@@ -98,6 +98,69 @@ const VARIANT_SPECS = {
     sub: "-528 DA3 clean 메시 + 평면 6cm/25° 제거 + 전체 톤",
     color: "#34d399",
   },
+  r3_12th_hybrid: {
+    key: "r3_12th_hybrid",
+    file: "scene_r3_12th_hybrid.glb",
+    title: "③ 3차(12차 메시, 관측>=90% 걷어내기 + 3mm 선명화 + 개구부 보존)",
+    sub: "관측>=90%만 제거 + 단일카메라 지배적 선택 + 3mm 벽 + see_through",
+    color: "#34d399",
+  },
+  r3_12th_tone: {
+    key: "r3_12th_tone",
+    file: "scene_r3_12th_tone.glb",
+    title: "③ 3차(12차 메시, 관측>=90% 걷어내기 + 3mm 선명화 + 전체 톤)",
+    sub: "관측>=90%만 제거 + 단일카메라 지배적 선택 + 3mm 벽 + see_through",
+    color: "#34d399",
+  },
+  r3_da3_hybrid: {
+    key: "r3_da3_hybrid",
+    file: "scene_r3_da3_hybrid.glb",
+    title: "③ 3차(DA3 메시, 관측>=90% 걷어내기 + 3mm 선명화 + 개구부 보존)",
+    sub: "DA3 clean + 관측>=90%만 제거 + 단일카메라 선명화 + 3mm 벽 + see_through",
+    color: "#34d399",
+  },
+  r3_da3_tone: {
+    key: "r3_da3_tone",
+    file: "scene_r3_da3_tone.glb",
+    title: "③ 3차(DA3 메시, 관측>=90% 걷어내기 + 3mm 선명화 + 전체 톤)",
+    sub: "DA3 clean + 관측>=90%만 제거 + 단일카메라 선명화 + 3mm 벽 + see_through",
+    color: "#34d399",
+  },
+  final_wm2: {
+    key: "final_wm2",
+    file: "scene_final_wm2.glb",
+    title: "② 최종 GLB (WM2 2cm 정밀 메시 + 1~5차 통합 + 압축)",
+    sub: "-537 WorldMirror 2.0 + 수평 가구 평면 굽기 + 3mm 벽 + see_through + 압축",
+    color: "#38bdf8",
+  },
+  final_da3: {
+    key: "final_da3",
+    file: "scene_final_da3.glb",
+    title: "③ 최종 GLB (DA3 정리 메시 + 1~5차 통합 + 압축)",
+    sub: "-528 DA3 clean + 수평 가구 평면 굽기 + 3mm 벽 + see_through + 압축",
+    color: "#34d399",
+  },
+  final_wm2_uncompressed: {
+    key: "final_wm2_uncompressed",
+    file: "scene_final_wm2_uncompressed.glb",
+    title: "① 비압축 PNG 원본 (scene_final_wm2_uncompressed.glb)",
+    sub: "무손실 PNG 아틀라스·평면 텍스처",
+    color: "#e2e8f0",
+  },
+  final_wm2_r4: {
+    key: "final_wm2_r4",
+    file: "scene_final_wm2_r4.glb",
+    title: "① 최종(4차, 수정 전: texrecon 가구 면 그대로)",
+    sub: "테이블·벤치 위 VDT 포즈 오차 + 등받이 가림 + 조각보 이음새",
+    color: "#fbbf24",
+  },
+  final_da3_r4: {
+    key: "final_da3_r4",
+    file: "scene_final_da3_r4.glb",
+    title: "① 최종 DA3(4차, 수정 전: texrecon 가구 면 그대로)",
+    sub: "DA3 메시 가구 면 수정 전",
+    color: "#fbbf24",
+  },
 };
 
 const variantScenes = {};
@@ -155,12 +218,17 @@ function applyStandardMaterialMode(root, mode) {
       origMat.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     }
 
+    const alphaTest = origMat.alphaTest || 0;
+    const transparent = Boolean(origMat.transparent);
+
     if (mode === "basic") {
       node.material = new THREE.MeshBasicMaterial({
         map: origMat.map || null,
         color: hasMap ? new THREE.Color(0xffffff) : origMat.color.clone(),
         vertexColors: hasVertexColor,
         side,
+        alphaTest,
+        transparent,
       });
     } else {
       // 표준 MeshStandardMaterial
@@ -171,6 +239,8 @@ function applyStandardMaterialMode(root, mode) {
         roughness: 1.0,
         metalness: 0.0,
         side,
+        alphaTest,
+        transparent,
       });
     }
   });
@@ -207,6 +277,7 @@ export function setCameraView(viewKey) {
   const camEntry = camerasMeta.cameras.find((c) => c.camera_id === viewKey);
   if (camEntry) {
     camera.fov = camEntry.vfov_deg;
+    camera.userData.baseFov = camEntry.vfov_deg;
     camera.up.fromArray(camEntry.up_glb);
     camera.position.fromArray(camEntry.position_glb);
     controls.target.fromArray(camEntry.look_target_glb);
@@ -217,9 +288,31 @@ export function setCameraView(viewKey) {
     return;
   }
 
-  const freeEntry = camerasMeta.free_views[viewKey];
+  const freeEntry =
+    camerasMeta.free_views[viewKey] ||
+    {
+      table_mix_close: {
+        vfov_deg: 42.0,
+        up_glb: [0.0, 1.0, 0.0],
+        position_glb: [2.45, 2.15, -1.25],
+        target_glb: [1.1, 0.72, -2.1],
+      },
+      bench_south_close: {
+        vfov_deg: 44.0,
+        up_glb: [0.0, 1.0, 0.0],
+        position_glb: [5.35, 2.15, -1.1],
+        target_glb: [3.85, 0.55, -2.1],
+      },
+      tables_north_close: {
+        vfov_deg: 46.0,
+        up_glb: [0.0, 1.0, 0.0],
+        position_glb: [3.65, 2.35, -3.65],
+        target_glb: [2.45, 0.68, -5.25],
+      },
+    }[viewKey];
   if (freeEntry) {
     camera.fov = freeEntry.vfov_deg;
+    camera.userData.baseFov = freeEntry.vfov_deg;
     camera.up.fromArray(freeEntry.up_glb);
     camera.position.fromArray(freeEntry.position_glb);
     controls.target.fromArray(freeEntry.target_glb);
@@ -233,7 +326,17 @@ export function setCameraView(viewKey) {
 function renderPane(sceneKey, x, y, w, h) {
   const sc = variantScenes[sceneKey];
   if (!sc) return;
-  camera.aspect = w / Math.max(1, h);
+  const aspect = w / Math.max(1, h);
+  const baseFov = camera.userData.baseFov || 60;
+  camera.aspect = aspect;
+  if (aspect < 1.25) {
+    // 3칸 가로 분할(aspect ≈ 0.63)에서 좌우 화각이 잘리지 않도록 수직 FOV를 보정해 수평 시야를 보존
+    const factor = Math.min(1.55, 1.25 / Math.max(aspect, 0.35));
+    const halfRad = Math.atan(Math.tan(THREE.MathUtils.degToRad(baseFov * 0.5)) * factor);
+    camera.fov = THREE.MathUtils.radToDeg(halfRad * 2.0);
+  } else {
+    camera.fov = baseFov;
+  }
   camera.updateProjectionMatrix();
   renderer.setViewport(x, y, w, h);
   renderer.setScissor(x, y, w, h);
@@ -520,7 +623,13 @@ async function init() {
 
   const autoMode = params.get("autoshots");
   let keys;
-  if (autoMode === "r2") {
+  if (autoMode === "r5") {
+    keys = ["final_wm2_r4", "final_wm2", "final_da3_r4", "final_da3"];
+  } else if (autoMode === "r4") {
+    keys = ["orig", "final_wm2", "final_da3", "final_wm2_uncompressed"];
+  } else if (autoMode === "r3") {
+    keys = ["orig", "r2_da3_hybrid", "r3_da3_hybrid", "r2_12th_hybrid", "r3_12th_hybrid"];
+  } else if (autoMode === "r2") {
     keys = ["lama", "tone", "r2_12th_hybrid", "r2_12th_tone", "r2_da3_hybrid", "r2_da3_tone"];
   } else if (autoMode === "1") {
     keys = ["orig", "tone", "tone_grid", "lama", "classic"];
@@ -633,6 +742,12 @@ async function init() {
     await runAutoShots();
   } else if (params.get("autoshots") === "r2") {
     await runAutoShotsR2();
+  } else if (params.get("autoshots") === "r3") {
+    await runAutoShotsR3();
+  } else if (params.get("autoshots") === "r4") {
+    await runAutoShotsR4();
+  } else if (params.get("autoshots") === "r5") {
+    await runAutoShotsR5();
   }
 }
 
@@ -751,6 +866,174 @@ async function runAutoShotsR2() {
   const wallFile = "compare_r2_da3_hybrid_vs_tone_wall_close.jpg";
   await postJson("/__save_shot", { filename: wallFile, dataUrl: dataUrlWall });
   savedFiles.push(wallFile);
+
+  await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
+}
+
+async function runAutoShotsR3() {
+  // 3차 지시 4번 + 3차 추가:
+  // [① 12차 원본 | ② 2차 | ③ 3차] 3칸 비교 캡처
+  // 필수 시점: ssafy_sign (파란 SSAFY 안내판 정면 근접), left_frame (왼쪽 끝 액자 벽 근접),
+  // wall_close (나무 벽 근접), obl3 (비스듬히 3), door_corridor (문·복도 개구부 확인 캡처) + 기본 시점
+  const views = [
+    "ssafy_sign",
+    "left_frame",
+    "wall_close",
+    "obl3",
+    "door_corridor",
+    "obl1",
+    "obl2",
+    "top",
+    "cam_A",
+    "cam_B",
+    "cam_C",
+    "cam_D",
+  ];
+  const savedFiles = [];
+
+  // 1. 주력(DA3 정리 메시 + hybrid) 3칸 비교: [① 12차 원본 | ② 2차(DA3) | ③ 3차(DA3)]
+  for (const v of views) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 90));
+    const dataUrl = captureSplit3DataUrl(
+      "orig",
+      "r2_da3_hybrid",
+      "r3_da3_hybrid",
+      "image/jpeg",
+      0.95,
+      [
+        "① 12차 원본 (current-scene-textured.glb)",
+        "② 2차 (DA3 + 무조건 걷어내기·5mm·개구부 막힘)",
+        "③ 3차 (DA3 + 관측>=90% 제거·3mm 선명화·see_through)",
+      ]
+    );
+    const filename = `compare_r3_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  // 2. 12차 메시 기준 3칸 비교: [① 12차 원본 | ② 2차(12차 메시) | ③ 3차(12차 메시)] (핵심 5개 시점)
+  for (const v of ["ssafy_sign", "left_frame", "wall_close", "obl3", "door_corridor"]) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 90));
+    const dataUrl = captureSplit3DataUrl(
+      "orig",
+      "r2_12th_hybrid",
+      "r3_12th_hybrid",
+      "image/jpeg",
+      0.95,
+      [
+        "① 12차 원본 (current-scene-textured.glb)",
+        "② 2차 (12차 메시 + 무조건 걷어내기·5mm·개구부 막힘)",
+        "③ 3차 (12차 메시 + 관측>=90% 제거·3mm 선명화·see_through)",
+      ]
+    );
+    const filename = `compare_r3_12th_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
+}
+
+async function runAutoShotsR4() {
+  // 4차 지시 5번:
+  // [① 12차 원본 | ② 최종(WM2) | ③ 최종(DA3)] 3칸 비교 캡처
+  // 8개 시점(카메라 4 + 자유 4) + ssafy_sign + left_frame + wall_close + door_corridor
+  const views = [
+    "cam_A",
+    "cam_B",
+    "cam_C",
+    "cam_D",
+    "top",
+    "obl1",
+    "obl2",
+    "obl3",
+    "ssafy_sign",
+    "left_frame",
+    "wall_close",
+    "door_corridor",
+  ];
+  const savedFiles = [];
+
+  for (const v of views) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 90));
+    const dataUrl = captureSplit3DataUrl(
+      "orig",
+      "final_wm2",
+      "final_da3",
+      "image/jpeg",
+      0.95,
+      [
+        "① 12차 원본 (current-scene-textured.glb)",
+        "② 최종 GLB (WM2 -537 정밀 기하 + 1~4차 통합 + 압축)",
+        "③ 최종 GLB (DA3 -528 정리 기하 + 1~4차 통합 + 압축)",
+      ]
+    );
+    const filename = `compare_final_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  // 4차 지시 4번: 텍스처 압축 전후 화질 차이가 눈에 띄지 않음을 보여 주는 비교 캡처 1장 이상
+  if (variantScenes.final_wm2_uncompressed && variantScenes.final_wm2) {
+    for (const v of ["ssafy_sign", "obl1"]) {
+      setCameraView(v);
+      await new Promise((r) => setTimeout(r, 90));
+      const dataUrlComp = captureSplit2DataUrl(
+        "final_wm2_uncompressed",
+        "final_wm2",
+        "image/jpeg",
+        0.96
+      );
+      const compFile = v === "ssafy_sign" ? "compression_quality_compare.jpg" : `compression_quality_compare_${v}.jpg`;
+      await postJson("/__save_shot", { filename: compFile, dataUrl: dataUrlComp });
+      savedFiles.push(compFile);
+    }
+  }
+
+  await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
+}
+
+async function runAutoShotsR5() {
+  // 5차 지시 2번:
+  // 같은 시점(obl2, top, cam_B 포함 8개 시점 + 테이블·벤치 근접 시점 3곳)에서
+  // [① 최종(4차, 수정 전) | ② 수정(5차, 수평 가구 평면 + 일관성 선택)] 2칸 비교 캡처
+  const views = [
+    "obl2",
+    "top",
+    "cam_B",
+    "cam_A",
+    "cam_C",
+    "cam_D",
+    "obl1",
+    "obl3",
+    "table_mix_close",
+    "bench_south_close",
+    "tables_north_close",
+  ];
+  const savedFiles = [];
+
+  for (const v of views) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 90));
+    const dataUrl = captureSplit2DataUrl("final_wm2_r4", "final_wm2", "image/jpeg", 0.95);
+    const filename = `compare_r5_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  if (variantScenes.final_da3_r4 && variantScenes.final_da3) {
+    for (const v of ["obl2", "top", "cam_B"]) {
+      setCameraView(v);
+      await new Promise((r) => setTimeout(r, 90));
+      const dataUrlDa3 = captureSplit2DataUrl("final_da3_r4", "final_da3", "image/jpeg", 0.95);
+      const da3File = `compare_r5_da3_${v}.jpg`;
+      await postJson("/__save_shot", { filename: da3File, dataUrl: dataUrlDa3 });
+      savedFiles.push(da3File);
+    }
+  }
 
   await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
 }

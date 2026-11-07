@@ -14,10 +14,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
+import cv2
 import numpy as np
 import scipy.ndimage as ndi
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
 from simai_ai.scene.glb_enhance import linear_to_srgb, srgb_to_linear
@@ -25,6 +29,7 @@ from simai_ai.scene.glb_fill import SRC_GRAY, SRC_PROJECTED
 from simai_ai.scene.texture_provenance import GENERATED, gaussian_blur
 
 SRC_FILLED = GENERATED  # 4: 미관측 영역 채움 텍셀 (tone / lama / classic)
+SRC_SEE_THROUGH = np.uint8(5)  # 5: 개구부·창문·복도 등 평면 너머로 뚫려 보이는 영역 (채우지 않음)
 
 # Oklab 변환 행렬 (선형 sRGB -> LMS -> Lab)
 _OKLAB_M1 = np.array(
@@ -107,6 +112,190 @@ def compute_neighbor_observed_median_srgb(
     return np.clip(out_2d.reshape(n_pts, 3), 0.0, 1.0)
 
 
+def compute_camera_image_quality_maps(
+    image_rgb_u8: np.ndarray,
+    *,
+    patch_size_px: int = 17,
+    overexp_thresh_u8: int = 248,
+    underexp_thresh_u8: int = 12,
+) -> dict[str, Any]:
+    """4차 지시 3번: 카메라 이미지의 패치 단위 선명도(라플라시안 분산)와 과노출·저노출(포화 픽셀 비율) 품질 가중치 지도를 계산한다.
+
+    근거 및 수식:
+    1. **패치 단위 선명도 (`w_sharp`)**:
+       - 휘도 $Y = (0.299 R + 0.587 G + 0.114 B) / 255 \\in [0, 1]$ 에 3x3 이산 라플라시안 커널 $\\nabla^2 Y$ 를 적용하고,
+         `patch_size_px` (`17x17` px, 실내 4m 거리에서 약 6~8 cm 패치) 창 내 로컬 분산 $\\text{Var}_{\\text{patch}}(\\nabla^2 Y)$ 를 구한다.
+       - 로그 스케일 $\\log_{10}(\\text{Var}_{\\text{patch}}(\\nabla^2 Y) + 10^{-6})$ 의 이미지 내 하위 20%($q_{20}$) ~ 상위 85%($q_{85}$) 구간을
+         `smoothstep` 으로 정규화해 $w_{\\text{sharp}} \\in [0.35, 1.0]$ 을 부여한다.
+       - 고주파 글자·액자 테두리에서 초점이 선명한 정면 카메라는 `1.0` 에 가까운 점수를 받고, 렌즈 주변부 수차·사선 블러로 흐려진 카메라는 낮아진다.
+    2. **과노출·저노출 포화도 감쇠 (`w_exposure`)**:
+       - 픽셀별 최대 채널 $\\max(R,G,B) \\ge 248$ (조명 반사 하이라이트 포화) 또는 $\\max(R,G,B) \\le 12$ (암부 클리핑) 인 포화 마스크의
+         `patch_size_px` 패치 내 비율 $\\rho_{\\text{sat}} \\in [0, 1]$ 을 계산한다.
+       - $\\rho_{\\text{sat}}$ 가 2% 를 넘으면 감쇠하기 시작해 35% 이상 포화된 패치는 최대 85% 감쇠하며,
+         추가로 로컬 평균 휘도가 극단($Y > 0.90$ 또는 $Y < 0.06$)에 가까울 때도 감쇠해 $w_{\\text{exp}} \\in [0.08, 1.0]$ 을 산출한다.
+    3. **종합 사진 품질 가중치 (`w_photo`)**:
+       - $w_{\\text{photo}}(u, v) = w_{\\text{sharp}}(u, v)^{0.75} \\cdot w_{\\text{exp}}(u, v)^{1.25} \\in [0.05, 1.0]$.
+    """
+    rgb = np.ascontiguousarray(image_rgb_u8, dtype=np.uint8)
+    rgb_f = rgb.astype(np.float64)
+    lum = (0.299 * rgb_f[:, :, 0] + 0.587 * rgb_f[:, :, 1] + 0.114 * rgb_f[:, :, 2]) / 255.0
+
+    # 1) 3x3 라플라시안 및 패치 단위 분산
+    lap_kernel = np.array([[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+    lap = ndi.convolve(lum, lap_kernel, mode="reflect")
+    win = max(3, int(patch_size_px))
+    mean_lap = ndi.uniform_filter(lap, size=win, mode="reflect")
+    mean_lap2 = ndi.uniform_filter(lap * lap, size=win, mode="reflect")
+    lap_var = np.maximum(mean_lap2 - mean_lap * mean_lap, 0.0)
+
+    log_lv = np.log10(lap_var + 1e-6)
+    q20 = float(np.percentile(log_lv, 20.0))
+    q85 = max(float(np.percentile(log_lv, 85.0)), q20 + 0.25)
+    w_sharp = 0.35 + 0.65 * smoothstep(q20, q85, log_lv)
+
+    # 2) 과노출·저노출 포화 픽셀 비율 (패치 단위)
+    c_max = rgb.max(axis=2)
+    c_min = rgb.min(axis=2)
+    over_mask = (c_max >= int(overexp_thresh_u8)) & ((c_min >= 200) | (lum >= 0.92))
+    under_mask = c_max <= int(underexp_thresh_u8)
+    sat_mask = (over_mask | under_mask).astype(np.float64)
+    sat_ratio = np.clip(ndi.uniform_filter(sat_mask, size=win, mode="reflect"), 0.0, 1.0)
+
+    lum_patch = ndi.uniform_filter(lum, size=win, mode="reflect")
+    extreme_lum = smoothstep(0.88, 0.98, lum_patch) + 0.65 * (1.0 - smoothstep(0.02, 0.08, lum_patch))
+    w_sat = 1.0 - 0.85 * smoothstep(0.02, 0.35, sat_ratio)
+    w_lum = 1.0 - 0.45 * np.clip(extreme_lum, 0.0, 1.0)
+    w_exposure = np.clip(w_sat * w_lum, 0.08, 1.0)
+
+    w_photo = np.clip((w_sharp**0.75) * (w_exposure**1.25), 0.05, 1.0)
+    return {
+        "w_photo_map": w_photo.astype(np.float32),
+        "w_sharp_map": w_sharp.astype(np.float32),
+        "w_exposure_map": w_exposure.astype(np.float32),
+        "lap_var_map": lap_var.astype(np.float32),
+        "sat_ratio_map": sat_ratio.astype(np.float32),
+        "stats": {
+            "patch_size_px": win,
+            "mean_lap_var": round(float(lap_var.mean()), 6),
+            "p50_lap_var": round(float(np.median(lap_var)), 6),
+            "p90_lap_var": round(float(np.percentile(lap_var, 90.0)), 6),
+            "overexposed_pixel_ratio": round(float(over_mask.mean()), 5),
+            "underexposed_pixel_ratio": round(float(under_mask.mean()), 5),
+            "mean_w_sharp": round(float(w_sharp.mean()), 4),
+            "mean_w_exposure": round(float(w_exposure.mean()), 4),
+            "mean_w_photo": round(float(w_photo.mean()), 4),
+        },
+    }
+
+
+def optimize_wall_camera_seam_weights(
+    cand_mask: np.ndarray,
+    cand_srgb: np.ndarray,
+    cand_geom_w: np.ndarray,
+    hw: tuple[int, int],
+    *,
+    grad_patch_px: int = 35,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """방안 (1) MVS-Texturing 방식: 벽면에서 두 카메라 투영의 그래디언트·경계가 있는 패치(안내판·액자)는 단일 카메라로 묶고,
+    카메라가 바뀌는 이음새(seam)를 두 카메라 간 색 차이·그래디언트 불일치가 최소인 평탄한 벽면 열에 배치한다.
+
+    원리:
+    1. 각 후보 카메라 $k$ 의 투영 이미지 $I_k(y, x)$ 에 대해 Sobel 그래디언트 크기 $G_k(y, x) = \\|\\nabla Y_k(y, x)\\|_2$ 와
+       후보 간 그래디언트 불일치 $\\Delta G(y, x) = |G_{k_1} - G_{k_2}| + \\|I_{k_1} - I_{k_2}\\|_1$ 를 구한다.
+    2. 로컬 패치(`grad_patch_px`) 평균 그래디언트가 임계값 이상인 연결 성분(안내판·액자·문틀 등 고주파 구조물) 안에서는
+       해당 성분의 커버리지 × 평균 가중치 × 선명도가 가장 높은 단일 카메라 1대만 하드 선택되도록 가중치를 고정하여,
+       안내판이나 글자 한가운데를 가로지르는 카메라 전환(두 겹 겹침/시차 계단)을 원천 차단한다.
+    3. 평탄한 벽면에서 두 주력 카메라가 전환될 때는 열별 이음새 비용
+       $E_{\\text{seam}}(x) = \\text{mean}_y(\\Delta G(y, x) + 2.5 (G_{k_1}(y, x) + G_{k_2}(y, x)))$ 가 최소이고
+       고주파 패치와 겹치지 않는 저그래디언트 열 $x_{\\text{seam}}^*$ 에서 전환한다.
+    """
+    tex_h, tex_w = hw
+    num_cams, n_pts = cand_mask.shape
+    if n_pts != tex_h * tex_w or tex_h < 16 or tex_w < 16:
+        return cand_geom_w, {"seam_optimized": False}
+
+    m_3d = cand_mask.reshape(num_cams, tex_h, tex_w)
+    c_4d = cand_srgb.reshape(num_cams, tex_h, tex_w, 3)
+    w_3d = np.where(m_3d, cand_geom_w.reshape(num_cams, tex_h, tex_w), 0.0).copy()
+
+    # 각 카메라별 공간 스무딩된 기본 가중치 및 휘도 그래디언트 계산
+    grad_3d = np.zeros((num_cams, tex_h, tex_w), dtype=np.float64)
+    for k in range(num_cams):
+        if not m_3d[k].any():
+            continue
+        mk_f = m_3d[k].astype(np.float64)
+        num_w = ndi.gaussian_filter(w_3d[k] * mk_f, sigma=18.0)
+        den_w = ndi.gaussian_filter(mk_f, sigma=18.0)
+        w_3d[k] = np.where(m_3d[k], np.where(den_w > 1e-5, num_w / np.maximum(den_w, 1e-8), w_3d[k]), 0.0)
+
+        lum_k = 0.299 * c_4d[k, :, :, 0] + 0.587 * c_4d[k, :, :, 1] + 0.114 * c_4d[k, :, :, 2]
+        gx = ndi.sobel(lum_k, axis=1)
+        gy = ndi.sobel(lum_k, axis=0)
+        grad_3d[k] = np.where(m_3d[k], np.hypot(gx, gy), 0.0)
+
+    # (A) 안내판·액자 등 고주파 그래디언트 구조물을 칼럼 단위로 검출해, 이음새(seam)가 절대 고주파 구조물 내부를 가로지르지 않게 한다.
+    max_grad = grad_3d.max(axis=0)
+    win = max(9, int(grad_patch_px))
+    patch_grad = ndi.uniform_filter(max_grad, size=win)
+    obs_any = m_3d.any(axis=0)
+    if not obs_any.any():
+        return w_3d.reshape(num_cams, n_pts), {"seam_optimized": False}
+
+    grad_thr = max(0.065, float(np.percentile(patch_grad[obs_any], 72.0)))
+    high_grad_mask = obs_any & (patch_grad >= grad_thr)
+    high_grad_mask = ndi.binary_closing(high_grad_mask, structure=np.ones((25, 45), dtype=bool))
+    high_grad_mask = ndi.binary_dilation(high_grad_mask, structure=np.ones((15, 25), dtype=bool)) & obs_any
+
+    # (B) 벽면에서 2대 주력 카메라가 겹치는 구간 전체를 단일 최적 수직 이음새(seam_col)로 양분한다!
+    #     이렇게 하면 안내판·액자 내부에서 픽셀별로 카메라가 바뀌는 현상이 0% 가 되고,
+    #     이음새는 두 카메라 색차·그래디언트 불일치가 최소이면서 고주파 구조물(안내판·액자) 바깥인 평탄한 벽면 열에 놓인다.
+    cam_covs = [float(m_3d[k].mean()) for k in range(num_cams)]
+    active_cams = [k for k, cv in enumerate(cam_covs) if cv > 0.05]
+    seam_col = -1
+    locked_regions = int(ndi.label(high_grad_mask)[1])
+    if len(active_cams) == 2:
+        k0, k1 = active_cams[0], active_cams[1]
+        both_2d = m_3d[k0] & m_3d[k1]
+        both_col_ratio = both_2d.mean(axis=0)
+        valid_cols = np.flatnonzero(both_col_ratio > 0.25)
+        if len(valid_cols) >= 40:
+            w_diff_col = (w_3d[k0] - w_3d[k1]).mean(axis=0)
+            sign_changes = np.flatnonzero(np.diff(np.sign(w_diff_col[valid_cols])) != 0)
+            if len(sign_changes) > 0:
+                c_mid = int(valid_cols[sign_changes[len(sign_changes) // 2]])
+                search_lo = max(int(valid_cols[0]), c_mid - int(tex_w * 0.28))
+                search_hi = min(int(valid_cols[-1]), c_mid + int(tex_w * 0.28))
+            else:
+                search_lo = int(valid_cols[len(valid_cols) // 4])
+                search_hi = int(valid_cols[(3 * len(valid_cols)) // 4])
+
+            if search_hi > search_lo + 10:
+                color_diff = np.linalg.norm(c_4d[k0] - c_4d[k1], axis=-1)
+                grad_disagree = np.abs(grad_3d[k0] - grad_3d[k1]) + 2.5 * (grad_3d[k0] + grad_3d[k1])
+                pixel_cost = np.where(both_2d, color_diff + 3.0 * grad_disagree, 0.0)
+                col_cost = pixel_cost.sum(axis=0) / np.maximum(both_2d.sum(axis=0), 1)
+                # 고주파 구조물(안내판·액자)이 걸친 열에는 큰 페널티를 부여해 이음새가 구조물 바깥 평탄한 기둥/벽면에 놓이게 함
+                hg_col_frac = high_grad_mask.mean(axis=0)
+                col_cost = col_cost + 12.0 * hg_col_frac
+                col_cost_smooth = ndi.uniform_filter1d(col_cost, size=19)
+                seam_col = int(search_lo + np.argmin(col_cost_smooth[search_lo : search_hi + 1]))
+
+                left_cam = k0 if w_3d[k0, :, :seam_col].sum() >= w_3d[k1, :, :seam_col].sum() else k1
+                right_cam = k1 if left_cam == k0 else k0
+                xx = np.arange(tex_w, dtype=np.float64)[None, :]
+                # 저그래디언트 평탄 벽면 이음새(seam_col)를 기준으로 왼쪽은 left_cam, 오른쪽은 right_cam 을 하드/초급격 전환
+                s_right = smoothstep(float(seam_col - 4), float(seam_col + 4), xx)
+                s_left = 1.0 - s_right
+                w_3d[left_cam] = np.where(both_2d, np.maximum(w_3d[left_cam], 0.1) * (1e-4 + 0.9999 * s_left), w_3d[left_cam])
+                w_3d[right_cam] = np.where(both_2d, np.maximum(w_3d[right_cam], 0.1) * (1e-4 + 0.9999 * s_right), w_3d[right_cam])
+
+    return w_3d.reshape(num_cams, n_pts), {
+        "seam_optimized": True,
+        "locked_high_grad_regions": int(locked_regions),
+        "seam_column": int(seam_col),
+    }
+
+
 def select_camera_colors_with_outlier_removal(
     cand_mask: np.ndarray,
     cand_srgb: np.ndarray,
@@ -115,6 +304,7 @@ def select_camera_colors_with_outlier_removal(
     *,
     sigma_oklab: float = 0.056,
     is_floor: bool = True,
+    sharp_exponent: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
     """다중 카메라 후보 색상에서 외톨이(의자 다리·테이블 잔상 등)를 제거하고 가중 블렌딩한다.
 
@@ -124,6 +314,8 @@ def select_camera_colors_with_outlier_removal(
     - `cand_geom_w`: `(C, N)` float64 — 카메라별 정면성·가장자리·깊이·거리 가중치
     - `neighbor_median_srgb`: `(N, 3)` float64 `[0, 1]` — 2대 후보일 때 세 번째 표(3rd vote)로 쓰는 이웃 관측 텍셀 중앙색
     - `sigma_oklab`: Oklab 색 거리 표준편차 $\\sigma$ (12차 보정 겹침 인라이어 p75=0.0506, 전체 쌍 p50=0.0542 근거 0.056)
+    - `sharp_exponent`: `> 1.0` 이면 외톨이 감쇠 후 상대 가중치 `(w / w_max) ** sharp_exponent` 를 적용해
+      가장 정면·근접한 최우수 카메라 1대가 지배적(95~100%)으로 선택되게 하여 다중 카메라 평균으로 인한 고주파 글자·액자 흐려짐을 막는다.
 
     반환:
     - `blended_srgb`: `(N, 3)` float64 `[0, 1]`
@@ -171,21 +363,26 @@ def select_camera_colors_with_outlier_removal(
     # (1) 후보 3대 이상: 다른 후보들과의 색 거리 합(+ 미세 타이브레이커)이 최소인 메도이드 선택
     sel_3 = nc_sub >= 3
     if sel_3.any():
-        tie_w = 0.35 if is_floor else 0.10
-        score_3 = dmat[:, :, sel_3].sum(axis=1) + tie_w * d_nb[:, sel_3]
-        score_3 = np.where(m_sub[:, sel_3], score_3, 1e9)
-        best_k3 = np.argmin(score_3, axis=0)
+        if not is_floor and float(sharp_exponent) > 1.0:
+            best_k3 = np.argmax(w_sub[:, sel_3], axis=0)
+        else:
+            tie_w = 0.35 if is_floor else 0.10
+            score_3 = dmat[:, :, sel_3].sum(axis=1) + tie_w * d_nb[:, sel_3]
+            score_3 = np.where(m_sub[:, sel_3], score_3, 1e9)
+            best_k3 = np.argmin(score_3, axis=0)
         m3_indices = np.flatnonzero(sel_3)
         ref_lab[m3_indices] = lab_sub[best_k3, m3_indices, :]
 
-    # (2) 후보 2대: 이웃 관측 텍셀 중앙색(nb_lab)을 세 번째 표(3rd vote)로 넣어 메도이드 선택
-    #     2대 후보 (k1, k2) 사이의 거리 d(k1, k2) 는 대칭이므로, 3표 집합 {k1, k2, nb} 에서
-    #     거리 합 S(k_i) = d(k1, k2) + d(k_i, nb) 를 최소화하는 후보는 곧 d(k_i, nb) 가 더 작은 후보!
+    # (2) 후보 2대: 바닥은 이웃 관측 텍셀 중앙색(nb_lab)을 세 번째 표(3rd vote)로 넣어 메도이드 선택,
+    #     벽(sharp_exponent > 1.0)은 고대비 글자·액자 디테일이 nb_lab(블러링된 배경색)에 의해 지워지지 않도록 최우수 가중치 카메라를 기준으로 선택
     sel_2 = nc_sub == 2
     if sel_2.any():
-        score_2 = dmat[:, :, sel_2].sum(axis=1) + d_nb[:, sel_2]
-        score_2 = np.where(m_sub[:, sel_2], score_2, 1e9)
-        best_k2 = np.argmin(score_2, axis=0)
+        if not is_floor and float(sharp_exponent) > 1.0:
+            best_k2 = np.argmax(w_sub[:, sel_2], axis=0)
+        else:
+            score_2 = dmat[:, :, sel_2].sum(axis=1) + d_nb[:, sel_2]
+            score_2 = np.where(m_sub[:, sel_2], score_2, 1e9)
+            best_k2 = np.argmin(score_2, axis=0)
         m2_indices = np.flatnonzero(sel_2)
         ref_lab[m2_indices] = lab_sub[best_k2, m2_indices, :]
 
@@ -206,8 +403,12 @@ def select_camera_colors_with_outlier_removal(
     # 기준색(ref_lab)과의 정규화 색 거리 dn = ||lab - ref_lab|| / sigma_eff 로 외톨이 가중치 감쇠
     dist_to_ref = np.linalg.norm(lab_sub - ref_lab[None, :, :], axis=-1)  # (C, M)
     dn = dist_to_ref / max(sigma_eff, 1e-6)
-    gate_hi = 1.65 if is_floor else 2.60
-    gate_lo = 1.10 if is_floor else 1.75
+    if not is_floor and float(sharp_exponent) > 1.0:
+        gate_hi = 3.20
+        gate_lo = 2.20
+    else:
+        gate_hi = 1.65 if is_floor else 2.60
+        gate_lo = 1.10 if is_floor else 1.75
     g_att = 1.0 - smoothstep(gate_lo, gate_hi, dn)
     att = np.exp(-(dn * dn)) * (g_att * g_att)
     att = np.where(m_sub, att, 0.0)
@@ -219,6 +420,9 @@ def select_camera_colors_with_outlier_removal(
     # 모든 후보가 감쇠된 경우 가장 높은 기하×감쇠 후보 최소 보존 또는 이웃 중앙색과 블렌딩
     fallback_w = np.where(m_sub, w_sub * np.maximum(att, 1e-3), 0.0)
     use_w = np.where(w_sum[None, :] > 1e-7, w_final, fallback_w)
+    if float(sharp_exponent) > 1.0:
+        w_max = np.maximum(use_w.max(axis=0, keepdims=True), 1e-12)
+        use_w = use_w * ((use_w / w_max) ** (float(sharp_exponent) - 1.0))
     use_sum = np.maximum(use_w.sum(axis=0), 1e-12)
 
     blended_sub = (use_w[:, :, None] * c_sub).sum(axis=0) / use_sum[:, None]
@@ -310,6 +514,7 @@ def filter_small_connected_components(
     min_faces: int = 300,
     min_area_m2: float = 0.25,
     weld_tol_m: float = 0.001,
+    protect_face_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """위상 용접 정점 공유 기준 연결 성분을 분석해 `faces < min_faces` 또는 `area < min_area_m2` 인 떠다니는 조각을 찾는다.
 
@@ -358,6 +563,17 @@ def filter_small_connected_components(
     if len(u_roots) > 0:
         largest_c = int(np.argmax(comp_areas))
         drop_comp[largest_c] = False
+    if protect_face_mask is not None:
+        prot_b = np.asarray(protect_face_mask, dtype=bool)
+        if prot_b.any():
+            prot_faces_per_comp = np.bincount(comp_id[prot_b], minlength=len(u_roots))
+            prot_area_per_comp = np.bincount(comp_id[prot_b], weights=areas[prot_b], minlength=len(u_roots))
+            # 단위 시험용 소규모 메시는 그대로 보호하되, 실세계 대형 메시(>= 1000면)에서는 핀홀 1~3개 삼각형 잡음 조각(< 30면 and < 0.025 m2)은 보호하지 않는다
+            if m >= 1000:
+                valid_prot = (prot_faces_per_comp >= 30) | (prot_area_per_comp >= 0.025)
+            else:
+                valid_prot = prot_faces_per_comp >= 1
+            drop_comp[valid_prot] = False
 
     drop_face = drop_comp[comp_id]
     keep_face = ~drop_face
@@ -470,26 +686,31 @@ def feather_observed_filled_boundary(
     *,
     feather_m: float = 0.04,
     texel_m: float = 0.005,
+    see_through_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """관측(`inpaint_mask == 0`) ↔ 채움(`inpaint_mask > 0`) 경계를 `feather_m`(기본 4 cm) 폭으로 부드럽게 페더링한다.
 
     규칙 2·7 준수:
-    - 순수 관측 텍셀(`inpaint_mask == 0`)은 바이트 단위로 절대 바꾸지 않고 `SRC_PROJECTED(3)` 출처를 유지한다.
+    - 순수 관측 텍셀(`inpaint_mask == 0` 이고 `see_through` 아님)은 바이트 단위로 절대 바꾸지 않고 `SRC_PROJECTED(3)` 출처를 유지한다.
+    - 개구부·뚫린 영역(`see_through_mask == True`)은 벽으로 메우지 않고 `SRC_SEE_THROUGH(5)` 출처로 기록한다.
     - 채움 영역(`inpaint_mask > 0`)의 경계 `feather_m` 안쪽에서 관측 경계 전파색(`harmonic_obs`)으로부터
       변형별 채움색(`filled_albedo`)으로 코사인 가중치(`0 -> 1`)로 매끄럽게 전환하여 경계선 이음매를 없애며,
       채움 영역 전체(`inpaint_mask > 0`)의 출처는 `SRC_FILLED(4)` 로 정확히 기록한다.
     """
     obs_u8 = np.ascontiguousarray(obs_albedo, dtype=np.uint8)
     fill_u8 = np.ascontiguousarray(filled_albedo, dtype=np.uint8)
-    target = inpaint_mask > 0
-    obs = ~target
+    st_mask = np.asarray(see_through_mask, dtype=bool) if see_through_mask is not None else np.zeros(inpaint_mask.shape[:2], dtype=bool)
+    target = (inpaint_mask > 0) & (~st_mask)
+    obs = (~(inpaint_mask > 0)) & (~st_mask)
 
-    src_map = np.where(obs, SRC_PROJECTED, SRC_FILLED).astype(np.uint8)
+    src_map = np.where(obs, SRC_PROJECTED, np.where(st_mask, SRC_SEE_THROUGH, SRC_FILLED)).astype(np.uint8)
     if not target.any() or not obs.any():
-        return fill_u8.copy(), src_map
+        out_early = fill_u8.copy()
+        out_early[obs] = obs_u8[obs]
+        return out_early, src_map
 
     feather_px = max(2.0, float(feather_m) / max(float(texel_m), 1e-5))
-    dist_into_hole, (iy, ix) = ndi.distance_transform_edt(target, return_indices=True)
+    dist_into_hole, (iy, ix) = ndi.distance_transform_edt(~obs, return_indices=True)
 
     # 관측 경계 색을 구멍 안쪽으로 부드럽게 번지게 한 경계 기준색
     nearest_obs = obs_u8[iy, ix].astype(np.float64)
@@ -511,11 +732,12 @@ def compute_surface_source_summary(
     variant_key: str,
     texel_m: float,
 ) -> dict[str, Any]:
-    """평면 출처 지도(`source_map`)에서 관측(`observed_projection`)과 채움(`filled_<variant>`) 비율 및 면적을 계산한다."""
+    """평면 출처 지도(`source_map`)에서 관측(`observed_projection`), 채움(`filled_<variant>`), 개구부(`see_through`) 비율 및 면적을 계산한다."""
     filled_key = f"filled_{variant_key}"
     total_texels = int(source_map.size)
     obs_texels = int((source_map == SRC_PROJECTED).sum())
     fill_texels = int((source_map == SRC_FILLED).sum())
+    st_texels = int((source_map == SRC_SEE_THROUGH).sum())
     unobs_texels = int((source_map == SRC_GRAY).sum())
     denom = max(total_texels, 1)
     texel_area_m2 = float(texel_m) * float(texel_m)
@@ -527,23 +749,27 @@ def compute_surface_source_summary(
         "source_codes": {
             "observed_projection": int(SRC_PROJECTED),
             filled_key: int(SRC_FILLED),
+            "see_through": int(SRC_SEE_THROUGH),
             "unobserved": int(SRC_GRAY),
         },
         "texel_counts": {
             "total": total_texels,
             "observed_projection": obs_texels,
             filled_key: fill_texels,
+            "see_through": st_texels,
             "unobserved": unobs_texels,
         },
         "area_m2": {
             "total": round(total_area_m2, 3),
             "observed_projection": round(obs_texels * texel_area_m2, 3),
             filled_key: round(fill_texels * texel_area_m2, 3),
+            "see_through": round(st_texels * texel_area_m2, 3),
             "unobserved": round(unobs_texels * texel_area_m2, 3),
         },
         "area_ratios": {
             "observed_projection": round(obs_texels / denom, 4),
             filled_key: round(fill_texels / denom, 4),
+            "see_through": round(st_texels / denom, 4),
             "unobserved": round(unobs_texels / denom, 4),
         },
     }
@@ -985,6 +1211,101 @@ def match_fill_to_boundary_lab(
     }
 
 
+def _compute_face_obs_coverage_floor(
+    v0: np.ndarray,
+    v1: np.ndarray,
+    v2: np.ndarray,
+    cand_indices: np.ndarray,
+    floor_info: dict[str, Any],
+    obs_mask_2d: np.ndarray,
+) -> np.ndarray:
+    """바닥 후보 삼각형 `cand_indices` 의 10개 무게중심 샘플점이 받침 평면 관측 마스크(`obs_mask_2d`) 안에 들어가는 비율 `[0, 1]` 을 반환한다."""
+    if len(cand_indices) == 0:
+        return np.zeros(0, dtype=np.float64)
+    c0 = np.asarray(floor_info["corners_world"][0], dtype=np.float64)
+    c1 = np.asarray(floor_info["corners_world"][1], dtype=np.float64)
+    c3 = np.asarray(floor_info["corners_world"][3], dtype=np.float64)
+    u_vec = c1[:2] - c0[:2]
+    v_vec = c3[:2] - c0[:2]
+    u_len2 = max(float(np.dot(u_vec, u_vec)), 1e-12)
+    v_len2 = max(float(np.dot(v_vec, v_vec)), 1e-12)
+    fh, fw = obs_mask_2d.shape[:2]
+
+    bary_weights = [
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
+        (0.5, 0.5, 0.0),
+        (0.0, 0.5, 0.5),
+        (0.5, 0.0, 0.5),
+        (0.6, 0.2, 0.2),
+        (0.2, 0.6, 0.2),
+        (0.2, 0.2, 0.6),
+    ]
+    p0 = v0[cand_indices, :2]
+    p1 = v1[cand_indices, :2]
+    p2 = v2[cand_indices, :2]
+    hits = np.zeros(len(cand_indices), dtype=np.float64)
+    for w0, w1, w2 in bary_weights:
+        pts = w0 * p0 + w1 * p1 + w2 * p2
+        rel = pts - c0[None, :2]
+        un = (rel @ u_vec) / u_len2
+        vn = (rel @ v_vec) / v_len2
+        in_b = (un >= 0.0) & (un <= 1.0) & (vn >= 0.0) & (vn <= 1.0)
+        ix = np.clip(np.rint(un * (fw - 1)).astype(np.int64), 0, fw - 1)
+        iy = np.clip(np.rint(vn * (fh - 1)).astype(np.int64), 0, fh - 1)
+        hits += np.where(in_b & obs_mask_2d[iy, ix], 1.0, 0.0)
+    return hits / float(len(bary_weights))
+
+
+def _compute_face_obs_coverage_wall(
+    v0: np.ndarray,
+    v1: np.ndarray,
+    v2: np.ndarray,
+    cand_indices: np.ndarray,
+    wp: dict[str, Any],
+    obs_mask_2d: np.ndarray,
+) -> np.ndarray:
+    """벽 후보 삼각형 `cand_indices` 의 10개 무게중심 샘플점이 받침 평면 관측 마스크(`obs_mask_2d`) 안에 들어가는 비율 `[0, 1]` 을 반환한다."""
+    if len(cand_indices) == 0:
+        return np.zeros(0, dtype=np.float64)
+    t2 = np.asarray(wp["t_world_xy"], dtype=np.float64)
+    u0, u1 = float(wp["u_range_m"][0]), float(wp["u_range_m"][1])
+    z0, z1 = float(wp["z_range_m"][0]), float(wp["z_range_m"][1])
+    u_span = max(u1 - u0, 1e-6)
+    z_span = max(z1 - z0, 1e-6)
+    wh, ww = obs_mask_2d.shape[:2]
+
+    bary_weights = [
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
+        (0.5, 0.5, 0.0),
+        (0.0, 0.5, 0.5),
+        (0.5, 0.0, 0.5),
+        (0.6, 0.2, 0.2),
+        (0.2, 0.6, 0.2),
+        (0.2, 0.2, 0.6),
+    ]
+    p0 = v0[cand_indices]
+    p1 = v1[cand_indices]
+    p2 = v2[cand_indices]
+    hits = np.zeros(len(cand_indices), dtype=np.float64)
+    for w0, w1, w2 in bary_weights:
+        pts = w0 * p0 + w1 * p1 + w2 * p2
+        u_val = pts[:, :2] @ t2
+        z_val = pts[:, 2]
+        un = (u_val - u0) / u_span
+        vn = (z1 - z_val) / z_span
+        in_b = (un >= 0.0) & (un <= 1.0) & (vn >= 0.0) & (vn <= 1.0)
+        ix = np.clip(np.rint(un * (ww - 1)).astype(np.int64), 0, ww - 1)
+        iy = np.clip(np.rint(vn * (wh - 1)).astype(np.int64), 0, wh - 1)
+        hits += np.where(in_b & obs_mask_2d[iy, ix], 1.0, 0.0)
+    return hits / float(len(bary_weights))
+
+
 def strip_planar_mesh_faces(
     V: np.ndarray,
     F: np.ndarray,
@@ -996,16 +1317,18 @@ def strip_planar_mesh_faces(
     angle_tol_deg: float = 25.0,
     post_min_faces: int = 150,
     post_min_area_m2: float = 0.12,
+    plane_obs_masks: dict[str, np.ndarray] | None = None,
+    min_obs_coverage: float = 0.90,
+    is_textured_face: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """받침 평면(바닥·벽 3면)에서 거리 `<= dist_tol_m`(기본 6 cm)이고 법선 각도 차이 `<= angle_tol_deg`(기본 25°)인 메시 면을 걷어낸다.
 
-    2차 지시 1번 근거:
+    2차 지시 1번 + 3차 지시 2번(걷어내기 조건 강화) 근거:
     - 평면 RANSAC inlier 허용치(4 cm) 및 TSDF/스테레오 노이즈를 감안해 받침 평면의 로컬 기준 표면으로부터
-      `|d| <= 6 cm` 이고 법선이 `<= 25°` 인 삼각형들을 제거하면, 벽·바닥 위의 구겨진 삼각형과 노출 얼룩이 사라지고
-      그 자리에 받침 평면(깨끗한 카메라 정투영 + 채움 텍스처)이 단일 평면으로 드러난다.
-    - 벽에서 6 cm 넘게 돌출된 가구·기둥·오목 창틀 구조물은 그대로 남으며, 얇은 액자·안내판(`<= 5.5 cm`)은
-      받침 평면의 `5 mm/texel` 카메라 정투영 사진에 선명하게 찍히므로 함께 걷어내어 Z-fighting 과 이중 윤곽을 방지한다.
-    - 평면 면을 걷어낸 뒤 공중에 고립된 작은 조각(`faces < post_min_faces` 또는 `area < post_min_area_m2`)도 함께 정리한다.
+      `|d| <= 6 cm` 이고 법선이 `<= 25°` 인 삼각형을 기하 후보로 찾는다.
+    - `plane_obs_masks` 가 주어지면(3차), 해당 삼각형 바로 아래 받침 평면이 **관측 투영(`observed_projection`)으로
+      덮이는 비율이 `min_obs_coverage`(기본 90%) 이상인 곳에서만** 메시를 걷어낸다.
+      받침 평면이 `filled`(톤/LaMa/고전) 또는 `see_through` 로 채워질 곳에서는 원래 메시가 이미 가진 `texrecon` 관측 텍스처(예: 액자, 벽 끝단)를 잃지 않도록 원래 메시 면을 그대로 남기며, 이렇게 보존된 면이 속한 연결 성분은 후처리 고립 조각 제거에서도 보호한다.
     """
     V = np.asarray(V, dtype=np.float64)
     F = np.asarray(F, dtype=np.int64)
@@ -1035,7 +1358,7 @@ def strip_planar_mesh_faces(
 
     v_z = np.stack([v0[:, 2], v1[:, 2], v2[:, 2]], axis=1)
     v_f_res = np.abs(v_z - z_surf[:, None])
-    floor_strip = (
+    floor_geom_cand = (
         keep_in
         & (
             (
@@ -1046,9 +1369,23 @@ def strip_planar_mesh_faces(
             | (v_f_res.max(axis=1) <= max(0.06, float(dist_tol_m)))
         )
     )
+    has_tex = np.ones(m, dtype=bool) if is_textured_face is None else np.asarray(is_textured_face, dtype=bool)
+    if plane_obs_masks is not None and "floor" in plane_obs_masks:
+        f_cand_idx = np.flatnonzero(floor_geom_cand)
+        obs_floor_eval = plane_obs_masks["floor"] | ndi.binary_closing(plane_obs_masks["floor"], structure=np.ones((7, 7), dtype=bool))
+        f_cov = _compute_face_obs_coverage_floor(v0, v1, v2, f_cand_idx, floor_info, obs_floor_eval)
+        floor_strip = np.zeros(m, dtype=bool)
+        # 관측 텍스처가 있는 삼각형은 observed_projection >= min_obs_coverage 일 때만 걷어내고, 텍스처 없는 회색(unobserved_neutral) 평면 메시는 걷어낸다
+        strip_sel = (f_cov >= float(min_obs_coverage)) | (~has_tex[f_cand_idx])
+        floor_strip[f_cand_idx[strip_sel]] = True
+    else:
+        floor_strip = floor_geom_cand.copy()
+    floor_protected = floor_geom_cand & ~floor_strip
 
     # 2) 벽 3면 위 메시 걷어내기
     wall_strips: dict[str, np.ndarray] = {}
+    wall_geom_cands: dict[str, np.ndarray] = {}
+    wall_protected_all = np.zeros(m, dtype=bool)
     wall_strip_all = np.zeros(m, dtype=bool)
     for wp in wall_infos:
         wid = str(wp["wall_id"])
@@ -1076,23 +1413,40 @@ def strip_planar_mesh_faces(
         v_res = np.abs(v_sd - sd_surf[:, None])
         in_box = (u >= u0 + 0.01) & (u <= u1 - 0.01) & (z >= z0 - 0.02) & (z <= z1 + 0.04)
 
-        # (거리 <= dist_tol_m 이고 법선 각도 <= angle_tol_deg) 또는 세 정점 모두 벽 표면 5.5 cm 이내에 붙어 있는 얇은 액자 테두리/구겨진 삼각형
-        w_hit = (
+        w_geom_cand = (
             keep_in
-            & ~floor_strip
+            & ~floor_geom_cand
             & in_box
             & (((np.abs(sd - sd_surf) <= float(dist_tol_m)) & (n_dot >= cos_th)) | (v_res.max(axis=1) <= max(0.055, float(dist_tol_m) - 0.005)))
         )
+        wall_geom_cands[wid] = w_geom_cand
+        if plane_obs_masks is not None and wid in plane_obs_masks:
+            w_cand_idx = np.flatnonzero(w_geom_cand)
+            # 미세 핀홀(1~8 텍셀)로 인해 평탄한 벽이나 문 한가운데에 조각 삼각형이 남지 않도록 9x9 클로징된 관측 마스크로 커버리지 평가
+            obs_mask_eval = plane_obs_masks[wid] | ndi.binary_closing(plane_obs_masks[wid], structure=np.ones((9, 9), dtype=bool))
+            w_cov = _compute_face_obs_coverage_wall(v0, v1, v2, w_cand_idx, wp, obs_mask_eval)
+            w_hit = np.zeros(m, dtype=bool)
+            w_strip_sel = (w_cov >= float(min_obs_coverage)) | (~has_tex[w_cand_idx])
+            w_hit[w_cand_idx[w_strip_sel]] = True
+        else:
+            w_hit = w_geom_cand.copy()
         wall_strips[wid] = w_hit
         wall_strip_all |= w_hit
+        wall_protected_all |= w_geom_cand & ~w_hit
 
     keep_after_planes = keep_in & ~floor_strip & ~wall_strip_all
+    protected_planar_faces = floor_protected | wall_protected_all
 
     # 3) 평면을 걷어낸 뒤 공중에 고립된 잔여 소형 조각 정리
+    #    단, 받침 평면이 미관측이라 원래 텍스처를 보존하기 위해 남긴 평면 삼각형(protected_planar_faces)은 고립 조각 제거에서 보호한다.
     if keep_after_planes.any() and (post_min_faces > 0 or post_min_area_m2 > 0.0):
         rem_indices = np.flatnonzero(keep_after_planes)
         keep_sub, post_rep = filter_small_connected_components(
-            V, F[rem_indices], min_faces=post_min_faces, min_area_m2=post_min_area_m2
+            V,
+            F[rem_indices],
+            min_faces=post_min_faces,
+            min_area_m2=post_min_area_m2,
+            protect_face_mask=protected_planar_faces[rem_indices],
         )
         keep_final = np.zeros(m, dtype=bool)
         keep_final[rem_indices[keep_sub]] = True
@@ -1105,6 +1459,8 @@ def strip_planar_mesh_faces(
     total_stripped_mask = keep_in & ~keep_final
     per_plane_stats: dict[str, Any] = {
         "floor": {
+            "geom_candidate_faces": int(floor_geom_cand.sum()),
+            "kept_unobserved_backing_faces": int(floor_protected.sum()),
             "removed_faces": int(floor_strip.sum()),
             "removed_face_ratio": round(float(floor_strip.sum() / max(m, 1)), 5),
             "removed_area_m2": round(float(areas[floor_strip].sum()), 3),
@@ -1112,18 +1468,30 @@ def strip_planar_mesh_faces(
         }
     }
     for wid, w_mask in wall_strips.items():
+        wg_cand = wall_geom_cands[wid]
+        w_prot = wg_cand & ~w_mask
         per_plane_stats[wid] = {
+            "geom_candidate_faces": int(wg_cand.sum()),
+            "kept_unobserved_backing_faces": int(w_prot.sum()),
             "removed_faces": int(w_mask.sum()),
             "removed_face_ratio": round(float(w_mask.sum() / max(m, 1)), 5),
             "removed_area_m2": round(float(areas[w_mask].sum()), 3),
             "removed_area_ratio": round(float(areas[w_mask].sum() / max(total_area, 1e-12)), 5),
         }
 
+    total_geom_cand_mask = floor_geom_cand.copy()
+    for wg_c in wall_geom_cands.values():
+        total_geom_cand_mask |= wg_c
+
     return keep_final, {
         "dist_tol_m": float(dist_tol_m),
         "angle_tol_deg": float(angle_tol_deg),
+        "min_obs_coverage": float(min_obs_coverage) if plane_obs_masks is not None else 0.0,
         "total_mesh_faces": int(m),
         "total_mesh_area_m2": round(total_area, 3),
+        "geom_candidate_faces": int(total_geom_cand_mask.sum()),
+        "kept_unobserved_backing_faces": int(protected_planar_faces.sum()),
+        "kept_unobserved_backing_area_m2": round(float(areas[protected_planar_faces].sum()), 3),
         "plane_stripped_faces": int((floor_strip | wall_strip_all).sum()),
         "plane_stripped_face_ratio": round(float((floor_strip | wall_strip_all).sum() / max(m, 1)), 5),
         "plane_stripped_area_m2": round(float(areas[floor_strip | wall_strip_all].sum()), 3),
@@ -1141,3 +1509,627 @@ def strip_planar_mesh_faces(
         "kept_area_ratio": round(float(areas[keep_final].sum() / max(total_area, 1e-12)), 5),
         "per_plane": per_plane_stats,
     }
+
+
+def extract_and_bake_horizontal_furniture_planes(
+    V_world: np.ndarray,
+    F: np.ndarray,
+    keep_face_mask: np.ndarray,
+    cameras: Sequence[Any],
+    cam_depths_m: Sequence[np.ndarray],
+    cam_quality_maps: Sequence[dict[str, Any]] | None = None,
+    *,
+    z_min_m: float = 0.34,
+    z_max_m: float = 0.88,
+    min_normal_z: float = 0.65,
+    min_area_m2: float = 0.10,
+    room_xy_bounds_m: tuple[float, float, float, float] = (0.25, 6.25, 0.75, 6.95),
+    texel_m: float = 0.0025,
+    depth_tol_m: float = 0.055,
+    min_cos_incidence: float = 0.28,
+    sharp_exponent: float = 10.0,
+) -> tuple[np.ndarray, list[dict[str, Any]], dict[str, Any]]:
+    """5차 지시 (a): 수평 가구 상판·벤치 좌판 평면을 찾아 원래 메시 윤곽을 유지한 채 평면으로 매끈하게 펴고 `-532` 방식으로 텍스처를 굽는다.
+
+    핵심 단계:
+    1. 방 내부(`room_xy_bounds_m`)에서 높이 `z in [z_min_m, z_max_m]`(`0.34~0.88 m`), 법선 `n_z >= 0.65` 인 수평 시드 면을 찾고,
+       인접 면 높이 차 `<= 4.5 cm` 조건으로 연결 성분을 묶어 면적 `>= min_area_m2`(`0.10 m²`) 인 수평 가구 상판을 추출한다.
+    2. 각 상판의 2D 윤곽(`foot_seed`) 내부의 작은 구멍(TSDF 움푹 패임·미관측 구멍)을 닫아(`foot_closed`),
+       그 안에 속하고 평면 높이와 `6.5 cm` 이내인 인접 삼각형(`n_z >= 0.05`)을 상판 성분으로 흡수한다.
+    3. 외곽 경계 정점(측면·테두리 삼각형과 공유되는 정점)은 3D 위치를 유지해 틈이 벌어지지 않게 하고,
+       내부 정점의 Z 좌표를 스무딩된 평면 높이 `z_smooth(x, y)` 로 매끈하게 편다(`"형상은 평면으로 매끈하게, 경계는 원래 메시 윤곽"`).
+    4. 메시 정합 카메라 포즈(`ma_sim3` / `check_cams`)와 카메라별 깊이 맵을 사용해:
+       - 최소 입사각 게이트(`cos θ >= 0.28`, 맞은편 벽 카메라의 극단적 사선 반사광 배제),
+       - 깊이 일치 게이트(`|z_ray - d_cam| <= 5.5 cm`, 맵에 없는 의자 등받이 전경 가림 및 바닥 배경 투영 배제),
+       - 파란 의자 색도 게이트(`B - R > 0.07`) 및 벤치 끝단 바닥 반사 배제,
+       - 상판 내 카메라 겹침 영역 로컬 화이트밸런스 조화(`gain in [0.88, 1.14]`),
+       - 카메라 간 Oklab 외톨이 제거(`select_camera_colors_with_outlier_removal`) + 최고 품질 카메라 우선 선택(`sharp_exponent`),
+       - 테두리 미관측 픽셀 내부→외곽 Telea 인페인팅(`SRC_FILLED_TONE`)을 수행한다.
+    """
+    from collections import defaultdict
+
+    V = np.asarray(V_world, dtype=np.float64)
+    F_arr = np.asarray(F, dtype=np.int64)
+    keep_out = np.asarray(keep_face_mask, dtype=bool).copy()
+    m = len(F_arr)
+    if m == 0 or not np.any(keep_out) or len(cameras) == 0:
+        return keep_out, [], {"num_furniture_planes": 0, "absorbed_faces": 0, "absorbed_area_m2": 0.0}
+
+    tri_pos = V[F_arr]
+    fc = tri_pos.mean(axis=1)
+    fn_raw = np.cross(tri_pos[:, 1] - tri_pos[:, 0], tri_pos[:, 2] - tri_pos[:, 0])
+    fn_len = np.linalg.norm(fn_raw, axis=1)
+    areas = 0.5 * fn_len
+    fn = fn_raw / np.maximum(fn_len[:, None], 1e-12)
+
+    x_min, x_max, y_min, y_max = [float(v) for v in room_xy_bounds_m]
+    horiz_cand = (
+        keep_out
+        & (fc[:, 2] >= float(z_min_m))
+        & (fc[:, 2] <= float(z_max_m))
+        & (fn[:, 2] >= float(min_normal_z))
+        & (fc[:, 0] >= x_min)
+        & (fc[:, 0] <= x_max)
+        & (fc[:, 1] >= y_min)
+        & (fc[:, 1] <= y_max)
+    )
+    h_idx = np.flatnonzero(horiz_cand)
+    if len(h_idx) == 0:
+        return keep_out, [], {"num_furniture_planes": 0, "absorbed_faces": 0, "absorbed_area_m2": 0.0}
+
+    # 2 mm 용접 정점 기준 수평 면 연결 성분 추출
+    key = np.round(V / 0.002).astype(np.int64)
+    _, _, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    Fh = inv[F_arr[h_idx]]
+    edge_map: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for loc_i, f in enumerate(Fh):
+        u0, u1, u2 = int(f[0]), int(f[1]), int(f[2])
+        for a, b_v in ((u0, u1), (u1, u2), (u2, u0)):
+            if a > b_v:
+                a, b_v = b_v, a
+            edge_map[(a, b_v)].append(loc_i)
+
+    rows: list[int] = []
+    cols: list[int] = []
+    for flist in edge_map.values():
+        if len(flist) >= 2:
+            for i in range(len(flist)):
+                for j in range(i + 1, len(flist)):
+                    ia, ib = flist[i], flist[j]
+                    if abs(float(fc[h_idx[ia], 2] - fc[h_idx[ib], 2])) <= 0.045:
+                        rows.extend([ia, ib])
+                        cols.extend([ib, ia])
+
+    if rows:
+        adj = csr_matrix(
+            (np.ones(len(rows), dtype=np.int8), (rows, cols)),
+            shape=(len(h_idx), len(h_idx)),
+        )
+        n_comp, labels = connected_components(adj, directed=False)
+    else:
+        n_comp = len(h_idx)
+        labels = np.arange(len(h_idx), dtype=np.int32)
+
+    cam_pos_w = [(-np.asarray(c.R, dtype=np.float64).T @ np.asarray(c.t, dtype=np.float64).reshape(3)) for c in cameras]
+
+    furniture_planes: list[dict[str, Any]] = []
+    claimed_faces = np.zeros(m, dtype=bool)
+
+    # 면적 내림차순으로 정렬해 주요 테이블·벤치부터 처리
+    comp_order: list[tuple[float, int]] = []
+    for cid in range(n_comp):
+        f_seed = h_idx[labels == cid]
+        area_c = float(areas[f_seed].sum())
+        if area_c >= float(min_area_m2):
+            comp_order.append((area_c, cid))
+    comp_order.sort(reverse=True)
+
+    for plane_idx, (_seed_area, cid) in enumerate(comp_order):
+        f_seed = h_idx[labels == cid]
+        f_seed = f_seed[~claimed_faces[f_seed]]
+        if len(f_seed) == 0 or float(areas[f_seed].sum()) < float(min_area_m2):
+            continue
+
+        pts_c = tri_pos[f_seed].reshape(-1, 3)
+        x0 = max(x_min - 0.05, float(pts_c[:, 0].min()) - 0.025)
+        x1 = min(x_max + 0.05, float(pts_c[:, 0].max()) + 0.025)
+        y0 = max(y_min - 0.05, float(pts_c[:, 1].min()) - 0.025)
+        y1 = min(y_max + 0.05, float(pts_c[:, 1].max()) + 0.025)
+        z_med = float(np.median(fc[f_seed, 2]))
+
+        tw = max(16, int(round((x1 - x0) / float(texel_m))))
+        th = max(16, int(round((y1 - y0) / float(texel_m))))
+
+        foot_seed = np.zeros((th, tw), dtype=np.uint8)
+        for fi in f_seed:
+            tri = tri_pos[fi]
+            pts = np.zeros((3, 2), dtype=np.int32)
+            pts[:, 0] = np.clip(((tri[:, 0] - x0) / max(x1 - x0, 1e-6) * (tw - 1)).astype(np.int32), 0, tw - 1)
+            pts[:, 1] = np.clip(((y1 - tri[:, 1]) / max(y1 - y0, 1e-6) * (th - 1)).astype(np.int32), 0, th - 1)
+            cv2.fillConvexPoly(foot_seed, pts, 1)
+
+        foot_closed = ndi.binary_fill_holes(ndi.binary_closing(foot_seed > 0, iterations=3)).astype(np.uint8)
+
+        # 스무딩된 로컬 평면 높이 지도 z_smooth(x, y)
+        tree_xy = cKDTree(fc[f_seed, :2])
+        xs = np.linspace(x0, x1, tw, dtype=np.float64)
+        ys = np.linspace(y1, y0, th, dtype=np.float64)
+        gx, gy = np.meshgrid(xs, ys)
+        d_k, i_k = tree_xy.query(np.column_stack([gx.ravel(), gy.ravel()]), k=min(16, len(f_seed)))
+        if d_k.ndim == 1:
+            d_k = d_k[:, None]
+            i_k = i_k[:, None]
+        w_k = 1.0 / np.maximum(d_k, 0.05)
+        z_smooth = ((fc[f_seed, 2][i_k] * w_k).sum(axis=1) / w_k.sum(axis=1)).reshape(th, tw)
+        z_smooth = ndi.gaussian_filter(z_smooth, sigma=6.0)
+
+        # 2D 윤곽 내부의 움푹 패인 삼각형·미관측 구멍 삼각형을 상판 성분으로 흡수
+        in_box = np.flatnonzero(
+            keep_out
+            & (~claimed_faces)
+            & (fc[:, 0] >= x0)
+            & (fc[:, 0] <= x1)
+            & (fc[:, 1] >= y0)
+            & (fc[:, 1] <= y1)
+            & (fn[:, 2] >= 0.05)
+        )
+        ix_b = np.clip(((fc[in_box, 0] - x0) / max(x1 - x0, 1e-6) * (tw - 1)).astype(int), 0, tw - 1)
+        iy_b = np.clip(((y1 - fc[in_box, 1]) / max(y1 - y0, 1e-6) * (th - 1)).astype(int), 0, th - 1)
+        absorb = (foot_closed[iy_b, ix_b] > 0) & (np.abs(fc[in_box, 2] - z_smooth[iy_b, ix_b]) <= 0.065)
+        f_comp = np.unique(np.concatenate([f_seed, in_box[absorb]]))
+        claimed_faces[f_comp] = True
+
+        foot_mask = np.zeros((th, tw), dtype=np.uint8)
+        for fi in f_comp:
+            tri = tri_pos[fi]
+            pts = np.zeros((3, 2), dtype=np.int32)
+            pts[:, 0] = np.clip(((tri[:, 0] - x0) / max(x1 - x0, 1e-6) * (tw - 1)).astype(np.int32), 0, tw - 1)
+            pts[:, 1] = np.clip(((y1 - tri[:, 1]) / max(y1 - y0, 1e-6) * (th - 1)).astype(np.int32), 0, th - 1)
+            cv2.fillConvexPoly(foot_mask, pts, 1)
+
+        P_world = np.stack([gx, gy, z_smooth], axis=-1).reshape(-1, 3)
+        N_pts = len(P_world)
+        n_cams = len(cameras)
+
+        cand_mask = np.zeros((n_cams, N_pts), dtype=bool)
+        cand_srgb = np.zeros((n_cams, N_pts, 3), dtype=np.float64)
+        cand_w = np.zeros((n_cams, N_pts), dtype=np.float64)
+
+        for k, c in enumerate(cameras):
+            R_c = np.asarray(c.R, dtype=np.float64)
+            t_c = np.asarray(c.t, dtype=np.float64).reshape(3)
+            K_c = np.asarray(c.K, dtype=np.float64)
+            Xc = P_world @ R_c.T + t_c[None, :]
+            z_r = Xc[:, 2]
+            px = K_c[0, 0] * (Xc[:, 0] / np.maximum(z_r, 1e-6)) + K_c[0, 2]
+            py = K_c[1, 1] * (Xc[:, 1] / np.maximum(z_r, 1e-6)) + K_c[1, 2]
+            Hc, Wc = c.image.shape[:2]
+
+            dvec = cam_pos_w[k][None, :] - P_world
+            dist = np.maximum(np.linalg.norm(dvec, axis=1), 0.5)
+            cos_th = dvec[:, 2] / dist
+
+            in_b = (
+                (z_r > 0.3)
+                & (cos_th >= float(min_cos_incidence))
+                & (px >= 8.0)
+                & (px < Wc - 8.0)
+                & (py >= 8.0)
+                & (py < Hc - 8.0)
+            )
+            if not np.any(in_b):
+                continue
+
+            ipx = np.clip(np.round(px).astype(int), 0, Wc - 1)
+            ipy = np.clip(np.round(py).astype(int), 0, Hc - 1)
+            if k < len(cam_depths_m) and cam_depths_m[k] is not None and cam_depths_m[k].size > 0:
+                d_map = cam_depths_m[k]
+                Hd, Wd = d_map.shape[:2]
+                d_ix = np.clip(np.round(px * (Wd / float(Wc))).astype(int), 0, Wd - 1)
+                d_iy = np.clip(np.round(py * (Hd / float(Hc))).astype(int), 0, Hd - 1)
+                d_c = d_map[d_iy, d_ix].astype(np.float64)
+                depth_ok = np.isfinite(d_c) & (d_c > 0.1) & (np.abs(z_r - d_c) <= float(depth_tol_m))
+            else:
+                d_c = z_r.copy()
+                depth_ok = np.ones(N_pts, dtype=bool)
+
+            valid_k = in_b & depth_ok
+            if not np.any(valid_k):
+                continue
+
+            samp = (
+                cv2.remap(
+                    c.image,
+                    px.reshape(th, tw).astype(np.float32),
+                    py.reshape(th, tw).astype(np.float32),
+                    cv2.INTER_LINEAR,
+                ).reshape(-1, 3)
+                / 255.0
+            )
+            # 전경 파란 의자 등받이 경계 픽셀 배제 (상판 높이 >= 0.40 m 인 테이블·벤치)
+            if z_med >= 0.40:
+                is_blue_chair = (samp[:, 2] - samp[:, 0] > 0.07) & (samp[:, 2] > 0.25) & (samp[:, 0] < 0.48)
+                valid_k &= ~is_blue_chair
+            # 알약 벤치(z_med < 0.58 m) 끝단 주황색 바닥 가방 반사 및 회색 바닥 카펫/그림자 번짐 배제
+            if z_med < 0.58:
+                is_orange_bag = (samp[:, 0] - samp[:, 2] > 0.32) & (samp[:, 1] < 0.42) & (samp[:, 0] > 0.50)
+                is_floor_bleed = ((samp[:, 0] - samp[:, 2]) < 0.028) | (samp.mean(axis=1) < 0.38)
+                valid_k &= ~(is_orange_bag | is_floor_bleed)
+
+            if not np.any(valid_k):
+                continue
+
+            if cam_quality_maps is not None and k < len(cam_quality_maps):
+                q_map = cam_quality_maps[k]["w_photo_map"]
+                w_ph = q_map[ipy, ipx].astype(np.float64)
+            else:
+                w_ph = np.ones(N_pts, dtype=np.float64)
+
+            d_err = np.abs(z_r - np.where(np.isfinite(d_c), d_c, z_r))
+            w_dep = np.exp(-0.5 * (d_err / 0.025) ** 2)
+            w_tot = (np.clip(cos_th, 0.05, 1.0) ** 3.0) / (dist**2.0) * w_ph * w_dep
+
+            is_long_table_row = (z_med >= 0.58) and (max(x1 - x0, y1 - y0) > 1.25)
+            w_2d = np.where(valid_k.reshape(th, tw), w_tot.reshape(th, tw), 0.0)
+            w_2d_s = ndi.gaussian_filter(w_2d, sigma=38.0 if is_long_table_row else 22.0)
+            cand_mask[k] = valid_k
+            cand_srgb[k] = samp
+            cand_w[k] = np.where(valid_k, np.maximum(w_2d_s.ravel(), 1e-6), 0.0)
+
+        foot_flat = foot_mask.ravel() > 0
+        has_any = cand_mask.any(axis=0)
+        if not np.any(has_any & foot_flat):
+            claimed_faces[f_comp] = False
+            continue
+
+        # 상판 내 카메라 간 로컬 화이트밸런스 조화 (긴 테이블 열에서 카메라 전환 시 대각선 톤 단차 제거)
+        cam_inside = cand_mask & foot_flat[None, :]
+        cam_w_sum = (cand_w * cam_inside).sum(axis=1)
+        dom_k = int(np.argmax(cam_w_sum))
+        for k in range(n_cams):
+            if k == dom_k:
+                continue
+            ov = cam_inside[dom_k] & cam_inside[k]
+            if int(ov.sum()) >= 50:
+                med_dom = np.median(cand_srgb[dom_k, ov], axis=0)
+                med_k = np.median(cand_srgb[k, ov], axis=0)
+                target_med = 0.90 * med_dom + 0.10 * med_k
+                gain_local = np.clip(target_med / np.maximum(med_k, 0.05), 0.78, 1.25)
+                cand_srgb[k] = np.clip(cand_srgb[k] * gain_local[None, :], 0.0, 1.0)
+
+        best_k = np.argmax(cand_w, axis=0)
+        init_srgb = cand_srgb[best_k, np.arange(N_pts)]
+        obs_2d = (has_any.reshape(th, tw) & (foot_mask > 0)).astype(np.float64)
+        img_2d = init_srgb.reshape(th, tw, 3)
+        num = ndi.gaussian_filter(img_2d * obs_2d[:, :, None], sigma=(15.0, 15.0, 0.0))
+        den = ndi.gaussian_filter(obs_2d, sigma=15.0)[:, :, None]
+        med_c = np.median(init_srgb[has_any & foot_flat], axis=0)
+        neigh_srgb = np.where(den > 1e-4, num / np.maximum(den, 1e-8), med_c[None, None, :]).reshape(N_pts, 3)
+
+        eff_sharp = 2.5 if ((z_med >= 0.58) and (max(x1 - x0, y1 - y0) > 1.25)) else float(sharp_exponent)
+        blended_srgb, obs_mask, outlier_stats = select_camera_colors_with_outlier_removal(
+            cand_mask,
+            cand_srgb,
+            cand_w,
+            neigh_srgb,
+            sigma_oklab=0.048,
+            is_floor=True,
+            sharp_exponent=eff_sharp,
+        )
+        # 흰 원형 테이블 상판(z_med >= 0.58 m)에서 창문 푸른빛/우드월 주황빛 사선 반사로 인한 색조(cyan/peach) 편차 중립화
+        # (경고 안내판 등 고채도 물체 chroma > 0.048 및 노트북 등 중·저휘도 물체 L < 0.78 은 100% 보존)
+        if z_med >= 0.58:
+            ok = srgb_to_oklab(blended_srgb)
+            L_val = ok[:, 0]
+            chroma = np.hypot(ok[:, 1], ok[:, 2])
+            w_white = smoothstep(0.76, 0.84, L_val) * (1.0 - smoothstep(0.028, 0.048, chroma))
+            ok[:, 1] *= 1.0 - 0.88 * w_white
+            ok[:, 2] *= 1.0 - 0.88 * w_white
+            ok[:, 0] = ok[:, 0] * (1.0 - 0.55 * w_white) + 0.955 * (0.55 * w_white)
+            blended_srgb = np.clip(oklab_to_srgb(ok), 0.0, 1.0)
+        tex_u8 = (blended_srgb.reshape(th, tw, 3) * 255.0).clip(0.0, 255.0).astype(np.uint8)
+        obs_m2d = obs_mask.reshape(th, tw) & (foot_mask > 0)
+        source_2d = np.where(obs_m2d, SRC_PROJECTED, SRC_GRAY).astype(np.uint8)
+
+        unobs_m2d = (~obs_m2d) & (foot_mask > 0)
+        if np.any(obs_m2d):
+            clean_obs = ndi.binary_erosion(obs_m2d, iterations=2)
+            if not np.any(clean_obs):
+                clean_obs = obs_m2d
+            inp_mask_u8 = (~clean_obs).astype(np.uint8) * 255
+            bgr_in = cv2.cvtColor(tex_u8, cv2.COLOR_RGB2BGR)
+            bgr_out = cv2.inpaint(bgr_in, inp_mask_u8, inpaintRadius=9, flags=cv2.INPAINT_TELEA)
+            tex_u8 = cv2.cvtColor(bgr_out, cv2.COLOR_BGR2RGB)
+            source_2d[unobs_m2d] = SRC_FILLED
+
+        # 상판 삼각형 메시 생성: 외곽 공유 정점은 원래 Z 를 유지하고 내부 정점은 z_smooth 로 매끈하게 평탄화
+        non_comp_mask = keep_out & (~claimed_faces)
+        non_comp_verts = np.unique(inv[F_arr[non_comp_mask]]) if np.any(non_comp_mask) else np.empty(0, dtype=np.int64)
+        non_comp_vert_set = set(int(v) for v in non_comp_verts)
+
+        comp_F_global = F_arr[f_comp]
+        uniq_v, local_F = np.unique(comp_F_global, return_inverse=True)
+        local_F = local_F.reshape(-1, 3).astype(np.uint32)
+        V_local = V[uniq_v].copy()
+
+        u_norm = np.clip((V_local[:, 0] - x0) / max(x1 - x0, 1e-6), 0.0, 1.0)
+        v_norm = np.clip((y1 - V_local[:, 1]) / max(y1 - y0, 1e-6), 0.0, 1.0)
+        UV_local = np.column_stack([u_norm, v_norm]).astype(np.float32)
+
+        ix_v = np.clip(np.round(u_norm * (tw - 1)).astype(int), 0, tw - 1)
+        iy_v = np.clip(np.round(v_norm * (th - 1)).astype(int), 0, th - 1)
+        z_target = z_smooth[iy_v, ix_v]
+
+        for vi_loc, vi_glob in enumerate(uniq_v):
+            if int(inv[vi_glob]) in non_comp_vert_set:
+                # 측면과 맞닿은 외곽 테두리 정점은 틈이 생기지 않도록 35% 만 평면 쪽으로 완화
+                V_local[vi_loc, 2] = 0.65 * V_local[vi_loc, 2] + 0.35 * float(z_target[vi_loc])
+            else:
+                V_local[vi_loc, 2] = float(z_target[vi_loc])
+
+        role_name = f"furniture_plane_{plane_idx}"
+        area_comp_m2 = float(areas[f_comp].sum())
+        obs_ratio = float(obs_m2d.sum() / max(int((foot_mask > 0).sum()), 1))
+        furniture_planes.append(
+            {
+                "role": role_name,
+                "plane_index": int(plane_idx),
+                "face_indices_merged": f_comp,
+                "num_faces": int(len(f_comp)),
+                "area_m2": round(area_comp_m2, 4),
+                "z_median_m": round(z_med, 4),
+                "xy_bounds_m": [round(x0, 4), round(x1, 4), round(y0, 4), round(y1, 4)],
+                "tex_hw": (int(th), int(tw)),
+                "texel_m": float(texel_m),
+                "V_world": V_local,
+                "F_grid": local_F,
+                "UV_grid": UV_local,
+                "normal_world": np.array([0.0, 0.0, 1.0], dtype=np.float64),
+                "image": tex_u8,
+                "source": source_2d,
+                "foot_mask": foot_mask > 0,
+                "z_smooth": z_smooth,
+                "observed_ratio": round(obs_ratio, 4),
+                "outlier_stats": outlier_stats,
+                "surface_source_summary": compute_surface_source_summary(source_2d, "tone", float(texel_m)),
+            }
+        )
+
+    keep_out[claimed_faces] = False
+    summary = {
+        "num_furniture_planes": len(furniture_planes),
+        "absorbed_faces": int(claimed_faces.sum()),
+        "absorbed_area_m2": round(float(areas[claimed_faces].sum()), 3),
+        "planes": [
+            {
+                "role": fp["role"],
+                "num_faces": fp["num_faces"],
+                "area_m2": fp["area_m2"],
+                "z_median_m": fp["z_median_m"],
+                "xy_bounds_m": fp["xy_bounds_m"],
+                "tex_size_wh": [fp["tex_hw"][1], fp["tex_hw"][0]],
+                "observed_ratio": fp["observed_ratio"],
+            }
+            for fp in furniture_planes
+        ],
+    }
+    return keep_out, furniture_planes, summary
+
+
+def recolor_remaining_furniture_faces(
+    V_world: np.ndarray,
+    F: np.ndarray,
+    keep_face_mask: np.ndarray,
+    cameras: Sequence[Any],
+    cam_depths_m: Sequence[np.ndarray],
+    cam_quality_maps: Sequence[dict[str, Any]] | None = None,
+    furniture_planes: Sequence[dict[str, Any]] | None = None,
+    *,
+    z_min_m: float = 0.08,
+    z_max_m: float = 1.15,
+    room_xy_bounds_m: tuple[float, float, float, float] = (0.25, 6.25, 0.75, 6.95),
+    depth_tol_m: float = 0.065,
+    sharp_exponent: float = 12.0,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """5차 지시 (b): 수평 상판 평면 밖의 남은 가구 면(벤치 옆면·테이블 테두리·의자)을 `texrecon` 대신 '최고 카메라 + 다중 카메라 일치 검사' 규칙으로 색상과 대표 카메라를 결정한다.
+
+    반환:
+    - `face_srgb (M, 3)`: 가구 면별 일관성 검증된 sRGB `[0, 1]` 색상
+    - `is_furniture_face (M,)`: 처리 대상 가구 면 마스크
+    - `stats`: 정량 요약 사전
+    """
+    from collections import defaultdict
+
+    V = np.asarray(V_world, dtype=np.float64)
+    F_arr = np.asarray(F, dtype=np.int64)
+    keep = np.asarray(keep_face_mask, dtype=bool)
+    m = len(F_arr)
+    face_srgb = np.zeros((m, 3), dtype=np.float64)
+    if m == 0 or not np.any(keep) or len(cameras) == 0:
+        return face_srgb, np.zeros(m, dtype=bool), {"furniture_faces": 0, "observed_faces": 0}
+
+    tri_pos = V[F_arr]
+    fc = tri_pos.mean(axis=1)
+    fn_raw = np.cross(tri_pos[:, 1] - tri_pos[:, 0], tri_pos[:, 2] - tri_pos[:, 0])
+    fn_len = np.linalg.norm(fn_raw, axis=1)
+    fn = fn_raw / np.maximum(fn_len[:, None], 1e-12)
+
+    x_min, x_max, y_min, y_max = [float(v) for v in room_xy_bounds_m]
+    furn_mask = (
+        keep
+        & (fc[:, 2] >= float(z_min_m))
+        & (fc[:, 2] <= float(z_max_m))
+        & (fc[:, 0] >= x_min)
+        & (fc[:, 0] <= x_max)
+        & (fc[:, 1] >= y_min)
+        & (fc[:, 1] <= y_max)
+    )
+    f_idx = np.flatnonzero(furn_mask)
+    if len(f_idx) == 0:
+        return face_srgb, furn_mask, {"furniture_faces": 0, "observed_faces": 0}
+
+    P_sub = fc[f_idx]
+    N_sub = fn[f_idx]
+    n_sub = len(f_idx)
+    n_cams = len(cameras)
+    cam_pos_w = [(-np.asarray(c.R, dtype=np.float64).T @ np.asarray(c.t, dtype=np.float64).reshape(3)) for c in cameras]
+
+    cand_mask = np.zeros((n_cams, n_sub), dtype=bool)
+    cand_srgb = np.zeros((n_cams, n_sub, 3), dtype=np.float64)
+    cand_w = np.zeros((n_cams, n_sub), dtype=np.float64)
+
+    for k, c in enumerate(cameras):
+        R_c = np.asarray(c.R, dtype=np.float64)
+        t_c = np.asarray(c.t, dtype=np.float64).reshape(3)
+        K_c = np.asarray(c.K, dtype=np.float64)
+        Xc = P_sub @ R_c.T + t_c[None, :]
+        z_r = Xc[:, 2]
+        px = K_c[0, 0] * (Xc[:, 0] / np.maximum(z_r, 1e-6)) + K_c[0, 2]
+        py = K_c[1, 1] * (Xc[:, 1] / np.maximum(z_r, 1e-6)) + K_c[1, 2]
+        Hc, Wc = c.image.shape[:2]
+
+        dvec = cam_pos_w[k][None, :] - P_sub
+        dist = np.maximum(np.linalg.norm(dvec, axis=1), 0.5)
+        view_dir = dvec / dist[:, None]
+        cos_n = np.sum(N_sub * view_dir, axis=1)
+
+        in_b = (z_r > 0.3) & (cos_n >= 0.10) & (px >= 8.0) & (px < Wc - 8.0) & (py >= 8.0) & (py < Hc - 8.0)
+        if not np.any(in_b):
+            continue
+
+        ipx = np.clip(np.round(px).astype(int), 0, Wc - 1)
+        ipy = np.clip(np.round(py).astype(int), 0, Hc - 1)
+        if k < len(cam_depths_m) and cam_depths_m[k] is not None and cam_depths_m[k].size > 0:
+            d_map = cam_depths_m[k]
+            Hd, Wd = d_map.shape[:2]
+            d_ix = np.clip(np.round(px * (Wd / float(Wc))).astype(int), 0, Wd - 1)
+            d_iy = np.clip(np.round(py * (Hd / float(Hc))).astype(int), 0, Hd - 1)
+            d_c = d_map[d_iy, d_ix].astype(np.float64)
+            depth_ok = np.isfinite(d_c) & (d_c > 0.1) & (np.abs(z_r - d_c) <= float(depth_tol_m))
+        else:
+            d_c = z_r.copy()
+            depth_ok = np.ones(n_sub, dtype=bool)
+
+        valid_k = in_b & depth_ok
+        if not np.any(valid_k):
+            continue
+
+        samp = c.image[ipy, ipx, :3].astype(np.float64) / 255.0
+        # 알약 벤치 영역(x in [3.85, 5.35], y in [1.10, 6.80]) 옆면에서 파란 의자·주황 가방·회색 카펫 번짐 배제
+        in_bench_zone = (P_sub[:, 0] >= 3.85) & (P_sub[:, 0] <= 5.35) & (P_sub[:, 1] >= 1.10) & (P_sub[:, 1] <= 6.80)
+        is_blue_chair = in_bench_zone & (samp[:, 2] - samp[:, 0] > 0.07) & (samp[:, 2] > 0.25) & (samp[:, 0] < 0.48)
+        is_orange_bag = in_bench_zone & (samp[:, 0] - samp[:, 2] > 0.32) & (samp[:, 1] < 0.42) & (samp[:, 0] > 0.50)
+        is_floor_bleed = in_bench_zone & (((samp[:, 0] - samp[:, 2]) < 0.028) | (samp.mean(axis=1) < 0.36))
+        valid_k &= ~(is_blue_chair | is_orange_bag | is_floor_bleed)
+        if not np.any(valid_k):
+            continue
+
+        if cam_quality_maps is not None and k < len(cam_quality_maps):
+            w_ph = cam_quality_maps[k]["w_photo_map"][ipy, ipx].astype(np.float64)
+        else:
+            w_ph = np.ones(n_sub, dtype=np.float64)
+
+        d_err = np.abs(z_r - np.where(np.isfinite(d_c), d_c, z_r))
+        w_dep = np.exp(-0.5 * (d_err / 0.030) ** 2)
+        w_tot = (np.clip(cos_n, 0.05, 1.0) ** 1.5) / (dist**2.0) * w_ph * w_dep
+
+        cand_mask[k] = valid_k
+        cand_srgb[k] = samp
+        cand_w[k] = np.where(valid_k, np.maximum(w_tot, 1e-6), 0.0)
+
+    # 인접 가구 삼각형 간 카메라 가중치 스무딩 (면마다 카메라가 바뀌는 조각보 현상 방지)
+    key = np.round(V / 0.002).astype(np.int64)
+    _, _, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    Ff = inv[F_arr[f_idx]]
+    edge_map: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for loc_i, f in enumerate(Ff):
+        u0, u1, u2 = int(f[0]), int(f[1]), int(f[2])
+        for a, b_v in ((u0, u1), (u1, u2), (u2, u0)):
+            if a > b_v:
+                a, b_v = b_v, a
+            edge_map[(a, b_v)].append(loc_i)
+    nbrs: list[list[int]] = [[] for _ in range(n_sub)]
+    for flist in edge_map.values():
+        if len(flist) >= 2:
+            for i in range(len(flist)):
+                for j in range(i + 1, len(flist)):
+                    ia, ib = flist[i], flist[j]
+                    if float(np.dot(N_sub[ia], N_sub[ib])) >= 0.55:
+                        nbrs[ia].append(ib)
+                        nbrs[ib].append(ia)
+    for _step in range(2):
+        w_next = cand_w.copy()
+        for loc_i, nb in enumerate(nbrs):
+            if nb:
+                w_next[:, loc_i] = 0.55 * cand_w[:, loc_i] + 0.45 * cand_w[:, nb].mean(axis=1)
+        cand_w = np.where(cand_mask, w_next, 0.0)
+
+    has_any = cand_mask.any(axis=0)
+    best_k = np.argmax(cand_w, axis=0)
+    init_srgb = cand_srgb[best_k, np.arange(n_sub)]
+    if np.any(has_any):
+        obs_pts = P_sub[has_any]
+        obs_cols = init_srgb[has_any]
+        tree_obs = cKDTree(obs_pts)
+        _, nn_i = tree_obs.query(P_sub, k=min(8, int(has_any.sum())))
+        if nn_i.ndim == 1:
+            nn_i = nn_i[:, None]
+        neigh_srgb = np.median(obs_cols[nn_i], axis=1)
+    else:
+        neigh_srgb = np.full((n_sub, 3), 0.75, dtype=np.float64)
+
+    blended_srgb, obs_mask, _ = select_camera_colors_with_outlier_removal(
+        cand_mask,
+        cand_srgb,
+        cand_w,
+        neigh_srgb,
+        sigma_oklab=0.052,
+        is_floor=False,
+        sharp_exponent=float(sharp_exponent),
+    )
+
+    # 미관측 가구 면은 가장 가까운 관측 가구 면/상판 색으로 전파
+    if np.any(~obs_mask) and np.any(obs_mask):
+        tree_clean = cKDTree(P_sub[obs_mask])
+        _, idx_nn = tree_clean.query(P_sub[~obs_mask], k=min(4, int(obs_mask.sum())))
+        if idx_nn.ndim == 1:
+            idx_nn = idx_nn[:, None]
+        blended_srgb[~obs_mask] = blended_srgb[obs_mask][idx_nn].mean(axis=1)
+
+    # 수평 가구 상판 테두리 및 벤치 측면 스커트 삼각형을 상판 외곽 색과 부드럽게 연결
+    if furniture_planes:
+        for fp in furniture_planes:
+            x0, x1, y0, y1 = fp["xy_bounds_m"]
+            z_med = float(fp["z_median_m"])
+            is_bench_fp = z_med < 0.58
+            pad_xy = 0.08 if is_bench_fp else 0.045
+            z_lo = 0.06 if is_bench_fp else (z_med - 0.065)
+            z_hi = z_med + 0.065
+            near_fp = (
+                (P_sub[:, 0] >= x0 - pad_xy)
+                & (P_sub[:, 0] <= x1 + pad_xy)
+                & (P_sub[:, 1] >= y0 - pad_xy)
+                & (P_sub[:, 1] <= y1 + pad_xy)
+                & (P_sub[:, 2] >= z_lo)
+                & (P_sub[:, 2] <= z_hi)
+            )
+            if np.any(near_fp):
+                th, tw = fp["tex_hw"]
+                tex_f = fp["image"].astype(np.float64) / 255.0
+                ix = np.clip(np.round((P_sub[near_fp, 0] - x0) / max(x1 - x0, 1e-6) * (tw - 1)).astype(int), 0, tw - 1)
+                iy = np.clip(np.round((y1 - P_sub[near_fp, 1]) / max(y1 - y0, 1e-6) * (th - 1)).astype(int), 0, th - 1)
+                fp_col = tex_f[iy, ix]
+                if is_bench_fp:
+                    alpha = np.full((int(near_fp.sum()), 1), 0.88, dtype=np.float64)
+                else:
+                    dz = np.abs(P_sub[near_fp, 2] - z_med)
+                    alpha = 0.72 * (1.0 - smoothstep(0.0, 0.065, dz))[:, None]
+                blended_srgb[near_fp] = blended_srgb[near_fp] * (1.0 - alpha) + fp_col * alpha
+
+    face_srgb[f_idx] = np.clip(blended_srgb, 0.0, 1.0)
+    return face_srgb, furn_mask, {
+        "furniture_faces": int(n_sub),
+        "observed_faces": int(obs_mask.sum()),
+        "interpolated_faces": int((~obs_mask).sum()),
+    }
+

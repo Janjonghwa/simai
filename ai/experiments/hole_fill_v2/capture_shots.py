@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_OUT_DIR = Path("C:/Users/SSAFY/simai-local/hole-fill-v2")
+DEFAULT_FINAL_OUT_DIR = Path("C:/Users/SSAFY/simai-local/final-glb")
 DEFAULT_VDT_DIR = Path("C:/Users/SSAFY/simai-local/vdt")
 
 BROWSER_CANDIDATES = [
@@ -48,6 +49,9 @@ def run_capture(
     vdt_dir: Path,
     timeout_s: float = 180.0,
     round2: bool = False,
+    round3: bool = False,
+    round4: bool = False,
+    round5: bool = False,
 ) -> dict[str, Any]:
     here = Path(__file__).resolve().parent
     data_dir = data_dir.resolve()
@@ -64,7 +68,11 @@ def run_capture(
     if not cam_dst.is_file() and (vdt_dir / "cameras.json").is_file():
         shutil.copy2(vdt_dir / "cameras.json", cam_dst)
 
-    shots_dir = data_dir / ("shots_r2" if round2 else "shots")
+    shots_dir = data_dir / (
+        "diag_tables"
+        if round5
+        else ("shots" if round4 else ("shots_r3" if round3 else ("shots_r2" if round2 else "shots")))
+    )
     shots_dir.mkdir(parents=True, exist_ok=True)
 
     done_event = threading.Event()
@@ -123,7 +131,7 @@ def run_capture(
     srv_thread.start()
 
     browser = find_browser()
-    auto_param = "r2" if round2 else "1"
+    auto_param = "r5" if round5 else ("r4" if round4 else ("r3" if round3 else ("r2" if round2 else "1")))
     url = f"http://127.0.0.1:{port}/index.html?autoshots={auto_param}"
     print(f"[capture] 브라우저 실행: {browser.name} -> {url}", flush=True)
 
@@ -180,8 +188,31 @@ def main() -> None:
         action="store_true",
         help="2차(평면 단일화·톤 일치·DA3 정리 메시 비교) 3칸 스크린샷을 shots_r2/에 캡처",
     )
+    parser.add_argument(
+        "--round3",
+        action="store_true",
+        help="3차(관측>=90% 걷어내기·3mm 선명화·see_through 개구부 보존) [① 12차 원본 | ② 2차 | ③ 3차] 3칸 스크린샷을 shots_r3/에 캡처",
+    )
+    parser.add_argument(
+        "--round4",
+        action="store_true",
+        help="4차 최종 GLB [① 12차 원본 | ② 최종(WM2) | ③ 최종(DA3)] 3칸 스크린샷 및 압축 품질 비교를 final-glb/shots/에 캡처",
+    )
+    parser.add_argument(
+        "--round5",
+        action="store_true",
+        help="5차 가구 평면 수정 [① 최종(4차, 수정 전) | ② 수정(5차, 수평 가구 평면 + 일관성 선택)] 2칸 비교를 final-glb/diag_tables/에 캡처",
+    )
     args = parser.parse_args()
-    res = run_capture(args.data_dir, args.vdt_dir, round2=args.round2)
+    target_dir = DEFAULT_FINAL_OUT_DIR if ((args.round4 or args.round5) and args.data_dir == DEFAULT_OUT_DIR) else args.data_dir
+    res = run_capture(
+        target_dir,
+        args.vdt_dir,
+        round2=args.round2,
+        round3=args.round3,
+        round4=args.round4,
+        round5=args.round5,
+    )
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 
