@@ -191,6 +191,17 @@ export function createSceneGltfLoader(
   return loader;
 }
 
+function attachTopLevelUserData(gltf: {
+  scene: Object3D;
+  userData?: Record<string, unknown>;
+}): Object3D {
+  const root = gltf.scene;
+  if (gltf.userData?.simai !== undefined && root.userData?.simai === undefined) {
+    root.userData = { ...root.userData, simai: gltf.userData.simai };
+  }
+  return root;
+}
+
 /** 메모리 버퍼(ArrayBuffer)나 JSON 문자열의 glb·gltf 를 설정된 로더로 해석해 장면 루트를 돌려준다. */
 export function parseGltfScene(
   data: ArrayBuffer | string,
@@ -198,16 +209,14 @@ export function parseGltfScene(
   options: { renderer?: unknown; transcoderPath?: string } = {},
 ): Promise<Object3D> {
   const loader = createSceneGltfLoader(options);
-  return loader.parseAsync(data, path).then((gltf) => gltf.scene);
+  return loader.parseAsync(data, path).then(attachTopLevelUserData);
 }
 
 /** 배경 glTF 를 읽어 장면 루트를 돌려준다. 시험은 이 함수를 바꿔 끼운다. */
 export type SceneAssetLoader = (url: string) => Promise<Object3D>;
 
 export const loadGltfScene: SceneAssetLoader = (url) =>
-  createSceneGltfLoader()
-    .loadAsync(url)
-    .then((gltf) => gltf.scene);
+  createSceneGltfLoader().loadAsync(url).then(attachTopLevelUserData);
 
 export const SceneLoaderContext = createContext<SceneAssetLoader>(loadGltfScene);
 

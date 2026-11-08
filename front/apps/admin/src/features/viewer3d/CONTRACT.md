@@ -201,15 +201,17 @@ AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회
 - 후처리(`postProcessing` prop):
   - `postProcessing?: boolean | Partial<ViewerPostProcessingOptions>` 로 N8AO + SMAA 후처리를 켜고 끌 수 있다. 기본값은 `false`(끔)이며, 개발 하네스에서는 `?post=on|off` 쿼리로 전환할 수 있다.
 
-## 시점 의존 텍스처(VDT)·미관측 표시 층·경계 섞기·외톨이 제거(`vdt` prop, -534)
+## 시점 의존 텍스처(VDT)·미관측 표시 층·경계 섞기·외톨이 제거(`vdt` prop, -534, -541)
 
 - 입력:
   - `GET /api/scenes/current` 응답의 선택 필드 `vdt`(`readSceneVdtConfig(raw)`) 또는 `parseExperimentVdtDocs(camerasJson, wallsJson, baseUrl)` 로 읽은 `SceneVdtConfig`: 카메라별 왜곡 보정 배경 사진 URL·크기·`K`·정본 World 기준 `R`·`t`·노출 보정 계수(`colorGainSrgb`) 및 바닥·벽 표시 층 평면(`floorPlane`, `wallPlanes`).
+  - `GET /api/scenes/current` 응답의 선택 필드 `map_cameras`(`scene_output.method.map_cameras`) 또는 GLB `extras.simai.map_cameras`(`Object3D.userData.simai.map_cameras`): 최종 맵 굽기에 실제로 쓰인 카메라별 `{ image_size, K, R, t, pose_source }`(`CALIBRATION` | `MA_ALIGNED_SIM3` | `MA_ALIGNED`). `R`, `t` 규약은 정본 World(m, +Z 상방) → OpenCV 카메라(+X 우, +Y 하, +Z 정면) 변환(`p_cam_cv = R * p_world + t`, `C_world = -R^T * t`)이다.
   - `vdt?: boolean | ViewerVdtOptions` prop 으로 켜고 끈다. **기능 플래그 기본값은 `false`(끔)** 이다.
 - 동작:
   - 플래그가 꺼져 있을 때(기본)는 기존 `MeshBasicMaterial` + `SURFACE_SOURCE_MAP` 렌더 경로를 그대로 유지한다.
   - 플래그가 켜져 있고 장면 데이터에 `vdt` 가 있으면:
-    1. 정본 World 좌표계의 `R`, `t`, 평면 꼭짓점·법선을 오직 `worldCoordinates.ts` 를 통해 Three.js 공간으로 변환한다.
-    2. 정적 장면·카메라 기준 깊이 그림자 맵 4장(`shadowMapSize`, 기본 `1536`)을 장면/카메라 변경 시 1회만 굽는다.
-    3. 카메라별 시점 각도·깊이 가림 검사(5-tap)와 4차 Oklab 메도이드 카메라 간 외톨이 제거(`outlierRemoval = true`), 미관측 TSDF 면 투영 기본 끔(`projectUnobserved = false`), 바닥·벽 미관측 표시 층(깊이 5 cm 일치 게이트 + 차분한 톤·격자), 열린 구멍 경계 페더링(`aBoundaryDist` 11 cm)을 적용한다.
-    4. 사람·아바타(`PersonLayer`), 구역(`ZoneLayer`), 접지 그림자(`GroundShadowLayer`), 작업면(`WorkSurfaceLayer`), 카메라 마커(`CameraLayer`)의 재질과 깊이 가림은 영향받지 않는다.
+    1. `map_cameras` 가 있으면(응답의 `map_cameras` → `vdt.map_cameras` → GLB `userData.simai.map_cameras` 순) 해당 카메라의 `image_size, K, R, t, pose_source` 로 투영 카메라 자세를 오버라이드하고, 없으면(레거시 Scene) 기존 calibration 자세(`CALIBRATION`)로 폴백한다. Tier 0 `calibration.json` 정본(`GET /api/calibrations/current`)은 변경하지 않는다.
+    2. 정본 World 좌표계의 `R`, `t`, 평면 꼭짓점·법선을 오직 `worldCoordinates.ts` 를 통해 Three.js 공간으로 변환한다.
+    3. 정적 장면·카메라 기준 깊이 그림자 맵 4장(`shadowMapSize`, 기본 `1536`)을 장면/카메라 변경 시 1회만 굽는다.
+    4. 카메라별 시점 각도·깊이 가림 검사(5-tap)와 4차 Oklab 메도이드 카메라 간 외톨이 제거(`outlierRemoval = true`), 미관측 TSDF 면 투영 기본 끔(`projectUnobserved = false`), 바닥·벽 미관측 표시 층(깊이 5 cm 일치 게이트 + 차분한 톤·격자), 열린 구멍 경계 페더링(`aBoundaryDist` 11 cm)을 적용한다.
+    5. 사람·아바타(`PersonLayer`), 구역(`ZoneLayer`), 접지 그림자(`GroundShadowLayer`), 작업면(`WorkSurfaceLayer`), 카메라 마커(`CameraLayer`)의 재질과 깊이 가림은 영향받지 않는다.

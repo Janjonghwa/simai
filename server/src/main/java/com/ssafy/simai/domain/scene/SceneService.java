@@ -88,6 +88,7 @@ public class SceneService {
             node.set("compatibility", compatibility.current(s.version(), s.calibrationVersion()));
             gltf(node, s.gltfKey());
             sourceMaps(node, s.output());
+            mapCameras(node, s.output());
             return node;
         }
         if (defaultGltfKey.isEmpty()) {
@@ -131,6 +132,17 @@ public class SceneService {
         }
         if (!urls.isEmpty()) {
             node.set("surface_source_map_urls", urls);
+        }
+    }
+
+    /** 최종 맵 굽기에 실제로 쓰인 카메라 자세 사본(method.map_cameras, S15P31A101-539·-541). 있으면 그대로 실어 뷰어 VDT 가 참조하게 한다. */
+    private void mapCameras(ObjectNode node, String output) {
+        if (output == null) {
+            return;
+        }
+        JsonNode cameras = mapper.readTree(output).path("method").path("map_cameras");
+        if (cameras.isObject() && !cameras.isEmpty()) {
+            node.set("map_cameras", cameras);
         }
     }
 

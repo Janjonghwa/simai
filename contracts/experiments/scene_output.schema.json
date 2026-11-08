@@ -79,6 +79,7 @@
               },
               "R": {
                 "type": "array",
+                "description": "3x3 회전 행렬 (World → OpenCV 카메라, p_cam_cv = R * p_world + t, OPENCV_WORLD_TO_CAMERA)",
                 "minItems": 3,
                 "maxItems": 3,
                 "items": {
@@ -90,6 +91,7 @@
               },
               "t": {
                 "type": "array",
+                "description": "3x1 이동 벡터 (m, World → OpenCV 카메라, p_cam_cv = R * p_world + t, 광학 중심 C_world = -R^T * t)",
                 "minItems": 3,
                 "maxItems": 3,
                 "items": { "type": "number" }

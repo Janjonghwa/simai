@@ -1,7 +1,7 @@
 import type { ViewerHealthMessage } from '@simai/contracts';
 import { z } from 'zod';
-import { readSceneVdtConfig } from './vdtMath';
-import type { SceneVdtConfig } from './vdtTypes';
+import { applyMapCamerasToVdtConfig, readSceneMapCameras, readSceneVdtConfig } from './vdtMath';
+import type { SceneMapCameras, SceneVdtConfig } from './vdtTypes';
 
 export type SceneCompatibility = NonNullable<
   ViewerHealthMessage['payload']['scene']['compatibility']
@@ -70,6 +70,8 @@ export interface CurrentScene {
   gltfExpiresAtMs: number | null;
   /** 선택: scene_output 2.1.0 SURFACE_SOURCE_MAP 서명 주소(서버가 함께 내려줄 때만 채운다). */
   surfaceSourceMapUrls?: SurfaceSourceMapUrls;
+  /** 선택: 최종 맵 굽기에 실제로 쓰인 단일 카메라 자세 사본(S15P31A101-539·-541, method.map_cameras). */
+  mapCameras?: SceneMapCameras;
   /** 선택: 시점 의존 텍스처(VDT, -534) 카메라 K·R·t·배경 사진 URL 및 바닥·벽 표시 층 평면. */
   vdt?: SceneVdtConfig | null;
 }
@@ -158,12 +160,23 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (sourceMaps === 'INVALID') {
     return { ok: false, reason: 'surface_source_map_urls 형식이 틀렸다' };
   }
+  const mapCamerasRaw = field(raw, 'map_cameras') ?? field(field(raw, 'method'), 'map_cameras');
+  let parsedMapCameras: SceneMapCameras | null = null;
+  if (mapCamerasRaw !== undefined && mapCamerasRaw !== null) {
+    parsedMapCameras = readSceneMapCameras(mapCamerasRaw);
+    if (!parsedMapCameras) {
+      return { ok: false, reason: 'map_cameras 형식이 틀렸다' };
+    }
+  }
   const vdtRaw = field(raw, 'vdt');
   let parsedVdt: SceneVdtConfig | null = null;
   if (vdtRaw !== undefined && vdtRaw !== null) {
     parsedVdt = readSceneVdtConfig(vdtRaw);
     if (!parsedVdt || !parsedVdt.cameras.every((c) => readableUrl(c.imageUrl))) {
       return { ok: false, reason: 'vdt 형식이 틀렸다' };
+    }
+    if (parsedMapCameras) {
+      parsedVdt = applyMapCamerasToVdtConfig(parsedVdt, parsedMapCameras);
     }
   }
   const compatibility = field(raw, 'compatibility');
@@ -190,6 +203,10 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (typeof calibrationState === 'string') scene.calibrationState = calibrationState;
   if (sourceMaps !== null) {
     scene.surfaceSourceMapUrls = sourceMaps;
+  }
+  const effectiveMapCameras = parsedMapCameras ?? parsedVdt?.mapCameras ?? null;
+  if (effectiveMapCameras !== null) {
+    scene.mapCameras = effectiveMapCameras;
   }
   if (parsedVdt !== null) {
     scene.vdt = parsedVdt;

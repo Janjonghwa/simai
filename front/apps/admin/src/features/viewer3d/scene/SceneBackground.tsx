@@ -17,7 +17,11 @@ import {
   type SceneStore,
   type SceneTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
-import { convertVdtCameraToThree } from '@/features/viewer3d/scene/vdtMath';
+import {
+  applyMapCamerasToVdtCameras,
+  convertVdtCameraToThree,
+  readSceneMapCamerasFromObject3D,
+} from '@/features/viewer3d/scene/vdtMath';
 import {
   bakeVdtShadowMaps,
   collectVdtMeshes,
@@ -458,10 +462,11 @@ function Background({ store }: { store: SceneStore }) {
 
   const camerasThree = useMemo(() => {
     if (!vdtEnabled || !vdtConfig) return null;
-    return vdtConfig.cameras.map((c) =>
-      convertVdtCameraToThree(c, vdtConfig.nearM, vdtConfig.farM),
-    );
-  }, [vdtEnabled, vdtConfig]);
+    const glbMapCameras = loaded ? readSceneMapCamerasFromObject3D(loaded.root) : null;
+    const effectiveMapCameras = scene?.mapCameras ?? vdtConfig.mapCameras ?? glbMapCameras;
+    const resolvedCameras = applyMapCamerasToVdtCameras(vdtConfig.cameras, effectiveMapCameras);
+    return resolvedCameras.map((c) => convertVdtCameraToThree(c, vdtConfig.nearM, vdtConfig.farM));
+  }, [vdtEnabled, vdtConfig, scene?.mapCameras, loaded]);
 
   const [vdtIndicatorGroup, setVdtIndicatorGroup] = useState<Object3D | null>(null);
   const mountedVdtRef = useRef<MountedVdtScene | null>(null);
