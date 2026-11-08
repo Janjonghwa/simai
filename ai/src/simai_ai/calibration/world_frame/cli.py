@@ -349,6 +349,7 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             fallback_scale_basis=ScaleBasis.MODEL_ESTIMATE,
             site_id=args.site_id,
             world_axes_source=result.axes_source,
+            floor_tilt_correction=result.floor_tilt_correction,
         )
         problems = check_calibration(doc)
         if problems:

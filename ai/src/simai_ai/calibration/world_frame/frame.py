@@ -101,6 +101,13 @@ class WorldFrameConfig:
     # 카메라 높이 축척(-277)
     camera_height_min_cameras: int = 2
     camera_height_max_spread: float = 0.03  # 카메라별 배율이 중앙값에서 벗어나는 최대 비율
+    # 바닥 법선 + 카메라 높이 피치·롤 기울기 보정(-542)
+    floor_tilt_min_cameras: int = 3
+    floor_tilt_max_deg: float = 3.0  # 허용 최대 기울기 보정 각도(deg). 초과 시 거부하고 이유를 기록한다
+    floor_tilt_min_deg: float = 0.02  # 바닥 RANSAC 노이즈 수준(0.02°) 미만은 수치 흔들림 방지용 0 처리
+    floor_tilt_min_lever_arm_m: float = 0.5  # 카메라 수평 배치 최소 특이값(m). 미달 시 일직선 배치로 거부
+    floor_tilt_max_residual_cm: float = 2.0  # 평면 보정 후 비평면 잔차 상한(cm). 초과 시 단일 카메라 이상값으로 거부
+    floor_tilt_prior_weight_m2: float = 0.02  # 바닥 RANSAC 법선 제약 가중치(m^2)
 
 
 @dataclass(frozen=True)
@@ -142,6 +149,7 @@ class WorldFrameResult:
     scale_cross_checks: tuple[str, ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
     axes_source: str | None = None  # WALLS·WALL_AND_FLOOR·MANUAL_FLOOR_POINTS (OK 일 때만)
+    floor_tilt_correction: dict[str, Any] | None = None  # 바닥 법선 + 카메라 높이 피치·롤 보정 기록(-542)
 
     def matrix(self) -> np.ndarray:
         """MapAnything world → World 4×4 [sR | T] (-214 `load_world_alignment` 형식)."""
@@ -255,6 +263,282 @@ def camera_height_scale(
         rec["rejected"] = f"카메라끼리 어긋남(중앙값에서 {spread:.1%} > {cfg.camera_height_max_spread:.0%})"
         return None, rec
     return ScaleEstimate(ScaleBasis.MEASURED_CAMERA_HEIGHT, med, len(used), "camera_heights"), rec
+
+
+def _rodrigues_tilt(pitch_rad: float, roll_rad: float) -> np.ndarray:
+    """World +X(pitch_rad)·+Y(roll_rad) 축각 벡터 [pitch, roll, 0] 의 3×3 회전 행렬."""
+    theta = math.hypot(pitch_rad, roll_rad)
+    if theta < 1e-12:
+        return np.eye(3)
+    kx, ky = pitch_rad / theta, roll_rad / theta
+    K = np.array([[0.0, 0.0, ky], [0.0, 0.0, -kx], [-ky, kx, 0.0]], dtype=float)
+    return np.eye(3) + math.sin(theta) * K + (1.0 - math.cos(theta)) * (K @ K)
+
+
+def refine_floor_tilt_with_camera_heights(
+    floor0: Plane,
+    X0: np.ndarray,
+    Y0: np.ndarray,
+    pts: np.ndarray,
+    centers: np.ndarray,
+    ids: Sequence[str],
+    heights: Mapping[str, float],
+    cfg: WorldFrameConfig,
+) -> tuple[Plane, dict[str, Any]]:
+    """바닥 RANSAC 법선과 카메라별 실측 높이(3대 이상)를 결합해 +Z 피치·롤 기울기를 보정한다(S15P31A101-542).
+
+    높이를 모르는 카메라는 빼고, 쓸 수 있는 카메라가 3대 미만이면 기존 바닥 법선을 그대로 유지한다(pitch·roll 은 null).
+    기울기 보정량이 cfg.floor_tilt_max_deg(기본 3.0°)를 넘거나, 카메라 수평 배치가 일직선에 가깝거나,
+    평면 보정 뒤에도 비평면 잔차가 cfg.floor_tilt_max_residual_cm 를 넘으면(단일 카메라 높이 이상값) 거부하고 사유를 기록한다.
+    """
+    for cid, v in heights.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            raise ValueError(f"카메라 높이 {cid} 는 양의 유한한 수(m)다: {v!r}")
+    model_h0 = {c: float(floor0.distance(centers[i:i + 1])[0]) for i, c in enumerate(ids)}
+    used = [c for c in ids if c in heights]
+    unknown_cameras = sorted(set(heights) - set(ids))
+    missing_cameras = [c for c in ids if c not in heights]
+    obs_heights = {c: round(float(heights[c]), 4) for c in used}
+    obs_sources = (
+        ["POINTCLOUD_FLOOR_RANSAC", "MEASURED_CAMERA_HEIGHT"]
+        if used
+        else ["POINTCLOUD_FLOOR_RANSAC"]
+    )
+    if used and all(model_h0[c] > 0 for c in used):
+        s0 = float(np.median([heights[c] / model_h0[c] for c in used]))
+        est_before = {c: round(float(s0 * model_h0[c]), 4) for c in used}
+        res_before_cm = {c: round(float((s0 * model_h0[c] - heights[c]) * 100.0), 2) for c in used}
+        rms_before_cm: float | None = round(
+            float(np.sqrt(np.mean([(s0 * model_h0[c] - heights[c]) ** 2 for c in used])) * 100.0), 2
+        )
+    else:
+        s0 = 1.0
+        est_before = {}
+        res_before_cm = {}
+        rms_before_cm = None
+
+    if len(used) < cfg.floor_tilt_min_cameras:
+        return floor0, {
+            "status": "INSUFFICIENT_CAMERAS",
+            "applied": False,
+            "pitch_rad": None,
+            "roll_rad": None,
+            "tilt_deg": None,
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "FLOOR_RANSAC_ONLY",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": f"실측 높이를 아는 카메라 {len(used)}대 < {cfg.floor_tilt_min_cameras}대",
+        }
+
+    used_idx = [i for i, c in enumerate(ids) if c in heights]
+    C_used = centers[used_idx]
+    h_vec = np.array([float(heights[c]) for c in used], dtype=float)
+    Ra0 = np.vstack([X0 / np.linalg.norm(X0), Y0 / np.linalg.norm(Y0), floor0.normal])
+
+    inl0 = np.abs(floor0.distance(pts)) < cfg.plane_tol_m
+    q_bar = pts[inl0].mean(axis=0) if np.any(inl0) else C_used.mean(axis=0)
+    p_pivot = q_bar - float(floor0.distance(q_bar[None])[0]) * floor0.normal
+
+    c_bar = C_used.mean(axis=0)
+    rel0 = s0 * ((C_used - c_bar) @ Ra0.T)
+    A0 = np.column_stack([rel0[:, 1], -rel0[:, 0]])
+    sv = np.linalg.svd(A0, compute_uv=False)
+    if float(sv[-1]) < cfg.floor_tilt_min_lever_arm_m:
+        return floor0, {
+            "status": "REJECTED",
+            "applied": False,
+            "pitch_rad": 0.0,
+            "roll_rad": 0.0,
+            "tilt_deg": 0.0,
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "FLOOR_RANSAC_ONLY",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": (
+                f"카메라 수평 배치 레버암 부족(최소 특이값 {float(sv[-1]):.2f}m < "
+                f"{cfg.floor_tilt_min_lever_arm_m:.2f}m, 일직선 배치: COLLINEAR_CAMERAS)"
+            ),
+        }
+
+    theta = np.zeros(2, dtype=float)
+    lam = float(cfg.floor_tilt_prior_weight_m2)
+    for _ in range(3):
+        R_t = _rodrigues_tilt(float(theta[0]), float(theta[1]))
+        Ra_cur = R_t @ Ra0
+        u_cur = Ra_cur[2]
+        d_cur = float(u_cur @ p_pivot)
+        d_cam = C_used @ u_cur - d_cur
+        if np.any(d_cam <= 0):
+            break
+        s_cur = float(np.median(h_vec / d_cam))
+        z_cur = s_cur * d_cam
+        r_cur = h_vec - z_cur
+        rel_cur = s_cur * ((C_used - c_bar) @ Ra_cur.T)
+        A_cur = np.column_stack([rel_cur[:, 1], -rel_cur[:, 0]])
+        r_tilde = r_cur - float(np.mean(r_cur))
+        H = A_cur.T @ A_cur + lam * np.eye(2)
+        g = A_cur.T @ r_tilde - lam * theta
+        theta = theta + np.linalg.solve(H, g)
+
+    pitch_rad = float(theta[0])
+    roll_rad = float(theta[1])
+    tilt_deg = math.degrees(math.hypot(pitch_rad, roll_rad))
+
+    if tilt_deg > cfg.floor_tilt_max_deg:
+        return floor0, {
+            "status": "REJECTED",
+            "applied": False,
+            "pitch_rad": round(pitch_rad, 6),
+            "roll_rad": round(roll_rad, 6),
+            "tilt_deg": round(tilt_deg, 4),
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": (
+                f"추정된 바닥 기울기 보정량 {tilt_deg:.2f}° 가 허용 상한 "
+                f"{cfg.floor_tilt_max_deg:.2f}° 를 초과함 (MAX_TILT_EXCEEDED)"
+            ),
+        }
+
+    R_t = _rodrigues_tilt(pitch_rad, roll_rad)
+    Ra_new = R_t @ Ra0
+    u_new = Ra_new[2] / np.linalg.norm(Ra_new[2])
+    d_new = float(u_new @ p_pivot)
+    d_cam_new = C_used @ u_new - d_new
+    if np.any(d_cam_new <= cfg.min_camera_height_m):
+        return floor0, {
+            "status": "REJECTED",
+            "applied": False,
+            "pitch_rad": round(pitch_rad, 6),
+            "roll_rad": round(roll_rad, 6),
+            "tilt_deg": round(tilt_deg, 4),
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": "기울기 보정 후 카메라 높이가 최소 기준 미만임 (CAMERA_TOO_LOW_AFTER_TILT)",
+        }
+
+    ratios_new = h_vec / d_cam_new
+    s_new = float(np.median(ratios_new))
+    spread_new = float(np.max(np.abs(ratios_new / s_new - 1.0)))
+    z_after = s_new * d_cam_new
+    res_after_arr_cm = (z_after - h_vec) * 100.0
+    max_abs_res_after_cm = float(np.max(np.abs(res_after_arr_cm)))
+
+    if max_abs_res_after_cm > cfg.floor_tilt_max_residual_cm or spread_new > cfg.camera_height_max_spread:
+        return floor0, {
+            "status": "REJECTED",
+            "applied": False,
+            "pitch_rad": round(pitch_rad, 6),
+            "roll_rad": round(roll_rad, 6),
+            "tilt_deg": round(tilt_deg, 4),
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": (
+                f"기울기 보정 후에도 카메라 높이 비평면 잔차가 허용치를 초과함"
+                f"(최대 잔차 {max_abs_res_after_cm:.2f}cm > {cfg.floor_tilt_max_residual_cm:.2f}cm, "
+                f"배율 편차 {spread_new:.1%}: CAMERA_HEIGHT_OUTLIER)"
+            ),
+        }
+
+    if tilt_deg < cfg.floor_tilt_min_deg:
+        return floor0, {
+            "status": "APPLIED",
+            "applied": True,
+            "pitch_rad": 0.0,
+            "roll_rad": 0.0,
+            "tilt_deg": 0.0,
+            "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+            "used_cameras": used,
+            "missing_cameras": missing_cameras,
+            "unknown_cameras": unknown_cameras,
+            "observation_sources": obs_sources,
+            "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+            "observed_heights_m": obs_heights,
+            "estimated_heights_before_m": est_before,
+            "estimated_heights_after_m": dict(est_before),
+            "residuals_before_cm": res_before_cm,
+            "residuals_after_cm": dict(res_before_cm),
+            "residual_rms_before_cm": rms_before_cm,
+            "residual_rms_after_cm": rms_before_cm,
+            "rejection_reason": None,
+        }
+
+    floor_new = Plane(u_new, d_new, floor0.inliers, floor0.rms)
+    est_after = {c: round(float(z_after[idx]), 4) for idx, c in enumerate(used)}
+    res_after_cm = {c: round(float(res_after_arr_cm[idx]), 2) for idx, c in enumerate(used)}
+    rms_after_cm = round(float(np.sqrt(np.mean(res_after_arr_cm ** 2))), 2)
+    return floor_new, {
+        "status": "APPLIED",
+        "applied": True,
+        "pitch_rad": round(pitch_rad, 6),
+        "roll_rad": round(roll_rad, 6),
+        "tilt_deg": round(tilt_deg, 4),
+        "max_tilt_deg": float(cfg.floor_tilt_max_deg),
+        "used_cameras": used,
+        "missing_cameras": missing_cameras,
+        "unknown_cameras": unknown_cameras,
+        "observation_sources": obs_sources,
+        "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+        "observed_heights_m": obs_heights,
+        "estimated_heights_before_m": est_before,
+        "estimated_heights_after_m": est_after,
+        "residuals_before_cm": res_before_cm,
+        "residuals_after_cm": res_after_cm,
+        "residual_rms_before_cm": rms_before_cm,
+        "residual_rms_after_cm": rms_after_cm,
+        "rejection_reason": None,
+    }
 
 
 # --------------------------------------------------------------------------- 평면
@@ -446,8 +730,50 @@ def _quadrants(fl_ma: np.ndarray) -> dict[str, float]:
             "-X-Y": round(float(np.mean(~px & ~py)), 4), "+X-Y": round(float(np.mean(px & ~py)), 4)}
 
 
+def _horizontal_basis(
+    floor: Plane,
+    floor_points: FloorPointRays | None,
+    pair: tuple[Wall, Wall] | None,
+    one_wall: Wall | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """바닥 법선 보정 전 초기 수평 기저 (X0, Y0): 바닥 두 점 > 경계 벽 쌍 > 경계 벽 하나 > 임의 직교 기저."""
+    u0 = floor.normal
+    if floor_points is not None:
+        center = np.asarray(floor_points.center, dtype=float)
+        h_cam = float(floor.distance(center[None])[0])
+        if h_cam > 0:
+            ray_pts = []
+            for d in floor_points.directions:
+                dn = np.asarray(d, dtype=float)
+                dn = dn / np.linalg.norm(dn)
+                down = -float(dn @ u0)
+                if down > 1e-9:
+                    ray_pts.append(center + (h_cam / down) * dn)
+            if len(ray_pts) == 2:
+                v = ray_pts[1] - ray_pts[0]
+                v = v - float(v @ u0) * u0
+                nv = float(np.linalg.norm(v))
+                if nv > 1e-9:
+                    X0 = v / nv
+                    return X0, np.cross(u0, X0)
+    if pair is not None:
+        wx, _ = _wall_axes(pair, u0)
+        return wx.normal, np.cross(u0, wx.normal)
+    if one_wall is not None:
+        return one_wall.normal, np.cross(u0, one_wall.normal)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(float(u0[0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+    X0 = ref - float(ref @ u0) * u0
+    X0 = X0 / np.linalg.norm(X0)
+    return X0, np.cross(u0, X0)
+
+
 def manual_floor_axes(
-    floor: Plane, rays: FloorPointRays, scale: float, cfg: WorldFrameConfig
+    floor: Plane,
+    rays: FloorPointRays,
+    scale: float,
+    cfg: WorldFrameConfig,
+    *,
+    observed_floor: Plane | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, str, dict[str, Any]]:
     """바닥 두 점 → (Ra, 원점, 실패 사유, 기록). 실패하면 Ra·원점이 None 이고 사유가 있다(지어내지 않는다).
 
@@ -457,6 +783,7 @@ def manual_floor_axes(
     사람)을 찍은 것이다(POINT_NOT_ON_FLOOR, 근처 점이 없으면 확인 못 함으로 기록). 두 점의 바닥 위 거리(스케일 반영)가
     하한보다 작으면 X 방향이 픽셀 오차에 크게 흔들린다(POINTS_TOO_CLOSE).
     """
+    obs_floor = floor if observed_floor is None else observed_floor
     up = floor.normal
     center = np.asarray(rays.center, dtype=float)
     h_cam = float(floor.distance(center[None])[0])
@@ -480,7 +807,7 @@ def manual_floor_axes(
             rec["floor_check"] = "NOT_CHECKED"  # 그 픽셀 근처에 MapAnything 점이 없다(사람 마스크·저신뢰)
         else:
             obs = np.asarray(obs, dtype=float)
-            hob = float(floor.distance(obs[None])[0])
+            hob = float(obs_floor.distance(obs[None])[0])
             rec |= {"observed_height_ma": round(hob, 4), "observed_offset_ma": round(float(np.linalg.norm(obs - p)), 4)}
             if abs(hob) > cfg.floor_point_max_height_m:
                 rec["floor_check"] = "OFF_FLOOR"
@@ -534,13 +861,14 @@ def fix_world_frame(
     up0 = _up_prior([cam2world[c] for c in ids])
     ev["up_prior_ma"] = _r(up0)
 
-    floor, tried = find_floor(pts, centers, up0, cfg, rng)
+    floor0, tried = find_floor(pts, centers, up0, cfg, rng)
     ev["floor_search"] = tried
-    if floor is None:
+    if floor0 is None:
         return WorldFrameResult(
             STATUS_FAILED, FLOOR_NOT_FOUND,
             "카메라 아래에 있고 그 아래 점이 거의 없는 수평면을 찾지 못했다(바닥을 지어내지 않는다)", ev,
         )
+    floor = floor0
     up = floor.normal
     ev["floor"] = {
         "normal_ma": _r(up), "offset_ma": round(floor.offset, 4), "inliers": floor.inliers, "rms_ma": round(floor.rms, 4),
@@ -548,14 +876,39 @@ def fix_world_frame(
         "gravity_ma": _r(-up),
     }
     if foot_points is not None:
-        check = check_floor_with_feet(floor, np.asarray(foot_points, dtype=float), cfg)
+        check = check_floor_with_feet(floor0, np.asarray(foot_points, dtype=float), cfg)
         ev["floor"]["foot_check"] = check
         if check["status"] == "INCONSISTENT":
             return WorldFrameResult(STATUS_FAILED, FLOOR_FOOT_MISMATCH, check["detail"], ev)
     else:
         ev["floor"]["foot_check"] = {"status": "NOT_CHECKED", "detail": "발 접지점 입력 없음"}
 
-    # 스케일은 바닥만 있으면 정해진다(카메라 높이 실측은 바닥에서 잰다). 축을 못 정해도 근거는 남긴다
+    walls = find_walls(pts, floor0, cfg, rng)
+    ev["walls"] = [w.record() for w in walls]
+    pair, why, info = choose_axes(walls, floor0.normal, cfg)
+    ev["axes"] = info
+    one_wall = _single_wall(walls) if pair is None and ONE_WALL_DIRECTION in why else None
+    ref_wall = _wall_axes(pair, floor0.normal)[0] if pair is not None else one_wall  # 두 점과 비교할 벽 축(있으면)
+
+    tilt_rec: dict[str, Any] | None = None
+    if camera_heights is not None:
+        X0, Y0 = _horizontal_basis(floor0, floor_points, pair, one_wall)
+        floor, tilt_rec = refine_floor_tilt_with_camera_heights(
+            floor0, X0, Y0, pts, centers, ids, camera_heights, cfg
+        )
+        ev["floor"]["tilt_correction"] = tilt_rec
+        if floor is not floor0:
+            up = floor.normal
+            ev["floor"].update({
+                "ransac_normal_ma": _r(floor0.normal),
+                "ransac_offset_ma": round(floor0.offset, 4),
+                "normal_ma": _r(up),
+                "offset_ma": round(floor.offset, 4),
+                "tilt_from_prior_deg": round(math.degrees(math.acos(min(1.0, float(up @ up0)))), 3),
+                "gravity_ma": _r(-up),
+            })
+
+    # 스케일은 바닥만 있으면 정해진다(카메라 높이 실측은 보정된 바닥에서 잰다). 축을 못 정해도 근거는 남긴다
     estimates = list(scale_estimates)
     height_rec = None
     if camera_heights is not None:
@@ -568,31 +921,29 @@ def fix_world_frame(
     ev["scale"] = scale.record
     s = scale.scale
 
-    walls = find_walls(pts, floor, cfg, rng)
-    ev["walls"] = [w.record() for w in walls]
-    pair, why, info = choose_axes(walls, up, cfg)
-    ev["axes"] = info
-    on_floor = np.abs(floor.distance(pts)) < cfg.plane_tol_m
+    on_floor = np.abs(floor0.distance(pts)) < cfg.plane_tol_m
     warnings = []
     # 축 우선순위: 사람이 준 바닥 두 점 > 경계 벽 두 방향(WALLS) > 경계 벽 한 방향(WALL_AND_FLOOR) > 실패(비움)
-    one_wall = _single_wall(walls) if pair is None and ONE_WALL_DIRECTION in why else None
-    ref_wall = _wall_axes(pair, up)[0] if pair is not None else one_wall  # 두 점과 비교할 벽 축(있으면)
     if floor_points is not None:
         # 사람 지정이 이긴다(재현성). 벽 축이 있으면 그 축과의 각도 차만 기록한다
-        Ra, origin, fail, manual = manual_floor_axes(floor, floor_points, s, cfg)
+        Ra, origin, fail, manual = manual_floor_axes(floor, floor_points, s, cfg, observed_floor=floor0)
         info.update({"source": AXES_MANUAL_FLOOR_POINTS, "floor_points": manual | {"input": floor_points.record}})
         if Ra is None:
-            return WorldFrameResult(STATUS_FAILED, FLOOR_POINTS_INVALID, fail, ev)
+            return WorldFrameResult(
+                STATUS_FAILED, FLOOR_POINTS_INVALID, fail, ev, floor_tilt_correction=tilt_rec
+            )
         X, Y = Ra[0], Ra[1]
         info.update({"rule": MANUAL_ORIGIN_RULE, "x_axis_ma": _r(X), "y_axis_ma": _r(Y), "z_axis_ma": _r(up)})
         ev["origin"] = {"point_ma": _r(origin), "rule": MANUAL_ORIGIN_RULE, "source": ORIGIN_FLOOR_POINT}
         local_ma = (pts - origin) @ Ra.T
         info["floor_quadrant_fractions"] = _quadrants(local_ma[on_floor])  # 판정하지 않는다(사람이 정한 기준)
         if ref_wall is not None:
-            Yw = np.cross(up, ref_wall.normal)
-            ang = math.degrees(math.atan2(float(X @ Yw), float(X @ ref_wall.normal)))
+            ref_x = ref_wall.normal - float(ref_wall.normal @ up) * up if floor is not floor0 else ref_wall.normal
+            ref_x = ref_x / np.linalg.norm(ref_x) if floor is not floor0 else ref_x
+            Yw = np.cross(up, ref_x)
+            ang = math.degrees(math.atan2(float(X @ Yw), float(X @ ref_x)))
             ang = (ang + 45.0) % 90.0 - 45.0  # 벽 축 X·Y 중 가까운 것과의 각도
-            info["walls_comparison"] = {"x_axis_ma": _r(ref_wall.normal), "angle_to_wall_axes_deg": round(ang, 3),
+            info["walls_comparison"] = {"x_axis_ma": _r(ref_x), "angle_to_wall_axes_deg": round(ang, 3),
                                         "walls": "WALLS" if pair is not None else "ONE_WALL",
                                         "note": "비교용 기록(축은 사람 지정)"}
             if abs(ang) > cfg.orthogonal_tol_deg:
@@ -602,7 +953,11 @@ def fix_world_frame(
         axes_source = AXES_MANUAL_FLOOR_POINTS
     elif pair is None and one_wall is not None:
         # 경계 벽 한 방향(열린 공간): 벽 법선이 X, 원점은 벽·바닥 교선 위 카메라 중심 평균의 수선 발
-        X = one_wall.normal
+        if floor is not floor0:
+            X = one_wall.normal - float(one_wall.normal @ up) * up
+            X = X / np.linalg.norm(X)
+        else:
+            X = one_wall.normal
         Y = np.cross(up, X)
         Ra = np.vstack([X, Y, up])
         cbar = centers.mean(axis=0)
@@ -624,23 +979,34 @@ def fix_world_frame(
             return WorldFrameResult(
                 STATUS_FAILED, AXES_AMBIGUOUS,
                 f"벽 한 방향 축에서 방이 +X(벽 안쪽)에 놓이지 않는다(QUADRANT_X: 바닥 점 {outside:.1%} 가 "
-                f"{cfg.wall_outside_margin_m} 넘게 밖, 한도 {cfg.wall_max_outside_fraction:.0%})", ev,
+                f"{cfg.wall_outside_margin_m} 넘게 밖, 한도 {cfg.wall_max_outside_fraction:.0%})",
+                ev,
+                floor_tilt_correction=tilt_rec,
             )
         warnings.append("축은 경계 벽 하나와 바닥(WALL_AND_FLOOR), 원점은 카메라 배치로 정했다"
                         "(카메라를 벽을 따라 옮기면 원점이 Y 로 움직인다)")
         axes_source = AXES_WALL_AND_FLOOR
     else:
         if pair is None:
-            return WorldFrameResult(STATUS_FAILED, AXES_AMBIGUOUS, f"{why}. {AMBIGUOUS_HINT}", ev)
-        wx, wy = _wall_axes(pair, up)
-        X = wx.normal
+            return WorldFrameResult(
+                STATUS_FAILED, AXES_AMBIGUOUS, f"{why}. {AMBIGUOUS_HINT}", ev, floor_tilt_correction=tilt_rec
+            )
+        wx, wy = _wall_axes(pair, floor0.normal)
+        if floor is not floor0:
+            X = wx.normal - float(wx.normal @ up) * up
+            X = X / np.linalg.norm(X)
+            wy_n = wy.normal - float(wy.normal @ up) * up
+            wy_n = wy_n / np.linalg.norm(wy_n)
+        else:
+            X = wx.normal
+            wy_n = wy.normal
         Y = np.cross(up, X)
         Ra = np.vstack([X, Y, up])
-        origin = np.linalg.solve(np.vstack([wx.normal, wy.normal, up]), [wx.offset, wy.offset, floor.offset])
+        origin = np.linalg.solve(np.vstack([X, wy_n, up]), [wx.offset, wy.offset, floor.offset])
         ev["axes"].update({
             "source": AXES_WALLS, "rule": ORIGIN_RULE, "x_wall": _index(walls, wx), "y_wall": _index(walls, wy),
             "x_axis_ma": _r(X), "y_axis_ma": _r(Y), "z_axis_ma": _r(up),
-            "y_vs_wall_deg": round(_line_angle_deg(Y, wy.normal), 3),
+            "y_vs_wall_deg": round(_line_angle_deg(Y, wy_n), 3),
         })
         ev["origin"] = {"point_ma": _r(origin), "rule": ORIGIN_RULE, "source": ORIGIN_WALL_CORNER}
 
@@ -655,7 +1021,9 @@ def fix_world_frame(
                 STATUS_FAILED, AXES_AMBIGUOUS,
                 f"직교화한 축으로 방이 +X·+Y 쪽에 놓이지 않는다(QUADRANT: 바닥 점 {outside:.1%} 가 "
                 f"{cfg.wall_outside_margin_m} 넘게 밖, 한도 {cfg.wall_max_outside_fraction:.0%}. 두 벽 직교 오차 "
-                f"{info.get('orthogonality_error_deg')}°)", ev,
+                f"{info.get('orthogonality_error_deg')}°)",
+                ev,
+                floor_tilt_correction=tilt_rec,
             )
         if info.get("other_families"):
             warnings.append(f"경계 벽 방향이 {len(info['families'])}개다(직사각형이 아닌 방이면 축 선택을 확인)")
@@ -675,7 +1043,7 @@ def fix_world_frame(
         floor_h = float(np.mean(floor.distance(centers)))
         ev["room"]["ceiling_height_m"] = round(s * min(floor_h - t["mean_camera_height"] for t in ceiling), 3)
     return WorldFrameResult(
-        STATUS_OK, None, None, ev, Ra, origin, s, scale.basis, scale.cross_checks, tuple(warnings), axes_source
+        STATUS_OK, None, None, ev, Ra, origin, s, scale.basis, scale.cross_checks, tuple(warnings), axes_source, tilt_rec
     )
 
 

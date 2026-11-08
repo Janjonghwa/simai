@@ -329,3 +329,307 @@ def test_ceiling_height_is_measured_at_the_cameras():
     center_x = np.mean([T[0, 3] for T in cams.values()])
     assert center_x == pytest.approx(4.0)
     assert res.evidence["room"]["ceiling_height_m"] == pytest.approx(2.9, abs=0.03)
+
+
+# ----- 바닥 법선 + 카메라별 실측 높이 기울기(피치·롤) 보정 (S15P31A101-542)
+
+
+TRUE_HEIGHTS = {cid: float(c[2]) for cid, c in CAMS.items()}
+
+
+def _doc_from_world_frame(res):
+    from simai_ai.calibration.criteria import CalibrationJudgement, ScaleDecision
+    from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
+    from simai_ai.tracking.system_health import CalibrationState
+
+    K = [[620.0, 0.0, 448.0], [0.0, 620.0, 252.0], [0.0, 0.0, 1.0]]
+    cams = [
+        CameraCalibration(
+            camera_id=cid,
+            image_size=(896, 504),
+            K=K,
+            R=np.eye(3).tolist(),
+            t=[0.0, 0.0, -float(h)],
+        )
+        for cid, h in res.evidence["room"]["camera_heights_m"].items()
+    ]
+    judgement = CalibrationJudgement(
+        state=CalibrationState.PROVISIONAL,
+        failures=(),
+        scale=ScaleDecision(
+            None,
+            None,
+            tuple(ScaleBasis(b) for b in res.scale_cross_checks),
+            ScaleBasis(res.scale_basis),
+        ),
+    )
+    return build_calibration_doc(
+        calibration_version="cal-wf-tilt-test",
+        provider_source="G1_AUTO",
+        provider_version="simai-world-frame-0.1.0",
+        created_at=1_775_900_000_000,
+        cameras=cams,
+        judgement=judgement,
+        fallback_scale_basis=ScaleBasis.MODEL_ESTIMATE,
+        site_id="test_site",
+        world_axes_source=res.axes_source,
+        floor_tilt_correction=res.floor_tilt_correction,
+    )
+
+
+@pytest.mark.parametrize(
+    ("pitch_deg", "roll_deg"),
+    [
+        (1.6, -1.2),
+        (-1.057, 0.8),
+        (2.2, 1.5),
+        (-2.4, -0.9),
+    ],
+)
+def test_synthetic_4_cameras_known_pitch_roll_restores_tilt_under_0_2_deg(sim_run, pitch_deg, roll_deg):
+    """알려진 피치·롤을 넣은 합성 카메라 4대 → +Z 기울기 오차 0.2° 이하로 복원한다."""
+    from simai_ai.calibration.world_frame.frame import _rodrigues_tilt
+    from simai_ai.providers.contract import check_calibration
+
+    run = load_mapanything_run(sim_run.run_dir)
+    pts = run.all_points()
+    base_cams = run.cam2world()
+
+    # 기준 실행(기울기 없음)에서 초기 바닥 평면 기저 Ra0 = [X0, Y0, u0] 와 바닥 중심점 p_bar 를 구한다.
+    base_res = fix_world_frame(pts, base_cams)
+    assert base_res.status == STATUS_OK
+    Ra0 = base_res.rotation
+    u0 = Ra0[2]
+    floor_offset = float(base_res.evidence["floor"]["offset_ma"])
+    on_floor = np.abs(pts @ u0 - floor_offset) < 0.03
+    p_bar = pts[on_floor].mean(axis=0)
+
+    pitch_rad = float(np.radians(pitch_deg))
+    roll_rad = float(np.radians(roll_deg))
+    # Ra_new = _rodrigues_tilt(pitch, roll) @ Ra0 이므로 u_true = Ra_new[2] 는 MapAnything 좌표에서 R_t^T 회전이다.
+    R_true_tilt = Ra0.T @ _rodrigues_tilt(pitch_rad, roll_rad).T @ Ra0
+    u_true = R_true_tilt @ u0
+
+    # 진짜 수평면 법선이 u_true 인 세계에서 4대 카메라가 바닥 위로 정확히 TRUE_HEIGHTS 높이를 갖도록 카메라를 배치한다.
+    # 점구름 바닥은 여전히 u0 이므로, 카메라 높이를 쓰지 않으면 +Z 가 u_true 에서 hypot(pitch, roll) 만큼 기울어진다.
+    tilted_cams = {}
+    for cid, T in base_cams.items():
+        T2 = np.eye(4, dtype=float)
+        T2[:3, :3] = R_true_tilt @ T[:3, :3]
+        T2[:3, 3] = p_bar + R_true_tilt @ (T[:3, 3] - p_bar)
+        tilted_cams[cid] = T2
+
+    uncorrected = fix_world_frame(pts, tilted_cams)
+    uncorrected_err_deg = float(np.degrees(np.arccos(np.clip(uncorrected.rotation[2] @ u_true, -1.0, 1.0))))
+    assert uncorrected_err_deg == pytest.approx(np.hypot(pitch_deg, roll_deg), abs=0.05)
+
+    corrected = fix_world_frame(pts, tilted_cams, camera_heights=TRUE_HEIGHTS)
+    assert corrected.status == STATUS_OK, corrected.detail
+    restored_err_deg = float(np.degrees(np.arccos(np.clip(corrected.rotation[2] @ u_true, -1.0, 1.0))))
+    assert restored_err_deg <= 0.2, f"복원 기울기 오차 {restored_err_deg:.4f}° > 0.2°"
+
+    tc = corrected.floor_tilt_correction
+    assert tc is not None
+    assert tc["status"] == "APPLIED" and tc["applied"] is True
+    assert tc["pitch_rad"] == pytest.approx(pitch_rad, abs=3e-3)
+    assert tc["roll_rad"] == pytest.approx(roll_rad, abs=3e-3)
+    assert tc["observation_sources"] == ["POINTCLOUD_FLOOR_RANSAC", "MEASURED_CAMERA_HEIGHT"]
+    assert tc["estimation_method"] == "REGULARIZED_SMALL_ROTATION_LSQ"
+    assert tc["residual_rms_after_cm"] < 0.25
+    assert tc["residual_rms_after_cm"] < tc["residual_rms_before_cm"]
+
+    doc = _doc_from_world_frame(corrected)
+    assert check_calibration(doc) == []
+
+
+def test_session12_lobby_camera_poses_tilt_regression():
+    """12차 로비 실측 포즈(cal-lobby-init-f0ab1c6b-jba2-2f6cc097, -1.057° 기울기) 회귀 시험."""
+    from simai_ai.providers.contract import check_calibration
+
+    # 12차 로비 Stage A 보정 문서(cal-lobby-init-f0ab1c6b-jba2-2f6cc097)의 4대 카메라 World 포즈
+    # 실측 높이: cam_A=2.44m, cam_B=2.44m, cam_C=2.48m, cam_D=2.48m
+    # 보정 전 카메라 중심 Z = [2.3592, 2.3821, 2.5417, 2.5528] m (잔차 [-8.08, -5.79, +6.17, +7.28] cm, RMS 6.88 cm)
+    s12_cameras = {
+        "cam_A": {
+            "R": [
+                [-0.5209663869565954, 0.8202460714413591, -0.23620062338819683],
+                [0.42895767323042644, 0.012345857489691019, -0.9032402673442959],
+                [-0.7379631498380582, -0.5718777809455245, -0.3582824551715579],
+            ],
+            "t": [-1.5475323907466019, -1.1606291214736633, 10.530864208538762],
+        },
+        "cam_B": {
+            "R": [
+                [0.585409626667118, 0.7759073302701651, 0.2350823142002199],
+                [0.4180981866147502, -0.04049671299117791, -0.9074987699544654],
+                [-0.6946148894505797, 0.6295459983455127, -0.34811249895580015],
+            ],
+            "t": [-5.422958902132357, -0.8964899585500822, 5.517899610615518],
+        },
+        "cam_C": {
+            "R": [
+                [0.6780788233947153, -0.6757894454456194, -0.2889943234878501],
+                [-0.46215817478187105, -0.08629388468759952, -0.8825888896115979],
+                [0.5715058087404219, 0.7320259701745558, -0.3708356679300734],
+            ],
+            "t": [1.1549301007187054, 2.2965516076709993, 0.4882764669098269],
+        },
+        "cam_D": {
+            "R": [
+                [-0.6007211482029713, -0.7730572128716535, 0.20375635221268215],
+                [-0.46078597809623345, 0.1265301381199789, -0.8784454686917584],
+                [0.6533072856840662, -0.6215888405010396, -0.4322232534189608],
+            ],
+            "t": [5.145086814624316, 1.334117116440272, 5.620211379925911],
+        },
+    }
+    cam2world = {}
+    for cid, cam in s12_cameras.items():
+        R = np.asarray(cam["R"], dtype=float)
+        t = np.asarray(cam["t"], dtype=float)
+        c = -R.T @ t
+        T = np.eye(4, dtype=float)
+        T[:3, :3] = R.T
+        T[:3, 3] = c
+        cam2world[cid] = T
+
+    # 12차 초기 World 좌표계에서 바닥 점구름은 Z=0 이고 경계 벽은 X=0, Y=0 다.
+    rng = np.random.default_rng(12)
+    floor_pts = np.column_stack([rng.uniform(0.0, 9.0, 6000), rng.uniform(0.0, 9.0, 6000), rng.normal(0.0, 0.003, 6000)])
+    wx0 = np.column_stack([rng.normal(0.0, 0.003, 2500), rng.uniform(0.0, 9.0, 2500), rng.uniform(0.25, 2.5, 2500)])
+    wy0 = np.column_stack([rng.uniform(0.0, 9.0, 2500), rng.normal(0.0, 0.003, 2500), rng.uniform(0.25, 2.5, 2500)])
+    pts = np.concatenate([floor_pts, wx0, wy0])
+
+    measured = {"cam_A": 2.44, "cam_B": 2.44, "cam_C": 2.48, "cam_D": 2.48}
+    res = fix_world_frame(pts, cam2world, camera_heights=measured)
+    assert res.status == STATUS_OK, res.detail
+    tc = res.floor_tilt_correction
+    assert tc is not None and tc["status"] == "APPLIED" and tc["applied"] is True
+    assert tc["tilt_deg"] == pytest.approx(1.057, abs=0.06)
+    assert tc["residual_rms_before_cm"] == pytest.approx(6.88, abs=0.2)
+    assert tc["residual_rms_after_cm"] < 1.0
+
+    # 각 카메라 중심에서 실측 높이만큼 내려간 바닥 접지점들의 최소제곱 평면 법선과 복원된 +Z 의 각도 차 <= 0.2°
+    ids = sorted(measured)
+    foot_pts = np.array([cam2world[c][:3, 3] - np.array([0.0, 0.0, measured[c]]) for c in ids])
+    u_true = np.linalg.svd(foot_pts - foot_pts.mean(axis=0), full_matrices=False)[2][2]
+    if u_true[2] < 0:
+        u_true = -u_true
+    tilt_err_deg = float(np.degrees(np.arccos(np.clip(res.rotation[2] @ u_true, -1.0, 1.0))))
+    assert tilt_err_deg <= 0.2, f"12차 실측 포즈 수평 복원 오차 {tilt_err_deg:.4f}° > 0.2°"
+    assert check_calibration(_doc_from_world_frame(res)) == []
+
+
+def test_session12_local_mapanything_run_regression():
+    """노트북 로컬에 12차 MapAnything 산출물이 있으면 실제 점구름에서도 기울기 보정이 작동하는지 확인한다."""
+    from pathlib import Path
+
+    from simai_ai.calibration.world_frame.inputs import load_prepared
+
+    s12_root = Path("C:/Users/SSAFY/simai-local/align-535/ma_single")
+    if not (s12_root / "mapanything" / "raw.npz").is_file():
+        pytest.skip(f"로컬 12차 MapAnything 데이터 없음: {s12_root}")
+
+    prep = load_prepared(s12_root / "prepared")
+    run = load_mapanything_run(s12_root / "mapanything", prepared=prep)
+    measured = {"cam_A": 2.44, "cam_B": 2.44, "cam_C": 2.48, "cam_D": 2.48}
+    res = fix_world_frame(
+        run.all_points(),
+        run.cam2world(),
+        camera_heights=measured,
+        config=WorldFrameConfig(camera_height_max_spread=0.5),
+    )
+    assert res.status == STATUS_OK, res.detail
+    tc = res.floor_tilt_correction
+    assert tc is not None and tc["status"] == "APPLIED" and tc["applied"] is True
+    assert 0.2 <= tc["tilt_deg"] <= 2.0
+    assert tc["residual_rms_after_cm"] < tc["residual_rms_before_cm"]
+    assert tc["residual_rms_after_cm"] < 1.6
+
+
+def test_floor_tilt_correction_no_heights_and_two_cameras(sim_run):
+    """높이 없음·2대만 있음·모르는 카메라 ID 포함 시 동작 확인."""
+    from simai_ai.providers.contract import check_calibration
+
+    run = load_mapanything_run(sim_run.run_dir)
+    pts, cams = run.all_points(), run.cam2world()
+
+    # 1) camera_heights=None 이면 floor_tilt_correction 도 None 이고 문서에 싣지 않는다.
+    res_none = fix_world_frame(pts, cams, camera_heights=None)
+    assert res_none.status == STATUS_OK
+    assert res_none.floor_tilt_correction is None
+    doc_none = _doc_from_world_frame(res_none)
+    assert "floor_tilt_correction" not in doc_none
+    assert check_calibration(doc_none) == []
+
+    # 2) 높이를 아는 카메라가 2대뿐이고 모르는 카메라 ID 가 섞인 경우:
+    #    모르는 카메라는 빼고, 3대 미만이면 지금 방식 그대로(RANSAC 바닥 법선 유지, 피치·롤은 비운다).
+    two_heights = {
+        "cam_A": TRUE_HEIGHTS["cam_A"],
+        "cam_B": TRUE_HEIGHTS["cam_B"],
+        "cam_unknown": 2.50,
+    }
+    res_two = fix_world_frame(pts, cams, camera_heights=two_heights)
+    assert res_two.status == STATUS_OK
+    assert res_two.scale_basis == "MEASURED_CAMERA_HEIGHT"
+    assert np.allclose(res_two.rotation, res_none.rotation)
+    tc = res_two.floor_tilt_correction
+    assert tc is not None
+    assert tc["status"] == "INSUFFICIENT_CAMERAS" and tc["applied"] is False
+    assert tc["pitch_rad"] is None and tc["roll_rad"] is None and tc["tilt_deg"] is None
+    assert tc["used_cameras"] == ["cam_A", "cam_B"]
+    assert tc["missing_cameras"] == ["cam_C", "cam_D"]
+    assert tc["unknown_cameras"] == ["cam_unknown"]
+    assert tc["estimation_method"] == "FLOOR_RANSAC_ONLY"
+    assert "2대 < 3대" in tc["rejection_reason"]
+    assert check_calibration(_doc_from_world_frame(res_two)) == []
+
+
+def test_floor_tilt_correction_rejects_excessive_tilt_and_height_outlier(sim_run):
+    """일정 이상(3°) 기울기 보정과 단일 카메라 높이 이상값은 거부하고 이유를 기록한다."""
+    from simai_ai.calibration.world_frame.frame import _rodrigues_tilt
+    from simai_ai.providers.contract import check_calibration
+
+    run = load_mapanything_run(sim_run.run_dir)
+    pts, base_cams = run.all_points(), run.cam2world()
+    base_res = fix_world_frame(pts, base_cams)
+    Ra0 = base_res.rotation
+    u0 = Ra0[2]
+    floor_offset = float(base_res.evidence["floor"]["offset_ma"])
+    p_bar = pts[np.abs(pts @ u0 - floor_offset) < 0.03].mean(axis=0)
+
+    # 1) 4.5° 기울기(> 3.0° 상한) → MAX_TILT_EXCEEDED 로 거부하고 RANSAC 바닥 법선을 유지한다.
+    R_big = Ra0.T @ _rodrigues_tilt(float(np.radians(4.5)), 0.0) @ Ra0
+    big_tilt_cams = {}
+    for cid, T in base_cams.items():
+        T2 = np.eye(4, dtype=float)
+        T2[:3, :3] = R_big @ T[:3, :3]
+        T2[:3, 3] = p_bar + R_big @ (T[:3, 3] - p_bar)
+        big_tilt_cams[cid] = T2
+
+    res_big = fix_world_frame(pts, big_tilt_cams, camera_heights=TRUE_HEIGHTS)
+    assert res_big.status == STATUS_OK
+    tc_big = res_big.floor_tilt_correction
+    assert tc_big is not None
+    assert tc_big["status"] == "REJECTED" and tc_big["applied"] is False
+    assert tc_big["tilt_deg"] == pytest.approx(4.5, abs=0.2)
+    assert "MAX_TILT_EXCEEDED" in tc_big["rejection_reason"]
+    assert np.allclose(res_big.rotation[2], base_res.rotation[2])
+    assert check_calibration(_doc_from_world_frame(res_big)) == []
+
+    # 2) 단일 카메라 높이 이상값(한 대만 25 cm 높게 잘못 입력) → 평면 잔차 한도 초과(CAMERA_HEIGHT_OUTLIER)로 거부한다.
+    outlier_heights = dict(TRUE_HEIGHTS)
+    outlier_heights["cam_B"] += 0.25
+    res_out = fix_world_frame(
+        pts,
+        base_cams,
+        camera_heights=outlier_heights,
+        config=WorldFrameConfig(camera_height_max_spread=0.5),
+    )
+    assert res_out.status == STATUS_OK
+    tc_out = res_out.floor_tilt_correction
+    assert tc_out is not None
+    assert tc_out["status"] == "REJECTED" and tc_out["applied"] is False
+    assert "CAMERA_HEIGHT_OUTLIER" in tc_out["rejection_reason"]
+    assert np.allclose(res_out.rotation, base_res.rotation)
+    assert check_calibration(_doc_from_world_frame(res_out)) == []
