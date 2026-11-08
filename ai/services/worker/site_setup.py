@@ -341,6 +341,7 @@ def build_world_from_pointcloud_and_poses(
         fallback_scale_basis=ScaleBasis.MEASURED_CAMERA_HEIGHT,
         site_id=site_id,
         world_axes_source=wf.axes_source or "WALLS",
+        floor_tilt_correction=wf.floor_tilt_correction,
     )
     return InitialWorldReconstruction(
         calibration_doc=doc,

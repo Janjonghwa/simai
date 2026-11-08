@@ -1,0 +1,97 @@
+{
+  "_expect_error": "floor_tilt_correction.max_tilt_deg 는 0 보다 커야 하고 estimation_method 는 허용된 열거값이어야 한다",
+  "schema_version": "2.4.0",
+  "calibration_version": "cal-bad-floor-tilt",
+  "provider_source": "G1_AUTO",
+  "state": "PROVISIONAL",
+  "created_at": 1760598000000,
+  "coordinate_frame": {
+    "frame": "WORLD",
+    "unit": "m",
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "scale_basis": "MEASURED_CAMERA_HEIGHT",
+  "floor_tilt_correction": {
+    "status": "REJECTED",
+    "applied": false,
+    "pitch_rad": 0.08,
+    "roll_rad": 0.0,
+    "tilt_deg": 4.584,
+    "max_tilt_deg": -3.0,
+    "used_cameras": [
+      "cam1",
+      "cam2",
+      "cam3"
+    ],
+    "observation_sources": [
+      "POINTCLOUD_FLOOR_RANSAC",
+      "MEASURED_CAMERA_HEIGHT"
+    ],
+    "estimation_method": "UNCONSTRAINED_GUESS",
+    "residuals_before_cm": {
+      "cam1": -12.0,
+      "cam2": 4.0,
+      "cam3": 8.0
+    },
+    "residuals_after_cm": {
+      "cam1": -12.0,
+      "cam2": 4.0,
+      "cam3": 8.0
+    },
+    "rejection_reason": "기울기 보정량 4.58° > 상한 3.00°"
+  },
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1000.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1000.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "NONE",
+        "coeffs": []
+      },
+      "R": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "t": [
+        0.0,
+        0.0,
+        -2.0
+      ]
+    }
+  ]
+}

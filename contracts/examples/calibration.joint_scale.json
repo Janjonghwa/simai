@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.3.0",
+  "schema_version": "2.4.0",
   "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-joint",
   "provider_source": "G1_AUTO",
   "provider_version": "0.2.0",
@@ -63,6 +63,60 @@
         }
       ]
     }
+  },
+  "floor_tilt_correction": {
+    "status": "APPLIED",
+    "applied": true,
+    "pitch_rad": -0.00084,
+    "roll_rad": -0.01841,
+    "tilt_deg": 1.056,
+    "max_tilt_deg": 3.0,
+    "used_cameras": [
+      "cam1",
+      "cam2",
+      "cam3",
+      "cam4"
+    ],
+    "missing_cameras": [],
+    "unknown_cameras": [],
+    "observation_sources": [
+      "POINTCLOUD_FLOOR_RANSAC",
+      "MEASURED_CAMERA_HEIGHT"
+    ],
+    "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
+    "observed_heights_m": {
+      "cam1": 2.44,
+      "cam2": 2.44,
+      "cam3": 2.48,
+      "cam4": 2.48
+    },
+    "estimated_heights_before_m": {
+      "cam1": 2.3592,
+      "cam2": 2.3821,
+      "cam3": 2.5417,
+      "cam4": 2.5528
+    },
+    "estimated_heights_after_m": {
+      "cam1": 2.4318,
+      "cam2": 2.4481,
+      "cam3": 2.4712,
+      "cam4": 2.4889
+    },
+    "residuals_before_cm": {
+      "cam1": -8.08,
+      "cam2": -5.79,
+      "cam3": 6.17,
+      "cam4": 7.28
+    },
+    "residuals_after_cm": {
+      "cam1": -0.82,
+      "cam2": 0.81,
+      "cam3": -0.88,
+      "cam4": 0.89
+    },
+    "residual_rms_before_cm": 6.89,
+    "residual_rms_after_cm": 0.85,
+    "rejection_reason": null
   },
   "world_axes_source": "WALL_AND_FLOOR",
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
@@ -312,7 +366,7 @@
       }
     }
   ],
-  "content_hash": "sha256:7aa0818b093e8383d5df3b6c874d97171cbc25f1c1db4b5a451e2f6fb0002724",
+  "content_hash": "sha256:97744a83f9737c6f5d618deadf9bf6d9da0d71084a9f3e499d76b353db617400",
   "previous_calibration_version": "cal-0",
   "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452"
 }

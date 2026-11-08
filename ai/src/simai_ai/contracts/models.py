@@ -126,6 +126,11 @@ class ReprojectionErrorPx(BaseModel):
     p95: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
 
 
+ObservedHeightsMAdditionalProperty = TypeAliasType(
+    "ObservedHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0)]
+)
+
+
 class CalibrationScaleBasis(
     RootModel[Literal['MEASURED_OBJECT', 'MEASURED_CAMERA_HEIGHT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']]
 ):
@@ -2497,6 +2502,44 @@ class RoomOutline(BaseModel):
     openings: None
 
 
+class CalibrationFloorTiltCorrection(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    status: Literal['APPLIED', 'INSUFFICIENT_CAMERAS', 'REJECTED']
+    applied: StrictBool
+    pitch_rad: StrictFloat | None
+    roll_rad: StrictFloat | None
+    tilt_deg: Annotated[StrictFloat | None, Field(ge=0.0)]
+    max_tilt_deg: Annotated[StrictFloat, Field(gt=0.0)]
+    used_cameras: list[DefsCameraId]
+    missing_cameras: list[DefsCameraId] | MISSING = MISSING
+    unknown_cameras: list[DefsCameraId] | MISSING = MISSING
+    observation_sources: Annotated[
+        list[Literal['POINTCLOUD_FLOOR_RANSAC', 'MEASURED_CAMERA_HEIGHT']],
+        Field(min_length=1),
+    ]
+    estimation_method: Literal['FLOOR_RANSAC_ONLY', 'REGULARIZED_SMALL_ROTATION_LSQ']
+    observed_heights_m: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), ObservedHeightsMAdditionalProperty] | MISSING
+    ) = MISSING
+    estimated_heights_before_m: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
+    ) = MISSING
+    estimated_heights_after_m: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
+    ) = MISSING
+    residuals_before_cm: dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat]
+    residuals_after_cm: dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat]
+    residual_rms_before_cm: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    residual_rms_after_cm: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    rejection_reason: Annotated[StrictStr | None, Field(max_length=500, min_length=1)]
+
+
 class CalibrationScalePropResidual(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4238,6 +4281,7 @@ class Calibration(BaseModel):
     scale_basis: CalibrationScaleBasis
     scale_source: CalibrationScaleSource | MISSING = MISSING
     scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
+    floor_tilt_correction: CalibrationFloorTiltCorrection | MISSING = MISSING
     world_axes_source: Literal['WALLS', 'WALL_AND_FLOOR', 'MANUAL_FLOOR_POINTS', 'CAMERA_LAYOUT'] | MISSING = (
         MISSING
     )
