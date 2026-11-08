@@ -95,6 +95,34 @@
       "hash_from": "고정 revision 에서 받아 sha256 (docs/data/weights.md)"
     },
     {
+      "name": "hy-worldmirror-2.0-model",
+      "sets": ["static"],
+      "path": "weights/hy-world-2.0/HY-WorldMirror-2.0/model.safetensors",
+      "source": {"hf": {"repo": "tencent/HY-World-2.0", "file": "HY-WorldMirror-2.0/model.safetensors", "revision": "d78a16c91c7a56488894a1c8de4f5c7cc28aa8b0"}},
+      "sha256": "9fff06539d3d9e85338d7de1ffb5afffb7739fa5bf4d62b4b7c319b5ecdde54f",
+      "license": "Tencent HY-World 2.0 Community License Agreement",
+      "hash_from": "HF API LFS oid = S15P31A101-537 weights_hash fa12bdb9... (docs/data/weights.md)"
+    },
+    {
+      "name": "hy-worldmirror-2.0-config",
+      "sets": ["static"],
+      "path": "weights/hy-world-2.0/HY-WorldMirror-2.0/config.json",
+      "source": {"hf": {"repo": "tencent/HY-World-2.0", "file": "HY-WorldMirror-2.0/config.json", "revision": "d78a16c91c7a56488894a1c8de4f5c7cc28aa8b0"}},
+      "sha256": "5e40150577ef7d38e24d8d079a7126568a0ec9816dbfc61ebc99c67faf430ed9",
+      "license": "Tencent HY-World 2.0 Community License Agreement",
+      "hash_from": "고정 revision 에서 받아 sha256 (842 B, docs/data/weights.md)"
+    },
+    {
+      "name": "big-lama",
+      "sets": ["static"],
+      "path": "weights/lama/big-lama.pt",
+      "source": {"url": "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt"},
+      "sha256": "7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c",
+      "license": "Apache-2.0",
+      "env": "SIMAI_LAMA_WEIGHTS",
+      "hash_from": "docs/data/weights.md (S15P31A101-532 hole-fill-v2 report.json sha256, 205,803,911 B)"
+    },
+    {
       "name": "cosmos3-nano-config",
       "sets": ["vlm"],
       "path": "weights/cosmos3-nano/config.json",

@@ -15,6 +15,7 @@ from simai_ai.providers.contract import schema_errors
 
 SCENE_SCHEMA = "scene_output"
 SURFACE_VALUES = {"0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED"}
+SURFACE_VALUES_WITH_SEE_THROUGH = {**SURFACE_VALUES, "5": "SEE_THROUGH"}
 TIMEOUTS = {"download": 120, "prepare": 180, "mapanything": 1200, "preview": 60, "bake": 1800,
             "fallback": 120, "measure": 180, "upload": 180}
 
@@ -110,6 +111,10 @@ def validate_input(inp: Mapping[str, Any]) -> None:
             "enhance",
             "fill",
             "inpaint",
+            "final_map_pipeline",
+            "depth_adapter",
+            "reconstruction_path",
+            "voxel_m",
         }
         if set(opts) - allowed_opts:
             raise ValueError("모르는 복원 옵션")
@@ -305,26 +310,48 @@ class StaticReconstructor:
                     on_preview(preview_emitted)
             tool("bake", .8)  # 도구 부재 시 bake 가 fallback 을 선언한다
             bake = output(root / "bake.json", "bake")
-        if mode != "preview" and bake.get("fallback_reason"):
+        if mode != "preview" and bake.get("fallback_reason") and not bake.get("assets"):
             tool("fallback", .85)
             bake = output(root / "bake.json", "fallback")
         tool("measure", .9)
         metrics.update(texture=bake.get("texture"), texture_fallback_reason=bake.get("fallback_reason"),
                        scale_check=output(root / "scale_check.json", "measure"), reconstruction=model,
                        bake=bake.get("metrics"), enhance=bake.get("enhance"), image_hashes=read_json(root / "job.json")["image_hashes"])
+        method_obj: dict[str, Any] = {
+            "reconstructor": bake.get("reconstructor", "MAPANYTHING_NATIVE"),
+            "uses_known_pose": bool(bake.get("uses_known_pose", False)),
+            **({"reconstructor_detail": "preview_scene"} if mode == "preview" else (
+                {"reconstructor_detail": bake["reconstructor_detail"]} if bake.get("reconstructor_detail") else {}
+            )),
+            "human_removal": "MASK_COMPOSITE",
+            "postprocess": bake["postprocess"],
+        }
+        for opt_k in ("reconstruction_path", "pose_depth_fit", "map_cameras"):
+            if bake.get(opt_k) is not None:
+                method_obj[opt_k] = bake[opt_k]
+        if bake.get("reconstruction_path") is not None and "fallback_reason" in bake:
+            method_obj["fallback_reason"] = bake["fallback_reason"]
+        has_v23_fields = any(
+            k in method_obj for k in ("reconstruction_path", "pose_depth_fit", "map_cameras")
+        ) or method_obj["reconstructor"] == "WORLDMIRROR2_HYBRID"
         result = {
-            "schema_version": "2.1.0", "scene_version": f"scene-preview-{run_id}" if mode == "preview" else f"scene-{run_id}", "state": "CANDIDATE",
+            "schema_version": "2.3.0" if has_v23_fields else "2.1.0",
+            "scene_version": f"scene-preview-{run_id}" if mode == "preview" else f"scene-{run_id}", "state": "CANDIDATE",
             "geometry_role": "VISUAL", "created_at": self.clock_ms(), "calibration_version": inp["calibration_version"],
             "coordinate_frame": cal["coordinate_frame"], "input_provenance": inp["input_provenance"],
             "reproducibility": {"run_id": run_id, "model_version": model["model_version"],
                 "input_hash": sha256(json.dumps({"input": inp, "image_hashes": metrics["image_hashes"]}, sort_keys=True).encode())},
-            "method": {"reconstructor": "MAPANYTHING_NATIVE", "uses_known_pose": False,
-                       **({"reconstructor_detail": "preview_scene"} if mode == "preview" else {}),
-                       "human_removal": "MASK_COMPOSITE", "postprocess": bake["postprocess"]},
+            "method": method_obj,
             "assets": [], "quality": {"wall_deviation_m": None, "observed_surface_ratio": bake["observed_surface_ratio"],
+                **({"coobserved_point_disagreement_median_m": bake["coobserved_point_disagreement_median_m"]} if bake.get("coobserved_point_disagreement_median_m") is not None else {}),
                 "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json"
                 + ("; scene_tier=PREVIEW; preview_scene=true" if mode == "preview" else (f"; scene_tier=FULL; replaces_preview_scene={preview_emitted['scene_version']}" if preview_emitted is not None else ""))
-                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else str(bake.get("texture") or "texrecon"))
+                + "; texture=" + (
+                    "null: " + bake["fallback_reason"]
+                    if bake.get("texture") is None and bake.get("fallback_reason")
+                    else str(bake.get("texture") or "texrecon")
+                )
+                + (f"; fallback_reason={bake['fallback_reason']}" if bake.get("texture") is not None and bake.get("fallback_reason") else "")
                 + _enhance_note(bake.get("enhance")),
                 **regenerate_quality_fields(inp)},
         }
@@ -346,9 +373,14 @@ class StaticReconstructor:
                     if spec.get("triangle_count") is not None:
                         asset["triangle_count"] = int(spec["triangle_count"])
                 elif spec["kind"] == "SURFACE_SOURCE_MAP":
-                    asset["surface_values"] = SURFACE_VALUES
-                    if spec.get("ratios"):
-                        asset["ratios"] = spec["ratios"]
+                    ratios_d = spec.get("ratios") or {}
+                    asset["surface_values"] = (
+                        SURFACE_VALUES_WITH_SEE_THROUGH
+                        if ("SEE_THROUGH" in ratios_d or spec.get("has_see_through"))
+                        else SURFACE_VALUES
+                    )
+                    if ratios_d:
+                        asset["ratios"] = ratios_d
                 result["assets"].append(asset)
             check("upload", started)
             metrics["auxiliary_assets"] = []

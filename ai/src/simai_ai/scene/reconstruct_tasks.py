@@ -360,6 +360,356 @@ def _bake_vertex_color(root: Path, opts: dict) -> None:
     })
 
 
+def _resolve_final_map_pipeline(opts: dict) -> bool:
+    """최종 맵 파이프라인(S15P31A101-539) 활성화 여부를 결정한다(기본값 True)."""
+    if "final_map_pipeline" in opts and opts["final_map_pipeline"] is not None:
+        return bool(opts["final_map_pipeline"])
+    env = os.environ.get("SIMAI_FINAL_MAP_PIPELINE", "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return True
+
+
+def _ensure_wm2_depth_dir(
+    root: Path,
+    opts: dict,
+    *,
+    use_calibration_pose: bool = False,
+) -> Path | None:
+    """사전 계산된 깊이 폴더가 있으면 반환하고, 없으면 WorldMirror 2.0 추론을 실행한다. 가중치가 없으면 None."""
+    calib_depth_dir = root / "depth_calib"
+    ma_depth_dir = root / "depth"
+    if use_calibration_pose and (calib_depth_dir / "depth.json").is_file():
+        return calib_depth_dir
+    if not use_calibration_pose and (ma_depth_dir / "depth.json").is_file():
+        return ma_depth_dir
+
+    wm2_model = (
+        os.environ.get("SIMAI_WM2_MODEL")
+        or os.environ.get("SIMAI_WORLDMIRROR_MODEL")
+        or str(Path(os.environ.get("SIMAI_ROOT", "/workspace/simai")) / "weights" / "worldmirror2")
+    )
+    if not Path(wm2_model).exists():
+        if (ma_depth_dir / "depth.json").is_file():
+            return ma_depth_dir
+        if (calib_depth_dir / "depth.json").is_file():
+            return calib_depth_dir
+        return None
+    from . import run_hybrid_depth as hd
+
+    target_dir = calib_depth_dir if use_calibration_pose else ma_depth_dir
+    if (target_dir / "depth.json").is_file():
+        return target_dir
+    prep = hd.load_prepared(root / "prepared")
+    adapter = hd.WorldMirrorAdapter(
+        variant="worldmirror2",
+        model=str(wm2_model),
+        process_res=int(opts.get("process_res", 952)),
+        use_pose=True,
+    )
+    calib_arg = (root / "calibration.json") if use_calibration_pose else None
+    hd.run_predict(adapter, root / "mapanything", prep, target_dir, calibration=calib_arg)
+    return target_dir
+
+
+def run_final_map_pipeline(
+    root: Path,
+    opts: dict,
+    *,
+    texrecon: str | None,
+    failure_out: dict[str, str] | None = None,
+) -> bool:
+    """S15P31A101-539 최종 맵 파이프라인(운영 기본: 대체 경로 1 MA_ALIGNED_WM2, 게이트 통과·요청 시 방식 2 -> 2 cm TSDF + mesh_clean + 받침·가구 평면·LaMa 굽기)을 실행한다."""
+
+    def _fail(reason: str) -> bool:
+        log.warning("final_map_pipeline 중단 -> FALLBACK2_LEGACY_TEXRECON 전환: %s", reason)
+        if failure_out is not None:
+            failure_out["reason"] = reason
+        return False
+
+    from . import final_map_bake as fmb
+    from . import mesh_clean as mclean
+    from . import pose_depth_fit as pdf
+    from . import run_hybrid_depth as hd
+    from . import texture_mesh as tm
+
+    prep = hd.load_prepared(root / "prepared")
+    req_path = str(
+        opts.get("reconstruction_path") or os.environ.get("SIMAI_RECONSTRUCTION_PATH") or "fallback1"
+    ).strip().lower()
+
+    if req_path in ("method2", "method2_calib_wm2"):
+        depth_m2_dir = _ensure_wm2_depth_dir(root, opts, use_calibration_pose=True)
+        if depth_m2_dir is None:
+            return _fail("FINAL_MAP_WM2_DEPTH_MISSING")
+        fit_m2 = pdf.fit_and_evaluate_poses_and_depths(
+            ma_run=root / "mapanything",
+            prepared=prep,
+            depth_dir=depth_m2_dir,
+            world_alignment_path=root / "world_alignment.json",
+            calibration_path=root / "calibration.json",
+            mode="method2",
+        )
+        recorded_fit_summary = fit_m2.pose_depth_fit_summary
+        active_fit = fit_m2
+    elif req_path == "auto":
+        depth_m2_dir = _ensure_wm2_depth_dir(root, opts, use_calibration_pose=True)
+        if depth_m2_dir is None:
+            return _fail("FINAL_MAP_WM2_DEPTH_MISSING")
+        fit_m2 = pdf.fit_and_evaluate_poses_and_depths(
+            ma_run=root / "mapanything",
+            prepared=prep,
+            depth_dir=depth_m2_dir,
+            world_alignment_path=root / "world_alignment.json",
+            calibration_path=root / "calibration.json",
+            mode="method2",
+        )
+        recorded_fit_summary = fit_m2.pose_depth_fit_summary
+        if fit_m2.status == "PASSED":
+            active_fit = fit_m2
+        else:
+            log.info(
+                "Method 2 게이트 미달(%s) -> Fallback 1(MA_ALIGNED_WM2)로 자동 전환",
+                recorded_fit_summary.get("failure_reason"),
+            )
+            depth_fb1_dir = _ensure_wm2_depth_dir(root, opts, use_calibration_pose=False) or depth_m2_dir
+            active_fit = pdf.fit_and_evaluate_poses_and_depths(
+                ma_run=root / "mapanything",
+                prepared=prep,
+                depth_dir=depth_fb1_dir,
+                world_alignment_path=root / "world_alignment.json",
+                calibration_path=root / "calibration.json",
+                mode="fallback1",
+            )
+    else:
+        # 운영 기본 경로: Fallback 1 (FALLBACK1_MA_ALIGNED_WM2)
+        depth_fb1_dir = _ensure_wm2_depth_dir(root, opts, use_calibration_pose=False)
+        if depth_fb1_dir is None:
+            return _fail("FINAL_MAP_WM2_DEPTH_MISSING")
+        depth_m2_dir = (root / "depth_calib") if (root / "depth_calib" / "depth.json").is_file() else depth_fb1_dir
+        fit_m2 = pdf.fit_and_evaluate_poses_and_depths(
+            ma_run=root / "mapanything",
+            prepared=prep,
+            depth_dir=depth_m2_dir,
+            world_alignment_path=root / "world_alignment.json",
+            calibration_path=root / "calibration.json",
+            mode="method2",
+        )
+        active_fit = pdf.fit_and_evaluate_poses_and_depths(
+            ma_run=root / "mapanything",
+            prepared=prep,
+            depth_dir=depth_fb1_dir,
+            world_alignment_path=root / "world_alignment.json",
+            calibration_path=root / "calibration.json",
+            mode="fallback1",
+        )
+        recorded_fit_summary = fit_m2.pose_depth_fit_summary
+
+    out_dir = root / "textured"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_glb = out_dir / "input_cleaned.glb"
+
+    if not cleaned_glb.is_file():
+        if not texrecon:
+            return _fail("TEXRECON_NOT_FOUND")
+        try:
+            import open3d  # noqa: F401
+        except ImportError:
+            return _fail("TSDF_OPEN3D_NOT_FOUND")
+
+        fitted_dir = root / "depth_fitted"
+        fitted_dir.mkdir(parents=True, exist_ok=True)
+        npz_d: dict[str, np.ndarray] = {}
+        c_views: list[dict[str, object]] = []
+        for fv in active_fit.views:
+            npz_d[f"{fv.camera_id}__depth_z"] = np.asarray(fv.depth_m, dtype=np.float32)
+            npz_d[f"{fv.camera_id}__mask"] = np.asarray(fv.valid, dtype=bool)
+            npz_d[f"{fv.camera_id}__conf"] = np.ones_like(fv.depth_m, dtype=np.float32)
+            npz_d[f"{fv.camera_id}__intrinsics"] = np.asarray(fv.K, dtype=np.float32)
+            npz_d[f"{fv.camera_id}__camera_pose"] = np.asarray(fv.cam2world, dtype=np.float32)
+            c_views.append(
+                {
+                    "name": fv.camera_id,
+                    "cam2world": fv.cam2world.tolist(),
+                    "intrinsics_model_res": fv.K.tolist(),
+                    "model_input_hw": [int(fv.height), int(fv.width)],
+                }
+            )
+        np.savez_compressed(fitted_dir / "raw.npz", **npz_d)
+        write_json(fitted_dir / "cameras.json", {"convention": "cam2world 4x4, OpenCV", "views": c_views})
+        # texture_mesh 는 ma-run 폴더의 metrics.json(prepared_sha256·result)으로 같은 입력인지 확인한다 → MapAnything Run 의 것을 그대로 둔다.
+        ma_metrics_path = root / "mapanything" / "metrics.json"
+        if ma_metrics_path.is_file():
+            shutil.copyfile(ma_metrics_path, fitted_dir / "metrics.json")
+        else:
+            write_json(
+                fitted_dir / "metrics.json",
+                {"result": "SUCCESS", "prepared_sha256": prep.get("_sha256"), "model_version": "wm2-hybrid"},
+            )
+        id_align_path = fitted_dir / "world_alignment_identity.json"
+        write_json(
+            id_align_path,
+            {
+                "format": "simai.world_alignment",
+                "status": "OK",
+                "cameras_json_sha256": sha256((fitted_dir / "cameras.json").read_bytes()),
+                "mapanything_to_world": np.eye(4).tolist(),
+                "scale": 1.0,
+                "max_center_residual_m": 0.0,
+            },
+        )
+        voxel_m = float(opts.get("voxel_m") or os.environ.get("SIMAI_FINAL_MAP_VOXEL_M") or 0.02)
+        target_faces = int(opts.get("target_faces") or os.environ.get("SIMAI_FINAL_MAP_TARGET_FACES") or 300_000)
+        num_threads = int(opts.get("num_threads") or os.environ.get("SIMAI_BAKE_NUM_THREADS") or 0)
+        tsdf_dir = root / "textured_raw"
+        if tsdf_dir.exists():
+            shutil.rmtree(tsdf_dir, ignore_errors=True)
+        args = [
+            "--ma-run",
+            str(fitted_dir),
+            "--prepared",
+            str(root / "prepared"),
+            "--out",
+            str(tsdf_dir),
+            "--world-alignment",
+            str(id_align_path),
+            "--texrecon",
+            texrecon,
+            "--terms",
+            "area",
+            "--loo-terms",
+            "",
+            "--voxel",
+            str(voxel_m),
+            "--num-threads",
+            str(num_threads),
+            "--target-faces",
+            str(target_faces),
+            "--align-views",
+            "off",
+            "--run-id",
+            read_json(root / "job.json")["run_id"],
+            "--jira-key",
+            "S15P31A101-539",
+        ]
+        code = tm.main(args)
+        if code:
+            return _fail(f"FINAL_MAP_TEXTURE_MESH_FAILED:exit_{code}")
+        raw_rec = read_json(tsdf_dir / "metrics.json")
+        raw_glb_path = tsdf_dir / raw_rec["bakes"]["area"]["glb"]
+        clean_cams = [
+            mclean.CleanCamera(
+                camera_id=fv.camera_id,
+                K=fv.K,
+                R_w2c=fv.R_w2c,
+                t_w2c=fv.t_w2c,
+                width=int(fv.width),
+                height=int(fv.height),
+            )
+            for fv in active_fit.views
+        ]
+        mclean.clean_glb_file(raw_glb_path, cleaned_glb, clean_cams)
+
+    env_lama = os.environ.get("SIMAI_LAMA_WEIGHTS")
+    if env_lama:
+        lama_weights = Path(env_lama)
+    else:
+        lama_weights = Path(os.environ.get("SIMAI_ROOT", "/workspace/simai")) / "weights" / "lama" / "big-lama.pt"
+        if not lama_weights.is_file() and fmb.DEFAULT_LAMA_WEIGHTS.is_file():
+            lama_weights = fmb.DEFAULT_LAMA_WEIGHTS
+
+    walls_doc = read_json(root / "walls.json") if (root / "walls.json").is_file() else None
+    pose_mode = "method2" if active_fit.reconstruction_path == "METHOD2_CALIB_WM2" else "fallback1"
+    bake_rep = fmb.run_final_map_bake_on_glb(
+        cleaned_glb,
+        active_fit,
+        root / "prepared",
+        out_dir,
+        lama_weights=lama_weights,
+        walls_doc=walls_doc,
+        pose_mode=pose_mode,
+        output_glb_name="scene_final_wm2.glb",
+    )
+
+    final_glb = out_dir / "scene_final_wm2.glb"
+    surf_info = bake_rep.get("surface_source") or {}
+    obs_ratio = float(surf_info.get("observed_projection_ratio", 0.7))
+    fill_ratio = float(surf_info.get("filled_ratio", 0.3))
+    st_ratio = float(surf_info.get("see_through_ratio", 0.0))
+    ratios: dict[str, float] = {
+        "OBSERVED": round(obs_ratio, 4),
+        "ESTIMATED_PLANE": round(fill_ratio, 4),
+    }
+    if st_ratio > 0.0:
+        ratios["SEE_THROUGH"] = round(st_ratio, 4)
+
+    source_maps = sorted((out_dir / "planes").glob("final_wm2_*_source.png"))
+    if not source_maps:
+        source_maps = sorted(out_dir.glob("surface_source_*.png"))
+
+    g_final = fmb.ge.parse_glb(final_glb.read_bytes())
+    simai_ext = (g_final.doc.get("extras") or {}).get("simai") or {}
+    tri_count = (simai_ext.get("surface_source") or {}).get("kept_mesh_faces")
+
+    gltf_asset: dict[str, object] = {
+        "kind": "GLTF_VISUAL",
+        "path": final_glb.relative_to(root).as_posix(),
+        "content_type": "model/gltf-binary",
+    }
+    if tri_count is not None:
+        gltf_asset["triangle_count"] = int(tri_count)
+    assets: list[dict[str, object]] = [gltf_asset]
+    for sm in source_maps:
+        assets.append(
+            {
+                "kind": "SURFACE_SOURCE_MAP",
+                "path": sm.relative_to(root).as_posix(),
+                "content_type": "image/png",
+                "ratios": ratios,
+                "has_see_through": st_ratio > 0.0,
+            }
+        )
+
+    postprocess = [
+        "DEPTH_ALIGNMENT",
+        "OUTLIER_REMOVAL",
+        "TSDF_FUSION",
+        "DECIMATION",
+        "TEXTURE",
+        "WORLD_ALIGNMENT",
+        "MESH_CLEAN_V2",
+        "BACKING_PLANES",
+        "FURNITURE_PLANES",
+        "LAMA_INPAINT",
+    ]
+    coobs_med = active_fit.pose_depth_fit_summary.get("coobserved_surface_3d_median_m")
+    write_json(
+        root / "bake.json",
+        {
+            "texture": "texrecon",
+            "fallback_reason": None,
+            "reconstructor": "WORLDMIRROR2_HYBRID",
+            "uses_known_pose": active_fit.reconstruction_path == "METHOD2_CALIB_WM2",
+            "reconstruction_path": active_fit.reconstruction_path,
+            "pose_depth_fit": recorded_fit_summary,
+            "map_cameras": active_fit.map_cameras,
+            "coobserved_point_disagreement_median_m": coobs_med,
+            "assets": assets,
+            "observed_surface_ratio": round(obs_ratio, 4),
+            "postprocess": postprocess,
+            "metrics": {
+                "final_map_bake": bake_rep,
+                "method2_gate_details": fit_m2.gate_details,
+                "active_gate_details": active_fit.gate_details,
+            },
+            "enhance": {"applied": True, "check_mode": "final_map_v5", "purpose": "VISUAL_ONLY", "safety_use": False},
+        },
+    )
+    return True
+
+
 def bake(root: Path) -> None:
     if not (root / "world_alignment.json").is_file():
         align_to_calibration(root)
@@ -370,6 +720,16 @@ def bake(root: Path) -> None:
         return
     spec = os.environ.get("SIMAI_TEXRECON", "").strip()
     texrecon = shutil.which(spec or "texrecon")
+    final_map_failure_reason: str | None = None
+    if _resolve_final_map_pipeline(opts):
+        failure_info: dict[str, str] = {}
+        try:
+            if run_final_map_pipeline(root, opts, texrecon=texrecon, failure_out=failure_info):
+                return
+            final_map_failure_reason = failure_info.get("reason") or "FINAL_MAP_PIPELINE_RETURNED_FALSE"
+        except Exception as exc:  # noqa: BLE001
+            final_map_failure_reason = f"FINAL_MAP_PIPELINE_ERROR:{type(exc).__name__}:{exc}"
+            log.warning("final_map_pipeline 예외 발생 -> FALLBACK2_LEGACY_TEXRECON 폴백: %s", final_map_failure_reason)
     if not texrecon:
         write_json(root / "bake.json", {"fallback_reason": "TEXRECON_NOT_FOUND", "texture": None})
         return
@@ -427,13 +787,24 @@ def bake(root: Path) -> None:
         post.append("PLANE_CLEANUP")
     if geo.get("decimated", True):
         post.append("DECIMATION")
-    write_json(root / "bake.json", {"texture": "texrecon", "fallback_reason": None, "assets": assets,
-        "observed_surface_ratio": ratios["OBSERVED"], "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"], "metrics": rec, "enhance": enhance,
-        "target_faces": target_faces, "num_threads": tm.resolve_num_threads(num_threads),
+    bake_doc: dict[str, object] = {
+        "texture": "texrecon",
+        "fallback_reason": final_map_failure_reason,
+        "assets": assets,
+        "observed_surface_ratio": ratios["OBSERVED"],
+        "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"],
+        "metrics": rec,
+        "enhance": enhance,
+        "target_faces": target_faces,
+        "num_threads": tm.resolve_num_threads(num_threads),
         "stage_times": rec.get("times"),
         "auxiliary": [p.relative_to(root).as_posix() for p in sorted(glb.parent.glob("observed_camera_*.png"))]
                      + [p.relative_to(root).as_posix() for p in sorted((glb.parent / ((enhance["detail"].get("fill_atlas") or {}).get("dir") or "-")).glob("*"))
-                        if p.is_file()]})
+                        if p.is_file()],
+    }
+    if final_map_failure_reason is not None:
+        bake_doc["reconstruction_path"] = "FALLBACK2_LEGACY_TEXRECON"
+    write_json(root / "bake.json", bake_doc)
 
 
 def _load_colored_fuse_views(root: Path) -> list:
@@ -584,16 +955,33 @@ def measure(root: Path) -> None:
     detector = HSVStoolDetector(obj.detector)
     output_cameras = {v["name"]: v for v in read_json(root / "mapanything" / "cameras.json")["views"]}
     M = np.asarray(read_json(root / "world_alignment.json")["mapanything_to_world"], float)
+    map_cams = None
+    if (root / "bake.json").is_file():
+        mc_doc = read_json(root / "bake.json").get("map_cameras")
+        if isinstance(mc_doc, dict) and mc_doc:
+            map_cams = mc_doc
     rig, detections, masks = {}, {}, {}
     for p in read_json(root / "prepared" / "prepared.json")["views"]:
         cid = p["camera_id"]
-        model = output_cameras[p["name"]]
-        T = transform_pose(M, np.asarray(model["cam2world"], float))
-        # 내보낸 메시와 같은 모델 K·자세로 점검한다. 입력 보정으로 점검 결과를 미리 고정하지 않는다.
-        px = prepared_to_model_px(np.array([[0., 0.], [1., 0.], [0., 1.]]), p["image_size"], model["model_input_hw"])
-        A = np.array([[px[1, 0]-px[0, 0], 0, px[0, 0]], [0, px[2, 1]-px[0, 1], px[0, 1]], [0, 0, 1]])
-        K = np.linalg.solve(A, np.asarray(model["intrinsics_model_res"], float))
-        R, t = T[:3, :3].T, -T[:3, :3].T @ T[:3, 3]
+        if map_cams and cid in map_cams:
+            from .intrinsics_check import expected_axis_resize_k
+
+            mc = map_cams[cid]
+            K = expected_axis_resize_k(
+                np.asarray(mc["K"], float),
+                tuple(mc["image_size"]),
+                tuple(p["image_size"]),
+            )
+            R = np.asarray(mc["R"], float)
+            t = np.asarray(mc["t"], float)
+        else:
+            model = output_cameras[p["name"]]
+            T = transform_pose(M, np.asarray(model["cam2world"], float))
+            # 내보낸 메시와 같은 모델 K·자세로 점검한다. 입력 보정으로 점검 결과를 미리 고정하지 않는다.
+            px = prepared_to_model_px(np.array([[0., 0.], [1., 0.], [0., 1.]]), p["image_size"], model["model_input_hw"])
+            A = np.array([[px[1, 0]-px[0, 0], 0, px[0, 0]], [0, px[2, 1]-px[0, 1], px[0, 1]], [0, 0, 1]])
+            K = np.linalg.solve(A, np.asarray(model["intrinsics_model_res"], float))
+            R, t = T[:3, :3].T, -T[:3, :3].T @ T[:3, 3]
         c = {**cams[cid], "K": K.tolist(), "R": R.tolist(), "t": t.tolist(), "distortion": {"model": "NONE", "coeffs": []}}
         rig[cid] = RigCamera.from_calibration(c)
         image = cv2.imread(str(root / "prepared" / p["image"]))

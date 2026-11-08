@@ -249,14 +249,44 @@ def resolve_calibration_payload(
                     return bp
         return payload
     if p.is_dir():
-        for bf in sorted(p.rglob("calibration.json")):
+        fallback_payload: dict[str, Any] | None = None
+        direct_cal = p / "calibration.json"
+        candidates = ([direct_cal] if direct_cal.is_file() else []) + [
+            bf for bf in sorted(p.rglob("calibration.json")) if bf != direct_cal
+        ]
+        for bf in candidates:
             bd = json.loads(bf.read_text(encoding="utf-8"))
             bp = bd.get("payload", bd)
+            if fallback_payload is None and isinstance(bp, dict) and "cameras" in bp:
+                fallback_payload = bp
             if bp.get("calibration_version") == calibration_version:
                 return bp
+        if fallback_payload is not None:
+            return fallback_payload
     raise FileNotFoundError(
         f"Calibration ({calibration_version}) not found at {calib_path_or_dir}"
     )
+
+
+def _find_camera_image_path(bundle_dir: Path, cid: str) -> Path | None:
+    """Locate camera image under `bundle_dir` supporting `.jpg`, `.png`, `.image`, `images/`, and `prepared/`."""
+    bdir = Path(bundle_dir)
+    candidates = [
+        bdir / f"{cid}.jpg",
+        bdir / f"{cid}.png",
+        bdir / f"{cid}.image",
+        bdir / "images" / f"{cid}.image",
+        bdir / "images" / f"{cid}.png",
+        bdir / "images" / f"{cid}.jpg",
+        bdir / "prepared" / f"{cid}.png",
+        bdir / "prepared" / f"{cid}.jpg",
+        bdir / "prepared" / "images" / f"{cid}.png",
+        bdir / "prepared" / "images" / f"{cid}.jpg",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
 
 
 def load_and_undistort_cameras(
@@ -265,7 +295,7 @@ def load_and_undistort_cameras(
     camera_ids: tuple[str, ...] = ("cam_A", "cam_B", "cam_C", "cam_D"),
     calibration_version: str = "cal-lobby-init-f0ab1c6b-jba2-2f6cc097",
 ) -> dict[str, UndistortedCamera]:
-    """Load `calibration.json` and undistort `cam_*.jpg` + optional `cam_*.valid.png`.
+    """Load `calibration.json` and undistort `cam_*.{jpg,png,image}` + optional `cam_*.valid.png`.
 
     Follows the exact `texrecon_opt/common.py` / `-314` undistortion convention:
     `cv2.getOptimalNewCameraMatrix(K_raw, dist, (W, H), 0, (W, H), centerPrincipalPoint=True)`
@@ -279,12 +309,15 @@ def load_and_undistort_cameras(
         if cid not in cam_entries:
             raise KeyError(f"Camera {cid} not found in {calib_path}")
         entry = cam_entries[cid]
-        img_path = Path(bundle_dir) / f"{cid}.jpg"
-        if not img_path.is_file():
-            img_path = Path(bundle_dir) / f"{cid}.png"
-        bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        img_path = _find_camera_image_path(Path(bundle_dir), cid)
+        bgr = None
+        if img_path is not None and cv2 is not None:
+            raw_bytes = np.frombuffer(img_path.read_bytes(), dtype=np.uint8)
+            bgr = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
         if bgr is None:
-            raise FileNotFoundError(f"Cannot read camera image: {img_path}")
+            raise FileNotFoundError(
+                f"Cannot read camera image for {cid} under {bundle_dir} (checked .jpg/.png/.image in root, images/, prepared/)"
+            )
         h, w = bgr.shape[:2]
 
         if "intrinsics" in entry:

@@ -15,6 +15,7 @@ ARG BASE_IMAGE=simai-base
 # MapAnything 코드 커밋(unified 만 쓴다). deploy/mapanything/Dockerfile 의 torch 2.7.1 이미지와 같은 커밋이라 두 환경의 결과를 비교한다
 ARG MA_COMMIT=3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9
 ARG DINOV2_COMMIT=7764ea0f912e53c92e82eb78a2a1631e92725fc8
+ARG WM2_COMMIT=df9988efb87bfc0f4947eb3889411cf957478b06
 
 # 0) 잠금(ai/uv.lock)에서 층별 설치 목록(해시 포함)을 뽑는다. 잠금이 바뀌면 이 단계는 다시 돌지만, 목록 내용이 같으면
 #    아래 COPY --from 의 캐시 키(내용 체크섬)가 같아 큰 층을 다시 만들지 않는다(같은 층 = 같은 다이제스트 = 다시 올리지 않음).
@@ -150,12 +151,17 @@ RUN git clone -q https://github.com/yangtiming/Fast-SAM-3D-Body /opt/code/Fast-S
 FROM unified-deps AS ma-code
 ARG MA_COMMIT
 ARG DINOV2_COMMIT
+ARG WM2_COMMIT
 RUN git clone -q https://github.com/facebookresearch/map-anything /opt/code/map-anything \
  && git -C /opt/code/map-anything checkout -q "${MA_COMMIT}" \
  && rm -rf /opt/code/map-anything/.git \
  && git clone -q https://github.com/facebookresearch/dinov2 /opt/code/facebookresearch_dinov2_main \
  && git -C /opt/code/facebookresearch_dinov2_main checkout -q "${DINOV2_COMMIT}" \
- && rm -rf /opt/code/facebookresearch_dinov2_main/.git
+ && rm -rf /opt/code/facebookresearch_dinov2_main/.git \
+ && git clone -q https://github.com/Tencent-Hunyuan/HY-World-2.0 /opt/code/HY-World-2.0 \
+ && git -C /opt/code/HY-World-2.0 checkout -q "${WM2_COMMIT}" \
+ && rm -rf /opt/code/HY-World-2.0/.git /opt/code/HY-World-2.0/assets \
+ && find /opt/code/HY-World-2.0 -type f \( -name '*.pth' -o -name '*.pt' -o -name '*.ckpt' -o -name '*.safetensors' -o -name '*.onnx' -o -name '*.engine' \) -delete
 # setuptools 가 사본에 남기는 build/·egg-info 는 지운다(사본이 sys.path 에 들어가 설치 메타데이터와 겹치지 않게)
 RUN --mount=type=cache,target=/root/.cache/uv uv build -q --no-config --wheel --out-dir /opt/code/dist /opt/code/map-anything \
  && rm -rf /opt/code/map-anything/build /opt/code/map-anything/*.egg-info
@@ -198,10 +204,12 @@ COPY --from=texrecon-build /src/mvs-texturing/build/apps/texrecon/texrecon /usr/
 COPY --from=texrecon-build /src/mvs-texturing/LICENSE.txt /usr/local/share/licenses/mvs-texturing/LICENSE.txt
 ENV SIMAI_TEXRECON=/usr/local/bin/texrecon
 ARG MA_COMMIT
+ARG WM2_COMMIT
 COPY --from=hmr-code /opt/code/Fast-SAM-3D-Body /opt/simai/hmr/Fast-SAM-3D-Body
 COPY --from=hmr-code /opt/code/facebookresearch_dinov3_main /root/.cache/torch/hub/facebookresearch_dinov3_main
-# MapAnything 소스 사본(SIMAI_MAPANYTHING_REPO: run_mapanything.py 가 sys.path 앞에 넣는다, 2.7.1 이미지와 같은 규약)과 DINOv2 허브 코드
+# MapAnything·WorldMirror 2.0 소스 사본(SIMAI_MAPANYTHING_REPO·SIMAI_WM2_REPO)과 DINOv2 허브 코드
 COPY --from=ma-code /opt/code/map-anything /opt/simai/mapanything/map-anything
+COPY --from=ma-code /opt/code/HY-World-2.0 /opt/simai/worldmirror2/HY-World-2.0
 COPY --from=ma-code /opt/code/facebookresearch_dinov2_main /root/.cache/torch/hub/facebookresearch_dinov2_main
 
 # 5) simai_ai 패키지·배포 단위·계약 스키마(잠금 밖 휠이 없으므로 tier0 와 같은 정확 sync)
@@ -234,6 +242,8 @@ COPY deploy/weights.json /opt/simai/deploy/weights.json
 ENV SIMAI_IMAGE_KIND=unified \
     SIMAI_MAPANYTHING_REPO=/opt/simai/mapanything/map-anything \
     SIMAI_MAPANYTHING_COMMIT=${MA_COMMIT} \
+    SIMAI_WM2_REPO=/opt/simai/worldmirror2/HY-World-2.0 \
+    SIMAI_WM2_COMMIT=${WM2_COMMIT} \
     SIMAI_SERVICES=tier0,vllm,worker \
     SIMAI_WORKER_WEIGHTS_SET=vlm \
     SIMAI_CONTRACTS_DIR=/opt/simai/contracts \

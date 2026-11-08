@@ -46,6 +46,9 @@ E-GATE-0(2026-10-16) 전이어서, E-GATE-0 때 받은 파일과 같은 revision
 | map-anything-apache-config | static | `weights/map-anything-apache/config.json` | 같은 저장소 | `65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5` | Apache-2.0 | 고정 revision 에서 받아 sha256 (5,776 B) |
 | map-anything-model | static | `weights/map-anything/model.safetensors` | `facebook/map-anything` @a1d87e9 | `981f060c64664dff3272b5f5a823d350abe71a2f144444db4cfc325f3ed5a3a0` | CC-BY-NC-4.0 (비상업, 연구 비교용) | HF API LFS oid = E-GATE-0 C1 `weights_hash` |
 | map-anything-config | static | `weights/map-anything/config.json` | 같은 저장소 | `65701d09…676c5` (apache 와 같은 파일) | CC-BY-NC-4.0 | 고정 revision 에서 받아 sha256 |
+| hy-worldmirror-2.0-model | static | `weights/hy-world-2.0/HY-WorldMirror-2.0/model.safetensors` | `tencent/HY-World-2.0` @d78a16c (5,053,553,272 B) | `9fff06539d3d9e85338d7de1ffb5afffb7739fa5bf4d62b4b7c319b5ecdde54f` | Tencent HY-World 2.0 Community License Agreement | HF API LFS oid (`_weights_hash` 조합 `fa12bdb9…` 일치, S15P31A101-539) |
+| hy-worldmirror-2.0-config | static | `weights/hy-world-2.0/HY-WorldMirror-2.0/config.json` | 같은 저장소 (`HY-WorldMirror-2.0/config.json`, 842 B) | `5e40150577ef7d38e24d8d079a7126568a0ec9816dbfc61ebc99c67faf430ed9` | Tencent HY-World 2.0 Community License Agreement | 고정 revision 에서 받아 sha256 (S15P31A101-539) |
+| big-lama | static | `weights/lama/big-lama.pt` | `enesmsahin/simple-lama-inpainting` v0.1.0 (205,803,911 B) | `7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c` | Apache-2.0 | S15P31A101-532 노트북 `sha256sum` (`hole-fill-v2/report.json`) |
 
 획득 기록:
 

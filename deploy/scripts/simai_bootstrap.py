@@ -1037,8 +1037,14 @@ class Supervisor:
         self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
         self.avatar_set = env.get("SIMAI_AVATAR_WEIGHTS_SET") or "avatar"
         self.ppe_set = env.get("SIMAI_PPE_WEIGHTS_SET") or "ppe"
-        # 현장 세팅(site_setup) MapAnything 모델 폴더(reconstruct_tasks.mapanything 과 같은 규칙). 워커를 띄울 때만 뒤에서 받는다(-473)
+        # 현장 세팅(site_setup) MapAnything·WorldMirror 2.0·LaMa 가중치(reconstruct_tasks 와 같은 규칙). 워커를 띄울 때만 뒤에서 받는다(-473, -539)
         self.setup_model_dir = Path(env.get("SIMAI_MAPANYTHING_MODEL") or root / "weights" / "map-anything")
+        self.setup_wm2_dir = Path(
+            env.get("SIMAI_WM2_MODEL")
+            or env.get("SIMAI_WORLDMIRROR_MODEL")
+            or root / "weights" / "hy-world-2.0" / "HY-WorldMirror-2.0"
+        )
+        self.setup_lama_path = Path(env.get("SIMAI_LAMA_WEIGHTS") or root / "weights" / "lama" / "big-lama.pt")
         self.setup_weights = (env.get("SIMAI_WORKER_SETUP_WEIGHTS") or "1").strip() not in ("0", "false", "no", "off")
         self._setup_weights_thread: threading.Thread | None = None
         self.setup_weights_error: str | None = None
@@ -1130,6 +1136,9 @@ class Supervisor:
                     e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(fractions["worker_fraction"])
                     e["SIMAI_VALIDATED_WORKER_FRACTION"] = str(fractions["worker_fraction"])
                     e.setdefault("SIMAI_TIER0_WEIGHTS", str(self.root / "weights" / "yolo" / "yolo26x-pose.pt"))
+                    e.setdefault("SIMAI_WM2_MODEL", str(self.setup_wm2_dir))
+                    e.setdefault("SIMAI_WORLDMIRROR_MODEL", str(self.setup_wm2_dir))
+                    e.setdefault("SIMAI_LAMA_WEIGHTS", str(self.setup_lama_path))
                     e.setdefault("SIMAI_VLLM_PORT", str(self.port))
                     e.setdefault("SIMAI_VLM_MODEL", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano")
             cache = cache_root / name
@@ -1235,17 +1244,26 @@ class Supervisor:
             _write_record(self.root, rec)
 
     def _prepare_setup_weights(self) -> None:
-        """site_setup 의 MapAnything 가중치(static 묶음 중 setup_model_dir 항목). 실패해도 워커·Tier 0 는 계속(경고만)."""
+        """site_setup 의 MapAnything·WorldMirror 2.0·LaMa 가중치(static 묶음, -473·-539). 실패해도 워커·Tier 0 는 계속(경고만)."""
         rec: dict = {"bootstrap": "S15P31A101-473", "stage": "setup-weights", "set": SCENE_SET, "model_dir": str(self.setup_model_dir),
+                     "wm2_model_dir": str(self.setup_wm2_dir), "lama_weights": str(self.setup_lama_path),
                      "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
         try:
-            want = self.setup_model_dir.resolve()
-            entries = [w for w in load_manifest(self.manifest, SCENE_SET) if (self.root / w["path"]).parent.resolve() == want]
-            if not entries:
+            all_static = load_manifest(self.manifest, SCENE_SET)
+            want_ma = self.setup_model_dir.resolve()
+            ma_entries = [w for w in all_static if (self.root / w["path"]).parent.resolve() == want_ma]
+            if not ma_entries:
                 raise BootstrapError(EXIT_STORAGE, f"가중치 목록에 {self.setup_model_dir} 의 {SCENE_SET} 항목이 없다")
+            want_wm2 = self.setup_wm2_dir.resolve()
+            want_lama = self.setup_lama_path.resolve()
+            entries = [
+                w for w in all_static
+                if (self.root / w["path"]).parent.resolve() in (want_ma, want_wm2)
+                or (self.root / w["path"]).resolve() == want_lama
+            ]
             rec["weights"] = ensure_weights(self.root, entries)
             rec["exit"] = EXIT_OK
-            log(f"현장 세팅 MapAnything 가중치 준비({self.setup_model_dir}): "
+            log(f"현장 세팅 정적 맵 가중치 준비({self.setup_model_dir}): "
                 + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
         except Exception as e:  # noqa: BLE001 - 세팅 가중치 실패는 Tier 0·워커를 멈추지 않는다
             self.setup_weights_error = _redact(f"{type(e).__name__}: {e}")
@@ -1813,6 +1831,9 @@ def run_scene_child(root: Path, argv: list[str], extra_env: dict[str, str] | Non
     env = child_env()
     env.setdefault("SIMAI_ALLOW_WITHOUT_TIER0_MARKER", "1")
     env.setdefault("SIMAI_TIER0_WEIGHTS", str(root / "weights" / "yolo" / "yolo26x-pose.pt"))
+    env.setdefault("SIMAI_WM2_MODEL", str(root / "weights" / "hy-world-2.0" / "HY-WorldMirror-2.0"))
+    env.setdefault("SIMAI_WORLDMIRROR_MODEL", env["SIMAI_WM2_MODEL"])
+    env.setdefault("SIMAI_LAMA_WEIGHTS", str(root / "weights" / "lama" / "big-lama.pt"))
     if extra_env:
         env |= extra_env
     env["SIMAI_ROOT"] = str(root)  # 준비한 가중치 위치는 env 파일보다 우선
@@ -2079,6 +2100,14 @@ def run_check(rest: list[str], *, preflight: bool = False) -> int:
                 code = code or EXIT_STORAGE
             if missing_mods:
                 errors.append(f"필수 파이썬 모듈 없음: {', '.join(missing_mods)}")
+                code = code or EXIT_STORAGE
+        wm2_repo = os.environ.get("SIMAI_WM2_REPO")
+        if "static" in sets and wm2_repo:
+            wm2_dir = Path(wm2_repo) / "hyworld2" / "worldrecon"
+            wm2_ok = wm2_dir.is_dir()
+            rec.setdefault("runtime", {})["wm2_repo"] = {"path": wm2_repo, "ok": wm2_ok}
+            if not wm2_ok:
+                errors.append(f"SIMAI_WM2_REPO 경로 없음: {wm2_dir}")
                 code = code or EXIT_STORAGE
         if args.preflight:  # 진단 도구 안내(실패로 세지 않는다, -414)
             spy = py_spy_status()

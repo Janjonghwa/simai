@@ -6,7 +6,7 @@ docs/design/mapanything-input-resolution.md "4차 세션 비교 무효"). Run �
 쓰지 않게 한다. 실패로 끝내지 않고 경고로 남긴다(Run 자체는 비교 근거다).
 
 같은 폴더 스크립트가 `import intrinsics_check` 로 쓴다(스크립트를 직접 실행하면 이 폴더가 sys.path 첫 항목). 표준 라이브러리와
-numpy 만 쓴다(DA3 전용 가상환경에서도 돈다).
+numpy 만 쓴다(DA3·WorldMirror·Pi3X 전용 가상환경에서도 돈다).
 
     # 이미 가져온 MapAnything Run 을 노트북에서 다시 본다(torch 없음)
     uv run --project ai python ai/experiments/static_scene/intrinsics_check.py <Run 폴더> --prepared <prepare 출력 폴더>
@@ -41,7 +41,7 @@ def expected_crop_resize_k(K, src_wh, dst_wh) -> np.ndarray:
 
 
 def expected_axis_resize_k(K, src_wh, dst_wh) -> np.ndarray:
-    """축마다 따로 늘이는 규칙(DA3 처리 해상도: 14 배수로 맞추며 가로·세로 배율이 조금 다르다, 자르기 없음)."""
+    """축마다 따로 늘이는 규칙(DA3·WorldMirror·Pi3X 처리 해상도: 14 배수로 맞추며 가로·세로 배율이 조금 다르다, 자르기 없음)."""
     (W, H), (w, h) = src_wh, dst_wh
     sx, sy = w / W, h / H
     out = np.asarray(K, float).copy()
