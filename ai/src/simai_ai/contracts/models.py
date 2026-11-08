@@ -1538,15 +1538,60 @@ class SceneCompatibility(BaseModel):
     ]
 
 
+class PoseDepthFit(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    passed: StrictBool
+    model: Literal['M1_SCALE', 'M2_SCALE_OFFSET', 'M4_RAY_TILT', 'NONE']
+    failure_reason: StrictStr | None | MISSING = MISSING
+    max_camera_abs_dz_median_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    max_camera_rel_dz_median: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    coobserved_surface_3d_median_m: Annotated[
+        StrictFloat | None | MISSING, Field(ge=0.0)
+    ] = MISSING
+    floor_z_median_m: StrictFloat | None | MISSING = MISSING
+    floor_tilt_deg: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = MISSING
+
+
+class KItem(RootModel[list[StrictFloat]]):
+    root: Annotated[list[StrictFloat], Field(max_length=3, min_length=3)]
+
+
+class RItem(RootModel[list[StrictFloat]]):
+    root: Annotated[list[StrictFloat], Field(max_length=3, min_length=3)]
+
+
+class MapCameras(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    image_size: Annotated[list[ImageSizeItem], Field(max_length=2, min_length=2)]
+    K: Annotated[list[KItem], Field(max_length=3, min_length=3)]
+    R: Annotated[list[RItem], Field(max_length=3, min_length=3)]
+    t: Annotated[list[StrictFloat], Field(max_length=3, min_length=3)]
+    pose_source: Literal['CALIBRATION', 'MA_ALIGNED_SIM3', 'MA_ALIGNED']
+
+
 class Method(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    reconstructor: Literal['MAPANYTHING_NATIVE', 'MAPANYTHING_EXTERNAL', 'MOGE3', 'VGGT', 'FLOOR_PLAN_PRIMITIVES', 'OTHER']
+    reconstructor: Literal['MAPANYTHING_NATIVE', 'MAPANYTHING_EXTERNAL', 'WORLDMIRROR2_HYBRID', 'MOGE3', 'VGGT', 'FLOOR_PLAN_PRIMITIVES', 'OTHER']
     reconstructor_detail: StrictStr | MISSING = MISSING
     uses_known_pose: StrictBool
+    reconstruction_path: Literal['METHOD2_CALIB_WM2', 'FALLBACK1_MA_ALIGNED_WM2', 'FALLBACK1_MA_ALIGNED_NATIVE', 'FALLBACK2_LEGACY_TEXRECON'] | MISSING = (
+        MISSING
+    )
+    fallback_reason: StrictStr | None | MISSING = MISSING
+    pose_depth_fit: PoseDepthFit | MISSING = MISSING
+    map_cameras: dict[DefsCameraId, MapCameras] | MISSING = MISSING
     human_removal: Literal['EMPTY_ROOM', 'MASK_COMPOSITE', 'NONE'] | MISSING = MISSING
-    postprocess: list[Literal['DEPTH_ALIGNMENT', 'CROSS_VIEW_ALIGNMENT', 'OUTLIER_REMOVAL', 'TSDF_FUSION', 'PLANE_CLEANUP', 'POISSON', 'TEXTURE', 'DECIMATION', 'WORLD_ALIGNMENT']] | MISSING = (
+    postprocess: list[Literal['DEPTH_ALIGNMENT', 'CROSS_VIEW_ALIGNMENT', 'OUTLIER_REMOVAL', 'TSDF_FUSION', 'PLANE_CLEANUP', 'POISSON', 'TEXTURE', 'DECIMATION', 'WORLD_ALIGNMENT', 'MESH_CLEAN_V2', 'BACKING_PLANES', 'FURNITURE_PLANES', 'LAMA_INPAINT']] | MISSING = (
         MISSING
     )
 
@@ -1560,6 +1605,7 @@ class SurfaceValues(BaseModel):
     field_2: Annotated[Literal['OBSERVED'], Field(alias='2')]
     field_3: Annotated[Literal['ESTIMATED_PLANE'] | MISSING, Field(alias='3')] = MISSING
     field_4: Annotated[Literal['GENERATED'] | MISSING, Field(alias='4')] = MISSING
+    field_5: Annotated[Literal['SEE_THROUGH'] | MISSING, Field(alias='5')] = MISSING
 
 
 class Ratios2(BaseModel):
@@ -1571,6 +1617,7 @@ class Ratios2(BaseModel):
     OBSERVED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
     ESTIMATED_PLANE: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
     GENERATED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    SEE_THROUGH: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
 
 
 class Asset(BaseModel):

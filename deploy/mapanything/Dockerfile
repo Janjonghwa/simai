@@ -11,6 +11,7 @@ ARG BASE_IMAGE=simai-base-cu128-py312
 FROM ${BASE_IMAGE} AS prep
 ARG MA_COMMIT=3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9
 ARG DINOV2_COMMIT=7764ea0f912e53c92e82eb78a2a1631e92725fc8
+ARG WM2_COMMIT=df9988efb87bfc0f4947eb3889411cf957478b06
 # hadolint ignore=DL3008
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git \
@@ -34,11 +35,16 @@ RUN git clone -q https://github.com/facebookresearch/map-anything /opt/code/map-
  && rm -rf /opt/code/map-anything/.git \
  && git clone -q https://github.com/facebookresearch/dinov2 /opt/code/facebookresearch_dinov2_main \
  && git -C /opt/code/facebookresearch_dinov2_main checkout -q "${DINOV2_COMMIT}" \
- && rm -rf /opt/code/facebookresearch_dinov2_main/.git
+ && rm -rf /opt/code/facebookresearch_dinov2_main/.git \
+ && git clone -q https://github.com/Tencent-Hunyuan/HY-World-2.0 /opt/code/HY-World-2.0 \
+ && git -C /opt/code/HY-World-2.0 checkout -q "${WM2_COMMIT}" \
+ && rm -rf /opt/code/HY-World-2.0/.git /opt/code/HY-World-2.0/assets \
+ && find /opt/code/HY-World-2.0 -type f \( -name '*.pth' -o -name '*.pt' -o -name '*.ckpt' -o -name '*.safetensors' -o -name '*.onnx' -o -name '*.engine' \) -delete
 
 # ---------------------------------------------------------------- 1) 실행 이미지
 FROM ${BASE_IMAGE}
 ARG MA_COMMIT=3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9
+ARG WM2_COMMIT=df9988efb87bfc0f4947eb3889411cf957478b06
 # libgl1·libglib2.0-0: 볼륨 venv 가 돌던 RunPod PyTorch 이미지에 있던 GL·glib 로더(수 MB, 시각화 의존성용), gcc: torch.compile(triton) 런처
 # hadolint ignore=DL3008
 RUN apt-get update \
@@ -57,6 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q -r /opt/mapanyth
 COPY --from=prep /opt/code/map-anything /opt/mapanything/map-anything
 # 의존성은 잠금이 이미 깔았다(--no-deps). 편집 모드가 아니므로 사본을 지워도 되지만 run_mapanything.py 가 사본 경로를 sys.path 에 넣으므로 둔다
 RUN uv pip install -q --no-deps /opt/mapanything/map-anything
+COPY --from=prep /opt/code/HY-World-2.0 /opt/mapanything/HY-World-2.0
 COPY --from=prep /opt/code/facebookresearch_dinov2_main /root/.cache/torch/hub/facebookresearch_dinov2_main
 
 COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstrap
@@ -69,6 +76,8 @@ ENV SIMAI_IMAGE_KIND=mapanything \
     SIMAI_WEIGHTS_MANIFEST=/opt/simai/deploy/weights.json \
     SIMAI_MAPANYTHING_REPO=/opt/mapanything/map-anything \
     SIMAI_MAPANYTHING_COMMIT=${MA_COMMIT} \
+    SIMAI_WM2_REPO=/opt/mapanything/HY-World-2.0 \
+    SIMAI_WM2_COMMIT=${WM2_COMMIT} \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # 기본은 SSH 로 들어가 쓰는 개발 Pod(sleep infinity, 준비 없음). 준비 → 실행은 'simai-bootstrap run python ...', 세션 큐는 'simai-bootstrap queue'.

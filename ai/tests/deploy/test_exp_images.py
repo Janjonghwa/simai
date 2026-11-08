@@ -126,6 +126,9 @@ def test_real_manifest_experiment_entries_are_pinned_and_hashes_match_records():
         "moge-2-vits-normal",
         "map-anything-apache-model",
         "map-anything-config",
+        "hy-worldmirror-2.0-model",
+        "hy-worldmirror-2.0-config",
+        "big-lama",
     }
     for w in exp:
         src = w["source"]
@@ -149,6 +152,9 @@ def test_real_manifest_experiment_entries_are_pinned_and_hashes_match_records():
     assert by["sam-3d-body-dinov3"]["sha256"].startswith("b5a2f9d305dd")
     assert by["map-anything-apache-model"]["sha256"].startswith("fa06c0fdccef")
     assert by["map-anything-model"]["sha256"].startswith("981f060c6466")
+    assert by["hy-worldmirror-2.0-model"]["sha256"].startswith("9fff06539d3d")
+    assert by["hy-worldmirror-2.0-config"]["sha256"].startswith("5e40150577ef")
+    assert by["big-lama"]["sha256"].startswith("7ba7aa7ac37a")
 
 
 # ---------------------------------------------------------------- GPU 세대 호환
@@ -353,16 +359,17 @@ def test_exp_jobs_record_real_weights_dataset_metrics_and_results(gs, ej, tmp_pa
 
 
 def test_unified_mapanything_code_pins_match_the_torch271_image():
-    """통합 이미지의 map-anything·DINOv2 허브 커밋이 deploy/mapanything(torch 2.7.1) 과 같다(다르면 u3·u4 ↔ m1·m2 비교가 환경 비교가 아니다, S15P31A101-250).
+    """통합 이미지의 map-anything·DINOv2·WorldMirror 2.0 커밋이 deploy/mapanything(torch 2.7.1) 과 같다(S15P31A101-250·-539).
     map-anything 휠은 코드 층의 정확 sync 뒤에 --no-deps 로 깐다(앞에 깔면 정확 sync 가 지운다)."""
-    pins = lambda text: dict(re.findall(r"^ARG (MA_COMMIT|DINOV2_COMMIT)=([0-9a-f]{40})$", text, re.M))  # noqa: E731
+    pins = lambda text: dict(re.findall(r"^ARG (MA_COMMIT|DINOV2_COMMIT|WM2_COMMIT)=([0-9a-f]{40})$", text, re.M))  # noqa: E731
     unified = (REPO / "deploy" / "tier0" / "Dockerfile").read_text(encoding="utf-8")
     ma = (REPO / "deploy" / "mapanything" / "Dockerfile").read_text(encoding="utf-8")
-    assert pins(unified) == pins(ma) and len(pins(ma)) == 2
+    assert pins(unified) == pins(ma) and len(pins(ma)) == 3
     stage = unified[unified.index("AS unified\n"):]
-    sync = stage.index("uv sync --locked --no-dev --extra tier0 --extra worker --no-editable")
+    sync = stage.index("uv sync --locked --no-dev")
     wheel = stage.index("--no-deps --no-index /tmp/ma-dist/mapanything-")
     assert sync < wheel and "SIMAI_MAPANYTHING_REPO=" in stage and "SIMAI_MAPANYTHING_COMMIT=${MA_COMMIT}" in stage
+    assert "SIMAI_WM2_REPO=" in stage and "SIMAI_WM2_COMMIT=${WM2_COMMIT}" in stage
     tier0 = unified[unified.index("AS tier0\n"):unified.index("AS unified-deps")]
     assert "mapanything" not in tier0.lower()  # tier0 타깃은 그대로
 

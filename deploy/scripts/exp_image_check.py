@@ -103,8 +103,13 @@ def mapanything_check() -> dict:
     with torch.autocast("cuda", dtype=torch.bfloat16):
         y = torch.nn.functional.scaled_dot_product_attention(*(torch.randn(1, 4, 64, 32, device="cuda"),) * 3)
     assert torch.isfinite(y).all().item()
+    wm2_repo = os.environ.get("SIMAI_WM2_REPO")
+    if wm2_repo:
+        wm2_dir = Path(wm2_repo) / "hyworld2" / "worldrecon"
+        assert wm2_dir.is_dir(), f"{wm2_dir} 없음(WorldMirror 2.0 코드 사본)"
     return {"mapanything": m.version("mapanything"), "uniception": m.version("uniception"),
-            "commit": os.environ.get("SIMAI_MAPANYTHING_COMMIT", "")[:7]}
+            "commit": os.environ.get("SIMAI_MAPANYTHING_COMMIT", "")[:7],
+            "wm2_commit": os.environ.get("SIMAI_WM2_COMMIT", "")[:7] if wm2_repo else None}
 
 
 def run_checks(kind: str) -> dict:

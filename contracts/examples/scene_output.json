@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.2.0",
+  "schema_version": "2.3.0",
   "scene_version": "scene-cand-0001",
   "state": "CANDIDATE",
   "geometry_role": "VISUAL",
@@ -19,11 +19,23 @@
     "input_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
   },
   "method": {
-    "reconstructor": "MAPANYTHING_NATIVE",
-    "reconstructor_detail": "facebook/map-anything (CC-BY-NC 4.0), known K·pose 입력",
-    "uses_known_pose": true,
+    "reconstructor": "WORLDMIRROR2_HYBRID",
+    "reconstructor_detail": "tencent/HY-World-2.0 (WorldMirror 2.0, 952x532) + calibration.json 자세 고정 특징점 깊이 정합",
+    "uses_known_pose": false,
+    "reconstruction_path": "FALLBACK1_MA_ALIGNED_WM2",
+    "fallback_reason": null,
+    "pose_depth_fit": {
+      "passed": true,
+      "model": "M2_SCALE_OFFSET",
+      "failure_reason": null,
+      "max_camera_abs_dz_median_m": 0.018,
+      "max_camera_rel_dz_median": 0.004,
+      "coobserved_surface_3d_median_m": 0.021,
+      "floor_z_median_m": -0.002,
+      "floor_tilt_deg": 0.42
+    },
     "human_removal": "EMPTY_ROOM",
-    "postprocess": ["DEPTH_ALIGNMENT", "CROSS_VIEW_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "PLANE_CLEANUP", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"]
+    "postprocess": ["DEPTH_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "DECIMATION", "MESH_CLEAN_V2", "BACKING_PLANES", "FURNITURE_PLANES", "LAMA_INPAINT", "TEXTURE"]
   },
   "assets": [
     {
@@ -39,8 +51,8 @@
       "uri": "volume://US-KS-2/exp01/runs/exp01-20261020-0001/surface_source_0000.png",
       "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
       "bytes": 412337,
-      "surface_values": { "0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED" },
-      "ratios": { "UNOBSERVED": 0.22, "INTERPOLATED": 0.01, "OBSERVED": 0.72, "ESTIMATED_PLANE": 0.05 }
+      "surface_values": { "0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED", "5": "SEE_THROUGH" },
+      "ratios": { "UNOBSERVED": 0.02, "INTERPOLATED": 0.03, "OBSERVED": 0.72, "ESTIMATED_PLANE": 0.15, "GENERATED": 0.05, "SEE_THROUGH": 0.03 }
     }
   ],
   "quality": {

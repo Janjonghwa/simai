@@ -1576,3 +1576,42 @@ def test_vllm_fp8_quantization_default_disable_override_and_extra_args_dedup(bs,
         quant_flags = [x for x in argv_extra if x.split("=", 1)[0].replace("_", "-") in ("--quantization", "-q")]
         assert len(quant_flags) == 1
         assert argv_extra[-len(extra.split()):] == extra.split()
+
+
+def test_preflight_checks_wm2_repo_when_configured_and_worker_gets_wm2_lama_envs(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-539: SIMAI_WM2_REPO 가 설정된 경우 preflight 가 hyworld2/worldrecon 디렉터리를 점검하고 워커 환경에 WM2·LaMa 경로를 넣는다."""
+    sup = _sup(bs, tmp_path, monkeypatch, World())
+    w_env = sup.svc["worker"].env
+    assert w_env["SIMAI_WM2_MODEL"].endswith(os.path.join("weights", "hy-world-2.0", "HY-WorldMirror-2.0"))
+    assert w_env["SIMAI_LAMA_WEIGHTS"].endswith(os.path.join("weights", "lama", "big-lama.pt"))
+
+    root = tmp_path / "simai"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "weights": [
+                    {"name": f"w-{s}", "sets": [s], "path": f"weights/{s}.bin", "source": {"url": "x"}, "sha256": "a" * 64}
+                    for s in ("tier0", "avatar", "static", "vlm")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SIMAI_ROOT", str(root))
+    monkeypatch.setenv("SIMAI_WEIGHTS_MANIFEST", str(manifest))
+    monkeypatch.setenv("SIMAI_MIN_FREE_GB", "0.001")
+    monkeypatch.setattr(bs, "detect_gpu", lambda smi: {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0})
+    monkeypatch.setattr(bs, "ensure_weights", lambda r, entries: [{"name": e["name"], "status": "present"} for e in entries])
+
+    missing_wm2 = tmp_path / "missing_wm2"
+    monkeypatch.setenv("SIMAI_WM2_REPO", str(missing_wm2))
+    rc_fail = bs.main(["check", "--sets", "static"])
+    out_fail = json.loads(capsys.readouterr().out)
+    assert rc_fail == bs.EXIT_STORAGE and out_fail["runtime"]["wm2_repo"]["ok"] is False
+
+    (missing_wm2 / "hyworld2" / "worldrecon").mkdir(parents=True, exist_ok=True)
+    rc_ok = bs.main(["check", "--sets", "static"])
+    out_ok = json.loads(capsys.readouterr().out)
+    assert rc_ok == 0 and out_ok["runtime"]["wm2_repo"]["ok"] is True
+

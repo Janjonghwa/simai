@@ -386,7 +386,7 @@ class ProductionSiteSetupStages:
              backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
         self._run_stage("bake")
         doc = self._read_stage_doc("bake.json", "bake")
-        if doc.get("fallback_reason"):
+        if doc.get("fallback_reason") and not doc.get("assets"):
             self._run_stage("fallback")
             doc = self._read_stage_doc("bake.json", "fallback")
         glbs = [a for a in doc["assets"] if a["kind"] == "GLTF_VISUAL"]

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/experiments/scene_output.schema.json",
   "title": "정적 장면 결과 (EXP-01, static_reconstruct)",
-  "description": "정적 3D 복원 결과 한 건 (명세 5.3, 20.2, 20.4). 보기용 Visual Geometry이며 안전 판단용 Operational Geometry(등록 작업면·정적 객체의 보수적 OBB, 명세 7.5)가 아니다. 2.2.0(-461, 마이너): quality 에 이전 모습으로 채운 비율 previous_fill_ratio·비운 비율 unrevealed_ratio 및 카메라별 비율 camera_background_quality 추가. 2.1.0(-317, 마이너): 자산 종류 SURFACE_SOURCE_MAP(배경 메시 텍셀 출처 지도)과 그 자산에만 쓰는 값 표 surface_values·표면적 비율 ratios(추정 평면 ESTIMATED_PLANE = 3, 생성 GENERATED = 4 예약), 후처리 CROSS_VIEW_ALIGNMENT·PLANE_CLEANUP(-314) 추가. 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
+  "description": "정적 3D 복원 결과 한 건 (명세 5.3, 20.2, 20.4). 보기용 Visual Geometry이며 안전 판단용 Operational Geometry(등록 작업면·정적 객체의 보수적 OBB, 명세 7.5)가 아니다. 2.3.0(-539, 마이너): method 에 WORLDMIRROR2_HYBRID·복원 경로 reconstruction_path·폴백 사유 fallback_reason·깊이 정합 기록 pose_depth_fit·맵 전용 카메라 자세 사본 map_cameras 및 후처리 MESH_CLEAN_V2·BACKING_PLANES·FURNITURE_PLANES·LAMA_INPAINT 추가, SURFACE_SOURCE_MAP 값 표·비율에 5 = SEE_THROUGH(개구부 비채움) 선택 키 추가. 2.2.0(-461, 마이너): quality 에 이전 모습으로 채운 비율 previous_fill_ratio·비운 비율 unrevealed_ratio 및 카메라별 비율 camera_background_quality 추가. 2.1.0(-317, 마이너): 자산 종류 SURFACE_SOURCE_MAP(배경 메시 텍셀 출처 지도)과 그 자산에만 쓰는 값 표 surface_values·표면적 비율 ratios(추정 평면 ESTIMATED_PLANE = 3, 생성 GENERATED = 4 예약), 후처리 CROSS_VIEW_ALIGNMENT·PLANE_CLEANUP(-314) 추가. 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
   "type": "object",
   "required": [
     "schema_version", "scene_version", "state", "geometry_role", "created_at",
@@ -25,14 +25,85 @@
       "type": "object",
       "required": ["reconstructor", "uses_known_pose"],
       "properties": {
-        "reconstructor": { "enum": ["MAPANYTHING_NATIVE", "MAPANYTHING_EXTERNAL", "MOGE3", "VGGT", "FLOOR_PLAN_PRIMITIVES", "OTHER"] },
+        "reconstructor": { "enum": ["MAPANYTHING_NATIVE", "MAPANYTHING_EXTERNAL", "WORLDMIRROR2_HYBRID", "MOGE3", "VGGT", "FLOOR_PLAN_PRIMITIVES", "OTHER"] },
         "reconstructor_detail": { "type": "string" },
         "uses_known_pose": { "type": "boolean", "description": "보정 K·pose를 입력으로 썼는지 (명세 16: MapAnything Native 우선 이유)" },
+        "reconstruction_path": {
+          "enum": ["METHOD2_CALIB_WM2", "FALLBACK1_MA_ALIGNED_WM2", "FALLBACK1_MA_ALIGNED_NATIVE", "FALLBACK2_LEGACY_TEXRECON"],
+          "description": "최종 맵 파이프라인(S15P31A101-539)에서 선택된 복원·굽기 경로"
+        },
+        "fallback_reason": {
+          "type": ["string", "null"],
+          "description": "새 경로(방식 2·폴백 1) 또는 텍스처 단계가 실패해 폴백 경로(폴백 2 등)로 전환된 사유 (S15P31A101-539)"
+        },
+        "pose_depth_fit": {
+          "type": "object",
+          "description": "방식 2(calibration.json 자세 고정 + 특징점·바닥 깊이 정합) 진단 및 게이트 통과 기록 (S15P31A101-539)",
+          "required": ["passed", "model"],
+          "properties": {
+            "passed": { "type": "boolean" },
+            "model": { "enum": ["M1_SCALE", "M2_SCALE_OFFSET", "M4_RAY_TILT", "NONE"] },
+            "failure_reason": { "type": ["string", "null"] },
+            "max_camera_abs_dz_median_m": { "type": ["number", "null"], "minimum": 0 },
+            "max_camera_rel_dz_median": { "type": ["number", "null"], "minimum": 0 },
+            "coobserved_surface_3d_median_m": { "type": ["number", "null"], "minimum": 0 },
+            "floor_z_median_m": { "type": ["number", "null"] },
+            "floor_tilt_deg": { "type": ["number", "null"], "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "map_cameras": {
+          "type": "object",
+          "description": "이 맵의 기하·텍스처에 실제로 쓰인 단일 카메라 자세 집합 사본 (S15P31A101-539). Tier 0 calibration.json 정본을 덮어쓰지 않고 뷰어 VDT 가 참조한다",
+          "propertyNames": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["image_size", "K", "R", "t", "pose_source"],
+            "properties": {
+              "image_size": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "K": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": { "type": "number" }
+                }
+              },
+              "R": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": { "type": "number" }
+                }
+              },
+              "t": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": { "type": "number" }
+              },
+              "pose_source": { "enum": ["CALIBRATION", "MA_ALIGNED_SIM3", "MA_ALIGNED"] }
+            },
+            "additionalProperties": false
+          }
+        },
         "human_removal": { "enum": ["EMPTY_ROOM", "MASK_COMPOSITE", "NONE"], "description": "사람 제거 방식 (명세 5.3 촬영 조건)" },
         "postprocess": {
           "type": "array",
-          "items": { "enum": ["DEPTH_ALIGNMENT", "CROSS_VIEW_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "PLANE_CLEANUP", "POISSON", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"] },
-          "description": "적용한 후처리 순서. CROSS_VIEW_ALIGNMENT 는 카메라 간 깊이 겹침으로 자세를 되맞춤, PLANE_CLEANUP 은 수평 평면 군집의 정점을 맞춘 평면에 올림(그 면은 출처 지도에서 ESTIMATED_PLANE, -314)"
+          "items": { "enum": ["DEPTH_ALIGNMENT", "CROSS_VIEW_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "PLANE_CLEANUP", "POISSON", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT", "MESH_CLEAN_V2", "BACKING_PLANES", "FURNITURE_PLANES", "LAMA_INPAINT"] },
+          "description": "적용한 후처리 순서. CROSS_VIEW_ALIGNMENT 는 카메라 간 깊이 겹침으로 자세를 되맞춤, PLANE_CLEANUP 은 수평 평면 군집의 정점을 맞춘 평면에 올림(그 면은 출처 지도에서 ESTIMATED_PLANE, -314). MESH_CLEAN_V2·BACKING_PLANES·FURNITURE_PLANES·LAMA_INPAINT 는 최종 맵 파이프라인(-539)"
         }
       },
       "additionalProperties": false
@@ -66,7 +137,8 @@
               "1": { "const": "INTERPOLATED" },
               "2": { "const": "OBSERVED" },
               "3": { "const": "ESTIMATED_PLANE" },
-              "4": { "const": "GENERATED" }
+              "4": { "const": "GENERATED" },
+              "5": { "const": "SEE_THROUGH" }
             },
             "additionalProperties": false
           },
@@ -79,7 +151,8 @@
               "INTERPOLATED": { "type": "number", "minimum": 0, "maximum": 1 },
               "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
               "ESTIMATED_PLANE": { "type": "number", "minimum": 0, "maximum": 1 },
-              "GENERATED": { "type": "number", "minimum": 0, "maximum": 1 }
+              "GENERATED": { "type": "number", "minimum": 0, "maximum": 1 },
+              "SEE_THROUGH": { "type": "number", "minimum": 0, "maximum": 1 }
             },
             "additionalProperties": false
           }

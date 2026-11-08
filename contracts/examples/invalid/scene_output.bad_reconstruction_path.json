@@ -1,0 +1,39 @@
+{
+  "schema_version": "2.3.0",
+  "scene_version": "scene-cand-0001",
+  "state": "CANDIDATE",
+  "geometry_role": "VISUAL",
+  "created_at": 1760342400000,
+  "experiment_id": "EXP-01",
+  "calibration_version": "cal-0",
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
+  "input_provenance": {
+    "frames": { "source": "FILE", "dataset_id": "classroom-empty/2026-10-20", "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
+    "calibration": { "source": "G1_AUTO", "calibration_version": "cal-0" },
+    "is_upper_bound": false
+  },
+  "reproducibility": {
+    "run_id": "exp01-20261020-0001",
+    "model_version": "map-anything@3d10cf7",
+    "weights_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "input_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "method": {
+    "reconstructor": "WORLDMIRROR2_HYBRID",
+    "uses_known_pose": true,
+    "reconstruction_path": "INVALID_PATH_NAME"
+  },
+  "assets": [
+    {
+      "kind": "GLTF_VISUAL",
+      "uri": "volume://US-KS-2/exp01/runs/exp01-20261020-0001/scene.glb",
+      "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "bytes": 48213004,
+      "axis_convention": "GLTF_Y_UP"
+    }
+  ],
+  "quality": {
+    "wall_deviation_m": null,
+    "observed_surface_ratio": 0.72
+  }
+}

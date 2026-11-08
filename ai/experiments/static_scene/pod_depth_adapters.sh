@@ -71,7 +71,7 @@ REPO_DIR="${REPO_DIR:-/workspace/S15P31A101}"
 AI_DIR="${AI_DIR:-${REPO_DIR}/ai}"
 RUNNER_PY="${RUNNER_PY:-${SCRIPT_DIR}/run_hybrid_depth.py}"
 
-MA_SINGLE_DIR="${MA_SINGLE_DIR:-/workspace/out/ma_single}"
+MA_SINGLE_DIR="${MA_SINGLE_DIR:-${SIMAI_SCENE_INPUT:-/workspace/simai/runs/s12_bg}}"
 MA_RUN_DIR="${MA_RUN_DIR:-${MA_SINGLE_DIR}/mapanything}"
 PREPARED_DIR="${PREPARED_DIR:-${MA_SINGLE_DIR}/prepared}"
 OUT_ROOT="${OUT_ROOT:-/workspace/out/depth_adapters_537}"
@@ -431,10 +431,49 @@ predict_pi3x_nopose() {
         --no-pose
 }
 
+setup_da3() {
+    log_info "=== [setup_da3] DA3 가상환경(${DA3_VENV}) 및 가중치 준비 ==="
+    ensure_base_tools
+    if [[ ! -x "${DA3_VENV}/bin/python" ]]; then
+        log_info "가상환경 생성: ${DA3_VENV}"
+        uv venv "$DA3_VENV" --python "$BASE_PY"
+        uv pip install --python "${DA3_VENV}/bin/python" \
+            --index-url https://download.pytorch.org/whl/cu124 \
+            "torch==2.5.1" \
+            "torchvision==0.20.1"
+        uv pip install --python "${DA3_VENV}/bin/python" \
+            "numpy==1.26.4" \
+            "einops==0.8.1" \
+            "pillow==11.1.0" \
+            "opencv-python-headless==4.11.0.86" \
+            "scipy==1.15.2" \
+            "safetensors==0.5.3" \
+            "huggingface_hub==0.30.2" \
+            "omegaconf==2.3.0" \
+            "git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@${DA3_COMMIT}"
+    fi
+    if [[ ! -s "${DA3_WEIGHTS_DIR}/model.safetensors" ]]; then
+        log_info "DA3 가중치 다운로드 -> ${DA3_WEIGHTS_DIR}"
+        "${DA3_VENV}/bin/python" -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id='depth-anything/DA3NESTED-GIANT-LARGE-1.1',
+    local_dir='${DA3_WEIGHTS_DIR}',
+    allow_patterns=['*.json', '*.safetensors'],
+)
+"
+    fi
+    log_info "[setup_da3] 완료"
+}
+
 predict_da3() {
     if [[ ! -x "${DA3_VENV}/bin/python" ]]; then
-        log_info "경고: ${DA3_VENV}/bin/python 이 없어 predict_da3 를 건너뜁니다"
-        return 1
+        if [[ "${AUTO_SETUP_DA3:-0}" == "1" ]]; then
+            setup_da3 || return 1
+        else
+            log_info "경고: ${DA3_VENV}/bin/python 이 없어 predict_da3 를 건너뜁니다 (setup_da3 또는 AUTO_SETUP_DA3=1 필요)"
+            return 1
+        fi
     fi
     SIMAI_DA3_COMMIT="$DA3_COMMIT" \
         run_predict_job "da3_1008" "${DA3_VENV}/bin/python" \
@@ -481,11 +520,7 @@ bench_dir = out_root / "bench_2cm"
 bench_dir.mkdir(parents=True, exist_ok=True)
 
 calib_path = ma_single_root / "calibration.json"
-images_dir = ma_single_root / "images"
-if not images_dir.is_dir():
-    images_dir = ma_single_root / "prepared"
-
-cameras = mio.load_and_undistort_cameras(calib_path, images_dir)
+cameras = mio.load_and_undistort_cameras(calib_path, ma_single_root)
 prep = hd.load_prepared(ma_single_root / "prepared")
 cams_ma, cam_sha = hd.read_cameras(ma_single_root / "mapanything")
 w_align_path = ma_single_root / "world_alignment.json"
@@ -668,7 +703,7 @@ steps=("${@:-all}")
 overall_rc=0
 for step in "${steps[@]}"; do
     case "$step" in
-        setup_wm2|setup_wm1|setup_pi3x|\
+        setup_wm2|setup_wm1|setup_pi3x|setup_da3|\
         predict_wm2|predict_wm2_depthprior|predict_wm2_nopose|\
         predict_wm1|predict_wm1_depthprior|\
         predict_pi3x|predict_pi3x_depthprior|predict_pi3x_nopose|\
