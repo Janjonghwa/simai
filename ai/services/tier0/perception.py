@@ -540,14 +540,33 @@ class Perception:
         # 마지막으로 인지 결과를 낸 tick 에서 늦어서 뺀 카메라. 새 tick 이 날 때까지 유지한다(판정의 감시 입력이 읽는다: 수신
         # 중이어도 융합에 쓰지 못한 카메라는 R7 의 정상 관측 카메라로 세지 않는다)
         self.lagging: tuple[str, ...] = ()
+        self._excluded_cameras: frozenset[str] = frozenset()
         # 추적 계측(S15P31A101-413): 판정에 쓰지 않는 관찰자. 상태 파일 status.tracking_diagnostics 와 주기 요약 로그(촬영 시각 30 s)
         self.diagnostics = TrackingDiagnostics()
+
+    @property
+    def excluded_cameras(self) -> tuple[str, ...]:
+        """DRIFTED·STREAM_CHANGED 등으로 새 보정 활성화(재세팅) 전까지 3D 융합에서 영구 제외한 카메라."""
+        return tuple(sorted(self._excluded_cameras))
+
+    def exclude_cameras(self, camera_ids: Sequence[str] | set[str] | frozenset[str]) -> None:
+        """판정 lock 안. 지정한 카메라를 새 보정 활성화 전까지 3D 융합·관절 게이트·R7 정상 감시에서 제외한다."""
+        if isinstance(camera_ids, str):
+            raise TypeError("camera_ids 는 카메라 ID 모음이어야 한다")
+        added = frozenset(c for c in camera_ids if c in self.rig.cameras)
+        if added - self._excluded_cameras:
+            self._excluded_cameras = self._excluded_cameras | added
+            log.warning(
+                "틀어짐/스트림 변경 카메라를 3D 융합에서 제외한다(재세팅 전까지 복귀 안 함): %s",
+                ", ".join(sorted(self._excluded_cameras)),
+            )
 
     def replace_rig(self, rig: CameraRig, provenance: Mapping[str, Any]) -> None:
         """판정 lock 안의 tick 경계 전용. World Track·접지·입력 버퍼는 유지한다(-344)."""
         self.associator.replace_rig(rig)
         self.manager.input_provenance = dict(provenance)
         self.rig = rig
+        self._excluded_cameras = frozenset()
         self._last_avatar_t = None
         self._avatar_calibration_rig = None
         self._avatar_calibration_doc = None
@@ -572,7 +591,12 @@ class Perception:
 
     def choose_t(self) -> FusionTime | None:
         """공통 시각과 늦어서 뺀 카메라(모듈 설명). 모르면 None."""
-        return choose_fusion_time(self.camera_clocks(), self.time_config)
+        clocks = self.camera_clocks()
+        if self._excluded_cameras:
+            active = tuple(c for c in clocks if c.camera_id not in self._excluded_cameras)
+            if any(c.last_capture is not None for c in active):
+                clocks = active
+        return choose_fusion_time(clocks, self.time_config)
 
     def ingest(self, frames: Sequence[Observation2DFrame]) -> None:
         for f in frames:
@@ -611,11 +635,12 @@ class Perception:
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
         self.people = max((sum(v.camera_id == c for v in views) for c in self.feed.camera_ids), default=0)
+        excluded = tuple(sorted(set(sync_invalid) | self._excluded_cameras))
         with self.timing.measure("cross_view_2d_triangulation", self.people):
             assoc = self.associator.associate(
                 t,
                 views,
-                exclude_cameras=tuple(sync_invalid),
+                exclude_cameras=excluded,
                 prior_groups=self.manager.temporal_prior_groups(t, self.associator.config.temporal_prior_ttl_ms),
             )
         self._observe(lambda d: d.observe_association(assoc))
@@ -626,7 +651,7 @@ class Perception:
                 log.exception("보정 감시 표본 공급 실패(판정은 계속한다)")
         self.buffer.prune(t)
         with self.timing.measure("world_track", self.people):
-            frame = self.manager.update(assoc, self.rig, tuple(sync_invalid))
+            frame = self.manager.update(assoc, self.rig, excluded)
         collector = getattr(self.feed, "reid_collector", None)
         if collector is not None and hasattr(collector, "update_sampling"):
             collector.update_sampling(frame)

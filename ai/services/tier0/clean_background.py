@@ -9,6 +9,7 @@ import logging
 import math
 import shutil
 import threading
+import time
 import uuid
 import weakref
 from collections import deque
@@ -248,7 +249,7 @@ class BackgroundCleanBackground:
             return
         small = self._small_samples(cid, samples)
         revealed = np.logical_or.reduce([s[2] for s in small])
-        if 1.0 - float(revealed.mean()) >= self.accumulator.config.max_unrevealed_ratio:
+        if not bool(revealed.any()):
             self._rotation_views = {k: v for k, v in self._rotation_views.items() if k != cid}
             return
         view = {"signature": (ctx.generations[cid], samples[0].capture_time_ms, samples[-1].capture_time_ms),
@@ -257,16 +258,22 @@ class BackgroundCleanBackground:
                 "samples": [(s[1], s[2]) for s in small]}
         self._rotation_views = {**self._rotation_views, cid: view}
 
-    def rotation_snapshot(self) -> dict | None:
+    def rotation_snapshot(self, exclude_cameras=()) -> dict | None:
         ctx = self._active
         views = self._rotation_views
-        if ctx is None or self._context is not ctx or set(views) != set(ctx.generations):
+        if ctx is None or self._context is not ctx:
             return None
-        return views
+        required = set(ctx.generations) - set(exclude_cameras or ())
+        if not required or not required <= set(views):
+            return None
+        return {cid: views[cid] for cid in required}
 
     def recent_signature(self, cid: str) -> tuple[int, int, int] | None:
-        views = self.rotation_snapshot()
-        return views[cid]["signature"] if views is not None and cid in views else None
+        ctx = self._active
+        views = self._rotation_views
+        if ctx is None or self._context is not ctx or cid not in views:
+            return None
+        return views[cid]["signature"]
 
     def synthesize_recent(self, cid: str) -> tuple[np.ndarray, np.ndarray, int] | None:
         from simai_ai.calibration.rotation_worker import synthesize_samples
@@ -436,7 +443,15 @@ class BackgroundCleanBackground:
         try:
             _json(staging, doc)
             if self._context is ctx:
-                staging.replace(self.root / "status.json")
+                target = self.root / "status.json"
+                for attempt in range(5):
+                    try:
+                        staging.replace(target)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.005)
                 log.info("clean_background status %s", json.dumps(doc, ensure_ascii=False))
         finally:
             staging.unlink(missing_ok=True)

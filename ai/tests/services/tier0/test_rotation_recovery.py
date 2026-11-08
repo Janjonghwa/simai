@@ -448,16 +448,33 @@ def test_translation_and_large_rotation_require_setup_without_auto_overwrite(sit
     t_ms = _feed_clean_background(cb, disturbed, start_ms=t_ms, count=3)
     site.elapsed[0] = t_ms - 1_760_342_400_000
 
+    # 1차 감지: 연속 확인(2회) 전에는 SUSPECT(CONFIRMING)로 두고 아직 DRIFTED/re_setup을 확정하지 않는다
+    res1 = rot.run_once()
+    assert rot.worker_pid == pid
+    assert res1["status"] == "REQUIRES_SETUP"
+    assert res1["camera_id"] == target_cid
+    assert rot.last_status == "CONFIRMING"
+    assert res1["consecutive_confirmation"]["count"] == 1
+    assert service.calibration.state != "DRIFTED"
+    assert service.re_setup_field() == []
+    assert target_cid not in service.perception.excluded_cameras
+
+    # 새 표본 도착 뒤 2차 감지: 2회 연속 확인 완료 -> DRIFTED 확정, health.re_setup 등재, 3D 융합 제외
+    t_ms = _feed_clean_background(cb, disturbed, start_ms=t_ms, count=1)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
     res = rot.run_once()
     assert rot.worker_pid == pid
     assert res["status"] == "REQUIRES_SETUP"
     assert res["camera_id"] == target_cid
+    assert rot.last_status == "REQUIRES_SETUP"
+    assert res["consecutive_confirmation"]["count"] == 2
     assert service._pending_calibration is None
     assert service.rig.calibration_version == doc["calibration_version"]
     assert service.calibration.state == "DRIFTED"
     assert service.calibration_status["re_setup_required"] is True
     assert "현장 세팅 다시 하기" in service.calibration_status["re_setup_reason"]
     assert service.health.payload()["calibration_state"] == "DRIFTED"
+    assert target_cid in service.perception.excluded_cameras
 
     # 보고 필드(health.re_setup, 계약 2.2.0): 틀어진 카메라만, 사유·감지 시각과 함께 싣는다
     health = service.health.payload()
@@ -664,3 +681,366 @@ def test_re_setup_field_keeps_first_detection_and_clears_when_new_calibration_ac
     assert service.rig.calibration_version == "cal-after-resetup"
     assert service.re_setup_field() == [] and service.health.payload()["re_setup"] == []
     assert service.calibration_status["re_setup_required"] is False
+    assert service.perception.excluded_cameras == ()
+
+
+def _synthetic_person_observation_frames(rig, t_ms: int, *, rotated_cameras: dict[str, np.ndarray] | None = None):
+    """4대 카메라 시야 안의 합성 사람 1명(17관절)을 투영해 Observation2DFrame 목록을 만든다."""
+    from simai_ai.geometry import distortion
+    from simai_ai.tracking.local_tracker import Observation2DFrame, PoseDetection, TrackedDetection
+
+    points = np.array([4.0, 3.0, 0.0]) + np.column_stack(
+        [np.zeros(17), np.linspace(-0.15, 0.15, 17), np.linspace(0.1, 1.7, 17)]
+    )
+    out = []
+    for cid, camera in rig.cameras.items():
+        xc = camera.to_camera(points)
+        if rotated_cameras and cid in rotated_cameras:
+            xc = xc @ rotated_cameras[cid].T
+        in_front = xc[:, 2] > 0.2
+        if not np.all(in_front):
+            # 카메라가 크게 돌아가 사람이 시야 밖으로 벗어난 경우 검출 없음
+            out.append(
+                Observation2DFrame(
+                    camera_id=cid,
+                    stream_epoch=1,
+                    frame_sequence=t_ms,
+                    estimated_capture_time_ms=t_ms,
+                    timestamp_source="SIM",
+                    timestamp_uncertainty_ms=0.0,
+                    detections=(),
+                )
+            )
+            continue
+        xy = distortion.distort(xc[:, :2] / xc[:, 2:3], camera.distortion_model, camera.distortion_coeffs)
+        uv = (np.column_stack([xy, np.ones(17)]) @ camera.K.T)[:, :2]
+        w, h = camera.image_size
+        if not np.all((uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)):
+            out.append(
+                Observation2DFrame(
+                    camera_id=cid,
+                    stream_epoch=1,
+                    frame_sequence=t_ms,
+                    estimated_capture_time_ms=t_ms,
+                    timestamp_source="SIM",
+                    timestamp_uncertainty_ms=0.0,
+                    detections=(),
+                )
+            )
+            continue
+        kps = tuple((float(u), float(v), 0.95) for u, v in uv)
+        bbox = (
+            float(np.min(uv[:, 0]) - 10),
+            float(np.min(uv[:, 1]) - 10),
+            float(np.max(uv[:, 0]) + 10),
+            float(np.max(uv[:, 1]) + 10),
+        )
+        det = TrackedDetection("local-1", PoseDetection(bbox, 0.95, kps))
+        out.append(
+            Observation2DFrame(
+                camera_id=cid,
+                stream_epoch=1,
+                frame_sequence=t_ms,
+                estimated_capture_time_ms=t_ms,
+                timestamp_source="SIM",
+                timestamp_uncertainty_ms=0.0,
+                detections=(det,),
+            )
+        )
+    return out
+
+
+def test_reproduce_severe_drift_empty_and_with_person_and_confirm_background_detection(site):
+    """지시서 1·2: 카메라 1대가 30° 회전하거나 완전히 다른 장면을 비출 때(빈 방 / 사람 있음):
+    1) 사람 관절 기반 ReprojectionMonitor(drift_watch)는 30° 회전 시 CrossViewAssociator 게이트에서 탈락해
+       3+ 카메라 클러스터 표본이 0개(INSUFFICIENT_DATA)라 감지하지 못함을 재현한다.
+    2) 사람 없는 배경 전용 비교(BackgroundRotationRecovery)는 30° 회전과 완전히 다른 장면 모두
+       2회 연속 확인 뒤 DRIFTED 및 health.re_setup 으로 확정하고 3D 융합에서 제외한다."""
+    from services.tier0.drift_watch import person_observations
+    from simai_ai.calibration.monitor import MonitorConfig, MonitorStatus, ReprojectionMonitor
+    from simai_ai.tracking.cross_view import CrossViewAssociator, LocalTrackletBuffer
+
+    service, doc, cb, rot = _setup_service_with_rotation_worker(site)
+    ref_images = {cam["camera_id"]: _render_plane_view(cam) for cam in doc["cameras"]}
+    target_cid = "cam3"
+    target_cam = next(c for c in doc["cameras"] if c["camera_id"] == target_cid)
+    rot_30 = _euler_matrix(18.0, -24.0, 8.0)  # 약 30.2° 큰 회전
+    assert math.degrees(angle(rot_30)) > 28.0
+
+    # --- 1) 기존 사람 기반 감시(ReprojectionMonitor + CrossViewAssociator)의 한계 재현 ---
+    monitor = ReprojectionMonitor(
+        doc,
+        MonitorConfig(window_ms=5_000, min_window_samples=3, baseline_min_samples=3, baseline_min_span_ms=500, sustain_ms=1_000),
+    )
+    buf = LocalTrackletBuffer()
+    assoc_engine = CrossViewAssociator(service.rig)
+    # 정상 상태에서 baseline 확립 (t=1000..3000)
+    for step_t in (1_000, 1_500, 2_000, 2_500):
+        for obs in _synthetic_person_observation_frames(service.rig, step_t):
+            buf.add(obs)
+        views, _ = buf.views_at(step_t)
+        af = assoc_engine.associate(step_t, views)
+        rep = monitor.observe(step_t, [p.views for p in person_observations(af)])
+    assert all(c.baseline_median_px is not None for c in rep.cameras)
+
+    # (a) 빈 방에서 cam3 가 30° 회전 (t=4000..7000): 사람 관측이 없으므로 NO_EVIDENCE
+    rep_empty = monitor.observe(7_000, ())
+    cam3_empty = next(c for c in rep_empty.cameras if c.camera_id == target_cid)
+    assert cam3_empty.status is MonitorStatus.NO_EVIDENCE
+
+    # (b) 사람이 있어도 cam3 가 30° 회전하면 CrossViewAssociator 게이트에서 cam3 가 빠져 3대 클러스터(cam1,cam2,cam4)만 형성됨
+    for step_t in (14_000, 14_500, 15_000, 15_500, 16_000):
+        # 시야 안에 남도록 작은 픽셀 이동이지만 에피폴라 게이트(30px)를 넘는 15° 회전 투영도 함께 확인
+        for obs in _synthetic_person_observation_frames(service.rig, step_t, rotated_cameras={target_cid: _euler_matrix(0.0, 12.0, 0.0)}):
+            buf.add(obs)
+        views, _ = buf.views_at(step_t)
+        af = assoc_engine.associate(step_t, views)
+        for cluster in af.clusters:
+            if len(cluster.views) >= 3:
+                assert target_cid not in cluster.camera_ids
+        rep_person = monitor.observe(step_t, [p.views for p in person_observations(af)])
+    cam3_person = next(c for c in rep_person.cameras if c.camera_id == target_cid)
+    assert cam3_person.status is MonitorStatus.NO_EVIDENCE
+    assert cam3_person.window_samples == 0
+
+    # --- 2) 배경 전용 비교: 30° 회전 및 완전히 다른 장면(바닥/벽 추락) 감지 ---
+    t_ms = _feed_clean_background(cb, ref_images, start_ms=service.clock.now_ms(), count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    assert rot.run_once()["status"] == "STABLE"
+
+    # Case A: 30° 회전 (특징점 일부가 겹쳐도 허용각 15° 초과 또는 매칭 붕괴로 REQUIRES_SETUP)
+    rotated_30_images = dict(ref_images)
+    rotated_30_images[target_cid] = _warp_pure_rotation(ref_images[target_cid], target_cam, rot_30)
+    t_ms = _feed_clean_background(cb, rotated_30_images, start_ms=t_ms, count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r_30_1 = rot.run_once()
+    assert r_30_1["status"] == "REQUIRES_SETUP" and rot.last_status == "CONFIRMING"
+    assert service.calibration.state != "DRIFTED"
+
+    # Case B: 완전히 다른 장면(쓰러져 바닥/벽만 비추는 무특징·이질 장면)으로 전환 -> 2회차 연속 확인으로 DRIFTED 확정
+    fallen_scene = np.full_like(ref_images[target_cid], 42)
+    cv2.line(fallen_scene, (0, 100), (fallen_scene.shape[1], 120), (60, 60, 60), 3)
+    completely_different = dict(ref_images)
+    completely_different[target_cid] = fallen_scene
+    t_ms = _feed_clean_background(cb, completely_different, start_ms=t_ms, count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r_fall_2 = rot.run_once()
+    assert r_fall_2["status"] == "REQUIRES_SETUP" and rot.last_status == "REQUIRES_SETUP"
+    assert r_fall_2["rotations"][target_cid]["matches"] < rot.settings.config.min_matches
+    assert service.calibration.state == "DRIFTED"
+    assert target_cid in service.perception.excluded_cameras
+    assert [item["camera_id"] for item in service.re_setup_field()] == [target_cid]
+
+
+def test_multi_camera_fall_exclusion_and_under_two_cameras_null_position(site):
+    """지시서 3:
+    - 11-08 로비 사례처럼 2대 카메라(cam2, cam3)가 동시에 쓰러졌을 때 두 카메라 모두 DRIFTED·health.re_setup·융합 제외된다.
+    - 남은 2대(cam1, cam4)만으로도 사람 3D World 위치·관절이 정상 삼각측량된다(드리프트 카메라 관측은 섞이지 않음).
+    - DRIFTED 카메라가 이후 정상 배경/관측을 보내도 재세팅 전에는 절대 자동 복귀하지 않는다.
+    - 추가로 cam1 까지 쓰러져 정상 카메라가 1대(< 2대)만 남으면 3D 위치·관절을 지어내지 않고 null 처리한다.
+    - 새 보정(재세팅)이 활성화되면 그제서야 제외가 풀리고 4대 융합이 복구된다."""
+    from simai_ai.contact import SurfaceSet
+
+    service, doc, cb, rot = _setup_service_with_rotation_worker(site)
+    ref_images = {cam["camera_id"]: _render_plane_view(cam) for cam in doc["cameras"]}
+    t_ms = _feed_clean_background(cb, ref_images, start_ms=service.clock.now_ms(), count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    assert rot.run_once()["status"] == "STABLE"
+
+    # 1) cam2(완전히 다른 바닥 장면), cam3(30° 큰 회전) 동시 발생
+    cam3_cfg = next(c for c in doc["cameras"] if c["camera_id"] == "cam3")
+    two_fallen = dict(ref_images)
+    two_fallen["cam2"] = np.full_like(ref_images["cam2"], 30)
+    two_fallen["cam3"] = _warp_pure_rotation(ref_images["cam3"], cam3_cfg, _euler_matrix(20.0, -22.0, 6.0))
+
+    t_ms = _feed_clean_background(cb, two_fallen, start_ms=t_ms, count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r1 = rot.run_once()
+    assert r1["status"] == "REQUIRES_SETUP"
+    assert set(r1["failed_cameras"]) == {"cam2", "cam3"}
+    assert rot.last_status == "CONFIRMING"
+    assert service.perception.excluded_cameras == ()
+
+    t_ms = _feed_clean_background(cb, two_fallen, start_ms=t_ms, count=1)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r2 = rot.run_once()
+    assert r2["status"] == "REQUIRES_SETUP"
+    assert rot.last_status == "REQUIRES_SETUP"
+    assert [item["camera_id"] for item in service.re_setup_field()] == ["cam2", "cam3"]
+    assert service.perception.excluded_cameras == ("cam2", "cam3")
+
+    # R7 구역 감시 입력에서도 cam2, cam3 가 fusion_excluded=True 로 표시되는지 확인
+    mon_state = service.judge._monitoring(service.judge.active_config)
+    excluded_in_mon = {c.camera_id for c in mon_state.cameras if c.fusion_excluded}
+    assert {"cam2", "cam3"} <= excluded_in_mon
+
+    # 2) 남은 2대(cam1, cam4)와 틀어진 2대(cam2, cam3)가 모두 사람 관측을 보내도
+    #    cam2, cam3 는 융합에서 배제되고 cam1, cam4 2대만으로 정확한 World 3D 트랙이 생성·갱신된다.
+    base_t = (service.perception.manager.last_t or t_ms) + 1_000
+    bad_rot = {"cam2": _euler_matrix(15.0, -10.0, 5.0), "cam3": _euler_matrix(-12.0, 14.0, -6.0)}
+    for step_idx in range(1, 5):
+        obs_t = base_t + step_idx * 100
+        site.elapsed[0] = obs_t - 1_760_342_400_000
+        service.perception.ingest(_synthetic_person_observation_frames(service.rig, obs_t, rotated_cameras=bad_rot))
+        perceived = service.perception.step(obs_t, SurfaceSet(()))
+    assert perceived is not None
+    assert len(perceived.frame.tracks) == 1
+    track = perceived.frame.tracks[0]
+    assert track.cameras == ("cam1", "cam4")
+    assert track.pelvis_xyz is not None
+    assert np.linalg.norm(np.asarray(track.pelvis_xyz[:2]) - np.array([4.0, 3.0])) < 0.15
+
+    # 3) cam2, cam3 가 다시 정상 배경을 보내도 재세팅 전에는 절대 자동 복구·복귀되지 않으며,
+    #    그 상태에서 추가로 cam1 까지 쓰러지면 cam1 도 감지되어 총 3대가 제외된다.
+    cam1_fallen = dict(ref_images)
+    cam1_fallen["cam1"] = np.full_like(ref_images["cam1"], 15)
+    t_ms = _feed_clean_background(cb, cam1_fallen, start_ms=obs_t + 500, count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r3 = rot.run_once()
+    assert r3["status"] == "REQUIRES_SETUP" and rot.last_status == "CONFIRMING"
+    assert r3["camera_id"] == "cam1"
+
+    t_ms = _feed_clean_background(cb, cam1_fallen, start_ms=t_ms, count=1)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r4 = rot.run_once()
+    assert r4["status"] == "REQUIRES_SETUP" and rot.last_status == "REQUIRES_SETUP"
+    assert [item["camera_id"] for item in service.re_setup_field()] == ["cam1", "cam2", "cam3"]
+    assert service.perception.excluded_cameras == ("cam1", "cam2", "cam3")
+
+    # 4) 정상 카메라가 cam4 1대(< 2대)뿐이면 3D 위치·관절을 절대 지어내지 않고 null(UNKNOWN) 처리한다.
+    #    extrapolation 창(500ms) 이후 기존 트랙의 pelvis_xyz 는 None 이 되고 관절도 모두 None 이다.
+    single_cam_t = obs_t + 1_200
+    site.elapsed[0] = single_cam_t - 1_760_342_400_000
+    service.perception.ingest(_synthetic_person_observation_frames(service.rig, single_cam_t))
+    perceived_single = service.perception.step(single_cam_t, SurfaceSet(()))
+    assert perceived_single is not None
+    for snap in perceived_single.frame.tracks:
+        assert snap.skeleton is None
+    for ws_track in perceived_single.payload["tracks"]:
+        assert ws_track["pelvis_xyz"] is None
+        assert ws_track.get("joints_3d") is None
+
+    # 5) 재세팅(새 calibration_version 활성화)을 거치면 제외 목록과 re_setup 이 초기화되어 4대 융합이 복구된다.
+    new_doc, new_report = candidate(service, version="cal-resetup-recovered")
+    new_doc["cameras"] = copy.deepcopy(doc["cameras"])
+    new_doc["provider_source"] = "G1_AUTO"
+    new_doc["content_hash"] = content_hash(new_doc)
+    new_report["calibration"]["content_hash"] = new_doc["content_hash"]
+    assert service.propose_calibration(new_doc, new_report)
+    site.tick()
+    assert service.perception.excluded_cameras == ()
+    assert service.re_setup_field() == []
+
+
+def test_false_positive_prevention_occlusion_lighting_and_small_shake(site):
+    """지시서 5: 오탐 방지 시험:
+    1) 사람이 화면 일부(25% 가림 및 70% 과반 가림)를 가리는 경우 DRIFTED 가 되지 않는다(STABLE 또는 NO_EVIDENCE).
+    2) 조명 밝기가 변하는 경우(창 전체 조도 감소/증가 및 창 내부 급격한 밝기 단차) DRIFTED 가 되지 않는다.
+    3) 작은 흔들림(0.25° 미세 진동 -> STABLE, 3.1° 회전 -> PROPOSED, 1회성 일시 불량 -> 2회차 복귀 시 STABLE)은
+       DRIFTED 로 빠지지 않는다."""
+    from simai_ai.tracking.local_tracker import PoseDetection
+
+    service, doc, cb, rot = _setup_service_with_rotation_worker(site)
+    ref_images = {cam["camera_id"]: _render_plane_view(cam) for cam in doc["cameras"]}
+    t_ms = _feed_clean_background(cb, ref_images, start_ms=service.clock.now_ms(), count=3)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    assert rot.run_once()["status"] == "STABLE"
+
+    target_cid = "cam3"
+    w, h = next(c["image_size"] for c in doc["cameras"] if c["camera_id"] == target_cid)
+
+    # 1-A) 사람이 화면 일부를 가린 채 서 있는 경우 (검출 박스 마스킹 + 마스킹 안 된 국소 가림 동시 포함)
+    for _ in range(4):
+        t_ms += 100
+        for cid, img in ref_images.items():
+            frame_img = img.copy()
+            dets = ()
+            if cid == target_cid:
+                # YOLO 검출로 마스킹되는 사람 영역
+                bx1, by1, bx2, by2 = int(w * 0.28), int(h * 0.30), int(w * 0.45), int(h * 0.58)
+                frame_img[by1:by2, bx1:bx2] = (35, 180, 210)
+                dets = (PoseDetection((bx1, by1, bx2, by2), 0.92, (None,) * 17),)
+                # 검출 박스에 잡히지 않은 작은 가방/물체 국소 가림 (70x70px)
+                frame_img[int(h * 0.72) : int(h * 0.80), int(w * 0.65) : int(w * 0.72)] = 240
+            frame = Frame(cid, t_ms, "FILE", {"stream_epoch": 1, "frame_sequence": t_ms}, image=frame_img)
+            det = CameraDetections(cid, 1, t_ms, t_ms, "FILE", None, dets)
+            assert cb.offer(frame, det)
+            assert cb.process_one()
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    res_occ_partial = rot.run_once()
+    assert res_occ_partial["status"] == "STABLE", res_occ_partial
+    assert service.calibration.state != "DRIFTED"
+    assert service.re_setup_field() == []
+
+    # 1-B) 사람이 카메라 바로 앞(화면의 75%)을 가려 유효 배경이 부족한 경우 -> REQUIRES_SETUP 이 아니라 NO_EVIDENCE
+    for _ in range(4):
+        t_ms += 100
+        for cid, img in ref_images.items():
+            frame_img = img.copy()
+            dets = ()
+            if cid == target_cid:
+                bx1, by1, bx2, by2 = int(w * 0.05), int(h * 0.05), int(w * 0.90), int(h * 0.90)
+                frame_img[by1:by2, bx1:bx2] = 200
+                dets = (PoseDetection((bx1, by1, bx2, by2), 0.95, (None,) * 17),)
+            frame = Frame(cid, t_ms, "FILE", {"stream_epoch": 1, "frame_sequence": t_ms}, image=frame_img)
+            det = CameraDetections(cid, 1, t_ms, t_ms, "FILE", None, dets)
+            assert cb.offer(frame, det)
+            assert cb.process_one()
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    res_occ_heavy = rot.run_once()
+    assert res_occ_heavy["status"] == "NO_EVIDENCE", res_occ_heavy
+    assert rot.last_status == "NO_EVIDENCE"
+    assert service.calibration.state != "DRIFTED"
+    assert service.re_setup_field() == []
+
+    # 2) 조명 밝기 변화 (창 내부에서 조명이 갑자기 어두워지거나 밝아져 프레임 간 밝기 단차 +38/-35 가 발생한 경우)
+    for step_i in range(4):
+        t_ms += 100
+        for cid, img in ref_images.items():
+            frame_img = img.copy()
+            if cid == target_cid:
+                shift = -35.0 if step_i < 2 else 25.0  # 창 내 밝기 60단위 점프 (기존 분산 게이트는 variance=900>225 로 전부 탈락했음)
+                frame_img = np.clip(frame_img.astype(np.float32) + shift, 0, 255).astype(np.uint8)
+            frame = Frame(cid, t_ms, "FILE", {"stream_epoch": 1, "frame_sequence": t_ms}, image=frame_img)
+            det = CameraDetections(cid, 1, t_ms, t_ms, "FILE", None, ())
+            assert cb.offer(frame, det)
+            assert cb.process_one()
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    res_light = rot.run_once()
+    assert res_light["status"] == "STABLE", res_light
+    assert service.calibration.state != "DRIFTED"
+    assert service.re_setup_field() == []
+
+    # 3-A) 1회성 일시 불량(예: 순간 블러/가림) 뒤 다음 주기에 정상 배경 복귀 시 연속 확인에서 기각되어 DRIFTED 가 되지 않음
+    transient_bad = dict(ref_images)
+    transient_bad[target_cid] = np.full_like(ref_images[target_cid], 20)
+    t_ms = _feed_clean_background(cb, transient_bad, start_ms=t_ms, count=4)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r_glitch = rot.run_once()
+    assert r_glitch["status"] == "REQUIRES_SETUP" and rot.last_status == "CONFIRMING"
+    assert service.calibration.state != "DRIFTED"
+
+    # 다음 주기에 정상 배경으로 복귀 -> STABLE 로 리셋
+    t_ms = _feed_clean_background(cb, ref_images, start_ms=t_ms, count=4)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r_recover = rot.run_once()
+    assert r_recover["status"] == "STABLE" and rot.last_status == "STABLE"
+    assert rot.confirmation.drift_counts == {}
+    assert service.calibration.state != "DRIFTED"
+
+    # 3-B) 작은 흔들림(0.2° 미세 진동 -> STABLE, 3.1° 회전 -> 자동 복구 후보 CONFIRMING/PROPOSED)은 DRIFTED 가 되지 않음
+    target_cam = next(c for c in doc["cameras"] if c["camera_id"] == target_cid)
+    micro_shake = dict(ref_images)
+    micro_shake[target_cid] = _warp_pure_rotation(ref_images[target_cid], target_cam, _euler_matrix(0.15, -0.1, 0.05))
+    t_ms = _feed_clean_background(cb, micro_shake, start_ms=t_ms, count=4)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    assert rot.run_once()["status"] == "STABLE"
+
+    small_rot = dict(ref_images)
+    small_rot[target_cid] = _warp_pure_rotation(ref_images[target_cid], target_cam, _euler_matrix(2.5, -1.5, 1.0))
+    t_ms = _feed_clean_background(cb, small_rot, start_ms=t_ms, count=4)
+    site.elapsed[0] = t_ms - 1_760_342_400_000
+    r_small = rot.run_once()
+    assert r_small["status"] == "PROPOSED" and rot.last_status == "CONFIRMING"
+    assert service.calibration.state != "DRIFTED"
+    assert service.re_setup_field() == []
