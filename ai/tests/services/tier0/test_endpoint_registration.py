@@ -424,3 +424,68 @@ def test_control_and_video_listeners_read_site_neutral_ports() -> None:
     assert _control(ctl).port == 30000
     with pytest.raises(Tier0ConfigError, match="SIMAI_PUBLIC_PORT_70000 또는 RUNPOD_TCP_PORT_70000"):
         _control({k: v for k, v in ctl.items() if k != "SIMAI_PUBLIC_PORT_70000"})
+
+
+# ---------------------------------------------------------------------------- S15P31A101-543: 터널 포트 매핑·중복 검증·등록 상태
+
+
+def test_public_port_collision_between_control_and_video_or_distinct_requests_is_rejected() -> None:
+    # 제어(70000)와 영상(70001)이 서로 다른 요청 번호여도 실제 공개(듣는) 포트가 같으면 거부한다
+    env_ctrl_vid = _site_env(SIMAI_PUBLIC_PORT_70000="17000", SIMAI_PUBLIC_PORT_70001="17000")
+    with pytest.raises(EndpointConfigError, match="공개 포트 17000 를 제어 포트와 영상 포트가 같이 쓴다"):
+        build_payload(env_ctrl_vid, cert_pem=CERT_PEM, registered_at_ms=T0)
+
+    # 서로 다른 영상 요청 번호(70001, 70002)가 같은 공개 포트를 가리키면 거부한다(같은 포트를 쓰려면 같은 요청 번호여야 함)
+    env_dup_vid = _site_env(SIMAI_PUBLIC_PORT_70001="17001", SIMAI_PUBLIC_PORT_70002="17001")
+    with pytest.raises(EndpointConfigError, match="공개 포트 17001 가 서로 다른 요청 번호"):
+        build_payload(env_dup_vid, cert_pem=CERT_PEM, registered_at_ms=T0)
+
+
+def test_endpoint_i1_registration_logs_and_exposes_status(caplog: pytest.LogCaptureFixture) -> None:
+    from services.tier0.i1_publisher import EndpointI1Registration
+
+    class _DummyClient:
+        def __init__(self) -> None:
+            self.queued: list[tuple[dict, str | None]] = []
+
+        def enqueue(self, msg, *, replace_key=None) -> None:
+            self.queued.append((dict(msg), replace_key))
+
+    client = _DummyClient()
+    reg = registrar(lambda *a: 201)
+    env = {
+        "SIMAI_TIER0_ID": "tier0-lobby-s13",
+        "SIMAI_PUBLIC_HOST": "127.0.0.1",
+        "SIMAI_TIER0_CONTROL_PORT": "70000",
+        "SIMAI_PUBLIC_PORT_70000": "17000",
+        "SIMAI_TIER0_VIDEO_PORTS": "cam_A:70001,cam_B:70001,cam_C:70001,cam_D:70001",
+        "SIMAI_PUBLIC_PORT_70001": "17001",
+    }
+    ep = EndpointI1Registration(client, lambda: reg.build(env, CERT_PEM), source_id="tier0-lobby-s13")  # type: ignore[arg-type]
+    assert ep.status()["state"] == "PENDING"
+
+    with caplog.at_level(logging.INFO):
+        msg = ep.register()
+    assert msg is not None and not schema_errors(msg, "tier0_endpoint")
+    assert "엔드포인트 I1 등록 대기열 적재" in caplog.text
+    st = ep.status()
+    assert st["state"] == "REGISTERED" and st["registered"] == 1 and st["failures"] == 0 and st["last_error"] is None
+    assert st["public_ip"] == "127.0.0.1"
+    assert st["ports"] == [
+        {"role": "CONTROL", "requested_port": 70000, "public_port": 17000},
+        {"role": "VIDEO", "camera_id": "cam_A", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_B", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_C", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_D", "requested_port": 70001, "public_port": 17001},
+    ]
+
+    bad_ep = EndpointI1Registration(
+        client,
+        lambda: reg.build({**env, "SIMAI_TIER0_CONTROL_PORT": "17000"}, CERT_PEM),
+        source_id="tier0-lobby-s13",
+    )  # type: ignore[arg-type]
+    with caplog.at_level(logging.ERROR):
+        assert bad_ep.register() is None
+    st_bad = bad_ep.status()
+    assert st_bad["state"] == "FAILED" and st_bad["failures"] == 1 and "대칭 매핑" in (st_bad["last_error"] or "")
+
