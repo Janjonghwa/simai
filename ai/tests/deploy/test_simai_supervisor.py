@@ -1615,3 +1615,187 @@ def test_preflight_checks_wm2_repo_when_configured_and_worker_gets_wm2_lama_envs
     out_ok = json.loads(capsys.readouterr().out)
     assert rc_ok == 0 and out_ok["runtime"]["wm2_repo"]["ok"] is True
 
+
+# ---------------------------------------------------------------- S15P31A101-543: EC2 터널 포트 분리 및 대칭 매핑 회귀
+
+
+def _make_lobby_bundle(tmp_path: Path) -> tuple[Path, Path]:
+    bundle = tmp_path / "bundle-543"
+    (bundle / "tls").mkdir(parents=True, exist_ok=True)
+    (bundle / "calibration.json").write_text('{"cameras": ["cam_A", "cam_B", "cam_C", "cam_D"]}\n', encoding="utf-8")
+    (bundle / "tls" / "tier0.crt").write_bytes(_test_cert_pem())
+    (bundle / "tls" / "tier0.key").write_text("FAKE-PRIVATE-KEY\n", encoding="utf-8")
+    (bundle / "laptop_token.sha256").write_text("sha256:" + "a" * 64 + "\n", encoding="utf-8")
+    tok_file = tmp_path / "tier0-543.token"
+    tok_file.write_text("tier0-secret-543\n", encoding="utf-8")
+    return bundle, tok_file
+
+
+def test_lobby_s13_tunnel_args_register_contract_valid_1031_shape_and_listen_on_17000_17001(bs, tmp_path):
+    """(a) 13차 lobby 인자 그대로(127.0.0.1, 제어 17000, 영상 cam_A~D:17001) → 계약 통과 + 10-31 기록과 동일한 모양 + 듣는 포트 17000/17001."""
+    ai_dir = REPO / "ai"
+    if str(ai_dir) not in sys.path:
+        sys.path.insert(0, str(ai_dir))
+    from services.tier0 import video_ingest as vi
+    from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
+    from services.tier0.settings import _control
+    from simai_ai.providers.contract import schema_errors
+
+    bundle, tok_file = _make_lobby_bundle(tmp_path)
+    _cfg_path, lobby_env = bs.prepare_lobby_work(
+        tmp_path / "simai",
+        tmp_path / "work-s13",
+        bundle,
+        services=["tier0", "vllm", "worker", "avatar"],
+        public_host="127.0.0.1",
+        ec2_base_url="https://simai.live",
+        tier0_token_file=tok_file,
+        gateway_id="tier0-lobby-s13",
+        camera_ids="cam_A,cam_B,cam_C,cam_D",
+        measured_heights="cam_A=2.50,cam_B=2.50,cam_C=2.50,cam_D=2.50",
+        control_port=17000,
+        video_ports="cam_A:17001,cam_B:17001,cam_C:17001,cam_D:17001",
+        base_env={},
+    )
+    assert lobby_env["SIMAI_TIER0_CONTROL_PORT"] == "70000"
+    assert lobby_env["SIMAI_PUBLIC_PORT_70000"] == "17000"
+    assert lobby_env["SIMAI_TIER0_VIDEO_PORTS"] == "cam_A:70001,cam_B:70001,cam_C:70001,cam_D:70001"
+    assert lobby_env["SIMAI_PUBLIC_PORT_70001"] == "17001"
+
+    reg = EndpointRegistrar(
+        type("_NoT", (), {"post": lambda *a: 201})(),
+        clock_ms=lambda: 1761868800000,
+        sleep=lambda _s: None,
+        new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000543",
+    )
+    msg = reg.build(lobby_env, read_cert_pem(lobby_env))
+    assert not schema_errors(msg, "tier0_endpoint"), schema_errors(msg, "tier0_endpoint")
+    p = msg["payload"]
+    assert p["public_ip"] == "127.0.0.1"
+    assert p["gateway_id"] == "tier0-lobby-s13"
+    assert p["tls_public_key_sha256"] == "sha256:" + hashlib.sha256(_TEST_SPKI).hexdigest()
+    assert p["ports"] == [
+        {"role": "CONTROL", "requested_port": 70000, "public_port": 17000},
+        {"role": "VIDEO", "camera_id": "cam_A", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_B", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_C", "requested_port": 70001, "public_port": 17001},
+        {"role": "VIDEO", "camera_id": "cam_D", "requested_port": 70001, "public_port": 17001},
+    ]
+    # Tier 0 제어·영상 서버가 실제로 17000, 17001 포트에서 듣는다
+    assert _control(lobby_env).port == 17000
+    specs = vi.listen_specs_from_env(lobby_env)
+    assert len(specs) == 1 and specs[0].port == 17001
+    assert specs[0].cameras == frozenset({"cam_A", "cam_B", "cam_C", "cam_D"})
+
+
+def test_lobby_symmetric_mapping_regression_preserves_runpod_tcp_ports(bs, tmp_path):
+    """(b) RunPod 대칭 매핑 구성(요청 번호 70000 이상 + RUNPOD_TCP_PORT_*) 회귀: SIMAI_PUBLIC_PORT_70000=70000 으로 덮어쓰지 않고 그대로 동작."""
+    ai_dir = REPO / "ai"
+    if str(ai_dir) not in sys.path:
+        sys.path.insert(0, str(ai_dir))
+    from services.tier0 import video_ingest as vi
+    from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
+    from services.tier0.settings import _control
+    from simai_ai.providers.contract import schema_errors
+
+    bundle, tok_file = _make_lobby_bundle(tmp_path)
+    base_env = {
+        "RUNPOD_PUBLIC_IP": "203.0.113.24",
+        "RUNPOD_TCP_PORT_70000": "44464",
+        "RUNPOD_TCP_PORT_70001": "44465",
+        "RUNPOD_TCP_PORT_70002": "44466",
+        "RUNPOD_POD_ID": "pod543abc",
+        "RUNPOD_DC_ID": "AP-JP-1",
+    }
+    _cfg_path, lobby_env = bs.prepare_lobby_work(
+        tmp_path / "simai",
+        tmp_path / "work-runpod",
+        bundle,
+        services=["tier0", "vllm", "worker", "avatar"],
+        public_host="203.0.113.24",
+        ec2_base_url="https://simai.live",
+        tier0_token_file=tok_file,
+        gateway_id="tier0-runpod-01",
+        camera_ids="cam_A,cam_B",
+        measured_heights="cam_A=2.50,cam_B=2.50",
+        control_port=70000,
+        video_ports="cam_A:70001,cam_B:70002",
+        base_env=base_env,
+    )
+    assert "SIMAI_PUBLIC_PORT_70000" not in lobby_env
+    assert lobby_env["SIMAI_TIER0_CONTROL_PORT"] == "70000"
+    assert lobby_env["SIMAI_TIER0_VIDEO_PORTS"] == "cam_A:70001,cam_B:70002"
+
+    reg = EndpointRegistrar(
+        type("_NoT", (), {"post": lambda *a: 201})(),
+        clock_ms=lambda: 1761868800000,
+        sleep=lambda _s: None,
+        new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000544",
+    )
+    msg = reg.build(lobby_env, read_cert_pem(lobby_env))
+    assert not schema_errors(msg, "tier0_endpoint"), schema_errors(msg, "tier0_endpoint")
+    assert msg["payload"]["ports"] == [
+        {"role": "CONTROL", "requested_port": 70000, "public_port": 44464},
+        {"role": "VIDEO", "camera_id": "cam_A", "requested_port": 70001, "public_port": 44465},
+        {"role": "VIDEO", "camera_id": "cam_B", "requested_port": 70002, "public_port": 44466},
+    ]
+    assert _control(lobby_env).port == 44464
+    assert [s.port for s in vi.listen_specs_from_env(lobby_env)] == [44465, 44466]
+
+
+@pytest.mark.parametrize(
+    ("over", "match"),
+    [
+        ({"control_port": 17000, "video_ports": "cam_A:17000,cam_B:17001"}, "제어 포트와 영상 포트가 같은 번호"),
+        ({"control_port": 17000, "video_ports": "cam_A:17001", "avatar_port": 17000}, "아바타 포트"),
+        ({"control_port": 17000, "video_ports": "cam_A:17001", "avatar_port": 17001}, "아바타 포트"),
+        ({"control_port": 17000, "video_ports": "cam_A:17001,cam_A:17002"}, "두 번"),
+        ({"control_port": 0, "video_ports": "cam_A:17001"}, "--control-port 범위 오류"),
+        ({"control_port": 65536, "video_ports": "cam_A:17001"}, "--control-port 범위 오류"),
+        ({"control_port": 69999, "video_ports": "cam_A:17001"}, "--control-port 범위 오류"),
+        ({"control_port": 17000, "video_ports": "cam_A:65536"}, "--video-ports 포트 범위 오류"),
+        ({"control_port": 17000, "video_ports": "cam_A:0"}, "--video-ports 포트 범위 오류"),
+        ({"control_port": 17000, "video_ports": "cam_A"}, "--video-ports 항목 형식 오류"),
+        ({"control_port": 17000, "video_ports": "   "}, "--video-ports 에 카메라가 없다"),
+        ({"control_port": 17000, "video_ports": "cam_A:70001"}, "섞어 쓸 수 없다"),
+        ({"control_port": 70000, "video_ports": "cam_A:17001"}, "섞어 쓸 수 없다"),
+        ({"control_port": 70000, "video_ports": "cam_A:70000"}, "같은 요청 번호"),
+        (
+            {
+                "control_port": 70000,
+                "video_ports": "cam_A:70001",
+                "base_env": {"RUNPOD_TCP_PORT_70000": "44464", "RUNPOD_TCP_PORT_70001": "44464"},
+            },
+            "공개 포트(44464)가 같다",
+        ),
+        (
+            {
+                "control_port": 70000,
+                "video_ports": "cam_A:70001,cam_B:70002",
+                "base_env": {"RUNPOD_TCP_PORT_70000": "44464", "RUNPOD_TCP_PORT_70001": "44465", "RUNPOD_TCP_PORT_70002": "44465"},
+            },
+            "서로 다른 요청 번호",
+        ),
+    ],
+)
+def test_lobby_rejects_duplicate_or_invalid_ports(bs, tmp_path, over, match):
+    """(c) 듣는 포트 중복·잘못된 값 오류."""
+    bundle, tok_file = _make_lobby_bundle(tmp_path)
+    kw = {
+        "services": ["tier0", "vllm", "worker", "avatar"],
+        "public_host": "127.0.0.1",
+        "ec2_base_url": "https://simai.live",
+        "tier0_token_file": tok_file,
+        "camera_ids": "cam_A,cam_B",
+        "measured_heights": "cam_A=2.50,cam_B=2.50",
+        "control_port": 17000,
+        "video_ports": "cam_A:17001,cam_B:17001",
+        "base_env": {},
+        **over,
+    }
+    with pytest.raises(bs.BootstrapError) as exc:
+        bs.prepare_lobby_work(tmp_path / "simai", tmp_path / "work-bad", bundle, **kw)
+    assert exc.value.code == bs.EXIT_USAGE
+    assert match in str(exc.value)
+
+

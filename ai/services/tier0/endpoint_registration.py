@@ -260,6 +260,8 @@ def build_payload(
     seen_cameras: set[str] = set()
     requests = _env_port_requests(env, problems)
     control_requested = {r.requested_port for r in requests if r.role == "CONTROL"}
+    control_public: set[int] = set()
+    requested_by_public: dict[int, int] = {}
     for r in requests:
         if r.requested_port < MIN_REQUESTED_PORT:
             problems.append(f"요청 번호 {r.requested_port} 는 대칭 매핑 번호({MIN_REQUESTED_PORT} 이상)가 아니다")
@@ -283,10 +285,23 @@ def build_payload(
         if not _UINT.match(raw) or not 1 <= int(raw) <= 65535:
             problems.append(f"{name} 가 1~65535 포트 번호가 아니다")
             continue
+        pub_port = int(raw)
+        if r.role == "CONTROL":
+            control_public.add(pub_port)
+            requested_by_public.setdefault(pub_port, r.requested_port)
+        else:
+            if pub_port in control_public:
+                problems.append(f"공개 포트 {pub_port} 를 제어 포트와 영상 포트가 같이 쓴다")
+                continue
+            prev_req = requested_by_public.get(pub_port)
+            if prev_req is not None and prev_req != r.requested_port:
+                problems.append(f"공개 포트 {pub_port} 가 서로 다른 요청 번호({prev_req}, {r.requested_port})에 중복 지정됐다")
+                continue
+            requested_by_public[pub_port] = r.requested_port
         entry: dict[str, Any] = {"role": r.role}
         if r.camera_id is not None:
             entry["camera_id"] = r.camera_id
-        entry.update(requested_port=r.requested_port, public_port=int(raw))
+        entry.update(requested_port=r.requested_port, public_port=pub_port)
         ports.append(entry)
 
     fingerprint: str | None = None

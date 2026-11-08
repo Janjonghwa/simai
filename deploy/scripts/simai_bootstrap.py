@@ -2210,6 +2210,125 @@ def _parse_measured_heights(raw: str) -> dict[str, float]:
     return heights
 
 
+MIN_REQUESTED_PORT = 70000
+_LOBBY_CAM_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_LOBBY_UINT_RE = re.compile(r"^[0-9]{1,6}$")
+
+
+def _apply_lobby_port_env(
+    env: dict[str, str],
+    control_port: int,
+    video_ports: str,
+    *,
+    avatar_port: int | None = None,
+) -> None:
+    """로비 제어·영상 포트를 Tier 0 환경 변수(요청 번호 >= 70000 + 공개/듣는 포트 1~65535)로 매핑한다(S15P31A101-543).
+
+    - 듣는 포트(1~65535)가 주어지면(EC2 SSH 터널 등) 제어 요청 번호는 70000, 영상 요청 번호는 고유 듣는 포트 순서대로
+      70001, 70002, ... 로 배정하고 SIMAI_PUBLIC_PORT_<요청 번호>=<듣는 포트> 를 넣는다.
+    - 대칭 매핑 요청 번호(70000 이상)가 주어지면(RunPod 대칭 매핑) 요청 번호를 그대로 쓰고 SIMAI_PUBLIC_PORT_<요청 번호> 를
+      요청 번호로 덮어쓰지 않는다(환경의 SIMAI_PUBLIC_PORT_* 또는 RUNPOD_TCP_PORT_* 를 그대로 쓴다).
+    """
+    if isinstance(control_port, bool) or not isinstance(control_port, int) or not (
+        1 <= control_port <= 65535 or control_port >= MIN_REQUESTED_PORT
+    ):
+        raise BootstrapError(
+            EXIT_USAGE,
+            f"lobby: --control-port 범위 오류(1~65535 듣는 포트 또는 {MIN_REQUESTED_PORT} 이상 요청 번호): {control_port!r}",
+        )
+    parsed_video: list[tuple[str, int]] = []
+    seen_cams: set[str] = set()
+    for raw_item in (video_ports or "").split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        cam, sep, p_str = item.partition(":")
+        cam, p_str = cam.strip(), p_str.strip()
+        if not sep or not _LOBBY_CAM_ID_RE.match(cam) or not _LOBBY_UINT_RE.match(p_str):
+            raise BootstrapError(EXIT_USAGE, f"lobby: --video-ports 항목 형식 오류(<camera_id>:<포트>): {item!r}")
+        if cam in seen_cams:
+            raise BootstrapError(EXIT_USAGE, f"lobby: --video-ports 에 카메라 {cam} 가 두 번 있다")
+        seen_cams.add(cam)
+        p = int(p_str)
+        if not (1 <= p <= 65535 or p >= MIN_REQUESTED_PORT):
+            raise BootstrapError(
+                EXIT_USAGE,
+                f"lobby: --video-ports 포트 범위 오류(1~65535 또는 {MIN_REQUESTED_PORT} 이상): {item!r}",
+            )
+        parsed_video.append((cam, p))
+    if not parsed_video:
+        raise BootstrapError(EXIT_USAGE, "lobby: --video-ports 에 카메라가 없다")
+
+    ctrl_is_req = control_port >= MIN_REQUESTED_PORT
+    if any((p >= MIN_REQUESTED_PORT) != ctrl_is_req for _, p in parsed_video):
+        raise BootstrapError(
+            EXIT_USAGE,
+            f"lobby: 듣는 포트(1~65535)와 대칭 매핑 요청 번호({MIN_REQUESTED_PORT} 이상)를 섞어 쓸 수 없다",
+        )
+    if avatar_port is not None and (
+        isinstance(avatar_port, bool) or not isinstance(avatar_port, int) or not 1 <= avatar_port <= 65535
+    ):
+        raise BootstrapError(EXIT_USAGE, f"lobby: --avatar-port 범위 오류(1~65535): {avatar_port!r}")
+
+    if not ctrl_is_req:
+        if any(p == control_port for _, p in parsed_video):
+            raise BootstrapError(EXIT_USAGE, f"lobby: 제어 포트와 영상 포트가 같은 번호({control_port})를 쓴다")
+        if avatar_port is not None and (avatar_port == control_port or any(p == avatar_port for _, p in parsed_video)):
+            raise BootstrapError(EXIT_USAGE, f"lobby: 아바타 포트({avatar_port})가 제어·영상 듣는 포트와 겹친다")
+        control_req = MIN_REQUESTED_PORT
+        env["SIMAI_TIER0_CONTROL_PORT"] = str(control_req)
+        env[f"SIMAI_PUBLIC_PORT_{control_req}"] = str(control_port)
+        req_by_listen: dict[int, int] = {}
+        video_req_items: list[str] = []
+        for cam, listen_p in parsed_video:
+            req_p = req_by_listen.get(listen_p)
+            if req_p is None:
+                req_p = MIN_REQUESTED_PORT + 1 + len(req_by_listen)
+                req_by_listen[listen_p] = req_p
+                env[f"SIMAI_PUBLIC_PORT_{req_p}"] = str(listen_p)
+            video_req_items.append(f"{cam}:{req_p}")
+        env["SIMAI_TIER0_VIDEO_PORTS"] = ",".join(video_req_items)
+        log(
+            f"lobby 엔드포인트 포트 매핑: 제어 {control_req}->{control_port}, "
+            f"영상 {', '.join(f'{r}->{lp}' for lp, r in req_by_listen.items())}"
+        )
+        return
+
+    if any(p == control_port for _, p in parsed_video):
+        raise BootstrapError(EXIT_USAGE, f"lobby: 제어 포트와 영상 포트가 같은 요청 번호({control_port})를 쓴다")
+
+    def _pub_port(req: int) -> int | None:
+        for prefix in ("SIMAI_PUBLIC_PORT_", "RUNPOD_TCP_PORT_"):
+            raw = (env.get(f"{prefix}{req}") or "").strip()
+            if raw:
+                if not _LOBBY_UINT_RE.match(raw) or not 1 <= int(raw) <= 65535:
+                    raise BootstrapError(EXIT_USAGE, f"lobby: {prefix}{req}={raw!r} 가 1~65535 포트 번호가 아니다")
+                return int(raw)
+        return None
+
+    ctrl_pub = _pub_port(control_port)
+    req_by_pub: dict[int, int] = {}
+    if ctrl_pub is not None:
+        req_by_pub[ctrl_pub] = control_port
+    for _cam, req_p in parsed_video:
+        v_pub = _pub_port(req_p)
+        if v_pub is None:
+            continue
+        if ctrl_pub is not None and v_pub == ctrl_pub:
+            raise BootstrapError(EXIT_USAGE, f"lobby: 제어 포트와 영상 포트의 공개 포트({v_pub})가 같다")
+        prev_req = req_by_pub.get(v_pub)
+        if prev_req is not None and prev_req != req_p:
+            raise BootstrapError(
+                EXIT_USAGE,
+                f"lobby: 공개 포트({v_pub})가 서로 다른 요청 번호({prev_req}, {req_p})에 중복 지정됐다",
+            )
+        req_by_pub[v_pub] = req_p
+    if avatar_port is not None and avatar_port in req_by_pub:
+        raise BootstrapError(EXIT_USAGE, f"lobby: 아바타 포트({avatar_port})가 제어·영상 공개 포트와 겹친다")
+    env["SIMAI_TIER0_CONTROL_PORT"] = str(control_port)
+    env["SIMAI_TIER0_VIDEO_PORTS"] = ",".join(f"{cam}:{req_p}" for cam, req_p in parsed_video)
+
+
 def prepare_lobby_work(
     root: Path,
     work: Path,
@@ -2322,15 +2441,12 @@ def prepare_lobby_work(
     env["SIMAI_TIER0_TLS_KEY_FILE"] = str(key)
     env["SIMAI_LAPTOP_TOKEN_SHA256"] = laptop_hash
     env["SIMAI_PUBLIC_HOST"] = public_host
-    env["SIMAI_TIER0_CONTROL_PORT"] = str(control_port)
-    env.setdefault(f"SIMAI_PUBLIC_PORT_{control_port}", str(control_port))
-    env["SIMAI_TIER0_VIDEO_PORTS"] = video_ports
-    for item in video_ports.split(","):
-        if ":" in item:
-            _, p_str = item.rsplit(":", 1)
-            p_str = p_str.strip()
-            if p_str.isdigit():
-                env.setdefault(f"SIMAI_PUBLIC_PORT_{p_str}", p_str)
+    _apply_lobby_port_env(
+        env,
+        control_port,
+        video_ports,
+        avatar_port=avatar_port if "avatar" in services else None,
+    )
     if "avatar" in services:
         env["SIMAI_AVATAR_PORT"] = str(avatar_port)
         env.setdefault(f"SIMAI_PUBLIC_PORT_{avatar_port}", str(avatar_port))

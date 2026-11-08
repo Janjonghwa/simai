@@ -356,7 +356,9 @@ class EndpointI1Registration:
         self._client = client
         self._build = build
         self._source_id = source_id
+        self.registered = 0
         self.failures = 0
+        self.last_error: str | None = None
         self.last_message: Mapping[str, Any] | None = None
 
     def register(self) -> Mapping[str, Any] | None:
@@ -364,20 +366,52 @@ class EndpointI1Registration:
             message = dict(self._build())
         except EndpointConfigError as e:
             self.failures += 1
+            self.last_error = str(e)
             log.error("엔드포인트 I1 등록 안 함: %s", e)
             return None
         if message.get("msg_type") != "tier0_endpoint" or message.get("source_id") != self._source_id:
             self.failures += 1
-            log.error("엔드포인트 I1 등록 안 함: tier0_endpoint 가 아니거나 source_id 가 I1 봉투와 다르다")
+            self.last_error = "tier0_endpoint 가 아니거나 source_id 가 I1 봉투와 다르다"
+            log.error("엔드포인트 I1 등록 안 함: %s", self.last_error)
             return None
         try:
             self._client.enqueue(message, replace_key=self.REPLACE_KEY)
         except QueueFull:
             self.failures += 1
-            log.error("엔드포인트 I1 등록 안 함: 신뢰 대기열이 찼다(다음 연결에서 다시)")
+            self.last_error = "신뢰 대기열이 찼다(다음 연결에서 다시)"
+            log.error("엔드포인트 I1 등록 안 함: %s", self.last_error)
             return None
+        self.registered += 1
+        self.last_error = None
         self.last_message = message
+        payload = message.get("payload") if isinstance(message.get("payload"), Mapping) else {}
+        log.info(
+            "엔드포인트 I1 등록 대기열 적재: public_ip=%s, ports=%s, registered_at=%s",
+            payload.get("public_ip"),
+            payload.get("ports"),
+            payload.get("registered_at"),
+        )
         return message
+
+    def status(self) -> dict[str, Any]:
+        payload = (
+            self.last_message.get("payload")
+            if self.last_message is not None and isinstance(self.last_message.get("payload"), Mapping)
+            else None
+        )
+        return {
+            "state": (
+                "REGISTERED"
+                if self.last_message is not None and self.last_error is None
+                else ("FAILED" if self.last_error is not None else "PENDING")
+            ),
+            "registered": self.registered,
+            "failures": self.failures,
+            "last_error": self.last_error,
+            "registered_at": None if payload is None else payload.get("registered_at"),
+            "public_ip": None if payload is None else payload.get("public_ip"),
+            "ports": None if payload is None else payload.get("ports"),
+        }
 
 
 # ---------------------------------------------------------------------------- 조립

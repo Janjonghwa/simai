@@ -50,7 +50,7 @@ from services.tier0.clips.service import EventClipService
 from services.tier0.clips.upload import HttpPutTransport
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.drift_watch import BackgroundDriftWatch
-from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
+from services.tier0.endpoint_registration import EndpointConfigError, EndpointRegistrar, read_cert_pem
 from services.tier0.event_frames import EventFrameService, EventFrameSigner
 from services.tier0.event_frame_buffer import EventFrameBuffer
 from services.tier0.event_snapshot import EventStateSnapshot
@@ -882,6 +882,19 @@ class Tier0Service:
         )
         link.dispatcher.register("scene_reference", self._accept_scene_reference)
         link_ref["link"] = link
+        if link.endpoint is not None:
+            try:
+                preview = registrar.build(env, read_cert_pem(env))
+            except EndpointConfigError as e:
+                link.endpoint.last_error = str(e)
+                log.warning("엔드포인트 등록 설정 미비(I1 연결 시 등록 건너뜀): %s", e)
+            else:
+                ep_payload = preview.get("payload") if isinstance(preview.get("payload"), Mapping) else {}
+                log.info(
+                    "엔드포인트 등록 준비 완료: public_ip=%s, ports=%s",
+                    ep_payload.get("public_ip"),
+                    ep_payload.get("ports"),
+                )
         self.calibration.ensure_scene_snapshot(effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
         link.publisher.add_source(self._calibration_messages)
         if env.get("SIMAI_PPE_RELAY") == "1":
@@ -1468,6 +1481,9 @@ class Tier0Service:
                                                           "risk_event": self.jsonl.risk_event_lines,
                                                           "failed": self.jsonl.failed}},
             "ec2_connected": self._ec2_ok(),
+            "endpoint_registration": (
+                None if self.link is None or self.link.endpoint is None else self.link.endpoint.status()
+            ),
             "laptop_connected": self.control is not None and self.control.connected,
             "marker_error": self.marker_error,
             "avatar_share": None if avatar_writer is None else {
