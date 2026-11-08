@@ -474,8 +474,8 @@ class JudgmentLoop:
         if key != self._coverage_key:
             self._coverage = zone_cameras(self.perception.rig, active.zones)
             self._coverage_key = key
-        # 수신 중이어도 늦어서 융합에서 뺀 카메라는 그 구역을 관측하지 못한다(R7 정상 카메라·감시 복구 근거 아님, -219)
-        excluded = set(self.perception.lagging)
+        # 수신 중이어도 늦어서 융합에서 뺀 카메라나 DRIFTED/STREAM_CHANGED 로 제외된 카메라는 그 구역을 관측하지 못한다(R7 정상 카메라·감시 복구 근거 아님, -219, -540)
+        excluded = set(self.perception.lagging) | set(self.perception.excluded_cameras)
         cameras = tuple(
             CameraMonitor(
                 c.camera_id,

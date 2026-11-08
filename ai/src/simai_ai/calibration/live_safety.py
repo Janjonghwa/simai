@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from simai_ai.calibration.monitor import MonitorReport, MonitorStatus
@@ -36,25 +36,82 @@ class CandidateConfirmation:
     previous_version: str | None = None
     last_end_ms: int | None = None
     count: int = 0
+    drift_version: str | None = None
+    drift_last_end_ms: dict[str, int] = field(default_factory=dict)
+    drift_counts: dict[str, int] = field(default_factory=dict)
+
+    def reset_candidate(self) -> None:
+        self.previous_version, self.last_end_ms, self.count = None, None, 0
+
+    def reset_drift(self) -> None:
+        self.drift_version = None
+        self.drift_last_end_ms.clear()
+        self.drift_counts.clear()
+
+    def clear_camera_drift(self, camera_id: str) -> None:
+        self.drift_last_end_ms.pop(camera_id, None)
+        self.drift_counts.pop(camera_id, None)
 
     def reset(self) -> None:
-        self.previous_version, self.last_end_ms, self.count = None, None, 0
+        self.reset_candidate()
+        self.reset_drift()
 
     def observe(self, report: dict[str, Any]) -> bool:
         """동일 활성 버전에서 새 표본을 포함한 두 번의 연속 개선만 채택한다."""
+        self.reset_drift()
         version = report.get("previous_version")
         end = report.get("validation_end_ms")
         if not report.get("improvement_decision", {}).get("accepted") or not isinstance(end, int):
-            self.reset()
+            self.reset_candidate()
             return False
         if version != self.previous_version:
-            self.reset()
+            self.reset_candidate()
         if self.last_end_ms is not None and end <= self.last_end_ms:
             return False
         self.count += 1
         self.previous_version, self.last_end_ms = version, end
         report["consecutive_confirmation"] = {"count": self.count, "required": 2, "validation_end_ms": end}
         return self.count >= 2
+
+    def observe_drift(
+        self, version: str | None, report: dict[str, Any], *, required: int = 2
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """배경 기반 복구 불가능 큰 틀어짐(REQUIRES_SETUP)도 카메라별 새 표본 연속 확인 뒤 확정한다."""
+        self.reset_candidate()
+        if version != self.drift_version:
+            self.reset_drift()
+            self.drift_version = version
+        raw_failed = report.get("failed_cameras")
+        if isinstance(raw_failed, dict) and raw_failed:
+            failed = {str(cid): str(reason or "사유 미상") for cid, reason in raw_failed.items()}
+        elif report.get("camera_id"):
+            failed = {str(report["camera_id"]): str(report.get("reason") or "사유 미상")}
+        else:
+            failed = {}
+        for cid in list(self.drift_counts):
+            if cid not in failed:
+                self.clear_camera_drift(cid)
+        recent = report.get("recent_samples_ms") if isinstance(report.get("recent_samples_ms"), dict) else {}
+        fallback_end = report.get("validation_end_ms")
+        for cid in failed:
+            end = recent.get(cid, fallback_end)
+            prev_end = self.drift_last_end_ms.get(cid)
+            if isinstance(end, int):
+                if prev_end is None or end > prev_end:
+                    self.drift_counts[cid] = self.drift_counts.get(cid, 0) + 1
+                    self.drift_last_end_ms[cid] = end
+            else:
+                self.drift_counts[cid] = self.drift_counts.get(cid, 0) + 1
+        confirmed = {cid: reason for cid, reason in failed.items() if self.drift_counts.get(cid, 0) >= required}
+        suspect = {cid: reason for cid, reason in failed.items() if cid not in confirmed}
+        counts = {cid: self.drift_counts.get(cid, 0) for cid in failed}
+        report["consecutive_confirmation"] = {
+            "count": max(counts.values(), default=0),
+            "required": required,
+            "validation_end_ms": fallback_end,
+            "camera_counts": counts,
+        }
+        return confirmed, suspect
 
 
 @dataclass

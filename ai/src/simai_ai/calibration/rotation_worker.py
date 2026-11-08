@@ -80,6 +80,44 @@ def synthesize_samples(samples):
     variance = np.maximum(squares / denom - (total / denom) ** 2, 0)
     if variance.ndim == 3:
         variance = variance.max(axis=2)
+    # 전역 무채색 조명 밝기(노출/조도) 변화만 있는 창은 스칼라 밝기 오프셋을 보정해 오탐을 막는다.
+    # 색 변화(채널별 편차)나 국소 움직임(공간 잔차 표준편차)은 기존 분산 게이트대로 기각한다.
+    common = masks.all(axis=-1)
+    if (variance > 225).any() and int(common.sum()) >= max(64, int(common.size * 0.25)):
+        g0 = pixels[..., 0].astype(np.float32)
+        f0 = frames[0].astype(np.float32)
+        shifts: list[float] = []
+        achromatic_global = True
+        for k, frame in enumerate(frames):
+            gk = pixels[..., k].astype(np.float32)
+            diff_g = gk[common] - g0[common]
+            shift_k = float(np.median(diff_g))
+            if float(np.std(diff_g - shift_k)) > 15.0:
+                achromatic_global = False
+                break
+            if frame.ndim == 3:
+                fk = frame.astype(np.float32)
+                for ch in range(3):
+                    diff_ch = fk[..., ch][common] - f0[..., ch][common]
+                    if abs(float(np.median(diff_ch)) - shift_k) > 15.0 or float(np.std(diff_ch - shift_k)) > 15.0:
+                        achromatic_global = False
+                        break
+                if not achromatic_global:
+                    break
+            shifts.append(shift_k)
+        if achromatic_global and max(shifts, default=0.0) - min(shifts, default=0.0) > 5.0:
+            anchor_shift = float(np.median(shifts))
+            norm_total = np.zeros(shape, np.float32)
+            norm_squares = np.zeros(shape, np.float32)
+            for frame, mask, shift_k in zip(frames, np.moveaxis(masks, -1, 0), shifts):
+                valid_mask = np.ascontiguousarray(mask, dtype=np.uint8)
+                aligned = np.clip(frame.astype(np.float32) - (shift_k - anchor_shift), 0.0, 255.0)
+                cv2.accumulate(aligned, norm_total, mask=valid_mask)
+                cv2.accumulateSquare(aligned, norm_squares, mask=valid_mask)
+            norm_var = np.maximum(norm_squares / denom - (norm_total / denom) ** 2, 0)
+            if norm_var.ndim == 3:
+                norm_var = norm_var.max(axis=2)
+            variance = np.minimum(variance, norm_var)
     valid = ((count >= minimum) & (variance <= 225)).astype(np.uint8) * 255
     bg[valid == 0] = 0
     return bg, valid
@@ -130,10 +168,13 @@ class RotationComputation:
         result = {}
         try:
             config = request["config"]
+            ignored = set(request.get("ignored_cameras") or ())
             refs, features = {}, {}
             # 문서·렌즈·해상도·설정도 최근 특징의 캐시 키에 넣는다.
             for camera in request["document"]["cameras"]:
                 cid = camera["camera_id"]
+                if cid in ignored:
+                    continue
                 entry = request["references"][cid]
                 key = (entry["key"], config)
                 cached = self.references.get(cid)
@@ -156,6 +197,8 @@ class RotationComputation:
                 refs[cid] = entry["camera"], self.references[cid][1]
             for camera in request["document"]["cameras"]:
                 cid = camera["camera_id"]
+                if cid in ignored:
+                    continue
                 recent = request["recent"][cid]
                 feature_config = self.references[cid][2]
                 key = (recent["signature"], json.dumps(camera, sort_keys=True), feature_config)
@@ -184,7 +227,7 @@ class RotationComputation:
             candidate, report = make_candidate(
                 request["document"], refs, features, request["recent_ms"],
                 at_ms=request["now_ms"], version=request["version"], config=config,
-                check_budget=check_budget, measure=measure,
+                check_budget=check_budget, measure=measure, ignored_cameras=ignored,
             )
             check_budget()
             result = {"status": "COMPLETED", "candidate": candidate, "report": report}

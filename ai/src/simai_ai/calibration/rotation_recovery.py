@@ -52,6 +52,8 @@ class Features:
     points: np.ndarray  # 왜곡 제거한 원본 해상도의 픽셀 좌표
     descriptors: np.ndarray | None
     size: tuple[int, int]
+    valid_ratio: float = 1.0
+    mask: np.ndarray | None = None
 
 
 def extract_features(image, mask, camera, config: RotationConfig, *, original_size=None) -> Features:
@@ -64,9 +66,19 @@ def extract_features(image, mask, camera, config: RotationConfig, *, original_si
     small = cv2.resize(image, size, interpolation=cv2.INTER_LINEAR)
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
     valid = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+    valid_ratio = float((valid > 0).mean()) if valid.size else 0.0
     # 마스크 경계의 descriptor patch도 관측된 정적 배경만 쓴다.
     valid = cv2.erode(valid, np.ones((9, 9), np.uint8))
-    keypoints, descriptors = cv2.SIFT_create(nfeatures=config.max_features).detectAndCompute(gray, valid)
+    sift = cv2.SIFT_create(nfeatures=config.max_features)
+    keypoints, descriptors = sift.detectAndCompute(gray, valid)
+    if len(keypoints) < max(80, config.min_matches * 2) and (valid > 0).any():
+        active_px = gray[valid > 0]
+        lo_p, hi_p = float(np.percentile(active_px, 2)), float(np.percentile(active_px, 98))
+        if hi_p - lo_p >= 8.0:
+            norm_gray = np.clip((gray.astype(np.float32) - lo_p) * (255.0 / (hi_p - lo_p)), 0.0, 255.0).astype(np.uint8)
+            kp2, desc2 = sift.detectAndCompute(norm_gray, valid)
+            if len(kp2) > len(keypoints):
+                keypoints, descriptors = kp2, desc2
     points = np.array([k.pt for k in keypoints], dtype=np.float64).reshape(-1, 2)
     points *= np.array([source_size[0] / size[0], source_size[1] / size[1]])
     distortion = camera["distortion"]
@@ -79,7 +91,7 @@ def extract_features(image, mask, camera, config: RotationConfig, *, original_si
             points = cv2.fisheye.undistortPoints(points[:, None], K, coeffs, P=K)[:, 0]
         elif distortion["model"] != "NONE":
             points = cv2.undistortPoints(points[:, None], K, coeffs if coeffs.size else None, P=K)[:, 0]
-    return Features(points, descriptors, source_size)
+    return Features(points, descriptors, source_size, valid_ratio, valid)
 
 
 def match_features(a: Features, b: Features):
@@ -106,10 +118,28 @@ def _project(H, points):
     return p[:, :2] / p[:, 2, None]
 
 
-def fit_rotation(p, q, K, size, config: RotationConfig) -> dict:
+def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 1.0) -> dict:
     """1/5 대응은 H 적합에서 제외한다. H 잔차와 회전 H 잔차를 별도로 검사한다."""
-    result = {"status": "REQUIRES_SETUP", "matches": len(p), "reason": "매칭 부족"}
+    result = {"status": "REQUIRES_SETUP", "matches": len(p), "reason": "매칭 부족", "valid_ratio": float(valid_ratio)}
     if len(p) < config.min_matches:
+        if len(p) >= 12 and valid_ratio < 0.90:
+            disp = np.linalg.norm(p - q, axis=1)
+            p95 = float(np.percentile(disp, 95))
+            if float(np.percentile(disp, 90)) <= config.max_residual_px:
+                return {
+                    **result,
+                    "status": "ROTATION",
+                    "delta_R": np.eye(3).tolist(),
+                    "angle_rad": 0.0,
+                    "singular_ratio": 1.0,
+                    "inlier_ratio": float((disp <= config.max_residual_px).mean()),
+                    "coverage": 0.0,
+                    "residual_p95_px": p95,
+                    "rotation_residual_p95_px": p95,
+                    "reason": None,
+                }
+        if valid_ratio < 0.5:
+            return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return result
     held = np.arange(len(p)) % 5 == 0
     H, inliers = cv2.findHomography(p[~held], q[~held], cv2.RANSAC, config.max_residual_px)
@@ -123,16 +153,34 @@ def fit_rotation(p, q, K, size, config: RotationConfig) -> dict:
     delta = U @ np.diag([1., 1., np.linalg.det(U @ Vt)]) @ Vt
     residual = np.linalg.norm(_project(H, p[held]) - q[held], axis=1)
     rotation_residual = np.linalg.norm(_project(K @ delta @ np.linalg.inv(K), p[held]) - q[held], axis=1)
+    inlier_ratio = float(inliers.mean())
+    # 부분 가림으로 소수의 외점 대응이 held-out에 섞여도 대다수 대응이 정합하면 인라이어 잔차로 평가한다.
+    if (
+        inlier_ratio >= config.min_inlier_ratio
+        and float((residual <= config.max_residual_px).mean()) >= max(config.min_inlier_ratio, 0.75)
+        and np.any(residual > config.max_residual_px * 3.0)
+    ):
+        keep = residual <= config.max_residual_px * 3.0
+        residual = residual[keep]
+        rotation_residual = rotation_residual[keep]
     coverage = min(float(np.prod(np.ptp(x, axis=0)) / (size[0] * size[1])) for x in (p, q))
     result.update(delta_R=delta.tolist(), angle_rad=angle(delta),
                   singular_ratio=float(singular[-1] / singular[0]),
-                  inlier_ratio=float(inliers.mean()), coverage=coverage,
+                  inlier_ratio=inlier_ratio, coverage=coverage,
                   residual_p95_px=float(np.percentile(residual, 95)),
                   rotation_residual_p95_px=float(np.percentile(rotation_residual, 95)))
-    pure = (result["singular_ratio"] >= config.min_singular_ratio
-            and result["inlier_ratio"] >= config.min_inlier_ratio and coverage >= config.min_coverage
-            and max(result["residual_p95_px"], result["rotation_residual_p95_px"]) <= config.max_residual_px)
+    geom_ok = (result["singular_ratio"] >= config.min_singular_ratio
+               and result["inlier_ratio"] >= config.min_inlier_ratio
+               and max(result["residual_p95_px"], result["rotation_residual_p95_px"]) <= config.max_residual_px)
+    if geom_ok and coverage < config.min_coverage:
+        if result["angle_rad"] < config.min_angle_rad:
+            return {**result, "status": "ROTATION", "reason": None}
+        if result["angle_rad"] <= config.max_angle_rad:
+            return {**result, "status": "NO_EVIDENCE", "reason": "정적 배경 분포 면적 부족"}
+    pure = geom_ok and coverage >= config.min_coverage
     if not pure:
+        if valid_ratio < 0.5 and result["inlier_ratio"] >= config.min_inlier_ratio:
+            return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return {**result, "reason": "위치 이동/시차 또는 불충분한 정적 배경"}
     if result["angle_rad"] > config.max_angle_rad:
         return {**result, "reason": "자동 복구 허용각 초과"}
@@ -223,21 +271,40 @@ def consistent_rotation(previous: Mapping[str, Any] | None, current: Mapping[str
 
 
 def make_candidate(previous, references, features, recent, *, at_ms, version, config, check_budget=lambda: None,
-                   measure=lambda _stage: nullcontext()):
+                   measure=lambda _stage: nullcontext(), ignored_cameras=()):
     document = copy.deepcopy(previous)
-    rotations, changed, failed = {}, [], None
+    ignored = set(ignored_cameras or ())
+    rotations, changed = {}, []
+    failed_cameras: dict[str, str] = {}
+    no_evidence_cameras: dict[str, str] = {}
     for i, active in enumerate(document["cameras"]):
         cid = active["camera_id"]
+        if cid in ignored:
+            continue
         reference, ref_features = references[cid]
+        feat = features[cid]
         check_budget()
         with measure("matching"):
-            p, q = match_features(ref_features, features[cid])
+            p, q = match_features(ref_features, feat)
+        eff_valid_ratio = float(getattr(feat, "valid_ratio", 1.0))
+        feat_mask = getattr(feat, "mask", None)
+        if feat_mask is not None and feat_mask.size and len(ref_features.points):
+            mh, mw = feat_mask.shape[:2]
+            sw, sh = ref_features.size
+            u_idx = np.clip((ref_features.points[:, 0] * (mw / sw)).astype(int), 0, mw - 1)
+            v_idx = np.clip((ref_features.points[:, 1] * (mh / sh)).astype(int), 0, mh - 1)
+            ref_vis = float((feat_mask[v_idx, u_idx] > 0).mean())
+            eff_valid_ratio = min(eff_valid_ratio, ref_vis)
         with measure("estimation"):
-            fit = fit_rotation(p, q, reference["K"], ref_features.size, config)
+            fit = fit_rotation(
+                p, q, reference["K"], ref_features.size, config, valid_ratio=eff_valid_ratio
+            )
         rotations[cid] = fit
+        if fit["status"] == "NO_EVIDENCE":
+            no_evidence_cameras[cid] = str(fit["reason"])
+            continue
         if fit["status"] != "ROTATION":
-            if failed is None:
-                failed = cid, fit["reason"]
+            failed_cameras[cid] = str(fit["reason"])
             continue
         camera = fixed_center_camera(reference, fit["delta_R"])
         change = angle(np.asarray(camera["R"]) @ np.asarray(active["R"]).T)
@@ -245,10 +312,18 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
         if change >= config.min_angle_rad:
             document["cameras"][i] = camera
             changed.append(cid)
-    end_ms = min(recent.values())
-    if failed is not None:
-        return None, {"status": "REQUIRES_SETUP", "reason": failed[1], "camera_id": failed[0],
-                      "rotations": rotations, "validation_end_ms": end_ms, "recent_samples_ms": recent}
+    active_recent = {cid: ms for cid, ms in recent.items() if cid not in ignored} or dict(recent)
+    end_ms = min(active_recent.values()) if active_recent else at_ms
+    if failed_cameras:
+        first_cid, first_reason = next(iter(failed_cameras.items()))
+        return None, {"status": "REQUIRES_SETUP", "reason": first_reason, "camera_id": first_cid,
+                      "failed_cameras": failed_cameras, "rotations": rotations,
+                      "validation_end_ms": end_ms, "recent_samples_ms": recent}
+    if no_evidence_cameras:
+        first_cid, first_reason = next(iter(no_evidence_cameras.items()))
+        return None, {"status": "NO_EVIDENCE", "reason": first_reason, "camera_id": first_cid,
+                      "no_evidence_cameras": no_evidence_cameras, "rotations": rotations,
+                      "validation_end_ms": end_ms, "recent_samples_ms": recent}
     if not changed:
         return None, {"status": "STABLE", "reason": "STABLE", "rotations": rotations,
                       "validation_end_ms": end_ms, "recent_samples_ms": recent}
@@ -257,14 +332,16 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
     document["content_hash"] = content_hash(document)
     pairs = evaluate_pairs(previous, document, features, changed, config, check_budget, measure)
     accepted = pairs_improve(pairs, changed, config)
+    pair_reason = "인접 쌍 배경 재투영 개선 미달"
     return document if accepted else None, {
         "status": "PROPOSED" if accepted else "REQUIRES_SETUP",
         "method": METHOD, "previous_version": previous["calibration_version"],
         "calibration": {"version": version, "content_hash": document["content_hash"]},
         "validation_end_ms": end_ms, "recent_samples_ms": recent,
         "camera_id": changed[0], "changed_camera_ids": changed, "rotations": rotations, "pairs": pairs,
+        "failed_cameras": {} if accepted else {cid: pair_reason for cid in changed},
         "world_alignment": {"mode": "fixed_centers_rotation_only", "fixed_center_rotation_cameras": changed},
-        "thresholds": asdict(config), "reason": None if accepted else "인접 쌍 배경 재투영 개선 미달",
+        "thresholds": asdict(config), "reason": None if accepted else pair_reason,
         "improvement_decision": {"accepted": accepted},
     }
 

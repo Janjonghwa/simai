@@ -92,19 +92,22 @@ class BackgroundRotationRecovery:
         self.last_report: dict[str, Any] | None = None
         self.last_cpu_ms: dict[str, float] = {}
         self.feature_sides: dict[str, int] = {}
+        self.drifted_cameras: set[str] = set()
 
     def activate(self, document: Mapping[str, Any], provenance: Mapping[str, Any]) -> None:
         self.document = copy.deepcopy(document)
         self.provenance = copy.deepcopy(provenance)
         self.generation += 1
         self.blocked_reason = None
+        self.drifted_cameras.clear()
         self.confirmation.reset()
         self._last_candidate_report = None
         self._last_signatures = None
 
     def reset_camera(self, camera_id: str) -> None:
         self.generation += 1
-        self.confirmation.reset()
+        self.confirmation.reset_candidate()
+        self.confirmation.clear_camera_drift(camera_id)
         self._last_candidate_report = None
         self._last_signatures = None
 
@@ -121,6 +124,8 @@ class BackgroundRotationRecovery:
         references = {}
         for camera in self.document["cameras"]:
             cid = camera["camera_id"]
+            if cid in self.drifted_cameras:
+                continue
             entry = self.clean_background._reference.get(cid)
             if entry is None or cid not in cameras:
                 return None
@@ -133,7 +138,7 @@ class BackgroundRotationRecovery:
             references[cid] = {"key": key, "camera": copy.deepcopy(ref_camera),
                                "image": str(folder / record["image"]),
                                "mask": str(folder / record["valid_mask"])}
-        return references
+        return references or None
 
     def _compute(self, request):
         if self._process is None or self._process.poll() is not None:
@@ -195,6 +200,7 @@ class BackgroundRotationRecovery:
         *,
         bad_cameras: set[str],
         status_for_bad: MonitorStatus,
+        status_by_camera: Mapping[str, MonitorStatus] | None = None,
         findings: tuple[DriftFinding, ...] = (),
         rotations: Mapping[str, Any] = (),
     ) -> None:
@@ -206,12 +212,25 @@ class BackgroundRotationRecovery:
         for cam in self.document["cameras"]:
             cid = cam["camera_id"]
             sample_ms = min(now_ms, int(recent_ms.get(cid, now_ms)))
+            if status_by_camera is not None and cid in status_by_camera:
+                cam_status = status_by_camera[cid]
+            elif cid in bad_cameras:
+                cam_status = status_for_bad
+            elif cid in self.drifted_cameras:
+                cam_status = MonitorStatus.DRIFTED
+            else:
+                cam_status = MonitorStatus.MONITORING
+            is_bad = cam_status in (MonitorStatus.SUSPECT, MonitorStatus.DRIFTED, MonitorStatus.STREAM_CHANGED)
             fit = rotations.get(cid) if isinstance(rotations, Mapping) else None
-            res = float(fit.get("rotation_residual_p95_px", threshold + 1.0 if cid in bad_cameras else 0.5)) if isinstance(fit, Mapping) else (threshold + 1.0 if cid in bad_cameras else 0.5)
+            res = (
+                float(fit.get("rotation_residual_p95_px", threshold + 1.0 if is_bad else 0.5))
+                if isinstance(fit, Mapping)
+                else (threshold + 1.0 if is_bad else 0.5)
+            )
             cameras.append(
                 CameraMonitorReport(
                     camera_id=cid,
-                    status=status_for_bad if cid in bad_cameras else MonitorStatus.MONITORING,
+                    status=cam_status,
                     window_samples=min_samples,
                     window_median_px=res,
                     window_p95_px=res,
@@ -236,29 +255,52 @@ class BackgroundRotationRecovery:
         self._on_drift_report(report, changed_streams)
 
     def _handle_requires_setup(
-        self, now_ms: int, cid: str, reason: str, recent_ms: Mapping[str, int], rotations: Mapping[str, Any]
+        self,
+        now_ms: int,
+        failed_cameras: Mapping[str, str],
+        recent_ms: Mapping[str, int],
+        rotations: Mapping[str, Any],
+        *,
+        suspect_cameras: Mapping[str, str] | None = None,
     ) -> None:
-        self.confirmation.reset()
+        self.confirmation.reset_candidate()
+        for cid in failed_cameras:
+            self.confirmation.clear_camera_drift(cid)
+            self.drifted_cameras.add(cid)
         self._last_candidate_report = None
+        first_cid, first_reason = next(iter(failed_cameras.items()))
         self.last_status = "REQUIRES_SETUP"
-        self.last_error = f"현장 세팅 다시 하기: {cid} ({reason})"
-        if self._on_requires_setup is not None:
-            self._on_requires_setup(cid, reason)
-        stream_changed = reason.startswith("STREAM_CHANGED")
-        finding = DriftFinding(
-            camera_id=cid,
-            reason=DriftReason.RESOLUTION_CHANGED if stream_changed else DriftReason.REPROJECTION_INCREASED,
-            message=f"현장 세팅 다시 하기: {reason}",
-        )
+        self.last_error = f"현장 세팅 다시 하기: {first_cid} ({first_reason})"
+        findings = []
+        status_by_camera: dict[str, MonitorStatus] = {}
+        if suspect_cameras:
+            for cid in suspect_cameras:
+                status_by_camera[cid] = MonitorStatus.SUSPECT
+        for cid, reason in failed_cameras.items():
+            if self._on_requires_setup is not None:
+                self._on_requires_setup(cid, reason)
+            stream_changed = reason.startswith("STREAM_CHANGED")
+            status_by_camera[cid] = (
+                MonitorStatus.STREAM_CHANGED if stream_changed else MonitorStatus.DRIFTED
+            )
+            findings.append(
+                DriftFinding(
+                    camera_id=cid,
+                    reason=DriftReason.RESOLUTION_CHANGED if stream_changed else DriftReason.REPROJECTION_INCREASED,
+                    message=f"현장 세팅 다시 하기: {reason}",
+                )
+            )
         self._emit_monitor_report(
             now_ms,
             recent_ms,
-            bad_cameras={cid},
-            status_for_bad=MonitorStatus.STREAM_CHANGED if stream_changed else MonitorStatus.DRIFTED,
-            findings=(finding,),
+            bad_cameras=set(failed_cameras) | set(suspect_cameras or ()),
+            status_for_bad=MonitorStatus.DRIFTED,
+            status_by_camera=status_by_camera,
+            findings=tuple(findings),
             rotations=rotations,
         )
-        self.clean_background.reset_camera(cid)
+        for cid in failed_cameras:
+            self.clean_background.reset_camera(cid)
 
     def run_once(self) -> dict[str, Any] | None:
         if not self._run_lock.acquire(blocking=False):
@@ -270,7 +312,7 @@ class BackgroundRotationRecovery:
             if self._stop.is_set():
                 return None
             references = self._load_references()
-            recent = self.clean_background.rotation_snapshot()
+            recent = self.clean_background.rotation_snapshot(exclude_cameras=self.drifted_cameras)
             if references is None or recent is None:
                 self.last_status = "NOT_READY"
                 return {"status": "NOT_READY"}
@@ -283,6 +325,7 @@ class BackgroundRotationRecovery:
                 "recent_ms": recent_ms, "config": self.settings.config,
                 "budget_ms": self.settings.cpu_budget_ms, "now_ms": now,
                 "version": f"cal-rot-{now}-{self.cycles + 1}-{uuid.uuid4().hex[:8]}",
+                "ignored_cameras": sorted(self.drifted_cameras),
             })
             self.last_cpu_ms = result["timings"]
             self.worker_pid = result.get("worker_pid")
@@ -308,8 +351,10 @@ class BackgroundRotationRecovery:
             status = report["status"]
             if self._in_probation():
                 bad_ids = set(report.get("changed_camera_ids") or ())
-                if status == "REQUIRES_SETUP" and report.get("camera_id"):
-                    bad_ids.add(report["camera_id"])
+                if status == "REQUIRES_SETUP":
+                    bad_ids.update((report.get("failed_cameras") or {}).keys())
+                    if report.get("camera_id"):
+                        bad_ids.add(report["camera_id"])
                 self._emit_monitor_report(
                     now,
                     recent_ms,
@@ -326,15 +371,58 @@ class BackgroundRotationRecovery:
                 self.last_status = "STABLE"
                 self.last_error = None
                 return report
+            if status == "NO_EVIDENCE":
+                self.confirmation.reset_candidate()
+                self._last_candidate_report = None
+                self.last_status = "NO_EVIDENCE"
+                self.last_error = str(report.get("reason") or "유효 배경 근거 부족")
+                no_ev = set((report.get("no_evidence_cameras") or {}).keys())
+                self._emit_monitor_report(
+                    now,
+                    recent_ms,
+                    bad_cameras=no_ev,
+                    status_for_bad=MonitorStatus.NO_EVIDENCE,
+                    rotations=report.get("rotations", {}),
+                )
+                return report
             if status == "REQUIRES_SETUP":
+                raw_failed = report.get("failed_cameras")
+                if isinstance(raw_failed, Mapping) and raw_failed:
+                    failed_map = {str(k): str(v) for k, v in raw_failed.items()}
+                else:
+                    failed_map = {str(report["camera_id"]): str(report["reason"])}
+                if self.safety_enabled:
+                    confirmed, suspect = self.confirmation.observe_drift(
+                        self.document["calibration_version"], report
+                    )
+                    if not confirmed:
+                        self._last_candidate_report = None
+                        self.last_status = "CONFIRMING"
+                        self.last_error = f"재세팅 확인 대기: {', '.join(sorted(suspect))}"
+                        self._emit_monitor_report(
+                            now,
+                            recent_ms,
+                            bad_cameras=set(suspect),
+                            status_for_bad=MonitorStatus.SUSPECT,
+                            rotations=report.get("rotations", {}),
+                        )
+                        return report
+                else:
+                    confirmed, suspect = failed_map, {}
+                    report["consecutive_confirmation"] = {
+                        "count": 2,
+                        "required": 2,
+                        "validation_end_ms": report["validation_end_ms"],
+                        "camera_counts": {cid: 2 for cid in confirmed},
+                    }
                 self._handle_requires_setup(
-                    now, report["camera_id"], str(report["reason"]), recent_ms, report.get("rotations", {})
+                    now, confirmed, recent_ms, report.get("rotations", {}), suspect_cameras=suspect
                 )
                 return report
             assert candidate is not None
-            if self.blocked_reason is not None:
+            if self.blocked_reason is not None or self.drifted_cameras:
                 self.last_status = "BLOCKED"
-                self.last_error = self.blocked_reason
+                self.last_error = self.blocked_reason or "재세팅 필요 카메라 존재"
                 return report
             if self.safety_enabled:
                 if self.confirmation.count > 0 and not consistent_rotation(
@@ -375,7 +463,7 @@ class BackgroundRotationRecovery:
                 parts = msg.split(":", 2)
                 cid = parts[1] if len(parts) == 3 else self.document["cameras"][0]["camera_id"]
                 reason = parts[2] if len(parts) == 3 else msg
-                self._handle_requires_setup(now, cid, reason, {}, {})
+                self._handle_requires_setup(now, {cid: reason}, {}, {})
                 return {"status": "REQUIRES_SETUP", "camera_id": cid, "reason": reason}
             self.confirmation.reset()
             self.cycles += 1

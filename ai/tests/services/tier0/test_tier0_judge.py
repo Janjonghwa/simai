@@ -91,6 +91,7 @@ class FakePerception:
     manager: _Manager = field(default_factory=_Manager)
     _t: int | None = None
     lagging: tuple[str, ...] = ()
+    excluded_cameras: tuple[str, ...] = ()
 
     def camera_clocks(self):
         return (CameraClock("cam1", self._t, True),)

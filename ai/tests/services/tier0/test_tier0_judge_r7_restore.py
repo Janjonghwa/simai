@@ -77,6 +77,7 @@ class _Perception:
     manager: _Manager = field(default_factory=_Manager)
     _t: int | None = None
     lagging: tuple[str, ...] = ()
+    excluded_cameras: tuple[str, ...] = ()
 
     def camera_clocks(self):
         return tuple(CameraClock(c, self._t, True) for c in CAMERAS)

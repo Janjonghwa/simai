@@ -916,6 +916,7 @@ class Tier0Service:
                 "reason": reason or "사유 미상",
                 "detected_at": self.clock.now_ms() if known is None else known["detected_at"],
             }
+            self.perception.exclude_cameras((camera_id,))
 
     def re_setup_field(self) -> list[dict[str, Any]]:
         """health.re_setup 값(계약 2.2.0): 재세팅이 필요한 카메라 목록(camera_id 오름차순), 없으면 빈 배열. 판정은 건드리지 않는다."""
@@ -1116,6 +1117,13 @@ class Tier0Service:
                 # 저장 실패 시 근거를 유지해 다음 표본 때 다시 저장한다(감시기는 확정 근거를 한 번만 낸다).
                 self.calibration.report_drift(pending, effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
                 self._pending_drift_report = None
+            drifted_or_changed = {
+                c.camera_id
+                for c in report.cameras
+                if c.status in (MonitorStatus.DRIFTED, MonitorStatus.STREAM_CHANGED)
+            } | set(changed_streams)
+            if drifted_or_changed:
+                self.perception.exclude_cameras(drifted_or_changed)
             if self.calibration.state == "DRIFTED" and not changed_streams:
                 for camera in report.cameras:
                     key = report.calibration_version, camera.camera_id
