@@ -8,17 +8,29 @@ import {
 } from '@/features/viewer3d/worldCoordinates';
 import * as THREE from 'three';
 import type {
+  SceneMapCamera,
+  SceneMapCameras,
   SceneVdtConfig,
   VdtCameraInput,
   VdtCameraThree,
   VdtFloorPlaneInput,
   VdtFreeViewInput,
   VdtMatrix3,
+  VdtPoseSource,
   VdtQuadCornersWorld,
   VdtVec2,
   VdtVec3,
   VdtWallPlaneInput,
 } from './vdtTypes';
+
+const POSE_SOURCES = new Set<VdtPoseSource>(['CALIBRATION', 'MA_ALIGNED_SIM3', 'MA_ALIGNED']);
+const CAMERA_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function readPoseSource(raw: unknown): VdtPoseSource | null {
+  return typeof raw === 'string' && POSE_SOURCES.has(raw as VdtPoseSource)
+    ? (raw as VdtPoseSource)
+    : null;
+}
 
 function matrix3FromRows(rows: VdtMatrix3): THREE.Matrix3 {
   const m = new THREE.Matrix3();
@@ -200,6 +212,7 @@ function readCameraInput(raw: unknown, convertFromGlbConvention: boolean): VdtCa
   const gain = readVec3(raw.color_gain_srgb ?? raw.colorGainSrgb) ?? [1, 1, 1];
   const expRaw = raw.image_expires_at_ms ?? raw.imageExpiresAtMs;
   const imageExpiresAtMs = isFiniteNum(expRaw) ? expRaw : null;
+  const poseSource = readPoseSource(raw.pose_source ?? raw.poseSource) ?? 'CALIBRATION';
 
   return {
     cameraId,
@@ -210,6 +223,102 @@ function readCameraInput(raw: unknown, convertFromGlbConvention: boolean): VdtCa
     R,
     t,
     colorGainSrgb: gain,
+    poseSource,
+  };
+}
+
+function readSceneMapCamera(raw: unknown): SceneMapCamera | null {
+  if (!isRecord(raw)) return null;
+  const sizeRaw = raw.image_size ?? raw.imageSize;
+  if (!Array.isArray(sizeRaw) || sizeRaw.length !== 2) return null;
+  const [w, h] = sizeRaw;
+  if (!Number.isInteger(w) || w <= 0 || !Number.isInteger(h) || h <= 0) return null;
+
+  const K = readMatrix3(raw.K);
+  const R = readMatrix3(raw.R);
+  const t = readVec3(raw.t);
+  const poseSource = readPoseSource(raw.pose_source ?? raw.poseSource);
+  if (!K || !R || !t || !poseSource) return null;
+  if (K[0][0] <= 0 || K[1][1] <= 0) return null;
+
+  return {
+    imageSize: [w, h],
+    K,
+    R,
+    t,
+    poseSource,
+  };
+}
+
+/**
+ * `GET /api/scenes/current` 의 `map_cameras` (`scene_output.method.map_cameras` 또는 GLB `extras.simai.map_cameras`)를
+ * 검증하여 `SceneMapCameras` 로 변환한다. 형식이 맞지 않거나 빈 객체면 `null` 을 반환한다.
+ */
+export function readSceneMapCameras(raw: unknown): SceneMapCameras | null {
+  if (!isRecord(raw)) return null;
+  const entries = Object.entries(raw);
+  if (entries.length === 0) return null;
+  const out: Record<string, SceneMapCamera> = {};
+  for (const [cameraId, value] of entries) {
+    if (!CAMERA_ID_RE.test(cameraId)) return null;
+    const parsed = readSceneMapCamera(value);
+    if (!parsed) return null;
+    out[cameraId] = parsed;
+  }
+  return out;
+}
+
+/**
+ * GLB 루트(`Object3D.userData.simai.map_cameras`)에 기록된 맵 카메라 자세 사본을 읽는다.
+ * 없거나 형식이 맞지 않으면 `null` 을 반환한다.
+ */
+export function readSceneMapCamerasFromObject3D(
+  root: THREE.Object3D | null | undefined,
+): SceneMapCameras | null {
+  if (!root || !isRecord(root.userData)) return null;
+  const simai = isRecord(root.userData.simai) ? root.userData.simai : null;
+  const raw = simai?.map_cameras ?? root.userData.map_cameras;
+  if (raw === undefined || raw === null) return null;
+  return readSceneMapCameras(raw);
+}
+
+/**
+ * `map_cameras` 가 주어진 카메라는 맵 베이크에 쓰인 `imageSize, K, R, t, poseSource` 로 교체하고,
+ * 없거나 해당 카메라 항목이 없는 레거시 카메라는 기존 calibration 자세(`CALIBRATION`)를 유지한다.
+ */
+export function applyMapCamerasToVdtCameras(
+  cameras: readonly VdtCameraInput[],
+  mapCameras?: SceneMapCameras | null,
+): VdtCameraInput[] {
+  return cameras.map((cam) => {
+    const mc = mapCameras?.[cam.cameraId];
+    if (!mc) {
+      return cam.poseSource ? cam : { ...cam, poseSource: 'CALIBRATION' };
+    }
+    return {
+      ...cam,
+      imageSize: mc.imageSize,
+      K: mc.K,
+      R: mc.R,
+      t: mc.t,
+      poseSource: mc.poseSource,
+    };
+  });
+}
+
+/**
+ * `SceneVdtConfig` 에 `map_cameras` 를 적용하여 각 카메라 자세를 오버라이드한 사본을 반환한다.
+ */
+export function applyMapCamerasToVdtConfig(
+  vdtConfig: SceneVdtConfig,
+  mapCameras?: SceneMapCameras | null,
+): SceneVdtConfig {
+  const effectiveMapCameras =
+    mapCameras && Object.keys(mapCameras).length > 0 ? mapCameras : vdtConfig.mapCameras;
+  return {
+    ...vdtConfig,
+    cameras: applyMapCamerasToVdtCameras(vdtConfig.cameras, effectiveMapCameras),
+    ...(effectiveMapCameras ? { mapCameras: effectiveMapCameras } : {}),
   };
 }
 
@@ -274,15 +383,24 @@ export function readSceneVdtConfig(raw: unknown): SceneVdtConfig | null {
   }
 
   const fmtVer = raw.format_version ?? raw.formatVersion;
+  let mapCameras: SceneMapCameras | undefined;
+  const rawMapCameras = raw.map_cameras ?? raw.mapCameras;
+  if (rawMapCameras !== undefined && rawMapCameras !== null) {
+    const parsedMapCameras = readSceneMapCameras(rawMapCameras);
+    if (!parsedMapCameras) return null;
+    mapCameras = parsedMapCameras;
+  }
+
   return {
     formatVersion: typeof fmtVer === 'string' ? fmtVer : '1.0.0',
     colorSigmaOklab,
     nearM,
     farM,
-    cameras,
+    cameras: applyMapCamerasToVdtCameras(cameras, mapCameras),
     floorPlane,
     wallPlanes,
     freeViews: Object.keys(freeViews).length > 0 ? freeViews : undefined,
+    ...(mapCameras ? { mapCameras } : {}),
   };
 }
 
@@ -449,6 +567,7 @@ export function convertVdtCameraToThree(
     threeProjectionMatrix,
     vfovDeg,
     colorGainSrgb,
+    poseSource: cam.poseSource ?? 'CALIBRATION',
   };
 }
 

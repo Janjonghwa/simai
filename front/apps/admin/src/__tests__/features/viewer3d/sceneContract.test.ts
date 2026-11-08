@@ -94,6 +94,31 @@ describe('readCurrentScene', () => {
     expect(sceneOf(committed({ gltf_url: '/assets/scene.gltf' })).gltfUrl).toBe(
       '/assets/scene.gltf',
     );
+    // map_cameras 가 있으면 읽어서 보존하고, 없으면 생략한다.
+    const withMapCameras = sceneOf(
+      committed({
+        map_cameras: {
+          cam_A: {
+            image_size: [2304, 1296],
+            K: [
+              [1100, 0, 1152],
+              [0, 1100, 648],
+              [0, 0, 1],
+            ],
+            R: [
+              [0, -1, 0],
+              [0, 0, -1],
+              [1, 0, 0],
+            ],
+            t: [-0.5, 2.5, 1.2],
+            pose_source: 'MA_ALIGNED_SIM3',
+          },
+        },
+      }),
+    );
+    expect(withMapCameras.mapCameras?.cam_A.poseSource).toBe('MA_ALIGNED_SIM3');
+    expect(withMapCameras.mapCameras?.cam_A.imageSize).toEqual([2304, 1296]);
+    expect(withMapCameras.mapCameras?.cam_A.t).toEqual([-0.5, 2.5, 1.2]);
   });
 
   it.each([
@@ -121,6 +146,30 @@ describe('readCurrentScene', () => {
       'gltf_url 이 읽을 수 있는 주소가 아니다',
     ],
     ['만료 형식', committed({ gltf_expires_at_ms: NaN }), 'gltf_expires_at_ms 형식이 틀렸다'],
+    ['빈 map_cameras', committed({ map_cameras: {} }), 'map_cameras 형식이 틀렸다'],
+    [
+      '잘못된 map_cameras pose_source',
+      committed({
+        map_cameras: {
+          cam_A: {
+            image_size: [2304, 1296],
+            K: [
+              [1100, 0, 1152],
+              [0, 1100, 648],
+              [0, 0, 1],
+            ],
+            R: [
+              [1, 0, 0],
+              [0, 1, 0],
+              [0, 0, 1],
+            ],
+            t: [0, 0, 0],
+            pose_source: 'UNKNOWN_SOURCE',
+          },
+        },
+      }),
+      'map_cameras 형식이 틀렸다',
+    ],
   ])('%s 이면 거부하고 주소를 이유에 넣지 않는다', (_name, raw, reason) => {
     const read = readCurrentScene(raw);
     expect(read).toEqual({ ok: false, reason });

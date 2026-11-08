@@ -6,6 +6,30 @@ export type VdtMatrix3 = readonly [VdtVec3, VdtVec3, VdtVec3];
 export type VdtQuadCornersWorld = readonly [VdtVec3, VdtVec3, VdtVec3, VdtVec3];
 
 /**
+ * 맵 베이크 및 VDT 투영에 사용된 카메라 자세 출처(S15P31A101-539, -541).
+ * - `CALIBRATION`: Tier 0 초기 `calibration.json` 자세
+ * - `MA_ALIGNED_SIM3`: MapAnything 추론 자세를 Sim(3) 정렬한 자세(폴백 1 기본 경로)
+ * - `MA_ALIGNED`: MapAnything 정렬 자세
+ */
+export type VdtPoseSource = 'CALIBRATION' | 'MA_ALIGNED_SIM3' | 'MA_ALIGNED';
+
+/**
+ * 최종 맵 베이크에 실제로 쓰인 단일 카메라 자세 사본(S15P31A101-539, -541).
+ * `scene_output.method.map_cameras` 및 `scene.glb` 의 `extras.simai.map_cameras` 계약과 1:1 대응한다.
+ * `R`, `t` 방향 규약은 정본 World 좌표계(m, +Z 상방) → OpenCV 카메라 좌표계(+X 우, +Y 하, +Z 정면) 변환이다:
+ *   `p_cam_cv = R * p_world + t`, 광학 중심 `C_world = -R^T * t` (`OPENCV_WORLD_TO_CAMERA`).
+ */
+export interface SceneMapCamera {
+  readonly imageSize: readonly [number, number];
+  readonly K: VdtMatrix3;
+  readonly R: VdtMatrix3;
+  readonly t: VdtVec3;
+  readonly poseSource: VdtPoseSource;
+}
+
+export type SceneMapCameras = Readonly<Record<string, SceneMapCamera>>;
+
+/**
  * 카메라 1대의 시점 의존 텍스처(VDT) 입력 계약.
  * 모든 외부 파라미터(R, t)는 정본 World 좌표계(m, +Z 상방)에서 OpenCV 카메라 좌표계(+X 우, +Y 하, +Z 정면)로의 변환이다:
  *   p_cam_cv = R * p_world + t
@@ -19,6 +43,7 @@ export interface VdtCameraInput {
   R: VdtMatrix3;
   t: VdtVec3;
   colorGainSrgb?: VdtVec3;
+  poseSource?: VdtPoseSource;
 }
 
 /** 바닥 미관측 표시 층 평면 입력 (정본 World 좌표계 기준). */
@@ -60,6 +85,7 @@ export interface SceneVdtConfig {
   floorPlane: VdtFloorPlaneInput | null;
   wallPlanes: readonly VdtWallPlaneInput[];
   freeViews?: Readonly<Record<string, VdtFreeViewInput>>;
+  mapCameras?: SceneMapCameras;
 }
 
 export type VdtRenderMode = 'vdt' | 'original' | 'weights' | 'diagnostic';
@@ -124,4 +150,6 @@ export interface VdtCameraThree {
   vfovDeg: number;
   /** sRGB 노출/색 보정 게인 */
   colorGainSrgb: THREE.Vector3;
+  /** 적용된 카메라 자세 출처 (`CALIBRATION` | `MA_ALIGNED_SIM3` | `MA_ALIGNED`) */
+  poseSource: VdtPoseSource;
 }

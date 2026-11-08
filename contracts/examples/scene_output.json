@@ -34,6 +34,23 @@
       "floor_z_median_m": -0.002,
       "floor_tilt_deg": 0.42
     },
+    "map_cameras": {
+      "cam1": {
+        "image_size": [2304, 1296],
+        "K": [
+          [1100.0, 0.0, 1152.0],
+          [0.0, 1100.0, 648.0],
+          [0.0, 0.0, 1.0]
+        ],
+        "R": [
+          [0.0, -1.0, 0.0],
+          [0.0, 0.0, -1.0],
+          [1.0, 0.0, 0.0]
+        ],
+        "t": [-0.5, 2.5, 1.2],
+        "pose_source": "MA_ALIGNED_SIM3"
+      }
+    },
     "human_removal": "EMPTY_ROOM",
     "postprocess": ["DEPTH_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "DECIMATION", "MESH_CLEAN_V2", "BACKING_PLANES", "FURNITURE_PLANES", "LAMA_INPAINT", "TEXTURE"]
   },

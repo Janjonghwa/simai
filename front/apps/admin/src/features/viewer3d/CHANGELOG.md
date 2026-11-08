@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-541 관제 뷰어가 맵 카메라 자세(`map_cameras`)로 투영
+
+모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/viewer-map-cameras.md` 에 있다.
+
+- 추가: `CurrentScene.mapCameras`(`SceneMapCameras` 선택 필드), `SceneVdtConfig.mapCameras`, `VdtCameraInput.poseSource`, `VdtCameraThree.poseSource`.
+- 추가 export: `readSceneMapCameras`, `readSceneMapCamerasFromObject3D`, `applyMapCamerasToVdtCameras`, `applyMapCamerasToVdtConfig`, `SceneMapCamera`, `SceneMapCameras`, `VdtPoseSource`.
+- 동작: `GET /api/scenes/current` 응답(`map_cameras`), `vdt.map_cameras`, 또는 GLB `extras.simai.map_cameras` 가 있으면 시점 의존 텍스처(VDT) 투영 시 해당 맵 카메라 자세(`K`, `R`, `t`, `image_size`, `pose_source`)를 쓰고, 없으면(레거시 Scene) 기존 calibration 자세로 폴백한다.
+
 ## S15P31A101-534 시점 의존 텍스처(VDT) 모듈 통합
 
 모두 더하기이며 하위 호환이다(기능 플래그 기본값 `false`). 설계 문서는 `docs/design/viewer-view-dependent-texture.md` 에 있다.

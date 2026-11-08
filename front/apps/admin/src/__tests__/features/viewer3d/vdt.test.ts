@@ -13,12 +13,16 @@ import {
   type SceneVdtTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
 import {
+  applyMapCamerasToVdtCameras,
+  applyMapCamerasToVdtConfig,
   buildOpenGlProjectionMatrix,
   convertVdtCameraToThree,
   convertVdtFreeViewToThree,
   convertVdtQuadToThree,
   evaluateCameraWeightCpu,
   parseExperimentVdtDocs,
+  readSceneMapCameras,
+  readSceneMapCamerasFromObject3D,
   readSceneVdtConfig,
   resolveVdtOutliersAndBlendCpu,
   srgbToOklab,
@@ -647,5 +651,210 @@ describe('SceneBackground VDT 기능 플래그(기본 끔) 보존 및 마운트/
     expect(tsdfMesh.material).toBe(origMat);
     expect(baseTex.colorSpace).toBe(THREE.SRGBColorSpace);
     expect(estFloor.visible).toBe(true);
+  });
+
+  it('map_cameras(MA_ALIGNED_SIM3)가 있으면 그 자세로 투영하고 없으면 기존 calibration 자세로 폴백하며 R·t 규약을 지킨다', async () => {
+    // 1) R, t 방향 규약(World -> OpenCV 카메라: p_cam_cv = R * p_world + t, C_world = -R^T * t) 검증
+    // 카메라가 World (1.0, 2.0, 1.5)에서 +X 방향을 정면(+Z_cv), -Y 방향을 우측(+X_cv), -Z 방향을 하방(+Y_cv)으로 볼 때:
+    // R_w2c = [[0, -1, 0], [0, 0, -1], [1, 0, 0]]
+    // t_w2c = -R_w2c * C_world = [2.0, 1.5, -1.0]
+    const rW2c: VdtMatrix3 = [
+      [0, -1, 0],
+      [0, 0, -1],
+      [1, 0, 0],
+    ];
+    const tW2c: VdtVec3 = [2.0, 1.5, -1.0];
+    const mapCamerasRaw = {
+      cam_A: {
+        image_size: [2304, 1296],
+        K: [
+          [1152, 0, 1152],
+          [0, 1152, 648],
+          [0, 0, 1],
+        ],
+        R: rW2c,
+        t: tW2c,
+        pose_source: 'MA_ALIGNED_SIM3',
+      },
+    };
+
+    const parsedMapCameras = readSceneMapCameras(mapCamerasRaw);
+    expect(parsedMapCameras).not.toBeNull();
+
+    const vdtWithTwoCamsRaw = {
+      ...SAMPLE_VDT_RAW,
+      cameras: [
+        ...SAMPLE_VDT_RAW.cameras,
+        {
+          ...SAMPLE_VDT_RAW.cameras[0]!,
+          camera_id: 'cam_B',
+          image_url: 'https://assets.invalid/vdt/cam_B.jpg',
+        },
+      ],
+    };
+
+    // 2) map_cameras 가 없을 때(레거시 Scene): 기존 calibration 자세(SAMPLE_CAM_A)를 그대로 유지한다.
+    const legacyVdt = readSceneVdtConfig(vdtWithTwoCamsRaw)!;
+    const legacyCamThree = convertVdtCameraToThree(legacyVdt.cameras[0]!);
+    expect(legacyCamThree.poseSource).toBe('CALIBRATION');
+    expect(legacyCamThree.tThreeToCv.toArray()).toEqual(CAM_A_WORLD_T);
+
+    // 3) map_cameras 가 있을 때: cam_A 는 MA_ALIGNED_SIM3 자세로 오버라이드되고, map_cameras 에 없는 카메라는 CALIBRATION 유지
+    const directAppliedCams = applyMapCamerasToVdtCameras(legacyVdt.cameras, parsedMapCameras);
+    expect(directAppliedCams[0]?.poseSource).toBe('MA_ALIGNED_SIM3');
+    expect(directAppliedCams[1]?.poseSource).toBe('CALIBRATION');
+    const appliedVdt = applyMapCamerasToVdtConfig(legacyVdt, parsedMapCameras);
+    const maCamThree = convertVdtCameraToThree(appliedVdt.cameras[0]!);
+    const otherCamThree = convertVdtCameraToThree(appliedVdt.cameras[1]!);
+    expect(maCamThree.poseSource).toBe('MA_ALIGNED_SIM3');
+    expect(otherCamThree.poseSource).toBe('CALIBRATION');
+    expect(maCamThree.positionWorld[0]).toBeCloseTo(1.0, 6);
+    expect(maCamThree.positionWorld[1]).toBeCloseTo(2.0, 6);
+    expect(maCamThree.positionWorld[2]).toBeCloseTo(1.5, 6);
+
+    // World 점 P_world = (5.0, 2.0, 1.5) (카메라 정면 4m 앞) -> OpenCV 카메라 좌표 p_cv = (0, 0, 4.0)
+    // 정규화 투영 좌표 (uImg, vImg) = (0.5, 0.5) 정중앙이어야 한다.
+    const [pxThree, pyThree, pzThree] = worldToThree(worldPoint(5.0, 2.0, 1.5));
+    const pCv = new THREE.Vector3(pxThree, pyThree, pzThree)
+      .applyMatrix3(maCamThree.rThreeToCv)
+      .add(maCamThree.tThreeToCv);
+    expect(pCv.x).toBeCloseTo(0.0, 6);
+    expect(pCv.y).toBeCloseTo(0.0, 6);
+    expect(pCv.z).toBeCloseTo(4.0, 6);
+
+    // 4) readCurrentScene 에서 응답 최상위 map_cameras 가 vdt 카메라에 자동 반영되는지 확인
+    const sceneRead = readCurrentScene({
+      scene_version: 'scene-ma-1',
+      state: 'COMMITTED',
+      default: false,
+      calibration_version: 'cal-demo',
+      committed_at_ms: 1_760_342_400_000,
+      quality: null,
+      gltf_url: 'https://assets.invalid/scene-ma-1.glb',
+      gltf_expires_at_ms: Date.now() + 300_000,
+      map_cameras: mapCamerasRaw,
+      vdt: vdtWithTwoCamsRaw,
+    });
+    expect(sceneRead.ok).toBe(true);
+    if (sceneRead.ok) {
+      expect(sceneRead.scene.mapCameras?.cam_A.poseSource).toBe('MA_ALIGNED_SIM3');
+      expect(sceneRead.scene.vdt?.cameras[0]?.poseSource).toBe('MA_ALIGNED_SIM3');
+      expect(sceneRead.scene.vdt?.cameras[0]?.t).toEqual(tW2c);
+      expect(sceneRead.scene.vdt?.cameras[1]?.poseSource).toBe('CALIBRATION');
+    }
+
+    // 5) GLB extras.simai.map_cameras (Object3D.userData.simai.map_cameras) 폴백 및 SceneBackground 장착 검증
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const data = createSpatialDataStore();
+    data.getState().reset('mock:normal:1');
+    data
+      .getState()
+      .ingest(
+        scenarioWorld('normal', 0, 1_760_342_400_000) as { payload: Record<string, unknown> },
+        1_760_342_400_020,
+      );
+
+    const sceneStore = createSceneStore();
+    sceneStore.getState().setVdtOptions({ enabled: true });
+
+    const rootGroup = new THREE.Group();
+    rootGroup.userData = { simai: { map_cameras: mapCamerasRaw } };
+    expect(readSceneMapCamerasFromObject3D(rootGroup)?.cam_A.poseSource).toBe('MA_ALIGNED_SIM3');
+
+    const tex = new THREE.DataTexture(new Uint8Array([200, 180, 160, 255]), 1, 1);
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(4, 0.1, 4),
+      new THREE.MeshStandardMaterial({ map: tex }),
+    );
+    mesh.position.set(2, -0.05, -2);
+    rootGroup.add(mesh);
+
+    const camTex = new THREE.DataTexture(new Uint8Array([100, 120, 140, 255]), 1, 1);
+    const loader: SceneAssetLoader = vi.fn().mockResolvedValue(rootGroup);
+    const vdtTexLoader: SceneVdtTextureLoader = vi
+      .fn()
+      .mockResolvedValue([camTex, camTex, camTex, camTex]);
+
+    const canvas = document.createElement('canvas');
+    const r3fRoot = createRoot(canvas);
+    await r3fRoot.configure({
+      gl: {
+        render: () => {},
+        setPixelRatio: () => {},
+        setSize: () => {},
+        dispose: () => {},
+        forceContextLoss: () => {},
+        domElement: canvas,
+        shadowMap: { enabled: false, type: 0, needsUpdate: false },
+        xr: {
+          enabled: false,
+          isPresenting: false,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          setAnimationLoop: () => {},
+        },
+        renderLists: { dispose: () => {} },
+        outputColorSpace: '',
+        toneMapping: 0,
+      } as never,
+      size: { width: 800, height: 600, top: 0, left: 0 },
+      frameloop: 'never',
+    });
+
+    await act(async () =>
+      r3fRoot.render(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            SpatialDataContext,
+            { value: data },
+            createElement(
+              ViewerStoreContext,
+              { value: createViewerStore() },
+              createElement(
+                SceneStoreContext,
+                { value: sceneStore },
+                createElement(
+                  SceneLoaderContext,
+                  { value: loader },
+                  createElement(
+                    SceneVdtTextureLoaderContext,
+                    { value: vdtTexLoader },
+                    createElement(SceneBackground),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await act(async () =>
+      sceneStore.getState().setInput({
+        ok: true,
+        raw: {
+          scene_version: 'scene-demo-1',
+          state: 'COMMITTED',
+          default: false,
+          calibration_version: 'cal-demo',
+          committed_at_ms: 1_760_342_400_000,
+          quality: null,
+          gltf_url: 'https://assets.invalid/scene-demo-1.glb',
+          gltf_expires_at_ms: Date.now() + 300_000,
+          vdt: vdtWithTwoCamsRaw,
+        },
+      }),
+    );
+
+    expect(mesh.material).toBeInstanceOf(THREE.ShaderMaterial);
+    const shaderMat = mesh.material as unknown as THREE.ShaderMaterial;
+    const uCamT = shaderMat.uniforms.uCamT?.value as THREE.Vector3[];
+    expect(uCamT[0]?.toArray()).toEqual(tW2c);
+    expect(uCamT[1]?.toArray()).toEqual(CAM_A_WORLD_T);
+
+    await act(async () => r3fRoot.unmount());
+    vi.restoreAllMocks();
   });
 });

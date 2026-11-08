@@ -113,6 +113,26 @@ class SceneServiceTest {
         assertThat(scenes.current().get("scene_version").asString()).isEqualTo("scene-b");
     }
 
+    @Test
+    void 맵_카메라_자세가_있으면_응답에_포함하고_없으면_생략한다() throws Exception {
+        assertThat(scenes.current().has("map_cameras")).isFalse();
+
+        ObjectNode output = mapper.createObjectNode();
+        ObjectNode camA = output.putObject("method").putObject("map_cameras").putObject("cam_A");
+        camA.putArray("image_size").add(2304).add(1296);
+        camA.set("K", mapper.readTree("[[1100.0,0.0,1152.0],[0.0,1100.0,648.0],[0.0,0.0,1.0]]"));
+        camA.set("R", mapper.readTree("[[0.0,-1.0,0.0],[0.0,0.0,-1.0],[1.0,0.0,0.0]]"));
+        camA.set("t", mapper.readTree("[-0.5,2.5,1.2]"));
+        camA.put("pose_source", "MA_ALIGNED_SIM3");
+        when(row.getString("output")).thenReturn(output.toString());
+
+        ObjectNode result = scenes.current();
+        assertThat(result.has("map_cameras")).isTrue();
+        assertThat(result.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("MA_ALIGNED_SIM3");
+        assertThat(result.at("/map_cameras/cam_A/image_size/0").asInt()).isEqualTo(2304);
+        assertThat(result.at("/map_cameras/cam_A/t/2").asDouble()).isEqualTo(1.2);
+    }
+
     private void maps(String... names) throws Exception {
         ObjectNode output = mapper.createObjectNode();
         var assets = output.putArray("assets");
