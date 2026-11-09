@@ -662,6 +662,9 @@ def load_points_from_bytes(data: bytes, uri: str = "") -> np.ndarray:
 
 
 def _load_points_from_glb(data: bytes) -> np.ndarray:
+    from simai_ai.scene.glb_enhance import _node_matrix
+    from simai_ai.scene.texture_mesh import GLTF_Y_UP
+
     magic, version, total_len = struct.unpack_from("<4sII", data, 0)
     if magic != b"glTF" or version != 2 or total_len > len(data):
         raise ValueError("손상된 GLB 헤더다")
@@ -680,11 +683,38 @@ def _load_points_from_glb(data: bytes) -> np.ndarray:
     if json_chunk is None:
         raise ValueError("GLB JSON 청크가 없다")
 
+    extras = json_chunk.get("extras")
+    simai = extras.get("simai") if isinstance(extras, dict) else None
+    if isinstance(simai, dict) and simai.get("axis_convention") not in (None, "GLTF_Y_UP"):
+        raise ValueError(f"AXIS_NOT_WORLD: axis_convention={simai.get('axis_convention')}")
+
     accessors = json_chunk.get("accessors") or []
     buffer_views = json_chunk.get("bufferViews") or []
     meshes = json_chunk.get("meshes") or []
     arrays: list[np.ndarray] = []
-    for mesh in meshes:
+    nodes = json_chunk.get("nodes") or []
+    instances: list[tuple[int, np.ndarray]] = []
+    if nodes:
+        scenes = json_chunk.get("scenes") or []
+        if scenes:
+            roots = scenes[json_chunk.get("scene", 0)].get("nodes", [])
+        else:
+            children = {child for node in nodes for child in node.get("children", [])}
+            roots = [i for i in range(len(nodes)) if i not in children]
+        stack = [(i, np.eye(4), frozenset()) for i in reversed(roots)]
+        while stack:
+            i, parent, ancestors = stack.pop()
+            if i in ancestors:
+                raise ValueError("GLB 노드 계층에 순환이 있다")
+            node = nodes[i]
+            matrix = parent @ _node_matrix(node)
+            if "mesh" in node:
+                instances.append((node["mesh"], matrix))
+            stack.extend((child, matrix, ancestors | {i}) for child in reversed(node.get("children", [])))
+    else:
+        instances = [(i, np.eye(4)) for i in range(len(meshes))]
+    for mesh_index, matrix in instances:
+        mesh = meshes[mesh_index]
         for prim in mesh.get("primitives") or []:
             pos_idx = (prim.get("attributes") or {}).get("POSITION")
             if pos_idx is None or pos_idx >= len(accessors):
@@ -712,13 +742,14 @@ def _load_points_from_glb(data: bytes) -> np.ndarray:
                     for i in range(count)
                 ]
                 pts = np.asarray(rows, dtype=np.float64)
-            arrays.append(pts)
+            arrays.append((pts @ matrix[:3, :3].T + matrix[:3, 3]) @ GLTF_Y_UP)
     if not arrays:
         return np.zeros((0, 3), dtype=np.float64)
     return np.vstack(arrays)
 
 
 def _load_points_from_ply(data: bytes) -> np.ndarray:
+    """PLY 정점은 이미 World(m, +Z 상방) 좌표라고 가정한다."""
     header_end = data.find(b"end_header\n")
     nl_len = 1
     if header_end < 0:

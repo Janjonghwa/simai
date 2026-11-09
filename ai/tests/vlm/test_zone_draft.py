@@ -113,28 +113,35 @@ def test_flat_floor_or_empty_returns_empty_list():
     assert extract_geometry_candidates(_make_flat_floor()) == []
 
 
-def test_load_points_from_glb_and_ply():
-    """미리보기 GLB 와 ASCII PLY 바이트에서 World XYZ 점군을 읽는다."""
-    pts = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 0.75], [-0.5, 0.5, -0.4]], dtype=np.float32)
-    bin_data = pts.tobytes()
+def _make_glb(points, **fields):
+    bin_data = np.asarray(points, dtype="<f4").tobytes()
     gltf = {
         "asset": {"version": "2.0"},
         "buffers": [{"byteLength": len(bin_data)}],
         "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(bin_data)}],
-        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": len(points), "type": "VEC3"}],
         "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 0}]}],
     }
+    gltf.update(fields)
     json_bytes = json.dumps(gltf).encode("utf-8")
     while len(json_bytes) % 4 != 0:
         json_bytes += b" "
     total_len = 12 + 8 + len(json_bytes) + 8 + len(bin_data)
-    glb = (
+    return (
         struct.pack("<4sII", b"glTF", 2, total_len)
         + struct.pack("<II", len(json_bytes), 0x4E4F534A)
         + json_bytes
         + struct.pack("<II", len(bin_data), 0x004E4942)
         + bin_data
     )
+
+
+def test_load_points_from_glb_and_ply():
+    """미리보기 GLB 와 ASCII PLY 바이트에서 World XYZ 점군을 읽는다."""
+    from simai_ai.scene.texture_mesh import to_glb_points
+
+    pts = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 0.75], [-0.5, 0.5, -0.4]], dtype=np.float32)
+    glb = _make_glb(to_glb_points(np.eye(4), pts))
     loaded_glb = load_points_from_bytes(glb, "s3://simai-bucket/preview.glb")
     np.testing.assert_allclose(loaded_glb, pts, atol=1e-5)
 
@@ -145,6 +152,51 @@ def test_load_points_from_glb_and_ply():
     )
     loaded_ply = load_points_from_bytes(ply, "s3://simai-bucket/cloud.ply")
     np.testing.assert_allclose(loaded_ply, [[0.5, 1.0, 0.75], [-0.5, -1.0, 0.0]], atol=1e-5)
+
+
+def test_glb_axis_regression_two_platforms_and_opening():
+    from simai_ai.scene.texture_mesh import to_glb_points
+
+    floor = _make_flat_floor(x_range=(-4, 4), y_range=(-3.5, 3.5))
+    left = _make_elevated_platform(x_range=(-2.5, -1.3), y_range=(-0.4, 0.4), top_z=0.4)
+    right = _make_elevated_platform(x_range=(1.3, 2.5), y_range=(-0.4, 0.4), top_z=0.4)
+    hole = _make_elevated_platform(x_range=(-0.4, 0.4), y_range=(-0.4, 0.4), top_z=-0.4)
+    world = np.vstack([floor, left, right, hole])
+    gltf = to_glb_points(np.eye(4), world)
+    candidates = extract_geometry_candidates(load_points_from_bytes(_make_glb(gltf)))
+    surfaces = [c for c in candidates if c.candidate_kind == "ELEVATED_WORK_SURFACE"]
+    assert len(surfaces) == 2
+    assert all(c.top_height_m == pytest.approx(0.4, abs=0.05) for c in surfaces)
+    assert sum(c.candidate_kind == "OPENING" for c in candidates) == 1
+    assert not any(c.candidate_kind == "FLOOR_EDGE" for c in candidates)
+    # 이전 로더는 glTF Y 를 World 높이로 오인하여 같은 결과를 내지 못한다.
+    old = extract_geometry_candidates(gltf)
+    assert sum(c.candidate_kind == "ELEVATED_WORK_SURFACE" for c in old) != 2 or any(
+        c.candidate_kind == "FLOOR_EDGE" for c in old
+    )
+
+
+def test_glb_node_hierarchy_and_instances():
+    from simai_ai.scene.texture_mesh import GLTF_Y_UP
+
+    # 부모 행렬(열 우선)과 자식 TRS를 합성하고 같은 메시의 두 인스턴스를 보존한다.
+    matrix = np.eye(4)
+    matrix[:3, 3] = [1, 2, 3]
+    half = np.sqrt(0.5)
+    glb = _make_glb(
+        [[1, 0, 0]],
+        nodes=[{"matrix": matrix.T.ravel().tolist(), "children": [1, 2]},
+               {"mesh": 0, "rotation": [0, 0, half, half], "scale": [2, 1, 1]},
+               {"mesh": 0, "translation": [0, 1, 0]}],
+        scenes=[{"nodes": [0]}], scene=0,
+    )
+    np.testing.assert_allclose(load_points_from_bytes(glb), np.array([[1, 4, 3], [2, 3, 3]]) @ GLTF_Y_UP, atol=1e-6)
+
+
+def test_glb_rejects_unknown_axis_convention():
+    glb = _make_glb([[0, 0, 0]], extras={"simai": {"axis_convention": "UNKNOWN"}})
+    with pytest.raises(ValueError, match="AXIS_NOT_WORLD"):
+        load_points_from_bytes(glb)
 
 
 class _NoPeopleProvider:
