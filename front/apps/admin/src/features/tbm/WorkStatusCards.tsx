@@ -4,8 +4,7 @@ import type { TbmTask } from '@/features/tbm/tbmDemo';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 
-// 작업 상태별 본문 머리. 진행 중 = 시작 시각 · 경과 · 사건 수 + 실시간 관제로 가기 · 작업 종료, 종료 후 = 작업 중 사건 집계 띠
-// (사건 수 · 작업 마무리 문단 · 작업 시각).
+// 진행 중 작업의 본문 머리: 시작 시각 · 경과 · 사건 수 + 실시간 관제로 가기 · 작업 종료.
 // 사건 수는 서버 work_unit.event_counts(위험 · 경고) 그대로다.
 
 /** 경과 시간을 다시 그리는 간격(ms). */
@@ -103,35 +102,5 @@ export function WorkRunningCard({
         </Button>
       </div>
     </Card>
-  );
-}
-
-export function WrapUpBand({
-  task,
-  summary,
-}: {
-  task: TbmTask;
-  /** 작업 마무리 문단(또는 만드는 중 안내). 없으면 사건 수만 보인다. */
-  summary: string | null;
-}) {
-  const started = timeOf(task.actualStartedAt);
-  const ended = timeOf(task.actualEndedAt);
-  return (
-    <div
-      role="status"
-      aria-label="작업 중 사건"
-      className="flex flex-none items-center gap-x-3.5 rounded-xl bg-card px-4 py-2.5 text-sm ring-1 ring-border ring-inset"
-    >
-      <b className="flex-none">작업 중 사건</b>
-      <span className="flex-none">
-        <EventCounts task={task} />
-      </span>
-      {summary && <span className="min-w-0 flex-1 text-muted-foreground">{summary}</span>}
-      {started && ended && (
-        <span className="ml-auto flex-none font-mono text-[13px] text-muted-foreground">
-          {hhmm(started)}–{hhmm(ended)}
-        </span>
-      )}
-    </div>
   );
 }

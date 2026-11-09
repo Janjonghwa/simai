@@ -172,7 +172,6 @@ describe('설치 · 보정 작업 연결', () => {
     fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toMatchObject({ work_unit_id: 5 });
-    expect(useSetupFlowStore.getState().workUnitId).toBe(5);
   });
 });
 

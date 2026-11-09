@@ -1,5 +1,4 @@
 import { remoteViewUrl } from '@/features/cctv/api';
-import { usageText } from '@/features/cctv/cctv';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { IDLE_MS, LOCAL_PROBE_MS, startCctvView, WATCH_MS } from '@/features/cctv/cctvView';
 import {
@@ -104,22 +103,13 @@ const store = () => useCctvStore.getState();
 
 beforeEach(() => useCctvStore.getState().reset());
 
-describe('원격 시청 주소·표시', () => {
+describe('원격 시청 주소', () => {
   it('서버가 준 경로를 STOMP 주소의 출처에 붙이고 입장권을 싣는다', () => {
     expect(remoteViewUrl('wss://simai.live/ws', '/ws/cctv/view', 'a+b/c')).toBe(
       'wss://simai.live/ws/cctv/view?ticket=a%2Bb%2Fc',
     );
     expect(remoteViewUrl('ws://localhost:8080/ws', '/ws/cctv/view', 't')).toBe(
       'ws://localhost:8080/ws/cctv/view?ticket=t',
-    );
-  });
-
-  it('월 송출을 GB(10^9)로 보인다', () => {
-    expect(usageText(1_932_735_283, 80_000_000_000, false)).toBe(
-      '원격 CCTV 월 송출 1.9 / 80 GB · 정상',
-    );
-    expect(usageText(80_000_000_001, 80_000_000_000, true)).toBe(
-      '원격 CCTV 월 송출 80 / 80 GB · 차단됨',
     );
   });
 });

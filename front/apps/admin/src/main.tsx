@@ -45,6 +45,8 @@ declare module '@tanstack/react-router' {
     fullBleed?: boolean;
     /** 오른쪽에 이벤트 패널이 있다(실시간 관제). 경보 배너가 그 자리를 비키고 「상세」를 이 화면에서 연다. */
     eventPanel?: boolean;
+    /** 하단 메뉴(독)가 본문 위에 반투명하게 떠 있어도 되는 화면(CCTV 관제·작업 관리). 본문 아래에 독 자리를 따로 비우지 않고 끝까지 채운다. */
+    dockOverlay?: boolean;
   }
 }
 

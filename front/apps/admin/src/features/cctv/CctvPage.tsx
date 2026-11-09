@@ -6,7 +6,6 @@ import {
   STATE_LABEL,
   stateText,
   tileLabel,
-  usageText,
   type CameraState,
 } from '@/features/cctv/cctv';
 import { useCctvStore, type PreviewLink } from '@/features/cctv/cctv.store';
@@ -18,7 +17,6 @@ import { DIMMED, LIVE_DOT, TILE_FRAME, tilePan, tileZoom } from '@/features/cctv
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { usePanZoom } from '@/features/cctv/usePanZoom';
-import { useRemoteStatus } from '@/features/cctv/useRemoteStatus';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { useNow } from '@/features/layout/useNow';
 import { env } from '@/lib/env';
@@ -261,22 +259,10 @@ function RemoteNoticeLine({ resume }: { resume: () => void }) {
   );
 }
 
-/** 원격 CCTV 월 송출 x / 80 GB · 차단 여부(운영 상태 표시, 위험 알림 아님). 못 받으면 비운다. */
-function RemoteUsage() {
-  const status = useRemoteStatus(true);
-  if (!status) return null;
-  return (
-    <p aria-label="원격 CCTV 월 송출" className="text-xs text-muted-foreground tabular-nums">
-      {usageText(status.monthly_sent_bytes, status.monthly_quota_bytes, status.blocked)}
-    </p>
-  );
-}
-
 function AdminCctv() {
   const { attach, resume } = useCctvPreview(env.VITE_CCTV_PREVIEW_URL, env.VITE_STOMP_URL);
   return (
     <>
-      <RemoteUsage />
       <RemoteNoticeLine resume={resume} />
       <AdminWall attach={attach} />
     </>

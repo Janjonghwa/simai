@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 레이아웃이 알림 자리를 어디에 어떻게 두는지만 본다. 화면 조각은 대역으로 바꾼다.
 const route = vi.hoisted(() => ({
-  staticData: {} as { fullBleed?: boolean; eventPanel?: boolean },
+  staticData: {} as { fullBleed?: boolean; eventPanel?: boolean; dockOverlay?: boolean },
   failure: true,
   alarm: true,
   reSetup: false,
@@ -114,6 +114,19 @@ describe('AppLayout 알림 자리', () => {
     const box = notices();
     expect(box.childElementCount).toBe(0);
     expect(box.className).toContain('empty:hidden');
+  });
+});
+
+describe('AppLayout 본문 아래 여백', () => {
+  it('보통 화면은 하단 메뉴(독) 자리를 비우고, dockOverlay 화면은 독이 본문 위에 떠서 아래 여백을 줄인다', () => {
+    render(<AppLayout />);
+    expect(screen.getByRole('main').className).toContain('pb-[90px]');
+    cleanup();
+
+    route.staticData = { dockOverlay: true };
+    render(<AppLayout />);
+    expect(screen.getByRole('main').className).toContain('pb-3.5');
+    expect(screen.getByRole('main').className).not.toContain('pb-[90px]');
   });
 });
 

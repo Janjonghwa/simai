@@ -141,6 +141,32 @@ describe('정식 구역 장면', () => {
   });
 });
 
+describe('구역 이름표 위치', () => {
+  /** 구역 하나의 이름표(스프라이트) World→Three 좌표. */
+  const labelAt = (zoneId: string) => {
+    const sprites: THREE.Sprite[] = [];
+    named(`zone-entry:${zoneId}`)!.traverse((node) => {
+      if (node instanceof THREE.Sprite) sprites.push(node);
+    });
+    expect(sprites).toHaveLength(1);
+    return sprites[0]!
+      .getWorldPosition(new THREE.Vector3())
+      .toArray()
+      .map((v) => +v.toFixed(6));
+  };
+
+  it('상자와 기둥은 앞쪽 모서리의 윗면 높이 위에, 바닥 판정은 바닥 위에 둔다', async () => {
+    await mount();
+    // 이름표 중심은 모서리에서 0.2m(이름표 높이 0.3m 의 절반 + 0.05m) 위다.
+    // 상자 z-01: 앞 모서리 World (1.5, 5.5), 윗면 2m → Three (1.5, 2.2, -5.5)
+    expect(labelAt('z-01')).toEqual([1.5, 2.2, -5.5]);
+    // 기둥 z-03: 앞 꼭짓점 World (4.5, 7.5), 윗면 2.4m → Three (4.5, 2.6, -7.5)
+    expect(labelAt('z-03')).toEqual([4.5, 2.6, -7.5]);
+    // 바닥 판정 z-02: 앞 꼭짓점 World (6.5, 1), 바닥 0m → Three (6.5, 0.2, -1)
+    expect(labelAt('z-02')).toEqual([6.5, 0.2, -1]);
+  });
+});
+
 describe('레이어 값', () => {
   it('hidden 은 그리지 않고 대상에서 내려 선택을 푼다. 다시 켜면 돌아온다', async () => {
     await mount();

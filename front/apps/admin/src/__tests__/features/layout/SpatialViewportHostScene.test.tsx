@@ -186,23 +186,27 @@ describe('관제 호스트의 교실 범위', () => {
   });
 });
 
-it('임시 보정 기준 배경과 재생성 필요를 관제 호스트에 표시한다', async () => {
-  renderHost();
-  await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
-  const status = sceneStatusOf(null, IDLE_LOAD, {
-    worldScene: null,
-    worldCalibration: null,
-    healthCommitted: null,
-    healthLive: null,
-    healthMismatch: null,
+describe('장면 상태 안내', () => {
+  const reportStatus = async (patch: Partial<ViewerSceneStatus>) => {
+    renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+    const status = sceneStatusOf(null, IDLE_LOAD, {
+      worldScene: null,
+      worldCalibration: null,
+      healthCommitted: null,
+      healthLive: null,
+      healthMismatch: null,
+    });
+    act(() => viewer.props?.onSceneStatusChange?.({ ...status, ...patch }));
+  };
+
+  it('재생성이 필요하면 관제 호스트에 표시하고, 임시 보정 기준 배경 글자는 붙이지 않는다', async () => {
+    await reportStatus({ provisionalBackground: true, regenerationRequired: true });
+    expect(screen.getByRole('status').textContent).toBe('재생성 필요');
   });
-  act(() =>
-    viewer.props?.onSceneStatusChange?.({
-      ...status,
-      provisionalBackground: true,
-      regenerationRequired: true,
-    }),
-  );
-  expect(screen.getByRole('status').textContent).toContain('임시 보정 기준 배경');
-  expect(screen.getByRole('status').textContent).toContain('재생성 필요');
+
+  it('임시 보정 기준 배경만 있고 재생성이 필요하지 않으면 아무것도 표시하지 않는다', async () => {
+    await reportStatus({ provisionalBackground: true, regenerationRequired: false });
+    expect(screen.queryByRole('status')).toBeNull();
+  });
 });

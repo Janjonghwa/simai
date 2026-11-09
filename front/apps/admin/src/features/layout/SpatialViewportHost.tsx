@@ -125,17 +125,14 @@ export function SpatialViewportHost({
   return (
     <SpatialViewportContext value={viewport}>
       <main aria-label="실시간 관제" className="relative flex-1 bg-background">
-        {view === '3d' &&
-          (sceneStatus?.provisionalBackground || sceneStatus?.regenerationRequired) && (
-            <div
-              role="status"
-              className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded bg-card px-3 py-2 text-sm text-muted-foreground shadow-float"
-            >
-              {sceneStatus.provisionalBackground && <span>임시 보정 기준 배경</span>}
-              {sceneStatus.provisionalBackground && sceneStatus.regenerationRequired && ' · '}
-              {sceneStatus.regenerationRequired && <span>재생성 필요</span>}
-            </div>
-          )}
+        {view === '3d' && sceneStatus?.regenerationRequired && (
+          <div
+            role="status"
+            className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded bg-card px-3 py-2 text-sm text-muted-foreground shadow-float"
+          >
+            재생성 필요
+          </div>
+        )}
         {view === '3d' && (
           <ViewerLoadBoundary key={loadAttempt} onError={onLoadError}>
             <Suspense fallback={null}>

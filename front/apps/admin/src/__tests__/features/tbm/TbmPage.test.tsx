@@ -823,9 +823,9 @@ describe('작업 세션과 서명', () => {
     await act(async () => {
       vi.advanceTimersByTime(2200);
     });
-    // 마무리 문단은 따로 줄을 두지 않고 작업 중 사건 띠 안에 들어간다.
-    const band = await screen.findByRole('status', { name: '작업 중 사건' });
-    expect(await within(band).findByText(/작업 구간의 위험 이벤트 집계/)).toBeTruthy();
+    // 마무리 문단은 따로 줄을 두지 않고 TBM 회의록의 '작업 후 종료 미팅' 칸에 들어간다.
+    expect((await screen.findAllByText(/작업 구간의 위험 이벤트 집계/)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('status', { name: '작업 중 사건' })).toBeNull();
     expect(screen.queryByText(/작업 마무리:/)).toBeNull();
     vi.restoreAllMocks();
   });

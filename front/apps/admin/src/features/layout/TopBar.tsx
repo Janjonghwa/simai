@@ -7,7 +7,6 @@ import { clockLabel } from '@/features/layout/status';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useCurrentSite } from '@/features/layout/useCurrentSite';
 import { useNow } from '@/features/layout/useNow';
-import { useSetupFlowStore } from '@/features/setup/setup.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import {
@@ -18,8 +17,8 @@ import {
   DropdownMenuTrigger,
 } from '@simai/ui/components/dropdown-menu';
 import { cn } from '@simai/ui/lib/utils';
-import { Link, useNavigate } from '@tanstack/react-router';
-import { ChevronDown, LogOut, Moon, Ruler, Sun } from 'lucide-react';
+import { Link } from '@tanstack/react-router';
+import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
 
 // 상단 바는 로고·현장명·시계·경보 소리 버튼(확인 권한이 있는 계정만)·관리자 메뉴만 둔다(관제 데모와 같다). 상태 값(System Health·데이터 연령·카메라·보정·구성·장면)은
 // 시스템 상태 화면에서 보고, 장애·연결 끊김은 상단 바 아래 장애 띠가 알린다.
@@ -41,9 +40,6 @@ function AccountMenu() {
   const toggleTheme = useThemeStore((s) => s.toggle);
   const role = useCurrentRole();
   const logout = useLogout();
-  const navigate = useNavigate();
-  // 세팅은 작업마다 한다. 선택된 작업이 없으면 작업 관리로 안내한다.
-  const workUnitId = useSetupFlowStore((s) => s.workUnitId);
 
   return (
     <DropdownMenu>
@@ -54,16 +50,6 @@ function AccountMenu() {
         <ChevronDown aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[220px]">
-        <DropdownMenuItem
-          onClick={() =>
-            void navigate(
-              workUnitId === null ? { to: '/work' } : { to: '/setup', search: { workUnitId } },
-            )
-          }
-        >
-          <Ruler />
-          설치 · 보정
-        </DropdownMenuItem>
         <DropdownMenuItem onClick={toggleTheme}>
           {isDark ? <Sun /> : <Moon />}
           {isDark ? '화이트 모드' : '다크 모드'}

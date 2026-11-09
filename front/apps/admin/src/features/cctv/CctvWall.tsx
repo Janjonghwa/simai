@@ -1,4 +1,5 @@
 import { Button } from '@simai/ui/components/button';
+import { Undo2 } from 'lucide-react';
 import { type CSSProperties, type ReactNode, useState } from 'react';
 
 // 카메라 화면 배치: 기본은 2열 분할(카메라 4대면 2×2). 한 칸을 누르면 그 칸을 크게, 나머지를 옆에 세로로 둔다
@@ -93,8 +94,14 @@ export function CctvWall({
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       {focus && (
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => setPicked(null)}>
-            4분할로
+          <Button
+            size="icon-lg"
+            className="shadow-float"
+            aria-label="4분할로 돌아가기"
+            title="4분할로 돌아가기"
+            onClick={() => setPicked(null)}
+          >
+            <Undo2 aria-hidden className="size-5" />
           </Button>
         </div>
       )}

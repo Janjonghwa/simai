@@ -11,13 +11,16 @@ import { cn } from '@simai/ui/lib/utils';
 import { Pencil } from 'lucide-react';
 import { useRef, useState } from 'react';
 
-/** 구역 이름 버튼. 왼쪽 띠가 심각도 색이고, 고른 구역은 바탕이 짙어진다. */
+/** 구역 이름 버튼. 행 전체 폭을 쓰고(오른쪽은 연필 자리), 왼쪽 띠가 심각도 색이며, 고른 구역은 바탕이 짙어진다. */
 const NAME_BUTTON_CLASS =
-  'flex min-w-0 flex-1 items-center rounded-md border-l-[3px] px-2 py-1.5 text-left text-[13px] outline-none hover:bg-foreground/10 focus-visible:ring-2 focus-visible:ring-ring/50 aria-pressed:bg-foreground/15 aria-pressed:font-semibold';
+  'flex w-full min-w-0 items-center rounded-md border-l-[3px] py-1.5 pl-2 text-left text-[13px] outline-none hover:bg-foreground/10 focus-visible:ring-2 focus-visible:ring-ring/50 aria-pressed:bg-foreground/15 aria-pressed:font-semibold';
+/** 이름 버튼 오른쪽 여백: 행 안 오른쪽에 겹친 연필 버튼을 비켜 간다. 연필을 두지 않는 행(열람 계정)은 가장자리 여백만. */
+const NAME_PAD_RENAME = 'pr-8';
+const NAME_PAD_PLAIN = 'pr-2';
 
-/** 행에 마우스를 올리거나 포커스가 있을 때(터치 화면은 늘) 보이는 연필 버튼. */
+/** 행 안 오른쪽에 겹쳐 놓고, 행에 마우스를 올리거나 포커스가 있을 때(터치 화면은 늘) 보이는 연필 버튼. */
 const PENCIL_CLASS =
-  'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100';
+  'absolute top-1/2 right-0 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100';
 
 /** 이름 입력. Enter 나 포커스를 잃으면 저장하고 Escape 는 저장하지 않고 닫는다. 저장하지 못했으면 입력을 그대로 둔다. */
 function NameEditor({
@@ -109,7 +112,7 @@ export function ZoneListRow({
   };
 
   return (
-    <li className="group/row flex items-center gap-1">
+    <li className="group/row relative">
       {editing ? (
         <NameEditor initial={zone.name} busy={busy} onSave={save} onCancel={cancelEdit} />
       ) : (
@@ -118,7 +121,11 @@ export function ZoneListRow({
             type="button"
             aria-pressed={selected}
             onClick={onOpen}
-            className={cn(NAME_BUTTON_CLASS, ALARM_BORDER[zone.severity])}
+            className={cn(
+              NAME_BUTTON_CLASS,
+              canRename ? NAME_PAD_RENAME : NAME_PAD_PLAIN,
+              ALARM_BORDER[zone.severity],
+            )}
           >
             <span className="sr-only">{`${SEVERITY_LABEL[zone.severity]} `}</span>
             <span className="truncate">{zoneDisplayName(zone.name)}</span>
