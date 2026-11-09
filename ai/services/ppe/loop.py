@@ -123,20 +123,25 @@ class PpeLoop:
             self.counts["not_live"] += 1
             return
         if admission.admit:
-            self._infer_latest()
+            if not self._infer_latest():
+                return  # 카메라 묶음 도중 Tier 0가 정상 종료했다.
         else:
             self.counts["gate_" + (getattr(admission, "code", "") or "closed")] += 1
+        if not getattr(self.gate.check(), "live", True):
+            self.counts["not_live"] += 1
+            return  # 마지막 추론 중 종료한 경우도 상태를 보내지 않는다.
         self._publish_due()
 
-    def _infer_latest(self) -> None:
+    def _infer_latest(self) -> bool:
+        """최신 카메라 묶음을 처리한다. 도중 NOT_LIVE면 False로 송신도 중단한다."""
         got = self.source.latest()
         if got is None:
             self.counts["no_input"] += 1
-            return
+            return True
         doc, images = got
         if doc.get("format") != INPUT_FORMAT:
             self.counts["bad_input"] += 1
-            return
+            return True
         provenance = doc.get("world", {}).get("input_provenance")
         if isinstance(provenance, Mapping) and "tracks" in provenance:
             self._provenance = dict(provenance)
@@ -167,6 +172,17 @@ class PpeLoop:
             if obs is None:
                 self.counts["bad_frame"] += 1
                 continue
+            # 한 카메라 추론 중 부하 신호가 바뀔 수 있다. 관측 구성 뒤, 새 검출 직전에 다시 확인한다.
+            admission = self.gate.check()
+            if not getattr(admission, "live", True):
+                self.counts["not_live"] += 1
+                return False
+            if not admission.admit:
+                self.counts["gate_" + (getattr(admission, "code", "") or "closed")] += 1
+                break  # 남은 프레임·촬영 칸·처리율 기록은 소비하지 않는다.
+            if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
+                self.counts["wait_exceeded"] += 1
+                continue  # 관측 구성·gate 재확인에 걸린 시간도 150ms 대기에 포함한다.
             self._last_frame[camera_id] = key
             self._last_infer_at[camera_id] = self.monotonic_ms()  # 관측 구성 비용 뒤의 실제 추론 시작을 기록한다.
             self._last_bin[camera_id] = (obs.stream_epoch, obs.capture_time_ms // self.judge.cfg.bin_ms)
@@ -175,6 +191,7 @@ class PpeLoop:
                                    tuple(candidates))
             self.judge.ingest(associate_frame(obs, dets, self.judge.cfg))
             self.counts["inferred"] += 1
+        return True
 
     def _publish_due(self) -> None:
         now = self.clock_ms()
