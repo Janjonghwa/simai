@@ -56,3 +56,5 @@ RUN UV_PYTHON_DOWNLOADS=automatic uv python install ${PYTHON_VERSION} \
 USER jenkins
 COPY deploy/jenkins/plugins.txt /usr/share/jenkins/ref/plugins.txt
 RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+# 실행기 1개 고정(S15P31A101-571)
+COPY deploy/jenkins/init.groovy.d/ /usr/share/jenkins/ref/init.groovy.d/
