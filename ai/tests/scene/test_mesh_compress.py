@@ -18,11 +18,24 @@ from simai_ai.scene.mesh_compress import (
     GLB_VERSION,
     compress_scene_mesh,
     count_glb_faces,
+    find_blender_executable,
     inspect_png_header,
     read_glb_json_chunk,
     register_scene_candidate,
     sha256_file,
 )
+
+
+def _blender_available() -> bool:
+    try:
+        find_blender_executable()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+# 실제 Blender 5.2 로 정리·Decimate 하는 통합 시험. Blender 가 없는 CI(Jenkins)에서는 건너뛴다
+needs_blender = pytest.mark.skipif(not _blender_available(), reason="Blender 5.2 실행 파일 없음")
 
 
 def _make_minimal_png_8bit(
@@ -293,6 +306,7 @@ def _build_synthetic_textured_glb(
     return gltf_json
 
 
+@needs_blender
 def test_compress_scene_mesh_removes_floating_islands_and_preserves_surface_source(
     tmp_path: Path,
 ) -> None:
@@ -360,6 +374,7 @@ def test_compress_scene_mesh_removes_floating_islands_and_preserves_surface_sour
     assert report["surface_source_maps"][0]["encoding"] == "PNG_LOSSLESS_8BIT"
 
 
+@needs_blender
 def test_compress_scene_mesh_skips_decimate_when_already_below_target(
     tmp_path: Path,
 ) -> None:

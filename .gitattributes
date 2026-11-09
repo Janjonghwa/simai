@@ -3,3 +3,6 @@
 # deploy/ 는 이미지에 COPY 되어 shebang 으로 실행되는 스크립트(simai-wait-tier0, simai-bootstrap 등)가 있다.
 # Windows checkout(core.autocrlf)의 CRLF 가 들어가면 'python3\r' 로 실패하므로 텍스트는 전부 LF 로 둔다(S15P31A101-205)
 deploy/** text=auto eol=lf
+# 법령 그래프 입력 사전은 docs/data/legal-graph/manifest.json 에 sha256 으로 고정된다.
+# Windows checkout 의 CRLF 로 해시가 바뀌지 않게 LF 로 둔다(S15P31A101-570)
+ai/src/simai_ai/rag/data/**/*.json text eol=lf
