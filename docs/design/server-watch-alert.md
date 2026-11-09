@@ -33,7 +33,7 @@ BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/to
 | 보낼 이벤트 | LIVE, `lifecycle <> RESOLVED`, CRITICAL·HIGH·CAUTION, 규칙은 가리지 않음 | 7.3 워치 개인 채널(INFO 제외), 7.4 출처 분리. C.6 의 'R5 진입 예측 시점' 은 R5 이벤트가 그 시점에 RAISED 되는 것으로 맞춘다 |
 | 보낼 때 | `RiskEventsDelivered`(REALTIME 전이·동기화 끝 DELAYED_ACTIVE, 운영자 확인·요약 갱신 재발행 포함) | 관제 화면에 알리는 것과 같은 때. AUDIT_ONLY 는 오지 않는다 |
 | 중복 | 같은 이벤트(재개마다 따로, `resume_count`)·워치에 같거나 높은 등급을 보냈으면 다시 보내지 않는다. 등급이 오르면 다시. 보내지 못한(SEND_FAILED) 알림은 세지 않아 다시 붙으면 다시 보낸다(부분 UQ `event_id, resume_count, device_id, severity`) | 재발행마다 진동하면 작업자가 무시한다. 상향·재진입(resumed, 6.4)은 새 위험이다 |
-| 한 단어 | 규칙별 R1 위험구역·R2 개구부·R3 고소·R4 낙상·R5 진입주의·R6 구역확인·R7 감시저하·R8 장비·R9 안전모(PPE MVP 는 안전모만, 워치 그림·종류 칸 없이 글자만)·R10 점유주의, 모르면 위험 | 계약 1~8자, 원형 화면 한 줄(-390) |
+| 한 단어 | 규칙별 R1 위험구역·R2 개구부·R3 고소·R4 낙상·R5 진입주의·R6 구역확인·R7 감시저하·R8 장비·R9 안전모·R10 점유주의·R11 조끼(PPE 는 워치 그림·종류 칸 없이 글자만, R11 은 S15P31A101-549), 모르면 위험 | 계약 1~8자, 원형 화면 한 줄(-390) |
 | 진동 패턴 | 등급으로: CRITICAL DANGER_LONG, HIGH CAUTION_DOUBLE, CAUTION CAUTION_WEAK. 메시지와 표 모두 적는다 | FR-45, 계약의 기본 대응과 같다 |
 | 방향 | 싣지 않는다 | 계약은 선택. 작업자 기준 방향은 트랙 속도가 필요하고 임계값이 정해지지 않았다(남은 일) |
 | 확인 기한 | `simai.watch.ack-within` 10초 | 계약 초깃값(watch-i4-contract.md). EC2 시각(`ack_received_at`)으로만 판단 |

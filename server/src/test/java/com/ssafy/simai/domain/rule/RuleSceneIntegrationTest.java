@@ -88,7 +88,7 @@ class RuleSceneIntegrationTest {
     }
 
     @Test
-    void 규칙은_R1부터_R10까지_활성_여부와_현재_판_임계값과_모든_판의_적용_기간을_준다() throws Exception {
+    void 규칙은_R1부터_R11까지_활성_여부와_현재_판_임계값과_모든_판의_적용_기간을_준다() throws Exception {
         String bundle = bundle("OPERATION");
         item(bundle, "R1", 1);
         item(bundle, "R2", 1);
@@ -99,7 +99,7 @@ class RuleSceneIntegrationTest {
         assertThat(body.get("rule_profile").asString()).isEqualTo("OPERATION");
         assertThat(body.get("config_version").asString()).isEqualTo(bundle);
         JsonNode rules = body.get("rules");
-        assertThat(rules).hasSize(10);
+        assertThat(rules).hasSize(11);
         assertThat(rules.get(0).get("rule_id").asString()).isEqualTo("R1");
         assertThat(rules.get(0).get("name").asString()).isEqualTo("위험 구역 진입");
         assertThat(rules.get(0).get("active").asBoolean()).isTrue();
@@ -122,6 +122,14 @@ class RuleSceneIntegrationTest {
         assertThat(rules.get(9).get("rule_id").asString()).isEqualTo("R10");
         assertThat(rules.get(9).get("stage").asString()).isEqualTo("EXTENSION");
         assertThat(rules.get(9).get("active").asBoolean()).isFalse();
+        // PPE 규칙(MVP, 기본 꺼짐이라 묶음에 없으면 비활성): R9 안전모, R11 조끼(S15P31A101-549)
+        assertThat(rules.get(8).get("rule_id").asString()).isEqualTo("R9");
+        assertThat(rules.get(8).get("name").asString()).isEqualTo("작업 중 안전모 미착용");
+        assertThat(rules.get(8).get("stage").asString()).isEqualTo("MVP");
+        assertThat(rules.get(10).get("rule_id").asString()).isEqualTo("R11");
+        assertThat(rules.get(10).get("name").asString()).isEqualTo("작업 중 조끼 미착용");
+        assertThat(rules.get(10).get("stage").asString()).isEqualTo("MVP");
+        assertThat(rules.get(10).get("active").asBoolean()).isFalse();
         // 적용 기간: 교실 시험 판까지 모든 판, 값 없이
         JsonNode versions = body.get("versions");
         assertThat(versions.size()).isGreaterThanOrEqualTo(9);

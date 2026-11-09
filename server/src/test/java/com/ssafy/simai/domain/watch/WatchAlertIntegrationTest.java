@@ -211,6 +211,22 @@ class WatchAlertIntegrationTest {
     }
 
     @Test
+    void R11_조끼_미착용은_조끼_단어와_CAUTION_진동으로_보낸다() throws Exception {
+        // S15P31A101-549: 조끼 미착용(R11, CAUTION)도 R9 안전모처럼 본인 워치로 간다. 단어 표에 없으면 "위험"으로 나가 구분이 안 된다
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID event = liveEvent("R11", "CAUTION", "RAISED", "LIVE", worldId);
+
+        alerts.alert(event);
+        JsonNode alert = watch.next("watch_alert");
+        assertThat(schemas.violations("messages/watch_alert", alert.toString())).isEmpty();
+        assertThat(alert.path("payload").path("event_id").asString()).isEqualTo(event.toString());
+        assertThat(alert.path("payload").path("severity").asString()).isEqualTo("CAUTION");
+        assertThat(alert.path("payload").path("vibration_pattern").asString()).isEqualTo("CAUTION_WEAK");
+        assertThat(alert.path("payload").path("word").asString()).isEqualTo("조끼");
+    }
+
+    @Test
     void ACK_가_없으면_기한_뒤_한_번만_격상하고_관리자_화면에_알린다() throws Exception {
         bindings.bindManually(watchId, worldId, adminId);
         Watch watch = watch(watchId, watchToken);

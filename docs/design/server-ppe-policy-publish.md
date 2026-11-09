@@ -1,10 +1,10 @@
 # 작업 시작·종료 때 안전모 요구(ppe_policy) 발행 (S15P31A101-518)
 
 기획서 §7.2 R9 행·설명(작업 기준 요구, `ppe_policy` 없음은 요구 없음), §8.10(작업 시작·종료 때 새 `config_version` 발행), §12.3
-(`config_bundle` 1.3.0, `contracts/data/ppe_policy` 1.0.0), §12.4(작업 시작·종료 API), §3.2(구성 묶음·`config_ack`)가 기준이다.
+(`config_bundle` 1.3.0, `contracts/data/ppe_policy` 1.0.0, -549 부터 1.1.0), §12.4(작업 시작·종료 API), §3.2(구성 묶음·`config_ack`)가 기준이다.
 
 Jira 본문의 `work_unit.ppe_helmet`·`ppe_vest` 칸, 공종 기본값, `zone.requirements` 검사는 -517(v1.3 수정 66)에서 폐기됐다.
-요구는 진행 중 작업(`IN_PROGRESS`)이 있으면 현장 전체 REQUIRED, 없으면 NOT_REQUIRED 이고, 작업별·공종별·구역별 설정과 조끼 요구는 없다.
+요구는 진행 중 작업(`IN_PROGRESS`)이 있으면 현장 전체 REQUIRED, 없으면 NOT_REQUIRED 이고, 작업별·공종별·구역별 설정은 없다. 조끼 요구(`vest`)는 -549 에서 안전모와 같은 규칙으로 더했다(`format_version` 1.1.0, 늘 싣는다, 명세 v1.3 수정 68, [`server-vest-r11.md`](server-vest-r11.md)).
 그래서 작업 칸과 작업 등록·수정 API 변경은 없다. DB 는 묶음 파일 이름 제약에 `ppe_policy` 를 더하는 것만 바꾼다(V44).
 
 ## 코드와 시험
@@ -15,7 +15,7 @@ Jira 본문의 `work_unit.ppe_helmet`·`ppe_vest` 칸, 공종 기본값, `zone.r
 | 묶음 파일 이름 제약 | `server/src/main/resources/db/migration/V44__config_bundle_ppe_policy.sql`(`config_bundle_file.name` 에 `ppe_policy`) | 같은 시험 |
 | 알림 버전 1.3.0 | `ConfigBundleSender.CONFIG_BUNDLE_SCHEMA_VERSION` | 같은 시험(알림을 계약으로 검사) |
 | 작업 시작·종료 발행 | `server/.../domain/work/WorkSessionService.java`(`publishWith`), `WorkUnitController.java`(발행자 = 로그인 사용자) | `ConfigBundleIntegrationTest`, `WorkSessionIntegrationTest` |
-| 묶음 보기 요약 | `ConfigBundleViews.java`(`ppe_policy`: helmet·work_id·effective_from_ms, 없으면 null) | `ConfigBundleIntegrationTest` |
+| 묶음 보기 요약 | `ConfigBundleViews.java`(`ppe_policy`: helmet·vest·work_id·effective_from_ms, 없으면 null. 1.0.0 으로 발행한 이전 묶음의 vest 는 null) | `ConfigBundleIntegrationTest` |
 
 ## 동작
 
