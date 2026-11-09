@@ -128,6 +128,8 @@ def test_marker_is_written_before_reservation_and_carries_load_for_gate(tmp_path
         assert gp["phase"] == "running"
         assert gp["processing"]["judge"]["samples"] > 0
         assert gp["processing"]["judge"]["unknown"] == 0
+        assert gp["processing"]["judge"]["lag_ms_p95"] is not None
+        assert gp["processing"]["judge"]["lag_ms_max"] is not None
         assert gp["processing"]["detect_required"] is False  # SIM 입력은 별도 검출기 없음
         assert gp["reserve"]["state"] == "OK" and gp["reserve"]["reserved_mb"] == pytest.approx(1024)
         assert torch.cached == 1024 * MB
