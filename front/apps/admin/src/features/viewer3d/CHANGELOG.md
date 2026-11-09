@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-552 사람 안전모·조끼 GLB(`personVests`)
+
+모두 더하기이며 하위 호환이다.
+
+- 추가: `personVests`(`Readonly<Record<string, PersonHelmetState>>`, 선택) prop. 안전모(`personHelmets`)와 같은 모양이다.
+- 동작: -531 의 단순 반구 안전모를 안전모·조끼 GLB 로 바꿨다. 골격 막대는 귀·어깨·골반 관절에, 캡슐·아바타 메시 사람은 캡슐 고정 자리에 붙는다. 둘 중 하나라도 NOT_WORN 이면 경고 표식 하나(메시 사람 포함). 두 prop 을 넘기지 않으면 지금과 같다.
+- 없앰: 내부 `PersonHelmet` 컴포넌트(공개 입구가 아니라 호환에 영향 없음).
+
 ## S15P31A101-531 사람 안전모 형상(`personHelmets`)
 
 모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/ppe-viewer.md` 에 있다.

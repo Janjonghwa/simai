@@ -65,17 +65,21 @@ function itemDisplay(item: ItemView, serverNow: number, linkAlive: boolean): Ppe
   return { state: item.state, reason: item.reason, lastEvidenceAtMs };
 }
 
-/** 3D 안전모 형상에 넘길 사람별 안전모 상태. */
-export function helmetStates(
+/** 사람 몸에 붙는 장비 종류: helmet · vest. */
+export type PpeItemKind = keyof PersonPpe;
+
+/** 3D 에 넘길 사람별 장비(안전모 또는 조끼) 상태. 붙일 상태가 있는 사람만 담는다. */
+export function itemStates(
   snapshots: Readonly<Record<string, PpeSnapshot>>,
   tracks: readonly { worldId: string; identityRevision: number }[],
   now: number,
   linkAlive: boolean,
+  item: PpeItemKind,
 ): Record<string, PpeState> {
   const states: Record<string, PpeState> = {};
   for (const track of tracks) {
     const ppe = personPpe(snapshots, track.worldId, track.identityRevision, now, linkAlive);
-    if (ppe) states[track.worldId] = ppe.helmet.state;
+    if (ppe) states[track.worldId] = ppe[item].state;
   }
   return states;
 }

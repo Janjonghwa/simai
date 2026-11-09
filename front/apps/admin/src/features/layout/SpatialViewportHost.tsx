@@ -22,7 +22,7 @@ import { useCurrentCalibration } from '@/features/layout/useCurrentCalibration';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
-import { useHelmetStates } from '@/features/ppe/usePpe';
+import { usePpeGearStates } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useWatchBadges, useWatchBindDetector } from '@/features/watch/useWatch';
 import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
@@ -106,8 +106,8 @@ export function SpatialViewportHost({
   const layers = editing || !eventPanel ? ZONE_EDIT_LAYERS : MONITOR_LAYERS;
   // 사람 이름표 뒤 워치 채널 상태(-342). 배정·연결이 바뀔 때만 새 객체다
   const personBadges = useWatchBadges();
-  // 사람 머리 위 단순 안전모 형상(-531, 명세 13.3). 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인에서 정한다
-  const personHelmets = useHelmetStates();
+  // 사람에게 붙는 안전모·조끼와 미착용 경고 표식(-531·-552, 명세 13.3). 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인에서 정한다
+  const { helmets: personHelmets, vests: personVests } = usePpeGearStates();
   // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
   useWatchBindDetector();
   const bindHighlights = useWatchBindEffectStore((s) => s.highlights);
@@ -148,6 +148,7 @@ export function SpatialViewportHost({
                 layers={layers}
                 personBadges={personBadges}
                 personHelmets={personHelmets}
+                personVests={personVests}
                 personHighlights={personHighlights}
                 cameraPoses={cameraPoses}
                 onCameraClick={handleCameraClick}

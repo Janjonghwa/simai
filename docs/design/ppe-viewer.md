@@ -16,7 +16,7 @@ I1 ppe_state ─▶ PpeStateIngestor ─(현재 상태가 바뀌었고 커밋됨
 GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot ───────────────┘
                                                                   │
                     ppeView.personPpe(같은 World ID·identity_revision, 만료·연결)
-                        ├─ 3D 안전모 형상(useHelmetStates → viewer3d personHelmets)
+                        ├─ 3D 안전모·조끼 형상(usePpeGearStates → viewer3d personHelmets·personVests)
                         └─ 글 표시용 훅 usePersonPpe(안전모·조끼·사유·마지막 근거 시각). 화면에 그리는 일은 프론트 디자인(아래 넘긴 일)
 ```
 
@@ -29,7 +29,7 @@ GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot 
 | EC2 REST | `PpeViewController`(`GET /api/ppe/current`, VIEWER·FOREMAN·ADMIN) | 같은 시험 |
 | 관제 앱 수신 | `front/apps/admin/src/lib/stomp.ts`(`PPE_TOPIC`, 3D Source 로 넘기지 않음), `store/realtime.store.ts`(`ppe`, `receivePpe`) | `__tests__/lib/stomp.test.ts`, `__tests__/features/ppe/ppeView.test.ts` |
 | 표시 규칙 | `features/ppe/ppeView.ts`, `usePpe.ts`, `api.ts` | `ppeView.test.ts`, `AppLayout.test.tsx`(처음 상태 훅) |
-| 3D 형상 | `features/viewer3d/people/PersonHelmet.tsx`, `PersonLayer.tsx`, prop `personHelmets`(CONTRACT.md·CHANGELOG.md) | 타입 검사(렌더 시험 없음, 아래 잔여 위험) |
+| 3D 형상 | `features/viewer3d/people/ppe/`(`PpeGear`·`PpeWarningMark`·`ppeFit`·`ppeAssets`, GLB 2개), `PersonLayer.tsx`, prop `personHelmets`·`personVests`(CONTRACT.md·CHANGELOG.md) | `__tests__/features/viewer3d/{ppeFit,ppeAssets,personPpe}.test.ts(x)`(장면 렌더 포함) |
 | 개발 mock | `front/apps/admin/src/mocks/scenario/ppe.ts`(`ppeViewAt`: mock 사람 셋을 안전모 착용·미착용·모름으로), `mocks/realtime.ts`(`/topic/ppe` 2 Hz, `GET /api/ppe/current`) | `__tests__/mocks/realtimeScenario.test.ts`(계약), `__tests__/mocks/realtime.test.ts` |
 
 ## 명세에 없어 정한 것과 근거
@@ -46,22 +46,22 @@ GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot 
 | EC2 끊김 | `isLinkAlive`(health 3초) 가 거짓이면 모든 사람 UNKNOWN(`EC2_DISCONNECTED`, 화면 전용 사유) | §13.3 "EC2 연결이 끊기면 UNKNOWN" |
 | 붙이는 조건 | 지금 world 트랙(LOST 제외)과 World ID·`identity_revision` 이 같을 때만 | §13.3 "이전 ID 의 상태를 새 사람에게 넘기지 않는다". 차수가 다르면 아무것도 붙이지 않는다(UNKNOWN 도 아님) |
 | 글 표시 | 이 MR 에서는 그리지 않는다. 데이터(`usePersonPpe`: 상태·사유·마지막 근거 시각, 만료·연결 반영)까지만 둔다 | 관제 화면 디자인을 프론트가 정한다(이원준 결정 2026-11-09). 처음 구현했던 이름표 글·보호구 카드는 뺐다 |
-| 3D 형상 | 골격 머리(얼굴 관절 가운데) 위 0.07 m 에 반구(반지름 0.15 m)+챙. 골격 머리가 없으면 캡슐 머리 위 1.64 m, 높이 모름이면 표식 위쪽 2.0 m. WORN 불투명, UNKNOWN 반투명 0.35 + 외곽선, NOT_WORN 은 형상 없이 머리 위 빨간 표식 | §13.3 표현. §13.3 의 크기 맞춤(어깨 폭·몸통 길이·머리 크기)과 아바타 메시 머리 정밀 맞춤은 하지 않고 고정 크기로 둔다(13.3 에 MVP 범위로 적고 19.1 미결로 남김) |
+| 3D 형상 | 안전모·조끼 GLB(-552). 골격 막대는 양쪽 귀 가운데에 안전모, 어깨·골반 관절로 조끼 크기를 맞춘다. 캡슐·아바타 메시 사람은 캡슐 몸의 고정 자리. WORN 은 채도를 낮춘 실물, UNKNOWN 반투명 0.3 + 외곽선, NOT_WORN 은 그 장비를 그리지 않는다. 안전모·조끼 중 하나라도 NOT_WORN 이면 머리 위 빨간 표식 하나(골격 머리 공 위 0.07+0.22 m, 캡슐 1.64 m, 높이 모름 2.0 m). 높이 모름 기둥은 표식만 | §13.3 표현과 크기 맞춤(어깨 폭·몸통 길이). 아바타 메시 머리 정밀 맞춤은 하지 않고 캡슐 자리에 둔다(19.1 미결) |
 
 ## 버린 대안
 
 - `/topic/world` 에 PPE 를 싣는다: `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는 규칙(§12.4)이고 I1 LIVE 계약은 Lead 승인 대상이다.
 - I1 `ppe_state` 를 그대로 중계한다: 처음 상태 REST 와 모양이 달라지고, 사라진 사람 정리·만료·근거 내부 값을 앱이 따로 다뤄야 한다.
 - 주기적(1초) 스냅샷: 바뀔 때만 보내고 화면이 만료를 스스로 보면 같은 결과다. 사람이 없을 때 빈 메시지를 계속 보낼 이유가 없다.
-- 조끼도 3D 모델로 그린다: 조끼 요구가 없고(§8.10) 몸통 형상 맞춤은 아바타 표현마다 달라 이번 범위에서 뺐다.
+- 조끼도 3D 모델로 그린다: -531 에서는 뺐으나 조끼 미착용도 같은 경고 표식으로 보이기로 해 -552 에서 GLB 로 더했다(몸통 맞춤은 골격 어깨·골반, 그 밖은 캡슐 고정 자리).
 - 이름표 글(워치 글 뒤 `· 안전모 착용`)·고른 사람 보호구 카드: 처음 구현했으나 관제 화면 디자인을 프론트가 정하기로 해 뺐다(데이터 훅만 남김).
 
 ## 잔여 위험과 넘긴 일
 
 - 시계: 만료는 Tier 0 시계(`expires_at_ms`)와 EC2 시계(`snapshot_at_ms`)를 같은 UTC 로 본다([`ppe-state-ingest.md`](ppe-state-ingest.md) 잔여 위험과 같다).
-- 3D 형상 렌더 시험이 없다. 시각 확인은 실제 PPE 상태가 오는 GPU 세션에서 한다.
+- 3D 형상은 jsdom 장면 시험으로 위치·이름·표식 규칙을 본다. 실제 GPU 에서의 모양은 개발 화면(`?ppe=fixed|cycle`)과 mock 으로 눈으로 본다.
 - 골격 머리 위치는 표본 기준이고 루트 보간과 조금 어긋날 수 있다(캡슐·메시 아바타일 때). 골격 아바타는 같은 그룹에 둬서 어긋나지 않는다.
-- 아바타 메시 머리 정밀 맞춤, 크기를 골격 치수로 맞추기, 조끼 3D 모델은 §19.1 에 남긴다.
+- 아바타 메시 머리 정밀 맞춤은 §19.1 에 남긴다(메시 사람은 캡슐 자리에 장비를 둔다).
 - **넘긴 일(프론트 디자인)**: §8.10·§13.3 의 "상태와 마지막 근거 시각을 보인다" 글 표시. `usePersonPpe(worldId)` 가 같은 World ID·차수·만료·연결을 따진 값을 준다. 사유 코드는 계약 `ppe_state` reason 목록과 화면 전용 `EC2_DISCONNECTED` 이다.
 - 리플레이에 PPE 상태를 싣는지는 명세 8.5 에 없다(넘김).
 - 요구사항 FR-74 갱신 필요(명세 README 요구사항 갱신 목록).

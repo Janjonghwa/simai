@@ -1,4 +1,4 @@
-import { EXPIRED_REASON, helmetStates, LINK_LOST_REASON, personPpe } from '@/features/ppe/ppeView';
+import { EXPIRED_REASON, itemStates, LINK_LOST_REASON, personPpe } from '@/features/ppe/ppeView';
 import { useRealtimeStore, type PpeSnapshot } from '@/store/realtime.store';
 import type { PpeViewPayload } from '@simai/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -81,14 +81,23 @@ describe('personPpe', () => {
   });
 });
 
-describe('helmetStates', () => {
-  it('3D 안전모 형상에는 붙일 상태가 있는 사람만 담는다', () => {
-    const tracks = [
-      { worldId: 'w-1', identityRevision: 2 },
-      { worldId: 'w-2', identityRevision: 0 },
-    ];
-    expect(helmetStates(snapshots(), tracks, RECEIVED, true)).toEqual({ 'w-1': 'WORN' });
-    expect(helmetStates(snapshots(), tracks, RECEIVED, false)).toEqual({ 'w-1': 'UNKNOWN' });
+describe('itemStates', () => {
+  const tracks = [
+    { worldId: 'w-1', identityRevision: 2 },
+    { worldId: 'w-2', identityRevision: 0 },
+  ];
+
+  it('3D 에는 붙일 상태가 있는 사람만 담고, 안전모와 조끼를 따로 준다', () => {
+    expect(itemStates(snapshots(), tracks, RECEIVED, true, 'helmet')).toEqual({ 'w-1': 'WORN' });
+    expect(itemStates(snapshots(), tracks, RECEIVED, true, 'vest')).toEqual({ 'w-1': 'UNKNOWN' });
+  });
+
+  it('EC2 연결이 끊기면 둘 다 UNKNOWN 이고, 차수가 다른 사람은 담지 않는다', () => {
+    expect(itemStates(snapshots(), tracks, RECEIVED, false, 'helmet')).toEqual({
+      'w-1': 'UNKNOWN',
+    });
+    const stale = [{ worldId: 'w-1', identityRevision: 9 }];
+    expect(itemStates(snapshots(), stale, RECEIVED, true, 'vest')).toEqual({});
   });
 });
 

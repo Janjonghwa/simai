@@ -101,6 +101,38 @@ describe('관절 표시 규칙(명세 13.2)', () => {
   });
 });
 
+describe('장비 기준점(anchors, -552)', () => {
+  it('그릴 수 있는 관절의 루트 기준 Three 좌표를 준다: 코·귀·어깨·골반과 머리(얼굴 관절 평균)', () => {
+    const track = trackOf(crowdTrackId(0));
+    const pose = personPose(track, null);
+    const { anchors } = skeletonFigure(track.skeleton!, pose.feet!)!;
+    const expected = (joint: number) => {
+      const three = worldToThree(track.skeleton!.joints[joint]!);
+      return close(three.map((v, i) => v - pose.feet![i]!));
+    };
+    expect(close(anchors.lShoulder!)).toEqual(expected(COCO.lShoulder));
+    expect(close(anchors.rHip!)).toEqual(expected(COCO.rHip));
+    expect(close(anchors.nose!)).toEqual(expected(COCO.nose));
+    expect(anchors.head).toBeDefined();
+  });
+
+  it('가려진 관절(귀)은 기준점에 넣지 않는다', () => {
+    const track = trackOf(crowdTrackId(0));
+    const { anchors } = skeletonFigure(track.skeleton!, personPose(track, null).feet!)!;
+    // crowd 의 왼쪽 귀는 UNAVAILABLE 이다(막대 모양 시험과 같다).
+    expect(anchors.lEar).toBeUndefined();
+    expect(anchors.rEar).toBeDefined();
+  });
+
+  it('좌표가 없는 어깨는 기준점에 없다', () => {
+    const track = trackOf(crowdTrackId(0));
+    const skeleton = withJoint(track.skeleton!, COCO.lShoulder, { joint: null });
+    const { anchors } = skeletonFigure(skeleton, personPose(track, null).feet!)!;
+    expect(anchors.lShoulder).toBeUndefined();
+    expect(anchors.rShoulder).toBeDefined();
+  });
+});
+
 describe('접지와 원본 보존(명세 13.2, 5.2)', () => {
   it('접지가 확인되면 루트를 접지점에 두고, 관절은 World 높이 그대로다(발목을 접지점에 붙이지 않는다)', () => {
     const track = trackOf(crowdTrackId(0));

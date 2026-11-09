@@ -38,7 +38,7 @@ import {
   type AvatarModel,
 } from '@/features/viewer3d/people/avatarModel';
 import { applyPose, PosePlayer } from '@/features/viewer3d/people/avatarPose';
-import { PersonHelmet } from '@/features/viewer3d/people/PersonHelmet';
+import { CAPSULE } from '@/features/viewer3d/people/capsuleShape';
 import { PersonHighlight } from '@/features/viewer3d/people/PersonHighlight';
 import {
   approach,
@@ -54,6 +54,8 @@ import {
   type PersonPose,
   type PersonTone,
 } from '@/features/viewer3d/people/personMotion';
+import { PpeGear } from '@/features/viewer3d/people/ppe/PpeGear';
+import { PpeWarningMark } from '@/features/viewer3d/people/ppe/PpeWarningMark';
 import { SkeletonBody } from '@/features/viewer3d/people/SkeletonBody';
 import {
   skeletonFigure,
@@ -93,7 +95,7 @@ type PersonColor = ScenePalette['person'];
 const OPACITY: Record<PersonTone, number> = { observed: 1, predicted: 0.45, unknown: 0.3 };
 const LABEL_Y = 2.05;
 const COLUMN_TOP = 2.0;
-/** 골격 머리가 없을 때 안전모를 두는 높이(캡슐 머리 구 1.58 m 위, -531). */
+/** 골격 머리가 없을 때 경고 표식을 두는 높이(캡슐 머리 구 1.58 m 위, -531). */
 const HELMET_Y = 1.64;
 const noRaycast = () => null;
 
@@ -177,8 +179,10 @@ function PersonAvatar({
   const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
   // 호스트가 잠깐 켜는 강조(-509 워치 연결 순간). 고리 펄스와 큰 이름표
   const highlight = useStore(viewerStore, (s) => s.personHighlights[worldId] ?? null);
-  // 호스트가 따진 안전모 상태(-531). 없으면 형상을 그리지 않는다
+  // 호스트가 따진 안전모·조끼 상태(-531·-552). 없으면 장비를 그리지 않고, 하나라도 미착용이면 경고 표식이 보인다
   const helmet = useStore(viewerStore, (s) => s.personHelmets[worldId] ?? null);
+  const vest = useStore(viewerStore, (s) => s.personVests[worldId] ?? null);
+  const notWorn = helmet === 'NOT_WORN' || vest === 'NOT_WORN';
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
@@ -351,6 +355,8 @@ function PersonAvatar({
   const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
   const placement = trackPlacement(track).basis;
   const meshOn = meshUse && mesh !== null && pose.kind === 'BODY';
+  // 메시가 보이는 사람은 골격 막대를 그리지 않으므로 장비도 캡슐 자리에 붙는다.
+  const skeletonOn = skeleton && !meshOn;
 
   return (
     <>
@@ -371,7 +377,7 @@ function PersonAvatar({
           />
         )}
         <group ref={root} name={`person-avatar:${worldId}`}>
-          {meshOn ? null : skeleton ? (
+          {skeletonOn ? (
             <group ref={skeletonRoot} name="person-skeleton-root">
               <SkeletonBody
                 motion={motion}
@@ -385,11 +391,18 @@ function PersonAvatar({
                       : 'NONE'
                 }
               />
-              {helmet && <PersonHelmet state={helmet} figure={motion} fallbackY={HELMET_Y} />}
+              <PpeGear
+                helmet={helmet}
+                vest={vest}
+                motion={motion}
+                opacity={OPACITY[tone]}
+                outlineColor={palette.person.unknown}
+              />
+              {notWorn && <PpeWarningMark figure={motion} fallbackY={HELMET_Y} />}
             </group>
           ) : pose.kind === 'BODY' ? (
             <group ref={body}>
-              {model ? (
+              {meshOn ? null : model ? (
                 <ModelBody
                   key={model.url}
                   model={model}
@@ -402,16 +415,21 @@ function PersonAvatar({
               ) : (
                 <CapsuleBody color={palette.person} tone={tone} selected={selected} />
               )}
+              {/* 캡슐·아바타 메시 사람은 캡슐 자리에 붙인다(메시 머리·등뼈에 맞추기는 명세 19.1 미결). 개발용 모델은 크기가 달라 뺀다. */}
+              {!model && (
+                <PpeGear
+                  helmet={helmet}
+                  vest={vest}
+                  opacity={OPACITY[tone]}
+                  outlineColor={palette.person.unknown}
+                />
+              )}
             </group>
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />
           )}
-          {helmet && !skeleton && (
-            <PersonHelmet
-              state={helmet}
-              figure={motion}
-              fallbackY={pose.kind === 'BODY' ? HELMET_Y : COLUMN_TOP}
-            />
+          {notWorn && !skeletonOn && (
+            <PpeWarningMark fallbackY={pose.kind === 'BODY' ? HELMET_Y : COLUMN_TOP} />
           )}
           {/* 이름표는 사람 ID 만 늘 보인다. 위험이면 글자 색만 위험 색이고, 예측·확인 불가는 몸 색·투명도로 보인다. */}
           <LabelSprite
@@ -452,8 +470,8 @@ function CapsuleBody({
   const solid = tone === 'observed';
   return (
     <>
-      <mesh position-y={0.78}>
-        <capsuleGeometry args={[0.2, 1.06, 6, 14]} />
+      <mesh position-y={CAPSULE.bodyY}>
+        <capsuleGeometry args={[CAPSULE.bodyRadius, CAPSULE.bodyLength, 6, 14]} />
         <meshStandardMaterial
           color={color}
           transparent
@@ -462,8 +480,8 @@ function CapsuleBody({
           roughness={0.6}
         />
       </mesh>
-      <mesh position-y={1.58}>
-        <sphereGeometry args={[0.13, 16, 12]} />
+      <mesh position-y={CAPSULE.headY}>
+        <sphereGeometry args={[CAPSULE.headRadius, 16, 12]} />
         <meshStandardMaterial
           color={color}
           transparent
@@ -472,7 +490,7 @@ function CapsuleBody({
           roughness={0.6}
         />
       </mesh>
-      <mesh position={[0, 1.58, 0.12]} raycast={noRaycast}>
+      <mesh position={[0, CAPSULE.headY, 0.12]} raycast={noRaycast}>
         <boxGeometry args={[0.14, 0.05, 0.04]} />
         <meshBasicMaterial color={COLOR.joint} transparent opacity={opacity} />
       </mesh>

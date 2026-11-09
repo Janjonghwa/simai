@@ -144,11 +144,29 @@ export interface SkeletonBall {
   look: DrawnLook;
 }
 
+/** 안전모·조끼를 맞출 때 쓰는 기준점. head 는 얼굴 관절 평균(머리 구의 중심)이다. */
+export type SkeletonAnchorKey =
+  'head' | 'nose' | 'lEar' | 'rEar' | 'lShoulder' | 'rShoulder' | 'lHip' | 'rHip';
+/** 루트(발 위치) 기준 Three 좌표. 그릴 수 없는(없거나 UNAVAILABLE) 관절은 없다. */
+export type SkeletonAnchors = Readonly<Partial<Record<SkeletonAnchorKey, ThreePoint>>>;
+
+const ANCHOR_JOINTS = {
+  nose: C.nose,
+  lEar: C.lEar,
+  rEar: C.rEar,
+  lShoulder: C.lShoulder,
+  rShoulder: C.rShoulder,
+  lHip: C.lHip,
+  rHip: C.rHip,
+} as const;
+
 export interface SkeletonFigure {
   segments: readonly SkeletonSegment[];
   balls: readonly SkeletonBall[];
   /** 그리지 않은(없거나 UNAVAILABLE) 관절 수. 모양으로 채우지 않았다는 기록이다. */
   missingJoints: number;
+  /** 사람에게 붙이는 장비(안전모·조끼)의 기준점. */
+  anchors: SkeletonAnchors;
 }
 
 const relative = (point: ThreePoint, root: ThreePoint) =>
@@ -218,11 +236,16 @@ export function skeletonFigure(
 
   // 머리는 좌표가 있는 얼굴 관절의 가운데 구 하나. 얼굴 관절이 하나도 없으면 머리를 그리지 않는다.
   const face = FACE.filter((i) => looks[i] !== 'MISSING');
+  const anchors: Partial<Record<SkeletonAnchorKey, ThreePoint>> = {};
+  for (const [key, joint] of Object.entries(ANCHOR_JOINTS) as [SkeletonAnchorKey, number][]) {
+    if (looks[joint] !== 'MISSING') anchors[key] = at(joint);
+  }
   if (face.length > 0) {
     const points = face.map(at);
     const head = points
       .reduce((sum, p) => [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]], [0, 0, 0])
       .map((v) => v / points.length) as unknown as ThreePoint;
+    anchors.head = head;
     const headLook = worst(face.map((i) => looks[i]!)) as DrawnLook;
     balls.push({ at: head, radius: SKELETON_RADIUS.head, look: headLook });
     if (neck) {
@@ -239,5 +262,6 @@ export function skeletonFigure(
     segments,
     balls,
     missingJoints: looks.slice(0, 17).filter((look) => look === 'MISSING').length,
+    anchors,
   };
 }

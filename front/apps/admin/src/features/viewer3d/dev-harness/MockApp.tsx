@@ -18,10 +18,12 @@ import {
 } from '@/features/viewer3d/dev-harness/devView';
 import { DevViewSwitcher } from '@/features/viewer3d/dev-harness/DevViewSwitcher';
 import { EditPanel, EditProbe } from '@/features/viewer3d/dev-harness/EditPanel';
+import { readPpeMode, useHarnessPpe } from '@/features/viewer3d/dev-harness/harnessPpe';
 import {
   createHarnessSource,
   DEV_XBOT_URL,
   readAvatar,
+  readAvatarMesh,
   readDataSource,
   readZoneApply,
   withDataSource,
@@ -148,6 +150,10 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [initialMode] = useState<ViewerMode>(() => (sourceKey === 'replay' ? 'REPLAY' : 'LIVE'));
   const replaying = sourceKey === 'replay';
   const [avatar] = useState(() => readAvatar(window.location.search));
+  const [avatarMesh] = useState(() => readAvatarMesh(window.location.search));
+  // ?ppe=fixed|cycle: 사람별 안전모·조끼 상태(-552). 없으면 장비를 그리지 않는다.
+  const [ppeMode] = useState(() => readPpeMode(window.location.search));
+  const ppe = useHarnessPpe(dataStore, ppeMode);
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
   const [postProcessing, setPostProcessing] = useState(() =>
     readPostProcessingParam(window.location.search),
@@ -335,6 +341,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           layers={layers}
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
+          avatarMesh={avatarMesh}
+          personHelmets={ppe?.helmets}
+          personVests={ppe?.vests}
           zoneApplyState={zoneApply}
           scene={effectiveSceneInput}
           onSceneStatusChange={setSceneStatus}
