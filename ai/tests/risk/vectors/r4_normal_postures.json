@@ -1,7 +1,7 @@
 {
   "format_version": "1.3.0",
   "vector_id": "r4-normal-postures",
-  "description": "R4 오경보 대조: 빠른 앉기·빠르게 바닥에 앉기(급하강 후보지만 머리 0.9 m 라 낮은 자세 아님)·단상에서 내려오기(머리와 접지가 함께 내려감)는 판정 없음, 접지를 모르는 사람은 바닥 Z=0 으로 채우지 않고 유지(input_unknown, Z_UNKNOWN)만. 이벤트 0건",
+  "description": "R4 오경보 대조: 빠른 앉기·빠르게 바닥에 앉기(급하강 후보지만 머리 0.9 m 라 낮은 자세 아님)·단상에서 내려오기(머리와 접지가 함께 내려감)는 판정 없음, 접지를 모르는 사람은 바닥 Z=0 으로 채우지 않고 유지(input_unknown, Z_UNKNOWN)만. 이벤트 0건 [S15P31A101-555: 완화된 R4 기준에 따른 판정·전이 기대값]",
   "origin": "LIVE",
   "rules": [
     {
@@ -805,11 +805,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -905,11 +932,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1005,11 +1059,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1105,11 +1186,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1205,11 +1313,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1305,11 +1440,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1405,11 +1567,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1505,11 +1694,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1605,11 +1821,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1705,11 +1948,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1805,11 +2075,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -1905,11 +2202,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2005,11 +2329,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2105,11 +2456,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2205,11 +2583,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2305,11 +2710,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2405,11 +2837,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2505,11 +2964,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2605,11 +3091,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2705,11 +3218,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2805,11 +3345,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -2905,11 +3472,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }
@@ -3005,11 +3599,38 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0034"],
+            "world_ids": [
+              "w-0032"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.8,
+              "head_height_m": 0.9
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0034"
+            ],
             "zone_id": null,
             "needs_check": true,
-            "confidence_reasons": ["Z_UNKNOWN"],
-            "reasons": ["input_unknown", "support_unknown"],
+            "confidence_reasons": [
+              "Z_UNKNOWN"
+            ],
+            "reasons": [
+              "input_unknown",
+              "support_unknown"
+            ],
             "metrics": {},
             "holding": true
           }

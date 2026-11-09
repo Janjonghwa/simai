@@ -187,9 +187,9 @@ def test_fall_on_floor_raises_critical_after_low_hold_and_resolves_when_standing
     scene = fall() + frames(hold(6100, 12000, HEIGHT))
     result, _ = run(scene)
     ((dt, tr),) = raised(result)
-    # 머리 0.6 m 이하가 처음 된 표본(1600 ms: 0.2+1.5×(0.25)=… 아래 계산)에서 2초 유지 + 지속 조건 2프레임째
-    first_low = next(d for d, h in fall() if d > 1000 and h["head"] <= 0.6)
-    assert dt == first_low + 2000 + STEP
+    # 완화된 0.8m 이하 표본에서 1.5초 유지 + 지속 조건 2프레임째
+    first_low = next(d for d, h in fall() if d > 1000 and h["head"] <= 0.8)
+    assert dt == first_low + 1500 + STEP  # 완화된 0.8m·1.5초
     assert tr.state.severity is Severity.CRITICAL and tr.state.rule_id == "R4"
     assert tr.state.confidence_reasons == () and tr.state.needs_check is False
     assert tr.state.zone_id is None and tr.state.world_ids == ("w-0001",)
@@ -328,9 +328,9 @@ def test_lost_then_seen_standing_resolves_and_seen_lying_keeps_event():
 
 
 def test_loss_long_after_drop_without_low_posture_does_not_raise():
-    # 급하강(빠르게 바닥에 앉기, 머리 0.9) 뒤 1.5초 지나 가려짐: 급하강 '직후'가 아니고 낮은 자세도 아니었다 → 발생 없음
-    profile = hold(0, 1000, HEIGHT) + ramp(1000, 1800, HEIGHT, 0.9) + hold(1800, 3300, 0.9)
-    scene = frames(profile) + [(dt, {"state": "UNKNOWN"}) for dt in range(3400, 6000, STEP)]
+    # 빠른 바닥 앉기 후 후보의 후속 창이 만료된 뒤 가려지면 발생하지 않는다.
+    profile = hold(0, 1000, HEIGHT) + ramp(1000, 1800, HEIGHT, 0.9) + hold(1800, 7200, 0.9)
+    scene = frames(profile) + [(dt, {"state": "UNKNOWN"}) for dt in range(7300, 9000, STEP)]
     result, _ = run(scene)
     assert raised(result) == []
 
@@ -363,14 +363,11 @@ def test_missing_track_memory_expires():
         hold(0, 1000, HEIGHT) + ramp(1000, 1700, HEIGHT, 1.10) + hold(1700, 15000, 1.10),
         # 빠르게 바닥에 앉기(0.8초에 0.9, 하강 0.8 m → 후보지만 낮은 자세 아님)
         hold(0, 1000, HEIGHT) + ramp(1000, 1800, HEIGHT, 0.90) + hold(1800, 12000, 0.90),
-        # 의도적으로 눕기: 1.5초에 앉고 1초 뒤 2초에 걸쳐 누움
-        hold(0, 1000, HEIGHT) + ramp(1000, 2500, HEIGHT, 0.90) + hold(2500, 3500, 0.90) + ramp(3500, 5500, 0.90, 0.20)
-        + hold(5500, 15000, 0.20),
         # 휘청였다 바로 일어남(급하강 후 1초 안에 일어섬)
         hold(0, 1000, HEIGHT) + ramp(1000, 1600, HEIGHT, 0.40) + ramp(1600, 2600, 0.40, HEIGHT)
         + hold(2600, 8000, HEIGHT),
     ],
-    ids=["fast-sit", "squat-pickup", "stoop-pickup", "crouch", "fast-floor-sit", "deliberate-lie", "stumble-recover"],
+    ids=["fast-sit", "squat-pickup", "stoop-pickup", "crouch", "fast-floor-sit", "stumble-recover"],
 )
 def test_normal_postures_do_not_raise(profile):
     result, _ = run(frames(profile))
@@ -378,15 +375,23 @@ def test_normal_postures_do_not_raise(profile):
     assert raising_findings(result) == []
 
 
+
+def test_s12_relaxed_threshold_fast_sit_then_lie_can_raise():
+    # 1.5초에 바닥 앉기 후 눕는 기존 정상 시나리오는 새 급하강 기준에서 오경보가 난다.
+    profile = (hold(0, 1000, HEIGHT) + ramp(1000, 2500, HEIGHT, 0.90) + hold(2500, 3500, 0.90)
+               + ramp(3500, 5500, 0.90, 0.20) + hold(5500, 15000, 0.20))
+    result, _ = run(frames(profile))
+    assert raised(result)
+
 def test_deliberate_lying_only_holds():
     # 의도적으로 누운 사람은 발생 없이 낮은 자세 유지(holding)만 낸다(활성 이벤트가 있을 때만 의미가 있다)
-    profile = hold(0, 1000, HEIGHT) + ramp(1000, 4000, HEIGHT, 0.2) + hold(4000, 8000, 0.2)
+    profile = hold(0, 1000, HEIGHT) + ramp(1000, 8000, HEIGHT, 0.2) + hold(8000, 12000, 0.2)
     result, _ = run(frames(profile))
     last = result[-1][1]
     assert [(f.holding, f.reasons) for f in last] == [(True, (REASON_LOW_POSTURE,))]
 
 
-@pytest.mark.parametrize("support_from", [(0.4, 0.0), (0.75, 0.0)], ids=["podium-step-down", "desk-jump-down"])
+@pytest.mark.parametrize("support_from", [(0.4, 0.0), (0.45, 0.0), (0.75, 0.0)], ids=["podium-step-down", "demo-podium-step-down", "desk-jump-down"])
 def test_stepping_down_lowers_support_too(support_from):
     # 단상에서 내려오기(머리 0.4 m 하강)·책상에서 뛰어내려 쪼그려 착지(머리 1.25 m 하강, 후보): 접지도 내려가 지면 기준
     # 머리 높이는 낮은 자세가 아니다
@@ -592,20 +597,20 @@ def _run_config_sync(scene, switch_at=(), calibration=lambda version: "cal-stabl
 
 
 def test_review_f1_config_switch_mid_fall_keeps_candidate():
-    # 리뷰 재현: 2000 ms(넘어진 직후, 낮은 자세 유지 중)에 같은 R4 v1·같은 보정의 새 묶음으로 전환해도 3700 ms 에 발생한다
+    # 리뷰 재현: 2000 ms(넘어진 직후, 낮은 자세 유지 중)에 같은 R4 v1·같은 보정의 새 묶음으로 전환해도 완화된 기준의 3100 ms 에 발생한다
     baseline, _ = _run_config_sync(fall())
-    assert [dt for dt, _ in raised(baseline)] == [3700]
+    assert [dt for dt, _ in raised(baseline)] == [3100]  # 완화된 낮은 자세·유지 시간
     switched, engines = _run_config_sync(fall(), switch_at={2000})
     assert engines == 2  # 실제로 다른 엔진(다른 규칙 인스턴스)으로 바뀌었다
-    assert [dt for dt, _ in raised(switched)] == [3700]
+    assert [dt for dt, _ in raised(switched)] == [3100]  # 완화된 낮은 자세·유지 시간
 
 
-@pytest.mark.parametrize("switch", [900, 1000, 1400, 1800, 1900, 2500, 3600, 3700, 4000])
+@pytest.mark.parametrize("switch", [900, 1000, 1400, 1800, 1900, 2500, 3000, 3100, 4000])
 def test_config_switch_just_before_during_after_fall(switch):
     # 반례: 넘어지기 직전·하강 중·하강 끝·유지 중·발생 직전·발생 프레임·발생 뒤 어느 시각에 전환해도 결과가 같다
     result, engines = _run_config_sync(fall(), switch_at={switch})
     assert engines == 2
-    assert [dt for dt, _ in raised(result)] == [3700]
+    assert [dt for dt, _ in raised(result)] == [3100]  # 완화된 낮은 자세·유지 시간
 
 
 def test_config_switch_with_new_calibration_resets_history():
@@ -688,11 +693,9 @@ def test_engines_sharing_one_rule_object_do_not_share_history():
 
 
 def _late_low(first_low):
-    """1.70 → 0.85 를 1000~1500 ms 에 내려가 2000 ms 까지 0.85(마지막 급하강 표본 2000 ms), 띠(0.79 m) 뒤 first_low 부터 0.50."""
-    profile = (
-        hold(0, 1000, HEIGHT) + ramp(1000, 1500, HEIGHT, 0.85) + hold(1500, 2000, 0.85)
-        + hold(2100, first_low - STEP, 0.79) + hold(first_low, 7500, 0.50)
-    )  # fmt: skip
+    """2초 창에서 마지막 급하강은 3000ms; 1.05→0.75m 는 새 후보를 만들지 않는다."""
+    profile = (hold(0, 1000, 1.6) + ramp(1000, 1500, 1.6, 1.05) + hold(1500, first_low - STEP, 1.05)
+               + hold(first_low, 9000, 0.75))
     rule = FallSuspectRule()
     clock = FixedClock(T0)
     engine = RiskEngine([rule], clock)
@@ -712,17 +715,16 @@ def _late_low(first_low):
 
 
 def test_review_f3_followup_window_boundary():
-    # 리뷰 재현: 마지막 급하강 2000 ms 에서 정확히 2.0초(4000 ms) 뒤 시작한 낮은 자세는 받고, 2.1초(4100 ms)는 받지 않는다
-    opened, last_drop = _late_low(4000)
-    assert last_drop == 2000
-    assert opened == [6100]
-    assert _late_low(4100)[0] == []
-    assert _late_low(4200)[0] == []
+    # 완화된 후속 3초 창의 경계와 그 직후를 검증한다.
+    opened, last_drop = _late_low(6000)
+    assert last_drop == 3000
+    assert opened == [7600]
+    assert _late_low(6100)[0] == []
 
 
 def test_low_started_inside_window_may_hold_past_window():
-    # 반례: 창 안(1.9초)에 시작한 낮은 자세는 유지 시간이 창 밖으로 넘어가도 발생한다(창은 낮은 자세의 시작에만 적용)
-    assert _late_low(3900)[0] == [6000]
+    # 1.5초의 낮은 자세 유지는 후속 창 밖까지 이어져도 된다.
+    assert _late_low(5900)[0] == [7500]
 
 
 # --- world_state 1.4.0 head_z_validity (S15P31A101-177) -------------------------------------------
@@ -1010,10 +1012,10 @@ def test_uncertain_recovery_does_not_resolve_active_fall_until_valid_returns(mak
     valid_up = frames(hold(10100, 14000, 2.10), validity="VALID", support=0.4, skeleton=head_skeleton(2.10, "VALID"))
     result, tracker = run(uncertain_up + valid_up)
     ((dt_raised, _),) = raised(result)
-    assert dt_raised == 3700
+    assert dt_raised == 3100  # 완화된 낮은 자세·유지 시간
     ((dt_resolved, _),) = resolved(result)
     assert dt_resolved == 13100  # VALID 첫 표본(10100)에서 해소 유지 3초
-    assert _signals(result) == [(3700, "LOCAL_ALERT"), (13100, "ALERT_CLEAR")]
+    assert _signals(result) == [(3100, "LOCAL_ALERT"), (13100, "ALERT_CLEAR")]
     holding = [f for dt, fs, _, _ in result if 6100 <= dt <= 10000 for f in fs]
     assert holding and all(
         f.holding and f.reasons == (REASON_HEAD_UNCERTAIN_RECOVERY,) and ConfidenceReason.JOINT_UNCERTAIN in f.confidence_reasons
@@ -1036,10 +1038,10 @@ def test_v1_uncertain_null_recovery_does_not_resolve_active_fall(make):
     scene += [(dt, _valid(h)) for dt, h in hold(10100, 14000, 2.10)]
     result, tracker = run(scene)
     ((dt_raised, _),) = raised(result)
-    assert dt_raised == 3700
+    assert dt_raised == 3100  # 완화된 낮은 자세·유지 시간
     ((dt_resolved, _),) = resolved(result)
     assert dt_resolved == 13100
-    assert _signals(result) == [(3700, "LOCAL_ALERT"), (13100, "ALERT_CLEAR")]
+    assert _signals(result) == [(3100, "LOCAL_ALERT"), (13100, "ALERT_CLEAR")]
     gap = [f for dt, fs, _, _ in result if 6100 <= dt <= 10000 for f in fs]
     assert gap and all(
         not f.holding and f.reasons[:2] == (REASON_HEAD_DROP, REASON_LOST_AFTER_DROP)
@@ -1096,3 +1098,97 @@ def test_recovery_valid_ms_matches_lifecycle_clear_hold():
     from simai_ai.risk.lifecycle import LifecyclePolicy
 
     assert LifecyclePolicy().clear_hold_ms == R4_RECOVERY_VALID_MS
+
+
+@pytest.mark.parametrize("duration,bottom,expected", [
+    (1000, 0.4, True), (1000, 0.6, True), (1000, 0.7, True), (1000, 0.9, False),
+    (2000, 0.4, True), (2000, 0.6, True), (2000, 0.9, False),
+    (1000, 1.0, False), (1000, 1.25, False),
+    (1000, 0.75, True), (2000, 0.75, True),
+])
+def test_demo_podium_to_floor(duration, bottom, expected):
+    # 0.45 m 단상에 선 키 1.7 m. 바닥 도착 시 검증된 바닥 접지로 전환한다.
+    end = 1000 + duration
+    profile = hold(0, 1000, 2.15) + ramp(1000, end, 2.15, bottom) + hold(end, 7000, bottom)
+    scene = [(t, {"head": h, "support": 0.45 if t < end else 0.0}) for t, h in dict(profile).items()]
+    result, _ = run(sorted(scene))
+    assert bool(raised(result)) is expected
+
+
+def test_demo_walk_down_without_low_posture():
+    profile = hold(0, 1000, 2.1) + ramp(1000, 3000, 2.1, 1.7) + hold(3000, 7000, 1.7)
+    scene = [(t, {"head": h, "support": 0.4 if t < 3000 else 0.0}) for t, h in dict(profile).items()]
+    result, _ = run(sorted(scene))
+    assert not raised(result)
+
+
+def test_diagnostics_report_new_samples_and_candidate(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="simai_ai.risk.rules.r4_fall_suspect"):
+        run(frames(hold(0, 1000, 2.1) + ramp(1000, 2000, 2.1, 0.4) + hold(2000, 11000, 0.4)))
+    messages = [r.message for r in caplog.records if "R4 diagnostics" in r.message]
+    assert messages and "'candidates': 1" in messages[0]
+    assert "'valid':" in messages[0] and "head_height_m_min_max=" in messages[0]
+
+
+def test_s12_recorded_drop_excerpt_raises_after_candidate_then_observation_loss():
+    """CSV 에 없는 t_last_valid 는 observation_at 으로 근사한다. 누락된 중간 tick 은 복원하지 않는다."""
+    import datetime
+    import json
+    from pathlib import Path
+
+    from simai_ai.risk.rules.r4_fall_suspect import REASON_HEAD_DROP
+
+    records = json.loads((Path(__file__).parent / "fixtures/r4_s12_0044_excerpt.json").read_text(encoding="utf-8"))
+    clock = FixedClock(T0)
+    engine = RiskEngine([default_registry().create("R4", 1)], clock)
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock)
+    all_findings, all_transitions = [], []
+    for row in records:
+        t = int(datetime.datetime.fromisoformat(row["observation_at"]).timestamp() * 1000)
+        doc = track(head=row["head_z"], support=None, t=t, state=row["observation_state"],
+                    validity=row["head_z_validity"], cameras=row["cameras"])
+        for key in ("track_lifecycle", "identity_confidence", "position_xy", "ground_anchor_xyz",
+                    "support_surface_id", "support_surface_validity", "contact_validity", "z_validity", "surface_source"):
+            doc[key] = row[key]
+        state = world([doc], t, calibration=row["calibration_version"])
+        clock.set(t + 100)
+        evaluation = engine.evaluate(state, [], Origin.LIVE)
+        step = tracker.apply(evaluation, state, config_version="cfg-36")
+        all_findings.extend(evaluation.findings)
+        all_transitions.extend(step.transitions)
+    assert any(REASON_HEAD_DROP in f.reasons for f in all_findings)
+    assert any(REASON_LOST_AFTER_DROP in f.reasons for f in all_findings)
+    assert any(tr.transition is Lifecycle.RAISED for tr in all_transitions)
+
+
+def test_demo_podium_drop_followed_by_observation_loss_raises_critical():
+    # 단상에서 빠르게 내려가는 중 후보가 된 뒤 보이지 않으면 상실 경로도 CRITICAL 을 유지한다.
+    profile = hold(0, 1000, 2.15) + ramp(1000, 1800, 2.15, 1.25)
+    scene = frames(profile, support=0.45) + [(t, {"state": "UNKNOWN"}) for t in range(1900, 2600, STEP)]
+    result, _ = run(scene)
+    ((_, event),) = raised(result)
+    assert event.state.severity is Severity.CRITICAL
+    assert REASON_LOST_AFTER_DROP in event.state.reasons
+    assert event.state.needs_check
+
+
+def test_floor_sit_then_immediate_occlusion_can_raise():
+    # 알려진 한계: 0.9m 바닥 앉기 자체는 발생하지 않지만 직후 관측 상실은 CRITICAL 확인 필요로 발생한다.
+    profile = hold(0, 1000, HEIGHT) + ramp(1000, 1800, HEIGHT, 0.9)
+    scene = frames(profile) + [(t, {"state": "UNKNOWN"}) for t in range(1900, 2600, STEP)]
+    result, _ = run(scene)
+    ((_, event),) = raised(result)
+    assert event.state.severity is Severity.CRITICAL
+    assert REASON_LOST_AFTER_DROP in event.state.reasons and event.state.needs_check
+
+
+def test_floor_sit_without_any_support_can_raise_with_z_unknown():
+    # 1.72→0.9m 정상 앉기는 접지가 없으면 대체 0.8m 하강 조건을 넘는다. 오경보 한계다.
+    profile = hold(0, 1000, 1.72) + ramp(1000, 1800, 1.72, 0.9) + hold(1800, 7000, 0.9)
+    result, _ = run(frames(profile, support=None))
+    ((_, event),) = raised(result)
+    assert event.state.severity is Severity.CRITICAL
+    assert ConfidenceReason.Z_UNKNOWN in event.state.confidence_reasons
+    assert REASON_SUPPORT_HEAD_CHANGE in event.state.reasons

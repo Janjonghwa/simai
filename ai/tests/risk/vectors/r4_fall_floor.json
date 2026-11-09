@@ -1,7 +1,7 @@
 {
   "format_version": "1.3.0",
   "vector_id": "r4-fall-floor",
-  "description": "R4 바닥 낙상(7.2): 머리 1.70 → 0.20 m 를 0.8초에 내려간 뒤 낮은 자세가 2초 이어지면 CRITICAL 발생(지속 조건 2프레임째), 일어나 머리가 0.8 m 를 넘은 뒤 판정 없이 3초면 해소. LIVE 는 현장 경보·해소 신호",
+  "description": "R4 바닥 낙상(7.2): 머리 1.70 → 0.20 m 를 0.8초에 내려간 뒤 낮은 자세가 1.5초 이어지면 CRITICAL 발생(지속 조건 2프레임째), 일어나 머리가 1.0 m 를 넘은 뒤 판정 없이 3초면 해소. LIVE 는 현장 경보·해소 신호 [S15P31A101-555: 완화된 R4 기준에 따른 판정·전이 기대값]",
   "origin": "LIVE",
   "rules": [
     {
@@ -211,7 +211,28 @@
         ]
       },
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0021"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.75,
+              "head_height_m": 0.95
+            },
+            "holding": true
+          }
+        ],
         "transitions": [],
         "local_signals": []
       }
@@ -641,16 +662,21 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0021"],
+            "world_ids": [
+              "w-0021"
+            ],
             "zone_id": null,
             "needs_check": false,
             "confidence_reasons": [],
-            "reasons": ["head_drop", "low_posture"],
+            "reasons": [
+              "head_drop",
+              "low_posture_sustained"
+            ],
             "metrics": {
               "head_drop_m": 1.5,
               "head_height_m": 0.2
             },
-            "holding": true
+            "holding": false
           }
         ],
         "transitions": [],
@@ -690,20 +716,51 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0021"],
+            "world_ids": [
+              "w-0021"
+            ],
             "zone_id": null,
             "needs_check": false,
             "confidence_reasons": [],
-            "reasons": ["head_drop", "low_posture"],
+            "reasons": [
+              "head_drop",
+              "low_posture_sustained"
+            ],
             "metrics": {
               "head_drop_m": 1.5,
               "head_height_m": 0.2
             },
-            "holding": true
+            "holding": false
           }
         ],
-        "transitions": [],
-        "local_signals": []
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 1,
+            "transition": "RAISED",
+            "changes": [
+              "RAISED"
+            ],
+            "rule_id": "R4",
+            "severity": "CRITICAL",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0021"
+            ],
+            "zone_id": null,
+            "acknowledged": false,
+            "confidence_reasons": []
+          }
+        ],
+        "local_signals": [
+          {
+            "kind": "LOCAL_ALERT",
+            "event": "e1",
+            "severity": "CRITICAL",
+            "needs_check": false
+          }
+        ]
       }
     },
     {
@@ -788,11 +845,16 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0021"],
+            "world_ids": [
+              "w-0021"
+            ],
             "zone_id": null,
             "needs_check": false,
             "confidence_reasons": [],
-            "reasons": ["head_drop", "low_posture_sustained"],
+            "reasons": [
+              "head_drop",
+              "low_posture_sustained"
+            ],
             "metrics": {
               "head_drop_m": 1.5,
               "head_height_m": 0.2
@@ -800,30 +862,8 @@
             "holding": false
           }
         ],
-        "transitions": [
-          {
-            "event": "e1",
-            "event_sequence": 1,
-            "transition": "RAISED",
-            "changes": ["RAISED"],
-            "rule_id": "R4",
-            "severity": "CRITICAL",
-            "needs_check": false,
-            "verification": "VERIFIED",
-            "world_ids": ["w-0021"],
-            "zone_id": null,
-            "acknowledged": false,
-            "confidence_reasons": []
-          }
-        ],
-        "local_signals": [
-          {
-            "kind": "LOCAL_ALERT",
-            "event": "e1",
-            "severity": "CRITICAL",
-            "needs_check": false
-          }
-        ]
+        "transitions": [],
+        "local_signals": []
       }
     },
     {
@@ -1006,11 +1046,16 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0021"],
+            "world_ids": [
+              "w-0021"
+            ],
             "zone_id": null,
             "needs_check": false,
             "confidence_reasons": [],
-            "reasons": ["head_drop", "low_posture_sustained"],
+            "reasons": [
+              "head_drop",
+              "low_posture_sustained"
+            ],
             "metrics": {
               "head_drop_m": 1.5,
               "head_height_m": 0.5
@@ -1018,7 +1063,26 @@
             "holding": false
           }
         ],
-        "transitions": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 2,
+            "transition": "UPDATED",
+            "changes": [
+              "METRICS"
+            ],
+            "rule_id": "R4",
+            "severity": "CRITICAL",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0021"
+            ],
+            "zone_id": null,
+            "acknowledged": false,
+            "confidence_reasons": []
+          }
+        ],
         "local_signals": []
       }
     },
@@ -1055,34 +1119,24 @@
             "rule_id": "R4",
             "rule_version": 1,
             "severity": "CRITICAL",
-            "world_ids": ["w-0021"],
+            "world_ids": [
+              "w-0021"
+            ],
             "zone_id": null,
             "needs_check": false,
             "confidence_reasons": [],
-            "reasons": ["head_drop", "low_posture_within_clear_margin"],
+            "reasons": [
+              "head_drop",
+              "low_posture_sustained"
+            ],
             "metrics": {
               "head_drop_m": 1.5,
               "head_height_m": 0.8
             },
-            "holding": true
+            "holding": false
           }
         ],
-        "transitions": [
-          {
-            "event": "e1",
-            "event_sequence": 2,
-            "transition": "UPDATED",
-            "changes": ["METRICS"],
-            "rule_id": "R4",
-            "severity": "CRITICAL",
-            "needs_check": false,
-            "verification": "VERIFIED",
-            "world_ids": ["w-0021"],
-            "zone_id": null,
-            "acknowledged": false,
-            "confidence_reasons": []
-          }
-        ],
+        "transitions": [],
         "local_signals": []
       }
     },

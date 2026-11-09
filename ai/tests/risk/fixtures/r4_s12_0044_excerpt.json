@@ -1,0 +1,1307 @@
+[
+  {
+    "observation_at": "2026-11-05 03:23:03.265+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      6.037843721641869,
+      6.412531170276057
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": [
+      6.3357596,
+      6.4723454,
+      0.0
+    ],
+    "surface_source": "observed",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "VALID",
+    "cameras": [
+      "cam_B",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:03.586+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      5.758668064876186,
+      6.391096559477543
+    ],
+    "head_z": 1.7032435,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      5.769971,
+      6.386687,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:03.707+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      5.650327770061869,
+      6.3960158685529125
+    ],
+    "head_z": 1.7168584,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": [
+      5.6401954,
+      6.403623,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.059+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      5.330868304906348,
+      6.452999565739006
+    ],
+    "head_z": 1.7105418,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      5.3294616,
+      6.4544797,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.186+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      5.330868304906348,
+      6.452999565739006
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": [
+      6.3357596,
+      6.4723454,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_A",
+      "cam_B"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.386+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      5.0416530676327005,
+      6.563360547761383
+    ],
+    "head_z": 1.7453196,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      5.055212,
+      6.572988,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.588+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      4.893817331743685,
+      6.6876874582094885
+    ],
+    "head_z": 1.7334826,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      4.8940773,
+      6.7038236,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.748+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      4.798562395265148,
+      6.755601665155148
+    ],
+    "head_z": 1.74587,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      4.794429,
+      6.7591877,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:04.948+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      4.671717183298744,
+      6.824728083239542
+    ],
+    "head_z": 1.7235371,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      4.671228,
+      6.814028,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:05.431+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      4.272014720605513,
+      6.917339058322098
+    ],
+    "head_z": 1.6751202,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      4.2695484,
+      6.8440776,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:06.068+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      4.272014720605513,
+      6.917339058322098
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": [
+      6.3357596,
+      6.4723454,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:06.542+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      3.3212881766769,
+      6.659330512395764
+    ],
+    "head_z": 1.7110132,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:06.669+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      3.196030586280261,
+      6.545748098536779
+    ],
+    "head_z": 1.7196796,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:07.188+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      3.196030586280261,
+      6.545748098536779
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:07.586+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.751786043748287,
+      5.9980387807318
+    ],
+    "head_z": 1.706887,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": "floor",
+    "support_surface_validity": "UNCERTAIN",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:07.748+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.7198309587744505,
+      5.8850123515438515
+    ],
+    "head_z": 1.7027175,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:08.186+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.7198309587744505,
+      5.8850123515438515
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:08.54+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.5640393385759332,
+      5.485453922178663
+    ],
+    "head_z": 1.690052,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:08.906+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.445031696595678,
+      5.242360402275619
+    ],
+    "head_z": 1.6938319,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:09.345+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.3981553893637884,
+      5.031862323944861
+    ],
+    "head_z": 1.6891886,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:09.706+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.3981553893637884,
+      5.031862323944861
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:09.98+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.3981553893637884,
+      5.031862323944861
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:10.466+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.3646978874402116,
+      4.966752357282805
+    ],
+    "head_z": 1.6924092,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:10.825+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.3646978874402116,
+      4.966752357282805
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:11.185+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.3939385418682306,
+      5.037784191329057
+    ],
+    "head_z": 1.6918745,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:11.73+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.262605573465155,
+      5.07890263248245
+    ],
+    "head_z": 1.6344535,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:11.984+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.262605573465155,
+      5.07890263248245
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:12.185+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.3306360383802884,
+      5.096217976547322
+    ],
+    "head_z": 1.6696442,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:12.427+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.416080919869413,
+      5.113922986115547
+    ],
+    "head_z": 1.6683828,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:12.665+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.416080919869413,
+      5.113922986115547
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:13.304+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.5130378645870994,
+      4.624845272266756
+    ],
+    "head_z": 1.5906826,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:13.41+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.549403680947655,
+      4.591508972153395
+    ],
+    "head_z": 1.5864673,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:13.689+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.549403680947655,
+      4.591508972153395
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:13.944+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.549403680947655,
+      4.591508972153395
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:14.31+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.549403680947655,
+      4.591508972153395
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:14.511+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.713918542817728,
+      4.705200014953272
+    ],
+    "head_z": 0.6693732,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:14.751+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.713918542817728,
+      4.705200014953272
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:14.991+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.713918542817728,
+      4.705200014953272
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:15.311+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.7280593329140097,
+      4.9749333818171015
+    ],
+    "head_z": 0.7733793,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": "floor",
+    "support_surface_validity": "UNCERTAIN",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:15.511+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.6891757358507977,
+      4.889490319016699
+    ],
+    "head_z": 0.8261334,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": [
+      2.597636,
+      4.4839993,
+      0.0
+    ],
+    "surface_source": "observed",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "VALID",
+    "z_validity": "VALID",
+    "cameras": [
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:16.11+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.6891757358507977,
+      4.889490319016699
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": [
+      2.597636,
+      4.4839993,
+      0.0
+    ],
+    "surface_source": "inferred",
+    "support_surface_id": "floor",
+    "support_surface_validity": "VALID",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNCERTAIN",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:16.506+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "IDENTITY_UNCERTAIN",
+    "position_xy": [
+      2.678568426002251,
+      4.897138511098936
+    ],
+    "head_z": 0.7714532,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:16.748+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.678568426002251,
+      4.897138511098936
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:17.187+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.6831572460174105,
+      4.907005491025036
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:17.549+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.7304085724500404,
+      4.9523209843595435
+    ],
+    "head_z": 0.7438659,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:17.748+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.720212242675733,
+      4.944484919308584
+    ],
+    "head_z": 0.7763375,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:18.107+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.720212242675733,
+      4.944484919308584
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:18.426+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.720212242675733,
+      4.944484919308584
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:18.825+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.6956027344552256,
+      4.915529266639604
+    ],
+    "head_z": 0.742622,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:19.084+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.6956027344552256,
+      4.915529266639604
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:19.424+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.6956027344552256,
+      4.915529266639604
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:19.745+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.7161753376438402,
+      4.928588170614419
+    ],
+    "head_z": 0.7440175,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": "floor",
+    "support_surface_validity": "UNCERTAIN",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:19.947+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.694573951209087,
+      4.910525747428333
+    ],
+    "head_z": 0.7431301,
+    "head_z_validity": "UNCERTAIN",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": "floor",
+    "support_surface_validity": "UNCERTAIN",
+    "contact_validity": "UNCERTAIN",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:20.346+00",
+    "observation_state": "PREDICTED",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.694573951209087,
+      4.910525747428333
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:21.226+00",
+    "observation_state": "OBSERVED",
+    "track_lifecycle": "CONFIRMED",
+    "identity_confidence": "HIGH",
+    "position_xy": [
+      2.710595687958733,
+      4.843074392480908
+    ],
+    "head_z": 0.7947624,
+    "head_z_validity": "VALID",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  },
+  {
+    "observation_at": "2026-11-05 03:23:21.767+00",
+    "observation_state": "UNKNOWN",
+    "track_lifecycle": "OCCLUDED",
+    "identity_confidence": "MEDIUM",
+    "position_xy": [
+      2.710595687958733,
+      4.843074392480908
+    ],
+    "head_z": null,
+    "head_z_validity": "UNAVAILABLE",
+    "ground_anchor_xyz": null,
+    "surface_source": null,
+    "support_surface_id": null,
+    "support_surface_validity": "UNKNOWN",
+    "contact_validity": "UNAVAILABLE",
+    "z_validity": "UNAVAILABLE",
+    "cameras": [],
+    "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+  }
+]
