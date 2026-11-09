@@ -543,3 +543,16 @@ def test_joint_noise_weighted_false_matches_unweighted_behavior(rig):
             assert ev.epipolar_px == pytest.approx(single.epipolar_px, abs=1e-9)
             assert ev.residual_px == pytest.approx(single.residual_px, abs=1e-9)
             assert ev.cost == pytest.approx(single.cost, abs=1e-9)
+
+
+def test_association_stage_timing_preserves_result(rig):
+    from simai_ai.tracking.stage_timing import StageTiming
+
+    cameras = rig
+    views = views_of(cameras, {"a": skeleton(4.0, 3.0)})
+    plain = CrossViewAssociator(cameras).associate(T, views)
+    timing = StageTiming()
+    measured = CrossViewAssociator(cameras).associate(T, views, timing=timing, timing_people=1)
+    assert [(c.association_id, c.keys) for c in measured.clusters] == [(c.association_id, c.keys) for c in plain.clusters]
+    for stage in ("cross_view_pairs", "cross_view_clustering", "cross_view_validate_triangulate"):
+        assert timing.summary()[stage]["1"]["count"] == 1

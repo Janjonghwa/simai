@@ -53,6 +53,8 @@ MV3DT 원칙(공유 World 좌표, tracklet 연결, 전체 1:1 배정)을 Python 
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import itertools
 import math
 import statistics
@@ -479,6 +481,8 @@ class CrossViewAssociator:
         exclude_cameras: Collection[str] = (),
         *,
         prior_groups: Iterable[Collection[TrackKey]] | None = None,
+        timing=None,
+        timing_people: int | None = None,
     ) -> AssociationFrame:
         """공통 시각 t 의 view 를 클러스터로 묶는다.
 
@@ -518,16 +522,20 @@ class CrossViewAssociator:
             results = self.rig.cameras[cid].undistort_many([v.view.keypoints for v in cam_views])
             undistorted.update((v.key, u) for v, u in zip(cam_views, results))
         prepared = {v.key: self._prepare(v, undistorted[v.key]) for v in used}
-        pairs = self._pairs(prepared)
+        measure = (lambda stage: timing.measure(stage, timing_people)) if timing is not None else (lambda stage: nullcontext())
+        with measure("cross_view_pairs"):
+            pairs = self._pairs(prepared)
         pair_joints = dict(self._last_pair_joints)
         prior_pairs = self._prior_pair_set(t, prior_groups)
 
         flags: list[_Flag] = []
-        if self.config.graph_clustering_enabled and self.config.same_camera_exclusive:
-            works = self._assign_graph(prepared, pairs, pair_joints, prior_pairs, flags)
-        else:
-            works = self._assign(prepared, pairs, flags)
-        skeletons = self._validate(works, prepared, flags)
+        with measure("cross_view_clustering"):
+            if self.config.graph_clustering_enabled and self.config.same_camera_exclusive:
+                works = self._assign_graph(prepared, pairs, pair_joints, prior_pairs, flags)
+            else:
+                works = self._assign(prepared, pairs, flags)
+        with measure("cross_view_validate_triangulate"):
+            skeletons = self._validate(works, prepared, flags)
         self._two_view_competitors(works, pairs, flags)
         clusters = self._finish(works, skeletons, prepared, flags)
         self._update_pair_residuals(clusters, pairs)

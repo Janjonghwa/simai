@@ -642,6 +642,8 @@ class Perception:
                 views,
                 exclude_cameras=excluded,
                 prior_groups=self.manager.temporal_prior_groups(t, self.associator.config.temporal_prior_ttl_ms),
+                timing=self.timing,
+                timing_people=self.people,
             )
         self._observe(lambda d: d.observe_association(assoc))
         if self.observe_association is not None:
