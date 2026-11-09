@@ -1679,6 +1679,8 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `policy_version` | text | NN | `policy_version` |  |
 | `updated_at` | ts | NN |  | 이 상태를 쓴 메시지의 EC2 수신 시각 |
 
+- 색인 `ppe_current_state_observation_at_idx (observation_at, source_id)`: 관제 화면 PPE 스냅샷(`PpeViewRepository`, -531)의 촬영 시각 60초 범위 조회(V45, S15P31A101-550). 지난 사람 행이 쌓여도 전체를 훑지 않는다.
+
 #### `region_state` — 정적 공간 변화 영역(임시 형상·불확실 점유)
 
 - 단계 **확장** · 일반 · 근거: 11.2 region_state, 부록 C.8, R10 · 검토: 이연주
