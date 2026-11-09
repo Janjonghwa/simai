@@ -1,4 +1,4 @@
-"""구성 묶음 선택 구성 요소 ppe_policy (명세 7.2 R9, 12.3, 계약 config_bundle 1.3.0·data/ppe_policy 1.0.0, S15P31A101-519).
+"""구성 묶음 선택 구성 요소 ppe_policy (명세 7.2 R9·R11, 12.3, 계약 config_bundle 1.3.0·data/ppe_policy 1.1.0, S15P31A101-519·-548).
 
 - 없으면 통과하고 요구 없음(ConfigBundle.ppe_policy None).
 - 실려 있으면 다른 구성 요소처럼 내려받아 해시·계약 스키마·version 참조를 검사한다. 틀리면 묶음 전체를 거부하고 이전 묶음을 쓴다.
@@ -38,12 +38,26 @@ def test_ppe_policy_is_verified_and_kept(kit, doc):
     assert message["payload"]["components"]["ppe_policy"]["sha256"] in bundle.blobs  # 보관할 원본 바이트
 
 
+WORK_VEST = WORK | {"format_version": "1.1.0", "vest": "REQUIRED"}
+NO_WORK_VEST = NO_WORK | {"format_version": "1.1.0", "vest": "NOT_REQUIRED"}
+
+
+@pytest.mark.parametrize("doc", [WORK_VEST, NO_WORK_VEST])
+def test_ppe_policy_1_1_vest_is_verified_and_kept(kit, doc):
+    """1.1.0 조끼 요구(-548)도 같은 검증을 거쳐 판정 값으로 온다."""
+    bundle = kit.verifier().verify(kit.publish("cfg-14", ppe_policy=doc))
+    assert bundle.ppe_policy is not None
+    assert bundle.ppe_policy.vest_required is (doc["vest"] == "REQUIRED")
+
+
 @pytest.mark.parametrize(
     "doc",
     [
         WORK | {"helmet": "NOT_REQUIRED"},  # 작업 중인데 요구 없음(스키마 allOf)
         NO_WORK | {"helmet": "REQUIRED"},  # 작업이 없는데 요구
-        WORK | {"vest": "REQUIRED"},  # 조끼 요구는 두지 않는다(닫힌 객체)
+        WORK | {"vest": "REQUIRED"},  # vest 는 1.1.0 부터(1.0.0 문서에 싣지 않는다)
+        WORK_VEST | {"vest": "NOT_REQUIRED"},  # 작업 중인데 조끼 요구 없음(안전모와 같은 규칙)
+        NO_WORK_VEST | {"vest": "REQUIRED"},  # 작업이 없는데 조끼 요구
         WORK | {"zone_overrides": []},  # 구역별 요구·예외는 두지 않는다
         {k: v for k, v in WORK.items() if k != "work_id"},
         WORK | {"helmet": True},

@@ -1,0 +1,9 @@
+{
+  "_expect_error": "진행 중 작업이 있는데 조끼를 실으면 REQUIRED 여야 한다(안전모와 같은 규칙, 명세 8.10)",
+  "format_version": "1.1.0",
+  "version": "ppe-4",
+  "work_id": 12,
+  "effective_from_ms": 1760342499000,
+  "helmet": "REQUIRED",
+  "vest": "NOT_REQUIRED"
+}

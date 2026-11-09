@@ -114,6 +114,7 @@ from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.rule import Finding, FindingTarget
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
 from simai_ai.risk.rules.r9_helmet import R9_RULE_ID
+from simai_ai.risk.rules.r11_vest import R11_RULE_ID
 from simai_ai.risk.sound_ladder import SoundLadder
 from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
 
@@ -817,8 +818,8 @@ def _default_persistence_by_rule() -> dict[str, Persistence]:
 
 def _default_clear_hold_by_rule() -> dict[str, int]:
     # R9 는 안전모 WORN 관측이나 요구 해제로 위험 조건이 사라지면 그 판정에 닫는다(명세 7.2 R9 '그 tick 의 판정 해소').
-    # PPE 상태 자체가 3초 창(5.5)으로 이미 걸러진 값이라 해소 유지 시간을 더 두지 않는다.
-    return {R9_RULE_ID: 0}
+    # PPE 상태 자체가 3초 창(5.5)으로 이미 걸러진 값이라 해소 유지 시간을 더 두지 않는다. R11(조끼, -548)도 같다.
+    return {R9_RULE_ID: 0, R11_RULE_ID: 0}
 
 
 @dataclass(frozen=True)
@@ -832,9 +833,9 @@ class LifecyclePolicy:
       (기본 R7 즉시). 비우면 모든 규칙이 persistence 를 쓴다.
     - resume_window_ms: 해소 후 이 시간(관측 시각 기준, 이하) 안의 재발생은 기존 이벤트를 재개한다(6.4, 초기값 10초).
       None 이면 재개하지 않는다(항상 새 이벤트).
-    - clear_hold_ms_by_rule 기본값: R9 는 0(그 판정에 해소, 7.2).
+    - clear_hold_ms_by_rule 기본값: R9·R11 은 0(그 판정에 해소, 7.2).
     - pending_loss_exempt_rules: 지속 대기 중 관측 상실·정지로 미리 발생시키지 않는 규칙. 기본 R9: 근거가 위치 관측이 아니라
-      PPE 상태이고, 상태를 모르면(UNKNOWN) 새 R9 를 내지 않는다(7.2). 대기 중 판정이 사라지면 이벤트 없이 끝난다.
+      PPE 상태이고, 상태를 모르면(UNKNOWN) 새 R9 를 내지 않는다(7.2). 대기 중 판정이 사라지면 이벤트 없이 끝난다. R11 도 같다.
     """
 
     clear_hold_ms: int = 3000
@@ -843,7 +844,7 @@ class LifecyclePolicy:
     persistence: Persistence = Persistence()
     persistence_by_rule: Mapping[str, Persistence] = field(default_factory=_default_persistence_by_rule, hash=False)
     resume_window_ms: int | None = 10_000
-    pending_loss_exempt_rules: frozenset[str] = frozenset({R9_RULE_ID})
+    pending_loss_exempt_rules: frozenset[str] = frozenset({R9_RULE_ID, R11_RULE_ID})
 
     def __post_init__(self) -> None:
         as_int(self.clear_hold_ms, "LifecyclePolicy.clear_hold_ms", minimum=0)

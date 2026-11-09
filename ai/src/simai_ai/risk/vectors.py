@@ -120,7 +120,7 @@ from simai_ai.risk.lifecycle import (
     Persistence,
 )
 from simai_ai.risk.monitoring import MonitoringState
-from simai_ai.risk.ppe import HelmetObservation, PpePolicy, PpeSnapshot
+from simai_ai.risk.ppe import PpePolicy, PpeSnapshot, WearObservation
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
 from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
@@ -157,7 +157,7 @@ class VectorStep:
     expected_signals: tuple[Mapping[str, Any], ...] | None = None
     calibration_state: str | None = None  # 이 단계의 보정 상태(steps[].calibration_state, 없으면 최상위 값)
     ppe_policy: PpePolicy | None = None  # 이 단계의 안전모 요구(steps[].ppe_policy, 없으면 최상위 값)
-    ppe_received: tuple[HelmetObservation, ...] = ()  # 이 단계 판정 전에 받은 안전모 상태(steps[].ppe_state)
+    ppe_received: tuple[WearObservation, ...] = ()  # 이 단계 판정 전에 받은 안전모·조끼 상태(steps[].ppe_state)
 
 
 @dataclass(frozen=True)
@@ -334,11 +334,12 @@ def _parse_ppe_policy(value: Any, where: str) -> PpePolicy | None:
     return None if value is None else PpePolicy.from_json(value, where)
 
 
-def _parse_ppe_state(value: Any, where: str) -> tuple[HelmetObservation, ...]:
-    out: list[HelmetObservation] = []
+def _parse_ppe_state(value: Any, where: str) -> tuple[WearObservation, ...]:
+    out: list[WearObservation] = []
     for i, payload in enumerate(as_list(value, where)):
         people = as_list(require(as_mapping(payload, f"{where}[{i}]"), "people", f"{where}[{i}]"), f"{where}[{i}].people")
-        out.extend(HelmetObservation.from_person(p, f"{where}[{i}].people[{j}]") for j, p in enumerate(people))
+        for j, p in enumerate(people):
+            out.extend(WearObservation.all_from_person(p, f"{where}[{i}].people[{j}]"))
     return tuple(out)
 
 
@@ -354,7 +355,7 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
     lifecycle = None if vector.lifecycle is None else _LifecycleRun(vector, vector.lifecycle, clock)
 
     mismatches: list[str] = []
-    received: list[HelmetObservation] = []  # 받은 안전모 상태(Tier 0 PpeStateStore 처럼 쌓는다)
+    received: list[WearObservation] = []  # 받은 안전모·조끼 상태(Tier 0 PpeStateStore 처럼 쌓는다)
     for i, step in enumerate(vector.steps):
         clock.set(step.clock_ms)
         received.extend(step.ppe_received)

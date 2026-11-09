@@ -1127,6 +1127,7 @@ class PpePolicy(BaseModel):
     work_id: WorkId | None
     effective_from_ms: DefsTimestampMs
     helmet: Literal['REQUIRED', 'NOT_REQUIRED']
+    vest: Literal['REQUIRED', 'NOT_REQUIRED'] | MISSING = MISSING
 
 
 class PpeStateEvidence(DefsFrameKey):

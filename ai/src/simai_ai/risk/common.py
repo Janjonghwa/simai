@@ -44,7 +44,7 @@ class ConfidenceReason(StrEnum):
     SINGLE_VIEW = "SINGLE_VIEW"  # 2대 이상 유효 관측이 없음
     JOINT_UNCERTAIN = "JOINT_UNCERTAIN"  # 근거 관절 UNCERTAIN
     IDENTITY_UNCERTAIN = "IDENTITY_UNCERTAIN"  # 카메라 간 연결이 애매함
-    PPE_UNKNOWN = "PPE_UNKNOWN"  # 안전모 상태를 모름(R9 유지에만, 명세 7.1·7.2, 계약 v7.17.0)
+    PPE_UNKNOWN = "PPE_UNKNOWN"  # 안전모·조끼 상태를 모름(R9·R11 유지에만, 명세 7.1·7.2, 계약 v7.17.0)
     UNSPECIFIED = "UNSPECIFIED"  # 확인 필요인데 생산자가 이유를 적지 않음(하위 호환, 원인 미상)
 
 

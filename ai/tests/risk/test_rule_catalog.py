@@ -95,10 +95,11 @@ CLAUSES = Path(__file__).resolve().parents[2] / "src/simai_ai/rag/data/clauses.j
 
 
 def test_r3_legal_basis_only_on_operation_profile() -> None:
-    """R3 v1·R9 v1 만 근거 조항을 갖고, 교실 시험 프로파일(v1001)과 다른 규칙은 비어 있다(S15P31A101-256·-519)."""
+    """R3 v1·R9 v1·R11 v1 만 근거 조항을 갖고, 교실 시험 프로파일(v1001)과 다른 규칙은 비어 있다(S15P31A101-256·-519·-548)."""
     by_key = {(e.rule_id, e.rule_version): e.legal_basis for e in catalog()}
     assert by_key.pop(("R3", 1)) == "산업안전보건기준규칙 제32조; 산업안전보건기준규칙 제44조"
     assert by_key.pop(("R9", 1)) == "산업안전보건기준규칙 제32조"  # ①1호 안전모(명세 7.2 R9)
+    assert by_key.pop(("R11", 1)) == "산업안전보건기준규칙 제32조"  # 보호구(조끼, -548)
     assert set(by_key.values()) == {None}
 
 
@@ -109,9 +110,19 @@ def test_r9_is_registered_but_not_seeded() -> None:
     assert ("R9", 1) in {(e.rule_id, e.rule_version) for e in catalog()}
     seeded = {(e.rule_id, e.rule_version) for e in seed_entries()}
     assert ("R9", 1) not in seeded
-    assert set(DISABLED_BY_DEFAULT) == {("R9", 1)}
+    assert set(DISABLED_BY_DEFAULT) == {("R9", 1), ("R11", 1)}
     assert "'R9'" not in render_flyway_seed(seed_entries())
     assert seeded | set(DISABLED_BY_DEFAULT) == set(default_registry())
+
+
+def test_r11_is_registered_but_not_seeded() -> None:
+    """R11(조끼)도 R9 처럼 기본 꺼짐이다: 등록부·카탈로그에는 있고 시드에는 없다(S15P31A101-548)."""
+    from simai_ai.risk.rule_catalog import seed_entries
+
+    entry = next(e for e in catalog() if (e.rule_id, e.rule_version) == ("R11", 1))
+    assert entry.default_severity == "CAUTION"
+    assert ("R11", 1) not in {(e.rule_id, e.rule_version) for e in seed_entries()}
+    assert "'R11'" not in render_flyway_seed(seed_entries())
 
 
 def test_legal_basis_ids_exist_in_clause_file() -> None:
