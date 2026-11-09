@@ -299,7 +299,7 @@ class Worker:
             if adm.blocks(lease.job_type):
                 return self._defer(lease, beat, "LIVE_EXP_BLOCKED",
                                    f"LIVE 관제 중이라 {lease.job_type} 를 돌리지 않는다: {adm.reason}")
-            if adm.admit:
+            if adm.admits(lease.job_type):
                 return None
             now = self._monotonic()
             if now >= hold_deadline or should_stop():

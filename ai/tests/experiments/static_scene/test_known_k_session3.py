@@ -72,3 +72,60 @@ def test_session3_jobs_cover_both_weights_and_pass_queue_check(tmp_path):
                             "--session", "s", "-o", str(out)], capture_output=True, text=True, encoding="utf-8",
                            errors="replace", env=ENV)
     assert again.returncode != 0  # 덮어쓰지 않는다
+
+
+def test_use_local_dinov2_hub_bypasses_github_on_http_504_and_resolves_cache_dir(tmp_path, monkeypatch):
+    """13차 재현(S15P31A101-566): GitHub 가 HTTP 504 를 내도 로컬 허브 캐시(facebookresearch_dinov2_main)가 있으면
+    source='local' 로 바꿔 네트워크 없이 읽고, 캐시가 없거나 다른 저장소면 원래 호출을 유지한다."""
+    import urllib.error
+
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    from simai_ai.scene import run_mapanything as rma
+
+    hub_root = tmp_path / "torch_hub"
+    cache_dir = hub_root / "facebookresearch_dinov2_main"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "hubconf.py").write_text("dependencies = ['torch']\n", encoding="utf-8")
+
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_hub_load(repo_or_dir, model, *args, **kwargs):
+        calls.append((repo_or_dir, model, dict(kwargs)))
+        if kwargs.get("source", "github") == "github":
+            raise urllib.error.HTTPError(
+                "https://github.com/facebookresearch/dinov2", 504, "Gateway Time-out", {}, None
+            )
+        return {"loaded_from": repo_or_dir, "model": model, "kwargs": kwargs}
+
+    fake_hub = types.SimpleNamespace(get_dir=lambda: str(hub_root), load=fake_hub_load)
+    # 1) 허브 캐시 감지 및 멱등 패치
+    assert rma.resolve_local_hub_dir("facebookresearch/dinov2", hub_mod=fake_hub, env={}) == cache_dir
+    assert rma.resolve_local_hub_dir("facebookresearch/dinov2:main", hub_mod=fake_hub, env={}) == cache_dir
+    assert rma.resolve_local_hub_dir("other/repo", hub_mod=fake_hub, env={}) is None
+
+    rma.use_local_dinov2_hub(fake_hub, env={})
+    rma.use_local_dinov2_hub(fake_hub, env={})  # 두 번 불러도 중첩 감싸지 않는다
+    out = fake_hub.load("facebookresearch/dinov2", "dinov2_vitg14", pretrained=False)
+    assert out["loaded_from"] == str(cache_dir)
+    assert out["model"] == "dinov2_vitg14"
+    assert out["kwargs"] == {"pretrained": False, "source": "local"}
+    assert len(calls) == 1
+
+    # 2) SIMAI_DINOV2_HUB_DIR / TORCH_HOME 환경변수 경로 확인
+    custom_dir = tmp_path / "custom_dinov2"
+    custom_dir.mkdir()
+    (custom_dir / "hubconf.py").write_text("dependencies = ['torch']\n", encoding="utf-8")
+    no_dir_hub = types.SimpleNamespace(load=fake_hub_load)
+    assert rma.resolve_local_hub_dir(
+        "facebookresearch/dinov2", hub_mod=no_dir_hub, env={"SIMAI_DINOV2_HUB_DIR": str(custom_dir)}
+    ) == custom_dir
+
+    # 3) 캐시에 hubconf.py 가 없으면 원래 github 경로로 내려가 504 가 그대로 발생
+    (cache_dir / "hubconf.py").unlink()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        fake_hub.load("facebookresearch/dinov2", "dinov2_vitg14", pretrained=False)
+    assert exc_info.value.code == 504
+
+    # 4) 볼륨 설치 스크립트(setup_runpod.sh)도 facebookresearch_dinov2_main 허브 캐시를 준비한다
+    setup_sh = (STATIC / "setup_runpod.sh").read_text(encoding="utf-8")
+    assert "facebookresearch_dinov2_main" in setup_sh and "DINOV2_COMMIT" in setup_sh

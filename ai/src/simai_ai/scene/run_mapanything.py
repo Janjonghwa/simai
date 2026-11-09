@@ -39,6 +39,70 @@ MA_REPO = Path(os.environ.get("SIMAI_MAPANYTHING_REPO") or ROOT / "third_party" 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
+DINOV2_HUB_REPO = "facebookresearch/dinov2"
+DINOV2_HUB_CACHE_NAME = "facebookresearch_dinov2_main"
+
+
+def resolve_local_hub_dir(repo_or_dir: str, *, hub_mod=None, env=None) -> Path | None:
+    """facebookresearch/dinov2 허브 요청에 대응하는 로컬 캐시 디렉터리(hubconf.py 포함)를 찾는다(S15P31A101-566)."""
+    if not isinstance(repo_or_dir, str):
+        return None
+    target = repo_or_dir.strip()
+    if target != DINOV2_HUB_REPO and not target.startswith(f"{DINOV2_HUB_REPO}:"):
+        return None
+    env_map = os.environ if env is None else env
+    hub = getattr(torch, "hub", None) if hub_mod is None else hub_mod
+    candidates: list[Path] = []
+    explicit = (env_map.get("SIMAI_DINOV2_HUB_DIR") or "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    get_dir = getattr(hub, "get_dir", None)
+    if callable(get_dir):
+        try:
+            candidates.append(Path(get_dir()) / DINOV2_HUB_CACHE_NAME)
+        except Exception:  # noqa: BLE001
+            pass
+    torch_home = (env_map.get("TORCH_HOME") or "").strip()
+    if torch_home:
+        candidates.append(Path(torch_home) / "hub" / DINOV2_HUB_CACHE_NAME)
+    candidates.append(Path.home() / ".cache" / "torch" / "hub" / DINOV2_HUB_CACHE_NAME)
+    candidates.append(Path("/root/.cache/torch/hub") / DINOV2_HUB_CACHE_NAME)
+    for cand in candidates:
+        if (cand / "hubconf.py").is_file():
+            return cand
+    return None
+
+
+def use_local_dinov2_hub(hub_mod=None, *, env=None):
+    """torch.hub.load 가 facebookresearch/dinov2 를 부를 때 로컬 허브 사본이 있으면 source='local' 로 우회한다.
+
+    torch.hub 기본 경로(source='github')는 브랜치 미지정 시 GitHub 에 기본 브랜치를 묻고,
+    HTTP 504(Gateway Time-out) 등 HTTPError 가 나면 캐시 폴백(URLError 분기)으로 가지 않고 바로 예외를 던진다.
+    """
+    hub = getattr(torch, "hub", None) if hub_mod is None else hub_mod
+    if hub is None or not callable(getattr(hub, "load", None)):
+        return None
+    orig_load = getattr(hub, "_simai_orig_load", hub.load)
+
+    def _load(repo_or_dir, model, *args, **kwargs):
+        source = kwargs.get("source", "github")
+        force_reload = bool(kwargs.get("force_reload", False))
+        if source == "github" and not force_reload and isinstance(repo_or_dir, str):
+            local_dir = resolve_local_hub_dir(repo_or_dir, hub_mod=hub, env=env)
+            if local_dir is not None:
+                kw = dict(kwargs)
+                kw["source"] = "local"
+                return orig_load(str(local_dir), model, *args, **kw)
+        return orig_load(repo_or_dir, model, *args, **kwargs)
+
+    _load._simai_orig_load = orig_load  # type: ignore[attr-defined]
+    hub._simai_orig_load = orig_load
+    hub.load = _load
+    return _load
+
+
+use_local_dinov2_hub()
+
 
 def ma_commit():
     """이미지 사본에는 .git 이 없어 이미지가 적어 둔 커밋(SIMAI_MAPANYTHING_COMMIT)을 쓴다."""
@@ -246,6 +310,7 @@ def main():
     smp = Sampler()
     try:
         t0 = time.perf_counter()
+        use_local_dinov2_hub()
         model = MapAnything.from_pretrained(a.model).to("cuda").eval()
         torch.cuda.synchronize()
         res["load_s"] = round(time.perf_counter() - t0, 1)

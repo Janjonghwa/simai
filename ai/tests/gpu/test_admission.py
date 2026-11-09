@@ -483,8 +483,103 @@ def test_budget_defaults_are_consistent_and_env_overrides():
         {"SIMAI_WORKER_LIVE_WAIT_MS": "40000"},
         {"SIMAI_WORKER_DEV_NO_LIVE": "maybe"},
         {"SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED": "-1"},
+        {"SIMAI_WORKER_SETUP_LAG_BUDGET_MS": "0"},
+        {"SIMAI_WORKER_SETUP_LAG_BUDGET_MS": "-10"},
+        {"SIMAI_WORKER_SETUP_LAG_BUDGET_MS": "abc"},
     ],
 )
 def test_budget_rejects_inconsistent_settings(env):
     with pytest.raises(BudgetError):
         WorkerGpuSettings.from_env(env)
+
+
+# ------------------------------------------------------------------ site_setup 지연 예산 예외 (S15P31A101-566)
+
+
+def test_site_setup_admitted_when_over_budget_or_stabilizing_while_other_types_refused(tmp_path):
+    """13차 재현(지연 776~955ms > 예산 600ms): 표시 파일·GPU 예약·표본이 정상이면 site_setup 만 예외로 받고 다른 유형은 막는다."""
+    all_types = ["site_setup", *TYPES]
+    clock, marker, gate = default_gate(tmp_path)
+
+    # 1) 지연 예산 초과(776~955ms): 일반 admit 은 False 이지만 site_setup 은 허용
+    write(marker, clock, lags=(776.0, 845.0, 955.0))
+    adm = gate.check()
+    assert adm.live and not adm.admit and adm.code == "over_budget"
+    assert adm.admits("site_setup")
+    for t in TYPES:
+        assert not adm.admits(t)
+    assert adm.allowed_types(all_types) == ["site_setup"]
+
+    # 2) 큐 대기 초과(창당 3건 이상): 지연 표본이 정상일 때 site_setup 만 허용
+    clock.advance(5.0)
+    write(marker, clock, lags=(320.0,), qwe=4)
+    adm = gate.check()
+    assert not adm.admit and adm.code == "queue_wait_exceeded"
+    assert adm.allowed_types(all_types) == ["site_setup"]
+
+    # 3) 안정 대기(stabilizing, 10초 미경과): site_setup 은 기다리지 않고 바로 허용
+    clock.advance(5.0)
+    write(marker, clock, lags=(280.0,))
+    adm = gate.check()
+    assert not adm.admit and adm.code == "stabilizing"
+    assert adm.allowed_types(all_types) == ["site_setup"]
+
+
+@pytest.mark.parametrize(
+    "setup_fn, expected_code",
+    [
+        (lambda marker, clock: None, "marker_absent"),
+        (lambda marker, clock: marker.write_text("{broken", encoding="utf-8"), "marker_unreadable"),
+        (lambda marker, clock: (write(marker, clock), clock.advance(16.0)), "marker_stale"),
+        (lambda marker, clock: write(marker, clock, phase="starting"), "not_running"),
+        (lambda marker, clock: write(marker, clock, reserve="FAILED"), "reserve_not_ok"),
+        (lambda marker, clock: write(marker, clock, lags=()), "no_samples"),
+        (lambda marker, clock: write(marker, clock, unknown=1), "lag_unknown"),
+    ],
+)
+def test_site_setup_refused_when_marker_reserve_or_lag_is_not_healthy(tmp_path, setup_fn, expected_code):
+    """표시 파일 없음/만료/깨짐, 기동 중, GPU 예약 실패, 표본 없음/지연 모름일 때는 site_setup 도 받지 않는다."""
+    clock, marker, gate = default_gate(tmp_path)
+    setup_fn(marker, clock)
+    adm = gate.check()
+    assert not adm.admit and adm.code == expected_code
+    assert not adm.admits("site_setup")
+    assert adm.allowed_types(["site_setup", *TYPES]) == []
+
+
+def test_site_setup_refused_during_live_linger(env):
+    """Tier 0 정상 종료 직후 재시작 틈(live_linger_s)에는 site_setup 도 받지 않는다."""
+    clock, marker, gate = env
+    assert settle(gate, clock, marker, 12).admit
+    marker.unlink()
+    clean_stop_path(marker).write_text(json.dumps(clean_stop_record(stopped_at_ms=1000, pid=1)), encoding="utf-8")
+    adm = gate.check()
+    assert adm.code == "live_linger" and not adm.admits("site_setup")
+
+
+def test_setup_lag_budget_ms_policy_and_env(tmp_path):
+    """SIMAI_WORKER_SETUP_LAG_BUDGET_MS 로 site_setup 지연 상한을 조절할 수 있고 기본값은 무제한(None)이다."""
+    s_default = WorkerGpuSettings.from_env({"SIMAI_ROOT": "/v/simai"})
+    assert s_default.policy.setup_lag_budget_ms is None
+    s_dash = WorkerGpuSettings.from_env({"SIMAI_WORKER_SETUP_LAG_BUDGET_MS": "-"})
+    assert s_dash.policy.setup_lag_budget_ms is None
+    s_capped = WorkerGpuSettings.from_env({"SIMAI_WORKER_SETUP_LAG_BUDGET_MS": "1200"})
+    assert s_capped.policy.setup_lag_budget_ms == 1200
+
+    clock = Clock()
+    marker = tmp_path / "tier0.live"
+    gate = AdmissionGate(marker, s_capped.policy, wall_s=lambda: clock.wall, monotonic=lambda: clock.mono)
+
+    write(marker, clock, lags=(955.0,))
+    adm = gate.check()
+    assert not adm.admit and adm.admits("site_setup")
+
+    clock.advance(5.0)
+    write(marker, clock, lags=(1250.0,))
+    adm = gate.check()
+    assert not adm.admit and not adm.admits("site_setup")
+
+    with pytest.raises(ValueError):
+        AdmissionPolicy(setup_lag_budget_ms=0)
+    with pytest.raises(ValueError):
+        AdmissionPolicy(setup_lag_budget_ms=True)  # type: ignore[arg-type]

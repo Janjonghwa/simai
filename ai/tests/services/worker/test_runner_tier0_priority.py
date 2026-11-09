@@ -368,3 +368,67 @@ def test_long_pause_is_observable(ec2, make):
     time.sleep(0.05)
     assert w.run_once() is Outcome.PAUSED
     assert w.paused_for_s >= 0.05
+
+
+# ---------------------------------------------------------------- site_setup 지연 예산 예외 (S15P31A101-566)
+
+
+SETUP_INPUT = load_example("job_request.site_setup.json")["payload"]["input"]
+SETUP_OUTPUT = load_example("job_callback.site_setup.json")["payload"]["result"]
+
+
+def test_worker_leases_and_runs_site_setup_when_tier0_over_budget_but_blocks_vlm(ec2, make, tmp_path):
+    """13차 재현: Tier 0 지연이 600ms 를 넘어도(776~955ms) 표시 파일·예약·표본이 정상이면
+    vlm_rationale 은 대여하지 않고 site_setup 은 대여해 _hold 에서 반납하지 않고 끝낸다."""
+    import json
+    from simai_ai.gpu.admission import RUNNING, AdmissionGate, AdmissionPolicy, LoadWindow, marker_section
+    from simai_ai.gpu.reserve import OK
+
+    marker = tmp_path / "tier0.live"
+    win = LoadWindow(budget_ms=600)
+    for v in (776.0, 845.0, 955.0):
+        win.add(v)
+    now_s = time.time()
+    doc = {"gpu_priority": marker_section(
+        phase=RUNNING,
+        reserve={"state": OK, "reserved_mb": 8192},
+        load=win.take(),
+        written_at_ms=int(now_s * 1000),
+        pid=123,
+    )}
+    marker.write_text(json.dumps(doc), encoding="utf-8")
+    gate = AdmissionGate(marker, AdmissionPolicy(lag_budget_ms=600), wall_s=time.time, monotonic=time.monotonic)
+
+    vlm_id = ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST")
+    ran: list[str] = []
+    handlers = {
+        "vlm_rationale": never,
+        "tbm_report": never,
+        "site_setup": lambda ctx: ran.append(ctx.job_id) or dict(SETUP_OUTPUT),
+    }
+    w = make(handlers, gate)
+
+    # 1) 대기열에 vlm_rationale 만 있을 때는 대여 요청을 ["site_setup"] 으로만 보내므로 NO_JOB 이고 VLM 은 QUEUED 유지
+    assert w.run_once() is Outcome.NO_JOB
+    assert ec2.bodies("lease")[-1]["payload"]["job_types"] == ["site_setup"]
+    assert ec2.jobs[vlm_id].state == "QUEUED"
+
+    # 2) site_setup 이 들어오면 지연 초과 상태에서도 대여해 _hold 를 통과하고 완료한다
+    setup_id = ec2.add_job("site_setup", copy.deepcopy(SETUP_INPUT))
+    assert w.run_once() is Outcome.ACCEPTED
+    assert ran == [setup_id]
+    assert ec2.jobs[setup_id].state == "SUCCEEDED"
+    assert ec2.jobs[vlm_id].state == "QUEUED"
+
+
+def test_worker_hold_defers_site_setup_if_marker_becomes_unhealthy_after_lease(ec2, make):
+    """site_setup 대여 직후 표시 파일이 지연 모름/예약 실패(admit_types 비어 있음)로 바뀌면 _hold 에서 반납한다."""
+    setup_ex = Admission(True, False, "Tier 0 지연 850ms > 예산 600ms", code="over_budget",
+                         admit_types=frozenset({"site_setup"}))
+    unknown = Admission(True, False, "지연 표본이 없다 → 모름", code="no_samples")
+    setup_id = ec2.add_job("site_setup", copy.deepcopy(SETUP_INPUT), timeout_ms=2000)
+    gate = ScriptedGate(lambda n: setup_ex if n == 1 else unknown)
+    w = make({"site_setup": never}, gate, hold_max_s=0.05)
+    assert w.run_once() is Outcome.DEFERRED
+    job = ec2.jobs[setup_id]
+    assert job.state == "QUEUED" and job.attempt == 0 and job.error["code"] == "TIER0_PRIORITY"

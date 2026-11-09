@@ -58,6 +58,7 @@ DEFAULT_LAG_BUDGET_MS = 600
 DEFAULT_RESUME_AFTER_S = 10.0
 DEFAULT_MAX_QUEUE_WAIT_EXCEEDED = 2
 DEFAULT_LIVE_BLOCKED = frozenset({"static_reconstruct", "hmr_refine", "hmr_appearance_update"})
+SETUP_JOB_TYPE = "site_setup"
 CLEAN_STOP_PHASE = "stopped_clean"
 CLEAN_STOP_VERSION = 1
 
@@ -183,6 +184,8 @@ class AdmissionPolicy:
     max_queue_wait_exceeded: int = DEFAULT_MAX_QUEUE_WAIT_EXCEEDED
     live_blocked_types: frozenset[str] = field(default_factory=lambda: DEFAULT_LIVE_BLOCKED)
     allow_without_marker: bool = False  # 표시 파일이 없으면 관제 없음으로 본다(개발 시간 명시 모드). 기본은 모름 → 받지 않음
+    # site_setup 전용 지연 예산(ms). None 이면 표시 파일·예약·지연 표본이 정상일 때 지연 상한 없이 site_setup 을 허용한다(S15P31A101-566)
+    setup_lag_budget_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.lag_budget_ms <= 0 or self.max_marker_age_s <= 0:
@@ -191,6 +194,12 @@ class AdmissionPolicy:
             raise ValueError("resume_after_s·live_linger_s 는 0 이상이다")
         if not _count(self.max_queue_wait_exceeded):
             raise ValueError("max_queue_wait_exceeded 는 0 이상의 정수다")
+        if self.setup_lag_budget_ms is not None and (
+            isinstance(self.setup_lag_budget_ms, bool)
+            or not isinstance(self.setup_lag_budget_ms, int)
+            or self.setup_lag_budget_ms <= 0
+        ):
+            raise ValueError("setup_lag_budget_ms 는 None 또는 양의 정수다")
 
 
 @dataclass(frozen=True)
@@ -200,11 +209,14 @@ class Admission:
     reason: str
     blocked_types: frozenset[str] = frozenset()
     code: str = ""  # 판정 사유 코드(계측용, 위 상수)
+    admit_types: frozenset[str] = frozenset()  # admit=False 여도 예외로 허용하는 작업 유형(예: site_setup)
+
+    def admits(self, job_type: str) -> bool:
+        """이 작업 유형을 시작·대여해도 되는지(일반 허용 또는 유형별 예외 허용, LIVE 차단 제외)."""
+        return not self.blocks(job_type) and (self.admit or job_type in self.admit_types)
 
     def allowed_types(self, types: Iterable[str]) -> list[str]:
-        if not self.admit:
-            return []
-        return [t for t in types if not (self.live and t in self.blocked_types)]
+        return [t for t in types if self.admits(t)]
 
     def blocks(self, job_type: str) -> bool:
         """LIVE 라서 이 유형을 돌리면 안 된다(지연과 무관)."""
@@ -231,6 +243,7 @@ class AdmissionGate:
         self._live_seen: float | None = None
         self._opened = False
         self._last_marker_id: tuple[int, bytes] | None = None
+        self._setup_admit_types: frozenset[str] = frozenset()
         # 계측(판정에 쓰지 않음)
         self.blocked: Counter[str] = Counter()  # 받지 않은 check 횟수, 사유 코드별
         self.resets: Counter[str] = Counter()  # 열림·안정 대기를 지운 횟수, 사유 코드별
@@ -267,9 +280,9 @@ class AdmissionGate:
         self._ok_since = None
         self._opened = False
 
-    def _refuse(self, reason: str, code: str) -> Admission:
+    def _refuse(self, reason: str, code: str, *, admit_types: frozenset[str] = frozenset()) -> Admission:
         self.blocked[code] += 1
-        return Admission(True, False, reason, self.policy.live_blocked_types, code)
+        return Admission(True, False, reason, self.policy.live_blocked_types, code, admit_types=admit_types)
 
     def check(self) -> Admission:
         with self._lock:
@@ -293,7 +306,7 @@ class AdmissionGate:
         self._live_seen = now
         if state == "refuse":
             self._close(code, reason)
-            return self._refuse(reason, code)
+            return self._refuse(reason, code, admit_types=self._setup_admit_types)
         if qwe:
             if marker_id != self._last_marker_id:  # 같은 표시 파일을 여러 번 읽어도 한 창으로 센다
                 self.queue_wait_tolerated_windows += 1
@@ -304,11 +317,15 @@ class AdmissionGate:
             self._ok_since = now
         held = now - self._ok_since
         if held < self.policy.resume_after_s:
-            return self._refuse(f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", STABILIZING)
+            return self._refuse(
+                f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s",
+                STABILIZING,
+                admit_types=self._setup_admit_types,
+            )
         if not self._opened:
             self._opened = True
             self.opened_count += 1
-        return Admission(True, True, reason, blocked, OK)
+        return Admission(True, True, reason, blocked, OK, admit_types=self._setup_admit_types)
 
     def _without_marker(self, why: str) -> tuple[str, str, str, None, int]:
         """표시 파일이 없을 때: 정상 종료 기록이 있으면 stopped, 없으면 absent(기본 모름), 기록을 못 읽거나 틀리면 refuse(모름)."""
@@ -328,6 +345,7 @@ class AdmissionGate:
 
     def _evaluate(self) -> tuple[str, str, str, tuple[int, bytes] | None, int]:
         """('absent' | 'stopped' | 'refuse' | 'ok', 사유 코드, 이유, 표시 파일 식별자, 넘긴 큐 대기 초과 프레임 수)."""
+        self._setup_admit_types = frozenset()
         try:
             st = os.stat(self.marker)
         except FileNotFoundError:
@@ -371,6 +389,9 @@ class AdmissionGate:
         qwe = load.get("queue_wait_exceeded")
         if qwe is not None and not _count(qwe):
             return "refuse", MARKER_UNREADABLE, "queue_wait_exceeded 형식이 틀렸다 → 모름", marker_id, 0
+        # 표시 파일 정상·phase=running·GPU 예약 OK·지연 표본 정상일 때 site_setup 예외 판정(S15P31A101-566)
+        if self.policy.setup_lag_budget_ms is None or lag_max <= self.policy.setup_lag_budget_ms:
+            self._setup_admit_types = frozenset({SETUP_JOB_TYPE}) - self.policy.live_blocked_types
         if lag_max > self.policy.lag_budget_ms:
             return ("refuse", OVER_BUDGET, f"Tier 0 지연 {lag_max:.0f}ms > 예산 {self.policy.lag_budget_ms}ms",
                     marker_id, 0)

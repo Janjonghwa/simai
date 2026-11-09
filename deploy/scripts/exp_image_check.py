@@ -98,8 +98,10 @@ def mapanything_check() -> dict:
     from mapanything.models import MapAnything  # noqa: F401
     from mapanything.utils.image import load_images, preprocess_inputs  # noqa: F401
     from mapanything.utils.viz import predictions_to_glb  # noqa: F401
+    from simai_ai.scene.run_mapanything import resolve_local_hub_dir
     hub = Path.home() / ".cache" / "torch" / "hub" / "facebookresearch_dinov2_main" / "hubconf.py"
     assert hub.is_file(), f"{hub} 없음(DINOv2 허브 코드 사본)"
+    assert resolve_local_hub_dir("facebookresearch/dinov2") == hub.parent
     with torch.autocast("cuda", dtype=torch.bfloat16):
         y = torch.nn.functional.scaled_dot_product_attention(*(torch.randn(1, 4, 64, 32, device="cuda"),) * 3)
     assert torch.isfinite(y).all().item()
