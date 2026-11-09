@@ -44,7 +44,7 @@
   event_escalate_result. 끊겨도 보관하고 버리지 않는다.
   상한(reliable_limit)에 차면 enqueue 가 QueueFull 을 내 호출자가 붙들고 다시 넣는다(backpressure). 보내다 실패하면
   맨 앞에 되돌린다(같은 msg_id, EC2 가 중복을 거른다, 12.1). replace_key 가 같은 대기 메시지는 새것으로 바꾼다.
-- 텔레메트리 대기열(telemetry): observation_summary. 상한을 넘으면 가장 오래된 것을 버리고 센다(telemetry_overflow).
+- 텔레메트리 대기열(telemetry): observation_summary·ppe_state. 상한을 넘으면 가장 오래된 것을 버리고 센다(telemetry_overflow).
 - risk_event_transition 은 outbox 가, event_state_snapshot 은 outbox 재전송을 마친 pump 가 연결 고정으로 직접 보낸다.
   대기열로는 받지 않는다(순서 보장. i1_publisher.attach_outbox).
 - 우선순위: health → 신뢰 → 텔레메트리 → world_state. pump 는 pump_interval_s 마다 송신 스레드에서 부른다.
@@ -92,6 +92,7 @@ MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
     "calibration_update": "2.1.0",  # World 계보·카메라 자세 추가 (-381, Lead 승인 필요)
     "event_close_result": "1.1.0",  # 운영자 종료 결과, 1.1.0 JOURNAL_UNAVAILABLE (-200)
     "event_escalate_result": "1.0.0",  # 운영자 상향 결과 (계약 -206, Tier 0 처리 -272)
+    "ppe_state": "1.0.0",  # PPE 상태 (-491, -507, -565)
 }
 
 # I1 위로(Tier 0 → EC2) 메시지 (명세 12.2). 다른 종류는 보내지 않는다.
@@ -108,6 +109,7 @@ UPSTREAM_TYPES = frozenset(
         "tier0_endpoint",
         "event_close_result",
         "event_escalate_result",
+        "ppe_state",
     }
 )
 LATEST_KINDS = ("health", "world_state")  # 최신 칸
@@ -116,7 +118,7 @@ INFLIGHT_WAIT_GRACE_S = 0.5
 RELIABLE_TYPES = frozenset(
     {"config_ack", "calibration_update", "event_frame_ready", "tier0_endpoint", "event_close_result", "event_escalate_result"}
 )
-TELEMETRY_TYPES = frozenset({"observation_summary"})
+TELEMETRY_TYPES = frozenset({"observation_summary", "ppe_state"})
 
 DEFAULT_I1_PATH = "/ws/tier0"
 """SIMAI_EC2_I1_URL 이 없을 때 SIMAI_EC2_BASE_URL 에 붙이는 경로의 기본값(SIMAI_EC2_I1_PATH 로 바꾼다). 서버 확정 전 기본안이다"""
