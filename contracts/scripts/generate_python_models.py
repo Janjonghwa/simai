@@ -9,7 +9,8 @@
 - 설명문(title·description·$comment·examples)과 format 은 뺀다. 검증 정본(jsonschema)도 format 을 검사하지 않는다.
 - 열린 객체(properties 가 있고 additionalProperties 를 적지 않은 객체)는 additionalProperties: true 로 적어 모르는 필드를
   지우지 않고 그대로 싣게 한다(extra='allow'). 닫힌 객체는 생성기가 extra='forbid' 로 만든다.
-- contains 는 뺀다. 생성기가 allOf 안의 contains 를 필드 없는 모델과의 합집합으로 만들어 배열 자리에 객체를 받게 된다.
+- contains·propertyNames 는 뺀다. 생성기가 allOf 안의 contains 를 필드 없는 모델과의 합집합으로 만들어 배열 자리에 객체를 받게 되고,
+  propertyNames 의 $ref 는 RootModel(unhashable)을 dict 키로 만들어 검증 시 TypeError 가 난다(키 패턴 검증은 jsonschema 가 정본).
 - 모델은 if/then/else·not·조건 분기로 적은 불변 규칙을 검사하지 않는다. 계약 검증은 jsonschema 가 정본이다.
   allOf 로 $ref 한 정의를 같은 자리에서 좁히는 제약(event_ack 의 ack.channel enum, observation_summary 의 archive_uri
   pattern)도 생성기가 합치지 못해 모델에 없다(ai/tests/contracts/test_models.py 의 KNOWN_GAPS).
@@ -33,7 +34,7 @@ HEADER = (
     "# 다시 만들기(ai/ 에서): uv run python ../contracts/scripts/generate_python_models.py\n"
     f"# 스키마 이름 → 모델: {ROOT_CLASS}.model_fields['<스키마 이름>'] (예: world_state → WorldState)"
 )
-ANNOTATIONS = {"title", "description", "$comment", "examples", "format", "$id", "$schema", "contains"}
+ANNOTATIONS = {"title", "description", "$comment", "examples", "format", "$id", "$schema", "contains", "propertyNames"}
 VALUE_KEYWORDS = {"const", "enum", "default"}
 NAME_MAPS = {"properties", "$defs", "patternProperties"}
 CONDITIONALS = {"if", "then", "else", "not"}

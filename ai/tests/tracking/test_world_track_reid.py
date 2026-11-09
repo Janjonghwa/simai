@@ -402,6 +402,7 @@ def test_lost_to_dormant_not_exported_and_reentry_within_30min_inherits_world_id
 @pytest.mark.parametrize("people", [1, 4])
 def test_demand_collector_preserves_dormant_reentry_ids(rig, people):
     """-499: 3초 갱신·8/s 상한을 거친 실제 collector 특징으로 재입장 ID 비율 100%를 유지한다(SIM)."""
+    pytest.importorskip("cv2")
     from types import SimpleNamespace
 
     from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig

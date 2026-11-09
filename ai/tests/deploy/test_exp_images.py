@@ -220,9 +220,9 @@ def test_check_without_cuda_fails_not_passes(xc, monkeypatch):
     ("exp02", ["a_pod_check", "g0_exp02_image_check", "g1_exp02_h6_det", "g2_exp02_h0_smoke", "g3_exp02_h1_official",
                "g4_exp02_h7_calib_k"]),
     ("mapanything", ["a_pod_check", "m0_mapanything_image_check", "m1_mapanything_c1", "m2_mapanything_c2"]),
-    # 통합 이미지는 Tier 0 층이 같아 tier0 항목도 돈다(S15P31A101-246). v4 는 3차의 사람 항목 v1~v3 를 대신한 통합 시험(-291)
+    # 통합 이미지는 Tier 0 층이 같아 tier0 항목도 돈다(S15P31A101-246). v4 는 3차의 사람 항목 v1~v3 를 대신한 통합 시험(-291), e25 는 빠른 경로 종단 확인(-25)
     ("unified", ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority", "u1_unified_image_check",
-                 "u2_unified_hmr_calib_k", "v4_vlm_int", "u3_unified_mapanything_c1", "u4_unified_mapanything_c2"]),
+                 "u2_unified_hmr_calib_k", "v4_vlm_int", "e25_fast_path", "u3_unified_mapanything_c1", "u4_unified_mapanything_c2"]),
 ])
 def test_queue_takes_only_this_images_items_and_exp_images_keep_live_guard(gs, monkeypatch, image, want):
     monkeypatch.setenv("SIMAI_IMAGE_DIGEST", "sha256:" + "b" * 64)

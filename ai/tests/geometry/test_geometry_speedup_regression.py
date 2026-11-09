@@ -238,6 +238,8 @@ def _previous_evidence(self, pa, pb, common, epi: float, tri):
 
 
 def _make_previous_associator(old_rig, config=None, joint_layout: str = "COCO17"):
+    if config is None:
+        config = legacy_cv.CrossViewConfig(epipolar_gate_px=cross_view_module.CrossViewConfig.epipolar_gate_px)
     assoc = legacy_cv.CrossViewAssociator(old_rig, config=config, joint_layout=joint_layout)
     assoc._epipolar_px = _previous_epipolar_px.__get__(assoc, legacy_cv.CrossViewAssociator)
     assoc._epipolar_matrix = _previous_epipolar_matrix.__get__(assoc, legacy_cv.CrossViewAssociator)
@@ -245,10 +247,20 @@ def _make_previous_associator(old_rig, config=None, joint_layout: str = "COCO17"
     return assoc
 
 
+def _make_current_associator(rig, joint_layout: str = "COCO17"):
+    """S15P31A101-237 이전 탐욕 병합·고정 잔차 문턱 기준과 비교할 때 S15P31A101-464 그래프 분할·시간 간선·쌍별 적응 문턱은 끈다."""
+    cfg = cross_view_module.CrossViewConfig(
+        graph_clustering_enabled=False,
+        temporal_prior_enabled=False,
+        pairwise_threshold_enabled=False,
+    )
+    return CrossViewAssociator(rig, config=cfg, joint_layout=joint_layout)
+
+
 def compare_pipeline(lens: str, seed: int, n_people: int, n_ticks: int, harsh: bool, crowd: bool = False) -> set[str]:
     """World Track 갱신의 기하(연결 → 클러스터별 게이트)를 tick 마다 두 구현으로 돌려 비교한다. 본 사유를 돌려준다."""
     rig, old_rig = _rigs(lens)
-    new_assoc, old_assoc = CrossViewAssociator(rig), _make_previous_associator(old_rig)
+    new_assoc, old_assoc = _make_current_associator(rig), _make_previous_associator(old_rig)
     new_gates: dict[str, Any] = {}
     old_gates: dict[str, Any] = {}
     seen: set[str] = set()

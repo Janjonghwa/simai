@@ -268,7 +268,7 @@ def test_unknown_clock_offset_keeps_health_unsafe_and_blocks_resolution(tmp_path
             assert h["payload"]["system_health"] == "UNSAFE_UNKNOWN" and h["payload"]["laptop_clock_offset"] is None
             # 계약 health 2.0.0: T_lag 를 모르면 null 이다. 처리 정체 하한·0 을 참값처럼 싣지 않는다(-179)
             assert h["payload"]["pipeline_lag_ms"] is None
-            assert h["schema_version"] == "2.2.0"  # I0 봉투도 health 2.2.0(i0_control 이 HEALTH_SCHEMA_VERSION 을 씀)
+            assert h["schema_version"] == "2.3.0"  # I0 봉투도 health 2.3.0(i0_control 이 HEALTH_SCHEMA_VERSION 을 씀)
             assert all(c["sync_valid"] is None for c in h["payload"]["cameras"])  # 동기화 측정 근거 없음
             assert schema_errors(h, "health") == []
         # 운영 경고는 정리 주기가 상태를 읽은 뒤부터 싣는다(이 장면은 켜진 경고 없음)

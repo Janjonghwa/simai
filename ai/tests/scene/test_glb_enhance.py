@@ -1,8 +1,10 @@
 """GLB 시각 보강(바닥 평면·미관측 색 채우기, S15P31A101-481) 합성 시험."""
 from __future__ import annotations
 
-import cv2
 import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from simai_ai.scene import glb_enhance as ge
 from simai_ai.scene import reconstruct_tasks as tasks

@@ -23,10 +23,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
+
+cv2 = pytest.importorskip("cv2")
 
 from simai_ai.calibration.document import content_hash
 from simai_ai.calibration.extrinsics.joint_ba_v2 import (

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from simai_ai.scene import glb_enhance as ge
 from simai_ai.scene import object_completion as oc

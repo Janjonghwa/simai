@@ -1,10 +1,11 @@
 """CPU 배경 특징점 매칭. 반환 좌표는 입력 이미지 픽셀이다."""
 
-import cv2
 import numpy as np
 
 
 def match_sift(image_a: np.ndarray, image_b: np.ndarray) -> list[dict]:
+    import cv2
+
     sift = cv2.SIFT_create()
     def features(image):
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image

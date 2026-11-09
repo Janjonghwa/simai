@@ -1,6 +1,8 @@
 """현장 배경 매칭과 5점 기하 회귀 시험 (합성 데이터)."""
-import cv2
 import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from simai_ai.calibration.extrinsics.joint_ba_v2 import (

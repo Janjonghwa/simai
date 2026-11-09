@@ -8,7 +8,6 @@ from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-import cv2
 import numpy as np
 
 from simai_ai.calibration.document import content_hash
@@ -57,6 +56,8 @@ class Features:
 
 
 def extract_features(image, mask, camera, config: RotationConfig, *, original_size=None) -> Features:
+    import cv2
+
     source_size = tuple(image.shape[1::-1]) if original_size is None else tuple(original_size)
     if source_size != tuple(camera["image_size"]):
         raise ValueError("STREAM_CHANGED: 배경과 내부 파라미터의 해상도가 다름")
@@ -97,6 +98,8 @@ def extract_features(image, mask, camera, config: RotationConfig, *, original_si
 def match_features(a: Features, b: Features):
     if a.descriptors is None or b.descriptors is None or min(len(a.points), len(b.points)) < 2:
         return np.empty((0, 2)), np.empty((0, 2))
+    import cv2
+
     matcher = cv2.BFMatcher(cv2.NORM_L2)
     forward = matcher.knnMatch(a.descriptors, b.descriptors, k=2)
     reverse = matcher.knnMatch(b.descriptors, a.descriptors, k=2)
@@ -142,6 +145,8 @@ def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 
             return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return result
     held = np.arange(len(p)) % 5 == 0
+    import cv2
+
     H, inliers = cv2.findHomography(p[~held], q[~held], cv2.RANSAC, config.max_residual_px)
     if H is None or inliers is None or not np.isfinite(H).all():
         return {**result, "reason": "호모그래피 적합 실패"}
@@ -201,6 +206,8 @@ def fixed_center_camera(reference, delta):
 
 def pair_reprojection(a, b, p, q):
     """같은 정적 대응의 두 영상 재투영 RMS. 음의 깊이는 큰 실패값으로 보존한다."""
+    import cv2
+
     Pa = np.asarray(a["K"]) @ np.c_[a["R"], a["t"]]
     Pb = np.asarray(b["K"]) @ np.c_[b["R"], b["t"]]
     X = cv2.triangulatePoints(Pa.astype(float), Pb.astype(float), p.T, q.T).T
@@ -233,6 +240,8 @@ def evaluate_pairs(previous, candidate, features, changed, config: RotationConfi
                 p, q = match_features(features[a], features[b])
             if len(p) < config.min_matches:
                 continue  # 대각 쌍은 원래 매칭되지 않는다. 인접 쌍을 자동 선택한다.
+            import cv2
+
             with measure("estimation"):
                 _, mask = cv2.findFundamentalMat(p, q, cv2.FM_RANSAC, 2., .999)
             if mask is None or int(mask.sum()) < config.min_matches:
@@ -394,3 +403,11 @@ def validate_rotation_candidate(document: Mapping[str, Any], report, previous):
     if not pairs_improve(report["pairs"], changed, config):
         raise ValueError("회전 후보 인접 쌍 개선 미달")
     return {"accepted": True, "method": METHOD, "changed_camera_ids": sorted(changed)}
+
+
+def __getattr__(name: str) -> Any:
+    if name == "cv2":
+        import cv2
+
+        return cv2
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

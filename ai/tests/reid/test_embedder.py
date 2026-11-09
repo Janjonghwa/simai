@@ -6,8 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
-from PIL import Image
+
+torch = pytest.importorskip("torch")
+from PIL import Image  # noqa: E402
 
 from simai_ai.reid import (
     COPE_EMBEDDING_DIM,

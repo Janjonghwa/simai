@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+cv2 = pytest.importorskip("cv2")
+
 from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
 from simai_ai.tracking.local_tracker import Observation2DFrame, PoseDetection, TrackedDetection
 

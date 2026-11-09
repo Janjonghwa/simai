@@ -231,6 +231,7 @@ def test_fake_model_segmentation_benchmark(rig, count, delay):
 
 
 def test_real_pipeline_upload_retry_and_atomic_commit_on_worker(rig):
+    pytest.importorskip("cv2")
     from simai_ai.hmr.appearance_worker import AppearanceWorker
     from simai_ai.hmr.stream import AvatarLoop, PersonState
     from simai_ai.providers.contract import schema_errors
