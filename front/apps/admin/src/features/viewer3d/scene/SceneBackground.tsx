@@ -384,6 +384,7 @@ function Background({ store }: { store: SceneStore }) {
   }, [loaded]);
 
   const sceneVersion = scene?.sceneVersion ?? null;
+  const cacheVersion = scene?.state === 'COMMITTED' ? (sceneVersion ?? undefined) : undefined;
   const url = scene?.gltfUrl ?? null;
   const expiresAt = scene?.gltfExpiresAtMs ?? null;
   const surfaceSourceMapUrls = scene?.surfaceSourceMapUrls;
@@ -405,7 +406,10 @@ function Background({ store }: { store: SceneStore }) {
     let alive = true;
     at('LOADING');
     configureSceneKtx2Loader(gl);
-    Promise.all([loader(url), loadSurfaceSourceMaps(surfaceSourceMapUrls, textureLoader)]).then(
+    Promise.all([
+      loader(url, cacheVersion),
+      loadSurfaceSourceMaps(surfaceSourceMapUrls, textureLoader),
+    ]).then(
       ([root, sourceMaps]) => {
         if (!alive) {
           disposeObject(root);
@@ -434,7 +438,17 @@ function Background({ store }: { store: SceneStore }) {
     return () => {
       alive = false;
     };
-  }, [store, gl, loader, textureLoader, sceneVersion, url, expiresAt, surfaceSourceMapUrls]);
+  }, [
+    store,
+    gl,
+    loader,
+    textureLoader,
+    sceneVersion,
+    cacheVersion,
+    url,
+    expiresAt,
+    surfaceSourceMapUrls,
+  ]);
 
   // 바뀌거나 내려가면 이전 자산을 해제한다.
   useEffect(() => {

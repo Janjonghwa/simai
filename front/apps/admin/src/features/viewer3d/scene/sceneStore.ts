@@ -213,10 +213,21 @@ export function parseGltfScene(
 }
 
 /** 배경 glTF 를 읽어 장면 루트를 돌려준다. 시험은 이 함수를 바꿔 끼운다. */
-export type SceneAssetLoader = (url: string) => Promise<Object3D>;
+export type SceneAssetLoader = (url: string, cacheVersion?: string) => Promise<Object3D>;
 
-export const loadGltfScene: SceneAssetLoader = (url) =>
-  createSceneGltfLoader().loadAsync(url).then(attachTopLevelUserData);
+export const loadGltfScene: SceneAssetLoader = async (url, cacheVersion) => {
+  // GLB 만 단일 파일이므로 외부 텍스처를 참조할 수 있는 glTF 는 기존 로더로 처리한다.
+  if (
+    !cacheVersion ||
+    !new URL(url, window.location.href).pathname.toLowerCase().endsWith('.glb')
+  ) {
+    return createSceneGltfLoader().loadAsync(url).then(attachTopLevelUserData);
+  }
+  const { loadCachedScene } = await import('@/features/viewer3d/scene/sceneAssetCache');
+  return loadCachedScene(url, cacheVersion, (bytes) =>
+    parseGltfScene(bytes, new URL('.', new URL(url, window.location.href)).href),
+  );
+};
 
 export const SceneLoaderContext = createContext<SceneAssetLoader>(loadGltfScene);
 
