@@ -384,10 +384,95 @@ class AdmissionGate:
 
 AVATAR_JUDGE_BUDGET_MS = 100
 AVATAR_DETECT_BUDGET_MS = 150
+AVATAR_OVER_BUDGET_HOLD_S = 10.0
+AVATAR_EXTREME_LAG_MS = 1000
 
 
 class AvatarAdmissionGate(AdmissionGate):
-    """아바타 전용 처리 부하 기준. 파일·GPU 예약·안정 대기 규칙은 기존 문과 같다."""
+    """아바타 전용 처리 부하 기준(S15P31A101-498·547).
+
+    - 창 p95(`lag_ms_p95`, 구버전 표시 파일에 없으면 `lag_ms_max` 폴백)가 예산(judge 100ms, detect 150ms)을
+      연속 `over_budget_hold_s`(기본 10초) 넘을 때만 차단하고, 차단 뒤에는 예산 이하가 연속 `resume_after_s`
+      (기본 10초) 이어져야 재개한다(히스테리시스).
+    - 처리 시간 모름·표시 파일 만료/없음·GPU 예약 실패·기동 중과 극단적 멈춤(`lag_ms_max >= extreme_lag_ms`,
+      기본 1000ms)은 즉시 차단한다.
+    """
+
+    def __init__(
+        self,
+        marker: Path,
+        policy: AdmissionPolicy = AdmissionPolicy(),
+        *,
+        wall_s: Callable[[], float],
+        monotonic: Callable[[], float],
+        over_budget_hold_s: float = AVATAR_OVER_BUDGET_HOLD_S,
+        extreme_lag_ms: float = AVATAR_EXTREME_LAG_MS,
+    ) -> None:
+        if over_budget_hold_s < 0 or extreme_lag_ms <= 0:
+            raise ValueError("over_budget_hold_s 는 0 이상, extreme_lag_ms 는 양수다")
+        super().__init__(marker, policy, wall_s=wall_s, monotonic=monotonic)
+        self.over_budget_hold_s = float(over_budget_hold_s)
+        self.extreme_lag_ms = float(extreme_lag_ms)
+        self._over_since: float | None = None
+        self._blocked = False
+
+    def _check(self) -> Admission:
+        now = self._monotonic()
+        state, code, reason, marker_id, _ = self._evaluate()
+        blocked = self.policy.live_blocked_types
+        if state == "absent" and not self.policy.allow_without_marker:
+            self._over_since = None
+            self._blocked = True
+            self._close(code, reason)
+            return self._refuse(f"{reason}·정상 종료 기록 없음 → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
+                                "관제가 없는 개발 시간이면 SIMAI_WORKER_DEV_NO_LIVE=1", code)
+        if state in ("absent", "stopped"):
+            self._over_since = None
+            self._blocked = True
+            self._close(code, reason)
+            if self._live_seen is not None and now - self._live_seen < self.policy.live_linger_s:
+                left = self.policy.live_linger_s - (now - self._live_seen)
+                return self._refuse(f"{reason}: LIVE 가 끝난 직후라 {left:.0f}s 더 LIVE 로 본다(재시작 틈)", LIVE_LINGER)
+            self._live_seen = None
+            return Admission(False, True, reason, blocked, NOT_LIVE)
+        self._live_seen = now
+        if state == "refuse":
+            self._over_since = None
+            self._blocked = True
+            self._close(code, reason)
+            return self._refuse(reason, code)
+        self._last_marker_id = marker_id
+        if state == "over_p95":
+            if self._blocked:
+                self._close(code, reason)
+                return self._refuse(reason, code)
+            if self._over_since is None:
+                self._over_since = now
+            over_held = now - self._over_since
+            if over_held < self.over_budget_hold_s:
+                if not self._opened:
+                    self._opened = True
+                    self.opened_count += 1
+                return Admission(True, True,
+                                 f"{reason} (연속 초과 {over_held:.0f}/{self.over_budget_hold_s:.0f}s, 일시 허용)",
+                                 blocked, OK)
+            self._blocked = True
+            self._over_since = None
+            self._close(code, reason)
+            return self._refuse(f"{reason} (연속 {over_held:.0f}s ≥ {self.over_budget_hold_s:.0f}s)", code)
+        self._over_since = None
+        if self._blocked:
+            if self._ok_since is None:
+                self._ok_since = now
+            held = now - self._ok_since
+            if held < self.policy.resume_after_s:
+                return self._refuse(f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", STABILIZING)
+            self._blocked = False
+            self._ok_since = None
+        if not self._opened:
+            self._opened = True
+            self.opened_count += 1
+        return Admission(True, True, reason, blocked, OK)
 
     def _evaluate_load(self, gp, marker_id):
         processing = gp.get("processing")
@@ -396,13 +481,34 @@ class AvatarAdmissionGate(AdmissionGate):
         stages = [("judge", AVATAR_JUDGE_BUDGET_MS)]
         if processing["detect_required"]:
             stages.append(("detect", AVATAR_DETECT_BUDGET_MS))
+        parsed: list[tuple[str, int, float, float, bool]] = []
         for stage, budget in stages:
             load = processing.get(stage)
             if (not isinstance(load, dict) or not _count(load.get("samples")) or load["samples"] == 0
                     or not _count(load.get("unknown")) or load["unknown"] > 0
                     or not _number(load.get("lag_ms_max")) or load["lag_ms_max"] < 0):
                 return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
-            if load["lag_ms_max"] > budget:
-                return ("refuse", OVER_BUDGET, f"Tier 0 {stage} 처리 {load['lag_ms_max']:.1f}ms > {budget}ms",
+            lag_max = float(load["lag_ms_max"])
+            has_p95 = "lag_ms_p95" in load
+            if has_p95:
+                raw_p95 = load["lag_ms_p95"]
+                if not _number(raw_p95) or raw_p95 < 0:
+                    return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
+                lag_p95 = float(raw_p95)
+            else:
+                # 옛 표시 파일 호환: lag_ms_p95 필드가 없으면 창 최댓값(p95 의 보수적 상한)을 쓴다.
+                lag_p95 = lag_max
+            parsed.append((stage, budget, lag_p95, lag_max, has_p95))
+        for stage, _budget, _lag_p95, lag_max, _has_p95 in parsed:
+            if lag_max >= self.extreme_lag_ms:
+                return ("refuse", OVER_BUDGET,
+                        f"Tier 0 {stage} 처리 최댓값 {lag_max:.1f}ms ≥ 극단값 {self.extreme_lag_ms:.0f}ms",
+                        marker_id, 0)
+        for stage, budget, lag_p95, _lag_max, has_p95 in parsed:
+            if lag_p95 > budget:
+                metric = "p95" if has_p95 else "max(p95 없음)"
+                return ("over_p95", OVER_BUDGET,
+                        f"Tier 0 {stage} 처리 {metric} {lag_p95:.1f}ms > {budget}ms",
                         marker_id, 0)
         return "ok", OK, "Tier 0 판정·검출 처리 부하 정상", marker_id, 0
+
