@@ -561,8 +561,8 @@ describe('3D 가상 레이아웃 편집기', () => {
     fireEvent.change(within(dialog).getByLabelText('놓을 기준면'), {
       target: { value: 'ws-0a0c0001' },
     });
-    fireEvent.click(within(dialog).getByRole('button', { name: '+ 비계' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: '+ 장비' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ 고소 작업면' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ 개구부' }));
 
     expect(within(dialog).getByText('배치 물체 (2)')).toBeTruthy();
 
@@ -592,7 +592,7 @@ describe('3D 가상 레이아웃 편집기', () => {
         revision: 1,
       });
       expect(tbmMock.layouts[0]?.items[0]).toMatchObject({
-        kind: 'SCAFFOLD',
+        kind: 'WORK_SURFACE',
         label: '단상 위 이동식 비계',
       });
       expect(tbmMock.works[0]?.layout_id).toBe(104);

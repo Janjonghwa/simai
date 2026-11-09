@@ -3,6 +3,7 @@ import type { Zone } from '@/features/zones/types';
 import { useCommitNotice } from '@/features/zones/useCommitNotice';
 import { publishErrorText, usePublishBundle } from '@/features/zones/useConfigApply';
 import { useExclusiveRun } from '@/features/zones/useExclusiveRun';
+import { useLayoutZoneCommit } from '@/features/zones/useLayoutZoneCommit';
 import { useZoneCommitMutation, type CommitDone } from '@/features/zones/useZoneCommitMutation';
 import { renameRequestOf } from '@/features/zones/zoneCommit';
 import { nameError } from '@/features/zones/zoneForm';
@@ -15,6 +16,7 @@ import { dropZoneDraftName } from '@/store/zoneEdit.store';
  */
 export function useZoneRename() {
   const commit = useZoneCommitMutation();
+  const commitLayout = useLayoutZoneCommit();
   const publish = usePublishBundle();
   const { busy, run } = useExclusiveRun();
   const { notice, publishFailed, show, publishAndShow, clearNotice } = useCommitNotice();
@@ -26,6 +28,27 @@ export function useZoneRename() {
     if (invalid) {
       show(invalid, false);
       return false;
+    }
+    if (zone.layoutId != null && zone.layoutItemId) {
+      try {
+        await run(() =>
+          commitLayout(zone.layoutId!, (items) => {
+            if (!items.some((item) => item.item_id === zone.layoutItemId))
+              throw new Error('Layout item missing');
+            return {
+              items: items.map((item) =>
+                item.item_id === zone.layoutItemId ? { ...item, label: name.trim() } : item,
+              ),
+            };
+          }),
+        );
+        dropZoneDraftName(zone.zoneId);
+        show(null, false);
+        return true;
+      } catch (error) {
+        show(commitErrorText(error), false);
+        return false;
+      }
     }
     let done: CommitDone | undefined;
     try {

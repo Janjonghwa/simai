@@ -24,6 +24,9 @@ const SAVED_SURFACE: WorkSurface = {
   sigma: null,
   zoneId: 'z-1',
   validFrom: 1,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
 };
 
 /** 화면이 고칠 때와 같은 순서: 단계를 남기고 초안을 고친다. */

@@ -52,6 +52,10 @@ const CODE_TEXT = new Map<string, string>([
   ['INVALID_ZONE_COMMIT', '저장 요청이 올바르지 않습니다.'],
   ['CONCURRENT_EDIT', CHANGED_TEXT],
   [
+    'LAYOUT_REVISION_CONFLICT',
+    '다른 변경이 먼저 저장되었습니다. 최신 레이아웃을 확인한 뒤 다시 시도하세요.',
+  ],
+  [
     'SURFACE_ZONE_TAKEN',
     '이 구역에 이미 다른 작업면이 이어져 있거나 작업면이 다른 구역에 이어져 있습니다. 새로 받은 값을 확인하세요.',
   ],

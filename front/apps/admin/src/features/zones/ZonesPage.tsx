@@ -21,6 +21,7 @@ const SHAPE_LOCKED_TEXT =
 interface ZonesPageProps {
   /** 관제 편집 모드는 3D 위 왼쪽에 띄우고(float), 세팅의 구역 단계는 3D 옆 칸에 놓는다(inline). */
   placement?: ZonePanelPlacement;
+  workLayoutId?: number | null;
   /** 구역 고르기 줄 오른쪽에 붙는 버튼. */
   headerAction?: ReactNode;
   /** 저장·추가가 발행까지 끝났을 때 부른다. */
@@ -42,8 +43,13 @@ export function ZonesPage(props: ZonesPageProps) {
  * 작업면)의 상자를 고친다. 저장하면 구역·작업면·현장 판정 발행을 요청 하나로 보낸다. 3D 에서 화면에서 닿을 수 없는 작업면을
  * 누르면 구역 대신 그 작업면을 삭제하는 카드를 보인다.
  */
-function ZoneEditPanel({ placement = 'float', headerAction, onCommitted }: ZonesPageProps) {
-  const edit = useZoneEditing(onCommitted);
+function ZoneEditPanel({
+  placement = 'float',
+  headerAction,
+  onCommitted,
+  workLayoutId,
+}: ZonesPageProps) {
+  const edit = useZoneEditing(onCommitted, workLayoutId);
   // 작업면 카드가 구역 양식을 가린 동안에는 가려진 구역의 형상 경고를 띄우지 않는다.
   const shapeLocked = edit.orphan === null && edit.shapeLocked;
   const warning = edit.notice ?? (shapeLocked ? SHAPE_LOCKED_TEXT : null);

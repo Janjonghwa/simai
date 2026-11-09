@@ -3,6 +3,7 @@ import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import type { ViewerBoxEdit, ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import type { JudgeType, Severity, Zone, ZoneBox } from '@/features/zones/types';
 import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
+import { r3, surfaceZoneHalf, surfaceZoneTop } from '@/features/zones/zoneShape';
 import type { RoomLimit } from '@/lib/roomLimit';
 
 // 구역 편집 화면의 초안 모델(순수 계산). 이름·심각도 고침, 구역 상자, 작업면 하나를 구역(또는 새 구역) 하나의 초안으로 묶는다.
@@ -29,20 +30,11 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
 
 const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
-/** 작업면이 붙은 구역의 최소 높이(m). 상판이 이보다 높으면 상판까지 올린다. */
-const SURFACE_ZONE_MIN_HEIGHT_M = 2;
-/** 작업면이 붙은 구역이 작업면 둘레에 남기는 여유(m). AI 개구부·가장자리 초안도 이만큼 바깥으로 민다. */
-export const SURFACE_ZONE_MARGIN_M = 0.3;
-/** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). */
-const NEW_SURFACE_SIZE_M = 1;
-const NEW_SURFACE_TOP_M = 0.4;
+/** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). 작업 레이아웃 편집기도 같은 값으로 새 고소 작업면을 놓는다. */
+export const NEW_SURFACE_SIZE_M = 1;
+export const NEW_SURFACE_TOP_M = 0.4;
 /** 좌표(m)·각도(rad)가 이 값보다 덜 다르면 같다고 본다. */
 const SAME_EPS = 1e-6;
-/** 좌표를 맞추는 배율(0.001 m 단위). */
-const ROUND_SCALE = 1000;
-
-/** 좌표(m)를 0.001 m 단위로 맞춘다. */
-export const r3 = (v: number) => Math.round(v * ROUND_SCALE) / ROUND_SCALE;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
 type LinkedSurface = Pick<WorkSurface, 'objectId' | 'name' | 'geometry'>;
@@ -99,41 +91,6 @@ export function defaultNewBox(zones: readonly ZoneBox[], limit: RoomLimit): View
   const cx = clamp(r3(mid(0)), limit.min[0] + half, limit.max[0] - half);
   const cy = clamp(r3(mid(1)), limit.min[1] + half, limit.max[1] - half);
   return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
-}
-
-/** 작업면이 붙은 구역의 반쪽 크기(가로·세로): 작업면 반쪽 크기에 여유를 더한 값. */
-const surfaceZoneHalf = (g: SurfaceGeometry): [number, number] => [
-  g.sizeXy[0] / 2 + SURFACE_ZONE_MARGIN_M,
-  g.sizeXy[1] / 2 + SURFACE_ZONE_MARGIN_M,
-];
-
-/** 작업면이 붙은 구역의 높이: 바닥에서 최소 높이와 상판 중 큰 값까지. */
-const surfaceZoneTop = (g: SurfaceGeometry) =>
-  r3(Math.max(SURFACE_ZONE_MIN_HEIGHT_M, g.topHeightM));
-
-/**
- * 작업면이 붙은 구역의 모양: 작업면 발자국을 사방으로 SURFACE_ZONE_MARGIN_M 넓힌 직사각형(작업면이 회전했으면 같이 회전한
- * 다각형, 반시계)과 바닥(0)부터의 높이. 서버 판정은 이 다각형으로 한다.
- */
-export function surfaceZoneShape(g: SurfaceGeometry): ZoneShape {
-  const [cx, cy] = g.centerXy;
-  const [halfX, halfY] = surfaceZoneHalf(g);
-  const cos = Math.cos(g.yawRad);
-  const sin = Math.sin(g.yawRad);
-  const corners = [
-    [-halfX, -halfY],
-    [halfX, -halfY],
-    [halfX, halfY],
-    [-halfX, halfY],
-  ] as const;
-  return {
-    polygon_xy: corners.map(
-      ([dx, dy]) =>
-        [r3(cx + dx * cos - dy * sin), r3(cy + dx * sin + dy * cos)] as [number, number],
-    ),
-    z_min_m: 0,
-    z_max_m: surfaceZoneTop(g),
-  };
 }
 
 /** 받은 구역이 이미 작업면 구역의 모양·높이·등급·판정 유형 그대로인지(그러면 작업면만 고쳐도 새 구역 버전이 필요 없다). */

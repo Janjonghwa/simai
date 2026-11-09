@@ -199,6 +199,8 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
   };
 
   const openLayoutEditor = (layoutId?: number | null) => {
+    // 진행 중인 작업의 레이아웃은 관제 구역이 되어 있어 여기서 고치지 않는다(관제에서 고친다).
+    if (currentTask?.status === 'IN_PROGRESS') return;
     const targetId = layoutId !== undefined ? layoutId : (currentTask?.layoutId ?? null);
     setEditingLayoutInitialId(targetId);
     setEditingLayout(true);

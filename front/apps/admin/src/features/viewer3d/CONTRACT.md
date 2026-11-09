@@ -156,7 +156,7 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 
 TBM 계획의 가상 개구부·비계·장비를 3D 에 놓고 고친다. 배치 목록·저장·평가·보고서는 FE -62·BE -30 몫이고, Viewer 는 받은 배치를 그리고 편집 결과를 World 값으로 돌려준다(`saved: false`).
 
-- 입력: `plannedLayout={{ layoutId, objects: [{ id, kind, geometry: { center, size, yawRad }, label? }] }}`. `kind` 는 OPENING·SCAFFOLD·EQUIPMENT.
+- 입력: `plannedLayout={{ layoutId, objects: [{ id, kind, geometry: { center, size, yawRad }, label? }] }}`. `kind` 는 OPENING·WORK_SURFACE(고소 작업면)·SCAFFOLD(옛 비계)·EQUIPMENT.
   - 형상은 World(m, +Z 위) OBB 다. `center` 는 3D 중심, `size` 는 지역 X'·Y'·높이 전체 길이(> 0), `yawRad` 는 [-π, π] 다. 도 값과 0 크기는 거부한다.
   - 같은 `id` 는 모두 빼고, 모르는 종류도 뺀다(`readPlannedLayout`·`plannedGeometryProblem` 으로 FE 폼 검사에 같은 규칙을 쓸 수 있다).
 - 격리:

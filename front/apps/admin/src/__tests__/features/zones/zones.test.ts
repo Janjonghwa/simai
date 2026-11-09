@@ -47,6 +47,9 @@ describe('readZones', () => {
         hasGuardrail: false,
         requirements: { helmet: true },
         validFrom: 100,
+        workId: null,
+        layoutId: null,
+        layoutItemId: null,
         shapeEditable: true,
       },
     ]);

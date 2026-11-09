@@ -7,7 +7,7 @@ import { env } from '@/lib/env';
 export async function startMockBackend() {
   const [
     { network },
-    { handlers, staticObjectsMock },
+    { handlers, staticObjectsMock, tbmMock },
     { readMockUser },
     { withoutRealPaths },
     { createStompBroker },
@@ -39,6 +39,7 @@ export async function startMockBackend() {
   const clips = createClipsMock({ findEvent: events.find });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다.
   const zones = createZonesMock({ staticObjects: staticObjectsMock.store });
+  tbmMock.bindLayoutZones(zones.layoutZones);
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
   const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
     broker,

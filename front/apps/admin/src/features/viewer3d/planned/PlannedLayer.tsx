@@ -24,12 +24,14 @@ const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersec
 // WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 둔다. 운영 형상(청록·푸른 회색·주황)과 겹치지 않는 색이다.
 const KIND_COLOR: Record<PlannedKind, string> = {
   OPENING: '#e6c84f',
+  WORK_SURFACE: '#b18cf2',
   SCAFFOLD: '#b18cf2',
   EQUIPMENT: '#5fd0a8',
 };
 const SELECTED_COLOR = '#ffffff';
 export const PLANNED_KIND_LABEL: Record<PlannedKind, string> = {
   OPENING: '개구부',
+  WORK_SURFACE: '고소 작업면',
   SCAFFOLD: '비계',
   EQUIPMENT: '장비',
 };

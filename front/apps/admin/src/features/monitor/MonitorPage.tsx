@@ -1,7 +1,9 @@
 import { EditExitButton } from '@/features/monitor/EditExitButton';
 import { MonitorSideColumn } from '@/features/monitor/MonitorSideColumn';
 import { MonitorStandby } from '@/features/monitor/MonitorStandby';
+import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { useMonitorStandby } from '@/features/monitor/useTodayWorks';
+import { useWorkZonesRefresh } from '@/features/monitor/useWorkZonesRefresh';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { stopZoneEdit } from '@/store/zoneEditMode.store';
@@ -14,13 +16,22 @@ import { useEffect } from 'react';
  * 않는다, S15P31A101-457). 대기 화면은 같은 층(z-6)에서 DOM 뒤쪽이라 칼럼을 덮고, 덮인 곳은 inert 로 키보드도 막는다.
  */
 export function MonitorPage() {
+  const works = useMonitorWorks({ passive: true });
+  const active = works.state === 'ready' ? works.active : undefined;
+  useWorkZonesRefresh(active?.work_id, works.state === 'ready');
   const editing = useZoneEditActive();
   const standby = useMonitorStandby();
   useEffect(() => stopZoneEdit, []);
   return (
     <>
       <h1 className="sr-only">실시간 관제</h1>
-      {editing && <ZonesPage headerAction={<EditExitButton />} onCommitted={stopZoneEdit} />}
+      {editing && (
+        <ZonesPage
+          headerAction={<EditExitButton />}
+          onCommitted={stopZoneEdit}
+          workLayoutId={active?.layout_id}
+        />
+      )}
       {!editing && (
         <div inert={standby} className="contents">
           <MonitorSideColumn />

@@ -1,6 +1,7 @@
 import { SurfaceHeightField } from '@/features/zones/SurfaceHeightField';
 import type { ZoneEditing } from '@/features/zones/useZoneEditing';
 import { CARD_CLASS, FIELD_LABEL_CLASS } from '@/features/zones/zonePanelStyle';
+import { Button } from '@simai/ui/components/button';
 
 /**
  * 고소 작업면(구역에 하나): 상판 높이. 구역은 작업면에서 계산하므로 작업면은 지우거나 따로 더하지 않는다(새 구역은 작업면과
@@ -8,10 +9,26 @@ import { CARD_CLASS, FIELD_LABEL_CLASS } from '@/features/zones/zonePanelStyle';
  */
 export function SurfaceCard({ edit }: { edit: ZoneEditing }) {
   const { surface, busy } = edit;
-  if (!surface) return null;
+  if (!surface)
+    return edit.canToggleNewSurface ? (
+      <Button type="button" variant="secondary" disabled={busy} onClick={edit.toggleNewSurface}>
+        작업면 추가
+      </Button>
+    ) : null;
   return (
     <section aria-label="고소 작업면" className={CARD_CLASS}>
       <b className={FIELD_LABEL_CLASS}>고소 작업면</b>
+      {edit.canToggleNewSurface && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onClick={edit.toggleNewSurface}
+        >
+          작업면 제외
+        </Button>
+      )}
       <SurfaceHeightField
         key={`${edit.zoneKey}:${surface.id ?? 'new'}`}
         value={surface.geometry.topHeightM}

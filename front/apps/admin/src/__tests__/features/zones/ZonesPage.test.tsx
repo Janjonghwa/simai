@@ -5,6 +5,7 @@ import { ARM_MS } from '@/features/zones/useArmedDelete';
 import { NEW_KEY } from '@/features/zones/zoneEditModel';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
+import { createTbmMock } from '@/mocks/tbm';
 import { createZonesMock, MOCK_ZONES, type ZonesMock } from '@/mocks/zones';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useSessionStore } from '@/store/session.store';
@@ -125,11 +126,12 @@ afterEach(() => {
 async function renderPage({
   surfaces = true,
   onCommitted,
-}: { surfaces?: boolean; onCommitted?: () => void } = {}) {
+  workLayoutId,
+}: { surfaces?: boolean; onCommitted?: () => void; workLayoutId?: number } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <ZonesPage onCommitted={onCommitted} />
+      <ZonesPage onCommitted={onCommitted} workLayoutId={workLayoutId} />
     </QueryClientProvider>,
   );
   await screen.findByRole('option', { name: /개구부 구역/ });
@@ -1550,5 +1552,52 @@ describe('구역 편집 화면', () => {
       pressUndo();
       expect(nameInput().value).toBe('개구부 구역');
     });
+  });
+});
+
+describe('작업 레이아웃 구역 편집', () => {
+  it('레이아웃 구역 이름 변경과 새 구역 추가는 layout PUT으로 저장한다', async () => {
+    const tbm = createTbmMock();
+    tbm.bindLayoutZones(zonesMock.layoutZones);
+    server.use(...tbm.handlers);
+    await fetch('http://api.test/api/work-units/1/start', { method: 'POST' });
+    log.splice(0);
+    await renderPage({ workLayoutId: 101 });
+    await screen.findByRole('option', { name: '비계 S1' });
+    const zone = (
+      await (
+        await fetch('http://api.test/api/zones', {
+          headers: { Authorization: 'Bearer mock-token.admin' },
+        })
+      ).json()
+    ).find((z: { layout_item_id?: string }) => z.layout_item_id === 'pos-01');
+    pick(zone.zone_id);
+    expect(screen.queryByLabelText('심각도')).toBeNull();
+    fireEvent.change(screen.getByLabelText('이름'), { target: { value: '수정한 작업면' } });
+    fireEvent.click(button('저장'));
+    await waitFor(() => expect(tbm.layouts[0]?.items[0]?.label).toBe('수정한 작업면'));
+    expect(writes()).toContain('PUT /api/layouts/101');
+    expect(writes()).not.toContain(COMMIT);
+    pick(NEW_KEY);
+    fireEvent.change(screen.getByLabelText('이름'), { target: { value: '새 작업면' } });
+    fireEvent.click(button('구역 추가'));
+    await waitFor(() =>
+      expect(
+        tbm.layouts[0]?.items.some(
+          (item) => item.label === '새 작업면' && item.kind === 'WORK_SURFACE',
+        ),
+      ).toBe(true),
+    );
+    expect(writes()).not.toContain(COMMIT);
+    pick(NEW_KEY);
+    fireEvent.click(button('작업면 제외'));
+    fireEvent.change(screen.getByLabelText('이름'), { target: { value: '새 개구부' } });
+    fireEvent.click(button('구역 추가'));
+    await waitFor(() =>
+      expect(
+        tbm.layouts[0]?.items.some((item) => item.label === '새 개구부' && item.kind === 'OPENING'),
+      ).toBe(true),
+    );
+    expect(writes()).not.toContain(COMMIT);
   });
 });

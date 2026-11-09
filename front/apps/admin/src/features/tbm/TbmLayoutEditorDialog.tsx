@@ -9,18 +9,22 @@ import {
   updateLayout,
 } from '@/features/tbm/api';
 import {
+  ADDABLE_LAYOUT_KINDS,
   applyEditBoxToDraftItem,
   buildLayoutBoxEdit,
   buildLayoutBoxGhosts,
   buildLayoutWriteBody,
   buildPlannedLayoutInput,
+  changeDraftItemKind,
   createDraftItem,
   degToYawRad,
   importOpeningFromZone,
+  isAddableLayoutKind,
   LAYOUT_ITEM_KIND_LABELS,
   layoutDetailToDraftItems,
   validateLayoutDraft,
   yawRadToDeg,
+  type AddableLayoutKind,
   type LayoutDraftItem,
   type LayoutItemKind,
 } from '@/features/tbm/layoutEditorModel';
@@ -208,7 +212,7 @@ export function TbmLayoutEditorDialog({
     );
   };
 
-  const handleAddKind = (kind: LayoutItemKind) => {
+  const handleAddKind = (kind: AddableLayoutKind) => {
     setErrorText(null);
     const surface = placementSurfaceId
       ? (surfaces.find((s) => s.objectId === placementSurfaceId) ?? null)
@@ -499,34 +503,19 @@ export function TbmLayoutEditorDialog({
                 </select>
               </Label>
 
-              <div className="grid grid-cols-3 gap-1.5">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleAddKind('OPENING')}
-                  className="h-8 text-xs font-semibold"
-                >
-                  + 개구부
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleAddKind('SCAFFOLD')}
-                  className="h-8 text-xs font-semibold"
-                >
-                  + 비계
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleAddKind('EQUIPMENT')}
-                  className="h-8 text-xs font-semibold"
-                >
-                  + 장비
-                </Button>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ADDABLE_LAYOUT_KINDS.map((kind) => (
+                  <Button
+                    key={kind}
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleAddKind(kind)}
+                    className="h-8 text-xs font-semibold"
+                  >
+                    + {LAYOUT_ITEM_KIND_LABELS[kind]}
+                  </Button>
+                ))}
               </div>
 
               <Label className={FIELD_LABEL}>
@@ -612,17 +601,22 @@ export function TbmLayoutEditorDialog({
                     <select
                       aria-label="물체 종류"
                       value={selectedItem.kind}
+                      disabled={!isAddableLayoutKind(selectedItem.kind)}
                       onChange={(e) =>
-                        updateSelectedItem((prev) => ({
-                          ...prev,
-                          kind: e.target.value as LayoutItemKind,
-                        }))
+                        updateSelectedItem((prev) =>
+                          changeDraftItemKind(prev, e.target.value as LayoutItemKind),
+                        )
                       }
                       className={SELECT_CLS}
                     >
-                      <option value="OPENING">개구부 (OPENING)</option>
-                      <option value="SCAFFOLD">비계 (SCAFFOLD)</option>
-                      <option value="EQUIPMENT">장비 (EQUIPMENT)</option>
+                      {(isAddableLayoutKind(selectedItem.kind)
+                        ? ADDABLE_LAYOUT_KINDS
+                        : [selectedItem.kind]
+                      ).map((kind) => (
+                        <option key={kind} value={kind}>
+                          {LAYOUT_ITEM_KIND_LABELS[kind]}
+                        </option>
+                      ))}
                     </select>
                   </Label>
 

@@ -60,6 +60,9 @@ function toZone(item: ZoneItem): Zone | null {
     hasGuardrail: item.has_guardrail ?? null,
     requirements: item.requirements ?? null,
     validFrom: item.valid_from,
+    workId: item.work_id ?? null,
+    layoutId: item.layout_id ?? null,
+    layoutItemId: item.layout_item_id ?? null,
     shapeEditable: item.eval_type === 'VOLUME_3D' && zRange !== null && isAxisRect(item.polygon_xy),
   };
 }

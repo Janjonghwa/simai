@@ -34,6 +34,9 @@ const SAMPLE_SURFACE: WorkSurface = {
   },
   sigma: 0.02,
   validFrom: 1760572800000,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
 };
 
 const ZONE_WITH_HEIGHT: Zone = {
@@ -56,6 +59,9 @@ const ZONE_WITH_HEIGHT: Zone = {
   hasGuardrail: false,
   requirements: null,
   validFrom: 1760572800000,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
   shapeEditable: true,
 };
 
@@ -79,6 +85,9 @@ const ZONE_WITHOUT_HEIGHT: Zone = {
   hasGuardrail: null,
   requirements: null,
   validFrom: 1760572800000,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
   shapeEditable: false,
 };
 
@@ -90,64 +99,31 @@ describe('layoutEditorModel 순수 로직', () => {
     expect(Math.abs(normalizeYawRad(Math.PI * 3))).toBeLessThanOrEqual(3.1415927);
   });
 
-  it('물체를 바닥(Z=0) 또는 등록 작업면 윗면(topHeightM)에 추가한다', () => {
-    const onFloor = createDraftItem('SCAFFOLD', []);
-    expect(onFloor).toMatchObject({
-      item_id: 'scaf-01',
-      kind: 'SCAFFOLD',
-      label: '비계 1',
-      centerXy: [5, 5],
-      sizeXy: [1.2, 2.0],
+  it('새 항목은 회전 없이 놓고 작업면 기본값과 구역 미리보기를 쓴다', () => {
+    const floor = createDraftItem('WORK_SURFACE', []);
+    expect(floor).toMatchObject({
+      item_id: 'surf-01',
+      kind: 'WORK_SURFACE',
+      sizeXy: [1, 1],
       bottomZ: 0,
-      height: 2.0,
+      height: 0.4,
       yaw_rad: 0,
     });
-
-    const onSurface = createDraftItem('EQUIPMENT', [onFloor], { surface: SAMPLE_SURFACE });
-    expect(onSurface).toMatchObject({
-      item_id: 'equip-01',
-      kind: 'EQUIPMENT',
-      label: '장비 1',
-      centerXy: [3.2, 4.5],
-      bottomZ: 1.4,
-      yaw_rad: 0.25,
+    const item = createDraftItem('OPENING', [floor], { surface: SAMPLE_SURFACE });
+    expect(item).toMatchObject({ centerXy: [3.2, 4.5], bottomZ: 1.4, yaw_rad: 0 });
+    expect(nextLayoutItemId('WORK_SURFACE', [floor])).toBe('surf-02');
+    expect(buildLayoutBoxEdit(floor)?.kind).toBe('surface');
+    expect(buildLayoutBoxEdit({ ...floor, yaw_rad: 0.25 })).toBeNull();
+    const box = draftItemToEditBox(floor)!;
+    expect(applyEditBoxToDraftItem(floor, box)).toMatchObject({
+      centerXy: floor.centerXy,
+      sizeXy: floor.sizeXy,
     });
-    expect(nextLayoutItemId('SCAFFOLD', [onFloor])).toBe('scaf-02');
-  });
-
-  it('3D 상자 손잡이(ViewerEditBox)와 초안 항목을 서로 변환하고 회전(yaw_rad)을 보존한다', () => {
-    const item = createDraftItem('SCAFFOLD', [], { surface: SAMPLE_SURFACE });
-    const box = draftItemToEditBox(item);
-    expect(box).toEqual({
-      min: [2.6, 3.5, 1.4],
-      max: [3.8, 5.5, 3.4],
-    });
-
-    const moved = applyEditBoxToDraftItem(item, {
-      min: [1.0, 2.0, 0.5],
-      max: [3.0, 5.0, 3.0],
-    });
-    expect(moved).toMatchObject({
-      item_id: item.item_id,
-      kind: 'SCAFFOLD',
-      centerXy: [2.0, 3.5],
-      sizeXy: [2.0, 3.0],
-      bottomZ: 0.5,
-      height: 2.5,
-      yaw_rad: 0.25,
-    });
-
-    const boxEdit = buildLayoutBoxEdit(moved);
-    expect(boxEdit).toEqual({
-      id: moved.item_id,
-      kind: 'zone',
-      box: { min: [1.0, 2.0, 0.5], max: [3.0, 5.0, 3.0] },
-    });
-
-    const other = createDraftItem('OPENING', [moved]);
-    const ghosts = buildLayoutBoxGhosts([moved, other], moved.item_id);
-    expect(ghosts).toHaveLength(1);
-    expect(ghosts[0]?.id).toBe(other.item_id);
+    expect(
+      buildLayoutBoxGhosts([floor, item], floor.item_id).some(
+        (ghost) => ghost.id === 'zone:surf-01',
+      ),
+    ).toBe(true);
   });
 
   it('구역에서 가져오기: 높이가 있는 구역은 외접 OBB와 구역 높이로 OPENING을 만든다', () => {
@@ -171,6 +147,7 @@ describe('layoutEditorModel 순수 로직', () => {
       size: [2, 2, 0.4],
       yaw_rad: 0,
       label: '개구부 구역 (z-04)',
+      source_zone_id: 'z-04',
     });
   });
 
@@ -223,6 +200,7 @@ describe('layoutEditorModel 순수 로직', () => {
           size: [2, 3, 0.3],
           yaw_rad: 0,
           label: '바닥 통로 구역 (z-02)',
+          source_zone_id: 'z-02',
         },
       ],
     });
@@ -240,7 +218,7 @@ describe('layoutEditorModel 순수 로직', () => {
     const draft = obbToDraftItem(rawObb);
     expect(draft).toEqual({
       item_id: 'pos-01',
-      kind: 'SCAFFOLD',
+      kind: 'WORK_SURFACE',
       label: '비계 S1',
       centerXy: [6.1, 2.4],
       sizeXy: [1.0, 2.4],
@@ -261,7 +239,7 @@ describe('layoutEditorModel 순수 로직', () => {
       objects: [
         {
           id: 'pos-01',
-          kind: 'SCAFFOLD',
+          kind: 'WORK_SURFACE',
           label: '비계 S1',
           geometry: {
             center: [6.1, 2.4, 1.2],

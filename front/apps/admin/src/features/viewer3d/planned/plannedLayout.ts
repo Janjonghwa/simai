@@ -2,7 +2,7 @@ import { YAW_LIMIT_RAD } from '@/features/viewer3d/surfaces/workSurfaceGeometry'
 import { createContext } from 'react';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
-// PLANNED 가상 배치(S15P31A101-186). TBM 계획에서 쓰는 가상 개구부·비계·장비를 3D 에 놓고 고친다.
+// PLANNED 가상 배치(S15P31A101-186). TBM 계획에서 쓰는 가상 개구부·고소 작업면(옛 비계·장비 포함)을 3D 에 놓고 고친다.
 //
 // - 배치 목록은 FE 가 가진다(계획 화면 상태·저장·평가는 FE -62·BE -30). Viewer 는 받은 목록을 PLANNED 모드에서만 그리고,
 //   편집 결과를 World 값으로 돌려준다(saved: false). 받은 목록을 스스로 바꾸지 않는다.
@@ -10,7 +10,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 // - 형상은 World(m, +Z 위) OBB 다: center 3D 중심, size 지역 X'·Y'·높이 전체 길이(> 0), yawRad +Z 축 회전([-π, π]).
 //   세 종류 모두 같은 OBB 이고 종류는 표시와 결과에만 실린다(개구부를 바닥 구멍으로 그리는 등 종류별 의미 해석은 하지 않는다).
 
-export const PLANNED_KINDS = ['OPENING', 'SCAFFOLD', 'EQUIPMENT'] as const;
+export const PLANNED_KINDS = ['OPENING', 'WORK_SURFACE', 'SCAFFOLD', 'EQUIPMENT'] as const;
 export type PlannedKind = (typeof PLANNED_KINDS)[number];
 
 /** PLANNED 가상 객체 형상(World m·rad). 정적 객체 OBB 와 같은 모양이다. */
@@ -89,7 +89,7 @@ function readObject(item: unknown): { object: PlannedObjectView } | { reason: st
   if (idProblem) return { reason: idProblem };
   const kind = field(item, 'kind');
   if (!isPlannedKind(kind))
-    return { reason: 'kind 는 OPENING·SCAFFOLD·EQUIPMENT 중 하나여야 한다' };
+    return { reason: 'kind 는 OPENING·WORK_SURFACE·SCAFFOLD·EQUIPMENT 중 하나여야 한다' };
   const geometry = field(item, 'geometry');
   const problem = plannedGeometryProblem(geometry);
   if (problem) return { reason: problem };

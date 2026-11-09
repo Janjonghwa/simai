@@ -43,6 +43,9 @@ function toSurface(item: StaticObjectItem): WorkSurface | null {
     sigma: item.top_height_sigma_m ?? null,
     zoneId: item.zone_id ?? null,
     validFrom: item.valid_from,
+    workId: item.work_id ?? null,
+    layoutId: item.layout_id ?? null,
+    layoutItemId: item.layout_item_id ?? null,
   };
 }
 

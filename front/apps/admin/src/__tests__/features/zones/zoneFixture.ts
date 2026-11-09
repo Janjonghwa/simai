@@ -15,6 +15,9 @@ export function zoneOf(box: ZoneBox, attrs: Partial<Zone> = {}): Zone {
     hasGuardrail: null,
     requirements: null,
     validFrom: 1,
+    workId: null,
+    layoutId: null,
+    layoutItemId: null,
     shapeEditable: true,
     ...attrs,
   };

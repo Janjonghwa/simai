@@ -1,4 +1,7 @@
+import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
 import type { StaticObjectItem } from '@/features/surfaces/types';
+import { itemMakesZone, layoutZonePlans, type LayoutZonePlan } from '@/features/tbm/layoutZones';
+import type { LayoutObbItem } from '@/features/tbm/types';
 import {
   zoneBodySchema,
   type BundleItem,
@@ -11,8 +14,11 @@ import { readLiveUser } from '@/mocks/problem';
 import type { MockConfig } from '@/mocks/realtimeScenario';
 import {
   createStaticObjectStore,
+  layoutOriginOf,
   readStaticObjectFields,
   WORK_SURFACE_KIND,
+  type LayoutOrigin,
+  type StaticObjectFields,
   type StaticObjectStore,
 } from '@/mocks/staticObjectStore';
 import { http, HttpResponse } from 'msw/http';
@@ -22,6 +28,8 @@ import { z } from 'zod';
 // 이벤트 시나리오(realtimeScenario)의 z-04·z-02 와 맞춘다. 위치는 디자인 데모의 기본 구역을 따른다.
 // 작업면 mock(mocks/staticObjects)도 이 파일의 오류 응답·인증 검사를 함께 쓴다. 구역 한 번 저장(POST /api/zones/commit)은
 // 구역과 작업면(mocks/staticObjectStore)을 함께 바꾼다.
+// 작업을 시작하면 작업 레이아웃 항목으로 구역·작업면을 만드는 서버 일(S15P31A101-553)은 layoutZones 로 흉내 낸다(작업 mock 인
+// mocks/tbm 이 시작·진행 중 저장·종료 때 부른다). 그렇게 만든 것은 layout_item_id 가 있고, 구역 API 로 바꾸면 409 LAYOUT_ZONE_LOCKED 다.
 
 /** 처음 구성 묶음(cfg-12)을 발행한 시각(ms). 처음 구역·작업면들은 그 전에 저장했다. */
 export const SEEDED_AT = 1_760_342_400_000;
@@ -43,6 +51,10 @@ const ACK_DELAY_MS = 3_000;
 /** 구역 다각형 꼭짓점 수의 범위(서버 검사). */
 const MIN_VERTICES = 3;
 const MAX_VERTICES = 256;
+/** 작업 레이아웃 항목으로 만드는 구역의 값(등급 경고, 입체 판정). 작업면이 붙은 구역도 개구부 유형이다(관제 새 구역과 같다). */
+const LAYOUT_ZONE_KIND = 'OPENING';
+const LAYOUT_ZONE_SEVERITY = 'HIGH';
+const LAYOUT_ZONE_JUDGE_TYPE = 'VOLUME_3D';
 
 interface ErrorSpec {
   status: number;
@@ -53,6 +65,14 @@ interface ErrorSpec {
 export const AUTH_ERRORS = {
   UNAUTHORIZED: { status: 401, detail: '로그인이 필요합니다' },
   FORBIDDEN: { status: 403, detail: '권한이 없습니다' },
+};
+
+/** 작업 레이아웃으로 만든 구역·작업면을 구역·작업면 API 로 바꾸려 할 때의 오류. 작업면 mock 도 같은 표를 쓴다. */
+export const LAYOUT_LOCK_ERRORS = {
+  LAYOUT_ZONE_LOCKED: {
+    status: 409,
+    detail: '작업 레이아웃으로 만든 구역·작업면은 레이아웃으로만 바꿀 수 있습니다',
+  },
 };
 
 /** 구성 묶음 발행이 실패하는 이유(서버 ConfigBundleService 의 오류 코드). */
@@ -66,6 +86,7 @@ export const PUBLISH_FAILURES = {
 export type PublishFailureCode = keyof typeof PUBLISH_FAILURES;
 
 const ERRORS = {
+  ...LAYOUT_LOCK_ERRORS,
   INVALID_ZONE: { status: 400, detail: '구역 값이 올바르지 않습니다' },
   INVALID_Z_RANGE: { status: 400, detail: '높이 범위가 올바르지 않습니다' },
   INVALID_POLYGON: { status: 400, detail: '다각형이 올바르지 않습니다' },
@@ -229,6 +250,23 @@ function checkZoneBody(value: unknown) {
 
 type ZoneFields = Exclude<ReturnType<typeof checkZoneBody>, Response>;
 
+/**
+ * 레이아웃 저장 때의 항목 형상 검사(서버가 저장 때 ZoneRepository.check 와 같이 미리 본다: 다각형 유효·넓이>0·높이 최저<최고).
+ * 구역을 만드는 항목 중 못 넘는 첫 항목의 안내 글, 모두 넘으면 null. 이름이 비면 기본 이름을 쓰므로 이름은 보지 않는다.
+ */
+export function layoutShapeProblem(items: readonly LayoutObbItem[]): string | null {
+  for (const item of items) {
+    if (!itemMakesZone(item)) continue;
+    const [plan] = layoutZonePlans([item]);
+    if (!plan) return `구역 형상이 올바르지 않습니다: ${item.item_id}`;
+    const { polygon_xy: ring, z_min_m: min, z_max_m: max } = plan.shape;
+    if (!isValidRing(ring)) return `구역 다각형이 올바르지 않습니다: ${item.item_id}`;
+    if (min === null || max === null || !(min < max))
+      return `구역 높이 범위가 올바르지 않습니다: ${item.item_id}`;
+  }
+  return null;
+}
+
 /** 요청 본문의 rule_profile. 본문이 객체가 아니면 없는 것으로 본다. */
 function profileOf(body: unknown): unknown {
   return typeof body === 'object' && body !== null ? Reflect.get(body, 'rule_profile') : undefined;
@@ -341,8 +379,31 @@ interface MockBundle {
   items: BundleItem[];
 }
 
+/** 작업 레이아웃에서 구역·작업면을 맞추는 요청(진행 중인 작업 하나). */
+export interface LayoutZonesSync {
+  workId: string;
+  layoutId: number;
+  /** 레이아웃의 지금 항목 전부. 이 항목들로 구역·작업면을 맞춘다. */
+  items: readonly LayoutObbItem[];
+  /** 맞추는 시각(ms). 없으면 구역 mock 의 지금 시각이다. */
+  now?: number;
+}
+
+/** 작업 시작·진행 중 레이아웃 저장·종료 때 서버가 하는 일. 작업 mock(mocks/tbm)이 묶어서(bindLayoutZones) 부른다. */
+export interface LayoutZonesHooks {
+  /**
+   * 레이아웃 항목으로 이 작업의 구역·작업면을 맞추고 묶음을 발행한다. 항목 ID(layout_item_id)로 지금 것과 견줘, 사라진 항목은
+   * 끝내고(valid_to) 바뀐 항목은 새 버전, 새 항목은 새로 만든다. 같은 입력을 되풀이해도 구역이 늘지 않는다.
+   */
+  sync(input: LayoutZonesSync): void;
+  /** 이 작업의 레이아웃 구역·작업면을 모두 끝내고(valid_to) 묶음을 발행한다. at 이 없으면 구역 mock 의 지금 시각이다. */
+  end(workId: string, at?: number): void;
+}
+
 export interface ZonesMock {
   handlers: ReturnType<typeof http.get>[];
+  /** 작업 시작·진행 중 저장·종료 때 레이아웃 항목으로 구역·작업면을 만들고 끝낸다(서버 WorkSessionService 의 일을 흉내 낸다). */
+  layoutZones: LayoutZonesHooks;
   /** 상단 바 /topic/health 의 구성 묶음 상태(서버 ViewerHealthService 의 config 를 흉내 낸다). */
   config(): MockConfig;
   /** 다음 발행을 Tier 0 가 거부한다(REJECTED, 이전 묶음을 계속 쓴다). */
@@ -353,7 +414,8 @@ export interface ZonesMock {
 
 /**
  * 구역 조회·만들기·새 버전·보관(삭제)과 구성 묶음 발행·조회, 구역·작업면 한 번 저장(POST /api/zones/commit). 로그인하지 않았거나
- * 실서버 토큰이 만료면 401, 쓰기는 관리자만(아니면 403)이다.
+ * 실서버 토큰이 만료면 401, 쓰기는 관리자만(아니면 403)이다. 작업 레이아웃 항목으로 만든 구역·작업면(layoutZones)을 이 API 들로
+ * 바꾸면 409 LAYOUT_ZONE_LOCKED 다.
  * 새 버전은 지금 버전을 닫고 다음 버전을 더한다(서버처럼 고치기 시작한 버전은 보지 않는다). 보관은 지금 버전의 valid_to 만 닫는다
  * (이력은 남고, 다시 보관해도 204, 보관한 구역을 고치면 404). 상태는 이 mock 이 살아 있는 동안만 둔다.
  * 처음에는 두 구역 v1·규칙·작업면 둘을 담은 cfg-12 가 현장에 적용되어 있다. 발행하는 묶음은 그때 유효한 구역과 staticObjects 가
@@ -394,24 +456,31 @@ export function createZonesMock({
     versions.map((z) => (z === target ? { ...z, valid_to: t } : z));
   const findCurrent = (zoneId: string) => current().find((z) => z.zone_id === zoneId);
 
-  /** 새 구역(v1)을 더한다. */
-  const addZone = (fields: ZoneFields, t: number): ZoneItem => {
+  /** 새 구역(v1)을 더한다. origin 은 작업 레이아웃 항목으로 만드는 구역의 출처다. */
+  const addZone = (fields: ZoneFields, t: number, origin?: LayoutOrigin): ZoneItem => {
     const zone: ZoneItem = {
       ...fields,
       zone_id: hexId('z', ++issued),
       zone_version: 1,
+      ...(origin ?? {}),
       valid_from: t,
       valid_to: null,
     };
     versions = [...versions, zone];
     return zone;
   };
-  /** before 의 지금 버전을 닫고 다음 버전을 더한다. */
-  const addVersion = (before: ZoneItem, fields: ZoneFields, t: number): ZoneItem => {
+  /** before 의 지금 버전을 닫고 다음 버전을 더한다. 레이아웃 출처는 origin 이 있으면 그것을, 없으면 before 의 것을 이어받는다. */
+  const addVersion = (
+    before: ZoneItem,
+    fields: ZoneFields,
+    t: number,
+    origin?: LayoutOrigin,
+  ): ZoneItem => {
     const zone: ZoneItem = {
       ...fields,
       zone_id: before.zone_id,
       zone_version: before.zone_version + 1,
+      ...(origin ?? layoutOriginOf(before) ?? {}),
       valid_from: t,
       valid_to: null,
     };
@@ -424,6 +493,13 @@ export function createZonesMock({
     const before = findCurrent(zoneId);
     if (before) versions = closed(before, t);
     return true;
+  };
+  /** 구역을 보관하고 이은 작업면도 함께 보관한다. 이은 작업면 ID(없으면 null)를 돌려준다. */
+  const archiveWithSurface = (zoneId: string, t: number): string | null => {
+    archiveZone(zoneId, t);
+    const linked = staticObjects.linkedTo(zoneId);
+    if (linked) staticObjects.archive(linked.object_id, t);
+    return linked?.object_id ?? null;
   };
 
   const statusAt = (bundle: MockBundle, t: number): AckStatus => {
@@ -478,6 +554,95 @@ export function createZonesMock({
     return bundle;
   };
 
+  // 작업 레이아웃 구역·작업면. 작업 레이아웃 항목으로 만든 것은 layout_item_id 가 있고, 구역·작업면 API 로는 바꿀 수 없다.
+  /** 작업 레이아웃 항목으로 만든 구역인가(보관한 것 포함). */
+  const isLayoutZone = (zoneId: string) =>
+    versions.some((z) => z.zone_id === zoneId && z.layout_item_id != null);
+  const isLayoutSurface = (objectId: string) =>
+    staticObjects.versionsOf(objectId).some((o) => o.layout_item_id != null);
+  /** 한 번 저장이 레이아웃 구역·작업면을 고치거나 보관하려 하는가. */
+  const touchesLayout = ({ zone, surface }: CommitPlan) =>
+    (zone.op !== 'CREATE' && isLayoutZone(zone.id)) ||
+    (surface !== null && surface.op !== 'CREATE' && isLayoutSurface(surface.id));
+
+  /** 레이아웃 항목이 만들 구역 칸. 등급은 늘 경고, 판정은 입체다. */
+  const layoutZoneFields = (plan: LayoutZonePlan): ZoneFields => ({
+    name: plan.name,
+    zone_kind: LAYOUT_ZONE_KIND,
+    eval_type: LAYOUT_ZONE_JUDGE_TYPE,
+    polygon_xy: plan.shape.polygon_xy,
+    z_min_m: plan.shape.z_min_m,
+    z_max_m: plan.shape.z_max_m,
+    severity: LAYOUT_ZONE_SEVERITY,
+    has_guardrail: null,
+    requirements: null,
+  });
+  /** 구역이 계획과 같은가(이름·모양·높이·레이아웃). */
+  const sameLayoutZone = (zone: ZoneItem, fields: ZoneFields, layoutId: number) =>
+    zone.layout_id === layoutId &&
+    zone.name === fields.name &&
+    zone.z_min_m === fields.z_min_m &&
+    zone.z_max_m === fields.z_max_m &&
+    JSON.stringify(zone.polygon_xy) === JSON.stringify(fields.polygon_xy);
+  const sameLayoutSurface = (surface: StaticObjectItem, fields: StaticObjectFields) =>
+    surface.name === fields.name &&
+    surface.top_height_m === fields.top_height_m &&
+    JSON.stringify(surface.obb) === JSON.stringify(fields.obb);
+
+  /** 구역에 이은 작업면을 계획대로 맞춘다: 없으면 만들고, 달라졌으면 새 버전, 계획에 작업면이 없으면 보관한다. */
+  const syncLayoutSurface = (
+    zone: ZoneItem,
+    plan: LayoutZonePlan,
+    origin: LayoutOrigin,
+    t: number,
+  ) => {
+    const linked = staticObjects.linkedTo(zone.zone_id);
+    const fields = plan.surface
+      ? readStaticObjectFields(surfaceBodyOf(null, plan.name, plan.surface))
+      : undefined;
+    if (!fields) {
+      if (linked) staticObjects.archive(linked.object_id, t);
+    } else if (!linked) {
+      staticObjects.create(fields, zone.zone_id, t, origin);
+    } else if (!sameLayoutSurface(linked, fields)) {
+      staticObjects.update(linked.object_id, fields, zone.zone_id, t);
+    }
+  };
+
+  const layoutZones: LayoutZonesHooks = {
+    sync: ({ workId, layoutId, items, now: at }) => {
+      const t = at ?? now();
+      const plans = layoutZonePlans(items);
+      const wanted = new Set(plans.map((p) => p.itemId));
+      const ofWork = (z: ZoneItem) => z.work_id === workId && z.layout_item_id != null;
+      // 사라진 항목의 구역·작업면은 끝낸다.
+      for (const zone of current().filter(ofWork)) {
+        if (!wanted.has(zone.layout_item_id!)) archiveWithSurface(zone.zone_id, t);
+      }
+      for (const plan of plans) {
+        const origin = { work_id: workId, layout_id: layoutId, layout_item_id: plan.itemId };
+        const fields = layoutZoneFields(plan);
+        const before = current().find((z) => ofWork(z) && z.layout_item_id === plan.itemId);
+        let zone = before;
+        if (!zone) zone = addZone(fields, t, origin);
+        else if (!sameLayoutZone(zone, fields, layoutId))
+          zone = addVersion(zone, fields, t, origin);
+        syncLayoutSurface(zone, plan, origin, t);
+      }
+      publish(t);
+    },
+    end: (workId, at) => {
+      const t = at ?? now();
+      for (const zone of current().filter((z) => z.work_id === workId)) {
+        archiveWithSurface(zone.zone_id, t);
+      }
+      for (const surface of staticObjects.current().filter((o) => o.work_id === workId)) {
+        staticObjects.archive(surface.object_id, t);
+      }
+      publish(t);
+    },
+  };
+
   /** 구역을 이은 지금 작업면 ID. 이은 구역이 보관됐으면 이은 것으로 보지 않는다(서버 StaticObjectRepository.zoneOf). */
   const currentZoneOf = (objectId: string) => {
     const zoneId = staticObjects.find(objectId)?.zone_id;
@@ -517,10 +682,8 @@ export function createZonesMock({
       return { ...unchanged(zone.id), zone: addVersion(before, fields, t) };
     }
     if (zone.op === 'ARCHIVE') {
-      if (!archiveZone(zone.id, t)) return fail('ZONE_NOT_FOUND');
-      const linked = staticObjects.linkedTo(zone.id);
-      if (linked) staticObjects.archive(linked.object_id, t);
-      return { ...unchanged(zone.id), archivedSurfaceId: linked?.object_id ?? null };
+      if (!versions.some((z) => z.zone_id === zone.id)) return fail('ZONE_NOT_FOUND');
+      return { ...unchanged(zone.id), archivedSurfaceId: archiveWithSurface(zone.id, t) };
     }
     return findCurrent(zone.id) ? unchanged(zone.id) : fail('ZONE_NOT_FOUND');
   };
@@ -606,6 +769,7 @@ export function createZonesMock({
     http.put('*/api/zones/:zoneId', async ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
+      if (isLayoutZone(String(params.zoneId))) return fail('LAYOUT_ZONE_LOCKED');
       const before = findCurrent(String(params.zoneId));
       if (!before) return fail('ZONE_NOT_FOUND');
       const fields = checkZoneBody(await request.json().catch(() => undefined));
@@ -615,6 +779,7 @@ export function createZonesMock({
     http.delete('*/api/zones/:zoneId', ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
+      if (isLayoutZone(String(params.zoneId))) return fail('LAYOUT_ZONE_LOCKED');
       return archiveZone(String(params.zoneId), now()) ? noContent() : fail('ZONE_NOT_FOUND');
     }),
     http.post('*/api/zones/commit', async ({ request }) => {
@@ -622,6 +787,7 @@ export function createZonesMock({
       if (denied) return denied;
       const plan = planOf(await request.json().catch(() => undefined));
       if (!plan) return fail('INVALID_ZONE_COMMIT');
+      if (touchesLayout(plan)) return fail('LAYOUT_ZONE_LOCKED');
       return commit(plan, now());
     }),
     http.post('*/api/config-bundles', async ({ request }) => {
@@ -651,6 +817,7 @@ export function createZonesMock({
 
   return {
     handlers,
+    layoutZones,
     config: () => {
       const t = now();
       const latest = bundles[0]!;
