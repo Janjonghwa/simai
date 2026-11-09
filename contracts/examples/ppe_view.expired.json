@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "ppe_view",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000532",
+  "sent_at": 1760342412020,
+  "source_id": "ec2",
+  "payload": {
+    "tier0_source_id": "tier0-01",
+    "snapshot_at_ms": 1760342412000,
+    "people": [
+      {
+        "world_id": "w-0012",
+        "identity_revision": 2,
+        "capture_time_ms": 1760342400400,
+        "received_at_ms": 1760342400480,
+        "helmet": {
+          "state": "UNKNOWN",
+          "reported_state": "WORN",
+          "reason": "EVIDENCE_EXPIRED",
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400
+        },
+        "vest": {
+          "state": "UNKNOWN",
+          "reported_state": "NOT_WORN",
+          "reason": "EVIDENCE_EXPIRED",
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400
+        }
+      }
+    ]
+  }
+}

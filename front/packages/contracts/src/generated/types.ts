@@ -475,6 +475,40 @@ export type WatchEscalationMessage = (Envelope & {
 msg_type?: "watch_escalation"
 payload: WatchEscalationPayload
 })
+/**
+ * EC2(source_id ec2) → 관제 화면 STOMP /topic/ppe 와 처음 상태 REST GET /api/ppe/current. EC2 가 I1 ppe_state 로 갱신한 사람별 화면용 현재 상태(ppe_current_state)를 한 장의 스냅샷으로 싣는다(명세 8.10, 12.3, 12.4, 13.3). 스냅샷이라 이번 메시지에 없는 사람은 '지금 보일 PPE 상태 없음'이다(이전 메시지 값을 이어 쓰지 않는다). 근거 프레임 키·local ID·모델 판 같은 내부 값은 싣지 않는다(사람·장비 객체는 닫힘. payload 최상위는 수신 측이 모르는 필드를 무시하는 계약 규칙대로 열어 둔다). 뷰어는 같은 world_id·identity_revision 의 world_state 트랙에만 붙이고, expires_at_ms 가 지나거나 EC2 연결이 끊기면 UNKNOWN 으로 보인다. PPE 표시는 경보가 아니다(경보는 R9 이벤트, 7.3). 1.0.0 신설(S15P31A101-531).
+ */
+export type PpeViewMessage = (Envelope & {
+msg_type?: "ppe_view"
+payload: PpeViewPayload
+})
+/**
+ * 장비 하나(안전모 또는 조끼)의 화면용 상태. state 는 EC2 가 snapshot_at_ms 기준으로 만료를 반영한 값이고 reported_state 는 PPE 프로세스가 보낸 값이다. 만료됐으면 state UNKNOWN·reason EVIDENCE_EXPIRED 다. 착용·미착용 표시는 보낸 값과 같을 때만 가능하다(EC2 가 상태를 지어내지 않는다)
+ */
+export type ItemView = ({
+[k: string]: unknown
+} & {
+/**
+ * 화면에 보일 상태(명세 6장 PPE 상태)
+ */
+state: ("WORN" | "NOT_WORN" | "UNKNOWN")
+/**
+ * ppe_state item_state.state 그대로
+ */
+reported_state: ("WORN" | "NOT_WORN" | "UNKNOWN")
+/**
+ * ppe_state item_state.reason 그대로. 만료를 반영했으면 EVIDENCE_EXPIRED. 읽는 쪽은 모르는 코드를 표시만 한다
+ */
+reason: string
+/**
+ * ppe_state 값 그대로(마지막 근거 촬영 시각, Tier 0 시계). 화면은 상태 옆에 이 시각을 보인다. 근거가 없으면 null
+ */
+last_evidence_at_ms: (number | null)
+/**
+ * ppe_state 값 그대로(Tier 0 시계). 뷰어는 다음 스냅샷 전이라도 이 시각이 지나면 UNKNOWN 으로 보인다. 근거가 없으면 null
+ */
+expires_at_ms: (number | null)
+})
 
 export interface FrontContracts {
 world_state?: WorldStateMessage
@@ -482,6 +516,7 @@ risk_event?: RiskEventMessage
 viewer_health?: ViewerHealthMessage
 avatar_frame?: AvatarFrameMessage
 watch_escalation?: WatchEscalationMessage
+ppe_view?: PpeViewMessage
 }
 /**
  * I0의 영상 프레임(바이너리)을 제외한 모든 구간 메시지의 봉투 (명세 12.1). 수신 측은 모르는 필드를 무시한다.
@@ -801,4 +836,44 @@ sent_at: number
  * UTC epoch 밀리초
  */
 escalated_at: number
+}
+export interface PpeViewPayload {
+/**
+ * 이 상태를 보낸 Tier 0 연결의 source_id(I1 ppe_state 봉투 값, 예 tier0-01). Tier 0 마다 따로 보낸다
+ */
+tier0_source_id: string
+/**
+ * UTC epoch 밀리초
+ */
+snapshot_at_ms: number
+/**
+ * 이 Tier 0 의 사람별 현재 상태 중 촬영 시각이 snapshot_at_ms − 60초 이후인 것(최신 촬영 순, 최대 64명). 빈 배열은 보일 상태가 없다는 뜻이다. 한 메시지에 같은 world_id 는 하나(계약 시험)
+ * 
+ * @minItems 0
+ * @maxItems 64
+ */
+people: PersonView[]
+}
+/**
+ * 한 사람의 안전모·조끼 현재 상태. 위치·이미지 필드가 끼어들지 않도록 닫는다(위치·ID 정본은 /topic/world)
+ */
+export interface PersonView {
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+world_id: string
+/**
+ * ppe_state 값 그대로(판정에 쓴 Tier 0 트랙의 identity_revision). 뷰어가 그리는 world_state 트랙 값과 다르면 이 상태를 그 사람에게 붙이지 않는다
+ */
+identity_revision: number
+/**
+ * UTC epoch 밀리초
+ */
+capture_time_ms: number
+/**
+ * UTC epoch 밀리초
+ */
+received_at_ms: number
+helmet: ItemView
+vest: ItemView
 }

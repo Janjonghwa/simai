@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -24,7 +25,7 @@ import tools.jackson.databind.ObjectMapper;
  * ppe_state(PPE 프로세스 → Tier 0 I1 → EC2, 1~2 Hz, S15P31A101-516, 명세 5.5·12.3·11장).
  * 계약 스키마 전체와 스키마가 못 거는 계약 시험(PpeStateChecks)으로 검사한 뒤, people 항목마다 ppe_state 에 한 행을 추가만 하고
  * 사람별 현재 상태(ppe_current_state)는 더 새 메시지일 때만 덮는다. 멱등 키는 (source_id, stream_epoch, state_sequence) 다.
- * 관제 화면 전달(I2 토픽)은 명세 19.1 미결이라 여기서 하지 않는다.
+ * 현재 상태를 하나라도 바꿨으면 커밋 뒤 /topic/ppe 로 그 Tier 0 의 스냅샷을 보내도록 PpeStateStored 를 낸다(S15P31A101-531).
  */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -77,12 +78,15 @@ class PpeStateIngestor implements I1MessageIngestor {
     private final ContractSchemas schemas;
     private final ObjectMapper mapper;
     private final TransactionTemplate transaction;
+    private final ApplicationEventPublisher events;
 
-    PpeStateIngestor(NamedParameterJdbcTemplate jdbc, ContractSchemas schemas, ObjectMapper mapper, TransactionTemplate transaction) {
+    PpeStateIngestor(NamedParameterJdbcTemplate jdbc, ContractSchemas schemas, ObjectMapper mapper, TransactionTemplate transaction,
+            ApplicationEventPublisher events) {
         this.jdbc = jdbc;
         this.schemas = schemas;
         this.mapper = mapper;
         this.transaction = transaction;
+        this.events = events;
     }
 
     @Override
@@ -130,12 +134,17 @@ class PpeStateIngestor implements I1MessageIngestor {
             if (seen) {
                 return Outcome.DUPLICATE;
             }
+            boolean currentChanged = false;
             for (JsonNode person : people) {
                 MapSqlParameterSource row = row(envelope, p, person, receivedAt);
                 jdbc.update(INSERT, row);
-                if (!isStale(person, receivedAt)) {
-                    jdbc.update(UPSERT_CURRENT, row);
+                if (!isStale(person, receivedAt) && jdbc.update(UPSERT_CURRENT, row) > 0) {
+                    currentChanged = true;
                 }
+            }
+            if (currentChanged) {
+                // 커밋 뒤 /topic/ppe 스냅샷(PpeViewRelay). 과거·만료 메시지만 온 경우는 화면이 바뀌지 않아 보내지 않는다
+                events.publishEvent(new PpeStateStored(envelope.sourceId()));
             }
             return Outcome.STORED;
         });

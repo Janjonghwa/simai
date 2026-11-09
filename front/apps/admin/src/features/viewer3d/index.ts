@@ -217,6 +217,7 @@ export type { ViewerTestCall, ViewerTestHandle } from '@/features/viewer3d/testi
 export type {
   CommandFailureReason,
   CommandResult,
+  PersonHelmetState,
   Viewer3DHandle,
   Viewer3DProps,
   ViewerBoxEdit,

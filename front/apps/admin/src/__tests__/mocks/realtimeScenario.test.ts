@@ -1,5 +1,6 @@
 import {
   EVENT_CYCLE_MS,
+  ppeViewAt,
   riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
@@ -89,6 +90,16 @@ describe('실시간 mock 시나리오', () => {
       expect(world.ok ? [] : world.errors).toEqual([]);
       expect(health.ok ? [] : health.errors).toEqual([]);
     }
+  });
+
+  it('PPE 스냅샷(-531)은 계약을 통과하고 mock 사람 셋을 착용·미착용·모름으로 나눈다', () => {
+    const ppe = ppeViewAt(T0);
+    const checked = validateMessage('ppe_view', ppe);
+    expect(checked.ok ? [] : checked.errors).toEqual([]);
+    expect(ppe.payload.people.map((p) => p.helmet.state)).toEqual(['WORN', 'NOT_WORN', 'UNKNOWN']);
+    expect(ppe.payload.people.map((p) => p.world_id)).toEqual(
+      worldStateAt(T0).payload.tracks.map((tr) => tr.world_id),
+    );
   });
 
   describe('바퀴의 20~26초에는 cam3 가 키프레임을 기다린다', () => {

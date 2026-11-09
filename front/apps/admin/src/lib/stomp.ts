@@ -23,10 +23,19 @@ export const EVENTS_TOPIC = '/topic/events';
 export const AVATAR_TOPIC = '/topic/avatar';
 /** 워치 진동 알림 격상(watch_escalation, 확장 부록 C.6, S15P31A101-338·-342). 3D 뷰어 입력이 아니다. */
 export const WATCH_TOPIC = '/topic/watch';
+/** 사람별 안전모·조끼 화면용 현재 상태(ppe_view, 명세 12.4·13.3, S15P31A101-531). 3D 뷰어 Source 입력이 아니다. */
+export const PPE_TOPIC = '/topic/ppe';
 /** 로그인한 계정이면 누구나 구독하는 토픽. */
-export const TOPICS = [WORLD_TOPIC, HEALTH_TOPIC, EVENTS_TOPIC, AVATAR_TOPIC, WATCH_TOPIC] as const;
+export const TOPICS = [
+  WORLD_TOPIC,
+  HEALTH_TOPIC,
+  EVENTS_TOPIC,
+  AVATAR_TOPIC,
+  WATCH_TOPIC,
+  PPE_TOPIC,
+] as const;
 /** 3D 뷰어(Source)에 넘기지 않는 토픽. 뷰어 계약 입력(world_state·risk_event·viewer_health·avatar_frame)이 아니다. */
-const APP_ONLY_TOPICS: ReadonlySet<string> = new Set([WATCH_TOPIC]);
+const APP_ONLY_TOPICS: ReadonlySet<string> = new Set([WATCH_TOPIC, PPE_TOPIC]);
 
 /** 연결에서 화면 쪽으로 알리는 일. 화면 데이터(Query 캐시 등)는 받는 쪽이 정한다. */
 export interface RealtimeListeners {
@@ -269,6 +278,17 @@ const TOPIC_HANDLERS = new Map<string, TopicHandler>([
       const escalation = validateMessage('watch_escalation', received.raw);
       if (!escalation.ok) return store.getState().reject();
       emit('watchEscalation', escalation.message.payload, received.receivedAt);
+    },
+  ],
+  [
+    PPE_TOPIC,
+    (received, { store }) => {
+      // 스냅샷이다. 재연결 때 놓친 것은 처음 상태 REST(usePpeSnapshot)가 채운다.
+      const ppe = validateMessage('ppe_view', received.raw);
+      if (!ppe.ok) return store.getState().reject();
+      store
+        .getState()
+        .receivePpe({ payload: ppe.message.payload, receivedAt: received.receivedAt });
     },
   ],
   [

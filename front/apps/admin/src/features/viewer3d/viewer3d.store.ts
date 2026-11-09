@@ -12,6 +12,7 @@ import type { ViewerTheme } from '@/features/viewer3d/palette';
 import { isViewerMode, parseTarget, sameTarget, targetKey } from '@/features/viewer3d/target';
 import type {
   CommandResult,
+  PersonHelmetState,
   ViewerError,
   ViewerMode,
   ViewerPhase,
@@ -24,6 +25,7 @@ import type {
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
 const NO_BADGES: Readonly<Record<string, string>> = Object.freeze({});
+const NO_HELMETS: Readonly<Record<string, PersonHelmetState>> = Object.freeze({});
 const NO_CAMERA_POSES: readonly CalibratedCameraPose[] = Object.freeze([]);
 
 function sameBadges(
@@ -69,6 +71,8 @@ export interface ViewerState {
   personBadges: Readonly<Record<string, string>>;
   /** 사람 강조 큰 이름표 글(World ID → 글, -509). */
   personHighlights: Readonly<Record<string, string>>;
+  /** 사람 머리 위 안전모 형상 상태(World ID → 상태, -531). */
+  personHelmets: Readonly<Record<string, PersonHelmetState>>;
   /** 보정된 카메라 마커 자세·시야각 목록(-522). */
   cameraPoses: readonly CalibratedCameraPose[];
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
@@ -89,6 +93,7 @@ export interface ViewerState {
   /** 내용이 같으면 바꾸지 않는다. 비우면 모두 지운다. */
   setPersonBadges(input: Readonly<Record<string, string>> | undefined): void;
   setPersonHighlights(input: Readonly<Record<string, string>> | undefined): void;
+  setPersonHelmets(input: Readonly<Record<string, PersonHelmetState>> | undefined): void;
   setCameraPoses(input: readonly CalibratedCameraPose[] | undefined): void;
   markReady(): void;
   markError(error: ViewerError): void;
@@ -177,6 +182,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       layers: DEFAULT_LAYERS,
       personBadges: NO_BADGES,
       personHighlights: NO_BADGES,
+      personHelmets: NO_HELMETS,
       cameraPoses: NO_CAMERA_POSES,
       pendingSelect: null,
       selectRequest: null,
@@ -297,6 +303,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setPersonHighlights: (input) => {
         const next = input ?? NO_BADGES;
         if (!sameBadges(next, get().personHighlights)) set({ personHighlights: next });
+      },
+
+      setPersonHelmets: (input) => {
+        const next = input ?? NO_HELMETS;
+        if (!sameBadges(next, get().personHelmets)) set({ personHelmets: next });
       },
 
       setCameraPoses: (input) => {

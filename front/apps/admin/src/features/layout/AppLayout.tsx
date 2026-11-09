@@ -10,6 +10,7 @@ import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
 import { PpePolicyNotice } from '@/features/monitor/PpePolicyNotice';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
+import { usePpeSnapshot } from '@/features/ppe/usePpe';
 import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
@@ -96,6 +97,8 @@ export function AppLayout() {
   useNoticesHeight(noticesRef, root);
   // 연결이 (다시) 열리면 /topic/health 를 기다리지 않고 지금 상태를 먼저 채운다(GET /api/health).
   useHealthSnapshot();
+  // 사람별 안전모·조끼 상태도 연결마다 지금 값을 먼저 채운다(GET /api/ppe/current, S15P31A101-531).
+  usePpeSnapshot();
 
   // 로그아웃으로 이 레이아웃을 벗어나면 연 이벤트를 닫는다. 다음 계정에 이전 화면 상태가 남지 않게 한다.
   useEffect(() => () => openEvent(null), [openEvent]);

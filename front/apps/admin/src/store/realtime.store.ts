@@ -1,5 +1,5 @@
 import type { ExternalSpatialSource } from '@/features/viewer3d';
-import type { ViewerHealthPayload, WorldStatePayload } from '@simai/contracts';
+import type { PpeViewPayload, ViewerHealthPayload, WorldStatePayload } from '@simai/contracts';
 import { create } from 'zustand';
 
 /** STOMP 연결 단계. IDLE 은 로그인 전·로그아웃 뒤다. */
@@ -19,6 +19,13 @@ export interface WorldSnapshot {
   receivedAt: number;
 }
 
+/** Tier 0 하나의 PPE 화면용 스냅샷(/topic/ppe·GET /api/ppe/current, 명세 12.4·13.3). */
+export interface PpeSnapshot {
+  payload: PpeViewPayload;
+  /** 이 브라우저 시계로 받은 시각(ms). 다음 스냅샷 전 만료를 볼 때 EC2 시각을 어림하는 기준이다. */
+  receivedAt: number;
+}
+
 export interface RealtimeState {
   phase: LinkPhase;
   /** 마지막으로 연결이 열린 시각. 연결 뒤 health 를 아직 못 받았을 때 끊김 판단의 기준이다. */
@@ -31,6 +38,8 @@ export interface RealtimeState {
    * 뒤로 가면 이후 프레임을 모두 버려 평면이 멈추기 때문이다.
    */
   worldResync: boolean;
+  /** Tier 0(tier0_source_id)별 가장 새 PPE 스냅샷. 스냅샷이라 이전 값을 이어 쓰지 않고 통째로 바꾼다. */
+  ppe: Readonly<Record<string, PpeSnapshot>>;
   /** JSON 이 아니거나 계약 검사에 실패해 버린 메시지 수. */
   rejected: number;
   /** 3D 뷰어 입력. 세션마다 새로 만들어 이전 사용자의 데이터가 뷰어에 남지 않게 한다. */
@@ -45,6 +54,8 @@ export interface RealtimeState {
   seedHealth: (health: HealthSnapshot) => void;
   /** 더 새 프레임만 받는다. 늦게 온 이전 프레임은 버린다. */
   receiveWorld: (world: WorldSnapshot) => void;
+  /** 더 새(snapshot_at_ms) 스냅샷만 받는다. /topic/ppe 와 처음 상태 REST 가 같이 쓴다. */
+  receivePpe: (snapshot: PpeSnapshot) => void;
   reject: () => void;
   reset: () => void;
 }
@@ -55,6 +66,7 @@ const INITIAL = {
   health: null,
   world: null,
   worldResync: false,
+  ppe: {},
   rejected: 0,
   source: null,
 } as const satisfies Partial<RealtimeState>;
@@ -80,6 +92,13 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
         ? s
         : { world, worldResync: false },
     ),
+  receivePpe: (snapshot) =>
+    set((s) => {
+      const id = snapshot.payload.tier0_source_id;
+      const prev = s.ppe[id];
+      if (prev && prev.payload.snapshot_at_ms >= snapshot.payload.snapshot_at_ms) return s;
+      return { ppe: { ...s.ppe, [id]: snapshot } };
+    }),
   reject: () => set((s) => ({ rejected: s.rejected + 1 })),
   reset: () => set(INITIAL),
 }));

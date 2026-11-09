@@ -38,6 +38,7 @@ import {
   type AvatarModel,
 } from '@/features/viewer3d/people/avatarModel';
 import { applyPose, PosePlayer } from '@/features/viewer3d/people/avatarPose';
+import { PersonHelmet } from '@/features/viewer3d/people/PersonHelmet';
 import { PersonHighlight } from '@/features/viewer3d/people/PersonHighlight';
 import {
   approach,
@@ -92,6 +93,8 @@ type PersonColor = ScenePalette['person'];
 const OPACITY: Record<PersonTone, number> = { observed: 1, predicted: 0.45, unknown: 0.3 };
 const LABEL_Y = 2.05;
 const COLUMN_TOP = 2.0;
+/** 골격 머리가 없을 때 안전모를 두는 높이(캡슐 머리 구 1.58 m 위, -531). */
+const HELMET_Y = 1.64;
 const noRaycast = () => null;
 
 const NO_LAST_VALID: ThreePoint | null = null;
@@ -174,6 +177,8 @@ function PersonAvatar({
   const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
   // 호스트가 잠깐 켜는 강조(-509 워치 연결 순간). 고리 펄스와 큰 이름표
   const highlight = useStore(viewerStore, (s) => s.personHighlights[worldId] ?? null);
+  // 호스트가 따진 안전모 상태(-531). 없으면 형상을 그리지 않는다
+  const helmet = useStore(viewerStore, (s) => s.personHelmets[worldId] ?? null);
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
@@ -380,6 +385,7 @@ function PersonAvatar({
                       : 'NONE'
                 }
               />
+              {helmet && <PersonHelmet state={helmet} figure={motion} fallbackY={HELMET_Y} />}
             </group>
           ) : pose.kind === 'BODY' ? (
             <group ref={body}>
@@ -399,6 +405,13 @@ function PersonAvatar({
             </group>
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />
+          )}
+          {helmet && !skeleton && (
+            <PersonHelmet
+              state={helmet}
+              figure={motion}
+              fallbackY={pose.kind === 'BODY' ? HELMET_Y : COLUMN_TOP}
+            />
           )}
           {/* 이름표는 사람 ID 만 늘 보인다. 위험이면 글자 색만 위험 색이고, 예측·확인 불가는 몸 색·투명도로 보인다. */}
           <LabelSprite
