@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.layout;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
@@ -34,12 +35,17 @@ class LayoutController {
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final LayoutZoneService layoutZones;
+    private final ConfigBundleService bundles;
 
-    LayoutController(LayoutRepository layouts, SiteLookup sites, TransactionTemplate transaction, Clock clock) {
+    LayoutController(LayoutRepository layouts, SiteLookup sites, TransactionTemplate transaction, Clock clock,
+            LayoutZoneService layoutZones, ConfigBundleService bundles) {
         this.layouts = layouts;
         this.sites = sites;
         this.transaction = transaction;
         this.clock = clock;
+        this.layoutZones = layoutZones;
+        this.bundles = bundles;
     }
 
     @GetMapping
@@ -80,9 +86,16 @@ class LayoutController {
     ObjectNode replace(@PathVariable long layoutId, @RequestBody(required = false) LayoutRequest request,
             @AuthenticationPrincipal Jwt jwt) {
         String siteId = sites.siteId();
-        return transaction.execute(s -> {
-            layouts.replace(siteId, layoutId, request, Long.parseLong(jwt.getSubject()), clock.instant());
-            return layouts.findOne(siteId, layoutId).orElseThrow(() -> new BusinessException(ErrorCode.Layout.LAYOUT_NOT_FOUND));
-        });
+        long user = Long.parseLong(jwt.getSubject());
+        return bundles.publishWithDynamic(() -> {
+            layoutZones.lock();
+            var now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            layouts.replace(siteId, layoutId, request, user, now);
+            Long work = layoutZones.activeWork(siteId, layoutId);
+            if (work != null) layoutZones.sync(siteId, work, layoutId, user,
+                    java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
+            return new Replaced(layouts.findOne(siteId, layoutId).orElseThrow(), work != null);
+        }, Replaced::publish, user).changes().layout();
     }
+    private record Replaced(ObjectNode layout, boolean publish) {}
 }

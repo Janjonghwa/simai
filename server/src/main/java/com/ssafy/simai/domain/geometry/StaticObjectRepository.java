@@ -31,7 +31,7 @@ public class StaticObjectRepository {
     static final Set<String> KINDS = Set.of(WORK_SURFACE, "OBSTACLE");
 
     private static final String COLUMNS = """
-            object_id, object_version, kind, name, obb::text AS obb, top_height_m, zone_id, valid_from, valid_to
+            object_id, object_version, kind, name, obb::text AS obb, top_height_m, zone_id, valid_from, valid_to, work_id, layout_id, layout_item_id
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -246,6 +246,11 @@ public class StaticObjectRepository {
         }
         o.put("valid_from", Versioned.millis(rs.getObject("valid_from", OffsetDateTime.class)));
         o.put("valid_to", Versioned.millis(rs.getObject("valid_to", OffsetDateTime.class)));
+        if (rs.getObject("layout_item_id") != null) {
+            o.put("work_id", rs.getLong("work_id"));
+            o.put("layout_id", rs.getLong("layout_id"));
+            o.put("layout_item_id", rs.getString("layout_item_id"));
+        }
         return o;
     }
 }

@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.zone;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.layout.LayoutZoneService;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -36,14 +37,16 @@ class ZoneController {
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final LayoutZoneService layoutZones;
 
     ZoneController(ZoneRepository zones, ZoneCommitService commits, SiteLookup sites, TransactionTemplate transaction,
-            Clock clock) {
+            Clock clock, LayoutZoneService layoutZones) {
         this.zones = zones;
         this.commits = commits;
         this.sites = sites;
         this.transaction = transaction;
         this.clock = clock;
+        this.layoutZones = layoutZones;
     }
 
     /**
@@ -79,7 +82,7 @@ class ZoneController {
     @PutMapping("/{zoneId}")
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode newVersion(@PathVariable String zoneId, @RequestBody ZoneRequest request, @AuthenticationPrincipal Jwt jwt) {
-        return transaction.execute(s -> zones.newVersion(zoneId, request, Long.parseLong(jwt.getSubject()), now()));
+        return transaction.execute(s -> { layoutZones.lock(); layoutZones.denyZone(zoneId); return zones.newVersion(zoneId, request, Long.parseLong(jwt.getSubject()), now()); });
     }
 
     /** 보관: 지금 버전을 닫아 목록·다음 묶음에서 뺀다. 이미 적용된 묶음은 다음 발행까지 그대로 쓰인다 */
@@ -87,7 +90,7 @@ class ZoneController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     void archive(@PathVariable String zoneId) {
-        transaction.executeWithoutResult(s -> zones.archive(zoneId, now()));
+        transaction.executeWithoutResult(s -> { layoutZones.lock(); layoutZones.denyZone(zoneId); zones.archive(zoneId, now()); });
     }
 
     private OffsetDateTime now() {

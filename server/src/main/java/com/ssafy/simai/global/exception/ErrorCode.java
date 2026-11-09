@@ -140,6 +140,7 @@ public sealed interface ErrorCode {
 
     /** 구역·작업면·보정 문서·구성 묶음(S15P31A101-120·-58) */
     enum Config implements ErrorCode {
+        LAYOUT_ZONE_LOCKED(HttpStatus.CONFLICT, "작업 레이아웃에서 만든 구역·작업면은 레이아웃에서 수정하세요"),
         ZONE_NOT_FOUND(HttpStatus.NOT_FOUND, "구역을 찾을 수 없습니다"),
         INVALID_ZONE(HttpStatus.BAD_REQUEST, "구역 값이 올바르지 않습니다(name·zone_kind 필수, eval_type 은 GROUND_FOOTPRINT·VOLUME_3D, severity 는 CRITICAL·HIGH·CAUTION·INFO)"),
         INVALID_POLYGON(HttpStatus.BAD_REQUEST, "다각형은 서로 다른 꼭짓점 3개 이상이고 자기 교차·넓이 0 이 없어야 합니다"),
@@ -572,7 +573,7 @@ public sealed interface ErrorCode {
     /** 가상 레이아웃(GET·POST·PUT /api/layouts, S15P31A101-30) */
     enum Layout implements ErrorCode {
         LAYOUT_NOT_FOUND(HttpStatus.NOT_FOUND, "레이아웃을 찾을 수 없습니다"),
-        INVALID_LAYOUT(HttpStatus.BAD_REQUEST, "레이아웃 값이 올바르지 않습니다(name 1~100자, items 200개 이내, item_id 1~64자 겹치지 않게, kind 는 OPENING·SCAFFOLD·EQUIPMENT, center·size 는 유한한 수 3개(size > 0), yaw_rad 는 [-π, π])"),
+        INVALID_LAYOUT(HttpStatus.BAD_REQUEST, "레이아웃 값이 올바르지 않습니다(name 1~100자, items 200개 이내, item_id 1~64자 겹치지 않게, kind 는 OPENING·WORK_SURFACE·SCAFFOLD·EQUIPMENT, center·size 는 유한한 수 3개(size > 0), 작업면 상판은 0보다 높고 yaw_rad 는 [-π, π])"),
         // 다른 사람이 먼저 고쳤다. 다시 불러와 고친다
         LAYOUT_REVISION_CONFLICT(HttpStatus.CONFLICT, "다른 요청이 먼저 레이아웃을 고쳤습니다. 다시 불러와 고치세요");
 

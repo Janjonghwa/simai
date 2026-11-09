@@ -361,7 +361,7 @@ public class TbmReportService implements DisposableBean {
                 z.putArray("z_range").add(zMin).add(zMax);
                 z.put("severity", "HIGH");
                 z.put("zone_type", "EQUIPMENT_PARKING");
-            } else if ("SCAFFOLD".equals(kind)) {
+            } else if ("SCAFFOLD".equals(kind) || "WORK_SURFACE".equals(kind)) {
                 ObjectNode s = surfaces.addObject();
                 s.put("surface_id", "floor".equals(itemId) ? "surface-floor" : itemId);
                 double topHeight = cz + sz / 2.0;
