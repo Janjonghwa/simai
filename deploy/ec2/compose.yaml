@@ -114,7 +114,10 @@ services:
     networks: [edge, ci]
     # 자동 배포(S15P31A101-254): 호스트 sshd 로 deploy.sh 만 실행하는 제한 키를 쓴다
     extra_hosts: ["host.docker.internal:host-gateway"]
-    mem_limit: 4g
+    # 실행기 2개라 dev 빌드와 nightly 가 겹치면 4 GB 를 넘어 죽었다(S15P31A101-569, 11-09).
+    # 호스트는 16 GB·스왑 없음이라 메모리가 모자라면 운영 db·server 대신 Jenkins 가 먼저 종료되게 한다
+    mem_limit: 6g
+    oom_score_adj: 800
     restart: unless-stopped
 
   # 서버 시험 전용 DB(운영 db 와 같은 이미지). Jenkinsfile 이 빌드마다 시험 DB 를 지우고 새로 만든다.
