@@ -36,6 +36,7 @@ def _prepare_fill_only(tmp_path: Path) -> tuple[Path, Path, ge.EnhanceResult]:
 
 
 def test_observed_texels_byte_invariant_and_only_mask_becomes_generated(tmp_path: Path):
+    pytest.importorskip("cv2")
     raw_orig = _glb(room(strip=False))
     glb_path, sidecar_dir, res = _prepare_fill_only(tmp_path)
 
@@ -121,6 +122,7 @@ def test_observed_texels_byte_invariant_and_only_mask_becomes_generated(tmp_path
 
 
 def test_fallback_chain_diffusion_to_classic_to_gray(tmp_path: Path):
+    pytest.importorskip("cv2")
     # 1) diffusion 실패 -> classic 폴백
     glb1, side1, res1 = _prepare_fill_only(tmp_path / "case1")
 
@@ -173,6 +175,7 @@ def test_fallback_chain_diffusion_to_classic_to_gray(tmp_path: Path):
 
 
 def test_inpaint_disabled_keeps_gray_and_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("cv2")
     path = tmp_path / "scene.glb"
     path.write_bytes(_glb(room(strip=False)))
     monkeypatch.setenv("SIMAI_GLB_INPAINT", "off")
@@ -225,6 +228,7 @@ def test_large_plane_tiling_seam_continuity():
 
 
 def test_classic_backend_inpainting_fills_hole_from_observed_pattern(tmp_path: Path):
+    pytest.importorskip("cv2")
     # 줄무늬·체커 패턴이 있는 관측 바닥 한가운데 구멍을 classic 백엔드가 주변 패턴으로 자연스럽게 메우는지 시험
     H, W = 160, 160
     yy, xx = np.mgrid[:H, :W]

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("cv2")
+
 AI_DIR = Path(__file__).resolve().parents[2]
 if str(AI_DIR) not in sys.path:
     sys.path.insert(0, str(AI_DIR))

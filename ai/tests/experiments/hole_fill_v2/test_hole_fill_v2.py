@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytest.importorskip("cv2")
 
 AI_ROOT = Path(__file__).resolve().parents[3]
 if str(AI_ROOT) not in sys.path:

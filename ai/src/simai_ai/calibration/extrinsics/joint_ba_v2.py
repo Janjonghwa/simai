@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
-import cv2
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 from scipy.spatial.transform import Rotation
@@ -322,6 +321,8 @@ def _undistort_pixels(uv: np.ndarray, K: np.ndarray, distortion: Mapping[str, An
     coeffs = np.asarray(distortion["coeffs"], dtype=float)
     if not coeffs.size or not np.any(coeffs):
         return np.asarray(uv, dtype=float).copy()
+    import cv2
+
     return cv2.undistortPoints(np.asarray(uv, dtype=float)[:, None, :], K, coeffs, P=K)[:, 0, :]
 
 
@@ -362,6 +363,8 @@ def _fit_essential_ransac(
     """5점 RANSAC, 정규화 좌표와 임계값을 사용한다."""
     if len(na) < 8:
         return None
+    import cv2
+
     cv2.setRNGSeed(seed)
     E, _ = cv2.findEssentialMat(np.asarray(na, dtype=np.float64), np.asarray(nb, dtype=np.float64),
                                 np.eye(3), method=cv2.RANSAC, prob=0.9999,

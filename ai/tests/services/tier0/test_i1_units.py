@@ -264,7 +264,7 @@ def test_envelope_fields_and_versions() -> None:
     msg = env.make("world_state", world_payload(T0 - 100))
     assert msg["schema_version"] == "2.1.0" and msg["sent_at"] == T0 and msg["source_id"] == "tier0-01"
     assert schema_errors(msg, "world_state") == []
-    assert env.make("health", health_payload())["schema_version"] == "2.2.0"
+    assert env.make("health", health_payload())["schema_version"] == "2.3.0"
     assert schema_errors(env.make("health", health_payload()), "health") == []
     for name in ("observation_summary", "calibration_update", "event_state_snapshot", "event_frame_ready"):
         doc = env.make(name, example(name)["payload"])

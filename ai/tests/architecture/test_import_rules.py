@@ -41,7 +41,7 @@ def _fake_tree(root: Path, extra: dict[str, str]) -> subprocess.CompletedProcess
     files |= {f"src/simai_ai/{name}/__init__.py": "" for name in SRC_PACKAGES}
     files |= {f"services/{name}/__init__.py": "" for name in SERVICES}
     files |= {"experiments/__init__.py": "", "experiments/hmr/__init__.py": "", "experiments/hmr/bench.py": ""}
-    files |= {"src/simai_ai/risk/plan.py": ""}  # 계약 risk-engine-no-channels 의 source 모듈(없으면 lint-imports 오류)
+    files |= {"src/simai_ai/risk/plan.py": "", "services/risk_engine/handler.py": ""}  # 계약 risk-engine-no-channels 의 source 모듈(없으면 lint-imports 오류)
     files |= extra
     for rel, text in files.items():
         path = root / rel
@@ -183,9 +183,9 @@ def test_tier0_contract_covers_every_package_tier0_imports():
         pytest.param("services/risk_engine/app.py", "from simai_ai.risk import lifecycle\n", id="api-imports-lifecycle"),
         pytest.param("services/risk_engine/app.py", "import simai_ai.eventlog\n", id="api-imports-journal"),
         pytest.param("services/risk_engine/app.py", "from services.tier0 import i1_publisher\n", id="api-imports-tier0"),
-        pytest.param("services/risk_engine/app.py", "import websockets\n", id="api-imports-websockets"),
-        pytest.param("services/risk_engine/app.py", "import urllib.request\n", id="api-imports-urllib"),
-        pytest.param("services/risk_engine/app.py", "import socket\n", id="api-imports-socket"),
+        pytest.param("services/risk_engine/handler.py", "import websockets\n", id="api-imports-websockets"),
+        pytest.param("services/risk_engine/handler.py", "import urllib.request\n", id="api-imports-urllib"),
+        pytest.param("services/risk_engine/handler.py", "import socket\n", id="api-imports-socket"),
         pytest.param("src/simai_ai/risk/plan.py", "import sqlite3\n", id="plan-imports-sqlite3"),
         pytest.param("src/simai_ai/risk/plan.py", "import simai_ai.risk.site_alerts\n", id="plan-imports-site-alerts"),
     ],

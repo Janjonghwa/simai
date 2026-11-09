@@ -124,7 +124,7 @@ def test_counterexample_g_helper_never_invents_health_or_counts() -> None:
     assert WORLD_STATE_DROPS_FIELD not in base  # 원본 그대로
     assert merged[WORLD_STATE_DROPS_FIELD] == drops.to_payload()
     msg = u.envelope().make("health", merged)
-    assert msg["schema_version"] == "2.2.0" and schema_errors(msg, "health") == []
+    assert msg["schema_version"] == "2.3.0" and schema_errors(msg, "health") == []
     with pytest.raises(ValueError, match=WORLD_STATE_DROPS_FIELD):
         with_world_state_drops(merged, drops)
 

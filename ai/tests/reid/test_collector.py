@@ -129,6 +129,7 @@ def test_collector_disabled_by_config_and_missing_weights_fallback(tmp_path: Pat
 
 
 def test_collector_async_batch_queue_and_cooldown() -> None:
+    pytest.importorskip("cv2")
     fake_emb = _FakeEmbedder()
     col = AsyncReidCollector(
         ReidCollectorConfig(

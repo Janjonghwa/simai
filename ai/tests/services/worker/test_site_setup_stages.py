@@ -8,9 +8,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from services.worker.auto_static import AutoStaticSettings, calibration_document_path
 from services.worker.handlers import JobContext, JobFailed

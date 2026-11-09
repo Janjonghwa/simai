@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -246,26 +247,34 @@ def test_loop_batches_four_cameras_once_reuses_masks_and_continues_on_seg_failur
         return infer(image, obs, track, cam)
     model.infer = infer_with_prompt
     appearance_masks = []
+    updated = threading.Event()
+    def record_appearance_masks(*args, **kwargs):
+        appearance_masks.append(args[-1])
+        updated.set()
     loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_: None, register=lambda *_: None,
-        config=SimpleNamespace(face_policy="OBSERVED"), update=lambda *args: appearance_masks.append(args[-1]))
+        config=SimpleNamespace(face_policy="OBSERVED"), update=record_appearance_masks)
     before = copy.deepcopy(source.item[0])
-    loop.step()
-    sender.tick()
-    assert len(calls) == 1 and len(calls[0]) == 4 and model.calls == 4 and uploads
-    assert source.item[0] == before
-    assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
-    if failure:
-        assert all(p is None for p in received) and appearance_masks == [{}]
-    else:
-        assert len(appearance_masks[0]) == 4 and all(p.prompt.mask is not None for p in received)
-        for cid in source.item[1]:
-            assert appearance_masks[0][("w-1", cid)].all()
-    loop.step()  # 같은 촬영 시각은 seg도 반복하지 않는다.
-    assert len(calls) == 1
-    clock[0] += 200
-    source.item = full_snapshot(clock[0])
-    loop.step()
-    assert len(calls) == (1 if failure else 2) and model.calls == 8
+    try:
+        loop.step()
+        assert updated.wait(1)
+        sender.tick()
+        assert len(calls) == 1 and len(calls[0]) == 4 and model.calls == 4 and uploads
+        assert source.item[0] == before
+        assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
+        if failure:
+            assert all(p is None for p in received) and appearance_masks == [{}]
+        else:
+            assert len(appearance_masks[0]) == 4 and all(p.prompt.mask is not None for p in received)
+            for cid in source.item[1]:
+                assert appearance_masks[0][("w-1", cid)].all()
+        loop.step()  # 같은 촬영 시각은 seg도 반복하지 않는다.
+        assert len(calls) == 1
+        clock[0] += 200
+        source.item = full_snapshot(clock[0])
+        loop.step()
+        assert len(calls) == (1 if failure else 2) and model.calls == 8
+    finally:
+        loop.close()
 
 
 def test_loop_checks_admission_before_seg_and_again_before_hmr(rig):

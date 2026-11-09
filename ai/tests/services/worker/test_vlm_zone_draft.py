@@ -6,9 +6,10 @@ import copy
 import json
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 import services.worker.__main__ as entry
 from services.worker.handlers import JobContext, JobFailed

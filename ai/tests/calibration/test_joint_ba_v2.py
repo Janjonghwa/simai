@@ -418,6 +418,7 @@ def test_run_stage_a_raises_insufficient_features_on_empty_tracks() -> None:
 
 
 def test_extract_tracks_from_backgrounds_with_injected_matcher(tmp_path: Path) -> None:
+    pytest.importorskip("cv2")
     calib_doc, tracks_doc = synthetic_calibration_and_tracks()
     fake_imgs = {cid: [np.zeros((1296, 2304, 3), dtype=np.uint8)] for cid in CAMS}
     by_pair = {

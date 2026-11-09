@@ -6,6 +6,8 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from simai_ai.rag.chunk import CLAUSE_ID_RE
 from simai_ai.rag.graph import build, catalog, enrich, export, ir
 
@@ -100,6 +102,7 @@ class _DummyEmbedder:
 
 
 def test_export_preserves_human_reviews_and_writes_sql_and_manifest(tmp_path: Path):
+    pytest.importorskip("torch")
     docs = _sample_docs()
     out = tmp_path / "out"
     repo = tmp_path / "repo"

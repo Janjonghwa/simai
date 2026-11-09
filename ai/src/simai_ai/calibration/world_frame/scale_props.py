@@ -20,7 +20,6 @@ import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import cv2
 import numpy as np
 
 from simai_ai.geometry.rig import RigCamera
@@ -192,6 +191,8 @@ class HSVTrafficConeDetector:
             raise ValueError("HSV_TRAFFIC_CONE 임계값이 범위를 벗어났다")
 
     def describe(self) -> dict[str, Any]:
+        import cv2
+
         return {"kind": "HSV_TRAFFIC_CONE", "opencv": cv2.__version__, **self.spec}
 
     def detect(self, image_bgr: np.ndarray) -> list[Detection]:
@@ -219,6 +220,8 @@ class HSVOpeningSignDetector:
             raise ValueError("HSV_OPENING_SIGN 임계값이 범위를 벗어났다")
 
     def describe(self) -> dict[str, Any]:
+        import cv2
+
         return {"kind": "HSV_OPENING_SIGN", "opencv": cv2.__version__, **self.spec}
 
     def detect(self, image_bgr: np.ndarray) -> list[Detection]:
@@ -240,6 +243,8 @@ def undistort_image(
     if coeffs.size == 0 or np.allclose(coeffs, 0.0):
         return image
     K_arr = np.asarray(K, dtype=float).reshape(3, 3)
+    import cv2
+
     if distortion.get("model") == "OPENCV_FISHEYE":
         h, w = image.shape[:2]
         map1, map2 = cv2.fisheye.initUndistortRectifyMap(
@@ -251,11 +256,15 @@ def undistort_image(
 
 def _ensure_bgr(image: np.ndarray, *, color_order: str = "BGR") -> np.ndarray:
     if color_order.upper() == "RGB":
+        import cv2
+
         return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     return image
 
 
 def _orange_mask(image_bgr: np.ndarray, spec: Mapping[str, Any]) -> np.ndarray:
+    import cv2
+
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     b = image_bgr[:, :, 0].astype(np.int16)
     g = image_bgr[:, :, 1].astype(np.int16)
@@ -312,6 +321,8 @@ def detect_traffic_cone_endpoints(
     image_bgr = _ensure_bgr(image, color_order=color_order)
     h_img, w_img = image_bgr.shape[:2]
     mask = _orange_mask(image_bgr, cfg)
+    import cv2
+
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
     min_band_area = int(cfg["min_band_area_px"])
     comps = [i for i in range(1, num_labels) if int(stats[i, cv2.CC_STAT_AREA]) >= min_band_area]
@@ -727,6 +738,8 @@ def detect_and_triangulate_cone_from_images(
                 continue
             src = src[0]
         if isinstance(src, (Path, str)):
+            import cv2
+
             raw = cv2.imread(str(src), cv2.IMREAD_COLOR)
             if raw is None:
                 continue
@@ -984,6 +997,8 @@ def measure_traffic_cones_for_catalog(
     person_masks: Mapping[str, np.ndarray] | None = None,
 ) -> tuple[float | None, int, dict[str, Any]]:
     """`measured_objects.measure_object` 연동용 어댑터."""
+    import cv2
+
     from simai_ai.calibration.world_frame.measured_objects import STATUS_OK, STATUS_REJECTED, aggregate
 
     cfg = TrafficConeMeasurer.config(obj.measurement)

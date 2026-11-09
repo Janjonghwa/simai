@@ -242,6 +242,7 @@ def _png_pixels(g, image_index) -> np.ndarray:
 
 
 def test_enhance_glb_applies_fill_with_provenance_and_preserves_original():
+    pytest.importorskip("cv2")
     raw = _glb(room())
     res = ge.enhance_glb(raw, config=CFG, cameras=two_cameras())
     assert res.glb is not None and res.report["applied"] is True
@@ -266,6 +267,7 @@ def test_enhance_glb_applies_fill_with_provenance_and_preserves_original():
 
 
 def test_stretched_removal_rewrites_only_indices():
+    pytest.importorskip("cv2")
     prims = room(strip=False)
     cams = [camera("cam_A", (3.0, 3.0, 2.4), (3.0, 6.0, 1.6))]  # 다른 카메라가 잘 보면 사선이 아니라 지우지 않는다(규칙: 모든 시선에서)
     prims.append(grazing_triangle(cams[0]))
@@ -310,6 +312,7 @@ def test_fill_disabled_or_no_cameras_keeps_legacy_behavior():
 
 
 def test_sidecar_atlas_written_per_plane_with_inpaint_mask(tmp_path):
+    pytest.importorskip("cv2")
     import json
 
     path = tmp_path / "scene.glb"

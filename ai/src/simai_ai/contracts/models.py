@@ -16,7 +16,6 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
-    constr,
 )
 from typing_extensions import TypeAliasType
 
@@ -364,10 +363,8 @@ class DefsRiskVerification(RootModel[Literal['VERIFIED', 'UNVERIFIABLE']]):
     root: Literal['VERIFIED', 'UNVERIFIABLE']
 
 
-class DefsRuleMetrics(
-    RootModel[dict[constr(pattern=r'^[a-z][a-z0-9_]*$', strict=True), StrictFloat]]
-):
-    root: dict[constr(pattern=r'^[a-z][a-z0-9_]*$', strict=True), StrictFloat]
+class DefsRuleMetrics(RootModel[dict[str, StrictFloat]]):
+    root: dict[str, StrictFloat]
 
 
 class DefsSceneState(
@@ -1281,9 +1278,7 @@ class Faults(BaseModel):
         extra='forbid',
     )
     jitter_ms: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
-    stalls: (
-        dict[constr(pattern=r'^[0-9]+$', strict=True), StallsAdditionalProperty] | MISSING
-    ) = MISSING
+    stalls: dict[str, StallsAdditionalProperty] | MISSING = MISSING
     disconnect_after: list[DisconnectAfterItem] | MISSING = MISSING
     failed_reopens: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
     seed: StrictInt | MISSING = MISSING
@@ -1595,7 +1590,7 @@ class Method(BaseModel):
     )
     fallback_reason: StrictStr | None | MISSING = MISSING
     pose_depth_fit: PoseDepthFit | MISSING = MISSING
-    map_cameras: dict[DefsCameraId, MapCameras] | MISSING = MISSING
+    map_cameras: dict[str, MapCameras] | MISSING = MISSING
     human_removal: Literal['EMPTY_ROOM', 'MASK_COMPOSITE', 'NONE'] | MISSING = MISSING
     postprocess: list[Literal['DEPTH_ALIGNMENT', 'CROSS_VIEW_ALIGNMENT', 'OUTLIER_REMOVAL', 'TSDF_FUSION', 'PLANE_CLEANUP', 'POISSON', 'TEXTURE', 'DECIMATION', 'WORLD_ALIGNMENT', 'MESH_CLEAN_V2', 'BACKING_PLANES', 'FURNITURE_PLANES', 'LAMA_INPAINT']] | MISSING = (
         MISSING
@@ -1779,8 +1774,7 @@ class SiteSetupInput(BaseModel):
     work_unit_id: Annotated[StrictInt, Field(ge=1)]
     site_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
     camera_heights_m: Annotated[
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), CameraHeightsMAdditionalProperty],
-        Field(min_length=1),
+        dict[str, CameraHeightsMAdditionalProperty], Field(min_length=1)
     ]
     calibration_target: CalibrationTarget
     height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
@@ -2521,17 +2515,13 @@ class CalibrationFloorTiltCorrection(BaseModel):
         Field(min_length=1),
     ]
     estimation_method: Literal['FLOOR_RANSAC_ONLY', 'REGULARIZED_SMALL_ROTATION_LSQ']
-    observed_heights_m: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), ObservedHeightsMAdditionalProperty] | MISSING
-    ) = MISSING
-    estimated_heights_before_m: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
-    ) = MISSING
-    estimated_heights_after_m: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
-    ) = MISSING
-    residuals_before_cm: dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat]
-    residuals_after_cm: dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat]
+    observed_heights_m: dict[str, ObservedHeightsMAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    estimated_heights_before_m: dict[str, StrictFloat] | MISSING = MISSING
+    estimated_heights_after_m: dict[str, StrictFloat] | MISSING = MISSING
+    residuals_before_cm: dict[str, StrictFloat]
+    residuals_after_cm: dict[str, StrictFloat]
     residual_rms_before_cm: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
         MISSING
     )
@@ -2557,9 +2547,7 @@ class CalibrationScaleResiduals(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    camera_heights_cm: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
-    ) = MISSING
+    camera_heights_cm: dict[str, StrictFloat] | MISSING = MISSING
     props: list[CalibrationScalePropResidual] | MISSING = MISSING
 
 
@@ -3908,7 +3896,7 @@ class BevFloorplanResult(BaseModel):
     coordinate_frame: CoordinateFrame
     raster: Raster
     cameras_used: Annotated[list[DefsCameraId], Field(min_length=1)]
-    cameras_skipped: dict[DefsCameraId, CamerasSkippedAdditionalProperty]
+    cameras_skipped: dict[str, CamerasSkippedAdditionalProperty]
     coverage_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
     room_outline: RoomOutline | None
     input_provenance: DefsInputProvenance
@@ -4174,9 +4162,9 @@ class JointBa(BaseModel):
         MISSING
     )
     pair_holdout: dict[str, PairHoldout] | MISSING = MISSING
-    pair_holdout_median_px: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$', strict=True), PairHoldoutMedianPxAdditionalProperty] | MISSING
-    ) = MISSING
+    pair_holdout_median_px: dict[str, PairHoldoutMedianPxAdditionalProperty] | MISSING = (
+        MISSING
+    )
     scale_source: CalibrationScaleSource | MISSING = MISSING
     scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
 
@@ -4185,9 +4173,7 @@ class SiteSetupMetrics(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    stage_seconds: dict[Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE'], StageSecondsAdditionalProperty] | MISSING = (
-        MISSING
-    )
+    stage_seconds: dict[str, StageSecondsAdditionalProperty] | MISSING = MISSING
     total_seconds: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
     joint_ba: JointBa | MISSING = MISSING
 

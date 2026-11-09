@@ -461,11 +461,21 @@ def assert_same_frame(new, old, where):
             _assert_close(p.cost, q.cost, ATOL_COST, "cost")
 
 
+def _legacy_compare_config():
+    """S15P31A101-168 묶음 계산 동등성 비교용: S15P31A101-464 그래프 분할·시간 간선·쌍별 적응 문턱을 꺼 `_assign` 경로를 대조한다."""
+    return cross_view_module.CrossViewConfig(
+        graph_clustering_enabled=False,
+        temporal_prior_enabled=False,
+        pairwise_threshold_enabled=False,
+    )
+
+
 @pytest.mark.parametrize("lens", ["wide", "fold", "fisheye"])
 @pytest.mark.parametrize("harsh", [False, True], ids=["clean", "harsh"])
 def test_cross_view_matches_legacy(lens, harsh, monkeypatch):
     rig, ticks = _ticks(lens, seed=300, n_people=6, n_ticks=4, harsh=harsh)
-    new_assoc, old_assoc = CrossViewAssociator(rig), CrossViewAssociator(rig)
+    cfg = _legacy_compare_config()
+    new_assoc, old_assoc = CrossViewAssociator(rig, config=cfg), CrossViewAssociator(rig, config=cfg)
     for inp in ticks:
         new = new_assoc.associate(inp.t, inp.local_views)
         with monkeypatch.context() as m:
@@ -497,9 +507,10 @@ def _crowd_ticks(seed: int, n_people: int = 8, n_ticks: int = 6, noise_px: float
 def test_cross_view_crowd_matches_legacy(monkeypatch):
     """사람이 몰린 장면에서 배정의 애매함·잔차 경계 경로까지 이전 구현과 같다."""
     reasons = set()
+    cfg = _legacy_compare_config()
     for seed in (0, 1):
         rig, ticks = _crowd_ticks(seed)
-        new_assoc, old_assoc = CrossViewAssociator(rig), CrossViewAssociator(rig)
+        new_assoc, old_assoc = CrossViewAssociator(rig, config=cfg), CrossViewAssociator(rig, config=cfg)
         for inp in ticks:
             new = new_assoc.associate(inp.t, inp.local_views)
             with monkeypatch.context() as m:

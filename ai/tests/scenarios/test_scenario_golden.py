@@ -210,8 +210,8 @@ def test_known_limitation_is_separate_from_rule_truth(enter_exit) -> None:
 
 
 def test_r1_enter_exit_needs_the_calibration_margin(tmp_path, monkeypatch, enter_exit) -> None:
-    """음성 대조(S15P31A101-233): SIM 보정은 PROVISIONAL 이라 R1 은 보정 여유 0.3 m 로 넓혀 판정한다. 넓힘을 끄면(CALIBRATED 처럼)
-    발생 줄의 calibration_margin_m 확인이 실패하고, 발생은 늦어지고(약 0.2 s) 해소는 빨라진다."""
+    """음성 대조(S15P31A101-233, S15P31A101-431): SIM 보정은 PROVISIONAL 이라 R1 은 보정 여유 0.3 m 로 열린 이벤트를 유지한다.
+    넓힘을 끄면(CALIBRATED 처럼) 발생 줄의 calibration_margin_m 확인이 실패하고, 발생은 같지만(점 진입) 해소는 빨라진다."""
     from simai_ai.risk.rules import r1_zone_entry
 
     case, expected, scene, widened = enter_exit
@@ -225,12 +225,12 @@ def test_r1_enter_exit_needs_the_calibration_margin(tmp_path, monkeypatch, enter
         return {m.kind: m.at_ms for m in r1.milestones}
 
     w, p = r1_milestones(widened), r1_milestones(plain)
-    assert w["RAISED"] < p["RAISED"] and w["RESOLVED"] > p["RESOLVED"], (w, p)
+    assert w["RAISED"] == p["RAISED"] and w["RESOLVED"] > p["RESOLVED"], (w, p)
 
 
 def test_lagging_camera_scenario_needs_the_fusion_time_fix(tmp_path, monkeypatch) -> None:
-    """음성 대조(S15P31A101-219): 융합 시각을 수신 중 카메라의 최신 촬영 시각 최솟값(이전 구현)으로 되돌리면 늦은 카메라
-    시나리오가 실패한다(해소를 확인하지 못하고, 늦어서 뺀 tick 수 측정도 맞지 않음)."""
+    """음성 대조(S15P31A101-219, S15P31A101-431): 융합 시각을 수신 중 카메라의 최신 촬영 시각 최솟값(이전 구현)으로 되돌리면
+    늦은 카메라(cam3 단독 SINGLE_VIEW) 시각에 묶여 다중 뷰 트랙을 만들지 못하고 시나리오가 실패한다."""
     from services.tier0 import perception
     from simai_ai.tracking.time_model import FusionTime
 
@@ -240,7 +240,10 @@ def test_lagging_camera_scenario_needs_the_fusion_time_fix(tmp_path, monkeypatch
 
     monkeypatch.setattr(perception, "choose_fusion_time", oldest)
     outcome = golden.run_case("r1_lagging_camera_unverifiable", tmp_path, repeat=False)
-    assert any(x.startswith("[이벤트 늦은 카메라가 있는 진입] 전이 순서") for x in outcome.diffs), outcome.diffs
+    assert any(
+        x.startswith(("[이벤트 늦은 카메라가 있는 진입] 전이 순서", "[이벤트 늦은 카메라가 있는 진입] R1 이벤트가 없다"))
+        for x in outcome.diffs
+    ), outcome.diffs
     assert any(x.startswith("[카메라 cam3] lagging_ticks") for x in outcome.diffs), outcome.diffs
 
 

@@ -27,7 +27,6 @@ import threading
 import time
 from typing import Any
 
-import cv2
 import numpy as np
 
 from simai_ai.tracking.stage_timing import StageTiming
@@ -718,6 +717,8 @@ class AsyncReidCollector:
 
     def _prepare_crops(self, batch: list[_CropTask]):
         """프레임 참조가 수명을 보장한다. 잘라내기/색변환/얼굴 복사는 모델 작업 스레드에서만 실행."""
+        import cv2
+
         crops, faces = [], []
         for task in batch:
             x1, y1, x2, y2 = task.crop_bounds
@@ -848,3 +849,12 @@ class AsyncReidCollector:
                 "errors": self.errors,
                 "last_batch_ms": self.last_batch_ms,
             }
+
+
+def __getattr__(name: str) -> Any:
+    if name == "cv2":
+        import cv2
+
+        globals()["cv2"] = cv2
+        return cv2
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
