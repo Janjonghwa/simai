@@ -1,6 +1,5 @@
 import { ROLE_LABEL } from '@/features/auth/roleLabel';
 import { TopBar } from '@/features/layout/TopBar';
-import { setSetupWorkUnitId } from '@/features/setup/setup.store';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useRoomBoundsStore } from '@/store/roomBounds.store';
@@ -36,10 +35,8 @@ function renderTopBar() {
   };
 }
 
-const navigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
-  useNavigate: () => navigate,
 }));
 vi.mock('@/features/auth/useLogout', () => ({ useLogout: () => () => undefined }));
 
@@ -66,8 +63,6 @@ function signInAs(role: Role) {
 afterEach(() => {
   cleanup();
   server.resetHandlers();
-  navigate.mockClear();
-  setSetupWorkUnitId(null);
   useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useRoomBoundsStore.setState(useRoomBoundsStore.getInitialState(), true);
@@ -125,27 +120,13 @@ describe('TopBar', () => {
     expect(container.querySelector('header > span')!.textContent).toBe('');
   });
 
-  it('관리자 메뉴는 설치 · 보정, 화이트·다크 모드, 로그아웃이고 시험 경보는 없다', async () => {
+  it('관리자 메뉴는 화이트·다크 모드와 로그아웃뿐이다(설치 · 보정은 작업 관리 단계 줄의 세팅으로 들어간다)', async () => {
     seed();
     renderTopBar();
 
     act(() => fireEvent.click(screen.getByRole('button', { name: /—/ })));
     const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
-    expect(items).toEqual(['설치 · 보정', '화이트 모드', '로그아웃']);
-
-    act(() => fireEvent.click(screen.getByRole('menuitem', { name: '설치 · 보정' })));
-    // 선택된 작업이 없으면 세팅 화면 대신 작업 관리로 안내한다.
-    expect(navigate).toHaveBeenCalledWith({ to: '/work' });
-  });
-
-  it('작업이 선택돼 있으면 설치 · 보정이 그 작업의 세팅(/setup?workUnitId=)으로 간다', async () => {
-    seed();
-    act(() => setSetupWorkUnitId(7));
-    renderTopBar();
-
-    act(() => fireEvent.click(screen.getByRole('button', { name: /—/ })));
-    act(() => fireEvent.click(screen.getByRole('menuitem', { name: '설치 · 보정' })));
-    expect(navigate).toHaveBeenCalledWith({ to: '/setup', search: { workUnitId: 7 } });
+    expect(items).toEqual(['화이트 모드', '로그아웃']);
   });
 
   it.each(['ADMIN', 'FOREMAN'] as const)(

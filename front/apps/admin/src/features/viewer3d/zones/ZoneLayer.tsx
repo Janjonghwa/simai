@@ -1,6 +1,7 @@
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import type { ZoneView } from '@/features/viewer3d/data/spatialFrame';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
+import { cssHex } from '@/features/viewer3d/palette';
 import { ZoneRiskMark } from '@/features/viewer3d/risk/RiskMarks';
 import { riskStyle, type RiskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
@@ -42,8 +43,12 @@ import { useStore } from 'zustand';
 // 레이어 값(-234): hidden 이면 그리지 않고, visible 이면 그리되 클릭을 받지 않는다.
 
 const noRaycast = () => null;
-/** 구역 이름표를 상자 하단에서 띄우는 높이(m). 바닥 격자·안내선과 겹치지 않게 조금만 띄운다. */
-const ZONE_LABEL_LIFT = 0.18;
+/** 구역 이름표 높이(m). */
+const ZONE_LABEL_HEIGHT = 0.3;
+/** 이름표 아래쪽과 모서리 사이 간격(m). 윤곽선·바닥 안내선에 닿지 않게 조금 띄운다. */
+const ZONE_LABEL_GAP = 0.05;
+/** 이름표 중심을 모서리 위로 띄우는 높이(m). */
+const ZONE_LABEL_LIFT = ZONE_LABEL_HEIGHT / 2 + ZONE_LABEL_GAP;
 /** 가려진 부분을 덧그리는 선의 그리기 순서. 구역 채움(0) 뒤, 이름표(10) 앞이다. */
 const HIDDEN_EDGE_ORDER = 2;
 /** 윤곽선 굵기. 선택하면 굵고, 위험이 걸린 다각형 구역은 위험 모양(이중선이면 더 굵게)을 따른다. */
@@ -181,15 +186,16 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
             raycast={noRaycast}
           />
         )}
-        {/* 이름표는 상자 앞쪽(World min X·min Y, 기본 시점 쪽) 모서리의 하단 높이에 둔다.
-            사람 이름표(머리 위)와 높이대가 달라 구역 안·가장자리의 사람과 겹치지 않는다.
-            구역 이름만 늘 보이고, 위험이 있으면 글자 색이 위험 색이 된다. */}
-        <group position={[-sx / 2, -sy / 2, sz / 2]}>
+        {/* 이름표는 상자 앞쪽(World min X·min Y, 기본 시점 쪽) 모서리의 윗면 높이에 둔다.
+            구역을 가리지 않고 위로 읽히며, 구역 이름만 늘 보인다. 왼쪽 띠는 심각도 색이고,
+            위험이 있으면 글자 색이 위험 색이 된다. */}
+        <group position={[-sx / 2, sy / 2, sz / 2]}>
           <LabelSprite
             text={zoneLabel(zone)}
             y={ZONE_LABEL_LIFT}
-            height={0.22}
+            height={ZONE_LABEL_HEIGHT}
             color={risk ? riskStyle(risk, palette).labelColor : undefined}
+            accent={cssHex(style.color)}
           />
         </group>
         {risk && <ZoneRiskMark risk={risk} zoneId={zone.zoneId} size={[sx, sy, sz]} />}
@@ -235,7 +241,8 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
   const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone));
   const riskLook = risk && riskStyle(risk, palette);
   const [lx, ly] = labelVertex(points);
-  const labelAt = worldToThree(worldPoint(lx, ly, footprint ? 0 : zMin));
+  // 기둥은 윗면 높이, 바닥 판정(FOOTPRINT)은 바닥에 둔다.
+  const labelAt = worldToThree(worldPoint(lx, ly, footprint ? 0 : zMax));
 
   return (
     <group name={`zone-entry:${zone.zoneId}`}>
@@ -269,8 +276,9 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
         <LabelSprite
           text={zoneLabel(zone)}
           y={ZONE_LABEL_LIFT}
-          height={0.22}
+          height={ZONE_LABEL_HEIGHT}
           color={riskLook?.labelColor}
+          accent={cssHex(style.color)}
         />
       </group>
     </group>

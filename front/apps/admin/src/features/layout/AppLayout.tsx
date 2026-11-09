@@ -87,6 +87,9 @@ export function AppLayout() {
   const eventPanel = useMatches({
     select: (matches) => matches.some((m) => m.staticData.eventPanel),
   });
+  const dockOverlay = useMatches({
+    select: (matches) => matches.some((m) => m.staticData.dockOverlay),
+  });
   const openEvent = useEventsStore((s) => s.openEvent);
   const root = useRef<HTMLDivElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
@@ -111,7 +114,12 @@ export function AppLayout() {
             <Outlet />
           </SpatialViewportHost>
         ) : (
-          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto bg-blueprint px-5 pt-3.5 pb-[90px]">
+          <main
+            className={cn(
+              'relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto bg-blueprint px-5 pt-3.5',
+              dockOverlay ? 'pb-3.5' : 'pb-[90px]',
+            )}
+          >
             <Outlet />
           </main>
         )}

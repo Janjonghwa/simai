@@ -24,7 +24,6 @@ import {
 import {
   discardSetupZoneDraft,
   setActiveSetupSessionId,
-  setSetupWorkUnitId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
 import { SetupMap } from '@/features/setup/SetupMap';
@@ -113,7 +112,6 @@ export function SetupPage({ workUnitId }: { workUnitId?: number } = {}) {
 }
 
 function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
-  useEffect(() => setSetupWorkUnitId(workUnitId), [workUnitId]);
   // 이어 온 세팅 세션이 있으면 대기 화면에서 시작한다. 맵이 이미 준비됐으면 곧바로 구역 단계로 넘어간다(작업 관리의 구역
   // 단계도 이 화면을 연다).
   const [stage, setStage] = useState<Stage>(() =>

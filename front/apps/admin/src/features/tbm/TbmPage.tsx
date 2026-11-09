@@ -1,5 +1,4 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import { setSetupWorkUnitId } from '@/features/setup/setup.store';
 import { WRAP_UP_GENERATING_TEXT } from '@/features/tbm/constants';
 import { SignaturePanel, useSignatures } from '@/features/tbm/SignaturePanel';
 import { ALERT, PILL, SWITCH } from '@/features/tbm/styles';
@@ -26,13 +25,13 @@ import { confirmWorkDelete, confirmWorkEnd, confirmWorkStart } from '@/features/
 import { dayText, WorkDateNav } from '@/features/tbm/WorkDateNav';
 import { deriveWorkStages, unfinishedBeforeStart, type StageKey } from '@/features/tbm/workStage';
 import { WorkStageBar } from '@/features/tbm/WorkStageBar';
-import { WorkRunningCard, WrapUpBand } from '@/features/tbm/WorkStatusCards';
+import { WorkRunningCard } from '@/features/tbm/WorkStatusCards';
 import { createQueryClient } from '@/lib/queryClient';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 import { QueryClientContext, QueryClientProvider } from '@tanstack/react-query';
-import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useMemo, useRef, useState } from 'react';
 
 const EMPTY_PLACEHOLDER_TASK: TbmTask = TBM_TASKS[0]!;
 
@@ -53,7 +52,8 @@ function defaultSelectedTask(tasks: readonly TbmTask[], past: boolean): TbmTask 
 // 마무리·서명)과 다음 행동 단추. 본문은 고른 작업의 상태에 따라 바뀐다:
 // - 계획: 가상 레이아웃 · 법령 근거(RAG) · TBM 회의록 3블록(1:1:1)
 // - 진행 중: 시작 · 경과 · 사건 수와 실시간 관제로 가기 · 작업 종료(TBM 3블록은 접어 둔다)
-// - 종료: 작업 중 사건 집계 띠 + 3블록. 서명 · 결재 패널은 단계 줄의 서명하기로 펼친다.
+// - 종료: 3블록. 서명 · 결재 패널은 단계 줄의 서명하기로 펼친다.
+// 3블록은 화면 높이에 맞춰 줄어들고(최소 높이 없음) 블록 안 내용이 넘치면 블록 안에서만 스크롤한다.
 // 서버 API 실패(네트워크 끊김·5xx) 때만 tbmDemo 로 대체 화면을 그린다.
 
 export interface TbmPageProps {
@@ -133,12 +133,9 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
 
   const session = useWorkSession(workId, selectVersion);
 
-  // 세팅 화면에서 어느 작업인지 알 수 있게 선택한 작업을 남긴다(숫자 id 만).
+  // 세팅 화면은 서버 작업(숫자 id)만 연다.
   const numericWorkId = workId !== undefined && /^\d+$/.test(workId) ? Number(workId) : null;
   const canOpenSetup = numericWorkId !== null && numericWorkId > 0;
-  useEffect(() => {
-    if (!isFallback && canOpenSetup) setSetupWorkUnitId(numericWorkId);
-  }, [isFallback, canOpenSetup, numericWorkId]);
 
   // 단계 판정은 서버 값으로만: 작업(active_setup_session_id·status·actual_*), 세팅 세션, 최신 보고서.
   const setupSessionId = currentTask?.activeSetupSessionId ?? null;
@@ -309,11 +306,6 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
 
   const closeEditor = () => setEditing(false);
 
-  // 작업 마무리 문단은 따로 줄을 두지 않고 작업 중 사건 띠 안에 넣는다.
-  const wrapUpNote =
-    report?.wrap_up_summary ||
-    (report?.wrap_up_status === 'GENERATING' ? WRAP_UP_GENERATING_TEXT : null);
-
   // 세팅·구역이 아직이고 보고서도 없으면 3블록은 빈 칸뿐이다. 흐리게 덮고 가운데에 다음 단계 단추를 크게 둔다(둘 다 세팅
   // 화면을 연다. 구역은 세팅 화면의 마지막 단계다).
   const gate =
@@ -327,8 +319,11 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
           ? '구역 설정'
           : null;
 
+  // 서명 패널이 열려 있으면 그 패널이 화면을 크게 차지한다. 이때만 3블록에 최소 높이를 두어 0 으로 줄지 않게 하고 페이지가 스크롤한다.
+  const signReport = task.status === 'DONE' && signOpen && !isFallback ? report : null;
+
   const blocks = (
-    <div className="relative flex min-h-[450px] flex-1 flex-col">
+    <div className={cn('relative flex min-h-0 flex-1 flex-col', signReport && 'min-h-[450px]')}>
       <div
         inert={gate !== null}
         className={cn(
@@ -436,7 +431,8 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
             />
           )}
           <p role="status" className="flex-none text-sm empty:hidden">
-            {session.message}
+            {session.message ||
+              (report?.wrap_up_status === 'GENERATING' ? WRAP_UP_GENERATING_TEXT : '')}
           </p>
           <p role="status" className="flex-none text-[13px] text-point-soft empty:hidden">
             {message}
@@ -462,12 +458,11 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
               onToggleTbm={() => setShowTbm(!showTbm)}
             />
           )}
-          {task.status === 'DONE' && <WrapUpBand task={task} summary={wrapUpNote} />}
-          {task.status === 'DONE' && signOpen && report && !isFallback && (
+          {signReport && (
             <div className="relative flex-none">
               <SignaturePanel
-                key={`${report.report_id}-${report.report_version}`}
-                report={report}
+                key={`${signReport.report_id}-${signReport.report_version}`}
+                report={signReport}
                 signatures={signatures}
               />
               <button
@@ -483,7 +478,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
           {(task.status !== 'IN_PROGRESS' || showTbm) && blocks}
         </>
       ) : (
-        <div className="flex min-h-[420px] flex-1 flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
           {mutationError && (
             <div role="alert" data-testid="tbm-mutation-error" className={ALERT}>
               {mutationError}

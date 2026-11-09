@@ -23,6 +23,6 @@ describe('CCTV 실시간 목 화면', () => {
 
     act(() => screen.getByRole('button', { name: 'cam2 크게 보기' }).click());
     expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '4분할로' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '4분할로 돌아가기' })).toBeTruthy();
   });
 });

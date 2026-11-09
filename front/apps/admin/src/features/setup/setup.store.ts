@@ -5,8 +5,6 @@ import { create } from 'zustand';
 
 interface SetupFlowState {
   activeSessionId: string | null;
-  /** 작업 관리·세팅 화면에서 고른 작업(머리글의 '설치 · 보정'이 그 작업의 세팅을 연다). */
-  workUnitId: number | null;
   acceptedDraftIds: string[];
   discardedDraftIds: string[];
   zonesCommitted: boolean;
@@ -14,7 +12,6 @@ interface SetupFlowState {
 
 const INITIAL_STATE: SetupFlowState = {
   activeSessionId: null,
-  workUnitId: null,
   acceptedDraftIds: [],
   discardedDraftIds: [],
   zonesCommitted: false,
@@ -68,9 +65,4 @@ export function markSetupZonesCommitted() {
 /** 세팅 흐름 스토어를 초기화한다(시험·세션 초기화용). */
 export function resetSetupFlowStore() {
   useSetupFlowStore.setState({ ...INITIAL_STATE });
-}
-
-/** 세팅 중인 작업을 기록한다. */
-export function setSetupWorkUnitId(workUnitId: number | null) {
-  useSetupFlowStore.setState({ workUnitId });
 }

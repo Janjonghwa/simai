@@ -130,12 +130,3 @@ export function remoteNotice(
       return null;
   }
 }
-
-const GB = 1_000_000_000;
-
-/** 원격 CCTV 월 송출 표시(10^9 바이트 = 1 GB, 서버 상한과 같은 단위). */
-export function usageText(sentBytes: number, quotaBytes: number, blocked: boolean): string {
-  const sent = (sentBytes / GB).toFixed(sentBytes < 10 * GB ? 1 : 0);
-  const quota = Math.round(quotaBytes / GB);
-  return `원격 CCTV 월 송출 ${sent} / ${quota} GB · ${blocked ? '차단됨' : '정상'}`;
-}

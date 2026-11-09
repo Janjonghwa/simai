@@ -21,10 +21,10 @@ function Wall({ ids = IDS, focusable }: { ids?: string[]; focusable?: boolean })
 }
 
 const small = () => screen.getAllByRole('button', { name: /크게 보기$/ });
-const back = () => screen.queryByRole('button', { name: '4분할로' });
+const back = () => screen.queryByRole('button', { name: '4분할로 돌아가기' });
 
 describe('CctvWall', () => {
-  it('처음에는 4분할이고 4분할로 버튼이 없다', () => {
+  it('처음에는 4분할이고 돌아가기 버튼이 없다', () => {
     render(<Wall />);
     expect(small().map((b) => b.textContent)).toEqual([
       'cam1 크게 보기',
@@ -55,9 +55,11 @@ describe('CctvWall', () => {
     expect(screen.getByRole('button', { name: 'cam1 크게 보기' })).toBeTruthy();
   });
 
-  it('4분할로 버튼으로 돌아간다', () => {
+  it('돌아가기 아이콘 버튼(글자 없음)으로 4분할로 돌아간다', () => {
     render(<Wall />);
     fireEvent.click(screen.getByRole('button', { name: 'cam2 크게 보기' }));
+    expect(back()!.textContent).toBe('');
+    expect(back()!.getAttribute('title')).toBe('4분할로 돌아가기');
     fireEvent.click(back()!);
     expect(back()).toBeNull();
     expect(small()).toHaveLength(4);

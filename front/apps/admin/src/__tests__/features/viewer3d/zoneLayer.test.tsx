@@ -156,6 +156,38 @@ describe('ZoneLayer', () => {
     expect(labels).toEqual(['예시 구역 A', '예시 구역 B', '예시 구역 C(공중)']);
   });
 
+  it('이름표는 흰 바탕에 어두운 고딕 글자이고, 왼쪽 띠는 구역 색이다', async () => {
+    const fills: string[] = [];
+    const inks: string[] = [];
+    const fonts: string[] = [];
+    const context = {
+      fillStyle: '',
+      font: '',
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill() {
+        fills.push(this.fillStyle);
+      },
+      fillText() {
+        inks.push(this.fillStyle);
+        fonts.push(this.font);
+      },
+    };
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    await mount();
+    await ingest(DEMO_ZONES_RESPONSE);
+
+    // 등급을 모르는 구역이라 띠는 구역 기본색이다. 띠 색으로 칠한 뒤 흰 바탕으로 덮는다.
+    expect([...new Set(fills)].sort()).toEqual(['#ffffff', cssHex(PALETTE.dark.zone.color)].sort());
+    expect([...new Set(inks)]).toEqual(['#0b2140']);
+    expect(fonts.every((font) => font.startsWith('800 ') && !font.includes('monospace'))).toBe(
+      true,
+    );
+  });
+
   it('상자 구역 이름표는 포인터를 올리거나 선택하지 않아도 모두 보인다', async () => {
     await mount();
     await ingest(DEMO_ZONES_RESPONSE);

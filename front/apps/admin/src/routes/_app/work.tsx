@@ -22,4 +22,6 @@ export const Route = createFileRoute('/_app/work')({
     return { workUnitId: text !== '' ? text : undefined };
   },
   component: WorkRoute,
+  // 하단 메뉴가 블록 위에 반투명하게 떠서 본문이 화면 아래까지 내려온다(스크롤 없이 한 화면에 들어가게).
+  staticData: { dockOverlay: true },
 });
