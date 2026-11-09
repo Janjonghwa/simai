@@ -58,6 +58,7 @@ GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot 
 
 ## 잔여 위험과 넘긴 일
 
+- 범위 조회 색인: `ppe_current_state (observation_at, source_id)` 를 V45 에서 더했다(S15P31A101-550). 표는 지난 사람을 지우지 않아 색인 없이는 발행·재연결마다 전체를 훑는다.
 - 시계: 만료는 Tier 0 시계(`expires_at_ms`)와 EC2 시계(`snapshot_at_ms`)를 같은 UTC 로 본다([`ppe-state-ingest.md`](ppe-state-ingest.md) 잔여 위험과 같다).
 - 3D 형상은 jsdom 장면 시험으로 위치·이름·표식 규칙을 본다. 실제 GPU 에서의 모양은 개발 화면(`?ppe=fixed|cycle`)과 mock 으로 눈으로 본다.
 - 골격 머리 위치는 표본 기준이고 루트 보간과 조금 어긋날 수 있다(캡슐·메시 아바타일 때). 골격 아바타는 같은 그룹에 둬서 어긋나지 않는다.
