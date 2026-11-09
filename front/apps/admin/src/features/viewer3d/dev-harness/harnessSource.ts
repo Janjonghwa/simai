@@ -58,6 +58,11 @@ export function readAvatar(search: string): AvatarKind {
     : 'xbot';
 }
 
+/** ?avatarMesh=off 면 사람 메시(EXP-02)를 끄고 골격 막대·캡슐로만 그린다. 배포 화면은 메시가 거의 없어 그 모습을 본다. */
+export function readAvatarMesh(search: string): 'auto' | 'off' {
+  return new URLSearchParams(search).get('avatarMesh')?.toLowerCase() === 'off' ? 'off' : 'auto';
+}
+
 const isDataSourceKey = (value: unknown): value is DataSourceKey =>
   isScenarioKey(value) || value === 'external' || value === 'replay' || value === 'off';
 

@@ -1,0 +1,16 @@
+3D 사람에게 붙이는 안전모·조끼 모델의 출처와 라이선스
+
+두 모델 모두 Sketchfab 에서 받은 것이고 CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/) 으로 쓴다.
+원본에서 고친 것: 안 쓰는 UV 세트·접선·법선·거칠기 텍스처를 지웠고, 기본 색 텍스처를 512 px JPEG 로 줄이면서 채도를 낮췄고(경보 색과 덜 헷갈리게), 노드를 하나로 합쳤다. 모양은 바꾸지 않았다.
+
+vest.glb
+  제목: safety vest
+  작가: teacherap123 (https://sketchfab.com/teacherap123)
+  원본: https://sketchfab.com/3d-models/safety-vest-8510a33da89a41cea6150b2af4d10df0
+  라이선스: CC BY 4.0
+
+helmet.glb
+  제목: Safety Helmet
+  작가: Hovo Muradyan (https://sketchfab.com/muradyanhovo1117)
+  원본: https://sketchfab.com/3d-models/safety-helmet-f9c17905f17a45d885442ebace25a66f
+  라이선스: CC BY 4.0

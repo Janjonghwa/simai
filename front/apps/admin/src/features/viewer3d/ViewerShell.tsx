@@ -136,6 +136,7 @@ export function ViewerShell({
   personBadges,
   personHighlights,
   personHelmets,
+  personVests,
   cameraPoses,
   onCameraClick,
   avatarMesh = 'auto',
@@ -163,6 +164,7 @@ export function ViewerShell({
     created.getState().setPersonBadges(personBadges);
     created.getState().setPersonHighlights(personHighlights);
     created.getState().setPersonHelmets(personHelmets);
+    created.getState().setPersonVests(personVests);
     created.getState().setCameraPoses(cameraPoses);
     created.getState().setTopView(topView);
     return created;
@@ -289,6 +291,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setPersonHelmets(personHelmets);
   }, [store, personHelmets]);
+
+  useEffect(() => {
+    store.getState().setPersonVests(personVests);
+  }, [store, personVests]);
 
   useEffect(() => {
     store.getState().setCameraPoses(cameraPoses);

@@ -1,6 +1,6 @@
 import { useNow } from '@/features/layout/useNow';
 import { requestPpeCurrent } from '@/features/ppe/api';
-import { helmetStates, personPpe, type PersonPpe, type PpeState } from '@/features/ppe/ppeView';
+import { itemStates, personPpe, type PersonPpe, type PpeState } from '@/features/ppe/ppeView';
 import { api } from '@/lib/api';
 import { isLinkAlive, useRealtimeStore } from '@/store/realtime.store';
 import { useQuery } from '@tanstack/react-query';
@@ -70,16 +70,25 @@ function usePpeInputs() {
   return { now, snapshots, linkAlive, trackKey };
 }
 
-/** 3D 안전모 형상에 넘길 사람별 안전모 상태. 상태가 바뀔 때만 새 객체다. */
-export function useHelmetStates(): Readonly<Record<string, PpeState>> {
+/**
+ * 3D 에 넘길 사람별 안전모·조끼 상태(뷰어 `personHelmets`·`personVests`). 각각 상태가 바뀔 때만 새 객체다.
+ * 입력(1초 시계·스냅샷·트랙)은 한 번만 읽는다.
+ */
+export function usePpeGearStates(): {
+  helmets: Readonly<Record<string, PpeState>>;
+  vests: Readonly<Record<string, PpeState>>;
+} {
   const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
-  const states = helmetStates(snapshots, tracksOf(trackKey), now, linkAlive);
-  return useSameRecord(states);
+  const tracks = tracksOf(trackKey);
+  return {
+    helmets: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'helmet')),
+    vests: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'vest')),
+  };
 }
 
 /**
  * 사람 하나의 PPE 상태(안전모·조끼·사유·마지막 근거 시각). 지금 트랙이 없거나 붙일 상태가 없으면 null.
- * 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인이 이 훅으로 그린다(-531 은 3D 안전모 형상만 그린다).
+ * 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인이 이 훅으로 그린다(3D 에는 -531·-552 가 안전모·조끼 형상과 미착용 표식만 그린다).
  */
 export function usePersonPpe(worldId: string | null): PersonPpe | null {
   const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
