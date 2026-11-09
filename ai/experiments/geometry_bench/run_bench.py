@@ -176,7 +176,7 @@ def find_native_texrecon_binary() -> str | None:
         Path("/opt/conda/envs/openmvs/bin/texrecon"),
         Path("/root/micromamba/envs/openmvs/bin/texrecon"),
     ):
-        if cand.is_file():
+        if mio._is_file_quiet(cand):
             return str(cand)
     which_hit = shutil.which("texrecon")
     if which_hit:

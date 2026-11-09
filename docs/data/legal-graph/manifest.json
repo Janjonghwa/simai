@@ -263,8 +263,8 @@
   }
  },
  "inputs": {
-  "lexicon_sha256": "4b4fcb0802c0268ac640f1a313a18cbe5791342afc4c96977c935a00d91759a8",
-  "query_templates_sha256": "8361963db2b1b3f1c7d0ad0f45b05a466f840e4fa8c28c62decf351ac08e61f2"
+  "lexicon_sha256": "86fe770848bb6cf53a7b18331bbc13981b9b3808787de3dee2a2c025ad344737",
+  "query_templates_sha256": "3bf369095cbe644a2b94a5be235a24ed79cd8cb5bde023f3ca9f941f3b4f45d3"
  },
  "kosha": {
   "checked_at": "2026-11-02",

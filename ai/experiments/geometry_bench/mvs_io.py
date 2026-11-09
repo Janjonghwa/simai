@@ -1085,6 +1085,14 @@ def write_texrecon_scene(
         (scene_dir / f"{cid}.cam").write_text(cam_txt, encoding="utf-8")
 
 
+def _is_file_quiet(path: Path) -> bool:
+    """`path.is_file()` 이되, 읽을 권한이 없는 후보(예: 일반 사용자에게 /root/...)는 없는 것으로 본다."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def find_native_openmvs_binary(bin_name: str) -> str | None:
     """Locate a native OpenMVS binary (`TextureMesh`, `RefineMesh`, `ReconstructMesh`, `InterfaceCOLMAP`) on the host/Pod.
 
@@ -1112,7 +1120,7 @@ def find_native_openmvs_binary(bin_name: str) -> str | None:
     )
     for d in search_dirs:
         cand = d / bin_name
-        if cand.is_file():
+        if _is_file_quiet(cand):
             return str(cand)
     which_hit = shutil.which(bin_name)
     if which_hit:

@@ -6,6 +6,7 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from experiments.geometry_bench.metrics import (
     compute_edge_sharpness_for_view,
@@ -498,3 +499,21 @@ def test_v2_cleanup_stage_masks_and_glb_filter_in_place(tmp_path: Path) -> None:
     np.testing.assert_allclose(parsed_clean["V_world"], V_w[:3], atol=1e-5)
 
 
+def test_native_binary_lookup_skips_unreadable_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """일반 사용자(Jenkins)에게 /root/... 후보는 PermissionError 다. 없는 것으로 보고 다음 후보로 간다."""
+    from experiments.geometry_bench import mvs_io
+    from experiments.geometry_bench.run_bench import find_native_texrecon_binary
+
+    def _deny(self: Path) -> bool:
+        if str(self).replace("\\", "/").startswith("/root/"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return False
+
+    monkeypatch.setattr(Path, "is_file", _deny)
+    monkeypatch.delenv("SIMAI_OPENMVS_BIN_DIR", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.delenv("SIMAI_TEXRECON", raising=False)
+    monkeypatch.setattr(mvs_io.shutil, "which", lambda _name: None)
+    monkeypatch.setattr("experiments.geometry_bench.run_bench.shutil.which", lambda _name: None)
+    assert mvs_io.find_native_openmvs_binary("TextureMesh") is None
+    assert find_native_texrecon_binary() is None
