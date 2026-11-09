@@ -1,5 +1,5 @@
-"""PPE → Tier 0 outbox(simai_ai.io.ppe_outbox, S15P31A101-507): 순서·상한·오래된 파일·깨진 파일·source_id 맞춤,
-그리고 Tier 0 I1Publisher.add_source 로 신뢰 대기열까지 가는지."""
+"""PPE → Tier 0 outbox(simai_ai.io.ppe_outbox, S15P31A101-507·-565): 순서·상한·오래된 파일·깨진 파일·source_id 맞춤,
+그리고 Tier 0 I1Publisher.add_source 로 I1Client 텔레메트리 대기열까지 가는지."""
 
 import json
 import os
@@ -91,30 +91,22 @@ class _Clock:
         return 1_760_342_400_000
 
 
-class _Client:
-    connected = False
-
-    def __init__(self):
-        self.enqueued = []
-
-    def drop_counts(self, _kind):
-        return (0, 0)
-
-    def enqueue(self, message, *, replace_key=None):
-        self.enqueued.append(message)
+class _Connector:
+    def connect(self):
+        raise ConnectionError("offline")
 
 
 def test_tier0_publisher_relays_outbox_messages_unchanged(tmp_path, monkeypatch):
-    pytest.importorskip("cv2")  # services.tier0 은 io 추가 설치(opencv)가 있어야 불러온다
     monkeypatch.syspath_prepend(str(AI_DIR))
-    from services.tier0.i1_client import Envelope
+    from services.tier0.i1_client import Envelope, I1Client
     from services.tier0.i1_publisher import I1Publisher
 
-    client = _Client()
+    client = I1Client(_Connector(), on_message=lambda _raw: None, telemetry_limit=3)
     publisher = I1Publisher(client, Envelope("tier0-01", _Clock()), health_payload=lambda: None)
     publisher.add_source(PpeOutboxReader(tmp_path, source_id=publisher.source_id).take)
     PpeOutboxWriter(tmp_path).put(message(7))
     publisher.tick()
-    assert client.enqueued == [message(7)]
-    assert json.loads(json.dumps(client.enqueued[0])) == message(7)
+    assert client.queue_sizes() == {"reliable": 0, "telemetry": 1}
+    assert [m for _, m in client._telemetry] == [message(7)]
+    assert json.loads(json.dumps(client._telemetry[0][1])) == message(7)
     assert not any(Path(tmp_path).iterdir())

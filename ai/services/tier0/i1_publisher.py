@@ -9,6 +9,7 @@
 | config_ack | ConfigSync.take_acks 를 tick 마다 꺼내. 대기열이 차면 붙들고 다음 tick 에 다시 | 신뢰 대기열(버리지 않음) |
 | calibration_update·event_frame_ready | 만드는 쪽이 send_event 로 넣을 때. 차면 QueueFull 을 돌려준다 | 신뢰 대기열 |
 | observation_summary | send_event | 텔레메트리 대기열(차면 오래된 것 버림) |
+| ppe_state | PPE outbox(add_source)를 tick 마다 꺼내 (또는 send_event) | 텔레메트리 대기열(차면 오래된 것 버림) |
 | tier0_endpoint | (재)연결마다 EndpointRegistrar.build 로 새로 만들어 | 신뢰 대기열(이전 것 교체) |
 
 - payload 내용은 만드는 모듈이 정한다(world_state_payload, ConfigSync, EndpointRegistrar, outbox, 스냅샷 함수). 여기서는
@@ -41,7 +42,7 @@ log = logging.getLogger("services.tier0.i1.publisher")
 
 WORLD_STATE_INTERVAL_S = 0.1  # 10 Hz (명세 12.2)
 HEALTH_INTERVAL_S = 1.0  # 1 Hz (명세 12.2)
-EVENT_TYPES = frozenset({"observation_summary", "calibration_update", "event_frame_ready"})
+EVENT_TYPES = frozenset({"observation_summary", "calibration_update", "event_frame_ready", "ppe_state"})
 
 WORLD_STATE_DROPS_FIELD = "ec2_world_state_drops"
 """health 1.5.0 선택 필드 이름 (contracts/messages/health.schema.json)"""
@@ -228,14 +229,16 @@ class I1Publisher:
                 self._carry.extend(dict(m) for m in source())
             except Exception:  # noqa: BLE001 - 한 출처 실패가 다른 송신을 멈추지 않는다
                 log.exception("I1 메시지 출처 실패")
+        held: deque[dict[str, Any]] = deque()
         while self._carry:
+            message = self._carry.popleft()
             try:
-                self._client.enqueue(self._carry[0])
+                self._client.enqueue(message)
             except QueueFull:
-                return  # 붙들고 다음 tick 에 다시(ConfigSync 는 꺼낸 ACK 를 다시 만들지 않는다)
+                held.append(message)  # 붙들고 다음 tick 에 다시(ConfigSync 는 꺼낸 ACK 를 다시 만들지 않는다)
             except Exception:  # noqa: BLE001
-                log.exception("I1 메시지 넣기 실패: %s", self._carry[0].get("msg_type"))
-            self._carry.popleft()
+                log.exception("I1 메시지 넣기 실패: %s", message.get("msg_type"))
+        self._carry = held
 
     def _emit_health(self) -> bool:
         try:

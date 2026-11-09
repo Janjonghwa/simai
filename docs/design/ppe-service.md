@@ -20,7 +20,7 @@ Tier 0 (SIMAI_AVATAR_SHARE=1)            PPE (python -m services.ppe)           
 | 관측 고르기 | 영상과 `estimated_capture_time`·`frame_sequence` 가 같은 관측만 쓴다. `avatar_update_hold` 트랙은 `IDENTITY_UNCERTAIN` 으로 넘긴다 | 5.5 "같은 카메라·같은 프레임·같은 촬영 시각". 보류 트랙(분할 대기·교차 의심)은 상태를 초기화한다(판정 모듈 규칙) |
 | 주기 | 카메라마다 같은 프레임은 한 번, 지난 처리 뒤 500 ms 안의 프레임은 건너뛴다. Tier 0 가 공유한 뒤 150 ms 를 넘긴 프레임은 버린다. 추론은 한 스레드·한 장씩. 상태는 500 ms 마다 보낸다 | 5.5: 카메라당 최대 2 Hz, 대기 1, 동시 추론 1, 대기 150 ms. 송신은 1~2 Hz |
 | 접수 문 | `AdmissionGate`(Tier 0 표시 파일의 지연 신호, 표시 파일이 없으면 모름 → 멈춤). 막히면 새 추론만 멈추고 누적 상태는 계속 보낸다. Tier 0 가 정상 종료했으면 보내지 않는다 | 5.5 "Tier 0 지연을 모르거나 넘으면 새 추론을 멈추고 10초 안정 뒤 재개". 계속 보내면 근거 만료(10초)로 UNKNOWN 이 된다 |
-| 출력 | outbox 폴더에 메시지 한 건 = 파일 한 개. Tier 0 가 꺼내 자기 I1 연결로 보낸다(대기 상한 32, 10초 넘은 파일은 버림, `source_id` 는 Tier 0 연결 값으로 맞춤) | PPE 가 같은 `source_id` 로 I1 을 따로 열면, EC2 의 `event_ack`·`event_close`·`event_escalate` 전달기가 gateway 가 맞는 연결 중 첫 번째로 보내므로 운영자 명령이 PPE 로 갈 수 있다. 다른 `source_id` 는 계약(tier0-01)을 바꿔야 한다. 빈 순번은 계약상 잃은 메시지다 |
+| 출력 | outbox 폴더에 메시지 한 건 = 파일 한 개. Tier 0 가 꺼내 자기 I1 연결의 텔레메트리 대기열(`TELEMETRY_TYPES`, S15P31A101-565)로 보낸다(outbox 대기 상한 32, 10초 넘은 파일은 버림, `source_id` 는 Tier 0 연결 값으로 맞춤, I1 끊김·적체 시 `telemetry_limit` 상한에서 오래된 것부터 버림) | PPE 가 같은 `source_id` 로 I1 을 따로 열면, EC2 의 `event_ack`·`event_close`·`event_escalate` 전달기가 gateway 가 맞는 연결 중 첫 번째로 보내므로 운영자 명령이 PPE 로 갈 수 있다. 다른 `source_id` 는 계약(tier0-01)을 바꿔야 한다. 빈 순번은 계약상 잃은 메시지다 |
 | GPU | `cap_process_memory(SIMAI_PPE_GPU_MEMORY_FRACTION=0.05)`. bootstrap 은 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 본다 | 3.2 표·49행. 초기값으로는 여유가 0 이라 G0 실측으로 다시 정한다 |
 | 기동 | `SIMAI_SERVICES` 에 `ppe` 를 명시해야 켜진다. lobby 기본·preflight 묶음에는 넣지 않았다 | G9(동시 실행 p99) 판정 전이라 시연 기본값을 바꾸지 않는다 |
 
@@ -37,5 +37,5 @@ Tier 0 (SIMAI_AVATAR_SHARE=1)            PPE (python -m services.ppe)           
 
 ## 코드·시험
 
-- `ai/services/ppe/loop.py`·`__main__.py`, `ai/src/simai_ai/io/ppe_outbox.py`, `ai/services/tier0/service.py`(`_build_link`), `deploy/scripts/simai_bootstrap.py`
-- `ai/tests/ppe/test_service_loop.py`, `ai/tests/io/test_ppe_outbox.py`, `ai/tests/deploy/test_simai_supervisor.py`(`test_ppe_*`)
+- `ai/services/ppe/loop.py`·`__main__.py`, `ai/src/simai_ai/io/ppe_outbox.py`, `ai/services/tier0/service.py`(`_build_link`), `ai/services/tier0/i1_client.py`·`i1_publisher.py`, `deploy/scripts/simai_bootstrap.py`
+- `ai/tests/ppe/test_service_loop.py`, `ai/tests/io/test_ppe_outbox.py`, `ai/tests/services/tier0/test_i1_units.py`, `ai/tests/deploy/test_simai_supervisor.py`(`test_ppe_*`)

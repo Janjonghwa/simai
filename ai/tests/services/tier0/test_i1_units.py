@@ -266,7 +266,7 @@ def test_envelope_fields_and_versions() -> None:
     assert schema_errors(msg, "world_state") == []
     assert env.make("health", health_payload())["schema_version"] == "2.3.0"
     assert schema_errors(env.make("health", health_payload()), "health") == []
-    for name in ("observation_summary", "calibration_update", "event_state_snapshot", "event_frame_ready"):
+    for name in ("observation_summary", "calibration_update", "event_state_snapshot", "event_frame_ready", "ppe_state"):
         doc = env.make(name, example(name)["payload"])
         assert schema_errors(doc, name) == [], name
     with pytest.raises(ValueError, match="위로"):
@@ -776,6 +776,53 @@ def test_reliable_queue_never_drops_and_telemetry_overflow_drops_oldest() -> Non
             client.enqueue(bad)
     with pytest.raises(ValueError):
         client.put_latest(summaries[0])
+
+
+def test_ppe_state_relays_via_publisher_to_telemetry_queue_and_bounds_when_disconnected(tmp_path) -> None:
+    """ppe_state(S15P31A101-565): PpeOutboxReader 출처가 I1Publisher 를 거쳐 I1Client 텔레메트리 대기열로 들어가고,
+    끊긴 동안이나 신뢰 대기열이 찼을 때도 무한 적재 없이 상한(telemetry_limit)으로 오래된 것부터 버린다."""
+    from simai_ai.io.ppe_outbox import PpeOutboxReader, PpeOutboxWriter
+
+    conn = FakeConn()
+    client = make_client(FakeConnector([conn]), reliable_limit=1, telemetry_limit=3)
+    env = envelope()
+    sync = FakeConfigSync()
+    pub = I1Publisher(client, env, health_payload=health_payload, monotonic=FakeMono())
+    writer = PpeOutboxWriter(tmp_path)
+    reader = PpeOutboxReader(tmp_path, source_id=pub.source_id)
+    pub.add_source(sync.take_acks)
+    pub.add_source(reader.take)
+
+    def ppe_msg(seq: int) -> dict:
+        doc = copy.deepcopy(example("ppe_state"))
+        doc["msg_id"] = f"7f1c2a10-4b6e-4c1d-9a2b-{seq:012d}"
+        doc["payload"]["state_sequence"] = seq
+        return doc
+
+    # 연결 전(끊김): 신뢰 대기열이 가득 차 config_ack 가 _carry 에 붙들려 있어도 ppe_state 는 텔레메트리 상한(3) 안에서만 유지된다
+    sync.acks.extend([example("config_ack"), example("config_ack.rejected")])
+    for seq in range(5):
+        assert writer.put(ppe_msg(seq))
+    pub.tick()
+    assert client.queue_sizes() == {"reliable": 1, "telemetry": 3}
+    assert client.stats.reliable_full == 1 and client.stats.telemetry_overflow == 2
+    assert len(pub._carry) == 1 and pub._carry[0]["msg_type"] == "config_ack"
+    assert [m["payload"]["state_sequence"] for _, m in client._telemetry] == [2, 3, 4]
+
+    # 연결되면 health → 신뢰(config_ack) → 텔레메트리(ppe_state 2·3·4) 순으로 나가고, 붙들렸던 config_ack 도 다음 tick 에 나간다
+    client.add_on_connected(pub.on_connected)
+    client.start()
+    try:
+        assert wait_until(lambda: len(conn.sent) >= 5)
+        pub.tick()
+        assert wait_until(lambda: len(conn.sent) >= 6)
+    finally:
+        client.close()
+    assert kinds(conn.sent)[:5] == ["health", "config_ack", "ppe_state", "ppe_state", "ppe_state"]
+    assert [m["payload"]["state_sequence"] for m in conn.sent if m["msg_type"] == "ppe_state"] == [2, 3, 4]
+    for m in conn.sent:
+        if m["msg_type"] == "ppe_state":
+            assert schema_errors(m, "ppe_state") == []
 
 
 def test_backoff_grows_on_failures_and_resets_after_stable_connection() -> None:
