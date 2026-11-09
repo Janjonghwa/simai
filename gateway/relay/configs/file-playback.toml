@@ -1,4 +1,5 @@
-# 녹화 파일 재생 예시(-353). 파일 경로와 fps 를 실제 녹화에 맞춘다. 파일은 커밋하지 않는다.
+# 녹화 파일 재생 예시(-353, -554). 파일 경로와 fps 를 실제 녹화에 맞춘다. 파일은 커밋하지 않는다.
+# file 에는 세그먼트 파일(.../cam_A/epoch_NNNN.h264) 또는 녹화 세션 폴더(C:/simai-local/recordings/live-...)를 줄 수 있다.
 # 실시간 파일은 기본 timestamp_source = FILE, uncertainty_no_pts_ms = 20 이므로 capture_time 설정이 필요 없다.
 # 덮어쓰기: 공통 [capture_time] < 카메라별 capture_time. 명시한 값은 파일 기본값보다 우선한다.
 # RTSP example.toml 의 공통 uncertainty_no_pts_ms = 45 를 그대로 복사하지 않는다.

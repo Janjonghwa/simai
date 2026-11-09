@@ -265,3 +265,35 @@ def test_capture_time_raise_is_recorded_once_per_epoch(tmp_path, contract_valida
         contract_validator("frame_header", h)
     raised = [e for e in _events(tmp_path) if e["event"] == "capture_time_raised"]
     assert raised == [{**raised[0], "stream_epoch": 0, "frames": 2, "max_raise_ms": 81}]
+
+
+def test_camera_segments_supports_large_utc_ms_stream_epoch(tmp_path):
+    """EpochStore 처럼 4자리를 넘는 UTC ms stream_epoch 도 숫자 순서로 찾는다(S15P31A101-554)."""
+    from simai_recorder.segment import SegmentWriter
+
+    cam_dir = tmp_path / "cam_A"
+    for epoch in (9, 1_762_000_000_002, 1_762_000_000_001):
+        w = SegmentWriter(
+            cam_dir,
+            {
+                "type": "codec_info",
+                "camera_id": "cam_A",
+                "stream_epoch": epoch,
+                "codec": "H264",
+                "width": 64,
+                "height": 48,
+                "sps": "AAAA",
+                "pps": "BBBB",
+                "started_at_ms": 1_762_000_000_000,
+            },
+            prefix_parameter_sets=False,
+        )
+        w.close()
+
+    segs = camera_segments(cam_dir)
+    assert [s.h264.name for s in segs] == [
+        "epoch_0009.h264",
+        "epoch_1762000000001.h264",
+        "epoch_1762000000002.h264",
+    ]
+

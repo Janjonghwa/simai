@@ -22,11 +22,13 @@ import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from simai_recorder.capture_time import CaptureTimeModel
 from simai_recorder.clock import Clock
 from simai_recorder.config import ConfigError, build_source, load_env
 from simai_recorder.recorder import CameraSpec
+from simai_recorder.segment import SegmentPaths, camera_segments
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
@@ -35,6 +37,36 @@ __all__ = ["DEFAULT_ENV_FILE", "ConfigError", "RedactSecrets", "RemoteCctvSettin
            "load_env", "load_remote_cctv_settings", "load_tier0_settings", "secret_values"]
 
 SECRET_ENV_KEYS = ("SIMAI_DEVICE_TOKEN",)
+
+
+def _resolve_camera_entry(c: Mapping[str, Any], config_dir: Path) -> Mapping[str, Any]:
+    """kind = 'file' 의 file 이 녹화 세션 폴더나 카메라 폴더면 그 카메라의 세그먼트(.h264)로 풀어 준다."""
+    if c.get("kind") != "file":
+        return c
+    file_val = c.get("file") or c.get("path")
+    if not file_val:
+        return c
+    raw = Path(str(file_val))
+    target = raw if raw.is_absolute() else config_dir / raw
+    if not target.is_dir():
+        return c if "file" in c else {**c, "file": str(file_val)}
+    cid = str(c["camera_id"])
+    cam_dir = target / cid if (target / cid).is_dir() else target
+    segs = camera_segments(cam_dir)
+    if "stream_epoch" in c:
+        epoch = int(c["stream_epoch"])
+        cand = SegmentPaths.of(cam_dir, epoch).h264
+        if not cand.is_file():
+            raise ConfigError(f"{cid}: stream_epoch {epoch} 세그먼트가 없다 ({cam_dir})")
+        chosen = cand
+    elif segs:
+        chosen = segs[0].h264
+    else:
+        h264s = sorted(cam_dir.glob("epoch_*.h264"))
+        if not h264s:
+            raise ConfigError(f"{cid}: 녹화 세그먼트(.h264)가 없다 ({cam_dir})")
+        chosen = h264s[0]
+    return {**c, "file": str(chosen)}
 
 
 def load_cameras(path: Path, clock: Clock, env: Mapping[str, str]) -> list[CameraSpec]:
@@ -47,17 +79,18 @@ def load_cameras(path: Path, clock: Clock, env: Mapping[str, str]) -> list[Camer
     for c in cams:
         if not c.get("camera_id"):
             raise ConfigError("[[cameras]] 에 camera_id 가 없다")
+        resolved = _resolve_camera_entry(c, path.parent)
         defaults = {}
-        if c.get("kind") == "file":
+        if resolved.get("kind") == "file":
             defaults["timestamp_source"] = "FILE"
-            if c.get("realtime", True):
+            if resolved.get("realtime", True):
                 # FileSource.read() 는 _pace() 뒤 반환한다. PTS 없음 시 수신 시각은 파일 페이싱 시각이고
                 # RTSP 의 Wi-Fi 지터를 위한 45 ms 대신 정상 PTS 와 같은 잠정 20 ms 를 쓴다(-353).
                 # 근거·한계: README 의 파일 재생 절. 명시 설정은 공통 → 카메라 순으로 우선한다.
                 defaults["uncertainty_no_pts_ms"] = 20.0
-        model = CaptureTimeModel(**{**defaults, **base, **(c.get("capture_time") or {})})
-        specs.append(CameraSpec(camera_id=c["camera_id"], source=build_source(c, clock, env, path.parent),
-                                capture_time=model, firmware=c.get("firmware") or None))
+        model = CaptureTimeModel(**{**defaults, **base, **(resolved.get("capture_time") or {})})
+        specs.append(CameraSpec(camera_id=resolved["camera_id"], source=build_source(resolved, clock, env, path.parent),
+                                capture_time=model, firmware=resolved.get("firmware") or None))
     ids = [s.camera_id for s in specs]
     if len(set(ids)) != len(ids):
         raise ConfigError("camera_id 가 겹친다")

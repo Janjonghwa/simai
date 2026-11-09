@@ -173,7 +173,7 @@ class CameraRelay:
                 if codec is None:
                     dropped += 1
                     continue
-                self.sink.send_codec_info(I0CodecInfo(codec[0]))
+                self.sink.send_codec_info(I0CodecInfo(codec[0], dropped_before_keyframe=dropped))
                 self.stats.on_stream_started(codec[0], dropped)
                 self._event(logging.INFO, "stream_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 sequence = 0

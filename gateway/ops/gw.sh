@@ -13,8 +13,9 @@ show_help() {
 사용법: gateway/ops/gw.sh <명령> [인자...]
 
 명령:
-  status                                  게이트웨이 전체 상태(모드·창·sshd·역터널·카메라·커밋·디스크·절전·heal 로그)
-  live <PodIP> <17000 매핑> <17001 매핑>  관제 시작(run-remote: 터널·경보 단말·영상 중계 및 카메라 헬퍼) 후 status
+  status                                  게이트웨이 전체 상태(모드·창·녹화·sshd·역터널·카메라·커밋·디스크·절전·heal 로그)
+  live <PodIP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv]
+                                          관제 시작(run-remote: 터널·경보 단말·영상 중계·동시 녹화 및 카메라 헬퍼) 후 status
   preview                                 카메라 미리보기와 헬퍼(preview-remote: Tier 0 전송 없음) 후 status
   stop                                    관제·미리보기 끄기 후 status
   update                                  원격 갱신(update-remote: git pull --ff-only + uv sync 후 이전 모드 복원)
@@ -102,8 +103,27 @@ case "$cmd" in
     gw status
     ;;
   live)
-    [ $# -eq 4 ] || { echo "사용: gw.sh live <Pod IP> <17000 매핑> <17001 매핑>" >&2; exit 2; }
-    gw run-remote -PodIp "$2" -ControlPort "$3" -VideoPort "$4"
+    [ $# -ge 4 ] || { echo "사용: gw.sh live <Pod IP> <17000 매핑> <17001 매핑> [--no-record|-NoRecord] [--no-remote-cctv|-NoRemoteCctv]" >&2; exit 2; }
+    pod_ip="$2"
+    ctrl_port="$3"
+    video_port="$4"
+    shift 4
+    extra_args=()
+    for arg in "$@"; do
+      case "$arg" in
+        --no-record|-NoRecord)
+          extra_args+=("-NoRecord")
+          ;;
+        --no-remote-cctv|-NoRemoteCctv)
+          extra_args+=("-NoRemoteCctv")
+          ;;
+        *)
+          echo "알 수 없는 live 옵션: $arg (사용: gw.sh live <Pod IP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv])" >&2
+          exit 2
+          ;;
+      esac
+    done
+    gw run-remote -PodIp "$pod_ip" -ControlPort "$ctrl_port" -VideoPort "$video_port" "${extra_args[@]}"
     gw status
     ;;
   preview)

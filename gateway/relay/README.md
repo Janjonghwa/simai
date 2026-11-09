@@ -15,6 +15,7 @@
 | 3.10 장애별 표시, `laptop_heartbeat` | 1초마다 127.0.0.1 UDP(`--status-port`, 기본 47031, 0 이면 끔)로 현장 경보 단말에 카메라별 상태(`laptop_heartbeat.cameras[]` 항목)와 Tier 0 영상 연결이 살아 있는 카메라를 알린다(`status_report.py`, S15P31A101-91). 단말이 '영상 단절 → 관제 중단'을 판단하고 하트비트를 채운다. 형식은 `simai_site_alert.relay_status` |
 | 3.3 RTSP 접속 규칙, 16장 관제 화면 실시간 영상 | CCTV 로컬 미리보기(`--preview-port`, 기본 꺼짐): 수신 루프가 Tier 0 로 넘기는 I0 기록을 그대로 나눠 받아(RTSP 세션을 더 열지 않음, 디코딩·재인코딩 없음) 127.0.0.1 에서만 듣는 WebSocket 으로 보낸다(EC2 를 거치지 않음). 형식 `contracts/messages/cctv_preview.schema.json`(접속 직후 hello → 카메라별 마지막 codec → 카메라별 다음 키프레임부터 이진 프레임 = u32 BE 헤더 길이 + I0 frame_header + Annex B). 브라우저 Origin 허용 목록(기본 `https://simai.live`, `localhost`·`127.0.0.1` 의 5173·4173, `--preview-origin` 으로 바꿈), 소비자 4개, 소비자마다 큐 50프레임·16 MiB, 넘치면 그 소비자의 그 카메라만 다음 키프레임까지 건너뜀. 상태 로그에 카메라별 `preview`(sent·dropped_overflow·waiting_keyframe)와 `미리보기 상태`(소비자 수 등). 설계 `docs/design/cctv-local-preview.md` |
 | 3.3 RTSP 접속 규칙, 16장 관제 화면 실시간 영상(원격) | CCTV 원격 시청 업로드(`--remote-cctv`, 기본 꺼짐, S15P31A101-400): `.env` 의 `SIMAI_EC2_BASE_URL`(https → `wss://<호스트>/ws/devices/cctv`, http 는 루프백 시험만)·`SIMAI_DEVICE_TOKEN`(Authorization 헤더에만)으로 EC2 에 늘 붙어 있고 끊기면 1 s → 30 s 지수 백오프. EC2 가 `cctv_remote_control` demand 를 접속 직후·바뀔 때 보내고, active 동안만 로컬 미리보기와 같은 형식(hello → 카메라별 마지막 codec → 카메라별 다음 키프레임부터 이진 프레임)으로 올린다. 허브는 로컬 미리보기와 따로(소비자 1, 큐 50프레임·16 MiB(로컬 미리보기와 같은 기준), 넘치면 그 카메라만 다음 키프레임까지 건너뜀), 수요가 없으면 수신 스레드에서 바로 돌아온다. ping 15 s·pong 없이 30 s 면 끊음. 상태 로그에 카메라별 `remote_cctv` 와 `원격 CCTV 상태`(연결·수요·보낸 바이트) |
+| 3.3 RTSP 접속 규칙, 15.3 녹화, 12.7 I0 프레임 식별 | 관제 중계 동시 녹화(`--record-dir <폴더>`, 기본 꺼짐, S15P31A101-554): 추가 RTSP 접속 없이 수신 루프가 Tier 0 로 보내는 I0 기록(`codec_info`, `frame_header` + 압축 Annex B 프레임)을 그대로 카메라별 녹화 스레드·제한 큐(`--record-queue-frames`, 기본 150프레임·16 MiB)로 넘겨 세그먼트(`<camera_id>/epoch_<stream_epoch>.{h264,frames.jsonl,codec_info.json}`)로 쓴다. 재접속(`stream_epoch` 변경)마다 새 세그먼트를 열며, 큐가 차면 **송신을 절대 막지 않고** 녹화 프레임만 다음 키프레임까지 버리고 상태·로그에 남긴다. 디스크 여유 공간이 하한(`--record-min-free-gb`, 기본 20 GB) 아래면 경고를 남기고 녹화만 중단한다. 끝날 때(정상 종료·Ctrl+C) `write_manifest` 로 `manifest.json`(기본 `consent.purpose = "dev_test"`)을 만들고 `validate_manifest` 로 검증한다 |
 | 12.7 누락 | `camera_to_gateway_gap`: 도착 간격이 공칭 간격의 1.5배를 넘은 횟수·최대(RTP 간격도 따로). `laptop_heartbeat.cameras[]` 항목을 만든다 |
 
 ## 구조
@@ -37,6 +38,7 @@ src/simai_relay/
   status_report.py 현장 경보 단말로 1초마다 상태 보고(loopback UDP)
   preview.py      관제 앱 CCTV 로컬 미리보기(127.0.0.1 WebSocket, PreviewSink 가 원래 CameraSink 를 감쌈)
   remote.py       CCTV 원격 시청 업로드(EC2 wss /ws/devices/cctv, 보는 사람이 있을 때만, 허브는 로컬 미리보기와 따로)
+  recording.py    관제 중계 동시 녹화(--record-dir, 카메라별 비차단 큐·세그먼트 쓰기·디스크 하한·manifest 생성)
   bench.py        G0 전송 비교 측정: 카메라별 연결 vs 단일 연결 다중화 (bench-transport)
   config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets)
   cli.py          simai-relay run
@@ -72,6 +74,7 @@ uv run simai-relay run --config configs/my-cameras.toml                # 실제 
 uv run simai-relay run --config configs/my-cameras.toml --send         # Tier 0 로 전송
 uv run simai-relay run --config configs/my-cameras.toml --send --preview-port 47032   # + 관제 앱 CCTV 로컬 미리보기
 uv run simai-relay run --config configs/my-cameras.toml --preview-port 47032 --remote-cctv  # + 노트북 밖 관리자 원격 시청
+uv run simai-relay run --config configs/my-cameras.toml --send --record-dir C:/simai-local/recordings/live-20261109-140000  # + 동시 녹화
 uv run simai-relay bench-transport --seconds 20                        # 카메라별 연결 vs 다중화 (로컬)
 uv run simai-relay bench-transport --mode per-camera --slow-camera none --seconds 1800   # 30분 연속 중계
 ```
@@ -94,7 +97,9 @@ uv run simai-relay bench-transport --mode per-camera --slow-camera none --second
 [[cameras]]
 camera_id = "cam_A"
 kind = "file"
-file = "C:/path/to/cam_A.h264"
+# 세그먼트 .h264 파일을 직접 지정하거나, 녹화 세션 폴더(예: C:/simai-local/recordings/live-20261109-140000) 또는
+# 카메라 폴더(.../cam_A)를 지정하면 그 카메라의 첫 세그먼트(epoch_*.h264, 또는 stream_epoch 로 지정한 세그먼트)를 자동으로 연다.
+file = "C:/simai-local/recordings/live-20261109-140000/cam_A/epoch_0000.h264"
 realtime = true
 loop = true
 fps = 25
@@ -147,6 +152,6 @@ Tier 0 를 다시 띄워도 받게 되지만(Tier 0 가 epoch 기준을 잊는�
 
 ## 하지 않는 것
 
-- 디코딩·재인코딩·얼굴 처리, 영상 저장(녹화는 `gateway/recorder`). 미리보기도 받은 압축 프레임을 그대로 넘긴다.
+- 디코딩·재인코딩·얼굴 처리. 미리보기와 동시 녹화(`--record-dir`)도 받은 압축 프레임을 그대로 넘기거나 쓴다.
 - 비밀 값 기록. RTSP 계정은 입력 안에만 있고, 로그에는 camera_id 와 계정 없는 입력 설명만 쓴다. 로그 처리기에는 `.env` 계정 값을
   `***` 로 바꾸는 필터를 덧붙인다.

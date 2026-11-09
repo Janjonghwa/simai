@@ -36,9 +36,10 @@ Pod 공개 IP 와 17000·17001 의 바깥 매핑 포트를 묻고(`C:\simai-loca
    SSAFY 망은 EC2(simai.live:22)만 열려 있어 EC2 를 거친다. EC2→Pod 는 연결마다 따로 TCP 라 카메라별 독립 연결(명세 12.2)을 지키고,
    TLS 는 Tier 0 가 끝낸다(경로 결정은 S15P31A101-392).
 2. 현장 경보 단말 `uv run simai-site-alert run`
-3. 영상 중계 `uv run simai-relay run --config ../relay/configs/lobby.toml --send --preview-port 47032 --remote-cctv`
+3. 영상 중계 `uv run simai-relay run --config ../relay/configs/lobby.toml --send --preview-port 47032 --remote-cctv --record-dir C:\simai-local\recordings\live-<yyyyMMdd-HHmmss>`
    (CCTV 는 게이트웨이 노트북 브라우저는 로컬 127.0.0.1 로, 노트북 밖 관리자는 원격 시청으로 본다. 원격 시청은 EC2 에 늘 붙어 있다가
-   보는 사람이 있을 때만 올린다(S15P31A101-400). 관제 중 Tier 0 지연이 늘면 `-NoRemoteCctv` 로 끈다: `simai-gateway.cmd run -NoRemoteCctv …`)
+   보는 사람이 있을 때만 올린다(S15P31A101-400). 관제 중 Tier 0 지연이 늘면 `-NoRemoteCctv` 로 끈다: `simai-gateway.cmd run -NoRemoteCctv …`.
+   관제 모드는 기본으로 보내는 프레임을 `C:\simai-local\recordings\live-<yyyyMMdd-HHmmss>` 에 동시 녹화하며(S15P31A101-554), 녹화를 끄려면 `-NoRecord` 또는 `gw.sh live … --no-record` 를 준다. 미리보기 모드는 녹화하지 않는다)
 
 끄기(`4`)는 세 창의 프로세스 트리를 끝낸다.
 
@@ -92,8 +93,8 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 
 | 명령 | 동작 |
 |---|---|
-| `gateway/ops/gw.sh status` | 한 화면 상태 확인: 현재 모드(관제 창 사망 시 `관제가 꺼짐`), 창 PID 생존, `sshd` 상태·시작 유형·실패 옵션, 역터널 작업·프로세스·마지막 연결 시각, 카메라 RTSP 응답(`n / 4`), 저장소 커밋, 디스크 여유, 절전 설정 이상 여부, `heal` 로그 마지막 3줄 |
-| `gateway/ops/gw.sh live <PodIP> <17000 매핑> <17001 매핑>` | 로그인 세션에서 관제(창 3개: 터널·경보 단말·영상 중계) 시작 후 `status` 출력 |
+| `gateway/ops/gw.sh status` | 한 화면 상태 확인: 현재 모드(관제 창 사망 시 `관제가 꺼짐`), 창 PID 생존, 녹화 폴더·용량·버린 프레임 수, `sshd` 상태·시작 유형·실패 옵션, 역터널 작업·프로세스·마지막 연결 시각, 카메라 RTSP 응답(`n / 4`), 저장소 커밋, 디스크 여유, 절전 설정 이상 여부, `heal` 로그 마지막 3줄 |
+| `gateway/ops/gw.sh live <PodIP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv]` | 로그인 세션에서 관제(창 3개: 터널·경보 단말·영상 중계 + 기본 동시 녹화) 시작 후 `status` 출력 |
 | `gateway/ops/gw.sh preview` | 로그인 세션에서 카메라 미리보기(Tier 0 전송 없음, 원격 시청 포함) 시작 후 `status` 출력 |
 | `gateway/ops/gw.sh stop` | 관제·미리보기 창 종료 후 `status` 출력 |
 | `gateway/ops/gw.sh update` | 현재 모드를 잠시 멈추고 로그인 세션 예약 작업(`simai-gateway-update`)으로 `git pull --ff-only` + `uv sync` 수행 후 이전 모드 복원 및 `status` 출력 |
