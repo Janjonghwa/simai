@@ -22,7 +22,7 @@ const OPEN = { type: 'planned', id: 'plan-open-1' } as const;
 const SCAF = { type: 'planned', id: 'plan-scaf-1' } as const;
 
 describe('readPlannedLayout', () => {
-  it('세 종류를 받고 모르는 종류는 이유와 함께 뺀다', () => {
+  it('개구부·비계·장비를 받고 모르는 종류는 이유와 함께 뺀다', () => {
     const snapshot = readPlannedLayout(DEMO_PLANNED_LAYOUT);
     expect(snapshot.layoutId).toBe('tbm-demo-1');
     expect(snapshot.objects.map((o) => [o.id, o.kind])).toEqual([
@@ -31,8 +31,26 @@ describe('readPlannedLayout', () => {
       ['plan-equip-1', 'EQUIPMENT'],
     ]);
     expect(snapshot.invalid).toEqual([
-      { id: 'plan-bad', reason: 'kind 는 OPENING·SCAFFOLD·EQUIPMENT 중 하나여야 한다' },
+      {
+        id: 'plan-bad',
+        reason: 'kind 는 OPENING·WORK_SURFACE·SCAFFOLD·EQUIPMENT 중 하나여야 한다',
+      },
     ]);
+  });
+
+  it('고소 작업면(WORK_SURFACE)도 같은 형상으로 받는다', () => {
+    const snapshot = readPlannedLayout({
+      layoutId: 'tbm-ws',
+      objects: [
+        {
+          id: 'plan-ws-1',
+          kind: 'WORK_SURFACE',
+          geometry: { center: [3, 2, 0.2], size: [1, 1, 0.4], yawRad: 0 },
+        },
+      ],
+    });
+    expect(snapshot.invalid).toEqual([]);
+    expect(snapshot.objects.map((o) => [o.id, o.kind])).toEqual([['plan-ws-1', 'WORK_SURFACE']]);
   });
 
   it.each([

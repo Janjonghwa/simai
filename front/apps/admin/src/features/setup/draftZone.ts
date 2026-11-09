@@ -5,15 +5,9 @@ import type { SurfaceGeometry } from '@/features/surfaces/types';
 import type { ViewerEditBox } from '@/features/viewer3d';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { createRequestOf } from '@/features/zones/zoneCommit';
-import {
-  newZoneForm,
-  r3,
-  SURFACE_ZONE_MARGIN_M,
-  surfaceZoneForm,
-  surfaceZoneShape,
-  type SurfaceDraft,
-} from '@/features/zones/zoneEditModel';
+import { newZoneForm, surfaceZoneForm, type SurfaceDraft } from '@/features/zones/zoneEditModel';
 import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
+import { r3, SURFACE_ZONE_MARGIN_M, surfaceZoneShape } from '@/features/zones/zoneShape';
 
 // 세팅 AI 구역 초안 → 구역 저장 요청(순수 계산). 고소 작업면 초안은 작업면과 그 둘레 구역(관제에서 작업면을 추가할 때와 같은
 // surfaceZoneShape)이고, 그 밖(개구부·바닥 가장자리, 상판 높이를 믿을 수 없는 작업면)은 AI 다각형을 바깥으로

@@ -14,6 +14,7 @@ import type {
   ZoneDraftItem,
 } from '@/features/setup/types';
 import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
+import { openingZoneZ } from '@/features/zones/zoneShape';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
 // 걷기 보정과 실측 정물 배치 단계는 폐기되었으며(명세 v1.3 수정 54·56), 색은 위험 등급(sev-*)과 겹치지 않는다.
@@ -715,9 +716,7 @@ export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
   const minY = Number.isFinite(rawMinY) ? rawMinY : 1;
   const maxY = Number.isFinite(rawMaxY) && rawMaxY - minY >= 0.5 ? rawMaxY : minY + 1.2;
 
-  const minZ = Math.max(0, Number.isFinite(item.z_min_m) ? item.z_min_m : 0);
-  const rawMaxZ = Number.isFinite(item.z_max_m) ? item.z_max_m : minZ + 2;
-  const maxZ = rawMaxZ - minZ >= 0.5 ? rawMaxZ : minZ + 2;
+  const [minZ, maxZ] = openingZoneZ(item.z_min_m, item.z_max_m);
 
   return {
     min: [minX, minY, minZ],

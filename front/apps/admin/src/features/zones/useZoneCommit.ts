@@ -1,10 +1,17 @@
 import type { WorkSurface } from '@/features/surfaces/types';
+import {
+  applyLayoutEdit,
+  itemOfSurface,
+  itemOfZoneShape,
+  newLayoutItemId,
+} from '@/features/tbm/layoutZones';
 import { commitErrorText } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
 import { useCommitNotice } from '@/features/zones/useCommitNotice';
 import { publishErrorText } from '@/features/zones/useConfigApply';
 import { useExclusiveRun } from '@/features/zones/useExclusiveRun';
+import { useLayoutZoneCommit } from '@/features/zones/useLayoutZoneCommit';
 import { archiveErrorText, useSurfaceArchive } from '@/features/zones/useSurfaceArchive';
 import { useZoneCommitMutation, type CommitDone } from '@/features/zones/useZoneCommitMutation';
 import type { ZoneTarget } from '@/features/zones/useZoneTarget';
@@ -15,6 +22,7 @@ import { removeZoneDraft } from '@/store/zoneEdit.store';
 
 export interface ZoneCommitInput {
   zone: Zone | null;
+  workLayoutId?: number | null;
   /** 저장할 구역 모양. 기존 구역을 고치지 않았으면 null(받은 모양 그대로)이고, 새 구역은 늘 있다. */
   shape: ZoneShape | null;
   form: ZoneForm;
@@ -45,6 +53,7 @@ export interface ZoneCommitInput {
 export function useZoneCommit(input: ZoneCommitInput) {
   const { zone, shape, form, draft, surface, linked, orphan, target } = input;
   const commit = useZoneCommitMutation();
+  const commitLayout = useLayoutZoneCommit();
   const archive = useSurfaceArchive();
   const { busy, run } = useExclusiveRun();
   const { armedKey, arm, disarm } = useArmedDelete();
@@ -82,6 +91,30 @@ export function useZoneCommit(input: ZoneCommitInput) {
 
   const save = async () => {
     if (!zone || !input.saveReady || busy) return;
+    if (zone.layoutId != null && zone.layoutItemId) {
+      try {
+        await run(() =>
+          commitLayout(zone.layoutId!, (items) => {
+            const original = items.find((item) => item.item_id === zone.layoutItemId);
+            if (!original) throw new Error('Layout item missing');
+            const item =
+              surface && input.surfaceDirty
+                ? itemOfSurface(original.item_id, form.name, surface.geometry)
+                : !surface && shape
+                  ? itemOfZoneShape(original.item_id, form.name, shape)
+                  : { ...original, label: form.name.trim() };
+            if (!item) throw new Error('Invalid opening shape');
+            return { items: applyLayoutEdit(items, { op: 'UPSERT', item }) };
+          }),
+        );
+        removeZoneDraft(zone.zoneId);
+        show(null, false);
+        input.onCommitted?.();
+      } catch (error) {
+        show(commitErrorText(error), false);
+      }
+      return;
+    }
     const request = saveRequestOf({
       zone,
       form,
@@ -100,7 +133,30 @@ export function useZoneCommit(input: ZoneCommitInput) {
   };
 
   const add = async () => {
-    if (zone || !shape || !surface || !input.addReady || busy) return;
+    if (zone || !shape || !input.addReady || busy || (!surface && input.workLayoutId == null))
+      return;
+    if (input.workLayoutId != null) {
+      try {
+        const id = await run(() =>
+          commitLayout(input.workLayoutId!, (items) => {
+            const itemId = newLayoutItemId(surface ? 'WORK_SURFACE' : 'OPENING', items);
+            const item = surface
+              ? itemOfSurface(itemId, form.name, surface.geometry)
+              : itemOfZoneShape(itemId, form.name, shape);
+            if (!item) throw new Error('Invalid opening shape');
+            return { items: applyLayoutEdit(items, { op: 'UPSERT', item }), itemId };
+          }),
+        );
+        removeZoneDraft(NEW_KEY);
+        if (id) target.openZone(id);
+        show(null, false);
+        input.onCommitted?.();
+      } catch (error) {
+        show(commitErrorText(error), false);
+      }
+      return;
+    }
+    if (!surface) return;
     const request = createRequestOf({ form, shape, surface });
     await send(request, (done) => {
       // 만든 구역을 고르고 새 구역 양식은 처음 값으로 돌린다.
@@ -118,6 +174,23 @@ export function useZoneCommit(input: ZoneCommitInput) {
       return;
     }
     disarm();
+    if (zone.layoutId != null && zone.layoutItemId) {
+      try {
+        await run(() =>
+          commitLayout(zone.layoutId!, (items) => {
+            if (!items.some((item) => item.item_id === zone.layoutItemId))
+              throw new Error('Layout item missing');
+            return { items: applyLayoutEdit(items, { op: 'REMOVE', itemId: zone.layoutItemId! }) };
+          }),
+        );
+        removeZoneDraft(zone.zoneId);
+        target.openNew();
+        show(null, false);
+      } catch (error) {
+        show(commitErrorText(error), false);
+      }
+      return;
+    }
     await send(archiveRequestOf(zone.zoneId), () => {
       removeZoneDraft(zone.zoneId);
       target.openNew();

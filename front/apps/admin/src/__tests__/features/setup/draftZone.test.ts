@@ -13,7 +13,7 @@ import {
 import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry } from '@/features/surfaces/types';
 import type { ZoneBody, ZoneCommitRequest } from '@/features/zones/types';
-import { SURFACE_ZONE_MARGIN_M, surfaceZoneShape } from '@/features/zones/zoneEditModel';
+import { SURFACE_ZONE_MARGIN_M, surfaceZoneShape } from '@/features/zones/zoneShape';
 import { buildDefaultZoneDraftItems } from '@/mocks/setup';
 import { describe, expect, it } from 'vitest';
 

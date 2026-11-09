@@ -1,6 +1,8 @@
 import { todayIsoDate } from '@/features/tbm/taskInput';
 import {
   dateHhmmToMs,
+  WORK_TYPE_OPTIONS,
+  workTypeLabelOf,
   type LayoutDetail,
   type SubgraphEdge,
   type SubgraphNode,
@@ -8,12 +10,10 @@ import {
   type TbmReportCitation,
   type TbmReportStep,
   type TbmWorkUnit,
-  WORK_TYPE_OPTIONS,
-  workTypeLabelOf,
   type WorkTypeOption,
 } from '@/features/tbm/types';
 import { readMockUser } from '@/mocks/mockUser';
-import { MOCK_ZONES } from '@/mocks/zones';
+import { MOCK_ZONES, type LayoutZonesHooks } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
 // TBM 화면(작업·공종·가상 레이아웃·보고서) MSW 핸들러.
@@ -139,7 +139,12 @@ function validateLayoutPayload(body: Record<string, unknown> | null):
     }
     ids.add(itemId);
     const kind = item.kind;
-    if (kind !== 'OPENING' && kind !== 'SCAFFOLD' && kind !== 'EQUIPMENT') {
+    if (
+      kind !== 'OPENING' &&
+      kind !== 'SCAFFOLD' &&
+      kind !== 'EQUIPMENT' &&
+      kind !== 'WORK_SURFACE'
+    ) {
       return { ok: false, detail: `지원하지 않는 kind: ${String(kind)}` };
     }
     const center = item.center;
@@ -180,6 +185,7 @@ function validateLayoutPayload(body: Record<string, unknown> | null):
       size: [size[0] as number, size[1] as number, size[2] as number],
       yaw_rad: yawRad,
       label,
+      source_zone_id: typeof item.source_zone_id === 'string' ? item.source_zone_id : null,
     });
   }
   const revision = typeof body.revision === 'number' ? body.revision : undefined;
@@ -813,6 +819,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
   const today = todayIsoDate();
   const works: TbmWorkUnit[] = initialWorks(today).map((w) => ({ ...w, status: 'PLANNED' }));
 
+  let layoutZones: LayoutZonesHooks | undefined;
   let nextLayoutSeq = 104;
   let nextWorkSeq = 4;
   let nextReportSeq = 300;
@@ -1059,6 +1066,9 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
         items: validated.items,
       };
       layouts[idx] = updated;
+      const activeWork = works.find((w) => w.status === 'IN_PROGRESS' && w.layout_id === id);
+      if (activeWork)
+        layoutZones?.sync({ workId: activeWork.work_id, layoutId: id, items: updated.items });
       layoutRevisions.set(`${updated.layout_id}:${nextRevision}`, {
         layout_id: updated.layout_id,
         revision: nextRevision,
@@ -1081,6 +1091,37 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
         );
       if (work.status !== 'PLANNED')
         return HttpResponse.json({ code: 'WORK_INVALID_STATE' }, { status: 409 });
+      if (work.layout_id == null) {
+        const now = Date.now();
+        const layout: LayoutDetail = {
+          layout_id: nextLayoutSeq++,
+          name: work.name,
+          revision: 1,
+          layout_version: 'lv-1',
+          source: 'PLANNED',
+          item_count: 0,
+          created_at: now,
+          updated_at: now,
+          items: [],
+        };
+        layouts.unshift(layout);
+        layoutRevisions.set(`${layout.layout_id}:1`, {
+          layout_id: layout.layout_id,
+          revision: 1,
+          layout_version: 'lv-1',
+          name: layout.name,
+          items: [],
+          created_at: now,
+        });
+        work.layout_id = layout.layout_id;
+      }
+      const layout = layouts.find((l) => l.layout_id === work.layout_id);
+      if (layout)
+        layoutZones?.sync({
+          workId: work.work_id,
+          layoutId: layout.layout_id,
+          items: layout.items,
+        });
       work.status = 'IN_PROGRESS';
       work.actual_started_at = Date.now();
       return HttpResponse.json(work);
@@ -1089,6 +1130,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       const work = works.find((w) => w.work_id === String(params.id));
       if (!work || work.status !== 'IN_PROGRESS')
         return HttpResponse.json({ code: 'WORK_INVALID_STATE' }, { status: 409 });
+      layoutZones?.end(work.work_id);
       work.status = 'DONE';
       work.actual_ended_at = Date.now();
       const list = reportsByWork.get(work.work_id) ?? [];
@@ -1320,6 +1362,9 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
 
   return {
     handlers,
+    bindLayoutZones(hooks: LayoutZonesHooks) {
+      layoutZones = hooks;
+    },
     works,
     layouts,
     workTypes,

@@ -19,7 +19,6 @@ import {
   surfaceChanged,
   surfaceDraftOf,
   surfaceOfBox,
-  surfaceZoneShape,
   targetChanged,
   withoutName,
   withoutUnchangedSurface,
@@ -31,7 +30,7 @@ import {
   zoneFollowsSurface,
   type TargetDraft,
 } from '@/features/zones/zoneEditModel';
-import { isAxisRect } from '@/features/zones/zones';
+import { surfaceZoneShape } from '@/features/zones/zoneShape';
 import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
 import { describe, expect, it } from 'vitest';
 
@@ -47,6 +46,9 @@ const linked: WorkSurface = {
   sigma: null,
   zoneId: null,
   validFrom: 1,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
 };
 
 describe('작업면 ↔ 3D 편집 상자', () => {
@@ -257,56 +259,6 @@ describe('nextZoneName', () => {
   it('다른 이름의 구역이나 번호 없는 `구역` 은 번호를 차지하지 않고, 앞뒤 공백은 같은 이름으로 본다', () => {
     expect(nextZoneName(named('개구부 구역', '단상 구역', '구역', '새 구역'))).toBe('구역 1');
     expect(nextZoneName(named(' 구역 1 '))).toBe('구역 2');
-  });
-});
-
-describe('surfaceZoneShape(작업면이 붙은 구역의 모양)', () => {
-  const geometry = (over: Partial<SurfaceGeometry> = {}): SurfaceGeometry => ({
-    centerXy: [5, 4],
-    sizeXy: [2, 1],
-    yawRad: 0,
-    topHeightM: 1.2,
-    ...over,
-  });
-
-  it('작업면 발자국에 0.30 m 여유를 더한 반시계 직사각형이고, 바닥에서 구역 높이(2 m)까지다', () => {
-    expect(surfaceZoneShape(geometry())).toEqual({
-      polygon_xy: [
-        [3.7, 3.2],
-        [6.3, 3.2],
-        [6.3, 4.8],
-        [3.7, 4.8],
-      ],
-      z_min_m: 0,
-      z_max_m: 2,
-    });
-  });
-
-  it('회전하지 않은 작업면의 구역은 축에 맞춘 직사각형이다(3D 에서 상자로 그려진다)', () => {
-    expect(isAxisRect(surfaceZoneShape(geometry()).polygon_xy)).toBe(true);
-  });
-
-  it('상판이 구역 높이보다 높으면 상판까지 올린다', () => {
-    expect(surfaceZoneShape(geometry({ topHeightM: 2.6 })).z_max_m).toBe(2.6);
-  });
-
-  it('회전한 작업면은 같이 회전한 다각형이다(90° 면 가로·세로가 바뀐다)', () => {
-    expect(surfaceZoneShape(geometry({ yawRad: Math.PI / 2 })).polygon_xy).toEqual([
-      [5.8, 2.7],
-      [5.8, 5.3],
-      [4.2, 5.3],
-      [4.2, 2.7],
-    ]);
-  });
-
-  it('45° 로 돌린 작업면의 구역은 같은 중심의 회전한 직사각형이고 축에 맞지 않는다', () => {
-    const { polygon_xy: polygon } = surfaceZoneShape(geometry({ yawRad: Math.PI / 4 }));
-    expect(isAxisRect(polygon)).toBe(false);
-    const center = [0, 1].map((axis) => polygon.reduce((sum, p) => sum + p[axis]!, 0) / 4);
-    expect(center[0]).toBeCloseTo(5, 2);
-    expect(center[1]).toBeCloseTo(4, 2);
-    const side = Math.hypot(polygon[1]![0] - polygon[0]![0], polygon[1]![1] - polygon[0]![1]);
-    expect(side).toBeCloseTo(2.6, 2);
   });
 });
 

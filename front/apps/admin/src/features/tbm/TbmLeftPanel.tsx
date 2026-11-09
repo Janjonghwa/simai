@@ -9,7 +9,7 @@ import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 
 // 왼쪽 블록: 기본은 가상 레이아웃을 크게 보이고, 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다(토글이 아니라 화면 전환).
-// 머리에 3D 레이아웃 편집 단추를 둔다.
+// 머리에 3D 레이아웃 편집 단추를 둔다. 진행 중인 작업은 레이아웃이 관제 구역이 되어 있어 편집을 막는다.
 
 export function TbmLeftPanel({
   task,
@@ -42,6 +42,7 @@ export function TbmLeftPanel({
           variant="secondary"
           size="sm"
           aria-haspopup="dialog"
+          disabled={task.status === 'IN_PROGRESS'}
           onClick={onEditLayout}
           className={SWITCH}
         >

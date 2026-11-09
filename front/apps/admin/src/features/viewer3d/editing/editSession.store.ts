@@ -549,7 +549,7 @@ export function createEditStore(
         return refusePlanned(
           target,
           'INVALID_TARGET',
-          'kind 는 OPENING·SCAFFOLD·EQUIPMENT 중 하나여야 한다',
+          'kind 는 OPENING·WORK_SURFACE·SCAFFOLD·EQUIPMENT 중 하나여야 한다',
         );
       }
       const { snapshot } = planned.getState();

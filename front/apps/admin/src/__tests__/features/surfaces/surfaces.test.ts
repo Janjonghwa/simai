@@ -29,6 +29,9 @@ const desk: WorkSurface = {
   sigma: 0.03,
   zoneId: null,
   validFrom: 100,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
 };
 
 describe('readWorkSurfaces', () => {
@@ -47,6 +50,9 @@ describe('readWorkSurfaces', () => {
         sigma: 0.03,
         zoneId: null,
         validFrom: 100,
+        workId: null,
+        layoutId: null,
+        layoutItemId: null,
       },
     ]);
   });

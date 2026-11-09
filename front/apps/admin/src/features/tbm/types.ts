@@ -129,11 +129,14 @@ export interface WorkUnitWriteBody {
 
 export const layoutObbItemSchema = z.object({
   item_id: z.string().min(1),
-  kind: z.enum(['OPENING', 'SCAFFOLD', 'EQUIPMENT']),
+  // WORK_SURFACE(고소 작업면)가 새 종류다. SCAFFOLD 는 옛 데이터라 고소 작업면으로 읽고, EQUIPMENT 는 데이터만 두고 구역을 만들지 않는다.
+  kind: z.enum(['OPENING', 'WORK_SURFACE', 'SCAFFOLD', 'EQUIPMENT']),
   center: z.tuple([z.number(), z.number(), z.number()]),
   size: z.tuple([z.number(), z.number(), z.number()]),
   yaw_rad: z.number().default(0),
   label: z.string().nullable().default(null),
+  // 기존 구역에서 가져온 개구부 표시. 이런 항목은 작업 시작 때 새 구역을 만들지 않는다.
+  source_zone_id: z.string().nullish(),
 });
 export type LayoutObbItem = z.infer<typeof layoutObbItemSchema>;
 
@@ -412,13 +415,21 @@ export function riskItemToEval(item: TbmReportRiskItem): TaskEval {
   };
 }
 
+/** 레이아웃 항목 종류 → 2D 평면 도식 종류. 고소 작업면(옛 비계 포함)은 높이를 함께 보인다. */
+const LAYOUT_ITEM_PLAN_KIND: Record<LayoutObbItem['kind'], 'scaffold' | 'parking' | 'area'> = {
+  OPENING: 'area',
+  WORK_SURFACE: 'scaffold',
+  SCAFFOLD: 'scaffold',
+  EQUIPMENT: 'parking',
+};
+
 /** 가상 레이아웃 OBB 항목을 2D 평면 도식(LayoutItem)으로 바꾼다. */
 export function layoutObbToItem(obb: LayoutObbItem): LayoutItem {
   const [cx, cy] = obb.center;
   const [sx, sy, sz] = obb.size;
   const x = Number((cx - sx / 2).toFixed(3));
   const y = Number((cy - sy / 2).toFixed(3));
-  const kind = obb.kind === 'SCAFFOLD' ? 'scaffold' : obb.kind === 'EQUIPMENT' ? 'parking' : 'area';
+  const kind = LAYOUT_ITEM_PLAN_KIND[obb.kind];
   return {
     kind,
     label: obb.label ?? obb.item_id,

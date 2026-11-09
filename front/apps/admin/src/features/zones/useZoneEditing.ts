@@ -2,6 +2,7 @@ import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { geometryErrors, sameGeometry } from '@/features/surfaces/surfaces';
 import { useWorkSurfaces } from '@/features/surfaces/useWorkSurfaces';
+import { itemOfZoneShape } from '@/features/tbm/layoutZones';
 import type { Severity } from '@/features/zones/types';
 import { useConfigApply } from '@/features/zones/useConfigApply';
 import { useRefreshSurfacesOnOpen } from '@/features/zones/useRefreshSurfacesOnOpen';
@@ -26,7 +27,6 @@ import {
   nextZoneName,
   surfaceChanged,
   surfaceZoneForm,
-  surfaceZoneShape,
   targetChanged,
   withoutUnchangedSurface,
   withPatch,
@@ -37,6 +37,7 @@ import {
   type ZonePatch,
 } from '@/features/zones/zoneEditModel';
 import { formErrors, formOf, newZoneErrors, shapeOfBox } from '@/features/zones/zoneForm';
+import { surfaceZoneShape } from '@/features/zones/zoneShape';
 import { linkSurfaces, pickedSurface } from '@/features/zones/zoneSurfaceLink';
 import { useRoomLimit } from '@/store/roomBounds.store';
 import {
@@ -46,7 +47,7 @@ import {
   updateZoneDraft,
   useZoneEditStore,
 } from '@/store/zoneEdit.store';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 /** 이름 글자 입력을 한 단계로 묶는 되돌리기 묶음 이름. */
 const NAME_EDIT_GROUP = 'name';
@@ -79,7 +80,7 @@ function usePendingPublish(
  * 이은 구역의 작업면 모드로 열고, 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
  * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 이때 편집 모드를 끝낸다).
  */
-export function useZoneEditing(onCommitted?: () => void) {
+export function useZoneEditing(onCommitted?: () => void, workLayoutId?: number | null) {
   const viewport = useSpatialViewport()!;
   const { zones, zonesRaw, zonesFailed } = viewport;
   const surfaceList = useWorkSurfaces();
@@ -92,6 +93,8 @@ export function useZoneEditing(onCommitted?: () => void) {
   const picked = pickedSurface(pickedObjectId, surfaces, links);
   const target = useZoneTarget(viewport, picked.zoneId);
   const { zone, key } = target;
+  const [excludedLayoutId, setExcludedLayoutId] = useState<number | null>(null);
+  const withoutNewSurface = workLayoutId != null && excludedLayoutId === workLayoutId;
   const { orphan } = picked;
   useRefreshSurfacesOnOpen();
   useClearObjectPickOnClose(pickedObjectId !== null, viewport.clearSelection);
@@ -108,8 +111,11 @@ export function useZoneEditing(onCommitted?: () => void) {
   );
   // 새 구역은 늘 작업면과 함께 시작한다(작업면은 지우거나 따로 더하지 않는다). 작업면 없이 만든 기존 구역은 작업면이 없다.
   const surface = useMemo(
-    () => currentSurface(draft, linked) ?? (zone ? null : newSurfaceDraft(zoneBox)),
-    [draft, linked, zone, zoneBox],
+    () =>
+      !zone && withoutNewSurface
+        ? null
+        : (currentSurface(draft, linked) ?? (zone ? null : newSurfaceDraft(zoneBox))),
+    [draft, linked, zone, zoneBox, withoutNewSurface],
   );
   // 작업면이 있으면 구역은 작업면에서 계산한다(모양은 작업면 둘레, 심각도는 경고, 판정 유형은 입체로 고정). 3D 손잡이도
   // 작업면을 고친다.
@@ -121,7 +127,8 @@ export function useZoneEditing(onCommitted?: () => void) {
   const patchedForm = zone
     ? formWithPatch(zone, draft?.patch ?? {})
     : newZoneForm(draft?.patch ?? {}, nextZoneName(zones));
-  const form = bound ? surfaceZoneForm(patchedForm) : patchedForm;
+  const layoutBound = zone ? zone.layoutItemId != null : workLayoutId != null;
+  const form = bound || layoutBound ? surfaceZoneForm(patchedForm) : patchedForm;
   // 저장할 구역 모양: 작업면이 있으면 작업면에서 계산한 모양, 없으면 고친 상자(새 구역은 지금 상자). 기존 구역을 고치지 않았으면
   // null 이고 받은 모양을 그대로 보낸다.
   const savedBox = zone ? editedBox(zone, draft) : zoneBox;
@@ -129,6 +136,9 @@ export function useZoneEditing(onCommitted?: () => void) {
   const errors = zone
     ? formErrors(form, { saved: formOf(zone), hasHeight: bound || zone.zRange !== null })
     : newZoneErrors(form);
+  if (layoutBound && !surface && shape && !itemOfZoneShape('validation', form.name, shape)) {
+    errors.judgeType = '구역의 너비와 길이는 각각 0.8m 이상이어야 합니다.';
+  }
   const surfaceErrors = surface ? geometryErrors(surface.geometry) : null;
   const surfaceValid = surfaceErrors === null;
 
@@ -167,6 +177,7 @@ export function useZoneEditing(onCommitted?: () => void) {
   // ---- 저장·추가·삭제 -----------------------------------------------------------------------
   const commit = useZoneCommit({
     zone,
+    workLayoutId,
     shape,
     form,
     draft,
@@ -203,6 +214,7 @@ export function useZoneEditing(onCommitted?: () => void) {
   };
   const pick = (value: string) => {
     commit.disarm();
+    setExcludedLayoutId(null);
     target.pick(value);
   };
   const restore = () => {
@@ -227,6 +239,9 @@ export function useZoneEditing(onCommitted?: () => void) {
     surface,
     surfaceErrors,
     bound,
+    layoutBound,
+    canToggleNewSurface: !zone && workLayoutId != null,
+    toggleNewSurface: () => setExcludedLayoutId(withoutNewSurface ? null : (workLayoutId ?? null)),
     shapeLocked,
     orphan,
     dirty,

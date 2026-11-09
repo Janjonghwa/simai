@@ -25,6 +25,9 @@ const linked: WorkSurface = {
   sigma: 0.02,
   zoneId: 'z-04',
   validFrom: 1,
+  workId: null,
+  layoutId: null,
+  layoutItemId: null,
 };
 const form = { ...formOf(zone), name: '새 이름' };
 

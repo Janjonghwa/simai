@@ -19,6 +19,8 @@ export type Severity = (typeof SEVERITIES)[number];
 export const SEVERITY_CHOICES = ['CRITICAL', 'HIGH'] as const satisfies readonly Severity[];
 
 const vec2 = z.tuple([z.number(), z.number()]);
+// 작업 ID 는 숫자나 글자로 오고 글자로 맞춘다(작업 API 와 같다).
+const workId = z.union([z.string().min(1), z.number().int()]).transform(String);
 const requirements = z.record(z.string(), z.unknown());
 
 export const zoneItemSchema = z.object({
@@ -37,6 +39,10 @@ export const zoneItemSchema = z.object({
   // 화면에서 고치지 않는다. 새 버전을 저장할 때 받은 값을 그대로 다시 보낸다.
   requirements: requirements.nullish(),
   has_guardrail: z.boolean().nullish(),
+  // 작업 시작 때 서버가 작업 레이아웃 항목으로 만든 구역이면 그 출처(작업·레이아웃·레이아웃 항목). 상시 구역은 모두 비어 있다.
+  work_id: workId.nullish(),
+  layout_id: z.number().int().nullish(),
+  layout_item_id: z.string().nullish(),
   // 이 버전이 유효해진 시각(epoch ms, 서버가 저장할 때 정한다). 지금 버전은 valid_to 가 없다.
   valid_from: z.number(),
   valid_to: z.number().nullable(),
@@ -164,6 +170,10 @@ export interface Zone extends ZoneBox {
   requirements: Readonly<Record<string, unknown>> | null;
   /** 이 버전이 유효해진 시각(ms). 마지막 묶음보다 늦으면 아직 발행하지 않은 것이다. */
   validFrom: number;
+  /** 작업 시작 때 작업 레이아웃 항목으로 만든 구역의 출처. 상시 구역은 null 이다. */
+  workId: string | null;
+  layoutId: number | null;
+  layoutItemId: string | null;
   /** 입체 판정이고 바닥이 축에 맞춘 직사각형이며 높이가 있어야 상자 편집기로 형상을 고칠 수 있다. */
   shapeEditable: boolean;
 }

@@ -32,7 +32,7 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
           </span>
         )}
       </label>
-      {!edit.bound && <SeverityField edit={edit} />}
+      {!edit.bound && !edit.layoutBound && <SeverityField edit={edit} />}
       {errors.judgeType && (
         <span role="alert" className={FIELD_NOTE_CLASS}>
           {errors.judgeType}

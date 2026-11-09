@@ -46,6 +46,7 @@ export const DEMO_PLANNED_LAYOUT: PlannedLayoutInput = {
 
 const NEW_GEOMETRY: Record<PlannedKind, PlannedGeometry> = {
   OPENING: { center: [5, 2.5, 0.05], size: [1, 1, 0.1], yawRad: 0 },
+  WORK_SURFACE: { center: [5, 2.5, 0.2], size: [1, 1, 0.4], yawRad: 0 },
   SCAFFOLD: { center: [5, 2.5, 1], size: [1.6, 0.6, 2], yawRad: 0 },
   EQUIPMENT: { center: [5, 2.5, 0.5], size: [0.8, 0.8, 1], yawRad: 0 },
 };

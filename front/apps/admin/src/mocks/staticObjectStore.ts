@@ -46,12 +46,32 @@ export function readStaticObjectFields(value: unknown): StaticObjectFields | und
   return { kind, name: body.data.name?.trim() || null, obb, top_height_m: stored, sigma };
 }
 
+/** 작업 시작 때 작업 레이아웃 항목으로 만든 작업면·구역의 출처(서버 work_id·layout_id·layout_item_id 열). 상시 것에는 없다. */
+export interface LayoutOrigin {
+  work_id: string;
+  layout_id: number;
+  layout_item_id: string;
+}
+
+/** 항목에 실린 출처. 상시 작업면·구역이면 undefined. */
+export function layoutOriginOf(item: {
+  work_id?: string | null;
+  layout_id?: number | null;
+  layout_item_id?: string | null;
+}): LayoutOrigin | undefined {
+  const { work_id: workId, layout_id: layoutId, layout_item_id: itemId } = item;
+  return workId != null && layoutId != null && itemId != null
+    ? { work_id: workId, layout_id: layoutId, layout_item_id: itemId }
+    : undefined;
+}
+
 const itemOf = (
   id: string,
   version: number,
   f: StaticObjectFields,
   zoneId: string | null,
   t: number,
+  origin?: LayoutOrigin,
 ): StaticObjectItem => ({
   object_id: id,
   object_version: version,
@@ -61,6 +81,7 @@ const itemOf = (
   top_height_m: f.top_height_m,
   ...(f.sigma === null ? {} : { top_height_sigma_m: f.sigma }),
   zone_id: zoneId,
+  ...(origin ?? {}),
   valid_from: t,
   valid_to: null,
 });
@@ -80,10 +101,16 @@ export interface StaticObjectStore {
   find(objectId: string): StaticObjectItem | undefined;
   /** 이 구역에 이어진 지금 작업면. */
   linkedTo(zoneId: string): StaticObjectItem | undefined;
-  create(fields: StaticObjectFields, zoneId: string | null, t: number): StaticObjectItem;
+  /** origin 은 작업 레이아웃 항목으로 만든 작업면이면 그 출처다(새 버전은 이를 그대로 이어받는다). */
+  create(
+    fields: StaticObjectFields,
+    zoneId: string | null,
+    t: number,
+    origin?: LayoutOrigin,
+  ): StaticObjectItem;
   /**
    * 새 버전. zoneId 가 undefined 면 이전 연결을 그대로 두고(장애물로 바꾸면 푼다), null 이면 푼다. 지금 버전이 없으면
-   * undefined. 이어받은 구역이 보관됐는지는 보지 않는다(구역 mock 이 아닌 저장소라 모른다).
+   * undefined. 이어받은 구역이 보관됐는지는 보지 않는다(구역 mock 이 아닌 저장소라 모른다). 레이아웃 출처는 그대로 이어받는다.
    */
   update(
     objectId: string,
@@ -113,11 +140,11 @@ export function createStaticObjectStore(seed: readonly StaticObjectItem[]): Stat
     versionsOf: (objectId) => versions.filter((o) => o.object_id === objectId),
     find,
     linkedTo: (zoneId) => current().find((o) => o.zone_id === zoneId),
-    create: (fields, zoneId, t) => {
+    create: (fields, zoneId, t, origin) => {
       // 서버는 작업면이면 ws-, 아니면 so- 뒤에 8 hex 를 고른다.
       const prefix =
         fields.kind === WORK_SURFACE_KIND ? WORK_SURFACE_ID_PREFIX : OBSTACLE_ID_PREFIX;
-      const item = itemOf(hexId(prefix, ++issued), 1, fields, zoneId, t);
+      const item = itemOf(hexId(prefix, ++issued), 1, fields, zoneId, t, origin);
       versions = [...versions, item];
       return item;
     },
@@ -131,6 +158,7 @@ export function createStaticObjectStore(seed: readonly StaticObjectItem[]): Stat
         fields,
         zoneId === undefined ? kept : zoneId,
         t,
+        layoutOriginOf(before),
       );
       versions = [...closed(before, t), item];
       return item;

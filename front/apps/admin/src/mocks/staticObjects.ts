@@ -10,6 +10,7 @@ import {
   created,
   createDeny,
   errorsOf,
+  LAYOUT_LOCK_ERRORS,
   noContent,
   SEEDED_VALID_FROM,
 } from '@/mocks/zones';
@@ -21,6 +22,7 @@ import { http, HttpResponse } from 'msw/http';
 
 const ERRORS = {
   ...AUTH_ERRORS,
+  ...LAYOUT_LOCK_ERRORS,
   INVALID_STATIC_OBJECT: { status: 400, detail: '작업면·정적 객체 값이 올바르지 않습니다' },
   INVALID_SURFACE_ZONE: { status: 400, detail: '작업면만 구역에 이을 수 있습니다' },
   STATIC_OBJECT_NOT_FOUND: { status: 404, detail: '작업면·정적 객체를 찾을 수 없습니다' },
@@ -72,6 +74,7 @@ export interface StaticObjectsMock {
 
 /**
  * 작업면·정적 객체 조회·만들기·새 버전·보관(삭제). 로그인하지 않았거나 실서버 토큰이 만료면 401, 쓰기는 관리자만(아니면 403)이다.
+ * 작업 레이아웃 항목으로 만든 작업면(layout_item_id 가 있다)을 고치거나 보관하면 409 LAYOUT_ZONE_LOCKED 다(구역 mock 의 layoutZones 가 만든다).
  * 새 버전은 지금 버전을 닫고 다음 버전을 더한다(서버처럼 고치기 시작한 버전은 보지 않는다). 새 버전 본문에 zone_id 가 없으면
  * 이전 연결을 그대로 두고 빈 글자면 푼다. 보관은 지금 버전의 valid_to 만 닫는다(이력은 남고, 다시 보관해도 204, 보관한 객체를
  * 고치면 404). 상태는 이 mock 이 살아 있는 동안만 둔다.
@@ -81,6 +84,9 @@ export function createStaticObjectsMock({
 }: { now?: () => number } = {}): StaticObjectsMock {
   const store = createStaticObjectStore(MOCK_STATIC_OBJECTS);
   const deny = createDeny(now);
+  /** 작업 레이아웃 항목으로 만든 작업면인가(보관한 것 포함). 그런 작업면은 작업 레이아웃으로만 바꾼다. */
+  const isLayoutSurface = (objectId: string) =>
+    store.versionsOf(objectId).some((o) => o.layout_item_id != null);
   /** 작업면이 아닌 객체를 구역에 이을 수 없다(서버 StaticObjectRepository.link). */
   const linksNonSurface = (kind: string, zoneId: string | null | undefined) =>
     kind !== WORK_SURFACE_KIND && typeof zoneId === 'string';
@@ -109,6 +115,7 @@ export function createStaticObjectsMock({
     http.put('*/api/static-objects/:objectId', async ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
+      if (isLayoutSurface(String(params.objectId))) return fail('LAYOUT_ZONE_LOCKED');
       const raw: unknown = await request.json().catch(() => undefined);
       const fields = readStaticObjectFields(raw);
       if (!fields) return fail('INVALID_STATIC_OBJECT');
@@ -121,6 +128,7 @@ export function createStaticObjectsMock({
     http.delete('*/api/static-objects/:objectId', ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
+      if (isLayoutSurface(String(params.objectId))) return fail('LAYOUT_ZONE_LOCKED');
       return store.archive(String(params.objectId), now())
         ? noContent()
         : fail('STATIC_OBJECT_NOT_FOUND');
