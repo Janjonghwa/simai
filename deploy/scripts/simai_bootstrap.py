@@ -1070,12 +1070,16 @@ class Supervisor:
                                    f"주의: 워커 ID 를 정하지 못함({wid_src}) → 워커는 기본 worker-01 로 뜬다. EC2 에 등록한 ID 와 다르면 대여가 401 이다"
                                    f"(--worker-id·{WORKER_ID_ENV} 또는 토큰 파일 이름 <워커 ID>.token)")
         threads = env.get("SIMAI_SIDECAR_THREADS") or "1"
+        tier0_threads = env.get("SIMAI_TIER0_BLAS_THREADS", "1")
+        if not re.fullmatch(r"[1-9][0-9]*", tier0_threads):
+            raise BootstrapError(EXIT_USAGE, "SIMAI_TIER0_BLAS_THREADS 는 양의 정수여야 한다")
         avail = usable_cpus()
         quota, quota_src = cgroup_vcpu()
         self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), avail, quota)
         self.cpu_note = (f"CPU 묶기({env.get('SIMAI_SIDECAR_CPUS') or 'auto'}): affinity {len(avail)}개, cgroup 상한 "
                          f"{f'{quota} vCPU ({quota_src})' if quota is not None else '없음·못 읽음'} → vLLM·워커 "
                          f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 묶지 않음")
+        self.cpu_note += f", Tier 0 수치 연산 스레드 {tier0_threads}개 (OMP/MKL/OpenBLAS/NumExpr)"
         # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
         cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
         worker_env = dict(env)
@@ -1144,9 +1148,9 @@ class Supervisor:
             cache = cache_root / name
             e["TRITON_CACHE_DIR"], e["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "triton"), str(cache / "inductor")
             e["CUDA_CACHE_PATH"] = str(cache / "cuda")
-            if name != "tier0":  # Tier 0 의 CPU 디코딩·단일 스레드 기하 단계를 보호한다(자문 3-4). torch 의 intra-op 스레드도 OMP_NUM_THREADS 를 따른다
-                for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-                    e[k] = threads
+            # torch intra-op 도 OMP_NUM_THREADS 를 따른다. 영상 디코더 설정은 건드리지 않는다.
+            for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                e[k] = tier0_threads if name == "tier0" else threads
             if name == "vllm":
                 e.setdefault("VLLM_USE_DEEP_GEMM", "0")
                 # runtime 이미지에 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 메모리 측정 중 실패한다(3차 GPU 세션). PyTorch 샘플러로

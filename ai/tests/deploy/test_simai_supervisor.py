@@ -331,7 +331,7 @@ def test_children_get_no_token_own_caches_thread_limits_and_vllm_budget_flags(bs
         assert env["TRITON_CACHE_DIR"].endswith(os.path.join("simai-cache", name, "triton"))
         assert env["CUDA_CACHE_PATH"].endswith(os.path.join("simai-cache", name, "cuda"))
     assert len({e["TORCHINDUCTOR_CACHE_DIR"] for e in w.envs.values()}) == 3
-    assert "OMP_NUM_THREADS" not in w.envs["tier0"] and w.envs["vllm"]["OMP_NUM_THREADS"] == w.envs["worker"]["MKL_NUM_THREADS"] == "1"
+    assert w.envs["tier0"]["OMP_NUM_THREADS"] == "1" and w.envs["vllm"]["OMP_NUM_THREADS"] == w.envs["worker"]["MKL_NUM_THREADS"] == "1"
     assert w.envs["vllm"]["HF_HUB_OFFLINE"] == "1"
     a = w.argvs["vllm"]
     assert a[:2] == ["vllm", "serve"] and a[2].endswith(os.path.join("weights", "cosmos3-nano"))
@@ -1799,3 +1799,21 @@ def test_lobby_rejects_duplicate_or_invalid_ports(bs, tmp_path, over, match):
     assert match in str(exc.value)
 
 
+
+
+@pytest.mark.parametrize("override,expected", [(None, "1"), ("2", "2"), ("4", "4")])
+def test_tier0_numeric_threads(bs, tmp_path, monkeypatch, override, expected):
+    env = {"OMP_NUM_THREADS": "99", "SIMAI_SIDECAR_THREADS": "3"}
+    if override is not None:
+        env["SIMAI_TIER0_BLAS_THREADS"] = override
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env=env)
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert sup.svc["tier0"].env[key] == expected
+        assert sup.svc["worker"].env[key] == "3"
+    assert f"스레드 {expected}개" in sup.cpu_note
+
+
+@pytest.mark.parametrize("override", ["", "0", "-1", "1.5", "abc"])
+def test_invalid_tier0_numeric_threads(bs, tmp_path, monkeypatch, override):
+    with pytest.raises(bs.BootstrapError, match="SIMAI_TIER0_BLAS_THREADS"):
+        _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_TIER0_BLAS_THREADS": override})
