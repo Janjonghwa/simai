@@ -26,6 +26,7 @@ class I0CodecInfo:
     """contracts/messages/codec_info.schema.json 한 건. 새 stream_epoch 마다 프레임보다 먼저 한 번."""
 
     codec_info: dict[str, Any]
+    dropped_before_keyframe: int = 0
 
 
 @dataclass(frozen=True)

@@ -98,3 +98,42 @@ Describe 'Rotate-LogIfNeeded 로그 1 MB 순환' {
     (Test-Path $tmpLog) | Should Be $false
   }
 }
+
+Describe 'Build-RelayCommand 및 Get-RecordingStatusInfo 관제 동시 녹화 (S15P31A101-554)' {
+  It 'Build-RelayCommand 는 recordDir 가 있으면 --record-dir 를 붙이고 preview(빈 문자열)면 붙이지 않는다' {
+    $RelayLog = Join-Path $TestDrive 'gateway-relay.log'
+    $cmdWithRec = Build-RelayCommand 'simai 영상 중계' ' --send' 'C:\simai-local\recordings\live-20261109-140000'
+    ($cmdWithRec -like "*--send*--record-dir 'C:\simai-local\recordings\live-20261109-140000'*") | Should Be $true
+
+    $cmdPreview = Build-RelayCommand 'simai 카메라 미리보기(전송 없음)' ''
+    ($cmdPreview -like '*--record-dir*') | Should Be $false
+  }
+
+  It 'Get-RecordingStatusInfo 는 녹화 폴더 용량과 버린 프레임 수를 집계한다' {
+    $recRoot = Join-Path $TestDrive 'recordings'
+    $liveDir = Join-Path $recRoot 'live-20261109-140000'
+    $camDir = Join-Path $liveDir 'cam_A'
+    New-Item -ItemType Directory -Force $camDir | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $camDir 'epoch_0000.h264'), (New-Object byte[] 2097152))
+    [IO.File]::WriteAllText((Join-Path $liveDir 'manifest.json'), '{}', $Utf8)
+    $logLines = @(
+      '2026-11-09 14:00:05 INFO 녹화 상태 {"record_dir": "' + ($liveDir -replace '\\', '\\') + '", "recorded_frames": 250, "dropped_frames": 3}'
+    )
+
+    $info = Get-RecordingStatusInfo -ModeText "관제 Pod 1.2.3.4 제어 40001 영상 40002, 원격 시청 켬, 녹화 $liveDir" -RelayLogLines $logLines
+    $info.Enabled | Should Be $true
+    $info.RecordDir | Should Be $liveDir
+    $info.TotalBytes | Should Be 2097154
+    $info.DroppedFrames | Should Be 3
+    $info.RecordedFrames | Should Be 250
+    $info.HasManifest | Should Be $true
+    ($info.Summary -like "*폴더 $liveDir*용량 2.0 MB*버린 프레임 3*") | Should Be $true
+  }
+
+  It 'Get-RecordingStatusInfo 는 -NoRecord(녹화 끔)일 때 Enabled=false 를 돌려준다' {
+    $info = Get-RecordingStatusInfo -ModeText '관제 Pod 1.2.3.4 제어 40001 영상 40002, 원격 시청 켬, 녹화 끔'
+    $info.Enabled | Should Be $false
+    $info.Summary | Should Be '끔 (-NoRecord)'
+  }
+}
+

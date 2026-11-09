@@ -19,7 +19,11 @@ param(
   [string]$LocalDir = 'C:\simai-local',
   # 관제(run)·미리보기(preview)는 기본으로 CCTV 원격 시청 업로드(중계 --remote-cctv, 보는 사람이 있을 때만 EC2 로)를 켠다.
   # 관제 중 Tier 0 지연이 늘면 이 스위치로 끈다(S15P31A101-400). 로컬 미리보기(127.0.0.1)는 그대로다
-  [switch]$NoRemoteCctv
+  [switch]$NoRemoteCctv,
+  # 관제(run, run-remote)는 기본으로 C:\simai-local\recordings\live-<yyyyMMdd-HHmmss> 에 중계 송신 프레임을 그대로 녹화한다(S15P31A101-554).
+  # 녹화를 끄려면 -NoRecord 를 준다. 미리보기(preview, preview-remote)는 녹화하지 않는다.
+  [switch]$NoRecord,
+  [string]$RecordDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -27,6 +31,8 @@ try { [Console]::OutputEncoding = $Utf8; $OutputEncoding = $Utf8 } catch { }
 
 $RemoteCctvArg = if ($NoRemoteCctv) { '' } else { ' --remote-cctv' }
 $RemoteCctvLabel = if ($NoRemoteCctv) { '원격 시청 끔' } else { '원격 시청 켬' }
+$RecordingsRoot = Join-Path $LocalDir 'recordings'
+$RecordDirFile = Join-Path $LocalDir 'gateway-record-dir.txt'
 $RepoUrl = 'https://lab.ssafy.com/s15-final/S15P31A101.git'
 $InRepo = Test-Path (Join-Path $PSScriptRoot '..\..\AGENTS.md')
 if (-not $Root) {
@@ -231,9 +237,28 @@ function Stop-CameraHelper {
   Remove-Item $HelperPidFile -Force -ErrorAction SilentlyContinue
 }
 
+function Finalize-RecordingManifest([string]$recDir = '') {
+  $target = $recDir
+  if ((-not $target) -and (Test-Path $RecordDirFile)) {
+    $target = ([IO.File]::ReadAllText($RecordDirFile, $Utf8)).Trim()
+  }
+  if ((-not $target) -or (-not (Test-Path (Join-Path $target 'session.json')))) { return }
+  if (Test-Path (Join-Path $target 'manifest.json')) { return }
+  if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return }
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  Push-Location $RelayDir
+  try {
+    uv run python -c "import sys; from pathlib import Path; from simai_recorder.manifest import write_manifest; write_manifest(Path(sys.argv[1]))" "$target" 2>$null | Out-Null
+  } catch { } finally {
+    Pop-Location
+    $ErrorActionPreference = $old
+  }
+}
+
 function Do-Stop([switch]$Quiet) {
   Stop-CameraHelper
   if (-not (Test-Path $PidFile)) {
+    Finalize-RecordingManifest
     Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
     if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }
     return
@@ -241,15 +266,17 @@ function Do-Stop([switch]$Quiet) {
   foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
     if (Get-Process -Id $p -ErrorAction SilentlyContinue) { taskkill /PID $p /T /F | Out-Null }
   }
+  Finalize-RecordingManifest
   Remove-Item $PidFile -Force
   Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
   if (-not $Quiet) { Say '관제·미리보기 창을 껐다' }
 }
 
-function Build-RelayCommand([string]$title, [string]$sendArg) {
+function Build-RelayCommand([string]$title, [string]$sendArg, [string]$recordDir = '') {
   Rotate-LogIfNeeded $RelayLog
   [IO.File]::AppendAllText($RelayLog, ("=== {0:yyyy-MM-dd HH:mm:ss} $title ===`r`n" -f (Get-Date)), $Utf8)
-  return "`$Host.UI.RawUI.WindowTitle='$title'; `$ErrorActionPreference='Continue'; `$env:PYTHONUTF8='1'; uv run simai-relay run --config '$RelayCfg'$sendArg --preview-port 47032$RemoteCctvArg 2>&1 | ForEach-Object { `$l = `"`$_`"; Write-Host `$l; Add-Content -LiteralPath '$RelayLog' -Value `$l -Encoding UTF8 }"
+  $recArg = if ($recordDir) { " --record-dir '$recordDir'" } else { '' }
+  return "`$Host.UI.RawUI.WindowTitle='$title'; `$ErrorActionPreference='Continue'; `$env:PYTHONUTF8='1'; uv run simai-relay run --config '$RelayCfg'$sendArg --preview-port 47032$RemoteCctvArg$recArg 2>&1 | ForEach-Object { `$l = `"`$_`"; Write-Host `$l; Add-Content -LiteralPath '$RelayLog' -Value `$l -Encoding UTF8 }"
 }
 
 function Do-Run {
@@ -279,14 +306,24 @@ function Do-Run {
   for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 500; if (Test-Tcp '127.0.0.1' 17000 300) { $ok = $true; break } }
   if (-not $ok) { Warn '터널이 10초 안에 열리지 않았다. 터널 창의 오류를 본다(계속 다시 시도한다).' } else { Say '터널 열림' }
 
+  $recDir = ''
+  if (-not $NoRecord) {
+    $recDir = if ($RecordDir) { $RecordDir } else { Join-Path $RecordingsRoot ("live-{0:yyyyMMdd-HHmmss}" -f (Get-Date)) }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $recDir) | Out-Null
+    [IO.File]::WriteAllText($RecordDirFile, $recDir, $Utf8)
+  } else {
+    Remove-Item $RecordDirFile -Force -ErrorAction SilentlyContinue
+  }
+  $recordLabel = if ($NoRecord) { '녹화 끔' } else { "녹화 $recDir" }
+
   $p2 = Start-Process powershell -PassThru -WorkingDirectory $AlertDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 현장 경보 단말'; uv run simai-site-alert run"
   Start-Sleep 3
-  $relayCmd = Build-RelayCommand 'simai 영상 중계' ' --send'
+  $relayCmd = Build-RelayCommand 'simai 영상 중계' ' --send' $recDir
   $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', $relayCmd
   Start-CameraHelper
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
-  "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
-  Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel. 끌 때는 메뉴 4"
+  "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel, $recordLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
+  Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel, $recordLabel. 끌 때는 메뉴 4"
 }
 
 function Do-Preview {
@@ -514,7 +551,10 @@ function Start-InSession([string]$modeArgs, [string]$label) {
 
 function Do-RunRemote {
   if (-not $PodIp -or -not $ControlPort -or -not $VideoPort) { Fail 'run-remote 는 -PodIp -ControlPort -VideoPort 를 모두 준다' }
-  $extra = if ($NoRemoteCctv) { ' -NoRemoteCctv' } else { '' }
+  $extra = ''
+  if ($NoRemoteCctv) { $extra += ' -NoRemoteCctv' }
+  if ($NoRecord) { $extra += ' -NoRecord' }
+  if ($RecordDir) { $extra += " -RecordDir `"$RecordDir`"" }
   Start-InSession "run -PodIp $PodIp -ControlPort $ControlPort -VideoPort $VideoPort$extra" '관제(창 3개)'
 }
 
@@ -568,10 +608,11 @@ function Get-ResumeMode {
   if (-not (Test-Path $ModeFile)) { return $null }
   $m = (Get-Content $ModeFile -Raw).Trim()
   $extra = if ($m -match '원격 시청 끔') { ' -NoRemoteCctv' } else { '' }
+  $recExtra = if ($m -match '녹화 끔') { ' -NoRecord' } else { '' }
   if ($m.StartsWith('관제')) {
     $s = Load-State
     if ($s.PodIp -and $s.ControlPort -and $s.VideoPort) {
-      return @{ Mode = 'run'; Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra"; Label = '관제(창 3개)' }
+      return @{ Mode = 'run'; Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra$recExtra"; Label = '관제(창 3개)' }
     }
     return @{ Mode = 'run'; Args = ''; Label = '관제(창 3개)' }
   }
@@ -877,6 +918,131 @@ function Do-Heal {
   }
 }
 
+function Get-RecordingStatusInfo {
+  # 녹화 폴더·용량·버린 프레임 수를 계산한다(S15P31A101-554).
+  param(
+    [string]$ModeText = '',
+    [string]$RecordDirPath = '',
+    [string]$RecordingsRootDir = $RecordingsRoot,
+    [string[]]$RelayLogLines = @()
+  )
+  if ($ModeText -match '녹화 끔') {
+    return @{
+      Enabled        = $false
+      RecordDir      = ''
+      Exists         = $false
+      TotalBytes     = [long]0
+      SizeLabel      = '0.0 MB'
+      DroppedFrames  = 0
+      RecordedFrames = 0
+      HasManifest    = $false
+      Summary        = '끔 (-NoRecord)'
+    }
+  }
+  $dir = $RecordDirPath
+  if ((-not $dir) -and ($ModeText -match '녹화\s+([^\s,()]+)')) {
+    $dir = $Matches[1]
+  }
+  if ((-not $dir) -and (Test-Path $RecordDirFile)) {
+    $dir = ([IO.File]::ReadAllText($RecordDirFile, $Utf8)).Trim()
+  }
+  if ((-not $dir) -and $RecordingsRootDir -and (Test-Path $RecordingsRootDir)) {
+    $latest = Get-ChildItem -LiteralPath $RecordingsRootDir -Directory -Filter 'live-*' -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending | Select-Object -First 1
+    if ($latest) { $dir = $latest.FullName }
+  }
+  if (-not $dir) {
+    return @{
+      Enabled        = $false
+      RecordDir      = ''
+      Exists         = $false
+      TotalBytes     = [long]0
+      SizeLabel      = '0.0 MB'
+      DroppedFrames  = 0
+      RecordedFrames = 0
+      HasManifest    = $false
+      Summary        = '기록 없음'
+    }
+  }
+
+  $exists = Test-Path -LiteralPath $dir
+  [long]$totalBytes = 0
+  $dropped = 0
+  $recorded = 0
+  $hasManifest = $false
+
+  if ($exists) {
+    $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue)
+    foreach ($f in $files) { $totalBytes += [long]$f.Length }
+    $hasManifest = Test-Path -LiteralPath (Join-Path $dir 'manifest.json')
+    $sessPath = Join-Path $dir 'session.json'
+    if (Test-Path -LiteralPath $sessPath) {
+      try {
+        $sess = Get-Content -LiteralPath $sessPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($sess.recording_stats) {
+          $dropped = [int]$sess.recording_stats.dropped_frames
+          $recorded = [int]$sess.recording_stats.recorded_frames
+        }
+      } catch { }
+    }
+    $evFiles = @(Get-ChildItem -LiteralPath $dir -Recurse -Filter 'events.jsonl' -File -ErrorAction SilentlyContinue)
+    if ($evFiles.Count -gt 0) {
+      $evDropped = 0
+      $evRecorded = 0
+      $foundClosed = $false
+      foreach ($ef in $evFiles) {
+        foreach ($line in @(Get-Content -LiteralPath $ef.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+          if ($line -match '"event"\s*:\s*"closed"') {
+            try {
+              $ev = $line | ConvertFrom-Json
+              $evDropped += [int]$ev.dropped_frames
+              $evRecorded += [int]$ev.recorded_frames
+              $foundClosed = $true
+            } catch { }
+          }
+        }
+      }
+      if ($foundClosed) {
+        if ($evDropped -gt $dropped) { $dropped = $evDropped }
+        if ($evRecorded -gt $recorded) { $recorded = $evRecorded }
+      }
+    }
+  }
+
+  foreach ($line in $RelayLogLines) {
+    if ($line -match '녹화 상태\s+(\{.+\})\s*$') {
+      try {
+        $snap = $Matches[1] | ConvertFrom-Json
+        if ((-not $snap.record_dir) -or ($snap.record_dir -eq $dir)) {
+          $dropped = [int]$snap.dropped_frames
+          $recorded = [int]$snap.recorded_frames
+        }
+      } catch { }
+    } elseif ($line -match '동시 녹화 완료:.*저장 프레임\s+(\d+),\s*바이트\s+\d+,\s*버린 프레임\s+(\d+)') {
+      $recorded = [int]$Matches[1]
+      $dropped = [int]$Matches[2]
+    }
+  }
+
+  $sizeLabel = if ($totalBytes -ge 1GB) {
+    ("{0:N2} GB" -f ($totalBytes / 1GB))
+  } else {
+    ("{0:N1} MB" -f ($totalBytes / 1MB))
+  }
+  $manifestLabel = if ($hasManifest) { ', manifest 있음' } elseif ($exists) { ', 녹화 중/manifest 전' } else { ', 폴더 아직 없음' }
+  return @{
+    Enabled        = $true
+    RecordDir      = $dir
+    Exists         = $exists
+    TotalBytes     = $totalBytes
+    SizeLabel      = $sizeLabel
+    DroppedFrames  = $dropped
+    RecordedFrames = $recorded
+    HasManifest    = $hasManifest
+    Summary        = "폴더 $dir, 용량 $sizeLabel, 버린 프레임 $dropped (저장 $recorded$manifestLabel)"
+  }
+}
+
 function Do-Status {
   Say "카메라 헬퍼: $(if (Test-CameraHelper) { '실행 중' } else { '꺼짐' }) (로그 $HelperLog)"
   $rawMode = '꺼짐'
@@ -895,6 +1061,14 @@ function Do-Status {
     $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
     $alive = [bool]($proc -and ($proc.ProcessName -match '^(powershell|pwsh)$'))
     Say "  창 PID $p : $(if ($alive) { '살아 있음' } else { '죽음' })"
+  }
+
+  $relayTail = if (Test-Path $RelayLog) { @(Get-Content -LiteralPath $RelayLog -Encoding UTF8 -Tail 120 -ErrorAction SilentlyContinue) } else { @() }
+  $recInfo = Get-RecordingStatusInfo -ModeText $rawMode -RelayLogLines $relayTail
+  if ($recInfo.Enabled -and ($recInfo.DroppedFrames -gt 0)) {
+    Warn "녹화: $($recInfo.Summary)"
+  } else {
+    Say "녹화: $($recInfo.Summary)"
   }
 
   $sshd = Get-Service sshd -ErrorAction SilentlyContinue

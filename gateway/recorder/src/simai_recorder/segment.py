@@ -101,8 +101,8 @@ def read_segment(paths: SegmentPaths) -> tuple[dict[str, Any], Iterator[tuple[di
 
 def camera_segments(camera_dir: Path) -> list[SegmentPaths]:
     """카메라 디렉터리의 세그먼트를 stream_epoch 순서로."""
-    out = []
-    for codec in sorted(camera_dir.glob(f"epoch_*{CODEC_INFO_SUFFIX}")):
-        epoch = int(codec.name[len("epoch_") : len("epoch_") + 4])
-        out.append(SegmentPaths.of(camera_dir, epoch))
-    return out
+    epochs = [
+        int(codec.name[len("epoch_") : -len(CODEC_INFO_SUFFIX)])
+        for codec in camera_dir.glob(f"epoch_*{CODEC_INFO_SUFFIX}")
+    ]
+    return [SegmentPaths.of(camera_dir, epoch) for epoch in sorted(epochs)]

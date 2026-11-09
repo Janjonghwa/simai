@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from simai_recorder.clock import SystemClock
+from simai_recorder.contract import ContractsNotFoundError
 
 from simai_relay import __version__
 from simai_relay.config import (
@@ -43,6 +44,12 @@ from simai_relay.preview import (
     PreviewServer,
     preview_factory,
 )
+from simai_relay.recording import (
+    DEFAULT_MAX_QUEUE_FRAMES as DEFAULT_RECORD_QUEUE_FRAMES,
+    DEFAULT_MIN_FREE_GB,
+    RelayRecorder,
+    recording_factory,
+)
 from simai_relay.relay import RelaySession
 from simai_relay.remote import RemoteUploader, make_remote_hub
 from simai_relay.sink import CountingSink, SinkFactory
@@ -62,7 +69,7 @@ def _setup_logging(secrets: list[str], verbose: bool) -> None:
 
 
 def _report(session: RelaySession, transport: object | None = None, preview: PreviewHub | None = None,
-            remote: RemoteUploader | None = None) -> None:
+            remote: RemoteUploader | None = None, recorder: RelayRecorder | None = None) -> None:
     sends = {s["camera_id"]: s for s in transport.snapshots()} if transport is not None else {}  # type: ignore[attr-defined]
     # 로그는 도착 간격 창을 비우지 않는다(창은 1초마다 단말로 보내는 상태 보고가 비운다)
     for entry, snap in zip(session.heartbeat_cameras(reset_window=False), session.snapshots(), strict=True):
@@ -73,11 +80,15 @@ def _report(session: RelaySession, transport: object | None = None, preview: Pre
             record["preview"] = preview.camera_snapshot(snap["camera_id"])
         if remote is not None:
             record["remote_cctv"] = remote.hub.camera_snapshot(snap["camera_id"])
+        if recorder is not None:
+            record["recording"] = recorder.camera_snapshot(snap["camera_id"])
         log.info("상태 %s", json.dumps(record, ensure_ascii=False))
     if preview is not None:
         log.info("미리보기 상태 %s", json.dumps(preview.snapshot(), ensure_ascii=False))
     if remote is not None:
         log.info("원격 CCTV 상태 %s", json.dumps(remote.snapshot(), ensure_ascii=False))
+    if recorder is not None:
+        log.info("녹화 상태 %s", json.dumps(recorder.snapshot(), ensure_ascii=False))
 
 
 def _tier0_transport(env: dict[str, str]):  # noqa: ANN202
@@ -106,21 +117,41 @@ def cmd_run(args: argparse.Namespace) -> int:
     _setup_logging(secret_values(env), args.verbose)
     watcher = factory = None
     remote_settings = None
+    recorder: RelayRecorder | None = None
     try:
         if not 0 <= args.status_port <= 65535:
             raise ValueError("--status-port 는 0~65535 다")
         if args.preview_port is not None and not 1 <= args.preview_port <= 65535:
             raise ValueError("--preview-port 는 1~65535 다")
-        cameras = load_cameras(Path(args.config), clock, env)
+        if args.record_min_free_gb < 0:
+            raise ValueError("--record-min-free-gb 는 0 이상이다")
+        if args.record_queue_frames < 1:
+            raise ValueError("--record-queue-frames 는 1 이상이다")
+        config_path = Path(args.config)
+        cameras = load_cameras(config_path, clock, env)
         epochs = EpochStore(Path(args.epoch_state))
         if args.send:
             watcher, factory = _tier0_transport(env)
         if args.remote_cctv:
             remote_settings = load_remote_cctv_settings(env)
-    except (ConfigError, KeyError, TypeError, ValueError) as e:
+        if args.record_dir is not None:
+            laptop_id = (env.get("SIMAI_LAPTOP_ID") or "laptop-01").strip()
+            recorder = RelayRecorder(
+                Path(args.record_dir),
+                cameras,
+                clock,
+                config_path=config_path,
+                gateway_id=laptop_id,
+                requested_duration_s=args.seconds,
+                min_free_bytes=int(args.record_min_free_gb * (1024**3)),
+                max_queue_frames=args.record_queue_frames,
+            )
+    except (ConfigError, ContractsNotFoundError, FileExistsError, KeyError, TypeError, ValueError) as e:
         print(f"설정 오류: {e}", file=sys.stderr)
         return 2
     sink_factory: SinkFactory = factory if factory is not None else CountingSink
+    if recorder is not None:
+        sink_factory = recording_factory(sink_factory, recorder)
     hub = preview_server = None
     if args.preview_port is not None:
         hub = PreviewHub([c.camera_id for c in cameras])
@@ -143,10 +174,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 2
         # 로컬 미리보기와 따로 둔 허브. 원래 전송(Tier 0)·로컬 미리보기를 먼저 하고, 원격 쪽 고장은 수신으로 올리지 않는다
         sink_factory = preview_factory(sink_factory, remote.hub)
+    if recorder is not None:
+        recorder.start()
     session = RelaySession(cameras, sink_factory, clock, epoch_store=epochs)
-    log.info("중계 시작 (simai-relay %s, 카메라 %d대, %s, %s)", __version__, len(cameras),
+    log.info("중계 시작 (simai-relay %s, 카메라 %d대, %s, %s%s)", __version__, len(cameras),
              "Ctrl+C 로 멈춤" if args.seconds is None else f"{args.seconds:.0f}초",
-             "Tier 0 로 카메라별 TLS 전송" if factory is not None else "전송 없음: 측정만")
+             "Tier 0 로 카메라별 TLS 전송" if factory is not None else "전송 없음: 측정만",
+             f", 동시 녹화 {recorder.record_dir}" if recorder is not None else "")
     if watcher is not None:
         watcher.start()
     if remote is not None:
@@ -160,7 +194,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         publisher.start()
     try:
         while not session.join(timeout=args.report_interval):
-            _report(session, factory, hub, remote)
+            _report(session, factory, hub, remote, recorder)
     except KeyboardInterrupt:
         session.stop()
         session.join()
@@ -173,10 +207,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             preview_server.stop()
         if remote is not None:
             remote.stop()
-    _report(session, factory, hub, remote)
+        if recorder is not None:
+            recorder.close(session)
+    _report(session, factory, hub, remote, recorder)
     errors = session.errors()
     if errors:
         log.error("오류로 멈춘 카메라: %s", errors)
+        return 1
+    if recorder is not None and recorder.manifest_errors:
         return 1
     return 0
 
@@ -203,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--remote-cctv", action="store_true",
                      help="노트북 밖 관리자 CCTV 원격 시청: EC2(wss /ws/devices/cctv)에 늘 붙어 있다가 보는 사람이 있을 때만 "
                           "올린다 (.env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN, 주지 않으면 끔)")
+    run.add_argument("--record-dir", default=None,
+                     help="송신하는 압축 프레임·I0 헤더를 녹화 세그먼트와 manifest 로 저장할 폴더 (주지 않으면 녹화 안 함)")
+    run.add_argument("--record-min-free-gb", type=float, default=DEFAULT_MIN_FREE_GB,
+                     help=f"녹화 유지 최소 디스크 여유 공간(GB, 기본 {DEFAULT_MIN_FREE_GB:g}). 하한 아래면 녹화만 중단하고 송신은 계속")
+    run.add_argument("--record-queue-frames", type=int, default=DEFAULT_RECORD_QUEUE_FRAMES,
+                     help=f"카메라별 녹화 큐 프레임 상한 (기본 {DEFAULT_RECORD_QUEUE_FRAMES}). 넘치면 녹화 프레임만 버림")
     run.add_argument("--verbose", action="store_true")
     from simai_relay import bench
 
