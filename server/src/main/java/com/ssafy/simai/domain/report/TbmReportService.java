@@ -144,13 +144,34 @@ public class TbmReportService implements DisposableBean {
         for (String severity : List.of("CRITICAL", "HIGH", "CAUTION", "INFO")) {
             text.append("등급 ").append(severity).append(' ').append(facts.path("severity_counts").path(severity).asLong()).append("건. ");
         }
+        // risk-engine wrap_up.RULE_DESCRIPTIONS 와 같은 사전(명세 7장 R1~R10, R11 조끼 -549)
+        var descriptions = java.util.Map.ofEntries(java.util.Map.entry("R1", "위험 구역 진입"),
+                java.util.Map.entry("R2", "가장자리 근접"), java.util.Map.entry("R3", "고소 위치"),
+                java.util.Map.entry("R4", "낙상 의심"), java.util.Map.entry("R5", "진입 예측"),
+                java.util.Map.entry("R6", "위험 구역 내 관측 상실"), java.util.Map.entry("R7", "구역 감시 능력 저하"),
+                java.util.Map.entry("R8", "장비 근접"), java.util.Map.entry("R9", "안전모 미착용"),
+                java.util.Map.entry("R10", "불확실 점유 근접"), java.util.Map.entry("R11", "조끼 미착용"));
         for (var entry : facts.path("rule_counts").properties()) {
-            text.append("규칙 ").append(entry.getKey()).append(' ').append(entry.getValue().asLong()).append("건. ");
+            text.append("규칙 ").append(entry.getKey()).append(' ').append(descriptions.getOrDefault(entry.getKey(), ""))
+                    .append(' ').append(entry.getValue().asLong()).append("건. ");
+        }
+        for (var zone : facts.path("top_zones")) {
+            text.append("구역 ").append(zone.path("name").asString()).append(" 이벤트 ")
+                    .append(zone.path("count").asLong()).append("건. ");
         }
         text.append("최고 등급 ").append(facts.path("max_severity").asString("없음")).append(". ");
         text.append("운영자 확인 ").append(facts.path("operator_ack_count").asLong()).append("건. ");
+        text.append("운영자 미확인 CRITICAL ").append(facts.path("unacknowledged_critical_count").asLong()).append("건. ");
         text.append("운영자 종료 ").append(facts.path("operator_close_count").asLong()).append("건. ");
         text.append("작업 외 진입 ").append(facts.path("outside_work_entry_count").asLong()).append("건.");
+        for (var phase : java.util.Map.of("early", "초반", "middle", "중반", "late", "후반").entrySet()) {
+            text.append(" 작업 ").append(phase.getValue()).append(" 이벤트 ")
+                    .append(facts.path("phase_counts").path(phase.getKey()).asLong()).append("건.");
+        }
+        if (!facts.path("first_event_min").isNull() && !facts.path("first_event_min").isMissingNode()) {
+            text.append(" 첫 이벤트 시작 후 ").append(facts.path("first_event_min").asLong()).append("분.");
+            text.append(" 마지막 이벤트 시작 후 ").append(facts.path("last_event_min").asLong()).append("분.");
+        }
         return text.toString();
     }
 

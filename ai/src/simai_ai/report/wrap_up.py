@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 
@@ -12,7 +13,13 @@ from .llm import ChatClient, LlmError
 SEVERITIES = ("CRITICAL", "HIGH", "CAUTION", "INFO")
 WORK_TYPES = frozenset(("SCAFFOLD_INSTALL", "OPENING_WORK", "HIGH_PLACE", "MATERIAL_HANDLING",
                         "EQUIPMENT_OP", "FLOOR_FINISHING", "GENERAL"))
-COUNT_FIELDS = ("event_count", "operator_ack_count", "operator_close_count", "outside_work_entry_count")
+COUNT_FIELDS = ("event_count", "operator_ack_count", "operator_close_count", "outside_work_entry_count", "unacknowledged_critical_count")
+RULE_DESCRIPTIONS = {
+    "R1": "위험 구역 진입", "R2": "가장자리 근접", "R3": "고소 위치", "R4": "낙상 의심",
+    "R5": "진입 예측", "R6": "위험 구역 내 관측 상실", "R7": "구역 감시 능력 저하",
+    # 명세 7장 R8~R10, R11 조끼(-549). 이 사전에 없는 규칙이 오면 요청 전체를 거절해 대체 문장으로 간다.
+    "R8": "장비 근접", "R9": "안전모 미착용", "R10": "불확실 점유 근접", "R11": "조끼 미착용",
+}
 
 
 def validate_request(data: Any) -> dict[str, Any]:
@@ -29,7 +36,7 @@ def validate_request(data: Any) -> dict[str, Any]:
     if window[1] < window[0] or window[1] > 253_402_300_799_999:
         raise ValueError("invalid window")
     facts = data["facts"]
-    if not isinstance(facts, dict) or set(facts) != {*COUNT_FIELDS, "severity_counts", "rule_counts", "max_severity"}:
+    if not isinstance(facts, dict) or set(facts) != {*COUNT_FIELDS, "severity_counts", "rule_counts", "max_severity", "phase_counts", "first_event_min", "last_event_min", "top_zones"}:
         raise ValueError("invalid facts")
     for key in COUNT_FIELDS:
         if type(facts[key]) is not int or not 0 <= facts[key] <= 2**63 - 1:
@@ -37,12 +44,43 @@ def validate_request(data: Any) -> dict[str, Any]:
     severities, rules = facts["severity_counts"], facts["rule_counts"]
     if not isinstance(severities, dict) or set(severities) != set(SEVERITIES) or not isinstance(rules, dict):
         raise ValueError("invalid breakdown")
-    if any(not isinstance(key, str) or not re.fullmatch(r"R[1-7]", key) for key in rules):
+    if any(not isinstance(key, str) or not key in RULE_DESCRIPTIONS for key in rules):
         raise ValueError("invalid rule")
     if any(type(v) is not int or not 0 <= v <= 2**63 - 1 for v in (*severities.values(), *rules.values())):
         raise ValueError("invalid breakdown count")
     if sum(severities.values()) != facts["event_count"] or sum(rules.values()) != facts["event_count"]:
         raise ValueError("inconsistent total")
+    zones = facts["top_zones"]
+    if not isinstance(zones, list) or len(zones) > 3:
+        raise ValueError("invalid zones")
+    names = set()
+    for zone in zones:
+        if not isinstance(zone, dict) or set(zone) != {"name", "count"}:
+            raise ValueError("invalid zone")
+        name, count = zone["name"], zone["count"]
+        if (not isinstance(name, str) or not 1 <= len(name) <= 40 or name != name.strip()
+                or any(unicodedata.category(c).startswith("C") for c in name)
+                or name in names or type(count) is not int or not 1 <= count <= facts["event_count"]):
+            raise ValueError("invalid zone")
+        names.add(name)
+    if (sum(z["count"] for z in zones) > facts["event_count"]
+            or any(zones[i]["count"] < zones[i + 1]["count"] for i in range(len(zones) - 1))
+            or bool(zones) != bool(facts["event_count"])):
+        raise ValueError("inconsistent zones")
+    if facts["unacknowledged_critical_count"] > severities["CRITICAL"]:
+        raise ValueError("invalid unacknowledged critical count")
+    phases = facts["phase_counts"]
+    if (not isinstance(phases, dict) or set(phases) != {"early", "middle", "late"}
+            or any(type(v) is not int or v < 0 for v in phases.values())
+            or sum(phases.values()) != facts["event_count"]):
+        raise ValueError("invalid phase counts")
+    first, last = facts["first_event_min"], facts["last_event_min"]
+    if facts["event_count"] == 0:
+        if first is not None or last is not None:
+            raise ValueError("invalid event times")
+    elif (type(first) is not int or type(last) is not int
+          or not 0 <= first <= last <= (window[1] - window[0]) // 60000):
+        raise ValueError("invalid event times")
     maximum = next((s for s in SEVERITIES if severities[s]), None)
     if facts["max_severity"] != maximum or any(
         facts[k] > facts["event_count"] for k in ("operator_ack_count", "operator_close_count")
@@ -55,41 +93,29 @@ def fact_clauses(facts: dict[str, Any]) -> list[str]:
     return [
         f"전체 이벤트 {facts['event_count']}건",
         *(f"등급 {s} {facts['severity_counts'][s]}건" for s in SEVERITIES),
-        *(f"규칙 {r} {n}건" for r, n in sorted(facts["rule_counts"].items())),
+        *(f"규칙 {r} {RULE_DESCRIPTIONS[r]} {n}건" for r, n in sorted(facts["rule_counts"].items())),
+        *(f"구역 {z['name']} 이벤트 {z['count']}건" for z in facts["top_zones"]),
         f"최고 등급 {facts['max_severity'] or '없음'}",
         f"운영자 확인 {facts['operator_ack_count']}건",
+        f"운영자 미확인 CRITICAL {facts['unacknowledged_critical_count']}건",
         f"운영자 종료 {facts['operator_close_count']}건",
         f"작업 외 진입 {facts['outside_work_entry_count']}건",
+        *(f"작업 {label} 이벤트 {facts['phase_counts'][key]}건" for key, label in
+          (("early", "초반"), ("middle", "중반"), ("late", "후반"))),
+        *([f"첫 이벤트 시작 후 {facts['first_event_min']}분", f"마지막 이벤트 시작 후 {facts['last_event_min']}분"]
+          if facts["first_event_min"] is not None else []),
     ]
 
 
-_FENCE = re.compile(r"^```[A-Za-z]*\s*\n?(.*?)\n?```$", re.S)
-
-
 def unwrap_paragraph(text: Any) -> str | None:
-    """모델 응답에서 문단만 꺼낸다(S15P31A101-512). 지시를 어기고 감싼 껍데기만 벗긴다.
-
-    - 코드 블록(```)이면 안쪽.
-    - JSON 문자열(`"..."`)이면 그 글, 값이 글 하나뿐인 JSON 객체(`{"message": "..."}`)면 그 글.
-    - 그 밖의 JSON(값이 여럿·배열·숫자 등)이나 깨진 JSON 은 문단이 아니므로 None(거절).
-    """
+    """JSON이나 코드 블록으로 감싼 응답은 재작성을 요청한다."""
     if not isinstance(text, str):
         return None
     body = text.strip()
-    fenced = _FENCE.match(body)
-    if fenced:
-        body = fenced.group(1).strip()
-    if body[:1] in "{[\"":
-        try:
-            value = json.loads(body)
-        except ValueError:
-            return None
-        if isinstance(value, dict) and len(value) == 1:
-            value = next(iter(value.values()))
-        if not isinstance(value, str):
-            return None
-        body = value.strip()
-    return body or None
+    if not body or body.startswith(('{', '[', '"', '```')):
+        return None
+    return body
+
 
 
 def numbers_match(text: str, facts: dict[str, Any]) -> bool:
@@ -99,19 +125,20 @@ def numbers_match(text: str, facts: dict[str, Any]) -> bool:
     """
     if not isinstance(text, str) or not text.strip() or len(text) > 8_000:
         return False
-    # 꺼내고도 남은 JSON·코드 블록 흔적은 문단이 아니다(S15P31A101-512).
-    if re.search(r"[{}]|```", text):
-        return False
     rest = text
     for clause in fact_clauses(facts):
         pattern = r"(?<![\w.+−-])" + re.escape(clause) + r"(?![\w])"
         rest, count = re.subn(pattern, "", rest, count=1)
         if count != 1:
             return False
+    # 절 밖에는 제한된 연결 문구만 허용해 임의 구역명·규칙 설명도 막는다.
+    rest = re.sub(r"작업 중|집계 내용은 다음과 같다|기록을 확인했다|로 집계됐다|로 기록됐다|집계됐다|기록됐다|그리고|또한|이며|이다", "", rest)
+    if re.search(r"[^\s,.!?·]", rest):
+        return False
     # 한글 수사로 수치를 추가하거나 허용 절 앞에 부호·소수점을 붙이는 우회도 거절한다.
     return not re.search(
         r"\d|[%％]|CRITICAL|HIGH|CAUTION|INFO|최고\s*등급|"
-        r"[영일이삼사오육칠팔구십백천만한두세네다섯여섯일곱여덟아홉]+\s*(?:건|명|회|퍼센트)", rest
+        r"[영일이삼사오육칠팔구십백천만한두세네다섯여섯일곱여덟아홉]+\s*(?:건|명|회|분|퍼센트)", rest
     )
 
 
@@ -127,7 +154,7 @@ def generate(data: dict[str, Any], client_factory: Callable[[], ChatClient]) -> 
         {"role": "system", "content": (
             "작업 마무리를 집계 사실만으로 한국어로 작성한다. 아래 필수 사실 절을 각각 정확히 한 번 그대로 포함한다. "
             "다른 수치·날짜·시간·확률·사고 유무·안전 판정·추측은 추가하지 않는다. "
-            "필수 절 바깥에서는 규칙 ID도 쓰지 않는다. 설명이나 JSON 없이 문단만 반환한다."
+            "절 사이에는 작업 중, 그리고, 또한, 집계됐다, 기록됐다 같은 연결 문구만 쓴다. 필수 절 바깥에서는 규칙 ID도 쓰지 않는다. 설명이나 JSON 없이 문단만 반환한다."
         )},
         {"role": "user", "content": json.dumps({"work_type": data["work_type"], "facts": facts,
                                                  "required_clauses": required}, ensure_ascii=False)},

@@ -25,6 +25,10 @@ REQUEST = {
         "operator_ack_count": 1,
         "operator_close_count": 0,
         "outside_work_entry_count": 4,
+        "phase_counts": {"early": 1, "middle": 1, "late": 1},
+        "first_event_min": 0, "last_event_min": 0,
+        "unacknowledged_critical_count": 1,
+        "top_zones": [{"name": "개구부 1", "count": 2}, {"name": "개구부 2", "count": 1}],
     },
 }
 
@@ -55,7 +59,7 @@ def test_valid_numbers_are_kept_and_only_aggregates_enter_prompt():
 
 @pytest.mark.parametrize("bad", [
     lambda s: s.replace("CRITICAL 2건", "CRITICAL 1건").replace("HIGH 1건", "HIGH 2건"),
-    lambda s: s.replace("규칙 R1 2건", "규칙 R1 3건"),
+    lambda s: s.replace("규칙 R1 위험 구역 진입 2건", "규칙 R1 위험 구역 진입 3건"),
     lambda s: s + " 사망자 99명.",
     lambda s: s + " 확률 0.3%.",
     lambda s: s + " 사고 한건.",
@@ -115,7 +119,8 @@ def test_zero_events_same_millisecond_is_valid_and_does_not_claim_safety():
     request["facts"] = {
         "event_count": 0, "severity_counts": dict.fromkeys(("CRITICAL", "HIGH", "CAUTION", "INFO"), 0),
         "rule_counts": {}, "max_severity": None, "operator_ack_count": 0, "operator_close_count": 0,
-        "outside_work_entry_count": 0,
+        "outside_work_entry_count": 0, "phase_counts": {"early": 0, "middle": 0, "late": 0},
+        "first_event_min": None, "last_event_min": None, "unacknowledged_critical_count": 0, "top_zones": [],
     }
     assert validate_request(request) == request
     text = deterministic(request["facts"])
@@ -136,6 +141,14 @@ def test_zero_events_same_millisecond_is_valid_and_does_not_claim_safety():
     lambda r: r.update(window_ms=[2000, 1000]),
     lambda r: r.update(work_type=[]),
     lambda r: r.update(window_ms=[True, 1000]),
+    lambda r: r["facts"]["top_zones"][0].update(name="구역\n이름"),
+    lambda r: r["facts"]["top_zones"][0].update(name="가" * 41),
+    lambda r: r["facts"]["top_zones"][0].update(extra=1),
+    lambda r: r["facts"].update(unacknowledged_critical_count=3),
+    lambda r: r["facts"]["phase_counts"].update(early=2),
+    lambda r: r["facts"]["phase_counts"].update(extra=0),
+    lambda r: r["facts"].update(first_event_min=1),
+    lambda r: r["facts"].update(last_event_min=True),
 ])
 def test_invalid_or_personal_input_is_rejected(edit):
     request = copy.deepcopy(REQUEST)
@@ -151,10 +164,11 @@ def test_invalid_or_personal_input_is_rejected(edit):
     lambda s: "```json\n" + json.dumps({"message": s}, ensure_ascii=False) + "\n```",
     lambda s: "```\n" + s + "\n```",
 ])
-def test_wrapped_paragraph_is_unwrapped_and_stored_plain(wrap):
+def test_wrapped_paragraph_is_rejected_and_rewritten(wrap):
     text = deterministic(REQUEST["facts"])
-    client = Client([wrap(text)])
+    client = Client([wrap(text), text])
     assert generate(REQUEST, lambda: client) == {"text": text, "fallback": False, "model": "fake-llm"}
+    assert len(client.messages) == 2
 
 
 @pytest.mark.parametrize("bad", [
@@ -180,8 +194,45 @@ def test_wrapped_twice_falls_back_to_deterministic():
 
 def test_unwrap_paragraph_cases():
     assert unwrap_paragraph("  문단.  ") == "문단."
-    assert unwrap_paragraph('{"message": "문단."}') == "문단."
+    assert unwrap_paragraph('{"message": "문단."}') is None
     assert unwrap_paragraph('{"a": 1}') is None
     assert unwrap_paragraph("{깨짐") is None
     assert unwrap_paragraph('{"message": ""}') is None
     assert unwrap_paragraph(None) is None
+
+
+def test_real_case_narrative_and_timing_validation():
+    from simai_ai.report.wrap_up import fact_clauses
+    request = copy.deepcopy(REQUEST)
+    request["window_ms"] = [0, 3600000]
+    request["facts"].update(event_count=46, severity_counts={"CRITICAL": 7, "HIGH": 0, "CAUTION": 39, "INFO": 0},
+        rule_counts={"R1": 7, "R5": 32, "R7": 7}, operator_ack_count=5,
+        phase_counts={"early": 12, "middle": 20, "late": 14}, first_event_min=2, last_event_min=58,
+        top_zones=[{"name": "개구부 1", "count": 30}, {"name": "개구부 2", "count": 16}],
+        unacknowledged_critical_count=4)
+    clauses = fact_clauses(request["facts"])
+    paragraph = "작업 중 " + ", ".join(clauses[:5]) + ". 집계 내용은 다음과 같다. " + ", ".join(clauses[5:]) + ". 기록을 확인했다."
+    assert generate(request, lambda: Client([paragraph]))["text"] == paragraph
+    assert not numbers_match(paragraph.replace("중반 이벤트 20건", "중반 이벤트 12건"), request["facts"])
+    assert not numbers_match(paragraph + " 추가 99건.", request["facts"])
+    assert not numbers_match(paragraph + " 옥상에서 발생했다.", request["facts"])
+    assert not numbers_match(paragraph.replace("개구부 1", "개구부 3"), request["facts"])
+    assert not numbers_match(paragraph.replace("미확인 CRITICAL 4건", "미확인 CRITICAL 5건"), request["facts"])
+    assert generate(request, lambda: Client([json.dumps({"text": paragraph}), "오류"]))["fallback"]
+
+
+@pytest.mark.parametrize("rule", ["R8", "R9", "R10", "R11"])
+def test_ppe_and_extended_rules_are_accepted_with_description(rule):
+    """R9 안전모·R11 조끼(-549) 이벤트가 있어도 요청 전체가 거절되지 않고 설명 절이 붙는다."""
+    req = copy.deepcopy(REQUEST)
+    req["facts"]["rule_counts"] = {"R1": 2, rule: 1}
+    validate_request(req)
+    text = deterministic(req["facts"])
+    assert f"규칙 {rule} " in text and numbers_match(text, req["facts"])
+
+
+def test_unknown_rule_is_rejected():
+    req = copy.deepcopy(REQUEST)
+    req["facts"]["rule_counts"] = {"R1": 2, "R12": 1}
+    with pytest.raises(ValueError):
+        validate_request(req)
