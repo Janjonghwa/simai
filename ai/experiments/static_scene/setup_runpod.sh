@@ -6,9 +6,11 @@
 set -euo pipefail
 ROOT=${SIMAI_ROOT:-/workspace/simai}
 MA_COMMIT=${MA_COMMIT:-3d10cf7}        # 선행 PoC 와 같은 커밋
+DINOV2_COMMIT=${DINOV2_COMMIT:-7764ea0f912e53c92e82eb78a2a1631e92725fc8}
 TORCH=${TORCH:-2.7.1}; TORCHVISION=${TORCHVISION:-0.22.1}; CU=${CU:-cu126}
 ENV=$ROOT/envs/mapanything
 REPO=$ROOT/third_party/map-anything
+HUB_DIR=${TORCH_HOME:-$HOME/.cache/torch}/hub/facebookresearch_dinov2_main
 log(){ echo "[$(date -u +%H:%M:%S)] $*"; }
 
 mkdir -p "$ROOT"/{envs,third_party,weights,datasets,runs,logs}
@@ -19,6 +21,15 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 git -C "$REPO" fetch -q --all && git -C "$REPO" checkout -q "$MA_COMMIT"
 log "map-anything @ $(git -C "$REPO" rev-parse --short HEAD)"
+
+if [ ! -f "$HUB_DIR/hubconf.py" ]; then
+  log "clone dinov2 torch.hub cache ($DINOV2_COMMIT)"
+  mkdir -p "$(dirname "$HUB_DIR")"
+  rm -rf "$HUB_DIR"
+  git clone -q https://github.com/facebookresearch/dinov2 "$HUB_DIR"
+  git -C "$HUB_DIR" checkout -q "$DINOV2_COMMIT"
+  rm -rf "$HUB_DIR/.git"
+fi
 
 if [ ! -x "$ENV/bin/python" ]; then
   log "create venv (python 3.12)"

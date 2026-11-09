@@ -92,8 +92,11 @@ print(sys.version.split()[0], "torch", torch.__version__, "detectron2", m.versio
 import importlib.metadata as m, os, pathlib, sys
 import torch, torchvision, mapanything, uniception, rerun
 from mapanything.models import MapAnything
+from simai_ai.scene.run_mapanything import resolve_local_hub_dir, use_local_dinov2_hub
 for d in (os.environ["SIMAI_MAPANYTHING_REPO"] + "/mapanything", "/root/.cache/torch/hub/facebookresearch_dinov2_main/hubconf.py"):
     assert pathlib.Path(d).exists(), d
+assert resolve_local_hub_dir("facebookresearch/dinov2") == pathlib.Path("/root/.cache/torch/hub/facebookresearch_dinov2_main")
+use_local_dinov2_hub()
 print(sys.version.split()[0], "torch", torch.__version__, "mapanything", m.version("mapanything"), "uniception", m.version("uniception"),
       "commit", os.environ["SIMAI_MAPANYTHING_COMMIT"][:7])' ;;
   unified) IMPORTS='
@@ -347,10 +350,15 @@ RUN
   fi
   rm -rf "$SUP"
 
-  # 5c) MapAnything(S15P31A101-250): DINOv2 허브 코드 사본으로 망 없이 골격을 만든다(uniception 이 torch.hub.load("facebookresearch/dinov2", pretrained=False) 로 부르는 그대로,
-  #     작은 vits14 로). 망이 없으면 torch.hub 가 GitHub 확인에 실패하고 캐시를 쓴다(이 사본이 없으면 실패)
+  # 5c) MapAnything(S15P31A101-250·-566): DINOv2 허브 코드 사본으로 망 없이(HTTP 504 상황 포함) source="local" 골격을 만든다
   if OUT=$(docker run --rm --network none --entrypoint python "$IMG" -c '
-import torch
+import urllib.error, urllib.request, torch
+from simai_ai.scene.run_mapanything import resolve_local_hub_dir, use_local_dinov2_hub
+assert resolve_local_hub_dir("facebookresearch/dinov2") is not None
+def _boom(*a, **k):
+    raise urllib.error.HTTPError("https://github.com/facebookresearch/dinov2", 504, "Gateway Time-out", {}, None)
+urllib.request.urlopen = _boom
+use_local_dinov2_hub()
 m = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14", pretrained=False)
 n = sum(p.numel() for p in m.parameters())
 assert n > 2e7, n

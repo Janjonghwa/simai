@@ -82,6 +82,16 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         raise BudgetError(f"{key} 는 정수다") from None
 
 
+def _optional_int(env: Mapping[str, str], key: str) -> int | None:
+    raw = (env.get(key) or "").strip()
+    if not raw or raw == "-":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise BudgetError(f"{key} 는 정수다") from None
+
+
 def _flag(env: Mapping[str, str], key: str) -> bool:
     raw = (env.get(key) or "").strip().lower()
     if raw in ("", "0", "false", "no"):
@@ -108,6 +118,7 @@ class WorkerGpuSettings:
 
         SIMAI_TIER0_MARKER                      Tier 0 표시 파일 (기본 $SIMAI_ROOT/state/tier0.live)
         SIMAI_WORKER_LAG_BUDGET_MS              capture_to_risk 예산 (기본 600, 명세 6.6 p95)
+        SIMAI_WORKER_SETUP_LAG_BUDGET_MS        site_setup 전용 지연 예산 (기본 빈 값/"-" = 무제한, 양의 정수면 상한 ms)
         SIMAI_WORKER_MARKER_MAX_AGE_S           표시 파일이 이보다 오래되면 모름 → 받지 않음 (기본 15, 갱신 5초의 3배)
         SIMAI_WORKER_RESUME_AFTER_S             멈춘 뒤 통과 상태가 이만큼 이어져야 다시 받음 (기본 10, 10차 실측 근거)
         SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED    한 창(5초)에서 넘기는 큐 대기 초과 프레임 수, 넘으면 멈춤 (기본 2)
@@ -138,6 +149,7 @@ class WorkerGpuSettings:
                 max_queue_wait_exceeded=_int(env, "SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED", DEFAULT_MAX_QUEUE_WAIT_EXCEEDED),
                 live_blocked_types=blocked,
                 allow_without_marker=_flag(env, "SIMAI_WORKER_DEV_NO_LIVE"),
+                setup_lag_budget_ms=_optional_int(env, "SIMAI_WORKER_SETUP_LAG_BUDGET_MS"),
             )
         except ValueError as e:
             raise BudgetError(str(e)) from None
