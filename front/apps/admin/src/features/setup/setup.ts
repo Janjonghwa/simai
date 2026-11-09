@@ -467,6 +467,8 @@ export interface SceneTierStatusView {
 
 export interface SetupWaitingView {
   sessionId: string | null;
+  startedAtMs: number | null;
+  updatedAtMs: number | null;
   stage: SetupSessionStage;
   stageLabel: string;
   progressPct: number;
@@ -684,6 +686,8 @@ export function deriveWaitingView(
 
   return {
     sessionId: session?.setup_session_id ?? null,
+    startedAtMs: session?.started_at_ms ?? null,
+    updatedAtMs: session?.updated_at_ms ?? null,
     stage: rawStage,
     stageLabel,
     progressPct,

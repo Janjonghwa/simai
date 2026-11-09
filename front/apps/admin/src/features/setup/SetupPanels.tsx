@@ -24,7 +24,7 @@ import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
-import { useCallback, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 // 세팅 화면 패널: 1단계 2D 지도 양옆의 카메라 영상(기존 디코딩 재사용)·카메라 연결/방향 안내·카메라 높이 입력, 이후 단계 요약.
 // 색은 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 토큰만 쓴다.
@@ -369,26 +369,40 @@ export function CameraHeightPanel({
 /** 2단계 대기 화면 패널(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안, 진행률·남은 시간·실패/높이 경고). */
 export function WaitingPanel({
   waiting,
+  pollingError = false,
   onRetry,
   retryPending = false,
   retryError = null,
   onReturnToStep1,
 }: {
   waiting: SetupWaitingView;
+  pollingError?: boolean;
   onRetry?: () => void;
   retryPending?: boolean;
   retryError?: string | null;
   onReturnToStep1?: () => void;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  const [openedAt] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const elapsed = Math.max(0, Math.floor((now - (waiting.startedAtMs ?? openedAt)) / 1000));
+  const unchanged = Math.max(
+    0,
+    Math.floor((now - (waiting.updatedAtMs ?? waiting.startedAtMs ?? openedAt)) / 1000),
+  );
+  const elapsedLabel = `${Math.floor(elapsed / 60)}분 ${String(elapsed % 60).padStart(2, '0')}초`;
+  const stalled = !waiting.failed && !waiting.previewReady && unchanged >= 30;
   return (
     <Panel title="현장 자동 보정 · 3D 공간 생성 대기" fill={1}>
       <div className="flex flex-col gap-2 rounded-lg bg-surface-2 px-3.5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <span className="font-semibold text-foreground">{waiting.stageLabel}</span>
-          <span className="font-mono text-muted-foreground" aria-label="세팅 진행률 및 남은 시간">
-            진행률 <strong className="text-foreground">{waiting.progressPct}%</strong> · 남은 시간{' '}
-            <strong className="text-foreground">{waiting.remainingLabel}</strong> (
-            {waiting.remainingClock})
+          <span className="font-mono text-muted-foreground" aria-label="세팅 진행률 및 경과 시간">
+            실제 진행률 <strong className="text-foreground">{waiting.progressPct}%</strong> · 경과
+            시간 <strong className="text-foreground">{elapsedLabel}</strong>
           </span>
         </div>
         <div
@@ -405,8 +419,22 @@ export function WaitingPanel({
           />
         </div>
         <p className="text-[11px] text-muted-foreground">
-          목표 약 1분 30초 · 2초 주기로 진행 상태를 자동 갱신합니다
+          서버에서 받은 진행률입니다 · 2초마다 상태를 확인합니다
         </p>
+        {pollingError ? (
+          <p role="alert" className="text-xs text-delay">
+            서버에서 진행 상태를 가져오지 못했습니다. 연결을 확인해 주세요.
+          </p>
+        ) : stalled ? (
+          <p role="status" className="text-xs text-delay">
+            {unchanged}초 동안 새 진행 정보가 없습니다. 계속 유지되면 워커와 배경 수집 상태를 확인해
+            주세요.
+          </p>
+        ) : !waiting.failed && waiting.progressPct === 0 ? (
+          <p role="status" className="text-xs text-muted-foreground">
+            세팅 요청이 접수됐습니다. 워커의 진행 정보를 기다리는 중입니다.
+          </p>
+        ) : null}
       </div>
 
       <ol aria-label="세팅 대기 세부 단계" className="divide-y divide-border">
@@ -452,10 +480,25 @@ export function WaitingPanel({
           {waiting.backgroundCollection.map((cam) => (
             <div
               key={cam.cameraId}
-              className="flex items-center justify-between rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-xs"
+              className="flex flex-col gap-1.5 rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-xs"
             >
-              <span>{cam.cameraId}</span>
-              <span className="font-semibold text-foreground">{cam.pct}%</span>
+              <div className="flex items-center justify-between gap-1">
+                <span>{cam.cameraId}</span>
+                <span className="font-semibold text-foreground">{cam.pct}%</span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label={`${cam.cameraId} 배경 수집률`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.max(0, Math.min(100, cam.pct))}
+                className="h-1.5 overflow-hidden rounded-full bg-surface-3"
+              >
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: `${Math.max(0, Math.min(100, cam.pct))}%` }}
+                />
+              </div>
             </div>
           ))}
         </div>
