@@ -3,7 +3,7 @@
 공통 테스트 벡터는 규칙을 (ID, 버전)으로만 적고, 실행기는 등록부에서 규칙을 만든다.
 두 배포(Tier 0, EC2 컨테이너)가 같은 등록부를 쓰므로 같은 벡터에 같은 결과가 나와야 한다.
 구체 규칙은 default_registry 에 등록한다. 현재 R1(S15P31A101-71), R2·R3(S15P31A101-93), R4(S15P31A101-96), R5(S15P31A101-98), R7(S15P31A101-73),
-R9(S15P31A101-519, 기본 꺼짐: 규칙 버전 시드에서 빠져 EC2 가 구성 묶음에 싣지 않는다, rule_catalog.DISABLED_BY_DEFAULT).
+R9·R11(S15P31A101-519·-548, Lead 시연 예외로 시드에 포함, -556, 2026-11-09).
 높이 규칙(R2·R3)과 그 가장자리를 예측하는 R5 는 운영 프로파일(기본 버전, 높이차 2 m)과 교실 시험 프로파일(기본 버전 + 1000,
 높이차 0.35 m, 명세 7.4 '별도 rule_version')을 함께 등록한다. 배포는 구성 묶음 rules 의 rule_versions 로 하나를 고른다. R6 은 자기 ID 의 이벤트를 만들지
 않고 구역 규칙을 감싸는 방식이라(rules.r6_observation_loss.ObservationLossHold) 따로 등록하지 않는다. 구역 규칙(R1 등)은
@@ -81,6 +81,6 @@ def default_registry() -> RuleRegistry:
     registry.register(R7_RULE_ID, R7_RULE_VERSION, ZoneMonitoringRule)
     # R9 는 사람 대상이지만 위치가 아니라 PPE 상태·구성 요구로 판정하므로 R6 으로 감싸지 않는다(7.2)
     registry.register(R9_RULE_ID, R9_RULE_VERSION, HelmetRequiredRule)
-    # R11(조끼, -548)도 R9 와 같은 이유로 감싸지 않는다. R9 처럼 기본 꺼짐(rule_catalog.DISABLED_BY_DEFAULT)
+    # R11(조끼, -548)도 R9 와 같은 이유로 감싸지 않는다. 활성화 정책은 rule_catalog 에 둔다.
     registry.register(R11_RULE_ID, R11_RULE_VERSION, VestRequiredRule)
     return registry

@@ -3,18 +3,23 @@ import { hasClips } from '@/features/clips/clips';
 import { EventClips } from '@/features/clips/EventClips';
 import { AckButton } from '@/features/events/AckButton';
 import { ALARM_TEXT } from '@/features/events/alarmTone';
-import { CONFIDENCE_REASON } from '@/features/events/constants';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
 import { escalationStatusLabel, mergedEscalations } from '@/features/events/escalation';
 import { EscalationControl } from '@/features/events/EscalationControl';
-import { eventRuleName, formatTime, metricLabels, statusText } from '@/features/events/format';
+import {
+  confidenceReasonText,
+  eventRuleName,
+  formatTime,
+  metricLabels,
+  statusText,
+} from '@/features/events/format';
 import type { Incident } from '@/features/events/incidents';
 import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
 import { incidentTimeline } from '@/features/events/incidentView';
 import {
   needsBundlesForRelease,
   PERSON_ONLY_RULES,
-  r9ReleaseOf,
+  ppeReleaseOf,
 } from '@/features/events/ppePolicy';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { canRequestSummary, latestSummary } from '@/features/events/summary';
@@ -45,7 +50,7 @@ const None = () => <p className="text-sm text-muted-foreground">—</p>;
 const NO_ZONE_TEXT = '구역 없음';
 
 /**
- * 해소된 R9 의 해소 원인을 가릴 최근 구성 묶음. 해소된 LIVE R9 가 없으면 받지 않는다(캐시에 있으면 그것을 쓴다).
+ * 해소된 R9·R11 의 해소 원인을 가릴 최근 구성 묶음. 해소된 LIVE R9·R11 이 없으면 받지 않는다(캐시에 있으면 그것을 쓴다).
  * 묶음을 모르면 undefined 이고 "해소"로만 보인다.
  */
 function useReleaseBundles(entries: readonly EventEntry[]): readonly ConfigBundle[] | undefined {
@@ -65,7 +70,7 @@ function RuleRow({
   bundles: readonly ConfigBundle[] | undefined;
 }) {
   const { event } = entry;
-  // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다). 사람 단위 규칙(R9)은 구역을 보지 않아 칸이 없다.
+  // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다). 사람 단위 규칙(R9·R11)은 구역을 보지 않아 칸이 없다.
   const zone = event.zone_id
     ? zoneName(event.zone_id)
     : PERSON_ONLY_RULES.has(event.rule_id)
@@ -89,7 +94,7 @@ function RuleRow({
         <span className="text-[13px] text-muted-foreground">
           {zone && `${zone} · `}
           <span className="font-mono">{formatTime(event.raised_at)}</span> 발생 ·{' '}
-          {statusText(entryStatus(entry), r9ReleaseOf(event, bundles))}
+          {statusText(entryStatus(entry), ppeReleaseOf(event, bundles))}
         </span>
       </span>
       {metrics.length > 0 && (
@@ -102,7 +107,8 @@ function RuleRow({
       {needsConfirmation(event) && (
         <span className="text-sm">
           확인 필요
-          {reasons.length > 0 && ` · ${reasons.map((r) => CONFIDENCE_REASON[r] ?? r).join(', ')}`}
+          {reasons.length > 0 &&
+            ` · ${reasons.map((r) => confidenceReasonText(r, event.rule_id)).join(', ')}`}
         </span>
       )}
     </li>
@@ -249,7 +255,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                       : 'text-muted-foreground'
                   }
                 >
-                  {statusText(status, r9ReleaseOf(entry.event, bundles))}
+                  {statusText(status, ppeReleaseOf(entry.event, bundles))}
                 </span>
               </span>
               <AckButton entry={entry} label="경보 확인(ACK)" zoneName={zoneName} />

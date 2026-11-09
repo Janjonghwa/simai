@@ -105,6 +105,7 @@ export const RULE_NAME: Record<string, string> = {
   R7: '구역 감시 능력 저하',
   // 명세 7.2 R9 이름. 안전모만 보고(조끼는 표시만), 진행 중 작업이 있을 때만 요구한다(S15P31A101-520).
   R9: '작업 중 안전모 미착용',
+  R11: '작업 중 조끼 미착용',
 };
 
 /** 등급에 따라 이름이 달라지는 규칙. R1 주의는 구역 안이 아니라 근접 띠에 있다(-497). */
@@ -127,7 +128,7 @@ export const CONFIDENCE_REASON: Record<string, string> = {
   JOINT_UNCERTAIN: '관절 불확실',
   IDENTITY_UNCERTAIN: '신원 불확실',
   // R9 를 유지할 때만 붙는다(계약 v7.17.0, 명세 7.1·7.2 R9).
-  PPE_UNKNOWN: '안전모 상태 모름',
+  PPE_UNKNOWN: '보호구 상태 모름',
   UNSPECIFIED: '이유 미상',
 };
 

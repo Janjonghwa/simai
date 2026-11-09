@@ -103,26 +103,25 @@ def test_r3_legal_basis_only_on_operation_profile() -> None:
     assert set(by_key.values()) == {None}
 
 
-def test_r9_is_registered_but_not_seeded() -> None:
-    """R9 는 기본 꺼짐: 등록부·카탈로그에는 있고 시드(EC2 rule_version)에는 없다(명세 8.10·15.1, S15P31A101-519)."""
+def test_ppe_rules_are_seeded_for_lead_approved_demo() -> None:
+    """Lead 시연 예외(-556): G9·G6 통과를 주장하지 않고 R9·R11 v1 을 EC2 시드에 넣는다."""
     from simai_ai.risk.rule_catalog import DISABLED_BY_DEFAULT, seed_entries
 
-    assert ("R9", 1) in {(e.rule_id, e.rule_version) for e in catalog()}
     seeded = {(e.rule_id, e.rule_version) for e in seed_entries()}
-    assert ("R9", 1) not in seeded
-    assert set(DISABLED_BY_DEFAULT) == {("R9", 1), ("R11", 1)}
-    assert "'R9'" not in render_flyway_seed(seed_entries())
+    assert {("R9", 1), ("R11", 1)} <= seeded
+    assert DISABLED_BY_DEFAULT == {}
+    assert "'R9'" in render_flyway_seed(seed_entries())
+    assert "'R11'" in render_flyway_seed(seed_entries())
     assert seeded | set(DISABLED_BY_DEFAULT) == set(default_registry())
 
 
-def test_r11_is_registered_but_not_seeded() -> None:
-    """R11(조끼)도 R9 처럼 기본 꺼짐이다: 등록부·카탈로그에는 있고 시드에는 없다(S15P31A101-548)."""
+def test_r11_demo_seed_preserves_caution_severity() -> None:
+    """시연 예외는 활성화만 바꾼다. 조끼 R11 의 판·심각도는 그대로다(-556)."""
     from simai_ai.risk.rule_catalog import seed_entries
 
     entry = next(e for e in catalog() if (e.rule_id, e.rule_version) == ("R11", 1))
     assert entry.default_severity == "CAUTION"
-    assert ("R11", 1) not in {(e.rule_id, e.rule_version) for e in seed_entries()}
-    assert "'R11'" not in render_flyway_seed(seed_entries())
+    assert ("R11", 1) in {(e.rule_id, e.rule_version) for e in seed_entries()}
 
 
 def test_legal_basis_ids_exist_in_clause_file() -> None:

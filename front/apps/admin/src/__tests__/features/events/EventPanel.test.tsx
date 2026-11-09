@@ -382,12 +382,18 @@ describe('EventDetail 확인 필요', () => {
     const r9 = row({ rule_id: 'R9', severity: 'CAUTION', zone_id: null, metrics: {} });
     expect(r9).toContain('R9 작업 중 안전모 미착용');
     expect(r9).not.toMatch(/구역/);
+    const r11 = row({ rule_id: 'R11', severity: 'CAUTION', zone_id: null, metrics: {} });
+    expect(r11).toContain('R11 작업 중 조끼 미착용');
+    expect(r11).not.toMatch(/구역/);
   });
 
-  it('안전모 상태를 모르는 R9 는 확인 필요 이유를 한국어로 보인다(PPE_UNKNOWN)', () => {
+  it.each([
+    ['R9', '안전모'],
+    ['R11', '조끼'],
+  ])('%s 는 해당 보호구의 확인 필요 이유를 보인다', (ruleId, equipment) => {
     const dialog = renderDetail([
       entry({
-        rule_id: 'R9',
+        rule_id: ruleId,
         severity: 'CAUTION',
         zone_id: null,
         metrics: {},
@@ -397,23 +403,33 @@ describe('EventDetail 확인 필요', () => {
       }),
     ]);
     // 머리(첫 이유)와 규칙 줄(전체 이유)에 같은 문구가 보인다.
-    expect(within(dialog).getAllByText('확인 필요 · 안전모 상태 모름').length).toBeGreaterThan(0);
+    expect(
+      within(dialog).getAllByText(`확인 필요 · ${equipment} 상태 모름`).length,
+    ).toBeGreaterThan(0);
     expect(dialog.textContent).not.toContain('PPE_UNKNOWN');
   });
 
-  it('해소된 R9 는 해소 전이 묶음의 안전모 요구로 작업 종료 해소와 착용 해소를 가른다', () => {
+  it.each([
+    ['R9', '안전모'],
+    ['R11', '조끼'],
+  ])('%s 는 해당 장비 요구로 작업 종료·착용 해소를 보인다', (ruleId, equipment) => {
     const bundle = (version: string, helmet: 'REQUIRED' | 'NOT_REQUIRED') => ({
       config_version: version,
       issued_at: T,
       status: 'APPLIED',
       applied_at: T,
       items: [],
-      ppe_policy: { helmet, work_id: helmet === 'REQUIRED' ? 12 : null, effective_from_ms: T },
+      ppe_policy: {
+        helmet,
+        vest: helmet,
+        work_id: helmet === 'REQUIRED' ? 12 : null,
+        effective_from_ms: T,
+      },
     });
     const bundles = [bundle('cfg-8', 'NOT_REQUIRED'), bundle('cfg-7', 'REQUIRED')];
-    const resolvedR9 = (configVersion: string) =>
+    const resolvedPpe = (configVersion: string) =>
       entry({
-        rule_id: 'R9',
+        rule_id: ruleId,
         severity: 'CAUTION',
         zone_id: null,
         metrics: {},
@@ -423,23 +439,23 @@ describe('EventDetail 확인 필요', () => {
         config_version: configVersion,
       });
 
-    const ended = renderDetail([resolvedR9('cfg-8')], bundles);
+    const ended = renderDetail([resolvedPpe('cfg-8')], bundles);
     expect(within(ended).getByRole('region', { name: '규칙과 근거' }).textContent).toContain(
       '작업 종료로 해소',
     );
     expect(within(ended).getByRole('region', { name: '타임라인' }).textContent).toContain(
-      '작업 중 안전모 미착용 작업 종료로 해소',
+      `작업 중 ${equipment} 미착용 작업 종료로 해소`,
     );
     cleanup();
 
-    const worn = renderDetail([resolvedR9('cfg-7')], bundles);
+    const worn = renderDetail([resolvedPpe('cfg-7')], bundles);
     expect(within(worn).getByRole('region', { name: '처리' }).textContent).toContain(
       '착용 확인으로 해소',
     );
     cleanup();
 
     // 묶음을 모르면(최근 목록 밖) 그냥 해소다.
-    const unknown = renderDetail([resolvedR9('cfg-1')], bundles);
+    const unknown = renderDetail([resolvedPpe('cfg-1')], bundles);
     const rules = within(unknown).getByRole('region', { name: '규칙과 근거' }).textContent!;
     expect(rules).toMatch(/해소 \d/);
     expect(rules).not.toMatch(/작업 종료로|착용 확인으로/);

@@ -5,7 +5,7 @@ import {
   RULE_NAME_BY_SEVERITY,
 } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
-import { R9_RELEASE_LABEL, type R9Release } from '@/features/events/ppePolicy';
+import { PPE_RELEASE_LABEL, type PpeRelease } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
@@ -32,8 +32,8 @@ export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
 export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>
   event.world_ids[0] ?? (event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '');
 
-/** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9) "해소" 대신 해소 원인을 보인다. */
-export function statusText(status: EntryStatus, release: R9Release | null = null) {
+/** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9·R11) "해소" 대신 해소 원인을 보인다. */
+export function statusText(status: EntryStatus, release: PpeRelease | null = null) {
   switch (status.kind) {
     case 'alarm':
       return '확인 대기';
@@ -42,7 +42,7 @@ export function statusText(status: EntryStatus, release: R9Release | null = null
     case 'notice':
       return '안내';
     case 'resolved': {
-      const word = status.closed ? '운영자 종료' : release ? R9_RELEASE_LABEL[release] : '해소';
+      const word = status.closed ? '운영자 종료' : release ? PPE_RELEASE_LABEL[release] : '해소';
       return `${word} ${formatTime(status.at)}`;
     }
   }
@@ -57,10 +57,19 @@ export function metricLabels(metrics: EventItem['metrics']): string[] {
   });
 }
 
+/** PPE 불확실성은 이벤트 규칙의 장비 이름을 쓴다. 다른 이유는 공통 문구로 보인다. */
+export function confidenceReasonText(reason: string, ruleId: string): string {
+  if (reason === 'PPE_UNKNOWN') {
+    if (ruleId === 'R9') return '안전모 상태 모름';
+    if (ruleId === 'R11') return '조끼 상태 모름';
+  }
+  return CONFIDENCE_REASON[reason] ?? reason;
+}
+
 /** 확인 요청에 붙일 첫 이유 문구. 이유가 없으면 null. */
 function firstReasonText(event: EventItem): string | null {
   const first = event.confidence_reasons?.[0];
-  return first ? (CONFIDENCE_REASON[first] ?? first) : null;
+  return first ? confidenceReasonText(first, event.rule_id) : null;
 }
 
 /** 확인 요청 문구: "확인 필요" 에 첫 이유를 붙인다. */

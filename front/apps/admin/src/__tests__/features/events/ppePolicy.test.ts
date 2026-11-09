@@ -9,7 +9,8 @@ import {
   appliedBundle,
   needsBundlesForRelease,
   ppePolicyMissing,
-  r9ReleaseOf,
+  ppeReleaseOf,
+  vestPolicyMissing,
 } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import { readBundles } from '@/features/zones/useRecentBundles';
@@ -117,25 +118,25 @@ describe('R9 해소 원인', () => {
   ]);
 
   it('해소 전이의 config_version 이 가리키는 묶음의 요구로 가른다', () => {
-    expect(r9ReleaseOf(r9({ config_version: 'cfg-3' }), bundles)).toBe('WORK_ENDED');
-    expect(r9ReleaseOf(r9({ config_version: 'cfg-2' }), bundles)).toBe('WORN');
-    expect(r9ReleaseOf(r9({ config_version: 'cfg-1' }), bundles)).toBe('POLICY_MISSING');
+    expect(ppeReleaseOf(r9({ config_version: 'cfg-3' }), bundles)).toBe('WORK_ENDED');
+    expect(ppeReleaseOf(r9({ config_version: 'cfg-2' }), bundles)).toBe('WORN');
+    expect(ppeReleaseOf(r9({ config_version: 'cfg-1' }), bundles)).toBe('POLICY_MISSING');
   });
 
   it('묶음을 못 찾거나 요약을 모르면, 운영자 종료·열림·LIVE 아님·다른 규칙이면 가리지 않는다', () => {
-    expect(r9ReleaseOf(r9({ config_version: 'cfg-99' }), bundles)).toBeNull();
-    expect(r9ReleaseOf(r9({ config_version: 'cfg-0' }), bundles)).toBeNull();
-    expect(r9ReleaseOf(r9({ config_version: undefined }), bundles)).toBeNull();
-    expect(r9ReleaseOf(r9(), undefined)).toBeNull();
+    expect(ppeReleaseOf(r9({ config_version: 'cfg-99' }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9({ config_version: 'cfg-0' }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9({ config_version: undefined }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9(), undefined)).toBeNull();
     expect(
-      r9ReleaseOf(
+      ppeReleaseOf(
         r9({ resolution: { kind: 'OPERATOR_CLOSED', reason: '오탐', requested_at: T } }),
         bundles,
       ),
     ).toBeNull();
-    expect(r9ReleaseOf(r9({ lifecycle: 'UPDATED' }), bundles)).toBeNull();
-    expect(r9ReleaseOf(r9({ source: 'REPLAY' }), bundles)).toBeNull();
-    expect(r9ReleaseOf(r9({ rule_id: 'R2' }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9({ lifecycle: 'UPDATED' }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9({ source: 'REPLAY' }), bundles)).toBeNull();
+    expect(ppeReleaseOf(r9({ rule_id: 'R2' }), bundles)).toBeNull();
   });
 
   it('상태 문구와 타임라인이 "해소" 대신 해소 원인을 쓴다', () => {
@@ -170,5 +171,62 @@ describe('PPE_UNKNOWN', () => {
       confidence_reasons: ['PPE_UNKNOWN'],
     });
     expect(confirmationText(holding)).toBe('확인 필요 · 안전모 상태 모름');
+    expect(confirmationText({ ...holding, rule_id: 'R11' })).toBe('확인 필요 · 조끼 상태 모름');
+    expect(confirmationText({ ...holding, rule_id: 'R99' })).toBe('확인 필요 · 보호구 상태 모름');
+  });
+});
+
+describe('R11 조끼 요구와 해소', () => {
+  const event = r9({ rule_id: 'R11' });
+  const bundles = readBundles([
+    rawBundle('cfg-3', 'APPLIED', { ...REQUIRED, vest: 'NOT_REQUIRED' }),
+    rawBundle('cfg-2', 'APPLIED', { ...NOT_REQUIRED, vest: 'REQUIRED' }),
+    rawBundle('cfg-1', 'APPLIED', { ...REQUIRED, vest: null }),
+    rawBundle('cfg-0', 'APPLIED', REQUIRED),
+    rawBundle('cfg-missing', 'APPLIED', null),
+    rawBundle('cfg-broken', 'APPLIED', { ...REQUIRED, vest: 'MAYBE' }),
+  ]);
+
+  it('서버 vest 요약을 보존하고 안전모 요구와 별개로 조끼 요구를 읽는다', () => {
+    expect(bundles[0]?.ppe_policy?.vest).toBe('NOT_REQUIRED');
+    expect(ppeReleaseOf(event, bundles)).toBe('WORK_ENDED');
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-2' }, bundles)).toBe('WORN');
+    expect(needsBundlesForRelease([event])).toBe(true);
+    expect(needsBundlesForRelease([{ ...event, source: 'REPLAY' }])).toBe(false);
+  });
+
+  it('이전 문서의 vest 없음(null)과 요약 모름(undefined·형식 오류)을 구분한다', () => {
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-1' }, bundles)).toBe(
+      'VEST_POLICY_MISSING',
+    );
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-0' }, bundles)).toBeNull();
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-broken' }, bundles)).toBeNull();
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-missing' }, bundles)).toBe(
+      'POLICY_MISSING',
+    );
+    expect(
+      vestPolicyMissing(readBundles([rawBundle('cfg-v', 'APPLIED', { ...REQUIRED, vest: null })])),
+    ).toBe(true);
+    expect(vestPolicyMissing(readBundles([rawBundle('cfg-v', 'APPLIED', REQUIRED)]))).toBe(false);
+  });
+
+  it('운영자 종료·열린 이벤트·알 수 없는 묶음에서 착용 해소를 지어내지 않는다', () => {
+    expect(ppeReleaseOf({ ...event, lifecycle: 'UPDATED' }, bundles)).toBeNull();
+    expect(ppeReleaseOf({ ...event, config_version: 'cfg-99' }, bundles)).toBeNull();
+    expect(
+      ppeReleaseOf(
+        { ...event, resolution: { kind: 'OPERATOR_CLOSED', reason: '오탐', requested_at: T } },
+        bundles,
+      ),
+    ).toBeNull();
+  });
+
+  it('타임라인은 R11 규칙명과 조끼 해소 원인을 쓴다', () => {
+    const [incident] = groupIncidents([
+      mergeEvent(undefined, { ...event, config_version: 'cfg-1' }),
+    ]);
+    expect(incidentTimeline(incident!, bundles).at(-1)?.text).toBe(
+      '작업 중 조끼 미착용 조끼 요구 미수신으로 해소',
+    );
   });
 });

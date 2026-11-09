@@ -76,11 +76,13 @@ const bundleItemSchema = z.object({
 export type BundleItem = z.infer<typeof bundleItemSchema>;
 
 /**
- * 묶음에 실은 안전모 요구 요약(서버 -518, docs/design/server-ppe-policy-publish.md D3). 진행 중 작업이 있으면 REQUIRED 와
+ * 묶음에 실은 안전모·조끼 요구 요약(서버 -518·-549). 진행 중 작업이 있으면 REQUIRED 와
  * 그 작업 ID, 없으면 NOT_REQUIRED 와 null 이다(계약 contracts/data/ppe_policy). effective_from_ms 는 표시·기록용이다.
  */
 const ppePolicySummarySchema = z.object({
   helmet: z.enum(['REQUIRED', 'NOT_REQUIRED']),
+  // -549: 이전 문서에 vest 가 없으면 서버 요약은 null. 이전 서버는 칸을 생략할 수 있다.
+  vest: z.enum(['REQUIRED', 'NOT_REQUIRED']).nullish(),
   work_id: z.number().int().nullable(),
   effective_from_ms: z.number(),
 });
