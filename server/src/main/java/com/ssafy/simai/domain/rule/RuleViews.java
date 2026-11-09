@@ -21,7 +21,7 @@ import tools.jackson.databind.node.ObjectNode;
  * 규칙 버전 조회(GET /api/rules, S15P31A101-264, 명세 7.1·11.4-1·12.6, FR-113). 현재 규칙은 Tier 0 가 적용했다고 알린(config_ack APPLIED,
  * config_bundle.applied_at) 이 현장의 마지막 구성 묶음이 실은 판이다(config_bundle_item). 발행했지만 아직 적용 전이거나 거부된 묶음은
  * 현재가 아니고 pending_config_version 으로만 알린다. 적용된 묶음이 없으면 묶음을 만들 때와 같은 선택(RuleSelection)으로 운영 판을 준다.
- * R1~R10 은 활성 여부와 함께 모두 싣고(확장 규칙은 비활성), 적용 기간은 versions 에 모든 판의 valid_from·valid_to 로 싣는다.
+ * R1~R11 은 활성 여부와 함께 모두 싣고(확장 규칙은 비활성), 적용 기간은 versions 에 모든 판의 valid_from·valid_to 로 싣는다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -32,7 +32,7 @@ class RuleViews {
             r.rule_id, r.rule_version, r.profile, r.thresholds::text AS thresholds, r.default_severity, r.legal_basis, r.reads,
             r.valid_from, r.valid_to
             """;
-    /** 규칙 ID 를 R1, R2, …, R10 순서로(문자열 순이면 R10 이 R2 앞에 온다) */
+    /** 규칙 ID 를 R1, R2, …, R11 순서로(문자열 순이면 R10 이 R2 앞에 온다) */
     private static final String RULE_ORDER = "length(r.rule_id), r.rule_id";
 
     private final NamedParameterJdbcTemplate jdbc;

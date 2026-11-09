@@ -139,6 +139,8 @@ public class ConfigBundleViews {
             JsonNode doc = mapper.readTree(ppe);
             ObjectNode summary = b.putObject("ppe_policy");
             summary.set("helmet", doc.get("helmet"));
+            // 조끼 요구(1.1.0, -549). 1.0.0 으로 발행한 이전 묶음은 vest 가 없어 null(조끼 요구 없음, 7.2 R11)
+            summary.set("vest", doc.has("vest") ? doc.get("vest") : null);
             summary.set("work_id", doc.get("work_id"));
             summary.set("effective_from_ms", doc.get("effective_from_ms"));
         }

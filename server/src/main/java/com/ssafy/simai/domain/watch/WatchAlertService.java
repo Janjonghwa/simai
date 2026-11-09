@@ -89,9 +89,10 @@ public class WatchAlertService implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(WatchAlertService.class);
 
     /** 규칙별 한 단어(계약 1~8자, 갤럭시워치6 원형 화면 한 줄). 모르는 규칙은 "위험" */
-    private static final Map<String, String> WORDS = Map.of(
-            "R1", "위험구역", "R2", "개구부", "R3", "고소", "R4", "낙상", "R5", "진입주의",
-            "R6", "구역확인", "R7", "감시저하", "R8", "장비", "R9", "안전모", "R10", "점유주의");
+    private static final Map<String, String> WORDS = Map.ofEntries(
+            Map.entry("R1", "위험구역"), Map.entry("R2", "개구부"), Map.entry("R3", "고소"), Map.entry("R4", "낙상"),
+            Map.entry("R5", "진입주의"), Map.entry("R6", "구역확인"), Map.entry("R7", "감시저하"), Map.entry("R8", "장비"),
+            Map.entry("R9", "안전모"), Map.entry("R10", "점유주의"), Map.entry("R11", "조끼"));
 
     /** 등급 → 진동 패턴(FR-45, 계약에서 생략할 때 워치가 쓰는 것과 같다. 표에는 늘 적는다) */
     private static final Map<String, String> PATTERNS = Map.of(

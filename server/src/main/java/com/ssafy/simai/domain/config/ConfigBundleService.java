@@ -43,7 +43,7 @@ import tools.jackson.databind.node.ObjectNode;
  *       교실 시험 버전이 없으면 운영 버전)
  *   <li>calibration: 가장 최근에 올린 보정 문서 원문
  *   <li>operational_geometry: {"version", "work_surfaces": [...], "static_objects": [...]}. 작업면은 OBB 바닥 투영과 상판 높이
- *   <li>ppe_policy: 계약 data/ppe_policy 1.0.0(임시 형식 아님). 그때 작업 상태로 만든 안전모 요구(S15P31A101-518)
+ *   <li>ppe_policy: 계약 data/ppe_policy 1.1.0(임시 형식 아님). 그때 작업 상태로 만든 안전모·조끼 요구(S15P31A101-518·-549)
  * </ul>
  */
 @Service
@@ -377,7 +377,9 @@ public class ConfigBundleService {
     }
 
     /**
-     * 안전모 요구(계약 data/ppe_policy 1.0.0, 명세 7.2 R9·8.10·12.3). 진행 중(IN_PROGRESS) 작업이 있으면 REQUIRED, 없으면 NOT_REQUIRED.
+     * 안전모·조끼 요구(계약 data/ppe_policy 1.1.0, 명세 7.2 R9·R11·8.10·12.3). 진행 중(IN_PROGRESS) 작업이 있으면 둘 다 REQUIRED, 없으면
+     * NOT_REQUIRED. vest 는 1.1.0 의 선택 필드지만 늘 싣는다(S15P31A101-549). 1.0.0 만 아는 Tier 0 는 vest 가 실린 문서를 거부하므로
+     * Tier 0 를 1.1.0 판(-548)으로 먼저 올린 뒤 이 판을 배포한다(12.3).
      * 발행 잠금 뒤에 읽어 같은 트랜잭션의 작업 시작·종료와, 먼저 커밋된 다른 트랜잭션의 시작·종료를 본다. 어느 경로로 발행해도 싣는다.
      * effective_from_ms 는 진행 중 작업의 실제 시작 시각, 없으면 가장 최근 실제 종료 시각, 끝난 작업도 없으면 발행 시각이다
      * (작업 시작·종료 묶음이면 그 시각과 같다, docs/design/server-ppe-policy-publish.md)
@@ -389,18 +391,20 @@ public class ConfigBundleService {
                 ORDER BY actual_started_at DESC LIMIT 1
                 """, site).stream().findFirst().orElse(null);
         ObjectNode doc = mapper.createObjectNode();
-        doc.put("format_version", "1.0.0");
+        doc.put("format_version", "1.1.0");
         doc.put("version", version);
         if (active != null) {
             doc.put("work_id", ((Number) active.get("work_id")).longValue());
             doc.put("effective_from_ms", millisOf(active.get("actual_started_at")));
             doc.put("helmet", "REQUIRED");
+            doc.put("vest", "REQUIRED");
             return doc;
         }
         Object lastEnd = jdbc.queryForObject("SELECT max(actual_ended_at) FROM work_unit WHERE site_id = :site", site, Object.class);
         doc.putNull("work_id");
         doc.put("effective_from_ms", lastEnd == null ? issuedAt.toEpochMilli() : millisOf(lastEnd));
         doc.put("helmet", "NOT_REQUIRED");
+        doc.put("vest", "NOT_REQUIRED");
         return doc;
     }
 

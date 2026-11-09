@@ -275,7 +275,7 @@ class ConfigBundleIntegrationTest {
 
     /** S15P31A101-518: 작업 시작·종료가 ppe_policy 를 실은 새 묶음을 발행하고, 다른 경로의 묶음도 그때 작업 상태를 싣는다 */
     @Test
-    void 작업_시작_종료는_안전모_요구를_실은_새_묶음을_내고_다른_경로의_묶음도_요구를_싣는다() throws Exception {
+    void 작업_시작_종료는_안전모_조끼_요구를_실은_새_묶음을_내고_다른_경로의_묶음도_요구를_싣는다() throws Exception {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM work_unit WHERE status = 'IN_PROGRESS'", Integer.class))
                 .as("다른 시험이 남긴 진행 중 작업").isZero();
         long work = createWork();
@@ -287,6 +287,7 @@ class ConfigBundleIntegrationTest {
             // 작업 전 발행: 요구 없음
             JsonNode before = publish(null);
             assertThat(before.at("/ppe_policy/helmet").asString()).isEqualTo("NOT_REQUIRED");
+            assertThat(before.at("/ppe_policy/vest").asString()).as("조끼 요구(-549)").isEqualTo("NOT_REQUIRED");
             assertThat(before.at("/ppe_policy/work_id").isNull()).isTrue();
 
             JsonNode started = call("POST", "/api/work-units/" + work + "/start", admin(), null, 200);
@@ -299,11 +300,14 @@ class ConfigBundleIntegrationTest {
             assertThat(startNotice.at("/payload/previous_config_version").asString()).isEqualTo(before.get("config_version").asString());
             JsonNode startPolicy = ppeDocument(startNotice);
             assertThat(startPolicy.get("helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(startPolicy.get("vest").asString()).isEqualTo("REQUIRED");
+            assertThat(startPolicy.get("format_version").asString()).isEqualTo("1.1.0");
             assertThat(startPolicy.get("work_id").longValue()).isEqualTo(work);
             assertThat(startPolicy.get("effective_from_ms").longValue()).isEqualTo(startedAt);
             JsonNode startView = call("GET", "/api/config-bundles/" + startVersion, viewer(), null, 200);
             assertThat(startView.get("status").asString()).isEqualTo("PENDING");
             assertThat(startView.at("/ppe_policy/helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(startView.at("/ppe_policy/vest").asString()).isEqualTo("REQUIRED");
             assertThat(startView.at("/components/ppe_policy/sha256").asString())
                     .isEqualTo(startNotice.at("/payload/components/ppe_policy/sha256").asString());
 
@@ -328,6 +332,7 @@ class ConfigBundleIntegrationTest {
             assertThat(schemaViolations("config_bundle", endNotice)).isEmpty();
             JsonNode endPolicy = ppeDocument(endNotice);
             assertThat(endPolicy.get("helmet").asString()).isEqualTo("NOT_REQUIRED");
+            assertThat(endPolicy.get("vest").asString()).isEqualTo("NOT_REQUIRED");
             assertThat(endPolicy.get("work_id").isNull()).isTrue();
             assertThat(endPolicy.get("effective_from_ms").longValue()).isEqualTo(endedAt);
 
