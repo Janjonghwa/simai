@@ -419,14 +419,15 @@ async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionRespo
 }
 
 describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI 초안·발행 뒤)', () => {
-  it('대기 화면에 4단계 중 현재 단계·진행률·남은 시간(목표 90초)을 2초 주기로 갱신해 보인다', async () => {
+  it('대기 화면에 실제 진행률과 경과 시간을 보이고 진행 상태를 갱신한다', async () => {
     const { sessionId } = await startSetupSession();
 
     expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
     expect(
       screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'),
     ).toBe('0');
-    expect(screen.getByLabelText('세팅 진행률 및 남은 시간').textContent).toContain('약 1분 30초');
+    expect(screen.getByLabelText('세팅 진행률 및 경과 시간').textContent).toContain('경과 시간');
+    expect(screen.getByText(/워커의 진행 정보를 기다리는 중/)).toBeTruthy();
 
     setupMock.updateSession(sessionId, {
       stage: 'INITIAL_POSE_AND_WORLD',
@@ -441,7 +442,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
         ).toBe('40'),
       POLL_WAIT,
     );
-    expect(screen.getByLabelText('세팅 진행률 및 남은 시간').textContent).toContain('약 54초');
+    expect(screen.getByLabelText('세팅 진행률 및 경과 시간').textContent).toContain('40%');
     const steps = within(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).getAllByRole(
       'listitem',
     );

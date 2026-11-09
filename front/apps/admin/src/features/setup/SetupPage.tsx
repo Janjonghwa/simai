@@ -60,7 +60,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
 // 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력. 세션이 생기기 전에는 2·3단계로 갈 수 없다.
 // 2단계(대기 화면): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
-// 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·진행률·남은 시간(목표 약 1분 30초),
+// 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·실제 진행률·경과 시간,
 // 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
 // 3단계(구역): 미리보기 Scene 이 준비되면 넘어가 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
 // 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
@@ -502,6 +502,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
           {currentSession && (
             <WaitingPanel
               waiting={waiting}
+              pollingError={sessionQuery.error}
               onRetry={handleRetryFailedSession}
               retryPending={retrySession.pending}
               retryError={retrySession.error}
