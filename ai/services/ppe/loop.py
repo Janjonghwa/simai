@@ -4,7 +4,7 @@
 그 안의 카메라별 영상과 관측은 Tier 0 가 (camera_id, stream_epoch, frame_sequence, 촬영 시각)이 같은 것끼리 짝지은 것이고,
 트랙의 local ID → World ID 대응은 그 틱의 다시점 연관 결과다(관측 프레임과 최대 100 ms 차이, 설계 메모의 알려진 한계).
 
-- 카메라마다 같은 프레임은 한 번만, 지난 처리 뒤 per_camera_period_ms(500 ms = 카메라당 2 Hz) 안의 프레임은 건너뛴다.
+- 카메라마다 추론 시작 사이에 per_camera_period_ms(500 ms = 최대 2 Hz)를 두고, 같은 촬영 칸은 한 번만 처리한다.
 - 최신 한 건만 읽으므로 카메라당 대기는 1 이다. Tier 0 가 공유한 뒤 max_wait_ms(150 ms)를 넘긴 프레임은 추론하지 않는다.
 - 추론은 이 스레드 하나에서 한 장씩(동시 추론 1).
 - 접수 문(Tier 0 지연, 3.2)이 막으면 새 추론을 멈춘다. 누적된 상태는 계속 내보내 근거 만료로 UNKNOWN 이 되게 한다.
@@ -92,6 +92,7 @@ class PpeLoop:
         model_version: str,
         checkpoint_sha256: str,
         clock_ms: Callable[[], int],
+        monotonic_ms: Callable[[], int] | None = None,
         judge: PpeJudge | None = None,
         per_camera_period_ms: int = DEFAULT_PER_CAMERA_PERIOD_MS,
         publish_period_ms: int = DEFAULT_PUBLISH_PERIOD_MS,
@@ -103,13 +104,15 @@ class PpeLoop:
         self.model_version = model_version
         self.checkpoint_sha256 = checkpoint_sha256
         self.clock_ms = clock_ms
+        self.monotonic_ms = monotonic_ms or clock_ms
         self.judge = judge or PpeJudge()
         self.per_camera_period_ms = per_camera_period_ms
         self.publish_period_ms = publish_period_ms
         self.max_wait_ms = max_wait_ms
         self.state_sequence = 0
         self._last_frame: dict[str, tuple[int, int]] = {}  # camera → (stream_epoch, frame_sequence)
-        self._last_capture: dict[str, int] = {}
+        self._last_infer_at: dict[str, int] = {}  # camera → 추론 시작 시각(운영은 단조 시계)
+        self._last_bin: dict[str, tuple[int, int]] = {}  # camera → (stream_epoch, 촬영 칸)
         self._last_publish: int | None = None
         self._provenance: dict[str, Any] | None = None
         self.counts: Counter[str] = Counter()  # 계측(판정에 쓰지 않음)
@@ -146,8 +149,14 @@ class PpeLoop:
             capture = ref.get("capture_time_ms")
             if self._last_frame.get(camera_id) == key:
                 continue  # 이미 본 프레임
-            last = self._last_capture.get(camera_id)
-            if isinstance(capture, int) and last is not None and 0 <= capture - last < self.per_camera_period_ms:
+            infer_at = self.monotonic_ms()
+            last = self._last_infer_at.get(camera_id)
+            # 촬영 간격으로 500ms를 요구하면 5Hz 입력이 600ms마다 선택되어 6칸 창에 빈칸이 생긴다(-567).
+            # GPU 처리율은 시작 간격으로 제한하고, 누적 표본은 같은 촬영 칸에서 한 번만 고른다.
+            bin_key = (key[0], capture // self.judge.cfg.bin_ms) if isinstance(capture, int) else None
+            if (last is not None and infer_at - last < self.per_camera_period_ms) or (
+                bin_key is not None and self._last_bin.get(camera_id) == bin_key
+            ):
                 self.counts["rate_skip"] += 1
                 continue
             if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
@@ -159,7 +168,8 @@ class PpeLoop:
                 self.counts["bad_frame"] += 1
                 continue
             self._last_frame[camera_id] = key
-            self._last_capture[camera_id] = obs.capture_time_ms
+            self._last_infer_at[camera_id] = self.monotonic_ms()  # 관측 구성 비용 뒤의 실제 추론 시작을 기록한다.
+            self._last_bin[camera_id] = (obs.stream_epoch, obs.capture_time_ms // self.judge.cfg.bin_ms)
             candidates = self.detector.infer(image)
             dets = FrameDetections(camera_id, obs.stream_epoch, obs.frame_sequence, obs.capture_time_ms, obs.image_size,
                                    tuple(candidates))

@@ -3,6 +3,7 @@
 가짜 검출기·가짜 접수 문으로 돈다(GPU·torch 없음). 나온 메시지는 계약(ppe_state 1.0.0)과 스키마 밖 규칙으로 검사한다.
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -15,8 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # ai/ (services �
 
 from services.ppe.loop import PpeLoop, frame_observations  # noqa: E402
 from simai_ai.io.avatar_channel import LatestChannelReader, LatestChannelWriter  # noqa: E402
+from simai_ai.risk import (  # noqa: E402
+    FixedClock, HelmetRequiredRule, LifecycleTracker, Origin, PpePolicy, PpeStateStore,
+    RiskEngine, VestRequiredRule, WorldState,
+)
 
-from .test_association_state import HELMET, IMAGE, NO_VEST, keypoints  # noqa: E402
+from .test_association_state import HELMET, IMAGE, NO_HELMET, NO_VEST, keypoints  # noqa: E402
 from .test_message import out_of_schema_violations, validator  # noqa: E402,F401 - 픽스처
 
 SHA = "e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c"
@@ -127,7 +132,7 @@ def test_steady_helmet_becomes_worn_and_messages_pass_contract(validator):  # no
     [person] = last["people"]
     assert person["world_id"] == "w-0012" and person["identity_revision"] == 2
     assert person["helmet"]["state"] == "WORN"
-    assert person["vest"]["state"] in ("NOT_WORN", "UNKNOWN")
+    assert person["vest"]["state"] == "NOT_WORN"
     assert len(det.calls) == 10  # 250 ms 마다 새 프레임이지만 카메라당 2 Hz(500 ms)로만 추론
 
 
@@ -184,6 +189,149 @@ def test_two_cameras_each_limited_to_2hz():
     loop, source, _gate, det, _out, clock = make_loop()
     run(loop, source, clock, 1000, 8, cams=("cam1", "cam2"))
     assert len(det.calls) == 8  # 2초 동안 카메라 2대 × 2 Hz
+
+
+def tick_stream(*, period_ms=200, phase_ms=0, cameras=1, candidates=None, duration_ms=10_000,
+                capture_jitter_ms=(0,)):
+    """50ms 주기로 최신 입력을 다시 읽는다. 모델·시계만 합성하고 추론 시작과 촬영 시각을 따로 기록한다."""
+    loop, source, gate, det, out, clock = make_loop(
+        candidates=(NO_HELMET(), NO_VEST()) if candidates is None else candidates)
+    start = 1_760_342_400_000 + phase_ms
+    cams = tuple(f"cam{i + 1}" for i in range(cameras))
+    samples = {cid: [] for cid in cams}
+    infer = det.infer
+
+    def record(image):
+        cid = next(cid for cid, value in source.value[1].items() if value is image)
+        capture = source.value[0]["frames"][cid]["capture_time_ms"]
+        samples[cid].append((clock.t, capture))
+        return infer(image)
+
+    det.infer = record
+    for elapsed in range(0, duration_ms, 50):
+        if elapsed % period_ms == 0:
+            sequence = elapsed // period_ms
+            capture = start + elapsed + capture_jitter_ms[sequence % len(capture_jitter_ms)]
+            source.value = shared(capture, {c: sequence + 1 for c in cams}, cams=cams,
+                                  produced=start + elapsed + 20)
+        clock.t = start + elapsed + 30
+        loop.step()
+    return loop, out, samples
+
+
+@pytest.mark.parametrize("period_ms", [200, 250, 500])
+@pytest.mark.parametrize("phase_ms", [0, 150, 400])
+@pytest.mark.parametrize("cameras", [1, 4])
+def test_shared_input_reaches_not_worn_without_exceeding_inference_rate(period_ms, phase_ms, cameras):
+    """-567: 기본5Hz와500ms선택이 엇갈려도 실제 추론은2Hz 이하, 미착용6칸은 온전히 쌓인다."""
+    loop, out, samples = tick_stream(period_ms=period_ms, phase_ms=phase_ms, cameras=cameras)
+    [person] = out.messages[-1]["payload"]["people"]
+    assert person["helmet"]["state"] == person["vest"]["state"] == "NOT_WORN"
+    for camera_samples in samples.values():
+        assert all(b[0] - a[0] >= 500 for a, b in zip(camera_samples, camera_samples[1:]))
+        bins = [capture // loop.judge.cfg.bin_ms for _, capture in camera_samples]
+        assert len(bins) == len(set(bins)), "같은 카메라·촬영 칸을 두 번 추론했다"
+    assert loop.judge.dropped == {}
+
+
+@pytest.mark.parametrize("phase_ms", [0, 150, 400])
+def test_capture_jitter_still_accumulates_explicit_not_worn(phase_ms):
+    _loop, out, samples = tick_stream(phase_ms=phase_ms, cameras=4, capture_jitter_ms=(-20, 0, 20))
+    [person] = out.messages[-1]["payload"]["people"]
+    assert person["helmet"]["state"] == person["vest"]["state"] == "NOT_WORN"
+    for camera_samples in samples.values():
+        assert all(b[0] - a[0] >= 500 for a, b in zip(camera_samples, camera_samples[1:]))
+
+
+@pytest.mark.parametrize("kwargs", [{"period_ms": 1000}, {"candidates": ()}])
+def test_missing_bins_or_detections_do_not_become_not_worn(kwargs):
+    _loop, out, _samples = tick_stream(**kwargs)
+    for message in out.messages:
+        [person] = message["payload"]["people"]
+        assert person["helmet"]["state"] == person["vest"]["state"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("candidates,expected_rules", [
+    ((NO_HELMET(), NO_VEST()), {"R9", "R11"}),
+    ((), set()),
+])
+def test_5hz_states_feed_real_ppe_store_and_r9_r11_lifecycle(candidates, expected_rules):
+    """생산된 메시지를 실제 Tier 0 저장소·규칙·생명주기에 넣는다. REPLAY라 실제 알림은 없다."""
+    _loop, out, _samples = tick_stream(cameras=4, candidates=candidates)
+    example = Path(__file__).resolve().parents[3] / "contracts/examples/world_state.json"
+    world_payload = json.loads(example.read_text(encoding="utf-8"))["payload"]
+    start = out.messages[0]["sent_at"]
+    clock = FixedClock(start)
+    store = PpeStateStore()
+    engine = RiskEngine([HelmetRequiredRule(), VestRequiredRule()], clock)
+    tracker = LifecycleTracker(origin=Origin.REPLAY, clock=clock, gateway_id="tier0-01")
+    policy = PpePolicy(version="ppe-test", work_id=7, effective_from_ms=start - 1000,
+                       helmet="REQUIRED", vest="REQUIRED")
+    raised = set()
+    for message in out.messages:
+        assert store.offer(message)
+        now = message["sent_at"]
+        clock.set(now)
+        track = dict(world_payload["tracks"][0], t_last_valid=now, frame_age_ms=0)
+        world = WorldState.from_payload(dict(world_payload, t_latest_global=now, tracks=[track]))
+        evaluation = engine.evaluate(world, [], Origin.REPLAY, ppe_policy=policy, ppe=store.snapshot())
+        result = tracker.apply(evaluation, world, config_version="cfg-test")
+        raised.update(t.state.rule_id for t in result.transitions if t.transition == "RAISED")
+        assert not result.local_signals and not evaluation.alert_candidates()
+    assert raised == expected_rules
+
+
+def test_does_not_infer_a_second_frame_in_the_same_capture_bin():
+    loop, source, _gate, det, _out, clock = make_loop()
+    source.value = shared(1000, {"cam1": 1})
+    clock.t = 1030
+    loop.step()
+    # 처리 간격이 지났어도 같은 촬영 칸의 다른 프레임은 GPU에 다시 넣지 않는다.
+    source.value = shared(1200, {"cam1": 2}, produced=1620)
+    clock.t = 1630
+    loop.step()
+    assert len(det.calls) == 1
+
+
+def test_rate_limit_uses_inference_clock_instead_of_capture_or_utc_clock():
+    monotonic = Clock(0)
+    loop, source, _gate, det, _out, clock = make_loop(monotonic_ms=monotonic)
+    source.value = shared(1000, {"cam1": 1})
+    clock.t = 1030
+    loop.step()
+    source.value = shared(1600, {"cam1": 2})
+    clock.t = 1630
+    monotonic.t = 499
+    loop.step()
+    assert len(det.calls) == 1  # 촬영·UTC가 600ms 진행해도 실제 추론 시작 간격은 아직 499ms다.
+    monotonic.t = 500
+    loop.step()
+    assert len(det.calls) == 2
+
+
+def test_rate_limit_includes_time_spent_building_observations(monkeypatch):
+    monotonic = Clock(0)
+    loop, source, _gate, det, _out, clock = make_loop(monotonic_ms=monotonic)
+    observed = []
+
+    def slow_first_observation(*args):
+        if not observed:
+            monotonic.t += 100
+        observed.append(monotonic.t)
+        return frame_observations(*args)
+
+    monkeypatch.setattr("services.ppe.loop.frame_observations", slow_first_observation)
+    source.value = shared(1000, {"cam1": 1})
+    clock.t = 1030
+    loop.step()  # 실제 추론 시작은 관측을 만든 뒤인 단조 시각100ms다.
+    source.value = shared(1600, {"cam1": 2})
+    clock.t = 1630
+    monotonic.t = 500
+    loop.step()
+    assert len(det.calls) == 1  # 이전 step 시작부터는500ms여도 실제 추론 시작부터는400ms다.
+    monotonic.t = 600
+    loop.step()
+    assert len(det.calls) == 2
 
 
 def test_reads_real_shared_file_written_by_tier0_writer(tmp_path):

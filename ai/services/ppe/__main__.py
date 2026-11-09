@@ -74,6 +74,7 @@ def main() -> int:
         model_version=env.get("SIMAI_PPE_MODEL_VERSION") or DEFAULT_MODEL_VERSION,
         checkpoint_sha256=detector.checkpoint_sha256,
         clock_ms=lambda: time.time_ns() // 1_000_000,
+        monotonic_ms=lambda: time.monotonic_ns() // 1_000_000,
     )
     logging.info("PPE 시작: stream_epoch=%d model=%s gpu_fraction=%.2f", stream_epoch, loop.model_version, fraction)
     report_at = time.monotonic() + REPORT_S
