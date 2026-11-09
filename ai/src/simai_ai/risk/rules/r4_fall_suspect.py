@@ -89,9 +89,10 @@ low_posture(후보이지만 아직 유지 시간 전, holding). 기준을 대체
 수치(metrics): head_drop_m(후보의 최대 하강량), head_height_m(지면 기준 머리 높이, 알 때만), head_drop_from_peak_m(머리 변화
 기준을 쓸 때만). 표시용으로 mm 반올림한다.
 
-초기값은 모두 명세에 없는 값이다(명세화 대상). SIM 측정은 tests/risk/test_r4_sim_g6.py (상한, 판정 아님).
+초기값은 명세 7.2를 따른다. 완화 기준에서 빠르게 앉은 뒤 눕는 동작은 오경보가 가능하다. SIM 측정은 tests/risk/test_r4_sim_g6.py (상한, 판정 아님).
 """
 
+import logging
 import math
 from collections import deque
 from collections.abc import Iterator
@@ -104,33 +105,35 @@ from simai_ai.risk.rule import Finding, RuleContext, RuleSpec
 from simai_ai.risk.rules.r1_zone_entry import track_confidence_reasons
 from simai_ai.risk.world import ObservationState, Validity, WorldTrack
 
+log = logging.getLogger(__name__)
+
 R4_RULE_ID = "R4"
 R4_RULE_VERSION = 1
 R4_SEVERITY = Severity.CRITICAL
 """명세 7.2 R4 심각도. 확인 필요여도 내리지 않는다(7.3)"""
 
-R4_DROP_WINDOW_MS = 1000
-"""급하강을 보는 창. 사람 낙상은 대략 0.5~1초에 끝난다"""
-R4_DROP_MIN_M = 0.8
-"""창 안 머리 높이 하강량 하한. 빠른 앉기(약 0.45 m)·쪼그려 줍기(약 0.6 m)보다 크고, 서 있다 넘어짐(1.3 m 이상)보다 작다"""
-R4_LOW_RAISE_M = 0.6
-"""지면 기준 머리 높이가 이 값 이하면 낮은 자세(발생 임계). 바닥에 앉기(약 0.9 m)·웅크림(약 1.1 m)보다 낮고 누움(0.1~0.3 m)보다 높다"""
-R4_LOW_CLEAR_M = 0.8
-"""이 값을 넘으면 낮은 자세가 아니다(해소 임계, 히스테리시스 띠 0.6~0.8 m)"""
-R4_FOLLOWUP_MS = 2000
+R4_DROP_WINDOW_MS = 2000
+"""급하강을 보는 창. 사람 낙상은 대략 0.5~1초에 끝나지만 관측 끊김·연기(빠르게 내려가기)를 넣어 2초(S15P31A101-555, 11-09 사용자 결정 완화)"""
+R4_DROP_MIN_M = 0.5
+"""창 안 머리 높이 하강량 하한. 빠른 앉기(약 0.45 m)보다 크다. 쪼그려 줍기(약 0.6 m)는 후보가 되지만 낮은 자세(R4_LOW_RAISE_M)에서 걸러진다(-555 완화, 12차 실측 최대 하강 0.92 m/1.2 s 를 놓치지 않게)"""
+R4_LOW_RAISE_M = 0.8
+"""지면 기준 머리 높이가 이 값 이하면 낮은 자세(발생 임계). 바닥에 앉기(약 0.9 m)·줍기(약 1.0 m)·웅크림(약 1.1 m)보다 낮고, 무릎 꿇고 머리 숙이기(약 0.7 m)·누움(0.1~0.3 m)은 든다(-555 완화)"""
+R4_LOW_CLEAR_M = 1.0
+"""이 값을 넘으면 낮은 자세가 아니다(해소 임계, 히스테리시스 띠 0.8~1.0 m)"""
+R4_FOLLOWUP_MS = 3000
 """급하강 뒤 이 시간 안에 낮은 자세가 되어야 한다"""
-R4_LOW_HOLD_MS = 2000
+R4_LOW_HOLD_MS = 1500
 """낮은 자세가 이만큼 이어지면 발생('낮은 자세 유지')"""
-R4_LOST_WINDOW_MS = 1000
+R4_LOST_WINDOW_MS = 1500
 """마지막 머리 관측이 급하강에서 이 시간 안이면 관측 상실을 '급하강 직후 관측 상실'로 본다"""
 R4_LOST_MEMORY_MS = 10_000
 """world_state 에서 사라진 사람에게 상실 발생 판정을 내는 최대 시간. 지나면 이력을 버린다(활성 이벤트는 lifecycle 이 유지)"""
 R4_SUPPORT_MEMORY_MS = 10_000
 """지금 접지점이 없을 때 마지막 접지 Z 를 기준으로 쓰는 최대 경과 시간"""
-R4_FALLBACK_LOW_DROP_M = 1.0
+R4_FALLBACK_LOW_DROP_M = 0.8
 """접지를 전혀 모를 때: 급하강 전 머리 높이에서 이만큼 이상 내려가 있으면 낮은 자세(명세 5.2 head_z 변화)"""
-R4_FALLBACK_CLEAR_DROP_M = 0.8
-"""접지를 전혀 모를 때: 내려간 양이 이보다 작으면 낮은 자세가 아니다(띠 0.8~1.0 m)"""
+R4_FALLBACK_CLEAR_DROP_M = 0.6
+"""접지를 전혀 모를 때: 내려간 양이 이보다 작으면 낮은 자세가 아니다(띠 0.6~0.8 m)"""
 R4_RECOVERY_VALID_MS = 3000
 """회복 확인(모듈 설명)을 끝내는 VALID 높은 머리 근거 누적 시간. lifecycle 기본 해소 유지(LifecyclePolicy.clear_hold_ms)와 같다"""
 _RECOVERY_GAP_CAP_MS = 500
@@ -243,6 +246,10 @@ class _Session:
     memory: dict[str, _Memory] = field(default_factory=dict)
     last_global: int | None = None
     calibration_version: str | None = None
+    diagnostic_start: int | None = None
+    diagnostic_counts: dict[str, int] = field(default_factory=dict)
+    diagnostic_heights: list[float] = field(default_factory=list)
+    diagnostic_seen: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 class FallSuspectRule:
@@ -322,8 +329,13 @@ class FallSuspectRule:
         s = ctx.state.slot(self._spec.key, _Session)
         now = ctx.world.t_latest_global
         if s.last_global is not None and now < s.last_global:
+            s.diagnostic_start = None
+            s.diagnostic_counts.clear()
+            s.diagnostic_heights.clear()
+            s.diagnostic_seen.clear()
             s.memory.clear()  # 관측 시각이 뒤로 갔다(같은 출처의 다른 재생). 이력을 섞지 않는다
         if s.calibration_version is not None and ctx.world.calibration_version != s.calibration_version:
+            s.diagnostic_seen.clear()
             s.memory.clear()  # 보정이 바뀌면 World 좌표가 달라져 이전 머리 높이와 비교할 수 없다(가짜 급하강 방지)
         s.last_global = now
         s.calibration_version = ctx.world.calibration_version
@@ -334,13 +346,55 @@ class FallSuspectRule:
             if track is None:
                 finding = self._missing(s, world_id, now)
             else:
+                previous = s.memory.get(world_id)
+                was_candidate = (previous is not None and previous.revision == track.identity_revision
+                                 and previous.phase is not _Phase.NONE)
                 finding = self._present(s, track, now)
+                self._diagnose(s, track, was_candidate)
             if finding is not None:
                 findings.append(finding)
+        if s.diagnostic_start is None:
+            s.diagnostic_start = now
+        elif now - s.diagnostic_start >= 10_000:
+            heights = s.diagnostic_heights
+            log.info(
+                "R4 diagnostics period_ms=%d counts=%s head_height_m_min_max=%s",
+                now - s.diagnostic_start, s.diagnostic_counts,
+                None if not heights else (round(min(heights), 3), round(max(heights), 3)),
+            )
+            s.diagnostic_start = now
+            s.diagnostic_counts.clear()
+            heights.clear()
         calib = ctx.calibration_confidence()
         if calib:  # 판정 경로가 여럿이라 끝에서 한 번에 붙인다(Finding 이 이유를 다시 정렬하고 needs_check 를 맞춘다)
             findings = [replace(f, confidence_reasons=f.confidence_reasons + tuple(calib)) for f in findings]
         return iter(findings)
+
+    def _diagnose(self, session: _Session, track: WorldTrack, was_candidate: bool) -> None:
+        """새 OBSERVED 표본만 집계한다. 높이는 실제 또는 유지 접지 기준이며 모르면 비운다."""
+        if track.observation_state is not ObservationState.OBSERVED:
+            return
+        previous = session.diagnostic_seen.get(track.world_id)
+        if previous is not None and previous[0] == track.identity_revision and track.t_last_valid <= previous[1]:
+            return
+        session.diagnostic_seen[track.world_id] = (track.identity_revision, track.t_last_valid)
+        counts = session.diagnostic_counts
+        head = self._head(track)
+        key = ("uncertain_no_value" if head == REASON_HEAD_UNCERTAIN else
+               "unavailable" if isinstance(head, str) else "uncertain" if head.uncertain else "valid")
+        counts[key] = counts.get(key, 0) + 1
+        memory = session.memory[track.world_id]
+        if not was_candidate and memory.phase is _Phase.CANDIDATE:
+            counts["candidates"] = counts.get("candidates", 0) + 1
+        if not isinstance(head, str):
+            reading = self._reading(memory, track, head)
+            if reading.height_m is not None:
+                counts["height_known"] = counts.get("height_known", 0) + 1
+                if reading.support_code is not None:
+                    counts["height_held"] = counts.get("height_held", 0) + 1
+                session.diagnostic_heights.append(reading.height_m)
+            else:
+                counts["height_unknown"] = counts.get("height_unknown", 0) + 1
 
     # --- 사람 하나 -------------------------------------------------------------------
 
@@ -373,6 +427,7 @@ class FallSuspectRule:
         memory = s.memory[world_id]
         if now - memory.last_seen_global > self._lost_memory:
             del s.memory[world_id]
+            s.diagnostic_seen.pop(world_id, None)
             return None
         return self._lost(world_id, memory, REASON_TRACK_MISSING, None, False, now)
 

@@ -1,7 +1,7 @@
 {
   "format_version": "1.3.0",
   "vector_id": "r4-lost-after-drop",
-  "description": "R4 급하강 직후 관측 상실(7.2): 머리가 0.6초에 0.85 m 내려간 뒤 트랙이 UNKNOWN 이 되면 바로 발생(PREDICTED, UNVERIFIABLE). 상실 6초 동안 해소하지 않고, 다시 보여 서 있으면 판정 없이 3초 뒤 해소",
+  "description": "R4 급하강 직후 관측 상실(7.2): 머리가 0.6초에 0.85 m 내려간 뒤 트랙이 UNKNOWN 이 되면 바로 발생(PREDICTED, UNVERIFIABLE). 상실 6초 동안 해소하지 않고, 다시 보여 서 있으면 판정 없이 3초 뒤 해소 [S15P31A101-555: 완화된 R4 기준에 따른 판정·전이 기대값]",
   "origin": "LIVE",
   "rules": [
     {
@@ -244,7 +244,28 @@
         ]
       },
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R4",
+            "rule_version": 1,
+            "severity": "CRITICAL",
+            "world_ids": [
+              "w-0021"
+            ],
+            "zone_id": null,
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "head_drop",
+              "low_posture"
+            ],
+            "metrics": {
+              "head_drop_m": 0.85,
+              "head_height_m": 0.85
+            },
+            "holding": true
+          }
+        ],
         "transitions": [],
         "local_signals": []
       }

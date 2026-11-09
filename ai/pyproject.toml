@@ -223,6 +223,8 @@ requires = ["uv_build>=0.8,<0.12"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
+# services 는 설치 대상이 아니므로 risk 계약 시험도 ai/ 에서 import 한다.
+pythonpath = ["."]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib", "-ra"]
 markers = [
