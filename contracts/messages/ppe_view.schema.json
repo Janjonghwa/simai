@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/ppe_view.schema.json",
+  "title": "I2 /topic/ppe ppe_view",
+  "description": "EC2(source_id ec2) → 관제 화면 STOMP /topic/ppe 와 처음 상태 REST GET /api/ppe/current. EC2 가 I1 ppe_state 로 갱신한 사람별 화면용 현재 상태(ppe_current_state)를 한 장의 스냅샷으로 싣는다(명세 8.10, 12.3, 12.4, 13.3). 스냅샷이라 이번 메시지에 없는 사람은 '지금 보일 PPE 상태 없음'이다(이전 메시지 값을 이어 쓰지 않는다). 근거 프레임 키·local ID·모델 판 같은 내부 값은 싣지 않는다(사람·장비 객체는 닫힘. payload 최상위는 수신 측이 모르는 필드를 무시하는 계약 규칙대로 열어 둔다). 뷰어는 같은 world_id·identity_revision 의 world_state 트랙에만 붙이고, expires_at_ms 가 지나거나 EC2 연결이 끊기면 UNKNOWN 으로 보인다. PPE 표시는 경보가 아니다(경보는 R9 이벤트, 7.3). 1.0.0 신설(S15P31A101-531).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "ppe_view" },
+    "payload": {
+      "type": "object",
+      "required": ["tier0_source_id", "snapshot_at_ms", "people"],
+      "properties": {
+        "tier0_source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "이 상태를 보낸 Tier 0 연결의 source_id(I1 ppe_state 봉투 값, 예 tier0-01). Tier 0 마다 따로 보낸다"
+        },
+        "snapshot_at_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "EC2 가 스냅샷을 만든 시각(EC2 시계). 만료 판단(state)은 이 시각 기준이다"
+        },
+        "people": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "description": "이 Tier 0 의 사람별 현재 상태 중 촬영 시각이 snapshot_at_ms − 60초 이후인 것(최신 촬영 순, 최대 64명). 빈 배열은 보일 상태가 없다는 뜻이다. 한 메시지에 같은 world_id 는 하나(계약 시험)",
+          "items": { "$ref": "#/$defs/person_view" }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "person_view": {
+      "type": "object",
+      "description": "한 사람의 안전모·조끼 현재 상태. 위치·이미지 필드가 끼어들지 않도록 닫는다(위치·ID 정본은 /topic/world)",
+      "required": ["world_id", "identity_revision", "capture_time_ms", "received_at_ms", "helmet", "vest"],
+      "properties": {
+        "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ppe_state 값 그대로(판정에 쓴 Tier 0 트랙의 identity_revision). 뷰어가 그리는 world_state 트랙 값과 다르면 이 상태를 그 사람에게 붙이지 않는다"
+        },
+        "capture_time_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "ppe_state 값 그대로(상태 계산에 쓴 가장 새 원본 프레임 촬영 시각, Tier 0 시계)"
+        },
+        "received_at_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "EC2 가 그 ppe_state 를 받은 시각(EC2 시계, 지연 진단용)"
+        },
+        "helmet": { "$ref": "#/$defs/item_view" },
+        "vest": { "$ref": "#/$defs/item_view" }
+      },
+      "additionalProperties": false
+    },
+
+    "item_view": {
+      "type": "object",
+      "description": "장비 하나(안전모 또는 조끼)의 화면용 상태. state 는 EC2 가 snapshot_at_ms 기준으로 만료를 반영한 값이고 reported_state 는 PPE 프로세스가 보낸 값이다. 만료됐으면 state UNKNOWN·reason EVIDENCE_EXPIRED 다. 착용·미착용 표시는 보낸 값과 같을 때만 가능하다(EC2 가 상태를 지어내지 않는다)",
+      "required": ["state", "reported_state", "reason", "last_evidence_at_ms", "expires_at_ms"],
+      "properties": {
+        "state": { "enum": ["WORN", "NOT_WORN", "UNKNOWN"], "description": "화면에 보일 상태(명세 6장 PPE 상태)" },
+        "reported_state": { "enum": ["WORN", "NOT_WORN", "UNKNOWN"], "description": "ppe_state item_state.state 그대로" },
+        "reason": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+          "description": "ppe_state item_state.reason 그대로. 만료를 반영했으면 EVIDENCE_EXPIRED. 읽는 쪽은 모르는 코드를 표시만 한다"
+        },
+        "last_evidence_at_ms": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+          "description": "ppe_state 값 그대로(마지막 근거 촬영 시각, Tier 0 시계). 화면은 상태 옆에 이 시각을 보인다. 근거가 없으면 null"
+        },
+        "expires_at_ms": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+          "description": "ppe_state 값 그대로(Tier 0 시계). 뷰어는 다음 스냅샷 전이라도 이 시각이 지나면 UNKNOWN 으로 보인다. 근거가 없으면 null"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "착용 표시는 보낸 값도 착용이고 근거 시각이 있어야 한다",
+          "if": { "properties": { "state": { "const": "WORN" } }, "required": ["state"] },
+          "then": {
+            "properties": {
+              "reported_state": { "const": "WORN" },
+              "last_evidence_at_ms": { "type": "integer" },
+              "expires_at_ms": { "type": "integer" }
+            }
+          }
+        },
+        {
+          "description": "미착용 표시는 보낸 값도 미착용이고 근거 시각이 있어야 한다",
+          "if": { "properties": { "state": { "const": "NOT_WORN" } }, "required": ["state"] },
+          "then": {
+            "properties": {
+              "reported_state": { "const": "NOT_WORN" },
+              "last_evidence_at_ms": { "type": "integer" },
+              "expires_at_ms": { "type": "integer" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

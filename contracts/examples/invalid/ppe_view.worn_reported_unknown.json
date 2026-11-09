@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "ppe_view",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000531",
+  "sent_at": 1760342400520,
+  "source_id": "ec2",
+  "payload": {
+    "tier0_source_id": "tier0-01",
+    "snapshot_at_ms": 1760342400510,
+    "people": [
+      {
+        "world_id": "w-0012",
+        "identity_revision": 2,
+        "capture_time_ms": 1760342400400,
+        "received_at_ms": 1760342400480,
+        "helmet": {
+          "state": "WORN",
+          "reported_state": "UNKNOWN",
+          "reason": "WINDOW_WORN",
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400
+        },
+        "vest": {
+          "state": "NOT_WORN",
+          "reported_state": "NOT_WORN",
+          "reason": "WINDOW_NOT_WORN",
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400
+        }
+      },
+      {
+        "world_id": "w-0013",
+        "identity_revision": 0,
+        "capture_time_ms": 1760342400400,
+        "received_at_ms": 1760342400480,
+        "helmet": {
+          "state": "UNKNOWN",
+          "reported_state": "UNKNOWN",
+          "reason": "REGION_NOT_OBSERVABLE",
+          "last_evidence_at_ms": null,
+          "expires_at_ms": null
+        },
+        "vest": {
+          "state": "UNKNOWN",
+          "reported_state": "UNKNOWN",
+          "reason": "NO_OBSERVATION",
+          "last_evidence_at_ms": null,
+          "expires_at_ms": null
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "ppe_view",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000533",
+  "sent_at": 1760342400520,
+  "source_id": "ec2",
+  "payload": {
+    "tier0_source_id": "tier0-01",
+    "snapshot_at_ms": 1760342400510,
+    "people": []
+  }
+}

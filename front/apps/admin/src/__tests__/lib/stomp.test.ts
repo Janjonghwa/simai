@@ -17,6 +17,12 @@ const [avatarFrame] = Object.values(
     import: 'default',
   }),
 );
+const [ppeView] = Object.values(
+  import.meta.glob('../../../../../../contracts/examples/ppe_view.json', {
+    eager: true,
+    import: 'default',
+  }),
+);
 /** 브로커가 받은 CONNECT 의 Authorization. */
 const authorizations: (string | undefined)[] = [];
 const broker = createStompBroker({
@@ -255,6 +261,24 @@ describe('createRealtime', () => {
       viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'watch_escalation'),
     ).toBe(false);
     off();
+  });
+
+  it('/topic/ppe 의 ppe_view 는 계약을 검사해 저장소에 두고 3D 뷰어 Source 로 넘기지 않는다(-531)', async () => {
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
+    const viewer = await watchSource();
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    await until(() => {
+      broker.publish('/topic/ppe', ppeView);
+      return useRealtimeStore.getState().ppe['tier0-01'] !== undefined;
+    });
+    const stored = useRealtimeStore.getState().ppe['tier0-01']!;
+    expect(stored.payload.people.map((p) => p.world_id)).toEqual(['w-0012', 'w-0013']);
+    const rejected = useRealtimeStore.getState().rejected;
+    broker.publish('/topic/ppe', { msg_type: 'ppe_view', payload: {} });
+    await until(() => useRealtimeStore.getState().rejected === rejected + 1);
+    expect(viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'ppe_view')).toBe(
+      false,
+    );
   });
 
   it('3D 뷰어가 받다가 실패해도 앱은 world·health 를 계속 받는다', async () => {

@@ -1,7 +1,8 @@
-import { HEALTH_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
+import { HEALTH_TOPIC, PPE_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
 import { readLiveUser, unauthorized } from '@/mocks/problem';
 import {
   MOCK_CONFIG,
+  ppeViewAt,
   viewerHealthAt,
   worldStateAt,
   type MockConfig,
@@ -10,9 +11,10 @@ import {
 import type { StompBroker } from '@/mocks/stompBroker';
 import { http, HttpResponse } from 'msw/http';
 
-// 개발 서버 mock 송출: world 10Hz, health 1Hz. 위험 이벤트는 저절로 만들지 않는다.
+// 개발 서버 mock 송출: world 10Hz, health 1Hz, PPE 2Hz(-531). 위험 이벤트는 저절로 만들지 않는다.
 const WORLD_MS = 100;
 const HEALTH_MS = 1000;
+const PPE_MS = 500;
 
 export interface RealtimeMock {
   /**
@@ -63,7 +65,16 @@ export function startRealtimeMock(
     if (live() && t >= healthPausedUntil) broker.publish(HEALTH_TOPIC, healthAt(t));
   }
 
-  const timers = [setInterval(publishWorld, WORLD_MS), setInterval(publishHealth, HEALTH_MS)];
+  function publishPpe() {
+    // 장애 흉내 중에는 PPE 도 오지 않는다(화면은 만료·연결로 UNKNOWN 을 보인다).
+    if (live() && !fault) broker.publish(PPE_TOPIC, ppeViewAt(now()));
+  }
+
+  const timers = [
+    setInterval(publishWorld, WORLD_MS),
+    setInterval(publishHealth, HEALTH_MS),
+    setInterval(publishPpe, PPE_MS),
+  ];
 
   return {
     handlers: [
@@ -71,6 +82,12 @@ export function startRealtimeMock(
         // 로그인한 계정이면 역할과 상관없이 본다. 만료된 실서버 토큰(혼합 모드)은 서버처럼 거절한다.
         const t = now();
         return readLiveUser(request, t) ? HttpResponse.json(healthAt(t)) : unauthorized();
+      }),
+      // PPE 처음 상태(-531). /topic/ppe 와 같은 스냅샷의 payload 를 Tier 0 하나만큼 담는다.
+      http.get('*/api/ppe/current', ({ request }) => {
+        const t = now();
+        if (!readLiveUser(request, t)) return unauthorized();
+        return HttpResponse.json(fault ? [] : [ppeViewAt(t).payload]);
       }),
     ],
     pauseHealth: (ms) => {

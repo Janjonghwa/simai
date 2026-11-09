@@ -86,10 +86,11 @@ describe('실시간 mock 장애 흉내', () => {
 });
 
 describe('실시간 mock 송출', () => {
-  it('한 바퀴 동안 world·health 토픽으로만 보내고 위험 이벤트는 만들지 않는다', () => {
+  it('한 바퀴 동안 world·health·ppe 토픽으로만 보내고 위험 이벤트는 만들지 않는다', () => {
     run(EVENT_CYCLE_MS);
     expect([...new Set(sent.map((m) => m.topic))].sort()).toEqual([
       '/topic/health',
+      '/topic/ppe',
       '/topic/world',
     ]);
   });

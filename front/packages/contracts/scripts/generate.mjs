@@ -20,6 +20,7 @@ const MESSAGES = {
   viewer_health: 'ViewerHealth',
   avatar_frame: 'AvatarFrame',
   watch_escalation: 'WatchEscalation',
+  ppe_view: 'PpeView',
 };
 // 메시지 스키마가 $ref 하는 파일. 새 파일을 $ref 하면 여기에 더한다.
 const SCHEMAS = [

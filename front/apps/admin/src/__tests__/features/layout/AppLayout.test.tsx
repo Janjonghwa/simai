@@ -1,6 +1,7 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AppLayout } from '@/features/layout/AppLayout';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
+import { usePpeSnapshot } from '@/features/ppe/usePpe';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +30,7 @@ vi.mock('@/features/monitor/WorkSessionBar', () => ({
 }));
 vi.mock('@/features/monitor/PpePolicyNotice', () => ({ PpePolicyNotice: () => null }));
 vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
+vi.mock('@/features/ppe/usePpe', () => ({ usePpeSnapshot: vi.fn() }));
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),
 }));
@@ -134,6 +136,11 @@ describe('AppLayout 연결 상태', () => {
   it('연결이 열릴 때 지금 상태를 먼저 받는 훅(GET /api/health)을 부른다', () => {
     render(<AppLayout />);
     expect(vi.mocked(useHealthSnapshot)).toHaveBeenCalled();
+  });
+
+  it('연결이 열릴 때 지금 PPE 상태를 먼저 받는 훅(GET /api/ppe/current)을 부른다(-531)', () => {
+    render(<AppLayout />);
+    expect(vi.mocked(usePpeSnapshot)).toHaveBeenCalled();
   });
 });
 

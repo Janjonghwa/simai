@@ -1,0 +1,90 @@
+import { useNow } from '@/features/layout/useNow';
+import { requestPpeCurrent } from '@/features/ppe/api';
+import { helmetStates, personPpe, type PersonPpe, type PpeState } from '@/features/ppe/ppeView';
+import { api } from '@/lib/api';
+import { isLinkAlive, useRealtimeStore } from '@/store/realtime.store';
+import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo } from 'react';
+
+/**
+ * 연결이 (다시) 열릴 때마다 지금 PPE 상태를 한 번 받아 채운다(GET /api/ppe/current, 명세 12.4).
+ * 그 사이 /topic/ppe 로 더 새 스냅샷을 받았으면 덮지 않는다(receivePpe). 실패하면 /topic/ppe 를 기다린다(알리지 않는다).
+ */
+export function usePpeSnapshot() {
+  const openedAt = useRealtimeStore((s) => (s.phase === 'OPEN' ? s.openedAt : null));
+  const { data } = useQuery({
+    queryKey: ['ppe', 'current', openedAt],
+    queryFn: async ({ signal }) => {
+      const startedAt = Date.now();
+      return { payloads: await requestPpeCurrent(api, signal), startedAt };
+    },
+    enabled: openedAt !== null,
+    // 연결마다 한 번만 받는다. 그 뒤는 /topic/ppe 가 갱신한다.
+    staleTime: Infinity,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    // 받은 시각은 요청을 보낸 때로 둔다. 응답이 늦어도 만료를 늦게 보지 않는다.
+    for (const payload of data.payloads) {
+      useRealtimeStore.getState().receivePpe({ payload, receivedAt: data.startedAt });
+    }
+  }, [data]);
+}
+
+/** 지금 그리는 트랙(놓친 트랙 제외)의 World ID·차수. 사람·차수가 바뀔 때만 새 문자열이라 10 Hz world 에 다시 그리지 않는다. */
+function useTrackKey(): string {
+  return useRealtimeStore(
+    (s) =>
+      s.world?.payload.tracks
+        .filter((t) => t.track_lifecycle !== 'LOST')
+        .map((t) => `${t.world_id}\u0000${t.identity_revision}`)
+        .join('\u0001') ?? '',
+  );
+}
+
+function tracksOf(key: string) {
+  if (!key) return [];
+  return key.split('\u0001').map((part) => {
+    const [worldId = '', revision = '0'] = part.split('\u0000');
+    return { worldId, identityRevision: Number(revision) };
+  });
+}
+
+/** 내용이 같으면 이전 객체를 그대로 돌려준다(이름표·3D 가 1초마다 다시 그리지 않게). */
+function useSameRecord<T>(next: Record<string, T>): Readonly<Record<string, T>> {
+  const key = JSON.stringify(next);
+  return useMemo(() => JSON.parse(key) as Record<string, T>, [key]);
+}
+
+/** 1초마다 다시 보는 PPE 입력(만료·연결 끊김을 다음 스냅샷 전에도 반영). */
+function usePpeInputs() {
+  const now = useNow(1000);
+  const snapshots = useRealtimeStore((s) => s.ppe);
+  const linkAlive = useRealtimeStore((s) => isLinkAlive(s, now));
+  const trackKey = useTrackKey();
+  return { now, snapshots, linkAlive, trackKey };
+}
+
+/** 3D 안전모 형상에 넘길 사람별 안전모 상태. 상태가 바뀔 때만 새 객체다. */
+export function useHelmetStates(): Readonly<Record<string, PpeState>> {
+  const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
+  const states = helmetStates(snapshots, tracksOf(trackKey), now, linkAlive);
+  return useSameRecord(states);
+}
+
+/**
+ * 사람 하나의 PPE 상태(안전모·조끼·사유·마지막 근거 시각). 지금 트랙이 없거나 붙일 상태가 없으면 null.
+ * 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인이 이 훅으로 그린다(-531 은 3D 안전모 형상만 그린다).
+ */
+export function usePersonPpe(worldId: string | null): PersonPpe | null {
+  const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
+  if (!worldId) return null;
+  const track = tracksOf(trackKey).find((t) => t.worldId === worldId);
+  if (!track) return null;
+  return personPpe(snapshots, worldId, track.identityRevision, now, linkAlive);
+}

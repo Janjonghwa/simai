@@ -38,6 +38,9 @@ export type ViewerMode = (typeof VIEWER_MODES)[number];
 export const VIEWER_TARGET_TYPES = ['person', 'zone', 'object', 'planned'] as const;
 export type ViewerTargetType = (typeof VIEWER_TARGET_TYPES)[number];
 
+/** 사람 머리 위 단순 안전모 형상의 상태(명세 13.3). WORN 실물, UNKNOWN 반투명, NOT_WORN 형상 없음 + 경고 표식. */
+export type PersonHelmetState = 'WORN' | 'NOT_WORN' | 'UNKNOWN';
+
 export interface ViewerTarget {
   type: ViewerTargetType;
   id: string;
@@ -225,6 +228,12 @@ export interface Viewer3DProps {
    * 시간은 호스트가 정한다(키를 빼면 바로 사라진다). 내용이 같으면 다시 그리지 않고, 화면에 없는 사람은 그리지 않는다.
    */
   personHighlights?: Readonly<Record<string, string>>;
+  /**
+   * 사람별 안전모 상태(World ID → 상태, -531, 선택 사항). 호스트가 같은 World ID·identity_revision·만료·연결을 이미 따진 값만 넘긴다.
+   * Tier 0 머리 위치(골격이면 머리, 캡슐·높이 모름이면 몸 위쪽)에 단순 형상을 그린다. 아바타 메시 머리에 정밀하게 맞추지 않는다.
+   * 경보가 아니다(경보는 R9 이벤트). 키가 없는 사람은 그리지 않는다. 내용이 같으면 다시 그리지 않는다.
+   */
+  personHelmets?: Readonly<Record<string, PersonHelmetState>>;
   /**
    * 보정된 카메라 마커 목록(-522, 선택 사항). LIVE 모드에서 카메라 본체·렌즈, 카메라 ID 이름표, 약 1.5 m 시야 절두체를 그린다.
    * 구역·작업면 편집 중에는 자동으로 숨기고, 사람이 선택되면 그 트랙의 cameras 에 포함된 카메라 마커를 강조 표시한다.

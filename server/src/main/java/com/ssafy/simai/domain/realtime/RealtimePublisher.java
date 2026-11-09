@@ -54,7 +54,8 @@ public class RealtimePublisher {
         }
     }
 
-    void count(String topic, String result) {
+    /** 보내지 않은 결과(replaced·failed)를 센다. 다른 패키지의 중계기(PPE 등)도 같은 지표를 쓴다 */
+    public void count(String topic, String result) {
         meters.counter(METRIC, "topic", topic, "result", result).increment();
     }
 }

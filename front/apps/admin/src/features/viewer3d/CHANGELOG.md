@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-531 사람 안전모 형상(`personHelmets`)
+
+모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/ppe-viewer.md` 에 있다.
+
+- 추가: `personHelmets`(`Readonly<Record<string, PersonHelmetState>>`, 선택) prop, export 타입 `PersonHelmetState`.
+- 동작: 키가 있는 사람만 머리 위에 단순 안전모 형상(WORN·UNKNOWN) 또는 경고 표식(NOT_WORN)을 그린다. prop 을 넘기지 않으면 지금과 같다.
+
 ## S15P31A101-541 관제 뷰어가 맵 카메라 자세(`map_cameras`)로 투영
 
 모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/viewer-map-cameras.md` 에 있다.
