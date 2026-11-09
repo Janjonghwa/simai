@@ -22,6 +22,7 @@ from simai_ai.risk.rules.r5_entry_prediction import R5_RULE_ID, R5_RULE_VERSION,
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID, R7_RULE_VERSION, ZoneMonitoringRule
 from simai_ai.risk.rules.r9_helmet import R9_RULE_ID, R9_RULE_VERSION, HelmetRequiredRule
+from simai_ai.risk.rules.r11_vest import R11_RULE_ID, R11_RULE_VERSION, VestRequiredRule
 
 RuleFactory = Callable[[], Rule]
 
@@ -80,4 +81,6 @@ def default_registry() -> RuleRegistry:
     registry.register(R7_RULE_ID, R7_RULE_VERSION, ZoneMonitoringRule)
     # R9 는 사람 대상이지만 위치가 아니라 PPE 상태·구성 요구로 판정하므로 R6 으로 감싸지 않는다(7.2)
     registry.register(R9_RULE_ID, R9_RULE_VERSION, HelmetRequiredRule)
+    # R11(조끼, -548)도 R9 와 같은 이유로 감싸지 않는다. R9 처럼 기본 꺼짐(rule_catalog.DISABLED_BY_DEFAULT)
+    registry.register(R11_RULE_ID, R11_RULE_VERSION, VestRequiredRule)
     return registry

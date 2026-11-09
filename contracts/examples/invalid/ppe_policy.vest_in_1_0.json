@@ -1,7 +1,7 @@
 {
-  "_expect_error": "조끼 요구는 두지 않는다. 조끼는 표시만 (명세 8.10)",
+  "_expect_error": "vest 는 1.1.0 에서 더했다(1.0.x 문서에 싣지 않는다)",
   "format_version": "1.0.0",
-  "version": "ppe-3",
+  "version": "ppe-4",
   "work_id": 12,
   "effective_from_ms": 1760342499000,
   "helmet": "REQUIRED",

@@ -1,0 +1,9 @@
+{
+  "_expect_error": "진행 중 작업이 없으면 조끼 요구도 없다",
+  "format_version": "1.1.0",
+  "version": "ppe-5",
+  "work_id": null,
+  "effective_from_ms": 1760356899000,
+  "helmet": "NOT_REQUIRED",
+  "vest": "REQUIRED"
+}

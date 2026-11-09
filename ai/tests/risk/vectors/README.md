@@ -157,5 +157,7 @@ R9 입력(명세 7.2 R9, 5.5, 12.3, S15P31A101-519). world_state 계약에 없�
 | `r9_unknown_never_raises.json` | 1.6 R9: UNKNOWN·만료된 NOT_WORN·다른 identity_revision 상태로는 새 R9 없음 (7.2, D-G6-10) |
 | `r9_no_policy.json` | 1.6 R9: `ppe_policy` 없음·NOT_REQUIRED 면 NOT_WORN 이어도 판정 없음 (7.2) |
 | `r9_off_by_default.json` | 1.6 R9 기본 꺼짐: 묶음 rules 에 R9 가 없으면 판정·이벤트 없음 (8.10, 15.1) |
+| `r11_live_raise_resolve.json`, `r11_replay_raise_resolve.json`, `r11_work_end_release.json`, `r11_unknown_never_raises.json`, `r11_no_policy.json`, `r11_off_by_default.json` | 1.6 R11(조끼, -548): 같은 이름의 R9 벡터에서 안전모·조끼 상태를 맞바꾸고 `ppe_policy` 1.1.0 `vest` 를 실은 것. 판정·해소·요구 해제·UNKNOWN·REPLAY·기본 꺼짐이 R9 와 같다 |
+| `r11_policy_1_0_no_vest.json` | 1.6 R11: `ppe_policy` 1.0.0(vest 없음)은 조끼 요구 없음이라 작업 중 조끼 NOT_WORN 이어도 판정 없음(1.0.0 묶음 호환) |
 
 R2·R3·R5 가장자리 벡터는 1.4 형식(`work_surfaces`)이다. R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 등록부의 R1 v1 이 `ObservationLossHold(ZoneEntryRule())` 이고(S15P31A101-71), R6 벡터도 실제 R1 판정을 쓴다. R1·R6 벡터는 1.3 형식(기본 생명주기 정책, 판정·전이에 `confidence_reasons`)이다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.

@@ -74,9 +74,12 @@ from simai_ai.risk.registry import RuleRegistry, UnknownRuleError, default_regis
 from simai_ai.risk.ppe import (
     HelmetObservation,
     HelmetRequirement,
+    PpeItem,
     PpePolicy,
     PpeSnapshot,
     PpeStateStore,
+    VestRequirement,
+    WearObservation,
     WearState,
 )
 from simai_ai.risk.rule import (
@@ -98,6 +101,7 @@ from simai_ai.risk.rules.r5_entry_prediction import EntryPredictionRule
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import ZoneMonitoringRule
 from simai_ai.risk.rules.r9_helmet import HelmetRequiredRule
+from simai_ai.risk.rules.r11_vest import VestRequiredRule
 from simai_ai.risk.site_alerts import build_active_site_alerts, default_summary, is_site_alert, local_alert_payload
 from simai_ai.risk.work_surface import WorkSurface, WorkSurfaceSet, work_surfaces_from_operational_geometry
 from simai_ai.risk.world import WorldState, WorldTrack
@@ -158,6 +162,7 @@ __all__ = [
     "Origin",
     "Persistence",
     "PersonClearEvidence",
+    "PpeItem",
     "PpePolicy",
     "PpeSnapshot",
     "PpeStateStore",
@@ -176,6 +181,9 @@ __all__ = [
     "UnknownRuleError",
     "Verification",
     "VerificationPolicy",
+    "VestRequiredRule",
+    "VestRequirement",
+    "WearObservation",
     "WearState",
     "WorkSurface",
     "WorkSurfaceSet",
