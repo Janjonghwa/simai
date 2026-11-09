@@ -39,6 +39,33 @@ describe('PpePolicyNotice', () => {
       bundle('cfg-3', 'APPLIED', null),
     ]);
     expect(screen.getByRole('status').textContent).toContain(PPE_POLICY_MISSING_TEXT);
+    expect(screen.getByRole('status').textContent).toContain('안전모·조끼 미착용(R9·R11)');
+  });
+
+  it('이전 문서에 vest 가 없으면 조끼만 미판정이라고 보인다', () => {
+    renderNotice([
+      bundle('cfg-3', 'APPLIED', {
+        helmet: 'REQUIRED',
+        vest: null,
+        work_id: 1,
+        effective_from_ms: T,
+      }),
+    ]);
+    expect(screen.getByRole('status').textContent).toContain('조끼 요구 미수신');
+    expect(screen.getByRole('status').textContent).toContain('조끼 미착용(R11)');
+    expect(screen.getByRole('status').textContent).not.toContain('안전모');
+  });
+
+  it.each(['REQUIRED', 'NOT_REQUIRED'])('조끼 요구 %s 이면 미수신 안내가 없다', (requirement) => {
+    renderNotice([
+      bundle('cfg-3', 'APPLIED', {
+        helmet: requirement,
+        vest: requirement,
+        work_id: requirement === 'REQUIRED' ? 1 : null,
+        effective_from_ms: T,
+      }),
+    ]);
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('적용 중 묶음에 요구가 있으면 그리지 않는다', () => {

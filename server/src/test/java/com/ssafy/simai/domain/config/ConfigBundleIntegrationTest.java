@@ -252,7 +252,7 @@ class ConfigBundleIntegrationTest {
             JsonNode rules = MAPPER.readTree(download(p.at("/components/rules/uri").asString()));
             assertThat(rules.get("rule_versions")).isEqualTo(p.at("/components/rules/rule_versions"));
             assertThat(rules.get("rule_versions").valueStream().map(r -> r.get("rule_id").asString() + ":" + r.get("rule_version").intValue()))
-                    .contains("R2:1001", "R3:1001", "R1:1").doesNotContain("R2:1");
+                    .contains("R2:1001", "R3:1001", "R1:1", "R9:1", "R11:1").doesNotContain("R2:1");
             assertThat(download(p.at("/components/calibration/uri").asString()))
                     .isEqualTo(MAPPER.writeValueAsBytes(calibrationDoc));
 
@@ -270,6 +270,14 @@ class ConfigBundleIntegrationTest {
                     .isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle_item WHERE config_version = ? AND item_id IN (?, ?)",
                     Integer.class, version, zone.get("zone_id").asString(), surface.get("object_id").asString())).isEqualTo(2);
+            // Lead 시연 예외(-556): 시드 → 발행 묶음 → APPLIED → 규칙 조회까지 PPE 두 규칙이 이어진다.
+            JsonNode activeRules = call("GET", "/api/rules", admin(), null, 200).get("rules");
+            for (String id : List.of("R9", "R11")) {
+                JsonNode rule = activeRules.valueStream().filter(r -> r.get("rule_id").asString().equals(id))
+                        .findFirst().orElseThrow();
+                assertThat(rule.get("active").asBoolean()).isTrue();
+                assertThat(rule.at("/current/rule_version").asInt()).isEqualTo(1);
+            }
         }
     }
 

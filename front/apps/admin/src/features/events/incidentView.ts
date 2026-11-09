@@ -9,7 +9,7 @@ import {
 } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
-import { R9_RELEASE_LABEL, r9ReleaseOf } from '@/features/events/ppePolicy';
+import { PPE_RELEASE_LABEL, ppeReleaseOf } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import type { ConfigBundle } from '@/features/zones/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
@@ -79,7 +79,7 @@ export interface TimelineItem {
   text: string;
 }
 
-/** 규칙 하나의 타임라인 항목: 발생, 확인들, 해소(운영자 종료). 해소된 R9 는 묶음으로 가린 해소 원인을 쓴다. */
+/** 규칙 하나의 타임라인 항목: 발생, 확인들, 해소(운영자 종료). 해소된 R9·R11 는 묶음으로 가린 해소 원인을 쓴다. */
 function ruleTimeline(
   event: EventItem,
   bundles: readonly ConfigBundle[] | undefined,
@@ -99,11 +99,11 @@ function ruleTimeline(
   const resolvedAt = isActive(event) ? null : (event.resolved_at ?? eventTime(event));
   if (resolvedAt !== null) {
     const closed = event.resolution?.kind === 'OPERATOR_CLOSED';
-    const release = closed ? null : r9ReleaseOf(event, bundles);
+    const release = closed ? null : ppeReleaseOf(event, bundles);
     items.push({
       at: resolvedAt,
       who: closed ? '운영자' : '시스템',
-      text: `${rule} ${closed ? '종료' : release ? R9_RELEASE_LABEL[release] : '해소'}`,
+      text: `${rule} ${closed ? '종료' : release ? PPE_RELEASE_LABEL[release] : '해소'}`,
     });
   }
   return items;
@@ -111,7 +111,7 @@ function ruleTimeline(
 
 /**
  * 사건 상세 타임라인: 규칙마다 발생·확인·해소(운영자 종료)를 시각 순으로. 받은 이벤트 값만으로 만든다. bundles(최근 구성 묶음)를
- * 주면 해소된 R9 의 해소 원인(작업 종료·착용 확인)을 가린다.
+ * 주면 해소된 R9·R11 의 해소 원인(작업 종료·착용 확인)을 가린다.
  */
 export const incidentTimeline = (
   incident: Incident,

@@ -122,7 +122,7 @@ class RuleSceneIntegrationTest {
         assertThat(rules.get(9).get("rule_id").asString()).isEqualTo("R10");
         assertThat(rules.get(9).get("stage").asString()).isEqualTo("EXTENSION");
         assertThat(rules.get(9).get("active").asBoolean()).isFalse();
-        // PPE 규칙(MVP, 기본 꺼짐이라 묶음에 없으면 비활성): R9 안전모, R11 조끼(S15P31A101-549)
+        // PPE 규칙(MVP, 시연 예외로 시드에는 있지만 이 시험의 적용 묶음에는 없어 비활성): R9·R11(-556)
         assertThat(rules.get(8).get("rule_id").asString()).isEqualTo("R9");
         assertThat(rules.get(8).get("name").asString()).isEqualTo("작업 중 안전모 미착용");
         assertThat(rules.get(8).get("stage").asString()).isEqualTo("MVP");

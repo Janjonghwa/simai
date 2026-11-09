@@ -1,5 +1,7 @@
 # 관제 앱 R9 안전모 계약 연동 설계
 
+> 후속 정책(2026-11-09, S15P31A101-556): Lead 시연 예외로 R9·R11 을 시드에 포함한다. 아래 기본 꺼짐·잔여 작업 설명은 이 문서 작성 시점의 기록이다. 현재 활성화·프런트 보완·복구 절차는 [`ppe-demo-activation.md`](ppe-demo-activation.md)를 따른다.
+
 S15P31A101-520. 기획서 §7.1(확인 필요 이유 `PPE_UNKNOWN`), §7.2 R9 행과 설명(“PPE 요구 미수신”, 요구 해제 해소의 `config_version` 구분), §7.3, §8.10 이 기준이다.
 선행: -519(`docs/design/risk-r9-helmet.md`, 계약 v7.17.0), -518(`docs/design/server-ppe-policy-publish.md` D3, `GET /api/config-bundles` 의 `ppe_policy` 요약).
 사람별 안전모·조끼 상태 표시는 -531 범위다.

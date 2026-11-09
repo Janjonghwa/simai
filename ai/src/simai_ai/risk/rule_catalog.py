@@ -40,8 +40,8 @@ from simai_ai.risk.rules.r2_edge_proximity import R2_RULE_ID, R2_SEVERITY
 from simai_ai.risk.rules.r3_elevated_position import R3_RULE_ID, R3_SEVERITY
 from simai_ai.risk.rules.r4_fall_suspect import R4_RULE_ID, R4_SEVERITY
 from simai_ai.risk.rules.r5_entry_prediction import R5_RULE_ID, R5_SEVERITY
-from simai_ai.risk.rules.r9_helmet import R9_RULE_ID, R9_RULE_VERSION, R9_SEVERITY
-from simai_ai.risk.rules.r11_vest import R11_RULE_ID, R11_RULE_VERSION, R11_SEVERITY
+from simai_ai.risk.rules.r9_helmet import R9_RULE_ID, R9_SEVERITY
+from simai_ai.risk.rules.r11_vest import R11_RULE_ID, R11_SEVERITY
 
 _SKIP_ATTRS = {"_spec", "_inner"}
 # 규칙 모듈의 고정 심각도 상수({규칙 ID}_SEVERITY). risk 는 동적 import 를 쓰지 않으므로 직접 가져온다.
@@ -56,11 +56,10 @@ DEFAULT_SEVERITY = {
 }
 # 기본 꺼진 규칙: 등록부에는 있어(두 배포가 같은 규칙 버전·공통 벡터) 구성 묶음에 적히면 돌지만, 시드에서 빼서 EC2 DB 의
 # rule_version 에 들어가지 않으므로 EC2 가 구성 묶음 rules 에 싣지 않는다(ConfigBundleService 는 유효한 규칙을 모두 싣는다).
-# 켜는 것은 여기서 빼고 --write 로 시드를 다시 만드는 MR 이다(명세 8.10·15.1, S15P31A101-519).
-DISABLED_BY_DEFAULT: dict[tuple[str, int], str] = {
-    (R9_RULE_ID, R9_RULE_VERSION): "G9·G6-R9 통과 전(명세 15.1). 통과 뒤 이 줄을 지우고 시드를 다시 만들어 켠다",
-    (R11_RULE_ID, R11_RULE_VERSION): "G9(조끼)·G6-R11 통과 전(S15P31A101-548). 통과 뒤 이 줄을 지우고 시드를 다시 만들어 켠다",
-}
+# R9·R11 은 G9·G6-R9·G6-R11 미통과지만 Lead 가 시연용 활성화 예외를 승인했다(2026-11-09,
+# S15P31A101-556, 명세 8.10·15.1, docs/design/ppe-demo-activation.md). 게이트 통과·제품 성능 검증은 아니다.
+# 비활성 복구는 이 목록에 되넣는 것만으로 끝나지 않는다: 이미 들어간 DB 행의 적용 기간을 닫고 새 묶음을 적용해야 한다.
+DISABLED_BY_DEFAULT: dict[tuple[str, int], str] = {}
 # 첫 실제 운영 배포 날짜(ISO, 예 "2026-11-02"). None 이면 첫 운영 배포 전이라 같은 버전의 값 변경을 시드가 갱신한다(11.4-1 예외).
 # 첫 운영 배포 MR 이 날짜를 넣고 --write 로 시드를 다시 만들고 명세 README 개정 이력에 같은 날짜를 적는다. 시점은 Lead 가 정한다
 # (docs/design/rule-seed-preop-exception.md).
