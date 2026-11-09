@@ -4,6 +4,7 @@ import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
+import com.ssafy.simai.domain.layout.LayoutZoneService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
@@ -28,14 +29,16 @@ public class ZoneCommitService {
     private final ConfigBundleService bundles;
     private final SiteLookup sites;
     private final Clock clock;
+    private final LayoutZoneService layoutZones;
 
     public ZoneCommitService(ZoneRepository zones, StaticObjectRepository surfaces, ConfigBundleService bundles,
-            SiteLookup sites, Clock clock) {
+            SiteLookup sites, Clock clock, LayoutZoneService layoutZones) {
         this.zones = zones;
         this.surfaces = surfaces;
         this.bundles = bundles;
         this.sites = sites;
         this.clock = clock;
+        this.layoutZones = layoutZones;
     }
 
     private record Changes(ObjectNode zone, ObjectNode surface, String zoneId, String archivedSurfaceId) {
@@ -103,6 +106,9 @@ public class ZoneCommitService {
 
     /** 트랜잭션 안: 구역 → 작업면. 저장소가 값·버전 충돌·연결을 검사하고 실패하면 던져 모두 되돌린다 */
     private Changes apply(Plan p, String siteId, long userId, OffsetDateTime now) {
+        layoutZones.lock();
+        if (!"CREATE".equals(p.zoneOp())) layoutZones.denyZone(p.zoneId());
+        if (p.surfaceOp() != null && !"CREATE".equals(p.surfaceOp())) layoutZones.denyObject(p.objectId());
         ObjectNode zone = null;
         String zoneId = p.zoneId();
         String archivedSurface = null;

@@ -36,7 +36,7 @@ public class ZoneRepository {
 
     private static final String COLUMNS = """
             zone_id, zone_version, site_id, name, zone_kind, eval_type, ST_AsGeoJSON(polygon) AS polygon, z_min_m, z_max_m,
-            severity, requirements::text AS requirements, has_guardrail, valid_from, valid_to
+            severity, requirements::text AS requirements, has_guardrail, valid_from, valid_to, work_id, layout_id, layout_item_id
             """;
 
     private static final String INSERT = """
@@ -227,6 +227,11 @@ public class ZoneRepository {
         }
         z.put("valid_from", Versioned.millis(rs.getObject("valid_from", OffsetDateTime.class)));
         z.put("valid_to", Versioned.millis(rs.getObject("valid_to", OffsetDateTime.class)));
+        if (rs.getObject("layout_item_id") != null) {
+            z.put("work_id", rs.getLong("work_id"));
+            z.put("layout_id", rs.getLong("layout_id"));
+            z.put("layout_item_id", rs.getString("layout_item_id"));
+        }
         return z;
     }
 }

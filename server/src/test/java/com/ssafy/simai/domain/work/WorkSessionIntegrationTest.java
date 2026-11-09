@@ -3,6 +3,8 @@ package com.ssafy.simai.domain.work;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -132,7 +134,11 @@ class WorkSessionIntegrationTest {
         jdbc.update("DELETE FROM event_close WHERE event_id IN (SELECT event_id FROM risk_event WHERE gateway_id = ?)", gateway);
         jdbc.update("DELETE FROM risk_event WHERE gateway_id = ?", gateway);
         jdbc.update("DELETE FROM report WHERE work_id IN (SELECT work_id FROM work_unit WHERE name = ?)", "개인정보작업-" + suffix);
+        jdbc.update("DELETE FROM static_object WHERE work_id IN (SELECT work_id FROM work_unit WHERE name = ?)", "개인정보작업-" + suffix);
+        jdbc.update("DELETE FROM zone WHERE work_id IN (SELECT work_id FROM work_unit WHERE name = ?)", "개인정보작업-" + suffix);
         jdbc.update("DELETE FROM work_unit WHERE name = ?", "개인정보작업-" + suffix);
+        jdbc.update("DELETE FROM layout_plan_revision WHERE layout_id IN (SELECT layout_id FROM layout_plan WHERE name = ?)", "배치-" + suffix);
+        jdbc.update("DELETE FROM layout_plan WHERE name = ?", "배치-" + suffix);
         jdbc.update("DELETE FROM zone WHERE zone_id IN (?, ?)", zone, outside);
         String users = "SELECT user_id FROM app_user WHERE login_id LIKE '%" + suffix + "'";
         List<String> versions = jdbc.queryForList("SELECT config_version FROM config_bundle WHERE issued_by IN (" + users
@@ -326,6 +332,49 @@ class WorkSessionIntegrationTest {
                 .andExpect(jsonPath("$.latest.signature_count").value(0))
                 .andExpect(jsonPath("$.versions[0].wrap_up_status").value("SUCCEEDED"));
         releaseEngine.countDown();
+    }
+
+    @Test
+    void 작업_배치가_구역과_묶음에_반영되고_수정과_종료에_따라_갱신된다() throws Exception {
+        String items = """
+                [{"item_id":"open","kind":"OPENING","center":[2,3,0.05],"size":[2,1,0.1],"yaw_rad":0},
+                 {"item_id":"surface","kind":"WORK_SURFACE","center":[5,3,0.5],"size":[2,1,1],"yaw_rad":0}]
+                """;
+        String body = "{\"name\":\"배치-" + suffix + "\",\"items\":" + items + "}";
+        String created = mvc.perform(post("/api/layouts").header(HttpHeaders.AUTHORIZATION, admin)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long layout = MAPPER.readTree(created).path("layout_id").asLong();
+        long work = work(zone);
+        jdbc.update("UPDATE work_unit SET layout_id = ? WHERE work_id = ?", layout, work);
+        start(work);
+        String generated = jdbc.queryForObject("SELECT zone_id FROM zone WHERE work_id = ? AND layout_item_id = 'open' AND valid_to IS NULL", String.class, work);
+        String surface = jdbc.queryForObject("SELECT object_id FROM static_object WHERE work_id = ? AND layout_item_id = 'surface' AND valid_to IS NULL", String.class, work);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle_item WHERE item_id = ?", Integer.class, generated)).isPositive();
+        mvc.perform(get("/api/zones/{id}/versions", generated).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].layout_id").value(layout))
+                .andExpect(jsonPath("$[0].layout_item_id").value("open"));
+        mvc.perform(delete("/api/zones/{id}", generated).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("LAYOUT_ZONE_LOCKED"));
+        mvc.perform(delete("/api/static-objects/{id}", surface).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("LAYOUT_ZONE_LOCKED"));
+        clock.now.set(started.plusSeconds(1));
+        mvc.perform(put("/api/layouts/{id}", layout).header(HttpHeaders.AUTHORIZATION, admin)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT max(zone_version) FROM zone WHERE zone_id = ?", Integer.class, generated)).isEqualTo(1);
+        String changed = "[{\"item_id\":\"open\",\"kind\":\"OPENING\",\"center\":[4,3,0.05],\"size\":[2,1,0.1],\"yaw_rad\":0}]";
+        mvc.perform(put("/api/layouts/{id}", layout).header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"배치-" + suffix + "\",\"items\":" + changed + "}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT max(zone_version) FROM zone WHERE zone_id = ?", Integer.class, generated)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM static_object WHERE object_id = ? AND valid_to IS NULL", Integer.class, surface)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM zone WHERE work_id = ? AND layout_item_id = 'surface' AND valid_to IS NULL", Integer.class, work)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle_item WHERE item_id = ? AND item_version = 2", Integer.class, generated)).isPositive();
+        clock.now.set(started.plusSeconds(2));
+        end(work);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM zone WHERE work_id = ? AND valid_to IS NULL", Integer.class, work)).isZero();
+        mvc.perform(delete("/api/zones/{id}", generated).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("LAYOUT_ZONE_LOCKED"));
     }
 
     private MvcResult concurrentStart(long work, CountDownLatch go) throws Exception {

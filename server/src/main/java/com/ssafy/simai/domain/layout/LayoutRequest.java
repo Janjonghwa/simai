@@ -20,6 +20,7 @@ public record LayoutRequest(
             @JsonProperty("center") List<Double> center,
             @JsonProperty("size") List<Double> size,
             @JsonProperty("yaw_rad") Double yawRad,
-            @JsonProperty("label") String label) {
+            @JsonProperty("label") String label,
+            @JsonProperty("source_zone_id") String sourceZoneId) {
     }
 }

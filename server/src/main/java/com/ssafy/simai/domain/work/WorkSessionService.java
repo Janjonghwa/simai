@@ -4,6 +4,7 @@ import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.report.TbmReportService;
 import com.ssafy.simai.domain.report.WorkWrapUpRepository;
+import com.ssafy.simai.domain.layout.LayoutZoneService;
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -27,9 +28,10 @@ public class WorkSessionService {
     private final ConfigBundleService bundles;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final LayoutZoneService layoutZones;
 
     public WorkSessionService(WorkUnitRepository works, WorkWrapUpRepository wrapUps, TbmReportService reports,
-            SiteLookup sites, ConfigBundleService bundles, ObjectMapper mapper, Clock clock) {
+            SiteLookup sites, ConfigBundleService bundles, ObjectMapper mapper, Clock clock, LayoutZoneService layoutZones) {
         this.works = works;
         this.wrapUps = wrapUps;
         this.reports = reports;
@@ -37,19 +39,28 @@ public class WorkSessionService {
         this.bundles = bundles;
         this.mapper = mapper;
         this.clock = clock;
+        this.layoutZones = layoutZones;
     }
 
     public ObjectNode start(long workId, long userId) {
         String site = sites.siteId();
         var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
-        return bundles.publishWith(() -> works.startSession(site, workId, now), true, userId).changes();
+        return bundles.publishWith(() -> {
+            layoutZones.lock();
+            ObjectNode work = works.startSession(site, workId, now);
+            Long layout = work.path("layout_id").isNumber() ? work.path("layout_id").asLong() : null;
+            layoutZones.sync(site, workId, layout, userId, java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
+            return work;
+        }, true, userId).changes();
     }
 
     public ObjectNode end(long workId, long userId) {
         String site = sites.siteId();
         ObjectNode response = bundles.publishWith(() -> {
+            layoutZones.lock();
             var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
             ObjectNode work = works.endSession(site, workId, now);
+            layoutZones.end(site, workId, java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
             ObjectNode out = mapper.createObjectNode();
             out.set("work_unit", work);
             out.set("wrap_up", wrapUps.prepare(workId, work, now));

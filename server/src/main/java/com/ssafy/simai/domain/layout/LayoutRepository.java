@@ -28,7 +28,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class LayoutRepository {
 
-    static final Set<String> KINDS = Set.of("OPENING", "SCAFFOLD", "EQUIPMENT");
+    static final Set<String> KINDS = Set.of("OPENING", "WORK_SURFACE", "SCAFFOLD", "EQUIPMENT");
     static final int MAX_NAME = 100;
     static final int MAX_LABEL = 100;
     static final int MAX_ITEM_ID = 64;
@@ -164,6 +164,13 @@ public class LayoutRepository {
             o.putArray("center").add(center[0]).add(center[1]).add(center[2]);
             o.putArray("size").add(size[0]).add(size[1]).add(size[2]);
             o.put("yaw_rad", yaw);
+            if (item.sourceZoneId() != null && !item.sourceZoneId().isBlank()) {
+                o.put("source_zone_id", text(item.sourceZoneId(), MAX_ITEM_ID));
+            }
+            if (("WORK_SURFACE".equals(item.kind()) || "SCAFFOLD".equals(item.kind()))
+                    && Math.floor((center[2] + size[2] / 2) * 1000 + 0.5) <= 0) {
+                throw invalid();
+            }
             if (label == null) {
                 o.putNull("label");
             } else {

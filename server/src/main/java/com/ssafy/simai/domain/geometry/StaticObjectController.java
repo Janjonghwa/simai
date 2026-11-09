@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.geometry;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.layout.LayoutZoneService;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -35,12 +36,14 @@ class StaticObjectController {
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final LayoutZoneService layoutZones;
 
-    StaticObjectController(StaticObjectRepository objects, SiteLookup sites, TransactionTemplate transaction, Clock clock) {
+    StaticObjectController(StaticObjectRepository objects, SiteLookup sites, TransactionTemplate transaction, Clock clock, LayoutZoneService layoutZones) {
         this.objects = objects;
         this.sites = sites;
         this.transaction = transaction;
         this.clock = clock;
+        this.layoutZones = layoutZones;
     }
 
     @GetMapping
@@ -65,7 +68,7 @@ class StaticObjectController {
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode newVersion(@PathVariable String objectId, @RequestBody StaticObjectRequest request,
             @AuthenticationPrincipal Jwt jwt) {
-        return transaction.execute(s -> objects.newVersion(objectId, request, Long.parseLong(jwt.getSubject()), now()));
+        return transaction.execute(s -> { layoutZones.lock(); layoutZones.denyObject(objectId); return objects.newVersion(objectId, request, Long.parseLong(jwt.getSubject()), now()); });
     }
 
     /** 보관: 지금 버전을 닫아 목록·다음 묶음에서 뺀다. 이미 적용된 묶음은 다음 발행까지 그대로 쓰인다 */
@@ -73,7 +76,7 @@ class StaticObjectController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     void archive(@PathVariable String objectId) {
-        transaction.executeWithoutResult(s -> objects.archive(objectId, now()));
+        transaction.executeWithoutResult(s -> { layoutZones.lock(); layoutZones.denyObject(objectId); objects.archive(objectId, now()); });
     }
 
     private OffsetDateTime now() {

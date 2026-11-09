@@ -126,6 +126,20 @@ public class ConfigBundleService {
         return new Published<>(built.changes(), views.find(built.configVersion()));
     }
 
+    /** 변경 결과에 따라 발행 여부를 트랜잭션 안에서 결정한다. */
+    public <T> Published<T> publishWithDynamic(Supplier<T> changes, java.util.function.Predicate<T> publish, long userId) {
+        String siteId = sites.siteId();
+        Built<T> built = transaction.execute(status -> {
+            T value = changes.get();
+            if (!publish.test(value)) return new Built<>(value, null);
+            if (!signer.configured()) throw new BusinessException(ErrorCode.Config.PUBLIC_URL_NOT_SET);
+            return new Built<>(value, build(siteId, null, userId, null));
+        });
+        if (built.configVersion() == null) return new Published<>(built.changes(), null);
+        sender.sendToAll(built.configVersion());
+        return new Published<>(built.changes(), views.find(built.configVersion()));
+    }
+
     /**
      * 현장 세팅 성공(I5 site_setup 결과) 때 세팅이 등록한 새 보정을 실은 묶음을 발행한다(S15P31A101-467). Tier 0 가 알린 현재 보정 대신
      * 그 보정 문서를 싣고, 구역·규칙·작업면은 발행과 같이 지금 유효한 것을 싣는다. 이전 묶음의 규칙 프로필을 잇는다.
