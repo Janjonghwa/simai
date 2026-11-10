@@ -271,7 +271,7 @@ class Worker:
                 )
             except RetryableError as e:
                 beat.failures += 1
-                beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
+                beat.next_heartbeat = self._monotonic() + min(beat.interval, self.client.backoff.delay(beat.failures))
                 log.warning("site_setup 단계 하트비트 실패 %d회: %s", beat.failures, e)
                 return
             except RequestRejected as e:
@@ -346,7 +346,7 @@ class Worker:
                 )
             except RetryableError as e:
                 beat.failures += 1
-                beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
+                beat.next_heartbeat = self._monotonic() + min(beat.interval, self.client.backoff.delay(beat.failures))
                 log.warning("하트비트 실패 %d회: %s", beat.failures, e)
                 return None
             except RequestRejected as e:

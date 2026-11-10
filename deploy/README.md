@@ -611,3 +611,15 @@ E-GATE-0 H0·H1·H6, C1·C2 와 `docs/design/exp-images.md` "E-GATE-0 대조 기
 
 
 맵 재생성은 기본적으로 LIVE 표시가 있는 동안 접수 대상에서 제외되며 워커 로그에 이유가 남는다. 작업 종료 후에도 상시 안전 감시가 계속되므로 작업 종료만으로 LIVE 종료가 아니다. 관제를 정상 종료한 뒤 `simai-bootstrap after-live`로 워커만 띄우고 요청한다. LIVE 중 허용 여부는 명세 5.3·19.1에서 실측 후 결정할 미결 사항이다. 서버·화면에는 현재 이 대기 이유가 표시되지 않아 안내 개선이 필요하다.
+
+## EC2 배포 동결 (S15P31A101-582)
+
+GPU 세션 전에 EC2 호스트에서 저장소의 `deploy/ec2/deploy.sh`를 `/opt/simai/bin/deploy.sh`에 다시 설치하고 `freeze.sh`도 `/opt/simai/bin/freeze.sh`에 설치한다(`install -m 755`). 기존 제한 SSH 키가 실행하는 것은 호스트 설치본이다. 이미 동작 중인 배포는 끝난 뒤 동결된다.
+
+```sh
+/opt/simai/bin/freeze.sh on --hours 4 --reason "GPU 세션 세팅"
+/opt/simai/bin/freeze.sh status
+/opt/simai/bin/freeze.sh off
+```
+
+시간은 1~168 정수다. 사유·만료 UTC·설정자는 `/opt/simai/deploy.freeze`에 기록한다. 동결 중 Jenkins 로그에는 사유·만료와 배포 건너뜀이 표시되고 성공으로 끝난다. 만료되면 경고 후 배포한다. 건너뛴 커밋은 자동으로 다시 배포되지 않으므로 세션 후 배포를 다시 실행한다.

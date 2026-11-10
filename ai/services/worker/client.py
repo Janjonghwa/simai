@@ -63,7 +63,12 @@ class Backoff:
 
     def delay(self, failures: int) -> float:
         """연속 실패 failures(1부터) 번째 뒤 기다릴 초."""
-        return min(self.max_s, self.initial_s * self.factor ** max(0, failures - 1))
+        delay = self.initial_s
+        for _ in range(max(0, failures - 1)):
+            delay = min(self.max_s, delay * self.factor)
+            if delay >= self.max_s:
+                break
+        return delay
 
 
 @dataclass(frozen=True)
@@ -257,7 +262,15 @@ class LeaseClient:
         if site_setup is not None:
             payload["site_setup"] = dict(site_setup)
         body = self.envelope("job_heartbeat", payload)
-        resp = self._post(heartbeat_path(lease.job_id), body, self._timeout_s, "하트비트")
+        try:
+            resp = self._transport.post(heartbeat_path(lease.job_id), body, self._timeout_s)
+        except TransportError as e:
+            raise RetryableError(f"하트비트: {e}") from e
+        if resp.status == 404:
+            return LeaseStatus("REJECTED", "UNKNOWN_LEASE")
+        if resp.status == 409 and (resp.body is None or resp.body.get("msg_type") != "job_lease_status"):
+            return LeaseStatus("REJECTED", "LEASE_NOT_ACTIVE")
+        _raise_for_status(resp, "하트비트")
         if resp.body is None:
             raise RetryableError(f"하트비트: 본문 없는 응답 {resp.status}")
         return LeaseStatus.from_message(resp.body)

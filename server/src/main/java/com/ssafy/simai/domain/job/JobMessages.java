@@ -16,8 +16,8 @@ final class JobMessages {
     /** job_request 3.7.0(site_setup 입력, -452). 워커 클라이언트는 메이저 3 만 본다 */
     static final String JOB_REQUEST_VERSION = "3.8.0";
     static final String LEASE_STATUS_VERSION = "2.0.0";
-    /** 대여 유지 시간과 하트비트 주기(계약 기본안: 유지 30000ms, 주기 10000ms = 유지의 1/3) */
-    static final long LEASE_HOLD_MS = 30_000;
+    /** 90초 서버 중단과 재시도 여유를 포함한 대여 유지 시간. 주기는 기존 10초를 유지한다. */
+    static final long LEASE_HOLD_MS = 180_000;
     static final int HEARTBEAT_INTERVAL_MS = 10_000;
 
     private JobMessages() {
