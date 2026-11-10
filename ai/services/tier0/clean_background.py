@@ -255,7 +255,9 @@ class BackgroundCleanBackground:
         view = {"signature": (ctx.generations[cid], samples[0].capture_time_ms, samples[-1].capture_time_ms),
                 "size": samples[-1].frame_bgr.shape[1::-1],
                 "sample_times": [s.capture_time_ms for s in samples],
-                "samples": [(s[1], s[2]) for s in small]}
+                "samples": [(s[1], s[2]) for s in small],
+                "mean_person_cover_ratio": round(float(np.mean([s.person_cover_ratio for s in samples])), 6),
+                "never_revealed_ratio": round(float(1.0 - revealed.mean()), 6)}
         self._rotation_views = {**self._rotation_views, cid: view}
 
     def rotation_snapshot(self, exclude_cameras=()) -> dict | None:

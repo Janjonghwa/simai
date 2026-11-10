@@ -492,7 +492,9 @@ class Tier0Service:
             calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
             calibration_issue=lambda: (self.calibration_status["last_rejection"] is not None
                                        or bool(self.calibration_status.get("cumulative_warning"))
-                                       or bool(self.calibration_status.get("re_setup_required"))),
+                                       or bool(self.calibration_status.get("re_setup_required"))
+                                       or bool(self.calibration_status.get("suspect_cameras"))
+                                       or bool(self.calibration_status.get("monitoring_degraded_reason"))),
             re_setup=self.re_setup_field,
             lock=self.judge_lock,
         )
@@ -921,16 +923,23 @@ class Tier0Service:
 
     def _record_requires_setup(self, camera_id: str, reason: str) -> None:
         with self.judge_lock:
+            protected = self.perception.exclude_cameras((camera_id,))
+            effective_reason = reason or "사유 미상"
+            if camera_id in protected:
+                degraded_reason = f"감시 저하(최소 카메라 2대 보호로 융합 제외 보류): {camera_id} ({effective_reason})"
+                self.calibration_status["monitoring_degraded_reason"] = degraded_reason
+                prev_prot = set(self.calibration_status.get("protected_cameras") or ())
+                self.calibration_status["protected_cameras"] = sorted(prev_prot | {camera_id})
+                effective_reason = f"{effective_reason} (최소 카메라 2대 유지로 융합 제외 보류·감시 저하)"
             self.calibration_status["re_setup_required"] = True
-            self.calibration_status["re_setup_reason"] = f"현장 세팅 다시 하기: {camera_id} ({reason})"
+            self.calibration_status["re_setup_reason"] = f"현장 세팅 다시 하기: {camera_id} ({effective_reason})"
             self.calibration_status["re_setup_camera_id"] = camera_id
             # 처음 감지한 시각은 해소되기 전에는 바뀌지 않는다(계약 re_setup_camera.detected_at). 사유만 최신으로 고친다
             known = self._re_setup_cameras.get(camera_id)
             self._re_setup_cameras[camera_id] = {
-                "reason": reason or "사유 미상",
+                "reason": effective_reason,
                 "detected_at": self.clock.now_ms() if known is None else known["detected_at"],
             }
-            self.perception.exclude_cameras((camera_id,))
 
     def re_setup_field(self) -> list[dict[str, Any]]:
         """health.re_setup 값(계약 2.2.0): 재세팅이 필요한 카메라 목록(camera_id 오름차순), 없으면 빈 배열. 판정은 건드리지 않는다."""
@@ -1037,6 +1046,8 @@ class Tier0Service:
                     "config_version": bundle.config_version, "at_ms": at_ms}
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms, probation=None,
                                        re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None,
+                                       suspect_cameras=None, suspect_reason=None,
+                                       monitoring_degraded_reason=None, protected_cameras=None,
                                        setup_adoption=adoption)
         self._re_setup_cameras.clear()  # 재세팅이 끝났다: health.re_setup 을 비운다(-480)
         log.info("세팅 보정 채택: %s → %s (세션 %s, 묶음 %s, 새 World 기준)", previous_version, version,
@@ -1092,7 +1103,9 @@ class Tier0Service:
         self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms,
-                                       re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None)
+                                       re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None,
+                                       suspect_cameras=None, suspect_reason=None,
+                                       monitoring_degraded_reason=None, protected_cameras=None)
         self._re_setup_cameras.clear()  # 새 보정이 활성화됐다: health.re_setup 을 비운다(-480)
         self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
 
@@ -1131,13 +1144,34 @@ class Tier0Service:
                 # 저장 실패 시 근거를 유지해 다음 표본 때 다시 저장한다(감시기는 확정 근거를 한 번만 낸다).
                 self.calibration.report_drift(pending, effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
                 self._pending_drift_report = None
+            suspect_ids = sorted(c.camera_id for c in report.cameras if c.status is MonitorStatus.SUSPECT)
+            self.calibration_status["suspect_cameras"] = suspect_ids or None
+            self.calibration_status["suspect_reason"] = (
+                f"카메라 틀어짐 의심(SUSPECT, 기준·환경 점검 필요): {', '.join(suspect_ids)}" if suspect_ids else None
+            )
             drifted_or_changed = {
                 c.camera_id
                 for c in report.cameras
                 if c.status in (MonitorStatus.DRIFTED, MonitorStatus.STREAM_CHANGED)
             } | set(changed_streams)
             if drifted_or_changed:
-                self.perception.exclude_cameras(drifted_or_changed)
+                protected = self.perception.exclude_cameras(drifted_or_changed)
+                if protected:
+                    degraded_reason = (
+                        f"감시 저하(최소 카메라 2대 보호로 융합 제외 보류): {', '.join(protected)}"
+                    )
+                    self.calibration_status["monitoring_degraded_reason"] = degraded_reason
+                    prev_prot = set(self.calibration_status.get("protected_cameras") or ())
+                    self.calibration_status["protected_cameras"] = sorted(prev_prot | set(protected))
+                    for cid in protected:
+                        known = self._re_setup_cameras.get(cid)
+                        base_reason = (known["reason"] if known is not None else "재투영 오차 증가")
+                        if "최소 카메라 2대" not in base_reason:
+                            base_reason = f"{base_reason} (최소 카메라 2대 유지로 융합 제외 보류·감시 저하)"
+                        self._re_setup_cameras[cid] = {
+                            "reason": base_reason,
+                            "detected_at": self.clock.now_ms() if known is None else known["detected_at"],
+                        }
             if self.calibration.state == "DRIFTED" and not changed_streams:
                 for camera in report.cameras:
                     key = report.calibration_version, camera.camera_id

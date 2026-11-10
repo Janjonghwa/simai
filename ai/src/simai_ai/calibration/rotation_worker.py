@@ -215,7 +215,15 @@ class RotationComputation:
                     check_budget()
                     with measure("recent_extract"):
                         try:
-                            feat = extract_features(bg, mask, camera, feature_config, original_size=recent["size"])
+                            feat = extract_features(
+                                bg,
+                                mask,
+                                camera,
+                                feature_config,
+                                original_size=recent["size"],
+                                person_cover_ratio=float(recent.get("mean_person_cover_ratio") or 0.0),
+                                never_revealed_ratio=float(recent.get("never_revealed_ratio") or 0.0),
+                            )
                         except ValueError as exc:
                             if str(exc).startswith("STREAM_CHANGED"):
                                 raise ValueError(f"STREAM_CHANGED:{cid}:{exc}") from exc

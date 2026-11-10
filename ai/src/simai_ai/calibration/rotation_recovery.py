@@ -24,6 +24,9 @@ class RotationConfig:
     min_inlier_ratio: float = 0.6
     min_matches: int = 40
     min_coverage: float = 0.12
+    min_valid_ratio: float = 0.5
+    max_person_cover_ratio: float = 0.10
+    max_unrevealed_ratio: float = 0.02
     max_features: int = 1600
     max_image_side: int = 960
     max_pair_p95_px: float = 5.0
@@ -42,7 +45,18 @@ class RotationConfig:
             raise ValueError("rotation_recovery: 특징점/영상 크기 부족")
         if not self.min_angle_rad < self.max_angle_rad < math.pi:
             raise ValueError("rotation_recovery: 회전각 범위 오류")
-        if any(getattr(self, k) > 1 for k in ("min_singular_ratio", "min_inlier_ratio", "min_coverage", "min_pair_gain")):
+        if any(
+            getattr(self, k) > 1
+            for k in (
+                "min_singular_ratio",
+                "min_inlier_ratio",
+                "min_coverage",
+                "min_valid_ratio",
+                "max_person_cover_ratio",
+                "max_unrevealed_ratio",
+                "min_pair_gain",
+            )
+        ):
             raise ValueError("rotation_recovery: 비율은 1 이하")
 
 
@@ -53,9 +67,20 @@ class Features:
     size: tuple[int, int]
     valid_ratio: float = 1.0
     mask: np.ndarray | None = None
+    person_cover_ratio: float = 0.0
+    never_revealed_ratio: float = 0.0
 
 
-def extract_features(image, mask, camera, config: RotationConfig, *, original_size=None) -> Features:
+def extract_features(
+    image,
+    mask,
+    camera,
+    config: RotationConfig,
+    *,
+    original_size=None,
+    person_cover_ratio: float = 0.0,
+    never_revealed_ratio: float = 0.0,
+) -> Features:
     import cv2
 
     source_size = tuple(image.shape[1::-1]) if original_size is None else tuple(original_size)
@@ -92,7 +117,15 @@ def extract_features(image, mask, camera, config: RotationConfig, *, original_si
             points = cv2.fisheye.undistortPoints(points[:, None], K, coeffs, P=K)[:, 0]
         elif distortion["model"] != "NONE":
             points = cv2.undistortPoints(points[:, None], K, coeffs if coeffs.size else None, P=K)[:, 0]
-    return Features(points, descriptors, source_size, valid_ratio, valid)
+    return Features(
+        points,
+        descriptors,
+        source_size,
+        valid_ratio,
+        valid,
+        float(person_cover_ratio),
+        float(never_revealed_ratio),
+    )
 
 
 def match_features(a: Features, b: Features):
@@ -121,9 +154,31 @@ def _project(H, points):
     return p[:, :2] / p[:, 2, None]
 
 
-def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 1.0) -> dict:
+def fit_rotation(
+    p,
+    q,
+    K,
+    size,
+    config: RotationConfig,
+    *,
+    valid_ratio: float = 1.0,
+    person_cover_ratio: float = 0.0,
+    never_revealed_ratio: float = 0.0,
+) -> dict:
     """1/5 대응은 H 적합에서 제외한다. H 잔차와 회전 H 잔차를 별도로 검사한다."""
-    result = {"status": "REQUIRES_SETUP", "matches": len(p), "reason": "매칭 부족", "valid_ratio": float(valid_ratio)}
+    crowd_occluded = (
+        valid_ratio < config.min_valid_ratio
+        or person_cover_ratio >= config.max_person_cover_ratio
+        or never_revealed_ratio >= config.max_unrevealed_ratio
+    )
+    result = {
+        "status": "REQUIRES_SETUP",
+        "matches": len(p),
+        "reason": "매칭 부족",
+        "valid_ratio": float(valid_ratio),
+        "person_cover_ratio": float(person_cover_ratio),
+        "never_revealed_ratio": float(never_revealed_ratio),
+    }
     if len(p) < config.min_matches:
         if len(p) >= 12 and valid_ratio < 0.90:
             disp = np.linalg.norm(p - q, axis=1)
@@ -141,7 +196,9 @@ def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 
                     "rotation_residual_p95_px": p95,
                     "reason": None,
                 }
-        if valid_ratio < 0.5:
+        if crowd_occluded or (
+            len(p) >= 8 and float(np.median(np.linalg.norm(p - q, axis=1))) <= config.max_residual_px * 1.5
+        ):
             return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return result
     held = np.arange(len(p)) % 5 == 0
@@ -149,6 +206,8 @@ def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 
 
     H, inliers = cv2.findHomography(p[~held], q[~held], cv2.RANSAC, config.max_residual_px)
     if H is None or inliers is None or not np.isfinite(H).all():
+        if crowd_occluded:
+            return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return {**result, "reason": "호모그래피 적합 실패"}
     K = np.asarray(K, dtype=float)
     M = np.linalg.solve(K, H @ K)
@@ -180,11 +239,18 @@ def fit_rotation(p, q, K, size, config: RotationConfig, *, valid_ratio: float = 
     if geom_ok and coverage < config.min_coverage:
         if result["angle_rad"] < config.min_angle_rad:
             return {**result, "status": "ROTATION", "reason": None}
-        if result["angle_rad"] <= config.max_angle_rad:
+        if result["angle_rad"] <= config.max_angle_rad or crowd_occluded:
             return {**result, "status": "NO_EVIDENCE", "reason": "정적 배경 분포 면적 부족"}
     pure = geom_ok and coverage >= config.min_coverage
     if not pure:
-        if valid_ratio < 0.5 and result["inlier_ratio"] >= config.min_inlier_ratio:
+        disp = np.linalg.norm(p - q, axis=1)
+        stationary_anchors = int((disp <= config.max_residual_px).sum())
+        stationary_ratio = float((disp <= config.max_residual_px).mean())
+        if (
+            crowd_occluded
+            or coverage < config.min_coverage
+            or (stationary_anchors >= 12 and stationary_ratio >= 0.35)
+        ):
             return {**result, "status": "NO_EVIDENCE", "reason": "가림 또는 유효 배경 부족"}
         return {**result, "reason": "위치 이동/시차 또는 불충분한 정적 배경"}
     if result["angle_rad"] > config.max_angle_rad:
@@ -306,7 +372,14 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
             eff_valid_ratio = min(eff_valid_ratio, ref_vis)
         with measure("estimation"):
             fit = fit_rotation(
-                p, q, reference["K"], ref_features.size, config, valid_ratio=eff_valid_ratio
+                p,
+                q,
+                reference["K"],
+                ref_features.size,
+                config,
+                valid_ratio=eff_valid_ratio,
+                person_cover_ratio=float(getattr(feat, "person_cover_ratio", 0.0)),
+                never_revealed_ratio=float(getattr(feat, "never_revealed_ratio", 0.0)),
             )
         rotations[cid] = fit
         if fit["status"] == "NO_EVIDENCE":
