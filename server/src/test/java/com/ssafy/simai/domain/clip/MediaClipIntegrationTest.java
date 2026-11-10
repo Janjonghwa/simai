@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -292,10 +293,14 @@ class MediaClipIntegrationTest {
 
         send(retention);
         send(clip);
-        // 재전송은 보관함에서도 한 번
-        send(clip);
-
         awaitCount(() -> deferred(clip) + deferred(retention), 2);
+        Instant firstReceivedAt = deferredReceivedAt(clip);
+        // 재전송은 보관함에서도 한 번. 이벤트를 넣기 전에 처리된 것을 확인한다(Tier 0 연결마다 처리가 비동기라 기다리지 않으면
+        // 이벤트 뒤에 처리될 수 있다. 그 경우는 아래 다음 시험이 따로 본다, Jenkins #757·#771)
+        double duplicateBefore = counter("media_clip", "duplicate");
+        send(clip);
+        awaitCount(() -> (int) (counter("media_clip", "duplicate") - duplicateBefore), 1);
+        assertThat(deferred(clip)).isEqualTo(1);
         assertThat(clips(event)).isZero();
         insertEvent(event, "HIGH");
 
@@ -306,11 +311,45 @@ class MediaClipIntegrationTest {
         awaitZero(() -> deferred(clip) + deferred(retention), Duration.ofSeconds(10));
         JsonNode item = call("GET", "/api/events/" + event + "/clips", admin(), null, 200).get("clips").get(0);
         assertThat(item.get("retention_hold").asBoolean()).isTrue();
-        // 저장 때 받은 시각은 처음 받은 시각이다(이벤트를 넣기 전). 같은 밀리초일 수 있어 <= 로 본다(Jenkins #425 불안정)
+        // 저장 때 받은 시각은 처음 받은 시각(보관한 시각)이다
+        assertThat(clipReceivedAt(clipId)).isEqualTo(firstReceivedAt);
+    }
+
+    @Test
+    void 이벤트보다_먼저_온_클립의_재전송이_이벤트_뒤에_와서_바로_저장돼도_받은_시각은_처음_받은_시각이고_보관_행은_함께_지운다()
+            throws Exception {
+        UUID event = UUID.fromString(uuid7());
+        events.add(event);
+        ObjectNode clip = clip(event, "cam1", 0, "HIGH", false);
+        String clipId = clip.at("/payload/clip_id").asString();
+
+        // 처음 받은 클립을 보관한 상태를 직접 만든다. 다음 시도를 미뤄 재시도가 먼저 저장하지 않게 한다(재시도가 보관 행을 읽은 뒤
+        // 미루기를 덮어쓰는 경쟁이 없도록 처음부터 미룬 행으로 넣는다). 이벤트 뒤에 온 재전송이 바로 저장하는 길만 남는다
+        Instant firstReceivedAt = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MICROS);
+        jdbc.update("""
+                INSERT INTO i1_deferred_message (msg_id, msg_type, envelope, reason, received_at, next_attempt_at)
+                VALUES (?::uuid, 'media_clip', ?::jsonb, '이벤트 전이를 아직 받지 못했다', ?, now() + interval '1 hour')
+                """, clip.get("msg_id").asString(), MAPPER.writeValueAsString(clip), java.sql.Timestamp.from(firstReceivedAt));
+        insertEvent(event, "HIGH");
+        double storedBefore = counter("media_clip", "stored");
+
+        send(clip);
+
+        awaitCount(() -> (int) (counter("media_clip", "stored") - storedBefore), 1);
+        assertThat(clips(event)).isEqualTo(1);
+        // 보관 행은 저장과 같은 트랜잭션에서 지운다(저장이 보이면 이미 없다)
+        assertThat(deferred(clip)).isZero();
+        assertThat(clipReceivedAt(clipId)).isEqualTo(firstReceivedAt);
         assertThat(jdbc.queryForObject("""
-                SELECT c.received_at <= e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id
-                WHERE c.clip_id = ?::uuid
+                SELECT c.received_at <= e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id WHERE c.clip_id = ?::uuid
                 """, Boolean.class, clipId)).isTrue();
+
+        // 그 뒤 재전송은 중복이고 행이 늘지 않는다
+        double duplicateBefore = counter("media_clip", "duplicate");
+        send(clip);
+        awaitCount(() -> (int) (counter("media_clip", "duplicate") - duplicateBefore), 1);
+        assertThat(clips(event)).isEqualTo(1);
+        assertThat(clipReceivedAt(clipId)).isEqualTo(firstReceivedAt);
     }
 
     @Test
@@ -454,6 +493,16 @@ class MediaClipIntegrationTest {
     private int deferred(JsonNode message) {
         return jdbc.queryForObject("SELECT count(*) FROM i1_deferred_message WHERE msg_id = ?::uuid", Integer.class,
                 message.get("msg_id").asString());
+    }
+
+    private Instant deferredReceivedAt(JsonNode message) {
+        return jdbc.queryForObject("SELECT received_at FROM i1_deferred_message WHERE msg_id = ?::uuid", java.sql.Timestamp.class,
+                message.get("msg_id").asString()).toInstant();
+    }
+
+    private Instant clipReceivedAt(String clipId) {
+        return jdbc.queryForObject("SELECT received_at FROM media_clip WHERE clip_id = ?::uuid", java.sql.Timestamp.class, clipId)
+                .toInstant();
     }
 
     private static void awaitCount(Supplier<Integer> actual, int expected) throws InterruptedException {
