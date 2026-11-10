@@ -21,18 +21,42 @@ for path in (HERE, HERE.parents[2]):
         sys.path.insert(0, str(path))
 
 from test_calibration_swap import candidate, recording  # noqa: E402, F401
+
 # 사람 관절 보정 감시(drift_watch)는 -444 이후 기본 꺼짐이라, 감시와 연결된 이 시험들은 켠 site 를 쓴다.
 from test_drift_watch import drive, field_calibration, site  # noqa: E402, F401
 from test_tier0_service import _settings  # noqa: E402
+
 from services.tier0.clean_background import BackgroundCleanBackground  # noqa: E402
 from services.tier0.perception import DetectorFeed  # noqa: E402
 from services.tier0.service import Tier0Service  # noqa: E402
-from services.tier0.settings import CleanBackgroundSettings, Tier0ConfigError, load_settings  # noqa: E402
+from services.tier0.settings import (  # noqa: E402
+    CleanBackgroundSettings,
+    Tier0ConfigError,
+    load_settings,
+)
 from simai_ai.providers.base import Frame  # noqa: E402
-from simai_ai.tracking.local_tracker import CameraDetections, PoseDetection  # noqa: E402
+from simai_ai.tracking.local_tracker import (  # noqa: E402
+    CameraDetections,
+    PoseDetection,
+)
 
 IDS = ("cam_A", "cam_B", "cam_C", "cam_D")
 PROV = {"frames": {"source": "FILE", "dataset_id": "synthetic-clean-background"}, "is_upper_bound": True}
+
+
+@pytest.fixture(autouse=True)
+def _close_clean_bg_workers(monkeypatch):
+    created = []
+    original = BackgroundCleanBackground.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(BackgroundCleanBackground, "__init__", init)
+    yield
+    for item in created:
+        item.close()
 
 
 def document():
@@ -350,8 +374,8 @@ def test_disabled_service_has_no_collector_or_callback(tmp_path, recording, monk
         assert service.stop()
 
 
-@pytest.mark.parametrize("value", [{"enabled": "false"}, {"sample_interval_ms": 0}, {"queue_depth": True},
-                                  {"max_bytes": -1}, {"max_pending_bytes": 0},
+@pytest.mark.parametrize("value", [{"enabled": "false"}, {"offload": "true"}, {"sample_interval_ms": 0},
+                                  {"queue_depth": True}, {"max_bytes": -1}, {"max_pending_bytes": 0},
                                   {"min_samples_per_camera": 61}, []])
 def test_invalid_settings_rejected(tmp_path, recording, value):
     _settings(tmp_path, recording, anchor_ms=1000)
@@ -365,14 +389,16 @@ def test_invalid_settings_rejected(tmp_path, recording, value):
 
 def test_settings_default_and_relative_output_path(tmp_path, recording):
     settings = _settings(tmp_path, recording, anchor_ms=1000)
-    assert settings.clean_background.enabled and settings.clean_background.sample_interval_ms == 5000
+    assert settings.clean_background.enabled and settings.clean_background.offload is True
+    assert settings.clean_background.sample_interval_ms == 5000
     path = tmp_path / "tier0.json"
     doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["clean_background"] = {"output_dir": "background-output", "max_bytes": 10000}
+    doc["clean_background"] = {"output_dir": "background-output", "max_bytes": 10000, "offload": False}
     path.write_text(json.dumps(doc), encoding="utf-8")
     settings = load_settings(path, env={})
     assert settings.clean_background.output_dir == tmp_path / "background-output"
     assert settings.clean_background.max_bytes == 10000
+    assert settings.clean_background.offload is False
 
 
 def test_regenerate_exports_new_bundle_and_not_ready(tmp_path):
@@ -467,3 +493,196 @@ def test_measure_background_worker_cpu_time(tmp_path):
     w._regenerate_bundle(w._active)
     print(f"clean_background worker_cpu_seconds={time.process_time() - started:.3f} "
           "cameras=4 frames_per_camera=4 resolution=640x360")
+
+
+def test_offload_runs_in_spawn_child_and_matches_inprocess_export(tmp_path):
+    """-563: offload(spawn 자식 + shared_memory) 경로와 인프로세스(offload=False) 경로의
+    export 산출물·status.json·rotation_snapshot·is_ready 결과가 완전히 일치한다."""
+    import os
+
+    w_inproc = worker(tmp_path / "inproc", offload=False)
+    w_offload = worker(tmp_path / "offload", offload=True)
+    w_inproc.configure_rotation_samples(16)
+    w_offload.configure_rotation_samples(16)
+
+    assert w_offload._mp_ctx.get_start_method() == "spawn"
+    assert not w_inproc.is_ready() and not w_offload.is_ready()
+
+    for idx, at in enumerate((0, 100, 200, 300)):
+        for cid in IDS:
+            f_in, d_in = pair(cid, at, person=True)
+            f_off, d_off = pair(cid, at, person=True)
+            # 일부 픽셀에 시간 분산 변화를 넣어 _mask_unknown 경로도 함께 검증한다.
+            f_in.image[0:2, 25:28] = 250 if idx % 2 else 10
+            f_off.image[0:2, 25:28] = 250 if idx % 2 else 10
+            assert w_inproc.offer(f_in, d_in)
+            assert w_inproc.process_one()
+            assert w_offload.offer(f_off, d_off)
+            assert w_offload.process_one()
+
+    assert w_offload.worker_pid is not None and w_offload.worker_pid != os.getpid()
+    assert len(w_offload.allocated_shm_names) >= 1
+    assert w_inproc.is_ready() and w_offload.is_ready()
+
+    st_in = read_status(w_inproc)
+    st_off = read_status(w_offload)
+    assert st_in["complete"] and st_off["complete"]
+    assert st_in["calibration_version"] == st_off["calibration_version"] == "cal-1"
+    assert st_in["camera_generations"] == st_off["camera_generations"]
+    assert st_in["queue_dropped"] == st_off["queue_dropped"] == 0
+
+    bundle_in = Path(st_in["bundle"])
+    bundle_off = Path(st_off["bundle"])
+    assert json.loads((bundle_in / "COMPLETE").read_text(encoding="utf-8")) == json.loads(
+        (bundle_off / "COMPLETE").read_text(encoding="utf-8")
+    )
+    meta_in = json.loads((bundle_in / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    meta_off = json.loads((bundle_off / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    assert meta_in == meta_off
+
+    for cid in IDS:
+        assert (bundle_in / f"{cid}.jpg").read_bytes() == (bundle_off / f"{cid}.jpg").read_bytes()
+        assert (bundle_in / f"{cid}.valid.png").read_bytes() == (bundle_off / f"{cid}.valid.png").read_bytes()
+        for key in (
+            "sample_count",
+            "time_range_ms",
+            "never_revealed_ratio",
+            "mean_person_cover_ratio",
+            "image_size",
+            "bytes_used",
+            "ready",
+            "exported",
+        ):
+            assert st_in["cameras"][cid][key] == st_off["cameras"][cid][key]
+
+    snap_in = w_inproc.rotation_snapshot()
+    snap_off = w_offload.rotation_snapshot()
+    assert snap_in is not None and snap_off is not None
+    for cid in IDS:
+        assert snap_in[cid]["signature"] == snap_off[cid]["signature"]
+        assert snap_in[cid]["size"] == snap_off[cid]["size"]
+        assert snap_in[cid]["sample_times"] == snap_off[cid]["sample_times"]
+        for key in ("mean_person_cover_ratio", "never_revealed_ratio"):  # -564 혼잡 보류 근거
+            assert snap_off[cid][key] is not None
+            assert snap_in[cid][key] == snap_off[cid][key]
+        assert len(snap_in[cid]["samples"]) == len(snap_off[cid]["samples"])
+        for (img_a, m_a), (img_b, m_b) in zip(snap_in[cid]["samples"], snap_off[cid]["samples"]):
+            np.testing.assert_array_equal(img_a, img_b)
+            np.testing.assert_array_equal(m_a, m_b)
+
+
+def test_offload_nonblocking_put_and_full_slot_drop_count(tmp_path):
+    """-563: 큐나 공유 메모리 슬롯이 가득 차면 기다리지 않고 버리며 queue_dropped 를 올린다."""
+    w = worker(tmp_path, offload=True, queue_depth=2)
+    assert w.offer(*pair("cam_A", 0))
+    assert w.process_one()
+    # 모든 공유 메모리 슬롯이 사용 중인 상태를 모사하면 _worker_add_frame 이 즉시 버리고 dropped 를 올린다.
+    for slot in w._shm_slots:
+        slot.in_use = True
+    try:
+        started = time.perf_counter()
+        assert not w._worker_add_frame("cam_A", 100, pair("cam_A", 100)[0].image, ())
+        assert time.perf_counter() - started < 0.05
+        assert w.dropped == 1
+    finally:
+        for slot in w._shm_slots:
+            slot.in_use = False
+
+    # 판정 스레드 offer() 경로도 queue_depth 초과 시 블로킹 없이 즉시 버리고 queue_dropped 에 반영한다.
+    started = time.perf_counter()
+    assert w.offer(*pair("cam_B", 200))
+    assert w.offer(*pair("cam_C", 200))
+    for i in range(10):
+        assert not w.offer(*pair("cam_D", 200 + i * 100))
+    assert time.perf_counter() - started < 0.05
+    assert w.dropped == 11
+    while w.process_one():
+        pass
+    assert read_status(w)["queue_dropped"] == 11
+
+
+def test_offload_child_crash_restarts_once_then_disables_and_unlinks_shm(tmp_path, caplog):
+    """-563: 자식 프로세스가 죽으면 로그를 남기고 1회 재시작하며, 다시 죽으면 배경 누적을 끄고 공유 메모리를 해제한다."""
+    import os
+    from multiprocessing.shared_memory import SharedMemory
+
+    w = worker(tmp_path, offload=True)
+    assert w.offer(*pair("cam_A", 0))
+    assert w.process_one()
+    pid1 = w.worker_pid
+    assert pid1 is not None and pid1 != os.getpid()
+    assert w.worker_restarts == 0
+
+    # 1차 비정상 종료 -> 경고 로그 + 1회 재시작 후 정상 누적·내보내기
+    proc1 = w.worker_process
+    assert proc1 is not None
+    w._cmd_queue.put_nowait(("crash_for_test", 0, 1))
+    proc1.join(timeout=3)
+    assert not proc1.is_alive()
+
+    collect(w, start=200)
+    pid2 = w.worker_pid
+    assert w.worker_restarts == 1
+    assert not w.disabled
+    assert pid2 is not None and pid2 != pid1
+    assert read_status(w)["complete"]
+    assert "1회 재시작" in caplog.text
+
+    # 2차 비정상 종료 -> 에러 로그 + 배경 누적 비활성화(disabled=True) + 공유 메모리 unlink
+    proc2 = w.worker_process
+    assert proc2 is not None
+    w._cmd_queue.put_nowait(("crash_for_test", 0, 1))
+    proc2.join(timeout=3)
+    assert not proc2.is_alive()
+
+    assert w.offer(*pair("cam_A", 1000))
+    assert not w.process_one()
+    assert w.disabled is True
+    assert w.worker_restarts == 1
+    assert w.worker_process is None
+    assert w.active_shm_names == set()
+    assert "배경 누적을 끈다" in caplog.text
+    assert read_status(w)["last_error"] is not None
+
+    # 비활성화 뒤에도 판정 스레드 offer() 는 블로킹이나 예외 없이 즉시 False 를 반환한다.
+    assert not w.offer(*pair("cam_A", 2000))
+    assert not w.process_one()
+    for name in w.allocated_shm_names:
+        with pytest.raises(FileNotFoundError):
+            SharedMemory(name=name, create=False)
+
+
+def test_offload_close_terminates_worker_and_unlinks_shared_memory(tmp_path):
+    """-563: 종료(close) 시 자식 프로세스를 끝내고 생성한 모든 shared_memory 를 unlink 한다."""
+    from multiprocessing.shared_memory import SharedMemory
+
+    w = worker(tmp_path, offload=True)
+    collect(w, ("cam_A",))
+    proc = w.worker_process
+    shm_names = set(w.allocated_shm_names)
+    assert proc is not None and proc.is_alive()
+    assert len(shm_names) >= 1 and w.active_shm_names == shm_names
+
+    w.close()
+    assert not proc.is_alive()
+    assert w.worker_process is None
+    assert w.active_shm_names == set()
+    for name in shm_names:
+        with pytest.raises(FileNotFoundError):
+            SharedMemory(name=name, create=False)
+
+
+def test_offload_falls_back_to_in_process_when_shm_is_small(tmp_path, monkeypatch):
+    """-563: /dev/shm 이 작으면(도커 기본 64 MB 등) 공유 메모리에 쓰다 SIGBUS 로 죽지 않게 인프로세스로 돈다."""
+    import services.tier0.clean_background as cb
+
+    monkeypatch.setattr(cb, "_shm_free_bytes", lambda: 8 * 1024 * 1024)
+    w = worker(tmp_path, offload=True)
+    try:
+        assert w.settings.offload is False
+        assert w.offer(*pair("cam_A", 0))
+        assert w.process_one()
+        assert w.worker_process is None
+        assert w.accumulator.camera_status("cam_A").sample_count == 1
+    finally:
+        w.close()
