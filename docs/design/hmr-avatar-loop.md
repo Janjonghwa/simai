@@ -10,7 +10,7 @@ Tier 0 World ID·위치·접지를 읽기만 하며 I1·위험 판정에는 HMR 
 이 묶음은 기존 exp02의 SAM 3D Body 체크포인트·MHR 자산 두 개만 참조한다. 검출·FOV 모델은 다시 띄우지 않는다.
 Fast 저장소의 model_config.yaml과 가중치 링크를 fastcfg 폴더에 준비한다. 공식 모델 로더는 `simai_ai.hmr.loader`에서 실험과 공유한다.
 
-avatar 선택 시 GPU 전체 대비 분석 워커 예산 0.70을 vLLM 0.55 + HMR 0.10 + I5 torch 0.05로 나눈다.
+avatar 선택 시 GPU 전체 대비 분석 워커 예산 0.70을 vLLM 0.30 + HMR 0.10 + I5 torch 0.30으로 나눈다(S15P31A101-525, 그 전 기본은 vLLM 0.55 + HMR 0.10 + I5 torch 0.05, 명세 3.2).
 감시 프로세스가 I5에 `SIMAI_WORKER_TORCH_MEMORY_FRACTION`을 주고, HMR은 `SIMAI_AVATAR_GPU_MEMORY_FRACTION`으로 torch 할당을 제한한다.
 음수 잔여 예산은 기동 전에 거부한다. vLLM을 선택하지 않으면 그 몫은 I5에 남는다. CUDA 문맥·외부 할당까지 포함한 실제 VRAM은 GPU에서 검증해야 한다.
 각 프로세스는 기존과 같이 별도 감시·재기동되며 아바타 실패는 Tier 0를 종료하지 않는다.

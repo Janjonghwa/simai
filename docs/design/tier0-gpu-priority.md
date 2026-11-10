@@ -163,7 +163,7 @@ H100 80GB 기준. 비율은 GPU 전체 메모리 대비.
 |---|---|---|
 | Tier 0 | 0.20 (16GB): 엔진 + 디코더 4개 + torch 선확보 8GB | `SIMAI_TIER0_GPU_RESERVE_MB`, 검사용 `SIMAI_GPU_TIER0_FRACTION` |
 | 분석 워커 전체 예산 | 0.70 (vLLM + 아바타 + 워커 합산 상한) | `SIMAI_WORKER_GPU_MEMORY_FRACTION` |
-| VLM(vLLM, FP8) | 0.30 (24GB: FP8 가중치 10.05 GiB + CUDA graph·활성화 여유 + KV 약 13 GiB), 동시 요청 4 | `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION`, `SIMAI_VLLM_QUANTIZATION`(`fp8`), `SIMAI_WORKER_VLLM_MAX_NUM_SEQS` |
+| VLM(vLLM, FP8) | 0.30 (81,559 MiB 기준 24,468 MiB = 23.89 GiB: FP8 가중치 10.05 GiB + 활성화 프로파일·CUDA graph·torch 밖 약 2.9 GiB + KV 약 10.9 GiB, KV 는 H200 같은 절대 크기 시험값, 아래 -580), 동시 요청 4 | `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION`, `SIMAI_VLLM_QUANTIZATION`(`fp8`), `SIMAI_WORKER_VLLM_MAX_NUM_SEQS` |
 | 상시 아바타 | 0.10 (8GB, 실사용 4.0~5.1GB) | `SIMAI_AVATAR_GPU_MEMORY_FRACTION` |
 | 분석 워커 프로세스(torch) | 0.30 (아바타 켬, 24GB) / 0.40 (아바타 끔, 32GB), **최소 보장 0.10 (8GB, MapAnything 피크 6.4GB OOM 방지)** | `SIMAI_WORKER_TORCH_MEMORY_FRACTION` (`MIN_WORKER_TORCH_FRACTION=0.10`) |
 
@@ -268,6 +268,23 @@ Tier 0 지연(정본 기준)과 직접 맞지 않는다.
 
 ## S15P31A101-493 로비 배분과 재생성
 
-기동기 기본은 전체 분석 예산 0.70 = vLLM 0.50 + 아바타 0.10 + 워커 0.10이다. H100 80GB에서 워커 상한 약 8GB는 12차 MapAnything peak alloc 6.4GB보다 약 1.6GB 크다. 이는 예약이 아니고 다른 CUDA 할당·입력에 따른 피크 증가를 보장하지 않는다. 아바타 실측 4.0~5.1GB여서 0.10을 유지한다. vLLM은 12차 38.3GB, 3차 가중치 16.79GiB + KV 23.99GiB였고 다운로드 31.5GB는 VRAM 크기가 아니다. 0.55에서 0.50으로 줄이면 KV와 동시성 여유가 줄며 32768 토큰·4 동시 요청의 기동과 처리량은 미검증이다. 80GB 미만은 경고하며 48GB급 미만은 기존대로 Tier 0만 기동한다. 명시 워커 상한은 env 파일 > 프로세스 환경 > 계산값, 합계 초과 거부.
+(이 절은 -493 당시 기록이다. 현재 기본은 -525 의 vLLM 0.30 + 아바타 0.10 + 워커 0.30 이고 위 "GPU 메모리 예산"을 본다.) 기동기 기본은 전체 분석 예산 0.70 = vLLM 0.50 + 아바타 0.10 + 워커 0.10이다. H100 80GB에서 워커 상한 약 8GB는 12차 MapAnything peak alloc 6.4GB보다 약 1.6GB 크다. 이는 예약이 아니고 다른 CUDA 할당·입력에 따른 피크 증가를 보장하지 않는다. 아바타 실측 4.0~5.1GB여서 0.10을 유지한다. vLLM은 12차 38.3GB, 3차 가중치 16.79GiB + KV 23.99GiB였고 다운로드 31.5GB는 VRAM 크기가 아니다. 0.55에서 0.50으로 줄이면 KV와 동시성 여유가 줄며 32768 토큰·4 동시 요청의 기동과 처리량은 미검증이다. 80GB 미만은 경고하며 48GB급 미만은 기존대로 Tier 0만 기동한다. 명시 워커 상한은 env 파일 > 프로세스 환경 > 계산값, 합계 초과 거부.
 
 명세 5.3·19.1은 LIVE 중 재생성 예외를 실측 뒤 결정하도록 남겨 두었다. 작업이 없어도 상시 안전 감시이므로 작업 종료를 LIVE 종료로 취급하지 않는다. 기본적으로 LIVE 재생성을 차단하고 로그에 접수 제외 이유를 남긴다. 관제 정상 종료 뒤 `simai-bootstrap after-live`로 워커를 띄워 처리한다. 서버·화면의 대기 이유 및 관제 종료 안내는 후속이며 대기 요청의 시간 초과를 피하려면 종료 후 요청해야 한다.
+
+## S15P31A101-580 명세 정합(VLM 메모리)
+
+관련 명세: 3.2 GPU 메모리 예산표·'VLM 메모리 항목', 3.12 최소 사양, 5.4 VLM 모델, 19.1. 배포 값·코드 동작은 바꾸지 않았다.
+
+- **불일치.** -525 가 시작 절차·`simai_ai.gpu.budget`·`deploy/compose.yaml` 기본을 VLM `0.30`·FP8 로 바꿨지만 명세 3.2 는 `0.55`·BF16 가중치 16.79 GiB, 분석 워커 분할 `0.55 + 0.10 + 0.05` 로 남아 있었다. 3.12·19.1·이 문서의 -493 절·`vlm-serving.md` 서빙 인자도 옛 값이었다. 명세 갱신만 빠진 문서 오류로 보고 명세를 배포 기본에 맞췄다. 총합(`0.20 + 0.70`, PPE 켜면 `+ 0.05 ≤ 0.95`)은 -525 전후가 같아 GPU 배분 결정을 새로 하지 않았다.
+- **기본값과 우선순위(코드 확인).**
+  - 비율: `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION`(프로세스 환경, compose 는 `"0.30"` 명시) > `VLLM_GPU_MEMORY_UTILIZATION = "0.30"`(`simai_bootstrap.py`). 빈 값은 기본으로 돌아간다. `compute_gpu_fractions` 가 같은 값으로 예산 합을 검사한다.
+  - 양자화: `SIMAI_VLLM_EXTRA_ARGS` 안의 `--quantization`/`-q` > `SIMAI_VLLM_QUANTIZATION`(`none`·빈 값이면 끔) > `VLLM_QUANTIZATION = "fp8"`. `--quantization fp8` 은 vLLM 의 가중치 온라인 양자화다. KV 캐시 dtype 은 넘기지 않아 `auto`(모델 dtype BF16)다(2026-11-10 H200 시험 로그 `quantization=fp8, kv_cache_dtype=auto, dtype=torch.bfloat16`).
+  - `SIMAI_VLLM_EXTRA_ARGS` 에 `--gpu-memory-utilization` 을 넣으면 시작 절차가 걸러내지 않고 뒤에 붙인다. vLLM 이 뒤 값을 쓰면 예산 검사(환경 값 기준)와 실제 상한이 달라질 수 있다(vLLM 인자 처리 순서는 확인하지 않음, 잔여 위험).
+- **계산(H100 80GB `nvidia-smi` 81,559 MiB = 79.65 GiB).** Tier 0 0.20 = 16,312 MiB, VLM 0.30 = 24,468 MiB(23.89 GiB), 아바타 0.10 = 8,156 MiB, 워커 프로세스 0.30 = 24,468 MiB(아바타 끄면 0.40 = 32,624 MiB), PPE 0.05 = 4,078 MiB, 합 0.95 = 77,481 MiB, 여유 4,078 MiB.
+- **VLM 0.30 안 구성(시험값).** 2026-11-10 H200(143,771 MiB)에서 비율 0.1702(= 24,470 MiB, H100 0.30 과 같은 절대 크기)로 띄운 vLLM 0.21 로그: 가중치 FP8 10.05 GiB, KV 10.92 GiB = 79,536 토큰(32,768 기준 2.43x), CUDA graph 0.03 GiB, `nvidia-smi` 프로세스 사용량 24,128 MiB. 23.90 − 10.05 − 10.92 ≈ 2.9 GiB 가 활성화 프로파일 최대·torch 밖 메모리다. 같은 H200 의 0.30(43,131 MiB = 42.12 GiB)에서는 KV 29.07 GiB, 나머지 3.0 GiB 로 비슷하다. -525 문서의 "KV 약 13 GiB·9.4만 토큰·2.9x"는 이 나머지를 1 GiB 안팎으로 본 추정이라 고쳤다.
+- **버린 대안.** H200 시험용 비율 0.1702 를 기본으로 적는 안: GPU 별 환산값이라 운영 기본이 아니다. 3차 세션 BF16 수치를 VLM 행에 남기는 안: 현재 기본과 섞여 읽힌다. 이력 문장으로만 남겼다.
+- **잔여 위험·넘긴 일.**
+  - H100 에서 FP8·0.30 과 Tier 0·PPE·아바타를 함께 띄운 전체 스택 실측, G0 합격, FP8 기본의 G7(근거 일치·빠른 경로 지연) 재측정은 하지 않았다(19.1).
+  - 48GB급에서 0.30 은 KV 가 32,768 토큰 요청 하나(약 4.5 GiB)에 모자랄 것으로 계산된다. VLM 몫·`--max-model-len` 을 바꿀지는 제품 결정이라 19.1 미결로 둔다.
+  - 요구사항 NFR-19 는 명세 README "요구사항 갱신 목록"에 올렸다(마일스톤 때 반영).
