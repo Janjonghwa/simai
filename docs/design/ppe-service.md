@@ -57,3 +57,12 @@ Tier 0 (SIMAI_AVATAR_SHARE=1)            PPE (python -m services.ppe)           
 
 - `ai/services/ppe/loop.py`·`__main__.py`, `ai/src/simai_ai/io/ppe_outbox.py`, `ai/services/tier0/service.py`(`_build_link`), `ai/services/tier0/i1_client.py`·`i1_publisher.py`, `deploy/scripts/simai_bootstrap.py`
 - `ai/tests/ppe/test_service_loop.py`, `ai/tests/io/test_ppe_outbox.py`, `ai/tests/services/tier0/test_i1_units.py`, `ai/tests/deploy/test_simai_supervisor.py`(`test_ppe_*`)
+
+## 지연 입력의 촬영 칸과 만료 시계 분리 (S15P31A101-572, 감사 PPE-04)
+
+- 문제: 공유 뒤 대기는 150ms 안이고 실제 `AdmissionGate`도 허용하는 촬영→공유 지연 540ms에서, 처리 UTC로 먼저 닫힌 칸에 입력이 도착한다. 5Hz·시작 위상 100ms 반례는 28회 추론 중 27회가 `LATE_FRAME`으로 버려져 명시적 미착용이 `UNKNOWN`에 머문다. 관련 명세는 §5.5의 촬영 시각 500ms 누적과 마지막 유효 근거 + 10초 만료다.
+- 수정: `PpeJudge`는 거부·오래된 epoch·닫힌 칸 검사를 통과한 프레임의 최대 촬영 시각을 보관한다. `PpeLoop`는 이를 `evaluate(now_ms, capture_time_ms=...)`에 넘겨 칸을 진행하고, 현재 UTC `now_ms`는 근거 만료와 트랙 보존 기간 정리에 계속 쓴다. 닫힌 칸은 촬영 시각이 뒤로 가도 다시 열지 않는다. 기존 동기·오프라인 호출은 키워드를 생략해 같은 시각으로 두 기능을 평가할 수 있다.
+- 유지: 500ms 칸·100ms 닫힘 유예·6칸 창·착용 5/6·미착용 6/6·실제 10초 만료, 카메라별 최대 2Hz·공유 후 대기 150ms·ID 초기화·GPU 몫·I1 계약은 같다. 판정 수치·사유 코드가 아닌 서비스의 시각 전달을 고치므로 `policy_version`도 유지한다. 촬영 시각·근거를 처리 시각으로 다시 쓰지 않는다.
+- 검증: `ai/tests/ppe/test_capture_watermark.py`는 실제 `AdmissionGate`에 합성 부하를 넣어 촬영→공유 지연 20/540/600ms × 시작 위상 3개 × 카메라 1/4대, 실제 저장소·R9/R11 REPLAY 생명주기, 검출 없음, 입력 중단·gate 차단 중 WORN/NOT_WORN의 만료 10,000/10,001ms 및 트랙 정리, 시각 역전과 카메라 충돌을 확인한다. 모델·영상·시계는 합성이고 실제 경보는 보내지 않는다.
+- 버린 대안: 처리 UTC에서 임의의 고정 지연을 빼거나 닫힘 유예를 늘리면 부하가 달라졌을 때 같은 문제가 생긴다. 촬영 시각을 만료에도 사용하면 입력이 멈출 때 오래된 상태가 남는다. 빈칸 복사나 6/6 완화는 근거를 만들어 내므로 쓰지 않는다.
+- 잔여 위험: 마지막 열린 촬영 칸은 후속 촬영 진행이 있어야 닫힌다. 입력이 멈추면 그 칸을 추측해서 채우지 않고 기존 근거를 실제 10초에 만료한다. 닫힌 칸의 순서 역전 입력은 계속 버린다. 실제 GPU 처리율·연속 6칸 확보·카메라 ID 대응·G9/G6 및 EC2/워치 연결은 별도 검증 대상이다. H200 단독 결과도 H100 동시 실행 성능을 대신하지 않는다.
