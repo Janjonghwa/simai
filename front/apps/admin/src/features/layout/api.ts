@@ -40,6 +40,28 @@ export function requestCurrentCalibration(http: Http, signal?: AbortSignal) {
   return http('/api/calibrations/current', { schema: z.unknown(), signal });
 }
 
+// ── Scene 입력 카메라 사진 (S15P31A101-592) ─────────────────────────────────
+
+/**
+ * GET /api/scenes/{scene_version}/camera-images 응답(계약 messages/scene_camera_images). 그 Scene 을 구운 사람 지운 배경 사진의
+ * 카메라별 서명 주소다. 묶음을 모르면 bundle_id 는 null 이고 images 는 비어 있다.
+ */
+export const sceneCameraImagesSchema = z.object({
+  scene_version: z.string(),
+  bundle_id: z.string().nullable(),
+  expires_at_ms: z.number().int().nullable(),
+  images: z.array(z.object({ camera_id: z.string().min(1), url: z.string().min(1) })),
+});
+
+export type SceneCameraImages = z.infer<typeof sceneCameraImagesSchema>;
+
+export function requestSceneCameraImages(http: Http, sceneVersion: string, signal?: AbortSignal) {
+  return http(`/api/scenes/${encodeURIComponent(sceneVersion)}/camera-images`, {
+    schema: sceneCameraImagesSchema,
+    signal,
+  });
+}
+
 // ── 3D 배경(Scene) 재생성 (S15P31A101-428) ─────────────────────────────────
 
 export const SCENE_REGENERATE_POLL_INTERVAL_MS = 2000;

@@ -1572,6 +1572,18 @@ class Review(BaseModel):
     reproduced: StrictBool | MISSING = MISSING
 
 
+class BundleId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+
+
+class SceneCameraImagesCameraImage(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    url: Annotated[StrictStr, Field(pattern='^https?://\\S+$')]
+
+
 class SceneCompatibility(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3561,6 +3573,16 @@ class RunRecord(BaseModel):
     notes: StrictStr | MISSING = MISSING
 
 
+class SceneCameraImages(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scene_version: DefsVersionId
+    bundle_id: BundleId | None
+    expires_at_ms: DefsTimestampMs | None
+    images: Annotated[list[SceneCameraImagesCameraImage], Field(max_length=16)]
+
+
 class Quality1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4495,6 +4517,7 @@ class Contracts(BaseModel):
     risk_plan_request: RiskPlanRequest | MISSING = MISSING
     risk_plan_result: RiskPlanResult | MISSING = MISSING
     run_record: RunRecord | MISSING = MISSING
+    scene_camera_images: SceneCameraImages | MISSING = MISSING
     scene_compatibility: SceneCompatibility | MISSING = MISSING
     scene_output: SceneOutput | MISSING = MISSING
     scene_reference: SceneReference | MISSING = MISSING
