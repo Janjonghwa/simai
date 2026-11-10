@@ -135,6 +135,54 @@ describe('관제 호스트의 Scene 연결', () => {
   });
 });
 
+describe('관제 호스트의 카메라 시점 사진(-592)', () => {
+  it('확정 Scene 이면 그 버전의 카메라 사진 주소를 Viewer3D vdt.cameraImageUrls 로 넘긴다', async () => {
+    const paths: string[] = [];
+    server.use(
+      http.get('*/api/scenes/current', () =>
+        HttpResponse.json({
+          scene_version: 'scene-baked',
+          state: 'COMMITTED',
+          default: false,
+          calibration_version: 'cal-1',
+          gltf_url: '/scene.glb',
+          gltf_expires_at_ms: Date.now() + 300_000,
+        }),
+      ),
+      http.get('*/api/scenes/:sceneVersion/camera-images', ({ request, params }) => {
+        paths.push(new URL(request.url).pathname);
+        return HttpResponse.json({
+          scene_version: params.sceneVersion,
+          bundle_id: 'bundle-3f6c2b1a9d8e4f70a1b2c3d4e5f60718',
+          expires_at_ms: Date.now() + 300_000,
+          images: [{ camera_id: 'cam_A', url: 'https://s3.test/cam_A.jpg?sig=1' }],
+        });
+      }),
+    );
+    renderHost();
+    await waitFor(() =>
+      expect(viewer.props?.vdt).toEqual({
+        cameraImageUrls: { cam_A: 'https://s3.test/cam_A.jpg?sig=1' },
+      }),
+    );
+    expect(paths).toEqual(['/api/scenes/scene-baked/camera-images']);
+  });
+
+  it('기본 Scene 이면 사진을 묻지 않고 vdt 를 넘기지 않는다(시점 이동만)', async () => {
+    let calls = 0;
+    server.use(
+      http.get('*/api/scenes/:sceneVersion/camera-images', () => {
+        calls++;
+        return HttpResponse.json({});
+      }),
+    );
+    renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+    expect(viewer.props?.vdt).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+});
+
 describe('관제 호스트의 교실 범위', () => {
   const SCAN: NonNullable<ViewerSceneStatus['boundsWorld']> = {
     min: [0, 0, 0],

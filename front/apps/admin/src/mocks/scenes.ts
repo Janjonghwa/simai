@@ -93,6 +93,22 @@ export const sceneHandlers = [
     });
   }),
 
+  // Scene 입력 카메라 사진(-592). 지금 mock Scene 은 데모 glTF 라 사진을 구운 입력 묶음이 없다(서버와 같이 묶음 null·빈 목록).
+  // 시연용 기본 Scene 은 DB 행이 아니라 서버처럼 404 다.
+  http.get('*/api/scenes/:sceneVersion/camera-images', ({ request, params }) => {
+    if (!readLiveUser(request, Date.now())) return unauthorized();
+    const version = String(params.sceneVersion ?? '');
+    if (state.isDefault || version !== state.currentSceneVersion) {
+      return problem(404, 'SCENE_VERSION_NOT_FOUND', 'Scene 을 찾을 수 없습니다');
+    }
+    return HttpResponse.json({
+      scene_version: version,
+      bundle_id: null,
+      expires_at_ms: null,
+      images: [],
+    });
+  }),
+
   http.post('*/api/scenes/regenerate', async ({ request }) => {
     const now = Date.now();
     const user = readLiveUser(request, now);

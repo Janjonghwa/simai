@@ -19,6 +19,7 @@ import { useViewportHost } from '@/features/layout/spatialHost/useViewportHost';
 import { ZoneEditFade } from '@/features/layout/spatialHost/ZoneEditFade';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useCurrentCalibration } from '@/features/layout/useCurrentCalibration';
+import { useSceneCameraImages } from '@/features/layout/useSceneCameraImages';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
@@ -30,7 +31,15 @@ import type { ViewerZones, Zone } from '@/features/zones/types';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { cn } from '@simai/ui/lib/utils';
-import { createContext, Suspense, useCallback, useContext, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  Suspense,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 export interface SpatialViewportValue {
   view: SpatialViewMode;
@@ -101,6 +110,9 @@ export function SpatialViewportHost({
   const [cameraView, setCameraView] = useState(false);
   const split = useCamSplitStore((s) => s.split);
   const { cameraPoses: calibratedCameraPoses } = useCurrentCalibration();
+  // 지금 Scene 을 구운 카메라별 사진(-592). 카메라 시점에 맞아 있는 동안 뷰어가 VDT 로 투영한다. 없으면 시점 이동만 한다.
+  const cameraImageUrls = useSceneCameraImages(scene);
+  const vdt = useMemo(() => (cameraImageUrls ? { cameraImageUrls } : undefined), [cameraImageUrls]);
 
   // 편집 모드에서는 이벤트 패널·카메라 분할 창·2D 미니맵을 두지 않고 구역 편집에 화면을 준다(맵 재생성은 도구 모음이 숨긴다).
   const showEventPanel = eventPanel && !editing;
@@ -165,6 +177,7 @@ export function SpatialViewportHost({
                 personVests={personVests}
                 personHighlights={personHighlights}
                 cameraPoses={cameraPoses}
+                vdt={vdt}
                 onCameraClick={handleCameraClick}
                 onSceneStatusChange={onSceneStatusChange}
                 onSelectionChange={onViewerSelect}
@@ -191,7 +204,8 @@ export function SpatialViewportHost({
             setCameraView(false);
           }}
           onRetry3d={show3d}
-          currentSceneVersion={readSceneVersion(scene)}
+          // scene 은 { ok, raw } 라 버전은 raw 에서 읽는다(전에는 scene 에서 읽어 늘 null 이었다, -592).
+          currentSceneVersion={readSceneVersion(scene?.ok ? scene.raw : null)}
           currentScene={scene?.ok ? scene.raw : undefined}
           onToggleCctv={
             eventPanel && !editing

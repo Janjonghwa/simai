@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/scene_camera_images.schema.json",
+  "title": "Scene 입력 카메라 사진 서명 주소 조회 응답 (scene_camera_images)",
+  "description": "EC2 → 관제 앱 GET /api/scenes/{scene_version}/camera-images 응답(열람 이상 권한, 봉투 없음, S15P31A101-592). 그 Scene 을 구운 static_reconstruct 작업 입력(analysis_job.input 의 clean_background_bundle_id·images, contracts/messages/static_reconstruct_submit.schema.json)에 실린 카메라별 사람 지운 배경 사진(static-inputs/<bundle_id>/…)의 짧게 사는 GET 서명 주소를 준다. 관제 3D 뷰어가 카메라 시점에서 시점별 텍스처(VDT)를 그 Scene 의 map_cameras 자세에 투영하는 데만 쓴다(Visual 층, Tier 0 위치·위험 판정에 들어가지 않음). Scene 이 static_reconstruct 작업에서 나오지 않았거나(관리자 등록·세팅 세션 Scene) 입력 묶음을 알 수 없으면 bundle_id 는 null 이고 images 는 빈 배열이다(다른 묶음을 지어 붙이지 않음). 1.0.0 신설.",
+  "type": "object",
+  "required": ["scene_version", "bundle_id", "expires_at_ms", "images"],
+  "properties": {
+    "scene_version": {
+      "$ref": "../common/defs.schema.json#/$defs/version_id",
+      "description": "요청한 Scene 버전"
+    },
+    "bundle_id": {
+      "oneOf": [
+        { "type": "string", "pattern": "^bundle-[0-9a-f]{32}$" },
+        { "type": "null" }
+      ],
+      "description": "그 Scene 을 구운 사람 지운 배경 묶음 ID(static_reconstruct_submit.bundle_id). 모르면 null"
+    },
+    "expires_at_ms": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        { "type": "null" }
+      ],
+      "description": "images 의 서명 주소 중 가장 이른 만료 시각(UTC epoch ms, EC2 시계). images 가 비면 null"
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/camera_image" },
+      "description": "카메라별 사진 서명 주소(카메라 ID 순, 카메라당 하나). 묶음을 모르거나 저장소를 쓸 수 없으면 빈 배열"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "입력 묶음을 모르면(null) 사진도 없다(지어내지 않음)",
+      "if": {
+        "properties": { "bundle_id": { "type": "null" } },
+        "required": ["bundle_id"]
+      },
+      "then": {
+        "properties": { "images": { "maxItems": 0 } }
+      }
+    },
+    {
+      "description": "사진 주소가 있으면 만료 시각이 있어야 한다",
+      "if": {
+        "properties": { "images": { "minItems": 1 } },
+        "required": ["images"]
+      },
+      "then": {
+        "properties": { "expires_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" } }
+      }
+    }
+  ],
+  "$defs": {
+    "camera_image": {
+      "type": "object",
+      "required": ["camera_id", "url"],
+      "properties": {
+        "camera_id": {
+          "$ref": "../common/defs.schema.json#/$defs/camera_id",
+          "description": "map_cameras 와 같은 카메라 ID"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://\\S+$",
+          "description": "짧게 사는 GET 서명 주소. 비밀 값처럼 다루고 로그에 남기지 않는다"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
