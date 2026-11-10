@@ -232,6 +232,8 @@ def test_fake_model_segmentation_benchmark(rig, count, delay):
 
 def test_real_pipeline_upload_retry_and_atomic_commit_on_worker(rig):
     pytest.importorskip("cv2")
+    # 도우미 모듈(test_appearance)이 맨 위에서 torch 를 건너뛰므로, torch 가 없으면 반쯤 import 된 모듈을 읽게 된다(-594).
+    pytest.importorskip("torch")
     from simai_ai.hmr.appearance_worker import AppearanceWorker
     from simai_ai.hmr.stream import AvatarLoop, PersonState
     from simai_ai.providers.contract import schema_errors
