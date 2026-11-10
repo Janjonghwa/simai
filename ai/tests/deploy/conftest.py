@@ -51,6 +51,12 @@ def bs():
 
 
 @pytest.fixture
+def bw():
+    """deploy/scripts/bake_weight.py (S15P31A101-577, 통합 이미지 시연 가중치 굽기 단계)"""
+    return load_script("bake_weight")
+
+
+@pytest.fixture
 def pc():
     """deploy/scripts/pod_check.py"""
     return load_script("pod_check")

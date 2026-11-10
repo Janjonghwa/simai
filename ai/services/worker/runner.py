@@ -110,6 +110,7 @@ class Worker:
         pause_s: float = 2.0,
         live_poll_s: float = 2.0,
         sleep: Callable[[float], Any] | None = None,
+        type_gate: Callable[[list[str]], list[str]] | None = None,
     ) -> None:
         if not handlers:
             raise ValueError("작업 처리기가 하나도 없다")
@@ -130,6 +131,7 @@ class Worker:
         self.pause_s = pause_s
         self.live_poll_s = live_poll_s
         self._sleep = sleep if sleep is not None else threading.Event().wait
+        self.type_gate = type_gate  # 대여 요청 직전 작업 유형을 줄인다(vLLM 준비 전 VLM 유형 보류, S15P31A101-577 vlm_gate)
         self._last_filtered: tuple[str, ...] | None = None
         self._last_admit: bool | None = None
         self._closed_since: float | None = None
@@ -143,7 +145,11 @@ class Worker:
     def run_once(self, *, should_stop: Callable[[], bool] = lambda: False) -> Outcome:
         self._wait_abandoned()
         if self.admission is None:
-            lease = self.client.lease(sorted(self.handlers), self.wait_ms, should_stop=should_stop)
+            types = self._gated(sorted(self.handlers))
+            if not types:
+                self._sleep(self.pause_s)
+                return Outcome.PAUSED
+            lease = self.client.lease(types, self.wait_ms, should_stop=should_stop)
         else:
             lease = self._lease_gated(should_stop)
             if lease is Outcome.PAUSED:
@@ -157,7 +163,7 @@ class Worker:
         failures = 0
         while not should_stop():
             adm = self._admission()
-            types = adm.allowed_types(sorted(self.handlers))
+            types = self._gated(adm.allowed_types(sorted(self.handlers)))
             filtered = tuple(sorted(set(self.handlers) & adm.blocked_types)) if adm.live else ()
             if filtered != self._last_filtered:
                 self._last_filtered = filtered
@@ -174,6 +180,9 @@ class Worker:
                 log.warning("대여 요청 실패 %d회, %.1f초 뒤 접수 문부터 다시: %s", failures, delay, e)
                 self._sleep(delay)
         return None
+
+    def _gated(self, types: list[str]) -> list[str]:
+        return types if self.type_gate is None else self.type_gate(types)
 
     def _admission(self) -> Admission:
         assert self.admission is not None

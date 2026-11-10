@@ -61,6 +61,7 @@ from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
 from .vlm_frames import LocalFrames
+from .vlm_gate import from_env as vlm_gate_from_env
 from .vlm_rationale import VlmRationaleHandler
 from .vlm_zone_draft import VlmZoneDraftHandler
 
@@ -212,6 +213,14 @@ def main(argv: list[str] | None = None) -> int:
         print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
         return 1
 
+    try:  # 감시 프로세스가 워커를 vLLM 보다 먼저 띄울 때(S15P31A101-577): VLM 유형은 vLLM /health 200 뒤에만 받는다
+        vlm_gate = vlm_gate_from_env(os.environ)
+    except ValueError as e:
+        print(f"services.worker: {e}", file=sys.stderr)
+        return 2
+    if vlm_gate is not None:
+        log.info("VLM 작업 유형은 %s 가 200 일 때만 받는다(SIMAI_WORKER_VLM_GATE=health)", vlm_gate.url)
+
     stop = threading.Event()
     client = LeaseClient(
         transport,
@@ -224,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     worker = Worker(
         client, handlers, clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic, wait_ms=args.wait_ms,
         admission=gate, live_wait_ms=gpu.live_wait_ms, hold_max_s=gpu.hold_max_s, pause_s=gpu.pause_s, sleep=stop.wait,
+        type_gate=vlm_gate,
     )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())

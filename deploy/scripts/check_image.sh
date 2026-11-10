@@ -6,7 +6,8 @@
 #   bash deploy/scripts/check_image.sh simai/unified:local          # 통합 이미지(S15P31A101-246): Tier 0 항목 전부 + vLLM·플러그인·HMR(잠금 밖 휠 없이) import,
 #                                                                     EGL 렌더(버리는 컨테이너의 Mesa), 감시 프로세스 기동·종료 순서(가짜 프로세스). 저장소 최상위에서
 #                                                                     MapAnything(S15P31A101-250): 추론 경로 import·DINOv2 허브 사본(망 없이 골격 생성)·장면 준비 모드
-# 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
+# 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음(통합 이미지의 구운 시연 가중치 /opt/simai/baked 는 따로: 목록과 같은 판·VLM·apache 판 없음,
+#       망 없는 컨테이너에서 받지 않고 모두 baked 로 준비됨, S15P31A101-577), 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
 #       wstunnel 고정 판이 있고 경로 비밀값을 주면 sshd 뒤에 뜨며 비밀값이 명령줄·출력에 없음(S15P31A101-286),
@@ -54,8 +55,9 @@ fi
 #    가중치 확장자는 256KB 넘는 것만 본다(패키지가 싣는 .pth 경로 설정 파일·onnx 시험용 작은 모델은 가중치가 아니다).
 #    .pem·.key 는 개인 키가 든 것만 본다(certifi 인증서 묶음 같은 공개 인증서는 괜찮다).
 #    compressed_tensors(vLLM 의존성)의 hadamards.safetensors 는 패키지에 든 하다마드 행렬 표(학습 가중치 아님, 통합 이미지)라 뺀다.
-FOUND=$(docker run --rm --entrypoint /bin/sh "$IMG" -c '
-  find / -xdev \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f -size +256k \( \
+#    /opt/simai/baked(통합 이미지의 구운 시연 가중치, S15P31A101-577)는 여기서 빼고 아래 2b 가 목록과 대조한다. 다른 이미지에는 그 폴더가 없어야 한다.
+FOUND=$(docker run --rm -e "KIND=$KIND" --entrypoint /bin/sh "$IMG" -c '
+  find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /opt/simai/baked \) -prune -o -type f -size +256k \( \
     -name "*.pt" -o -name "*.pth" -o -name "*.engine" -o -name "*.onnx" -o -name "*.safetensors" -o -name "*.ckpt" \
     -o -name "*.trt" -o -name "*.bin" -path "*weights*" \)     ! -path "*/site-packages/compressed_tensors/transform/utils/hadamards.safetensors" -print 2>/dev/null
   find / -xdev \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f \( \
@@ -65,11 +67,42 @@ FOUND=$(docker run --rm --entrypoint /bin/sh "$IMG" -c '
     -exec grep -l "PRIVATE KEY" {} + 2>/dev/null
   [ -e /workspace ] && echo "/workspace (이미지 안에 볼륨 경로가 있다)"
   [ -d /opt/simai/ai/src ] && echo "/opt/simai/ai/src (소스 사본이 남았다)"
+  [ "$KIND" != unified ] && [ -e /opt/simai/baked ] && echo "/opt/simai/baked (구운 가중치는 통합 이미지에만)"
   true')
 if [ -z "$FOUND" ]; then
   pass "가중치·엔진·비밀 파일·SSH 호스트 키 없음"
 else
   fail "이미지에 있으면 안 되는 파일:"; while IFS= read -r line; do echo "      $line"; done <<<"$FOUND"
+fi
+
+# 2b) 통합 이미지의 구운 시연 가중치(S15P31A101-577): 파일마다 목록(deploy/weights.json)에 같은 경로가 있고 옆 .sha256 이 목록 해시와 같다.
+#     굽는 것은 tier0·avatar·ppe·static(MapAnything 은 기본 판 weights/map-anything 만) 전부, vlm·apache 판·실험 전용은 굽지 않는다.
+#     그다음 망 없는 컨테이너에서 simai-bootstrap check 가 받지 않고 모두 baked(사본 sha256 확인 뒤 링크)로 끝나는지 본다(약 13GB 해시, 수십 초)
+if [ "$KIND" = unified ]; then
+  if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
+import json, pathlib
+root = pathlib.Path("/opt/simai/baked")
+doc = json.load(open("/opt/simai/deploy/weights.json", encoding="utf-8"))
+by = {w["path"]: w for w in doc["weights"]}
+want = {w["path"] for w in doc["weights"] if set(w["sets"]) & {"tier0", "avatar", "ppe", "static"}
+        and (w.get("group") != "mapanything" or w["path"].startswith("weights/map-anything/"))}
+files = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() and not p.name.endswith(".sha256")}
+bad = [f for f in files if f not in by or (root / (f + ".sha256")).read_text().split()[0] != by[f]["sha256"]]
+assert not bad, ("목록과 다른 사본", bad)
+assert files == want, ("구운 것 ≠ 시연 묶음", sorted(files - want), sorted(want - files))
+assert not any("vlm" in by[f]["sets"] for f in files)
+print(len(files), "개", round(sum((root / f).stat().st_size for f in files) / 1e9, 2), "GB")' 2>&1); then
+    pass "구운 시연 가중치 = 목록의 tier0·avatar·ppe·static(기본 판) ($(tail -1 <<<"$OUT"))"
+  else
+    fail "구운 시연 가중치: $(tail -3 <<<"$OUT")"
+  fi
+  if OUT=$(docker run --rm --network none -e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06" -e SIMAI_ROOT=/tmp/simai \
+      -e SIMAI_MIN_FREE_GB=0 --entrypoint /bin/sh "$IMG" -c 'simai-bootstrap check --sets tier0,avatar,ppe,static --services tier0 > /tmp/c.json || exit $?
+python -c "import json; d = json.load(open(\"/tmp/c.json\")); s = sorted({w[\"status\"] for w in d[\"weights\"]}); print(len(d[\"weights\"]), s); raise SystemExit(s != [\"baked\"])"' 2>&1); then
+    pass "망 없이 시연 가중치 준비: 모두 baked ($(tail -1 <<<"$OUT"))"
+  else
+    fail "망 없이 시연 가중치 준비: $(tail -4 <<<"$OUT")"
+  fi
 fi
 
 # 3) import·버전·잠금
@@ -305,7 +338,7 @@ PY
   else
     fail "pyrender EGL 렌더: $(tail -5 <<<"$OUT")"
   fi
-  # 감시 프로세스: 저장소의 가짜 프로세스(ai/tests/deploy/fake_service.py)로 Tier 0 → vLLM(/health) → 워커, docker stop 에 워커 → vLLM → Tier 0
+  # 감시 프로세스: 저장소의 가짜 프로세스(ai/tests/deploy/fake_service.py)로 Tier 0 → (워커 · VLM 가중치 → vLLM), docker stop 에 워커 → vLLM → Tier 0
   SUP=$(mktemp -d)
   cp ai/tests/deploy/fake_service.py "$SUP/"
   cat > "$SUP/run.sh" <<'RUN'
@@ -331,7 +364,8 @@ RUN
     -e HF_TOKEN=hf_checkimageFakeToken0000000000 "$IMG" bash /tmp/sup/run.sh >/dev/null
   docker cp "$(hostpath "$SUP")/." "$VOL:/tmp/sup" >/dev/null && docker start "$VOL" >/dev/null
   for _ in $(seq 1 120); do
-    if docker exec "$VOL" cat /tmp/sup/events.txt 2>/dev/null | grep -q '^worker start'; then break; fi
+    EV=$(docker exec "$VOL" cat /tmp/sup/events.txt 2>/dev/null)
+    if grep -q '^worker start' <<<"$EV" && grep -q '^vllm start' <<<"$EV"; then break; fi
     sleep 1
   done
   docker stop -t 60 "$VOL" >/dev/null
@@ -342,7 +376,8 @@ RUN
   STARTS=$(awk '$2 == "start" { printf "%s ", $1 }' "$SUP/events.txt" 2>/dev/null)
   TERMS=$(awk '$2 == "term" { printf "%s ", $1 }' "$SUP/events.txt" 2>/dev/null)
   TOKENS=$(awk '$2 == "start" && $3 != "clean"' "$SUP/events.txt" 2>/dev/null)
-  if [ "$STARTS" = "tier0 vllm worker " ] && [ "$TERMS" = "worker vllm tier0 " ] && [ -z "$TOKENS" ] && [ "$CODE" = 0 ] \
+  # 워커는 VLM 받기·vLLM 을 기다리지 않고 Tier 0 준비 뒤 바로 뜬다(S15P31A101-577): Tier 0 다음 둘의 순서는 정하지 않는다
+  if { [ "$STARTS" = "tier0 vllm worker " ] || [ "$STARTS" = "tier0 worker vllm " ]; } && [ "$TERMS" = "worker vllm tier0 " ] && [ -z "$TOKENS" ] && [ "$CODE" = 0 ] \
      && grep -q '^\[worker\] worker says hello' <<<"$LOGS" && ! grep -q 'hf_checkimage' <<<"$LOGS"; then
     pass "감시 프로세스: 기동 ${STARTS}/ 종료 ${TERMS}/ 자식 토큰 없음, 종료 코드 0"
   else
@@ -371,7 +406,8 @@ print("dinov2_vits14", n)' 2>&1); then
   # 가짜 GPU(사용 중 0 MiB)·file:// 가중치로 명령 종료 코드 7 이 그대로·자식 토큰 없음, 사용 중 2048 MiB 면 75
   expect "scene 명령 없음" 64 "사용법" "$IMG" scene
   expect "scene LIVE 표시 파일 → 받기 전에 거부" 75 "LIVE 서비스가 떠 있다" -e SIMAI_ROOT=/tmp/s --entrypoint /bin/sh "$IMG"     -c 'mkdir -p /tmp/s/state && echo "{}" > /tmp/s/state/tier0.live && exec simai-bootstrap scene true'
-  expect "scene 묶음 static: map-anything 받기 실패는 코드 2" 2 "map-anything-apache-model 받기 실패" "${FAKE_GPU[@]}" "$IMG" scene true
+  # 구운 사본을 끄면(SIMAI_BAKED_WEIGHTS) MapAnything 은 기본 판만 받으려 한다(apache 판은 받지 않음, S15P31A101-577)
+  expect "scene 묶음 static: MapAnything 기본 판만, 받기 실패는 코드 2" 2 "map-anything-model 받기 실패" "${FAKE_GPU[@]}" -e SIMAI_BAKED_WEIGHTS=/nonexistent "$IMG" scene true
   SCN=$(mktemp -d)
   cp ai/tests/experiments/gpu_queue/fake_nvidia_smi.py "$SCN/"
   cat > "$SCN/run.sh" <<'RUN'
