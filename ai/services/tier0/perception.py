@@ -549,17 +549,42 @@ class Perception:
         """DRIFTED·STREAM_CHANGED 등으로 새 보정 활성화(재세팅) 전까지 3D 융합에서 영구 제외한 카메라."""
         return tuple(sorted(self._excluded_cameras))
 
-    def exclude_cameras(self, camera_ids: Sequence[str] | set[str] | frozenset[str]) -> None:
-        """판정 lock 안. 지정한 카메라를 새 보정 활성화 전까지 3D 융합·관절 게이트·R7 정상 감시에서 제외한다."""
+    def exclude_cameras(
+        self,
+        camera_ids: Sequence[str] | set[str] | frozenset[str],
+        *,
+        min_remaining: int = 2,
+    ) -> tuple[str, ...]:
+        """판정 lock 안. 지정한 카메라를 새 보정 활성화 전까지 3D 융합·관절 게이트·R7 정상 감시에서 제외한다.
+        제외 후 남는 카메라가 min_remaining(기본 2대) 미만이면 제외하지 않고 보호된 카메라 목록을 돌려준다."""
         if isinstance(camera_ids, str):
             raise TypeError("camera_ids 는 카메라 ID 모음이어야 한다")
-        added = frozenset(c for c in camera_ids if c in self.rig.cameras)
-        if added - self._excluded_cameras:
-            self._excluded_cameras = self._excluded_cameras | added
+        valid = [c for c in sorted(set(camera_ids)) if c in self.rig.cameras]
+        current = set(self._excluded_cameras)
+        total = len(self.rig.cameras)
+        newly_excluded: list[str] = []
+        protected: list[str] = []
+        for cid in valid:
+            if cid in current:
+                continue
+            if total - (len(current) + 1) < min_remaining:
+                protected.append(cid)
+                continue
+            current.add(cid)
+            newly_excluded.append(cid)
+        if newly_excluded:
+            self._excluded_cameras = frozenset(current)
             log.warning(
                 "틀어짐/스트림 변경 카메라를 3D 융합에서 제외한다(재세팅 전까지 복귀 안 함): %s",
                 ", ".join(sorted(self._excluded_cameras)),
             )
+        if protected:
+            log.warning(
+                "제외 후 남는 카메라가 %d대 미만이라 3D 융합 제외를 보류한다(감시 저하): %s",
+                min_remaining,
+                ", ".join(protected),
+            )
+        return tuple(protected)
 
     def replace_rig(self, rig: CameraRig, provenance: Mapping[str, Any]) -> None:
         """판정 lock 안의 tick 경계 전용. World Track·접지·입력 버퍼는 유지한다(-344)."""

@@ -368,6 +368,14 @@ class BackgroundRotationRecovery:
             if status == "STABLE":
                 self.confirmation.reset()
                 self._last_candidate_report = None
+                if self.last_status in ("CONFIRMING", "SUSPECT", "NO_EVIDENCE"):
+                    self._emit_monitor_report(
+                        now,
+                        recent_ms,
+                        bad_cameras=set(),
+                        status_for_bad=MonitorStatus.MONITORING,
+                        rotations=report.get("rotations", {}),
+                    )
                 self.last_status = "STABLE"
                 self.last_error = None
                 return report
@@ -377,6 +385,8 @@ class BackgroundRotationRecovery:
                 self.last_status = "NO_EVIDENCE"
                 self.last_error = str(report.get("reason") or "유효 배경 근거 부족")
                 no_ev = set((report.get("no_evidence_cameras") or {}).keys())
+                for cid in no_ev:
+                    self.confirmation.clear_camera_drift(cid)
                 self._emit_monitor_report(
                     now,
                     recent_ms,
@@ -391,10 +401,30 @@ class BackgroundRotationRecovery:
                     failed_map = {str(k): str(v) for k, v in raw_failed.items()}
                 else:
                     failed_map = {str(report["camera_id"]): str(report["reason"])}
+                window_ms = max(self.settings.interval_ms * 2, 1_000)
                 if self.safety_enabled:
                     confirmed, suspect = self.confirmation.observe_drift(
-                        self.document["calibration_version"], report
+                        self.document["calibration_version"],
+                        report,
+                        at_ms=now,
+                        multi_camera_window_ms=window_ms,
                     )
+                    if report.get("multi_camera_suspect") or len(failed_map) >= 2:
+                        self._last_candidate_report = None
+                        self.last_status = "SUSPECT"
+                        self.last_error = (
+                            f"다수 카메라 동시 배경 불일치(기준·환경 의심, 융합 제외 보류): {', '.join(sorted(failed_map))}"
+                        )
+                        report["status"] = "SUSPECT"
+                        report["suspect_cameras"] = dict(failed_map)
+                        self._emit_monitor_report(
+                            now,
+                            recent_ms,
+                            bad_cameras=set(failed_map),
+                            status_for_bad=MonitorStatus.SUSPECT,
+                            rotations=report.get("rotations", {}),
+                        )
+                        return report
                     if not confirmed:
                         self._last_candidate_report = None
                         self.last_status = "CONFIRMING"
@@ -407,6 +437,22 @@ class BackgroundRotationRecovery:
                             rotations=report.get("rotations", {}),
                         )
                         return report
+                elif len(failed_map) >= 2:
+                    self._last_candidate_report = None
+                    self.last_status = "SUSPECT"
+                    self.last_error = (
+                        f"다수 카메라 동시 배경 불일치(기준·환경 의심, 융합 제외 보류): {', '.join(sorted(failed_map))}"
+                    )
+                    report["status"] = "SUSPECT"
+                    report["suspect_cameras"] = dict(failed_map)
+                    self._emit_monitor_report(
+                        now,
+                        recent_ms,
+                        bad_cameras=set(failed_map),
+                        status_for_bad=MonitorStatus.SUSPECT,
+                        rotations=report.get("rotations", {}),
+                    )
+                    return report
                 else:
                     confirmed, suspect = failed_map, {}
                     report["consecutive_confirmation"] = {

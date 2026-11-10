@@ -39,6 +39,7 @@ class CandidateConfirmation:
     drift_version: str | None = None
     drift_last_end_ms: dict[str, int] = field(default_factory=dict)
     drift_counts: dict[str, int] = field(default_factory=dict)
+    drift_recent_at_ms: dict[str, int] = field(default_factory=dict)
 
     def reset_candidate(self) -> None:
         self.previous_version, self.last_end_ms, self.count = None, None, 0
@@ -47,6 +48,7 @@ class CandidateConfirmation:
         self.drift_version = None
         self.drift_last_end_ms.clear()
         self.drift_counts.clear()
+        self.drift_recent_at_ms.clear()
 
     def clear_camera_drift(self, camera_id: str) -> None:
         self.drift_last_end_ms.pop(camera_id, None)
@@ -74,9 +76,17 @@ class CandidateConfirmation:
         return self.count >= 2
 
     def observe_drift(
-        self, version: str | None, report: dict[str, Any], *, required: int = 2
+        self,
+        version: str | None,
+        report: dict[str, Any],
+        *,
+        required: int = 2,
+        at_ms: int | None = None,
+        multi_camera_window_ms: int = 0,
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """배경 기반 복구 불가능 큰 틀어짐(REQUIRES_SETUP)도 카메라별 새 표본 연속 확인 뒤 확정한다."""
+        """배경 기반 복구 불가능 큰 틀어짐(REQUIRES_SETUP)도 카메라별 새 표본 연속 확인 뒤 확정한다.
+        같은 주기 또는 짧은 창(multi_camera_window_ms)에 2대 이상이 실패하면 기준·환경 문제로 보고
+        DRIFTED 로 승격하지 않고 모두 SUSPECT 로만 남긴다."""
         self.reset_candidate()
         if version != self.drift_version:
             self.reset_drift()
@@ -88,11 +98,17 @@ class CandidateConfirmation:
             failed = {str(report["camera_id"]): str(report.get("reason") or "사유 미상")}
         else:
             failed = {}
-        for cid in list(self.drift_counts):
-            if cid not in failed:
-                self.clear_camera_drift(cid)
         recent = report.get("recent_samples_ms") if isinstance(report.get("recent_samples_ms"), dict) else {}
         fallback_end = report.get("validation_end_ms")
+        now_ref = at_ms if isinstance(at_ms, int) else (fallback_end if isinstance(fallback_end, int) else None)
+        if now_ref is not None and multi_camera_window_ms > 0:
+            for cid, prev_at in list(self.drift_recent_at_ms.items()):
+                if now_ref - prev_at > multi_camera_window_ms:
+                    self.drift_recent_at_ms.pop(cid, None)
+        for cid in list(self.drift_counts):
+            if cid not in failed:
+                self.drift_last_end_ms.pop(cid, None)
+                self.drift_counts.pop(cid, None)
         for cid in failed:
             end = recent.get(cid, fallback_end)
             prev_end = self.drift_last_end_ms.get(cid)
@@ -102,8 +118,19 @@ class CandidateConfirmation:
                     self.drift_last_end_ms[cid] = end
             else:
                 self.drift_counts[cid] = self.drift_counts.get(cid, 0) + 1
-        confirmed = {cid: reason for cid, reason in failed.items() if self.drift_counts.get(cid, 0) >= required}
-        suspect = {cid: reason for cid, reason in failed.items() if cid not in confirmed}
+            if now_ref is not None:
+                self.drift_recent_at_ms[cid] = now_ref
+        window_cameras = set(failed) | (set(self.drift_recent_at_ms) if multi_camera_window_ms > 0 else set())
+        if len(failed) >= 2 or len(window_cameras) >= 2:
+            for cid in failed:
+                self.drift_counts[cid] = min(self.drift_counts.get(cid, 1), max(1, required - 1))
+            confirmed = {}
+            suspect = dict(failed)
+            report["multi_camera_suspect"] = True
+            report["suspect_cameras"] = dict(failed)
+        else:
+            confirmed = {cid: reason for cid, reason in failed.items() if self.drift_counts.get(cid, 0) >= required}
+            suspect = {cid: reason for cid, reason in failed.items() if cid not in confirmed}
         counts = {cid: self.drift_counts.get(cid, 0) for cid in failed}
         report["consecutive_confirmation"] = {
             "count": max(counts.values(), default=0),
