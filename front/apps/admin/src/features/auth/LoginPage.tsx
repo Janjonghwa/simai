@@ -4,7 +4,6 @@ import { useLogin } from '@/features/auth/useLogin';
 import { useMediaQuery } from '@/features/auth/useMediaQuery';
 import { BrandMark, Wordmark } from '@/features/layout/BrandMark';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Alert, AlertDescription } from '@simai/ui/components/alert';
 import { Button } from '@simai/ui/components/button';
 import {
   InputGroup,
@@ -21,6 +20,13 @@ import { useForm } from 'react-hook-form';
 const FIELD = 'h-12 rounded-xl bg-card/60 dark:bg-input/20';
 const FIELD_INPUT = 'h-full text-[15px] md:text-[15px]';
 const FIELD_ICON = 'pl-3.5 [&>svg:not([class*=size-])]:size-[18px]';
+// 오류 문구는 칸 아래 빈자리에 띄운다(absolute). 문구가 생겨도 폼 높이가 그대로라 세로 가운데 정렬된 로고·제목이 밀리지 않는다(-591).
+// 칸 사이 간격(gap-8)이 문구 한 줄을, 비밀번호 칸과 버튼 사이(gap-8 + mt-3 = 44px)는 서버 문구 두 줄(4 + 40px)까지 담는다.
+const FIELD_ERROR = 'absolute top-full left-0 mt-1 text-sm leading-5 text-destructive';
+// 로그인 버튼은 로고 오른쪽 파랑(#094EFC→#3539FA)으로 칠하고 흰 글자를 쓴다. 흰 글자 대비 6.0:1 이상.
+// 다크 토큰 primary(#6886D5)에 검은 글자는 눌리지 않는 버튼처럼 흐려 보였다.
+const SUBMIT =
+  'mt-3 h-12 cursor-pointer rounded-full bg-linear-to-r from-[#094EFC] to-[#3539FA] text-[15px] font-semibold text-white shadow-lg shadow-[#094EFC]/30 transition-[filter,box-shadow] hover:brightness-110 hover:shadow-[#094EFC]/45 disabled:cursor-default';
 
 export function LoginPage() {
   const { login, pending, error } = useLogin();
@@ -58,7 +64,7 @@ export function LoginPage() {
             </div>
             <form
               noValidate
-              className="flex flex-col gap-5"
+              className="flex flex-col gap-8"
               onSubmit={(event) => {
                 // 보낼 때는 다시 가린다. 비밀번호 관리자가 칸을 알아보고, 화면에 비밀번호가 남지 않게 한다.
                 setShowPassword(false);
@@ -69,7 +75,7 @@ export function LoginPage() {
                 })(event);
               }}
             >
-              <div className="flex flex-col gap-2">
+              <div className="relative flex flex-col gap-2">
                 <Label htmlFor="username" className="font-semibold">
                   아이디
                 </Label>
@@ -91,12 +97,12 @@ export function LoginPage() {
                   />
                 </InputGroup>
                 {errors.username && (
-                  <p id="username-error" className="text-sm text-destructive">
+                  <p id="username-error" className={FIELD_ERROR}>
                     {errors.username.message}
                   </p>
                 )}
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="relative flex flex-col gap-2">
                 <Label htmlFor="password" className="font-semibold">
                   비밀번호
                 </Label>
@@ -126,23 +132,20 @@ export function LoginPage() {
                     </InputGroupButton>
                   </InputGroupAddon>
                 </InputGroup>
-                {errors.password && (
-                  <p id="password-error" className="text-sm text-destructive">
+                {errors.password ? (
+                  <p id="password-error" className={FIELD_ERROR}>
                     {errors.password.message}
                   </p>
+                ) : (
+                  // 서버 오류(틀린 비밀번호 등)도 같은 자리에 띄워 폼이 밀리지 않게 한다.
+                  error && (
+                    <p role="alert" className={FIELD_ERROR}>
+                      {error}
+                    </p>
+                  )
                 )}
               </div>
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-              <Button
-                type="submit"
-                size="lg"
-                disabled={pending}
-                className="mt-3 h-12 rounded-full text-[15px] font-semibold shadow-lg shadow-primary/20"
-              >
+              <Button type="submit" size="lg" disabled={pending} className={SUBMIT}>
                 {pending ? '로그인 중…' : '로그인'}
               </Button>
             </form>
