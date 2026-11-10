@@ -55,7 +55,7 @@
     TRITON_CACHE_DIR·TORCHINDUCTOR_CACHE_DIR·CUDA_CACHE_PATH(SIMAI_CACHE_ROOT, 기본 /tmp/simai-cache/<이름>/)로 띄운다.
     vLLM 기본값: --max-model-len SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768, SIMAI_VLLM_EXTRA_ARGS 에 있으면 그 값),
     --quantization SIMAI_VLLM_QUANTIZATION(fp8, none·빈 값이면 비활성, SIMAI_VLLM_EXTRA_ARGS 에 --quantization/-q 가 있으면 그 값, S15P31A101-525),
-    --gpu-memory-utilization SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.30, H100 80 GiB 기준 24 GiB = FP8 가중치 10.05 GiB + CUDA graph·활성화 여유 + KV 캐시),
+    --gpu-memory-utilization SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.30, H100 80GB(81,559 MiB) 기준 24,468 MiB = FP8 가중치 10.05 GiB + 실행 시 추가 약 2.9 GiB + KV 캐시 약 10.9 GiB, 명세 3.2),
     환경 VLLM_USE_DEEP_GEMM=0·VLLM_USE_FLASHINFER_SAMPLER=0(환경에 주면 그 값)·HF_HUB_OFFLINE=1.
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
@@ -174,8 +174,8 @@ RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
 LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
 STAMP_DIR = ("weights", ".verified")  # 모델 폴더 밖(vLLM 이 읽는 weights/cosmos3-nano/ 에 섞이지 않게), Tier 0 state/ 밖
 VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}'  # Reasoner 탑만 싣는다(docs/design/unified-env.md)
-VLLM_MAX_MODEL_LEN = "32768"  # H100·0.30(FP8 가중치 10.05 GiB)에서 KV 약 13 GiB ≈ 9.4만 토큰(동시 4 × 실사용 ~3k 토큰/요청 충분), H200·0.30 에서는 KV 29.07 GiB = 211,664 토큰(32k 기준 동시 6.46x, 11-06 GPU PoC)
-VLLM_GPU_MEMORY_UTILIZATION = "0.30"  # 11-06 GPU PoC FP8(S15P31A101-525): H100 80 GiB 의 0.30 = 24 GiB = 가중치 10.05 GiB + CUDA graph(0.03~0.04 GiB)·활성화 여유 + KV 캐시
+VLLM_MAX_MODEL_LEN = "32768"  # H100·0.30(FP8 가중치 10.05 GiB)과 같은 절대 크기 시험(H200 0.1702)에서 KV 10.92 GiB = 79,536 토큰(32k 기준 동시 2.43x, 동시 4 × 실사용 ~3k 토큰/요청 충분), H200·0.30 에서는 KV 29.07 GiB = 211,664 토큰(32k 기준 동시 6.46x, 11-06 GPU PoC)
+VLLM_GPU_MEMORY_UTILIZATION = "0.30"  # 11-06 GPU PoC FP8(S15P31A101-525): H100 80GB(81,559 MiB)의 0.30 = 24,468 MiB = 가중치 10.05 GiB + CUDA graph(0.03 GiB)·활성화·torch 밖 약 2.9 GiB + KV 캐시 약 10.9 GiB(S15P31A101-580, 명세 3.2)
 VLLM_QUANTIZATION = "fp8"  # 11-06 GPU PoC(S15P31A101-525): FP8 온라인 양자화(가중치 16.79 → 10.05 GiB, 첫 응답 1.73 → 1.57 s). SIMAI_VLLM_QUANTIZATION=none·빈 값이면 비활성
 MIN_WORKER_TORCH_FRACTION = 0.10  # H100 80GB 기준 ~8GB: 12차 GPU 세션에서 워커 몫 0.05(~4GB)로 MapAnything(피크 6.4GB)이 OOM 난 문제 재발 방지(S15P31A101-525)
 KILL = getattr(signal, "SIGKILL", 9)  # Windows(노트북 시험)에는 SIGKILL 이 없다(Proc.signal 이 kill() 로 바꾼다)

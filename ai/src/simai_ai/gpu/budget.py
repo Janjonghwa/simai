@@ -12,8 +12,9 @@
 불변식: tier0_fraction + worker_fraction ≤ 0.95(드라이버·컨텍스트 여유), vLLM 비율 ≤ worker_fraction.
 vLLM 의 gpu_memory_utilization 은 '이 vLLM 인스턴스가 쓸 GPU 전체 메모리 비율'이라 Tier 0 몫을 빼고 정한다.
 11-06 GPU PoC(H200, vLLM 0.21 + vllm-cosmos3, `--quantization fp8`, S15P31A101-525): 가중치 16.79 → 10.05 GiB, 첫 응답 1.73 → 1.57 s,
-실제 입력 약 2,900 토큰/요청. H100 80 GiB 의 0.30(24 GiB)은 가중치 10.05 GiB + CUDA graph(0.03~0.04 GiB)·활성화 여유 + KV 캐시(약 13 GiB ≈
-9.4만 토큰, 32k 상한 기준 동시 2.9x·실사용 3k 토큰 기준 동시 30x 이상)를 담고, 아바타(0.10)를 켠 기본 구성에서도 분석 워커에 0.30(24 GiB)을
+실제 입력 약 2,900 토큰/요청. H100 80GB(81,559 MiB)의 0.30(24,468 MiB)은 FP8 가중치 10.05 GiB + CUDA graph(0.03 GiB)·활성화·torch 밖 약 2.9 GiB
++ KV 캐시(약 10.9 GiB = 79,536 토큰, 32k 상한 기준 동시 2.43x. H200 에서 같은 절대 크기로 띄운 시험값, S15P31A101-580)를 담고(KV 는 BF16,
+FP8 은 가중치만), 아바타(0.10)를 켠 기본 구성에서도 분석 워커에 0.30(24,468 MiB)을
 남겨 12차 GPU 세션의 MapAnything OOM(워커 몫 0.05 ≈ 4 GB < 피크 6.4 GB)을 막는다.
 """
 

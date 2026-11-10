@@ -493,6 +493,7 @@ S15P31A101-246 이 위 "2단계" 로 처리한 것: 통합 Dockerfile·opencv-py
   - `SIMAI_VLLM_QUANTIZATION` 이 `none` 또는 빈 값이면 `--quantization` 을 넣지 않고(BF16 복귀 스위치), `SIMAI_VLLM_EXTRA_ARGS` 에 이미 `--quantization` 또는 `-q` 가 있으면 중복 전달하지 않는다.
 - **VLM 기본 `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION = 0.30` 정합화**:
   - H100 80 GiB 의 `0.30` = `24 GiB`: FP8 가중치 `10.05 GiB` + CUDA graph(`0.03~0.04 GiB`)·인코더/활성화 여유 + KV 캐시 약 `13 GiB`(약 `9.4만 토큰`, 32,768 상한 기준 동시 `2.9x`, 실제 요청당 약 `2,950 토큰` × 동시 4 요청 ≈ `1.2만 토큰` 대비 `7~8배` 이상 여유).
+  - 위 KV 약 `13 GiB` 는 계산 추정이었다. 같은 절대 크기(H200 에서 비율 `0.1702` = 24,470 MiB, H100 81,559 MiB × 0.30 = 24,468 MiB)로 띄운 2026-11-10 시험에서 vLLM 0.21 이 잡은 KV 는 `10.92 GiB`(79,536 토큰, 32,768 상한 기준 동시 `2.43x`)였고, 가중치·KV 밖 실행 시 메모리가 약 `2.9 GiB` 였다(S15P31A101-580, 명세 3.2 'VLM 메모리 항목'). 동시 4 × 약 2,950 토큰 ≈ 1.2만 토큰 대비 여유는 약 `6.7배` 다. H100 실측은 아니다.
   - `deploy/scripts/simai_bootstrap.py`(`compute_gpu_fractions`, `_vllm_argv`, `preflight`), `ai/src/simai_ai/gpu/budget.py`(`GpuBudget`, `WorkerGpuSettings`), `deploy/compose.yaml` 모두 `0.30` 으로 통일했다.
 - **분석 워커 몫 확대 및 최소 보장 비율(`MIN_WORKER_TORCH_FRACTION = 0.10`) 검증**:
   - Tier 0 `0.20`·아바타 `0.10` 은 그대로 두고, 분석 예산 `0.70` 에서 vLLM `0.30`·아바타 `0.10` 을 뺀 분석 워커 기본 몫은 `0.30`(H100 80 GiB 기준 24 GiB, 아바타 미사용 시 `0.40` = 32 GiB)이 된다.

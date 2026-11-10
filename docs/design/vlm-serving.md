@@ -7,7 +7,8 @@
 
 - 모델·판: Cosmos3-Nano(16B) Reasoner, vLLM 0.21.0 + `vllm-cosmos3`, CUDA 13.0, torch 2.11.0. Tier 0 와 같은 가상환경, 프로세스 분리(명세 16장).
 - 감시 프로세스가 띄운다(`deploy/README.md` "감시 프로세스" 3번): `--served-model-name cosmos3-nano`, `--host 127.0.0.1 --port $SIMAI_VLLM_PORT(8000)`,
-  `--gpu-memory-utilization 0.55`, `--max-num-seqs 4`, `--max-model-len 32768`, `VLLM_USE_FLASHINFER_SAMPLER=0`.
+  `--gpu-memory-utilization 0.30`, `--quantization fp8`(가중치 FP8 온라인 양자화, KV 캐시는 BF16), `--max-num-seqs 4`, `--max-model-len 32768`, `VLLM_USE_FLASHINFER_SAMPLER=0`(S15P31A101-525, 메모리 항목 구분은 명세 3.2 'VLM 메모리 항목').
+  아래 3차 GPU 세션 수치는 그 전 기본값 `0.55`·BF16 가중치에서 잰 것이다.
 - 반복 억제·형식 강제는 서버 인자가 아니라 요청 인자로 준다(아래).
 
 ## 3차 GPU 세션 결과 (2026-10-26)

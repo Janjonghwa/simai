@@ -38,8 +38,8 @@
 | 프로세스 | 내용 | 메모리 상한 |
 |---|---|---|
 | Tier 0 | YOLO26x-pose TensorRT 엔진(디코딩은 기본 CPU, NVDEC 을 고르면 하드웨어 디코더 4개 추가) | 초기값 0.20(80GB 에서 16GB, 그중 torch 선확보 8GB). G0 실측으로 고침 |
-| 분석 워커 전체 | 아래 VLM·마스크·HMR 을 합친 워커 프로세스 상한(상시 아바타 루프를 함께 띄울 때는 VLM 0.55 + HMR·아바타 seg 0.10 + I5 워커 0.05 로 분할) | 초기값 0.70. G0 실측으로 고침 |
-| VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침. 3차 GPU 세션(H100 80GB, 감시 프로세스와 같은 인자) 실측: 가중치 16.79 GiB·KV 캐시 23.99 GiB 가 0.55 안에 들고, G7 빠른 경로 p95 2.1 s, VLM 동시 4 지속 중 Tier 0 `frame_age` p95 60 → 76 ms 라 값은 그대로 둔다(48GB급의 0.55 는 19.1 미결, `docs/design/unified-env.md`) |
+| 분석 워커 전체 | 아래 VLM·마스크·HMR 을 합친 워커 프로세스 상한. 시작 절차 기본 분할은 VLM 0.30 + 상시 아바타(HMR·아바타 seg) 0.10 + 분석 워커 프로세스(torch: I5 작업·마스크·`site_setup` 등) 0.30 이고, 아바타를 띄우지 않으면 VLM 0.30 + 워커 프로세스 0.40 이다. 워커 프로세스 몫이 0.10(80GB 에서 약 8GB, MapAnything 피크 할당 6.4GB)보다 작으면 시작하지 않는다 | 초기값 0.70. G0 실측으로 고침 |
+| VLM | Cosmos3-Nano(16B) Reasoner 를 vLLM 으로 서빙한다. 가중치·활성화·CUDA graph·KV 캐시를 모두 vLLM `gpu_memory_utilization` 상한 안에 둔다. 가중치는 BF16 원본을 기동 때 FP8 로 바꿔 싣고(온라인 양자화 `--quantization fp8`, 기본 켬, `SIMAI_VLLM_QUANTIZATION=none` 이면 BF16), KV 캐시는 양자화하지 않는다(`kv_cache_dtype=auto`, 모델 dtype BF16) | 초기값 0.30, 동시 요청 4, `--max-model-len` 32,768(분석 워커 상한 안). G0 실측으로 고침. 아래 'VLM 메모리 항목'을 본다(48GB급의 VLM 몫은 19.1 미결) |
 | 임베딩(GPU 에 둘 때만) | `Qwen/Qwen3-Embedding-0.6B`(1024차원, v1.3 수정 49). GPU 에 두지 않는다(법령 지식 그래프 노드·표준 질의 템플릿은 사전 임베딩해 두고, 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리, 5.4·11장) | 해당 없음 |
 | 마스크 | YOLO26-seg(아바타 루프 `YOLO26x-seg` 는 아래 HMR 상한 안) | 분석 워커 상한 안. G0 실측 |
 | HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_MEMORY_FRACTION`). G0 실측(상한) |
@@ -47,6 +47,20 @@
 | MapAnything | 작업 시작(LIVE) 전 현장 세팅 시간 실행(메모리 상주 `warm` 모델로 세팅 요청 즉시 초기 자세·점구름 추론 후 빠른 미리보기 맵 선출력 + 구역을 그리는 동안 전체 CPU 코어로 `texrecon` 백그라운드 완료, 일회성 `simai-bootstrap scene` 또는 분석 워커 `site_setup`·`static_reconstruct`, 4.3·5.3) | — |
 
 비율은 GPU 전체 메모리 대비다. 분석 워커는 시작할 때 Tier 0 + 분석 워커 ≤ 0.95, VLM ≤ 분석 워커를 검사하고 틀리면 시작하지 않는다. PPE 프로세스를 함께 띄우면 검사식은 Tier 0 + 분석 워커 + PPE ≤ 0.95 이고, 초기값(0.20 + 0.70 + 0.05)이 상한과 같아 여유가 없으므로 G0 실측으로 몫을 다시 정한다(17장).
+
+H100 80GB(`nvidia-smi` 전체 81,559 MiB = 79.65 GiB)로 환산하면 Tier 0 0.20 = 16,312 MiB(15.93 GiB), 분석 워커 0.70 = 57,091 MiB(55.75 GiB: VLM 0.30 = 24,468 MiB(23.89 GiB), 아바타 0.10 = 8,156 MiB(7.96 GiB), 워커 프로세스 0.30 = 24,468 MiB), PPE 0.05 = 4,078 MiB(3.98 GiB)이다. 합계 0.95 = 77,481 MiB(75.67 GiB)이고 남는 여유는 0.05 = 4,078 MiB 다(PPE 를 띄우지 않으면 0.10 = 8,156 MiB). 비율은 GPU 마다 같고 절대 크기는 GPU 전체 메모리에 따라 바뀐다(GiB = 1,024 MiB).
+
+**VLM 메모리 항목.** 다음 다섯 가지를 섞지 않는다.
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 설정 비율 | `gpu_memory_utilization` 0.30(GPU 전체 메모리 대비, 이 vLLM 인스턴스 하나의 상한) | 시작 절차 기본값(`deploy/scripts/simai_bootstrap.py`, `simai_ai.gpu.budget`) |
+| 환산 절대 예산 | H100 80GB 에서 24,468 MiB(23.89 GiB) | 81,559 MiB × 0.30 |
+| 가중치 정밀도·메모리 | FP8 10.05 GiB(BF16 이면 16.79 GiB). 받는 파일 약 31.5GB 는 VRAM 크기가 아니다 | vLLM 로그 `Model loading took` |
+| KV 캐시·실행 시 추가 메모리 | KV 약 10.9 GiB(79,536 토큰, 32,768 토큰 요청 기준 동시 2.43x), 나머지 약 2.9 GiB 는 활성화 프로파일 최대·CUDA graph(0.03 GiB)·torch 밖 메모리 | H200 에서 같은 절대 크기(비율 0.1702)로 띄운 시험값. H100 에서 잰 값이 아니다 |
+| 실측 GPU 사용량 | 위 시험에서 vLLM 프로세스 24,128 MiB(`nvidia-smi`) | 설정 상한 안. H100 전체 스택 안정성이나 G0·G7 합격 근거로 쓰지 않는다 |
+
+FP8 기본과 0.30 은 12차 GPU 세션의 MapAnything OOM(VLM 0.55·아바타 0.10 일 때 워커 프로세스 몫 0.05)과 2026-11-06 H200 비교(BF16 대비 가중치 16.79 → 10.05 GiB, 실제 프롬프트 2건의 답 동등)로 정했다(`docs/design/unified-env.md` 5단계). 그 전의 0.55·BF16 은 3차 GPU 세션 H100 실측(가중치 16.79 GiB·KV 23.99 GiB, G7 빠른 경로 p95 2.1 s, VLM 동시 4 지속 중 Tier 0 `frame_age` p95 60 → 76 ms)의 근거였다. FP8 기본에서 G7(근거 일치·빠른 경로 지연)은 다시 재지 않았다(19.1).
 
 **Risk Engine 배치.** Risk Engine은 Python 라이브러리 하나로 구현하고 두 곳에 배포한다. 같은 규칙을 Java로 다시 구현하지 않는다.
 
@@ -362,7 +376,7 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 
 **최소 사양.**
 
-- Tier 0 만 돌릴 때 VRAM 24GB급(RTX 4090 이상), Tier 0 와 분석 워커·실험을 함께 돌릴 때 48GB 이상(80GB 권장). 시연 기준 GPU 는 80GB(H100)이고, 48GB 는 Tier 0 와 분석(VLM·HMR 스트림) 동시 실행에 모자랄 수 있다(3.2 예산표의 VLM 0.55 는 3차 GPU 세션 H100 실측에서 가중치·KV 캐시가 그 안에 들어 그대로 두었고, 48GB급에서 0.55 가 맞는지는 19.1 미결이다). 48GB 미만 GPU 에는 분석 부하를 같은 GPU 에 올리지 않는다.
+- Tier 0 만 돌릴 때 VRAM 24GB급(RTX 4090 이상), Tier 0 와 분석 워커·실험을 함께 돌릴 때 48GB 이상(80GB 권장). 시연 기준 GPU 는 80GB(H100)이고, 48GB 는 Tier 0 와 분석(VLM·HMR 스트림) 동시 실행에 모자랄 수 있다(3.2 예산표의 VLM 0.30 은 80GB 기준이다. 48GB급(전체 약 44~48 GiB)에서 0.30 은 13~14 GiB 라 FP8 가중치 10.05 GiB 와 실행 시 추가 메모리 약 2.9 GiB 를 빼면 KV 캐시가 32,768 토큰 요청 하나에 필요한 약 4.5 GiB 에 못 미칠 것으로 계산된다. 실측하지 않았고 48GB급의 VLM 몫은 19.1 미결이다). 48GB 미만 GPU 에는 분석 부하를 같은 GPU 에 올리지 않는다.
 - Ampere(compute capability 8.0) 이후 GPU, 드라이버가 지원하는 최대 CUDA 13.0 이상(아래 이미지와 CUDA). Blackwell(sm_100·sm_120)도 대상이다: Tier 0 이미지는 CUDA 13, 실험 이미지는 Blackwell 커널이 든 CUDA 12.8 판으로 만든다. Blackwell GPU 에서 실제로 돌려 본 것은 아직 없다(19.1).
 - GPU 가 없거나 사양을 읽지 못하거나 사양 미만이면 Tier 0 를 띄우지 않는다(시작 절차가 가중치를 받기 전에 멈춘다).
 - CPU: 컨테이너가 받는 vCPU(cgroup 할당량, 호스트 코어 수가 아님) 8개 이상(초기값). Tier 0 기본 디코더가 CPU 라 카메라 4대 디코딩·색 변환(실측 약 코어 1개 이하)과 검출 전후처리·기하·판정·수신이 이 몫을 나눠 쓴다. 시작 절차는 아직 vCPU 로 멈추지 않고 검증 큐가 기록만 하며, 기록으로 값을 고친다(19.1).
