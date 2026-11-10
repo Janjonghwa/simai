@@ -66,6 +66,19 @@ Tier 0 (SIMAI_AVATAR_SHARE=1)            PPE (python -m services.ppe)           
 - 검증 위치: `ai/tests/ppe/test_service_metadata.py`, `ai/tests/io/test_channel_timing.py`, 기존 PPE 접수·누적·Risk Engine, `ai/tests/services/tier0/test_avatar_channel.py`, 아바타 루프 회귀. 실제 NPZ 배열 접근을 감시해 전체 선별 시 메타데이터만 읽는지, 같은 파일 재시도·새 epoch·혼합 카메라·영상 읽기 중 gate/150·151ms 전환·상태 만료를 확인한다. 원자 교체 테스트는 Windows 파일 삭제 제한 때문에 이미 열린 이전 파일을 메모리 핸들로 모사하며, OS별 동시 교체 성능 판정은 아니다.
 - 잔여·별도 이슈: -579에서 게시 시각의 정확한 계약과 카메라 공정성을 검토한다. -580에서 VLM 명세·FP8·GPU 예산 불일치를 정리한다. 이번 로컬 회귀는 실제 H100 추론율 개선·공존 부하·G9 통과의 근거가 아니다. Pod를 켜거나 운영 GPU에서 시험하지 않는다.
 
+## 게시 완료 관측 시각·순서 회전 (S15P31A101-579)
+
+- 명세 §3.2·§5.5의 150ms 대기·2Hz·동시 추론 1을 유지한다. 이번 이슈에서 150ms 시작 사건을 **NPZ `os.replace`가 정상 반환한 직후 writer가 관측한 UTC ms**로 정의한다. NPZ 준비/쓰기 전의 `produced_at_ms`는 그대로 두어 기존 아바타의 접수 후 나이 검사와 호환한다. 촬영 시각·프레임 키·PPE-04 만료 시계·I1 계약·판정 임계값은 변경하지 않는다.
+- 로컬 IPC 추가 계약: NPZ `simai.avatar-input@1` metadata에 매 쓰기마다 새 UUID의 `publication_id`를 추가한다. `<NPZ 이름>.published.json`에는 `format=simai.avatar-publication@1`, 같은 `publication_id`, 위 정의의 `published_at_ms`를 쓴다. writer는 완성된 NPZ를 원자 교체한 뒤 시각을 관측하고, 완료 표식도 임시 파일→원자 교체한다. 단일 writer 전제다. 최신 영상 1개·표식 1개만 유지하며 영상 복사본을 추가 보관하지 않는다.
+- PPE 진입점은 reader의 `require_publication=True`를 명시한다. 같은 열린 NPZ의 metadata를 읽은 뒤 표식의 format·세대·정수 시각을 검사하고 일치한 경우에만 메모리 문서에 `published_at_ms`를 추가한 뒤 predicate와 배열 읽기를 진행한다. 표식 누락·불일치·깨짐·쓰기 실패·경쟁 세대는 영상 없이 None으로 건너뛴다. 이전 파일을 열고 이전 표식을 읽은 경우는 그 이전 snapshot을 일관되게 처리하며, 새 snapshot에 이전/새 시각을 섞지 않는다. 2개 파일의 순간적인 일괄 교체를 가정하지 않는다. 기본 reader(`False`)는 아바타 호환을 위해 표식을 요구하거나 읽지 않으며 produced 기준의 기존 나이 검사와 가용성을 유지한다. 표식만 실패해도 아바타 입력까지 차단하는 설계는 기각했다.
+- 표식 게시까지의 지연은 150ms에 포함되므로 PPE에는 보수적이다. NPZ 교체 직후 죽으면 PPE는 새 영상을 표식 없이 채택하지 않는다. PPE가 소비 가능한 새 snapshot은 표식까지 게시된 것뿐이다. 새 ID 없는 기존 NPZ는 legacy 입력으로 읽고 PPE는 기존 produced 시각으로 검사한다. 새 ID가 있는데 표식이 없으면 PPE는 legacy로 폴백하지 않는다. 미래/잘못된 게시 시각도 처리 기록을 소비하지 않고 거절한다. 배포는 reader/PPE와 writer를 같은 소스로 갱신한다. 파일 한 개만 수동 복사하면 새 프로토콜의 PPE 입력은 준비되지 않은 것으로 본다. 아바타 기본 reader에는 이 제약을 추가하지 않는다.
+- 이 사건은 커널의 실제 rename 순간과 같다고 주장하지 않는다. NPZ 교체 뒤 시각을 관측하기 전에 writer가 오래 선점되면 그 구간은 게시 시각에 반영되지 않는다. 대신 PPE에는 완료 표식 전까지 새 세대가 공개되지 않는다. 시각 관측 **뒤**의 표식 지연은 대기에 포함된다. 호스트 시계 역전/미래 시각이면 PPE가 건너뛴다. 커널 교체 순간부터의 엄밀한 150ms나 촬영→추론 전체 지연을 이 계약으로 보장하지 않는다.
+- reader는 원본 NPZ에 내장된 `published_at_ms`를 항상 제거한다. 검증된 표식으로만 새 시각을 주입하며, ID 없는 legacy 입력이 임의의 내장 필드로 기존 produced 기준의 대기를 우회할 수 없게 한다.
+- PPE는 일치한 게시 시각을 우선해 선별 단계·카메라별 시작·관측/gate 후 150ms를 모두 재확인한다. 순서는 마지막으로 실제 검출을 시작한 카메라의 사전순 다음부터 회전한다. 전 카메라를 다 처리하면 다음에도 같은 순환이지만, 예산이 앞쪽 일부에만 허용되면 다음 묶음은 미처리 카메라부터 기회를 얻는다. 마지막 카메라가 사라져도 사전순 다음 카메라부터 이어 간다. 미처리 카메라의 프레임/칸/추론 시각은 소비하지 않는다.
+- 버린 대안: 게시 뒤 Python dict만 수정하면 NPZ 바이트에 반영되지 않는다. 동일 파일을 게시 후 다시 고치면 원자 snapshot을 깨뜨린다. mtime은 offer/쓰기/복사·시계 의미가 모호해 게시 사건으로 쓰지 않는다. 새 시각만 세대 없이 sidecar에 쓰면 이전 NPZ에 새 시각이 붙을 수 있다. 단순 step마다 시작 순서를 한 칸씩 옮기면 실제 처리 수가 달라질 때 편향이 남아 마지막 실제 추론 위치를 사용한다.
+- 진단: -578의 `camera_source_age_*`는 새 입력에서 게시 시각 기준이고 legacy에서는 produced 기준이다. `camera_first`와 기존 카메라별 inferred/skip·batch_wait를 함께 해석한다. `write_publication`은 시각 관측 후 완료 표식의 직렬화/쓰기/교체 비용이다. 포함 관계인 단계 백분위를 합산하거나 고유 프레임 폐기율로 해석하지 않는다.
+- 보장 범위: 동일 조건에서 반복되는 앞 카메라 편향을 줄이는 처리 기회 회전이다. 카메라마다 검출 시간·도착·누락·gate가 다르면 동일 추론율이나 6칸 확보를 보장하지 않는다. 대기 150ms보다 읽기 자체가 오래 걸리거나 CPU/GPU가 막히면 모두 건너뛸 수 있다. 로컬 합성 시험은 실제 H100 전체 부하·G9/G6 통과의 증거가 아니다.
+
 ## 코드·시험
 
 - `ai/services/ppe/loop.py`·`__main__.py`, `ai/src/simai_ai/io/ppe_outbox.py`, `ai/services/tier0/service.py`(`_build_link`), `ai/services/tier0/i1_client.py`·`i1_publisher.py`, `deploy/scripts/simai_bootstrap.py`

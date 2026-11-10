@@ -38,13 +38,22 @@ per_camera = {camera_id, local_track_id, bbox, keypoints_2d, joint_layout,
               estimated_capture_time, frame_ref}
 ```
 
+S15P31A101-579의 writer는 `publication_id`를 추가하고 NPZ 교체 완료 관측 시각을
+`<NPZ 이름>.published.json`에 같은 ID와 함께 게시한다. PPE의 `require_publication=True`
+reader만 같은 세대 표식을 검증하고 메모리 문서에 `published_at_ms`를 추가한다. 아바타의
+기본 reader(`False`)는 표식을 읽거나 요구하지 않으며 기존 `produced_at_ms` 나이 검사와
+가용성을 유지한다. PPE만 게시 시각을 대기 시작으로 사용한다. PPE는 새 ID가 있는데 표식이
+없거나 다른 세대면 입력을 건너뛴다. ID 없는 legacy 파일은 기존 방식으로 읽는다. 세부 계약·경쟁
+조건은 `ppe-service.md`의 -579 절을 따른다. 새 NPZ를 파일 하나만 복사하는 방식은 PPE에서는 지원하지 않는다.
+
 Tracker가 수락한 실제 프레임과 2D 관측을 같은 epoch/sequence/촬영 시각으로 묶는다. World Track의 local_keys로 ID를 붙인다.
 전역 최신 시각과 100ms 넘게 다른 카메라는 공유 관측에서 뺀다. HMR에서도 frame_ref가 같은지 검사한다.
 모르는 관절·pelvis·접지는 null 그대로이며 프레임 촬영 시각을 송신 시각으로 바꾸지 않는다.
 
 Tier 0 판정 스레드는 직전 공유 시각으로부터 `period_s`(기본 0.2s, 5Hz)가 지났을 때만 스냅샷을 조립해 최신 참조 한 건을 `offer`한다(보정이 교체된 tick은 즉시 공유, S15P31A101-385). lock을 즉시 얻지 못하면 버리고, 파일 I/O는 daemon이 한다.
 daemon은 최대 5Hz로 쓰며(`period_s - write_elapsed`만큼 대기) 대기 중인 참조를 최신으로 바꾼다. 파일 실패는 errors로 세고 Tier 0를 멈추지 않는다.
-Frame.image는 전달 뒤 수정하지 않는 기존 소유권을 따른다. 원자 교체 파일과 최대 한 임시 파일만 유지하므로 프레임 이력을 저장하지 않는다.
+Frame.image는 전달 뒤 수정하지 않는 기존 소유권을 따른다. 최신 영상 파일 한 개와 완료 표식 한 개,
+각 단계의 임시 파일만 사용하므로 프레임 이력을 저장하지 않는다.
 POSIX 공유 메모리 세그먼트(`multiprocessing.shared_memory`) 대신 tmpfs(`/dev/shm`) 위 원자 교체 파일 기반 로컬 IPC를 고른 이유는 독자 종료·재시작 때 자원 추적·seqlock 복구가 필요 없으면서도 컨테이너 overlayfs 디스크 쓰기를 피할 수 있기 때문이다.
 
 ## 체형·송신

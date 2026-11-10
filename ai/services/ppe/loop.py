@@ -5,7 +5,7 @@
 트랙의 local ID → World ID 대응은 그 틱의 다시점 연관 결과다(관측 프레임과 최대 100 ms 차이, 설계 메모의 알려진 한계).
 
 - 카메라마다 추론 시작 사이에 per_camera_period_ms(500 ms = 최대 2 Hz)를 두고, 같은 촬영 칸은 한 번만 처리한다.
-- 최신 한 건만 읽으므로 카메라당 대기는 1 이다. Tier 0 가 공유한 뒤 max_wait_ms(150 ms)를 넘긴 프레임은 추론하지 않는다.
+- 최신 한 건만 읽으므로 카메라당 대기는 1 이다. NPZ 게시 완료 관측 뒤 max_wait_ms(150 ms)를 넘기면 추론하지 않는다(legacy는 offer 시각).
 - 추론은 이 스레드 하나에서 한 장씩(동시 추론 1).
 - 접수 문(Tier 0 지연, 3.2)이 막으면 새 추론을 멈춘다. 누적된 상태는 계속 내보내 근거 만료로 UNKNOWN 이 되게 한다.
 - Tier 0 가 LIVE 가 아니면(정상 종료) 보내지 않는다.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from bisect import bisect_right
 from collections.abc import Callable, Mapping
 import logging
 from typing import Any, Protocol
@@ -116,6 +117,7 @@ class PpeLoop:
         self._last_infer_at: dict[str, int] = {}  # camera → 추론 시작 시각(운영은 단조 시계)
         self._last_bin: dict[str, tuple[int, int]] = {}  # camera → (stream_epoch, 촬영 칸)
         self._last_publish: int | None = None
+        self._last_camera: str | None = None  # 마지막 실제 검출 시작. 미처리 입력은 순서를 소비하지 않는다.
         self._provenance: dict[str, Any] | None = None
         self.counts: Counter[str] = Counter()  # 계측(판정에 쓰지 않음)
         self.timing = timing or ChannelTiming()
@@ -125,7 +127,10 @@ class PpeLoop:
         return {"loop": self.timing.summary(),
                 "source": None if source_timing is None else source_timing.summary()}
 
-    def _skip_reason(self, camera_id, ref, produced):
+    def _skip_reason(self, camera_id, ref, produced, *, published=False):
+        if published and (not isinstance(produced, int) or isinstance(produced, bool)
+                          or produced < 0 or produced > self.clock_ms()):
+            return "publication_invalid"
         frame_ref = ref.get("frame_ref") or {}
         key = (frame_ref.get("stream_epoch"), frame_ref.get("frame_sequence"))
         capture = ref.get("capture_time_ms")
@@ -146,7 +151,8 @@ class PpeLoop:
         """모든 카메라가 불가할 때만 영상 읽기를 생략한다. 처리 기록은 소비하지 않는다."""
         eligible = False
         for camera_id, ref in doc.get("frames", {}).items():
-            reason = self._skip_reason(camera_id, ref or {}, doc.get("produced_at_ms"))
+            reason = self._skip_reason(camera_id, ref or {}, self._wait_since(doc),
+                                       published="published_at_ms" in doc)
             if reason is None:
                 eligible = True
             else:
@@ -155,6 +161,15 @@ class PpeLoop:
         if not eligible:
             self.counts["metadata_rejected"] += 1
         return eligible
+
+    @staticmethod
+    def _wait_since(doc):
+        return doc.get("published_at_ms", doc.get("produced_at_ms"))
+
+    def _camera_order(self, images):
+        cameras = sorted(images)
+        start = 0 if self._last_camera is None else bisect_right(cameras, self._last_camera)
+        return cameras[start:] + cameras[:start]
 
     def step(self) -> None:
         admission = self.gate.check()
@@ -188,9 +203,12 @@ class PpeLoop:
         provenance = doc.get("world", {}).get("input_provenance")
         if isinstance(provenance, Mapping) and "tracks" in provenance:
             self._provenance = dict(provenance)
-        produced = doc.get("produced_at_ms")
+        produced = self._wait_since(doc)
         batch_ready = self.timing.clock()
-        for camera_id in sorted(images):
+        cameras = self._camera_order(images)
+        if cameras:
+            self.timing.record("camera_first", camera=cameras[0])
+        for camera_id in cameras:
             self.timing.record("camera_batch_wait", (self.timing.clock() - batch_ready) * 1000, camera=camera_id)
             image = images[camera_id]
             ref = doc.get("frames", {}).get(camera_id) or {}
@@ -198,7 +216,7 @@ class PpeLoop:
             key = (frame_ref.get("stream_epoch"), frame_ref.get("frame_sequence"))
             if isinstance(produced, int):
                 self.timing.record("camera_source_age_at_check", self.clock_ms() - produced, camera=camera_id)
-            reason = self._skip_reason(camera_id, ref, produced)
+            reason = self._skip_reason(camera_id, ref, produced, published="published_at_ms" in doc)
             if reason is not None:
                 if reason != "duplicate":
                     self.counts[reason] += 1
@@ -222,6 +240,10 @@ class PpeLoop:
             if isinstance(produced, int):
                 age = self.clock_ms() - produced
                 self.timing.record("camera_source_age_at_infer", age, camera=camera_id)
+                if age < 0 and "published_at_ms" in doc:
+                    self.counts["publication_invalid"] += 1
+                    self.timing.record("camera_skip_publication_invalid", camera=camera_id)
+                    continue
                 if age > self.max_wait_ms:
                     self.counts["wait_exceeded"] += 1
                     self.timing.record("camera_skip_wait_exceeded", camera=camera_id)
@@ -229,6 +251,7 @@ class PpeLoop:
             self._last_frame[camera_id] = key
             self._last_infer_at[camera_id] = self.monotonic_ms()  # 관측 구성 비용 뒤의 실제 추론 시작을 기록한다.
             self._last_bin[camera_id] = (obs.stream_epoch, obs.capture_time_ms // self.judge.cfg.bin_ms)
+            self._last_camera = camera_id
             with self.timing.measure("camera_inference", camera=camera_id):
                 candidates = self.detector.infer(image)
             dets = FrameDetections(camera_id, obs.stream_epoch, obs.frame_sequence, obs.capture_time_ms, obs.image_size,

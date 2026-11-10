@@ -65,7 +65,7 @@ def main() -> int:
         logging.error("PPE 시작 실패: %s", e)
         return 2
     loop = PpeLoop(
-        LatestChannelReader(avatar_channel_path(env, root)),
+        LatestChannelReader(avatar_channel_path(env, root), require_publication=True),
         gate,
         detector,
         PpeOutboxWriter(ppe_outbox_path(env, root)),
