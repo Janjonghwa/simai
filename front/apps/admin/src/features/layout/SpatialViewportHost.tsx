@@ -97,6 +97,8 @@ export function SpatialViewportHost({
   const editing = useZoneEditActive();
   const [cctvOpen, setCctvOpen] = useState(false);
   const [requestedCamera, setRequestedCamera] = useState<CctvCameraRequest | null>(null);
+  // 3D 가 카메라 시점 보기 중인지(-590). CCTV 창을 닫거나 「전체 보기」를 누르면 클릭 전 시점으로 돌아간다.
+  const [cameraView, setCameraView] = useState(false);
   const split = useCamSplitStore((s) => s.split);
   const { cameraPoses: calibratedCameraPoses } = useCurrentCalibration();
 
@@ -121,9 +123,21 @@ export function SpatialViewportHost({
       saveCctvFloatCamera(cameraId);
       setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
       setCctvOpen(true);
+      // 3D 시점도 그 카메라 자리로 옮긴다. 맞아 있는 동안 뷰어가 VDT 를 켠다(사진이 없으면 시점만 옮긴다).
+      if (viewer.current?.viewFromCamera?.(cameraId)?.ok) setCameraView(true);
     },
-    [eventPanel, editing],
+    [eventPanel, editing, viewer],
   );
+
+  const exitCameraView = useCallback(() => {
+    viewer.current?.exitCameraView?.();
+    setCameraView(false);
+  }, [viewer]);
+
+  const closeCctv = useCallback(() => {
+    setCctvOpen(false);
+    if (cameraView) exitCameraView();
+  }, [cameraView, exitCameraView]);
 
   return (
     <SpatialViewportContext value={viewport}>
@@ -171,15 +185,25 @@ export function SpatialViewportHost({
         {editing && <ZoneEditFade />}
         <ToolPalette
           view={view}
-          onResetView={() => viewer.current?.resetView?.()}
+          onResetView={() => {
+            viewer.current?.resetView?.();
+            // 시점 초기화는 카메라 시점 보기도 끝낸다(뷰어가 돌아갈 시점을 잊는다).
+            setCameraView(false);
+          }}
           onRetry3d={show3d}
           currentSceneVersion={readSceneVersion(scene)}
           currentScene={scene?.ok ? scene.raw : undefined}
           onToggleCctv={
             eventPanel && !editing
               ? () => {
-                  if (split) useCamSplitStore.getState().close();
-                  setCctvOpen((open) => (split ? true : !open));
+                  if (split) {
+                    useCamSplitStore.getState().close();
+                    setCctvOpen(true);
+                  } else if (cctvOpen) {
+                    closeCctv();
+                  } else {
+                    setCctvOpen(true);
+                  }
                 }
               : undefined
           }
@@ -199,7 +223,8 @@ export function SpatialViewportHost({
           <CctvFloat
             selectedKey={selectedKey}
             requestedCamera={requestedCamera}
-            onClose={() => setCctvOpen(false)}
+            onClose={closeCctv}
+            onFullView={cameraView ? exitCameraView : undefined}
           />
         )}
       </main>

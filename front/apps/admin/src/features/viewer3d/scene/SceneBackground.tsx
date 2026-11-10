@@ -1,3 +1,4 @@
+import { CAMERA_VDT_FADE_MS, createFpsGuard } from '@/features/viewer3d/cameras/cameraView';
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import {
   IDLE_LOAD,
@@ -21,6 +22,7 @@ import {
   applyMapCamerasToVdtCameras,
   convertVdtCameraToThree,
   readSceneMapCamerasFromObject3D,
+  withVdtCameraImages,
 } from '@/features/viewer3d/scene/vdtMath';
 import {
   bakeVdtShadowMaps,
@@ -29,8 +31,10 @@ import {
   type BakedShadowMaps,
   type MountedVdtScene,
 } from '@/features/viewer3d/scene/vdtShader';
+import { createViewerStore } from '@/features/viewer3d/viewer3d.store';
+import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { threeToWorld, toThreePoint } from '@/features/viewer3d/worldCoordinates';
-import { useThree } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box3,
@@ -353,6 +357,9 @@ function httpStatusOf(error: unknown): number | null {
   return typeof status === 'number' ? status : null;
 }
 
+// 뷰어 Store 가 없는 곳(시험 등)에서 읽는 빈 상태. 카메라 시점 보기가 없어 VDT 를 카메라 때문에 켜지 않는다.
+const NO_VIEWER = createViewerStore();
+
 export function SceneBackground() {
   const store = useContext(SceneStoreContext);
   return store ? <Background store={store} /> : null;
@@ -366,6 +373,12 @@ function Background({ store }: { store: SceneStore }) {
   const input = useStore(store, (s) => s.input);
   const load = useStore(store, (s) => s.load);
   const vdtOptions = useStore(store, (s) => s.vdtOptions);
+  const viewerStore = useContext(ViewerStoreContext) ?? NO_VIEWER;
+  // 카메라 시점 보기(-590): 시점이 카메라에 맞아 있고 프레임 저하로 막히지 않았으면 VDT 를 켠다.
+  const cameraWant = useStore(
+    viewerStore,
+    (s) => s.alignedCamera !== null && s.cameraVdtBlocked === null,
+  );
   const worldScene = useSpatialData((s) => s.world?.sceneVersion ?? null);
   const worldCalibration = useSpatialData((s) => s.world?.calibrationVersion ?? null);
   const compatibility = useSpatialData((s) => s.health?.scene.compatibility);
@@ -466,8 +479,24 @@ function Background({ store }: { store: SceneStore }) {
   }).display;
   const shown: SceneDisplay = loaded && loaded.sceneVersion === sceneVersion ? display : 'HIDDEN';
 
-  const vdtConfig = scene?.vdt ?? null;
-  const vdtEnabled = Boolean(vdtOptions.enabled && vdtConfig && loaded);
+  const glbMapCameras = useMemo(
+    () => (loaded ? readSceneMapCamerasFromObject3D(loaded.root) : null),
+    [loaded],
+  );
+  // 카메라별 사진 주소(사람 지운 배경, cameraImageUrls)가 있으면 장면 vdt 에 끼우거나 map_cameras 로 설정을 만든다.
+  const vdtConfig = useMemo(
+    () =>
+      withVdtCameraImages(
+        scene?.vdt ?? null,
+        scene?.mapCameras ?? glbMapCameras,
+        vdtOptions.cameraImageUrls,
+      ),
+    [scene?.vdt, scene?.mapCameras, glbMapCameras, vdtOptions.cameraImageUrls],
+  );
+  const alwaysOn = Boolean(vdtOptions.enabled);
+  // 카메라 시점 VDT 가 장착돼 있거나 장착 중인지. 끌 때는 서서히 0 으로 내린 뒤에 내린다(프레임에서 false 로 바꾼다).
+  const [cameraLive, setCameraLive] = useState(false);
+  const vdtEnabled = Boolean((alwaysOn || cameraWant || cameraLive) && vdtConfig && loaded);
   const shadowMapSize = vdtOptions.shadowMapSize ?? 1536;
   const vdtOptionsRef = useRef(vdtOptions);
   useEffect(() => {
@@ -476,16 +505,28 @@ function Background({ store }: { store: SceneStore }) {
 
   const camerasThree = useMemo(() => {
     if (!vdtEnabled || !vdtConfig) return null;
-    const glbMapCameras = loaded ? readSceneMapCamerasFromObject3D(loaded.root) : null;
     const effectiveMapCameras = scene?.mapCameras ?? vdtConfig.mapCameras ?? glbMapCameras;
     const resolvedCameras = applyMapCamerasToVdtCameras(vdtConfig.cameras, effectiveMapCameras);
     return resolvedCameras.map((c) => convertVdtCameraToThree(c, vdtConfig.nearM, vdtConfig.farM));
-  }, [vdtEnabled, vdtConfig, scene?.mapCameras, loaded]);
+  }, [vdtEnabled, vdtConfig, scene?.mapCameras, glbMapCameras]);
 
   const [vdtIndicatorGroup, setVdtIndicatorGroup] = useState<Object3D | null>(null);
   const mountedVdtRef = useRef<MountedVdtScene | null>(null);
   const bakedShadowsRef = useRef<BakedShadowMaps | null>(null);
   const lastBakedShadowSizeRef = useRef<number | null>(null);
+  // 카메라 시점 VDT 페이드(-590): 지금 섞는 비율과 켠 동안 프레임 감시.
+  const strengthRef = useRef(0);
+  const fpsGuardRef = useRef<ReturnType<typeof createFpsGuard> | null>(null);
+  const alwaysOnRef = useRef(alwaysOn);
+  const cameraWantRef = useRef(cameraWant);
+  useEffect(() => {
+    alwaysOnRef.current = alwaysOn;
+  }, [alwaysOn]);
+  useEffect(() => {
+    cameraWantRef.current = cameraWant;
+    // 켜기는 바로, 끄기는 장착된 VDT 가 없을 때만 바로 한다(장착돼 있으면 프레임에서 서서히 내린 뒤 끈다).
+    if (cameraWant || !mountedVdtRef.current) setCameraLive(cameraWant);
+  }, [cameraWant]);
 
   useEffect(() => {
     if (!vdtEnabled || !loaded || !vdtConfig || !camerasThree) {
@@ -513,6 +554,7 @@ function Background({ store }: { store: SceneStore }) {
         );
         bakedShadowsRef.current = baked;
         lastBakedShadowSizeRef.current = initShadowSize;
+        const startStrength = alwaysOnRef.current ? 1 : 0;
         const mounted = mountVdtOnSceneRoot({
           root: loaded.root,
           vdtConfig,
@@ -520,17 +562,23 @@ function Background({ store }: { store: SceneStore }) {
           cameraTextures: textures,
           bakedShadows: baked,
           options: vdtOptionsRef.current,
+          strength: startStrength,
         });
         mountedVdtRef.current = mounted;
+        strengthRef.current = startStrength;
+        fpsGuardRef.current = createFpsGuard();
         setVdtIndicatorGroup(mounted.indicatorGroup);
       },
       () => {
         // VDT 카메라 텍스처 로드 실패 시 원래 구운 텍스처(MeshBasicMaterial) 경로를 그대로 유지한다.
+        // 카메라 시점 보기는 시점만 옮긴 채로 두고, 맞음이 풀리면 위 effect 가 cameraLive 를 내린다.
       },
     );
 
     return () => {
       alive = false;
+      strengthRef.current = 0;
+      fpsGuardRef.current = null;
       setVdtIndicatorGroup(null);
       lastBakedShadowSizeRef.current = null;
       if (mountedVdtRef.current) {
@@ -580,6 +628,32 @@ function Background({ store }: { store: SceneStore }) {
     mountedVdtRef.current.updateShadowMaps(nextBaked);
     prevBaked?.dispose();
   }, [shadowMapSize, loaded, vdtConfig, camerasThree, gl]);
+
+  // 카메라 시점 VDT 를 서서히 켜고 끈다(CAMERA_VDT_FADE_MS). 켠 동안 평균 FPS 가 기준 아래면 이번 카메라 시점에서 끈다.
+  useFrame((_, delta) => {
+    const mounted = mountedVdtRef.current;
+    if (!mounted) return;
+    if (alwaysOnRef.current) {
+      if (strengthRef.current !== 1) {
+        strengthRef.current = 1;
+        mounted.setStrength(1);
+      }
+      return;
+    }
+    const want = cameraWantRef.current;
+    const step = (delta * 1000) / CAMERA_VDT_FADE_MS;
+    const prev = strengthRef.current;
+    const next = want ? Math.min(1, prev + step) : Math.max(0, prev - step);
+    if (next !== prev) {
+      strengthRef.current = next;
+      mounted.setStrength(next);
+    }
+    if (!want) {
+      if (next === 0) setCameraLive(false);
+      return;
+    }
+    if (fpsGuardRef.current?.push(delta * 1000)) viewerStore.getState().blockCameraVdt('LOW_FPS');
+  });
 
   const activeVdtIndicatorGroup = vdtEnabled ? vdtIndicatorGroup : null;
 

@@ -138,6 +138,14 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - 사람 선택 강조: 사람이 선택돼 있으면(`selected?.type === 'person'`) 그 트랙의 `cameras` 에 든 카메라 마커·절두체·이름표를 강조 색으로 표시한다.
 - 클릭: 카메라 본체·렌즈를 클릭하면 `onCameraClick(cameraId)` 를 부른다(시야 절두체는 뒤의 사람·구역 클릭을 가리지 않게 광선 검사를 끈다).
 
+## 카메라 시점 보기(`viewFromCamera` · `exitCameraView` 명령, -590)
+
+- `viewFromCamera(cameraId)`: `cameraPoses` 의 그 카메라 광학 중심·정면·세로 시야각(수평 시야각과 16:9)으로 시점을 1 초(`CAMERA_VIEW_MOVE_MS`) 동안 이음 이동한다. 움직임 줄이기 설정이면 다음 프레임에 바로 옮긴다. 회전 중심은 정면 광선이 바닥(Z=0)에 닿는 점(1~15 m, 바닥을 향하지 않으면 4 m 앞)이다. 준비 전 `NOT_READY`, 없는 카메라 `NOT_FOUND`.
+- 옮기는 동안과 맞아 있는 동안 그 카메라 마커를 숨긴다. 다 옮긴 뒤 시점이 자리 1 cm·방향 0.25°·시야각 0.1° 안에 있는 동안만 "맞아 있음"이고, 이때만 VDT 를 0.4 초(`CAMERA_VDT_FADE_MS`)에 걸쳐 켠다. 사용자 조작·초점·위에서 보기 등으로 시점이 바뀌면 맞음을 풀고 VDT 를 서서히 끈다. 같은 카메라를 다시 부르면 다시 맞춘다.
+- 켠 동안 1 초 준비 뒤 2 초 평균 FPS 가 24 아래면 그 카메라 시점에서는 VDT 를 끄고 시점은 둔다(다음 `viewFromCamera` 에서 다시 시도). 사진을 받지 못하면 구운 텍스처 그대로다.
+- `exitCameraView()`: 첫 `viewFromCamera` 직전 시점(자리·회전 중심·시야각)으로 1 초에 돌아간다. 카메라 시점이 아니면 아무것도 하지 않는다. `resetView` 는 카메라 시점 보기를 끝내고 돌아갈 시점을 잊는다.
+- 사진: 장면 `vdt` 가 있으면 그 사진, `vdt.cameraImageUrls`(카메라 ID → 주소)가 있으면 같은 카메라의 주소를 바꾸고, 장면 `vdt` 가 없으면 `map_cameras` 자세와 주소로 표시 층 없는 설정을 만든다(`withVdtCameraImages`). 둘 다 없으면 시점만 옮긴다.
+
 ## 기타 공개 항목
 
 - `personModelUrl`: 사람 모델 GLB 주소(선택). 읽지 못하면 캡슐로 그린다. 에셋 권리와 배포 경로는 미정이다.

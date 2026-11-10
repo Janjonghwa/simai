@@ -1,4 +1,6 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
+import type { CalibratedCameraPose } from '@/features/viewer3d/cameras/cameraMarkers';
+import { cameraViewPose } from '@/features/viewer3d/cameras/cameraView';
 import { roomViewOf } from '@/features/viewer3d/scene/roomView';
 import { IDLE_LOAD, type SceneLoad } from '@/features/viewer3d/scene/sceneContract';
 import {
@@ -8,8 +10,10 @@ import {
 } from '@/features/viewer3d/scene/sceneStore';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
+import { worldPoint } from '@/features/viewer3d/worldCoordinates';
 import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
 import {
+  advance,
   createRoot,
   extend,
   useThree,
@@ -18,7 +22,7 @@ import {
 } from '@react-three/fiber';
 import { act, useEffect } from 'react';
 import * as THREE from 'three';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 시점 틀(CameraRig): 새 스캔 범위가 들어오면 한 번 그 시점으로 옮기고, 시점 초기화는 스캔이 있으면 스캔 시점·없으면 목업 시점으로 돌린다(-395).
 // 스캔 범위는 뷰어 장면 저장소의 load.boundsWorld 와 display 로 들어온다. WebGL 없이 실제 OrbitControls 를 붙여 카메라 자리를 읽는다.
@@ -202,5 +206,137 @@ describe('CameraRig 시점 초기화', () => {
     moveByUser();
     await resetView();
     expectNear(position(), homeOf(SCAN_B));
+  });
+});
+
+const CAM_A: CalibratedCameraPose = {
+  cameraId: 'cam_A',
+  position: worldPoint(1, 2, 2.4),
+  forward: worldPoint(Math.SQRT1_2, 0, -Math.SQRT1_2),
+  hfovRad: 1.6,
+};
+const CAM_A_VIEW = cameraViewPose(CAM_A);
+
+let clockS = 0;
+/** frameloop 'never' 라 시계를 직접 돌린다(초). OrbitControls update(-1) 뒤에 시점 틀 프레임이 돈다. */
+const step = (seconds: number) =>
+  act(async () => {
+    clockS += seconds;
+    advance(clockS);
+  });
+const fov = () => (camera() as THREE.PerspectiveCamera).fov;
+const viewFromCamera = (cameraId: string) =>
+  act(async () => void viewer.getState().viewFromCamera(cameraId));
+const exitCameraView = () => act(async () => void viewer.getState().exitCameraView());
+
+describe('CameraRig 카메라 시점 보기(-590)', () => {
+  beforeEach(() => {
+    clockS = 0;
+    viewer.getState().setCameraPoses([CAM_A]);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('약 1 초에 걸쳐 카메라 자리·방향·세로 시야각으로 옮기고, 다 옮긴 뒤에만 맞아 있음을 알린다', async () => {
+    await mount();
+    const startPosition = position();
+    const startFov = fov();
+    await viewFromCamera('cam_A');
+    expect(viewer.getState().cameraViewId).toBe('cam_A');
+    expect(viewer.getState().alignedCamera).toBeNull();
+
+    await step(0.5);
+    expect(viewer.getState().alignedCamera).toBeNull();
+    const mid = position();
+    expect(mid).not.toEqual(startPosition);
+    expect(fov()).not.toBeCloseTo(startFov, 3);
+
+    await step(0.6);
+    expectNear(position(), CAM_A_VIEW.position);
+    expectNear(orbitTarget().toArray(), CAM_A_VIEW.target);
+    expect(fov()).toBeCloseTo(CAM_A_VIEW.fovDeg, 6);
+    expect(viewer.getState().alignedCamera).toBe('cam_A');
+
+    // 가만히 있으면 맞아 있음을 유지한다(OrbitControls update 가 시점을 바꾸지 않는다).
+    await step(0.1);
+    expect(viewer.getState().alignedCamera).toBe('cam_A');
+  });
+
+  it('사용자가 시점을 돌리면 맞음과 마커 숨김을 풀고, 나가기는 클릭 전 시점·시야각으로 부드럽게 돌아간다', async () => {
+    await mount();
+    const startPosition = position();
+    const startTarget = orbitTarget().toArray();
+    const startFov = fov();
+    await viewFromCamera('cam_A');
+    await step(1.1);
+    expect(viewer.getState().alignedCamera).toBe('cam_A');
+
+    moveByUser();
+    await step(0.016);
+    expect(viewer.getState().alignedCamera).toBeNull();
+    expect(viewer.getState().cameraViewId).toBeNull();
+
+    await exitCameraView();
+    await step(0.5);
+    expect(position()).not.toEqual(startPosition);
+    await step(0.6);
+    expectNear(position(), startPosition);
+    expectNear(orbitTarget().toArray(), startTarget);
+    expect(fov()).toBeCloseTo(startFov, 6);
+    expect(viewer.getState().alignedCamera).toBeNull();
+  });
+
+  it('돌아가는 동안은 그 카메라 마커를 숨긴 채 두고 돌아간 뒤에 보인다', async () => {
+    await mount();
+    await viewFromCamera('cam_A');
+    await step(1.1);
+    await exitCameraView();
+    expect(viewer.getState().alignedCamera).toBeNull();
+    expect(viewer.getState().cameraViewId).toBe('cam_A');
+    await step(1.1);
+    expect(viewer.getState().cameraViewId).toBeNull();
+  });
+
+  it('같은 카메라를 다시 부르면 다시 맞춘다', async () => {
+    await mount();
+    await viewFromCamera('cam_A');
+    await step(1.1);
+    moveByUser();
+    await step(0.016);
+    expect(viewer.getState().alignedCamera).toBeNull();
+
+    await viewFromCamera('cam_A');
+    await step(1.1);
+    expectNear(position(), CAM_A_VIEW.position);
+    expect(viewer.getState().alignedCamera).toBe('cam_A');
+  });
+
+  it('움직임 줄이기 설정이면 다음 프레임에 바로 옮긴다', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: true })),
+    );
+    await mount();
+    await viewFromCamera('cam_A');
+    await step(0.016);
+    expectNear(position(), CAM_A_VIEW.position);
+    expect(viewer.getState().alignedCamera).toBe('cam_A');
+  });
+
+  it('시점 초기화는 카메라 시점 보기를 끝내고, 그 뒤 나가기는 시점을 바꾸지 않는다', async () => {
+    await mount();
+    await viewFromCamera('cam_A');
+    await step(1.1);
+    await resetView();
+    expectNear(position(), MOCK_HOME);
+    expect(viewer.getState().alignedCamera).toBeNull();
+    expect(viewer.getState().cameraViewId).toBeNull();
+    const startFov = fov();
+
+    await exitCameraView();
+    await step(1.1);
+    expectNear(position(), MOCK_HOME);
+    expect(fov()).toBe(startFov);
   });
 });

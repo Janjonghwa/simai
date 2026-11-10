@@ -40,6 +40,14 @@ export interface FocusRequest {
   target: ViewerTarget;
 }
 
+/** 카메라 시점 보기 요청(-590). 요청마다 새 객체라 같은 카메라를 다시 눌러도 다시 맞춘다. */
+export interface CameraViewRequest {
+  cameraId: string;
+}
+
+/** 카메라 시점에서 VDT 를 끈 이유(-590). LOW_FPS: 평균 프레임이 기준 아래로 떨어졌다. */
+export type CameraVdtBlock = 'LOW_FPS';
+
 /** 기다리는 선택의 최대 시간(ms). 이보다 길게 주면 이 값으로 자른다. */
 export const MAX_SELECT_WAIT_MS = 30_000;
 
@@ -65,6 +73,16 @@ export interface ViewerState {
   viewResets: number;
   /** 위에서 내려다보는 시점('위에서 보기') 여부. */
   topView: boolean;
+  /** 카메라 시점 보기 요청(-590). CameraRig 가 받아 그 카메라 자리로 옮긴다. */
+  cameraViewRequest: CameraViewRequest | null;
+  /** 카메라 시점에서 나가기(클릭 전 시점으로 돌아가기) 요청 수(-590). */
+  cameraViewExits: number;
+  /** 옮기는 중이거나 맞아 있는 카메라(-590). 그 카메라 마커는 시야를 가리지 않게 숨긴다. CameraRig 만 쓴다. */
+  cameraViewId: string | null;
+  /** 시점이 맞아 있는 카메라(-590). 이 동안만 VDT 를 켠다. CameraRig 만 쓴다. */
+  alignedCamera: string | null;
+  /** 이번 카메라 시점에서 VDT 를 끈 이유(-590). 새 카메라 시점 요청이 오면 지운다. */
+  cameraVdtBlocked: CameraVdtBlock | null;
   /** 레이어별 표시·피킹(-234). 기본값은 모두 interactive(기존 동작). */
   layers: ResolvedLayers;
   /** 사람 이름표 뒤에 붙일 글(World ID → 글, -342). */
@@ -105,6 +123,13 @@ export interface ViewerState {
   setTheme(theme: ViewerTheme): void;
   resetView(): CommandResult;
   setTopView(enabled: boolean): CommandResult;
+  /** 카메라 시점 보기(-590). 준비 전이면 NOT_READY, 마커에 없는 카메라면 NOT_FOUND. */
+  viewFromCamera(cameraId: unknown): CommandResult;
+  /** 카메라 시점에서 나간다(-590). 카메라 시점이 아니어도 ok 이고 아무것도 하지 않는다. */
+  exitCameraView(): CommandResult;
+  setCameraViewId(cameraId: string | null): void;
+  setAlignedCamera(cameraId: string | null): void;
+  blockCameraVdt(reason: CameraVdtBlock): void;
 }
 
 export type ViewerStore = StoreApi<ViewerState>;
@@ -193,6 +218,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       theme: 'dark',
       viewResets: 0,
       topView: false,
+      cameraViewRequest: null,
+      cameraViewExits: 0,
+      cameraViewId: null,
+      alignedCamera: null,
+      cameraVdtBlocked: null,
 
       registerTarget: (target) => {
         const key = targetKey(target);
@@ -350,6 +380,35 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         const next = Boolean(enabled);
         if (get().topView !== next) set({ topView: next });
         return OK;
+      },
+
+      viewFromCamera: (cameraId) => {
+        if (typeof cameraId !== 'string' || cameraId.length === 0) {
+          return { ok: false, reason: 'INVALID_TARGET' };
+        }
+        if (get().phase !== 'ready') return { ok: false, reason: 'NOT_READY' };
+        if (!get().cameraPoses.some((pose) => pose.cameraId === cameraId)) {
+          return { ok: false, reason: 'NOT_FOUND' };
+        }
+        set({ cameraViewRequest: { cameraId }, cameraVdtBlocked: null });
+        return OK;
+      },
+
+      exitCameraView: () => {
+        set({ cameraViewExits: get().cameraViewExits + 1 });
+        return OK;
+      },
+
+      setCameraViewId: (cameraId) => {
+        if (get().cameraViewId !== cameraId) set({ cameraViewId: cameraId });
+      },
+
+      setAlignedCamera: (cameraId) => {
+        if (get().alignedCamera !== cameraId) set({ alignedCamera: cameraId });
+      },
+
+      blockCameraVdt: (reason) => {
+        if (get().cameraVdtBlocked !== reason) set({ cameraVdtBlocked: reason });
       },
     };
   });

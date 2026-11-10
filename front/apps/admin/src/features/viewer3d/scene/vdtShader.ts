@@ -109,6 +109,7 @@ export const vdtFragmentShader = /* glsl */ `
   uniform float uColorSigma;        // 카메라 간 Oklab 색 거리 σ (기본 0.056)
   uniform int uFeatherPass;         // 0: 단일 패스
   uniform int uTopK;                // 2 또는 3 (상위 K대 카메라 블렌딩)
+  uniform float uVdtStrength;       // 0..1: 원래 구운 색과 VDT 결과를 섞는 비율(카메라 시점 보기 페이드, -590)
   uniform float uFar;
   uniform vec2 uShadowTexelSize;
 
@@ -445,7 +446,7 @@ export const vdtFragmentShader = /* glsl */ `
           float darkW = 1.0 - smoothstep(0.18, 0.37, lum);
           colOut = mix(colOut, uIndicatorObsColor * 0.88, darkW * 0.90);
         }
-        gl_FragColor = vec4(applySceneFog(colOut, viewDist), 1.0);
+        gl_FragColor = vec4(mix(rawOrigColor, applySceneFog(colOut, viewDist), uVdtStrength), 1.0);
       } else {
         gl_FragColor = vec4(origColor, 1.0);
       }
@@ -690,7 +691,7 @@ export const vdtFragmentShader = /* glsl */ `
             fallbackCol = mix(vec3(0.157, 0.204, 0.271), fallbackCol, tCol);
           }
         }
-        gl_FragColor = vec4(applySceneFog(fallbackCol, viewDist), 1.0);
+        gl_FragColor = vec4(mix(rawOrigColor, applySceneFog(fallbackCol, viewDist), uVdtStrength), 1.0);
       }
       return;
     }
@@ -734,7 +735,7 @@ export const vdtFragmentShader = /* glsl */ `
     }
 
     finalColor = applySceneFog(finalColor, viewDist);
-    gl_FragColor = vec4(finalColor, 1.0);
+    gl_FragColor = vec4(mix(rawOrigColor, finalColor, uVdtStrength), 1.0);
   }
 `;
 
@@ -1162,6 +1163,8 @@ export function collectVdtMeshes(root: THREE.Object3D): {
 export interface MountedVdtScene {
   indicatorGroup: THREE.Group;
   updateOptions(options: ViewerVdtOptions): void;
+  /** 원래 구운 색과 VDT 결과를 섞는 비율(0..1, -590 페이드). 1 이면 VDT 그대로다. */
+  setStrength(strength: number): void;
   updateShadowMaps(baked: BakedShadowMaps): void;
   dispose(): void;
 }
@@ -1177,6 +1180,8 @@ export function mountVdtOnSceneRoot(params: {
   cameraTextures: readonly THREE.Texture[];
   bakedShadows: BakedShadowMaps;
   options: ViewerVdtOptions;
+  /** 처음 섞는 비율(0..1, 기본 1). 카메라 시점 보기는 0 에서 서서히 올린다(-590). */
+  strength?: number;
 }): MountedVdtScene {
   const { root, vdtConfig, camerasThree, cameraTextures, bakedShadows, options } = params;
   const { allMeshes, shadowMeshes, estimatedFloorNode } = collectVdtMeshes(root);
@@ -1246,6 +1251,7 @@ export function mountVdtOnSceneRoot(params: {
     uColorSigma: { value: vdtConfig.colorSigmaOklab },
     uFeatherPass: { value: 0 },
     uTopK: { value: options.topK ?? 3 },
+    uVdtStrength: { value: Math.min(Math.max(params.strength ?? 1, 0), 1) },
     uFar: { value: vdtConfig.farM },
     uShadowTexelSize: { value: bakedShadows.shadowTexelSize.clone() },
     uFloorCalmColorShared: { value: calmFloorVec.clone() },
@@ -1489,6 +1495,9 @@ export function mountVdtOnSceneRoot(params: {
     indicatorGroup,
     updateOptions(nextOpts) {
       applyVisibilityAndUniforms(nextOpts);
+    },
+    setStrength(strength) {
+      sharedUniforms.uVdtStrength.value = Math.min(Math.max(strength, 0), 1);
     },
     updateShadowMaps(nextBaked) {
       sharedUniforms.uShadowTexelSize.value.copy(nextBaked.shadowTexelSize);
