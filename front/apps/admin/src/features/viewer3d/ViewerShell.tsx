@@ -200,10 +200,19 @@ export function ViewerShell({
   const mode = useStore(store, (s) => s.mode);
   const phase = useStore(store, (s) => s.phase);
   const isTopView = useStore(store, (s) => s.topView);
+  const alignedCamera = useStore(store, (s) => s.alignedCamera);
 
   useImperativeHandle(ref, () => {
-    const { requestSelect, clearSelection, focusOn, setMode, resetView, setTopView } =
-      store.getState();
+    const {
+      requestSelect,
+      clearSelection,
+      focusOn,
+      setMode,
+      resetView,
+      setTopView,
+      viewFromCamera,
+      exitCameraView,
+    } = store.getState();
     const {
       begin,
       cancel,
@@ -244,6 +253,8 @@ export function ViewerShell({
           : { ok: false, reason: 'NOT_EDITABLE' },
       resetView,
       setTopView,
+      viewFromCamera,
+      exitCameraView,
     };
   }, [store, edit]);
 
@@ -409,6 +420,7 @@ export function ViewerShell({
       data-viewer-mode={mode}
       data-viewer-phase={phase}
       data-viewer-top-view={isTopView ? 'on' : 'off'}
+      data-viewer-camera-view={alignedCamera ?? 'off'}
       data-viewer-post={resolvedPostProcessing.enabled ? 'on' : 'off'}
     >
       {/* 렌더 오류로 Canvas 가 내려가도 데이터 구독은 이어 간다(뷰어는 경보 경로가 아니지만 상태는 잃지 않는다). */}

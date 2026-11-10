@@ -35,6 +35,9 @@ vi.mock('@/lib/avatarMeshFetch', () => ({ avatarMeshFetch }));
 
 const fake = vi.hoisted(() => ({
   props: null as Viewer3DProps | null,
+  viewFromCamera: vi.fn<(cameraId: string) => { ok: boolean }>(),
+  exitCameraView: vi.fn<() => { ok: boolean }>(),
+  resetView: vi.fn<() => { ok: boolean }>(),
 }));
 
 function FakeViewer(props: Viewer3DProps) {
@@ -47,6 +50,9 @@ function FakeViewer(props: Viewer3DProps) {
         focus: () => ({ ok: true }),
         clearSelection: () => ({ ok: true }),
         setMode: () => ({ ok: true }),
+        viewFromCamera: fake.viewFromCamera,
+        exitCameraView: fake.exitCameraView,
+        resetView: fake.resetView,
       }) as unknown as Viewer3DHandle,
   );
   const reported = useRef(false);
@@ -113,6 +119,9 @@ beforeEach(() => {
     session: { accessToken: 't', user: { id: 'admin', role: 'ADMIN' } },
   });
   fake.props = null;
+  fake.viewFromCamera.mockReset().mockImplementation((id) => ({ ok: id !== 'cam_D' }));
+  fake.exitCameraView.mockReset().mockReturnValue({ ok: true });
+  fake.resetView.mockReset().mockReturnValue({ ok: true });
   api.mockReset().mockImplementation((path: string) => {
     if (String(path).includes('/api/calibrations/current')) {
       return Promise.resolve(CALIBRATION_V1);
@@ -233,5 +242,61 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
     await waitFor(() => {
       expect(fake.props?.cameraPoses?.[0]?.cameraId).toBe('cam_C');
     });
+  });
+});
+
+describe('카메라 시점 보기(-590)', () => {
+  it('카메라 마커를 누르면 3D 를 그 카메라 시점으로 옮기고, 「전체 보기」는 CCTV 창을 둔 채 클릭 전 시점으로 돌린다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+    // 관제 화면은 VDT 를 늘 켜지 않는다(카메라 시점에 맞아 있는 동안만 뷰어가 켠다).
+    expect(fake.props?.vdt).toBeUndefined();
+
+    act(() => fake.props?.onCameraClick?.('cam_B'));
+    expect(fake.viewFromCamera).toHaveBeenCalledWith('cam_B');
+    act(() => screen.getByRole('button', { name: '3D 전체 보기' }).click());
+    expect(fake.exitCameraView).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
+  });
+
+  it('CCTV 창을 닫으면(창 닫기·도구 버튼) 클릭 전 시점으로 돌린다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+
+    act(() => fake.props?.onCameraClick?.('cam_A'));
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
+    expect(fake.exitCameraView).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
+
+    act(() => fake.props?.onCameraClick?.('cam_A'));
+    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    expect(fake.exitCameraView).toHaveBeenCalledTimes(2);
+  });
+
+  it('뷰어가 카메라 시점을 거절하면(마커에 없는 카메라) CCTV 창만 열고 「전체 보기」를 두지 않는다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+
+    act(() => fake.props?.onCameraClick?.('cam_D'));
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
+    expect(fake.exitCameraView).not.toHaveBeenCalled();
+  });
+
+  it('시점 초기화는 카메라 시점 보기를 끝내 「전체 보기」를 거둔다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+
+    act(() => fake.props?.onCameraClick?.('cam_A'));
+    expect(screen.getByRole('button', { name: '3D 전체 보기' })).toBeTruthy();
+    act(() => screen.getByRole('button', { name: '시점 초기화' }).click());
+    expect(fake.resetView).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
   });
 });

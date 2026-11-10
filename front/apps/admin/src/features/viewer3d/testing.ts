@@ -37,6 +37,8 @@ export function createViewerTestHandle(overrides: Partial<Viewer3DHandle> = {}):
     updatePlannedEditField: () => NOT_READY,
     resetView: () => NOT_READY,
     setTopView: () => ({ ok: true }),
+    viewFromCamera: () => NOT_READY,
+    exitCameraView: () => ({ ok: true }),
   };
   const handle = { calls } as unknown as ViewerTestHandle;
   for (const method of Object.keys(defaults) as (keyof Viewer3DHandle)[]) {

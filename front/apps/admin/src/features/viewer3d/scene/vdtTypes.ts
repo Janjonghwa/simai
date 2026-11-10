@@ -117,6 +117,12 @@ export interface ViewerVdtOptions {
   topK?: number;
   /** 렌더 모드 (기본값: 'vdt') */
   renderMode?: VdtRenderMode;
+  /**
+   * 카메라 ID → 투영할 사진 주소(-590, 선택). 사람 지운 배경(clean background) 주소를 넣는 자리다.
+   * 장면에 `vdt` 가 있으면 같은 카메라의 `imageUrl` 을 바꾸고, 없으면 `map_cameras` 자세와 이 주소로 VDT 설정을 만든다.
+   * 주소가 없는 카메라는 쓰지 않는다. 비었거나 없으면 장면 `vdt` 그대로다.
+   */
+  cameraImageUrls?: Readonly<Record<string, string>>;
 }
 
 /** `worldCoordinates.ts` 를 거쳐 Three.js 공간(`GLTF_Y_UP`)으로 변환된 카메라 파라미터. */

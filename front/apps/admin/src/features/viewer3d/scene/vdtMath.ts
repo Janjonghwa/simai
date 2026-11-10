@@ -322,6 +322,65 @@ export function applyMapCamerasToVdtConfig(
   };
 }
 
+/** VDT 셰이더가 받는 최대 카메라 수. */
+const VDT_MAX_CAMERAS = 4;
+
+/**
+ * 카메라별 사진 주소(사람 지운 배경 등, -590)를 VDT 설정에 끼운다.
+ * - 장면 `vdt` 가 있으면 같은 카메라의 `imageUrl` 만 바꾼다(주소가 없는 카메라는 그대로).
+ * - 없으면 `map_cameras` 자세와 주소가 둘 다 있는 카메라(ID 순, 최대 4대)로 최소 설정을 만든다(표시 층 없음).
+ * 주소가 비었거나 만들 카메라가 없으면 `base` 그대로(없으면 null)다. 사진을 지어내지 않는다.
+ */
+export function withVdtCameraImages(
+  base: SceneVdtConfig | null,
+  mapCameras: SceneMapCameras | null | undefined,
+  imageUrls: Readonly<Record<string, string>> | null | undefined,
+): SceneVdtConfig | null {
+  const urlOf = (cameraId: string): string | null => {
+    const url = imageUrls?.[cameraId];
+    return typeof url === 'string' && url.length > 0 ? url : null;
+  };
+  if (!imageUrls || Object.keys(imageUrls).length === 0) return base;
+  if (base) {
+    let changed = false;
+    const cameras = base.cameras.map((cam) => {
+      const url = urlOf(cam.cameraId);
+      if (!url || url === cam.imageUrl) return cam;
+      changed = true;
+      return { ...cam, imageUrl: url, imageExpiresAtMs: null };
+    });
+    return changed ? { ...base, cameras } : base;
+  }
+  if (!mapCameras) return null;
+  const cameras: VdtCameraInput[] = [];
+  for (const cameraId of Object.keys(mapCameras).sort()) {
+    const mc = mapCameras[cameraId];
+    const url = urlOf(cameraId);
+    if (!mc || !url) continue;
+    cameras.push({
+      cameraId,
+      imageUrl: url,
+      imageSize: mc.imageSize,
+      K: mc.K,
+      R: mc.R,
+      t: mc.t,
+      poseSource: mc.poseSource,
+    });
+    if (cameras.length === VDT_MAX_CAMERAS) break;
+  }
+  if (cameras.length === 0) return null;
+  return {
+    formatVersion: 'camera-images',
+    colorSigmaOklab: 0.056,
+    nearM: 0.1,
+    farM: 25.0,
+    cameras,
+    floorPlane: null,
+    wallPlanes: [],
+    mapCameras,
+  };
+}
+
 /**
  * `GET /api/scenes/current` 의 선택 필드 `vdt` (또는 실험 메타)를 검증하여 `SceneVdtConfig` 로 변환한다.
  * 형식이 맞지 않거나 필수 필드가 누락되면 `null` 을 반환한다.

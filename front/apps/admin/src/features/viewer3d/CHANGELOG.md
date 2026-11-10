@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-590 카메라 시점 보기와 카메라 시점 VDT
+
+모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-590-camera-view-vdt.md` 에 있다.
+
+- 추가: `Viewer3DHandle.viewFromCamera?(cameraId)`·`exitCameraView?()`(선택 멤버, Viewer3D 는 늘 채움), `ViewerVdtOptions.cameraImageUrls`(카메라 ID → 사진 주소, 선택), 뷰어 바깥 요소의 `data-viewer-camera-view`(맞아 있는 카메라 ID 또는 `off`). `createViewerTestHandle` 기본값에 두 명령을 더했다.
+- 동작: `viewFromCamera` 는 시점을 그 카메라 자리·방향·세로 시야각으로 1 초에 옮기고(움직임 줄이기면 바로) 그 카메라 마커를 숨긴다. 맞아 있는 동안만 VDT 를 0.4 초에 걸쳐 켜고, 시점이 바뀌거나 평균 FPS 가 24 아래로 떨어지면 서서히 끈다. `vdt` 를 넘기지 않아도 이 동안은 켠다(사진이 없으면 켜지지 않는다). `exitCameraView` 는 첫 요청 직전 시점으로 돌아간다. 시점 초기화(`resetView`)는 처음·위에서 보기 시야각도 처음 값으로 돌린다.
+
 ## S15P31A101-552 사람 안전모·조끼 GLB(`personVests`)
 
 모두 더하기이며 하위 호환이다.

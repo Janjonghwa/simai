@@ -201,10 +201,13 @@ function AdminContent({
 }
 export function CctvFloat({
   onClose,
+  onFullView,
   selectedKey,
   requestedCamera = null,
 }: {
   onClose: () => void;
+  /** 3D 가 카메라 시점 보기 중일 때만 넘긴다(-590). 누르면 3D 를 클릭 전 시점으로 돌린다. */
+  onFullView?: () => void;
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
 }) {
@@ -260,6 +263,11 @@ export function CctvFloat({
         >
           CCTV ⋮⋮
         </div>
+        {onFullView && (
+          <button type="button" aria-label="3D 전체 보기" onClick={onFullView}>
+            전체 보기
+          </button>
+        )}
         <button
           type="button"
           aria-label={collapsed ? 'CCTV 펼치기' : 'CCTV 접기'}

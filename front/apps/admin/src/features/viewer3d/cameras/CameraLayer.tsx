@@ -48,6 +48,7 @@ export const CameraClickContext = createContext<((cameraId: string) => void) | u
  * - 구역·작업면 편집 중이거나 LIVE 모드가 아니면 숨긴다.
  * - 사람이 선택되면 그 사람 트랙의 cameras 에 포함된 카메라 마커를 강조 표시한다.
  * - 마커를 클릭하면 호스트가 넘긴 onCameraClick(cameraId) 을 불러 떠 있는 CCTV 창을 연다.
+ * - 카메라 시점 보기(-590) 중인 카메라의 마커는 숨긴다.
  */
 export function CameraLayer() {
   const viewerStore = useViewerStore();
@@ -55,6 +56,8 @@ export function CameraLayer() {
   const boxEditBinding = useContext(BoxEditContext);
   const mode = useStore(viewerStore, (s) => s.mode);
   const cameraPoses = useStore(viewerStore, (s) => s.cameraPoses);
+  // 카메라 시점 보기(-590)로 옮기는 중이거나 맞아 있는 카메라의 마커는 숨긴다(그 자리에 서면 본체·렌즈가 시야를 가린다).
+  const viewingCameraId = useStore(viewerStore, (s) => s.cameraViewId);
   const selectedPersonId = useStore(viewerStore, (s) =>
     s.selected?.type === 'person' ? s.selected.id : null,
   );
@@ -79,13 +82,15 @@ export function CameraLayer() {
 
   return (
     <group name="camera-layer">
-      {cameraPoses.map((pose) => (
-        <CameraMarker
-          key={pose.cameraId}
-          pose={pose}
-          highlighted={highlightedIds.has(pose.cameraId)}
-        />
-      ))}
+      {cameraPoses
+        .filter((pose) => pose.cameraId !== viewingCameraId)
+        .map((pose) => (
+          <CameraMarker
+            key={pose.cameraId}
+            pose={pose}
+            highlighted={highlightedIds.has(pose.cameraId)}
+          />
+        ))}
     </group>
   );
 }

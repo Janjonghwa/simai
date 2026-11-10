@@ -171,6 +171,15 @@ export interface Viewer3DHandle {
    * 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
    */
   setTopView?(enabled: boolean): CommandResult;
+  /**
+   * 3D 시점을 그 카메라 자리·방향·세로 시야각으로 약 1 초에 걸쳐 옮긴다(-590, 움직임 줄이기 설정이면 바로).
+   * 맞아 있는 동안만 장면에 VDT(시점 의존 텍스처)를 켜고, 사용자가 시점을 돌리거나 다른 시점으로 가면 서서히 끈다.
+   * 처음 부를 때의 시점을 기억해 exitCameraView 로 돌아간다. 같은 카메라를 다시 부르면 다시 맞추고 켠다.
+   * 준비 전이면 NOT_READY, cameraPoses 에 없는 카메라면 NOT_FOUND. 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
+   */
+  viewFromCamera?(cameraId: string): CommandResult;
+  /** 카메라 시점에서 나가 기억한 시점으로 부드럽게 돌아가고 VDT 를 끈다(-590). 카메라 시점이 아니면 아무것도 하지 않는다. */
+  exitCameraView?(): CommandResult;
 }
 
 /**
@@ -325,6 +334,7 @@ export interface Viewer3DProps {
    * 시점 의존 텍스처(VDT, -534, 선택 사항). 장면 배경에 카메라 4대 실제 사진을 시점 각도·깊이 가림 검사·외톨이 제거에 따라
    * 실시간 투영하고 바닥·벽 미관측 표시 층 및 구멍 경계 페더링을 적용한다.
    * 기능 플래그 기본값은 false(끔)이며, 꺼져 있을 때는 기존 구운 텍스처(MeshBasicMaterial) 경로를 그대로 사용한다.
+   * 꺼져 있어도 viewFromCamera 로 카메라 시점에 맞아 있는 동안은 켠다(-590). 사진이 없으면(장면 vdt·cameraImageUrls 모두 없음) 켜지 않는다.
    */
   vdt?: boolean | ViewerVdtOptions;
   className?: string;
