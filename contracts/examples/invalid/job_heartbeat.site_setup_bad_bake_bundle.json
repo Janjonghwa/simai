@@ -1,0 +1,105 @@
+{
+  "schema_version": "2.3.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000479",
+  "sent_at": 1760342436000,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "PREVIEW_AND_VLM_DRAFT",
+      "progress_pct": 80,
+      "background_collection_pct": {
+        "cam1": 100,
+        "cam2": 100,
+        "cam3": 100,
+        "cam4": 100
+      },
+      "calibration_version": "cal-setup-12-jba2-3f9c2a10",
+      "artifacts": {
+        "calibration_document": {
+          "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/calibration-cal-setup-12-jba2-3f9c2a10.json",
+          "sha256": "9b1f0c3e5a7d2b4c6e8f0a1b3c5d7e9f1a2b3c4d5e6f708192a3b4c5d6e7f809",
+          "size_bytes": 6214
+        },
+        "preview_scene": {
+          "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/preview_scene.glb",
+          "sha256": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+          "size_bytes": 1843200
+        },
+        "camera_frames": [
+          {
+            "camera_id": "cam1",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam1.jpg",
+            "sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "size_bytes": 214733,
+            "face_policy": "BLURRED"
+          },
+          {
+            "camera_id": "cam2",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam2.jpg",
+            "sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "size_bytes": 198021,
+            "face_policy": "BLURRED"
+          },
+          {
+            "camera_id": "cam3",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam3.jpg",
+            "sha256": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+            "size_bytes": 207455,
+            "face_policy": "BLURRED"
+          },
+          {
+            "camera_id": "cam4",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam4.jpg",
+            "sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+            "size_bytes": 221908,
+            "face_policy": "BLURRED"
+          }
+        ],
+        "bake_images": {
+          "bundle_id": "bundle-latest",
+          "images": [
+            {
+              "camera_id": "cam1",
+              "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/bake-cam1.jpg",
+              "sha256": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+              "size_bytes": 1204331,
+              "face_policy": "OBSERVED"
+            }
+          ]
+        }
+      },
+      "preview_scene_version": "scene-preview-job-20261017-0041-0192a6f0",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        }
+      }
+    }
+  }
+}

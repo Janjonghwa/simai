@@ -130,10 +130,73 @@ class SceneCameraImageServiceTest {
     }
 
     @Test
+    void 작업_입력_묶음이면_출처를_STATIC_RECONSTRUCT로_밝힌다() throws Exception {
+        images(image("cam_A", PREFIX + "cam_A.jpg", "CLEAN_BACKGROUND"));
+        assertThat(service.images("scene-a").path("source").asString()).isEqualTo("STATIC_RECONSTRUCT");
+        verify(jdbc, never()).queryForList(anyString(), any(SqlParameterSource.class));
+    }
+
+    @Test
+    void 세팅_Scene은_그_Scene을_등록한_대여의_굽기_입력_사진을_서명한다() throws Exception {
+        when(row.getString("bundle_id")).thenReturn(null);
+        when(row.getString("images")).thenReturn(null);
+        String lease = "0192a6f0-7c1e-7b3a-9f2d-000000000311";
+        String dir = "s3://test-bucket/job-objects/site_setup/job-1/" + lease + "/";
+        setupRows(setupRow("cam_B", dir + "bake-cam_B.jpg", BUNDLE, "job-1", lease),
+                setupRow("cam_A", dir + "bake-cam_A.jpg", BUNDLE, "job-1", lease),
+                setupRow("cam_A", dir + "bake-cam_A-old.jpg", BUNDLE, "job-1", lease),
+                setupRow("cam_C", "s3://test-bucket/job-objects/site_setup/job-2/" + lease + "/bake-cam_C.jpg", BUNDLE, "job-1", lease),
+                setupRow("cam_D", dir + "bake-cam_D.png", BUNDLE, "job-1", lease),
+                setupRow("cam_E", dir + "../bake-cam_E.jpg", BUNDLE, "job-1", lease));
+
+        ObjectNode body = service.images("scene-a");
+
+        assertThat(body.path("bundle_id").asString()).isEqualTo(BUNDLE);
+        assertThat(body.path("source").asString()).isEqualTo("SITE_SETUP");
+        assertThat(body.path("images")).hasSize(2);
+        assertThat(body.path("images").get(0).path("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(body.path("images").get(0).path("url").asString())
+                .isEqualTo("https://objects.test/job-objects/site_setup/job-1/" + lease + "/bake-cam_A.jpg");
+        assertThat(body.path("images").get(1).path("camera_id").asString()).isEqualTo("cam_B");
+        assertThat(body.path("expires_at_ms").isNumber()).isTrue();
+        assertThat(schemas.violations("messages/scene_camera_images", body.toString())).isEmpty();
+    }
+
+    @Test
+    void 세팅_사진이_없거나_묶음을_하나로_정할_수_없으면_모름이다() throws Exception {
+        when(row.getString("bundle_id")).thenReturn(null);
+        when(row.getString("images")).thenReturn(null);
+        String dir = "s3://test-bucket/job-objects/site_setup/job-1/lease-1/";
+        setupRows(setupRow("cam_A", dir + "bake-cam_A.jpg", BUNDLE, "job-1", "lease-1"),
+                setupRow("cam_B", dir + "bake-cam_B.jpg", "bundle-00000000000000000000000000000000", "job-1", "lease-1"));
+
+        ObjectNode mixed = service.images("scene-a");
+        assertThat(mixed.path("bundle_id").isNull()).isTrue();
+        assertThat(mixed.has("source")).isFalse();
+        assertThat(mixed.path("images")).isEmpty();
+        assertThat(schemas.violations("messages/scene_camera_images", mixed.toString())).isEmpty();
+
+        setupRows();
+        ObjectNode none = service.images("scene-a");
+        assertThat(none.path("bundle_id").isNull()).isTrue();
+        assertThat(none.has("source")).isFalse();
+        verify(storage, never()).signGet(anyString());
+    }
+
+    @Test
     void 없는_Scene은_404다() {
         exists = false;
         assertThatThrownBy(() -> service.images("missing")).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.Scene.SCENE_VERSION_NOT_FOUND));
+    }
+
+    @SafeVarargs
+    private void setupRows(Map<String, Object>... rows) {
+        when(jdbc.queryForList(anyString(), any(SqlParameterSource.class))).thenReturn(List.of(rows));
+    }
+
+    private static Map<String, Object> setupRow(String camera, String uri, String bundle, String job, String lease) {
+        return Map.of("camera_id", camera, "object_uri", uri, "bundle_id", bundle, "job_id", job, "lease_id", lease);
     }
 
     private void images(String... items) throws Exception {

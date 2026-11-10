@@ -1772,6 +1772,25 @@ class SiteSetup(RootModel[Any]):
     root: Any
 
 
+class SiteSetupBakeImageRef(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    uri: Annotated[StrictStr, Field(max_length=1024, pattern='^s3://[^\\s]+$')]
+    sha256: Annotated[StrictStr, Field(pattern='^[0-9a-f]{64}$')]
+    size_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+    face_policy: Literal['OBSERVED', 'BLURRED', 'EXCLUDED']
+
+
+class SiteSetupBakeImages(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+    images: Annotated[list[SiteSetupBakeImageRef], Field(max_length=16, min_length=1)]
+
+
 class SiteSetupCameraFrameRef(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3579,6 +3598,7 @@ class SceneCameraImages(BaseModel):
     )
     scene_version: DefsVersionId
     bundle_id: BundleId | None
+    source: Literal['STATIC_RECONSTRUCT', 'SITE_SETUP'] | MISSING = MISSING
     expires_at_ms: DefsTimestampMs | None
     images: Annotated[list[SceneCameraImagesCameraImage], Field(max_length=16)]
 
@@ -3661,6 +3681,7 @@ class SiteSetupArtifacts(BaseModel):
     camera_frames: Annotated[
         list[SiteSetupCameraFrameRef] | MISSING, Field(max_length=8)
     ] = MISSING
+    bake_images: SiteSetupBakeImages | MISSING = MISSING
 
 
 class Input(BaseModel):

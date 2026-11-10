@@ -7,12 +7,15 @@ import com.ssafy.simai.global.storage.ObjectStorage.SignedRequest;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -43,6 +46,9 @@ public class SceneService {
             AND s.state = 'COMMITTED'
             ORDER BY s.committed_at DESC NULLS LAST
             """;
+
+    /** 뷰어 map_cameras 카메라 ID 형식(vdtMath CAMERA_ID_RE) */
+    private static final Pattern MAP_CAMERA_ID = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -88,7 +94,7 @@ public class SceneService {
             node.set("compatibility", compatibility.current(s.version(), s.calibrationVersion()));
             gltf(node, s.gltfKey());
             sourceMaps(node, s.output());
-            mapCameras(node, s.output());
+            mapCameras(node, s.output(), s.version(), s.calibrationVersion());
             return node;
         }
         if (defaultGltfKey.isEmpty()) {
@@ -135,15 +141,98 @@ public class SceneService {
         }
     }
 
-    /** 최종 맵 굽기에 실제로 쓰인 카메라 자세 사본(method.map_cameras, S15P31A101-539·-541). 있으면 그대로 실어 뷰어 VDT 가 참조하게 한다. */
-    private void mapCameras(ObjectNode node, String output) {
-        if (output == null) {
-            return;
+    /**
+     * 최종 맵 굽기에 실제로 쓰인 카메라 자세 사본(method.map_cameras, S15P31A101-539·-541). 있으면 그대로 실어 뷰어 VDT 가 참조하게 한다.
+     * 세팅 세션 Scene 은 scene_output 이 없다. 그 Scene 은 자기 보정 문서(scene_version.calibration_version, 세팅이 등록) World 에 정렬해
+     * 구웠으므로(S15P31A101-584) 그 문서의 카메라 자세를 pose_source CALIBRATION 으로 싣는다(S15P31A101-593).
+     */
+    private void mapCameras(ObjectNode node, String output, String sceneVersion, String calibrationVersion) {
+        if (output != null) {
+            JsonNode cameras = mapper.readTree(output).path("method").path("map_cameras");
+            if (cameras.isObject() && !cameras.isEmpty()) {
+                node.set("map_cameras", cameras);
+                return;
+            }
         }
-        JsonNode cameras = mapper.readTree(output).path("method").path("map_cameras");
-        if (cameras.isObject() && !cameras.isEmpty()) {
-            node.set("map_cameras", cameras);
+        ObjectNode fromCalibration = setupCalibrationMapCameras(sceneVersion, calibrationVersion);
+        if (fromCalibration != null) {
+            node.set("map_cameras", fromCalibration);
         }
+    }
+
+    /**
+     * 세팅 세션이 등록한 Scene(setup_session_artifact SCENE·PREVIEW_SCENE)이면 그 보정 문서의 카메라별 image_size·K·R·t(World → 카메라,
+     * 미터, +Z 상방). 한 대라도 형식이 틀리면 싣지 않는다(뷰어는 map_cameras 형식이 틀리면 Scene 전체를 거부한다). 아니면 null.
+     */
+    private ObjectNode setupCalibrationMapCameras(String sceneVersion, String calibrationVersion) {
+        if (sceneVersion == null || calibrationVersion == null) {
+            return null;
+        }
+        List<byte[]> docs = jdbc.queryForList("""
+                SELECT d.content FROM calibration_document d
+                WHERE d.calibration_version = :cal
+                  AND EXISTS (SELECT 1 FROM setup_session_artifact a
+                              WHERE a.kind IN ('SCENE', 'PREVIEW_SCENE') AND a.version = :v)
+                """, new MapSqlParameterSource("cal", calibrationVersion).addValue("v", sceneVersion), byte[].class);
+        if (docs.isEmpty() || docs.getFirst() == null) {
+            return null;
+        }
+        JsonNode doc;
+        try {
+            doc = mapper.readTree(docs.getFirst());
+        } catch (JacksonException e) {
+            log.warn("세팅 Scene {} 의 보정 문서를 읽지 못해 map_cameras 를 싣지 않는다", sceneVersion);
+            return null;
+        }
+        ObjectNode out = mapper.createObjectNode();
+        for (JsonNode camera : doc.path("cameras")) {
+            String id = camera.path("camera_id").asString("");
+            JsonNode size = camera.path("image_size");
+            JsonNode k = camera.path("K");
+            if (!MAP_CAMERA_ID.matcher(id).matches() || out.has(id) || !positiveIntPair(size) || !matrix3(k)
+                    || !matrix3(camera.path("R")) || !finiteVector(camera.path("t"), 3)
+                    || k.get(0).get(0).doubleValue() <= 0 || k.get(1).get(1).doubleValue() <= 0) {
+                log.warn("세팅 Scene {} 의 보정 문서 카메라 형식이 맞지 않아 map_cameras 를 싣지 않는다", sceneVersion);
+                return null;
+            }
+            ObjectNode entry = out.putObject(id);
+            entry.set("image_size", size.deepCopy());
+            entry.set("K", k.deepCopy());
+            entry.set("R", camera.path("R").deepCopy());
+            entry.set("t", camera.path("t").deepCopy());
+            entry.put("pose_source", "CALIBRATION");
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    private static boolean positiveIntPair(JsonNode node) {
+        return node.isArray() && node.size() == 2 && node.get(0).isIntegralNumber() && node.get(0).canConvertToInt()
+                && node.get(0).intValue() > 0 && node.get(1).isIntegralNumber() && node.get(1).canConvertToInt()
+                && node.get(1).intValue() > 0;
+    }
+
+    private static boolean matrix3(JsonNode node) {
+        if (!node.isArray() || node.size() != 3) {
+            return false;
+        }
+        for (JsonNode row : node) {
+            if (!finiteVector(row, 3)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean finiteVector(JsonNode node, int size) {
+        if (!node.isArray() || node.size() != size) {
+            return false;
+        }
+        for (JsonNode value : node) {
+            if (!value.isNumber() || !Double.isFinite(value.doubleValue())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

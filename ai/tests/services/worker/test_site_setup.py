@@ -22,6 +22,8 @@ from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
     BakedScene,
+    BakeImageRef,
+    BakeImages,
     CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
@@ -814,3 +816,69 @@ def test_world_anchor_hook_feeds_the_same_document_to_publish_preview_and_bake()
     assert result["status"] == "COMPLETED" and seen["anchor_calls"] == 1
     assert published[0]["world_anchor"]["reason"] == "INSUFFICIENT_CAMERAS"
     assert seen["preview"]["world_anchor"] == seen["bake"]["world_anchor"] == published[0]["world_anchor"]
+
+
+# ---------------------------------------------------------------------------- S15P31A101-593
+_BAKE_BUNDLE = "bundle-3f6c2b1a9d8e4f70a1b2c3d4e5f60718"
+_PROGRESS = {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/progress"}
+_RESULT = {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/result"}
+
+
+def _bake_publisher(bundle_id: str = _BAKE_BUNDLE, extra: tuple[str, ...] = ()) -> Any:
+    def publish(*, setup_session_id: str, camera_ids: tuple[str, ...], backgrounds: CleanBackgroundBundle) -> BakeImages:
+        refs = [BakeImageRef(cid, ObjectRef(f"s3://bucket/job-objects/site_setup/j/l/bake-{cid}.jpg", f"{idx + 1:x}" * 64, 9000 + idx))
+                for idx, cid in enumerate((*extra, *camera_ids, camera_ids[0]))]
+        return BakeImages(bundle_id, tuple(refs))
+    return publish
+
+
+def test_bake_images_ride_the_preview_snapshot_before_the_preview_goes_live() -> None:
+    """굽기 입력 사진은 미리보기 스냅샷(서버가 미리보기를 현재 Scene 으로 올리기 전)부터 실려 결과까지 간다.
+    세션 밖·중복 카메라는 버리고 기본 얼굴 정책은 OBSERVED."""
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        bake_image_publisher=_bake_publisher(extra=("camX",)),
+    )
+    ctx = JobContext("job-b", "0192a6f0-7c1e-7b3a-9f2d-000000000593", "site_setup", 1, inp)
+    result = handler(ctx)
+    by_stage = {s["status"]: s for s in ctx.site_setup_history}
+    camera_ids = inp["calibration_target"]["camera_ids"]
+    assert "bake_images" not in by_stage["JOINT_BA_AND_VERIFY"].get("artifacts", {})
+    bake = by_stage["PREVIEW_AND_VLM_DRAFT"]["artifacts"]["bake_images"]
+    assert by_stage["READY_FOR_ZONES"]["artifacts"]["bake_images"] == by_stage["BAKING_TEXTURE"]["artifacts"]["bake_images"] == bake
+    assert bake["bundle_id"] == _BAKE_BUNDLE
+    assert [i["camera_id"] for i in bake["images"]] == camera_ids
+    assert all(i["face_policy"] == "OBSERVED" for i in bake["images"])
+    assert result["artifacts"]["bake_images"] == bake
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_bake_image_failure_or_unknown_bundle_never_fails_setup(caplog: pytest.LogCaptureFixture) -> None:
+    """VDT 사진은 장식 층: 저장소 오류·예상 밖 예외·형식 모를 묶음 ID 는 경고만 남기고 사진 없이 끝낸다. 취소는 그대로 취소한다."""
+    def collector(td: Any, cams: tuple[str, ...]) -> CleanBackgroundBundle:
+        return CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td)
+
+    def store_down(**kw: Any) -> BakeImages:
+        raise JobFailed("SETUP_OBJECT_FAILED", "5xx", retryable=True)
+
+    def boom(**kw: Any) -> BakeImages:
+        raise RuntimeError("예상 밖")
+
+    for publisher in (store_down, boom, _bake_publisher(bundle_id="bundle-latest")):
+        handler, inp, _ = _room_handler(collector, bake_image_publisher=publisher)
+        with caplog.at_level("WARNING", logger="services.worker"):
+            result = handler(JobContext("job-b", "0192a6f0-7c1e-7b3a-9f2d-000000000594", "site_setup", 1, inp))
+        assert result["status"] == "COMPLETED" and "artifacts" not in result
+    assert "VDT 사진 없이" in caplog.text and "묶음 ID 형식을 몰라" in caplog.text
+
+    def cancel_then_fail(**kw: Any) -> BakeImages:
+        ctx2.cancelled.set()
+        raise JobFailed("SETUP_OBJECT_FAILED", "5xx", retryable=True)
+
+    handler2, inp2, _ = _room_handler(collector, bake_image_publisher=cancel_then_fail)
+    ctx2 = JobContext("job-b", "0192a6f0-7c1e-7b3a-9f2d-000000000595", "site_setup", 1, inp2)
+    with pytest.raises(JobFailed) as exc:
+        handler2(ctx2)
+    assert exc.value.code == "CANCELLED"

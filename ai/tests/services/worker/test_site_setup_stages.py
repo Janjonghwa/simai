@@ -438,3 +438,42 @@ def test_world_anchor_off_switch_keeps_new_world(tmp_path: Path) -> None:
     doc = s.anchor_world(new)
     assert doc["world_anchor"]["accepted"] is False and doc["world_anchor"]["reason"] == "DISABLED"
     assert [c["R"] for c in doc["cameras"]] == [c["R"] for c in new["cameras"]]
+
+
+# ---------------------------------------------------------------------------- S15P31A101-593
+def _jpeg(w: int, h: int, seed: int) -> bytes:
+    image = np.random.default_rng(seed).integers(0, 255, size=(h, w, 3), dtype=np.uint8)
+    ok, raw = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    assert ok
+    return bytes(raw.tobytes())
+
+
+def test_publish_bake_images_uploads_the_exact_work_folder_file_per_camera(tmp_path: Path) -> None:
+    """미리보기·굽기가 읽는 images/<카메라>.image 를 그대로 올린다(JPEG 이면 바이트 그대로 = 같은 sha256). 없는 카메라는 건너뛴다."""
+    store = _Store()
+    s = _stages(tmp_path, _Stages(), store)
+    (s.root / "images").mkdir()
+    jpeg = _jpeg(320, 180, 1)
+    (s.root / "images" / "cam_A.image").write_bytes(jpeg)
+    (s.root / "images" / "cam_B.image").write_bytes(_png(320, 180, 2))  # JPEG 가 아니면 같은 해상도 JPEG 로
+    (s.root / "images" / "cam_D.image").write_bytes(b"not an image")
+    got = s.publish_bake_images(setup_session_id="s", camera_ids=("cam_A", "cam_B", "cam_C", "cam_D"),
+                                backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert got is not None and got.bundle_id == BUNDLE
+    assert [i.camera_id for i in got.images] == ["cam_A", "cam_B"] and {i.face_policy for i in got.images} == {"OBSERVED"}
+    assert [(n, ct) for n, _, ct in store.puts] == [("bake-cam_A.jpg", "image/jpeg"), ("bake-cam_B.jpg", "image/jpeg")]
+    assert store.puts[0][1] == jpeg
+    for ref, (_, raw, _) in zip(got.images, store.puts, strict=True):
+        assert ref.ref == ObjectRef(f"s3://bucket/bake-{ref.camera_id}.jpg", hashlib.sha256(raw).hexdigest(), len(raw))
+        assert raw[:3] == b"\xff\xd8\xff"
+    assert cv2.imdecode(np.frombuffer(store.puts[1][1], np.uint8), cv2.IMREAD_COLOR).shape[:2] == (180, 320)  # 해상도 불변
+
+
+def test_publish_bake_images_without_files_returns_none_and_maps_store_failure(tmp_path: Path) -> None:
+    s = _stages(tmp_path, _Stages(), _Store(ObjectStoreError("5xx", retryable=True)))
+    assert s.publish_bake_images(setup_session_id="s", camera_ids=CAMS, backgrounds=CleanBackgroundBundle(BUNDLE, {})) is None
+    (s.root / "images").mkdir()
+    (s.root / "images" / "cam_A.image").write_bytes(_jpeg(64, 64, 3))
+    with pytest.raises(JobFailed) as exc:
+        s.publish_bake_images(setup_session_id="s", camera_ids=("cam_A",), backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert exc.value.code == "SETUP_OBJECT_FAILED" and exc.value.retryable is True

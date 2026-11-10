@@ -18,6 +18,9 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 - (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
 - (g) `publish_frames`: 사람 지운 배경에서 카메라별 대표 프레임 1장(JPEG, 긴 변 1280 px 이하)을 같은 산출물 경로로 올리고 카메라 ID·sha256 과
   함께 `artifacts.camera_frames` 로 알린다. EC2 가 이를 AI 구역 초안(`vlm_zone_draft`) 입력 `frames` 에 싣는다(S15P31A101-479).
+- (g) `publish_bake_images`: 미리보기·굽기가 읽는 작업 폴더 `images/<카메라>.image`(배경 묶음 사진 원본) 를 카메라당 1장
+  `bake-<카메라>.jpg` 로 올리고 묶음 ID 와 함께 `artifacts.bake_images` 로 알린다. JPEG 이고 8 MiB 이하면 바이트 그대로, 아니면 같은
+  해상도 JPEG(품질 90)로 바꾼다. EC2 가 이 대여의 Scene 에 묶어 관제 카메라 시점 VDT 사진으로 서명해 준다(S15P31A101-593).
 - (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`(+ `artifacts.scene`).
 
 단계가 실패하면 그 단계 로그(`<단계>.log`)의 끝 줄을 워커 로그와 실패 메시지에 남기고, 작업 폴더를 지우기 전에 로그·오류 문서를
@@ -52,8 +55,11 @@ from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
 from .site_setup import (
+    MAX_BAKE_IMAGES,
     MAX_CAMERA_FRAMES,
     BakedScene,
+    BakeImageRef,
+    BakeImages,
     CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
@@ -74,6 +80,9 @@ DEFAULT_BACKGROUND_POLL_S = 2.0
 TIER0_MIN_SAMPLES_PER_CAMERA = 20  # Tier 0 기본값. 수집률 표시에만 쓴다(완성 판정은 Tier 0 의 ready·묶음 COMPLETE)
 FRAME_MAX_LONG_SIDE_PX = 1280  # 구역 초안용 프레임 긴 변 상한(VLM 크롭에 충분, 업로드는 작게)
 FRAME_JPEG_QUALITY = 90
+# 굽기 입력 사진(VDT) 상한. Tier 0 배경은 이미 JPEG(카메라 해상도, 보통 1 MB 안팎)라 그대로 올린다. 서버 MAX_BAKE_IMAGE_BYTES 와 같다
+BAKE_IMAGE_MAX_BYTES = 8 << 20
+BAKE_IMAGE_JPEG_QUALITY = 90  # JPEG 가 아니거나 상한을 넘을 때만 같은 해상도로 다시 인코딩(해상도를 줄이지 않아 투영 정렬 불변)
 WORLD_ANCHOR_MODES = ("auto", "off")  # SIMAI_SETUP_WORLD_ANCHOR: auto = 카메라가 그대로면 이전 World 로 맞춤(-584), off = 새 World 그대로
 LOG_TAIL_LINES = 20  # 실패 단계 로그를 워커 로그에 남길 줄 수
 _MESSAGE_TAIL_CHARS = 240  # 실패 메시지(계약 500자)에 붙일 로그 끝 길이
@@ -195,6 +204,20 @@ def _frame_jpeg(source: Any) -> bytes | None:
         image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
     ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY])
     return bytes(encoded.tobytes()) if ok else None
+
+
+def _bake_image_jpeg(raw: bytes) -> bytes | None:
+    """굽기 입력 사진 원본 → 올릴 JPEG. JPEG 이고 상한 안이면 바이트 그대로(같은 파일), 아니면 같은 해상도 JPEG. 못 만들면 None."""
+    if raw[:3] == b"\xff\xd8\xff" and len(raw) <= BAKE_IMAGE_MAX_BYTES:
+        return raw
+    import cv2
+
+    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None or image.ndim < 2 or image.shape[0] < 1 or image.shape[1] < 1:
+        return None
+    ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), BAKE_IMAGE_JPEG_QUALITY])
+    out = bytes(encoded.tobytes()) if ok else b""
+    return out if 0 < len(out) <= BAKE_IMAGE_MAX_BYTES else None
 
 
 def _bundle_dir(settings: AutoStaticSettings) -> tuple[Path, str] | None:
@@ -411,6 +434,32 @@ class ProductionSiteSetupStages:
             out.append(CameraFrameRef(cid, ObjectRef.of(uri, jpeg)))
         return out
 
+    # ------------------------------------------------------------------ (g) 굽기 입력 사진
+    def publish_bake_images(self, *, setup_session_id: str, camera_ids: Sequence[str],
+                            backgrounds: CleanBackgroundBundle) -> BakeImages | None:
+        """미리보기·굽기가 읽는 `images/<카메라>.image` 를 카메라당 1장 올린다. 없거나 읽지 못한 카메라는 건너뛴다(모르면 비운다).
+
+        `initialize` 가 배경 묶음 사진을 그대로 이 폴더에 썼고 prepare·preview·bake 단계가 이 파일을 읽으므로, 다른 시점의 사진이
+        섞이지 않는다. 저장소 오류는 `SETUP_OBJECT_FAILED` 로 내고 처리기가 로그만 남긴 뒤 이어간다.
+        """
+        out: list[BakeImageRef] = []
+        for cid in list(camera_ids)[:MAX_BAKE_IMAGES]:
+            try:
+                raw = (self.root / "images" / f"{cid}.image").read_bytes()
+            except OSError:
+                log.warning("작업 %s: 카메라 %s 의 굽기 입력 사진이 작업 폴더에 없어 건너뛴다", self.ctx.job_id, cid)
+                continue
+            jpeg = _bake_image_jpeg(raw)
+            if jpeg is None:
+                log.warning("작업 %s: 카메라 %s 의 굽기 입력 사진을 JPEG 로 만들지 못해 건너뛴다", self.ctx.job_id, cid)
+                continue
+            try:
+                uri = self.store.put(self.ctx, f"bake-{cid}.jpg", jpeg, "image/jpeg")
+            except ObjectStoreError as exc:
+                raise JobFailed("SETUP_OBJECT_FAILED", str(exc), retryable=exc.retryable) from exc
+            out.append(BakeImageRef(cid, ObjectRef.of(uri, jpeg)))
+        return BakeImages(backgrounds.bundle_id, tuple(out)) if out else None
+
     # ------------------------------------------------------------------ (h)
     def bake(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
              backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
@@ -518,6 +567,7 @@ class ProductionSiteSetupHandler:
                     feature_matcher=match_sift,
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
                     preview_builder=s.preview, texture_baker=s.bake, frame_publisher=s.publish_frames,
+                    bake_image_publisher=s.publish_bake_images,
                     object_cross_checker=self._cross,
                     live_gate=self._live_gate, live_notice=self._live_notice, world_anchor=s.anchor_world,
                     clock_ms=self._clock_ms, **self._wait,
