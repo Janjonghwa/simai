@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+import uuid
 
 import numpy as np
 
@@ -24,6 +25,11 @@ DEFAULT_SHM_DIR = Path("/dev/shm")
 DEFAULT_SHM_FILENAME = "simai-avatar-input.npz"
 DEFAULT_STATE_RELPATH = Path("state/avatar-input.npz")
 DEFAULT_PERIOD_S = 0.2
+PUBLICATION_FORMAT = "simai.avatar-publication@1"
+
+
+def publication_path(path: Path) -> Path:
+    return path.with_name(path.name + ".published.json")
 
 
 def avatar_channel_path(
@@ -85,13 +91,18 @@ class LatestChannelWriter:
             image_arrays[key] = image
             refs[cid] = {"array": key, "capture_time_ms": frame.estimated_capture_time,
                          "frame_ref": dict(frame.frame_ref)}
-        doc = {"format": "simai.avatar-input@1", **metadata, "frames": refs}
+        publication_id = uuid.uuid4().hex
+        doc = {"format": "simai.avatar-input@1", **metadata, "frames": refs,
+               "publication_id": publication_id}
+        doc.pop("published_at_ms", None)  # 게시 완료 뒤의 시각은 아래 완료 표식에만 기록한다.
         arrays = {
             "metadata": np.frombuffer(json.dumps(doc, allow_nan=False).encode("utf-8"), dtype=np.uint8),
             **image_arrays,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix(f".{os.getpid()}.tmp")
+        published_path = publication_path(self.path)
+        published_temp = published_path.with_suffix(f".{os.getpid()}.tmp")
         self.timing.record("write_prepare", (self.timing.clock() - started) * 1000)
         try:
             with self.timing.measure("write_npz"):
@@ -99,8 +110,15 @@ class LatestChannelWriter:
                     np.savez(f, **arrays)
             with self.timing.measure("write_replace"):
                 os.replace(temp, self.path)
+                published_at_ms = self._clock_ms()  # NPZ 교체 성공 직후의 완료 관측 시각.
+            with self.timing.measure("write_publication"):
+                publication = {"format": PUBLICATION_FORMAT, "publication_id": publication_id,
+                               "published_at_ms": published_at_ms}
+                published_temp.write_text(json.dumps(publication), encoding="utf-8")
+                os.replace(published_temp, published_path)
         finally:
             temp.unlink(missing_ok=True)
+            published_temp.unlink(missing_ok=True)
 
     def _run(self) -> None:
         report_at = time.monotonic() + 60
@@ -136,9 +154,11 @@ class LatestChannelWriter:
 class LatestChannelReader:
     supports_predicate = True
 
-    def __init__(self, path: Path, *, timing: ChannelTiming | None = None) -> None:
+    def __init__(self, path: Path, *, timing: ChannelTiming | None = None,
+                 require_publication: bool = False) -> None:
         self.path = path
         self.timing = timing or ChannelTiming()
+        self.require_publication = require_publication
 
     def latest(self, *, predicate: Callable[[dict[str, Any]], bool] | None = None):
         try:
@@ -148,6 +168,21 @@ class LatestChannelReader:
                     z = np.load(f, allow_pickle=False)
                     try:
                         doc = json.loads(z["metadata"].tobytes())
+                        if not isinstance(doc, dict):
+                            raise ValueError("공유 metadata는 JSON object여야 한다")
+                        doc.pop("published_at_ms", None)  # NPZ 내장 값은 완료 표식으로 검증된 시각이 아니다.
+                        if self.require_publication and "publication_id" in doc:
+                            publication = json.loads(publication_path(self.path).read_text(encoding="utf-8"))
+                            stamp = publication.get("published_at_ms") if isinstance(publication, dict) else None
+                            if (not isinstance(publication, dict)
+                                    or publication.get("format") != PUBLICATION_FORMAT
+                                    or not isinstance(doc["publication_id"], str) or not doc["publication_id"]
+                                    or publication.get("publication_id") != doc["publication_id"]
+                                    or not isinstance(stamp, int) or isinstance(stamp, bool) or stamp < 0):
+                                self.timing.record("publication_unavailable")
+                                z.close()
+                                return None
+                            doc["published_at_ms"] = stamp
                     except Exception:
                         z.close()
                         raise
