@@ -56,6 +56,21 @@ def test_starts_unverified_without_bundle(kit):
     assert sync.health_fields() == {"config_sync": "UNVERIFIED"}
 
 
+def test_repeated_rejection_logs_summary_but_keeps_all_acks(kit, caplog):
+    sync = make_sync(kit)
+    message = kit.publish("cfg-46", register_calibration=False)
+    for _ in range(10):
+        assert not sync.receive(message).accepted
+        kit.clock.advance(30_000)
+    assert len(sync.take_acks()) == 10
+    assert len([r for r in caplog.records if "구성 묶음 cfg-46 거부" in r.message]) == 1
+    assert not sync.receive(message).accepted
+    assert "반복 10회" in caplog.records[-1].message
+    other = kit.publish("cfg-47", register_calibration=False)
+    assert not sync.receive(other).accepted
+    assert "cfg-47 거부" in caplog.records[-1].message
+
+
 def test_applied_only_at_tick_boundary_with_ack(kit):
     sync = make_sync(kit)
     sync.on_connected()

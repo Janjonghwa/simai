@@ -2525,7 +2525,6 @@ def prepare_lobby_work(
         "scene_version": scene_version,
         "calibration_file": str(cal_dst),
         "input": {"mode": "live", "camera_ids": cams, "decoder": "cpu", "max_queue_wait_ms": 150, "queue_depth": 1},
-        "bootstrap": {"archive": str(work / "bootstrap"), "config_version": config_version},
         "tick_ms": 100,
         "live_calibration": {
             "enabled": not no_live_calibration,
@@ -2539,6 +2538,15 @@ def prepare_lobby_work(
             "enabled": bool(clean_background),
         },
     }
+    # 시작 보관소가 준비된 경우에만 복구를 요청한다. 빈 디렉터리는 구성 묶음이 아니다.
+    for notice_path in (work / "bootstrap" / "bundles").glob("*/notice.json"):
+        try:
+            notice = json.loads(notice_path.read_text(encoding="utf-8"))
+            if notice.get("payload", {}).get("config_version") == config_version:
+                cfg["bootstrap"] = {"archive": str(work / "bootstrap"), "config_version": config_version}
+                break
+        except (OSError, ValueError, AttributeError):
+            continue
     cfg_path = work / "tier0-live.json"
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
 

@@ -1405,6 +1405,7 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
 
     # 생성된 설정 파일 검증
     cfg = json.loads((work / "tier0-live.json").read_text(encoding="utf-8"))
+    assert "bootstrap" not in cfg  # 빈 시작 보관소는 복구 대상으로 설정하지 않는다
     assert cfg["clean_background"] == {"enabled": False}
     assert cfg["live_calibration"]["enabled"] is True
     assert cfg["live_calibration"]["measured_camera_heights"] == {"cam1": 2.49, "cam2": 2.76, "cam3": 2.39}

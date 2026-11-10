@@ -83,5 +83,7 @@ export function withParameterSets(data: Uint8Array, sps: Uint8Array, pps: Uint8A
 
 /** 마지막으로 그린 프레임의 나이(초). 노트북의 중계와 브라우저가 같은 기계라 벽시계로 비교한다. */
 export function frameAgeSec(lastCaptureMs: number | undefined, now: number): number | undefined {
-  return lastCaptureMs === undefined ? undefined : Math.max(0, now - lastCaptureMs) / 1000;
+  return lastCaptureMs === undefined || now < lastCaptureMs
+    ? undefined
+    : (now - lastCaptureMs) / 1000;
 }
