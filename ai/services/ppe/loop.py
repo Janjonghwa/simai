@@ -200,7 +200,9 @@ class PpeLoop:
         if self._last_publish is not None and now - self._last_publish < self.publish_period_ms:
             return
         self._last_publish = now
-        views = self.judge.evaluate(now)
+        # 처리 UTC로 칸을 닫으면 허용된 촬영→공유 지연도 LATE_FRAME이 된다(-572).
+        # 촬영 진행과 실제 근거 만료를 분리한다. gate 차단·입력 중단 중에도 만료는 현재 UTC로 돈다.
+        views = self.judge.evaluate(now, capture_time_ms=self.judge.latest_capture_time_ms)
         try:
             message = build_ppe_state(
                 self.judge, views, msg_id=str(uuid.uuid4()), sent_at=now, source_id=self.source_id,

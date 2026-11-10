@@ -1,9 +1,9 @@
 """World ID·identity_revision 별 안전모·조끼 상태 누적 (명세 5.5, 6장 PPE 상태).
 
-시간은 모두 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
+근거·칸의 시간은 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
 약 3초(6칸) 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 칸이 착용일 때, 미착용은 6칸 모두 미착용일 때다.
 반대 근거가 나오면 곧바로 반대 상태로 가지 않고 먼저 UNKNOWN 으로 두고 창을 다시 쌓는다(깜빡임 방지).
-마지막 유효 근거 + 10초가 지나면 UNKNOWN 이다. identity_revision 이 오르거나 같은 카메라 local ID 의 주인이 바뀌거나
+만료·트랙 정리는 현재 UTC로 판단해 마지막 유효 근거 + 10초가 지나면 UNKNOWN 이다. identity_revision 이 오르거나 같은 카메라 local ID 의 주인이 바뀌거나
 ID 대응이 불확실하면 이전 근거를 넘기지 않는다. 이 모듈은 World 위치·ID 를 만들거나 바꾸지 않는다.
 """
 
@@ -91,6 +91,7 @@ class PpeJudge:
         self.local_owner: dict[tuple[str, int, str], tuple[str, int]] = {}
         self.dropped: dict[str, int] = {}
         self.last_closed_bin: int | None = None
+        self.latest_capture_time_ms = 0  # 접수한 프레임의 촬영 진행 시각. 입력이 멈추면 함께 멈춘다.
 
     # ---- 입력 -------------------------------------------------------------------------------
     def ingest(self, assoc: FrameAssociation) -> None:
@@ -110,6 +111,7 @@ class PpeJudge:
         if self.last_closed_bin is not None and b <= self.last_closed_bin:
             self._drop("LATE_FRAME")
             return
+        self.latest_capture_time_ms = max(self.latest_capture_time_ms, t)
 
         accepted: set[str] = set()
         for p in assoc.persons:
@@ -181,12 +183,18 @@ class PpeJudge:
         return B_UNKNOWN, []
 
     # ---- 평가 -------------------------------------------------------------------------------
-    def evaluate(self, now_ms: int) -> dict[str, dict[str, ItemView]]:
-        """now_ms(촬영 시각 기준)까지 닫힌 칸을 반영해 사람·장비별 상태를 돌려준다."""
+    def evaluate(self, now_ms: int, *, capture_time_ms: int | None = None) -> dict[str, dict[str, ItemView]]:
+        """촬영 진행 시각으로 칸을 닫고 현재 UTC(now_ms)로 근거를 만료한다.
+
+        동기 입력·오프라인 호출은 capture_time_ms를 생략해 기존처럼 now_ms까지 칸을 진행할 수 있다.
+        비동기 서비스는 latest_capture_time_ms를 넘긴다. 처리 지연이나 입력 중단이 촬영 시계를 앞당기지 않는다.
+        """
         cfg = self.cfg
-        last_closed = (now_ms - cfg.bin_close_grace_ms) // cfg.bin_ms - 1
+        capture_now = now_ms if capture_time_ms is None else min(capture_time_ms, now_ms)
+        last_closed = (capture_now - cfg.bin_close_grace_ms) // cfg.bin_ms - 1
         if self.last_closed_bin is None or last_closed > self.last_closed_bin:
             self.last_closed_bin = last_closed
+        last_closed = self.last_closed_bin  # 순서 역전·촬영 시계 정지에도 닫은 칸을 다시 열지 않는다.
         out: dict[str, dict[str, ItemView]] = {}
         for wid in list(self.tracks):
             track = self.tracks[wid]
