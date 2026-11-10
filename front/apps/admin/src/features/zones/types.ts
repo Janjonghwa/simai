@@ -135,6 +135,7 @@ export interface ZoneCommitRequest {
   zone: ZoneCommitZone;
   surface?: ZoneCommitSurface;
   publish?: boolean;
+  setup_session_id?: string;
 }
 
 /** 한 번 저장 응답. 저장하지 않은 부분은 null 이고, bundle 은 publish 가 true 일 때만 있다. */
@@ -144,6 +145,7 @@ export const zoneCommitResultSchema = z.object({
   surface: staticObjectItemSchema.nullable(),
   archived_surface_id: z.string().nullable(),
   bundle: configBundleSchema.nullable(),
+  layout_sync_failed: z.boolean().optional(),
 });
 export type ZoneCommitResult = z.infer<typeof zoneCommitResultSchema>;
 

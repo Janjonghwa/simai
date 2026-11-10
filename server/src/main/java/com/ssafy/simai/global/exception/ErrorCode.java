@@ -572,6 +572,10 @@ public sealed interface ErrorCode {
 
     /** 가상 레이아웃(GET·POST·PUT /api/layouts, S15P31A101-30) */
     enum Layout implements ErrorCode {
+        LAYOUT_REFERENCE_LOCKED(HttpStatus.CONFLICT, "자동 반영 항목은 원본 구역에서 수정하세요"),
+        SETUP_ZONE_NOT_PUBLISHED(HttpStatus.CONFLICT, "세팅 구역을 발행한 뒤 레이아웃에 반영하세요"),
+        SETUP_ZONE_NOT_LINKED(HttpStatus.NOT_FOUND, "이 작업의 세팅에서 만든 구역을 찾을 수 없습니다"),
+        SETUP_ZONE_INCOMPLETE(HttpStatus.CONFLICT, "구역 또는 작업면의 형상을 확인해 주세요"),
         LAYOUT_NOT_FOUND(HttpStatus.NOT_FOUND, "레이아웃을 찾을 수 없습니다"),
         INVALID_LAYOUT(HttpStatus.BAD_REQUEST, "레이아웃 값이 올바르지 않습니다(name 1~100자, items 200개 이내, item_id 1~64자 겹치지 않게, kind 는 OPENING·WORK_SURFACE·SCAFFOLD·EQUIPMENT, center·size 는 유한한 수 3개(size > 0), 작업면 상판은 0보다 높고 yaw_rad 는 [-π, π])"),
         // 다른 사람이 먼저 고쳤다. 다시 불러와 고친다

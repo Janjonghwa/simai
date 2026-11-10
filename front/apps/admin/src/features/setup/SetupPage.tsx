@@ -37,6 +37,7 @@ import {
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
+import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
   submitErrorText,
   useCameraHeightDefaults,
@@ -175,6 +176,11 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   // 이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 이 작업의 세션을 서버에서 다시 찾는다(위 이어받기). 찾기 전에는
   // 1단계에서 기다린다.
   const foreignSession = currentSession !== null && currentSession.work_unit_id !== workUnitId;
+  const layoutSync = useSetupLayoutSync(workUnitId, foreignSession ? null : sessionId);
+  const setupLayoutSync =
+    sessionId && !foreignSession
+      ? { sessionId, sync: layoutSync.sync, retry: layoutSync.retry }
+      : undefined;
   if (foreignSession && stage !== 0) setStage(0);
   useEffect(() => {
     if (foreignSession) setActiveSetupSessionId(null);
@@ -221,7 +227,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
   const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
-  const draftAccept = useAcceptZoneDraft(draftsList);
+  const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync);
   const acceptedDraftIds = draftAccept.acceptedIds;
   const draftGhosts = useMemo(
     () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
@@ -524,7 +530,15 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             />
           }
         >
-          {currentSession && <ZonesPage placement="inline" />}
+          {layoutSync.failure && (
+            <div role="alert">
+              구역은 발행됐지만 가상 레이아웃 반영에 실패했습니다.
+              <Button disabled={layoutSync.pending} onClick={() => void layoutSync.retry()}>
+                다시 시도
+              </Button>
+            </div>
+          )}
+          {currentSession && <ZonesPage placement="inline" setupLayoutSync={setupLayoutSync} />}
           <AiZoneDraftsPanel
             sceneTier={waiting.sceneTier}
             draftsResponse={zoneDraftsQuery.data}

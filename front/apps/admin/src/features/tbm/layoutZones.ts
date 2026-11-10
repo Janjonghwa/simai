@@ -37,9 +37,14 @@ const zoneKindOf = (kind: ItemKind): ZoneItemKind | null => {
 };
 
 /** 작업 시작 때 구역을 만드는 항목인지: 고소 작업면, 그리고 기존 구역에서 가져오지 않은 개구부. */
-export function itemMakesZone(item: Pick<LayoutObbItem, 'kind' | 'source_zone_id'>): boolean {
+export function itemMakesZone(
+  item: Pick<LayoutObbItem, 'kind' | 'source_zone_id' | 'source_object_id'>,
+): boolean {
   const kind = zoneKindOf(item.kind);
-  return kind === 'WORK_SURFACE' || (kind === 'OPENING' && !item.source_zone_id);
+  return (
+    (kind === 'WORK_SURFACE' && !item.source_object_id) ||
+    (kind === 'OPENING' && !item.source_zone_id)
+  );
 }
 
 /** 고소 작업면 항목의 작업면 형상. 상판 = 가운데 z + 높이 / 2. 작업면 종류가 아니거나 형상 검사를 못 넘기면 null. */

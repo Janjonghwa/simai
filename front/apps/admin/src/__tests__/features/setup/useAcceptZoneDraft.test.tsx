@@ -53,12 +53,15 @@ afterEach(() => {
   server.events.removeAllListeners();
 });
 
-function run(drafts: readonly ZoneDraftItem[] = DRAFTS) {
+function run(
+  drafts: readonly ZoneDraftItem[] = DRAFTS,
+  setup?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return renderHook(() => ({ accept: useAcceptZoneDraft(drafts), zones: useZones() }), {
+  return renderHook(() => ({ accept: useAcceptZoneDraft(drafts, setup), zones: useZones() }), {
     wrapper,
   });
 }
@@ -71,6 +74,16 @@ const withoutPublish = (body: unknown) => {
 };
 
 describe('useAcceptZoneDraft', () => {
+  it('세팅 AI 초안 저장에 세션을 전달하고 발행 후 구역을 반영한다', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined);
+    const view = run(DRAFTS, { sessionId: 'session-1', sync, retry: vi.fn() });
+    await waitFor(() => expect(view.result.current.zones.zones.length).toBeGreaterThan(0));
+    await act(() => view.result.current.accept.accept(OPENING));
+    await waitFor(() => expect(commits).toHaveLength(1));
+    expect(commits[0]).toMatchObject({ setup_session_id: 'session-1', publish: true });
+    expect(sync).toHaveBeenCalledOnce();
+    expect(sync).toHaveBeenCalledWith(expect.any(String), false);
+  });
   it('초안 두 개를 수락하면 저장이 두 번 가고 구역이 둘 다 생기며, 작업면 초안은 작업면도 만든다', async () => {
     const view = run();
     await waitFor(() => expect(view.result.current.zones.zones.length).toBeGreaterThan(0));

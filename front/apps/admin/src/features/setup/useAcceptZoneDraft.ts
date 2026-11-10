@@ -2,6 +2,7 @@ import { acceptedByZones, draftCreateRequest } from '@/features/setup/draftZone'
 import { markSetupZoneDraftAccepted, useSetupFlowStore } from '@/features/setup/setup.store';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { commitErrorText } from '@/features/zones/commitErrors';
+import { publishErrorText } from '@/features/zones/useConfigApply';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
 import { useMemo, useRef, useState } from 'react';
@@ -17,8 +18,11 @@ export interface DraftAcceptFailure {
  * 바로 만든다. 한 번에 하나만 보내고, 이미 구역으로 만든 초안(이 화면에서 수락했거나 같은 모양의 구역이 있다)은 다시
  * 보내지 않는다. acceptedIds 는 그렇게 구역이 된 초안 ID 다.
  */
-export function useAcceptZoneDraft(drafts: readonly ZoneDraftItem[]) {
-  const commit = useZoneCommitMutation();
+export function useAcceptZoneDraft(
+  drafts: readonly ZoneDraftItem[],
+  setupLayoutSync?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync,
+) {
+  const commit = useZoneCommitMutation(setupLayoutSync);
   const { zones } = useZones();
   const recorded = useSetupFlowStore((s) => s.acceptedDraftIds);
   const matched = useMemo(() => acceptedByZones(drafts, zones), [drafts, zones]);
@@ -36,8 +40,18 @@ export function useAcceptZoneDraft(drafts: readonly ZoneDraftItem[]) {
     setPendingId(id);
     setFailure(null);
     try {
-      await commit.mutateAsync({ request: draftCreateRequest(item), zone: null, linked: null });
+      const result = await commit.mutateAsync({
+        request: draftCreateRequest(item),
+        zone: null,
+        linked: null,
+      });
       markSetupZoneDraftAccepted(id);
+      if (result.publishError) {
+        setFailure({
+          candidateId: id,
+          text: `구역은 저장됐지만 발행되지 않았습니다. ${publishErrorText(result.publishError)}`,
+        });
+      }
     } catch (error) {
       setFailure({ candidateId: id, text: commitErrorText(error) });
     } finally {

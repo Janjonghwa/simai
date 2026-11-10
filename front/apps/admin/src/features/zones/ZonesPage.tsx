@@ -19,6 +19,7 @@ const SHAPE_LOCKED_TEXT =
   '직사각형이 아니거나 높이가 없거나 바닥 판정인 구역은 형상을 고칠 수 없습니다.';
 
 interface ZonesPageProps {
+  setupLayoutSync?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync;
   /** 관제 편집 모드는 3D 위 왼쪽에 띄우고(float), 세팅의 구역 단계는 3D 옆 칸에 놓는다(inline). */
   placement?: ZonePanelPlacement;
   workLayoutId?: number | null;
@@ -48,8 +49,9 @@ function ZoneEditPanel({
   headerAction,
   onCommitted,
   workLayoutId,
+  setupLayoutSync,
 }: ZonesPageProps) {
-  const edit = useZoneEditing(onCommitted, workLayoutId);
+  const edit = useZoneEditing(onCommitted, workLayoutId, setupLayoutSync);
   // 작업면 카드가 구역 양식을 가린 동안에는 가려진 구역의 형상 경고를 띄우지 않는다.
   const shapeLocked = edit.orphan === null && edit.shapeLocked;
   const warning = edit.notice ?? (shapeLocked ? SHAPE_LOCKED_TEXT : null);

@@ -15,7 +15,8 @@ import com.ssafy.simai.domain.geometry.StaticObjectRequest;
 public record ZoneCommitRequest(
         @JsonProperty("zone") ZonePart zone,
         @JsonProperty("surface") SurfacePart surface,
-        @JsonProperty("publish") Boolean publish) {
+        @JsonProperty("publish") Boolean publish,
+        @JsonProperty("setup_session_id") String setupSessionId) {
 
     public record ZonePart(
             @JsonProperty("op") String op,

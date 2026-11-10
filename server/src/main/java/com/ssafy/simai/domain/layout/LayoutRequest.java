@@ -21,6 +21,7 @@ public record LayoutRequest(
             @JsonProperty("size") List<Double> size,
             @JsonProperty("yaw_rad") Double yawRad,
             @JsonProperty("label") String label,
-            @JsonProperty("source_zone_id") String sourceZoneId) {
+            @JsonProperty("source_zone_id") String sourceZoneId,
+            @JsonProperty("source_object_id") String sourceObjectId) {
     }
 }

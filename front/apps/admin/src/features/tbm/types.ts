@@ -137,6 +137,8 @@ export const layoutObbItemSchema = z.object({
   label: z.string().nullable().default(null),
   // 기존 구역에서 가져온 개구부 표시. 이런 항목은 작업 시작 때 새 구역을 만들지 않는다.
   source_zone_id: z.string().nullish(),
+  /** 기존 작업면을 참조하는 항목. 작업 시작 때 새 작업면을 만들지 않는다. */
+  source_object_id: z.string().nullish(),
 });
 export type LayoutObbItem = z.infer<typeof layoutObbItemSchema>;
 

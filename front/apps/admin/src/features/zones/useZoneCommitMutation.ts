@@ -1,4 +1,5 @@
 import { markSetupZonesCommitted } from '@/features/setup/setup.store';
+import type { SetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import { requestStaticObjects, STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import type { WorkSurface } from '@/features/surfaces/types';
 import { commitZone, requestZones, ZONES_KEY } from '@/features/zones/api';
@@ -128,17 +129,25 @@ async function send(request: ZoneCommitRequest): Promise<CommitDone> {
  * 않는다. 낙관적 갱신을 하지 않고 응답(새 버전·묶음)으로 목록을 바꾼다(CONVENTION). 결과를 알 수 없는 실패(연결 끊김·시간
  * 초과·응답 오류·서버 오류)면 이미 저장됐을 수 있어 세 목록을 다시 받는다.
  */
-export function useZoneCommitMutation() {
+export function useZoneCommitMutation(setup?: SetupLayoutSync) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationKey: COMMIT_MUTATION_KEY,
     mutationFn: async (input: CommitInput): Promise<CommitDone> => {
       await assertUnchanged(queryClient, input);
-      return send(input.request);
+      const request =
+        setup && input.request.zone.op === 'CREATE'
+          ? { ...input.request, setup_session_id: setup.sessionId }
+          : input.request;
+      return send(request);
     },
-    onSuccess: ({ result }, { request }) => {
+    onSuccess: async ({ result, publishError }, { request }) => {
       applyCommitted(queryClient, request, result);
-      markSetupZonesCommitted();
+      if (!publishError) {
+        markSetupZonesCommitted();
+        if (setup && request.zone.op !== 'ARCHIVE')
+          await setup.sync(result.zone_id, request.zone.op !== 'CREATE');
+      }
     },
     onError: (error) => {
       if (needsRefetch(error)) invalidateCommitted(queryClient);

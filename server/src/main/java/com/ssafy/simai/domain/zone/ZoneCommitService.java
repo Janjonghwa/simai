@@ -5,12 +5,18 @@ import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
 import com.ssafy.simai.domain.layout.LayoutZoneService;
+import com.ssafy.simai.domain.layout.SetupZoneLayoutService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
@@ -23,6 +29,7 @@ import tools.jackson.databind.node.ObjectNode;
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ZoneCommitService {
+    private static final Logger log = LoggerFactory.getLogger(ZoneCommitService.class);
 
     private final ZoneRepository zones;
     private final StaticObjectRepository surfaces;
@@ -30,22 +37,27 @@ public class ZoneCommitService {
     private final SiteLookup sites;
     private final Clock clock;
     private final LayoutZoneService layoutZones;
+    private final NamedParameterJdbcTemplate jdbc;
+    private final SetupZoneLayoutService setupLayouts;
 
     public ZoneCommitService(ZoneRepository zones, StaticObjectRepository surfaces, ConfigBundleService bundles,
-            SiteLookup sites, Clock clock, LayoutZoneService layoutZones) {
+            SiteLookup sites, Clock clock, LayoutZoneService layoutZones, NamedParameterJdbcTemplate jdbc,
+            SetupZoneLayoutService setupLayouts) {
         this.zones = zones;
         this.surfaces = surfaces;
         this.bundles = bundles;
         this.sites = sites;
         this.clock = clock;
         this.layoutZones = layoutZones;
+        this.jdbc = jdbc;
+        this.setupLayouts = setupLayouts;
     }
 
     private record Changes(ObjectNode zone, ObjectNode surface, String zoneId, String archivedSurfaceId) {
     }
 
     private record Plan(String zoneOp, String zoneId, ZoneRequest zoneBody, String surfaceOp, String objectId,
-            StaticObjectRequest surfaceBody, boolean publish) {
+            StaticObjectRequest surfaceBody, boolean publish, UUID setupSessionId) {
     }
 
     /** 응답: {zone_id, zone(새 버전 또는 null), surface(새 버전 또는 null), archived_surface_id, bundle(만든 묶음 또는 null)} */
@@ -63,6 +75,15 @@ public class ZoneCommitService {
         response.set("surface", changes.surface());
         response.put("archived_surface_id", changes.archivedSurfaceId());
         response.set("bundle", published.bundle());
+        if (plan.publish() && !"CREATE".equals(plan.zoneOp())) {
+            try {
+                response.put("layout_sync_failed", !setupLayouts.refreshForZone(changes.zoneId(), userId));
+            } catch (RuntimeException e) {
+                // 구역과 묶음은 이미 커밋됐다. 실패를 별도로 돌려주어 구역을 재생성하지 않게 한다.
+                log.warn("Failed to find layout references for zone {}", changes.zoneId(), e);
+                response.put("layout_sync_failed", true);
+            }
+        }
         return response;
     }
 
@@ -101,12 +122,28 @@ public class ZoneCommitService {
             throw invalid();
         }
         boolean publish = r.publish() == null || r.publish();
-        return new Plan(zoneOp, zoneId, r.zone().body(), surfaceOp, objectId, s == null ? null : s.body(), publish);
+        UUID session = null;
+        if (r.setupSessionId() != null) {
+            if (!"CREATE".equals(zoneOp)) throw invalid();
+            try { session = UUID.fromString(r.setupSessionId()); }
+            catch (IllegalArgumentException e) { throw invalid(); }
+        }
+        return new Plan(zoneOp, zoneId, r.zone().body(), surfaceOp, objectId, s == null ? null : s.body(), publish, session);
     }
 
     /** 트랜잭션 안: 구역 → 작업면. 저장소가 값·버전 충돌·연결을 검사하고 실패하면 던져 모두 되돌린다 */
     private Changes apply(Plan p, String siteId, long userId, OffsetDateTime now) {
         layoutZones.lock();
+        if (p.setupSessionId() != null) {
+            var params = new MapSqlParameterSource("session", p.setupSessionId()).addValue("site", siteId);
+            var found = jdbc.queryForList("""
+                    SELECT w.work_id FROM setup_session s JOIN work_unit w ON w.work_id = s.work_unit_id
+                    WHERE s.setup_session_id = :session AND s.site_id = :site AND w.site_id = :site
+                      AND w.status = 'PLANNED' AND w.active_setup_session_id = s.setup_session_id
+                      AND s.status IN ('READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED') FOR UPDATE OF w
+                    """, params, Long.class);
+            if (found.isEmpty()) throw invalid();
+        }
         if (!"CREATE".equals(p.zoneOp())) layoutZones.denyZone(p.zoneId());
         if (p.surfaceOp() != null && !"CREATE".equals(p.surfaceOp())) layoutZones.denyObject(p.objectId());
         ObjectNode zone = null;
@@ -130,6 +167,14 @@ public class ZoneCommitService {
                 zones.archive(zoneId, now);
             }
             default -> zones.requireCurrent(zoneId);
+        }
+
+        if (p.setupSessionId() != null) {
+            jdbc.update("""
+                    INSERT INTO setup_session_zone (setup_session_id, zone_id, zone_version, created_at)
+                    VALUES (:session, :zone, :version, :now)
+                    """, new MapSqlParameterSource("session", p.setupSessionId()).addValue("zone", zoneId)
+                    .addValue("version", zone.path("zone_version").asInt()).addValue("now", now));
         }
 
         ObjectNode surface = null;

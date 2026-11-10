@@ -72,6 +72,7 @@ export interface LayoutDraftItem {
   yaw_rad: number;
   /** 기존 구역에서 가져온 개구부의 구역 ID. 있으면 작업을 시작해도 새 구역을 만들지 않는다. */
   sourceZoneId?: string | null;
+  sourceObjectId?: string | null;
 }
 
 /** 새 개구부의 가로·세로·높이(m). 새 고소 작업면은 관제 작업면 만들기와 같은 크기·상판 높이를 쓴다. */
@@ -107,12 +108,14 @@ export function obbToDraftItem(item: LayoutObbItem): LayoutDraftItem {
     height: r3(sz),
     yaw_rad: normalizeYawRad(item.yaw_rad ?? 0),
     ...(item.source_zone_id ? { sourceZoneId: item.source_zone_id } : {}),
+    ...(item.source_object_id ? { sourceObjectId: item.source_object_id } : {}),
   };
 }
 
 /** 종류를 바꾼다. 가져온 구역 표시(sourceZoneId)는 개구부에만 뜻이 있어 다른 종류가 되면 뗀다. */
 export function changeDraftItemKind(item: LayoutDraftItem, kind: LayoutItemKind): LayoutDraftItem {
   const { sourceZoneId, ...rest } = item;
+  delete rest.sourceObjectId;
   return { ...rest, kind, ...(kind === 'OPENING' && sourceZoneId ? { sourceZoneId } : {}) };
 }
 
@@ -155,6 +158,7 @@ export function draftItemToObb(item: LayoutDraftItem): LayoutObbItem | null {
     yaw_rad: normalizeYawRad(item.yaw_rad),
     label: trimmedLabel.length > 0 ? trimmedLabel : null,
     ...(item.sourceZoneId ? { source_zone_id: item.sourceZoneId } : {}),
+    ...(item.sourceObjectId ? { source_object_id: item.sourceObjectId } : {}),
   };
 }
 
