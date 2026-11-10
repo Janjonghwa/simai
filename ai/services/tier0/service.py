@@ -467,7 +467,8 @@ class Tier0Service:
             avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
                                      input_provenance=provenance, avatar_writer=avatar_writer,
-                                     roi_enabled=s.roi_filter.enabled, roi_margin_m=s.roi_filter.margin_m)
+                                     roi_enabled=s.roi_filter.enabled, roi_margin_m=s.roi_filter.margin_m,
+                                     roi_min_people=s.roi_filter.min_people)
         # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
         self.restore_link = RestoreLink(self.perception.manager, r)
         self.writer = JournalWriter(self.journal)

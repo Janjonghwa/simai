@@ -19,7 +19,7 @@
                 "decoder": "cpu", "max_queue_wait_ms": 150, "queue_depth": 1}   LIVE 와 같다
                file 입력은 판정 출처가 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(환경 변수가 있어도). 상태(저널·체크포인트·
                표시 파일)는 state_dir/replay/<실행 이름>/ 에 따로 둔다(LIVE 상태와 섞이지 않음). 구조는 docs/design/tier0-recording-replay.md
-               모든 입력에 "roi_filter": {"enabled": true, "margin_m": 1.5} 를 둘 수 있다(활성 구역이 없으면 통과).
+               모든 입력에 "roi_filter": {"enabled": true, "margin_m": 3.0, "min_people": 4} 를 둘 수 있다(활성 구역이 없거나 한 카메라 최대 인원이 min_people 미만이면 통과).
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
@@ -179,7 +179,8 @@ class ReidSettings:
 @dataclass(frozen=True)
 class RoiFilterSettings:
     enabled: bool = True
-    margin_m: float = 1.5
+    margin_m: float = 3.0
+    min_people: int = 4
 
 
 @dataclass(frozen=True)
@@ -497,9 +498,12 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     if not isinstance(input_doc, dict):
         raise Tier0ConfigError("input 은 객체다")
     roi = input_doc.get("roi_filter", {})
-    if not isinstance(roi, dict) or set(roi) - {"enabled", "margin_m"}:
-        raise Tier0ConfigError("input.roi_filter 는 enabled, margin_m 객체다")
-    enabled, margin = roi.get("enabled", True), roi.get("margin_m", 1.5)
+    if not isinstance(roi, dict) or set(roi) - {"enabled", "margin_m", "min_people"}:
+        raise Tier0ConfigError("input.roi_filter 는 enabled, margin_m, min_people 객체다")
+    enabled, margin = roi.get("enabled", True), roi.get("margin_m", 3.0)
+    min_people = roi.get("min_people", 4)
+    if isinstance(min_people, bool) or not isinstance(min_people, int) or min_people < 0:
+        raise Tier0ConfigError("input.roi_filter.min_people 은 0 이상 정수다")
     if not isinstance(enabled, bool):
         raise Tier0ConfigError("input.roi_filter.enabled 는 bool이다")
     if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not math.isfinite(margin) or margin < 0:
@@ -586,7 +590,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         clean_background=_clean_background(doc.get("clean_background", {}), base),
         rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),
         reid=_reid(doc.get("reid", {}), base, env),
-        roi_filter=RoiFilterSettings(enabled, float(margin)),
+        roi_filter=RoiFilterSettings(enabled, float(margin), min_people),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,
