@@ -107,21 +107,14 @@ class _SimIndexDetector:
         self.judge_lock_free_checks: list[bool] = []
 
     def _check_judge_lock_free(self) -> None:
+        # 검출을 부른 스레드가 judge_lock 을 쥐고 있지 않은지 직접 본다(S15P31A101-581).
+        # 예전에는 다른 스레드가 20 ms 안에 lock 을 잡는지로 봤는데, 판정 스레드가 정상적으로 lock 을 쥔
+        # tick 이 느린 CI CPU 에서 20 ms 를 넘기면 검출과 무관하게 실패했다.
         if self.judge_lock is None:
             return
-        free: list[bool] = []
-
-        def probe() -> None:
-            acquired = self.judge_lock.acquire(timeout=0.02)
-            if acquired:
-                self.judge_lock.release()
-            free.append(acquired)
-
-        t = threading.Thread(target=probe, daemon=True)
-        t.start()
-        t.join(0.1)
+        held = self.judge_lock._is_owned()  # noqa: SLF001 - RLock 소유 스레드 검사(공개 API 없음)
         with self._lock:
-            self.judge_lock_free_checks.append(bool(free and free[0]))
+            self.judge_lock_free_checks.append(not held)
 
     def detect(self, batch):
         self._check_judge_lock_free()
