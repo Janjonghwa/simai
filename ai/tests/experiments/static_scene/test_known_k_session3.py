@@ -129,3 +129,21 @@ def test_use_local_dinov2_hub_bypasses_github_on_http_504_and_resolves_cache_dir
     # 4) 볼륨 설치 스크립트(setup_runpod.sh)도 facebookresearch_dinov2_main 허브 캐시를 준비한다
     setup_sh = (STATIC / "setup_runpod.sh").read_text(encoding="utf-8")
     assert "facebookresearch_dinov2_main" in setup_sh and "DINOV2_COMMIT" in setup_sh
+
+
+def test_resolve_local_hub_dir_skips_unreadable_candidates(tmp_path, monkeypatch):
+    """-573: 일반 사용자(Jenkins)에게 /root/... 후보는 PermissionError 다. 없는 것으로 보고 None 을 돌려준다."""
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    from simai_ai.scene import run_mapanything as rma
+
+    real_is_file = rma.Path.is_file
+
+    def _deny(self):
+        if str(self).replace("\\", "/").startswith("/root/") or "denied_home" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(rma.Path, "is_file", _deny)
+    monkeypatch.setattr(rma.Path, "home", classmethod(lambda cls: tmp_path / "denied_home"))
+    fake_hub = types.SimpleNamespace(get_dir=lambda: str(tmp_path / "empty_hub"))
+    assert rma.resolve_local_hub_dir("facebookresearch/dinov2", hub_mod=fake_hub, env={}) is None

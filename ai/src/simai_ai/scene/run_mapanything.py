@@ -68,8 +68,12 @@ def resolve_local_hub_dir(repo_or_dir: str, *, hub_mod=None, env=None) -> Path |
     candidates.append(Path.home() / ".cache" / "torch" / "hub" / DINOV2_HUB_CACHE_NAME)
     candidates.append(Path("/root/.cache/torch/hub") / DINOV2_HUB_CACHE_NAME)
     for cand in candidates:
-        if (cand / "hubconf.py").is_file():
-            return cand
+        try:
+            if (cand / "hubconf.py").is_file():
+                return cand
+        except OSError:
+            # 일반 사용자(Jenkins 등)에게 /root/... 은 PermissionError 다. 없는 것으로 보고 다음 후보로(S15P31A101-573)
+            continue
     return None
 
 
