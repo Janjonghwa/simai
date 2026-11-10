@@ -85,7 +85,8 @@ def main() -> int:
             loop.counts["step_failed"] += 1
             logging.exception("PPE 주기 실패")
         if time.monotonic() >= report_at:
-            logging.info("PPE 상태: seq=%d counts=%s gate=%s", loop.state_sequence, dict(loop.counts), gate.stats())
+            logging.info("PPE 상태: seq=%d counts=%s gate=%s timing=%s", loop.state_sequence,
+                         dict(loop.counts), gate.stats(), loop.diagnostics())
             report_at = time.monotonic() + REPORT_S
         stop.wait(STEP_S)
     return 0

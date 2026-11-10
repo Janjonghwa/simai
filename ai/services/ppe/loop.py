@@ -22,6 +22,7 @@ import uuid
 
 from simai_ai.ppe import FrameDetections, FrameObservations, PersonObservation, PpeJudge, associate_frame, build_ppe_state
 from simai_ai.ppe.classes import Candidate
+from simai_ai.io.channel_timing import ChannelTiming
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class PpeLoop:
         per_camera_period_ms: int = DEFAULT_PER_CAMERA_PERIOD_MS,
         publish_period_ms: int = DEFAULT_PUBLISH_PERIOD_MS,
         max_wait_ms: int = DEFAULT_MAX_WAIT_MS,
+        timing: ChannelTiming | None = None,
     ) -> None:
         self.source, self.gate, self.detector, self.outbox = source, gate, detector, outbox
         self.source_id = source_id
@@ -116,6 +118,43 @@ class PpeLoop:
         self._last_publish: int | None = None
         self._provenance: dict[str, Any] | None = None
         self.counts: Counter[str] = Counter()  # 계측(판정에 쓰지 않음)
+        self.timing = timing or ChannelTiming()
+
+    def diagnostics(self):
+        source_timing = getattr(self.source, "timing", None)
+        return {"loop": self.timing.summary(),
+                "source": None if source_timing is None else source_timing.summary()}
+
+    def _skip_reason(self, camera_id, ref, produced):
+        frame_ref = ref.get("frame_ref") or {}
+        key = (frame_ref.get("stream_epoch"), frame_ref.get("frame_sequence"))
+        capture = ref.get("capture_time_ms")
+        if self._last_frame.get(camera_id) == key:
+            return "duplicate"
+        infer_at = self.monotonic_ms()
+        last = self._last_infer_at.get(camera_id)
+        bin_key = (key[0], capture // self.judge.cfg.bin_ms) if isinstance(capture, int) else None
+        if (last is not None and infer_at - last < self.per_camera_period_ms) or (
+            bin_key is not None and self._last_bin.get(camera_id) == bin_key
+        ):
+            return "rate_skip"
+        if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
+            return "wait_exceeded"
+        return None
+
+    def _metadata_eligible(self, doc):
+        """모든 카메라가 불가할 때만 영상 읽기를 생략한다. 처리 기록은 소비하지 않는다."""
+        eligible = False
+        for camera_id, ref in doc.get("frames", {}).items():
+            reason = self._skip_reason(camera_id, ref or {}, doc.get("produced_at_ms"))
+            if reason is None:
+                eligible = True
+            else:
+                self.counts["metadata_" + reason] += 1
+                self.timing.record("metadata_skip_" + reason, camera=camera_id)
+        if not eligible:
+            self.counts["metadata_rejected"] += 1
+        return eligible
 
     def step(self) -> None:
         admission = self.gate.check()
@@ -134,7 +173,11 @@ class PpeLoop:
 
     def _infer_latest(self) -> bool:
         """최신 카메라 묶음을 처리한다. 도중 NOT_LIVE면 False로 송신도 중단한다."""
-        got = self.source.latest()
+        with self.timing.measure("source_latest"):
+            if getattr(self.source, "supports_predicate", False):
+                got = self.source.latest(predicate=self._metadata_eligible)
+            else:
+                got = self.source.latest()
         if got is None:
             self.counts["no_input"] += 1
             return True
@@ -146,51 +189,54 @@ class PpeLoop:
         if isinstance(provenance, Mapping) and "tracks" in provenance:
             self._provenance = dict(provenance)
         produced = doc.get("produced_at_ms")
+        batch_ready = self.timing.clock()
         for camera_id in sorted(images):
+            self.timing.record("camera_batch_wait", (self.timing.clock() - batch_ready) * 1000, camera=camera_id)
             image = images[camera_id]
             ref = doc.get("frames", {}).get(camera_id) or {}
             frame_ref = ref.get("frame_ref") or {}
             key = (frame_ref.get("stream_epoch"), frame_ref.get("frame_sequence"))
-            capture = ref.get("capture_time_ms")
-            if self._last_frame.get(camera_id) == key:
-                continue  # 이미 본 프레임
-            infer_at = self.monotonic_ms()
-            last = self._last_infer_at.get(camera_id)
-            # 촬영 간격으로 500ms를 요구하면 5Hz 입력이 600ms마다 선택되어 6칸 창에 빈칸이 생긴다(-567).
-            # GPU 처리율은 시작 간격으로 제한하고, 누적 표본은 같은 촬영 칸에서 한 번만 고른다.
-            bin_key = (key[0], capture // self.judge.cfg.bin_ms) if isinstance(capture, int) else None
-            if (last is not None and infer_at - last < self.per_camera_period_ms) or (
-                bin_key is not None and self._last_bin.get(camera_id) == bin_key
-            ):
-                self.counts["rate_skip"] += 1
-                continue
-            if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
-                self.counts["wait_exceeded"] += 1
+            if isinstance(produced, int):
+                self.timing.record("camera_source_age_at_check", self.clock_ms() - produced, camera=camera_id)
+            reason = self._skip_reason(camera_id, ref, produced)
+            if reason is not None:
+                if reason != "duplicate":
+                    self.counts[reason] += 1
+                self.timing.record("camera_skip_" + reason, camera=camera_id)
                 continue
             height, width = image.shape[:2]
-            obs = frame_observations(doc, camera_id, (int(width), int(height)))
+            with self.timing.measure("camera_observations", camera=camera_id):
+                obs = frame_observations(doc, camera_id, (int(width), int(height)))
             if obs is None:
                 self.counts["bad_frame"] += 1
                 continue
             # 한 카메라 추론 중 부하 신호가 바뀔 수 있다. 관측 구성 뒤, 새 검출 직전에 다시 확인한다.
-            admission = self.gate.check()
+            with self.timing.measure("camera_gate", camera=camera_id):
+                admission = self.gate.check()
             if not getattr(admission, "live", True):
                 self.counts["not_live"] += 1
                 return False
             if not admission.admit:
                 self.counts["gate_" + (getattr(admission, "code", "") or "closed")] += 1
                 break  # 남은 프레임·촬영 칸·처리율 기록은 소비하지 않는다.
-            if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
-                self.counts["wait_exceeded"] += 1
-                continue  # 관측 구성·gate 재확인에 걸린 시간도 150ms 대기에 포함한다.
+            if isinstance(produced, int):
+                age = self.clock_ms() - produced
+                self.timing.record("camera_source_age_at_infer", age, camera=camera_id)
+                if age > self.max_wait_ms:
+                    self.counts["wait_exceeded"] += 1
+                    self.timing.record("camera_skip_wait_exceeded", camera=camera_id)
+                    continue  # 관측 구성·gate 재확인에 걸린 시간도 150ms 대기에 포함한다.
             self._last_frame[camera_id] = key
             self._last_infer_at[camera_id] = self.monotonic_ms()  # 관측 구성 비용 뒤의 실제 추론 시작을 기록한다.
             self._last_bin[camera_id] = (obs.stream_epoch, obs.capture_time_ms // self.judge.cfg.bin_ms)
-            candidates = self.detector.infer(image)
+            with self.timing.measure("camera_inference", camera=camera_id):
+                candidates = self.detector.infer(image)
             dets = FrameDetections(camera_id, obs.stream_epoch, obs.frame_sequence, obs.capture_time_ms, obs.image_size,
                                    tuple(candidates))
-            self.judge.ingest(associate_frame(obs, dets, self.judge.cfg))
+            with self.timing.measure("camera_association_ingest", camera=camera_id):
+                self.judge.ingest(associate_frame(obs, dets, self.judge.cfg))
             self.counts["inferred"] += 1
+            self.timing.record("camera_inferred", camera=camera_id)
         return True
 
     def _publish_due(self) -> None:
