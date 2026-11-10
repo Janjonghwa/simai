@@ -1,5 +1,5 @@
 {
-  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지, vlm = 분석 워커 VLM Cosmos3-Nano(통합 이미지 2단계에서 쓴다, S15P31A101-235), ppe = PPE 프로세스 안전모·조끼 검출(HF 비공개 저장소, S15P31A101-491))을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
+  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지, vlm = 분석 워커 VLM Cosmos3-Nano(통합 이미지 2단계에서 쓴다, S15P31A101-235), ppe = PPE 프로세스 안전모·조끼 검출(HF 비공개 저장소, S15P31A101-491))을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. group=mapanything 은 static 묶음의 MapAnything 판(기본·apache)이다: 장면 준비·after-live·check --sets·preflight 는 SIMAI_MAPANYTHING_MODEL(기본 weights/map-anything, 현장 세팅 워커와 같음)의 한 판만 받는다(S15P31A101-577). 통합 이미지는 tier0·avatar·ppe·static(기본 판) 항목을 이미지에 구워 두고(deploy/tier0/Dockerfile weights-* 단계, 원본·해시는 이 목록과 같아야 한다) simai-bootstrap 이 그 사본을 확인해 링크한다. vlm 은 굽지 않는다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
   "manifest_version": 1,
   "weights": [
     {
@@ -61,6 +61,7 @@
     {
       "name": "map-anything-apache-model",
       "sets": ["static"],
+      "group": "mapanything",
       "path": "weights/map-anything-apache/model.safetensors",
       "source": {"hf": {"repo": "facebook/map-anything-apache", "file": "model.safetensors", "revision": "00f9c245bbcb60522d1ed7f9e9d88462c6e3f38a"}},
       "sha256": "fa06c0fdccefc5048e072c85935d5789b1e36b307f3859033c17f9dcb9fd5201",
@@ -70,6 +71,7 @@
     {
       "name": "map-anything-apache-config",
       "sets": ["static"],
+      "group": "mapanything",
       "path": "weights/map-anything-apache/config.json",
       "source": {"hf": {"repo": "facebook/map-anything-apache", "file": "config.json", "revision": "00f9c245bbcb60522d1ed7f9e9d88462c6e3f38a"}},
       "sha256": "65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5",
@@ -79,6 +81,7 @@
     {
       "name": "map-anything-model",
       "sets": ["static"],
+      "group": "mapanything",
       "path": "weights/map-anything/model.safetensors",
       "source": {"hf": {"repo": "facebook/map-anything", "file": "model.safetensors", "revision": "a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa"}},
       "sha256": "981f060c64664dff3272b5f5a823d350abe71a2f144444db4cfc325f3ed5a3a0",
@@ -88,6 +91,7 @@
     {
       "name": "map-anything-config",
       "sets": ["static"],
+      "group": "mapanything",
       "path": "weights/map-anything/config.json",
       "source": {"hf": {"repo": "facebook/map-anything", "file": "config.json", "revision": "a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa"}},
       "sha256": "65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5",

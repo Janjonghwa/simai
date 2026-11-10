@@ -42,7 +42,7 @@ Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·EC2 경
 
 | 무엇 | 어디에 | 비고 |
 |---|---|---|
-| 가중치 (YOLO26x-pose `.pt`, sam-3d-body-dinov3·MoGe2·map-anything 등) | `$SIMAI_ROOT/weights/` | 해시 목록은 저장소 `deploy/weights.json`(3.12). `simai-bootstrap` 이 없으면 받고 다르면 시작하지 않는다. Tier 0 는 `SIMAI_TIER0_WEIGHTS_SHA256`(부트스트랩이 목록 값으로 채움)과 다르면 시작하지 않는다 |
+| 가중치 (YOLO26x-pose `.pt`, sam-3d-body-dinov3·MoGe2·map-anything 등) | `$SIMAI_ROOT/weights/` | 해시 목록은 저장소 `deploy/weights.json`(3.12). `simai-bootstrap` 이 없으면 받고 다르면 시작하지 않는다. Tier 0 는 `SIMAI_TIER0_WEIGHTS_SHA256`(부트스트랩이 목록 값으로 채움)과 다르면 시작하지 않는다. **예외: 통합 이미지는 시연 가중치(tier0·avatar·ppe·static 기본 판, 약 13.4GB)를 `/opt/simai/baked` 에 굽는다**(아래 "시연 가중치 굽기"). VLM(Cosmos3-Nano 31.5GB)은 굽지 않는다 |
 | TensorRT 엔진 | `$SIMAI_ROOT/engines/` | 그 GPU 에서 첫 기동 때 만든다(아래). 세대별 경로(`sm_XX`) |
 | 데이터·녹화·2D 관측·Run 산출물 | `$SIMAI_ROOT/{datasets,recordings,obs2d,runs}` | 19.1 볼륨 구조 |
 | HF 토큰 | 환경 변수 `HF_TOKEN` 만: RunPod Secret `{{ RUNPOD_SECRET_hf_token }}`, Vast 계정 환경 변수, 엘리스는 블록 스토리지 `.simai-private/hf.env`(chmod 600)를 `docker run --env-file` 로 | `simai-bootstrap` 이 가중치를 받을 때만 쓰고 Tier 0·큐를 띄우기 전에 환경에서 지운다. 이미지·저장소·로그·결과 묶음에 남기지 않는다 |
@@ -91,7 +91,14 @@ TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl risk-engine # → simai/ri
 bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비루트·포트 없음·망 없는 컨테이너 HTTP 왕복
 ```
 
-- Tier 0 이미지는 풀면 약 18.7GB, 통합 이미지는 약 24.3GB 다(2026-10-23 노트북 빌드, S15P31A101-246: torch 2.11.0·onnxruntime-gpu·cupy 제외. 층별 크기는 `docs/design/unified-env.md` "빌드 결과"). 이전 Tier 0 는 압축 약 7.9GB·풀면 약 21GB 였다. 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
+- **시연 가중치 굽기(S15P31A101-577).** `unified` 는 Tier 0·아바타·현장 세팅(MapAnything 기본 판·WorldMirror 2.0·LaMa)·PPE 가중치를 이미지 층(`/opt/simai/baked/<목록 path>` + `.sha256`)으로 싣는다. 새 Pod 는 이것들을 HF·GitHub 에서 받지 않고, `simai-bootstrap` 이 사본을 sha256 확인한 뒤 `$SIMAI_ROOT/<path>` 에 심볼릭 링크로 건다(상태 `baked`). VLM 만 Pod 시작 뒤에 받는다. 빌드 셸에 HF 토큰이 있어야 한다(sam-3d-body 승인제·PPE 비공개 저장소). 토큰은 BuildKit 비밀로만 들어가고 층·이력·ARG 에 남지 않는다:
+  ```sh
+  read -rs HF_TOKEN && export HF_TOKEN       # 셸 기록에 남기지 않는다(Pod 의 RunPod Secret hf_token 과 같은 토큰)
+  TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl unified
+  unset HF_TOKEN
+  ```
+  가중치 층은 `--link` 라 잠금·코드가 바뀌어도 다시 만들지 않고 같은 다이제스트라 다시 올리지 않는다(처음 한 번 약 13.4GB 더 올린다). 원본·해시를 바꿀 때는 `deploy/weights.json` 과 `deploy/tier0/Dockerfile` 의 `weights-*` 단계를 같이 바꾼다(시험이 대조한다). 설계·근거: `docs/design/bake-demo-weights.md`.
+- Tier 0 이미지는 풀면 약 18.7GB, 통합 이미지는 약 24.3GB 다(시연 가중치 굽기 전. 구운 뒤 약 37.7GB 추정)(2026-10-23 노트북 빌드, S15P31A101-246: torch 2.11.0·onnxruntime-gpu·cupy 제외. 층별 크기는 `docs/design/unified-env.md` "빌드 결과"). 이전 Tier 0 는 압축 약 7.9GB·풀면 약 21GB 였다. 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
 - **Re-ID(S15P31A101-471).** Tier 0·통합 이미지는 `--extra reid`(timm·yacs·ftfy·einops 등, torch 는 tier0 와 같은 판)를 함께 설치한다. COPE 저장소는 LICENSE 가 없어 이미지에 넣지 않는다 — 세션 준비 때 Pod `/srv/simai/reid/{cope,weights/cope_msmt17.pth,clip-cache/ViT-B-16.pt}` 로 올리고 `SIMAI_COPE_ROOT`·`SIMAI_COPE_WEIGHTS`·`SIMAI_COPE_CLIP_PATH` 를 Pod 환경에 넣는다(Tier 0 설정 파일에 경로가 없으면 이 환경변수를 읽는다). 없으면 Re-ID 만 꺼지고(`reid: disabled`) 나머지는 그대로 돈다.
 - **층 분할(S15P31A101-207).** 큰 휠은 잠금에서 뽑은 묶음별 층(CUDA 13 휠·torch·TensorRT libs·큰 일반 휠)이고, 작은 패키지는 그 위 한 층, simai_ai 코드는 맨 위다. 로컬 재빌드에서 작은 패키지 하나가 바뀌면 다시 만든 층이 풀린 크기로 약 0.6GB, 코드 한 줄이면 약 9MB 다(push 전송량은 압축 크기라 더 작다. 같은 빌드 기계의 BuildKit 캐시가 남아 있을 때. 실측은 `docs/design/exp-images.md`).
   묶음 이름이 잠금에 없으면 빌드가 멈춘다. 묶음을 바꿀 때는 `deploy/tier0/Dockerfile` 의 `pick` 줄을 고친다.
@@ -390,12 +397,13 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 
 1. 준비(저장 위치·GPU·`tier0` 가중치) → `simai-tier0`(엔진 준비 → Tier 0). GPU VRAM 이 48GB급(45,000 MiB) 미만이면 vLLM·워커를 띄우지 않고 Tier 0 단독으로 exec 한다(명세 3.12).
 2. Tier 0 표시 파일 `state/tier0.live` 가 `phase=running`·`reserve.state=OK`(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 쓴 것(`gpu_priority.written_at` ≥ 기동 시각, `pid` 같음)이면 워커 가중치를 받는다(받는 동안에도 Tier 0 는 돈다). 이전 실행이 비정상 종료로 남긴 표시는 준비로 보지 않고 지우지도 않는다.
+   **시작 순서(S15P31A101-577)**: 이때 분석 워커와 현장 세팅 가중치 받기를 바로 시작하고, 한 스레드가 아바타·PPE 묶음(통합 이미지는 구운 사본, 수 초) → VLM 묶음(31.5GB)을 차례로 준비한다. 아바타·PPE 는 자기 묶음이 끝나는 대로 뜨고 VLM 받기를 기다리지 않는다. vLLM 은 VLM 묶음 뒤에 뜬다. 워커는 vLLM 전에 돌지만 `SIMAI_WORKER_VLM_GATE=health` 로 `vlm_rationale`·`incident_summary` 는 vLLM `/health` 200 뒤에만 받는다(그 전에는 EC2 대기열에 남아 시도를 쓰지 않는다). VLM 받기가 실패하면 vLLM 만 포기하고(로그 `VLM 미준비`·기록 `worker-weights` 에 이유) 워커·아바타·PPE·Tier 0 는 계속 돈다. 아바타·PPE 묶음이 실패하면 그 둘만 띄우지 않는다.
 3. vLLM 서버: `vllm serve $SIMAI_ROOT/weights/cosmos3-nano --served-model-name cosmos3-nano --hf-overrides '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}' --gpu-memory-utilization $SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.30) --max-num-seqs $SIMAI_WORKER_VLLM_MAX_NUM_SEQS(4) --max-model-len $SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768) --quantization $SIMAI_VLLM_QUANTIZATION(fp8) --host 127.0.0.1 --port $SIMAI_VLLM_PORT(8000) --mm-encoder-tp-mode data --async-scheduling $SIMAI_VLLM_EXTRA_ARGS`, `VLLM_USE_DEEP_GEMM=0`, `VLLM_USE_FLASHINFER_SAMPLER=0`, `HF_HUB_OFFLINE=1`. `/health` 가 200 이 될 때까지 기다린다(`SIMAI_VLLM_READY_TIMEOUT_S`, 기본 1800).
    `--max-model-len` 이 없으면 모델 기본 262,144 토큰(한 요청 KV 36 GiB)이 남는 KV 를 넘어 기동이 실패하고, runtime 이미지에는 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 실패한다(3차 GPU 세션, `docs/design/unified-env.md`). `SIMAI_VLLM_QUANTIZATION`(기본 `fp8`, S15P31A101-525)은 FP8 온라인 양자화(`--quantization fp8`)를 켜서 가중치 메모리를 `16.79 GiB → 10.05 GiB`(11-06 GPU PoC, 첫 응답 `1.73 → 1.57 s`, 한국어 판정·근거 품질 동등)로 줄인다. `SIMAI_VLLM_QUANTIZATION=none` 또는 빈 값이면 `--quantization` 을 넣지 않고, `SIMAI_VLLM_EXTRA_ARGS` 에 이미 `--quantization`(또는 `-q`)·`--max-model-len` 이 있으면 그 값을 쓰고 중복하지 않는다.
 4. 분석 워커·아바타(S15P31A101-246·-382·-493·-525): `python -m services.worker $SIMAI_WORKER_ARGS` 와(`avatar` 선택 시) `python -m services.avatar`.
    - **GPU 메모리 상한(-493·-525)**: 분석 예산 `0.70` 에서 vLLM `0.30`·avatar `0.10` 을 빼 워커 `0.30`(H100 80 GiB 기준 24 GiB), 아바타 미사용이면 `0.40`(32 GiB)을 쓴다. H100 80 GiB 의 vLLM `0.30`(24 GiB)은 FP8 가중치 `10.05 GiB` + CUDA graph(`0.03~0.04 GiB`)·활성화 여유 + KV 캐시(약 `13 GiB ≈ 9.4만 토큰`, `--max-model-len 32768` 기준 동시 `2.9x`·실사용 약 `2,900 토큰/요청` 기준 동시 `30x` 이상; H200 140 GiB 의 `0.30` 에서는 KV `29.07 GiB = 211,664 토큰`, 동시 `6.46x`)를 담는다. 워커 상한은 `worker.env` 의 `SIMAI_WORKER_TORCH_MEMORY_FRACTION` > 프로세스 환경의 명시 값 > 계산값 순서이며, 합이 예산을 넘거나 워커 몫이 **최소 보장 비율 `0.10`(H100 80 GB 기준 ~8 GB, 12차 세션 MapAnything peak alloc 6.4 GB 대비 여유 약 1.6 GB)** 미만이면(예: 12차 세션처럼 워커 몫이 `0.05` ≈ 4 GB 로 줄어드는 구성) 기동 전 종료 코드 64 로 거부한다. 실행 직전 env 파일이 바뀌어 검증값과 다르면 워커를 띄우지 않는다. 아바타 실사용은 `4.0~5.1 GB` 라 상한 `0.10` 과 Tier 0 `0.20` 은 유지한다. 48GB급 이상 80GB 미만은 경고 후 실행(이 조합 미검증·OOM 가능), 48GB급 미만은 Tier 0 단독이다.
    - **토큰 파일 격리**: 워커 토큰 파일은 `SIMAI_WORKER_ENV_FILE`(또는 `SIMAI_WORKER_TOKEN_FILE` 로부터 생성한 `0600` `worker.env`, 없으면 `$SIMAI_ROOT/../.simai-private/worker.env`)을 `simai-wait-tier0 --env-file` 로 `worker`·`avatar` 환경에만 넣는다. Tier 0 토큰 파일(`SIMAI_TIER0_TOKEN_FILE`)은 `tier0` 환경에만 넣는다(명령줄·로그·기록·다른 자식 프로세스 환경에 노출하지 않는다).
-5. PPE(`ppe` 선택 시, 명세 5.5, S15P31A101-507): Tier 0 준비 뒤 `ppe` 가중치 묶음(`SIMAI_PPE_WEIGHTS_SET`, 기본 `ppe`)을 워커 가중치와 함께 받고 `python -m services.ppe` 를 띄운다. 명시해야 켜지고 `lobby` 기본(`tier0,vllm,worker,avatar`)·`preflight` 묶음에는 넣지 않았다(G9 동시 실행 판정 전).
+5. PPE(`ppe` 선택 시, 명세 5.5, S15P31A101-507): Tier 0 준비 뒤 `ppe` 가중치 묶음(`SIMAI_PPE_WEIGHTS_SET`, 기본 `ppe`)을 아바타 묶음과 함께(VLM 받기와 따로, S15P31A101-577) 준비하고 `python -m services.ppe` 를 띄운다. 명시해야 켜지고 `lobby` 기본(`tier0,vllm,worker,avatar`)·`preflight` 묶음에는 넣지 않았다(G9 동시 실행 판정 전).
    - **입력·출력**: Tier 0 환경에 `SIMAI_AVATAR_SHARE=1`(아바타 입력 공유 파일 `/dev/shm/simai-avatar-input.npz`, 아바타가 꺼져 있어도 켠다)과 `SIMAI_PPE_RELAY=1` 을 넣는다. PPE 는 그 공유 파일을 읽기만 하고, 만든 `ppe_state` 봉투를 outbox(`SIMAI_PPE_OUTBOX`, 기본 `/dev/shm/simai-ppe-outbox`)에 쓴다. Tier 0 가 그것을 자기 I1 연결(`source_id` 그대로)로 보낸다. PPE 는 I1 연결·워커 토큰·HF 토큰을 쓰지 않는다(같은 `source_id` 연결이 둘이면 EC2 의 운영자 명령이 PPE 쪽으로 갈 수 있다).
    - **GPU 메모리 상한**: `SIMAI_PPE_GPU_MEMORY_FRACTION`(기본 0.05)은 분석 워커 예산(0.70) 밖의 별도 몫이다. Tier 0 + 분석 워커 + PPE ≤ 0.95 를 넘으면 기동 전 64(명세 3.2. 초기값 0.20 + 0.70 + 0.05 는 여유 0, G0 실측으로 다시 정한다). PPE 환경에는 체크포인트 경로·sha256(`SIMAI_PPE_WEIGHTS`·`SIMAI_PPE_WEIGHTS_SHA256`)을 넣고, PPE 는 불러오기 전에 sha256 을 다시 확인한다.
    - **접수 문**: PPE 는 Tier 0 표시 파일의 지연 신호(3.2 접수 규칙)가 모름·초과면 새 추론을 멈추고 안정 뒤 재개한다. 종료는 Tier 0 보다 먼저다(`ppe → avatar → worker → vllm`).
@@ -416,6 +424,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 
 ```sh
 # 1) 기동 전 일괄 점검 (tier0,avatar,static,vlm 가중치 + GPU 메모리 예산 + texrecon 바이너리 + open3d·ultralytics 모듈)
+#    static 의 MapAnything 은 SIMAI_MAPANYTHING_MODEL 한 판만(기본 weights/map-anything, apache 판은 받지 않음, S15P31A101-577)
 #    하나라도 실패하면 비-0 종료 코드(2·3·64)로 즉시 실패한다.
 simai-bootstrap preflight
 
@@ -455,7 +464,7 @@ simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanyt
 ```
 
 1. LIVE 확인(받기 전): Tier 0 표시 파일(`SIMAI_TIER0_MARKER`, 기본 `$SIMAI_ROOT/state/tier0.live`)이 30초 안에 갱신됐거나 확인하지 못하면, 또는 GPU 사용 중 메모리가 1024 MiB 초과면 종료 코드 75(못 읽는 것은 2 의 GPU 단계가 판정).
-2. 준비: 저장 위치·GPU·가중치 `static` 묶음(MapAnything 기본·apache, `SIMAI_WEIGHTS_SET` 과 상관없음). 실패하면 2·3.
+2. 준비: 저장 위치·GPU·가중치 `static` 묶음(`SIMAI_WEIGHTS_SET` 과 상관없음). MapAnything 은 한 판만: 명령에 `--model <판의 폴더>` 가 있으면 그 판, 없으면 `SIMAI_MAPANYTHING_MODEL`(기본 `weights/map-anything`, 현장 세팅 워커와 같음, S15P31A101-577). 통합 이미지에서는 구운 사본을 확인해 링크한다. 실패하면 2·3.
 3. 재확인: 표시 파일(받는 동안 Tier 0 가 떴을 수 있다)과 GPU 사용 중 메모리(`nvidia-smi memory.used` 가 1024 MiB 초과, 못 읽음, NaN 등 → 75: 표시 파일로 안 보이는 Tier 0 엔진 빌드·REPLAY·vLLM·다른 컨테이너). 거부하면 `runs/bootstrap/` 에 exit 75 기록을 추가한다.
 4. 그 명령을 새 프로세스 그룹 자식으로 실행한다(출력은 `[scene]` 접두, 원문 `$SIMAI_ROOT/logs/scene.log`). 종료 코드는 명령의 것이고 끝나면 그룹을 정리해 VRAM 을 돌려준다. HF 토큰은 2 의 받기에만 쓰고 명령에 넘기지 않는다. 실행 중 Tier 0 가 시작하면 아래처럼 멈춘다.
 
@@ -469,7 +478,7 @@ simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanyt
 |---|---|
 | GPU | 하나. 80GB 권장(H100·A100 80GB), 48GB급 미만이면 Tier 0 단독으로 뜬다. Ampere 이후. H100 80GB 실측(3차 GPU 세션): 적재 가중치 16.79 GiB + KV 23.99 GiB(174,688 토큰)가 VLM 0.55 안에 들어간다(31.5GB 는 받는 파일 크기). 48GB 에서 0.55(26.4GB)는 미확인(명세 19.1). 추정: 26.4GB ≈ 24.6 GiB − 가중치 16.79 GiB ≈ KV 7.8 GiB 이하 ≈ 56,800 토큰 이하(7.8/23.99 × 174,688), `--max-model-len` 32,768 기준 최대 동시 약 1.7x 이하(활성화 등 여유를 빼면 더 작다) |
 | 드라이버 | 최대 CUDA 13.0 이상(RunPod·Vast 의 CUDA 필터 13.0). VM 은 NVIDIA Container Toolkit, `graphics` 기능이 컨테이너에 올라오는지(`ls /usr/share/glvnd/egl_vendor.d/` 에 `10_nvidia.json`) |
-| 디스크 | 이미지(풀면 아래 "빌드 결과") + 가중치 약 32GB(YOLO 0.1GB + Cosmos3-Nano 31.5GB) + 엔진·저널·로그. 컨테이너 디스크면 150GB 이상, 시연은 인스턴스를 다시 켜도 남는 디스크(명세 3.12) |
+| 디스크 | 이미지(풀면 아래 "빌드 결과", 시연 가중치 약 13.4GB 포함) + 받는 가중치 약 31.5GB(Cosmos3-Nano. 나머지는 이미지 사본에 링크) + 엔진·저널·로그. 컨테이너 디스크면 150GB 이상, 시연은 인스턴스를 다시 켜도 남는 디스크(명세 3.12) |
 | 포트 | 22(SSH, 키 인증만), I0 수신 포트(공개 TCP 17000·17001 노출, 매핑은 `RUNPOD_TCP_PORT_17000`·`_17001` 또는 대칭 매핑). vLLM 8000 은 127.0.0.1 만(공개하지 않는다) |
 | 메모리·CPU | vCPU 8개 이상(명세 3.12 초기값). Tier 0 CPU 디코딩과 vLLM 전처리가 같은 CPU 를 쓴다. 3차 GPU 세션 실측(Pod cgroup 상한 23.8 vCPU): VLM 동시 4 지속 중 Tier 0 CPU 142 → 192%, loadavg 최대 85, `frame_age` p95 60 → 76 ms. cgroup 기준 새 CPU 묶기(S15P31A101-278)는 4차 세션 v4 가 다시 잰다 |
 
@@ -491,7 +500,7 @@ RunPod Stop 이 SIGTERM 뒤 얼마를 기다리는지는 문서로 확인하지 
 # 2) 준비만: Tier 0 묶음 + 워커 묶음(31.5GB, 블록 스토리지에 한 번 받으면 다음부터 검증 스탬프로 다시 해시하지 않는다)
 docker run --rm --gpus all -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
   --env-file /mnt/simai-block/.simai-private/hf.env -e SIMAI_WEIGHTS_SET=vlm <통합 이미지> check
-# 3) 기동: Tier 0 → (준비) → vLLM → 워커. 정지 시한 60초
+# 3) 기동: Tier 0 → (준비) → 워커·아바타 바로, VLM 받은 뒤 vLLM(S15P31A101-577). 정지 시한 60초
 docker run -d --name simai --restart unless-stopped --stop-timeout 60 --gpus all \
   -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
   --env-file /mnt/simai-block/.simai-private/hf.env \
@@ -500,7 +509,7 @@ docker run -d --name simai --restart unless-stopped --stop-timeout 60 --gpus all
   -e SIMAI_TIER0_GPU_RESERVE_MB=8192 -e SIMAI_IMAGE_DIGEST=sha256:<다이제스트> \
   -e SIMAI_EC2_BASE_URL=https://<EC2> -e SIMAI_WORKER_ID=worker-01 \
   <통합 이미지> --config /workspace/simai/tier0.json
-docker logs -f simai     # [tier0] … → simai-bootstrap: Tier 0 준비됨 → 워커 가중치 → [vllm] … 준비됨 → [worker] …
+docker logs -f simai     # [tier0] … → simai-bootstrap: Tier 0 준비됨 → [worker] … → 워커 가중치 vlm 준비 → [vllm] … 준비됨
 ```
 
 Compose 다중 컨테이너로 나누지 않는다(Pod형과 같은 단일 컨테이너, 자문 1). Tier 0 만 띄울 때는 `-e SIMAI_SERVICES=tier0`.

@@ -123,6 +123,32 @@ def test_scene_prepares_static_weights_then_runs_command(bs, tmp_path, monkeypat
     assert (st["root"] / "logs" / "scene.log").is_file()
 
 
+def _grouped() -> None:
+    """저장소 목록처럼 MapAnything 두 판에 group=mapanything 을 붙이고 실제 폴더 이름(map-anything·map-anything-apache)을 쓴다."""
+    manifest = Path(os.environ["SIMAI_WEIGHTS_MANIFEST"])
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
+    for w in doc["weights"]:
+        if w["sets"] == ["static"]:
+            w["group"] = "mapanything"
+            w["path"] = "weights/map-anything-apache/model.safetensors" if w["name"] == "map-apache" else "weights/map-anything/model.safetensors"
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_scene_fetches_only_the_setup_mapanything_variant_unless_the_command_names_one(bs, tmp_path, monkeypatch):
+    """S15P31A101-577: 관제 전 정적 장면·after-live(워커)는 현장 세팅 폴더(weights/map-anything) 판만 받는다(apache 4.9GB 를 받지 않음).
+    실험 명령이 --model 로 apache 판 폴더를 가리키면 그 판만 받는다(3차 세션 u4 와 같은 명령)."""
+    st = _setup(bs, tmp_path, monkeypatch)
+    _grouped()
+    monkeypatch.delenv("SIMAI_MAPANYTHING_MODEL", raising=False)
+    assert bs.main(["scene", "--", *_cmd(st)]) == 0
+    assert [e[1] for e in _gets(st)] == ["facebook/map-ma"]
+    st["events"].clear()
+    apache = st["root"] / "weights" / "map-anything-apache"
+    assert bs.main(["scene", "--", PY, "-c", "import sys; sys.exit(0)", "--model", str(apache)]) == 0
+    assert [e[1] for e in _gets(st)] == ["facebook/map-apache"]
+    assert (apache / "model.safetensors").read_bytes() == BLOB["apache"]
+
+
 def test_fresh_live_marker_refuses_before_downloading(bs, tmp_path, monkeypatch, capsys):
     st = _setup(bs, tmp_path, monkeypatch)
     _live_marker(st["marker"], age_s=2)

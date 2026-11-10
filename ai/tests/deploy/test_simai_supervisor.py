@@ -138,6 +138,8 @@ def _start(sup, world):
 
 
 def test_order_tier0_then_weights_then_vllm_then_worker_after_health(bs, tmp_path, monkeypatch):
+    """Tier 0 먼저(준비 전에는 받지도 띄우지도 않는다). 준비 뒤 워커는 바로, vLLM 은 VLM 가중치 뒤(S15P31A101-577).
+    워커는 vLLM /health 전에도 돌지만 VLM 작업 유형은 /health 200 뒤에만 받는다(SIMAI_WORKER_VLM_GATE=health)."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w)
     _start(sup, w)
@@ -145,12 +147,11 @@ def test_order_tier0_then_weights_then_vllm_then_worker_after_health(bs, tmp_pat
     assert w.spawned == ["tier0"] and sup.weight_calls == [] and sup.phase == "wait_tier0"  # 준비 전: 받지도 띄우지도 않는다
     w.ready = True
     _settle(sup, w, 3)
-    assert sup.weight_calls == [["m"]] and w.spawned == ["tier0", "vllm"]  # 준비 뒤 가중치 → vLLM
-    _settle(sup, w, 10)
-    assert w.spawned == ["tier0", "vllm"]  # /health 전에는 워커를 띄우지 않는다
+    assert sup.weight_calls == [["m"]] and w.spawned[0] == "tier0" and sorted(w.spawned[1:]) == ["vllm", "worker"]
+    assert w.envs["worker"]["SIMAI_WORKER_VLM_GATE"] == "health" and "SIMAI_WORKER_VLM_GATE" not in w.envs["vllm"]
     w.healthy = True
     _settle(sup, w, 8)
-    assert w.spawned == ["tier0", "vllm", "worker"]
+    assert sorted(w.spawned) == ["tier0", "vllm", "worker"]  # 다시 띄운 것 없음
     assert w.last("vllm").nice == 10 and w.last("worker").nice == 10 and w.last("tier0").nice == 0
     assert ("tier0", signal.SIGTERM) not in w.signals
 
@@ -172,7 +173,7 @@ def test_avatar_opt_in_weights_and_total_worker_budget(bs, tmp_path, monkeypatch
     assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
     w.ready = w.healthy = True
     _settle(sup, w, 12)
-    assert "avatar" in w.spawned and sup.weight_calls == [["m", "m"]]
+    assert "avatar" in w.spawned and sup.weight_calls == [["m"], ["m"]]  # 아바타 묶음 → VLM 묶음(따로, S15P31A101-577)
     assert "services.avatar" in w.argvs["avatar"]
     assert w.argvs["avatar"][:3] == ["simai-wait-tier0", "--env-file", str(env_file)]
     assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.30)
@@ -242,12 +243,103 @@ def test_ppe_stops_before_other_sidecars_and_avatar_share_is_not_duplicated(bs, 
     w.ready = w.healthy = True
     _settle(sup, w, 12)
     assert {"avatar", "ppe", "worker"} <= set(w.spawned)
-    assert sup.weight_calls == [["m", "m", "ppe-ckpt"]]
+    assert sup.weight_calls == [["m", "ppe-ckpt"], ["m"]]  # 아바타·PPE 묶음 → VLM 묶음
     # PPE 몫은 분석 워커 예산(0.70) 밖이다: worker 는 vLLM(0.30)·avatar(0.10) 를 뺀 0.30 그대로
     assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.30)
     w.signals.clear()
     sup._stop_sidecars()
     assert [n for n, s in w.signals if s == signal.SIGTERM] == ["ppe", "avatar", "worker", "vllm"]
+
+
+def _split_manifest(tmp_path) -> Path:
+    path = tmp_path / "weights-split.json"
+    path.write_text(json.dumps({"weights": [
+        {"name": "m", "sets": ["vlm"], "path": "weights/m.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+        {"name": "av", "sets": ["avatar"], "path": "weights/av.bin", "source": {"url": "x"}, "sha256": "1" * 64},
+        {"name": "ppe-ckpt", "sets": ["ppe"], "path": "weights/ppe/p.pt", "source": {"url": "x"}, "sha256": PPE_SHA,
+         "env": "SIMAI_PPE_WEIGHTS"}]}), encoding="utf-8")
+    return path
+
+
+def _split_sup(bs, tmp_path, monkeypatch, w, fake):
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar", "ppe"),
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_split_manifest(tmp_path))})
+    calls: list[list[str]] = []
+
+    def ensure(_root, entries):
+        names = [e["name"] for e in entries]
+        calls.append(names)
+        fake(names)
+        return [{"name": n, "status": "baked"} for n in names]
+
+    monkeypatch.setattr(bs, "ensure_weights", ensure)
+    sup.weight_calls = calls
+    return sup
+
+
+def _stage_records(tmp_path) -> dict[str, dict]:
+    docs = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "simai" / "runs" / "bootstrap").glob("*.json")]
+    return {d["stage"]: d for d in docs if d["stage"] != "setup-weights"}  # 현장 세팅 가중치(시험 목록에 static 없음, 경고만)는 뺀다
+
+
+def test_slow_vlm_download_does_not_hold_back_avatar_ppe_or_worker(bs, tmp_path, monkeypatch):
+    """S15P31A101-577: 구운 아바타·PPE 가중치가 준비되면 VLM 31.5GB 받기를 기다리지 않고 띄운다. vLLM 은 VLM 이 준비된 뒤."""
+    import threading
+
+    release = threading.Event()
+    w = World()
+    sup = _split_sup(bs, tmp_path, monkeypatch, w, lambda names: release.wait(30) if names == ["m"] else None)
+    _start(sup, w)
+    w.ready = True
+    sup.step()  # Tier 0 준비 → 가중치 스레드 시작(아바타·PPE → VLM)
+    deadline = time.monotonic() + 5
+    while not sup.sidecar_done and time.monotonic() < deadline:
+        time.sleep(0.01)
+    for _ in range(3):
+        sup.step()
+        w.now += 1
+    assert sup.sidecar_done and not sup.vlm_done  # VLM 은 아직 받는 중
+    assert {"avatar", "ppe", "worker"} <= set(w.spawned) and "vllm" not in w.spawned
+    assert sup.weight_calls == [["av", "ppe-ckpt"], ["m"]]
+    release.set()
+    sup._weights.join(5)
+    w.healthy = True
+    _settle(sup, w, 3)
+    assert sorted(w.spawned) == ["avatar", "ppe", "tier0", "vllm", "worker"]  # VLM 준비 뒤 vLLM, 다른 것은 다시 띄우지 않았다
+    assert {k: v["exit"] for k, v in _stage_records(tmp_path).items()} == {"sidecar-weights": 0, "worker-weights": 0}
+
+
+def test_vlm_download_failure_keeps_avatar_ppe_worker_and_logs_why(bs, tmp_path, monkeypatch, capsys):
+    def fail_vlm(names):
+        if names == ["m"]:
+            raise bs.BootstrapError(bs.EXIT_STORAGE, "cosmos3-nano 받기 실패: HTTP 503")
+
+    w = World()
+    sup = _split_sup(bs, tmp_path, monkeypatch, w, fail_vlm)
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 30, dt=10)
+    assert sorted(w.spawned) == ["avatar", "ppe", "tier0", "worker"] and sup.svc["vllm"].given_up
+    assert not w.signals  # 아무것도 내리지 않았다
+    err = capsys.readouterr().err
+    assert "HTTP 503" in err and err.count("VLM 미준비") == 1  # 이유는 한 번만
+    recs = _stage_records(tmp_path)
+    assert recs["worker-weights"]["exit"] == 2 and "HTTP 503" in recs["worker-weights"]["error"]
+    assert recs["sidecar-weights"]["exit"] == 0
+
+
+def test_sidecar_weights_failure_skips_only_avatar_and_ppe(bs, tmp_path, monkeypatch, capsys):
+    def fail_sidecar(names):
+        if "av" in names:
+            raise bs.BootstrapError(bs.EXIT_STORAGE, "av 해시 불일치")
+
+    w = World()
+    sup = _split_sup(bs, tmp_path, monkeypatch, w, fail_sidecar)
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 10)
+    assert sorted(w.spawned) == ["tier0", "vllm", "worker"]
+    assert "아바타·PPE 를 띄우지 않는다" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("env", [
@@ -304,7 +396,7 @@ def test_stale_running_marker_from_previous_run_is_not_ready_until_this_tier0_wr
     assert "이번 Tier 0 기동 전의 표시 파일" in capsys.readouterr().err
     _marker(root, 10_500, pid)  # 이번 Tier 0 가 엔진 적재·선확보 뒤에 쓴 running·OK
     _settle(sup, w, 10)
-    assert w.spawned[:2] == ["tier0", "vllm"] and sup.weight_calls == [["m"]]
+    assert w.spawned[0] == "tier0" and "vllm" in w.spawned and sup.weight_calls == [["m"]]
 
 
 @pytest.mark.parametrize("doc", [{"gpu_priority": {"phase": "running", "reserve": {"state": "OK"}}},  # written_at·pid 없음(모르면 준비 아님)
@@ -542,7 +634,7 @@ def test_vllm_not_healthy_in_time_is_group_killed_and_retried(bs, tmp_path, monk
     first = w.last("vllm")
     _settle(sup, w, 70)  # /health 가 끝내 200 이 아니다
     assert first.rc == -9 and ("vllm", bs.KILL) in w.signals
-    assert "worker" not in w.spawned  # VLM 이 뜨지 않았으니 워커도 아직
+    assert w.spawned.count("worker") == 1  # 워커는 VLM 을 기다리지 않고 한 번 떠 그대로 돈다(VLM 유형은 워커가 미룬다)
     assert w.spawned.count("vllm") >= 2
 
 
@@ -556,14 +648,16 @@ def test_worker_starts_without_vlm_when_vllm_is_given_up(bs, tmp_path, monkeypat
     assert sup.svc["vllm"].given_up and w.spawned == ["tier0", "worker"]
 
 
-def test_worker_weights_failure_keeps_tier0_and_starts_nothing(bs, tmp_path, monkeypatch, capsys):
+def test_worker_weights_failure_keeps_tier0_and_worker_but_not_vllm(bs, tmp_path, monkeypatch, capsys):
+    """VLM 받기 실패: vLLM 만 포기, Tier 0·워커는 계속(S15P31A101-577. 예전에는 워커도 띄우지 않았다)."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w, weights_ok=False)
     _start(sup, w)
     w.ready = w.healthy = True
     _settle(sup, w, 20)
-    assert sup.phase == "off" and w.spawned == ["tier0"] and not w.signals
-    assert "Tier 0 는 계속" in capsys.readouterr().err
+    assert w.spawned == ["tier0", "worker"] and sup.svc["vllm"].given_up and not w.signals
+    err = capsys.readouterr().err
+    assert "Tier 0·워커·아바타·PPE 는 계속" in err and "VLM 미준비" in err and "vlm 받기 실패" in err
     rec = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "simai" / "runs" / "bootstrap").glob("*.json")]
     assert rec[0]["stage"] == "worker-weights" and rec[0]["exit"] == 2 and TOKEN not in json.dumps(rec)
 
@@ -595,8 +689,9 @@ def test_worker_start_prepares_setup_mapanything_weights_after_vlm(bs, tmp_path,
     w.ready = True
     _settle(sup, w, 3)
     _join_setup(sup)
-    assert sup.weight_calls == [["m"], ["ma-model", "ma-config"]]  # apache 사본은 워커가 쓰지 않는다
-    assert sup.setup_weights_error is None and w.spawned == ["tier0", "vllm"]
+    # apache 사본은 워커가 쓰지 않는다. 현장 세팅 가중치는 VLM 받기와 따로(나란히) 돈다(S15P31A101-577)
+    assert sorted(sup.weight_calls) == [["m"], ["ma-model", "ma-config"]]
+    assert sup.setup_weights_error is None and sorted(w.spawned) == ["tier0", "vllm", "worker"]
     rec = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((tmp_path / "simai" / "runs" / "bootstrap").glob("*.json"))]
     assert sorted(r["stage"] for r in rec) == ["setup-weights", "worker-weights"]
     assert next(r for r in rec if r["stage"] == "setup-weights")["exit"] == 0
@@ -1089,9 +1184,9 @@ def _finish(p: subprocess.Popen, timeout: float = 60) -> tuple[int, str]:
 def test_real_processes_start_in_order_stop_in_reverse_and_clean_grandchildren(tmp_path):
     p, events, root = _real(tmp_path)
     try:
-        ev = _wait_for(events, lambda ev: any(e[0] == "worker" and e[1] == "start" for e in ev))
+        ev = _wait_for(events, lambda ev: {"worker", "vllm"} <= {e[0] for e in ev if e[1] == "start"})
         starts = [e[0] for e in ev if e[1] == "start"]
-        assert starts == ["tier0", "vllm", "worker"]
+        assert starts[0] == "tier0" and sorted(starts[1:]) == ["vllm", "worker"]  # 워커는 VLM 을 기다리지 않는다(S15P31A101-577)
         assert all(e[2].startswith("clean") for e in ev if e[1] == "start")  # HF 토큰 없음
         assert [e[2:4] for e in ev if e[1] == "start" and e[0] != "tier0"] == [["clean", "omp=1"]] * 2
         kid = int(next(e[2] for e in ev if e[1] == "grandchild"))
@@ -1119,7 +1214,7 @@ def test_real_stale_marker_does_not_start_vllm_before_this_tier0_is_ready(tmp_pa
     _marker(root, int(time.time() * 1000) - 5_000, 1)
     p, events, _root = _real(tmp_path, FAKE_TIER0_READY_AFTER_S="3")
     try:
-        _wait_for(events, lambda ev: any(e[0] == "worker" and e[1] == "start" for e in ev))
+        _wait_for(events, lambda ev: {"worker", "vllm"} <= {e[0] for e in ev if e[1] == "start"})
         p.send_signal(signal.SIGTERM)
         rc, out = _finish(p)
     finally:
@@ -1130,6 +1225,7 @@ def test_real_stale_marker_does_not_start_vllm_before_this_tier0_is_ready(tmp_pa
     assert rc == 0, out[-2000:]
     assert ts[("tier0", "marker")] - ts[("tier0", "start")] >= 2.9
     assert ts[("vllm", "start")] >= ts[("tier0", "marker")]  # 이번 Tier 0 가 표시를 쓴 뒤에야
+    assert ts[("worker", "start")] >= ts[("tier0", "marker")]  # 워커도 Tier 0 준비 뒤(VLM 은 기다리지 않음)
     assert "이번 Tier 0 기동 전의 표시 파일" in out
 
 
@@ -1303,7 +1399,7 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
         "--no-clean-background",
     ])
     assert rc == 17, "Tier 0 의 비-0 종료 코드를 삼키지 않고 그대로 돌려줘야 한다"
-    assert w.spawned == ["tier0", "vllm", "avatar", "worker"]
+    assert w.spawned[0] == "tier0" and sorted(w.spawned[1:]) == ["avatar", "vllm", "worker"]
     assert w.envs["worker"]["SIMAI_WORKER_ID"] == w.envs["avatar"]["SIMAI_WORKER_ID"] == "worker-s10"
     assert "SIMAI_WORKER_ID" not in w.envs["tier0"] and "SIMAI_WORKER_ID" not in w.envs["vllm"]
 

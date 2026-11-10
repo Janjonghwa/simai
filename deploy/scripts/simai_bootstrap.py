@@ -34,14 +34,23 @@
      받기는 끊기면 지수 백오프로 다시 시도하고(SIMAI_FETCH_ATTEMPTS, 기본 5회) 옆 임시 파일(<이름>.part)에서 이어받는다(HTTP Range).
      tier0 묶음에 없는 항목(워커·실험 가중치)은 확인한 뒤 검증 스탬프($SIMAI_ROOT/weights/.verified/<이름>.json: 경로·크기·mtime·sha256)를
      남기고, 다음 시작에 크기·mtime 이 같으면 다시 해시하지 않는다(Cosmos3-Nano 31.5GB 재해싱을 피한다). Tier 0 가중치는 매번 해시한다.
+     이미지에 구운 사본(SIMAI_BAKED_WEIGHTS, 기본 /opt/simai/baked/<path>, 통합 이미지의 시연 가중치, S15P31A101-577)이 있으면 받기 전에 그것을 쓴다:
+     옆 <path>.sha256 이 목록 해시와 같고 사본을 해시해 맞으면 $SIMAI_ROOT/<path> 에 심볼릭 링크를 건다(상태 baked, 링크를 못 걸면 복사).
+     다르면 사본을 쓰지 않고 위처럼 받는다. $SIMAI_ROOT/<path> 가 이미 있으면 사본을 보지 않는다(있는 파일의 규칙 그대로).
+     static 묶음의 MapAnything 판(목록 group=mapanything: 기본·apache 두 벌)은 장면 준비·after-live·check --sets·preflight 에서 고른 하나만 받는다:
+     SIMAI_MAPANYTHING_MODEL(기본 $SIMAI_ROOT/weights/map-anything = 현장 세팅 워커가 읽는 폴더), 장면 명령에 --model <그 판의 폴더> 가 있으면 그것.
+     SIMAI_WEIGHTS_SET=static 으로 부르는 실험 경로(run·queue·인자 없는 check)는 목록 그대로 두 벌을 받는다(S15P31A101-577).
   4) 기록 $SIMAI_ROOT/runs/bootstrap/<UTC>-<pid>.json (추가만), 그다음 실행할 명령으로 exec 한다.
      queue 는 엔진 준비를 하지 않는다: 세션 b 항목이 엔진 첫 빌드 시간을 재기 때문이다.
 
 감시 프로세스(SIMAI_SERVICES=tier0,vllm,worker, 통합 이미지 기본. 없거나 'tier0' 이면 위처럼 simai-tier0 로 exec 하는 Tier 0 단독):
   - Tier 0 가중치만 확인한 뒤 simai-tier0 을 새 프로세스 그룹으로 띄운다. Tier 0 표시 파일(state/tier0.live)이 phase=running·
-    reserve.state=OK(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 기동 뒤에 쓴 것(gpu_priority.written_at ≥ 기동 시각, pid 같음)이면 워커 가중치 묶음(SIMAI_WORKER_WEIGHTS_SET, 기본 vlm)을 받고(실패해도 Tier 0 는 계속),
-    vLLM 서버(127.0.0.1:SIMAI_VLLM_PORT, /health 확인) → 분석 워커 순서로 띄운다. GPU VRAM 이 48GB급 미만이면 워커 쪽을 띄우지 않는다(명세 3.12).
-  - 분석 워커를 띄우면(run 단계에 들어서면) 뒤에서 현장 세팅(site_setup)의 MapAnything 가중치를 받는다: static 묶음 중 워커가 쓰는 모델 폴더
+    reserve.state=OK(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 기동 뒤에 쓴 것(gpu_priority.written_at ≥ 기동 시각, pid 같음)이면 나머지를 서비스별로 따로 준비해 띄운다(S15P31A101-577):
+    분석 워커는 바로 띄운다(VLM 작업 유형 vlm_rationale·incident_summary 는 워커가 vLLM /health 200 뒤에만 받는다, SIMAI_WORKER_VLM_GATE=health).
+    아바타·PPE 는 그 가중치 묶음(통합 이미지는 구운 사본, 수 초)이 준비되는 대로 띄운다. 그다음 같은 스레드가 워커 가중치 묶음(SIMAI_WORKER_WEIGHTS_SET,
+    기본 vlm, 31.5GB)을 받고 vLLM 서버(127.0.0.1:SIMAI_VLLM_PORT, /health 확인)를 띄운다. 어느 묶음이 실패해도 그 서비스만 띄우지 않고 나머지·Tier 0 는 계속
+    (VLM 실패는 vLLM 포기 + 로그·기록에 이유). GPU VRAM 이 48GB급 미만이면 워커 쪽을 띄우지 않는다(명세 3.12).
+  - Tier 0 가 준비되면 뒤에서 현장 세팅(site_setup)의 MapAnything 가중치를 받는다: static 묶음 중 워커가 쓰는 모델 폴더
     (SIMAI_MAPANYTHING_MODEL, 기본 $SIMAI_ROOT/weights/map-anything) 항목만, 이미 있으면 건너뛴다(S15P31A101-473). 워커 시작을 막지 않고, 실패하면
     경고만 남긴다(그 상태로 세팅하면 STATIC_MODEL_MISSING. 'simai-bootstrap preflight' 로 확인). 끄려면 SIMAI_WORKER_SETUP_WEIGHTS=0.
   - vLLM·워커가 죽으면 그 프로세스 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자 포함), 지수 백오프 뒤 Tier 0 가 준비 상태일 때만
@@ -66,7 +75,7 @@
     GPU 예산은 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 보고, 넘으면 64 로 시작하지 않는다(명세 3.2). PPE 는 I1 연결·워커 토큰을 쓰지 않는다.
 
 장면 준비 모드(S15P31A101-250, simai-bootstrap scene): MapAnything 같은 준비 단계 일회성 작업을 LIVE 서비스(Tier 0·vLLM·워커)와 겹치지 않게 돌린다.
-  - 가중치 묶음은 SIMAI_WEIGHTS_SET 과 상관없이 static(MapAnything 기본·apache)이다. SIMAI_SERVICES(이미지 기본 tier0,vllm,worker)는 tier0 명령만 쓰므로 보지 않는다.
+  - 가중치 묶음은 SIMAI_WEIGHTS_SET 과 상관없이 static 이다(MapAnything 은 명령의 --model 판, 없으면 SIMAI_MAPANYTHING_MODEL 한 판, S15P31A101-577). SIMAI_SERVICES(이미지 기본 tier0,vllm,worker)는 tier0 명령만 쓰므로 보지 않는다.
   - Tier 0 와 상호 배제(리뷰 R1, Tier 0 우선): tier0 명령은 GPU 를 잡기 전에 $SIMAI_ROOT/locks/tier0.lock 공유 잠금을 쥐고(exec 를 지나 Tier 0 가
     끝날 때까지), 장면 작업이 돌고 있으면(locks/scene.lock) 그 작업이 멈추기를 SCENE_PREEMPT_WAIT_S(20초)까지 기다리고 남은 그룹을 회수한 뒤
     (최악 약 40초) 시작한다. 회수하지 못하면 경고·기록(75)을 남기고 그대로 시작한다(Tier 0 가용성 우선, 의도된 정책). 장면 모드는
@@ -157,7 +166,7 @@ CAP_SYS_PTRACE = 19  # linux/capability.h. py-spy 부착에 필요(RunPod 컨테
 PREFLIGHT_SETS = ("tier0", "avatar", "static", "vlm")
 PREFLIGHT_BINS = ("texrecon",)
 PREFLIGHT_MODULES = ("open3d", "ultralytics")
-SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 기본·apache)
+SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 은 고른 한 판, pick_mapanything)
 SCENE_MARKER_MAX_AGE_S = 30.0  # 이 안에 갱신된 Tier 0 표시 파일 = LIVE (gpu_session1 live_guard 의 marker_max_age_s 와 같음)
 SCENE_POLL_S = 0.5  # 장면 작업 실행 중 Tier 0 시작 확인 주기
 SCENE_STOP_GRACE_S = 10.0  # Tier 0 가 시작하면 장면 그룹 SIGTERM 뒤 SIGKILL 까지
@@ -173,6 +182,8 @@ FETCH_ATTEMPTS = 5
 RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
 LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
 STAMP_DIR = ("weights", ".verified")  # 모델 폴더 밖(vLLM 이 읽는 weights/cosmos3-nano/ 에 섞이지 않게), Tier 0 state/ 밖
+BAKED_ROOT = Path("/opt/simai/baked")  # 통합 이미지에 구운 시연 가중치(<path> 와 옆 <path>.sha256, S15P31A101-577). SIMAI_BAKED_WEIGHTS 로 바꾼다
+MA_GROUP = "mapanything"  # 목록 group: static 묶음의 MapAnything 판(기본·apache). 데모 경로는 고른 하나만 받는다(S15P31A101-577)
 VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}'  # Reasoner 탑만 싣는다(docs/design/unified-env.md)
 VLLM_MAX_MODEL_LEN = "32768"  # H100·0.30(FP8 가중치 10.05 GiB)에서 KV 약 13 GiB ≈ 9.4만 토큰(동시 4 × 실사용 ~3k 토큰/요청 충분), H200·0.30 에서는 KV 29.07 GiB = 211,664 토큰(32k 기준 동시 6.46x, 11-06 GPU PoC)
 VLLM_GPU_MEMORY_UTILIZATION = "0.30"  # 11-06 GPU PoC FP8(S15P31A101-525): H100 80 GiB 의 0.30 = 24 GiB = 가중치 10.05 GiB + CUDA graph(0.03~0.04 GiB)·활성화 여유 + KV 캐시
@@ -590,6 +601,38 @@ def _write_stamp(root: Path, w: dict, target: Path, st: os.stat_result) -> None:
         log(f"{w['name']} 검증 스탬프를 쓰지 못함(다음 시작에 다시 해시한다): {e}")
 
 
+def _seed_from_baked(w: dict, target: Path) -> os.stat_result | None:
+    """이미지에 구운 사본으로 target 을 채운다(받기 대신, S15P31A101-577). 채웠으면 확인한 사본의 stat(스탬프용), 쓸 사본이 없으면 None.
+    옆 .sha256 이 목록 해시와 다르면(다른 판) 해시하지 않고 넘어가고, 사본을 해시해 다르면(손상) 경고만 남기고 넘어간다(그다음은 받기).
+    심볼릭 링크를 건다: 하드 링크는 overlayfs 아래 층 파일을 위 층으로 통째 복사하고, $SIMAI_ROOT 가 볼륨이면 파일 시스템이 달라 걸리지 않는다."""
+    baked = Path(os.environ.get("SIMAI_BAKED_WEIGHTS") or BAKED_ROOT) / w["path"]
+    if not baked.is_file():
+        return None
+    want = w["sha256"]
+    try:
+        tag = baked.with_name(f"{baked.name}.sha256").read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        tag = ""
+    if tag != want:
+        log(f"{w['name']} 이미지에 구운 사본({baked})은 목록과 다른 판이라 쓰지 않는다")
+        return None
+    st = baked.stat()
+    got = sha256_file(baked)
+    if got != want:
+        log(f"주의: {w['name']} 이미지에 구운 사본 해시 불일치 {got[:12]}… ≠ 목록 {want[:12]}… → 쓰지 않고 받는다")
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.baked-{os.getpid()}")
+    tmp.unlink(missing_ok=True)
+    try:
+        os.symlink(baked, tmp)
+    except OSError:  # 링크를 못 거는 파일 시스템(권한 없는 Windows 시험 등): 복사한다
+        shutil.copyfile(baked, tmp)
+        st = tmp.stat()
+    os.replace(tmp, target)  # 끊긴 링크(다른 이미지의 사본을 가리키던 볼륨)도 이것으로 바뀐다
+    return st
+
+
 def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
     # 해시를 모르는 항목이 하나라도 있으면 아무것도 받기 전에 멈춘다(앞 항목 수 GB 를 받고 나서 실패하지 않게, S15P31A101-207)
     for w in entries:
@@ -614,6 +657,10 @@ def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
                     rec["status"] = "present"
                     if stamped:
                         _write_stamp(root, w, target, st)
+            elif (st := _seed_from_baked(w, target)) is not None:
+                rec["status"] = "baked"  # 이미지 사본을 확인하고 링크했다(받지 않음)
+                if stamped:
+                    _write_stamp(root, w, target, st)
             else:
                 log(f"{w['name']} 받는 중 → {target}")
                 fetch(w, target)
@@ -628,11 +675,37 @@ def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
     return out
 
 
+def pick_mapanything(root: Path, entries: list[dict], hint: Path | None = None) -> list[dict]:
+    """static 묶음의 MapAnything 판(group=mapanything)을 하나만 남긴다(S15P31A101-577). 다른 항목은 그대로 둔다.
+    고르는 폴더: hint(장면 명령의 --model)가 그 판의 폴더면 그것, 아니면 SIMAI_MAPANYTHING_MODEL(기본 $SIMAI_ROOT/weights/map-anything,
+    현장 세팅 워커 reconstruct_tasks.mapanything 과 같은 규칙). 고른 폴더에 항목이 없으면 오류(그대로 세팅하면 STATIC_MODEL_MISSING)."""
+    ma = [w for w in entries if w.get("group") == MA_GROUP]
+    if not ma:
+        return entries
+    dirs = {(root / w["path"]).parent.resolve() for w in ma}
+    want = hint.resolve() if hint is not None and hint.resolve() in dirs else \
+        Path(os.environ.get("SIMAI_MAPANYTHING_MODEL") or root / "weights" / "map-anything").resolve()
+    if want not in dirs:
+        raise BootstrapError(EXIT_STORAGE, f"가중치 목록에 MapAnything 폴더 {want} 의 항목이 없다(SIMAI_MAPANYTHING_MODEL)")
+    return [w for w in entries if w.get("group") != MA_GROUP or (root / w["path"]).parent.resolve() == want]
+
+
+def _model_arg(cmd: list[str]) -> Path | None:
+    """장면 명령의 --model <폴더>(run_mapanything.py 등). 없으면 None."""
+    for i, a in enumerate(cmd):
+        if a == "--model" and i + 1 < len(cmd):
+            return Path(cmd[i + 1])
+        if a.startswith("--model="):
+            return Path(a.split("=", 1)[1])
+    return None
+
+
 # ---------------------------------------------------------------- 준비·실행
 
 
-def prepare(want_set: str = "tier0") -> dict:
-    """준비 1)~3). 실패하면 BootstrapError. 기록은 저장 위치를 쓸 수 있을 때 남긴다."""
+def prepare(want_set: str = "tier0", pick=None) -> dict:
+    """준비 1)~3). 실패하면 BootstrapError. 기록은 저장 위치를 쓸 수 있을 때 남긴다.
+    pick(root, entries) → entries: 묶음 항목을 줄인다(장면 준비의 MapAnything 한 판, S15P31A101-577)."""
     started = time.time_ns() // 1_000_000
     rec: dict = {"bootstrap": "S15P31A101-205", "started_at": started, "set": want_set,
                  "hf_token": "present" if _hf_token else "absent"}
@@ -645,7 +718,8 @@ def prepare(want_set: str = "tier0") -> dict:
         rec["storage"] = prepare_storage(root, source, min_free)
         storage_ok = True
         rec["gpu"] = detect_gpu(smi)
-        rec["weights"] = ensure_weights(root, load_manifest(manifest, want_set))
+        entries = load_manifest(manifest, want_set)
+        rec["weights"] = ensure_weights(root, pick(root, entries) if pick else entries)
         rec["exit"] = EXIT_OK
     except BootstrapError as e:
         rec |= {"exit": e.code, "error": _redact(str(e))}
@@ -664,15 +738,23 @@ def prepare(want_set: str = "tier0") -> dict:
 
 def _write_record(root: Path, rec: dict) -> None:
     d = root / "runs" / "bootstrap"
-    name = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}.json"
-    n = 0
-    while (d / name).exists():  # 같은 초·같은 프로세스의 두 번째 기록(감시 모드의 워커 가중치). 추가만 하고, 이름순 = 시간순('~' 는 '.' 뒤)
-        n += 1
-        name = f"{name.split('.')[0].split('~')[0]}~{n}.json"
+    stem = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    text = _redact(json.dumps(rec, ensure_ascii=False, indent=2)) + "\n"
     try:
         d.mkdir(parents=True, exist_ok=True)
-        (d / name).write_text(_redact(json.dumps(rec, ensure_ascii=False, indent=2)) + "\n", encoding="utf-8")
-        rec["record"] = str(d / name)
+        # 같은 초·같은 프로세스의 다음 기록(감시 모드의 아바타·PPE·VLM·현장 세팅 가중치 스레드가 동시에 쓴다, S15P31A101-577)은 ~n 을 붙인다.
+        # 배타 생성('x')이라 두 스레드가 같은 이름을 덮어쓰지 않는다. 추가만 하고, 이름순 = 시간순('~' 는 '.' 뒤)
+        for n in range(1000):
+            path = d / (f"{stem}.json" if n == 0 else f"{stem}~{n}.json")
+            try:
+                with open(path, "x", encoding="utf-8") as f:
+                    f.write(text)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise OSError("같은 초의 기록 이름이 다 찼다")
+        rec["record"] = str(path)
     except OSError as e:
         log(f"기록을 {d} 에 쓰지 못함: {e}")
 
@@ -1121,6 +1203,8 @@ class Supervisor:
                 e["SIMAI_TIER0_TOKEN"] = tier0_token
             if name in ("worker", "avatar") and self.worker_id:
                 e[WORKER_ID_ENV] = self.worker_id
+            if name == "worker" and "vllm" in services:  # 워커가 vLLM 보다 먼저 뜬다: VLM 작업 유형은 /health 200 뒤에만 받는다(S15P31A101-577)
+                e["SIMAI_WORKER_VLM_GATE"] = "health"
             if fractions is not None:
                 if "avatar" in services:
                     e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(fractions["avatar_fraction"])
@@ -1160,11 +1244,15 @@ class Supervisor:
                     "avatar": self._worker_argv(worker_env, avatar=True),
                     "ppe": [sys.executable, "-m", "services.ppe"]}[name]  # 워커 토큰 필요 없음(I1 은 Tier 0 가 보낸다)
             self.svc[name] = Service(name, argv, e)
-        self.phase = "wait_tier0"  # → weights → run | off(워커 쪽 포기)
+        self.phase = "wait_tier0"  # → run (Tier 0 준비 뒤. 가중치는 서비스별로 따로 준비되고 각 서비스 문이 그것을 본다, S15P31A101-577)
         self.last_why = ""
         self.stop_signal: int | None = None
-        self._weights: threading.Thread | None = None
-        self.weights_error: str | None = None
+        self._weights: threading.Thread | None = None  # 아바타·PPE 묶음 → VLM 묶음을 차례로 준비하는 한 스레드
+        self.sidecar_done = False  # 아바타·PPE 가중치 단계가 끝남(구운 사본이면 수 초). VLM 받기를 기다리지 않는다
+        self.sidecar_error: str | None = None  # 그 실패 이유: 아바타·PPE 만 띄우지 않는다
+        self.vlm_done = False  # VLM 가중치 단계가 끝남
+        self.weights_error: str | None = None  # VLM 받기 실패 이유: vLLM 만 띄우지 않는다(워커·아바타·PPE·Tier 0 는 계속)
+        self._noted: set[str] = set()
 
     def _record_pod_marker(self) -> None:
         if self.pod_jsonl is None or not self.marker.is_file():
@@ -1229,23 +1317,37 @@ class Supervisor:
         return ok
 
     def _prepare_worker_weights(self) -> None:
-        rec: dict = {"bootstrap": "S15P31A101-246", "stage": "worker-weights", "set": self.worker_set,
-                     "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
+        """아바타·PPE 묶음(통합 이미지는 구운 사본이라 수 초) → 끝나면 그 둘을 띄울 수 있다 → VLM 묶음(31.5GB) → 끝나면 vLLM (S15P31A101-577).
+        예전에는 셋을 한 번에 받고 나서 띄워 아바타·PPE 가 VLM 받기를 기다렸다. 어느 쪽이 실패해도 Tier 0·다른 쪽은 계속."""
         try:
-            entries = load_manifest(self.manifest, self.worker_set) if "vllm" in self.svc else []
-            if "avatar" in self.svc:
-                entries += load_manifest(self.manifest, self.avatar_set)
-            if "ppe" in self.svc:
-                entries += load_manifest(self.manifest, self.ppe_set)
+            if "avatar" in self.svc or "ppe" in self.svc:
+                sets = [s for s, n in ((self.avatar_set, "avatar"), (self.ppe_set, "ppe")) if n in self.svc]
+                self.sidecar_error = self._weights_stage("sidecar-weights", sets, "아바타·PPE")
+        finally:
+            self.sidecar_done = True
+        try:
+            if "vllm" in self.svc:
+                self.weights_error = self._weights_stage("worker-weights", [self.worker_set], f"워커 가중치 {self.worker_set}")
+        finally:
+            self.vlm_done = True
+
+    def _weights_stage(self, stage: str, sets: list[str], what: str) -> str | None:
+        """묶음들을 준비하고 기록을 남긴다. 실패 이유(가린 문자열), 성공이면 None."""
+        rec: dict = {"bootstrap": "S15P31A101-246", "stage": stage, "set": ",".join(sets),
+                     "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
+        error = None
+        try:
+            entries = [w for s in sets for w in load_manifest(self.manifest, s)]
             rec["weights"] = ensure_weights(self.root, entries)
             rec["exit"] = EXIT_OK
-            log(f"워커 가중치 {self.worker_set} 준비: " + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
-        except Exception as e:  # noqa: BLE001 - 워커 가중치 실패는 Tier 0 를 멈추지 않는다
-            self.weights_error = _redact(f"{type(e).__name__}: {e}")
-            rec |= {"exit": getattr(e, "code", EXIT_STORAGE), "error": self.weights_error}
+            log(f"{what} 준비: " + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
+        except Exception as e:  # noqa: BLE001 - 가중치 실패는 Tier 0 를 멈추지 않는다
+            error = _redact(f"{type(e).__name__}: {e}")
+            rec |= {"exit": getattr(e, "code", EXIT_STORAGE), "error": error}
         finally:
             rec["finished_at"] = time.time_ns() // 1_000_000
             _write_record(self.root, rec)
+        return error
 
     def _prepare_setup_weights(self) -> None:
         """site_setup 의 MapAnything·WorldMirror 2.0·LaMa 가중치(static 묶음, -473·-539). 실패해도 워커·Tier 0 는 계속(경고만)."""
@@ -1288,29 +1390,38 @@ class Supervisor:
         now = self.clock()
         self._record_pod_marker()
         if self.phase == "wait_tier0" and self._tier0_ready():
-            log("Tier 0 준비됨(phase=running, reserve OK) → 워커 쪽 준비")
+            log("Tier 0 준비됨(phase=running, reserve OK) → 워커·현장 세팅 가중치·아바타·PPE 가중치는 바로, VLM 은 뒤에서 받아 vLLM")
+            self.phase = "run"
             if "vllm" in self.svc or "avatar" in self.svc or "ppe" in self.svc:
-                self.phase = "weights"
                 self._weights = threading.Thread(target=self._prepare_worker_weights, name="worker-weights", daemon=True)
                 self._weights.start()
             else:
-                self.phase = "run"
-        if self.phase == "weights" and self._weights is not None and not self._weights.is_alive():
-            if self.weights_error:
-                log(f"워커 가중치 {self.worker_set} 실패 → vLLM·워커를 띄우지 않는다(Tier 0 는 계속): {self.weights_error}")
-                self.phase = "off"
-            else:
-                self.phase = "run"
+                self.sidecar_done = self.vlm_done = True
         if self.phase == "run":
-            self._start_setup_weights()  # 워커 가중치(VLM) 다음에 받아 대역을 다투지 않는다. 워커 시작은 막지 않는다
+            self._start_setup_weights()  # 구운 사본이면 수 초. VLM 받기와 따로 돈다(워커 시작은 막지 않는다)
+            self._note_weights()
             for name in ("vllm", "worker", "avatar", "ppe"):
                 if name in self.svc:
                     self._tend(self.svc[name], now)
 
+    def _note_weights(self) -> None:
+        """가중치 실패를 한 번씩 알린다. VLM 이 실패하면 vLLM 을 포기로 두고(다시 띄우지 않음) 나머지는 그대로 둔다."""
+        if self.sidecar_done and self.sidecar_error and "sidecar" not in self._noted:
+            self._noted.add("sidecar")
+            log(f"아바타·PPE 가중치 실패 → 아바타·PPE 를 띄우지 않는다(Tier 0·워커·vLLM 은 계속): {self.sidecar_error}")
+        if self.vlm_done and self.weights_error and "vlm" not in self._noted:
+            self._noted.add("vlm")
+            self.svc["vllm"].given_up = True
+            log(f"워커 가중치 {self.worker_set} 실패 → VLM 미준비, vLLM 을 띄우지 않는다(Tier 0·워커·아바타·PPE 는 계속, "
+                f"워커는 VLM 작업 유형을 받지 않는다): {self.weights_error}")
+
     def _gate_open(self, s: Service) -> bool:
-        if s.name == "worker" and "vllm" in self.svc:
-            v = self.svc["vllm"]
-            return v.ever_healthy or v.given_up  # VLM 이 한 번 뜬 뒤(포기했으면 VLM 없이)
+        if s.name in ("avatar", "ppe"):
+            return self.sidecar_done and not self.sidecar_error
+        if s.name == "vllm":
+            return self.vlm_done and not self.weights_error
+        # 워커: VLM 을 기다리지 않는다(현장 세팅·정적 맵·TBM 등). VLM 작업 유형은 워커가 vLLM /health 를 보고 스스로 미룬다
+        # (SIMAI_WORKER_VLM_GATE=health, services/worker/vlm_gate.py). vLLM 이 뜨면 그때부터 받는다
         return True
 
     def _tend(self, s: Service, now: float) -> None:
@@ -1962,8 +2073,9 @@ def scene(rest: list[str], *, worker_id: str | None = None) -> int:
         # 받기 전에: Tier 0 와 GPU 사용 중 메모리(엔진 빌드·다른 컨테이너 중에 수 GB 를 받지 않는다)
         if why := scene_busy(root, smi, gpu_unknown_ok=True):
             return _scene_refuse(root, why)
+        hint = _model_arg(cmd)  # 장면 명령이 읽는 MapAnything 판(없으면 현장 세팅 기본 폴더)만 받는다(S15P31A101-577)
         try:
-            prepare(SCENE_SET)
+            prepare(SCENE_SET, pick=lambda r, entries: pick_mapanything(r, entries, hint))
         except BootstrapError as e:
             log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
             return e.code
@@ -2072,7 +2184,10 @@ def run_check(rest: list[str], *, preflight: bool = False) -> int:
             all_weights: list[dict] = []
             for s in sets:
                 try:
-                    w = ensure_weights(root, load_manifest(manifest, s))
+                    entries = load_manifest(manifest, s)
+                    if s == SCENE_SET:  # 현장 세팅이 읽는 MapAnything 한 판만(S15P31A101-577)
+                        entries = pick_mapanything(root, entries)
+                    w = ensure_weights(root, entries)
                     rec["sets"][s] = {"status": "ok", "weights": w}
                     all_weights.extend(w)
                 except BootstrapError as e:

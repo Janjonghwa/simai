@@ -1,6 +1,7 @@
 # simai 이미지 빌드 정의. 저장소 최상위에서 실행한다 (자세한 절차: deploy/README.md).
 #   docker buildx bake tier0                     # 베이스(cu130) → Tier 0, 로컬 이미지로 적재
-#   docker buildx bake unified                   # 베이스(cu130) → Tier 0 층 + 워커 스택(vLLM·HMR) 통합 이미지 (S15P31A101-246)
+#   HF_TOKEN=... docker buildx bake unified      # 베이스(cu130) → Tier 0 층 + 워커 스택(vLLM·HMR) 통합 이미지 (S15P31A101-246)
+#                                                # + 시연 가중치 층(S15P31A101-577). HF_TOKEN 은 BuildKit 비밀 hf_token 으로만 쓴다(승인제 sam-3d-body·비공개 PPE)
 #   docker buildx bake exp02                     # 베이스(cu128 base) → EXP-02 HMR (Detectron2 는 CUDA 확장 없이 빌드)
 #   docker buildx bake mapanything               # 베이스(cu128 base, Python 3.12) → EXP-01 MapAnything
 #   docker buildx bake risk-engine               # EC2 Risk Engine 컨테이너(CPU, python slim, S15P31A101-99)
@@ -81,12 +82,15 @@ target "tier0" {
 }
 
 # 통합 이미지(S15P31A101-246): tier0 와 같은 Dockerfile·같은 큰 층 위에 워커 스택(vLLM·HMR)을 더한다. Tier 0 → vLLM → 분석 워커를 simai-bootstrap 이 감시
+# 시연 가중치(S15P31A101-577): weights-* 단계가 HF 토큰을 비밀(파일 /run/secrets/hf_token)로만 받는다. 빌드 셸의 HF_TOKEN 을 넘긴다(ARG·ENV·층에 남지 않음).
+# 받기 단계 이미지는 Risk Engine 과 같은 고정 python slim(simai-base 가 바뀌어도 가중치를 다시 받지 않게)
 target "unified" {
   inherits   = ["_common"]
   dockerfile = "deploy/tier0/Dockerfile"
   target     = "unified"
   contexts   = { simai-base = "target:base-cu130" }
-  args       = { BASE_IMAGE = "simai-base" }
+  args       = { BASE_IMAGE = "simai-base", WEIGHTS_IMAGE = "${PYTHON_RISK_ENGINE}" }
+  secret     = ["type=env,id=hf_token,env=HF_TOKEN"]
   tags       = ["${REGISTRY}/unified:${TAG}"]
 }
 

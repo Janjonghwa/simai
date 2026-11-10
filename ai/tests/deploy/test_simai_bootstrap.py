@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ def _setup(bs, tmp_path: Path, monkeypatch, *, sha: str | None = None, source: d
              "sha256": hashlib.sha256(WEIGHTS).hexdigest() if sha is None else sha}
     manifest.write_text(json.dumps({"manifest_version": 1, "weights": [entry]}), encoding="utf-8")
     for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "SIMAI_TIER0_WEIGHTS", "SIMAI_TIER0_WEIGHTS_SHA256", "FAKE_SMI_FAIL",
-              "FAKE_SMI_CC", "FAKE_SMI_TOTAL_MB", "SIMAI_SESSION_REPO"):
+              "FAKE_SMI_CC", "FAKE_SMI_TOTAL_MB", "SIMAI_SESSION_REPO", "SIMAI_BAKED_WEIGHTS"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SIMAI_ROOT", str(tmp_path / "simai"))
     monkeypatch.setenv("SIMAI_NVIDIA_SMI", f"{PY} {FAKE_SMI}")
@@ -561,3 +562,307 @@ def test_tunnel_allow_without_prefix_or_sshd_opens_nothing(gs, tmp_path):
     assert r.returncode == 0 and "SIMAI_TUNNEL_PREFIX 없음" in r.stderr and _wst(tmp_path, wait_s=0.3) is None
     r, _ = _start(gs, tmp_path / "nosshd", {"SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_ALLOW": "17000"})
     assert r.returncode == 0 and _wst(tmp_path / "nosshd", wait_s=0.3) is None
+
+
+# ---------------------------------------------------------------- 이미지에 구운 시연 가중치 (S15P31A101-577)
+
+
+def _bake(tmp_path: Path, monkeypatch, rel: str = "weights/yolo/yolo26x-pose.pt", data: bytes = WEIGHTS,
+          tag: str | None = None) -> Path:
+    """구운 사본(<baked>/<path> + .sha256)을 만들고 SIMAI_BAKED_WEIGHTS 로 가리킨다."""
+    baked = tmp_path / "baked" / rel
+    baked.parent.mkdir(parents=True, exist_ok=True)
+    baked.write_bytes(data)
+    baked.with_name(baked.name + ".sha256").write_text((tag or hashlib.sha256(data).hexdigest()) + "\n", encoding="utf-8")
+    monkeypatch.setenv("SIMAI_BAKED_WEIGHTS", str(tmp_path / "baked"))
+    return baked
+
+
+def _hashed(bs, monkeypatch) -> list[Path]:
+    """sha256_file 이 해시한 파일 목록(실제 해시는 그대로)."""
+    seen: list[Path] = []
+    real = bs.sha256_file
+    monkeypatch.setattr(bs, "sha256_file", lambda p: (seen.append(Path(p)), real(p))[1])
+    return seen
+
+
+def test_baked_copy_is_verified_and_linked_instead_of_downloading(bs, tmp_path, monkeypatch, capsys):
+    st = _setup(bs, tmp_path, monkeypatch)
+    baked = _bake(tmp_path, monkeypatch)
+    hashed = _hashed(bs, monkeypatch)
+    monkeypatch.setattr(bs, "urlopen", _no_network)  # 새 Pod 가 HF·GitHub 에 가지 않는다
+    assert bs.main(["tier0"]) == 0
+    _argv, env = st["calls"][0]
+    assert st["target"].read_bytes() == WEIGHTS and hashed == [baked]  # 사본을 한 번 해시해 확인했다
+    assert env["SIMAI_TIER0_WEIGHTS"] == str(st["target"])  # Tier 0 는 늘 $SIMAI_ROOT 경로를 본다
+    if st["target"].is_symlink():  # 링크를 못 거는 Windows 시험 환경은 복사
+        assert st["target"].resolve() == baked.resolve()
+    assert _records(st["root"])[0]["weights"][0]["status"] == "baked"
+    assert "yolo26x-pose baked" in capsys.readouterr().err
+    # 다음 시작: 이미 있는 파일 규칙(Tier 0 가중치는 매번 해시)
+    assert bs.main(["tier0"]) == 0 and _records(st["root"])[1]["weights"][0]["status"] == "present"
+
+
+def test_baked_copy_of_another_version_is_skipped_without_hashing_and_downloaded(bs, tmp_path, monkeypatch):
+    st = _setup(bs, tmp_path, monkeypatch)
+    baked = _bake(tmp_path, monkeypatch, data=b"older-weights", tag="1" * 64)  # 목록이 바뀐 뒤의 옛 이미지
+    hashed = _hashed(bs, monkeypatch)
+    assert bs.main(["tier0"]) == 0
+    assert baked not in hashed  # 옆 .sha256 이 목록과 다르면 수 GB 를 해시하지 않는다
+    assert st["target"].read_bytes() == WEIGHTS and not st["target"].is_symlink()
+    assert _records(st["root"])[0]["weights"][0]["status"] == "downloaded"
+
+
+def test_corrupt_baked_copy_falls_back_to_download_and_is_left_alone(bs, tmp_path, monkeypatch, capsys):
+    st = _setup(bs, tmp_path, monkeypatch)
+    baked = _bake(tmp_path, monkeypatch, data=b"bit-rot", tag=hashlib.sha256(WEIGHTS).hexdigest())  # 표는 맞는데 내용이 다르다
+    assert bs.main(["tier0"]) == 0
+    assert st["target"].read_bytes() == WEIGHTS and baked.read_bytes() == b"bit-rot"
+    assert _records(st["root"])[0]["weights"][0]["status"] == "downloaded"
+    assert "구운 사본 해시 불일치" in capsys.readouterr().err
+
+
+def test_without_baked_copy_downloads_as_before(bs, tmp_path, monkeypatch):
+    st = _setup(bs, tmp_path, monkeypatch)
+    (tmp_path / "baked").mkdir()
+    monkeypatch.setenv("SIMAI_BAKED_WEIGHTS", str(tmp_path / "baked"))
+    assert bs.main(["tier0"]) == 0 and _records(st["root"])[0]["weights"][0]["status"] == "downloaded"
+
+
+def test_existing_target_keeps_its_rules_even_with_a_baked_copy(bs, tmp_path, monkeypatch):
+    st = _setup(bs, tmp_path, monkeypatch)
+    baked = _bake(tmp_path, monkeypatch)
+    hashed = _hashed(bs, monkeypatch)
+    monkeypatch.setattr(bs, "urlopen", _no_network)
+    st["target"].parent.mkdir(parents=True)
+    st["target"].write_bytes(b"tampered")  # 볼륨에 남은 깨진 파일: 사본으로 덮지 않고 시작하지 않는다(지우지 않음)
+    assert bs.main(["tier0"]) == bs.EXIT_STORAGE and st["target"].read_bytes() == b"tampered" and baked not in hashed
+    st["target"].write_bytes(WEIGHTS)
+    assert bs.main(["tier0"]) == 0 and baked not in hashed
+    assert _records(st["root"])[-1]["weights"][0]["status"] == "present"
+
+
+def test_baked_worker_weight_is_stamped_then_not_rehashed(bs, tmp_path, monkeypatch):
+    """tier0 밖 항목(아바타·정적 맵): 사본 확인 뒤 검증 스탬프를 남겨 다음 시작에 수 GB 를 다시 해시하지 않는다."""
+    root = tmp_path / "simai"
+    data = b"fake-sam3d" * 300
+    entry = {"name": "sam-3d-body-dinov3", "sets": ["avatar"], "path": "weights/sam-3d-body-dinov3/model.ckpt",
+             "source": {"url": "https://example.invalid/never"}, "sha256": hashlib.sha256(data).hexdigest()}
+    _bake(tmp_path, monkeypatch, entry["path"], data)
+    monkeypatch.setattr(bs, "urlopen", _no_network)
+    assert [r["status"] for r in bs.ensure_weights(root, [entry])] == ["baked"]
+    monkeypatch.setattr(bs, "sha256_file", lambda p: (_ for _ in ()).throw(AssertionError(f"다시 해시했다: {p}")))
+    assert [r["status"] for r in bs.ensure_weights(root, [entry])] == ["present-stamp"]
+    assert (root / entry["path"]).read_bytes() == data
+
+
+def test_baked_copy_falls_back_to_copy_when_symlinks_are_refused(bs, tmp_path, monkeypatch):
+    root = tmp_path / "simai"
+    entry = {"name": "y", "sets": ["tier0"], "path": "weights/yolo/yolo26x-pose.pt", "source": {"url": "https://example.invalid/x"},
+             "sha256": hashlib.sha256(WEIGHTS).hexdigest()}
+    baked = _bake(tmp_path, monkeypatch)
+    monkeypatch.setattr(bs, "urlopen", _no_network)
+    monkeypatch.setattr(bs.os, "symlink", lambda *a, **k: (_ for _ in ()).throw(OSError("no symlinks here")))
+    assert [r["status"] for r in bs.ensure_weights(root, [entry])] == ["baked"]
+    target = root / entry["path"]
+    assert target.read_bytes() == WEIGHTS and not target.is_symlink() and baked.read_bytes() == WEIGHTS
+    assert not list(target.parent.glob("*.baked-*"))  # 임시 이름이 남지 않는다
+
+
+def test_dangling_link_from_an_old_image_is_replaced_by_the_new_copy(bs, tmp_path, monkeypatch):
+    root = tmp_path / "simai"
+    target = root / "weights" / "yolo" / "yolo26x-pose.pt"
+    target.parent.mkdir(parents=True)
+    try:
+        os.symlink(tmp_path / "gone" / "yolo26x-pose.pt", target)  # 볼륨에 남은, 이전 이미지 사본을 가리키던 링크
+    except OSError:
+        pytest.skip("심볼릭 링크를 만들 수 없는 환경")
+    entry = {"name": "y", "sets": ["tier0"], "path": "weights/yolo/yolo26x-pose.pt", "source": {"url": "https://example.invalid/x"},
+             "sha256": hashlib.sha256(WEIGHTS).hexdigest()}
+    baked = _bake(tmp_path, monkeypatch)
+    monkeypatch.setattr(bs, "urlopen", _no_network)
+    assert [r["status"] for r in bs.ensure_weights(root, [entry])] == ["baked"]
+    assert target.resolve() == baked.resolve()
+
+
+# ---------------------------------------------------------------- MapAnything 한 판만 (S15P31A101-577)
+
+
+def _ma_entries() -> list[dict]:
+    def e(name, path, group=True):
+        return {"name": name, "sets": ["static"], "path": path, "source": {"url": "x"}, "sha256": "0" * 64,
+                **({"group": "mapanything"} if group else {})}
+    return [e("ma-apache-model", "weights/map-anything-apache/model.safetensors"),
+            e("ma-apache-config", "weights/map-anything-apache/config.json"),
+            e("ma-model", "weights/map-anything/model.safetensors"), e("ma-config", "weights/map-anything/config.json"),
+            e("wm2", "weights/hy-world-2.0/HY-WorldMirror-2.0/model.safetensors", group=False),
+            e("lama", "weights/lama/big-lama.pt", group=False)]
+
+
+def test_pick_mapanything_keeps_the_setup_folder_variant_and_other_static_entries(bs, tmp_path, monkeypatch):
+    root = tmp_path / "simai"
+    monkeypatch.delenv("SIMAI_MAPANYTHING_MODEL", raising=False)
+
+    def names(ws):
+        return [w["name"] for w in ws]
+
+    default = ["ma-model", "ma-config", "wm2", "lama"]
+    apache_names = ["ma-apache-model", "ma-apache-config", "wm2", "lama"]
+    assert names(bs.pick_mapanything(root, _ma_entries())) == default  # 현장 세팅 워커 기본 폴더
+    apache = root / "weights" / "map-anything-apache"
+    assert names(bs.pick_mapanything(root, _ma_entries(), hint=apache)) == apache_names
+    assert names(bs.pick_mapanything(root, _ma_entries(), hint=root / "weights" / "moge")) == default  # 판 폴더가 아닌 --model 은 무시
+    monkeypatch.setenv("SIMAI_MAPANYTHING_MODEL", str(apache))
+    assert names(bs.pick_mapanything(root, _ma_entries())) == apache_names
+    monkeypatch.setenv("SIMAI_MAPANYTHING_MODEL", str(tmp_path / "elsewhere"))
+    with pytest.raises(bs.BootstrapError, match="MapAnything 폴더"):
+        bs.pick_mapanything(root, _ma_entries())
+    plain = [w for w in _ma_entries() if "group" not in w]  # 판 표시가 없는 목록은 그대로
+    assert bs.pick_mapanything(root, plain) == plain
+    assert bs._model_arg(["python", "run.py", "--model", str(apache)]) == apache
+    assert bs._model_arg(["python", "run.py", f"--model={apache}"]) == apache and bs._model_arg(["python", "-m", "x"]) is None
+
+
+def test_check_sets_and_preflight_fetch_one_mapanything_but_static_set_env_keeps_both(bs, tmp_path, monkeypatch, capsys):
+    manifest = tmp_path / "weights.json"
+    manifest.write_text(json.dumps({"weights": _ma_entries()}), encoding="utf-8")
+    monkeypatch.setenv("SIMAI_ROOT", str(tmp_path / "simai"))
+    monkeypatch.setenv("SIMAI_WEIGHTS_MANIFEST", str(manifest))
+    monkeypatch.setenv("SIMAI_MIN_FREE_GB", "0")
+    for k in ("SIMAI_MAPANYTHING_MODEL", "SIMAI_WEIGHTS_SET", "SIMAI_WM2_REPO"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(bs, "detect_gpu", lambda smi: {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0})
+    got: list[list[str]] = []
+
+    def fake_ensure(_root, entries):
+        got.append([e["name"] for e in entries])
+        return [{"name": e["name"], "status": "present"} for e in entries]
+
+    monkeypatch.setattr(bs, "ensure_weights", fake_ensure)
+    assert bs.main(["check", "--sets", "static"]) == 0
+    assert got == [["ma-model", "ma-config", "wm2", "lama"]]  # -539 큐(check --sets static)·preflight: apache 판 4.9GB 를 받지 않는다
+    got.clear()
+    monkeypatch.setenv("SIMAI_WEIGHTS_SET", "static")  # 실험 경로(MapAnything 이미지 m1·m2 비교): 목록 그대로
+    assert bs.main(["check"]) == 0
+    assert got == [[w["name"] for w in _ma_entries()]]
+    capsys.readouterr()
+
+
+# ---------------------------------------------------------------- 저장소 목록·Dockerfile·bake 대조 (S15P31A101-577)
+
+
+def _baked_in_dockerfile() -> dict[str, dict]:
+    """deploy/tier0/Dockerfile 의 weights-* 단계: 단계 이름 → {from, run, items: [(path, sha256, source)]}."""
+    text = (REPO / "deploy" / "tier0" / "Dockerfile").read_text(encoding="utf-8").replace("\\\n", " ")
+    stages: dict[str, dict] = {}
+    for m in re.finditer(r"^FROM (\S+) AS (weights-[a-z0-9-]+)\n(?:#.*\n)*RUN (.*)$", text, re.MULTILINE):
+        toks = m.group(3).split()
+        args = toks[toks.index("/tmp/bake_weight.py") + 2:]
+        assert len(args) % 3 == 0, m.group(2)
+        stages[m.group(2)] = {"from": m.group(1), "run": m.group(3),
+                              "items": [tuple(args[i:i + 3]) for i in range(0, len(args), 3)]}
+    return stages
+
+
+def test_dockerfile_bakes_exactly_the_demo_weights_with_manifest_hashes_and_sources(bs):
+    doc = json.loads(bs.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    by = {w["path"]: w for w in doc["weights"]}
+    stages = _baked_in_dockerfile()
+    assert stages, "weights-* 단계가 없다"
+    baked: set[str] = set()
+    for name, st in stages.items():
+        assert st["from"] == "${WEIGHTS_IMAGE}", name  # simai-base 가 바뀌어도 다시 받지 않는다
+        for path, sha, src in st["items"]:
+            w = by[path]
+            assert sha == w["sha256"], path
+            s = w["source"]
+            want = s["url"] if "url" in s else f"hf:{s['hf']['repo']}@{s['hf']['revision']}:{s['hf']['file']}"
+            assert src == want, path
+            assert (re.fullmatch(r"[0-9a-f]{40}", s["hf"]["revision"]) if "hf" in s else src.startswith("https://")), path
+            baked.add(path)
+        has_hf = any(src.startswith("hf:") for _p, _s, src in st["items"])
+        assert ("--mount=type=secret,id=hf_token" in st["run"]) is has_hf, name  # HF 단계만 비밀을 연다
+    # 시연 경로가 읽는 것 = tier0·avatar·ppe 전부 + static 중 MapAnything 은 현장 세팅 기본 판만. VLM·apache 판·실험 전용은 굽지 않는다
+    demo = {w["path"] for w in doc["weights"] if set(w["sets"]) & {"tier0", "avatar", "ppe", "static"}
+            and (w.get("group") != bs.MA_GROUP or w["path"].startswith("weights/map-anything/"))}
+    assert baked == demo
+    assert not any("vlm" in by[p]["sets"] for p in baked)
+    assert {w["name"] for w in doc["weights"] if w.get("group") == bs.MA_GROUP} == {
+        "map-anything-model", "map-anything-config", "map-anything-apache-model", "map-anything-apache-config"}
+
+
+def test_baked_layers_sit_below_code_and_token_is_only_a_buildkit_secret():
+    text = (REPO / "deploy" / "tier0" / "Dockerfile").read_text(encoding="utf-8")
+    unified = text[text.index("FROM unified-deps AS unified\n"):]
+    code_at = unified.index("COPY ai/src ./src")
+    for name in _baked_in_dockerfile():
+        line = f"COPY --link --from={name} /out/ /opt/simai/baked/"
+        assert line in unified and unified.index(line) < code_at, name  # 코드·apt 층보다 앞, 앞 층과 무관한 --link
+    assert "SIMAI_BAKED_WEIGHTS=/opt/simai/baked" in unified
+    tier0 = text[text.index("AS tier0\n"):text.index("AS unified-deps")]
+    assert "baked" not in tier0  # tier0 타깃은 그대로(가중치 없음)
+    assert not re.search(r"^\s*(ARG|ENV)\b.*HF_TOKEN", text, re.MULTILINE) and "HUGGING_FACE" not in text
+    bake = (REPO / "deploy" / "docker-bake.hcl").read_text(encoding="utf-8")
+    unified_target = bake[bake.index('target "unified"'):]
+    unified_target = unified_target[:unified_target.index("\n}\n") + 2]
+    assert 'secret     = ["type=env,id=hf_token,env=HF_TOKEN"]' in unified_target
+    assert 'WEIGHTS_IMAGE = "${PYTHON_RISK_ENGINE}"' in unified_target
+    ignore = (REPO / "deploy" / "tier0" / "Dockerfile.dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "!deploy/scripts/bake_weight.py" in ignore
+
+
+# ---------------------------------------------------------------- 굽기 단계 받기 도구 (deploy/scripts/bake_weight.py)
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        self.close()
+
+
+def test_bake_weight_writes_file_tag_and_epoch_mtime(bw, tmp_path, monkeypatch):
+    data = b"lama" * 1000
+    sha = hashlib.sha256(data).hexdigest()
+    monkeypatch.setattr(bw.urllib.request, "urlopen", lambda req, timeout: _Resp(data))
+    assert bw.main([str(tmp_path / "out"), "weights/lama/big-lama.pt", sha, "https://example.invalid/big-lama.pt"]) == 0
+    f = tmp_path / "out" / "weights" / "lama" / "big-lama.pt"
+    assert f.read_bytes() == data and f.with_name("big-lama.pt.sha256").read_text(encoding="utf-8").strip() == sha
+    assert {p.stat().st_mtime for p in (tmp_path / "out").rglob("*")} == {0}  # 다시 받아도 같은 층
+    assert not list(f.parent.glob("*.part"))
+
+
+def test_bake_weight_sends_secret_token_only_unredirected_and_never_prints_it(bw, tmp_path, monkeypatch, capsys):
+    secret = tmp_path / "hf_token"
+    secret.write_text(TOKEN + "\n", encoding="utf-8")
+    monkeypatch.setattr(bw, "SECRET", secret)
+    data = b"ckpt" * 100
+    seen = []
+
+    def fake_open(req, timeout):
+        seen.append(req)
+        return _Resp(data)
+
+    monkeypatch.setattr(bw.urllib.request, "urlopen", fake_open)
+    assert bw.main([str(tmp_path / "out"), "weights/sam/assets/m.pt", hashlib.sha256(data).hexdigest(),
+                    "hf:facebook/sam-3d-body-dinov3@" + "a" * 40 + ":assets/m.pt"]) == 0
+    req = seen[0]
+    assert req.full_url == "https://huggingface.co/facebook/sam-3d-body-dinov3/resolve/" + "a" * 40 + "/assets/m.pt"
+    assert req.unredirected_hdrs.get("Authorization") == f"Bearer {TOKEN}" and "Authorization" not in req.headers
+    out = capsys.readouterr()
+    assert TOKEN not in out.out + out.err
+    files = [p for p in (tmp_path / "out").rglob("*") if p.is_file()]
+    assert TOKEN not in "".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
+
+
+def test_bake_weight_refuses_hash_mismatch_and_bad_arguments(bw, tmp_path, monkeypatch):
+    monkeypatch.setattr(bw.urllib.request, "urlopen", lambda req, timeout: _Resp(b"other"))
+    with pytest.raises(SystemExit, match="해시 불일치"):
+        bw.main([str(tmp_path / "out"), "weights/x.pt", "0" * 64, "https://example.invalid/x"])
+    assert not (tmp_path / "out" / "weights" / "x.pt").exists() and not list((tmp_path / "out" / "weights").glob("*.part"))
+    assert bw.main([str(tmp_path / "out"), "weights/x.pt", "0" * 64]) == 64
+    with pytest.raises(SystemExit, match="경로"):
+        bw.main([str(tmp_path / "out"), "../x.pt", "0" * 64, "https://example.invalid/x"])
+    with pytest.raises(SystemExit, match="원본 형식"):
+        bw.main([str(tmp_path / "out"), "weights/x.pt", "0" * 64, "http://example.invalid/x"])
