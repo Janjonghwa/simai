@@ -785,3 +785,32 @@ def test_frame_refs_outside_the_session_cameras_are_dropped_and_capped() -> None
                                     frame_publisher=odd)
     result = handler(JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000483", "site_setup", 1, inp))
     assert [f["camera_id"] for f in result["artifacts"]["camera_frames"]] == [inp["calibration_target"]["camera_ids"][0]]
+
+
+# ---------------------------------------------------------------------------- S15P31A101-584
+def test_world_anchor_hook_feeds_the_same_document_to_publish_preview_and_bake() -> None:
+    """Stage A 뒤 World 다시 맞추기를 한 번만 하고, 등록·미리보기·굽기가 같은(옮긴) 문서를 받는다."""
+    seen: dict[str, Any] = {}
+
+    def anchor(doc: Any) -> dict[str, Any]:
+        out = copy.deepcopy(dict(doc))
+        out["world_anchor"] = {"accepted": False, "reason": "INSUFFICIENT_CAMERAS"}
+        seen["anchor_calls"] = seen.get("anchor_calls", 0) + 1
+        return out
+
+    def preview(**kw: Any) -> PreviewDraftResult:
+        seen["preview"] = kw["calibration_doc"]
+        return PreviewDraftResult("scene-preview-x")
+
+    def bake(**kw: Any) -> str:
+        seen["bake"] = kw["calibration_doc"]
+        return "scene-x"
+
+    handler, inp, published = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=anchor, preview_builder=preview, texture_baker=bake,
+    )
+    result = handler(JobContext("job-anchor", "0192a6f0-7c1e-7b3a-9f2d-000000000584", "site_setup", 1, inp))
+    assert result["status"] == "COMPLETED" and seen["anchor_calls"] == 1
+    assert published[0]["world_anchor"]["reason"] == "INSUFFICIENT_CAMERAS"
+    assert seen["preview"]["world_anchor"] == seen["bake"]["world_anchor"] == published[0]["world_anchor"]
