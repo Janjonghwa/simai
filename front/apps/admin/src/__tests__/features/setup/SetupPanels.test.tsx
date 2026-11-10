@@ -1,7 +1,7 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
-import { deriveStep1Coverage } from '@/features/setup/setup';
-import { CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
-import type { CoverageGuidesResponse } from '@/features/setup/types';
+import { deriveStep1Coverage, deriveWaitingView } from '@/features/setup/setup';
+import { CameraMapPanel, CameraPanel, WaitingPanel } from '@/features/setup/SetupPanels';
+import { setupSessionResponseSchema, type CoverageGuidesResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload } from '@/mocks/setup';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -150,5 +150,97 @@ describe('카메라 각도 표시', () => {
     const row = screen.getByText('cam1', { selector: 'b' }).closest('li')!;
     expect(within(row).getByText(expected)).toBeTruthy();
     if (expected !== '각도 양호') expect(within(row).queryByText('각도 양호')).toBeNull();
+  });
+});
+
+describe('세팅 대기 이유 표시(S15P31A101-583)', () => {
+  const NOW = 1_800_000_000_000;
+  const session = (waitReason: Record<string, unknown> | null, status = 'COLLECTING_BACKGROUND') =>
+    setupSessionResponseSchema.parse({
+      setup_session_id: 's1',
+      site_id: 'classroom-1',
+      work_unit_id: 1,
+      status,
+      progress_pct: 0,
+      camera_heights_m: { cam_A: 2.44, cam_C: 2.48 },
+      started_at_ms: NOW - 700_000,
+      updated_at_ms: NOW - 700_000,
+      wait_reason: waitReason,
+    });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function renderPanel(waitReason: Record<string, unknown> | null, status?: string) {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    render(<WaitingPanel waiting={deriveWaitingView(session(waitReason, status))} />);
+    return screen.queryByRole('status', { name: '세팅 대기 이유' });
+  }
+
+  it('관제 우선으로 세팅을 받지 않으면 이유·대기 시간·할 일을 보이고 일반 문구를 대신한다', () => {
+    const box = renderPanel({
+      code: 'WORKER_PAUSED_TIER0',
+      since_ms: NOW - 605_000,
+      basis: 'TIER0_HEALTH',
+    })!;
+    expect(box.textContent).toContain(
+      'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다',
+    );
+    expect(box.textContent).toContain('대기 10분 05초');
+    expect(box.textContent).toContain('관제 지연을 알 수 없다는 기록으로 추정');
+    expect(box.textContent).toContain('GPU 서버 상태를 확인하세요');
+    expect(screen.queryByText(/워커의 진행 정보를 기다리는 중입니다/)).toBeNull();
+    expect(screen.queryByText(/새 진행 정보가 없습니다/)).toBeNull();
+  });
+
+  it('배경 미완료는 카메라와 비켜 달라는 안내를 보인다', () => {
+    const box = renderPanel({
+      code: 'BACKGROUND_INCOMPLETE',
+      since_ms: NOW - 90_000,
+      cameras: [{ camera_id: 'cam_C', collection_pct: 15 }],
+    })!;
+    expect(
+      within(box).getByText('사람 없는 배경을 아직 다 모으지 못했습니다 (cam_C 15%)'),
+    ).toBeTruthy();
+    expect(within(box).getByText('사람이 카메라 앞에서 잠시 비켜 주세요.')).toBeTruthy();
+    expect(box.textContent).toContain('대기 1분 30초');
+  });
+
+  it.each([
+    ['NO_WORKER', 'GPU 서버(분석 워커)가 연결돼 있지 않습니다'],
+    ['WORKER_BUSY_OTHER_JOB', 'GPU 서버가 다른 작업을 먼저 처리하고 있습니다'],
+    ['WAITING_FOR_WORKER', 'GPU 서버가 세팅 작업을 가져가기를 기다리고 있습니다'],
+    ['WORKER_STARTING', 'GPU 서버가 세팅 작업을 받아 시작을 준비하고 있습니다'],
+  ])('%s 이유를 보인다', (code, title) => {
+    const box = renderPanel({ code, since_ms: NOW - 5_000 })!;
+    expect(within(box).getByText(title)).toBeTruthy();
+    expect(box.textContent).toContain('대기 0분 05초');
+    expect(box.textContent).not.toContain('마지막 연결');
+  });
+
+  it('워커가 묻지 않으면 마지막 연결 시각(없으면 기록 없음)을 함께 보인다', () => {
+    const box = renderPanel({
+      code: 'WORKER_NOT_POLLING',
+      since_ms: NOW - 60_000,
+      worker_last_seen_ms: NOW - 900_000,
+      tier0_lag_ms: 1800,
+    })!;
+    expect(box.textContent).toContain('GPU 서버가 세팅 작업을 가져가지 않고 있습니다');
+    expect(box.textContent).toContain('마지막 연결 15분 00초 전');
+    expect(box.textContent).toContain('참고: 최근 관제 지연 1800 ms');
+    cleanup();
+    expect(renderPanel({ code: 'WORKER_NOT_POLLING', since_ms: NOW })!.textContent).toContain(
+      '연결 기록 없음',
+    );
+  });
+
+  it('이유가 없거나 실패한 세션이면 대기 이유 칸이 없다', () => {
+    expect(renderPanel(null)).toBeNull();
+    // 이유가 없으면 기존 안내(오래 바뀌지 않음)를 그대로 쓴다
+    expect(screen.getByText(/새 진행 정보가 없습니다/)).toBeTruthy();
+    cleanup();
+    expect(renderPanel({ code: 'WORKER_NOT_POLLING', since_ms: NOW }, 'FAILED')).toBeNull();
   });
 });

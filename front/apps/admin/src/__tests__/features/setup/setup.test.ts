@@ -8,10 +8,12 @@ import {
   deriveSceneTierStatus,
   deriveStep1Coverage,
   deriveWaitingView,
+  deriveWaitReasonView,
   draftGhostsOf,
   estimateRemainingSeconds,
   formatClock,
   formatGuideItem,
+  formatMinSec,
   formatRemainingKorean,
   isPreviewSceneReady,
   MAX_CAMERA_HEIGHT_M,
@@ -29,7 +31,12 @@ import {
   SETUP_LIVE_WORK_BLOCKED_TEXT,
   setupErrorMessage,
 } from '@/features/setup/setupErrorMessage';
-import { setupZoneDraftsResponseSchema, type SetupSessionResponse } from '@/features/setup/types';
+import {
+  setupSessionResponseSchema,
+  setupWaitReasonSchema,
+  setupZoneDraftsResponseSchema,
+  type SetupSessionResponse,
+} from '@/features/setup/types';
 import { ApiError } from '@/lib/http';
 import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
 import { describe, expect, it } from 'vitest';
@@ -527,6 +534,94 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       scene_version: 'scene-final-1',
     };
     expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵 · scene-final-1');
+  });
+});
+
+describe('세팅 대기 이유 안내(S15P31A101-583)', () => {
+  const reason = (over: Record<string, unknown>) =>
+    setupWaitReasonSchema.parse({ code: 'WAITING_FOR_WORKER', since_ms: 1_000, ...over });
+
+  it('없으면 null 이고, 실패한 세션에는 대기 이유를 보이지 않는다', () => {
+    expect(deriveWaitReasonView(null)).toBeNull();
+    expect(deriveWaitReasonView(undefined)).toBeNull();
+    const session = setupSessionResponseSchema.parse({
+      setup_session_id: 's1',
+      site_id: 'classroom-1',
+      work_unit_id: 1,
+      status: 'FAILED',
+      progress_pct: 0,
+      camera_heights_m: { cam1: 2.4 },
+      wait_reason: { code: 'WORKER_NOT_POLLING', since_ms: 1 },
+    });
+    expect(deriveWaitingView(session).waitReason).toBeNull();
+    expect(
+      deriveWaitingView({ ...session, status: 'COLLECTING_BACKGROUND' }).waitReason?.code,
+    ).toBe('WORKER_NOT_POLLING');
+  });
+
+  it('Tier 0 우선 접수 중지는 근거(워커 알림/기록 추정)와 참고 지연을 덧붙인다', () => {
+    const released = deriveWaitReasonView(
+      reason({
+        code: 'WORKER_PAUSED_TIER0',
+        basis: 'WORKER_RELEASE',
+        detail: 'Tier 0 우선으로 시작하지 않았다: 표시 파일이 120s 전 것이다',
+        tier0_lag_ms: 1450.4,
+      }),
+    )!;
+    expect(released.title).toBe(
+      'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다',
+    );
+    expect(released.notes).toEqual([
+      'GPU 서버가 알려 옴: Tier 0 우선으로 시작하지 않았다: 표시 파일이 120s 전 것이다',
+      '참고: 최근 관제 지연 1450 ms',
+    ]);
+    expect(released.hint).toContain('GPU 서버 상태를 확인');
+    expect(released.tone).toBe('delay');
+
+    const inferred = deriveWaitReasonView(
+      reason({ code: 'WORKER_PAUSED_TIER0', basis: 'TIER0_HEALTH' }),
+    )!;
+    expect(inferred.notes).toEqual(['관제 지연을 알 수 없다는 기록으로 추정']);
+  });
+
+  it('배경 미완료는 덜 모인 카메라와 비켜 달라는 안내를, 재시도는 앞 실패를 보인다', () => {
+    const bg = deriveWaitReasonView(
+      reason({
+        code: 'BACKGROUND_INCOMPLETE',
+        cameras: [{ camera_id: 'cam_C', collection_pct: 15.4 }],
+      }),
+    )!;
+    expect(bg.title).toBe('사람 없는 배경을 아직 다 모으지 못했습니다 (cam_C 15%)');
+    expect(bg.hint).toBe('사람이 카메라 앞에서 잠시 비켜 주세요.');
+
+    const retry = deriveWaitReasonView(reason({ previous_error_code: 'BACKGROUND_INCOMPLETE' }))!;
+    expect(retry.tone).toBe('idle');
+    expect(retry.notes[0]).toContain('앞 시도에서 배경을 다 모으지 못해');
+    const other = deriveWaitReasonView(reason({ previous_error_code: 'BA_DIVERGED' }))!;
+    expect(other.notes).toEqual(['앞 시도가 실패(BA_DIVERGED)해 다시 시도합니다.']);
+  });
+
+  it.each([
+    ['NO_WORKER', 'GPU 서버(분석 워커)가 연결돼 있지 않습니다', 'delay'],
+    ['WAITING_FOR_WORKER', 'GPU 서버가 세팅 작업을 가져가기를 기다리고 있습니다', 'idle'],
+    ['WORKER_NOT_POLLING', 'GPU 서버가 세팅 작업을 가져가지 않고 있습니다', 'delay'],
+    ['WORKER_STARTING', 'GPU 서버가 세팅 작업을 받아 시작을 준비하고 있습니다', 'idle'],
+    ['SOMETHING_NEW', '세팅이 기다리는 중입니다 (SOMETHING_NEW)', 'idle'],
+  ])('%s 는 짧은 안내와 할 일을 준다', (code, title, tone) => {
+    const view = deriveWaitReasonView(reason({ code }))!;
+    expect(view.title).toBe(title);
+    expect(view.tone).toBe(tone);
+    expect(view.hint.length).toBeGreaterThan(0);
+    expect(view.showLastSeen).toBe(code === 'WORKER_NOT_POLLING');
+  });
+
+  it('다른 작업 처리 중이면 그 작업을 쉬운 이름으로 보인다', () => {
+    expect(
+      deriveWaitReasonView(
+        reason({ code: 'WORKER_BUSY_OTHER_JOB', other_job_type: 'scene_regenerate' }),
+      )!.title,
+    ).toBe('GPU 서버가 다른 작업(3D 맵 다시 만들기)을 먼저 처리하고 있습니다');
+    expect(formatMinSec(125)).toBe('2분 05초');
   });
 });
 

@@ -10,6 +10,7 @@ import type {
   PairGrade,
   SetupSessionResponse,
   SetupSessionStage,
+  SetupWaitReason,
   ZoneDraftCandidateKind,
   ZoneDraftItem,
 } from '@/features/setup/types';
@@ -465,6 +466,120 @@ export interface SceneTierStatusView {
   description: string;
 }
 
+/** 세팅이 왜 기다리는지 화면 표시(S15P31A101-583). 경과 시간·마지막 연결은 화면이 매초 계산한다. */
+export interface SetupWaitReasonView {
+  code: string;
+  /** 무엇 때문에 기다리는지 한 줄 */
+  title: string;
+  /** 관리자가 할 수 있는 일 */
+  hint: string;
+  /** 덧붙일 사실(지연 값·앞 시도 실패 등) */
+  notes: string[];
+  /** 문제라 눈에 띄게 보일지(delay) 안내만 할지(idle) */
+  tone: 'delay' | 'idle';
+  sinceMs: number;
+  /** WORKER_NOT_POLLING: 워커 마지막 대여 요청 시각(없으면 null) */
+  lastSeenMs: number | null;
+  showLastSeen: boolean;
+}
+
+/** 다른 작업 유형의 쉬운 이름(없으면 유형 그대로). */
+const JOB_TYPE_LABEL: Record<string, string> = {
+  scene_regenerate: '3D 맵 다시 만들기',
+  static_reconstruct: '정적 3D 복원',
+  vlm_rationale: 'AI 위험 설명',
+  vlm_zone_draft: 'AI 구역 초안',
+  incident_summary: '사고 요약',
+  tbm_report: 'TBM 보고서',
+  bev_floorplan: '평면도',
+};
+
+const STEP_ASIDE_HINT = '사람이 카메라 앞에서 잠시 비켜 주세요.';
+
+/** 서버 wait_reason 을 짧은 한국어 안내로 바꾼다. 없으면 null. */
+export function deriveWaitReasonView(
+  reason: SetupWaitReason | null | undefined,
+): SetupWaitReasonView | null {
+  if (!reason) return null;
+  const notes: string[] = [];
+  let title: string;
+  let hint: string;
+  let tone: SetupWaitReasonView['tone'] = 'delay';
+  switch (reason.code) {
+    case 'NO_WORKER':
+      title = 'GPU 서버(분석 워커)가 연결돼 있지 않습니다';
+      hint = 'GPU 서버를 켜고 분석 워커가 서버에 연결됐는지 확인하세요.';
+      break;
+    case 'WORKER_BUSY_OTHER_JOB': {
+      const type = reason.other_job_type;
+      const label = type ? (JOB_TYPE_LABEL[type] ?? type) : null;
+      title = `GPU 서버가 다른 작업${label ? `(${label})` : ''}을 먼저 처리하고 있습니다`;
+      hint = '끝나면 바로 세팅을 시작합니다. 잠시 기다려 주세요.';
+      tone = 'idle';
+      break;
+    }
+    case 'WAITING_FOR_WORKER':
+      title = 'GPU 서버가 세팅 작업을 가져가기를 기다리고 있습니다';
+      hint = '보통 30초 안에 시작합니다. 잠시 기다려 주세요.';
+      tone = 'idle';
+      break;
+    case 'WORKER_PAUSED_TIER0':
+      title = 'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다';
+      hint = '관제가 안정되면 저절로 시작합니다. 잠시 기다리거나 GPU 서버 상태를 확인하세요.';
+      if (reason.basis === 'WORKER_RELEASE') {
+        notes.push(reason.detail ? `GPU 서버가 알려 옴: ${reason.detail}` : 'GPU 서버가 알려 옴');
+      } else if (reason.basis === 'TIER0_HEALTH') {
+        notes.push('관제 지연을 알 수 없다는 기록으로 추정');
+      }
+      break;
+    case 'WORKER_NOT_POLLING':
+      title = 'GPU 서버가 세팅 작업을 가져가지 않고 있습니다';
+      hint = '분석 워커가 켜져 있는지, GPU 서버 상태를 확인하세요.';
+      break;
+    case 'WORKER_STARTING':
+      title = 'GPU 서버가 세팅 작업을 받아 시작을 준비하고 있습니다';
+      hint = '잠시 기다려 주세요.';
+      tone = 'idle';
+      break;
+    case 'BACKGROUND_INCOMPLETE': {
+      const cams = reason.cameras.map((c) => `${c.camera_id} ${Math.round(c.collection_pct)}%`);
+      title = `사람 없는 배경을 아직 다 모으지 못했습니다${cams.length ? ` (${cams.join(', ')})` : ''}`;
+      hint = STEP_ASIDE_HINT;
+      break;
+    }
+    default:
+      title = `세팅이 기다리는 중입니다 (${reason.code})`;
+      hint = '잠시 기다려 주세요.';
+      tone = 'idle';
+  }
+  if (reason.tier0_lag_ms !== null) {
+    notes.push(`참고: 최근 관제 지연 ${Math.round(reason.tier0_lag_ms)} ms`);
+  }
+  if (reason.previous_error_code) {
+    notes.push(
+      reason.previous_error_code === 'BACKGROUND_INCOMPLETE'
+        ? `앞 시도에서 배경을 다 모으지 못해 다시 시도합니다. ${STEP_ASIDE_HINT}`
+        : `앞 시도가 실패(${reason.previous_error_code})해 다시 시도합니다.`,
+    );
+  }
+  return {
+    code: reason.code,
+    title,
+    hint,
+    notes,
+    tone,
+    sinceMs: reason.since_ms,
+    lastSeenMs: reason.worker_last_seen_ms,
+    showLastSeen: reason.code === 'WORKER_NOT_POLLING',
+  };
+}
+
+/** 초를 "N분 SS초" 로 바꾼다(대기 시간 표시). */
+export function formatMinSec(secs: number): string {
+  const safe = Math.max(0, Math.floor(secs));
+  return `${Math.floor(safe / 60)}분 ${String(safe % 60).padStart(2, '0')}초`;
+}
+
 export interface SetupWaitingView {
   sessionId: string | null;
   startedAtMs: number | null;
@@ -484,6 +599,8 @@ export interface SetupWaitingView {
   hasHeightWarning: boolean;
   previewReady: boolean;
   sceneTier: SceneTierStatusView;
+  /** 왜 기다리는지(실패·정상 진행이면 null) */
+  waitReason: SetupWaitReasonView | null;
 }
 
 const STAGE_ORDER: Record<SetupSessionStage, number> = {
@@ -703,6 +820,7 @@ export function deriveWaitingView(
     hasHeightWarning: heightWarnings.length > 0,
     previewReady: isPreviewSceneReady(session),
     sceneTier: deriveSceneTierStatus(session),
+    waitReason: failed ? null : deriveWaitReasonView(session?.wait_reason),
   };
 }
 
