@@ -22,6 +22,7 @@ import { createZonesMock } from '@/mocks/zones';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -281,6 +282,69 @@ describe('설치 · 보정 1단계 화면', () => {
       cam2: 2.3,
       cam3: 2.2,
       cam4: 2.35,
+    });
+  });
+
+  it('세팅 시작이 409(SETUP_BLOCKED_BY_LIVE_WORK)로 거절되면 진행 중 작업 종료 안내와 작업 이동 링크를 제공한다', async () => {
+    // 1) 서버 현재 응답(작업 정보 없음) -> 일반 문구 + /work 이동
+    server.use(
+      http.post('*/api/setup-sessions', () =>
+        HttpResponse.json(
+          {
+            status: 409,
+            code: 'SETUP_BLOCKED_BY_LIVE_WORK',
+            detail: '같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다',
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    renderSetupPage(5);
+    const cam1Input = (await screen.findByLabelText('cam1 높이 (m)')) as HTMLInputElement;
+    await waitFor(() => expect(cam1Input.value).toBe('2.25'));
+    const cam4Input = screen.getByLabelText('cam4 높이 (m)') as HTMLInputElement;
+    fireEvent.change(cam4Input, { target: { value: '2.35' } });
+    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+
+    const alert = await screen.findByTestId('setup-submit-error');
+    expect(alert.textContent).toContain(
+      '진행 중인 작업이 있어 세팅을 시작할 수 없습니다. 작업을 종료한 뒤 다시 시도하세요',
+    );
+    fireEvent.click(within(alert).getByRole('button', { name: '진행 중인 작업으로 이동' }));
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/work' });
+
+    // 2) 서버 본문에 work_id · work_name 이 함께 오면 작업 이름을 포함한 문구와 해당 작업으로 이동
+    navigateMock.mockReset();
+    server.use(
+      http.post('*/api/setup-sessions', () =>
+        HttpResponse.json(
+          {
+            status: 409,
+            code: 'SETUP_BLOCKED_BY_LIVE_WORK',
+            detail: '같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다',
+            work_id: 2,
+            work_name: '배관 점검',
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('setup-submit-error').textContent).toContain(
+        '진행 중인 작업(배관 점검)이 있어 세팅을 시작할 수 없습니다. 작업을 종료한 뒤 다시 시도하세요',
+      );
+    });
+    fireEvent.click(
+      within(screen.getByTestId('setup-submit-error')).getByRole('button', {
+        name: '진행 중인 작업으로 이동',
+      }),
+    );
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: '/work',
+      search: { workUnitId: '2' },
     });
   });
 

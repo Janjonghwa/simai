@@ -520,7 +520,11 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     const netErr = new ApiError(NETWORK_ERROR, { kind: 'NETWORK' });
     const serverErr = new ApiError(503, { kind: 'HTTP' });
 
-    expect(tbmReportRequestErrorText(noLayoutErr)).toContain('WORK_HAS_NO_LAYOUT');
+    const noLayoutText = tbmReportRequestErrorText(noLayoutErr);
+    expect(noLayoutText).toContain('가상 레이아웃에 위험 요소(개구부 등)를 먼저 배치·저장하세요');
+    expect(noLayoutText).toContain('구역 화면의 개구부(관제 구역)');
+    expect(noLayoutText).toContain('TBM 가상 레이아웃');
+    expect(noLayoutText).not.toContain('WORK_HAS_NO_LAYOUT');
     expect(tbmReportRequestErrorText(inProgressErr)).toContain('REPORT_IN_PROGRESS');
     expect(tbmFailureReasonText('CITATION_VIOLATION')).toContain('CITATION_VIOLATION');
     expect(isFallbackApiError(netErr)).toBe(true);

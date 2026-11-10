@@ -254,6 +254,7 @@ export function CameraHeightPanel({
   fields,
   onChange,
   submitError,
+  onNavigateLiveWork,
   heightWarnings = [],
   retrySessionId = null,
   onRetryWithHeights,
@@ -263,6 +264,7 @@ export function CameraHeightPanel({
   fields: readonly HeightFieldView[];
   onChange: (cameraId: string, value: string) => void;
   submitError: string | null;
+  onNavigateLiveWork?: () => void;
   heightWarnings?: readonly HeightWarningItem[];
   retrySessionId?: string | null;
   onRetryWithHeights?: () => void;
@@ -358,9 +360,18 @@ export function CameraHeightPanel({
         </div>
       )}
       {submitError && (
-        <p role="alert" className="text-xs font-medium text-delay">
-          {submitError}
-        </p>
+        <div
+          role="alert"
+          data-testid="setup-submit-error"
+          className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-delay"
+        >
+          <span>{submitError}</span>
+          {onNavigateLiveWork && (
+            <Button size="sm" variant="secondary" onClick={onNavigateLiveWork}>
+              진행 중인 작업으로 이동
+            </Button>
+          )}
+        </div>
       )}
     </Panel>
   );
@@ -373,6 +384,7 @@ export function WaitingPanel({
   onRetry,
   retryPending = false,
   retryError = null,
+  onNavigateLiveWork,
   onReturnToStep1,
 }: {
   waiting: SetupWaitingView;
@@ -380,6 +392,7 @@ export function WaitingPanel({
   onRetry?: () => void;
   retryPending?: boolean;
   retryError?: string | null;
+  onNavigateLiveWork?: () => void;
   onReturnToStep1?: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -551,9 +564,18 @@ export function WaitingPanel({
       )}
 
       {retryError && (
-        <p role="alert" className="text-xs font-medium text-delay">
-          {retryError}
-        </p>
+        <div
+          role="alert"
+          data-testid="setup-retry-error"
+          className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-delay"
+        >
+          <span>{retryError}</span>
+          {onNavigateLiveWork && (
+            <Button size="sm" variant="secondary" onClick={onNavigateLiveWork}>
+              진행 중인 작업으로 이동
+            </Button>
+          )}
+        </div>
       )}
     </Panel>
   );

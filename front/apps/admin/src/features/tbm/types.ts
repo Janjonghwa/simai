@@ -540,6 +540,15 @@ export function tbmFailureReasonText(reason: string | null | undefined): string 
   return FAILURE_REASON_TEXT[reason] ?? `보고서 생성에 실패했습니다 (${reason})`;
 }
 
+/** WORK_HAS_NO_LAYOUT(409) 거절 시 안내 문구: 배치·저장 안내 + 구역 화면의 개구부(관제 구역)와 TBM 가상 레이아웃의 차이 한 줄. */
+export const WORK_HAS_NO_LAYOUT_GUIDANCE =
+  '가상 레이아웃에 위험 요소(개구부 등)를 먼저 배치·저장하세요. 구역 화면의 개구부(관제 구역)는 실시간 위험 감지용이고, TBM 가상 레이아웃은 작업 전 위험성 평가·보고서 생성을 위한 사전 계획 배치입니다.';
+
+/** 보고서 생성 요청이 가상 레이아웃 미연결(409 WORK_HAS_NO_LAYOUT)로 거절됐는지 판정한다. */
+export function isWorkHasNoLayoutError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === 'WORK_HAS_NO_LAYOUT';
+}
+
 /** POST /api/reports/tbm 실패(404/409 등)를 화면 안내 문구로 바꾼다. */
 export function tbmReportRequestErrorText(error: unknown): string {
   if (error instanceof ApiError) {
@@ -550,8 +559,8 @@ export function tbmReportRequestErrorText(error: unknown): string {
     ) {
       return '작업을 찾을 수 없습니다. 작업이 서버에 등록되어 있는지 확인해 주세요. (WORK_NOT_FOUND)';
     }
-    if (error.status === 409 && error.code === 'WORK_HAS_NO_LAYOUT') {
-      return '작업에 연결된 가상 레이아웃이 없습니다. 가상 레이아웃을 먼저 연결해 주세요. (WORK_HAS_NO_LAYOUT)';
+    if (isWorkHasNoLayoutError(error)) {
+      return WORK_HAS_NO_LAYOUT_GUIDANCE;
     }
     if (error.status === 409 && error.code === 'REPORT_IN_PROGRESS') {
       return '이미 생성 중인 보고서가 있습니다. 생성이 끝날 때까지 기다려 주세요. (REPORT_IN_PROGRESS)';

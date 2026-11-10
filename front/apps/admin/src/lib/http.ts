@@ -20,6 +20,9 @@ export interface ApiErrorOptions {
   code?: string;
   /** ProblemDetail 에 함께 실린 request_id 등 부가 식별자. */
   requestId?: number;
+  /** ProblemDetail 에 함께 실린 진행 중 작업 식별자·이름(있을 때만). */
+  workId?: number;
+  workName?: string;
   cause?: unknown;
 }
 
@@ -29,10 +32,12 @@ export class ApiError extends Error {
   readonly serverMessage?: string;
   readonly code?: string;
   readonly requestId?: number;
+  readonly workId?: number;
+  readonly workName?: string;
 
   constructor(
     status: number,
-    { kind, serverMessage, code, requestId, cause }: ApiErrorOptions = {},
+    { kind, serverMessage, code, requestId, workId, workName, cause }: ApiErrorOptions = {},
   ) {
     const resolved = kind ?? (status === NETWORK_ERROR ? 'NETWORK' : 'HTTP');
     // 서버 문구는 message 에 넣지 않는다. 로그·오류 화면으로 서버 내부 정보가 새지 않게 한다.
@@ -43,6 +48,8 @@ export class ApiError extends Error {
     this.serverMessage = serverMessage;
     this.code = code;
     this.requestId = requestId;
+    this.workId = workId;
+    this.workName = workName;
   }
 }
 
@@ -172,8 +179,10 @@ function hasUnsafeChar(path: string) {
   });
 }
 
-// Spring 기본 오류 본문(message)과 ProblemDetail(detail·code·request_id)을 읽는다.
-function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'code' | 'requestId'> {
+// Spring 기본 오류 본문(message)과 ProblemDetail(detail·code·request_id·work_id·work_name)을 읽는다.
+function readProblem(
+  text: string,
+): Pick<ApiErrorOptions, 'serverMessage' | 'code' | 'requestId' | 'workId' | 'workName'> {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -194,5 +203,7 @@ function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'cod
     serverMessage: field('message') ?? field('detail'),
     code: field('code'),
     requestId: numField('request_id'),
+    workId: numField('work_id'),
+    workName: field('work_name'),
   };
 }

@@ -126,6 +126,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
     selectedReportId,
     isGenerating,
     requestError,
+    needsLayout,
     selectVersion,
     generate,
     clearError,
@@ -267,6 +268,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
 
   const handleLayoutSaved = (savedLayout: LayoutDetail) => {
     setEditingLayout(false);
+    clearError();
     if (!currentTask) {
       setMessage(`가상 레이아웃 #${savedLayout.layout_id} (rev.${savedLayout.revision}) 저장됨`);
       return;
@@ -446,8 +448,22 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPagePr
             </div>
           )}
           {requestError && (
-            <div role="alert" data-testid="tbm-request-error" className={ALERT}>
-              {requestError}
+            <div
+              role="alert"
+              data-testid="tbm-request-error"
+              className={cn(ALERT, 'flex flex-wrap items-center justify-between gap-2')}
+            >
+              <span>{requestError}</span>
+              {needsLayout && currentTask?.status !== 'IN_PROGRESS' && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => openLayoutEditor(task.layoutId ?? null)}
+                >
+                  레이아웃 편집 열기
+                </Button>
+              )}
             </div>
           )}
           {task.status === 'IN_PROGRESS' && (

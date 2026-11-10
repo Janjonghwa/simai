@@ -23,7 +23,14 @@ import {
   ZONE_STAGE,
   zoneMapTitle,
 } from '@/features/setup/setup';
+import {
+  blockedLiveWorkId,
+  isSetupBlockedByLiveWork,
+  SETUP_LIVE_WORK_BLOCKED_TEXT,
+  setupErrorMessage,
+} from '@/features/setup/setupErrorMessage';
 import { setupZoneDraftsResponseSchema, type SetupSessionResponse } from '@/features/setup/types';
+import { ApiError } from '@/lib/http';
 import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
 import { describe, expect, it } from 'vitest';
 
@@ -520,5 +527,42 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       scene_version: 'scene-final-1',
     };
     expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵 · scene-final-1');
+  });
+});
+
+describe('setupErrorMessage: 진행 중 작업 409 안내 매핑', () => {
+  it('SETUP_BLOCKED_BY_LIVE_WORK(409)에 작업 이름이 없으면 일반 안내 문구를 돌려준다', () => {
+    const error = new ApiError(409, {
+      code: 'SETUP_BLOCKED_BY_LIVE_WORK',
+      serverMessage:
+        '같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다',
+    });
+    expect(isSetupBlockedByLiveWork(error)).toBe(true);
+    expect(blockedLiveWorkId(error)).toBeNull();
+    expect(setupErrorMessage(error)).toBe(SETUP_LIVE_WORK_BLOCKED_TEXT);
+  });
+
+  it('SETUP_BLOCKED_BY_LIVE_WORK(409)에 작업 이름·ID가 있으면 이름 포함 문구와 작업 ID를 돌려준다', () => {
+    const error = new ApiError(409, {
+      code: 'SETUP_BLOCKED_BY_LIVE_WORK',
+      workId: 2,
+      workName: '배관 점검',
+      serverMessage:
+        '같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다',
+    });
+    expect(isSetupBlockedByLiveWork(error)).toBe(true);
+    expect(blockedLiveWorkId(error)).toBe(2);
+    expect(setupErrorMessage(error)).toBe(
+      '진행 중인 작업(배관 점검)이 있어 세팅을 시작할 수 없습니다. 작업을 종료한 뒤 다시 시도하세요',
+    );
+  });
+
+  it('다른 409(SETUP_ALREADY_IN_PROGRESS)는 진행 중 작업 차단으로 보지 않고 서버 문구를 유지한다', () => {
+    const error = new ApiError(409, {
+      code: 'SETUP_ALREADY_IN_PROGRESS',
+      serverMessage: '이미 진행 중인 현장 세팅 세션이 있습니다',
+    });
+    expect(isSetupBlockedByLiveWork(error)).toBe(false);
+    expect(setupErrorMessage(error)).toBe('이미 진행 중인 현장 세팅 세션이 있습니다');
   });
 });
