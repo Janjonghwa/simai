@@ -385,3 +385,56 @@ def test_publish_frames_maps_object_store_failure_to_job_failure(tmp_path: Path)
     with pytest.raises(JobFailed) as exc:
         s.publish_frames(setup_session_id="s", camera_ids=("cam_A",), backgrounds=_frames_bundle(tmp_path, {"cam_A": (64, 64)}))
     assert exc.value.code == "SETUP_OBJECT_FAILED" and exc.value.retryable is True
+
+
+def _rig_doc(version: str, yaw: float = 0.0, shift: tuple[float, float] = (0.0, 0.0)) -> dict[str, Any]:
+    """4대 코너 리그 보정 문서. yaw·shift 는 같은 리그를 다른 World 로 표현한 값(X_ref = Rz·X + T)."""
+    c, s = np.cos(yaw), np.sin(yaw)
+    Rz, T = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]), np.array([shift[0], shift[1], 0.0])
+    cams = []
+    for cid, center in zip(CAMS, ((7.5, 7.3, 2.44), (7.4, 0.7, 2.44), (0.0, 0.6, 2.48), (0.0, 7.3, 2.48))):
+        z = np.array([3.7, 4.0, 0.8]) - np.asarray(center)
+        z /= np.linalg.norm(z)
+        x = np.cross(z, [0.0, 0.0, 1.0])
+        x /= np.linalg.norm(x)
+        R = np.stack([x, np.cross(z, x), z]) @ Rz
+        C = Rz.T @ (np.asarray(center) - T)
+        cams.append({"camera_id": cid, "R": R.tolist(), "t": (-R @ C).tolist()})
+    return {"calibration_version": version, "state": "PROVISIONAL", "provider_source": "G1_AUTO", "cameras": cams}
+
+
+def test_anchor_world_moves_new_calibration_into_prior_world_and_publish_marks_contract(tmp_path: Path) -> None:
+    """활성 보정(이전 채택 World)이 있으면 같은 리그의 새 보정을 그 World 로 옮기고, 등록 문서는 계약 2.5.0 이다(-584)."""
+    store = _Store()
+    s = _stages(tmp_path, _Stages(), store)
+    s._prior = _rig_doc("cal-old")
+    new = _rig_doc("cal-new", yaw=0.6, shift=(1.5, -2.0))
+    doc = s.anchor_world(new)
+    assert doc["world_anchor"]["accepted"] is True and doc["world_anchor"]["reference_calibration_version"] == "cal-old"
+    for a, b in zip(doc["cameras"], s._prior["cameras"]):
+        assert np.allclose(a["R"], b["R"], atol=1e-9) and np.allclose(a["t"], b["t"], atol=1e-9)
+    s.publish(doc)
+    sent = json.loads(store.puts[-1][1])
+    assert sent["schema_version"] == "2.5.0" and sent["previous_calibration_version"] == "cal-old"
+    # 이전 보정이 없으면(첫 세팅) 기록 없이 그대로
+    s._prior = None
+    assert s.anchor_world(new) == new
+
+
+def test_world_anchor_off_switch_keeps_new_world(tmp_path: Path) -> None:
+    """SIMAI_SETUP_WORLD_ANCHOR=off 면 변환하지 않고 DISABLED 로 기록한다. 기본은 auto, 그 밖의 값은 설정 오류."""
+    from services.worker.site_setup_stages import world_anchor_enabled_from_env
+
+    assert world_anchor_enabled_from_env({}) is True and world_anchor_enabled_from_env({"SIMAI_SETUP_WORLD_ANCHOR": "auto"}) is True
+    assert world_anchor_enabled_from_env({"SIMAI_SETUP_WORLD_ANCHOR": " OFF "}) is False
+    with pytest.raises(ValueError):
+        world_anchor_enabled_from_env({"SIMAI_SETUP_WORLD_ANCHOR": "on"})
+    root = tmp_path / "root"
+    root.mkdir()
+    s = ProductionSiteSetupStages(_ctx(), _Store(), _settings(tmp_path), _Stages(), root, clock_ms=lambda: 1,
+                                  calibration_loader=lambda _s: None, world_anchor_enabled=False)
+    s._prior = _rig_doc("cal-old")
+    new = _rig_doc("cal-new", yaw=0.6, shift=(1.5, -2.0))
+    doc = s.anchor_world(new)
+    assert doc["world_anchor"]["accepted"] is False and doc["world_anchor"]["reason"] == "DISABLED"
+    assert [c["R"] for c in doc["cameras"]] == [c["R"] for c in new["cameras"]]

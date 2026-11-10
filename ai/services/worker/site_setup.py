@@ -8,7 +8,8 @@
 (d) INITIAL_POSE_AND_WORLD: 카메라 높이(`camera_heights_m`)로 축척 및 높이 불일치(`height_checks`) 계산
     (-462 정물 교차 확인은 `object_cross_checker` 확장 지점만 둔다)
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
-(f) JOINT_BA_AND_VERIFY: 새 `calibration_version` 보정 문서 등록(덮어쓰지 않음)
+(f) JOINT_BA_AND_VERIFY: (선택 `world_anchor`) 카메라가 움직이지 않았으면 새 보정을 이전 채택 보정의 World 로 옮긴 뒤
+    새 `calibration_version` 보정 문서 등록(덮어쓰지 않음). 미리보기·굽기·map_cameras 는 이 문서를 기준으로 정렬한다(S15P31A101-584)
 (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록 + 카메라별 대표 프레임 업로드·등록
     (`artifacts.camera_frames`, S15P31A101-479: 서버가 이 스냅샷으로 AI 구역 초안 작업을 만들 때 VLM 크롭 입력으로 싣는다)
 (h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`). 세팅은 서버가 진행 중 작업(IN_PROGRESS)이 없을 때만
@@ -366,6 +367,7 @@ class SiteSetupHandler:
         feature_matcher: Callable[[np.ndarray, np.ndarray], Sequence[Mapping[str, Any]]] | None = None,
         live_gate: Callable[[], bool] | None = None,
         live_notice: Callable[[], bool] | None = None,
+        world_anchor: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
         perf_counter: Callable[[], float] = time.perf_counter,
         stage_a_target_seconds: float = 10.0,
@@ -376,7 +378,8 @@ class SiteSetupHandler:
     ) -> None:
         """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
         live_notice: True 면 Tier 0 가 떠 있다는 로그만 남기고 굽는다(Tier 0 지연이 잠깐 늘 수 있음).
-        background_wait_s: 배경 묶음이 완성되기를 기다리는 최대 초(0 이면 한 번만 본다). sleep(취소 신호, 초)의 기본은 신호 대기."""
+        background_wait_s: 배경 묶음이 완성되기를 기다리는 최대 초(0 이면 한 번만 본다). sleep(취소 신호, 초)의 기본은 신호 대기.
+        world_anchor: Stage A 뒤 보정 문서 → 이전 채택 World 로 옮긴(또는 사유만 기록한) 문서. 없으면 새 World 그대로(-584)."""
         if background_wait_s < 0 or background_poll_s <= 0:
             raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
         self._collect_bg = background_collector
@@ -391,6 +394,7 @@ class SiteSetupHandler:
         self._feature_matcher = feature_matcher
         self._live_gate = live_gate or (lambda: False)
         self._live_notice = live_notice or (lambda: False)
+        self._anchor_world = world_anchor
         self._bg_wait_s = float(background_wait_s)
         self._bg_poll_s = float(background_poll_s)
         self._monotonic = monotonic
@@ -641,7 +645,11 @@ class SiteSetupHandler:
         except StageAError as exc:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
 
-        published = self._publish_calibration(copy.deepcopy(stage_a.calibration_doc))
+        # 등록·미리보기·굽기가 같은 World 를 쓰도록 여기서 한 번만 이전 World 로 옮긴다(-584)
+        calibration_doc = stage_a.calibration_doc
+        if self._anchor_world is not None:
+            calibration_doc = dict(self._anchor_world(copy.deepcopy(calibration_doc)))
+        published = self._publish_calibration(copy.deepcopy(calibration_doc))
         artifacts: dict[str, Any] = {}
         if isinstance(published, PublishedCalibration):
             calibration_version = published.calibration_version
@@ -682,7 +690,7 @@ class SiteSetupHandler:
         preview = self._build_preview(
             setup_session_id=setup_session_id,
             site_id=site_id,
-            calibration_doc=stage_a.calibration_doc,
+            calibration_doc=calibration_doc,
             backgrounds=bg_bundle,
         )
         camera_frames = self._publish_camera_frames(ctx, setup_session_id, camera_ids, bg_bundle)
@@ -757,7 +765,7 @@ class SiteSetupHandler:
         baked = self._bake_texture(
             setup_session_id=setup_session_id,
             site_id=site_id,
-            calibration_doc=stage_a.calibration_doc,
+            calibration_doc=calibration_doc,
             backgrounds=bg_bundle,
             preview_scene_version=preview.preview_scene_version,
         )

@@ -146,6 +146,31 @@ class CalibrationScaleSource(
     root: Literal['HEIGHT_ONLY', 'JOINT', 'PROP_ONLY', 'MODEL_ESTIMATE']
 
 
+class Limits(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    max_center_residual_m: Annotated[StrictFloat, Field(gt=0.0)]
+    max_scale_deviation: Annotated[StrictFloat, Field(gt=0.0)]
+    max_orientation_change_rad: Annotated[StrictFloat, Field(gt=0.0)]
+    min_cameras: Annotated[StrictInt, Field(ge=3)]
+
+
+CenterResidualsMAdditionalProperty = TypeAliasType(
+    "CenterResidualsMAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
+AppliedCenterResidualsMAdditionalProperty = TypeAliasType(
+    "AppliedCenterResidualsMAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
+OrientationChangesRadAdditionalProperty = TypeAliasType(
+    "OrientationChangesRadAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
 class ForwardXyzItem(RootModel[StrictFloat]):
     root: Annotated[StrictFloat, Field(ge=-1.0, le=1.0)]
 
@@ -2574,6 +2599,39 @@ class CalibrationScaleResiduals(BaseModel):
     props: list[CalibrationScalePropResidual] | MISSING = MISSING
 
 
+class CalibrationWorldAnchor(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    accepted: StrictBool
+    reason: Literal['ANCHORED', 'DISABLED', 'PREVIOUS_NOT_USABLE', 'SITE_MISMATCH', 'INSUFFICIENT_CAMERAS', 'DEGENERATE_LAYOUT', 'CENTER_RESIDUAL_EXCEEDED', 'SCALE_OUT_OF_RANGE', 'ORIENTATION_CHANGE_EXCEEDED']
+    reference_calibration_version: DefsVersionId
+    method: Literal['CAMERA_CENTER_YAW_XY']
+    limits: Limits
+    used_cameras: list[DefsCameraId] | MISSING = MISSING
+    yaw_rad: StrictFloat | None | MISSING = MISSING
+    translation_m: Annotated[
+        list[StrictFloat] | None | MISSING, Field(max_length=2, min_length=2)
+    ] = MISSING
+    scale: Annotated[StrictFloat | None | MISSING, Field(gt=0.0)] = MISSING
+    max_center_residual_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    max_orientation_change_rad: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    center_residuals_m: dict[str, CenterResidualsMAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    applied_center_residuals_m: dict[str, AppliedCenterResidualsMAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    vertical_differences_m: dict[str, StrictFloat] | MISSING = MISSING
+    orientation_changes_rad: dict[str, OrientationChangesRadAdditionalProperty] | MISSING = (
+        MISSING
+    )
+
+
 class CalibrationStatusCalibratedCameraPose(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4309,6 +4367,7 @@ class Calibration(BaseModel):
     scale_source: CalibrationScaleSource | MISSING = MISSING
     scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
     floor_tilt_correction: CalibrationFloorTiltCorrection | MISSING = MISSING
+    world_anchor: CalibrationWorldAnchor | MISSING = MISSING
     world_axes_source: Literal['WALLS', 'WALL_AND_FLOOR', 'MANUAL_FLOOR_POINTS', 'CAMERA_LAYOUT'] | MISSING = (
         MISSING
     )

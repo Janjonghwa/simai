@@ -10,6 +10,9 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 - (b) 내부 파라미터: Tier 0 활성 보정 문서의 K·왜곡을 재사용한다. 없으면 `INTRINSICS_UNAVAILABLE` 로 끝낸다(무마커 추정 경로는 이 처리기에 아직
   연결하지 않았다, 지어내지 않는다).
 - (c)(d) `initialize`: prepare → mapanything 단계 → `build_world_from_pointcloud_and_poses`(바닥 Z=0, 벽 +X, 모서리 원점, 카메라 높이 축척).
+- (f) `anchor_world`: Stage A 뒤 새 보정을 Tier 0 활성 보정(이전 채택 World)과 카메라 중심으로 비교해, 카메라가 움직이지
+  않았으면 이전 World 로 옮긴다(yaw + 수평 이동, 바닥·축척 유지). 아니면 새 World 그대로 두고 사유를 `world_anchor` 에 남긴다
+  (S15P31A101-584, docs/design/world-reanchor.md).
 - (f) `publish`: 새 보정 문서를 작업 폴더에 두고 객체 저장소에 올린다. 올린 객체 참조(주소·sha256·크기)를 함께 돌려주면 처리기가
   `artifacts.calibration_document` 로 알리고, EC2 가 그 문서를 읽어 새 calibration_version 으로 등록한다(S15P31A101-467).
 - (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
@@ -71,6 +74,7 @@ DEFAULT_BACKGROUND_POLL_S = 2.0
 TIER0_MIN_SAMPLES_PER_CAMERA = 20  # Tier 0 기본값. 수집률 표시에만 쓴다(완성 판정은 Tier 0 의 ready·묶음 COMPLETE)
 FRAME_MAX_LONG_SIDE_PX = 1280  # 구역 초안용 프레임 긴 변 상한(VLM 크롭에 충분, 업로드는 작게)
 FRAME_JPEG_QUALITY = 90
+WORLD_ANCHOR_MODES = ("auto", "off")  # SIMAI_SETUP_WORLD_ANCHOR: auto = 카메라가 그대로면 이전 World 로 맞춤(-584), off = 새 World 그대로
 LOG_TAIL_LINES = 20  # 실패 단계 로그를 워커 로그에 남길 줄 수
 _MESSAGE_TAIL_CHARS = 240  # 실패 메시지(계약 500자)에 붙일 로그 끝 길이
 _KEEP_LOG_MAX_BYTES = 8 * 1024 * 1024
@@ -105,6 +109,14 @@ def background_wait_from_env(env: Mapping[str, str]) -> tuple[float, float]:
             raise ValueError(f"{key} 는 {'0 이상' if allow_zero else '양수'}(초)다")
         out.append(value)
     return out[0], out[1]
+
+
+def world_anchor_enabled_from_env(env: Mapping[str, str]) -> bool:
+    """SIMAI_SETUP_WORLD_ANCHOR(기본 auto). off 면 World 다시 맞추기를 끈다(시연 현장 안전장치). 그 밖의 값은 ValueError."""
+    raw = (env.get("SIMAI_SETUP_WORLD_ANCHOR") or "auto").strip().lower()
+    if raw not in WORLD_ANCHOR_MODES:
+        raise ValueError(f"SIMAI_SETUP_WORLD_ANCHOR 는 {'·'.join(WORLD_ANCHOR_MODES)} 중 하나다")
+    return raw == "auto"
 
 
 def _partial_collection_pct(settings: AutoStaticSettings, camera_ids: Sequence[str], prior_version: str | None) -> dict[str, float]:
@@ -213,8 +225,10 @@ class ProductionSiteSetupStages:
         *,
         clock_ms: Callable[[], int],
         calibration_loader: Callable[[AutoStaticSettings], dict[str, Any] | None] = load_active_calibration,
+        world_anchor_enabled: bool = True,
     ) -> None:
         self.ctx, self.store, self.settings, self.stages, self.root = ctx, store, settings, stages, root
+        self._world_anchor_enabled = world_anchor_enabled
         self._clock_ms = clock_ms
         self._load_calibration = calibration_loader
         self._prior: dict[str, Any] | None = None
@@ -326,13 +340,29 @@ class ProductionSiteSetupStages:
             intrinsics_by_cam=intrinsics, created_at_ms=created_at_ms,
         )
 
+    # ------------------------------------------------------------------ (f) World 다시 맞추기
+    def anchor_world(self, calibration_doc: Mapping[str, Any]) -> dict[str, Any]:
+        """이전 채택 보정(Tier 0 활성 보정)의 World 로 옮긴 보정 문서. 이전 보정이 없으면 그대로(기록 없음).
+
+        SIMAI_SETUP_WORLD_ANCHOR=off 면 옮기지 않고 DISABLED 기록만 남긴다."""
+        from simai_ai.calibration.world_frame.reanchor import reanchor_calibration
+
+        doc, result = reanchor_calibration(self._prior, calibration_doc, enabled=self._world_anchor_enabled)
+        if result is not None:
+            rec = result.to_record()
+            log.info("작업 %s World 다시 맞추기: %s(%s) 기준 %s, yaw=%s rad, 이동=%s m, 축척=%s, 배치 잔차 최대=%s m, 방향 변화 최대=%s rad",
+                     self.ctx.job_id, "채택" if result.accepted else "거부", result.reason,
+                     result.reference_calibration_version, rec["yaw_rad"], rec["translation_m"], rec["scale"],
+                     rec["max_center_residual_m"], rec["max_orientation_change_rad"])
+        return doc
+
     # ------------------------------------------------------------------ (f)
     def publish(self, calibration_doc: Mapping[str, Any]) -> PublishedCalibration:
         """새 보정 문서를 작업 폴더에 두고(이후 preview·bake 의 World 정렬 기준) 객체 저장소에 올린다. 버전은 덮어쓰지 않는다."""
         doc = copy.deepcopy(dict(calibration_doc))
         version = str(doc["calibration_version"])
         # 세팅 출처·계보(계약 2.2.0, content_hash 제외 키). Tier 0 는 previous 가 자기 활성 보정일 때만 이 문서를 새 기준으로 채택한다
-        doc["schema_version"] = "2.2.0"
+        doc["schema_version"] = "2.5.0" if "world_anchor" in doc else "2.2.0"  # world_anchor 는 계약 2.5.0
         doc["setup_session_id"] = str(self.ctx.input["setup_session_id"])
         if self._prior is not None:
             doc["previous_calibration_version"] = str(self._prior["calibration_version"])
@@ -467,8 +497,10 @@ class ProductionSiteSetupHandler:
         background_poll_s: float = DEFAULT_BACKGROUND_POLL_S,
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[Any, float], Any] | None = None,
+        world_anchor_enabled: bool = True,
     ) -> None:
         self.store, self.settings, self.stages = store, settings, stages
+        self._world_anchor_enabled = world_anchor_enabled
         self._clock_ms, self._live_gate, self._live_notice = clock_ms, live_gate, live_notice
         self._workspace, self._cross = workspace, object_cross_checker
         self._wait = {"background_wait_s": background_wait_s, "background_poll_s": background_poll_s, "sleep": sleep}
@@ -480,13 +512,15 @@ class ProductionSiteSetupHandler:
             with tempfile.TemporaryDirectory(prefix="site-setup-", dir=self._workspace) as tmp:
                 s = ProductionSiteSetupStages(
                     ctx, self.store, self.settings, self.stages, Path(tmp), clock_ms=self._clock_ms,
+                    world_anchor_enabled=self._world_anchor_enabled,
                 )
                 handler = SiteSetupHandler(
                     feature_matcher=match_sift,
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
                     preview_builder=s.preview, texture_baker=s.bake, frame_publisher=s.publish_frames,
                     object_cross_checker=self._cross,
-                    live_gate=self._live_gate, live_notice=self._live_notice, clock_ms=self._clock_ms, **self._wait,
+                    live_gate=self._live_gate, live_notice=self._live_notice, world_anchor=s.anchor_world,
+                    clock_ms=self._clock_ms, **self._wait,
                 )
                 try:
                     return handler(ctx)

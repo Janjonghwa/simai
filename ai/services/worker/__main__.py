@@ -56,7 +56,11 @@ from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
 from .scene_regenerate import SceneRegenerateHandler
-from .site_setup_stages import ProductionSiteSetupHandler, background_wait_from_env
+from .site_setup_stages import (
+    ProductionSiteSetupHandler,
+    background_wait_from_env,
+    world_anchor_enabled_from_env,
+)
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
@@ -163,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         setup_wait_s, setup_poll_s = background_wait_from_env(os.environ)
+        world_anchor_enabled = world_anchor_enabled_from_env(os.environ)
     except ValueError as e:
         print(f"services.worker: 현장 세팅 설정 오류: {e}", file=sys.stderr)
         return 2
@@ -196,11 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     # 현장 세팅(site_setup, S15P31A101-465·-473): 서버는 진행 중 작업(IN_PROGRESS)이 없을 때만 세팅을 시작시킨다(-467 409).
     # 그래서 Tier 0 표시 파일(대기 관제)이 있어도 굽기를 미루지 않는다. 미루면 재시도가 처음부터 다시 돌아 서버 등록이 어긋났다.
     # 표시 파일은 로그(Tier 0 지연이 잠깐 늘 수 있음)에만 쓴다. 서버가 워커에 "LIVE 작업 중"을 알려 주는 신호는 아직 없다
-    log.info("현장 세팅 상태 폴더 %s, 배경 묶음 대기 최대 %gs", auto_static.state_dir, setup_wait_s)
+    log.info("현장 세팅 상태 폴더 %s, 배경 묶음 대기 최대 %gs, World 다시 맞추기 %s", auto_static.state_dir, setup_wait_s,
+             "auto" if world_anchor_enabled else "off")
     site_setup = ProductionSiteSetupHandler(
         store, auto_static, ProcessStages(os.environ), clock_ms=lambda: time.time_ns() // 1_000_000,
         live_notice=lambda: bool(live_gate_probe.check().live),
-        background_wait_s=setup_wait_s, background_poll_s=setup_poll_s,
+        background_wait_s=setup_wait_s, background_poll_s=setup_poll_s, world_anchor_enabled=world_anchor_enabled,
     )
     handlers = dict(build_handlers(args.config, store))
     handlers["site_setup"] = site_setup

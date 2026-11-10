@@ -1,0 +1,298 @@
+{
+  "schema_version": "2.5.0",
+  "calibration_version": "cal-2-jba2-setup",
+  "provider_source": "G1_AUTO",
+  "provider_version": "0.1.0",
+  "state": "CALIBRATED",
+  "created_at": 1760684400000,
+  "coordinate_frame": {
+    "frame": "WORLD",
+    "unit": "m",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "site_id": "classroom-1"
+  },
+  "scale_basis": "MEASURED_OBJECT",
+  "scale_cross_check_basis": [
+    "KNOWN_PERSON_HEIGHT"
+  ],
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1010.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1010.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "OPENCV_PINHOLE",
+        "coeffs": [
+          -0.29,
+          0.088,
+          0.0,
+          0.0,
+          -0.011
+        ]
+      },
+      "R": [
+        [
+          0.5932,
+          -0.8051,
+          0.0
+        ],
+        [
+          -0.2728,
+          -0.201,
+          -0.9408
+        ],
+        [
+          0.7574,
+          0.5581,
+          -0.3388
+        ]
+      ],
+      "t": [
+        0.0424,
+        2.4468,
+        0.5839
+      ],
+      "camera_height_m": 2.4998,
+      "reprojection_error_px": {
+        "median": 1.2,
+        "p95": 3.4
+      }
+    },
+    {
+      "camera_id": "cam2",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1010.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1010.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "OPENCV_PINHOLE",
+        "coeffs": [
+          -0.29,
+          0.088,
+          0.0,
+          0.0,
+          -0.011
+        ]
+      },
+      "R": [
+        [
+          0.5932,
+          0.8051,
+          0.0
+        ],
+        [
+          0.2728,
+          -0.201,
+          -0.9408
+        ],
+        [
+          -0.7574,
+          0.5581,
+          -0.3388
+        ]
+      ],
+      "t": [
+        -4.788,
+        0.2644,
+        6.6431
+      ],
+      "camera_height_m": 2.4994,
+      "reprojection_error_px": {
+        "median": 1.4,
+        "p95": 3.9
+      }
+    },
+    {
+      "camera_id": "cam3",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1010.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1010.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "OPENCV_PINHOLE",
+        "coeffs": [
+          -0.29,
+          0.088,
+          0.0,
+          0.0,
+          -0.011
+        ]
+      },
+      "R": [
+        [
+          -0.5932,
+          0.8051,
+          0.0
+        ],
+        [
+          0.2728,
+          0.201,
+          -0.9408
+        ],
+        [
+          -0.7574,
+          -0.5581,
+          -0.3388
+        ]
+      ],
+      "t": [
+        -0.0426,
+        -0.9416,
+        9.9917
+      ],
+      "camera_height_m": 2.4993,
+      "reprojection_error_px": {
+        "median": 1.1,
+        "p95": 3.1
+      }
+    },
+    {
+      "camera_id": "cam4",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1010.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1010.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "OPENCV_PINHOLE",
+        "coeffs": [
+          -0.29,
+          0.088,
+          0.0,
+          0.0,
+          -0.011
+        ]
+      },
+      "R": [
+        [
+          -0.5932,
+          -0.8051,
+          0.0
+        ],
+        [
+          -0.2728,
+          0.201,
+          -0.9408
+        ],
+        [
+          0.7574,
+          -0.5581,
+          -0.3388
+        ]
+      ],
+      "t": [
+        4.7882,
+        1.2408,
+        3.9325
+      ],
+      "camera_height_m": 2.4997,
+      "reprojection_error_px": {
+        "median": 1.6,
+        "p95": 4.2
+      }
+    }
+  ],
+  "validation": {
+    "checkpoint_count": 4,
+    "max_pairwise_position_disagreement_m": 0.11,
+    "max_head_height_error_m": 0.06,
+    "floor_plane_disagreement_m": 0.018,
+    "floor_coverage_ratio": 0.86
+  },
+  "content_hash": "sha256:5c39d25e69dcc7de7214ee8693945f48f5d4813e8f715902148c2dc73fbc16d6",
+  "previous_calibration_version": "cal-1-jba2-setup",
+  "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000585",
+  "world_anchor": {
+    "accepted": false,
+    "reason": "DISABLED",
+    "reference_calibration_version": "cal-1-jba2-setup",
+    "method": "CAMERA_CENTER_YAW_XY",
+    "limits": {
+      "max_center_residual_m": 0.15,
+      "max_scale_deviation": 0.03,
+      "max_orientation_change_rad": 0.174533,
+      "min_cameras": 3
+    },
+    "used_cameras": [],
+    "yaw_rad": null,
+    "translation_m": null,
+    "scale": null,
+    "max_center_residual_m": null,
+    "max_orientation_change_rad": null,
+    "center_residuals_m": {},
+    "applied_center_residuals_m": {},
+    "vertical_differences_m": {},
+    "orientation_changes_rad": {}
+  }
+}

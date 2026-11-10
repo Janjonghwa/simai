@@ -194,6 +194,7 @@ sequenceDiagram
 ### 4.5 작업 간 좌표계 독립성과 과거 기록 조회
 - World 좌표계는 **해당 세팅(작업 단위) 안에서만 일관되면 된다**. 다음 작업에서 카메라를 옮겨 다시 세팅하면 새로운 `calibration_version` 과 `scene_version` 이 발급된다.
 - 과거 작업의 이벤트·리플레이·TBM 가상 배치도를 열람할 때는 그 작업 세션에 연결된 당시 `calibration_version`·`scene_version`·구역 스냅샷 계보를 불러와 그대로 재현한다.
+- **카메라가 그대로인 재세팅 (`S15P31A101-584`)**: 새 보정을 Tier 0 활성 보정(이전 채택 World)과 카메라 중심으로 비교해, 카메라가 움직이지 않았으면(배치 잔차 ≤ 0.15 m, 축척 ±3%, 방향 변화 ≤ 10°) 새 보정을 이전 World 로 옮긴다(yaw + 수평 이동, 바닥·축척은 새 값). 새 버전은 그대로 발급하되 World 정의가 같아져 기존 구역·TBM 배치를 그대로 쓴다. 기록은 보정 문서 `world_anchor`. 워커 `SIMAI_SETUP_WORLD_ANCHOR=off` 면 끈다(`reason=DISABLED`). 상세는 `docs/design/world-reanchor.md`.
 
 ---
 
