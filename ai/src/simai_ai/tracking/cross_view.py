@@ -1513,6 +1513,7 @@ class LocalTrackletBuffer:
                     timestamp_source=frame.timestamp_source,
                     timestamp_uncertainty_ms=frame.timestamp_uncertainty_ms,
                     keypoints=det.detection.keypoints_2d,
+                    bbox=det.detection.bbox,
                     frame_ref={"stream_epoch": frame.stream_epoch, "frame_sequence": frame.frame_sequence},
                 )
             )
