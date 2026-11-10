@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 let client: QueryClient;
-async function run() {
+async function run(setup?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -77,7 +77,7 @@ async function run() {
         queryFn: ({ signal }) => requestBundles(api, signal),
         staleTime: Infinity,
       }),
-      commit: useZoneCommitMutation(),
+      commit: useZoneCommitMutation(setup),
     }),
     { wrapper },
   );
@@ -187,6 +187,25 @@ const otherAdminSavesSurface = (surface: WorkSurface, name: string) =>
   });
 
 describe('useZoneCommitMutation: 저장 성공', () => {
+  it('직접 추가한 세팅 구역은 세션을 전달하고 발행 성공 후 반영한다', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined);
+    const view = await run({ sessionId: 'session-1', sync, retry: vi.fn() });
+    const request = createZoneOnly();
+    const done = await commit(view, { request, zone: null, linked: null });
+    expect(await commitBodies()).toEqual([
+      { ...request, setup_session_id: 'session-1', publish: true },
+    ]);
+    expect(sync).toHaveBeenCalledExactlyOnceWith(done.result.zone_id, false);
+  });
+
+  it('구역만 저장되고 발행에 실패하면 반영하지 않는다', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined);
+    const view = await run({ sessionId: 'session-1', sync, retry: vi.fn() });
+    zonesMock.failNextPublish('CALIBRATION_MISSING');
+    const done = await commit(view, { request: createZoneOnly(), zone: null, linked: null });
+    expect(done.publishError).not.toBeNull();
+    expect(sync).not.toHaveBeenCalled();
+  });
   it('구역 새 버전: 지금 버전을 확인하고 요청 한 번(publish: true)으로 저장해 구역·묶음 캐시를 바꾼다', async () => {
     const view = await run();
     const zone = zoneIn(view, 'z-04');

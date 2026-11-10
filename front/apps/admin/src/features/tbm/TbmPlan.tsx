@@ -1,13 +1,7 @@
 import { ROOM, toPlan } from '@/features/plan/plan';
 import { itemHeight } from '@/features/tbm/tbm';
-import {
-  TBM_DOOR,
-  TBM_OPENING,
-  TBM_ZONES,
-  type LayoutItem,
-  type Rect,
-  type TbmTask,
-} from '@/features/tbm/tbmDemo';
+import { TBM_DOOR, type LayoutItem, type Rect, type TbmTask } from '@/features/tbm/tbmDemo';
+import type { Zone } from '@/features/zones/types';
 import { cn } from '@simai/ui/lib/utils';
 
 // 작업 하나의 가상 레이아웃(2D 평면, m). 같은 시간대의 다른 작업은 점선으로, 배치가 겹친 자리는 '▲ 간섭'으로 그린다.
@@ -22,8 +16,12 @@ const LINE_GRID = 0.025;
 const LINE_SPOT = 0.06;
 const DASH = '0.15 0.1';
 const FONT_LABEL = 0.24;
-const FONT_ZONE = 0.2;
-const FONT_OPENING = 0.21;
+const ZONE_STYLE: Record<Zone['severity'], string> = {
+  CRITICAL: 'fill-sev-critical/15 stroke-sev-critical',
+  HIGH: 'fill-sev-high/15 stroke-sev-high',
+  CAUTION: 'fill-sev-caution/15 stroke-sev-caution',
+  INFO: 'fill-muted-foreground/10 stroke-muted-foreground',
+};
 /** 평면 둘레 여백(m). 방 밖의 글자가 잘리지 않게 한다. */
 const VIEW_MARGIN = 0.5;
 
@@ -34,7 +32,6 @@ function planRect(r: Rect): Rect {
 }
 
 const DOOR = planRect(TBM_DOOR);
-const OPENING = planRect(TBM_OPENING);
 const VIEW_BOX = `${-VIEW_MARGIN} ${-VIEW_MARGIN} ${ROOM.width + 2 * VIEW_MARGIN} ${ROOM.depth + 2 * VIEW_MARGIN}`;
 
 /** 1m 간격 바둑판 선(방 크기가 고정이라 한 번만 만든다). */
@@ -155,7 +152,7 @@ function SpotMark({ spot }: { spot: Rect }) {
   );
 }
 
-/** 작업과 상관없이 늘 같은 바닥: 바탕 · 바둑판 · 방 테두리 · 출입문 · 구역 · 개구부. */
+/** 작업과 상관없이 늘 같은 바닥: 바탕 · 바둑판 · 방 테두리 · 출입문. */
 function PlanBase() {
   return (
     <>
@@ -178,41 +175,6 @@ function PlanBase() {
         className="fill-background stroke-muted-foreground"
         strokeWidth={LINE_DOOR}
       />
-      {TBM_ZONES.map((zone) => {
-        const r = planRect(zone);
-        return (
-          <g key={zone.id}>
-            <rect
-              x={r.x}
-              y={r.y}
-              width={r.w}
-              height={r.h}
-              fill="none"
-              className="stroke-faint/60"
-              strokeWidth={LINE_AREA}
-            />
-            <text x={r.x + 0.08} y={r.y + r.h - 0.1} fontSize={FONT_ZONE} className="fill-faint">
-              {zone.id}
-            </text>
-          </g>
-        );
-      })}
-      <rect
-        x={OPENING.x}
-        y={OPENING.y}
-        width={OPENING.w}
-        height={OPENING.h}
-        className="fill-sev-critical/15 stroke-sev-critical"
-        strokeWidth={LINE_AREA}
-      />
-      <text
-        x={OPENING.x + 0.05}
-        y={OPENING.y + OPENING.h + 0.28}
-        fontSize={FONT_OPENING}
-        className="fill-sev-critical"
-      >
-        개구부
-      </text>
     </>
   );
 }
@@ -224,12 +186,14 @@ export function TbmPlan({
   task,
   others,
   spots,
+  setupZones = [],
 }: {
   task: TbmTask;
   /** 같은 시간대의 다른 작업. */
   others: readonly TbmTask[];
   /** 배치가 겹친 자리(World). */
   spots: readonly Rect[];
+  setupZones?: readonly Zone[];
 }) {
   return (
     <svg
@@ -239,6 +203,15 @@ export function TbmPlan({
       className="block size-full"
     >
       {PLAN_BASE}
+      {setupZones.map((zone) => (
+        <polygon
+          key={zone.zoneId}
+          aria-label={`${zone.name} 위험 구역 (${zone.severity})`}
+          points={zone.polygon.map(([x, y]) => toPlan(x, y).join(',')).join(' ')}
+          className={ZONE_STYLE[zone.severity]}
+          strokeWidth={LINE_AREA}
+        />
+      ))}
       {others.map((other) =>
         other.items.map((item, n) => (
           <PlanItem key={`${other.id}-${n}`} item={item} mine={false} tag={other.id} />

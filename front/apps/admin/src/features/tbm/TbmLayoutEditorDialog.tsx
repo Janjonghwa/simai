@@ -174,8 +174,26 @@ export function TbmLayoutEditorDialog({
     () => items.find((i) => i.item_id === selectedItemId) ?? null,
     [items, selectedItemId],
   );
+  const autoReference = Boolean(
+    selectedItem?.item_id.startsWith('auto-') && selectedItem.sourceZoneId,
+  );
+  const missingReference = items.some((item) => {
+    if (!item.item_id.startsWith('auto-') || !item.sourceZoneId) return false;
+    if (zonesRaw && !zones.some((zone) => zone.zoneId === item.sourceZoneId)) return true;
+    return Boolean(
+      item.sourceObjectId &&
+      surfacesRaw &&
+      !surfaces.some(
+        (surface) =>
+          surface.objectId === item.sourceObjectId && surface.zoneId === item.sourceZoneId,
+      ),
+    );
+  });
 
-  const boxEdit = useMemo(() => buildLayoutBoxEdit(selectedItem), [selectedItem]);
+  const boxEdit = useMemo(
+    () => (autoReference ? null : buildLayoutBoxEdit(selectedItem)),
+    [selectedItem, autoReference],
+  );
   const boxGhosts = useMemo(
     () => buildLayoutBoxGhosts(items, selectedItemId),
     [items, selectedItemId],
@@ -396,6 +414,14 @@ export function TbmLayoutEditorDialog({
           )}
         </div>
       )}
+      {missingReference && (
+        <div
+          role="alert"
+          className="border-b border-border bg-destructive/15 px-5 py-2 text-destructive"
+        >
+          원본 구역이나 연결된 작업면을 확인할 수 없습니다. 원본을 확인한 뒤 다시 반영해 주세요.
+        </div>
+      )}
 
       {isNarrow ? (
         <div
@@ -577,7 +603,12 @@ export function TbmLayoutEditorDialog({
             </section>
 
             {/* 4. 선택 물체 수치 편집 */}
-            {selectedItem && (
+            {selectedItem && autoReference && (
+              <p role="status" className={NOTE}>
+                이 항목은 구역에서 자동 반영됩니다. 형상을 바꾸려면 원본 구역을 편집하세요.
+              </p>
+            )}
+            {selectedItem && !autoReference && (
               <section
                 aria-label="선택 물체 속성"
                 className="flex flex-col gap-2.5 border-t border-border pt-3"

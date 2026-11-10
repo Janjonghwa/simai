@@ -40,6 +40,9 @@ describe('itemMakesZone', () => {
   it('구역에서 가져온 개구부와 장비는 만들지 않는다', () => {
     expect(itemMakesZone(item({ source_zone_id: 'z-04' }))).toBe(false);
     expect(itemMakesZone(item({ kind: 'EQUIPMENT' }))).toBe(false);
+    expect(itemMakesZone(surfaceItem({ source_zone_id: 'z-04', source_object_id: 'ws-04' }))).toBe(
+      false,
+    );
   });
 });
 

@@ -45,6 +45,20 @@ public class LayoutZoneService {
     public void sync(String site, long work, Long layout, long user, OffsetDateTime now) {
         if (layout == null) return;
         ObjectNode l = layouts.findOne(site, layout).orElseThrow(() -> new BusinessException(ErrorCode.Layout.LAYOUT_NOT_FOUND));
+        // 원본이 사라진 참조를 가상의 형상으로 대체하지 않는다. 작업 시작도 같은 트랜잭션에서 되돌린다.
+        for (var item : l.path("items")) {
+            String zone = item.path("source_zone_id").asString("");
+            String object = item.path("source_object_id").asString("");
+            if (zone.isEmpty()) continue;
+            boolean exists = !jdbc.queryForList("""
+                    SELECT 1 FROM zone z WHERE z.site_id = :site AND z.zone_id = :zone AND z.valid_to IS NULL
+                      AND (:kind <> 'OPENING' OR z.zone_kind = 'OPENING')
+                      AND (:object = '' OR EXISTS (SELECT 1 FROM static_object o WHERE o.site_id = :site
+                        AND o.object_id = :object AND o.zone_id = z.zone_id AND o.kind = 'WORK_SURFACE' AND o.valid_to IS NULL))
+                    """, new MapSqlParameterSource("site", site).addValue("zone", zone).addValue("object", object)
+                    .addValue("kind", item.path("kind").asString("")), Integer.class).isEmpty();
+            if (!exists) throw new BusinessException(ErrorCode.Layout.SETUP_ZONE_INCOMPLETE);
+        }
         var plans = LayoutZonePlans.from(l.path("items"));
         Set<String> wanted = new HashSet<>();
         plans.forEach(p -> wanted.add(p.itemId()));

@@ -1238,6 +1238,8 @@ public class SetupService {
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, requested_by, started_at, ready_at, completed_at, updated_at,
+                       CASE WHEN setup_session.started_at < COALESCE(
+                            (SELECT installed_on FROM flyway_schema_history WHERE version = '47' AND success), now()) THEN
                        (SELECT min(t) FROM (
                             SELECT z.valid_from AS t FROM zone z WHERE z.site_id = setup_session.site_id
                             UNION ALL
@@ -1246,7 +1248,13 @@ public class SetupService {
                             SELECT o.valid_from FROM static_object o WHERE o.site_id = setup_session.site_id
                             UNION ALL
                             SELECT o.valid_to FROM static_object o WHERE o.site_id = setup_session.site_id
-                        ) changes WHERE t >= setup_session.started_at) AS zones_committed_at
+                        ) changes WHERE t >= setup_session.started_at)
+                       ELSE (SELECT min(b.issued_at) FROM setup_session_zone sz
+                            JOIN config_bundle_item i ON i.item_type = 'ZONE' AND i.item_id = sz.zone_id
+                                AND i.item_version >= sz.zone_version
+                            JOIN config_bundle b ON b.config_version = i.config_version AND b.site_id = setup_session.site_id
+                            WHERE sz.setup_session_id = setup_session.setup_session_id)
+                       END AS zones_committed_at
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 """, new MapSqlParameterSource().addValue("site", siteId).addValue("id", setupSessionId),
@@ -1389,7 +1397,7 @@ public class SetupService {
             out.put("completed_at_ms", completedAt.getTime());
         }
         out.put("updated_at_ms", rs.getTimestamp("updated_at").getTime());
-        // 그 세션 시작 뒤 그 현장의 첫 구역·작업면 변경(POST /api/zones/commit 이 만드는 행) 시각. 세팅 보정 묶음 발행(config_version)과 무관
+        // 새 세션은 해당 세션에서 만든 구역이 발행된 시각. 마이그레이션 이전 세션은 기존 표시를 유지한다.
         var zonesCommittedAt = rs.getTimestamp("zones_committed_at");
         if (zonesCommittedAt == null) {
             out.putNull("zones_committed_at");

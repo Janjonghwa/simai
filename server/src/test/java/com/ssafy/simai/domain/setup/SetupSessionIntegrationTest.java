@@ -397,7 +397,7 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.config_version").value(configVer))
                 .andReturn());
         assertThat(finalView.get("completed_at_ms").isNumber()).isTrue();
-        // 세션 config_version 이 있어도 구역 발행(zones_committed_at)은 아니다. 세션 시작 뒤 구역 행이 생기면 그 시각이 된다
+        // 다른 구역의 생성이나 저장만으로는 발행된 세팅 구역으로 추정하지 않는다.
         assertThat(finalView.get("zones_committed_at").isNull()).isTrue();
         String zoneId = "zone-474-" + suffix;
         jdbc.update("""
@@ -408,8 +408,19 @@ class SetupSessionIntegrationTest {
         try {
             mvc.perform(get("/api/setup-sessions/{id}", retrySessionId).with(viewerJwt()))
                     .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.zones_committed_at").doesNotExist());
+            jdbc.update("INSERT INTO setup_session_zone(setup_session_id,zone_id,zone_version,created_at) VALUES (?,?,1,now())",
+                    UUID.fromString(retrySessionId), zoneId);
+            mvc.perform(get("/api/setup-sessions/{id}", retrySessionId).with(viewerJwt()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.zones_committed_at").doesNotExist());
+            jdbc.update("INSERT INTO config_bundle_item(config_version,item_type,item_id,item_version) VALUES (?,'ZONE',?,1)", configVer, zoneId);
+            mvc.perform(get("/api/setup-sessions/{id}", retrySessionId).with(viewerJwt()))
+                    .andExpect(status().isOk())
                     .andExpect(jsonPath("$.zones_committed_at").isNumber());
         } finally {
+            jdbc.update("DELETE FROM config_bundle_item WHERE config_version = ? AND item_id = ?", configVer, zoneId);
+            jdbc.update("DELETE FROM setup_session_zone WHERE setup_session_id = ? AND zone_id = ?", UUID.fromString(retrySessionId), zoneId);
             jdbc.update("DELETE FROM zone WHERE zone_id = ?", zoneId);
         }
 

@@ -69,6 +69,7 @@ public class LayoutRepository {
 
     public long create(String siteId, LayoutRequest request, long userId, Instant now) {
         Checked c = check(request);
+        validateSources(siteId, request);
         Long id = jdbc.queryForObject("""
                 INSERT INTO layout_plan (site_id, name, items, revision, source, created_by, created_at, updated_at)
                 VALUES (:site, :name, CAST(:items AS jsonb), 1, 'PLANNED', :user, :now, :now)
@@ -112,7 +113,18 @@ public class LayoutRepository {
      * 비교와 바꾸기를 한 문장으로 해 동시에 두 번 고쳐도 하나만 이긴다
      */
     public void replace(String siteId, long layoutId, LayoutRequest request, long userId, Instant now) {
+        replace(siteId, layoutId, request, userId, now, false);
+    }
+
+    /** 세팅 구역 동기화만 원본 참조 항목을 갱신할 수 있다. */
+    void replaceSetupReferences(String siteId, long layoutId, LayoutRequest request, long userId, Instant now) {
+        replace(siteId, layoutId, request, userId, now, true);
+    }
+
+    private void replace(String siteId, long layoutId, LayoutRequest request, long userId, Instant now, boolean setupSync) {
         Checked c = check(request);
+        validateSources(siteId, request);
+        if (!setupSync) validateAutomaticReferences(siteId, layoutId, request);
         int updated = jdbc.update("""
                 UPDATE layout_plan SET name = :name, items = CAST(:items AS jsonb), revision = revision + 1, updated_at = :now
                 WHERE site_id = :site AND layout_id = :id
@@ -125,6 +137,34 @@ public class LayoutRepository {
             throw new BusinessException(exists ? ErrorCode.Layout.LAYOUT_REVISION_CONFLICT : ErrorCode.Layout.LAYOUT_NOT_FOUND);
         }
         record(layoutId, userId, now);
+    }
+
+    /** 자동 항목의 형상은 원본 구역에서만 바꾼다. 오래된 클라이언트도 직접 덮을 수 없다. */
+    private void validateAutomaticReferences(String siteId, long layoutId, LayoutRequest request) {
+        ObjectNode existing = findOne(siteId, layoutId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.Layout.LAYOUT_NOT_FOUND));
+        for (var node : existing.path("items")) {
+            String id = node.path("item_id").asString();
+            if (!id.startsWith("auto-") || !node.path("source_zone_id").isTextual()) continue;
+            LayoutRequest.Item next = request.items().stream().filter(item -> id.equals(item.itemId())).findFirst()
+                    .orElseThrow(() -> new BusinessException(ErrorCode.Layout.LAYOUT_REFERENCE_LOCKED));
+            if (!node.path("kind").asString().equals(next.kind())
+                    || !node.path("source_zone_id").asString().equals(next.sourceZoneId())
+                    || !java.util.Objects.equals(node.path("source_object_id").isTextual()
+                        ? node.path("source_object_id").asString() : null, next.sourceObjectId())
+                    || !sameVector(node.path("center"), next.center()) || !sameVector(node.path("size"), next.size())
+                    || next.yawRad() == null || Math.abs(node.path("yaw_rad").asDouble() - next.yawRad()) > 0.001)
+                throw new BusinessException(ErrorCode.Layout.LAYOUT_REFERENCE_LOCKED);
+        }
+    }
+
+    private static boolean sameVector(tools.jackson.databind.JsonNode previous, List<Double> next) {
+        if (!previous.isArray() || previous.size() != 3 || next == null || next.size() != 3) return false;
+        for (int i = 0; i < 3; i++) {
+            if (!previous.get(i).isNumber() || next.get(i) == null
+                    || !Double.isFinite(next.get(i)) || Math.abs(previous.get(i).asDouble() - next.get(i)) > 0.001) return false;
+        }
+        return true;
     }
 
     private record Checked(String name, String items) {
@@ -167,6 +207,9 @@ public class LayoutRepository {
             if (item.sourceZoneId() != null && !item.sourceZoneId().isBlank()) {
                 o.put("source_zone_id", text(item.sourceZoneId(), MAX_ITEM_ID));
             }
+            if (item.sourceObjectId() != null && !item.sourceObjectId().isBlank()) {
+                o.put("source_object_id", text(item.sourceObjectId(), MAX_ITEM_ID));
+            }
             if (("WORK_SURFACE".equals(item.kind()) || "SCAFFOLD".equals(item.kind()))
                     && Math.floor((center[2] + size[2] / 2) * 1000 + 0.5) <= 0) {
                 throw invalid();
@@ -178,6 +221,24 @@ public class LayoutRepository {
             }
         }
         return new Checked(name, mapper.writeValueAsString(items));
+    }
+
+    /** 원본 참조는 현장이 같고 현재 연결된 작업면·구역일 때만 받는다. */
+    private void validateSources(String siteId, LayoutRequest request) {
+        for (LayoutRequest.Item item : request.items()) {
+            String object = item.sourceObjectId();
+            if (object == null || object.isBlank()) continue;
+            String zone = item.sourceZoneId();
+            if ((!"WORK_SURFACE".equals(item.kind()) && !"SCAFFOLD".equals(item.kind()))
+                    || zone == null || zone.isBlank()) throw invalid();
+            Boolean matches = jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM static_object o JOIN zone z ON z.zone_id = o.zone_id
+                        WHERE o.object_id = :object AND o.site_id = :site AND o.valid_to IS NULL
+                          AND o.kind = 'WORK_SURFACE' AND o.zone_id = :zone
+                          AND z.site_id = :site AND z.valid_to IS NULL)
+                    """, new MapSqlParameterSource("site", siteId).addValue("object", object).addValue("zone", zone), Boolean.class);
+            if (!Boolean.TRUE.equals(matches)) throw invalid();
+        }
     }
 
     /** 유한한 수 3개, |값| <= MAX_ABS_M. positive 면 모두 > 0 */

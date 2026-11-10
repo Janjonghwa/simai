@@ -1,3 +1,4 @@
+import type { SetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import type { WorkSurface } from '@/features/surfaces/types';
 import {
   applyLayoutEdit,
@@ -21,6 +22,7 @@ import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
 import { removeZoneDraft } from '@/store/zoneEdit.store';
 
 export interface ZoneCommitInput {
+  setupLayoutSync?: SetupLayoutSync;
   zone: Zone | null;
   workLayoutId?: number | null;
   /** 저장할 구역 모양. 기존 구역을 고치지 않았으면 null(받은 모양 그대로)이고, 새 구역은 늘 있다. */
@@ -52,7 +54,7 @@ export interface ZoneCommitInput {
  */
 export function useZoneCommit(input: ZoneCommitInput) {
   const { zone, shape, form, draft, surface, linked, orphan, target } = input;
-  const commit = useZoneCommitMutation();
+  const commit = useZoneCommitMutation(input.setupLayoutSync);
   const commitLayout = useLayoutZoneCommit();
   const archive = useSurfaceArchive();
   const { busy, run } = useExclusiveRun();
@@ -79,8 +81,15 @@ export function useZoneCommit(input: ZoneCommitInput) {
       return;
     }
     if (!done) return;
-    const { publishError } = done;
-    show(publishError ? publishErrorText(publishError) : null, publishError !== null);
+    const { publishError, result } = done;
+    show(
+      publishError
+        ? publishErrorText(publishError)
+        : result.layout_sync_failed
+          ? '구역은 발행됐지만 가상 레이아웃 반영에 실패했습니다. 해당 작업의 세팅에서 다시 시도하세요.'
+          : null,
+      publishError !== null,
+    );
     onSaved(done);
   };
 
@@ -197,7 +206,10 @@ export function useZoneCommit(input: ZoneCommitInput) {
     });
   };
 
-  const publishAndShow = () => showPublish(input.publish);
+  const publishAndShow = async () => {
+    await showPublish(input.publish);
+    void input.setupLayoutSync?.retry();
+  };
 
   // 어느 구역에도 이어지지 않은 작업면 삭제: 처음 누르면 확인 단계, 한 번 더 누르면 보관하고(DELETE /api/static-objects/{id})
   // 선택을 풀고 구성 묶음을 발행한다. 보관만으로는 다음 묶음에서 빠질 뿐이라 발행해야 현장에서도 사라진다.

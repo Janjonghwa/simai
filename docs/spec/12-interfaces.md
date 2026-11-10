@@ -185,7 +185,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`·`vlm_zone_draft`)�
 | GET · POST · PUT | /api/zones | 구역 조회·생성·새 버전(신규·편집 심각도 선택지는 `CRITICAL`·`HIGH` 2종, 8.2) | 쓰기는 관리자 |
 | POST | /api/zones/commit | 실시간 관제 화면 관리자 편집 모드에서 구역(`zone`)·고소 작업면(`static_object`, 둘레 `HIGH` 구역과 `zone_id` 연결) 새 버전 저장과 구성 묶음(`config_bundle`) 발행을 한 트랜잭션으로 처리(VLM 위험구역 초안의 발행 확정 포함, 7.5·8.2, S15P31A101-397·-410·-426) | 관리자 |
 | GET | /api/zones/\{zoneId\}/versions | 구역 버전 이력(리플레이는 그 시각 유효 버전) | 열람 |
-| POST | /api/zones/commit | 구역 편집 한 번 저장: 구역 새 버전·연결 작업면(`static_object.zone_id`)·구성 묶음 발행을 한 트랜잭션으로(송신은 커밋 뒤, `docs/design/server-zone-commit.md`) | 관리자 |
+| POST | /api/zones/commit | 구역 편집 한 번 저장(세팅에서 새 구역을 만들 때 선택 `setup_session_id`): 구역 새 버전·연결 작업면(`static_object.zone_id`)·구성 묶음 발행을 한 트랜잭션으로(송신은 커밋 뒤, `docs/design/server-zone-commit.md`) | 관리자 |
 | GET · POST · PUT | /api/static-objects | 정적 객체·작업면(OBB, 상판 높이) 조회·등록·새 버전(7.5) | 쓰기는 관리자 |
 | GET | /api/rules | 규칙 버전 조회 | 열람 |
 | POST | /api/setup-sessions | 작업 시작 전 **현장 세팅 세션 시작**(본문 `work_unit_id`, 카메라별 실측 높이 `camera_heights_m` — 생략 시 직전 세팅 높이 사용, 화면 기본 채움 값 함께 반환). 깨끗한 배경 누적 → 무마커 내부 파라미터 → 상주 MapAnything·World 자동 정의 → 인접 쌍 배경 특징점 공동 BA(V2)·정물 검증 → 빠른 미리보기 맵 + VLM 위험구역 초안 병렬 생성 실행(목표 약 1분 30초, 확인 필요, 4.3·8.1·13.4, `docs/design/site-setup-pipeline.md`) | 관리자 |
@@ -213,6 +213,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`·`vlm_zone_draft`)�
 | POST · PUT | /api/sites · /api/sites/current | 현장 등록(없을 때만)·수정(이름·원점 근거, 구성이 붙기 전이면 `site_id`) | 관리자 |
 | GET · POST · PUT · DELETE | /api/work-units, /api/work-units/\{id\} | 작업 관리 목록(`?days=`, 구간 LIVE 이벤트 수·상태 `PLANNED`\|`IN_PROGRESS`\|`DONE`·활성 현장 세팅 `active_setup_session_id`·실제 시작/종료 시각 포함)·단건 조회·등록·수정·삭제. 작업마다 현장 세팅·구역 발행 뒤 확정된 대상 구역(`zone_id`), 가상 레이아웃(`layout_id`), 공종(`work_type`)을 연결한다(8.3, `docs/design/server-work-units.md`·`docs/design/work-session-flow.md`·`docs/design/site-setup-pipeline.md`) | 조회는 열람, 쓰기는 관리자 |
 | POST | /api/work-units/\{id\}/start · /api/work-units/\{id\}/end | 작업 시작(`PLANNED` → `IN_PROGRESS`, 해당 작업의 현장 세팅·구역 발행이 완료된 경우에만 허용, `actual_started_at` 기록 및 관제 화면 세션 연동, 안전모 요구 `ppe_policy` 를 실은 새 구성 묶음 발행, 8.10) · 작업 종료(`IN_PROGRESS` → `DONE`, `actual_ended_at` 기록, 요구 해제 `ppe_policy` 를 실은 새 구성 묶음 발행 후 진행 구간·구역의 실제 LIVE `risk_event` 집계 사실로 EC2 Python 컨테이너가 TBM 보고서 “작업 마무리” 문단을 작성해 새 `report_version` 저장, 8.3) | 관리자 |
+| GET · PUT | /api/work-units/\{id\}/layout/zones · /api/work-units/\{id\}/layout/zones/\{zoneId\} | 현재 계획 작업의 세팅에서 생성·발행된 구역 목록 및 구역의 레이아웃 참조 반영. PUT은 같은 세션·현장·작업과 발행 여부를 확인하고 반복 요청 시 중복을 만들지 않는다. 결과는 `work_id`, `layout_id`, `revision`, `zone_id`, `result` | 목록 열람, 반영 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
 | GET · PUT | /api/layouts/\{id\} | 가상 레이아웃 조회·수정 | 조회는 열람, 수정은 관리자 |
 | POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장, 부록 C.4. M3 TBM 보고서는 아래 `/api/reports/tbm` 안에서 계산) | 관리자 |

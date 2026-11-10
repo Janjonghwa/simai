@@ -19,6 +19,7 @@ public final class LayoutZonePlans {
             boolean surface = kind.equals("WORK_SURFACE") || kind.equals("SCAFFOLD");
             if (!surface && !kind.equals("OPENING")) continue;
             int ordinal = surface ? ++surfaces : ++openings;
+            if (surface && !item.path("source_object_id").asString("").isEmpty()) continue;
             if (!surface && !item.path("source_zone_id").asString("").isEmpty()) continue;
             JsonNode c = item.path("center"), s = item.path("size");
             double x = c.get(0).asDouble(), y = c.get(1).asDouble(), z = c.get(2).asDouble();
