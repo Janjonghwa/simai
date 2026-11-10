@@ -371,7 +371,7 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     expect(within(detail).getByRole('alert').textContent).toContain('CITATION_VIOLATION');
   });
 
-  it('409 응답(WORK_HAS_NO_LAYOUT · REPORT_IN_PROGRESS)을 구분해 안내한다', async () => {
+  it('409 응답(WORK_HAS_NO_LAYOUT · REPORT_IN_PROGRESS)을 구분해 안내하고 레이아웃 편집 열기 버튼을 제공한다', async () => {
     // 1) WORK_HAS_NO_LAYOUT: 가상 레이아웃이 끊긴 작업(T1)에 보고서 재작성 요청
     tbmMock = createTbmMock({ pollsBeforeComplete: 2 });
     server.resetHandlers(...tbmMock.handlers, ...geometryHandlers);
@@ -381,9 +381,20 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     await screen.findByRole('button', { name: '보고서 재작성' });
 
     fireEvent.click(screen.getByRole('button', { name: '보고서 재작성' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('tbm-request-error').textContent).toContain('WORK_HAS_NO_LAYOUT');
+    const noLayoutAlert = await screen.findByTestId('tbm-request-error');
+    expect(noLayoutAlert.textContent).toContain(
+      '가상 레이아웃에 위험 요소(개구부 등)를 먼저 배치·저장하세요',
+    );
+    expect(noLayoutAlert.textContent).toContain('구역 화면의 개구부(관제 구역)');
+    expect(noLayoutAlert.textContent).toContain('TBM 가상 레이아웃');
+    expect(noLayoutAlert.textContent).not.toContain('WORK_HAS_NO_LAYOUT');
+
+    const openEditorBtn = within(noLayoutAlert).getByRole('button', {
+      name: '레이아웃 편집 열기',
     });
+    fireEvent.click(openEditorBtn);
+    const editorDialog = await screen.findByRole('dialog', { name: '3D 가상 레이아웃 편집' });
+    fireEvent.click(within(editorDialog).getByRole('button', { name: '닫기' }));
 
     // 2) REPORT_IN_PROGRESS: T2(레이아웃 연결됨) 선택 후, 다른 화면이 먼저 생성을 시작한 상태에서 재작성 요청
     fireEvent.click(screen.getByRole('button', { name: /^T2 자재 반입/ }));
@@ -402,7 +413,9 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
 
     fireEvent.click(screen.getByRole('button', { name: '보고서 재작성' }));
     await waitFor(() => {
-      expect(screen.getByTestId('tbm-request-error').textContent).toContain('REPORT_IN_PROGRESS');
+      const alert = screen.getByTestId('tbm-request-error');
+      expect(alert.textContent).toContain('REPORT_IN_PROGRESS');
+      expect(within(alert).queryByRole('button', { name: '레이아웃 편집 열기' })).toBeNull();
     });
   });
 

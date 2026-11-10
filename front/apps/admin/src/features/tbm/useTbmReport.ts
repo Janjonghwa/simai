@@ -7,6 +7,7 @@ import {
   tbmReportsByWorkKey,
 } from '@/features/tbm/api';
 import {
+  isWorkHasNoLayoutError,
   tbmReportRequestErrorText,
   type TbmReport,
   type TbmReportVersionSummary,
@@ -30,6 +31,8 @@ export interface UseTbmReportResult {
   isGenerating: boolean;
   /** POST /api/reports/tbm 요청 실패(409 WORK_HAS_NO_LAYOUT, REPORT_IN_PROGRESS 등) 안내 문구. */
   requestError: string | null;
+  /** POST /api/reports/tbm 요청이 WORK_HAS_NO_LAYOUT(409)로 거절되어 레이아웃 편집 열기 버튼이 필요한지. */
+  needsLayout: boolean;
   /** 보고서 버전 선택. */
   selectVersion: (reportId: number) => void;
   /** 보고서 생성/재생성 요청(POST /api/reports/tbm). */
@@ -43,6 +46,7 @@ interface ScopedReportState {
   selectedReportId: number | null;
   pollingReport: TbmReport | null;
   requestError: string | null;
+  needsLayout: boolean;
 }
 
 /**
@@ -58,6 +62,7 @@ export function useTbmReport(
     selectedReportId: null,
     pollingReport: null,
     requestError: null,
+    needsLayout: false,
   });
 
   // workId 가 바뀌면 부수효과(useEffect) 없이 파생 값을 바로 비운다.
@@ -65,6 +70,7 @@ export function useTbmReport(
   const selectedReportId = isSameWork ? scoped.selectedReportId : null;
   const pollingReport = isSameWork ? scoped.pollingReport : null;
   const requestError = isSameWork ? scoped.requestError : null;
+  const needsLayout = isSameWork ? scoped.needsLayout : false;
 
   const byWorkQuery = useQuery({
     queryKey: tbmReportsByWorkKey(workId ?? ''),
@@ -118,6 +124,7 @@ export function useTbmReport(
                 : null,
           pollingReport: polled.status === 'GENERATING' ? polled : null,
           requestError: prev.workId === workId ? prev.requestError : null,
+          needsLayout: prev.workId === workId ? prev.needsLayout : false,
         }));
         if (polled.status !== 'GENERATING' && workId) {
           await queryClient.invalidateQueries({ queryKey: tbmReportsByWorkKey(workId) });
@@ -144,6 +151,7 @@ export function useTbmReport(
       selectedReportId: prev.workId === workId ? prev.selectedReportId : null,
       pollingReport: prev.workId === workId ? prev.pollingReport : null,
       requestError: null,
+      needsLayout: false,
     }));
     try {
       const accepted = await requestGenerateTbmReport(api, workId);
@@ -173,6 +181,7 @@ export function useTbmReport(
         selectedReportId: accepted.report_id,
         pollingReport: placeholder,
         requestError: null,
+        needsLayout: false,
       });
       if (accepted.status !== 'GENERATING') {
         await pollOnce(accepted.report_id);
@@ -183,6 +192,7 @@ export function useTbmReport(
         selectedReportId: prev.workId === workId ? prev.selectedReportId : null,
         pollingReport: prev.workId === workId ? prev.pollingReport : null,
         requestError: tbmReportRequestErrorText(err),
+        needsLayout: isWorkHasNoLayoutError(err),
       }));
     }
   }, [workId, latest, pollOnce]);
@@ -194,6 +204,7 @@ export function useTbmReport(
         selectedReportId: reportId,
         pollingReport: null,
         requestError: null,
+        needsLayout: false,
       });
     },
     [workId],
@@ -205,6 +216,7 @@ export function useTbmReport(
       selectedReportId: prev.workId === workId ? prev.selectedReportId : null,
       pollingReport: prev.workId === workId ? prev.pollingReport : null,
       requestError: null,
+      needsLayout: false,
     }));
   }, [workId]);
 
@@ -223,6 +235,7 @@ export function useTbmReport(
     selectedReportId: activeReport?.report_id ?? selectedReportId,
     isGenerating,
     requestError,
+    needsLayout,
     selectVersion,
     generate,
     clearError,

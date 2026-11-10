@@ -13,6 +13,7 @@ import {
   setupZoneDraftsKey,
 } from '@/features/setup/api';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
+import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
 import type {
   CreateSetupSessionBody,
   RetrySetupSessionBody,
@@ -20,7 +21,6 @@ import type {
   SetupZoneDraftsResponse,
 } from '@/features/setup/types';
 import { api } from '@/lib/api';
-import { ApiError } from '@/lib/http';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 
@@ -55,15 +55,7 @@ export function useCameraHeightDefaults(enabled = true) {
 
 export function submitErrorText(error: unknown): string | null {
   if (!error) return null;
-  if (
-    error instanceof ApiError &&
-    error.status >= 400 &&
-    error.status < 500 &&
-    error.serverMessage
-  ) {
-    return error.serverMessage;
-  }
-  return '현장 세팅을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요';
+  return setupErrorMessage(error);
 }
 
 export function useCreateSetupSession(onCreated?: (session: SetupSessionResponse) => void) {
@@ -84,6 +76,7 @@ export function useCreateSetupSession(onCreated?: (session: SetupSessionResponse
     submit: mutation.mutate,
     pending: mutation.isPending,
     error: submitErrorText(mutation.error),
+    rawError: mutation.error,
     session: mutation.data ?? null,
     reset: mutation.reset,
   };
@@ -167,6 +160,7 @@ export function useRetrySetupSession(onRetried?: (session: SetupSessionResponse)
     retry: mutation.mutate,
     pending: mutation.isPending,
     error: submitErrorText(mutation.error),
+    rawError: mutation.error,
     session: mutation.data ?? null,
     reset: mutation.reset,
   };

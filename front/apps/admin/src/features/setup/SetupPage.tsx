@@ -26,6 +26,7 @@ import {
   setActiveSetupSessionId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
+import { blockedLiveWorkId, isSetupBlockedByLiveWork } from '@/features/setup/setupErrorMessage';
 import { SetupMap } from '@/features/setup/SetupMap';
 import {
   AiZoneDraftsPanel,
@@ -340,8 +341,23 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     restart: () => go(0),
   };
 
+  const step1RawError = retrySession.rawError ?? createSession.rawError ?? cancelMutation.error;
   const step1Error =
     retrySession.error ?? createSession.error ?? submitErrorText(cancelMutation.error);
+  const step1BlockedByLiveWork = isSetupBlockedByLiveWork(step1RawError);
+  const retryBlockedByLiveWork = isSetupBlockedByLiveWork(retrySession.rawError);
+
+  const navigateToBlockedWork = useCallback(
+    (error: unknown) => {
+      const liveWorkId = blockedLiveWorkId(error);
+      if (liveWorkId !== null) {
+        void navigate({ to: '/work', search: { workUnitId: String(liveWorkId) } });
+      } else {
+        void navigate({ to: '/work' });
+      }
+    },
+    [navigate],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -495,6 +511,9 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
               fields={heightFields}
               onChange={onChangeHeight}
               submitError={step1Error}
+              onNavigateLiveWork={
+                step1BlockedByLiveWork ? () => navigateToBlockedWork(step1RawError) : undefined
+              }
               heightWarnings={waiting.heightWarnings}
               retrySessionId={returnForHeightRetry ? sessionId : null}
               onRetryWithHeights={restartWithHeights}
@@ -512,6 +531,11 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
               onRetry={handleRetryFailedSession}
               retryPending={retrySession.pending}
               retryError={retrySession.error}
+              onNavigateLiveWork={
+                retryBlockedByLiveWork
+                  ? () => navigateToBlockedWork(retrySession.rawError)
+                  : undefined
+              }
               onReturnToStep1={handleReturnToStep1ForHeight}
             />
           )}
