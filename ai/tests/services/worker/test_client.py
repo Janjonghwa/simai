@@ -225,3 +225,13 @@ def test_contract_examples_tell_consistent_story():
 def test_job_types_match_contract():
     schema = json.loads((contracts_dir() / "messages" / "job_request.schema.json").read_text(encoding="utf-8"))
     assert JOB_TYPES == frozenset(schema["$defs"]["job_type"]["enum"])
+
+@pytest.mark.parametrize("status", [404, 409])
+def test_heartbeat_http_lease_loss(status):
+    lease = Lease.from_message(load_example("job_request.vlm_rationale.json"))
+    reply = _client(Scripted(Response(status, None))).heartbeat(lease)
+    assert reply.status == "REJECTED"
+
+
+def test_backoff_many_failures_stays_capped():
+    assert Backoff().delay(10000) == 30

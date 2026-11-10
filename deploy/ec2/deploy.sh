@@ -31,6 +31,19 @@ TAG=$(printf %s "$COMMIT" | cut -c1-12)
 exec 9>"$SIMAI/deploy.lock"
 flock -w 1800 9 || fail "다른 배포가 30분 넘게 끝나지 않는다"
 
+# freeze.sh 와 같은 잠금 안에서 확인한다. 입력을 비워 SSH 파이프의 git archive 가 정상 종료하게 한다.
+if [ -f "$SIMAI/deploy.freeze" ]; then
+    expiry=$(sed -n '1p' "$SIMAI/deploy.freeze")
+    reason=$(sed -n '2p' "$SIMAI/deploy.freeze")
+    case "$expiry" in ''|*[!0-9]*) fail "동결 파일의 만료 시각이 올바르지 않다" ;; esac
+    if [ "$expiry" -gt "$(date -u +%s)" ]; then
+        echo "deploy: 동결 중 (사유: $reason, 만료: $(date -u -d "@$expiry" '+%Y-%m-%d %H:%M:%S UTC')) — 배포 건너뜀"
+        cat > /dev/null
+        exit 0
+    fi
+    echo "deploy: 경고: 동결이 만료되어 배포한다 (사유: $reason)" >&2
+fi
+
 env_get() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
 PREV=$(env_get SIMAI_TAG)
 DOMAIN=$(env_get SIMAI_DOMAIN)

@@ -381,3 +381,41 @@ def test_failure_warning_masks_secrets_and_limits_message(ec2, make_worker, capl
     assert "test-secret-123" not in warnings[0] and "signature=abc" not in warnings[0]
     assert "<REDACTED>" in warnings[0] and "<URL>" in warnings[0] and "\n" not in warnings[0]
     assert len(warnings[0].split("message=", 1)[1]) == 400
+
+
+def test_heartbeat_survives_90_seconds_and_recovers():
+    """서버가 180초 대여를 발급하고 90초간 502/503/504를 보내는 상황을 가상 시계로 검증한다."""
+    from services.worker.runner import _Beat
+    from services.worker.transport import Response
+
+    now = [0.0]
+    calls = []
+
+    class Outage:
+        def post(self, path, body, timeout_s):
+            calls.append(now[0])
+            if now[0] < 90:
+                return Response((502, 503, 504)[len(calls) % 3], None)
+            return Response(200, {"msg_type": "job_lease_status", "sent_at": 0,
+                                  "payload": {"status": "ACTIVE", "lease_expires_at": 180000,
+                                              "heartbeat_interval_ms": 10000}})
+
+    client = LeaseClient(Outage(), "worker-01", clock_ms=lambda: 0, monotonic=lambda: now[0], sleep=lambda _: None)
+    worker = Worker(client, {"static_reconstruct": lambda ctx: GLTF}, clock_ms=lambda: 0, monotonic=lambda: now[0])
+    lease = Lease.from_message(ec2_lease_message_for_outage())
+    ctx = JobContext(lease.job_id, lease.lease_id, lease.job_type, 1, {})
+    beat = _Beat(180, 600, 10, 10)
+    while now[0] < 90:
+        now[0] = beat.next_heartbeat
+        assert worker._heartbeat_due(lease, ctx, beat) is None
+        assert not ctx.cancelled.is_set()
+    assert now[0] >= 90 and beat.failures == 0
+    assert beat.lease_deadline > 180
+    assert calls[1] - calls[0] == 0.5
+    assert max(b - a for a, b in zip(calls, calls[1:])) <= 10
+
+
+def ec2_lease_message_for_outage():
+    msg = copy.deepcopy(load_example("job_request.static_reconstruct.json"))
+    msg["payload"]["lease_expires_at"] = msg["sent_at"] + 180000
+    return msg
