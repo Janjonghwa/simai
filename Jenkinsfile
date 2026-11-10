@@ -205,7 +205,13 @@ pipeline {
                     sh 'uv run lint-imports'
                     script {
                         if (params.FULL_AI_TESTS?.toString() == 'true') {
-                            echo 'ai 시험 전체(FULL_AI_TESTS)'
+                            // 1) extras 없이 수집만: 선택 의존성(cv2·torch 등)을 함수 안에서 import 하는지 확인
+                            // 2) 가벼운 extras(calibration·io: opencv-headless·scipy·psutil·pyarrow·av)를 넣고 전체 시험.
+                            //    extras 없이 돌면 Tier 0 보정·배경·회전 복구 시험 약 35파일이 cv2 없음으로 통째로 건너뛰어
+                            //    깨져도 CI 가 몰랐다(S15P31A101-574). torch 묶음은 무거워 넣지 않는다
+                            echo 'ai 시험 전체(FULL_AI_TESTS): extras 없이 수집 확인 → calibration·io extras 로 전체'
+                            sh 'uv run pytest -m "not gpu" --collect-only -q > /dev/null'
+                            sh 'uv sync --frozen --extra calibration --extra io'
                             sh 'uv run pytest -m "not gpu"'
                         } else {
                             echo 'ai pytest 생략: 새벽 전체 시험 작업(simai-nightly-ai, 02:00 KST)에서 돈다. 급하면 로컬에서 scripts.select_tests 로 고른 시험을 돌린다'

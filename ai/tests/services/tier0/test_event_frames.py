@@ -399,7 +399,7 @@ def test_event_frames_feed_shares_matched_frames_with_background():
     frame = Frame("cam_A", ANCHOR, "RECEIVE_ESTIMATED",
                   {"stream_epoch": 0, "frame_sequence": 1}, None, image)
     result = SimpleNamespace(camera_id="cam_A", stream_epoch=0, frame_sequence=1,
-                             estimated_capture_time_ms=ANCHOR)
+                             estimated_capture_time_ms=ANCHOR, detections=())  # -499 부터 검출 수를 센다
     feed = DetectorFeed(camera_ids=("cam_A",), tickets=lambda: [frame],
                         detector=SimpleNamespace(detect=lambda _: [result]),
                         tracker=SimpleNamespace(update_batch=lambda _: []))

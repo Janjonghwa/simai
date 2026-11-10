@@ -63,6 +63,10 @@ def test_four_cameras_reduce_views_and_preserve_inside_world(rig):
     assert actual.payload["tracks"] == expected.payload["tracks"]
     inactive, _, all_counts = run(people | outsiders, True, active=False)
     assert all_counts == [32] and all(n == 0 for n in inactive.roi_filtered.values())
+    # 혼잡하지 않으면(한 카메라 최대 인원 < min_people 4) 거르지 않는다: 구역으로 다가오는 사람의 추적을 늦추지 않게(-574)
+    few = {"a": skeleton(4, 4), "out0": skeleton(1, 1)}
+    calm, _, calm_counts = run(few, True)
+    assert calm_counts == [8] and all(n == 0 for n in calm.roi_filtered.values())
 
 
 def test_no_zones_and_failed_projection_pass(rig):
@@ -96,7 +100,8 @@ def test_bbox_uses_same_temporal_interpolation_as_keypoints():
     assert not drops and view.bbox == (5, 10, 15, 20)
 
 
-@pytest.mark.parametrize("roi", [{"enabled": 1}, {"margin_m": -1}, {"margin_m": float('nan')}, {"extra": 1}])
+@pytest.mark.parametrize("roi", [{"enabled": 1}, {"margin_m": -1}, {"margin_m": float('nan')}, {"extra": 1},
+                                 {"min_people": -1}, {"min_people": 1.5}, {"min_people": True}])
 def test_invalid_settings(tmp_path, roi):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"input": {"mode": "sim", "run_dir": "sim", "roi_filter": roi}}))
@@ -107,10 +112,12 @@ def test_invalid_settings(tmp_path, roi):
 def test_settings_defaults_and_override(tmp_path):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"input": {"mode": "sim", "run_dir": "sim"}}))
-    assert load_settings(config, env={}).roi_filter.margin_m == 1.5
-    config.write_text(json.dumps({"input": {"mode": "sim", "run_dir": "sim", "roi_filter": {"enabled": False, "margin_m": 0}}}))
+    default = load_settings(config, env={}).roi_filter
+    assert default.margin_m == 3.0 and default.min_people == 4
+    config.write_text(json.dumps({"input": {"mode": "sim", "run_dir": "sim",
+                                            "roi_filter": {"enabled": False, "margin_m": 0, "min_people": 0}}}))
     roi = load_settings(config, env={}).roi_filter
-    assert not roi.enabled and roi.margin_m == 0
+    assert not roi.enabled and roi.margin_m == 0 and roi.min_people == 0
 
 
 def test_zone_envelope_covers_gap_between_zones():

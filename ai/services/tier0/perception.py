@@ -499,7 +499,8 @@ class Perception:
         observe_frame: Callable[[Observation2DFrame], None] | None = None,
         feature_lookup: Any = None,
         roi_enabled: bool = True,
-        roi_margin_m: float = 1.5,
+        roi_margin_m: float = 3.0,
+        roi_min_people: int = 4,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -509,6 +510,7 @@ class Perception:
         self.people = 0
         self.roi_enabled = roi_enabled
         self.roi_margin_m = roi_margin_m
+        self.roi_min_people = roi_min_people
         self.roi_zones = ()
         self.roi_filtered = {c: 0 for c in feed.camera_ids}
         self.feed = feed
@@ -666,7 +668,9 @@ class Perception:
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
         self.people = max((sum(v.camera_id == c for v in views) for c in self.feed.camera_ids), default=0)
-        if self.roi_enabled:
+        # 혼잡할 때만 거른다(-574): 사람이 적으면 비용이 작고, 거르면 구역으로 다가오는 사람의 추적이 늦어
+        # R5 접근 경보가 늦다(시나리오 시험 r1_enter_exit 등). 기준은 한 카메라에 보인 최대 인원
+        if self.roi_enabled and self.people >= self.roi_min_people:
             from simai_ai.tracking.roi_filter import filter_views, zone_envelope
 
             polygons = zone_envelope(tuple(z.polygon_xy for z in self.roi_zones if z.is_active(t)))

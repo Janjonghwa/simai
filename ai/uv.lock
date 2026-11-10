@@ -3866,6 +3866,7 @@ calibration = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin' and sys_platform != 'win32'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
     { name = "opencv-python-headless" },
+    { name = "psutil" },
     { name = "scipy" },
 ]
 detection = [
@@ -3989,6 +3990,7 @@ tier0 = [
     { name = "onnx", marker = "sys_platform == 'linux'" },
     { name = "onnxruntime", marker = "sys_platform == 'linux'" },
     { name = "opencv-python-headless" },
+    { name = "psutil" },
     { name = "pyarrow" },
     { name = "scipy" },
     { name = "tensorrt-cu13", marker = "sys_platform == 'linux'" },
@@ -4141,6 +4143,7 @@ requires-dist = [
     { name = "pipeline", marker = "sys_platform == 'linux' and extra == 'hmr'", git = "https://github.com/EasternJournalist/pipeline.git?rev=1c511390d90226c00c101f34b84df26a0f8789b4" },
     { name = "plyfile", marker = "sys_platform == 'linux' and extra == 'hmr'" },
     { name = "plyfile", marker = "sys_platform == 'linux' and extra == 'scene'" },
+    { name = "psutil", marker = "extra == 'calibration'", specifier = ">=5.9" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'risk-api'", specifier = ">=3.2,<4" },
     { name = "pyarrow", marker = "extra == 'io'", specifier = ">=17" },
     { name = "pycocotools", marker = "sys_platform == 'linux' and extra == 'hmr'" },

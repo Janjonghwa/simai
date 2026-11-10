@@ -526,9 +526,12 @@ def _atexit_cleanup() -> None:
 atexit.register(_atexit_cleanup)
 
 
-# 공유 메모리 한 칸이 받을 최대 프레임(2304×1296 BGR 은 약 9 MB). tmpfs 가 모자라면 쓰는 순간 SIGBUS 로
-# Tier 0 프로세스 전체가 죽으므로, 시작·칸 할당 때 남은 공간을 먼저 본다(Lead 검토, S15P31A101-563)
-_SHM_SLOT_BUDGET_BYTES = 16 * 1024 * 1024
+# 공유 메모리 한 칸이 받을 프레임(2304×1296 BGR 은 약 9 MB). tmpfs 가 모자라면 쓰는 순간 SIGBUS 로
+# Tier 0 프로세스 전체가 죽으므로, 시작·칸 할당 때 남은 공간을 먼저 본다(Lead 검토, S15P31A101-563).
+# 시작 기준은 실제 칸 크기 그대로(queue_depth 4 × 10 MB = 40 MB): 도커 기본 /dev/shm 64 MB 에서도 분리가 켜지게(-574).
+# 더 큰 프레임은 칸 할당 때 다시 보고 모자라면 그 표본만 버린다
+_SHM_SLOT_BUDGET_BYTES = 10 * 1024 * 1024
+_SHM_HEADROOM_BYTES = 4 * 1024 * 1024
 _SHM_DIR = Path("/dev/shm")
 
 
@@ -554,7 +557,7 @@ class BackgroundCleanBackground:
     ) -> None:
         if settings.offload:
             free = _shm_free_bytes()
-            need = max(1, settings.queue_depth) * _SHM_SLOT_BUDGET_BYTES * 2
+            need = max(1, settings.queue_depth) * _SHM_SLOT_BUDGET_BYTES + _SHM_HEADROOM_BYTES
             if free is not None and free < need:
                 log.warning("[tier0] clean_background: /dev/shm 남은 공간 %d B < 필요 %d B, 프로세스 분리를 끄고 "
                             "인프로세스로 누적한다", free, need)
@@ -833,7 +836,7 @@ class BackgroundCleanBackground:
             slot.shm = None
         if slot.shm is None:
             free = _shm_free_bytes()
-            if free is not None and free < nbytes * 2:
+            if free is not None and free < nbytes + _SHM_HEADROOM_BYTES:
                 return None  # 쓰다가 SIGBUS 로 죽느니 이 표본을 버린다(dropped 증가)
             shm = SharedMemory(create=True, size=nbytes)
             slot.shm = shm
