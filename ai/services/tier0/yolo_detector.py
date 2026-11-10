@@ -9,11 +9,35 @@ ultralytics 는 extras(detection·tier0)에만 있어 이 모듈은 만들 때 �
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Sequence
 from typing import Any
 
 from simai_ai.providers.base import Frame
 from simai_ai.tracking.local_tracker import CameraDetections, PoseDetection
+
+
+class _HalfDeprecationOnce(logging.Filter):
+    """ultralytics 의 해당 경고만 프로세스에서 한 번 보인다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen = False
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "'half' is deprecated" not in message or "Use 'quantize' instead" not in message:
+            return True
+        with self._lock:
+            if self._seen:
+                return False
+            self._seen = True
+            return True
+
+
+_HALF_WARNING_FILTER = _HalfDeprecationOnce()
 
 DEFAULT_IMGSZ = 1280
 
@@ -59,8 +83,11 @@ class UltralyticsPoseDetector:
             raise DetectorUnavailable("검출기 엔진 경로가 없다(SIMAI_TIER0_ENGINE)")
         try:
             from ultralytics import YOLO
+            from ultralytics.utils import LOGGER
         except ImportError as e:
             raise DetectorUnavailable("ultralytics 가 없다(extras detection·tier0)") from e
+        if _HALF_WARNING_FILTER not in LOGGER.filters:
+            LOGGER.addFilter(_HALF_WARNING_FILTER)
         self.model_path = model_path
         self._model = YOLO(model_path, task="pose")
         self._imgsz = imgsz

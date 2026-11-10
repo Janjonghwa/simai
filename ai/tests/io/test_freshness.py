@@ -61,6 +61,17 @@ def test_frame_age_and_queue_wait(setup):
     assert ticket.dispatched_at_ms == T0 + 120
 
 
+def test_future_capture_age_is_unknown_and_not_sampled(setup):
+    sched, clock, log, records = setup()
+    sched.offer(_frame("cam1", 0, T0 + 350))
+    (ticket,) = sched.take()
+    assert ticket.frame_age_ms is None
+    log.deliver()
+    assert records[-1].frame_age_ms is None
+    assert not log.stats["cam1"].frame_age_ms
+    assert log.stats["cam1"].summary()["frame_age_ms_p95"] is None
+
+
 @pytest.mark.parametrize(("wait", "inferred"), [(150, True), (151, False)])
 def test_queue_wait_cap_boundary(setup, wait, inferred):
     """상한을 '넘는' 프레임만 버린다. 150ms 는 추론, 151ms 는 버림."""

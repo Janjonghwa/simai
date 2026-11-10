@@ -64,6 +64,7 @@ from simai_ai.risk import (
 CONTRACTS_VERSION = "2.0.0"
 """보내는 config_ack 봉투의 schema_version (contracts/README.md 의 현재 계약 버전)"""
 ACK_MSG_TYPE = "config_ack"
+REJECTION_SUMMARY_MS = 300_000
 
 log = logging.getLogger("simai_ai.config.sync")
 
@@ -206,6 +207,9 @@ class ConfigSync:
         self._applied: list[AppliedRecord] = []
         self._transitions: list[SyncTransition] = []
         self._acks: list[Mapping[str, Any]] = []
+        self._last_rejection: tuple[Any, ...] | None = None
+        self._rejection_logged_at = 0
+        self._rejection_suppressed = 0
         self._state = ConfigSyncState.UNVERIFIED
         # 판정 사이 규칙 기억(R4 사람별 이력). 묶음마다 엔진을 새로 만들어도 같은 RuleState 를 넘겨, 같은 규칙 버전이면
         # 구성 전환 중 진행 중인 낙상 후보를 잃지 않는다(출처별 칸은 엔진이 나눈다).
@@ -329,6 +333,8 @@ class ConfigSync:
             self._connected = True  # 알림을 받았으면 EC2 와 이어져 있다
             early = self._precheck(notice)
             if early is not None:
+                if early.accepted:
+                    self._last_rejection = None
                 return early
             # EC2 가 더 새 묶음을 알렸다
             prior = self._state
@@ -398,6 +404,7 @@ class ConfigSync:
                 # 아직 판정에 쓰지 않은 대기 묶음은 더 새 묶음으로 바꾼다(적용하지 않았으므로 APPLIED 를 보내지 않는다)
                 log.info("대기 묶음 %s 를 %s 로 바꾼다", self._staged.config_version, version)
             self._staged = ActiveConfig(bundle, RiskEngine(bundle.rules, self._clock, state=self._rule_state), 0)
+            self._last_rejection = None
             self._update_state(f"{version} 검증 통과, 판정 경계 대기")
             return ReceiveResult(version, accepted=True)
 
@@ -472,7 +479,17 @@ class ConfigSync:
             self._state = after
 
     def _reject(self, version: str | None, digest: str | None, error: BundleRejected) -> ReceiveResult:
-        log.warning("구성 묶음 %s 거부: %s %s", version, error.reason, error.detail)
+        key = (version, digest, error.reason, error.detail)
+        now = self._clock.now_ms()
+        if key != self._last_rejection or now < self._rejection_logged_at:
+            log.warning("구성 묶음 %s 거부: %s %s", version, error.reason, error.detail)
+            self._last_rejection, self._rejection_logged_at, self._rejection_suppressed = key, now, 0
+        elif now - self._rejection_logged_at >= REJECTION_SUMMARY_MS:
+            log.warning("구성 묶음 %s 거부 지속: %s %s (반복 %d회)",
+                        version, error.reason, error.detail, self._rejection_suppressed + 1)
+            self._rejection_logged_at, self._rejection_suppressed = now, 0
+        else:
+            self._rejection_suppressed += 1
         ack = None
         if version is not None and digest is not None:
             ack = self._envelope(

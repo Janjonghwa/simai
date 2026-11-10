@@ -93,6 +93,6 @@ describe('프레임 나이', () => {
   it('촬영 시각과 지금의 차이(초), 없으면 비운다', () => {
     expect(frameAgeSec(undefined, 1000)).toBeUndefined();
     expect(frameAgeSec(1000, 1300)).toBeCloseTo(0.3);
-    expect(frameAgeSec(1300, 1000)).toBe(0);
+    expect(frameAgeSec(1300, 1000)).toBeUndefined();
   });
 });

@@ -189,12 +189,13 @@ class FrameLog:
             if rec.disposition is FrameDisposition.INFERRED:
                 s.inferred += 1
                 assert rec.estimated_capture_time is not None
-                assert rec.frame_age_ms is not None and rec.queue_wait_ms is not None
+                assert rec.queue_wait_ms is not None
                 if s.last_inferred_capture is not None:
                     interval = rec.estimated_capture_time - s.last_inferred_capture
                     s.max_result_interval_ms = max(interval, s.max_result_interval_ms or 0)
                 s.last_inferred_capture = rec.estimated_capture_time
-                self._sample(s.frame_age_ms, rec.frame_age_ms)
+                if rec.frame_age_ms is not None:
+                    self._sample(s.frame_age_ms, rec.frame_age_ms)
                 self._sample(s.queue_wait_ms, rec.queue_wait_ms)
             elif rec.disposition is FrameDisposition.SKIPPED_BY_POLICY:
                 assert rec.reason is not None
@@ -258,7 +259,7 @@ class InferenceTicket:
 
     frame: Frame
     dispatched_at_ms: int
-    frame_age_ms: int
+    frame_age_ms: int | None
     queue_wait_ms: int
 
 
@@ -368,7 +369,8 @@ class LatestFrameScheduler:
         ticket = InferenceTicket(
             frame=pending.frame,
             dispatched_at_ms=now,
-            frame_age_ms=now - pending.frame.estimated_capture_time,
+            frame_age_ms=(now - pending.frame.estimated_capture_time
+                          if now >= pending.frame.estimated_capture_time else None),
             queue_wait_ms=queue_wait,
         )
         epoch, seq = _frame_ids(pending.frame)
