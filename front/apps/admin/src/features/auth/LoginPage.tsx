@@ -13,7 +13,7 @@ import {
   InputGroupInput,
 } from '@simai/ui/components/input-group';
 import { Label } from '@simai/ui/components/label';
-import { Eye, EyeOff, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react';
+import { Eye, EyeOff, LockKeyhole, UserRound } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 
@@ -39,20 +39,21 @@ export function LoginPage() {
   });
 
   return (
-    <main className="grid min-h-svh bg-background px-6 py-4 lg:grid-cols-2 lg:gap-4 lg:p-5">
+    <main className="grid min-h-svh bg-background px-6 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.82fr)] lg:gap-4 lg:p-5">
       <section className="mx-auto flex w-full max-w-[420px] flex-col py-6 lg:py-8">
-        <div className="flex items-center gap-2.5">
-          <BrandMark />
-          <Wordmark />
-        </div>
         <div className="flex flex-1 items-center py-12">
           <div className="flex w-full flex-col gap-10">
+            {/* 로고는 폼 묶음 맨 위에 하나만 둔다(오른쪽 카드에는 넣지 않음). */}
+            <div className="flex items-center gap-3">
+              <BrandMark size={36} />
+              <Wordmark size={36} />
+            </div>
             <div className="flex flex-col gap-3">
               <h1 className="text-[32px] leading-tight font-bold tracking-[-0.8px]">
-                다시 오신 걸 환영합니다
+                현장 안전 관제
               </h1>
               <p className="text-[15px] break-keep text-muted-foreground">
-                관제 계정으로 로그인해 현장 안전 관제를 이어 가세요.
+                관리자 계정으로 로그인하세요.
               </p>
             </div>
             <form
@@ -147,10 +148,6 @@ export function LoginPage() {
             </form>
           </div>
         </div>
-        <p className="flex items-center gap-1.5 text-[13px] text-faint">
-          <ShieldCheck className="size-3.5" aria-hidden="true" />
-          등록된 관제 계정으로만 로그인할 수 있습니다.
-        </p>
       </section>
       {wide && <LoginHero className="hidden lg:flex" />}
     </main>

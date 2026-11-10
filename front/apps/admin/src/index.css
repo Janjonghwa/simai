@@ -96,7 +96,13 @@
   --side-column-bottom: calc(14px + var(--minimap-size) + 8px);
 }
 
+/* 로그인 카드 바탕. 마스코트 영상의 아래 가장자리 남색과 같게 해 영상과 이어지게 한다(두 모드 같은 값). */
+:root {
+  --login-hero: #1b2f64;
+}
+
 @theme inline {
+  --color-login-hero: var(--login-hero);
   --color-surface-4: var(--surface-4);
   --color-primary-hover: var(--primary-hover);
   --color-tool-panel: var(--tool-panel);
