@@ -225,6 +225,8 @@ class JudgmentLoop:
             active = self.config_sync.begin_tick()  # 1) 구성 묶음 전환 경계
             self.active_config = active
             surfaces = SurfaceSet.from_active_config(active)
+            if hasattr(self.perception, "roi_zones"):
+                self.perception.roi_zones = () if active is None else active.zones
             with self.timing.measure("perception", lambda: getattr(self.perception, "people", 0)):
                 perceived = self.perception.step(self._now_ms(), surfaces)  # 2) 인지
             if self._observe_progress is not None:

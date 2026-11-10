@@ -498,6 +498,8 @@ class Perception:
         observe_association: Callable[[AssociationFrame], None] | None = None,
         observe_frame: Callable[[Observation2DFrame], None] | None = None,
         feature_lookup: Any = None,
+        roi_enabled: bool = True,
+        roi_margin_m: float = 1.5,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -505,6 +507,10 @@ class Perception:
         self.rig = rig
         self.timing = StageTiming()
         self.people = 0
+        self.roi_enabled = roi_enabled
+        self.roi_margin_m = roi_margin_m
+        self.roi_zones = ()
+        self.roi_filtered = {c: 0 for c in feed.camera_ids}
         self.feed = feed
         self.scene_version = scene_version
         self.time_config = time_config
@@ -635,6 +641,14 @@ class Perception:
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
         self.people = max((sum(v.camera_id == c for v in views) for c in self.feed.camera_ids), default=0)
+        if self.roi_enabled:
+            from simai_ai.tracking.roi_filter import filter_views, zone_envelope
+
+            polygons = zone_envelope(tuple(z.polygon_xy for z in self.roi_zones if z.is_active(t)))
+            with self.timing.measure("roi_filter", self.people):
+                views, counts = filter_views(views, self.rig, polygons, self.roi_margin_m)
+            for camera_id, count in counts.items():
+                self.roi_filtered[camera_id] += count
         excluded = tuple(sorted(set(sync_invalid) | self._excluded_cameras))
         with self.timing.measure("cross_view_2d_triangulation", self.people):
             assoc = self.associator.associate(

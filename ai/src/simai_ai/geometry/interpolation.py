@@ -70,6 +70,7 @@ class KeypointSample:
     timestamp_uncertainty_ms: float | None
     keypoints: tuple[Keypoint, ...]
     frame_ref: Mapping[str, Any] | None = None
+    bbox: tuple[float, float, float, float] | None = None
 
     def __post_init__(self) -> None:
         _require_ms("estimated_capture_time", self.estimated_capture_time)
@@ -100,6 +101,7 @@ class InterpolatedView:
     timestamp_source: str
     timestamp_uncertainty_ms: float
     source_times: tuple[int, ...]
+    bbox: tuple[float, float, float, float] | None = None
 
 
 def interpolate_camera(
@@ -238,6 +240,13 @@ def _drop(sample: KeypointSample, t: int, reason: DropReason) -> FrameDrop:
 def _view(camera_id: str, t: int, used: Iterable[KeypointSample], keypoints: tuple[Keypoint, ...]) -> InterpolatedView:
     used = list(used)
     sources = {s.timestamp_source for s in used}
+    bbox = None
+    if all(s.bbox is not None for s in used):
+        if len(used) == 1:
+            bbox = used[0].bbox
+        else:
+            alpha = (t - used[0].estimated_capture_time) / (used[1].estimated_capture_time - used[0].estimated_capture_time)
+            bbox = tuple(a + (b - a) * alpha for a, b in zip(used[0].bbox, used[1].bbox, strict=True))
     return InterpolatedView(
         camera_id=camera_id,
         t=t,
@@ -246,6 +255,7 @@ def _view(camera_id: str, t: int, used: Iterable[KeypointSample], keypoints: tup
         timestamp_source=sources.pop() if len(sources) == 1 else "RECEIVE_ESTIMATED",
         timestamp_uncertainty_ms=max(float(s.timestamp_uncertainty_ms or 0.0) for s in used),
         source_times=tuple(s.estimated_capture_time for s in used),
+        bbox=bbox,
     )
 
 

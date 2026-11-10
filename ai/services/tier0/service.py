@@ -466,7 +466,8 @@ class Tier0Service:
             root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
             avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
-                                     input_provenance=provenance, avatar_writer=avatar_writer)
+                                     input_provenance=provenance, avatar_writer=avatar_writer,
+                                     roi_enabled=s.roi_filter.enabled, roi_margin_m=s.roi_filter.margin_m)
         # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
         self.restore_link = RestoreLink(self.perception.manager, r)
         self.writer = JournalWriter(self.journal)
@@ -1395,6 +1396,7 @@ class Tier0Service:
                     last_timing = now
                     log.info("[tier0] stage_timing %s", json.dumps({
                         "judge": self.perception.timing.summary(),
+                        "roi_filtered": dict(self.perception.roi_filtered),
                         "detector": (self.perception.feed.timing.summary()
                                      if isinstance(self.perception.feed, DetectorFeed) else None),
                         "input": None if self.live_input is None else self.live_input.bridge.timing.summary(),
@@ -1494,6 +1496,7 @@ class Tier0Service:
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "input_timing": None if self.live_input is None else self.live_input.bridge.timing.summary(),
             "stage_timing": self.perception.timing.summary(),
+            "roi_filtered": dict(self.perception.roi_filtered),
             "detector_timing": (self.perception.feed.timing.summary()
                                 if isinstance(self.perception.feed, DetectorFeed) else None),
             "skipped_camera_pairs": sorted("/".join(pair) for pair in self.perception.associator.skipped_camera_pairs),
