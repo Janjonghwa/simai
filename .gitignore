@@ -68,6 +68,8 @@ runs/
 *.h265
 recordings/
 datasets/
+# 로그인 화면 마스코트 영상은 생성 캐릭터(사람 없음)라 예외로 커밋한다(WebM 을 못 트는 브라우저용 H.264).
+!front/apps/admin/public/media/mascot.mp4
 
 # 런타임 데이터 (이벤트 저널, 체크포인트)
 journal/

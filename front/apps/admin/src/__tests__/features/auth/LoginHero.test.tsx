@@ -67,4 +67,18 @@ describe('LoginHero', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(3);
     expect(screen.getByText('실시간 위험 판정')).toBeTruthy();
   });
+
+  it('글자는 위 칸, 영상은 그 아래 칸에 따로 두고 영상을 키워 자르지 않고 맞춘다(글자가 마스코트를 덮지 않는다)', () => {
+    stubReducedMotion(false);
+    const { container } = render(<LoginHero />);
+
+    const list = screen.getByRole('list');
+    const media = screen.getByTestId('login-hero-media');
+    const video = container.querySelector('video');
+    expect(media.contains(video)).toBe(true);
+    expect(media.contains(list)).toBe(false);
+    expect(list.compareDocumentPosition(media) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(video?.classList.contains('object-contain')).toBe(true);
+    expect(video?.classList.contains('object-cover')).toBe(false);
+  });
 });
