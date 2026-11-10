@@ -12,6 +12,8 @@
     새 `calibration_version` 보정 문서 등록(덮어쓰지 않음). 미리보기·굽기·map_cameras 는 이 문서를 기준으로 정렬한다(S15P31A101-584)
 (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록 + 카메라별 대표 프레임 업로드·등록
     (`artifacts.camera_frames`, S15P31A101-479: 서버가 이 스냅샷으로 AI 구역 초안 작업을 만들 때 VLM 크롭 입력으로 싣는다)
+    + 미리보기·굽기에 쓰는 카메라별 사람 지운 배경 사진 업로드(`artifacts.bake_images`, S15P31A101-593: 서버가 이 대여의
+    미리보기·정식 Scene 에 묶어 관제 카메라 시점 VDT 사진으로 서명해 준다)
 (h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`). 세팅은 서버가 진행 중 작업(IN_PROGRESS)이 없을 때만
     시작시키므로(-467, 409) Tier 0 표시 파일이 있어도 굽는다(`live_notice` 는 로그만). `live_gate` 는 "LIVE 작업 중" 신호를
     받을 자리로 남긴다(지금 서버가 워커에 주는 그런 신호는 없다, S15P31A101-473)
@@ -27,6 +29,10 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(
 카메라 프레임(`frame_publisher`)은 AI 의견을 위한 보조 산출물이다. 올리지 못해도(저장소 오류 등) 세팅을 실패시키지 않고 프레임 없이
 이어가며(초안은 \"AI 의견 없음\"), 취소·시간 초과만 그대로 낸다. 프레임은 사람 지운 배경이라 얼굴이 원칙상 없지만 계약의 얼굴 정책
 (`face_policy`, BLURRED)을 함께 싣고, VLM 워커가 그 정책대로 얼굴 흐림 관문을 거친다.
+
+굽기 입력 사진(`bake_image_publisher`, S15P31A101-593)은 VDT(Visual 층, 장식)용 보조 산출물이다. 카메라 프레임과 같이 올리지 못해도
+세팅을 실패시키지 않고 사진 없이 이어간다(취소·시간 초과만 그대로). 같은 사진이 이미 GLB 텍스처로 구워졌으므로 얼굴 정책은 외형
+텍스처 규칙(AGENTS 규칙 8, 기본 OBSERVED)을 따른다.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -69,6 +76,8 @@ from .handlers import JobContext, JobFailed
 log = logging.getLogger("services.worker")
 
 MAX_CAMERA_FRAMES = 8  # site_setup#/$defs/artifacts/camera_frames maxItems = vlm_zone_draft frames maxItems
+MAX_BAKE_IMAGES = 16  # site_setup#/$defs/bake_images/images maxItems = scene_camera_images images maxItems
+BAKE_BUNDLE_ID_RE = re.compile(r"^bundle-[0-9a-f]{32}$")  # site_setup#/$defs/bake_images/bundle_id
 
 SITE_SETUP_INPUT_SCHEMA = {
     "$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/input"
@@ -149,6 +158,29 @@ class CameraFrameRef:
 
 
 @dataclass(frozen=True, slots=True)
+class BakeImageRef:
+    """(g) 카메라 하나의 굽기 입력 사진(JPEG)과 올린 객체 참조(계약 site_setup#/$defs/bake_image_ref)."""
+
+    camera_id: str
+    ref: ObjectRef
+    face_policy: str = "OBSERVED"  # GLB 텍스처와 같은 사진이라 외형 텍스처 규칙(AGENTS 규칙 8)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"camera_id": self.camera_id, **self.ref.to_json(), "face_policy": self.face_policy}
+
+
+@dataclass(frozen=True, slots=True)
+class BakeImages:
+    """(g) 이 대여의 미리보기·굽기 입력 사진 묶음(계약 site_setup#/$defs/bake_images)."""
+
+    bundle_id: str
+    images: tuple[BakeImageRef, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {"bundle_id": self.bundle_id, "images": [image.to_json() for image in self.images]}
+
+
+@dataclass(frozen=True, slots=True)
 class PublishedCalibration:
     """(f) 올린 새 보정 문서의 버전과 객체 참조."""
 
@@ -220,6 +252,16 @@ class CameraFramePublisher(Protocol):
         camera_ids: Sequence[str],
         backgrounds: CleanBackgroundBundle,
     ) -> Sequence[CameraFrameRef]: ...
+
+
+class BakeImagePublisher(Protocol):
+    def __call__(
+        self,
+        *,
+        setup_session_id: str,
+        camera_ids: Sequence[str],
+        backgrounds: CleanBackgroundBundle,
+    ) -> BakeImages | None: ...
 
 
 class TextureSceneBaker(Protocol):
@@ -363,6 +405,7 @@ class SiteSetupHandler:
         preview_builder: PreviewSceneBuilder | None = None,
         texture_baker: TextureSceneBaker | None = None,
         frame_publisher: CameraFramePublisher | None = None,
+        bake_image_publisher: BakeImagePublisher | None = None,
         object_cross_checker: ObjectScaleCrossChecker | None = None,
         feature_matcher: Callable[[np.ndarray, np.ndarray], Sequence[Mapping[str, Any]]] | None = None,
         live_gate: Callable[[], bool] | None = None,
@@ -390,6 +433,7 @@ class SiteSetupHandler:
         self._build_preview = preview_builder or self._default_preview_builder
         self._bake_texture = texture_baker or self._default_texture_baker
         self._publish_frames = frame_publisher
+        self._publish_bake_images = bake_image_publisher
         self._object_cross_checker = object_cross_checker
         self._feature_matcher = feature_matcher
         self._live_gate = live_gate or (lambda: False)
@@ -535,6 +579,41 @@ class SiteSetupHandler:
                 seen.add(frame.camera_id)
                 out.append(frame)
         return out[:MAX_CAMERA_FRAMES]  # 계약 camera_frames maxItems
+
+    def _publish_bake_inputs(
+        self, ctx: JobContext, setup_session_id: str, camera_ids: tuple[str, ...], bundle: CleanBackgroundBundle,
+    ) -> BakeImages | None:
+        """(g) 미리보기·굽기에 쓰는 카메라별 배경 사진을 올려 `artifacts.bake_images` 로 알린다. 못 올리면 사진 없이 이어간다.
+
+        VDT(Visual 층) 장식용이라 어떤 실패도 세팅을 멈추지 않는다(로그만). 취소·시간 초과만 그대로 낸다.
+        묶음 ID 가 계약 형식이 아니면 어느 묶음의 사진인지 밝힐 수 없어 싣지 않는다(지어내지 않는다).
+        """
+        if self._publish_bake_images is None:
+            return None
+        try:
+            published = self._publish_bake_images(
+                setup_session_id=setup_session_id, camera_ids=camera_ids, backgrounds=bundle,
+            )
+        except Exception as exc:  # noqa: BLE001 - 장식 층이라 어떤 실패도 세팅을 멈추지 않는다
+            self._check_cancelled(ctx)
+            log.warning("작업 %s: 굽기 입력 사진을 올리지 못해 카메라 시점 VDT 사진 없이 진행한다(%s: %s)",
+                        ctx.job_id, type(exc).__name__, exc)
+            return None
+        if published is None:
+            return None
+        if not BAKE_BUNDLE_ID_RE.match(published.bundle_id or ""):
+            log.warning("작업 %s: 배경 묶음 ID 형식을 몰라 굽기 입력 사진을 싣지 않는다", ctx.job_id)
+            return None
+        known = set(camera_ids)
+        seen: set[str] = set()
+        images: list[BakeImageRef] = []
+        for image in published.images:
+            if image.camera_id in known and image.camera_id not in seen:
+                seen.add(image.camera_id)
+                images.append(image)
+        if not images:
+            return None
+        return BakeImages(published.bundle_id, tuple(images[:MAX_BAKE_IMAGES]))  # 계약 images maxItems
 
     def _created_at_ms(self, bundle: CleanBackgroundBundle) -> int:
         """보정 문서 생성 시각: 묶음의 마지막 관측 시각(같은 묶음 → 같은 값). 모르면 처리기 시계(재시도 결정론 없음, 로그)."""
@@ -694,6 +773,9 @@ class SiteSetupHandler:
             backgrounds=bg_bundle,
         )
         camera_frames = self._publish_camera_frames(ctx, setup_session_id, camera_ids, bg_bundle)
+        # 미리보기·굽기가 읽는 같은 사진. 서버가 미리보기를 현재 Scene 으로 올리기(READY_FOR_ZONES) 전에 등록돼야 관제 화면이
+        # 그 Scene 의 사진을 처음 물을 때 받는다. 서버는 대여로 미리보기·정식 Scene 둘 다에 묶는다
+        bake_images = self._publish_bake_inputs(ctx, setup_session_id, camera_ids, bg_bundle)
         stage_seconds["PREVIEW_AND_VLM_DRAFT"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -722,6 +804,8 @@ class SiteSetupHandler:
             artifacts["preview_scene"] = preview.scene_asset.to_json()
         if camera_frames:
             artifacts["camera_frames"] = [frame.to_json() for frame in camera_frames]
+        if bake_images is not None:
+            artifacts["bake_images"] = bake_images.to_json()
         if artifacts:
             preview_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, preview_snapshot)

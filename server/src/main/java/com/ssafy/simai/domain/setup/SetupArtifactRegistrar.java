@@ -40,6 +40,9 @@ import tools.jackson.databind.ObjectMapper;
  *   <li>카메라 프레임({@code camera_frames}, site_setup 1.3.0, S15P31A101-479)은 AI 구역 초안의 VLM 입력이라 작은 JPEG 이다. 내려받아
  *       크기·sha256·JPEG 시그니처를 확인하고, 카메라가 이 세션의 것이며 한 스냅샷에 카메라당 하나인지 본 뒤 CAMERA_FRAME 으로 보관한다
  *       (얼굴 정책 BLURRED·EXCLUDED 만. {@code SetupService} 가 vlm_zone_draft 입력 frames 에 싣는다).
+ *   <li>굽기 입력 사진({@code bake_images}, site_setup 1.6.0, S15P31A101-593)은 이 대여의 미리보기·정식 GLB 를 구운 카메라별 사람 지운
+ *       배경 JPEG 이다. 프레임과 같이 내려받아 크기·sha256·JPEG 시그니처를 확인하고 묶음 ID 와 함께 BAKE_IMAGE 로 대여마다 보관한다
+ *       ({@code SceneCameraImageService} 가 같은 대여가 등록한 Scene 의 카메라 시점 VDT 사진으로 서명한다. 얼굴 정책은 외형 텍스처 규칙).
  *   <li>등록한 버전은 {@code setup_session_artifact} 에 이 세션 귀속으로 남긴다(추가만). 버전 계보 검사가 이 귀속을 본다:
  *       다른 세팅 세션에 귀속된 버전은 그 세션 것이다.
  * </ul>
@@ -69,6 +72,14 @@ class SetupArtifactRegistrar {
     static final int MAX_FRAMES = 8;
     private static final Set<String> FACE_POLICIES = Set.of("BLURRED", "EXCLUDED");
     private static final Pattern CAMERA_ID = Pattern.compile("^[A-Za-z0-9_-]+$");
+    static final String BAKE_IMAGE = "BAKE_IMAGE";
+    /** 굽기 입력 사진 상한: 워커가 카메라 해상도 JPEG 를 8 MiB 이하로만 올린다(BAKE_IMAGE_MAX_BYTES) */
+    static final int MAX_BAKE_IMAGE_BYTES = 8 << 20;
+    /** 계약 artifacts.bake_images.images maxItems = scene_camera_images images maxItems */
+    static final int MAX_BAKE_IMAGES = 16;
+    /** 같은 사진이 GLB 텍스처로 이미 구워졌으므로 외형 텍스처 규칙(AGENTS 규칙 8)을 따른다 */
+    private static final Set<String> BAKE_FACE_POLICIES = Set.of("OBSERVED", "BLURRED", "EXCLUDED");
+    private static final Pattern BUNDLE_ID = Pattern.compile("^bundle-[0-9a-f]{32}$");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -120,6 +131,10 @@ class SetupArtifactRegistrar {
         if (frames != null && !frames.isNull()) {
             registerFrames(target, frames);
         }
+        JsonNode bake = artifacts.get("bake_images");
+        if (bake != null && !bake.isNull()) {
+            registerBakeImages(target, bake);
+        }
     }
 
     /** 이 세션이 artifacts 로 등록한 보정인지 */
@@ -166,7 +181,52 @@ class SetupArtifactRegistrar {
             log.info("세팅 카메라 프레임 거부: JPEG 가 아니다(세션 {}, 카메라 {})", target.setupSessionId(), cameraId);
             throw invalid();
         }
-        link(target, CAMERA_FRAME, version, ref, cameraId, facePolicy);
+        link(target, CAMERA_FRAME, version, ref, cameraId, facePolicy, null);
+    }
+
+    private void registerBakeImages(Target target, JsonNode bake) {
+        if (!bake.isObject()) {
+            throw invalid();
+        }
+        String bundleId = bake.path("bundle_id").asString(null);
+        JsonNode images = bake.get("images");
+        if (bundleId == null || !BUNDLE_ID.matcher(bundleId).matches() || images == null || !images.isArray() || images.isEmpty()
+                || images.size() > MAX_BAKE_IMAGES) {
+            throw invalid();
+        }
+        Set<String> seen = new TreeSet<>();
+        for (JsonNode image : images.values()) {
+            if (!image.isObject()) {
+                throw invalid();
+            }
+            String cameraId = image.path("camera_id").asString(null);
+            String facePolicy = image.path("face_policy").asString(null);
+            if (cameraId == null || !CAMERA_ID.matcher(cameraId).matches() || !target.cameraIds().contains(cameraId)
+                    || !seen.add(cameraId) || facePolicy == null || !BAKE_FACE_POLICIES.contains(facePolicy)) {
+                throw invalid();
+            }
+            registerBakeImage(target, ObjectRef.of(image), cameraId, facePolicy, bundleId);
+        }
+    }
+
+    private void registerBakeImage(Target target, ObjectRef ref, String cameraId, String facePolicy, String bundleId) {
+        // 대여마다 한 행이다. 재시도가 같은 묶음(같은 바이트)을 써도 그 대여가 등록한 Scene 에 묶여야 한다.
+        // 같은 대여의 이어지는 하트비트·결과는 다시 읽지 않는다
+        String version = cameraId + "@" + target.leaseId();
+        if (alreadyLinked(target, BAKE_IMAGE, version, ref)) {
+            return;
+        }
+        String key = keyOf(target, ref.uri());
+        byte[] content = storage.read(key, MAX_BAKE_IMAGE_BYTES).orElseThrow(SetupArtifactRegistrar::invalid);
+        if ((ref.sizeBytes() != null && ref.sizeBytes() != content.length) || !ref.sha256().equals(sha256Hex(content))) {
+            log.info("세팅 굽기 입력 사진 거부: 크기·해시가 알린 값과 다르다(세션 {}, 카메라 {})", target.setupSessionId(), cameraId);
+            throw invalid();
+        }
+        if (!isJpeg(content)) {
+            log.info("세팅 굽기 입력 사진 거부: JPEG 가 아니다(세션 {}, 카메라 {})", target.setupSessionId(), cameraId);
+            throw invalid();
+        }
+        link(target, BAKE_IMAGE, version, ref, cameraId, facePolicy, bundleId);
     }
 
     private static boolean isJpeg(byte[] content) {
@@ -280,20 +340,21 @@ class SetupArtifactRegistrar {
     }
 
     private void link(Target target, String kind, String version, ObjectRef ref) {
-        link(target, kind, version, ref, null, null);
+        link(target, kind, version, ref, null, null, null);
     }
 
-    private void link(Target target, String kind, String version, ObjectRef ref, String cameraId, String facePolicy) {
+    private void link(Target target, String kind, String version, ObjectRef ref, String cameraId, String facePolicy,
+            String bundleId) {
         jdbc.update("""
                 INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256,
-                    size_bytes, registered_at, camera_id, face_policy)
-                VALUES (:id, :kind, :v, :job, :lease, :uri, :sha, :size, :now, :camera, :face)
+                    size_bytes, registered_at, camera_id, face_policy, bundle_id)
+                VALUES (:id, :kind, :v, :job, :lease, :uri, :sha, :size, :now, :camera, :face, :bundle)
                 ON CONFLICT (setup_session_id, kind, version) DO NOTHING
                 """, new MapSqlParameterSource()
                 .addValue("id", target.setupSessionId()).addValue("kind", kind).addValue("v", version)
                 .addValue("job", target.jobId()).addValue("lease", target.leaseId()).addValue("uri", ref.uri())
                 .addValue("sha", ref.sha256()).addValue("size", ref.sizeBytes())
-                .addValue("camera", cameraId).addValue("face", facePolicy)
+                .addValue("camera", cameraId).addValue("face", facePolicy).addValue("bundle", bundleId)
                 .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)));
     }
 

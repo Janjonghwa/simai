@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.scene.SceneActivationService;
+import com.ssafy.simai.domain.scene.SceneCameraImageService;
 import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.global.contract.ContractSchemas;
 import com.ssafy.simai.global.storage.ObjectStorage;
@@ -85,6 +86,12 @@ class SetupResultRegisterIntegrationTest {
 
     @Autowired
     SceneActivationService sceneActivations;
+
+    @Autowired
+    SceneCameraImageService sceneCameraImages;
+
+    @Autowired
+    SceneService sceneService;
 
     @MockitoBean
     ObjectStorage storage;
@@ -561,6 +568,65 @@ class SetupResultRegisterIntegrationTest {
         mvc.perform(heartbeat(s, 0.65, fine)).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT face_policy FROM setup_session_artifact WHERE kind = 'CAMERA_FRAME'", String.class))
                 .isEqualTo("EXCLUDED");
+    }
+
+    @Test
+    void 굽기_입력_사진을_대여_귀속으로_등록하고_그_대여의_Scene_이_사진과_보정_자세를_준다() throws Exception {
+        when(storage.signGet(anyString())).thenAnswer(i -> new ObjectStorage.SignedRequest(
+                "https://storage.test/" + i.getArgument(0), Map.of(), Instant.now().plusSeconds(300)));
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calibrationDocument(newCalibration, s.sessionId()));
+        ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
+        String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
+        String bundle = "bundle-" + "3f6c2b1a9d8e4f70a1b2c3d4e5f60718";
+        ObjectNode readySnap = withChecks(snapshot(s.sessionId(), "READY_FOR_ZONES", 85.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview);
+        ObjectNode artifacts = readySnap.putObject("artifacts");
+        artifacts.set("calibration_document", calRef);
+        artifacts.set("preview_scene", previewRef);
+        mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
+
+        ObjectNode bakingSnap = readySnap.deepCopy().put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
+        ObjectNode bake = ((ObjectNode) bakingSnap.get("artifacts")).putObject("bake_images").put("bundle_id", bundle);
+        ArrayNode images = bake.putArray("images");
+        for (String cam : List.of("cam2", "cam1")) {
+            images.add(frameRef(cam, put(prefix + "bake-" + cam + ".jpg", jpeg("bake-" + cam)), "OBSERVED"));
+        }
+        mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+        // 결과가 같은 사진을 다시 알려도 다시 읽지 않고 중복 등록하지 않는다
+        mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+
+        assertThat(jdbc.queryForList("""
+                SELECT camera_id || ':' || face_policy || ':' || bundle_id || ':' || version FROM setup_session_artifact
+                WHERE setup_session_id = ?::uuid AND kind = 'BAKE_IMAGE' ORDER BY camera_id
+                """, String.class, s.sessionId()))
+                .containsExactly("cam1:OBSERVED:" + bundle + ":cam1@" + s.leaseId(), "cam2:OBSERVED:" + bundle + ":cam2@" + s.leaseId());
+
+        ObjectNode body = sceneCameraImages.images(preview);
+        assertThat(body.path("bundle_id").asString()).isEqualTo(bundle);
+        assertThat(body.path("source").asString()).isEqualTo("SITE_SETUP");
+        assertThat(body.path("images")).hasSize(2);
+        assertThat(body.path("images").get(0).path("url").asString()).isEqualTo("https://storage.test/" + prefix + "bake-cam1.jpg");
+        assertThat(schemas.violations("messages/scene_camera_images", body.toString())).isEmpty();
+
+        // 세팅 미리보기가 현재 Scene 이면 scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
+        assertThat(currentScene()).isEqualTo(preview);
+        ObjectNode current = sceneService.current();
+        assertThat(current.at("/map_cameras/cam1/pose_source").asString()).isEqualTo("CALIBRATION");
+        assertThat(current.at("/map_cameras/cam4/K").size()).isEqualTo(3);
+
+        // 세션 밖 카메라, JPEG 가 아닌 사진은 거부한다(묶음 ID·얼굴 정책 형식은 계약 검사가 먼저 막는다)
+        List<ObjectNode> badImages = List.of(
+                frameRef("camX", put(prefix + "bake-x.jpg", jpeg("x")), "OBSERVED"),
+                frameRef("cam3", put(prefix + "bake-y.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1}), "OBSERVED"));
+        for (ObjectNode badImage : badImages) {
+            ObjectNode snap = bakingSnap.deepCopy();
+            ObjectNode badBake = ((ObjectNode) snap.get("artifacts")).putObject("bake_images").put("bundle_id", bundle);
+            badBake.putArray("images").add(badImage);
+            mvc.perform(heartbeat(s, 0.95, snap)).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+        }
     }
 
     private void assertFrameRejected(Session s, ObjectNode frame) throws Exception {

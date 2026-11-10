@@ -26,8 +26,12 @@ import tools.jackson.databind.node.ObjectNode;
  * <ul>
  * <li>Scene ↔ 입력 묶음은 이미 DB 에 있다: scene_version.job_id(static_reconstruct, SceneJobListener) → analysis_job.input 의
  * clean_background_bundle_id·images(StaticReconstructSubmitService 가 저장). 새 열·표를 만들지 않는다.</li>
- * <li>관리자 등록·세팅 세션 Scene 처럼 작업이 없거나 묶음을 알 수 없으면 bundle_id null·빈 목록이다. 최신 묶음을 갖다 붙이지 않는다(규칙 2).</li>
- * <li>이 묶음의 static-inputs/&lt;bundle_id&gt;/ 아래 사람 지운 배경(CLEAN_BACKGROUND) 사진만 서명한다. 다른 키는 서명하지 않는다.</li>
+ * <li>세팅 세션 Scene(S15P31A101-593)은 job_id 가 없다. 그 Scene 을 등록한 setup_session_artifact(SCENE·PREVIEW_SCENE)의 세션·작업·대여가
+ * 알린 굽기 입력 사진(BAKE_IMAGE, 그 대여의 job-objects/site_setup/&lt;job&gt;/&lt;lease&gt;/ 아래 JPEG)과 묶음 ID 를 쓴다(source SITE_SETUP).
+ * 다른 대여의 사진은 다른 배경일 수 있어 묶지 않는다.</li>
+ * <li>관리자 등록 Scene 처럼 둘 다 없거나 묶음을 하나로 정할 수 없으면 bundle_id null·빈 목록이다. 최신 묶음을 갖다 붙이지 않는다(규칙 2).</li>
+ * <li>이 묶음의 static-inputs/&lt;bundle_id&gt;/ 아래 사람 지운 배경(CLEAN_BACKGROUND) 사진, 세팅 Scene 은 그 대여 경로의 사진만 서명한다.
+ * 다른 키는 서명하지 않는다.</li>
  * <li>저장소를 쓸 수 없거나 서명에 실패하면 묶음 ID 만 주고 목록은 비운다(화면은 시점 이동만 한다). 서명 주소는 로그에 남기지 않는다.</li>
  * </ul>
  */
@@ -43,6 +47,20 @@ public class SceneCameraImageService {
     private static final Pattern FILE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.(jpg|png)$");
     /** 계약 scene_camera_images.images maxItems */
     private static final int MAX_IMAGES = 16;
+    /** 세팅 대여 결과 경로 바로 아래 굽기 입력 사진 한 장(워커 bake-&lt;camera&gt;.jpg, SetupArtifactRegistrar 가 JPEG 만 받음) */
+    private static final Pattern SETUP_FILE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.jpg$");
+    private static final String SETUP_PREFIX = "job-objects/site_setup/";
+    static final String SOURCE_STATIC = "STATIC_RECONSTRUCT";
+    static final String SOURCE_SETUP = "SITE_SETUP";
+    /** 그 Scene 을 등록한 세팅 대여(세션·작업·대여가 같은 행)가 알린 굽기 입력 사진 */
+    private static final String SETUP_IMAGES = """
+            SELECT b.camera_id, b.object_uri, b.bundle_id, b.job_id, b.lease_id::text AS lease_id
+            FROM setup_session_artifact s
+            JOIN setup_session_artifact b ON b.setup_session_id = s.setup_session_id AND b.job_id = s.job_id
+                AND b.lease_id = s.lease_id AND b.kind = 'BAKE_IMAGE'
+            WHERE s.version = :v AND s.kind IN ('SCENE', 'PREVIEW_SCENE')
+            ORDER BY b.camera_id, b.registered_at
+            """;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -68,15 +86,32 @@ public class SceneCameraImageService {
         }
         Input input = found.getFirst();
         String bundle = input.bundleId() != null && BUNDLE.matcher(input.bundleId()).matches() ? input.bundleId() : null;
+        String source = bundle == null ? null : SOURCE_STATIC;
+        List<Map<String, Object>> setupRows = List.of();
+        if (bundle == null) {
+            setupRows = jdbc.queryForList(SETUP_IMAGES, new MapSqlParameterSource("v", input.sceneVersion()));
+            bundle = setupBundle(setupRows);
+            source = bundle == null ? null : SOURCE_SETUP;
+        }
         ObjectNode node = mapper.createObjectNode();
         node.put("scene_version", input.sceneVersion());
         node.put("bundle_id", bundle);
+        if (source != null) {
+            node.put("source", source);
+        }
         node.putNull("expires_at_ms");
         ArrayNode images = node.putArray("images");
-        if (bundle == null || input.images() == null || !storage.configured()) {
+        if (bundle == null || !storage.configured()) {
             return node;
         }
-        Map<String, String> keys = keys(bundle, mapper.readTree(input.images()));
+        Map<String, String> keys;
+        if (SOURCE_SETUP.equals(source)) {
+            keys = setupKeys(setupRows);
+        } else if (input.images() != null) {
+            keys = keys(bundle, mapper.readTree(input.images()));
+        } else {
+            return node;
+        }
         Instant expires = null;
         ArrayNode signed = mapper.createArrayNode();
         try {
@@ -112,6 +147,39 @@ public class SceneCameraImageService {
             if (!"CLEAN_BACKGROUND".equals(image.path("kind").asString("")) || !CAMERA.matcher(camera).matches()
                     || keys.containsKey(camera) || !uri.startsWith(prefix)
                     || !FILE.matcher(uri.substring(prefix.length())).matches()) {
+                continue;
+            }
+            if (keys.size() >= MAX_IMAGES) {
+                break;
+            }
+            keys.put(camera, uri.substring(bucketPrefix.length()));
+        }
+        return keys;
+    }
+
+    /** 세팅 대여 사진의 묶음 ID. 사진이 없거나 묶음이 둘 이상이면(그럴 수 없지만) 모름(null) */
+    private static String setupBundle(List<Map<String, Object>> rows) {
+        String bundle = null;
+        for (Map<String, Object> row : rows) {
+            Object value = row.get("bundle_id");
+            if (!(value instanceof String id) || !BUNDLE.matcher(id).matches() || (bundle != null && !bundle.equals(id))) {
+                return null;
+            }
+            bundle = id;
+        }
+        return bundle;
+    }
+
+    /** 카메라 ID → 저장소 키(카메라 ID 순, 카메라당 처음 것). 그 대여 결과 경로 밖이거나 형식이 틀린 항목은 버린다 */
+    private Map<String, String> setupKeys(List<Map<String, Object>> rows) {
+        Map<String, String> keys = new TreeMap<>();
+        String bucketPrefix = storage.uri("");
+        for (Map<String, Object> row : rows) {
+            String camera = row.get("camera_id") instanceof String c ? c : "";
+            String uri = row.get("object_uri") instanceof String u ? u : "";
+            String prefix = storage.uri(SETUP_PREFIX + row.get("job_id") + "/" + row.get("lease_id") + "/");
+            if (!CAMERA.matcher(camera).matches() || keys.containsKey(camera) || !uri.startsWith(prefix)
+                    || !SETUP_FILE.matcher(uri.substring(prefix.length())).matches()) {
                 continue;
             }
             if (keys.size() >= MAX_IMAGES) {

@@ -2,8 +2,10 @@ package com.ssafy.simai.domain.scene;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -11,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.storage.ObjectStorage;
+import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.List;
@@ -20,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -131,6 +135,45 @@ class SceneServiceTest {
         assertThat(result.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("MA_ALIGNED_SIM3");
         assertThat(result.at("/map_cameras/cam_A/image_size/0").asInt()).isEqualTo(2304);
         assertThat(result.at("/map_cameras/cam_A/t/2").asDouble()).isEqualTo(1.2);
+    }
+
+    @Test
+    void 세팅_Scene은_scene_output이_없으면_그_보정_문서_카메라_자세를_CALIBRATION으로_싣는다() throws Exception {
+        calibrationDocument("""
+                {"calibration_version":"cal-a","cameras":[
+                 {"camera_id":"cam_A","image_size":[2304,1296],"K":[[1100.0,0.0,1152.0],[0.0,1100.0,648.0],[0.0,0.0,1.0]],
+                  "distortion":{"model":"NONE","coeffs":[]},"R":[[0.0,-1.0,0.0],[0.0,0.0,-1.0],[1.0,0.0,0.0]],"t":[-0.5,2.5,1.2]}]}
+                """);
+
+        ObjectNode result = scenes.current();
+
+        assertThat(result.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("CALIBRATION");
+        assertThat(result.at("/map_cameras/cam_A/image_size/1").asInt()).isEqualTo(1296);
+        assertThat(result.at("/map_cameras/cam_A/K/0/0").asDouble()).isEqualTo(1100.0);
+        assertThat(result.at("/map_cameras/cam_A/R/2/0").asDouble()).isEqualTo(1.0);
+        assertThat(result.at("/map_cameras/cam_A/t/1").asDouble()).isEqualTo(2.5);
+        assertThat(result.at("/map_cameras/cam_A").has("distortion")).isFalse();
+    }
+
+    @Test
+    void 보정_문서_카메라_한_대라도_형식이_틀리면_map_cameras를_싣지_않는다() throws Exception {
+        calibrationDocument("""
+                {"cameras":[
+                 {"camera_id":"cam_A","image_size":[2304,1296],"K":[[1100.0,0.0,1152.0],[0.0,1100.0,648.0],[0.0,0.0,1.0]],
+                  "R":[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],"t":[0.0,0.0,0.0]},
+                 {"camera_id":"cam_B","image_size":[2304.5,1296],"K":[[1100.0,0.0,1152.0],[0.0,1100.0,648.0],[0.0,0.0,1.0]],
+                  "R":[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],"t":[0.0,0.0,0.0]}]}
+                """);
+        assertThat(scenes.current().has("map_cameras")).isFalse();
+
+        calibrationDocument("not json");
+        assertThat(scenes.current().has("map_cameras")).isFalse();
+    }
+
+    private void calibrationDocument(String json) {
+        // 세팅 Scene 이 아니면(setup_session_artifact 없음) 질의가 빈 목록이다(모의 기본값). 여기서는 세팅 Scene 이다
+        when(jdbc.queryForList(anyString(), any(SqlParameterSource.class), eq(byte[].class)))
+                .thenReturn(List.of(json.getBytes(StandardCharsets.UTF_8)));
     }
 
     private void maps(String... names) throws Exception {
