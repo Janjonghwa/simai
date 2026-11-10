@@ -907,6 +907,9 @@ def test_multi_camera_fall_exclusion_and_under_two_cameras_null_position(site):
     #    cam2, cam3 는 융합에서 배제되고 cam1, cam4 2대만으로 정확한 World 3D 트랙이 생성·갱신된다.
     base_t = max(service.perception.manager.last_t or 0, t_ms) + 1_000
     bad_rot = {"cam2": _euler_matrix(15.0, -10.0, 5.0), "cam3": _euler_matrix(-12.0, 14.0, -6.0)}
+    # 합성 사람은 17관절을 높이순으로 쌓아 15·16번(COCO 발목)이 1.6 m 높이다. 구역 밖 필터(-562)는 15·16번을
+    # 발목으로 보고 바닥에 투영하므로 이 골격에서는 멀리 떨어진 위치로 계산돼 걸러진다. 여기서는 융합 제외만 본다.
+    service.perception.roi_enabled = False
     for step_idx in range(1, 5):
         obs_t = base_t + step_idx * 100
         site.elapsed[0] = obs_t - 1_760_342_400_000
