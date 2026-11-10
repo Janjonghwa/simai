@@ -1,6 +1,6 @@
 # PPE 시연 예외 활성화와 이벤트 표시
 
-S15P31A101-556. 관련 명세 §5.5, §7.2, §8.10, §15.1, §16, 부록 E. 선행 -548(계약·Tier 0 R11), -549(서버 vest 발행·워치), -550(V45), -531(PPE 화면 전달).
+S15P31A101-556. 관련 명세 §5.5, §7.2, §8.10, §15.1, §16, 부록 E. 선행 -548(계약·Tier 0 R11), -549(서버 vest 발행·워치), -550(V45), -531(PPE 화면 전달). PPE 프로세스 기동·수신 확인 절차는 S15P31A101-587 에서 더했다.
 
 ## 승인과 범위
 
@@ -30,8 +30,14 @@ Lead 이원준이 2026-11-09 이 대화에서 **G9·G6-R9·G6-R11 미통과 상�
 2. 서버를 내려도 되는 시점에 팀과 조율해 배포한다. Flyway 반복 시드가 R9·R11 v1 을 넣고, V45 적용도 확인한다. 기존 시계열·이벤트·구성 묶음을 지우지 않는다.
 3. 보정·구역·작업면과 워치 연결을 준비한 뒤 새 묶음을 발행한다. 묶음 rules에 R9·R11, PPE 요구 문서에 `format_version: 1.1.0`과 `helmet`·`vest`를 확인한다. 작업 시작·종료는 각각 새 묶음을 발행한다.
 4. `GET /api/config-bundles/{version}`의 `status: APPLIED`, `last_ack.reject_reason`, 현장의 적용 config_version을 확인한다. 거부·PENDING·config_version null이면 준비 완료로 보지 않는다. `/api/rules`의 R9·R11 active를 적용 묶음과 대조한다.
-5. LIVE에서 같은 World ID·identity_revision의 BOUND·CONNECTED 워치로 안전모 미착용 R9와 조끼 미착용 R11을 각각 발생시켜 “안전모”·“조끼” CAUTION 진동을 확인한다. 한 장비를 다시 착용하면 그 이벤트만 해소되는지, UNKNOWN·만료가 새 발생이나 자동 해소를 만들지 않는지 확인한다. 두 장비를 따로 검사해 높은 등급의 다른 경보가 워치 표현을 가리지 않게 한다.
-6. 작업 종료의 NOT_REQUIRED 묶음 APPLIED로 열린 PPE 이벤트가 해소되는지 확인한다. 워치 ACK 자체는 착용·해소 근거가 아니다. REPLAY에서는 실제 워치·현장 알림이 없어야 한다.
+5. PPE 프로세스를 띄우고 상태가 들어오는지 확인한다(S15P31A101-587). PPE 는 명시해야 뜨고 `simai-bootstrap lobby`·`preflight` 기본(`tier0,vllm,worker,avatar`)에는 없다(명세 3.12, `deploy/scripts/simai_bootstrap.py`의 `LOBBY_SERVICES`). 안 띄우면 `ppe_state` 가 오지 않아 R9·R11 이 UNKNOWN 에 머물고 발생하지 않는다. 이 상태는 health·관제 화면에 따로 표시되지 않으므로(아래 잔여 위험) 아래 항목을 직접 확인한다.
+   - 가중치: `simai-bootstrap check --sets ppe` 가 0 으로 끝나는지 본다(`deploy/weights.json`의 `ppe-t1-v4-all-e08`). 통합 이미지는 이 체크포인트를 이미지에 구워 두므로 상태가 `baked` 로 나오고 Pod 에서 받지 않는다(S15P31A101-577). 구운 사본이 없는 이미지에서만 HF 비공개 저장소에서 받으므로, 그때는 읽기 권한이 있는 계정의 `HF_TOKEN` 이 필요하다.
+   - 기동: lobby 에 `--services tier0,vllm,worker,avatar,ppe` 를 준다(아바타를 빼지 않는다). lobby 는 `SIMAI_SERVICES` 를 보지 않는다. GPU 예산은 Tier 0 0.20 + 분석 워커 0.70 + PPE 0.05 = 0.95 로 상한 안이다.
+   - 기동 로그: `$SIMAI_ROOT/logs/ppe.log` 에 `PPE 시작: stream_epoch=… model=T1-v4-ALL-seed20261021-e08-e373a1048057` 이 있는지 본다. `PPE 시작 실패`(종료 코드 2)면 가중치·sha256·GPU 상한 설정을 먼저 고친다.
+   - 추론: 사람이 카메라에 보이는 상태에서 60초마다 남는 `PPE 상태: seq=… counts=…` 의 `inferred` 가 늘어나는지 본다. `seq` 만 늘고 `inferred` 가 그대로면 입력이 막힌 것이다. 같은 줄의 `gate_*`(Tier 0 지연 접수 문), `wait_exceeded`, `metadata_rejected`, 그리고 timing 의 `publication_unavailable`·`read_error` 를 보고 원인을 가린다.
+   - 수신: 관제 앱에 로그인한 상태에서 `GET /api/ppe/current` 응답에 이 Tier 0 의 사람별 안전모·조끼 항목이 있는지 본다. 비어 있으면 준비 완료로 보지 않는다. 3D 뷰어의 장비 표시(`PpeGear`)만으로 판단하지 않는다. 미착용이나 상태 없음이면 아무것도 그리지 않아 둘을 구분할 수 없기 때문이다.
+6. LIVE에서 같은 World ID·identity_revision의 BOUND·CONNECTED 워치로 안전모 미착용 R9와 조끼 미착용 R11을 각각 발생시켜 “안전모”·“조끼” CAUTION 진동을 확인한다. 한 장비를 다시 착용하면 그 이벤트만 해소되는지, UNKNOWN·만료가 새 발생이나 자동 해소를 만들지 않는지 확인한다. 두 장비를 따로 검사해 높은 등급의 다른 경보가 워치 표현을 가리지 않게 한다.
+7. 작업 종료의 NOT_REQUIRED 묶음 APPLIED로 열린 PPE 이벤트가 해소되는지 확인한다. 워치 ACK 자체는 착용·해소 근거가 아니다. REPLAY에서는 실제 워치·현장 알림이 없어야 한다.
 
 ## 예외 종료·문제 시 비활성 복구
 
@@ -58,4 +64,6 @@ Lead 이원준이 2026-11-09 이 대화에서 **G9·G6-R9·G6-R11 미통과 상�
 - R9에 조끼를 합치는 안은 버렸다. 한 사람에게도 장비별 발생·해소·워치 단어가 따로 필요하다.
 - 최신 config_version만으로 해소 원인을 정하는 안은 버렸다. 작업 종료 전후·거부 묶음과 섞여 착용 해소를 잘못 표시할 수 있다.
 - 조끼 근거가 UNKNOWN이면 경보가 안 생길 수 있다. 시연에 맞추려고 UNKNOWN을 미착용으로 바꾸거나 등급을 올리지 않는다. 현장 리허설·동시 GPU 부하는 미확정이다.
+- lobby 기본 서비스에 `ppe` 를 넣는 안은 이번에 하지 않았다(S15P31A101-587). 기본에서 뺀 것은 G9 동시 실행 판정 전이라는 -507 결정이고, 바꾸려면 Lead 결정이 필요하다. 그래서 시연 예외 기간에는 배포 절차 5단계에서 명시적으로 띄운다.
+- PPE 프로세스가 없거나 입력이 끊긴 상태(완료 표식 쓰기 실패, 접수 문 차단 지속 등)가 health·관제 화면에 표시되지 않는다. health 계약에 PPE 항목이 없고, 서버는 상태별 10초 만료만 보며, 화면의 사람별 PPE 표시는 상태가 없으면 비어 있을 뿐이다. 그래서 운영 중 PPE 가 멈추면 R9·R11 이 조용히 발생하지 않는다. 지금은 PPE 60초 로그로만 알 수 있다. 화면 안내나 health 항목 추가(I1 LIVE 계약, Lead 승인 필요)는 별도 스토리 후보다.
 - 요구사항 FR-74 갱신 필요: R11·장비별 해소 및 Lead 시연 예외(정식 게이트는 미통과).
