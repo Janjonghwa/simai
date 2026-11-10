@@ -36,8 +36,9 @@ class ClipDeferral {
         try {
             return ingestor.apply(envelope, receivedAt);
         } catch (WaitingForEarlier waiting) {
-            return park(envelope, receivedAt, waiting.getMessage())
-                    ? I1MessageIngestor.Outcome.STORED : I1MessageIngestor.Outcome.DUPLICATE;
+            // 수신기가 잠금 안에서 이미 보관했으면 그 결과를 쓴다(MediaClipIngestor)
+            boolean parked = waiting.parked != null ? waiting.parked : park(envelope, receivedAt, waiting.getMessage());
+            return parked ? I1MessageIngestor.Outcome.STORED : I1MessageIngestor.Outcome.DUPLICATE;
         }
     }
 
@@ -49,6 +50,21 @@ class ClipDeferral {
                 """, new MapSqlParameterSource().addValue("msgId", envelope.msgId()).addValue("msgType", envelope.msgType())
                 .addValue("envelope", mapper.writeValueAsString(envelope.toContractJson(mapper)))
                 .addValue("reason", reason).addValue("receivedAt", utc(receivedAt))) > 0;
+    }
+
+    /**
+     * 불변식: media_clip.received_at 은 EC2 가 그 클립 메시지를 처음 받은 시각이다. 보관함에 같은 클립(같은 msg_id, 또는 같은 clip_id 의
+     * media_clip)이 있으면 그 received_at 이 처음 받은 시각이다. 이벤트를 넣은 뒤 도착한 재전송이 재시도보다 먼저 바로 저장되는 경우가 그렇다
+     * (S15P31A101-589). 저장하는 트랜잭션 안에서 보관 행을 지우며 가장 이른 시각을 돌려준다. 저장이 되돌려지면 지운 것도 되돌려진다.
+     */
+    Instant takeFirstReceipt(UUID msgId, UUID clipId, Instant receivedAt) {
+        return jdbc.queryForList("""
+                DELETE FROM i1_deferred_message
+                WHERE msg_id = :msgId OR (msg_type = 'media_clip' AND envelope #>> '{payload,clip_id}' = :clipId)
+                RETURNING received_at
+                """, new MapSqlParameterSource().addValue("msgId", msgId).addValue("clipId", clipId.toString()), OffsetDateTime.class)
+                .stream().map(OffsetDateTime::toInstant).filter(parked -> parked.isBefore(receivedAt)).min(Instant::compareTo)
+                .orElse(receivedAt);
     }
 
     List<Parked> due(Instant now, int limit) {
@@ -85,11 +101,26 @@ class ClipDeferral {
         Outcome apply(I1Envelope envelope, Instant receivedAt);
     }
 
-    /** 앞선 메시지(이벤트 전이·클립 기록)를 아직 받지 못했다. 트랜잭션 안에서 던져 아무것도 쓰지 않고 되돌린다 */
+    /**
+     * 앞선 메시지(이벤트 전이·클립 기록)를 아직 받지 못했다. 트랜잭션 안에서 던져 아무것도 쓰지 않고 되돌린다. 클립 기록은 잠금 안에서
+     * 보관까지 한 뒤 트랜잭션 밖에서 던진다(parked)
+     */
     static final class WaitingForEarlier extends RuntimeException {
 
+        /** 수신기가 잠금 안에서 보관까지 했으면 새로 보관했는지(true)·이미 있었는지(false). 보관하지 않았으면 null */
+        final Boolean parked;
+
         WaitingForEarlier(String reason) {
+            this(reason, null);
+        }
+
+        private WaitingForEarlier(String reason, Boolean parked) {
             super(reason, null, false, false);
+            this.parked = parked;
+        }
+
+        WaitingForEarlier parked(boolean inserted) {
+            return new WaitingForEarlier(getMessage(), inserted);
         }
     }
 }

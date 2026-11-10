@@ -114,7 +114,8 @@ class MediaClipIngestor implements Deferrable {
         }
         MapSqlParameterSource row = row(p, receivedAt).addValue("contentType", contentType).addValue("retentionHold", hold);
         boolean autoRetain = hold && "CRITICAL".equals(severity);
-        return transaction.execute(status -> {
+        WaitingForEarlier[] waiting = new WaitingForEarlier[1];
+        Outcome outcome = transaction.execute(status -> {
             // 아직 행이 없는 클립은 FOR UPDATE 로 잠기지 않는다. 같은 위험 구간·카메라를 잠가 동시에 온 같은 기록을 한 줄로 세운다
             jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.clip:' || :eventId || ':' || :resumeCount || ':' || :cameraId))",
                     row);
@@ -128,8 +129,17 @@ class MediaClipIngestor implements Deferrable {
                 }
                 return Outcome.DUPLICATE;
             }
-            checkEvent(envelope, row);
-            claimUpload(p, contentType, receivedAt);
+            try {
+                checkEvent(envelope, row);
+            } catch (WaitingForEarlier w) {
+                // 잠금을 쥔 채 보관한다. 잠금을 놓은 뒤 보관하면 그 사이 이벤트 뒤에 온 재전송이 늦은 받은 시각으로 먼저 저장될 수 있다
+                waiting[0] = w.parked(deferral.park(envelope, receivedAt, w.getMessage()));
+                return null;
+            }
+            // received_at 은 처음 받은 시각이다(불변식, ClipDeferral.takeFirstReceipt). 보관 행은 이 저장과 함께 지운다
+            Instant firstReceivedAt = deferral.takeFirstReceipt(envelope.msgId(), (UUID) row.getValue("clipId"), receivedAt);
+            row.addValue("receivedAt", utc(firstReceivedAt));
+            claimUpload(p, contentType, firstReceivedAt);
             if (!jdbc.queryForList("""
                     SELECT 1 FROM media_clip WHERE event_id = :eventId AND resume_count = :resumeCount AND camera_id = :cameraId
                     """, row).isEmpty()) {
@@ -147,6 +157,10 @@ class MediaClipIngestor implements Deferrable {
             }
             return Outcome.STORED;
         });
+        if (waiting[0] != null) {
+            throw waiting[0];
+        }
+        return outcome;
     }
 
     /**
