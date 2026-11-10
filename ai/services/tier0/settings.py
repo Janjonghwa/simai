@@ -134,6 +134,7 @@ class LiveCalibrationSettings:
 @dataclass(frozen=True)
 class CleanBackgroundSettings:
     enabled: bool = True
+    offload: bool = True
     output_dir: Path | None = None  # None: state_dir/clean-background
     sample_interval_ms: int = 5_000
     min_samples_per_camera: int = 20
@@ -305,6 +306,9 @@ def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
     enabled = doc.get("enabled", True)
     if not isinstance(enabled, bool):
         raise Tier0ConfigError("clean_background.enabled 는 bool이다")
+    offload = doc.get("offload", True)
+    if not isinstance(offload, bool):
+        raise Tier0ConfigError("clean_background.offload 는 bool이다")
     values = {key: _int(doc, key, default, minimum=1) for key, default in (
         ("sample_interval_ms", 5_000), ("min_samples_per_camera", 20),
         ("max_samples_per_camera", 60), ("max_bytes", 2_200 * 1024 * 1024),
@@ -312,7 +316,7 @@ def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
     if values["min_samples_per_camera"] > values["max_samples_per_camera"]:
         raise Tier0ConfigError("clean_background 최소 표본 수가 최대 표본 수보다 크다")
     output = _path(base, doc["output_dir"], "clean_background.output_dir") if "output_dir" in doc else None
-    return CleanBackgroundSettings(enabled=enabled, output_dir=output, **values)
+    return CleanBackgroundSettings(enabled=enabled, offload=offload, output_dir=output, **values)
 
 
 def _rotation_recovery(doc: Any) -> RotationRecoverySettings:

@@ -1693,6 +1693,8 @@ class Tier0Service:
             t.join(left())
         failures += [f"thread:{t.name}" for t in self._threads if t.is_alive()]
         self._event("judge_stopped")
+        if self.clean_background is not None and hasattr(self.clean_background, "close"):
+            self._bounded(deadline, "clean_background", self.clean_background.close, failures)
         if self.event_frames is not None:
             if not self.event_frames.stop(left()):
                 failures.append("thread:tier0-event-frames")

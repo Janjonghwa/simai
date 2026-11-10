@@ -369,16 +369,24 @@ def test_synthetic_homography_rotation_recovery_accuracy(site, angles_deg):
 @pytest.fixture(autouse=True)
 def _no_background_daemon_loops(monkeypatch):
     workers = []
+    cb_workers = []
     original = BackgroundRotationRecovery.__init__
+    cb_original = BackgroundCleanBackground.__init__
     def initialize(self, *args, **kwargs):
         original(self, *args, **kwargs)
         workers.append(self)
+    def cb_initialize(self, *args, **kwargs):
+        cb_original(self, *args, **kwargs)
+        cb_workers.append(self)
     monkeypatch.setattr(BackgroundRotationRecovery, "__init__", initialize)
+    monkeypatch.setattr(BackgroundCleanBackground, "__init__", cb_initialize)
     monkeypatch.setattr(BackgroundCleanBackground, "run", lambda self: None)
     monkeypatch.setattr(BackgroundRotationRecovery, "run", lambda self: None)
     yield
     for worker in workers:
         worker.close()
+    for cb_worker in cb_workers:
+        cb_worker.close()
 
 
 def _setup_service_with_rotation_worker(site):
