@@ -6,6 +6,7 @@ import { ROOM } from '@/features/plan/plan';
 import {
   CAMERA_HEIGHT_HELP,
   CANDIDATE_KIND_LABEL,
+  formatMinSec,
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
   type CoverageCameraView,
@@ -14,6 +15,7 @@ import {
   type SceneTierStatusView,
   type SetupTone,
   type SetupWaitingView,
+  type SetupWaitReasonView,
   type Step1CoverageView,
 } from '@/features/setup/setup';
 import { SetupMap } from '@/features/setup/SetupMap';
@@ -377,6 +379,39 @@ export function CameraHeightPanel({
   );
 }
 
+/** 세팅이 왜 기다리는지 한 줄 + 대기 시간 + 할 수 있는 일(S15P31A101-583). */
+function WaitReasonNotice({ reason, now }: { reason: SetupWaitReasonView; now: number }) {
+  const waited = Math.max(0, Math.floor((now - reason.sinceMs) / 1000));
+  const lastSeen =
+    reason.lastSeenMs === null
+      ? '연결 기록 없음'
+      : `마지막 연결 ${formatMinSec(Math.max(0, (now - reason.lastSeenMs) / 1000))} 전`;
+  return (
+    <div
+      role="status"
+      aria-label="세팅 대기 이유"
+      className={cn(
+        'flex flex-col gap-1 rounded-md px-2.5 py-2 text-xs',
+        reason.tone === 'delay' ? 'bg-delay/15 text-delay' : 'bg-surface-3 text-muted-foreground',
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-semibold">{reason.title}</span>
+        <span className="font-mono">
+          대기 {formatMinSec(waited)}
+          {reason.showLastSeen ? ` · ${lastSeen}` : ''}
+        </span>
+      </div>
+      {reason.notes.map((note) => (
+        <span key={note} className="font-mono text-[11px]">
+          {note}
+        </span>
+      ))}
+      <span className="text-foreground">{reason.hint}</span>
+    </div>
+  );
+}
+
 /** 2단계 대기 화면 패널(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안, 진행률·남은 시간·실패/높이 경고). */
 export function WaitingPanel({
   waiting,
@@ -438,6 +473,8 @@ export function WaitingPanel({
           <p role="alert" className="text-xs text-delay">
             서버에서 진행 상태를 가져오지 못했습니다. 연결을 확인해 주세요.
           </p>
+        ) : waiting.waitReason ? (
+          <WaitReasonNotice reason={waiting.waitReason} now={now} />
         ) : stalled ? (
           <p role="status" className="text-xs text-delay">
             {unchanged}초 동안 새 진행 정보가 없습니다. 계속 유지되면 워커와 배경 수집 상태를 확인해

@@ -106,10 +106,11 @@ public class SetupService {
     private final SetupArtifactRegistrar artifacts;
     private final ConfigBundleService configs;
     private final SceneActivationService scenes;
+    private final SetupWaitReasonReader waitReasons;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
-            ConfigBundleService configs, SceneActivationService scenes) {
+            ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -123,6 +124,7 @@ public class SetupService {
         this.artifacts = artifacts;
         this.configs = configs;
         this.scenes = scenes;
+        this.waitReasons = waitReasons;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -1230,8 +1232,8 @@ public class SetupService {
     }
 
     private ObjectNode getInSite(String siteId, UUID setupSessionId) {
-        List<ObjectNode> list = jdbc.query("""
-                SELECT setup_session_id, site_id, work_unit_id, retry_of, job_id, status, progress_pct,
+        List<ViewRow> list = jdbc.query("""
+                SELECT setup_session_id, site_id, work_unit_id, retry_of, job_id, status, progress_pct, progress_lease_id,
                        camera_heights_m::text AS camera_heights_m, height_tolerance_cm,
                        background_collection_pct::text AS background_collection_pct,
                        height_checks::text AS height_checks,
@@ -1258,11 +1260,30 @@ public class SetupService {
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 """, new MapSqlParameterSource().addValue("site", siteId).addValue("id", setupSessionId),
-                (rs, i) -> view(rs));
+                (rs, i) -> new ViewRow(view(rs), rs.getString("status"), rs.getString("job_id"),
+                        rs.getObject("progress_lease_id", UUID.class), rs.getString("background_collection_pct")));
         if (list.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
         }
-        return list.getFirst();
+        ViewRow row = list.getFirst();
+        ObjectNode out = row.view();
+        // 왜 기다리는지(S15P31A101-583). 표시용이며 진행 처리에 쓰지 않는다
+        SetupWaitReason.Reason reason = null;
+        Instant now = clock.instant();
+        if (SetupWaitReason.mayWait(row.status())) {
+            reason = SetupWaitReason.derive(
+                    waitReasons.read(row.status(), row.progressLeaseId(), row.backgroundCollectionJson(), row.jobId(), now), now);
+        }
+        if (reason == null) {
+            out.putNull("wait_reason");
+        } else {
+            out.set("wait_reason", reason.toJson(mapper, now));
+        }
+        return out;
+    }
+
+    private record ViewRow(ObjectNode view, String status, String jobId, UUID progressLeaseId,
+            String backgroundCollectionJson) {
     }
 
     private SessionRow findForUpdateOrView(String siteId, UUID setupSessionId, boolean forUpdate) {

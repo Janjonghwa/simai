@@ -436,6 +436,87 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.active_setup_session_id").value(retrySessionId));
     }
 
+    @Test
+    void 세팅_조회는_기다리는_이유를_있는_상태에서만_고른다() throws Exception {
+        registerWorkers();
+        String gateway = "gw-583-" + suffix;
+        try {
+            JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                    .andExpect(status().isAccepted()).andReturn());
+            String sessionId = created.get("setup_session_id").asString();
+            String jobId = created.get("job_id").asString();
+            assertThat(created.at("/wait_reason/since_ms").isNumber()).isTrue();
+
+            // 1) 워커가 방금 대여를 물었다 → 곧 가져간다
+            jdbc.update("UPDATE worker SET last_seen_at = now() WHERE worker_id IN (?, ?)", workerA, workerB);
+            JsonNode polling = body(mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(polling.at("/wait_reason/code").asString()).isEqualTo("WAITING_FOR_WORKER");
+            assertThat(polling.at("/wait_reason/worker_last_seen_ms").isNumber()).isTrue();
+
+            // 2) 워커가 10분째 묻지 않고, Tier 0 health 가 지연을 모른다(UNSAFE_UNKNOWN) → health 근거 접수 중지 추정
+            jdbc.update("UPDATE worker SET last_seen_at = now() - interval '10 minutes' WHERE worker_id IN (?, ?)",
+                    workerA, workerB);
+            jdbc.update("""
+                    INSERT INTO system_health (reported_at, gateway_id, msg_id, system_health, pipeline_lag_ms,
+                        calibration_state, cameras, received_at)
+                    VALUES (now(), ?, ?, 'UNSAFE_UNKNOWN', NULL, 'CALIBRATED', '[]'::jsonb, now())
+                    """, gateway, UUID.randomUUID());
+            JsonNode paused = body(mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(paused.at("/wait_reason/code").asString()).isEqualTo("WORKER_PAUSED_TIER0");
+            assertThat(paused.at("/wait_reason/basis").asString()).isEqualTo("TIER0_HEALTH");
+            assertThat(paused.at("/wait_reason/worker_last_seen_ms").isNumber()).isTrue();
+            assertThat(paused.at("/wait_reason/waited_s").isNumber()).isTrue();
+
+            // 3) 대여했지만 이 대여의 세팅 하트비트가 아직 없다 → 시작 준비
+            String lease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
+                    .at("/payload/lease_id").asString();
+            mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.wait_reason.code").value("WORKER_STARTING"));
+
+            // 4) 배경 수집 하트비트: 덜 모인 카메라만 싣는다
+            ObjectNode snap = progressSnapshot(sessionId, "COLLECTING_BACKGROUND", 10.0);
+            snap.putObject("background_collection_pct")
+                    .put("cam1", 100.0).put("cam2", 100.0).put("cam3", 15.0).put("cam4", 100.0);
+            mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.1, snap)).andExpect(status().isOk());
+            JsonNode collecting = body(mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(collecting.at("/wait_reason/code").asString()).isEqualTo("BACKGROUND_INCOMPLETE");
+            assertThat(collecting.at("/wait_reason/cameras")).hasSize(1);
+            assertThat(collecting.at("/wait_reason/cameras/0/camera_id").asString()).isEqualTo("cam3");
+            assertThat(collecting.at("/wait_reason/cameras/0/collection_pct").asDouble()).isEqualTo(15.0);
+
+            // 5) 워커가 Tier 0 우선으로 반납하고 그 뒤 대여를 묻지 않는다 → 워커 근거
+            long now = Instant.now().toEpochMilli();
+            ObjectNode release = mapper.createObjectNode()
+                    .put("job_id", jobId).put("lease_id", lease).put("job_type", "site_setup").put("status", "FAILED")
+                    .put("started_at", now - 1_000).put("finished_at", now);
+            release.putObject("error").put("code", "TIER0_PRIORITY")
+                    .put("message", "Tier 0 우선으로 시작하지 않았다: 지연 초과").put("retryable", true)
+                    .put("consume_attempt", false);
+            mvc.perform(submitCallback(tokenA, workerA, release)).andExpect(status().isOk());
+            jdbc.update("UPDATE worker SET last_seen_at = now() - interval '10 minutes' WHERE worker_id IN (?, ?)",
+                    workerA, workerB);
+            JsonNode released = body(mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(released.at("/wait_reason/code").asString()).isEqualTo("WORKER_PAUSED_TIER0");
+            assertThat(released.at("/wait_reason/basis").asString()).isEqualTo("WORKER_RELEASE");
+            assertThat(released.at("/wait_reason/detail").asString()).contains("Tier 0 우선");
+            assertThat(released.at("/wait_reason/previous_error_code").isNull()).isTrue();
+
+            // 6) 끝난 세션은 이유가 없다
+            mvc.perform(post("/api/setup-sessions/{id}/cancel", sessionId).with(adminJwt()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.wait_reason").value(org.hamcrest.Matchers.nullValue()));
+        } finally {
+            jdbc.update("DELETE FROM system_health WHERE gateway_id = ?", gateway);
+        }
+    }
+
     private void registerWorkers() {
         if (tokenA == null) {
             tokenA = machines.registerWorker(workerA, List.of("site_setup")).token();

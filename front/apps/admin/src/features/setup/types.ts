@@ -146,6 +146,31 @@ export type HeightCheckItem = z.infer<typeof heightCheckItemSchema>;
 export const heightChecksSchema = z.record(z.string(), heightCheckItemSchema);
 export type HeightChecksMap = z.infer<typeof heightChecksSchema>;
 
+/**
+ * 세팅이 왜 기다리는지(GET /api/setup-sessions/{id} 의 wait_reason, S15P31A101-583, docs/design/setup-wait-reason.md).
+ * 서버가 이미 가진 상태(작업·대여·워커 대여 요청 시각·워커 반납 사유·Tier 0 health 지연·배경 수집률)로 고른다. 정상 진행이면 null.
+ * 코드: NO_WORKER·WORKER_BUSY_OTHER_JOB·WAITING_FOR_WORKER·WORKER_PAUSED_TIER0·WORKER_NOT_POLLING·WORKER_STARTING·
+ * BACKGROUND_INCOMPLETE. 서버가 뒤에 새 코드를 더해도 화면이 깨지지 않게 code 는 문자열로 받는다.
+ */
+export const setupWaitReasonSchema = z.object({
+  code: z.string().min(1),
+  since_ms: z.number(),
+  waited_s: z.number().optional(),
+  /** WORKER_PAUSED_TIER0 근거: 워커가 직접 반납(WORKER_RELEASE) 또는 Tier 0 health 지연 모름으로 추정(TIER0_HEALTH). */
+  basis: z.string().nullable().optional().default(null),
+  detail: z.string().nullable().optional().default(null),
+  /** 최근 Tier 0 health 의 지연 최댓값(관측값, 참고). site_setup 은 지연이 높다는 것만으로는 막히지 않는다(S15P31A101-566). */
+  tier0_lag_ms: z.number().nullable().optional().default(null),
+  worker_last_seen_ms: z.number().nullable().optional().default(null),
+  other_job_type: z.string().nullable().optional().default(null),
+  previous_error_code: z.string().nullable().optional().default(null),
+  cameras: z
+    .array(z.object({ camera_id: z.string().min(1), collection_pct: z.number() }))
+    .optional()
+    .default([]),
+});
+export type SetupWaitReason = z.infer<typeof setupWaitReasonSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -175,6 +200,7 @@ export const setupSessionResponseSchema = z.object({
   ready_at_ms: z.number().nullable().optional(),
   completed_at_ms: z.number().nullable().optional(),
   updated_at_ms: z.number().optional(),
+  wait_reason: setupWaitReasonSchema.nullable().optional(),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
 
