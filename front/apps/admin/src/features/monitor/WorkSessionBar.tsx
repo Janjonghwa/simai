@@ -4,6 +4,7 @@ import { formatClock } from '@/features/history/works';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { workElapsedLabel, workStartedAt, workZoneLabel } from '@/features/monitor/workSession';
 import type { TbmWorkUnit } from '@/features/tbm/types';
+import { workNameOf } from '@/features/work/workDay';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
@@ -24,7 +25,7 @@ function ActiveSession({ work }: { work: TbmWorkUnit }) {
       className="pointer-events-auto flex max-w-[680px] items-center gap-3 rounded-[12px] bg-card/94 px-4 py-2 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset"
     >
       <span aria-hidden className="size-2 shrink-0 rounded-full bg-ok" />
-      <b className="min-w-0 truncate">{work.name}</b>
+      <b className="min-w-0 truncate">{workNameOf(work.name)}</b>
       {startedAt !== null && (
         <span className="text-sm whitespace-nowrap text-muted-foreground">
           시작 {formatClock(startedAt)} · 경과 <Elapsed startedAt={startedAt} />

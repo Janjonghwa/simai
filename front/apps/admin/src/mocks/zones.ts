@@ -291,6 +291,7 @@ const commitRequestSchema = z.object({
     })
     .nullish(),
   publish: z.boolean().nullish(),
+  setup_session_id: z.string().nullish(),
 });
 
 /** 한 번 저장 요청에서 모양 검사를 통과한 구역·작업면 변경. op 별로 필요한 칸만 남는다. */
@@ -306,6 +307,8 @@ interface CommitPlan {
   zone: ZonePlan;
   surface: SurfacePlan | null;
   publish: boolean;
+  /** 이 저장이 속한 세팅 세션(세팅 화면이 구역을 저장할 때만 있다). */
+  setupSessionId: string | null;
 }
 
 const isPresent = (value: unknown) => value !== undefined && value !== null;
@@ -355,9 +358,12 @@ function planOf(value: unknown): CommitPlan | undefined {
   const zone = zonePlanOf(request.zone);
   if (!zone) return undefined;
   const publish = request.publish !== false;
-  if (!request.surface) return zone.op === 'KEEP' ? undefined : { zone, surface: null, publish };
+  const setupSessionId = idOrNull(request.setup_session_id);
+  if (!request.surface) {
+    return zone.op === 'KEEP' ? undefined : { zone, surface: null, publish, setupSessionId };
+  }
   const surface = surfacePlanOf(request.surface);
-  return surface && zone.op !== 'ARCHIVE' ? { zone, surface, publish } : undefined;
+  return surface && zone.op !== 'ARCHIVE' ? { zone, surface, publish, setupSessionId } : undefined;
 }
 
 /** 한 번 저장이 바꾼 것(응답의 zone·surface·archived_surface_id 가 된다). */
@@ -426,10 +432,16 @@ export function createZonesMock({
   now = Date.now,
   ackDelayMs = ACK_DELAY_MS,
   staticObjects = createStaticObjectStore([]),
+  onCommit,
 }: {
   now?: () => number;
   ackDelayMs?: number;
   staticObjects?: StaticObjectStore;
+  /**
+   * 세팅 세션에 속한 구역 한 번 저장(POST /api/zones/commit 의 setup_session_id)이 묶음 발행까지 성공한 뒤 부른다(세션 id, 저장한
+   * 시각 ms). 개발 서버가 세팅 mock 의 세션을 끝내는 데 쓴다.
+   */
+  onCommit?: (setupSessionId: string, at: number) => void;
 } = {}): ZonesMock {
   // 지금 버전과 닫힌 버전. 지금 버전은 valid_to 가 null 이다.
   let versions: ZoneItem[] = structuredClone(MOCK_ZONES);
@@ -788,7 +800,11 @@ export function createZonesMock({
       const plan = planOf(await request.json().catch(() => undefined));
       if (!plan) return fail('INVALID_ZONE_COMMIT');
       if (touchesLayout(plan)) return fail('LAYOUT_ZONE_LOCKED');
-      return commit(plan, now());
+      const at = now();
+      const response = commit(plan, at);
+      if (response.ok && plan.publish && plan.setupSessionId !== null)
+        onCommit?.(plan.setupSessionId, at);
+      return response;
     }),
     http.post('*/api/config-bundles', async ({ request }) => {
       const denied = deny(request, true);

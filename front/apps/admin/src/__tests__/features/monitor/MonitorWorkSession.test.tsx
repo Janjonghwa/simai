@@ -176,6 +176,13 @@ describe('세션 바', () => {
     expect(navigate).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '12' } });
   });
 
+  it('이름이 빈 작업(작업내용을 고르기 전 날짜 작업)은 이름 자리에 대체어를 보인다', async () => {
+    serveWorks([inProgress({ name: '' })]);
+    renderMonitor();
+    const bar = await screen.findByRole('region', { name: '작업 세션' });
+    expect(within(bar).getByText('작업')).toBeTruthy();
+  });
+
   it('구역 없는 작업은 작업 구역에 장소(없으면 현장 전체)를 보인다', async () => {
     serveWorks([inProgress({ zone_id: null, place: null })]);
     renderMonitor();
@@ -234,7 +241,7 @@ describe('세션 바', () => {
 });
 
 describe('이벤트 목록 필터', () => {
-  it('진행 중 작업이 시작된 뒤 이벤트만 보이고, 시작 전 이벤트는 건수와 히스토리 링크로 남는다', async () => {
+  it('진행 중 작업이 시작된 뒤 이벤트만 보이고, 시작 전 이벤트는 건수와 지난 이벤트 링크(작업 관리)로 남는다', async () => {
     serveWorks([inProgress()]);
     renderMonitor([
       item({ event_id: 'old', world_ids: ['w-0011'], raised_at: STARTED - 30 * MIN }),
@@ -245,8 +252,10 @@ describe('이벤트 목록 필터', () => {
     await waitFor(() => expect(cardNames()).toEqual(['w-0012 이벤트']));
     expect(screen.getByText('작업 시작 전 이벤트 1건')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '히스토리로' }));
-    expect(navigate).toHaveBeenCalledWith({ to: '/history' });
+    // 세션 바에도 같은 이름의 단추가 있어서 건수 줄 안에서 찾는다.
+    const pastLine = screen.getByText('작업 시작 전 이벤트 1건').parentElement!;
+    fireEvent.click(within(pastLine).getByRole('button', { name: '작업 관리로' }));
+    expect(navigate).toHaveBeenCalledWith({ to: '/work' });
   });
 
   it('시작 전에 났어도 확인 대기 경보는 패널과 배너에서 숨지 않는다', async () => {
@@ -275,7 +284,7 @@ describe('이벤트 목록 필터', () => {
 
     await screen.findByRole('region', { name: '관제 대기' });
     expect(cardNames().sort()).toEqual(['w-0011 이벤트', 'w-0012 이벤트']);
-    expect(screen.queryByRole('button', { name: '히스토리로' })).toBeNull();
+    expect(screen.queryByText(/^(작업 시작 전 이벤트 \d+건|지난 이벤트)$/)).toBeNull();
   });
 });
 
