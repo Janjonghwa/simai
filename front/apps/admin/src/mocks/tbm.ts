@@ -192,7 +192,7 @@ function validateLayoutPayload(body: Record<string, unknown> | null):
   return { ok: true, name, items, revision };
 }
 
-/** 처음에 있는 작업. 날짜는 오늘이라 개발 서버를 언제 열어도 오늘 작업 목록이 채워진다. */
+/** 처음에 있는 작업. 날짜는 오늘이라 개발 서버를 언제 열어도 오늘 작업이 있어 관제 대기 화면이 뜨지 않는다. */
 const initialWorks = (date: string): TbmWorkUnit[] => [
   {
     work_id: '1',
