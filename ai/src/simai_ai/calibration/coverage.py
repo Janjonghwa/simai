@@ -204,9 +204,7 @@ def coverage_guidance(
         walkable = len(cells)
         visible = {}
         for cid, cam in cameras.items():
-            foot_uv = _project(cam, np.column_stack([cells, np.full(len(cells), config.ankle_height_m)]))
-            head_uv = _project(cam, np.column_stack([cells, np.full(len(cells), config.head_height_m)]))
-            foot, head = _inside_image(cam, foot_uv, config), _inside_image(cam, head_uv, config)
+            foot_uv, head_uv, foot, head = _person_visibility(cam, cells, config)
             margin, height = config.image_margin_px, cam.image_size[1]
             with np.errstate(invalid="ignore"):
                 # 실제로 어느 경계를 벗어났는지 본다: 머리는 위 경계, 발은 아래 경계(좌우로 나간 칸은 세지 않는다)
@@ -333,7 +331,34 @@ def coverage_guidance(
     )
 
 
+def floor_camera_counts(
+    calibration: Mapping[str, Any], cells_xy: np.ndarray, config: CoverageConfig = CoverageConfig()
+) -> np.ndarray:
+    """바닥 칸 중심 (N, 2) 마다 그 자리에 선 사람이 통째로(발목·머리 높이 점 모두) 영상 안에 보이는 카메라 수 (N,).
+
+    `coverage_guidance` 의 기하 커버리지와 같은 기준이다(같은 투영·영상 경계·높이). 가림은 보지 않는다(상한).
+    관제 화면 바닥 감시 범위 표시(S15P31A101-606)가 쓴다.
+    """
+    cells = np.asarray(cells_xy, dtype=float).reshape(-1, 2)
+    counts = np.zeros(len(cells), dtype=int)
+    if not len(cells):
+        return counts
+    for cam_doc in calibration["cameras"]:
+        _, _, foot, head = _person_visibility(RigCamera.from_calibration(cam_doc), cells, config)
+        counts += foot & head
+    return counts
+
+
 # --------------------------------------------------------------------------- 내부
+
+
+def _person_visibility(
+    cam: RigCamera, cells: np.ndarray, config: CoverageConfig
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """칸 중심에 선 사람의 발목·머리 높이 점 투영 (foot_uv, head_uv)과 각각 영상 안인지 (foot, head)."""
+    foot_uv = _project(cam, np.column_stack([cells, np.full(len(cells), config.ankle_height_m)]))
+    head_uv = _project(cam, np.column_stack([cells, np.full(len(cells), config.head_height_m)]))
+    return foot_uv, head_uv, _inside_image(cam, foot_uv, config), _inside_image(cam, head_uv, config)
 
 
 def _walkable_cells(polygon: Sequence[tuple[float, float]], cell_m: float) -> np.ndarray | None:

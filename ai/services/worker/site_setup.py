@@ -14,6 +14,8 @@
     (`artifacts.camera_frames`, S15P31A101-479: 서버가 이 스냅샷으로 AI 구역 초안 작업을 만들 때 VLM 크롭 입력으로 싣는다)
     + 미리보기·굽기에 쓰는 카메라별 사람 지운 배경 사진 업로드(`artifacts.bake_images`, S15P31A101-593: 서버가 이 대여의
     미리보기·정식 Scene 에 묶어 관제 카메라 시점 VDT 사진으로 서명해 준다)
+    + 바닥 감시 범위(`artifacts.floor_coverage`, S15P31A101-606: 미리보기 단계가 같은 점구름·새 보정으로 바닥 칸마다 사람이 통째로
+    보이는 카메라 수를 세어 둔 표시용 자료. 서버가 보정 버전에 묶어 관제 화면 바닥 겹침으로 준다)
 (h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`). 세팅은 서버가 진행 중 작업(IN_PROGRESS)이 없을 때만
     시작시키므로(-467, 409) Tier 0 표시 파일이 있어도 굽는다(`live_notice` 는 로그만). `live_gate` 는 "LIVE 작업 중" 신호를
     받을 자리로 남긴다(지금 서버가 워커에 주는 그런 신호는 없다, S15P31A101-473)
@@ -88,6 +90,22 @@ SITE_SETUP_PROGRESS_SCHEMA = {
 SITE_SETUP_RESULT_SCHEMA = {
     "$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/result"
 }
+SITE_SETUP_FLOOR_COVERAGE_SCHEMA = {
+    "$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/floor_coverage"
+}
+
+
+def floor_coverage_problems(doc: Any) -> list[str]:
+    """바닥 감시 범위 문서(S15P31A101-606)가 계약에 맞지 않는 이유. 스키마 검사에 칸 수(cols × rows = cells 길이)를 더한다.
+
+    스냅샷 전체가 계약 검사를 받으므로(어기면 INTERNAL_CONTRACT_ERROR) 표시용 자료 하나가 세팅을 멈추지 않게 먼저 거른다.
+    """
+    errs = schema_errors(doc, SITE_SETUP_FLOOR_COVERAGE_SCHEMA)
+    if errs:
+        return errs
+    if len(doc["cells"]) != doc["cols"] * doc["rows"]:
+        return [f"cells 길이 {len(doc['cells'])} 이 cols × rows = {doc['cols'] * doc['rows']} 와 다르다"]
+    return []
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +244,8 @@ class PreviewDraftResult:
     preview_scene_version: str
     zone_drafts_ref: str | None = None
     scene_asset: ObjectRef | None = None
+    floor_coverage: Mapping[str, Any] | None = None
+    """바닥 감시 범위(계약 site_setup#/$defs/floor_coverage, S15P31A101-606). 바닥을 모르면 None(싣지 않는다)"""
 
 
 class BackgroundCollector(Protocol):
@@ -830,6 +850,12 @@ class SiteSetupHandler:
             artifacts["camera_frames"] = [frame.to_json() for frame in camera_frames]
         if bake_images is not None:
             artifacts["bake_images"] = bake_images.to_json()
+        if preview.floor_coverage is not None:
+            # 표시용(Visual 층). 등록한 이 보정 버전으로 계산한 것만 싣는다(EC2 가 보정 버전에 묶어 현재 Scene 응답에 싣는다)
+            if preview.floor_coverage.get("calibration_version") == calibration_version:
+                artifacts["floor_coverage"] = dict(preview.floor_coverage)
+            else:
+                log.warning("작업 %s: 바닥 감시 범위의 보정 버전이 등록한 보정과 달라 싣지 않는다", ctx.job_id)
         if artifacts:
             preview_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, preview_snapshot)

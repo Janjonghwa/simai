@@ -23,6 +23,7 @@ import type { PlannedLayoutInput } from '@/features/viewer3d/planned/plannedLayo
 import type { ViewerPostProcessingInput } from '@/features/viewer3d/PostProcessingLayer';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type { ViewerVdtOptions } from '@/features/viewer3d/scene/vdtTypes';
+import type { FloorCoverage } from '@/lib/floorCoverage';
 import type { Ref } from 'react';
 
 // FE 와 주고받는 값의 모양이다. FE 통합(S15P31A101-193 완료 조건) 때 함께 확정하며, 아직 팀 공통 계약이 아니다.
@@ -257,6 +258,13 @@ export interface Viewer3DProps {
   cameraPoses?: readonly CalibratedCameraPose[];
   /** 3D 카메라 마커를 클릭했을 때 부른다(-522, 선택 사항). 호스트가 떠 있는 CCTV 창을 열어 해당 카메라로 맞춘다. */
   onCameraClick?: (cameraId: string) => void;
+  /**
+   * 바닥 감시 범위 겹침(-606, 선택 사항). `readFloorCoverage(scene 응답)` 결과를 넘기면 바닥(Z=0) 바로 위에 칸마다
+   * 사람을 통째로 보는 카메라 수(2대 이상·1대·사각)를 반투명 색으로 깐다. 바닥 모름 칸은 그리지 않는다. 클릭을 받지 않는다.
+   * 지금 보정과 맞는지(`isCoverageCurrent`)와 켜고 끄기는 호스트가 정한다. null·없음이면 그리지 않는다.
+   * 같은 객체면 다시 그리지 않으니 응답이 바뀔 때만 새로 만든다. Visual 층이라 위험 판정·사람 위치와 무관하다.
+   */
+  floorCoverage?: FloorCoverage | null;
   /**
    * 아바타 자산(mesh_url, 같은 출처 /api/avatars/...) 내려받기(선택 사항). FE 가 인증된 요청 함수를 넘긴다.
    * 없으면 fetch(url, { credentials: 'same-origin' }). 렌더마다 새 함수를 만들지 말고 고정해 넘긴다.

@@ -138,6 +138,7 @@ export function ViewerShell({
   personHelmets,
   personVests,
   cameraPoses,
+  floorCoverage,
   onCameraClick,
   avatarMesh = 'auto',
   avatarMeshFetch = fetchAvatarMesh,
@@ -166,6 +167,7 @@ export function ViewerShell({
     created.getState().setPersonHelmets(personHelmets);
     created.getState().setPersonVests(personVests);
     created.getState().setCameraPoses(cameraPoses);
+    created.getState().setFloorCoverage(floorCoverage);
     created.getState().setTopView(topView);
     return created;
   });
@@ -310,6 +312,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setCameraPoses(cameraPoses);
   }, [store, cameraPoses]);
+
+  useEffect(() => {
+    store.getState().setFloorCoverage(floorCoverage);
+  }, [store, floorCoverage]);
 
   useEffect(() => {
     planned.getState().setInput(plannedLayout);

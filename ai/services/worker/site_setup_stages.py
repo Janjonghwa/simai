@@ -16,6 +16,7 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 - (f) `publish`: 새 보정 문서를 작업 폴더에 두고 객체 저장소에 올린다. 올린 객체 참조(주소·sha256·크기)를 함께 돌려주면 처리기가
   `artifacts.calibration_document` 로 알리고, EC2 가 그 문서를 읽어 새 calibration_version 으로 등록한다(S15P31A101-467).
 - (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
+- (g) `preview` 는 그 단계가 쓴 바닥 감시 범위(`floor_coverage.json`, S15P31A101-606)가 있고 계약에 맞으면 함께 돌려준다.
 - (g) `publish_frames`: 사람 지운 배경에서 카메라별 대표 프레임 1장(JPEG, 긴 변 1280 px 이하)을 같은 산출물 경로로 올리고 카메라 ID·sha256 과
   함께 `artifacts.camera_frames` 로 알린다. EC2 가 이를 AI 구역 초안(`vlm_zone_draft`) 입력 `frames` 에 싣는다(S15P31A101-479).
 - (g) `publish_bake_images`: 미리보기·굽기가 읽는 작업 폴더 `images/<카메라>.image`(배경 묶음 사진 원본) 를 카메라당 1장
@@ -71,6 +72,7 @@ from .site_setup import (
     PublishedCalibration,
     SiteSetupHandler,
     build_world_from_pointcloud_and_poses,
+    floor_coverage_problems,
 )
 
 PREFLIGHT_BUCKET = "preflight"
@@ -410,7 +412,24 @@ class ProductionSiteSetupStages:
         if glb is None:
             raise JobFailed("STATIC_OUTPUT_INVALID", "미리보기 산출물에 GLB 가 없다", retryable=False)
         ref = self._upload_asset(glb)
-        return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref)
+        return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref,
+                                  floor_coverage=self._read_floor_coverage())
+
+    def _read_floor_coverage(self) -> dict[str, Any] | None:
+        """미리보기 단계가 쓴 바닥 감시 범위(S15P31A101-606). 없거나 읽지 못하거나 계약에 맞지 않으면 None(표시용이라 세팅은 이어간다)."""
+        path = self.root / "floor_coverage.json"
+        if not path.is_file():
+            return None
+        try:
+            doc = read_json(path)
+        except (OSError, ValueError) as exc:
+            log.warning("작업 %s: 바닥 감시 범위를 읽지 못해 싣지 않는다: %s", self.ctx.job_id, type(exc).__name__)
+            return None
+        problems = floor_coverage_problems(doc)
+        if problems:
+            log.warning("작업 %s: 바닥 감시 범위가 계약에 맞지 않아 싣지 않는다: %s", self.ctx.job_id, problems[:3])
+            return None
+        return doc
 
     # ------------------------------------------------------------------ (g) 카메라 프레임
     def publish_frames(self, *, setup_session_id: str, camera_ids: Sequence[str],

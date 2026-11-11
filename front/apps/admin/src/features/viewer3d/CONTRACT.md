@@ -138,6 +138,13 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - 사람 선택 강조: 사람이 선택돼 있으면(`selected?.type === 'person'`) 그 트랙의 `cameras` 에 든 카메라 마커·절두체·이름표를 강조 색으로 표시한다.
 - 클릭: 카메라 본체·렌즈를 클릭하면 `onCameraClick(cameraId)` 를 부른다(시야 절두체는 뒤의 사람·구역 클릭을 가리지 않게 광선 검사를 끈다).
 
+## 바닥 감시 범위(`floorCoverage` prop, -606)
+
+- 입력: `readFloorCoverage(GET /api/scenes/current 응답 본문)` 결과(`FloorCoverage`, `@/lib/floorCoverage`). 응답의 `floor_coverage` 는 계약 `site_setup#/$defs/floor_coverage` 원문이다: 칸 크기 `cell_m`, 최소 모서리 `origin_xy`, `cols`·`rows`, 행 우선 `cells`(행 0 이 가장 작은 Y, `.` 바닥 모름·`0` 사각·`1` 1대만·`2` 2대 이상).
+- 표시: 행마다 같은 종류를 이은 사각형(`coverageRuns`)을 바닥 위 `FLOOR_COVERAGE_LIFT_M`(3 cm)에 종류별 반투명 메시로 그린다. 꼭짓점은 `worldToThree` 로만 바꾼다. 깊이를 쓰지 않고 클릭을 받지 않는다(사람·구역 피킹 그대로).
+- 켜기와 정합: 뷰어는 받은 것만 그린다. 관제 앱은 기본 꺼 두고 도구 모음 「감시 범위」로 켜며, 칸을 센 보정 버전이 world_state 의 보정 버전과 같거나, 회전 자동 복구로 버전만 바뀌어 서버 Scene 정합 판정이 VERIFIED 일 때만 넘긴다(`isCoverageCurrent`). 구역 편집 중에는 넘기지 않는다.
+- Visual 층이다: 가림을 계산하지 않은 상한이며 위험 판정·사람 위치와 무관하다. 같은 객체면 다시 그리지 않는다.
+
 ## 카메라 시점 보기(`viewFromCamera` · `exitCameraView` 명령, -590)
 
 - `viewFromCamera(cameraId)`: `cameraPoses` 의 그 카메라 광학 중심·정면·세로 시야각(수평 시야각과 16:9)으로 시점을 1 초(`CAMERA_VIEW_MOVE_MS`) 동안 이음 이동한다. 움직임 줄이기 설정이면 다음 프레임에 바로 옮긴다. 회전 중심은 정면 광선이 바닥(Z=0)에 닿는 점(1~15 m, 바닥을 향하지 않으면 4 m 앞)이다. 준비 전 `NOT_READY`, 없는 카메라 `NOT_FOUND`.

@@ -1,0 +1,67 @@
+{
+  "schema_version": "2.3.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000479",
+  "sent_at": 1760342436000,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "PREVIEW_AND_VLM_DRAFT",
+      "progress_pct": 80,
+      "background_collection_pct": {
+        "cam1": 100,
+        "cam2": 100,
+        "cam3": 100,
+        "cam4": 100
+      },
+      "artifacts": {
+        "floor_coverage": {
+          "calibration_version": "cal-setup-12-jba2-3f9c2a10",
+          "cell_m": 0.3,
+          "origin_xy": [
+            0.4,
+            0.3
+          ],
+          "cols": 3,
+          "rows": 2,
+          "cells": "012222",
+          "ankle_height_m": 0.1,
+          "head_height_m": 1.7,
+          "floor_source": "MAPANYTHING_FLOOR_POINTS",
+          "is_upper_bound": true
+        }
+      },
+      "preview_scene_version": "scene-preview-job-20261017-0041-0192a6f0",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 2.4,
+          "restored_height_m": 2.41,
+          "difference_cm": 1.0,
+          "within_tolerance": true
+        }
+      }
+    }
+  }
+}

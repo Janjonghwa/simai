@@ -1797,6 +1797,24 @@ class SiteSetupCameraFrameRef(BaseModel):
     face_policy: Literal['BLURRED', 'EXCLUDED']
 
 
+class SiteSetupFloorCoverage(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    calibration_version: DefsVersionId
+    cell_m: Annotated[StrictFloat, Field(gt=0.0, le=2.0)]
+    origin_xy: Annotated[list[StrictFloat], Field(max_length=2, min_length=2)]
+    cols: Annotated[StrictInt, Field(ge=1, le=2000)]
+    rows: Annotated[StrictInt, Field(ge=1, le=2000)]
+    cells: Annotated[
+        StrictStr, Field(max_length=40000, min_length=1, pattern='^[.012]+$')
+    ]
+    ankle_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    head_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    floor_source: Literal['MAPANYTHING_FLOOR_POINTS']
+    is_upper_bound: Literal[True]
+
+
 class SiteSetupHeightChecks1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3822,6 +3840,7 @@ class SiteSetupArtifacts(BaseModel):
         list[SiteSetupCameraFrameRef] | MISSING, Field(max_length=8)
     ] = MISSING
     bake_images: SiteSetupBakeImages | MISSING = MISSING
+    floor_coverage: SiteSetupFloorCoverage | MISSING = MISSING
 
 
 class Input(BaseModel):

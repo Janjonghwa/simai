@@ -22,6 +22,7 @@ import type {
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d/types';
+import type { FloorCoverage } from '@/lib/floorCoverage';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
 const NO_BADGES: Readonly<Record<string, string>> = Object.freeze({});
@@ -95,6 +96,8 @@ export interface ViewerState {
   personVests: Readonly<Record<string, PersonHelmetState>>;
   /** 보정된 카메라 마커 자세·시야각 목록(-522). */
   cameraPoses: readonly CalibratedCameraPose[];
+  /** 바닥 감시 범위 겹침(-606). 호스트가 지금 보정에 맞는 것만 넘긴다. 없으면 그리지 않는다. */
+  floorCoverage: FloorCoverage | null;
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
   pendingSelect: PendingSelect | null;
   /** 기다리는 선택의 마지막 진행. 바뀔 때마다 새 객체라 구독자가 알린다. */
@@ -116,6 +119,8 @@ export interface ViewerState {
   setPersonHelmets(input: Readonly<Record<string, PersonHelmetState>> | undefined): void;
   setPersonVests(input: Readonly<Record<string, PersonHelmetState>> | undefined): void;
   setCameraPoses(input: readonly CalibratedCameraPose[] | undefined): void;
+  /** 같은 객체면 바꾸지 않는다. 없으면 겹침을 지운다. */
+  setFloorCoverage(input: FloorCoverage | null | undefined): void;
   markReady(): void;
   markError(error: ViewerError): void;
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
@@ -213,6 +218,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       personHelmets: NO_HELMETS,
       personVests: NO_HELMETS,
       cameraPoses: NO_CAMERA_POSES,
+      floorCoverage: null,
       pendingSelect: null,
       selectRequest: null,
       theme: 'dark',
@@ -352,6 +358,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setCameraPoses: (input) => {
         const next = input && input.length > 0 ? input : NO_CAMERA_POSES;
         if (!sameCalibratedCameraPoses(next, get().cameraPoses)) set({ cameraPoses: next });
+      },
+
+      setFloorCoverage: (input) => {
+        const next = input ?? null;
+        if (next !== get().floorCoverage) set({ floorCoverage: next });
       },
 
       markReady: () => {

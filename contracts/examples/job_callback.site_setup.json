@@ -207,6 +207,18 @@
               "face_policy": "OBSERVED"
             }
           ]
+        },
+        "floor_coverage": {
+          "calibration_version": "cal-setup-12",
+          "cell_m": 0.3,
+          "origin_xy": [0.4, 0.3],
+          "cols": 6,
+          "rows": 4,
+          "cells": "..1122012222012222.11222",
+          "ankle_height_m": 0.1,
+          "head_height_m": 1.7,
+          "floor_source": "MAPANYTHING_FLOOR_POINTS",
+          "is_upper_bound": true
         }
       }
     }

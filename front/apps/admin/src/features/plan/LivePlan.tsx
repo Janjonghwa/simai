@@ -5,6 +5,7 @@ import { usePlanBackdrop } from '@/features/plan/usePlanBackdrop';
 import { useWorldFresh } from '@/features/plan/useWorldFresh';
 import { useZones } from '@/features/zones/useZones';
 import { useLinkAlive } from '@/hooks/useLinkAlive';
+import type { FloorCoverage } from '@/lib/floorCoverage';
 import { useRealtimeStore } from '@/store/realtime.store';
 import type { WorldTrack } from '@simai/contracts';
 import { useMemo } from 'react';
@@ -18,11 +19,14 @@ const NO_TRACKS: WorldTrack[] = [];
 export function LivePlan({
   selectedKey,
   onSelect,
+  coverage = null,
   className,
 }: {
   selectedKey: string | null;
   /** 없으면 고르지 않고 보기만 한다(미니맵). */
   onSelect?: (key: string) => void;
+  /** 바닥 감시 범위(-606). 호스트가 켰고 지금 보정에 맞을 때만 넘긴다. */
+  coverage?: FloorCoverage | null;
   className?: string;
 }) {
   const tracks = useRealtimeStore((s) => s.world?.payload.tracks ?? NO_TRACKS);
@@ -44,6 +48,7 @@ export function LivePlan({
       stale={!alive || !fresh}
       bounds={bounds}
       backdrop={backdrop}
+      coverage={coverage}
       className={className}
     />
   );

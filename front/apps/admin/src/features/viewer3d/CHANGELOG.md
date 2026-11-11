@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-606 바닥 감시 범위 겹침(`floorCoverage`)
+
+모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-606-coverage-overlay.md` 에 있다.
+
+- 추가: `floorCoverage`(`FloorCoverage | null`, 선택) prop. 타입과 순수 함수(`readFloorCoverage`·`coverageRuns`·`isCoverageCurrent`)는 2D 평면도 같이 쓰도록 three.js 가 없는 `@/lib/floorCoverage` 에 두었다(뷰어 입구에서 내보내지 않는다).
+- 동작: 넘기면 바닥 위 3 cm 에 칸마다 사람을 통째로 보는 카메라 수(2대 이상 초록·1대 파랑·사각 보라, 위험 등급 색과 겹치지 않음)를 반투명하게 깐다. 바닥 모름 칸은 그리지 않고 클릭을 받지 않는다. 켜기·지금 보정과 맞는지는 호스트가 정한다. 넘기지 않으면 지금과 같다.
+
 ## S15P31A101-590 카메라 시점 보기와 카메라 시점 VDT
 
 모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-590-camera-view-vdt.md` 에 있다.

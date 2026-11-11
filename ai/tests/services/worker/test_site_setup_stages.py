@@ -161,6 +161,31 @@ def test_preview_runs_stage_uploads_glb_and_names_scene_by_run(tmp_path: Path) -
     assert got.preview_scene_version == "scene-preview-job-1-lease-1"
     assert got.scene_asset == ObjectRef("s3://bucket/preview_scene.glb", hashlib.sha256(b"glb").hexdigest(), 3)
     assert store.puts == [("preview_scene.glb", b"glb", "model/gltf-binary")]
+    assert got.floor_coverage is None  # 단계가 감시 범위를 쓰지 않았으면(바닥 모름) 싣지 않는다
+
+
+FLOOR_COVERAGE = {
+    "calibration_version": "cal-setup-1", "cell_m": 0.3, "origin_xy": [0.0, 0.0], "cols": 3, "rows": 2, "cells": "..1222",
+    "ankle_height_m": 0.1, "head_height_m": 1.7, "floor_source": "MAPANYTHING_FLOOR_POINTS", "is_upper_bound": True,
+}
+
+
+def test_preview_returns_floor_coverage_written_by_stage(tmp_path: Path) -> None:
+    files = {**_preview_files(), "floor_coverage.json": json.dumps(FLOOR_COVERAGE).encode()}
+    s = _stages(tmp_path, _Stages({"preview": files}))
+    got = s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert got.floor_coverage == FLOOR_COVERAGE
+
+
+@pytest.mark.parametrize("raw", [
+    b"{not json",
+    json.dumps({**FLOOR_COVERAGE, "cells": "..12"}).encode(),  # 길이가 cols × rows 와 다르다
+    json.dumps({**FLOOR_COVERAGE, "cells": "..1239"}).encode(),  # 계약 밖 문자
+])
+def test_preview_drops_unreadable_or_invalid_floor_coverage(tmp_path: Path, raw: bytes) -> None:
+    s = _stages(tmp_path, _Stages({"preview": {**_preview_files(), "floor_coverage.json": raw}}))
+    got = s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert got.floor_coverage is None and got.scene_asset is not None  # 표시용이라 미리보기는 그대로 이어간다
 
 
 def test_bake_falls_back_when_texrecon_missing(tmp_path: Path) -> None:

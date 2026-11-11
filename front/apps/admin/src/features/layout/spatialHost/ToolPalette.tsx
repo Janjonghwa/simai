@@ -19,6 +19,9 @@ interface ToolPaletteProps {
   currentSceneVersion: string | null;
   /** 현재 Scene 조회 응답 본문(맵 재생성 품질 표시용). */
   currentScene?: unknown;
+  /** 바닥 감시 범위(-606) 켜고 끄기. 범위 자료가 없으면 넘기지 않는다(버튼을 숨긴다). */
+  onToggleCoverage?: () => void;
+  coverageOn?: boolean;
 }
 
 /** 3D 는 처음 시점으로 돌리고, 3D 가 멈춰 2D 를 보고 있으면 3D 를 다시 띄운다(관제 데모와 같다). */
@@ -47,9 +50,30 @@ function ViewTool({
   );
 }
 
+/** 바닥 감시 범위(2대 이상·1대·사각) 겹침을 켜고 끈다(S15P31A101-606). 켜져 있으면 눌린 모양이다. */
+function CoverageTool({ on, onToggle }: { on?: boolean; onToggle: () => void }) {
+  const Icon = TOOL_ICON.coverage;
+  return (
+    <ToolTooltip
+      label="감시 범위"
+      trigger={
+        <Button
+          variant="ghost"
+          size={TOOL_BUTTON_SIZE}
+          aria-label="감시 범위"
+          aria-pressed={on}
+          onClick={onToggle}
+        />
+      }
+    >
+      <Icon aria-hidden className={TOOL_ICON_CLASS} />
+    </ToolTooltip>
+  );
+}
+
 /**
  * 실시간 관제 화면의 도구 모음. 왼쪽 위에 고정된 아이콘 줄이고, 구역 목록·작업 목록 칼럼이 그 아래에 이어진다.
- * 시점 초기화(또는 3D 다시 시도) · 맵 재생성(관리자)이 들어 있고, 버튼에 올리면 이름이 바로 뜬다.
+ * 시점 초기화(또는 3D 다시 시도) · 감시 범위(자료가 있을 때) · 맵 재생성(관리자)이 들어 있고, 버튼에 올리면 이름이 바로 뜬다.
  * 구역 편집은 구역 목록에서 들어가고 구역 편집 패널에서 끝낸다. 맵 재생성 도구는 편집 중에도 떼지 않고 숨기기만 한다
  * (진행 상태를 계속 받는다).
  */
@@ -59,6 +83,8 @@ export function ToolPalette({
   onRetry3d,
   currentSceneVersion,
   currentScene,
+  onToggleCoverage,
+  coverageOn,
 }: ToolPaletteProps) {
   const isAdmin = useCurrentRole() === 'ADMIN';
   const editing = useZoneEditActive();
@@ -74,6 +100,7 @@ export function ToolPalette({
         className="absolute top-[72px] left-3.5 z-[6] flex items-center gap-1 rounded-[14px] bg-card/94 p-1 shadow-float backdrop-blur-[8px]"
       >
         <ViewTool view={view} onResetView={onResetView} onRetry3d={onRetry3d} />
+        {onToggleCoverage && <CoverageTool on={coverageOn} onToggle={onToggleCoverage} />}
         {isAdmin && (
           <SceneRegenerateTool
             hidden={editing}
