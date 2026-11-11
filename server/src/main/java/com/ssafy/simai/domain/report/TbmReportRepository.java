@@ -9,7 +9,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -46,12 +48,19 @@ public class TbmReportRepository {
                    r.llm_model, r.created_at, r.completed_at, r.wrap_up_summary, r.wrap_up_status,
                    r.locked_at, r.content_sha256, r.approved_at,
                    (SELECT COALESCE(u.display_label, u.login_id) FROM app_user u WHERE u.user_id=r.approved_by) AS approved_by_name,
+                   r.form::text AS form, r.form_revision, r.leader_user_id,
+                   COALESCE(lu.display_label, lu.login_id) AS leader_name, lu.org AS leader_org, lu.title AS leader_title,
                    w.work_date, w.name AS work_name, w.starts_at, w.ends_at,
                    w.zone_id, w.place, w.planned_people, w.lead_team
             FROM report r
             JOIN work_unit w ON w.work_id = r.work_id
+            LEFT JOIN app_user lu ON lu.user_id = r.leader_user_id
             WHERE w.site_id = :siteId AND r.report_kind = 'TBM'
             """;
+
+    /** 날짜 작업 보고서의 일시 기본값(미래 날짜). 요청서 B5·아티팩트 기준 07:30(Asia/Seoul). */
+    static final LocalTime DAILY_DEFAULT_TIME = LocalTime.of(7, 30);
+    static final ZoneId SITE_ZONE = ZoneId.of("Asia/Seoul");
 
     private static final Map<String, Integer> SEVERITY_RANK = Map.of(
             "INFO", 1,
@@ -106,7 +115,7 @@ public class TbmReportRepository {
     /**
      * 작업 행을 잠그고 레이아웃 연결 여부·진행 중 보고서 유무를 확인한 뒤 새 report_version 의 GENERATING 행을 넣는다.
      */
-    public GeneratingStart createGenerating(String siteId, long workId, Instant now) {
+    public GeneratingStart createGenerating(String siteId, long workId, Long leaderUserId, Instant now) {
         MapSqlParameterSource lookupParams = new MapSqlParameterSource()
                 .addValue("siteId", siteId)
                 .addValue("workId", workId);
@@ -149,12 +158,13 @@ public class TbmReportRepository {
         try {
             Long reportId = jdbc.queryForObject("""
                     INSERT INTO report (report_kind, work_id, layout_id, layout_revision, report_version,
-                        status, work_type, created_at)
+                        status, work_type, created_at, leader_user_id)
                     VALUES ('TBM', :workId, :layoutId, :layoutRevision, :version,
-                        'GENERATING', :workType, :now)
+                        'GENERATING', :workType, :now, :leader)
                     RETURNING report_id
                     """, new MapSqlParameterSource()
                     .addValue("workId", workId)
+                    .addValue("leader", leaderUserId)
                     .addValue("layoutId", work.layoutId())
                     .addValue("layoutRevision", work.layoutRevision())
                     .addValue("version", version)
@@ -250,6 +260,73 @@ public class TbmReportRepository {
                 .addValue("steps", jsonOrDefault(steps, "[]"))
                 .addValue("llmModel", llmModel)
                 .addValue("completedAt", utc(completedAt)));
+    }
+
+    /**
+     * 날짜 작업의 빈 보고서(PENDING, 빈 양식)를 만든다. 이미 보고서가 있으면 새로 만들지 않고 최신 보고서 id 를 돌려준다.
+     * 레이아웃 검사(WORK_HAS_NO_LAYOUT)는 하지 않는다. 일시는 작업 날짜가 오늘(또는 지난 날)이면 지금, 미래면 그날 07:30.
+     * 작업 행을 잠가 같은 작업에 두 번 만들지 않는다. 부르는 쪽의 트랜잭션 안에서 부른다.
+     */
+    public long createBlank(String siteId, long workId, Long leaderUserId, Instant now) {
+        MapSqlParameterSource p = new MapSqlParameterSource().addValue("siteId", siteId).addValue("workId", workId);
+        List<LocalDate> dates = jdbc.query("""
+                SELECT work_date FROM work_unit WHERE site_id = :siteId AND work_id = :workId FOR UPDATE
+                """, p, (rs, i) -> rs.getObject("work_date", LocalDate.class));
+        if (dates.isEmpty()) {
+            throw new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND);
+        }
+        List<Long> existing = jdbc.queryForList("""
+                SELECT report_id FROM report WHERE work_id = :workId AND report_kind = 'TBM'
+                ORDER BY report_version DESC, report_id DESC LIMIT 1
+                """, p, Long.class);
+        if (!existing.isEmpty()) {
+            return existing.getFirst();
+        }
+        LocalDate workDate = dates.getFirst();
+        Instant dateTime = workDate.isAfter(LocalDate.ofInstant(now, SITE_ZONE))
+                ? workDate.atTime(DAILY_DEFAULT_TIME).atZone(SITE_ZONE).toInstant()
+                : now;
+        Long id = jdbc.queryForObject("""
+                INSERT INTO report (report_kind, work_id, report_version, status, created_at, form, leader_user_id)
+                VALUES ('TBM', :workId, 1, 'PENDING', :now, CAST(:form AS jsonb), :leader)
+                RETURNING report_id
+                """, p.addValue("now", utc(now))
+                .addValue("form", mapper.writeValueAsString(TbmForm.blank(dateTime.toEpochMilli())))
+                .addValue("leader", leaderUserId), Long.class);
+        return id == null ? 0L : id;
+    }
+
+    /**
+     * 양식 칸을 통째로 바꾼다. 새 report_version 을 만들지 않고 form_revision 만 올린다.
+     * 최신 버전이 아니면 REPORT_VERSION_STALE, 잠겼으면 REPORT_LOCKED, revision 이 다르면 REPORT_FORM_CONFLICT.
+     */
+    public void updateForm(String siteId, long reportId, JsonNode form, int expectedRevision) {
+        MapSqlParameterSource p = new MapSqlParameterSource().addValue("siteId", siteId).addValue("reportId", reportId);
+        record Target(int revision, boolean locked, boolean latest) { }
+        List<Target> rows = jdbc.query("""
+                SELECT r.form_revision, r.locked_at IS NOT NULL AS locked,
+                       r.report_version = (SELECT max(x.report_version) FROM report x WHERE x.work_id = r.work_id) AS latest
+                FROM report r JOIN work_unit w ON w.work_id = r.work_id
+                WHERE w.site_id = :siteId AND r.report_id = :reportId AND r.report_kind = 'TBM'
+                FOR UPDATE OF r
+                """, p, (rs, i) -> new Target(rs.getInt("form_revision"), rs.getBoolean("locked"), rs.getBoolean("latest")));
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_NOT_FOUND);
+        }
+        Target t = rows.getFirst();
+        if (!t.latest()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_VERSION_STALE);
+        }
+        if (t.locked()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_LOCKED);
+        }
+        if (t.revision() != expectedRevision) {
+            throw new BusinessException(ErrorCode.Report.REPORT_FORM_CONFLICT);
+        }
+        jdbc.update("""
+                UPDATE report SET form = CAST(:form AS jsonb), form_revision = form_revision + 1
+                WHERE report_id = :reportId
+                """, p.addValue("form", mapper.writeValueAsString(form)));
     }
 
     public Optional<ObjectNode> findOne(String siteId, long reportId) {
@@ -420,8 +497,24 @@ public class TbmReportRepository {
         o.put("report_id", rs.getLong("report_id"));
         o.put("work_id", rs.getLong("work_id"));
         o.put("report_version", rs.getInt("report_version"));
-        o.put("status", rs.getString("status"));
+        String status = rs.getString("status");
+        o.put("status", status);
+        // draft_status: AI 초안 상태. PENDING(초안 작성 전)은 null 로 낸다.
+        putText(o, "draft_status", "PENDING".equals(status) ? null : status);
         putText(o, "failure_reason", rs.getString("failure_reason"));
+        String form = rs.getString("form");
+        o.set("form", form == null ? mapper.nullNode() : mapper.readTree(form));
+        o.put("form_revision", rs.getInt("form_revision"));
+        long leaderId = rs.getLong("leader_user_id");
+        if (rs.wasNull()) {
+            o.putNull("leader");
+        } else {
+            ObjectNode leader = o.putObject("leader");
+            leader.put("user_id", leaderId);
+            putText(leader, "name", rs.getString("leader_name"));
+            putText(leader, "org", rs.getString("leader_org"));
+            putText(leader, "title", rs.getString("leader_title"));
+        }
         putText(o, "wrap_up_summary", rs.getString("wrap_up_summary"));
         putText(o, "wrap_up_status", rs.getString("wrap_up_status"));
         putText(o, "content_sha256", rs.getString("content_sha256"));

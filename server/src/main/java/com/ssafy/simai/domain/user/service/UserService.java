@@ -53,6 +53,21 @@ public class UserService {
         return user;
     }
 
+    /** 표시 이름·소속·직책을 바꾼다(admin set-profile). 소속·직책은 TBM 리더 칸에 쓴다. 40자 제한은 DB CHECK 와 같다. */
+    @Transactional
+    public AppUser setProfile(String loginId, String displayLabel, String org, String title) {
+        for (String v : new String[] {org, title}) {
+            if (v != null && v.strip().codePointCount(0, v.strip().length()) > 40) {
+                throw new BusinessException(ErrorCode.User.INVALID_PROFILE);
+            }
+        }
+        AppUser user = users.findByLoginId(loginId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.User.USER_NOT_FOUND));
+        user.changeProfile(displayLabel, org, title);
+        // 같은 트랜잭션의 JDBC 조회(보고서 리더 칸)가 바로 보도록 반영한다.
+        return users.saveAndFlush(user);
+    }
+
     private static void validatePassword(String rawPassword) {
         if (PasswordPolicy.tooShort(rawPassword)) {
             throw new BusinessException(ErrorCode.User.WEAK_PASSWORD);

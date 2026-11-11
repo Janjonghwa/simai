@@ -46,11 +46,13 @@ public class WorkWrapUpRepository {
         Long id = jdbc.queryForObject("""
                 INSERT INTO report (report_kind, work_id, layout_id, layout_revision, report_version, status,
                     work_type, rule_version, risk_items, zone_history, sections, citations, subgraph, steps,
-                    llm_model, created_at, wrap_up_status, wrap_up_facts)
+                    llm_model, created_at, wrap_up_status, wrap_up_facts, form, form_revision, leader_user_id)
                 SELECT report_kind, work_id, layout_id, layout_revision,
                     (SELECT MAX(report_version) + 1 FROM report WHERE work_id = :work), 'GENERATING',
                     work_type, rule_version, risk_items, zone_history, sections, citations, subgraph, steps,
-                    llm_model, :now, 'GENERATING', CAST(:facts AS jsonb)
+                    llm_model, :now, 'GENERATING', CAST(:facts AS jsonb),
+                    -- 사람이 고친 양식 칸과 리더는 새 버전으로 옮긴다(S15P31A101-609). B10 에서 새 버전 없이 바꿀 때까지의 보완.
+                    form, form_revision, leader_user_id
                 FROM report WHERE report_id = :base
                 RETURNING report_id
                 """, new MapSqlParameterSource("work", workId).addValue("base", ready.getFirst())
