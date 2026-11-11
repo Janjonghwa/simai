@@ -32,6 +32,7 @@ import {
   blockedLiveWorkId,
   isSetupBlockedByLiveWork,
   SETUP_LIVE_WORK_BLOCKED_TEXT,
+  SETUP_WORKER_UNAVAILABLE_TEXT,
   setupErrorMessage,
 } from '@/features/setup/setupErrorMessage';
 import {
@@ -684,6 +685,30 @@ describe('setupErrorMessage: 진행 중 작업 409 안내 매핑', () => {
     });
     expect(isSetupBlockedByLiveWork(error)).toBe(false);
     expect(setupErrorMessage(error)).toBe('이미 진행 중인 현장 세팅 세션이 있습니다');
+  });
+
+  it('SETUP_WORKER_UNAVAILABLE(409)는 진행 중 작업 차단이 아니라 GPU 서버 연결 안내를 돌려준다', () => {
+    const error = new ApiError(409, {
+      code: 'SETUP_WORKER_UNAVAILABLE',
+      serverMessage: '현장 세팅(site_setup)을 처리할 활성 워커가 없습니다',
+    });
+    expect(isSetupBlockedByLiveWork(error)).toBe(false);
+    expect(blockedLiveWorkId(error)).toBeNull();
+    expect(setupErrorMessage(error)).toBe(SETUP_WORKER_UNAVAILABLE_TEXT);
+  });
+
+  it.each([
+    [
+      'SETUP_CAMERAS_INSUFFICIENT',
+      '현장에 활성 카메라가 2대 이상 있어야 세팅을 시작할 수 있습니다',
+    ],
+    ['WORK_NOT_TODAY', '작업 날짜가 오늘(Asia/Seoul)일 때만 할 수 있습니다'],
+    ['WORK_INVALID_STATE', '현재 작업 상태에서는 요청한 전이를 수행할 수 없습니다'],
+    [undefined, '서버가 코드 없이 준 409 문구'],
+  ])('%s(409)도 진행 중 작업 차단으로 보지 않고 서버 문구를 유지한다', (code, serverMessage) => {
+    const error = new ApiError(409, { code, serverMessage });
+    expect(isSetupBlockedByLiveWork(error)).toBe(false);
+    expect(setupErrorMessage(error)).toBe(serverMessage);
   });
 });
 

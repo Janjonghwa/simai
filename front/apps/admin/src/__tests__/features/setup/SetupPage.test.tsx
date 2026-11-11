@@ -392,6 +392,36 @@ describe('설치 · 보정 1단계 화면', () => {
     });
   });
 
+  it('세팅 시작이 409(SETUP_WORKER_UNAVAILABLE)로 거절되면 GPU 서버 연결 안내만 보이고 작업 이동 링크는 없다', async () => {
+    server.use(
+      http.post('*/api/setup-sessions', () =>
+        HttpResponse.json(
+          {
+            status: 409,
+            code: 'SETUP_WORKER_UNAVAILABLE',
+            detail: '현장 세팅(site_setup)을 처리할 활성 워커가 없습니다',
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    renderSetupPage(5);
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
+    await waitFor(() => expect(cam1Input.value).toBe('2.25'));
+    const cam4Input = screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement;
+    fireEvent.change(cam4Input, { target: { value: '2.35' } });
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
+
+    const alert = await screen.findByTestId('setup-submit-error');
+    expect(alert.textContent).toContain(
+      'GPU 서버(분석 워커)가 연결돼 있지 않아 세팅을 시작할 수 없습니다',
+    );
+    expect(alert.textContent).not.toContain('진행 중인 작업');
+    expect(within(alert).queryByRole('button', { name: '진행 중인 작업으로 이동' })).toBeNull();
+  });
+
   it('연결 상태 3종(DISCONNECTED / CONNECTED / UNKNOWN), 쌍 등급, 방향 안내 문구를 표시한다', async () => {
     renderSetupPage();
 
