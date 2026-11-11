@@ -111,20 +111,22 @@ afterEach(() => {
 });
 
 describe('틀의 작업면 연결', () => {
-  it('도구로 CCTV 창을 열고 닫으며 편집 중에는 숨긴다', async () => {
+  it('3D 카메라 마커로 CCTV 창을 열고 창의 닫기로 닫으며 편집 중에는 숨긴다', async () => {
     useSessionStore.setState({
       session: { accessToken: 't', user: { id: 'admin', role: 'ADMIN' } },
     });
     renderHost();
     await screen.findByTestId('viewer3d');
-    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+    // 도구 모음에는 CCTV 창 버튼이 없다
+    expect(screen.queryByRole('button', { name: 'CCTV 창' })).toBeNull();
+    act(() => fake.props?.onCameraClick?.('cam_A'));
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
     act(() => startZoneEdit());
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'CCTV 창' })).toBeNull();
     act(() => stopZoneEdit());
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
-    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
   });
   it('3D 에 앱의 인증된 아바타 fetch 를 넘긴다', async () => {

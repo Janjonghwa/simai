@@ -18,8 +18,6 @@ type Settings = {
   spot?: FloatSpot;
   width?: number;
   height?: number;
-  camera?: string;
-  all?: boolean;
 };
 function readSettings(): Settings {
   try {
@@ -44,8 +42,6 @@ function readSettings(): Settings {
         typeof v.height === 'number' && Number.isFinite(v.height)
           ? Math.min(800, Math.max(180, v.height))
           : undefined,
-      camera: typeof v.camera === 'string' ? v.camera : undefined,
-      all: typeof v.all === 'boolean' ? v.all : undefined,
     };
   } catch {
     return {};
@@ -64,10 +60,6 @@ export interface CctvCameraRequest {
   readonly seq: number;
 }
 
-export function saveCctvFloatCamera(cameraId: string) {
-  saveSettings({ camera: cameraId, all: false });
-}
-
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
 function Content({
   attach,
@@ -78,9 +70,7 @@ function Content({
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
 }) {
-  const [initial] = useState(readSettings);
-  const [camera, setCamera] = useState(requestedCamera?.cameraId ?? initial.camera ?? '');
-  const [all, setAll] = useState(requestedCamera ? false : (initial.all ?? false));
+  const [camera, setCamera] = useState(requestedCamera?.cameraId ?? '');
   const link = useCctvStore((s) => s.link);
   const relayIds = useCctvStore((s) => s.cameras);
   const { cameras, stateOf, lastClock } = useCameraStates();
@@ -91,84 +81,51 @@ function Content({
       ? [...baseIds, requestedCamera.cameraId]
       : baseIds;
   useEffect(() => {
-    if (!requestedCamera) return;
-    // 3D 카메라 마커를 클릭하면 이미 열려 있는 창도 해당 카메라 단일 보기로 전환한다.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCamera(requestedCamera.cameraId);
-    setAll(false);
-    saveSettings({ camera: requestedCamera.cameraId, all: false });
-  }, [requestedCamera]);
-  useEffect(() => {
     const target = targetOfKey(selectedKey);
     const best = bestCamera(
       useRealtimeStore.getState().world?.payload.tracks,
       target?.type === 'person' ? { type: 'person', id: target.id } : null,
     );
     if (best) {
-      // 외부 3D 선택이 바뀐 순간에만 수동 카메라 선택을 갱신한다.
+      // 외부 3D 선택이 바뀐 순간에만 카메라를 갱신한다.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCamera(best);
-      setAll(false);
-      saveSettings({ camera: best, all: false });
     }
   }, [selectedKey]);
+  // 마운트 때 두 효과가 모두 돌므로 마커 요청이 뒤에 와야 사람 선택에 덮이지 않는다.
+  useEffect(() => {
+    if (!requestedCamera) return;
+    // 3D 카메라 마커를 클릭하면 이미 열려 있는 창도 해당 카메라로 바꾼다.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCamera(requestedCamera.cameraId);
+  }, [requestedCamera]);
+  // 창은 늘 카메라 하나만 보인다. 고른 카메라가 중계 목록에 없으면 첫 카메라를 보인다.
   const current = ids.includes(camera) ? camera : ids[0];
-  const shown = all ? ids : current ? [current] : [];
   return (
     <>
-      <div className="flex flex-wrap gap-1 p-2" role="group" aria-label="카메라 선택">
-        <button
-          type="button"
-          aria-pressed={all}
-          onClick={() => {
-            setAll(true);
-            saveSettings({ all: true });
-          }}
-          className="rounded bg-surface-2 px-2 py-1"
-        >
-          4분할
-        </button>
-        {ids.map((id) => (
-          <button
-            type="button"
-            key={id}
-            aria-pressed={!all && current === id}
-            onClick={() => {
-              setCamera(id);
-              setAll(false);
-              saveSettings({ camera: id, all: false });
-            }}
-            className="rounded bg-surface-2 px-2 py-1"
-          >
-            {id}
-          </button>
-        ))}
-      </div>
       {attach && link !== 'open' && (
-        <p role="status" className="px-2 text-xs">
+        <p role="status" className="px-2 pt-2 text-xs">
           {tileLabel(undefined, link)}
         </p>
       )}
-      {shown.length === 0 ? (
+      {!current ? (
         <p role="status" className="p-3">
           카메라 연결 정보가 없습니다
         </p>
       ) : (
-        <div className={all ? 'grid min-h-0 flex-1 grid-cols-2 gap-1 p-2' : 'min-h-0 flex-1 p-2'}>
-          {shown.map((id) => (
-            <div key={id} className="min-h-0 min-w-0">
-              {attach ? (
-                <CameraTile
-                  cameraId={id}
-                  attach={attach}
-                  state={stateOf(id)}
-                  lastClock={lastClock}
-                />
-              ) : (
-                <StateTile cameraId={id} state={stateOf(id)} lastClock={lastClock} />
-              )}
-            </div>
-          ))}
+        <div className="min-h-0 flex-1 p-2">
+          <div key={current} className="min-h-0 min-w-0">
+            {attach ? (
+              <CameraTile
+                cameraId={current}
+                attach={attach}
+                state={stateOf(current)}
+                lastClock={lastClock}
+              />
+            ) : (
+              <StateTile cameraId={current} state={stateOf(current)} lastClock={lastClock} />
+            )}
+          </div>
         </div>
       )}
     </>

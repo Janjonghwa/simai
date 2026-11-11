@@ -25,7 +25,6 @@ vi.mock('@/features/layout/useSceneRegenerate', () => ({
 
 const onResetView = vi.fn();
 const onRetry3d = vi.fn();
-const onToggleCctv = vi.fn();
 
 /** 오늘 작업 하나(대기 화면 판정용). */
 const todayWork = (status: 'PLANNED' | 'IN_PROGRESS' | 'DONE'): TbmWorkUnit => ({
@@ -73,7 +72,6 @@ const button = (name: string) => screen.queryByRole('button', { name });
 beforeEach(() => {
   onResetView.mockReset();
   onRetry3d.mockReset();
-  onToggleCctv.mockReset();
 });
 afterEach(() => {
   cleanup();
@@ -123,28 +121,10 @@ describe('ToolPalette 틀', () => {
 });
 
 describe('ToolPalette CCTV 창 버튼', () => {
-  it('CCTV 창을 여닫는 함수를 받았을 때만 달리고, 누르면 그 함수를 부른다', () => {
-    const { rerender } = renderPalette();
+  it('도구 모음에 CCTV 창 버튼이 없다(창은 3D 카메라 마커로만 연다)', () => {
+    renderPalette();
     expect(button('CCTV 창')).toBeNull();
-
-    rerender(
-      <ToolPalette
-        view="3d"
-        onResetView={onResetView}
-        onRetry3d={onRetry3d}
-        currentSceneVersion={null}
-        onToggleCctv={onToggleCctv}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'CCTV 창' }));
-    expect(onToggleCctv).toHaveBeenCalledOnce();
-  });
-
-  it('창이 열려 있으면 눌린 모양이다', () => {
-    renderPalette({ onToggleCctv, cctvOpen: true });
-    expect(screen.getByRole('button', { name: 'CCTV 창' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
+    expect(screen.queryByLabelText('CCTV 창')).toBeNull();
   });
 });
 
@@ -174,8 +154,8 @@ describe('ToolPalette: 대기 화면이 위를 덮을 때', () => {
 
 describe('ToolPalette 이름표', () => {
   it('늦게 뜨는 브라우저 기본 title 대신 빨리 뜨는 이름표를 쓴다', () => {
-    renderPalette({ onToggleCctv });
-    for (const name of ['시점 초기화', 'CCTV 창', '맵 재생성']) {
+    renderPalette();
+    for (const name of ['시점 초기화', '맵 재생성']) {
       expect(screen.getByRole('button', { name }).getAttribute('title')).toBeNull();
     }
   });

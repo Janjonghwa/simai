@@ -155,34 +155,30 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
     expect(fake.props?.cameraPoses).toHaveLength(2);
   });
 
-  it('3D 카메라 마커를 클릭하면 떠 있는 CCTV 창을 해당 카메라로 열고, 이미 열려 있으면 그 카메라로 바꾼다', async () => {
+  it('3D 카메라 마커를 클릭하면 떠 있는 CCTV 창을 해당 카메라 하나로 열고, 이미 열려 있으면 그 카메라로 바꾼다', async () => {
     renderHost();
     await screen.findByTestId('viewer3d');
     await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
 
-    // 좌상단 CCTV 창 도구 버튼은 그대로 유지된다
-    expect(screen.getByRole('button', { name: 'CCTV 창' })).toBeTruthy();
+    // 도구 모음에는 CCTV 창 버튼이 없고, 창은 카메라 마커로만 열린다
+    expect(screen.queryByRole('button', { name: 'CCTV 창' })).toBeNull();
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
 
-    // 마커 클릭 시 떠 있는 CCTV 창이 열리고 클릭한 카메라(cam_B)를 보여준다
+    // 마커 클릭 시 떠 있는 CCTV 창이 열리고 클릭한 카메라(cam_B) 하나만 보여준다. 4분할·카메라 버튼 줄은 없다
     act(() => fake.props?.onCameraClick?.('cam_B'));
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
     expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '4분할' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '4분할' })).toBeNull();
 
     // 이미 열려 있는 상태에서 다른 카메라 마커(cam_D)를 클릭하면 그 카메라로 즉시 전환한다
     act(() => fake.props?.onCameraClick?.('cam_D'));
     expect(screen.getByLabelText('cam_D 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
 
-    // 4분할 모드가 열려 있더라도 3D 카메라 마커를 클릭하면 4분할을 해제하고 해당 단일 카메라 창으로 전환한다
-    act(() => screen.getByRole('button', { name: '4분할' }).click());
-    expect(screen.getByRole('button', { name: '4분할' }).getAttribute('aria-pressed')).toBe('true');
     act(() => fake.props?.onCameraClick?.('cam_A'));
-    expect(screen.getByRole('button', { name: '4분할' }).getAttribute('aria-pressed')).toBe(
-      'false',
-    );
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
     expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_D 영상')).toBeNull();
   });
 
   it('실시간 calibration_version 이 바뀌면 다시 조회해 갱신하고 1 Hz health 갱신에는 다시 조회하지 않는다', async () => {
@@ -261,7 +257,7 @@ describe('카메라 시점 보기(-590)', () => {
     expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
   });
 
-  it('CCTV 창을 닫으면(창 닫기·도구 버튼) 클릭 전 시점으로 돌린다', async () => {
+  it('CCTV 창을 닫으면 클릭 전 시점으로 돌린다', async () => {
     renderHost();
     await screen.findByTestId('viewer3d');
     await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
@@ -272,7 +268,7 @@ describe('카메라 시점 보기(-590)', () => {
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
 
     act(() => fake.props?.onCameraClick?.('cam_A'));
-    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
     expect(fake.exitCameraView).toHaveBeenCalledTimes(2);
   });
 
