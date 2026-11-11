@@ -921,6 +921,41 @@ describe('작업 세션과 서명', () => {
     if (!stale) expect(await within(panel).findByText(/홍길동/)).toBeTruthy();
     vi.restoreAllMocks();
   });
+
+  it.each([
+    ['PARTICIPANT', '서명 등록', '서명을 등록했습니다.'],
+    ['APPROVER', '관리자 결재', '관리자 결재를 완료했습니다.'],
+  ] as const)(
+    '제출 전이라 잠금 시각이 비어 오는 %s 응답도 성공으로 처리한다',
+    async (signer_role, button, message) => {
+      mockSignatureCanvas();
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      server.use(
+        http.post('*/api/reports/tbm/:reportId/signatures', ({ params }) =>
+          HttpResponse.json(
+            {
+              signature_id: 1,
+              report_id: Number(params.reportId),
+              report_version: 1,
+              signer_name: '홍길동',
+              signer_role,
+              signed_at: Date.now(),
+              locked_at: null,
+              content_sha256: 'b'.repeat(64),
+            },
+            { status: 201 },
+          ),
+        ),
+      );
+      endWork();
+      render(<TbmPage initialWorkId="1" />);
+      const panel = await openSignPanel();
+      fillSignature(panel);
+      fireEvent.click(within(panel).getByRole('button', { name: button }));
+      expect(await within(panel).findByText(message)).toBeTruthy();
+      vi.restoreAllMocks();
+    },
+  );
 });
 
 describe('관리자 최종 결재', () => {

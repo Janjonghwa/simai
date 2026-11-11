@@ -337,9 +337,11 @@ export const signatureSchema = z.object({
   image_url: z.string(),
 });
 export type Signature = z.infer<typeof signatureSchema>;
+// 서버는 첫 서명이 아니라 제출 때 보고서를 잠가서(-611) `locked_at` 이 제출 전에는 null 이다.
+// `content_sha256` 은 제출 전에도 그 서명 시점의 내용 해시로 온다.
 export const signatureResultSchema = signatureSchema.omit({ image_url: true }).extend({
   report_id: z.number(),
-  locked_at: z.union([z.number(), z.string()]),
+  locked_at: z.union([z.number(), z.string()]).nullish(),
   content_sha256: z.string(),
 });
 
