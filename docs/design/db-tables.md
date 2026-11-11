@@ -55,6 +55,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | C. 보정·설치 | `floor_plan` | MVP | 일반 | BEV 평면도(보조 화면) | 수정 16 추가 | `/api/floor-plans/current` | 이연주 |
 | C. 보정·설치 | `bev_frame_set` | MVP | 일반 | BEV 평면도 입력 프레임 묶음(관리 명령으로 등록, 추가만)(V12, S15P31A101-240) | V12 추가 | 없음(관리 명령 `admin floorplan frames`) | 이연주 |
 | C. 보정·설치 | `scene_version` | MVP | 버전 | 정적 3D Scene. 테이블은 MVP(버전 ID 참조), 생성은 M3 | 있음 | `/api/scenes/current`, `/api/scenes/rebuild`, `/api/scenes/{}` | 이연주 |
+| C. 보정·설치 | `setup_session_zone_plan` | M3 | 일반 | 세팅 중 구역 목록(세션당 한 행, 목록 통째·revision). 세팅 완료 때 관제 구역으로 한 번에 적용하고, 세팅 중에는 `zone` 에 쓰지 않는다(V57, S15P31A101-612, `docs/design/setup-session-zones.md`) | V57 추가 | `/api/setup-sessions/{}/zones` | 곽나혁 |
 | D. 시계열 관측 | `world_track_state` | MVP | hypertable | World Track 상태 10 Hz(최소 리플레이 근거) | 있음 | `/api/replay`, `/api/world`, `/topic/world` | 이연주 |
 | D. 시계열 관측 | `skeleton_3d` | MVP | hypertable | 3D 골격 5~10 Hz(리플레이 확장·뷰어) | 있음 | `/api/world` | 이연주 |
 | D. 시계열 관측 | `system_health` | MVP | hypertable | Tier 0 health 기록(카메라별 값은 JSONB) | 있음 | `/api/health`, `/topic/health` | 이연주 |

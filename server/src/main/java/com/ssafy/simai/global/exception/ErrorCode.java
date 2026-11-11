@@ -142,6 +142,11 @@ public sealed interface ErrorCode {
     /** 구역·작업면·보정 문서·구성 묶음(S15P31A101-120·-58) */
     enum Config implements ErrorCode {
         LAYOUT_ZONE_LOCKED(HttpStatus.CONFLICT, "작업 레이아웃에서 만든 구역·작업면은 레이아웃에서 수정하세요"),
+        INVALID_SETUP_ZONE_PLAN(HttpStatus.BAD_REQUEST, "세팅 구역 목록이 올바르지 않습니다(항목 100개 이하, source 는 AI·MANUAL, 새 구역은 zone 본문 필수)"),
+        SETUP_ZONE_PLAN_CONFLICT(HttpStatus.CONFLICT, "다른 곳에서 먼저 고친 세팅 구역 목록입니다. 다시 불러온 뒤 고치세요"),
+        SETUP_ZONES_CLOSED(HttpStatus.CONFLICT, "세팅이 끝났거나 작업이 시작돼 세팅 구역 목록을 고칠 수 없습니다"),
+        SETUP_ZONE_WORLD_MISMATCH(HttpStatus.CONFLICT, "World 좌표가 바뀐 세팅이라 기존 구역(zone_id)을 그대로 쓸 수 없습니다"),
+        SETUP_ZONE_STALE(HttpStatus.CONFLICT, "목록의 기존 구역이 더 이상 관제 구역이 아닙니다"),
         ZONE_NOT_FOUND(HttpStatus.NOT_FOUND, "구역을 찾을 수 없습니다"),
         INVALID_ZONE(HttpStatus.BAD_REQUEST, "구역 값이 올바르지 않습니다(name·zone_kind 필수, eval_type 은 GROUND_FOOTPRINT·VOLUME_3D, severity 는 CRITICAL·HIGH·CAUTION·INFO)"),
         INVALID_POLYGON(HttpStatus.BAD_REQUEST, "다각형은 서로 다른 꼭짓점 3개 이상이고 자기 교차·넓이 0 이 없어야 합니다"),
