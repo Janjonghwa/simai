@@ -60,16 +60,49 @@ def prepare(root: Path) -> None:
         "segmenter": seg.describe() if seg else None, "human_removal": "MASK_COMPOSITE"})
 
 
-def mapanything(root: Path) -> None:
+def _mapanything_model() -> str:
     model = os.environ.get("SIMAI_MAPANYTHING_MODEL") or str(Path(os.environ.get("SIMAI_ROOT", "/workspace/simai")) / "weights" / "map-anything")
     if not Path(model).is_dir():
         raise ReconstructionError("STATIC_MODEL_MISSING", "MapAnything 가중치 폴더 없음")
+    return model
+
+
+def run_mapanything_prepared(prepared_dir: Path, out_dir: Path) -> None:
+    """prepared 모드 MapAnything 한 번 → out_dir(cameras.json·raw.npz·metrics.json). K 없는 view 는 K 없이 넣는다(-605)."""
+    model = _mapanything_model()
     from . import run_mapanything
     # 기존 prepared 모드와 같은 K 전용 추론. 모델 세계를 보정 세계로 정렬하는 것은 다음 단계다.
-    sys.argv = ["mapanything", "--run-id", "mapanything", "--runs-dir", str(root), "--mode", "prepared",
-                "--prepared", str(root / "prepared"), "--model", model, "--repeat", "1"]
+    sys.argv = ["mapanything", "--run-id", out_dir.name, "--runs-dir", str(out_dir.parent), "--mode", "prepared",
+                "--prepared", str(prepared_dir), "--model", model, "--repeat", "1"]
     if run_mapanything.main():
         raise ReconstructionError("STATIC_MAPANYTHING_TOOL_FAILED", "MapAnything 추론 실패")
+
+
+def mapanything(root: Path) -> None:
+    run_mapanything_prepared(root / "prepared", root / "mapanything")
+
+
+def _person_mask_fn():
+    """prepare 와 같은 사람 분할기(SIMAI_SEG_WEIGHTS). 없으면 None(보조 촬영은 사람을 지울 수 없어 건너뛴다)."""
+    from simai_ai.calibration.intrinsics.estimate import WeightsRef
+    from simai_ai.calibration.world_frame.prepare import UltralyticsPersonSegmenter
+
+    weights = Path(os.environ.get("SIMAI_SEG_WEIGHTS", ""))
+    if not weights.is_file():
+        return None
+    seg = UltralyticsPersonSegmenter(WeightsRef(str(weights), sha256(weights.read_bytes())))
+    return lambda image: seg.person_mask(image)[0]
+
+
+def supplement(root: Path) -> None:
+    """세팅 보조 촬영 단계(S15P31A101-605): supplement/request.json → 묶음별 MapAnything·고정 카메라 정렬·관문 → 병합·교체.
+
+    결과 요약은 supplement/result.json. 보조 촬영 실패는 이 단계를 실패시키지 않는다(요약 FALLBACK·SKIPPED)."""
+    from . import supplement_capture as sc
+
+    _, conf = sc.load_request(root)
+    cfg = sc.SupplementConfig.from_env(os.environ, **{k: conf.get(k) for k in ("max_frames", "chunk_frames", "time_budget_s")})
+    sc.run_supplement(root, infer=run_mapanything_prepared, person_mask=_person_mask_fn(), cfg=cfg)
 
 
 ALIGN_MAX_CENTER_M = 0.10
@@ -96,14 +129,22 @@ def _resolve_floor_constraint(job_doc: dict, explicit: bool | None) -> bool:
     return True
 
 
-def _mapanything_points(root: Path) -> np.ndarray | None:
-    """MapAnything 모델 좌표의 점구름 (N, 3): `raw.npz` 가 있으면 시점별 유효 점, 아니면 `pointcloud.npz` 정점. 없으면 None."""
-    ma_dir = root / "mapanything"
+def _mapanything_points(root: Path, *, ma_dir: Path | None = None, prepared_dir: Path | None = None,
+                        names: set[str] | None = None) -> np.ndarray | None:
+    """MapAnything 모델 좌표의 점구름 (N, 3): `raw.npz` 가 있으면 시점별 유효 점, 아니면 `pointcloud.npz` 정점. 없으면 None.
+
+    names 가 있으면 그 view 의 점만 모은다(보조 촬영 프레임을 World 정렬에서 빼는 데 쓴다, S15P31A101-605)."""
+    ma_dir = ma_dir or root / "mapanything"
+    prepared_dir = prepared_dir or root / "prepared"
     if (ma_dir / "raw.npz").is_file():
         from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
 
-        prepared = load_prepared(root / "prepared") if (root / "prepared" / "prepared.json").is_file() else None
-        return load_mapanything_run(ma_dir, prepared=prepared).all_points()
+        prepared = load_prepared(prepared_dir) if (prepared_dir / "prepared.json").is_file() else None
+        run = load_mapanything_run(ma_dir, prepared=prepared)
+        if names is None:
+            return run.all_points()
+        views = [v for v in run.views if v.name in names]
+        return np.concatenate([v.points()[0] for v in views]) if views else None
     if (ma_dir / "pointcloud.npz").is_file():
         with np.load(ma_dir / "pointcloud.npz") as pc:
             if "points_xyz" in pc.files:
@@ -134,13 +175,16 @@ def write_floor_coverage(root: Path, M: np.ndarray) -> dict | None:
 
 
 def _extract_floor_plane_ma(
-    root: Path, src: np.ndarray, cam2world_list: list[np.ndarray]
+    root: Path, src: np.ndarray, cam2world_list: list[np.ndarray], *,
+    ma_dir: Path | None = None, prepared_dir: Path | None = None, names: set[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """MapAnything 점구름(`raw.npz` 또는 `pointcloud.npz`)이 있으면 RANSAC 바닥 평면을 찾는다."""
+    """MapAnything 점구름(`raw.npz` 또는 `pointcloud.npz`)이 있으면 RANSAC 바닥 평면을 찾는다.
+
+    names 가 있으면 그 view(고정 카메라)의 점만 쓴다. 보조 촬영 프레임 점은 World 정렬에 넣지 않는다(S15P31A101-605)."""
     from simai_ai.calibration.world_frame.frame import WorldFrameConfig, _up_prior, find_floor
 
     try:
-        pts = _mapanything_points(root)
+        pts = _mapanything_points(root, ma_dir=ma_dir, prepared_dir=prepared_dir, names=names)
     except Exception:  # noqa: BLE001 - 점구름 보조 읽기 실패 시 카메라 중심 정렬로 안전하게 폴백
         return None
     if pts is None or len(pts) < 50:
@@ -229,19 +273,26 @@ def _solve_similarity_alignment(
     }
 
 
-def align_to_calibration(
+def solve_fixed_alignment(
     root: Path,
     *,
+    ma_dir: Path | None = None,
+    prepared_dir: Path | None = None,
     max_center_m: float = ALIGN_MAX_CENTER_M,
     max_rotation_deg: float = ALIGN_MAX_ROTATION_DEG,
     floor_constraint: bool | None = None,
-) -> np.ndarray:
-    """카메라 중심·회전과 선택적 바닥 평면(+Z, Z=0) 제약을 이용한 similarity. 보정 문서는 읽기만 한다."""
+) -> tuple[np.ndarray, dict[str, object]]:
+    """MapAnything Run(ma_dir, 기본 root/mapanything) → 보정 World similarity M 과 기록. 쓰지 않는다.
+
+    고정 카메라(job.json 의 images = 보정 카메라)만으로 푼다. Run 에 다른 view(세팅 보조 촬영 프레임)가 있어도 정렬·바닥 점에
+    넣지 않는다(World 는 고정 카메라 4대만, S15P31A101-605). 고정 카메라가 하나라도 빠지면 실패다."""
+    ma_dir = ma_dir or root / "mapanything"
     cal = read_json(root / "calibration.json")
     cams = {c["camera_id"]: c for c in cal["cameras"]}
-    views = read_json(root / "mapanything" / "cameras.json")["views"]
+    all_views = read_json(ma_dir / "cameras.json")["views"]
     job_doc = read_json(root / "job.json")
     requested = {im["camera_id"] for im in job_doc["input"]["images"]}
+    views = [v for v in all_views if v["name"] in requested]
     if {v["name"] for v in views} != requested:
         raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", "모델 출력과 입력 카메라 불일치")
     rotations, src, dst, cam2world_list = [], [], [], []
@@ -262,7 +313,8 @@ def align_to_calibration(
         raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", "독립 카메라 2대 필요")
     src, dst = np.asarray(src), np.asarray(dst)
     use_floor = _resolve_floor_constraint(job_doc, floor_constraint)
-    floor_info = _extract_floor_plane_ma(root, src, cam2world_list) if use_floor else None
+    floor_info = (_extract_floor_plane_ma(root, src, cam2world_list, ma_dir=ma_dir, prepared_dir=prepared_dir,
+                                          names=requested) if use_floor else None)
     Q, scale, shift, floor_meta = _solve_similarity_alignment(
         src, dst, rotations, floor_info, max_center_m=max_center_m
     )
@@ -279,10 +331,23 @@ def align_to_calibration(
         raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", message)
     M = np.eye(4)
     M[:3, :3], M[:3, 3] = scale * Q, shift
-    write_json(root / "world_alignment.json", {"format": "simai.world_alignment", "status": "OK",
-        "cameras_json_sha256": sha256((root / "mapanything" / "cameras.json").read_bytes()),
-        "mapanything_to_world": M.tolist(), "calibration": cal,
-        "max_center_residual_m": float(residual.max()), "scale": scale, **floor_meta})
+    return M, {"format": "simai.world_alignment", "status": "OK",
+               "cameras_json_sha256": sha256((ma_dir / "cameras.json").read_bytes()),
+               "mapanything_to_world": M.tolist(), "calibration": cal,
+               "max_center_residual_m": float(residual.max()), "scale": scale, **floor_meta}
+
+
+def align_to_calibration(
+    root: Path,
+    *,
+    max_center_m: float = ALIGN_MAX_CENTER_M,
+    max_rotation_deg: float = ALIGN_MAX_ROTATION_DEG,
+    floor_constraint: bool | None = None,
+) -> np.ndarray:
+    """카메라 중심·회전과 선택적 바닥 평면(+Z, Z=0) 제약을 이용한 similarity. 보정 문서는 읽기만 한다."""
+    M, doc = solve_fixed_alignment(root, max_center_m=max_center_m, max_rotation_deg=max_rotation_deg,
+                                   floor_constraint=floor_constraint)
+    write_json(root / "world_alignment.json", doc)
     return M
 
 
@@ -991,6 +1056,8 @@ def measure(root: Path) -> None:
     rig, detections, masks = {}, {}, {}
     for p in read_json(root / "prepared" / "prepared.json")["views"]:
         cid = p["camera_id"]
+        if cid not in cams:
+            continue  # 세팅 보조 촬영 프레임(S15P31A101-605)은 보정 카메라가 아니라 축척 점검에 넣지 않는다
         if map_cams and cid in map_cams:
             from .intrinsics_check import expected_axis_resize_k
 
@@ -1026,14 +1093,15 @@ def main() -> int:
     stage, root_arg = sys.argv[1:]
     root = Path(root_arg)
     try:
-        if stage in ("prepare", "mapanything"):
+        if stage in ("prepare", "mapanything", "supplement"):
             from simai_ai.gpu.budget import WorkerGpuSettings
             from simai_ai.gpu.reserve import FAILED, cap_process_memory
             settings = WorkerGpuSettings.from_env(os.environ)
             fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or settings.budget.worker_fraction)
             if not 0 < fraction <= settings.budget.worker_fraction or cap_process_memory(fraction).state == FAILED:
                 raise ReconstructionError("STATIC_GPU_BUDGET_FAILED", "자식 프로세스 GPU 상한 설정 실패")
-        {"prepare": prepare, "mapanything": mapanything, "preview": preview, "bake": bake, "fallback": fallback, "measure": measure}[stage](root)
+        {"prepare": prepare, "mapanything": mapanything, "preview": preview, "bake": bake, "fallback": fallback,
+         "measure": measure, "supplement": supplement}[stage](root)
         return 0
     except ReconstructionError as e:
         write_json(root / f"{stage}.error.json", {"code": e.code, "message": str(e)})

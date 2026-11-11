@@ -23,6 +23,11 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
   `bake-<카메라>.jpg` 로 올리고 묶음 ID 와 함께 `artifacts.bake_images` 로 알린다. JPEG 이고 8 MiB 이하면 바이트 그대로, 아니면 같은
   해상도 JPEG(품질 90)로 바꾼다. EC2 가 이 대여의 Scene 에 묶어 관제 카메라 시점 VDT 사진으로 서명해 준다(S15P31A101-593).
 - (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`(+ `artifacts.scene`).
+  입력에 `supplement_media` 가 있으면 굽기 전에 보조 촬영 파일을 서명 GET 으로 받아 `supplement` 단계(묶음별 MapAnything·고정
+  카메라 정렬·관문·병합, S15P31A101-605)를 돌린다. 적용되면 병합본으로 굽고, 그 굽기가 실패하면 보조 촬영 없이 다시 굽는다
+  (요약 FALLBACK·BAKE_FAILED). 어느 경우에도 세팅은 보조 촬영 때문에 실패하지 않는다.
+- `rebake`(mode SUPPLEMENT_REBAKE): `rebake_base` 의 보정 문서·굽기 입력 사진만 받아 같은 작업 폴더를 만들고 prepare →
+  mapanything(고정 카메라) → supplement → (적용될 때만) bake → GLB 업로드. 적용되지 않으면 굽지 않고 기준 Scene 을 그대로 돌려준다.
 
 단계가 실패하면 그 단계 로그(`<단계>.log`)의 끝 줄을 워커 로그와 실패 메시지에 남기고, 작업 폴더를 지우기 전에 로그·오류 문서를
 `SIMAI_STATE_DIR/worker/site-setup-failed/<작업>-<대여>/` 에 복사한다(S15P31A101-473).
@@ -31,6 +36,7 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -56,6 +62,8 @@ from .auto_static import AutoStaticSettings, calibration_document_path
 from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
+from simai_ai.scene import supplement_capture as sc
+
 from .site_setup import (
     MAX_BAKE_IMAGES,
     MAX_CAMERA_FRAMES,
@@ -70,13 +78,20 @@ from .site_setup import (
     ObjectRef,
     PreviewDraftResult,
     PublishedCalibration,
+    RebakeOutcome,
     SiteSetupHandler,
     build_world_from_pointcloud_and_poses,
     floor_coverage_problems,
 )
 
 PREFLIGHT_BUCKET = "preflight"
-STAGE_TIMEOUTS_S = {"prepare": 180.0, "mapanything": 1200.0, "preview": 60.0, "bake": 1800.0, "fallback": 120.0}
+STAGE_TIMEOUTS_S = {"prepare": 180.0, "mapanything": 1200.0, "preview": 60.0, "bake": 1800.0, "fallback": 120.0,
+                    "supplement": 1200.0}
+# 보조 촬영을 시작하려면 남아 있어야 하는 작업 시간(보조 단계 + 굽기). 모르면(상한 없음) 시작한다
+SUPPLEMENT_MIN_REMAINING_S = 900.0
+SUPPLEMENT_MAX_MEDIA_BYTES = 4 << 30  # 계약 size_bytes 상한(4 GiB)
+# 보조 촬영을 넣을 수 없는 굽기 경로: 방식 2 는 보정 자세로 WorldMirror 를 조건 거는데 보조 프레임에는 보정 자세가 없다
+SUPPLEMENT_UNSUPPORTED_PATHS = ("method2", "method2_calib_wm2", "auto")
 # Tier 0 묶음은 카메라마다 최소 20장 × 5 s ≈ 100 s 걸린다(services/tier0/settings.py CleanBackgroundSettings).
 # 기다림 기본 240 s = 그 두 배 남짓 + 묶음 조립·사람이 오래 가린 카메라 여유. 실행 상한(서버 900 s) 안에서 복원·굽기 시간을 남긴다
 DEFAULT_BACKGROUND_WAIT_S = 240.0
@@ -484,6 +499,24 @@ class ProductionSiteSetupStages:
     # ------------------------------------------------------------------ (h)
     def bake(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
              backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
+        summary = self.supplement() if self.ctx.input.get("supplement_media") else None
+        if summary is not None and summary["status"] == "APPLIED":
+            try:
+                glb = self._bake_glb()
+            except JobFailed as exc:
+                if exc.code == "CANCELLED" or self.ctx.cancelled.is_set():
+                    raise
+                log.warning("작업 %s: 보조 촬영을 넣은 굽기 실패(%s) → 보조 촬영 없이 다시 굽는다", self.ctx.job_id, exc.code)
+                sc.restore_baseline(self.root)
+                summary = self._fallback_summary(summary, sc.R_BAKE_FAILED)
+                glb = self._bake_glb()
+        else:
+            glb = self._bake_glb()
+        sc.annotate_bake(self.root, summary)
+        ref = self._upload_asset(glb)
+        return BakedScene(f"scene-{self._run_id}"[:160], ref, summary)
+
+    def _bake_glb(self) -> Mapping[str, Any]:
         self._run_stage("bake")
         doc = self._read_stage_doc("bake.json", "bake")
         if doc.get("fallback_reason") and not doc.get("assets"):
@@ -493,8 +526,154 @@ class ProductionSiteSetupStages:
         if len(glbs) != 1:
             # 정식 Scene 은 GLB 하나다(EC2 가 scene_version 의 gltf_key 하나로 등록)
             raise JobFailed("STATIC_OUTPUT_INVALID", f"굽기 산출물의 GLB 가 하나가 아니다({len(glbs)})", retryable=False)
-        ref = self._upload_asset(glbs[0])
-        return BakedScene(f"scene-{self._run_id}"[:160], ref)
+        return glbs[0]
+
+    # ------------------------------------------------------------------ 보조 촬영(-605)
+    @staticmethod
+    def _fallback_summary(summary: Mapping[str, Any], reason: str) -> dict[str, Any]:
+        out = dict(summary)
+        out.update(status="FALLBACK", reason=reason)
+        out["media"] = [{**m, "status": sc.M_NOT_REGISTERED} if m["status"] == sc.M_USED else m
+                        for m in out.get("media", [])]
+        out.pop("captured_from_ms", None)
+        out.pop("captured_to_ms", None)
+        if not out["media"]:
+            out.pop("media")
+        return out
+
+    def _media_inputs(self) -> list[sc.MediaInput]:
+        return [sc.MediaInput(media_id=str(m["media_id"]), kind=str(m["kind"]), path=None,
+                              captured_at_ms=m.get("captured_at_ms"), source=m.get("source"), device=m.get("device"),
+                              sha256=m.get("sha256"))
+                for m in list(self.ctx.input.get("supplement_media") or [])[: sc.MAX_MEDIA]]
+
+    def _skip(self, reason: str) -> dict[str, Any]:
+        log.warning("작업 %s: 보조 촬영을 건너뛴다(%s)", self.ctx.job_id, reason)
+        return sc.summary(status="SKIPPED", reason=reason, media=self._media_inputs())
+
+    def supplement(self) -> dict[str, Any]:
+        """보조 촬영 파일을 받고 `supplement` 단계를 돌려 요약을 돌려준다. 취소만 예외로 올리고 나머지는 요약으로 바꾼다."""
+        job_path = self.root / "job.json"
+        opts = (read_json(job_path)["input"].get("options") or {}) if job_path.is_file() else {}
+        path = str(opts.get("reconstruction_path") or os.environ.get("SIMAI_RECONSTRUCTION_PATH") or "fallback1")
+        if path.strip().lower() in SUPPLEMENT_UNSUPPORTED_PATHS:
+            return self._skip(sc.R_PATH_UNSUPPORTED)
+        remaining = self.ctx.remaining_s()
+        if remaining is not None and remaining < SUPPLEMENT_MIN_REMAINING_S:
+            return self._skip(sc.R_TIME_BUDGET)
+        media = self._media_inputs()
+        rows: list[dict[str, Any]] = []
+        media_dir = self.root / sc.SUPPLEMENT_DIR / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        for m, raw_item in zip(media, self.ctx.input["supplement_media"]):
+            row = m.provenance()
+            try:
+                content = self.store.get(self.ctx, str(raw_item["uri"]))
+            except ObjectStoreError as exc:
+                if self.ctx.cancelled.is_set():
+                    raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True) from exc
+                log.warning("작업 %s: 보조 촬영 %s 를 받지 못함(%s)", self.ctx.job_id, m.media_id, exc)
+                rows.append({**row, "status": sc.M_DOWNLOAD_FAILED})
+                continue
+            digest = hashlib.sha256(content).hexdigest()
+            if (m.sha256 and digest != m.sha256) or not content or len(content) > SUPPLEMENT_MAX_MEDIA_BYTES:
+                log.warning("작업 %s: 보조 촬영 %s 의 바이트가 입력(sha256·크기)과 다르다", self.ctx.job_id, m.media_id)
+                rows.append({**row, "status": sc.M_DOWNLOAD_FAILED})
+                continue
+            suffix = ".video" if m.kind == "VIDEO" else ".image"
+            (media_dir / f"{m.media_id}{suffix}").write_bytes(content)
+            rows.append({**row, "path": f"media/{m.media_id}{suffix}"})
+        sc.write_request(self.root, rows)
+        try:
+            self._run_stage("supplement")
+        except JobFailed as exc:
+            if exc.code == "CANCELLED":
+                raise
+            log.warning("작업 %s: 보조 촬영 단계 실패(%s) → 보조 촬영 없이 굽는다", self.ctx.job_id, exc.code)
+            sc.restore_baseline(self.root)
+            return sc.summary(status="FALLBACK", reason=sc.R_RECONSTRUCTION_FAILED, media=media)
+        try:
+            return dict(read_json(self.root / sc.SUPPLEMENT_DIR / sc.RESULT_FILE)["summary"])
+        except (OSError, ValueError, KeyError):
+            sc.restore_baseline(self.root)
+            return sc.summary(status="FALLBACK", reason=sc.R_RECONSTRUCTION_FAILED, media=media)
+
+    # ------------------------------------------------------------------ SUPPLEMENT_REBAKE(-605)
+    def _get_verified(self, ref: Mapping[str, Any], what: str) -> bytes:
+        try:
+            content = self.store.get(self.ctx, str(ref["uri"]))
+        except ObjectStoreError as exc:
+            if self.ctx.cancelled.is_set():
+                raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True) from exc
+            raise JobFailed("SETUP_OBJECT_FAILED", f"{what} 를 받지 못함: {exc}", retryable=exc.retryable) from exc
+        if hashlib.sha256(content).hexdigest() != str(ref["sha256"]):
+            raise JobFailed("INVALID_INPUT", f"{what} 의 sha256 이 입력과 다르다", retryable=False)
+        return content
+
+    def rebake(self, *, setup_session_id: str, site_id: str, camera_ids: Sequence[str],
+               camera_heights_m: Mapping[str, float], height_tolerance_cm: float, rebake_base: Mapping[str, Any],
+               on_height_checks: Callable[[dict[str, dict[str, Any]]], None]) -> RebakeOutcome:
+        """기준 보정 문서·굽기 입력 사진으로 작업 폴더를 다시 만들고 보조 촬영이 적용될 때만 새 맵을 굽는다.
+
+        배경 수집·내부 파라미터·Stage A·보정 등록·미리보기·구역 초안은 하지 않는다. prepare·mapanything(고정 카메라)은 보조 촬영
+        관문의 기준(보조 촬영 없을 때 정렬·재투영)과 같은 입력 폴더를 만들려고 다시 돈다(기준 맵 자체는 다시 굽지 않는다)."""
+        from simai_ai.calibration.extrinsics.joint_ba_v2 import compute_height_checks
+
+        cal_raw = self._get_verified(rebake_base["calibration_document"], "기준 보정 문서")
+        try:
+            cal = json.loads(cal_raw.decode("utf-8"))
+            cams = {str(c["camera_id"]): c for c in cal["cameras"]}
+        except (ValueError, KeyError, TypeError) as exc:
+            raise JobFailed("INVALID_INPUT", "기준 보정 문서를 읽지 못함", retryable=False) from exc
+        if str(cal.get("calibration_version")) != str(rebake_base["calibration_version"]):
+            raise JobFailed("INVALID_INPUT", "기준 보정 문서의 버전이 rebake_base.calibration_version 과 다르다",
+                            retryable=False)
+        missing = [cid for cid in camera_ids if cid not in cams]
+        if missing:
+            raise JobFailed("INVALID_INPUT", f"기준 보정 문서에 없는 카메라: {missing}", retryable=False)
+        restored = {}
+        for cid in camera_ids:
+            R, tvec = np.asarray(cams[cid]["R"], float), np.asarray(cams[cid]["t"], float)
+            restored[cid] = float((-R.T @ tvec)[2])
+        height_checks = compute_height_checks(camera_heights_m, restored, tolerance_cm=height_tolerance_cm)
+        on_height_checks(height_checks)
+        images = {str(im["camera_id"]): im for im in rebake_base["bake_images"]["images"]}
+        (self.root / "images").mkdir(exist_ok=True)
+        hashes = []
+        for cid in camera_ids:
+            raw = self._get_verified(images[cid], f"카메라 {cid} 굽기 입력 사진")
+            hashes.append(sha256(raw))
+            (self.root / "images" / f"{cid}.image").write_bytes(raw)
+        write_json(self.root / "calibration.json", cal)
+        job_input = {
+            "calibration_version": str(cal["calibration_version"]),
+            "images": [{"camera_id": cid, "kind": "CLEAN_BACKGROUND"} for cid in camera_ids],
+            "input_provenance": {"frames": {"source": "LIVE", "camera_ids": list(camera_ids)},
+                                 "calibration": {"source": str(cal.get("provider_source") or "G1_AUTO"),
+                                                 "calibration_version": str(cal["calibration_version"])},
+                                 "is_upper_bound": False},
+            "options": {},
+        }
+        write_json(self.root / "job.json", {
+            "input": job_input, "run_id": self._run_id, "image_hashes": hashes,
+            "rebake_base": {"calibration_version": str(rebake_base["calibration_version"]),
+                            "scene_version": str(rebake_base["scene_version"])}})
+        self._run_stage("prepare")
+        self._run_stage("mapanything")
+        summary = self.supplement()
+        base_scene = str(rebake_base["scene_version"])
+        if summary["status"] != "APPLIED":
+            return RebakeOutcome(base_scene, summary, height_checks)
+        try:
+            glb = self._bake_glb()
+        except JobFailed as exc:
+            if exc.code == "CANCELLED" or self.ctx.cancelled.is_set():
+                raise
+            log.warning("작업 %s: 보조 촬영 다시 굽기 실패(%s) → 원래 맵 유지", self.ctx.job_id, exc.code)
+            return RebakeOutcome(base_scene, self._fallback_summary(summary, sc.R_BAKE_FAILED), height_checks)
+        sc.annotate_bake(self.root, summary)
+        ref = self._upload_asset(glb)
+        return RebakeOutcome(f"scene-{self._run_id}"[:160], summary, height_checks, ref)
 
     # ------------------------------------------------------------------ 공통
     def _run_stage(self, stage: str) -> None:
@@ -593,7 +772,7 @@ class ProductionSiteSetupHandler:
                     feature_matcher=match_sift,
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
                     preview_builder=s.preview, texture_baker=s.bake, frame_publisher=s.publish_frames,
-                    bake_image_publisher=s.publish_bake_images,
+                    bake_image_publisher=s.publish_bake_images, rebaker=s.rebake,
                     object_cross_checker=self._cross,
                     live_gate=self._live_gate, live_notice=self._live_notice, world_anchor=s.anchor_world,
                     clock_ms=self._clock_ms, **self._wait,

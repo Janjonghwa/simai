@@ -956,6 +956,22 @@ def test_bake_image_failure_or_unknown_bundle_never_fails_setup(caplog: pytest.L
     assert exc.value.code == "CANCELLED"
 
 
+def test_full_setup_result_carries_supplement_summary_from_baker() -> None:
+    """S15P31A101-605: 굽기 주입점이 돌려준 보조 촬영 요약이 COMPLETED 결과 supplement 로 실린다(계약 통과)."""
+    from simai_ai.scene import supplement_capture as sc
+
+    summary = sc.summary(status="FALLBACK", reason=sc.R_TOO_FEW_REGISTERED,
+                         media=[sc.MediaInput("sup-01", "VIDEO", None)], frames_selected=40, frames_registered=3)
+    handler, _, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        texture_baker=lambda **kw: BakedScene("scene-sup", None, summary),
+    )
+    inp = load_example("job_request.site_setup_supplement.json")["payload"]["input"]
+    result = handler(JobContext("job-sup", "0192a6f0-7c1e-7b3a-9f2d-000000000605", "site_setup", 1, inp))
+    assert result["supplement"] == summary and result["scene_version"] == "scene-sup"
+    assert "mode" not in result
+
+
 # ---------------------------------------------------------------------------- S15P31A101-606
 def _floor_coverage(calibration_version: str) -> dict[str, Any]:
     return {"calibration_version": calibration_version, "cell_m": 0.3, "origin_xy": [0.0, 0.0], "cols": 2, "rows": 2,

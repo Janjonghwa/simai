@@ -1,0 +1,64 @@
+{
+  "schema_version": "2.17.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000060d",
+  "sent_at": 1760342460100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261111-0605",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000311",
+    "job_type": "site_setup",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342460050,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "COMPLETED",
+      "progress_pct": 100,
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "scene_version": "scene-job-20261111-0605-0192a6f0-7c1e-7b3a-9f2d-000000000311",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.52,
+          "difference_cm": 2,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.52,
+          "difference_cm": 2,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.52,
+          "difference_cm": 2,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.52,
+          "difference_cm": 2,
+          "within_tolerance": true
+        }
+      },
+      "metrics": {
+        "stage_seconds": {
+          "BAKING_TEXTURE": 412.5
+        },
+        "total_seconds": 498.1
+      },
+      "artifacts": {
+        "scene": {
+          "uri": "s3://simai-objects/worker-jobs/job-20261111-0605/scene_final_wm2.glb",
+          "sha256": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "size_bytes": 38512345
+        }
+      },
+      "mode": "SUPPLEMENT_REBAKE"
+    }
+  },
+  "_expect_error": "다시 굽기 결과는 supplement 요약이 있어야 한다"
+}

@@ -1858,20 +1858,6 @@ class CalibrationTarget(BaseModel):
     world_frame: Literal['AUTO_FLOOR_Z_UP_METERS']
 
 
-class SiteSetupInput(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    setup_session_id: DefsUuid
-    work_unit_id: Annotated[StrictInt, Field(ge=1)]
-    site_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    camera_heights_m: Annotated[
-        dict[str, CameraHeightsMAdditionalProperty], Field(min_length=1)
-    ]
-    calibration_target: CalibrationTarget
-    height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
-
-
 StageSecondsAdditionalProperty = TypeAliasType(
     "StageSecondsAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
 )
@@ -1921,6 +1907,83 @@ class ObjectCrossCheck(BaseModel):
     residual_cm: StrictFloat | MISSING = MISSING
     floor_z_m: StrictFloat | MISSING = MISSING
     cameras: Annotated[list[DefsCameraId] | MISSING, Field(min_length=2)] = MISSING
+
+
+class SiteSetupRebakeBase(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    calibration_document: SiteSetupObjectRef
+    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    bake_images: SiteSetupBakeImages
+
+
+class Device(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    make: Annotated[StrictStr | MISSING, Field(max_length=80, min_length=1)] = MISSING
+    model: Annotated[StrictStr | MISSING, Field(max_length=80, min_length=1)] = MISSING
+
+
+class SiteSetupSupplementMediaItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    media_id: Annotated[StrictStr, Field(pattern='^[A-Za-z0-9_-]{1,64}$')]
+    kind: Literal['VIDEO', 'IMAGE']
+    uri: Annotated[StrictStr, Field(max_length=1024, pattern='^s3://[^\\s]+$')]
+    source: Literal['PHONE_UPLOAD', 'FILE_UPLOAD'] | MISSING = MISSING
+    captured_at_ms: DefsTimestampMs | MISSING = MISSING
+    device: Device | MISSING = MISSING
+    sha256: Annotated[StrictStr | MISSING, Field(pattern='^[0-9a-f]{64}$')] = MISSING
+    size_bytes: Annotated[StrictInt | MISSING, Field(ge=1, le=4294967296)] = MISSING
+
+
+class Alignment(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    baseline_center_residual_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    supplement_center_residual_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    baseline_fixed_reprojection_px: Annotated[
+        StrictFloat | None | MISSING, Field(ge=0.0)
+    ] = MISSING
+    supplement_fixed_reprojection_px: Annotated[
+        StrictFloat | None | MISSING, Field(ge=0.0)
+    ] = MISSING
+
+
+class MediaItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    media_id: Annotated[StrictStr, Field(pattern='^[A-Za-z0-9_-]{1,64}$')]
+    status: Literal['USED', 'DOWNLOAD_FAILED', 'UNREADABLE', 'NO_FRAMES', 'NOT_REGISTERED', 'WIDE_FOV_REJECTED']
+    frames_selected: Annotated[StrictInt, Field(ge=0)]
+    frames_registered: Annotated[StrictInt, Field(ge=0)]
+
+
+class SiteSetupSupplementSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    status: Literal['APPLIED', 'FALLBACK', 'SKIPPED']
+    reason: Literal['NO_USABLE_FRAMES', 'MEDIA_UNREADABLE', 'MEDIA_DOWNLOAD_FAILED', 'TOO_FEW_REGISTERED', 'ALIGNMENT_WORSE', 'FIXED_REPROJECTION_WORSE', 'RECONSTRUCTION_FAILED', 'BAKE_FAILED', 'PATH_UNSUPPORTED', 'SEGMENTER_MISSING', 'TIME_BUDGET'] | None
+    input_role: Literal['SETUP_SUPPLEMENT_CAPTURE']
+    media_count: Annotated[StrictInt, Field(ge=0)]
+    frames_selected: Annotated[StrictInt, Field(ge=0)]
+    frames_registered: Annotated[StrictInt, Field(ge=0)]
+    captured_from_ms: DefsTimestampMs | MISSING = MISSING
+    captured_to_ms: DefsTimestampMs | MISSING = MISSING
+    alignment: Alignment | MISSING = MISSING
+    media: Annotated[list[MediaItem] | MISSING, Field(max_length=32)] = MISSING
 
 
 class Image(BaseModel):
@@ -3843,6 +3906,25 @@ class SiteSetupArtifacts(BaseModel):
     floor_coverage: SiteSetupFloorCoverage | MISSING = MISSING
 
 
+class SiteSetupInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    work_unit_id: Annotated[StrictInt, Field(ge=1)]
+    site_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    camera_heights_m: Annotated[
+        dict[str, CameraHeightsMAdditionalProperty], Field(min_length=1)
+    ]
+    calibration_target: CalibrationTarget
+    height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
+    supplement_media: Annotated[
+        list[SiteSetupSupplementMediaItem] | MISSING, Field(max_length=32, min_length=1)
+    ] = MISSING
+    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
+    rebake_base: SiteSetupRebakeBase | MISSING = MISSING
+
+
 class Input(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -4619,6 +4701,8 @@ class SiteSetupProgress(BaseModel):
     object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
     metrics: SiteSetupMetrics | MISSING = MISSING
     artifacts: SiteSetupArtifacts | MISSING = MISSING
+    supplement: SiteSetupSupplementSummary | MISSING = MISSING
+    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
 
 
 class SiteSetupResult(BaseModel):
@@ -4647,6 +4731,8 @@ class SiteSetupResult(BaseModel):
     bake_skipped: Literal['LIVE_WORK_STARTED'] | MISSING = MISSING
     metrics: SiteSetupMetrics | MISSING = MISSING
     artifacts: SiteSetupArtifacts | MISSING = MISSING
+    supplement: SiteSetupSupplementSummary | MISSING = MISSING
+    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
 
 
 class TbmFormDraftRequest(BaseModel):

@@ -21,8 +21,8 @@ from .transport import (
     result_path,
 )
 
-SCHEMA_VERSION = "2.4.0"  # site_setup 홀드아웃 전후 지표(-492)
-CALLBACK_SCHEMA_VERSION = "2.11.0"  # site_setup 홀드아웃 전후 지표(-492)
+SCHEMA_VERSION = "2.9.0"  # site_setup 보조 촬영 요약·다시 굽기 mode(-605)
+CALLBACK_SCHEMA_VERSION = "2.17.0"  # site_setup 보조 촬영 요약·다시 굽기 mode(-605)
 JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({
