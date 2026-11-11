@@ -19,6 +19,9 @@
                 "decoder": "cpu", "max_queue_wait_ms": 150, "queue_depth": 1}   LIVE 와 같다
                file 입력은 판정 출처가 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(환경 변수가 있어도). 상태(저널·체크포인트·
                표시 파일)는 state_dir/replay/<실행 이름>/ 에 따로 둔다(LIVE 상태와 섞이지 않음). 구조는 docs/design/tier0-recording-replay.md
+               sim 입력은 합성 장면인데 판정 출처가 LIVE 다(로컬 e2e·G3 시험이 이 경로를 쓴다). 그래서 I1 주소와 제어 채널 듣는
+               주소가 루프백(127.0.0.0/8, ::1, localhost)일 때만 연다. 운영 .env 가 남아 EC2·노트북 경보로 나갈 주소면 시작하지
+               않는다(AGENTS 규칙 5, S15P31A101-599, docs/design/S15P31A101-599-sim-origin.md)
                모든 입력에 "roi_filter": {"enabled": true, "margin_m": 3.0, "min_people": 4} 를 둘 수 있다(활성 구역이 없거나 한 카메라 최대 인원이 min_people 미만이면 통과).
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
@@ -59,10 +62,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
 import time
+import urllib.parse
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -430,6 +435,37 @@ def _i1(env: Mapping[str, str]) -> I1Settings | None:
         raise Tier0ConfigError(f"I1: {e}") from None
 
 
+def _is_loopback(host: str | None) -> bool:
+    """루프백 주소(127.0.0.0/8, ::1) 또는 localhost 인가. 0.0.0.0·빈 값·다른 이름은 루프백이 아니다."""
+    if not host:
+        return False
+    host = host.strip().strip("[]").rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _sim_channels_local_only(i1: I1Settings | None, control: ControlSettings | None) -> None:
+    """SIM 입력은 판정 출처가 LIVE 라(로컬 시험) 실제 알림 채널로 새지 않게 I1·제어 채널을 루프백으로만 연다(AGENTS 규칙 5).
+
+    운영 .env(EC2 I1 주소, 제어 채널 기본 0.0.0.0)가 남은 채 SIM 을 띄우면 합성 이벤트가 노트북 현장 경보·EC2·워치로
+    LIVE 로 나간다. 그런 설정은 시작하지 않는다(S15P31A101-599).
+    """
+    problems = []
+    if i1 is not None and not _is_loopback(urllib.parse.urlsplit(i1.url).hostname):
+        problems.append("I1 주소(SIMAI_EC2_I1_URL·SIMAI_EC2_BASE_URL)")
+    if control is not None and not _is_loopback(control.host):
+        problems.append(f"제어 채널 듣는 주소(SIMAI_TIER0_CONTROL_LISTEN_HOST={control.host})")
+    if problems:
+        raise Tier0ConfigError(
+            "SIM 입력은 합성 이벤트를 LIVE 출처로 만들므로 I1·노트북 제어 채널을 루프백(127.0.0.1·::1·localhost)으로만 연다: "
+            + ", ".join(problems) + " 가 루프백이 아니다. 운영 .env 의 EC2·제어 채널 값을 빼거나 루프백 시험 상대를 쓴다"
+            " (AGENTS 규칙 5, docs/design/S15P31A101-599-sim-origin.md)")
+
+
 def _camera_ids(input_doc: Mapping[str, Any], default: list[str] | None) -> tuple[str, ...] | None:
     ids = input_doc.get("camera_ids", default)
     if ids is None:
@@ -577,6 +613,10 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     event_frames_enabled = doc.get("event_frames_enabled", True)
     if not isinstance(event_frames_enabled, bool):
         raise Tier0ConfigError("event_frames_enabled 는 bool이다")
+    i1 = None if file is not None else _i1({**env, "SIMAI_TIER0_ID": gateway_id})
+    control = None if file is not None else _control(env)
+    if sim is not None:
+        _sim_channels_local_only(i1, control)
     return Tier0Settings(
         gateway_id=gateway_id,
         state_dir=state_dir,
@@ -609,8 +649,8 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         gpu_reserve_mb=_int(gpu, "reserve_mb", 8192),
         gpu_device=_int(gpu, "device", 0),
         lag_budget_ms=_int(gpu, "lag_budget_ms", 600, minimum=1),
-        # file 입력(REPLAY)은 실제 알림 채널(I1·노트북 제어 채널)을 열지 않는다(AGENTS 규칙 5)
-        i1=None if file is not None else _i1({**env, "SIMAI_TIER0_ID": gateway_id}),
-        control=None if file is not None else _control(env),
+        # file 입력(REPLAY)은 실제 알림 채널(I1·노트북 제어 채널)을 열지 않는다(AGENTS 규칙 5). SIM 은 루프백만 연다(-599)
+        i1=i1,
+        control=control,
         env=env,
     )
