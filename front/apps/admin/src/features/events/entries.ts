@@ -1,4 +1,4 @@
-import { MAX_RESOLVED, SEVERITY_RANK } from '@/features/events/constants';
+import { ACK_HIDE_AFTER_MS, MAX_RESOLVED, SEVERITY_RANK } from '@/features/events/constants';
 import type {
   EventEscalation,
   EventItem,
@@ -367,3 +367,22 @@ export const needsCheck = (event: EventItem) =>
  */
 export const needsConfirmation = (event: EventItem) =>
   needsCheck(event) || event.verification === 'UNVERIFIABLE';
+
+/**
+ * 카드에 「확인 필요」를 보일지: 확인을 요청하는 이벤트(needsConfirmation)를 운영자가 아직 확인하지 않았을 때만이다.
+ * 확인한 뒤에는 처리 칩이 확인 시각을 알리므로 되풀이하지 않는다(이유 글은 사건 상세에 남는다).
+ */
+export const isConfirmationPending = (entry: EventEntry) =>
+  needsConfirmation(entry.event) && acknowledgedAt(entry) === null;
+
+/**
+ * 운영자가 확인한 지 ACK_HIDE_AFTER_MS 가 지난 이벤트를 뺀다(nowMs 는 확인 시각과 같은 EC2 시계).
+ * 지금 경보 단계에서 확인하지 않은 이벤트는 오래돼도 남고, 뺄 것이 없으면 받은 배열을 그대로 돌려준다.
+ */
+export function withoutStaleAcked(entries: EventEntry[], nowMs: number): EventEntry[] {
+  const shown = entries.filter((entry) => {
+    const ackedAt = acknowledgedAt(entry);
+    return ackedAt === null || nowMs - ackedAt < ACK_HIDE_AFTER_MS;
+  });
+  return shown.length === entries.length ? entries : shown;
+}

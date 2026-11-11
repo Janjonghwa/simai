@@ -27,6 +27,9 @@ export const RESOLVED_PER_INCIDENT = 2;
 /** 이벤트 패널의 「최근 해소」 칸에 남기는 해소된 묶음(사람·규칙·구역별) 수. */
 export const RECENT_RESOLVED_INCIDENTS = 4;
 
+/** 운영자가 확인한 지 이만큼(ms) 지난 이벤트는 이벤트 패널에서 숨긴다. 확인하지 않은 이벤트는 오래돼도 남는다. */
+export const ACK_HIDE_AFTER_MS = 24 * 60 * 60 * 1000;
+
 /** 관제 화면이 ACK 를 보낼 때 쓰는 확인 경로(계약 event_ack 의 channel). */
 export const CONTROL_ROOM_CHANNEL = 'CONTROL_ROOM';
 
@@ -134,3 +137,6 @@ export const CONFIDENCE_REASON: Record<string, string> = {
 
 /** 경과 시간이 바뀌는 간격(ms). 초 단위로 보이므로 1초다. */
 export const ELAPSED_TICK_MS = 1000;
+
+/** 1분(ms). 분 단위로만 다시 따지는 판단이 쓴다. */
+export const MINUTE_MS = 60 * 1000;

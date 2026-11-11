@@ -1,4 +1,5 @@
 import { clamp, FLOAT_MARGIN, type FloatBounds, type FloatBox } from '@/lib/floatSpot';
+import type { CSSProperties } from 'react';
 
 // 떠 있는 이벤트 패널을 끌어 옮기고 크기를 바꾸는 계산(관제 데모와 같다). 화면 컴포넌트 없이 시험한다.
 // 패널 자리와 부모 크기는 CCTV 창과 같은 타입(FloatBox·FloatBounds)이고, 가장자리 틈도 같이 쓴다.
@@ -43,13 +44,31 @@ export function resizePanel(
   return { left: right - width, top: start.top, width, height };
 }
 
-/** 기본 자리(오른쪽 위에서 화면 아래까지)의 패널 상자. */
+/** 펼친 패널의 기본 높이는 화면(부모) 높이의 이 비율(%)이다: 카드 두 장이 스크롤 없이 보이고, 아래에 CCTV 창 자리가 남는다. */
+export const PANEL_DEFAULT_HEIGHT_PERCENT = 46;
+/** 작은 화면에서도 머리줄과 카드 두 장(제목이 두 줄로 접혀도)이 들어가는 기본 높이의 최솟값(px). */
+export const PANEL_DEFAULT_MIN_HEIGHT = 380;
+
+/** 기본 자리 패널의 높이: 비율과 최솟값 중 큰 쪽, 단 위쪽 틈·아래쪽 틈 안에서. */
+export function defaultPanelHeight(bounds: FloatBounds): number {
+  const room = bounds.height - PANEL_TOP - PANEL_GAP;
+  const wanted = Math.round((bounds.height * PANEL_DEFAULT_HEIGHT_PERCENT) / 100);
+  return Math.min(room, Math.max(PANEL_DEFAULT_MIN_HEIGHT, wanted));
+}
+
+/** `defaultPanelHeight` 와 같은 높이를 CSS 로: 옮기지 않은 패널이 첫 그림부터 이 높이로 선다. */
+export const PANEL_DEFAULT_STYLE: CSSProperties = {
+  height: `max(${PANEL_DEFAULT_MIN_HEIGHT}px, ${PANEL_DEFAULT_HEIGHT_PERCENT}%)`,
+  maxHeight: `calc(100% - ${PANEL_TOP + PANEL_GAP}px)`,
+};
+
+/** 기본 자리(오른쪽 위, 기본 높이)의 패널 상자. */
 export function defaultPanelBox(bounds: FloatBounds, width: number): FloatBox {
   return {
     left: bounds.width - PANEL_GAP - width,
     top: PANEL_TOP,
     width,
-    height: bounds.height - PANEL_TOP - PANEL_GAP,
+    height: defaultPanelHeight(bounds),
   };
 }
 

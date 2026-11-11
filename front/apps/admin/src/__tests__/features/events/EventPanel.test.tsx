@@ -1,6 +1,7 @@
 import { EventDetail } from '@/features/events/EventDetail';
 import { EventPanel } from '@/features/events/EventPanel';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
+import { PANEL_DEFAULT_STYLE } from '@/features/events/panelBox';
 import type { EventItem } from '@/features/events/types';
 import { BUNDLES_KEY, ZONES_KEY } from '@/features/zones/api';
 import { MOCK_ZONES } from '@/mocks/zones';
@@ -160,7 +161,7 @@ describe('EventPanel 접기', () => {
     renderPanel([entry()]);
     const card = screen.getByRole('article', { name: 'w-0015 이벤트' });
     expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
-    expect(card.textContent).toMatch(/초 전|분/);
+    expect(card.textContent).toMatch(/\d+(초|분|시간|일)( \d+(초|분|시간))? 전/);
   });
 });
 
@@ -345,7 +346,7 @@ describe('EventPanel 지난 관제 칸', () => {
 });
 
 describe('EventPanel 떠 있는 CCTV 창 비켜 서기', () => {
-  // jsdom 은 배치를 하지 않는다. 관제 장면(1440×900)과 패널 폭(340)을 심으면 기본 자리는 left 1086, top 72, 아래 끝 886 이다.
+  // jsdom 은 배치를 하지 않는다. 관제 장면(1440×900)과 패널 폭(340)을 심으면 기본 자리는 left 1086, top 72, 높이 414(화면의 46%), 아래 끝 486 이다.
   const scene = document.createElement('div');
   Object.defineProperties(scene, {
     clientWidth: { get: () => 1440 },
@@ -372,19 +373,27 @@ describe('EventPanel 떠 있는 CCTV 창 비켜 서기', () => {
 
   it('창이 패널 아래쪽을 가리면 패널 아래 끝이 창 위로 올라가고, 창을 치우면 다시 길어진다', () => {
     renderPanel([entry()]);
-    expect(panel().style.height).toBe('');
+    expect(panel().style.top).toBe('');
 
+    cctvAt(1000, 300);
+    expect(placed()).toEqual({ left: '1086px', top: '72px', height: '214px' });
+
+    cctvAt(96, 300);
+    expect(panel().style.top).toBe('');
+  });
+
+  it('기본 높이(화면의 46%) 아래에 둔 창은 패널이 비켜 설 필요가 없다', () => {
+    renderPanel([entry()]);
+    // 패널 아래 끝은 486 이라 그 아래(500)에 선 창과 겹치지 않는다. 전에는 바닥까지 길어서 패널이 올라갔다.
     cctvAt(1000, 500);
-    expect(placed()).toEqual({ left: '1086px', top: '72px', height: '414px' });
-
-    cctvAt(96, 500);
-    expect(panel().style.height).toBe('');
+    expect(panel().style.top).toBe('');
+    expect(panel().style.left).toBe('');
   });
 
   it('창이 패널 위쪽을 가리면 패널이 창 아래에서 시작하고, 창이 닫히면 제자리다', () => {
     renderPanel([entry()]);
-    cctvAt(1000, 80, 480, 300);
-    expect(placed()).toEqual({ left: '1086px', top: '394px', height: '492px' });
+    cctvAt(1000, 80, 480, 200);
+    expect(placed()).toEqual({ left: '1086px', top: '294px', height: '192px' });
 
     act(() => useCctvFloatBoxStore.setState({ box: null }));
     expect(panel().style.top).toBe('');
@@ -392,10 +401,25 @@ describe('EventPanel 떠 있는 CCTV 창 비켜 서기', () => {
 
   it('접은 패널은 비켜 서지 않는다', () => {
     renderPanel([entry()]);
-    cctvAt(1000, 500);
+    cctvAt(1000, 300);
     fireEvent.click(fold());
     expect(panel().style.height).toBe('');
     expect(panel().style.top).toBe('');
+  });
+});
+
+describe('EventPanel 기본 높이', () => {
+  const panel = () => screen.getByRole('complementary', { name: '이벤트' });
+
+  it('옮기지 않은 펼친 패널은 화면 높이의 46%(최소 380px)이고, 접으면 머리줄 높이다', () => {
+    renderPanel([entry()]);
+    // 바닥까지 늘이던 bottom 은 더 쓰지 않고 높이를 비율로 준다.
+    expect(panel().className).not.toContain('bottom-');
+    expect(panel().style.height).toBe(PANEL_DEFAULT_STYLE.height);
+    expect(panel().style.maxHeight).toBe(PANEL_DEFAULT_STYLE.maxHeight);
+
+    fireEvent.click(screen.getByRole('button', { name: '이벤트 접기' }));
+    expect(panel().style.height).toBe('');
   });
 });
 

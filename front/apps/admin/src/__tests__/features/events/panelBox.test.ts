@@ -1,8 +1,11 @@
 import {
   avoidBox,
   defaultPanelBox,
+  defaultPanelHeight,
   fitPanel,
   movePanel,
+  PANEL_DEFAULT_MIN_HEIGHT,
+  PANEL_DEFAULT_STYLE,
   PANEL_GAP,
   PANEL_MAX_WIDTH,
   PANEL_MIN_HEIGHT,
@@ -81,8 +84,41 @@ describe('fitPanel', () => {
 });
 
 describe('defaultPanelBox', () => {
-  it('오른쪽 위(위 72, 오른쪽 14)에서 화면 아래 14 까지다', () => {
-    expect(defaultPanelBox(bounds, 340)).toEqual(start);
+  it('오른쪽 위(위 72, 오른쪽 14)에서 화면 높이의 46%까지다(작은 화면은 최솟값)', () => {
+    expect(defaultPanelBox({ width: 1920, height: 1012 }, 340)).toEqual({
+      left: 1920 - 14 - 340,
+      top: 72,
+      width: 340,
+      height: 466,
+    });
+    expect(defaultPanelBox(bounds, 340)).toEqual({
+      left: 1280 - 14 - 340,
+      top: 72,
+      width: 340,
+      height: PANEL_DEFAULT_MIN_HEIGHT,
+    });
+  });
+});
+
+describe('defaultPanelHeight', () => {
+  it('화면 높이의 46% 이다', () => {
+    expect(defaultPanelHeight({ width: 1920, height: 1012 })).toBe(466);
+    expect(defaultPanelHeight({ width: 1920, height: 1080 })).toBe(497);
+  });
+
+  it('작은 화면에서도 카드 두 장이 들어가는 최솟값 아래로 내려가지 않는다', () => {
+    expect(defaultPanelHeight({ width: 1280, height: 600 })).toBe(PANEL_DEFAULT_MIN_HEIGHT);
+  });
+
+  it('최솟값이 위·아래 틈을 넘으면 틈 안에 맞춘다', () => {
+    expect(defaultPanelHeight({ width: 800, height: 400 })).toBe(400 - PANEL_TOP - PANEL_GAP);
+  });
+
+  it('옮기지 않은 패널의 CSS 높이도 같은 비율과 최솟값, 위·아래 틈이다', () => {
+    expect(PANEL_DEFAULT_STYLE).toEqual({
+      height: `max(${PANEL_DEFAULT_MIN_HEIGHT}px, 46%)`,
+      maxHeight: `calc(100% - ${PANEL_TOP + PANEL_GAP}px)`,
+    });
   });
 });
 

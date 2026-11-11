@@ -4,9 +4,8 @@ import { CameraButton } from '@/features/events/CameraButton';
 import { SEVERITY_RANK } from '@/features/events/constants';
 import { isAlarming, type EventEntry } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
-import { entryEtaLine, eventRuleName, eventSubject } from '@/features/events/format';
+import { entryEtaLine, eventRuleName, eventShortSubject } from '@/features/events/format';
 import { incidentTarget } from '@/features/events/incidents';
-import { targetFont } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
@@ -33,7 +32,9 @@ function AlarmHeadline({ event, zoneName }: { event: EventItem; zoneName: ZoneNa
   return (
     <span role="alert" className="min-w-0 truncate font-medium">
       <span>{eventRuleName(event)}</span> ·{' '}
-      <span className={targetFont(target)}>{eventSubject(event, zoneName)}</span>
+      <span title={target?.type === 'person' ? target.id : undefined}>
+        {eventShortSubject(event, zoneName)}
+      </span>
       {target?.type === 'person' && zone && (
         <>
           {' '}

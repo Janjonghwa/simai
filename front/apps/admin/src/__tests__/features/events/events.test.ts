@@ -1,3 +1,4 @@
+import { ACK_HIDE_AFTER_MS } from '@/features/events/constants';
 import {
   acknowledgedAt,
   bestCamera,
@@ -9,6 +10,7 @@ import {
   entryEtaLine,
   eventRuleName,
   eventSections,
+  eventShortSubject,
   eventSubject,
   firstActiveRaisedAt,
   firstRaisedAt,
@@ -16,14 +18,18 @@ import {
   incidentOf,
   incidentTimeline,
   isAlarming,
+  isConfirmationPending,
   isCurrent,
   isStale,
   mergeEvent,
   metricLabels,
   needsConfirmation,
+  shortPersonId,
   targetFont,
   targetLabel,
+  targetShortLabel,
   upsertEvents,
+  withoutStaleAcked,
   type EventEntry,
 } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
@@ -284,6 +290,100 @@ describe('eventSections', () => {
   });
 });
 
+describe('사람 ID 줄이기', () => {
+  it('끝번호만 남기고, 구분이 없거나 끝이 비면 그대로 둔다', () => {
+    expect(shortPersonId('w-mw8y3hai-0722')).toBe('0722');
+    expect(shortPersonId('w-0012')).toBe('0012');
+    expect(shortPersonId('0012')).toBe('0012');
+    expect(shortPersonId('w-')).toBe('w-');
+  });
+
+  it('이벤트 대상은 사람이면 끝번호, 사람이 없으면 구역 이름 그대로다', () => {
+    expect(eventShortSubject(item({ world_ids: ['w-mw8y3hai-0722'] }), zoneName)).toBe('0722');
+    expect(eventShortSubject(item({ world_ids: [], zone_id: 'z-04' }), zoneName)).toBe(
+      '개구부 구역',
+    );
+    // 전체 문구(eventSubject)는 그대로다.
+    expect(eventSubject(item({ world_ids: ['w-mw8y3hai-0722'] }), zoneName)).toBe(
+      'w-mw8y3hai-0722',
+    );
+  });
+
+  it('묶음 대상은 사람이면 끝번호이고 targetLabel 은 전체 ID 그대로다', () => {
+    const person = groupIncidents([entry({ world_ids: ['w-mw8y3hai-0722'] })])[0]!.target;
+    expect(targetShortLabel(person, zoneName)).toBe('0722');
+    expect(targetLabel(person, zoneName)).toBe('w-mw8y3hai-0722');
+    const zone = groupIncidents([entry({ world_ids: [], zone_id: 'z-04' })])[0]!.target;
+    expect(targetShortLabel(zone, zoneName)).toBe('개구부 구역');
+    expect(targetShortLabel(null, zoneName)).toBe('대상 없음');
+  });
+});
+
+describe('확인 필요와 오래된 확인', () => {
+  const needsCheck = { verification: 'UNVERIFIABLE', needs_check: true } as const;
+  const HOUR = 3_600_000;
+
+  it('확인 필요는 운영자가 확인하기 전에만 이어진다', () => {
+    expect(isConfirmationPending(entry(needsCheck))).toBe(true);
+    expect(isConfirmationPending(entry({ ...needsCheck, acks: [ack(T + 10)] }))).toBe(false);
+    // 확인을 요청하지 않는 이벤트는 확인 전에도 아니다.
+    expect(isConfirmationPending(entry())).toBe(false);
+    // 확인한 뒤 등급이 올라 새 경보 단계가 열리면 다시 확인 필요다.
+    const acked = entry({ ...needsCheck, severity: 'HIGH', acks: [ack(T + 2)] });
+    const raised = mergeEvent(
+      acked,
+      item({
+        ...needsCheck,
+        event_sequence: 2,
+        severity: 'CRITICAL',
+        updated_at: T + 5,
+        acks: [ack(T + 2)],
+      }),
+    );
+    expect(isConfirmationPending(raised)).toBe(true);
+  });
+
+  it('확인한 지 24시간이 지난 이벤트만 뺀다', () => {
+    const old = entry({ event_id: 'old', acks: [ack(T)], updated_at: T });
+    const edge = entry({ event_id: 'edge', acks: [ack(T + 1)], updated_at: T + 1 });
+    const recent = entry({
+      event_id: 'recent',
+      acks: [ack(T + 2 * HOUR)],
+      updated_at: T + 2 * HOUR,
+    });
+    const unacked = entry({ event_id: 'unacked' });
+    const now = T + ACK_HIDE_AFTER_MS;
+
+    const shown = withoutStaleAcked([old, edge, recent, unacked], now);
+    // 정확히 24시간(old)은 뺀다. 1ms 모자란 것(edge)과 확인하지 않은 오래된 이벤트는 남는다.
+    expect(shown.map((e) => e.event.event_id)).toEqual(['edge', 'recent', 'unacked']);
+  });
+
+  it('뺄 것이 없으면 받은 배열을 그대로 돌려준다', () => {
+    const entries = [
+      entry({ event_id: 'a', acks: [ack(T)], updated_at: T }),
+      entry({ event_id: 'b' }),
+    ];
+    expect(withoutStaleAcked(entries, T + 60_000)).toBe(entries);
+    expect(withoutStaleAcked([], T + 2 * ACK_HIDE_AFTER_MS)).toEqual([]);
+  });
+
+  it('확인한 뒤 새 경보 단계가 열린 이벤트는 이전 확인이 24시간 지나도 남는다', () => {
+    const acked = entry({ severity: 'HIGH', acks: [ack(T)] });
+    const raised = mergeEvent(
+      acked,
+      item({
+        event_sequence: 2,
+        severity: 'CRITICAL',
+        updated_at: T + 5,
+        raised_at: T,
+        acks: [ack(T)],
+      }),
+    );
+    expect(withoutStaleAcked([raised], T + 2 * ACK_HIDE_AFTER_MS)).toEqual([raised]);
+  });
+});
+
 describe('표시 값', () => {
   it('규칙 이름은 R1 주의만 위험 구역 근접이고 나머지는 규칙 이름 그대로다', () => {
     const name = (rule_id: string, severity: EventItem['severity']) =>
@@ -378,11 +478,18 @@ describe('카드 표시 계산', () => {
   const incidentOfEntries = (...entries: EventEntry[]) => groupIncidents(entries)[0]!;
   const HH = /^확인 \d{2}:\d{2}:\d{2}$/;
 
-  it('경과는 초, 1분 넘으면 분과 초로 쓰고 음수는 0초다', () => {
+  it('경과는 초, 1분부터 분과 초, 1시간부터 시간과 분, 하루부터 일과 시간으로 쓰고 음수는 0초다', () => {
     expect(elapsedLabel(0)).toBe('0초');
     expect(elapsedLabel(12_900)).toBe('12초');
     expect(elapsedLabel(60_000)).toBe('1분');
     expect(elapsedLabel(200_000)).toBe('3분 20초');
+    expect(elapsedLabel(3_599_000)).toBe('59분 59초');
+    expect(elapsedLabel(3_600_000)).toBe('1시간');
+    expect(elapsedLabel(7_500_000)).toBe('2시간 5분');
+    expect(elapsedLabel(86_399_000)).toBe('23시간 59분');
+    expect(elapsedLabel(86_400_000)).toBe('1일');
+    // 캡처의 「2386분 53초 전」(약 40시간).
+    expect(elapsedLabel((2386 * 60 + 53) * 1000)).toBe('1일 15시간');
     expect(elapsedLabel(-5_000)).toBe('0초');
     expect(ec2Now(T, 250)).toBe(T + 250);
     expect(ec2Now(T, undefined)).toBe(T);

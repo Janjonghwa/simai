@@ -32,6 +32,15 @@ export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
 export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>
   event.world_ids[0] ?? (event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '');
 
+/** 사람 World ID 의 끝번호: `w-mw8y3hai-0722` → `0722`. 구분(`-`)이 없거나 끝이 비면 ID 그대로. */
+export const shortPersonId = (id: string) => id.slice(id.lastIndexOf('-') + 1) || id;
+
+/** 이벤트 대상 문구의 짧은 모양(카드·배너): 사람은 끝번호, 사람이 없으면 `eventSubject` 와 같은 구역 이름. */
+export const eventShortSubject = (event: EventItem, zoneName: ZoneNameOf) => {
+  const person = event.world_ids[0];
+  return person === undefined ? eventSubject(event, zoneName) : shortPersonId(person);
+};
+
 /** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9·R11) "해소" 대신 해소 원인을 보인다. */
 export function statusText(status: EntryStatus, release: PpeRelease | null = null) {
   switch (status.kind) {
@@ -78,12 +87,30 @@ export const confirmationText = (event: EventItem) => {
   return reason ? `확인 필요 · ${reason}` : '확인 필요';
 };
 
-/** 발생 뒤 경과(ms)를 "12초" · "3분 20초" 로. 시계가 어긋나 음수면 0초. */
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
+const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
+
+/** 큰 단위와 그 아래 단위를 함께: 아래 단위가 0 이면 큰 단위만 적는다. */
+const twoUnits = (big: number, bigUnit: string, small: number, smallUnit: string) =>
+  `${big}${bigUnit}${small ? ` ${small}${smallUnit}` : ''}`;
+
+/**
+ * 발생 뒤 경과(ms)를 "12초" · "3분 20초" · "2시간 5분"(1시간부터) · "1일 16시간"(하루부터)로.
+ * 시계가 어긋나 음수면 0초.
+ */
 export function elapsedLabel(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}초`;
-  const rest = s % 60;
-  return `${Math.floor(s / 60)}분${rest ? ` ${rest}초` : ''}`;
+  if (s < SECONDS_PER_MINUTE) return `${s}초`;
+  if (s < SECONDS_PER_HOUR) {
+    return twoUnits(Math.floor(s / SECONDS_PER_MINUTE), '분', s % SECONDS_PER_MINUTE, '초');
+  }
+  if (s < SECONDS_PER_DAY) {
+    const minutes = Math.floor((s % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+    return twoUnits(Math.floor(s / SECONDS_PER_HOUR), '시간', minutes, '분');
+  }
+  const hours = Math.floor((s % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
+  return twoUnits(Math.floor(s / SECONDS_PER_DAY), '일', hours, '시간');
 }
 
 /** EC2 시계 기준 지금(ms). 이 브라우저 시계에 EC2 와의 차이(health 의 clockOffsetMs)를 더한다. */

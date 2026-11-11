@@ -7,7 +7,7 @@ import {
   type EventSections,
   type Incident,
 } from '@/features/events/incidents';
-import { movePanel, PANEL_GAP, PANEL_TOP } from '@/features/events/panelBox';
+import { defaultPanelHeight, movePanel, PANEL_DEFAULT_STYLE } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
 import type { EventItem } from '@/features/events/types';
 import { useAutoFold } from '@/features/events/useAutoFold';
@@ -20,9 +20,12 @@ import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
-/** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다). 폭은 --event-panel-width 이고, 상단 알림·2D 창이 오른쪽에서 비키는 간격(--event-panel-inset)이 이 폭에 맞춰 정해진다(index.css). */
+/**
+ * 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다). 높이는 PANEL_DEFAULT_STYLE(펼치면 화면의 46%, 접으면 머리줄만큼)이다.
+ * 폭은 --event-panel-width 이고, 상단 알림·2D 창이 오른쪽에서 비키는 간격(--event-panel-inset)이 이 폭에 맞춰 정해진다(index.css).
+ */
 const PANEL_CLASS =
-  'absolute top-[72px] right-3.5 bottom-3.5 z-[6] flex w-(--event-panel-width) flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
+  'absolute top-[72px] right-3.5 z-[6] flex w-(--event-panel-width) flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 
@@ -238,7 +241,7 @@ export function EventPanel({
   const startOf = (): Measured => {
     const now = measure(panel.current);
     if (!now || !folded) return now;
-    const height = box?.height ?? now.bounds.height - PANEL_TOP - PANEL_GAP;
+    const height = box?.height ?? defaultPanelHeight(now.bounds);
     return { ...now, box: { ...now.box, height } };
   };
   const move = usePanelDrag(startOf, (start, dx, dy, bounds) =>
@@ -250,8 +253,8 @@ export function EventPanel({
       <aside
         ref={panel}
         aria-label="이벤트"
-        style={shown ? boxStyle(shown, folded) : undefined}
-        className={cn(PANEL_CLASS, folded && 'bottom-auto')}
+        style={shown ? boxStyle(shown, folded) : folded ? undefined : PANEL_DEFAULT_STYLE}
+        className={PANEL_CLASS}
       >
         <div
           data-testid="event-panel-head"

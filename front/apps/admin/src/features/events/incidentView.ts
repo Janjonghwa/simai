@@ -7,7 +7,7 @@ import {
   isAlarmSeverity,
   isAlarming,
 } from '@/features/events/entries';
-import { eventRuleName, formatTime } from '@/features/events/format';
+import { eventRuleName, formatTime, shortPersonId } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { PPE_RELEASE_LABEL, ppeReleaseOf } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
@@ -24,12 +24,16 @@ export const targetLabel = (target: Incident['target'], zoneName: ZoneNameOf) =>
       ? target.id
       : zoneNameOrDefault(target.id, zoneName);
 
-/** 대상 글꼴: 사람 ID 만 고정폭이고 구역 이름은 본문 글꼴이다. */
+/** 카드·배너의 짧은 대상 문구: 사람은 끝번호(전체 ID 는 사건 상세·툴팁), 구역은 이름 그대로. */
+export const targetShortLabel = (target: Incident['target'], zoneName: ZoneNameOf) =>
+  target?.type === 'person' ? shortPersonId(target.id) : targetLabel(target, zoneName);
+
+/** 대상 글꼴: 사람 ID 만 고정폭이고 구역 이름은 본문 글꼴이다. 사건 상세의 전체 ID 가 쓴다. */
 export const targetFont = (target: Incident['target']) =>
   target?.type === 'person' ? 'font-mono' : undefined;
 
 /**
- * 카드 제목: 대표 규칙 이름 · 구역 이름. 대상이 구역이면 칩에 그 구역이 있어 제목에서는 되풀이하지 않는다.
+ * 카드 제목: 대표 규칙 이름 · 구역 이름. 대상이 구역이면 카드 둘째 줄에 그 구역이 있어 제목에서는 되풀이하지 않는다.
  * 이름을 모르는 구역은 뺀다.
  */
 export function cardTitle(incident: Incident, zoneName: ZoneNameOf): string {
