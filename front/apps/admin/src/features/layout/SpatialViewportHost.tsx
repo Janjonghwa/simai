@@ -1,6 +1,6 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
-import { CctvFloat, saveCctvFloatCamera, type CctvCameraRequest } from '@/features/cctv/CctvFloat';
+import { CctvFloat, type CctvCameraRequest } from '@/features/cctv/CctvFloat';
 import {
   MONITOR_LAYERS,
   PLAN_FALLBACK_MS,
@@ -132,7 +132,6 @@ export function SpatialViewportHost({
     (cameraId: string) => {
       if (!eventPanel || editing) return;
       if (useCamSplitStore.getState().split) useCamSplitStore.getState().close();
-      saveCctvFloatCamera(cameraId);
       setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
       setCctvOpen(true);
       // 3D 시점도 그 카메라 자리로 옮긴다. 맞아 있는 동안 뷰어가 VDT 를 켠다(사진이 없으면 시점만 옮긴다).
@@ -207,21 +206,6 @@ export function SpatialViewportHost({
           // scene 은 { ok, raw } 라 버전은 raw 에서 읽는다(전에는 scene 에서 읽어 늘 null 이었다, -592).
           currentSceneVersion={readSceneVersion(scene?.ok ? scene.raw : null)}
           currentScene={scene?.ok ? scene.raw : undefined}
-          onToggleCctv={
-            eventPanel && !editing
-              ? () => {
-                  if (split) {
-                    useCamSplitStore.getState().close();
-                    setCctvOpen(true);
-                  } else if (cctvOpen) {
-                    closeCctv();
-                  } else {
-                    setCctvOpen(true);
-                  }
-                }
-              : undefined
-          }
-          cctvOpen={cctvOpen && !split && !editing}
         />
         {children}
         {showEventPanel && view === '3d' && (

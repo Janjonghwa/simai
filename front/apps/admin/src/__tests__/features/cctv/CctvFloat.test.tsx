@@ -32,20 +32,26 @@ afterEach(() => {
 });
 
 describe('떠 있는 CCTV', () => {
-  it('카메라와 4분할을 바꾸고 닫았다 열어도 선택을 기억한다', () => {
+  it('도구 줄 없이 카메라 하나만 보이고 닫으면 연결을 정리한다', () => {
     const close = vi.fn();
     const view = render(<CctvFloat selectedKey={null} onClose={close} />);
-    fireEvent.click(screen.getByRole('button', { name: 'cam_B' }));
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '4분할' }));
+    // 요청이 없으면 중계 목록의 첫 카메라 하나만 보인다. 4분할·카메라 버튼 줄은 없다.
     expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
+    for (const name of ['4분할', 'cam_A', 'cam_B']) {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    }
     fireEvent.click(screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }));
     expect(close).toHaveBeenCalledOnce();
     view.unmount();
     expect(stopped).toHaveBeenCalledOnce();
-    render(<CctvFloat selectedKey={null} onClose={close} />);
-    expect(screen.getByRole('button', { name: '4분할' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('예전에 저장한 카메라·4분할 값은 쓰지 않는다', () => {
+    localStorage.setItem('simai.cctv.float', JSON.stringify({ camera: 'cam_B', all: true }));
+    render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
   });
 
   it('저장한 위치와 크기를 복원하고 접으면 연결을 정리한다', () => {
@@ -73,6 +79,32 @@ describe('떠 있는 CCTV', () => {
     });
     render(<CctvFloat selectedKey="person:p1" onClose={vi.fn()} />);
     expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+  });
+
+  it('사람을 고른 채 카메라 마커로 열면 마커의 카메라를 보이고, 그 뒤 사람 선택이 바뀌면 그 사람의 카메라로 바뀐다', () => {
+    useRealtimeStore.setState({
+      world: {
+        payload: {
+          tracks: [
+            { world_id: 'p1', cameras: ['cam_B'] },
+            { world_id: 'p2', cameras: ['cam_B'] },
+          ],
+        } as never,
+        receivedAt: Date.now(),
+      },
+    });
+    const request = { cameraId: 'cam_A', seq: 1 };
+    const view = render(
+      <CctvFloat selectedKey="person:p1" requestedCamera={request} onClose={vi.fn()} />,
+    );
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
+
+    view.rerender(
+      <CctvFloat selectedKey="person:p2" requestedCamera={request} onClose={vi.fn()} />,
+    );
+    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_A 영상')).toBeNull();
   });
 
   it('연 창의 자리를 이벤트 패널에 알리고, 창이 내려가면 비운다', () => {
@@ -103,7 +135,7 @@ describe('떠 있는 CCTV', () => {
     }
   });
 
-  it('3D 카메라 마커 클릭 요청(requestedCamera)으로 열리거나 이미 열린 창의 카메라를 바꾸고 4분할 버튼도 유지한다', () => {
+  it('3D 카메라 마커 클릭 요청(requestedCamera)으로 열리거나 이미 열린 창의 카메라를 바꾼다', () => {
     const view = render(
       <CctvFloat
         selectedKey={null}
@@ -114,11 +146,7 @@ describe('떠 있는 CCTV', () => {
     expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
     expect(screen.queryByLabelText('cam_A 영상')).toBeNull();
 
-    // 4분할로 전환했다가 다시 카메라 마커 클릭 요청이 오면 해당 카메라 단일 보기로 전환한다
-    fireEvent.click(screen.getByRole('button', { name: '4분할' }));
-    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
-
+    // 이미 열린 창에 다른 카메라 마커 클릭 요청이 오면 그 카메라 하나로 바뀐다
     view.rerender(
       <CctvFloat
         selectedKey={null}
