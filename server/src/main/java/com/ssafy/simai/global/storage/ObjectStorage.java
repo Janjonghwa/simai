@@ -92,17 +92,21 @@ public class ObjectStorage implements AutoCloseable {
         return "s3://" + properties.bucket() + "/" + key;
     }
 
-    /** sha256 은 16진수 64자. 저장소는 Base64 로 받는다 */
+    /**
+     * sha256 은 16진수 64자. 저장소는 Base64 로 받는다. null 이면 해시를 묶지 않고 형식·크기만 묶는다
+     * (휴대폰이 큰 동영상의 해시를 미리 계산하지 못하는 세팅 보강 촬영 업로드, S15P31A101-607).
+     */
     public SignedRequest signPut(String key, String contentType, long sizeBytes, String sha256Hex) {
         requireConfigured();
-        String checksum = Base64.getEncoder().encodeToString(HexFormat.of().parseHex(sha256Hex));
-        PutObjectRequest put = PutObjectRequest.builder()
+        PutObjectRequest.Builder builder = PutObjectRequest.builder()
                 .bucket(properties.bucket())
                 .key(key)
                 .contentType(contentType)
-                .contentLength(sizeBytes)
-                .checksumSHA256(checksum)
-                .build();
+                .contentLength(sizeBytes);
+        if (sha256Hex != null) {
+            builder.checksumSHA256(Base64.getEncoder().encodeToString(HexFormat.of().parseHex(sha256Hex)));
+        }
+        PutObjectRequest put = builder.build();
         return sign(() -> presigner.presignPutObject(PutObjectPresignRequest.builder()
                 .signatureDuration(properties.uploadTtl())
                 .putObjectRequest(put)

@@ -14,6 +14,7 @@ import {
 } from '@/features/setup/api';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
 import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
+import { rebakeRunning } from '@/features/setup/supplement';
 import type {
   CreateSetupSessionBody,
   RetrySetupSessionBody,
@@ -84,6 +85,8 @@ export function useCreateSetupSession(onCreated?: (session: SetupSessionResponse
 
 function isTerminalSession(session: SetupSessionResponse | undefined): boolean {
   if (!session) return false;
+  // 끝난 세션이어도 맵 다시 굽기(S15P31A101-607)가 진행 중이면 계속 조회한다
+  if (rebakeRunning(session)) return false;
   const stage = session.stage ?? session.status;
   return (
     session.status === 'COMPLETED' ||

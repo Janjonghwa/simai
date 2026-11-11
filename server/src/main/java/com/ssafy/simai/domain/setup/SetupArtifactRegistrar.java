@@ -182,6 +182,17 @@ class SetupArtifactRegistrar {
                 """, params);
     }
 
+    /**
+     * 맵 보강 다시 굽기(SUPPLEMENT_REBAKE, S15P31A101-607) APPLIED 결과의 새 GLB 를 정식 Scene 처럼 이 세션 귀속 SCENE 후보로 등록한다.
+     * 객체 키·크기·저장소 체크섬 대조는 정식 Scene 과 같다(이 다시 굽기 작업·대여 경로만). 출처 표시에 보조 촬영 입력과 기준 맵을 남긴다.
+     */
+    void registerRebakeScene(Target target, JsonNode sceneRef, String sceneVersion, String calibrationVersion,
+            String baseSceneVersion) {
+        String notes = "scene_tier=FULL; safety_use=false; source=site_setup; mode=SUPPLEMENT_REBAKE"
+                + "; input_role=SETUP_SUPPLEMENT_CAPTURE; rebake_base_scene=" + baseSceneVersion;
+        registerScene(target, ObjectRef.of(sceneRef), SCENE, required(sceneVersion), required(calibrationVersion), notes);
+    }
+
     /** 이 세션이 artifacts 로 등록한 보정인지 */
     boolean registeredBySession(UUID setupSessionId, String kind, String version) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
