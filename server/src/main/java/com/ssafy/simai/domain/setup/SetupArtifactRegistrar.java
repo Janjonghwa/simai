@@ -43,6 +43,8 @@ import tools.jackson.databind.ObjectMapper;
  *   <li>굽기 입력 사진({@code bake_images}, site_setup 1.6.0, S15P31A101-593)은 이 대여의 미리보기·정식 GLB 를 구운 카메라별 사람 지운
  *       배경 JPEG 이다. 프레임과 같이 내려받아 크기·sha256·JPEG 시그니처를 확인하고 묶음 ID 와 함께 BAKE_IMAGE 로 대여마다 보관한다
  *       ({@code SceneCameraImageService} 가 같은 대여가 등록한 Scene 의 카메라 시점 VDT 사진으로 서명한다. 얼굴 정책은 외형 텍스처 규칙).
+ *   <li>바닥 감시 범위({@code floor_coverage}, site_setup 1.9.0, S15P31A101-606)는 바닥 칸별 카메라 수 문서(수십 KB 이하, 본문에 바로 실림)다.
+ *       스냅샷 보정 버전과 같은지·칸 수를 확인하고 {@code floor_coverage} 표에 보정 버전별 한 행으로 남긴다({@code SceneService} 가 싣는다).
  *   <li>등록한 버전은 {@code setup_session_artifact} 에 이 세션 귀속으로 남긴다(추가만). 버전 계보 검사가 이 귀속을 본다:
  *       다른 세팅 세션에 귀속된 버전은 그 세션 것이다.
  * </ul>
@@ -80,6 +82,9 @@ class SetupArtifactRegistrar {
     /** 같은 사진이 GLB 텍스처로 이미 구워졌으므로 외형 텍스처 규칙(AGENTS 규칙 8)을 따른다 */
     private static final Set<String> BAKE_FACE_POLICIES = Set.of("OBSERVED", "BLURRED", "EXCLUDED");
     private static final Pattern BUNDLE_ID = Pattern.compile("^bundle-[0-9a-f]{32}$");
+    /** 계약 site_setup#/$defs/floor_coverage cells: 칸 값 문자와 최대 길이 */
+    private static final Pattern FLOOR_CELLS = Pattern.compile("^[.012]+$");
+    static final int MAX_FLOOR_COVERAGE_CELLS = 40_000;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -135,6 +140,46 @@ class SetupArtifactRegistrar {
         if (bake != null && !bake.isNull()) {
             registerBakeImages(target, bake);
         }
+        JsonNode coverage = artifacts.get("floor_coverage");
+        if (coverage != null && !coverage.isNull()) {
+            registerFloorCoverage(target, coverage, required(calibrationVersion));
+        }
+    }
+
+    /**
+     * 바닥 감시 범위(site_setup 1.9.0, S15P31A101-606)를 그 보정 버전에 묶어 남긴다. 문서의 보정 버전이 스냅샷의 calibration_version 과
+     * 같고 이 현장 보정이어야 하며, 칸 문자열 길이가 cols × rows 여야 한다(스키마 밖 규칙). 보정 버전마다 한 행이고 먼저 등록한 것을 둔다
+     * (재시도 대여의 점구름은 조금 다를 수 있다. 표시용이라 세팅을 거부하지 않는다). 위치·판정에 쓰지 않는다.
+     */
+    private void registerFloorCoverage(Target target, JsonNode coverage, String calibrationVersion) {
+        if (!coverage.isObject() || !calibrationVersion.equals(coverage.path("calibration_version").asString(null))) {
+            throw invalid();
+        }
+        JsonNode cols = coverage.get("cols");
+        JsonNode rows = coverage.get("rows");
+        String cells = coverage.path("cells").asString(null);
+        if (cols == null || rows == null || !cols.canConvertToInt() || !rows.canConvertToInt() || cells == null
+                || cols.intValue() < 1 || rows.intValue() < 1 || cells.length() > MAX_FLOOR_COVERAGE_CELLS
+                || (long) cols.intValue() * rows.intValue() != cells.length() || !FLOOR_CELLS.matcher(cells).matches()) {
+            log.info("세팅 바닥 감시 범위 거부: 칸 수·문자가 맞지 않는다(세션 {})", target.setupSessionId());
+            throw invalid();
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("cal", calibrationVersion).addValue("site", target.siteId())
+                .addValue("content", mapper.writeValueAsString(coverage)).addValue("session", target.setupSessionId())
+                .addValue("job", target.jobId()).addValue("lease", target.leaseId())
+                .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+        Boolean calibrationKnown = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM calibration_version WHERE calibration_version = :cal AND site_id = :site)
+                """, params, Boolean.class);
+        if (!Boolean.TRUE.equals(calibrationKnown) || target.leaseId() == null) {
+            throw invalid();
+        }
+        jdbc.update("""
+                INSERT INTO floor_coverage (calibration_version, site_id, content, setup_session_id, job_id, lease_id, registered_at)
+                VALUES (:cal, :site, CAST(:content AS jsonb), :session, :job, :lease, :now)
+                ON CONFLICT (calibration_version) DO NOTHING
+                """, params);
     }
 
     /** 이 세션이 artifacts 로 등록한 보정인지 */

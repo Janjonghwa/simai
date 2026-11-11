@@ -9,6 +9,7 @@ import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { PlannedLayer } from '@/features/viewer3d/planned/PlannedLayer';
 import { PostProcessingLayer } from '@/features/viewer3d/PostProcessingLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
+import { FloorCoverageLayer } from '@/features/viewer3d/scene/FloorCoverageLayer';
 import { roomViewOf } from '@/features/viewer3d/scene/roomView';
 import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
@@ -104,6 +105,8 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       <SceneBase />
       {/* 정적 배경 Scene(-59). 같은 깊이 버퍼라 배경 뒤 사람은 가려진다. 클릭은 받지 않는다. */}
       <SceneBackground />
+      {/* 바닥 감시 범위(-606). 호스트가 켜고 지금 보정에 맞을 때만 넘긴다. 클릭을 받지 않는다. */}
+      <FloorCoverageLayer />
       {/* 접지 확인(VALID) 인원 발아래 접지 그림자(-360). people/ 와 분리된 별도 레이어다. */}
       <GroundShadowLayer />
       <RiskScope>

@@ -6,6 +6,7 @@ import {
   PLAN_FALLBACK_MS,
   ZONE_EDIT_LAYERS,
 } from '@/features/layout/spatialHost/constants';
+import { CoverageLegend } from '@/features/layout/spatialHost/CoverageLegend';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
@@ -19,6 +20,7 @@ import { useViewportHost } from '@/features/layout/spatialHost/useViewportHost';
 import { ZoneEditFade } from '@/features/layout/spatialHost/ZoneEditFade';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useCurrentCalibration } from '@/features/layout/useCurrentCalibration';
+import { useFloorCoverage } from '@/features/layout/useFloorCoverage';
 import { useSceneCameraImages } from '@/features/layout/useSceneCameraImages';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
@@ -113,6 +115,12 @@ export function SpatialViewportHost({
   // 지금 Scene 을 구운 카메라별 사진(-592). 카메라 시점에 맞아 있는 동안 뷰어가 VDT 로 투영한다. 없으면 시점 이동만 한다.
   const cameraImageUrls = useSceneCameraImages(scene);
   const vdt = useMemo(() => (cameraImageUrls ? { cameraImageUrls } : undefined), [cameraImageUrls]);
+  // 바닥 감시 범위(-606). 기본은 꺼 둔다: 관제 화면의 1차 신호는 사람·구역·경보 색이라 바닥 색면을 늘 깔지 않고,
+  // 관제자가 사각을 확인할 때 켠다. 지금 보정과 맞을 때만 그리고, 편집 중에는 숨긴다.
+  const { coverage, current: coverageCurrent } = useFloorCoverage(scene);
+  const [coverageOn, setCoverageOn] = useState(false);
+  const showCoverage = coverageOn && coverage !== null && !editing;
+  const drawnCoverage = showCoverage && coverageCurrent ? coverage : null;
 
   // 편집 모드에서는 이벤트 패널·카메라 분할 창·2D 미니맵을 두지 않고 구역 편집에 화면을 준다(맵 재생성은 도구 모음이 숨긴다).
   const showEventPanel = eventPanel && !editing;
@@ -176,6 +184,7 @@ export function SpatialViewportHost({
                 personVests={personVests}
                 personHighlights={personHighlights}
                 cameraPoses={cameraPoses}
+                floorCoverage={drawnCoverage}
                 vdt={vdt}
                 onCameraClick={handleCameraClick}
                 onSceneStatusChange={onSceneStatusChange}
@@ -192,8 +201,10 @@ export function SpatialViewportHost({
             withEventPanel={showEventPanel}
             selectedKey={selectedKey}
             onSelect={setSelectedKey}
+            coverage={drawnCoverage}
           />
         )}
+        {showCoverage && <CoverageLegend coverage={coverage} current={coverageCurrent} />}
         {editing && <ZoneEditFade />}
         <ToolPalette
           view={view}
@@ -206,6 +217,8 @@ export function SpatialViewportHost({
           // scene 은 { ok, raw } 라 버전은 raw 에서 읽는다(전에는 scene 에서 읽어 늘 null 이었다, -592).
           currentSceneVersion={readSceneVersion(scene?.ok ? scene.raw : null)}
           currentScene={scene?.ok ? scene.raw : undefined}
+          onToggleCoverage={coverage && !editing ? () => setCoverageOn((on) => !on) : undefined}
+          coverageOn={showCoverage}
         />
         {children}
         {showEventPanel && view === '3d' && (

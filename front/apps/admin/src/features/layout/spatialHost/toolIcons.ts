@@ -1,9 +1,10 @@
-import { Focus, Loader2, RefreshCw, RotateCcw } from 'lucide-react';
+import { Focus, Loader2, RefreshCw, RotateCcw, ScanEye } from 'lucide-react';
 
 /** 관제 화면 도구 모음의 아이콘. 아이콘을 바꿀 때는 이 파일만 고친다. */
 export const TOOL_ICON = {
   resetView: Focus,
   retry3d: RotateCcw,
+  coverage: ScanEye,
   regenerate: RefreshCw,
   busy: Loader2,
 } as const;

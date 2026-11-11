@@ -12,10 +12,12 @@ import {
   type PlanMarks,
   type PlanZone,
 } from '@/features/plan/plan';
+import { PlanCoverage } from '@/features/plan/PlanCoverage';
 import { PlanPerson } from '@/features/plan/PlanPerson';
 import { PlanRoom } from '@/features/plan/PlanRoom';
 import { planTip } from '@/features/plan/planTip';
 import { PlanZones } from '@/features/plan/PlanZones';
+import type { FloorCoverage } from '@/lib/floorCoverage';
 import type { WorldTrack } from '@simai/contracts';
 import { cn } from '@simai/ui/lib/utils';
 
@@ -42,6 +44,8 @@ export interface FloorPlanProps {
   bounds?: PlanBounds;
   /** 평면도(BEV) 바탕. 없으면 모눈을 그린다. */
   backdrop?: PlanBackdrop;
+  /** 바닥 감시 범위(-606). 호스트가 켜고 지금 보정에 맞을 때만 넘긴다. 없으면 그리지 않는다. */
+  coverage?: FloorCoverage | null;
   className?: string;
 }
 
@@ -54,6 +58,7 @@ export function FloorPlan({
   stale = false,
   bounds = ROOM_BOUNDS,
   backdrop,
+  coverage = null,
   className,
 }: FloorPlanProps) {
   const dwell = useDwell();
@@ -85,6 +90,7 @@ export function FloorPlan({
             오래된 평면도
           </text>
         )}
+        {coverage && <PlanCoverage coverage={coverage} bounds={bounds} />}
         <PlanZones
           zones={zones}
           bounds={bounds}

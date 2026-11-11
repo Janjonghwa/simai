@@ -96,27 +96,51 @@ def _resolve_floor_constraint(job_doc: dict, explicit: bool | None) -> bool:
     return True
 
 
+def _mapanything_points(root: Path) -> np.ndarray | None:
+    """MapAnything 모델 좌표의 점구름 (N, 3): `raw.npz` 가 있으면 시점별 유효 점, 아니면 `pointcloud.npz` 정점. 없으면 None."""
+    ma_dir = root / "mapanything"
+    if (ma_dir / "raw.npz").is_file():
+        from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+
+        prepared = load_prepared(root / "prepared") if (root / "prepared" / "prepared.json").is_file() else None
+        return load_mapanything_run(ma_dir, prepared=prepared).all_points()
+    if (ma_dir / "pointcloud.npz").is_file():
+        with np.load(ma_dir / "pointcloud.npz") as pc:
+            if "points_xyz" in pc.files:
+                return np.asarray(pc["points_xyz"], dtype=float)
+    return None
+
+
+def write_floor_coverage(root: Path, M: np.ndarray) -> dict | None:
+    """바닥 감시 범위(S15P31A101-606)를 `floor_coverage.json` 으로 쓴다. 바닥을 모르면 쓰지 않고 None.
+
+    MapAnything 점구름을 World 로 옮겨(M = mapanything_to_world) 관측 바닥 영역을 뽑고, 작업 폴더 `calibration.json`
+    (세팅이면 등록한 새 보정 문서, `publish` 가 미리보기 전에 바꿔 둔다)으로 칸마다 사람이 통째로 보이는 카메라 수를 센다.
+    표시용 자료라 미리보기·굽기를 실패시키지 않는다(부르는 쪽이 예외를 삼킨다).
+    """
+    from simai_ai.calibration.floor_coverage import floor_coverage_from_points
+
+    out = root / "floor_coverage.json"
+    out.unlink(missing_ok=True)
+    pts = _mapanything_points(root)
+    if pts is None or len(pts) == 0:
+        return None
+    M = np.asarray(M, float)
+    world = pts @ M[:3, :3].T + M[:3, 3]
+    doc = floor_coverage_from_points(read_json(root / "calibration.json"), world)
+    if doc is not None:
+        write_json(out, doc)
+    return doc
+
+
 def _extract_floor_plane_ma(
     root: Path, src: np.ndarray, cam2world_list: list[np.ndarray]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """MapAnything 점구름(`raw.npz` 또는 `pointcloud.npz`)이 있으면 RANSAC 바닥 평면을 찾는다."""
     from simai_ai.calibration.world_frame.frame import WorldFrameConfig, _up_prior, find_floor
 
-    ma_dir = root / "mapanything"
-    pts: np.ndarray | None = None
-    raw_path = ma_dir / "raw.npz"
-    pc_path = ma_dir / "pointcloud.npz"
     try:
-        if raw_path.is_file():
-            from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
-
-            prep_json = root / "prepared" / "prepared.json"
-            prepared = load_prepared(root / "prepared") if prep_json.is_file() else None
-            pts = load_mapanything_run(ma_dir, prepared=prepared).all_points()
-        elif pc_path.is_file():
-            with np.load(pc_path) as pc:
-                if "points_xyz" in pc.files:
-                    pts = np.asarray(pc["points_xyz"], dtype=float)
+        pts = _mapanything_points(root)
     except Exception:  # noqa: BLE001 - 점구름 보조 읽기 실패 시 카메라 중심 정렬로 안전하게 폴백
         return None
     if pts is None or len(pts) < 50:
@@ -873,6 +897,10 @@ def preview(root: Path) -> None:
         raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "미리보기 메시 정점 없음")
 
     (root / "preview_scene.glb").write_bytes(glb_bytes)
+    try:
+        write_floor_coverage(root, M)
+    except Exception as exc:  # noqa: BLE001 - 감시 범위는 표시용이다. 미리보기를 실패시키지 않는다
+        log.warning("바닥 감시 범위를 만들지 못해 건너뛴다: %s: %s", type(exc).__name__, exc)
     enhance = _enhance_summary(enhance_visual_glb(root, root / "preview_scene.glb", opts))
     if enhance["applied"] and (enhance["detail"].get("floor") or {}).get("applied"):
         meta["triangle_count"] = int(meta["triangle_count"]) + 2

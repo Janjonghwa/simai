@@ -954,3 +954,38 @@ def test_bake_image_failure_or_unknown_bundle_never_fails_setup(caplog: pytest.L
     with pytest.raises(JobFailed) as exc:
         handler2(ctx2)
     assert exc.value.code == "CANCELLED"
+
+
+# ---------------------------------------------------------------------------- S15P31A101-606
+def _floor_coverage(calibration_version: str) -> dict[str, Any]:
+    return {"calibration_version": calibration_version, "cell_m": 0.3, "origin_xy": [0.0, 0.0], "cols": 2, "rows": 2,
+            "cells": ".102", "ankle_height_m": 0.1, "head_height_m": 1.7, "floor_source": "MAPANYTHING_FLOOR_POINTS",
+            "is_upper_bound": True}
+
+
+def test_floor_coverage_rides_the_preview_snapshot_with_its_calibration_version() -> None:
+    """바닥 감시 범위는 등록한 보정 버전으로 센 것만 미리보기 스냅샷부터 결과까지 실린다."""
+    def preview(**kw: Any) -> PreviewDraftResult:
+        return PreviewDraftResult("scene-p", floor_coverage=_floor_coverage(kw["calibration_doc"]["calibration_version"]))
+
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                    preview_builder=preview)
+    ctx = JobContext("job-c", "0192a6f0-7c1e-7b3a-9f2d-000000000606", "site_setup", 1, inp)
+    result = handler(ctx)
+    by_stage = {s["status"]: s for s in ctx.site_setup_history}
+    assert "floor_coverage" not in by_stage["JOINT_BA_AND_VERIFY"].get("artifacts", {})
+    coverage = by_stage["PREVIEW_AND_VLM_DRAFT"]["artifacts"]["floor_coverage"]
+    assert coverage["calibration_version"] == result["calibration_version"]
+    assert by_stage["BAKING_TEXTURE"]["artifacts"]["floor_coverage"] == result["artifacts"]["floor_coverage"] == coverage
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_floor_coverage_of_another_calibration_is_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                    preview_builder=lambda **kw: PreviewDraftResult("scene-p", floor_coverage=_floor_coverage("cal-old")))
+    with caplog.at_level("WARNING", logger="services.worker"):
+        result = handler(JobContext("job-c", "0192a6f0-7c1e-7b3a-9f2d-000000000607", "site_setup", 1, inp))
+    assert result["status"] == "COMPLETED" and "artifacts" not in result
+    assert "보정 버전이 등록한 보정과 달라" in caplog.text

@@ -190,3 +190,35 @@ describe('평면도 바탕', () => {
     );
   });
 });
+
+describe('2D 평면 바닥 감시 범위(-606)', () => {
+  const coverage = {
+    calibrationVersion: 'cal-1',
+    cellM: 0.5,
+    originXy: [1, 2] as const,
+    cols: 2,
+    rows: 2,
+    cells: '0.22',
+  };
+
+  it('칸 묶음을 구역 아래에 깔고 World +Y 를 화면 위로 뒤집는다', () => {
+    const { container } = plan({ coverage, zones: [zone] });
+    const rects = [...container.querySelectorAll('[data-plan-coverage] rect')];
+    expect(rects.map((r) => r.getAttribute('data-coverage'))).toEqual(['blind', 'covered']);
+    // 사각 칸 World [1,1.5]×[2,2.5] → 평면 (x - 0, 10 - 2.5)
+    expect(rects[0]?.getAttribute('x')).toBe('1');
+    expect(rects[0]?.getAttribute('y')).toBe('7.5');
+    expect(rects[1]?.getAttribute('width')).toBe('1');
+    expect(rects[1]?.getAttribute('y')).toBe('7');
+    // 구역보다 먼저(아래에) 그린다
+    const svgChildren = [...container.querySelector('svg')!.children];
+    const layerIndex = svgChildren.findIndex((el) => el.hasAttribute('data-plan-coverage'));
+    expect(layerIndex).toBeGreaterThan(-1);
+    expect(layerIndex).toBeLessThan(svgChildren.length - 2);
+  });
+
+  it('넘기지 않으면 그리지 않는다', () => {
+    const { container } = plan();
+    expect(container.querySelector('[data-plan-coverage]')).toBeNull();
+  });
+});

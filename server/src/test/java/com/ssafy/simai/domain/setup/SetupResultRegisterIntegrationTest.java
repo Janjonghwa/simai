@@ -156,6 +156,8 @@ class SetupResultRegisterIntegrationTest {
     private void cleanUpTables() {
         List<String> cals = List.of(baseCalibration, newCalibration, otherCalibration);
         jdbc.update("UPDATE work_unit SET active_setup_session_id = NULL WHERE active_setup_session_id IS NOT NULL");
+        jdbc.update("DELETE FROM floor_coverage WHERE calibration_version IN (?, ?, ?)", baseCalibration, newCalibration,
+                otherCalibration);
         jdbc.update("DELETE FROM setup_zone_draft");
         jdbc.update("DELETE FROM setup_zone_draft_run");
         jdbc.update("DELETE FROM setup_session");
@@ -680,6 +682,52 @@ class SetupResultRegisterIntegrationTest {
             mvc.perform(heartbeat(s, 0.95, snap)).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
         }
+    }
+
+    @Test
+    void 바닥_감시_범위를_보정_버전에_묶어_남기고_현재_Scene_응답에_싣는다() throws Exception {
+        when(storage.signGet(anyString())).thenAnswer(i -> new ObjectStorage.SignedRequest(
+                "https://storage.test/" + i.getArgument(0), Map.of(), Instant.now().plusSeconds(300)));
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calibrationDocument(newCalibration, s.sessionId()));
+        ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
+        String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode readySnap = withChecks(snapshot(s.sessionId(), "READY_FOR_ZONES", 85.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview);
+        ObjectNode artifacts = readySnap.putObject("artifacts");
+        artifacts.set("calibration_document", calRef);
+        artifacts.set("preview_scene", previewRef);
+        artifacts.set("floor_coverage", floorCoverage(newCalibration, "..1222"));
+        mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
+
+        // 이어지는 스냅샷이 조금 다른 범위를 다시 알려도(재시도 대여의 점구름 차이) 먼저 등록한 것을 두고 거부하지 않는다
+        ObjectNode bakingSnap = readySnap.deepCopy().put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
+        ((ObjectNode) bakingSnap.get("artifacts")).set("floor_coverage", floorCoverage(newCalibration, "0.1222"));
+        mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+        assertThat(jdbc.queryForList("SELECT content ->> 'cells' FROM floor_coverage WHERE calibration_version = ?",
+                String.class, newCalibration)).containsExactly("..1222");
+
+        assertThat(currentScene()).isEqualTo(preview);
+        ObjectNode current = sceneService.current();
+        assertThat(current.at("/floor_coverage/calibration_version").asString()).isEqualTo(newCalibration);
+        assertThat(current.at("/floor_coverage/cells").asString()).isEqualTo("..1222");
+        assertThat(current.at("/floor_coverage/cols").asInt()).isEqualTo(3);
+
+        // 스냅샷과 다른 보정 버전, cols × rows 와 다른 칸 수는 거부한다(칸 문자·필드 형식은 계약 검사가 먼저 막는다)
+        for (ObjectNode bad : List.of(floorCoverage(baseCalibration, "..1222"), floorCoverage(newCalibration, "..12"))) {
+            ObjectNode snap = bakingSnap.deepCopy();
+            ((ObjectNode) snap.get("artifacts")).set("floor_coverage", bad);
+            mvc.perform(heartbeat(s, 0.95, snap)).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+        }
+    }
+
+    private ObjectNode floorCoverage(String calibrationVersion, String cells) {
+        ObjectNode out = mapper.createObjectNode().put("calibration_version", calibrationVersion).put("cell_m", 0.3);
+        out.putArray("origin_xy").add(0.4).add(0.3);
+        return out.put("cols", 3).put("rows", 2).put("cells", cells).put("ankle_height_m", 0.1).put("head_height_m", 1.7)
+                .put("floor_source", "MAPANYTHING_FLOOR_POINTS").put("is_upper_bound", true);
     }
 
     private void assertFrameRejected(Session s, ObjectNode frame) throws Exception {

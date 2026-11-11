@@ -170,6 +170,29 @@ class SceneServiceTest {
         assertThat(scenes.current().has("map_cameras")).isFalse();
     }
 
+    @Test
+    void Scene_보정_버전의_바닥_감시_범위가_있으면_싣고_없거나_깨졌으면_생략한다() {
+        assertThat(scenes.current().has("floor_coverage")).isFalse();
+
+        when(jdbc.queryForList(anyString(), eq(Map.of("cal", "cal-a")), eq(String.class))).thenReturn(List.of("""
+                {"calibration_version":"cal-a","cell_m":0.3,"origin_xy":[0.4,0.3],"cols":2,"rows":1,"cells":"02",
+                 "ankle_height_m":0.1,"head_height_m":1.7,"floor_source":"MAPANYTHING_FLOOR_POINTS","is_upper_bound":true}
+                """));
+        ObjectNode result = scenes.current();
+        assertThat(result.at("/floor_coverage/calibration_version").asString()).isEqualTo("cal-a");
+        assertThat(result.at("/floor_coverage/cells").asString()).isEqualTo("02");
+        assertThat(result.at("/floor_coverage/origin_xy/1").asDouble()).isEqualTo(0.3);
+
+        when(jdbc.queryForList(anyString(), eq(Map.of("cal", "cal-a")), eq(String.class))).thenReturn(List.of("not json"));
+        assertThat(scenes.current().has("floor_coverage")).isFalse();
+    }
+
+    @Test
+    void 기본_배경에는_바닥_감시_범위가_없다() {
+        hasActive = false;
+        assertThat(scenes.current().has("floor_coverage")).isFalse();
+    }
+
     private void calibrationDocument(String json) {
         // 세팅 Scene 이 아니면(setup_session_artifact 없음) 질의가 빈 목록이다(모의 기본값). 여기서는 세팅 Scene 이다
         when(jdbc.queryForList(anyString(), any(SqlParameterSource.class), eq(byte[].class)))

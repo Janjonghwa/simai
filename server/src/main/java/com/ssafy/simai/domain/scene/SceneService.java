@@ -25,6 +25,7 @@ import tools.jackson.databind.node.ObjectNode;
  * Scene 과 glTF 의 짧게 사는 GET 서명 주소를 준다(viewer_health.scene.committed_version 과 같은 선택, ViewerHealthService).
  * Scene 생성(S15P31A101-137, M3) 전에는 설정으로 등록한 시연용 기본 Scene(simai.scene.default-gltf-key)을 default=true 로 준다.
  * 기본 Scene 을 DB 행으로 두지 않는 것은 scene_version 이 보정 버전(FK)을 요구하기 때문이다.
+ * 선택 floor_coverage(S15P31A101-606): 그 Scene 보정 버전의 바닥 감시 범위(바닥 칸별 카메라 수, 표시용).
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -95,6 +96,7 @@ public class SceneService {
             gltf(node, s.gltfKey());
             sourceMaps(node, s.output());
             mapCameras(node, s.output(), s.version(), s.calibrationVersion());
+            floorCoverage(node, s.calibrationVersion());
             return node;
         }
         if (defaultGltfKey.isEmpty()) {
@@ -203,6 +205,29 @@ public class SceneService {
             entry.put("pose_source", "CALIBRATION");
         }
         return out.isEmpty() ? null : out;
+    }
+
+    /**
+     * Scene 보정 버전의 바닥 감시 범위(S15P31A101-606, site_setup artifacts.floor_coverage 원문). 없거나 읽지 못하면 싣지 않는다(표시용).
+     * 화면은 문서의 calibration_version 이 Tier 0 가 지금 쓰는 보정과 같을 때만 그린다(다르면 오래된 범위로 숨긴다).
+     */
+    private void floorCoverage(ObjectNode node, String calibrationVersion) {
+        if (calibrationVersion == null) {
+            return;
+        }
+        List<String> docs = jdbc.queryForList("SELECT content::text FROM floor_coverage WHERE calibration_version = :cal",
+                Map.of("cal", calibrationVersion), String.class);
+        if (docs.isEmpty() || docs.getFirst() == null) {
+            return;
+        }
+        try {
+            JsonNode doc = mapper.readTree(docs.getFirst());
+            if (doc.isObject()) {
+                node.set("floor_coverage", doc);
+            }
+        } catch (JacksonException e) {
+            log.warn("보정 {} 의 바닥 감시 범위를 읽지 못해 싣지 않는다", calibrationVersion);
+        }
     }
 
     private static boolean positiveIntPair(JsonNode node) {

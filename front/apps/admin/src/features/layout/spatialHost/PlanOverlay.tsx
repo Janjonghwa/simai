@@ -1,5 +1,6 @@
 import { useMonitorStandby } from '@/features/monitor/useTodayWorks';
 import { LivePlan } from '@/features/plan/LivePlan';
+import type { FloorCoverage } from '@/lib/floorCoverage';
 import { cn } from '@simai/ui/lib/utils';
 
 /**
@@ -11,10 +12,13 @@ export function PlanOverlay({
   withEventPanel,
   selectedKey,
   onSelect,
+  coverage = null,
 }: {
   withEventPanel: boolean;
   selectedKey: string | null;
   onSelect: (key: string) => void;
+  /** 바닥 감시 범위(-606). 켰고 지금 보정에 맞을 때만 넘긴다. */
+  coverage?: FloorCoverage | null;
 }) {
   const standby = useMonitorStandby();
   return (
@@ -27,7 +31,12 @@ export function PlanOverlay({
           : 'right-5 left-[384px]',
       )}
     >
-      <LivePlan selectedKey={selectedKey} onSelect={onSelect} className="size-full" />
+      <LivePlan
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+        coverage={coverage}
+        className="size-full"
+      />
     </div>
   );
 }

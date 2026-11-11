@@ -623,3 +623,39 @@ def test_real_session12_ma_single_alignment_passes_gate_and_levels_floor(tmp_pat
     assert doc["floor_z_iqr_m"] < 0.035  # 기존(0.0791m) 대비 절반 이하
 
 
+
+
+def _corner_rig(version="cal-606"):
+    """8 m × 6 m 교실 네 모서리 2.5 m 높이에서 가운데를 보는 카메라 4대(World → 카메라 R·t)."""
+    cams = []
+    for cid, c in {"cam1": (0.2, 0.2, 2.5), "cam2": (7.8, 0.2, 2.5), "cam3": (7.8, 5.8, 2.5), "cam4": (0.2, 5.8, 2.5)}.items():
+        f = np.subtract((4.0, 3.0, 0.8), c)
+        f /= np.linalg.norm(f)
+        r = np.cross(f, [0.0, 0.0, 1.0])
+        r /= np.linalg.norm(r)
+        R = np.array([r, np.cross(f, r), f])
+        cams.append({"camera_id": cid, "image_size": [1920, 1080], "K": [[1000.0, 0, 960], [0, 1000.0, 540], [0, 0, 1]],
+                     "R": R.tolist(), "t": (-R @ np.asarray(c)).tolist(), "distortion": {"model": "NONE", "coeffs": []}})
+    return {"calibration_version": version, "cameras": cams}
+
+
+def test_write_floor_coverage_moves_points_to_world_and_counts_cameras(tmp_path):
+    """-606: 모델 좌표 점구름을 mapanything_to_world 로 옮겨 Z=0 바닥만 쓰고, 작업 폴더 보정으로 칸별 카메라 수를 센다."""
+    (tmp_path / "mapanything").mkdir()
+    write_json(tmp_path / "calibration.json", _corner_rig())
+    # 모델 좌표: 절반 크기, Z 가 1 만큼 아래. World = 2·p + (0, 0, 2)
+    gx, gy = np.meshgrid(np.arange(0.0, 4.0, 0.025), np.arange(0.0, 3.0, 0.025))
+    floor = np.column_stack([gx.ravel(), gy.ravel(), np.full(gx.size, -1.0)])
+    table = floor[:200] + [0.0, 0.0, 0.4]  # World Z=0.8: 바닥이 아니다
+    np.savez(tmp_path / "mapanything" / "pointcloud.npz", points_xyz=np.vstack([floor, table]))
+    M = np.diag([2.0, 2.0, 2.0, 1.0])
+    M[2, 3] = 2.0
+    doc = tasks.write_floor_coverage(tmp_path, M)
+    assert doc == read_json(tmp_path / "floor_coverage.json")
+    assert doc["calibration_version"] == "cal-606" and (doc["cols"], doc["rows"]) == (27, 20)
+    assert doc["origin_xy"] == [0.0, 0.0] and set(doc["cells"]) == {"2"}
+
+    # 바닥 점이 없으면 쓰지 않고 이전 파일도 남기지 않는다(모르면 비운다)
+    np.savez(tmp_path / "mapanything" / "pointcloud.npz", points_xyz=table)
+    assert tasks.write_floor_coverage(tmp_path, M) is None
+    assert not (tmp_path / "floor_coverage.json").exists()
