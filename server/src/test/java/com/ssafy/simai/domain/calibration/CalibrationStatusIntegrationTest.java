@@ -434,7 +434,18 @@ class CalibrationStatusIntegrationTest {
                 awaitCount(() -> healthState.world() != null && version.equals(healthState.world().calibrationVersion()) ? 1 : 0, 1);
                 JsonNode rest = call("/api/scenes/current", viewer(), 200);
                 JsonNode health = viewerHealth.message().at("/payload/scene/compatibility");
-                assertThat(rest.get("compatibility")).isEqualTo(health);
+                // REST 는 카메라별 값(cameras, S15P31A101-602)을 더 싣고 viewer_health 는 싣지 않는다. 나머지는 같다
+                ObjectNode restCompatibility = ((ObjectNode) rest.get("compatibility")).deepCopy();
+                JsonNode cameras = restCompatibility.remove("cameras");
+                assertThat(restCompatibility).isEqualTo(health);
+                assertThat(health.has("cameras")).isFalse();
+                if (suffix.equals("d")) {
+                    assertThat(cameras.isNull()).isTrue();
+                } else {
+                    assertThat(cameras).hasSize(1);
+                    assertThat(cameras.get(0).path("center_delta_m").asDouble())
+                            .isEqualTo(health.path("max_center_delta_m").asDouble());
+                }
                 assertThat(health.path("scene_version").asString()).isEqualTo(scene);
                 assertThat(health.path("calibration_version").asString()).isEqualTo(version);
                 assertThat(health.path("verification").asString()).isEqualTo(

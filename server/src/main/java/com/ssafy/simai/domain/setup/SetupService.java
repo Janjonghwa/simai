@@ -609,6 +609,8 @@ public class SetupService {
         if (crossNode != null && !crossNode.isNull()) {
             objectCrossChecksJson = validateObjectCrossChecks(crossNode);
         }
+        // 쌍별 홀드아웃 오차(S15P31A101-602). 표시용이라 이 스냅샷에 없거나 어긋나면 null 이고 아래 COALESCE 로 이전 값을 둔다
+        String pairHoldoutJson = SetupPairHoldout.fromSnapshot(mapper, snapshot);
 
         OffsetDateTime now = utc(clock.instant());
         OffsetDateTime readyAt = session.readyAt() != null ? session.readyAt() : (readyOrLater ? now : null);
@@ -623,6 +625,7 @@ public class SetupService {
                     background_collection_pct = CAST(:bg AS jsonb),
                     height_checks = CAST(:heightChecks AS jsonb),
                     object_cross_checks = CAST(:crossChecks AS jsonb),
+                    pair_holdout = COALESCE(CAST(:pairHoldout AS jsonb), pair_holdout),
                     calibration_version = :cal,
                     preview_scene_version = :previewScene,
                     scene_version = :scene,
@@ -640,6 +643,7 @@ public class SetupService {
                 .addValue("bg", backgroundCollectionJson)
                 .addValue("heightChecks", heightChecksJson)
                 .addValue("crossChecks", objectCrossChecksJson)
+                .addValue("pairHoldout", pairHoldoutJson)
                 .addValue("cal", calibrationVersion)
                 .addValue("previewScene", previewSceneVersion)
                 .addValue("scene", sceneVersion)
@@ -1238,6 +1242,7 @@ public class SetupService {
                        background_collection_pct::text AS background_collection_pct,
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
+                       pair_holdout::text AS pair_holdout,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, requested_by, started_at, ready_at, completed_at, updated_at,
                        CASE WHEN setup_session.started_at < COALESCE(
@@ -1279,7 +1284,22 @@ public class SetupService {
         } else {
             out.set("wait_reason", reason.toJson(mapper, now));
         }
+        JsonNode calibration = out.path("calibration_version");
+        out.set("cameras", cameraSummary(calibration.isString() ? calibration.asString() : null));
         return out;
+    }
+
+    /**
+     * 이 세션 보정 문서의 카메라별 요약(S15P31A101-602). 문서는 JOINT_BA_AND_VERIFY(65%) 하트비트의 artifacts 로 등록되고
+     * 세션 calibration_version 이 그때 채워진다. 그 전이거나 문서가 없으면 null(지어내지 않음).
+     */
+    private JsonNode cameraSummary(String calibrationVersion) {
+        if (calibrationVersion == null) {
+            return mapper.nullNode();
+        }
+        List<byte[]> docs = jdbc.queryForList("SELECT content FROM calibration_document WHERE calibration_version = :v",
+                new MapSqlParameterSource("v", calibrationVersion), byte[].class);
+        return docs.isEmpty() ? mapper.nullNode() : SetupCameraSummary.of(mapper, docs.getFirst());
     }
 
     private record ViewRow(ObjectNode view, String status, String jobId, UUID progressLeaseId,
@@ -1389,6 +1409,10 @@ public class SetupService {
         } else {
             out.set("object_cross_checks", mapper.readTree(crossRaw));
         }
+
+        // 쌍별 홀드아웃 오차(S15P31A101-602). 마지막으로 값을 실은 스냅샷 것, 받은 적 없으면 null
+        String pairHoldoutRaw = rs.getString("pair_holdout");
+        out.set("pair_holdout", pairHoldoutRaw == null ? mapper.nullNode() : mapper.readTree(pairHoldoutRaw));
 
         putText(out, "calibration_version", rs.getString("calibration_version"));
         putText(out, "preview_scene_version", rs.getString("preview_scene_version"));

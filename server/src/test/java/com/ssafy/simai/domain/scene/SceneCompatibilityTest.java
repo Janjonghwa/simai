@@ -86,5 +86,45 @@ class SceneCompatibilityTest {
         assertThat(service.compare("scene", "source", "target").path("reason").asString()).isEqualTo("UNKNOWN");
     }
 
+    /** 카메라 둘: cam_A 는 (x, 0, 2) 에서 yaw 회전, cam_B 는 고정 */
+    private ObjectNode twoCameras(String world, double x, double degrees) {
+        var m = metadata(world, x, degrees);
+        var p = m.withArray("camera_poses").addObject().put("camera_id", "cam_B");
+        p.set("R", mapper.valueToTree(new double[][] {{1,0,0},{0,1,0},{0,0,1}}));
+        p.set("t", mapper.valueToTree(new double[] {-1,-1,-2}));
+        return m;
+    }
+
+    @Test void 현재_Scene_판정은_카메라별_중심_이동과_회전을_최대값_옆에_싣는다() {
+        versions(twoCameras("root", 0, 0), twoCameras("root", .05, 1));
+        var out = service.compareWithCameras("scene", "source", "target");
+        assertThat(out.path("reason").asString()).isEqualTo("SMALL_CHANGE");
+        var cameras = out.path("cameras");
+        assertThat(cameras).hasSize(2);
+        assertThat(cameras.get(0).path("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(cameras.get(0).path("center_delta_m").asDouble()).isCloseTo(.05, within(1e-9));
+        assertThat(cameras.get(0).path("rotation_delta_rad").asDouble()).isCloseTo(Math.toRadians(1), within(1e-9));
+        assertThat(cameras.get(1).path("camera_id").asString()).isEqualTo("cam_B");
+        assertThat(cameras.get(1).path("center_delta_m").asDouble()).isCloseTo(0, within(1e-12));
+        assertThat(cameras.get(1).path("rotation_delta_rad").asDouble()).isCloseTo(0, within(1e-6));
+        assertThat(out.path("max_center_delta_m").asDouble()).isEqualTo(cameras.get(0).path("center_delta_m").asDouble());
+        // viewer_health 용 compare 는 카메라별 값을 싣지 않는다(주기 송신 모양 유지)
+        assertThat(service.compare("scene", "source", "target").has("cameras")).isFalse();
+    }
+
+    @Test void 자세를_비교하지_못하면_카메라별_값은_null_이다() {
+        assertThat(service.compareWithCameras("scene", "source", "source").path("cameras").isNull()).isTrue();
+        assertThat(service.compareWithCameras("scene", "source", null).path("cameras").isNull()).isTrue();
+        versions(twoCameras("world-a", 0, 0), twoCameras("world-b", 0, 0));
+        var different = service.compareWithCameras("scene", "source", "target");
+        assertThat(different.path("reason").asString()).isEqualTo("DIFFERENT_WORLD");
+        assertThat(different.path("cameras").isNull()).isTrue();
+        versions(twoCameras("root", 0, 0), metadata("root", 0, 0));
+        var missing = service.compareWithCameras("scene", "source", "target");
+        assertThat(missing.path("reason").asString()).isEqualTo("UNKNOWN");
+        assertThat(missing.has("cameras")).isTrue();
+        assertThat(missing.path("cameras").isNull()).isTrue();
+    }
+
     private static org.assertj.core.data.Offset<Double> within(double n) { return org.assertj.core.data.Offset.offset(n); }
 }

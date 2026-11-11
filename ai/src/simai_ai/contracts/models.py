@@ -1584,19 +1584,13 @@ class SceneCameraImagesCameraImage(BaseModel):
     url: Annotated[StrictStr, Field(pattern='^https?://\\S+$')]
 
 
-class SceneCompatibility(BaseModel):
+class SceneCompatibilityCameraDelta(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    scene_version: DefsVersionId
-    calibration_version: DefsVersionId | None
-    verification: Literal['VERIFIED', 'DIMMED', 'MISMATCH']
-    regeneration_required: StrictBool
-    reason: Literal['SAME_CALIBRATION', 'SMALL_CHANGE', 'LARGE_CHANGE', 'DIFFERENT_WORLD', 'UNKNOWN']
-    max_center_delta_m: Annotated[StrictFloat | None, Field(ge=0.0)]
-    max_rotation_delta_rad: Annotated[
-        StrictFloat | None, Field(ge=0.0, le=3.141592653589793)
-    ]
+    camera_id: DefsCameraId
+    center_delta_m: Annotated[StrictFloat, Field(ge=0.0)]
+    rotation_delta_rad: Annotated[StrictFloat, Field(ge=0.0, le=3.141592653589793)]
 
 
 class PoseDepthFit(BaseModel):
@@ -2134,16 +2128,6 @@ class Config1(BaseModel):
     sync: DefsConfigSync
 
 
-class Scene(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    committed_version: DefsVersionId | None
-    live_version: DefsVersionId | None
-    compatibility: SceneCompatibility | MISSING = MISSING
-    mismatch: StrictBool
-
-
 class ReSetupItem(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2175,35 +2159,6 @@ class Watches(BaseModel):
     registered: Annotated[StrictInt, Field(ge=0)]
     connected: Annotated[StrictInt, Field(ge=0)]
     items: list[Item]
-
-
-class Payload43(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    as_of: DefsTimestampMs
-    system_health: DefsSystemHealth
-    remote_state: Literal['NORMAL', 'REMOTE_LINK_LOST', 'CONTROL_HALTED']
-    tier0_link: DefsLinkState
-    laptop: Laptop
-    data_age_ms: DataAgeMs | None
-    calibration_state: DefsCalibrationState
-    config: Config1
-    scene: Scene
-    tier0_health: dict[str, Any] | None
-    re_setup: list[ReSetupItem] | MISSING = MISSING
-    held_events_revision: Annotated[
-        StrictStr | MISSING, Field(max_length=64, min_length=1)
-    ] = MISSING
-    watches: Watches | MISSING = MISSING
-
-
-class ViewerHealth(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
-    payload: Payload43
 
 
 class VlmRationale(RootModel[Any]):
@@ -3607,6 +3562,24 @@ class SceneCameraImages(BaseModel):
     images: Annotated[list[SceneCameraImagesCameraImage], Field(max_length=16)]
 
 
+class SceneCompatibility(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scene_version: DefsVersionId
+    calibration_version: DefsVersionId | None
+    verification: Literal['VERIFIED', 'DIMMED', 'MISMATCH']
+    regeneration_required: StrictBool
+    reason: Literal['SAME_CALIBRATION', 'SMALL_CHANGE', 'LARGE_CHANGE', 'DIFFERENT_WORLD', 'UNKNOWN']
+    max_center_delta_m: Annotated[StrictFloat | None, Field(ge=0.0)]
+    max_rotation_delta_rad: Annotated[
+        StrictFloat | None, Field(ge=0.0, le=3.141592653589793)
+    ]
+    cameras: Annotated[
+        list[SceneCompatibilityCameraDelta] | None | MISSING, Field(max_length=64)
+    ] = MISSING
+
+
 class Quality1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3744,6 +3717,45 @@ class Tier0Endpoint(Envelope):
     )
     msg_type: Annotated[Literal['tier0_endpoint'], Field(min_length=1)]
     payload: Payload41
+
+
+class Scene(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    committed_version: DefsVersionId | None
+    live_version: DefsVersionId | None
+    compatibility: SceneCompatibility | MISSING = MISSING
+    mismatch: StrictBool
+
+
+class Payload43(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    as_of: DefsTimestampMs
+    system_health: DefsSystemHealth
+    remote_state: Literal['NORMAL', 'REMOTE_LINK_LOST', 'CONTROL_HALTED']
+    tier0_link: DefsLinkState
+    laptop: Laptop
+    data_age_ms: DataAgeMs | None
+    calibration_state: DefsCalibrationState
+    config: Config1
+    scene: Scene
+    tier0_health: dict[str, Any] | None
+    re_setup: list[ReSetupItem] | MISSING = MISSING
+    held_events_revision: Annotated[
+        StrictStr | MISSING, Field(max_length=64, min_length=1)
+    ] = MISSING
+    watches: Watches | MISSING = MISSING
+
+
+class ViewerHealth(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
+    payload: Payload43
 
 
 class Frame2(DefsCaptureTime):

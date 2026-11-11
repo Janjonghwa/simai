@@ -77,6 +77,11 @@ public class CalibrationViews {
      * 문서가 없거나 읽을 수 없거나 수치가 어긋나면 지어내지 않고 빈 배열을 돌려준다.
      */
     ArrayNode cameraPoses(byte[] content) {
+        return cameraPoses(mapper, content);
+    }
+
+    /** {@link #cameraPoses(byte[])} 와 같다. 세팅 세션 카메라 요약(SetupCameraSummary, S15P31A101-602)도 같은 계산을 쓴다. */
+    public static ArrayNode cameraPoses(ObjectMapper mapper, byte[] content) {
         ArrayNode empty = mapper.createArrayNode();
         if (content == null || content.length == 0) {
             return empty;

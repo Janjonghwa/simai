@@ -701,6 +701,23 @@ regeneration_required: boolean
 reason: ("SAME_CALIBRATION" | "SMALL_CHANGE" | "LARGE_CHANGE" | "DIFFERENT_WORLD" | "UNKNOWN")
 max_center_delta_m: (number | null)
 max_rotation_delta_rad: (number | null)
+/**
+ * 선택(v7.28.0, S15P31A101-602). 카메라별 중심 이동·회전 변화(생성 보정 대비). EC2 GET /api/scenes/current 의 compatibility 만 싣고 viewer_health 에는 싣지 않는다. 두 보정의 카메라 자세를 실제로 비교했을 때만 배열(카메라 ID 순, max_* 는 이 값들의 최대)이고, 같은 보정(SAME_CALIBRATION, 모두 0)·다른 World·자세 미상이면 null 이다.
+ * 
+ * @maxItems 64
+ */
+cameras?: (CameraDelta[] | null)
+}
+export interface CameraDelta {
+camera_id: string
+/**
+ * 카메라 중심 C = -R^T t 사이 거리, 미터
+ */
+center_delta_m: number
+/**
+ * 두 회전 사이 각도 acos((tr(R_a R_b^T) - 1) / 2), 라디안
+ */
+rotation_delta_rad: number
 }
 export interface AvatarFramePayload {
 /**
