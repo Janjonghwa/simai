@@ -16,7 +16,7 @@ cv2 = pytest.importorskip("cv2")
 from services.worker.auto_static import AutoStaticSettings, calibration_document_path
 from services.worker.handlers import JobContext, JobFailed
 from services.worker.objects import ObjectStoreError
-from services.worker.site_setup import CleanBackgroundBundle, ObjectRef
+from services.worker.site_setup import BakeReclaimed, CleanBackgroundBundle, ObjectRef
 from services.worker.site_setup_stages import (
     ProductionSiteSetupHandler,
     ProductionSiteSetupStages,
@@ -176,6 +176,86 @@ def test_bake_falls_back_when_texrecon_missing(tmp_path: Path) -> None:
     assert baked.scene_version == "scene-job-1-lease-1" and stages.ran == ["bake", "fallback"]
     assert baked.scene_asset is not None and baked.scene_asset.uri == "s3://bucket/scene.glb"
     assert store.puts == [("scene.glb", b"glb", "model/gltf-binary")]
+
+
+class _StopAwareStages(_Stages):
+    """실제 ProcessStages 처럼 멈춤 신호가 켜지면 CANCELLED 를 던진다. 받은 신호를 남긴다."""
+
+    def __init__(self, *, set_live_work: JobContext | None = None) -> None:
+        super().__init__()
+        self.signals: list[Any] = []
+        self._ctx = set_live_work
+
+    def run(self, stage: str, root: Path, *, timeout_s: float, cancelled: Any) -> None:
+        self.ran.append(stage)
+        self.signals.append(cancelled)
+        if self._ctx is not None:
+            self._ctx.live_work.set()  # 자식이 도는 사이 하트비트가 작업 시작을 받았다
+        if cancelled.is_set():
+            raise ReconstructionError("CANCELLED", "작업 취소")
+
+
+def test_bake_stage_stops_on_work_start_and_reports_reclaim(tmp_path: Path) -> None:
+    """정식 굽기는 작업 시작(live_work) 신호로도 멈추고, 처리기가 실패 대신 회수로 보게 BakeReclaimed 를 던진다(-597)."""
+    s = _stages(tmp_path, _StopAwareStages())
+    stages = _StopAwareStages(set_live_work=s.ctx)
+    s.stages = stages
+    with pytest.raises(BakeReclaimed):
+        s.bake(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}),
+               preview_scene_version="scene-preview-x")
+    assert stages.ran == ["bake"]
+
+
+def test_bake_cancel_wins_over_reclaim_and_other_stages_ignore_work_start(tmp_path: Path) -> None:
+    """대여 취소가 켜져 있으면 회수가 아니라 CANCELLED 실패다. 미리보기 등 굽기 밖 단계는 작업 시작 신호를 보지 않는다."""
+    s = _stages(tmp_path, _StopAwareStages())
+    s.ctx.live_work.set()
+    s.ctx.cancelled.set()
+    with pytest.raises(JobFailed) as exc:
+        s._run_stage("bake")
+    assert exc.value.code == "CANCELLED"
+
+    t = _stages(tmp_path, _StopAwareStages())
+    t.ctx.live_work.set()
+    t._run_stage("preview")  # 신호는 취소뿐이라 작업 시작으로 멈추지 않는다
+    assert t.stages.signals == [t.ctx.cancelled]
+
+
+def test_process_stages_kills_the_child_when_work_starts(tmp_path: Path) -> None:
+    """실제 ProcessStages: 정식 굽기 자식 프로세스가 도는 중 작업 시작 신호가 오면 자식을 끝내고 회수로 끝난다."""
+    import sys
+    import time
+
+    from simai_ai.scene import reconstruct_process
+
+    class _SlowChild(reconstruct_process.ProcessStages):
+        def run(self, stage: str, root: Path, *, timeout_s: float, cancelled: Any) -> None:
+            real = reconstruct_process.subprocess.Popen
+            first = [True]
+
+            def _popen(args: Any, **kw: Any) -> Any:  # 첫 호출(굽기 도구)만 오래 자는 자식으로. 정리용 taskkill 은 그대로
+                if first[0]:
+                    first[0] = False
+                    return real([sys.executable, "-c", "import time; time.sleep(60)"], **kw)
+                return real(args, **kw)
+
+            reconstruct_process.subprocess.Popen = _popen
+            try:
+                super().run(stage, root, timeout_s=timeout_s, cancelled=cancelled)
+            finally:
+                reconstruct_process.subprocess.Popen = real
+
+    s = _stages(tmp_path, _Stages())
+    s.stages = _SlowChild()
+    timer = threading.Timer(0.5, s.ctx.live_work.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(BakeReclaimed):
+            s._run_stage("bake")
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 15  # 자식(60 s)을 기다리지 않고 끝냈다
 
 
 @pytest.mark.parametrize(("code", "retryable"), [("CANCELLED", True), ("STATIC_PREVIEW_TIMEOUT", True),

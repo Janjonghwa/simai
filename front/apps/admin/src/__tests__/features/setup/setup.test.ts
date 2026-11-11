@@ -487,6 +487,29 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       bakingTexture: false,
       label: '정밀 3D 맵',
     });
+
+    // 작업 시작으로 정밀 굽기를 회수하고 끝난 세팅(S15P31A101-597): COMPLETED 여도 미리보기 맵으로 보인다
+    const skipped = setupSessionResponseSchema.parse({
+      ...previewSession,
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      progress_pct: 100,
+      scene_version: null,
+      bake_skipped: 'LIVE_WORK_STARTED',
+    });
+    expect(deriveSceneTierStatus(skipped)).toMatchObject({
+      tier: 'PREVIEW',
+      previewSceneVersion: 'scene-preview-1',
+      finalSceneVersion: null,
+      bakingTexture: false,
+      label: '미리보기 맵',
+    });
+    expect(deriveSceneTierStatus(skipped).description).toContain('정밀 텍스처 굽기를 건너뜀');
+    // 모르는 값은 null 로 보고 기존 판정(정식 Scene 없는 COMPLETED)을 따른다
+    expect(
+      setupSessionResponseSchema.parse({ ...previewSession, bake_skipped: 'SOMETHING_NEW' })
+        .bake_skipped,
+    ).toBeNull();
   });
 
   it('VLM 구역 초안 응답 스키마(no_opinion 포함)를 검증하고 편집 상자(BoxBounds)로 변환한다', () => {

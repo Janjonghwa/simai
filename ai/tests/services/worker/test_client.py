@@ -76,6 +76,10 @@ def test_job_request_2x_is_refused_not_retried():
 
 def test_lease_status_from_contract_examples():
     assert LeaseStatus.from_message(load_example("job_lease_status.active.json")) == LeaseStatus("ACTIVE", None, 30000)
+    # 2.1.0(-597): site_setup 대여의 작업 시작 신호와 주기
+    live = LeaseStatus.from_message(load_example("job_lease_status.active_live_work.json"))
+    assert live.live_work_active is True and live.heartbeat_interval_ms == 5000 and live.status == "ACTIVE"
+    assert LeaseStatus.from_message(load_example("job_lease_status.accepted.json")).live_work_active is False
     assert LeaseStatus.from_message(load_example("job_lease_status.duplicate.json")).status == "DUPLICATE"
     rejected = LeaseStatus.from_message(load_example("job_lease_status.rejected_expired.json"))
     assert (rejected.status, rejected.reason) == ("REJECTED", "LEASE_EXPIRED")

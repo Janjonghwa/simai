@@ -1,0 +1,16 @@
+{
+  "schema_version": "2.1.0",
+  "msg_type": "job_lease_status",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000203",
+  "sent_at": 1760342410510,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "status": "ACTIVE",
+    "lease_expires_at": 1760342440510,
+    "live_work_active": true,
+    "heartbeat_interval_ms": 5000
+  },
+  "_comment": "S15P31A101-597: site_setup 대여 하트비트 응답. 같은 현장 작업이 시작돼 정식 굽기를 회수하라는 신호, 주기 5 s"
+}

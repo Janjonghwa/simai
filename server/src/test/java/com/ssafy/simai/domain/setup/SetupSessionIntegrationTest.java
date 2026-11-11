@@ -437,6 +437,69 @@ class SetupSessionIntegrationTest {
     }
 
     @Test
+    void 굽는_중_작업이_시작되면_하트비트가_회수를_알리고_정식_Scene_없이_완료된다() throws Exception {
+        registerWorkers();
+        JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn());
+        String sessionId = created.get("setup_session_id").asString();
+        String jobId = created.get("job_id").asString();
+        String lease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
+                .at("/payload/lease_id").asString();
+
+        // 작업 전: site_setup 대여의 ACTIVE 답은 짧은 주기와 live_work_active false 를 싣고 계약(job_lease_status 2.1.0)을 지킨다
+        ObjectNode readySnap = progressSnapshot(sessionId, "READY_FOR_ZONES", 85.0);
+        readySnap.put("calibration_version", calibration).put("preview_scene_version", previewScene);
+        readySnap.set("height_checks", heightChecks(2.42, 2.40, -2.0, true,
+                2.48, 2.48, 0.0, true,
+                2.45, 2.46, 1.0, true,
+                2.51, 2.49, -2.0, true));
+        JsonNode before = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.85, readySnap))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", before.toString())).isEmpty();
+        assertThat(before.at("/schema_version").asString()).isEqualTo("2.1.0");
+        assertThat(before.at("/payload/live_work_active").booleanValue()).isFalse();
+        assertThat(before.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
+
+        // 굽는 동안 같은 현장 작업이 시작되면(IN_PROGRESS) 다음 하트비트가 회수 신호를 싣는다
+        jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now(), actual_ended_at = NULL WHERE work_id = ?",
+                workUnitId);
+        ObjectNode bakingSnap = readySnap.deepCopy();
+        bakingSnap.put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
+        JsonNode during = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.95, bakingSnap))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", during.toString())).isEmpty();
+        assertThat(during.at("/payload/live_work_active").booleanValue()).isTrue();
+
+        // 정식 Scene 을 비우면서 이유가 없으면 계약 위반으로 거절된다. submitCallback 은 보내기 전에 계약을 단언하므로
+        // 일부러 어긴 이 메시지는 직접 보낸다(계약 위반임을 먼저 확인)
+        ObjectNode noReason = readySnap.deepCopy();
+        noReason.put("status", "COMPLETED").put("progress_pct", 100.0).putNull("scene_version");
+        ObjectNode badEnv = envelope("job_callback", "2.6.0", workerA, succeededCallback(jobId, lease, noReason));
+        assertThat(schemas.violations("messages/job_callback", badEnv.toString())).isNotEmpty();
+        mvc.perform(post("/api/worker/jobs/" + jobId + "/result")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(badEnv.toString()))
+                .andExpect(status().isBadRequest());
+
+        // 회수 결과(bake_skipped LIVE_WORK_STARTED, scene_version null)는 받고 세션은 COMPLETED, 정식 Scene 없음
+        ObjectNode skipped = noReason.deepCopy();
+        skipped.put("bake_skipped", "LIVE_WORK_STARTED");
+        mvc.perform(submitCallback(tokenA, workerA, succeededCallback(jobId, lease, skipped)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.status").value("ACCEPTED"));
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.bake_skipped").value("LIVE_WORK_STARTED"))
+                .andExpect(jsonPath("$.scene_version").doesNotExist())
+                .andExpect(jsonPath("$.preview_scene_version").value(previewScene));
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+    }
+
+    @Test
     void 세팅_조회는_기다리는_이유를_있는_상태에서만_고른다() throws Exception {
         registerWorkers();
         String gateway = "gw-583-" + suffix;

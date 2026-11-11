@@ -3,10 +3,21 @@ package com.ssafy.simai.domain.job;
 import java.time.Instant;
 
 /**
- * 하트비트·제출의 답(계약 job_lease_status 2.0.0). ACTIVE 는 늘린 만료 시각을, REJECTED 는 이유를 싣는다.
+ * 하트비트·제출의 답(계약 job_lease_status 2.1.0). ACTIVE 는 늘린 만료 시각을, REJECTED 는 이유를 싣는다.
  * REJECTED 는 HTTP 409 로 보낸다. 워커는 HTTP 상태보다 본문 status 를 따른다.
+ * heartbeatIntervalMs·liveWorkActive 는 ACTIVE 에만 싣는 선택 값이다(null 이면 싣지 않음). liveWorkActive 는 site_setup 대여에서
+ * 같은 현장에 진행 중 작업이 있다는 정식 굽기 회수 신호다(2.1.0, S15P31A101-597).
  */
-record LeaseStatus(Status status, Instant leaseExpiresAt, Reason reason) {
+record LeaseStatus(Status status, Instant leaseExpiresAt, Reason reason, Integer heartbeatIntervalMs, Boolean liveWorkActive) {
+
+    LeaseStatus(Status status, Instant leaseExpiresAt, Reason reason) {
+        this(status, leaseExpiresAt, reason, null, null);
+    }
+
+    /** site_setup 대여의 ACTIVE 답에 하트비트 주기와 작업 시작 신호를 싣는다. ACTIVE 가 아니면 그대로 둔다(계약: ACTIVE 에만) */
+    LeaseStatus withSiteSetupSignal(int intervalMs, boolean liveWork) {
+        return status == Status.ACTIVE ? new LeaseStatus(status, leaseExpiresAt, reason, intervalMs, liveWork) : this;
+    }
 
     enum Status { ACTIVE, ACCEPTED, DUPLICATE, REJECTED }
 

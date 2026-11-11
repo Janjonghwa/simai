@@ -234,6 +234,22 @@ def test_timeout_reports_timed_out(ec2, make_worker):
     assert callback["payload"]["status"] == "TIMED_OUT" and "result" not in callback["payload"]
 
 
+def test_live_work_signal_reaches_the_handler_without_cancelling(ec2, make_worker):
+    """EC2 가 하트비트 응답에 작업 시작(live_work_active)을 실으면 처리기의 live_work 가 켜진다. 취소가 아니라 결과는 그대로 낸다(-597)."""
+    job_id = ec2.add_job("site_setup", load_example("job_request.site_setup.json")["payload"]["input"], timeout_ms=10_000)
+    contexts = []
+
+    def handler(ctx: JobContext):
+        contexts.append(ctx)
+        ec2.live_work.add(ctx.job_id)
+        assert ctx.live_work.wait(5.0), "작업 시작 신호가 와야 한다"
+        return copy.deepcopy(load_example("job_callback.site_setup_bake_skipped.json")["payload"]["result"])
+
+    assert make_worker({"site_setup": handler}).run_once() is Outcome.ACCEPTED
+    assert contexts[0].live_work.is_set() and not contexts[0].cancelled.is_set()
+    assert ec2.jobs[job_id].state == "SUCCEEDED"
+
+
 def test_cancelled_job_heartbeat_rejected(ec2, make_worker):
     """EC2 가 작업을 취소하면 다음 하트비트가 REJECTED 이고, 워커는 처리기를 멈추고 결과를 내지 않는다."""
     job_id = ec2.add_job("static_reconstruct")

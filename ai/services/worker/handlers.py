@@ -75,6 +75,9 @@ class JobContext:
     timeout_ms: int | None = None
     deadline: float | None = None
     monotonic: Callable[[], float] = time.monotonic
+    # EC2 가 하트비트 응답(job_lease_status 2.1.0 live_work_active)으로 같은 현장 작업 시작을 알리면 켜진다(-597).
+    # cancelled 와 달리 작업을 버리라는 뜻이 아니다: site_setup 은 정식 굽기만 회수하고 미리보기로 COMPLETED 를 낸다
+    live_work: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         self.monotonic = safe_monotonic(self.monotonic)

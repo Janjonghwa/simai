@@ -85,6 +85,7 @@ class FakeEC2:
         self.fail_before: dict[str, int] = {}  # 종류 → 남은 횟수: 처리 전에 연결 끊김
         self.fail_after: dict[str, int] = {}  # 종류 → 남은 횟수: 처리한 뒤 응답 잃음
         self.down: set[str] = set()  # 계속 끊긴 종류
+        self.live_work: set[str] = set()  # 하트비트 ACTIVE 에 live_work_active true 를 싣는 작업(job_lease_status 2.1.0, -597)
         self._seq = itertools.count()
         self._cond = threading.Condition()
 
@@ -237,7 +238,8 @@ class FakeEC2:
             job.state = "TIMED_OUT"
             return self._status(ids, "REJECTED", 409, reason="JOB_TIMED_OUT")
         rec.expires_at = now + self.ttl_ms
-        return self._status(ids, "ACTIVE", sent_at=now, lease_expires_at=rec.expires_at)
+        extra = {"live_work_active": True} if rec.job_id in self.live_work else {}
+        return self._status(ids, "ACTIVE", sent_at=now, lease_expires_at=rec.expires_at, **extra)
 
     def _result(self, path: str, body: dict[str, Any]) -> Response:
         p = body["payload"]
