@@ -52,6 +52,8 @@ WORLD_ALIGNMENT_FORMAT = "simai.world_alignment"
 ORTHONORMAL_TOL = 1e-3
 # 카메라 쌍 거리가 이 범위 밖이면 단위가 미터가 아니라고 본다(교실 한 칸, 카메라 4대)
 CAMERA_DISTANCE_RANGE_M = (0.3, 60.0)
+# 세팅 보조 촬영 프레임 view 이름 접두(S15P31A101-605). 손에 든 기기라 프레임끼리 0.3 m 보다 가까울 수 있어 단위 검사에서 뺀다
+SUPPLEMENT_VIEW_PREFIX = "sup_"
 MIN_UP_SAMPLES = 20
 UP_OUTLIER_DEG = 25.0
 # 상방 추정: 발목 중점 → 어깨 중점 길이가 이 범위 밖인 표본은 버린다(삼각측량 실패·오대응. MapAnything 미터 기준)
@@ -128,7 +130,8 @@ def load_mapanything_cameras(path: Path, view_map: Mapping[str, str] | None = No
             raise ValueError(f"{cid}: cameras.json 에 view {name!r} 가 없다")
         R, t = cam2world_to_extrinsics(views[name]["cam2world"])
         out[cid] = (R.tolist(), t.tolist())
-    centers = {cid: -np.asarray(R).T @ np.asarray(t) for cid, (R, t) in out.items()}
+    centers = {cid: -np.asarray(R).T @ np.asarray(t) for cid, (R, t) in out.items()
+               if not view_map[cid].startswith(SUPPLEMENT_VIEW_PREFIX)}
     _check_units(centers)
     record = {
         "path": path.name,

@@ -32,6 +32,11 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(
 이어가며(초안은 \"AI 의견 없음\"), 취소·시간 초과만 그대로 낸다. 프레임은 사람 지운 배경이라 얼굴이 원칙상 없지만 계약의 얼굴 정책
 (`face_policy`, BLURRED)을 함께 싣고, VLM 워커가 그 정책대로 얼굴 흐림 관문을 거친다.
 
+보조 촬영(입력 `supplement_media`, S15P31A101-605)은 (h) 굽기 주입점이 처리하고 `BakedScene.supplement` 요약을 돌려주면 결과
+`supplement` 로 싣는다. 보조 촬영 때문에 세팅을 실패시키지 않는다(주입점이 FALLBACK·SKIPPED 요약으로 바꾼다).
+`mode: SUPPLEMENT_REBAKE` 는 (a)~(g) 를 건너뛰고 `rebaker` 주입점 하나로 이 세션 맵만 보조 촬영을 넣어 다시 굽는다(BAKING_TEXTURE →
+COMPLETED). 새 보정·미리보기를 만들지 않고, 보조 촬영이 적용되지 않으면 새 Scene 도 올리지 않는다(결과 scene_version = 기준).
+
 굽기 입력 사진(`bake_image_publisher`, S15P31A101-593)은 VDT(Visual 층, 장식)용 보조 산출물이다. 카메라 프레임과 같이 올리지 못해도
 세팅을 실패시키지 않고 사진 없이 이어간다(취소·시간 초과만 그대로). 같은 사진이 이미 GLB 텍스처로 구워졌으므로 얼굴 정책은 외형
 텍스처 규칙(AGENTS 규칙 8, 기본 OBSERVED)을 따른다.
@@ -231,9 +236,20 @@ def _reclaim_as_no_scene(bake: Callable[..., Any]) -> Callable[..., Any]:
 
 @dataclass(frozen=True, slots=True)
 class BakedScene:
-    """(h) 굽기로 만든 정식 Scene 버전과 GLB 객체 참조."""
+    """(h) 굽기로 만든 정식 Scene 버전과 GLB 객체 참조. supplement 는 보조 촬영 결과 요약(계약 supplement_summary, -605)."""
 
     scene_version: str
+    scene_asset: ObjectRef | None = None
+    supplement: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RebakeOutcome:
+    """SUPPLEMENT_REBAKE 결과(-605). 보조 촬영이 적용되지 않았으면 scene_asset 없음·scene_version = 기준."""
+
+    scene_version: str
+    supplement: Mapping[str, Any]
+    height_checks: dict[str, dict[str, Any]]
     scene_asset: ObjectRef | None = None
 
 
@@ -305,6 +321,20 @@ class BakeImagePublisher(Protocol):
         camera_ids: Sequence[str],
         backgrounds: CleanBackgroundBundle,
     ) -> BakeImages | None: ...
+
+
+class SupplementRebaker(Protocol):
+    def __call__(
+        self,
+        *,
+        setup_session_id: str,
+        site_id: str,
+        camera_ids: Sequence[str],
+        camera_heights_m: Mapping[str, float],
+        height_tolerance_cm: float,
+        rebake_base: Mapping[str, Any],
+        on_height_checks: Callable[[dict[str, dict[str, Any]]], None],
+    ) -> RebakeOutcome: ...
 
 
 class TextureSceneBaker(Protocol):
@@ -454,6 +484,7 @@ class SiteSetupHandler:
         live_gate: Callable[[], bool] | None = None,
         live_notice: Callable[[], bool] | None = None,
         world_anchor: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        rebaker: SupplementRebaker | None = None,
         clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
         perf_counter: Callable[[], float] = time.perf_counter,
         stage_a_target_seconds: float = 10.0,
@@ -483,6 +514,7 @@ class SiteSetupHandler:
         self._live_gate = live_gate or (lambda: False)
         self._live_notice = live_notice or (lambda: False)
         self._anchor_world = world_anchor
+        self._rebake = rebaker
         self._bg_wait_s = float(background_wait_s)
         self._bg_poll_s = float(background_poll_s)
         self._monotonic = monotonic
@@ -668,11 +700,55 @@ class SiteSetupHandler:
                  bundle.bundle_id or "?")
         return int(self._clock_ms())
 
+    def _run_rebake(
+        self, ctx: JobContext, setup_session_id: str, site_id: str, camera_ids: tuple[str, ...],
+        camera_heights_m: dict[str, float], height_tolerance_cm: float,
+    ) -> Mapping[str, Any]:
+        """SUPPLEMENT_REBAKE(-605): 기준 보정·사진으로 맵만 보조 촬영을 넣어 다시 굽는다. 보정·미리보기는 기준 값 그대로."""
+        if self._rebake is None:
+            raise JobFailed("INVALID_INPUT", "이 워커는 SUPPLEMENT_REBAKE 를 처리하지 않는다", retryable=False)
+        base = dict(ctx.input["rebake_base"])
+        missing = sorted(set(camera_ids) - {str(im["camera_id"]) for im in base["bake_images"]["images"]})
+        if missing:
+            raise JobFailed("INVALID_INPUT", f"rebake_base.bake_images 에 없는 카메라: {missing}", retryable=False)
+        t_start = self._perf()
+        self._check_cancelled(ctx)
+        common = {"setup_session_id": setup_session_id, "mode": "SUPPLEMENT_REBAKE",
+                  "calibration_version": str(base["calibration_version"]),
+                  "preview_scene_version": str(base["preview_scene_version"])}
+
+        def started(height_checks: dict[str, dict[str, Any]]) -> None:
+            # 기준 보정 문서를 읽은 뒤 첫 스냅샷(BAKING_TEXTURE 는 보정·미리보기 버전·높이 확인이 필수)
+            self._check_cancelled(ctx)
+            self._emit_progress(ctx, {**common, "status": "BAKING_TEXTURE", "progress_pct": 90,
+                                      "height_checks": height_checks})
+
+        outcome = self._rebake(
+            setup_session_id=setup_session_id, site_id=site_id, camera_ids=camera_ids,
+            camera_heights_m=camera_heights_m, height_tolerance_cm=height_tolerance_cm, rebake_base=base,
+            on_height_checks=started,
+        )
+        seconds = round(max(0.0, self._perf() - t_start), 4)
+        result: dict[str, Any] = {
+            **common, "status": "COMPLETED", "progress_pct": 100, "scene_version": outcome.scene_version,
+            "height_checks": outcome.height_checks, "supplement": dict(outcome.supplement),
+            "metrics": {"stage_seconds": {"BAKING_TEXTURE": seconds}, "total_seconds": seconds},
+        }
+        if outcome.scene_asset is not None:
+            result["artifacts"] = {"scene": outcome.scene_asset.to_json()}
+        errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
+        if errs:
+            raise JobFailed("INTERNAL_CONTRACT_ERROR", f"site_setup 다시 굽기 결과가 계약을 위반했다: {'; '.join(errs)}",
+                            retryable=False)
+        return result
+
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         t_start = self._perf()
         setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm = (
             self._validate_input(ctx.input)
         )
+        if ctx.input.get("mode") == "SUPPLEMENT_REBAKE":
+            return self._run_rebake(ctx, setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm)
         stage_seconds: dict[str, float] = {}
 
         # ------------------------------------------------------------------
@@ -903,10 +979,12 @@ class SiteSetupHandler:
             backgrounds=bg_bundle,
             preview_scene_version=preview.preview_scene_version,
         )
+        supplement: Mapping[str, Any] | None = None
         if isinstance(baked, BakedScene):
             scene_version = baked.scene_version
             if baked.scene_asset is not None:
                 artifacts["scene"] = baked.scene_asset.to_json()
+            supplement = baked.supplement
         else:
             scene_version = str(baked)
         stage_seconds["BAKING_TEXTURE"] = round(
@@ -942,6 +1020,8 @@ class SiteSetupHandler:
             result["object_cross_checks"] = stage_a.object_cross_checks
         if artifacts:
             result["artifacts"] = dict(artifacts)
+        if supplement is not None:
+            result["supplement"] = dict(supplement)
 
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:

@@ -213,13 +213,19 @@ def build_known_views(paths, known_json, use_poses, pose_scale, device):
 
 
 def prepared_views(prepared_dir):
-    """prepared.json → [{name, path, K(원본 해상도, 왜곡 편 영상)}] (torch 없이 읽는다)."""
+    """prepared.json → [{name, path, K(원본 해상도, 왜곡 편 영상) 또는 None}] (torch 없이 읽는다).
+
+    K_undistorted 가 null 인 view(세팅 보조 촬영 프레임, S15P31A101-605)는 K 를 넘기지 않는다. MapAnything 은 view 마다 입력
+    종류를 따로 받으므로(K 있는 고정 카메라 + K 없는 보조 프레임) 한 번에 같이 추론한다. 자세는 어느 view 에도 넘기지 않는다."""
     d = Path(prepared_dir)
     doc = json.loads((d / "prepared.json").read_text(encoding="utf-8"))
     if doc.get("format") != "simai.mapanything_inputs":
         raise ValueError(f"prepared.json 형식이 아니다: {doc.get('format')!r}")
     out = []
     for v in doc["views"]:
+        if v.get("K_undistorted") is None:
+            out.append({"name": v["name"], "path": str(d / v["image"]), "K": None})
+            continue
         K = np.asarray(v["K_undistorted"], dtype=float)
         if K.shape != (3, 3) or not (K[0, 0] > 0 and K[1, 1] > 0):
             raise ValueError(f"{v['name']}: K_undistorted 가 3×3 양의 초점 행렬이 아니다")
@@ -232,7 +238,10 @@ def build_prepared_views(specs):
     views = []
     for sp in specs:
         img = cv2.cvtColor(cv2.imread(sp["path"]), cv2.COLOR_BGR2RGB)
-        views.append({"img": torch.from_numpy(img), "intrinsics": torch.tensor(sp["K"], dtype=torch.float32)})
+        view = {"img": torch.from_numpy(img)}
+        if sp.get("K") is not None:
+            view["intrinsics"] = torch.tensor(sp["K"], dtype=torch.float32)
+        views.append(view)
     return views
 
 
@@ -327,7 +336,9 @@ def main():
         else:
             src = (build_prepared_views(specs) if a.mode == "prepared"
                    else build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"))
-            given = [(np.asarray(v["intrinsics"], float), (int(v["img"].shape[1]), int(v["img"].shape[0]))) for v in src]
+            # K 없는 view(보조 촬영)는 기대 K 가 없어 출력 K 검사에서 뺀다(None)
+            given = [(np.asarray(v["intrinsics"], float) if "intrinsics" in v else None,
+                      (int(v["img"].shape[1]), int(v["img"].shape[0]))) for v in src]
             views = preprocess_inputs(src, **resize)
         res["preprocess_ms"] = round((time.perf_counter() - t1) * 1000, 1)
         res["model_input_hw"] = list(views[0]["img"].shape[-2:])
@@ -412,7 +423,7 @@ def main():
     kv = [{"name": n, "output": raw[f"{n}__intrinsics"],
            "expected": intrinsics_check.expected_crop_resize_k(Kg, wh, tuple(raw[f"{n}__depth_z"].shape[::-1])),
            "input": views[i]["intrinsics"][0].float().cpu().numpy() if "intrinsics" in views[i] else None}
-          for i, (n, (Kg, wh)) in enumerate(zip(names, given))]
+          for i, (n, (Kg, wh)) in enumerate(zip(names, given)) if Kg is not None]
     res["intrinsics_check"] = intrinsics_check.check(kv)
     warn = intrinsics_check.warning(res["intrinsics_check"])
     if warn:
