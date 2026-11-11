@@ -77,11 +77,46 @@ const ack = (at: number) => ({
 const entry = (change: Partial<EventItem> = {}) => mergeEvent(undefined, item(change));
 
 describe('mergeEvent', () => {
-  it('event_sequence 가 같거나 작은 상태는 무시한다', () => {
+  it('event_sequence 가 같거나 작은 전이는 무시한다', () => {
     const first = entry({ event_sequence: 2, lifecycle: 'UPDATED' });
     expect(mergeEvent(first, item({ event_sequence: 2 }))).toBe(first);
     expect(mergeEvent(first, item({ event_sequence: 1 }))).toBe(first);
     expect(mergeEvent(first, item({ event_sequence: 3 })).event.event_sequence).toBe(3);
+  });
+
+  it('같은 순번이면 EC2 표시용 칸만 새 값을 받고 Tier 0 전이 칸은 유지한다(S15P31A101-598)', () => {
+    const first = entry({ event_sequence: 2, lifecycle: 'UPDATED', severity: 'HIGH' });
+    const merged = mergeEvent(
+      first,
+      item({
+        event_sequence: 2,
+        lifecycle: 'RESOLVED',
+        severity: 'INFO',
+        rationale: '근거 문장',
+        proposed_severity: 'CRITICAL',
+        delivery: 'DELAYED_ACTIVE',
+        assessments: [{ assessment_id: 7, proposed_severity: 'CRITICAL', decision: 'NONE' }],
+      }),
+    );
+    expect(merged.event).toMatchObject({
+      event_sequence: 2,
+      lifecycle: 'UPDATED',
+      severity: 'HIGH',
+      rationale: '근거 문장',
+      proposed_severity: 'CRITICAL',
+      delivery: 'DELAYED_ACTIVE',
+    });
+    expect(merged.event.assessments).toHaveLength(1);
+    expect(merged.stageStartedAt).toBe(first.stageStartedAt);
+    // 거절은 같은 순번으로 상향 의견을 비운다. 근거는 null 로 지우지 않는다(늦게 온 이전 목록 응답 대비).
+    const rejected = mergeEvent(
+      merged,
+      item({ event_sequence: 2, rationale: null, proposed_severity: null }),
+    );
+    expect(rejected.event.proposed_severity).toBeNull();
+    expect(rejected.event.rationale).toBe('근거 문장');
+    // 낮은 순번은 표시용 칸도 받지 않는다.
+    expect(mergeEvent(merged, item({ event_sequence: 1, rationale: '이전' }))).toBe(merged);
   });
 
   it('sequence 가 없으면 시각으로 순서를 본다', () => {

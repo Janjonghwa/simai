@@ -196,6 +196,33 @@ function isSameState(prev: EventItem, next: EventItem): boolean {
   return eventTime(prev) === eventTime(next);
 }
 
+const sameSequence = (prev: EventItem, next: EventItem) =>
+  prev.event_sequence !== undefined && prev.event_sequence === next.event_sequence;
+
+/**
+ * 같은 순번에서도 EC2 가 바꿔 다시 보내는 표시용 칸(VLM 근거·상향 의견·평가 기록·전달 방식, S15P31A101-598).
+ * Tier 0 전이(등급·생명주기 등)는 순번 규칙을 그대로 따른다. 근거는 서버가 비우지 않으므로 null 로 지우지 않는다.
+ */
+function sameSequenceDisplay(prev: EventItem, next: EventItem): Partial<EventItem> {
+  const patch: Partial<EventItem> = {};
+  if (next.rationale != null && next.rationale !== prev.rationale) patch.rationale = next.rationale;
+  if (next.proposed_severity !== undefined && next.proposed_severity !== prev.proposed_severity) {
+    patch.proposed_severity = next.proposed_severity;
+  }
+  for (const key of ['assessment_id', 'assessmentId', 'assessment_job_id', 'delivery'] as const) {
+    if (next[key] !== undefined && next[key] !== prev[key]) {
+      Object.assign(patch, { [key]: next[key] });
+    }
+  }
+  if (
+    next.assessments !== undefined &&
+    JSON.stringify(next.assessments) !== JSON.stringify(prev.assessments)
+  ) {
+    patch.assessments = next.assessments;
+  }
+  return patch;
+}
+
 /** 등급이 오르거나 재개되면 새 경보 단계가 열린다. */
 const opensNewStage = (prev: EventItem, next: EventItem) =>
   SEVERITY_RANK[next.severity] > SEVERITY_RANK[prev.severity] ||
@@ -203,7 +230,7 @@ const opensNewStage = (prev: EventItem, next: EventItem) =>
 
 /**
  * 받은 이벤트를 반영한다. 같거나 오래된 상태면 prev 를 그대로 돌려준다.
- * 다만 확인·상향·구간 요약 기록은 합친다. 재개(resume_count 증가)된 전이는 이전 상향 기록을 비운다(명세 5.4).
+ * 다만 확인·상향·구간 요약 기록은 합치고, 같은 순번이면 EC2 표시용 칸(근거 등)은 새 값을 받는다. 재개(resume_count 증가)된 전이는 이전 상향 기록을 비운다(명세 5.4).
  */
 export function mergeEvent(prev: EventEntry | undefined, next: EventItem): EventEntry {
   if (!prev) return { event: next, stageStartedAt: firstStageStart(next) };
@@ -214,15 +241,18 @@ export function mergeEvent(prev: EventEntry | undefined, next: EventItem): Event
       ? prev.event.escalations
       : unionEscalations(prev.event.escalations, next.escalations);
     const summaries = unionSummaries(prev.event.summaries, next.summaries);
+    const display = sameSequence(prev.event, next) ? sameSequenceDisplay(prev.event, next) : {};
     const merged =
       acks === prev.event.acks &&
       escalations === prev.event.escalations &&
-      summaries === prev.event.summaries
+      summaries === prev.event.summaries &&
+      Object.keys(display).length === 0
         ? prev
         : {
             ...prev,
             event: {
               ...prev.event,
+              ...display,
               acks,
               escalations,
               ...(summaries !== undefined ? { summaries } : {}),
