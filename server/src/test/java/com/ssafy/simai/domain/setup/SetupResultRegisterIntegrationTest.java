@@ -281,6 +281,59 @@ class SetupResultRegisterIntegrationTest {
     }
 
     @Test
+    void 세션_조회는_보정_문서가_등록된_뒤부터_카메라별_요약을_싣고_쌍별_홀드아웃은_마지막_값을_유지한다() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+
+        // 보정 전: 지어내지 않고 null
+        JsonNode before = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(before.get("cameras").isNull()).isTrue();
+        assertThat(before.get("pair_holdout").isNull()).isTrue();
+
+        // JOINT_BA_AND_VERIFY(65%): 보정 문서와 쌍별 홀드아웃 지표
+        byte[] calDoc = calibrationDocument(newCalibration, s.sessionId());
+        ObjectNode jointSnap = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0).put("calibration_version", newCalibration);
+        jointSnap.putObject("artifacts").set("calibration_document", put(prefix + "calibration-" + newCalibration + ".json", calDoc));
+        ObjectNode jointBa = jointSnap.putObject("metrics").putObject("joint_ba")
+                .put("anchor_camera_id", "cam1").put("converged", true).put("stage_seconds", 12.5).put("valid_points", 900)
+                .put("holdout_worsening_tolerance_px", 1.0);
+        ObjectNode pair = jointBa.putObject("pair_holdout").putObject("cam1-cam2");
+        pair.putObject("before").put("n", 40).put("invalid", 1).put("median", 2.4).put("p90", 4.0).put("p95", 5.1);
+        pair.putObject("after").put("n", 40).put("invalid", 0).put("median", 1.1).put("p90", 2.0).putNull("p95");
+        jointBa.putObject("pair_holdout_median_px").put("cam1-cam2", 1.1).putNull("cam3-cam4");
+        mvc.perform(heartbeat(s, 0.65, jointSnap)).andExpect(status().isOk());
+
+        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
+                .andExpect(status().isOk()).andReturn());
+        JsonNode cameras = view.get("cameras");
+        assertThat(cameras).hasSize(4);
+        JsonNode cam1 = cameras.get(0);
+        assertThat(cam1.get("camera_id").asString()).isEqualTo("cam1");
+        assertThat(cam1.get("yaw_rad").asDouble()).isCloseTo(Math.PI / 4, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(cam1.get("pitch_rad").asDouble()).isNegative();
+        assertThat(cam1.get("image_size").get(0).asInt()).isEqualTo(1920);
+        assertThat(cam1.get("camera_height_m").asDouble()).isEqualTo(2.19);
+        assertThat(cam1.at("/reprojection_error_px/median").asDouble()).isEqualTo(1.8);
+        assertThat(cam1.at("/reprojection_error_px/p95").asDouble()).isEqualTo(4.6);
+        assertThat(cam1.get("world_anchor").isNull()).isTrue();
+        JsonNode holdout = view.get("pair_holdout");
+        assertThat(holdout.get("holdout_worsening_tolerance_px").asDouble()).isEqualTo(1.0);
+        assertThat(holdout.at("/pairs/cam1-cam2/before/median").asDouble()).isEqualTo(2.4);
+        assertThat(holdout.at("/pairs/cam1-cam2/after/p95").isNull()).isTrue();
+        assertThat(holdout.at("/pairs/cam1-cam2/median_px").asDouble()).isEqualTo(1.1);
+        assertThat(holdout.at("/pairs/cam3-cam4/before").isNull()).isTrue();
+        assertThat(holdout.at("/pairs/cam3-cam4/median_px").isNull()).isTrue();
+
+        // 지표 없는 다음 스냅샷은 이전 쌍별 값을 지우지 않는다
+        ObjectNode later = snapshot(s.sessionId(), "PREVIEW_AND_VLM_DRAFT", 70.0).put("calibration_version", newCalibration);
+        mvc.perform(heartbeat(s, 0.70, later)).andExpect(status().isOk());
+        JsonNode after = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
+        assertThat(after.get("pair_holdout")).isEqualTo(holdout);
+        assertThat(after.get("cameras")).isEqualTo(cameras);
+    }
+
+    @Test
     void 해시가_다르거나_다른_작업_경로의_보정_문서는_거부하고_등록하지_않는다() throws Exception {
         Session s = startSession();
         String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";

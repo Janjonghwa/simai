@@ -1,17 +1,22 @@
 package com.ssafy.simai.domain.scene;
 
 import com.ssafy.simai.domain.health.HealthState;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** 보기용 Scene을 생성 보정 대비 누적 자세 변화로 판정한다. 위치·위험 판정에 쓰지 않는다. */
+/**
+ * 보기용 Scene을 생성 보정 대비 누적 자세 변화로 판정한다. 위치·위험 판정에 쓰지 않는다.
+ * GET /api/scenes/current({@link #current})는 최대값 옆에 카메라별 중심 이동·회전 변화 {@code cameras} 도 싣는다(S15P31A101-602).
+ * viewer_health({@link #compare})에는 싣지 않는다(주기 송신 크기·viewer_health 판 유지).
+ */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SceneCompatibility {
@@ -29,10 +34,21 @@ public class SceneCompatibility {
 
     public ObjectNode current(String scene, String source) {
         var world = health.world();
-        return compare(scene, source, world == null ? null : world.calibrationVersion());
+        return compareWithCameras(scene, source, world == null ? null : world.calibrationVersion());
     }
 
+    /** viewer_health 용. 카메라별 값({@code cameras})은 뺀다 */
     public ObjectNode compare(String scene, String source, String target) {
+        ObjectNode out = compareWithCameras(scene, source, target);
+        out.remove("cameras");
+        return out;
+    }
+
+    /**
+     * 카메라별 값까지 실은 판정. {@code cameras} 는 두 보정의 카메라 자세를 실제로 비교했을 때만 배열이고(카메라 ID 순),
+     * 같은 보정(SAME_CALIBRATION: 모두 0)·다른 World·자세 미상이면 null 이다.
+     */
+    ObjectNode compareWithCameras(String scene, String source, String target) {
         ObjectNode out = mapper.createObjectNode();
         out.put("scene_version", scene);
         out.put("calibration_version", target);
@@ -41,6 +57,7 @@ public class SceneCompatibility {
         out.put("reason", "UNKNOWN");
         out.putNull("max_center_delta_m");
         out.putNull("max_rotation_delta_rad");
+        out.putNull("cameras");
         if (source == null || target == null) return out;
         // 버전은 불변이며 정확히 같은 보정은 별도 자세 자료 없이도 같은 좌표를 사용한다.
         if (source.equals(target)) return result(out, "VERIFIED", "SAME_CALIBRATION", 0., 0.);
@@ -84,6 +101,7 @@ public class SceneCompatibility {
             Map<String, double[][]> old = poses(oldPoses), now = poses(newPoses);
             if (old.isEmpty() || !old.keySet().equals(now.keySet())) return out;
             double maxDistance = 0, maxAngle = 0;
+            ArrayNode cameras = out.arrayNode();
             for (String id : old.keySet()) {
                 double[][] a = old.get(id), b = now.get(id);
                 double distance = 0, trace = 0;
@@ -96,12 +114,16 @@ public class SceneCompatibility {
                     }
                     distance += (ca - cb) * (ca - cb);
                 }
-                maxDistance = Math.max(maxDistance, Math.sqrt(distance));
-                maxAngle = Math.max(maxAngle, Math.acos(Math.clamp((trace - 1) / 2, -1., 1.)));
+                double centerDelta = Math.sqrt(distance), rotationDelta = Math.acos(Math.clamp((trace - 1) / 2, -1., 1.));
+                maxDistance = Math.max(maxDistance, centerDelta);
+                maxAngle = Math.max(maxAngle, rotationDelta);
+                cameras.addObject().put("camera_id", id).put("center_delta_m", centerDelta).put("rotation_delta_rad", rotationDelta);
             }
             if (!Double.isFinite(maxDistance) || !Double.isFinite(maxAngle)) return out;
             boolean small = maxDistance <= MAX_CENTER_M + 1e-9 && maxAngle <= MAX_ROTATION_RAD + 1e-9;
-            return result(out, small ? "VERIFIED" : "DIMMED", small ? "SMALL_CHANGE" : "LARGE_CHANGE", maxDistance, maxAngle);
+            result(out, small ? "VERIFIED" : "DIMMED", small ? "SMALL_CHANGE" : "LARGE_CHANGE", maxDistance, maxAngle);
+            out.set("cameras", cameras);
+            return out;
         } catch (IllegalArgumentException e) {
             return out;
         }
@@ -109,7 +131,7 @@ public class SceneCompatibility {
 
     private static Map<String, double[][]> poses(JsonNode poses) {
         if (!poses.isArray()) throw new IllegalArgumentException("자세 없음");
-        Map<String, double[][]> result = new HashMap<>();
+        Map<String, double[][]> result = new TreeMap<>();
         for (JsonNode pose : poses) {
             String id = pose.path("camera_id").asString("");
             JsonNode rotation = pose.path("R"), translation = pose.path("t");
