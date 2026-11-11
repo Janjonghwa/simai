@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,14 +18,21 @@ import org.springframework.web.bind.annotation.RestController;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import tools.jackson.databind.node.ObjectNode;
 
-/** 현장 세팅 REST. 조회는 인증된 열람자, 높이 조회·생성·재시도는 ADMIN(명세 12.6). */
+/**
+ * 현장 세팅 REST. 조회는 인증된 열람자, 높이 조회·생성·재시도는 ADMIN(명세 12.6).
+ * 맵 보강 촬영 업로드·다시 굽기(S15P31A101-607)도 ADMIN 이다(휴대폰 화면도 같은 관리자 로그인을 쓴다).
+ */
 @RestController
 @RequestMapping("/api/setup-sessions")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class SetupController {
     private final SetupService setups;
+    private final SetupSupplementService supplements;
 
-    SetupController(SetupService setups) { this.setups = setups; }
+    SetupController(SetupService setups, SetupSupplementService supplements) {
+        this.setups = setups;
+        this.supplements = supplements;
+    }
 
     record Create(@JsonProperty("work_unit_id") Long workUnitId,
                   @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
@@ -57,5 +65,44 @@ class SetupController {
     ObjectNode retry(@PathVariable UUID id, @RequestBody(required = false) Retry request,
             @AuthenticationPrincipal Jwt jwt) {
         return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
+    }
+
+    /** 맵 보강 촬영 파일 하나의 서명 PUT 주소(S15P31A101-607). 응답은 파일 기록 + upload{method,url,headers,expires_at_ms} */
+    @PostMapping("/{id}/supplement-media")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode issueSupplement(@PathVariable UUID id, @RequestBody SetupSupplementService.IssueRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        return supplements.issue(id, request, Long.parseLong(jwt.getSubject()));
+    }
+
+    /** 올리기를 마쳤다는 알림. 저장소 HEAD 로 확인한다 */
+    @PostMapping("/{id}/supplement-media/{mediaId}/complete")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode completeSupplement(@PathVariable UUID id, @PathVariable String mediaId) {
+        return supplements.complete(id, mediaId);
+    }
+
+    @DeleteMapping("/{id}/supplement-media/{mediaId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PreAuthorize("hasRole('ADMIN')")
+    void removeSupplement(@PathVariable UUID id, @PathVariable String mediaId) {
+        supplements.remove(id, mediaId);
+    }
+
+    /** 올린 보강 촬영 파일로 맵만 다시 굽는다(site_setup SUPPLEMENT_REBAKE). 응답은 세션 조회와 같은 모양 */
+    @PostMapping("/{id}/supplement-rebake")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode rebake(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        supplements.requestRebake(id, Long.parseLong(jwt.getSubject()));
+        return setups.get(id);
+    }
+
+    @PostMapping("/{id}/supplement-rebake/cancel")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode cancelRebake(@PathVariable UUID id) {
+        supplements.cancelRebake(id);
+        return setups.get(id);
     }
 }

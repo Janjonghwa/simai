@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
+import { Route as MobileRouteImport } from './routes/_mobile'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
@@ -18,9 +19,14 @@ import { Route as AppTbmRouteImport } from './routes/_app/tbm'
 import { Route as AppWorkRouteImport } from './routes/_app/work'
 import { Route as AppHistoryIndexRouteImport } from './routes/_app/history.index'
 import { Route as AppHistoryWorkIdRouteImport } from './routes/_app/history.$workId'
+import { Route as MobileMSupplementSessionIdRouteImport } from './routes/_mobile/m.supplement.$sessionId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MobileRoute = MobileRouteImport.update({
+  id: '/_mobile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -63,6 +69,12 @@ const AppHistoryWorkIdRoute = AppHistoryWorkIdRouteImport.update({
   path: '/history/$workId',
   getParentRoute: () => AppRoute,
 } as any)
+const MobileMSupplementSessionIdRoute =
+  MobileMSupplementSessionIdRouteImport.update({
+    id: '/m/supplement/$sessionId',
+    path: '/m/supplement/$sessionId',
+    getParentRoute: () => MobileRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -73,20 +85,23 @@ export interface FileRoutesByFullPath {
   '/work': typeof AppWorkRoute
   '/history/$workId': typeof AppHistoryWorkIdRoute
   '/history/': typeof AppHistoryIndexRoute
+  '/m/supplement/$sessionId': typeof MobileMSupplementSessionIdRoute
 }
 export interface FileRoutesByTo {
+  '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
   '/setup': typeof AppSetupRoute
   '/tbm': typeof AppTbmRoute
   '/work': typeof AppWorkRoute
-  '/': typeof AppIndexRoute
   '/history/$workId': typeof AppHistoryWorkIdRoute
   '/history': typeof AppHistoryIndexRoute
+  '/m/supplement/$sessionId': typeof MobileMSupplementSessionIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/_mobile': typeof MobileRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/cctv': typeof AppCctvRoute
   '/_app/setup': typeof AppSetupRoute
@@ -95,6 +110,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/history/$workId': typeof AppHistoryWorkIdRoute
   '/_app/history/': typeof AppHistoryIndexRoute
+  '/_mobile/m/supplement/$sessionId': typeof MobileMSupplementSessionIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -107,19 +123,22 @@ export interface FileRouteTypes {
     | '/work'
     | '/history/$workId'
     | '/history/'
+    | '/m/supplement/$sessionId'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/'
     | '/login'
     | '/cctv'
     | '/setup'
     | '/tbm'
     | '/work'
-    | '/'
     | '/history/$workId'
     | '/history'
+    | '/m/supplement/$sessionId'
   id:
     | '__root__'
     | '/_app'
+    | '/_mobile'
     | '/login'
     | '/_app/cctv'
     | '/_app/setup'
@@ -128,10 +147,12 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/history/$workId'
     | '/_app/history/'
+    | '/_mobile/m/supplement/$sessionId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  MobileRoute: typeof MobileRouteWithChildren
   LoginRoute: typeof LoginRoute
 }
 
@@ -142,6 +163,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_mobile': {
+      id: '/_mobile'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof MobileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -200,6 +228,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppHistoryWorkIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_mobile/m/supplement/$sessionId': {
+      id: '/_mobile/m/supplement/$sessionId'
+      path: '/m/supplement/$sessionId'
+      fullPath: '/m/supplement/$sessionId'
+      preLoaderRoute: typeof MobileMSupplementSessionIdRouteImport
+      parentRoute: typeof MobileRoute
+    }
   }
 }
 
@@ -225,8 +260,20 @@ const AppRouteChildren: AppRouteChildren = {
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
+interface MobileRouteChildren {
+  MobileMSupplementSessionIdRoute: typeof MobileMSupplementSessionIdRoute
+}
+
+const MobileRouteChildren: MobileRouteChildren = {
+  MobileMSupplementSessionIdRoute: MobileMSupplementSessionIdRoute,
+}
+
+const MobileRouteWithChildren =
+  MobileRoute._addFileChildren(MobileRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  MobileRoute: MobileRouteWithChildren,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport

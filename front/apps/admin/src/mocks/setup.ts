@@ -14,6 +14,7 @@ import {
   type ZoneDraftItemInput,
 } from '@/features/setup/types';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
+import { createSupplementMock } from '@/mocks/setupSupplement';
 import { http, HttpResponse } from 'msw/http';
 
 // 현장 세팅 1단계 및 2단계 이후(GET /api/cameras/coverage-guides, GET /api/setup-sessions/camera-height-defaults,
@@ -250,7 +251,23 @@ export interface SetupMockOptions {
   latestGuide?: CoverageGuidePayload | null;
   /** GET /api/work-units/{id} 가 돌려줄 진행 중 세팅 세션 ID(새로고침 뒤 이어받기 시험). */
   workUnitSessionId?: string | null;
+  /**
+   * 조회할 때 시작 뒤 지난 시간으로 세션 단계를 넘긴다(개발 서버용, 시험은 끈다). 약 35초 뒤 COMPLETED 가 되어
+   * 맵 보강 촬영 다시 굽기(S15P31A101-607)까지 mock 으로 해 볼 수 있다.
+   */
+  autoProgress?: boolean;
 }
+
+/** autoProgress 단계표: 시작 뒤 이 시각(ms)부터 그 단계. */
+const AUTO_STAGES: readonly { at: number; stage: SetupSessionResponse['status']; pct: number }[] = [
+  { at: 0, stage: 'COLLECTING_BACKGROUND', pct: 10 },
+  { at: 4_000, stage: 'INITIAL_POSE_AND_WORLD', pct: 30 },
+  { at: 7_000, stage: 'JOINT_BA_AND_VERIFY', pct: 55 },
+  { at: 10_000, stage: 'PREVIEW_AND_VLM_DRAFT', pct: 70 },
+  { at: 13_000, stage: 'READY_FOR_ZONES', pct: 85 },
+  { at: 25_000, stage: 'BAKING_TEXTURE', pct: 95 },
+  { at: 35_000, stage: 'COMPLETED', pct: 100 },
+];
 
 export interface RetrySetupRecord {
   sessionId: string;
@@ -294,6 +311,52 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     };
     sessions.set(sessionId, updated);
     return updated;
+  }
+
+  const supplement = createSupplementMock({ now, sessions, updateSession });
+
+  /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션은 두지 않는다. */
+  function progressSession(session: SetupSessionResponse): SetupSessionResponse {
+    if (
+      !options.autoProgress ||
+      session.status === 'FAILED' ||
+      session.started_at_ms === undefined
+    ) {
+      return session;
+    }
+    const elapsed = now() - session.started_at_ms;
+    const target = [...AUTO_STAGES].reverse().find((s) => elapsed >= s.at);
+    const order = AUTO_STAGES.map((s) => s.stage);
+    if (!target || order.indexOf(target.stage) <= order.indexOf(session.status)) return session;
+    const idx = order.indexOf(target.stage);
+    const n = session.setup_session_id.slice(-4);
+    const cams = Object.keys(session.camera_heights_m);
+    return updateSession(session.setup_session_id, {
+      status: target.stage,
+      stage: target.stage,
+      progress_pct: target.pct,
+      background_collection_pct: Object.fromEntries(cams.map((c) => [c, idx > 0 ? 100 : 60])),
+      calibration_version: idx >= 2 ? `cal-setup-${n}` : null,
+      preview_scene_version: idx >= 4 ? `scene-preview-setup-${n}` : null,
+      scene_version: idx >= 6 ? (session.scene_version ?? `scene-setup-${n}`) : null,
+      height_checks:
+        idx >= 4
+          ? Object.fromEntries(
+              Object.entries(session.camera_heights_m).map(([c, h]) => [
+                c,
+                {
+                  input_height_m: h,
+                  restored_height_m: h + 0.01,
+                  difference_cm: 1,
+                  within_tolerance: true,
+                  guidance: null,
+                },
+              ]),
+            )
+          : null,
+      ready_at_ms: idx >= 4 ? (session.ready_at_ms ?? now()) : null,
+      completed_at_ms: idx >= 6 ? now() : null,
+    });
   }
 
   function setZoneDrafts(
@@ -459,7 +522,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (!found) {
         return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
       }
-      return HttpResponse.json(found);
+      return HttpResponse.json(supplement.withView(progressSession(found)));
     }),
 
     http.post('*/api/setup-sessions/:id/cancel', ({ request, params }) => {
@@ -582,6 +645,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       zoneDraftsBySession.set(id, built);
       return HttpResponse.json(built);
     }),
+    ...supplement.handlers,
   ];
 
   return {

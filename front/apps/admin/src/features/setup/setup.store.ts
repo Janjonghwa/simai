@@ -8,6 +8,8 @@ interface SetupFlowState {
   acceptedDraftIds: string[];
   discardedDraftIds: string[];
   zonesCommitted: boolean;
+  /** 이 세션에서 맵 보강 촬영(선택)을 건너뛰었다(카드를 한 줄로 접는다, S15P31A101-607). */
+  supplementSkipped: boolean;
 }
 
 const INITIAL_STATE: SetupFlowState = {
@@ -15,6 +17,7 @@ const INITIAL_STATE: SetupFlowState = {
   acceptedDraftIds: [],
   discardedDraftIds: [],
   zonesCommitted: false,
+  supplementSkipped: false,
 };
 
 export const useSetupFlowStore = create<SetupFlowState>(() => ({
@@ -31,6 +34,7 @@ export function setActiveSetupSessionId(sessionId: string | null) {
       acceptedDraftIds: [],
       discardedDraftIds: [],
       zonesCommitted: false,
+      supplementSkipped: false,
     };
   });
 }
@@ -60,6 +64,11 @@ export function discardSetupZoneDraft(candidateId: string) {
 /** 구역 발행(POST /api/zones/commit 또는 POST /api/config-bundles)이 완료되었음을 표시한다. */
 export function markSetupZonesCommitted() {
   useSetupFlowStore.setState({ zonesCommitted: true });
+}
+
+/** 맵 보강 촬영을 건너뛰거나(true) 다시 연다(false). */
+export function setSupplementSkipped(skipped: boolean) {
+  useSetupFlowStore.setState({ supplementSkipped: skipped });
 }
 
 /** 세팅 흐름 스토어를 초기화한다(시험·세션 초기화용). */

@@ -651,7 +651,21 @@ public sealed interface ErrorCode {
         SETUP_CANCEL_NOT_ALLOWED(HttpStatus.CONFLICT, "이미 끝난 세팅 세션은 취소할 수 없습니다"),
         SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
         SETUP_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다"),
-        INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다");
+        INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다"),
+        // 맵 보강 촬영·다시 굽기(S15P31A101-607)
+        INVALID_SUPPLEMENT_MEDIA(HttpStatus.BAD_REQUEST,
+                "보강 촬영 파일 형식·크기 값이 올바르지 않습니다(동영상 mp4·mov, 사진 jpeg·png)"),
+        SUPPLEMENT_MEDIA_NOT_FOUND(HttpStatus.NOT_FOUND, "보강 촬영 파일을 찾을 수 없습니다"),
+        SUPPLEMENT_SESSION_NOT_READY(HttpStatus.CONFLICT, "미리보기 맵이 준비된 세팅 세션에서만 맵 보강 촬영을 할 수 있습니다"),
+        SUPPLEMENT_SETUP_JOB_RUNNING(HttpStatus.CONFLICT, "정식 맵 굽기가 끝난 뒤에 다시 구울 수 있습니다"),
+        SUPPLEMENT_SESSION_SUPERSEDED(HttpStatus.CONFLICT, "이 현장에 더 새 세팅 세션이 있어 이 세션의 맵은 보강할 수 없습니다"),
+        SUPPLEMENT_LIMIT_EXCEEDED(HttpStatus.CONFLICT, "보강 촬영 파일 개수나 전체 용량 상한을 넘었습니다"),
+        SUPPLEMENT_UPLOAD_INCOMPLETE(HttpStatus.CONFLICT, "저장소에 올라온 파일이 없거나 크기·해시가 알린 값과 다릅니다"),
+        SUPPLEMENT_MEDIA_IN_USE(HttpStatus.CONFLICT, "진행 중인 다시 굽기가 쓰는 파일은 뺄 수 없습니다"),
+        SUPPLEMENT_NO_MEDIA(HttpStatus.CONFLICT, "올리기를 마친 보강 촬영 파일이 없습니다"),
+        SUPPLEMENT_REBAKE_IN_PROGRESS(HttpStatus.CONFLICT, "이 세팅 세션의 다시 굽기가 이미 진행 중입니다"),
+        SUPPLEMENT_REBAKE_BASE_MISSING(HttpStatus.CONFLICT, "이 세션의 보정 문서나 굽기 입력 사진이 없어 다시 구울 수 없습니다"),
+        SUPPLEMENT_REBAKE_NOT_RUNNING(HttpStatus.CONFLICT, "진행 중인 다시 굽기가 없습니다");
 
         private final HttpStatus status;
         private final String message;

@@ -36,6 +36,8 @@ import {
   WaitingPanel,
 } from '@/features/setup/SetupPanels';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
+import { supplementVisible } from '@/features/setup/supplement';
+import { SupplementCaptureCard } from '@/features/setup/SupplementCaptureCard';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
@@ -67,6 +69,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 3단계(구역): 미리보기 Scene 이 준비되면 넘어가 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
 // 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
 // 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
+// 구역 단계 오른쪽 칸 끝에 「맵 보강 촬영(선택)」 카드(S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
 
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
@@ -573,6 +576,9 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             onAcceptDraft={(item) => void draftAccept.accept(item)}
             onDiscardDraft={discardSetupZoneDraft}
           />
+          {supplementVisible(currentSession) && currentSession && (
+            <SupplementCaptureCard session={currentSession} />
+          )}
         </SetupZoneStep>
       )}
     </div>

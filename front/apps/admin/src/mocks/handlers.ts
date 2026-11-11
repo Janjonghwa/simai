@@ -36,7 +36,8 @@ const signedIn = (account: MockAccount) =>
 // 작업면은 앱이 살아 있는 동안 상태를 둔다. 구성 묶음 mock(startBackend 의 createZonesMock)이 발행 때 지금 작업면을 싣도록 같은 인스턴스를 나눈다.
 export const staticObjectsMock = createStaticObjectsMock();
 export const tbmMock = createTbmMock({ deferDaysToHistory: true });
-export const setupMock = createSetupMock();
+// 개발 서버에서는 세팅 세션이 시간으로 진행해 맵 보강 촬영 다시 굽기까지 해 볼 수 있다(S15P31A101-607).
+export const setupMock = createSetupMock({ autoProgress: true });
 
 // 경로 앞의 * 는 VITE_API_BASE_URL 이 무엇이든 맞추려는 것이다.
 export const handlers = [

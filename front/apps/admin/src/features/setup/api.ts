@@ -1,14 +1,19 @@
 import {
   cameraHeightDefaultsResponseSchema,
   coverageGuidesResponseSchema,
+  issuedSupplementMediaSchema,
   setupSessionResponseSchema,
   setupZoneDraftsResponseSchema,
+  supplementMediaSchema,
   type CameraHeightDefaultsResponse,
   type CoverageGuidesResponse,
   type CreateSetupSessionBody,
+  type IssuedSupplementMedia,
+  type IssueSupplementMediaBody,
   type RetrySetupSessionBody,
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
+  type SupplementMedia,
 } from '@/features/setup/types';
 import type { Http } from '@/lib/http';
 import { z } from 'zod';
@@ -114,6 +119,72 @@ export function cancelSetupSession(
   setupSessionId: string,
 ): Promise<SetupSessionResponse> {
   return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/cancel`, {
+    method: 'POST',
+    body: {},
+    schema: setupSessionResponseSchema,
+  });
+}
+
+// ---- 맵 보강 촬영(S15P31A101-607) ----
+
+const sessionPath = (setupSessionId: string) =>
+  `/api/setup-sessions/${encodeURIComponent(setupSessionId)}`;
+
+/** 보강 촬영 파일 하나의 올리기 주소를 받는다(서명 PUT, 키는 서버가 정한다). */
+export function issueSupplementMedia(
+  http: Http,
+  setupSessionId: string,
+  body: IssueSupplementMediaBody,
+): Promise<IssuedSupplementMedia> {
+  return http(`${sessionPath(setupSessionId)}/supplement-media`, {
+    method: 'POST',
+    body,
+    schema: issuedSupplementMediaSchema,
+  });
+}
+
+/** 저장소에 다 올렸다고 알린다. 서버가 객체 크기를 확인하고 UPLOADED 로 바꾼다. */
+export function completeSupplementMedia(
+  http: Http,
+  setupSessionId: string,
+  mediaId: string,
+): Promise<SupplementMedia> {
+  return http(
+    `${sessionPath(setupSessionId)}/supplement-media/${encodeURIComponent(mediaId)}/complete`,
+    { method: 'POST', body: {}, schema: supplementMediaSchema },
+  );
+}
+
+/** 보강 촬영 파일을 목록에서 뺀다(다시 굽기에 들어가지 않는다). */
+export async function removeSupplementMedia(
+  http: Http,
+  setupSessionId: string,
+  mediaId: string,
+): Promise<void> {
+  await http(`${sessionPath(setupSessionId)}/supplement-media/${encodeURIComponent(mediaId)}`, {
+    method: 'DELETE',
+    schema: z.void(),
+  });
+}
+
+/** 올린 보강 촬영으로 맵을 다시 굽는다(고정 카메라 4대와 함께). */
+export function startSupplementRebake(
+  http: Http,
+  setupSessionId: string,
+): Promise<SetupSessionResponse> {
+  return http(`${sessionPath(setupSessionId)}/supplement-rebake`, {
+    method: 'POST',
+    body: {},
+    schema: setupSessionResponseSchema,
+  });
+}
+
+/** 진행 중인 다시 굽기를 취소한다(원래 맵 유지). */
+export function cancelSupplementRebake(
+  http: Http,
+  setupSessionId: string,
+): Promise<SetupSessionResponse> {
+  return http(`${sessionPath(setupSessionId)}/supplement-rebake/cancel`, {
     method: 'POST',
     body: {},
     schema: setupSessionResponseSchema,

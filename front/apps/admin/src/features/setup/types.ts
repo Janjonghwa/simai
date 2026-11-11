@@ -171,6 +171,131 @@ export const setupWaitReasonSchema = z.object({
 });
 export type SetupWaitReason = z.infer<typeof setupWaitReasonSchema>;
 
+// ---- 맵 보강 촬영(S15P31A101-607, docs/design/S15P31A101-607-supplement-capture-flow.md) ----
+// 세팅 세션 조회의 supplement 와 보강 촬영 업로드·다시 굽기 REST. 찍은 기기(휴대폰·액션캠·DSLR)는 등록 카메라가 아니다.
+
+export const supplementMediaKindSchema = z.enum(['VIDEO', 'IMAGE']);
+export type SupplementMediaKind = z.infer<typeof supplementMediaKindSchema>;
+
+export const supplementSourceSchema = z.enum(['PHONE_UPLOAD', 'FILE_UPLOAD']);
+export type SupplementSource = z.infer<typeof supplementSourceSchema>;
+
+export const supplementMediaSchema = z.object({
+  media_id: z.string().min(1),
+  kind: supplementMediaKindSchema,
+  source: supplementSourceSchema.nullable().optional().default(null),
+  content_type: z.string().min(1),
+  file_name: z.string().nullable().optional().default(null),
+  size_bytes: z.number().int().positive(),
+  sha256: z.string().nullable().optional().default(null),
+  captured_at_ms: z.number().nullable().optional().default(null),
+  device: z
+    .object({ make: z.string().optional(), model: z.string().optional() })
+    .nullable()
+    .optional()
+    .default(null),
+  /** 서버가 올라온 것을 확인했으면 UPLOADED. 모르는 값이 와도 화면이 깨지지 않게 문자열로 받는다. */
+  status: z.string().min(1),
+  created_at_ms: z.number(),
+  uploaded_at_ms: z.number().nullable().optional().default(null),
+});
+export type SupplementMedia = z.infer<typeof supplementMediaSchema>;
+
+export const supplementUploadSchema = z.object({
+  method: z.literal('PUT'),
+  url: z.string().min(1),
+  headers: z.record(z.string(), z.string()),
+  expires_at_ms: z.number(),
+});
+export type SupplementUpload = z.infer<typeof supplementUploadSchema>;
+
+export const issuedSupplementMediaSchema = supplementMediaSchema.extend({
+  upload: supplementUploadSchema,
+});
+export type IssuedSupplementMedia = z.infer<typeof issuedSupplementMediaSchema>;
+
+export interface IssueSupplementMediaBody {
+  content_type: string;
+  size_bytes: number;
+  sha256?: string;
+  source?: SupplementSource;
+  file_name?: string;
+  captured_at_ms?: number;
+  device?: { make?: string; model?: string };
+}
+
+export const supplementLimitsSchema = z.object({
+  max_items: z.number().int().positive(),
+  max_video_bytes: z.number().positive(),
+  max_image_bytes: z.number().positive(),
+  max_total_bytes: z.number().positive(),
+  content_types: z.array(z.string()),
+});
+export type SupplementLimits = z.infer<typeof supplementLimitsSchema>;
+
+export const supplementMediaResultSchema = z.object({
+  media_id: z.string().min(1),
+  status: z.string().min(1),
+  frames_selected: z.number().int().nonnegative(),
+  frames_registered: z.number().int().nonnegative(),
+});
+export type SupplementMediaResult = z.infer<typeof supplementMediaResultSchema>;
+
+/** 워커가 알린 보조 촬영 결과 요약(계약 site_setup supplement_summary). 서버가 받은 그대로 준다. */
+export const supplementSummarySchema = z.object({
+  status: z.string().min(1),
+  reason: z.string().nullable().optional().default(null),
+  input_role: z.string().optional(),
+  media_count: z.number().int().nonnegative(),
+  frames_selected: z.number().int().nonnegative(),
+  frames_registered: z.number().int().nonnegative(),
+  captured_from_ms: z.number().nullable().optional(),
+  captured_to_ms: z.number().nullable().optional(),
+  alignment: z.record(z.string(), z.number().nullable()).nullable().optional(),
+  media: z.array(supplementMediaResultSchema).optional().default([]),
+});
+export type SupplementSummary = z.infer<typeof supplementSummarySchema>;
+
+export const supplementRebakeStatusSchema = z.enum([
+  'QUEUED',
+  'RUNNING',
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED',
+]);
+export type SupplementRebakeStatus = z.infer<typeof supplementRebakeStatusSchema>;
+
+export const supplementRebakeSchema = z.object({
+  rebake_id: z.string().min(1),
+  job_id: z.string().nullable().optional().default(null),
+  status: supplementRebakeStatusSchema,
+  stage: z.string().nullable().optional().default(null),
+  progress_pct: z.number().min(0).max(100),
+  media_ids: z.array(z.string()).optional().default([]),
+  base_scene_version: z.string().nullable().optional().default(null),
+  scene_version: z.string().nullable().optional().default(null),
+  outcome: z.string().nullable().optional().default(null),
+  reason: z.string().nullable().optional().default(null),
+  result: supplementSummarySchema.nullable().optional().default(null),
+  scene_activated: z.boolean().nullable().optional().default(null),
+  failure_code: z.string().nullable().optional().default(null),
+  failure_message: z.string().nullable().optional().default(null),
+  requested_at_ms: z.number(),
+  completed_at_ms: z.number().nullable().optional().default(null),
+});
+export type SupplementRebake = z.infer<typeof supplementRebakeSchema>;
+
+export const supplementStateSchema = z.object({
+  media: z.array(supplementMediaSchema).optional().default([]),
+  limits: supplementLimitsSchema,
+  can_upload: z.boolean(),
+  can_rebake: z.boolean(),
+  rebake_blocked_reason: z.string().nullable().optional().default(null),
+  rebake: supplementRebakeSchema.nullable().optional().default(null),
+});
+export type SupplementState = z.infer<typeof supplementStateSchema>;
+export type SupplementStateInput = z.input<typeof supplementStateSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -203,6 +328,8 @@ export const setupSessionResponseSchema = z.object({
   completed_at_ms: z.number().nullable().optional(),
   updated_at_ms: z.number().optional(),
   wait_reason: setupWaitReasonSchema.nullable().optional(),
+  /** 맵 보강 촬영 상태(S15P31A101-607). 그 전 서버는 싣지 않는다. */
+  supplement: supplementStateSchema.nullable().optional(),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
 

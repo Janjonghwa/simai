@@ -52,14 +52,26 @@ public class SceneCameraImageService {
     private static final String SETUP_PREFIX = "job-objects/site_setup/";
     static final String SOURCE_STATIC = "STATIC_RECONSTRUCT";
     static final String SOURCE_SETUP = "SITE_SETUP";
-    /** 그 Scene 을 등록한 세팅 대여(세션·작업·대여가 같은 행)가 알린 굽기 입력 사진 */
+    /**
+     * 그 Scene 을 등록한 세팅 대여(세션·작업·대여가 같은 행)가 알린 굽기 입력 사진. 맵 보강 다시 굽기(S15P31A101-607)로 만든 Scene 은
+     * 그 대여가 사진을 알리지 않으므로(계약상 bake_images 불가) 다시 굽기의 기준(rebake_base.bake_images)으로 보낸 원래 세팅 대여의
+     * 사진을 쓴다. 고정 카메라 보정이 같아 카메라 시점 사진이 그대로 맞는다. 경로 검사는 사진을 알린 대여 기준 그대로다.
+     */
     private static final String SETUP_IMAGES = """
-            SELECT b.camera_id, b.object_uri, b.bundle_id, b.job_id, b.lease_id::text AS lease_id
-            FROM setup_session_artifact s
-            JOIN setup_session_artifact b ON b.setup_session_id = s.setup_session_id AND b.job_id = s.job_id
-                AND b.lease_id = s.lease_id AND b.kind = 'BAKE_IMAGE'
-            WHERE s.version = :v AND s.kind IN ('SCENE', 'PREVIEW_SCENE')
-            ORDER BY b.camera_id, b.registered_at
+            SELECT camera_id, object_uri, bundle_id, job_id, lease_id FROM (
+                SELECT b.camera_id, b.object_uri, b.bundle_id, b.job_id, b.lease_id::text AS lease_id, b.registered_at
+                FROM setup_session_artifact s
+                JOIN setup_session_artifact b ON b.setup_session_id = s.setup_session_id AND b.job_id = s.job_id
+                    AND b.lease_id = s.lease_id AND b.kind = 'BAKE_IMAGE'
+                WHERE s.version = :v AND s.kind IN ('SCENE', 'PREVIEW_SCENE')
+                UNION ALL
+                SELECT b.camera_id, b.object_uri, b.bundle_id, b.job_id, b.lease_id::text AS lease_id, b.registered_at
+                FROM setup_supplement_rebake r
+                JOIN setup_session_artifact b ON b.setup_session_id = r.setup_session_id AND b.job_id = r.base_bake_job_id
+                    AND b.lease_id = r.base_bake_lease_id AND b.kind = 'BAKE_IMAGE'
+                WHERE r.result_scene_version = :v
+            ) images
+            ORDER BY camera_id, registered_at
             """;
 
     private final NamedParameterJdbcTemplate jdbc;

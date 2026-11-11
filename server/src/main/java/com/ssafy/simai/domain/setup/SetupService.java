@@ -109,10 +109,12 @@ public class SetupService {
     private final ConfigBundleService configs;
     private final SceneActivationService scenes;
     private final SetupWaitReasonReader waitReasons;
+    private final SetupSupplementService supplements;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
-            ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons) {
+            ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
+            SetupSupplementService supplements) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -127,6 +129,7 @@ public class SetupService {
         this.configs = configs;
         this.scenes = scenes;
         this.waitReasons = waitReasons;
+        this.supplements = supplements;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -202,7 +205,8 @@ public class SetupService {
                     WHERE site_id = :site AND status NOT IN ('COMPLETED', 'FAILED')
                     LIMIT 1
                     """, new MapSqlParameterSource("site", siteId), UUID.class);
-            if (!running.isEmpty()) {
+            // 맵 보강 다시 굽기(S15P31A101-607)도 같은 GPU 의 site_setup 작업이다. 끝나기 전에는 새 세팅을 시작하지 않는다
+            if (!running.isEmpty() || supplements.rebakeRunningInSite(siteId)) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_ALREADY_IN_PROGRESS);
             }
             if (!hasActiveSetupWorker()) {
@@ -429,6 +433,11 @@ public class SetupService {
     /** 유효 대여의 하트비트에 실린 {@code site_setup} 진행 스냅샷을 검증·반영한다. */
     @EventListener
     public void onProgress(JobProgress event) {
+        // 맵 보강 다시 굽기 작업(S15P31A101-607)은 세션의 원래 작업이 아니라 다시 굽기 행만 바꾼다
+        if (supplements.isRebakeJob(event.jobId())) {
+            supplements.onRebakeProgress(event);
+            return;
+        }
         SessionRow session = findByJobForUpdate(event.jobId());
         if (session == null || "COMPLETED".equals(session.status()) || "FAILED".equals(session.status())) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
@@ -453,6 +462,16 @@ public class SetupService {
             return;
         }
         if (!"site_setup".equals(event.jobType())) {
+            return;
+        }
+        if (supplements.isRebakeJob(event.jobId())) {
+            SetupSupplementService.Applied applied = supplements.onRebakeFinished(event);
+            if (applied != null) {
+                // 다시 구운 맵(APPLIED)도 세팅 정식 Scene 과 같은 절차: 지금 현재 Scene 이 기준 맵일 때만, 관제 중이면 하지 않는다
+                promoteSetupSceneAfterCommit(applied.setupSessionId(), applied.siteId(), applied.calibrationVersion(),
+                        applied.sceneVersion(), SetupArtifactRegistrar.SCENE, applied.baseSceneVersion(),
+                        "현장 세팅 맵 보강 다시 굽기 반영(보조 촬영 입력, 위험 판정 미사용)");
+            }
             return;
         }
         SessionRow session = findByJobForUpdate(event.jobId());
@@ -707,6 +726,14 @@ public class SetupService {
      */
     private void promoteSetupSceneAfterCommit(UUID setupSessionId, String siteId, String calibrationVersion, String sceneVersion,
             String kind, String expectedCurrent) {
+        promoteSetupSceneAfterCommit(setupSessionId, siteId, calibrationVersion, sceneVersion, kind, expectedCurrent,
+                SetupArtifactRegistrar.PREVIEW_SCENE.equals(kind)
+                        ? "현장 세팅 미리보기 자동 현재화(PREVIEW, 위험 판정 미사용)"
+                        : "현장 세팅 정식 Scene 이 미리보기를 교체");
+    }
+
+    private void promoteSetupSceneAfterCommit(UUID setupSessionId, String siteId, String calibrationVersion, String sceneVersion,
+            String kind, String expectedCurrent, String reason) {
         if (sceneVersion == null || calibrationVersion == null
                 || !artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.CALIBRATION, calibrationVersion)
                 || !artifacts.registeredBySession(setupSessionId, kind, sceneVersion)) {
@@ -731,9 +758,6 @@ public class SetupService {
                             """, params, Boolean.class))) {
                         return;  // 이 세션이 이미 한 번 올렸다
                     }
-                    String reason = SetupArtifactRegistrar.PREVIEW_SCENE.equals(kind)
-                            ? "현장 세팅 미리보기 자동 현재화(PREVIEW, 위험 판정 미사용)"
-                            : "현장 세팅 정식 Scene 이 미리보기를 교체";
                     boolean done = scenes.activateIfCurrent(siteId, sceneVersion, expectedCurrent, actor, reason);
                     if (done) {
                         log.info("세팅 세션 {} 의 Scene {} 을 현재 Scene 으로 올림", setupSessionId, sceneVersion);
@@ -1307,6 +1331,8 @@ public class SetupService {
         }
         JsonNode calibration = out.path("calibration_version");
         out.set("cameras", cameraSummary(calibration.isString() ? calibration.asString() : null));
+        // 맵 보강 촬영 파일·다시 굽기 상태(S15P31A101-607). 계약 스키마 없는 조회 응답이라 -602 cameras·pair_holdout 처럼 최상위 객체로 싣는다
+        out.set("supplement", supplements.view(siteId, setupSessionId));
         return out;
     }
 
