@@ -188,6 +188,29 @@ class PublishedCalibration:
     document: ObjectRef | None = None
 
 
+BAKE_SKIPPED_LIVE_WORK = "LIVE_WORK_STARTED"  # site_setup 1.7.0 bake_skipped(-597)
+
+
+class BakeReclaimed(Exception):
+    """(h) 정식 굽기를 작업 시작(LIVE)으로 회수했다(명세 3.2 5항, -597). 굽기 도구는 자식 프로세스를 끝낸 뒤 이것을 던진다.
+
+    처리기는 실패로 보지 않고 정식 Scene 없이(scene_version null, bake_skipped) COMPLETED 를 낸다. 관제는 미리보기 Scene 으로 한다.
+    """
+
+
+def _reclaim_as_no_scene(bake: Callable[..., Any]) -> Callable[..., Any]:
+    """굽기 도구를 감싸 BakeReclaimed 를 정식 Scene 없음(BakedScene(None))으로 바꾼다. 대여 취소·시간 초과는 그대로 올린다."""
+
+    def run(**kw: Any) -> Any:
+        try:
+            return bake(**kw)
+        except BakeReclaimed:
+            log.warning("같은 현장 작업이 시작돼 정식 굽기를 멈췄다(미리보기 Scene 으로 관제)")
+            return BakedScene(None)  # type: ignore[arg-type]  # None = 정식 Scene 없음(-597)
+
+    return run
+
+
 @dataclass(frozen=True, slots=True)
 class BakedScene:
     """(h) 굽기로 만든 정식 Scene 버전과 GLB 객체 참조."""
@@ -431,7 +454,8 @@ class SiteSetupHandler:
             lambda doc: str(doc["calibration_version"])
         )
         self._build_preview = preview_builder or self._default_preview_builder
-        self._bake_texture = texture_baker or self._default_texture_baker
+        # 정식 굽기를 작업 시작(LIVE)으로 회수하면(BakeReclaimed) 정식 Scene 없음(scene_version None)으로 바꾼다(-597)
+        self._bake_texture = _reclaim_as_no_scene(texture_baker or self._default_texture_baker)
         self._publish_frames = frame_publisher
         self._publish_bake_images = bake_image_publisher
         self._object_cross_checker = object_cross_checker
@@ -879,6 +903,9 @@ class SiteSetupHandler:
                 "joint_ba": stage_a.summary_metrics,
             },
         }
+        if scene_version is None:
+            # 작업 시작으로 정식 굽기를 회수했다(site_setup 1.7.0, -597): 관제는 이미 현재 Scene 인 미리보기로 한다
+            result["bake_skipped"] = BAKE_SKIPPED_LIVE_WORK
         if stage_a.scale_source is not None:
             result["scale_source"] = stage_a.scale_source
         if stage_a.scale_estimation is not None:

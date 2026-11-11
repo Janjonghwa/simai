@@ -86,6 +86,8 @@ public class SetupService {
             "BAKING_TEXTURE",
             "COMPLETED");
 
+    /** site_setup 1.7.0 bake_skipped 의 유일한 값: 작업 시작(LIVE)으로 정식 굽기를 회수했다(S15P31A101-597) */
+    static final String BAKE_SKIPPED_LIVE_WORK = "LIVE_WORK_STARTED";
     private static final Set<String> READY_OR_LATER_STAGES = Set.of(
             "READY_FOR_ZONES",
             "BAKING_TEXTURE",
@@ -593,8 +595,18 @@ public class SetupService {
                 throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
             }
         }
-        if (terminalResult && sceneVersion == null) {
+        // 정식 굽기를 작업 시작(LIVE)으로 회수한 결과만 정식 Scene 없이 끝난다(site_setup 1.7.0, 명세 3.2 5항, S15P31A101-597).
+        // 관제는 READY_FOR_ZONES 때 현재 Scene 이 된 미리보기로 한다. 계약이 bake_skipped ↔ scene_version null 을 묶는다
+        String bakeSkipped = terminalResult ? optionalText(snapshot, "bake_skipped", null) : null;
+        if (terminalResult && sceneVersion == null && !BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped)) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
+        }
+        if (bakeSkipped != null && (!BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped) || sceneVersion != null)) {
+            throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
+        }
+        if (bakeSkipped != null && !liveWorkInProgress(session.siteId())) {
+            // 워커가 신호를 받은 뒤 작업이 이미 끝났을 수 있다. 결과는 받되(미리보기로 충분) 흔적을 남긴다
+            log.warn("세팅 세션 {}: 진행 중 작업이 없는데 정식 굽기 건너뜀({}) 결과가 왔다", session.setupSessionId(), bakeSkipped);
         }
 
         // 이 스냅샷이 알린 새 산출물을 먼저 등록한다(이 작업·이 대여 경로, 해시 대조). 등록 뒤 계보 검사가 이 세션 귀속을 본다
@@ -631,6 +643,7 @@ public class SetupService {
                     scene_version = :scene,
                     config_version = :config,
                     zone_drafts_ref = :zoneDrafts,
+                    bake_skipped = COALESCE(:bakeSkipped, bake_skipped),
                     ready_at = COALESCE(ready_at, :readyAt),
                     completed_at = COALESCE(completed_at, :completedAt),
                     updated_at = :now
@@ -649,6 +662,7 @@ public class SetupService {
                 .addValue("scene", sceneVersion)
                 .addValue("config", configVersion)
                 .addValue("zoneDrafts", zoneDraftsRef)
+                .addValue("bakeSkipped", bakeSkipped)
                 .addValue("readyAt", readyAt)
                 .addValue("completedAt", completedAt)
                 .addValue("now", now));
@@ -1217,6 +1231,13 @@ public class SetupService {
         return Boolean.TRUE.equals(exists);
     }
 
+    private boolean liveWorkInProgress(String siteId) {
+        Boolean exists = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS')",
+                new MapSqlParameterSource("site", siteId), Boolean.class);
+        return Boolean.TRUE.equals(exists);
+    }
+
     private static int stageIndex(String stage) {
         return stage == null ? -1 : ORDERED_STAGES.indexOf(stage);
     }
@@ -1244,7 +1265,7 @@ public class SetupService {
                        object_cross_checks::text AS object_cross_checks,
                        pair_holdout::text AS pair_holdout,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       failure_code, failure_message, requested_by, started_at, ready_at, completed_at, updated_at,
+                       failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
                        CASE WHEN setup_session.started_at < COALESCE(
                             (SELECT installed_on FROM flyway_schema_history WHERE version = '47' AND success), now()) THEN
                        (SELECT min(t) FROM (
@@ -1421,6 +1442,8 @@ public class SetupService {
         putText(out, "zone_drafts_ref", rs.getString("zone_drafts_ref"));
         putText(out, "failure_code", rs.getString("failure_code"));
         putText(out, "failure_message", rs.getString("failure_message"));
+        // 작업 시작으로 정식 굽기를 회수한 COMPLETED(site_setup 1.7.0, S15P31A101-597). 그 밖에는 null
+        putText(out, "bake_skipped", rs.getString("bake_skipped"));
 
         long requestedBy = rs.getLong("requested_by");
         if (rs.wasNull()) {

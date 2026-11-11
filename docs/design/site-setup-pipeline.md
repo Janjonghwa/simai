@@ -559,7 +559,7 @@ C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험)
 잔여 위험:
 
 1. 첫 시도가 `READY_FOR_ZONES` 를 지나 Tier 0 가 세팅 보정을 채택한 뒤 굽기(`STATIC_BAKE_TIMEOUT` 등)로 재시도되면, 재시도는 새 활성 보정 기준으로 배경을 다시 모아(약 100 s) 처음부터 돈다 → 또 하나의 새 보정·World. 서버 400 은 아니지만 느리다. 굽기 실패만 굽기부터 다시 하는 단계 재개는 넘긴다.
-2. 굽는 동안 관리자가 작업을 시작(IN_PROGRESS)해도 워커는 알 길이 없어 굽기를 계속한다(GPU 상한·Tier 0 우선 접수 문은 그대로). 서버가 하트비트 응답 등으로 "LIVE 작업 중"을 알려 주면 `live_gate` 에 잇는다(계약 변경 필요, 이 티켓 범위 밖).
+2. 굽는 동안 관리자가 작업을 시작(IN_PROGRESS)해도 워커는 알 길이 없어 굽기를 계속한다(GPU 상한·Tier 0 우선 접수 문은 그대로). 서버가 하트비트 응답 등으로 "LIVE 작업 중"을 알려 주면 `live_gate` 에 잇는다(계약 변경 필요, 이 티켓 범위 밖). → S15P31A101-597 에서 해소: EC2 가 site_setup 하트비트 답에 `live_work_active`(job_lease_status 2.1.0)를 싣고, 워커는 굽기를 시작하지 않거나 멈춰 `bake_skipped` 결과(site_setup 1.7.0)로 미리보기 Scene 에서 끝낸다(`live_gate` 차단 경로는 그대로 두고 별도 신호 `JobContext.live_work` 를 쓴다). `docs/design/S15P31A101-597-setup-bake-live-reclaim.md`.
 3. MapAnything 가중치는 run 단계 뒤에 받으므로 Pod 를 띄우자마자 세팅을 시작하면 받기가 끝나기 전에 `mapanything` 단계에 닿을 수 있다(배경 대기 ~100 s 가 대개 가린다). 감시 로그의 "현장 세팅 MapAnything 가중치 준비" 줄을 본 뒤 세팅을 시작한다.
 4. 활성 보정이 없으면(`INTRINSICS_UNAVAILABLE`) 배경 대기를 다 채운 뒤에야 실패한다. lobby 는 번들 `calibration.json` 으로 늘 활성 보정을 갖고 시작하므로 운영 경로에서는 생기지 않는다.
 

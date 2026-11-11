@@ -910,6 +910,7 @@ class Payload21(BaseModel):
     reason: Literal['LEASE_EXPIRED', 'JOB_TIMED_OUT', 'JOB_CANCELLED', 'UNKNOWN_LEASE'] | MISSING = (
         MISSING
     )
+    live_work_active: StrictBool | MISSING = MISSING
 
 
 class JobLeaseStatus(Envelope):
@@ -4380,7 +4381,7 @@ class SiteSetupResult(BaseModel):
     )
     calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
     preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr | None, Field(max_length=160, min_length=1)]
     config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
         MISSING
     )
@@ -4391,6 +4392,7 @@ class SiteSetupResult(BaseModel):
     scale_source: CalibrationScaleSource | MISSING = MISSING
     scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
     object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    bake_skipped: Literal['LIVE_WORK_STARTED'] | MISSING = MISSING
     metrics: SiteSetupMetrics | MISSING = MISSING
     artifacts: SiteSetupArtifacts | MISSING = MISSING
 

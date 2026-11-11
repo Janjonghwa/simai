@@ -138,7 +138,24 @@ class JobLeaseService {
                 WHERE lease_id = :leaseId
                 """, new MapSqlParameterSource().addValue("leaseId", leaseId).addValue("expiresAt", I1Json.utc(expiresAt))
                 .addValue("now", I1Json.utc(now)).addValue("progress", progress));
-        return LeaseStatus.active(expiresAt);
+        LeaseStatus active = LeaseStatus.active(expiresAt);
+        if ("site_setup".equals(job.jobType())) {
+            // 같은 현장에 진행 중 작업이 있으면 정식 굽기를 회수하라고 알린다(명세 3.2 5항, job_lease_status 2.1.0, -597).
+            // 세팅은 진행 중 작업이 없을 때만 시작하므로(-467 409) true 는 세팅 도중 작업이 시작됐다는 뜻이다
+            return active.withSiteSetupSignal(JobMessages.SITE_SETUP_HEARTBEAT_INTERVAL_MS, liveWorkAtJobSite(jobId));
+        }
+        return active;
+    }
+
+    /** site_setup 입력의 현장에 IN_PROGRESS 작업이 있는가 */
+    private boolean liveWorkAtJobSite(String jobId) {
+        Boolean live = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM analysis_job j JOIN work_unit w ON w.site_id = j.input ->> 'site_id'
+                    WHERE j.job_id = :jobId AND w.status = 'IN_PROGRESS'
+                )
+                """, new MapSqlParameterSource("jobId", jobId), Boolean.class);
+        return Boolean.TRUE.equals(live);
     }
 
     /** @param p job_callback payload(계약 검사를 마친 것) */

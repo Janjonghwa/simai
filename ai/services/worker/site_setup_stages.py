@@ -36,6 +36,7 @@ import math
 import os
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,7 @@ from .site_setup import (
     MAX_BAKE_IMAGES,
     MAX_CAMERA_FRAMES,
     BakedScene,
+    BakeReclaimed,
     BakeImageRef,
     BakeImages,
     CameraFrameRef,
@@ -477,9 +479,14 @@ class ProductionSiteSetupStages:
 
     # ------------------------------------------------------------------ 공통
     def _run_stage(self, stage: str) -> None:
+        # 정식 굽기(bake·fallback)는 작업 시작(LIVE) 신호로도 멈춘다(명세 3.2 5항, -597). 자식 프로세스 정리는 ProcessStages 가 한다
+        reclaimable = stage in _RECLAIMABLE_STAGES
+        stop = _AnyEvent(self.ctx.cancelled, self.ctx.live_work) if reclaimable else self.ctx.cancelled
         try:
-            self.stages.run(stage, self.root, timeout_s=STAGE_TIMEOUTS_S[stage], cancelled=self.ctx.cancelled)
+            self.stages.run(stage, self.root, timeout_s=STAGE_TIMEOUTS_S[stage], cancelled=stop)
         except ReconstructionError as exc:
+            if exc.code == "CANCELLED" and reclaimable and self.ctx.live_work.is_set() and not self.ctx.cancelled.is_set():
+                raise BakeReclaimed(stage) from exc
             if exc.code == "CANCELLED":
                 raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True) from exc
             retry = exc.code.endswith("_TIMEOUT") or exc.code.endswith("_TOOL_FAILED")
@@ -579,3 +586,25 @@ class ProductionSiteSetupHandler:
                     raise
         except OSError as exc:
             raise JobFailed("SETUP_IO_FAILED", type(exc).__name__, retryable=True) from exc
+
+
+# 작업 시작(LIVE) 신호로 멈추는 단계: 정식 굽기와 그 대체. 미리보기·복원은 READY_FOR_ZONES 전이라 작업이 시작될 수 없다(-597)
+_RECLAIMABLE_STAGES = frozenset({"bake", "fallback"})
+
+
+class _AnyEvent:
+    """둘 중 하나라도 켜지면 켜진 것으로 보는 읽기 전용 신호. ProcessStages.run 이 쓰는 is_set·wait 만 있다."""
+
+    __slots__ = ("_events",)
+
+    def __init__(self, *events: threading.Event) -> None:
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if self.is_set():
+            return True
+        self._events[0].wait(timeout)  # 첫 신호(취소)만 깨어 기다린다. 나머지는 다음 확인(0.05 s 주기)에서 본다
+        return self.is_set()

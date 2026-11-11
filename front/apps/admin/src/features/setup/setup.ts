@@ -708,6 +708,19 @@ export function deriveSceneTierStatus(
   const currentStage = session?.stage ?? session?.status;
   const bakingTexture = currentStage === 'BAKING_TEXTURE';
 
+  // 작업 시작(LIVE)으로 정밀 굽기를 회수하고 끝난 세팅(site_setup 1.7.0 bake_skipped, S15P31A101-597, 명세 3.2 5항).
+  // COMPLETED 여도 정식 Scene 이 없으니 '정밀 3D 맵'으로 보이지 않고 미리보기 맵으로 관제 중임을 밝힌다
+  if (session?.bake_skipped === 'LIVE_WORK_STARTED' && !finalSceneVersion) {
+    return {
+      tier: 'PREVIEW',
+      previewSceneVersion,
+      finalSceneVersion: null,
+      bakingTexture: false,
+      label: '미리보기 맵',
+      description: '작업 시작으로 정밀 텍스처 굽기를 건너뜀 · 미리보기 맵으로 관제 중',
+    };
+  }
+
   if (finalSceneVersion || currentStage === 'COMPLETED') {
     return {
       tier: 'FINAL',

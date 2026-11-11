@@ -195,6 +195,8 @@ export const setupSessionResponseSchema = z.object({
   zone_drafts_ref: z.string().nullable().optional().default(null),
   failure_code: z.string().nullable().optional().default(null),
   failure_message: z.string().nullable().optional().default(null),
+  /** 작업 시작(LIVE)으로 정밀 굽기를 회수한 COMPLETED(site_setup 1.7.0, S15P31A101-597). 그 밖에는 null. 모르는 값은 null 로 본다 */
+  bake_skipped: z.enum(['LIVE_WORK_STARTED']).nullish().catch(null),
   requested_by: z.number().nullable().optional(),
   started_at_ms: z.number().optional(),
   ready_at_ms: z.number().nullable().optional(),

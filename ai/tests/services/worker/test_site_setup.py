@@ -22,6 +22,7 @@ from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
     BakedScene,
+    BakeReclaimed,
     BakeImageRef,
     BakeImages,
     CameraFrameRef,
@@ -691,6 +692,77 @@ def test_bake_runs_while_tier0_marker_is_live_and_logs(caplog: pytest.LogCapture
         result = handler(ctx)
     assert result["status"] == "COMPLETED" and "BAKING_TEXTURE" in [s["status"] for s in ctx.site_setup_history]
     assert "Tier 0 가 떠 있지만 세팅 굽기를 진행" in caplog.text
+
+
+_RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/result"}
+
+
+def test_work_started_before_bake_skips_bake_and_completes_on_preview() -> None:
+    """굽기 전에 같은 현장 작업이 시작됐으면(EC2 live_work_active) 정식 Scene 없이 COMPLETED(-597, 명세 3.2 5항).
+
+    운영 굽기 도구(ProcessStages)는 신호가 이미 켜져 있으면 자식을 띄우지 않고 BakeReclaimed 를 던진다(stages 시험). 여기서는 그 동작을 흉내 낸다.
+    """
+    ctx_box: list[JobContext] = []
+
+    def _bake(**kw: Any) -> BakedScene:
+        assert ctx_box[0].live_work.is_set()
+        raise BakeReclaimed("bake")
+
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        texture_baker=_bake,
+    )
+    ctx = JobContext("job-reclaim-0", "0192a6f0-7c1e-7b3a-9f2d-000000000325", "site_setup", 1, inp)
+    ctx_box.append(ctx)
+    ctx.live_work.set()
+    result = handler(ctx)
+    assert result["status"] == "COMPLETED" and result["scene_version"] is None
+    assert result["bake_skipped"] == "LIVE_WORK_STARTED" and "scene" not in result.get("artifacts", {})
+    assert schema_errors(result, _RESULT_SCHEMA) == []
+
+
+def test_work_started_during_bake_reclaims_and_completes_on_preview() -> None:
+    """굽는 중 작업 시작: 굽기 도구가 자식을 끝내고 BakeReclaimed 를 던지면 실패가 아니라 정식 Scene 없는 COMPLETED 다."""
+    ctx_box: list[JobContext] = []
+
+    def _bake(**kw: Any) -> BakedScene:
+        ctx_box[0].live_work.set()  # 굽는 사이 하트비트가 신호를 받았다
+        raise BakeReclaimed("bake")
+
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        texture_baker=_bake,
+    )
+    ctx = JobContext("job-reclaim-1", "0192a6f0-7c1e-7b3a-9f2d-000000000326", "site_setup", 1, inp)
+    ctx_box.append(ctx)
+    result = handler(ctx)
+    assert result["scene_version"] is None and result["bake_skipped"] == "LIVE_WORK_STARTED"
+    assert "BAKING_TEXTURE" in [s["status"] for s in ctx.site_setup_history]
+    assert result["metrics"]["stage_seconds"]["BAKING_TEXTURE"] >= 0
+    assert schema_errors(result, _RESULT_SCHEMA) == []
+
+
+def test_lease_cancel_during_bake_is_still_a_failure_not_a_reclaim() -> None:
+    """대여 취소·시간 초과는 회수가 아니다: 작업 시작 신호가 함께 켜져 있어도 굽기 도구의 CANCELLED 실패는 그대로 올라간다.
+
+    운영 굽기 도구는 취소가 켜져 있으면 BakeReclaimed 가 아니라 JobFailed(CANCELLED)를 던진다(stages 시험).
+    """
+    ctx_box: list[JobContext] = []
+
+    def _bake(**kw: Any) -> BakedScene:
+        ctx_box[0].live_work.set()
+        ctx_box[0].cancelled.set()
+        raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True)
+
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        texture_baker=_bake,
+    )
+    ctx = JobContext("job-reclaim-2", "0192a6f0-7c1e-7b3a-9f2d-000000000327", "site_setup", 1, inp)
+    ctx_box.append(ctx)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "CANCELLED"
 
 
 def test_retry_with_same_bundle_publishes_identical_calibration_document() -> None:

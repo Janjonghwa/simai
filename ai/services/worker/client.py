@@ -147,6 +147,8 @@ class LeaseStatus:
     reason: str | None = None
     ttl_ms: int | None = None
     heartbeat_interval_ms: int | None = None
+    # job_lease_status 2.1.0(-597): site_setup 대여에서 같은 현장 작업이 시작됐다(정식 굽기 회수 신호). ACTIVE 에만 있다
+    live_work_active: bool = False
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> LeaseStatus:
@@ -159,7 +161,8 @@ class LeaseStatus:
                 raise ValueError(f"모르는 상태: {status}")
             ttl = int(p["lease_expires_at"]) - int(msg["sent_at"]) if status == "ACTIVE" else None
             interval = p.get("heartbeat_interval_ms")
-            return cls(status, p.get("reason"), ttl, int(interval) if interval is not None else None)
+            live_work = status == "ACTIVE" and p.get("live_work_active") is True
+            return cls(status, p.get("reason"), ttl, int(interval) if interval is not None else None, live_work)
         except (KeyError, TypeError, ValueError) as e:
             raise RetryableError(f"대여 상태 응답을 해석하지 못했다: {e}") from e
 

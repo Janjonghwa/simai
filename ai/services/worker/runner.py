@@ -41,6 +41,7 @@ from .client import (
     GaveUp,
     Lease,
     LeaseClient,
+    LeaseStatus,
     RequestRejected,
     RetryableError,
 )
@@ -298,6 +299,7 @@ class Worker:
             if status.heartbeat_interval_ms:
                 beat.interval = status.heartbeat_interval_ms / 1000
             beat.next_heartbeat = now + beat.interval
+            self._note_live_work(lease, ctx, status)
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
@@ -371,7 +373,15 @@ class Worker:
             if status.heartbeat_interval_ms:
                 beat.interval = status.heartbeat_interval_ms / 1000
             beat.next_heartbeat = now + beat.interval
+            self._note_live_work(lease, ctx, status)
             return None
+
+    @staticmethod
+    def _note_live_work(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:
+        """EC2 가 같은 현장 작업 시작을 알리면(job_lease_status 2.1.0, -597) 처리기에 알린다. 한 번 켜면 끄지 않는다."""
+        if status.live_work_active and not ctx.live_work.is_set():
+            ctx.live_work.set()
+            log.warning("작업 %s(%s): EC2 가 같은 현장 작업 시작을 알렸다. 정식 굽기를 회수한다", lease.job_id, lease.job_type)
 
     def _supervise(
         self, lease: Lease, ctx: JobContext, box: dict[str, Any], done: threading.Event, started_at: int, beat: _Beat
