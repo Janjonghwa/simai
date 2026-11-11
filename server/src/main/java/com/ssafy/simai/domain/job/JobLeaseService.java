@@ -62,6 +62,10 @@ class JobLeaseService {
                     SELECT job_id FROM analysis_job
                     WHERE status = 'QUEUED' AND job_type = ANY(CAST(:types AS text[]))
                         AND (deadline_at IS NULL OR deadline_at > :now)
+                        -- 맵 다시 굽기(SUPPLEMENT_REBAKE)는 오프라인 굽기다. 같은 현장 작업이 진행 중(LIVE)이면 내주지 않고 QUEUED 로
+                        -- 둔다(명세 3.2 5항, -621). 요청 때 막는 것(SetupSupplementService)과 별개로 대기 중 작업이 시작된 경우를 막는다
+                        AND NOT (job_type = 'site_setup' AND input ->> 'mode' = 'SUPPLEMENT_REBAKE' AND EXISTS (
+                            SELECT 1 FROM work_unit w WHERE w.site_id = analysis_job.input ->> 'site_id' AND w.status = 'IN_PROGRESS'))
                     ORDER BY CASE priority WHEN 'VLM_FAST' THEN 0 WHEN 'REPORT' THEN 1 ELSE 2 END, created_at, job_id
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED)

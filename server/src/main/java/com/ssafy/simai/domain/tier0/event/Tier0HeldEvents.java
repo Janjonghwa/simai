@@ -88,7 +88,7 @@ public class Tier0HeldEvents {
         log.info("Tier 0 가 들고 있는 이벤트를 스냅샷으로 바꿈: gateway={} before={} after={}", gatewayId, previous.size(), active.size());
     }
 
-    /** 스냅샷 뒤 현재 상태를 바꾼 실시간 전이(transition: RAISED·UPDATED·RESOLVED·ACKNOWLEDGED) */
+    /** 현재 상태를 바꾼 전이(transition: RAISED·UPDATED·RESOLVED·ACKNOWLEDGED). 동기화 중 전이도 받는다(-621) */
     public synchronized void apply(String gatewayId, UUID eventId, String transition) {
         if ("RESOLVED".equals(transition)) {
             Set<UUID> set = held.get(gatewayId);

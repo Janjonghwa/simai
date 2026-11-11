@@ -25,8 +25,8 @@ function hasNextPage(result: EventsPage, page: number): boolean {
 
 /**
  * 관제 화면이 처음(재연결 때도) 받는 이벤트 목록. 이후는 /topic/events 로 갱신한다.
- * 서버는 해소된 이벤트·감사 전용(AUDIT_ONLY)까지 최신순으로 줘서, 해소된 것이 많으면 아직 진행 중인 오래된 경보가
- * 첫 쪽 밖으로 밀린다. 진행 중 이벤트가 하나도 없는 쪽을 만나거나, 쪽이 끝나거나, EVENTS_MAX_PAGES 에 닿을 때까지 이어 받는다.
+ * 서버는 해소 전 이벤트를 먼저, 그 안에서 최신순으로 준다(S15P31A101-621). 그래서 진행 중 이벤트가 하나도 없는 쪽을 만나면 뒤에는
+ * 해소된 것뿐이라 멈춘다. 쪽이 끝나거나 EVENTS_MAX_PAGES 에 닿아도 멈춘다.
  * 다음 쪽은 앞 쪽의 내용을 보고 정하므로 차례로 받는다.
  */
 export async function requestEvents(

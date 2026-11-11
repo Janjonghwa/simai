@@ -277,6 +277,7 @@ class ProductionSiteSetupStages:
         self._bundle_dir: Path | None = None
         self._run_id = f"{ctx.job_id}-{ctx.lease_id}"
         self._baked: dict[str, Any] = {}
+        self._rebaking = False  # SUPPLEMENT_REBAKE 는 모든 GPU 단계를 작업 시작(LIVE)으로 회수한다(-621)
 
     # ------------------------------------------------------------------ (a)
     def collect(self, *, setup_session_id: str, site_id: str, camera_ids: Sequence[str]) -> CleanBackgroundBundle:
@@ -551,6 +552,14 @@ class ProductionSiteSetupStages:
         log.warning("작업 %s: 보조 촬영을 건너뛴다(%s)", self.ctx.job_id, reason)
         return sc.summary(status="SKIPPED", reason=reason, media=self._media_inputs())
 
+    def _reclaimed_summary(self, summary: Mapping[str, Any] | None, exc: BakeReclaimed) -> dict[str, Any]:
+        """다시 굽기 회수(-621) 요약. 보조 촬영 단계 전이면 SKIPPED, 그 뒤면 FALLBACK. 사유는 LIVE_WORK_STARTED."""
+        stage = str(exc.args[0]) if exc.args else ""
+        if summary is not None:
+            return self._fallback_summary(summary, sc.R_LIVE_WORK_STARTED)
+        status = "FALLBACK" if stage == "supplement" else "SKIPPED"
+        return sc.summary(status=status, reason=sc.R_LIVE_WORK_STARTED, media=self._media_inputs())
+
     def supplement(self) -> dict[str, Any]:
         """보조 촬영 파일을 받고 `supplement` 단계를 돌려 요약을 돌려준다. 취소만 예외로 올리고 나머지는 요약으로 바꾼다."""
         job_path = self.root / "job.json"
@@ -658,27 +667,35 @@ class ProductionSiteSetupStages:
             "input": job_input, "run_id": self._run_id, "image_hashes": hashes,
             "rebake_base": {"calibration_version": str(rebake_base["calibration_version"]),
                             "scene_version": str(rebake_base["scene_version"])}})
-        self._run_stage("prepare")
-        self._run_stage("mapanything")
-        summary = self.supplement()
         base_scene = str(rebake_base["scene_version"])
-        if summary["status"] != "APPLIED":
-            return RebakeOutcome(base_scene, summary, height_checks)
+        self._rebaking = True
+        summary: dict[str, Any] | None = None
         try:
-            glb = self._bake_glb()
-        except JobFailed as exc:
-            if exc.code == "CANCELLED" or self.ctx.cancelled.is_set():
-                raise
-            log.warning("작업 %s: 보조 촬영 다시 굽기 실패(%s) → 원래 맵 유지", self.ctx.job_id, exc.code)
-            return RebakeOutcome(base_scene, self._fallback_summary(summary, sc.R_BAKE_FAILED), height_checks)
+            self._run_stage("prepare")
+            self._run_stage("mapanything")
+            summary = self.supplement()
+            if summary["status"] != "APPLIED":
+                return RebakeOutcome(base_scene, summary, height_checks)
+            try:
+                glb = self._bake_glb()
+            except JobFailed as exc:
+                if exc.code == "CANCELLED" or self.ctx.cancelled.is_set():
+                    raise
+                log.warning("작업 %s: 보조 촬영 다시 굽기 실패(%s) → 원래 맵 유지", self.ctx.job_id, exc.code)
+                return RebakeOutcome(base_scene, self._fallback_summary(summary, sc.R_BAKE_FAILED), height_checks)
+        except BakeReclaimed as exc:
+            # 같은 현장 작업이 시작됐다(명세 3.2 5항): 자식 프로세스는 이미 끝났다. 실패가 아니라 원래 맵 유지로 끝낸다(-621)
+            log.warning("작업 %s: 작업 시작으로 다시 굽기를 %s 단계에서 멈췄다(원래 맵 유지)", self.ctx.job_id, exc)
+            return RebakeOutcome(base_scene, self._reclaimed_summary(summary, exc), height_checks)
         sc.annotate_bake(self.root, summary)
         ref = self._upload_asset(glb)
         return RebakeOutcome(f"scene-{self._run_id}"[:160], summary, height_checks, ref)
 
     # ------------------------------------------------------------------ 공통
     def _run_stage(self, stage: str) -> None:
-        # 정식 굽기(bake·fallback)는 작업 시작(LIVE) 신호로도 멈춘다(명세 3.2 5항, -597). 자식 프로세스 정리는 ProcessStages 가 한다
-        reclaimable = stage in _RECLAIMABLE_STAGES
+        # 정식 굽기(bake·fallback)와 그 안의 보조 촬영(supplement)은 작업 시작(LIVE) 신호로도 멈춘다(명세 3.2 5항, -597·-621).
+        # 다시 굽기(SUPPLEMENT_REBAKE)는 READY_FOR_ZONES 뒤 오프라인 굽기라 prepare·mapanything 까지 모두 멈춘다. 자식 정리는 ProcessStages
+        reclaimable = stage in _RECLAIMABLE_STAGES or (self._rebaking and stage in _REBAKE_RECLAIMABLE_STAGES)
         stop = _AnyEvent(self.ctx.cancelled, self.ctx.live_work) if reclaimable else self.ctx.cancelled
         try:
             self.stages.run(stage, self.root, timeout_s=STAGE_TIMEOUTS_S[stage], cancelled=stop)
@@ -786,8 +803,11 @@ class ProductionSiteSetupHandler:
             raise JobFailed("SETUP_IO_FAILED", type(exc).__name__, retryable=True) from exc
 
 
-# 작업 시작(LIVE) 신호로 멈추는 단계: 정식 굽기와 그 대체. 미리보기·복원은 READY_FOR_ZONES 전이라 작업이 시작될 수 없다(-597)
-_RECLAIMABLE_STAGES = frozenset({"bake", "fallback"})
+# 작업 시작(LIVE) 신호로 멈추는 단계: 정식 굽기와 그 대체(-597), 굽기 안의 보조 촬영(-605 → -621).
+# 일반 세팅의 READY_FOR_ZONES 전 단계(prepare·mapanything·preview)는 여기 넣지 않는다(서버가 그 전 작업 시작을 막는 것은 -621 범위 밖)
+_RECLAIMABLE_STAGES = frozenset({"bake", "fallback", "supplement"})
+# SUPPLEMENT_REBAKE 에서 더 멈추는 단계: 기준 입력 폴더를 다시 만드는 고정 카메라 복원(-621)
+_REBAKE_RECLAIMABLE_STAGES = frozenset({"prepare", "mapanything"})
 
 
 class _AnyEvent:

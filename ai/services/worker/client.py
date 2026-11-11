@@ -21,8 +21,8 @@ from .transport import (
     result_path,
 )
 
-SCHEMA_VERSION = "2.10.0"  # site_setup 이전 모델 재사용 mode·world_anchor(-614)
-CALLBACK_SCHEMA_VERSION = "2.18.0"  # site_setup 이전 모델 재사용 mode·world_anchor(-614)
+SCHEMA_VERSION = "2.11.0"  # site_setup 다시 굽기 회수 사유 LIVE_WORK_STARTED(-621)
+CALLBACK_SCHEMA_VERSION = "2.19.0"  # site_setup 다시 굽기 회수 사유 LIVE_WORK_STARTED(-621)
 JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({

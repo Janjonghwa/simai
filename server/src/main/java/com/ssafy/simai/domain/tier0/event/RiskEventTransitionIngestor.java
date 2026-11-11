@@ -80,13 +80,18 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
         int epoch = tracker.epoch();
         return transaction.execute(status -> {
             Recorded recorded = events.recordTransition(envelope, deliveryMode, receivedAt, epoch);
-            // 현재 상태를 바꾼 실시간 전이만 커밋 뒤 알린다. 늦게 온 낮은 sequence(빈 구간 재전송 등)는 기록만 한다
-            if (recorded == Recorded.APPLIED && "REALTIME".equals(deliveryMode)) {
+            if (recorded == Recorded.APPLIED) {
                 JsonNode p = envelope.payload();
                 UUID eventId = I1Json.requiredUuid(p, "event_id");
-                // 알림(커밋 뒤 다른 스레드)이 바뀐 '들고 있음'을 싣도록 먼저 고친다
+                // '들고 있음'은 동기화 중에도 Tier 0 의 지금 상태를 따른다(S15P31A101-621). 동기화 중 새로 난 이벤트가 REST 투영에서
+                // 「지난 관제」로 내려가지 않게 한다. 스냅샷이 오면 Tier0HeldEvents.replace 가 다시 맞춘다.
+                // 알림(커밋 뒤 다른 스레드)이 바뀐 값을 싣도록 알리기 전에 고친다
                 held.apply(envelope.sourceId(), eventId, I1Json.requiredText(p, "transition"));
-                publisher.publishEvent(new RiskEventsDelivered(List.of(eventId)));
+                // 현재 상태를 바꾼 실시간 전이만 커밋 뒤 알린다. 동기화 중 전이는 스냅샷 분류가 DELAYED_ACTIVE 로 알린다.
+                // 늦게 온 낮은 sequence(빈 구간 재전송 등)는 기록만 한다
+                if ("REALTIME".equals(deliveryMode)) {
+                    publisher.publishEvent(new RiskEventsDelivered(List.of(eventId)));
+                }
             }
             return recorded;
         });
