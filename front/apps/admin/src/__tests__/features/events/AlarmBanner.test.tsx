@@ -133,8 +133,12 @@ describe('AlarmBanner', () => {
 
     expect(within(banner).getByText('위험')).toBeTruthy();
     expect(within(banner).getByRole('alert').textContent).toBe(
-      '개구부·가장자리 근접 · w-0015 · 개구부 구역',
+      '개구부·가장자리 근접 · 0015 · 개구부 구역',
     );
+    // 사람은 끝번호만 보이고 전체 ID 는 올려 보면 나온다. 고정폭 글꼴도 쓰지 않는다.
+    const person = within(banner).getByText('0015');
+    expect(person.getAttribute('title')).toBe('w-0015');
+    expect(person.className).not.toContain('font-mono');
     // 경과는 낭독 영역(role=alert) 밖에 둔다.
     expect(within(banner).getByText('12초 전').closest('[role="alert"]')).toBeNull();
     // 개구부 수치 같은 근거 줄은 배너에 없다.
@@ -156,7 +160,7 @@ describe('AlarmBanner', () => {
 
     live.entries = [{ ...alarm, event: { ...alarm.event, zone_id: 'z-99' } }];
     const person = renderBanner(true);
-    expect(within(person).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · w-0015');
+    expect(within(person).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · 0015');
     expect(person.textContent).not.toMatch(/z-\d/);
   });
 
@@ -176,7 +180,7 @@ describe('AlarmBanner', () => {
 
     expect(within(banner).getByText('+1')).toBeTruthy();
     expect(within(banner).getByText('외 1건').className).toContain('sr-only');
-    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
+    expect(within(banner).getByRole('alert').textContent).toContain('0015');
   });
 
   it('확인 버튼은 확인 대기 경보에만 있고, 확인을 누를 수 있다', () => {
@@ -251,7 +255,7 @@ describe('AlarmBanner 모두 지우기', () => {
     live.entries = [alarm, second];
     const banner = renderBanner(true);
 
-    expect(within(banner).getByRole('alert').textContent).toContain('w-0021');
+    expect(within(banner).getByRole('alert').textContent).toContain('0021');
     expect(within(banner).queryByText('+1')).toBeNull();
   });
 
@@ -259,13 +263,13 @@ describe('AlarmBanner 모두 지우기', () => {
     useEventClearStore.getState().clearAll(T);
     useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'other', role: 'ADMIN' } });
     const banner = renderBanner(true);
-    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
+    expect(within(banner).getByRole('alert').textContent).toContain('0015');
   });
 
   it('지운 뒤에 새 단계가 열린 경보는 다시 뜬다', () => {
     useEventClearStore.getState().clearAll(T);
     live.entries = [{ ...alarm, stageStartedAt: T + 5_000 }];
     const banner = renderBanner(true);
-    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
+    expect(within(banner).getByRole('alert').textContent).toContain('0015');
   });
 });

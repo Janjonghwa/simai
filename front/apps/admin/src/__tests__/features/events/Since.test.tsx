@@ -1,6 +1,7 @@
 import { Since } from '@/features/events/Since';
+import { useMinuteNow } from '@/features/events/useSharedNow';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -39,5 +40,27 @@ describe('Since', () => {
 
     cleanup();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('useMinuteNow', () => {
+  it('분이 바뀔 때만 갱신하고, 1초 틱마다 다시 그리지 않는다', () => {
+    const startMinute = Math.floor(T / 60_000);
+    vi.setSystemTime(startMinute * 60_000 + 5_000);
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useMinuteNow();
+    });
+    const first = result.current;
+    const initial = renders;
+
+    act(() => void vi.advanceTimersByTime(30_000));
+    expect(result.current).toBe(first);
+    expect(renders).toBe(initial);
+
+    act(() => void vi.advanceTimersByTime(30_000));
+    expect(Math.floor(result.current / 60_000)).toBe(startMinute + 1);
+    expect(renders).toBe(initial + 1);
   });
 });

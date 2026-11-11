@@ -1,4 +1,4 @@
-import { ELAPSED_TICK_MS } from '@/features/events/constants';
+import { ELAPSED_TICK_MS, MINUTE_MS } from '@/features/events/constants';
 import { useEffect, useState } from 'react';
 
 // 경과 표시가 여럿(배너·카드)이어도 타이머는 하나다. 칸마다 setTimeout 을 두지 않는다.
@@ -36,5 +36,21 @@ function subscribe(listener: Listener) {
 export function useSharedNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => subscribe(setNow), []);
+  return now;
+}
+
+/**
+ * 지금 시각(ms)을 분이 바뀔 때만 갱신한다. 1초 틱을 그대로 쓰면 목록 전체가 매 초 다시 그려지므로,
+ * 분 단위면 충분한 판단(확인한 지 오래된 이벤트 숨기기)은 이 훅으로 한다.
+ */
+export function useMinuteNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(
+    () =>
+      subscribe((at) =>
+        setNow((prev) => (Math.floor(at / MINUTE_MS) === Math.floor(prev / MINUTE_MS) ? prev : at)),
+      ),
+    [],
+  );
   return now;
 }

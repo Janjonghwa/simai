@@ -85,11 +85,9 @@ afterEach(() => {
 });
 
 describe('IncidentCard', () => {
-  it('첫 줄은 작업자 칩·미확인 칩이고, 둘째 줄은 등급 배지·규칙 이름·구역이며, 오른쪽 아래에 경과다', () => {
+  it('첫 줄은 등급 배지·규칙 이름·구역과 미확인 칩이고, 둘째 줄은 사람 끝번호와 오른쪽 끝의 경과다', () => {
     const { card } = renderCard([entry()]);
 
-    // 진행 중 작업자 칩은 등급색으로 채운다.
-    expect(within(card).getByText('w-0015').className).toContain('bg-sev-critical');
     expect(within(card).getByText('위험')).toBeTruthy();
     expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
     expect(card.textContent).not.toMatch(/z-\d/);
@@ -97,8 +95,35 @@ describe('IncidentCard', () => {
     expect(chip?.getAttribute('data-chip')).toBe('unacked');
     expect(chip?.textContent).toBe('미확인');
     expect(chip?.className).toContain('border-sev-critical');
-    expect(within(card).getByText('12초 전')).toBeTruthy();
+    // 사람은 끝번호만 보인다(전체 ID 는 올려 보면 나오고 카드 이름에 있다). 등급색 알약·굵은 글씨·고정폭이 아니다.
+    const person = within(card).getByText('0015');
+    expect(card.textContent).not.toContain('w-0015');
+    expect(person.getAttribute('title')).toBe('w-0015');
+    expect(card.getAttribute('aria-label')).toBe('w-0015 이벤트');
+    expect(person.className).toBe('text-sm');
+    // 경과는 같은 줄(둘째 줄) 오른쪽 끝에 있다.
+    const row = person.parentElement!.parentElement!;
+    expect(within(row).getByText('12초 전')).toBeTruthy();
+    expect(row.lastElementChild?.textContent).toBe('12초 전');
     expect(within(card).queryByText(/회 발생/)).toBeNull();
+  });
+
+  it('지난 관제 카드도 같은 세 줄이고, 지난 관제 칩과 흐린 모양에 등급 테두리·카메라 버튼은 없다', () => {
+    const { card } = renderCard([entry({ held_by_tier0: false, severity: 'HIGH' })]);
+
+    expect(card.querySelector('[data-chip]')?.textContent).toBe('지난 관제');
+    expect(within(card).getByText('0015').className).toBe('text-sm');
+    expect(within(card).getByText('12초 전')).toBeTruthy();
+    expect(card.className).toContain('opacity-75');
+    expect(card.className).not.toContain('ring-sev-high');
+    expect(within(card).queryByRole('button', { name: /로 확인/ })).toBeNull();
+  });
+
+  it('긴 사람 ID 는 끝번호만 보인다', () => {
+    const { card } = renderCard([entry({ world_ids: ['w-mw8y3hai-0722'] })]);
+
+    expect(within(card).getByText('0722').getAttribute('title')).toBe('w-mw8y3hai-0722');
+    expect(card.textContent).not.toContain('mw8y3hai');
   });
 
   it('R1 주의 묶음은 규칙 이름을 위험 구역 근접으로 보인다', () => {
@@ -123,11 +148,11 @@ describe('IncidentCard', () => {
     expect(card.querySelectorAll('li')).toHaveLength(0);
   });
 
-  it('구역이 대상인 카드는 칩이 구역 이름이고 제목에서 되풀이하지 않는다. 이름을 모르면 `구역`이다', () => {
+  it('구역이 대상인 카드는 둘째 줄이 구역 이름이고 제목에서 되풀이하지 않는다. 이름을 모르면 `구역`이다', () => {
     const { card } = renderCard([entry({ world_ids: [], zone_id: 'z-04' })]);
-    const chip = within(card).getByText('개구부 구역');
-    expect(chip.className).toContain('bg-sev-critical');
-    expect(chip.className).not.toContain('font-mono');
+    const name = within(card).getByText('개구부 구역');
+    expect(name.className).toBe('text-sm');
+    expect(name.getAttribute('title')).toBeNull();
     expect(within(card).getByText('개구부·가장자리 근접')).toBeTruthy();
     expect(card.textContent).not.toMatch(/z-\d/);
     cleanup();
@@ -183,16 +208,16 @@ describe('IncidentCard', () => {
     );
   });
 
-  it('해소된 묶음은 해소 시각 칩만 있고 경과는 없으며, 작업자 칩은 테두리만 남는다', () => {
+  it('해소된 묶음은 해소 시각 칩만 있고 경과는 없으며, 카드가 흐려진다', () => {
     const { card } = renderCard([
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 5_000, updated_at: T + 5_000 }),
     ]);
 
     expect(card.querySelector('[data-chip]')?.textContent).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
     expect(card.textContent).not.toContain('초 전');
-    const worker = within(card).getByText('w-0015').className;
-    expect(worker).toContain('border-sev-critical');
-    expect(worker).not.toContain('bg-sev-critical');
+    expect(within(card).getByText('0015')).toBeTruthy();
+    expect(card.className).toContain('opacity-55');
+    expect(card.className).not.toContain('ring-sev-critical');
   });
 
   it('해소 카드는 두 번 이상 발생했을 때만 N회 발생을 보인다', () => {
@@ -203,6 +228,10 @@ describe('IncidentCard', () => {
     });
     const twice = renderCard([resolved], { occurrences: 2 });
     expect(within(twice.card).getByText('2회 발생')).toBeTruthy();
+    // 경과가 없는 해소 카드는 그 자리(둘째 줄 오른쪽 끝)에 발생 횟수가 선다.
+    expect(within(twice.card).getByText('2회 발생').previousElementSibling).toBe(
+      within(twice.card).getByText('0015').parentElement,
+    );
     cleanup();
 
     const once = renderCard([resolved], { occurrences: 1 });
@@ -222,6 +251,44 @@ describe('IncidentCard', () => {
     expect(within(card).getByText('확인 필요').getAttribute('title')).toBe('확인 필요 · 높이 모름');
     expect(card.textContent).not.toContain('높이 모름');
     expect(card.textContent).not.toContain('예측 위치');
+  });
+
+  it('확인 필요는 운영자가 확인하기 전에만 보인다. 확인하면 확인 시각 칩만 남고 꼬리표는 사라진다', () => {
+    const needsCheck = { verification: 'UNVERIFIABLE', needs_check: true } as const;
+    const before = renderCard([entry(needsCheck)]).card;
+    expect(within(before).getByText('확인 필요')).toBeTruthy();
+    cleanup();
+
+    const acked = renderCard([
+      entry({
+        ...needsCheck,
+        acks: [
+          {
+            ack_id: 'a-1',
+            channel: 'CONTROL_ROOM',
+            actor_role: 'ADMIN',
+            actor_id: 'admin',
+            acked_at: T + 3_000,
+          },
+        ],
+        updated_at: T + 3_000,
+      }),
+    ]).card;
+    expect(acked.querySelector('[data-chip]')?.textContent).toMatch(/^확인 \d{2}:\d{2}:\d{2}$/);
+    expect(within(acked).queryByText('확인 필요')).toBeNull();
+  });
+
+  it('둘째 줄 꼬리표는 사람 번호 옆에 있고, 경과는 맨 오른쪽 끝이다', () => {
+    const { card } = renderCard(
+      [entry({ delivery: 'DELAYED_ACTIVE', verification: 'UNVERIFIABLE', needs_check: true })],
+      { outsideWork: true },
+    );
+
+    const row = within(card).getByText('0015').parentElement!.parentElement!;
+    expect(within(row).getByText('확인 필요')).toBeTruthy();
+    expect(within(row).getByText('지연 알림')).toBeTruthy();
+    expect(within(row).getByText('작업 외 진입')).toBeTruthy();
+    expect(row.lastElementChild?.textContent).toBe('12초 전');
   });
 
   it('지연 알림 꼬리표를 보인다', () => {
