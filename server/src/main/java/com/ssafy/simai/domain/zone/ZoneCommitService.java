@@ -87,6 +87,14 @@ public class ZoneCommitService {
         return response;
     }
 
+    /**
+     * 부르는 쪽 트랜잭션 안에서 구역 하나를 바꾸고 구역 ID 를 돌려준다. 구성 묶음은 만들지 않는다(세팅 완료가 한 번에 만든다,
+     * SetupZoneApplier, S15P31A101-612). commit 과 같은 검사·잠금 순서를 쓴다.
+     */
+    String applyInTransaction(ZoneCommitRequest request, long userId, OffsetDateTime now) {
+        return apply(plan(request), sites.siteId(), userId, now).zoneId();
+    }
+
     /** 트랜잭션 전에 모양만 검사한다(값 검사는 저장소가 트랜잭션 안에서 한다) */
     private static Plan plan(ZoneCommitRequest r) {
         if (r == null || r.zone() == null || r.zone().op() == null) {

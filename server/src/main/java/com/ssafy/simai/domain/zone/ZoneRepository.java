@@ -69,6 +69,11 @@ public class ZoneRepository {
         return versions;
     }
 
+    /** 저장하지 않고 본문만 검사한다(세팅 구역 목록 저장, S15P31A101-612). 만들 때와 같은 오류를 던진다 */
+    public void validate(ZoneRequest request) {
+        check(request);
+    }
+
     /** 한 트랜잭션 안에서 부른다. 다각형이 꼬였으면(자기 교차·넓이 0) 실패한다 */
     public ObjectNode create(String siteId, ZoneRequest request, long userId, OffsetDateTime now) {
         Checked checked = check(request);

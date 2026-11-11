@@ -60,6 +60,11 @@ public class StaticObjectRepository {
         return create(siteId, request, request == null ? null : request.zoneId(), userId, now);
     }
 
+    /** 저장하지 않고 본문만 검사한다(세팅 구역 목록 저장, S15P31A101-612). 만들 때와 같은 오류를 던진다 */
+    public void validate(StaticObjectRequest request) {
+        check(request);
+    }
+
     /** zoneId 는 본문의 zone_id 대신 쓸 연결(구역과 함께 만들 때 새 구역 ID). null·빈 글자면 잇지 않는다. 한 트랜잭션 안에서 부른다 */
     public ObjectNode create(String siteId, StaticObjectRequest request, String zoneId, long userId, OffsetDateTime now) {
         Checked checked = check(request);
