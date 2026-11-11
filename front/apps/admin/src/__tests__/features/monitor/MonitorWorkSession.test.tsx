@@ -2,9 +2,14 @@ import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { useEventClearStore } from '@/features/events/eventClear.store';
 import { applyEvents, LIVE_EVENTS_KEY, type LiveEvents } from '@/features/events/eventsCache';
 import type { EventItem } from '@/features/events/types';
+import {
+  SpatialViewportContext,
+  type SpatialViewportValue,
+} from '@/features/layout/SpatialViewportHost';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { MonitorPage } from '@/features/monitor/MonitorPage';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
+import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { todayIsoDate } from '@/features/tbm/taskInput';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -113,7 +118,20 @@ function item(change: Partial<EventItem> = {}): EventItem {
   };
 }
 
-/** 관제 화면 조각(대기 화면·세션 바·경보 배너·이벤트 패널)을 이벤트가 든 캐시와 함께 그린다. */
+/** 3D 호스트가 칼럼의 위험 구역 목록에 주는 값(구역은 없다). */
+const VIEWPORT: SpatialViewportValue = {
+  view: '3d',
+  viewerReady: true,
+  selectedKey: null,
+  selectedZoneId: null,
+  zones: [],
+  zonesRaw: undefined,
+  zonesFailed: false,
+  selectTarget: () => undefined,
+  clearSelection: vi.fn(),
+};
+
+/** 관제 화면 조각(칼럼·대기 화면·세션 바·경보 배너·이벤트 패널)을 이벤트가 든 캐시와 함께 그린다. */
 function renderMonitor(events: EventItem[] = []) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   applyEvents(queryClient, events);
@@ -124,7 +142,9 @@ function renderMonitor(events: EventItem[] = []) {
   }));
   render(
     <QueryClientProvider client={queryClient}>
-      <MonitorPage />
+      <SpatialViewportContext value={VIEWPORT}>
+        <MonitorPage />
+      </SpatialViewportContext>
       <WorkSessionBar />
       <AlarmBanner withPanel />
       <HostEventPanel visible selectedKey={null} onSelect={vi.fn()} />
@@ -299,25 +319,26 @@ describe('작업 외 진입 배지', () => {
 describe('대기 화면이 아래 층을 막는다', () => {
   const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
 
-  it('오늘 남은 작업이 없으면 작업 목록 칼럼은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
+  it('오늘 남은 작업이 없으면 왼쪽 칼럼(위험 구역 목록)은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
     serveWorks([done({ work_id: '5' })]);
     renderMonitor();
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });
-    const works = await screen.findByRole('region', { name: '오늘 작업' });
-    expect(works.closest('[inert]')).not.toBeNull();
-    expect(works.compareDocumentPosition(waiting) & FOLLOWING).toBeTruthy();
+    const zones = await screen.findByRole('region', { name: '위험 구역' });
+    expect(zones.closest('[inert]')).not.toBeNull();
+    expect(zones.compareDocumentPosition(waiting) & FOLLOWING).toBeTruthy();
     // 대기 화면 자체는 눌려야 한다(작업 관리로).
     expect(waiting.closest('[inert]')).toBeNull();
   });
 
-  it('오늘 예정 작업이 있으면 칼럼에서 작업을 시작할 수 있고 아무것도 막히지 않는다', async () => {
+  it('오늘 예정 작업이 있으면 왼쪽 칼럼이 막히지 않고 대기 화면도 없다', async () => {
     serveWorks([serverWork({ work_id: '6' })]);
-    renderMonitor();
+    const queryClient = renderMonitor();
 
-    const works = await screen.findByRole('region', { name: '오늘 작업' });
-    expect(within(works).getByRole('button', { name: '작업 시작' })).toBeTruthy();
-    expect(works.closest('[inert]')).toBeNull();
+    // 칼럼은 작업 목록을 받기 전에도 그려지므로, 목록이 들어온 뒤에 막히지 않았는지 본다.
+    await waitFor(() => expect(queryClient.getQueryData(TBM_WORKS_KEY)).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.getByRole('region', { name: '위험 구역' }).closest('[inert]')).toBeNull();
     expect(standby()).toBeNull();
   });
 

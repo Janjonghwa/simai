@@ -53,18 +53,11 @@ describe('useTodayWorks', () => {
     expect(standby.result.current).toBe(false);
   });
 
-  it('오늘 작업과 진행 중 작업을 계획 시각순으로 주고, 남은 작업이 없을 때만 standby 다', () => {
+  it('남은 작업이 없을 때만 standby 다', () => {
     const { result } = renderHook(() => useTodayWorks({ passive: true }), {
-      wrapper: wrapperWith([
-        work({ work_id: 'b', from_ms: 20 }),
-        work({ work_id: 'a', from_ms: 10 }),
-        work({ work_id: 'old', date: '2026-11-04' }),
-      ]),
+      wrapper: wrapperWith([work({ work_id: 'b' }), work({ work_id: 'old', date: '2026-11-04' })]),
     });
     expect(result.current).toMatchObject({ state: 'ready', standby: false });
-    if (result.current.state === 'ready') {
-      expect(result.current.works.map((w) => w.work_id)).toEqual(['a', 'b']);
-    }
     const done = renderHook(() => useTodayWorks({ passive: true }), {
       wrapper: wrapperWith([work({ status: 'DONE' })]),
     });

@@ -20,7 +20,7 @@ const work = (patch: Partial<TbmWorkUnit> = {}): TbmWorkUnit => ({
   ...patch,
 });
 
-describe('오늘 작업 목록', () => {
+describe('오늘 작업', () => {
   it('오늘 날짜의 작업과 날짜와 상관없이 진행 중인 작업만 남긴다', () => {
     const list = [
       work({ work_id: 'today' }),
@@ -37,17 +37,7 @@ describe('오늘 작업 목록', () => {
     ).toEqual(['done-today', 'running-yesterday', 'today']);
   });
 
-  it('계획 시작 시각순이고, 받은 배열은 바꾸지 않는다', () => {
-    const late = work({ work_id: 'late', from_ms: 300 });
-    const early = work({ work_id: 'early', from_ms: 100 });
-    const input = [late, early];
-    const result = todayWorks(input, TODAY);
-    expect(result.map((w) => w.work_id)).toEqual(['early', 'late']);
-    expect(result[0]).toBe(early);
-    expect(input.map((w) => w.work_id)).toEqual(['late', 'early']);
-  });
-
-  it('상태를 모르는 오늘 작업도 목록에 남는다', () => {
+  it('상태를 모르는 오늘 작업도 남는다', () => {
     expect(todayWorks([work({ status: undefined })], TODAY)).toHaveLength(1);
   });
 });
