@@ -7,7 +7,7 @@
 
 | 항목 | 위치 |
 |---|---|
-| V49: `report.form`·`form_revision`·`leader_user_id`, 상태 `PENDING`, `app_user.org`·`title` | `server/src/main/resources/db/migration/V49__tbm_daily_form.sql` |
+| V51(처음 V49, -602 와 겹쳐 옮김): `report.form`·`form_revision`·`leader_user_id`, 상태 `PENDING`, `app_user.org`·`title` | `server/src/main/resources/db/migration/V51__tbm_daily_form.sql` |
 | 양식 칸 모양·검사·빈 양식 | `server/.../domain/report/TbmForm.java` |
 | 빈 보고서 만들기 `TbmReportService.createDailyBlank(workId, leaderUserId)` | `TbmReportService`·`TbmReportRepository.createBlank` |
 | 양식 저장 `PUT /api/reports/tbm/{id}/form` (ADMIN) | `TbmReportController`·`TbmReportRepository.updateForm` |
