@@ -199,6 +199,30 @@ class SceneServiceTest {
                 .thenReturn(List.of(json.getBytes(StandardCharsets.UTF_8)));
     }
 
+    @Test
+    void 버전을_지정한_보기는_current_와_같은_모양이고_그_상태를_싣는다() throws Exception {
+        when(row.getString("quality")).thenReturn("{\"scene_tier\":\"PREVIEW\"}");
+        when(row.getString("state")).thenReturn("CANDIDATE");
+        when(row.getBoolean("is_current")).thenReturn(false);
+        ObjectNode result = scenes.view("scene-a");
+        assertThat(result.get("scene_version").asString()).isEqualTo("scene-a");
+        assertThat(result.get("state").asString()).isEqualTo("CANDIDATE");
+        assertThat(result.get("current").asBoolean()).isFalse();
+        assertThat(result.get("default").asBoolean()).isFalse();
+        assertThat(result.get("calibration_version").asString()).isEqualTo("cal-a");
+        // 미리보기는 관제 보정과 비교하지 않는다
+        assertThat(result.has("compatibility")).isFalse();
+        assertThat(result.get("gltf_url").asString()).endsWith("/scene.glb");
+        assertThat(result.at("/quality/scene_tier").asString()).isEqualTo("PREVIEW");
+    }
+
+    @Test
+    void 보일_수_없는_버전은_404_이고_기본_배경으로_대신하지_않는다() {
+        hasActive = false;
+        assertThatThrownBy(() -> scenes.view("scene-missing")).isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getErrorCode()).isEqualTo(ErrorCode.Scene.SCENE_VERSION_NOT_FOUND);
+    }
+
     private void maps(String... names) throws Exception {
         ObjectNode output = mapper.createObjectNode();
         var assets = output.putArray("assets");
