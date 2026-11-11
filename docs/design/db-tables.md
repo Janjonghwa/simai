@@ -1215,11 +1215,13 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `subgraph` | jsonb |  |  | 보고서에 사용한 법령 지식 그래프 서브그래프(`nodes[]`·`edges[]`, 시연 Scene 6 그래프 패널용, 후속 구현에서 추가) |
 | `steps` | jsonb |  |  | 코드 4단계 생성·검증 파이프라인 실행 기록 배열(`step`·`label`·`status`·`input_count`·`output_count`·`duration_ms`·`detail`, 후속 구현에서 추가) |
 | `wrap_up_summary` | jsonb |  |  | 작업 종료(`POST /api/work-units/{id}/end`) 시 실제 LIVE `risk_event` 집계 사실(`wrap_up_facts`: 등급별·규칙별 건수, 확인/종료 건수, 작업 외 진입 건수)과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_text`), 후속 구현에서 추가 |
-| `content_sha256` | text |  |  | 첫 전자서명 등록 시 고정하는 보고서 본문 정규화 해시(`sha256:<64hex>`), 후속 구현에서 추가 |
-| `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, V29 적용, 역할과 무관한 첫 서명에서 잠금 |
+| `content_sha256` | text |  |  | 보고서 제출 때 고정하는 내용 정규화 해시(`sha256:<64hex>`). 날짜 작업은 양식(`form`) + 이 작업 TBM 보고서의 서명 목록(V56, S15P31A101-611). 예전에는 첫 서명 때 고정했다 |
+| `locked_at` | ts |  |  | 보고서가 잠긴 시각. 제출(`POST /api/reports/tbm/{id}/submit`) 때 기록한다(V56, S15P31A101-611). 잠긴 보고서는 양식 수정·서명·서명 지우기가 409 `REPORT_LOCKED`. V29~V55 에서는 첫 서명 때 잠갔다 |
+| `submitted_at` | ts |  |  | 제출 시각(작업 `DONE` 뒤, 받는 사람 없음). 달력 진행 칩 `SUBMITTED` 의 근거(V56) |
+| `submitted_by` | bigint | FK>app_user.user_id, CK(submitted_at 과 함께) |  | 제출한 계정. 응답 `submitted_by_name` 은 display_label(없으면 login_id)(V56) |
 | `form` | jsonb |  |  | 날짜 작업 TBM 양식 칸(`info`·`risks` 3줄·`focus`·`checks` 5줄·`review`). 사람이 고친 칸의 정본, 리더·참석자는 넣지 않는다. 고쳐도 새 `report_version` 을 만들지 않는다(V51, `docs/design/tbm-daily-form.md`) |
 | `form_revision` | int | NN, 기본 0, CK(>= 0) |  | 양식 저장마다 1 증가. AI 초안이 빈 칸을 하나라도 채울 때와 작업 종료 미팅이 빈 `review.ending` 을 채울 때도 1 증가(채운 칸이 없으면 그대로, S15P31A101-616). `PUT .../form` 의 `form_revision` 이 다르면 409 `REPORT_FORM_CONFLICT`(V51) |
-| `leader_user_id` | bigint | FK>app_user.user_id |  | TBM 리더 계정(보고서를 만든 계정). 응답 `leader{user_id,name,org,title}`, name 은 display_label(없으면 login_id)(V49, NFR-14 예외 아님: 계정 참조) |
+| `leader_user_id` | bigint | FK>app_user.user_id |  | TBM 리더 계정(보고서를 만든 계정). 응답 `leader{user_id,name,org,title}`, name 은 display_label(없으면 login_id)(V51, NFR-14 예외 아님: 계정 참조) |
 | `llm_model` | text |  |  |  |
 | `requested_by` | bigint | FK>app_user.user_id, NN |  |  |
 | `requested_at` | ts | NN |  |  |
@@ -1241,8 +1243,8 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `signer_name` | text | NN |  | 참석자·승인자 실명(1~40자, NFR-14 예외: TBM 전자서명에만 허용, 외부 LLM 미전송) |
 | `signature_image_key` | text | NN |  | 비공개 객체 저장소 키(또는 서버 전용 저장 경로, PNG 최대 600×240 px · 256 KiB) |
 | `image_sha256` | text | NN |  | 서명 이미지 바이트 해시(`sha256:<64hex>`) |
-| `report_content_sha256` | text | NN |  | 서명 시점의 `report.content_sha256` 사본(감사 추적용) |
-| `legal_notice_ack` | boolean | NN, CK(= true) |  | `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인 |
+| `report_content_sha256` | text | NN |  | 서명 시점의 보고서 내용(양식·섹션·인용·마무리) 해시. 서명은 보고서를 잠그지 않는다(S15P31A101-611) |
+| `legal_notice_ack` | boolean | NN |  | `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인. 서명 화면에 고지 체크가 없어져 선택이다(받은 값, 없으면 false, V56 에서 CK 제거) |
 | `recorded_by` | bigint | FK>app_user.user_id, NN |  | 서명을 수집·등록한 요청 관리자 계정. APPROVER는 이 계정 본인의 결재 |
 | `signed_at` | ts | NN |  | 서명 등록 시각 |
 

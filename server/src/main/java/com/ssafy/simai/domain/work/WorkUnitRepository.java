@@ -47,8 +47,8 @@ public class WorkUnitRepository {
                    c.critical, c.high
             FROM work_unit w
             LEFT JOIN LATERAL (
-                -- 최신 TBM 보고서 요약(달력이 작업마다 보고서를 따로 조회하지 않게). submitted_at 은 제출(-611)에서 칸을 더할 때 바꾼다
-                SELECT r.report_id, r.status, NULL::timestamptz AS submitted_at
+                -- 최신 TBM 보고서 요약(달력이 작업마다 보고서를 따로 조회하지 않게)
+                SELECT r.report_id, r.status, r.submitted_at
                 FROM report r WHERE r.work_id = w.work_id AND r.report_kind = 'TBM'
                 ORDER BY r.report_version DESC, r.report_id DESC LIMIT 1
             ) t ON true

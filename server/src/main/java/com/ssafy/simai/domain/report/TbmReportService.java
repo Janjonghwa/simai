@@ -134,6 +134,13 @@ public class TbmReportService implements DisposableBean {
         return getOne(reportId);
     }
 
+    /** 보고서 제출(POST /api/reports/tbm/{id}/submit). 받는 사람은 없고 잠그기만 한다. 제출한 뒤의 보고서를 돌려준다. */
+    public ObjectNode submit(long reportId, long userId) {
+        String siteId = sites.siteId();
+        transaction.executeWithoutResult(s -> reports.submit(siteId, reportId, userId, clock.instant()));
+        return getOne(reportId);
+    }
+
     public ObjectNode getOne(long reportId) {
         return reports.findOne(sites.siteId(), reportId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.Report.REPORT_NOT_FOUND));

@@ -72,6 +72,13 @@ class TbmReportController {
         return formAi.startDraft(reportId);
     }
 
+    /** 보고서 제출(S15P31A101-611). 작업 종료 뒤에만 되고, 제출 뒤에는 양식 수정·서명이 409 REPORT_LOCKED 다. */
+    @PostMapping("/{reportId}/submit")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode submit(@PathVariable long reportId, @AuthenticationPrincipal Jwt jwt) {
+        return service.submit(reportId, Long.parseLong(jwt.getSubject()));
+    }
+
     @GetMapping("/{reportId}")
     ObjectNode one(@PathVariable long reportId) {
         return service.getOne(reportId);

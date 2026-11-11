@@ -48,6 +48,8 @@ public class TbmReportRepository {
                    r.llm_model, r.created_at, r.completed_at, r.wrap_up_summary, r.wrap_up_status,
                    r.locked_at, r.content_sha256, r.approved_at,
                    (SELECT COALESCE(u.display_label, u.login_id) FROM app_user u WHERE u.user_id=r.approved_by) AS approved_by_name,
+                   r.submitted_at,
+                   (SELECT COALESCE(u.display_label, u.login_id) FROM app_user u WHERE u.user_id=r.submitted_by) AS submitted_by_name,
                    r.form::text AS form, r.form_revision, r.leader_user_id,
                    COALESCE(lu.display_label, lu.login_id) AS leader_name, lu.org AS leader_org, lu.title AS leader_title,
                    w.work_date, w.name AS work_name, w.starts_at, w.ends_at,
@@ -158,6 +160,13 @@ public class TbmReportRepository {
         }
         if (work.layoutId() < 0 || work.layoutRevision() < 1) {
             throw new BusinessException(ErrorCode.Report.WORK_HAS_NO_LAYOUT);
+        }
+        // 제출한 작업에는 새 보고서 버전을 만들지 않는다(잠긴 보고서 뒤에 잠기지 않은 버전이 생기지 않게, S15P31A101-611)
+        Boolean submitted = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM report WHERE work_id = :workId AND submitted_at IS NOT NULL)",
+                new MapSqlParameterSource("workId", workId), Boolean.class);
+        if (Boolean.TRUE.equals(submitted)) {
+            throw new BusinessException(ErrorCode.Report.REPORT_LOCKED);
         }
         Optional<Long> existingGenerating = findGeneratingId(workId);
         if (existingGenerating.isPresent()) {
@@ -349,6 +358,71 @@ public class TbmReportRepository {
                 WHERE daily AND work_id = (SELECT work_id FROM report WHERE report_id = :reportId)
                   AND name IS DISTINCT FROM :name
                 """, new MapSqlParameterSource("reportId", reportId).addValue("name", TbmForm.workName(form)));
+    }
+
+    /**
+     * 보고서 제출(S15P31A101-611). 작업이 종료(DONE)됐고 최신 버전이고 제출 전일 때만 된다.
+     * submitted_at·submitted_by·locked_at 과 content_sha256(양식 + 이 작업 TBM 보고서의 서명 목록)을 기록한다.
+     * 서명은 버전마다 따로 붙는다(작업 종료가 새 버전을 만드는 동안, B10 전까지). 그래서 작업의 모든 버전 서명을 넣는다.
+     */
+    public void submit(String siteId, long reportId, long userId, Instant now) {
+        MapSqlParameterSource p = new MapSqlParameterSource().addValue("siteId", siteId).addValue("reportId", reportId);
+        record Target(long workId, String workStatus, boolean latest, boolean submitted, boolean generating, String form,
+                String sections, String citations, String wrap) { }
+        List<Target> rows = jdbc.query("""
+                SELECT r.work_id, w.status AS work_status, r.submitted_at IS NOT NULL AS submitted, r.form::text AS form,
+                       r.report_version = (SELECT max(x.report_version) FROM report x WHERE x.work_id = r.work_id) AS latest,
+                       (r.status = 'GENERATING' OR r.wrap_up_status = 'GENERATING') AS generating,
+                       r.sections::text AS sections, r.citations::text AS citations, to_jsonb(r)->'wrap_up_summary' AS wrap
+                FROM report r JOIN work_unit w ON w.work_id = r.work_id
+                WHERE w.site_id = :siteId AND r.report_id = :reportId AND r.report_kind = 'TBM'
+                FOR UPDATE OF w, r
+                """, p, (rs, i) -> new Target(rs.getLong("work_id"), rs.getString("work_status"), rs.getBoolean("latest"),
+                rs.getBoolean("submitted"), rs.getBoolean("generating"), rs.getString("form"),
+                rs.getString("sections"), rs.getString("citations"), rs.getString("wrap")));
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_NOT_FOUND);
+        }
+        Target t = rows.getFirst();
+        if (t.submitted()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_LOCKED);
+        }
+        if (!t.latest()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_VERSION_STALE);
+        }
+        if (!"DONE".equals(t.workStatus())) {
+            throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        // 초안·종료 미팅을 쓰는 중이면 제출하지 않는다(잠근 뒤에 생성이 행을 바꾸지 않게)
+        if (t.generating()) {
+            throw new BusinessException(ErrorCode.Report.REPORT_NOT_READY);
+        }
+        ObjectNode content = mapper.createObjectNode();
+        content.set("form", t.form() == null ? mapper.nullNode() : mapper.readTree(t.form()));
+        // AI 본문(섹션·인용·마무리)도 잠금 해시에 넣는다(예전 보고서는 양식이 없다)
+        content.set("sections", mapper.readTree(t.sections()));
+        content.set("citations", mapper.readTree(t.citations()));
+        content.set("wrap_up_summary", t.wrap() == null ? mapper.nullNode() : mapper.readTree(t.wrap()));
+        ArrayNode signatures = content.putArray("signatures");
+        jdbc.query("""
+                SELECT s.signature_id, s.report_version, s.signer_name, s.signer_role, s.image_sha256, s.signed_at
+                FROM report_signature s JOIN report r ON r.report_id = s.report_id
+                WHERE r.work_id = :workId ORDER BY s.signature_id
+                """, new MapSqlParameterSource("workId", t.workId()), rs -> {
+            ObjectNode s = signatures.addObject();
+            s.put("signature_id", rs.getLong(1));
+            s.put("report_version", rs.getInt(2));
+            s.put("signer_name", rs.getString(3));
+            s.put("signer_role", rs.getString(4));
+            s.put("image_sha256", rs.getString(5));
+            s.put("signed_at_ms", rs.getTimestamp(6).getTime());
+        });
+        jdbc.update("""
+                UPDATE report SET submitted_at = :now, submitted_by = :user,
+                    -- 첫 서명으로 이미 잠긴 예전 보고서는 그 잠금 기록을 덮어쓰지 않는다(규칙 6)
+                    locked_at = COALESCE(locked_at, :now), content_sha256 = COALESCE(content_sha256, :hash)
+                WHERE report_id = :reportId
+                """, p.addValue("now", utc(now)).addValue("user", userId).addValue("hash", ReportHash.of(mapper, content)));
     }
 
     public Optional<ObjectNode> findOne(String siteId, long reportId) {
@@ -545,6 +619,9 @@ public class TbmReportRepository {
         Timestamp approvedAt = rs.getTimestamp("approved_at");
         if (approvedAt == null) o.putNull("approved_at"); else o.put("approved_at", approvedAt.getTime());
         putText(o, "approved_by_name", rs.getString("approved_by_name"));
+        Timestamp submittedAt = rs.getTimestamp("submitted_at");
+        if (submittedAt == null) o.putNull("submitted_at"); else o.put("submitted_at", submittedAt.getTime());
+        putText(o, "submitted_by_name", rs.getString("submitted_by_name"));
         // 서명 표는 -440(V29)가 소유한다. 독립 worktree에는 없으므로 0으로 시작한다.
         boolean signaturesExist = Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT to_regclass('report_signature') IS NOT NULL", Map.of(), Boolean.class));

@@ -63,20 +63,22 @@ class ReportSignatureIntegrationTest {
     }
 
     @Test
-    void firstSignatureLocksCanonicalContentAndLaterSignaturesReuseHash() throws Exception {
+    void signaturesRecordCanonicalContentHashWithoutLocking() throws Exception {
         String key = upload(admin);
         JsonNode first = body(sign(admin, reportId, 1, key, SHA, true).andExpect(status().isCreated()));
-        String canonical = "{\"citations\":[{\"c\":5,\"d\":4}],\"sections\":[{\"a\":{\"b\":3,\"y\":2},\"z\":1}],\"wrap_up_summary\":null}";
+        String canonical = "{\"citations\":[{\"c\":5,\"d\":4}],\"form\":null,\"sections\":[{\"a\":{\"b\":3,\"y\":2},\"z\":1}],\"wrap_up_summary\":null}";
         String expected = "sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8)));
         assertThat(first.path("content_sha256").asString()).isEqualTo(expected);
         assertThat(first.path("signer_role").asString()).isEqualTo("PARTICIPANT");
         assertThat(jdbc.queryForObject("SELECT signer_role FROM report_signature WHERE signature_id=?", String.class,
                 first.path("signature_id").asLong())).isEqualTo("PARTICIPANT");
-        assertThat(jdbc.queryForObject("SELECT content_sha256 FROM report WHERE report_id=?", String.class, reportId)).isEqualTo(expected);
-        assertThat(jdbc.queryForObject("SELECT locked_at FROM report WHERE report_id=?", java.sql.Timestamp.class, reportId)).isNotNull();
+        // 서명은 잠그지 않는다(S15P31A101-611). 잠금은 제출 때다
+        assertThat(jdbc.queryForObject("SELECT report_content_sha256 FROM report_signature WHERE signature_id=?", String.class,
+                first.path("signature_id").asLong())).isEqualTo(expected);
+        assertThat(jdbc.queryForObject("SELECT locked_at FROM report WHERE report_id=?", java.sql.Timestamp.class, reportId)).isNull();
+        assertThat(first.path("locked_at").isNull()).isTrue();
         JsonNode second = body(sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isCreated()));
         assertThat(second.path("content_sha256").asString()).isEqualTo(expected);
-        assertThat(second.path("locked_at").asLong()).isEqualTo(first.path("locked_at").asLong());
         mvc.perform(get("/api/reports/tbm/{id}/signatures", reportId).header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.items[0].image_url").exists())
@@ -86,23 +88,26 @@ class ReportSignatureIntegrationTest {
     }
 
     @Test
-    void invalidNoticeForeignGrantAndHashAreRejected() throws Exception {
+    void foreignGrantAndHashAreRejectedAndNoticeIsOptional() throws Exception {
         String foreign = upload(other);
         sign(admin, reportId, 1, foreign, SHA, true).andExpect(status().isBadRequest());
         String own = upload(admin);
         sign(admin, reportId, 1, own, "b".repeat(64), true).andExpect(status().isBadRequest());
-        sign(admin, reportId, 1, own, SHA, false).andExpect(status().isBadRequest());
         assertThat(jdbc.queryForObject("SELECT locked_at FROM report WHERE report_id=?", java.sql.Timestamp.class, reportId)).isNull();
+        // 고지 확인은 선택이다(서명 화면에 고지 체크가 없다). 받은 값을 그대로 남긴다
+        JsonNode noNotice = body(sign(admin, reportId, 1, own, SHA, false).andExpect(status().isCreated()));
+        assertThat(jdbc.queryForObject("SELECT legal_notice_ack FROM report_signature WHERE signature_id=?", Boolean.class,
+                noNotice.path("signature_id").asLong())).isFalse();
     }
 
     @Test
-    void staleAndGeneratingVersionsAreRejected() throws Exception {
+    void staleVersionIsRejectedButDraftStateDoesNotMatter() throws Exception {
         String key = upload(admin);
         long pending = report(2, "GENERATING");
         sign(admin, reportId, 1, key, SHA, true).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("REPORT_VERSION_STALE"));
-        sign(admin, pending, 2, key, SHA, true).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("REPORT_NOT_READY"));
+        // 초안 상태(GENERATING 등)와 무관하게 받는다(작업 전 확인에서 서명)
+        sign(admin, pending, 2, key, SHA, true).andExpect(status().isCreated());
     }
 
     @Test
@@ -138,10 +143,10 @@ class ReportSignatureIntegrationTest {
     }
 
     @Test
-    void approvalWithoutParticipantsLocksContentAndNewVersionRequiresNewApproval() throws Exception {
+    void approvalWithoutParticipantsAndNewVersionRequiresNewApproval() throws Exception {
         JsonNode first = body(approve(admin, reportId, 1, upload(admin)).andExpect(status().isCreated()));
         assertThat(first.path("content_sha256").asString()).startsWith("sha256:");
-        assertThat(first.path("locked_at").asLong()).isPositive();
+        assertThat(first.path("locked_at").isNull()).isTrue();
         Instant endedAt = Instant.now();
         var work = mapper.createObjectNode();
         work.put("actual_started_at", endedAt.minusSeconds(60).toEpochMilli());
