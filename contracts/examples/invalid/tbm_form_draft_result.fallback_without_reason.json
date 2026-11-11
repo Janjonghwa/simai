@@ -1,0 +1,84 @@
+{
+  "_expect_error": "대체 초안은 사유가 있다",
+  "request_id": "rpt-41-r3",
+  "form_draft": {
+    "task_name": "슬래브 개구부 덮개 설치, 자재 정리",
+    "place": "개구부 1, 3층 슬래브 단부",
+    "risk_assessed": true,
+    "risks": [
+      {
+        "risk": "개구부 1 주변 개구부·단부 가장자리에 다가가 떨어질 위험",
+        "measure": "개구부 덮개를 고정하고 단부에 안전난간을 설치한 뒤 작업한다"
+      },
+      {
+        "risk": "개구부 1 주변 위험구역에 작업자가 들어가 다칠 위험",
+        "measure": "개구부 1 주변 위험구역 경계를 표시하고 작업자 외 출입을 통제한다"
+      },
+      {
+        "risk": "개구부 1 주변 위험구역 쪽으로 이동하다 모르고 들어갈 위험",
+        "measure": "이동 동선을 위험구역과 떨어뜨려 정하고 동선을 작업자에게 알린다"
+      }
+    ],
+    "focus": {
+      "risk": "개구부 1 주변 개구부·단부 가장자리에 다가가 떨어질 위험",
+      "measure": "개구부 덮개를 고정하고 단부에 안전난간을 설치한 뒤 작업한다"
+    },
+    "checks": [
+      {
+        "code": "PPE",
+        "yes": null,
+        "action": "안전모·안전화 등 보호구 착용을 작업 전 서로 확인한다"
+      },
+      {
+        "code": "ZONE_CONTROL",
+        "yes": null,
+        "action": "개구부 1 주변 위험구역 경계 표시와 출입 통제 상태를 확인한다"
+      },
+      {
+        "code": "OPENING_GUARD",
+        "yes": null,
+        "action": "개구부 1 주변 개구부 덮개 고정과 안전난간 설치를 확인한다"
+      },
+      {
+        "code": "WORK_SURFACE_FALL",
+        "yes": null,
+        "action": "높은 곳 작업이 있으면 작업발판과 추락 방호 설비를 확인한다"
+      },
+      {
+        "code": "HEALTH",
+        "yes": null,
+        "action": "작업 전 작업자 컨디션과 음주·피로 여부를 확인한다"
+      }
+    ],
+    "review": {
+      "daily": "2026-11-12 슬래브 개구부 덮개 설치, 자재 정리 작업 전 TBM. 장소: 개구부 1, 3층 슬래브 단부. 주요 위험: 개구부 1 주변 개구부·단부 가장자리에 다가가 떨어질 위험; 개구부 1 주변 위험구역에 작업자가 들어가 다칠 위험; 개구부 1 주변 위험구역 쪽으로 이동하다 모르고 들어갈 위험. 중점 관리: 개구부 1 주변 개구부·단부 가장자리에 다가가 떨어질 위험. 대책: 개구부 덮개를 고정하고 단부에 안전난간을 설치한 뒤 작업한다. 작업 전 점검 항목은 현장에서 확인한 뒤 표시한다."
+    }
+  },
+  "fallback": true,
+  "fallback_reason": null,
+  "citations": [],
+  "generator": {
+    "model": "gpt-5-mini",
+    "prompt_version": "tbm-form-1",
+    "attempts": 0,
+    "input_tokens": null,
+    "output_tokens": null
+  },
+  "steps": [
+    {
+      "step": "CANDIDATE_SEARCH",
+      "status": "SKIPPED",
+      "detail": "법령 그래프 설정 없음"
+    },
+    {
+      "step": "LLM_DRAFT",
+      "status": "FAILED",
+      "detail": "LLM 호출 실패"
+    },
+    {
+      "step": "FALLBACK",
+      "status": "SUCCEEDED",
+      "detail": "결정적 대체 초안(LLM_TIMEOUT)"
+    }
+  ]
+}

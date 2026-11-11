@@ -1,0 +1,42 @@
+{
+  "request_id": "rpt-41-end",
+  "window_ms": [
+    1762905600000,
+    1762909200000
+  ],
+  "facts": {
+    "event_count": 3,
+    "severity_counts": {
+      "CRITICAL": 2,
+      "HIGH": 1,
+      "CAUTION": 0,
+      "INFO": 0
+    },
+    "rule_counts": {
+      "R1": 2,
+      "R2": 1
+    },
+    "max_severity": "CRITICAL",
+    "operator_ack_count": 1,
+    "operator_close_count": 0,
+    "outside_work_entry_count": 0,
+    "unacknowledged_critical_count": 1,
+    "phase_counts": {
+      "early": 1,
+      "middle": 1,
+      "late": 1
+    },
+    "first_event_min": 4,
+    "last_event_min": 52,
+    "top_zones": [
+      {
+        "name": "개구부 1",
+        "count": 2
+      },
+      {
+        "name": "현장 전체",
+        "count": 1
+      }
+    ]
+  }
+}

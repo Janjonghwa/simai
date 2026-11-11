@@ -1935,6 +1935,168 @@ class StaticReconstructSubmitResult(Envelope):
     payload: Payload40
 
 
+class Review1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    daily: Annotated[StrictStr, Field(max_length=2000)]
+
+
+class TbmFormDraftRequestExistingPair(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    risk: Annotated[StrictStr, Field(max_length=500)]
+    measure: Annotated[StrictStr, Field(max_length=500)]
+
+
+class TbmFormDraftRequestRuleTag(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(pattern='^R([1-9]|1[01])$')]
+
+
+class TbmFormDraftRequestTaskCode(
+    RootModel[Literal['SLAB_OPENING_COVER', 'WORK_PLATFORM', 'FORMWORK', 'REBAR', 'MATERIAL_HANDLING', 'EXTERIOR_SCAFFOLD_CHECK', 'FLOOR_FINISHING']]
+):
+    root: Literal['SLAB_OPENING_COVER', 'WORK_PLATFORM', 'FORMWORK', 'REBAR', 'MATERIAL_HANDLING', 'EXTERIOR_SCAFFOLD_CHECK', 'FLOOR_FINISHING']
+
+
+class TbmFormDraftRequestZone(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    name: Annotated[StrictStr, Field(max_length=100, min_length=1)]
+    zone_kind: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    rule_id: TbmFormDraftRequestRuleTag | None
+
+
+class Generator(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    model: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+    prompt_version: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    attempts: Annotated[StrictInt, Field(ge=0, le=2)]
+    input_tokens: Annotated[StrictInt | None, Field(ge=0)]
+    output_tokens: Annotated[StrictInt | None, Field(ge=0)]
+
+
+class TbmFormDraftResultCheckCode(
+    RootModel[Literal['PPE', 'ZONE_CONTROL', 'OPENING_GUARD', 'WORK_SURFACE_FALL', 'HEALTH']]
+):
+    root: Literal['PPE', 'ZONE_CONTROL', 'OPENING_GUARD', 'WORK_SURFACE_FALL', 'HEALTH']
+
+
+class TbmFormDraftResultCheckRow(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    code: TbmFormDraftResultCheckCode
+    yes: None
+    action: Annotated[StrictStr, Field(max_length=500)]
+
+
+class TbmFormDraftResultCitation(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    node_id: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+    source_name: Annotated[StrictStr | None, Field(max_length=200)]
+    article_ref: Annotated[StrictStr | None, Field(max_length=200)]
+    title: Annotated[StrictStr | None, Field(max_length=500)]
+    excerpt: Annotated[StrictStr, Field(max_length=200)]
+
+
+class Review2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    daily: Annotated[StrictStr, Field(max_length=2000, min_length=1)]
+
+
+class TbmFormDraftResultPair(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    risk: Annotated[StrictStr, Field(max_length=500, min_length=1)]
+    measure: Annotated[StrictStr, Field(max_length=500, min_length=1)]
+
+
+class TbmFormDraftResultStepName(
+    RootModel[Literal['CANDIDATE_SEARCH', 'LLM_DRAFT', 'LLM_RETRY', 'CODE_VERIFY', 'FALLBACK']]
+):
+    root: Literal['CANDIDATE_SEARCH', 'LLM_DRAFT', 'LLM_RETRY', 'CODE_VERIFY', 'FALLBACK']
+
+
+class TbmFormDraftResultStepStatus(
+    RootModel[Literal['SUCCEEDED', 'FAILED', 'SKIPPED']]
+):
+    root: Literal['SUCCEEDED', 'FAILED', 'SKIPPED']
+
+
+class WindowM(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=253402300799999)]
+
+
+class TbmFormEndingRequestCount(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=9223372036854775807)]
+
+
+class SeverityCounts(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    CRITICAL: TbmFormEndingRequestCount
+    HIGH: TbmFormEndingRequestCount
+    CAUTION: TbmFormEndingRequestCount
+    INFO: TbmFormEndingRequestCount
+
+
+class PhaseCounts(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    early: TbmFormEndingRequestCount
+    middle: TbmFormEndingRequestCount
+    late: TbmFormEndingRequestCount
+
+
+class TopZone(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    name: Annotated[StrictStr, Field(max_length=40, min_length=1)]
+    count: Annotated[StrictInt, Field(ge=1)]
+
+
+class TbmFormEndingRequestFacts(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    event_count: TbmFormEndingRequestCount
+    severity_counts: SeverityCounts
+    rule_counts: dict[str, TbmFormEndingRequestCount]
+    max_severity: Literal['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] | None
+    operator_ack_count: TbmFormEndingRequestCount
+    operator_close_count: TbmFormEndingRequestCount
+    outside_work_entry_count: TbmFormEndingRequestCount
+    unacknowledged_critical_count: TbmFormEndingRequestCount
+    phase_counts: PhaseCounts
+    first_event_min: Annotated[StrictInt | None, Field(ge=0)]
+    last_event_min: Annotated[StrictInt | None, Field(ge=0)]
+    top_zones: Annotated[list[TopZone], Field(max_length=3)]
+
+
+class TbmFormEndingResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    ending: Annotated[StrictStr, Field(max_length=2000, min_length=1)]
+    fallback: StrictBool
+    fallback_reason: Literal['LLM_NOT_CONFIGURED', 'LLM_TIMEOUT', 'LLM_UNAVAILABLE', 'VALIDATION_FAILED'] | None
+    model: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+
+
 class TbmReport(RootModel[Any]):
     root: Any
 
@@ -2033,7 +2195,7 @@ class RiskItem(BaseModel):
     position_ids: list[PositionId]
 
 
-class Generator(BaseModel):
+class Generator1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2053,7 +2215,7 @@ class TbmReportResult(BaseModel):
     sections: Annotated[list[Section], Field(min_length=1)]
     risk_items: list[RiskItem]
     citations: list[TbmReportClauseId]
-    generator: Generator
+    generator: Generator1
     created_at: DefsTimestampMs
 
 
@@ -3694,6 +3856,77 @@ class StaticReconstructSubmit(Envelope):
     payload: Payload39
 
 
+class Check(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    code: TbmFormDraftResultCheckCode
+    yes: StrictBool | None
+    action: Annotated[StrictStr, Field(max_length=500)]
+
+
+class TbmFormDraftRequestExisting(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    task_name: Annotated[StrictStr, Field(max_length=100)]
+    place: Annotated[StrictStr, Field(max_length=200)]
+    risk_assessed: StrictBool | None
+    risks: Annotated[
+        list[TbmFormDraftRequestExistingPair], Field(max_length=3, min_length=3)
+    ]
+    focus: TbmFormDraftRequestExistingPair
+    checks: Annotated[list[Check], Field(max_length=5, min_length=5)]
+    review: Review1
+
+
+class TbmFormDraftRequestTask(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    code: TbmFormDraftRequestTaskCode | MISSING = MISSING
+    label: Annotated[StrictStr | MISSING, Field(max_length=100, min_length=1)] = MISSING
+    rule_tags: Annotated[
+        list[TbmFormDraftRequestRuleTag] | MISSING, Field(max_length=11)
+    ] = MISSING
+    text: Annotated[StrictStr | MISSING, Field(max_length=100, min_length=1)] = MISSING
+
+
+class TbmFormDraftResultFormDraft(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    task_name: Annotated[StrictStr, Field(max_length=100, min_length=1)]
+    place: Annotated[StrictStr, Field(max_length=200)]
+    risk_assessed: StrictBool | None
+    risks: Annotated[list[TbmFormDraftResultPair], Field(max_length=3, min_length=3)]
+    focus: TbmFormDraftResultPair
+    checks: Annotated[
+        list[TbmFormDraftResultCheckRow], Field(max_length=5, min_length=5)
+    ]
+    review: Review2
+
+
+class TbmFormDraftResultPipelineStep(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    step: TbmFormDraftResultStepName
+    status: TbmFormDraftResultStepStatus
+    detail: Annotated[StrictStr, Field(max_length=500)]
+
+
+class TbmFormEndingRequest(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[
+        StrictStr, Field(max_length=64, min_length=1, pattern='^[A-Za-z0-9._:-]+$')
+    ]
+    window_ms: Annotated[list[WindowM], Field(max_length=2, min_length=2)]
+    facts: TbmFormEndingRequestFacts
+
+
 class Payload41(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4397,6 +4630,35 @@ class SiteSetupResult(BaseModel):
     artifacts: SiteSetupArtifacts | MISSING = MISSING
 
 
+class TbmFormDraftRequest(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[
+        StrictStr, Field(max_length=64, min_length=1, pattern='^[A-Za-z0-9._:-]+$')
+    ]
+    report_date: Annotated[StrictStr, Field(pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}$')]
+    tasks: Annotated[list[TbmFormDraftRequestTask], Field(max_length=20, min_length=1)]
+    rule_tags: Annotated[list[TbmFormDraftRequestRuleTag], Field(max_length=11)]
+    zones: Annotated[list[TbmFormDraftRequestZone], Field(max_length=50)]
+    existing: TbmFormDraftRequestExisting | MISSING = MISSING
+
+
+class TbmFormDraftResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    form_draft: TbmFormDraftResultFormDraft
+    fallback: StrictBool
+    fallback_reason: Literal['LLM_NOT_CONFIGURED', 'LLM_TIMEOUT', 'LLM_UNAVAILABLE', 'VALIDATION_FAILED'] | None
+    citations: Annotated[list[TbmFormDraftResultCitation], Field(max_length=24)]
+    generator: Generator
+    steps: Annotated[
+        list[TbmFormDraftResultPipelineStep] | MISSING, Field(max_length=10)
+    ] = MISSING
+
+
 class Payload2(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -4565,6 +4827,10 @@ class Contracts(BaseModel):
     site_setup: SiteSetup | MISSING = MISSING
     static_reconstruct_submit: StaticReconstructSubmit | MISSING = MISSING
     static_reconstruct_submit_result: StaticReconstructSubmitResult | MISSING = MISSING
+    tbm_form_draft_request: TbmFormDraftRequest | MISSING = MISSING
+    tbm_form_draft_result: TbmFormDraftResult | MISSING = MISSING
+    tbm_form_ending_request: TbmFormEndingRequest | MISSING = MISSING
+    tbm_form_ending_result: TbmFormEndingResult | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING
     tier0_endpoint: Tier0Endpoint | MISSING = MISSING
     video_segment: VideoSegment | MISSING = MISSING

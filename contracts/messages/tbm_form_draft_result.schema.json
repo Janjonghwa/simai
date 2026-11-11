@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/tbm_form_draft_result.schema.json",
+  "title": "EC2 내부 tbm_form_draft_result (1.0.0)",
+  "description": "EC2 옆 Python 컨테이너(deploy/risk-engine) → Spring. 날짜 작업 TBM 보고서 양식(report.form, S15P31A101-609)의 AI 초안 응답(S15P31A101-616, 계약 d: 양식 칸 JSON). 【전송】 compose 내부망 HTTP/JSON, 공개 포트 없음, 봉투 없음. POST /v1/report/form-draft 의 200 응답 본문이고 요청은 tbm_form_draft_request 다. 【무엇을 채우나】 form_draft 는 초안이 채우는 칸만 싣는다: info.task_name·info.place·info.risk_assessed, risks 3줄, focus, checks[*].yes·action, review.daily. 일시·작업일 동일·작업내용(info.date_time_ms·same_day·tasks)과 점검 문구(label), 종료 미팅(review.ending, tbm_form_ending_result)은 싣지 않는다. Spring 은 같은 보고서 행에서 비어 있는 칸(글자 \"\", 예·아니오 null)만 이 값으로 채우고 사람이 쓴 칸은 덮지 않는다(설계 docs/design/S15P31A101-616-tbm-form-draft.md). 【AI 는 제안만】 점검 예·아니오(checks[*].yes)는 사람이 현장에서 확인하는 답이라 초안은 늘 null 이다(스키마, AGENTS 규칙 4). 작업명·장소·위험성평가 실시는 LLM 이 아니라 입력에서 코드가 정한다. 【대체 초안】 LLM 이 없거나(설정·연결·시간 초과) 두 번 만든 초안이 모두 검사를 통과하지 못하면 규칙 태그·구역으로 만든 결정적 대체 문장(fallback true, 사유 fallback_reason)이고 그때 인용은 없다. 인용(citations)은 법령 그래프 허용 목록 안의 조문만이고(코드가 검사, 어기면 그 초안을 버린다) 확률·퍼센트 표현은 쓰지 않는다. 보고서는 경보가 아니다(알림 채널로 보내지 않는다, AGENTS 규칙 5). 글자 수는 코드 포인트 수(서버 TbmForm 과 같다). 1.0.0 신설(S15P31A101-616).",
+  "type": "object",
+  "required": ["request_id", "form_draft", "fallback", "fallback_reason", "citations", "generator"],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "요청의 request_id 그대로" },
+    "form_draft": { "$ref": "#/$defs/form_draft" },
+    "fallback": { "type": "boolean", "description": "true 면 LLM 초안이 아니라 결정적 대체 초안이다" },
+    "fallback_reason": {
+      "enum": ["LLM_NOT_CONFIGURED", "LLM_TIMEOUT", "LLM_UNAVAILABLE", "VALIDATION_FAILED", null],
+      "description": "대체 사유. LLM_NOT_CONFIGURED: 컨테이너 .env 에 LLM 설정 없음, LLM_TIMEOUT: 시간 초과, LLM_UNAVAILABLE: 연결·인증·응답 오류, VALIDATION_FAILED: 두 초안이 모두 스키마·글자 수·인용 검사에 걸림. fallback false 면 null"
+    },
+    "citations": {
+      "type": "array",
+      "maxItems": 24,
+      "items": { "$ref": "#/$defs/citation" },
+      "description": "LLM 초안이 근거로 삼은 법령 조문(법령 그래프 허용 목록 안, 처음 나온 순서, 중복 없음). 그래프를 쓸 수 없었거나 대체 초안이면 빈 배열"
+    },
+    "generator": {
+      "type": "object",
+      "required": ["model", "prompt_version", "attempts", "input_tokens", "output_tokens"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1, "maxLength": 200, "description": "제공사가 응답에 적은 모델 이름(없으면 요청한 모델 이름). LLM 을 한 번도 부르지 못했으면 deterministic" },
+        "prompt_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "attempts": { "type": "integer", "minimum": 0, "maximum": 2, "description": "LLM 호출 횟수(검사로 버린 초안 포함). 설정이 없어 부르지 못했으면 0" },
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0, "description": "제공사가 주면(모든 시도 합), 아니면 null" },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "maxItems": 10,
+      "description": "실행 기록(선택). 단계 이름·결과·짧은 설명만 싣고 LLM 응답 본문은 싣지 않는다",
+      "items": { "$ref": "#/$defs/pipeline_step" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "fallback": { "const": true } }, "required": ["fallback"] },
+      "then": {
+        "properties": {
+          "fallback_reason": { "enum": ["LLM_NOT_CONFIGURED", "LLM_TIMEOUT", "LLM_UNAVAILABLE", "VALIDATION_FAILED"] },
+          "citations": { "maxItems": 0 }
+        }
+      },
+      "else": { "properties": { "fallback_reason": { "const": null } } }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "pipeline_step": {
+      "type": "object",
+      "required": ["step", "status", "detail"],
+      "properties": {
+        "step": { "$ref": "#/$defs/step_name" },
+        "status": { "$ref": "#/$defs/step_status" },
+        "detail": { "type": "string", "maxLength": 500 }
+      },
+      "additionalProperties": false
+    },
+    "step_name": { "enum": ["CANDIDATE_SEARCH", "LLM_DRAFT", "LLM_RETRY", "CODE_VERIFY", "FALLBACK"] },
+    "step_status": { "enum": ["SUCCEEDED", "FAILED", "SKIPPED"] },
+    "check_code": {
+      "enum": ["PPE", "ZONE_CONTROL", "OPENING_GUARD", "WORK_SURFACE_FALL", "HEALTH"],
+      "description": "안전조치 점검 5줄 코드. 양식의 줄 순서도 이 순서로 고정이다(서버 TbmForm.CHECKS)"
+    },
+    "pair": {
+      "type": "object",
+      "description": "위험 한 줄: 위험 요인과 대책",
+      "required": ["risk", "measure"],
+      "properties": {
+        "risk": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "measure": { "type": "string", "minLength": 1, "maxLength": 500 }
+      },
+      "additionalProperties": false
+    },
+    "check_row": {
+      "type": "object",
+      "description": "점검 한 줄. 문구(label)는 서버가 정하므로 싣지 않는다",
+      "required": ["code", "yes", "action"],
+      "properties": {
+        "code": { "$ref": "#/$defs/check_code" },
+        "yes": { "type": ["boolean", "null"], "const": null, "description": "초안은 늘 null(사람이 현장에서 확인해 고른다, AGENTS 규칙 4)" },
+        "action": { "type": "string", "maxLength": 500, "description": "조치 제안 문장" }
+      },
+      "additionalProperties": false
+    },
+    "form_draft": {
+      "type": "object",
+      "description": "초안이 채우는 양식 칸. 줄 수(위험 3·점검 5)와 점검 코드는 스키마가, 점검 줄 순서(check_code 순서)는 컨테이너 코드와 계약 시험이 본다",
+      "required": ["task_name", "place", "risk_assessed", "risks", "focus", "checks", "review"],
+      "properties": {
+        "task_name": { "type": "string", "minLength": 1, "maxLength": 100, "description": "작업명. 고른 작업내용 이름에서 코드가 만든다(LLM 아님)" },
+        "place": { "type": "string", "maxLength": 200, "description": "장소. 세팅 구역 이름에서 코드가 만든다. 구역이 없으면 \"\"(모르면 비운다)" },
+        "risk_assessed": { "type": ["boolean", "null"], "description": "위험성평가 실시. 위험 3줄이 규칙 태그에서 나왔으면 true, 태그가 하나도 없으면 null(코드가 정한다)" },
+        "risks": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/pair" } },
+        "focus": { "$ref": "#/$defs/pair", "description": "중점 위험 한 줄" },
+        "checks": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/check_row" },
+          "allOf": [
+            { "contains": { "properties": { "code": { "const": "PPE" } } } },
+            { "contains": { "properties": { "code": { "const": "ZONE_CONTROL" } } } },
+            { "contains": { "properties": { "code": { "const": "OPENING_GUARD" } } } },
+            { "contains": { "properties": { "code": { "const": "WORK_SURFACE_FALL" } } } },
+            { "contains": { "properties": { "code": { "const": "HEALTH" } } } }
+          ]
+        },
+        "review": {
+          "type": "object",
+          "required": ["daily"],
+          "properties": {
+            "daily": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "일일 미팅(작업 전 TBM 요약)" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "citation": {
+      "type": "object",
+      "required": ["node_id", "source_name", "article_ref", "title", "excerpt"],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1, "maxLength": 200, "description": "법령 그래프 rag_node.node_id" },
+        "source_name": { "type": ["string", "null"], "maxLength": 200 },
+        "article_ref": { "type": ["string", "null"], "maxLength": 200 },
+        "title": { "type": ["string", "null"], "maxLength": 500 },
+        "excerpt": { "type": "string", "maxLength": 200, "description": "조문 본문 앞 200자" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "_expect_error": "점검 코드 5개가 한 줄씩",
+  "request_id": "rpt-41-r3",
+  "form_draft": {
+    "task_name": "슬래브 개구부 덮개 설치, 자재 정리",
+    "place": "개구부 1, 3층 슬래브 단부",
+    "risk_assessed": true,
+    "risks": [
+      {
+        "risk": "개구부 1 덮개를 설치하는 동안 덮개가 없는 개구부로 떨어질 위험",
+        "measure": "덮개 설치 전 개구부 둘레에 안전난간을 먼저 세우고 안전대를 걸고 작업한다"
+      },
+      {
+        "risk": "3층 슬래브 단부 가장자리에서 자재를 옮기다 떨어질 위험",
+        "measure": "단부 가까이에는 자재를 두지 않고 단부 안전난간 상태를 확인한다"
+      },
+      {
+        "risk": "자재 정리 중 개구부 1 위험구역으로 모르고 들어갈 위험",
+        "measure": "위험구역 경계를 표시하고 이동 동선을 개구부와 떨어뜨려 정한다"
+      }
+    ],
+    "focus": {
+      "risk": "덮개가 없는 개구부로 떨어질 위험",
+      "measure": "덮개 설치가 끝날 때까지 개구부 둘레 안전난간을 유지하고 안전대를 건다"
+    },
+    "checks": [
+      {
+        "code": "PPE",
+        "yes": null,
+        "action": "안전모 턱끈과 안전대 착용 상태를 작업 전 서로 확인한다"
+      },
+      {
+        "code": "ZONE_CONTROL",
+        "yes": null,
+        "action": "개구부 1 위험구역 경계 표시와 출입 통제를 확인한다"
+      },
+      {
+        "code": "OPENING_GUARD",
+        "yes": null,
+        "action": "개구부 1 덮개 고정 상태와 둘레 안전난간 설치를 확인한다"
+      },
+      {
+        "code": "WORK_SURFACE_FALL",
+        "yes": null,
+        "action": "3층 슬래브 단부 안전난간과 안전대 걸이 설비를 확인한다"
+      },
+      {
+        "code": "PPE",
+        "yes": null,
+        "action": "작업 전 작업자 컨디션과 음주·피로 여부를 확인한다"
+      }
+    ],
+    "review": {
+      "daily": "오늘은 개구부 1 덮개 설치와 자재 정리를 한다. 개구부와 슬래브 단부에서 떨어질 위험이 가장 크므로 덮개 설치 전 안전난간을 먼저 세우고 안전대를 건다. 자재 정리 동선은 위험구역과 떨어뜨린다. 산업안전보건기준규칙 제43조(개구부 등의 방호 조치)를 근거로 한다."
+    }
+  },
+  "fallback": false,
+  "fallback_reason": null,
+  "citations": [
+    {
+      "node_id": "산업안전보건기준규칙 제43조",
+      "source_name": "산업안전보건기준에 관한 규칙",
+      "article_ref": "제43조",
+      "title": "개구부 등의 방호 조치",
+      "excerpt": "① 사업주는 작업발판 및 통로의 끝이나 개구부로서 근로자가 추락할 위험이 있는 장소에는 안전난간, 울타리, 수직형 추락방망 또는 덮개 등의 방호 조치를 충분한 강도를 가진 구조로 튼튼하게 설치하여야 한다"
+    }
+  ],
+  "generator": {
+    "model": "gpt-5-mini",
+    "prompt_version": "tbm-form-1",
+    "attempts": 1,
+    "input_tokens": 2310,
+    "output_tokens": 640
+  },
+  "steps": [
+    {
+      "step": "CANDIDATE_SEARCH",
+      "status": "SUCCEEDED",
+      "detail": "후보 14건, 허용 조문 9건"
+    },
+    {
+      "step": "LLM_DRAFT",
+      "status": "SUCCEEDED",
+      "detail": "초안 수신 3120 ms"
+    },
+    {
+      "step": "CODE_VERIFY",
+      "status": "SUCCEEDED",
+      "detail": "검사 통과"
+    }
+  ]
+}
