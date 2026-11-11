@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.scene;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -25,6 +26,13 @@ class SceneController {
     @GetMapping("/api/scenes/current")
     ObjectNode current() {
         return scenes.current();
+    }
+
+    /** 버전을 지정한 Scene 보기(S15P31A101-613). 세팅 화면용이라 관리자만. current 와 같은 모양 */
+    @GetMapping("/api/scenes/{sceneVersion}/view")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode view(@PathVariable String sceneVersion) {
+        return scenes.view(sceneVersion);
     }
 
     @GetMapping("/api/scenes/{sceneVersion}/camera-images")

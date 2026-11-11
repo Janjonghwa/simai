@@ -8,6 +8,8 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -69,34 +71,24 @@ public class SceneService {
         this.defaultGltfKey = defaultGltfKey.strip();
     }
 
+    /** current·view 가 같이 쓰는 열. s 는 scene_version 행, c 는 그 보정 버전 */
+    private static final String SCENE_COLUMNS = """
+            SELECT s.scene_version, s.state, s.calibration_version, c.state AS calibration_state, s.gltf_key,
+                s.quality::text AS quality, s.scene_output::text AS output, s.committed_at
+            """;
+
     public ObjectNode current() {
-        List<Committed> committed = jdbc.query("""
-                SELECT s.scene_version, s.calibration_version, c.state AS calibration_state, s.gltf_key,
-                    s.quality::text AS quality, s.scene_output::text AS output, s.committed_at
+        List<Committed> committed = jdbc.query(SCENE_COLUMNS + """
                 FROM (""" + CURRENT_COMMITTED + """
                 ) s
                 LEFT JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
                 LIMIT 1
-                """, Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
-                rs.getString("calibration_state"), rs.getString("gltf_key"), rs.getString("quality"), rs.getString("output"),
-                rs.getObject("committed_at", OffsetDateTime.class)));
+                """, Map.of(), (rs, i) -> committed(rs));
         ObjectNode node = mapper.createObjectNode();
         if (!committed.isEmpty()) {
             Committed s = committed.getFirst();
-            node.put("scene_version", s.version());
-            node.put("state", "COMMITTED");
-            node.put("default", false);
-            node.put("calibration_version", s.calibrationVersion());
-            if (s.calibrationState() != null && !s.calibrationState().isBlank()) {
-                node.put("calibration_state", s.calibrationState());
-            }
-            node.put("committed_at_ms", s.committedAt() == null ? null : s.committedAt().toInstant().toEpochMilli());
-            node.set("quality", s.quality() == null ? mapper.nullNode() : mapper.readTree(s.quality()));
+            scene(node, s, "COMMITTED");
             node.set("compatibility", compatibility.current(s.version(), s.calibrationVersion()));
-            gltf(node, s.gltfKey());
-            sourceMaps(node, s.output());
-            mapCameras(node, s.output(), s.version(), s.calibrationVersion());
-            floorCoverage(node, s.calibrationVersion());
             return node;
         }
         if (defaultGltfKey.isEmpty()) {
@@ -113,8 +105,63 @@ public class SceneService {
         return node;
     }
 
-    private record Committed(String version, String calibrationVersion, String calibrationState, String gltfKey, String quality,
-            String output, OffsetDateTime committedAt) {
+    private record Committed(String version, String state, String calibrationVersion, String calibrationState, String gltfKey,
+            String quality, String output, OffsetDateTime committedAt) {
+    }
+
+    private static Committed committed(ResultSet rs) throws SQLException {
+        return new Committed(rs.getString("scene_version"), rs.getString("state"), rs.getString("calibration_version"),
+                rs.getString("calibration_state"), rs.getString("gltf_key"), rs.getString("quality"), rs.getString("output"),
+                rs.getObject("committed_at", OffsetDateTime.class));
+    }
+
+    /** 관리 API 와 같은 Scene 버전 형식(SceneAdminController.VERSION) */
+    private static final Pattern SCENE_VERSION = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,62}$");
+
+    /**
+     * 버전을 지정한 Scene 보기(GET /api/scenes/{sceneVersion}/view, S15P31A101-613). /api/scenes/current 와 같은 모양
+     * (서명 주소·map_cameras)이고 현재 Scene 은 바꾸지 않는다. 세팅 완료 전에는 관제 Scene 이 바뀌지 않으므로
+     * 새로 만들기 길의 보정·구역 화면이 이 세션의 미리보기를 이것으로 그린다. 보일 glb 가 있는 CANDIDATE·COMMITTED 만 낸다.
+     * compatibility 는 싣지 않는다: 관제 보정과 비교하는 값이라 아직 적용 전인 미리보기는 늘 어긋남으로 나온다.
+     * current 는 이 버전이 지금 관제 Scene 인지다(예전에 확정됐다 바뀐 COMMITTED 와 구분).
+     */
+    public ObjectNode view(String sceneVersion) {
+        if (sceneVersion == null || !SCENE_VERSION.matcher(sceneVersion).matches()) {
+            throw new BusinessException(ErrorCode.Scene.SCENE_VERSION_NOT_FOUND);
+        }
+        record Viewed(Committed scene, boolean current) { }
+        List<Viewed> rows = jdbc.query(SCENE_COLUMNS + """
+                    , s.scene_version = (SELECT x.scene_version FROM (""" + CURRENT_COMMITTED + """
+                    ) x LIMIT 1) AS is_current
+                FROM scene_version s
+                LEFT JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
+                WHERE s.scene_version = :version AND s.state IN ('CANDIDATE', 'COMMITTED') AND s.gltf_key IS NOT NULL
+                """, Map.of("version", sceneVersion), (rs, i) -> new Viewed(committed(rs), rs.getBoolean("is_current")));
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.Scene.SCENE_VERSION_NOT_FOUND);
+        }
+        Viewed v = rows.getFirst();
+        ObjectNode node = scene(mapper.createObjectNode(), v.scene(), v.scene().state());
+        node.put("current", v.current());
+        return node;
+    }
+
+    /** current·view 가 같은 모양으로 낸다(compatibility 는 current 만 싣는다) */
+    private ObjectNode scene(ObjectNode node, Committed s, String state) {
+        node.put("scene_version", s.version());
+        node.put("state", state);
+        node.put("default", false);
+        node.put("calibration_version", s.calibrationVersion());
+        if (s.calibrationState() != null && !s.calibrationState().isBlank()) {
+            node.put("calibration_state", s.calibrationState());
+        }
+        node.put("committed_at_ms", s.committedAt() == null ? null : s.committedAt().toInstant().toEpochMilli());
+        node.set("quality", s.quality() == null ? mapper.nullNode() : mapper.readTree(s.quality()));
+        gltf(node, s.gltfKey());
+        sourceMaps(node, s.output());
+        mapCameras(node, s.output(), s.version(), s.calibrationVersion());
+        floorCoverage(node, s.calibrationVersion());
+        return node;
     }
 
     /** 재질 순서대로 내려준다. 한 장이라도 서명하지 못하면 부분 배열을 보내 순서를 틀리지 않는다. */
