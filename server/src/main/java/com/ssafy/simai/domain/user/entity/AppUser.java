@@ -38,6 +38,14 @@ public class AppUser {
     @Column(name = "display_label")
     private String displayLabel;
 
+    /** 소속. TBM 리더 칸에 쓴다(S15P31A101-609). */
+    @Column(name = "org")
+    private String org;
+
+    /** 직책. TBM 리더 칸에 쓴다(S15P31A101-609). */
+    @Column(name = "title")
+    private String title;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -62,5 +70,12 @@ public class AppUser {
 
     public void disable(Instant at) {
         this.disabledAt = at;
+    }
+
+    /** 표시 이름·소속·직책을 바꾼다. null 인 값은 그대로 두고, 빈 글자는 지운다. */
+    public void changeProfile(String displayLabel, String org, String title) {
+        if (displayLabel != null) this.displayLabel = displayLabel.isBlank() ? null : displayLabel.strip();
+        if (org != null) this.org = org.isBlank() ? null : org.strip();
+        if (title != null) this.title = title.isBlank() ? null : title.strip();
     }
 }

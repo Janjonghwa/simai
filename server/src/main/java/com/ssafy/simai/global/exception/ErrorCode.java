@@ -49,7 +49,8 @@ public sealed interface ErrorCode {
         USER_NOT_FOUND(HttpStatus.NOT_FOUND, "없는 아이디입니다"),
         WEAK_PASSWORD(HttpStatus.BAD_REQUEST, "비밀번호는 8자 이상이어야 합니다"),
         // BCrypt 는 72바이트까지만 본다
-        PASSWORD_TOO_LONG(HttpStatus.BAD_REQUEST, "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다");
+        PASSWORD_TOO_LONG(HttpStatus.BAD_REQUEST, "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다"),
+        INVALID_PROFILE(HttpStatus.BAD_REQUEST, "소속·직책은 40자 이하여야 합니다");
 
         private final HttpStatus status;
         private final String message;
@@ -612,6 +613,8 @@ public sealed interface ErrorCode {
         SIGNATURE_LIMIT_REACHED(HttpStatus.CONFLICT, "이 보고서 버전의 서명 인원 상한(50명)에 도달했습니다"),
         REPORT_LOCKED(HttpStatus.CONFLICT, "서명된 보고서 버전입니다"),
         INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다"),
+        INVALID_REPORT_FORM(HttpStatus.BAD_REQUEST, "보고서 양식 칸이 올바르지 않습니다"),
+        REPORT_FORM_CONFLICT(HttpStatus.CONFLICT, "다른 곳에서 먼저 고친 보고서입니다. 다시 불러온 뒤 고치세요"),
         INVALID_DAILY_DATE(HttpStatus.BAD_REQUEST, "report_date 는 YYYY-MM-DD 이고 오늘(Asia/Seoul)보다 뒤일 수 없습니다"),
         DAILY_REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 날짜의 일일 일지를 이미 생성 중입니다");
 

@@ -95,13 +95,14 @@ public class TbmReportService implements DisposableBean {
         engine.configure(baseUrl, timeout);
     }
 
-    public ObjectNode start(TbmReportRequest request) {
+    /** userId: 요청한 계정. 보고서 리더(leader_user_id)로 남긴다. */
+    public ObjectNode start(TbmReportRequest request, Long userId) {
         if (request == null || request.workId() == null || request.workId() < 1) {
             throw new BusinessException(ErrorCode.Report.INVALID_REPORT_REQUEST);
         }
         String siteId = sites.siteId();
         GeneratingStart started = transaction.execute(
-                s -> reports.createGenerating(siteId, request.workId(), clock.instant()));
+                s -> reports.createGenerating(siteId, request.workId(), userId, clock.instant()));
         executor.submit(() -> runGeneration(siteId, started));
         ObjectNode accepted = mapper.createObjectNode();
         accepted.put("report_id", started.reportId());
@@ -109,6 +110,28 @@ public class TbmReportService implements DisposableBean {
         accepted.put("report_version", started.reportVersion());
         accepted.put("status", "GENERATING");
         return accepted;
+    }
+
+    /**
+     * 날짜 작업의 빈 보고서를 만든다(S15P31A101-609, 날짜 작업 생성 -610 이 같은 트랜잭션에서 부른다).
+     * 이미 있으면 그 보고서 id 를 돌려준다. leaderUserId 는 날짜 작업을 연 계정이다.
+     */
+    public long createDailyBlank(long workId, Long leaderUserId) {
+        // 부르는 쪽 트랜잭션이 있으면 그 안에서, 없으면 따로 연다. 작업 행 잠금이 이 안에서만 유효하다.
+        String siteId = sites.siteId();
+        Long id = transaction.execute(s -> reports.createBlank(siteId, workId, leaderUserId, clock.instant()));
+        return id == null ? 0L : id;
+    }
+
+    /** 양식 칸 저장(PUT /api/reports/tbm/{id}/form). 저장한 뒤의 보고서를 돌려준다. */
+    public ObjectNode updateForm(long reportId, JsonNode form, Integer formRevision) {
+        if (formRevision == null || formRevision < 0) {
+            throw new BusinessException(ErrorCode.Report.INVALID_REPORT_FORM);
+        }
+        ObjectNode normalized = TbmForm.normalize(form);
+        String siteId = sites.siteId();
+        transaction.executeWithoutResult(s -> reports.updateForm(siteId, reportId, normalized, formRevision));
+        return getOne(reportId);
     }
 
     public ObjectNode getOne(long reportId) {

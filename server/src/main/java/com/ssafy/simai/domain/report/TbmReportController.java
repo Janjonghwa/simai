@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.report;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.exception.GlobalExceptionHandler;
@@ -7,6 +8,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.PutMapping;
+import tools.jackson.databind.JsonNode;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -36,8 +41,22 @@ class TbmReportController {
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode generate(@RequestBody(required = false) TbmReportRequest request) {
-        return service.start(request);
+    ObjectNode generate(@RequestBody(required = false) TbmReportRequest request, @AuthenticationPrincipal Jwt jwt) {
+        return service.start(request, Long.parseLong(jwt.getSubject()));
+    }
+
+    /** 양식 칸 저장 본문. form 은 통째로, form_revision 은 마지막으로 읽은 값이다. */
+    record FormRequest(JsonNode form, @JsonProperty("form_revision") Integer formRevision) {
+    }
+
+    /** 양식 칸을 통째로 저장한다(S15P31A101-609). 새 보고서 버전을 만들지 않는다. */
+    @PutMapping("/{reportId}/form")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode updateForm(@PathVariable long reportId, @RequestBody(required = false) FormRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.Report.INVALID_REPORT_FORM);
+        }
+        return service.updateForm(reportId, request.form(), request.formRevision());
     }
 
     @GetMapping("/{reportId}")
