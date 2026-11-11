@@ -47,7 +47,7 @@ let serverDay: WorkDayItem;
 /** 이 시험에서 하루 작업 열기가 간 날짜. */
 let opened: string[] = [];
 let failOpen = false;
-/** 하루 작업 열기가 오늘 이전 날짜라 거절되는 경우(400 WORK_DATE_IN_PAST). */
+/** 하루 작업 열기가 오늘 이전 날짜라 거절되는 경우(409 WORK_DATE_PAST). */
 let openInPast = false;
 const server = setupServer();
 
@@ -61,7 +61,7 @@ beforeEach(() => {
   server.resetHandlers(
     http.put('*/api/work-units/daily/:date', ({ params }) => {
       opened.push(String(params.date));
-      if (openInPast) return HttpResponse.json({ code: WORK_ERROR.DATE_IN_PAST }, { status: 400 });
+      if (openInPast) return HttpResponse.json({ code: WORK_ERROR.DATE_PAST }, { status: 409 });
       if (failOpen) return HttpResponse.json({ code: 'SERVER_ERROR' }, { status: 500 });
       return HttpResponse.json({ ...serverDay, date: String(params.date) });
     }),
@@ -338,7 +338,7 @@ describe('WorkDayPage 불러오기', () => {
     expect(screen.queryByText('작업을 불러오지 못했습니다.')).toBeNull();
   });
 
-  it('지난 날짜라 거절되면(WORK_DATE_IN_PAST) 다시 시도 단추 없이 새로 열 수 없다고 알린다', async () => {
+  it('지난 날짜라 거절되면(WORK_DATE_PAST) 다시 시도 단추 없이 새로 열 수 없다고 알린다', async () => {
     openInPast = true;
     const { onBack } = renderDay();
     expect(await screen.findByText('지난 날짜는 새로 열 수 없어요.')).toBeTruthy();

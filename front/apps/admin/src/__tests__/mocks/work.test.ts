@@ -136,8 +136,8 @@ async function readyToStart() {
 describe('작업 관리 mock: 날짜 열기', () => {
   it('오늘 이전 날짜는 거절하고 오늘은 멱등으로 만든다', async () => {
     expect(await failure(putDailyWorkUnit(asAdmin, '2026-11-10'))).toEqual({
-      status: 400,
-      code: WORK_ERROR.DATE_IN_PAST,
+      status: 409,
+      code: WORK_ERROR.DATE_PAST,
     });
     expect(await failure(putDailyWorkUnit(asAdmin, '2026-02-30'))).toEqual({
       status: 400,
@@ -164,6 +164,18 @@ describe('작업 관리 mock: 날짜 열기', () => {
     expect(second.tbm_report?.report_id).toBe(first.tbm_report?.report_id);
     const month = await fetchWorkUnits(asAdmin, { from: '2026-11-01', to: '2026-11-30' });
     expect(month.filter((w) => w.daily)).toHaveLength(1);
+  });
+
+  it('이미 열어 둔 날은 지난 뒤에도 그대로 돌려주고, 없는 지난 날짜만 거절한다(WORK_DATE_PAST)', async () => {
+    const opened = await openToday();
+    clock += 24 * 60 * 60 * 1000; // 하루가 지나 그 날이 지난 날짜가 됐다.
+
+    const again = await putDailyWorkUnit(asAdmin, TODAY);
+    expect(again.work_id).toBe(opened.work_id);
+    expect(await failure(putDailyWorkUnit(asAdmin, '2026-11-09'))).toEqual({
+      status: 409,
+      code: WORK_ERROR.DATE_PAST,
+    });
   });
 
   it('빈 보고서: PENDING·초안 없음·빈 양식·리더 계정, 일시는 오늘이면 지금', async () => {
@@ -547,12 +559,12 @@ describe('작업 관리 mock: 서명', () => {
 });
 
 describe('작업 관리 mock: 시작·종료·제출', () => {
-  it('서명이 없으면 시작할 수 없고(임시 SIGNATURE_REQUIRED) 서명 뒤에는 시작한다', async () => {
+  it('서명이 없으면 시작할 수 없고(WORK_NO_SIGNATURE) 서명 뒤에는 시작한다', async () => {
     const work = await openToday();
     mock.markSetupDone(work.work_id);
     expect(await failure(startWork(asAdmin, work.work_id))).toEqual({
       status: 409,
-      code: WORK_ERROR.SIGNATURE_REQUIRED,
+      code: WORK_ERROR.NO_SIGNATURE,
     });
 
     const report = await latestOf(work.work_id);

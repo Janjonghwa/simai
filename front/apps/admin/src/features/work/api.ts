@@ -36,19 +36,19 @@ const enc = encodeURIComponent;
 
 /**
  * 화면이 구분해서 안내해야 하는 서버 오류 코드(ProblemDetail 의 code).
- * 티켓에 이름이 없는 것은 임시다: DATE_IN_PAST·SIGNATURE_REQUIRED·STARTED 처럼 서버 구현 때 바뀔 수 있다.
+ * 이름은 서버 구현(ErrorCode.Work, -610)을 따른다. -611(서명 삭제·제출)이 정하는 이름은 서버가 정하면 맞춘다.
  */
 export const WORK_ERROR = {
   /** 날짜가 오늘이 아닌 작업은 시작할 수 없다(409, -610). */
   NOT_TODAY: 'WORK_NOT_TODAY',
-  /** 오늘 이전 날짜는 하루 작업을 만들 수 없다(400). 임시 이름. */
-  DATE_IN_PAST: 'WORK_DATE_IN_PAST',
+  /** 오늘 이전 날짜는 하루 작업을 새로 만들 수 없다(409, -610). 이미 있는 날은 그대로 돌려준다. */
+  DATE_PAST: 'WORK_DATE_PAST',
   /** 지금 상태에서 할 수 없는 일(종료 안 한 작업 제출·시작한 작업의 서명 삭제 등, 409). */
   INVALID_STATE: 'WORK_INVALID_STATE',
   /** 같은 현장에 진행 중인 작업이 있다(409). `serverMessage` 에 그 작업 이름이 온다. */
   ALREADY_IN_PROGRESS: 'WORK_ALREADY_IN_PROGRESS',
-  /** 서명이 한 명도 없어 작업을 시작할 수 없다(409). 임시 이름. */
-  SIGNATURE_REQUIRED: 'SIGNATURE_REQUIRED',
+  /** 참석자 서명이 한 명도 없어 작업을 시작할 수 없다(409, -610). */
+  NO_SIGNATURE: 'WORK_NO_SIGNATURE',
   /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제가 막힌다. */
   REPORT_LOCKED: 'REPORT_LOCKED',
   /** 다른 곳에서 먼저 양식을 고쳤다(409). 다시 불러와야 한다. */
@@ -76,7 +76,7 @@ export const isWorkError = (error: unknown, code: WorkErrorCode): boolean =>
 // ── 작업 (/api/work-units) ───────────────────────────────────────────────────
 
 /**
- * 날짜를 열 때 그 날의 작업과 빈 보고서를 만들거나 가져온다(멱등, 오늘 이전은 400 WORK_DATE_IN_PAST). 응답은 작업 항목이고
+ * 날짜를 열 때 그 날의 작업과 빈 보고서를 만들거나 가져온다(멱등, 오늘 이전의 새 날짜는 409 WORK_DATE_PAST). 응답은 작업 항목이고
  * `tbm_report.report_id` 가 같이 만들어진 보고서다.
  */
 export function putDailyWorkUnit(http: Http, date: string, signal?: AbortSignal) {
@@ -106,7 +106,7 @@ export function fetchWorkUnit(http: Http, workId: string, signal?: AbortSignal) 
   return http(`/api/work-units/${enc(workId)}`, { schema: workDayItemSchema, signal });
 }
 
-/** 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 SIGNATURE_REQUIRED(임시). */
+/** 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE. */
 export function startWork(http: Http, workId: string) {
   return http(`/api/work-units/${enc(workId)}/start`, {
     method: 'POST',
