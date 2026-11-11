@@ -10,8 +10,8 @@ export function isSetupBlockedByLiveWork(error: unknown): boolean {
   return (
     error.status === 409 &&
     error.code !== 'SETUP_ALREADY_IN_PROGRESS' &&
-    error.code !== 'SETUP_RETRY_INVALID_STATE' &&
-    error.code !== 'SETUP_CANCEL_INVALID_STATE'
+    error.code !== 'SETUP_RETRY_NOT_ALLOWED' &&
+    error.code !== 'SETUP_CANCEL_NOT_ALLOWED'
   );
 }
 

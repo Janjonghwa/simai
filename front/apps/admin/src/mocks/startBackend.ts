@@ -7,7 +7,7 @@ import { env } from '@/lib/env';
 export async function startMockBackend() {
   const [
     { network },
-    { handlers, staticObjectsMock, tbmMock },
+    { handlers, staticObjectsMock, tbmMock, workMock, setupMock },
     { readMockUser },
     { withoutRealPaths },
     { createStompBroker },
@@ -44,8 +44,12 @@ export async function startMockBackend() {
     seed: seededEventsAt(Date.now()),
   });
   const clips = createClipsMock({ findEvent: events.find });
-  // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다.
-  const zones = createZonesMock({ staticObjects: staticObjectsMock.store });
+  // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다. 구역을 저장하면 세팅 mock 의
+  // 세션이 끝나(COMPLETED·zones_committed_at) 작업 관리가 '세팅 완료' 를 본다.
+  const zones = createZonesMock({
+    staticObjects: staticObjectsMock.store,
+    onCommit: setupMock.completeAfterZonesCommit,
+  });
   tbmMock.bindLayoutZones(zones.layoutZones);
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
   const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
@@ -80,6 +84,7 @@ export async function startMockBackend() {
   // simaiMock.failNextPublish('CALIBRATION_MISSING' | 'CURRENT_CALIBRATION_MISSING' | 'RULES_MISSING' |
   // 'SITE_NOT_SINGLE' | 'PUBLIC_URL_NOT_SET')(다음 발행 요청을 서버 오류 409·503 으로 거절, 기본 CALIBRATION_MISSING)
   // simaiMock.expireStomp()(STOMP 토큰 만료: 다음 연결을 ERROR 로 거절 → 갱신 뒤 다시 붙기)
+  // simaiMock.markSetupDone(workId?)(오늘 날짜 작업의 세팅이 끝났다고 표시: 진행이 SETUP_DONE 이 되고 보고서 초안이 2.5초 뒤 채워진다)
   Object.assign(globalThis, {
     simaiMock: {
       ...realtimeMock,
@@ -88,6 +93,7 @@ export async function startMockBackend() {
       updateSummary: events.updateSummary,
       rejectNextBundle: zones.rejectNextBundle,
       failNextPublish: zones.failNextPublish,
+      markSetupDone: workMock.markSetupDone,
     },
   });
 }

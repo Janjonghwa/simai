@@ -22,6 +22,14 @@ import { http, HttpResponse } from 'msw/http';
 // GET /api/setup-sessions/:id/zone-drafts) MSW 핸들러(S15P31A101-447·-452·-448·-455·-453).
 
 const DEFAULT_SITE_ID = 'classroom-1';
+/** previewReadyAfterMs 가 지난 세션이 되는 모양(미리보기 맵·보정 버전이 생겨 구역 단계로 갈 수 있다). */
+const PREVIEW_READY_PATCH = {
+  status: 'PREVIEW_AND_VLM_DRAFT',
+  stage: 'PREVIEW_AND_VLM_DRAFT',
+  progress_pct: 92,
+  preview_scene_version: 'scene-preview-1',
+  calibration_version: 'cal-8',
+} as const satisfies Partial<SetupSessionResponse>;
 const DEFAULT_TOLERANCE_CM = 5.0;
 const STALE_AFTER_MS = 10_000;
 const DEMAND_TTL_MS = 15_000;
@@ -232,6 +240,26 @@ export function buildSetupZoneDraftsResponse(
   });
 }
 
+/**
+ * 서버가 세팅을 실패로 끝내는 경우: 실패 코드마다 멈춘 시점의 진행률(서버는 stage 를 FAILED 로 덮어써서 마지막 진행률만 남는다)과
+ * 서버 형식의 메시지(카메라 쌍은 DB 카메라 id). failSession 이 세션에 적용한다.
+ */
+export const SETUP_FAILURE_SCENARIOS = {
+  INSUFFICIENT_FEATURES: {
+    progress_pct: 40,
+    failure_message: 'Insufficient raw feature matches on pair cam2-cam3: 7',
+  },
+  VALIDATION_REJECTED: {
+    progress_pct: 40,
+    failure_message: "Calibration validation rejected: worsened_pairs=['cam1-cam2', 'cam3-cam4']",
+  },
+  TIMEOUT: {
+    progress_pct: 40,
+    failure_message: 'Setup session timed out after 900 s',
+  },
+} as const;
+export type SetupFailureScenario = keyof typeof SETUP_FAILURE_SCENARIOS;
+
 export interface SetupMockState {
   siteId: string;
   heightToleranceCm: number;
@@ -251,6 +279,11 @@ export interface SetupMockOptions {
   latestGuide?: CoverageGuidePayload | null;
   /** GET /api/work-units/{id} 가 돌려줄 진행 중 세팅 세션 ID(새로고침 뒤 이어받기 시험). */
   workUnitSessionId?: string | null;
+  /**
+   * 개발 서버용: 세션을 시작한 지 이만큼(ms) 지나 처음 조회하면 미리보기 맵이 준비된 모양(PREVIEW_AND_VLM_DRAFT 92%)으로 바꿔 답한다.
+   * 없으면 이 mock 은 세션을 저절로 진행시키지 않고 updateSession 으로만 바뀐다(시험).
+   */
+  previewReadyAfterMs?: number;
   /**
    * 조회할 때 시작 뒤 지난 시간으로 세션 단계를 넘긴다(개발 서버용, 시험은 끈다). 약 35초 뒤 COMPLETED 가 되어
    * 맵 보강 촬영 다시 굽기(S15P31A101-607)까지 mock 으로 해 볼 수 있다.
@@ -311,6 +344,45 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     };
     sessions.set(sessionId, updated);
     return updated;
+  }
+
+  /** 세션을 서버가 실패시킨 것처럼 FAILED 로 바꾼다(실패 코드·메시지·멈춘 진행률은 SETUP_FAILURE_SCENARIOS). */
+  function failSession(sessionId: string, scenario: SetupFailureScenario): SetupSessionResponse {
+    const { progress_pct, failure_message } = SETUP_FAILURE_SCENARIOS[scenario];
+    return updateSession(sessionId, {
+      status: 'FAILED',
+      stage: 'FAILED',
+      progress_pct,
+      failure_code: scenario,
+      failure_message,
+    });
+  }
+
+  /** previewReadyAfterMs 옵션이 있고 수집 중인 세션이 그 시간이 지났으면 미리보기 맵이 준비된 모양으로 바꾼다. */
+  function advanceIfDue(session: SetupSessionResponse, t: number): SetupSessionResponse {
+    const { previewReadyAfterMs } = options;
+    if (previewReadyAfterMs === undefined || session.status !== 'COLLECTING_BACKGROUND') {
+      return session;
+    }
+    if (t - (session.started_at_ms ?? t) < previewReadyAfterMs) return session;
+    return updateSession(session.setup_session_id, PREVIEW_READY_PATCH);
+  }
+
+  /**
+   * 세팅 세션의 구역을 발행했을 때(POST /api/zones/commit 의 setup_session_id) 세팅에 보이는 일: 아직 안 끝난 세션을 COMPLETED 로
+   * 보내고 구역을 처음 발행한 시각(zones_committed_at)을 남긴다. 세션 진행은 구역 저장을 모르기 때문에, 작업 관리가
+   * '세팅 끝' 을 알도록 구역 mock 의 저장(createZonesMock 의 onCommit)에 이어 쓴다. 없는 세션·실패한 세션은 그대로 둔다.
+   */
+  function completeAfterZonesCommit(sessionId: string, at: number = now()): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.status === 'FAILED') return;
+    updateSession(sessionId, {
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      progress_pct: 100,
+      zones_committed_at: session.zones_committed_at ?? at,
+      completed_at_ms: session.completed_at_ms ?? at,
+    });
   }
 
   const supplement = createSupplementMock({ now, sessions, updateSession });
@@ -522,7 +594,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (!found) {
         return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
       }
-      return HttpResponse.json(supplement.withView(progressSession(found)));
+      return HttpResponse.json(supplement.withView(progressSession(advanceIfDue(found, t))));
     }),
 
     http.post('*/api/setup-sessions/:id/cancel', ({ request, params }) => {
@@ -656,6 +728,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     sessions,
     zoneDraftsBySession,
     updateSession,
+    failSession,
+    completeAfterZonesCommit,
     setZoneDrafts,
   };
 }

@@ -374,7 +374,7 @@ describe('관제 관리자 편집 모드', () => {
     const hrefs = within(nav)
       .getAllByRole('link')
       .map((a) => a.getAttribute('href'));
-    expect(hrefs).toEqual(['/', '/cctv', '/work', '/history']);
+    expect(hrefs).toEqual(['/', '/cctv', '/work']);
     expect(hrefs).not.toContain('/zones');
   });
 });

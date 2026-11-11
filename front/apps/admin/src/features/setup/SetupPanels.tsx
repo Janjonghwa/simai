@@ -3,10 +3,12 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { ROOM } from '@/features/plan/plan';
+import { CameraCue } from '@/features/setup/CameraCue';
+import { CALIBRATION_RISK_TITLE } from '@/features/setup/cameraGuides';
+import { cameraLabel } from '@/features/setup/cameraLabels';
 import {
   CAMERA_HEIGHT_HELP,
   CANDIDATE_KIND_LABEL,
-  formatMinSec,
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
   type CoverageCameraView,
@@ -14,19 +16,19 @@ import {
   type HeightWarningItem,
   type SceneTierStatusView,
   type SetupTone,
-  type SetupWaitingView,
-  type SetupWaitReasonView,
   type Step1CoverageView,
 } from '@/features/setup/setup';
 import { SetupMap } from '@/features/setup/SetupMap';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
+import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { TriangleAlert } from 'lucide-react';
+import { useCallback, type ReactNode } from 'react';
 
 // 세팅 화면 패널: 1단계 2D 지도 양옆의 카메라 영상(기존 디코딩 재사용)·카메라 연결/방향 안내·카메라 높이 입력, 이후 단계 요약.
 // 색은 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 토큰만 쓴다.
@@ -130,23 +132,32 @@ function CameraTile({
   attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
 }) {
   const phase = useCctvStore((s) => s.views[camera.id]?.phase);
+  const videoWidth = useCctvStore((s) => s.views[camera.id]?.width);
+  const videoHeight = useCctvStore((s) => s.views[camera.id]?.height);
   const link = useCctvStore((s) => s.link);
   const playing = link === 'open' && phase === 'playing';
   const ref = useCallback(
     (canvas: HTMLCanvasElement | null) => attach(camera.id, canvas),
     [attach, camera.id],
   );
+  const aspect = videoWidth && videoHeight ? videoWidth / videoHeight : TILE_ASPECT;
   return (
     <div className="w-full" style={{ height: TILE_HEIGHT }}>
       <div className={cn(TILE_FRAME, 'bg-surface-2')}>
         <canvas
           ref={ref}
-          aria-label={`${camera.id} 영상`}
+          aria-label={`${camera.label} 영상`}
           className={cn('size-full object-contain', !playing && DIMMED)}
         />
+        {camera.status === 'OK' &&
+          camera.guides.map((guide) => (
+            <CameraCue key={guide.text} guide={guide} aspect={aspect} />
+          ))}
         <span className={cn(CAPTION, 'top-2 left-2')}>
           <Dot tone={camera.tone} />
-          <span className="font-mono font-semibold">{camera.id}</span>
+          <span className="font-semibold">
+            {camera.status === 'OK' ? camera.label : `${camera.label} · ${camera.statusLabel}`}
+          </span>
           <span>{tileLabel(phase, link)}</span>
         </span>
       </div>
@@ -224,7 +235,10 @@ export function CameraMapPanel({ coverage }: { coverage: Step1CoverageView }) {
   );
 }
 
-/** 1단계 카메라별 수신 상태·회전 방향 안내. 카메라 쌍 등급은 2D 지도의 연결선에 보인다. 칸이 남으면 행 사이 여백이 고르게 늘어난다. */
+/**
+ * 1단계 카메라별 수신 상태·회전 방향 안내와, 옆 카메라 쌍 겹침이 부족하면 보정 실패 위험 안내. 카메라 쌍 등급은 2D 지도의
+ * 연결선에 보인다. 칸이 남으면 행 사이 여백이 고르게 늘어난다.
+ */
 export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
   return (
     <Panel title="카메라 연결 · 방향 안내" dense fill={2}>
@@ -232,7 +246,7 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
         {coverage.cameras.map((cam) => (
           <Row key={cam.id}>
             <Dot tone={cam.tone} />
-            <b className="font-mono">{cam.id}</b>
+            <b>{cam.label}</b>
             <Badge
               className={cn(
                 'h-auto rounded px-1.5 py-0.5 font-mono text-xs font-medium',
@@ -241,12 +255,27 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
             >
               {cam.statusLabel}
             </Badge>
-            <span className="ml-auto text-right text-xs text-muted-foreground">
-              {cam.angleLabel}
+            <span
+              className={cn(
+                'ml-auto min-w-0 text-right text-xs',
+                cam.guides.length > 0 ? 'font-semibold text-delay' : 'text-muted-foreground',
+              )}
+            >
+              {cam.guideLabel}
             </span>
           </Row>
         ))}
       </Rows>
+      {coverage.riskyPairs.length > 0 && (
+        <Alert className="border-delay/30 bg-delay/10 text-delay">
+          <TriangleAlert aria-hidden />
+          <AlertTitle>{CALIBRATION_RISK_TITLE}</AlertTitle>
+          <AlertDescription className="text-xs text-foreground">
+            {coverage.riskyPairs.join(', ')} 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬
+            있는 물건을 두세요.
+          </AlertDescription>
+        </Alert>
+      )}
     </Panel>
   );
 }
@@ -274,6 +303,7 @@ export function CameraHeightPanel({
   canSubmitHeights?: boolean;
 }) {
   const warnedCamIds = new Set(heightWarnings.map((w) => w.cameraId));
+  const cameraIds = fields.map((f) => f.cameraId);
   return (
     <Panel title="카메라 높이 입력 (바닥~렌즈 중심, m)" dense fill={1}>
       <p className="text-xs text-muted-foreground">{CAMERA_HEIGHT_HELP}</p>
@@ -284,7 +314,8 @@ export function CameraHeightPanel({
           className="flex flex-col gap-1.5 rounded-lg bg-delay/15 px-3 py-2 text-xs text-delay"
         >
           <p className="font-semibold">
-            높이 불일치 카메라: {heightWarnings.map((w) => w.cameraId).join(', ')}
+            높이 불일치 카메라:{' '}
+            {heightWarnings.map((w) => cameraLabel(cameraIds, w.cameraId)).join(', ')}
           </p>
           {heightWarnings.map((w) => (
             <p key={w.cameraId} className="font-mono text-[11px]">
@@ -307,8 +338,8 @@ export function CameraHeightPanel({
               )}
             >
               <div className="flex items-center justify-between gap-2 text-xs">
-                <label htmlFor={inputId} className="font-mono font-semibold text-foreground">
-                  {field.cameraId} 높이 (m)
+                <label htmlFor={inputId} className="font-semibold text-foreground">
+                  {cameraLabel(cameraIds, field.cameraId)} 높이 (m)
                 </label>
                 <span
                   className={cn(
@@ -368,245 +399,6 @@ export function CameraHeightPanel({
           className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-delay"
         >
           <span>{submitError}</span>
-          {onNavigateLiveWork && (
-            <Button size="sm" variant="secondary" onClick={onNavigateLiveWork}>
-              진행 중인 작업으로 이동
-            </Button>
-          )}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-/** 세팅이 왜 기다리는지 한 줄 + 대기 시간 + 할 수 있는 일(S15P31A101-583). */
-function WaitReasonNotice({ reason, now }: { reason: SetupWaitReasonView; now: number }) {
-  const waited = Math.max(0, Math.floor((now - reason.sinceMs) / 1000));
-  const lastSeen =
-    reason.lastSeenMs === null
-      ? '연결 기록 없음'
-      : `마지막 연결 ${formatMinSec(Math.max(0, (now - reason.lastSeenMs) / 1000))} 전`;
-  return (
-    <div
-      role="status"
-      aria-label="세팅 대기 이유"
-      className={cn(
-        'flex flex-col gap-1 rounded-md px-2.5 py-2 text-xs',
-        reason.tone === 'delay' ? 'bg-delay/15 text-delay' : 'bg-surface-3 text-muted-foreground',
-      )}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-semibold">{reason.title}</span>
-        <span className="font-mono">
-          대기 {formatMinSec(waited)}
-          {reason.showLastSeen ? ` · ${lastSeen}` : ''}
-        </span>
-      </div>
-      {reason.notes.map((note) => (
-        <span key={note} className="font-mono text-[11px]">
-          {note}
-        </span>
-      ))}
-      <span className="text-foreground">{reason.hint}</span>
-    </div>
-  );
-}
-
-/** 2단계 대기 화면 패널(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안, 진행률·남은 시간·실패/높이 경고). */
-export function WaitingPanel({
-  waiting,
-  pollingError = false,
-  onRetry,
-  retryPending = false,
-  retryError = null,
-  onNavigateLiveWork,
-  onReturnToStep1,
-}: {
-  waiting: SetupWaitingView;
-  pollingError?: boolean;
-  onRetry?: () => void;
-  retryPending?: boolean;
-  retryError?: string | null;
-  onNavigateLiveWork?: () => void;
-  onReturnToStep1?: () => void;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  const [openedAt] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const elapsed = Math.max(0, Math.floor((now - (waiting.startedAtMs ?? openedAt)) / 1000));
-  const unchanged = Math.max(
-    0,
-    Math.floor((now - (waiting.updatedAtMs ?? waiting.startedAtMs ?? openedAt)) / 1000),
-  );
-  const elapsedLabel = `${Math.floor(elapsed / 60)}분 ${String(elapsed % 60).padStart(2, '0')}초`;
-  const stalled = !waiting.failed && !waiting.previewReady && unchanged >= 30;
-  return (
-    <Panel title="현장 자동 보정 · 3D 공간 생성 대기" fill={1}>
-      <div className="flex flex-col gap-2 rounded-lg bg-surface-2 px-3.5 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-          <span className="font-semibold text-foreground">{waiting.stageLabel}</span>
-          <span className="font-mono text-muted-foreground" aria-label="세팅 진행률 및 경과 시간">
-            실제 진행률 <strong className="text-foreground">{waiting.progressPct}%</strong> · 경과
-            시간 <strong className="text-foreground">{elapsedLabel}</strong>
-          </span>
-        </div>
-        <div
-          role="progressbar"
-          aria-label="세팅 진행률"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={waiting.progressPct}
-          className="h-2 w-full overflow-hidden rounded-full bg-surface-3"
-        >
-          <div
-            className={cn('h-full transition-all', waiting.failed ? 'bg-delay' : 'bg-primary')}
-            style={{ width: `${Math.max(0, Math.min(100, waiting.progressPct))}%` }}
-          />
-        </div>
-        <p className="text-[11px] text-muted-foreground">
-          서버에서 받은 진행률입니다 · 2초마다 상태를 확인합니다
-        </p>
-        {pollingError ? (
-          <p role="alert" className="text-xs text-delay">
-            서버에서 진행 상태를 가져오지 못했습니다. 연결을 확인해 주세요.
-          </p>
-        ) : waiting.waitReason ? (
-          <WaitReasonNotice reason={waiting.waitReason} now={now} />
-        ) : stalled ? (
-          <p role="status" className="text-xs text-delay">
-            {unchanged}초 동안 새 진행 정보가 없습니다. 계속 유지되면 워커와 배경 수집 상태를 확인해
-            주세요.
-          </p>
-        ) : !waiting.failed && waiting.progressPct === 0 ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            세팅 요청이 접수됐습니다. 워커의 진행 정보를 기다리는 중입니다.
-          </p>
-        ) : null}
-      </div>
-
-      <ol aria-label="세팅 대기 세부 단계" className="divide-y divide-border">
-        {waiting.steps.map((step) => {
-          const tone: SetupTone =
-            step.status === 'done'
-              ? 'ok'
-              : step.status === 'current'
-                ? 'active'
-                : step.status === 'failed'
-                  ? 'delay'
-                  : 'idle';
-          const statusText =
-            step.status === 'done'
-              ? '완료'
-              : step.status === 'current'
-                ? '진행 중'
-                : step.status === 'failed'
-                  ? '실패'
-                  : '대기';
-          return (
-            <li key={step.stage} className="flex items-start gap-2.5 py-2 text-sm">
-              <Dot tone={tone} />
-              <div className="flex flex-col gap-0.5">
-                <span className="font-medium text-foreground">{step.label}</span>
-                <span className="text-xs text-muted-foreground">{step.description}</span>
-              </div>
-              <Badge
-                className={cn(
-                  'ml-auto h-auto rounded px-1.5 py-0.5 font-mono text-xs font-semibold',
-                  TONE_BADGE[tone],
-                )}
-              >
-                {statusText}
-              </Badge>
-            </li>
-          );
-        })}
-      </ol>
-
-      {waiting.backgroundCollection.length > 0 && (
-        <div className="mt-auto grid grid-cols-4 gap-2" aria-label="카메라별 배경 수집 진행률">
-          {waiting.backgroundCollection.map((cam) => (
-            <div
-              key={cam.cameraId}
-              className="flex flex-col gap-1.5 rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-xs"
-            >
-              <div className="flex items-center justify-between gap-1">
-                <span>{cam.cameraId}</span>
-                <span className="font-semibold text-foreground">{cam.pct}%</span>
-              </div>
-              <div
-                role="progressbar"
-                aria-label={`${cam.cameraId} 배경 수집률`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.max(0, Math.min(100, cam.pct))}
-                className="h-1.5 overflow-hidden rounded-full bg-surface-3"
-              >
-                <div
-                  className="h-full bg-primary transition-all"
-                  style={{ width: `${Math.max(0, Math.min(100, cam.pct))}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {waiting.hasHeightWarning && (
-        <div
-          role="alert"
-          aria-label="카메라 높이 불일치 경고"
-          className="flex flex-col gap-2 rounded-lg bg-delay/15 px-3.5 py-3 text-xs text-delay"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-semibold">
-              카메라 높이 불일치 경고 ({waiting.heightWarnings.map((w) => w.cameraId).join(', ')})
-            </span>
-            {onReturnToStep1 && (
-              <Button size="sm" variant="secondary" onClick={onReturnToStep1}>
-                1단계 높이 수정
-              </Button>
-            )}
-          </div>
-          <ul className="flex flex-col gap-1 font-mono text-[11px]">
-            {waiting.heightWarnings.map((w) => (
-              <li key={w.cameraId}>{w.message}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {waiting.failed && (
-        <div
-          role="alert"
-          aria-label="세팅 실패 안내"
-          className="flex flex-col gap-2 rounded-lg bg-delay/15 px-3.5 py-3 text-xs text-delay"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-semibold">
-              세팅 실패{waiting.failureCode ? ` (${waiting.failureCode})` : ''}
-            </span>
-            {onRetry && (
-              <Button size="sm" disabled={retryPending} onClick={onRetry}>
-                다시 시도
-              </Button>
-            )}
-          </div>
-          <p className="text-foreground">
-            {waiting.failureMessage ?? '3D 공간 복원 및 보정에 실패했습니다. 다시 시도해 주세요.'}
-          </p>
-        </div>
-      )}
-
-      {retryError && (
-        <div
-          role="alert"
-          data-testid="setup-retry-error"
-          className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-delay"
-        >
-          <span>{retryError}</span>
           {onNavigateLiveWork && (
             <Button size="sm" variant="secondary" onClick={onNavigateLiveWork}>
               진행 중인 작업으로 이동

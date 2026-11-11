@@ -2,20 +2,23 @@ import {
   boxOfDraftItem,
   CAMERA_CORNERS,
   CAMERA_HEIGHT_HELP,
+  currentSceneVersion,
   DEFAULT_CAMERA_IDS,
+  deriveHeightCheckRows,
   deriveHeightFields,
   deriveHeightWarnings,
   deriveSceneTierStatus,
+  deriveStageRows,
   deriveStep1Coverage,
   deriveWaitingView,
   deriveWaitReasonView,
   draftGhostsOf,
   estimateRemainingSeconds,
   formatClock,
-  formatGuideItem,
   formatMinSec,
   formatRemainingKorean,
   isPreviewSceneReady,
+  isSessionScene,
   MAX_CAMERA_HEIGHT_M,
   resolveHeightCameraIds,
   SETUP_TARGET_DURATION_SEC,
@@ -42,14 +45,14 @@ import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks
 import { describe, expect, it } from 'vitest';
 
 describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 안내 계산', () => {
-  it('보정 단계 순서에서 1단계는 카메라 · 높이 확인이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
-    expect(STEPS).toEqual(['카메라 · 높이 확인', '자동 보정', '구역']);
+  it('보정 단계 순서에서 1단계는 카메라 연결 관리이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
+    expect(STEPS).toEqual(['카메라 연결 관리', '보정·생성', '구역']);
     expect(STEPS[ZONE_STAGE]).toBe('구역');
     expect(DEFAULT_CAMERA_IDS).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
     expect(CAMERA_CORNERS).toHaveLength(4);
   });
 
-  it('CONNECTED 이고 정상 수신이면 쌍 등급(충분·약함·부족)을 정리하고 다음 버튼을 낸다', () => {
+  it('CONNECTED 이고 정상 수신이면 쌍 등급(충분·약함·부족)을 정리하고 연결 요약에 확인 시각을 붙인다', () => {
     const latest = buildCoverageGuidePayload({
       connectivity: 'CONNECTED',
       guides: [],
@@ -69,9 +72,9 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     );
 
     expect(view.connectivity).toBe('CONNECTED');
-    expect(view.connectivityLabel).toBe('4대 시야 연결됨');
-    expect(view.canProceedCleanly).toBe(true);
-    expect(view.submitLabel).toBe('다음');
+    expect(view.connectivitySummary).toBe('4대 모두 연결 · 방금');
+    // 부족한 쌍은 마주 보는 쌍(1–3, 2–4)뿐이라 보정이 실패할 위험은 없다.
+    expect(view.riskyPairs).toEqual([]);
     expect(view.pairs.map((p) => p.gradeLabel)).toEqual([
       '충분',
       '부족',
@@ -81,6 +84,13 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       '약함',
     ]);
     expect(view.cameras.every((c) => c.statusLabel === '정상')).toBe(true);
+    expect(view.cameras.map((c) => c.label)).toEqual([
+      '카메라 1',
+      '카메라 2',
+      '카메라 3',
+      '카메라 4',
+    ]);
+    expect(view.pairs[0]!.label).toBe('캠1–캠2');
   });
 
   it('CONNECTED 의 선택 보강(OPTIONAL_IMPROVE)은 돌리라는 지시로 보이지 않는다', () => {
@@ -94,9 +104,9 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     const latest = buildCoverageGuidePayload({
       connectivity: 'CONNECTED',
       guides: [
-        optional('cam1', ['cam1', 'cam3']),
-        optional('cam3', ['cam1', 'cam3']),
-        optional('cam2', ['cam2', 'cam4']),
+        optional('cam1', ['cam1', 'cam2']),
+        optional('cam2', ['cam1', 'cam2']),
+        optional('cam3', ['cam3', 'cam4']),
       ],
     });
     const view = deriveStep1Coverage(
@@ -113,9 +123,8 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       false,
     );
 
-    expect(view.canProceedCleanly).toBe(true);
-    expect(view.cameras.map((c) => c.guideText)).toEqual([null, null, null, null]);
-    expect(view.cameras.map((c) => c.angleLabel)).toEqual([
+    expect(view.cameras.map((c) => c.guides)).toEqual([[], [], [], []]);
+    expect(view.cameras.map((c) => c.guideLabel)).toEqual([
       '각도 양호',
       '각도 양호',
       '각도 양호',
@@ -123,7 +132,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     ]);
   });
 
-  it('DISCONNECTED 와 한 줄 방향 안내 문구를 만들고 그대로 진행 버튼을 낸다', () => {
+  it('DISCONNECTED 는 갈린 묶음을 보이고, 안내는 카메라 이름 없는 한 줄 문장과 영상 위 표시 값으로 만든다', () => {
     const latest = buildCoverageGuidePayload({
       connectivity: 'DISCONNECTED',
       guides: [
@@ -151,12 +160,19 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     );
 
     expect(view.connectivity).toBe('DISCONNECTED');
-    expect(view.connectivityLabel).toBe('시야 분리됨');
-    expect(view.cameras.find((c) => c.id === 'cam3')?.guideText).toBe(
-      'cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4)',
-    );
-    expect(view.canProceedCleanly).toBe(false);
-    expect(view.submitLabel).toBe('그대로 진행');
+    expect(view.connectivitySummary).toBe('캠1·캠2·캠3 / 캠4 갈림 · 방금');
+    const cam3 = view.cameras.find((c) => c.id === 'cam3')!;
+    expect(cam3.guideLabel).toBe('오른쪽으로 조금 돌려 주세요 (캠3–캠4)');
+    // 카메라 3 쪽 같이 보는 곳(쌍 cam3–cam4 의 centroid_a)과 이웃 이름.
+    expect(cam3.guides).toEqual([
+      {
+        text: '오른쪽으로 조금 돌려 주세요 (캠3–캠4)',
+        direction: 'RIGHT',
+        magnitude: 'SMALL',
+        neighborLabel: '캠4',
+        spot: [0.79, 0.62],
+      },
+    ]);
   });
 
   it('한 카메라에 돌릴 안내가 둘이면 카메라 칸에 모두 이어 붙여 보인다', () => {
@@ -192,8 +208,8 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       },
       false,
     );
-    expect(view.cameras.find((c) => c.id === 'cam3')?.angleLabel).toBe(
-      'cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4) · cam3 카메라를 왼쪽으로 조금 돌려 주세요 (cam2–cam3)',
+    expect(view.cameras.find((c) => c.id === 'cam3')?.guideLabel).toBe(
+      '오른쪽으로 조금 돌려 주세요 (캠3–캠4) · 왼쪽으로 조금 돌려 주세요 (캠2–캠3)',
     );
   });
 
@@ -227,43 +243,22 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     );
 
     expect(staleView.connectivity).toBe('UNKNOWN');
-    expect(staleView.connectivityLabel).toBe('연결 확인 불가');
+    expect(staleView.connectivitySummary).toBe('연결 확인 중 · 12초 전 확인');
     expect(staleView.stale).toBe(true);
     expect(staleView.calculationFailed).toBe(true);
     expect(staleView.noVideoCameras).toEqual(['cam2']);
     expect(staleView.staleCameras).toEqual(['cam4']);
     expect(staleView.cameras.find((c) => c.id === 'cam2')?.statusLabel).toBe('영상 없음');
-    expect(staleView.cameras.find((c) => c.id === 'cam4')?.statusLabel).toBe('오래된 결과(STALE)');
-    expect(staleView.submitLabel).toBe('그대로 진행');
-
-    expect(
-      formatGuideItem({
-        camera_id: 'cam2',
-        pair: ['cam2', 'cam3'],
-        direction: 'NONE',
-        magnitude: 'NONE',
-        reason_code: 'NO_OVERLAP_VISIBLE',
-      }),
-    ).toBe('cam2 · cam2–cam3 공통 시야 없음 — 각도를 조정해 주세요');
-
-    // 받침 없는 방향(위·아래)은 '로', 받침 있는 방향(왼쪽·오른쪽)은 '으로'.
-    const toward = (direction: 'LEFT' | 'RIGHT' | 'UP' | 'DOWN') =>
-      formatGuideItem({
-        camera_id: 'cam_A',
-        pair: ['cam_A', 'cam_C'],
-        direction,
-        magnitude: 'MORE',
-        reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
-      });
-    expect(toward('UP')).toBe('cam_A 카메라를 위로 더 돌려 주세요 (cam_A–cam_C)');
-    expect(toward('DOWN')).toBe('cam_A 카메라를 아래로 더 돌려 주세요 (cam_A–cam_C)');
-    expect(toward('LEFT')).toBe('cam_A 카메라를 왼쪽으로 더 돌려 주세요 (cam_A–cam_C)');
-    expect(toward('RIGHT')).toBe('cam_A 카메라를 오른쪽으로 더 돌려 주세요 (cam_A–cam_C)');
+    expect(staleView.cameras.find((c) => c.id === 'cam4')?.statusLabel).toBe('끊김');
+    expect(staleView.cameras.find((c) => c.id === 'cam2')?.guideLabel).toBe(
+      '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (캠2–캠3)',
+    );
 
     const errorView = deriveStep1Coverage(undefined, true);
     expect(errorView.calculationFailed).toBe(true);
     expect(errorView.connectivity).toBe('UNKNOWN');
-    expect(errorView.submitLabel).toBe('그대로 진행');
+    // 응답이 없으면 확인 시각을 모르므로 붙이지 않는다.
+    expect(errorView.connectivitySummary).toBe('연결 확인 중');
   });
 });
 
@@ -402,12 +397,20 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     failure_message: null,
   };
 
-  it('대기 4단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)와 목표 90초 기준 남은 시간을 계산한다', () => {
+  it('대기 5단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안 → 정밀 3D 맵)와 목표 90초 기준 남은 시간을 계산한다', () => {
     expect(WAITING_STAGES.map((s) => s.label)).toEqual([
       '배경 수집',
       '3D 공간·좌표계',
       '카메라 정밀 보정',
       '미리보기 맵·구역 초안',
+      '정밀 3D 맵',
+    ]);
+    expect(WAITING_STAGES.map((s) => [s.stage, s.from, s.to])).toEqual([
+      ['COLLECTING_BACKGROUND', 0, 15],
+      ['INITIAL_POSE_AND_WORLD', 15, 40],
+      ['JOINT_BA_AND_VERIFY', 40, 65],
+      ['PREVIEW_AND_VLM_DRAFT', 65, 85],
+      ['BAKING_TEXTURE', 85, 100],
     ]);
     expect(SETUP_TARGET_DURATION_SEC).toBe(90);
     expect(estimateRemainingSeconds(0)).toBe(90);
@@ -423,11 +426,10 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       stage: 'JOINT_BA_AND_VERIFY',
       progress_pct: 60,
     });
-    expect(view.stageLabel).toBe('카메라 정밀 보정');
     expect(view.progressPct).toBe(60);
     expect(view.remainingSec).toBe(36);
     expect(view.remainingClock).toBe('0:36');
-    expect(view.steps.map((s) => s.status)).toEqual(['done', 'done', 'current', 'upcoming']);
+    expect(view.failedStageIndex).toBeNull();
   });
 
   it('높이 불일치 경고(within_tolerance=false)와 미리보기/정밀 Scene 단계를 구분한다', () => {
@@ -683,4 +685,221 @@ describe('setupErrorMessage: 진행 중 작업 409 안내 매핑', () => {
     expect(isSetupBlockedByLiveWork(error)).toBe(false);
     expect(setupErrorMessage(error)).toBe('이미 진행 중인 현장 세팅 세션이 있습니다');
   });
+});
+
+describe('보정·생성 실패 단계(마지막 서버 진행률로 추정)', () => {
+  const session = (over: Record<string, unknown>) =>
+    setupSessionResponseSchema.parse({
+      setup_session_id: 's1',
+      site_id: 'classroom-1',
+      work_unit_id: 1,
+      status: 'FAILED',
+      stage: 'FAILED',
+      progress_pct: 0,
+      camera_heights_m: { cam1: 2.4, cam2: 2.4 },
+      ...over,
+    });
+
+  it.each([
+    [0, 0],
+    [14, 0],
+    [15, 1],
+    [39, 1],
+    [40, 2],
+    [64, 2],
+    [65, 3],
+    [84, 3],
+    [85, 4],
+    [100, 4],
+  ])(
+    '서버가 stage 를 FAILED 로 덮으면 진행률 %i%% 는 %i번째 단계에서 실패한 것이다',
+    (pct, index) => {
+      const view = deriveWaitingView(session({ progress_pct: pct }));
+      expect(view.failed).toBe(true);
+      expect(view.failedStageIndex).toBe(index);
+    },
+  );
+
+  it('stage 가 FAILED 로 덮이지 않았으면 그 stage 가 실패 단계이고, 실패가 아니면 실패 단계가 없다', () => {
+    expect(
+      deriveWaitingView(session({ stage: 'BAKING_TEXTURE', progress_pct: 10 })).failedStageIndex,
+    ).toBe(4);
+    expect(
+      deriveWaitingView(
+        session({ status: 'JOINT_BA_AND_VERIFY', stage: 'JOINT_BA_AND_VERIFY', progress_pct: 50 }),
+      ).failedStageIndex,
+    ).toBeNull();
+  });
+});
+
+describe('보정·생성 5단계 막대 표시(deriveStageRows)', () => {
+  const summary = (shown: number, failed: number | null = null) =>
+    deriveStageRows(shown, failed).map((r) => `${r.status}:${r.stagePct}`);
+
+  it('끝난 단계는 완료, 지금 단계는 구간 안 비율, 남은 단계는 대기다', () => {
+    expect(summary(0)).toEqual([
+      'current:0',
+      'upcoming:0',
+      'upcoming:0',
+      'upcoming:0',
+      'upcoming:0',
+    ]);
+    // 배경 수집 7.5/15 = 50%
+    expect(summary(7.5)[0]).toBe('current:50');
+    // 3D 공간·좌표계 구간(15~40)의 절반
+    expect(summary(27.5)).toEqual([
+      'done:100',
+      'current:50',
+      'upcoming:0',
+      'upcoming:0',
+      'upcoming:0',
+    ]);
+  });
+
+  it('구간 경계에서는 앞 단계가 완료되고 다음 단계가 0% 에서 시작한다', () => {
+    expect(summary(15).slice(0, 2)).toEqual(['done:100', 'current:0']);
+    expect(summary(85).slice(3, 5)).toEqual(['done:100', 'current:0']);
+    expect(summary(100)).toEqual(['done:100', 'done:100', 'done:100', 'done:100', 'done:100']);
+  });
+
+  it('실패한 단계는 실패, 앞 단계는 완료, 뒤 단계는 대기이고 실패 단계 막대는 멈춘 곳까지 찬다', () => {
+    expect(summary(52, 2)).toEqual([
+      'done:100',
+      'done:100',
+      'failed:48',
+      'upcoming:0',
+      'upcoming:0',
+    ]);
+    expect(summary(0, 0)[0]).toBe('failed:0');
+  });
+});
+
+describe('보정 검증 결과·높이 안내 표시 시점', () => {
+  const check = (over: Record<string, unknown> = {}) => ({
+    input_height_m: 2.25,
+    restored_height_m: 2.26,
+    difference_cm: 1,
+    within_tolerance: true,
+    guidance: null,
+    ...over,
+  });
+  const session = (over: Record<string, unknown> = {}) =>
+    setupSessionResponseSchema.parse({
+      setup_session_id: 's1',
+      site_id: 'classroom-1',
+      work_unit_id: 1,
+      status: 'JOINT_BA_AND_VERIFY',
+      stage: 'JOINT_BA_AND_VERIFY',
+      progress_pct: 50,
+      camera_heights_m: { cam1: 2.25, cam2: 2.3 },
+      height_tolerance_cm: 5,
+      height_checks: {
+        cam1: check(),
+        cam2: check({
+          input_height_m: 2.3,
+          restored_height_m: null,
+          difference_cm: null,
+          within_tolerance: false,
+        }),
+      },
+      ...over,
+    });
+
+  it('세션의 height_checks 를 서버 판정 그대로 행으로 바꾸고 없으면 빈 배열이다', () => {
+    expect(deriveHeightCheckRows(session())).toEqual([
+      {
+        cameraId: 'cam1',
+        inputHeightM: 2.25,
+        restoredHeightM: 2.26,
+        differenceCm: 1,
+        withinTolerance: true,
+      },
+      {
+        cameraId: 'cam2',
+        inputHeightM: 2.3,
+        restoredHeightM: null,
+        differenceCm: null,
+        withinTolerance: false,
+      },
+    ]);
+    expect(deriveHeightCheckRows(session({ height_checks: null }))).toEqual([]);
+    expect(deriveHeightCheckRows(null)).toEqual([]);
+  });
+
+  it('허용 오차 안에 있어도 서버가 안 맞다고 하면 안 맞는 행이다(허용값으로 다시 계산하지 않는다)', () => {
+    const rows = deriveHeightCheckRows(
+      session({
+        height_checks: { cam1: check({ difference_cm: 0.5, within_tolerance: false }) },
+      }),
+    );
+    expect(rows[0]!.withinTolerance).toBe(false);
+  });
+
+  it('카메라 id 와 허용 오차는 세션에서 읽는다', () => {
+    const view = deriveWaitingView(session());
+    expect(view.cameraIds).toEqual(['cam1', 'cam2']);
+    expect(view.heightToleranceCm).toBe(5);
+    expect(
+      deriveWaitingView(session({ height_tolerance_cm: undefined })).heightToleranceCm,
+    ).toBeNull();
+  });
+
+  it('높이 불일치 안내는 서버가 높이를 확인한 뒤(40%~)나 미리보기 맵이 준비된 뒤에만, 실패가 아닐 때 보인다', () => {
+    const mismatch = { cam2: check({ within_tolerance: false, difference_cm: 41 }) };
+    const noticeAt = (over: Record<string, unknown>) =>
+      deriveWaitingView(session({ height_checks: mismatch, ...over })).showHeightNotice;
+    expect(noticeAt({ progress_pct: 39 })).toBe(false);
+    expect(noticeAt({ progress_pct: 40 })).toBe(true);
+    expect(noticeAt({ progress_pct: 20, preview_scene_version: 'scene-preview-1' })).toBe(true);
+    expect(noticeAt({ progress_pct: 70, status: 'FAILED', stage: 'FAILED' })).toBe(false);
+    expect(
+      deriveWaitingView(session({ height_checks: { cam1: check() }, progress_pct: 70 }))
+        .showHeightNotice,
+    ).toBe(false);
+  });
+});
+
+describe('현재 Scene 이 이 세션의 맵인지', () => {
+  const tier = (preview: string | null, final: string | null = null) =>
+    deriveSceneTierStatus(
+      setupSessionResponseSchema.parse({
+        setup_session_id: 's1',
+        site_id: 'classroom-1',
+        work_unit_id: 1,
+        status: final ? 'COMPLETED' : 'BAKING_TEXTURE',
+        stage: final ? 'COMPLETED' : 'BAKING_TEXTURE',
+        progress_pct: 90,
+        camera_heights_m: { cam1: 2.4 },
+        preview_scene_version: preview,
+        scene_version: final,
+      }),
+    );
+
+  it('응답의 scene_version 만 읽고 응답이 아니거나 비면 null 이다', () => {
+    expect(currentSceneVersion(null)).toBeNull();
+    expect(currentSceneVersion({ ok: false, reason: '실패' })).toBeNull();
+    expect(currentSceneVersion({ ok: true, raw: 'x' })).toBeNull();
+    expect(currentSceneVersion({ ok: true, raw: { scene_version: '' } })).toBeNull();
+    expect(currentSceneVersion({ ok: true, raw: { scene_version: 'scene-preview-1' } })).toBe(
+      'scene-preview-1',
+    );
+  });
+
+  it('미리보기 버전이나(정밀 3D 맵으로 바뀐 뒤에는) 정밀 버전과 같을 때만 맞다', () => {
+    expect(isSessionScene('scene-preview-1', tier('scene-preview-1'))).toBe(true);
+    expect(isSessionScene('scene-demo', tier('scene-preview-1'))).toBe(false);
+    expect(isSessionScene(null, tier('scene-preview-1'))).toBe(false);
+    expect(isSessionScene('scene-final-1', tier('scene-preview-1', 'scene-final-1'))).toBe(true);
+  });
+});
+
+describe('setupErrorMessage: 재시도·취소 불가 409', () => {
+  it.each(['SETUP_RETRY_NOT_ALLOWED', 'SETUP_CANCEL_NOT_ALLOWED'])(
+    '%s(409)는 진행 중 작업 차단으로 보지 않고 서버 문구를 유지한다',
+    (code) => {
+      const error = new ApiError(409, { code, serverMessage: '지금은 할 수 없는 상태입니다' });
+      expect(isSetupBlockedByLiveWork(error)).toBe(false);
+      expect(setupErrorMessage(error)).toBe('지금은 할 수 없는 상태입니다');
+    },
+  );
 });

@@ -1,4 +1,5 @@
 import { PLAN_MARGIN, ROOM, toPlan } from '@/features/plan/plan';
+import { cameraShortLabel } from '@/features/setup/cameraLabels';
 import {
   DESKS,
   DOOR,
@@ -137,7 +138,7 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
           pair.grade === 'ENOUGH' ? undefined : pair.grade === 'WEAK' ? '0.24 0.14' : '0.1 0.12';
         const width = pair.grade === 'ENOUGH' ? 0.09 : pair.grade === 'WEAK' ? 0.075 : 0.05;
         return (
-          <g key={pair.key} aria-label={`${pair.key} ${pair.gradeLabel}`}>
+          <g key={pair.key} aria-label={`${pair.label} ${pair.gradeLabel}`}>
             <line
               x1={x1}
               y1={y1}
@@ -156,7 +157,7 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
               {...HALO}
               className={cn(HALO_CLASS, 'font-mono', PAIR_TEXT[pair.tone])}
             >
-              {`${pair.key} ${pair.gradeLabel}`}
+              {`${pair.label} ${pair.gradeLabel}`}
             </text>
           </g>
         );
@@ -166,6 +167,7 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
 }
 
 function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
+  const cameraIds = cameras.map((cam) => cam.id);
   return (
     <g>
       {cameras.map((cam) => {
@@ -184,7 +186,9 @@ function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
               fontSize={0.22}
               className={cn('font-mono', PAIR_TEXT[cam.tone])}
             >
-              {cam.status === 'OK' ? cam.id : `${cam.id} (${cam.statusLabel})`}
+              {cam.status === 'OK'
+                ? cameraShortLabel(cameraIds, cam.id)
+                : `${cameraShortLabel(cameraIds, cam.id)} (${cam.statusLabel})`}
             </text>
           </g>
         );

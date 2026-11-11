@@ -1,13 +1,12 @@
 import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Link } from '@tanstack/react-router';
-import { FileText, History, Monitor, Video } from 'lucide-react';
+import { FileText, Monitor, Video } from 'lucide-react';
 
 const ITEMS = [
   { to: '/', label: '실시간 관제', short: '실시간 관제', icon: Monitor },
   { to: '/cctv', label: 'CCTV 관제', short: 'CCTV 관제', icon: Video },
   { to: '/work', label: '작업 관리', short: '작업 관리', icon: FileText },
-  { to: '/history', label: '히스토리', short: '히스토리', icon: History },
 ] as const;
 
 // 평소에는 흐리게 두어 장면을 덜 가리고, 마우스를 올리거나 키보드 초점이 들어오면 진하게 보인다(관제 데모와 같다).

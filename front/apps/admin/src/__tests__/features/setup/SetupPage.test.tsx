@@ -156,11 +156,17 @@ function renderSetupPage(workUnitId: number | null = 1) {
   };
 }
 
+/** 1단계에서 생성 단추를 누르면 뜨는 방식 고르기 창에서 '새로 3D 공간 만들기' 를 누른다(세션 POST 는 이 클릭 뒤에 나간다). */
+function pickNewModel() {
+  const dialog = screen.getByRole('dialog', { name: '3D 공간' });
+  fireEvent.click(within(dialog).getByRole('button', { name: /^새로 3D 공간 만들기/ }));
+}
+
 describe('설치 · 보정 작업 연결', () => {
   it('작업 id 없이 열면 세팅을 시작하지 않고 작업 관리로 돌려보내는 안내를 보인다', () => {
     renderSetupPage(null);
     expect(screen.getByTestId('setup-needs-work')).toBeTruthy();
-    expect(screen.queryByLabelText('cam1 높이 (m)')).toBeNull();
+    expect(screen.queryByLabelText('카메라 1 높이 (m)')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '작업 관리로 이동' }));
     expect(navigateMock).toHaveBeenCalledWith({ to: '/work' });
     expect(setupMock.submittedBodies).toHaveLength(0);
@@ -168,9 +174,10 @@ describe('설치 · 보정 작업 연결', () => {
 
   it('검색 값의 workUnitId 로 세팅을 시작하고 발행 뒤에는 그 작업의 작업 관리로 돌아간다', async () => {
     renderSetupPage(5);
-    const cam4 = (await screen.findByLabelText('cam4 높이 (m)')) as HTMLInputElement;
+    const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
     fireEvent.change(cam4, { target: { value: '2.35' } });
-    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toMatchObject({ work_unit_id: 5 });
   });
@@ -195,7 +202,7 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(page.classList.contains('flex-1')).toBe(true);
     expect(page.classList.contains('min-h-0')).toBe(true);
     expect(page.className).not.toContain('pb-[');
-    expect(page.contains(screen.getByLabelText('cam1 높이 (m)'))).toBe(true);
+    expect(page.contains(screen.getByLabelText('카메라 1 높이 (m)'))).toBe(true);
   });
 
   it('보정 단계 아래에 지도와 카메라 영상을 한 카드로 보이고 규칙 표는 두지 않는다(관리자가 아닌 역할도)', async () => {
@@ -208,27 +215,34 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('세션이 생기기 전에는 2·3단계로 갈 수 없어 카메라 연결 안내가 한 번만 보인다', async () => {
+  it('단계 줄은 표시만 하고 눌러도 이동하지 않아 카메라 연결 안내가 한 번만 보인다', async () => {
     renderSetupPage();
-    await screen.findByLabelText('cam1 높이 (m)');
-    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
-    expect((steps[0] as HTMLButtonElement).disabled).toBe(false);
-    expect((steps[1] as HTMLButtonElement).disabled).toBe(true);
-    expect((steps[2] as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByLabelText('카메라 1 높이 (m)');
+    const list = screen.getByRole('list', { name: '보정 단계' });
+    const steps = within(list).getAllByRole('listitem');
+    expect(steps.map((step) => step.textContent)).toEqual([
+      '1카메라 연결 관리',
+      '2보정·생성',
+      '3구역',
+    ]);
+    expect(steps.map((step) => step.getAttribute('aria-current'))).toEqual(['step', null, null]);
+    expect(within(list).queryAllByRole('button')).toHaveLength(0);
     fireEvent.click(steps[1]!);
+    fireEvent.click(steps[2]!);
+    expect(steps[0]!.getAttribute('aria-current')).toBe('step');
     expect(screen.getAllByRole('heading', { name: '카메라 연결 · 방향 안내' })).toHaveLength(1);
-    expect(screen.getByLabelText('cam1 높이 (m)')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 1 높이 (m)')).toBeTruthy();
   });
 
   it('카메라 높이 기본값을 자동으로 채우고 값 없는 카메라만 입력 필수 상태로 둔다', async () => {
     renderSetupPage();
 
-    const cam1Input = (await screen.findByLabelText('cam1 높이 (m)')) as HTMLInputElement;
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam1Input.value).toBe('2.25'));
 
-    const cam2Input = screen.getByLabelText('cam2 높이 (m)') as HTMLInputElement;
-    const cam3Input = screen.getByLabelText('cam3 높이 (m)') as HTMLInputElement;
-    const cam4Input = screen.getByLabelText('cam4 높이 (m)') as HTMLInputElement;
+    const cam2Input = screen.getByLabelText('카메라 2 높이 (m)') as HTMLInputElement;
+    const cam3Input = screen.getByLabelText('카메라 3 높이 (m)') as HTMLInputElement;
+    const cam4Input = screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement;
 
     expect(cam2Input.value).toBe('2.3');
     expect(cam3Input.value).toBe('2.2');
@@ -244,23 +258,24 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(screen.getByText('입력 필수')).toBeTruthy();
     expect(screen.getAllByText('지난 제출값')).toHaveLength(3);
 
-    const submitButton = screen.getByRole('button', { name: '그대로 진행' }) as HTMLButtonElement;
+    const submitButton = screen.getByRole('button', { name: '다음' }) as HTMLButtonElement;
     expect(submitButton.disabled).toBe(true);
   });
 
   it('값 없는 카메라 높이를 채워 제출하면 요청 본문을 보내고 다음 기본값으로 반영한다', async () => {
     renderSetupPage();
 
-    const cam1Input = (await screen.findByLabelText('cam1 높이 (m)')) as HTMLInputElement;
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam1Input.value).toBe('2.25'));
 
-    const cam4Input = screen.getByLabelText('cam4 높이 (m)') as HTMLInputElement;
+    const cam4Input = screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement;
     fireEvent.change(cam4Input, { target: { value: '2.35' } });
 
-    const submitButton = screen.getByRole('button', { name: '그대로 진행' }) as HTMLButtonElement;
+    const submitButton = screen.getByRole('button', { name: '다음' }) as HTMLButtonElement;
     expect(submitButton.disabled).toBe(false);
 
     fireEvent.click(submitButton);
+    pickNewModel();
 
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toEqual({
@@ -285,6 +300,33 @@ describe('설치 · 보정 1단계 화면', () => {
     });
   });
 
+  it('생성 단추는 방식을 고르기 전에는 세션을 만들지 않고, 창은 Esc 로 닫히지 않으며, 새로 3D 공간 만들기를 누르면 지금 흐름대로 만든다', async () => {
+    renderSetupPage();
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
+    await waitFor(() => expect(cam1Input.value).toBe('2.25'));
+    fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    const dialog = screen.getByRole('dialog', { name: '3D 공간' });
+    const reuse = within(dialog).getByRole('button', { name: /^이전 모델 쓰기/ });
+    expect((reuse as HTMLButtonElement).disabled).toBe(true);
+    // false = preventDefault 가 불렸다(Esc 로 닫히지 않는다).
+    expect(fireEvent(dialog, new Event('cancel', { cancelable: true }))).toBe(false);
+    expect(screen.getByRole('dialog', { name: '3D 공간' })).toBeTruthy();
+    expect(setupMock.submittedBodies).toHaveLength(0);
+
+    pickNewModel();
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    // 서버가 모르는 필드(mode 등)는 보내지 않는다.
+    expect(Object.keys(setupMock.submittedBodies[0]!).sort()).toEqual([
+      'camera_heights_m',
+      'work_unit_id',
+    ]);
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+    expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+  });
+
   it('세팅 시작이 409(SETUP_BLOCKED_BY_LIVE_WORK)로 거절되면 진행 중 작업 종료 안내와 작업 이동 링크를 제공한다', async () => {
     // 1) 서버 현재 응답(작업 정보 없음) -> 일반 문구 + /work 이동
     server.use(
@@ -301,11 +343,12 @@ describe('설치 · 보정 1단계 화면', () => {
     );
 
     renderSetupPage(5);
-    const cam1Input = (await screen.findByLabelText('cam1 높이 (m)')) as HTMLInputElement;
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam1Input.value).toBe('2.25'));
-    const cam4Input = screen.getByLabelText('cam4 높이 (m)') as HTMLInputElement;
+    const cam4Input = screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement;
     fireEvent.change(cam4Input, { target: { value: '2.35' } });
-    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
 
     const alert = await screen.findByTestId('setup-submit-error');
     expect(alert.textContent).toContain(
@@ -331,7 +374,8 @@ describe('설치 · 보정 1단계 화면', () => {
       ),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
     await waitFor(() => {
       expect(screen.getByTestId('setup-submit-error').textContent).toContain(
         '진행 중인 작업(배관 점검)이 있어 세팅을 시작할 수 없습니다. 작업을 종료한 뒤 다시 시도하세요',
@@ -351,10 +395,8 @@ describe('설치 · 보정 1단계 화면', () => {
   it('연결 상태 3종(DISCONNECTED / CONNECTED / UNKNOWN), 쌍 등급, 방향 안내 문구를 표시한다', async () => {
     renderSetupPage();
 
-    expect(await screen.findByText('DISCONNECTED · 시야 분리됨')).toBeTruthy();
-    expect(
-      screen.getAllByText('cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4)').length,
-    ).toBeGreaterThan(0);
+    expect(await screen.findByText('캠1·캠2·캠3 / 캠4 갈림 · 1초 전 확인')).toBeTruthy();
+    expect(screen.getAllByText('오른쪽으로 조금 돌려 주세요 (캠3–캠4)').length).toBeGreaterThan(0);
     // 쌍 등급은 목록 없이 지도의 연결선에만 보인다.
     const edges = within(screen.getByLabelText('카메라 쌍 연결 선'));
     expect(edges.getAllByLabelText(/충분$/).length).toBeGreaterThan(0);
@@ -362,7 +404,7 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(edges.getAllByLabelText(/부족$/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('list', { name: '카메라 쌍 매칭 등급' })).toBeNull();
 
-    // CONNECTED 상태로 바꾸면 "CONNECTED · 4대 시야 연결됨" 과 "다음" 버튼을 보인다
+    // CONNECTED 상태로 바꾸면 "4대 모두 연결" 과 "다음" 버튼을 보인다
     cleanup();
     setupMock.state.latestGuide = buildCoverageGuidePayload({
       connectivity: 'CONNECTED',
@@ -370,11 +412,134 @@ describe('설치 · 보정 1단계 화면', () => {
     });
     renderSetupPage();
 
-    expect(await screen.findByText('CONNECTED · 4대 시야 연결됨')).toBeTruthy();
+    expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
     expect(screen.getByRole('button', { name: '다음' })).toBeTruthy();
   });
 
-  it('STALE·영상 없음(NO_VIDEO)·계산 실패(UNKNOWN) 상태를 표시하고 그대로 진행을 막지 않는다', async () => {
+  describe('옆 카메라 쌍 겹침이 부족하면 다음 전에 확인한다', () => {
+    const pairOf = (a: string, b: string, grade: 'ENOUGH' | 'LACK') => ({
+      a,
+      b,
+      raw_matches: null,
+      inliers: null,
+      inlier_ratio: null,
+      grade,
+      centroid_a: null,
+      centroid_b: null,
+    });
+    /** 카메라 2–3 쌍이 부족한 응답과 높이가 모두 찬 상태로 세팅 화면을 연다. */
+    async function openWithLackPair(lack: boolean) {
+      setupMock = createSetupMock({
+        cameraHeightsM: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
+        latestGuide: buildCoverageGuidePayload({
+          guides: [],
+          pairs: [
+            pairOf('cam1', 'cam2', 'ENOUGH'),
+            pairOf('cam2', 'cam3', lack ? 'LACK' : 'ENOUGH'),
+            pairOf('cam3', 'cam4', 'ENOUGH'),
+            pairOf('cam4', 'cam1', 'ENOUGH'),
+          ],
+        }),
+      });
+      server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
+      renderSetupPage();
+      expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
+      await waitFor(() =>
+        expect((screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement).value).toBe('2.2'),
+      );
+    }
+
+    it('위험이 있으면 오른쪽 카드에 알리고, 다음을 누르면 확인창이 먼저 뜨며 돌아가기는 세션을 만들지 않는다', async () => {
+      await openWithLackPair(true);
+      expect(screen.getByRole('alert').textContent).toContain('캠2–캠3 겹침이 부족합니다');
+
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      const dialog = screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' });
+      expect(dialog.textContent).toContain('캠2–캠3 겹침이 부족한 채로 보정을 시작합니다.');
+      expect(setupMock.submittedBodies).toHaveLength(0);
+
+      fireEvent.click(within(dialog).getByRole('button', { name: '돌아가기' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(setupMock.submittedBodies).toHaveLength(0);
+    });
+
+    it('확인창에서 그대로 진행하면 기존 세션 만들기를 부른다', async () => {
+      await openWithLackPair(true);
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      fireEvent.click(
+        within(screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' })).getByRole(
+          'button',
+          {
+            name: '그대로 진행',
+          },
+        ),
+      );
+      expect(setupMock.submittedBodies).toHaveLength(0);
+      pickNewModel();
+      await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+      expect(setupMock.submittedBodies[0]).toMatchObject({
+        work_unit_id: 1,
+        camera_heights_m: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
+      });
+      expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('위험이 없으면 확인창 없이 바로 방식 고르기 창으로 간다', async () => {
+      await openWithLackPair(false);
+      expect(screen.queryByRole('alert')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      expect(screen.queryByRole('dialog', { name: '보정이 실패할 수 있어요' })).toBeNull();
+      expect(setupMock.submittedBodies).toHaveLength(0);
+      pickNewModel();
+      await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    });
+
+    it('확인창이 열린 채 이어받기로 단계가 바뀌면 사라지고, 1단계로 돌아와도 다시 뜨지 않는다', async () => {
+      await openWithLackPair(true);
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      fireEvent.click(
+        within(screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' })).getByRole(
+          'button',
+          { name: '그대로 진행' },
+        ),
+      );
+      pickNewModel();
+      await waitFor(() => expect(setupMock.sessions.size).toBe(1));
+      const sessionId = [...setupMock.sessions.keys()][0]!;
+      setupMock.failSession(sessionId, 'VALIDATION_REJECTED');
+      cleanup();
+      resetSetupFlowStore();
+
+      // 이어받을 세션 조회가 늦게 끝나도록 붙잡아 두고, 그 사이 확인창을 연다.
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      server.use(
+        http.get('*/api/work-units/:id', async () => {
+          await held;
+          return HttpResponse.json({ work_id: '1', active_setup_session_id: sessionId });
+        }),
+      );
+      renderSetupPage();
+      expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
+      await waitFor(() =>
+        expect((screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement).value).toBe('2.2'),
+      );
+      fireEvent.click(screen.getByRole('button', { name: '다음' }));
+      expect(screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' })).toBeTruthy();
+
+      release();
+      const failure = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      fireEvent.click(within(failure).getByRole('button', { name: '카메라 연결 관리로' }));
+      expect(await screen.findByLabelText('카메라 2 높이 (m)')).toBeTruthy();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    }, 20_000);
+  });
+
+  it('STALE·영상 없음(NO_VIDEO)·계산 실패(UNKNOWN) 상태를 표시하고 다음으로 가는 것을 막지 않는다', async () => {
     setupMock = createSetupMock({
       cameraHeightsM: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
       guideStatus: 'STALE',
@@ -397,8 +562,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
     renderSetupPage();
 
-    expect(await screen.findByText('STALE · 오래된 결과')).toBeTruthy();
-    expect(screen.getByText('UNKNOWN · 연결 확인 불가')).toBeTruthy();
+    expect(await screen.findByText('연결 확인 중 · 12초 전 확인')).toBeTruthy();
     expect(screen.getByText('계산 실패')).toBeTruthy();
     // 카메라별 상태·안내는 오른쪽 카메라 패널 행에 보인다.
     const cameraPanel = within(
@@ -406,23 +570,26 @@ describe('설치 · 보정 1단계 화면', () => {
     );
     expect(cameraPanel.getByText('영상 없음')).toBeTruthy();
     expect(
-      cameraPanel.getByText('cam2 · cam2–cam3 공통 시야 없음 — 각도를 조정해 주세요'),
+      cameraPanel.getByText(
+        '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (캠2–캠3)',
+      ),
     ).toBeTruthy();
 
-    const proceedButton = screen.getByRole('button', { name: '그대로 진행' }) as HTMLButtonElement;
+    const proceedButton = screen.getByRole('button', { name: '다음' }) as HTMLButtonElement;
     await waitFor(() => expect(proceedButton.disabled).toBe(false));
 
-    // 서버 오류(계산 실패)여도 그대로 진행할 수 있다
+    // 서버 오류(계산 실패)여도 다음으로 갈 수 있다
     cleanup();
     setupMock.state.guideError = true;
     renderSetupPage();
 
     expect(await screen.findByText('계산 실패')).toBeTruthy();
     const proceedOnFailure = screen.getByRole('button', {
-      name: '그대로 진행',
+      name: '다음',
     }) as HTMLButtonElement;
     await waitFor(() => expect(proceedOnFailure.disabled).toBe(false));
     fireEvent.click(proceedOnFailure);
+    pickNewModel();
 
     expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
   });
@@ -430,13 +597,14 @@ describe('설치 · 보정 1단계 화면', () => {
 
 const POLL_WAIT = { timeout: 8_000 };
 
-/** cam4 높이를 채워 세팅을 시작하고 대기 화면(2단계)의 세션 id 를 돌려준다. */
+/** cam4 높이를 채워 세팅을 시작하고 보정·생성 화면(2단계)의 세션 id 를 돌려준다. */
 async function startSetupSession() {
   const view = renderSetupPage();
-  const cam1Input = (await screen.findByLabelText('cam1 높이 (m)')) as HTMLInputElement;
+  const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
   await waitFor(() => expect(cam1Input.value).toBe('2.25'));
-  fireEvent.change(screen.getByLabelText('cam4 높이 (m)'), { target: { value: '2.35' } });
-  fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+  fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
+  fireEvent.click(screen.getByRole('button', { name: '다음' }));
+  pickNewModel();
   await waitFor(() => expect(setupMock.sessions.size).toBe(1));
   const sessionId = [...setupMock.sessions.keys()][0]!;
   expect(await screen.findByText(`세션 ${sessionId}`)).toBeTruthy();
@@ -471,65 +639,72 @@ const HEIGHT_MISMATCH = {
   },
 } as const;
 
-/** 높이 불일치 경고를 띄우고 1단계 높이 칸으로 돌아가 cam2 높이를 2.7 로 고친다('다시 시도' 직전까지). */
-async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionResponse>) {
-  setupMock.updateSession(sessionId, { ...HEIGHT_MISMATCH, ...patch });
-  const warning = await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-  expect(warning.textContent).toContain('cam2 높이를 다시 재서 입력해 주세요');
-  fireEvent.click(within(warning).getByRole('button', { name: '1단계 높이 수정' }));
-  const cam2Input = (await screen.findByLabelText('cam2 높이 (m)')) as HTMLInputElement;
+/** 카메라 연결 관리(1단계)로 돌아온 화면에서 cam2 높이를 2.7 로 고친다('다시 시도' 직전까지). */
+async function editCam2Height() {
+  const cam2Input = (await screen.findByLabelText('카메라 2 높이 (m)')) as HTMLInputElement;
   expect(cam2Input.value).toBe('2.3');
   fireEvent.change(cam2Input, { target: { value: '2.7' } });
 }
 
-describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI 초안·발행 뒤)', () => {
-  it('대기 화면에 실제 진행률과 경과 시간을 보이고 진행 상태를 갱신한다', async () => {
+/** 높이 불일치 안내를 띄우고 '카메라 다시 맞추기' 로 1단계 높이 칸에 돌아와 cam2 높이를 2.7 로 고친다. */
+async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionResponse>) {
+  setupMock.updateSession(sessionId, { ...HEIGHT_MISMATCH, ...patch });
+  const warning = await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
+  expect(warning.textContent).toContain('cam2 높이를 다시 재서 입력해 주세요');
+  fireEvent.click(screen.getByRole('button', { name: '카메라 다시 맞추기' }));
+  await editCam2Height();
+}
+
+/** 미리보기 맵이 준비돼 켜진 '다음' 을 눌러 구역 단계로 가고 구역 편집 도구 대역을 돌려준다. */
+async function goToZoneStep() {
+  const next = (await screen.findByRole('button', { name: '다음' })) as HTMLButtonElement;
+  await waitFor(() => expect(next.disabled).toBe(false), POLL_WAIT);
+  fireEvent.click(next);
+  return screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+}
+
+const progressNow = () =>
+  Number(screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'));
+const stageStates = () =>
+  within(screen.getByRole('list', { name: '보정·생성 단계' }))
+    .getAllByRole('listitem')
+    .map((item) => item.getAttribute('data-status'));
+
+describe('설치 · 보정 2단계(보정·생성)', () => {
+  it('보정·생성에 진행률과 경과 시간을 보이고 5단계 막대가 서버 진행 상태를 따라간다', async () => {
     const { sessionId } = await startSetupSession();
 
-    expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
-    expect(
-      screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'),
-    ).toBe('0');
-    expect(screen.getByLabelText('세팅 진행률 및 경과 시간').textContent).toContain('경과 시간');
+    expect(progressNow()).toBe(0);
+    expect(screen.getByText(/경과 \d+분 \d{2}초/)).toBeTruthy();
     expect(screen.getByText(/워커의 진행 정보를 기다리는 중/)).toBeTruthy();
+    expect(stageStates()).toEqual(['current', 'upcoming', 'upcoming', 'upcoming', 'upcoming']);
 
     setupMock.updateSession(sessionId, {
-      stage: 'INITIAL_POSE_AND_WORLD',
-      status: 'INITIAL_POSE_AND_WORLD',
+      stage: 'JOINT_BA_AND_VERIFY',
+      status: 'JOINT_BA_AND_VERIFY',
       progress_pct: 40,
     });
 
-    await waitFor(
-      () =>
-        expect(
-          screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'),
-        ).toBe('40'),
-      POLL_WAIT,
-    );
-    expect(screen.getByLabelText('세팅 진행률 및 경과 시간').textContent).toContain('40%');
-    const steps = within(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).getAllByRole(
-      'listitem',
-    );
-    expect(steps).toHaveLength(4);
-    expect(steps[0]!.textContent).toContain('완료');
-    expect(steps[1]!.textContent).toContain('진행 중');
-    expect(steps[3]!.textContent).toContain('대기');
+    // 서버 값은 바로 반영되고(시간으로 채우는 값은 그보다 앞서지만 다음 단계 끝값 65 에 닿지 않는다).
+    await waitFor(() => expect(progressNow()).toBeGreaterThanOrEqual(40), POLL_WAIT);
+    expect(progressNow()).toBeLessThan(65);
+    expect(stageStates()).toEqual(['done', 'done', 'current', 'upcoming', 'upcoming']);
   }, 20_000);
 
-  it('대기 화면의 세팅 취소는 확인 창 뒤 세션을 취소하고 실패 안내로 바뀐다', async () => {
+  it('보정·생성의 세팅 취소는 확인 창 뒤 세션을 취소하고 실패 안내로 바뀐다', async () => {
     const { sessionId } = await startSetupSession();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     fireEvent.click(await screen.findByRole('button', { name: '세팅 취소' }));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
-    await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
-    expect(screen.getByRole('alert', { name: '세팅 실패 안내' }).textContent).toContain(
-      'CANCELLED_BY_ADMIN',
-    );
+    const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(alert.textContent).toContain('배경 수집 단계에서 멈췄어요');
+    expect(alert.textContent).toContain('세팅을 취소했어요');
+    expect(within(alert).getByRole('button', { name: '다시 시도' })).toBeTruthy();
     expect(sessionId).toBeTruthy();
     confirmSpy.mockRestore();
   }, 20_000);
 
-  it('실패하면 사유와 다시 시도를 보이고, 다시 시도하면 retry 요청 뒤 새 세션을 추적한다', async () => {
+  it('실패하면 어느 단계에서 멈췄는지와 원인·해결을 보이고, 다시 시도하면 retry 요청 뒤 새 세션을 추적한다', async () => {
     const { sessionId } = await startSetupSession();
 
     setupMock.updateSession(sessionId, {
@@ -541,8 +716,13 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     });
 
     const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
-    expect(alert.textContent).toContain('RECONSTRUCT_FAILED');
-    expect(alert.textContent).toContain('3D 공간 복원에 실패했습니다(시험)');
+    // 표에 없는 코드는 폴백 안내를 보이고 서버 코드·메시지 원문은 화면에 쓰지 않는다.
+    expect(alert.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
+    expect(alert.textContent).toContain('서버에서 세팅을 끝내지 못했어요');
+    expect(alert.textContent).not.toContain('RECONSTRUCT_FAILED');
+    expect(alert.textContent).not.toContain('3D 공간 복원에 실패했습니다(시험)');
+    expect(stageStates()).toEqual(['done', 'done', 'failed', 'upcoming', 'upcoming']);
+    expect(screen.getByRole('button', { name: '다음' }).hasAttribute('disabled')).toBe(true);
 
     fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }));
 
@@ -551,12 +731,25 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(retried.sessionId).toBe(sessionId);
     expect(await screen.findByText(`세션 ${retried.retriedSessionId}`)).toBeTruthy();
     expect(screen.queryByRole('alert', { name: '세팅 실패 안내' })).toBeNull();
-    expect(
-      screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'),
-    ).toBe('0');
+    // 새 세션은 0%부터다(서버 값이 내려가면 표시값도 내려간다).
+    await waitFor(() => expect(progressNow()).toBe(0));
   }, 20_000);
 
-  it('높이 불일치 경고는 어느 카메라인지 보이고, 진행 중이면 세션을 취소한 뒤 고친 높이로 재시도한다', async () => {
+  it('같은 상태로 다시 해도 소용없는 실패는 다시 시도 없이 카메라 연결 관리로만 돌려보낸다(카메라 쌍은 캠N–캠M 으로)', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.failSession(sessionId, 'INSUFFICIENT_FEATURES');
+
+    const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(alert.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
+    expect(alert.textContent).toContain('옆 카메라 캠2–캠3 사이에 같이 보이는 곳이 적어요');
+    expect(within(alert).queryByRole('button', { name: '다시 시도' })).toBeNull();
+
+    fireEvent.click(within(alert).getByRole('button', { name: '카메라 연결 관리로' }));
+    expect(await screen.findByLabelText('카메라 2 높이 (m)')).toBeTruthy();
+    expect(screen.queryByRole('alert', { name: '세팅 실패 안내' })).toBeNull();
+  }, 20_000);
+
+  it('높이 불일치 안내는 어느 카메라인지 보이고, 진행 중이면 세션을 취소한 뒤 고친 높이로 재시도한다', async () => {
     const { sessionId } = await startSetupSession();
 
     await fixCam2Height(sessionId, {
@@ -578,10 +771,10 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(
       await screen.findByText(`세션 ${setupMock.retryRequests[0]!.retriedSessionId}`),
     ).toBeTruthy();
-    expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
+    expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
   }, 20_000);
 
-  it('높이 경고가 있는 채 끝난 세션은 고친 높이로 새 세션을 시작한다(서버 retry 는 실패한 세션만 받는다)', async () => {
+  it('높이 불일치가 있는 채 끝난 세션은 고친 높이로 새 세션을 시작한다(서버 retry 는 실패한 세션만 받는다)', async () => {
     const { sessionId } = await startSetupSession();
 
     await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
@@ -594,47 +787,133 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 수정 안내' })).toBeNull();
   }, 20_000);
 
-  it('실패한 세션은 취소 없이 고친 높이로 곧바로 재시도한다', async () => {
+  it('실패한 세션은 카메라 연결 관리로 돌아가 취소 없이 고친 높이로 곧바로 재시도한다', async () => {
     const { sessionId } = await startSetupSession();
+    setupMock.failSession(sessionId, 'VALIDATION_REJECTED');
 
-    await fixCam2Height(sessionId, {
-      stage: 'FAILED',
-      status: 'FAILED',
-      failure_code: 'VALIDATION_REJECTED',
-      failure_message: '검증에 실패했습니다',
-    });
+    const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(alert.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
+    expect(alert.textContent).toContain(
+      '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (캠1–캠2, 캠3–캠4)',
+    );
+    // 실패 중에는 높이 불일치 안내·카메라 다시 맞추기 단추를 따로 보이지 않는다.
+    expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
+    fireEvent.click(within(alert).getByRole('button', { name: '카메라 연결 관리로' }));
+    await editCam2Height();
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
 
+    // 같은 세션의 서버 retry 라서 방식을 다시 고르지 않는다.
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('VALIDATION_REJECTED');
     expect(setupMock.submittedBodies).toHaveLength(1);
   }, 20_000);
 
-  it('2단계는 자동 보정 대기 패널만 보이고 지도 카드와 고정 상태 배지는 없으며 단추는 구역으로 이동한다', async () => {
-    await startSetupSession();
+  it('끝난 세션을 고친 높이로 새로 시작할 때도 방식 고르기 창을 띄우지 않는다', async () => {
+    const { sessionId } = await startSetupSession();
 
-    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
-    expect(steps[1]!.textContent).toBe('2자동 보정');
+    await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+  }, 20_000);
+
+  it('보정·생성은 맵이 준비돼야 다음이 켜지고 저절로 구역으로 넘어가지 않으며 처음부터 다시 단추는 없다', async () => {
+    const { sessionId } = await startSetupSession();
+
+    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('listitem');
+    expect(steps[1]!.textContent).toBe('2보정·생성');
     expect(steps[1]!.getAttribute('aria-current')).toBe('step');
-    expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
+    expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '검증 지점' })).toBeNull();
     expect(screen.queryByRole('img', { name: /위에서 본 보정 화면/ })).toBeNull();
     expect(screen.queryByText('PROVISIONAL')).toBeNull();
     expect(screen.queryByRole('button', { name: '보정 확정' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '구역으로' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
+    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: '구역으로' }));
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    await waitFor(
+      () =>
+        expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
+          false,
+        ),
+      POLL_WAIT,
+    );
+    // 맵이 준비돼도 보정·생성에 머문다.
+    expect(screen.queryByTestId('zones-page-stub')).toBeNull();
+    expect(steps[1]!.getAttribute('aria-current')).toBe('step');
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
     expect(await screen.findByTestId('zones-page-stub')).toBeTruthy();
+    expect(steps[2]!.getAttribute('aria-current')).toBe('step');
+    expect(steps[1]!.getAttribute('aria-current')).toBeNull();
   }, 20_000);
 
-  it('미리보기 맵이 도착하면 구역 편집 도구로 넘어가고, 정식 Scene 이 오면 자동 교체해도 수락해 만든 구역이 남는다', async () => {
+  it('현재 Scene 이 이 세션의 미리보기 맵이면 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
+    server.use(
+      http.get('*/api/scenes/current', () =>
+        HttpResponse.json({
+          scene_version: 'scene-preview-1',
+          state: 'COMMITTED',
+          default: false,
+          calibration_version: 'cal-8',
+          committed_at_ms: 1_793_690_000_000,
+          gltf_url: null,
+          gltf_expires_at_ms: null,
+        }),
+      ),
+    );
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
+
+    const viewport = await screen.findByTestId('setup-preview-viewport', undefined, POLL_WAIT);
+    expect(await within(viewport).findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
+    expect(fakeViewer.props?.scene).toMatchObject({
+      ok: true,
+      raw: { scene_version: 'scene-preview-1' },
+    });
+    // 구역 편집 틀(useViewportHost)의 편집 상자·AI 윤곽을 쓰지 않는 읽기용 3D 다.
+    expect(fakeViewer.props?.boxEdit).toBeUndefined();
+    expect(fakeViewer.props?.boxGhosts).toBeUndefined();
+
+    expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
+    const table = screen.getByRole('table');
+    expect(within(table).getByText('카메라 2')).toBeTruthy();
+    expect(within(table).getByText('41.0 cm')).toBeTruthy();
+    expect(screen.getByText('높이 차이 허용 5 cm')).toBeTruthy();
+    expect(screen.getByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  }, 20_000);
+
+  it('높이가 안 맞아도 다음은 켜져 구역 단계로 갈 수 있고, 카메라 다시 맞추기도 함께 보인다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
+
+    expect(
+      await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: '카메라 다시 맞추기' })).toBeTruthy();
+    expect(await goToZoneStep()).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
+  }, 20_000);
+
+  it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 다음으로 구역 단계에 가면 정식 Scene 이 와도 수락해 만든 구역이 남는다', async () => {
     const { sessionId, client } = await startSetupSession();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
 
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
 
-    expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
+    expect(await goToZoneStep()).toBeTruthy();
     expect(screen.getByRole('status', { name: '배경 맵 단계 상태' }).textContent).toContain(
       '미리보기 맵',
     );
@@ -669,7 +948,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
 
-    const panel = await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+    const panel = await goToZoneStep();
     expect(panel.getAttribute('data-placement')).toBe('inline');
     // 3D 코드는 구역 단계에 와서야 받는다(무거운 묶음이라 기다림을 넉넉히 둔다).
     expect(await screen.findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
@@ -701,6 +980,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     });
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    await goToZoneStep();
 
     const list = await screen.findByRole('list', { name: 'AI 구역 초안 목록' }, POLL_WAIT);
     const items = within(list).getAllByRole('listitem');
@@ -748,9 +1028,9 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
   it('머리글에는 구역 편집(관제 이동) 단추가 없고, 구역을 발행하면 맨 오른쪽에 작업 관리로 하나만 생긴다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
-    await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+    await goToZoneStep();
 
-    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
+    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('listitem');
     expect(steps).toHaveLength(3);
     expect(steps[2]!.textContent).toBe('3구역');
     expect(steps[2]!.getAttribute('aria-current')).toBe('step');
@@ -768,36 +1048,27 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(navigateMock).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '1' } });
   }, 20_000);
 
-  it('작업 관리에서 다시 열면(이 브라우저에 세션이 남은 채) 맵이 준비된 세션은 곧바로 구역 단계로 연다', async () => {
+  it('작업 관리에서 다시 열면(이 브라우저에 세션이 남은 채) 맵이 준비된 세션은 보정·생성에서 열리고 다음으로 구역에 간다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
-    await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+    await goToZoneStep();
     cleanup();
 
     renderSetupPage();
-    expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
-    expect(screen.queryByLabelText('cam1 높이 (m)')).toBeNull();
+    expect(await screen.findByRole('list', { name: '보정·생성 단계' }, POLL_WAIT)).toBeTruthy();
+    expect(screen.queryByTestId('zones-page-stub')).toBeNull();
+    expect(await goToZoneStep()).toBeTruthy();
+    expect(screen.queryByLabelText('카메라 1 높이 (m)')).toBeNull();
     expect(setupMock.submittedBodies).toHaveLength(1);
   }, 20_000);
 
-  it('높이 경고가 남았어도 구역을 이미 발행한 세션은 자동 보정에 머물지 않고 구역 단계로 연다', async () => {
+  it('구역을 이미 발행한 세션도 보정·생성에서 열리고, 다음으로 구역 단계에 가면 작업 관리로 단추가 있다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, {
-      ...PREVIEW_PATCH,
-      height_checks: {
-        cam1: {
-          input_height_m: 2.44,
-          restored_height_m: 2.36,
-          difference_cm: -8,
-          within_tolerance: false,
-          guidance: 'cam1 높이가 8 cm 안 맞음',
-        },
-      },
-      zones_committed_at: 1_793_848_135_600,
-    });
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, zones_committed_at: 1_793_848_135_600 });
 
-    expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '구역으로' })).toBeNull();
+    expect(await screen.findByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
+    expect(await goToZoneStep()).toBeTruthy();
     expect(screen.getByRole('button', { name: '작업 관리로' })).toBeTruthy();
   }, 20_000);
 
@@ -806,7 +1077,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     cleanup();
 
     renderSetupPage(5);
-    expect(await screen.findByLabelText('cam1 높이 (m)', undefined, POLL_WAIT)).toBeTruthy();
+    expect(await screen.findByLabelText('카메라 1 높이 (m)', undefined, POLL_WAIT)).toBeTruthy();
     await waitFor(() => expect(useSetupFlowStore.getState().activeSessionId).toBeNull());
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
   }, 20_000);

@@ -1,0 +1,117 @@
+import { NO_CHECKS, type PreflightChecks } from '@/features/work/preflight/preflight';
+import { PreflightConfirmDialog } from '@/features/work/preflight/PreflightConfirmDialog';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(cleanup);
+
+/** 체크 상태를 들고 있는 상위 화면 대역. */
+function Harness({
+  signerCount = 0,
+  pending = false,
+  error = null,
+  initial = NO_CHECKS,
+  onSign = vi.fn(),
+  onStart = vi.fn(),
+  onCancel = vi.fn(),
+}: {
+  signerCount?: number;
+  pending?: boolean;
+  error?: string | null;
+  initial?: PreflightChecks;
+  onSign?: () => void;
+  onStart?: () => void;
+  onCancel?: () => void;
+}) {
+  const [checks, setChecks] = useState(initial);
+  return (
+    <PreflightConfirmDialog
+      checks={checks}
+      onChecksChange={setChecks}
+      signerCount={signerCount}
+      pending={pending}
+      error={error}
+      onSign={onSign}
+      onStart={onStart}
+      onCancel={onCancel}
+    />
+  );
+}
+
+const start = () => screen.getByRole('button', { name: '작업 시작' }) as HTMLButtonElement;
+const checkReport = () => screen.getByRole('checkbox', { name: 'TBM 보고서를 확인했습니다' });
+const checkLayout = () => screen.getByRole('checkbox', { name: '가상 레이아웃을 확인했습니다' });
+
+describe('PreflightConfirmDialog', () => {
+  it('제목·체크 둘·서명 줄과 취소·작업 시작을 보인다', () => {
+    render(<Harness />);
+    expect(screen.getByRole('dialog', { name: '작업 전 확인' })).toBeTruthy();
+    expect((checkReport() as HTMLInputElement).checked).toBe(false);
+    expect((checkLayout() as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText('참석자 서명이 필요합니다')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '취소' })).toBeTruthy();
+    expect(start().disabled).toBe(true);
+  });
+
+  it('체크 둘과 서명 1명이 모두 충족돼야 작업 시작이 켜진다', () => {
+    render(<Harness signerCount={1} />);
+    expect(start().disabled).toBe(true);
+    fireEvent.click(checkReport());
+    expect(start().disabled).toBe(true);
+    fireEvent.click(checkLayout());
+    expect(start().disabled).toBe(false);
+
+    // 체크를 하나 풀면 다시 꺼진다.
+    fireEvent.click(checkReport());
+    expect(start().disabled).toBe(true);
+  });
+
+  it('체크를 다 해도 서명이 없으면 작업 시작은 꺼져 있다', () => {
+    render(<Harness signerCount={0} initial={{ reportChecked: true, layoutChecked: true }} />);
+    expect(start().disabled).toBe(true);
+  });
+
+  it('서명이 있으면 체크 모양과 서명 인원을 보이고 서명하기는 없다', () => {
+    render(<Harness signerCount={3} />);
+    expect(screen.getByText('참석자 서명 3명')).toBeTruthy();
+    expect(screen.queryByText('참석자 서명이 필요합니다')).toBeNull();
+    expect(screen.queryByRole('button', { name: '서명하기' })).toBeNull();
+  });
+
+  it('서명하기를 누르면 서명 창을 열라고 알린다', () => {
+    const onSign = vi.fn();
+    render(<Harness onSign={onSign} />);
+    fireEvent.click(screen.getByRole('button', { name: '서명하기' }));
+    expect(onSign).toHaveBeenCalledTimes(1);
+  });
+
+  it('작업 시작·취소를 누르면 각각 알린다', () => {
+    const onStart = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <Harness
+        signerCount={1}
+        initial={{ reportChecked: true, layoutChecked: true }}
+        onStart={onStart}
+        onCancel={onCancel}
+      />,
+    );
+    fireEvent.click(start());
+    expect(onStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('시작 요청 중에는 모두 충족해도 작업 시작을 막는다', () => {
+    render(
+      <Harness signerCount={1} pending initial={{ reportChecked: true, layoutChecked: true }} />,
+    );
+    expect(start().disabled).toBe(true);
+  });
+
+  it('시작이 거절됐으면 창 안에 이유를 보인다', () => {
+    render(<Harness signerCount={1} error="오늘 작업만 시작할 수 있어요" />);
+    expect(screen.getByRole('alert').textContent).toBe('오늘 작업만 시작할 수 있어요');
+  });
+});

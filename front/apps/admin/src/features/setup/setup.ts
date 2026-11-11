@@ -1,12 +1,18 @@
 import { ROOM } from '@/features/plan/plan';
+import {
+  cameraGuideView,
+  connectivitySummary,
+  riskyPairs,
+  visibleGuides,
+  type CameraGuideView,
+} from '@/features/setup/cameraGuides';
+import { cameraLabel, isNeighborPair, pairLabel } from '@/features/setup/cameraLabels';
 import type {
   CameraHeightDefaultsResponse,
   CameraReceptionStatus,
   Connectivity,
-  CoverageGuideItem,
   CoverageGuidesResponse,
   GuideDirection,
-  GuideMagnitude,
   PairGrade,
   SetupSessionResponse,
   SetupSessionStage,
@@ -14,7 +20,7 @@ import type {
   ZoneDraftCandidateKind,
   ZoneDraftItem,
 } from '@/features/setup/types';
-import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
+import type { ViewerBoxGhost, ViewerEditBox, ViewerSceneInput } from '@/features/viewer3d';
 import { openingZoneZ } from '@/features/zones/zoneShape';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
@@ -22,13 +28,13 @@ import { openingZoneZ } from '@/features/zones/zoneShape';
 
 export type Point = readonly [number, number];
 
-export const STEPS = ['카메라 · 높이 확인', '자동 보정', '구역'] as const;
+export const STEPS = ['카메라 연결 관리', '보정·생성', '구역'] as const;
 export type Stage = 0 | 1 | 2;
 
 /** 구역 단계(마지막 단계). 맵이 준비되면 넘어가 3D 위에서 구역을 고치고 발행한다. */
 export const ZONE_STAGE = 2 satisfies Stage;
 
-/** 지도 카드 제목. 2단계(자동 보정)는 대기 패널만 있어 지도가 없다. */
+/** 지도 카드 제목. 2단계(보정·생성)의 3D 미리보기 카드는 맵 단계로 제목을 정해 여기 없다. */
 export const MAP_TITLE: Record<Exclude<Stage, 1>, string> = {
   0: '카메라 시야 · 실시간 영상',
   2: '3D 맵',
@@ -53,12 +59,6 @@ export const CAMERA_HEIGHT_HELP =
 
 export const MAX_CAMERA_HEIGHT_M = 20;
 
-export const CONNECTIVITY_LABEL: Record<Connectivity, string> = {
-  CONNECTED: '4대 시야 연결됨',
-  DISCONNECTED: '시야 분리됨',
-  UNKNOWN: '연결 확인 불가',
-};
-
 export const PAIR_GRADE_LABEL: Record<PairGrade, string> = {
   ENOUGH: '충분',
   WEAK: '약함',
@@ -69,7 +69,7 @@ export const PAIR_GRADE_LABEL: Record<PairGrade, string> = {
 export const CAMERA_STATUS_LABEL: Record<CameraReceptionStatus, string> = {
   OK: '정상',
   NO_VIDEO: '영상 없음',
-  STALE: '오래된 결과(STALE)',
+  STALE: '끊김',
 };
 
 export const DIRECTION_LABEL: Record<GuideDirection, string> = {
@@ -78,20 +78,6 @@ export const DIRECTION_LABEL: Record<GuideDirection, string> = {
   UP: '위',
   DOWN: '아래',
   NONE: '방향 미상',
-};
-
-/** 안내 문장용 방향(조사 포함). 받침 유무로 '으로/로'가 갈려서 방향마다 적는다. */
-const DIRECTION_TOWARD: Record<Exclude<GuideDirection, 'NONE'>, string> = {
-  LEFT: '왼쪽으로',
-  RIGHT: '오른쪽으로',
-  UP: '위로',
-  DOWN: '아래로',
-};
-
-export const MAGNITUDE_LABEL: Record<GuideMagnitude, string> = {
-  SMALL: '조금',
-  MORE: '더',
-  NONE: '',
 };
 
 export function pairTone(grade: PairGrade): SetupTone {
@@ -112,30 +98,24 @@ export function connectivityTone(connectivity: Connectivity, stale: boolean): Se
   return 'idle';
 }
 
-/** 카메라 회전 안내 항목 하나를 한국어 한 줄 문장으로 바꾼다. */
-export function formatGuideItem(guide: CoverageGuideItem): string {
-  const pairText = `${guide.pair[0]}–${guide.pair[1]}`;
-  if (guide.direction === 'NONE' || guide.reason_code === 'NO_OVERLAP_VISIBLE') {
-    return `${guide.camera_id} · ${pairText} 공통 시야 없음 — 각도를 조정해 주세요`;
-  }
-  const dir = DIRECTION_TOWARD[guide.direction];
-  const mag = MAGNITUDE_LABEL[guide.magnitude];
-  const magPart = mag ? `${mag} ` : '';
-  return `${guide.camera_id} 카메라를 ${dir} ${magPart}돌려 주세요 (${pairText})`;
-}
-
 export interface CoverageCameraView {
   id: string;
+  /** 화면에 쓰는 이름. 예: '카메라 2' */
+  label: string;
   corner: Point;
   status: CameraReceptionStatus;
   statusLabel: string;
-  guideText: string | null;
-  angleLabel: string;
+  /** 이 카메라에 보이는 안내(영상 위 표시와 오른쪽 카드 문장). 없으면 빈 배열. */
+  guides: CameraGuideView[];
+  /** 오른쪽 카드 한 줄: 안내 문장들, 없으면 결과가 신선할 때 '각도 양호', 아니면 '—'. */
+  guideLabel: string;
   tone: SetupTone;
 }
 
 export interface CoveragePairView {
   key: string;
+  /** 화면에 쓰는 이름. 예: '캠1–캠2' */
+  label: string;
   a: string;
   b: string;
   from: Point;
@@ -148,7 +128,8 @@ export interface CoveragePairView {
 
 export interface Step1CoverageView {
   connectivity: Connectivity;
-  connectivityLabel: string;
+  /** 연결 요약 한 줄. 예: '4대 모두 연결 · 3초 전 확인', '캠1·캠2 / 캠3·캠4 갈림' */
+  connectivitySummary: string;
   connectivityTone: SetupTone;
   stale: boolean;
   empty: boolean;
@@ -157,8 +138,8 @@ export interface Step1CoverageView {
   staleCameras: string[];
   cameras: CoverageCameraView[];
   pairs: CoveragePairView[];
-  canProceedCleanly: boolean;
-  submitLabel: '다음' | '그대로 진행';
+  /** 겹침이 부족해 보정이 실패할 수 있는 옆 카메라 쌍 이름. 예: ['캠2–캠3'] */
+  riskyPairs: string[];
 }
 
 function defaultPairsForCameras(cameraIds: readonly string[]): { a: string; b: string }[] {
@@ -173,7 +154,7 @@ function defaultPairsForCameras(cameraIds: readonly string[]): { a: string; b: s
 
 /**
  * GET /api/cameras/coverage-guides 응답과 오류 여부에서 세팅 1단계 표시 모델을 계산한다.
- * 결과가 DISCONNECTED·UNKNOWN·STALE·NO_VIDEO·계산 실패여도 진행을 막지 않고 "그대로 진행"으로 안내한다.
+ * 결과가 DISCONNECTED·UNKNOWN·STALE·NO_VIDEO·계산 실패여도 진행을 막지 않는다.
  */
 export function deriveStep1Coverage(
   response: CoverageGuidesResponse | undefined,
@@ -190,12 +171,9 @@ export function deriveStep1Coverage(
         ? [...fallbackCameraIds]
         : [...DEFAULT_CAMERA_IDS];
 
-  const cornerByCam = new Map<string, { corner: Point; index: number }>();
+  const cornerByCam = new Map<string, Point>();
   cameraIds.forEach((id, idx) => {
-    cornerByCam.set(id, {
-      corner: CAMERA_CORNERS[idx % CAMERA_CORNERS.length]!,
-      index: idx,
-    });
+    cornerByCam.set(id, CAMERA_CORNERS[idx % CAMERA_CORNERS.length]!);
   });
 
   const noVideoCameras: string[] = [];
@@ -207,29 +185,31 @@ export function deriveStep1Coverage(
     latest !== null &&
     latest.connectivity !== 'UNKNOWN';
 
-  // OPTIONAL_IMPROVE 는 이미 4대가 연결된 뒤의 선택 보강이다(계약 coverage_guide). 지시로 보이면
-  // "정상"인데 "돌려 주세요"가 같이 뜨고, 약한 쌍 점수가 기준선 근처라 결과마다 바뀌어 헷갈린다.
-  const requiredGuides = (latest?.guides ?? []).filter((g) => g.reason_code !== 'OPTIONAL_IMPROVE');
-
-  // 한 카메라에 안내가 둘 이상이면 모두 이어 붙인다(따로 모아 보이는 줄이 없어 이 칸이 유일한 안내다).
-  const guidesByCam = new Map<string, string[]>();
-  for (const g of requiredGuides) {
-    guidesByCam.set(g.camera_id, [...(guidesByCam.get(g.camera_id) ?? []), formatGuideItem(g)]);
-  }
-  const guideByCam = new Map([...guidesByCam].map(([id, texts]) => [id, texts.join(' · ')]));
+  const latestPairs = latest?.pairs ?? [];
+  const guides = visibleGuides(cameraIds, latest?.guides ?? [], latestPairs);
 
   const cameras: CoverageCameraView[] = cameraIds.map((id, idx) => {
     const item = latest?.cameras.find((c) => c.camera_id === id);
     const status: CameraReceptionStatus = item?.status ?? 'OK';
     if (latest && status === 'NO_VIDEO') noVideoCameras.push(id);
     if (latest && status === 'STALE') staleCameras.push(id);
+    // 한 카메라에 안내가 둘 이상이면 모두 이어 붙인다.
+    const cameraGuides = guides
+      .filter((g) => g.camera_id === id)
+      .map((g) => cameraGuideView(cameraIds, g, latestPairs));
     return {
       id,
+      label: cameraLabel(cameraIds, id),
       corner: CAMERA_CORNERS[idx % CAMERA_CORNERS.length]!,
       status,
       statusLabel: latest ? CAMERA_STATUS_LABEL[status] : '확인 중',
-      guideText: guideByCam.get(id) ?? null,
-      angleLabel: guideByCam.get(id) ?? (resultFresh && item?.status === 'OK' ? '각도 양호' : '—'),
+      guides: cameraGuides,
+      guideLabel:
+        cameraGuides.length > 0
+          ? cameraGuides.map((g) => g.text).join(' · ')
+          : resultFresh && item?.status === 'OK'
+            ? '각도 양호'
+            : '—',
       tone: latest ? cameraStatusTone(status) : 'idle',
     };
   });
@@ -239,8 +219,8 @@ export function deriveStep1Coverage(
     fetchError || (!empty && latest !== null && latest.connectivity === 'UNKNOWN');
 
   const rawPairs =
-    latest && latest.pairs.length > 0
-      ? latest.pairs
+    latestPairs.length > 0
+      ? latestPairs
       : defaultPairsForCameras(cameraIds).map(({ a, b }) => ({
           a,
           b,
@@ -252,30 +232,27 @@ export function deriveStep1Coverage(
           centroid_b: null,
         }));
 
-  const pairs: CoveragePairView[] = rawPairs.map((p) => {
-    const fromInfo = cornerByCam.get(p.a) ?? { corner: CAMERA_CORNERS[0]!, index: 0 };
-    const toInfo = cornerByCam.get(p.b) ?? { corner: CAMERA_CORNERS[1]!, index: 1 };
-    const diff = Math.abs(fromInfo.index - toInfo.index);
-    const isDiagonal = diff === 2;
-    return {
-      key: `${p.a}–${p.b}`,
-      a: p.a,
-      b: p.b,
-      from: fromInfo.corner,
-      to: toInfo.corner,
-      isDiagonal,
-      grade: p.grade,
-      gradeLabel: PAIR_GRADE_LABEL[p.grade],
-      tone: pairTone(p.grade),
-    };
-  });
-
-  const canProceedCleanly =
-    !fetchError && !empty && !stale && connectivity === 'CONNECTED' && noVideoCameras.length === 0;
+  const pairs: CoveragePairView[] = rawPairs.map((p) => ({
+    key: `${p.a}–${p.b}`,
+    label: pairLabel(cameraIds, p.a, p.b),
+    a: p.a,
+    b: p.b,
+    from: cornerByCam.get(p.a) ?? CAMERA_CORNERS[0]!,
+    to: cornerByCam.get(p.b) ?? CAMERA_CORNERS[1]!,
+    isDiagonal: !isNeighborPair(cameraIds, p.a, p.b),
+    grade: p.grade,
+    gradeLabel: PAIR_GRADE_LABEL[p.grade],
+    tone: pairTone(p.grade),
+  }));
 
   return {
     connectivity,
-    connectivityLabel: CONNECTIVITY_LABEL[connectivity],
+    connectivitySummary: connectivitySummary(
+      cameraIds,
+      connectivity,
+      latest?.components ?? [],
+      response?.age_ms ?? null,
+    ),
     connectivityTone: connectivityTone(connectivity, stale),
     stale,
     empty,
@@ -284,8 +261,7 @@ export function deriveStep1Coverage(
     staleCameras,
     cameras,
     pairs,
-    canProceedCleanly,
-    submitLabel: canProceedCleanly ? '다음' : '그대로 진행',
+    riskyPairs: riskyPairs(cameraIds, latestPairs).map((p) => pairLabel(cameraIds, p.a, p.b)),
   };
 }
 
@@ -399,7 +375,7 @@ export type ActionKey = 'start' | 'confirm' | 'restart';
 
 export const ACTION_LABEL: Record<ActionKey, string> = {
   start: '다음',
-  confirm: '구역으로',
+  confirm: '다음',
   restart: '다시 보정',
 };
 
@@ -413,38 +389,60 @@ export const SETUP_TARGET_DURATION_SEC = 90;
 export interface WaitingStageDef {
   stage: SetupSessionStage;
   label: string;
-  description: string;
+  /** 이 단계가 차지하는 서버 진행률 구간 [from, to). */
+  from: number;
+  to: number;
 }
 
-/** 세팅 대기 화면 4단계 표시 정의. */
+/**
+ * 보정·생성 막대 5단계. 서버 워커의 진행률 구간과 같다. 5번째 '정밀 3D 맵'(텍스처 굽기)은 4번째가 끝나는 85% 이후에도
+ * 뒤에서 이어지고, 구역 단계로는 85% 에서 넘어갈 수 있다.
+ */
 export const WAITING_STAGES: readonly WaitingStageDef[] = [
-  {
-    stage: 'COLLECTING_BACKGROUND',
-    label: '배경 수집',
-    description: '4대 카메라에서 사람 없는 배경 프레임을 모읍니다',
-  },
-  {
-    stage: 'INITIAL_POSE_AND_WORLD',
-    label: '3D 공간·좌표계',
-    description: '초기 카메라 포즈와 바닥(Z=0)·실측 스케일을 복원합니다',
-  },
-  {
-    stage: 'JOINT_BA_AND_VERIFY',
-    label: '카메라 정밀 보정',
-    description: '공동 번들 조정과 카메라 높이·교차 검증을 수행합니다',
-  },
-  {
-    stage: 'PREVIEW_AND_VLM_DRAFT',
-    label: '미리보기 맵·구역 초안',
-    description: '미리보기 3D 맵을 만들고 AI 위험 구역 초안을 준비합니다',
-  },
+  { stage: 'COLLECTING_BACKGROUND', label: '배경 수집', from: 0, to: 15 },
+  { stage: 'INITIAL_POSE_AND_WORLD', label: '3D 공간·좌표계', from: 15, to: 40 },
+  { stage: 'JOINT_BA_AND_VERIFY', label: '카메라 정밀 보정', from: 40, to: 65 },
+  { stage: 'PREVIEW_AND_VLM_DRAFT', label: '미리보기 맵·구역 초안', from: 65, to: 85 },
+  { stage: 'BAKING_TEXTURE', label: '정밀 3D 맵', from: 85, to: 100 },
 ] as const;
+
+/** 카메라 높이 확인(서버 height_checks)은 3D 공간을 만든 직후(2번째 단계가 끝나는 40%)부터 알린다. */
+const HEIGHT_NOTICE_FROM_PCT = WAITING_STAGES[1]!.to;
 
 export type WaitingStepStatus = 'done' | 'current' | 'upcoming' | 'failed';
 
-export interface WaitingStageStepView extends WaitingStageDef {
+export interface WaitingStageRowView extends WaitingStageDef {
   index: number;
   status: WaitingStepStatus;
+  /** 이 단계 구간 안에서 얼마나 왔는지(0~100). 끝난 단계는 100, 남은 단계는 0. */
+  stagePct: number;
+}
+
+/**
+ * 막대 5단계 표시. 표시 진행률(시간으로 부드럽게 채운 값)로 끝난·지금·남은 단계와 지금 단계의 구간 안 비율을 정한다.
+ * 실패한 단계는 마지막 서버 진행률로 정한 인덱스(failedStageIndex)를 받는다.
+ */
+export function deriveStageRows(
+  shownPct: number,
+  failedStageIndex: number | null,
+): WaitingStageRowView[] {
+  return WAITING_STAGES.map((def, index) => {
+    const fraction = Math.max(0, Math.min(1, (shownPct - def.from) / (def.to - def.from)));
+    let status: WaitingStepStatus;
+    if (failedStageIndex !== null) {
+      status =
+        index === failedStageIndex ? 'failed' : index < failedStageIndex ? 'done' : 'upcoming';
+    } else if (fraction >= 1) {
+      status = 'done';
+    } else if (shownPct >= def.from) {
+      status = 'current';
+    } else {
+      status = 'upcoming';
+    }
+    const stagePct =
+      status === 'done' ? 100 : status === 'upcoming' ? 0 : Math.round(fraction * 1000) / 10;
+    return { ...def, index, status, stagePct };
+  });
 }
 
 export interface HeightWarningItem {
@@ -580,29 +578,46 @@ export function formatMinSec(secs: number): string {
   return `${Math.floor(safe / 60)}분 ${String(safe % 60).padStart(2, '0')}초`;
 }
 
+/** 보정 검증 결과 표의 한 행(서버 height_checks). 맞는지(withinTolerance)는 서버 판정을 그대로 쓴다. */
+export interface HeightCheckRowView {
+  cameraId: string;
+  inputHeightM: number;
+  restoredHeightM: number | null;
+  differenceCm: number | null;
+  withinTolerance: boolean;
+}
+
 export interface SetupWaitingView {
   sessionId: string | null;
   startedAtMs: number | null;
   updatedAtMs: number | null;
   stage: SetupSessionStage;
-  stageLabel: string;
   progressPct: number;
   remainingSec: number;
   remainingClock: string;
   remainingLabel: string;
-  steps: WaitingStageStepView[];
+  /** 이 세션 카메라 id 목록(카메라 이름·쌍 이름을 만드는 순서). */
+  cameraIds: string[];
+  /** 실패한 단계(WAITING_STAGES 인덱스). 실패가 아니면 null. 마지막 서버 진행률로 정한다. */
+  failedStageIndex: number | null;
   backgroundCollection: { cameraId: string; pct: number }[];
   failed: boolean;
   failureCode: string | null;
   failureMessage: string | null;
   heightWarnings: HeightWarningItem[];
-  hasHeightWarning: boolean;
+  /** 높이 불일치 안내를 보일 시점인지: 실패가 아니고 불일치가 있고, 서버가 높이를 확인한 뒤(40% 부터)다. */
+  showHeightNotice: boolean;
+  /** 보정 검증 결과 표 행. 서버가 아직 주지 않았으면 빈 배열. */
+  heightChecks: HeightCheckRowView[];
+  /** 높이 차이 허용값(cm). 서버가 주지 않았으면 null. */
+  heightToleranceCm: number | null;
   previewReady: boolean;
   sceneTier: SceneTierStatusView;
   /** 왜 기다리는지(실패·정상 진행이면 null) */
   waitReason: SetupWaitReasonView | null;
 }
 
+/** 서버 stage → WAITING_STAGES 인덱스. READY_FOR_ZONES 는 4번째 단계가 끝나 정밀 3D 맵(굽기)이 이어지는 상태다. */
 const STAGE_ORDER: Record<SetupSessionStage, number> = {
   COLLECTING_BACKGROUND: 0,
   INITIAL_POSE_AND_WORLD: 1,
@@ -755,12 +770,23 @@ export function deriveSceneTierStatus(
   };
 }
 
-/** 진행률로 실패 시점 단계 인덱스를 추정한다. */
+/** 진행률이 속한 단계 인덱스. 서버는 실패하면 stage 를 FAILED 로 덮어써서 마지막 진행률로 실패 단계를 추정한다. */
 function inferStageIndexFromProgress(progressPct: number): number {
-  if (progressPct < 25) return 0;
-  if (progressPct < 55) return 1;
-  if (progressPct < 80) return 2;
-  return 3;
+  const index = WAITING_STAGES.findIndex((def) => progressPct < def.to);
+  return index < 0 ? WAITING_STAGES.length - 1 : index;
+}
+
+/** 세션 응답의 높이 검산(height_checks)을 결과 표 행으로 바꾼다. 없으면 빈 배열. */
+export function deriveHeightCheckRows(
+  session: SetupSessionResponse | null | undefined,
+): HeightCheckRowView[] {
+  return Object.entries(session?.height_checks ?? {}).map(([cameraId, check]) => ({
+    cameraId,
+    inputHeightM: check.input_height_m,
+    restoredHeightM: check.restored_height_m,
+    differenceCm: check.difference_cm,
+    withinTolerance: check.within_tolerance,
+  }));
 }
 
 /** GET /api/setup-sessions/{id} 응답에서 대기 화면 표시 모델을 계산한다. */
@@ -772,38 +798,11 @@ export function deriveWaitingView(
   const progressPct = session?.progress_pct ?? 0;
   const remainingSec = estimateRemainingSeconds(progressPct);
 
-  const activeIndex = failed
-    ? session?.stage && session.stage !== 'FAILED'
-      ? Math.min(3, Math.max(0, STAGE_ORDER[session.stage]))
-      : inferStageIndexFromProgress(progressPct)
-    : STAGE_ORDER[rawStage] >= 0
-      ? STAGE_ORDER[rawStage]
+  const failedStageIndex = !failed
+    ? null
+    : session?.stage && session.stage !== 'FAILED'
+      ? Math.min(WAITING_STAGES.length - 1, Math.max(0, STAGE_ORDER[session.stage]))
       : inferStageIndexFromProgress(progressPct);
-
-  const steps: WaitingStageStepView[] = WAITING_STAGES.map((def, idx) => {
-    let status: WaitingStepStatus;
-    if (failed) {
-      status = idx < activeIndex ? 'done' : idx === activeIndex ? 'failed' : 'upcoming';
-    } else if (idx < activeIndex) {
-      status = 'done';
-    } else if (idx === activeIndex) {
-      status = 'current';
-    } else {
-      status = 'upcoming';
-    }
-    return {
-      ...def,
-      index: idx,
-      status,
-    };
-  });
-
-  const currentDef = WAITING_STAGES[Math.min(3, Math.max(0, activeIndex))] ?? WAITING_STAGES[0]!;
-  const stageLabel = failed
-    ? `${currentDef.label} 실패`
-    : activeIndex >= 4
-      ? '미리보기 맵 준비 완료'
-      : currentDef.label;
 
   const backgroundCollection = Object.entries(session?.background_collection_pct ?? {}).map(
     ([cameraId, pct]) => ({
@@ -813,28 +812,52 @@ export function deriveWaitingView(
   );
 
   const heightWarnings = deriveHeightWarnings(session);
+  const previewReady = isPreviewSceneReady(session);
 
   return {
     sessionId: session?.setup_session_id ?? null,
     startedAtMs: session?.started_at_ms ?? null,
     updatedAtMs: session?.updated_at_ms ?? null,
     stage: rawStage,
-    stageLabel,
     progressPct,
     remainingSec,
     remainingClock: formatClock(remainingSec),
     remainingLabel: formatRemainingKorean(remainingSec),
-    steps,
+    cameraIds: Object.keys(session?.camera_heights_m ?? {}),
+    failedStageIndex,
     backgroundCollection,
     failed,
     failureCode: session?.failure_code ?? null,
     failureMessage: session?.failure_message ?? null,
     heightWarnings,
-    hasHeightWarning: heightWarnings.length > 0,
-    previewReady: isPreviewSceneReady(session),
+    showHeightNotice:
+      !failed &&
+      heightWarnings.length > 0 &&
+      (progressPct >= HEIGHT_NOTICE_FROM_PCT || previewReady),
+    heightChecks: deriveHeightCheckRows(session),
+    heightToleranceCm: session?.height_tolerance_cm ?? null,
+    previewReady,
     sceneTier: deriveSceneTierStatus(session),
     waitReason: failed ? null : deriveWaitReasonView(session?.wait_reason),
   };
+}
+
+/** 현재 Scene 입력(GET /api/scenes/current 응답)의 scene_version. 응답이 아니거나 비면 null. */
+export function currentSceneVersion(scene: ViewerSceneInput | null): string | null {
+  if (!scene?.ok || typeof scene.raw !== 'object' || scene.raw === null) return null;
+  const version: unknown = Reflect.get(scene.raw, 'scene_version');
+  return typeof version === 'string' && version !== '' ? version : null;
+}
+
+/**
+ * 지금 현장 Scene 이 이 세팅 세션이 만든 맵(미리보기, 정밀 3D 맵으로 바뀐 뒤에는 정밀)인지. 서버가 승격을 건너뛰어 다른 버전이
+ * 현재면 세팅 화면은 3D 를 보이지 않는다.
+ */
+export function isSessionScene(sceneVersion: string | null, tier: SceneTierStatusView): boolean {
+  return (
+    sceneVersion !== null &&
+    (sceneVersion === tier.previewSceneVersion || sceneVersion === tier.finalSceneVersion)
+  );
 }
 
 /** VLM 구역 초안 다각형과 Z 범위를 구역 편집기(`useZoneEditStore`)의 ViewerEditBox 로 변환한다. */

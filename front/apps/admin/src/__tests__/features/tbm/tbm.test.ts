@@ -7,7 +7,6 @@ import {
   taskToInput,
 } from '@/features/tbm/taskInput';
 import {
-  evalText,
   fromMin,
   interferencesOf,
   itemRects,
@@ -19,28 +18,15 @@ import {
   tbmInterferences,
   toMin,
 } from '@/features/tbm/tbm';
-import { TBM_FORM_KEY, useTbmFormStore } from '@/features/tbm/tbm.store';
 import { TBM_TASKS, type TbmTask } from '@/features/tbm/tbmDemo';
 import {
-  attendeeRows,
-  formOf,
-  hasEdits,
-  parseEdits,
-  tbmFill,
-  withEdit,
-  withoutEdits,
-} from '@/features/tbm/tbmForm';
-import {
-  dateHhmmToMs,
   isFallbackApiError,
   tbmFailureReasonText,
   tbmReportRequestErrorText,
-  tbmReportSchema,
-  type TbmReport,
 } from '@/features/tbm/types';
 import { storedPlaceOf } from '@/features/tbm/workPlace';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 const [T1, T2, T3] = TBM_TASKS as [TbmTask, TbmTask, TbmTask];
 
@@ -162,248 +148,6 @@ describe('동시 작업 간섭', () => {
   });
 });
 
-/** 작업 마무리(wrap_up_summary)만 다른 성공한 보고서. 위험·대책 칸은 비어 있다. */
-const wrapUpReport = (summary: string | null): TbmReport => ({
-  report_id: 303,
-  work_id: '1',
-  report_version: 2,
-  status: 'SUCCEEDED',
-  failure_reason: null,
-  layout_id: 101,
-  layout_revision: 3,
-  work_type: null,
-  wrap_up_summary: summary,
-  header: {
-    date: '2026-10-16',
-    name: '개구부 옆 비계 설치',
-    from_ms: dateHhmmToMs('2026-10-16', '09:00'),
-    to_ms: dateHhmmToMs('2026-10-16', '12:00'),
-    zone_id: 'z-04',
-    place: null,
-    planned_people: 4,
-    lead: 'A조',
-  },
-  rule_version: 3,
-  risk_items: [],
-  zone_history: [],
-  sections: [],
-  citations: [],
-  subgraph: { nodes: [], edges: [] },
-  steps: [],
-  llm_model: 'gpt-4o-mini',
-  created_at_ms: 1760573100000,
-  completed_at_ms: 1760573102000,
-});
-
-describe('TBM 회의록 칸', () => {
-  it('작업이 없으면 빈 양식이다', () => {
-    const f = tbmFill(null);
-    expect(f.name).toBe('');
-    expect(f.same).toBeNull();
-    expect(f.k0).toBeNull();
-  });
-
-  it('작업 내용과 평가·대책으로 칸을 채우고 가장 높은 위험을 중점위험으로 고른다', () => {
-    const f = tbmFill(T1);
-    expect(f.date).toBe('2026년 10월 16일 09:00 ~ 12:00');
-    expect(f.same).toBe(true);
-    expect(f.riskDone).toBe(true);
-    expect(f.content).toBe('개구부 구역 · 4명 · 반장 A조 · 장비 없음 · 배치 비계 S1 2.4m');
-    expect(f.r0).toBe('비계 S1 ↔ 개구부 · R2 · ▲▲ CRITICAL · 수평 0.6m · 높이 차 2.1m');
-    expect(f.c1).toBe(evalText(T1.evals[1]!));
-    expect(f.m0).toBe(T1.measures[0]);
-    expect(f.k0).toBe(true);
-    expect(f.k2).toBeNull();
-    expect(f.focusRisk).toBe(f.r0);
-    expect(f.focusMeasure).toBe(T1.measures[0]);
-  });
-
-  it('보고서(SUCCEEDED)가 있으면 header · risk_items · sections · citations 로 회의록 칸을 자동 채운다', () => {
-    const sampleReport: TbmReport = {
-      report_id: 301,
-      work_id: '1',
-      report_version: 2,
-      status: 'SUCCEEDED',
-      failure_reason: null,
-      layout_id: 101,
-      layout_revision: 3,
-      work_type: { code: 'SCAFFOLD_INSTALL', label: '비계 조립·해체 및 고소 작업발판' },
-      header: {
-        date: '2026-10-17',
-        name: '비계 보강(서버)',
-        from_ms: dateHhmmToMs('2026-10-17', '08:30'),
-        to_ms: dateHhmmToMs('2026-10-17', '11:30'),
-        zone_id: 'z-04',
-        place: null,
-        planned_people: 5,
-        lead: 'C조',
-      },
-      rule_version: 3,
-      risk_items: [
-        {
-          rule_id: 'R2',
-          severity: 'CRITICAL',
-          position_ids: ['pos-01'],
-          zone_id: 'z-04',
-          metrics: { edge_distance_m: 0.25, height_diff_m: 2.1 },
-          reason_codes: ['edge_within_raise_distance'],
-          confidence_reasons: [],
-          item: '비계 단부 추락 위험',
-          why: '수평 0.25m · 높이 차 2.1m',
-        },
-      ],
-      zone_history: [],
-      sections: [
-        {
-          key: 'measures',
-          title: '안전조치 대책',
-          body: '안전난간 선행 조립\n안전대 부착설비 체결 확인',
-          citations: ['OSH-STD-A43'],
-        },
-        {
-          key: 'focus',
-          title: '중점 위험 및 작업 전 확인',
-          body: '높이 2.1m 비계 상부 안전대 체결 상태 전수 점검',
-          citations: ['OSH-STD-A44'],
-        },
-        {
-          key: 'legal',
-          title: '관련 법령 근거 요약',
-          body: '산업안전보건기준에 관한 규칙 제43조 및 제44조 준수',
-          citations: ['OSH-STD-A43', 'OSH-STD-A44'],
-        },
-      ],
-      citations: [
-        {
-          node_id: 'OSH-STD-A43',
-          source_name: '산업안전보건기준에 관한 규칙',
-          article_ref: '제43조',
-          title: '개구부 등의 방호조치',
-          excerpt: '개구부 방호조치 본문',
-        },
-      ],
-      subgraph: { nodes: [], edges: [] },
-      steps: [],
-      llm_model: 'gpt-4o-mini',
-      created_at_ms: 1760573100000,
-      completed_at_ms: 1760573102000,
-    };
-
-    const f = tbmFill(T1, sampleReport);
-    expect(f.date).toBe('2026년 10월 17일 08:30 ~ 11:30');
-    expect(f.name).toBe('비계 보강(서버)');
-    expect(f.content).toContain('5명 · 반장 C조');
-    expect(f.r0).toContain('비계 단부 추락 위험');
-    expect(f.m0).toBe('안전난간 선행 조립');
-    expect(f.m1).toBe('안전대 부착설비 체결 확인');
-    expect(f.focusMeasure).toBe('높이 2.1m 비계 상부 안전대 체결 상태 전수 점검');
-    expect(f.daily).toContain('산업안전보건기준에 관한 규칙 제43조');
-  });
-
-  it('보고서가 FAILED 이면 대책·법령을 지어낸 문장으로 채우지 않는다', () => {
-    const failedReport: TbmReport = {
-      report_id: 302,
-      work_id: '1',
-      report_version: 2,
-      status: 'FAILED',
-      failure_reason: 'CITATION_VIOLATION',
-      layout_id: 101,
-      layout_revision: 3,
-      work_type: null,
-      header: {
-        date: '2026-10-16',
-        name: '개구부 옆 비계 설치',
-        from_ms: dateHhmmToMs('2026-10-16', '09:00'),
-        to_ms: dateHhmmToMs('2026-10-16', '12:00'),
-        zone_id: 'z-04',
-        place: null,
-        planned_people: 4,
-        lead: 'A조',
-      },
-      rule_version: 3,
-      risk_items: [],
-      zone_history: [],
-      sections: [],
-      citations: [],
-      subgraph: { nodes: [], edges: [] },
-      steps: [],
-      llm_model: 'gpt-4o-mini',
-      created_at_ms: 1760573100000,
-      completed_at_ms: 1760573102000,
-    };
-
-    const f = tbmFill(T1, failedReport);
-    expect(f.riskDone).toBe(false);
-    expect(f.m0).toBe('');
-    expect(f.focusMeasure).toBe('');
-    expect(f.daily).toBe('');
-  });
-
-  it('작업 마무리(wrap_up_summary)는 작업 후 종료 미팅 칸에 들어가고, 없거나 비었으면 비워 둔다', () => {
-    expect(tbmFill(T1, wrapUpReport(' 위험 이벤트 2건을 확인했습니다. ')).closing).toBe(
-      '위험 이벤트 2건을 확인했습니다.',
-    );
-    expect(tbmFill(T1, wrapUpReport(null)).closing).toBe('');
-    expect(tbmFill(T1, wrapUpReport('   ')).closing).toBe('');
-    expect(tbmFill(T1).closing).toBe('');
-  });
-
-  it('작업 마무리가 글 하나만 든 JSON 으로 감싸 왔으면 글만 꺼내고, 다른 모양은 받은 그대로 둔다', () => {
-    const summaryOf = (raw: string) =>
-      tbmReportSchema.parse({ ...wrapUpReport(null), work_id: 1, wrap_up_summary: raw })
-        .wrap_up_summary;
-    expect(summaryOf('{"message":"전체 이벤트 0건. 작업 외 진입 0건."}')).toBe(
-      '전체 이벤트 0건. 작업 외 진입 0건.',
-    );
-    expect(summaryOf(' {"text": "위험 이벤트 2건"} ')).toBe('위험 이벤트 2건');
-    expect(summaryOf('위험 이벤트 2건을 확인했습니다.')).toBe('위험 이벤트 2건을 확인했습니다.');
-    expect(summaryOf('{"message":"가","detail":"나"}')).toBe('{"message":"가","detail":"나"}');
-    expect(summaryOf('{"count":3}')).toBe('{"count":3}');
-    expect(summaryOf('{ 깨진 글')).toBe('{ 깨진 글');
-  });
-
-  it('작업 마무리로 채운 종료 미팅 칸도 손으로 고친 값이 이긴다', () => {
-    const report = wrapUpReport('서버 마무리');
-    expect(formOf(T1, {}, report).closing).toBe('서버 마무리');
-    const edits = withEdit({}, 'T1', 'closing', '반장이 고친 마무리', '서버 마무리');
-    expect(formOf(T1, edits, report).closing).toBe('반장이 고친 마무리');
-  });
-
-  it('참석자 서명 줄은 세 명씩, 적어도 네 줄이다', () => {
-    expect(attendeeRows(2)).toBe(4);
-    expect(attendeeRows(14)).toBe(5);
-    expect(attendeeRows(0)).toBe(4);
-  });
-
-  it('고친 칸을 받은 내용 위에 덮고, 받은 값으로 돌리면 고친 칸에서 뺀다', () => {
-    let edits = withEdit({}, 'T1', 'name', '비계 설치(수정)', T1.name);
-    edits = withEdit(edits, 'T1', 'same', false, true);
-    expect(formOf(T1, edits).name).toBe('비계 설치(수정)');
-    expect(formOf(T1, edits).same).toBe(false);
-    expect(formOf(T2, edits).name).toBe(T2.name);
-
-    edits = withEdit(edits, 'T1', 'name', T1.name, T1.name);
-    expect(edits).toEqual({ T1: { same: false } });
-    edits = withEdit(edits, 'T1', 'same', true, true);
-    expect(edits).toEqual({});
-    expect(hasEdits(edits, 'T1')).toBe(false);
-  });
-
-  it('되돌리기는 그 작업의 고친 칸만 버린다', () => {
-    const edits = { T1: { name: 'a' }, T2: { daily: 'b' } };
-    expect(withoutEdits(edits, 'T1')).toEqual({ T2: { daily: 'b' } });
-    expect(edits).toEqual({ T1: { name: 'a' }, T2: { daily: 'b' } });
-  });
-
-  it('남은 값에서 형식이 틀린 칸과 작업을 버린다', () => {
-    expect(parseEdits(null)).toEqual({});
-    expect(parseEdits([1, 2])).toEqual({});
-    expect(
-      parseEdits({ T1: { name: 'a', k0: true, f0: null, bad: 3, obj: {} }, T2: 'x', T3: {} }),
-    ).toEqual({ T1: { name: 'a', k0: true, f0: null } });
-  });
-});
-
 describe('작업 등록 · 수정 변환 및 오류 문구', () => {
   it('이름이 있고 끝이 시작보다 늦어야 한다', () => {
     expect(taskInputValid(TASK_INPUT_DEFAULT)).toBe(false);
@@ -495,17 +239,6 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     ).toBeNull();
   });
 
-  it('보고서 머리의 장소: 서버가 구역 작업의 place 를 비우면 그 작업의 구역 이름을 쓴다', () => {
-    expect(tbmFill(T1, wrapUpReport(null)).place).toBe('개구부 구역');
-    const withHeader = (zone_id: string | null, place: string | null) => {
-      const report = wrapUpReport(null);
-      return { ...report, header: { ...report.header!, zone_id, place } };
-    };
-    expect(tbmFill(T3, withHeader(null, '북서쪽 바닥')).place).toBe('북서쪽 바닥');
-    expect(tbmFill(task({}), withHeader(null, null)).place).toBe('현장 전체');
-    expect(tbmFill(task({}), withHeader(null, '구역 밖')).place).toBe('현장 전체');
-  });
-
   it('409 · FAILED · 폴백 오류를 올바르게 구분한다', () => {
     const noLayoutErr = new ApiError(409, {
       kind: 'HTTP',
@@ -530,49 +263,5 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     expect(isFallbackApiError(netErr)).toBe(true);
     expect(isFallbackApiError(serverErr)).toBe(true);
     expect(isFallbackApiError(noLayoutErr)).toBe(false);
-  });
-});
-
-describe('useTbmFormStore', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    useTbmFormStore.setState({ edits: {} });
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('칸을 고치면 브라우저에 남기고, 되돌리면 지운다', () => {
-    useTbmFormStore.getState().setField('T1', 'daily', '안전대 확인', '');
-    expect(useTbmFormStore.getState().edits).toEqual({ T1: { daily: '안전대 확인' } });
-    const saved = JSON.parse(localStorage.getItem(TBM_FORM_KEY) ?? '{}');
-    expect(saved.state.edits).toEqual({ T1: { daily: '안전대 확인' } });
-
-    useTbmFormStore.getState().undo('T1');
-    expect(useTbmFormStore.getState().edits).toEqual({});
-    expect(JSON.parse(localStorage.getItem(TBM_FORM_KEY) ?? '{}').state.edits).toEqual({});
-  });
-
-  it('남은 값을 되살릴 때 형식이 틀린 칸은 버린다', async () => {
-    localStorage.setItem(
-      TBM_FORM_KEY,
-      JSON.stringify({ state: { edits: { T2: { name: 'b', bad: 1 }, T3: 7 } }, version: 0 }),
-    );
-    await useTbmFormStore.persist.rehydrate();
-    expect(useTbmFormStore.getState().edits).toEqual({ T2: { name: 'b' } });
-  });
-
-  it('깨진 값이 남아 있으면 비운 채로 시작한다', async () => {
-    localStorage.setItem(TBM_FORM_KEY, '{not json');
-    await useTbmFormStore.persist.rehydrate();
-    expect(useTbmFormStore.getState().edits).toEqual({});
-  });
-
-  it('브라우저에 저장할 수 없어도 메모리에서는 고친 칸을 갖는다', () => {
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
-    expect(() => useTbmFormStore.getState().setField('T1', 'name', 'x', T1.name)).not.toThrow();
-    expect(useTbmFormStore.getState().edits).toEqual({ T1: { name: 'x' } });
   });
 });

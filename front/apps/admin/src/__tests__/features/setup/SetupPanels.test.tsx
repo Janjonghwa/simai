@@ -1,6 +1,7 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { deriveStep1Coverage, deriveWaitingView } from '@/features/setup/setup';
-import { CameraMapPanel, CameraPanel, WaitingPanel } from '@/features/setup/SetupPanels';
+import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
+import { CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
 import { setupSessionResponseSchema, type CoverageGuidesResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload } from '@/mocks/setup';
 import { cleanup, render, screen, within } from '@testing-library/react';
@@ -9,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/features/cctv/useCctvPreview', () => ({
   useCctvPreview: () => ({ attach: vi.fn() }),
 }));
+// 보정·생성 단계의 3D 칸이 읽는 현재 Scene 조회(@/lib/api → env)는 여기서 쓰지 않는다.
+vi.mock('@/lib/api', () => ({ api: vi.fn() }));
 
 afterEach(() => {
   cleanup();
@@ -31,14 +34,14 @@ describe('세팅 카메라 지도와 영상', () => {
         within(group)
           .getAllByLabelText(/영상$/)
           .map((canvas) => canvas.getAttribute('aria-label'));
-      // 위쪽 모서리(cam1·cam2) 영상이 위, 아래쪽 모서리(cam4·cam3) 영상이 아래다.
+      // 위쪽 모서리(카메라 1·2) 영상이 위, 아래쪽 모서리(카메라 4·3) 영상이 아래다.
       expect(canvasIds(screen.getByRole('group', { name: '왼쪽 카메라 영상' }))).toEqual([
-        'cam1 영상',
-        'cam4 영상',
+        '카메라 1 영상',
+        '카메라 4 영상',
       ]);
       expect(canvasIds(screen.getByRole('group', { name: '오른쪽 카메라 영상' }))).toEqual([
-        'cam2 영상',
-        'cam3 영상',
+        '카메라 2 영상',
+        '카메라 3 영상',
       ]);
       expect(screen.getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
       expect(screen.getAllByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toHaveLength(1);
@@ -47,9 +50,9 @@ describe('세팅 카메라 지도와 영상', () => {
 
   it('영상이 오지 않는 칸은 흐리게 두고 상태를 글로 보인다', () => {
     render(<CameraMapPanel coverage={defaultCoverage()} />);
-    const tile = screen.getByLabelText('cam1 영상');
+    const tile = screen.getByLabelText('카메라 1 영상');
     expect(tile.className).toContain('opacity-45');
-    expect(tile.parentElement!.textContent).toContain('cam1');
+    expect(tile.parentElement!.textContent).toContain('카메라 1');
   });
 
   it('영상 칸은 누르는 단추가 아니다(크게 보기 없음)', () => {
@@ -124,7 +127,7 @@ describe('카메라 각도 표시', () => {
         }),
       },
       error: false,
-      expected: 'cam1 카메라를 오른쪽으로 조금 돌려 주세요 (cam1–cam2)',
+      expected: '오른쪽으로 조금 돌려 주세요 (캠1–캠2)',
     },
     {
       label: 'CONNECTED + 선택 보강만',
@@ -147,9 +150,43 @@ describe('카메라 각도 표시', () => {
     },
   ])('$label', ({ response, error, expected }) => {
     render(<CameraPanel coverage={deriveStep1Coverage(response, error)} />);
-    const row = screen.getByText('cam1', { selector: 'b' }).closest('li')!;
+    const row = screen.getByText('카메라 1', { selector: 'b' }).closest('li')!;
     expect(within(row).getByText(expected)).toBeTruthy();
     if (expected !== '각도 양호') expect(within(row).queryByText('각도 양호')).toBeNull();
+  });
+
+  it('옆 카메라 쌍의 겹침이 부족하면 오른쪽 카드에 보정 실패 위험을 쌍 이름과 함께 알리고, 아니면 알리지 않는다', () => {
+    const pair = (a: string, b: string, grade: 'ENOUGH' | 'LACK') => ({
+      a,
+      b,
+      raw_matches: null,
+      inliers: null,
+      inlier_ratio: null,
+      grade,
+      centroid_a: null,
+      centroid_b: null,
+    });
+    const lackNeighbors = {
+      ...fresh,
+      latest: buildCoverageGuidePayload({
+        guides: [],
+        pairs: [
+          pair('cam1', 'cam2', 'ENOUGH'),
+          pair('cam2', 'cam3', 'LACK'),
+          pair('cam3', 'cam4', 'LACK'),
+          pair('cam1', 'cam3', 'LACK'),
+        ],
+      }),
+    };
+    render(<CameraPanel coverage={deriveStep1Coverage(lackNeighbors)} />);
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('보정이 실패할 수 있어요');
+    expect(alert.textContent).toContain(
+      '캠2–캠3, 캠3–캠4 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요.',
+    );
+    cleanup();
+    render(<CameraPanel coverage={deriveStep1Coverage(fresh)} />);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });
 
@@ -175,7 +212,13 @@ describe('세팅 대기 이유 표시(S15P31A101-583)', () => {
   function renderPanel(waitReason: Record<string, unknown> | null, status?: string) {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
-    render(<WaitingPanel waiting={deriveWaitingView(session(waitReason, status))} />);
+    render(
+      <SetupCalibrateStep
+        waiting={deriveWaitingView(session(waitReason, status))}
+        onRetry={vi.fn()}
+        onReturnToStep1={vi.fn()}
+      />,
+    );
     return screen.queryByRole('status', { name: '세팅 대기 이유' });
   }
 
