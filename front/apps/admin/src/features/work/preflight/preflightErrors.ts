@@ -8,6 +8,9 @@ export function startErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.NOT_TODAY)) return '오늘 작업만 시작할 수 있어요';
   if (isWorkError(error, WORK_ERROR.NO_SIGNATURE)) return '참석자 서명이 필요합니다';
   if (isWorkError(error, WORK_ERROR.ALREADY_IN_PROGRESS)) return '진행 중인 다른 작업이 있어요';
+  if (isWorkError(error, WORK_ERROR.SETUP_NOT_READY)) {
+    return '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작해 주세요';
+  }
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.';
   }
@@ -39,4 +42,13 @@ export function deleteSignatureErrorMessage(error: unknown): string {
   }
   if (isWorkError(error, WORK_ERROR.REPORT_LOCKED)) return '제출한 보고서의 서명은 지울 수 없어요';
   return '서명을 지우지 못했어요';
+}
+
+/** AI 초안 요청이 실패했을 때: 작업내용 없음·이미 생성 중·제출 잠금, 그 밖(-624). */
+export function draftErrorMessage(error: unknown): string {
+  if (isWorkError(error, WORK_ERROR.REPORT_FORM_NO_TASKS)) return '작업내용을 먼저 골라 주세요';
+  if (isWorkError(error, WORK_ERROR.REPORT_IN_PROGRESS)) return '초안을 이미 만들고 있어요';
+  if (isWorkError(error, WORK_ERROR.REPORT_LOCKED))
+    return '제출한 보고서에는 초안을 만들 수 없어요';
+  return 'AI 초안을 요청하지 못했어요';
 }

@@ -10,6 +10,7 @@ import {
 import {
   addSignatureErrorMessage,
   deleteSignatureErrorMessage,
+  draftErrorMessage,
   SIGNER_LIMIT_MESSAGE,
   startErrorMessage,
 } from '@/features/work/preflight/preflightErrors';
@@ -88,6 +89,21 @@ describe('canAddSigner', () => {
 
 const httpError = (code: string, status = 409) => new ApiError(status, { code });
 
+describe('draftErrorMessage', () => {
+  it('작업내용 없음·이미 생성 중·제출 잠금을 각각 알려 주고, 그 밖은 일반 글이다(-624)', () => {
+    expect(draftErrorMessage(httpError(WORK_ERROR.REPORT_FORM_NO_TASKS))).toBe(
+      '작업내용을 먼저 골라 주세요',
+    );
+    expect(draftErrorMessage(httpError(WORK_ERROR.REPORT_IN_PROGRESS))).toBe(
+      '초안을 이미 만들고 있어요',
+    );
+    expect(draftErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe(
+      '제출한 보고서에는 초안을 만들 수 없어요',
+    );
+    expect(draftErrorMessage(new Error('x'))).toBe('AI 초안을 요청하지 못했어요');
+  });
+});
+
 describe('startErrorMessage', () => {
   it('오늘 작업이 아니면·서명이 없으면·진행 중인 다른 작업이 있으면·시작할 수 없는 상태면 각각 알려 주고, 그 밖은 일반 글이다', () => {
     expect(startErrorMessage(httpError(WORK_ERROR.NOT_TODAY))).toBe('오늘 작업만 시작할 수 있어요');
@@ -97,6 +113,9 @@ describe('startErrorMessage', () => {
     );
     expect(startErrorMessage(httpError(WORK_ERROR.INVALID_STATE))).toBe(
       '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.',
+    );
+    expect(startErrorMessage(httpError(WORK_ERROR.SETUP_NOT_READY))).toBe(
+      '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작해 주세요',
     );
     expect(startErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe('시작하지 못했어요');
     expect(startErrorMessage(new ApiError(0))).toBe('시작하지 못했어요');

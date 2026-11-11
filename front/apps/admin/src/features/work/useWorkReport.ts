@@ -2,6 +2,7 @@ import {
   fetchReportsByWork,
   isWorkError,
   saveReportForm,
+  startReportDraft,
   WORK_ERROR,
   WORK_REPORT_POLL_MS,
 } from '@/features/work/api';
@@ -80,6 +81,19 @@ export function useSaveReportForm() {
         void client.invalidateQueries({ queryKey: WORK_REPORTS_KEY });
       }
     },
+  });
+  return mutationResult(mutation);
+}
+
+/**
+ * AI 양식 초안을 요청한다(-624). 원래 세팅 완료(-615)가 서버에서 시작하지만, 그 전이나 실패(FAILED) 뒤에도 사람이 시작할 수 있게 둔다.
+ * 끝나면(이미 생성 중 409 REPORT_IN_PROGRESS 포함) 보고서를 다시 받아 GENERATING 을 보이고, 그 뒤는 useWorkReport 가 2초마다 다시 받는다.
+ */
+export function useStartReportDraft(workId: string) {
+  const client = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (reportId: number) => startReportDraft(api, reportId),
+    onSettled: () => void client.invalidateQueries({ queryKey: workReportsKey(workId) }),
   });
   return mutationResult(mutation);
 }
