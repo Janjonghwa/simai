@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.18.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000617",
+  "sent_at": 1760342460100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261111-0614",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006b1",
+    "job_type": "site_setup",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342460050,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000614",
+      "status": "COMPLETED",
+      "progress_pct": 100,
+      "mode": "REUSE_SCENE",
+      "background_collection_pct": {
+        "cam1": 100,
+        "cam2": 100,
+        "cam3": 100,
+        "cam4": 100
+      },
+      "calibration_version": "cal-lobby-init-61400000-jba2-5a3c9e01",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "world_anchor": {
+        "accepted": false,
+        "reason": "CENTER_RESIDUAL_EXCEEDED",
+        "reference_calibration_version": "cal-lobby-init-079f00cd-jba2-55083185",
+        "max_center_residual_m": 0.4127,
+        "max_orientation_change_rad": 0.0811
+      },
+      "metrics": {
+        "stage_seconds": {
+          "COLLECTING_BACKGROUND": 41.2,
+          "INITIAL_POSE_AND_WORLD": 52.8,
+          "JOINT_BA_AND_VERIFY": 4.1,
+          "READY_FOR_ZONES": 0.0
+        },
+        "total_seconds": 98.1,
+        "joint_ba": {
+          "anchor_camera_id": "cam1",
+          "converged": true,
+          "stage_seconds": 3.42,
+          "valid_points": 412
+        }
+      },
+      "artifacts": {
+        "calibration_document": {
+          "uri": "s3://simai-objects/job-objects/site_setup/job-20261111-0614/0192a6f0-7c1e-7b3a-9f2d-0000000006b1/calibration-cal-lobby-init-61400000-jba2-5a3c9e01.json",
+          "sha256": "4c2a9e0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c",
+          "size_bytes": 7120
+        }
+      }
+    }
+  },
+  "_expect_error": "REUSE_SCENE 은 world_anchor 채택이어야 한다(거부면 FULL_SETUP + reuse_fallback_reason)"
+}

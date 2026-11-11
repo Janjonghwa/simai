@@ -596,8 +596,15 @@ public class SetupSupplementService {
 
     // ---------------------------------------------------------------- 상태 검사
 
-    /** 업로드가 막힌 사유(없으면 null): 미리보기 이전·실패, 더 새 세팅 세션 */
+    /**
+     * 업로드가 막힌 사유(없으면 null): 이전 모델 재사용 세션, 미리보기 이전·실패, 더 새 세팅 세션.
+     * 이전 모델 재사용(REUSE, S15P31A101-614)으로 끝났거나 진행 중인 세션은 이 세션이 만든 맵(미리보기·굽기 입력 사진)이 없어 다시 구울
+     * 기준이 없다(현재 관제 맵은 다른 세션의 것). 맵을 보강하려면 새 모델로 세팅한다.
+     */
     private String uploadBlockedReason(SessionInfo s) {
+        if ("REUSE".equals(s.mode())) {
+            return "REUSED_SCENE";
+        }
         if (!READY_OR_LATER.contains(s.status()) || s.previewSceneVersion() == null || s.calibrationVersion() == null) {
             return "SESSION_NOT_READY";
         }
@@ -658,6 +665,7 @@ public class SetupSupplementService {
     private static ErrorCode errorOf(String reason) {
         return switch (reason) {
             case "SESSION_NOT_READY" -> ErrorCode.Setup.SUPPLEMENT_SESSION_NOT_READY;
+            case "REUSED_SCENE" -> ErrorCode.Setup.SUPPLEMENT_REUSED_SCENE;
             case "SUPERSEDED" -> ErrorCode.Setup.SUPPLEMENT_SESSION_SUPERSEDED;
             case "SETUP_JOB_RUNNING" -> ErrorCode.Setup.SUPPLEMENT_SETUP_JOB_RUNNING;
             case "REBAKE_RUNNING" -> ErrorCode.Setup.SUPPLEMENT_REBAKE_IN_PROGRESS;
@@ -756,12 +764,12 @@ public class SetupSupplementService {
     // ---------------------------------------------------------------- 행 읽기
 
     private record SessionInfo(UUID setupSessionId, String siteId, String jobId, String status, String calibrationVersion,
-            String previewSceneVersion, String sceneVersion, OffsetDateTime startedAt, List<String> cameraIds) {
+            String previewSceneVersion, String sceneVersion, OffsetDateTime startedAt, List<String> cameraIds, String mode) {
     }
 
     private static final String SESSION_SELECT = """
             SELECT setup_session_id, site_id, job_id, status, calibration_version, preview_scene_version, scene_version,
-                   started_at, camera_heights_m::text AS camera_heights_m
+                   started_at, camera_heights_m::text AS camera_heights_m, mode
             FROM setup_session
             """;
 
@@ -786,7 +794,7 @@ public class SetupSupplementService {
         heights.properties().forEach(e -> cameras.add(e.getKey()));
         return new SessionInfo(rs.getObject("setup_session_id", UUID.class), rs.getString("site_id"), rs.getString("job_id"),
                 rs.getString("status"), rs.getString("calibration_version"), rs.getString("preview_scene_version"),
-                rs.getString("scene_version"), rs.getObject("started_at", OffsetDateTime.class), cameras);
+                rs.getString("scene_version"), rs.getObject("started_at", OffsetDateTime.class), cameras, rs.getString("mode"));
     }
 
     private record MediaRow(String mediaId, String kind, String source, String contentType, String objectKey, long sizeBytes,

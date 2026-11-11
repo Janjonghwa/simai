@@ -1797,6 +1797,12 @@ class SiteSetupCameraFrameRef(BaseModel):
     face_policy: Literal['BLURRED', 'EXCLUDED']
 
 
+class SiteSetupEffectiveMode(
+    RootModel[Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE', 'REUSE_SCENE']]
+):
+    root: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE', 'REUSE_SCENE']
+
+
 class SiteSetupFloorCoverage(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1920,6 +1926,16 @@ class SiteSetupRebakeBase(BaseModel):
     bake_images: SiteSetupBakeImages
 
 
+class SiteSetupReuseFallbackReason(
+    RootModel[Literal['DISABLED', 'PREVIOUS_NOT_USABLE', 'SITE_MISMATCH', 'INSUFFICIENT_CAMERAS', 'DEGENERATE_LAYOUT', 'CENTER_RESIDUAL_EXCEEDED', 'SCALE_OUT_OF_RANGE', 'ORIENTATION_CHANGE_EXCEEDED', 'NO_REFERENCE']]
+):
+    root: Literal['DISABLED', 'PREVIOUS_NOT_USABLE', 'SITE_MISMATCH', 'INSUFFICIENT_CAMERAS', 'DEGENERATE_LAYOUT', 'CENTER_RESIDUAL_EXCEEDED', 'SCALE_OUT_OF_RANGE', 'ORIENTATION_CHANGE_EXCEEDED', 'NO_REFERENCE']
+
+
+class SiteSetupReuseRules(BaseModel):
+    pass
+
+
 class Device(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1984,6 +2000,21 @@ class SiteSetupSupplementSummary(BaseModel):
     captured_to_ms: DefsTimestampMs | MISSING = MISSING
     alignment: Alignment | MISSING = MISSING
     media: Annotated[list[MediaItem] | MISSING, Field(max_length=32)] = MISSING
+
+
+class SiteSetupWorldAnchorSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    accepted: StrictBool
+    reason: Literal['ANCHORED', 'DISABLED', 'PREVIOUS_NOT_USABLE', 'SITE_MISMATCH', 'INSUFFICIENT_CAMERAS', 'DEGENERATE_LAYOUT', 'CENTER_RESIDUAL_EXCEEDED', 'SCALE_OUT_OF_RANGE', 'ORIENTATION_CHANGE_EXCEEDED', 'NO_REFERENCE']
+    reference_calibration_version: DefsVersionId | None
+    max_center_residual_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    max_orientation_change_rad: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
 
 
 class Image(BaseModel):
@@ -3921,7 +3952,7 @@ class SiteSetupInput(BaseModel):
     supplement_media: Annotated[
         list[SiteSetupSupplementMediaItem] | MISSING, Field(max_length=32, min_length=1)
     ] = MISSING
-    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
+    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE', 'REUSE_SCENE'] | MISSING = MISSING
     rebake_base: SiteSetupRebakeBase | MISSING = MISSING
 
 
@@ -4670,7 +4701,7 @@ class SiteSetupMetrics(BaseModel):
     joint_ba: JointBa | MISSING = MISSING
 
 
-class SiteSetupProgress(BaseModel):
+class SiteSetupProgress(SiteSetupReuseRules):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -4702,10 +4733,12 @@ class SiteSetupProgress(BaseModel):
     metrics: SiteSetupMetrics | MISSING = MISSING
     artifacts: SiteSetupArtifacts | MISSING = MISSING
     supplement: SiteSetupSupplementSummary | MISSING = MISSING
-    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
+    mode: SiteSetupEffectiveMode | MISSING = MISSING
+    reuse_fallback_reason: SiteSetupReuseFallbackReason | MISSING = MISSING
+    world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
 
 
-class SiteSetupResult(BaseModel):
+class SiteSetupResult(SiteSetupReuseRules):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -4716,8 +4749,12 @@ class SiteSetupResult(BaseModel):
         MISSING
     )
     calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    scene_version: Annotated[StrictStr | None, Field(max_length=160, min_length=1)]
+    preview_scene_version: Annotated[
+        StrictStr | None | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    scene_version: Annotated[
+        StrictStr | None | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
     config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
         MISSING
     )
@@ -4732,7 +4769,9 @@ class SiteSetupResult(BaseModel):
     metrics: SiteSetupMetrics | MISSING = MISSING
     artifacts: SiteSetupArtifacts | MISSING = MISSING
     supplement: SiteSetupSupplementSummary | MISSING = MISSING
-    mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE'] | MISSING = MISSING
+    mode: SiteSetupEffectiveMode | MISSING = MISSING
+    reuse_fallback_reason: SiteSetupReuseFallbackReason | MISSING = MISSING
+    world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
 
 
 class TbmFormDraftRequest(BaseModel):

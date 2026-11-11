@@ -34,8 +34,10 @@ class SetupController {
         this.supplements = supplements;
     }
 
+    /** mode: NEW(기본, 새 모델) | REUSE(이전 모델 재사용: 현재 관제 맵을 그대로 쓰고 보정만 다시 한다, S15P31A101-614) */
     record Create(@JsonProperty("work_unit_id") Long workUnitId,
-                  @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
+                  @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
+                  @JsonProperty("mode") String mode) { }
     record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
 
     @GetMapping("/camera-height-defaults")
@@ -46,7 +48,8 @@ class SetupController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode create(@RequestBody Create request, @AuthenticationPrincipal Jwt jwt) {
-        return setups.create(request.workUnitId(), request.cameraHeightsM(), Long.parseLong(jwt.getSubject()), null);
+        return setups.create(request.workUnitId(), request.cameraHeightsM(), Long.parseLong(jwt.getSubject()), null,
+                request.mode());
     }
 
     @GetMapping("/{id}")

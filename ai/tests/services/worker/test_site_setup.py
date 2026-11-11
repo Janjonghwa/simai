@@ -612,8 +612,7 @@ def _room_handler(collector: Any, **kw: Any) -> tuple[SiteSetupHandler, dict[str
             height_tolerance_cm=w["height_tolerance_cm"], points_m=points_m, unscaled_poses=unscaled_poses,
             intrinsics_by_cam=intrinsics_by_cam, created_at_ms=w["created_at_ms"],
         ),
-        calibration_publisher=_publish,
-        **kw,
+        **{"calibration_publisher": _publish, **kw},
     )
     return handler, inp, published
 
@@ -1005,3 +1004,141 @@ def test_floor_coverage_of_another_calibration_is_dropped(caplog: pytest.LogCapt
         result = handler(JobContext("job-c", "0192a6f0-7c1e-7b3a-9f2d-000000000607", "site_setup", 1, inp))
     assert result["status"] == "COMPLETED" and "artifacts" not in result
     assert "보정 버전이 등록한 보정과 달라" in caplog.text
+
+
+# ---------------------------------------------------------------------------- S15P31A101-614
+_REF_CAL = "cal-lobby-init-079f00cd-jba2-55083185"
+
+
+def _anchor_hook(accepted: bool, reason: str = "ANCHORED") -> Any:
+    """World 다시 맞추기(-584) 주입점 대역: 문서에 world_anchor 만 붙인다(채택이면 실제로는 R·t 도 옮겨진다)."""
+    def anchor(doc: Any) -> dict[str, Any]:
+        out = copy.deepcopy(dict(doc))
+        out["world_anchor"] = {
+            "accepted": accepted, "reason": reason, "reference_calibration_version": _REF_CAL,
+            "method": "CAMERA_CENTER_YAW_XY", "max_center_residual_m": 0.0612 if accepted else 0.4127,
+            "max_orientation_change_rad": 0.0703,
+        }
+        return out
+    return anchor
+
+
+def _doc_publisher(published: list[dict[str, Any]]) -> Any:
+    def publish(doc: Any) -> PublishedCalibration:
+        published.append(copy.deepcopy(dict(doc)))
+        version = str(doc["calibration_version"])
+        return PublishedCalibration(version, ObjectRef.of(f"s3://bucket/job-objects/site_setup/j/l/calibration-{version}.json",
+                                                          version.encode()))
+    return publish
+
+
+def _reuse_input() -> dict[str, Any]:
+    """계약 예시 job_request.site_setup_reuse 의 mode 를 합성 방 입력(job_request.site_setup)에 얹는다."""
+    mode = load_example("job_request.site_setup_reuse.json")["payload"]["input"]["mode"]
+    assert mode == "REUSE_SCENE"
+    return {**load_example("job_request.site_setup.json")["payload"]["input"], "mode": mode}
+
+
+def _must_not_run(name: str) -> Any:
+    def run(**kw: Any) -> Any:
+        raise AssertionError(f"REUSE_SCENE 채택이면 {name} 를 부르지 않는다")
+    return run
+
+
+def test_reuse_scene_accepted_skips_preview_and_bake_and_completes_with_calibration_only() -> None:
+    """REUSE_SCENE + World 다시 맞추기 채택: 배경·보정은 그대로 하고 JOINT_BA → READY_FOR_ZONES → COMPLETED.
+    미리보기·프레임·굽기 사진·굽기는 부르지 않고, 보정 문서 artifacts·높이 확인·world_anchor 를 싣는다."""
+    published: list[dict[str, Any]] = []
+    handler, _, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=_anchor_hook(True), calibration_publisher=_doc_publisher(published),
+        preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+        frame_publisher=_must_not_run("카메라 프레임"), bake_image_publisher=_must_not_run("굽기 입력 사진"),
+    )
+    ctx = JobContext("job-reuse", "0192a6f0-7c1e-7b3a-9f2d-000000000614", "site_setup", 1, _reuse_input())
+    result = handler(ctx)
+
+    stages = [s["status"] for s in ctx.site_setup_history]
+    assert stages == ["COLLECTING_BACKGROUND", "INITIAL_POSE_AND_WORLD", "JOINT_BA_AND_VERIFY", "READY_FOR_ZONES"]
+    assert [s["progress_pct"] for s in ctx.site_setup_history] == [15, 40, 65, 85]
+    assert all(s["mode"] == "REUSE_SCENE" for s in ctx.site_setup_history)
+    assert result["mode"] == "REUSE_SCENE" and result["status"] == "COMPLETED" and result["progress_pct"] == 100
+    assert "preview_scene_version" not in result and "scene_version" not in result and "reuse_fallback_reason" not in result
+    assert result["calibration_version"] == published[0]["calibration_version"]
+    assert set(result["artifacts"]) == {"calibration_document"}
+    assert result["world_anchor"] == {"accepted": True, "reason": "ANCHORED", "reference_calibration_version": _REF_CAL,
+                                      "max_center_residual_m": 0.0612, "max_orientation_change_rad": 0.0703}
+    assert set(result["height_checks"]) == set(_reuse_input()["calibration_target"]["camera_ids"])
+    assert set(result["metrics"]["stage_seconds"]) == {"COLLECTING_BACKGROUND", "INITIAL_POSE_AND_WORLD",
+                                                        "JOINT_BA_AND_VERIFY", "READY_FOR_ZONES"}
+    ready = ctx.site_setup_history[-1]
+    assert ready["world_anchor"] == result["world_anchor"] and ready["artifacts"] == result["artifacts"]
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_reuse_scene_rejected_anchor_continues_as_full_setup_in_the_same_job() -> None:
+    """World 다시 맞추기가 거부되면(카메라 이동) 같은 작업 안에서 FULL_SETUP 으로 이어 간다: 판정 전 스냅샷은 REUSE_SCENE,
+    그 뒤로는 mode=FULL_SETUP + reuse_fallback_reason + world_anchor(accepted=false). 미리보기·굽기를 그대로 한다."""
+    called: list[str] = []
+
+    def preview(**kw: Any) -> PreviewDraftResult:
+        called.append("preview")
+        return PreviewDraftResult("scene-preview-614")
+
+    def bake(**kw: Any) -> str:
+        called.append("bake")
+        return "scene-614"
+
+    handler, _, published = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=_anchor_hook(False, "CENTER_RESIDUAL_EXCEEDED"), preview_builder=preview, texture_baker=bake,
+    )
+    ctx = JobContext("job-reuse-fb", "0192a6f0-7c1e-7b3a-9f2d-000000000615", "site_setup", 1, _reuse_input())
+    result = handler(ctx)
+
+    assert called == ["preview", "bake"]
+    by_stage = {s["status"]: s for s in ctx.site_setup_history}
+    assert by_stage["COLLECTING_BACKGROUND"]["mode"] == by_stage["INITIAL_POSE_AND_WORLD"]["mode"] == "REUSE_SCENE"
+    for stage in ("JOINT_BA_AND_VERIFY", "PREVIEW_AND_VLM_DRAFT", "READY_FOR_ZONES", "BAKING_TEXTURE"):
+        assert by_stage[stage]["mode"] == "FULL_SETUP"
+        assert by_stage[stage]["reuse_fallback_reason"] == "CENTER_RESIDUAL_EXCEEDED"
+        assert by_stage[stage]["world_anchor"]["accepted"] is False
+    assert result["mode"] == "FULL_SETUP" and result["reuse_fallback_reason"] == "CENTER_RESIDUAL_EXCEEDED"
+    assert result["preview_scene_version"] == "scene-preview-614" and result["scene_version"] == "scene-614"
+    assert result["world_anchor"]["reason"] == "CENTER_RESIDUAL_EXCEEDED"
+    assert published[0]["world_anchor"]["accepted"] is False
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_reuse_scene_without_anchor_record_falls_back_with_no_reference() -> None:
+    """보정 문서에 world_anchor 가 없으면(비교할 기준 보정 없음·World 다시 맞추기 없음) 같은 World 라고 지어내지 않고
+    NO_REFERENCE 로 전체 세팅을 이어 간다."""
+    handler, _, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td))
+    ctx = JobContext("job-reuse-none", "0192a6f0-7c1e-7b3a-9f2d-000000000616", "site_setup", 1, _reuse_input())
+    result = handler(ctx)
+    assert result["mode"] == "FULL_SETUP" and result["reuse_fallback_reason"] == "NO_REFERENCE"
+    assert result["world_anchor"] == {"accepted": False, "reason": "NO_REFERENCE", "reference_calibration_version": None}
+    assert "BAKING_TEXTURE" in [s["status"] for s in ctx.site_setup_history]
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_full_setup_reports_world_anchor_summary_without_mode() -> None:
+    """FULL_SETUP 도 World 다시 맞추기 결과를 요약해 싣는다(세팅 완료 sameWorld 근거). mode 는 지금처럼 싣지 않는다."""
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=_anchor_hook(True),
+    )
+    ctx = JobContext("job-full-anchor", "0192a6f0-7c1e-7b3a-9f2d-000000000617", "site_setup", 1, inp)
+    result = handler(ctx)
+    assert "mode" not in result and "reuse_fallback_reason" not in result
+    assert result["world_anchor"]["accepted"] is True and result["scene_version"]
+    assert "world_anchor" not in {k for s in ctx.site_setup_history[:2] for k in s}
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []

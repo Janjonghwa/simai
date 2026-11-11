@@ -36,6 +36,10 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(
 `supplement` 로 싣는다. 보조 촬영 때문에 세팅을 실패시키지 않는다(주입점이 FALLBACK·SKIPPED 요약으로 바꾼다).
 `mode: SUPPLEMENT_REBAKE` 는 (a)~(g) 를 건너뛰고 `rebaker` 주입점 하나로 이 세션 맵만 보조 촬영을 넣어 다시 굽는다(BAKING_TEXTURE →
 COMPLETED). 새 보정·미리보기를 만들지 않고, 보조 촬영이 적용되지 않으면 새 Scene 도 올리지 않는다(결과 scene_version = 기준).
+`mode: REUSE_SCENE`(이전 모델 재사용, S15P31A101-614)은 (a)~(f) 를 그대로 하고, (f) 의 World 다시 맞추기가 채택되면 (g)·(h) 를
+건너뛰어 JOINT_BA_AND_VERIFY → READY_FOR_ZONES → COMPLETED 로 새 보정만 낸다(현재 관제 맵 유지, 보정 문서 artifacts·높이 확인은
+그대로 싣는다). 거부되거나 기록이 없으면 같은 작업 안에서 FULL_SETUP 으로 이어 가고 그 스냅샷부터 `mode: FULL_SETUP` +
+`reuse_fallback_reason` 을 싣는다. 모든 모드에서 보정 문서에 world_anchor 가 있으면 그 요약(`world_anchor`)을 (f) 스냅샷부터 싣는다.
 
 굽기 입력 사진(`bake_image_publisher`, S15P31A101-593)은 VDT(Visual 층, 장식)용 보조 산출물이다. 카메라 프레임과 같이 올리지 못해도
 세팅을 실패시키지 않고 사진 없이 이어간다(취소·시간 초과만 그대로). 같은 사진이 이미 GLB 텍스처로 구워졌으므로 얼굴 정책은 외형
@@ -212,6 +216,30 @@ class PublishedCalibration:
 
 
 BAKE_SKIPPED_LIVE_WORK = "LIVE_WORK_STARTED"  # site_setup 1.7.0 bake_skipped(-597)
+
+MODE_REUSE_SCENE = "REUSE_SCENE"  # site_setup 1.11.0 입력 mode(-614): 현재 관제 맵을 그대로 쓰고 보정만 다시 한다
+NO_ANCHOR_REFERENCE = "NO_REFERENCE"  # site_setup 1.11.0 world_anchor_summary.reason: 보정 문서에 world_anchor 가 없다
+
+
+def world_anchor_summary(calibration_doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """보정 문서 world_anchor(-584)의 진행·결과 요약(site_setup 1.11.0 world_anchor_summary). 기록이 없으면 None.
+
+    채택 여부는 문서 그대로 따른다. 기준 버전·최대값을 모르면 null·생략으로 둔다(지어내지 않는다)."""
+    rec = calibration_doc.get("world_anchor")
+    if not isinstance(rec, Mapping):
+        return None
+    accepted = rec.get("accepted") is True
+    reference = rec.get("reference_calibration_version")
+    out: dict[str, Any] = {
+        "accepted": accepted,
+        "reason": str(rec.get("reason") or ("ANCHORED" if accepted else NO_ANCHOR_REFERENCE)),
+        "reference_calibration_version": str(reference) if reference else None,
+    }
+    for key in ("max_center_residual_m", "max_orientation_change_rad"):
+        value = rec.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = float(value)
+    return out
 
 
 class BakeReclaimed(Exception):
@@ -597,6 +625,7 @@ class SiteSetupHandler:
 
     def _wait_for_backgrounds(
         self, ctx: JobContext, setup_session_id: str, site_id: str, camera_ids: tuple[str, ...],
+        mode_fields: Mapping[str, Any] | None = None,
     ) -> tuple[CleanBackgroundBundle, dict[str, float]]:
         """(a) 묶음이 완성될 때까지 최대 background_wait_s 동안 다시 본다. 수집률이 바뀌면 COLLECTING_BACKGROUND 하트비트.
 
@@ -628,6 +657,7 @@ class SiteSetupHandler:
                     "status": "COLLECTING_BACKGROUND",
                     "progress_pct": best_pct,
                     "background_collection_pct": pct,
+                    **(mode_fields or {}),
                 })
                 last_sent = key
             self._sleep(ctx.cancelled, min(self._bg_poll_s, remaining))
@@ -742,6 +772,28 @@ class SiteSetupHandler:
                             retryable=False)
         return result
 
+    def _finish_reuse(
+        self, ctx: JobContext, joint_ba_snapshot: Mapping[str, Any], stage_seconds: dict[str, float],
+        stage_a: StageAResult, t_start: float,
+    ) -> Mapping[str, Any]:
+        """REUSE_SCENE 채택(-614): JOINT_BA_AND_VERIFY 스냅샷(새 보정 문서·높이 확인·world_anchor)을 그대로 READY_FOR_ZONES 로 올리고
+        COMPLETED 로 끝낸다. 미리보기·정식 맵·카메라 프레임·굽기 사진을 만들지 않는다(현재 관제 맵과 그 구역을 그대로 쓴다)."""
+        self._check_cancelled(ctx)
+        stage_seconds["READY_FOR_ZONES"] = 0.0
+        metrics = {"stage_seconds": dict(stage_seconds), "joint_ba": stage_a.summary_metrics}
+        self._emit_progress(ctx, {**joint_ba_snapshot, "status": "READY_FOR_ZONES", "progress_pct": 85, "metrics": metrics})
+        result: dict[str, Any] = {
+            **joint_ba_snapshot,
+            "status": "COMPLETED",
+            "progress_pct": 100,
+            "metrics": {**metrics, "total_seconds": round(max(0.0, self._perf() - t_start), 4)},
+        }
+        errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
+        if errs:
+            raise JobFailed("INTERNAL_CONTRACT_ERROR", f"site_setup 재사용 결과가 계약을 위반했다: {'; '.join(errs)}",
+                            retryable=False)
+        return result
+
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         t_start = self._perf()
         setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm = (
@@ -750,13 +802,16 @@ class SiteSetupHandler:
         if ctx.input.get("mode") == "SUPPLEMENT_REBAKE":
             return self._run_rebake(ctx, setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm)
         stage_seconds: dict[str, float] = {}
+        # 이전 모델 재사용(-614): World 다시 맞추기 판정 전까지는 요청한 REUSE_SCENE 을 스냅샷에 싣는다. FULL_SETUP 은 지금처럼 싣지 않는다
+        requested_reuse = ctx.input.get("mode") == MODE_REUSE_SCENE
+        mode_fields: dict[str, Any] = {"mode": MODE_REUSE_SCENE} if requested_reuse else {}
 
         # ------------------------------------------------------------------
         # (a) COLLECTING_BACKGROUND
         # ------------------------------------------------------------------
         self._check_cancelled(ctx)
         t0 = self._perf()
-        bg_bundle, bg_pct = self._wait_for_backgrounds(ctx, setup_session_id, site_id, camera_ids)
+        bg_bundle, bg_pct = self._wait_for_backgrounds(ctx, setup_session_id, site_id, camera_ids, mode_fields)
         created_at_ms = self._created_at_ms(bg_bundle)
         stage_seconds["COLLECTING_BACKGROUND"] = round(
             max(0.0, self._perf() - t0), 4
@@ -769,6 +824,7 @@ class SiteSetupHandler:
                 "progress_pct": 15,
                 "background_collection_pct": bg_pct,
                 "metrics": {"stage_seconds": dict(stage_seconds)},
+                **mode_fields,
             },
         )
 
@@ -813,6 +869,7 @@ class SiteSetupHandler:
                 "background_collection_pct": bg_pct,
                 "height_checks": init_height_checks,
                 "metrics": {"stage_seconds": dict(stage_seconds)},
+                **mode_fields,
             },
         )
 
@@ -848,6 +905,20 @@ class SiteSetupHandler:
         calibration_doc = stage_a.calibration_doc
         if self._anchor_world is not None:
             calibration_doc = dict(self._anchor_world(copy.deepcopy(calibration_doc)))
+        anchor = world_anchor_summary(calibration_doc)
+        reuse_scene = False
+        if requested_reuse:
+            if anchor is not None and anchor["accepted"]:
+                reuse_scene = True
+            else:
+                # 카메라가 움직였거나 비교할 기준이 없다: 같은 작업 안에서 전체 세팅으로 이어 간다(배경·보정은 이미 끝났다, -614)
+                if anchor is None:
+                    anchor = {"accepted": False, "reason": NO_ANCHOR_REFERENCE, "reference_calibration_version": None}
+                mode_fields = {"mode": "FULL_SETUP", "reuse_fallback_reason": anchor["reason"]}
+                log.warning("작업 %s: 이전 모델 재사용을 요청했지만 World 다시 맞추기가 거부돼(%s) 새 모델 세팅으로 이어 간다",
+                            ctx.job_id, anchor["reason"])
+        if anchor is not None:
+            mode_fields = {**mode_fields, "world_anchor": anchor}
         published = self._publish_calibration(copy.deepcopy(calibration_doc))
         artifacts: dict[str, Any] = {}
         if isinstance(published, PublishedCalibration):
@@ -870,6 +941,7 @@ class SiteSetupHandler:
                 "stage_seconds": dict(stage_seconds),
                 "joint_ba": stage_a.summary_metrics,
             },
+            **mode_fields,
         }
         if stage_a.scale_source is not None:
             joint_ba_snapshot["scale_source"] = stage_a.scale_source
@@ -880,6 +952,10 @@ class SiteSetupHandler:
         if artifacts:
             joint_ba_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, joint_ba_snapshot)
+
+        if reuse_scene:
+            # 같은 World 로 옮겨졌다: 미리보기·AI 구역 초안·굽기를 건너뛰고 새 보정만으로 끝낸다(현재 관제 맵 유지, -614)
+            return self._finish_reuse(ctx, joint_ba_snapshot, stage_seconds, stage_a, t_start)
 
         # ------------------------------------------------------------------
         # (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES
@@ -911,6 +987,7 @@ class SiteSetupHandler:
                 "stage_seconds": dict(stage_seconds),
                 "joint_ba": stage_a.summary_metrics,
             },
+            **mode_fields,
         }
         if stage_a.scale_source is not None:
             preview_snapshot["scale_source"] = stage_a.scale_source
@@ -1006,6 +1083,7 @@ class SiteSetupHandler:
                 "total_seconds": total_seconds,
                 "joint_ba": stage_a.summary_metrics,
             },
+            **mode_fields,
         }
         if scene_version is None:
             # 작업 시작으로 정식 굽기를 회수했다(site_setup 1.7.0, -597): 관제는 이미 현재 Scene 인 미리보기로 한다

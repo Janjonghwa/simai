@@ -126,5 +126,48 @@ class SceneCompatibilityTest {
         assertThat(missing.path("cameras").isNull()).isTrue();
     }
 
+    /** 보정 문서에 world_anchor 를 싣는다(-584). accepted 면 reference 의 World 로 옮겨진 보정이다 */
+    private void anchorDoc(String version, boolean accepted, String reference) {
+        var doc = mapper.createObjectNode();
+        doc.putObject("world_anchor").put("accepted", accepted).put("reason", accepted ? "ANCHORED" : "CENTER_RESIDUAL_EXCEEDED")
+                .put("reference_calibration_version", reference);
+        when(jdbc.queryForList(contains("SELECT content"), eq(Map.of("v", version)), eq(byte[].class)))
+                .thenReturn(List.of(mapper.writeValueAsBytes(doc)));
+    }
+
+    @Test void 같은_World_로_옮긴_세팅_보정은_계보_ID_가_달라도_채택_한도로_판정한다() {
+        // 재사용 세팅(-614): Tier 0 는 세팅 보정을 새 계보(world-new)로 채택하지만 world_anchor 가 Scene 보정(source)의 World 로 옮겼다
+        versions(twoCameras("world-old", 0, 0), twoCameras("world-new", .12, 5));
+        anchorDoc("target", true, "source");
+        var out = service.compareWithCameras("scene", "source", "target");
+        assertThat(out.path("verification").asString()).isEqualTo("VERIFIED");
+        assertThat(out.path("reason").asString()).isEqualTo("SMALL_CHANGE");
+        assertThat(out.path("max_center_delta_m").asDouble()).isCloseTo(.12, within(1e-9));
+        assertThat(out.path("cameras")).hasSize(2);
+        // 채택 한도(0.25 m·10°)를 넘으면 같은 World 라도 흐림
+        versions(twoCameras("world-old", 0, 0), twoCameras("world-new", 0, 10.5));
+        anchorDoc("target", true, "source");
+        assertThat(service.compareWithCameras("scene", "source", "target").path("reason").asString()).isEqualTo("LARGE_CHANGE");
+    }
+
+    @Test void 기준_보정이_Scene_과_같은_World_계보면_사슬을_따라_같은_World_로_본다() {
+        // Scene 보정 source(world-old) → Tier 0 가 회전 복구로 같은 계보 후보 mid 를 씀 → 재사용 세팅 target 이 mid 에 맞춰짐
+        versions(twoCameras("world-old", 0, 0), twoCameras("world-new", .05, 1));
+        anchorDoc("target", true, "mid");
+        when(jdbc.queryForList(contains("SELECT payload"), eq(Map.of("v", "mid")), eq(String.class)))
+                .thenReturn(List.of(twoCameras("world-old", .01, 0).toString()));
+        assertThat(service.compareWithCameras("scene", "source", "target").path("verification").asString()).isEqualTo("VERIFIED");
+    }
+
+    @Test void 거부했거나_다른_World_에_맞춘_세팅_보정은_여전히_다른_World_다() {
+        versions(twoCameras("world-old", 0, 0), twoCameras("world-new", 0, 0));
+        anchorDoc("target", false, "source");
+        assertThat(service.compareWithCameras("scene", "source", "target").path("reason").asString()).isEqualTo("DIFFERENT_WORLD");
+        anchorDoc("target", true, "elsewhere");
+        when(jdbc.queryForList(contains("SELECT payload"), eq(Map.of("v", "elsewhere")), eq(String.class)))
+                .thenReturn(List.of(twoCameras("world-other", 0, 0).toString()));
+        assertThat(service.compareWithCameras("scene", "source", "target").path("verification").asString()).isEqualTo("MISMATCH");
+    }
+
     private static org.assertj.core.data.Offset<Double> within(double n) { return org.assertj.core.data.Offset.offset(n); }
 }
