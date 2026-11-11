@@ -595,18 +595,22 @@ export function createWorkMock(options: WorkMockOptions = {}) {
   // ── 핸들러 ─────────────────────────────────────────────────────────────────
 
   const handlers = [
-    // 날짜 열기: 하루 작업과 빈 보고서를 만들거나 가져온다(멱등, 오늘 이전 불가).
+    // 날짜 열기: 하루 작업과 빈 보고서를 만들거나 가져온다(멱등). 오늘 이전은 이미 있는 날만 돌려주고 새로 만들지 않는다.
     http.put('*/api/work-units/daily/:date', ({ request, params }) => {
       const user = guard(request, true);
       if (user instanceof Response) return user;
       const date = String(params.date ?? '');
       if (!validDateKey(date))
         return problem(400, 'INVALID_WORK_UNIT', '날짜는 YYYY-MM-DD 형식이어야 합니다');
-      const kind = dayKind(date, todayKey());
-      if (kind === 'past')
-        return problem(400, WORK_ERROR.DATE_IN_PAST, '오늘 이전 날짜의 작업은 만들 수 없습니다');
       const existing = works.find((w) => w.date === date);
       if (existing) return HttpResponse.json(viewWork(existing));
+      const kind = dayKind(date, todayKey());
+      if (kind === 'past')
+        return problem(
+          409,
+          WORK_ERROR.DATE_PAST,
+          '오늘 이전 날짜에는 작업을 새로 만들 수 없습니다',
+        );
 
       const t = now();
       const entryMs = kind === 'today' ? t : dateTimeMs(date, PLANNED_START);
@@ -705,7 +709,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       const active = works.find((w) => w.status === 'IN_PROGRESS');
       if (active) return problem(409, WORK_ERROR.ALREADY_IN_PROGRESS, active.name);
       if (signaturesOf(work.report.report_id).length < 1)
-        return problem(409, WORK_ERROR.SIGNATURE_REQUIRED, '서명이 한 명 이상 필요합니다');
+        return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
       work.status = 'IN_PROGRESS';
       work.actual_started_at = now();
       return HttpResponse.json(viewWork(work));

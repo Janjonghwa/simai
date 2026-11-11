@@ -91,9 +91,7 @@ const httpError = (code: string, status = 409) => new ApiError(status, { code })
 describe('startErrorMessage', () => {
   it('오늘 작업이 아니면·서명이 없으면·진행 중인 다른 작업이 있으면·시작할 수 없는 상태면 각각 알려 주고, 그 밖은 일반 글이다', () => {
     expect(startErrorMessage(httpError(WORK_ERROR.NOT_TODAY))).toBe('오늘 작업만 시작할 수 있어요');
-    expect(startErrorMessage(httpError(WORK_ERROR.SIGNATURE_REQUIRED))).toBe(
-      '참석자 서명이 필요합니다',
-    );
+    expect(startErrorMessage(httpError(WORK_ERROR.NO_SIGNATURE))).toBe('참석자 서명이 필요합니다');
     expect(startErrorMessage(httpError(WORK_ERROR.ALREADY_IN_PROGRESS))).toBe(
       '진행 중인 다른 작업이 있어요',
     );

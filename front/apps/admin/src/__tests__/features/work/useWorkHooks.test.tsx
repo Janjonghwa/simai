@@ -102,7 +102,7 @@ describe('useOpenDay', () => {
     // 시계가 하루 지난 것처럼: 훅은 '2026-11-10' 을 오늘로 알지만 서버는 11-11 이다.
     const { result } = renderHook(() => useOpenDay('2026-11-10', '2026-11-10'), { wrapper });
     await waitFor(() => expect(result.current.error).not.toBeNull());
-    expect(workErrorOf(result.current.error)).toBe(WORK_ERROR.DATE_IN_PAST);
+    expect(workErrorOf(result.current.error)).toBe(WORK_ERROR.DATE_PAST);
   });
 });
 

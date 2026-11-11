@@ -59,7 +59,7 @@ function DayHeader({
 
 /** 하루 작업을 못 열었을 때. 지난 날짜는 다시 시도해도 안 되므로 단추 없이 알린다. */
 function OpenFailure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  if (isWorkError(error, WORK_ERROR.DATE_IN_PAST)) {
+  if (isWorkError(error, WORK_ERROR.DATE_PAST)) {
     return <p className="text-muted-foreground">지난 날짜는 새로 열 수 없어요.</p>;
   }
   return (

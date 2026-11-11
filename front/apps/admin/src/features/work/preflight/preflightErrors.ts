@@ -6,7 +6,7 @@ import { SIGNATURE_MAX_COUNT } from '@/features/work/types';
 /** 작업 시작이 거절됐을 때. */
 export function startErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.NOT_TODAY)) return '오늘 작업만 시작할 수 있어요';
-  if (isWorkError(error, WORK_ERROR.SIGNATURE_REQUIRED)) return '참석자 서명이 필요합니다';
+  if (isWorkError(error, WORK_ERROR.NO_SIGNATURE)) return '참석자 서명이 필요합니다';
   if (isWorkError(error, WORK_ERROR.ALREADY_IN_PROGRESS)) return '진행 중인 다른 작업이 있어요';
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.';

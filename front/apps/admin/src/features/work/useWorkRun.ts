@@ -7,7 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 // 변수는 작업 id(문자열) 또는 보고서 id(숫자) 하나다. 요청은 한 번에 하나만 보내도록 화면이 pending 으로 단추를 막는다.
 
 /**
- * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 SIGNATURE_REQUIRED(임시),
+ * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE,
  * 진행 중인 다른 작업이 있으면 409 WORK_ALREADY_IN_PROGRESS(serverMessage 에 그 작업 이름).
  */
 export function useStartWork() {
