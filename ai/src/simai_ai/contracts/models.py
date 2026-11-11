@@ -2192,6 +2192,9 @@ class Payload43(BaseModel):
     scene: Scene
     tier0_health: dict[str, Any] | None
     re_setup: list[ReSetupItem] | MISSING = MISSING
+    held_events_revision: Annotated[
+        StrictStr | MISSING, Field(max_length=64, min_length=1)
+    ] = MISSING
     watches: Watches | MISSING = MISSING
 
 
@@ -3312,6 +3315,7 @@ class Payload33(DefsSeverityUpwardOnly, DefsNeedsCheckMatchesReasons):
     delivery: Literal['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY'] | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     resolution: DefsOperatorResolution | MISSING = MISSING
+    held_by_tier0: StrictBool | MISSING = MISSING
     escalations: list[DefsOperatorEscalation] | MISSING = MISSING
 
 

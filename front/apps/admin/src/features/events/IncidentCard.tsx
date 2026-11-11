@@ -66,6 +66,7 @@ const SEVERITY_LOOK: Record<
  * - 둘째 줄: 등급 배지 · 대표 규칙(가장 높은 등급) 이름 · 구역.
  * - 확인 필요 · 지연 알림 꼬리표(심각도와 함께 보여야 하는 것만, 명세 7.3). 셋째 줄은 진입 예측일 때만.
  * - 진행 중이면 경과(N초 전)와 카메라 버튼.
+ * - 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)는 등급 테두리·점멸·카메라 버튼 없이 흐리게 보인다(경과는 보인다).
  * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점),
  * 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
  */
@@ -85,6 +86,8 @@ export function IncidentCard({
   const check = live.find((e) => needsConfirmation(e.event));
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
   const raisedAt = incident.active ? firstActiveRaisedAt(incident) : null;
+  // 지금 관제 중인 사건만 등급 테두리·카메라 버튼을 쓴다. 지난 관제의 사람은 지금 카메라에 없다.
+  const current = incident.active && !incident.stale;
   const eta = entryEtaLine(top.event);
 
   // 3D·2D 에서 사람을 눌러 이 묶음이 선택되면 긴 목록에서도 보이게 한다.
@@ -101,8 +104,9 @@ export function IncidentCard({
         className={cn(
           'relative flex flex-col gap-1 overflow-hidden rounded-[10px] bg-surface-2 py-3 pr-3.5 pl-[18px]',
           'hover:ring-1 hover:ring-point-soft hover:ring-inset',
-          incident.active && look.ring,
+          current && look.ring,
           !incident.active && 'opacity-55',
+          incident.stale && 'opacity-75',
           selected && 'outline-2 outline-offset-1 outline-primary',
         )}
       >
@@ -126,7 +130,7 @@ export function IncidentCard({
                 className={cn(
                   'rounded-md border-2 border-transparent px-2 py-px text-sm font-bold',
                   targetFont(incident.target),
-                  incident.active ? look.chip : look.chipDone,
+                  current ? look.chip : look.chipDone,
                 )}
               >
                 {targetLabel(incident.target, zoneName)}
@@ -155,7 +159,7 @@ export function IncidentCard({
         {raisedAt !== null && (
           <Since raisedAt={raisedAt} className="self-end text-xs text-muted-foreground" />
         )}
-        <CameraButton target={incident.active ? incident.target : null} variant="card" />
+        <CameraButton target={current ? incident.target : null} variant="card" />
       </article>
     </li>
   );

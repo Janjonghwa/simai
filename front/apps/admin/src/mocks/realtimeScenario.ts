@@ -3,6 +3,6 @@
 
 export { viewerHealthAt, type MockOutage } from '@/mocks/scenario/health';
 export { ppeViewAt } from '@/mocks/scenario/ppe';
-export { mockEventId, riskEventsBetween } from '@/mocks/scenario/risk';
+export { mockEventId, riskEventsBetween, seededEventsAt } from '@/mocks/scenario/risk';
 export { EVENT_CYCLE_MS, MOCK_CONFIG, nextMsgId, type MockConfig } from '@/mocks/scenario/shared';
 export { worldStateAt } from '@/mocks/scenario/world';

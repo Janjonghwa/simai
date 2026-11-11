@@ -111,6 +111,7 @@ export const eventItemSchema = z.object({
   resolved_at: z.number().nullable().optional(),
   acks: z.array(operatorAck).optional(),
   delivery: z.enum(['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY']).optional(),
+  held_by_tier0: z.boolean().optional(),
   resolution: operatorResolution.optional(),
   escalations: z.array(operatorEscalation).optional(),
   assessments: z.array(vlmAssessment).optional(),

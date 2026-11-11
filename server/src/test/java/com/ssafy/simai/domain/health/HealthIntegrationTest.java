@@ -220,8 +220,10 @@ class HealthIntegrationTest {
             Thread.sleep(200);
             JsonNode unknown = getHealth();
             assertValid(unknown);
-            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.3.0");
+            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.4.0");
             assertThat(unknown.at("/payload").has("re_setup")).isFalse();
+            // 1.4.0: Tier 0 가 들고 있는 이벤트 집합의 판(S15P31A101-595)은 늘 싣는다
+            assertThat(unknown.at("/payload/held_events_revision").asString()).isNotBlank();
 
             // 두 카메라가 재세팅을 요구한다(순서는 camera_id 오름차순으로 내준다)
             long detected = Instant.now().toEpochMilli() - 5_000;

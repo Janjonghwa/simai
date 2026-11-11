@@ -16,6 +16,8 @@ import {
   incidentOf,
   incidentTimeline,
   isAlarming,
+  isCurrent,
+  isStale,
   mergeEvent,
   metricLabels,
   needsConfirmation,
@@ -506,5 +508,66 @@ describe('카드 표시 계산', () => {
     expect(
       confirmationText(item({ needs_check: true, confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'] })),
     ).toBe('확인 필요 · 높이 모름');
+  });
+});
+
+// S15P31A101-595: 꺼진 관제에서 열린 채 남은 사건은 「진행 중」이 아니다.
+describe('지금 Tier 0 가 들고 있는지(held_by_tier0)', () => {
+  it('해소 전이고 들고 있으면 진행 중, 들고 있지 않으면 지난 관제다. 칸이 없으면(이전 EC2) 진행 중으로 본다', () => {
+    expect(isCurrent(item({ held_by_tier0: true }))).toBe(true);
+    expect(isCurrent(item())).toBe(true);
+    expect(isStale(item({ held_by_tier0: false }))).toBe(true);
+    expect(isCurrent(item({ held_by_tier0: false }))).toBe(false);
+    // 해소된 것은 어느 쪽도 아니다
+    const resolved = item({ lifecycle: 'RESOLVED', held_by_tier0: false });
+    expect(isCurrent(resolved)).toBe(false);
+    expect(isStale(resolved)).toBe(false);
+  });
+
+  it('지난 관제의 확인 전 CRITICAL 은 울리지 않는다', () => {
+    expect(isAlarming(entry({ held_by_tier0: false }))).toBe(false);
+    expect(isAlarming(entry({ held_by_tier0: true }))).toBe(true);
+  });
+
+  it('같은 sequence 를 다시 받으면 들고 있음만 받은 값으로 바꾼다(목록 다시 받기)', () => {
+    const held = entry({ held_by_tier0: true });
+    const released = mergeEvent(held, item({ held_by_tier0: false }));
+    expect(released.event.held_by_tier0).toBe(false);
+    expect(released.stageStartedAt).toBe(held.stageStartedAt);
+    // 다시 들게 되면(같은 Tier 0 가 다시 붙어 스냅샷) 되돌아온다
+    expect(mergeEvent(released, item({ held_by_tier0: true })).event.held_by_tier0).toBe(true);
+    // 칸이 없는 것은 바꾸지 않는다
+    expect(mergeEvent(released, item())).toBe(released);
+  });
+
+  it('늦게 온 낮은 sequence 는 들고 있음을 되돌리지 않는다', () => {
+    const now = entry({ event_sequence: 3, held_by_tier0: false });
+    expect(
+      mergeEvent(now, item({ event_sequence: 2, held_by_tier0: true })).event.held_by_tier0,
+    ).toBe(false);
+  });
+
+  it('지난 관제는 접힌 칸으로 따로 모이고 같은 World ID 의 진행 중 사건과 섞이지 않는다', () => {
+    const sections = eventSections([
+      entry({ event_id: 'now', world_ids: ['w-1'], held_by_tier0: true }),
+      entry({ event_id: 'old-1', world_ids: ['w-1'], rule_id: 'R1', held_by_tier0: false }),
+      entry({ event_id: 'old-2', world_ids: ['w-9'], held_by_tier0: false }),
+    ]);
+    expect(sections.active.map((i) => i.key)).toEqual(['person:w-1']);
+    expect(sections.active[0]?.entries.map((e) => e.event.event_id)).toEqual(['now']);
+    expect(sections.stale.map((i) => i.key).sort()).toEqual(['person:w-1', 'person:w-9']);
+    expect(sections.stale.every((i) => i.stale && !i.alarming)).toBe(true);
+    expect(sections.staleEvents).toBe(2);
+    expect(cardChip(sections.stale[0]!)).toEqual({ kind: 'stale', label: '지난 관제' });
+  });
+
+  it('지난 관제 이벤트의 상세 묶음도 지난 관제 쪽에서 찾는다', () => {
+    const entries = [
+      entry({ event_id: 'now', world_ids: ['w-1'], held_by_tier0: true }),
+      entry({ event_id: 'old', world_ids: ['w-1'], rule_id: 'R1', held_by_tier0: false }),
+    ];
+    expect(incidentOf(entries, 'old')?.entries.map((e) => e.event.event_id)).toEqual(['old']);
+    expect(incidentOf(entries, 'old')?.stale).toBe(true);
+    expect(incidentOf(entries, 'now')?.stale).toBe(false);
   });
 });

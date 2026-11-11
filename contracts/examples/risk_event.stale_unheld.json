@@ -1,0 +1,34 @@
+{
+  "schema_version": "2.3.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000596",
+  "sent_at": 1760486400000,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "rule_id": "R1",
+    "rule_version": 3,
+    "source": "LIVE",
+    "lifecycle": "RAISED",
+    "verification": "VERIFIED",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "needs_check": false,
+    "confidence_reasons": [],
+    "resume_count": 0,
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {},
+    "rationale": null,
+    "proposed_severity": null,
+    "event_sequence": 1,
+    "gateway_id": "tier0-01",
+    "raised_at": 1760342400300,
+    "updated_at": 1760342400300,
+    "acks": [],
+    "delivery": "REALTIME",
+    "held_by_tier0": false
+  }
+}

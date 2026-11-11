@@ -9,7 +9,13 @@ import { AckButton } from '@/features/events/AckButton';
 import { entryStatus, isActive } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
 import { statusText } from '@/features/events/format';
-import { bestCamera, groupIncidents, topEntry, type Incident } from '@/features/events/incidents';
+import {
+  bestCamera,
+  groupIncidents,
+  topEntry,
+  withoutStale,
+  type Incident,
+} from '@/features/events/incidents';
 import { cardTitle, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
@@ -88,7 +94,8 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   const healthIds = useMemo(() => cameras.map((camera) => camera.id), [cameras]);
   const ids = useCameraIds(attach !== undefined, healthIds);
 
-  const incidents = useMemo(() => groupIncidents(entries), [entries]);
+  // 지금 보는 사람의 사건만 보인다. 지난 관제(지금 Tier 0 가 들고 있지 않음)의 같은 World ID 는 섞지 않는다(S15P31A101-595).
+  const incidents = useMemo(() => groupIncidents(withoutStale(entries)), [entries]);
   const { target } = split;
   const incident = target
     ? incidents.find((i) => i.target?.type === target.type && i.target.id === target.id)

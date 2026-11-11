@@ -175,11 +175,16 @@ const stableWorld = (ot: number) => {
   return { ...message, msg_id: `${WORLD_MSG_ID_PREFIX}${hex12(ot)}` };
 };
 // 서버는 기록 이벤트(LIVE)에 재시작 복원 표시 delivery 를 싣는다(S15P31A101-355). 복원된 것이 없는 기록은 REALTIME 이다.
-const stableEvent = (message: ReturnType<typeof riskEventsBetween>[number]) => ({
-  ...message,
-  msg_id: `${EVENT_MSG_ID_PREFIX}${hex12(message.payload.updated_at ?? 0)}`,
-  payload: { ...message.payload, delivery: 'REALTIME' as const },
-});
+// 지금 Tier 0 가 들고 있는지(held_by_tier0)는 실시간 표시용이라 기록에는 싣지 않는다(S15P31A101-595, 서버 ReplayRepository 와 같다).
+const stableEvent = (message: ReturnType<typeof riskEventsBetween>[number]) => {
+  const payload = { ...message.payload, delivery: 'REALTIME' as const };
+  delete payload.held_by_tier0;
+  return {
+    ...message,
+    msg_id: `${EVENT_MSG_ID_PREFIX}${hex12(message.payload.updated_at ?? 0)}`,
+    payload,
+  };
+};
 
 /** from 시각에 활성인 이벤트의 그 시각 상태(마지막 전이가 해소가 아닌 것). */
 function activeEventsAt(from: number) {

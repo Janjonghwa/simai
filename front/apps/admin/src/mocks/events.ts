@@ -110,6 +110,7 @@ export function createEventsMock({
   now = Date.now,
   isClipReady,
   summaryCompleteDelayMs,
+  seed = [],
 }: {
   broker: StompBroker;
   now?: () => number;
@@ -117,8 +118,12 @@ export function createEventsMock({
   isClipReady?: (event: Payload, now: number) => boolean;
   /** 지정하면 구간 요약 요청 뒤 이 시간(ms)에 걸쳐 RUNNING → SUCCEEDED 전이를 자동 발행한다(개발 서버용). */
   summaryCompleteDelayMs?: number;
+  /** 처음부터 저장소에 둘 이벤트(순번·held_by_tier0 그대로). 개발 서버가 진행 중·지난 관제 칸을 보이는 데 쓴다. */
+  seed?: readonly RiskEventMessage[];
 }): EventsMock {
-  const events = new Map<string, RiskEventMessage>();
+  const events = new Map<string, RiskEventMessage>(
+    seed.map((message) => [message.payload.event_id, message]),
+  );
   const decidedTargets = new Map<string, Payload['severity']>();
   const summariesByEvent = new Map<string, EventSummary[]>();
   const nextSequence = (eventId: string) => (events.get(eventId)?.payload.event_sequence ?? 0) + 1;
@@ -187,6 +192,8 @@ export function createEventsMock({
       ...(summaries?.length ? { summaries } : {}),
       ...change(),
     };
+    // 해소된 이벤트는 Tier 0 가 들고 있지 않다(계약 2.3.0: held_by_tier0 true 는 RAISED·UPDATED 에만).
+    if (payload.lifecycle === 'RESOLVED' && payload.held_by_tier0) payload.held_by_tier0 = false;
     const stored: RiskEventMessage = {
       ...prev,
       msg_id: nextMsgId(),

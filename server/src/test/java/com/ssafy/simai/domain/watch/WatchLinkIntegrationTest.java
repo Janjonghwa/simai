@@ -275,7 +275,7 @@ class WatchLinkIntegrationTest {
         watch.next();
 
         ObjectNode message = viewerHealth.message();
-        assertThat(message.path("schema_version").asString()).isEqualTo("1.3.0");
+        assertThat(message.path("schema_version").asString()).isEqualTo(ViewerHealthService.SCHEMA_VERSION);
         assertThat(schemas.violations("messages/viewer_health", message.toString())).isEmpty();
         JsonNode watches = message.get("payload").get("watches");
         assertThat(watches.path("registered").asInt()).isEqualTo(watches.path("items").size());

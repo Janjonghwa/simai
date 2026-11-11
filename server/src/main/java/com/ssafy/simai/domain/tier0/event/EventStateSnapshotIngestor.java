@@ -32,6 +32,8 @@ import tools.jackson.databind.JsonNode;
  *   <li>스냅샷이 새로 시작한 저널을 알리면(Pod 교체로 offset 이 줄어듦) 저널 세대를 올린다. 새 저널에 기록이 있으면 연결을 닫아
  *       Tier 0 가 처음부터 다시 보내게 한다.
  *   <li>분류가 커밋된 뒤에만 동기화를 끝낸다. 분류가 실패하면 동기화 모드가 이어지고 다음 스냅샷이 다시 분류한다.
+ *   <li>분류하기 전에 이 Tier 0 가 들고 있는 이벤트(Tier0HeldEvents)를 active_events 로 바꾼다(S15P31A101-595). 커밋 뒤 보내는
+ *       DELAYED_ACTIVE 알림이 바뀐 값을 싣는다. 분류가 실패해도 스냅샷은 Tier 0 의 지금 상태라 되돌리지 않는다.
  * </ul>
  */
 @Component
@@ -49,10 +51,11 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final EventCloseForwarder closes;
     private final Clock clock;
     private final ApplicationEventPublisher publisher;
+    private final Tier0HeldEvents held;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
             TransactionTemplate transaction, EventAckForwarder acks, EventEscalationForwarder escalations,
-            EventCloseForwarder closes, Clock clock, ApplicationEventPublisher publisher) {
+            EventCloseForwarder closes, Clock clock, ApplicationEventPublisher publisher, Tier0HeldEvents held) {
         this.acks = acks;
         this.escalations = escalations;
         this.closes = closes;
@@ -62,6 +65,7 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         this.transaction = transaction;
         this.clock = clock;
         this.publisher = publisher;
+        this.held = held;
     }
 
     @Override
@@ -103,8 +107,13 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             return Outcome.STORED;
         }
 
+        Set<UUID> activeIds = new LinkedHashSet<>();
+        for (JsonNode event : active.values()) {
+            activeIds.add(I1Json.requiredUuid(event, "event_id"));
+        }
+        held.replace(gatewayId, activeIds);
         Set<UUID> touched = tracker.touchedDuringSync();
-        transaction.executeWithoutResult(status -> classify(gatewayId, active, touched));
+        transaction.executeWithoutResult(status -> classify(gatewayId, active, activeIds, touched));
         tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
@@ -129,10 +138,8 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         return Outcome.STORED;
     }
 
-    private void classify(String gatewayId, JsonNode active, Set<UUID> touched) {
-        Set<UUID> activeIds = new LinkedHashSet<>();
+    private void classify(String gatewayId, JsonNode active, Set<UUID> activeIds, Set<UUID> touched) {
         for (JsonNode event : active.values()) {
-            activeIds.add(I1Json.requiredUuid(event, "event_id"));
             events.ensureFromSnapshot(gatewayId, event);
         }
         Set<UUID> undecided = events.withoutDelivery(activeIds);

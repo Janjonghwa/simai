@@ -83,7 +83,7 @@ class HealthPublisher implements AutoCloseable {
         return String.join("|", p.path("system_health").asString(""), p.path("remote_state").asString(""),
                 p.path("tier0_link").asString(""), p.path("laptop").path("link").asString(""),
                 p.path("calibration_state").asString(""), p.path("config").toString(), p.path("scene").toString(),
-                watchLinks(p.path("watches")));
+                watchLinks(p.path("watches")), p.path("held_events_revision").asString(""));
     }
 
     /** 워치마다 연결 상태만(배터리·마지막 수신 시각은 1초 주기로 충분하다) */

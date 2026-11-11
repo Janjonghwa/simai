@@ -15,6 +15,7 @@ export async function startMockBackend() {
     { createEventsMock },
     { createClipsMock },
     { createZonesMock },
+    { seededEventsAt },
   ] = await Promise.all([
     import('virtual:msw'),
     import('@/mocks/handlers'),
@@ -25,6 +26,7 @@ export async function startMockBackend() {
     import('@/mocks/events'),
     import('@/mocks/clips'),
     import('@/mocks/zones'),
+    import('@/mocks/realtimeScenario'),
   ]);
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명은 보지 않는다).
   // 로그아웃 뒤 토큰 없이 붙지 않는지, 만료된 실서버 토큰이 서버처럼 ERROR 로 거절되는지 볼 수 있다.
@@ -35,7 +37,12 @@ export async function startMockBackend() {
       return user !== undefined && (user.expiresAt === undefined || user.expiresAt > Date.now());
     },
   });
-  const events = createEventsMock({ broker, summaryCompleteDelayMs: 1_500 });
+  // 진행 중 두 건과 지난 관제(꺼진 관제에서 열린 채 남은) 세 건을 싣고 시작한다(S15P31A101-595).
+  const events = createEventsMock({
+    broker,
+    summaryCompleteDelayMs: 1_500,
+    seed: seededEventsAt(Date.now()),
+  });
   const clips = createClipsMock({ findEvent: events.find });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다.
   const zones = createZonesMock({ staticObjects: staticObjectsMock.store });
