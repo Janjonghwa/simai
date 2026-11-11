@@ -19,6 +19,7 @@ REST와 내부 보고서 HTTP에 해당하는 별도 `contracts/` 메시지가 �
 - 목록과 이벤트 수는 실제 작업 구간을 우선 사용한다. 진행 작업은 예정 종료가 오래 지났어도 목록에 남는다.
 - 집계는 `raised_at`이 양 끝을 포함한 실제 구간 안인 LIVE 이벤트다. 대상 구역이 null이면 현장 전체다. 현재 `risk_event`에는 site_id가 없으므로 기존 `SiteLookup`의 단일 현장 보장을 사용한다.
 - 사실 키는 `event_count`, `severity_counts`, `rule_counts`, `max_severity`, `operator_ack_count`, `operator_close_count`, `outside_work_entry_count`다. 확인·종료 수는 해당 구간에 확인 또는 ACCEPTED 종료가 기록된 **서로 다른 대상 이벤트 수**다. 중복 확인으로 수를 부풀리지 않는다. 작업 외 진입은 다른 구역의 R1이며, 다른 규칙이나 zone_id가 null인 이벤트는 진입으로 세지 않는다. 현장 전체 작업에서는 작업 외 진입이 0이다.
+- 아래 새 버전 규칙은 양식이 없는 예전 작업 보고서(`mode: NEW_VERSION`)에만 적용한다. 날짜 작업 보고서는 맨 아래 'S15P31A101-616 날짜 작업 종료 미팅'을 따른다.
 - 생성 중 보고서가 있으면 종료를 수락하고 `SKIPPED/REPORT_GENERATING`과 그 ID를 반환한다. 성공한 보고서가 하나도 없으면 `SKIPPED/NO_REPORT`다. 성공한 버전 중 최신 본문을 복사하되 새 버전 번호는 전체 이력의 최댓값+1이다.
 - 새 버전에는 이전 잠금·해시·서명을 복사하지 않는다. 마무리 생성 중에도 기존 sections·citations·risk_items 등 본문은 보존한다. 서버 재기동 시 중단된 마무리도 FAILED/INTERRUPTED로 마감한다.
 - 숫자 값의 집합만 비교하면 CRITICAL/HIGH의 수를 뒤바꾼 오류를 놓친다. 따라서 모든 항목명·숫자 쌍과 최고 등급을 포함한 필수 사실 절을 정확히 대조하고, 추가 숫자·확률·규칙 ID·등급을 거절한다. 텍스트는 최대 8,000자(짧은 마무리 문단의 응답 상한)다. 키·요청 오류·LLM 타임아웃·두 초안 검증 실패는 결정론 문장으로 대체한다.
@@ -47,3 +48,14 @@ REST와 내부 보고서 HTTP에 해당하는 별도 `contracts/` 메시지가 �
 가짜 LLM 시험 예시(시간대·구역별 건수·미확인 수 등은 시험용 가상 값): 작업 중 전체 이벤트 46건, 등급 CRITICAL 7건, 등급 HIGH 0건, 등급 CAUTION 39건, 등급 INFO 0건. 집계 내용은 다음과 같다. 규칙 R1 위험 구역 진입 7건, 규칙 R5 진입 예측 32건, 규칙 R7 구역 감시 능력 저하 7건, 구역 개구부 1 이벤트 30건, 구역 개구부 2 이벤트 16건, 최고 등급 CRITICAL, 운영자 확인 5건, 운영자 미확인 CRITICAL 4건, 운영자 종료 0건, 작업 외 진입 4건, 작업 초반 이벤트 12건, 작업 중반 이벤트 20건, 작업 후반 이벤트 14건, 첫 이벤트 시작 후 2분, 마지막 이벤트 시작 후 58분. 기록을 확인했다.
 
 위험도나 원인의 변화 추정, 구역 ID·작업명 사용은 제외했다. 시간대별 수치는 작업 길이에 의존하며 원인이나 위험도 변화를 뜻하지 않는다.
+
+## S15P31A101-616 날짜 작업 종료 미팅
+
+최신 TBM 보고서에 양식(`report.form`)이 있으면(날짜 작업, -609) 종료는 **새 버전을 만들지 않는다**. 작업 전에 받은 서명이 `report_version` 에 묶여 있어서다.
+
+- 종료 트랜잭션이 그 보고서 행을 잠그고 같은 행에 `wrap_up_status=GENERATING`·`wrap_up_facts`(위 집계 그대로)를 적는다. 응답 `wrap_up` 은 `{mode: "FORM_ENDING", status: "GENERATING", report_id: <같은 행>}` 이다. 잠긴 행이면 `SKIPPED/REPORT_LOCKED`.
+- 커밋 뒤 `/v1/report/wrap-up` 대신 `/v1/report/form-ending`(계약 `tbm_form_ending_request/result`)을 부르고, 같은 행의 `form.review.ending` 이 비어 있을 때만 그 문장을 채운다(채우면 `form_revision` +1). 사람이 이미 쓴 종료 미팅은 덮지 않는다.
+- 실패하면 위 결정론 문장(`wrapUpFallback`, 2000자에서 자름)을 채운다. `wrap_up_fallback`·`wrap_up_model` 은 기록하고, 서명 해시가 덮는 `wrap_up_summary` 는 쓰지 않는다. 초안 상태(`status`)는 바꾸지 않는다.
+- 재기동 때 멈춘 날짜 작업 종료 미팅은 INTERRUPTED 가 아니라 저장된 사실의 결정론 문장으로 마감한다(`TbmFormAiService.recoverEndings`).
+- 날짜 작업 보고서에는 예전 생성 경로(`POST /api/reports/tbm`)도 409 `REPORT_FORM_MANAGED` 로 새 버전을 만들지 않는다.
+- 자세한 규칙: `docs/design/S15P31A101-616-tbm-form-draft.md` '2단계 서버 연결'.

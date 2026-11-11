@@ -96,12 +96,15 @@ public class TbmReportRepository {
         this.mapper = mapper;
     }
 
-    /** 서버 재시작 때 GENERATING 으로 남아 있던 행을 FAILED(INTERRUPTED)로 마감한다. */
+    /**
+     * 서버 재시작 때 GENERATING 으로 남아 있던 행을 FAILED(INTERRUPTED)로 마감한다. 날짜 작업 AI 초안(-616 B9)도 같다.
+     * 날짜 작업의 종료 미팅(양식 있음, B10)은 초안 상태와 따로 가므로 여기서 건드리지 않고 TbmFormAiService.recoverEndings 가 마감한다.
+     */
     public int failInterrupted(Instant now) {
         return jdbc.update("""
                 UPDATE report
                 SET status = 'FAILED', failure_reason = 'INTERRUPTED', completed_at = :now,
-                    wrap_up_status = CASE WHEN wrap_up_status = 'GENERATING' THEN 'FAILED' ELSE wrap_up_status END
+                    wrap_up_status = CASE WHEN wrap_up_status = 'GENERATING' AND form IS NULL THEN 'FAILED' ELSE wrap_up_status END
                 WHERE status = 'GENERATING'
                 """, new MapSqlParameterSource("now", utc(now)));
     }
@@ -144,6 +147,15 @@ public class TbmReportRepository {
             throw new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND);
         }
         GeneratingStart work = target.getFirst();
+        // 날짜 작업 보고서(최신 TBM 보고서에 양식이 있음)는 이 새 버전 경로를 받지 않는다(S15P31A101-616).
+        // 양식 없는 새 버전이 최신이 되면 양식과 작업 전 서명이 가려진다. 초안은 POST .../{id}/form-draft 로 같은 행에 받는다.
+        Boolean formManaged = jdbc.queryForObject("""
+                SELECT COALESCE((SELECT form IS NOT NULL FROM report WHERE work_id = :workId AND report_kind = 'TBM'
+                    ORDER BY report_version DESC, report_id DESC LIMIT 1), false)
+                """, lookupParams, Boolean.class);
+        if (Boolean.TRUE.equals(formManaged)) {
+            throw new BusinessException(ErrorCode.Report.REPORT_FORM_MANAGED);
+        }
         if (work.layoutId() < 0 || work.layoutRevision() < 1) {
             throw new BusinessException(ErrorCode.Report.WORK_HAS_NO_LAYOUT);
         }

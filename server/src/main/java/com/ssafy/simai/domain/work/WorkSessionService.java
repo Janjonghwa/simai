@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.work;
 
 import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.report.TbmFormAiService;
 import com.ssafy.simai.domain.report.TbmReportService;
 import com.ssafy.simai.domain.report.WorkWrapUpRepository;
 import com.ssafy.simai.domain.layout.LayoutZoneService;
@@ -29,9 +30,12 @@ public class WorkSessionService {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final LayoutZoneService layoutZones;
+    private final TbmFormAiService formAi;
 
     public WorkSessionService(WorkUnitRepository works, WorkWrapUpRepository wrapUps, TbmReportService reports,
-            SiteLookup sites, ConfigBundleService bundles, ObjectMapper mapper, Clock clock, LayoutZoneService layoutZones) {
+            SiteLookup sites, ConfigBundleService bundles, ObjectMapper mapper, Clock clock, LayoutZoneService layoutZones,
+            TbmFormAiService formAi) {
+        this.formAi = formAi;
         this.works = works;
         this.wrapUps = wrapUps;
         this.reports = reports;
@@ -68,7 +72,13 @@ public class WorkSessionService {
         }, true, userId).changes();
         if ("GENERATING".equals(response.path("wrap_up").path("status").asString())) {
             long reportId = response.path("wrap_up").path("report_id").asLong();
-            reports.startWrapUp(reportId, wrapUps.request(reportId, (ObjectNode) response.path("work_unit")));
+            ObjectNode work = (ObjectNode) response.path("work_unit");
+            if (WorkWrapUpRepository.MODE_FORM_ENDING.equals(response.path("wrap_up").path("mode").asString())) {
+                // 날짜 작업: 새 버전 없이 같은 행의 양식 종료 미팅을 채운다(S15P31A101-616 B10)
+                formAi.startEnding(reportId, wrapUps.endingRequest(reportId, work));
+            } else {
+                reports.startWrapUp(reportId, wrapUps.request(reportId, work));
+            }
         }
         return response;
     }

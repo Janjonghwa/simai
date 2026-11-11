@@ -141,8 +141,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `password_hash` | text | NN |  |  |
 | `role` | text | NN, CK(ADMIN·FOREMAN·VIEWER) |  | 관리자·반장·열람 (14장) |
 | `display_label` | text |  |  | 화면 표시용 별칭. 위치·이벤트 기록에는 user_id 만 쓴다(11.4-5) |
-| `org` | text | CK(1~40자) |  | 소속. TBM 보고서 리더 칸에 쓴다(`admin set-profile`, V49, S15P31A101-609) |
-| `title` | text | CK(1~40자) |  | 직책. TBM 보고서 리더 칸에 쓴다(V49) |
+| `org` | text | CK(1~40자) |  | 소속. TBM 보고서 리더 칸에 쓴다(`admin set-profile`, V51, S15P31A101-609) |
+| `title` | text | CK(1~40자) |  | 직책. TBM 보고서 리더 칸에 쓴다(V51) |
 | `created_at` | ts | NN |  |  |
 | `disabled_at` | ts |  |  | 비활성 시각(삭제하지 않음) |
 
@@ -1209,7 +1209,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `events` | jsonb | NN, 기본 `[]` |  | 일일 일지 생성에 넘긴 그날 LIVE `risk_event` 사실(`rule_id`·`severity`·`zone_id`·`raised_at_ms`·`resolved`·`needs_check`, 최대 100건(넘으면 높은 등급부터, 발생 순으로 저장), 사람 ID·근거 문장 없음, V36) |
 | `event_summary` | jsonb | NN, 기본 `{}` |  | 일일 일지의 그날 LIVE 이벤트 집계(`event_count`·`resolved_count`·`needs_check_count`·`events_truncated`·`severity_counts`·`rule_counts`, 100건 상한 없이 전부, V36) |
 | `job_id` | text | FK>analysis_job.job_id |  | 레거시(`tbm_report` I5 폐기 예정, EC2 Python 컨테이너 직접 생성 시 NULL) |
-| `status` | text | NN, CK(PENDING·GENERATING·SUCCEEDED·FAILED) |  | PENDING 은 날짜 작업과 함께 만든 빈 TBM 보고서(초안 작성 전, V49). 응답 `draft_status` 는 PENDING 이면 null |
+| `status` | text | NN, CK(PENDING·GENERATING·SUCCEEDED·FAILED) |  | PENDING 은 날짜 작업과 함께 만든 빈 TBM 보고서(초안 작성 전, V51). 응답 `draft_status` 는 PENDING 이면 null |
 | `body` | text |  | `job_callback.result` | LLM 초안 |
 | `citations` | text[] |  | `job_callback.result` | 허용 목록(`allowed_ids`) 안의 조항·노드 ID 만 |
 | `subgraph` | jsonb |  |  | 보고서에 사용한 법령 지식 그래프 서브그래프(`nodes[]`·`edges[]`, 시연 Scene 6 그래프 패널용, 후속 구현에서 추가) |
@@ -1218,7 +1218,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `content_sha256` | text |  |  | 첫 전자서명 등록 시 고정하는 보고서 본문 정규화 해시(`sha256:<64hex>`), 후속 구현에서 추가 |
 | `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, V29 적용, 역할과 무관한 첫 서명에서 잠금 |
 | `form` | jsonb |  |  | 날짜 작업 TBM 양식 칸(`info`·`risks` 3줄·`focus`·`checks` 5줄·`review`). 사람이 고친 칸의 정본, 리더·참석자는 넣지 않는다. 고쳐도 새 `report_version` 을 만들지 않는다(V51, `docs/design/tbm-daily-form.md`) |
-| `form_revision` | int | NN, 기본 0, CK(>= 0) |  | 양식 저장마다 1 증가. `PUT .../form` 의 `form_revision` 이 다르면 409 `REPORT_FORM_CONFLICT`(V49) |
+| `form_revision` | int | NN, 기본 0, CK(>= 0) |  | 양식 저장마다 1 증가. AI 초안이 빈 칸을 하나라도 채울 때와 작업 종료 미팅이 빈 `review.ending` 을 채울 때도 1 증가(채운 칸이 없으면 그대로, S15P31A101-616). `PUT .../form` 의 `form_revision` 이 다르면 409 `REPORT_FORM_CONFLICT`(V51) |
 | `leader_user_id` | bigint | FK>app_user.user_id |  | TBM 리더 계정(보고서를 만든 계정). 응답 `leader{user_id,name,org,title}`, name 은 display_label(없으면 login_id)(V49, NFR-14 예외 아님: 계정 참조) |
 | `llm_model` | text |  |  |  |
 | `requested_by` | bigint | FK>app_user.user_id, NN |  |  |

@@ -13,7 +13,10 @@ import org.springframework.stereotype.Repository;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
-/** 종료 트랜잭션 안에서 사실을 고정하고 기존 보고서 본문을 새 버전에 복사한다. */
+/**
+ * 종료 트랜잭션 안에서 사실을 고정한다. 예전 작업 보고서(양식 없음)는 기존 본문을 새 버전에 복사하고,
+ * 날짜 작업 보고서(양식 있음, S15P31A101-616 B10)는 새 버전 없이 같은 행의 review.ending 을 채운다.
+ */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WorkWrapUpRepository {
@@ -25,8 +28,37 @@ public class WorkWrapUpRepository {
         this.mapper = mapper;
     }
 
+    /** 마무리 결과의 mode: 날짜 작업은 같은 행의 양식 종료 미팅, 예전 작업은 새 버전 마무리. */
+    public static final String MODE_FORM_ENDING = "FORM_ENDING";
+    public static final String MODE_NEW_VERSION = "NEW_VERSION";
+
     public ObjectNode prepare(long workId, ObjectNode work, Instant now) {
         ObjectNode result = mapper.createObjectNode();
+        // 날짜 작업 보고서(최신 TBM 보고서에 양식이 있음)는 새 버전을 만들지 않는다. 작업 전에 받은 서명이 버전에 묶여 있다.
+        record Latest(long reportId, boolean daily, boolean locked) { }
+        List<Latest> latest = jdbc.query("""
+                SELECT report_id, form IS NOT NULL AS daily, locked_at IS NOT NULL AS locked
+                FROM report WHERE work_id = :work AND report_kind = 'TBM'
+                ORDER BY report_version DESC, report_id DESC LIMIT 1
+                FOR UPDATE
+                """, new MapSqlParameterSource("work", workId),
+                (rs, i) -> new Latest(rs.getLong("report_id"), rs.getBoolean("daily"), rs.getBoolean("locked")));
+        if (!latest.isEmpty() && latest.getFirst().daily()) {
+            long reportId = latest.getFirst().reportId();
+            result.put("mode", MODE_FORM_ENDING);
+            if (latest.getFirst().locked()) {
+                // 잠긴(제출된) 보고서는 고치지 않는다. -611 전에는 첫 서명이 잠근다.
+                return result.put("status", "SKIPPED").put("report_id", reportId).put("reason", "REPORT_LOCKED");
+            }
+            ObjectNode facts = aggregate(work);
+            jdbc.update("""
+                    UPDATE report SET wrap_up_status = 'GENERATING', wrap_up_facts = CAST(:facts AS jsonb),
+                        wrap_up_fallback = NULL, wrap_up_model = NULL
+                    WHERE report_id = :id
+                    """, new MapSqlParameterSource("id", reportId).addValue("facts", mapper.writeValueAsString(facts)));
+            return result.put("status", "GENERATING").put("report_id", reportId).putNull("reason");
+        }
+        result.put("mode", MODE_NEW_VERSION);
         List<Long> generating = jdbc.queryForList("""
                 SELECT report_id FROM report WHERE work_id = :work AND report_kind = 'TBM' AND status = 'GENERATING'
                 ORDER BY report_version DESC LIMIT 1
@@ -51,7 +83,7 @@ public class WorkWrapUpRepository {
                     (SELECT MAX(report_version) + 1 FROM report WHERE work_id = :work), 'GENERATING',
                     work_type, rule_version, risk_items, zone_history, sections, citations, subgraph, steps,
                     llm_model, :now, 'GENERATING', CAST(:facts AS jsonb),
-                    -- 사람이 고친 양식 칸과 리더는 새 버전으로 옮긴다(S15P31A101-609). B10 에서 새 버전 없이 바꿀 때까지의 보완.
+                    -- 최신 보고서에 양식이 있는 날짜 작업은 위에서 새 버전 없이 처리한다(S15P31A101-616 B10). 여기 오는 보고서는 보통 양식이 없다.
                     form, form_revision, leader_user_id
                 FROM report WHERE report_id = :base
                 RETURNING report_id
@@ -155,6 +187,62 @@ public class WorkWrapUpRepository {
         request.putArray("window_ms").add(work.path("actual_started_at").asLong()).add(work.path("actual_ended_at").asLong());
         request.set("facts", mapper.readTree(facts));
         return request;
+    }
+
+    /** 날짜 작업 종료 미팅 요청(계약 tbm_form_ending_request). 사실은 종료 트랜잭션에서 고정한 wrap_up_facts 다. */
+    public ObjectNode endingRequest(long reportId, ObjectNode work) {
+        String facts = jdbc.queryForObject("SELECT wrap_up_facts::text FROM report WHERE report_id = :id",
+                new MapSqlParameterSource("id", reportId), String.class);
+        ObjectNode request = mapper.createObjectNode();
+        request.put("request_id", "rpt-" + reportId + "-end");
+        request.putArray("window_ms").add(work.path("actual_started_at").asLong()).add(work.path("actual_ended_at").asLong());
+        request.set("facts", mapper.readTree(facts));
+        return request;
+    }
+
+    /** 재기동 때 종료 미팅을 쓰다 멈춘 날짜 작업 보고서와 그 고정 사실. */
+    public List<Map.Entry<Long, ObjectNode>> generatingEndings() {
+        return jdbc.query("""
+                SELECT report_id, wrap_up_facts::text AS facts FROM report
+                WHERE wrap_up_status = 'GENERATING' AND form IS NOT NULL
+                """, Map.of(), (rs, i) -> Map.entry(rs.getLong("report_id"),
+                (ObjectNode) mapper.readTree(rs.getString("facts") == null ? "{}" : rs.getString("facts"))));
+    }
+
+    /**
+     * 날짜 작업 종료 미팅을 같은 행에 마감한다. 행을 잠그고 review.ending 이 비어 있을 때만 채우며 그때 form_revision 을 1 올린다.
+     * status(초안 상태)·wrap_up_summary(서명 해시가 덮는 칸)는 건드리지 않는다. 그 사이 잠겼으면 양식은 그대로 두고 FAILED.
+     *
+     * @return review.ending 을 채웠으면 true
+     */
+    public boolean completeEnding(long reportId, String ending, boolean fallback, String model) {
+        MapSqlParameterSource p = new MapSqlParameterSource("id", reportId).addValue("fallback", fallback).addValue("model", model);
+        record Row(String form, String wrapStatus, boolean locked) { }
+        List<Row> rows = jdbc.query("""
+                SELECT form::text AS form, wrap_up_status, locked_at IS NOT NULL AS locked
+                FROM report WHERE report_id = :id FOR UPDATE
+                """, p, (rs, i) -> new Row(rs.getString("form"), rs.getString("wrap_up_status"), rs.getBoolean("locked")));
+        if (rows.isEmpty() || !"GENERATING".equals(rows.getFirst().wrapStatus()) || rows.getFirst().form() == null) {
+            return false;
+        }
+        if (rows.getFirst().locked()) {
+            jdbc.update("""
+                    UPDATE report SET wrap_up_status = 'FAILED', wrap_up_fallback = :fallback, wrap_up_model = :model
+                    WHERE report_id = :id
+                    """, p);
+            return false;
+        }
+        ObjectNode form = (ObjectNode) mapper.readTree(rows.getFirst().form());
+        boolean fill = form.path("review").path("ending").asString("").isEmpty() && form.path("review").isObject();
+        if (fill) {
+            ((ObjectNode) form.path("review")).put("ending", ending);
+        }
+        jdbc.update("""
+                UPDATE report SET form = CAST(:form AS jsonb), form_revision = form_revision + :bump,
+                    wrap_up_status = 'SUCCEEDED', wrap_up_fallback = :fallback, wrap_up_model = :model
+                WHERE report_id = :id
+                """, p.addValue("form", mapper.writeValueAsString(form)).addValue("bump", fill ? 1 : 0));
+        return fill;
     }
 
     public void complete(long reportId, String summary, boolean fallback, String model, Instant now) {

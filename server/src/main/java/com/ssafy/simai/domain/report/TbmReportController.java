@@ -33,9 +33,11 @@ import tools.jackson.databind.node.ObjectNode;
 class TbmReportController {
 
     private final TbmReportService service;
+    private final TbmFormAiService formAi;
 
-    TbmReportController(TbmReportService service) {
+    TbmReportController(TbmReportService service, TbmFormAiService formAi) {
         this.service = service;
+        this.formAi = formAi;
     }
 
     @PostMapping
@@ -57,6 +59,17 @@ class TbmReportController {
             throw new BusinessException(ErrorCode.Report.INVALID_REPORT_FORM);
         }
         return service.updateForm(reportId, request.form(), request.formRevision());
+    }
+
+    /**
+     * 날짜 작업 보고서 양식의 빈 칸을 AI 초안으로 채운다(S15P31A101-616 B9). 같은 행을 GENERATING 으로 바꾸고 202 를 돌려준 뒤 비동기로 채운다.
+     * 새 보고서 버전을 만들지 않는다. 진행 상태는 GET 의 draft_status·form_revision 으로 본다.
+     */
+    @PostMapping("/{reportId}/form-draft")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode formDraft(@PathVariable long reportId) {
+        return formAi.startDraft(reportId);
     }
 
     @GetMapping("/{reportId}")
