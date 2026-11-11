@@ -659,7 +659,9 @@ def test_worker_weights_failure_keeps_tier0_and_worker_but_not_vllm(bs, tmp_path
     err = capsys.readouterr().err
     assert "Tier 0·워커·아바타·PPE 는 계속" in err and "VLM 미준비" in err and "vlm 받기 실패" in err
     rec = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "simai" / "runs" / "bootstrap").glob("*.json")]
-    assert rec[0]["stage"] == "worker-weights" and rec[0]["exit"] == 2 and TOKEN not in json.dumps(rec)
+    # 세팅 가중치 기록(setup-weights)이 나란히 생기므로(-577) 파일 순서가 아니라 stage 로 고른다(-596).
+    worker = [r for r in rec if r["stage"] == "worker-weights"]
+    assert len(worker) == 1 and worker[0]["exit"] == 2 and TOKEN not in json.dumps(rec)
 
 
 def _setup_manifest(tmp_path: Path) -> Path:

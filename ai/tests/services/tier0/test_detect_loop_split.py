@@ -323,19 +323,11 @@ def test_judge_lock_is_not_held_during_slow_detection_or_local_tracking(tmp_path
     class _SlowVerifyBackend(OneTrackBackend):
         def update(self, bboxes, scores, features=None):
             if service_ref:
-                lock = service_ref[0].judge_lock
-                free: list[bool] = []
-
-                def probe() -> None:
-                    ok = lock.acquire(timeout=0.02)
-                    if ok:
-                        lock.release()
-                    free.append(ok)
-
-                t = threading.Thread(target=probe, daemon=True)
-                t.start()
-                t.join(0.1)
-                tracker_lock_free.append(bool(free and free[0]))
+                # 추적을 부른 스레드가 judge_lock 을 쥐고 있지 않은지 직접 본다(검출 쪽 -581 과 같은 방식, -596).
+                # 다른 스레드가 20 ms 안에 lock 을 잡는지로 보면 판정 tick 이 정상적으로 lock 을 쥔 시간이
+                # 느린 CI CPU 에서 20 ms 를 넘길 때 추적과 무관하게 실패한다.
+                held = service_ref[0].judge_lock._is_owned()  # RLock 소유 스레드 검사(공개 API 없음)
+                tracker_lock_free.append(not held)
             time.sleep(0.004)  # 4대 카메라 합산 약 16 ms Local Tracker 부하
             return super().update(bboxes, scores, features)
 
