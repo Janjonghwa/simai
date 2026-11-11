@@ -1,8 +1,8 @@
-# TBM 양식 칸 AI 초안·종료 미팅 문장 (S15P31A101-616, 1단계: ai·contracts)
+# TBM 양식 칸 AI 초안·종료 미팅 문장 (S15P31A101-616, 1단계: ai·contracts, 2단계: server)
 
 날짜 작업 TBM 보고서가 고정 양식(`report.form`, -609 곽나혁, 설계 `docs/design/tbm-daily-form.md`)으로 바뀌어,
 AI 초안이 **양식 칸 JSON** 을 내고 스키마로 검사받는다(결정 "계약 d"). 서버는 나중에 빈 칸만 채운다.
-이 이슈는 1단계로 AI·계약 쪽만 만든다. `server/` 는 고치지 않는다(-609 가 보고서 서비스를 바꾸는 중). 2단계(서버 연결)는 -609 머지 뒤.
+1단계(MR !555)는 AI·계약 쪽만 만들었다. 2단계는 -609 머지 뒤 서버를 연결했다(아래 '2단계 서버 연결'). 계약은 2단계에서 바꾸지 않았다.
 
 관련 명세: 8.3(TBM 보고서, 작업 마무리 자동 채움), 5.4(외부 LLM 텍스트만), 11.3·11.4-5·14장(NFR-14 개인정보), 7장(규칙 R1~R11), AGENTS 규칙 4·5·8.
 
@@ -178,25 +178,107 @@ LLM 응답마다(`check_output` → `assemble` → `form_problems`):
 `max_chars=2000` 으로 부른다. 2000자를 넘는 LLM 문단은 형식 위반으로 한 번 다시 쓰게 하고, 결정적 문장이 넘으면(규칙·구역이 아주 많을 때) 마지막 온전한 문장까지 자른다.
 집계 일관성(등급·규칙·시간대 합, 미확인 CRITICAL ≤ CRITICAL, 구역 건수 순서 등)이 틀리면 400 이다(`wrap_up.validate_request`).
 
-## 2단계 서버 계획(-609 머지 뒤, 이 이슈 밖)
+## 2단계 서버 연결(-609 머지 뒤)
 
-초안(B9):
+### 만든 것
 
-1. 세팅 완료(C17)나 화면의 "AI 초안" 요청 때, 보고서 행을 `SELECT … FOR UPDATE` 로 잠그고 `draft_status=GENERATING`(기존 `status` 를 GENERATING 으로) 으로 바꾼 뒤 커밋한다.
-   이미 GENERATING 이면 새로 시작하지 않는다. 같은 행이고 **새 `report_version` 을 만들지 않는다**(작업 전에 받은 서명이 버전에 묶여 있어서, -609 설계).
-2. 커밋 뒤 비동기로 `tbm_form_draft_request` 를 만든다: `request_id = rpt-<report_id>-r<form_revision>`, `report_date` = 작업 날짜, `tasks` = `form.info.tasks` 를 `WorkTasks` 로 풀어(code·label·rule_tags / text),
-   `rule_tags` = 합집합, `zones` = 그 작업 세팅에서 발행한 구역의 표시 이름·`zone_kind`·규칙, `existing` = 현재 양식의 초안 칸. 리더(`leader_user_id`)·서명은 넣지 않는다.
-3. `POST /v1/report/form-draft`. 받은 본문을 `tbm_form_draft_result` 로 jsonschema 검증한다(contracts/README 사용 지침).
-4. 같은 행을 다시 `FOR UPDATE` 로 잠그고, **그 사이 사람이 고친 칸을 포함해 지금 비어 있는 칸만**(글자 `""`, 예·아니오 null) 초안 값으로 채운다. 점검 줄은 코드로 맞추고 `label` 은 서버 값.
-   `yes` 는 초안이 늘 null 이라 채울 것이 없다. 채운 칸이 하나라도 있으면 `form_revision + 1`(화면 낙관적 잠금이 새 판을 받게), `draft_status=SUCCEEDED`(대체 초안이어도 SUCCEEDED 이고 `fallback`·`fallback_reason`·모델을 함께 남김).
-5. 연결 실패·시간 초과·500·계약 위반 응답이면 같은 행을 `draft_status=FAILED` 로 두고 양식은 건드리지 않는다(빈 칸 그대로, 화면이 다시 요청). 서버 재기동 때 GENERATING 으로 남은 행은 기존 `recoverInterrupted` 처럼 FAILED(INTERRUPTED).
-6. 잠금된(제출된) 버전은 채우지 않는다(-611 제출 잠금 뒤면 건너뜀).
+| 항목 | 위치 |
+|---|---|
+| 초안·종료 미팅 서비스(비동기, 계약 검사, 결정적 문장 대체, 재기동 복구) | `server/.../domain/report/TbmFormAiService.java` |
+| 초안 행 잠금·상태 전이·세팅 구역 조회·양식 저장 | `server/.../domain/report/TbmFormAiRepository.java` |
+| 초안 요청의 `existing`, 빈 칸만 채우기 | `TbmForm.draftFields`, `TbmForm.fillDraft` |
+| 관리자 경로 `POST /api/reports/tbm/{reportId}/form-draft`(202) | `TbmReportController.formDraft` |
+| 작업 종료: 날짜 작업은 같은 행 종료 미팅, 예전 작업은 새 버전 마무리 | `WorkWrapUpRepository.prepare`(mode), `endingRequest`, `completeEnding`, `WorkSessionService.end` |
+| 오류 코드 | `REPORT_NO_FORM`(409, 양식 없는 예전 보고서), `REPORT_FORM_NO_TASKS`(409, 작업내용 없음), `REPORT_FORM_MANAGED`(409, 날짜 작업 보고서에 예전 `POST /api/reports/tbm`) |
+| 예전 새 버전 생성 경로 막기 | `TbmReportRepository.createGenerating`(작업 행 잠금 뒤 최신 TBM 보고서에 양식이 있으면 409 `REPORT_FORM_MANAGED`, 레이아웃 검사보다 먼저) |
+| 시험 | `server/src/test/.../report/TbmFormAiIntegrationTest.java`, `WorkSessionIntegrationTest`(날짜 작업 종료 2건) |
 
-종료 미팅(B10):
+### 초안(B9)
 
-1. 작업 종료 트랜잭션에서 지금처럼 집계 사실을 고정하고, 커밋 뒤 `POST /v1/report/form-ending`(`request_id = rpt-<report_id>-end`).
-2. 같은 행을 `FOR UPDATE` 로 잠그고 `form.review.ending` 이 비어 있을 때만 채우고 `form_revision + 1`. **새 버전을 만들지 않는다**(지금의 `WorkWrapUpRepository.prepare` 새 버전 경로를 날짜 작업에서는 쓰지 않음).
-3. 실패하면 지금 `wrapUpFallback` 과 같은 결정적 문장을 서버가 채운다(컨테이너는 LLM 실패도 200 대체 문장으로 주므로, 이 경로는 연결 실패·500 때만).
+```
+POST /api/reports/tbm/41/form-draft            (ADMIN, 본문 없음)
+202 {"report_id":41,"work_id":7,"report_version":1,"draft_status":"GENERATING","form_revision":3}
+```
+
+1. 트랜잭션 1: 작업 행 → 보고서 행 순서로 `FOR UPDATE`(서명·예전 생성 경로와 같은 순서). 받는 상태는 **PENDING(첫 초안)·FAILED(재시도)·SUCCEEDED(다시 초안)** 다.
+   다시 초안을 받아도 빈 칸만 채우므로 사람이 쓴 칸은 지켜지고, 새 버전을 만들지 않으니 서명도 그대로다. 거절: GENERATING 409 `REPORT_IN_PROGRESS`(본문에 `report_id`),
+   양식 없음 409 `REPORT_NO_FORM`, `info.tasks` 비었음 409 `REPORT_FORM_NO_TASKS`(계약 `tasks` 최소 1개), 최신 버전 아님 409 `REPORT_VERSION_STALE`, 잠김 409 `REPORT_LOCKED`, 없음 404.
+   같은 작업에 다른 GENERATING 행(예전 경로)이 있어도 409. 통과하면 `status=GENERATING`, `failure_reason`·`completed_at` 비움. 같은 트랜잭션에서 요청을 고정하고 커밋한다.
+2. 요청(`tbm_form_draft_request`): `request_id = rpt-<report_id>-r<form_revision>`, `report_date` = `work_unit.work_date`, `tasks` = `info.tasks` 순서대로 `WorkTasks` 로 풀기(`{text}` 그대로),
+   `rule_tags` = 합집합(R 번호 순), `zones` = 아래, `existing` = 지금 양식의 초안 칸(`TbmForm.draftFields`). 리더·서명·계정·작업 이름(`work_unit.name`)·구역 ID·좌표는 싣지 않는다.
+   보내기 전에 요청 스키마로 검사한다(위반이면 FAILED `INVALID_DRAFT_REQUEST`, 엔진을 부르지 않음).
+3. `zones`: `work_unit.active_setup_session_id` 의 `setup_session_zone` 중 지금 유효하고(`valid_to IS NULL`) 구성 묶음으로 발행한 구역의 `name`·`zone_kind`
+   (`SetupZoneLayoutService.list` 와 같은 기준, 만든 순서). 같은 이름·유형은 한 번, 이름 1~100자·유형 1~64자 밖은 빼고 50개까지.
+   **`rule_id` 는 늘 null** 이다. `zone` 표에 규칙 칸이 없어 모르면 비운다(AGENTS 규칙 2). 세팅이 없으면 빈 배열이고 장소는 비워진다.
+4. 커밋 뒤 가상 스레드에서 기존 `RiskEngineReportClient.postJson("/v1/report/form-draft")`(주소·타임아웃은 보고서 생성과 같은 설정). 응답 전체를 `ContractSchemas`
+   (`messages/tbm_form_draft_result`, jar 의 contracts/)로 검사하고 `request_id` 가 같은지 본다.
+5. 트랜잭션 2: 보고서 행을 다시 `FOR UPDATE` 로 잠그고 **지금** 양식에서 빈 칸(글자 `""`, 예·아니오 null)만 채운다(`TbmForm.fillDraft`). 채운 칸이 있으면
+   `TbmForm.normalize` 로 다시 검사해 저장하고 `form_revision + 1`, 그다음 기존 `completeSucceeded`(citations·steps·llm_model 저장, sections 등은 빈 값).
+   채울 칸이 없으면 revision 은 그대로다(편집 중인 화면이 쓸데없이 409 를 받지 않게).
+6. 실패: 연결 실패·5xx·4xx `ENGINE_UNAVAILABLE`, 시간 초과 `ENGINE_TIMEOUT`, 계약 위반·`request_id` 다름·양식에 맞지 않음 `ENGINE_CONTRACT_VIOLATION` → 기존 `completeFailed`, 양식은 그대로.
+   트랜잭션 2에서 그 사이 잠겼으면 `REPORT_LOCKED`, 새 버전이 생겼으면 `REPORT_VERSION_STALE`, `info.tasks` 가 바뀌었으면 `FORM_TASKS_CHANGED`(초안의 작업명·위험이 지금 작업과 맞지 않음)로 FAILED.
+7. 대체 초안(`fallback: true`)도 SUCCEEDED 다. 대체 여부·사유는 따로 칸을 두지 않고 `steps` 에 남는다(컨테이너가 넣는 `FALLBACK` 단계, 없으면 서버가
+   `{"step":"FALLBACK","status":"SUCCEEDED","detail":"결정적 대체 초안(<사유>)"}` 를 붙임). `llm_model` 은 `generator.model`, 서버 로그에 `fallback`·`reason`·`model` 을 한 줄 남긴다.
+8. 재기동: GENERATING 으로 남은 행은 기존 `TbmReportService.recoverInterrupted` 가 FAILED(`INTERRUPTED`)로 마감한다(양식은 그대로).
+
+#### 빈 칸만 채우는 규칙(`TbmForm.fillDraft`)
+
+- `info.task_name`·`info.place`·`checks[*].action`·`review.daily`: 지금 `""` 이면 초안 값.
+- `info.risk_assessed`·`checks[*].yes`: 지금 null 이면 초안 값(초안 `yes` 는 계약상 늘 null 이라 실제로는 채우지 않는다).
+- 위험·대책 한 쌍(`risks[i]`, `focus`): 빈 칸이어도 **같은 줄의 다른 칸이 비었거나 요청 때(`existing`)와 같을 때만** 채운다.
+  요청이 나간 뒤 사람이 위험을 새로 쓰면 AI 는 그 글을 못 봤으므로 짝이 맞지 않는 대책을 넣지 않고 비워 둔다.
+- 점검 줄은 코드로 맞추고 `label` 은 서버 값. 작업내용·일시·작업일 동일·종료 미팅은 건드리지 않는다.
+
+#### -615(세팅 완료, C17) 호출 계약
+
+- 부르는 곳: 세팅 완료 트랜잭션이 **커밋된 뒤**(구역이 발행돼 있어야 `zones` 에 실린다). 같은 트랜잭션 안에서 부르면 아직 커밋 안 된 구역이 빠지고, 바깥이 되돌려지면 초안은 채우지 않고 끝난다.
+- 메서드: `TbmFormAiService.tryStartDraftForWork(long workId) → Optional<ObjectNode>`(세팅 완료처럼 초안이 부가 작업일 때. 시작 못 하면 사유를 INFO 로그로 남기고 빈 값)
+  또는 `startDraftForWork(long workId) → ObjectNode`(예외를 그대로 받음: 404 `WORK_UNIT_NOT_FOUND`·`REPORT_NOT_FOUND`, 409 위 목록). 대상은 그 작업의 최신 TBM 보고서다.
+- 돌아오는 값은 HTTP 경로와 같은 `{report_id, work_id, report_version, draft_status:"GENERATING", form_revision}`. 결과는 기다리지 않는다(화면은 GET 의 `draft_status`·`form_revision` 으로 본다).
+- 작업내용이 비어 있으면(아직 양식에서 안 골랐으면) 시작하지 않는다(409 `REPORT_FORM_NO_TASKS`). 그때는 화면의 "AI 초안" 버튼(`POST .../form-draft`)으로 나중에 받는다.
+
+### 종료 미팅(B10)
+
+1. 작업 종료 트랜잭션(`WorkWrapUpRepository.prepare`)이 그 작업의 최신 TBM 보고서를 `FOR UPDATE` 로 잠근다. **양식이 있으면(날짜 작업) 새 버전을 만들지 않고**
+   같은 행에 `wrap_up_status=GENERATING`·`wrap_up_facts`(기존 집계 그대로)를 적고 `{mode:"FORM_ENDING", status:"GENERATING", report_id}` 를 낸다.
+   초안 상태(`status`)와는 따로 간다(PENDING·GENERATING·SUCCEEDED·FAILED 어느 것이든 종료 미팅을 받는다). 잠겼으면 `SKIPPED`·`REPORT_LOCKED`.
+   양식이 없으면(예전 작업) 지금까지처럼 `mode:"NEW_VERSION"` 새 버전 마무리(`/v1/report/wrap-up`).
+2. 커밋 뒤 `WorkSessionService.end` 가 mode 를 보고 `TbmFormAiService.startEnding` 을 부른다. 요청 `{request_id: rpt-<report_id>-end, window_ms, facts}` 를 요청 스키마로 검사하고
+   `POST /v1/report/form-ending`, 응답을 `tbm_form_ending_result` 스키마·`request_id` 로 검사한다.
+3. 실패(연결·시간 초과·5xx·계약 위반)면 서버 결정적 문장 `TbmReportService.wrapUpFallback(facts)`(2000자에서 자름), `fallback=true`, `model=deterministic`.
+4. `completeEnding`: 행을 `FOR UPDATE` 로 잠그고 `form.review.ending` 이 `""` 일 때만 채우고 그때만 `form_revision + 1`. `wrap_up_status=SUCCEEDED`, `wrap_up_fallback`·`wrap_up_model` 기록.
+   **`wrap_up_summary` 는 쓰지 않는다**(지금 서명 해시 `content_sha256` 이 덮는 칸이라, 이미 서명한 행에 쓰면 해시가 어긋난다). 그 사이 잠겼으면 양식은 그대로 두고 `wrap_up_status=FAILED`.
+5. 재기동: 종료 미팅을 쓰다 멈춘 날짜 작업 행은 `TbmFormAiService.recoverEndings` 가 저장된 사실로 같은 결정적 문장을 채워 마감한다.
+   `failInterrupted` 는 양식 있는 행의 `wrap_up_status` 를 건드리지 않게 바꿨다(두 복구가 순서와 무관).
+
+#### -609 의 작업 종료 새 버전 복사와의 관계(결정)
+
+날짜 작업은 B10 이 같은 행을 채우므로 **작업 종료 새 버전이 더 필요 없다.** 새 버전은 작업 전에 받은 서명을 끊고(서명은 `report_version` 에 묶임) 양식을 두 행으로 나눈다.
+그래서 `prepare` 는 양식이 있으면 새 버전 경로로 가지 않는다. 예전 경로의 `form, form_revision, leader_user_id` 복사는 남겨 뒀다(그 경로에 오는 보고서는 보통 양식이 없고, 리더 복사는 예전 작업에도 의미가 있다).
+
+### 명세에 없어 정한 것(2단계)
+
+| 항목 | 정한 값 | 근거 |
+|---|---|---|
+| 다시 초안 | PENDING·FAILED·SUCCEEDED 모두 받음, GENERATING 만 409 | 빈 칸만 채워 사람 칸은 지켜지고 새 버전이 없어 서명도 그대로다. 사람이 한 줄을 비우고 다시 받는 쓰임이 있다 |
+| revision 증가 | 채운 칸이 있을 때만 +1 | 1단계 계획과 같다. 채운 것이 없는데 올리면 편집 중인 화면이 이유 없이 409 를 받는다 |
+| 위험·대책 쌍 | 같은 줄의 다른 칸이 비었거나 요청 때와 같을 때만 채움 | AI 가 보지 못한 사람 글과 짝이 맞지 않는 대책이 들어가는 것을 막는다 |
+| 작업내용 변경 | 두 트랜잭션 사이 `info.tasks` 가 바뀌면 FAILED `FORM_TASKS_CHANGED` | 초안 작업명·위험이 지금 작업과 어긋난다. 화면이 다시 요청하면 된다 |
+| 구역 출처 | 작업의 현재 세팅 세션에서 만들고 발행한 현재 구역 | 세팅이 작업에 묶여 있고(`active_setup_session_id`) `SetupZoneLayoutService.list` 가 같은 기준을 쓴다. 현장 전체 구역은 다른 작업 구역까지 섞인다 |
+| 구역 `rule_id` | 늘 null | `zone` 표에 규칙 칸이 없다. 구역 유형으로 규칙을 짐작하는 일은 컨테이너가 이미 한다(대체 문장의 관련 구역) |
+| 대체 여부 저장 | `steps` 의 FALLBACK 단계 + 서버 로그, 새 칸 없음 | 마이그레이션 번호 경쟁(-609 V49→V51)을 피함. 화면이 필요하면 `steps` 에서 읽거나 나중에 칸을 더한다 |
+| 실패 사유 | `ENGINE_TIMEOUT`·`ENGINE_UNAVAILABLE`(기존), `ENGINE_CONTRACT_VIOLATION`·`INVALID_DRAFT_REQUEST`·`FORM_TASKS_CHANGED`·`REPORT_LOCKED`·`REPORT_VERSION_STALE`(신설), 재기동 `INTERRUPTED`(기존) | 연결 장애와 계약 어긋남을 운영에서 구분 |
+| 잠긴 보고서 | 초안·종료 미팅 모두 양식을 건드리지 않음 | 양식 저장(`PUT .../form`)이 잠긴 행을 막는 것과 같다 |
+
+### 남은 일·위험(2단계)
+
+- **-611 전에는 첫 서명이 보고서를 잠근다.** 작업 전에 서명을 받으면 작업 종료 때 `REPORT_LOCKED` 로 종료 미팅을 건너뛴다(양식 저장도 막히는 것과 같은 처지).
+  -611 이 잠금을 '제출'로 옮기면 풀린다. 또 지금 서명은 `status=SUCCEEDED` 를 요구하므로, 초안을 한 번도 받지 않은 PENDING 보고서에는 서명할 수 없다(-611 범위).
+- -611 의 제출 해시(`content_sha256`)에 `form` 이 들어가면 날짜 작업의 종료 미팅은 `form.review.ending` 으로 해시에 포함된다(`wrap_up_summary` 는 날짜 작업에서 비어 있음).
+- 화면: `POST .../form-draft` 버튼, `draft_status` 폴링, 대체 초안 표시(`steps` 의 FALLBACK), 409 `REPORT_FORM_NO_TASKS` 안내.
+- 컨테이너가 요청을 400 으로 거절하면(예: 사람이 쓴 칸에 URL) `ENGINE_UNAVAILABLE` 로 보인다. 응답 코드를 실패 사유로 나누지 않았다.
+- (해결) 세팅 구역을 작업 배치에 반영하면(`SetupZoneLayoutService`) 날짜 작업에도 `layout_id` 가 생겨 예전 `POST /api/reports/tbm` 이 통과했다.
+  양식 없는 새 버전이 최신이 되어 양식·서명이 가려지므로, 최신 TBM 보고서에 양식이 있으면 409 `REPORT_FORM_MANAGED` 로 거절한다(Lead 지시).
 
 ## 명세에 없어 정한 것
 

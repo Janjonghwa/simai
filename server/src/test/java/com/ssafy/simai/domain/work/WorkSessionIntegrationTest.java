@@ -66,6 +66,8 @@ class WorkSessionIntegrationTest {
     @Autowired PasswordEncoder passwords;
     @Autowired TbmReportService reports;
     @Autowired SessionClock clock;
+    @Autowired com.ssafy.simai.global.contract.ContractSchemas schemas;
+    private final AtomicReference<String> endingBody = new AtomicReference<>();
 
     private final String suffix = UUID.randomUUID().toString().substring(0, 8);
     private final String zone = "z-session-" + suffix;
@@ -119,6 +121,20 @@ class WorkSessionIntegrationTest {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 exchange.close();
+            }
+        });
+        // 날짜 작업 종료 미팅(S15P31A101-616 B10). request_id 를 그대로 돌려준다
+        engine.createContext("/v1/report/form-ending", exchange -> {
+            String requestText = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            endingBody.set(requestText);
+            ObjectNode res = MAPPER.createObjectNode();
+            res.put("request_id", MAPPER.readTree(requestText).path("request_id").asString());
+            res.put("ending", "엔진이 쓴 종료 미팅 문단").put("fallback", false).putNull("fallback_reason").put("model", "fake-llm");
+            byte[] body = MAPPER.writeValueAsString(res).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(engineStatus, body.length);
+            try (var stream = exchange.getResponseBody()) {
+                stream.write(body);
             }
         });
         engine.start();
@@ -280,6 +296,57 @@ class WorkSessionIntegrationTest {
     }
 
     @Test
+    void 날짜_작업은_새버전_없이_같은_행의_빈_종료_미팅만_채운다() throws Exception {
+        long work = work(zone);
+        long report = reports.createDailyBlank(work, adminUserId());
+        start(work);
+        event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(5));
+        clock.now.set(started.plusSeconds(20));
+        ObjectNode ended = end(work);
+        assertThat(ended.path("wrap_up").path("mode").asString()).isEqualTo("FORM_ENDING");
+        assertThat(ended.path("wrap_up").path("status").asString()).isEqualTo("GENERATING");
+        assertThat(ended.path("wrap_up").path("report_id").asLong()).isEqualTo(report);
+        ObjectNode done = awaitWrapUp(report);
+        assertThat(done.path("wrap_up_status").asString()).isEqualTo("SUCCEEDED");
+        assertThat(done.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        assertThat(done.path("form_revision").asInt()).isEqualTo(1);
+        assertThat(done.path("report_version").asInt()).isEqualTo(1);
+        assertThat(done.path("status").asString()).isEqualTo("PENDING");
+        // 서명 해시가 덮는 wrap_up_summary 는 날짜 작업에서 쓰지 않는다
+        assertThat(done.path("wrap_up_summary").isNull()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM report WHERE work_id = ?", Integer.class, work)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT wrap_up_model FROM report WHERE report_id = ?", String.class, report)).isEqualTo("fake-llm");
+        String raw = endingBody.get();
+        assertThat(schemas.violations("messages/tbm_form_ending_request", raw)).isEmpty();
+        ObjectNode request = (ObjectNode) MAPPER.readTree(raw);
+        assertThat(request.propertyNames()).containsExactlyInAnyOrder("request_id", "window_ms", "facts");
+        assertThat(request.path("request_id").asString()).isEqualTo("rpt-" + report + "-end");
+        assertThat(request.path("facts").path("event_count").asInt()).isEqualTo(1);
+        assertThat(raw).doesNotContain("개인정보", zone, "admin-");
+    }
+
+    @Test
+    void 날짜_작업의_종료_미팅이_이미_있으면_두고_엔진이_실패하면_결정적_문장을_기록한다() throws Exception {
+        long work = work(zone);
+        long report = reports.createDailyBlank(work, adminUserId());
+        ObjectNode form = (ObjectNode) getReport(report).path("form").deepCopy();
+        ((ObjectNode) form.path("review")).put("ending", "사람이 쓴 종료 미팅");
+        reports.updateForm(report, form, 0);
+        start(work);
+        engineStatus = 500;
+        clock.now.set(started.plusSeconds(20));
+        assertThat(end(work).path("wrap_up").path("report_id").asLong()).isEqualTo(report);
+        ObjectNode done = awaitWrapUp(report);
+        assertThat(done.path("wrap_up_status").asString()).isEqualTo("SUCCEEDED");
+        assertThat(done.path("form").path("review").path("ending").asString()).isEqualTo("사람이 쓴 종료 미팅");
+        assertThat(done.path("form_revision").asInt()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT wrap_up_fallback FROM report WHERE report_id = ?", Boolean.class, report)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT wrap_up_model FROM report WHERE report_id = ?", String.class, report))
+                .isEqualTo("deterministic");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM report WHERE work_id = ?", Integer.class, work)).isEqualTo(1);
+    }
+
+    @Test
     void 생성중_보고서는_건너뛰고_FAILED만_있으면_NO_REPORT다() throws Exception {
         for (String state : List.of("GENERATING", "FAILED")) {
             long work = work(zone);
@@ -406,6 +473,20 @@ class WorkSessionIntegrationTest {
             Thread.sleep(25);
         }
         throw new AssertionError("wrap-up did not finish");
+    }
+
+    private ObjectNode awaitWrapUp(long report) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            ObjectNode node = getReport(report);
+            if (!"GENERATING".equals(node.path("wrap_up_status").asString())) return node;
+            Thread.sleep(25);
+        }
+        throw new AssertionError("form ending did not finish");
+    }
+
+    private long adminUserId() {
+        return jdbc.queryForObject("SELECT user_id FROM app_user WHERE login_id = ?", Long.class, "admin-" + suffix);
     }
 
     private long work(String targetZone) throws Exception {

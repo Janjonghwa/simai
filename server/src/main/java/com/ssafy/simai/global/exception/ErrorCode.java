@@ -615,6 +615,9 @@ public sealed interface ErrorCode {
         INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다"),
         INVALID_REPORT_FORM(HttpStatus.BAD_REQUEST, "보고서 양식 칸이 올바르지 않습니다"),
         REPORT_FORM_CONFLICT(HttpStatus.CONFLICT, "다른 곳에서 먼저 고친 보고서입니다. 다시 불러온 뒤 고치세요"),
+        REPORT_NO_FORM(HttpStatus.CONFLICT, "양식이 없는 예전 작업 보고서입니다. AI 양식 초안은 날짜 작업 보고서만 받습니다"),
+        REPORT_FORM_NO_TASKS(HttpStatus.CONFLICT, "작업내용을 하나 이상 고른 뒤 AI 초안을 요청하세요"),
+        REPORT_FORM_MANAGED(HttpStatus.CONFLICT, "양식으로 관리하는 날짜 작업 보고서입니다. 새 버전을 만들지 않고 AI 초안(form-draft)으로 채우세요"),
         INVALID_DAILY_DATE(HttpStatus.BAD_REQUEST, "report_date 는 YYYY-MM-DD 이고 오늘(Asia/Seoul)보다 뒤일 수 없습니다"),
         DAILY_REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 날짜의 일일 일지를 이미 생성 중입니다");
 

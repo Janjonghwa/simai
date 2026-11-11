@@ -22,7 +22,10 @@
    보고서는 `report_version=1`, `status=PENDING`, 빈 양식, `leader_user_id`=요청 계정이다. 이미 있으면 그 보고서를 돌려준다(작업 행 잠금).
 2. 화면은 양식을 통째로 `PUT .../form {form, form_revision}` 으로 저장한다. 서버는 아는 칸만 골라 다시 만들고(점검 문구는 서버 값으로 덮음) `form_revision` 을 1 올린다.
    새 `report_version` 을 만들지 않는다. 서명이 `report_version` 에 묶여 있어서 새 버전이 생기면 작업 전에 받은 서명이 무효가 되기 때문이다.
-3. 세팅 완료(C17, 박종화) 때 AI 초안이 같은 행을 `GENERATING → SUCCEEDED·FAILED` 로 바꾸며 빈 칸만 채운다(B9, 이 이슈 밖).
+3. AI 초안(B9, S15P31A101-616)이 같은 행을 `GENERATING → SUCCEEDED·FAILED` 로 바꾸며 빈 칸만 채우고 채웠으면 `form_revision` 을 1 올린다.
+   관리자 `POST /api/reports/tbm/{id}/form-draft`(202) 또는 세팅 완료(C17, -615)가 `TbmFormAiService.tryStartDraftForWork` 로 시작한다.
+   PENDING·FAILED·SUCCEEDED 에서 시작할 수 있고 GENERATING 이면 409. 자세한 규칙은 `docs/design/S15P31A101-616-tbm-form-draft.md` '2단계 서버 연결'.
+4. 작업 종료(B10, -616)는 날짜 작업 보고서에 새 버전을 만들지 않고 같은 행의 `review.ending` 이 비어 있을 때만 채운다(채우면 `form_revision` +1).
 
 ## 양식 칸
 
@@ -66,9 +69,9 @@
 
 - -610: 날짜 작업 생성에서 `createDailyBlank` 호출, 양식의 작업내용(`info.tasks`)으로 작업 이름(첫 항목 + ' 외 N건') 만들기와 `name NOT NULL` 풀기.
 - -611: 서명 조건(보고서 있음 + 제출 전), 첫 서명 잠금 없앰, 제출 때 잠금·`content_sha256`(form + 서명 목록).
-- B9·B10(박종화): 초안을 `form` 의 빈 칸에만 채우고, 종료 미팅을 새 버전 없이 `review.ending` 에 채운다. AI 가 양식 칸 JSON 으로 낸다(계약 d).
+- B9·B10: S15P31A101-616 2단계에서 했다(초안은 같은 행의 빈 칸만, 종료 미팅은 새 버전 없이 `review.ending`).
 - 운영: `admin1~6` 계정에 `admin set-profile` 로 소속·직책을 넣는다.
-- B9(박종화): 날짜 작업 초안은 `POST /api/reports/tbm`(새 버전 추가) 대신 PENDING 행을 그대로 GENERATING 으로 바꿔 채운다. 지금 경로는 레이아웃이 있는 예전 작업만 받아(`WORK_HAS_NO_LAYOUT`) 날짜 작업에서는 새 버전이 생기지 않는다.
-- B10 전까지는 작업 종료의 새 버전에 `form`·`form_revision`·`leader_user_id` 를 복사한다(`WorkWrapUpRepository.prepare`).
+- B9: 날짜 작업 초안은 `POST /api/reports/tbm`(새 버전 추가) 대신 `POST /api/reports/tbm/{id}/form-draft` 로 같은 행을 GENERATING 으로 바꿔 채운다(-616). `POST /api/reports/tbm` 은 레이아웃이 있는 예전 작업만 받고(`WORK_HAS_NO_LAYOUT`), 최신 보고서에 양식이 있으면 409 `REPORT_FORM_MANAGED` 로 새 버전을 만들지 않는다.
+- 작업 종료의 새 버전은 이제 양식이 없는 예전 작업에만 생긴다(-616 B10). 그 경로의 `form` 복사는 보통 NULL 이고 `leader_user_id` 복사는 그대로다.
 - -611: 잠금 해시(`content_sha256`)에 `form` 을 넣는다. 지금 해시는 sections·citations·wrap_up_summary 만 덮는다.
 - 리더 이름(`display_label`)은 결재자 이름(`approved_by_name`)처럼 보고서를 읽을 수 있는 모든 역할에 보인다. `display_label` 은 화면 표시용 별칭이라 같은 규칙을 따랐다.

@@ -128,6 +128,98 @@ final class TbmForm {
         return form;
     }
 
+    /**
+     * AI 초안 요청의 existing(계약 tbm_form_draft_request, S15P31A101-616): 초안이 채우는 칸만, 빈 칸은 ""·null 그대로.
+     * 작업내용·일시·점검 문구·종료 미팅은 넣지 않는다. form 은 normalize 를 거친 저장 모양이다.
+     */
+    static ObjectNode draftFields(JsonNode form) {
+        JsonNode info = form.path("info");
+        ObjectNode out = F.objectNode();
+        out.put("task_name", info.path("task_name").asString(""));
+        out.put("place", info.path("place").asString(""));
+        out.set("risk_assessed", bool(info.path("risk_assessed")));
+        ArrayNode risks = out.putArray("risks");
+        for (JsonNode r : form.path("risks")) {
+            risks.addObject().put("risk", r.path("risk").asString("")).put("measure", r.path("measure").asString(""));
+        }
+        out.putObject("focus").put("risk", form.path("focus").path("risk").asString(""))
+                .put("measure", form.path("focus").path("measure").asString(""));
+        ArrayNode checks = out.putArray("checks");
+        for (JsonNode c : form.path("checks")) {
+            ObjectNode row = checks.addObject();
+            row.put("code", c.path("code").asString(""));
+            row.set("yes", bool(c.path("yes")));
+            row.put("action", c.path("action").asString(""));
+        }
+        out.putObject("review").put("daily", form.path("review").path("daily").asString(""));
+        return out;
+    }
+
+    /**
+     * AI 초안(form_draft)을 지금 양식의 빈 칸에만 채운다(글자 "", 예·아니오 null). 사람이 쓴 칸은 덮지 않는다.
+     * 위험·대책 한 쌍은 같은 줄의 다른 칸이 비어 있거나 요청 때(sent, 요청의 existing)와 같을 때만 채운다.
+     * 요청 뒤 사람이 그 줄의 다른 칸을 새로 쓰면 AI 가 그 글을 보지 못했으므로 짝이 맞지 않는 대책을 넣지 않는다.
+     * 점검 줄은 코드로 맞춘다. 종료 미팅(review.ending)·작업내용·일시·점검 문구는 건드리지 않는다.
+     *
+     * @return 채운 칸이 하나라도 있으면 true
+     */
+    static boolean fillDraft(ObjectNode form, JsonNode draft, JsonNode sent) {
+        boolean changed = false;
+        ObjectNode info = (ObjectNode) form.path("info");
+        changed |= fillText(info, "task_name", draft.path("task_name"));
+        changed |= fillText(info, "place", draft.path("place"));
+        if (info.path("risk_assessed").isNull() && draft.path("risk_assessed").isBoolean()) {
+            info.put("risk_assessed", draft.path("risk_assessed").booleanValue());
+            changed = true;
+        }
+        JsonNode risks = form.path("risks");
+        for (int i = 0; i < risks.size(); i++) {
+            changed |= fillPair((ObjectNode) risks.get(i), draft.path("risks").path(i), sent.path("risks").path(i));
+        }
+        changed |= fillPair((ObjectNode) form.path("focus"), draft.path("focus"), sent.path("focus"));
+        for (JsonNode row : form.path("checks")) {
+            ObjectNode check = (ObjectNode) row;
+            for (JsonNode d : draft.path("checks")) {
+                if (!d.path("code").asString("").equals(check.path("code").asString())) {
+                    continue;
+                }
+                // 초안의 yes 는 계약상 늘 null 이라 여기서 채워지지 않는다(사람이 현장에서 확인할 칸).
+                if (check.path("yes").isNull() && d.path("yes").isBoolean()) {
+                    check.put("yes", d.path("yes").booleanValue());
+                    changed = true;
+                }
+                changed |= fillText(check, "action", d.path("action"));
+            }
+        }
+        changed |= fillText((ObjectNode) form.path("review"), "daily", draft.path("review").path("daily"));
+        return changed;
+    }
+
+    private static boolean fillPair(ObjectNode current, JsonNode draft, JsonNode sent) {
+        boolean changed = false;
+        String risk = current.path("risk").asString("");
+        String measure = current.path("measure").asString("");
+        if (measure.isEmpty() || measure.equals(sent.path("measure").asString(""))) {
+            changed |= fillText(current, "risk", draft.path("risk"));
+        }
+        if (risk.isEmpty() || risk.equals(sent.path("risk").asString(""))) {
+            changed |= fillText(current, "measure", draft.path("measure"));
+        }
+        return changed;
+    }
+
+    private static boolean fillText(ObjectNode target, String field, JsonNode value) {
+        if (!target.path(field).asString("").isEmpty() || !value.isString() || value.asString().isBlank()) {
+            return false;
+        }
+        target.put(field, value.asString().strip());
+        return true;
+    }
+
+    private static JsonNode bool(JsonNode node) {
+        return node.isBoolean() ? node : F.nullNode();
+    }
+
     /** 작업내용: {code}(작업내용 항목) 또는 {text}(직접 쓴 작업). 같은 항목을 두 번 넣지 않는다. */
     private static ArrayNode tasks(JsonNode tasks) {
         ArrayNode out = F.arrayNode();
