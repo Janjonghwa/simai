@@ -50,12 +50,14 @@ public class EventQueryRepository {
     }
 
     /**
-     * 최신 발생순. 발생 시각을 모르는 이벤트(RAISED 보다 뒤 전이가 먼저 왔거나 스냅샷으로 만든 것)는 마지막 갱신 시각으로 보고,
-     * 그것도 없으면 앞에 둔다. 관제 앱은 첫 페이지만 읽으므로 활성 경보가 뒤로 밀려 안 보이면 안 된다. LIVE 만
+     * 해소 전 이벤트를 먼저, 그 안에서 최신 발생순. 발생 시각을 모르는 이벤트(RAISED 보다 뒤 전이가 먼저 왔거나 스냅샷으로 만든 것)는
+     * 마지막 갱신 시각으로 보고, 그것도 없으면 앞에 둔다. LIVE 만.
+     * 관제 앱은 해소 전 이벤트가 없는 쪽을 만나면 받기를 멈춘다(재연결 요청 수 제한). 최신 해소 이벤트가 쪽을 채워 더 오래된 활성 경보가
+     * 뒤 쪽에 남으면 받지 못했으므로, 해소 전 이벤트를 앞에 모은다(S15P31A101-621, 감사 F01).
      */
     public List<ObjectNode> findPage(int page, int size) {
         List<ObjectNode> events = jdbc.query("SELECT " + COLUMNS + " FROM risk_event WHERE source = 'LIVE'"
-                + " ORDER BY COALESCE(raised_at, updated_at) DESC NULLS FIRST, event_id"
+                + " ORDER BY (lifecycle = 'RESOLVED'), COALESCE(raised_at, updated_at) DESC NULLS FIRST, event_id"
                 + " LIMIT :size OFFSET :offset",
                 new MapSqlParameterSource().addValue("size", size).addValue("offset", (long) page * size),
                 (rs, i) -> toPayload(rs));

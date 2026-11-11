@@ -31,7 +31,9 @@ import tools.jackson.databind.JsonNode;
  *   <li>스냅샷의 활성 이벤트가 EC2 에 없거나 delivery 가 아직 없으면(끝나지 못한 이전 동기화) 같은 규칙으로 분류한다.
  *   <li>스냅샷이 새로 시작한 저널을 알리면(Pod 교체로 offset 이 줄어듦) 저널 세대를 올린다. 새 저널에 기록이 있으면 연결을 닫아
  *       Tier 0 가 처음부터 다시 보내게 한다.
- *   <li>분류가 커밋된 뒤에만 동기화를 끝낸다. 분류가 실패하면 동기화 모드가 이어지고 다음 스냅샷이 다시 분류한다.
+ *   <li>분류가 커밋된 뒤에만 동기화를 끝낸다. 분류가 실패하면(일시적 DB 오류 등) 연결을 닫는다. Tier 0 는 같은 연결 세대·재요청
+ *       횟수에는 스냅샷을 다시 보내지 않으므로, 열어 둔 채 기다리면 그 연결이 끊길 때까지 모든 전이가 AUDIT_ONLY 로 남는다.
+ *       다시 붙으면 Tier 0 가 ack 뒤 저널과 새 스냅샷을 보내 분류를 다시 한다(S15P31A101-621).
  *   <li>분류하기 전에 이 Tier 0 가 들고 있는 이벤트(Tier0HeldEvents)를 active_events 로 바꾼다(S15P31A101-595). 커밋 뒤 보내는
  *       DELAYED_ACTIVE 알림이 바뀐 값을 싣는다. 분류가 실패해도 스냅샷은 Tier 0 의 지금 상태라 되돌리지 않는다.
  * </ul>
@@ -113,7 +115,14 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         }
         held.replace(gatewayId, activeIds);
         Set<UUID> touched = tracker.touchedDuringSync();
-        transaction.executeWithoutResult(status -> classify(gatewayId, active, activeIds, touched));
+        try {
+            transaction.executeWithoutResult(status -> classify(gatewayId, active, activeIds, touched));
+        } catch (RuntimeException e) {
+            log.warn("I1 스냅샷 분류 실패라 연결을 닫아 스냅샷을 다시 받는다: gateway={} error={}", gatewayId,
+                    e.getClass().getSimpleName());
+            connection.close("event_state_snapshot 분류 실패: 다시 연결해 스냅샷을 다시 받는다");
+            throw e;
+        }
         tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);

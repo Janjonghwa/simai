@@ -157,6 +157,7 @@ export const SUPPLEMENT_REASON_LABEL: Record<string, string> = {
   PATH_UNSUPPORTED: '이 작업 서버는 보강 촬영 굽기를 지원하지 않습니다',
   SEGMENTER_MISSING: '사람 지우기 모델이 없어 넣지 않았습니다',
   TIME_BUDGET: '처리 시간이 모자랐습니다',
+  LIVE_WORK_STARTED: '작업이 시작돼 다시 굽기를 멈췄습니다(원래 맵 유지)',
 };
 
 export function supplementReasonText(reason: string | null | undefined): string {

@@ -447,6 +447,61 @@ class SetupSupplementIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_supplement_rebake", Integer.class)).isEqualTo(2);
     }
 
+    @Test
+    void 굽기를_회수한_세션도_다시_굽기_APPLIED_결과를_받아_세션_맵을_옮긴다() throws Exception {
+        // -597: 정식 굽기를 작업 시작으로 회수한 세션(bake_skipped, scene_version 없음)은 미리보기를 기준으로 다시 굽는다.
+        // V50 CHECK(bake_skipped 면 scene_version null)에 막혀 결과 제출이 통째로 되돌아가던 것을 V58 이 푼다(-621)
+        Done s = reclaimedSession();
+        assertThat(jdbc.queryForObject("SELECT scene_version FROM setup_session WHERE setup_session_id = ?::uuid",
+                String.class, s.sessionId())).isNull();
+        String video = uploadedMedia(s.sessionId(), "video/mp4", "phone-video".getBytes(StandardCharsets.UTF_8), "PHONE_UPLOAD");
+        mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake", s.sessionId()).with(adminJwt()))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.supplement.rebake.base_scene_version").value(s.preview()));
+        JsonNode leased = leaseRaw();
+        assertThat(leased.at("/payload/input/rebake_base/scene_version").asString()).isEqualTo(s.preview());
+        Session rebake = new Session(s.sessionId(), leased.at("/payload/job_id").asString(),
+                leased.at("/payload/lease_id").asString());
+
+        String rebakePrefix = "job-objects/site_setup/" + rebake.jobId() + "/" + rebake.leaseId() + "/";
+        String newScene = "scene-" + rebake.jobId() + "-" + rebake.leaseId();
+        ObjectNode result = rebakeSnapshot(s, "COMPLETED", 100.0).put("scene_version", newScene);
+        result.putObject("artifacts").set("scene", put(rebakePrefix + "scene_final.glb",
+                "glb-rebaked".getBytes(StandardCharsets.UTF_8)));
+        result.set("supplement", supplementSummary("APPLIED", null, video, "USED", null, null));
+        mvc.perform(callback(rebake, succeeded(rebake, result))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.status").value("ACCEPTED"));
+
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, rebake.jobId()))
+                .isEqualTo("SUCCEEDED");
+        assertThat(currentScene()).isEqualTo(newScene);
+        mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
+                .andExpect(jsonPath("$.scene_version").value(newScene))
+                // 회수 이력은 그대로 남는다(덮어쓰지 않음)
+                .andExpect(jsonPath("$.bake_skipped").value("LIVE_WORK_STARTED"))
+                .andExpect(jsonPath("$.supplement.rebake.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.supplement.rebake.outcome").value("APPLIED"))
+                .andExpect(jsonPath("$.supplement.rebake.base_scene_version").value(s.preview()));
+    }
+
+    @Test
+    void 대기_중_다시_굽기는_같은_현장_작업이_진행_중이면_대여하지_않는다() throws Exception {
+        // 요청 때는 관제 중이 아니었는데 대기 중에 작업이 시작됐다: 워커에 내주지 않고 QUEUED 로 둔다(명세 3.2 5항, -621)
+        Done s = completedSession();
+        uploadedMedia(s.sessionId(), "image/png", "png".getBytes(StandardCharsets.UTF_8), null);
+        mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake", s.sessionId()).with(adminJwt()))
+                .andExpect(status().isAccepted());
+        jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now() WHERE work_id = ?", workUnitId);
+        leaseExpect(status().isNoContent());
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_type = 'site_setup' AND input ->> 'mode' = ?",
+                String.class, "SUPPLEMENT_REBAKE")).isEqualTo("QUEUED");
+
+        // 작업이 끝나면 대여된다
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+        JsonNode leased = leaseRaw();
+        assertThat(leased.at("/payload/input/mode").asString()).isEqualTo("SUPPLEMENT_REBAKE");
+    }
+
     // ---------------------------------------------------------------- 도우미
 
     private record Session(String sessionId, String jobId, String leaseId) {
@@ -498,6 +553,42 @@ class SetupSupplementIntegrationTest {
         mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(baked);
         return new Done(s.sessionId(), prefix, r.get("calibration").get("uri").asString(), preview(s), baked);
+    }
+
+    /** 정식 굽기를 작업 시작으로 회수한 세션(-597): 굽기 입력 사진은 알렸고 결과는 bake_skipped·scene_version null */
+    private Done reclaimedSession() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        Map<String, ObjectNode> r = ready(s);
+        ObjectNode bakingSnap = r.get("snapshot").deepCopy().put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
+        ObjectNode bake = ((ObjectNode) bakingSnap.get("artifacts")).putObject("bake_images").put("bundle_id", BUNDLE);
+        ArrayNode bakeImages = bake.putArray("images");
+        for (String cam : CAMERAS) {
+            ObjectNode image = mapper.createObjectNode().put("camera_id", cam);
+            image.setAll(put(prefix + "bake-" + cam + ".jpg", jpeg("bake-" + cam)));
+            bakeImages.add(image.put("face_policy", "OBSERVED"));
+        }
+        mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+
+        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview(s)).putNull("scene_version")
+                .put("bake_skipped", "LIVE_WORK_STARTED");
+        ObjectNode artifacts = result.putObject("artifacts");
+        artifacts.set("calibration_document", r.get("calibration"));
+        artifacts.set("preview_scene", r.get("preview"));
+        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        return new Done(s.sessionId(), prefix, r.get("calibration").get("uri").asString(), preview(s), null);
+    }
+
+    private void leaseExpect(org.springframework.test.web.servlet.ResultMatcher expected) throws Exception {
+        ObjectNode p = mapper.createObjectNode();
+        p.putArray("job_types").add("site_setup");
+        p.put("wait_ms", 0);
+        mvc.perform(post("/api/worker/jobs/lease")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(envelope("job_lease_request", "2.0.0", p).toString()))
+                .andExpect(expected);
     }
 
     private ObjectNode rebakeSnapshot(Done s, String stage, double pct) {

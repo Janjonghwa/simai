@@ -244,6 +244,30 @@ class EventAckIntegrationTest {
         mvc.perform(get("/api/events")).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void 목록은_해소_전_이벤트를_해소된_것보다_앞에_둔다() throws Exception {
+        // 더 최근에 해소된 이벤트가 쪽을 채워도 오래된 활성 경보가 첫 쪽에 온다. 관제 앱은 활성 없는 쪽에서 받기를 멈춘다(감사 F01, -621)
+        UUID olderActive = UUID.randomUUID();
+        UUID newerResolved = UUID.randomUUID();
+        try (Tier0 tier0 = connect()) {
+            ObjectNode active = transition(olderActive, 1, 0, "RAISED", null);
+            ((ObjectNode) active.get("payload")).put("occurred_at", 4102444850000L);
+            ObjectNode raised = transition(newerResolved, 1, 1, "RAISED", null);
+            ((ObjectNode) raised.get("payload")).put("occurred_at", 4102444900000L);
+            ObjectNode resolved = transition(newerResolved, 2, 2, "RESOLVED", null);
+            ((ObjectNode) resolved.get("payload")).put("occurred_at", 4102444900000L);
+            tier0.send(active);
+            tier0.send(raised);
+            tier0.send(resolved);
+            tier0.await("journal_ack", p -> p.get("acked_offset").longValue() == 2);
+        }
+
+        mvc.perform(get("/api/events").param("size", "1").header(HttpHeaders.AUTHORIZATION, token("foreman", Role.FOREMAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].event_id").value(olderActive.toString()))
+                .andExpect(jsonPath("$.content[0].lifecycle").value("RAISED"));
+    }
+
     // ---- 도우미
 
     private String token(String name, Role role) throws Exception {

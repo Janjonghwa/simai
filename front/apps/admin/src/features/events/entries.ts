@@ -361,11 +361,14 @@ export function withoutCleared(entries: EventEntry[], clearedAt: number | null):
 /**
  * 관제 화면 소리·점멸 대상(명세 12.4): LIVE·CRITICAL/HIGH·RAISED/UPDATED 이고 지금 단계에서 아직 확인 전.
  * 지금 Tier 0 가 들고 있지 않은 「지난 관제」 이벤트는 울리지 않는다(S15P31A101-595).
+ * 감사 전용(delivery AUDIT_ONLY: 재동기화 중 저장만 했거나 근거 없이 복원한 것)은 실시간 알림 대상이 아니라 울리지 않는다(명세 3.2,
+ * S15P31A101-621). STOMP 는 원래 보내지 않지만 REST 로 다시 받은 목록에는 들어 있다. 지연 알림(DELAYED_ACTIVE)은 울린다.
  */
 export function isAlarming(entry: EventEntry): boolean {
   const { event } = entry;
   return (
     event.source === 'LIVE' &&
+    event.delivery !== 'AUDIT_ONLY' &&
     isAlarmSeverity(event.severity) &&
     isCurrent(event) &&
     acknowledgedAt(entry) === null

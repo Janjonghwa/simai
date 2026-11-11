@@ -174,6 +174,12 @@ describe('isAlarming', () => {
     expect(isAlarming(entry({ source: 'WHAT_IF' }))).toBe(false);
   });
 
+  it('감사 전용(AUDIT_ONLY)은 REST 로 다시 받아도 울리지 않고, 지연 알림(DELAYED_ACTIVE)은 울린다', () => {
+    expect(isAlarming(entry({ delivery: 'AUDIT_ONLY' }))).toBe(false);
+    expect(isAlarming(entry({ delivery: 'DELAYED_ACTIVE' }))).toBe(true);
+    expect(isAlarming(entry({ delivery: 'REALTIME' }))).toBe(true);
+  });
+
   it('확인하면 멈추고, 그 뒤 등급이 오르거나 재개되면 다시 울린다', () => {
     const acked = entry({ severity: 'HIGH', acks: [ack(T + 2)] });
     expect(isAlarming(acked)).toBe(false);

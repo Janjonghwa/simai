@@ -1,6 +1,10 @@
 package com.ssafy.simai.domain.tier0.event;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doThrow;
 
 import com.ssafy.simai.domain.tier0.Tier0Paths;
 import java.net.URI;
@@ -18,9 +22,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
@@ -48,6 +54,13 @@ class RiskEventJournalIntegrationTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    Tier0HeldEvents held;
+
+    /** 스냅샷 분류에 일시적 DB 오류를 넣는다(-621). 시험마다 되돌린다 */
+    @MockitoSpyBean
+    RiskEventRepository events;
 
     private final String gatewayId = "tier0-journal-" + UUID.randomUUID();
 
@@ -205,6 +218,53 @@ class RiskEventJournalIntegrationTest {
         assertThat(event(event, "delivery")).isEqualTo("DELAYED_ACTIVE");
     }
 
+    @Test
+    void 스냅샷_분류가_실패하면_연결을_닫고_다시_붙은_뒤_새_스냅샷으로_분류한다() throws Exception {
+        // 같은 연결에서는 Tier 0 가 스냅샷을 다시 보내지 않는다. 열어 두면 끊길 때까지 모든 전이가 AUDIT_ONLY 로 남았다(감사 NC1, -621)
+        UUID raised = UUID.randomUUID();
+        doThrow(new TransientDataAccessResourceException("시험: 일시적 DB 오류")).doCallRealMethod()
+                .when(events).setDelivery(anyCollection(), eq("DELAYED_ACTIVE"));
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(raised, 1, 0, "RAISED", true));
+            tier0.awaitAck(a -> a.get("acked_offset").longValue() == 0);
+            tier0.send(snapshot(0L, active(raised, 1, "RAISED", true)));
+            tier0.awaitClosed();
+        }
+        // 분류가 되돌려져 전달 방식은 아직 정하지 않았다(분류 대기 NULL). 다음 스냅샷이 정한다
+        assertThat(event(raised, "delivery")).isNull();
+        assertThat(jdbc.queryForObject("SELECT sync_mode FROM journal_cursor WHERE gateway_id = ?", Boolean.class, gatewayId))
+                .isTrue();
+
+        // 다시 붙은 Tier 0 가 새 스냅샷을 보내면 분류가 끝나고 지연 알림 대상이 된다
+        try (Tier0 tier0 = connect()) {
+            tier0.send(snapshot(0L, active(raised, 1, "RAISED", true)));
+            tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+        }
+        assertThat(event(raised, "delivery")).isEqualTo("DELAYED_ACTIVE");
+    }
+
+    @Test
+    void 동기화_중_새로_난_이벤트도_Tier0_가_들고_있는_것으로_본다() throws Exception {
+        // 스냅샷 전 동기화 중 RAISED 는 알리지 않지만(AUDIT_ONLY) 「지난 관제」로 내려가지 않게 들고 있음에 넣는다(-595, -621)
+        UUID raised = UUID.randomUUID();
+        UUID resolved = UUID.randomUUID();
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(raised, 1, 0, "RAISED", false));
+            tier0.send(transition(resolved, 1, 1, "RAISED", false));
+            tier0.send(transition(resolved, 2, 2, "RESOLVED", false));
+            tier0.awaitAck(a -> a.get("acked_offset").longValue() == 2 && a.get("sync_mode").booleanValue());
+
+            // 동기화 중 전이는 알리지 않는다(전이 기록은 AUDIT_ONLY, 이벤트 전달 방식은 스냅샷 분류 대기)
+            assertThat(event(raised, "delivery")).isNull();
+            assertThat(jdbc.queryForObject("SELECT delivery_mode FROM risk_event_update WHERE event_id = ?", String.class, raised))
+                    .isEqualTo("AUDIT_ONLY");
+            assertThat(held.isHeld(gatewayId, raised)).isTrue();
+            assertThat(held.isHeld(gatewayId, resolved)).isFalse();
+        }
+    }
+
     // ---- 도우미
 
     private ObjectNode transition(UUID eventId, int sequence, long offset, String kind, boolean resent) throws Exception {
@@ -295,9 +355,20 @@ class RiskEventJournalIntegrationTest {
             throw new AssertionError("기다린 journal_ack 가 오지 않았다");
         }
 
+        /** EC2 가 이 연결을 닫을 때까지 기다린다 */
+        void awaitClosed() throws InterruptedException {
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (session.isOpen() && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+            }
+            assertThat(session.isOpen()).as("EC2 가 연결을 닫았다").isFalse();
+        }
+
         @Override
         public void close() throws Exception {
-            session.close();
+            if (session.isOpen()) {
+                session.close();
+            }
         }
     }
 }

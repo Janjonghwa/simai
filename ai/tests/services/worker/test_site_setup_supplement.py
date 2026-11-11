@@ -21,6 +21,7 @@ from services.worker.handlers import JobContext, JobFailed
 from services.worker.objects import ObjectStoreError
 from services.worker.site_setup import (
     BakedScene,
+    BakeReclaimed,
     CleanBackgroundBundle,
     ObjectRef,
     RebakeOutcome,
@@ -296,6 +297,87 @@ def test_rebake_rejects_base_object_with_wrong_hash(tmp_path: Path) -> None:
     with pytest.raises(JobFailed) as exc:
         _rebake(_stages_for(tmp_path, inp, _Store(objects), _Stages()))
     assert exc.value.code == "INVALID_INPUT"
+
+
+class _WorkStartsDuring(_Stages):
+    """실제 ProcessStages 처럼 멈춤 신호를 본다. `at` 단계가 도는 사이 하트비트가 작업 시작(live_work)을 받는다."""
+
+    def __init__(self, ctx_box: list[JobContext], at: str, actions: dict[str, Callable[[Path], None]]) -> None:
+        super().__init__(actions)
+        self._box, self._at = ctx_box, at
+        self.signals: dict[str, Any] = {}
+
+    def run(self, stage: str, root: Path, *, timeout_s: float, cancelled: threading.Event) -> None:
+        self.ran.append(stage)
+        self.signals[stage] = cancelled
+        if stage == self._at:
+            self._box[0].live_work.set()
+        if cancelled.is_set():
+            raise ReconstructionError("CANCELLED", "작업 시작으로 자식 종료")
+        action = self.actions.get(stage)
+        if action is not None:
+            action(root)
+
+
+@pytest.mark.parametrize(("at", "status"), [("prepare", "SKIPPED"), ("mapanything", "SKIPPED"),
+                                            ("supplement", "FALLBACK"), ("bake", "FALLBACK")])
+def test_rebake_reclaimed_on_work_start_keeps_base_scene(tmp_path: Path, at: str, status: str) -> None:
+    """다시 굽기는 모든 GPU 단계에서 작업 시작(LIVE)으로 멈추고, 실패가 아니라 원래 맵 유지로 끝난다(-621, 명세 3.2 5항)."""
+    inp, objects = _rebake_input()
+    store = _Store(objects)
+    box: list[JobContext] = []
+    stages = _WorkStartsDuring(box, at, {"supplement": _supplement_stage("APPLIED"), "bake": _bake_ok})
+    s = _stages_for(tmp_path, inp, store, stages)
+    box.append(s.ctx)
+    out = _rebake(s)
+    order = ["prepare", "mapanything", "supplement", "bake"]
+    assert stages.ran == order[: order.index(at) + 1]  # 멈춘 뒤 다음 단계는 돌지 않는다
+    assert out.scene_version == "scene-setup-12" and out.scene_asset is None and store.puts == []
+    assert out.supplement["status"] == status and out.supplement["reason"] == sc.R_LIVE_WORK_STARTED
+    assert all(m["status"] != "USED" for m in out.supplement.get("media", []))
+    assert schema_errors(dict(out.supplement), SUMMARY_SCHEMA) == []
+    # 처리기가 내는 결과도 계약(기준 scene_version, artifacts.scene 없음)을 지킨다
+    result = _handler(rebaker=lambda **kw: out)(JobContext("job-1", "lease-1", "site_setup", 1, inp))
+    assert schema_errors(dict(result), RESULT_SCHEMA) == []
+    assert result["status"] == "COMPLETED" and "artifacts" not in result
+
+
+def test_rebake_cancel_wins_over_work_start(tmp_path: Path) -> None:
+    """대여 취소가 함께 켜져 있으면 회수가 아니라 CANCELLED 실패다(재대여 대상)."""
+    inp, objects = _rebake_input()
+    s = _stages_for(tmp_path, inp, _Store(objects), _Stages())
+    s.ctx.live_work.set()
+    s.ctx.cancelled.set()
+    stages = _WorkStartsDuring([s.ctx], "prepare", {})
+    s.stages = stages
+    with pytest.raises(JobFailed) as exc:
+        _rebake(s)
+    assert exc.value.code == "CANCELLED"
+
+
+def test_full_setup_supplement_stage_stops_on_work_start(tmp_path: Path) -> None:
+    """일반 세팅 정식 굽기 안의 보조 촬영 단계도 작업 시작으로 멈춘다. 처리기가 정식 Scene 없음으로 바꾼다(-597·-621)."""
+    objects = _objects()
+    box: list[JobContext] = []
+    stages = _WorkStartsDuring(box, "supplement", {"supplement": _supplement_stage("APPLIED"), "bake": _bake_ok})
+    s = _stages_for(tmp_path, _fix_sha(_input(), objects), _Store(objects), stages)
+    box.append(s.ctx)
+    with pytest.raises(BakeReclaimed):
+        _bake(s)
+    assert stages.ran == ["supplement"]
+
+
+def test_rebake_only_widens_reclaim_for_rebake_mode(tmp_path: Path) -> None:
+    """prepare·mapanything 은 다시 굽기에서만 작업 시작 신호를 본다. 일반 세팅(READY_FOR_ZONES 전)은 그대로 취소만 본다."""
+    inp, objects = _rebake_input()
+    s = _stages_for(tmp_path, inp, _Store(objects), _Stages())
+    stages = _WorkStartsDuring([s.ctx], "none", {})
+    s.stages = stages
+    s._run_stage("prepare")
+    assert stages.signals["prepare"] is s.ctx.cancelled
+    s._rebaking = True
+    s._run_stage("mapanything")
+    assert stages.signals["mapanything"] is not s.ctx.cancelled
 
 
 # --------------------------------------------------------------------------- 처리기(계약 모양)
