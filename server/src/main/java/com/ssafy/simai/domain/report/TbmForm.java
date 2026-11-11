@@ -26,6 +26,8 @@ final class TbmForm {
     static final int MAX_PLACE = 200;
     static final int MAX_TEXT = 500;
     static final int MAX_REVIEW = 2000;
+    /** work_unit.name 상한(WorkUnitRepository.MAX_NAME 과 같다) */
+    static final int MAX_WORK_NAME = 100;
 
     record Check(String code, String label) { }
 
@@ -218,6 +220,24 @@ final class TbmForm {
 
     private static JsonNode bool(JsonNode node) {
         return node.isBoolean() ? node : F.nullNode();
+    }
+
+    /** 날짜 작업 이름: 첫 작업내용(항목 이름 또는 직접 쓴 글) + ' 외 N건'. 작업내용이 없으면 null(S15P31A101-610). */
+    static String workName(JsonNode form) {
+        JsonNode tasks = form.path("info").path("tasks");
+        if (!tasks.isArray() || tasks.isEmpty()) {
+            return null;
+        }
+        JsonNode first = tasks.get(0);
+        String name = first.has("code")
+                ? WorkTasks.find(first.path("code").asString()).map(WorkTasks.WorkTask::label).orElse(first.path("code").asString())
+                : first.path("text").asString();
+        String suffix = tasks.size() == 1 ? "" : " 외 " + (tasks.size() - 1) + "건";
+        int room = MAX_WORK_NAME - suffix.length();
+        if (name.codePointCount(0, name.length()) > room) {
+            name = name.substring(0, name.offsetByCodePoints(0, room - 1)) + "…";
+        }
+        return name + suffix;
     }
 
     /** 작업내용: {code}(작업내용 항목) 또는 {text}(직접 쓴 작업). 같은 항목을 두 번 넣지 않는다. */

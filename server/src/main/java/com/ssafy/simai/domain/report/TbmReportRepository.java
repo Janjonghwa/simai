@@ -339,6 +339,16 @@ public class TbmReportRepository {
                 UPDATE report SET form = CAST(:form AS jsonb), form_revision = form_revision + 1
                 WHERE report_id = :reportId
                 """, p.addValue("form", mapper.writeValueAsString(form)));
+        renameDailyWork(reportId, form);
+    }
+
+    /** 날짜 작업 이름은 고른 작업내용으로 만든다(첫 항목 + ' 외 N건', 고르지 않았으면 비움, S15P31A101-610). */
+    private void renameDailyWork(long reportId, JsonNode form) {
+        jdbc.update("""
+                UPDATE work_unit SET name = :name, updated_at = now()
+                WHERE daily AND work_id = (SELECT work_id FROM report WHERE report_id = :reportId)
+                  AND name IS DISTINCT FROM :name
+                """, new MapSqlParameterSource("reportId", reportId).addValue("name", TbmForm.workName(form)));
     }
 
     public Optional<ObjectNode> findOne(String siteId, long reportId) {
