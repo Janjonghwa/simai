@@ -16,12 +16,25 @@ import tools.jackson.databind.node.ObjectNode;
  * 보기용 Scene을 생성 보정 대비 누적 자세 변화로 판정한다. 위치·위험 판정에 쓰지 않는다.
  * GET /api/scenes/current({@link #current})는 최대값 옆에 카메라별 중심 이동·회전 변화 {@code cameras} 도 싣는다(S15P31A101-602).
  * viewer_health({@link #compare})에는 싣지 않는다(주기 송신 크기·viewer_health 판 유지).
+ * 세팅 보정이 World 다시 맞추기(world_anchor 채택, -584)로 Scene 의 World 에 옮겨졌으면 World 계보 ID 가 달라도 같은 World 로 보고
+ * 채택 한도에 맞춘 값으로 자세 변화를 판정한다(이전 모델 재사용 세팅, S15P31A101-614). 판정 이유 값은 그대로다(계약 변경 없음).
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SceneCompatibility {
     static final double MAX_CENTER_M = 0.10;
     static final double MAX_ROTATION_RAD = Math.toRadians(2);
+    /**
+     * World 다시 맞추기(world_anchor, -584)로 같은 World 에 옮긴 세팅 보정의 한도(S15P31A101-614, docs/design/S15P31A101-614-setup-reuse-mode.md).
+     * 채택 기준(수평 배치 잔차 0.15 m·축척 ±3%·방향 10°)을 통과한 같은 배치도 Stage A 차이·실측 높이·바닥 기울기 보정 차이로 카메라 중심이
+     * 3차원으로 약 15 cm(12·13차 관측: 수평 적용 잔차 ≤ 11.4 cm, 판정에 쓰지 않는 높이 차 ≤ 9.4 cm), 방향이 최대 6° 달라진다. 0.10 m·2° 로
+     * 보면 방이 그대로인 재사용 세팅이 거의 늘 흐리게 나오므로, 중심은 수평 한도 0.15 m 에 높이 차 0.10 m 를 더한 0.25 m, 방향은 채택 한도
+     * 10° 를 쓴다. 넘으면 기존처럼 LARGE_CHANGE(흐림)다.
+     */
+    static final double ANCHORED_MAX_CENTER_M = 0.25;
+    static final double ANCHORED_MAX_ROTATION_RAD = Math.toRadians(10);
+    /** 재사용 세팅을 거듭해 생긴 world_anchor 사슬을 따라가는 최대 단계 수 */
+    static final int MAX_ANCHOR_HOPS = 8;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final HealthState health;
@@ -69,6 +82,11 @@ public class SceneCompatibility {
         if (a == null || b == null) return out;
         String oldWorld = a.path("world_frame_id").asString(null), newWorld = b.path("world_frame_id").asString(null);
         if (oldWorld == null || oldWorld.isBlank() || newWorld == null || newWorld.isBlank()) return out;
+        if (!oldWorld.equals(newWorld) && anchoredToWorldOf(source, a, target)) {
+            // 세팅 보정이 World 다시 맞추기(-584)로 Scene 의 World 에 옮겨졌다(이전 모델 재사용 -614 의 정상 경로). Tier 0 는 세팅 보정을
+            // 새 계보로 채택하므로 world_frame_id 는 다르지만 좌표계는 같다. 자세 변화는 그 채택 한도에 맞춘 값으로 본다
+            return evaluate(out, a.path("camera_poses"), b.path("camera_poses"), ANCHORED_MAX_CENTER_M, ANCHORED_MAX_ROTATION_RAD);
+        }
         if (!oldWorld.equals(newWorld)) {
             // 과거 업로드 문서의 자기 버전은 root와 같을 때만 계보 연결 근거다. 다른 ID면 계보 미상이다.
             if (a.path("legacy").asBoolean(false) || b.path("legacy").asBoolean(false)) return out;
@@ -96,7 +114,42 @@ public class SceneCompatibility {
         return legacy;
     }
 
+    /**
+     * target 보정이 world_anchor(accepted, -584)로 source 의 World 에 놓였는지. 기준 보정(reference_calibration_version)이 source 이거나
+     * source 와 같은 World 계보(world_frame_id)면 같은 World 다. 기준 보정도 다른 보정에 맞춰졌으면 그 사슬을 {@link #MAX_ANCHOR_HOPS} 까지
+     * 따라간다(재사용 세팅을 거듭한 경우). 기록이 없거나 거부면 false(같은 World 라고 지어내지 않는다).
+     */
+    private boolean anchoredToWorldOf(String source, JsonNode sourceMeta, String target) {
+        String sourceWorld = sourceMeta.path("world_frame_id").asString("");
+        String cursor = target;
+        for (int hop = 0; hop < MAX_ANCHOR_HOPS; hop++) {
+            String reference = anchorReference(cursor);
+            if (reference == null || reference.equals(cursor)) return false;
+            if (reference.equals(source)) return true;
+            JsonNode referenceMeta = metadata(reference);
+            if (referenceMeta != null && !sourceWorld.isBlank()
+                    && sourceWorld.equals(referenceMeta.path("world_frame_id").asString(""))) return true;
+            cursor = reference;
+        }
+        return false;
+    }
+
+    /** 보정 문서 world_anchor 가 채택(ANCHORED)이면 그 기준 보정 버전, 아니면 null */
+    private String anchorReference(String version) {
+        List<byte[]> docs = jdbc.queryForList("SELECT content FROM calibration_document WHERE calibration_version = :v",
+                Map.of("v", version), byte[].class);
+        if (docs == null || docs.isEmpty()) return null;
+        JsonNode anchor = mapper.readTree(docs.getFirst()).path("world_anchor");
+        if (!anchor.path("accepted").asBoolean(false) || !"ANCHORED".equals(anchor.path("reason").asString(""))) return null;
+        String reference = anchor.path("reference_calibration_version").asString("");
+        return reference.isBlank() ? null : reference;
+    }
+
     static ObjectNode evaluate(ObjectNode out, JsonNode oldPoses, JsonNode newPoses) {
+        return evaluate(out, oldPoses, newPoses, MAX_CENTER_M, MAX_ROTATION_RAD);
+    }
+
+    static ObjectNode evaluate(ObjectNode out, JsonNode oldPoses, JsonNode newPoses, double maxCenterM, double maxRotationRad) {
         try {
             Map<String, double[][]> old = poses(oldPoses), now = poses(newPoses);
             if (old.isEmpty() || !old.keySet().equals(now.keySet())) return out;
@@ -120,7 +173,7 @@ public class SceneCompatibility {
                 cameras.addObject().put("camera_id", id).put("center_delta_m", centerDelta).put("rotation_delta_rad", rotationDelta);
             }
             if (!Double.isFinite(maxDistance) || !Double.isFinite(maxAngle)) return out;
-            boolean small = maxDistance <= MAX_CENTER_M + 1e-9 && maxAngle <= MAX_ROTATION_RAD + 1e-9;
+            boolean small = maxDistance <= maxCenterM + 1e-9 && maxAngle <= maxRotationRad + 1e-9;
             result(out, small ? "VERIFIED" : "DIMMED", small ? "SMALL_CHANGE" : "LARGE_CHANGE", maxDistance, maxAngle);
             out.set("cameras", cameras);
             return out;

@@ -669,7 +669,11 @@ public sealed interface ErrorCode {
         SUPPLEMENT_NO_MEDIA(HttpStatus.CONFLICT, "올리기를 마친 보강 촬영 파일이 없습니다"),
         SUPPLEMENT_REBAKE_IN_PROGRESS(HttpStatus.CONFLICT, "이 세팅 세션의 다시 굽기가 이미 진행 중입니다"),
         SUPPLEMENT_REBAKE_BASE_MISSING(HttpStatus.CONFLICT, "이 세션의 보정 문서나 굽기 입력 사진이 없어 다시 구울 수 없습니다"),
-        SUPPLEMENT_REBAKE_NOT_RUNNING(HttpStatus.CONFLICT, "진행 중인 다시 굽기가 없습니다");
+        SUPPLEMENT_REBAKE_NOT_RUNNING(HttpStatus.CONFLICT, "진행 중인 다시 굽기가 없습니다"),
+        // 이전 모델 재사용 세팅(S15P31A101-614)
+        SETUP_REUSE_SCENE_MISSING(HttpStatus.CONFLICT, "현재 관제 맵(Scene)과 그 보정이 있어야 이전 모델을 재사용할 수 있습니다. 새 모델로 세팅하세요"),
+        SETUP_REUSE_SCENE_MISMATCH(HttpStatus.CONFLICT, "현재 관제 맵이 지금 보정과 다른 World 라 이전 모델을 재사용할 수 없습니다. 새 모델로 세팅하세요"),
+        SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다");
 
         private final HttpStatus status;
         private final String message;

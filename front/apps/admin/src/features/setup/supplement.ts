@@ -127,6 +127,8 @@ export const REBAKE_BLOCKED_LABEL: Record<string, string> = {
   NO_MEDIA: '올린 파일이 있어야 다시 구울 수 있습니다',
   NO_WORKER: '맵을 구울 작업 서버가 없습니다',
   BASE_MISSING: '이 세팅의 굽기 자료가 없어 다시 굽지 못합니다',
+  REUSED_SCENE:
+    '이전 모델을 재사용한 세팅이라 이 세팅의 맵이 없습니다. 맵을 보강하려면 새 모델로 세팅하세요',
 };
 
 export function rebakeBlockedText(reason: string | null | undefined): string | null {
@@ -138,6 +140,7 @@ export function rebakeBlockedText(reason: string | null | undefined): string | n
 export function uploadBlockedText(reason: string | null | undefined): string {
   if (reason === 'SESSION_NOT_READY') return '미리보기 맵이 준비되면 올릴 수 있습니다';
   if (reason === 'SUPERSEDED') return '더 새로운 세팅이 있어 이 세팅에는 올리지 않습니다';
+  if (reason === 'REUSED_SCENE') return '이전 모델을 재사용한 세팅에는 보강 촬영을 올리지 않습니다';
   return '지금은 보강 촬영을 올릴 수 없습니다';
 }
 
@@ -291,6 +294,7 @@ export function supplementErrorMessage(error: unknown, fallback: string): string
 
 export const SUPPLEMENT_ERROR_TEXT: Record<string, string> = {
   SUPPLEMENT_SESSION_NOT_READY: '미리보기 맵이 준비된 뒤에 할 수 있습니다',
+  SUPPLEMENT_REUSED_SCENE: '이전 모델을 재사용한 세팅은 맵을 보강할 수 없습니다',
   SUPPLEMENT_SETUP_JOB_RUNNING: '정식 맵 굽기가 끝나면 다시 구울 수 있습니다',
   SUPPLEMENT_SESSION_SUPERSEDED: '더 새로운 세팅이 있어 이 세팅에는 할 수 없습니다',
   SUPPLEMENT_REBAKE_IN_PROGRESS: '이미 다시 굽는 중입니다',

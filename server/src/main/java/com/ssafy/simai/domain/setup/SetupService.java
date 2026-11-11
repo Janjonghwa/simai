@@ -7,6 +7,9 @@ import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
 import com.ssafy.simai.domain.job.JobFinished;
 import com.ssafy.simai.domain.job.JobProgress;
 import com.ssafy.simai.domain.scene.SceneActivationService;
+import com.ssafy.simai.domain.scene.SceneCompatibility;
+import com.ssafy.simai.domain.scene.SceneService;
+import com.ssafy.simai.domain.work.WorkUnitRepository;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.ResultSet;
@@ -110,11 +113,13 @@ public class SetupService {
     private final SceneActivationService scenes;
     private final SetupWaitReasonReader waitReasons;
     private final SetupSupplementService supplements;
+    private final SceneCompatibility compatibility;
+    private final WorkUnitRepository workUnits;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
-            SetupSupplementService supplements) {
+            SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -130,6 +135,8 @@ public class SetupService {
         this.scenes = scenes;
         this.waitReasons = waitReasons;
         this.supplements = supplements;
+        this.compatibility = compatibility;
+        this.workUnits = workUnits;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -155,13 +162,25 @@ public class SetupService {
         return out;
     }
 
-    /** 세팅 세션을 만들고 I5 {@code site_setup} 작업을 대기열에 넣는다. */
+    /** 세팅 세션을 만들고 I5 {@code site_setup} 작업을 대기열에 넣는다(새 모델). */
     public ObjectNode create(Long workUnitId, Map<String, Double> requestedHeights, long userId, UUID retryOf) {
+        return create(workUnitId, requestedHeights, userId, retryOf, SetupReuseMode.NEW);
+    }
+
+    /**
+     * 세팅 세션을 만들고 I5 {@code site_setup} 작업을 대기열에 넣는다.
+     *
+     * @param mode REST mode: NEW(기본, 새 모델) | REUSE(이전 모델 재사용, S15P31A101-614). REUSE 는 현재 관제 맵과 그 보정이 있어야 한다
+     */
+    public ObjectNode create(Long workUnitId, Map<String, Double> requestedHeights, long userId, UUID retryOf, String mode) {
         if (workUnitId == null || workUnitId < 1) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_REQUEST);
         }
+        String requestedMode = SetupReuseMode.parseRequested(mode);
         String siteId = sites.siteId();
         checkWorkUnitCanSetup(siteId, workUnitId);
+        // 날짜 작업은 작업 날짜가 오늘(Asia/Seoul)일 때만 세팅을 시작한다(-610 정본, 409 WORK_NOT_TODAY, -614 팀 작업 관리 흐름)
+        workUnits.requireToday(siteId, workUnitId, clock.instant());
         List<String> cameras = activeCameras(siteId);
         if (cameras.size() < 2) {
             throw new BusinessException(ErrorCode.Setup.SETUP_CAMERAS_INSUFFICIENT);
@@ -212,6 +231,9 @@ public class SetupService {
             if (!hasActiveSetupWorker()) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_WORKER_UNAVAILABLE);
             }
+            if (SetupReuseMode.REUSE.equals(requestedMode)) {
+                requireReusableScene(siteId);
+            }
 
             UUID sessionId = UUID.randomUUID();
             Instant now = clock.instant();
@@ -233,6 +255,9 @@ public class SetupService {
             target.put("method", "BACKGROUND_JOINT_BA_V2");
             target.put("world_frame", "AUTO_FLOOR_Z_UP_METERS");
             input.put("height_tolerance_cm", DEFAULT_HEIGHT_TOLERANCE_CM);
+            if (SetupReuseMode.REUSE.equals(requestedMode)) {
+                input.put("mode", SetupReuseMode.REUSE_SCENE);  // site_setup 1.11.0. 새 모델은 지금처럼 싣지 않는다(FULL_SETUP)
+            }
 
             String jobId = jobs.enqueue(new JobSpec("site_setup", input, SETUP_MAX_ATTEMPTS, SETUP_TIMEOUT_MS, null, null));
 
@@ -241,13 +266,14 @@ public class SetupService {
                     INSERT INTO setup_session (
                         setup_session_id, site_id, work_unit_id, retry_of, job_id, status, progress_pct,
                         camera_heights_m, height_tolerance_cm, background_collection_pct,
-                        requested_by, started_at, updated_at
+                        requested_by, started_at, updated_at, requested_mode, mode
                     ) VALUES (
                         :id, :site, :workId, :retryOf, :jobId, 'COLLECTING_BACKGROUND', 0,
                         CAST(:heights AS jsonb), :tolerance, CAST(:collection AS jsonb),
-                        :userId, :now, :now
+                        :userId, :now, :now, :mode, :mode
                     )
                     """, new MapSqlParameterSource()
+                    .addValue("mode", requestedMode)
                     .addValue("id", sessionId)
                     .addValue("site", siteId)
                     .addValue("workId", workUnitId)
@@ -393,7 +419,8 @@ public class SetupService {
         if (!"FAILED".equals(existing.status())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_RETRY_NOT_ALLOWED);
         }
-        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId);
+        // 재시도는 처음 요청한 모드 그대로(-614)
+        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId, existing.requestedMode());
     }
 
     /**
@@ -447,10 +474,13 @@ public class SetupService {
         if (READY_OR_LATER_STAGES.contains(event.setup().path("status").asString(""))) {
             String calibration = optionalText(event.setup(), "calibration_version", session.calibrationVersion());
             publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
-            // 세팅 화면·관제 뷰어가 보는 현재 Scene 을 이 세션의 미리보기로 올린다(세션당 한 번)
-            promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
-                    optionalText(event.setup(), "preview_scene_version", session.previewSceneVersion()),
-                    SetupArtifactRegistrar.PREVIEW_SCENE, null);
+            // 세팅 화면·관제 뷰어가 보는 현재 Scene 을 이 세션의 미리보기로 올린다(세션당 한 번).
+            // 이전 모델 재사용(REUSE_SCENE, -614)은 미리보기가 없고 현재 관제 맵을 그대로 둔다
+            if (!SetupReuseMode.reuseScene(event.setup())) {
+                promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
+                        optionalText(event.setup(), "preview_scene_version", session.previewSceneVersion()),
+                        SetupArtifactRegistrar.PREVIEW_SCENE, null);
+            }
         }
     }
 
@@ -487,10 +517,13 @@ public class SetupService {
             applySnapshot(session, event.jobId(), session.progressLeaseId(), submittedLease, event.result(), true);
             String calibration = optionalText(event.result(), "calibration_version", session.calibrationVersion());
             publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
-            // 정식 Scene 은 지금 현재 Scene 이 이 세션의 미리보기일 때만 교체한다(관리자가 고른 다른 Scene 은 건드리지 않음)
-            promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
-                    optionalText(event.result(), "scene_version", session.sceneVersion()), SetupArtifactRegistrar.SCENE,
-                    optionalText(event.result(), "preview_scene_version", session.previewSceneVersion()));
+            // 정식 Scene 은 지금 현재 Scene 이 이 세션의 미리보기일 때만 교체한다(관리자가 고른 다른 Scene 은 건드리지 않음).
+            // 이전 모델 재사용(REUSE_SCENE, -614)은 새 Scene 이 없어 현재 관제 맵이 그대로다
+            if (!SetupReuseMode.reuseScene(event.result())) {
+                promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
+                        optionalText(event.result(), "scene_version", session.sceneVersion()), SetupArtifactRegistrar.SCENE,
+                        optionalText(event.result(), "preview_scene_version", session.previewSceneVersion()));
+            }
             return;
         }
         String code = event.status();
@@ -522,6 +555,9 @@ public class SetupService {
     private void applySnapshot(SessionRow session, String jobId, UUID leaseId, UUID artifactLeaseId, JsonNode snapshot,
             boolean terminalResult) {
         applySnapshotCore(session, jobId, leaseId, artifactLeaseId, snapshot, terminalResult);
+        if (SetupReuseMode.reuseScene(snapshot)) {
+            return;  // 이전 모델 재사용(-614): AI 구역 초안이 필요 없다(화면이 현재 관제 구역을 채운다)
+        }
         String cal = optionalText(snapshot, "calibration_version", session.calibrationVersion());
         String preview = optionalText(snapshot, "preview_scene_version", session.previewSceneVersion());
         if (cal != null && preview != null) {
@@ -597,11 +633,23 @@ public class SetupService {
         }
 
         boolean readyOrLater = READY_OR_LATER_STAGES.contains(stage);
+        // 새 모델 / 이전 모델 재사용(-614). 재사용은 미리보기·정식 Scene·구역 초안이 없다(현재 관제 맵을 그대로 쓴다)
+        SetupReuseMode.Applied mode = SetupReuseMode.read(mapper, session.requestedMode(), session.mode(), sameLease, snapshot);
         String calibrationVersion = optionalText(snapshot, "calibration_version", session.calibrationVersion());
         String previewSceneVersion = optionalText(snapshot, "preview_scene_version", session.previewSceneVersion());
         String sceneVersion = optionalText(snapshot, "scene_version", session.sceneVersion());
         String configVersion = optionalText(snapshot, "config_version", session.configVersion());
         String zoneDraftsRef = optionalText(snapshot, "zone_drafts_ref", session.zoneDraftsRef());
+        if (mode.reuse()) {
+            if (optionalText(snapshot, "preview_scene_version", null) != null || optionalText(snapshot, "scene_version", null) != null
+                    || optionalText(snapshot, "zone_drafts_ref", null) != null) {
+                throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
+            }
+            // 앞선 대여가 새 모델로 이어 가며 남긴 미리보기는 이 결과의 것이 아니다
+            previewSceneVersion = null;
+            sceneVersion = null;
+            zoneDraftsRef = null;
+        }
 
         JsonNode heightChecksNode = snapshot.get("height_checks");
         String heightChecksJson = session.heightChecksJson();
@@ -610,17 +658,22 @@ public class SetupService {
         }
 
         if (readyOrLater) {
-            if (calibrationVersion == null || previewSceneVersion == null || heightChecksJson == null) {
+            if (calibrationVersion == null || (!mode.reuse() && previewSceneVersion == null) || heightChecksJson == null) {
+                throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
+            }
+            // 재사용은 World 다시 맞추기가 채택된 뒤에만 READY 다(계약 site_setup 1.11.0 reuse_rules)
+            if (mode.reuse() && mode.worldAnchorJson() == null) {
                 throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
             }
         }
         // 정식 굽기를 작업 시작(LIVE)으로 회수한 결과만 정식 Scene 없이 끝난다(site_setup 1.7.0, 명세 3.2 5항, S15P31A101-597).
-        // 관제는 READY_FOR_ZONES 때 현재 Scene 이 된 미리보기로 한다. 계약이 bake_skipped ↔ scene_version null 을 묶는다
+        // 관제는 READY_FOR_ZONES 때 현재 Scene 이 된 미리보기로 한다. 계약이 bake_skipped ↔ scene_version null 을 묶는다.
+        // 이전 모델 재사용(-614)은 굽기가 없어 정식 Scene 없이 끝난다(bake_skipped 없음)
         String bakeSkipped = terminalResult ? optionalText(snapshot, "bake_skipped", null) : null;
-        if (terminalResult && sceneVersion == null && !BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped)) {
+        if (terminalResult && !mode.reuse() && sceneVersion == null && !BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped)) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
-        if (bakeSkipped != null && (!BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped) || sceneVersion != null)) {
+        if (bakeSkipped != null && (mode.reuse() || !BAKE_SKIPPED_LIVE_WORK.equals(bakeSkipped) || sceneVersion != null)) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
         if (bakeSkipped != null && !liveWorkInProgress(session.siteId())) {
@@ -665,10 +718,18 @@ public class SetupService {
                     bake_skipped = COALESCE(:bakeSkipped, bake_skipped),
                     ready_at = COALESCE(ready_at, :readyAt),
                     completed_at = COALESCE(completed_at, :completedAt),
+                    mode = :mode,
+                    reuse_fallback_reason = :fallback,
+                    world_anchor = COALESCE(CAST(:worldAnchor AS jsonb), CASE WHEN :keepAnchor THEN world_anchor END),
                     updated_at = :now
                 WHERE setup_session_id = :id
                 """, new MapSqlParameterSource()
                 .addValue("id", session.setupSessionId())
+                .addValue("mode", mode.mode())
+                .addValue("fallback", mode.fallbackReason())
+                .addValue("worldAnchor", mode.worldAnchorJson())
+                // 재대여는 처음부터 다시 하므로 앞선 대여의 World 다시 맞추기 결과를 두지 않는다
+                .addValue("keepAnchor", sameLease)
                 .addValue("leaseId", nextLeaseId)
                 .addValue("status", stage)
                 .addValue("pct", progressPct)
@@ -1178,6 +1239,27 @@ public class SetupService {
         }
     }
 
+    /**
+     * 이전 모델 재사용(-614)은 현재 관제 맵(현장당 하나)과 그 보정이 있어야 한다. 현재 맵이 Tier 0 의 지금 보정과 다른 World 로 판정되면
+     * 새 보정을 그 World 에 맞춰도 맵과 어긋나므로 막는다(판정을 모르면 막지 않는다. 워커의 World 다시 맞추기가 다시 확인한다).
+     */
+    private void requireReusableScene(String siteId) {
+        List<String[]> current = jdbc.query("SELECT s.scene_version, s.calibration_version FROM ("
+                + SceneService.CURRENT_COMMITTED + """
+                ) s JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
+                WHERE s.site_id = :site
+                LIMIT 1
+                """, new MapSqlParameterSource("site", siteId),
+                (rs, i) -> new String[] {rs.getString("scene_version"), rs.getString("calibration_version")});
+        if (current.isEmpty()) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_SCENE_MISSING);
+        }
+        JsonNode compat = compatibility.current(current.getFirst()[0], current.getFirst()[1]);
+        if ("MISMATCH".equals(compat.path("verification").asString(""))) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_SCENE_MISMATCH);
+        }
+    }
+
     private void checkWorkUnitCanSetupForUpdate(String siteId, long workUnitId) {
         List<String> rows = jdbc.queryForList(
                 "SELECT status FROM work_unit WHERE site_id = :site AND work_id = :id FOR UPDATE",
@@ -1290,6 +1372,7 @@ public class SetupService {
                        pair_holdout::text AS pair_holdout,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
+                       requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
                        CASE WHEN setup_session.started_at < COALESCE(
                             (SELECT installed_on FROM flyway_schema_history WHERE version = '47' AND success), now()) THEN
                        (SELECT min(t) FROM (
@@ -1361,7 +1444,7 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       ready_at, requested_by
+                       ready_at, requested_by, requested_mode, mode
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 """ + (forUpdate ? " FOR UPDATE" : "");
@@ -1382,7 +1465,7 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       ready_at, requested_by
+                       ready_at, requested_by, requested_mode, mode
                 FROM setup_session
                 WHERE job_id = :jobId
                 FOR UPDATE
@@ -1409,7 +1492,9 @@ public class SetupService {
                 rs.getString("config_version"),
                 rs.getString("zone_drafts_ref"),
                 rs.getObject("ready_at", OffsetDateTime.class),
-                rs.getObject("requested_by", Long.class));
+                rs.getObject("requested_by", Long.class),
+                rs.getString("requested_mode"),
+                rs.getString("mode"));
     }
 
     private ObjectNode view(ResultSet rs) throws SQLException {
@@ -1470,6 +1555,12 @@ public class SetupService {
         putText(out, "failure_message", rs.getString("failure_message"));
         // 작업 시작으로 정식 굽기를 회수한 COMPLETED(site_setup 1.7.0, S15P31A101-597). 그 밖에는 null
         putText(out, "bake_skipped", rs.getString("bake_skipped"));
+        // 세팅 모드(-614): mode 는 실제로 따른 모드(NEW|REUSE), requested_mode 는 요청한 모드. REUSE 요청이 새 모델로 이어 가면
+        // mode=NEW 이고 reuse_fallback_reason 에 World 다시 맞추기 거부 사유가 온다. world_anchor 는 그 판정 요약(받기 전 null)
+        out.put("mode", rs.getString("mode"));
+        out.put("requested_mode", rs.getString("requested_mode"));
+        putText(out, "reuse_fallback_reason", rs.getString("reuse_fallback_reason"));
+        SetupReuseMode.putWorldAnchor(mapper, out, rs.getString("world_anchor"));
 
         long requestedBy = rs.getLong("requested_by");
         if (rs.wasNull()) {
@@ -1531,6 +1622,8 @@ public class SetupService {
             String configVersion,
             String zoneDraftsRef,
             OffsetDateTime readyAt,
-            Long requestedBy) {
+            Long requestedBy,
+            String requestedMode,
+            String mode) {
     }
 }
