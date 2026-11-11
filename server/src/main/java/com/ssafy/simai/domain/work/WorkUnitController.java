@@ -1,12 +1,16 @@
 package com.ssafy.simai.domain.work;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.report.TbmReportService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.exception.GlobalExceptionHandler;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
@@ -39,15 +43,19 @@ class WorkUnitController {
 
     static final int DEFAULT_DAYS = 7;
     static final int MAX_DAYS = 90;
+    /** 달력 한 달(앞뒤 주 포함 6주)이 넉넉히 들어가는 기간 */
+    static final int MAX_RANGE_DAYS = 92;
 
     private final WorkUnitRepository works;
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
     private final WorkSessionService sessions;
+    private final TbmReportService reports;
 
     WorkUnitController(WorkUnitRepository works, SiteLookup sites, TransactionTemplate transaction, Clock clock,
-            WorkSessionService sessions) {
+            WorkSessionService sessions, TbmReportService reports) {
+        this.reports = reports;
         this.works = works;
         this.sites = sites;
         this.transaction = transaction;
@@ -59,13 +67,60 @@ class WorkUnitController {
     record WorkUnitsResponse(List<ObjectNode> works) {
     }
 
+    /**
+     * from·to(YYYY-MM-DD, 양끝 포함, 92일 이내)를 주면 작업 날짜로 거른다(달력, S15P31A101-610).
+     * 주지 않으면 예전처럼 끝난 지 days 일이 안 된 작업이다.
+     */
     @GetMapping
-    WorkUnitsResponse list(@RequestParam(defaultValue = "" + DEFAULT_DAYS) int days) {
+    WorkUnitsResponse list(@RequestParam(defaultValue = "" + DEFAULT_DAYS) int days,
+            @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        if (from != null || to != null) {
+            LocalDate start = parseDay(from, ErrorCode.Work.INVALID_WORK_RANGE);
+            LocalDate end = parseDay(to, ErrorCode.Work.INVALID_WORK_RANGE);
+            if (end.isBefore(start) || ChronoUnit.DAYS.between(start, end) >= MAX_RANGE_DAYS) {
+                throw new BusinessException(ErrorCode.Work.INVALID_WORK_RANGE);
+            }
+            return new WorkUnitsResponse(works.findByDateRange(sites.siteId(), start, end));
+        }
         if (days < 1 || days > MAX_DAYS) {
             throw new BusinessException(ErrorCode.Work.INVALID_WORK_DAYS);
         }
         Instant since = clock.instant().minus(Duration.ofDays(days));
         return new WorkUnitsResponse(works.findRecent(sites.siteId(), since));
+    }
+
+    /**
+     * 날짜 작업 만들기·찾기(S15P31A101-610). 그날 날짜 작업이 있으면 그대로, 없으면 빈 TBM 보고서와 함께 만든다.
+     * 오늘 이전 날짜는 새로 만들지 않는다(409 WORK_DATE_PAST).
+     */
+    @PutMapping("/daily/{date}")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode daily(@PathVariable String date, @AuthenticationPrincipal Jwt jwt) {
+        LocalDate day = parseDay(date, ErrorCode.Work.INVALID_WORK_UNIT);
+        String siteId = sites.siteId();
+        long userId = Long.parseLong(jwt.getSubject());
+        Long id = transaction.execute(s -> {
+            Instant now = clock.instant();
+            long workId = works.findOrCreateDaily(siteId, day, userId, now);
+            // 지난 날짜는 다시 보기만 한다. 보고서가 없던 예전 데이터에 새 기록을 만들지 않는다
+            if (!day.isBefore(LocalDate.ofInstant(now, WorkUnitRepository.SITE_ZONE))) {
+                reports.createDailyBlank(workId, userId);
+            }
+            return workId;
+        });
+        return works.findOne(siteId, id == null ? 0 : id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND));
+    }
+
+    private static LocalDate parseDay(String value, ErrorCode error) {
+        if (value == null || !value.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            throw new BusinessException(error);
+        }
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            throw new BusinessException(error);
+        }
     }
 
     @PostMapping("/{workId}/start")

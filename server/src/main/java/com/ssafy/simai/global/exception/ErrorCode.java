@@ -550,7 +550,11 @@ public sealed interface ErrorCode {
         INVALID_WORK_UNIT(HttpStatus.BAD_REQUEST, "작업 값이 올바르지 않습니다(date YYYY-MM-DD, name 1~100자, from_ms < to_ms 이고 24시간 이내, planned_people 0~100, place 100자·lead 50자 이내)"),
         // 구역 밖 작업은 zone_id 를 비우고 place 에 장소를 적는다
         UNKNOWN_WORK_ZONE(HttpStatus.BAD_REQUEST, "없는 구역입니다"),
-        INVALID_WORK_DAYS(HttpStatus.BAD_REQUEST, "days 는 1~90 이어야 합니다");
+        INVALID_WORK_DAYS(HttpStatus.BAD_REQUEST, "days 는 1~90 이어야 합니다"),
+        INVALID_WORK_RANGE(HttpStatus.BAD_REQUEST, "from·to 는 YYYY-MM-DD 이고 from ≤ to, 기간은 92일 이내여야 합니다"),
+        WORK_DATE_PAST(HttpStatus.CONFLICT, "오늘 이전 날짜에는 작업을 새로 만들 수 없습니다"),
+        WORK_NOT_TODAY(HttpStatus.CONFLICT, "작업 날짜가 오늘(Asia/Seoul)일 때만 할 수 있습니다"),
+        WORK_NO_SIGNATURE(HttpStatus.CONFLICT, "작업을 시작하려면 참석자 서명이 1명 이상 있어야 합니다");
 
         private final HttpStatus status;
         private final String message;

@@ -1354,7 +1354,9 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `work_id` | bigint identity | PK |  | 응답은 글자로 준다 |
 | `site_id` | text | FK>site.site_id, NN |  |  |
 | `work_date` | date | NN |  | 현장 시각의 작업 날짜 |
-| `name` | text | NN |  | 1~100자 |
+| `name` | text | CK(daily 이거나 NN) |  | 1~100자. 날짜 작업은 고른 작업내용으로 서버가 만든다(첫 항목 + ' 외 N건', 고르기 전에는 NULL, V54) |
+| `daily` | boolean | NN, 기본 false |  | 날짜 작업(하루 = 작업 하나). `UNIQUE (site_id, work_date) WHERE daily`. 계획 시간은 그날 0~24시(Asia/Seoul), 레이아웃 없음(V54, `docs/design/daily-work-units.md`) |
+| `setup_completed_at` | ts |  |  | 세팅 완료(C17) 시각. 달력 진행 칩 `SETUP_DONE` 의 근거(V54) |
 | `starts_at` | ts | NN |  |  |
 | `ends_at` | ts | NN, CK(> starts_at) |  | 24시간 이내(API 검사) |
 | `zone_id` | text |  |  | null 이면 구역 밖 작업 |
