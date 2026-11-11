@@ -57,6 +57,19 @@ const acked = (change: Partial<EventItem> = {}) =>
   entry({ event_sequence: 2, lifecycle: 'UPDATED', updated_at: T + 1000, acks: ack, ...change });
 
 describe('ringingSeverity', () => {
+  it('지금 Tier 0 가 들고 있지 않은 지난 관제 경보는 울리지 않는다(S15P31A101-595)', () => {
+    expect(ringingSeverity([entry({ held_by_tier0: false })], true)).toBeNull();
+    expect(
+      ringingSeverity(
+        [
+          entry({ held_by_tier0: false }),
+          entry({ event_id: 'e-2', severity: 'HIGH', held_by_tier0: true }),
+        ],
+        true,
+      ),
+    ).toBe('HIGH');
+  });
+
   it('확인 대기 위험·경고 경보가 없으면 null 이다', () => {
     expect(ringingSeverity([], true)).toBeNull();
   });

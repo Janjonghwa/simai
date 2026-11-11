@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.event;
 
+import com.ssafy.simai.domain.tier0.event.Tier0HeldEvents;
 import java.sql.Array;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -24,6 +25,8 @@ import tools.jackson.databind.node.ObjectNode;
  * 관제 화면이 읽는 LIVE 이벤트(risk_event)와 확인 기록(event_ack). 응답 항목은 계약 risk_event payload 와 같은 snake_case 이고
  * 시각은 UTC ms 다(명세 12.4·12.6, 관제 앱 features/events/types.ts). acks[] 는 event_ack 에서 만든다(risk_event 에 칸이 없다).
  * escalations[] 는 Tier 0 저널 전이(UPDATED escalation)로 반영된 상향 기록이다(S15P31A101-276).
+ * held_by_tier0 는 지금 Tier 0 가 그 이벤트를 활성으로 들고 있는지(Tier0HeldEvents, 저장하지 않는 파생값, S15P31A101-595)다.
+ * 관제 화면은 해소 전이면서 이 값이 true 인 이벤트만 「진행 중」으로 보이고, 나머지 해소 전 이벤트는 「지난 관제 · 확인 필요」로 내린다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -38,10 +41,12 @@ public class EventQueryRepository {
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
+    private final Tier0HeldEvents held;
 
-    public EventQueryRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper) {
+    public EventQueryRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Tier0HeldEvents held) {
         this.jdbc = jdbc;
         this.mapper = mapper;
+        this.held = held;
     }
 
     /**
@@ -264,6 +269,9 @@ public class EventQueryRepository {
                 e.set("escalations", escalations);
             }
         }
+        // 계약 risk_event 2.3.0: true 는 LIVE 의 RAISED·UPDATED 에만. 해소된 이벤트는 집합에 남아 있어도 false 다
+        e.put("held_by_tier0", !"RESOLVED".equals(rs.getString("lifecycle"))
+                && held.isHeld(rs.getString("gateway_id"), UUID.fromString(rs.getString("event_id"))));
         return e;
     }
 

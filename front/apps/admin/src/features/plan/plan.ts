@@ -1,4 +1,4 @@
-import { isActive, isAlarming, SEVERITY_RANK, type EventEntry } from '@/features/events/events';
+import { isAlarming, isCurrent, SEVERITY_RANK, type EventEntry } from '@/features/events/events';
 import type { Severity } from '@/features/events/types';
 import type { Zone, ZoneBox } from '@/features/zones/types';
 import type { WorldTrack } from '@simai/contracts';
@@ -121,13 +121,16 @@ export function markFor(
   return result;
 }
 
-/** 진행 중 이벤트(CAUTION 이상)로 사람·구역마다 가장 높은 등급과 확인 대기 여부를 모은다. */
+/**
+ * 진행 중 이벤트(CAUTION 이상)로 사람·구역마다 가장 높은 등급과 확인 대기 여부를 모은다.
+ * 지금 Tier 0 가 들고 있지 않은 「지난 관제」 이벤트는 뺀다(S15P31A101-595).
+ */
 export function planMarks(entries: readonly EventEntry[]) {
   const people = new Map<string, PlanMark>();
   const zones = new Map<string, PlanMark>();
   for (const entry of entries) {
     const { event } = entry;
-    if (!isActive(event) || SEVERITY_RANK[event.severity] < SEVERITY_RANK.CAUTION) continue;
+    if (!isCurrent(event) || SEVERITY_RANK[event.severity] < SEVERITY_RANK.CAUTION) continue;
     const mark = { severity: event.severity, alarming: isAlarming(entry) };
     for (const id of event.world_ids) merge(people, id, mark);
     if (event.zone_id) merge(zones, event.zone_id, mark);

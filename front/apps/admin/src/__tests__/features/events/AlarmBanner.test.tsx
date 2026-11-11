@@ -75,6 +75,19 @@ afterEach(() => {
 });
 
 describe('AlarmBanner', () => {
+  it('지금 Tier 0 가 들고 있지 않은 지난 관제 경보는 배너에 없다(S15P31A101-595)', () => {
+    live.entries = [
+      { ...alarm, event: { ...alarm.event, held_by_tier0: false } },
+      {
+        ...alarm,
+        event: { ...alarm.event, event_id: 'e-2', severity: 'HIGH', held_by_tier0: true },
+      },
+    ];
+    const banner = renderBanner(true);
+    expect(banner.textContent).not.toContain('+1');
+    expect(within(banner).getByText('경고')).toBeTruthy();
+  });
+
   it('깜빡이는 테두리는 배너 전체를 덮지만 클릭을 가로채지 않는다(버튼이 눌린다)', () => {
     const banner = renderBanner(true);
     const blink = [...banner.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].find((el) =>

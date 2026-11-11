@@ -172,6 +172,8 @@ async function resendPendingAcks(
  * - 연결이 열릴 때마다 목록을 다시 받는다. 서버에는 STOMP 다시 받기(재생 위치)가 없어 끊긴 동안에 놓친 전이는 목록으로만 채운다.
  *   목록을 받는 사이 STOMP 로 온 이벤트는 받은 뒤 합치므로 지워지지 않는다(useLiveEvents).
  * - sendAck 을 주면, 끊긴 화면에서 누른 확인(writeLocalAck)을 연결이 열릴 때 서버로 보낸다. 주지 않으면 보내지 않고 남겨 둔다.
+ * - viewer_health.held_events_revision 이 바뀌면 목록을 다시 받는다(S15P31A101-595). Tier 0 가 들고 있는 이벤트 집합이 전이 없이
+ *   한꺼번에 바뀐 것이라(재동기화 스냅샷·Tier 0 꺼짐) 이벤트마다 오는 메시지가 없다. 처음 받은 판은 기준으로만 삼는다.
  * 해제 함수를 돌려준다.
  */
 export function bindEventsCache(
@@ -182,6 +184,14 @@ export function bindEventsCache(
   const sending = new Set<string>();
   const reload = () => void queryClient.invalidateQueries({ queryKey: LIVE_EVENTS_KEY });
   const offEvent = realtime.on('riskEvent', (event) => applyEvents(queryClient, [event]));
+  let heldRevision = useRealtimeStore.getState().health?.payload.held_events_revision;
+  const offHealth = useRealtimeStore.subscribe((state) => {
+    const revision = state.health?.payload.held_events_revision;
+    if (revision === undefined || revision === heldRevision) return;
+    const known = heldRevision !== undefined;
+    heldRevision = revision;
+    if (known) reload();
+  });
   const offOpen = realtime.on('open', () => {
     // 다시 받을 때까지는 끊긴 동안 놓친 것이 있을 수 있다. 실패하면 받을 때까지 다시 시도한다.
     queryClient.setQueryData<LiveEvents>(
@@ -197,5 +207,6 @@ export function bindEventsCache(
   return () => {
     offEvent();
     offOpen();
+    offHealth();
   };
 }

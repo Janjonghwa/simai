@@ -30,6 +30,21 @@ export const eventTime = (event: EventItem) => event.updated_at ?? event.raised_
 
 export const isActive = (event: EventItem) => event.lifecycle !== 'RESOLVED';
 
+/**
+ * 지금 연결된 Tier 0 가 이 이벤트를 활성으로 들고 있는지(계약 risk_event 2.3.0 held_by_tier0, S15P31A101-595).
+ * 칸이 없으면(이전 EC2) 들고 있다고 본다. 모르면 경보를 놓치지 않는 쪽이다.
+ */
+export const isHeld = (event: EventItem) => event.held_by_tier0 !== false;
+
+/** 「진행 중」: 해소 전이고 지금 Tier 0 가 들고 있다. 경보 배너·소리·2D 평면·패널 머리줄 수가 이것만 쓴다. */
+export const isCurrent = (event: EventItem) => isActive(event) && isHeld(event);
+
+/**
+ * 「지난 관제 · 확인 필요」: 해소 전인데 지금 Tier 0 가 들고 있지 않다(GPU 를 끈 관제에서 열린 채 남은 것 등).
+ * 이벤트는 바꾸지 않고(자동 해소 없음, 명세 3.2) 화면 분류만 내린다. 상세·운영자 종료는 그대로 된다.
+ */
+export const isStale = (event: EventItem) => isActive(event) && !isHeld(event);
+
 /** 소리·점멸·확인 대상 등급(HIGH 이상). */
 export const isAlarmSeverity = (severity: Severity) =>
   SEVERITY_RANK[severity] >= SEVERITY_RANK.HIGH;
@@ -152,6 +167,17 @@ function unionSummaries(
   return [...byId.values()].sort(bySummaryNewest);
 }
 
+/**
+ * 같거나 오래된 상태라도 '들고 있음'(held_by_tier0)은 받은 쪽 값으로 바꾼다. 이 값은 전이 없이 바뀌고(스냅샷·Tier 0 꺼짐)
+ * 그때 목록을 다시 받아 알게 되므로, 같은 event_sequence 면 나중에 받은 것이 지금 값이다. 칸이 없는 것은 바꾸지 않는다.
+ */
+function withHeld(entry: EventEntry, next: EventItem): EventEntry {
+  if (next.held_by_tier0 === undefined || next.held_by_tier0 === entry.event.held_by_tier0) {
+    return entry;
+  }
+  return { ...entry, event: { ...entry.event, held_by_tier0: next.held_by_tier0 } };
+}
+
 /** next 가 prev 보다 새 상태인지. event_sequence 가 있으면 그것으로, 없으면 시각으로 본다. */
 function isNewer(prev: EventItem, next: EventItem): boolean {
   if (prev.event_sequence !== undefined && next.event_sequence !== undefined) {
@@ -160,6 +186,14 @@ function isNewer(prev: EventItem, next: EventItem): boolean {
   const a = eventTime(prev);
   const b = eventTime(next);
   return a === null || (b !== null && b > a);
+}
+
+/** 같은 상태(event_sequence 가 같음)를 다시 받았는지. sequence 가 없으면 시각이 같은지로 본다. */
+function isSameState(prev: EventItem, next: EventItem): boolean {
+  if (prev.event_sequence !== undefined && next.event_sequence !== undefined) {
+    return next.event_sequence === prev.event_sequence;
+  }
+  return eventTime(prev) === eventTime(next);
 }
 
 /** 등급이 오르거나 재개되면 새 경보 단계가 열린다. */
@@ -180,19 +214,22 @@ export function mergeEvent(prev: EventEntry | undefined, next: EventItem): Event
       ? prev.event.escalations
       : unionEscalations(prev.event.escalations, next.escalations);
     const summaries = unionSummaries(prev.event.summaries, next.summaries);
-    return acks === prev.event.acks &&
+    const merged =
+      acks === prev.event.acks &&
       escalations === prev.event.escalations &&
       summaries === prev.event.summaries
-      ? prev
-      : {
-          ...prev,
-          event: {
-            ...prev.event,
-            acks,
-            escalations,
-            ...(summaries !== undefined ? { summaries } : {}),
-          },
-        };
+        ? prev
+        : {
+            ...prev,
+            event: {
+              ...prev.event,
+              acks,
+              escalations,
+              ...(summaries !== undefined ? { summaries } : {}),
+            },
+          };
+    // 늦게 온 낮은 sequence(재연결 전 목록 등)가 '들고 있음'을 되돌리지 않게 같은 sequence 일 때만 바꾼다.
+    return isSameState(prev.event, next) ? withHeld(merged, next) : merged;
   }
   const acks = unionAcks(next.acks, prev.event.acks);
   const escalations = resumed
@@ -291,13 +328,16 @@ export function withoutCleared(entries: EventEntry[], clearedAt: number | null):
   return shown.length === entries.length ? entries : shown;
 }
 
-/** 관제 화면 소리·점멸 대상(명세 12.4): LIVE·CRITICAL/HIGH·RAISED/UPDATED 이고 지금 단계에서 아직 확인 전. */
+/**
+ * 관제 화면 소리·점멸 대상(명세 12.4): LIVE·CRITICAL/HIGH·RAISED/UPDATED 이고 지금 단계에서 아직 확인 전.
+ * 지금 Tier 0 가 들고 있지 않은 「지난 관제」 이벤트는 울리지 않는다(S15P31A101-595).
+ */
 export function isAlarming(entry: EventEntry): boolean {
   const { event } = entry;
   return (
     event.source === 'LIVE' &&
     isAlarmSeverity(event.severity) &&
-    isActive(event) &&
+    isCurrent(event) &&
     acknowledgedAt(entry) === null
   );
 }

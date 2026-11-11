@@ -8,6 +8,7 @@ import {
   eventTime,
   isActive,
   isAlarming,
+  isStale,
   type EventEntry,
 } from '@/features/events/entries';
 import type { EventItem, Severity } from '@/features/events/types';
@@ -24,6 +25,11 @@ export interface Incident {
   /** 진행 중 규칙 중 가장 높은 등급(모두 해소면 해소된 것 중 가장 높은 등급). */
   severity: Severity;
   active: boolean;
+  /**
+   * 진행 중 규칙이 모두 「지난 관제」(해소 전이지만 지금 Tier 0 가 들고 있지 않음, S15P31A101-595)다.
+   * 패널은 이런 묶음을 「지난 관제 · 확인 필요」 칸에 따로 모으고 경보처럼 보이지 않게 한다.
+   */
+  stale: boolean;
   alarming: boolean;
   latestAt: number;
 }
@@ -75,6 +81,7 @@ function buildIncident(key: string, group: EventEntry[]): Incident {
     entries: shown,
     severity: top.event.severity,
     active: live.length > 0,
+    stale: live.length > 0 && live.every((e) => isStale(e.event)),
     alarming: live.some(isAlarming),
     latestAt: Math.max(...shown.map((e) => eventTime(e.event) ?? 0)),
   };
@@ -124,18 +131,41 @@ export function resolvedGroups(entries: readonly EventEntry[]): ResolvedGroup[] 
     .sort((a, b) => b.incident.latestAt - a.incident.latestAt);
 }
 
-/** 이벤트 패널의 두 칸: 진행 중인 사건 전부와, 최근에 해소된 묶음 몇 건. */
+/**
+ * 이벤트 목록을 「지금」 쪽(진행 중·해소)과 「지난 관제」 쪽으로 나눈다. 두 쪽을 따로 묶어야 지난 관제의 World ID 가
+ * 지금 관제의 같은 ID 와 한 카드로 섞이지 않는다(Tier 0 가 바뀌면 ID 가 다시 시작한다).
+ */
+function splitStale(entries: readonly EventEntry[]) {
+  const now: EventEntry[] = [];
+  const stale: EventEntry[] = [];
+  for (const entry of entries) (isStale(entry.event) ? stale : now).push(entry);
+  return { now, stale };
+}
+
+/**
+ * 이벤트 패널의 세 칸: 진행 중인 사건 전부, 최근에 해소된 묶음 몇 건, 「지난 관제 · 확인 필요」 사건 전부(S15P31A101-595).
+ * staleEvents 는 지난 관제 칸의 이벤트 수(사건이 아니라 규칙 하나하나)다.
+ */
 export interface EventSections {
   active: Incident[];
   resolved: ResolvedGroup[];
+  stale: Incident[];
+  staleEvents: number;
 }
 
 export function eventSections(entries: readonly EventEntry[]): EventSections {
+  const { now, stale } = splitStale(entries);
   return {
-    active: groupIncidents(entries).filter((i) => i.active),
+    active: groupIncidents(now).filter((i) => i.active),
     resolved: resolvedGroups(entries).slice(0, RECENT_RESOLVED_INCIDENTS),
+    stale: groupIncidents(stale),
+    staleEvents: stale.length,
   };
 }
+
+/** 지금 Tier 0 가 들고 있지 않은 이벤트를 뺀다(진행 중·해소만 남김). 같은 사람 묶음에 지난 관제가 섞이지 않게 쓴다. */
+export const withoutStale = (entries: readonly EventEntry[]): EventEntry[] =>
+  splitStale(entries).now;
 
 /** 묶음에서 가장 먼저 발생한 시각(카드 머리줄). 발생 시각을 모르면 null. */
 export function firstRaisedAt(incident: Incident): number | null {
@@ -154,11 +184,16 @@ export function firstActiveRaisedAt(incident: Incident): number | null {
   return times.length > 0 ? Math.min(...times) : null;
 }
 
-/** 이 이벤트가 든 묶음. 사람별 묶음에 없는 해소 이벤트는 해소 묶음이다. 목록에서 빠졌으면 없다. */
+/**
+ * 이 이벤트가 든 묶음. 패널과 같이 지금 쪽과 지난 관제 쪽을 따로 묶는다. 사람별 묶음에 없는 해소 이벤트는 해소 묶음이다.
+ * 목록에서 빠졌으면 없다.
+ */
 export function incidentOf(entries: readonly EventEntry[], eventId: string): Incident | undefined {
   const holds = (i: Incident) => i.entries.some((e) => e.event.event_id === eventId);
+  const { now, stale } = splitStale(entries);
   return (
-    groupIncidents(entries).find(holds) ??
+    groupIncidents(now).find(holds) ??
+    groupIncidents(stale).find(holds) ??
     resolvedGroups(entries)
       .map((g) => g.incident)
       .find(holds)

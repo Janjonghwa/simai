@@ -281,6 +281,69 @@ describe('EventPanel 모두 지우기', () => {
   });
 });
 
+// S15P31A101-595: 꺼진 관제에서 열린 채 남은 사건은 접힌 「지난 관제 · 확인 필요」 칸으로 내린다.
+describe('EventPanel 지난 관제 칸', () => {
+  const head = () => screen.getByTestId('event-panel-head').textContent;
+  const staleToggle = () => screen.getByRole('button', { name: /지난 관제 · 확인 필요/ });
+  const old = (change: Partial<EventItem> = {}) =>
+    entry({ held_by_tier0: false, raised_at: T - 40 * 3_600_000, ...change });
+
+  it('지난 관제는 처음에 접힌 칸으로 이벤트 수만 보이고, 머리줄 사건 수에 들지 않는다', () => {
+    renderPanel([
+      entry({ event_id: 'now', world_ids: ['w-0015'], held_by_tier0: true }),
+      old({ event_id: 'o1', world_ids: ['w-0003'] }),
+      old({ event_id: 'o2', world_ids: ['w-0003'], rule_id: 'R1', severity: 'HIGH' }),
+      old({ event_id: 'o3', world_ids: ['w-0007'] }),
+    ]);
+    expect(head()).toContain('사건 1건');
+    expect(staleToggle().textContent).toContain('지난 관제 · 확인 필요 3건');
+    expect(staleToggle().getAttribute('aria-expanded')).toBe('false');
+    const region = screen.getByRole('region', { name: '지난 관제 · 확인 필요' });
+    expect(within(region).queryAllByRole('article')).toHaveLength(0);
+
+    fireEvent.click(staleToggle());
+    expect(
+      within(region)
+        .getAllByRole('article')
+        .map((a) => a.getAttribute('aria-label'))
+        .sort(),
+    ).toEqual(['w-0003 이벤트', 'w-0007 이벤트']);
+    // 지난 관제 카드는 경보처럼 점멸하지 않고 조용한 칩을 단다
+    expect(region.querySelector('.animate-alarm-blink, [class*="animate-alarm-blink"]')).toBeNull();
+    expect(region.querySelector('[data-chip="stale"]')).toBeTruthy();
+  });
+
+  it('지난 관제만 남으면 진행 중이 없다고 알리고 패널을 접되, 모두 지우기는 남는다', () => {
+    renderPanel([old()]);
+    expect(head()).toContain('사건 0건');
+    expect(fold().getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: '모두 지우기' })).toBeTruthy();
+    fireEvent.click(fold());
+    expect(screen.getByText('진행 중 이벤트 없음')).toBeTruthy();
+    expect(staleToggle().textContent).toContain('1건');
+  });
+
+  it('지난 관제 카드를 두 번 누르면 그 이벤트의 상세를 연다', () => {
+    const onOpen = vi.fn();
+    const onSelect = vi.fn();
+    renderPanel(
+      [
+        entry({ event_id: 'now', held_by_tier0: true }),
+        old({ event_id: 'o1', world_ids: ['w-0003'] }),
+      ],
+      {
+        onOpen,
+        onSelect,
+        selectedKey: 'person:w-0003',
+      },
+    );
+    fireEvent.click(staleToggle());
+    const card = screen.getByRole('article', { name: 'w-0003 이벤트' });
+    fireEvent.click(within(card).getByRole('button', { pressed: true }));
+    expect(onOpen).toHaveBeenCalledWith('o1');
+  });
+});
+
 describe('EventPanel 떠 있는 CCTV 창 비켜 서기', () => {
   // jsdom 은 배치를 하지 않는다. 관제 장면(1440×900)과 패널 폭(340)을 심으면 기본 자리는 left 1086, top 72, 아래 끝 886 이다.
   const scene = document.createElement('div');

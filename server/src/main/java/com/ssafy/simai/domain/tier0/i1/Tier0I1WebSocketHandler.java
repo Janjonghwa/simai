@@ -65,6 +65,8 @@ public class Tier0I1WebSocketHandler extends TextWebSocketHandler {
             log.warn("I1 봉투를 읽지 못해 버림: session={} reason={}", session.getId(), reason(e));
             return;
         }
+        // 받은 것만으로 Tier 0 가 살아 있다고 본다(저장 성공 여부와 상관없이, S15P31A101-595)
+        connections.received(envelope.sourceId(), System.nanoTime());
         try {
             router.route(envelope, clock.instant(), connection);
         } catch (InvalidI1Message | JacksonException e) {

@@ -64,6 +64,22 @@ describe('사람 모양', () => {
 });
 
 describe('planMarks', () => {
+  it('지금 Tier 0 가 들고 있지 않은 지난 관제 이벤트는 표시하지 않는다(S15P31A101-595)', () => {
+    const marks = planMarks([
+      entry({ event_id: 'old', severity: 'CRITICAL', zone_id: 'z-04', held_by_tier0: false }),
+      entry({
+        event_id: 'now',
+        severity: 'HIGH',
+        world_ids: ['w-2'],
+        zone_id: null,
+        held_by_tier0: true,
+      }),
+    ]);
+    expect(marks.people.get('w-1')).toBeUndefined();
+    expect(marks.zones.get('z-04')).toBeUndefined();
+    expect(marks.people.get('w-2')).toEqual({ severity: 'HIGH', alarming: true });
+  });
+
   it('사람·구역마다 진행 중 이벤트 중 가장 높은 등급과 확인 대기 여부를 모은다', () => {
     const marks = planMarks([
       entry({ event_id: 'a', severity: 'HIGH', zone_id: 'z-02' }),

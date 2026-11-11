@@ -109,6 +109,9 @@ function sceneOf(sceneMismatch: boolean): ViewerHealthPayload['scene'] {
     : { committed_version: VERSIONS.scene, live_version: VERSIONS.scene, mismatch: false };
 }
 
+/** mock 의 held_events_revision(viewer_health 1.4.0, S15P31A101-595). */
+export const MOCK_HELD_REVISION = 'mock-0';
+
 /**
  * /topic/health: 시각 t(ms)의 관제 상태. 데이터 연령은 0.2초 안팎이고, 바퀴마다 cam3 가 잠깐 키프레임을 기다린다.
  * faults 가 false 면 고장 흉내 없이 늘 정상이다(시각과 상관없이 NOMINAL 을 기대하는 시험).
@@ -156,6 +159,8 @@ export function viewerHealthAt(
       config,
       scene: sceneOf(sceneMismatch),
       ...(reSetup === undefined ? {} : { re_setup: reSetup }),
+      // Tier 0 가 들고 있는 이벤트 집합의 판(1.4.0). mock 은 집합을 한꺼번에 바꾸지 않아 늘 같다.
+      held_events_revision: MOCK_HELD_REVISION,
       tier0_health: {
         system_health: system,
         t_latest_global: latestGlobal,

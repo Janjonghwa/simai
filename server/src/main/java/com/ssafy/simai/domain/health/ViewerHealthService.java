@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.health;
 
 import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
+import com.ssafy.simai.domain.tier0.event.Tier0HeldEvents;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import com.ssafy.simai.domain.watch.WatchHub;
 import java.time.Clock;
@@ -41,13 +42,15 @@ import tools.jackson.databind.node.ObjectNode;
  *       그 밖은 싣지 않는다(모름). 관리자 상단 배너용 안내이며 system_health 를 바꾸지 않는다
  *   <li>watches(1.2.0, 확장 C.6, S15P31A101-336): 등록된 워치마다 I4 연결 상태(WatchHub). 워치는 개인 보조 채널이라 system_health·
  *       remote_state 에 넣지 않는다
+ *   <li>held_events_revision(1.4.0, S15P31A101-595): Tier 0 가 들고 있는 이벤트 집합(Tier0HeldEvents)이 스냅샷·유예 만료로 한꺼번에
+ *       바뀔 때마다 바뀌는 판. 관제 앱은 바뀌면 이벤트 목록을 다시 받아 「진행 중」과 「지난 관제」를 다시 가른다
  * </ul>
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.3.0";
+    public static final String SCHEMA_VERSION = "1.4.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
@@ -55,16 +58,18 @@ public class ViewerHealthService {
     private final HealthState state;
     private final SceneCompatibility compatibility;
     private final WatchHub watches;
+    private final Tier0HeldEvents held;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final long linkTimeoutMs;
 
     public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, SceneCompatibility compatibility,
-            WatchHub watches, @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
+            WatchHub watches, Tier0HeldEvents held, @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
         this.state = state;
         this.compatibility = compatibility;
         this.watches = watches;
+        this.held = held;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
@@ -118,6 +123,7 @@ public class ViewerHealthService {
             p.set("re_setup", reSetup);
         }
         p.set("watches", watches());
+        p.put("held_events_revision", held.revision());
         return p;
     }
 

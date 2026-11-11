@@ -9,10 +9,12 @@ import com.ssafy.simai.domain.tier0.i1.InvalidI1Message;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
 
 /**
  * risk_event_transition(Tier 0 → EC2, 명세 12.3·3.2) → risk_event_update 기록·risk_event 반영·저널 위치.
@@ -21,6 +23,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 저장 트랜잭션이 끝난 뒤에 저널 위치를 옮긴다(되돌려진 저장을 ack 하지 않게).
  * 같은 offset 에 다른 메시지가 오면 Tier 0 저널이 새로 시작된 것이라 세대를 올리고 다시 기록한다.
  * 계약 위반으로 버린 전이는 건너뛴 것으로 쳐서 빈 구간이 영원히 남지 않게 한다(onRejected).
+ * 현재 상태를 바꾼 실시간 전이는 알리기 전에 Tier 0 가 들고 있는 이벤트(Tier0HeldEvents)에도 반영한다(S15P31A101-595).
+ * 동기화 중 재전송 전이는 반영하지 않는다(이어지는 스냅샷이 집합을 바꾼다).
  */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -30,13 +34,15 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
     private final JournalService journal;
     private final TransactionTemplate transaction;
     private final ApplicationEventPublisher publisher;
+    private final Tier0HeldEvents held;
 
     RiskEventTransitionIngestor(RiskEventRepository events, JournalService journal, TransactionTemplate transaction,
-            ApplicationEventPublisher publisher) {
+            ApplicationEventPublisher publisher, Tier0HeldEvents held) {
         this.events = events;
         this.journal = journal;
         this.transaction = transaction;
         this.publisher = publisher;
+        this.held = held;
     }
 
     @Override
@@ -76,7 +82,11 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
             Recorded recorded = events.recordTransition(envelope, deliveryMode, receivedAt, epoch);
             // 현재 상태를 바꾼 실시간 전이만 커밋 뒤 알린다. 늦게 온 낮은 sequence(빈 구간 재전송 등)는 기록만 한다
             if (recorded == Recorded.APPLIED && "REALTIME".equals(deliveryMode)) {
-                publisher.publishEvent(new RiskEventsDelivered(List.of(I1Json.requiredUuid(envelope.payload(), "event_id"))));
+                JsonNode p = envelope.payload();
+                UUID eventId = I1Json.requiredUuid(p, "event_id");
+                // 알림(커밋 뒤 다른 스레드)이 바뀐 '들고 있음'을 싣도록 먼저 고친다
+                held.apply(envelope.sourceId(), eventId, I1Json.requiredText(p, "transition"));
+                publisher.publishEvent(new RiskEventsDelivered(List.of(eventId)));
             }
             return recorded;
         });

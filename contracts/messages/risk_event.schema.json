@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/risk_event.schema.json",
   "title": "I2 risk_event",
-  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2).",
+  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2). 2.3.0 필드 추가(마이너, S15P31A101-595): held_by_tier0(선택, LIVE 만) — 지금 Tier 0 가 이 이벤트를 활성으로 들고 있는지(EC2 파생값, 저장하지 않음). 관제 화면은 해소 전이면서 held_by_tier0 가 true 인 이벤트만 '진행 중'(경보 배너·소리·2D 평면 대상)으로 보이고, false 인 해소 전 이벤트는 '지난 관제 · 확인 필요'로 내린다. 이벤트 자체(lifecycle)는 바꾸지 않는다(3.2 복원 이벤트 자동 해소 금지). 없으면(이전 EC2) 해소 전 이벤트를 진행 중으로 읽는다.",
   "allOf": [
     { "$ref": "envelope.schema.json" },
     {
@@ -85,6 +85,10 @@
           "$ref": "../common/defs.schema.json#/$defs/operator_resolution",
           "description": "운영자 종료 해소(2.0.0, 6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다"
         },
+        "held_by_tier0": {
+          "type": "boolean",
+          "description": "지금 Tier 0 가 이 LIVE 이벤트를 활성으로 들고 있는가(2.3.0, S15P31A101-595). EC2 가 Tier 0 의 마지막 재동기화 스냅샷(event_state_snapshot.active_events)과 그 뒤 실시간 전이로 접은 집합에 있고, 그 Tier 0 에서 I1 메시지를 마지막으로 받은 지 유예 시간(초기값 60초) 안이면 true. EC2 가 다시 뜬 뒤 스냅샷을 받기 전, Tier 0 가 꺼진 지 유예 시간이 지난 뒤, 다른(새) Tier 0 의 스냅샷에 없으면 false. 만든 때의 값이라 바뀌면 /topic/events 나 목록 다시 받기(viewer_health.held_events_revision)로 고친다. 해소 여부·등급을 바꾸지 않는 표시용 파생값이다"
+        },
         "escalations": {
           "type": "array",
           "items": { "$ref": "../common/defs.schema.json#/$defs/operator_escalation" },
@@ -108,6 +112,16 @@
           "description": "운영자 상향 기록은 LIVE 에만 (2.1.0)",
           "if": { "required": ["escalations"] },
           "then": { "properties": { "source": { "const": "LIVE" } }, "required": ["source"] }
+        },
+        {
+          "description": "held_by_tier0 는 LIVE 에만 있다 (2.3.0, 7.4 출처 분리)",
+          "if": { "properties": { "source": { "not": { "const": "LIVE" } } }, "required": ["source"] },
+          "then": { "not": { "required": ["held_by_tier0"] } }
+        },
+        {
+          "description": "해소된 이벤트는 Tier 0 가 들고 있지 않다: held_by_tier0 true 는 RAISED·UPDATED 에만 (2.3.0)",
+          "if": { "properties": { "held_by_tier0": { "const": true } }, "required": ["held_by_tier0"] },
+          "then": { "properties": { "lifecycle": { "enum": ["RAISED", "UPDATED"] } }, "required": ["lifecycle"] }
         },
         {
           "description": "delivery 는 알림 대상인 LIVE 이벤트에만 있다 (7.4 출처 분리)",

@@ -1,5 +1,5 @@
 import { createEventsMock } from '@/mocks/events';
-import { riskEventsBetween } from '@/mocks/realtimeScenario';
+import { riskEventsBetween, seededEventsAt } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
 import { validateMessage, type RiskEventMessage } from '@simai/contracts';
 import { setupServer } from 'msw/node';
@@ -327,5 +327,31 @@ describe('close(운영자 종료)', () => {
     expect(local.close('none', { id: 'admin' })).toBeUndefined();
     expect(local.close(id(1), { id: 'admin' })).toBeUndefined();
     expect(published).toHaveLength(0);
+  });
+});
+
+// S15P31A101-595: 개발 서버는 진행 중과 지난 관제(꺼진 관제에서 열린 채 남은) 이벤트를 함께 싣고 시작한다.
+describe('createEventsMock 시드', () => {
+  it('시드 이벤트는 계약을 지키고 목록에 held_by_tier0 그대로 나온다(진행 중 둘, 지난 관제 셋)', async () => {
+    const seed = seededEventsAt(NOW);
+    for (const message of seed) expect(validateMessage('risk_event', message).ok).toBe(true);
+    const local = createEventsMock({ broker, now: () => NOW, seed });
+    server.use(...local.handlers);
+    const page = (await (await list('?size=100')).json()) as Page;
+    const held = page.content.filter((e) => e.held_by_tier0).map((e) => e.event_id);
+    const stale = page.content.filter((e) => e.held_by_tier0 === false).map((e) => e.event_id);
+    expect(held).toHaveLength(2);
+    expect(stale).toHaveLength(3);
+    expect(page.content.every((e) => e.lifecycle !== 'RESOLVED')).toBe(true);
+  });
+
+  it('들고 있던 이벤트를 닫으면 해소 전이에서 held_by_tier0 가 false 다(계약: true 는 해소 전만)', () => {
+    const seed = seededEventsAt(NOW);
+    const local = createEventsMock({ broker, now: () => NOW, seed });
+    const target = seed.find((m) => m.payload.held_by_tier0)!;
+    const closed = local.close(target.payload.event_id, { id: 'admin' });
+    expect(closed?.payload.lifecycle).toBe('RESOLVED');
+    expect(closed?.payload.held_by_tier0).toBe(false);
+    expect(validateMessage('risk_event', closed).ok).toBe(true);
   });
 });

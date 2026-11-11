@@ -50,7 +50,7 @@ export function resolvedLabel(incident: Incident): string {
 
 /** 카드 머리줄 오른쪽의 처리 상태 칩 하나. */
 export interface CardChip {
-  kind: 'ticket' | 'ack' | 'unacked' | 'resolved';
+  kind: 'ticket' | 'ack' | 'unacked' | 'resolved' | 'stale';
   label: string;
 }
 
@@ -64,6 +64,8 @@ export function cardChip(
   options: { ticketStage?: string } = {},
 ): CardChip | null {
   if (!incident.active) return { kind: 'resolved', label: resolvedLabel(incident) };
+  // 지난 관제(지금 Tier 0 가 들고 있지 않음)는 경보가 아니다. 미확인·확인 칩 대신 조용한 칩 하나만 둔다(S15P31A101-595).
+  if (incident.stale) return { kind: 'stale', label: '지난 관제' };
   const live = incident.entries.filter((e) => isActive(e.event));
   if (options.ticketStage) return { kind: 'ticket', label: options.ticketStage };
   const alarmLevel = live.filter((e) => isAlarmSeverity(e.event.severity));

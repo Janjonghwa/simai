@@ -16,7 +16,7 @@ import {
 } from '@/features/events/eventsCache';
 import type { EventItem } from '@/features/events/types';
 import { ApiError, createHttp, NETWORK_ERROR } from '@/lib/http';
-import { riskEventsBetween } from '@/mocks/realtimeScenario';
+import { riskEventsBetween, viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient } from '@tanstack/react-query';
@@ -70,6 +70,33 @@ describe('bindEventsCache', () => {
     realtime.emit('open');
     expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)?.loaded).toBe(false);
     expect(queryClient.getQueryState(LIVE_EVENTS_KEY)?.isInvalidated).toBe(true);
+  });
+
+  it('viewer_health 의 held_events_revision 이 바뀌면 목록을 다시 받고, 처음 받은 판은 기준으로만 삼는다(S15P31A101-595)', () => {
+    const queryClient = new QueryClient();
+    const realtime = fakeRealtime();
+    const unbind = bindEventsCache(realtime, queryClient);
+    queryClient.setQueryData<LiveEvents>(LIVE_EVENTS_KEY, { entries: [], loaded: true });
+    const health = (revision: string | undefined) =>
+      useRealtimeStore.getState().receiveHealth({
+        payload: { ...viewerHealthAt(NOW).payload, held_events_revision: revision },
+        receivedAt: NOW,
+        clockOffsetMs: 0,
+      });
+
+    health('boot-1');
+    expect(queryClient.getQueryState(LIVE_EVENTS_KEY)?.isInvalidated).toBe(false);
+    health('boot-1');
+    expect(queryClient.getQueryState(LIVE_EVENTS_KEY)?.isInvalidated).toBe(false);
+    // 판이 없는 health(이전 EC2)로는 다시 받지 않는다
+    health(undefined);
+    expect(queryClient.getQueryState(LIVE_EVENTS_KEY)?.isInvalidated).toBe(false);
+    health('boot-2');
+    expect(queryClient.getQueryState(LIVE_EVENTS_KEY)?.isInvalidated).toBe(true);
+    // 목록 캐시의 loaded 는 그대로다(끊긴 것이 아니다)
+    expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)?.loaded).toBe(true);
+
+    unbind();
   });
 
   it('목록을 받기 전에 연결이 열려도 캐시를 만들지 않는다', () => {

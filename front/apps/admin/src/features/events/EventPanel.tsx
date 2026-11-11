@@ -18,7 +18,7 @@ import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
 import { selectTrackedCount, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 /** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다). 폭은 --event-panel-width 이고, 상단 알림·2D 창이 오른쪽에서 비키는 간격(--event-panel-inset)이 이 폭에 맞춰 정해진다(index.css). */
 const PANEL_CLASS =
@@ -26,7 +26,11 @@ const PANEL_CLASS =
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 
-const hasCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
+/** 「진행 중」·「최근 해소」 카드가 있는지. 없으면 패널을 저절로 접는다(지난 관제만 있어도 접는다). */
+const hasRecentCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
+
+/** 보이는 카드가 하나라도 있는지(지난 관제 포함). 「모두 지우기」 버튼과 빈 목록 문구가 쓴다. */
+const hasCards = (sections: EventSections) => hasRecentCards(sections) || sections.stale.length > 0;
 
 /** 옮긴 자리의 인라인 스타일. 접으면 높이는 머리줄만큼이다. */
 const boxStyle = (box: FloatBox, folded: boolean): CSSProperties => ({
@@ -57,6 +61,34 @@ function FoldButton({ folded, onToggle }: { folded: boolean; onToggle: () => voi
   );
 }
 
+/**
+ * 「지난 관제 · 확인 필요 N건」 칸(S15P31A101-595). 해소 전이지만 지금 Tier 0 가 들고 있지 않은 이벤트(GPU 를 끈 관제에서 열린 채
+ * 남은 것)를 처음에는 접어 둔다. 펼치면 카드로 보이고 상세·운영자 종료는 진행 중과 같다. 경보·소리·2D 평면에는 들어가지 않는다.
+ */
+function StaleSection({ count, children }: { count: number; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const title = `지난 관제 · 확인 필요 ${count}건`;
+  return (
+    <section aria-label="지난 관제 · 확인 필요" className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 rounded-md px-1 text-left text-[15px] font-bold text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+      >
+        <span
+          aria-hidden
+          className={cn('inline-block transition-transform duration-200', !open && '-rotate-90')}
+        >
+          ▾
+        </span>
+        {title}
+      </button>
+      {open && <ul className="flex flex-col gap-2 p-0.5">{children}</ul>}
+    </section>
+  );
+}
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section aria-label={title} className="flex flex-col gap-2">
@@ -77,8 +109,8 @@ interface EventListProps {
 }
 
 /**
- * 「진행 중」과 「최근 해소」 두 칸의 카드 목록(빈 칸은 그리지 않는다). 둘 다 비었으면 상태(없음·받는 중)를 한 줄로 보인다.
- * 받지 못했으면 패널 위의 실패 문구가 대신한다.
+ * 「진행 중」·「최근 해소」·「지난 관제 · 확인 필요」(접힘) 칸의 카드 목록(빈 칸은 그리지 않는다). 모두 비었으면 상태(없음·받는 중)를
+ * 한 줄로 보인다. 지난 관제만 남았으면 진행 중이 없다는 것을 한 줄로 보인다. 받지 못했으면 패널 위의 실패 문구가 대신한다.
  */
 function EventList({
   sections,
@@ -88,7 +120,7 @@ function EventList({
   selectedKey,
   ...card
 }: EventListProps) {
-  const { active, resolved } = sections;
+  const { active, resolved, stale, staleEvents } = sections;
   const outside = (incident: Incident) =>
     isOutsideWork !== undefined && incident.entries.some((e) => isOutsideWork(e.event));
   if (!hasCards(sections)) {
@@ -97,6 +129,10 @@ function EventList({
   }
   return (
     <div className="flex flex-col gap-3 p-0.5">
+      {/* 지난 관제만 남았으면 지금 진행 중인 것이 없다는 것을 먼저 알린다 */}
+      {active.length === 0 && stale.length > 0 && (
+        <p className="mx-2 text-sm text-faint">진행 중 이벤트 없음</p>
+      )}
       {active.length > 0 && (
         <Section title="진행 중">
           {active.map((incident) => (
@@ -124,6 +160,19 @@ function EventList({
           ))}
         </Section>
       )}
+      {stale.length > 0 && (
+        <StaleSection count={staleEvents}>
+          {stale.map((incident) => (
+            <IncidentCard
+              key={incident.key}
+              incident={incident}
+              selected={incident.key === selectedKey}
+              outsideWork={outside(incident)}
+              {...card}
+            />
+          ))}
+        </StaleSection>
+      )}
     </div>
   );
 }
@@ -148,6 +197,7 @@ interface EventPanelProps {
 
 /**
  * 실시간 관제 오른쪽 이벤트 패널: 머리줄의 작업자·사건 수, 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창.
+ * 머리줄의 사건 수는 진행 중(지금 Tier 0 가 들고 있는 것)만 센다. 지난 관제는 목록 끝의 접힌 칸에 있다(S15P31A101-595).
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
  * 보이는 카드가 있으면 머리줄에 「모두 지우기」가 있다.
  */
@@ -178,8 +228,9 @@ export function EventPanel({
 
   const panel = useRef<HTMLElement>(null);
   const { box, setBox, reset } = useFloatingBox(panel);
-  // 목록을 받았는데 진행·최근 해소가 모두 0이면 접는다. 목록을 못 받았거나 받는 중이면 접지 않는다(실패 문구를 가리지 않는다).
-  const { folded, setFolded } = useAutoFold(loaded && !hasCards(sections));
+  // 목록을 받았는데 진행·최근 해소가 모두 0이면 접는다(지난 관제만 남아도 접는다). 목록을 못 받았거나 받는 중이면 접지 않는다
+  // (실패 문구를 가리지 않는다).
+  const { folded, setFolded } = useAutoFold(loaded && !hasRecentCards(sections));
   // 떠 있는 CCTV 창이 가리면 창 위·아래 넓은 빈칸으로 비켜 선다. 비켜 선 채 끌거나 크기를 바꾸면 그 자리가 새 기준(box)이다.
   const avoided = useAvoidCctv(panel, box, folded);
   const shown = avoided ?? box;

@@ -120,7 +120,7 @@ export type WorldXyz = [number, number, number]
  */
 export type Vec3 = [number, number, number]
 /**
- * EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2).
+ * EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2). 2.3.0 필드 추가(마이너, S15P31A101-595): held_by_tier0(선택, LIVE 만) — 지금 Tier 0 가 이 이벤트를 활성으로 들고 있는지(EC2 파생값, 저장하지 않음). 관제 화면은 해소 전이면서 held_by_tier0 가 true 인 이벤트만 '진행 중'(경보 배너·소리·2D 평면 대상)으로 보이고, false 인 해소 전 이벤트는 '지난 관제 · 확인 필요'로 내린다. 이벤트 자체(lifecycle)는 바꾸지 않는다(3.2 복원 이벤트 자동 해소 금지). 없으면(이전 EC2) 해소 전 이벤트를 진행 중으로 읽는다.
  */
 export type RiskEventMessage = (Envelope & {
 [k: string]: unknown
@@ -223,6 +223,10 @@ delivery?: ("REALTIME" | "DELAYED_ACTIVE" | "AUDIT_ONLY")
 related_event_id?: string
 resolution?: OperatorResolution
 /**
+ * 지금 Tier 0 가 이 LIVE 이벤트를 활성으로 들고 있는가(2.3.0, S15P31A101-595). EC2 가 Tier 0 의 마지막 재동기화 스냅샷(event_state_snapshot.active_events)과 그 뒤 실시간 전이로 접은 집합에 있고, 그 Tier 0 에서 I1 메시지를 마지막으로 받은 지 유예 시간(초기값 60초) 안이면 true. EC2 가 다시 뜬 뒤 스냅샷을 받기 전, Tier 0 가 꺼진 지 유예 시간이 지난 뒤, 다른(새) Tier 0 의 스냅샷에 없으면 false. 만든 때의 값이라 바뀌면 /topic/events 나 목록 다시 받기(viewer_health.held_events_revision)로 고친다. 해소 여부·등급을 바꾸지 않는 표시용 파생값이다
+ */
+held_by_tier0?: boolean
+/**
  * 운영자 상향 기록(2.1.0, 5.4·FR-116). 비어 있거나 없으면 상향 없음. LIVE 만. 뷰어는 규칙 판정 등급과 운영자 상향을 구분해 보여 준다
  */
 escalations?: OperatorEscalation[]
@@ -261,7 +265,7 @@ actor_id: string
 acked_at: number
 })
 /**
- * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.4.0: held_events_revision 선택 추가(Tier 0 가 들고 있는 이벤트 집합의 판, 바뀌면 관제 앱이 이벤트 목록을 다시 받아 '진행 중'·'지난 관제'를 다시 가른다, S15P31A101-595). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
  */
 export type ViewerHealthMessage = (Envelope & {
 msg_type?: "viewer_health"
@@ -350,6 +354,10 @@ reason: string
  */
 detected_at: number
 }[]
+/**
+ * Tier 0 가 지금 활성으로 들고 있는 이벤트 집합(risk_event.held_by_tier0 의 근거)의 판 (1.4.0, S15P31A101-595). 재동기화 스냅샷으로 집합이 달라지거나 Tier 0 I1 수신이 유예 시간 넘게 없어 집합을 비울 때마다 바뀐다(EC2 가 다시 뜨면 앞머리가 달라진다). 값의 뜻은 없고 같음·다름만 본다. 관제 앱은 바뀌면 이벤트 목록(GET /api/events)을 다시 받는다. 이벤트 하나의 전이로 바뀐 것은 그 /topic/events 가 알리므로 판이 바뀌지 않는다. 없으면(이전 EC2) 다시 받지 않는다
+ */
+held_events_revision?: string
 /**
  * 확장(부록 C.6): 등록된 워치(device.kind WATCH, 폐기 안 됨)의 I4 연결 상태. 워치는 개인 보조 채널이라 system_health·remote_state 에 넣지 않는다. 없으면 워치 확장을 쓰지 않는 EC2 다
  */

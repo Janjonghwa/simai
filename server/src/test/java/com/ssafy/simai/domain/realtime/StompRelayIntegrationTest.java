@@ -150,6 +150,8 @@ class StompRelayIntegrationTest {
             assertThat(delayed.at("/payload/event_id").asString()).isEqualTo(stillActive.toString());
             assertThat(delayed.at("/payload/delivery").asString()).isEqualTo("DELAYED_ACTIVE");
             assertThat(delayed.at("/payload/lifecycle").asString()).isEqualTo("RAISED");
+            // 스냅샷에 있어 지금 Tier 0 가 들고 있다(S15P31A101-595)
+            assertThat(delayed.at("/payload/held_by_tier0").booleanValue()).isTrue();
             // 선택 칸은 값이 없으면 싣지 않는다(REST 목록과 같은 투영)
             assertThat(delayed.at("/payload/resolved_at").isMissingNode()).isTrue();
 
@@ -165,6 +167,7 @@ class StompRelayIntegrationTest {
             assertThat(realtime.at("/payload/event_sequence").intValue()).isEqualTo(2);
             assertThat(realtime.at("/payload/lifecycle").asString()).isEqualTo("UPDATED");
             assertThat(realtime.at("/payload/delivery").asString()).isEqualTo("REALTIME");
+            assertThat(realtime.at("/payload/held_by_tier0").booleanValue()).isTrue();
             assertThat(realtime.at("/payload/acks")).hasSize(1);
             assertThat(realtime.at("/payload/acks/0/ack_id").asString()).isEqualTo(goodAck.toString());
 
@@ -173,6 +176,39 @@ class StompRelayIntegrationTest {
             awaitRows(resolvedDuringSync, 3);
 
             // 동기화 중 해소된 이벤트는 한 번도 오지 않았다(실시간 재알림 0, G3 D-G3-05)
+            assertThat(viewer.remaining(RealtimeTopics.EVENTS)).isEmpty();
+        }
+    }
+
+    @Test
+    void 저널이_빈_새_Tier0_가_붙으면_이전_이벤트는_해소하지_않고_들고_있지_않음으로_내리고_판을_바꾼다() throws Exception {
+        UUID eventId = uuidV7();
+
+        try (Viewer viewer = stomp(token("VIEWER"))) {
+            viewer.subscribe(RealtimeTopics.EVENTS);
+            viewer.subscribe(RealtimeTopics.WORLD);
+            try (Tier0 tier0 = tier0()) {
+                viewer.awaitWorld(tier0, worldState(baseMs));
+                tier0.send(snapshot(null));
+                tier0.send(transition(eventId, 1, 0, "RAISED", false));
+                JsonNode raised = viewer.await(RealtimeTopics.EVENTS);
+                assertValid("risk_event", raised);
+                assertThat(raised.at("/payload/held_by_tier0").booleanValue()).isTrue();
+                assertThat(eventDetail(eventId).get("held_by_tier0").booleanValue()).isTrue();
+            }
+            String before = healthRevision();
+
+            // GPU Pod 를 바꿔 저널이 빈 Tier 0 가 같은 gateway_id 로 붙었다(스냅샷 journal_offset null, 활성 없음)
+            try (Tier0 fresh = tier0()) {
+                fresh.send(snapshot(null));
+                awaitHeld(eventId, false);
+            }
+            JsonNode detail = eventDetail(eventId);
+            // 이벤트는 그대로다(EC2 는 전이를 만들지 않는다, 명세 3.2 자동 해소 금지)
+            assertThat(detail.get("lifecycle").asString()).isEqualTo("RAISED");
+            assertThat(detail.get("held_by_tier0").booleanValue()).isFalse();
+            assertThat(healthRevision()).isNotEqualTo(before);
+            // 한꺼번에 바뀐 것은 이벤트마다 보내지 않는다(관제 앱이 판을 보고 목록을 다시 받는다)
             assertThat(viewer.remaining(RealtimeTopics.EVENTS)).isEmpty();
         }
     }
@@ -322,6 +358,36 @@ class StompRelayIntegrationTest {
         root.put("sent_at", tMs);
         ((ObjectNode) root.get("payload")).put("t_latest_global", tMs);
         return root;
+    }
+
+    private JsonNode eventDetail(UUID eventId) throws Exception {
+        return getJson("/api/events/" + eventId);
+    }
+
+    private String healthRevision() throws Exception {
+        return getJson("/api/health").at("/payload/held_events_revision").asString();
+    }
+
+    private JsonNode getJson(String path) throws Exception {
+        HttpResponse<String> response = HttpClient.newHttpClient().send(HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + port + path))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("ADMIN"))
+                .GET()
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).as(path).isEqualTo(200);
+        return MAPPER.readTree(response.body());
+    }
+
+    /** 스냅샷 처리는 I1 수신 스레드에서 끝난다. 상세가 기대한 값을 줄 때까지 기다린다 */
+    private void awaitHeld(UUID eventId, boolean expected) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (eventDetail(eventId).get("held_by_tier0").booleanValue() == expected) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("held_by_tier0 가 " + expected + " 가 되지 않았다");
     }
 
     private ObjectNode transition(UUID eventId, int sequence, long offset, String kind, boolean resent) throws Exception {

@@ -1,5 +1,11 @@
 import { SEVERITY_RANK } from '@/features/events/constants';
-import { acknowledgedAt, isAlarming, type EventEntry } from '@/features/events/entries';
+import {
+  acknowledgedAt,
+  isAlarming,
+  isCurrent,
+  isStale,
+  type EventEntry,
+} from '@/features/events/entries';
 import type { RingSeverity } from '@/lib/alarmSound';
 
 export interface AlarmPlan {
@@ -24,9 +30,10 @@ export function createAlarmPolicy() {
     JSON.stringify([world, zone, rule]);
   return (entries: readonly EventEntry[], canAck: boolean): AlarmPlan | null => {
     if (!canAck) return null;
-    const live = entries.filter(({ event }) => event.source === 'LIVE');
+    // 지금 Tier 0 가 들고 있지 않은 「지난 관제」 이벤트는 소리에도, 다른 경보를 누르는 확인 기록에도 쓰지 않는다(S15P31A101-595).
+    const live = entries.filter(({ event }) => event.source === 'LIVE' && !isStale(event));
     const activeIds = new Set(
-      live.filter(({ event }) => event.lifecycle !== 'RESOLVED').map(({ event }) => event.event_id),
+      live.filter(({ event }) => isCurrent(event)).map(({ event }) => event.event_id),
     );
     for (const id of levels.keys()) if (!activeIds.has(id)) levels.delete(id);
     for (const id of stages.keys()) if (!activeIds.has(id)) stages.delete(id);
