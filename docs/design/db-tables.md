@@ -1217,7 +1217,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `wrap_up_summary` | jsonb |  |  | 작업 종료(`POST /api/work-units/{id}/end`) 시 실제 LIVE `risk_event` 집계 사실(`wrap_up_facts`: 등급별·규칙별 건수, 확인/종료 건수, 작업 외 진입 건수)과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_text`), 후속 구현에서 추가 |
 | `content_sha256` | text |  |  | 첫 전자서명 등록 시 고정하는 보고서 본문 정규화 해시(`sha256:<64hex>`), 후속 구현에서 추가 |
 | `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, V29 적용, 역할과 무관한 첫 서명에서 잠금 |
-| `form` | jsonb |  |  | 날짜 작업 TBM 양식 칸(`info`·`risks` 3줄·`focus`·`checks` 5줄·`review`). 사람이 고친 칸의 정본, 리더·참석자는 넣지 않는다. 고쳐도 새 `report_version` 을 만들지 않는다(V49, `docs/design/tbm-daily-form.md`) |
+| `form` | jsonb |  |  | 날짜 작업 TBM 양식 칸(`info`·`risks` 3줄·`focus`·`checks` 5줄·`review`). 사람이 고친 칸의 정본, 리더·참석자는 넣지 않는다. 고쳐도 새 `report_version` 을 만들지 않는다(V51, `docs/design/tbm-daily-form.md`) |
 | `form_revision` | int | NN, 기본 0, CK(>= 0) |  | 양식 저장마다 1 증가. `PUT .../form` 의 `form_revision` 이 다르면 409 `REPORT_FORM_CONFLICT`(V49) |
 | `leader_user_id` | bigint | FK>app_user.user_id |  | TBM 리더 계정(보고서를 만든 계정). 응답 `leader{user_id,name,org,title}`, name 은 display_label(없으면 login_id)(V49, NFR-14 예외 아님: 계정 참조) |
 | `llm_model` | text |  |  |  |

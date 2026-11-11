@@ -1,0 +1,7 @@
+{
+  "request_id": "rpt-41-end",
+  "ending": "전체 이벤트 3건. 등급 CRITICAL 2건. 등급 HIGH 1건. 등급 CAUTION 0건. 등급 INFO 0건. 규칙 R1 위험 구역 진입 2건. 규칙 R2 가장자리 근접 1건. 구역 개구부 1 이벤트 2건. 구역 현장 전체 이벤트 1건. 최고 등급 CRITICAL. 운영자 확인 1건. 운영자 미확인 CRITICAL 1건. 운영자 종료 0건. 작업 외 진입 0건. 작업 초반 이벤트 1건. 작업 중반 이벤트 1건. 작업 후반 이벤트 1건. 첫 이벤트 시작 후 4분. 마지막 이벤트 시작 후 52분.",
+  "fallback": true,
+  "fallback_reason": "VALIDATION_FAILED",
+  "model": "deterministic"
+}

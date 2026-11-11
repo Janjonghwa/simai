@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Callable
 from typing import Any
 
-from .llm import ChatClient, LlmError
+from .llm import ChatClient, LlmConfigError, LlmError, LlmTimeout
 
 SEVERITIES = ("CRITICAL", "HIGH", "CAUTION", "INFO")
 WORK_TYPES = frozenset(("SCAFFOLD_INSTALL", "OPENING_WORK", "HIGH_PLACE", "MATERIAL_HANDLING",
@@ -147,6 +147,17 @@ def deterministic(facts: dict[str, Any]) -> str:
 
 
 def generate(data: dict[str, Any], client_factory: Callable[[], ChatClient]) -> dict[str, Any]:
+    """/v1/report/wrap-up 응답: {text, fallback, model}."""
+    out = run(data, client_factory)
+    return {"text": out["text"], "fallback": out["fallback"], "model": out["model"]}
+
+
+def run(data: dict[str, Any], client_factory: Callable[[], ChatClient], *, max_chars: int = 8_000) -> dict[str, Any]:
+    """마무리 문단 생성. 결과에 대체 사유(reason)를 더한다(S15P31A101-616 종료 미팅이 같이 쓴다).
+
+    max_chars 를 넘는 LLM 문단은 형식 위반으로 보고 한 번 다시 쓰게 한다. 결정적 문장은 그대로 돌려주므로 길이는 부르는 쪽이 본다.
+    reason: None(LLM 문단), LLM_NOT_CONFIGURED, LLM_TIMEOUT, LLM_UNAVAILABLE, VALIDATION_FAILED.
+    """
     data = validate_request(data)
     facts = data["facts"]
     required = deterministic(facts)
@@ -159,17 +170,27 @@ def generate(data: dict[str, Any], client_factory: Callable[[], ChatClient]) -> 
         {"role": "user", "content": json.dumps({"work_type": data["work_type"], "facts": facts,
                                                  "required_clauses": required}, ensure_ascii=False)},
     ]
+    reason = "VALIDATION_FAILED"
     try:
         client = client_factory()
         for attempt in range(2):
             result = client.complete(messages)
             paragraph = unwrap_paragraph(result.content)
-            if paragraph is not None and numbers_match(paragraph, facts):
-                return {"text": paragraph, "fallback": False, "model": result.model or client.model}
+            if paragraph is not None and len(paragraph) <= max_chars and numbers_match(paragraph, facts):
+                return {"text": paragraph, "fallback": False, "model": result.model or client.model, "reason": None}
             if attempt == 0:
                 # 거절된 초안을 다시 보내지 않는다(지어낸 내용이 다음 입력의 사실로 섞이지 않게).
-                reason = "형식 검사 실패(JSON·코드 블록 금지, 문단 글만)." if paragraph is None else "항목별 숫자 검사 실패."
-                messages.append({"role": "user", "content": f"{reason} 필수 사실 절만 정확히 써서 문단 글로만 한 번 재작성한다."})
-    except (LlmError, TimeoutError, OSError, ValueError):
-        pass
-    return {"text": required, "fallback": True, "model": "deterministic"}
+                if paragraph is None:
+                    why = "형식 검사 실패(JSON·코드 블록 금지, 문단 글만)."
+                elif len(paragraph) > max_chars:
+                    why = f"길이 초과({max_chars}자 이하)."
+                else:
+                    why = "항목별 숫자 검사 실패."
+                messages.append({"role": "user", "content": f"{why} 필수 사실 절만 정확히 써서 문단 글로만 한 번 재작성한다."})
+    except LlmConfigError:
+        reason = "LLM_NOT_CONFIGURED"
+    except (LlmTimeout, TimeoutError):
+        reason = "LLM_TIMEOUT"
+    except (LlmError, OSError, ValueError):
+        reason = "LLM_UNAVAILABLE"
+    return {"text": required, "fallback": True, "model": "deterministic", "reason": reason}

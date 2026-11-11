@@ -1,0 +1,90 @@
+{
+  "_expect_error": "작업내용 항목과 직접 쓴 작업을 한 줄에 섞지 않는다",
+  "request_id": "rpt-41-r3",
+  "report_date": "2026-11-12",
+  "tasks": [
+    {
+      "code": "SLAB_OPENING_COVER",
+      "label": "슬래브 개구부 덮개 설치",
+      "rule_tags": [
+        "R1",
+        "R2",
+        "R5"
+      ],
+      "text": "직접 쓴 작업"
+    },
+    {
+      "text": "자재 정리"
+    }
+  ],
+  "rule_tags": [
+    "R1",
+    "R2",
+    "R5"
+  ],
+  "zones": [
+    {
+      "name": "개구부 1",
+      "zone_kind": "OPENING",
+      "rule_id": "R2"
+    },
+    {
+      "name": "3층 슬래브 단부",
+      "zone_kind": "FLOOR_EDGE",
+      "rule_id": null
+    }
+  ],
+  "existing": {
+    "task_name": "",
+    "place": "",
+    "risk_assessed": null,
+    "risks": [
+      {
+        "risk": "",
+        "measure": ""
+      },
+      {
+        "risk": "",
+        "measure": ""
+      },
+      {
+        "risk": "",
+        "measure": ""
+      }
+    ],
+    "focus": {
+      "risk": "",
+      "measure": ""
+    },
+    "checks": [
+      {
+        "code": "PPE",
+        "yes": true,
+        "action": ""
+      },
+      {
+        "code": "ZONE_CONTROL",
+        "yes": null,
+        "action": ""
+      },
+      {
+        "code": "OPENING_GUARD",
+        "yes": null,
+        "action": ""
+      },
+      {
+        "code": "WORK_SURFACE_FALL",
+        "yes": null,
+        "action": ""
+      },
+      {
+        "code": "HEALTH",
+        "yes": null,
+        "action": ""
+      }
+    ],
+    "review": {
+      "daily": ""
+    }
+  }
+}

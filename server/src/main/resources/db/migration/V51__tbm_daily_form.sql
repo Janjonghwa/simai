@@ -1,4 +1,4 @@
--- S15P31A101-609: 날짜 작업 TBM 보고서의 양식 칸과 리더 계정(docs/design/tbm-daily-form.md).
+-- S15P31A101-609: (V49 는 -602 가 먼저 써서 V51 로 옮김, V50 -597) 날짜 작업 TBM 보고서의 양식 칸과 리더 계정(docs/design/tbm-daily-form.md).
 -- 리더는 이름 글자를 저장하지 않고 계정을 참조한다. 소속·직책은 계정에 둔다.
 ALTER TABLE app_user
     ADD COLUMN org text CHECK (org IS NULL OR char_length(org) BETWEEN 1 AND 40),
