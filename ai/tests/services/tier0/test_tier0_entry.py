@@ -66,7 +66,8 @@ def test_i1_path_is_configurable_and_gateway_id_is_shared(tmp_path) -> None:
     assert I1Settings.from_env({k: v for k, v in env.items() if k != "SIMAI_EC2_I1_PATH"}).url.endswith("/ws/tier0")
     cfg = tmp_path / "c.json"
     cfg.write_text(json.dumps({"gateway_id": "tier0-07", "input": {"mode": "sim", "run_dir": "r"}}), encoding="utf-8")
-    s = load_settings(cfg, env=env)
+    # SIM 입력은 루프백 I1 만 연다(-599): EC2 흉내 주소로 gateway_id 공유를 본다
+    s = load_settings(cfg, env={**env, "SIMAI_EC2_BASE_URL": "https://127.0.0.1:8443"})
     assert s.gateway_id == "tier0-07" and s.i1.source_id == "tier0-07"
 
 
