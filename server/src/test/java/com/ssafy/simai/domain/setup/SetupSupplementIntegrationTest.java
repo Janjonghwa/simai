@@ -502,7 +502,65 @@ class SetupSupplementIntegrationTest {
         assertThat(leased.at("/payload/input/mode").asString()).isEqualTo("SUPPLEMENT_REBAKE");
     }
 
+    @Test
+    void 재시도로_대기_중인_세팅은_모드와_상관없이_같은_현장_작업이_진행_중이면_대여하지_않는다() throws Exception {
+        // 대여가 끝나(재시도 가능한 실패·만료) 다시 대기 중인 세팅을, 그사이 작업이 시작됐으면 내주지 않는다(명세 3.2 5항, -624).
+        // 새 모델은 입력에 mode 가 없다(NULL). -621 은 mode 를 비교해 새 모델은 NULL 로 우연히 막고 REUSE 는 내줬다
+        Session s = startSession();
+        long now = Instant.now().toEpochMilli();
+        ObjectNode failed = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId())
+                .put("job_type", "site_setup").put("status", "FAILED").put("started_at", now - 5_000).put("finished_at", now);
+        failed.putObject("error").put("code", "STATIC_MAPANYTHING_TIMEOUT").put("message", "시험: 재시도").put("retryable", true);
+        mvc.perform(callback(s, failed)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, s.jobId()))
+                .isEqualTo("QUEUED");
+        assertThat(jdbc.queryForObject("SELECT input ->> 'mode' FROM analysis_job WHERE job_id = ?", String.class, s.jobId()))
+                .isNull();
+
+        jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now() WHERE work_id = ?", workUnitId);
+        leaseExpect(status().isNoContent()); // 새 모델(mode 없음)
+        jdbc.update("UPDATE analysis_job SET input = jsonb_set(input, '{mode}', to_jsonb('FULL_SETUP'::text)) WHERE job_id = ?",
+                s.jobId());
+        leaseExpect(status().isNoContent()); // mode 를 FULL_SETUP 으로 적어도
+        jdbc.update("UPDATE analysis_job SET input = jsonb_set(input, '{mode}', to_jsonb('REUSE_SCENE'::text)) WHERE job_id = ?",
+                s.jobId());
+        leaseExpect(status().isNoContent()); // 이전 모델 재사용(REUSE)도
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, s.jobId()))
+                .isEqualTo("QUEUED");
+
+        // 작업이 끝나면 같은 작업이 다음 시도로 대여된다
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+        JsonNode leased = leaseRaw();
+        assertThat(leased.at("/payload/job_id").asString()).isEqualTo(s.jobId());
+        assertThat(leased.at("/payload/attempt").asInt()).isEqualTo(2);
+    }
+
+    @Test
+    void 세팅이_미리보기_맵_전이면_작업을_시작하지_않고_READY_FOR_ZONES_뒤에는_시작한다() throws Exception {
+        // 명세 3.2 5항: 작업 시작은 미리보기 맵으로 관제를 시작하고 뒤쪽 굽기만 회수한다. READY 전 단계는 회수 대상이 아니다(-624 M5)
+        seedCurrentCalibrationDocument();
+        Session s = startSession(); // COLLECTING_BACKGROUND
+        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_READY"));
+        assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, workUnitId))
+                .isEqualTo("PLANNED");
+
+        ready(s); // READY_FOR_ZONES: 미리보기 맵이 현재 Scene 이 됐다
+        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+    }
+
     // ---------------------------------------------------------------- 도우미
+
+    /** 작업 시작은 현재 보정 문서를 실은 구성 묶음을 만든다. 시험 기준 보정에 문서를 둔다(SetupZoneLayoutIntegrationTest 와 같은 방식) */
+    private void seedCurrentCalibrationDocument() throws Exception {
+        byte[] doc = java.nio.file.Files.readAllBytes(CONTRACTS.resolve("examples/calibration.json"));
+        jdbc.update("INSERT INTO calibration_document(calibration_version,content,sha256,uploaded_by,uploaded_at) VALUES (?,?,?,?,now())",
+                baseCalibration, doc, "sha256:" + "b".repeat(64), userId);
+    }
 
     private record Session(String sessionId, String jobId, String leaseId) {
     }

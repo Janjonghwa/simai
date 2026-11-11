@@ -189,6 +189,16 @@ public class WorkUnitRepository {
                 throw new BusinessException(ErrorCode.Work.WORK_NO_SIGNATURE);
             }
         }
+        // 같은 현장의 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이면 시작하지 않는다(명세 3.2 5항: 작업 시작은 미리보기 맵으로
+        // 관제를 시작하고 뒤쪽 굽기만 회수한다). READY 전 단계(배경 수집·보정·MapAnything·미리보기)는 회수 대상이 아니라 LIVE 중에도
+        // GPU 를 쓰고, 그 세팅의 보정은 작업이 끝날 때까지 Tier 0 에 발행되지 않는다(S15P31A101-624 M5)
+        Boolean setupNotReady = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM setup_session WHERE site_id = :site AND status IN
+                    ('COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT'))
+                """, new MapSqlParameterSource("site", siteId), Boolean.class);
+        if (Boolean.TRUE.equals(setupNotReady)) {
+            throw new BusinessException(ErrorCode.Work.WORK_SETUP_NOT_READY);
+        }
         List<Long> active = jdbc.queryForList(
                 "SELECT work_id FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'",
                 new MapSqlParameterSource("site", siteId), Long.class);

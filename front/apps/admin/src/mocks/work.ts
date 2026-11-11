@@ -127,6 +127,8 @@ interface MockWork {
   setupDoneAt: number | null;
   /** true 면 초안이 FAILED 로 끝난다. */
   draftFails: boolean;
+  /** 화면에서 AI 초안을 요청한(POST form-draft) 시각. null 이면 요청하지 않았다(S15P31A101-624). */
+  draftRequestedAt: number | null;
   /** 하루 보고서. 종료해도 같은 보고서(같은 report_id)를 쓴다. */
   report: MockReport;
 }
@@ -348,15 +350,19 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     if (sessionsOf(work).some(isSetupFinished)) work.setupDoneAt = now();
   }
 
-  /** 세팅 끝 시각으로 초안 상태를 앞으로 보낸다: PENDING → GENERATING → SUCCEEDED(빈 칸 채움)·FAILED. */
+  /**
+   * 세팅 끝 시각(서버가 초안을 시작, -615) 또는 화면의 초안 요청 시각(-624)으로 초안 상태를 앞으로 보낸다:
+   * PENDING → GENERATING → SUCCEEDED(빈 칸 채움)·FAILED.
+   */
   function syncDraft(work: MockWork) {
     const { report } = work;
-    if (work.setupDoneAt === null || report.locked_at !== null) return;
+    const startedAt = work.draftRequestedAt ?? work.setupDoneAt;
+    if (startedAt === null || report.locked_at !== null) return;
     if (report.status === 'PENDING') {
       report.status = 'GENERATING';
       report.draft_status = 'GENERATING';
     }
-    if (report.status !== 'GENERATING' || now() - work.setupDoneAt < draftDelayMs) return;
+    if (report.status !== 'GENERATING' || now() - startedAt < draftDelayMs) return;
     report.completed_at_ms = now();
     if (work.draftFails) {
       report.status = 'FAILED';
@@ -627,6 +633,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         event_counts: { CRITICAL: 0, HIGH: 0 },
         setupDoneAt: null,
         draftFails: false,
+        draftRequestedAt: null,
         report: {
           report_id: nextReportId++,
           work_id: workId,
@@ -796,6 +803,38 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       report.form = form;
       report.form_revision += 1;
       return HttpResponse.json(viewReport(work, report));
+    }),
+
+    // AI 양식 초안 요청(서버 TbmFormAiService.startDraft, -616·-624): 생성 중이면 409 REPORT_IN_PROGRESS,
+    // 작업내용이 없으면 409 REPORT_FORM_NO_TASKS, 잠겼으면 409 REPORT_LOCKED. 받으면 GENERATING 이고 draftDelayMs 뒤 끝난다
+    http.post('*/api/reports/tbm/:reportId/form-draft', ({ request, params }) => {
+      const user = guard(request, true);
+      if (user instanceof Response) return user;
+      const found = findReport(Number(params.reportId));
+      if (!found) return problem(404, 'REPORT_NOT_FOUND', '보고서를 찾을 수 없습니다');
+      if (found.kind === 'past') return problem(409, WORK_ERROR.REPORT_LOCKED, '잠긴 보고서입니다');
+      const { work, report } = found;
+      sync(work);
+      if (report.locked_at !== null)
+        return problem(409, WORK_ERROR.REPORT_LOCKED, '제출해 잠긴 보고서입니다');
+      if (report.status === 'GENERATING')
+        return problem(409, WORK_ERROR.REPORT_IN_PROGRESS, '이 작업의 보고서를 이미 생성 중입니다');
+      if (report.form.info.tasks.length === 0)
+        return problem(
+          409,
+          WORK_ERROR.REPORT_FORM_NO_TASKS,
+          '작업내용을 하나 이상 고른 뒤 AI 초안을 요청하세요',
+        );
+      work.draftRequestedAt = now();
+      report.status = 'GENERATING';
+      report.draft_status = 'GENERATING';
+      return HttpResponse.json({
+        report_id: report.report_id,
+        work_id: work.work_id,
+        report_version: report.report_version,
+        draft_status: 'GENERATING',
+        form_revision: report.form_revision,
+      });
     }),
 
     // 제출·잠금: 작업이 끝난 뒤에만. 제출 뒤 양식 수정·서명은 409 REPORT_LOCKED.

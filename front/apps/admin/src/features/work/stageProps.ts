@@ -33,5 +33,10 @@ export interface ReportPanelProps {
   editable: boolean;
   /** 출력 단추를 보일지. */
   withPrint?: boolean;
+  /**
+   * 초안이 아직 없거나(draft_status null) 실패했을 때 'AI 초안 만들기' 단추를 보일지(-624). 세팅이 끝난 뒤 화면(작업 전 확인)에서만 켠다.
+   * 원래 세팅 완료(-615)가 서버에서 초안을 시작하므로, 시작된 뒤(GENERATING·SUCCEEDED)에는 단추가 보이지 않는다.
+   */
+  draftable?: boolean;
   className?: string;
 }

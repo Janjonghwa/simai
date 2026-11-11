@@ -7,8 +7,12 @@ import {
   requestEnd,
   signAs,
   submitDay,
+  T0,
 } from '@/__tests__/features/work/report/reportHarness';
+import { saveReportForm } from '@/features/work/api';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
+import { blankReportForm } from '@/features/work/reportForm';
+import { api } from '@/lib/api';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -260,5 +264,84 @@ describe('출력', () => {
     fireEvent.click(screen.getByRole('button', { name: '출력' }));
     // 화면 종이의 안내 하나뿐이고 사본에는 없다.
     expect(printedPick).toBe(1);
+  });
+});
+
+describe('AI 초안 요청(S15P31A101-624)', () => {
+  const DRAFT = { name: 'AI 초안 만들기' };
+
+  /** 작업내용을 하나 골라 저장한다(초안은 작업내용이 있어야 만든다). */
+  async function chooseTask(workId: string) {
+    const report = await latestReport(workId);
+    await saveReportForm(api, report.report_id, {
+      form: {
+        ...blankReportForm(T0),
+        info: { ...blankReportForm(T0).info, tasks: [{ code: 'REBAR' }] },
+      },
+      form_revision: report.form_revision,
+    });
+  }
+
+  it('서버가 초안을 시작하지 않았으면 단추로 요청하고, 만드는 동안 줄무늬였다가 끝나면 값이 채워진다', async () => {
+    const day = await openDay();
+    await chooseTask(day.work_id);
+    renderWithClient(<ReportPanel workId={day.work_id} editable draftable />);
+    const button = await screen.findByRole('button', DRAFT);
+    expect(isStriped(valueOf('장소'))).toBe(true);
+
+    fireEvent.click(button);
+    // 요청하면 GENERATING 이라 단추가 사라지고, 2초마다 다시 받다가 끝나면 줄무늬가 걷힌다
+    await waitFor(() => expect(screen.queryByRole('button', DRAFT)).toBeNull());
+    expect((await latestReport(day.work_id)).draft_status).toBe('GENERATING');
+    server.clock += DRAFT_DELAY_MS;
+    await waitFor(() => expect(valueOf('성명').textContent).toBe('김안전'), { timeout: 6_000 });
+    expect(isStriped(valueOf('장소'))).toBe(false);
+  });
+
+  it('작업내용이 없으면 단추를 끄고, 세팅 전 화면(draftable 아님)·읽기 전용에는 단추가 없다', async () => {
+    const day = await openDay();
+    renderWithClient(<ReportPanel workId={day.work_id} editable draftable />);
+    const button = await screen.findByRole('button', DRAFT);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+
+    renderWithClient(<ReportPanel workId={day.work_id} editable />);
+    await screen.findByRole('button', EDIT);
+    expect(screen.queryByRole('button', DRAFT)).toBeNull();
+    cleanup();
+
+    renderWithClient(<ReportPanel workId={day.work_id} editable={false} draftable />);
+    await waitFor(() => expect(valueOf('일시').textContent).toBe('2026-11-11 09:00'));
+    expect(screen.queryByRole('button', DRAFT)).toBeNull();
+  });
+
+  it('초안이 실패하면 다시 만들기 단추로 다시 요청한다', async () => {
+    const day = await openDay();
+    await chooseTask(day.work_id);
+    server.mock.failDraft(day.work_id);
+    server.mock.markSetupDone(day.work_id);
+    server.clock += DRAFT_DELAY_MS;
+    expect((await latestReport(day.work_id)).draft_status).toBe('FAILED');
+    renderWithClient(<ReportPanel workId={day.work_id} editable draftable />);
+    fireEvent.click(await screen.findByRole('button', { name: 'AI 초안 다시 만들기' }));
+    await waitFor(async () =>
+      expect((await latestReport(day.work_id)).draft_status).toBe('GENERATING'),
+    );
+  });
+
+  it('이미 만드는 중(409 REPORT_IN_PROGRESS)이면 알리고 보고서를 다시 받는다', async () => {
+    const day = await openDay();
+    await chooseTask(day.work_id);
+    server.server.use(
+      http.post('*/api/reports/tbm/:reportId/form-draft', () =>
+        HttpResponse.json(
+          { status: 409, code: 'REPORT_IN_PROGRESS', detail: '생성 중' },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderWithClient(<ReportPanel workId={day.work_id} editable draftable />);
+    fireEvent.click(await screen.findByRole('button', DRAFT));
+    expect((await screen.findByRole('alert')).textContent).toBe('초안을 이미 만들고 있어요');
   });
 });

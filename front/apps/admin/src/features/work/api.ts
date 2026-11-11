@@ -49,6 +49,8 @@ export const WORK_ERROR = {
   ALREADY_IN_PROGRESS: 'WORK_ALREADY_IN_PROGRESS',
   /** 참석자 서명이 한 명도 없어 작업을 시작할 수 없다(409, -610). */
   NO_SIGNATURE: 'WORK_NO_SIGNATURE',
+  /** 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이라 작업을 시작할 수 없다(409, -624). */
+  SETUP_NOT_READY: 'WORK_SETUP_NOT_READY',
   /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제가 막힌다. */
   REPORT_LOCKED: 'REPORT_LOCKED',
   /** 다른 곳에서 먼저 양식을 고쳤다(409). 다시 불러와야 한다. */
@@ -57,6 +59,10 @@ export const WORK_ERROR = {
   REPORT_VERSION_STALE: 'REPORT_VERSION_STALE',
   /** 서명 인원 상한(50명) 도달(409). */
   SIGNATURE_LIMIT_REACHED: 'SIGNATURE_LIMIT_REACHED',
+  /** AI 양식 초안을 이미 만드는 중(409). 다시 받으면 GENERATING 이 보인다(-624). */
+  REPORT_IN_PROGRESS: 'REPORT_IN_PROGRESS',
+  /** 작업내용을 고르지 않아 AI 초안을 만들 수 없다(409, -624). */
+  REPORT_FORM_NO_TASKS: 'REPORT_FORM_NO_TASKS',
 } as const;
 export type WorkErrorCode = (typeof WORK_ERROR)[keyof typeof WORK_ERROR];
 
@@ -106,7 +112,10 @@ export function fetchWorkUnit(http: Http, workId: string, signal?: AbortSignal) 
   return http(`/api/work-units/${enc(workId)}`, { schema: workDayItemSchema, signal });
 }
 
-/** 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE. */
+/**
+ * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE,
+ * 현장 세팅이 미리보기 맵 전이면 409 WORK_SETUP_NOT_READY.
+ */
 export function startWork(http: Http, workId: string) {
   return http(`/api/work-units/${enc(workId)}/start`, {
     method: 'POST',
@@ -153,6 +162,18 @@ export function saveReportForm(
     method: 'PUT',
     body,
     schema: workReportSchema,
+  });
+}
+
+/**
+ * AI 양식 초안을 요청한다(POST /api/reports/tbm/{id}/form-draft, 서버 -616). 받으면 보고서 draft_status 가 GENERATING 이고
+ * 서버가 비동기로 빈 칸을 채운다. 409: REPORT_IN_PROGRESS(이미 생성 중)·REPORT_FORM_NO_TASKS(작업내용 없음)·REPORT_LOCKED.
+ * 원래 세팅 완료(-615)가 서버에서 시작한다. 그 전에도 사람이 시작·재시도할 수 있게 둔다(-624).
+ */
+export async function startReportDraft(http: Http, reportId: number): Promise<void> {
+  await http(`/api/reports/tbm/${enc(String(reportId))}/form-draft`, {
+    method: 'POST',
+    schema: z.unknown(),
   });
 }
 
