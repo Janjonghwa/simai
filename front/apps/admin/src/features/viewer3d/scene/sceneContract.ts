@@ -27,6 +27,8 @@ const compatibilitySchema = z.object({
 // 입력은 BE -264 GET /api/scenes/current 응답 본문 그대로다(docs/design/server-rules-scenes.md, 서버 SceneService):
 //   { scene_version, state: 'COMMITTED'|'DEFAULT', default, calibration_version, committed_at_ms, quality,
 //     gltf_url, gltf_expires_at_ms, surface_source_map_urls? }
+// 버전을 지정한 GET /api/scenes/{scene_version}/view(BE -613)도 같은 모양이다. state 는 그 버전의 실제 상태(CANDIDATE·COMMITTED)이고
+// default 는 늘 false, CANDIDATE 는 committed_at_ms 가 null, current(boolean)가 더 실리며 compatibility 는 없다(쓰지 않는 필드는 그대로 둔다).
 // FE 가 인증된 HTTP 로 받아 그대로 넘긴다. Viewer 는 조회·재시도·인증을 하지 않는다(서명 주소 5분 만료 뒤 다시 받기는 FE 몫).
 //
 // 좌표: 배경 glTF 는 scene_output 계약의 GLTF_VISUAL 자산이고 glTF 규약(+Y 위, World (x, y, z) → (x, z, −y))으로
@@ -35,7 +37,7 @@ const compatibilitySchema = z.object({
 //
 // 배경은 보기용 Visual Geometry 다. 위험 판정·작업면·구역 형상으로 쓰지 않는다(명세 5.3·7.5).
 
-export const SCENE_STATES = ['COMMITTED', 'DEFAULT'] as const;
+export const SCENE_STATES = ['COMMITTED', 'CANDIDATE', 'DEFAULT'] as const;
 export type SceneState = (typeof SCENE_STATES)[number];
 
 /**
@@ -121,7 +123,7 @@ function readSurfaceSourceMapUrls(raw: unknown): SurfaceSourceMapUrls | null | '
 
 /**
  * 응답을 검사한다. 값을 고쳐 받지 않고, 틀리면 이유를 돌려준다(주소는 이유에 넣지 않는다).
- * state 와 default 가 서로 맞지 않거나, COMMITTED 인데 보정 버전이 없으면 거부한다.
+ * state 와 default 가 서로 맞지 않거나, COMMITTED 인데 보정 버전이 없으면 거부한다. 아직 확정되지 않은 CANDIDATE 도 읽는다.
  */
 export function readCurrentScene(raw: unknown): SceneReadResult {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -131,7 +133,7 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (!isText(sceneVersion)) return { ok: false, reason: 'scene_version 이 비었다' };
   const state = field(raw, 'state');
   if (!SCENE_STATES.some((s) => s === state)) {
-    return { ok: false, reason: 'state 는 COMMITTED 또는 DEFAULT 여야 한다' };
+    return { ok: false, reason: 'state 는 COMMITTED·CANDIDATE·DEFAULT 중 하나여야 한다' };
   }
   const isDefault = field(raw, 'default');
   if (typeof isDefault !== 'boolean' || isDefault !== (state === 'DEFAULT')) {
@@ -270,7 +272,7 @@ export interface ViewerSceneStatus {
   display: SceneDisplay;
   /** 어긋난 항목(예: 'world.scene_version=scene-4'). 비교하지 못한 항목은 넣지 않는다. */
   mismatches: string[];
-  /** FE 가 /api/scenes/current 를 다시 받아야 한다(서명 주소 만료·권한 거부). */
+  /** FE 가 Scene(/api/scenes/current 또는 /api/scenes/{scene_version}/view)을 다시 받아야 한다(서명 주소 만료·권한 거부). */
   needsRefetch: boolean;
   reason: string | null;
   boundsWorld: SceneLoad['boundsWorld'];

@@ -36,7 +36,7 @@ const enc = encodeURIComponent;
 
 /**
  * 화면이 구분해서 안내해야 하는 서버 오류 코드(ProblemDetail 의 code).
- * 이름은 서버 구현(ErrorCode.Work, -610)을 따른다. -611(서명 삭제·제출)이 정하는 이름은 서버가 정하면 맞춘다.
+ * 이름은 서버 구현(ErrorCode.Work·Report, -610·-611·-624)과 같다.
  */
 export const WORK_ERROR = {
   /** 날짜가 오늘이 아닌 작업은 시작할 수 없다(409, -610). */
@@ -51,7 +51,7 @@ export const WORK_ERROR = {
   NO_SIGNATURE: 'WORK_NO_SIGNATURE',
   /** 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이라 작업을 시작할 수 없다(409, -624). */
   SETUP_NOT_READY: 'WORK_SETUP_NOT_READY',
-  /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제가 막힌다. */
+  /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제·제출이 막힌다. */
   REPORT_LOCKED: 'REPORT_LOCKED',
   /** 다른 곳에서 먼저 양식을 고쳤다(409). 다시 불러와야 한다. */
   REPORT_FORM_CONFLICT: 'REPORT_FORM_CONFLICT',
@@ -63,6 +63,12 @@ export const WORK_ERROR = {
   REPORT_IN_PROGRESS: 'REPORT_IN_PROGRESS',
   /** 작업내용을 고르지 않아 AI 초안을 만들 수 없다(409, -624). */
   REPORT_FORM_NO_TASKS: 'REPORT_FORM_NO_TASKS',
+  /** AI 초안 또는 종료 미팅을 쓰는 중이라 제출할 수 없다(409, -611). 다 쓴 뒤 다시 보낸다. */
+  REPORT_NOT_READY: 'REPORT_NOT_READY',
+  /** 지울 서명이 없다(404, -611). 이미 지웠거나 이 보고서의 참석자 서명이 아니다. */
+  SIGNATURE_NOT_FOUND: 'SIGNATURE_NOT_FOUND',
+  /** 서명 요청이 올바르지 않다(400, -611). 이름·판 번호·이미지 키·해시가 틀렸거나 올린 이미지를 쓸 수 없다. */
+  INVALID_SIGNATURE: 'INVALID_SIGNATURE',
 } as const;
 export type WorkErrorCode = (typeof WORK_ERROR)[keyof typeof WORK_ERROR];
 
@@ -178,8 +184,9 @@ export async function startReportDraft(http: Http, reportId: number): Promise<vo
 }
 
 /**
- * 보고서를 제출해 잠근다(작업이 끝난 뒤, 티켓 -611). 제출 뒤 양식 수정·서명은 409 REPORT_LOCKED.
- * 응답 모양이 티켓에 없어 본문은 읽지 않는다. 호출한 쪽이 보고서를 다시 받아 submitted_at 을 본다.
+ * 보고서를 제출해 잠근다(작업이 끝난 뒤, -611). 제출 뒤 양식 수정·서명·삭제는 409 REPORT_LOCKED.
+ * 409: REPORT_LOCKED(이미 제출)·REPORT_VERSION_STALE(새 판 있음)·WORK_INVALID_STATE(작업이 끝나지 않음)·
+ * REPORT_NOT_READY(초안이나 종료 미팅을 쓰는 중). 응답은 보고서 전체(GET 과 같다)지만 호출한 쪽이 보고서를 다시 받아 쓰므로 본문은 읽지 않는다.
  */
 export async function submitReport(http: Http, reportId: number): Promise<void> {
   await http(`/api/reports/tbm/${enc(String(reportId))}/submit`, {
@@ -245,8 +252,8 @@ export async function uploadSignatureImage(
 }
 
 /**
- * 서명을 더한다(201). 보고서 판이 최신이 아니면 409 REPORT_VERSION_STALE, 제출됐으면 409 REPORT_LOCKED,
- * 50명이면 409 SIGNATURE_LIMIT_REACHED. 제출 전이면 작업 시작 뒤에도 더할 수 있다.
+ * 서명을 더한다(201). 값이 틀리면 400 INVALID_SIGNATURE, 보고서 판이 최신이 아니면 409 REPORT_VERSION_STALE,
+ * 제출됐으면 409 REPORT_LOCKED, 50명이면 409 SIGNATURE_LIMIT_REACHED. 제출 전이면 작업 시작 뒤에도 더할 수 있다.
  */
 export function postSignature(
   http: Http,
@@ -260,7 +267,10 @@ export function postSignature(
   });
 }
 
-/** 서명을 지운다(작업 시작 전에만. 시작했거나 제출했으면 409). */
+/**
+ * 서명을 지운다(작업 시작 전에만). 409: REPORT_LOCKED(제출함)·REPORT_VERSION_STALE(새 판 있음)·WORK_INVALID_STATE(작업을 시작함),
+ * 404 SIGNATURE_NOT_FOUND(그 서명이 없음).
+ */
 export async function deleteSignature(
   http: Http,
   reportId: number,
@@ -298,6 +308,5 @@ export async function signReport(
     signer_role: 'PARTICIPANT',
     image_key: uploaded.image_key,
     image_sha256: uploaded.image_sha256,
-    notice_acknowledged: true,
   });
 }

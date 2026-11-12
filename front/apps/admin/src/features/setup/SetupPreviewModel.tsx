@@ -1,10 +1,9 @@
 import { importViewer } from '@/features/layout/spatialHost/useViewerMode';
 import { useThemeStore } from '@/features/layout/theme.store';
-import { useCurrentScene } from '@/features/layout/useCurrentScene';
+import { useSceneView } from '@/features/layout/useSceneView';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import {
-  currentSceneVersion,
-  isSessionScene,
+  sessionSceneVersion,
   zoneMapTitle,
   type SceneTierStatusView,
 } from '@/features/setup/setup';
@@ -27,8 +26,9 @@ const SPLIT =
   'grid min-h-[420px] flex-1 gap-3 min-[1100px]:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] min-[1100px]:grid-rows-[minmax(0,1fr)]';
 
 /**
- * 미리보기 맵이 준비된 뒤의 배치. 지금 현장 Scene 이 이 세션이 만든 맵이면 왼쪽에 3D 를, 오른쪽에 카드 열(children)을 둔다.
- * 3D 가 아직 없거나 서버가 승격을 건너뛰어 다른 Scene 이 현재이거나 3D 를 띄우지 못하면 3D 칸 없이 한 열이다.
+ * 미리보기 맵이 준비된 뒤의 배치. 이 세션이 만든 Scene(정밀 3D 맵이 있으면 정밀, 아니면 미리보기)을 버전을 지정해
+ * 받아(GET /api/scenes/{scene_version}/view, 지금 관제 Scene 과 무관) 받으면 왼쪽에 3D 를, 오른쪽에 카드 열(children)을 둔다.
+ * 맵이 아직 없거나 Scene 을 받지 못했거나 3D 를 띄우지 못하면 3D 칸 없이 한 열이다.
  * 관제 틀(useViewportHost)은 쓰지 않는다: 전역 편집 상태를 건드리지 않고 Scene 만 그린다.
  */
 export function SetupPreviewSplit({
@@ -39,8 +39,8 @@ export function SetupPreviewSplit({
   children: ReactNode;
 }) {
   const theme = useThemeStore((s) => s.theme);
-  const { scene, onSceneStatusChange } = useCurrentScene();
-  const sceneVersion = currentSceneVersion(scene);
+  const sceneVersion = sessionSceneVersion(sceneTier);
+  const { scene, onSceneStatusChange } = useSceneView(sceneVersion);
   // 3D 를 띄우지 못한 Scene 버전. 다른 버전(정식 Scene 등)으로 바뀌면 다시 띄워 본다.
   const [failedVersion, setFailedVersion] = useState<string | null>(null);
   const onLoadError = useCallback(() => setFailedVersion(sceneVersion), [sceneVersion]);
@@ -50,7 +50,7 @@ export function SetupPreviewSplit({
     },
     [sceneVersion],
   );
-  const hasModel = sceneVersion !== failedVersion && isSessionScene(sceneVersion, sceneTier);
+  const hasModel = sceneVersion !== null && sceneVersion !== failedVersion && scene?.ok === true;
 
   return (
     <div className={hasModel ? SPLIT : NARROW_COLUMN}>

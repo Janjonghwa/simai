@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-618 확정 전 Scene(`CANDIDATE`) 입력
+
+더하기이며 하위 호환이다.
+
+- 변경: `SCENE_STATES` 가 `['COMMITTED', 'CANDIDATE', 'DEFAULT']` 가 되고 `SceneState` 에 `CANDIDATE` 가 들어간다. 서버 `GET /api/scenes/{scene_version}/view`(BE -613)가 세팅 미리보기·정밀 맵을 이 상태로 낸다. 예전에는 `REJECTED` 였다.
+- 동작: `CANDIDATE` 는 `COMMITTED` 처럼 읽고 그린다. 자산 캐시는 `COMMITTED` 만 쓴다. 오류 이유 문구가 `state 는 COMMITTED·CANDIDATE·DEFAULT 중 하나여야 한다` 로 바뀌었다.
+
 ## S15P31A101-606 바닥 감시 범위 겹침(`floorCoverage`)
 
 모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-606-coverage-overlay.md` 에 있다.

@@ -44,11 +44,14 @@ function useZoneStepSource() {
  */
 export function SetupZoneStep({
   title,
+  sceneVersion = null,
   draftGhosts,
   plan,
   children,
 }: {
   title: string;
+  /** 세팅 세션이 만든 Scene 버전. 있으면 그 버전을 /view 로 받아 그리고, 없으면(작업 전 확인 창 등) 지금 관제 Scene 을 그린다. */
+  sceneVersion?: string | null;
   /** 아직 수락·버리기 전인 AI 구역 초안 윤곽. */
   draftGhosts: readonly ViewerBoxGhost[];
   plan: ReactNode;
@@ -68,7 +71,12 @@ export function SetupZoneStep({
     onViewerSelect,
     onViewerStatus,
     viewport,
-  } = useViewportHost({ source, loadViewer: importViewer, planFallbackMs: PLAN_FALLBACK_MS });
+  } = useViewportHost({
+    source,
+    loadViewer: importViewer,
+    planFallbackMs: PLAN_FALLBACK_MS,
+    sceneVersion,
+  });
   const { boxEdit, boxGhosts, onBoxEditChange } = useBoxEditProps();
   const ghosts = useMemo(() => [...boxGhosts, ...draftGhosts], [boxGhosts, draftGhosts]);
   const [topView, setTopView] = useState(false);

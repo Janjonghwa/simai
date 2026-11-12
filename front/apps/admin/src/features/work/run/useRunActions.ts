@@ -1,7 +1,7 @@
 import { useEndWork, useSubmitReport } from '@/features/work/useWorkRun';
 import { useCallback, useState } from 'react';
 
-// 작업 종료 단계의 동작 훅: 종료 확인창, 보고서 보내기 확인창. 요청 결과는 화면이 pending·failed 로만 본다.
+// 작업 종료 단계의 동작 훅: 종료 확인창, 보고서 보내기 확인창. 요청 결과는 화면이 pending 과 실패(failed·error)로만 본다.
 // 종료 미팅(`review.ending`)은 서버가 종료 뒤 채운다(화면이 채워 저장하지 않는다).
 
 const ignore = () => undefined;
@@ -42,5 +42,5 @@ export function useSendReport(onSubmitted: () => void) {
     },
     [mutateAsync, onSubmitted],
   );
-  return { open, pending, failed: error !== null, request, cancel, confirm };
+  return { open, pending, error, request, cancel, confirm };
 }

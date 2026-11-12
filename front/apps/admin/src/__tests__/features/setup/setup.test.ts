@@ -2,7 +2,6 @@ import {
   boxOfDraftItem,
   CAMERA_CORNERS,
   CAMERA_HEIGHT_HELP,
-  currentSceneVersion,
   DEFAULT_CAMERA_IDS,
   deriveHeightCheckRows,
   deriveHeightFields,
@@ -18,9 +17,9 @@ import {
   formatMinSec,
   formatRemainingKorean,
   isPreviewSceneReady,
-  isSessionScene,
   MAX_CAMERA_HEIGHT_M,
   resolveHeightCameraIds,
+  sessionSceneVersion,
   SETUP_TARGET_DURATION_SEC,
   STEPS,
   validateHeightFields,
@@ -884,7 +883,7 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
   });
 });
 
-describe('현재 Scene 이 이 세션의 맵인지', () => {
+describe('세팅 세션의 Scene 버전', () => {
   const tier = (preview: string | null, final: string | null = null) =>
     deriveSceneTierStatus(
       setupSessionResponseSchema.parse({
@@ -900,31 +899,27 @@ describe('현재 Scene 이 이 세션의 맵인지', () => {
       }),
     );
 
-  it('응답의 scene_version 만 읽고 응답이 아니거나 비면 null 이다', () => {
-    expect(currentSceneVersion(null)).toBeNull();
-    expect(currentSceneVersion({ ok: false, reason: '실패' })).toBeNull();
-    expect(currentSceneVersion({ ok: true, raw: 'x' })).toBeNull();
-    expect(currentSceneVersion({ ok: true, raw: { scene_version: '' } })).toBeNull();
-    expect(currentSceneVersion({ ok: true, raw: { scene_version: 'scene-preview-1' } })).toBe(
-      'scene-preview-1',
-    );
+  it('미리보기 맵이면 미리보기 버전이고, 정밀 3D 맵으로 바뀐 뒤에는 정밀 버전이다', () => {
+    expect(sessionSceneVersion(tier('scene-preview-1'))).toBe('scene-preview-1');
+    expect(sessionSceneVersion(tier('scene-preview-1', 'scene-final-1'))).toBe('scene-final-1');
   });
 
-  it('미리보기 버전이나(정밀 3D 맵으로 바뀐 뒤에는) 정밀 버전과 같을 때만 맞다', () => {
-    expect(isSessionScene('scene-preview-1', tier('scene-preview-1'))).toBe(true);
-    expect(isSessionScene('scene-demo', tier('scene-preview-1'))).toBe(false);
-    expect(isSessionScene(null, tier('scene-preview-1'))).toBe(false);
-    expect(isSessionScene('scene-final-1', tier('scene-preview-1', 'scene-final-1'))).toBe(true);
+  it('맵이 아직 없으면 null 이다', () => {
+    expect(sessionSceneVersion(tier(null))).toBeNull();
+    expect(sessionSceneVersion(deriveSceneTierStatus(null))).toBeNull();
   });
 });
 
-describe('setupErrorMessage: 재시도·취소 불가 409', () => {
-  it.each(['SETUP_RETRY_NOT_ALLOWED', 'SETUP_CANCEL_NOT_ALLOWED'])(
-    '%s(409)는 진행 중 작업 차단으로 보지 않고 서버 문구를 유지한다',
-    (code) => {
-      const error = new ApiError(409, { code, serverMessage: '지금은 할 수 없는 상태입니다' });
-      expect(isSetupBlockedByLiveWork(error)).toBe(false);
-      expect(setupErrorMessage(error)).toBe('지금은 할 수 없는 상태입니다');
-    },
-  );
+describe('setupErrorMessage: 진행 중 작업 때문이 아닌 409', () => {
+  it.each([
+    'SETUP_RETRY_NOT_ALLOWED',
+    'SETUP_CANCEL_NOT_ALLOWED',
+    'WORK_NOT_TODAY',
+    'WORK_INVALID_STATE',
+    'SETUP_CAMERAS_INSUFFICIENT',
+  ])('%s(409)는 진행 중 작업 차단으로 보지 않고 서버 문구를 유지한다', (code) => {
+    const error = new ApiError(409, { code, serverMessage: '지금은 할 수 없는 상태입니다' });
+    expect(isSetupBlockedByLiveWork(error)).toBe(false);
+    expect(setupErrorMessage(error)).toBe('지금은 할 수 없는 상태입니다');
+  });
 });

@@ -20,7 +20,7 @@ import type {
   ZoneDraftCandidateKind,
   ZoneDraftItem,
 } from '@/features/setup/types';
-import type { ViewerBoxGhost, ViewerEditBox, ViewerSceneInput } from '@/features/viewer3d';
+import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import { openingZoneZ } from '@/features/zones/zoneShape';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
@@ -842,22 +842,12 @@ export function deriveWaitingView(
   };
 }
 
-/** 현재 Scene 입력(GET /api/scenes/current 응답)의 scene_version. 응답이 아니거나 비면 null. */
-export function currentSceneVersion(scene: ViewerSceneInput | null): string | null {
-  if (!scene?.ok || typeof scene.raw !== 'object' || scene.raw === null) return null;
-  const version: unknown = Reflect.get(scene.raw, 'scene_version');
-  return typeof version === 'string' && version !== '' ? version : null;
-}
-
 /**
- * 지금 현장 Scene 이 이 세팅 세션이 만든 맵(미리보기, 정밀 3D 맵으로 바뀐 뒤에는 정밀)인지. 서버가 승격을 건너뛰어 다른 버전이
- * 현재면 세팅 화면은 3D 를 보이지 않는다.
+ * 이 세팅 세션이 만든 맵의 Scene 버전(정밀 3D 맵이 있으면 정밀, 아니면 미리보기). 아직 맵이 없으면 null.
+ * 세팅 화면은 지금 관제 Scene 이 아니라 이 버전을 GET /api/scenes/{scene_version}/view 로 받아 그린다.
  */
-export function isSessionScene(sceneVersion: string | null, tier: SceneTierStatusView): boolean {
-  return (
-    sceneVersion !== null &&
-    (sceneVersion === tier.previewSceneVersion || sceneVersion === tier.finalSceneVersion)
-  );
+export function sessionSceneVersion(sceneTier: SceneTierStatusView): string | null {
+  return sceneTier.finalSceneVersion ?? sceneTier.previewSceneVersion;
 }
 
 /** VLM 구역 초안 다각형과 Z 범위를 구역 편집기(`useZoneEditStore`)의 ViewerEditBox 로 변환한다. */
@@ -885,7 +875,7 @@ export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
 /** 구역 단계 3D 칸 제목: 미리보기 맵·정밀 3D 맵과 그 Scene 버전. 세팅 맵이 아직이면 지금 현장 맵이다. */
 export function zoneMapTitle(sceneTier: SceneTierStatusView): string {
   if (sceneTier.tier === 'NONE') return MAP_TITLE[ZONE_STAGE];
-  const version = sceneTier.finalSceneVersion ?? sceneTier.previewSceneVersion;
+  const version = sessionSceneVersion(sceneTier);
   return version ? `${sceneTier.label} · ${version}` : sceneTier.label;
 }
 

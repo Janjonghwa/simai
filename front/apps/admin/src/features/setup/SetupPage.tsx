@@ -13,6 +13,7 @@ import {
   deriveWaitingView,
   draftGhostsOf,
   resolveHeightCameraIds,
+  sessionSceneVersion,
   STEPS,
   validateHeightFields,
   ZONE_STAGE,
@@ -555,6 +556,7 @@ function SetupWorkPage({
       ) : (
         <SetupZoneStep
           title={zoneMapTitle(waiting.sceneTier)}
+          sceneVersion={sessionSceneVersion(waiting.sceneTier)}
           draftGhosts={draftGhosts}
           plan={
             <SetupMap

@@ -11,6 +11,7 @@ import {
   CANDIDATE_KIND_LABEL,
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
+  sessionSceneVersion,
   type CoverageCameraView,
   type HeightFieldView,
   type HeightWarningItem,
@@ -436,7 +437,7 @@ export function AiZoneDraftsPanel({
   const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
   const tierTone: SetupTone =
     sceneTier.tier === 'FINAL' ? 'ok' : sceneTier.tier === 'PREVIEW' ? 'active' : 'idle';
-  const activeSceneVersion = sceneTier.finalSceneVersion ?? sceneTier.previewSceneVersion;
+  const activeSceneVersion = sessionSceneVersion(sceneTier);
 
   return (
     <Panel title="AI 위험 구역 초안 · 배경 맵 상태" fill={1}>

@@ -641,6 +641,13 @@ async function startSetupSession() {
   return { ...view, sessionId };
 }
 
+/** 이 시험에서 나가는 요청의 경로를 모은다(시험이 끝나면 listener 는 afterEach 가 걷는다). */
+function trackRequestedPaths() {
+  const paths: string[] = [];
+  server.events.on('request:start', ({ request }) => paths.push(new URL(request.url).pathname));
+  return paths;
+}
+
 const PREVIEW_PATCH = {
   stage: 'PREVIEW_AND_VLM_DRAFT',
   status: 'PREVIEW_AND_VLM_DRAFT',
@@ -885,30 +892,21 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(steps[1]!.getAttribute('aria-current')).toBeNull();
   }, 20_000);
 
-  it('현재 Scene 이 이 세션의 미리보기 맵이면 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
-    server.use(
-      http.get('*/api/scenes/current', () =>
-        HttpResponse.json({
-          scene_version: 'scene-preview-1',
-          state: 'COMMITTED',
-          default: false,
-          calibration_version: 'cal-8',
-          committed_at_ms: 1_793_690_000_000,
-          gltf_url: null,
-          gltf_expires_at_ms: null,
-        }),
-      ),
-    );
+  it('이 세션의 미리보기 맵을 버전으로 받아(/view, 지금 관제 Scene 과 무관) 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
+    const requested = trackRequestedPaths();
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
 
     const viewport = await screen.findByTestId('setup-preview-viewport', undefined, POLL_WAIT);
     expect(await within(viewport).findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
     expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
+    // 확정 전(CANDIDATE) Scene 을 그대로 뷰어에 넘긴다.
     expect(fakeViewer.props?.scene).toMatchObject({
       ok: true,
-      raw: { scene_version: 'scene-preview-1' },
+      raw: { scene_version: 'scene-preview-1', state: 'CANDIDATE', current: false },
     });
+    expect(requested).toContain('/api/scenes/scene-preview-1/view');
+    expect(requested).not.toContain('/api/scenes/current');
     // 구역 편집 틀(useViewportHost)의 편집 상자·AI 윤곽을 쓰지 않는 읽기용 3D 다.
     expect(fakeViewer.props?.boxEdit).toBeUndefined();
     expect(fakeViewer.props?.boxGhosts).toBeUndefined();
@@ -924,6 +922,25 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     );
   }, 20_000);
 
+  it('세션의 Scene 을 받지 못하면(/view 404) 3D 칸 없이 진행 카드 열만 보인다', async () => {
+    server.use(
+      http.get('*/api/scenes/:sceneVersion/view', () =>
+        HttpResponse.json(
+          { status: 404, code: 'SCENE_VERSION_NOT_FOUND', detail: 'Scene 을 찾을 수 없습니다' },
+          { status: 404 },
+        ),
+      ),
+    );
+    const requested = trackRequestedPaths();
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+
+    await waitFor(() => expect(requested).toContain('/api/scenes/scene-preview-1/view'), POLL_WAIT);
+    expect(await screen.findByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
+    expect(screen.queryByTestId('setup-preview-viewport')).toBeNull();
+    expect(requested).not.toContain('/api/scenes/current');
+  }, 20_000);
+
   it('높이가 안 맞아도 다음은 켜져 구역 단계로 갈 수 있고, 카메라 다시 맞추기도 함께 보인다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
@@ -936,9 +953,9 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
   }, 20_000);
 
-  it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 다음으로 구역 단계에 가면 정식 Scene 이 와도 수락해 만든 구역이 남는다', async () => {
-    const { sessionId, client } = await startSetupSession();
-    const invalidate = vi.spyOn(client, 'invalidateQueries');
+  it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 다음으로 구역 단계에 가면 정식 Scene 이 와도 수락해 만든 구역이 남고 3D 는 그 버전으로 바뀐다', async () => {
+    const requested = trackRequestedPaths();
+    const { sessionId } = await startSetupSession();
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
 
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
@@ -947,19 +964,16 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.getByRole('status', { name: '배경 맵 단계 상태' }).textContent).toContain(
       '미리보기 맵',
     );
-    await waitFor(() =>
-      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['scenes', 'current'] }),
-    );
+    await waitFor(() => expect(requested).toContain('/api/scenes/scene-preview-1/view'), POLL_WAIT);
 
     fireEvent.click(await screen.findByRole('button', { name: '창가 개구부 추락 주의 수락' }));
     expect(await screen.findByText('반영됨', undefined, POLL_WAIT)).toBeTruthy();
 
-    invalidate.mockClear();
     setupMock.updateSession(sessionId, {
       stage: 'COMPLETED',
       status: 'COMPLETED',
       progress_pct: 100,
-      scene_version: 'scene-final-1',
+      scene_version: 'scene-setup-final-1',
     });
 
     await waitFor(
@@ -969,7 +983,19 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
         ),
       POLL_WAIT,
     );
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['scenes', 'current'] });
+    await waitFor(
+      () => expect(requested).toContain('/api/scenes/scene-setup-final-1/view'),
+      POLL_WAIT,
+    );
+    await waitFor(
+      () =>
+        expect(fakeViewer.props?.scene).toMatchObject({
+          ok: true,
+          raw: { scene_version: 'scene-setup-final-1' },
+        }),
+      POLL_WAIT,
+    );
+    expect(requested).not.toContain('/api/scenes/current');
     expect(screen.getByTestId('zones-page-stub')).toBeTruthy();
     expect(screen.getByText('반영됨')).toBeTruthy();
   }, 25_000);
@@ -985,6 +1011,15 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await waitFor(() => expect(panel.getAttribute('data-viewer-ready')).toBe('true'), POLL_WAIT);
     expect(fakeViewer.props?.layers).toMatchObject({ workSurfaces: 'interactive' });
     expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
+    // 3D 배경은 지금 관제 Scene 이 아니라 이 세션의 미리보기(확정 전)다.
+    await waitFor(
+      () =>
+        expect(fakeViewer.props?.scene).toMatchObject({
+          ok: true,
+          raw: { scene_version: 'scene-preview-1', state: 'CANDIDATE' },
+        }),
+      POLL_WAIT,
+    );
 
     // 구역 목록을 받은 뒤 패널에서 고르면 3D 가 고르고 초점을 옮긴다.
     await waitFor(() => expect(panel.getAttribute('data-zones')).not.toBe('0'), POLL_WAIT);

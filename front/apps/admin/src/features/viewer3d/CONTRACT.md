@@ -153,6 +153,11 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - `exitCameraView()`: 첫 `viewFromCamera` 직전 시점(자리·회전 중심·시야각)으로 1 초에 돌아간다. 카메라 시점이 아니면 아무것도 하지 않는다. `resetView` 는 카메라 시점 보기를 끝내고 돌아갈 시점을 잊는다.
 - 사진: 장면 `vdt` 가 있으면 그 사진, `vdt.cameraImageUrls`(카메라 ID → 주소)가 있으면 같은 카메라의 주소를 바꾸고, 장면 `vdt` 가 없으면 `map_cameras` 자세와 주소로 표시 층 없는 설정을 만든다(`withVdtCameraImages`). 둘 다 없으면 시점만 옮긴다.
 
+## 배경 Scene 상태(`scene` prop, -618)
+
+- 받는 `state` 는 `COMMITTED`·`CANDIDATE`·`DEFAULT` 이다. `CANDIDATE` 는 아직 확정되지 않은 Scene(세팅 미리보기·정밀 맵)으로, 버전을 지정한 `GET /api/scenes/{scene_version}/view` 가 낸다. 그 응답은 `default` 가 늘 false 이고 `committed_at_ms` 가 null 이며 `compatibility` 가 없다. 다른 값은 `REJECTED` 다.
+- `COMMITTED` 만 자산을 버전 키로 캐시한다. `CANDIDATE` 는 내용이 바뀔 수 있어 캐시하지 않는다. 정합 판정은 `COMMITTED` 와 같다(`DEFAULT` 만 근거 없음).
+
 ## 기타 공개 항목
 
 - `personModelUrl`: 사람 모델 GLB 주소(선택). 읽지 못하면 캡슐로 그린다. 에셋 권리와 배포 경로는 미정이다.

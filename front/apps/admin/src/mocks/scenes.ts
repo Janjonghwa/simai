@@ -11,6 +11,31 @@ const demoSceneUrl = new URL(
 // 서버가 주는 서명 URL 의 유효 시간.
 const SIGNED_URL_TTL_MS = 5 * 60_000;
 
+const MOCK_CALIBRATION_VERSION = 'cal-mock-1';
+
+/** 서버가 Scene 버전으로 받는 형식(SceneService.SCENE_VERSION). 어긋나면 보이는 Scene 이 없어 404 다. */
+const SCENE_VERSION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/**
+ * 아직 확정되지 않은(CANDIDATE) 보이는 Scene 의 버전 앞부분: 세팅의 미리보기·정밀 3D 맵(mocks/setup.ts), 보충 굽기
+ * (mocks/setupSupplement.ts), 재생성 후보(이 파일). 이 mock 은 모두 데모 glTF 로 보인다.
+ */
+const CANDIDATE_VERSION_PREFIXES = [
+  'scene-preview-',
+  'scene-setup-',
+  'scene-supplement-',
+  'scene-cand-',
+] as const;
+
+/** GET /api/scenes/{scene_version}/view 가 낼 상태. 기본 Scene(DB 행 아님)과 모르는 버전은 서버처럼 null 이다. */
+function viewableSceneState(version: string): 'COMMITTED' | 'CANDIDATE' | null {
+  if (!SCENE_VERSION_PATTERN.test(version)) return null;
+  if (!state.isDefault && version === state.currentSceneVersion) return 'COMMITTED';
+  return CANDIDATE_VERSION_PREFIXES.some((prefix) => version.startsWith(prefix))
+    ? 'CANDIDATE'
+    : null;
+}
+
 interface MockSceneState {
   currentSceneVersion: string;
   isDefault: boolean;
@@ -85,11 +110,37 @@ export const sceneHandlers = [
       scene_version: state.currentSceneVersion,
       state: state.isDefault ? 'DEFAULT' : 'COMMITTED',
       default: state.isDefault,
-      calibration_version: state.isDefault ? null : 'cal-mock-1',
+      calibration_version: state.isDefault ? null : MOCK_CALIBRATION_VERSION,
       committed_at_ms: state.committedAtMs,
       quality: state.quality,
       gltf_url: demoSceneUrl,
       gltf_expires_at_ms: now + SIGNED_URL_TTL_MS,
+    });
+  }),
+
+  // 버전을 지정한 Scene 보기(-613, 관리자 전용). current 와 같은 모양에 `current`(지금 관제 Scene 인지)를 더하고 compatibility 는 없다.
+  // state 는 그 버전의 실제 상태다: 세팅 미리보기·정밀 맵은 CANDIDATE(확정 시각 없음), 지금 관제 Scene 은 COMMITTED.
+  http.get('*/api/scenes/:sceneVersion/view', ({ request, params }) => {
+    const now = Date.now();
+    const user = readLiveUser(request, now);
+    if (!user) return unauthorized();
+    if (user.role !== 'ADMIN') {
+      return problem(403, 'FORBIDDEN', '관리자만 Scene 을 볼 수 있습니다.');
+    }
+    const version = String(params.sceneVersion ?? '');
+    const sceneState = viewableSceneState(version);
+    if (!sceneState) return problem(404, 'SCENE_VERSION_NOT_FOUND', 'Scene 을 찾을 수 없습니다');
+    const committed = sceneState === 'COMMITTED';
+    return HttpResponse.json({
+      scene_version: version,
+      state: sceneState,
+      default: false,
+      calibration_version: MOCK_CALIBRATION_VERSION,
+      committed_at_ms: committed ? state.committedAtMs : null,
+      quality: committed ? state.quality : null,
+      gltf_url: demoSceneUrl,
+      gltf_expires_at_ms: now + SIGNED_URL_TTL_MS,
+      current: committed,
     });
   }),
 

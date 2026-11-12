@@ -20,9 +20,12 @@ export function startErrorMessage(error: unknown): string {
 /** 서명 인원이 상한에 닿았을 때(서버가 거절했거나 목록이 이미 가득 찼을 때). */
 export const SIGNER_LIMIT_MESSAGE = `서명은 ${SIGNATURE_MAX_COUNT}명까지 받을 수 있어요`;
 
-/** 서명 추가가 실패했을 때: 인원 상한·이미지 크기·올리기 실패·보고서 판 바뀜·제출 잠금, 그 밖. */
+/** 서명 추가가 실패했을 때: 인원 상한·이미지 크기·올리기 실패·서명 값 틀림·보고서 판 바뀜·제출 잠금, 그 밖. */
 export function addSignatureErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.SIGNATURE_LIMIT_REACHED)) return SIGNER_LIMIT_MESSAGE;
+  if (isWorkError(error, WORK_ERROR.INVALID_SIGNATURE)) {
+    return '서명이 올바르지 않아요. 지우고 다시 써 주세요';
+  }
   if (error instanceof SignatureUploadError) {
     return error.reason === 'TOO_LARGE'
       ? '서명이 너무 커요. 지우고 다시 써 주세요'
@@ -35,12 +38,13 @@ export function addSignatureErrorMessage(error: unknown): string {
   return '서명을 추가하지 못했어요';
 }
 
-/** 서명 삭제가 실패했을 때: 작업을 시작했거나 제출해서 막힌 경우와 그 밖. */
+/** 서명 삭제가 실패했을 때: 작업을 시작했거나 제출해서 막힌 경우, 서명이 이미 없는 경우, 그 밖. */
 export function deleteSignatureErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '작업을 시작해서 서명을 지울 수 없어요';
   }
   if (isWorkError(error, WORK_ERROR.REPORT_LOCKED)) return '제출한 보고서의 서명은 지울 수 없어요';
+  if (isWorkError(error, WORK_ERROR.SIGNATURE_NOT_FOUND)) return '이미 지워진 서명이에요';
   return '서명을 지우지 못했어요';
 }
 

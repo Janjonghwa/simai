@@ -298,7 +298,7 @@ export interface Viewer3DProps {
   editDraftOverlay?: ViewerEditOverlayInput;
   /**
    * 정적 배경 Scene(S15P31A101-59). FE 가 인증된 HTTP 로 받은 GET /api/scenes/current 결과를 그대로 넘긴다
-   * (`{ ok: true, raw: 응답 본문 }` 또는 실패 `{ ok: false, reason, httpStatus? }`). 없거나 null 이면 기본 바닥만 그린다.
+   * (확정 전 Scene 은 GET /api/scenes/{scene_version}/view 결과. `{ ok: true, raw: 응답 본문 }` 또는 실패 `{ ok: false, reason, httpStatus? }`). 없거나 null 이면 기본 바닥만 그린다.
    * 렌더마다 새 객체를 만들지 말고 응답이 바뀔 때만 바꾼다. 같은 scene_version 의 서명 주소만 바뀌면 자산을 다시 읽지 않는다.
    */
   scene?: ViewerSceneInput | null;
