@@ -90,6 +90,13 @@ from simai_ai.calibration.world_frame.frame import (
     fix_world_frame,
 )
 from simai_ai.providers.contract import schema_errors
+from simai_ai.scene.zone_height_diff import (
+    REASON_NO_PREVIOUS_SCENE,
+    REASON_REUSE_SCENE,
+    REASON_SCENE_UNREADABLE,
+    REASON_WORLD_NOT_ANCHORED,
+    build_unknown_zone_height_changes,
+)
 from simai_ai.tracking.system_health import CalibrationState
 
 from .handlers import JobContext, JobFailed
@@ -279,6 +286,7 @@ class BakedScene:
     scene_version: str
     scene_asset: ObjectRef | None = None
     supplement: Mapping[str, Any] | None = None
+    zone_height_changes: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +297,7 @@ class RebakeOutcome:
     supplement: Mapping[str, Any]
     height_checks: dict[str, dict[str, Any]]
     scene_asset: ObjectRef | None = None
+    zone_height_changes: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +309,7 @@ class PreviewDraftResult:
     scene_asset: ObjectRef | None = None
     floor_coverage: Mapping[str, Any] | None = None
     """바닥 감시 범위(계약 site_setup#/$defs/floor_coverage, S15P31A101-606). 바닥을 모르면 None(싣지 않는다)"""
+    zone_height_changes: Mapping[str, Any] | None = None
 
 
 class BackgroundCollector(Protocol):
@@ -741,7 +751,7 @@ class SiteSetupHandler:
                 return
             try:
                 summary = self._camera_check.poll()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("작업 %s: 카메라 확인 평가 실패(다음 주기에 다시 본다)", ctx.job_id)
                 continue
             if summary is None:
@@ -759,7 +769,7 @@ class SiteSetupHandler:
                 if base is not None:
                     try:
                         self._emit_progress(ctx, base)
-                    except Exception:  # noqa: BLE001 - 하트비트 실패는 처리기 흐름이 다음 스냅샷에서 다시 낸다
+                    except Exception:
                         log.warning("작업 %s: 카메라 확인 스냅샷을 보내지 못했다", ctx.job_id, exc_info=True)
             if summary.get("status") in CAMERA_CHECK_FINAL:
                 return
@@ -779,7 +789,7 @@ class SiteSetupHandler:
         if (self._cc_summary or {}).get("status") not in CAMERA_CHECK_FINAL:
             try:
                 summary = self._camera_check.incomplete()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("작업 %s: 카메라 확인 마감 처리 실패", ctx.job_id)
                 summary = None
             if summary is not None:
@@ -937,11 +947,46 @@ class SiteSetupHandler:
         }
         if outcome.scene_asset is not None:
             result["artifacts"] = {"scene": outcome.scene_asset.to_json()}
+        if outcome.zone_height_changes is not None:
+            result["zone_height_changes"] = dict(outcome.zone_height_changes)
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:
             raise JobFailed("INTERNAL_CONTRACT_ERROR", f"site_setup 다시 굽기 결과가 계약을 위반했다: {'; '.join(errs)}",
                             retryable=False)
         return result
+
+    @staticmethod
+    def _fallback_zone_height_changes(
+        ctx: JobContext,
+        *,
+        anchor: Mapping[str, Any] | None,
+        compared_scene_version: str | None,
+        reason_override: str | None = None,
+    ) -> dict[str, Any] | None:
+        """주입점이 `zone_height_changes` 를 직접 주지 않았을 때, 입력에 이전 맵·구역이 있으면 UNKNOWN 요약을 만든다."""
+        if "previous_zones" not in ctx.input and "previous_scene" not in ctx.input:
+            return None
+        prev_zones = list(ctx.input.get("previous_zones") or [])
+        prev_scene = ctx.input.get("previous_scene")
+        prev_ver = (
+            str(prev_scene["scene_version"])
+            if isinstance(prev_scene, Mapping) and prev_scene.get("scene_version")
+            else None
+        )
+        if reason_override is not None:
+            reason = reason_override
+        elif not isinstance(prev_scene, Mapping) or not prev_scene.get("uri"):
+            reason = REASON_NO_PREVIOUS_SCENE
+        elif anchor is None or anchor.get("accepted") is not True:
+            reason = REASON_WORLD_NOT_ANCHORED
+        else:
+            reason = REASON_SCENE_UNREADABLE
+        return build_unknown_zone_height_changes(
+            prev_zones,
+            reason=reason,
+            previous_scene_version=prev_ver,
+            compared_scene_version=compared_scene_version,
+        )
 
     def _finish_reuse(
         self, ctx: JobContext, joint_ba_snapshot: Mapping[str, Any], stage_seconds: dict[str, float],
@@ -952,13 +997,30 @@ class SiteSetupHandler:
         self._check_cancelled(ctx)
         stage_seconds["READY_FOR_ZONES"] = 0.0
         metrics = {"stage_seconds": dict(stage_seconds), "joint_ba": stage_a.summary_metrics}
-        self._emit_progress(ctx, {**joint_ba_snapshot, "status": "READY_FOR_ZONES", "progress_pct": 85, "metrics": metrics})
+        reuse_zhc = self._fallback_zone_height_changes(
+            ctx,
+            anchor={"accepted": True},
+            compared_scene_version=None,
+            reason_override=REASON_REUSE_SCENE,
+        )
+        zhc_fields = {"zone_height_changes": reuse_zhc} if reuse_zhc is not None else {}
+        self._emit_progress(
+            ctx,
+            {
+                **joint_ba_snapshot,
+                "status": "READY_FOR_ZONES",
+                "progress_pct": 85,
+                "metrics": metrics,
+                **zhc_fields,
+            },
+        )
         self._finish_camera_check(ctx)
         result: dict[str, Any] = self._with_checks({
             **joint_ba_snapshot,
             "status": "COMPLETED",
             "progress_pct": 100,
             "metrics": {**metrics, "total_seconds": round(max(0.0, self._perf() - t_start), 4)},
+            **zhc_fields,
         })
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:
@@ -979,7 +1041,7 @@ class SiteSetupHandler:
             if self._camera_check is not None:
                 try:
                     self._camera_check.stop()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     log.warning("작업 %s: 카메라 확인 요청을 닫지 못했다", ctx.job_id, exc_info=True)
 
     def _run(self, ctx: JobContext) -> Mapping[str, Any]:
@@ -1234,6 +1296,17 @@ class SiteSetupHandler:
                 log.warning("작업 %s: 바닥 감시 범위의 보정 버전이 등록한 보정과 달라 싣지 않는다", ctx.job_id)
         if artifacts:
             preview_snapshot["artifacts"] = dict(artifacts)
+        preview_zhc = (
+            dict(preview.zone_height_changes)
+            if preview.zone_height_changes is not None
+            else self._fallback_zone_height_changes(
+                ctx,
+                anchor=anchor,
+                compared_scene_version=preview.preview_scene_version,
+            )
+        )
+        if preview_zhc is not None:
+            preview_snapshot["zone_height_changes"] = preview_zhc
         self._emit_progress(ctx, preview_snapshot)
 
         t0_ready = self._perf()
@@ -1281,11 +1354,13 @@ class SiteSetupHandler:
             progress=self._subprogress(ctx, baking_snapshot, 85, 94),
         )
         supplement: Mapping[str, Any] | None = None
+        baked_zhc: Mapping[str, Any] | None = None
         if isinstance(baked, BakedScene):
             scene_version = baked.scene_version
             if baked.scene_asset is not None:
                 artifacts["scene"] = baked.scene_asset.to_json()
             supplement = baked.supplement
+            baked_zhc = baked.zone_height_changes
         else:
             scene_version = str(baked)
         stage_seconds["BAKING_TEXTURE"] = round(
@@ -1326,6 +1401,9 @@ class SiteSetupHandler:
             result["artifacts"] = dict(artifacts)
         if supplement is not None:
             result["supplement"] = dict(supplement)
+        final_zhc = dict(baked_zhc) if baked_zhc is not None else preview_zhc
+        if final_zhc is not None:
+            result["zone_height_changes"] = final_zhc
         result = self._with_checks(result)
 
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)

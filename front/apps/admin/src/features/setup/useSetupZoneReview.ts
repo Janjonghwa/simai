@@ -6,8 +6,10 @@ import {
 } from '@/features/setup/api';
 import {
   confirmPlanItems,
+  confirmUnchangedPlanItems,
   pendingReviewCount,
   removePlanItem,
+  unchangedPendingReviewCount,
   type SetupZonePlanItem,
 } from '@/features/setup/setupZonePlan';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
@@ -31,8 +33,12 @@ type PlanEdit = (items: readonly SetupZonePlanItem[]) => SetupZonePlanItem[] | n
 export interface SetupZoneReview {
   /** 확인이 필요한 구역 수. */
   pending: number;
+  /** 확인이 필요한 구역 중 높이 차이 판정이 '변화 없음(UNCHANGED)'인 구역 수(S15P31A101-630). */
+  unchangedPending: number;
   /** 화면 ID 하나를 확인한다. */
   confirm: (viewId: string) => void;
+  /** 높이 차이 판정이 '변화 없음(UNCHANGED)'인 미확인 구역만 한 번에 확인한다(S15P31A101-630). */
+  confirmUnchanged: () => void;
   /** 남은 확인 필요를 모두 확인한다. */
   confirmAll: () => void;
   /** 화면 ID 하나를 목록에서 뺀다(완료 때 관제 구역에서 보관된다). */
@@ -79,6 +85,10 @@ export function useSetupZoneReview(sessionId: string): SetupZoneReview {
     (viewId: string) => run((items) => confirmPlanItems(items, [viewId])),
     [run],
   );
+  const confirmUnchanged = useCallback(
+    () => run((items) => confirmUnchangedPlanItems(items)),
+    [run],
+  );
   const confirmAll = useCallback(() => run((items) => confirmPlanItems(items)), [run]);
   const remove = useCallback(
     (viewId: string) => run((items) => removePlanItem(items, viewId)),
@@ -87,7 +97,9 @@ export function useSetupZoneReview(sessionId: string): SetupZoneReview {
 
   return {
     pending: pendingReviewCount(plan.data),
+    unchangedPending: unchangedPendingReviewCount(plan.data),
     confirm,
+    confirmUnchanged,
     confirmAll,
     remove,
     busy: isPending,

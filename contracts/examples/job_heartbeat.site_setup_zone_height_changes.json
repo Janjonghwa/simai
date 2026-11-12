@@ -1,0 +1,102 @@
+{
+  "schema_version": "2.14.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000631",
+  "sent_at": 1760342410500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261112-0630",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+    "progress": 0.85,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000630",
+      "status": "READY_FOR_ZONES",
+      "progress_pct": 85,
+      "mode": "FULL_SETUP",
+      "background_collection_pct": {
+        "cam1": 100,
+        "cam2": 100,
+        "cam3": 100,
+        "cam4": 100
+      },
+      "calibration_version": "cal-lobby-init-63000000-jba2-5a3c9e01",
+      "preview_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "world_anchor": {
+        "accepted": true,
+        "reason": "ANCHORED",
+        "reference_calibration_version": "cal-lobby-init-079f00cd-jba2-55083185",
+        "max_center_residual_m": 0.042,
+        "max_orientation_change_rad": 0.031
+      },
+      "zone_height_changes": {
+        "previous_scene_version": "scene-job-prev-0001",
+        "compared_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+        "cell_m": 0.1,
+        "height_diff_threshold_m": 0.15,
+        "changed_area_ratio_threshold": 0.1,
+        "min_coverage_ratio": 0.3,
+        "zones": [
+          {
+            "zone_id": "zone-opening-1",
+            "status": "CHANGE_SUSPECTED",
+            "reason": null,
+            "changed_area_ratio": 0.35,
+            "max_height_diff_m": 0.52,
+            "max_diff_xy": [0.45, 0.55],
+            "total_cells": 100,
+            "compared_cells": 80,
+            "changed_cells": 28
+          },
+          {
+            "zone_id": "zone-restricted-1",
+            "status": "UNCHANGED",
+            "reason": null,
+            "changed_area_ratio": 0.012,
+            "max_height_diff_m": 0.04,
+            "max_diff_xy": [2.25, 0.35],
+            "total_cells": 100,
+            "compared_cells": 84,
+            "changed_cells": 1
+          },
+          {
+            "zone_id": "zone-blind-1",
+            "status": "UNKNOWN",
+            "reason": "INSUFFICIENT_COVERAGE",
+            "changed_area_ratio": null,
+            "max_height_diff_m": null,
+            "max_diff_xy": null,
+            "total_cells": 50,
+            "compared_cells": 3,
+            "changed_cells": 0
+          }
+        ]
+      }
+    }
+  }
+}

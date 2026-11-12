@@ -1965,6 +1965,26 @@ class SiteSetupObjectRef(BaseModel):
     size_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
 
 
+class SiteSetupPreviousSceneRef(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scene_version: DefsVersionId
+    calibration_version: DefsVersionId
+    uri: Annotated[StrictStr, Field(max_length=1024, pattern='^s3://[^\\s]+$')]
+    sha256: Annotated[StrictStr | MISSING, Field(pattern='^[0-9a-f]{64}$')] = MISSING
+
+
+class SiteSetupPreviousZone(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    zone_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=256, min_length=3)]
+    z_min_m: StrictFloat | None | MISSING = MISSING
+    z_max_m: StrictFloat | None | MISSING = MISSING
+
+
 BackgroundCollectionPctAdditionalProperty = TypeAliasType(
     "BackgroundCollectionPctAdditionalProperty",
     Annotated[StrictFloat, Field(ge=0.0, le=100.0)],
@@ -2128,6 +2148,34 @@ class SiteSetupWorldAnchorSummary(BaseModel):
     max_orientation_change_rad: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
         MISSING
     )
+
+
+class SiteSetupZoneHeightChangeItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    zone_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    status: Literal['UNCHANGED', 'CHANGE_SUSPECTED', 'UNKNOWN']
+    reason: Literal['WORLD_NOT_ANCHORED', 'REUSE_SCENE', 'NO_PREVIOUS_SCENE', 'SCENE_UNREADABLE', 'INSUFFICIENT_COVERAGE'] | None
+    changed_area_ratio: Annotated[StrictFloat | None, Field(ge=0.0, le=1.0)]
+    max_height_diff_m: Annotated[StrictFloat | None, Field(ge=0.0)]
+    max_diff_xy: DefsVec2 | None
+    total_cells: Annotated[StrictInt, Field(ge=0)]
+    compared_cells: Annotated[StrictInt, Field(ge=0)]
+    changed_cells: Annotated[StrictInt, Field(ge=0)]
+
+
+class SiteSetupZoneHeightChanges(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    previous_scene_version: DefsVersionId | None
+    compared_scene_version: DefsVersionId | None
+    cell_m: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    height_diff_threshold_m: Annotated[StrictFloat, Field(gt=0.0, le=5.0)]
+    changed_area_ratio_threshold: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    min_coverage_ratio: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    zones: Annotated[list[SiteSetupZoneHeightChangeItem], Field(max_length=128)]
 
 
 class Image(BaseModel):
@@ -4110,6 +4158,10 @@ class SiteSetupInput(BaseModel):
     ] = MISSING
     mode: Literal['FULL_SETUP', 'SUPPLEMENT_REBAKE', 'REUSE_SCENE'] | MISSING = MISSING
     rebake_base: SiteSetupRebakeBase | MISSING = MISSING
+    previous_scene: SiteSetupPreviousSceneRef | MISSING = MISSING
+    previous_zones: Annotated[
+        list[SiteSetupPreviousZone] | MISSING, Field(max_length=128)
+    ] = MISSING
 
 
 class Input(BaseModel):
@@ -4894,6 +4946,7 @@ class SiteSetupProgress(SiteSetupReuseRules):
     world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
     quality_gate: SiteSetupQualityGate | MISSING = MISSING
     camera_check: SiteSetupCameraCheck | MISSING = MISSING
+    zone_height_changes: SiteSetupZoneHeightChanges | MISSING = MISSING
 
 
 class SiteSetupResult(SiteSetupReuseRules):
@@ -4932,6 +4985,7 @@ class SiteSetupResult(SiteSetupReuseRules):
     world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
     quality_gate: SiteSetupQualityGate | MISSING = MISSING
     camera_check: SiteSetupCameraCheck | MISSING = MISSING
+    zone_height_changes: SiteSetupZoneHeightChanges | MISSING = MISSING
 
 
 class TbmFormDraftRequest(BaseModel):

@@ -143,6 +143,12 @@ class ContractExamplesRoundTripTest {
         return out;
     }
 
+    /**
+     * 서로 다른 객체 갈래의 oneOf(진짜 합 타입)라 생성기가 Object 로 만드는 필드. 서버는 이 필드를 생성 클래스가 아니라 JsonNode 로 다룬다.
+     * risk_event_transition 2.3.0 resolution = 운영자 종료 | 병합 흡수(S15P31A101-657, RiskEventRepository 가 JsonNode 로 저장)
+     */
+    private static final java.util.Set<String> INTENTIONAL_UNIONS = java.util.Set.of("RiskEventTransitionPayload.resolution");
+
     @Test
     void generatedFieldsKeepTheirTypes() throws Exception {
         // nullable 갈래(oneOf [타입, null])는 설명문이 붙어 있어도 그 타입으로 만든다(Object 로 잃지 않음)
@@ -164,7 +170,8 @@ class ContractExamplesRoundTripTest {
                 Class<?> clazz = Class.forName(Detection.class.getPackageName() + "." + name);
                 for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
                     String type = field.getGenericType().getTypeName();
-                    if (!field.getName().equals("additionalProperties") && (type.equals("java.lang.Object") || type.contains("<java.lang.Object>"))) {
+                    if (!field.getName().equals("additionalProperties") && !INTENTIONAL_UNIONS.contains(name + "." + field.getName())
+                            && (type.equals("java.lang.Object") || type.contains("<java.lang.Object>"))) {
                         untyped.add(name + "." + field.getName() + ": " + type);
                     }
                 }

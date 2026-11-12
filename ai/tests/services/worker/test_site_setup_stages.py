@@ -31,11 +31,16 @@ CAMS = ("cam_A", "cam_B", "cam_C", "cam_D")
 
 
 class _Store:
-    def __init__(self, fail: ObjectStoreError | None = None) -> None:
+    def __init__(self, fail: ObjectStoreError | None = None, objects: dict[str, bytes] | None = None) -> None:
         self.puts: list[tuple[str, bytes, str]] = []
         self.fail = fail
+        self.objects = objects or {}
 
-    def get(self, ctx: JobContext, uri: str) -> bytes:  # pragma: no cover - 시험에서 쓰지 않는다
+    def get(self, ctx: JobContext, uri: str) -> bytes:
+        if self.fail:
+            raise self.fail
+        if uri in self.objects:
+            return self.objects[uri]
         raise AssertionError("get 은 쓰지 않는다")
 
     def put(self, ctx: JobContext, name: str, content: bytes, content_type: str) -> str:
@@ -587,3 +592,87 @@ def test_publish_bake_images_without_files_returns_none_and_maps_store_failure(t
     with pytest.raises(JobFailed) as exc:
         s.publish_bake_images(setup_session_id="s", camera_ids=("cam_A",), backgrounds=CleanBackgroundBundle(BUNDLE, {}))
     assert exc.value.code == "SETUP_OBJECT_FAILED" and exc.value.retryable is True
+
+
+# ---------------------------------------------------------------------------- S15P31A101-630
+def test_preview_and_bake_compute_zone_height_changes_against_previous_scene(tmp_path: Path) -> None:
+    """이전 관제 맵(`previous_scene`)과 이전 구역(`previous_zones`)이 입력에 있으면 미리보기·정식 단계가 상면 높이 차이를 판정한다."""
+    from simai_ai.scene.preview_scene import encode_vertex_color_glb
+    from simai_ai.scene.texture_mesh import to_glb_points
+
+    def grid_glb(z_box: float) -> bytes:
+        xs = np.linspace(0.5, 3.5, 31, dtype=np.float64)
+        ys = np.linspace(0.5, 3.5, 31, dtype=np.float64)
+        gx, gy = np.meshgrid(xs, ys)
+        gz = np.where((gx >= 1.2) & (gx <= 1.8) & (gy >= 1.2) & (gy <= 1.8), z_box, 0.0)
+        pts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        ny, nx = gx.shape
+        tris = []
+        for r in range(ny - 1):
+            for c in range(nx - 1):
+                i0 = r * nx + c
+                tris.extend([[i0, i0 + 1, i0 + nx + 1], [i0, i0 + nx + 1, i0 + nx]])
+        v_glb = to_glb_points(np.eye(4, dtype=np.float64), pts)
+        return encode_vertex_color_glb(
+            v_glb,
+            np.full((len(v_glb), 3), 180, dtype=np.uint8),
+            np.asarray(tris, dtype=np.int64),
+            extras_simai={"axis_convention": "GLTF_Y_UP", "geometry_role": "VISUAL", "safety_use": False},
+        )
+
+    prev_glb = grid_glb(0.0)
+    curr_glb = grid_glb(0.35)
+    prev_uri = "s3://bucket/scenes/scene-lobby-prev.glb"
+    inp = {
+        **_ctx().input,
+        "previous_scene": {
+            "scene_version": "scene-lobby-prev",
+            "calibration_version": "cal-old",
+            "uri": prev_uri,
+            "sha256": hashlib.sha256(prev_glb).hexdigest(),
+        },
+        "previous_zones": [
+            {"zone_id": "zone-changed", "polygon_xy": [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]]},
+            {"zone_id": "zone-flat", "polygon_xy": [[2.2, 2.2], [3.2, 2.2], [3.2, 3.2], [2.2, 3.2]]},
+        ],
+    }
+    ctx = JobContext("job-1", "lease-1", "site_setup", 1, inp)
+    store = _Store(objects={prev_uri: prev_glb})
+    files = {
+        "preview": {
+            "preview_scene.glb": curr_glb,
+            "preview.json": json.dumps(
+                {"assets": [{"kind": "GLTF_VISUAL", "path": "preview_scene.glb", "content_type": "model/gltf-binary"}]}
+            ).encode(),
+        },
+        "bake": {
+            "scene.glb": curr_glb,
+            "bake.json": json.dumps(
+                {"assets": [{"kind": "GLTF_VISUAL", "path": "scene.glb", "content_type": "model/gltf-binary"}]}
+            ).encode(),
+        },
+    }
+    root = tmp_path / "root"
+    root.mkdir()
+    s = ProductionSiteSetupStages(ctx, store, _settings(tmp_path), _Stages(files), root, clock_ms=lambda: 1)
+    cal_doc = {
+        "calibration_version": "cal-new",
+        "world_anchor": {"accepted": True, "reference_calibration_version": "cal-old"},
+    }
+    prev = s.preview(setup_session_id="s", site_id="site", calibration_doc=cal_doc, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert prev.zone_height_changes is not None
+    assert prev.zone_height_changes["compared_scene_version"] == "scene-preview-job-1-lease-1"
+    by_id = {item["zone_id"]: item for item in prev.zone_height_changes["zones"]}
+    assert by_id["zone-changed"]["status"] == "CHANGE_SUSPECTED"
+    assert by_id["zone-flat"]["status"] == "UNCHANGED"
+
+    baked = s.bake(
+        setup_session_id="s",
+        site_id="site",
+        calibration_doc=cal_doc,
+        backgrounds=CleanBackgroundBundle(BUNDLE, {}),
+        preview_scene_version=prev.preview_scene_version,
+    )
+    assert baked.zone_height_changes is not None
+    assert baked.zone_height_changes["compared_scene_version"] == "scene-job-1-lease-1"
+

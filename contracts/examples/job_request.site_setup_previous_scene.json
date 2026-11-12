@@ -1,0 +1,71 @@
+{
+  "schema_version": "3.11.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000630",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261112-0630",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "site_setup",
+    "priority": "BACKGROUND",
+    "timeout_ms": 1800000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000630",
+      "work_unit_id": 12,
+      "site_id": "classroom-1",
+      "camera_heights_m": {
+        "cam1": 2.44,
+        "cam2": 2.44,
+        "cam3": 2.44,
+        "cam4": 2.44
+      },
+      "calibration_target": {
+        "camera_ids": [
+          "cam1",
+          "cam2",
+          "cam3",
+          "cam4"
+        ],
+        "method": "BACKGROUND_JOINT_BA_V2",
+        "world_frame": "AUTO_FLOOR_Z_UP_METERS"
+      },
+      "height_tolerance_cm": 5,
+      "previous_scene": {
+        "scene_version": "scene-job-prev-0001",
+        "calibration_version": "cal-lobby-init-079f00cd-jba2-55083185",
+        "uri": "s3://simai-objects/job-objects/site_setup/job-prev/0192a6f0-7c1e-7b3a-9f2d-000000000600/scene.glb",
+        "sha256": "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+      },
+      "previous_zones": [
+        {
+          "zone_id": "zone-opening-1",
+          "polygon_xy": [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0]
+          ],
+          "z_min_m": -1.5,
+          "z_max_m": 0.1
+        },
+        {
+          "zone_id": "zone-restricted-1",
+          "polygon_xy": [
+            [2.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [2.0, 1.0]
+          ],
+          "z_min_m": 0.0,
+          "z_max_m": 2.0
+        }
+      ]
+    }
+  }
+}

@@ -2,15 +2,18 @@ import { createSetupSession, requestSetupZonePlan } from '@/features/setup/api';
 import {
   applyCommitToPlan,
   confirmPlanItems,
+  confirmUnchangedPlanItems,
   liveZonesAsItems,
   pendingReviewCount,
   planZonesView,
   removePlanItem,
   SETUP_NEW_ZONE_PREFIX,
   SetupZonePlanEditError,
+  unchangedPendingReviewCount,
   type SetupZonePlanItem,
   type SetupZonePlanView,
 } from '@/features/setup/setupZonePlan';
+import { reviewOrder } from '@/features/setup/SetupZoneReviewCard';
 import type { SetupSessionResponse } from '@/features/setup/types';
 import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
@@ -196,6 +199,73 @@ describe('확인 필요(S15P31A101-629)', () => {
     });
     expect(updated.items.find((i) => i.zone_id === first)?.needs_review).toBe(false);
     expect(pendingReviewCount({ ...reviewPlan, items: updated.items })).toBe(liveIds.length - 1);
+  });
+
+  it('높이 차이 판정(S15P31A101-630): 변경 의심을 먼저 정렬하고 변화 없음만 일괄 확인하며 모름·변경 의심은 남겨 둔다', () => {
+    const [first, second] = liveIds as [string, string];
+    const thirdZone = {
+      ...(MOCK_ZONES[0] as Record<string, unknown>),
+      zone_id: 'z-06',
+      name: '추가 구역',
+    };
+    const threeZones = [...MOCK_ZONES, thirdZone];
+    const planWithHeight: SetupZonePlanView = {
+      ...emptyPlan,
+      items: [
+        {
+          ...pending(first),
+          height_change: {
+            zone_id: first,
+            status: 'UNCHANGED',
+            reason: null,
+            changed_area_ratio: 0,
+            max_height_diff_m: 0.02,
+            max_diff_xy: [1, 1],
+            total_cells: 50,
+            compared_cells: 50,
+            changed_cells: 0,
+          },
+        },
+        {
+          ...pending(second),
+          height_change: {
+            zone_id: second,
+            status: 'UNKNOWN',
+            reason: 'INSUFFICIENT_COVERAGE',
+            changed_area_ratio: null,
+            max_height_diff_m: null,
+            max_diff_xy: null,
+            total_cells: 50,
+            compared_cells: 5,
+            changed_cells: null,
+          },
+        },
+        {
+          ...pending('z-06'),
+          height_change: {
+            zone_id: 'z-06',
+            status: 'CHANGE_SUSPECTED',
+            reason: null,
+            changed_area_ratio: 0.32,
+            max_height_diff_m: 0.35,
+            max_diff_xy: [2, 2],
+            total_cells: 50,
+            compared_cells: 50,
+            changed_cells: 16,
+          },
+        },
+      ],
+    };
+
+    expect(unchangedPendingReviewCount(planWithHeight)).toBe(1);
+    const ordered = reviewOrder(readZones(planZonesView(planWithHeight, threeZones)));
+    expect(ordered.map((z) => z.zoneId)).toEqual(['z-06', second, first]);
+
+    const afterUnchanged = confirmUnchangedPlanItems(planWithHeight.items)!;
+    expect(afterUnchanged.find((i) => i.zone_id === first)?.needs_review).toBe(false);
+    expect(afterUnchanged.find((i) => i.zone_id === second)?.needs_review).toBe(true);
+    expect(afterUnchanged.find((i) => i.zone_id === 'z-06')?.needs_review).toBe(true);
+    expect(confirmUnchangedPlanItems(afterUnchanged)).toBeNull();
   });
 });
 

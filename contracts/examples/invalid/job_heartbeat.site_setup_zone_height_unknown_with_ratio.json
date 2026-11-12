@@ -1,0 +1,49 @@
+{
+  "schema_version": "2.14.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000633",
+  "sent_at": 1760342410500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261112-0630",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+    "progress": 0.85,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000630",
+      "status": "READY_FOR_ZONES",
+      "progress_pct": 85,
+      "mode": "FULL_SETUP",
+      "calibration_version": "cal-lobby-init-63000000-jba2-5a3c9e01",
+      "preview_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "zone_height_changes": {
+        "previous_scene_version": "scene-job-prev-0001",
+        "compared_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+        "cell_m": 0.1,
+        "height_diff_threshold_m": 0.15,
+        "changed_area_ratio_threshold": 0.1,
+        "min_coverage_ratio": 0.3,
+        "zones": [
+          {
+            "zone_id": "zone-blind-1",
+            "status": "UNKNOWN",
+            "reason": "INSUFFICIENT_COVERAGE",
+            "changed_area_ratio": 0.0,
+            "max_height_diff_m": null,
+            "max_diff_xy": null,
+            "total_cells": 50,
+            "compared_cells": 3,
+            "changed_cells": 0
+          }
+        ]
+      }
+    }
+  }
+}

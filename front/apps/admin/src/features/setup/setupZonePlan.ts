@@ -1,5 +1,7 @@
+import { zoneHeightChangesSummarySchema } from '@/features/setup/types';
 import { staticObjectItemSchema, type StaticObjectBody } from '@/features/surfaces/types';
 import {
+  zoneHeightChangeSchema,
   zoneItemSchema,
   type ZoneBody,
   type ZoneCommitRequest,
@@ -38,6 +40,8 @@ export const setupZonePlanItemSchema = z.object({
     .boolean()
     .nullish()
     .transform((v) => v ?? false),
+  /** 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). 조회·저장 응답에만 붙고 PUT 요청 본문에는 보내지 않는다. */
+  height_change: zoneHeightChangeSchema.nullish().catch(null),
 });
 export type SetupZonePlanItem = z.infer<typeof setupZonePlanItemSchema>;
 
@@ -47,6 +51,7 @@ export const setupZonePlanViewSchema = z
     items: z.array(setupZonePlanItemSchema).default([]),
     revision: z.number().int().min(0),
     updated_at: z.number().nullish(),
+    zone_height_changes: zoneHeightChangesSummarySchema.nullish().catch(null),
   })
   .loose();
 export type SetupZonePlanView = z.infer<typeof setupZonePlanViewSchema>;
@@ -96,7 +101,15 @@ function zoneViewOf(
   const item = items[index]!;
   const current = item.zone_id ? live.get(item.zone_id) : undefined;
   if (item.zone_id && !current && !item.zone) return null;
-  if (!item.zone) return current ? { ...current, needs_review: item.needs_review } : null;
+  if (!item.zone) {
+    return current
+      ? {
+          ...current,
+          needs_review: item.needs_review,
+          height_change: item.height_change ?? null,
+        }
+      : null;
+  }
   const merged = {
     ...(current ?? {}),
     ...item.zone,
@@ -105,6 +118,7 @@ function zoneViewOf(
     valid_from: current?.valid_from ?? 0,
     valid_to: null,
     needs_review: item.needs_review,
+    height_change: item.height_change ?? null,
   };
   const parsed = zoneItemSchema.safeParse(merged);
   return parsed.success ? parsed.data : null;
@@ -270,6 +284,14 @@ export function pendingReviewCount(plan: SetupZonePlanView | undefined): number 
   return plan ? plan.items.filter((item) => item.needs_review).length : 0;
 }
 
+/** 확인이 필요한 항목 중 높이 차이 판정이 '변화 없음(UNCHANGED)'인 구역 수(S15P31A101-630). */
+export function unchangedPendingReviewCount(plan: SetupZonePlanView | undefined): number {
+  return plan
+    ? plan.items.filter((item) => item.needs_review && item.height_change?.status === 'UNCHANGED')
+        .length
+    : 0;
+}
+
 /** 화면 ID 들(없으면 모두)의 확인 필요를 지운 목록. 바뀐 것이 없으면 null. */
 export function confirmPlanItems(
   items: readonly SetupZonePlanItem[],
@@ -279,6 +301,19 @@ export function confirmPlanItems(
   let changed = false;
   const next = items.map((item, index) => {
     if (!item.needs_review || (targets && !targets.has(planItemViewId(items, index)))) return item;
+    changed = true;
+    return { ...item, needs_review: false };
+  });
+  return changed ? next : null;
+}
+
+/** 높이 차이 판정이 '변화 없음(UNCHANGED)'인 미확인 항목만 한 번에 확인한다(S15P31A101-630). 변경 의심·모름은 그대로 남는다. */
+export function confirmUnchangedPlanItems(
+  items: readonly SetupZonePlanItem[],
+): SetupZonePlanItem[] | null {
+  let changed = false;
+  const next = items.map((item) => {
+    if (!item.needs_review || item.height_change?.status !== 'UNCHANGED') return item;
     changed = true;
     return { ...item, needs_review: false };
   });

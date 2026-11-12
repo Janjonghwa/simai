@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.setup;
 
 import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.config.Versioned;
 import com.ssafy.simai.domain.job.AnalysisJobService;
 import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
 import com.ssafy.simai.domain.job.JobFinished;
@@ -80,6 +81,8 @@ public class SetupService {
             java.util.regex.Pattern.compile("^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/\\S+$");
     private static final java.util.regex.Pattern SHA256_PATTERN =
             java.util.regex.Pattern.compile("^sha256:[0-9a-f]{64}$");
+    private static final java.util.regex.Pattern SHA256_HEX_PATTERN =
+            java.util.regex.Pattern.compile("^[0-9a-f]{64}$");
     private static final double MAX_CAMERA_HEIGHT_M = 20.0;
     private static final int SETUP_MAX_ATTEMPTS = 2;
     private static final int SETUP_TIMEOUT_MS = 900_000;
@@ -264,6 +267,7 @@ public class SetupService {
             if (SetupReuseMode.REUSE.equals(requestedMode)) {
                 input.put("mode", SetupReuseMode.REUSE_SCENE);  // site_setup 1.11.0. 새 모델은 지금처럼 싣지 않는다(FULL_SETUP)
             }
+            populatePreviousSceneAndZones(siteId, input);
 
             String jobId = jobs.enqueue(new JobSpec("site_setup", input, SETUP_MAX_ATTEMPTS, SETUP_TIMEOUT_MS, null, null));
 
@@ -825,6 +829,8 @@ public class SetupService {
         // 보정 품질 게이트·카메라 확인(S15P31A101-646). 없거나 어긋나면 null 이고 아래 COALESCE 로 이전 값을 둔다
         String qualityGateJson = SetupCameraCheck.qualityGate(mapper, snapshot);
         String cameraCheckJson = SetupCameraCheck.cameraCheck(mapper, snapshot);
+        // 구역별 상면 높이 차이 판정(S15P31A101-630). 없거나 어긋나면 null 이고 같은 대여 안에서는 이전 값을 둔다
+        String zoneHeightChangesJson = SetupZoneHeightChanges.fromSnapshot(mapper, snapshot);
 
         OffsetDateTime now = utc(clock.instant());
         OffsetDateTime readyAt = session.readyAt() != null ? session.readyAt() : (readyOrLater ? now : null);
@@ -853,6 +859,7 @@ public class SetupService {
                     mode = :mode,
                     reuse_fallback_reason = :fallback,
                     world_anchor = COALESCE(CAST(:worldAnchor AS jsonb), CASE WHEN :keepAnchor THEN world_anchor END),
+                    zone_height_changes = COALESCE(CAST(:zoneHeightChanges AS jsonb), CASE WHEN :keepAnchor THEN zone_height_changes END),
                     updated_at = :now
                 WHERE setup_session_id = :id
                 """, new MapSqlParameterSource()
@@ -860,6 +867,7 @@ public class SetupService {
                 .addValue("mode", mode.mode())
                 .addValue("fallback", mode.fallbackReason())
                 .addValue("worldAnchor", mode.worldAnchorJson())
+                .addValue("zoneHeightChanges", zoneHeightChangesJson)
                 // 재대여는 처음부터 다시 하므로 앞선 대여의 World 다시 맞추기 결과를 두지 않는다
                 .addValue("keepAnchor", sameLease)
                 .addValue("leaseId", nextLeaseId)
@@ -1492,6 +1500,80 @@ public class SetupService {
         }
     }
 
+    /**
+     * 지금 관제 Scene(World 일치)과 지금 유효한 구역 다각형 목록을 site_setup 입력에 싣는다(S15P31A101-630).
+     * 워커가 미리보기·정식·다시 굽기 단계에서 이전 관제 Scene GLB 와 상면 높이를 비교해 구역별 판정을 내고,
+     * JobObjectSignService 는 입력에 실린 previous_scene.uri 에만 GET 서명을 내준다.
+     */
+    private void populatePreviousSceneAndZones(String siteId, ObjectNode input) {
+        record CurrentScene(String sceneVersion, String calibrationVersion, String gltfKey,
+                String artifactUri, String artifactSha256) { }
+        List<CurrentScene> current = jdbc.query("SELECT s.scene_version, s.calibration_version, s.gltf_key, "
+                + "(SELECT a.object_uri FROM setup_session_artifact a WHERE a.kind IN ('SCENE', 'PREVIEW_SCENE') "
+                + "AND a.version = s.scene_version ORDER BY (a.kind = 'SCENE') DESC, a.registered_at DESC LIMIT 1) AS artifact_uri, "
+                + "(SELECT a.sha256 FROM setup_session_artifact a WHERE a.kind IN ('SCENE', 'PREVIEW_SCENE') "
+                + "AND a.version = s.scene_version ORDER BY (a.kind = 'SCENE') DESC, a.registered_at DESC LIMIT 1) AS artifact_sha256 "
+                + "FROM (" + SceneService.CURRENT_COMMITTED + ") s "
+                + "JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id "
+                + "WHERE s.site_id = :site LIMIT 1",
+                new MapSqlParameterSource("site", siteId),
+                (rs, i) -> new CurrentScene(rs.getString("scene_version"), rs.getString("calibration_version"),
+                        rs.getString("gltf_key"), rs.getString("artifact_uri"), rs.getString("artifact_sha256")));
+        if (!current.isEmpty()) {
+            CurrentScene cs = current.getFirst();
+            JsonNode compat = compatibility.current(cs.sceneVersion(), cs.calibrationVersion());
+            if (!"MISMATCH".equals(compat.path("verification").asString(""))) {
+                String uri = null;
+                String sha = null;
+                if (cs.artifactUri() != null && S3_URI_PATTERN.matcher(cs.artifactUri()).matches()) {
+                    uri = cs.artifactUri();
+                    if (cs.artifactSha256() != null && SHA256_HEX_PATTERN.matcher(cs.artifactSha256()).matches()) {
+                        sha = cs.artifactSha256();
+                    }
+                } else if (cs.gltfKey() != null && S3_URI_PATTERN.matcher(cs.gltfKey()).matches()) {
+                    uri = cs.gltfKey();
+                } else {
+                    String storageUri = artifacts.storageUriIfConfigured(cs.gltfKey());
+                    if (storageUri != null && S3_URI_PATTERN.matcher(storageUri).matches()) {
+                        uri = storageUri;
+                    }
+                }
+                if (uri != null) {
+                    ObjectNode prevScene = input.putObject("previous_scene");
+                    prevScene.put("scene_version", cs.sceneVersion());
+                    prevScene.put("calibration_version", cs.calibrationVersion());
+                    prevScene.put("uri", uri);
+                    if (sha != null) {
+                        prevScene.put("sha256", sha);
+                    }
+                }
+            }
+        }
+        ArrayNode prevZones = mapper.createArrayNode();
+        jdbc.query("""
+                SELECT zone_id, ST_AsGeoJSON(polygon) AS polygon
+                FROM zone
+                WHERE site_id = :site AND valid_to IS NULL
+                ORDER BY zone_id
+                LIMIT 100
+                """, new MapSqlParameterSource("site", siteId), rs -> {
+            String zoneId = rs.getString("zone_id");
+            if (zoneId == null || zoneId.isBlank() || zoneId.length() > 100) {
+                return;
+            }
+            ObjectNode z = mapper.createObjectNode();
+            z.put("zone_id", zoneId);
+            ArrayNode poly = z.putArray("polygon_xy");
+            Versioned.polygonXy(mapper.readTree(rs.getString("polygon")), poly);
+            if (poly.size() >= 3 && poly.size() <= 64) {
+                prevZones.add(z);
+            }
+        });
+        if (!prevZones.isEmpty()) {
+            input.set("previous_zones", prevZones);
+        }
+    }
+
     private void checkWorkUnitCanSetupForUpdate(String siteId, long workUnitId) {
         // 세팅 완료(SetupCompletionService)도 이 행을 잠그고 setup_completed_at 을 쓴다. 잠근 뒤 다시 봐 완료 직후의 새 세션을 막는다
         checkWorkUnitCanSetup(siteId, workUnitId, " FOR UPDATE");
@@ -1599,6 +1681,7 @@ public class SetupService {
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
                        requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
+                       zone_height_changes::text AS zone_height_changes,
                        (SELECT w.setup_completed_at FROM work_unit w
                         WHERE w.work_id = setup_session.work_unit_id
                           AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
@@ -1800,6 +1883,9 @@ public class SetupService {
         out.put("requested_mode", rs.getString("requested_mode"));
         putText(out, "reuse_fallback_reason", rs.getString("reuse_fallback_reason"));
         SetupReuseMode.putWorldAnchor(mapper, out, rs.getString("world_anchor"));
+        String zoneHeightChangesRaw = rs.getString("zone_height_changes");
+        out.set("zone_height_changes",
+                zoneHeightChangesRaw == null ? mapper.nullNode() : mapper.readTree(zoneHeightChangesRaw));
 
         long requestedBy = rs.getLong("requested_by");
         if (rs.wasNull()) {
