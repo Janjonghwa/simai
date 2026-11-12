@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-POLICY_VERSION = "ppe-policy-0.1.0"
+POLICY_VERSION = "ppe-policy-0.2.0"   # 0.2.0: ID 불확실 칸 건너뛰기·3초 초과 초기화·유효 6칸 5초 창(S15P31A101-653)
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,11 @@ class PpeConfig:
     match_det_coverage: float = 0.6             # 검출 상자 중 영역 안 비율 ≥ 이면 '겹침'
     vest_region_coverage: float = 0.3           # 조끼: 몸통 영역 중 검출이 덮는 비율 ≥
     touch_det_coverage: float = 0.2             # 이 비율 이상 걸린 사람이 둘 이상이면 모호(UNKNOWN)
-    # 시간 누적(5.5: 약 3초 창, 10초 만료)
+    # 시간 누적(5.5: 유효 6칸 창, 10초 만료)
     bin_ms: int = 500
-    window_bins: int = 6
+    window_bins: int = 6                        # 확정에 쓰는 유효 칸 수(ID 불확실 칸은 세지 않는다)
+    window_span_bins: int = 10                  # 유효 6칸을 찾는 최근 범위(5초). 오래된 근거로 확정하지 않게
+    uncertain_reset_ms: int = 3_000             # ID 불확실이 이보다 길게 이어지면 상태를 초기화한다(S15P31A101-653, D2)
     worn_min_bins: int = 5
     max_camera_skew_ms: int = 100
     bin_close_grace_ms: int = 100

@@ -276,12 +276,92 @@ def test_local_id_handover_between_world_ids_resets_both():
         assert (views[wid]["helmet"].state, views[wid]["helmet"].reason) == ("UNKNOWN", ps.R_MAPPING_CHANGED)
 
 
-def test_identity_uncertain_resets_and_blocks_evidence():
+# ---- ID 불확실(S15P31A101-653: 표본은 버리고 확정 상태는 유지, 3초 초과면 초기화) ---------------------------
+UNCERTAIN = "IDENTITY_UNCERTAIN"
+
+
+def test_short_identity_uncertainty_keeps_state_without_extending_expiry():
     j = PpeJudge()
     _worn(j)
-    feed(j, "cam1", t_of(6), [person("w1", ident="IDENTITY_UNCERTAIN")], [HELMET()])
-    v = state(j, closed_after(6))
-    assert (v.state, v.reason) == ("UNKNOWN", pa.R_IDENTITY_UNCERTAIN)
+    for b in (6, 7):   # 1초 불확실(착용 검출이 있어도 근거로 쓰지 않는다)
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    v = state(j, closed_after(7))
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+    assert v.last_evidence_at == t_of(5) and v.expires_at == t_of(5) + 10_000   # 불확실 칸이 만료를 늘리지 않는다
+    assert state(j, t_of(5) + 10_001).state == "UNKNOWN"
+
+
+def test_identity_uncertainty_longer_than_reset_threshold_resets():
+    j = PpeJudge()
+    _worn(j)
+    for b in range(6, 14):   # 6칸 시작 ~ 13칸: 첫 불확실 프레임 뒤 3.5초 > 3초
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    v = state(j, closed_after(13))
+    assert (v.state, v.reason, v.evidence) == ("UNKNOWN", pa.R_IDENTITY_UNCERTAIN, ())
+
+
+def test_uncertainty_exactly_at_threshold_does_not_reset():
+    j = PpeJudge()
+    _worn(j)
+    for b in range(6, 13):   # 첫 불확실 뒤 3.0초 — 넘지 않았다
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    assert state(j, closed_after(12)).state == "WORN"
+
+
+def test_reset_threshold_restarts_after_a_certain_frame():
+    j = PpeJudge()
+    _worn(j)
+    for b in range(6, 11):   # 2초 불확실
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    feed(j, "cam1", t_of(11), [person("w1")], [HELMET()])   # 확실한 프레임이 끊는다
+    for b in range(12, 17):   # 다시 2초 불확실 — 합치면 3초를 넘지만 이어지지 않았다
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    v = state(j, closed_after(16))
+    assert v.state == "WORN" and v.last_evidence_at == t_of(11)
+
+
+def test_identity_revision_change_still_resets_immediately_even_inside_uncertainty():
+    j = PpeJudge()
+    _worn(j)
+    feed(j, "cam1", t_of(6), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    feed(j, "cam1", t_of(7), [person("w1", rev=1, ident=UNCERTAIN)], [HELMET()])
+    v = state(j, closed_after(7))
+    assert (v.state, v.evidence) == ("UNKNOWN", ())
+
+
+def test_uncertain_bins_are_skipped_so_six_valid_bins_within_span_still_decide():
+    j = PpeJudge()
+    # 유효 칸 0·1·2, 불확실 칸 3·4, 유효 칸 5·6·7 → 최근 10칸 안 유효 6칸이 모두 미착용
+    for b in range(8):
+        ident = UNCERTAIN if b in (3, 4) else "HIGH"
+        feed(j, "cam1", t_of(b), [person("w1", ident=ident)], [NO_HELMET()])
+    v = state(j, closed_after(7))
+    assert (v.state, v.reason, v.valid_cells) == ("NOT_WORN", ps.R_WINDOW_NOT_WORN, 6)
+
+
+def test_valid_bins_scattered_beyond_span_do_not_decide():
+    j = PpeJudge()
+    # 유효 칸이 0·1·2 와 9·10·11 로 흩어지면 최근 10칸(2~11) 안에는 4개뿐이다
+    for b in range(12):
+        ident = "HIGH" if b in (0, 1, 2, 9, 10, 11) else UNCERTAIN   # 불확실 3~8칸: 첫·끝 프레임 간격 2.5초
+        feed(j, "cam1", t_of(b), [person("w1", ident=ident)], [NO_HELMET()])
+    assert state(j, closed_after(11)).state == "UNKNOWN"
+
+
+def test_detections_in_uncertain_bins_are_never_evidence():
+    j = PpeJudge()
+    for b in range(6):   # 착용 검출이 6칸 내내 있어도 모두 불확실이면 확정하지 않는다
+        feed(j, "cam1", t_of(b), [person("w1", ident=UNCERTAIN)], [HELMET()])
+    v = state(j, closed_after(5))
+    assert (v.state, v.reason, v.valid_cells) == ("UNKNOWN", pa.R_IDENTITY_UNCERTAIN, 0)
+    # 다른 카메라의 확실한 프레임이 같은 칸에 있어도 그 칸은 건너뛴다
+    j2 = PpeJudge()
+    for b in range(6):
+        feed(j2, "cam1", t_of(b), [person("w1", ident=UNCERTAIN if b == 2 else "HIGH")], [HELMET()])
+        feed(j2, "cam2", t_of(b, off=60), [person("w1", local="c2")], [HELMET()])
+    assert state(j2, closed_after(5)).state == "UNKNOWN"   # 칸 2 를 빼면 유효 5칸뿐
+    feed(j2, "cam1", t_of(6), [person("w1")], [HELMET()])
+    assert state(j2, closed_after(6)).state == "WORN"
 
 
 def test_new_stream_epoch_clears_local_mapping_and_old_epoch_is_dropped():
