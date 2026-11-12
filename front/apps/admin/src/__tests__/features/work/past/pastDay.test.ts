@@ -1,6 +1,6 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
 import type { ReplayIndex } from '@/features/history/replayIndex';
-import { dayWorksOf, firstMoment, workChoiceLabel } from '@/features/work/past/pastDay';
+import { dayWorksOf, firstMoment, untouched, workChoiceLabel } from '@/features/work/past/pastDay';
 import { DAY_PROGRESS } from '@/features/work/types';
 import { describe, expect, it } from 'vitest';
 
@@ -84,6 +84,7 @@ describe('firstMoment', () => {
     workers: [],
     events,
     gaps: [],
+    pending: null,
   });
 
   it('첫 기록 뒤의 첫 사건 시각이다', () => {
@@ -97,5 +98,24 @@ describe('firstMoment', () => {
   it('사건이 없으면 첫 기록 시각이고, 기록이 없으면 null', () => {
     expect(firstMoment(index([]))).toBe(at(9, 0, 5));
     expect(firstMoment(index([event('a', at(9, 10))], []))).toBeNull();
+  });
+});
+
+describe('untouched — 우리가 옮겨 둔 자리에 그대로 멈춰 있는지', () => {
+  const place = (playhead: number | null, playing = false) => ({
+    getStatus: () => ({ playhead, playing }),
+  });
+
+  it('옮겨 둔 시각에 멈춰 있으면 true 다', () => {
+    expect(untouched(place(at(9, 10)), at(9, 10))).toBe(true);
+  });
+
+  it('사용자가 다른 시각으로 옮겼으면 false 다', () => {
+    expect(untouched(place(at(9, 11)), at(9, 10))).toBe(false);
+    expect(untouched(place(null), at(9, 10))).toBe(false);
+  });
+
+  it('같은 시각이어도 재생 중이면 false 다(재생 중에 시각이 같을 수는 없지만 재생을 눌렀다는 뜻이다)', () => {
+    expect(untouched(place(at(9, 10), true), at(9, 10))).toBe(false);
   });
 });

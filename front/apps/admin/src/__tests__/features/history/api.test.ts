@@ -533,6 +533,53 @@ describe('requestReplay', () => {
     expect(calls.every((c) => c.signal?.aborted)).toBe(true);
   });
 
+  describe('창 알림(onWindow)', () => {
+    const range = { from: T0, to: T0 + 3 * HOUR, stepMs: 3_700 };
+
+    it('창이 끝날 때마다 창의 순서(index)와 응답을 알리고, 합친 결과는 알림이 없을 때와 같다', async () => {
+      const seen: [number, number][] = [];
+      const { http } = fakeHttp((r) => serverReplay(r));
+      const result = await requestReplay(http, range, undefined, (index, window) =>
+        seen.push([index, window.from]),
+      );
+
+      expect(Object.fromEntries(seen)).toEqual({ 0: T0, 1: T0 + HOUR, 2: T0 + 2 * HOUR });
+      expect(seen).toHaveLength(3);
+      expect(result).toEqual(await requestReplay(fakeHttp((r) => serverReplay(r)).http, range));
+    });
+
+    it('앞 창이 늦어 뒤 창이 먼저 끝나면 끝난 순서대로 알리고 index 는 창의 순서 그대로다', async () => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const { http } = fakeHttp(async (r) => {
+        if (r.from === T0) await held;
+        return serverReplay(r);
+      });
+      const seen: number[] = [];
+      await requestReplay(http, range, undefined, (index) => {
+        seen.push(index);
+        // 뒤 두 창이 모두 알려진 뒤에야 첫 창을 놓는다.
+        if (seen.length === 2) release();
+      });
+
+      expect(seen.at(-1)).toBe(0);
+      expect([...seen].sort()).toEqual([0, 1, 2]);
+    });
+
+    it('창이 하나라도 실패하면 전체가 실패하고 그 창은 알리지 않는다', async () => {
+      const failure = new ApiError(500);
+      const { http } = fakeHttp((r) => {
+        if (r.from === T0 + HOUR) throw failure;
+        return serverReplay(r);
+      });
+      const seen: number[] = [];
+      await expect(requestReplay(http, range, undefined, (index) => seen.push(index))).rejects.toBe(
+        failure,
+      );
+      expect(seen).not.toContain(1);
+    });
+  });
+
   it.each([
     ['끝이 시작과 같다', { from: T0, to: T0, stepMs: 100 }],
     ['끝이 시작보다 이르다', { from: T0, to: T0 - 1, stepMs: 100 }],

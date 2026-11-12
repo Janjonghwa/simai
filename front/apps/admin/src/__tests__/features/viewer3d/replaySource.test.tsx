@@ -258,6 +258,64 @@ describe('녹화 재생 Source', () => {
     });
   });
 
+  it('기록을 갱신하면 재생 시각·배속을 지키고 구독에 새 기록의 지금 상태를 다시 보낸다', () => {
+    // 앞 World 둘과 이벤트 없음만 받은 기록. 받은 기록 끝보다 뒤 시각에서 시작해 갱신 전에는 기록 없는 구간이다.
+    const partial = { ...log, worlds: log.worlds.slice(0, 2), events: [] };
+    const source = createReplaySource(partial);
+    const { store } = connect(source);
+    const listener = vi.fn();
+    source.subscribeStatus(listener);
+    source.seek(T0 + 4500);
+    source.setSpeed(2);
+    expect(source.getStatus()).toMatchObject({ gap: true, worldT: partial.worlds[1]!.t });
+    expect(store.getState().world?.tLatestGlobal).toBe(partial.worlds[1]!.t);
+    expect(store.getState().events.size).toBe(0);
+    listener.mockClear();
+
+    expect(source.updateLog(log)).toBe(true);
+
+    const { entry } = recordAt(T0 + 4500);
+    expect(source.log).toBe(log);
+    expect(source.getStatus()).toMatchObject({
+      playhead: T0 + 4500,
+      speed: 2,
+      worldT: entry.t,
+      playing: false,
+    });
+    expect(store.getState().world?.tLatestGlobal).toBe(entry.t);
+    expect(store.getState().events.get('REPLAY:' + EVENT)?.lifecycle).toBe('UPDATED');
+    expect(source.subscriberCount).toBe(1);
+    expect(listener).toHaveBeenCalled();
+    const { counts } = store.getState();
+    expect([counts.outOfOrder, counts.duplicate, counts.rejected]).toEqual([0, 0, 0]);
+  });
+
+  it('재생 중에 기록을 갱신해도 시계가 이어서 진행한다', () => {
+    vi.useFakeTimers({ now: 0 });
+    const partial = { ...log, worlds: log.worlds.slice(0, 2), events: [] };
+    const source = createReplaySource(partial, { autoplay: true });
+    const { store } = connect(source);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(source.getStatus().playhead).toBe(T0 + 1000);
+
+    source.updateLog(log);
+    expect(source.getStatus()).toMatchObject({ playhead: T0 + 1000, playing: true });
+    expect(store.getState().world?.tLatestGlobal).toBe(T0 + 1000);
+    expect(vi.getTimerCount()).toBe(1);
+
+    act(() => vi.advanceTimersByTime(1000));
+    expect(source.getStatus().playhead).toBe(T0 + 2000);
+    expect(store.getState().world?.tLatestGlobal).toBe(T0 + 2000);
+    source.pause();
+  });
+
+  it('시각 범위가 다른 기록으로는 바꾸지 않는다', () => {
+    const source = createReplaySource(log);
+    expect(source.updateLog({ ...log, end: log.end! + 1 })).toBe(false);
+    expect(source.updateLog({ ...log, start: log.start! - 1 })).toBe(false);
+    expect(source.log).toBe(log);
+  });
+
   it('빈 기록은 아무것도 지어내지 않고 기록 없음만 알린다', () => {
     const source = createReplaySource(parseReplayLog([{ name: 'x', text: '' }]));
     const { store } = connect(source);

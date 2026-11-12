@@ -130,6 +130,7 @@ function fakeReplay() {
       },
     ],
     gaps: [],
+    pending: null,
   };
   engine.replay = replay;
   engine.index = index;
@@ -303,6 +304,86 @@ describe('PastDayPage — 본문', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /^이벤트 / })[0]!);
     expect(replay.seek).toHaveBeenCalledTimes(1);
     expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME - 1000);
+  });
+
+  describe('긴 작업: 앞 구간만 받고 화면이 뜬 뒤 뒤 구간이 오는 경우의 처음 보일 시각', () => {
+    /** 앞 구간만 받은 색인(첫 사건은 아직 못 받은 뒤 구간에 있다). */
+    const partialIndex = (): ReplayIndex => ({
+      ...(engine.index as ReplayIndex),
+      events: [],
+      pending: { from: FIRST_FRAME + 1000, to: EVENT_AT + 1000 },
+    });
+
+    /** seek 이 재생 시각을 실제처럼 바꾸는 대역과, 같은 화면을 다시 그리게 하는 함수. */
+    function renderGrowing() {
+      const replay = fakeReplay();
+      const status = replay.getStatus() as { playhead: number | null; playing: boolean };
+      replay.seek.mockImplementation((t: number) => {
+        status.playhead = t;
+        return true;
+      });
+      const full = engine.index as ReplayIndex;
+      engine.index = partialIndex();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(ZONES_KEY, MOCK_ZONES);
+      const tree = () => (
+        <QueryClientProvider client={client}>
+          <PastDayPage date={YESTERDAY} />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(tree());
+      return {
+        replay,
+        status,
+        /** 뒤 구간이 와서 첫 사건이 보이게 된 색인으로 바꾸고 다시 그린다. */
+        grow: () => {
+          engine.index = full;
+          rerender(tree());
+        },
+      };
+    }
+
+    it('앞 구간만으로 첫 기록 시각에서 시작하고, 사용자가 건드리지 않았으면 뒤 구간에서 첫 사건이 나올 때 그 시각으로 옮긴다', async () => {
+      const { replay, grow } = renderGrowing();
+      await waitFor(() => expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME));
+      expect(replay.seek).toHaveBeenCalledTimes(1);
+
+      grow();
+      await waitFor(() => expect(replay.seek).toHaveBeenLastCalledWith(EVENT_AT));
+      expect(replay.seek).toHaveBeenCalledTimes(2);
+    });
+
+    it('사용자가 재생 시각을 옮겼으면 첫 사건이 나와도 그 자리를 지킨다', async () => {
+      const { replay, status, grow } = renderGrowing();
+      await waitFor(() => expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME));
+      status.playhead = FIRST_FRAME + 5_000;
+
+      grow();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replay.seek).toHaveBeenCalledTimes(1);
+    });
+
+    it('사용자가 재생을 눌렀으면 첫 사건이 나와도 그 자리를 지킨다', async () => {
+      const { replay, status, grow } = renderGrowing();
+      await waitFor(() => expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME));
+      status.playing = true;
+
+      grow();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replay.seek).toHaveBeenCalledTimes(1);
+    });
+
+    it('같은 시각으로 다시 계산돼도(앞 구간이 늘 뿐 첫 사건은 그대로) 다시 옮기지 않는다', async () => {
+      const { replay, grow } = renderGrowing();
+      await waitFor(() => expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME));
+      grow();
+      await waitFor(() => expect(replay.seek).toHaveBeenLastCalledWith(EVENT_AT));
+      const calls = replay.seek.mock.calls.length;
+
+      grow();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replay.seek).toHaveBeenCalledTimes(calls);
+    });
   });
 
   it('시작하지 않아 다시 볼 구간이 없으면 안내를 보이고 오른쪽 열은 그대로 둔다', async () => {

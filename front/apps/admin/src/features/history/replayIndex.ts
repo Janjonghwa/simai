@@ -40,6 +40,11 @@ export interface ReplayIndex {
   events: EventRow[];
   /** 서버가 알려 준 기록 없는 구간("데이터 없음"). 나눠 받았으면 이어지는 것은 하나로 합쳤다. */
   gaps: Span[];
+  /**
+   * 아직 받지 못한 뒷구간(앞 창부터 이어서 받는 중이다). 이 구간의 시각은 "데이터 없음"도 "아무도 없음"도 아니고 모르는 것이다.
+   * 전부 받았으면 null 이다.
+   */
+  pending: Span | null;
 }
 
 const SEVERITIES: readonly Severity[] = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'];
@@ -139,11 +144,18 @@ function readWorkers(frames: readonly Frame[], events: readonly EventRow[]): Wor
   return [...workers.values()].sort((a, b) => a.worldId.localeCompare(b.worldId));
 }
 
-/** 재생 기록에서 화면 목록을 만든다. gaps 는 서버가 준 기록 없는 구간이다(우리가 간격으로 추정하지 않는다). */
-export function indexReplay(log: ReplayLog, gaps: readonly Span[]): ReplayIndex {
+/**
+ * 재생 기록에서 화면 목록을 만든다. gaps 는 서버가 준 기록 없는 구간이다(우리가 간격으로 추정하지 않는다).
+ * pending 은 아직 받지 못한 뒷구간이다(다 받았으면 null).
+ */
+export function indexReplay(
+  log: ReplayLog,
+  gaps: readonly Span[],
+  pending: Span | null = null,
+): ReplayIndex {
   const frames = log.worlds.map((entry) => readFrame(entry.t, payloadOf(entry.text)));
   const events = readEvents(log.events);
-  return { frames, workers: readWorkers(frames, events), events, gaps: [...gaps] };
+  return { frames, workers: readWorkers(frames, events), events, gaps: [...gaps], pending };
 }
 
 // ── 재생 시각에 맞는 값 ───────────────────────────────────────────────────────
@@ -178,6 +190,10 @@ export const inGap = (gaps: readonly Span[], t: number) =>
  */
 export const noDataAt = (index: ReplayIndex, t: number, holdMs: number) =>
   frameAt(index, t, holdMs) === null && inGap(index.gaps, t);
+
+/** t 가 아직 받지 못한 뒷구간 안인지(그 시각의 기록을 모른다). 앞 구간의 끝 tick 은 받은 쪽이다. */
+export const inPending = (index: ReplayIndex, t: number) =>
+  index.pending !== null && t > index.pending.from;
 
 /** 작업 구간 전체가 기록 없는 구간인지. */
 export const allGap = (gaps: readonly Span[], range: Span) =>

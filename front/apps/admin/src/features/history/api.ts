@@ -160,7 +160,7 @@ async function mapWithLimit<Item, Result>(
   items: readonly Item[],
   limit: number,
   signal: AbortSignal | undefined,
-  run: (item: Item, signal: AbortSignal) => Promise<Result>,
+  run: (item: Item, signal: AbortSignal, index: number) => Promise<Result>,
 ): Promise<Result[]> {
   const results = new Array<Result>(items.length);
   const stop = new AbortController();
@@ -169,7 +169,7 @@ async function mapWithLimit<Item, Result>(
   const worker = async () => {
     while (next < items.length) {
       const index = next++;
-      results[index] = await run(items[index]!, shared);
+      results[index] = await run(items[index]!, shared, index);
     }
   };
   try {
@@ -181,19 +181,31 @@ async function mapWithLimit<Item, Result>(
   return results;
 }
 
+/** 창 하나를 받았을 때 알리는 함수. index 는 planWindows 가 나눈 창의 순서(0부터)다. */
+export type OnReplayWindow = (index: number, response: ReplayResponse) => void;
+
 /**
  * 구간 기록. 서버 한도(1시간·3000 칸)를 넘는 구간은 창으로 나눠 받아 하나로 합친다.
  * 한 창이라도 실패하면 전체가 실패한다(빠진 창을 "기록 없음"으로 보이지 않게).
+ * 창은 시간순으로 시작하고 끝나는 대로 onWindow 로 알린다(앞 구간부터 먼저 보여 줄 수 있게). 합친 결과는 그대로 돌려준다.
  */
 export async function requestReplay(
   http: Http,
   range: ReplayRange,
   signal?: AbortSignal,
+  onWindow?: OnReplayWindow,
 ): Promise<ReplayResponse> {
   const windows = planWindows(range);
   if (windows.length === 0) throw new ApiError(400, { code: REPLAY_INVALID_QUERY_CODE });
-  const responses = await mapWithLimit(windows, REPLAY_CONCURRENCY, signal, (span, shared) =>
-    fetchWindow(http, { ...range, ...span }, shared),
+  const responses = await mapWithLimit(
+    windows,
+    REPLAY_CONCURRENCY,
+    signal,
+    async (span, shared, index) => {
+      const response = await fetchWindow(http, { ...range, ...span }, shared);
+      onWindow?.(index, response);
+      return response;
+    },
   );
   // 요청한 구간 그대로 돌려준다(창이 나뉘어도 from·to 는 처음과 끝이다).
   return { ...mergeReplay(responses), from: range.from, to: range.to };

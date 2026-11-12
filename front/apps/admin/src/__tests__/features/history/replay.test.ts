@@ -12,6 +12,7 @@ import {
   frameAt,
   indexReplay,
   inGap,
+  inPending,
   isActiveAt,
   noDataAt,
 } from '@/features/history/replayIndex';
@@ -567,5 +568,32 @@ describe('데이터 없음(inGap·noDataAt·allGap)', () => {
     expect(allGap([{ from: T0, to: T0 + 59_999 }], range)).toBe(false);
     expect(allGap([{ from: T0 + 10_000, to: T0 + 20_000 }], range)).toBe(false);
     expect(allGap([], range)).toBe(false);
+  });
+});
+
+describe('아직 받지 못한 뒷구간(pending·inPending)', () => {
+  const log = logOf([world(T0 + 1_000, ['w-1'])]);
+
+  it('색인에 받지 못한 구간을 싣고, 안 주면 다 받은 것(null)이다', () => {
+    const pending = { from: T0 + 60_000, to: T0 + 120_000 };
+    expect(indexReplay(log, [], pending).pending).toEqual(pending);
+    expect(indexReplay(log, []).pending).toBeNull();
+  });
+
+  it('받은 구간의 끝 tick 은 받은 쪽이고, 그 뒤 시각부터 모른다', () => {
+    const index = indexReplay(log, [], { from: T0 + 60_000, to: T0 + 120_000 });
+    expect(inPending(index, T0)).toBe(false);
+    expect(inPending(index, T0 + 60_000)).toBe(false);
+    expect(inPending(index, T0 + 60_001)).toBe(true);
+    expect(inPending(index, T0 + 120_000)).toBe(true);
+  });
+
+  it('다 받았으면 어느 시각도 모르는 구간이 아니다', () => {
+    expect(inPending(indexReplay(log, []), T0 + 999_999)).toBe(false);
+  });
+
+  it('받지 못한 구간은 데이터 없음이 아니다(서버가 준 gaps 만 데이터 없음이다)', () => {
+    const index = indexReplay(log, [], { from: T0 + 60_000, to: T0 + 120_000 });
+    expect(noDataAt(index, T0 + 90_000, 1_000)).toBe(false);
   });
 });
