@@ -1,11 +1,19 @@
 import {
+  setupZonePlanViewSchema,
+  toPlanRequestItems,
+  type SetupZonePlanItem,
+  type SetupZonePlanView,
+} from '@/features/setup/setupZonePlan';
+import {
   cameraHeightDefaultsResponseSchema,
+  completeSetupResponseSchema,
   coverageGuidesResponseSchema,
   issuedSupplementMediaSchema,
   setupSessionResponseSchema,
   setupZoneDraftsResponseSchema,
   supplementMediaSchema,
   type CameraHeightDefaultsResponse,
+  type CompleteSetupResponse,
   type CoverageGuidesResponse,
   type CreateSetupSessionBody,
   type IssuedSupplementMedia,
@@ -32,6 +40,7 @@ export const setupSessionKey = (id: string) => ['setup', 'session', id] as const
 export const setupWorkUnitSessionKey = (workUnitId: number) =>
   ['setup', 'work-unit-session', workUnitId] as const;
 export const setupZoneDraftsKey = (id: string) => ['setup', 'session', id, 'zone-drafts'] as const;
+export const setupZonePlanKey = (id: string) => ['setup', 'session', id, 'zone-plan'] as const;
 
 export function requestCoverageGuides(
   http: Http,
@@ -122,6 +131,52 @@ export function cancelSetupSession(
     method: 'POST',
     body: {},
     schema: setupSessionResponseSchema,
+  });
+}
+
+// ---- 세팅 완료(C17, S15P31A101-615) ----
+
+/** 세팅 중 구역 목록(-612). 세팅 완료가 이 목록으로 관제 구역을 맞춘다. */
+export function requestSetupZonePlan(
+  http: Http,
+  setupSessionId: string,
+  signal?: AbortSignal,
+): Promise<SetupZonePlanView> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zones`, {
+    schema: setupZonePlanViewSchema,
+    signal,
+  });
+}
+
+/**
+ * 세팅 중 구역 목록을 통째로 저장한다(-612). revision 은 마지막으로 읽은 값이고, 그 사이 다른 곳에서 고쳤으면 409
+ * SETUP_ZONE_PLAN_CONFLICT, 완료 뒤·작업 시작 뒤면 409 SETUP_ZONES_CLOSED 다. 관제 구역(zones/commit)은 바꾸지 않는다.
+ */
+export function saveSetupZonePlan(
+  http: Http,
+  setupSessionId: string,
+  items: readonly SetupZonePlanItem[],
+  revision: number,
+): Promise<SetupZonePlanView> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zones`, {
+    method: 'PUT',
+    body: { items: toPlanRequestItems(items), revision },
+    schema: setupZonePlanViewSchema,
+  });
+}
+
+/**
+ * 세팅을 완료한다(ADMIN): 구역 목록 적용 → 완료 기록 → (새 모델) 이 세션 맵 켜기 → 구성 묶음 한 번 발행.
+ * 커밋 뒤 서버가 TBM AI 양식 초안을 시작한다.
+ */
+export function completeSetupSession(
+  http: Http,
+  setupSessionId: string,
+): Promise<CompleteSetupResponse> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/complete`, {
+    method: 'POST',
+    body: {},
+    schema: completeSetupResponseSchema,
   });
 }
 

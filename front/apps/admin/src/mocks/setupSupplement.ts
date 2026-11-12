@@ -133,6 +133,8 @@ export function createSupplementMock({ now, sessions, updateSession }: Supplemen
 
   const blockedReason = (session: SetupSessionResponse, sup: SessionSupplement): string | null => {
     if (!supplementVisible(session)) return 'SESSION_NOT_READY';
+    // 세팅 완료(C17, -615) 뒤에는 보강 촬영·다시 굽기를 하지 않는다(서버와 같음)
+    if (session.setup_completed_at_ms != null) return 'SETUP_COMPLETED';
     if (session.status !== 'COMPLETED') return 'SETUP_JOB_RUNNING';
     if (sup.rebake && (sup.rebake.status === 'QUEUED' || sup.rebake.status === 'RUNNING')) {
       return 'REBAKE_RUNNING';
@@ -155,7 +157,7 @@ export function createSupplementMock({ now, sessions, updateSession }: Supplemen
     return {
       media: sup.media.map(strip),
       limits: DEFAULT_SUPPLEMENT_LIMITS,
-      can_upload: supplementVisible(session),
+      can_upload: supplementVisible(session) && session.setup_completed_at_ms == null,
       can_rebake: reason === null,
       rebake_blocked_reason: reason,
       rebake,
@@ -182,6 +184,13 @@ export function createSupplementMock({ now, sessions, updateSession }: Supplemen
           409,
           'SUPPLEMENT_SESSION_NOT_READY',
           '미리보기 맵이 준비된 뒤에 올릴 수 있습니다',
+        );
+      }
+      if (session.setup_completed_at_ms != null) {
+        return problem(
+          409,
+          'SUPPLEMENT_SETUP_COMPLETED',
+          '세팅을 완료한 뒤에는 맵을 보강할 수 없습니다',
         );
       }
       const raw: unknown = await request.json().catch(() => null);
@@ -299,6 +308,7 @@ export function createSupplementMock({ now, sessions, updateSession }: Supplemen
       const code: Record<string, string> = {
         SESSION_NOT_READY: 'SUPPLEMENT_SESSION_NOT_READY',
         SETUP_JOB_RUNNING: 'SUPPLEMENT_SETUP_JOB_RUNNING',
+        SETUP_COMPLETED: 'SUPPLEMENT_SETUP_COMPLETED',
         REBAKE_RUNNING: 'SUPPLEMENT_REBAKE_IN_PROGRESS',
         NO_MEDIA: 'SUPPLEMENT_NO_MEDIA',
       };

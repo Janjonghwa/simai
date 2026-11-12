@@ -1,3 +1,4 @@
+import { SetupZonePlanEditError } from '@/features/setup/setupZonePlan';
 import { ApiError } from '@/lib/http';
 import { HTTP_FORBIDDEN, outcomeUnknown } from '@/lib/writeFailure';
 
@@ -62,11 +63,20 @@ const CODE_TEXT = new Map<string, string>([
   ['ZONE_NOT_FOUND', '이미 없거나 보관된 구역입니다. 목록을 다시 받았습니다.'],
   ['STATIC_OBJECT_NOT_FOUND', '이미 없거나 보관된 작업면입니다. 목록을 다시 받았습니다.'],
   ['SITE_NOT_SINGLE', '현장이 하나로 정해지지 않아 저장할 수 없습니다.'],
+  // 세팅 구역 목록(-612·-615)
+  [
+    'SETUP_ZONE_PLAN_CONFLICT',
+    '다른 곳에서 먼저 고친 세팅 구역 목록이라 다시 받았습니다. 확인한 뒤 다시 저장하세요.',
+  ],
+  ['SETUP_ZONES_CLOSED', '세팅을 완료했거나 작업이 시작돼 세팅 구역을 더 고칠 수 없습니다.'],
+  ['INVALID_SETUP_ZONE_PLAN', '세팅 구역 목록 값이 올바르지 않아 저장하지 못했습니다.'],
+  ['SETUP_ZONE_STALE', '목록의 기존 구역이 더 이상 관제 구역이 아닙니다. 목록을 다시 받았습니다.'],
 ]);
 
 /** 저장 실패를 화면 알림 문구로. 서버가 자체 문구를 줘도 보이지 않는다(서버 내부 정보가 섞일 수 있다). */
 export function commitErrorText(error: unknown): string {
   if (error instanceof CommitBlockedError) return BLOCKED_TEXT[error.target][error.reason];
+  if (error instanceof SetupZonePlanEditError) return `${error.message}.`;
   if (!(error instanceof ApiError)) return FALLBACK_TEXT;
   const byCode = CODE_TEXT.get(error.code ?? '');
   if (byCode !== undefined) return byCode;

@@ -1,0 +1,253 @@
+import { staticObjectItemSchema, type StaticObjectBody } from '@/features/surfaces/types';
+import {
+  zoneItemSchema,
+  type ZoneBody,
+  type ZoneCommitRequest,
+  type ZoneCommitResult,
+  type ZoneItem,
+} from '@/features/zones/types';
+import { z } from 'zod';
+
+// 세팅 중 구역 목록(-612 GET·PUT /api/setup-sessions/{id}/zones)을 구역 편집 화면이 쓰는 모양으로 바꾸는 순수 계산(S15P31A101-615).
+// 세팅 구역 단계는 관제 구역(zones/commit)을 바로 바꾸지 않고 이 목록을 고친다. 세팅 완료가 목록을 한 번에 관제 구역으로 적용한다.
+// - 화면의 구역 목록은 목록 기준이다: zone_id 항목은 지금 관제 구역(본문이 있으면 그 본문으로), 새 항목은 임시 ID(setup-new-<순번>).
+// - 화면의 저장 요청(ZoneCommitRequest)은 목록 고치기로 바꾼다: 만들기 → 항목 추가, 새 버전 → 본문 바꾸기, 보관 → 항목 빼기.
+
+export const SETUP_NEW_ZONE_PREFIX = 'setup-new-';
+const SETUP_NEW_SURFACE_PREFIX = 'setup-surface-';
+
+const looseRecord = z.record(z.string(), z.unknown());
+
+/** 목록 항목(서버 SetupZonePlanService.Item). zone·surface 는 구역·작업면 본문(서버가 검사한다). */
+export const setupZonePlanItemSchema = z.object({
+  zone_id: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? null),
+  source: z.enum(['AI', 'MANUAL']),
+  candidate_id: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? null),
+  zone: looseRecord.nullish().transform((v) => (v ?? null) as ZoneBody | null),
+  surface: looseRecord.nullish().transform((v) => (v ?? null) as StaticObjectBody | null),
+});
+export type SetupZonePlanItem = z.infer<typeof setupZonePlanItemSchema>;
+
+export const setupZonePlanViewSchema = z
+  .object({
+    setup_session_id: z.string(),
+    items: z.array(setupZonePlanItemSchema).default([]),
+    revision: z.number().int().min(0),
+    updated_at: z.number().nullish(),
+  })
+  .loose();
+export type SetupZonePlanView = z.infer<typeof setupZonePlanViewSchema>;
+
+/** 화면이 저장할 때 새 항목에 붙일 출처(AI 초안 수락이면 AI + 후보 ID). */
+export interface PlanItemOrigin {
+  source: 'AI' | 'MANUAL';
+  candidateId: string | null;
+}
+
+/** 목록을 고칠 수 없는 요청(목록에 없는 구역, 기존 작업면만 지우기). 서버에 보내지 않는다. */
+export class SetupZonePlanEditError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SetupZonePlanEditError';
+  }
+}
+
+function parseZones(raw: readonly unknown[] | undefined): Map<string, ZoneItem> {
+  const out = new Map<string, ZoneItem>();
+  for (const item of raw ?? []) {
+    const parsed = zoneItemSchema.safeParse(item);
+    if (parsed.success) out.set(parsed.data.zone_id, parsed.data);
+  }
+  return out;
+}
+
+/** 항목의 화면 ID: 이어 쓰는 구역이면 그 zone_id, 새 구역이면 임시 ID. */
+export function planItemViewId(items: readonly SetupZonePlanItem[], index: number): string {
+  const item = items[index];
+  return item?.zone_id ?? `${SETUP_NEW_ZONE_PREFIX}${index}`;
+}
+
+function indexOfViewId(items: readonly SetupZonePlanItem[], viewId: string): number {
+  if (viewId.startsWith(SETUP_NEW_ZONE_PREFIX)) {
+    const index = Number(viewId.slice(SETUP_NEW_ZONE_PREFIX.length));
+    return Number.isInteger(index) && items[index] && items[index].zone_id === null ? index : -1;
+  }
+  return items.findIndex((item) => item.zone_id === viewId);
+}
+
+function zoneViewOf(
+  items: readonly SetupZonePlanItem[],
+  index: number,
+  live: Map<string, ZoneItem>,
+): ZoneItem | null {
+  const item = items[index]!;
+  const current = item.zone_id ? live.get(item.zone_id) : undefined;
+  if (item.zone_id && !current && !item.zone) return null;
+  if (!item.zone) return current ?? null;
+  const merged = {
+    ...(current ?? {}),
+    ...item.zone,
+    zone_id: planItemViewId(items, index),
+    zone_version: current?.zone_version ?? 1,
+    valid_from: current?.valid_from ?? 0,
+    valid_to: null,
+  };
+  const parsed = zoneItemSchema.safeParse(merged);
+  return parsed.success ? parsed.data : null;
+}
+
+/** 화면 구역 목록(GET /api/zones 와 같은 모양): 목록의 항목만, 이어 쓰는 구역은 지금 관제 구역에 본문을 덮는다. */
+export function planZonesView(
+  plan: SetupZonePlanView,
+  liveZones: readonly unknown[] | undefined,
+): ZoneItem[] {
+  const live = parseZones(liveZones);
+  return plan.items.flatMap((_, index) => {
+    const view = zoneViewOf(plan.items, index, live);
+    return view ? [view] : [];
+  });
+}
+
+/**
+ * 화면 정적 객체 목록(GET /api/static-objects 와 같은 모양). 장애물·구역 없는 작업면은 그대로, 구역에 이은 작업면은 그 구역이
+ * 목록에 있을 때만 둔다(목록에 없는 구역은 완료 때 작업면과 함께 보관된다). 항목의 작업면 본문은 이은 작업면을 덮거나 새로 만든다.
+ */
+export function planStaticObjectsView(
+  plan: SetupZonePlanView,
+  liveObjects: readonly unknown[] | undefined,
+): unknown[] {
+  const listed = new Map<string, number>();
+  plan.items.forEach((item, index) => {
+    if (item.zone_id) listed.set(item.zone_id, index);
+  });
+  const out: unknown[] = [];
+  const replaced = new Set<number>();
+  for (const raw of liveObjects ?? []) {
+    const parsed = staticObjectItemSchema.safeParse(raw);
+    const zoneId = parsed.success ? (parsed.data.zone_id ?? null) : null;
+    if (!parsed.success || zoneId === null) {
+      out.push(raw);
+      continue;
+    }
+    const index = listed.get(zoneId);
+    if (index === undefined) continue;
+    const body = plan.items[index]!.surface;
+    if (body) {
+      out.push({ ...parsed.data, ...body, zone_id: zoneId });
+      replaced.add(index);
+    } else {
+      out.push(raw);
+    }
+  }
+  plan.items.forEach((item, index) => {
+    if (!item.surface || replaced.has(index)) return;
+    out.push({
+      ...item.surface,
+      object_id: `${SETUP_NEW_SURFACE_PREFIX}${index}`,
+      object_version: 1,
+      zone_id: planItemViewId(plan.items, index),
+      valid_from: 0,
+      valid_to: null,
+    });
+  });
+  return out;
+}
+
+function surfaceBodyOf(request: ZoneCommitRequest): StaticObjectBody | null | undefined {
+  const surface = request.surface;
+  if (!surface) return undefined;
+  if (surface.op === 'ARCHIVE') return null;
+  return surface.body;
+}
+
+/**
+ * 화면의 저장 요청을 목록 고치기로 바꾼다. 돌려주는 result 는 zones/commit 응답 모양이다(화면이 고른 구역을 열 수 있게 화면 ID 와
+ * 바뀐 구역을 싣는다. 묶음은 없다).
+ */
+export function applyCommitToPlan(
+  plan: SetupZonePlanView,
+  liveZones: readonly unknown[] | undefined,
+  request: ZoneCommitRequest,
+  origin: PlanItemOrigin = { source: 'MANUAL', candidateId: null },
+): { items: SetupZonePlanItem[]; result: ZoneCommitResult } {
+  const items = plan.items.map((item) => ({ ...item }));
+  const surfaceBody = surfaceBodyOf(request);
+  let index: number;
+  if (request.zone.op === 'CREATE') {
+    items.push({
+      zone_id: null,
+      source: origin.source,
+      candidate_id: origin.candidateId,
+      zone: request.zone.body,
+      surface: surfaceBody ?? null,
+    });
+    index = items.length - 1;
+  } else {
+    index = indexOfViewId(items, request.zone.zone_id);
+    if (index < 0) throw new SetupZonePlanEditError('세팅 구역 목록에 없는 구역입니다');
+    if (request.zone.op === 'ARCHIVE') {
+      items.splice(index, 1);
+      return {
+        items,
+        result: {
+          zone_id: request.zone.zone_id,
+          zone: null,
+          surface: null,
+          archived_surface_id: null,
+          bundle: null,
+        },
+      };
+    }
+    const item = items[index]!;
+    if (request.zone.op === 'UPDATE') item.zone = request.zone.body;
+    if (surfaceBody === null && item.zone_id !== null) {
+      // 목록은 '작업면만 지우기'를 나타내지 못한다(-612 남은 일). 구역을 빼거나 새 구역으로 다시 그린다
+      throw new SetupZonePlanEditError('세팅 중에는 기존 구역의 작업면만 따로 지울 수 없습니다');
+    }
+    if (surfaceBody !== undefined) item.surface = surfaceBody;
+  }
+  return {
+    items,
+    result: {
+      zone_id: planItemViewId(items, index),
+      zone: zoneViewOf(items, index, parseZones(liveZones)),
+      surface: null,
+      archived_surface_id: null,
+      bundle: null,
+    },
+  };
+}
+
+/** 지금 관제 구역을 목록 항목으로(zone_id 를 이어 쓰고 본문은 비운다: 완료 때 그대로 둔다). 이미 목록에 있는 구역은 뺀다. */
+export function liveZonesAsItems(
+  liveZones: readonly unknown[] | undefined,
+  existing: readonly SetupZonePlanItem[] = [],
+): SetupZonePlanItem[] {
+  const have = new Set(existing.flatMap((item) => (item.zone_id ? [item.zone_id] : [])));
+  return [...parseZones(liveZones).keys()]
+    .filter((zoneId) => !have.has(zoneId))
+    .map((zoneId) => ({
+      zone_id: zoneId,
+      source: 'MANUAL',
+      candidate_id: null,
+      zone: null,
+      surface: null,
+    }));
+}
+
+/** PUT 본문 항목(서버 Item 모양 그대로). */
+export function toPlanRequestItems(items: readonly SetupZonePlanItem[]) {
+  return items.map(({ zone_id, source, candidate_id, zone, surface }) => ({
+    zone_id,
+    source,
+    candidate_id,
+    zone,
+    surface,
+  }));
+}

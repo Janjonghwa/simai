@@ -681,7 +681,13 @@ public sealed interface ErrorCode {
         // 이전 모델 재사용 세팅(S15P31A101-614)
         SETUP_REUSE_SCENE_MISSING(HttpStatus.CONFLICT, "현재 관제 맵(Scene)과 그 보정이 있어야 이전 모델을 재사용할 수 있습니다. 새 모델로 세팅하세요"),
         SETUP_REUSE_SCENE_MISMATCH(HttpStatus.CONFLICT, "현재 관제 맵이 지금 보정과 다른 World 라 이전 모델을 재사용할 수 없습니다. 새 모델로 세팅하세요"),
-        SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다");
+        SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다"),
+        // 세팅 완료(C17, S15P31A101-615)
+        SETUP_NOT_READY_TO_COMPLETE(HttpStatus.CONFLICT, "미리보기 맵이 나온(구역 단계 이후) 세팅 세션만 완료할 수 있습니다"),
+        SETUP_SESSION_NOT_ACTIVE(HttpStatus.CONFLICT, "이 작업에 지금 걸린 세팅 세션이 아니라 완료할 수 없습니다"),
+        SETUP_ALREADY_COMPLETED(HttpStatus.CONFLICT, "이 작업은 세팅을 이미 완료했습니다(하루 1회). 완료 뒤 구역 수정은 구역 화면에서 하세요"),
+        SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 세팅을 완료할 수 없습니다"),
+        SUPPLEMENT_SETUP_COMPLETED(HttpStatus.CONFLICT, "세팅을 완료한 뒤에는 맵 보강 촬영·다시 굽기를 할 수 없습니다");
 
         private final HttpStatus status;
         private final String message;

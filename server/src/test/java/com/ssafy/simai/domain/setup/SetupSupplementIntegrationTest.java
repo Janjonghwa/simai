@@ -356,7 +356,11 @@ class SetupSupplementIntegrationTest {
                 .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
         mvc.perform(heartbeat(rebake, 0.4, rebakeSnapshot(s, "BAKING_TEXTURE", 40.0))).andExpect(status().isBadRequest());
 
-        // 결과 APPLIED: 다시 굽기 대여 경로의 새 GLB → 세션 귀속 SCENE 후보 → 현재 Scene 이 기준 맵이었으므로 현재화
+        // 다시 굽기 도중 세팅을 완료한다(-615): 완료가 이 세션의 정식 맵을 켠다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(s.scene());
+
+        // 결과 APPLIED: 다시 굽기 대여 경로의 새 GLB → 세션 귀속 SCENE 후보 → 완료 뒤이고 현재 Scene 이 기준 맵이었으므로 현재화
         String rebakePrefix = "job-objects/site_setup/" + rebake.jobId() + "/" + rebake.leaseId() + "/";
         String newScene = "scene-" + rebake.jobId() + "-" + rebake.leaseId();
         ObjectNode result = rebakeSnapshot(s, "COMPLETED", 100.0).put("scene_version", newScene);
@@ -386,7 +390,9 @@ class SetupSupplementIntegrationTest {
                 .andExpect(jsonPath("$.supplement.rebake.scene_version").value(newScene))
                 .andExpect(jsonPath("$.supplement.rebake.scene_activated").value(true))
                 .andExpect(jsonPath("$.supplement.rebake.result.media[1].status").value("WIDE_FOV_REJECTED"))
-                .andExpect(jsonPath("$.supplement.can_rebake").value(true));
+                // 완료 뒤에는 더 다시 굽지 않는다(-615)
+                .andExpect(jsonPath("$.supplement.can_rebake").value(false))
+                .andExpect(jsonPath("$.supplement.rebake_blocked_reason").value("SETUP_COMPLETED"));
         // 다시 구운 맵도 원래 세팅의 고정 카메라 사진으로 카메라 시점 VDT 를 준다
         ObjectNode images = sceneCameraImages.images(newScene);
         assertThat(images.path("bundle_id").asString()).isEqualTo(BUNDLE);
@@ -397,6 +403,7 @@ class SetupSupplementIntegrationTest {
     @Test
     void FALLBACK_결과는_새_Scene_을_등록하지_않고_원래_맵을_유지한다() throws Exception {
         Done s = completedSession();
+        String currentBefore = currentScene();
         String video = uploadedMedia(s.sessionId(), "video/mp4", "short".getBytes(StandardCharsets.UTF_8), null);
         mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isAccepted());
@@ -414,7 +421,7 @@ class SetupSupplementIntegrationTest {
         result.set("supplement", supplementSummary("FALLBACK", "TOO_FEW_REGISTERED", video, "NOT_REGISTERED", null, null));
         mvc.perform(callback(rebake, succeeded(rebake, result))).andExpect(status().isOk());
 
-        assertThat(currentScene()).isEqualTo(s.scene());
+        assertThat(currentScene()).isEqualTo(currentBefore);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_version WHERE site_id = ?", Long.class, site))
                 .isEqualTo(scenesBefore);
         assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, rebake.jobId()))
@@ -432,6 +439,7 @@ class SetupSupplementIntegrationTest {
     @Test
     void 진행_중인_다시_굽기를_취소하면_원래_맵을_두고_다시_요청할_수_있다() throws Exception {
         Done s = completedSession();
+        String currentBefore = currentScene();
         uploadedMedia(s.sessionId(), "image/png", "png".getBytes(StandardCharsets.UTF_8), null);
         mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake/cancel", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SUPPLEMENT_REBAKE_NOT_RUNNING"));
@@ -441,7 +449,7 @@ class SetupSupplementIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.supplement.rebake.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.supplement.can_rebake").value(true));
-        assertThat(currentScene()).isEqualTo(s.scene());
+        assertThat(currentScene()).isEqualTo(currentBefore);
         mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("$.supplement.rebake.status").value("QUEUED"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_supplement_rebake", Integer.class)).isEqualTo(2);
@@ -474,6 +482,9 @@ class SetupSupplementIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, rebake.jobId()))
                 .isEqualTo("SUCCEEDED");
+        // 세팅 완료(C17, -615) 전이라 세션 맵만 옮기고 현재 Scene 은 그대로다. 완료가 이 맵을 켠다
+        assertThat(currentScene()).isNotEqualTo(newScene);
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(newScene);
         mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
                 .andExpect(jsonPath("$.scene_version").value(newScene))
@@ -546,7 +557,7 @@ class SetupSupplementIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, workUnitId))
                 .isEqualTo("PLANNED");
 
-        ready(s); // READY_FOR_ZONES: 미리보기 맵이 현재 Scene 이 됐다
+        ready(s); // READY_FOR_ZONES: 미리보기 맵이 나왔다(현재 Scene 으로 켜는 일은 세팅 완료가 한다, -615)
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
@@ -608,7 +619,7 @@ class SetupSupplementIntegrationTest {
 
     // ---------------------------------------------------------------- 도우미
 
-    /** 미리보기 맵(READY_FOR_ZONES) 뒤 정식 굽기 중(BAKING_TEXTURE)인 세션. 대여는 아직 유효하다 */
+    /** 미리보기 맵(READY_FOR_ZONES) 뒤 정식 굽기 중(BAKING_TEXTURE)이고 세팅을 완료한(-615, 미리보기가 관제 맵) 세션. 대여는 아직 유효하다 */
     private Session bakingSession() throws Exception {
         Session s = startSession();
         String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
@@ -622,6 +633,8 @@ class SetupSupplementIntegrationTest {
             bakeImages.add(image.put("face_policy", "OBSERVED"));
         }
         mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+        // 작업 시작 전 절차: 세팅 완료가 미리보기를 관제 맵으로 켠다(-615). 정식 굽기는 계속 돈다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         return s;
     }
 
@@ -641,7 +654,7 @@ class SetupSupplementIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT scene_version FROM setup_session WHERE setup_session_id = ?::uuid",
                 String.class, s.sessionId())).isNull();
         assertThat(jobStatus(s)).isEqualTo("CANCELLED");
-        assertThat(currentScene()).isEqualTo(preview(s)); // 관제는 미리보기 맵으로 계속한다
+        assertThat(currentScene()).isEqualTo(preview(s)); // 관제는 세팅 완료가 켠 미리보기 맵으로 계속한다
     }
 
     private String jobStatus(Session s) {
@@ -717,7 +730,8 @@ class SetupSupplementIntegrationTest {
         artifacts.set("preview_scene", r.get("preview"));
         artifacts.set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
         mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(baked);
+        // 세팅 완료(C17, -615) 전이라 정식 맵을 현재 Scene 으로 올리지 않는다
+        assertThat(currentScene()).isNotEqualTo(baked);
         return new Done(s.sessionId(), prefix, r.get("calibration").get("uri").asString(), preview(s), baked);
     }
 
@@ -901,6 +915,10 @@ class SetupSupplementIntegrationTest {
                 .put("source_id", worker);
         env.set("payload", payload);
         return env;
+    }
+
+    private RequestBuilder complete(String sessionId) {
+        return post("/api/setup-sessions/{id}/complete", sessionId).with(adminJwt());
     }
 
     private String currentScene() {

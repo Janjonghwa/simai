@@ -1,5 +1,9 @@
 // @vitest-environment node
-import { createSetupSession, requestSetupSession } from '@/features/setup/api';
+import {
+  completeSetupSession,
+  createSetupSession,
+  requestSetupSession,
+} from '@/features/setup/api';
 import { fetchWorkUnit, putDailyWorkUnit } from '@/features/work/api';
 import { commitZone } from '@/features/zones/api';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
@@ -12,8 +16,8 @@ import { setupServer } from 'msw/node';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 // 개발 서버의 세팅 끝내기 연결: 세팅 세션에 속한 구역 저장(POST /api/zones/commit 의 setup_session_id)이 발행까지 되면 그 세션이
-// COMPLETED 가 되고 zones_committed_at 이 찍혀, 작업 mock 이 그 작업을 SETUP_DONE 으로 보고 보고서 초안을 만든다
-// (startBackend 의 연결과 같다).
+// COMPLETED 가 되고 zones_committed_at 이 찍힌다(startBackend 의 연결과 같다). 작업 mock 이 그 작업을 SETUP_DONE 으로 보고 보고서
+// 초안을 만드는 것은 세팅 완료(POST /api/setup-sessions/{id}/complete, -615)를 받은 뒤다(서버의 setup_completed_at 과 같다).
 
 const BASE = 'http://api.test';
 const TODAY = '2026-11-11';
@@ -60,8 +64,8 @@ async function startSetupFor() {
   return { workId: work.work_id, sessionId: session.setup_session_id };
 }
 
-describe('구역 저장 → 세팅 끝 → 작업 SETUP_DONE', () => {
-  it('세션이 없으면 REPORT, 세션이 시작되면 SETUP 이고 구역을 저장하면 세션이 COMPLETED 가 되고 SETUP_DONE 이 된다', async () => {
+describe('구역 저장 → 세팅 완료 → 작업 SETUP_DONE', () => {
+  it('세션이 없으면 REPORT, 세션이 시작되면 SETUP 이고 구역을 저장하면 세션이 COMPLETED 가 되며 세팅 완료 뒤 SETUP_DONE 이 된다', async () => {
     const work = await putDailyWorkUnit(http, TODAY);
     expect(work.progress).toBe('REPORT');
 
@@ -83,6 +87,12 @@ describe('구역 저장 → 세팅 끝 → 작업 SETUP_DONE', () => {
       zones_committed_at: T0 + 60_000,
       completed_at_ms: T0 + 60_000,
     });
+    // 구역 저장만으로는 세팅이 끝나지 않는다
+    expect((await fetchWorkUnit(http, work.work_id)).progress).toBe('SETUP');
+
+    const completed = await completeSetupSession(http, session.setup_session_id);
+    expect(completed.setup_completed_at_ms).toBe(T0 + 60_000);
+    expect(completed.applied_zones).toEqual({ created: [], updated: [], kept: [], archived: [] });
     const done = await fetchWorkUnit(http, work.work_id);
     expect(done.progress).toBe('SETUP_DONE');
     expect(done.active_setup_session_id).toBeNull();
@@ -92,6 +102,7 @@ describe('구역 저장 → 세팅 끝 → 작업 SETUP_DONE', () => {
   it('세팅이 끝난 뒤 초안 생성 시간이 지나면 보고서 초안이 SUCCEEDED 가 된다', async () => {
     const { workId, sessionId } = await startSetupFor();
     await commitZone(http, newZone('개구부 위험 구역', sessionId));
+    await completeSetupSession(http, sessionId);
     // 작업 mock 은 처음 읽을 때 세팅이 끝난 것을 알아채고 그때부터 초안 시간을 잰다.
     expect((await fetchWorkUnit(http, workId)).tbm_report?.draft_status).toBe('GENERATING');
 
@@ -136,7 +147,7 @@ describe('구역 저장 → 세팅 끝 → 작업 SETUP_DONE', () => {
     expect(setupMock.sessions.get(sessionId)?.status).toBe('COLLECTING_BACKGROUND');
   });
 
-  it('실패한 세션은 그대로 두고, 두 번째 저장은 처음 저장한 시각을 바꾸지 않는다', async () => {
+  it('실패한 세션은 그대로 두고, 두 번째 저장은 처음 저장한 시각을 바꾸지 않으며 저장만으로는 SETUP 이다', async () => {
     const { workId, sessionId } = await startSetupFor();
     const failedId = 'failed-session';
     setupMock.sessions.set(failedId, {
@@ -157,7 +168,7 @@ describe('구역 저장 → 세팅 끝 → 작업 SETUP_DONE', () => {
       zones_committed_at: null,
     });
     expect(setupMock.sessions.get(sessionId)?.zones_committed_at).toBe(T0 + 10_000);
-    expect((await fetchWorkUnit(http, workId)).progress).toBe('SETUP_DONE');
+    expect((await fetchWorkUnit(http, workId)).progress).toBe('SETUP');
   });
 });
 
@@ -194,5 +205,28 @@ describe('개발 서버 세팅 mock: 시간이 지나면 미리보기 맵이 준
       status: 'COMPLETED',
       zones_committed_at: T0 + READY_AFTER_MS,
     });
+  });
+});
+
+describe('개발 서버 세팅 mock: 세팅 완료(POST .../complete, -615)', () => {
+  it('미리보기 맵 전에는 SETUP_NOT_READY_TO_COMPLETE, 완료 뒤 다시 누르면 SETUP_ALREADY_COMPLETED 이고 보강은 막힌다', async () => {
+    const { sessionId } = await startSetupFor();
+    await expect(completeSetupSession(http, sessionId)).rejects.toMatchObject({
+      code: 'SETUP_NOT_READY_TO_COMPLETE',
+    });
+
+    setupMock.updateSession(sessionId, {
+      status: 'READY_FOR_ZONES',
+      stage: 'READY_FOR_ZONES',
+      preview_scene_version: 'scene-preview-1',
+      calibration_version: 'cal-8',
+    });
+    await completeSetupSession(http, sessionId);
+    await expect(completeSetupSession(http, sessionId)).rejects.toMatchObject({
+      code: 'SETUP_ALREADY_COMPLETED',
+    });
+    const session = await requestSetupSession(http, sessionId);
+    expect(session.supplement?.can_upload).toBe(false);
+    expect(session.supplement?.rebake_blocked_reason).toBe('SETUP_COMPLETED');
   });
 });

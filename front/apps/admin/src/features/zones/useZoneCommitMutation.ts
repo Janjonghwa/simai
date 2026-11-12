@@ -1,4 +1,11 @@
+import {
+  requestSetupZonePlan,
+  saveSetupZonePlan,
+  setupSessionKey,
+  setupZonePlanKey,
+} from '@/features/setup/api';
 import { markSetupZonesCommitted } from '@/features/setup/setup.store';
+import { applyCommitToPlan, type PlanItemOrigin } from '@/features/setup/setupZonePlan';
 import type { SetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import { requestStaticObjects, STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import type { WorkSurface } from '@/features/surfaces/types';
@@ -11,6 +18,7 @@ import {
 } from '@/features/zones/commitCache';
 import { CommitBlockedError } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest, ZoneCommitResult } from '@/features/zones/types';
+import { useZoneSource, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { fieldOf, needsRefetch } from '@/lib/writeFailure';
@@ -90,6 +98,8 @@ export interface CommitInput {
   /** 고치기 시작한 구역(새 구역이면 null)과 이은 작업면. 요청이 덮거나 보관하는 것만 버전을 맞춰 본다. */
   zone: Zone | null;
   linked: WorkSurface | null;
+  /** 세팅 구역 목록에 새 항목으로 넣을 때의 출처(AI 초안 수락). 없으면 MANUAL. */
+  origin?: PlanItemOrigin;
 }
 
 /** 요청이 덮거나 보관하는 구역·작업면의 버전을 서버의 지금 버전과 맞춰 본다(KEEP·CREATE 는 덮지 않는다). */
@@ -124,16 +134,48 @@ async function send(request: ZoneCommitRequest): Promise<CommitDone> {
   }
 }
 
+/** 세팅 구역 목록에서 다시 받아야 하는 저장 실패: 다른 곳에서 먼저 고침(revision), 세팅 완료·작업 시작으로 닫힘. */
+const PLAN_REFETCH_CODES: ReadonlySet<string> = new Set([
+  'SETUP_ZONE_PLAN_CONFLICT',
+  'SETUP_ZONES_CLOSED',
+]);
+
+/**
+ * 세팅 구역 단계(-615): 관제 구역을 바꾸지 않고 세션 구역 목록을 고쳐 통째로 저장한다(PUT, revision 낙관적 잠금).
+ * 마지막으로 읽은 목록(없으면 지금 받은 목록)에 요청을 적용한다. 화면이 같은 모양으로 다룰 수 있게 zones/commit 응답 모양을 돌려준다.
+ */
+async function saveToPlan(
+  queryClient: QueryClient,
+  source: SetupZoneSource,
+  input: CommitInput,
+): Promise<CommitDone> {
+  const key = setupZonePlanKey(source.sessionId);
+  const plan = await queryClient.ensureQueryData({
+    queryKey: key,
+    queryFn: ({ signal }) => requestSetupZonePlan(api, source.sessionId, signal),
+  });
+  const liveZones = queryClient.getQueryData<unknown[]>(ZONES_KEY);
+  const { items, result } = applyCommitToPlan(plan, liveZones, input.request, input.origin);
+  const saved = await saveSetupZonePlan(api, source.sessionId, items, plan.revision);
+  queryClient.setQueryData(key, saved);
+  return { result, publishError: null };
+}
+
 /**
  * 구역·작업면 저장을 요청 하나로 보낸다(POST /api/zones/commit). 서버가 한 트랜잭션으로 처리해 실패하면 아무것도 바뀌지
  * 않는다. 낙관적 갱신을 하지 않고 응답(새 버전·묶음)으로 목록을 바꾼다(CONVENTION). 결과를 알 수 없는 실패(연결 끊김·시간
  * 초과·응답 오류·서버 오류)면 이미 저장됐을 수 있어 세 목록을 다시 받는다.
  */
-export function useZoneCommitMutation(setup?: SetupLayoutSync) {
+export function useZoneCommitMutation(
+  setup?: SetupLayoutSync,
+  explicitSource?: SetupZoneSource | null,
+) {
   const queryClient = useQueryClient();
+  const planSource = useZoneSource(explicitSource);
   return useMutation({
     mutationKey: COMMIT_MUTATION_KEY,
     mutationFn: async (input: CommitInput): Promise<CommitDone> => {
+      if (planSource) return saveToPlan(queryClient, planSource, input);
       await assertUnchanged(queryClient, input);
       const request =
         setup && input.request.zone.op === 'CREATE'
@@ -142,6 +184,11 @@ export function useZoneCommitMutation(setup?: SetupLayoutSync) {
       return send(request);
     },
     onSuccess: async ({ result, publishError }, { request }) => {
+      if (planSource) {
+        // 세션 목록은 저장 응답으로 이미 바꿨다. 관제 구역·묶음·레이아웃은 세팅 완료 때 바뀐다
+        markSetupZonesCommitted();
+        return;
+      }
       applyCommitted(queryClient, request, result);
       if (!publishError) {
         markSetupZonesCommitted();
@@ -150,6 +197,14 @@ export function useZoneCommitMutation(setup?: SetupLayoutSync) {
       }
     },
     onError: (error) => {
+      if (planSource) {
+        if (error instanceof ApiError && PLAN_REFETCH_CODES.has(error.code ?? '')) {
+          void queryClient.invalidateQueries({ queryKey: setupZonePlanKey(planSource.sessionId) });
+          // 닫혔으면(세팅 완료) 세션을 다시 받아 편집을 끈다
+          void queryClient.invalidateQueries({ queryKey: setupSessionKey(planSource.sessionId) });
+        }
+        return;
+      }
       if (needsRefetch(error)) invalidateCommitted(queryClient);
     },
   });

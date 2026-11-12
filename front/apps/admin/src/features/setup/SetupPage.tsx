@@ -28,6 +28,7 @@ import {
 } from '@/features/setup/setup.store';
 import { deriveSetupActions, toWorkAction } from '@/features/setup/setupActions';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
+import { SetupCompleteCard, setupCompleted } from '@/features/setup/SetupCompleteCard';
 import { blockedLiveWorkId, isSetupBlockedByLiveWork } from '@/features/setup/setupErrorMessage';
 import { SetupMap } from '@/features/setup/SetupMap';
 import {
@@ -36,6 +37,7 @@ import {
   CameraMapPanel,
   CameraPanel,
 } from '@/features/setup/SetupPanels';
+import { SetupZonePlanCard } from '@/features/setup/SetupZonePlanCard';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementCaptureCard } from '@/features/setup/SupplementCaptureCard';
@@ -52,6 +54,7 @@ import {
   useSetupZoneDrafts,
 } from '@/features/setup/useSetupStep1';
 import { useWorkAction } from '@/features/work/WorkActionContext';
+import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { api } from '@/lib/api';
 import { Alert } from '@simai/ui/components/alert';
@@ -75,6 +78,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 단추(다음·다시 보정·세션 취소·카메라 다시 맞추기·작업 관리로)는 setupActions 가 한 곳에서 정한다. 단독 화면(/setup)은 머리줄에 그리고,
 // 날짜 화면 안(embedded)은 같은 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록하며 구역 단계의 마지막 단추는 '다음'(onDone)이다.
 // 구역 단계 오른쪽 칸 끝에 「맵 보강 촬영(선택)」 카드(S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
+// 구역 단계 오른쪽 칸 맨 위에 「세팅 완료」 카드(C17, S15P31A101-615): 구역 목록 적용·이 세션 맵 켜기·구성 묶음 발행을 한 번에 한다.
+// 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
+// 완료 뒤에는 구역 편집·AI 초안 수락을 감춘다(완료 뒤 구역 수정은 관제 화면 구역 편집).
+// 완료 전 구역 단계의 구역 편집·AI 초안 수락·3D 구역 표시는 관제 구역이 아니라 세션 구역 목록(-612) 기준이다(ZoneSourceContext).
+// 이전 모델 재사용은 처음에 지금 관제 구역으로 목록을 채우고, 새 모델은 같은 World 일 때만 「지금 구역 불러오기」를 둔다(SetupZonePlanCard).
 
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
@@ -87,6 +95,7 @@ const TONE_BADGE: Record<SetupTone, string> = {
 const STEP1_LABEL = '세팅 1단계 · 카메라 확인';
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
+const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
 /** 레이아웃 반영을 하지 않는 화면(날짜 화면 안)이 구역 저장에 넘기는 반영 함수. */
 const skipLayoutSync = async () => {};
 
@@ -246,13 +255,20 @@ function SetupWorkPage({
     cancelMutation.mutate(sessionId);
   }, [sessionId, cancelMutation]);
 
-  // 이 세션의 구역을 발행했다(이 브라우저에서 방금, 또는 서버 기록).
-  const zonesPublished = zonesCommitted || currentSession?.zones_committed_at != null;
+  // 세팅을 완료했다(C17). 완료 뒤에는 구역 편집·초안 수락을 감추고 마지막 단추를 켠다
+  const completed = setupCompleted(currentSession);
+  // 이 세션의 구역을 발행했거나(이 브라우저에서 방금, 또는 서버 기록) 세팅을 완료했다.
+  const zonesPublished = zonesCommitted || currentSession?.zones_committed_at != null || completed;
 
+  // 세팅 구역 단계의 구역 편집·초안 수락은 세션 구역 목록에 저장한다(-615). 완료 뒤에는 관제 구역을 본다
+  const zoneSource = useMemo<SetupZoneSource | null>(
+    () => (sessionId && !foreignSession && !completed ? { sessionId } : null),
+    [sessionId, foreignSession, completed],
+  );
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
   const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
-  const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync);
+  const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync, zoneSource);
   const acceptedDraftIds = draftAccept.acceptedIds;
   const draftGhosts = useMemo(
     () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
@@ -554,43 +570,51 @@ function SetupWorkPage({
           />
         )
       ) : (
-        <SetupZoneStep
-          title={zoneMapTitle(waiting.sceneTier)}
-          sceneVersion={sessionSceneVersion(waiting.sceneTier)}
-          draftGhosts={draftGhosts}
-          plan={
-            <SetupMap
-              stage={stage}
-              coverage={coverage}
-              drafts={draftsList}
-              acceptedDraftIds={acceptedDraftIds}
-              discardedDraftIds={discardedDraftIds}
-            />
-          }
-        >
-          {layoutSync.failure && (
-            <div role="alert">
-              구역은 발행됐지만 가상 레이아웃 반영에 실패했습니다.
-              <Button disabled={layoutSync.pending} onClick={() => void layoutSync.retry()}>
-                다시 시도
-              </Button>
-            </div>
-          )}
-          {currentSession && <ZonesPage placement="inline" setupLayoutSync={setupLayoutSync} />}
-          <AiZoneDraftsPanel
-            sceneTier={waiting.sceneTier}
-            draftsResponse={zoneDraftsQuery.data}
-            acceptedDraftIds={acceptedDraftIds}
-            discardedDraftIds={discardedDraftIds}
-            pendingDraftId={draftAccept.pendingId}
-            acceptFailure={draftAccept.failure}
-            onAcceptDraft={(item) => void draftAccept.accept(item)}
-            onDiscardDraft={discardSetupZoneDraft}
-          />
-          {supplementVisible(currentSession) && currentSession && (
-            <SupplementCaptureCard session={currentSession} />
-          )}
-        </SetupZoneStep>
+        <ZoneSourceContext value={zoneSource}>
+          <SetupZoneStep
+            title={zoneMapTitle(waiting.sceneTier)}
+            sceneVersion={sessionSceneVersion(waiting.sceneTier)}
+            draftGhosts={completed ? NO_GHOSTS : draftGhosts}
+            plan={
+              <SetupMap
+                stage={stage}
+                coverage={coverage}
+                drafts={draftsList}
+                acceptedDraftIds={acceptedDraftIds}
+                discardedDraftIds={discardedDraftIds}
+              />
+            }
+          >
+            {layoutSync.failure && (
+              <div role="alert">
+                구역은 발행됐지만 가상 레이아웃 반영에 실패했습니다.
+                <Button disabled={layoutSync.pending} onClick={() => void layoutSync.retry()}>
+                  다시 시도
+                </Button>
+              </div>
+            )}
+            {currentSession && <SetupCompleteCard session={currentSession} />}
+            {currentSession && !completed && <SetupZonePlanCard session={currentSession} />}
+            {currentSession && !completed && (
+              <ZonesPage placement="inline" setupLayoutSync={setupLayoutSync} />
+            )}
+            {!completed && (
+              <AiZoneDraftsPanel
+                sceneTier={waiting.sceneTier}
+                draftsResponse={zoneDraftsQuery.data}
+                acceptedDraftIds={acceptedDraftIds}
+                discardedDraftIds={discardedDraftIds}
+                pendingDraftId={draftAccept.pendingId}
+                acceptFailure={draftAccept.failure}
+                onAcceptDraft={(item) => void draftAccept.accept(item)}
+                onDiscardDraft={discardSetupZoneDraft}
+              />
+            )}
+            {supplementVisible(currentSession) && currentSession && (
+              <SupplementCaptureCard session={currentSession} />
+            )}
+          </SetupZoneStep>
+        </ZoneSourceContext>
       )}
       {modelPickerOpen && <ModelPickerDialog onNew={pickNewModel} />}
     </div>

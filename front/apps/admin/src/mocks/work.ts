@@ -27,7 +27,7 @@ import { http, HttpResponse } from 'msw/http';
 // 상태 전이(progress):
 //   REPORT      날짜 작업만 있다(세션 없음)
 //   SETUP       그 작업의 세팅 세션이 있고 아직 끝나지 않았다(setupSessions 에서 읽는다)
-//   SETUP_DONE  세팅이 끝났다: 세션이 COMPLETED 이고 구역이 한 번 저장됐거나(zones_committed_at), markSetupDone 을 불렀다
+//   SETUP_DONE  세팅이 끝났다: 세팅 완료(POST .../complete, -615)로 setup_completed_at_ms 가 찍혔거나, markSetupDone 을 불렀다
 //               → 보고서 draft_status 가 GENERATING(draftDelayMs, 기본 2.5초) → SUCCEEDED 로 바뀌며 빈 칸이 채워진다
 //   IN_PROGRESS POST /start 뒤(날짜가 오늘이고 서명이 있을 때만)
 //   ENDED       POST /end 뒤(새 판 없이 같은 보고서: wrap_up_status 가 GENERATING → draftDelayMs 뒤 SUCCEEDED, 그때 review.ending 이 비어 있으면
@@ -101,7 +101,12 @@ const isSignerRole = (value: unknown): value is SignerRole =>
 /** 세팅 mock(mocks/setup)의 세션 중 이 mock 이 읽는 칸. */
 export type MockSetupSession = Pick<
   SetupSessionResponse,
-  'setup_session_id' | 'work_unit_id' | 'status' | 'zones_committed_at' | 'started_at_ms'
+  | 'setup_session_id'
+  | 'work_unit_id'
+  | 'status'
+  | 'zones_committed_at'
+  | 'started_at_ms'
+  | 'setup_completed_at_ms'
 >;
 
 export interface WorkMockOptions {
@@ -359,9 +364,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
 
   // ── 상태 계산 ──────────────────────────────────────────────────────────────
 
-  /** 세팅이 끝난 세션: COMPLETED 이고 구역이 한 번 저장됐다(개발 서버의 시간 진행으로 COMPLETED 만 된 세션은 아직 아니다). */
-  const isSetupFinished = (s: MockSetupSession) =>
-    s.status === 'COMPLETED' && s.zones_committed_at != null;
+  /** 세팅이 끝난 세션: 세팅 완료(C17, -615)를 받았다(서버의 work_unit.setup_completed_at 과 같음). 굽기 COMPLETED 만으로는 아니다. */
+  const isSetupFinished = (s: MockSetupSession) => s.setup_completed_at_ms != null;
 
   /** 세팅 세션이 끝난 것을 알아채 세팅 끝 시각을 찍는다. */
   function syncSetup(work: MockWork) {
@@ -370,7 +374,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
   }
 
   /**
-   * 세팅 끝 시각(서버가 초안을 시작, -615) 또는 화면의 초안 요청 시각(-624)으로 초안 상태를 앞으로 보낸다:
+   * 세팅 완료 시각(완료 커밋 뒤 서버가 초안을 시작, -615) 또는 화면의 초안 요청 시각(-624)으로 초안 상태를 앞으로 보낸다:
    * PENDING → GENERATING → SUCCEEDED(빈 칸 채움)·FAILED.
    */
   function syncDraft(work: MockWork) {

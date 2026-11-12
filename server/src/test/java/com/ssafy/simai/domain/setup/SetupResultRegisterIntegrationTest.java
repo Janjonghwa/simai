@@ -225,8 +225,8 @@ class SetupResultRegisterIntegrationTest {
                 "SELECT site_id, calibration_version, state, gltf_key, quality::text AS quality FROM scene_version WHERE scene_version = ?",
                 preview);
         assertThat(previewRow.get("calibration_version")).isEqualTo(newCalibration);
-        // 후보로 등록된 뒤 READY 커밋 뒤 자동 현재화로 COMMITTED(활성 이력 추가)
-        assertThat(previewRow.get("state")).isEqualTo("COMMITTED");
+        // 후보로 등록된다. 현재화는 세팅 완료(C17, -615)가 한다(READY 에서는 관제 맵을 바꾸지 않는다)
+        assertThat(previewRow.get("state")).isEqualTo("CANDIDATE");
         assertThat(previewRow.get("gltf_key")).isEqualTo(prefix + "preview_scene.glb");
         assertThat((String) previewRow.get("quality")).contains("scene_tier=PREVIEW");
         JsonNode draftInput = mapper.readTree(jdbc.queryForObject(
@@ -234,7 +234,14 @@ class SetupResultRegisterIntegrationTest {
         assertThat(draftInput.get("calibration_version").asString()).isEqualTo(newCalibration);
         assertThat(draftInput.get("preview_scene_version").asString()).isEqualTo(preview);
         assertThat(draftInput.get("calibration_ref").asString()).isEqualTo(BUCKET + prefix + "calibration-" + newCalibration + ".json");
-        // READY_FOR_ZONES(새 보정·미리보기 등록 완료)에서 새 보정을 실은 구성 묶음을 발행해 세션에 연결한다
+        // READY_FOR_ZONES 는 묶음을 발행하지 않고 현재 Scene 도 그대로다(-615: 완료 때로 옮김)
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
+                newCalibration)).isZero();
+        assertThat(currentScene()).isNotEqualTo(preview);
+
+        // 세팅 완료(C17): 미리보기를 현재 Scene 으로 켜고 새 보정을 실은 구성 묶음을 한 번 발행해 세션에 연결한다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.setup_completed_at_ms").isNumber());
         String configVersion = jdbc.queryForObject(
                 "SELECT config_version FROM config_bundle WHERE calibration_version = ?", String.class, newCalibration);
         assertThat(configVersion).startsWith("cfg-");
@@ -242,6 +249,8 @@ class SetupResultRegisterIntegrationTest {
                 byte[].class, configVersion)).isEqualTo(calDoc);
         assertThat(jdbc.queryForObject("SELECT config_version FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
                 s.sessionId())).isEqualTo(configVersion);
+        assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, preview))
+                .isEqualTo("COMMITTED");
         // 굽기 도중 관리자가 묶음을 발행해도(Tier 0 가 아직 새 보정을 알리기 전) 새 보정을 싣는다
         JsonNode during = configs.publish(null, userId);
         assertThat(during.get("calibration_version").asString()).isEqualTo(newCalibration);
@@ -267,7 +276,7 @@ class SetupResultRegisterIntegrationTest {
         assertThat(currentScene()).isEqualTo(baked);
         assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, baked))
                 .isEqualTo("COMMITTED");
-        // 결과 성공 때는 이미 그 보정의 묶음이 있으니 다시 만들지 않는다(굽기 중 발행분까지 2개)
+        // 결과 성공 때는 이미 그 보정의 묶음이 있으니 다시 만들지 않는다(완료 1개 + 굽기 중 관리자 발행분 = 2개)
         assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
                 newCalibration)).isEqualTo(2);
         String latestConfig = during.get("config_version").asString();
@@ -480,6 +489,7 @@ class SetupResultRegisterIntegrationTest {
         artifacts.set("calibration_document", calRef);
         artifacts.set("preview_scene", previewRef);
         mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(preview);
 
         // 관리자가 다른 후보 Scene 을 현재로 고른다
@@ -665,7 +675,8 @@ class SetupResultRegisterIntegrationTest {
         assertThat(body.path("images").get(0).path("url").asString()).isEqualTo("https://storage.test/" + prefix + "bake-cam1.jpg");
         assertThat(schemas.violations("messages/scene_camera_images", body.toString())).isEmpty();
 
-        // 세팅 미리보기가 현재 Scene 이면 scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
+        // 세팅 미리보기가 현재 Scene 이면(완료가 켠다) scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(preview);
         ObjectNode current = sceneService.current();
         assertThat(current.at("/map_cameras/cam1/pose_source").asString()).isEqualTo("CALIBRATION");
@@ -708,6 +719,7 @@ class SetupResultRegisterIntegrationTest {
         assertThat(jdbc.queryForList("SELECT content ->> 'cells' FROM floor_coverage WHERE calibration_version = ?",
                 String.class, newCalibration)).containsExactly("..1222");
 
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(preview);
         ObjectNode current = sceneService.current();
         assertThat(current.at("/floor_coverage/calibration_version").asString()).isEqualTo(newCalibration);
@@ -753,6 +765,10 @@ class SetupResultRegisterIntegrationTest {
         out[3] = (byte) 0xE0;
         System.arraycopy(body, 0, out, 4, body.length);
         return out;
+    }
+
+    private RequestBuilder complete(String sessionId) {
+        return post("/api/setup-sessions/{id}/complete", sessionId).with(adminJwt());
     }
 
     private String currentScene() {

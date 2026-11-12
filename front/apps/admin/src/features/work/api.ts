@@ -174,7 +174,8 @@ export function saveReportForm(
 /**
  * AI 양식 초안을 요청한다(POST /api/reports/tbm/{id}/form-draft, 서버 -616). 받으면 보고서 draft_status 가 GENERATING 이고
  * 서버가 비동기로 빈 칸을 채운다. 409: REPORT_IN_PROGRESS(이미 생성 중)·REPORT_FORM_NO_TASKS(작업내용 없음)·REPORT_LOCKED.
- * 원래 세팅 완료(-615)가 서버에서 시작한다. 그 전에도 사람이 시작·재시도할 수 있게 둔다(-624).
+ * 세팅 완료(POST /api/setup-sessions/{id}/complete, -615)가 커밋된 뒤 서버가 시작한다(작업내용을 골랐을 때). 그 전이나 실패 뒤에도
+ * 사람이 시작·재시도할 수 있게 둔다(-624).
  */
 export async function startReportDraft(http: Http, reportId: number): Promise<void> {
   await http(`/api/reports/tbm/${enc(String(reportId))}/form-draft`, {

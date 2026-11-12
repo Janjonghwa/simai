@@ -1003,6 +1003,19 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
   it('구역 단계는 왼쪽 3D 와 오른쪽 구역 편집 도구(옆 칸)가 같은 선택을 쓴다: 패널에서 고르면 3D 가 고르고 초점을 옮기고, 3D 에서 고르면 패널이 따른다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    // 구역 단계의 구역은 세션 구역 목록 기준이다(-615): 지금 관제 구역 둘을 이어 쓰는 목록
+    const keep = (zoneId: string) => ({
+      zone_id: zoneId,
+      source: 'MANUAL',
+      candidate_id: null,
+      zone: null,
+      surface: null,
+    });
+    setupMock.zonePlans.set(sessionId, {
+      items: [keep('z-04'), keep('z-02')],
+      revision: 1,
+      updatedAt: 0,
+    });
 
     const panel = await goToZoneStep();
     expect(panel.getAttribute('data-placement')).toBe('inline');
@@ -1033,14 +1046,17 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(panel.getAttribute('data-selected')).toBe('zone:z-02');
   }, 20_000);
 
-  it('AI 초안은 3D 점선 윤곽으로 겹쳐 보이고, 수락하면 0.3 m 민 구역을 바로 저장하고 버리면 목록·3D 에서 뺀다(AI 의견 없음은 회색)', async () => {
+  it('AI 초안은 3D 점선 윤곽으로 겹쳐 보이고, 수락하면 0.3 m 민 구역을 세션 구역 목록에 저장하고(관제 구역은 그대로) 버리면 목록·3D 에서 뺀다(AI 의견 없음은 회색)', async () => {
     const commits: unknown[] = [];
+    const planSaves: unknown[] = [];
     server.events.on('request:start', ({ request }) => {
-      if (request.method === 'POST' && new URL(request.url).pathname === '/api/zones/commit') {
+      const path = new URL(request.url).pathname;
+      if (request.method === 'POST' && path === '/api/zones/commit') commits.push(path);
+      if (request.method === 'PUT' && /^\/api\/setup-sessions\/[^/]+\/zones$/.test(path)) {
         void request
           .clone()
           .json()
-          .then((body) => commits.push(body));
+          .then((body) => planSaves.push(body));
       }
     });
     const { sessionId } = await startSetupSession();
@@ -1062,22 +1078,28 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
     expect(await within(items[0]!).findByText('반영됨', undefined, POLL_WAIT)).toBeTruthy();
-    await waitFor(() => expect(commits).toHaveLength(1));
-    expect(commits[0]).toMatchObject({
-      zone: {
-        op: 'CREATE',
-        body: {
-          name: '창가 개구부 추락 주의',
-          severity: 'CRITICAL',
-          polygon_xy: [
-            [6.7, 7.7],
-            [8.9, 7.7],
-            [8.9, 9.1],
-            [6.7, 9.1],
-          ],
+    await waitFor(() => expect(planSaves).toHaveLength(1));
+    expect(planSaves[0]).toMatchObject({
+      revision: 0,
+      items: [
+        {
+          zone_id: null,
+          source: 'AI',
+          candidate_id: opening,
+          zone: {
+            name: '창가 개구부 추락 주의',
+            severity: 'CRITICAL',
+            polygon_xy: [
+              [6.7, 7.7],
+              [8.9, 7.7],
+              [8.9, 9.1],
+              [6.7, 9.1],
+            ],
+          },
         },
-      },
+      ],
     });
+    expect(commits).toEqual([]);
     // 수락한 초안은 구역이 되어 AI 윤곽에서 빠지고, 다시 수락·버릴 단추가 없다.
     expect(ghostIds()).toEqual([`ai-draft:${podium}`]);
     expect(
