@@ -60,8 +60,8 @@ function SceneProbe() {
 
 const unitBox = () => new THREE.BoxGeometry(1, 1, 1);
 const testAssets: PpeAssets = {
-  helmet: { geometry: unitBox(), edges: new THREE.EdgesGeometry(unitBox()), map: null },
-  vest: { geometry: unitBox(), edges: new THREE.EdgesGeometry(unitBox()), map: null },
+  helmet: { geometry: unitBox(), map: null },
+  vest: { geometry: unitBox(), map: null },
 };
 
 let root: ReconcilerRoot<HTMLCanvasElement> | null = null;
@@ -175,10 +175,10 @@ describe('PersonLayer 안전모·조끼(-552)', () => {
     expect(marks(CAPSULE_ID)).toHaveLength(0);
   });
 
-  it('골격 막대 사람: 착용은 실물, 모름은 반투명 + 외곽선으로 골격 그룹 안에 붙고 머리 높이에 놓인다', async () => {
+  it('골격 막대 사람: 착용은 불투명 실물로 골격 그룹 안에 붙고 머리·어깨 높이에 놓인다', async () => {
     await mount();
     await play(3);
-    await setPpe(...both(SKELETON_ID, 'WORN', 'UNKNOWN'));
+    await setPpe(...both(SKELETON_ID, 'WORN', 'WORN'));
 
     const helmet = gear(SKELETON_ID, 'helmet')!;
     const vest = gear(SKELETON_ID, 'vest')!;
@@ -193,13 +193,24 @@ describe('PersonLayer 안전모·조끼(-552)', () => {
     expect(helmet.position.y).toBeLessThan(1.9);
 
     expect(vest.visible).toBe(true);
-    expect((meshesOf(vest)[0]!.material as MeshStandardMaterial).transparent).toBe(true);
-    expect((meshesOf(vest)[0]!.material as MeshStandardMaterial).opacity).toBeLessThan(0.5);
-    expect(hasLines(vest)).toBe(true);
+    expect(hasLines(vest)).toBe(false);
     // 조끼는 어깨 높이 아래로 내려온다.
     expect(vest.position.y).toBeGreaterThan(1.0);
     expect(vest.scale.y).toBeGreaterThan(0.4);
     expect(marks(SKELETON_ID)).toHaveLength(0);
+  });
+
+  it('모름(UNKNOWN)은 장비를 그리지 않는다(반투명 장비가 착용과 구분되지 않았다, -656)', async () => {
+    await mount();
+    await play(3);
+    await setPpe(...both(SKELETON_ID, 'WORN', 'UNKNOWN'));
+    expect(gear(SKELETON_ID, 'helmet')).toBeDefined();
+    expect(gear(SKELETON_ID, 'vest')).toBeUndefined();
+
+    await setPpe(...both(CAPSULE_ID, 'UNKNOWN', 'UNKNOWN'));
+    expect(gear(CAPSULE_ID, 'helmet')).toBeUndefined();
+    expect(gear(CAPSULE_ID, 'vest')).toBeUndefined();
+    expect(marks(CAPSULE_ID)).toHaveLength(0);
   });
 
   it('캡슐 사람: 몸 그룹 안에 고정 자리로 붙는다', async () => {
@@ -227,15 +238,16 @@ describe('PersonLayer 안전모·조끼(-552)', () => {
     expect((meshesOf(helmet)[0]!.material as MeshStandardMaterial).opacity).toBe(0.45);
   });
 
-  it('상태가 바뀌면 그 자리에서 갈아 끼우고, 비우면 모두 사라진다', async () => {
+  it('착용 → 모름이면 그 장비가 사라지고, 다시 착용이면 붙고, 비우면 모두 사라진다', async () => {
     await mount();
     await play(3);
     await setPpe(...both(SKELETON_ID, 'WORN', 'WORN'));
-    const before = gear(SKELETON_ID, 'helmet')!;
-    expect(hasLines(before)).toBe(false);
+    expect(gear(SKELETON_ID, 'helmet')).toBeDefined();
     await setPpe(...both(SKELETON_ID, 'UNKNOWN', 'WORN'));
-    expect(gear(SKELETON_ID, 'helmet')).toBe(before);
-    expect(hasLines(before)).toBe(true);
+    expect(gear(SKELETON_ID, 'helmet')).toBeUndefined();
+    expect(gear(SKELETON_ID, 'vest')).toBeDefined();
+    await setPpe(...both(SKELETON_ID, 'WORN', 'WORN'));
+    expect(gear(SKELETON_ID, 'helmet')).toBeDefined();
     await setPpe(undefined);
     expect(gear(SKELETON_ID, 'helmet')).toBeUndefined();
     expect(gear(SKELETON_ID, 'vest')).toBeUndefined();
@@ -246,7 +258,7 @@ describe('PersonLayer 안전모·조끼(-552)', () => {
     await play(3);
     await setPpe(
       { [SKELETON_ID]: 'WORN', [CAPSULE_ID]: 'NOT_WORN' },
-      { [SKELETON_ID]: 'UNKNOWN', [CAPSULE_ID]: 'WORN' },
+      { [SKELETON_ID]: 'WORN', [CAPSULE_ID]: 'WORN' },
     );
     const pieces = [
       ...meshesOf(gear(SKELETON_ID, 'helmet')!),

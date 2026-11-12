@@ -42,14 +42,28 @@ export function personPpe(
   now: number,
   linkAlive: boolean,
 ): PersonPpe | null {
+  return personPpeAt(snapshots, worldId, identityRevision, now, linkAlive)?.ppe ?? null;
+}
+
+/** personPpe 와 같고, 근거 시각과 견줄 지금 EC2 시각(어림)도 돌려준다. */
+function personPpeAt(
+  snapshots: Readonly<Record<string, PpeSnapshot>>,
+  worldId: string,
+  identityRevision: number,
+  now: number,
+  linkAlive: boolean,
+): { ppe: PersonPpe; serverNow: number } | null {
   for (const snapshot of Object.values(snapshots)) {
     const person = snapshot.payload.people.find((p) => p.world_id === worldId);
     if (!person) continue;
     if (person.identity_revision !== identityRevision) return null;
     const serverNow = snapshot.payload.snapshot_at_ms + Math.max(0, now - snapshot.receivedAt);
     return {
-      helmet: itemDisplay(person.helmet, serverNow, linkAlive),
-      vest: itemDisplay(person.vest, serverNow, linkAlive),
+      ppe: {
+        helmet: itemDisplay(person.helmet, serverNow, linkAlive),
+        vest: itemDisplay(person.vest, serverNow, linkAlive),
+      },
+      serverNow,
     };
   }
   return null;
@@ -67,6 +81,72 @@ function itemDisplay(item: ItemView, serverNow: number, linkAlive: boolean): Ppe
 
 /** 사람 몸에 붙는 장비 종류: helmet · vest. */
 export type PpeItemKind = keyof PersonPpe;
+
+const ITEM_NAMES: Readonly<Record<PpeItemKind, string>> = { helmet: '안전모', vest: '조끼' };
+const ITEM_ORDER: readonly PpeItemKind[] = ['helmet', 'vest'];
+
+/** 마지막 근거로부터 지난 시간. 이름표가 1초마다 바뀌지 않게 10초·1분 단위로 끊는다. */
+export function evidenceAgeText(ageMs: number): string {
+  const seconds = Math.max(0, Math.floor(ageMs / 1000));
+  if (seconds < 10) return '방금';
+  if (seconds < 60) return `${Math.floor(seconds / 10) * 10}초 전`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}분 전`;
+  return `${Math.floor(seconds / 3600)}시간 전`;
+}
+
+/**
+ * 이름표 뒤에 붙일 PPE 글(명세 13.3, S15P31A101-656). 착용이 아닐 때만 만든다(둘 다 착용이면 null, 장비 실물이 보인다).
+ * 미착용 장비를 먼저, 모름 장비를 뒤에 쓰고, 모름에는 마지막 근거 시각(또는 EC2 연결 끊김)을 괄호로 붙인다.
+ * 예: '안전모 미착용', '안전모·조끼 모름(30초 전)', '안전모 미착용 · 조끼 모름(연결 끊김)'.
+ */
+export function ppeLabel(ppe: PersonPpe, serverNow: number): string | null {
+  const notWorn = ITEM_ORDER.filter((item) => ppe[item].state === 'NOT_WORN');
+  const unknownBySuffix = new Map<string, PpeItemKind[]>();
+  for (const item of ITEM_ORDER) {
+    const display = ppe[item];
+    if (display.state !== 'UNKNOWN') continue;
+    const suffix =
+      display.reason === LINK_LOST_REASON
+        ? '(연결 끊김)'
+        : display.lastEvidenceAtMs === null
+          ? ''
+          : `(${evidenceAgeText(serverNow - display.lastEvidenceAtMs)})`;
+    unknownBySuffix.set(suffix, [...(unknownBySuffix.get(suffix) ?? []), item]);
+  }
+  const names = (items: readonly PpeItemKind[]) => items.map((item) => ITEM_NAMES[item]).join('·');
+  const parts: string[] = [];
+  if (notWorn.length > 0) parts.push(`${names(notWorn)} 미착용`);
+  for (const [suffix, items] of unknownBySuffix) parts.push(`${names(items)} 모름${suffix}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** 지금 그리는 트랙별 이름표 PPE 글. 착용이 아닌 사람만 담는다(상태가 없거나 둘 다 착용이면 빠진다). */
+export function ppeLabels(
+  snapshots: Readonly<Record<string, PpeSnapshot>>,
+  tracks: readonly { worldId: string; identityRevision: number }[],
+  now: number,
+  linkAlive: boolean,
+): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const track of tracks) {
+    const found = personPpeAt(snapshots, track.worldId, track.identityRevision, now, linkAlive);
+    const label = found && ppeLabel(found.ppe, found.serverNow);
+    if (label) labels[track.worldId] = label;
+  }
+  return labels;
+}
+
+/** 이름표 뒤 글(워치 등)에 PPE 글을 ' · ' 로 이어 붙인다. 둘 중 하나만 있으면 그것만 쓴다. */
+export function withPpeLabels(
+  badges: Readonly<Record<string, string>>,
+  labels: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out: Record<string, string> = { ...badges };
+  for (const [worldId, label] of Object.entries(labels)) {
+    out[worldId] = out[worldId] ? `${out[worldId]} · ${label}` : label;
+  }
+  return out;
+}
 
 /** 3D 에 넘길 사람별 장비(안전모 또는 조끼) 상태. 붙일 상태가 있는 사람만 담는다. */
 export function itemStates(

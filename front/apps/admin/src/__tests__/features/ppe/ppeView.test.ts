@@ -1,4 +1,15 @@
-import { EXPIRED_REASON, itemStates, LINK_LOST_REASON, personPpe } from '@/features/ppe/ppeView';
+import {
+  evidenceAgeText,
+  EXPIRED_REASON,
+  itemStates,
+  LINK_LOST_REASON,
+  personPpe,
+  ppeLabel,
+  ppeLabels,
+  withPpeLabels,
+  type PersonPpe,
+  type PpeItemDisplay,
+} from '@/features/ppe/ppeView';
 import { useRealtimeStore, type PpeSnapshot } from '@/store/realtime.store';
 import type { PpeViewPayload } from '@simai/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -78,6 +89,89 @@ describe('personPpe', () => {
     const p = payload();
     p.people[0]!.helmet = { ...p.people[0]!.helmet, state: 'UNKNOWN', reason: EXPIRED_REASON };
     expect(personPpe(snapshots(p), 'w-1', 2, RECEIVED, true)?.helmet.state).toBe('UNKNOWN');
+  });
+});
+
+describe('이름표 PPE 글(ppeLabel, -656: 착용이 아닐 때만)', () => {
+  const NOW = 100_000;
+  const item = (
+    state: PpeItemDisplay['state'],
+    extra: Partial<PpeItemDisplay> = {},
+  ): PpeItemDisplay => ({
+    state,
+    reason:
+      state === 'WORN'
+        ? 'WINDOW_WORN'
+        : state === 'NOT_WORN'
+          ? 'WINDOW_NOT_WORN'
+          : 'NO_OBSERVATION',
+    lastEvidenceAtMs: null,
+    ...extra,
+  });
+  const ppe = (helmet: PpeItemDisplay, vest: PpeItemDisplay): PersonPpe => ({ helmet, vest });
+
+  it('둘 다 착용이면 글이 없다(장비 실물이 보인다)', () => {
+    expect(ppeLabel(ppe(item('WORN'), item('WORN')), NOW)).toBeNull();
+  });
+
+  it('미착용은 장비 이름으로, 둘 다면 한 번에 쓴다', () => {
+    expect(ppeLabel(ppe(item('NOT_WORN'), item('WORN')), NOW)).toBe('안전모 미착용');
+    expect(ppeLabel(ppe(item('NOT_WORN'), item('NOT_WORN')), NOW)).toBe('안전모·조끼 미착용');
+  });
+
+  it('모름은 마지막 근거 시각을 괄호로 붙이고, 근거가 없으면 붙이지 않는다', () => {
+    const old = item('UNKNOWN', { reason: EXPIRED_REASON, lastEvidenceAtMs: NOW - 34_000 });
+    expect(ppeLabel(ppe(old, old), NOW)).toBe('안전모·조끼 모름(30초 전)');
+    expect(ppeLabel(ppe(item('UNKNOWN'), item('WORN')), NOW)).toBe('안전모 모름');
+    expect(ppeLabel(ppe(old, item('UNKNOWN')), NOW)).toBe('안전모 모름(30초 전) · 조끼 모름');
+  });
+
+  it('미착용을 먼저, 모름을 뒤에 쓴다', () => {
+    expect(ppeLabel(ppe(item('UNKNOWN'), item('NOT_WORN')), NOW)).toBe('조끼 미착용 · 안전모 모름');
+  });
+
+  it('EC2 연결이 끊긴 모름은 시각 대신 연결 끊김을 쓴다', () => {
+    const lost = item('UNKNOWN', { reason: LINK_LOST_REASON, lastEvidenceAtMs: NOW - 5_000 });
+    expect(ppeLabel(ppe(lost, lost), NOW)).toBe('안전모·조끼 모름(연결 끊김)');
+  });
+
+  it('경과 시각은 10초·1분·1시간 단위로 끊어 1초마다 바뀌지 않는다', () => {
+    expect(evidenceAgeText(3_000)).toBe('방금');
+    expect(evidenceAgeText(-1_000)).toBe('방금');
+    expect(evidenceAgeText(19_999)).toBe('10초 전');
+    expect(evidenceAgeText(59_000)).toBe('50초 전');
+    expect(evidenceAgeText(125_000)).toBe('2분 전');
+    expect(evidenceAgeText(3_700_000)).toBe('1시간 전');
+  });
+
+  it('트랙별로 모으고, 같은 차수·착용이 아닌 사람만 담는다', () => {
+    // 스냅샷: w-1 안전모 착용·조끼 모름(근거 없음)
+    expect(
+      ppeLabels(snapshots(), [{ worldId: 'w-1', identityRevision: 2 }], RECEIVED, true),
+    ).toEqual({
+      'w-1': '조끼 모름',
+    });
+    expect(
+      ppeLabels(snapshots(), [{ worldId: 'w-1', identityRevision: 3 }], RECEIVED, true),
+    ).toEqual({});
+    expect(
+      ppeLabels(snapshots(), [{ worldId: 'w-1', identityRevision: 2 }], RECEIVED, false),
+    ).toEqual({
+      'w-1': '안전모·조끼 모름(연결 끊김)',
+    });
+  });
+
+  it('워치 글 뒤에 이어 붙이고, 한쪽만 있으면 그것만 쓴다', () => {
+    expect(
+      withPpeLabels(
+        { 'w-1': '워치 watch-01', 'w-2': '워치 watch-02' },
+        { 'w-1': '안전모 미착용', 'w-3': '조끼 모름' },
+      ),
+    ).toEqual({
+      'w-1': '워치 watch-01 · 안전모 미착용',
+      'w-2': '워치 watch-02',
+      'w-3': '조끼 모름',
+    });
   });
 });
 
