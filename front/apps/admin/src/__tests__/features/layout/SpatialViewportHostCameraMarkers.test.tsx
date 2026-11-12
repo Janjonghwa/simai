@@ -241,55 +241,94 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
   });
 });
 
-describe('카메라 시점 보기(-590)', () => {
-  it('카메라 마커를 누르면 3D 를 그 카메라 시점으로 옮기고, 「전체 보기」는 CCTV 창을 둔 채 클릭 전 시점으로 돌린다', async () => {
-    renderHost();
-    await screen.findByTestId('viewer3d');
-    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+const VIEW_LABEL = '3D 에서 이 방향으로 보기';
+
+async function openCctv(cameraId: string) {
+  renderHost();
+  await screen.findByTestId('viewer3d');
+  await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
+  // 보정 자세가 뷰어에 넘어간 뒤(버튼이 켜질 조건) 마커를 누른다.
+  await waitFor(() => expect(fake.props?.cameraPoses).toHaveLength(2));
+  act(() => fake.props?.onCameraClick?.(cameraId));
+}
+
+function viewButton() {
+  return screen.getByRole('button', { name: VIEW_LABEL }) as HTMLButtonElement;
+}
+
+describe('카메라 시점 보기(-590, -626)', () => {
+  it('카메라 마커를 누르면 CCTV 창만 열고 3D 시점은 옮기지 않는다', async () => {
+    await openCctv('cam_B');
     // 관제 화면은 VDT 를 늘 켜지 않는다(카메라 시점에 맞아 있는 동안만 뷰어가 켠다).
     expect(fake.props?.vdt).toBeUndefined();
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(fake.viewFromCamera).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
+    expect(viewButton().disabled).toBe(false);
+  });
 
-    act(() => fake.props?.onCameraClick?.('cam_B'));
-    expect(fake.viewFromCamera).toHaveBeenCalledWith('cam_B');
+  it('「3D 에서 이 방향으로 보기」를 누르면 그 카메라 시점으로 옮기고, 「전체 보기」는 CCTV 창을 둔 채 이전 시점으로 돌린다', async () => {
+    await openCctv('cam_B');
+    act(() => viewButton().click());
+    expect(fake.viewFromCamera).toHaveBeenCalledExactlyOnceWith('cam_B');
     act(() => screen.getByRole('button', { name: '3D 전체 보기' }).click());
     expect(fake.exitCameraView).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
   });
 
-  it('CCTV 창을 닫으면 클릭 전 시점으로 돌린다', async () => {
-    renderHost();
-    await screen.findByTestId('viewer3d');
-    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
-
-    act(() => fake.props?.onCameraClick?.('cam_A'));
+  it('CCTV 창을 닫으면 이전 시점으로 돌리고, 시점을 옮기지 않았으면 그대로 둔다', async () => {
+    await openCctv('cam_A');
+    act(() => viewButton().click());
     act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
     expect(fake.exitCameraView).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
 
     act(() => fake.props?.onCameraClick?.('cam_A'));
     act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
-    expect(fake.exitCameraView).toHaveBeenCalledTimes(2);
+    expect(fake.exitCameraView).toHaveBeenCalledTimes(1);
   });
 
-  it('뷰어가 카메라 시점을 거절하면(마커에 없는 카메라) CCTV 창만 열고 「전체 보기」를 두지 않는다', async () => {
+  it('보정 정보가 없는 카메라면 버튼을 끄고 이유를 보인다', async () => {
+    await openCctv('cam_D');
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    const button = viewButton();
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId && document.getElementById(reasonId)?.textContent).toBe(
+      '이 카메라의 보정 정보가 없어 방향을 알 수 없습니다',
+    );
+    act(() => button.click());
+    expect(fake.viewFromCamera).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
+  });
+
+  it('3D 뷰어가 없으면(오류로 2D 보기) 버튼을 끄고 이유를 보인다', async () => {
     renderHost();
     await screen.findByTestId('viewer3d');
     await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
-
-    act(() => fake.props?.onCameraClick?.('cam_D'));
-    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
-    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
-    expect(fake.exitCameraView).not.toHaveBeenCalled();
+    await waitFor(() => expect(fake.props?.cameraPoses).toHaveLength(2));
+    // 뷰어가 오류를 알리면 호스트가 2D 보기로 바꾼다. 마커 콜백은 전에 받은 것을 그대로 부른다.
+    act(() =>
+      fake.props?.onStatusChange?.({
+        phase: 'error',
+        mode: 'LIVE',
+        error: { code: 'WEBGL_CONTEXT_LOST', message: 'x' },
+      } as unknown as ViewerStatus),
+    );
+    act(() => fake.props?.onCameraClick?.('cam_A'));
+    const button = viewButton();
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId && document.getElementById(reasonId)?.textContent).toBe(
+      '2D 보기에서는 3D 시점을 옮길 수 없습니다',
+    );
   });
 
   it('시점 초기화는 카메라 시점 보기를 끝내 「전체 보기」를 거둔다', async () => {
-    renderHost();
-    await screen.findByTestId('viewer3d');
-    await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
-
-    act(() => fake.props?.onCameraClick?.('cam_A'));
+    await openCctv('cam_A');
+    act(() => viewButton().click());
     expect(screen.getByRole('button', { name: '3D 전체 보기' })).toBeTruthy();
     act(() => screen.getByRole('button', { name: '시점 초기화' }).click());
     expect(fake.resetView).toHaveBeenCalledTimes(1);

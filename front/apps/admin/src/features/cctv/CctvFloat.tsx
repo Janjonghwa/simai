@@ -11,7 +11,15 @@ import { env } from '@/lib/env';
 import { FLOAT_MARGIN, type FloatSpot } from '@/lib/floatSpot';
 import { useReportCctvFloatBox } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '@simai/ui/components/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@simai/ui/components/tooltip';
+import { View } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 const KEY = 'simai.cctv.float';
 type Settings = {
@@ -61,14 +69,18 @@ export interface CctvCameraRequest {
 }
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
+/** 창이 지금 보이는 카메라를 위로 알린다(제목 줄의 「3D 에서 이 방향으로 보기」가 쓴다, -626). */
+type OnCurrent = (cameraId: string | undefined) => void;
 function Content({
   attach,
   selectedKey,
   requestedCamera,
+  onCurrent,
 }: {
   attach?: Attach;
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
+  onCurrent?: OnCurrent;
 }) {
   const [camera, setCamera] = useState(requestedCamera?.cameraId ?? '');
   const link = useCctvStore((s) => s.link);
@@ -101,6 +113,9 @@ function Content({
   }, [requestedCamera]);
   // 창은 늘 카메라 하나만 보인다. 고른 카메라가 중계 목록에 없으면 첫 카메라를 보인다.
   const current = ids.includes(camera) ? camera : ids[0];
+  useEffect(() => {
+    onCurrent?.(current);
+  }, [current, onCurrent]);
   return (
     <>
       {attach && link !== 'open' && (
@@ -134,9 +149,11 @@ function Content({
 function AdminContent({
   selectedKey,
   requestedCamera,
+  onCurrent,
 }: {
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
+  onCurrent?: OnCurrent;
 }) {
   const { attach, resume } = useCctvPreview(env.VITE_CCTV_PREVIEW_URL, env.VITE_STOMP_URL);
   const link = useCctvStore((s) => s.link);
@@ -146,7 +163,12 @@ function AdminContent({
   const notice = remoteNotice(mode, pause, remote);
   return (
     <>
-      <Content attach={attach} selectedKey={selectedKey} requestedCamera={requestedCamera} />
+      <Content
+        attach={attach}
+        selectedKey={selectedKey}
+        requestedCamera={requestedCamera}
+        onCurrent={onCurrent}
+      />
       {notice && <p role="status">{notice.text}</p>}
       {(notice?.resumable || link === 'stopped') && (
         <button type="button" onClick={resume}>
@@ -156,15 +178,83 @@ function AdminContent({
     </>
   );
 }
+const VIEW_FROM_CAMERA_LABEL = '3D 에서 이 방향으로 보기';
+const NO_CAMERA_REASON = '보이는 카메라가 없습니다';
+
+/**
+ * 제목 줄의 「3D 에서 이 방향으로 보기」 아이콘 버튼(-626). 누르면 3D 시점을 창이 보이는 카메라 자리·방향으로 옮긴다.
+ * 옮길 수 없으면 끄고 이유를 이름표로 보인다. 꺼진 버튼은 포인터를 받지 않으므로 감싼 자리에 이름표를 단다.
+ */
+function ViewFromCameraButton({
+  cameraId,
+  blockReason,
+  onView,
+}: {
+  cameraId: string | undefined;
+  blockReason: (cameraId: string) => string | null;
+  onView: (cameraId: string) => void;
+}) {
+  const reasonId = useId();
+  const reason = cameraId ? blockReason(cameraId) : NO_CAMERA_REASON;
+  const icon = <View aria-hidden />;
+  if (reason !== null || !cameraId) {
+    return (
+      <Tooltip>
+        <TooltipTrigger render={<span tabIndex={0} className="inline-flex" />}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled
+            aria-label={VIEW_FROM_CAMERA_LABEL}
+            aria-describedby={reasonId}
+          >
+            {icon}
+          </Button>
+          <span id={reasonId} className="sr-only">
+            {reason}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{reason}</TooltipContent>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={VIEW_FROM_CAMERA_LABEL}
+            onClick={() => onView(cameraId)}
+          />
+        }
+      >
+        {icon}
+      </TooltipTrigger>
+      <TooltipContent>{VIEW_FROM_CAMERA_LABEL}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function CctvFloat({
   onClose,
   onFullView,
+  onViewFromCamera,
+  viewFromCameraBlock = () => null,
   selectedKey,
   requestedCamera = null,
 }: {
   onClose: () => void;
   /** 3D 가 카메라 시점 보기 중일 때만 넘긴다(-590). 누르면 3D 를 클릭 전 시점으로 돌린다. */
   onFullView?: () => void;
+  /**
+   * 「3D 에서 이 방향으로 보기」를 눌렀을 때 창이 보이는 카메라 ID 로 부른다(-626). 넘기지 않으면 버튼을 두지 않는다.
+   * 카메라 마커를 눌러 창을 열 때는 시점을 옮기지 않고 이 버튼으로만 옮긴다.
+   */
+  onViewFromCamera?: (cameraId: string) => void;
+  /** 그 카메라로 시점을 옮길 수 없으면 이유(이름표 문구), 옮길 수 있으면 null(-626). */
+  viewFromCameraBlock?: (cameraId: string) => string | null;
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
 }) {
@@ -178,6 +268,8 @@ export function CctvFloat({
   const layoutKey = `${spot.style?.left},${spot.style?.top},${size.width}x${size.height}`;
   useReportCctvFloatBox(box, { dragging: spot.dragging, collapsed, layoutKey });
   const isAdmin = useCurrentRole() === 'ADMIN';
+  // 창이 보이는 카메라. 접어 Content 가 내려가도 마지막 값을 쥔다.
+  const [currentCamera, setCurrentCamera] = useState<string | undefined>(requestedCamera?.cameraId);
   useEffect(() => {
     if (requestedCamera) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -220,6 +312,15 @@ export function CctvFloat({
         >
           CCTV ⋮⋮
         </div>
+        {onViewFromCamera && (
+          <TooltipProvider>
+            <ViewFromCameraButton
+              cameraId={currentCamera}
+              blockReason={viewFromCameraBlock}
+              onView={onViewFromCamera}
+            />
+          </TooltipProvider>
+        )}
         {onFullView && (
           <button type="button" aria-label="3D 전체 보기" onClick={onFullView}>
             전체 보기
@@ -238,9 +339,17 @@ export function CctvFloat({
       </div>
       {!collapsed &&
         (isAdmin ? (
-          <AdminContent selectedKey={selectedKey} requestedCamera={requestedCamera} />
+          <AdminContent
+            selectedKey={selectedKey}
+            requestedCamera={requestedCamera}
+            onCurrent={setCurrentCamera}
+          />
         ) : (
-          <Content selectedKey={selectedKey} requestedCamera={requestedCamera} />
+          <Content
+            selectedKey={selectedKey}
+            requestedCamera={requestedCamera}
+            onCurrent={setCurrentCamera}
+          />
         ))}
     </section>
   );
