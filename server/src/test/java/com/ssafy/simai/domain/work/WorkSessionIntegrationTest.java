@@ -395,7 +395,7 @@ class WorkSessionIntegrationTest {
         long next = end(work).path("wrap_up").path("report_id").asLong();
         ObjectNode complete = awaitReport(next);
         assertThat(complete.path("status").asString()).isEqualTo("SUCCEEDED");
-        assertThat(complete.path("wrap_up_summary").asString()).contains("전체 이벤트 2건", "작업 외 진입 0건");
+        assertThat(complete.path("wrap_up_summary").asString()).contains("경보: 총 2건").doesNotContain("작업 외 진입 0건");
         assertThat(jdbc.queryForObject("SELECT wrap_up_fallback FROM report WHERE report_id = ?", Boolean.class, next)).isTrue();
     }
 
@@ -408,7 +408,7 @@ class WorkSessionIntegrationTest {
         reports.configureRiskEngine("http://127.0.0.1:" + engine.getAddress().getPort(), Duration.ofMillis(100));
         long next = end(work).path("wrap_up").path("report_id").asLong();
         ObjectNode completed = awaitReport(next);
-        assertThat(completed.path("wrap_up_summary").asString()).contains("전체 이벤트 0건", "최고 등급 없음");
+        assertThat(completed.path("wrap_up_summary").asString()).contains("경보: 없음");
         assertThat(completed.path("wrap_up_status").asString()).isEqualTo("SUCCEEDED");
         mvc.perform(get("/api/reports/tbm").param("work_id", String.valueOf(work)).header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.latest.report_id").value(next))

@@ -496,7 +496,8 @@ def _sum(values: Iterable[int | None]) -> int | None:
 
 def generate_ending(req: Mapping[str, Any], client_factory: Callable[[], ChatClient]) -> dict[str, Any]:
     """tbm_form_ending_request → tbm_form_ending_result. 기존 작업 마무리(wrap_up)의 숫자 검사·1회 재작성·결정적 문장을 그대로 쓰고
-    2000자 상한만 더한다. 집계가 맞지 않으면 wrap_up.validate_request 가 ValueError(처리기는 400)."""
+    2000자 상한만 더한다. 날짜·작업명은 요청 계약에 없어 제목은 '작업 종료 미팅'으로 둔다.
+    집계가 맞지 않으면 wrap_up.validate_request 가 ValueError(처리기는 400)."""
     data = {"work_type": None, "window_ms": list(req["window_ms"]), "facts": req["facts"]}
     out = wrap_up.run(data, client_factory, max_chars=MAX_REVIEW)
     text = out["text"] if len(out["text"]) <= MAX_REVIEW else _clip_sentences(out["text"], MAX_REVIEW)

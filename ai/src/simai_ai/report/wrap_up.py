@@ -11,6 +11,8 @@ from typing import Any
 from .llm import ChatClient, LlmConfigError, LlmError, LlmTimeout
 
 SEVERITIES = ("CRITICAL", "HIGH", "CAUTION", "INFO")
+# 관제 화면 features/events/constants.ts 의 SEVERITY_LABEL 과 같은 표기다.
+SEVERITY_LABELS = {"CRITICAL": "위험", "HIGH": "경고", "CAUTION": "주의", "INFO": "안내"}
 WORK_TYPES = frozenset(("SCAFFOLD_INSTALL", "OPENING_WORK", "HIGH_PLACE", "MATERIAL_HANDLING",
                         "EQUIPMENT_OP", "FLOOR_FINISHING", "GENERAL"))
 COUNT_FIELDS = ("event_count", "operator_ack_count", "operator_close_count", "outside_work_entry_count", "unacknowledged_critical_count")
@@ -90,21 +92,45 @@ def validate_request(data: Any) -> dict[str, Any]:
 
 
 def fact_clauses(facts: dict[str, Any]) -> list[str]:
-    return [
-        f"전체 이벤트 {facts['event_count']}건",
-        *(f"등급 {s} {facts['severity_counts'][s]}건" for s in SEVERITIES),
-        *(f"규칙 {r} {RULE_DESCRIPTIONS[r]} {n}건" for r, n in sorted(facts["rule_counts"].items())),
-        *(f"구역 {z['name']} 이벤트 {z['count']}건" for z in facts["top_zones"]),
-        f"최고 등급 {facts['max_severity'] or '없음'}",
-        f"운영자 확인 {facts['operator_ack_count']}건",
-        f"운영자 미확인 CRITICAL {facts['unacknowledged_critical_count']}건",
-        f"운영자 종료 {facts['operator_close_count']}건",
-        f"작업 외 진입 {facts['outside_work_entry_count']}건",
-        *(f"작업 {label} 이벤트 {facts['phase_counts'][key]}건" for key, label in
-          (("early", "초반"), ("middle", "중반"), ("late", "후반"))),
-        *([f"첫 이벤트 시작 후 {facts['first_event_min']}분", f"마지막 이벤트 시작 후 {facts['last_event_min']}분"]
-          if facts["first_event_min"] is not None else []),
-    ]
+    """읽을 문장과 숫자 검사가 같은 사실 절을 쓴다. 0건 항목은 필수 절에서도 뺀다."""
+    # 종료 미팅 계약은 날짜·작업명을 받지 않는다. 없는 작업 정보를 만들어 넣지 않는다.
+    clauses = ["작업 종료 미팅"]
+    if facts["event_count"] == 0:
+        return clauses + ["경보: 없음", "특이사항 없이 작업을 마쳤다"]
+
+    breakdown = ", ".join(
+        f"{SEVERITY_LABELS[s]} {facts['severity_counts'][s]}건"
+        for s in SEVERITIES if facts["severity_counts"][s]
+    )
+    rules = sorted(
+        ((r, n) for r, n in facts["rule_counts"].items() if n),
+        key=lambda item: (-item[1], int(item[0][1:])),
+    )
+    clauses.extend([
+        f"경보: 총 {facts['event_count']}건({breakdown}), 최고 등급 {SEVERITY_LABELS[facts['max_severity']]}",
+        "주요 위험: " + ", ".join(f"{RULE_DESCRIPTIONS[r]} {n}건" for r, n in rules),
+    ])
+    # 구역 밖 경보(예: 구역 밖 낙상 의심)만 있으면 구역 집계가 비어 있다. 빈 절·없는 구역을 만들지 않는다.
+    if facts["top_zones"]:
+        clauses.append("많이 발생한 구역: " + ", ".join(f"{z['name']} {z['count']}건" for z in facts["top_zones"]))
+    actions = []
+    if facts["operator_ack_count"]:
+        actions.append(f"운영자 확인 {facts['operator_ack_count']}건")
+    unacknowledged = facts["unacknowledged_critical_count"]
+    actions.append(f"미확인 위험 경보 {unacknowledged}건" if unacknowledged else "미확인 위험 경보 없음")
+    for key, label in (("operator_close_count", "운영자 종료"), ("outside_work_entry_count", "작업 외 진입")):
+        if facts[key]:
+            actions.append(f"{label} {facts[key]}건")
+    clauses.append("조치: " + ", ".join(actions))
+    phases = ", ".join(
+        f"{label} {facts['phase_counts'][key]}건"
+        for key, label in (("early", "초반"), ("middle", "중반"), ("late", "후반"))
+        if facts["phase_counts"][key]
+    )
+    clauses.append("시간대: " + phases)
+    where = f"{facts['top_zones'][0]['name']} 점검과 " if facts["top_zones"] else ""
+    clauses.append(f"다음 작업 반영: {where}{RULE_DESCRIPTIONS[rules[0][0]]} 예방 대책을 작업 전 TBM에 반영한다")
+    return clauses
 
 
 def unwrap_paragraph(text: Any) -> str | None:
@@ -121,7 +147,7 @@ def unwrap_paragraph(text: Any) -> str | None:
 def numbers_match(text: str, facts: dict[str, Any]) -> bool:
     """수치 집합만 비교하면 등급별 숫자를 서로 바꾼 오류를 놓친다. 필수 항목·숫자 쌍을 대조한다.
 
-    정확한 사실 절을 한 번씩 제거한 뒤 남은 숫자(규칙 ID 포함)·추가 건수·확률을 거절한다.
+    0건을 생략한 표시용 사실 절을 한 번씩 제거한 뒤 추가 숫자·건수·확률을 거절한다.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > 8_000:
         return False
@@ -163,9 +189,16 @@ def run(data: dict[str, Any], client_factory: Callable[[], ChatClient], *, max_c
     required = deterministic(facts)
     messages = [
         {"role": "system", "content": (
-            "작업 마무리를 집계 사실만으로 한국어로 작성한다. 아래 필수 사실 절을 각각 정확히 한 번 그대로 포함한다. "
-            "다른 수치·날짜·시간·확률·사고 유무·안전 판정·추측은 추가하지 않는다. "
-            "절 사이에는 작업 중, 그리고, 또한, 집계됐다, 기록됐다 같은 연결 문구만 쓴다. 필수 절 바깥에서는 규칙 ID도 쓰지 않는다. 설명이나 JSON 없이 문단만 반환한다."
+            "일일 안전점검처럼 읽히는 한국어 종료 미팅 문단을 작성한다. 아래 required_clauses 의 문장을 순서대로 "
+            "각각 정확히 한 번 그대로 포함한다. 형식은 작업 종료 미팅. 경보: 총 건수(등급별 건수), 최고 등급. "
+            "주요 위험: 규칙 설명과 건수. 많이 발생한 구역: 구역과 건수. 조치: 운영자 확인과 미확인 위험 경보. "
+            "시간대: 발생한 초반·중반·후반 건수. 다음 작업 반영: 주어진 고정 문장. 이다. "
+            "등급은 위험·경고·주의·안내로 쓰고 0건인 항목은 등급별 괄호 안에서도 생략한다. "
+            "미확인 위험 경보가 0건이면 미확인 위험 경보 없음으로 쓴다. 경보가 없으면 "
+            "작업 종료 미팅. 경보: 없음. 특이사항 없이 작업을 마쳤다. 세 문장만 반환한다. "
+            "다음 작업 반영은 가장 많이 발생한 규칙·구역으로 주어진 문장만 쓴다. "
+            "다른 수치·날짜·작업명·시간·확률·사고 유무·안전 판정·추측은 추가하지 않는다. "
+            "필수 절 바깥에서는 규칙 ID도 쓰지 않는다. 설명이나 JSON 없이 문단만 반환한다."
         )},
         {"role": "user", "content": json.dumps({"work_type": data["work_type"], "facts": facts,
                                                  "required_clauses": required}, ensure_ascii=False)},
