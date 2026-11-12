@@ -690,6 +690,8 @@ public sealed interface ErrorCode {
         SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다"),
         // 세팅 완료(C17, S15P31A101-615)
         SETUP_NOT_READY_TO_COMPLETE(HttpStatus.CONFLICT, "미리보기 맵이 나온(구역 단계 이후) 세팅 세션만 완료할 수 있습니다"),
+        SETUP_CAMERA_CHECK_NOT_PASSED(HttpStatus.CONFLICT,
+                "카메라 확인을 통과하지 않았습니다. 한 사람이 30~60초 걸어 카메라 확인을 마치거나, 실패했으면 다시 보정하세요"),
         SETUP_SESSION_NOT_ACTIVE(HttpStatus.CONFLICT, "이 작업에 지금 걸린 세팅 세션이 아니라 완료할 수 없습니다"),
         SETUP_ALREADY_COMPLETED(HttpStatus.CONFLICT, "이 작업은 세팅을 이미 완료했습니다(하루 1회). 완료 뒤 구역 수정은 구역 화면에서 하세요"),
         SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 세팅을 완료할 수 없습니다"),

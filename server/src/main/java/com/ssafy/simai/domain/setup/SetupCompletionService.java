@@ -80,7 +80,7 @@ public class SetupCompletionService {
     }
 
     private record SessionRow(long workUnitId, String status, String mode, boolean anchorAccepted, String calibrationVersion,
-            String previewSceneVersion, String sceneVersion) {
+            String previewSceneVersion, String sceneVersion, String cameraCheckStatus, String cameraCheckCalibration) {
     }
 
     private record WorkRow(String status, UUID activeSetupSessionId, boolean completed) {
@@ -88,7 +88,7 @@ public class SetupCompletionService {
 
     /**
      * 세팅을 완료한다. 거부(모두 409, 없으면 404): 세션 없음 SETUP_SESSION_NOT_FOUND, 이미 완료 SETUP_ALREADY_COMPLETED,
-     * 미리보기 전·실패 SETUP_NOT_READY_TO_COMPLETE, 작업에 걸린 세션 아님 SETUP_SESSION_NOT_ACTIVE, 오늘 아님 WORK_NOT_TODAY,
+     * 미리보기 전·실패 SETUP_NOT_READY_TO_COMPLETE, 카메라 확인 미통과 SETUP_CAMERA_CHECK_NOT_PASSED(-646), 작업에 걸린 세션 아님 SETUP_SESSION_NOT_ACTIVE, 오늘 아님 WORK_NOT_TODAY,
      * 작업 PLANNED 아님 WORK_INVALID_STATE, 같은 현장 관제 중 SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK, 구역 적용 오류(SETUP_ZONE_*, 확인 필요가 남으면 SETUP_ZONES_UNCONFIRMED)는 그대로.
      */
     public Completed complete(UUID setupSessionId, long actorUserId) {
@@ -105,6 +105,10 @@ public class SetupCompletionService {
             }
             if (!READY_OR_LATER.contains(session.status())) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE);
+            }
+            // 관제에서 뜰 카메라 경고는 세팅의 같은 검사(카메라 확인)로 먼저 통과해야 한다(S15P31A101-646)
+            if (!SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion())) {
+                throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
             }
             if (!setupSessionId.equals(work.activeSetupSessionId())) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_ACTIVE);
@@ -193,14 +197,17 @@ public class SetupCompletionService {
     private SessionRow lockSession(String siteId, UUID setupSessionId) {
         List<SessionRow> rows = jdbc.query("""
                 SELECT work_unit_id, status, mode, COALESCE((world_anchor ->> 'accepted')::boolean, false) AS anchor_accepted,
-                       calibration_version, preview_scene_version, scene_version
+                       calibration_version, preview_scene_version, scene_version,
+                       camera_check ->> 'status' AS camera_check_status,
+                       camera_check ->> 'calibration_version' AS camera_check_calibration
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 FOR UPDATE
                 """, new MapSqlParameterSource("site", siteId).addValue("id", setupSessionId),
                 (rs, i) -> new SessionRow(rs.getLong("work_unit_id"), rs.getString("status"), rs.getString("mode"),
                         rs.getBoolean("anchor_accepted"), rs.getString("calibration_version"),
-                        rs.getString("preview_scene_version"), rs.getString("scene_version")));
+                        rs.getString("preview_scene_version"), rs.getString("scene_version"),
+                        rs.getString("camera_check_status"), rs.getString("camera_check_calibration")));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
         }

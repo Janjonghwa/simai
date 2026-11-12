@@ -1786,6 +1786,66 @@ class SiteSetupBakeImages(BaseModel):
     images: Annotated[list[SiteSetupBakeImageRef], Field(max_length=16, min_length=1)]
 
 
+class Thresholds(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    min_duration_s: Annotated[StrictFloat, Field(gt=0.0)]
+    max_duration_s: Annotated[StrictFloat, Field(gt=0.0)]
+    min_pair_samples: Annotated[StrictInt, Field(ge=1)]
+    min_pair_pass_rate: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    max_pair_residual_median_px: Annotated[StrictFloat, Field(gt=0.0)]
+    min_camera_views: Annotated[StrictInt, Field(ge=1)]
+    min_loo_samples: Annotated[StrictInt, Field(ge=1)]
+    max_loo_median_px: Annotated[StrictFloat, Field(gt=0.0)]
+    min_evaluated_pairs: Annotated[StrictInt, Field(ge=1)]
+
+
+RejectsAdditionalProperty = TypeAliasType(
+    "RejectsAdditionalProperty", Annotated[StrictInt, Field(ge=0)]
+)
+
+
+class Pairs(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_ids: Annotated[list[DefsCameraId], Field(max_length=2, min_length=2)]
+    required: StrictBool
+    samples: Annotated[StrictInt, Field(ge=0)]
+    pass_rate: Annotated[StrictFloat | None, Field(ge=0.0, le=1.0)]
+    residual_median_px: Annotated[StrictFloat | None, Field(ge=0.0)]
+    verdict: Literal['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OVERLAPPING']
+    rejects: dict[str, RejectsAdditionalProperty] | MISSING = MISSING
+
+
+class Cameras(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    observed_views: Annotated[StrictInt, Field(ge=0)]
+    loo_samples: Annotated[StrictInt, Field(ge=0)]
+    loo_median_px: Annotated[StrictFloat | None, Field(ge=0.0)]
+    loo_p95_px: Annotated[StrictFloat | None, Field(ge=0.0)]
+    verdict: Literal['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OBSERVED']
+
+
+ValuesPxAdditionalProperty = TypeAliasType(
+    "ValuesPxAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
+class Baseline(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    values_px: Annotated[
+        dict[str, ValuesPxAdditionalProperty], Field(max_length=64, min_length=1)
+    ]
+    source: Literal['SETUP_CAMERA_CHECK']
+
+
 class SiteSetupCameraFrameRef(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1795,6 +1855,17 @@ class SiteSetupCameraFrameRef(BaseModel):
     sha256: Annotated[StrictStr, Field(pattern='^[0-9a-f]{64}$')]
     size_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
     face_policy: Literal['BLURRED', 'EXCLUDED']
+
+
+class SiteSetupCheckProblem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['PAIR', 'CAMERA', 'CHECK']
+    id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    camera_ids: Annotated[list[DefsCameraId] | MISSING, Field(max_length=2)] = MISSING
+    reason: Annotated[StrictStr, Field(pattern='^[A-Z_]{1,40}$')]
+    message: Annotated[StrictStr, Field(max_length=300, min_length=1)]
 
 
 class SiteSetupEffectiveMode(
@@ -1913,6 +1984,48 @@ class ObjectCrossCheck(BaseModel):
     residual_cm: StrictFloat | MISSING = MISSING
     floor_z_m: StrictFloat | MISSING = MISSING
     cameras: Annotated[list[DefsCameraId] | MISSING, Field(min_length=2)] = MISSING
+
+
+class Thresholds1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    pair_holdout_median_max_px: Annotated[StrictFloat, Field(gt=0.0)]
+    pair_holdout_p90_max_px: Annotated[StrictFloat, Field(gt=0.0)]
+    min_holdout_tracks: Annotated[StrictInt, Field(ge=1)]
+    height_max_diff_cm: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+class Pairs1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_ids: Annotated[list[DefsCameraId], Field(max_length=2, min_length=2)]
+    holdout_tracks: Annotated[StrictInt, Field(ge=0)]
+    median_px: Annotated[StrictFloat | None, Field(ge=0.0)]
+    p90_px: Annotated[StrictFloat | None, Field(ge=0.0)]
+    verdict: Literal['PASS', 'NEEDS_CHECK', 'FAIL']
+    reason: Literal['FEW_HOLDOUT', 'HOLDOUT_INVALID', 'HOLDOUT_ERROR_HIGH'] | None
+
+
+class Cameras1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    height_diff_cm: StrictFloat | None
+    verdict: Literal['PASS', 'FAIL']
+    reason: Literal['HEIGHT_MISMATCH', 'HEIGHT_UNKNOWN'] | None
+
+
+class SiteSetupQualityGate(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    verdict: Literal['PASSED', 'NEEDS_CHECK', 'FAILED']
+    thresholds: Thresholds1
+    pairs: Annotated[dict[str, Pairs1], Field(max_length=256)]
+    cameras: Annotated[dict[str, Cameras1], Field(max_length=64)]
+    problems: Annotated[list[SiteSetupCheckProblem], Field(max_length=64)]
 
 
 class SiteSetupRebakeBase(BaseModel):
@@ -3955,6 +4068,21 @@ class SiteSetupArtifacts(BaseModel):
     floor_coverage: SiteSetupFloorCoverage | MISSING = MISSING
 
 
+class SiteSetupCameraCheck(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    status: Literal['WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
+    elapsed_s: Annotated[StrictFloat, Field(ge=0.0)]
+    thresholds: Thresholds
+    pairs: Annotated[dict[str, Pairs], Field(max_length=256)]
+    cameras: Annotated[dict[str, Cameras], Field(max_length=64)]
+    problems: Annotated[list[SiteSetupCheckProblem], Field(max_length=64)]
+    baseline: Baseline | MISSING = MISSING
+
+
 class SiteSetupInput(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4754,6 +4882,8 @@ class SiteSetupProgress(SiteSetupReuseRules):
     mode: SiteSetupEffectiveMode | MISSING = MISSING
     reuse_fallback_reason: SiteSetupReuseFallbackReason | MISSING = MISSING
     world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
+    quality_gate: SiteSetupQualityGate | MISSING = MISSING
+    camera_check: SiteSetupCameraCheck | MISSING = MISSING
 
 
 class SiteSetupResult(SiteSetupReuseRules):
@@ -4790,6 +4920,8 @@ class SiteSetupResult(SiteSetupReuseRules):
     mode: SiteSetupEffectiveMode | MISSING = MISSING
     reuse_fallback_reason: SiteSetupReuseFallbackReason | MISSING = MISSING
     world_anchor: SiteSetupWorldAnchorSummary | MISSING = MISSING
+    quality_gate: SiteSetupQualityGate | MISSING = MISSING
+    camera_check: SiteSetupCameraCheck | MISSING = MISSING
 
 
 class TbmFormDraftRequest(BaseModel):

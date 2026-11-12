@@ -63,6 +63,13 @@ export interface SetupActionState {
   setupCompleted: boolean;
   /** 아직 확인하지 않은 이어 쓴 구역 수(완료 전에만 센다, S15P31A101-629). 남아 있으면 마지막 단추가 꺼진다. */
   unconfirmedZones?: number;
+  /**
+   * 카메라 확인(S15P31A101-646)을 통과하지 않아 2단계 '다음' 을 막는 이유. 통과했으면 null·생략.
+   * 관제에서 뜨는 카메라 경고를 세팅의 같은 검사로 먼저 통과해야 구역 단계로 간다(서버도 거부한다).
+   */
+  cameraCheckBlocked?: string | null;
+  /** 카메라 확인이 끝났는데 통과하지 못했다. 2단계에 '다시 보정' 이 생긴다. */
+  cameraCheckFailed?: boolean;
 }
 
 export interface SetupActionHandlers extends Record<ActionKey, () => void> {
@@ -81,7 +88,7 @@ export function deriveSetupActions(
 ): SetupActionButton[] {
   const disabledOf: Record<ActionKey, boolean> = {
     start: state.startDisabled,
-    confirm: !state.mapComplete,
+    confirm: !state.mapComplete || Boolean(state.cameraCheckBlocked),
     restart: false,
   };
   const staged = STAGE_ACTIONS[state.stage]
@@ -92,7 +99,12 @@ export function deriveSetupActions(
       onClick: on[key],
       disabled: disabledOf[key],
       primary: !SECONDARY_ACTIONS.has(key),
-      title: key === 'confirm' && disabledOf[key] ? CONFIRM_BLOCKED_TITLE : undefined,
+      title:
+        key === 'confirm' && disabledOf[key]
+          ? state.mapComplete
+            ? (state.cameraCheckBlocked ?? undefined)
+            : CONFIRM_BLOCKED_TITLE
+          : undefined,
     }));
 
   const buttons = staged.filter((button) => !button.primary);
@@ -102,6 +114,15 @@ export function deriveSetupActions(
       label: CANCEL_LABEL,
       onClick: on.cancelSession,
       disabled: state.cancelPending,
+      primary: false,
+    });
+  }
+  if (state.stage === 1 && state.cameraCheckFailed && !state.setupCompleted) {
+    buttons.push({
+      key: 'recalibrate',
+      label: ACTION_LABEL.restart,
+      onClick: on.restart,
+      disabled: false,
       primary: false,
     });
   }

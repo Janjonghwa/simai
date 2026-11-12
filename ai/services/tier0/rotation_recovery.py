@@ -59,7 +59,9 @@ class BackgroundRotationRecovery:
         on_requires_setup: Callable[[str, str], None] | None = None,
         in_probation: Callable[[], bool] = lambda: False,
         reference_document: Callable[[], Mapping[str, Any]] | None = None,
+        on_report: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
+        """on_report: 비교를 마친 주기마다 보고서(카메라별 rotations 포함)를 받는다. 융합에서 뺀 카메라의 배경 재검증용(-646)."""
         self.document = copy.deepcopy(document)
         self.provenance = copy.deepcopy(provenance)
         self.clean_background = clean_background
@@ -76,6 +78,7 @@ class BackgroundRotationRecovery:
         self._propose = propose
         self._on_drift_report = on_drift_report
         self._on_requires_setup = on_requires_setup
+        self._on_report = on_report
         self._in_probation = in_probation
         self._process = None
         self.worker_pid = None
@@ -348,6 +351,11 @@ class BackgroundRotationRecovery:
             self._last_signatures = signatures
             self.cycles += 1
             self.last_report = report
+            if self._on_report is not None:
+                try:
+                    self._on_report(report)
+                except Exception:  # noqa: BLE001 - 재검증 실패가 회전 복구를 멈추지 않는다
+                    log.exception("회전 복구 보고서 전달 실패(복구는 계속한다)")
             status = report["status"]
             if self._in_probation():
                 bad_ids = set(report.get("changed_camera_ids") or ())

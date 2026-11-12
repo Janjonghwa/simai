@@ -300,6 +300,76 @@ export type SupplementStateInput = z.input<typeof supplementStateSchema>;
 export const setupModeSchema = z.enum(['NEW', 'REUSE']);
 export type SetupMode = z.infer<typeof setupModeSchema>;
 
+// ---- 보정 품질 게이트·카메라 확인(S15P31A101-646, docs/design/S15P31A101-646-setup-camera-check.md) ----
+// 세션 조회의 quality_gate·camera_check 는 site_setup 1.14.0 원문이다. 화면은 판정·수치·문구만 느슨하게 읽고, 어긋난 값은 null 로 본다.
+
+const checkProblemSchema = z
+  .object({
+    kind: z.string(),
+    id: z.string(),
+    camera_ids: z.array(z.string()).optional().default([]),
+    reason: z.string(),
+    message: z.string(),
+  })
+  .loose();
+export type SetupCheckProblem = z.infer<typeof checkProblemSchema>;
+
+export const qualityGateSchema = z
+  .object({
+    verdict: z.enum(['PASSED', 'NEEDS_CHECK', 'FAILED']),
+    pairs: z.record(
+      z.string(),
+      z
+        .object({
+          camera_ids: z.array(z.string()),
+          holdout_tracks: z.number(),
+          median_px: z.number().nullable(),
+          p90_px: z.number().nullable(),
+          verdict: z.enum(['PASS', 'NEEDS_CHECK', 'FAIL']),
+          reason: z.string().nullable(),
+        })
+        .loose(),
+    ),
+    problems: z.array(checkProblemSchema).optional().default([]),
+  })
+  .loose();
+export type QualityGate = z.infer<typeof qualityGateSchema>;
+
+export const cameraCheckSchema = z
+  .object({
+    status: z.enum(['WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']),
+    calibration_version: z.string(),
+    progress_pct: z.number(),
+    elapsed_s: z.number(),
+    pairs: z.record(
+      z.string(),
+      z
+        .object({
+          camera_ids: z.array(z.string()),
+          required: z.boolean(),
+          samples: z.number(),
+          pass_rate: z.number().nullable(),
+          residual_median_px: z.number().nullable(),
+          verdict: z.enum(['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OVERLAPPING']),
+        })
+        .loose(),
+    ),
+    cameras: z.record(
+      z.string(),
+      z
+        .object({
+          observed_views: z.number(),
+          loo_samples: z.number(),
+          loo_median_px: z.number().nullable(),
+          verdict: z.enum(['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OBSERVED']),
+        })
+        .loose(),
+    ),
+    problems: z.array(checkProblemSchema).optional().default([]),
+  })
+  .loose();
+export type CameraCheck = z.infer<typeof cameraCheckSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -342,6 +412,12 @@ export const setupSessionResponseSchema = z.object({
   setup_completed_at_ms: z.number().nullish(),
   /** World 다시 맞추기 판정 요약(-614). accepted 면 지금 관제 구역과 같은 World 라 기존 구역을 이어 쓸 수 있다. */
   world_anchor: z.object({ accepted: z.boolean() }).loose().nullish().catch(null),
+  /** 보정 절대 품질 게이트(-646). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
+  quality_gate: qualityGateSchema.nullish().catch(null),
+  /** 세팅 카메라 확인(-646). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
+  camera_check: cameraCheckSchema.nullish().catch(null),
+  /** 서버 관문 판정(-646): PASSED 이고 그 확인의 보정이 세션 보정과 같다. 그 전 서버는 싣지 않는다(null) */
+  camera_check_passed: z.boolean().nullish().catch(null),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
 

@@ -8,6 +8,11 @@ import {
 } from '@/features/setup/api';
 import { isSetupSessionRunning } from '@/features/setup/blockingSetup';
 import { BlockingSetupNotice } from '@/features/setup/BlockingSetupNotice';
+import {
+  cameraCheckBlockReason,
+  cameraCheckFailed,
+  deriveCameraCheckView,
+} from '@/features/setup/cameraCheck';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
 import { ModelPickerDialog } from '@/features/setup/ModelPickerDialog';
 import {
@@ -239,6 +244,11 @@ function SetupWorkPage({
   const currentSession = sessionQuery.data ?? retrySession.session ?? createSession.session ?? null;
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
+  // 보정 검증 쌍별 표·카메라 확인(S15P31A101-646). 통과 전에는 2단계 '다음' 이 꺼진다
+  const cameraCheck = useMemo(
+    () => deriveCameraCheckView(currentSession, waiting.cameraIds),
+    [currentSession, waiting.cameraIds],
+  );
 
   // 이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 이 작업의 세션을 서버에서 다시 찾는다(위 이어받기). 찾기 전에는
   // 1단계에서 기다린다.
@@ -477,6 +487,8 @@ function SetupWorkPage({
       finishPending: completion.pending,
       setupCompleted: completed,
       unconfirmedZones: completed ? 0 : unconfirmedZones,
+      cameraCheckBlocked: completed ? null : cameraCheckBlockReason(cameraCheck),
+      cameraCheckFailed: !waiting.failed && cameraCheckFailed(cameraCheck),
     },
     {
       start: requestStep1Submit,
@@ -638,6 +650,11 @@ function SetupWorkPage({
         currentSession && (
           <SetupCalibrateStep
             waiting={waiting}
+            cameraCheck={cameraCheck}
+            showCameraCheck={
+              cameraCheck.gated && Boolean(currentSession.calibration_version) && !waiting.failed
+            }
+            onRecalibrate={handleRestart}
             pollingError={sessionQuery.error}
             onRetry={handleRetryFailedSession}
             retryPending={retrySession.pending}

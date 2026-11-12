@@ -49,7 +49,8 @@
 - 모르면 비운다: 창의 신선한 표본이 min_window_samples 개 미만이면 감시 근거 없음(NO_EVIDENCE)이다. 그동안은 틀어졌다고도,
   괜찮다고도 판단하지 않는다(보정 상태를 바꾸지 않고 보고에 감시 근거 없음을 남긴다).
 
-특정 카메라로 확정한 틀어짐(DRIFTED)은 이 감시기(보정 버전 하나)에서 고정하고 그 카메라를 기준에서 뺀다. 귀속 불확실
+특정 카메라로 확정한 틀어짐(DRIFTED)은 이 감시기(보정 버전 하나)에서 고정하고 그 카메라를 기준에서 뺀다(재검증으로 융합에
+되돌릴 때만 `reset_camera` 로 푼다, S15P31A101-646). 귀속 불확실
 근거는 카메라마다 한 번만 내고, 귀속된 카메라가 생기면 더 판단하지 않는다(이미 DRIFTED 이고 원인이 정해졌다).
 새 보정 버전이 활성화되면 호출자가 새 감시기를 만든다(`calibration.watch`). 시각은 UTC int64 ms 이고 주입받는다.
 """
@@ -166,6 +167,8 @@ class MonitorConfig:
 
 BASELINE_SOURCE_CALIBRATION_INPUT = "CALIBRATION_INPUT"
 BASELINE_SOURCE_LEARNED = "LEARNED_IN_OPERATION"
+BASELINE_SOURCE_SETUP_CAMERA_CHECK = "SETUP_CAMERA_CHECK"
+"""세팅 「카메라 확인」(S15P31A101-646)에서 사람 걷기로 잰 검증된 기준선. 관제 첫 10초 즉석 학습을 대신한다"""
 
 
 @dataclass(frozen=True)
@@ -448,6 +451,26 @@ class ReprojectionMonitor:
             for cid in values
         }
         return BaselineRecord(self.calibration_version, values, verified, sources)
+
+    def reset_camera(self, camera_id: str) -> bool:
+        """재검증을 통과해 융합에 되돌린 카메라의 확정 틀어짐(DRIFTED)을 풀고 창·지속 시간을 비운다(S15P31A101-646).
+
+        기준선(검증 여부 포함)은 그대로 두므로 다시 기준을 넘으면 지속 시간을 처음부터 쌓아 다시 확정한다. 해상도·화각 변경
+        (STREAM_CHANGED)은 풀지 않는다(이 보정으로는 그 카메라 오차를 모른다). 풀었으면 True.
+        """
+        track = self._tracks.get(camera_id)
+        if track is None or camera_id in self._stream_changed:
+            return False
+        track.final_status = None
+        track.ambiguous_reported = False
+        track.change_point_ms = None
+        track.change_level = None
+        track.change_run.clear()
+        for judge in (track.attributed, track.ambiguous):
+            judge.window.clear()
+            judge.pending_new = 0
+            judge._reset()
+        return True
 
     def observe(
         self,

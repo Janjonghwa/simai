@@ -1,0 +1,170 @@
+{
+  "schema_version": "2.13.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000647",
+  "sent_at": 1760342410500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261111-0614",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000614",
+      "status": "JOINT_BA_AND_VERIFY",
+      "progress_pct": 60,
+      "background_collection_pct": {
+        "cam1": 100,
+        "cam2": 100,
+        "cam3": 100,
+        "cam4": 100
+      },
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam2": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam3": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam4": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "metrics": {
+        "stage_seconds": {
+          "COLLECTING_BACKGROUND": 41.2,
+          "INITIAL_POSE_AND_WORLD": 52.8,
+          "JOINT_BA_AND_VERIFY": 4.1
+        },
+        "joint_ba": {
+          "anchor_camera_id": "cam1",
+          "converged": true,
+          "stage_seconds": 3.42,
+          "valid_points": 412
+        }
+      },
+      "quality_gate": {
+        "verdict": "FAILED",
+        "thresholds": {
+          "pair_holdout_median_max_px": 3.0,
+          "pair_holdout_p90_max_px": 6.0,
+          "min_holdout_tracks": 5,
+          "height_max_diff_cm": 10.0
+        },
+        "pairs": {
+          "cam1-cam2": {
+            "camera_ids": [
+              "cam1",
+              "cam2"
+            ],
+            "holdout_tracks": 103,
+            "median_px": 0.451,
+            "p90_px": 0.846,
+            "verdict": "PASS",
+            "reason": null
+          },
+          "cam2-cam3": {
+            "camera_ids": [
+              "cam2",
+              "cam3"
+            ],
+            "holdout_tracks": 103,
+            "median_px": 7.039,
+            "p90_px": 9.564,
+            "verdict": "FAIL",
+            "reason": "HOLDOUT_ERROR_HIGH"
+          },
+          "cam3-cam4": {
+            "camera_ids": [
+              "cam3",
+              "cam4"
+            ],
+            "holdout_tracks": 2,
+            "median_px": 2.234,
+            "p90_px": 3.208,
+            "verdict": "NEEDS_CHECK",
+            "reason": "FEW_HOLDOUT"
+          },
+          "cam4-cam1": {
+            "camera_ids": [
+              "cam4",
+              "cam1"
+            ],
+            "holdout_tracks": 53,
+            "median_px": 0.233,
+            "p90_px": 0.555,
+            "verdict": "PASS",
+            "reason": null
+          }
+        },
+        "cameras": {
+          "cam1": {
+            "height_diff_cm": 12.4,
+            "verdict": "FAIL",
+            "reason": "HEIGHT_MISMATCH"
+          },
+          "cam2": {
+            "height_diff_cm": 1.1,
+            "verdict": "PASS",
+            "reason": null
+          },
+          "cam3": {
+            "height_diff_cm": 1.1,
+            "verdict": "PASS",
+            "reason": null
+          },
+          "cam4": {
+            "height_diff_cm": 1.1,
+            "verdict": "PASS",
+            "reason": null
+          }
+        },
+        "problems": [
+          {
+            "kind": "PAIR",
+            "id": "cam3-cam4",
+            "camera_ids": [
+              "cam3",
+              "cam4"
+            ],
+            "reason": "FEW_HOLDOUT",
+            "message": "cam3-cam4: 홀드아웃 대응점이 2개뿐이라(최소 5개) 사람 걷기로 확인해야 합니다"
+          },
+          {
+            "kind": "PAIR",
+            "id": "cam2-cam3",
+            "camera_ids": [
+              "cam2",
+              "cam3"
+            ],
+            "reason": "HOLDOUT_ERROR_HIGH",
+            "message": "cam2-cam3: 홀드아웃 재투영 오차가 큽니다(중앙값 7.04px, p90 9.56px, 상한 3/6px)"
+          },
+          {
+            "kind": "CAMERA",
+            "id": "cam1",
+            "camera_ids": [
+              "cam1"
+            ],
+            "reason": "HEIGHT_MISMATCH",
+            "message": "cam1: 줄자 높이와 복원 높이 차가 +12.4cm 입니다(허용 ±10cm). 높이 입력과 카메라 각도를 확인하세요"
+          }
+        ]
+      }
+    }
+  }
+}

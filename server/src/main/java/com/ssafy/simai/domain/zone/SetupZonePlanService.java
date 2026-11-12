@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
+import com.ssafy.simai.domain.setup.SetupCameraCheck;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Timestamp;
@@ -202,16 +203,19 @@ public class SetupZonePlanService {
      * 작업이 PLANNED 이고, 세팅 완료(setup_completed_at) 전. 세션 행을 잠가 적용과 줄을 세운다.
      */
     private void requireSession(UUID id, boolean forWrite) {
-        record S(String status, String workStatus, boolean completed, boolean active) { }
+        record S(String status, String workStatus, boolean completed, boolean active, String calibration,
+                 String checkStatus, String checkCalibration) { }
         // 세션·작업 행을 잠근다. 세팅 완료(같은 행을 잠그고 setup_completed_at 을 쓴다)와 줄을 세워 완료 뒤 저장을 막는다
         List<S> rows = jdbc.query("""
                 SELECT s.status, w.status, w.setup_completed_at IS NOT NULL,
-                       w.active_setup_session_id IS NOT DISTINCT FROM s.setup_session_id
+                       w.active_setup_session_id IS NOT DISTINCT FROM s.setup_session_id,
+                       s.calibration_version, s.camera_check ->> 'status', s.camera_check ->> 'calibration_version'
                 FROM setup_session s JOIN work_unit w ON w.work_id = s.work_unit_id
                 WHERE s.setup_session_id = :id AND s.site_id = :site
                 """ + (forWrite ? " FOR UPDATE OF s, w" : ""),
                 new MapSqlParameterSource("id", id).addValue("site", sites.siteId()),
-                (rs, i) -> new S(rs.getString(1), rs.getString(2), rs.getBoolean(3), rs.getBoolean(4)));
+                (rs, i) -> new S(rs.getString(1), rs.getString(2), rs.getBoolean(3), rs.getBoolean(4), rs.getString(5),
+                        rs.getString(6), rs.getString(7)));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
         }
@@ -219,6 +223,10 @@ public class SetupZonePlanService {
         // 다시 시도로 새 세션이 생기면 예전 세션 목록은 적용되지 않으므로 고치지 못하게 한다
         if (forWrite && ("FAILED".equals(s.status()) || !"PLANNED".equals(s.workStatus()) || s.completed() || !s.active())) {
             throw new BusinessException(ErrorCode.Config.SETUP_ZONES_CLOSED);
+        }
+        // 구역 단계는 카메라 확인을 통과한 보정에서만 연다(S15P31A101-646). 읽기는 막지 않는다
+        if (forWrite && !SetupCameraCheck.passed(s.checkStatus(), s.checkCalibration(), s.calibration())) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
         }
     }
 

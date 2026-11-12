@@ -362,6 +362,48 @@ class SetupCompleteIntegrationTest {
     }
 
     @Test
+    void 카메라_확인을_통과하기_전에는_완료를_거부하고_세션_조회에_판정과_문제를_싣는다() throws Exception {
+        // S15P31A101-646: 보정 품질 게이트·카메라 확인 결과를 세션 조회로 돌려주고, PASSED 전에는 세팅 완료를 거부한다
+        Session s = startSession();
+        String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode snap = withChecks(snapshot(s.sessionId(), "READY_FOR_ZONES", 85.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview);
+        snap.set("camera_check", SetupCameraCheckFixtures.check(mapper, newCalibration, "FAILED"));
+        ObjectNode gate = snap.putObject("quality_gate").put("verdict", "NEEDS_CHECK");
+        gate.putObject("thresholds").put("pair_holdout_median_max_px", 3.0).put("pair_holdout_p90_max_px", 6.0)
+                .put("min_holdout_tracks", 5).put("height_max_diff_cm", 10.0);
+        ObjectNode pair = gate.putObject("pairs").putObject("cam3-cam4");
+        pair.putArray("camera_ids").add("cam3").add("cam4");
+        pair.put("holdout_tracks", 2).put("median_px", 2.2).put("p90_px", 3.2).put("verdict", "NEEDS_CHECK").put("reason", "FEW_HOLDOUT");
+        gate.putObject("cameras").putObject("cam1").put("height_diff_cm", 1.1).put("verdict", "PASS").putNull("reason");
+        gate.putArray("problems").addObject().put("kind", "PAIR").put("id", "cam3-cam4").put("reason", "FEW_HOLDOUT")
+                .put("message", "cam3-cam4: 홀드아웃 대응점이 2개뿐이라 사람 걷기로 확인해야 합니다");
+        ObjectNode artifacts = snap.putObject("artifacts");
+        artifacts.set("calibration_document", calRef(s));
+        artifacts.set("preview_scene", previewRef(s));
+        mvc.perform(heartbeat(s, 0.85, snap)).andExpect(status().isOk());
+
+        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(view.path("camera_check").path("status").asString()).isEqualTo("FAILED");
+        assertThat(view.path("camera_check").path("problems").get(0).path("id").asString()).isEqualTo("cam1-cam2");
+        assertThat(view.path("camera_check_passed").asBoolean()).isFalse();
+        assertThat(view.path("quality_gate").path("verdict").asString()).isEqualTo("NEEDS_CHECK");
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
+        assertThat(bundleCount()).isZero();
+
+        // 품질 게이트 값이 없는 스냅샷은 이전 값을 지우지 않는다. 카메라 확인 통과를 실은 스냅샷 뒤에는 완료한다
+        mvc.perform(heartbeat(s, 0.9, withChecks(snapshot(s.sessionId(), "READY_FOR_ZONES", 86.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview))).andExpect(status().isOk());
+        view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(adminJwt())).andReturn());
+        assertThat(view.path("camera_check").path("status").asString()).isEqualTo("PASSED");
+        assertThat(view.path("camera_check_passed").asBoolean()).isTrue();
+        assertThat(view.path("quality_gate").path("verdict").asString()).isEqualTo("NEEDS_CHECK");
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+    }
+
+    @Test
     void 확인_필요_구역이_남으면_완료를_거부하고_모두_확인하면_완료한다() throws Exception {
         Session s = startSession();
         String preview = ready(s);
@@ -516,6 +558,8 @@ class SetupCompleteIntegrationTest {
             checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
+        // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다
+        node.set("camera_check", SetupCameraCheckFixtures.passed(mapper, newCalibration));
         return node;
     }
 

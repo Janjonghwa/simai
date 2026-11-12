@@ -1,6 +1,8 @@
+import { deriveCameraCheckView } from '@/features/setup/cameraCheck';
 import { deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
 import { setupSessionResponseSchema } from '@/features/setup/types';
+import { buildCameraCheck, buildQualityGate } from '@/mocks/setup';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -289,5 +291,82 @@ describe('보정 검증 결과 표', () => {
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeNull();
     // 결과 표는 서버가 값을 준 뒤에는 늘 보인다
     expect(screen.getByRole('table')).toBeTruthy();
+  });
+});
+
+describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
+  const CAMS = ['cam1', 'cam2', 'cam3', 'cam4'];
+  const readySession = (over: Record<string, unknown> = {}) =>
+    // 미리보기 전(3D 칸 없음): 보정 등록(65%) 뒤부터 카메라 확인이 돈다
+    sessionOf({
+      status: 'JOINT_BA_AND_VERIFY',
+      stage: 'JOINT_BA_AND_VERIFY',
+      progress_pct: 65,
+      camera_heights_m: { cam1: 2.44, cam2: 2.44, cam3: 2.48, cam4: 2.48 },
+      calibration_version: 'cal-9',
+      quality_gate: buildQualityGate(CAMS),
+      ...over,
+    });
+
+  function renderCheck(session: ReturnType<typeof sessionOf>, onRecalibrate = vi.fn()) {
+    const waiting = deriveWaitingView(session);
+    render(
+      <SetupCalibrateStep
+        waiting={waiting}
+        cameraCheck={deriveCameraCheckView(session, waiting.cameraIds)}
+        showCameraCheck
+        onRecalibrate={onRecalibrate}
+        onRetry={vi.fn()}
+        onReturnToStep1={vi.fn()}
+      />,
+    );
+    return onRecalibrate;
+  }
+
+  it('재는 중에는 안내와 진행률을 보이고 쌍별 표에 6쌍이 있다', () => {
+    renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'MEASURING', 40),
+        camera_check_passed: false,
+      }),
+    );
+    const card = screen.getByRole('heading', { name: '카메라 확인' }).closest('[data-slot=card]')!;
+    expect(card.textContent).toContain('계속 걸어 주세요');
+    expect(
+      within(card as HTMLElement)
+        .getByRole('progressbar', { name: '카메라 확인 진행률' })
+        .getAttribute('aria-valuenow'),
+    ).toBe('40');
+    const table = screen.getByRole('table', { name: '카메라 쌍별 검증' });
+    expect(within(table).getAllByRole('row')).toHaveLength(7);
+    expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
+  });
+
+  it('실패하면 원인과 다시 보정을 보이고 누르면 다시 보정을 부른다', () => {
+    const onRecalibrate = renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'FAILED', 100),
+        camera_check_passed: false,
+      }),
+    );
+    expect(screen.getByRole('alert', { name: '카메라 확인 문제' }).textContent).toContain('통과율');
+    const failedRow = screen
+      .getAllByRole('row')
+      .find((row) => row.textContent?.startsWith('캠2–캠3'))!;
+    expect(failedRow.getAttribute('data-outcome')).toBe('fail');
+    fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
+    expect(onRecalibrate).toHaveBeenCalledOnce();
+  });
+
+  it('통과하면 통과로 보이고 안내가 없다', () => {
+    renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'PASSED'),
+        camera_check_passed: true,
+      }),
+    );
+    const card = screen.getByRole('heading', { name: '카메라 확인' }).closest('[data-slot=card]')!;
+    expect(card.textContent).toContain('통과');
+    expect(within(card as HTMLElement).queryByRole('status')).toBeNull();
   });
 });

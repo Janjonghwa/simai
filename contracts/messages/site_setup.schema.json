@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
-  "title": "I5 site_setup 1.13.0 입력·단계·결과",
+  "title": "I5 site_setup 1.14.0 입력·단계·결과",
   "$defs": {
     "input": {
       "type": "object",
@@ -256,6 +256,12 @@
         },
         "world_anchor": {
           "$ref": "#/$defs/world_anchor_summary"
+        },
+        "quality_gate": {
+          "$ref": "#/$defs/quality_gate"
+        },
+        "camera_check": {
+          "$ref": "#/$defs/camera_check"
         }
       },
       "additionalProperties": false,
@@ -517,6 +523,12 @@
         },
         "world_anchor": {
           "$ref": "#/$defs/world_anchor_summary"
+        },
+        "quality_gate": {
+          "$ref": "#/$defs/quality_gate"
+        },
+        "camera_check": {
+          "$ref": "#/$defs/camera_check"
         }
       },
       "additionalProperties": false,
@@ -1634,6 +1646,503 @@
       },
       "additionalProperties": false,
       "description": "1.10.0(S15P31A101-605): SUPPLEMENT_REBAKE 의 기준. 모두 EC2 가 이미 이 세션 귀속으로 보관한 값·객체다. 고정 카메라 입력(사람 지운 배경 사진·보정 문서)은 여기서만 읽는다."
+    },
+    "check_problem": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id",
+        "reason",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "PAIR",
+            "CAMERA",
+            "CHECK"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "camera_ids": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "$ref": "../common/defs.schema.json#/$defs/camera_id"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "pattern": "^[A-Z_]{1,40}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      },
+      "additionalProperties": false,
+      "description": "1.14.0(S15P31A101-646): 품질 게이트·카메라 확인이 지목한 문제 하나. kind PAIR 는 카메라 쌍(id = 쌍 키), CAMERA 는 카메라 한 대, CHECK 는 확인 전체(근거 부족 등). reason 은 대문자 사유 코드, message 는 관리자에게 보이는 한국어 문장"
+    },
+    "quality_gate": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "thresholds",
+        "pairs",
+        "cameras",
+        "problems"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "PASSED",
+            "NEEDS_CHECK",
+            "FAILED"
+          ]
+        },
+        "thresholds": {
+          "type": "object",
+          "required": [
+            "pair_holdout_median_max_px",
+            "pair_holdout_p90_max_px",
+            "min_holdout_tracks",
+            "height_max_diff_cm"
+          ],
+          "properties": {
+            "pair_holdout_median_max_px": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "pair_holdout_p90_max_px": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_holdout_tracks": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height_max_diff_cm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "pairs": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "camera_ids",
+              "holdout_tracks",
+              "median_px",
+              "p90_px",
+              "verdict",
+              "reason"
+            ],
+            "properties": {
+              "camera_ids": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "../common/defs.schema.json#/$defs/camera_id"
+                }
+              },
+              "holdout_tracks": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "median_px": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "p90_px": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "verdict": {
+                "enum": [
+                  "PASS",
+                  "NEEDS_CHECK",
+                  "FAIL"
+                ]
+              },
+              "reason": {
+                "enum": [
+                  "FEW_HOLDOUT",
+                  "HOLDOUT_INVALID",
+                  "HOLDOUT_ERROR_HIGH",
+                  null
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "cameras": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "height_diff_cm",
+              "verdict",
+              "reason"
+            ],
+            "properties": {
+              "height_diff_cm": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "verdict": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              },
+              "reason": {
+                "enum": [
+                  "HEIGHT_MISMATCH",
+                  "HEIGHT_UNKNOWN",
+                  null
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "problems": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/check_problem"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "1.14.0(S15P31A101-646): 세팅 보정 절대 품질 게이트. Stage A 쌍별 홀드아웃 재투영 오차(중앙값·p90)의 절대 상한, 쌍별 최소 홀드아웃 트랙 수, 카메라 줄자 높이와 복원 높이 차 상한을 본다. 쌍은 홀드아웃이 모자라면 NEEDS_CHECK(통과가 아니며 카메라 확인의 필수 쌍), 근거가 있고 상한을 넘거나 투영이 깨지면 FAIL. verdict 는 FAIL 이 하나라도 있으면 FAILED(워커는 이 값을 실은 스냅샷을 보내고 VALIDATION_REJECTED 로 끝내 보정을 등록하지 않는다), 아니면 NEEDS_CHECK 가 있으면 NEEDS_CHECK, 모두 PASS 면 PASSED. 쌍 키는 pair_holdout 과 같은 워커 키이고 카메라는 camera_ids 로 읽는다(ID 에 '-' 가 있을 수 있음)."
+    },
+    "camera_check": {
+      "type": "object",
+      "required": [
+        "status",
+        "calibration_version",
+        "progress_pct",
+        "elapsed_s",
+        "thresholds",
+        "pairs",
+        "cameras",
+        "problems"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "WAITING",
+            "MEASURING",
+            "PASSED",
+            "FAILED",
+            "INCOMPLETE"
+          ]
+        },
+        "calibration_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "progress_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "elapsed_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "thresholds": {
+          "type": "object",
+          "required": [
+            "min_duration_s",
+            "max_duration_s",
+            "min_pair_samples",
+            "min_pair_pass_rate",
+            "max_pair_residual_median_px",
+            "min_camera_views",
+            "min_loo_samples",
+            "max_loo_median_px",
+            "min_evaluated_pairs"
+          ],
+          "properties": {
+            "min_duration_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_duration_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_pair_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "min_pair_pass_rate": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "max_pair_residual_median_px": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_camera_views": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "min_loo_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_loo_median_px": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_evaluated_pairs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "pairs": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "camera_ids",
+              "required",
+              "samples",
+              "pass_rate",
+              "residual_median_px",
+              "verdict"
+            ],
+            "properties": {
+              "camera_ids": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "../common/defs.schema.json#/$defs/camera_id"
+                }
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pass_rate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "residual_median_px": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "verdict": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "INSUFFICIENT",
+                  "NOT_OVERLAPPING"
+                ]
+              },
+              "rejects": {
+                "type": "object",
+                "propertyNames": {
+                  "enum": [
+                    "EPIPOLAR",
+                    "TRIANGULATION",
+                    "RESIDUAL",
+                    "IMPLAUSIBLE_HEIGHT"
+                  ]
+                },
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "cameras": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "observed_views",
+              "loo_samples",
+              "loo_median_px",
+              "loo_p95_px",
+              "verdict"
+            ],
+            "properties": {
+              "observed_views": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "loo_samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "loo_median_px": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "loo_p95_px": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "verdict": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "INSUFFICIENT",
+                  "NOT_OBSERVED"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "problems": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/check_problem"
+          }
+        },
+        "baseline": {
+          "type": "object",
+          "required": [
+            "calibration_version",
+            "values_px",
+            "source"
+          ],
+          "properties": {
+            "calibration_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "values_px": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "source": {
+              "const": "SETUP_CAMERA_CHECK"
+            }
+          },
+          "additionalProperties": false,
+          "description": "PASSED 에서만. 관제 틀어짐 감시(한 카메라 제외 재투영)의 검증된 카메라별 기준선(px). 표본이 모자란 카메라는 없다(모르면 비움)"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "baseline 은 PASSED 에서만 싣는다",
+          "if": {
+            "required": [
+              "baseline"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "PASSED"
+              }
+            }
+          }
+        },
+        {
+          "description": "PASSED 는 문제가 없다. FAILED·INCOMPLETE 는 문제가 하나 이상 있다",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "PASSED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "problems": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "FAILED",
+                  "INCOMPLETE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "problems": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "description": "1.14.0(S15P31A101-646): 세팅 「카메라 확인」. 보정 등록 뒤 한 사람이 30~60초 걷는 동안 같은 Pod 의 Tier 0 관제 view(YOLO 관절·로컬 트랙·시각 보간 그대로)를 새 보정 후보로 관제와 같은 계산에 넣는다: 쌍은 Cross-view 쌍 근거의 통과율·삼각측량 잔차 중앙값(그 시각 두 카메라에 사람 하나일 때만 센다, 공통 관절 부족·시야 밖은 뺌), 카메라는 사람 관측 수와 한 카메라 제외 재투영 중앙값(관제 틀어짐 감시와 같은 통계). WAITING(아직 사람 없음) → MEASURING → PASSED | FAILED, 작업 마감까지 못 하면 INCOMPLETE. 쌍 verdict: 근거가 min_pair_samples 이상이면 PASS|FAIL, 모자라면 INSUFFICIENT, 새 보정 기하로 시야가 겹치지 않으면 NOT_OVERLAPPING(required false). required 는 겹치는 쌍과 품질 게이트 NEEDS_CHECK 쌍이다. EC2 는 status PASSED 이고 calibration_version 이 세션 보정과 같을 때만 구역 단계·세팅 완료를 받는다. Tier 0 위치·판정에는 쓰지 않는다."
     }
   }
 }

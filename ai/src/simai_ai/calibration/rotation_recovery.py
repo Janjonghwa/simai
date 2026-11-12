@@ -33,6 +33,9 @@ class RotationConfig:
     min_pair_gain: float = 0.1
     max_pair_worsening_px: float = 0.5
     confirmation_tolerance_rad: float = math.radians(0.5)
+    small_rotation_noise_rad: float = math.radians(1.5)
+    """순수 회전 적합은 정상인데 이 각도 이하이고 인접 쌍이 나아지지 않으면 물리 이동이 아니라 배경·보정 잡음으로 보고
+    재세팅을 요청하지 않는다(NO_EVIDENCE, S15P31A101-646: 14차 사람 있는 장면 오탐). 큰 회전·위치 이동(시차) 감지는 그대로다"""
 
     def __post_init__(self):
         for key, value in asdict(self).items():
@@ -415,6 +418,14 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
     pairs = evaluate_pairs(previous, document, features, changed, config, check_budget, measure)
     accepted = pairs_improve(pairs, changed, config)
     pair_reason = "인접 쌍 배경 재투영 개선 미달"
+    if not accepted and all(
+        float(rotations[cid].get("active_angle_rad", math.inf)) <= config.small_rotation_noise_rad for cid in changed
+    ):
+        noise = (f"작은 회전 추정(≤{math.degrees(config.small_rotation_noise_rad):.1f}°)이 인접 쌍을 개선하지 않음: "
+                 "배경·보정 잡음으로 보고 재세팅을 요청하지 않음")
+        return None, {"status": "NO_EVIDENCE", "reason": noise, "camera_id": changed[0],
+                      "no_evidence_cameras": {cid: noise for cid in changed}, "rotations": rotations, "pairs": pairs,
+                      "validation_end_ms": end_ms, "recent_samples_ms": recent}
     return document if accepted else None, {
         "status": "PROPOSED" if accepted else "REQUIRES_SETUP",
         "method": METHOD, "previous_version": previous["calibration_version"],
