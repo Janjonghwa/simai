@@ -14,14 +14,18 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 // 변수는 작업 id(문자열) 또는 보고서 id(숫자) 하나다. 요청은 한 번에 하나만 보내도록 화면이 pending 으로 단추를 막는다.
 
 /**
- * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE,
- * 진행 중인 다른 작업이 있으면 409 WORK_ALREADY_IN_PROGRESS(serverMessage 에 그 작업 이름).
+ * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 세팅을 완료하지 않았으면 409 WORK_SETUP_NOT_COMPLETED,
+ * 서명이 없으면 409 WORK_NO_SIGNATURE, 진행 중인 다른 작업이 있으면 409 WORK_ALREADY_IN_PROGRESS(serverMessage 에 그 작업 이름).
+ * 세팅 완료 전이라 거절되면 화면이 옛 진행 값을 보고 있으므로 하루 작업을 다시 받아 단계를 서버에 맞춘다(-642).
  */
 export function useStartWork() {
   const client = useQueryClient();
   const mutation = useMutation({
     mutationFn: (workId: string) => startWork(api, workId),
     onSuccess: () => invalidateAfterRun(client),
+    onError: (error) => {
+      if (isWorkError(error, WORK_ERROR.SETUP_NOT_COMPLETED)) void invalidateWork(client);
+    },
   });
   return mutationResult(mutation);
 }

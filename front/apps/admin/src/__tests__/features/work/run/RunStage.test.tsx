@@ -138,6 +138,7 @@ type Stage = 'running' | 'ended' | 'submitted';
  */
 async function prepare(upTo: Stage): Promise<string> {
   const day = await putDailyWorkUnit(api, TODAY);
+  mock.markSetupDone(day.work_id); // 작업 시작은 세팅 완료 뒤다(-642)
   await signReport(api, day.tbm_report?.report_id ?? 0, {
     image: png(),
     signerName: '박반장',

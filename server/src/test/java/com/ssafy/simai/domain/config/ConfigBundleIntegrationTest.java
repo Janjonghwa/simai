@@ -556,7 +556,10 @@ class ConfigBundleIntegrationTest {
         body.put("name", workName());
         body.put("from_ms", now - 3_600_000).put("to_ms", now + 3_600_000);
         body.put("planned_people", 2).put("work_type", "OPENING_WORK");
-        return Long.parseLong(call("POST", "/api/work-units", admin(), body, 201).get("work_id").asString());
+        long id = Long.parseLong(call("POST", "/api/work-units", admin(), body, 201).get("work_id").asString());
+        // 작업 시작은 세팅 완료 뒤다(S15P31A101-642). 묶음 시험이라 세팅을 마친 작업으로 둔다
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", id);
+        return id;
     }
 
     private ObjectNode zone(String name, double zMax) {

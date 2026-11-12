@@ -3,15 +3,19 @@ import { SIGNATURE_MAX_COUNT } from '@/features/work/types';
 
 // 작업 전 확인의 실패 안내 글. 서버가 준 문구는 보이지 않고 오류 코드로 가른다.
 
+/** 세팅 완료 전에 시작 단추를 끌 때와 서버가 409 WORK_SETUP_NOT_COMPLETED 로 거절할 때 함께 보이는 안내(-642). */
+export const SETUP_REQUIRED_MESSAGE = '세팅을 완료해야 시작할 수 있습니다';
+
+/** 시작 거절이 세팅 완료 전이라서인가(세팅 화면으로 가는 단추를 함께 보인다). */
+export const isSetupRequiredError = (error: unknown): boolean =>
+  isWorkError(error, WORK_ERROR.SETUP_NOT_COMPLETED);
+
 /** 작업 시작이 거절됐을 때. */
 export function startErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.NOT_TODAY)) return '오늘 작업만 시작할 수 있어요';
+  if (isSetupRequiredError(error)) return SETUP_REQUIRED_MESSAGE;
   if (isWorkError(error, WORK_ERROR.NO_SIGNATURE)) return '참석자 서명이 필요합니다';
   if (isWorkError(error, WORK_ERROR.ALREADY_IN_PROGRESS)) return '진행 중인 다른 작업이 있어요';
-  if (isWorkError(error, WORK_ERROR.SETUP_NOT_READY)) {
-    // 현장 단위로 막으므로 멈춘 세팅 하나가 모든 작업 시작을 막을 수 있다. 막는 세팅을 취소하는 단추가 이 글 옆에 붙는다(BlockingSetupNotice)
-    return '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작하거나, 세팅이 멈췄다면 세팅을 취소하세요';
-  }
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.';
   }

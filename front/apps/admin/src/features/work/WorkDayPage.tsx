@@ -11,6 +11,7 @@ import {
   formatDayTitle,
   stageIndexOf,
   stageOfProgress,
+  WORK_PHASE_LABELS,
   type DayKind,
   type WorkStageId,
 } from '@/features/work/workDay';
@@ -20,13 +21,15 @@ import { Button } from '@simai/ui/components/button';
 import { ChevronLeft } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
-// 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 단계 줄) 아래에 단계 화면 하나를 보인다.
-// 단계는 서버 progress 가 정한다. 보고서 → 세팅처럼 서버 progress 가 아직 못 따라온 이동만 로컬 상태가 먼저 맡는다.
+// 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 진행 상태 · 단계 줄) 아래에 단계 화면 하나를 보인다.
+// 단계는 서버 progress 가 정한다. 보고서 → 세팅(세션을 만들기 전이라 서버가 아직 REPORT)만 로컬 상태가 먼저 맡는다.
 
-/** 보고서 → 세팅 → 작업 전 확인까지만 로컬에서 넘긴다(그 뒤 단계는 서버 progress 가 따라온다). */
+/**
+ * 로컬에서 먼저 넘기는 이동은 보고서 → 세팅뿐이다. 작업 전 확인(작업 시작 단추)은 서버가 세팅 완료(work_unit.setup_completed_at,
+ * progress SETUP_DONE)를 알린 뒤에만 연다(-642). 세팅 완료는 세팅 화면이 하루 작업을 다시 받은 뒤 끝나므로 기다림이 없다.
+ */
 const NEXT_STAGE: Partial<Record<WorkStageId, WorkStageId>> = {
   report: 'setup',
-  setup: 'preflight',
 };
 
 const KIND_CHIP: Partial<Record<DayKind, string>> = { today: '오늘', future: '예정' };
@@ -35,11 +38,14 @@ const KIND_CHIP: Partial<Record<DayKind, string>> = { today: '오늘', future: '
 function DayHeader({
   date,
   kind,
+  phase = null,
   onBack,
   children,
 }: {
   date: string;
   kind: DayKind;
+  /** 서버 progress 의 진행 상태 글(세팅 전·세팅 중·세팅 완료·관제 중·끝남). 작업을 열기 전에는 없다. */
+  phase?: string | null;
   onBack: () => void;
   children?: ReactNode;
 }) {
@@ -52,6 +58,11 @@ function DayHeader({
       </Button>
       <h2 className="text-[17px] font-bold whitespace-nowrap">{formatDayTitle(date)}</h2>
       {chip && <Badge variant="outline">{chip}</Badge>}
+      {phase && (
+        <Badge variant="secondary" data-testid="work-phase">
+          {phase}
+        </Badge>
+      )}
       {children}
     </header>
   );
@@ -83,6 +94,7 @@ function OpenedDay({
   todayKey,
   localStage,
   onLocalStage,
+  onRefresh,
   onBack,
   onSubmitted,
 }: {
@@ -92,20 +104,28 @@ function OpenedDay({
   todayKey: string;
   localStage: WorkStageId;
   onLocalStage: (stage: WorkStageId) => void;
+  /** 하루 작업을 서버에서 다시 받는다(단계를 서버 progress 에 다시 맞춘다). */
+  onRefresh: () => void;
   onBack: () => void;
   onSubmitted: () => void;
 }) {
-  const stage = furtherStage(localStage, stageOfProgress(day.progress ?? 'REPORT'));
+  const progress = day.progress ?? 'REPORT';
+  const stage = furtherStage(localStage, stageOfProgress(progress));
   const stageProps = {
     day,
     date,
     todayKey,
     onNext: () => onLocalStage(NEXT_STAGE[stage] ?? stage),
+    // 작업 시작이 세팅 완료 전이라 막혔을 때 세팅으로 돌아간다. 로컬은 세팅까지만 앞서므로 서버 progress 를 다시 받으면 따라간다
+    onBackToSetup: () => {
+      onLocalStage('setup');
+      onRefresh();
+    },
   };
 
   return (
     <>
-      <DayHeader date={date} kind={kind} onBack={onBack}>
+      <DayHeader date={date} kind={kind} phase={WORK_PHASE_LABELS[progress]} onBack={onBack}>
         <WorkStageNav stage={stage} />
       </DayHeader>
       {stage === 'report' && <ReportStage {...stageProps} />}
@@ -130,7 +150,7 @@ export function WorkDayPage({
   /** 보고서를 보내(제출·잠금) 달력으로 나가야 할 때. */
   onSubmitted: () => void;
 }) {
-  // 서버 progress 가 아직 못 따라온 이동(보고서 → 세팅 → 작업 전 확인)을 로컬이 먼저 맡는다. 서버가 따라잡을 때까지 다시 받는다.
+  // 서버 progress 가 아직 못 따라온 이동(보고서 → 세팅)을 로컬이 먼저 맡는다. 서버가 따라잡을 때까지 다시 받는다.
   const [localStage, setLocalStage] = useState<WorkStageId>('report');
   const { kind, data, pending, error, refetch } = useOpenDay(date, todayKey, localStage);
 
@@ -146,6 +166,7 @@ export function WorkDayPage({
             todayKey={todayKey}
             localStage={localStage}
             onLocalStage={setLocalStage}
+            onRefresh={() => void refetch()}
             onBack={onBack}
             onSubmitted={onSubmitted}
           />

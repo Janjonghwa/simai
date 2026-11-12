@@ -10,8 +10,10 @@ export interface WorkStageProps {
   date: string;
   /** 오늘 날짜 키. */
   todayKey: string;
-  /** 다음 단계로 가 달라는 요청(보고서 → 세팅, 세팅 → 작업 전 확인). 이후 단계는 서버 `progress` 가 따라온다. */
+  /** 다음 단계로 가 달라는 요청(보고서 → 세팅). 작업 전 확인부터는 서버 `progress`(세팅 완료 SETUP_DONE 등)가 정한다(-642). */
   onNext: () => void;
+  /** 세팅 화면으로 돌아가 달라는 요청(작업 시작이 세팅 완료 전이라 막혔을 때, -642). 날짜 화면이 서버 progress 를 다시 받는다. */
+  onBackToSetup?: () => void;
 }
 
 /** 작업 종료 단계: 보고서를 보내면(제출·잠금) 달력으로 나가도록 날짜 화면에 알린다. */

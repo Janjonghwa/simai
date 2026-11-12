@@ -200,7 +200,7 @@ class DailyWorkUnitIntegrationTest {
     }
 
     @Test
-    void 날짜_작업_시작은_오늘이고_서명이_있어야_한다() throws Exception {
+    void 날짜_작업_시작은_오늘이고_세팅_완료와_서명이_있어야_한다() throws Exception {
         long future = Long.parseLong(body(daily(admin, today.plusDays(2))).path("work_id").asString());
         assertThatThrownBy(() -> works.startSession(site, future, Instant.now()))
                 .isInstanceOf(BusinessException.class).hasMessage("WORK_NOT_TODAY");
@@ -210,6 +210,10 @@ class DailyWorkUnitIntegrationTest {
         JsonNode todayWork = body(daily(admin, today));
         long workId = Long.parseLong(todayWork.path("work_id").asString());
         works.requireToday(site, workId, Instant.now());
+        // 세팅 완료가 서명보다 앞이다(세팅 → 작업 전 확인 → 시작, -642)
+        assertThatThrownBy(() -> works.startSession(site, workId, Instant.now()))
+                .isInstanceOf(BusinessException.class).hasMessage("WORK_SETUP_NOT_COMPLETED");
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", workId);
         assertThatThrownBy(() -> works.startSession(site, workId, Instant.now()))
                 .isInstanceOf(BusinessException.class).hasMessage("WORK_NO_SIGNATURE");
 

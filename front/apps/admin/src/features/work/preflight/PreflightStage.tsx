@@ -1,4 +1,3 @@
-import { BlockingSetupNotice } from '@/features/setup/BlockingSetupNotice';
 import { LayoutPreview } from '@/features/work/preflight/LayoutPreview';
 import {
   isSetupFinished,
@@ -6,7 +5,7 @@ import {
   type PreflightChecks,
 } from '@/features/work/preflight/preflight';
 import { PreflightConfirmDialog } from '@/features/work/preflight/PreflightConfirmDialog';
-import { startErrorMessage } from '@/features/work/preflight/preflightErrors';
+import { isSetupRequiredError, startErrorMessage } from '@/features/work/preflight/preflightErrors';
 import { PreflightZoneList } from '@/features/work/preflight/PreflightZoneList';
 import { SignDialog } from '@/features/work/preflight/SignDialog';
 import { SignerCard } from '@/features/work/preflight/SignerCard';
@@ -27,9 +26,11 @@ import { useCallback, useMemo, useState } from 'react';
 
 type Dialog = 'confirm' | 'sign' | null;
 
-export function PreflightStage({ day }: WorkStageProps) {
+export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
   const workId = day.work_id;
-  const signers = useSigners(workId, isSetupFinished(day.progress));
+  // 작업 시작은 세팅 완료 뒤다(서버 setup_completed_at → progress SETUP_DONE, -642). 날짜 화면은 그때만 이 단계를 연다
+  const setupDone = isSetupFinished(day.progress);
+  const signers = useSigners(workId, setupDone);
   const start = useStartWork();
   // 확인창의 AI 초안 경고(-625). ReportPanel 과 같은 쿼리라 요청이 더 나가지 않는다
   const { data: report } = useWorkReport(workId);
@@ -82,8 +83,16 @@ export function PreflightStage({ day }: WorkStageProps) {
           signerCount={signers.count}
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}
-          errorAction={<BlockingSetupNotice error={start.error} onCancelled={resetStart} />}
           draftWarning={draftWarning(report)}
+          setupCompleted={setupDone}
+          setupBlocked={isSetupRequiredError(start.error)}
+          onGoSetup={
+            onBackToSetup &&
+            (() => {
+              closeDialog();
+              onBackToSetup();
+            })
+          }
           onSign={() => setDialog('sign')}
           onStart={beginWork}
           onCancel={closeDialog}
