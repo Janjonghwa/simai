@@ -58,19 +58,21 @@ def test_valid_numbers_are_kept_and_only_aggregates_enter_prompt():
 
 
 @pytest.mark.parametrize("bad", [
-    lambda s: s.replace("CRITICAL 2건", "CRITICAL 1건").replace("HIGH 1건", "HIGH 2건"),
-    lambda s: s.replace("규칙 R1 위험 구역 진입 2건", "규칙 R1 위험 구역 진입 3건"),
+    lambda s: s.replace("위험 2건", "위험 1건").replace("경고 1건", "경고 2건"),
+    lambda s: s.replace("위험 구역 진입 2건", "위험 구역 진입 3건"),
     lambda s: s + " 사망자 99명.",
     lambda s: s + " 확률 0.3%.",
     lambda s: s + " 사고 한건.",
-    lambda s: s.replace("전체 이벤트 3건", "전체 이벤트 -3건"),
-    lambda s: s.replace("전체 이벤트 3건", "전체 이벤트 1.3건"),
-    lambda s: s.replace("전체 이벤트 3건", "전체 이벤트 1,003건"),
+    lambda s: s.replace("총 3건", "총 -3건"),
+    lambda s: s.replace("총 3건", "총 1.3건"),
+    lambda s: s.replace("총 3건", "총 1,003건"),
     lambda s: s.replace("작업 외 진입 4건", "작업 외 진입 ４건"),
-    lambda s: s.replace("최고 등급 CRITICAL", "최고 등급 HIGH"),
+    lambda s: s.replace("최고 등급 위험", "최고 등급 경고"),
     lambda s: s + " 규칙 R7.",
-    lambda s: s + " 최고 등급 HIGH.",
-    lambda s: s + " 전체 이벤트 3건.",
+    lambda s: s + " 최고 등급 경고.",
+    lambda s: s + " 경보: 총 3건.",
+    lambda s: s.replace("미확인 위험 경보 1건", "미확인 위험 경보 2건"),
+    lambda s: s.replace("개구부 1 2건", "개구부 1 1건"),
 ])
 def test_number_or_label_mismatch_rejected(bad):
     facts = REQUEST["facts"]
@@ -79,7 +81,7 @@ def test_number_or_label_mismatch_rejected(bad):
 
 def test_rewrite_once_then_success():
     good = deterministic(REQUEST["facts"])
-    client = Client([good.replace("이벤트 3건", "이벤트 77건"), good])
+    client = Client([good.replace("총 3건", "총 77건"), good])
     result = generate(REQUEST, lambda: client)
     assert result["fallback"] is False
     assert result["text"] == good
@@ -124,8 +126,14 @@ def test_zero_events_same_millisecond_is_valid_and_does_not_claim_safety():
     }
     assert validate_request(request) == request
     text = deterministic(request["facts"])
+    assert text == "작업 종료 미팅. 경보: 없음. 특이사항 없이 작업을 마쳤다."
     assert numbers_match(text, request["facts"])
     assert "안전" not in text
+    client = Client([text])
+    assert generate(request, lambda: client)["fallback"] is False
+    assert len(client.messages) == 1
+    assert "0건" not in json.loads(client.messages[0][1]["content"])["required_clauses"]
+    assert not numbers_match(text + " 운영자 확인 0건.", request["facts"])
 
 
 @pytest.mark.parametrize("edit", [
@@ -213,11 +221,11 @@ def test_real_case_narrative_and_timing_validation():
     clauses = fact_clauses(request["facts"])
     paragraph = "작업 중 " + ", ".join(clauses[:5]) + ". 집계 내용은 다음과 같다. " + ", ".join(clauses[5:]) + ". 기록을 확인했다."
     assert generate(request, lambda: Client([paragraph]))["text"] == paragraph
-    assert not numbers_match(paragraph.replace("중반 이벤트 20건", "중반 이벤트 12건"), request["facts"])
+    assert not numbers_match(paragraph.replace("중반 20건", "중반 12건"), request["facts"])
     assert not numbers_match(paragraph + " 추가 99건.", request["facts"])
     assert not numbers_match(paragraph + " 옥상에서 발생했다.", request["facts"])
     assert not numbers_match(paragraph.replace("개구부 1", "개구부 3"), request["facts"])
-    assert not numbers_match(paragraph.replace("미확인 CRITICAL 4건", "미확인 CRITICAL 5건"), request["facts"])
+    assert not numbers_match(paragraph.replace("미확인 위험 경보 4건", "미확인 위험 경보 5건"), request["facts"])
     assert generate(request, lambda: Client([json.dumps({"text": paragraph}), "오류"]))["fallback"]
 
 
@@ -228,7 +236,9 @@ def test_ppe_and_extended_rules_are_accepted_with_description(rule):
     req["facts"]["rule_counts"] = {"R1": 2, rule: 1}
     validate_request(req)
     text = deterministic(req["facts"])
-    assert f"규칙 {rule} " in text and numbers_match(text, req["facts"])
+    from simai_ai.report.wrap_up import RULE_DESCRIPTIONS
+
+    assert f"{RULE_DESCRIPTIONS[rule]} 1건" in text and numbers_match(text, req["facts"])
 
 
 def test_unknown_rule_is_rejected():
@@ -236,3 +246,71 @@ def test_unknown_rule_is_rejected():
     req["facts"]["rule_counts"] = {"R1": 2, "R12": 1}
     with pytest.raises(ValueError):
         validate_request(req)
+
+
+def test_daily_style_with_multiple_rules_zones_and_unacknowledged_critical():
+    text = (
+        "작업 종료 미팅. 경보: 총 3건(위험 2건, 경고 1건), 최고 등급 위험. "
+        "주요 위험: 위험 구역 진입 2건, 가장자리 근접 1건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
+        "조치: 운영자 확인 1건, 미확인 위험 경보 1건, 작업 외 진입 4건. 시간대: 초반 1건, 중반 1건, 후반 1건. "
+        "다음 작업 반영: 개구부 1 점검과 위험 구역 진입 예방 대책을 작업 전 TBM에 반영한다."
+    )
+    assert deterministic(REQUEST["facts"]) == text
+    client = Client([text])
+    assert generate(REQUEST, lambda: client) == {"text": text, "fallback": False, "model": "fake-llm"}
+    system = client.messages[0][0]["content"]
+    assert "0건인 항목" in system and "위험·경고·주의·안내" in system
+
+
+@pytest.mark.parametrize(("severity", "label"), [
+    ("CRITICAL", "위험"), ("HIGH", "경고"), ("CAUTION", "주의"), ("INFO", "안내"),
+])
+def test_sparse_counts_omit_zeroes_and_use_screen_labels(severity, label):
+    req = copy.deepcopy(REQUEST)
+    req["facts"].update(
+        severity_counts={s: 3 if s == severity else 0 for s in ("CRITICAL", "HIGH", "CAUTION", "INFO")},
+        rule_counts={"R1": 0, "R2": 3}, max_severity=severity,
+        operator_ack_count=0, operator_close_count=0, outside_work_entry_count=0,
+        unacknowledged_critical_count=0, phase_counts={"early": 3, "middle": 0, "late": 0},
+    )
+    validate_request(req)
+    text = (
+        f"작업 종료 미팅. 경보: 총 3건({label} 3건), 최고 등급 {label}. "
+        "주요 위험: 가장자리 근접 3건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
+        "조치: 미확인 위험 경보 없음. 시간대: 초반 3건. "
+        "다음 작업 반영: 개구부 1 점검과 가장자리 근접 예방 대책을 작업 전 TBM에 반영한다."
+    )
+    assert deterministic(req["facts"]) == text
+    assert numbers_match(text, req["facts"])
+    assert generate(req, lambda: Client([text]))["fallback"] is False
+    assert "0건" not in text and "0분" not in text
+    assert not numbers_match(text.replace("경보 없음", "경보 1건"), req["facts"])
+
+
+def test_follow_up_uses_most_frequent_rule_and_zone_and_keeps_positive_actions():
+    req = copy.deepcopy(REQUEST)
+    req["facts"].update(rule_counts={"R1": 1, "R2": 2}, operator_close_count=2)
+    validate_request(req)
+    text = deterministic(req["facts"])
+    assert "주요 위험: 가장자리 근접 2건, 위험 구역 진입 1건" in text
+    assert "다음 작업 반영: 개구부 1 점검과 가장자리 근접 예방 대책" in text
+    assert "운영자 종료 2건" in text and numbers_match(text, req["facts"])
+    # 빈도가 같으면 규칙 번호로 결정해 입력 dict 순서에 흔들리지 않는다.
+    req["facts"]["rule_counts"] = {"R10": 1, "R2": 1, "R1": 1}
+    tied = deterministic(req["facts"])
+    assert "주요 위험: 위험 구역 진입 1건, 가장자리 근접 1건, 불확실 점유 근접 1건" in tied
+
+
+def test_구역_없는_경보도_종료_미팅을_만든다():
+    """구역 밖 낙상 의심처럼 top_zones 가 비어도 멈추지 않고 구역 절을 뺀다(-655 Lead 검토)."""
+    from simai_ai.report.wrap_up import fact_clauses
+
+    facts = {
+        "event_count": 2, "severity_counts": {"CRITICAL": 2, "HIGH": 0, "CAUTION": 0, "INFO": 0},
+        "rule_counts": {"R4": 2}, "top_zones": [], "max_severity": "CRITICAL", "operator_ack_count": 0,
+        "unacknowledged_critical_count": 2, "operator_close_count": 0, "outside_work_entry_count": 0,
+        "phase_counts": {"early": 0, "middle": 2, "late": 0}, "first_event_min": 3, "last_event_min": 5,
+    }
+    text = ". ".join(fact_clauses(facts))
+    assert "많이 발생한 구역" not in text
+    assert "다음 작업 반영: 낙상 의심 예방 대책을 작업 전 TBM에 반영한다" in text

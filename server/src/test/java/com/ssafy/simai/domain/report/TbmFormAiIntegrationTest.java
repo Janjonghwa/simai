@@ -342,7 +342,7 @@ class TbmFormAiIntegrationTest {
         assertThat(r.path("status").asString()).isEqualTo("FAILED");
         assertThat(r.path("failure_reason").asString()).isEqualTo("INTERRUPTED");
         assertThat(r.path("wrap_up_status").asString()).isEqualTo("SUCCEEDED");
-        assertThat(r.path("form").path("review").path("ending").asString()).startsWith("전체 이벤트 3건.").contains("구역 개구부 1 이벤트 2건");
+        assertThat(r.path("form").path("review").path("ending").asString()).startsWith("작업 종료 미팅. 경보: 총 3건").contains("많이 발생한 구역: 개구부 1 2건");
         assertThat(r.path("form_revision").asInt()).isEqualTo(2);
         assertThat(r.path("wrap_up_summary").isNull()).isTrue();
         assertThat(r.path("form").path("info")).isEqualTo(before.path("info"));

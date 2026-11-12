@@ -179,11 +179,12 @@ public class TbmReportService implements DisposableBean {
         });
     }
 
+    /**
+     * 엔진을 못 쓸 때의 결정적 종료 미팅 문장. risk-engine wrap_up.fact_clauses 와 같은 형식이다(-655):
+     * 이름표 붙은 짧은 문장, 0건 항목 생략, 등급은 화면 한국어. 계약이 날짜·작업명을 넘기지 않아 머리말은 "작업 종료 미팅".
+     */
     static String wrapUpFallback(JsonNode facts) {
-        StringBuilder text = new StringBuilder("전체 이벤트 ").append(facts.path("event_count").asLong()).append("건. ");
-        for (String severity : List.of("CRITICAL", "HIGH", "CAUTION", "INFO")) {
-            text.append("등급 ").append(severity).append(' ').append(facts.path("severity_counts").path(severity).asLong()).append("건. ");
-        }
+        var labels = java.util.Map.of("CRITICAL", "위험", "HIGH", "경고", "CAUTION", "주의", "INFO", "안내");
         // risk-engine wrap_up.RULE_DESCRIPTIONS 와 같은 사전(명세 7장 R1~R10, R11 조끼 -549)
         var descriptions = java.util.Map.ofEntries(java.util.Map.entry("R1", "위험 구역 진입"),
                 java.util.Map.entry("R2", "가장자리 근접"), java.util.Map.entry("R3", "고소 위치"),
@@ -191,29 +192,88 @@ public class TbmReportService implements DisposableBean {
                 java.util.Map.entry("R6", "위험 구역 내 관측 상실"), java.util.Map.entry("R7", "구역 감시 능력 저하"),
                 java.util.Map.entry("R8", "장비 근접"), java.util.Map.entry("R9", "안전모 미착용"),
                 java.util.Map.entry("R10", "불확실 점유 근접"), java.util.Map.entry("R11", "조끼 미착용"));
+        List<String> clauses = new java.util.ArrayList<>(List.of("작업 종료 미팅"));
+        long total = facts.path("event_count").asLong();
+        if (total == 0) {
+            clauses.add("경보: 없음");
+            clauses.add("특이사항 없이 작업을 마쳤다");
+            return String.join(". ", clauses) + ".";
+        }
+        List<String> breakdown = new java.util.ArrayList<>();
+        for (String severity : List.of("CRITICAL", "HIGH", "CAUTION", "INFO")) {
+            long n = facts.path("severity_counts").path(severity).asLong();
+            if (n > 0) {
+                breakdown.add(labels.get(severity) + " " + n + "건");
+            }
+        }
+        String max = facts.path("max_severity").asString("");
+        String alerts = "경보: 총 " + total + "건" + (breakdown.isEmpty() ? "" : "(" + String.join(", ", breakdown) + ")");
+        clauses.add(labels.containsKey(max) ? alerts + ", 최고 등급 " + labels.get(max) : alerts);
+        // 많은 순, 같으면 규칙 번호 순(Python 과 같은 정렬)
+        List<java.util.Map.Entry<String, Long>> rules = new java.util.ArrayList<>();
         for (var entry : facts.path("rule_counts").properties()) {
-            text.append("규칙 ").append(entry.getKey()).append(' ').append(descriptions.getOrDefault(entry.getKey(), ""))
-                    .append(' ').append(entry.getValue().asLong()).append("건. ");
+            if (entry.getValue().asLong() > 0) {
+                rules.add(java.util.Map.entry(entry.getKey(), entry.getValue().asLong()));
+            }
         }
+        rules.sort((a, b) -> a.getValue().equals(b.getValue())
+                ? Integer.compare(ruleNo(a.getKey()), ruleNo(b.getKey())) : Long.compare(b.getValue(), a.getValue()));
+        List<String> ruleText = new java.util.ArrayList<>();
+        for (var r : rules) {
+            ruleText.add(descriptions.getOrDefault(r.getKey(), r.getKey()) + " " + r.getValue() + "건");
+        }
+        if (!ruleText.isEmpty()) {
+            clauses.add("주요 위험: " + String.join(", ", ruleText));
+        }
+        List<String> zones = new java.util.ArrayList<>();
         for (var zone : facts.path("top_zones")) {
-            text.append("구역 ").append(zone.path("name").asString()).append(" 이벤트 ")
-                    .append(zone.path("count").asLong()).append("건. ");
+            zones.add(zone.path("name").asString() + " " + zone.path("count").asLong() + "건");
         }
-        text.append("최고 등급 ").append(facts.path("max_severity").asString("없음")).append(". ");
-        text.append("운영자 확인 ").append(facts.path("operator_ack_count").asLong()).append("건. ");
-        text.append("운영자 미확인 CRITICAL ").append(facts.path("unacknowledged_critical_count").asLong()).append("건. ");
-        text.append("운영자 종료 ").append(facts.path("operator_close_count").asLong()).append("건. ");
-        text.append("작업 외 진입 ").append(facts.path("outside_work_entry_count").asLong()).append("건.");
+        if (!zones.isEmpty()) {
+            clauses.add("많이 발생한 구역: " + String.join(", ", zones));
+        }
+        List<String> actions = new java.util.ArrayList<>();
+        long ack = facts.path("operator_ack_count").asLong();
+        if (ack > 0) {
+            actions.add("운영자 확인 " + ack + "건");
+        }
+        long unack = facts.path("unacknowledged_critical_count").asLong();
+        actions.add(unack > 0 ? "미확인 위험 경보 " + unack + "건" : "미확인 위험 경보 없음");
+        long closed = facts.path("operator_close_count").asLong();
+        if (closed > 0) {
+            actions.add("운영자 종료 " + closed + "건");
+        }
+        long outside = facts.path("outside_work_entry_count").asLong();
+        if (outside > 0) {
+            actions.add("작업 외 진입 " + outside + "건");
+        }
+        clauses.add("조치: " + String.join(", ", actions));
         // 초반 → 중반 → 후반 순서를 고정한다(Map.of 는 순회 순서가 실행마다 달라 "결정적" 문장이 바뀐다)
+        List<String> phases = new java.util.ArrayList<>();
         for (String[] phase : new String[][] {{"early", "초반"}, {"middle", "중반"}, {"late", "후반"}}) {
-            text.append(" 작업 ").append(phase[1]).append(" 이벤트 ")
-                    .append(facts.path("phase_counts").path(phase[0]).asLong()).append("건.");
+            long n = facts.path("phase_counts").path(phase[0]).asLong();
+            if (n > 0) {
+                phases.add(phase[1] + " " + n + "건");
+            }
         }
-        if (!facts.path("first_event_min").isNull() && !facts.path("first_event_min").isMissingNode()) {
-            text.append(" 첫 이벤트 시작 후 ").append(facts.path("first_event_min").asLong()).append("분.");
-            text.append(" 마지막 이벤트 시작 후 ").append(facts.path("last_event_min").asLong()).append("분.");
+        if (!phases.isEmpty()) {
+            clauses.add("시간대: " + String.join(", ", phases));
         }
-        return text.toString();
+        if (!rules.isEmpty()) {
+            String where = facts.path("top_zones").isEmpty() ? ""
+                    : facts.path("top_zones").get(0).path("name").asString() + " 점검과 ";
+            clauses.add("다음 작업 반영: " + where + descriptions.getOrDefault(rules.get(0).getKey(), rules.get(0).getKey())
+                    + " 예방 대책을 작업 전 TBM에 반영한다");
+        }
+        return String.join(". ", clauses) + ".";
+    }
+
+    private static int ruleNo(String tag) {
+        try {
+            return Integer.parseInt(tag.substring(1));
+        } catch (RuntimeException e) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     public ObjectNode getByWork(long workId) {

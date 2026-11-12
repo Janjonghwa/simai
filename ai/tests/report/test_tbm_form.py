@@ -284,9 +284,12 @@ def test_every_task_code_tags_reach_known_themes():
 
 
 def ending_text():
-    from simai_ai.report.wrap_up import fact_clauses
-
-    return "작업 중 " + ", ".join(fact_clauses(ENDING["facts"])) + ". 기록을 확인했다."
+    return (
+        "작업 종료 미팅. 경보: 총 3건(위험 2건, 경고 1건), 최고 등급 위험. "
+        "주요 위험: 위험 구역 진입 2건, 가장자리 근접 1건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
+        "조치: 운영자 확인 1건, 미확인 위험 경보 1건, 작업 외 진입 4건. 시간대: 초반 1건, 중반 1건, 후반 1건. "
+        "다음 작업 반영: 개구부 1 점검과 위험 구역 진입 예방 대책을 작업 전 TBM에 반영한다."
+    )
 
 
 def test_ending_uses_llm_paragraph_and_passes_schema():
@@ -316,6 +319,22 @@ def test_ending_timeout_and_not_configured():
         raise LlmConfigError("no key")
 
     assert generate_ending(ENDING, factory)["fallback_reason"] == "LLM_NOT_CONFIGURED"
+
+
+def test_ending_without_alerts_passes_contract_for_llm_and_fallback():
+    req = copy.deepcopy(ENDING)
+    req["facts"] = {
+        "event_count": 0, "severity_counts": dict.fromkeys(("CRITICAL", "HIGH", "CAUTION", "INFO"), 0),
+        "rule_counts": {}, "max_severity": None, "operator_ack_count": 0, "operator_close_count": 0,
+        "outside_work_entry_count": 0, "unacknowledged_critical_count": 0,
+        "phase_counts": {"early": 0, "middle": 0, "late": 0},
+        "first_event_min": None, "last_event_min": None, "top_zones": [],
+    }
+    expected = "작업 종료 미팅. 경보: 없음. 특이사항 없이 작업을 마쳤다."
+    for reply, fallback in ((expected, False), (LlmTimeout("t"), True)):
+        out = generate_ending(req, lambda: Client([reply]))
+        assert schema_errors(out, "tbm_form_ending_result") == []
+        assert out["ending"] == expected and out["fallback"] is fallback
 
 
 def test_ending_rejects_inconsistent_facts():
