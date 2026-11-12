@@ -66,6 +66,7 @@ function toZone(item: ZoneItem): Zone | null {
     shapeEditable: item.eval_type === 'VOLUME_3D' && zRange !== null && isAxisRect(item.polygon_xy),
     ...(item.needs_review ? { needsReview: true } : {}),
     ...(item.height_change ? { heightChange: item.height_change } : {}),
+    ...(item.ai_opinion ? { aiOpinion: item.ai_opinion } : {}),
   };
 }
 

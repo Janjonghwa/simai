@@ -1453,6 +1453,12 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       const rowsBefore = within(card).getAllByRole('listitem');
       expect(rowsBefore[0]!.getAttribute('data-height-change')).toBe('CHANGE_SUSPECTED');
       expect(within(rowsBefore[0]!).getByText('변경 의심')).toBeTruthy();
+      // 변경 의심 구역은 AI 의견(-631) 배지·한 줄과 이전·이번 세팅 사진을 행 아래에 보인다(확인은 관리자가 누른다)
+      const opinion = rowsBefore[0]!.querySelector('[data-ai-opinion]') as HTMLElement;
+      expect(opinion.getAttribute('data-ai-opinion')).toBe('OPINION');
+      expect(within(opinion).getByText('삭제 권고')).toBeTruthy();
+      expect(within(opinion).getAllByRole('img')).toHaveLength(2);
+      expect(rowsBefore[0]!.getAttribute('data-needs-review')).toBe('true');
 
       fireEvent.click(within(card).getByRole('button', { name: '변화 없음 1개 모두 확인' }));
       await waitFor(() =>

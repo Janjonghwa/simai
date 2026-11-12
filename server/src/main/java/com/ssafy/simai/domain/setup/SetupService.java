@@ -77,6 +77,11 @@ public class SetupService {
     /** vlm_zone_draft 입력 frames maxItems(계약) */
     private static final int MAX_DRAFT_FRAMES = 8;
     private static final int DRAFT_TIMEOUT_MS = 60_000;
+    /**
+     * 변경 의심 구역 의견(S15P31A101-631)을 함께 낼 때의 상한. 초안 60 s + 구역 최대 8개 × 약 10 s(얼굴 처리 + VLM 한 번).
+     * 워커는 남은 시간이 모자라면 그 구역을 NO_OPINION(TIME_BUDGET)으로 낸다.
+     */
+    private static final int DRAFT_WITH_OPINIONS_TIMEOUT_MS = 150_000;
     private static final java.util.regex.Pattern S3_URI_PATTERN =
             java.util.regex.Pattern.compile("^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/\\S+$");
     private static final java.util.regex.Pattern SHA256_PATTERN =
@@ -121,11 +126,13 @@ public class SetupService {
     private final SetupSupplementService supplements;
     private final SceneCompatibility compatibility;
     private final WorkUnitRepository workUnits;
+    private final SetupZoneOpinions opinions;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
-            SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits) {
+            SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits,
+            SetupZoneOpinions opinions) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -141,6 +148,7 @@ public class SetupService {
         this.supplements = supplements;
         this.compatibility = compatibility;
         this.workUnits = workUnits;
+        this.opinions = opinions;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -1104,8 +1112,11 @@ public class SetupService {
         if (!frames.isEmpty()) {
             input.set("frames", frames);
         }
+        // 높이 비교가 변경 의심으로 판정한 구역과 이전 세팅 사진·보정(S15P31A101-631). 없으면 기존 초안 작업 그대로
+        boolean withOpinions = addOpinionInputSafe(setupSessionId, siteId, input);
 
-        String jobId = jobs.enqueue(new JobSpec("vlm_zone_draft", input, DRAFT_MAX_ATTEMPTS, DRAFT_TIMEOUT_MS, null, null));
+        String jobId = jobs.enqueue(new JobSpec("vlm_zone_draft", input, DRAFT_MAX_ATTEMPTS,
+                withOpinions ? DRAFT_WITH_OPINIONS_TIMEOUT_MS : DRAFT_TIMEOUT_MS, null, null));
         UUID runId = UUID.randomUUID();
         OffsetDateTime now = utc(clock.instant());
         jdbc.update("""
@@ -1124,6 +1135,20 @@ public class SetupService {
                 .addValue("cal", calibrationVersion)
                 .addValue("previewScene", previewSceneVersion)
                 .addValue("now", now));
+    }
+
+    /** 의견 입력을 싣다가 실패하면 그 필드만 빼고 기존 초안 작업으로 넣는다(초안 작업 등록을 막지 않는다) */
+    private boolean addOpinionInputSafe(UUID setupSessionId, String siteId, ObjectNode input) {
+        boolean[] added = {false};
+        try {
+            withSavepoint(() -> added[0] = opinions.addOpinionInput(setupSessionId, siteId, input));
+            return added[0];
+        } catch (RuntimeException e) {
+            input.remove(List.of("suspected_zones", "previous_setup_session_id", "previous_calibration_version",
+                    "previous_calibration_ref", "previous_calibration_hash", "previous_frames"));
+            log.warn("세팅 세션 {} 의 구역 의견 입력을 싣지 못해 초안만 요청한다: {}", setupSessionId, e.getMessage());
+            return false;
+        }
     }
 
     private void handleZoneDraftFinishedSafe(JobFinished event) {
@@ -1277,6 +1302,14 @@ public class SetupService {
                             .addValue("conf", conf)
                             .addValue("now", now));
                 }
+            }
+
+            // 변경 의심 구역 의견(S15P31A101-631). 표시용 제안이라 구역 목록·확인 필요는 건드리지 않는다.
+            // 의견 저장이 실패해도 초안은 남긴다(savepoint 로 이 부분만 되돌린다)
+            try {
+                withSavepoint(() -> opinions.store(run.draftRunId(), run.setupSessionId(), event.jobId(), res, now));
+            } catch (RuntimeException e) {
+                log.warn("vlm_zone_draft 작업 {} 의 구역 의견 저장 실패(초안은 저장): {}", event.jobId(), e.getMessage());
             }
 
             jdbc.update("""

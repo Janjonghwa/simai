@@ -274,3 +274,95 @@ def test_open_client_respects_remaining_time_and_preserves_settings():
     assert settings.timeout_s == 4.5
     assert settings.port == 8123 and settings.repetition_penalty == 1.2
     assert handler._open_client(60).timeout_s == 30
+
+
+# ---------------------------------------------------------------------------- S15P31A101-631
+# 변경 의심 구역: 이전 세팅 프레임·보정 + 이번 프레임 → 같은 카메라 전·후 크롭 두 장 → 구역별 의견(zone_opinions)
+PREV_CAL_REF = "s3://simai-bucket/calibrations/cal-setup-11.json"
+PREV_FRAME_URI = "s3://simai-bucket/job-objects/site_setup/job-0430/lease-0430/frame-cam1.jpg"
+DRAFT_ANSWER = {
+    "recommended_name": "중앙 고소 작업대 구역",
+    "zone_kind": "WORK_SURFACE",
+    "recommended_severity": "HIGH",
+    "rationale": "바닥 대비 0.75m 높이의 상판이 관측되어 작업대 추락 주의 구역으로 제안합니다.",
+    "confidence": 0.87,
+}
+OPINION_ANSWER = {"recommended_action": "REMOVE", "rationale": "단상이 치워져 바닥만 남았습니다. 구역 삭제를 권합니다.", "confidence": 0.66}
+
+
+def _opinion_input(**overrides):
+    inp = _input(
+        suspected_zones=[{
+            "zone_id": "zone-platform-1",
+            "name": "중앙 단상",
+            "polygon_xy": [[0.5, 0.4], [1.3, 0.4], [1.3, 1.0], [0.5, 1.0]],
+            "z_min_m": 0.0,
+            "z_max_m": 0.8,
+            "changed_area_ratio": 0.5,
+            "max_height_diff_m": 0.75,
+            "max_diff_xy": [0.9, 0.7],
+        }],
+        previous_setup_session_id="0192a6f0-7c1e-7b3a-9f2d-000000000430",
+        previous_calibration_version="cal-setup-11",
+        previous_calibration_ref=PREV_CAL_REF,
+        previous_calibration_hash=CAL_HASH,
+        previous_frames=[{"camera_id": "cam1", "frame_uri": PREV_FRAME_URI, "face_policy": "BLURRED"}],
+    )
+    inp.update(overrides)
+    for key in [k for k, v in inp.items() if v is None]:
+        del inp[key]
+    assert schema_errors(inp, INPUT_SCHEMA) == []
+    return inp
+
+
+def _opinion_handler(vlm, store=None):
+    return VlmZoneDraftHandler(store or _FakeStore(), _FakeProvider(), client_factory=lambda: vlm, decode=_decode,
+                               monotonic=lambda: 10.0)
+
+
+def test_suspected_zones_get_before_after_crop_opinions_after_drafts():
+    vlm = _FakeVlm(DRAFT_ANSWER, OPINION_ANSWER)
+    result = _opinion_handler(vlm)(_ctx(_opinion_input()))
+    assert schema_errors(result, RESULT_SCHEMA) == []
+    assert result["drafts"][0]["vlm_status"] == "VLM"  # 초안은 그대로
+    (op,) = result["zone_opinions"]
+    assert op["zone_id"] == "zone-platform-1" and op["status"] == "OPINION"
+    assert op["recommended_action"] == "REMOVE" and op["camera_id"] == "cam1" and op["reason"] is None
+    assert op["model_version"] == "nvidia/Cosmos-Reason2-2B" and op["prompt_version"] == "vlm-zone-opinion-1.0"
+    for box in (op["before_crop_box_norm"], op["after_crop_box_norm"]):
+        assert 0.0 <= box[0] < box[2] <= 1.0 and 0.0 <= box[1] < box[3] <= 1.0
+    _draft_call, opinion_call = vlm.calls
+    assert [f.source for f in opinion_call["frames"]] == [PREV_FRAME_URI, REQUEST["payload"]["input"]["frames"][0]["frame_uri"]]
+    assert all(f.face_policy == "BLURRED" for f in opinion_call["frames"])
+
+
+def test_without_previous_frames_opinions_are_no_opinion_and_job_succeeds():
+    vlm = _FakeVlm(DRAFT_ANSWER)
+    inp = _opinion_input(previous_frames=None, previous_calibration_ref=None, previous_calibration_hash=None,
+                         previous_calibration_version=None)
+    result = _opinion_handler(vlm)(_ctx(inp))
+    assert schema_errors(result, RESULT_SCHEMA) == []
+    (op,) = result["zone_opinions"]
+    assert op["status"] == "NO_OPINION" and op["reason"] == "NO_PREVIOUS_FRAMES" and op["camera_id"] is None
+    assert len(vlm.calls) == 1  # 초안만 불렀다
+
+
+def test_previous_calibration_hash_mismatch_is_no_opinion_not_failure():
+    vlm = _FakeVlm(DRAFT_ANSWER)
+    result = _opinion_handler(vlm)(_ctx(_opinion_input(previous_calibration_hash="sha256:" + "0" * 64)))
+    assert schema_errors(result, RESULT_SCHEMA) == []
+    assert result["zone_opinions"][0]["reason"] == "CALIBRATION_UNAVAILABLE"
+
+
+def test_vlm_failure_on_opinion_keeps_photos_for_the_screen():
+    vlm = _FakeVlm(DRAFT_ANSWER, VlmUnavailable("vllm down"))
+    result = _opinion_handler(vlm)(_ctx(_opinion_input()))
+    assert schema_errors(result, RESULT_SCHEMA) == []
+    (op,) = result["zone_opinions"]
+    assert op["status"] == "NO_OPINION" and op["reason"] == "VLM_FAILED"
+    assert op["camera_id"] == "cam1" and op["before_crop_box_norm"] and op["after_crop_box_norm"]
+
+
+def test_no_suspected_zones_means_no_zone_opinions_key():
+    result = _opinion_handler(_FakeVlm(DRAFT_ANSWER))(_ctx(_input()))
+    assert "zone_opinions" not in result
