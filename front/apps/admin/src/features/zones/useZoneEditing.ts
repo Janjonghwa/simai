@@ -26,13 +26,17 @@ import {
   newSurfaceDraft,
   newZoneForm,
   nextZoneName,
+  resizeBox,
   surfaceChanged,
   surfaceZoneForm,
+  takenZoneNames,
   targetChanged,
   withoutSurface,
   withoutUnchangedSurface,
   withPatch,
   withSurface,
+  withSurfaceBox,
+  withZoneBox,
   zoneChanged,
   zoneFollowsSurface,
   type TargetDraft,
@@ -81,7 +85,7 @@ function usePendingPublish(
  * 잃지 않는다. 새 구역은 작업면 없이 시작하고, 고소 작업면을 체크하면 기본 작업면이 초안에 붙는다. 3D 손잡이는 편집 상자를
  * boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면 이은 구역의 작업면 모드로 열고,
  * 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
- * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 이때 편집 모드를 끝낸다).
+ * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 넘기지 않아 편집 끝내기를 누를 때까지 편집 모드를 유지한다, -651).
  * addOnDemand 이면 새 구역 양식은 openAdd 를 불러야 열리고(그 전까지 collapsed), cancelAdd 나 추가 성공으로 다시 접힌다.
  * 접힌 동안에는 3D 에도 새 구역 상자를 내리지 않는다.
  */
@@ -130,18 +134,21 @@ export function useZoneEditing(
     () => (surface ? surfaceZoneShape(surface.geometry) : null),
     [surface],
   );
+  // 이름을 고치지 않은 새 구역은 `종류 + 구분자`(작업면이 있으면 고소작업면 A, 없으면 위험구역 1)이고 활성 구역과 겹치지 않는다.
   const patchedForm = zone
     ? formWithPatch(zone, draft?.patch ?? {})
-    : newZoneForm(draft?.patch ?? {}, nextZoneName(zones));
+    : newZoneForm(draft?.patch ?? {}, nextZoneName(zones, surface ? 'surface' : 'zone'));
   const layoutBound = zone ? zone.layoutItemId != null : workLayoutId != null;
   const form = bound || layoutBound ? surfaceZoneForm(patchedForm) : patchedForm;
   // 저장할 구역 모양: 작업면이 있으면 작업면에서 계산한 모양, 없으면 고친 상자(새 구역은 지금 상자). 기존 구역을 고치지 않았으면
   // null 이고 받은 모양을 그대로 보낸다.
   const savedBox = zone ? editedBox(zone, draft) : zoneBox;
   const shape = surfaceShape ?? (savedBox && shapeOfBox(savedBox));
+  // 다른 활성 구역과 같은 이름은 저장하지 않는다(고친 이름만 본다).
+  const taken = useMemo(() => takenZoneNames(zones, zone?.zoneId), [zones, zone]);
   const errors = zone
-    ? formErrors(form, { saved: formOf(zone), hasHeight: bound || zone.zRange !== null })
-    : newZoneErrors(form);
+    ? formErrors(form, { saved: formOf(zone), hasHeight: bound || zone.zRange !== null, taken })
+    : newZoneErrors(form, taken);
   if (layoutBound && !surface && shape && !itemOfZoneShape('validation', form.name, shape)) {
     errors.judgeType = '구역의 너비와 길이는 각각 0.8m 이상이어야 합니다.';
   }
@@ -223,6 +230,15 @@ export function useZoneEditing(
     if (sameGeometry(geometry, surface.geometry)) return;
     edit((prev) => withSurface(prev, { ...surface, geometry }));
   };
+  // 손잡이가 고치는 상자(작업면 또는 구역)의 가로·세로·높이를 숫자로 고친다. 가로·세로는 가운데를 두고 늘이고 줄이며, 높이는
+  // 바닥을 두고 위를 옮긴다. 손잡이가 없는 대상(회전한 작업면, 형상을 못 고치는 구역)은 칸도 없다.
+  const setBoxSize = (axis: 0 | 1 | 2, size: number) => {
+    if (!boxEdit) return;
+    const box = resizeBox(boxEdit.box, axis, size, roomLimit);
+    if (!box) return;
+    if (surface) edit((prev) => withSurfaceBox(prev, surface, box));
+    else edit((prev) => withZoneBox(prev, zone, box));
+  };
   const pick = (value: string) => {
     commit.disarm();
     if (value === NEW_KEY) setAdding(true);
@@ -282,6 +298,9 @@ export function useZoneEditing(
     setName,
     setSeverity,
     setSurfaceTop,
+    /** 숫자로 고칠 상자(3D 손잡이와 같은 상자)와 그 종류. 없으면 null. */
+    sizeBox: boxEdit ? { kind: boxEdit.kind, box: boxEdit.box } : null,
+    setBoxSize,
     save: commit.save,
     add: commit.add,
     restore,

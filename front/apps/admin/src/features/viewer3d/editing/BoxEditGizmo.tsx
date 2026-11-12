@@ -22,7 +22,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useStat
 // 호스트(FE)가 상자를 쥐고 있는 제어형 상자 편집 조작기. 뷰어 안 편집 세션(GizmoController·ObbGizmo)과 따로 쓰며 그 코드를 건드리지 않는다.
 // 받은 box 가 늘 정본이다. 끌면 onBoxEditChange 로 새 상자를 올리고, 호스트가 다시 내려 준 box 로 그린다.
 // 끄는 동안은 끌기를 시작할 때의 상자(from)에 전체 이동량을 더해 계산한다(데모 dragBox 와 같다). 끌기 계산은 boxEditDrag, 손잡이 그림은 BoxEditHandles.
-// 화살표: 상자 가운데에서 바깥으로 그 면만 움직인다. 값은 마우스 광선과 축 직선의 최근접점을 따른다.
+// 화살표: 그 면의 바깥 가운데에 놓이고 그 면만 움직인다. 값은 마우스 광선과 축 직선(상자 가운데를 지나는 그 축)의 최근접점을 따른다.
 // 가운데 구: 바닥(수평 평면)에서만 옮긴다. 끄는 동안 카메라 OrbitControls 를 끄고, 놓기·취소·버튼이 떨어진 움직임·
 // ID 바뀜·내려감에서 끄기 전 상태로 되돌린다. Esc 는 끌기를 시작 전 상자로 되돌린다.
 
@@ -135,6 +135,7 @@ function ActiveBoxEdit({ edit, onChange }: { edit: ViewerBoxEdit; onChange?: Box
       <BoxPreview box={box} />
       <BoxHandles
         box={box}
+        worldBox={edit.box}
         handles={handlesFor(edit.kind)}
         hovered={hovered}
         dragging={dragging}

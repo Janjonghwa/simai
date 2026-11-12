@@ -379,6 +379,19 @@ describe('BoxEditGizmo 장면', () => {
     expect(named('box-edit-pick:z-')).toHaveLength(0);
   });
 
+  it('가운데 구는 상자 가운데, 화살표는 각 면의 바깥 가운데에 놓인다(S15P31A101-651)', async () => {
+    await mount(binding());
+    const at = (handle: string) => named(`box-edit-at:${handle}`)[0]!.position.toArray();
+    // World (x, y, z) → Three (x, z, −y). 상자 World x 2~4 · y 3~6 · z 0~2.
+    expect(at('move')).toEqual([3, 1, -4.5]);
+    expect(at('x+')).toEqual([4, 1, -4.5]);
+    expect(at('x-')).toEqual([2, 1, -4.5]);
+    expect(at('y+')).toEqual([3, 1, -6]);
+    expect(at('y-')).toEqual([3, 1, -3]);
+    expect(at('z+')).toEqual([3, 2, -4.5]);
+    expect(at('z-')).toEqual([3, 0, -4.5]);
+  });
+
   it('미리보기 상자·윤곽은 클릭을 받지 않고, 손잡이는 판정 메시만 받는다', async () => {
     await mount(binding());
     scene!.updateMatrixWorld(true);
@@ -403,8 +416,8 @@ describe('BoxEditGizmo 장면', () => {
       ]);
       expect((pick as Mesh).material).toMatchObject({ visible: false });
     }
-    // x+ 화살표 몸통을 위에서 꿰뚫는 광선: 보이는 형상은 판정에서 빠지고 판정 메시만 맞는다.
-    const arrowRay = () => new THREE.Raycaster(new Vector3(3.5, 5, -4.5), new Vector3(0, -1, 0));
+    // x+ 화살표 몸통(x+ 면 x=4 바깥)을 위에서 꿰뚫는 광선: 보이는 형상은 판정에서 빠지고 판정 메시만 맞는다.
+    const arrowRay = () => new THREE.Raycaster(new Vector3(4.5, 5, -4.5), new Vector3(0, -1, 0));
     const arrow = named('box-edit-handle:x+')[0]!;
     const visible: THREE.Intersection[] = [];
     for (const child of arrow.children.slice(0, 2)) child.raycast(arrowRay(), visible);

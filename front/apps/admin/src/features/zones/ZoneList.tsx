@@ -29,7 +29,7 @@ export function ZoneList() {
 function ZoneListPanel({ viewport }: { viewport: SpatialViewportValue }) {
   const { zones, zonesFailed, selectedZoneId, selectTarget, clearSelection } = viewport;
   const isAdmin = useCurrentRole() === 'ADMIN';
-  const rename = useZoneRename();
+  const rename = useZoneRename(zones);
   const rows = useMemo(() => zonesForList(zones), [zones]);
 
   const open = (zoneId: string) => {

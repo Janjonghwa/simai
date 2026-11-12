@@ -6,7 +6,7 @@ import {
   itemOfZoneShape,
   newLayoutItemId,
 } from '@/features/tbm/layoutZones';
-import { commitErrorText } from '@/features/zones/commitErrors';
+import { commitErrorText, CommitInFlightError } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
 import { useCommitNotice } from '@/features/zones/useCommitNotice';
@@ -79,6 +79,8 @@ export function useZoneCommit(input: ZoneCommitInput) {
     try {
       done = await run(() => commit.mutateAsync({ request, zone, linked }));
     } catch (error) {
+      // 다른 곳의 저장이 아직 끝나지 않았다(두 번 누름). 보내지 않았으니 알림도 초안도 그대로 둔다.
+      if (error instanceof CommitInFlightError) return;
       show(commitErrorText(error), false);
       return;
     }

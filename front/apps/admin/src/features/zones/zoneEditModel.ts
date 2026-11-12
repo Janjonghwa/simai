@@ -16,8 +16,20 @@ export const NEW_EVAL_TYPE = 'VOLUME_3D';
 export const NEW_ZONE_SEVERITY: Severity = 'HIGH';
 /** 작업면이 붙은 구역의 판정 유형(높이가 있는 입체). 저장할 때 이 값으로 맞춘다. */
 export const SURFACE_ZONE_JUDGE_TYPE: JudgeType = NEW_EVAL_TYPE;
-/** 이름을 정하지 않은 새 구역의 기본 이름 앞부분(`구역 1`, `구역 2`…). */
-const NEW_ZONE_NAME_PREFIX = '구역';
+/**
+ * 자동 이름의 종류(S15P31A101-651). 이름은 `종류 + 구분자`이고, 고소작업면(작업면이 붙은 구역)은 A·B…, 그 밖은 1·2…를 붙인다.
+ * AI 구역 초안(ai zone_draft.py DEFAULT_NAME_BY_KIND)도 같은 말을 쓴다.
+ */
+export type AutoNameKind = 'surface' | 'opening' | 'edge' | 'zone';
+export const AUTO_ZONE_NAME: Record<AutoNameKind, string> = {
+  surface: '고소작업면',
+  opening: '개구부',
+  edge: '바닥 단부',
+  zone: '위험구역',
+};
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+/** 이름 끝의 구분자(` A`, ` 12`). 겹친 이름을 다시 매길 때 떼어 낸다. */
+const SEPARATOR_SUFFIX = /^(.*\S)\s+([A-Z]|\d+)$/;
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   CRITICAL: '위험',
@@ -122,6 +134,35 @@ function surfaceZoneOutline(g: SurfaceGeometry): ViewerEditBox | null {
   };
 }
 
+/** 숫자로 고칠 때의 최소 크기(m): 가로·세로, 높이. 3D 손잡이(viewer3d boxEdit.ts)와 같은 값이다. */
+const MIN_SIZE_HORIZONTAL_M = 0.2;
+const MIN_SIZE_VERTICAL_M = 0.05;
+
+/**
+ * 상자 한 축의 크기를 size(m)로 바꾼 새 상자. 가로(x)·세로(y)는 가운데를 두고 양쪽으로 늘이고 줄이며 교실 범위(limit)를
+ * 넘는 쪽은 경계에서 자른다. 높이(z)는 바닥(min)을 두고 위(max)를 옮긴다. 숫자가 아니거나 최소 크기보다 작으면 null 이다.
+ * 좌표는 0.001 m 로 맞춘다.
+ */
+export function resizeBox(
+  box: ViewerEditBox,
+  axis: 0 | 1 | 2,
+  size: number,
+  limit: RoomLimit,
+): ViewerEditBox | null {
+  const minSize = axis === 2 ? MIN_SIZE_VERTICAL_M : MIN_SIZE_HORIZONTAL_M;
+  if (!Number.isFinite(size) || size < minSize) return null;
+  const min: [number, number, number] = [box.min[0], box.min[1], box.min[2]];
+  const max: [number, number, number] = [box.max[0], box.max[1], box.max[2]];
+  if (axis === 2) {
+    max[2] = r3(Math.min(limit.max[2], min[2] + size));
+  } else {
+    const center = (box.min[axis] + box.max[axis]) / 2;
+    min[axis] = r3(Math.max(limit.min[axis], center - size / 2));
+    max[axis] = r3(Math.min(limit.max[axis], center + size / 2));
+  }
+  return max[axis] - min[axis] >= minSize ? { min, max } : null;
+}
+
 /** 작업면 형상 → 3D 편집 상자(바닥 0 ~ 상판). 회전은 상자에 나타나지 않는다. */
 export function surfaceBox(g: SurfaceGeometry): ViewerEditBox {
   const [cx, cy] = g.centerXy;
@@ -201,15 +242,51 @@ export function formWithPatch(zone: Zone, patch: ZonePatch): ZoneForm {
   };
 }
 
+/** n(1부터)번째 구분자. 고소작업면은 A~Z(넘으면 27·28…), 그 밖은 숫자다. */
+const separatorOf = (kind: AutoNameKind, n: number) =>
+  kind === 'surface' && n <= LETTERS.length ? LETTERS[n - 1]! : String(n);
+
+/** 구역들이 쓰는 이름(앞뒤 공백을 뗀 것). exceptId 의 구역(지금 고치는 구역)은 뺀다. */
+export function takenZoneNames(
+  zones: readonly Pick<ZoneBox, 'zoneId' | 'name'>[],
+  exceptId?: string,
+): Set<string> {
+  return new Set(zones.filter((zone) => zone.zoneId !== exceptId).map((zone) => zone.name.trim()));
+}
+
+/** base 뒤에 구분자를 붙인 이름 중 taken 에 없는 가장 작은 것. */
+function withSeparator(base: string, kind: AutoNameKind, taken: ReadonlySet<string>): string {
+  let n = 1;
+  while (taken.has(`${base} ${separatorOf(kind, n)}`)) n += 1;
+  return `${base} ${separatorOf(kind, n)}`;
+}
+
 /**
- * 이름을 정하지 않은 새 구역의 기본 이름: 겹치지 않는 가장 작은 번호를 붙인다(`구역 1`, `구역 2`…).
- * 이미 같은 이름이 있으면 번호를 건너뛰어, 드롭다운에서 구역을 이름만으로 가릴 수 있게 한다.
+ * 이름을 정하지 않은 새 구역의 기본 이름: `종류 + 구분자` 중 활성 구역과 겹치지 않는 가장 작은 것(고소작업면 A, 위험구역 1).
+ * 빈 구분자도 채운다. 드롭다운·경보에서 구역을 이름만으로 가릴 수 있게 한다.
  */
-export function nextZoneName(zones: readonly Pick<ZoneBox, 'name'>[]): string {
+export function nextZoneName(
+  zones: readonly Pick<ZoneBox, 'name'>[],
+  kind: AutoNameKind = 'zone',
+): string {
+  return withSeparator(AUTO_ZONE_NAME[kind], kind, new Set(zones.map((zone) => zone.name.trim())));
+}
+
+/**
+ * 자동으로 정한 이름(AI 초안 추천 이름)을 활성 구역과 겹치지 않게 한다. 겹치지 않으면 그대로, 겹치면 끝의 구분자를 떼고
+ * 비어 있는 가장 작은 구분자를 붙인다(`작업대 상판` → `작업대 상판 1`, `고소작업면 A` → `고소작업면 B`). 사람이 고친 이름에는
+ * 쓰지 않는다(그런 이름은 양식 검사가 겹침을 알린다).
+ */
+export function uniqueZoneName(
+  name: string,
+  zones: readonly Pick<ZoneBox, 'name'>[],
+  kind: AutoNameKind,
+): string {
+  const trimmed = name.trim();
   const taken = new Set(zones.map((zone) => zone.name.trim()));
-  let number = 1;
-  while (taken.has(`${NEW_ZONE_NAME_PREFIX} ${number}`)) number += 1;
-  return `${NEW_ZONE_NAME_PREFIX} ${number}`;
+  if (!taken.has(trimmed)) return trimmed;
+  const base = SEPARATOR_SUFFIX.exec(trimmed)?.[1] ?? trimmed;
+  return withSeparator(base, kind, taken);
 }
 
 /** 새 구역의 양식. 이름을 고치지 않았으면 defaultName 이고, 화면에서 고르지 않는 칸은 기본값이다. */

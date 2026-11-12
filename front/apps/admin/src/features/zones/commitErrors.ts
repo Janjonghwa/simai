@@ -24,6 +24,17 @@ export class CommitBlockedError extends Error {
   }
 }
 
+/**
+ * 앞 저장이 아직 끝나지 않아 보내지 않은 저장(S15P31A101-651). 같은 화면에서 저장은 한 번에 하나만 보낸다. 받은 쪽은 알림 없이
+ * 무시한다(앞 저장의 결과가 곧 화면에 들어온다).
+ */
+export class CommitInFlightError extends Error {
+  constructor() {
+    super('앞 구역 저장이 끝나지 않아 보내지 않았다');
+    this.name = 'CommitInFlightError';
+  }
+}
+
 const CHANGED_TEXT =
   '그 사이 다른 버전이 저장되어 최신 구역을 다시 받았습니다. 확인한 뒤 다시 저장하세요.';
 const OUTCOME_UNKNOWN_TEXT =

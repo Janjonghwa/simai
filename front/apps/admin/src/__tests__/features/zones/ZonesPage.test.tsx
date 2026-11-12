@@ -287,7 +287,7 @@ describe('구역 편집 화면', () => {
     expect(optionTexts()).toEqual(['새 구역 추가', '개구부 구역', '단상 구역']);
     expect(screen.queryByText(/z-0\d/)).toBeNull();
     expect(picker().value).toBe('__new__');
-    expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '구역 1');
+    expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '위험구역 1');
     // 편집 도구에 제목(h1)은 없다. 화면 제목은 실시간 관제 화면이 가진다.
     expect(screen.queryByRole('heading')).toBeNull();
     // 새 구역의 심각도는 경고로 시작하고 위험·경고 중에서 고른다.
@@ -405,7 +405,7 @@ describe('구역 편집 화면', () => {
     await waitFor(() =>
       expect(Number((screen.getByLabelText('높이(m)') as HTMLInputElement).value)).toBeCloseTo(0.9),
     );
-    expect(optionTexts()).toContain('구역 1');
+    expect(optionTexts()).toContain('고소작업면 A');
   });
 
   it('이은 작업면(서버 zone_id)이 카드에 보이고, 작업면이 붙은 구역은 3D 손잡이가 작업면을 고치며 심각도 칸이 있고 구역·작업면 전환이 없다', async () => {
@@ -421,6 +421,40 @@ describe('구역 편집 화면', () => {
     expect(screen.queryByRole('checkbox', { name: '고소 작업면' })).toBeNull();
     expect(screen.queryByRole('group', { name: '3D 에서 조절할 대상' })).toBeNull();
     expect(screen.queryByRole('button', { name: '구역' })).toBeNull();
+  });
+
+  it('고른 구역의 가로·세로·높이를 숫자로 고치면 3D 손잡이 상자도 바뀐다(가로·세로는 가운데 기준, S15P31A101-651)', async () => {
+    await renderPage();
+    pick('z-04');
+    const width = (await screen.findByLabelText('가로(m)')) as HTMLInputElement;
+    expect(width.value).toBe('2.80');
+    expect((screen.getByLabelText('세로(m)') as HTMLInputElement).value).toBe('2.60');
+    expect((screen.getByLabelText('구역 높이(m)') as HTMLInputElement).value).toBe('2.40');
+    fireEvent.change(width, { target: { value: '2' } });
+    fireEvent.keyDown(width, { key: 'Enter' });
+    fireEvent.change(screen.getByLabelText('구역 높이(m)'), { target: { value: '3' } });
+    fireEvent.keyDown(screen.getByLabelText('구역 높이(m)'), { key: 'Enter' });
+    await waitFor(() =>
+      expect(useBoxEditStore.getState().boxEdit).toMatchObject({
+        id: 'z-04',
+        kind: 'zone',
+        box: { min: [6.2, 1.2, 0], max: [8.2, 3.8, 3] },
+      }),
+    );
+    expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
+    // 작업면이 붙은 구역은 작업면의 가로·세로만 보이고 높이는 작업면 카드의 상판 높이 칸이다.
+    pick('z-02');
+    expect(await screen.findByLabelText('가로(m)')).toHaveProperty('value', '3.00');
+    expect(screen.queryByLabelText('구역 높이(m)')).toBeNull();
+  });
+
+  it('다른 활성 구역과 같은 이름으로 고치면 저장을 막고 알린다(S15P31A101-651)', async () => {
+    await renderPage();
+    pick('z-04');
+    const name = await screen.findByRole('textbox', { name: '이름' });
+    fireEvent.change(name, { target: { value: '단상 구역' } });
+    expect(await screen.findByText('같은 이름의 구역이 있습니다.')).toBeTruthy();
+    expect((button('저장') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('작업면 없이 만든 기존 구역은 작업면 카드와 추가 단추가 없고, 구역 상자 손잡이로 고친다', async () => {
@@ -948,12 +982,12 @@ describe('구역 편집 화면', () => {
   });
 
   describe('새 구역 이름·작업면 붙인 새 구역', () => {
-    it('이름을 정하지 않은 새 구역은 겹치지 않는 가장 작은 번호의 `구역 N` 이다', async () => {
+    it('이름을 정하지 않은 새 구역은 겹치지 않는 가장 작은 구분자다(새 구역은 작업면 없이 시작해 `위험구역 N`, -647)', async () => {
       await fetch('http://api.test/api/zones', {
         method: 'POST',
         headers: { Authorization: 'Bearer mock-token.admin', 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: '구역 1',
+          name: '위험구역 1',
           zone_kind: 'OPENING',
           eval_type: 'VOLUME_3D',
           polygon_xy: [
@@ -970,7 +1004,7 @@ describe('구역 편집 화면', () => {
         }),
       });
       await renderPage();
-      expect(nameInput().value).toBe('구역 2');
+      expect(nameInput().value).toBe('위험구역 2');
     });
 
     it('AI 초안처럼 이름을 먼저 넣은 새 구역 초안은 기본 이름을 이긴다', async () => {
@@ -1657,7 +1691,7 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
     await renderPage({ addOnDemand: true });
     openAdd();
     expect(picker().value).toBe(NEW_KEY);
-    expect(nameInput().value).toBe('구역 1');
+    expect(nameInput().value).toBe('위험구역 1');
     expect(screen.getByRole('region', { name: '고소 작업면' })).toBeTruthy();
     // 시작 단추는 사라지고 아래 제출 단추가 구역 추가다(같은 이름의 단추가 둘이면 getByRole 이 실패한다).
     expect(button('구역 추가')).toBeTruthy();
@@ -1678,7 +1712,7 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
     expect(writes()).toEqual([]);
 
     openAdd();
-    expect(nameInput().value).toBe('구역 1');
+    expect(nameInput().value).toBe('위험구역 1');
   });
 
   it('기존 구역을 3D 에서 고르면 접히지 않고 저장·되돌리기·삭제가 있는 전체 패널이다', async () => {
@@ -1705,7 +1739,7 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
 
     pick(NEW_KEY);
     expect(picker().value).toBe(NEW_KEY);
-    expect(nameInput().value).toBe('구역 1');
+    expect(nameInput().value).toBe('위험구역 1');
     expect(button('취소')).toBeTruthy();
   });
 
@@ -1779,7 +1813,7 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
   it('addOnDemand 가 없으면 양식이 늘 열려 있고 취소 단추가 없다', async () => {
     await renderPage();
     expect(picker().value).toBe(NEW_KEY);
-    expect(nameInput().value).toBe('구역 1');
+    expect(nameInput().value).toBe('위험구역 1');
     expect(screen.queryByRole('button', { name: '취소' })).toBeNull();
   });
 });

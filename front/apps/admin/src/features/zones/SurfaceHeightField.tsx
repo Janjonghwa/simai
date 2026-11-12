@@ -19,17 +19,26 @@ const HEIGHT_DIGITS = 2;
 export const formatMeters = (value: number) =>
   (Math.round(value * HEIGHT_ROUND_SCALE) / HEIGHT_ROUND_SCALE).toFixed(HEIGHT_DIGITS);
 
-/** 작업면 상판 높이 칸. 크기·위치는 3D 손잡이로 고치고, 높이만 숫자로 고친다. */
+/**
+ * 길이(m) 숫자 칸. 기본은 작업면 상판 높이 칸이고, label·ariaLabel 을 주면 구역 크기 칸(가로·세로·높이)으로도 쓴다.
+ * 3D 손잡이로 값이 바뀌면 입력 중이 아닐 때 그 값을 보인다.
+ */
 export function SurfaceHeightField({
   value,
   bad,
   disabled,
   onCommit,
+  label = '높이 (m)',
+  ariaLabel = '높이(m)',
+  badText = '높이는 0보다 커야 합니다.',
 }: {
   value: number;
   bad: boolean;
   disabled: boolean;
-  onCommit: (top: number) => void;
+  onCommit: (value: number) => void;
+  label?: string;
+  ariaLabel?: string;
+  badText?: string;
 }) {
   const [raw, setRaw] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -42,9 +51,9 @@ export function SurfaceHeightField({
 
   return (
     <label className={FIELD_CLASS}>
-      <span className={FIELD_LABEL_CLASS}>높이 (m)</span>
+      <span className={FIELD_LABEL_CLASS}>{label}</span>
       <Input
-        aria-label="높이(m)"
+        aria-label={ariaLabel}
         inputMode="decimal"
         aria-invalid={bad || undefined}
         disabled={disabled}
@@ -69,7 +78,7 @@ export function SurfaceHeightField({
       />
       {bad && (
         <span role="alert" className={FIELD_NOTE_CLASS}>
-          높이는 0보다 커야 합니다.
+          {badText}
         </span>
       )}
     </label>
