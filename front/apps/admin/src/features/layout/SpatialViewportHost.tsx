@@ -108,7 +108,7 @@ export function SpatialViewportHost({
   const editing = useZoneEditActive();
   const [cctvOpen, setCctvOpen] = useState(false);
   const [requestedCamera, setRequestedCamera] = useState<CctvCameraRequest | null>(null);
-  // 3D 가 카메라 시점 보기 중인지(-590). CCTV 창을 닫거나 「전체 보기」를 누르면 클릭 전 시점으로 돌아간다.
+  // 3D 가 카메라 시점 보기 중인지(-590). CCTV 창을 닫거나 「전체 보기」를 누르면 「이 방향으로 보기」 전 시점으로 돌아간다.
   const [cameraView, setCameraView] = useState(false);
   const split = useCamSplitStore((s) => s.split);
   const { cameraPoses: calibratedCameraPoses } = useCurrentCalibration();
@@ -141,11 +141,31 @@ export function SpatialViewportHost({
       if (!eventPanel || editing) return;
       if (useCamSplitStore.getState().split) useCamSplitStore.getState().close();
       setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
+      // CCTV 창만 연다. 3D 시점은 창 제목 줄의 「3D 에서 이 방향으로 보기」로만 옮긴다(-626).
       setCctvOpen(true);
-      // 3D 시점도 그 카메라 자리로 옮긴다. 맞아 있는 동안 뷰어가 VDT 를 켠다(사진이 없으면 시점만 옮긴다).
+    },
+    [eventPanel, editing],
+  );
+
+  // 「3D 에서 이 방향으로 보기」(-626). 3D 시점을 그 카메라 자리로 옮긴다. 맞아 있는 동안 뷰어가 VDT 를 켠다(사진이 없으면 시점만 옮긴다).
+  const viewFromCamera = useCallback(
+    (cameraId: string) => {
       if (viewer.current?.viewFromCamera?.(cameraId)?.ok) setCameraView(true);
     },
-    [eventPanel, editing, viewer],
+    [viewer],
+  );
+
+  // 시점을 옮길 수 없는 이유(버튼을 끄고 이름표로 보인다). 3D 가 없거나 그 카메라의 보정 자세가 없으면 방향을 모른다.
+  const viewFromCameraBlock = useCallback(
+    (cameraId: string): string | null => {
+      if (view !== '3d') return '2D 보기에서는 3D 시점을 옮길 수 없습니다';
+      if (!viewerReady) return '3D 화면이 아직 준비되지 않았습니다';
+      if (!calibratedCameraPoses.some((pose) => pose.cameraId === cameraId)) {
+        return '이 카메라의 보정 정보가 없어 방향을 알 수 없습니다';
+      }
+      return null;
+    },
+    [view, viewerReady, calibratedCameraPoses],
   );
 
   const exitCameraView = useCallback(() => {
@@ -236,6 +256,8 @@ export function SpatialViewportHost({
             requestedCamera={requestedCamera}
             onClose={closeCctv}
             onFullView={cameraView ? exitCameraView : undefined}
+            onViewFromCamera={viewFromCamera}
+            viewFromCameraBlock={viewFromCameraBlock}
           />
         )}
       </main>

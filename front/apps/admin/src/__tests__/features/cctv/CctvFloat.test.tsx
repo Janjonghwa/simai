@@ -157,4 +157,42 @@ describe('떠 있는 CCTV', () => {
     expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
     expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
   });
+
+  it('「3D 에서 이 방향으로 보기」는 넘겼을 때만 두고, 보이는 카메라로 부르며, 막히면 끄고 이유를 보인다(-626)', () => {
+    const view = render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: '3D 에서 이 방향으로 보기' })).toBeNull();
+    view.unmount();
+
+    const onView = vi.fn();
+    const block = vi.fn((id: string) => (id === 'cam_B' ? '보정 정보가 없습니다' : null));
+    const opened = render(
+      <CctvFloat
+        selectedKey={null}
+        requestedCamera={{ cameraId: 'cam_A', seq: 1 }}
+        onClose={vi.fn()}
+        onViewFromCamera={onView}
+        viewFromCameraBlock={block}
+      />,
+    );
+    const button = screen.getByRole('button', { name: '3D 에서 이 방향으로 보기' });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onView).toHaveBeenCalledExactlyOnceWith('cam_A');
+
+    opened.rerender(
+      <CctvFloat
+        selectedKey={null}
+        requestedCamera={{ cameraId: 'cam_B', seq: 2 }}
+        onClose={vi.fn()}
+        onViewFromCamera={onView}
+        viewFromCameraBlock={block}
+      />,
+    );
+    const blocked = screen.getByRole('button', { name: '3D 에서 이 방향으로 보기' });
+    expect((blocked as HTMLButtonElement).disabled).toBe(true);
+    const reasonId = blocked.getAttribute('aria-describedby');
+    expect(reasonId && document.getElementById(reasonId)?.textContent).toBe('보정 정보가 없습니다');
+    fireEvent.click(blocked);
+    expect(onView).toHaveBeenCalledOnce();
+  });
 });
