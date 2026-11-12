@@ -24,11 +24,12 @@ import { useFloorCoverage } from '@/features/layout/useFloorCoverage';
 import { useSceneCameraImages } from '@/features/layout/useSceneCameraImages';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
+import { buildPersonLabelCells } from '@/features/people/personLabelCells';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
-import { withPpeLabels } from '@/features/ppe/ppeView';
 import { usePpeGearStates, usePpeLabels } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
-import { useWatchBadges, useWatchBindDetector } from '@/features/watch/useWatch';
+import { useWatchBindDetector } from '@/features/watch/useWatch';
 import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
@@ -127,13 +128,12 @@ export function SpatialViewportHost({
   const showEventPanel = eventPanel && !editing;
   // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다. 관제에서는 보이기만 한다.
   const layers = editing || !eventPanel ? ZONE_EDIT_LAYERS : MONITOR_LAYERS;
-  // 사람 이름표 뒤 글: 워치 채널 상태(-342)와, 착용이 아닐 때 PPE 상태·마지막 근거 시각(-656, 명세 13.3).
-  // 둘 다 내용이 바뀔 때만 새 객체이고, 뷰어도 내용으로 비교한다
-  const watchBadges = useWatchBadges();
+  // 3D 사람 이름표(A안, S15P31A101-658): 단일 사람 표시 어댑터(워치 상태 + 표시 이름)와 PPE 상태(-656, 명세 13.3)를 칸 목록으로 넘긴다.
+  const personDisplayMap = usePersonDisplayMap();
   const ppeLabels = usePpeLabels();
-  const personBadges = useMemo(
-    () => withPpeLabels(watchBadges, ppeLabels),
-    [watchBadges, ppeLabels],
+  const personLabels = useMemo(
+    () => buildPersonLabelCells(personDisplayMap, ppeLabels),
+    [personDisplayMap, ppeLabels],
   );
   // 사람에게 붙는 착용 안전모·조끼와 미착용 경고 표식(-531·-552·-656, 명세 13.3)
   const { helmets: personHelmets, vests: personVests } = usePpeGearStates();
@@ -206,7 +206,7 @@ export function SpatialViewportHost({
                 avatarMeshFetch={avatarMeshFetch}
                 scene={scene}
                 layers={layers}
-                personBadges={personBadges}
+                personLabels={personLabels}
                 personHelmets={personHelmets}
                 personVests={personVests}
                 personHighlights={personHighlights}

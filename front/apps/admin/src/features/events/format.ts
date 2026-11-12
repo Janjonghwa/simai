@@ -2,9 +2,17 @@ import { CONFIDENCE_REASON, METRIC_LABEL } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
 import { PPE_RELEASE_LABEL, type PpeRelease } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
+import {
+  formatPersonFull,
+  formatPersonShort,
+  shortPersonId,
+  type PersonDisplayMap,
+} from '@/features/people/personDisplay';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { ruleName } from '@/lib/ruleNames';
 export { ruleName } from '@/lib/ruleNames';
+
+export { shortPersonId };
 
 // 이벤트 값을 화면 문구로 바꾸는 계산. 화면 없이 시험한다.
 
@@ -23,17 +31,27 @@ export const formatTime = (ms: number | null | undefined) =>
 export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
   ruleName(event.rule_id);
 
-/** 이벤트 대상 문구: 사람 ID, 사람이 없으면 구역 이름(모르면 `구역`). */
-export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>
-  event.world_ids[0] ?? (event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '');
-
-/** 사람 World ID 의 끝번호: `w-mw8y3hai-0722` → `0722`. 구분(`-`)이 없거나 끝이 비면 ID 그대로. */
-export const shortPersonId = (id: string) => id.slice(id.lastIndexOf('-') + 1) || id;
-
-/** 이벤트 대상 문구의 짧은 모양(카드·배너): 사람은 끝번호, 사람이 없으면 `eventSubject` 와 같은 구역 이름. */
-export const eventShortSubject = (event: EventItem, zoneName: ZoneNameOf) => {
+/** 이벤트 대상 문구: 해석된 사람 이름(없으면 World ID), 사람이 없으면 구역 이름(모르면 `구역`). */
+export const eventSubject = (
+  event: EventItem,
+  zoneName: ZoneNameOf,
+  personNames?: PersonDisplayMap,
+) => {
   const person = event.world_ids[0];
-  return person === undefined ? eventSubject(event, zoneName) : shortPersonId(person);
+  if (person !== undefined) return formatPersonFull(person, personNames);
+  return event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '';
+};
+
+/** 이벤트 대상 문구의 짧은 모양(카드·배너): 사람은 표시 이름(없으면 끝번호), 사람이 없으면 구역 이름. */
+export const eventShortSubject = (
+  event: EventItem,
+  zoneName: ZoneNameOf,
+  personNames?: PersonDisplayMap,
+) => {
+  const person = event.world_ids[0];
+  return person === undefined
+    ? eventSubject(event, zoneName, personNames)
+    : formatPersonShort(person, personNames);
 };
 
 /** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9·R11) "해소" 대신 해소 원인을 보인다. */

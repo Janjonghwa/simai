@@ -3,6 +3,8 @@ import type { WatchBinding } from '@/features/watch/api';
 import { useWatchBindDetector } from '@/features/watch/useWatch';
 import { HIGHLIGHT_MS, useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
 import { bindKeyOf, newBinds } from '@/features/watch/watchStatus';
+import { useRealtimeStore } from '@/store/realtime.store';
+import type { ViewerHealthPayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,17 +55,31 @@ function mount() {
   };
 }
 
-describe('새 배정 효과(-509)', () => {
+describe('새 배정 효과(-509·-658)', () => {
   beforeEach(() => {
     calls.bindings = [bind('watch-01', 'w-1')];
     useWatchBindEffectStore.getState().clear();
+    useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   });
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   });
 
-  it('처음 불러온 배정과 재로드는 효과가 없고, 새로 이어진 배정만 강조·알림이 뜬다', async () => {
+  it('처음 불러온 배정과 재로드는 효과가 없고, 새로 이어진 배정은 단일 어댑터 이름으로 강조·알림이 뜬다', async () => {
+    useRealtimeStore.setState({
+      health: {
+        receivedAt: 1_000,
+        clockOffsetMs: 0,
+        payload: {
+          watch_names: [{ device_id: 'watch-02', display_name: '김철수' }],
+          person_names: [
+            { world_id: 'w-17', display_name: '미확인 2', name_source: 'UNIDENTIFIED' },
+          ],
+        } as unknown as ViewerHealthPayload,
+      },
+    });
     const { client } = mount();
     await waitFor(() => expect(client.getQueryData(['watch-bindings'])).toBeTruthy());
     expect(useWatchBindEffectStore.getState().highlights).toEqual({});
@@ -72,27 +88,57 @@ describe('새 배정 효과(-509)', () => {
     await act(() => client.invalidateQueries({ queryKey: ['watch-bindings'] }));
     expect(useWatchBindEffectStore.getState().notice).toBeNull();
 
-    // 새 배정
+    // 새 배정: 워치 표시 이름('김철수')이 미확인 번호보다 우선해 강조·알림에 반영된다
     calls.bindings = [bind('watch-01', 'w-1'), bind('watch-02', 'w-17', 'MANUAL')];
     await act(() => client.invalidateQueries({ queryKey: ['watch-bindings'] }));
     await waitFor(() =>
       expect(useWatchBindEffectStore.getState().highlights).toEqual({
-        'w-17': '워치 watch-02 연결됨',
+        'w-17': '⌚ 김철수 연결됨',
       }),
     );
-    expect(useWatchBindEffectStore.getState().notice?.text).toBe('watch-02 → w-17 연결됨(수동)');
+    expect(useWatchBindEffectStore.getState().notice?.text).toBe('⌚ 김철수 연결됨(수동)');
   });
 
   it('효과 시간이 지나면 강조가 사라진다', () => {
     vi.useFakeTimers();
-    useWatchBindEffectStore
-      .getState()
-      .announce({ deviceId: 'watch-01', worldId: 'w-1', method: 'AUTO' });
-    expect(useWatchBindEffectStore.getState().highlights['w-1']).toBe('워치 watch-01 연결됨');
+    useWatchBindEffectStore.getState().announce({
+      deviceId: 'watch-01',
+      worldId: 'w-1',
+      method: 'AUTO',
+      person: {
+        displayName: '김철수',
+        isDuplicateName: false,
+        watch: { status: 'connected', deviceId: 'watch-01' },
+      },
+    });
+    expect(useWatchBindEffectStore.getState().highlights['w-1']).toBe('⌚ 김철수 연결됨');
+    expect(useWatchBindEffectStore.getState().notice?.text).toBe('⌚ 김철수 연결됨(자동)');
     vi.advanceTimersByTime(HIGHLIGHT_MS + 1);
     expect(useWatchBindEffectStore.getState().highlights).toEqual({});
     vi.advanceTimersByTime(5_000);
     expect(useWatchBindEffectStore.getState().notice).toBeNull();
+  });
+
+  it('동명이인이면 패널 알림에 기기 ID 를 괄호로 보태고, 이름 수신 전이면 미확인으로 알린다', () => {
+    useWatchBindEffectStore.getState().announce({
+      deviceId: 'watch-02',
+      worldId: 'w-2',
+      method: 'AUTO',
+      person: {
+        displayName: '김철수',
+        isDuplicateName: true,
+        watch: { status: 'connected', deviceId: 'watch-02' },
+      },
+    });
+    expect(useWatchBindEffectStore.getState().highlights['w-2']).toBe('⌚ 김철수 연결됨');
+    expect(useWatchBindEffectStore.getState().notice?.text).toBe(
+      '⌚ 김철수(watch-02) 연결됨(자동)',
+    );
+
+    useWatchBindEffectStore
+      .getState()
+      .announce({ deviceId: 'watch-03', worldId: 'w-3', method: 'AUTO' });
+    expect(useWatchBindEffectStore.getState().highlights['w-3']).toBe('⌚ 미확인 연결됨');
   });
 
   it('같은 사람에게 다시 이어지면 앞선 타이머가 새 강조를 일찍 지우지 않는다', () => {

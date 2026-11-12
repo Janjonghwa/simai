@@ -2597,6 +2597,17 @@ class Watches(BaseModel):
     items: list[Item]
 
 
+class ViewerHealthPersonDisplayName(RootModel[StrictStr]):
+    root: Annotated[
+        StrictStr,
+        Field(
+            max_length=20,
+            min_length=1,
+            pattern='^[^\\s\\u0000-\\u001F\\u007F-\\u009F](?:[^\\u0000-\\u001F\\u007F-\\u009F]*[^\\s\\u0000-\\u001F\\u007F-\\u009F])?$',
+        ),
+    ]
+
+
 class VlmRationale(RootModel[Any]):
     root: Any
 
@@ -4303,6 +4314,23 @@ class Scene(BaseModel):
     mismatch: StrictBool
 
 
+class WatchName(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    device_id: DefsInstanceId
+    display_name: ViewerHealthPersonDisplayName
+
+
+class PersonName(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    world_id: DefsWorldId
+    display_name: ViewerHealthPersonDisplayName
+    name_source: Literal['WORLD_MANUAL', 'WATCH_DEVICE', 'UNIDENTIFIED']
+
+
 class Payload43(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -4322,6 +4350,8 @@ class Payload43(BaseModel):
         StrictStr | MISSING, Field(max_length=64, min_length=1)
     ] = MISSING
     watches: Watches | MISSING = MISSING
+    watch_names: list[WatchName] | MISSING = MISSING
+    person_names: list[PersonName] | MISSING = MISSING
 
 
 class ViewerHealth(Envelope):

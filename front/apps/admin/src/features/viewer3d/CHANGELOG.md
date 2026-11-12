@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-658 사람 이름표 칸 목록(`personLabels`, A안)
+
+모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-658-person-name-label.md` 에 있다.
+
+- 추가: `personLabels`(`Readonly<Record<string, readonly ViewerLabelCell[]>>`, 선택) prop, export 타입 `ViewerLabelCell` · `ViewerLabelWatchStatus`.
+- 동작: 넘기면 한 이름표 알약 안에 왼쪽 스마트워치 선 아이콘 칸(연결 하늘색 + 칸 배경 강조 / 끊김 회색 + 빨간 점 / 미배정 생략)과 사람 이름 칸, 뒤따르는 PPE 칸을 그린다. World ID·기기 ID·`워치` 글자는 3D 이름표에서 빼고 상세 패널로 옮겼다. 넘기지 않으면 기존 `personBadges` 경로 그대로다.
+
 ## S15P31A101-656 PPE 모름은 장비를 그리지 않음
 
 공개 입구·타입 변경 없음. 동작만 바뀐다.

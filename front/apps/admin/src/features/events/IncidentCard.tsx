@@ -12,6 +12,7 @@ import { cardChip, cardTitle, targetLabel, targetShortLabel } from '@/features/e
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { Severity } from '@/features/events/types';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useRef } from 'react';
@@ -57,6 +58,7 @@ export function IncidentCard({
   onOpen,
 }: IncidentCardProps) {
   const zoneName = useZoneName();
+  const personNames = usePersonDisplayMap();
   const top = topEntry(incident);
   const look = SEVERITY_LOOK[incident.severity];
   const chip = cardChip(incident);
@@ -67,8 +69,8 @@ export function IncidentCard({
   // 지금 관제 중인 사건만 등급 테두리·카메라 버튼을 쓴다. 지난 관제의 사람은 지금 카메라에 없다.
   const current = incident.active && !incident.stale;
   const eta = entryEtaLine(top.event);
-  const target = targetShortLabel(incident.target, zoneName);
-  const fullTarget = targetLabel(incident.target, zoneName);
+  const target = targetShortLabel(incident.target, zoneName, personNames);
+  const fullTarget = targetLabel(incident.target, zoneName, personNames);
 
   // 3D·2D 에서 사람을 눌러 이 묶음이 선택되면 긴 목록에서도 보이게 한다.
   const card = useRef<HTMLElement>(null);

@@ -15,6 +15,7 @@ export async function startMockBackend() {
     { createEventsMock },
     { createClipsMock },
     { createZonesMock },
+    { createPeopleNamesMock },
     { seededEventsAt },
   ] = await Promise.all([
     import('virtual:msw'),
@@ -26,6 +27,7 @@ export async function startMockBackend() {
     import('@/mocks/events'),
     import('@/mocks/clips'),
     import('@/mocks/zones'),
+    import('@/mocks/peopleNames'),
     import('@/mocks/realtimeScenario'),
   ]);
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명은 보지 않는다).
@@ -53,11 +55,13 @@ export async function startMockBackend() {
   tbmMock.bindLayoutZones(zones.layoutZones);
   // 세팅 구역 단계의 처음 목록 채우기(-629)는 지금 관제 구역을 읽는다
   setupMock.bindLiveZones(() => zones.currentZones());
+  const peopleNames = createPeopleNamesMock(Date.now);
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
   const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
     broker,
     Date.now,
     zones.config,
+    peopleNames,
   );
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
@@ -65,6 +69,7 @@ export async function startMockBackend() {
       ...withoutRealPaths(
         [
           ...handlers,
+          ...peopleNames.handlers,
           ...events.handlers,
           ...clips.handlers,
           ...zones.handlers,
@@ -96,6 +101,7 @@ export async function startMockBackend() {
       rejectNextBundle: zones.rejectNextBundle,
       failNextPublish: zones.failNextPublish,
       markSetupDone: workMock.markSetupDone,
+      bindWatch: peopleNames.bindWatch,
     },
   });
 }

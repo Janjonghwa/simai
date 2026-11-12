@@ -228,7 +228,8 @@ public sealed interface ErrorCode {
         WATCH_SEND_FAILED(HttpStatus.BAD_GATEWAY, "보내는 사이 워치 연결이 끊겨 보내지 못했습니다. 알림은 SEND_FAILED 로 남아 관리자 화면에 격상됩니다"),
         INVALID_ALERT(HttpStatus.BAD_REQUEST,
                 "severity 는 CRITICAL·HIGH·CAUTION, word 는 1~8자(앞뒤 공백은 지움, 가운데 공백·줄바꿈 불가), direction 은 FRONT·BACK·LEFT·RIGHT, "
-                        + "ack_within_ms 는 1000~600000 이어야 합니다");
+                        + "ack_within_ms 는 1000~600000 이어야 합니다"),
+        INVALID_DISPLAY_NAME(HttpStatus.BAD_REQUEST, "표시 이름은 앞뒤 공백을 빼고 1~20자여야 하며 제어문자를 넣을 수 없습니다");
 
         private final HttpStatus status;
         private final String message;

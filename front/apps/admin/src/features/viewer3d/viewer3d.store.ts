@@ -15,6 +15,7 @@ import type {
   CommandResult,
   PersonHelmetState,
   ViewerError,
+  ViewerLabelCell,
   ViewerMode,
   ViewerPhase,
   ViewerSelectCancelReason,
@@ -36,6 +37,47 @@ function sameBadges(
 ): boolean {
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
+function sameLabelCell(a: ViewerLabelCell, b: ViewerLabelCell): boolean {
+  if (a.kind === 'watch' && b.kind === 'watch') return a.status === b.status;
+  if (a.kind === 'text' && b.kind === 'text') return a.text === b.text;
+  return false;
+}
+
+function sameLabelCells(
+  a: readonly ViewerLabelCell[] | undefined,
+  b: readonly ViewerLabelCell[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!sameLabelCell(a[i]!, b[i]!)) return false;
+  }
+  return true;
+}
+
+function mergePersonLabels(
+  prev: Readonly<Record<string, readonly ViewerLabelCell[]>> | null,
+  next: Readonly<Record<string, readonly ViewerLabelCell[]>> | undefined,
+): Readonly<Record<string, readonly ViewerLabelCell[]>> | null {
+  if (next === undefined) return null;
+  if (prev !== null) {
+    const prevKeys = Object.keys(prev);
+    const nextKeys = Object.keys(next);
+    if (
+      prevKeys.length === nextKeys.length &&
+      nextKeys.every((k) => sameLabelCells(prev[k], next[k]))
+    ) {
+      return prev;
+    }
+    const merged: Record<string, readonly ViewerLabelCell[]> = {};
+    for (const k of nextKeys) {
+      merged[k] = prev[k] && sameLabelCells(prev[k], next[k]) ? prev[k]! : next[k]!;
+    }
+    return merged;
+  }
+  return { ...next };
 }
 
 export interface FocusRequest {
@@ -94,7 +136,9 @@ export interface ViewerState {
   cameraVdtBlocked: CameraVdtBlock | null;
   /** 레이어별 표시·피킹(-234). 기본값은 모두 interactive(기존 동작). */
   layers: ResolvedLayers;
-  /** 사람 이름표 뒤에 붙일 글(World ID → 글, -342). */
+  /** 사람 이름표 칸 목록(World ID → 칸 배열, -658 A안). null 이면 레거시 personBadges 경로를 쓴다. */
+  personLabels: Readonly<Record<string, readonly ViewerLabelCell[]>> | null;
+  /** 레거시 사람 이름표 뒤에 붙일 글(World ID → 글, -342). */
   personBadges: Readonly<Record<string, string>>;
   /** 사람 강조 큰 이름표 글(World ID → 글, -509). */
   personHighlights: Readonly<Record<string, string>>;
@@ -121,6 +165,8 @@ export interface ViewerState {
   focusOn(input: unknown): CommandResult;
   setMode(input: unknown): CommandResult;
   setLayers(input: unknown): void;
+  /** 내용이 같으면 바꾸지 않는다. undefined 면 레거시 이름표 모드로 돌아간다. */
+  setPersonLabels(input: Readonly<Record<string, readonly ViewerLabelCell[]>> | undefined): void;
   /** 내용이 같으면 바꾸지 않는다. 비우면 모두 지운다. */
   setPersonBadges(input: Readonly<Record<string, string>> | undefined): void;
   setPersonHighlights(input: Readonly<Record<string, string>> | undefined): void;
@@ -254,6 +300,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       activated: null,
       targets: new Map(),
       layers: DEFAULT_LAYERS,
+      personLabels: null,
       personBadges: NO_BADGES,
       personHighlights: NO_BADGES,
       personHelmets: NO_HELMETS,
@@ -399,6 +446,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setLayers: (input) => {
         const layers = resolveLayers(input);
         if (!sameLayers(layers, get().layers)) set({ layers });
+      },
+
+      setPersonLabels: (input) => {
+        const merged = mergePersonLabels(get().personLabels, input);
+        if (merged !== get().personLabels) set({ personLabels: merged });
       },
 
       setPersonBadges: (input) => {

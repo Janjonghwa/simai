@@ -67,6 +67,7 @@ import { riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
+import type { ViewerLabelCell } from '@/features/viewer3d/types';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { worldToThree, type ThreePoint } from '@/features/viewer3d/worldCoordinates';
 import { Line } from '@react-three/drei';
@@ -102,6 +103,9 @@ const noRaycast = () => null;
 const NO_LAST_VALID: ThreePoint | null = null;
 // 렌더에서 표시 종류만 고를 때 쓰는 자리표시자. 실제 위치는 useFrame 이 마지막 유효 위치로 정한다.
 const SOME_LAST_VALID = [0, 0, 0] as unknown as ThreePoint;
+const DEFAULT_PERSON_CELLS: readonly ViewerLabelCell[] = Object.freeze([
+  { kind: 'text', text: '미확인' },
+]);
 
 const trackOf = (world: WorldFrame | null, worldId: string): TrackView | undefined =>
   world?.tracks.find((track) => track.worldId === worldId);
@@ -175,7 +179,10 @@ function PersonAvatar({
     viewerStore,
     (s) => s.selected?.type === 'person' && s.selected.id === worldId,
   );
-  // 호스트가 붙인 글(-342 워치 채널 상태). 있으면 이름표를 늘 보인다.
+  // 호스트가 넘긴 사람 이름표 칸 목록(-658 A안). 있으면 World ID 대신 [선택 워치 아이콘 칸 + 이름 칸 + PPE 칸]을 그린다.
+  const useCellLabels = useStore(viewerStore, (s) => s.personLabels !== null);
+  const labelCells = useStore(viewerStore, (s) => s.personLabels?.[worldId] ?? null);
+  // 레거시 문자열 배지(-342, personLabels 를 넘기지 않는 단독 시험·하네스용).
   const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
   // 호스트가 잠깐 켜는 강조(-509 워치 연결 순간). 고리 펄스와 큰 이름표
   const highlight = useStore(viewerStore, (s) => s.personHighlights[worldId] ?? null);
@@ -418,13 +425,22 @@ function PersonAvatar({
           {notWorn && !skeletonOn && (
             <PpeWarningMark fallbackY={pose.kind === 'BODY' ? HELMET_Y : COLUMN_TOP} />
           )}
-          {/* 이름표는 사람 ID 만 늘 보인다. 위험이면 글자 색만 위험 색이고, 예측·확인 불가는 몸 색·투명도로 보인다. */}
-          <LabelSprite
-            text={badge ? `${track.worldId} · ${badge}` : track.worldId}
-            y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
-            height={0.24}
-            color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
-          />
+          {/* A안 이름표(-658): 왼쪽 워치 아이콘 칸 + 이름 칸(+ PPE 칸). World ID·기기 ID·'워치' 글자는 빼고 상세 패널로 옮긴다. */}
+          {useCellLabels ? (
+            <LabelSprite
+              cells={labelCells ?? DEFAULT_PERSON_CELLS}
+              y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
+              height={0.24}
+              color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
+            />
+          ) : (
+            <LabelSprite
+              text={badge ? `${track.worldId} · ${badge}` : track.worldId}
+              y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
+              height={0.24}
+              color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
+            />
+          )}
           {highlight && <PersonHighlight text={highlight} labelY={LABEL_Y + 0.4} />}
         </group>
       </Selectable>

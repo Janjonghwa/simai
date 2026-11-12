@@ -102,6 +102,10 @@ class HealthIntegrationTest {
         jdbc.update("DELETE FROM device_heartbeat WHERE device_id = ?", laptopId);
         jdbc.update("DELETE FROM device WHERE device_id = ?", laptopId);
         jdbc.update("DELETE FROM system_health WHERE gateway_id = ?", gatewayId);
+        jdbc.update("DELETE FROM person_world_merge_log WHERE survivor_world_id IN ("
+                + "SELECT DISTINCT world_id FROM world_track_state WHERE gateway_id = ?)", gatewayId);
+        jdbc.update("DELETE FROM person_unidentified_number_history WHERE world_id IN ("
+                + "SELECT DISTINCT world_id FROM world_track_state WHERE gateway_id = ?)", gatewayId);
         jdbc.update("DELETE FROM skeleton_3d s USING world_track_state w"
                 + " WHERE s.observation_at = w.observation_at AND s.world_id = w.world_id AND w.gateway_id = ?", gatewayId);
         jdbc.update("DELETE FROM world_track_state WHERE gateway_id = ?", gatewayId);
@@ -220,10 +224,12 @@ class HealthIntegrationTest {
             Thread.sleep(200);
             JsonNode unknown = getHealth();
             assertValid(unknown);
-            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.4.0");
+            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.5.0");
             assertThat(unknown.at("/payload").has("re_setup")).isFalse();
             // 1.4.0: Tier 0 가 들고 있는 이벤트 집합의 판(S15P31A101-595)은 늘 싣는다
             assertThat(unknown.at("/payload/held_events_revision").asString()).isNotBlank();
+            assertThat(unknown.at("/payload/watch_names").isArray()).isTrue();
+            assertThat(unknown.at("/payload/person_names").isArray()).isTrue();
 
             // 두 카메라가 재세팅을 요구한다(순서는 camera_id 오름차순으로 내준다)
             long detected = Instant.now().toEpochMilli() - 5_000;

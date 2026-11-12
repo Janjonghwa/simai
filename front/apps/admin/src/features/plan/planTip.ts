@@ -1,4 +1,5 @@
 import { SEVERITY_LABEL } from '@/features/events/constants';
+import { formatPersonFull, type PersonDisplayMap } from '@/features/people/personDisplay';
 import type { TipTone } from '@/features/plan/HoverTip';
 import {
   markFor,
@@ -36,9 +37,13 @@ function personGlyph(mark: PlanMark | undefined, look: TrackLook): string {
   return look === 'unknown' ? '? ' : '';
 }
 
-function personTip(track: WorldTrack, mark: PlanMark | undefined): string {
+function personTip(
+  track: WorldTrack,
+  mark: PlanMark | undefined,
+  personNames?: PersonDisplayMap,
+): string {
   const look = trackLook(track);
-  return `${personGlyph(mark, look)}${track.world_id}${LOOK_LABEL[look]}`;
+  return `${personGlyph(mark, look)}${formatPersonFull(track.world_id, personNames)}${LOOK_LABEL[look]}`;
 }
 
 /** 지금 머무는 대상의 말풍선 글자. 그 사이 대상이 사라졌으면 없다. */
@@ -47,6 +52,7 @@ export function planTip(
   tracks: readonly WorldTrack[],
   zones: readonly PlanZone[],
   marks: PlanMarks,
+  personNames?: PersonDisplayMap,
 ): { text: string; tone?: TipTone } | undefined {
   if (key.startsWith(ZONE_KEY_PREFIX)) {
     const zone = zones.find((z) => zoneKey(z.zoneId) === key);
@@ -55,5 +61,5 @@ export function planTip(
   const track = tracks.find((t) => personKey(t.world_id) === key);
   if (!track) return undefined;
   const mark = markFor(marks.people, trackIds(track));
-  return { text: personTip(track, mark), tone: mark && severityTone(mark.severity) };
+  return { text: personTip(track, mark, personNames), tone: mark && severityTone(mark.severity) };
 }

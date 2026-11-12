@@ -144,6 +144,8 @@ class SiteSceneIntegrationTest {
                     AND NOT EXISTS (SELECT 1 FROM calibration_run) AND NOT EXISTS (SELECT 1 FROM scale_reference)
                     AND NOT EXISTS (SELECT 1 FROM floor_plan) AND NOT EXISTS (SELECT 1 FROM scene_version)
                     AND NOT EXISTS (SELECT 1 FROM bev_frame_set)
+                    AND NOT EXISTS (SELECT 1 FROM watch_display_name_history) AND NOT EXISTS (SELECT 1 FROM person_world_name_history)
+                    AND NOT EXISTS (SELECT 1 FROM person_unidentified_number_history) AND NOT EXISTS (SELECT 1 FROM person_world_merge_log)
                 """, Boolean.class);
         assumeTrue(empty, "다른 시험의 현장 기록이 남아 있어 site_id 바꾸기는 건너뜀");
         int cameras = jdbc.queryForObject("SELECT count(*) FROM camera WHERE site_id = ?", Integer.class, siteId);
@@ -169,6 +171,8 @@ class SiteSceneIntegrationTest {
                     AND NOT EXISTS (SELECT 1 FROM floor_plan) AND NOT EXISTS (SELECT 1 FROM scene_version)
                     AND NOT EXISTS (SELECT 1 FROM bev_frame_set) AND NOT EXISTS (SELECT 1 FROM work_unit)
                     AND NOT EXISTS (SELECT 1 FROM layout_plan) AND NOT EXISTS (SELECT 1 FROM setup_session)
+                    AND NOT EXISTS (SELECT 1 FROM watch_display_name_history) AND NOT EXISTS (SELECT 1 FROM person_world_name_history)
+                    AND NOT EXISTS (SELECT 1 FROM person_unidentified_number_history) AND NOT EXISTS (SELECT 1 FROM person_world_merge_log)
                 """, Boolean.class);
         assumeTrue(empty, "다른 시험의 현장 기록이 남아 있어 report 만 붙은 경우를 만들 수 없어 건너뜀");
         Long reportId = jdbc.queryForObject("""

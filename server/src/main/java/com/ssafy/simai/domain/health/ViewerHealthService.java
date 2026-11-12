@@ -4,6 +4,7 @@ import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.tier0.event.Tier0HeldEvents;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
+import com.ssafy.simai.domain.watch.PersonDisplayNames;
 import com.ssafy.simai.domain.watch.WatchHub;
 import java.time.Clock;
 import java.time.Instant;
@@ -50,7 +51,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.4.0";
+    public static final String SCHEMA_VERSION = "1.5.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
@@ -58,6 +59,7 @@ public class ViewerHealthService {
     private final HealthState state;
     private final SceneCompatibility compatibility;
     private final WatchHub watches;
+    private final PersonDisplayNames personDisplayNames;
     private final Tier0HeldEvents held;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -65,10 +67,12 @@ public class ViewerHealthService {
     private final long linkTimeoutMs;
 
     public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, SceneCompatibility compatibility,
-            WatchHub watches, Tier0HeldEvents held, @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
+            WatchHub watches, PersonDisplayNames personDisplayNames, Tier0HeldEvents held,
+            @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
         this.state = state;
         this.compatibility = compatibility;
         this.watches = watches;
+        this.personDisplayNames = personDisplayNames;
         this.held = held;
         this.jdbc = jdbc;
         this.mapper = mapper;
@@ -124,7 +128,31 @@ public class ViewerHealthService {
         }
         p.set("watches", watches());
         p.put("held_events_revision", held.revision());
+        PersonDisplayNames.Snapshot displayNames = personDisplayNames.snapshotForCurrentSite();
+        p.set("watch_names", watchNames(displayNames.watchNames()));
+        p.set("person_names", personNames(displayNames.personNames()));
         return p;
+    }
+
+    private ArrayNode watchNames(List<PersonDisplayNames.WatchNameItem> items) {
+        ArrayNode array = mapper.createArrayNode();
+        for (PersonDisplayNames.WatchNameItem item : items) {
+            ObjectNode n = array.addObject();
+            n.put("device_id", item.deviceId());
+            n.put("display_name", item.displayName());
+        }
+        return array;
+    }
+
+    private ArrayNode personNames(List<PersonDisplayNames.PersonNameItem> items) {
+        ArrayNode array = mapper.createArrayNode();
+        for (PersonDisplayNames.PersonNameItem item : items) {
+            ObjectNode n = array.addObject();
+            n.put("world_id", item.worldId());
+            n.put("display_name", item.displayName());
+            n.put("name_source", item.nameSource());
+        }
+        return array;
     }
 
     /**

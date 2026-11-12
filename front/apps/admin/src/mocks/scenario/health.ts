@@ -1,3 +1,4 @@
+import { defaultHealthPeopleSnapshot, type HealthPeopleSnapshot } from '@/mocks/peopleNames';
 import {
   cam3DownAt,
   CAMERAS,
@@ -125,11 +126,13 @@ export function viewerHealthAt(
     outage,
     sceneMismatch = false,
     config = MOCK_CONFIG,
+    people,
   }: {
     faults?: boolean;
     outage?: { kind: MockOutage; since: number };
     sceneMismatch?: boolean;
     config?: MockConfig;
+    people?: HealthPeopleSnapshot;
   } = {},
 ): ViewerHealthMessage {
   const down = outage && t - outage.since >= DETECT_MS ? outage.kind : undefined;
@@ -139,8 +142,9 @@ export function viewerHealthAt(
   const asOf = t - AS_OF_LAG_MS;
   // 끊긴 동안은 마지막 world(장애 시작 때)부터 잰다. as_of − t_latest_global 과 같다.
   const latestGlobal = (outage ? Math.min(t, outage.since) : t) - LATEST_GLOBAL_LAG_MS;
+  const peopleSnap = people ?? defaultHealthPeopleSnapshot(t);
   return {
-    schema_version: '1.0.0',
+    schema_version: '1.5.0',
     msg_type: 'viewer_health',
     msg_id: nextMsgId(),
     sent_at: t,
@@ -157,6 +161,9 @@ export function viewerHealthAt(
       scene: sceneOf(sceneMismatch),
       // Tier 0 가 들고 있는 이벤트 집합의 판(1.4.0). mock 은 집합을 한꺼번에 바꾸지 않아 늘 같다.
       held_events_revision: MOCK_HELD_REVISION,
+      watches: peopleSnap.watches,
+      watch_names: peopleSnap.watchNames,
+      person_names: peopleSnap.personNames,
       tier0_health: {
         system_health: system,
         t_latest_global: latestGlobal,

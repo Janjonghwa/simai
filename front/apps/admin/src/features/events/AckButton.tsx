@@ -3,6 +3,7 @@ import { entryStatus, type EventEntry } from '@/features/events/entries';
 import { eventRuleName, eventSubject } from '@/features/events/format';
 import type { EventItem } from '@/features/events/types';
 import { useAckEvent } from '@/features/events/useAckEvent';
+import type { PersonDisplayMap } from '@/features/people/personDisplay';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { Button } from '@simai/ui/components/button';
 
@@ -11,10 +12,12 @@ function AckControl({
   event,
   label,
   zoneName,
+  personNames,
 }: {
   event: EventItem;
   label: string;
   zoneName: ZoneNameOf;
+  personNames?: PersonDisplayMap;
 }) {
   const { ack, pending, error } = useAckEvent(event.event_id);
   const text = pending ? '확인 중…' : label;
@@ -25,7 +28,7 @@ function AckControl({
         disabled={pending}
         focusableWhenDisabled
         // 목록에 「확인」이 여러 개라 어느 경보인지 함께 읽힌다.
-        aria-label={`${eventRuleName(event)} ${eventSubject(event, zoneName)} ${text}`}
+        aria-label={`${eventRuleName(event)} ${eventSubject(event, zoneName, personNames)} ${text}`}
         onClick={() => ack(event.event_sequence)}
       >
         {text}
@@ -47,13 +50,17 @@ export function AckButton({
   entry,
   label = '확인',
   zoneName,
+  personNames,
 }: {
   entry: EventEntry;
   label?: string;
   /** 읽는 이름(aria-label)에 넣을 구역 이름 조회. 목록은 한 번 구해 내려준다. */
   zoneName: ZoneNameOf;
+  personNames?: PersonDisplayMap;
 }) {
   const canAck = useCanAck();
   if (!canAck || entryStatus(entry).kind !== 'alarm') return null;
-  return <AckControl event={entry.event} label={label} zoneName={zoneName} />;
+  return (
+    <AckControl event={entry.event} label={label} zoneName={zoneName} personNames={personNames} />
+  );
 }

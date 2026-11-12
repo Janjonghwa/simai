@@ -1,4 +1,5 @@
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { FloorPlan } from '@/features/plan/FloorPlan';
 import { planMarks } from '@/features/plan/plan';
 import { usePlanBackdrop } from '@/features/plan/usePlanBackdrop';
@@ -31,6 +32,7 @@ export function LivePlan({
 }) {
   const tracks = useRealtimeStore((s) => s.world?.payload.tracks ?? NO_TRACKS);
   const { zones } = useZones();
+  const personNames = usePersonDisplayMap();
   const { entries } = useVisibleLiveEvents();
   const marks = useMemo(() => planMarks(entries), [entries]);
   // 연결이 끊겼거나, 연결은 살아 있어도 world 만 멈췄으면(파이프라인 정지) 위치가 지금 것이 아니다.
@@ -49,6 +51,7 @@ export function LivePlan({
       bounds={bounds}
       backdrop={backdrop}
       coverage={coverage}
+      personNames={personNames}
       className={className}
     />
   );

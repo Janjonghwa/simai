@@ -11,6 +11,7 @@ import { PpeWorkNotice } from '@/features/monitor/PpeWorkNotice';
 import { WorkPpeStatus } from '@/features/monitor/WorkPpeStatus';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
 import { usePpeSnapshot } from '@/features/ppe/usePpe';
+import { WatchBindNotice } from '@/features/watch/WatchBindNotice';
 import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
@@ -76,6 +77,7 @@ function Notices({
       {eventPanel && <WorkPpeStatus />}
       {eventPanel && <PpePolicyNotice />}
       {eventPanel && <PpeWorkNotice />}
+      {eventPanel && <WatchBindNotice />}
       <WatchEscalationNotice />
     </div>
   );

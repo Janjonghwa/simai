@@ -42,6 +42,17 @@ export type ViewerTargetType = (typeof VIEWER_TARGET_TYPES)[number];
 /** 사람에게 붙는 안전모·조끼의 상태(명세 13.3). WORN 만 실물로 그리고 UNKNOWN·NOT_WORN 은 형상 없음(하나라도 미착용이면 머리 위 경고 표식). */
 export type PersonHelmetState = 'WORN' | 'NOT_WORN' | 'UNKNOWN';
 
+/** 3D 사람 이름표의 왼쪽 워치 아이콘 상태(S15P31A101-658 A안). 배정 없는 사람은 워치 칸을 넣지 않는다. */
+export type ViewerLabelWatchStatus = 'connected' | 'disconnected';
+
+/**
+ * 3D 사람 이름표 칸(S15P31A101-658 A안).
+ * 왼쪽 워치 아이콘 칸·사람 이름 칸·뒤따르는 PPE 칸을 문자열 이어붙이기 대신 칸 목록으로 넘긴다.
+ * 추후 PPE 아이콘 칸 등도 같은 배열에 더할 수 있게 태그드 유니온으로 둔다.
+ */
+export type ViewerLabelCell =
+  { kind: 'watch'; status: ViewerLabelWatchStatus } | { kind: 'text'; text: string };
+
 export interface ViewerTarget {
   type: ViewerTargetType;
   id: string;
@@ -229,8 +240,13 @@ export interface Viewer3DProps {
    */
   avatarMesh?: 'auto' | 'off';
   /**
-   * 사람 이름표 뒤에 붙일 짧은 글(World ID → 글, -342 워치 채널 상태 등, 선택 사항). 사람 이름표(사람 ID) 끝에 ` · 글` 로 붙는다.
-   * 렌더마다 새 객체를 넘겨도 내용이 같으면 다시 그리지 않는다. 사람 이름을 넣지 않는다(익명 World ID 원칙).
+   * 사람 이름표 칸 목록(World ID → 칸 배열, S15P31A101-658 A안, 선택 사항).
+   * 넘기면 기존 World ID 문자열 이름표 대신 한 이름표 안에 `[선택 워치 아이콘 칸, 이름 칸, ...PPE 칸]` 을 그린다.
+   * World ID·기기 ID·"워치" 글자는 넣지 않는다. 내용이 같으면 다시 그리지 않는다.
+   */
+  personLabels?: Readonly<Record<string, readonly ViewerLabelCell[]>>;
+  /**
+   * 레거시 사람 이름표 뒤에 붙일 짧은 글(World ID → 글, -342, 선택 사항). `personLabels` 를 넘기지 않을 때만 쓰인다.
    */
   personBadges?: Readonly<Record<string, string>>;
   /**
