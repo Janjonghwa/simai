@@ -116,7 +116,8 @@ public class SceneService {
     }
 
     /** 관리 API 와 같은 Scene 버전 형식(SceneAdminController.VERSION) */
-    private static final Pattern SCENE_VERSION = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,62}$");
+    // 세팅 맵 버전은 scene-job-<uuid>-<uuid>(83자)·scene-preview-job-…(91자)라 63자 제한이면 조회 전에 404 였다(-644). 컬럼은 text.
+    private static final Pattern SCENE_VERSION = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,159}$");
 
     /**
      * 버전을 지정한 Scene 보기(GET /api/scenes/{sceneVersion}/view, S15P31A101-613). /api/scenes/current 와 같은 모양

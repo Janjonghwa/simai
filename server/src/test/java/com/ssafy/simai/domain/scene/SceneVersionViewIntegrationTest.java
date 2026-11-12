@@ -74,6 +74,21 @@ class SceneVersionViewIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void 세팅_맵처럼_긴_버전도_보인다() throws Exception {
+        // 세팅 워커가 만드는 버전 모양(scene-job-<job uuid>-<uuid>, 83자). 63자 제한이던 때는 404 였다(-644).
+        String v = "scene-job-df141aed-4f0d-4434-9704-c75140197c29-" + java.util.UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO scene_version (scene_version, site_id, calibration_version, state, gltf_key, is_upper_bound, valid_from)
+                VALUES (?,?,?,?,?,false,now())
+                """, v, site, cal, "CANDIDATE", "scenes/setup.glb");
+        mvc.perform(get("/api/scenes/{v}/view", v).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scene_version").value(v));
+        mvc.perform(get("/api/scenes/{v}/view", "s" + "x".repeat(160)).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("SCENE_VERSION_NOT_FOUND"));
+    }
+
     private String scene(String name, String state, String gltf) {
         String v = "scene-view-" + name + "-" + suffix;
         jdbc.update("""
