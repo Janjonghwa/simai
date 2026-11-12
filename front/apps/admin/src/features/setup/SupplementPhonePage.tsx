@@ -77,7 +77,7 @@ export function SupplementPhonePage({ sessionId }: { sessionId: string }) {
         <h1 className="text-lg font-semibold">맵 보강 촬영</h1>
         <p className="text-sm text-muted-foreground">
           {session
-            ? `세팅 세션 ${session.setup_session_id.slice(0, 8)} · 올린 파일 ${capture.supplement?.media.length ?? 0}개`
+            ? `올린 파일 ${capture.supplement?.media.length ?? 0}개`
             : sessionQuery.error
               ? '세팅 세션을 불러오지 못했습니다'
               : '세팅 세션을 불러오는 중'}

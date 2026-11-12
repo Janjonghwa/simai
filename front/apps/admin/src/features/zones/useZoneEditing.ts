@@ -22,6 +22,7 @@ import {
   editedBox,
   formWithPatch,
   ghostsOf,
+  NEW_KEY,
   newSurfaceDraft,
   newZoneForm,
   nextZoneName,
@@ -79,11 +80,14 @@ function usePendingPublish(
  * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면
  * 이은 구역의 작업면 모드로 열고, 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
  * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 이때 편집 모드를 끝낸다).
+ * addOnDemand 이면 새 구역 양식은 openAdd 를 불러야 열리고(그 전까지 collapsed), cancelAdd 나 추가 성공으로 다시 접힌다.
+ * 접힌 동안에는 3D 에도 새 구역 상자를 내리지 않는다.
  */
 export function useZoneEditing(
   onCommitted?: () => void,
   workLayoutId?: number | null,
   setupLayoutSync?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync,
+  addOnDemand = false,
 ) {
   const viewport = useSpatialViewport()!;
   const { zones, zonesRaw, zonesFailed } = viewport;
@@ -99,7 +103,11 @@ export function useZoneEditing(
   const { zone, key } = target;
   const [excludedLayoutId, setExcludedLayoutId] = useState<number | null>(null);
   const withoutNewSurface = workLayoutId != null && excludedLayoutId === workLayoutId;
+  // 새 구역 양식을 열어 둔 상태(addOnDemand 일 때만 쓴다). 다른 구역으로 옮겨도 그대로다.
+  const [adding, setAdding] = useState(false);
   const { orphan } = picked;
+  // 고른 기존 구역도 작업면 카드도 열어 둔 새 구역 양식도 없어 패널이 추가 단추 하나만 보이는 상태.
+  const collapsed = addOnDemand && !adding && zone === null && orphan === null;
   useRefreshSurfacesOnOpen();
   useClearObjectPickOnClose(pickedObjectId !== null, viewport.clearSelection);
 
@@ -169,10 +177,10 @@ export function useZoneEditing(
   );
 
   // ---- 3D 와 주고받기 -----------------------------------------------------------------------
-  // 구역 없는 작업면을 골랐을 때는 고치는 상자가 없다(삭제만 한다).
+  // 구역 없는 작업면을 골랐을 때는 고치는 상자가 없다(삭제만 한다). 양식이 접혀 있을 때도 없다.
   const boxEdit = useMemo(
-    () => (orphan ? null : boxEditOf({ key, zone, zoneBox, surface, surfaceValid })),
-    [orphan, key, zone, zoneBox, surface, surfaceValid],
+    () => (orphan || collapsed ? null : boxEditOf({ key, zone, zoneBox, surface, surfaceValid })),
+    [orphan, collapsed, key, zone, zoneBox, surface, surfaceValid],
   );
   const ghosts = useMemo(() => ghostsOf(drafts, key, zones, links), [drafts, key, zones, links]);
   const onBoxChange = useBoxChange({ key, zone, linked, surface, zoneBox });
@@ -197,6 +205,7 @@ export function useZoneEditing(
     publish: () => apply.publish.mutateAsync(),
     target,
     onCommitted,
+    onAdded: addOnDemand ? () => setAdding(false) : undefined,
   });
 
   // ---- 고치기 -------------------------------------------------------------------------------
@@ -220,7 +229,22 @@ export function useZoneEditing(
   const pick = (value: string) => {
     commit.disarm();
     setExcludedLayoutId(null);
+    if (value === NEW_KEY) setAdding(true);
     target.pick(value);
+  };
+  // 새 구역 양식을 처음 값으로 돌린다: 입력하던 초안과 작업면 제외를 버린다.
+  const resetNewZone = () => {
+    removeZoneDraft(NEW_KEY);
+    setExcludedLayoutId(null);
+  };
+  const openAdd = () => {
+    resetNewZone();
+    setAdding(true);
+  };
+  const cancelAdd = () => {
+    resetNewZone();
+    commit.clearNotice();
+    setAdding(false);
   };
   const restore = () => {
     if (!zone) return;
@@ -249,6 +273,7 @@ export function useZoneEditing(
     toggleNewSurface: () => setExcludedLayoutId(withoutNewSurface ? null : (workLayoutId ?? null)),
     shapeLocked,
     orphan,
+    collapsed,
     dirty,
     changedIds,
     pendingIds,
@@ -260,6 +285,9 @@ export function useZoneEditing(
     showRetry: commit.showRetry,
     notice: commit.notice,
     pick,
+    openAdd,
+    // 취소 단추를 보일지도 이 값으로 가른다(양식이 늘 열려 있는 화면에는 취소가 없다).
+    cancelAdd: addOnDemand ? cancelAdd : undefined,
     setName,
     setSeverity,
     setSurfaceTop,

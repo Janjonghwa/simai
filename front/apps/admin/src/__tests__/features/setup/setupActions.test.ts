@@ -19,11 +19,12 @@ const stateOf = (overrides: Partial<SetupActionState> = {}): SetupActionState =>
   stage: 0,
   embedded: false,
   startDisabled: false,
-  previewReady: false,
+  mapComplete: false,
   sessionRunning: false,
   cancelPending: false,
   showHeightNotice: false,
-  zonesPublished: false,
+  canFinish: false,
+  finishPending: false,
   ...overrides,
 });
 
@@ -39,9 +40,9 @@ describe('deriveSetupActions: 단계별 단추', () => {
     expect(summary(stateOf({ stage: 0, startDisabled: true }))).toEqual(['*다음(꺼짐)']);
   });
 
-  it('2단계는 맵이 준비돼야 다음이 켜지고, 진행 중 세션은 세팅 취소가 먼저 있다', () => {
+  it('2단계는 3D 맵을 다 만들어야 다음이 켜지고, 진행 중 세션은 세팅 취소가 먼저 있다', () => {
     expect(summary(stateOf({ stage: 1 }))).toEqual(['*다음(꺼짐)']);
-    expect(summary(stateOf({ stage: 1, previewReady: true }))).toEqual(['*다음']);
+    expect(summary(stateOf({ stage: 1, mapComplete: true }))).toEqual(['*다음']);
     expect(summary(stateOf({ stage: 1, sessionRunning: true }))).toEqual([
       '세팅 취소',
       '*다음(꺼짐)',
@@ -52,10 +53,20 @@ describe('deriveSetupActions: 단계별 단추', () => {
     ]);
   });
 
+  it('2단계 다음이 꺼진 이유는 단추 title 로 알리고, 켜지면 title 이 없다', () => {
+    const blocked = deriveSetupActions(stateOf({ stage: 1 }), handlers());
+    expect(blocked[0]).toMatchObject({
+      disabled: true,
+      title: '3D 맵을 다 만들면 넘어갈 수 있어요',
+    });
+    const ready = deriveSetupActions(stateOf({ stage: 1, mapComplete: true }), handlers());
+    expect(ready[0]?.title).toBeUndefined();
+  });
+
   it('높이 불일치 안내가 있으면 세팅 취소 뒤에 카메라 다시 맞추기가 놓이고 주 단추는 맨 오른쪽이다', () => {
     expect(
       summary(
-        stateOf({ stage: 1, sessionRunning: true, showHeightNotice: true, previewReady: true }),
+        stateOf({ stage: 1, sessionRunning: true, showHeightNotice: true, mapComplete: true }),
       ),
     ).toEqual(['세팅 취소', '카메라 다시 맞추기', '*다음']);
   });
@@ -63,36 +74,42 @@ describe('deriveSetupActions: 단계별 단추', () => {
   it('세션 취소·카메라 다시 맞추기는 2단계에만 있다', () => {
     const extras = { sessionRunning: true, showHeightNotice: true };
     expect(summary(stateOf({ stage: 0, ...extras }))).toEqual(['*다음']);
-    expect(summary(stateOf({ stage: 2, ...extras }))).toEqual(['다시 보정']);
+    expect(summary(stateOf({ stage: 2, ...extras }))).toEqual(['다시 보정', '*작업 관리로(꺼짐)']);
   });
 });
 
 describe('deriveSetupActions: 구역 단계', () => {
-  it('단독 화면은 구역을 발행하기 전에는 다시 보정만 있고, 발행하면 맨 오른쪽에 작업 관리로가 생긴다', () => {
-    expect(summary(stateOf({ stage: 2 }))).toEqual(['다시 보정']);
-    expect(summary(stateOf({ stage: 2, zonesPublished: true }))).toEqual([
-      '다시 보정',
-      '*작업 관리로',
-    ]);
+  it('단독 화면은 구역 단계에서 맨 오른쪽에 작업 관리로가 항상 있고, 세팅을 완료할 수 있어야 켜진다', () => {
+    expect(summary(stateOf({ stage: 2 }))).toEqual(['다시 보정', '*작업 관리로(꺼짐)']);
+    expect(summary(stateOf({ stage: 2, canFinish: true }))).toEqual(['다시 보정', '*작업 관리로']);
   });
 
-  it('날짜 화면 안은 마지막 단추가 다음이고 구역을 발행하기 전에는 이유와 함께 꺼져 있다', () => {
+  it('날짜 화면 안은 마지막 단추가 다음이고 세팅을 완료할 수 있어야 켜진다', () => {
     const before = deriveSetupActions(stateOf({ stage: 2, embedded: true }), handlers());
     expect(before.map((button) => button.label)).toEqual(['다시 보정', '다음']);
     expect(before[1]).toMatchObject({ primary: true, disabled: true });
-    expect(before[1]?.title).toBeTruthy();
 
     const after = deriveSetupActions(
-      stateOf({ stage: 2, embedded: true, zonesPublished: true }),
+      stateOf({ stage: 2, embedded: true, canFinish: true }),
       handlers(),
     );
     expect(after[1]).toMatchObject({ label: '다음', primary: true, disabled: false });
     expect(after[1]?.title).toBeUndefined();
   });
 
+  it('세팅 완료를 요청하는 동안은 마지막 단추가 꺼진다', () => {
+    for (const embedded of [false, true]) {
+      const buttons = deriveSetupActions(
+        stateOf({ stage: 2, embedded, canFinish: true, finishPending: true }),
+        handlers(),
+      );
+      expect(buttons[1]).toMatchObject({ primary: true, disabled: true });
+    }
+  });
+
   it('embedded 여부는 구역 단계 밖의 단추를 바꾸지 않는다', () => {
     for (const stage of [0, 1] as const) {
-      const state = { stage, previewReady: true, sessionRunning: true, showHeightNotice: true };
+      const state = { stage, mapComplete: true, sessionRunning: true, showHeightNotice: true };
       expect(summary(stateOf({ ...state, embedded: true }))).toEqual(summary(stateOf(state)));
     }
   });
@@ -114,8 +131,8 @@ describe('deriveSetupActions: 구역 단계', () => {
     expect(on.recheckCameras).toHaveBeenCalledTimes(1);
     run(stateOf({ stage: 2 }), '다시 보정');
     expect(on.restart).toHaveBeenCalledTimes(1);
-    run(stateOf({ stage: 2, embedded: true, zonesPublished: true }), '다음');
-    run(stateOf({ stage: 2, zonesPublished: true }), '작업 관리로');
+    run(stateOf({ stage: 2, embedded: true, canFinish: true }), '다음');
+    run(stateOf({ stage: 2, canFinish: true }), '작업 관리로');
     expect(on.finish).toHaveBeenCalledTimes(2);
   });
 });
@@ -125,7 +142,7 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
     const on = handlers();
     const config = toWorkAction(
       deriveSetupActions(
-        stateOf({ stage: 1, sessionRunning: true, showHeightNotice: true, previewReady: true }),
+        stateOf({ stage: 1, sessionRunning: true, showHeightNotice: true, mapComplete: true }),
         on,
       ),
     );
@@ -148,7 +165,7 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
           sessionRunning: true,
           cancelPending: true,
           showHeightNotice: true,
-          previewReady: true,
+          mapComplete: true,
         }),
         handlers(),
       ),
@@ -159,16 +176,24 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
     ]);
   });
 
-  it('꺼진 주 단추는 enabled false 와 이유를 그대로 넘긴다', () => {
-    const config = toWorkAction(
+  it('꺼진 주 단추는 enabled false 와 이유(title)를 그대로 넘긴다', () => {
+    const blocked = toWorkAction(deriveSetupActions(stateOf({ stage: 1 }), handlers()));
+    expect(blocked).toMatchObject({ label: '다음', enabled: false });
+    expect(blocked?.title).toBeTruthy();
+
+    const zoneStage = toWorkAction(
       deriveSetupActions(stateOf({ stage: 2, embedded: true }), handlers()),
     );
-    expect(config).toMatchObject({ label: '다음', enabled: false });
-    expect(config?.title).toBeTruthy();
-    expect(config?.secondary?.map((item) => item.label)).toEqual(['다시 보정']);
+    expect(zoneStage).toMatchObject({ label: '다음', enabled: false });
+    expect(zoneStage?.secondary?.map((item) => item.label)).toEqual(['다시 보정']);
   });
 
   it('주 단추가 없으면 null 이다', () => {
-    expect(toWorkAction(deriveSetupActions(stateOf({ stage: 2 }), handlers()))).toBeNull();
+    const restartOnly = deriveSetupActions(stateOf({ stage: 2 }), handlers()).filter(
+      (button) => !button.primary,
+    );
+    expect(restartOnly.map((button) => button.label)).toEqual(['다시 보정']);
+    expect(toWorkAction(restartOnly)).toBeNull();
+    expect(toWorkAction([])).toBeNull();
   });
 });

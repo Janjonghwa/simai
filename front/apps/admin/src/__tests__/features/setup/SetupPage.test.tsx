@@ -1,11 +1,9 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { requestCameraHeightDefaults } from '@/features/setup/api';
-import {
-  markSetupZonesCommitted,
-  resetSetupFlowStore,
-  useSetupFlowStore,
-} from '@/features/setup/setup.store';
+import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
+import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
+import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import { SetupPage } from '@/features/setup/SetupPage';
 import type { SetupSessionResponse } from '@/features/setup/types';
 import type {
@@ -15,6 +13,7 @@ import type {
   ViewerTarget,
 } from '@/features/viewer3d';
 import { api } from '@/lib/api';
+import { problem } from '@/mocks/problem';
 import { sceneHandlers } from '@/mocks/scenes';
 import { buildCoverageGuidePayload, createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
@@ -162,6 +161,28 @@ function pickNewModel() {
   fireEvent.click(within(dialog).getByRole('button', { name: /^새로 3D 공간 만들기/ }));
 }
 
+/** 단계 줄('보정 단계')에서 지금 단계(aria-current="step")인 항목의 글. */
+const currentStepText = () =>
+  within(screen.getByRole('list', { name: '보정 단계' }))
+    .getAllByRole('listitem')
+    .find((step) => step.getAttribute('aria-current') === 'step')?.textContent;
+
+/** 세팅 세션이 만들어져 화면이 보정·생성(2단계)으로 넘어간 것을 기다린다(세션 id 는 화면에 보이지 않는다). */
+async function waitForCalibrationStep() {
+  await waitFor(() => expect(currentStepText()).toBe('2보정·생성'), POLL_WAIT);
+}
+
+/** 화면이 이 세션을 따라가기(세팅 흐름 저장소의 진행 세션)를 기다린다. */
+async function waitForTrackedSession(sessionId: string) {
+  await waitFor(
+    () => expect(useSetupFlowStore.getState().activeSessionId).toBe(sessionId),
+    POLL_WAIT,
+  );
+}
+
+/** 화면 전체의 글(대화상자 등 틀 밖 요소 포함). */
+const pageText = () => document.body.textContent ?? '';
+
 describe('설치 · 보정 작업 연결', () => {
   it('작업 id 없이 열면 세팅을 시작하지 않고 작업 관리로 돌려보내는 안내를 보인다', () => {
     renderSetupPage(null);
@@ -213,6 +234,14 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(screen.getByRole('list', { name: '보정 단계' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '규칙' })).toBeNull();
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('1단계 머리줄에는 세팅 1단계 안내만 보이고 세션·보정 버전 같은 코드 글은 없다', async () => {
+    renderSetupPage();
+    await screen.findByLabelText('카메라 1 높이 (m)');
+    expect(screen.getByText('세팅 1단계 · 카메라 확인')).toBeTruthy();
+    expect(pageText()).not.toContain('세션 019a');
+    expect(pageText()).not.toContain('cal-');
   });
 
   it('단계 줄은 표시만 하고 눌러도 이동하지 않아 카메라 연결 안내가 한 번만 보인다', async () => {
@@ -289,7 +318,7 @@ describe('설치 · 보정 1단계 화면', () => {
     });
 
     // 제출한 높이가 다음 기본값 조회에도 반영되고 2단계로 넘어간다.
-    expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+    await waitForCalibrationStep();
     const nextDefaults = await requestCameraHeightDefaults(api);
     expect(nextDefaults.all_present).toBe(true);
     expect(nextDefaults.camera_heights_m).toEqual({
@@ -324,7 +353,7 @@ describe('설치 · 보정 1단계 화면', () => {
       'work_unit_id',
     ]);
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
-    expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+    await waitForCalibrationStep();
   });
 
   it('세팅 시작이 409(SETUP_BLOCKED_BY_LIVE_WORK)로 거절되면 진행 중 작업 종료 안내와 작업 이동 링크를 제공한다', async () => {
@@ -511,7 +540,7 @@ describe('설치 · 보정 1단계 화면', () => {
         work_unit_id: 1,
         camera_heights_m: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
       });
-      expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+      await waitForCalibrationStep();
       expect(screen.queryByRole('dialog')).toBeNull();
     });
 
@@ -621,7 +650,7 @@ describe('설치 · 보정 1단계 화면', () => {
     fireEvent.click(proceedOnFailure);
     pickNewModel();
 
-    expect(await screen.findByText(/세션 019a0000/)).toBeTruthy();
+    await waitForCalibrationStep();
   });
 });
 
@@ -637,7 +666,8 @@ async function startSetupSession() {
   pickNewModel();
   await waitFor(() => expect(setupMock.sessions.size).toBe(1));
   const sessionId = [...setupMock.sessions.keys()][0]!;
-  expect(await screen.findByText(`세션 ${sessionId}`)).toBeTruthy();
+  await waitForCalibrationStep();
+  await waitForTrackedSession(sessionId);
   return { ...view, sessionId };
 }
 
@@ -648,6 +678,7 @@ function trackRequestedPaths() {
   return paths;
 }
 
+/** 미리보기 맵만 있는 세션(정밀 3D 맵을 굽는 중): 보정·생성의 '다음' 은 아직 꺼져 있다. */
 const PREVIEW_PATCH = {
   stage: 'PREVIEW_AND_VLM_DRAFT',
   status: 'PREVIEW_AND_VLM_DRAFT',
@@ -655,6 +686,19 @@ const PREVIEW_PATCH = {
   preview_scene_version: 'scene-preview-1',
   calibration_version: 'cal-8',
 } as const;
+
+/** 정밀 3D 맵까지 끝난 세션: 보정·생성의 '다음' 이 켜지고 구역 단계로 갈 수 있다. */
+const FINAL_PATCH = {
+  stage: 'COMPLETED',
+  status: 'COMPLETED',
+  progress_pct: 100,
+  preview_scene_version: 'scene-preview-1',
+  scene_version: 'scene-setup-final-1',
+  calibration_version: 'cal-8',
+} as const;
+
+/** 세팅 완료를 이미 한 세션의 완료 시각. */
+const SETUP_COMPLETED_AT_MS = 1_800_000_000_000;
 
 /** 카메라 2번 높이만 41cm 어긋난 높이 검산(서버 height_checks). */
 const HEIGHT_MISMATCH = {
@@ -692,13 +736,23 @@ async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionRespo
   await editCam2Height();
 }
 
-/** 미리보기 맵이 준비돼 켜진 '다음' 을 눌러 구역 단계로 가고 구역 편집 도구 대역을 돌려준다. */
-async function goToZoneStep() {
+/** 3D 맵이 다 만들어져 켜진 '다음' 을 눌러 맵 보강 촬영 창을 건너뛰고 구역 단계에 들어선다. */
+async function enterZoneStep() {
   const next = (await screen.findByRole('button', { name: '다음' })) as HTMLButtonElement;
   await waitFor(() => expect(next.disabled).toBe(false), POLL_WAIT);
   fireEvent.click(next);
+  const dialog = await screen.findByRole('dialog', { name: '맵 보강 촬영' }, POLL_WAIT);
+  fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+}
+
+/** 구역 단계에 들어서서 구역 편집 도구 대역을 돌려준다. */
+async function goToZoneStep() {
+  await enterZoneStep();
   return screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
 }
+
+/** 구역 단계 맨 오른쪽 단추(작업 관리로). */
+const finishButton = () => screen.getByRole('button', { name: '작업 관리로' }) as HTMLButtonElement;
 
 const progressNow = () =>
   Number(screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'));
@@ -766,7 +820,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
     const retried = setupMock.retryRequests[0]!;
     expect(retried.sessionId).toBe(sessionId);
-    expect(await screen.findByText(`세션 ${retried.retriedSessionId}`)).toBeTruthy();
+    await waitForTrackedSession(retried.retriedSessionId);
     expect(screen.queryByRole('alert', { name: '세팅 실패 안내' })).toBeNull();
     // 새 세션은 0%부터다(서버 값이 내려가면 표시값도 내려간다).
     await waitFor(() => expect(progressNow()).toBe(0));
@@ -805,9 +859,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('CANCELLED_BY_ADMIN');
     expect(setupMock.retryRequests[0]!.sessionId).toBe(sessionId);
     expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
-    expect(
-      await screen.findByText(`세션 ${setupMock.retryRequests[0]!.retriedSessionId}`),
-    ).toBeTruthy();
+    await waitForTrackedSession(setupMock.retryRequests[0]!.retriedSessionId);
     expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
   }, 20_000);
 
@@ -859,7 +911,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
   }, 20_000);
 
-  it('보정·생성은 맵이 준비돼야 다음이 켜지고 저절로 구역으로 넘어가지 않으며 처음부터 다시 단추는 없다', async () => {
+  it('보정·생성은 정밀 3D 맵이 다 만들어져야 다음이 켜지고(미리보기 맵만으로는 꺼짐) 저절로 구역으로 넘어가지 않으며 처음부터 다시 단추는 없다', async () => {
     const { sessionId } = await startSetupSession();
 
     const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('listitem');
@@ -874,22 +926,54 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
     expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(true);
 
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
-    await waitFor(
-      () =>
-        expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
-          false,
-        ),
-      POLL_WAIT,
-    );
-    // 맵이 준비돼도 보정·생성에 머문다.
+    // 미리보기 맵이 도착해도 정밀 3D 맵을 굽는 동안은 꺼져 있고 이유를 단추 title 로 알린다.
+    setupMock.updateSession(sessionId, {
+      ...PREVIEW_PATCH,
+      stage: 'BAKING_TEXTURE',
+      status: 'BAKING_TEXTURE',
+    });
+    await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    const next = () => screen.getByRole('button', { name: '다음' }) as HTMLButtonElement;
+    expect(next().disabled).toBe(true);
+    expect(next().title).toBe('3D 맵을 다 만들면 넘어갈 수 있어요');
+    expect(screen.queryByTestId('zones-page-stub')).toBeNull();
+
+    // 정밀 3D 맵이 끝나면 켜지지만 저절로 넘어가지는 않는다.
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    await waitFor(() => expect(next().disabled).toBe(false), POLL_WAIT);
+    expect(next().title).toBe('');
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
     expect(steps[1]!.getAttribute('aria-current')).toBe('step');
 
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(next());
+    const dialog = await screen.findByRole('dialog', { name: '맵 보강 촬영' }, POLL_WAIT);
+    fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
     expect(await screen.findByTestId('zones-page-stub')).toBeTruthy();
     expect(steps[2]!.getAttribute('aria-current')).toBe('step');
     expect(steps[1]!.getAttribute('aria-current')).toBeNull();
+  }, 20_000);
+
+  it('머리줄과 3D 칸 제목에 세션 id·보정 버전·Scene 버전 같은 코드 글을 보이지 않는다', async () => {
+    const { sessionId } = await startSetupSession();
+    const hiddenCodes = [sessionId, '세션 019a', 'cal-8', 'scene-preview', 'scene-setup-final'];
+
+    // 보정·생성: 1단계 안내 글도, 방금 만든 세션 id 도 없다.
+    expect(screen.queryByText('세팅 1단계 · 카메라 확인')).toBeNull();
+    expect(pageText()).not.toContain(sessionId);
+    expect(pageText()).not.toContain('세션 019a');
+
+    // 서버가 보정 버전·미리보기 Scene 을 알려 줘도 머리줄에는 맵 단계 이름만 나온다.
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    const badge = await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    expect(badge.textContent).toBe('미리보기 맵');
+    expect(await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT)).toBeTruthy();
+    for (const code of hiddenCodes) expect(pageText()).not.toContain(code);
+
+    // 구역 단계(정밀 3D 맵이 끝난 뒤): 3D 칸 제목은 맵 단계 이름뿐이다.
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    expect(await goToZoneStep()).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '정밀 3D 맵' })).toBeTruthy();
+    for (const code of hiddenCodes) expect(pageText()).not.toContain(code);
   }, 20_000);
 
   it('이 세션의 미리보기 맵을 버전으로 받아(/view, 지금 관제 Scene 과 무관) 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
@@ -899,7 +983,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     const viewport = await screen.findByTestId('setup-preview-viewport', undefined, POLL_WAIT);
     expect(await within(viewport).findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
+    // 3D 칸 제목은 맵 단계 이름뿐이다(Scene 버전은 제목에 붙이지 않는다).
+    expect(screen.getByRole('heading', { name: '미리보기 맵' })).toBeTruthy();
     // 확정 전(CANDIDATE) Scene 을 그대로 뷰어에 넘긴다.
     expect(fakeViewer.props?.scene).toMatchObject({
       ok: true,
@@ -917,9 +1002,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(within(table).getByText('41.0 cm')).toBeTruthy();
     expect(screen.getByText('높이 차이 허용 5 cm')).toBeTruthy();
     expect(screen.getByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeTruthy();
-    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    // 미리보기 맵만 있는 동안(정밀 3D 맵을 굽는 중)은 구역 단계로 넘어갈 수 없다.
+    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(true);
   }, 20_000);
 
   it('세션의 Scene 을 받지 못하면(/view 404) 3D 칸 없이 진행 카드 열만 보인다', async () => {
@@ -941,9 +1025,9 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(requested).not.toContain('/api/scenes/current');
   }, 20_000);
 
-  it('높이가 안 맞아도 다음은 켜져 구역 단계로 갈 수 있고, 카메라 다시 맞추기도 함께 보인다', async () => {
+  it('높이가 안 맞아도 3D 맵이 다 만들어졌으면 다음이 켜져 구역 단계로 갈 수 있고, 카메라 다시 맞추기도 함께 보인다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH, ...HEIGHT_MISMATCH });
 
     expect(
       await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT),
@@ -953,45 +1037,46 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
   }, 20_000);
 
-  it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 다음으로 구역 단계에 가면 정식 Scene 이 와도 수락해 만든 구역이 남고 3D 는 그 버전으로 바뀐다', async () => {
+  it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 정밀 3D 맵이 끝난 뒤 구역 단계에 가면 수락해 만든 구역은 Scene 이 새 버전으로 바뀌어도 남고 3D 는 그 버전으로 바뀐다', async () => {
     const requested = trackRequestedPaths();
     const { sessionId } = await startSetupSession();
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
 
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    expect(screen.queryByTestId('zones-page-stub')).toBeNull();
+    // 보강 촬영으로 정밀 3D 맵을 다시 굽는 중이어도 이전 정밀 맵이 있어 구역 단계에 갈 수 있다(세션을 계속 조회한다)
+    setupMock.updateSession(sessionId, {
+      ...FINAL_PATCH,
+      stage: 'BAKING_TEXTURE',
+      status: 'BAKING_TEXTURE',
+      progress_pct: 90,
+    });
 
     expect(await goToZoneStep()).toBeTruthy();
-    expect(screen.getByRole('status', { name: '배경 맵 단계 상태' }).textContent).toContain(
-      '미리보기 맵',
+    // AI 패널에는 제목과 초안만 있고 배경 맵 단계 상태 줄(맵 단계·Scene 버전)은 없다.
+    expect(screen.getByRole('heading', { name: 'AI 위험 구역 초안' })).toBeTruthy();
+    expect(screen.queryByRole('status', { name: '배경 맵 단계 상태' })).toBeNull();
+    expect(screen.getByRole('heading', { name: '정밀 3D 맵' })).toBeTruthy();
+    await waitFor(
+      () => expect(requested).toContain('/api/scenes/scene-setup-final-1/view'),
+      POLL_WAIT,
     );
-    await waitFor(() => expect(requested).toContain('/api/scenes/scene-preview-1/view'), POLL_WAIT);
 
     fireEvent.click(await screen.findByRole('button', { name: '창가 개구부 추락 주의 수락' }));
     expect(await screen.findByText('반영됨', undefined, POLL_WAIT)).toBeTruthy();
 
-    setupMock.updateSession(sessionId, {
-      stage: 'COMPLETED',
-      status: 'COMPLETED',
-      progress_pct: 100,
-      scene_version: 'scene-setup-final-1',
-    });
-
+    // 다시 구운 정밀 3D 맵이 도착해 Scene 이 바뀐다
+    setupMock.updateSession(sessionId, { scene_version: 'scene-setup-final-2' });
     await waitFor(
-      () =>
-        expect(screen.getByRole('status', { name: '배경 맵 단계 상태' }).textContent).toContain(
-          '정밀 3D 맵',
-        ),
-      POLL_WAIT,
-    );
-    await waitFor(
-      () => expect(requested).toContain('/api/scenes/scene-setup-final-1/view'),
+      () => expect(requested).toContain('/api/scenes/scene-setup-final-2/view'),
       POLL_WAIT,
     );
     await waitFor(
       () =>
         expect(fakeViewer.props?.scene).toMatchObject({
           ok: true,
-          raw: { scene_version: 'scene-setup-final-1' },
+          raw: { scene_version: 'scene-setup-final-2' },
         }),
       POLL_WAIT,
     );
@@ -1002,7 +1087,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
   it('구역 단계는 왼쪽 3D 와 오른쪽 구역 편집 도구(옆 칸)가 같은 선택을 쓴다: 패널에서 고르면 3D 가 고르고 초점을 옮기고, 3D 에서 고르면 패널이 따른다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
     // 구역 단계의 구역은 세션 구역 목록 기준이다(-615): 지금 관제 구역 둘을 이어 쓰는 목록
     const keep = (zoneId: string) => ({
       zone_id: zoneId,
@@ -1023,13 +1108,13 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(await screen.findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
     await waitFor(() => expect(panel.getAttribute('data-viewer-ready')).toBe('true'), POLL_WAIT);
     expect(fakeViewer.props?.layers).toMatchObject({ workSurfaces: 'interactive' });
-    expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
-    // 3D 배경은 지금 관제 Scene 이 아니라 이 세션의 미리보기(확정 전)다.
+    expect(screen.getByRole('heading', { name: '정밀 3D 맵' })).toBeTruthy();
+    // 3D 배경은 지금 관제 Scene 이 아니라 이 세션의 정밀 3D 맵(확정 전)이다.
     await waitFor(
       () =>
         expect(fakeViewer.props?.scene).toMatchObject({
           ok: true,
-          raw: { scene_version: 'scene-preview-1', state: 'CANDIDATE' },
+          raw: { scene_version: 'scene-setup-final-1', state: 'CANDIDATE' },
         }),
       POLL_WAIT,
     );
@@ -1060,7 +1145,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       }
     });
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
     await goToZoneStep();
 
     const list = await screen.findByRole('list', { name: 'AI 구역 초안 목록' }, POLL_WAIT);
@@ -1112,9 +1197,11 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(ghostIds()).toEqual([]);
   }, 20_000);
 
-  it('머리글에는 구역 편집(관제 이동) 단추가 없고, 구역을 발행하면 맨 오른쪽에 작업 관리로 하나만 생긴다', async () => {
+  it('머리글에는 구역 편집(관제 이동) 단추가 없고 구역 단계에서만 맨 오른쪽에 작업 관리로 하나가 있으며, 오른쪽 칸에 구역 목록·완료 카드는 없다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    await screen.findByLabelText('맵 단계 정밀 3D 맵', undefined, POLL_WAIT);
+    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
     await goToZoneStep();
 
     const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('listitem');
@@ -1122,22 +1209,134 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(steps[2]!.textContent).toBe('3구역');
     expect(steps[2]!.getAttribute('aria-current')).toBe('step');
     expect(screen.queryByRole('button', { name: '구역 편집' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
-
-    act(() => markSetupZonesCommitted());
 
     const restart = screen.getByRole('button', { name: '다시 보정' });
-    const toWork = screen.getByRole('button', { name: '작업 관리로' });
     expect(screen.getAllByRole('button', { name: /작업 관리/ })).toHaveLength(1);
-    expect(restart.nextElementSibling).toBe(toWork);
-    expect(toWork.nextElementSibling).toBeNull();
-    fireEvent.click(toWork);
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '1' } });
+    expect(restart.nextElementSibling).toBe(finishButton());
+    expect(finishButton().nextElementSibling).toBeNull();
+    expect(finishButton().disabled).toBe(false);
+
+    // 오른쪽 칸은 AI 초안 패널과 구역 편집뿐이다(세팅 구역 목록 카드·완료 전 세팅 완료 카드·불러오기 단추 없음)
+    expect(screen.getByRole('heading', { name: 'AI 위험 구역 초안' })).toBeTruthy();
+    expect(screen.getByTestId('zones-page-stub')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '세팅 구역 목록' })).toBeNull();
+    expect(screen.queryByTestId('setup-zone-plan-card')).toBeNull();
+    expect(screen.queryByRole('heading', { name: '세팅 완료' })).toBeNull();
+    expect(screen.queryByTestId('setup-complete-card')).toBeNull();
+    expect(screen.queryByRole('button', { name: '세팅 완료' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '지금 구역 불러오기' })).toBeNull();
   }, 20_000);
+
+  describe('구역 단계 마지막 단추의 세팅 완료(C17)', () => {
+    async function zoneStepSession() {
+      const { sessionId } = await startSetupSession();
+      setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+      await goToZoneStep();
+      return sessionId;
+    }
+    const workPage = { to: '/work', search: { workUnitId: '1' } };
+
+    it('저장한 구역이 없으면 확인한 뒤 세팅을 완료하고 그 작업의 작업 관리로 이동한다', async () => {
+      const sessionId = await zoneStepSession();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      fireEvent.click(finishButton());
+
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith(workPage));
+      expect(confirm).toHaveBeenCalledWith(EMPTY_ZONE_PLAN_CONFIRM);
+      expect(setupMock.sessions.get(sessionId)?.setup_completed_at_ms ?? null).not.toBeNull();
+    }, 20_000);
+
+    it('저장한 구역 목록이 있으면 묻지 않고 완료한다', async () => {
+      const sessionId = await zoneStepSession();
+      setupMock.zonePlans.set(sessionId, {
+        items: [
+          { zone_id: 'z-04', source: 'MANUAL', candidate_id: null, zone: null, surface: null },
+        ],
+        revision: 1,
+        updatedAt: 0,
+      });
+      const confirm = vi.spyOn(window, 'confirm');
+      fireEvent.click(finishButton());
+
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith(workPage));
+      expect(confirm).not.toHaveBeenCalled();
+      expect(setupMock.sessions.get(sessionId)?.setup_completed_at_ms ?? null).not.toBeNull();
+    }, 20_000);
+
+    it('저장한 구역이 없다는 확인을 취소하면 완료하지 않고 구역 단계에 머문다', async () => {
+      const sessionId = await zoneStepSession();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      fireEvent.click(finishButton());
+
+      await waitFor(() => expect(confirm).toHaveBeenCalledWith(EMPTY_ZONE_PLAN_CONFIRM));
+      await waitFor(() => expect(finishButton().disabled).toBe(false));
+      expect(navigateMock).not.toHaveBeenCalled();
+      expect(setupMock.sessions.get(sessionId)?.setup_completed_at_ms ?? null).toBeNull();
+      expect(screen.getByTestId('zones-page-stub')).toBeTruthy();
+    }, 20_000);
+
+    it('세팅 완료가 거부되면 구역 편집 아래에 안내를 보이고 이동하지 않으며 다시 누를 수 있다', async () => {
+      await zoneStepSession();
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      server.use(
+        http.post('*/api/setup-sessions/:id/complete', () =>
+          problem(409, 'SETUP_ZONE_WORLD_MISMATCH', 'World 좌표가 바뀐 세팅'),
+        ),
+      );
+      fireEvent.click(finishButton());
+
+      const message = await screen.findByText(
+        SETUP_COMPLETE_ERROR_TEXT.SETUP_ZONE_WORLD_MISMATCH,
+        undefined,
+        POLL_WAIT,
+      );
+      const alert = message.closest('[role="alert"]')!;
+      expect(alert).toBeTruthy();
+      expect(
+        screen.getByTestId('zones-page-stub').compareDocumentPosition(alert) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(navigateMock).not.toHaveBeenCalled();
+      expect(finishButton().disabled).toBe(false);
+    }, 20_000);
+
+    it('이미 세팅을 완료한 세션은 완료를 다시 부르지 않고 바로 이동하며 오른쪽 칸에는 완료 상태 카드만 남는다', async () => {
+      const requested = trackRequestedPaths();
+      const { sessionId } = await startSetupSession();
+      setupMock.updateSession(sessionId, {
+        ...FINAL_PATCH,
+        setup_completed_at_ms: SETUP_COMPLETED_AT_MS,
+      });
+      await enterZoneStep();
+
+      expect(await screen.findByTestId('setup-complete-card')).toBeTruthy();
+      expect(screen.getByText(/세팅을 완료했습니다/)).toBeTruthy();
+      expect(screen.queryByTestId('zones-page-stub')).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'AI 위험 구역 초안' })).toBeNull();
+      expect(finishButton().disabled).toBe(false);
+      fireEvent.click(finishButton());
+
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith(workPage));
+      expect(requested.some((path) => path.endsWith('/complete'))).toBe(false);
+    }, 20_000);
+
+    it('이전 모델 재사용 세션은 구역 단계에 들어서면 빈 구역 목록을 지금 관제 구역으로 채운다(보정·생성 단계에서는 채우지 않는다)', async () => {
+      const { sessionId } = await startSetupSession();
+      setupMock.updateSession(sessionId, { ...FINAL_PATCH, mode: 'REUSE' });
+      await screen.findByLabelText('맵 단계 정밀 3D 맵', undefined, POLL_WAIT);
+      expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
+
+      await goToZoneStep();
+      await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1), POLL_WAIT);
+      const items = setupMock.zonePlans.get(sessionId)!.items as { zone_id: string; zone: null }[];
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.every((item) => item.zone_id && item.zone === null)).toBe(true);
+    }, 20_000);
+  });
 
   it('작업 관리에서 다시 열면(이 브라우저에 세션이 남은 채) 맵이 준비된 세션은 보정·생성에서 열리고 다음으로 구역에 간다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
     await goToZoneStep();
     cleanup();
 
@@ -1147,16 +1346,6 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(await goToZoneStep()).toBeTruthy();
     expect(screen.queryByLabelText('카메라 1 높이 (m)')).toBeNull();
     expect(setupMock.submittedBodies).toHaveLength(1);
-  }, 20_000);
-
-  it('구역을 이미 발행한 세션도 보정·생성에서 열리고, 다음으로 구역 단계에 가면 작업 관리로 단추가 있다', async () => {
-    const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, zones_committed_at: 1_793_848_135_600 });
-
-    expect(await screen.findByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
-    expect(await goToZoneStep()).toBeTruthy();
-    expect(screen.getByRole('button', { name: '작업 관리로' })).toBeTruthy();
   }, 20_000);
 
   it('이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 그 작업의 세팅을 처음부터 연다', async () => {

@@ -1,5 +1,6 @@
 import { STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import type { ViewerEditBox } from '@/features/viewer3d';
+import { ZONES_KEY } from '@/features/zones/api';
 import type { ZoneCommitRequest } from '@/features/zones/types';
 import { ARM_MS } from '@/features/zones/useArmedDelete';
 import { NEW_KEY } from '@/features/zones/zoneEditModel';
@@ -127,14 +128,22 @@ async function renderPage({
   surfaces = true,
   onCommitted,
   workLayoutId,
-}: { surfaces?: boolean; onCommitted?: () => void; workLayoutId?: number } = {}) {
+  addOnDemand,
+}: {
+  surfaces?: boolean;
+  onCommitted?: () => void;
+  workLayoutId?: number;
+  addOnDemand?: boolean;
+} = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <ZonesPage onCommitted={onCommitted} workLayoutId={workLayoutId} />
+      <ZonesPage onCommitted={onCommitted} workLayoutId={workLayoutId} addOnDemand={addOnDemand} />
     </QueryClientProvider>,
   );
-  await screen.findByRole('option', { name: /개구부 구역/ });
+  // 접힌 화면에는 드롭다운이 없어 구역 목록이 도착했는지를 캐시로 본다.
+  if (addOnDemand) await waitFor(() => expect(client.getQueryData(ZONES_KEY)).toBeDefined());
+  else await screen.findByRole('option', { name: /개구부 구역/ });
   // 작업면 목록과 구성 묶음 목록이 도착해야 이은 작업면·발행 전이 맞다.
   if (surfaces) await waitFor(() => expect(client.getQueryData(['static-objects'])).toBeDefined());
   await waitFor(() => expect(client.getQueryData(['config-bundles'])).toBeDefined());
@@ -1599,5 +1608,153 @@ describe('작업 레이아웃 구역 편집', () => {
       ).toBe(true),
     );
     expect(writes()).not.toContain(COMMIT);
+  });
+});
+
+describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
+  /** 접힌 패널: 구역 고르기·이름·고소 작업면 없이 구역 추가 단추뿐이다. */
+  const expectCollapsed = () => {
+    expect(screen.queryByRole('combobox', { name: '구역 선택' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '고소 작업면' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '취소' })).toBeNull();
+    expect(
+      within(screen.getByRole('region', { name: '구역 편집 도구' })).getAllByRole('button'),
+    ).toEqual([button('구역 추가')]);
+  };
+  const openAdd = () => act(() => button('구역 추가').click());
+
+  it('처음에는 구역 추가 단추 하나만 보이고 3D 에도 새 구역 상자를 내리지 않는다', async () => {
+    await renderPage({ addOnDemand: true });
+    expectCollapsed();
+    expect(useBoxEditStore.getState().boxEdit).toBeNull();
+  });
+
+  it('구역 추가를 누르면 새 구역 양식 전체와 취소 단추가 나오고 3D 손잡이가 올라온다', async () => {
+    await renderPage({ addOnDemand: true });
+    openAdd();
+    expect(picker().value).toBe(NEW_KEY);
+    expect(nameInput().value).toBe('구역 1');
+    expect(screen.getByRole('region', { name: '고소 작업면' })).toBeTruthy();
+    // 시작 단추는 사라지고 아래 제출 단추가 구역 추가다(같은 이름의 단추가 둘이면 getByRole 이 실패한다).
+    expect(button('구역 추가')).toBeTruthy();
+    expect(button('취소')).toBeTruthy();
+    expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: 'surface:__new__' });
+  });
+
+  it('취소하면 다시 접히고 입력하던 이름·초안을 버려, 다시 펼치면 새 양식이다', async () => {
+    await renderPage({ addOnDemand: true });
+    openAdd();
+    rename('입력하다 만 구역');
+    expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeDefined();
+
+    act(() => button('취소').click());
+    expectCollapsed();
+    expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeUndefined();
+    expect(useBoxEditStore.getState().boxEdit).toBeNull();
+    expect(writes()).toEqual([]);
+
+    openAdd();
+    expect(nameInput().value).toBe('구역 1');
+  });
+
+  it('기존 구역을 3D 에서 고르면 접히지 않고 저장·되돌리기·삭제가 있는 전체 패널이다', async () => {
+    await renderPage({ addOnDemand: true });
+    selectInViewer('zone:z-04');
+    await waitFor(() => expect(picker().value).toBe('z-04'));
+    expect(nameInput().value).toBe('개구부 구역');
+    expect(button('저장')).toBeTruthy();
+    expect(button('되돌리기')).toBeTruthy();
+    expect(button('삭제')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '취소' })).toBeNull();
+  });
+
+  it('처음부터 구역이 골라져 있으면 접히지 않는다', async () => {
+    viewport.selectedKey = 'zone:z-04';
+    await renderPage({ addOnDemand: true });
+    expect(picker().value).toBe('z-04');
+  });
+
+  it('기존 구역을 보다가 드롭다운에서 새 구역 추가를 고르면 새 구역 양식이 열린다', async () => {
+    await renderPage({ addOnDemand: true });
+    selectInViewer('zone:z-04');
+    await waitFor(() => expect(picker().value).toBe('z-04'));
+
+    pick(NEW_KEY);
+    expect(picker().value).toBe(NEW_KEY);
+    expect(nameInput().value).toBe('구역 1');
+    expect(button('취소')).toBeTruthy();
+  });
+
+  it('3D 에서 작업면 카드가 뜨면 전체 패널이고, 선택이 풀리면 다시 접힌다', async () => {
+    await renderPage({ addOnDemand: true });
+    selectInViewer('object:ws-0a0c0002');
+    expect(await screen.findByRole('region', { name: '작업면' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '구역 선택' })).toBeTruthy();
+
+    selectInViewer(null);
+    await waitFor(() => expect(orphanCard()).toBeNull());
+    expectCollapsed();
+  });
+
+  it('추가에 성공하면 만든 구역을 고르지 않고 접히며 onCommitted 를 부른다', async () => {
+    const onCommitted = vi.fn();
+    await renderPage({ addOnDemand: true, onCommitted });
+    openAdd();
+    rename('새로 만든 구역');
+    act(() => button('구역 추가').click());
+
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull());
+    expectCollapsed();
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toMatchObject({ zone: { op: 'CREATE', body: { name: '새로 만든 구역' } } });
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+    expect(viewport.selectedKey).toBeNull();
+    expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeUndefined();
+    expect((await fetchList('/api/zones')).map((zone) => zone.name)).toContain('새로 만든 구역');
+
+    // 다시 펼치면 새 양식이다(방금 만든 구역이 열리지 않는다).
+    openAdd();
+    expect(picker().value).toBe(NEW_KEY);
+    expect(nameInput().value).not.toBe('새로 만든 구역');
+  });
+
+  it('추가가 실패하면 접히지 않고 양식과 입력을 그대로 두고 알림을 보인다', async () => {
+    await renderPage({ addOnDemand: true });
+    openAdd();
+    rename('실패할 구역');
+    failCommit(409, 'CONCURRENT_EDIT');
+    act(() => button('구역 추가').click());
+
+    expect(
+      await screen.findByText(
+        '그 사이 다른 버전이 저장되어 최신 구역을 다시 받았습니다. 확인한 뒤 다시 저장하세요.',
+      ),
+    ).toBeTruthy();
+    expect(nameInput().value).toBe('실패할 구역');
+    expect(button('취소')).toBeTruthy();
+  });
+
+  it('접힌 상태에서도 구역 목록을 못 불러왔다는 알림이 보인다', async () => {
+    server.use(http.get('*/api/zones', () => HttpResponse.json({ status: 500 }, { status: 500 })));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ZonesPage addOnDemand />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      '구역 목록을 불러오지 못했습니다.',
+    );
+    expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull();
+    expect(button('구역 추가')).toBeTruthy();
+  });
+
+  it('addOnDemand 가 없으면 양식이 늘 열려 있고 취소 단추가 없다', async () => {
+    await renderPage();
+    expect(picker().value).toBe(NEW_KEY);
+    expect(nameInput().value).toBe('구역 1');
+    expect(screen.queryByRole('button', { name: '취소' })).toBeNull();
   });
 });

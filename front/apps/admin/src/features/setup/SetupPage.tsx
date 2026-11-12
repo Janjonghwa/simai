@@ -28,7 +28,11 @@ import {
 } from '@/features/setup/setup.store';
 import { deriveSetupActions, toWorkAction } from '@/features/setup/setupActions';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
-import { SetupCompleteCard, setupCompleted } from '@/features/setup/SetupCompleteCard';
+import {
+  canCompleteSetup,
+  SetupCompleteCard,
+  setupCompleted,
+} from '@/features/setup/SetupCompleteCard';
 import { blockedLiveWorkId, isSetupBlockedByLiveWork } from '@/features/setup/setupErrorMessage';
 import { SetupMap } from '@/features/setup/SetupMap';
 import {
@@ -37,12 +41,13 @@ import {
   CameraMapPanel,
   CameraPanel,
 } from '@/features/setup/SetupPanels';
-import { SetupZonePlanCard } from '@/features/setup/SetupZonePlanCard';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
-import { SupplementCaptureCard } from '@/features/setup/SupplementCaptureCard';
+import { SupplementModal } from '@/features/setup/SupplementModal';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
+import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
+import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
   submitErrorText,
@@ -74,15 +79,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 미리보기 맵이 준비되면(85%) 3D 미리보기와 보정 검증 결과 표를 보이고 '다음' 으로 구역 단계에 간다(저절로 넘어가지 않는다).
 // 3단계(구역): 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
 // 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
-// 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
+// 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 세팅 완료 뒤 작업 관리(/work?workUnitId=) 복귀.
 // 단추(다음·다시 보정·세션 취소·카메라 다시 맞추기·작업 관리로)는 setupActions 가 한 곳에서 정한다. 단독 화면(/setup)은 머리줄에 그리고,
 // 날짜 화면 안(embedded)은 같은 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록하며 구역 단계의 마지막 단추는 '다음'(onDone)이다.
-// 구역 단계 오른쪽 칸 끝에 「맵 보강 촬영(선택)」 카드(S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
-// 구역 단계 오른쪽 칸 맨 위에 「세팅 완료」 카드(C17, S15P31A101-615): 구역 목록 적용·이 세션 맵 켜기·구성 묶음 발행을 한 번에 한다.
+// 「맵 보강 촬영(선택)」은 보정·생성의 '다음'에서 뜨는 창이다(SupplementModal, S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
+// 구역 단계의 마지막 단추가 세팅 완료(C17, S15P31A101-615)를 먼저 부르고(useCompleteSetup) 성공하면 넘어간다: 구역 목록 적용·이 세션 맵 켜기·
+// 구성 묶음 발행을 한 번에 한다. 실패하면 구역 편집 아래에 안내하고 머문다. 완료하면 오른쪽 칸에는 「세팅 완료」 상태 카드만 남는다.
 // 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
 // 완료 뒤에는 구역 편집·AI 초안 수락을 감춘다(완료 뒤 구역 수정은 관제 화면 구역 편집).
 // 완료 전 구역 단계의 구역 편집·AI 초안 수락·3D 구역 표시는 관제 구역이 아니라 세션 구역 목록(-612) 기준이다(ZoneSourceContext).
-// 이전 모델 재사용은 처음에 지금 관제 구역으로 목록을 채우고, 새 모델은 같은 World 일 때만 「지금 구역 불러오기」를 둔다(SetupZonePlanCard).
+// 이전 모델 재사용은 구역 단계에 들어오면 빈 목록을 지금 관제 구역으로 한 번 채운다(useSeedSetupZonePlan). 새 모델은 빈 목록에서 시작한다.
 
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
@@ -93,6 +99,8 @@ const TONE_BADGE: Record<SetupTone, string> = {
 
 /** 세션이 아직 없는 1단계 머리에 보이는 글자. */
 const STEP1_LABEL = '세팅 1단계 · 카메라 확인';
+/** 구역 단계의 '다시 보정'을 눌렀을 때 묻는 글. */
+const RESTART_CONFIRM_TEXT = '다시 보정할까요? 카메라 연결 관리부터 다시 시작합니다.';
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
@@ -126,10 +134,10 @@ export interface SetupPageProps {
   workUnitId?: number;
   /**
    * 날짜 화면(작업 관리) 안에 끼운다: 자기 제목과 머리줄 단추를 그리지 않고 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록한다.
-   * 구역 단계의 마지막 단추는 '다음' 이다(구역을 발행하면 켜진다). 단독 화면(/setup)은 머리줄에 단추를 둔다.
+   * 구역 단계의 마지막 단추는 '다음' 이다(세팅을 완료하고 넘어간다). 단독 화면(/setup)은 머리줄에 단추를 둔다.
    */
   embedded?: boolean;
-  /** 구역 단계의 마지막 단추를 눌렀을 때. 주면 작업 관리로 이동하지 않고 이것을 부른다(날짜 화면이 다음 단계로 넘긴다). */
+  /** 구역 단계의 마지막 단추로 세팅을 완료한 뒤. 주면 작업 관리로 이동하지 않고 이것을 부른다(날짜 화면이 다음 단계로 넘긴다). */
   onDone?: () => void;
 }
 
@@ -157,11 +165,12 @@ function SetupWorkPage({
   // 위험 확인창이 열린 동안 보이는 쌍 이름(열 때 붙잡아 둔다: 열린 사이 안내가 바뀌어도 문장이 비지 않는다). 닫혀 있으면 null.
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // 보정·생성의 '다음'을 눌렀을 때 뜨는 맵 보강 촬영 창.
+  const [supplementOpen, setSupplementOpen] = useState(false);
   const navigate = useNavigate();
 
   const activeSessionId = useSetupFlowStore((s) => s.activeSessionId);
   const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
-  const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
 
   // 새로고침·다른 화면에서 돌아왔을 때: 이 작업에 진행 중인(또는 끝난) 세션이 있으면 이어받아 대기 화면·구역 단계로 연다.
   // 세션 ID 를 메모리에만 두면 다시 시작하다 409 가 나므로 서버의 work_unit.active_setup_session_id 를 정본으로 본다.
@@ -231,6 +240,7 @@ function SetupWorkPage({
   if (foreignSession && stage !== 0) setStage(0);
   // 1단계를 떠났는데(이어받기 등) 방식 고르기 창·위험 확인창이 남아 있으면 닫는다.
   if (modelPickerOpen && stage !== 0) setModelPickerOpen(false);
+  if (supplementOpen && stage !== 1) setSupplementOpen(false);
   if (riskConfirmPairs !== null && stage !== 0) setRiskConfirmPairs(null);
   useEffect(() => {
     if (foreignSession) setActiveSetupSessionId(null);
@@ -255,10 +265,16 @@ function SetupWorkPage({
     cancelMutation.mutate(sessionId);
   }, [sessionId, cancelMutation]);
 
-  // 세팅을 완료했다(C17). 완료 뒤에는 구역 편집·초안 수락을 감추고 마지막 단추를 켠다
+  // 구역 단계의 '다시 보정'은 카메라 연결 관리(1단계)부터 다시 시작하므로 세팅 취소처럼 한 번 묻는다.
+  const handleRestart = useCallback(() => {
+    if (!window.confirm(RESTART_CONFIRM_TEXT)) return;
+    go(0);
+  }, [go]);
+
+  // 세팅을 완료했다(C17). 완료 뒤에는 구역 편집·초안 수락을 감춘다
   const completed = setupCompleted(currentSession);
-  // 이 세션의 구역을 발행했거나(이 브라우저에서 방금, 또는 서버 기록) 세팅을 완료했다.
-  const zonesPublished = zonesCommitted || currentSession?.zones_committed_at != null || completed;
+  const completion = useCompleteSetup(currentSession);
+  useSeedSetupZonePlan(stage === ZONE_STAGE && !completed ? currentSession : null);
 
   // 세팅 구역 단계의 구역 편집·초안 수락은 세션 구역 목록에 저장한다(-615). 완료 뒤에는 관제 구역을 본다
   const zoneSource = useMemo<SetupZoneSource | null>(
@@ -385,30 +401,45 @@ function SetupWorkPage({
     setStage(0);
   }, [currentSession]);
 
-  // 구역 단계의 마지막 단추: 날짜 화면 안이면 그 화면이 다음 단계로 넘기고, 단독 화면이면 그 작업의 작업 관리로 돌아간다.
-  const finish = useCallback(() => {
+  // 구역 단계의 마지막 단추: 아직 완료 전이면 세팅을 먼저 완료하고(취소·실패면 머문다), 날짜 화면 안이면 그 화면이 다음 단계로 넘기고,
+  // 단독 화면이면 그 작업의 작업 관리로 돌아간다.
+  const runCompletion = completion.run;
+  const finish = useCallback(async () => {
+    if (!completed && !(await runCompletion())) return;
     if (onDone) onDone();
     else void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
-  }, [onDone, navigate, workUnitId]);
+  }, [completed, runCompletion, onDone, navigate, workUnitId]);
+
+  // 보정·생성의 '다음': 보강 촬영을 할 수 있으면(미리보기 맵이 있다) 창으로 먼저 보이고, 아니면 바로 구역 단계로 간다.
+  const confirmCalibration = useCallback(() => {
+    if (supplementVisible(currentSession)) setSupplementOpen(true);
+    else go(ZONE_STAGE);
+  }, [currentSession, go]);
+
+  const enterZoneStage = useCallback(() => {
+    setSupplementOpen(false);
+    go(ZONE_STAGE);
+  }, [go]);
 
   const actions = deriveSetupActions(
     {
       stage,
       embedded,
       startDisabled: !heightValidation.valid || restartPending,
-      previewReady: waiting.previewReady,
+      mapComplete: waiting.mapComplete,
       sessionRunning,
       cancelPending: cancelMutation.isPending,
       showHeightNotice: waiting.showHeightNotice,
-      zonesPublished,
+      canFinish: completed || canCompleteSetup(currentSession),
+      finishPending: completion.pending,
     },
     {
       start: requestStep1Submit,
-      confirm: () => go(ZONE_STAGE),
-      restart: () => go(0),
+      confirm: confirmCalibration,
+      restart: handleRestart,
       cancelSession: handleCancelSession,
       recheckCameras: returnToStep1,
-      finish,
+      finish: () => void finish(),
     },
   );
   useWorkAction(embedded ? toWorkAction(actions) : null);
@@ -469,15 +500,7 @@ function SetupWorkPage({
             )}
           </>
         )}
-        <span className="font-mono text-muted-foreground">
-          {currentSession?.setup_session_id
-            ? `세션 ${currentSession.setup_session_id}${
-                currentSession.calibration_version ? ` · ${currentSession.calibration_version}` : ''
-              }`
-            : stage === 0
-              ? STEP1_LABEL
-              : ''}
-        </span>
+        {stage === 0 && <span className="text-muted-foreground">{STEP1_LABEL}</span>}
         {!embedded && (
           <div className="ml-auto flex flex-wrap gap-2">
             {actions.map((action) => (
@@ -593,14 +616,8 @@ function SetupWorkPage({
                 </Button>
               </div>
             )}
-            {currentSession && <SetupCompleteCard session={currentSession} />}
-            {currentSession && !completed && <SetupZonePlanCard session={currentSession} />}
-            {currentSession && !completed && (
-              <ZonesPage placement="inline" setupLayoutSync={setupLayoutSync} />
-            )}
             {!completed && (
               <AiZoneDraftsPanel
-                sceneTier={waiting.sceneTier}
                 draftsResponse={zoneDraftsQuery.data}
                 acceptedDraftIds={acceptedDraftIds}
                 discardedDraftIds={discardedDraftIds}
@@ -610,13 +627,28 @@ function SetupWorkPage({
                 onDiscardDraft={discardSetupZoneDraft}
               />
             )}
-            {supplementVisible(currentSession) && currentSession && (
-              <SupplementCaptureCard session={currentSession} />
+            {currentSession && !completed && (
+              <ZonesPage placement="inline" addOnDemand setupLayoutSync={setupLayoutSync} />
+            )}
+            {!completed && completion.error && (
+              <Alert role="alert" className="text-xs">
+                {completion.error}
+              </Alert>
+            )}
+            {currentSession && (
+              <SetupCompleteCard session={currentSession} applied={completion.applied} />
             )}
           </SetupZoneStep>
         </ZoneSourceContext>
       )}
       {modelPickerOpen && <ModelPickerDialog onNew={pickNewModel} />}
+      {supplementOpen && currentSession && (
+        <SupplementModal
+          session={currentSession}
+          onNext={enterZoneStage}
+          onCancel={() => setSupplementOpen(false)}
+        />
+      )}
     </div>
   );
 }

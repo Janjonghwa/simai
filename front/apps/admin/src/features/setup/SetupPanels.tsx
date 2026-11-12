@@ -11,11 +11,9 @@ import {
   CANDIDATE_KIND_LABEL,
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
-  sessionSceneVersion,
   type CoverageCameraView,
   type HeightFieldView,
   type HeightWarningItem,
-  type SceneTierStatusView,
   type SetupTone,
   type Step1CoverageView,
 } from '@/features/setup/setup';
@@ -411,9 +409,8 @@ export function CameraHeightPanel({
   );
 }
 
-/** 미리보기 맵 · 정밀 Scene 상태 배지 및 AI 위험 구역 초안(수락·버리기) 패널. */
+/** AI 위험 구역 초안(수락·버리기) 패널. */
 export function AiZoneDraftsPanel({
-  sceneTier,
   draftsResponse,
   acceptedDraftIds,
   discardedDraftIds,
@@ -422,7 +419,6 @@ export function AiZoneDraftsPanel({
   onAcceptDraft,
   onDiscardDraft,
 }: {
-  sceneTier: SceneTierStatusView;
   draftsResponse: SetupZoneDraftsResponse | null;
   /** 구역으로 만든 초안. */
   acceptedDraftIds: readonly string[];
@@ -435,33 +431,9 @@ export function AiZoneDraftsPanel({
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
   const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
-  const tierTone: SetupTone =
-    sceneTier.tier === 'FINAL' ? 'ok' : sceneTier.tier === 'PREVIEW' ? 'active' : 'idle';
-  const activeSceneVersion = sessionSceneVersion(sceneTier);
 
   return (
-    <Panel title="AI 위험 구역 초안 · 배경 맵 상태" fill={1}>
-      <div
-        role="status"
-        aria-label="배경 맵 단계 상태"
-        className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs"
-      >
-        <div className="flex items-center gap-2">
-          <Badge
-            className={cn(
-              'h-auto rounded px-2 py-0.5 font-mono text-xs font-semibold',
-              TONE_BADGE[tierTone],
-            )}
-          >
-            {sceneTier.label}
-          </Badge>
-          <span className="text-muted-foreground">{sceneTier.description}</span>
-        </div>
-        {activeSceneVersion && (
-          <span className="font-mono text-[11px] text-muted-foreground">{activeSceneVersion}</span>
-        )}
-      </div>
-
+    <Panel title="AI 위험 구역 초안" fill={1}>
       {draftsResponse?.status === 'QUEUED' || draftsResponse?.status === 'NOT_REQUESTED' ? (
         <p className="text-xs text-muted-foreground">AI 구역 초안 분석 중</p>
       ) : visibleDrafts.length === 0 ? (
