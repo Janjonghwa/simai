@@ -223,6 +223,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `established_calibration_version` | text | FK>calibration_version.calibration_version |  | 좌표계를 정한 보정 |
 | `current_floor_plan_id` | bigint | FK>floor_plan.floor_plan_id |  | 현재 BEV 평면도 |
 | `migrated_from` | jsonb |  |  | 좌표계 이전 이력 |
+| `rule_profile` | text | NN, 기본 OPERATION, CK(OPERATION·CLASSROOM_TEST) |  | 현장 규칙 기준. 이후 모든 구성 묶음이 이 값으로 규칙 판을 고른다(이전 묶음 상속보다 우선, V61, S15P31A101-654) |
 | `created_at` | ts | NN |  |  |
 
 #### `camera` — 카메라 장비 정보
@@ -315,7 +316,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `components` | jsonb | NN | `config_bundle.components` | 구성 요소별 version·sha256·uri |
 | `calibration_version` | text | FK>calibration_version.calibration_version, NN | `config_bundle.components.calibration` |  |
 | `applied_at` | ts |  | `config_ack.applied_at` | 현장 적용 시각(APPLIED 받은 뒤) |
-| `rule_profile` | text | CK(OPERATION·CLASSROOM_TEST) |  | 묶음에 넣은 규칙 묶음(7.4 운영·교실 시험 프로필). 다음 발행의 기본값(V6, S15P31A101-120) |
+| `rule_profile` | text | CK(OPERATION·CLASSROOM_TEST) |  | 묶음에 넣은 규칙 묶음(7.4 운영·교실 시험 프로필). V61 부터 발행 기본값은 `site.rule_profile`(V6 S15P31A101-120, S15P31A101-654) |
 
 #### `config_bundle_item` — 묶음에 들어간 구역·규칙·형상 버전 목록
 
@@ -1368,6 +1369,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `lead_team` | text |  |  | 담당 조 이름(LLM 에는 보내지 않고 서버가 보고서 머리말에만 붙임) |
 | `layout_id` | bigint | FK>layout_plan.layout_id |  | 이 작업이 쓰는 가상 레이아웃(`V23 layout_plan` 연결, 후속 구현에서 추가) |
 | `work_type` | text |  |  | 공종 코드(예: `SCAFFOLD_INSTALL`·`OPENING_WORK`·`HIGH_PLACE`·`MATERIAL_HANDLING`·`EQUIPMENT_OP`·`FLOOR_FINISHING`·`GENERAL`, 비개인정보라 LLM·검색 입력 허용, 후속 구현에서 추가) |
+| `helmet_required`·`vest_required` | boolean | NN, 기본 true |  | 작업 중 안전모·조끼 필수(ppe_policy 1.2.0 의 helmet·vest). 작업 시작 때 끌 수 있다(V61, S15P31A101-654) |
 | `status` | text | NN, CK(PLANNED·IN_PROGRESS·DONE), 기본 'PLANNED' |  | 작업 상태: `PLANNED`(계획) → `IN_PROGRESS`(진행, 작업 시작) → `DONE`(종료, 작업 종료). 한 시점에 현장당 `IN_PROGRESS` 는 최대 1개(후속 구현에서 추가, S15P31A101-426) |
 | `actual_started_at` | ts |  |  | `POST /api/work-units/{id}/start` 실제 작업 시작 시각(예정 `starts_at` 과 별도 기록, 후속 구현에서 추가) |
 | `actual_ended_at` | ts | CK(>= actual_started_at) |  | `POST /api/work-units/{id}/end` 실제 작업 종료 시각(예정 `ends_at` 과 별도 기록, 후속 구현에서 추가) |

@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.site;
 
+import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Timestamp;
@@ -11,6 +12,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -28,9 +31,10 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 현장(site) 등록·수정(S15P31A101-322, 운영 시드 2단계 docs/design/ec2-deploy.md, 명세 11.1·12.6). MVP 는 현장 하나다(16장, SiteLookup).
  * <pre>
- * GET  /api/sites/current   → {site_id, name, world_origin, established_calibration_version, created_at_ms}  (로그인)
+ * GET  /api/sites/current   → {site_id, name, world_origin, established_calibration_version, rule_profile, created_at_ms}  (로그인)
  * POST /api/sites           {site_id, name, world_origin?} → 201  (관리자, 현장이 없을 때만)
  * PUT  /api/sites/current   {site_id?, name?, world_origin?}       (관리자)
+ * PUT  /api/sites/current/rule-profile {rule_profile} → {rule_profile, bundle, publish_error}  (관리자, S15P31A101-654)
  * </pre>
  * Flyway V2 가 개발 현장(classroom-1)과 카메라를 늘 시드하므로, 운영 현장 ID 로 바꾸는 일은 PUT 의 site_id 로 한다. ID 는 보정 문서의
  * coordinate_frame.site_id 와 같아야 하고 구역·보정·Scene·구성 묶음이 모두 이 ID 에 붙으므로, 그런 기록이 하나라도 붙은 뒤에는 바꾸지 않는다
@@ -51,12 +55,15 @@ class SiteController {
     private final TransactionTemplate transaction;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final ConfigBundleService bundles;
 
-    SiteController(NamedParameterJdbcTemplate jdbc, TransactionTemplate transaction, ObjectMapper mapper, Clock clock) {
+    SiteController(NamedParameterJdbcTemplate jdbc, TransactionTemplate transaction, ObjectMapper mapper, Clock clock,
+            ConfigBundleService bundles) {
         this.jdbc = jdbc;
         this.transaction = transaction;
         this.mapper = mapper;
         this.clock = clock;
+        this.bundles = bundles;
     }
 
     @GetMapping("/api/sites/current")
@@ -82,6 +89,23 @@ class SiteController {
                             .addValue("now", Timestamp.from(clock.instant())));
             return view(siteId);
         });
+    }
+
+    /**
+     * 현장 규칙 기준(운영·교실 시험, 명세 7.2·7.4)을 바꾸고 그 기준으로 새 구성 묶음을 발행한다(S15P31A101-654). 이후 모든 묶음
+     * (세팅 완료·작업 시작·구역 저장)이 이 기준을 따른다. 묶음을 만들지 못해도(보정 없음 등) 설정은 남고 publish_error 에 코드를 싣는다.
+     */
+    @PutMapping("/api/sites/current/rule-profile")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode ruleProfile(@RequestBody(required = false) JsonNode body, @AuthenticationPrincipal Jwt jwt) {
+        JsonNode node = body == null ? null : body.get("rule_profile");
+        String profile = node != null && node.isString() ? node.stringValue() : null;
+        ConfigBundleService.RuleProfileChange change = bundles.changeRuleProfile(profile, Long.parseLong(jwt.getSubject()));
+        ObjectNode out = mapper.createObjectNode();
+        out.put("rule_profile", change.ruleProfile());
+        out.set("bundle", change.bundle() == null ? mapper.nullNode() : change.bundle());
+        out.put("publish_error", change.publishError());
+        return out;
     }
 
     /** 바꿀 칸만 보낸다. world_origin 을 null 로 보내면 비운다 */
@@ -120,8 +144,9 @@ class SiteController {
             // 키를 바꾸면 카메라 FK 가 걸린다. 새 행을 만들고 카메라를 옮긴 뒤 옛 행을 지운다
             jdbc.update("""
                     INSERT INTO site (site_id, name, world_origin, established_calibration_version, current_floor_plan_id,
-                        default_camera_heights_m, migrated_from, created_at)
-                    SELECT :newId, name, world_origin, established_calibration_version, current_floor_plan_id, default_camera_heights_m, migrated_from, created_at
+                        default_camera_heights_m, migrated_from, rule_profile, created_at)
+                    SELECT :newId, name, world_origin, established_calibration_version, current_floor_plan_id, default_camera_heights_m, migrated_from,
+                        rule_profile, created_at
 
                     FROM site WHERE site_id = :id
                     """, params.addValue("newId", newId));
@@ -161,7 +186,7 @@ class SiteController {
 
     private ObjectNode view(String siteId) {
         return jdbc.queryForObject("""
-                SELECT site_id, name, world_origin::text AS world_origin, established_calibration_version, created_at FROM site
+                SELECT site_id, name, world_origin::text AS world_origin, established_calibration_version, rule_profile, created_at FROM site
                 WHERE site_id = :id
                 """, new MapSqlParameterSource("id", siteId), (rs, i) -> {
             ObjectNode n = mapper.createObjectNode();
@@ -170,6 +195,7 @@ class SiteController {
             String origin = rs.getString("world_origin");
             n.set("world_origin", origin == null ? mapper.nullNode() : mapper.readTree(origin));
             n.put("established_calibration_version", rs.getString("established_calibration_version"));
+            n.put("rule_profile", rs.getString("rule_profile"));
             n.put("created_at_ms", rs.getTimestamp("created_at").getTime());
             return n;
         });

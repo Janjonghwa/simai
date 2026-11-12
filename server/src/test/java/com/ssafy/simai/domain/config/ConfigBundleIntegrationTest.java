@@ -117,6 +117,8 @@ class ConfigBundleIntegrationTest {
         jdbc.update("DELETE FROM calibration_document WHERE uploaded_by = ?", adminId);
         jdbc.update("DELETE FROM calibration_version WHERE calibration_version LIKE ?", "cal-test-" + tag + "%");
         jdbc.update("DELETE FROM app_user WHERE user_id = ?", adminId);
+        // 프로필을 지정한 발행·기준 바꾸기는 현장 설정을 바꾼다(S15P31A101-654). 다른 시험에 남기지 않는다
+        jdbc.update("UPDATE site SET rule_profile = 'OPERATION'");
     }
 
     @Test
@@ -309,7 +311,7 @@ class ConfigBundleIntegrationTest {
             JsonNode startPolicy = ppeDocument(startNotice);
             assertThat(startPolicy.get("helmet").asString()).isEqualTo("REQUIRED");
             assertThat(startPolicy.get("vest").asString()).isEqualTo("REQUIRED");
-            assertThat(startPolicy.get("format_version").asString()).isEqualTo("1.1.0");
+            assertThat(startPolicy.get("format_version").asString()).isEqualTo("1.2.0");
             assertThat(startPolicy.get("work_id").longValue()).isEqualTo(work);
             assertThat(startPolicy.get("effective_from_ms").longValue()).isEqualTo(startedAt);
             JsonNode startView = call("GET", "/api/config-bundles/" + startVersion, viewer(), null, 200);
@@ -349,6 +351,89 @@ class ConfigBundleIntegrationTest {
             assertThat(after.at("/ppe_policy/helmet").asString()).isEqualTo("NOT_REQUIRED");
             assertThat(after.at("/ppe_policy/effective_from_ms").longValue()).isEqualTo(endedAt);
         }
+    }
+
+    /** S15P31A101-654: 작업 시작 때 끈 장비는 시작 묶음의 ppe_policy 1.2.0 에 NOT_REQUIRED 로 실리고 작업에도 남는다 */
+    @Test
+    void 작업_시작에서_끈_보호구는_시작_묶음에_NOT_REQUIRED_로_실린다() throws Exception {
+        long work = createWork();
+        assertThat(call("GET", "/api/work-units/" + work, viewer(), null, 200).get("helmet").asString())
+                .as("등록 기본값은 필수").isEqualTo("REQUIRED");
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-q")), 201);
+        assertThat(call("POST", "/api/work-units/" + work + "/start", admin(),
+                MAPPER.createObjectNode().put("helmet", "MAYBE"), 400).get("code").asString()).isEqualTo("INVALID_WORK_UNIT");
+
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(health());
+            Thread.sleep(300);
+            JsonNode started = call("POST", "/api/work-units/" + work + "/start", admin(),
+                    MAPPER.createObjectNode().put("helmet", "REQUIRED").put("vest", "NOT_REQUIRED"), 200);
+            assertThat(started.get("helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(started.get("vest").asString()).isEqualTo("NOT_REQUIRED");
+            JsonNode policy = ppeDocument(tier0.await("config_bundle", latestVersion()));
+            assertThat(policy.get("format_version").asString()).isEqualTo("1.2.0");
+            assertThat(policy.get("work_id").longValue()).isEqualTo(work);
+            assertThat(policy.get("helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(policy.get("vest").asString()).isEqualTo("NOT_REQUIRED");
+            // 작업 중 다른 경로의 묶음도 그 작업의 요구를 싣는다
+            assertThat(publish(null).at("/ppe_policy/vest").asString()).isEqualTo("NOT_REQUIRED");
+            call("POST", "/api/work-units/" + work + "/end", admin(), null, 202);
+        }
+    }
+
+    /**
+     * S15P31A101-654: 현장 규칙 기준(site.rule_profile)을 교실 시험으로 바꾸면 그 기준(R3 v1001)으로 새 묶음을 내고, 이후 묶음(작업 시작·
+     * 구역 저장·발행)이 모두 따른다. 이전 묶음의 프로필보다 현장 설정이 앞선다
+     */
+    @Test
+    void 현장_규칙_기준이_이후_모든_묶음의_규칙_판을_정한다() throws Exception {
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-r")), 201);
+        assertThat(call("GET", "/api/sites/current", viewer(), null, 200).get("rule_profile").asString()).isEqualTo("OPERATION");
+        call("PUT", "/api/sites/current/rule-profile", viewer(), MAPPER.createObjectNode().put("rule_profile", "CLASSROOM_TEST"), 403);
+        assertThat(call("PUT", "/api/sites/current/rule-profile", admin(), MAPPER.createObjectNode().put("rule_profile", "FAST"), 400)
+                .get("code").asString()).isEqualTo("INVALID_RULE_PROFILE");
+
+        JsonNode changed = call("PUT", "/api/sites/current/rule-profile", admin(),
+                MAPPER.createObjectNode().put("rule_profile", "CLASSROOM_TEST"), 200);
+        assertThat(changed.get("rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+        assertThat(changed.get("publish_error").isNull()).isTrue();
+        JsonNode bundle = changed.get("bundle");
+        bundles.add(bundle.get("config_version").asString());
+        assertThat(bundle.get("rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+        assertThat(item(bundle, "R3").get("item_version").intValue()).isEqualTo(1001);
+        assertThat(item(bundle, "R2").get("item_version").intValue()).isEqualTo(1001);
+        assertThat(call("GET", "/api/sites/current", viewer(), null, 200).get("rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+
+        // 작업 시작 묶음과 구역 저장 묶음도 현장 기준을 따른다
+        long work = createWork();
+        call("POST", "/api/work-units/" + work + "/start", admin(), null, 200);
+        String startVersion = latestVersion();
+        JsonNode startView = call("GET", "/api/config-bundles/" + startVersion, viewer(), null, 200);
+        assertThat(startView.get("rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+        assertThat(startView.at("/ppe_policy/helmet").asString()).isEqualTo("REQUIRED");
+        assertThat(item(startView, "R3").get("item_version").intValue()).isEqualTo(1001);
+        ObjectNode commit = MAPPER.createObjectNode();
+        commit.putObject("zone").put("op", "CREATE").set("body", zone("기준 시험 구역", 3.0));
+        JsonNode committed = call("POST", "/api/zones/commit", admin(), commit, 200);
+        assertThat(committed.at("/bundle/rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+        call("POST", "/api/work-units/" + work + "/end", admin(), null, 202);
+
+        // 현장 설정이 운영으로 바뀌면 직전 묶음(교실 시험)을 잇지 않고 운영 판(R3 v1)을 싣는다
+        jdbc.update("UPDATE site SET rule_profile = 'OPERATION'");
+        JsonNode operation = publish(null);
+        assertThat(operation.get("rule_profile").asString()).isEqualTo("OPERATION");
+        assertThat(item(operation, "R3").get("item_version").intValue()).isEqualTo(1);
+    }
+
+    /** 묶음을 만들지 못해도(보정 문서 없음) 현장 규칙 기준은 저장되고 publish_error 로 알린다(S15P31A101-654) */
+    @Test
+    void 묶음을_만들지_못해도_현장_규칙_기준은_저장된다() throws Exception {
+        doReturn(Optional.of("cal-test-" + tag + "-not-uploaded")).when(calibrations).currentVersion();
+        JsonNode changed = call("PUT", "/api/sites/current/rule-profile", admin(),
+                MAPPER.createObjectNode().put("rule_profile", "CLASSROOM_TEST"), 200);
+        assertThat(changed.get("bundle").isNull()).isTrue();
+        assertThat(changed.get("publish_error").asString()).isEqualTo("CURRENT_CALIBRATION_MISSING");
+        assertThat(jdbc.queryForObject("SELECT rule_profile FROM site", String.class)).isEqualTo("CLASSROOM_TEST");
     }
 
     /** 묶음을 만들지 못하면(보정 문서 없음) 작업을 시작하지 않고 묶음도 남기지 않는다(S15P31A101-518 D1) */

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * TBM 작업 등록·수정 본문(V21 work_unit). 시각은 epoch ms, 날짜는 현장 시각의 YYYY-MM-DD 다(화면이 현장 시각을 안다).
  * zone_id 가 없으면 구역 밖 작업이고 place 에 장소를 적는다. lead 는 조 이름이다(사람 이름을 넣지 않는다, NFR-14).
  * 위험성 평가·대책 문장은 담지 않는다(tbm_report 가 AI 로 쓴다).
+ * helmet·vest 는 작업 중 안전모·조끼 요구(REQUIRED·NOT_REQUIRED, S15P31A101-654). 등록 때 없으면 REQUIRED, 수정 때 없으면 그대로다.
  */
 public record WorkUnitRequest(
         @JsonProperty("date") String date,
@@ -17,5 +18,7 @@ public record WorkUnitRequest(
         @JsonProperty("planned_people") Integer plannedPeople,
         @JsonProperty("lead") String lead,
         @JsonProperty("layout_id") Long layoutId,
-        @JsonProperty("work_type") String workType) {
+        @JsonProperty("work_type") String workType,
+        @JsonProperty("helmet") String helmet,
+        @JsonProperty("vest") String vest) {
 }

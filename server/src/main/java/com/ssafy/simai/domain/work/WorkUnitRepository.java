@@ -40,7 +40,7 @@ public class WorkUnitRepository {
     private static final String SELECT = """
             SELECT w.work_id, w.work_date, w.name, w.starts_at, w.ends_at, w.zone_id, w.place, w.planned_people,
                    w.lead_team, w.layout_id, w.work_type, w.status, w.actual_started_at, w.actual_ended_at, w.active_setup_session_id,
-                   w.daily, w.setup_completed_at,
+                   w.daily, w.setup_completed_at, w.helmet_required, w.vest_required,
                    EXISTS (SELECT 1 FROM setup_session s WHERE s.work_unit_id = w.work_id) AS has_setup,
                    t.report_id AS tbm_report_id, t.status AS tbm_status, t.submitted_at AS tbm_submitted_at,
                    (SELECT z.name FROM zone z WHERE z.zone_id = w.zone_id ORDER BY z.zone_version DESC LIMIT 1) AS zone_name,
@@ -154,9 +154,9 @@ public class WorkUnitRepository {
         MapSqlParameterSource params = params(siteId, request, now).addValue("userId", userId);
         Long id = jdbc.queryForObject("""
                 INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, zone_id, place, planned_people, lead_team,
-                    layout_id, work_type, created_by, created_at, updated_at)
+                    layout_id, work_type, helmet_required, vest_required, created_by, created_at, updated_at)
                 VALUES (:siteId, :date, :name, :startsAt, :endsAt, :zoneId, :place, :people, :lead,
-                    :layoutId, :workType, :userId, :now, :now)
+                    :layoutId, :workType, COALESCE(:helmet, true), COALESCE(:vest, true), :userId, :now, :now)
                 RETURNING work_id
                 """, params, Long.class);
         return id == null ? 0 : id;
@@ -173,7 +173,16 @@ public class WorkUnitRepository {
         return findOne(siteId, workId).orElseThrow();
     }
 
+    /** 저장된 안전모·조끼 요구 그대로 시작한다 */
     public ObjectNode startSession(String siteId, long workId, Instant now) {
+        return startSession(siteId, workId, now, null, null);
+    }
+
+    /**
+     * 작업 시작. helmet·vest 가 있으면 시작과 함께 그 작업의 안전모·조끼 요구로 저장한다(null 이면 저장된 값, 기본 필수, S15P31A101-654).
+     * 시작 묶음의 ppe_policy 가 이 값을 싣는다.
+     */
+    public ObjectNode startSession(String siteId, long workId, Instant now, Boolean helmet, Boolean vest) {
         ObjectNode work = lockSession(siteId, workId);
         if (!"PLANNED".equals(work.path("status").asString())) {
             throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
@@ -204,9 +213,11 @@ public class WorkUnitRepository {
                 new MapSqlParameterSource("site", siteId), Long.class);
         if (!active.isEmpty()) throw new WorkAlreadyInProgressException(active.getFirst());
         jdbc.update("""
-                UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = :now, updated_at = :now
+                UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = :now, updated_at = :now,
+                    helmet_required = COALESCE(:helmet, helmet_required), vest_required = COALESCE(:vest, vest_required)
                 WHERE site_id = :site AND work_id = :id
-                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now)));
+                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now))
+                .addValue("helmet", helmet).addValue("vest", vest));
         return findOne(siteId, workId).orElseThrow();
     }
 
@@ -272,7 +283,8 @@ public class WorkUnitRepository {
         int updated = jdbc.update("""
                 UPDATE work_unit SET work_date = :date, name = :name, starts_at = :startsAt, ends_at = :endsAt,
                     zone_id = :zoneId, place = :place, planned_people = :people, lead_team = :lead,
-                    layout_id = :layoutId, work_type = :workType, updated_at = :now
+                    layout_id = :layoutId, work_type = :workType, updated_at = :now,
+                    helmet_required = COALESCE(:helmet, helmet_required), vest_required = COALESCE(:vest, vest_required)
                 WHERE site_id = :siteId AND work_id = :workId
                 """, params(siteId, request, now).addValue("workId", workId));
         if (updated == 0) {
@@ -334,6 +346,8 @@ public class WorkUnitRepository {
             throw invalid();
         }
         return new MapSqlParameterSource()
+                .addValue("helmet", requirement(r.helmet()))
+                .addValue("vest", requirement(r.vest()))
                 .addValue("layoutId", r.layoutId())
                 .addValue("workType", r.workType())
                 .addValue("siteId", siteId)
@@ -346,6 +360,21 @@ public class WorkUnitRepository {
                 .addValue("people", people)
                 .addValue("lead", lead)
                 .addValue("now", utc(now));
+    }
+
+    /**
+     * 안전모·조끼 요구 글자(REQUIRED·NOT_REQUIRED, 계약 data/ppe_policy 값)를 필수 여부로. 없으면 null(기본값·지금 값 그대로),
+     * 다른 글자면 INVALID_WORK_UNIT
+     */
+    public static Boolean requirement(String value) {
+        if (value == null) {
+            return null;
+        }
+        return switch (value) {
+            case "REQUIRED" -> true;
+            case "NOT_REQUIRED" -> false;
+            default -> throw invalid();
+        };
     }
 
     private static LocalDate parseDate(String value) {
@@ -408,6 +437,9 @@ public class WorkUnitRepository {
             if (timestamp == null) w.putNull(field); else w.put(field, timestamp.getTime());
         }
         w.put("daily", rs.getBoolean("daily"));
+        // 작업 중 안전모·조끼 요구(S15P31A101-654). 시작 묶음의 ppe_policy 가 이 값을 싣는다
+        w.put("helmet", rs.getBoolean("helmet_required") ? "REQUIRED" : "NOT_REQUIRED");
+        w.put("vest", rs.getBoolean("vest_required") ? "REQUIRED" : "NOT_REQUIRED");
         var setupDone = rs.getTimestamp("setup_completed_at");
         if (setupDone == null) w.putNull("setup_completed_at"); else w.put("setup_completed_at", setupDone.getTime());
         long reportId = rs.getLong("tbm_report_id");

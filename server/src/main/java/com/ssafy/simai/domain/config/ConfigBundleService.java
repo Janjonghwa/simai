@@ -43,8 +43,10 @@ import tools.jackson.databind.node.ObjectNode;
  *       교실 시험 버전이 없으면 운영 버전)
  *   <li>calibration: 가장 최근에 올린 보정 문서 원문
  *   <li>operational_geometry: {"version", "work_surfaces": [...], "static_objects": [...]}. 작업면은 OBB 바닥 투영과 상판 높이
- *   <li>ppe_policy: 계약 data/ppe_policy 1.1.0(임시 형식 아님). 그때 작업 상태로 만든 안전모·조끼 요구(S15P31A101-518·-549)
+ *   <li>ppe_policy: 계약 data/ppe_policy 1.2.0(임시 형식 아님). 그때 작업 상태로 만든 안전모·조끼 요구(S15P31A101-518·-549·-654)
  * </ul>
+ * 규칙 프로필은 현장 설정(site.rule_profile)을 따른다. 이전 묶음의 프로필을 잇지 않는다(S15P31A101-654,
+ * docs/design/S15P31A101-654-ppe-r3-demo.md). 프로필을 지정한 발행은 현장 설정도 그 값으로 바꾼다.
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -84,7 +86,7 @@ public class ConfigBundleService {
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    /** @param ruleProfile 없으면 이전 묶음의 프로필, 그것도 없으면 OPERATION */
+    /** @param ruleProfile 없으면 현장 설정(site.rule_profile). 있으면 현장 설정을 그 값으로 바꾸고(같은 트랜잭션) 그 값으로 만든다 */
     public ObjectNode publish(String ruleProfile, long userId) {
         if (ruleProfile != null && !RULE_PROFILES.contains(ruleProfile)) {
             throw new BusinessException(ErrorCode.Config.INVALID_RULE_PROFILE);
@@ -98,6 +100,43 @@ public class ConfigBundleService {
         return views.find(configVersion);
     }
 
+    /** 현장 규칙 기준 바꾸기 결과. bundle 은 새로 만든 묶음, 만들지 못했으면 null 이고 publishError 에 그 오류 코드 */
+    public record RuleProfileChange(String ruleProfile, ObjectNode bundle, String publishError) {
+    }
+
+    /**
+     * 현장 규칙 기준을 바꾸고 그 기준으로 새 묶음을 발행한다(S15P31A101-654). 설정은 묶음과 따로 커밋한다: 묶음을 만들지 못해도
+     * (보정 없음·서명 주소 미설정 등) 설정은 남고, 다음 묶음(세팅 완료·작업 시작·구역 저장)이 그 기준을 따른다.
+     */
+    public RuleProfileChange changeRuleProfile(String ruleProfile, long userId) {
+        if (ruleProfile == null || !RULE_PROFILES.contains(ruleProfile)) {
+            throw new BusinessException(ErrorCode.Config.INVALID_RULE_PROFILE);
+        }
+        String siteId = sites.siteId();
+        transaction.executeWithoutResult(status -> saveRuleProfile(siteId, ruleProfile));
+        try {
+            return new RuleProfileChange(ruleProfile, publish(null, userId), null);
+        } catch (BusinessException e) {
+            log.warn("규칙 기준 {} 저장, 묶음은 만들지 못함(다음 묶음이 따른다): {}", ruleProfile, e.getErrorCode().name());
+            return new RuleProfileChange(ruleProfile, null, e.getErrorCode().name());
+        }
+    }
+
+    /** 현장 규칙 기준(site.rule_profile). 현장 행이 없으면 운영 */
+    public String ruleProfile() {
+        return siteRuleProfile(sites.siteId());
+    }
+
+    private String siteRuleProfile(String siteId) {
+        return jdbc.queryForList("SELECT rule_profile FROM site WHERE site_id = :site",
+                new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(OPERATION);
+    }
+
+    private void saveRuleProfile(String siteId, String ruleProfile) {
+        jdbc.update("UPDATE site SET rule_profile = :profile WHERE site_id = :site",
+                new MapSqlParameterSource("site", siteId).addValue("profile", ruleProfile));
+    }
+
     /** 바꾼 것과 그 바꾸기로 만든 묶음(만들지 않았으면 null) */
     public record Published<T>(T changes, ObjectNode bundle) {
     }
@@ -107,7 +146,7 @@ public class ConfigBundleService {
 
     /**
      * 구역·작업면 바꾸기와 묶음 만들기를 한 트랜잭션으로 한다(S15P31A101-397). 바꾸기나 묶음 만들기(보정 없음 등)가 실패하면
-     * 모두 되돌린다. 묶음은 이전 묶음의 규칙 프로필을 이어 쓰고, Tier 0 로 보내는 일은 커밋 뒤에 한다(publish 와 같음).
+     * 모두 되돌린다. 묶음은 현장 규칙 기준(site.rule_profile)을 따르고, Tier 0 로 보내는 일은 커밋 뒤에 한다(publish 와 같음).
      * 바꾸기는 트랜잭션 안에서 부르는 저장소 메서드만 써야 한다
      */
     public <T> Published<T> publishWith(Supplier<T> changes, boolean publish, long userId) {
@@ -142,7 +181,7 @@ public class ConfigBundleService {
 
     /**
      * 현장 세팅 성공(I5 site_setup 결과) 때 세팅이 등록한 새 보정을 실은 묶음을 발행한다(S15P31A101-467). Tier 0 가 알린 현재 보정 대신
-     * 그 보정 문서를 싣고, 구역·규칙·작업면은 발행과 같이 지금 유효한 것을 싣는다. 이전 묶음의 규칙 프로필을 잇는다.
+     * 그 보정 문서를 싣고, 구역·규칙·작업면은 발행과 같이 지금 유효한 것을 싣는다. 규칙 프로필은 현장 설정을 따른다.
      * 호출자 트랜잭션(결과 제출)이 커밋된 뒤 별도 트랜잭션에서 만들고 연결된 Tier 0 에 보낸다(트랜잭션 밖이면 바로). 그래서 묶음을
      * 만들지 못해도(규칙 없음·서명 주소 미설정·보정 문서 없음) 세팅 완료는 되돌아가지 않고, 경고만 남기며 Tier 0 는 이전 묶음 그대로다.
      * 그 보정을 실은 묶음이 이미 있으면 새로 만들지 않는다.
@@ -223,12 +262,14 @@ public class ConfigBundleService {
     private String build(String siteId, String requestedProfile, long userId, String explicitCalibration) {
         // 발행을 한 줄로 세운다(버전 번호·이전 버전이 겹치지 않게)
         jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.config_bundle'))", Map.of());
-        Map<String, Object> previous = jdbc.queryForList("""
-                SELECT config_version, rule_profile FROM config_bundle WHERE site_id = :site ORDER BY issued_at DESC LIMIT 1
-                """, new MapSqlParameterSource("site", siteId)).stream().findFirst().orElse(null);
-        String previousVersion = previous == null ? null : (String) previous.get("config_version");
-        String profile = requestedProfile != null ? requestedProfile
-                : previous != null && previous.get("rule_profile") != null ? (String) previous.get("rule_profile") : OPERATION;
+        String previousVersion = jdbc.queryForList("""
+                SELECT config_version FROM config_bundle WHERE site_id = :site ORDER BY issued_at DESC LIMIT 1
+                """, new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(null);
+        // 규칙 프로필은 현장 설정이 정한다(S15P31A101-654). 지정한 발행은 현장 설정도 바꿔 이후 묶음이 같은 기준을 쓰게 한다
+        if (requestedProfile != null) {
+            saveRuleProfile(siteId, requestedProfile);
+        }
+        String profile = requestedProfile != null ? requestedProfile : siteRuleProfile(siteId);
         Integer last = jdbc.queryForObject("""
                 SELECT max(CAST(substring(config_version FROM 5) AS integer)) FROM config_bundle WHERE config_version ~ '^cfg-[0-9]+$'
                 """, Map.of(), Integer.class);
@@ -418,9 +459,9 @@ public class ConfigBundleService {
     }
 
     /**
-     * 안전모·조끼 요구(계약 data/ppe_policy 1.1.0, 명세 7.2 R9·R11·8.10·12.3). 진행 중(IN_PROGRESS) 작업이 있으면 둘 다 REQUIRED, 없으면
-     * NOT_REQUIRED. vest 는 1.1.0 의 선택 필드지만 늘 싣는다(S15P31A101-549). 1.0.0 만 아는 Tier 0 는 vest 가 실린 문서를 거부하므로
-     * Tier 0 를 1.1.0 판(-548)으로 먼저 올린 뒤 이 판을 배포한다(12.3).
+     * 안전모·조끼 요구(계약 data/ppe_policy 1.2.0, 명세 7.2 R9·R11·8.10·12.3). 진행 중(IN_PROGRESS) 작업이 있으면 그 작업의 요구
+     * (work_unit.helmet_required·vest_required, 기본 필수, S15P31A101-654), 없으면 둘 다 NOT_REQUIRED. vest 는 늘 싣는다(S15P31A101-549).
+     * 작업 중 NOT_REQUIRED 는 1.2.0 에서 허용했다. 1.1.0 만 아는 Tier 0 는 그 문서(끈 작업)만 거부하므로 Tier 0 를 먼저 올린다(12.3).
      * 발행 잠금 뒤에 읽어 같은 트랜잭션의 작업 시작·종료와, 먼저 커밋된 다른 트랜잭션의 시작·종료를 본다. 어느 경로로 발행해도 싣는다.
      * effective_from_ms 는 진행 중 작업의 실제 시작 시각, 없으면 가장 최근 실제 종료 시각, 끝난 작업도 없으면 발행 시각이다
      * (작업 시작·종료 묶음이면 그 시각과 같다, docs/design/server-ppe-policy-publish.md)
@@ -428,17 +469,18 @@ public class ConfigBundleService {
     private ObjectNode ppePolicy(String siteId, String version, Instant issuedAt) {
         MapSqlParameterSource site = new MapSqlParameterSource("site", siteId);
         Map<String, Object> active = jdbc.queryForList("""
-                SELECT work_id, actual_started_at FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'
+                SELECT work_id, actual_started_at, helmet_required, vest_required FROM work_unit
+                WHERE site_id = :site AND status = 'IN_PROGRESS'
                 ORDER BY actual_started_at DESC LIMIT 1
                 """, site).stream().findFirst().orElse(null);
         ObjectNode doc = mapper.createObjectNode();
-        doc.put("format_version", "1.1.0");
+        doc.put("format_version", "1.2.0");
         doc.put("version", version);
         if (active != null) {
             doc.put("work_id", ((Number) active.get("work_id")).longValue());
             doc.put("effective_from_ms", millisOf(active.get("actual_started_at")));
-            doc.put("helmet", "REQUIRED");
-            doc.put("vest", "REQUIRED");
+            doc.put("helmet", Boolean.FALSE.equals(active.get("helmet_required")) ? "NOT_REQUIRED" : "REQUIRED");
+            doc.put("vest", Boolean.FALSE.equals(active.get("vest_required")) ? "NOT_REQUIRED" : "REQUIRED");
             return doc;
         }
         Object lastEnd = jdbc.queryForObject("SELECT max(actual_ended_at) FROM work_unit WHERE site_id = :site", site, Object.class);

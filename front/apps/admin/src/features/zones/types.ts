@@ -113,6 +113,8 @@ export const configBundleSchema = z.object({
   // 안전모 요구 요약. null 이면 이 묶음에 ppe_policy 가 없다(Tier 0 는 요구 없음으로 본다, 명세 7.2 R9). 칸이 없으면(-518 이전
   // 서버) 실렸는지 모른다(undefined). 요약 모양이 틀려도 묶음은 버리지 않고 모름으로 둔다(구역 발행 상태는 계속 보인다).
   ppe_policy: ppePolicySummarySchema.nullish().catch(undefined),
+  // 묶음에 넣은 규칙 기준(OPERATION·CLASSROOM_TEST, 명세 7.4). 관제 머리줄의 현재 기준 표시(S15P31A101-654). 모르면 null·undefined.
+  rule_profile: z.string().nullish().catch(undefined),
 });
 export type ConfigBundle = z.infer<typeof configBundleSchema>;
 

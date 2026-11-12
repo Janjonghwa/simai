@@ -1,3 +1,4 @@
+import type { StartPpe } from '@/features/work/api';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import {
   canStart,
@@ -20,9 +21,17 @@ const CHECK_ROWS: readonly { key: PreflightCheckKey; label: string }[] = [
   { key: 'layoutChecked', label: '가상 레이아웃을 확인했습니다' },
 ];
 
+// 작업 중 보호구 요구(S15P31A101-654). 기본 필수이고 끄면 그 장비 미착용(R9·R11)을 판정하지 않는다.
+const PPE_ROWS: readonly { key: keyof StartPpe; label: string }[] = [
+  { key: 'helmet', label: '안전모 필수' },
+  { key: 'vest', label: '조끼 필수' },
+];
+
 export function PreflightConfirmDialog({
   checks,
   onChecksChange,
+  ppe,
+  onPpeChange,
   signerCount,
   pending,
   error,
@@ -37,6 +46,9 @@ export function PreflightConfirmDialog({
 }: {
   checks: PreflightChecks;
   onChecksChange: (next: PreflightChecks) => void;
+  /** 작업 중 안전모·조끼 요구. 없으면 고르는 칸을 그리지 않는다(서버 기본값 = 필수). */
+  ppe?: StartPpe;
+  onPpeChange?: (next: StartPpe) => void;
   signerCount: number;
   /** 작업 시작 요청이 가는 중. */
   pending: boolean;
@@ -109,6 +121,27 @@ export function PreflightConfirmDialog({
             </>
           )}
         </div>
+        {ppe && onPpeChange && (
+          <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <legend className="mb-1 text-[13px] text-muted-foreground">작업 중 보호구</legend>
+            {PPE_ROWS.map(({ key, label }) => (
+              <label key={key} className="flex cursor-pointer items-center gap-2 select-none">
+                <input
+                  type="checkbox"
+                  checked={ppe[key] === 'REQUIRED'}
+                  onChange={(event) =>
+                    onPpeChange({
+                      ...ppe,
+                      [key]: event.target.checked ? 'REQUIRED' : 'NOT_REQUIRED',
+                    })
+                  }
+                  className="size-[18px] cursor-pointer accent-primary"
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </fieldset>
+        )}
         {draftWarning && <p className="text-[13px] text-sev-caution">{draftWarning}</p>}
         {setupNotice && (
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-destructive">

@@ -210,6 +210,19 @@ def test_profiles_and_versions():
         assert registry.create(rule_id, 1001).profile is CLASSROOM_TEST_PROFILE
 
 
+@pytest.mark.parametrize("top", [0.40, 0.66])
+def test_r3_bundle_rule_version_decides_low_work_surface(top):
+    """S15P31A101-654(14차 로비): 0.40~0.66 m 작업면은 묶음이 R3 v1001(현장 기준 교실 시험)을 실을 때만 발동한다.
+    묶음 rules 의 rule_version 으로 등록부에서 고른 규칙 그대로 판정한다(운영 v1 은 2.0 m 기준이라 판정 없음)."""
+    on_top = track(anchor=[4.5, 6.75, top])
+    surfaces = [surface(top_height_m=top)]
+    registry = default_registry()
+    (f,) = registry.create("R3", 1001).evaluate(ctx(on_top, surfaces=surfaces))
+    assert f.rule_version == 1001 and f.reasons == (REASON_STANDING_ELEVATED,)
+    assert f.metrics["height_diff_m"] == pytest.approx(top)
+    assert list(registry.create("R3", 1).evaluate(ctx(on_top, surfaces=surfaces))) == []
+
+
 # --- 위험 가장자리 ---------------------------------------------------------------
 
 

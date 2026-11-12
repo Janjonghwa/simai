@@ -76,12 +76,12 @@ def test_policy_reads_optional_vest(name, vest_value, required):
     assert PpePolicy.from_json(policy.to_json() | {"format_version": doc["format_version"]}) == policy
 
 
-@pytest.mark.parametrize(("work_id", "value"), [(7, "NOT_REQUIRED"), (None, "REQUIRED")])
-def test_vest_requirement_follows_work(work_id, value):
-    """안전모와 같은 작업 기준(8.10). 스키마와 같은 규칙을 한 번 더 막는다."""
-    helmet_value = "REQUIRED" if work_id else "NOT_REQUIRED"
+def test_vest_requirement_follows_work():
+    """안전모와 같은 작업 기준(8.10): 작업이 없으면 조끼도 NOT_REQUIRED. 스키마와 같은 규칙을 한 번 더 막는다."""
     with pytest.raises(RiskInputError):
-        PpePolicy(version="ppe-x", work_id=work_id, effective_from_ms=T0, helmet=helmet_value, vest=value)
+        PpePolicy(version="ppe-x", work_id=None, effective_from_ms=T0, helmet="NOT_REQUIRED", vest="REQUIRED")
+    # 1.2.0(S15P31A101-654): 작업 중에도 조끼를 끈 작업은 NOT_REQUIRED 다
+    assert not PpePolicy(version="ppe-x", work_id=7, effective_from_ms=T0, helmet="REQUIRED", vest="NOT_REQUIRED").vest_required
 
 
 # --- 조끼 상태 -------------------------------------------------------------------------------------------

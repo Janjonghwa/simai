@@ -123,10 +123,18 @@ class WorkUnitController {
         }
     }
 
+    /** 작업 시작 본문(선택). helmet·vest 는 REQUIRED·NOT_REQUIRED, 없으면 저장된 값(기본 필수, S15P31A101-654) */
+    record StartRequest(@com.fasterxml.jackson.annotation.JsonProperty("helmet") String helmet,
+            @com.fasterxml.jackson.annotation.JsonProperty("vest") String vest) {
+    }
+
     @PostMapping("/{workId}/start")
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode start(@PathVariable long workId, @AuthenticationPrincipal Jwt jwt) {
-        return sessions.start(workId, Long.parseLong(jwt.getSubject()));
+    ObjectNode start(@PathVariable long workId, @RequestBody(required = false) StartRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        Boolean helmet = request == null ? null : WorkUnitRepository.requirement(request.helmet());
+        Boolean vest = request == null ? null : WorkUnitRepository.requirement(request.vest());
+        return sessions.start(workId, Long.parseLong(jwt.getSubject()), helmet, vest);
     }
 
     @PostMapping("/{workId}/end")

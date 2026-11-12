@@ -1,3 +1,4 @@
+import type { StartPpe } from '@/features/work/api';
 import { LayoutPreview } from '@/features/work/preflight/LayoutPreview';
 import {
   isSetupFinished,
@@ -36,13 +37,18 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
   const { data: report } = useWorkReport(workId);
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
   const [checks, setChecks] = useState<PreflightChecks>(NO_CHECKS);
+  // 작업 중 보호구 요구(S15P31A101-654). 기본 필수, 끄면 그 장비는 R9·R11 을 판정하지 않는다
+  const [ppe, setPpe] = useState<StartPpe>(() => ({
+    helmet: day.helmet ?? 'REQUIRED',
+    vest: day.vest ?? 'REQUIRED',
+  }));
   const [dialog, setDialog] = useState<Dialog>(null);
   // 편집 창을 연 구역(없으면 창이 닫혀 있다).
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
 
   const { reset: resetStart, mutate: startWork } = start;
   const closeDialog = () => setDialog(null);
-  const beginWork = () => startWork(workId, { onSuccess: closeDialog });
+  const beginWork = () => startWork({ workId, ppe }, { onSuccess: closeDialog });
 
   // 아래 오른쪽 단추 '다음': 지난 시작 실패 안내를 지우고 확인창을 연다. 값이 같으면 다시 등록하지 않게 한 번만 만든다.
   const openConfirm = useCallback(() => {
@@ -80,6 +86,8 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
         <PreflightConfirmDialog
           checks={checks}
           onChecksChange={setChecks}
+          ppe={ppe}
+          onPpeChange={setPpe}
           signerCount={signers.count}
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}

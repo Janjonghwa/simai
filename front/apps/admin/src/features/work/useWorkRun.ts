@@ -4,6 +4,7 @@ import {
   startWork,
   submitReport,
   WORK_ERROR,
+  type StartPpe,
   type WorkErrorCode,
 } from '@/features/work/api';
 import { invalidateAfterRun, invalidateWork, mutationResult } from '@/features/work/workQuery';
@@ -21,7 +22,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 export function useStartWork() {
   const client = useQueryClient();
   const mutation = useMutation({
-    mutationFn: (workId: string) => startWork(api, workId),
+    // 변수는 작업 id, 또는 작업 id 와 안전모·조끼 요구(S15P31A101-654)
+    mutationFn: (vars: string | { workId: string; ppe: StartPpe }) =>
+      typeof vars === 'string' ? startWork(api, vars) : startWork(api, vars.workId, vars.ppe),
     onSuccess: () => invalidateAfterRun(client),
     onError: (error) => {
       if (isWorkError(error, WORK_ERROR.SETUP_NOT_COMPLETED)) void invalidateWork(client);

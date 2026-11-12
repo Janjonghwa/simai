@@ -1,0 +1,9 @@
+{
+  "_expect_error": "1.2.0 에서도 진행 중 작업이 없으면 요구가 없다(작업마다 끌 수 있게 했을 뿐, 명세 7.2 R9)",
+  "format_version": "1.2.0",
+  "version": "ppe-7",
+  "work_id": null,
+  "effective_from_ms": 1760360000000,
+  "helmet": "REQUIRED",
+  "vest": "NOT_REQUIRED"
+}

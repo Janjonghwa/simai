@@ -50,10 +50,23 @@ def test_ppe_policy_1_1_vest_is_verified_and_kept(kit, doc):
     assert bundle.ppe_policy.vest_required is (doc["vest"] == "REQUIRED")
 
 
+WORK_OFF = WORK | {"format_version": "1.2.0", "helmet": "NOT_REQUIRED", "vest": "REQUIRED"}
+
+
+@pytest.mark.parametrize("doc", [WORK_OFF, WORK_OFF | {"helmet": "REQUIRED", "vest": "NOT_REQUIRED"}])
+def test_ppe_policy_1_2_work_may_turn_items_off(kit, doc):
+    """1.2.0(S15P31A101-654): 작업 중에도 장비별로 끈 요구(NOT_REQUIRED)를 받아 판정 값으로 온다."""
+    bundle = kit.verifier().verify(kit.publish("cfg-14", ppe_policy=doc))
+    assert bundle.ppe_policy is not None and bundle.ppe_policy.work_id == doc["work_id"]
+    assert bundle.ppe_policy.helmet_required is (doc["helmet"] == "REQUIRED")
+    assert bundle.ppe_policy.vest_required is (doc["vest"] == "REQUIRED")
+
+
 @pytest.mark.parametrize(
     "doc",
     [
-        WORK | {"helmet": "NOT_REQUIRED"},  # 작업 중인데 요구 없음(스키마 allOf)
+        WORK | {"helmet": "NOT_REQUIRED"},  # 1.0.x 는 작업 중 요구 없음을 받지 않는다(스키마 allOf, 1.2.0 부터 허용)
+        WORK_OFF | {"work_id": None},  # 1.2.0 에서도 작업이 없으면 요구 없음
         NO_WORK | {"helmet": "REQUIRED"},  # 작업이 없는데 요구
         WORK | {"vest": "REQUIRED"},  # vest 는 1.1.0 부터(1.0.0 문서에 싣지 않는다)
         WORK_VEST | {"vest": "NOT_REQUIRED"},  # 작업 중인데 조끼 요구 없음(안전모와 같은 규칙)

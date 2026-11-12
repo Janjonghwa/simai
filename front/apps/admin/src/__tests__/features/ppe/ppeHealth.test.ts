@@ -66,6 +66,15 @@ describe('PPE 요구와 작업 상태', () => {
     ).toBe('not_applied');
   });
 
+  it('그 작업이 장비를 끈 요구(작업 중 NOT_REQUIRED, -654)는 어긋남이 아니다', () => {
+    const helmetOnly = { ...REQUIRED_12, vest: 'NOT_REQUIRED' };
+    const allOff = { ...REQUIRED_12, helmet: 'NOT_REQUIRED', vest: 'NOT_REQUIRED' };
+    expect(ppeRequirementMismatch(bundles(['APPLIED', helmetOnly]), '12')).toBeNull();
+    expect(ppeRequirementMismatch(bundles(['APPLIED', allOff]), '12')).toBeNull();
+    const vestLeft = { ...NOT_REQUIRED, vest: 'REQUIRED' };
+    expect(ppeRequirementMismatch(bundles(['APPLIED', vestLeft]), null)).toBe('not_released');
+  });
+
   it('작업이 없는데 아직 요구하면 not_released', () => {
     expect(ppeRequirementMismatch(bundles(['APPLIED', REQUIRED_12]), null)).toBe('not_released');
     expect(ppeRequirementMismatch(bundles(['APPLIED', NOT_REQUIRED]), null)).toBeNull();

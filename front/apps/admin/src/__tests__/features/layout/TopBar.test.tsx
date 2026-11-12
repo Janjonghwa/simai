@@ -129,6 +129,47 @@ describe('TopBar', () => {
     expect(items).toEqual(['화이트 모드', '로그아웃']);
   });
 
+  it('관리자 메뉴의 규칙 기준(-654): 지금 기준을 보이고, 교실 시험을 고르면 서버에 저장하고 새 묶음 발행을 알린다', async () => {
+    const puts: unknown[] = [];
+    server.use(
+      http.get('*/api/sites/current', () =>
+        HttpResponse.json({ ...site, rule_profile: 'OPERATION' }),
+      ),
+      http.put('*/api/sites/current/rule-profile', async ({ request }) => {
+        puts.push(await request.json());
+        return HttpResponse.json({
+          rule_profile: 'CLASSROOM_TEST',
+          bundle: { config_version: 'cfg-70' },
+          publish_error: null,
+        });
+      }),
+    );
+    seed();
+    signInAs('ADMIN');
+    renderTopBar();
+    await screen.findByText(site.name);
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: /관리자/ })));
+    const operation = await screen.findByRole('menuitemradio', { name: '운영 (고소 2.0m)' });
+    expect(operation.getAttribute('aria-checked')).toBe('true');
+    act(() =>
+      fireEvent.click(screen.getByRole('menuitemradio', { name: '교실 시험 (고소 0.35m)' })),
+    );
+    expect(await screen.findByText('새 구성 묶음 cfg-70 발행')).toBeTruthy();
+    expect(puts).toEqual([{ rule_profile: 'CLASSROOM_TEST' }]);
+  });
+
+  it('관리자가 아니면 규칙 기준을 보이지 않는다', async () => {
+    seed();
+    signInAs('FOREMAN');
+    renderTopBar();
+    act(() =>
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(ROLE_LABEL.FOREMAN) })),
+    );
+    await screen.findAllByRole('menuitem');
+    expect(screen.queryByRole('menuitemradio')).toBeNull();
+  });
+
   it.each(['ADMIN', 'FOREMAN'] as const)(
     '%s 계정에는 시계와 관리자 메뉴 사이에 경보 소리 버튼이 있다',
     (role) => {
