@@ -87,9 +87,13 @@ export const useZoneEditStore = create<ZoneEditState>()((set, get) => ({
   clear: () => set({ drafts: {}, history: {} }),
 }));
 
+const anyDrafts = (state: ZoneEditState) => Object.keys(state.drafts).length > 0;
+
 /** 저장하지 않은 초안이 하나라도 있는지. 편집 모드를 끌 때 버릴 것이 있는지 묻는 데 쓴다. */
-export const useHasZoneDrafts = () =>
-  useZoneEditStore((state) => Object.keys(state.drafts).length > 0);
+export const useHasZoneDrafts = () => useZoneEditStore(anyDrafts);
+
+/** 컴포넌트 밖에서 보는 같은 값(화면에 그리지 않는 구독이 쓴다). */
+export const hasZoneDrafts = () => anyDrafts(useZoneEditStore.getState());
 
 /** 사용자가 끝나거나 바뀌면(bindSession onUserChange) 보관한 초안과 되돌리기 기록을 모두 지운다. */
 export const clearZoneDrafts = () => useZoneEditStore.getState().clear();
