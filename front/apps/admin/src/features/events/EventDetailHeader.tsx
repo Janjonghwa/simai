@@ -6,6 +6,7 @@ import { firstRaisedAt, type Incident } from '@/features/events/incidents';
 import { resolvedLabel, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
@@ -45,14 +46,15 @@ export function EventDetailHeader({
   onClose: () => void;
 }) {
   const zoneName = useZoneName();
+  const personNames = usePersonDisplayMap();
   const events = incident.entries.map((e) => e.event);
   const confirm = events.find((e) => isActive(e) && needsConfirmation(e));
 
   return (
     <header className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
       <h2 className="text-[22px] leading-[30px] font-bold">
-        <span className={targetFont(incident.target)}>
-          {targetLabel(incident.target, zoneName)}
+        <span className={targetFont(incident.target, personNames)}>
+          {targetLabel(incident.target, zoneName, personNames)}
         </span>{' '}
         사건
       </h2>

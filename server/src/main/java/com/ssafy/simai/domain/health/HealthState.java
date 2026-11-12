@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.health;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import com.ssafy.simai.domain.tier0.i1.Tier0HealthStored;
 import com.ssafy.simai.domain.tier0.i1.WorldStateStored;
+import com.ssafy.simai.domain.watch.PersonDisplayNamesChanged;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -118,6 +119,12 @@ public class HealthState {
 
     /** 워치 I4 연결 상태가 바뀌었다(연결·하트비트·끊김, S15P31A101-336). viewer_health.watches 를 바로 보내게 한다 */
     public void watchesChanged() {
+        onChange.run();
+    }
+
+    /** 사람·워치 표시 이름이나 미확인 N 배정·병합·워치 배정이 바뀌면 바로 viewer_health 를 보내게 한다(S15P31A101-658) */
+    @TransactionalEventListener(fallbackExecution = true)
+    void onPersonDisplayNamesChanged(PersonDisplayNamesChanged changed) {
         onChange.run();
     }
 

@@ -1,4 +1,5 @@
 import { HEALTH_TOPIC, PPE_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
+import type { PeopleNamesMock } from '@/mocks/peopleNames';
 import { readLiveUser, unauthorized } from '@/mocks/problem';
 import {
   MOCK_CONFIG,
@@ -45,6 +46,7 @@ export function startRealtimeMock(
   now: () => number = Date.now,
   // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
   config: () => MockConfig = () => MOCK_CONFIG,
+  peopleNames?: PeopleNamesMock,
 ): RealtimeMock {
   let healthPausedUntil = 0;
   let fault: { kind: MockOutage; since: number } | undefined;
@@ -52,7 +54,12 @@ export function startRealtimeMock(
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
   const live = () => broker.connections > 0;
   const healthAt = (t: number) =>
-    viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene, config: config() });
+    viewerHealthAt(t, {
+      outage: fault,
+      sceneMismatch: staleScene,
+      config: config(),
+      people: peopleNames?.snapshotAt(t),
+    });
 
   function publishWorld() {
     if (!live() || fault) return;
@@ -64,6 +71,8 @@ export function startRealtimeMock(
     const t = now();
     if (live() && t >= healthPausedUntil) broker.publish(HEALTH_TOPIC, healthAt(t));
   }
+
+  peopleNames?.onChange(() => publishHealth());
 
   function publishPpe() {
     // 장애 흉내 중에는 PPE 도 오지 않는다(화면은 만료·연결로 UNKNOWN 을 보인다).

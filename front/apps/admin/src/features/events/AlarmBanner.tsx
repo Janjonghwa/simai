@@ -10,6 +10,8 @@ import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
+import { formatPersonFull, type PersonDisplayMap } from '@/features/people/personDisplay';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { Button } from '@simai/ui/components/button';
@@ -26,14 +28,24 @@ const byAlarmPriority = (a: EventEntry, b: EventEntry) =>
  * 규칙 · 대상 · 구역 이름. 가장 위 경보가 바뀔 때만 읽는다(role=alert). 경과·버튼·건수는 읽지 않는다.
  * 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다. 이름을 모르는 구역은 뺀다.
  */
-function AlarmHeadline({ event, zoneName }: { event: EventItem; zoneName: ZoneNameOf }) {
+function AlarmHeadline({
+  event,
+  zoneName,
+  personNames,
+}: {
+  event: EventItem;
+  zoneName: ZoneNameOf;
+  personNames: PersonDisplayMap;
+}) {
   const target = incidentTarget(event);
   const zone = zoneName(event.zone_id);
   return (
     <span role="alert" className="min-w-0 truncate font-medium">
       <span>{eventRuleName(event)}</span> ·{' '}
-      <span title={target?.type === 'person' ? target.id : undefined}>
-        {eventShortSubject(event, zoneName)}
+      <span
+        title={target?.type === 'person' ? formatPersonFull(target.id, personNames) : undefined}
+      >
+        {eventShortSubject(event, zoneName, personNames)}
       </span>
       {target?.type === 'person' && zone && (
         <>
@@ -74,6 +86,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
   const openEvent = useEventsStore((s) => s.openEvent);
   const navigate = useNavigate();
   const zoneName = useZoneName();
+  const personNames = usePersonDisplayMap();
   const top = alarms[0];
   if (!top) return null;
   const { event } = top;
@@ -101,7 +114,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
       <SeverityBadge severity={event.severity} />
       <span className="flex min-w-0 flex-col">
         <span className="flex min-w-0 items-center gap-2">
-          <AlarmHeadline event={event} zoneName={zoneName} />
+          <AlarmHeadline event={event} zoneName={zoneName} personNames={personNames} />
           {more > 0 && (
             <span className="text-sm whitespace-nowrap text-muted-foreground">
               <span aria-hidden>+{more}</span>
@@ -116,7 +129,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
           상세
         </Button>
         {withPanel && <CameraButton target={incidentTarget(event)} variant="banner" />}
-        <AckButton entry={top} label="확인" zoneName={zoneName} />
+        <AckButton entry={top} label="확인" zoneName={zoneName} personNames={personNames} />
       </span>
     </div>
   );

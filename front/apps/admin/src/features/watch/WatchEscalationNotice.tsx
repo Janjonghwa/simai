@@ -1,3 +1,5 @@
+import { formatPersonFull } from '@/features/people/personDisplay';
+import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { realtime } from '@/lib/realtime';
 import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import type { WatchEscalationPayload } from '@simai/contracts';
@@ -10,11 +12,12 @@ const SHOW_MS = 60_000;
 const REASON_TEXT = { NO_ACK: '진동 뒤 확인 없음', SEND_FAILED: '워치로 보내지 못함' } as const;
 
 /**
- * 워치 진동 알림 격상(watch_escalation, /topic/watch, S15P31A101-338·-342). 확인 기한 안에 워치 ACK 가 없거나 보내지
- * 못하면 관제 화면에 알린다. 워치 ACK·격상은 운영자 확인이 아니라 이벤트 상태를 바꾸지 않는다. 사람 이름은 없다.
+ * 워치 진동 알림 격상(watch_escalation, /topic/watch, S15P31A101-338·-342·-658). 확인 기한 안에 워치 ACK 가 없거나 보내지
+ * 못하면 관제 화면에 알린다. 워치 ACK·격상은 운영자 확인이 아니라 이벤트 상태를 바꾸지 않는다.
  */
 export function WatchEscalationNotice() {
   const [items, setItems] = useState<{ e: WatchEscalationPayload; at: number }[]>([]);
+  const personNames = usePersonDisplayMap();
 
   useEffect(
     () =>
@@ -50,7 +53,9 @@ export function WatchEscalationNotice() {
         >
           <span className="font-semibold text-destructive">워치 {REASON_TEXT[e.reason]}</span>
           <span>
-            {e.device_id} · {e.world_id} · {SEVERITY_LABEL[e.severity]}
+            {e.device_id}
+            {e.world_id ? ` · ${formatPersonFull(e.world_id, personNames)}` : ''} ·{' '}
+            {SEVERITY_LABEL[e.severity]}
           </span>
           <button
             type="button"

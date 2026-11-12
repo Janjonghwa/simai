@@ -209,6 +209,27 @@ describe('AlarmBanner', () => {
     const without = renderBanner(false);
     expect(within(without).queryByRole('button', { name: /로 확인/ })).toBeNull();
   });
+
+  it('해석된 사람 표시 이름이 있으면 배너와 확인 버튼 이름에 표시 이름을 쓴다(-658)', () => {
+    useRealtimeStore.setState({
+      health: {
+        receivedAt: T,
+        clockOffsetMs: 0,
+        payload: {
+          person_names: [
+            { world_id: 'w-0015', display_name: '김철수', name_source: 'WATCH_DEVICE' },
+          ],
+        } as never,
+      },
+    });
+    const banner = renderBanner(true);
+    expect(within(banner).getByRole('alert').textContent).toBe(
+      '추락 위험(가장자리) · 김철수 · 개구부 구역',
+    );
+    expect(
+      within(banner).getByRole('button', { name: '추락 위험(가장자리) 김철수 (w-0015) 확인' }),
+    ).toBeTruthy();
+  });
 });
 
 describe('AlarmBanner 모두 지우기', () => {

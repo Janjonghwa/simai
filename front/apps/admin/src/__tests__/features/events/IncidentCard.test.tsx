@@ -377,4 +377,23 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry({ lifecycle: 'RESOLVED', resolved_at: T })]);
     expect(within(card).queryByRole('button', { name: /로 확인/ })).toBeNull();
   });
+
+  it('해석된 사람 표시 이름이 있으면 끝번호 대신 이름을 보이고 동명이인은 끝번호로 구분한다(-658)', () => {
+    useRealtimeStore.setState({
+      health: {
+        receivedAt: T,
+        clockOffsetMs: 0,
+        payload: {
+          person_names: [
+            { world_id: 'w-0012', display_name: '김철수', name_source: 'WATCH_DEVICE' },
+            { world_id: 'w-0015', display_name: '김철수', name_source: 'WORLD_MANUAL' },
+          ],
+        } as never,
+      },
+    });
+    const { card } = renderCard([entry({ world_ids: ['w-0015'] })]);
+    const person = within(card).getByText('김철수 (0015)');
+    expect(person.getAttribute('title')).toBe('김철수 (w-0015)');
+    expect(card.getAttribute('aria-label')).toBe('김철수 (w-0015) 이벤트');
+  });
 });

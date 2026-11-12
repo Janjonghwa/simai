@@ -1,3 +1,8 @@
+import {
+  formatWatchBindHighlight,
+  formatWatchBindNotice,
+  type PersonDisplayInfo,
+} from '@/features/people/personDisplay';
 import type { NewBind } from '@/features/watch/watchStatus';
 import { BIND_METHOD_TEXT } from '@/features/watch/watchStatus';
 import { create } from 'zustand';
@@ -12,11 +17,15 @@ export interface BindNotice {
   text: string;
 }
 
+export interface AnnounceBind extends NewBind {
+  person?: Pick<PersonDisplayInfo, 'displayName' | 'isDuplicateName' | 'watch'>;
+}
+
 interface State {
   /** World ID → 3D 큰 이름표 글. 강조 시간 동안만 있다 */
   highlights: Readonly<Record<string, string>>;
   notice: BindNotice | null;
-  announce: (bind: NewBind) => void;
+  announce: (bind: AnnounceBind) => void;
   clear: () => void;
 }
 
@@ -25,19 +34,25 @@ let seq = 0;
 const latest = new Map<string, number>();
 const timers = new Set<ReturnType<typeof setTimeout>>();
 
-/** 새로 이어진 워치의 3D 강조·패널 알림. 시간이 지나면 스스로 지운다(관제 화면 한 곳이 감지해 알린다) */
+/** 새로 이어진 워치의 3D 강조·패널 알림. 단일 사람 표시 어댑터의 이름 문구("⌚ 김철수 연결됨")를 쓴다(S15P31A101-509·-658). */
 export const useWatchBindEffectStore = create<State>()((set, get) => ({
   highlights: {},
   notice: null,
-  announce: ({ deviceId, worldId, method }) => {
+  announce: ({ deviceId, worldId, method, person }) => {
     const id = ++seq;
-    const text = `워치 ${deviceId} 연결됨`;
+    const resolved = person ?? {
+      displayName: '미확인',
+      isDuplicateName: false,
+      watch: { status: 'connected' as const, deviceId },
+    };
+    const text = formatWatchBindHighlight(resolved.displayName);
+    const noticeText = formatWatchBindNotice(resolved, BIND_METHOD_TEXT[method]);
     latest.set(worldId, id);
     set({
       highlights: { ...get().highlights, [worldId]: text },
       notice: {
         id,
-        text: `${deviceId} → ${worldId} 연결됨(${BIND_METHOD_TEXT[method]})`,
+        text: noticeText,
       },
     });
     const drop = setTimeout(() => {

@@ -2,7 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/viewer_health.schema.json",
   "title": "I2 viewer_health",
-  "description": "EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.4.0: held_events_revision 선택 추가(Tier 0 가 들고 있는 이벤트 집합의 판, 바뀌면 관제 앱이 이벤트 목록을 다시 받아 '진행 중'·'지난 관제'를 다시 가른다, S15P31A101-595). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).",
+  "description": "EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.5.0: person_names·watch_names 선택 추가(현장·날짜별 사람 표시 이름 해석 결과: 관리자 World ID 지정 > 배정 워치 기기 표시 이름 > '미확인 N', 워치 기기별 현장 표시 이름, S15P31A101-658). 1.4.0: held_events_revision 선택 추가(Tier 0 가 들고 있는 이벤트 집합의 판, 바뀌면 관제 앱이 이벤트 목록을 다시 받아 '진행 중'·'지난 관제'를 다시 가른다, S15P31A101-595). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).",
+  "$defs": {
+    "person_display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F-\\u009F](?:[^\\u0000-\\u001F\\u007F-\\u009F]*[^\\s\\u0000-\\u001F\\u007F-\\u009F])?$",
+      "description": "사람·워치 표시 이름(1~20자, 앞뒤 공백·제어문자 금지, 중복 허용)"
+    }
+  },
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -99,6 +108,36 @@
             }
           },
           "additionalProperties": false
+        },
+        "watch_names": {
+          "type": "array",
+          "description": "현장 단위로 지속되는 워치 기기 표시 이름 목록(device_id 오름차순, 1.5.0, S15P31A101-658). watches.items 는 닫힌 객체라 이전 관제 앱 호환을 위해 payload 최상위에 둔다. 표시 이름이 지정된 등록 워치만 싣거나 전체 중 유효한 것만 싣는다",
+          "items": {
+            "type": "object",
+            "required": ["device_id", "display_name"],
+            "properties": {
+              "device_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id" },
+              "display_name": { "$ref": "#/$defs/person_display_name" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "person_names": {
+          "type": "array",
+          "description": "현장·날짜(Asia/Seoul) 기준 사람별 해석된 표시 이름 목록(world_id 오름차순, 1.5.0, S15P31A101-658). 우선순위: WORLD_MANUAL(관리자 World ID 지정, 당일·병합 승계) > WATCH_DEVICE(배정된 워치 기기 표시 이름, 현장 지속) > UNIDENTIFIED('미확인 N', 현장·날짜별 1부터 단조 증가). I1 world_state 는 익명 World ID 만 유지하고 관제 앱이 어댑터 한 곳에서 합친다. 없으면 이전 EC2 다",
+          "items": {
+            "type": "object",
+            "required": ["world_id", "display_name", "name_source"],
+            "properties": {
+              "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+              "display_name": { "$ref": "#/$defs/person_display_name" },
+              "name_source": {
+                "enum": ["WORLD_MANUAL", "WATCH_DEVICE", "UNIDENTIFIED"],
+                "description": "해석된 이름 출처: WORLD_MANUAL(관리자 World ID 지정) · WATCH_DEVICE(배정 워치 기기 표시 이름) · UNIDENTIFIED(미확인 N)"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "allOf": [

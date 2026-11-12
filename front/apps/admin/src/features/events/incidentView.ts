@@ -7,30 +7,48 @@ import {
   isAlarmSeverity,
   isAlarming,
 } from '@/features/events/entries';
-import { eventRuleName, formatTime, shortPersonId } from '@/features/events/format';
+import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { PPE_RELEASE_LABEL, ppeReleaseOf } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
+import {
+  formatPersonFull,
+  formatPersonShort,
+  type PersonDisplayMap,
+} from '@/features/people/personDisplay';
 import type { ConfigBundle } from '@/features/zones/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
 // 묶음(Incident)을 카드·상세에 보이는 값으로 바꾸는 계산. 화면 없이 시험한다.
 
-/** 대상 문구: 사람 ID, 구역이면 구역 이름(모르면 `구역`). */
-export const targetLabel = (target: Incident['target'], zoneName: ZoneNameOf) =>
+/** 대상 문구: 사람은 `표시 이름 (World ID)`(이름 수신 전이면 World ID), 구역이면 구역 이름(모르면 `구역`). */
+export const targetLabel = (
+  target: Incident['target'],
+  zoneName: ZoneNameOf,
+  personNames?: PersonDisplayMap,
+) =>
   !target
     ? '대상 없음'
     : target.type === 'person'
-      ? target.id
+      ? formatPersonFull(target.id, personNames)
       : zoneNameOrDefault(target.id, zoneName);
 
-/** 카드·배너의 짧은 대상 문구: 사람은 끝번호(전체 ID 는 사건 상세·툴팁), 구역은 이름 그대로. */
-export const targetShortLabel = (target: Incident['target'], zoneName: ZoneNameOf) =>
-  target?.type === 'person' ? shortPersonId(target.id) : targetLabel(target, zoneName);
+/** 카드·배너의 짧은 대상 문구: 사람은 표시 이름(동명이인이면 끝번호 병기, 수신 전이면 끝번호), 구역은 이름 그대로. */
+export const targetShortLabel = (
+  target: Incident['target'],
+  zoneName: ZoneNameOf,
+  personNames?: PersonDisplayMap,
+) =>
+  target?.type === 'person'
+    ? formatPersonShort(target.id, personNames)
+    : targetLabel(target, zoneName, personNames);
 
-/** 대상 글꼴: 사람 ID 만 고정폭이고 구역 이름은 본문 글꼴이다. 사건 상세의 전체 ID 가 쓴다. */
-export const targetFont = (target: Incident['target']) =>
-  target?.type === 'person' ? 'font-mono' : undefined;
+/** 대상 글꼴: 생 World ID 로 폴백할 때만 고정폭이고, 해석된 사람 이름이나 구역 이름은 본문 글꼴이다. */
+export const targetFont = (target: Incident['target'], personNames?: PersonDisplayMap) => {
+  if (target?.type !== 'person') return undefined;
+  const resolved = personNames?.[target.id];
+  return resolved && resolved.nameSource !== 'FALLBACK' ? undefined : 'font-mono';
+};
 
 /**
  * 카드 제목: 대표 규칙 이름 · 구역 이름. 대상이 구역이면 카드 둘째 줄에 그 구역이 있어 제목에서는 되풀이하지 않는다.

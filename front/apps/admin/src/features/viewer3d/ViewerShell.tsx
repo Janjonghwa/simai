@@ -134,6 +134,7 @@ export function ViewerShell({
   children,
   dataStore,
   personModelUrl = null,
+  personLabels,
   personBadges,
   personHighlights,
   personHelmets,
@@ -163,6 +164,7 @@ export function ViewerShell({
     const created = createViewerStore(initialMode);
     // 첫 장면부터 레이어 값을 따른다(기본값으로 한 번 그렸다가 숨기지 않게).
     created.getState().setLayers(layers);
+    created.getState().setPersonLabels(personLabels);
     created.getState().setPersonBadges(personBadges);
     created.getState().setPersonHighlights(personHighlights);
     created.getState().setPersonHelmets(personHelmets);
@@ -293,6 +295,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setLayers(layers);
   }, [store, layers]);
+
+  useEffect(() => {
+    store.getState().setPersonLabels(personLabels);
+  }, [store, personLabels]);
 
   useEffect(() => {
     store.getState().setPersonBadges(personBadges);

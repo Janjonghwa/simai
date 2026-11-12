@@ -1,3 +1,4 @@
+import type { PersonDisplayMap } from '@/features/people/personDisplay';
 import { HoverTip, useDwell } from '@/features/plan/HoverTip';
 import {
   boundsDepth,
@@ -46,6 +47,8 @@ export interface FloorPlanProps {
   backdrop?: PlanBackdrop;
   /** 바닥 감시 범위(-606). 호스트가 켜고 지금 보정에 맞을 때만 넘긴다. 없으면 그리지 않는다. */
   coverage?: FloorCoverage | null;
+  /** 단일 사람 표시 어댑터 맵(-658). 주면 2D 말풍선에도 표시 이름을 함께 보인다. */
+  personNames?: PersonDisplayMap;
   className?: string;
 }
 
@@ -59,10 +62,11 @@ export function FloorPlan({
   bounds = ROOM_BOUNDS,
   backdrop,
   coverage = null,
+  personNames,
   className,
 }: FloorPlanProps) {
   const dwell = useDwell();
-  const tip = dwell.tip && planTip(dwell.tip.key, tracks, zones, marks);
+  const tip = dwell.tip && planTip(dwell.tip.key, tracks, zones, marks, personNames);
   const viewBox = [
     -PLAN_MARGIN,
     -PLAN_MARGIN,

@@ -2,6 +2,7 @@ import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AppLayout } from '@/features/layout/AppLayout';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
 import { usePpeSnapshot } from '@/features/ppe/usePpe';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +12,16 @@ const route = vi.hoisted(() => ({
   staticData: {} as { fullBleed?: boolean; eventPanel?: boolean; dockOverlay?: boolean },
   alarm: true,
 }));
+
+/** AppLayout 안의 사람 표시 이름 어댑터(-658)가 워치 배정 캐시(react-query)를 읽어 QueryClient 가 필요하다 */
+function renderLayout() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <AppLayout />
+    </QueryClientProvider>,
+  );
+}
 
 vi.mock('@tanstack/react-router', () => ({
   useMatches: ({ select }: { select: (matches: unknown[]) => unknown }) =>
@@ -51,7 +62,7 @@ afterEach(() => {
 describe('AppLayout 알림 자리', () => {
   it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 경보 배너 아래에 작업 세션 바를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
     route.staticData = { fullBleed: true, eventPanel: true };
-    render(<AppLayout />);
+    renderLayout();
 
     const box = notices();
     expect(ids(box)).toEqual(['alarm', 'session']);
@@ -65,7 +76,7 @@ describe('AppLayout 알림 자리', () => {
 
   it('사건 분할 창이 열리면 양쪽을 그 창 자리만큼 같은 크기로 비워 가운데를 지키고, 닫으면 되돌린다', () => {
     route.staticData = { fullBleed: true, eventPanel: true };
-    render(<AppLayout />);
+    renderLayout();
     expect(notices().className).toContain('inset-x-(--event-panel-inset)');
 
     act(() => useCamSplitStore.getState().open({ cam: 'cam_A', target: null }));
@@ -79,14 +90,14 @@ describe('AppLayout 알림 자리', () => {
 
   it('이벤트 패널이 없는 화면은 사건 분할 창이 열려 있어도 양옆을 비키지 않는다', () => {
     route.staticData = {};
-    render(<AppLayout />);
+    renderLayout();
     act(() => useCamSplitStore.getState().open({ cam: 'cam_A', target: null }));
     expect(notices().className).toContain('inset-x-5');
   });
 
   it('다른 화면에서도 본문 위에 띄워 본문 높이를 차지하지 않는다(이벤트 패널이 없어 양옆을 비키지 않는다)', () => {
     route.staticData = {};
-    render(<AppLayout />);
+    renderLayout();
 
     const box = notices();
     expect(ids(box)).toEqual(['alarm']);
@@ -102,7 +113,7 @@ describe('AppLayout 알림 자리', () => {
 
   it('알릴 것이 없으면 자리가 비어 숨는다(empty:hidden)', () => {
     route.alarm = false;
-    render(<AppLayout />);
+    renderLayout();
 
     const box = notices();
     expect(box.childElementCount).toBe(0);
@@ -112,12 +123,12 @@ describe('AppLayout 알림 자리', () => {
 
 describe('AppLayout 본문 아래 여백', () => {
   it('보통 화면은 하단 메뉴(독) 자리를 비우고, dockOverlay 화면은 독이 본문 위에 떠서 아래 여백을 줄인다', () => {
-    render(<AppLayout />);
+    renderLayout();
     expect(screen.getByRole('main').className).toContain('pb-[90px]');
     cleanup();
 
     route.staticData = { dockOverlay: true };
-    render(<AppLayout />);
+    renderLayout();
     expect(screen.getByRole('main').className).toContain('pb-3.5');
     expect(screen.getByRole('main').className).not.toContain('pb-[90px]');
   });
@@ -125,12 +136,12 @@ describe('AppLayout 본문 아래 여백', () => {
 
 describe('AppLayout 연결 상태', () => {
   it('연결이 열릴 때 지금 상태를 먼저 받는 훅(GET /api/health)을 부른다', () => {
-    render(<AppLayout />);
+    renderLayout();
     expect(vi.mocked(useHealthSnapshot)).toHaveBeenCalled();
   });
 
   it('연결이 열릴 때 지금 PPE 상태를 먼저 받는 훅(GET /api/ppe/current)을 부른다(-531)', () => {
-    render(<AppLayout />);
+    renderLayout();
     expect(vi.mocked(usePpeSnapshot)).toHaveBeenCalled();
   });
 });

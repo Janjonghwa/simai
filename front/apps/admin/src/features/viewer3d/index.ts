@@ -225,6 +225,8 @@ export type {
   ViewerBoxGhost,
   ViewerError,
   ViewerErrorCode,
+  ViewerLabelCell,
+  ViewerLabelWatchStatus,
   ViewerMode,
   ViewerPhase,
   ViewerSelectCancelReason,

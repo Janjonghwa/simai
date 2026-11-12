@@ -59,9 +59,7 @@ export const handlers = [
       created_at_ms: 1_793_690_000_000,
     }),
   ),
-  // 워치 배정(-342)은 개발 mock 에 배정이 없다(잇기·풀기 화면이 없다).
-  http.get('*/api/watch-bindings', () => HttpResponse.json([])),
-  // 현재 보정 상태와 카메라 마커 자세(-522).
+  // 현재 보정 상태와 카메라 마커 자세(-522). 워치 배정·표시 이름 핸들러는 startBackend 의 peopleNames mock 이 맡는다(-658).
   http.get('*/api/calibrations/current', () =>
     HttpResponse.json({
       calibration_state: 'CALIBRATED',

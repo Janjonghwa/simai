@@ -1,0 +1,38 @@
+{
+  "_expect_error": "앞뒤 공백이 있거나 빈 표시 이름은 거부한다(S15P31A101-658)",
+  "schema_version": "1.5.0",
+  "msg_type": "viewer_health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000001658",
+  "sent_at": 1760342401000,
+  "source_id": "ec2",
+  "payload": {
+    "as_of": 1760342400990,
+    "system_health": "NOMINAL",
+    "remote_state": "NORMAL",
+    "tier0_link": "CONNECTED",
+    "laptop": {
+      "link": "CONNECTED",
+      "last_heartbeat_at": 1760342400800
+    },
+    "data_age_ms": 210,
+    "calibration_state": "CALIBRATED",
+    "config": {
+      "published_version": "cfg-12",
+      "applied_version": "cfg-12",
+      "sync": "CURRENT"
+    },
+    "scene": {
+      "committed_version": "scene-3",
+      "live_version": "scene-3",
+      "mismatch": false
+    },
+    "tier0_health": null,
+    "person_names": [
+      {
+        "world_id": "w-0012",
+        "display_name": " 김철수 ",
+        "name_source": "WORLD_MANUAL"
+      }
+    ]
+  }
+}
