@@ -61,8 +61,9 @@ from simai_ai.risk import (
     work_surfaces_from_operational_geometry,
 )
 
-CONTRACTS_VERSION = "2.0.0"
-"""보내는 config_ack 봉투의 schema_version (contracts/README.md 의 현재 계약 버전)"""
+CONFIG_ACK_SCHEMA_VERSION = "1.2.0"
+"""보내는 config_ack 봉투의 schema_version = config_ack 메시지 계약 버전(contracts/examples/config_ack.json).
+예전에는 계약 묶음 번호 2.0.0 을 실어 EC2 가 메이저 불일치로 전부 버렸다(-648). 메시지 계약이 바뀌면 함께 올린다."""
 ACK_MSG_TYPE = "config_ack"
 REJECTION_SUMMARY_MS = 300_000
 
@@ -519,7 +520,7 @@ class ConfigSync:
 
     def _envelope(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return {
-            "schema_version": CONTRACTS_VERSION,
+            "schema_version": CONFIG_ACK_SCHEMA_VERSION,
             "msg_type": ACK_MSG_TYPE,
             "msg_id": self._ids.new(),
             "sent_at": self._clock.now_ms(),

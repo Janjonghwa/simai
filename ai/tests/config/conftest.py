@@ -126,7 +126,7 @@ class BundleKit:
         elif tamper is not None:
             self.fetcher.blobs[f"{base}/{tamper}.json"] += b" "
         return {
-            "schema_version": "2.0.0",
+            "schema_version": "1.2.0",  # config_ack 메시지 계약 버전(-648)
             "msg_type": "config_bundle",
             "msg_id": str(uuid.uuid4()),
             "sent_at": issued_at + 1,
