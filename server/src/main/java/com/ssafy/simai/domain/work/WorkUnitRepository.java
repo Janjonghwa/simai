@@ -222,6 +222,50 @@ public class WorkUnitRepository {
         return findOne(siteId, workId).orElseThrow();
     }
 
+    /**
+     * 완료(DONE)를 계획(PLANNED)으로 되돌리고 실제 시각을 비운다(S15P31A101-649 시연 복구). 되돌리기 전 작업을 돌려준다.
+     * 작업 날짜가 오늘(Asia/Seoul)인 작업만(지난 기록은 바꾸지 않는다), 제출한 TBM 보고서가 있으면 거절한다(제출본은 그 실행의 기록).
+     * 다른 작업이 진행 중이면 거절한다(되돌려도 시작할 수 없다). 잠금 순서는 시작·종료와 같다(lockSession).
+     */
+    public ObjectNode reopenSession(String siteId, long workId, Instant now) {
+        ObjectNode work = lockSession(siteId, workId);
+        if (!"DONE".equals(work.path("status").asString())) {
+            throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        // 예전 작업(daily=false)도 오늘 것만: 시작·종료와 달리 이건 기록을 지우는 일이라 범위를 좁힌다
+        if (!LocalDate.parse(work.path("date").asString()).equals(LocalDate.ofInstant(now, SITE_ZONE))) {
+            throw new BusinessException(ErrorCode.Work.WORK_NOT_TODAY);
+        }
+        if (work.path("tbm_report").path("submitted_at").isNumber()) {
+            throw new BusinessException(ErrorCode.Work.WORK_REPORT_SUBMITTED);
+        }
+        List<Long> active = jdbc.queryForList(
+                "SELECT work_id FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'",
+                new MapSqlParameterSource("site", siteId), Long.class);
+        if (!active.isEmpty()) throw new WorkAlreadyInProgressException(active.getFirst());
+        MapSqlParameterSource p = new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now));
+        // 첫 종료의 마무리 생성이 아직 돌면 그 결과가 되돌린 뒤에 옛 사실로 양식을 채운다(같은 request_id, 구분 장치 없음)
+        Integer generating = jdbc.queryForObject("""
+                SELECT count(*) FROM report WHERE work_id = :id AND report_kind = 'TBM'
+                  AND (status = 'GENERATING' OR wrap_up_status = 'GENERATING')
+                """, p, Integer.class);
+        if (generating != null && generating > 0) {
+            throw new BusinessException(ErrorCode.Work.WORK_WRAP_UP_GENERATING);
+        }
+        // 날짜 작업 종료 미팅(review.ending)은 비어 있을 때만 채워진다(WorkWrapUpRepository.completeEnding). 첫 실행 문구를 비워
+        // 다음 종료가 새 실행의 사실로 다시 쓰게 한다. 관제 앱 양식 편집의 낙관적 잠금이 알도록 form_revision 을 올린다
+        jdbc.update("""
+                UPDATE report SET form = jsonb_set(form, '{review,ending}', '""'::jsonb), form_revision = form_revision + 1
+                WHERE work_id = :id AND report_kind = 'TBM' AND form IS NOT NULL AND locked_at IS NULL
+                  AND COALESCE(form #>> '{review,ending}', '') <> ''
+                """, p);
+        jdbc.update("""
+                UPDATE work_unit SET status = 'PLANNED', actual_started_at = NULL, actual_ended_at = NULL, updated_at = :now
+                WHERE site_id = :site AND work_id = :id
+                """, p);
+        return work;
+    }
+
     /** 전체를 바꾼다. 없으면 WORK_UNIT_NOT_FOUND */
     public void replace(String siteId, long workId, WorkUnitRequest request, Instant now) {
         rejectDaily(siteId, workId);

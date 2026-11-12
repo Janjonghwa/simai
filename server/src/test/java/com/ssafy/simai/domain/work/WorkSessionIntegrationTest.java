@@ -216,10 +216,100 @@ class WorkSessionIntegrationTest {
     }
 
     @Test
+    void 완료를_되돌리면_계획이_되고_다시_시작하고_종료할_수_있다() throws Exception {
+        // S15P31A101-649: 시연 중 실수로 누른 완료 복구
+        long work = todayWork(zone);
+        start(work);
+        clock.now.set(started.plusSeconds(13));
+        end(work);
+        clock.now.set(started.plusSeconds(60));
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PLANNED"))
+                .andExpect(jsonPath("$.actual_started_at").isEmpty()).andExpect(jsonPath("$.actual_ended_at").isEmpty());
+        // 되돌린 뒤에는 정상 경로 그대로 다시 시작·종료한다(새 실제 시각)
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.actual_started_at").value(started.plusSeconds(60).toEpochMilli()));
+        clock.now.set(started.plusSeconds(120));
+        ObjectNode ended = end(work);
+        assertThat(ended.path("work_unit").path("status").asString()).isEqualTo("DONE");
+        assertThat(ended.path("work_unit").path("actual_ended_at").asLong()).isEqualTo(started.plusSeconds(120).toEpochMilli());
+    }
+
+    @Test
+    void 되돌리면_첫_실행의_종료_미팅을_비워_다시_종료가_새_사실로_채운다() throws Exception {
+        long work = todayWork(zone);
+        long report = reports.createDailyBlank(work, adminUserId());
+        start(work);
+        clock.now.set(started.plusSeconds(13));
+        end(work);
+        ObjectNode first = awaitWrapUp(report);
+        assertThat(first.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        int revision = first.path("form_revision").asInt();
+
+        // 마무리를 만드는 중이면 그 결과가 되돌린 뒤 옛 사실로 양식을 채우므로 받지 않는다
+        jdbc.update("UPDATE report SET wrap_up_status = 'GENERATING' WHERE report_id = ?", report);
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_WRAP_UP_GENERATING"));
+        jdbc.update("UPDATE report SET wrap_up_status = 'SUCCEEDED' WHERE report_id = ?", report);
+
+        clock.now.set(started.plusSeconds(60));
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin)).andExpect(status().isOk());
+        ObjectNode cleared = getReport(report);
+        assertThat(cleared.path("form").path("review").path("ending").asString()).isEmpty();
+        assertThat(cleared.path("form_revision").asInt()).isEqualTo(revision + 1);
+
+        start(work);
+        event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(70));
+        clock.now.set(started.plusSeconds(120));
+        end(work);
+        ObjectNode second = awaitWrapUp(report);
+        assertThat(second.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        assertThat(second.path("form_revision").asInt()).isEqualTo(revision + 2);
+        // 두 번째 종료 요청은 새 실행 구간의 사실이다
+        ObjectNode request = (ObjectNode) MAPPER.readTree(endingBody.get());
+        assertThat(request.path("window_ms").get(0).asLong()).isEqualTo(started.plusSeconds(60).toEpochMilli());
+        assertThat(request.path("facts").path("event_count").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void 완료_되돌리기는_오늘의_완료된_미제출_작업만_받는다() throws Exception {
+        long work = todayWork(zone);
+        // 계획·진행 중은 되돌릴 완료가 없다
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_INVALID_STATE"));
+        start(work);
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_INVALID_STATE"));
+        end(work);
+
+        // 다른 작업이 진행 중이면 되돌려도 시작할 수 없다
+        long other = todayWork(outside);
+        start(other);
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_ALREADY_IN_PROGRESS"))
+                .andExpect(jsonPath("$.work_id").value(String.valueOf(other)));
+        end(other);
+
+        // 제출한 TBM 보고서는 그 실행의 기록이다
+        long submitted = report(work, "SUCCEEDED");
+        jdbc.update("UPDATE report SET submitted_at = now(), submitted_by = ? WHERE report_id = ?", adminUserId(), submitted);
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_REPORT_SUBMITTED"));
+        jdbc.update("UPDATE report SET submitted_at = NULL, submitted_by = NULL WHERE report_id = ?", submitted);
+
+        // 지난 날짜 작업은 바꾸지 않는다
+        jdbc.update("UPDATE work_unit SET work_date = work_date - 1 WHERE work_id = ?", work);
+        mvc.perform(post("/api/work-units/{id}/reopen", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_NOT_TODAY"));
+        assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, work)).isEqualTo("DONE");
+    }
+
+    @Test
     void 시작과_종료는_관리자만_가능하고_없는_작업은_404다() throws Exception {
         long work = work(zone);
         String viewer = token("viewer", Role.VIEWER);
-        for (String action : List.of("start", "end")) {
+        for (String action : List.of("start", "end", "reopen")) {
             mvc.perform(post("/api/work-units/{id}/" + action, work)).andExpect(status().isUnauthorized());
             mvc.perform(post("/api/work-units/{id}/" + action, work).header(HttpHeaders.AUTHORIZATION, viewer))
                     .andExpect(status().isForbidden());
@@ -521,6 +611,14 @@ class WorkSessionIntegrationTest {
         long id = Long.parseLong(MAPPER.readTree(response).path("work_id").asString());
         // 작업 시작은 세팅 완료 뒤다(-642). 이 시험들은 세팅 뒤의 시작·종료를 보므로 세팅을 마친 작업으로 둔다
         jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", id);
+        return id;
+    }
+
+    /** 작업 날짜를 현장 날짜(Asia/Seoul) 오늘로 둔 작업. 되돌리기는 오늘 작업만 받는다(work() 는 UTC 날짜라 자정 근처에 다르다) */
+    private long todayWork(String targetZone) throws Exception {
+        long id = work(targetZone);
+        jdbc.update("UPDATE work_unit SET work_date = ? WHERE work_id = ?",
+                java.sql.Date.valueOf(started.atZone(WorkUnitRepository.SITE_ZONE).toLocalDate()), id);
         return id;
     }
 

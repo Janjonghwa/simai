@@ -7,10 +7,14 @@ import com.ssafy.simai.domain.report.TbmReportService;
 import com.ssafy.simai.domain.report.WorkWrapUpRepository;
 import com.ssafy.simai.domain.layout.LayoutZoneService;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -23,6 +27,7 @@ import tools.jackson.databind.node.ObjectNode;
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WorkSessionService {
+    private static final Logger log = LoggerFactory.getLogger(WorkSessionService.class);
     private final WorkUnitRepository works;
     private final WorkWrapUpRepository wrapUps;
     private final TbmReportService reports;
@@ -86,5 +91,22 @@ public class WorkSessionService {
             }
         }
         return response;
+    }
+
+    /**
+     * 시연 복구용: 실수로 완료한 오늘 작업을 계획(PLANNED)으로 되돌린다(S15P31A101-649, 관제 앱 화면 없음).
+     * 진행 중으로 바로 되돌리지 않는다. 다시 시작은 화면의 시작(start)이 세팅 완료·서명 확인, 레이아웃 구역 다시 잇기,
+     * 안전모·조끼 요구 묶음 발행을 그대로 다시 한다. 구성 묶음은 발행하지 않는다: 완료 때 이미 요구 없음 묶음이 나갔고
+     * PLANNED 도 요구 없음이다. 종료 미팅(wrap-up)은 되돌리지 않고 다음 종료가 다시 채운다. 덮어쓰는 첫 실행 시각은 로그로 남긴다.
+     */
+    @Transactional
+    public ObjectNode reopen(long workId, long userId) {
+        String site = sites.siteId();
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
+        ObjectNode before = works.reopenSession(site, workId, now);
+        log.warn("작업 완료 되돌림(PLANNED): work_id={} user_id={} 이전 실제 시작={} 종료={}", workId, userId,
+                Instant.ofEpochMilli(before.path("actual_started_at").asLong()),
+                Instant.ofEpochMilli(before.path("actual_ended_at").asLong()));
+        return works.findOne(site, workId).orElseThrow();
     }
 }

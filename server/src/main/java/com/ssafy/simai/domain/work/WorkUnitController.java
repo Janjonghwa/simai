@@ -136,6 +136,13 @@ class WorkUnitController {
         return sessions.end(workId, Long.parseLong(jwt.getSubject()));
     }
 
+    /** 시연 복구: 실수로 완료한 오늘 작업을 계획으로 되돌린다(S15P31A101-649). 관제 앱 화면 없이 Swagger·curl 로 부른다 */
+    @PostMapping("/{workId}/reopen")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode reopen(@PathVariable long workId, @AuthenticationPrincipal Jwt jwt) {
+        return sessions.reopen(workId, Long.parseLong(jwt.getSubject()));
+    }
+
     @ExceptionHandler(WorkAlreadyInProgressException.class)
     ProblemDetail alreadyInProgress(WorkAlreadyInProgressException e) {
         ProblemDetail problem = GlobalExceptionHandler.problem(e.getErrorCode());
