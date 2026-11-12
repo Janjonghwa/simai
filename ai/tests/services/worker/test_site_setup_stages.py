@@ -157,7 +157,10 @@ def _preview_files() -> dict[str, bytes]:
 def test_preview_runs_stage_uploads_glb_and_names_scene_by_run(tmp_path: Path) -> None:
     store = _Store()
     s = _stages(tmp_path, _Stages({"preview": _preview_files()}), store)
-    got = s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    progress: list[float] = []
+    got = s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}),
+                    progress=progress.append)
+    assert progress == [0.5, 1.0]
     assert got.preview_scene_version == "scene-preview-job-1-lease-1"
     assert got.scene_asset == ObjectRef("s3://bucket/preview_scene.glb", hashlib.sha256(b"glb").hexdigest(), 3)
     assert store.puts == [("preview_scene.glb", b"glb", "model/gltf-binary")]
@@ -196,8 +199,10 @@ def test_bake_falls_back_when_texrecon_missing(tmp_path: Path) -> None:
         "fallback": {"scene.glb": b"glb", "bake.json": json.dumps({"assets": [asset]}).encode()},
     })
     s = _stages(tmp_path, stages, store)
+    progress: list[float] = []
     baked = s.bake(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}),
-                   preview_scene_version="scene-preview-x")
+                   preview_scene_version="scene-preview-x", progress=progress.append)
+    assert progress == [0.25, 0.75, 1.0]
     assert baked.scene_version == "scene-job-1-lease-1" and stages.ran == ["bake", "fallback"]
     assert baked.scene_asset is not None and baked.scene_asset.uri == "s3://bucket/scene.glb"
     assert store.puts == [("scene.glb", b"glb", "model/gltf-binary")]

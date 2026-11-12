@@ -366,6 +366,7 @@ def test_point_budget_exhaustion_is_marked_adoption_forbidden() -> None:
 def test_run_stage_a_rotation_ba_creates_new_version_and_preserves_input() -> None:
     calib_doc, tracks_doc = synthetic_calibration_and_tracks()
     snapshot = copy.deepcopy(calib_doc)
+    progress: list[float] = []
 
     res = run_stage_a_rotation_ba(
         calib_doc,
@@ -373,9 +374,11 @@ def test_run_stage_a_rotation_ba_creates_new_version_and_preserves_input() -> No
         camera_heights_m={cid: 2.2 for cid in CAMS},
         height_tolerance_cm=5.0,
         anchor_camera_id="cam_D",
+        progress=progress.append,
     )
 
     assert calib_doc == snapshot
+    assert progress == [n / 6 for n in range(1, 7)]
     assert res.calibration_version != calib_doc["calibration_version"]
     assert res.calibration_doc["calibration_version"] == res.calibration_version
     assert res.calibration_doc["content_hash"] != calib_doc["content_hash"]
@@ -433,11 +436,14 @@ def test_extract_tracks_from_backgrounds_with_injected_matcher(tmp_path: Path) -
         call_idx["k"] += 1
         return [{"uv": t["uv"], "nodes": t["nodes"]} for t in by_pair[pair]]
 
+    progress: list[float] = []
     extracted = extract_tracks_from_backgrounds(
         fake_imgs,
         calib_doc,
         matcher=_matcher,
+        progress=progress.append,
     )
+    assert progress == [(n + 1) / (len(PAIRS) + 1) for n in range(len(PAIRS))] + [1.0]
     assert len(extracted["tracks"]) >= 60
     import json
     saved = tmp_path / "tracks.json"

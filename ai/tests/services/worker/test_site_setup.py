@@ -213,6 +213,7 @@ def test_site_setup_worker_e2e_stage_heartbeats_and_callback_contract() -> None:
         height_tolerance_cm: float,
         backgrounds: CleanBackgroundBundle,
         created_at_ms: int,
+        progress: Any = None,
     ) -> InitialWorldReconstruction:
         return build_world_from_pointcloud_and_poses(
             site_id=site_id,
@@ -630,6 +631,91 @@ class _FakeTime:
     def sleep(self, event: Any, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.now += seconds
+
+
+def test_site_setup_subprogress_is_real_monotonic_unique_and_rate_limited() -> None:
+    t = _FakeTime()
+    handler = SiteSetupHandler(background_collector=lambda **kw: None, world_initializer=lambda **kw: None,
+                               monotonic=t.monotonic)
+    inp = load_example("job_request.site_setup.json")["payload"]["input"]
+    ctx = JobContext("job-progress", "lease-progress", "site_setup", 1, inp)
+    base = {"setup_session_id": inp["setup_session_id"], "status": "INITIAL_POSE_AND_WORLD", "progress_pct": 15}
+    handler._emit_progress(ctx, base)
+    report = handler._subprogress(ctx, base, 15, 39)
+    report(0.25)  # 같은 초의 하위 보고는 보내지 않는다.
+    assert len(ctx.site_setup_history) == 1
+    t.now = 1
+    report(0.25)
+    t.now = 2
+    report(0.25)
+    report(0.1)  # 중복·역순 콜백은 버린다.
+    report(0.5)
+    t.now = 2.5
+    report(0.75)
+    t.now = 3
+    report(0.75)
+    t.now = 1000  # 시간만으로 진행률을 올리지 않는다.
+    assert [s["progress_pct"] for s in ctx.site_setup_history] == [15, 21, 27, 33]
+    handler._emit_progress(ctx, ctx.site_setup_history[-1])
+    assert len(ctx.site_setup_history) == 4
+
+
+def test_site_setup_background_progress_follows_slowest_camera() -> None:
+    inp = load_example("job_request.site_setup.json")["payload"]["input"]
+    cams = tuple(inp["calibration_target"]["camera_ids"])
+    bundles = iter(CleanBackgroundBundle("b", {**dict.fromkeys(cams, 100), cams[-1]: slow}, tracks_doc={})
+                   for slow in (20, 50, 100))
+    t = _FakeTime()
+    handler = SiteSetupHandler(background_collector=lambda **kw: next(bundles), world_initializer=lambda **kw: None,
+                               background_wait_s=10, monotonic=t.monotonic, sleep=t.sleep)
+    ctx = JobContext("job-bg", "lease-bg", "site_setup", 1, inp)
+    handler._wait_for_backgrounds(ctx, inp["setup_session_id"], inp["site_id"], cams)
+    assert [s["progress_pct"] for s in ctx.site_setup_history] == [2.8, 7]
+    assert ctx.site_setup_history[0]["background_collection_pct"] == {**dict.fromkeys(cams, 100), cams[-1]: 20}
+
+
+def test_site_setup_subprogress_reaches_each_stage_and_preserves_milestones() -> None:
+    t = _FakeTime()
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100), tracks_doc=td),
+        monotonic=t.monotonic,
+    )
+    original = handler._init_world
+
+    def initialize(**kw: Any) -> InitialWorldReconstruction:
+        for fraction in (0.2, 0.4, 0.6, 0.8, 1):
+            t.now += 1
+            kw["progress"](fraction)
+        return original(**kw)
+
+    def preview(**kw: Any) -> PreviewDraftResult:
+        t.now += 1
+        kw["progress"](0.5)
+        t.now += 1
+        kw["progress"](1)
+        return PreviewDraftResult("scene-preview-test")
+
+    def bake(**kw: Any) -> str:
+        for fraction in (0.25, 0.75, 1):
+            t.now += 1
+            kw["progress"](fraction)
+        return "scene-baked-test"
+
+    handler._init_world, handler._build_preview, handler._bake_texture = initialize, preview, bake
+    # 최적화의 실제 경계 콜백도 시간 간격 제한을 통과하게 시계를 주입한다.
+    def tick() -> float:
+        t.now += 1
+        return t.now
+    handler._monotonic = tick
+    ctx = JobContext("job-progress", "lease-progress", "site_setup", 1, inp)
+    result = handler(ctx)
+    pcts = [s["progress_pct"] for s in ctx.site_setup_history]
+    assert pcts == sorted(pcts)
+    assert {15, 40, 65, 80, 85, 95} <= set(pcts)
+    for lo, hi in ((15, 40), (40, 65), (65, 80), (85, 95)):
+        assert any(lo < p < hi for p in pcts)
+    assert result["progress_pct"] == 100
+    assert all(schema_errors(s, _PROGRESS) == [] for s in ctx.site_setup_history)
 
 
 def test_background_wait_reports_collection_and_continues_when_bundle_completes() -> None:
@@ -1060,9 +1146,9 @@ def test_reuse_scene_accepted_skips_preview_and_bake_and_completes_with_calibrat
     ctx = JobContext("job-reuse", "0192a6f0-7c1e-7b3a-9f2d-000000000614", "site_setup", 1, _reuse_input())
     result = handler(ctx)
 
-    stages = [s["status"] for s in ctx.site_setup_history]
+    stages = list(dict.fromkeys(s["status"] for s in ctx.site_setup_history))
     assert stages == ["COLLECTING_BACKGROUND", "INITIAL_POSE_AND_WORLD", "JOINT_BA_AND_VERIFY", "READY_FOR_ZONES"]
-    assert [s["progress_pct"] for s in ctx.site_setup_history] == [15, 40, 65, 85]
+    assert {15, 40, 65, 85} <= {s["progress_pct"] for s in ctx.site_setup_history}
     assert all(s["mode"] == "REUSE_SCENE" for s in ctx.site_setup_history)
     assert result["mode"] == "REUSE_SCENE" and result["status"] == "COMPLETED" and result["progress_pct"] == 100
     assert "preview_scene_version" not in result and "scene_version" not in result and "reuse_fallback_reason" not in result

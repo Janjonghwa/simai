@@ -415,12 +415,12 @@ export function buildQualityGate(
 
 /** autoProgress 단계표: 시작 뒤 이 시각(ms)부터 그 단계. */
 const AUTO_STAGES: readonly { at: number; stage: SetupSessionResponse['status']; pct: number }[] = [
-  { at: 0, stage: 'COLLECTING_BACKGROUND', pct: 10 },
-  { at: 4_000, stage: 'INITIAL_POSE_AND_WORLD', pct: 30 },
-  { at: 7_000, stage: 'JOINT_BA_AND_VERIFY', pct: 55 },
-  { at: 10_000, stage: 'PREVIEW_AND_VLM_DRAFT', pct: 70 },
+  { at: 0, stage: 'COLLECTING_BACKGROUND', pct: 0 },
+  { at: 4_000, stage: 'INITIAL_POSE_AND_WORLD', pct: 15 },
+  { at: 7_000, stage: 'JOINT_BA_AND_VERIFY', pct: 40 },
+  { at: 10_000, stage: 'PREVIEW_AND_VLM_DRAFT', pct: 65 },
   { at: 13_000, stage: 'READY_FOR_ZONES', pct: 85 },
-  { at: 25_000, stage: 'BAKING_TEXTURE', pct: 95 },
+  { at: 25_000, stage: 'BAKING_TEXTURE', pct: 85 },
   { at: 35_000, stage: 'COMPLETED', pct: 100 },
 ];
 
@@ -626,8 +626,15 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   function progressStage(session: SetupSessionResponse, elapsed: number): SetupSessionResponse {
     const target = [...AUTO_STAGES].reverse().find((s) => elapsed >= s.at);
     const order = AUTO_STAGES.map((s) => s.stage);
-    if (!target || order.indexOf(target.stage) <= order.indexOf(session.status)) return session;
+    if (!target || order.indexOf(target.stage) < order.indexOf(session.status)) return session;
     const idx = order.indexOf(target.stage);
+    const next = AUTO_STAGES[idx + 1];
+    // 목업의 완료한 하위 작업 수를 1초 칸으로 센다(실제 화면은 서버 값을 보간하지 않는다).
+    const steps = next ? Math.max(1, Math.ceil((next.at - target.at) / 1000)) : 1;
+    const completed = next ? Math.min(steps - 1, Math.floor((elapsed - target.at) / 1000)) : 0;
+    const endPct = target.stage === 'BAKING_TEXTURE' ? 95 : (next?.pct ?? target.pct);
+    const pct = target.pct + (endPct - target.pct) * (completed / steps);
+    if (target.stage === session.status && pct <= session.progress_pct) return session;
     // 이전 모델 재사용은 새 맵을 만들지 않아 미리보기·정식 맵 버전이 없다(서버와 같다).
     const bakes = session.mode !== 'REUSE';
     const n = session.setup_session_id.slice(-4);
@@ -635,8 +642,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     return updateSession(session.setup_session_id, {
       status: target.stage,
       stage: target.stage,
-      progress_pct: target.pct,
-      background_collection_pct: Object.fromEntries(cams.map((c) => [c, idx > 0 ? 100 : 60])),
+      progress_pct: Math.round(pct * 10) / 10,
+      background_collection_pct: Object.fromEntries(
+        cams.map((c) => [c, idx > 0 ? 100 : Math.round((pct / 15) * 100)]),
+      ),
       calibration_version: idx >= 2 ? `cal-setup-${n}` : null,
       preview_scene_version: bakes && idx >= 4 ? `scene-preview-setup-${n}` : null,
       scene_version: bakes && idx >= 6 ? (session.scene_version ?? `scene-setup-${n}`) : null,

@@ -418,6 +418,9 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     expect(estimateRemainingSeconds(0)).toBe(90);
     expect(estimateRemainingSeconds(50)).toBe(45);
     expect(estimateRemainingSeconds(100)).toBe(0);
+    expect(estimateRemainingSeconds(50, 300)).toBe(300);
+    expect(estimateRemainingSeconds(99, 300)).toBe(15);
+    expect(estimateRemainingSeconds(100, 300)).toBe(0);
     expect(formatRemainingKorean(90)).toBe('약 1분 30초');
     expect(formatRemainingKorean(45)).toBe('약 45초');
     expect(formatRemainingKorean(0)).toBe('곧 완료');

@@ -40,7 +40,18 @@ describe('세팅 mock autoProgress', () => {
       rebake_blocked_reason: 'SESSION_NOT_READY',
     });
 
-    clock += 14_000;
+    clock += 5_000;
+    const initial = await get();
+    clock += 1_000;
+    const initialNext = await get();
+    expect(initial.status).toBe('INITIAL_POSE_AND_WORLD');
+    expect(initialNext.status).toBe(initial.status);
+    expect(initial.progress_pct).toBeGreaterThan(15);
+    expect(initialNext.progress_pct).toBeGreaterThan(initial.progress_pct);
+    expect(initialNext.progress_pct).toBeLessThan(40);
+    expect((await get()).progress_pct).toBe(initialNext.progress_pct);
+
+    clock += 8_000;
     const ready = await get();
     expect(ready.status).toBe('READY_FOR_ZONES');
     expect(ready.preview_scene_version).toBeTruthy();
@@ -49,7 +60,17 @@ describe('세팅 mock autoProgress', () => {
       rebake_blocked_reason: 'SETUP_JOB_RUNNING',
     });
 
-    clock += 30_000;
+    clock += 12_000;
+    const baking = await get();
+    clock += 1_000;
+    const bakingNext = await get();
+    expect(baking.status).toBe('BAKING_TEXTURE');
+    expect(baking.progress_pct).toBeGreaterThan(85);
+    expect(bakingNext.status).toBe(baking.status);
+    expect(bakingNext.progress_pct).toBeGreaterThan(baking.progress_pct);
+    expect(bakingNext.progress_pct).toBeLessThan(95);
+
+    clock += 17_000;
     const done = await get();
     expect(done.status).toBe('COMPLETED');
     expect(done.scene_version).toBeTruthy();
