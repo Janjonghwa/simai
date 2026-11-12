@@ -138,6 +138,8 @@ function startSession(workId: string) {
 function finishSession(session: MockSetupSession) {
   session.status = 'COMPLETED';
   session.zones_committed_at = clock;
+  // 작업 관리의 '세팅 끝'은 세팅 완료(-615)가 정한다
+  session.setup_completed_at_ms = clock;
 }
 
 /** 작업 전 확인까지 와서 서명 한 명이 있다. */

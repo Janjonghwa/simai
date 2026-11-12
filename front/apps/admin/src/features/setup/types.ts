@@ -330,8 +330,29 @@ export const setupSessionResponseSchema = z.object({
   wait_reason: setupWaitReasonSchema.nullable().optional(),
   /** 맵 보강 촬영 상태(S15P31A101-607). 그 전 서버는 싣지 않는다. */
   supplement: supplementStateSchema.nullable().optional(),
+  /** 실제로 따른 세팅 모드(-614): NEW 새 모델 · REUSE 이전 모델 재사용. 그 전 서버는 싣지 않는다(새 모델로 본다). */
+  mode: z.enum(['NEW', 'REUSE']).nullish().catch(null),
+  /** 이 세션으로 세팅을 완료한 시각(C17, -615). 완료 전이면 null. 그 전 서버는 싣지 않는다. */
+  setup_completed_at_ms: z.number().nullish(),
+  /** World 다시 맞추기 판정 요약(-614). accepted 면 지금 관제 구역과 같은 World 라 기존 구역을 이어 쓸 수 있다. */
+  world_anchor: z.object({ accepted: z.boolean() }).loose().nullish().catch(null),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
+
+/** 세팅 완료가 관제 구역에 적용한 결과(zone_id 목록, POST /api/setup-sessions/{id}/complete). */
+export const appliedZonesSchema = z.object({
+  created: z.array(z.string()).default([]),
+  updated: z.array(z.string()).default([]),
+  kept: z.array(z.string()).default([]),
+  archived: z.array(z.string()).default([]),
+});
+export type AppliedZones = z.infer<typeof appliedZonesSchema>;
+
+/** 세팅 완료 응답: 세션 조회와 같은 모양 + applied_zones. */
+export const completeSetupResponseSchema = setupSessionResponseSchema.extend({
+  applied_zones: appliedZonesSchema,
+});
+export type CompleteSetupResponse = z.infer<typeof completeSetupResponseSchema>;
 
 export interface CreateSetupSessionBody {
   work_unit_id: number;

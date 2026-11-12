@@ -58,10 +58,10 @@ import tools.jackson.databind.node.ObjectNode;
  *       등록한 버전만 받고, 다른 세팅 세션에 귀속된 버전은 거부한다(S15P31A101-467).
  *   <li>같은 스냅샷의 {@code artifacts.camera_frames}(1.3.0)로 알린 카메라별 대표 프레임도 이 세션 귀속으로 보관하고(CAMERA_FRAME),
  *       AI 구역 초안({@code vlm_zone_draft}) 입력 {@code frames} 에 카메라·주소·얼굴 정책으로 싣는다(S15P31A101-479).
- *   <li>{@code READY_FOR_ZONES} 이후 하트비트(새 보정·미리보기 등록 완료)에서 이 세션이 등록한 새 보정이면 그 보정을 실은 구성 묶음
- *       (config_version)을 커밋 뒤 발행해 Tier 0 로 보낸다. 결과 성공(SUCCEEDED) 때는 이미 발행했으면 다시 만들지 않는다. 같은 현장에
- *       관제 중(IN_PROGRESS) 작업이 있으면 발행하지 않고 경고만 남기며, 세팅 시작 자체도 409 로 막는다. 묶음을 만들지 못해도 세팅은
- *       되돌리지 않는다. 그 전에 실패하면 묶음을 만들지 않아 이전 보정이 그대로다.
+ *   <li>새 보정을 실은 구성 묶음 발행과 이 세션 맵의 현재 Scene 올리기는 세팅 완료(C17, {@link SetupCompletionService},
+ *       S15P31A101-615)가 한다. READY_FOR_ZONES 하트비트는 더 이상 묶음을 만들거나 Scene 을 올리지 않는다. 완료 뒤에 도착한
+ *       정식 맵·다시 굽기 맵은 지금 현재 Scene 이 이 세션의 이전 맵일 때만 교체한다(관제 중이면 하지 않음).
+ *   <li>세팅을 완료한 작업(work_unit.setup_completed_at)에는 새 세팅 세션을 만들지 않는다(하루 1회, 409 SETUP_ALREADY_COMPLETED).
  * </ul>
  */
 @Service
@@ -493,7 +493,7 @@ public class SetupService {
 
     /**
      * 대기 중인 세팅 작업의 세션이 미리보기 맵 뒤면 세션을 COMPLETED 로 닫고(새 모델은 bake_skipped=LIVE_WORK_STARTED, 정식 Scene 없음)
-     * 작업을 취소한다. 워커 회수(-597) 결과와 같은 상태다. 관제는 READY 때 현재 Scene 이 된 미리보기로 하고, 정식 맵은 작업 뒤 관리자가
+     * 작업을 취소한다. 워커 회수(-597) 결과와 같은 상태다. 관제는 세팅 완료(C17, -615)가 켠 미리보기로 하고, 정식 맵은 작업 뒤 관리자가
      * 다시 굽기(-607)로 얻는다(자동으로 다시 굽지 않는다). 세션을 먼저 닫아 취소 알림(JobFinished)이 세션을 FAILED 로 바꾸지 않게 한다.
      */
     private void reclaimQueuedBake(String jobId) {
@@ -534,19 +534,9 @@ public class SetupService {
         if (session == null || "COMPLETED".equals(session.status()) || "FAILED".equals(session.status())) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
+        // READY_FOR_ZONES 에서 하던 구성 묶음 발행·미리보기 현재화는 세팅 완료(C17)로 옮겼다(S15P31A101-615).
+        // 세팅 화면은 미리보기를 버전 지정 보기(GET /api/scenes/{v}/view)로 그리고, 관제 맵은 완료 전까지 그대로다
         applySnapshot(session, event.jobId(), event.leaseId(), event.leaseId(), event.setup(), false);
-        // 새 보정·미리보기 등록이 끝난 READY_FOR_ZONES 부터 새 보정 구성 묶음을 발행한다. 그래야 굽기 도중 구역을 발행해도 새 보정을 싣는다
-        if (READY_OR_LATER_STAGES.contains(event.setup().path("status").asString(""))) {
-            String calibration = optionalText(event.setup(), "calibration_version", session.calibrationVersion());
-            publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
-            // 세팅 화면·관제 뷰어가 보는 현재 Scene 을 이 세션의 미리보기로 올린다(세션당 한 번).
-            // 이전 모델 재사용(REUSE_SCENE, -614)은 미리보기가 없고 현재 관제 맵을 그대로 둔다
-            if (!SetupReuseMode.reuseScene(event.setup())) {
-                promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
-                        optionalText(event.setup(), "preview_scene_version", session.previewSceneVersion()),
-                        SetupArtifactRegistrar.PREVIEW_SCENE, null);
-            }
-        }
     }
 
     /** {@code site_setup} 작업 종료 콜백을 반영한다. */
@@ -561,8 +551,9 @@ public class SetupService {
         }
         if (supplements.isRebakeJob(event.jobId())) {
             SetupSupplementService.Applied applied = supplements.onRebakeFinished(event);
-            if (applied != null) {
-                // 다시 구운 맵(APPLIED)도 세팅 정식 Scene 과 같은 절차: 지금 현재 Scene 이 기준 맵일 때만, 관제 중이면 하지 않는다
+            // 완료 전 다시 굽기는 세션 맵만 옮긴다(완료가 그 맵을 켠다). 완료 뒤 도착하면 세팅 정식 Scene 과 같은 절차:
+            // 지금 현재 Scene 이 기준 맵일 때만, 관제 중이면 하지 않는다
+            if (applied != null && setupCompleted(applied.setupSessionId())) {
                 promoteSetupSceneAfterCommit(applied.setupSessionId(), applied.siteId(), applied.calibrationVersion(),
                         applied.sceneVersion(), SetupArtifactRegistrar.SCENE, applied.baseSceneVersion(),
                         "현장 세팅 맵 보강 다시 굽기 반영(보조 촬영 입력, 위험 판정 미사용)");
@@ -580,7 +571,12 @@ public class SetupService {
                     WHERE l.job_id = :job AND l.status = 'SUBMITTED'
                     """, new MapSqlParameterSource("job", event.jobId()), UUID.class).stream().findFirst().orElse(null);
             applySnapshot(session, event.jobId(), session.progressLeaseId(), submittedLease, event.result(), true);
+            // 완료(C17) 전이면 묶음·Scene 은 완료가 한다(완료가 이 정식 맵을 켠다). 완료 뒤 도착한 결과만 아래로 잇는다
+            if (!setupCompleted(session.setupSessionId())) {
+                return;
+            }
             String calibration = optionalText(event.result(), "calibration_version", session.calibrationVersion());
+            // 완료가 이 보정으로 이미 발행했으면 만들지 않는다(보정이 바뀐 결과만 새 묶음)
             publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
             // 정식 Scene 은 지금 현재 Scene 이 이 세션의 미리보기일 때만 교체한다(관리자가 고른 다른 Scene 은 건드리지 않음).
             // 이전 모델 재사용(REUSE_SCENE, -614)은 새 Scene 이 없어 현재 관제 맵이 그대로다
@@ -904,6 +900,14 @@ public class SetupService {
             return;
         }
         task.run();
+    }
+
+    /** 이 세션으로 세팅을 완료했는지(C17): 작업에 걸린 세션이고 작업의 setup_completed_at 이 있다 */
+    private boolean setupCompleted(UUID setupSessionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM work_unit
+                               WHERE active_setup_session_id = :id AND setup_completed_at IS NOT NULL)
+                """, new MapSqlParameterSource("id", setupSessionId), Boolean.class));
     }
 
     private void enqueueZoneDraftIfReadySafe(UUID setupSessionId, String siteId, String calibrationVersion,
@@ -1293,14 +1297,23 @@ public class SetupService {
     }
 
     private void checkWorkUnitCanSetup(String siteId, long workUnitId) {
-        List<String> rows = jdbc.queryForList(
-                "SELECT status FROM work_unit WHERE site_id = :site AND work_id = :id",
-                new MapSqlParameterSource().addValue("site", siteId).addValue("id", workUnitId), String.class);
+        checkWorkUnitCanSetup(siteId, workUnitId, "");
+    }
+
+    /** 끝난 작업은 409 WORK_INVALID_STATE, 세팅을 완료한 작업은 409 SETUP_ALREADY_COMPLETED(하루 1회, S15P31A101-615) */
+    private void checkWorkUnitCanSetup(String siteId, long workUnitId, String lock) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT status, setup_completed_at IS NOT NULL AS completed FROM work_unit WHERE site_id = :site AND work_id = :id"
+                        + lock,
+                new MapSqlParameterSource().addValue("site", siteId).addValue("id", workUnitId));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND);
         }
-        if ("DONE".equals(rows.getFirst())) {
+        if ("DONE".equals(rows.getFirst().get("status"))) {
             throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        if (Boolean.TRUE.equals(rows.getFirst().get("completed"))) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_ALREADY_COMPLETED);
         }
     }
 
@@ -1326,15 +1339,8 @@ public class SetupService {
     }
 
     private void checkWorkUnitCanSetupForUpdate(String siteId, long workUnitId) {
-        List<String> rows = jdbc.queryForList(
-                "SELECT status FROM work_unit WHERE site_id = :site AND work_id = :id FOR UPDATE",
-                new MapSqlParameterSource().addValue("site", siteId).addValue("id", workUnitId), String.class);
-        if (rows.isEmpty()) {
-            throw new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND);
-        }
-        if ("DONE".equals(rows.getFirst())) {
-            throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
-        }
+        // 세팅 완료(SetupCompletionService)도 이 행을 잠그고 setup_completed_at 을 쓴다. 잠근 뒤 다시 봐 완료 직후의 새 세션을 막는다
+        checkWorkUnitCanSetup(siteId, workUnitId, " FOR UPDATE");
     }
 
     private List<String> activeCameras(String siteId) {
@@ -1438,6 +1444,9 @@ public class SetupService {
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
                        requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
+                       (SELECT w.setup_completed_at FROM work_unit w
+                        WHERE w.work_id = setup_session.work_unit_id
+                          AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
                        CASE WHEN setup_session.started_at < COALESCE(
                             (SELECT installed_on FROM flyway_schema_history WHERE version = '47' AND success), now()) THEN
                        (SELECT min(t) FROM (
@@ -1647,6 +1656,13 @@ public class SetupService {
             out.put("completed_at_ms", completedAt.getTime());
         }
         out.put("updated_at_ms", rs.getTimestamp("updated_at").getTime());
+        // 세팅 완료(C17, S15P31A101-615) 시각. 이 세션으로 완료한 작업이면 그 work_unit.setup_completed_at, 아니면 null
+        var setupCompletedAt = rs.getTimestamp("setup_completed_at");
+        if (setupCompletedAt == null) {
+            out.putNull("setup_completed_at_ms");
+        } else {
+            out.put("setup_completed_at_ms", setupCompletedAt.getTime());
+        }
         // 새 세션은 해당 세션에서 만든 구역이 발행된 시각. 마이그레이션 이전 세션은 기존 표시를 유지한다.
         var zonesCommittedAt = rs.getTimestamp("zones_committed_at");
         if (zonesCommittedAt == null) {

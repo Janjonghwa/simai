@@ -193,6 +193,33 @@ public class ConfigBundleService {
         task.run();
     }
 
+    /**
+     * 세팅 완료(C17, S15P31A101-615): 부르는 쪽 트랜잭션 안에서 묶음을 만든다(구역 적용·완료 기록과 함께 커밋되거나 함께 되돌아간다).
+     * calibrationVersion 이 있으면 그 보정 문서를 싣고(세팅이 등록한 새 보정), 없으면 발행과 같이 지금 보정을 싣는다.
+     * Tier 0 로 보내는 일은 커밋 뒤에 한다. 묶음을 만들지 못하면(규칙 없음·서명 주소 미설정·보정 문서 없음) 던져 모두 되돌린다.
+     */
+    public String publishInTransaction(String calibrationVersion, long userId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("publishInTransaction 은 부르는 쪽 트랜잭션 안에서만 부른다");
+        }
+        if (!signer.configured()) {
+            throw new BusinessException(ErrorCode.Config.PUBLIC_URL_NOT_SET);
+        }
+        String configVersion = build(sites.siteId(), null, userId, calibrationVersion);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    sender.sendToAll(configVersion);
+                } catch (RuntimeException e) {
+                    // 묶음은 커밋됐다. 다시 보내기는 미확인 묶음 재전송(ConfigBundleSender)이 맡는다
+                    log.warn("구성 묶음 {} 전송 실패(묶음은 저장됨): {}", configVersion, e.getMessage());
+                }
+            }
+        });
+        return configVersion;
+    }
+
     private String build(String siteId, String requestedProfile, long userId, String explicitCalibration) {
         // 발행을 한 줄로 세운다(버전 번호·이전 버전이 겹치지 않게)
         jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.config_bundle'))", Map.of());

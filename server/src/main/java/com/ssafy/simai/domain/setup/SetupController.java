@@ -28,10 +28,12 @@ import tools.jackson.databind.node.ObjectNode;
 class SetupController {
     private final SetupService setups;
     private final SetupSupplementService supplements;
+    private final SetupCompletionService completions;
 
-    SetupController(SetupService setups, SetupSupplementService supplements) {
+    SetupController(SetupService setups, SetupSupplementService supplements, SetupCompletionService completions) {
         this.setups = setups;
         this.supplements = supplements;
+        this.completions = completions;
     }
 
     /** mode: NEW(기본, 새 모델) | REUSE(이전 모델 재사용: 현재 관제 맵을 그대로 쓰고 보정만 다시 한다, S15P31A101-614) */
@@ -68,6 +70,23 @@ class SetupController {
     ObjectNode retry(@PathVariable UUID id, @RequestBody(required = false) Retry request,
             @AuthenticationPrincipal Jwt jwt) {
         return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 세팅 완료(C17, S15P31A101-615): 세션 구역 목록 적용 → 완료 기록 → (새 모델) 이 세션 최종 맵 켜기 → 구성 묶음 한 번 발행.
+     * 응답은 세션 조회와 같은 모양에 applied_zones{created,updated,kept,archived}(zone_id 목록)를 더한다
+     */
+    @PostMapping("/{id}/complete")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode complete(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        SetupCompletionService.Completed done = completions.complete(id, Long.parseLong(jwt.getSubject()));
+        ObjectNode out = setups.get(id);
+        ObjectNode applied = out.putObject("applied_zones");
+        done.zones().created().forEach(applied.putArray("created")::add);
+        done.zones().updated().forEach(applied.putArray("updated")::add);
+        done.zones().kept().forEach(applied.putArray("kept")::add);
+        done.zones().archived().forEach(applied.putArray("archived")::add);
+        return out;
     }
 
     /** 맵 보강 촬영 파일 하나의 서명 PUT 주소(S15P31A101-607). 응답은 파일 기록 + upload{method,url,headers,expires_at_ms} */

@@ -86,7 +86,8 @@ export function useSaveReportForm() {
 }
 
 /**
- * AI 양식 초안을 요청한다(-624). 원래 세팅 완료(-615)가 서버에서 시작하지만, 그 전이나 실패(FAILED) 뒤에도 사람이 시작할 수 있게 둔다.
+ * AI 양식 초안을 요청한다(-624). 세팅 완료(-615) 커밋 뒤 서버가 시작하지만(작업내용을 골랐을 때), 그 전이나 실패(FAILED) 뒤에도
+ * 사람이 시작할 수 있게 둔다.
  * 끝나면(이미 생성 중 409 REPORT_IN_PROGRESS 포함) 보고서를 다시 받아 GENERATING 을 보이고, 그 뒤는 useWorkReport 가 2초마다 다시 받는다.
  */
 export function useStartReportDraft(workId: string) {

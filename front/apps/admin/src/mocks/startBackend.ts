@@ -45,7 +45,7 @@ export async function startMockBackend() {
   });
   const clips = createClipsMock({ findEvent: events.find });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다. 구역을 저장하면 세팅 mock 의
-  // 세션이 끝나(COMPLETED·zones_committed_at) 작업 관리가 '세팅 완료' 를 본다.
+  // 세션이 COMPLETED·zones_committed_at 이 된다. 작업 관리의 '세팅 완료'(SETUP_DONE)는 세팅 화면의 「세팅 완료」(POST .../complete, -615)가 정한다.
   const zones = createZonesMock({
     staticObjects: staticObjectsMock.store,
     onCommit: setupMock.completeAfterZonesCommit,

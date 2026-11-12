@@ -229,11 +229,17 @@ class SetupReuseModeIntegrationTest {
 
         ObjectNode ready = joint.deepCopy().put("status", "READY_FOR_ZONES").put("progress_pct", 85.0);
         mvc.perform(heartbeat(s, 0.85, ready)).andExpect(status().isOk());
-        // READY_FOR_ZONES: 새 보정을 실은 구성 묶음은 발행하지만 현재 Scene 은 그대로, AI 구역 초안도 없다
+        // READY_FOR_ZONES: 묶음은 아직(완료가 발행, -615), 현재 Scene 은 그대로, AI 구역 초안도 없다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
+                newCalibration)).isZero();
+        assertThat(currentScene()).isEqualTo(baseScene);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_type = 'vlm_zone_draft'", Integer.class)).isZero();
+
+        // 세팅 완료(C17): 재사용은 지금 관제 맵을 그대로 두고 새 보정을 실은 구성 묶음만 한 번 발행한다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
                 newCalibration)).isEqualTo(1);
         assertThat(currentScene()).isEqualTo(baseScene);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_type = 'vlm_zone_draft'", Integer.class)).isZero();
 
         ObjectNode result = joint.deepCopy().put("status", "COMPLETED").put("progress_pct", 100.0);
         mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk())
@@ -307,6 +313,9 @@ class SetupReuseModeIntegrationTest {
                 .put("preview_scene_version", preview);
         ((ObjectNode) ready.get("artifacts")).set("preview_scene", previewRef);
         mvc.perform(heartbeat(s, 0.85, ready)).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(baseScene);
+        // 새 모델로 이어 간 세션(World 다시 맞추기 거부)의 완료는 이 세션 미리보기를 켠다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(preview);
 
         String baked = "scene-" + s.jobId() + "-" + s.leaseId();
@@ -383,6 +392,10 @@ class SetupReuseModeIntegrationTest {
                 .put("reason", accepted ? "ANCHORED" : "CENTER_RESIDUAL_EXCEEDED")
                 .put("reference_calibration_version", baseCalibration)
                 .put("max_center_residual_m", accepted ? 0.0437 : 0.41).put("max_orientation_change_rad", 0.0095);
+    }
+
+    private RequestBuilder complete(String sessionId) {
+        return post("/api/setup-sessions/{id}/complete", sessionId).with(adminJwt());
     }
 
     private String currentScene() {

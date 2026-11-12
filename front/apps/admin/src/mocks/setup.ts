@@ -31,6 +31,12 @@ const PREVIEW_READY_PATCH = {
   calibration_version: 'cal-8',
 } as const satisfies Partial<SetupSessionResponse>;
 const DEFAULT_TOLERANCE_CM = 5.0;
+/** 세팅 완료(POST .../complete)를 받는 단계: 미리보기 맵 이후(서버 SetupCompletionService 와 같음). */
+const COMPLETABLE_STAGES: ReadonlySet<string> = new Set([
+  'READY_FOR_ZONES',
+  'BAKING_TEXTURE',
+  'COMPLETED',
+]);
 const STALE_AFTER_MS = 10_000;
 const DEMAND_TTL_MS = 15_000;
 
@@ -370,8 +376,9 @@ export function createSetupMock(options: SetupMockOptions = {}) {
 
   /**
    * 세팅 세션의 구역을 발행했을 때(POST /api/zones/commit 의 setup_session_id) 세팅에 보이는 일: 아직 안 끝난 세션을 COMPLETED 로
-   * 보내고 구역을 처음 발행한 시각(zones_committed_at)을 남긴다. 세션 진행은 구역 저장을 모르기 때문에, 작업 관리가
-   * '세팅 끝' 을 알도록 구역 mock 의 저장(createZonesMock 의 onCommit)에 이어 쓴다. 없는 세션·실패한 세션은 그대로 둔다.
+   * 보내고 구역을 처음 발행한 시각(zones_committed_at)을 남긴다(개발 서버에서 굽기 끝을 기다리지 않게). 작업 관리의 '세팅 끝'
+   * (SETUP_DONE)은 이것이 아니라 세팅 완료(POST .../complete, -615)의 setup_completed_at_ms 로 정한다(서버와 같음).
+   * 없는 세션·실패한 세션은 그대로 둔다.
    */
   function completeAfterZonesCommit(sessionId: string, at: number = now()): void {
     const session = sessions.get(sessionId);
@@ -386,6 +393,32 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   }
 
   const supplement = createSupplementMock({ now, sessions, updateSession });
+
+  /** 세션별 구역 목록(-612). 저장한 적이 없으면 없다(빈 목록·revision 0). */
+  const zonePlans = new Map<string, { items: unknown[]; revision: number; updatedAt: number }>();
+  const planView = (id: string) => {
+    const stored = zonePlans.get(id);
+    return {
+      setup_session_id: id,
+      items: stored?.items ?? [],
+      revision: stored?.revision ?? 0,
+      updated_at: stored?.updatedAt ?? null,
+    };
+  };
+  /** 완료가 적용한 것처럼 목록을 나눈다(개발 서버는 관제 구역 mock 을 바꾸지 않는다). 새 구역은 임시 zone_id 를 준다. */
+  const appliedOf = (id: string) => {
+    const items = zonePlans.get(id)?.items ?? [];
+    const created: string[] = [];
+    const updated: string[] = [];
+    const kept: string[] = [];
+    items.forEach((item, index) => {
+      const zoneId = Reflect.get(item as object, 'zone_id');
+      if (typeof zoneId !== 'string') created.push(`z-setup-${id.slice(-4)}-${index}`);
+      else if (Reflect.get(item as object, 'zone') != null) updated.push(zoneId);
+      else kept.push(zoneId);
+    });
+    return { created, updated, kept, archived: [] as string[] };
+  };
 
   /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션은 두지 않는다. */
   function progressSession(session: SetupSessionResponse): SetupSessionResponse {
@@ -717,6 +750,86 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       zoneDraftsBySession.set(id, built);
       return HttpResponse.json(built);
     }),
+    // 세팅 중 구역 목록(-612): 통째로 저장, revision 이 다르면 409 SETUP_ZONE_PLAN_CONFLICT, 완료 뒤면 409 SETUP_ZONES_CLOSED
+    http.get('*/api/setup-sessions/:id/zones', ({ request, params }) => {
+      if (!readLiveUser(request, now())) return unauthorized();
+      const id = String(params.id ?? '');
+      if (!sessions.has(id)) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      return HttpResponse.json(planView(id));
+    }),
+
+    http.put('*/api/setup-sessions/:id/zones', async ({ request, params }) => {
+      const t = now();
+      const user = readLiveUser(request, t);
+      if (!user) return unauthorized();
+      if (user.role !== 'ADMIN') return problem(403, 'FORBIDDEN', '관리자만 저장할 수 있습니다');
+      const id = String(params.id ?? '');
+      const session = sessions.get(id);
+      if (!session) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      if (session.setup_completed_at_ms != null || session.status === 'FAILED') {
+        return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
+      }
+      const raw: unknown = await request.json().catch(() => null);
+      const items = typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'items') : undefined;
+      const revision =
+        typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'revision') : undefined;
+      const valid =
+        Array.isArray(items) &&
+        items.length <= 100 &&
+        items.every((item: unknown) => {
+          if (typeof item !== 'object' || item === null) return false;
+          const source = Reflect.get(item, 'source');
+          const zoneId = Reflect.get(item, 'zone_id');
+          return (
+            (source === 'AI' || source === 'MANUAL') &&
+            (zoneId != null || Reflect.get(item, 'zone') != null)
+          );
+        });
+      if (!valid || typeof revision !== 'number') {
+        return problem(400, 'INVALID_SETUP_ZONE_PLAN', '세팅 구역 목록이 올바르지 않습니다');
+      }
+      const stored = zonePlans.get(id);
+      if ((stored?.revision ?? 0) !== revision) {
+        return problem(
+          409,
+          'SETUP_ZONE_PLAN_CONFLICT',
+          '다른 곳에서 먼저 고친 세팅 구역 목록입니다',
+        );
+      }
+      zonePlans.set(id, { items: items as unknown[], revision: revision + 1, updatedAt: t });
+      return HttpResponse.json(planView(id));
+    }),
+
+    // 세팅 완료(C17, -615): 미리보기 맵 이후·완료 전만 받는다. 완료 시각을 남기고 적용 결과(구역은 개발 서버에서 따로 저장)를 돌려준다
+    http.post('*/api/setup-sessions/:id/complete', ({ request, params }) => {
+      const t = now();
+      const user = readLiveUser(request, t);
+      if (!user) return unauthorized();
+      if (user.role !== 'ADMIN')
+        return problem(403, 'FORBIDDEN', '관리자만 세팅을 완료할 수 있습니다');
+      const id = String(params.id ?? '');
+      const found = sessions.get(id);
+      if (!found) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      const session = progressSession(advanceIfDue(found, t));
+      if (session.setup_completed_at_ms != null) {
+        return problem(409, 'SETUP_ALREADY_COMPLETED', '이 작업은 세팅을 이미 완료했습니다');
+      }
+      if (!COMPLETABLE_STAGES.has(session.status)) {
+        return problem(
+          409,
+          'SETUP_NOT_READY_TO_COMPLETE',
+          '미리보기 맵이 나온 뒤에 완료할 수 있습니다',
+        );
+      }
+      const done = updateSession(id, { setup_completed_at_ms: t });
+      return HttpResponse.json({ ...supplement.withView(done), applied_zones: appliedOf(id) });
+    }),
     ...supplement.handlers,
   ];
 
@@ -731,5 +844,6 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     failSession,
     completeAfterZonesCommit,
     setZoneDrafts,
+    zonePlans,
   };
 }

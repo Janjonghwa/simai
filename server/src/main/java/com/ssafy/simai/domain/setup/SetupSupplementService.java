@@ -600,6 +600,7 @@ public class SetupSupplementService {
      * 업로드가 막힌 사유(없으면 null): 이전 모델 재사용 세션, 미리보기 이전·실패, 더 새 세팅 세션.
      * 이전 모델 재사용(REUSE, S15P31A101-614)으로 끝났거나 진행 중인 세션은 이 세션이 만든 맵(미리보기·굽기 입력 사진)이 없어 다시 구울
      * 기준이 없다(현재 관제 맵은 다른 세션의 것). 맵을 보강하려면 새 모델로 세팅한다.
+     * 보강은 READY_FOR_ZONES 부터 세팅 완료(C17) 전까지만 한다(S15P31A101-615). 완료 뒤에는 SETUP_COMPLETED.
      */
     private String uploadBlockedReason(SessionInfo s) {
         if ("REUSE".equals(s.mode())) {
@@ -611,7 +612,18 @@ public class SetupSupplementService {
         if (superseded(s)) {
             return "SUPERSEDED";
         }
+        if (setupCompleted(s)) {
+            return "SETUP_COMPLETED";
+        }
         return null;
+    }
+
+    /** 이 세션으로 세팅을 완료했는지(작업에 걸린 세션이고 작업의 setup_completed_at 이 있다) */
+    private boolean setupCompleted(SessionInfo s) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM work_unit
+                               WHERE active_setup_session_id = :id AND setup_completed_at IS NOT NULL)
+                """, new MapSqlParameterSource("id", s.setupSessionId()), Boolean.class));
     }
 
     /**
@@ -667,6 +679,7 @@ public class SetupSupplementService {
             case "SESSION_NOT_READY" -> ErrorCode.Setup.SUPPLEMENT_SESSION_NOT_READY;
             case "REUSED_SCENE" -> ErrorCode.Setup.SUPPLEMENT_REUSED_SCENE;
             case "SUPERSEDED" -> ErrorCode.Setup.SUPPLEMENT_SESSION_SUPERSEDED;
+            case "SETUP_COMPLETED" -> ErrorCode.Setup.SUPPLEMENT_SETUP_COMPLETED;
             case "SETUP_JOB_RUNNING" -> ErrorCode.Setup.SUPPLEMENT_SETUP_JOB_RUNNING;
             case "REBAKE_RUNNING" -> ErrorCode.Setup.SUPPLEMENT_REBAKE_IN_PROGRESS;
             case "LIVE_WORK" -> ErrorCode.Setup.SETUP_BLOCKED_BY_LIVE_WORK;
