@@ -149,7 +149,8 @@ class Change(StrEnum):
     RESTORED = "RESTORED"
     IDENTITY_REVISED = "IDENTITY_REVISED"  # world_state 의 identity_revision 증가
     IDENTITY_CORRECTED = "IDENTITY_CORRECTED"  # 명시적 교정으로 World ID 가 바뀜
-    IDENTITY_CONFLICT = "IDENTITY_CONFLICT"  # 교정 대상 키에 이미 이벤트가 있어 연결만 남김
+    IDENTITY_CONFLICT = "IDENTITY_CONFLICT"  # 교정 대상 키에 이미 이벤트가 있어 연결만 남김(-657 전 동작, 지금은 내지 않음)
+    IDENTITY_MERGED = "IDENTITY_MERGED"  # 병합으로 같은 사람의 같은 위험 이벤트가 둘이 되어 흡수된 쪽을 마감(-657). 관측 해소가 아니다
     SEVERITY = "SEVERITY"
     CONFIDENCE = "CONFIDENCE"
     VERIFICATION = "VERIFICATION"
@@ -304,6 +305,25 @@ class CloseRecord:
             "requested_at": self.requested_at,
             "recorded_at": self.recorded_at,
             "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class MergeRecord:
+    """병합 흡수 기록(-657, 흡수 마감 전이에 싣는다). 관측 해소가 아니라 ID 병합으로 같은 사람의 같은 위험이 남는 이벤트에
+    이어졌다는 기록이다. 계약 identity_merge_resolution(risk_event_transition 2.3.0)의 재료다."""
+
+    survivor_event_id: str
+    survivor_world_id: str
+    merged_world_id: str
+    identity_revision: int
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "survivor_event_id": self.survivor_event_id,
+            "survivor_world_id": self.survivor_world_id,
+            "merged_world_id": self.merged_world_id,
+            "identity_revision": self.identity_revision,
         }
 
 
@@ -717,6 +737,7 @@ class EventTransition:
     evidence_ref: str | None = None
     close: CloseRecord | None = None  # 운영자 종료 전이에만
     escalation: Mapping[str, Any] | None = field(default=None, hash=False)  # 운영자 상향 전이에만(계약 operator_escalation)
+    merge: MergeRecord | None = None  # 병합 흡수 마감 전이에만(-657)
 
     @property
     def event_id(self) -> str:
@@ -732,6 +753,8 @@ class EventTransition:
             doc["close"] = self.close.to_payload()
         if self.escalation is not None:  # 상향 전이에만. 받은 값 그대로(outbox 가 계약 escalation 으로 그대로 보낸다)
             doc["escalation"] = dict(self.escalation)
+        if self.merge is not None:  # 병합 흡수 마감에만(-657). outbox 가 계약 resolution(IDENTITY_MERGED)으로 바꾼다
+            doc["merge"] = self.merge.to_payload()
         return doc
 
     def _payload(self) -> dict[str, Any]:
@@ -1628,11 +1651,15 @@ class LifecycleTracker:
         """명시적 ID 교정을 반영한다(명세 5.2). 진행 중인 위험은 해소하지 않는다(G3).
 
         previous_world_id 를 대상으로 하는 활성 이벤트의 World ID 를 world_id 로 바꾼다. 원본 World ID 는
-        origin_world_ids 에 남는다. 바뀐 키에 이미 활성 이벤트가 있으면 키를 바꾸지 않고 related_event_id 로
-        연결만 남긴다(그 이벤트는 옛 ID 가 더는 관측되지 않으므로 UNVERIFIABLE 로 남는다).
+        origin_world_ids 에 남는다. 바뀐 키에 이미 활성 이벤트(같은 사람의 같은 규칙·구역 위험)가 있으면(-657, Lead 결정 2):
+        옛 ID 의 이벤트는 남는 이벤트에 흡수 기록(origin_world_ids 에 옛 원본 ID 를 더함)하고, 옛 이벤트는 RESOLVED(변경 사유
+        IDENTITY_MERGED, merge 기록 = 남는 이벤트)로 마감한다. 관측 해소가 아니므로 검증 상태는 바꾸지 않고 재개 대상에 넣지
+        않는다. 위험은 남는 이벤트가 그대로 이어 해소 확인을 처음부터 센다(자동 해소 없음, G3). 옛 동작(IDENTITY_CONFLICT 로
+        연결만 남김)은 옛 ID 가 다시 관측되지 않아 UNVERIFIABLE 유령 카드로 영원히 남았다(14차).
         """
         occurred_at = self._clock.now_ms()
         transitions: list[EventTransition] = []
+        signals: list[LocalSignal] = []
         for active in self._by_id.values():  # 분할 상대가 합쳐지면 남는 ID 로 잇는다(S15P31A101-201)
             if correction.previous_world_id in active.split_partners:
                 active.split_partners.discard(correction.previous_world_id)
@@ -1647,12 +1674,35 @@ class LifecycleTracker:
             other = self._by_key.get(new_key)
             active.clear_since = None
             if other is not None and other is not active:
-                active.update(
+                other.clear_since = None
+                other.update(origin_world_ids=tuple(dict.fromkeys((*other.state.origin_world_ids, *state.origin_world_ids))))
+                record = MergeRecord(
+                    survivor_event_id=other.state.event_id,
+                    survivor_world_id=correction.world_id,
+                    merged_world_id=correction.previous_world_id,
+                    identity_revision=correction.identity_revision,
+                )
+                closed = replace(
+                    state,
                     related_event_id=other.state.event_id,
                     event_sequence=state.event_sequence + 1,
-                    lifecycle=Lifecycle.UPDATED,
+                    lifecycle=Lifecycle.RESOLVED,
                 )
-                change = Change.IDENTITY_CONFLICT
+                active.state = closed
+                active.mark_emitted()
+                self._drop(active)
+                if closed.local_alerted:
+                    signals.append(AlertClear(**self._signal_fields(closed, occurred_at)))
+                transitions.append(
+                    EventTransition(
+                        state=closed,
+                        transition=Lifecycle.RESOLVED,
+                        changes=(Change.IDENTITY_MERGED,),
+                        occurred_at=occurred_at,
+                        merge=record,
+                    )
+                )
+                continue
             else:
                 revisions = {w: r for w, r in state.identity_revisions.items() if w != correction.previous_world_id}
                 revisions[correction.world_id] = correction.identity_revision
@@ -1674,7 +1724,7 @@ class LifecycleTracker:
             )
         for active in self._by_id.values():  # 상대가 이벤트 자신의 ID 로 합쳐졌으면 상대가 아니다
             active.split_partners.difference_update(active.state.world_ids)
-        return LifecycleStep(tuple(transitions))
+        return LifecycleStep(tuple(transitions), tuple(signals))
 
     def split_identity(self, split: IdentitySplit) -> LifecycleStep:
         """ID 분할을 반영한다(명세 5.2, S15P31A101-201). 이벤트를 옮기거나 해소하지 않는다(G3).

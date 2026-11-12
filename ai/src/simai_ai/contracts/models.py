@@ -3190,6 +3190,16 @@ class DefsCaptureTime(BaseModel):
     timestamp_uncertainty_ms: DefsDurationMs
 
 
+class DefsIdentityMergeResolution(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['IDENTITY_MERGED']
+    survivor_event_id: DefsUuidV7
+    survivor_world_id: DefsWorldId
+    merged_world_id: DefsWorldId
+
+
 class Frames(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3719,7 +3729,7 @@ class Payload343(DefsNeedsCheckMatchesReasons):
     resumed: StrictBool | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     ack: DefsOperatorAck | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
@@ -3754,7 +3764,7 @@ class Payload344(Payload341, Payload343):
     resumed: StrictBool | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     ack: DefsOperatorAck | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
@@ -3789,7 +3799,7 @@ class Payload345(Payload342, Payload343):
     resumed: StrictBool | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     ack: DefsOperatorAck | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
@@ -3824,7 +3834,7 @@ class Payload346(Payload341, Payload343):
     resumed: StrictBool | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     ack: DefsOperatorAck | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
@@ -3859,7 +3869,7 @@ class Payload347(Payload342, Payload343):
     resumed: StrictBool | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
     ack: DefsOperatorAck | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 

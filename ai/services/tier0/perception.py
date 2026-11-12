@@ -720,7 +720,7 @@ class Perception:
         collector = getattr(self.feed, "reid_collector", None)
         if collector is not None and hasattr(collector, "update_sampling"):
             collector.update_sampling(frame)
-        self._observe(lambda d: d.observe_world(frame, self.manager.diag))
+        self._observe(lambda d: d.observe_world(frame, self.manager.diag, self.manager.duplicate_pair_count))
         self._observe(lambda d: d.window_due(t) and log.info("%s", window_log_line(d.take_window(t))))
         with self.timing.measure("contact", self.people):
             contacts = self.contact.update(frame, surfaces)

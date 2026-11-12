@@ -42,6 +42,16 @@ ID 를 다시 쓰지 않는다.
    구별할 근거가 없으므로 둘 다 남기고 POSSIBLE_DUPLICATE 후보 쌍으로 둔다. 후보 쌍은 둘 다 살아 있고 가까운 동안 매
    시각 IDENTITY_UNCERTAIN(POSSIBLE_DUPLICATE)을 다시 붙인다. 근거가 쌓이면 아래 늦은 재연결의 병합으로 합친다.
 
+**시점 분할 그림자·동시 활성 중복 (S15P31A101-657, 14차 3명 → 89 ID).** 한 사람을 두 카메라 묶음이 따로 본 것(2+2)은
+"카메라가 겹치지 않고, 방향별 불확실성 반경(두 묶음 삼각측량 공분산을 두 골반 방향으로 잰 σ 로 0.6~1.35 m) 안이고, 두 묶음
+view 를 엉덩이마다 한 점으로 풀어도 재투영 오차가 20 px 안"인 경우로 판정한다(`_geometric_shadow`). 그러면
+(a) 이번 시각 갱신된 확정 Track 의 그림자 클러스터는 소유 이력·IDENTITY_UNCERTAIN 과 무관하게 새 ID·늦은 재연결보다 먼저
+걸러 내고(IDENTITY_UNCERTAIN 은 붙이지 않음), (b) 이미 둘 다 살아 있는 두 Track 은 근거가 4시각 이어지면 `_merge` 로 합치고
+(MERGE·aliases), (c) 확정 Track 근처 저신뢰 TENTATIVE 는 확정을 6회로 늦추며, (d) 분신 쌍은 Re-ID 경쟁자·crowd 판정에서 서로를
+뺀다. **안전장치:** 같은 시각 같은 카메라에서 서로 다른 로컬 트랙으로 따로 보인 두 사람(그 근거를 distinct_ttl_ms 안에 본
+쌍 포함)은 절대 억제·병합하지 않는다. 0.5 m 옆 다른 사람은 한 점 재투영이 수십 px 벌어져 걸리지 않는다. 기립 키(머리 − 발목)는
+재입장 지연 병합의 보조 근거로만 쓴다(확실히 다르면 후보 제외, 외형 애매 시 하나만 맞으면 동률 깨기).
+
 같은 카메라의 두 검출은 Cross-view 클러스터에서 이미 갈라져 있고(카메라당 view 하나), 여기서는 Track 하나에 시각마다
 클러스터 하나만 붙이므로 같은 카메라의 두 검출이 한 World ID 에 동시에 묶이지 않는다.
 
@@ -147,9 +157,22 @@ from typing import Any
 
 import numpy as np
 
-from simai_ai.geometry.joint_gate import GatedSkeleton, GateIssue, HeadZ, JointGate, JointGateConfig
+from simai_ai.geometry.joint_gate import (
+    GatedSkeleton,
+    GateIssue,
+    HeadZ,
+    JointGate,
+    JointGateConfig,
+    triangulation_covariance,
+)
 from simai_ai.geometry.rig import CameraRig, UndistortedKeypoints
-from simai_ai.geometry.triangulation import COCO17_L_HIP, COCO17_R_HIP, JointValidity, SkeletonEstimate
+from simai_ai.geometry.triangulation import (
+    COCO17_L_HIP,
+    COCO17_R_HIP,
+    JointValidity,
+    SkeletonEstimate,
+    joint_consistency_px,
+)
 from simai_ai.reid.collector import LocalTrackFeature
 from simai_ai.reid.gallery import GalleryConfig, ReidGalleryStore, quantize_orientation_bin
 from simai_ai.risk.lifecycle import IdentityCorrection, IdentitySplit
@@ -159,6 +182,8 @@ from simai_ai.tracking.time_model import ObservationState, TimeModelConfig, Trac
 
 COCO17_L_SHOULDER = 5
 COCO17_R_SHOULDER = 6
+COCO17_L_ANKLE = 15
+COCO17_R_ANKLE = 16
 ReidFeatureLookup = Callable[[str, str, int], LocalTrackFeature | None]
 
 JOINT_LAYOUT = "COCO17"
@@ -383,6 +408,54 @@ class WorldTrackConfig:
     """분할 나머지의 로컬 키 하나 이상이 억제 근거 Track 에 속했던 최근 시간 창(경계 포함)"""
     split_suppression_require_owner: bool = False
     """-413 S1·S2 비교용 추가 제약: 모든 로컬 트랙의 옛 주인이 같을 때만 억제한다"""
+    shadow_suppression_enabled: bool = True
+    """-657 시점 분할 그림자 억제: 이번 시각 갱신된 확정(CONFIRMED·OCCLUDED) Track 과 카메라가 겹치지 않는 근처 클러스터가
+    방향별 불확실성 반경 안이고 두 묶음의 view 를 한 점으로 풀어도 재투영이 맞으면(같은 사람을 두 카메라 묶음이 따로 본 것)
+    소유 이력·IDENTITY_UNCERTAIN 여부와 무관하게 새 ID 를 만들지 않는다. 같은 시각 같은 카메라의 별도 검출이나 병합 금지
+    반증이 있으면 억제하지 않는다. 위치·관절·로컬 소유권은 합치지 않는다"""
+    shadow_radius_base_m: float = 0.6
+    """방향별 반경의 바닥값 (split_suppression_radius_m 과 같은 초기값). 시선 수직(옆 사람이 서는 방향)에서는 이 값 근처다"""
+    shadow_radius_sigma_k: float = 2.5
+    """방향별 반경 = base + k × σ_dir. σ_dir 는 두 묶음 삼각측량 공분산의 수평 성분을 두 골반을 잇는 방향으로 잰 값"""
+    shadow_radius_max_m: float = 1.35
+    """방향별 반경의 상한 (예각 2대 깊이 오차 0.5~1.0 m 를 덮고 gate_max_m 1.5 m 보다 작게)"""
+    shadow_keypoint_sigma_px: float = 8.0
+    """방향별 반경에 쓰는 2D 엉덩이 keypoint 1σ 가정(px). 몸통 회전·숙임에서 엉덩이 점이 10~18 px 밀리는 것을 2σ 로 덮는다.
+    관절 게이트의 keypoint_sigma_px(2 px, VALID 판정용)와 다르다"""
+    shadow_reprojection_px: float = 20.0
+    """두 묶음 view 를 한 점으로 푼 엉덩이 재투영 오차 상한(px). triangulation.outlier_reprojection_error_px 와 같은 값이다.
+    0.5 m 옆에 선 다른 사람은 5 m 거리에서 약 50 px 이상 벌어진다"""
+    shadow_min_keypoint_confidence: float = 0.3
+    """그림자 판정에 쓰는 엉덩이 keypoint 신뢰도 하한 (삼각측량 min_keypoint_confidence 와 같음)"""
+    confirm_hits_near_confirmed: int = 6
+    """-657 확정 지연: 카메라가 겹치지 않는 확정 Track 이 confirm_delay_radius_m 안에 있는 동안 저신뢰(클러스터
+    IDENTITY_UNCERTAIN 또는 골반 VALID 아님)로 갱신된 TENTATIVE 의 확정 횟수 (10 Hz 에서 0.6 s). 전역 confirm_hits 는 그대로다"""
+    confirm_delay_radius_m: float = 1.35
+    """확정 지연을 거는 확정 Track 과의 수평 거리 (shadow_radius_max_m 과 같은 값)"""
+    active_merge_enabled: bool = True
+    """-657 동시 활성 중복 병합: 같은 시각 둘 다 갱신된 두 Track 이 카메라가 겹치지 않고 그림자 판정(방향별 반경 + 한 점 재투영)
+    을 active_merge_confirm_ticks 번 연속 통과하면 먼저 만든 ID 로 합친다(MERGE·aliases). 같은 카메라 별도 검출이 병합 금지
+    쌍 TTL 안에 있었거나 분할 쌍이면 합치지 않는다"""
+    active_merge_confirm_ticks: int = 4
+    """동시 활성 병합에 필요한 연속 근거 시각 수 (10 Hz 에서 0.4 s). 근거가 key_ttl_ms 넘게 끊기거나 반대 근거가 나오면 처음부터"""
+    stature_enabled: bool = True
+    """-657 키 보조 근거: Re-ID 지연 병합(재입장)에서 기립 키(머리 높이 − 발목 높이, 관측값만)가 확실히 다른 후보를 빼고,
+    외형이 애매할 때 키로 하나만 남으면 그 후보로 잇는다(보호구로 외형이 비슷해지는 경우). 기하 게이트·위치 정본은 그대로다"""
+    stature_window: int = 30
+    """Track 마다 남기는 기립 키 표본 수 (10 Hz 에서 기립 3 s)"""
+    stature_min_samples: int = 10
+    """키를 쓰는 최소 기립 표본 수 (기립 1 s). 모자라면 키를 쓰지 않는다(모르면 비움)"""
+    stature_min_tolerance_m: float = 0.07
+    """키 일치 허용치 바닥값. 2대 관측 머리·발목 Z 표본 잡음(각 약 3~5 cm)과 자세 흔들림을 덮는다"""
+    stature_sigma_k: float = 2.5
+    """키 일치 허용치 = max(바닥값, k × √(σa² + σb²)). σ 는 표본 MAD × 1.4826 (표본 하나의 퍼짐, 중앙값 오차보다 보수적)"""
+    standing_min_height_m: float = 1.2
+    """기립 표본: 머리 − 발목 높이 하한 (웅크림·누움·바닥 앉기를 뺀다)"""
+    standing_min_pelvis_ratio: float = 0.45
+    """기립 표본: (골반 − 발목) / (머리 − 발목) 하한. 서기 약 0.55, 의자에 앉기 약 0.3~0.4"""
+    distinct_ttl_ms: int = 15_000
+    """-657 병합 금지 쌍 유지 시간: 같은 시각 같은 카메라의 별도 검출(또는 도달 불가 관측)을 마지막으로 본 뒤 이 시간 동안만
+    병합 금지로 본다. 함께 보이는 동안은 매 시각 갱신된다. 분할로 생긴 쌍은 시간과 무관하게 남는다(진동 방지)"""
     uncertain_hold_ms: int = 1000
     """IDENTITY_UNCERTAIN 을 마지막 사유 뒤 이 시간 동안 유지한다 (깜박임 방지, 보수적)"""
     max_speed_mps: float = 2.0
@@ -447,15 +520,41 @@ class WorldTrackConfig:
             "split_suppression_enabled",
             "split_suppress_ownerless",
             "split_suppression_require_owner",
+            "shadow_suppression_enabled",
+            "active_merge_enabled",
+            "stature_enabled",
             "reid_enabled",
             "reid_swap_correction_enabled",
             "reid_dormant_enabled",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} 는 bool 이어야 한다")
-        for name in ("confirm_hits", "merge_confirm_frames", "reid_swap_confirm_frames"):
+        for name in (
+            "confirm_hits",
+            "merge_confirm_frames",
+            "reid_swap_confirm_frames",
+            "confirm_hits_near_confirmed",
+            "active_merge_confirm_ticks",
+            "stature_window",
+            "stature_min_samples",
+        ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 는 1 이상이어야 한다")
+        if self.distinct_ttl_ms < 0:
+            raise ValueError("distinct_ttl_ms 는 0 이상이어야 한다")
+        for name in (
+            "shadow_radius_base_m",
+            "shadow_radius_max_m",
+            "shadow_keypoint_sigma_px",
+            "shadow_reprojection_px",
+            "confirm_delay_radius_m",
+        ):
+            if not getattr(self, name) > 0:
+                raise ValueError(f"{name} 는 양수여야 한다")
+        if self.shadow_radius_sigma_k < 0 or not self.shadow_radius_base_m <= self.shadow_radius_max_m:
+            raise ValueError("shadow_radius_sigma_k ≥ 0, shadow_radius_base_m ≤ shadow_radius_max_m 이어야 한다")
+        if not 0 <= self.shadow_min_keypoint_confidence <= 1:
+            raise ValueError("shadow_min_keypoint_confidence 는 0~1 이어야 한다")
         for name in (
             "tentative_max_gap_ms",
             "occluded_after_ms",
@@ -832,6 +931,10 @@ class _Track:
     last_reid_similarity: float | None = None
     last_reid_margin: float | None = None
     reid_checked_reentry: bool = False
+    confirm_needed: int = 0
+    stature: list[float] = field(default_factory=list)
+    """-657 기립 키 표본(머리 − 발목, m, 관측값만). 최근 stature_window 개. 소실·장기 보류 동안 Track 과 함께 남는다"""
+    """-657 이 TENTATIVE 의 확정 횟수 하한(확정 Track 근처 저신뢰 갱신이면 confirm_hits_near_confirmed). 0 이면 confirm_hits"""
 
     @property
     def last_xy(self) -> np.ndarray:
@@ -845,6 +948,14 @@ class _Evidence:
 
     stale: str
     keys: frozenset[TrackKey]
+    count: int
+    last_t: int
+
+
+@dataclass
+class _ShadowEvidence:
+    """동시 활성 두 Track 이 같은 사람의 시점 분할로 보인 연속 근거 (-657)."""
+
     count: int
     last_t: int
 
@@ -1021,8 +1132,19 @@ class WorldTrackManager:
         self._revisions: list[IdentityRevision] = []
         self._duplicates: set[frozenset[str]] = set()
         """같은 사람 두 ID 로 보이는 World ID 쌍 (POSSIBLE_DUPLICATE 를 다시 붙인다)"""
-        self._distinct: set[frozenset[str]] = set()
-        """같은 시각 같은 카메라의 다른 검출로 따로 보인 적이 있는 World ID 쌍. 서로 다른 두 사람이라 병합하지 않는다"""
+        self._distinct: dict[frozenset[str], int] = {}
+        """같은 시각 같은 카메라의 다른 검출로 따로 보인(또는 도달 불가로 관측된) World ID 쌍 → 마지막 근거 시각. 서로 다른 두
+        사람이라 distinct_ttl_ms 동안 병합·억제하지 않는다(-657 전에는 시간 제한 없음)"""
+        self._distinct_fixed: set[frozenset[str]] = set()
+        """분할로 생긴 병합 금지 쌍. 시간과 무관하게 남는다(진동 방지, S15P31A101-201)"""
+        self._shadow_pairs: dict[frozenset[str], _ShadowEvidence] = {}
+        """동시 활성 두 Track 의 시점 분할 근거 (-657). key_ttl_ms 넘게 끊기면 버린다"""
+        self._twins: dict[frozenset[str], int] = {}
+        """시점 분할 근거가 한 번이라도 있었던 쌍(분신) → 마지막 근거 시각. 둘 다 살아 있는 동안(소실·장기 보류 포함) 남겨,
+        재입장 Re-ID 경쟁자·늦은 재연결 crowd 판정에서 서로를 빼는 데 쓴다(14차: 분신끼리 margin 을 0 으로 만들어 재입장 실패).
+        그 뒤 병합 금지 근거가 생기면 분신으로 보지 않는다 (-657)"""
+        self._rig: CameraRig | None = None
+        """이번 update 의 보정 (그림자 판정 전용)"""
         self._evidence: dict[str, _Evidence] = {}
         """갱신된 Track ID → 병합 근거 (갱신되지 않은 Track 의 로컬 트랙이 이어진 시각 수)"""
         self._splits: dict[str, _Split] = {}
@@ -1040,6 +1162,11 @@ class WorldTrackManager:
     def revisions(self) -> tuple[IdentityRevision, ...]:
         """지금까지의 ID 교정 기록 (추가만 한다)."""
         return tuple(self._revisions)
+
+    @property
+    def duplicate_pair_count(self) -> int:
+        """지금 중복 의심 쌍 수: 시점 분할 근거가 이어지는 동시 활성 쌍과 POSSIBLE_DUPLICATE 쌍 (계측 전용, -657)."""
+        return len(set(self._shadow_pairs) | self._duplicates)
 
     @property
     def lost_candidates(self) -> tuple[str, ...]:
@@ -1161,7 +1288,10 @@ class WorldTrackManager:
             for key in sorted({key for cluster in frame.clusters for key in cluster.keys}):
                 self._tick_features[key] = self.feature_lookup(key[0], key[1], t)
         self._last_t = t
+        self._rig = rig
         self._restore_step(t)
+        self._distinct = {p: pt for p, pt in self._distinct.items() if t - pt <= cfg.distinct_ttl_ms}
+        self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if t - ev.last_t <= cfg.key_ttl_ms}
 
         keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms, cfg.split_suppression_owner_ttl_ms)
         for tr in self._all():
@@ -1392,7 +1522,14 @@ class WorldTrackManager:
         for c in anchored:
             if id(c) in taken or id(c) in blocked or not c.has_pelvis:
                 continue
-            target, ambiguous, unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
+            # -657: 확정 Track 의 시점 분할 그림자(카메라 비겹침 + 방향별 반경 + 한 점 재투영)는 늦은 재연결·새 ID 보다 먼저
+            # 거른다. 그 사람이 이번 시각 이미 갱신된 확정 Track 이므로 다른 ID 로 잇거나 새로 만들면 한 사람 두 ID 다.
+            # 두 묶음이 한 점으로 맞으므로 신원이 애매하지 않아 IDENTITY_UNCERTAIN 은 붙이지 않는다(설계 문서).
+            shadow_of = self._shadow_target(c, applied, holder, cluster_of) if cfg.shadow_suppression_enabled else None
+            if shadow_of is not None:
+                self.diag["new_track.suppressed_disjoint_shadow"] += 1
+                continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
+            target, ambiguous, _unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
             reid_reconnected = False
             if target is None and self.feature_lookup is not None and cfg.reid_enabled:
                 reid_target, reid_ambig = self._reid_reconnect_target(
@@ -1455,9 +1592,9 @@ class WorldTrackManager:
             for k in c.cluster.keys:
                 self._take_key(k, tr, t, set(assigned) | set(applied))
                 owner[k] = tr.world_id
-            if unreachable is not None:
-                # 첫 관측이 그 Track 의 마지막 관측에서 갈 수 없는 거리다: 같은 사람이 아니다(병합 근거로 세지 않는다)
-                self._distinct.add(frozenset((unreachable, tr.world_id)))
+            # -657: 첫 관측이 옛 주인의 마지막 위치에서 갈 수 없는 거리여도 병합 금지 쌍으로 두지 않는다. 예각 2대의 깊이 오차
+            # (0.5 m 넘음)로 태어난 그림자를 영구히 다른 사람으로 묶어 동시 활성 병합·분할 억제를 막았다. 거리만으로는 ID 전환과
+            # 깊이 오차를 구별할 수 없고, 같은 카메라 동시 검출이 진짜 반증이다(그건 _mark_distinct 가 기록한다)
             applied[tr.world_id] = _Applied(c.cluster, gated, (float(z[0]), float(z[1]), float(z[2])))
             self._split_candidate(tr.world_id, c, holder, applied, t)
             new_flags = set()
@@ -1472,6 +1609,9 @@ class WorldTrackManager:
                     self._duplicates.add(frozenset((tr.world_id, other_id)))
             flags[tr.world_id] = new_flags
             nearby[tr.world_id] = z[:2]
+
+        if cfg.stature_enabled:
+            self._update_stature(applied)
 
         # 병합 (ID 교정): 근거 시각이 merge_confirm_frames 번 쌓였으면 먼저 만든 ID 로 합친다
         revisions: list[IdentityRevision] = []
@@ -1498,6 +1638,14 @@ class WorldTrackManager:
 
         # 병합 금지 쌍: 이번 시각 새로 생기거나 다시 이은 Track 까지 (다음 시각 근거에 쓴다)
         self._mark_distinct(frame, holder, {wid: a.cluster for wid, a in applied.items()})
+
+        # 동시 활성 중복 병합 (-657): 둘 다 이번 시각 갱신된 두 Track 이 같은 사람의 시점 분할로 연속해 보이면 합친다.
+        # 기존 병합(_merge)을 그대로 써서 aliases·MERGE 교정 기록이 워치 배정·이벤트 승계로 이어진다
+        for rec in self._active_duplicate_merges(applied, holder, cluster_of, flags, t):
+            self.diag["revision.merge"] += 1
+            self.diag["revision.active_merge"] += 1
+            revisions.append(rec)
+            linked.add(rec.world_id)
 
         # 분할 (ID 교정, S15P31A101-201): 떨어진 근거 시각이 merge_confirm_frames 번 쌓이면 새 ID 를 원래 ID 에서 가른다
         for rec in self._split_step(t, applied, holder, flags):
@@ -1545,13 +1693,16 @@ class WorldTrackManager:
             for f in fs:
                 tr.flags[f] = t
 
+        # 확정 지연 (-657): 카메라가 겹치지 않는 확정 Track 근처에서 저신뢰로 갱신된 TENTATIVE 는 확정을 늦춘다(그림자일 수 있다)
+        self._delay_confirmation(applied)
+
         # 생명주기
         newly_lost: list[tuple[_Track, bool]] = []
         for tr in list(self._tracks.values()):
             gap = t - tr.t_last_valid
             was_confirmed = tr.lifecycle is not TrackLifecycle.TENTATIVE
             if tr.lifecycle is TrackLifecycle.TENTATIVE:
-                if gap == 0 and tr.hits >= cfg.confirm_hits:
+                if gap == 0 and tr.hits >= max(cfg.confirm_hits, tr.confirm_needed):
                     tr.lifecycle = TrackLifecycle.CONFIRMED
                     self.diag["lifecycle.confirmed"] += 1
                 elif gap > cfg.tentative_max_gap_ms:
@@ -1644,7 +1795,7 @@ class WorldTrackManager:
                 continue  # 주인의 다른 검출이 1대 클러스터에만 있어도 두 사람이다
             distance = math.dist(c.anchor, a.pelvis[:2])
             has_recent_owner = any(recent_owner.get(k) == wid for k in c.cluster.keys)
-            is_distinct = any(old is not None and frozenset((old, wid)) in self._distinct for old in owners)
+            is_distinct = any(old is not None and self._is_distinct(old, wid) for old in owners)
             sim = reid_scores.get(wid)
 
             # 1) 외형이 명확히 다르면(< reid_split_different_max_sim) 억제를 취소하여 두 사람(<n)을 보호한다
@@ -1666,13 +1817,232 @@ class WorldTrackManager:
 
             # 3) Re-ID 외형 일치로 확인된 분리 나머지 억제 (소유 이력 만료 또는 최대 반경 reid_split_max_radius_m 내)
             if reid_on and sim is not None and distance <= cfg.reid_split_max_radius_m:
-                best_other = max((s for other_w, s in reid_scores.items() if other_w != wid), default=-1.0)
+                shadows = self._shadows_of(wid)  # 같은 사람의 분신 Track 은 경쟁자가 아니다(-657)
+                best_other = max(
+                    (s for other_w, s in reid_scores.items() if other_w != wid and other_w not in shadows), default=-1.0
+                )
                 margin = sim - best_other if best_other >= 0.0 else sim
                 min_sim = cfg.reid_split_same_min_sim if not has_recent_owner else (cfg.reid_split_same_min_sim - 0.05)
                 if sim >= min_sim and margin >= cfg.reid_split_margin:
                     self.diag["reid.split_suppressed_same"] += 1
                     candidates.append((distance, wid))
         return min(candidates)[1] if candidates else None
+
+    # ------------------------------------------------------------------ 시점 분할 그림자 (-657)
+
+    def _is_distinct(self, a: str, b: str) -> bool:
+        """병합 금지 쌍인지: 같은 시각 같은 카메라의 별도 검출(또는 도달 불가 관측)을 distinct_ttl_ms 안에 봤거나 분할 쌍."""
+        pair = frozenset((a, b))
+        if pair in self._distinct_fixed:
+            return True
+        seen = self._distinct.get(pair)
+        return seen is not None and (self._last_t is None or self._last_t - seen <= self.config.distinct_ttl_ms)
+
+    def _shadows_of(self, world_id: str) -> set[str]:
+        """world_id 의 분신(시점 분할 근거가 지금 있거나 있었던 Track, 병합 금지 쌍 제외). Re-ID 경쟁자·crowd 판정에서 뺀다."""
+        out: set[str] = set()
+        for pair in (*self._shadow_pairs, *self._twins):
+            if world_id in pair:
+                out |= pair - {world_id}
+        return {w for w in out if not self._is_distinct(world_id, w)}
+
+    def _undistorted(self, cluster: ViewCluster) -> list[UndistortedKeypoints]:
+        """클러스터 view 의 왜곡 제거 결과 (Cross-view 가 푼 것을 다시 쓰고, 없으면 지금 푼다)."""
+        assert self._rig is not None
+        out = []
+        for v in cluster.views:
+            u = cluster.undistorted.get(v.camera_id)
+            if u is None:
+                u = self._rig.cameras[v.camera_id].undistort_keypoints(v.view.keypoints)
+            out.append(u)
+        return out
+
+    def _directional_radius(
+        self,
+        cluster_a: ViewCluster,
+        pelvis_a: Sequence[float],
+        cluster_b: ViewCluster,
+        pelvis_b: Sequence[float],
+    ) -> float:
+        """두 골반을 잇는 방향의 결합 삼각측량 표준편차로 정한 그림자 반경: clip(base + k·σ_dir, base, max).
+
+        공분산은 각 클러스터 카메라로 그 골반을 풀 때의 σ²(JᵀJ)⁻¹(keypoint σ = shadow_keypoint_sigma_px)의 수평 2×2 블록이다.
+        예각 2대의 깊이 방향은 σ 가 커서 반경이 넓어지고, 시선 수직 방향(옆 사람이 서는 쪽)은 base 근처로 좁게 남는다.
+        공분산을 구하지 못하면(시선이 거의 평행) 깊이를 모르므로 상한을 쓴다.
+        """
+        cfg = self.config
+        assert self._rig is not None
+        delta = np.asarray(pelvis_a[:2], dtype=float) - np.asarray(pelvis_b[:2], dtype=float)
+        dist = float(np.linalg.norm(delta))
+        if dist < 1e-9:
+            return cfg.shadow_radius_base_m
+        u = delta / dist
+        total = np.zeros((2, 2))
+        for cluster, pelvis in ((cluster_a, pelvis_a), (cluster_b, pelvis_b)):
+            cams = [self._rig.cameras[cid] for cid in cluster.camera_ids]
+            cov = triangulation_covariance(cams, np.asarray(pelvis, dtype=float), cfg.shadow_keypoint_sigma_px)
+            if cov is None or not np.all(np.isfinite(cov)):
+                return cfg.shadow_radius_max_m
+            total += cov[:2, :2]
+        sigma = math.sqrt(max(float(u @ total @ u), 0.0))
+        radius = cfg.shadow_radius_base_m + cfg.shadow_radius_sigma_k * sigma
+        return min(max(radius, cfg.shadow_radius_base_m), cfg.shadow_radius_max_m)
+
+    def _geometric_shadow(
+        self,
+        cluster_a: ViewCluster,
+        pelvis_a: Sequence[float],
+        cluster_b: ViewCluster,
+        pelvis_b: Sequence[float],
+    ) -> bool:
+        """두 클러스터(카메라 비겹침)가 같은 사람을 따로 본 것으로 기하가 맞는지: 수평 거리 ≤ 방향별 반경이고, 두 묶음 view 를
+        엉덩이마다 한 점으로 풀어도 재투영 오차가 shadow_reprojection_px 안이다. 모르면(관측 부족) 맞지 않는 것으로 본다."""
+        cfg = self.config
+        if set(cluster_a.camera_ids) & set(cluster_b.camera_ids):
+            return False
+        dist = math.dist(pelvis_a[:2], pelvis_b[:2])
+        if dist > cfg.shadow_radius_max_m:
+            return False
+        if dist > self._directional_radius(cluster_a, pelvis_a, cluster_b, pelvis_b):
+            return False
+        err = joint_consistency_px(
+            [self._undistorted(cluster_a), self._undistorted(cluster_b)],
+            (COCO17_L_HIP, COCO17_R_HIP),
+            cfg.shadow_min_keypoint_confidence,
+        )
+        return err is not None and err <= cfg.shadow_reprojection_px
+
+    def _co_observed_now(
+        self,
+        keys: Iterable[TrackKey],
+        world_id: str,
+        own_keys: Iterable[TrackKey],
+        holder: Mapping[TrackKey, str],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+    ) -> bool:
+        """이번 시각 같은 카메라에서 keys 와 world_id 의 다른 검출(받은 클러스터 또는 world_id 가 든 다른 로컬 트랙)이 따로 보였는지.
+
+        안전장치(-657): 같은 시각 같은 카메라의 서로 다른 검출은 서로 다른 사람이라 절대 억제·병합하지 않는다.
+        """
+        visible = set(own_keys) | {k for k in cluster_of if holder.get(k) == world_id}
+        return any(k[0] == other[0] and k != other for k in keys for other in visible)
+
+    def _shadow_target(
+        self,
+        c: _Cluster,
+        applied: Mapping[str, _Applied],
+        holder: Mapping[TrackKey, str],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+    ) -> str | None:
+        """새 ID 후보 c 가 이번 시각 갱신된 확정 Track 의 시점 분할 그림자면 그 Track. 아니면 None.
+
+        조건: 그 Track 이 확정(CONFIRMED·OCCLUDED, 이번 시각 만든 TENTATIVE 는 아님)이고 골반 측정으로 갱신됐으며 받은 클러스터와
+        카메라가 하나도 겹치지 않는다. 반증(같은 시각 같은 카메라 별도 검출, c 의 옛 주인과의 병합 금지 쌍)이 없다. 기하가 맞는다
+        (`_geometric_shadow`). 소유 이력·c 의 IDENTITY_UNCERTAIN 은 보지 않는다(주인 없는 그림자·불확실 그림자 구멍).
+        여럿이면 가까운 것.
+        """
+        if c.anchor is None or c.cluster.skeleton is None:
+            return None
+        pelvis_c = c.cluster.skeleton.pelvis_xyz()
+        if pelvis_c is None:
+            return None
+        owners = {o for o in (holder.get(k) for k in c.cluster.keys) if o is not None}
+        cameras = set(c.cluster.camera_ids)
+        found: list[tuple[float, str]] = []
+        for wid, a in applied.items():
+            tr = self._tracks.get(wid)
+            if tr is None or tr.lifecycle is TrackLifecycle.TENTATIVE or a.pelvis is None:
+                continue
+            if cameras & set(a.cluster.camera_ids):
+                continue
+            if self._co_observed_now(c.cluster.keys, wid, a.cluster.keys, holder, cluster_of):
+                continue
+            if any(old != wid and self._is_distinct(old, wid) for old in owners):
+                continue
+            if self._geometric_shadow(c.cluster, pelvis_c, a.cluster, a.pelvis):
+                found.append((math.dist(c.anchor, a.pelvis[:2]), wid))
+        return min(found)[1] if found else None
+
+    def _active_duplicate_merges(
+        self,
+        applied: dict[str, _Applied],
+        holder: Mapping[TrackKey, str],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        flags: dict[str, set[IdentityFlag]],
+        t: int,
+    ) -> list[IdentityRevision]:
+        """둘 다 이번 시각 갱신된 두 Track 의 시점 분할 근거를 세고, active_merge_confirm_ticks 번 연속이면 먼저 만든 ID 로 합친다.
+
+        근거: 카메라 비겹침, 병합 금지 쌍(TTL)·분할 쌍·분할 후보가 아님, 이번 시각 같은 카메라 별도 검출 없음, 기하가 맞음
+        (`_geometric_shadow`). 반대 근거가 나오면 처음부터 센다. 한쪽이 갱신되지 않은 시각은 세지도 버리지도 않는다(key_ttl_ms 넘게
+        끊기면 tick 시작에서 버린다). 한 시각에 한 Track 은 한 번만 합친다. 근거 세기는 active_merge_enabled 와 무관하게 한다
+        (Re-ID 경쟁자·crowd 판정 제외와 계측에 쓴다).
+        """
+        cfg = self.config
+        live = sorted(
+            (w for w, a in applied.items() if a.pelvis is not None and w in self._tracks),
+            key=lambda w: self._tracks[w].order,
+        )
+        splitting = {sp.source for sp in self._splits.values()} | set(self._splits)
+        ready: list[tuple[int, int, str, str]] = []
+        for i, older in enumerate(live):
+            for newer in live[i + 1 :]:
+                pair = frozenset((older, newer))
+                a, b = applied[older], applied[newer]
+                assert a.pelvis is not None and b.pelvis is not None
+                if (
+                    set(a.cluster.camera_ids) & set(b.cluster.camera_ids)  # 같은 카메라 자리를 따로 가졌다: 두 사람이다
+                    or self._is_distinct(older, newer)
+                    or older in splitting
+                    or newer in splitting
+                    or self._co_observed_now(b.cluster.keys, older, a.cluster.keys, holder, cluster_of)
+                    or self._co_observed_now(a.cluster.keys, newer, b.cluster.keys, holder, cluster_of)
+                    or not self._geometric_shadow(a.cluster, a.pelvis, b.cluster, b.pelvis)
+                ):
+                    self._shadow_pairs.pop(pair, None)
+                    continue
+                prev = self._shadow_pairs.get(pair)
+                count = prev.count + 1 if prev is not None and t - prev.last_t <= cfg.key_ttl_ms else 1
+                self._shadow_pairs[pair] = _ShadowEvidence(count, t)
+                self._twins[pair] = t
+                self.diag["duplicate.shadow_pair_ticks"] += 1
+                if cfg.active_merge_enabled and count >= cfg.active_merge_confirm_ticks:
+                    ready.append((self._tracks[older].order, self._tracks[newer].order, older, newer))
+        out: list[IdentityRevision] = []
+        done: set[str] = set()
+        for _, _, older, newer in sorted(ready):
+            if older in done or newer in done or older not in self._tracks or newer not in self._tracks:
+                continue
+            ev = _Evidence(newer, frozenset(applied[newer].cluster.keys), cfg.active_merge_confirm_ticks, t)
+            rec = self._merge(newer, older, ev, t, applied, flags)
+            applied.pop(newer, None)  # 남는 ID(older)가 이번 시각 측정을 이미 받았다. 사라진 ID 의 측정은 쓰지 않는다
+            done |= {older, newer}
+            out.append(rec)
+        return out
+
+    def _delay_confirmation(self, applied: Mapping[str, _Applied]) -> None:
+        """카메라가 겹치지 않는 확정 Track 이 confirm_delay_radius_m 안에 있는 동안 저신뢰로 갱신된 TENTATIVE 의 확정 횟수를 올린다."""
+        cfg = self.config
+        for wid, a in applied.items():
+            tr = self._tracks.get(wid)
+            if tr is None or tr.lifecycle is not TrackLifecycle.TENTATIVE or a.pelvis is None:
+                continue
+            low = a.cluster.identity_uncertain or a.gated.pelvis_validity() is not JointValidity.VALID
+            if not low or tr.confirm_needed >= cfg.confirm_hits_near_confirmed:
+                continue
+            for other, b in applied.items():
+                ot = self._tracks.get(other)
+                if (
+                    other != wid
+                    and ot is not None
+                    and ot.lifecycle is not TrackLifecycle.TENTATIVE
+                    and b.pelvis is not None
+                    and not set(a.cluster.camera_ids) & set(b.cluster.camera_ids)
+                    and math.dist(a.pelvis[:2], b.pelvis[:2]) <= cfg.confirm_delay_radius_m
+                ):
+                    tr.confirm_needed = cfg.confirm_hits_near_confirmed
+                    self.diag["lifecycle.confirm_delayed"] += 1
+                    break
 
     def _all(self) -> list[_Track]:
         """살아 있는 Track 과 소실 후보."""
@@ -1681,6 +2051,58 @@ class WorldTrackManager:
     def _find(self, world_id: str) -> _Track | None:
         return self._tracks.get(world_id) or self._dormant.get(world_id)
 
+    # ------------------------------------------------------------------ 기립 키 보조 근거 (-657)
+
+    def _update_stature(self, applied: Mapping[str, _Applied]) -> None:
+        """이번 시각 갱신된 Track 의 기립 키 표본을 더한다(`standing_stature`, 관측값만)."""
+        cfg = self.config
+        for wid, a in applied.items():
+            tr = self._tracks.get(wid)
+            if tr is None:
+                continue
+            value = standing_stature(a.gated, cfg)
+            if value is not None:
+                tr.stature.append(value)
+                del tr.stature[: -cfg.stature_window]
+
+    def _stature_stats(self, tr: _Track) -> tuple[float, float] | None:
+        """(중앙값, 표본 σ = MAD × 1.4826). 표본이 모자라면 None(모름)."""
+        if len(tr.stature) < self.config.stature_min_samples:
+            return None
+        v = np.array(tr.stature, dtype=float)
+        med = float(np.median(v))
+        return med, float(np.median(np.abs(v - med))) * 1.4826
+
+    def _stature_gap(self, a: _Track, b: _Track) -> tuple[float, float] | None:
+        """(키 차이 |Δ|, 허용치). 한쪽이라도 모르면 None."""
+        sa, sb = self._stature_stats(a), self._stature_stats(b)
+        if sa is None or sb is None:
+            return None
+        tol = max(self.config.stature_min_tolerance_m, self.config.stature_sigma_k * math.hypot(sa[1], sb[1]))
+        return abs(sa[0] - sb[0]), tol
+
+    def _stature_rejects(self, tr: _Track, cand: _Track) -> bool:
+        """키 차이가 허용치의 2배를 넘으면(확실히 다르면) 그 후보를 뺀다. 모르면 빼지 않는다."""
+        gap = self._stature_gap(tr, cand)
+        return gap is not None and gap[0] > 2.0 * gap[1]
+
+    def _stature_breaks_tie(self, tr: _Track, best_id: str, rivals: Sequence[str]) -> bool:
+        """최선 후보는 키 허용치 안이고, 외형으로 겨룬 다른 후보는 모두 키를 알며 허용치의 2배 이상 다른지."""
+        best = self._find_with_dormant(best_id)
+        gap = self._stature_gap(tr, best) if best is not None else None
+        if gap is None or gap[0] > gap[1]:
+            return False
+        for rid in rivals:
+            other = self._find_with_dormant(rid)
+            g = self._stature_gap(tr, other) if other is not None else None
+            if g is None or g[0] < 2.0 * g[1]:
+                return False
+        return True
+
+    def _order_of(self, world_id: str) -> int:
+        tr = self._find_with_dormant(world_id)
+        return tr.order if tr is not None else 0
+
     def _find_with_dormant(self, world_id: str) -> _Track | None:
         return self._tracks.get(world_id) or self._dormant.get(world_id) or self._reid_dormant.get(world_id)
 
@@ -1688,7 +2110,10 @@ class WorldTrackManager:
         """사라진 ID 가 든 병합 금지 쌍·병합 근거를 지운다."""
         alive = set(self._tracks) | set(self._dormant)
         alive_reid = alive | set(self._reid_dormant)
-        self._distinct = {p for p in self._distinct if p <= alive_reid}
+        self._distinct = {p: pt for p, pt in self._distinct.items() if p <= alive_reid}
+        self._distinct_fixed = {p for p in self._distinct_fixed if p <= alive_reid}
+        self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if p <= alive}
+        self._twins = {p: pt for p, pt in self._twins.items() if p <= alive_reid}
         self._evidence = {w: ev for w, ev in self._evidence.items() if w in alive and ev.stale in alive}
         self._recent_proximity = {p: pt for p, pt in self._recent_proximity.items() if p <= alive}
         self._swap_counts = {k: v for k, v in self._swap_counts.items() if k[0] in alive and k[1] in alive}
@@ -1733,7 +2158,7 @@ class WorldTrackManager:
                     for p in a:
                         for q in b:
                             if p != q:
-                                self._distinct.add(frozenset((p, q)))
+                                self._distinct[frozenset((p, q))] = frame.t
 
     def _ambiguous(self, tr: _Track) -> bool:
         """넘겨받은 로컬 트랙의 옛 주인이 그 뒤 다시 갱신되지 않고 남아 있어 이 Track 이 그 사람일 수도 있는지.
@@ -1747,7 +2172,7 @@ class WorldTrackManager:
                 or other is None
                 or other is tr
                 or other.t_last_valid > taken
-                or frozenset((origin, tr.world_id)) in self._distinct
+                or self._is_distinct(origin, tr.world_id)
             ):
                 del tr.origin_of[key]
         return bool(tr.origin_of)
@@ -1785,9 +2210,10 @@ class WorldTrackManager:
             reach = cfg.gate_base_m + cfg.max_speed_mps * (when - tr.t_last_valid) / 1000.0
             if float(np.linalg.norm(xy - tr.last_xy)) > reach:
                 return "unreachable"
+        shadows = self._shadows_of(stale_id)  # 같은 사람의 분신 Track 은 crowd 가 아니다(-657)
         for wid in crowd:
             other_tr = self._find(wid)
-            if other_tr is None:
+            if other_tr is None or wid in shadows:
                 continue
             if float(np.linalg.norm(other_tr.last_xy - tr.last_xy)) <= cfg.reconnect_crowd_radius_m:
                 return "crowd"
@@ -1827,11 +2253,11 @@ class WorldTrackManager:
         if c.uncertain or len(claims) != 1:
             return None, True
         ((stale_id, keys),) = claims.items()
-        if stale_id not in stale_ids or frozenset((stale_id, wid)) in self._distinct:
+        if stale_id not in stale_ids or self._is_distinct(stale_id, wid):
             return None, True
         reason = self._link_check(stale_id, c, held, cluster_of, stale_ids - {stale_id}, t, y.path)
         if reason == "unreachable":
-            self._distinct.add(frozenset((stale_id, wid)))  # 갈 수 없는 곳에서 관측된 적이 있다: 같은 사람이 아니다
+            self._distinct[frozenset((stale_id, wid))] = t  # 갈 수 없는 곳에서 관측된 적이 있다: 같은 사람이 아니다
         if reason is not None:
             return None, True
         if _cameras(keys) < cfg.reconnect_min_cameras:
@@ -1954,7 +2380,15 @@ class WorldTrackManager:
         old, new = retired.world_id, survivor.world_id
         self.galleries.merge(new, old, t)
         self._duplicates = {p for p in (_rename(p, old, new) for p in self._duplicates) if len(p) == 2}
-        self._distinct = {p for p in (_rename(p, old, new) for p in self._distinct) if len(p) == 2}
+        renamed: dict[frozenset[str], int] = {}
+        for p, pt in self._distinct.items():
+            q = _rename(p, old, new)
+            if len(q) == 2:
+                renamed[q] = max(pt, renamed.get(q, pt))
+        self._distinct = renamed
+        self._distinct_fixed = {q for q in (_rename(p, old, new) for p in self._distinct_fixed) if len(q) == 2}
+        self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if not p & {old, new}}
+        self._twins = {p: pt for p, pt in self._twins.items() if old not in p}
         self._evidence = {w: e for w, e in self._evidence.items() if {w, e.stale}.isdisjoint({old, new})}
         record = IdentityRevision(
             t=t,
@@ -2046,7 +2480,7 @@ class WorldTrackManager:
         child.split_from = sp.source  # 새로 만든 Track 이라 아직 없다(분할 후보는 새 Track 에만 생긴다)
         source.gate.reset()  # 분할 전 관절 이력은 다른 사람 것일 수 있다 (joint_gate)
         pair = frozenset((sp.source, sp.child))
-        self._distinct.add(pair)  # 같은 카메라의 두 검출로 보였다: 다시 합치지 않는다(진동 방지)
+        self._distinct_fixed.add(pair)  # 같은 카메라의 두 검출로 보였다: 다시 합치지 않는다(진동 방지, 시간 제한 없음)
         self._duplicates.discard(pair)
         record = IdentityRevision(
             t=t,
@@ -2173,11 +2607,11 @@ class WorldTrackManager:
             return None, False
 
         # 현재 활성 배정된 Track 들과의 유사도 (이미 화면에 있는 사람의 분리 나머지를 DORMANT 에 잘못 붙이는 것을 방지)
-        active_max_sim = -1.0
+        active_sims: dict[str, float] = {}
         for wid, a in applied.items():
             sim = self._cluster_track_sim(wid, c.cluster, a.cluster, t)
-            if sim is not None and sim > active_max_sim:
-                active_max_sim = sim
+            if sim is not None:
+                active_sims[wid] = sim
 
         holders = {holder[k] for k in c.cluster.keys if k in holder}
         candidates: list[tuple[float, str]] = []
@@ -2196,7 +2630,7 @@ class WorldTrackManager:
                 for k in held.get(cand_id, ())
             ):
                 continue
-            if holders and all(frozenset((h, cand_id)) in self._distinct for h in holders):
+            if holders and all(self._is_distinct(h, cand_id) for h in holders):
                 continue
             dt_ms = t - cand.t_last_valid
             if dt_ms <= 0 or dt_ms > cfg.reid_dormant_ttl_ms:
@@ -2210,10 +2644,16 @@ class WorldTrackManager:
 
         if not candidates:
             return None, False
-        candidates.sort(reverse=True)
+        # 유사도가 같으면 먼저 만든 ID (분신끼리 같은 외형이면 원래 ID 로 돌아온다, -657)
+        candidates.sort(key=lambda c: (c[0], -self._order_of(c[1])), reverse=True)
         best_sim, best_id = candidates[0]
-        second_sim = candidates[1][0] if len(candidates) > 1 else -1.0
-        rival_sim = max(second_sim, active_max_sim)
+        # 같은 사람의 분신 Track(시점 분할 근거가 있었던 쌍)은 경쟁자가 아니다(-657, 14차 reentry_ambiguous 원인)
+        twins = self._shadows_of(best_id)
+        second_sim = max((s for s, w in candidates[1:] if w not in twins), default=-1.0)
+        active_rival = max(
+            (s for w, s in active_sims.items() if w not in twins), default=-1.0
+        )
+        rival_sim = max(second_sim, active_rival)
         margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
 
         # 1대 로컬 트랙이 유지된 경우(single_camera_evidence)는 재입장 임계값을 소폭 완화
@@ -2249,19 +2689,21 @@ class WorldTrackManager:
             feats = self._cluster_features(a.cluster, t)
             if not feats:
                 continue
-            tr.reid_checked_reentry = True
+            # -657: 키 표본이 모자라면 창 안에서 다시 본다(외형이 애매할 때 키 동률 깨기). 이으면 아래에서 끝낸다
+            tr.reid_checked_reentry = not (cfg.stature_enabled and len(tr.stature) < cfg.stature_min_samples)
             if not tr.path:
                 continue
             first_t, first_xy = tr.path[0]
 
-            # 다른 활성 Track 과의 최대 유사도
-            active_max_sim = -1.0
+            # 다른 활성 Track 과의 유사도 (자기 분신은 경쟁자가 아니다, -657)
+            active_sims: dict[str, float] = {}
+            shadows = self._shadows_of(wid)
             for other_wid, other_a in applied.items():
-                if other_wid == wid:
+                if other_wid == wid or other_wid in shadows:
                     continue
                 sim = self._cluster_track_sim(other_wid, a.cluster, other_a.cluster, t)
-                if sim is not None and sim > active_max_sim:
-                    active_max_sim = sim
+                if sim is not None:
+                    active_sims[other_wid] = sim
 
             candidates: list[tuple[float, str]] = []
             for cand_id, cand in [
@@ -2273,7 +2715,7 @@ class WorldTrackManager:
                     continue
                 if cand.lifecycle is TrackLifecycle.TENTATIVE and cand.hits < cfg.confirm_hits:
                     continue
-                if frozenset((cand_id, wid)) in self._distinct:
+                if self._is_distinct(cand_id, wid):
                     continue
                 if any(
                     (other := cluster_of.get(k)) is not None and other is not a.cluster
@@ -2288,16 +2730,29 @@ class WorldTrackManager:
                     continue
                 sim = self._cluster_gallery_sim(cand_id, a.cluster, t)
                 if sim is not None:
+                    if cfg.stature_enabled and self._stature_rejects(tr, cand):
+                        self.diag["reid.stature_rejected"] += 1
+                        continue  # 기립 키가 확실히 다르다: 그 사람이 아니다(-657)
                     candidates.append((sim, cand_id))
 
             if not candidates:
                 continue
-            candidates.sort(reverse=True)
+            candidates.sort(key=lambda c: (c[0], -self._order_of(c[1])), reverse=True)
             best_sim, best_id = candidates[0]
-            second_sim = candidates[1][0] if len(candidates) > 1 else -1.0
+            twins = self._shadows_of(best_id)  # 분신은 경쟁자가 아니다(-657)
+            second_sim = max((s for s, w in candidates[1:] if w not in twins), default=-1.0)
+            active_max_sim = max((s for w, s in active_sims.items() if w not in twins), default=-1.0)
             rival_sim = max(second_sim, active_max_sim)
             margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
+            if cfg.stature_enabled and best_sim >= cfg.reid_reentry_min_sim and margin < cfg.reid_reentry_margin:
+                # 외형이 애매하다: 키 허용치 안이 최선 후보 하나뿐이고 겨룬 후보가 모두 허용치의 2배 넘게 다르면 잇는다(-657)
+                rivals = [w for s, w in candidates[1:] if w not in twins and s >= cfg.reid_split_same_min_sim]
+                rivals += [w for w, s in active_sims.items() if w not in twins and s >= cfg.reid_split_same_min_sim]
+                if self._stature_breaks_tie(tr, best_id, rivals):
+                    self.diag["reid.stature_tiebreak"] += 1
+                    margin = cfg.reid_reentry_margin
             if best_sim >= cfg.reid_reentry_min_sim and margin >= cfg.reid_reentry_margin:
+                tr.reid_checked_reentry = True
                 was_lost = best_id in self._dormant or best_id in self._reid_dormant
                 ev = _Evidence(best_id, frozenset(a.cluster.keys), cfg.merge_confirm_frames, t)
                 rec = self._merge(best_id, wid, ev, t, applied, flags)
@@ -2417,6 +2872,8 @@ class WorldTrackManager:
         wids = sorted(active_positions)
         for i, wa in enumerate(wids):
             for wb in wids[i + 1 :]:
+                if frozenset((wa, wb)) in self._shadow_pairs:
+                    continue  # 같은 사람의 분신끼리는 서로 오염시키지 않는다(-657)
                 if float(np.linalg.norm(active_positions[wa] - active_positions[wb])) <= cfg.reid_gallery_freeze_distance_m:
                     close_freeze.add(wa)
                     close_freeze.add(wb)
@@ -2431,11 +2888,12 @@ class WorldTrackManager:
             if not feats:
                 continue
 
-            # 현재 갤러리와의 유사도 및 다른 활성 Track 대비 margin 기록
+            # 현재 갤러리와의 유사도 및 다른 활성 Track 대비 margin 기록 (같은 사람의 분신 Track 은 경쟁자가 아니다, -657)
+            shadows = self._shadows_of(wid)
             own_sim = self._cluster_gallery_sim(wid, a.cluster, t)
             rival_sim = -1.0
             for other_wid in self._tracks:
-                if other_wid == wid:
+                if other_wid == wid or other_wid in shadows:
                     continue
                 s = self._cluster_gallery_sim(other_wid, a.cluster, t)
                 if s is not None and s > rival_sim:
@@ -2480,7 +2938,7 @@ class WorldTrackManager:
                 own_sim = self._cluster_gallery_sim(wid, a.cluster, t)
                 rival_sim = -1.0
                 for other_wid in self._tracks:
-                    if other_wid == wid:
+                    if other_wid == wid or other_wid in shadows:
                         continue
                     s = self._cluster_gallery_sim(other_wid, a.cluster, t)
                     if s is not None and s > rival_sim:
@@ -2619,6 +3077,27 @@ class WorldTrackManager:
             reid_similarity=tr.last_reid_similarity,
             reid_margin=tr.last_reid_margin,
         )
+
+
+def standing_stature(gated: GatedSkeleton, cfg: WorldTrackConfig) -> float | None:
+    """기립 키 표본 = 머리 높이(head_z, 관측 귀·눈 기반) − 두 발목 Z 평균 (-657). 지지 표면 높이를 몰라도 되게 발목을 뺀다.
+
+    머리·골반·두 발목이 모두 관측(좌표 있음)이고 기립 자세(머리 − 발목 ≥ standing_min_height_m, (골반 − 발목)/(머리 − 발목) ≥
+    standing_min_pelvis_ratio)일 때만 값을 낸다. 낙상·앉기·웅크림·관측 부족이면 None(지어내지 않음). head_z 는 귀·눈
+    keypoint 로 만들어 안전모 유무의 영향이 작다고 본다(설계 문서). 신원 보조 근거로만 쓰고 내보내지 않는다.
+    """
+    if len(gated.joints) <= COCO17_R_ANKLE:
+        return None
+    head = gated.head_z(cfg.joint_gate.head_top_offset_m).value
+    pelvis = gated.pelvis_xyz()
+    left, right = gated.joints[COCO17_L_ANKLE].xyz, gated.joints[COCO17_R_ANKLE].xyz
+    if head is None or pelvis is None or left is None or right is None:
+        return None
+    foot = (left[2] + right[2]) / 2.0
+    height = head - foot
+    if height < cfg.standing_min_height_m or (pelvis[2] - foot) < cfg.standing_min_pelvis_ratio * height:
+        return None
+    return float(height)
 
 
 def _check_clusters(frame: AssociationFrame) -> None:

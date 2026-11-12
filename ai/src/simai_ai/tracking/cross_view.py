@@ -75,8 +75,11 @@ from simai_ai.geometry.interpolation import (
 )
 from simai_ai.geometry.rig import CameraRig, RigCamera, UndistortedKeypoints
 from simai_ai.geometry.triangulation import (
+    COCO17_L_HIP,
+    COCO17_R_HIP,
     SkeletonEstimate,
     TriangulationConfig,
+    joint_consistency_px,
     triangulate_skeleton,
     triangulate_skeletons,
 )
@@ -171,6 +174,13 @@ class CrossViewConfig:
     """시간 연결 간선을 유지하는 최근 시간 창(ms)"""
     cluster_3d_consistency_m: float = 0.25
     """4대 클러스터에서 6쌍 중 5쌍이 통과하고 1쌍만 잔차 상한을 넘을 때, 2-view 3D 관절이 서로 맞아야 하는 허용 거리(m)"""
+    four_view_soft_pair_enabled: bool = True
+    """-657: 4대 클러스터에서 6쌍 중 5쌍이 통과하고 남은 1쌍이 EPIPOLAR·TRIANGULATION 으로 기각됐어도, 5쌍의 2-view 3D 관절이
+    `cluster_3d_consistency_m` 안에 모이고 4대 view 를 엉덩이마다 한 점으로 푼 재투영 오차가 `four_view_pelvis_reprojection_px`
+    안이면 4대 묶음을 허용한다(같은 카메라 금지는 그대로). 한 카메라 쌍의 에피폴라가 경계에서 늘 튀어 한 사람이 2+2 로
+    갈라지던 14차 장면(cam_B/cam_D 상시 EPIPOLAR)을 막는다"""
+    four_view_pelvis_reprojection_px: float = 20.0
+    """위 4대 묶음 허용의 엉덩이 재투영 오차 상한(px). triangulation.outlier_reprojection_error_px 와 같다"""
     max_pair_3d_disagreement_m: float = 0.8
     """같은 클러스터 안의 2-view 삼각측량 3D 관절들이 서로 어긋날 수 있는 최대 거리(m). 이를 넘으면 시간 간선이 있어도 끊는다"""
     pairwise_threshold_enabled: bool = True
@@ -202,6 +212,7 @@ class CrossViewConfig:
             "graph_clustering_enabled",
             "temporal_prior_enabled",
             "pairwise_threshold_enabled",
+            "four_view_soft_pair_enabled",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} 는 bool 이어야 한다")
@@ -220,6 +231,7 @@ class CrossViewConfig:
             "max_pair_3d_disagreement_m",
             "pairwise_marginal_scale",
             "pairwise_gate_scale",
+            "four_view_pelvis_reprojection_px",
         ):
             if not getattr(self, name) > 0:
                 raise ValueError(f"{name} 는 양수여야 한다")
@@ -385,6 +397,8 @@ class CrossViewAssociator:
         """정렬한 카메라 ID 쌍 → 최근 유효 쌍 재투영 잔차(px) 표본 창 (S15P31A101-464)"""
         self._last_pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray] = {}
         """직전 `_pairs`/`_pair` 호출에서 구한 쌍별 2-view 삼각측량 관절 XYZ (관절 수, 3)"""
+        self._prepared_now: dict[TrackKey, _Prepared] = {}
+        """이번 시각 view 준비 결과 (4대 묶음 허용의 엉덩이 한 점 재투영 검사용, -657)"""
         self._previous: dict[str, frozenset[TrackKey]] = {}
         self._issued = 0
         self._last_t: int | None = None
@@ -996,6 +1010,7 @@ class CrossViewAssociator:
         n_total = len(union_keys)
         feasible_pks: list[tuple[TrackKey, TrackKey]] = []
         residual_soft_pks: list[tuple[TrackKey, TrackKey]] = []
+        four_view_soft = False
         for u, v in itertools.combinations(union_keys, 2):
             if u[0] == v[0]:
                 continue
@@ -1012,10 +1027,15 @@ class CrossViewAssociator:
                 and ev.residual_px <= cfg.pairwise_gate_max_px
             ):
                 residual_soft_pks.append(pk)
+            elif n_total == 4 and self._four_view_soft(ev):
+                residual_soft_pks.append(pk)
+                four_view_soft = True
             else:
                 return math.inf, False
         if residual_soft_pks:
             if len(residual_soft_pks) > 1 or len(feasible_pks) < 5:
+                return math.inf, False
+            if four_view_soft and not self._four_view_hips_consistent(union_keys):
                 return math.inf, False
         tol_3d = cfg.cluster_3d_consistency_m if residual_soft_pks else cfg.max_pair_3d_disagreement_m
         joint_sets = [pair_joints[pk] for pk in feasible_pks if pk in pair_joints]
@@ -1049,12 +1069,32 @@ class CrossViewAssociator:
                     )
                     c_val = (ev.epipolar_px or 0.0) / cfg.epipolar_scale_px + ev.residual_px / cfg.residual_scale_px + floor_c
                     costs.append(float(c_val))
+                elif four_view_soft and self._four_view_soft(ev):
+                    # -657: 4대 한 점 검사로 허용한 기각 쌍은 근거로 세지 않고 근거 없는 쌍 비용만 준다
+                    costs.append(cfg.no_evidence_cost)
                 else:
                     return math.inf, False
                 bonuses.append(b_val)
         if not evidence:
             return math.inf, False
         return statistics.fmean(costs) - statistics.fmean(bonuses), (strong_evidence == 0)
+
+    def _four_view_soft(self, ev: PairEvidence) -> bool:
+        """4대 클러스터에서 한 쌍만 풀어 줄 수 있는 기각인지 (-657: EPIPOLAR·TRIANGULATION)."""
+        return self.config.four_view_soft_pair_enabled and ev.reject in (RejectReason.EPIPOLAR, RejectReason.TRIANGULATION)
+
+    def _four_view_hips_consistent(self, keys: Sequence[TrackKey]) -> bool:
+        """4대 view 를 엉덩이마다 한 점으로 풀었을 때 재투영 오차 최댓값이 four_view_pelvis_reprojection_px 안인지 (-657).
+        엉덩이를 본 view 가 3대 미만이면 모름이라 허용하지 않는다."""
+        prepared = self._prepared_now
+        if any(k not in prepared for k in keys):
+            return False
+        err = joint_consistency_px(
+            [[prepared[k].undistorted for k in keys]],
+            (COCO17_L_HIP, COCO17_R_HIP),
+            self.config.min_keypoint_confidence,
+        )
+        return err is not None and err <= self.config.four_view_pelvis_reprojection_px
 
     def _preferred_partition_pairs(
         self,
@@ -1213,6 +1253,7 @@ class CrossViewAssociator:
     ) -> list[_Work]:
         """시간 간선(temporal prior)과 제약 그래프 분할(Constrained Graph Clustering)로 클러스터를 묶는다 (S15P31A101-464)."""
         cfg = self.config
+        self._prepared_now = prepared
         works = [_Work([k]) for k in sorted(prepared)]
         n = len(works)
         row = {w.keys[0]: r for r, w in enumerate(works)}
@@ -1233,7 +1274,8 @@ class CrossViewAssociator:
                 ev.reject is RejectReason.RESIDUAL
                 and ev.residual_px is not None
                 and ev.residual_px <= cfg.pairwise_gate_max_px
-            ):
+            ) and not self._four_view_soft(ev):
+                # 4대 묶음에서만 풀 수 있는 기각(-657)은 금지 행렬에 넣지 않는다. 2·3대 병합은 _graph_linkage 가 그대로 막는다
                 veto[i, j] = veto[j, i] = True
         while True:
             open_ = np.triu(cost < cfg.new_cluster_cost, k=1) & ~blocked

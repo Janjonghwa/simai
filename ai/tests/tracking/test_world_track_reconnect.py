@@ -376,7 +376,8 @@ def test_merge_evidence_tolerates_short_gap_but_resets_on_counter_evidence(rig):
 def test_split_person_rejoined_merges_into_first_id(rig):
     """Cross-view 가 한 사람을 두 클러스터로 갈라 두 ID 가 생겼다가(POSSIBLE_DUPLICATE) 다시 한 클러스터로 묶이면,
     근거 3시각 뒤 먼저 만든 ID 로 합친다(두 클러스터가 같은 카메라를 쓴 적이 없다)."""
-    m = _manager(split_suppression_enabled=False)  # 기존 중복 ID 병합 경로의 기준선
+    # 기존 중복 ID 병합 경로의 기준선 (S3·-657 그림자 억제·동시 활성 병합은 끈다)
+    m = _manager(split_suppression_enabled=False, shadow_suppression_enabled=False, active_merge_enabled=False)
     frames = wt._split_ticks(m, rig, 0, 15)
     a, b = sorted(tr.world_id for tr in frames[-1].tracks)
     rejoined = [_tick(m, rig, k, [lambda t: wt._cluster(rig, "xv-3", t, 3.0, 3.0)]) for k in range(15, 20)]
@@ -578,7 +579,8 @@ def test_switched_local_id_keeps_alarm_of_hidden_person(rig):
 
 def test_g3_merge_keeps_ongoing_risk_events(rig):
     """D-G3-10: X 의 위험 이벤트가 진행 중일 때 X 가 사라졌다가 새 ID Y 로 돌아와 Y 에도 이벤트가 생기고, Y 가 X 로
-    교정돼도 진행 중인 이벤트는 하나도 자동 해소되지 않는다. 원본 World ID 는 남는다."""
+    교정돼도 관측으로 해소되는 이벤트는 없다. -657: 같은 사람의 같은 위험이 둘이 되므로 Y 의 이벤트는 X 의 이벤트에 귀속돼
+    병합 흡수 마감(IDENTITY_MERGED)으로 닫히고(유령 카드 없음), 위험은 X 의 이벤트가 잇는다. 원본 World ID 는 남는다."""
     m = _manager()
     loop = _RiskLoop()
     for k in range(10):
@@ -595,13 +597,15 @@ def test_g3_merge_keeps_ongoing_risk_events(rig):
     for f in frames:
         loop.feed(f)
     assert sum(len(f.revisions) for f in frames) == 1
-    assert loop.resolved() == []  # 교정 후 진행 중 위험 자동 해소 0건
-    corrected = [t for t in loop.transitions if set(t.changes) & {Change.IDENTITY_CORRECTED, Change.IDENTITY_CONFLICT}]
-    assert [t.event_id for t in corrected] == [y_event.event_id]
-    # Y 의 이벤트는 같은 규칙의 X 이벤트와 이어지고(related_event_id), 원본 World ID(Y)를 보존한다
-    after = loop.tracker.get(y_event.event_id)
-    assert after.origin_world_ids == (y,) and after.related_event_id == x_event.event_id
-    assert loop.tracker.get(x_event.event_id).world_ids == (x,)
+    observed = [t for t in loop.resolved() if Change.IDENTITY_MERGED not in t.changes]
+    assert observed == []  # 교정 후 진행 중 위험의 관측 자동 해소 0건
+    (absorbed,) = [t for t in loop.transitions if Change.IDENTITY_MERGED in t.changes]
+    assert absorbed.event_id == y_event.event_id and absorbed.transition is Lifecycle.RESOLVED
+    assert absorbed.merge.survivor_event_id == x_event.event_id and absorbed.state.related_event_id == x_event.event_id
+    assert absorbed.state.origin_world_ids == (y,)
+    assert [s.event_id for s in loop.tracker.active()] == [x_event.event_id]
+    survivor = loop.tracker.get(x_event.event_id)
+    assert survivor.world_ids == (x,) and survivor.origin_world_ids == (x, y)
     assert not [t for t in loop.transitions if t.transition is Lifecycle.RAISED and t.state.world_ids == (x,)][1:]
 
 
@@ -660,7 +664,10 @@ def test_unreachable_newcomer_is_never_merged_and_alarm_stays(rig, xy):
         loop.feed(f)
     (b,) = (tr.world_id for tr in frames[0].tracks if tr.world_id != a)
     assert m.revisions == () and all(f.reassociations == () for f in frames)
-    assert frozenset((a, b)) in distinct[0]  # 갈 수 없는 첫 관측: 같은 사람이 아니다 (A 가 남아 있는 동안 유지)
+    # -657: 새 ID 를 만든 첫 시각에는 병합 금지 쌍으로 두지 않는다(예각 깊이 오차로 태어난 그림자를 영구히 묶지 않는다).
+    # 다음 시각 병합 근거를 셀 때 B 의 관측 이력(첫 관측 포함)이 A 에서 갈 수 없는 곳이라 병합 금지 쌍이 된다(TTL 안 유지)
+    assert frozenset((a, b)) not in distinct[0]
+    assert frozenset((a, b)) in distinct[1]
     assert loop.resolved() == [] and not any(isinstance(s, AlertClear) for s in loop.signals)
     assert a_event.event_id in {s.event_id for s in loop.tracker.active()}
 
