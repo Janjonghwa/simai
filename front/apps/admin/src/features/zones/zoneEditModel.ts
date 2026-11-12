@@ -31,12 +31,7 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** 이름 끝의 구분자(` A`, ` 12`). 겹친 이름을 다시 매길 때 떼어 낸다. */
 const SEPARATOR_SUFFIX = /^(.*\S)\s+([A-Z]|\d+)$/;
 
-export const SEVERITY_LABEL: Record<Severity, string> = {
-  CRITICAL: '위험',
-  HIGH: '경고',
-  CAUTION: '주의',
-  INFO: '안내',
-};
+export { SEVERITY_LABEL } from '@/lib/ruleNames';
 
 const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;

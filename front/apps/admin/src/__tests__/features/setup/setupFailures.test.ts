@@ -65,7 +65,7 @@ describe('실패 메시지에서 카메라 쌍 뽑기', () => {
       'Insufficient raw feature matches on pair cam_B-cam_C: 7',
       LETTERS,
     );
-    expect(guide.title).toBe('옆 카메라 캠2–캠3 사이에 같이 보이는 곳이 적어요');
+    expect(guide.title).toBe('옆 카메라 카메라 2–카메라 3 사이에 같이 보이는 곳이 적어요');
     expect(guide.fix).toBe(
       '카메라 연결 관리로 돌아가 두 카메라를 서로 쪽으로 돌리거나, 겹치는 곳에 무늬 있는 물건을 두세요.',
     );
@@ -78,7 +78,9 @@ describe('실패 메시지에서 카메라 쌍 뽑기', () => {
       "pair cam_A-cam_B was ok; worsened_pairs=['cam_C-cam_D', 'cam_A-cam_B']",
       LETTERS,
     );
-    expect(guide.title).toBe('보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (캠3–캠4, 캠1–캠2)');
+    expect(guide.title).toBe(
+      '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 3–카메라 4, 카메라 1–카메라 2)',
+    );
     expect(guide.fix).toBe(
       '카메라와 거치대를 단단히 고정하고 위치를 다시 맞춘 뒤 처음부터 다시 하세요.',
     );
@@ -89,23 +91,23 @@ describe('실패 메시지에서 카메라 쌍 뽑기', () => {
     expect(
       failureGuide('VALIDATION_REJECTED', "worsened_pairs=['cam1-cam2', 'cam3-cam4']", NUMBERS)
         .title,
-    ).toBe('보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (캠1–캠2, 캠3–캠4)');
+    ).toBe('보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 1–카메라 2, 카메라 3–카메라 4)');
     expect(
       failureGuide('INSUFFICIENT_FEATURES', 'matches on pair cam4-cam1: 3', NUMBERS).title,
-    ).toBe('옆 카메라 캠4–캠1 사이에 같이 보이는 곳이 적어요');
+    ).toBe('옆 카메라 카메라 4–카메라 1 사이에 같이 보이는 곳이 적어요');
   });
 
   it('카메라 id 에 -가 있어도 알려진 id 조합을 찾는다', () => {
     const ids = ['cam-1', 'cam-2', 'cam-3'];
     expect(failureGuide('INSUFFICIENT_FEATURES', 'matches on pair cam-2-cam-3: 7', ids).title).toBe(
-      '옆 카메라 캠2–캠3 사이에 같이 보이는 곳이 적어요',
+      '옆 카메라 카메라 2–카메라 3 사이에 같이 보이는 곳이 적어요',
     );
   });
 
   it('id 가 다른 id 의 끝부분이어도 다른 카메라 쌍으로 읽지 않는다', () => {
     const ids = ['am1', 'cam1', 'cam2'];
     expect(failureGuide('INSUFFICIENT_FEATURES', 'matches on pair cam1-cam2: 7', ids).title).toBe(
-      '옆 카메라 캠2–캠3 사이에 같이 보이는 곳이 적어요',
+      '옆 카메라 카메라 2–카메라 3 사이에 같이 보이는 곳이 적어요',
     );
   });
 

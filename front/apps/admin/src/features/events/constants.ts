@@ -10,13 +10,7 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   INFO: 0,
 };
 
-/** 등급 이름(배지 글자). 색 없이도 읽히도록 기호와 함께 쓴다(SeverityBadge). */
-export const SEVERITY_LABEL: Record<Severity, string> = {
-  CRITICAL: '위험',
-  HIGH: '경고',
-  CAUTION: '주의',
-  INFO: '안내',
-};
+export { SEVERITY_LABEL } from '@/lib/ruleNames';
 
 /** 목록에 남기는 해소된 이벤트 수. 넘치면 오래된 것부터 버린다. */
 export const MAX_RESOLVED = 50;
@@ -97,24 +91,7 @@ export const SUMMARY_ERROR_CODE = {
   TIMED_OUT: 'TIMED_OUT',
 } as const;
 
-/** 규칙 ID 의 화면 이름. */
-export const RULE_NAME: Record<string, string> = {
-  R1: '위험 구역 진입',
-  R2: '개구부·가장자리 근접',
-  R3: '고소 위치',
-  R4: '낙상 의심',
-  R5: '진입 예측',
-  R6: '위험 구역 내 관측 상실',
-  R7: '구역 감시 능력 저하',
-  // 명세 7.2 R9 이름. 안전모만 보고(조끼는 표시만), 진행 중 작업이 있을 때만 요구한다(S15P31A101-520).
-  R9: '작업 중 안전모 미착용',
-  R11: '작업 중 조끼 미착용',
-};
-
-/** 등급에 따라 이름이 달라지는 규칙. R1 주의는 구역 안이 아니라 근접 띠에 있다(-497). */
-export const RULE_NAME_BY_SEVERITY: Record<string, Partial<Record<Severity, string>>> = {
-  R1: { CAUTION: '위험 구역 근접' },
-};
+export { RULE_NAME } from '@/lib/ruleNames';
 
 /** 지표 키의 화면 이름. 없는 키는 키에서 단위 꼬리표를 뗀 이름으로 보인다. */
 export const METRIC_LABEL: Record<string, string> = {

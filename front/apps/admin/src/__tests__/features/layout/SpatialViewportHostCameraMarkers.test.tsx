@@ -1,4 +1,5 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { useCctvStore } from '@/features/cctv/cctv.store';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/viewer3d';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -107,6 +108,7 @@ function renderHost() {
 
 beforeEach(() => {
   localStorage.clear();
+  useCctvStore.getState().hello(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
   useCamSplitStore.getState().close();
   useRealtimeStore.setState(
     {
@@ -132,6 +134,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useCctvStore.getState().reset();
   stopZoneEdit();
   useCamSplitStore.getState().close();
   useSessionStore.setState({ session: undefined });
@@ -167,18 +170,18 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
     // 마커 클릭 시 떠 있는 CCTV 창이 열리고 클릭한 카메라(cam_B) 하나만 보여준다. 4분할·카메라 버튼 줄은 없다
     act(() => fake.props?.onCameraClick?.('cam_B'));
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 2 영상')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '4분할' })).toBeNull();
 
     // 이미 열려 있는 상태에서 다른 카메라 마커(cam_D)를 클릭하면 그 카메라로 즉시 전환한다
     act(() => fake.props?.onCameraClick?.('cam_D'));
-    expect(screen.getByLabelText('cam_D 영상')).toBeTruthy();
-    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
+    expect(screen.getByLabelText('카메라 4 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('카메라 2 영상')).toBeNull();
 
     act(() => fake.props?.onCameraClick?.('cam_A'));
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
-    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
-    expect(screen.queryByLabelText('cam_D 영상')).toBeNull();
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('카메라 4 영상')).toBeNull();
   });
 
   it('실시간 calibration_version 이 바뀌면 다시 조회해 갱신하고 1 Hz health 갱신에는 다시 조회하지 않는다', async () => {
@@ -262,7 +265,7 @@ describe('카메라 시점 보기(-590, -626)', () => {
     // 관제 화면은 VDT 를 늘 켜지 않는다(카메라 시점에 맞아 있는 동안만 뷰어가 켠다).
     expect(fake.props?.vdt).toBeUndefined();
     expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 2 영상')).toBeTruthy();
     expect(fake.viewFromCamera).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: '3D 전체 보기' })).toBeNull();
     expect(viewButton().disabled).toBe(false);

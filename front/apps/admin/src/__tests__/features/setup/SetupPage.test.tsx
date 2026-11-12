@@ -466,8 +466,12 @@ describe('설치 · 보정 1단계 화면', () => {
   it('연결 상태 3종(DISCONNECTED / CONNECTED / UNKNOWN), 쌍 등급, 방향 안내 문구를 표시한다', async () => {
     renderSetupPage();
 
-    expect(await screen.findByText('캠1·캠2·캠3 / 캠4 갈림 · 1초 전 확인')).toBeTruthy();
-    expect(screen.getAllByText('오른쪽으로 조금 돌려 주세요 (캠3–캠4)').length).toBeGreaterThan(0);
+    expect(
+      await screen.findByText('카메라 1·카메라 2·카메라 3 / 카메라 4 갈림 · 1초 전 확인'),
+    ).toBeTruthy();
+    expect(
+      screen.getAllByText('오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)').length,
+    ).toBeGreaterThan(0);
     // 쌍 등급은 목록 없이 지도의 연결선에만 보인다.
     const edges = within(screen.getByLabelText('카메라 쌍 연결 선'));
     expect(edges.getAllByLabelText(/충분$/).length).toBeGreaterThan(0);
@@ -522,11 +526,15 @@ describe('설치 · 보정 1단계 화면', () => {
 
     it('위험이 있으면 오른쪽 카드에 알리고, 다음을 누르면 확인창이 먼저 뜨며 돌아가기는 세션을 만들지 않는다', async () => {
       await openWithLackPair(true);
-      expect(screen.getByRole('alert').textContent).toContain('캠2–캠3 겹침이 부족합니다');
+      expect(screen.getByRole('alert').textContent).toContain(
+        '카메라 2–카메라 3 겹침이 부족합니다',
+      );
 
       fireEvent.click(screen.getByRole('button', { name: '다음' }));
       const dialog = screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' });
-      expect(dialog.textContent).toContain('캠2–캠3 겹침이 부족한 채로 보정을 시작합니다.');
+      expect(dialog.textContent).toContain(
+        '카메라 2–카메라 3 겹침이 부족한 채로 보정을 시작합니다.',
+      );
       expect(setupMock.submittedBodies).toHaveLength(0);
 
       fireEvent.click(within(dialog).getByRole('button', { name: '돌아가기' }));
@@ -642,7 +650,7 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(cameraPanel.getByText('영상 없음')).toBeTruthy();
     expect(
       cameraPanel.getByText(
-        '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (캠2–캠3)',
+        '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (카메라 2–카메라 3)',
       ),
     ).toBeTruthy();
 
@@ -844,7 +852,9 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
     expect(alert.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
-    expect(alert.textContent).toContain('옆 카메라 캠2–캠3 사이에 같이 보이는 곳이 적어요');
+    expect(alert.textContent).toContain(
+      '옆 카메라 카메라 2–카메라 3 사이에 같이 보이는 곳이 적어요',
+    );
     expect(within(alert).queryByRole('button', { name: '다시 시도' })).toBeNull();
 
     fireEvent.click(within(alert).getByRole('button', { name: '카메라 연결 관리로' }));
@@ -895,7 +905,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
     expect(alert.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
     expect(alert.textContent).toContain(
-      '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (캠1–캠2, 캠3–캠4)',
+      '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 1–카메라 2, 카메라 3–카메라 4)',
     );
     // 실패 중에는 높이 불일치 안내·카메라 다시 맞추기 단추를 따로 보이지 않는다.
     expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();

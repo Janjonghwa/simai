@@ -15,6 +15,7 @@ import { DIMMED, LIVE_DOT, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyl
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { clockLabel, lastDataClock } from '@/features/layout/status';
 import { useNow } from '@/features/layout/useNow';
+import { cameraLabel } from '@/lib/cameraNames';
 import { useRealtimeStore } from '@/store/realtime.store';
 import type { WorldTrack } from '@simai/contracts';
 import { cn } from '@simai/ui/lib/utils';
@@ -107,7 +108,10 @@ function Feed({
       viewBox={`0 0 ${CCTV_W} ${CCTV_H}`}
       preserveAspectRatio="xMidYMid slice"
       role="img"
-      aria-label={`${view.cam.id} 카메라 영상`}
+      aria-label={`${cameraLabel(
+        CCTV_CAMS.map((c) => c.id),
+        view.cam.id,
+      )} 영상`}
       className={cn('block size-full', frozen && DIMMED)}
     >
       <defs>
@@ -171,12 +175,21 @@ function Tile({
     <button
       type="button"
       onClick={onToggle}
-      aria-label={`${id} ${focused ? '작게 보기' : '크게 보기'}`}
+      aria-label={`${cameraLabel(
+        CCTV_CAMS.map((c) => c.id),
+        id,
+      )} ${focused ? '작게 보기' : '크게 보기'}`}
       className={cn(TILE_FRAME, 'bg-slate-900', tileZoom(focused))}
     >
       <Feed view={view} down={down} frozen={frozen} figures={figures} />
       <span className={cn(PILL, 'left-2')}>
-        <b className="font-mono">{id}</b> {dir} 모서리
+        <b className="font-mono" title={id}>
+          {cameraLabel(
+            CCTV_CAMS.map((c) => c.id),
+            id,
+          )}
+        </b>{' '}
+        {dir} 모서리
       </span>
       <span
         className={cn(

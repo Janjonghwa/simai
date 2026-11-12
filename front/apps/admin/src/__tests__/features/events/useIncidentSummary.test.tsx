@@ -613,14 +613,14 @@ describe('MSW createEventsMock POST /api/events/:id/summary', () => {
     mock.updateSummary(EVENT_ID, {
       status: 'SUCCEEDED',
       finished_at: T + 6_000,
-      summary: '작업자 위험 구역 진입 요약 완료',
+      summary: '작업자 위험구역 진입 요약 완료',
       evidence_timestamps_ms: [T + 200, T + 900],
     });
     expect(published).toHaveLength(2);
     expect(validateMessage('risk_event', published[1]).ok).toBe(true);
     const summaries = (published[1]?.payload as unknown as EventItem).summaries;
     expect(summaries?.[0]?.status).toBe('SUCCEEDED');
-    expect(summaries?.[0]?.summary).toBe('작업자 위험 구역 진입 요약 완료');
+    expect(summaries?.[0]?.summary).toBe('작업자 위험구역 진입 요약 완료');
   });
 
   it('CLIP_NOT_READY·EVENT_NOT_LIVE·EVENT_NOT_FOUND 에러 계약을 준수한다', async () => {

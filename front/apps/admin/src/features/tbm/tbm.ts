@@ -2,6 +2,7 @@ import { SEVERITY_RANK } from '@/features/events/events';
 import type { Severity } from '@/features/events/types';
 import { SITE_WIDE_TEXT } from '@/features/tbm/constants';
 import type { LayoutItem, Rect, TaskEval, TbmTask } from '@/features/tbm/tbmDemo';
+import { ruleName, SEVERITY_LABEL } from '@/lib/ruleNames';
 
 // 레이아웃 · TBM 보고서의 계산. 시간대 겹침과 동시 작업 간섭, 작업 평가 글자를 화면 없이 한다.
 // 회의록 칸은 tbmForm.ts, 작업 등록은 taskInput.ts 에 있다.
@@ -119,11 +120,11 @@ export function taskPeak(task: Pick<TbmTask, 'evals'>): Severity | null {
 export const taskPlace = (task: Pick<TbmTask, 'area'>) => task.area ?? SITE_WIDE_TEXT;
 
 export const SEVERITY_TEXT: Record<Severity, string> = {
-  CRITICAL: '▲▲ CRITICAL',
-  HIGH: '▲ HIGH',
-  CAUTION: '! CAUTION',
-  INFO: 'i INFO',
+  CRITICAL: `▲▲ ${SEVERITY_LABEL.CRITICAL}`,
+  HIGH: `▲ ${SEVERITY_LABEL.HIGH}`,
+  CAUTION: `! ${SEVERITY_LABEL.CAUTION}`,
+  INFO: `i ${SEVERITY_LABEL.INFO}`,
 };
 
 export const evalText = (e: TaskEval) =>
-  `${e.item} · ${e.rule} · ${SEVERITY_TEXT[e.sev]} · ${e.why}`;
+  `${e.item} · ${ruleName(e.rule)} · ${SEVERITY_TEXT[e.sev]} · ${e.why}`;

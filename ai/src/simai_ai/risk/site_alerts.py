@@ -22,6 +22,7 @@ from typing import Any
 
 from simai_ai.risk.alerting import Channel, channels_for
 from simai_ai.risk.lifecycle import EventState, Lifecycle
+from simai_ai.risk.names import RULE_DESCRIPTIONS
 
 Summarize = Callable[[EventState], str]
 
@@ -29,8 +30,8 @@ _MAX_METRICS_IN_SUMMARY = 3
 
 
 def default_summary(state: EventState) -> str:
-    """규칙 근거 한 줄: 규칙 ID, 구역, 측정값 몇 개. 규칙별 문구가 생기면 summarize 를 바꿔 끼운다."""
-    parts = [state.rule_id]
+    """규칙 근거 한 줄: 규칙 표시 이름, 구역, 측정값 몇 개. 알림·보고서와 같은 사전을 쓴다."""
+    parts = [RULE_DESCRIPTIONS.get(state.rule_id, state.rule_id)]
     if state.zone_id:
         parts.append(state.zone_id)
     metrics = ", ".join(f"{k} {v:.2f}" for k, v in sorted(state.metrics.items())[:_MAX_METRICS_IN_SUMMARY])

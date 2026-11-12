@@ -2,6 +2,7 @@ import { ROOM, toPlan } from '@/features/plan/plan';
 import { itemHeight } from '@/features/tbm/tbm';
 import { TBM_DOOR, type LayoutItem, type Rect, type TbmTask } from '@/features/tbm/tbmDemo';
 import type { Zone } from '@/features/zones/types';
+import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import { cn } from '@simai/ui/lib/utils';
 
 // 작업 하나의 가상 레이아웃(2D 평면, m). 같은 시간대의 다른 작업은 점선으로, 배치가 겹친 자리는 '▲ 간섭'으로 그린다.
@@ -206,7 +207,7 @@ export function TbmPlan({
       {setupZones.map((zone) => (
         <polygon
           key={zone.zoneId}
-          aria-label={`${zone.name} 위험 구역 (${zone.severity})`}
+          aria-label={`${zone.name} 위험 구역 (${SEVERITY_LABEL[zone.severity]})`}
           points={zone.polygon.map(([x, y]) => toPlan(x, y).join(',')).join(' ')}
           className={ZONE_STYLE[zone.severity]}
           strokeWidth={LINE_AREA}

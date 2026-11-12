@@ -354,7 +354,7 @@ describe('작업 외 진입 배지', () => {
 
     await screen.findByRole('region', { name: '작업 세션' });
     await waitFor(() => expect(within(card('w-0013 이벤트')).queryByText(BADGE)).toBeTruthy());
-    expect(within(card('w-0013 이벤트')).getByText(/위험|CRITICAL/)).toBeTruthy();
+    expect(within(card('w-0013 이벤트')).getByText(/^(위험|CRITICAL)$/)).toBeTruthy();
     expect(screen.getByRole('group', { name: '확인 대기 경보' })).toBeTruthy();
   });
 

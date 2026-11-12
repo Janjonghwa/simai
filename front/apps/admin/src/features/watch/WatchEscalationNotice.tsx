@@ -1,4 +1,5 @@
 import { realtime } from '@/lib/realtime';
+import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import type { WatchEscalationPayload } from '@simai/contracts';
 import { useEffect, useState } from 'react';
 
@@ -49,7 +50,7 @@ export function WatchEscalationNotice() {
         >
           <span className="font-semibold text-destructive">워치 {REASON_TEXT[e.reason]}</span>
           <span>
-            {e.device_id} · {e.world_id} · {e.severity}
+            {e.device_id} · {e.world_id} · {SEVERITY_LABEL[e.severity]}
           </span>
           <button
             type="button"

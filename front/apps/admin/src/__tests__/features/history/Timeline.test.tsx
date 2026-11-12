@@ -184,14 +184,14 @@ describe('타임라인: 이벤트 표시', () => {
     renderTimeline({ events: [first, second] });
     const markers = within(region()).getAllByRole('button', { name: /^이벤트 / });
     expect(markers.map((m) => m.getAttribute('aria-label'))).toEqual([
-      '이벤트 10:20:05 개구부·가장자리 근접',
-      '이벤트 10:45:00 진입 예측',
+      '이벤트 10:20:05 추락 위험(가장자리)',
+      '이벤트 10:45:00 위험구역 접근',
     ]);
   });
 
   it('이벤트 표시를 누르면 그 이벤트를 알린다', () => {
     const { onJump, onSeek } = renderTimeline({ events: [first, second] });
-    fireEvent.click(screen.getByRole('button', { name: '이벤트 10:45:00 진입 예측' }));
+    fireEvent.click(screen.getByRole('button', { name: '이벤트 10:45:00 위험구역 접근' }));
     expect(onJump).toHaveBeenCalledTimes(1);
     expect(onJump).toHaveBeenCalledWith(second);
     expect(onSeek).not.toHaveBeenCalled();

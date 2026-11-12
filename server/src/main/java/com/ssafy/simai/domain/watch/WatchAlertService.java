@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.watch;
 
 import com.ssafy.simai.domain.realtime.RealtimePublisher;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
+import com.ssafy.simai.domain.rule.RuleCatalog;
 import com.ssafy.simai.domain.tier0.event.RiskEventsDelivered;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import com.ssafy.simai.global.exception.BusinessException;
@@ -96,12 +97,6 @@ public class WatchAlertService implements AutoCloseable {
     private static final int MAX_LIST = 200;
 
     private static final Logger log = LoggerFactory.getLogger(WatchAlertService.class);
-
-    /** 규칙별 한 단어(계약 1~8자, 갤럭시워치6 원형 화면 한 줄). 모르는 규칙은 "위험" */
-    private static final Map<String, String> WORDS = Map.ofEntries(
-            Map.entry("R1", "위험구역"), Map.entry("R2", "개구부"), Map.entry("R3", "고소"), Map.entry("R4", "낙상"),
-            Map.entry("R5", "진입주의"), Map.entry("R6", "구역확인"), Map.entry("R7", "감시저하"), Map.entry("R8", "장비"),
-            Map.entry("R9", "안전모"), Map.entry("R10", "점유주의"), Map.entry("R11", "조끼"));
 
     /** 등급 → 진동 패턴(FR-45, 계약에서 생략할 때 워치가 쓰는 것과 같다. 표에는 늘 적는다) */
     private static final Map<String, String> PATTERNS = Map.of(
@@ -296,7 +291,7 @@ public class WatchAlertService implements AutoCloseable {
         UUID msgId = UUID.randomUUID();
         Instant now = clock.instant();
         int ackWithinMs = (int) properties.ackWithin().toMillis();
-        String word = WORDS.getOrDefault(event.ruleId(), "위험");
+        String word = RuleCatalog.watchWord(event.ruleId());
         // 같은 이벤트·워치에 같거나 높은 등급을 이미 보냈으면 넣지 않는다(재발행·요약 갱신·ACK 로 다시 와도 진동은 한 번, 등급이 오르면 다시)
         List<Long> inserted = jdbc.queryForList("""
                 INSERT INTO watch_alert (origin, alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,

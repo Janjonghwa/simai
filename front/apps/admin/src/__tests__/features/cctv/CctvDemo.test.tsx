@@ -15,14 +15,14 @@ describe('CCTV 실시간 목 화면', () => {
     useRealtimeStore.setState({ world: { payload: worldStateAt(now).payload, receivedAt: now } });
     render(<CctvDemo />);
 
-    const feeds = screen.getAllByRole('img', { name: /카메라 영상/ });
+    const feeds = screen.getAllByRole('img', { name: /카메라 \d 영상/ });
     expect(feeds).toHaveLength(4);
     expect(
       feeds.reduce((n, feed) => n + feed.querySelectorAll('circle').length, 0),
     ).toBeGreaterThan(0);
 
-    act(() => screen.getByRole('button', { name: 'cam2 크게 보기' }).click());
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBeTruthy();
+    act(() => screen.getByRole('button', { name: '카메라 2 크게 보기' }).click());
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '4분할로 돌아가기' })).toBeTruthy();
   });
 });

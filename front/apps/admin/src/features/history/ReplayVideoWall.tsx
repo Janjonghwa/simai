@@ -7,6 +7,7 @@ import { syncVideo } from '@/features/history/replaySegments';
 import type { VideoSegment } from '@/features/history/types';
 import { useReplayStatus } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
+import { useCameraNames } from '@/hooks/useCameraNames';
 import { api } from '@/lib/api';
 import { cn } from '@simai/ui/lib/utils';
 import { useQuery } from '@tanstack/react-query';
@@ -45,11 +46,13 @@ function SegmentTile({
   replay,
   focused,
   onToggle,
+  label,
 }: {
   segment: VideoSegment;
   replay: ReplaySpatialSource | null;
   focused: boolean;
   onToggle: () => void;
+  label: string;
 }) {
   const { url, failed } = useSegmentSource(segment);
   const status = useReplayStatus(replay);
@@ -63,7 +66,7 @@ function SegmentTile({
     <button
       type="button"
       onClick={onToggle}
-      aria-label={`${segment.camera_id} ${focused ? '작게 보기' : '크게 보기'}`}
+      aria-label={`${label} ${focused ? '작게 보기' : '크게 보기'}`}
       className={cn(TILE_FRAME, 'bg-slate-900', tileZoom(focused))}
     >
       {url && !failed ? (
@@ -81,7 +84,9 @@ function SegmentTile({
           {failed ? '영상을 받지 못했습니다' : '영상을 불러오는 중입니다…'}
         </span>
       )}
-      <span className={cn(PILL, 'left-2 font-mono font-bold')}>{segment.camera_id}</span>
+      <span className={cn(PILL, 'left-2 font-mono font-bold')} title={segment.camera_id}>
+        {label}
+      </span>
       <span className={cn(PILL, 'right-2 font-mono')}>
         {status.playhead !== null ? formatTime(status.playhead) : ''}
       </span>
@@ -97,6 +102,7 @@ export function ReplayVideoWall({
   segments: readonly VideoSegment[];
   replay: ReplaySpatialSource | null;
 }) {
+  const label = useCameraNames(segments.map((segment) => segment.camera_id));
   const byCamera = new Map(segments.map((segment) => [segment.camera_id, segment]));
   return (
     <CctvWall
@@ -107,6 +113,7 @@ export function ReplayVideoWall({
           segment && (
             <SegmentTile
               segment={segment}
+              label={label(segment.camera_id)}
               replay={replay}
               focused={wall.focused}
               onToggle={wall.toggle}

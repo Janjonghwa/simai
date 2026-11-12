@@ -1,13 +1,10 @@
-import {
-  CONFIDENCE_REASON,
-  METRIC_LABEL,
-  RULE_NAME,
-  RULE_NAME_BY_SEVERITY,
-} from '@/features/events/constants';
+import { CONFIDENCE_REASON, METRIC_LABEL } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
 import { PPE_RELEASE_LABEL, type PpeRelease } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
+import { ruleName } from '@/lib/ruleNames';
+export { ruleName } from '@/lib/ruleNames';
 
 // 이벤트 값을 화면 문구로 바꾸는 계산. 화면 없이 시험한다.
 
@@ -22,11 +19,9 @@ const TIME = new Intl.DateTimeFormat('ko-KR', {
 export const formatTime = (ms: number | null | undefined) =>
   ms === null || ms === undefined ? '—' : TIME.format(ms);
 
-export const ruleName = (ruleId: string) => RULE_NAME[ruleId] ?? ruleId;
-
-/** 이벤트의 규칙 이름: 등급에 따라 이름이 달라지는 규칙(R1 주의)이면 그 이름, 아니면 `ruleName`. */
+/** 이벤트 규칙 이름은 등급과 무관하게 같은 사전을 쓴다. */
 export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
-  RULE_NAME_BY_SEVERITY[event.rule_id]?.[event.severity] ?? ruleName(event.rule_id);
+  ruleName(event.rule_id);
 
 /** 이벤트 대상 문구: 사람 ID, 사람이 없으면 구역 이름(모르면 `구역`). */
 export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>

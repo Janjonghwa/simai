@@ -38,7 +38,7 @@ class WrapUpFallbackOrderTest {
         facts.putArray("top_zones").addObject().put("name", "개구부 1").put("count", 2);
         facts.putObject("phase_counts").put("early", 0).put("middle", 3).put("late", 0);
         String text = TbmReportService.wrapUpFallback(facts);
-        assertThat(text).isEqualTo("작업 종료 미팅. 경보: 총 3건(위험 2건, 주의 1건), 최고 등급 위험. 주요 위험: 낙상 의심 2건, 위험 구역 진입 1건. "
+        assertThat(text).isEqualTo("작업 종료 미팅. 경보: 총 3건(위험 2건, 주의 1건), 최고 등급 위험. 주요 위험: 낙상 의심 2건, 위험구역 진입 1건. "
                 + "많이 발생한 구역: 개구부 1 2건. 조치: 운영자 확인 1건, 미확인 위험 경보 없음. 시간대: 중반 3건. "
                 + "다음 작업 반영: 개구부 1 점검과 낙상 의심 예방 대책을 작업 전 TBM에 반영한다.");
         assertThat(text).doesNotContain("0건");

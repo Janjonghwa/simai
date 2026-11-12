@@ -234,3 +234,14 @@ def test_daily_passes_truncation_flag_and_tolerates_null_lists():
     retrieve(Store(), dict(DAILY, events=None, risk_items=None))
     out = generate(dict(DAILY, events=None), Store(), lambda: Client([daily_draft()]))
     assert out["status"] == "SUCCEEDED" and out["steps"][0]["input_count"] == 0
+
+
+@pytest.mark.parametrize("kind", ["TBM", "DAILY"])
+def test_report_prompt_uses_shared_display_names(kind):
+    from simai_ai.report.tbm_graph import messages
+
+    prompt = messages({"report_kind": kind}, [NODE])
+    assert "R2=추락 위험(가장자리)" in prompt[0]["content"]
+    assert "R6=위험구역 안 시야 끊김" in prompt[0]["content"]
+    assert "CRITICAL=위험" in prompt[0]["content"]
+    assert "HIGH=경고" in prompt[0]["content"]

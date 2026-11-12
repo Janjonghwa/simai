@@ -21,7 +21,7 @@ def test_alert_line_contents(core: SiteAlertCore) -> None:
     eid = uuid7()
     core.handle(local_alert(eid, 1, "RAISED", severity="HIGH", rule_id="R1", zone_id="z-02", summary="R1 위험 구역 진입 1.4s"))
     line = render_lines(core.screen_state())[-1]
-    assert line == "[HIGH] | R1 · z-02 | R1 위험 구역 진입 1.4s | 확인 전 · 소리 반복 중"
+    assert line == "[경고] | R1 · z-02 | R1 위험 구역 진입 1.4s | 확인 전 · 소리 반복 중"
     core.site_ack(eid)
     lines = render_lines(core.screen_state())
     assert "현장 확인 1건 Tier 0 기록 대기" in lines

@@ -31,7 +31,7 @@ it('세팅 구역의 실제 다각형을 가상 배치 위에 표시한다', () 
     shapeEditable: true,
   };
   render(<TbmPlan task={TBM_TASKS[0]!} others={[]} spots={[]} setupZones={[zone]} />);
-  const area = screen.getByLabelText('위험 구역 위험 구역 (HIGH)');
+  const area = screen.getByLabelText('위험 구역 위험 구역 (경고)');
   expect(area.getAttribute('points')).not.toBeNull();
   expect(area.getAttribute('class')).toContain('stroke-sev-high');
 });

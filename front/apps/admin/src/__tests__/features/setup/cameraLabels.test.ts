@@ -14,15 +14,15 @@ describe('세팅 화면 카메라 이름', () => {
   it('id 종류와 상관없이 목록 순서로 이름을 만든다', () => {
     expect(cameraLabel(DB_IDS, 'cam3')).toBe('카메라 3');
     expect(cameraLabel(AI_IDS, 'cam_C')).toBe('카메라 3');
-    expect(cameraShortLabel(AI_IDS, 'cam_D')).toBe('캠4');
-    expect(pairLabel(AI_IDS, 'cam_B', 'cam_C')).toBe('캠2–캠3');
+    expect(cameraShortLabel(AI_IDS, 'cam_D')).toBe('카메라 4');
+    expect(pairLabel(AI_IDS, 'cam_B', 'cam_C')).toBe('카메라 2–카메라 3');
   });
 
-  it('목록에 없는 id 는 그대로 돌려주고 번호는 null 이다', () => {
+  it('목록에 없는 id 는 번호 없이 표시하고 번호는 null 이다', () => {
     expect(cameraNumber(DB_IDS, 'cam9')).toBeNull();
-    expect(cameraLabel(DB_IDS, 'cam9')).toBe('cam9');
-    expect(cameraShortLabel(DB_IDS, 'cam9')).toBe('cam9');
-    expect(pairLabel(DB_IDS, 'cam1', 'cam9')).toBe('캠1–cam9');
+    expect(cameraLabel(DB_IDS, 'cam9')).toBe('카메라');
+    expect(cameraShortLabel(DB_IDS, 'cam9')).toBe('카메라');
+    expect(pairLabel(DB_IDS, 'cam1', 'cam9')).toBe('카메라 1–카메라');
   });
 });
 

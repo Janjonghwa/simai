@@ -3,6 +3,7 @@ import json
 import re
 import time
 
+from simai_ai.risk.names import REPORT_NAME_GUIDE
 from simai_ai.report.llm import LlmError, LlmTimeout
 from simai_ai.report.retrieval import retrieve
 from simai_ai.report.tbm import _ARTICLE_IN_TEXT, _PERCENT, assert_text_only
@@ -43,6 +44,7 @@ def _daily_messages(request, nodes):
              "zones": [_pick(z, ("zone_id", "zone_kind", "label")) for z in request.get("zones", []) if isinstance(z, dict)],
              "clauses": [{k: n.get(k) for k in ("node_id", "source_name", "article_ref", "title")} | {"body": n["body"][:600]} for n in nodes]}
     result = [{"role": "system", "content": "일일 안전 일지를 입력 사실과 허용 조문만으로 작성하라. 이벤트 수·등급·규칙은 입력 그대로 쓰고 지어내지 말라. 위험 등급을 바꾸거나 확률·퍼센트를 쓰지 말라. 이벤트가 없으면 없었다고 쓴다. events_truncated 가 참이면 events 는 등급이 높은 일부이고 건수는 event_summary 가 정확하다. JSON 객체 sections 배열에 summary(하루 요약), events(이벤트 되돌아보기), measures(다음 작업 대책), legal(법령 근거 요약) 각각 하나를 넣고 각 항목은 key, title, body, citations만 쓴다. citations에는 제공된 node_id만 쓴다."}, {"role": "user", "content": json.dumps(facts, ensure_ascii=False)}]
+    result[0]["content"] += "\n" + REPORT_NAME_GUIDE
     assert_text_only(result)
     return result
 
@@ -63,6 +65,7 @@ def messages(request, nodes):
     facts["zones"] = [_pick(z, ("zone_id", "zone_kind", "label")) for z in request.get("zones", []) if isinstance(z, dict)]
     facts["zone_history"] = [_pick(z, ("zone_id", "days", "live_event_count", "rules", "max_severity", "last_at_ms")) for z in request.get("zone_history", []) if isinstance(z, dict)]
     result = [{"role": "system", "content": "안전 보고서를 입력 사실과 허용 조문만으로 작성하라. 위험 등급을 바꾸거나 확률·퍼센트를 쓰지 말라. JSON 객체 sections 배열에 hazards, measures, focus, legal 각각 하나를 넣고 각 항목은 key, title, body, citations만 쓴다. citations에는 제공된 node_id만 쓴다."}, {"role": "user", "content": json.dumps(facts, ensure_ascii=False)}]
+    result[0]["content"] += "\n" + REPORT_NAME_GUIDE
     assert_text_only(result)
     return result
 

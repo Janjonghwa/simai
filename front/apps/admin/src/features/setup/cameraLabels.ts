@@ -1,25 +1,7 @@
-// 세팅 화면에 보이는 카메라 이름과 옆 카메라 쌍 판정.
-// 서버 카메라 id(cam1..4, cam_A..D)는 화면에 쓰지 않고, id 목록 안의 순서로 이름을 만든다.
+import { cameraShortLabel } from '@/lib/cameraNames';
+export { cameraLabel, cameraNumber, cameraShortLabel } from '@/lib/cameraNames';
 
-/** 카메라 id 목록 안의 순서(1부터). 목록에 없으면 null. */
-export function cameraNumber(cameraIds: readonly string[], id: string): number | null {
-  const index = cameraIds.indexOf(id);
-  return index < 0 ? null : index + 1;
-}
-
-/** '카메라 N'. 목록에 없는 id 는 그대로 돌려준다. */
-export function cameraLabel(cameraIds: readonly string[], id: string): string {
-  const n = cameraNumber(cameraIds, id);
-  return n === null ? id : `카메라 ${n}`;
-}
-
-/** '캠N'. 목록에 없는 id 는 그대로 돌려준다. */
-export function cameraShortLabel(cameraIds: readonly string[], id: string): string {
-  const n = cameraNumber(cameraIds, id);
-  return n === null ? id : `캠${n}`;
-}
-
-/** '캠1–캠2'. */
+/** '카메라 1–카메라 2'. */
 export function pairLabel(cameraIds: readonly string[], a: string, b: string): string {
   return `${cameraShortLabel(cameraIds, a)}–${cameraShortLabel(cameraIds, b)}`;
 }

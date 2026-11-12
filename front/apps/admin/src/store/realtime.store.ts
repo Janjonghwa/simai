@@ -1,4 +1,5 @@
 import type { ExternalSpatialSource } from '@/features/viewer3d';
+import { useCameraOrderStore } from '@/lib/cameraNames';
 import type { PpeViewPayload, ViewerHealthPayload, WorldStatePayload } from '@simai/contracts';
 import { create } from 'zustand';
 
@@ -75,7 +76,10 @@ const INITIAL = {
 // world 를 쓰는 화면(2D 평면)은 필요한 층만 구독한다. 다른 구독자는 원시값 셀렉터라 다시 그리지 않는다.
 export const useRealtimeStore = create<RealtimeState>()((set) => ({
   ...INITIAL,
-  begin: () => set({ ...INITIAL, phase: 'CONNECTING' }),
+  begin: () => {
+    useCameraOrderStore.getState().reset();
+    set({ ...INITIAL, phase: 'CONNECTING' });
+  },
   setSource: (source) => set({ source }),
   setPhase: (phase) => set({ phase }),
   opened: (at) => set({ phase: 'OPEN', openedAt: at, worldResync: true }),
@@ -100,7 +104,10 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
       return { ppe: { ...s.ppe, [id]: snapshot } };
     }),
   reject: () => set((s) => ({ rejected: s.rejected + 1 })),
-  reset: () => set(INITIAL),
+  reset: () => {
+    useCameraOrderStore.getState().reset();
+    set(INITIAL);
+  },
 }));
 
 export type RealtimeStore = typeof useRealtimeStore;

@@ -20,6 +20,7 @@ import { cardTitle, targetFont, targetLabel } from '@/features/events/incidentVi
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
 import { useZoneName } from '@/features/zones/useZoneName';
+import { useCameraNames } from '@/hooks/useCameraNames';
 import { env } from '@/lib/env';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
@@ -74,18 +75,15 @@ function IncidentSummary({
   );
 }
 
-/** 카메라 이름 순서(cam2 가 cam10 앞). 중계가 알린 순서와 상관없이 「CCTV로 확인」이 여는 첫 카메라가 cam1 이 되게 한다. */
-const byCameraName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
-
 /**
- * 탭에 올리는 카메라: 중계가 이어졌으면 중계가 알린 카메라, 아니면 Tier 0 health 의 카메라. 이름 순서로 둔다.
+ * 탭에 올리는 카메라: 중계가 이어졌으면 중계가 알린 카메라, 아니면 Tier 0 health 의 카메라. 현장 목록 순서로 둔다.
  * 이름은 이 둘이 같다(예: cam_A). 이벤트의 카메라(world 트랙)도 같은 이름이라 추천 탭이 맞는 탭을 가리킨다.
  */
 function useCameraIds(relayed: boolean, healthIds: readonly string[]): readonly string[] {
   const link = useCctvStore((s) => s.link);
   const relayCameras = useCctvStore((s) => s.cameras);
   const ids = relayed && link === 'open' && relayCameras.length > 0 ? relayCameras : healthIds;
-  return useMemo(() => [...ids].sort(byCameraName), [ids]);
+  return ids;
 }
 
 /** attach 가 없으면(관리자가 아님) 영상 없이 카메라 상태만 보인다. */
@@ -97,6 +95,7 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   const best = useRealtimeStore((s) => bestCamera(s.world?.payload.tracks, split.target));
   const healthIds = useMemo(() => cameras.map((camera) => camera.id), [cameras]);
   const ids = useCameraIds(attach !== undefined, healthIds);
+  const label = useCameraNames(ids);
 
   // 지금 보는 사람의 사건만 보인다. 지난 관제(지금 Tier 0 가 들고 있지 않음)의 같은 World ID 는 섞지 않는다(S15P31A101-595).
   const incidents = useMemo(() => groupIncidents(withoutStale(entries)), [entries]);
@@ -128,7 +127,11 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
     >
       <div className="flex items-center gap-2">
         <Video aria-hidden className="size-[18px]" />
-        {camId && <b className="font-mono">{camId}</b>}
+        {camId && (
+          <b className="font-mono" title={camId}>
+            {label(camId)}
+          </b>
+        )}
         <span className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-0.5 font-mono text-xs">
           {down ? '끊김' : fresh ? <LiveBadge frozen={false} /> : <LiveBadge frozen />}
         </span>
@@ -165,7 +168,9 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
                 dn && 'text-delay',
               )}
             >
-              <span className="font-mono">{id}</span>
+              <span className="font-mono" title={id}>
+                {label(id)}
+              </span>
               {dn ? (
                 <em className="text-xs not-italic">끊김</em>
               ) : id === best ? (
@@ -199,7 +204,7 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
       </div>
       {down && best && best !== camId && ids.includes(best) && (
         <Button size="sm" onClick={() => setCam(best)}>
-          {best}로 보기
+          {label(best)}로 보기
         </Button>
       )}
       <div className="rounded-[10px] bg-surface-2 p-3">

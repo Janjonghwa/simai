@@ -10,6 +10,7 @@ import {
 } from '@/features/plan/plan';
 import { ALARM_BLINK, RING_TONE, type Bind } from '@/features/plan/planDraw';
 import { LOOK_LABEL } from '@/features/plan/planTip';
+import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import type { WorldTrack } from '@simai/contracts';
 import { cn } from '@simai/ui/lib/utils';
 import type { KeyboardEvent } from 'react';
@@ -225,7 +226,7 @@ export function PlanPerson({
   const look = trackLook(track);
   const key = personKey(track.world_id);
   const select = onSelect && (() => onSelect(key));
-  const label = `${track.world_id}${LOOK_LABEL[look]}${mark ? ` · ${mark.severity}` : ''}`;
+  const label = `${track.world_id}${LOOK_LABEL[look]}${mark ? ` · ${SEVERITY_LABEL[mark.severity]}` : ''}`;
 
   return (
     <g

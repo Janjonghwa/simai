@@ -426,13 +426,13 @@ describe('확인 필요와 오래된 확인', () => {
 });
 
 describe('표시 값', () => {
-  it('규칙 이름은 R1 주의만 위험 구역 근접이고 나머지는 규칙 이름 그대로다', () => {
+  it('규칙 이름은 모든 등급에서 공통 사전을 쓴다', () => {
     const name = (rule_id: string, severity: EventItem['severity']) =>
       eventRuleName(item({ rule_id, severity }));
-    expect(name('R1', 'CAUTION')).toBe('위험 구역 근접');
-    expect(name('R1', 'HIGH')).toBe('위험 구역 진입');
-    expect(name('R1', 'CRITICAL')).toBe('위험 구역 진입');
-    expect(name('R5', 'CAUTION')).toBe('진입 예측');
+    expect(name('R1', 'CAUTION')).toBe('위험구역 진입');
+    expect(name('R1', 'HIGH')).toBe('위험구역 진입');
+    expect(name('R1', 'CRITICAL')).toBe('위험구역 진입');
+    expect(name('R5', 'CAUTION')).toBe('위험구역 접근');
     expect(name('R99', 'CAUTION')).toBe('R99');
   });
 
@@ -488,16 +488,16 @@ describe('사건 상세', () => {
   it('타임라인은 규칙마다 발생·확인·해소를 시각 순으로 늘어놓는다', () => {
     const [incident] = groupIncidents([r2, r1]);
     expect(incidentTimeline(incident!)).toEqual([
-      { at: T, who: '시스템', text: '위험 구역 진입 발생' },
-      { at: T + 2_000, who: '관제', text: expect.stringMatching(/^위험 구역 진입 확인 · /) },
-      { at: T + 5_000, who: '시스템', text: '개구부·가장자리 근접 발생' },
-      { at: T + 9_000, who: '시스템', text: '위험 구역 진입 해소' },
+      { at: T, who: '시스템', text: '위험구역 진입 발생' },
+      { at: T + 2_000, who: '관제', text: expect.stringMatching(/^위험구역 진입 확인 · /) },
+      { at: T + 5_000, who: '시스템', text: '추락 위험(가장자리) 발생' },
+      { at: T + 9_000, who: '시스템', text: '위험구역 진입 해소' },
     ]);
   });
 
-  it('R1 주의의 타임라인은 위험 구역 근접으로 적는다', () => {
+  it('R1 주의의 타임라인은 위험구역 진입으로 적는다', () => {
     const [incident] = groupIncidents([entry({ rule_id: 'R1', severity: 'CAUTION' })]);
-    expect(incidentTimeline(incident!)[0]).toMatchObject({ text: '위험 구역 근접 발생' });
+    expect(incidentTimeline(incident!)[0]).toMatchObject({ text: '위험구역 진입 발생' });
   });
 
   it('운영자가 끝낸 규칙은 운영자 종료로 적는다', () => {
@@ -510,7 +510,7 @@ describe('사건 상세', () => {
     expect(incidentTimeline(incident!).at(-1)).toEqual({
       at: T + 1_000,
       who: '운영자',
-      text: '개구부·가장자리 근접 종료',
+      text: '추락 위험(가장자리) 종료',
     });
   });
 });
@@ -548,7 +548,7 @@ describe('카드 표시 계산', () => {
     ).toBeNull();
   });
 
-  it('진입 예측만 N초 뒤 진입 예상 줄을 만들고, 개구부 수치는 만들지 않는다', () => {
+  it('위험구역 접근만 N초 뒤 진입 예상 줄을 만들고, 개구부 수치는 만들지 않는다', () => {
     const r5 = item({ rule_id: 'R5', severity: 'CAUTION', metrics: { time_to_entry_s: 1.64 } });
     expect(entryEtaLine(r5)).toBe('1.6초 뒤 진입 예상');
     expect(entryEtaLine({ ...r5, lifecycle: 'RESOLVED' })).toBeNull();
@@ -587,25 +587,25 @@ describe('카드 표시 계산', () => {
       entry({ event_id: 'a', zone_id: 'z-04' }),
       entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
     );
-    expect(cardTitle(incident, zoneName)).toBe('개구부·가장자리 근접 · 개구부 구역');
+    expect(cardTitle(incident, zoneName)).toBe('추락 위험(가장자리) · 개구부 구역');
   });
 
-  it('R1 주의 묶음의 카드 제목은 위험 구역 근접이다', () => {
+  it('R1 주의 묶음의 카드 제목은 위험구역 진입이다', () => {
     const incident = incidentOfEntries(entry({ rule_id: 'R1', severity: 'CAUTION' }));
-    expect(cardTitle(incident, zoneName)).toBe('위험 구역 근접 · 개구부 구역');
+    expect(cardTitle(incident, zoneName)).toBe('위험구역 진입 · 개구부 구역');
   });
 
   it('구역이 대상인 묶음은 제목에서 구역을 되풀이하지 않고, 구역이 없거나 이름을 모르면 규칙 이름만이다', () => {
     const title = (change: Partial<EventItem>) =>
       cardTitle(incidentOfEntries(entry(change)), zoneName);
-    expect(title({ world_ids: [], zone_id: 'z-04' })).toBe('개구부·가장자리 근접');
-    expect(title({ zone_id: undefined })).toBe('개구부·가장자리 근접');
-    expect(title({ zone_id: 'z-99' })).toBe('개구부·가장자리 근접');
+    expect(title({ world_ids: [], zone_id: 'z-04' })).toBe('추락 위험(가장자리)');
+    expect(title({ zone_id: undefined })).toBe('추락 위험(가장자리)');
+    expect(title({ zone_id: 'z-99' })).toBe('추락 위험(가장자리)');
   });
 
   it('이름이 빈 구역은 제목에서 빼고, 구역이 대상이거나 주어이면 `구역` 이다', () => {
     const incident = (change: Partial<EventItem>) => incidentOfEntries(entry(change));
-    expect(cardTitle(incident({ zone_id: 'z-05' }), zoneName)).toBe('개구부·가장자리 근접');
+    expect(cardTitle(incident({ zone_id: 'z-05' }), zoneName)).toBe('추락 위험(가장자리)');
     expect(targetLabel(incident({ world_ids: [], zone_id: 'z-05' }).target, zoneName)).toBe('구역');
     expect(eventSubject(item({ world_ids: [], zone_id: 'z-05' }), zoneName)).toBe('구역');
   });

@@ -189,7 +189,7 @@ class WatchAlertIntegrationTest {
         assertThat(alert.path("payload").path("event_id").asString()).isEqualTo(event.toString());
         assertThat(alert.path("payload").path("severity").asString()).isEqualTo("HIGH");
         assertThat(alert.path("payload").path("vibration_pattern").asString()).isEqualTo("CAUTION_DOUBLE");
-        assertThat(alert.path("payload").path("word").asString()).isEqualTo("진입주의");
+        assertThat(alert.path("payload").path("word").asString()).isEqualTo("위험구역 접근");
         assertThat(alert.path("payload").path("ack_within_ms").asInt()).isEqualTo(1_000);
 
         String alertMsgId = alert.path("msg_id").asString();
@@ -223,7 +223,7 @@ class WatchAlertIntegrationTest {
         assertThat(alert.path("payload").path("event_id").asString()).isEqualTo(event.toString());
         assertThat(alert.path("payload").path("severity").asString()).isEqualTo("CAUTION");
         assertThat(alert.path("payload").path("vibration_pattern").asString()).isEqualTo("CAUTION_WEAK");
-        assertThat(alert.path("payload").path("word").asString()).isEqualTo("조끼");
+        assertThat(alert.path("payload").path("word").asString()).isEqualTo("조끼 미착용");
     }
 
     @Test
@@ -315,7 +315,7 @@ class WatchAlertIntegrationTest {
         Watch watch = watch(watchId, watchToken);
         UUID event = liveEvent("R9", "CAUTION", "RAISED", "LIVE", worldId);
         alerts.alert(event);
-        assertThat(watch.next("watch_alert").path("payload").path("word").asString()).isEqualTo("안전모");
+        assertThat(watch.next("watch_alert").path("payload").path("word").asString()).isEqualTo("안전모 미착용");
 
         jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED', resolved_at = now() WHERE event_id = ?", event);
         events.publishEvent(new RiskEventsDelivered(List.of(event))); // 실제 경로: 해소 전이도 커밋 뒤 이 이벤트로 온다

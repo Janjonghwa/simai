@@ -11,6 +11,7 @@ import { useClipRetention } from '@/features/clips/useClipRetention';
 import { useEventClips } from '@/features/clips/useEventClips';
 import { formatTime } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { useCameraNames } from '@/hooks/useCameraNames';
 import { Button } from '@simai/ui/components/button';
 import { Play, X } from 'lucide-react';
 import { useState } from 'react';
@@ -23,7 +24,15 @@ type Playback = ReturnType<typeof useClipPlayback>;
 type Retention = ReturnType<typeof useClipRetention>;
 
 /** 보존 표시 붙이기·떼기. 자동 보존은 뗄 수 없어 표시만 보인다. */
-function RetentionControl({ clip, retention }: { clip: Clip; retention: Retention }) {
+function RetentionControl({
+  clip,
+  retention,
+  label,
+}: {
+  clip: Clip;
+  retention: Retention;
+  label: string;
+}) {
   const held = retentionState(clip);
   if (held === 'AUTO') return <span className={TAG}>자동 보존</span>;
   return (
@@ -31,7 +40,7 @@ function RetentionControl({ clip, retention }: { clip: Clip; retention: Retentio
       size="xs"
       variant={held === 'HELD' ? 'secondary' : 'ghost'}
       aria-pressed={held === 'HELD'}
-      aria-label={`${clip.camera_id} 보존`}
+      aria-label={`${label} 보존`}
       disabled={retention.pending}
       onClick={() => retention.setRetention(!clip.retention_hold)}
     >
@@ -40,12 +49,12 @@ function RetentionControl({ clip, retention }: { clip: Clip; retention: Retentio
   );
 }
 
-function ClipVideo({ clip, playback, url }: { clip: Clip; playback: Playback; url: string }) {
+function ClipVideo({ playback, url, label }: { playback: Playback; url: string; label: string }) {
   return (
     <video
       key={playback.videoKey}
       src={url}
-      aria-label={`${clip.camera_id} 클립`}
+      aria-label={`${label} 클립`}
       controls
       // 브라우저 기본 메뉴의 내려받기·다른 이름으로 저장을 감춘다(완전히 막지는 못한다).
       controlsList="nodownload"
@@ -60,7 +69,7 @@ function ClipVideo({ clip, playback, url }: { clip: Clip; playback: Playback; ur
   );
 }
 
-function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
+function ClipRow({ eventId, clip, label }: { eventId: string; clip: Clip; label: string }) {
   const [open, setOpen] = useState(false);
   const playback = useClipPlayback(eventId, clip);
   const retention = useClipRetention(eventId, clip.clip_id);
@@ -70,7 +79,9 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
   return (
     <li className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-2.5 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span className="font-mono font-semibold">{clip.camera_id}</span>
+        <span className="font-mono font-semibold" title={clip.camera_id}>
+          {label}
+        </span>
         <span className="font-mono text-muted-foreground">
           {formatTime(clip.clip_start_capture_ms)} ~ {formatTime(clip.clip_end_capture_ms)}
         </span>
@@ -84,12 +95,12 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
             <span className="text-muted-foreground">{deletedLabel(clip)}</span>
           ) : (
             <>
-              <RetentionControl clip={clip} retention={retention} />
+              <RetentionControl clip={clip} retention={retention} label={label} />
               {open ? (
                 <Button
                   size="xs"
                   variant="secondary"
-                  aria-label={`${clip.camera_id} 닫기`}
+                  aria-label={`${label} 닫기`}
                   onClick={() => setOpen(false)}
                 >
                   <X aria-hidden />
@@ -99,7 +110,7 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
                 <Button
                   size="xs"
                   variant="secondary"
-                  aria-label={`${clip.camera_id} 재생`}
+                  aria-label={`${label} 재생`}
                   disabled={playback.pending}
                   onClick={() => {
                     setOpen(true);
@@ -115,7 +126,7 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
         </span>
       </div>
       {open && !deleted && playback.url && (
-        <ClipVideo clip={clip} playback={playback} url={playback.url} />
+        <ClipVideo playback={playback} url={playback.url} label={label} />
       )}
       {error && (
         <span role="alert" className="text-xs text-muted-foreground">
@@ -132,6 +143,7 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
  */
 export function EventClips({ event, title = '클립' }: { event: EventItem; title?: string }) {
   const { enabled, clips, failed } = useEventClips(event);
+  const label = useCameraNames(clips?.map((clip) => clip.camera_id));
   if (!enabled) return null;
   const groups = groupClips(clips ?? []);
 
@@ -153,7 +165,12 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
           )}
           <ul className="flex flex-col gap-1.5">
             {group.clips.map((clip) => (
-              <ClipRow key={clip.clip_id} eventId={event.event_id} clip={clip} />
+              <ClipRow
+                key={clip.clip_id}
+                eventId={event.event_id}
+                clip={clip}
+                label={label(clip.camera_id)}
+              />
             ))}
           </ul>
         </div>

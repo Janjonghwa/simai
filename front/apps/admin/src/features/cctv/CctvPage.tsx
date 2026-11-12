@@ -18,6 +18,7 @@ import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { usePanZoom } from '@/features/cctv/usePanZoom';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { useNow } from '@/features/layout/useNow';
+import { useCameraNames } from '@/hooks/useCameraNames';
 import { env } from '@/lib/env';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -55,6 +56,7 @@ function StateBadge({
   state: CameraState;
   lastClock?: string;
 }) {
+  const label = useCameraNames();
   const sinceFrameSec = useSecondsSinceFrame(cameraId);
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
@@ -62,7 +64,7 @@ function StateBadge({
   return (
     <span
       className={cn(CAPTION, 'top-2 right-2', state !== 'live' && 'font-semibold')}
-      aria-label={`${cameraId} 상태 ${STATE_LABEL[state]}`}
+      aria-label={`${label(cameraId)} 상태 ${STATE_LABEL[state]}`}
     >
       {live ? (
         <>
@@ -116,6 +118,7 @@ export function CameraTile({
   /** 크게 보기 배치(CctvWall)에서만. 없으면 누르는 칸이 아니라 영상만 보인다. */
   wall?: WallTile;
 }) {
+  const label = useCameraNames();
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
   const playing = link === 'open' && phase === 'playing';
@@ -128,7 +131,7 @@ export function CameraTile({
     <>
       <canvas
         ref={ref}
-        aria-label={`${cameraId} 영상`}
+        aria-label={`${label(cameraId)} 영상`}
         // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(정지·끊김)는 오른쪽 위 배지로 알린다 —
         // Pod 가 없을 때 들어오는 영상까지 45% 로 흐려 물빠진 색으로 보였다(2026-11-02)
         className={cn(
@@ -138,7 +141,9 @@ export function CameraTile({
         )}
         style={{ transform: panZoomTransform(view) }}
       />
-      <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')}>{cameraId}</span>
+      <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
+        {label(cameraId)}
+      </span>
       <StateBadge cameraId={cameraId} state={state} lastClock={lastClock} />
       <ZoomMap view={view} />
     </>
@@ -157,7 +162,7 @@ export function CameraTile({
       {...handlers}
       type="button"
       onClick={wall.toggle}
-      aria-label={`${cameraId} ${wall.focused ? '작게 보기' : '크게 보기'}`}
+      aria-label={`${label(cameraId)} ${wall.focused ? '작게 보기' : '크게 보기'}`}
       className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused), pan)}
     >
       {content}
@@ -175,13 +180,16 @@ export function StateTile({
   state: CameraState;
   lastClock?: string;
 }) {
+  const label = useCameraNames();
   return (
     <div
       role="group"
-      aria-label={`${cameraId} 상태`}
+      aria-label={`${label(cameraId)} 상태`}
       className={cn(TILE_FRAME, 'flex items-center justify-center bg-surface-2')}
     >
-      <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')}>{cameraId}</span>
+      <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
+        {label(cameraId)}
+      </span>
       <span
         className={cn('text-xl', state === 'live' ? 'font-medium' : 'font-semibold text-delay')}
       >

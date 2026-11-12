@@ -144,9 +144,9 @@ describe('CamSplitPanel 관리자', () => {
     openSplit('cam_B');
     renderPanel();
 
-    expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
-    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_B');
-    const canvas = screen.getByLabelText('cam_B 영상');
+    expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
+    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('카메라 2');
+    const canvas = screen.getByLabelText('카메라 2 영상');
     expect(canvas.tagName).toBe('CANVAS');
     expect(attach).toHaveBeenCalledWith('cam_B', canvas);
     // 모의 그림은 없다.
@@ -156,7 +156,7 @@ describe('CamSplitPanel 관리자', () => {
   it('영상 칸에서 휠을 굴리면 영상이 확대되고 작은 지도가 뜬다', () => {
     openSplit('cam_B');
     renderPanel();
-    const canvas = screen.getByLabelText('cam_B 영상');
+    const canvas = screen.getByLabelText('카메라 2 영상');
     expect(canvas.style.transform).toBe('');
 
     // 패널 칸(영상의 부모)도 jsdom 에는 크기가 없어 800×450 으로 흉내 낸다.
@@ -177,7 +177,7 @@ describe('CamSplitPanel 관리자', () => {
     renderPanel([raised()]);
 
     expect(screen.getByText('w-0012').className).toContain('font-mono');
-    expect(screen.getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
+    expect(screen.getByText('추락 위험(가장자리) · 개구부 구역')).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/z-\d/);
   });
 
@@ -188,7 +188,7 @@ describe('CamSplitPanel 관리자', () => {
     renderPanel([raised({ world_ids: [] })]);
 
     expect(screen.getByText('개구부 구역').className).not.toContain('font-mono');
-    expect(screen.getByText('개구부·가장자리 근접')).toBeTruthy();
+    expect(screen.getByText('추락 위험(가장자리)')).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/z-\d/);
   });
 
@@ -196,30 +196,30 @@ describe('CamSplitPanel 관리자', () => {
     openSplit('cam2');
     renderPanel();
 
-    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_A');
-    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('카메라 1');
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
   });
 
-  it('어느 카메라인지 모르면(ANY_CAMERA) 중계가 알린 순서와 상관없이 이름이 앞선 카메라를 보인다', () => {
+  it('어느 카메라인지 모르면(ANY_CAMERA) 중계가 알린 현장 목록의 첫 카메라를 보인다', () => {
     openRelay(['cam_C', 'cam_A', 'cam_D', 'cam_B']);
     openSplit(ANY_CAMERA);
     renderPanel();
 
-    expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
-    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_A');
-    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
+    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('카메라 1');
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
   });
 
   it('탭을 바꾸면 그 카메라 영상으로 바뀌지만 중계 연결은 그대로다', () => {
     openSplit('cam_A');
     renderPanel();
-    const first = screen.getByLabelText('cam_A 영상');
+    const first = screen.getByLabelText('카메라 1 영상');
     expect(connected).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('tab', { name: /cam_C/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /카메라 3/ }));
 
-    expect(screen.queryByLabelText('cam_A 영상')).toBeNull();
-    const next = screen.getByLabelText('cam_C 영상');
+    expect(screen.queryByLabelText('카메라 1 영상')).toBeNull();
+    const next = screen.getByLabelText('카메라 3 영상');
     expect(attach).toHaveBeenCalledWith('cam_A', null);
     expect(attach).toHaveBeenCalledWith('cam_C', next);
     expect(first.isConnected).toBe(false);
@@ -243,8 +243,8 @@ describe('CamSplitPanel 관리자 · 중계가 이어지지 않았을 때', () =
     openSplit('cam_C');
     renderPanel();
 
-    expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
-    expect(screen.getByLabelText('cam_C 상태 실시간')).toBeTruthy();
+    expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
+    expect(screen.getByLabelText('카메라 3 상태 실시간')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
   });
 
@@ -270,7 +270,7 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CamSplitPanel %s', (role) => {
 
     expect(vi.mocked(useCctvPreview)).not.toHaveBeenCalled();
     expect(document.querySelector('canvas')).toBeNull();
-    expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
-    expect(screen.getByRole('group', { name: 'cam_B 상태' }).textContent).toContain('실시간');
+    expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
+    expect(screen.getByRole('group', { name: '카메라 2 상태' }).textContent).toContain('실시간');
   });
 });
