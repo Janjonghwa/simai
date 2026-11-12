@@ -1,9 +1,4 @@
-import {
-  LoginHeadline,
-  LoginHero,
-  MASCOT_MEDIA,
-  MASCOT_PLAYBACK_RATE,
-} from '@/features/auth/LoginHero';
+import { LoginHeadline, LoginHero, MASCOT_MEDIA } from '@/features/auth/LoginHero';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,19 +46,6 @@ describe('LoginHero', () => {
       MASCOT_MEDIA.mp4,
     ]);
     expect(screen.queryByTestId('login-hero-poster')).toBeNull();
-  });
-
-  it('영상은 메타데이터를 읽은 뒤 조금 느리게(0.8배) 튼다', () => {
-    stubReducedMotion(false);
-    const { container } = render(<LoginHero />);
-    const video = container.querySelector('video') as HTMLVideoElement;
-
-    act(() => {
-      video.dispatchEvent(new Event('loadedmetadata'));
-    });
-    expect(MASCOT_PLAYBACK_RATE).toBe(0.8);
-    expect(video.playbackRate).toBe(MASCOT_PLAYBACK_RATE);
-    expect(video.defaultPlaybackRate).toBe(MASCOT_PLAYBACK_RATE);
   });
 
   it('움직임 줄이기 설정이면 영상 없이 첫 장면만 보이고, 설정을 바꾸면 따라간다', () => {
@@ -120,9 +102,9 @@ describe('LoginHero', () => {
 
     for (const [seconds, expected] of [
       [1, ['3D 현장 재현']],
-      [3, ['AI 위험 감지']],
-      [4.5, ['워치 알림 연동']],
-      [6.5, []],
+      [4, ['AI 위험 감지']],
+      [6, ['워치 알림 연동']],
+      [8, []],
     ] as const) {
       Object.defineProperty(video, 'currentTime', { configurable: true, value: seconds });
       act(() => {
