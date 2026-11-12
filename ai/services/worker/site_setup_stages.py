@@ -50,6 +50,8 @@ from typing import Any
 
 import numpy as np
 
+from simai_ai.calibration.extrinsics.feature_matching import match_sift
+from simai_ai.scene import supplement_capture as sc
 from simai_ai.scene.reconstruct import (
     ReconstructionError,
     Stages,
@@ -57,21 +59,25 @@ from simai_ai.scene.reconstruct import (
     sha256,
     write_json,
 )
+from simai_ai.scene.zone_height_diff import (
+    REASON_NO_PREVIOUS_SCENE,
+    REASON_SCENE_UNREADABLE,
+    REASON_WORLD_NOT_ANCHORED,
+    build_unknown_zone_height_changes,
+    evaluate_zone_height_changes,
+)
 
 from .auto_static import AutoStaticSettings, calibration_document_path
 from .camera_check import CameraCheckRunner
-from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
-from simai_ai.scene import supplement_capture as sc
-
 from .site_setup import (
     MAX_BAKE_IMAGES,
     MAX_CAMERA_FRAMES,
     BakedScene,
-    BakeReclaimed,
     BakeImageRef,
     BakeImages,
+    BakeReclaimed,
     CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
@@ -279,6 +285,8 @@ class ProductionSiteSetupStages:
         self._run_id = f"{ctx.job_id}-{ctx.lease_id}"
         self._baked: dict[str, Any] = {}
         self._rebaking = False  # SUPPLEMENT_REBAKE 는 모든 GPU 단계를 작업 시작(LIVE)으로 회수한다(-621)
+        self._prev_glb_loaded = False
+        self._prev_glb_bytes: bytes | None = None
 
     # ------------------------------------------------------------------ (a)
     def collect(self, *, setup_session_id: str, site_id: str, camera_ids: Sequence[str]) -> CleanBackgroundBundle:
@@ -443,10 +451,106 @@ class ProductionSiteSetupStages:
         if glb is None:
             raise JobFailed("STATIC_OUTPUT_INVALID", "미리보기 산출물에 GLB 가 없다", retryable=False)
         ref = self._upload_asset(glb)
+        preview_ver = f"scene-preview-{self._run_id}"[:160]
+        zhc = self._compute_zone_height_changes(
+            calibration_doc=calibration_doc,
+            compared_scene_version=preview_ver,
+            glb_spec=glb,
+        )
         if progress is not None:
             progress(1.0)
-        return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref,
-                                  floor_coverage=self._read_floor_coverage())
+        return PreviewDraftResult(
+            preview_scene_version=preview_ver,
+            scene_asset=ref,
+            floor_coverage=self._read_floor_coverage(),
+            zone_height_changes=zhc,
+        )
+
+    def _load_previous_glb(self, prev_scene: Mapping[str, Any]) -> bytes | None:
+        """이전 관제 Scene GLB 바이트를 한 번 내려받아 캐시한다. 실패해도 세팅을 멈추지 않고 None 을 돌려준다."""
+        if self._prev_glb_loaded:
+            return self._prev_glb_bytes
+        self._prev_glb_loaded = True
+        try:
+            content = self.store.get(self.ctx, str(prev_scene["uri"]))
+        except ObjectStoreError as exc:
+            if self.ctx.cancelled.is_set():
+                raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True) from exc
+            log.warning("작업 %s: 이전 관제 Scene GLB 를 내려받지 못해 높이 비교를 건너뛴다(%s)", self.ctx.job_id, exc)
+            return None
+        expected_sha = prev_scene.get("sha256")
+        if expected_sha and hashlib.sha256(content).hexdigest() != str(expected_sha):
+            log.warning("작업 %s: 이전 관제 Scene GLB 해시가 입력과 달라 높이 비교를 건너뛴다", self.ctx.job_id)
+            return None
+        self._prev_glb_bytes = content
+        return content
+
+    def _compute_zone_height_changes(
+        self,
+        *,
+        calibration_doc: Mapping[str, Any],
+        compared_scene_version: str,
+        glb_spec: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """이전 관제 맵과 새 맵(미리보기·정식)의 구역별 상면 높이 차이를 계산한다(S15P31A101-630)."""
+        if "previous_zones" not in self.ctx.input and "previous_scene" not in self.ctx.input:
+            return None
+        prev_zones = list(self.ctx.input.get("previous_zones") or [])
+        prev_scene = self.ctx.input.get("previous_scene")
+        prev_ver = (
+            str(prev_scene["scene_version"])
+            if isinstance(prev_scene, Mapping) and prev_scene.get("scene_version")
+            else None
+        )
+        if not isinstance(prev_scene, Mapping) or not prev_scene.get("uri"):
+            return build_unknown_zone_height_changes(
+                prev_zones,
+                reason=REASON_NO_PREVIOUS_SCENE,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
+        anchor = calibration_doc.get("world_anchor")
+        if not isinstance(anchor, Mapping) or anchor.get("accepted") is not True:
+            return build_unknown_zone_height_changes(
+                prev_zones,
+                reason=REASON_WORLD_NOT_ANCHORED,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
+        path = (self.root / glb_spec["path"]).resolve()
+        try:
+            curr_bytes = path.read_bytes()
+        except OSError:
+            return build_unknown_zone_height_changes(
+                prev_zones,
+                reason=REASON_SCENE_UNREADABLE,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
+        prev_bytes = self._load_previous_glb(prev_scene)
+        if prev_bytes is None:
+            return build_unknown_zone_height_changes(
+                prev_zones,
+                reason=REASON_SCENE_UNREADABLE,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
+        try:
+            return evaluate_zone_height_changes(
+                prev_bytes,
+                curr_bytes,
+                prev_zones,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
+        except Exception as exc:  # noqa: BLE001 — 참고 표시라 세팅을 멈추지 않고 모름으로 둔다
+            log.warning("작업 %s: 구역 높이 비교 실패 → 모름: %s", self.ctx.job_id, type(exc).__name__)
+            return build_unknown_zone_height_changes(
+                prev_zones,
+                reason=REASON_SCENE_UNREADABLE,
+                previous_scene_version=prev_ver,
+                compared_scene_version=compared_scene_version,
+            )
 
     def _read_floor_coverage(self) -> dict[str, Any] | None:
         """미리보기 단계가 쓴 바닥 감시 범위(S15P31A101-606). 없거나 읽지 못하거나 계약에 맞지 않으면 None(표시용이라 세팅은 이어간다)."""
@@ -537,9 +641,15 @@ class ProductionSiteSetupStages:
         if progress is not None:
             progress(3 / 4)
         ref = self._upload_asset(glb)
+        scene_ver = f"scene-{self._run_id}"[:160]
+        zhc = self._compute_zone_height_changes(
+            calibration_doc=calibration_doc,
+            compared_scene_version=scene_ver,
+            glb_spec=glb,
+        )
         if progress is not None:
             progress(1.0)
-        return BakedScene(f"scene-{self._run_id}"[:160], ref, summary)
+        return BakedScene(scene_ver, ref, summary, zhc)
 
     def _bake_glb(self) -> Mapping[str, Any]:
         self._run_stage("bake")
@@ -714,7 +824,13 @@ class ProductionSiteSetupStages:
             return RebakeOutcome(base_scene, self._reclaimed_summary(summary, exc), height_checks)
         sc.annotate_bake(self.root, summary)
         ref = self._upload_asset(glb)
-        return RebakeOutcome(f"scene-{self._run_id}"[:160], summary, height_checks, ref)
+        scene_ver = f"scene-{self._run_id}"[:160]
+        zhc = self._compute_zone_height_changes(
+            calibration_doc=cal,
+            compared_scene_version=scene_ver,
+            glb_spec=glb,
+        )
+        return RebakeOutcome(scene_ver, summary, height_checks, ref, zhc)
 
     # ------------------------------------------------------------------ 공통
     def _run_stage(self, stage: str) -> None:

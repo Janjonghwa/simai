@@ -1,3 +1,4 @@
+import { zoneHeightChangeSchema } from '@/features/zones/types';
 import { z } from 'zod';
 
 // 세팅 1단계 카메라 각도 헬퍼(GET /api/cameras/coverage-guides, S15P31A101-447, contracts/messages/coverage_guide.schema.json 1.0.0),
@@ -370,6 +371,19 @@ export const cameraCheckSchema = z
   .loose();
 export type CameraCheck = z.infer<typeof cameraCheckSchema>;
 
+/** 세팅 구역 상면 높이 차이 판정 요약(site_setup 1.15.0 zone_height_changes, S15P31A101-630). */
+export const zoneHeightChangesSummarySchema = z
+  .object({
+    previous_scene_version: z.string().nullish().default(null),
+    compared_scene_version: z.string().nullish().default(null),
+    cell_m: z.number(),
+    height_diff_threshold_m: z.number(),
+    changed_area_ratio_threshold: z.number(),
+    zones: z.array(zoneHeightChangeSchema).default([]),
+  })
+  .loose();
+export type ZoneHeightChangesSummary = z.infer<typeof zoneHeightChangesSummarySchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -418,6 +432,8 @@ export const setupSessionResponseSchema = z.object({
   camera_check: cameraCheckSchema.nullish().catch(null),
   /** 서버 관문 판정(-646): PASSED 이고 그 확인의 보정이 세션 보정과 같다. 그 전 서버는 싣지 않는다(null) */
   camera_check_passed: z.boolean().nullish().catch(null),
+  /** 구역별 상면 높이 차이 판정 요약(-630). 그 전 서버·워커는 싣지 않는다(null) */
+  zone_height_changes: zoneHeightChangesSummarySchema.nullish().catch(null),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
 

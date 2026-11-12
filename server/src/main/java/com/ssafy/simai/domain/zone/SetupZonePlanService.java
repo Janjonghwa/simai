@@ -1,10 +1,12 @@
 package com.ssafy.simai.domain.zone;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
 import com.ssafy.simai.domain.setup.SetupCameraCheck;
+import com.ssafy.simai.domain.setup.SetupZoneHeightChanges;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Timestamp;
@@ -14,6 +16,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -48,6 +51,7 @@ public class SetupZonePlanService {
      * needs_review(S15P31A101-629): 새 모델 + World 이어짐 세팅이 지금 관제 구역으로 채운 항목은 사람이 확인하기 전까지 true 다.
      * 없으면 false(확인된 것). 저장할 때 이어 쓰는 구역을 고치지 않은 항목만 true 를 남긴다(고치면 확인한 것으로 본다).
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record Item(
             @JsonProperty("zone_id") String zoneId,
             @JsonProperty("source") String source,
@@ -182,6 +186,26 @@ public class SetupZonePlanService {
     private ObjectNode view(UUID id) {
         ObjectNode out = mapper.createObjectNode();
         out.put("setup_session_id", id.toString());
+        record SessionHeightState(boolean reuse, Boolean anchorAccepted, String zoneHeightChanges,
+                boolean hasPreviousScene) { }
+        SessionHeightState heightState = jdbc.query("""
+                SELECT s.mode = 'REUSE' AS reuse,
+                       (s.world_anchor ->> 'accepted')::boolean AS anchor_accepted,
+                       s.zone_height_changes::text AS zone_height_changes,
+                       EXISTS (
+                           SELECT 1 FROM analysis_job j
+                           WHERE j.job_id = s.job_id AND (j.input -> 'previous_scene') IS NOT NULL
+                       ) OR (s.zone_height_changes ->> 'previous_scene_version') IS NOT NULL AS has_previous_scene
+                FROM setup_session s
+                WHERE s.setup_session_id = :id
+                """, new MapSqlParameterSource("id", id), (rs, i) -> {
+            boolean anchor = rs.getBoolean("anchor_accepted");
+            Boolean anchorAccepted = rs.wasNull() ? null : anchor;
+            return new SessionHeightState(rs.getBoolean("reuse"), anchorAccepted,
+                    rs.getString("zone_height_changes"), rs.getBoolean("has_previous_scene"));
+        }).stream().findFirst().orElse(new SessionHeightState(false, null, null, false));
+        Map<String, JsonNode> heightByZone = SetupZoneHeightChanges.indexByZoneId(mapper, heightState.zoneHeightChanges());
+
         record Row(String items, int revision, Timestamp updatedAt) { }
         List<Row> rows = jdbc.query("""
                 SELECT items::text, revision, updated_at FROM setup_session_zone_plan WHERE setup_session_id = :id
@@ -191,10 +215,24 @@ public class SetupZonePlanService {
             out.put("revision", 0);
             out.putNull("updated_at");
         } else {
-            out.set("items", mapper.readTree(rows.getFirst().items()));
+            JsonNode itemsNode = mapper.readTree(rows.getFirst().items());
+            if (itemsNode.isArray()) {
+                for (JsonNode item : itemsNode) {
+                    if (item instanceof ObjectNode itemObj) {
+                        JsonNode zoneIdNode = itemObj.get("zone_id");
+                        String zoneId = zoneIdNode != null && zoneIdNode.isString() ? zoneIdNode.asString() : null;
+                        itemObj.set("height_change", SetupZoneHeightChanges.resolveForZone(
+                                mapper, zoneId, heightByZone, heightState.reuse(),
+                                heightState.anchorAccepted(), heightState.hasPreviousScene()));
+                    }
+                }
+            }
+            out.set("items", itemsNode);
             out.put("revision", rows.getFirst().revision());
             out.put("updated_at", rows.getFirst().updatedAt().getTime());
         }
+        out.set("zone_height_changes", heightState.zoneHeightChanges() == null
+                ? mapper.nullNode() : mapper.readTree(heightState.zoneHeightChanges()));
         return out;
     }
 

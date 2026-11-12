@@ -116,7 +116,7 @@ describe('떠 있는 CCTV', () => {
       },
     });
     render(<CctvFloat selectedKey="person:p2" onClose={vi.fn()} />);
-    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
     act(() =>
       useRealtimeStore.setState({
         world: {
@@ -125,7 +125,7 @@ describe('떠 있는 CCTV', () => {
         },
       }),
     );
-    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 2 영상')).toBeTruthy();
   });
 
   it('연 창의 자리를 이벤트 패널에 알리고, 창이 내려가면 비운다', () => {

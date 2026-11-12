@@ -23,6 +23,25 @@ const vec2 = z.tuple([z.number(), z.number()]);
 const workId = z.union([z.string().min(1), z.number().int()]).transform(String);
 const requirements = z.record(z.string(), z.unknown());
 
+/** 세팅 구역 상면 높이 차이 판정(S15P31A101-630). 이전 관제 맵과 이번 세팅 맵의 구역 바닥 상면 높이를 비교한 결과다. */
+export const zoneHeightChangeStatusSchema = z.enum(['UNCHANGED', 'CHANGE_SUSPECTED', 'UNKNOWN']);
+export type ZoneHeightChangeStatus = z.infer<typeof zoneHeightChangeStatusSchema>;
+
+export const zoneHeightChangeSchema = z
+  .object({
+    zone_id: z.string(),
+    status: zoneHeightChangeStatusSchema,
+    reason: z.string().nullish().default(null),
+    changed_area_ratio: z.number().nullish().default(null),
+    max_height_diff_m: z.number().nullish().default(null),
+    max_diff_xy: vec2.nullish().default(null),
+    total_cells: z.number().int().nonnegative().optional().default(0),
+    compared_cells: z.number().int().nonnegative().optional().default(0),
+    changed_cells: z.number().int().nonnegative().nullish().default(null),
+  })
+  .loose();
+export type ZoneHeightChange = z.infer<typeof zoneHeightChangeSchema>;
+
 export const zoneItemSchema = z.object({
   // 공백만 있는 ID 는 받지 않는다. 값은 자르지 않는다(이벤트의 zone_id 와 그대로 맞춘다).
   zone_id: z.string().refine((id) => id.trim() !== ''),
@@ -48,6 +67,8 @@ export const zoneItemSchema = z.object({
   valid_to: z.number().nullable(),
   // 세팅 구역 목록에서 사람이 아직 확인하지 않은 이어 쓴 구역(S15P31A101-629). 관제 구역 응답에는 없다. 3D 가 구별해 그린다.
   needs_review: z.boolean().nullish(),
+  // 세팅 구역 목록에서 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). 관제 구역·새 구역에는 없다.
+  height_change: zoneHeightChangeSchema.nullish().catch(null),
 });
 
 export type ZoneItem = z.infer<typeof zoneItemSchema>;
@@ -186,6 +207,8 @@ export interface Zone extends ZoneBox {
   shapeEditable: boolean;
   /** 세팅 구역 목록에서 확인이 필요한 이어 쓴 구역(S15P31A101-629). 관제 구역은 없다(false). */
   needsReview?: boolean;
+  /** 세팅 구역 목록에서 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). */
+  heightChange?: ZoneHeightChange | null;
 }
 
 /** 3D 뷰어 Source 가 받는 구역 형식: 정식 구역 응답(zoneItemSchema) 배열. 뷰어(contractAdapter)가 다시 검사한다. */

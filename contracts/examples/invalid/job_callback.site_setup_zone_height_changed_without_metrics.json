@@ -1,0 +1,53 @@
+{
+  "schema_version": "2.22.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000634",
+  "sent_at": 1760342460100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261112-0630",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+    "job_type": "site_setup",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342460050,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000630",
+      "status": "COMPLETED",
+      "progress_pct": 100,
+      "mode": "FULL_SETUP",
+      "calibration_version": "cal-lobby-init-63000000-jba2-5a3c9e01",
+      "preview_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+      "scene_version": "scene-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+      "height_checks": {
+        "cam1": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "zone_height_changes": {
+        "previous_scene_version": "scene-job-prev-0001",
+        "compared_scene_version": "scene-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
+        "cell_m": 0.1,
+        "height_diff_threshold_m": 0.15,
+        "changed_area_ratio_threshold": 0.1,
+        "min_coverage_ratio": 0.3,
+        "zones": [
+          {
+            "zone_id": "zone-opening-1",
+            "status": "CHANGE_SUSPECTED",
+            "reason": null,
+            "changed_area_ratio": null,
+            "max_height_diff_m": 0.51,
+            "max_diff_xy": [0.45, 0.55],
+            "total_cells": 100,
+            "compared_cells": 88,
+            "changed_cells": 28
+          }
+        ]
+      }
+    }
+  }
+}

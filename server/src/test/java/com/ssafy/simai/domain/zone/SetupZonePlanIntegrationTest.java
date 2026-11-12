@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.ssafy.simai.domain.setup.SetupCameraCheckFixtures;
+import com.ssafy.simai.domain.setup.SetupZoneHeightChanges;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
@@ -308,6 +309,84 @@ class SetupZonePlanIntegrationTest {
         assertThat(result.kept()).containsExactlyInAnyOrder(a, c);
         assertThat(result.updated()).containsExactly(b);
         assertThat(result.created()).hasSize(1);
+    }
+
+    @Test
+    void 구역별_높이_차이_판정을_세션과_구역_목록_응답에_싣고_자동_확인하지_않는다() throws Exception {
+        String changed = zone("바뀜");
+        String unchanged = zone("그대로");
+        String unknown = zone("모름");
+        anchor(true);
+
+        ObjectNode zh = mapper.createObjectNode();
+        zh.put("previous_scene_version", "scene-lobby-prev");
+        zh.put("compared_scene_version", "scene-preview-1");
+        zh.put("cell_m", 0.10);
+        zh.put("height_diff_threshold_m", 0.15);
+        zh.put("changed_area_ratio_threshold", 0.10);
+        ArrayNode zonesNode = zh.putArray("zones");
+
+        ObjectNode zChanged = zonesNode.addObject();
+        zChanged.put("zone_id", changed).put("status", "CHANGE_SUSPECTED").putNull("reason")
+                .put("changed_area_ratio", 0.36).put("max_height_diff_m", 0.35)
+                .put("total_cells", 100).put("compared_cells", 100).put("changed_cells", 36);
+        zChanged.putArray("max_diff_xy").add(1.5).add(1.5);
+
+        ObjectNode zUnchanged = zonesNode.addObject();
+        zUnchanged.put("zone_id", unchanged).put("status", "UNCHANGED").putNull("reason")
+                .put("changed_area_ratio", 0.0).put("max_height_diff_m", 0.02)
+                .put("total_cells", 100).put("compared_cells", 100).put("changed_cells", 0);
+        zUnchanged.putArray("max_diff_xy").add(2.4).add(2.4);
+
+        ObjectNode snap = mapper.createObjectNode();
+        snap.set("zone_height_changes", zh);
+        String validJson = SetupZoneHeightChanges.fromSnapshot(mapper, snap);
+        assertThat(validJson).isNotNull();
+
+        // UNKNOWN 인데 비율이 들어간 깨진 스냅샷은 거부한다
+        ObjectNode badSnap = snap.deepCopy();
+        ((ObjectNode) badSnap.at("/zone_height_changes/zones/1")).put("status", "UNKNOWN").put("reason", "INSUFFICIENT_COVERAGE");
+        assertThat(SetupZoneHeightChanges.fromSnapshot(mapper, badSnap)).isNull();
+
+        jdbc.update("UPDATE setup_session SET zone_height_changes = CAST(? AS jsonb) WHERE setup_session_id = ?",
+                validJson, session);
+
+        // 세션 단건 조회에도 zone_height_changes 가 실린다
+        JsonNode sessionView = body(mvc.perform(get("/api/setup-sessions/{id}", session).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()));
+        assertThat(sessionView.at("/zone_height_changes/compared_scene_version").asString()).isEqualTo("scene-preview-1");
+
+        // seed 응답과 GET 응답 모두 구역별 height_change 를 싣고, 워커 결과에 없는 구역은 사유와 함께 UNKNOWN 으로 채운다
+        JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
+        assertThat(seeded.at("/zone_height_changes/previous_scene_version").asString()).isEqualTo("scene-lobby-prev");
+        assertThat(heightChangeOf(seeded, changed).path("status").asString()).isEqualTo("CHANGE_SUSPECTED");
+        assertThat(heightChangeOf(seeded, changed).path("changed_area_ratio").asDouble()).isEqualTo(0.36);
+        assertThat(heightChangeOf(seeded, unchanged).path("status").asString()).isEqualTo("UNCHANGED");
+        assertThat(heightChangeOf(seeded, unknown).path("status").asString()).isEqualTo("UNKNOWN");
+        assertThat(heightChangeOf(seeded, unknown).path("reason").asString()).isEqualTo("INSUFFICIENT_COVERAGE");
+        assertThat(heightChangeOf(seeded, unknown).path("changed_area_ratio").isNull()).isTrue();
+
+        // UNCHANGED 여도 needs_review 가 자동으로 풀리지 않는다(사람이 확인해야 세팅 완료 가능)
+        assertThat(reviewOf(seeded, changed)).isTrue();
+        assertThat(reviewOf(seeded, unchanged)).isTrue();
+        assertThat(reviewOf(seeded, unknown)).isTrue();
+        assertThatThrownBy(() -> applier.apply(session, true, user)).isInstanceOf(SetupZonesUnconfirmedException.class)
+                .extracting("remaining").isEqualTo(3);
+
+        // 새로 그린 구역(zone_id null)은 height_change 가 null 이고, 클라이언트가 height_change 필드를 함께 보내도 PUT 이 통과한다
+        ArrayNode items = (ArrayNode) seeded.path("items").deepCopy();
+        items.addObject().put("source", "MANUAL").set("zone", zoneBody("새 구역"));
+        JsonNode updated = body(putPlan(admin, items, 1).andExpect(status().isOk()));
+        assertThat(updated.path("items").get(3).path("height_change").isNull()).isTrue();
+    }
+
+    private static JsonNode heightChangeOf(JsonNode plan, String zoneId) {
+        for (JsonNode item : plan.path("items")) {
+            if (item.hasNonNull("zone_id") && zoneId.equals(item.get("zone_id").asString())) {
+                return item.path("height_change");
+            }
+        }
+        throw new AssertionError("목록에 없는 구역: " + zoneId);
     }
 
     private void anchor(boolean accepted) {

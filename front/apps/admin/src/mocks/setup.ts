@@ -558,11 +558,32 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   const zonePlans = new Map<string, { items: unknown[]; revision: number; updatedAt: number }>();
   const planView = (id: string) => {
     const stored = zonePlans.get(id);
+    const session = sessions.get(id);
+    const zh = session?.zone_height_changes ?? null;
+    const byZoneId = new Map((zh?.zones ?? []).map((z) => [z.zone_id, z]));
+    const items = (stored?.items ?? []).map((raw) => {
+      const item = raw as Record<string, unknown>;
+      const zoneId = typeof item.zone_id === 'string' ? item.zone_id : null;
+      if (!zh || !zoneId) return item;
+      const found = byZoneId.get(zoneId) ?? {
+        zone_id: zoneId,
+        status: 'UNKNOWN' as const,
+        reason: 'INSUFFICIENT_COVERAGE',
+        changed_area_ratio: null,
+        max_height_diff_m: null,
+        max_diff_xy: null,
+        total_cells: 0,
+        compared_cells: 0,
+        changed_cells: null,
+      };
+      return { ...item, height_change: found };
+    });
     return {
       setup_session_id: id,
-      items: stored?.items ?? [],
+      items,
       revision: stored?.revision ?? 0,
       updated_at: stored?.updatedAt ?? null,
+      zone_height_changes: zh,
     };
   };
   /** 완료가 적용한 것처럼 목록을 나눈다(개발 서버는 관제 구역 mock 을 바꾸지 않는다). 새 구역은 임시 zone_id 를 준다. */

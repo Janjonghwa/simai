@@ -22,9 +22,9 @@ from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
     BakedScene,
-    BakeReclaimed,
     BakeImageRef,
     BakeImages,
+    BakeReclaimed,
     CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
@@ -1356,3 +1356,72 @@ def test_camera_check_not_finished_by_deadline_is_incomplete() -> None:
     assert result["camera_check"]["status"] == "INCOMPLETE" and result["camera_check"]["problems"]
     assert schema_errors(result, _RESULT) == []
     assert checker.stopped >= 1
+
+
+# ---------------------------------------------------------------------------- S15P31A101-630
+def test_zone_height_changes_propagate_from_preview_to_baked_and_fallback_to_unknown() -> None:
+    """이전 구역·이전 맵이 주어지면 미리보기·완료 스냅샷에 zone_height_changes 가 실리고,
+    world_anchor 가 거부되거나 REUSE_SCENE 이면 UNKNOWN 사유가 실린다."""
+    preview_zhc = {
+        "previous_scene_version": "scene-prev-1",
+        "compared_scene_version": "scene-preview-x",
+        "cell_m": 0.1,
+        "height_diff_threshold_m": 0.15,
+        "changed_area_ratio_threshold": 0.1,
+        "min_coverage_ratio": 0.3,
+        "zones": [
+            {
+                "zone_id": "zone-1",
+                "status": "CHANGE_SUSPECTED",
+                "reason": None,
+                "changed_area_ratio": 0.25,
+                "max_height_diff_m": 0.42,
+                "max_diff_xy": [0.45, 0.55],
+                "total_cells": 100,
+                "compared_cells": 80,
+                "changed_cells": 20,
+            }
+        ],
+    }
+    baked_zhc = {
+        **preview_zhc,
+        "compared_scene_version": "scene-baked-x",
+        "zones": [{**preview_zhc["zones"][0], "changed_area_ratio": 0.22}],
+    }
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        preview_builder=lambda **kw: PreviewDraftResult("scene-preview-x", zone_height_changes=preview_zhc),
+        texture_baker=lambda **kw: BakedScene("scene-baked-x", zone_height_changes=baked_zhc),
+    )
+    inp = {
+        **inp,
+        "previous_scene": {
+            "scene_version": "scene-prev-1",
+            "calibration_version": "cal-prev-1",
+            "uri": "s3://bucket/scenes/prev.glb",
+        },
+        "previous_zones": [
+            {"zone_id": "zone-1", "polygon_xy": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}
+        ],
+    }
+    ctx = JobContext("job-zhc", "0192a6f0-7c1e-7b3a-9f2d-000000000630", "site_setup", 1, inp)
+    result = handler(ctx)
+    by_stage = {s["status"]: s for s in ctx.site_setup_history}
+    assert by_stage["READY_FOR_ZONES"]["zone_height_changes"] == preview_zhc
+    assert result["zone_height_changes"] == baked_zhc
+    assert schema_errors(result, _RESULT) == []
+
+    # world_anchor 가 채택되지 않은 경우 UNKNOWN(WORLD_NOT_ANCHORED) 폴백
+    handler_unanchored, _, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=lambda doc: {
+            **doc,
+            "world_anchor": {"accepted": False, "reason": "CENTER_RESIDUAL_EXCEEDED", "reference_calibration_version": "cal-prev-1"},
+        },
+    )
+    ctx2 = JobContext("job-zhc2", "0192a6f0-7c1e-7b3a-9f2d-000000000631", "site_setup", 1, inp)
+    res2 = handler_unanchored(ctx2)
+    assert res2["zone_height_changes"]["zones"][0]["status"] == "UNKNOWN"
+    assert res2["zone_height_changes"]["zones"][0]["reason"] == "WORLD_NOT_ANCHORED"
+    assert schema_errors(res2, _RESULT) == []
+

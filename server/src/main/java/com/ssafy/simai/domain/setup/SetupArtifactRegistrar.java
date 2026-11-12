@@ -454,6 +454,14 @@ class SetupArtifactRegistrar {
         return new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
     }
 
+    /** 저장소가 설정돼 있을 때만 키의 s3:// 주소를 돌려준다(이전 관제 Scene GLB 주소 채우기, S15P31A101-630) */
+    String storageUriIfConfigured(String key) {
+        if (key == null || key.isBlank() || !storage.configured()) {
+            return null;
+        }
+        return storage.uri(key);
+    }
+
     /** 계약 site_setup#/$defs/object_ref. 형식은 계약 검사를 지났지만 다시 본다 */
     private record ObjectRef(String uri, String sha256, Long sizeBytes) {
 

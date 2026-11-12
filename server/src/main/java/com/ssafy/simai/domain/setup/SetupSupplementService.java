@@ -449,8 +449,17 @@ public class SetupSupplementService {
                     """, new MapSqlParameterSource("rid", rebake.rebakeId()).addValue("scene", sceneVersion)
                     .addValue("sup", mapper.writeValueAsString(supplement)).addValue("now", now));
             // 이 세션의 맵을 다시 구운 버전으로 옮긴다(다음 다시 굽기의 기준). 이력은 다시 굽기 행에 남는다
-            jdbc.update("UPDATE setup_session SET scene_version = :scene, updated_at = :now WHERE setup_session_id = :id",
-                    new MapSqlParameterSource("id", session.setupSessionId()).addValue("scene", sceneVersion)
+            String zoneHeightChangesJson = SetupZoneHeightChanges.fromSnapshot(mapper, result);
+            jdbc.update("""
+                    UPDATE setup_session
+                    SET scene_version = :scene,
+                        zone_height_changes = COALESCE(CAST(:zoneHeightChanges AS jsonb), zone_height_changes),
+                        updated_at = :now
+                    WHERE setup_session_id = :id
+                    """,
+                    new MapSqlParameterSource("id", session.setupSessionId())
+                            .addValue("scene", sceneVersion)
+                            .addValue("zoneHeightChanges", zoneHeightChangesJson)
                             .addValue("now", now));
             return new Applied(session.setupSessionId(), session.siteId(), rebake.baseCalibrationVersion(), sceneVersion,
                     rebake.baseSceneVersion());

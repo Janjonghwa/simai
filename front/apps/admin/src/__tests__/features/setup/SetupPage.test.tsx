@@ -1403,6 +1403,78 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       await waitFor(() => expect(navigateMock).toHaveBeenCalledWith(workPage));
     }, 20_000);
 
+    it('높이 차이 판정(-630)이 있으면 변경 의심을 먼저 강조하고 변화 없음만 일괄 확인하며 모름·변경 의심은 개별 확인한다', async () => {
+      const { sessionId } = await startSetupSession();
+      setupMock.updateSession(sessionId, {
+        ...FINAL_PATCH,
+        mode: 'NEW',
+        world_anchor: { accepted: true },
+        zone_height_changes: {
+          previous_scene_version: 'scene-lobby-prev',
+          compared_scene_version: 'scene-preview-1',
+          cell_m: 0.1,
+          height_diff_threshold_m: 0.15,
+          changed_area_ratio_threshold: 0.1,
+          zones: [
+            {
+              zone_id: 'z-04',
+              status: 'UNCHANGED',
+              reason: null,
+              changed_area_ratio: 0,
+              max_height_diff_m: 0.02,
+              max_diff_xy: [1, 1],
+              total_cells: 50,
+              compared_cells: 50,
+              changed_cells: 0,
+            },
+            {
+              zone_id: 'z-02',
+              status: 'CHANGE_SUSPECTED',
+              reason: null,
+              changed_area_ratio: 0.36,
+              max_height_diff_m: 0.35,
+              max_diff_xy: [2, 2],
+              total_cells: 50,
+              compared_cells: 50,
+              changed_cells: 18,
+            },
+          ],
+        },
+      });
+      await goToZoneStep();
+      await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1), POLL_WAIT);
+
+      const card = await screen.findByTestId('setup-zone-review-card', undefined, POLL_WAIT);
+      await waitFor(() =>
+        expect(within(card).getByRole('status').textContent).toContain('변경 의심 1개'),
+      );
+
+      // 첫 행은 변경 의심(CHANGE_SUSPECTED)이고, 변화 없음 1개 모두 확인 단추가 뜬다
+      const rowsBefore = within(card).getAllByRole('listitem');
+      expect(rowsBefore[0]!.getAttribute('data-height-change')).toBe('CHANGE_SUSPECTED');
+      expect(within(rowsBefore[0]!).getByText('변경 의심')).toBeTruthy();
+
+      fireEvent.click(within(card).getByRole('button', { name: '변화 없음 1개 모두 확인' }));
+      await waitFor(() =>
+        expect(within(card).queryByRole('button', { name: /모두 확인/ })).toBeNull(),
+      );
+
+      // 변경 의심은 여전히 미확인 상태로 남아 세팅 완료가 막혀 있다
+      expect(
+        (screen.getByRole('button', { name: '작업 관리로 · 확인 필요 1개' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      const pendingRows = card.querySelectorAll('li[data-needs-review="true"]');
+      expect(pendingRows.length).toBeGreaterThanOrEqual(1);
+
+      // 남은 변경 의심 구역을 하나씩 개별 확인하면 완료 단추가 켜진다
+      for (const row of Array.from(card.querySelectorAll('li[data-needs-review="true"]'))) {
+        fireEvent.click(within(row as HTMLElement).getByRole('button', { name: /확인$/ }));
+        await waitFor(() => expect(row.getAttribute('data-needs-review')).toBeNull());
+      }
+      await waitFor(() => expect(finishButton().disabled).toBe(false), POLL_WAIT);
+    }, 25_000);
+
     it('확인 필요가 남은 채 서버가 완료를 거부하면 남은 개수 안내를 보인다', async () => {
       await zoneStepSession();
       server.use(
