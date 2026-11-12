@@ -3,12 +3,11 @@ import { cn } from '@simai/ui/lib/utils';
 import { Box, ShieldAlert, Watch, type LucideIcon } from 'lucide-react';
 import { useState } from 'react';
 
-// 마스코트 장면 영상(-622): 원형 그리드 바닥 하나 위에 홀로그램 건물(왼쪽)과 너구리(오른쪽)가 함께 선 9:16(720×1280),
-// 7초 반복, 소리 없음. 생성 영상(8초)의 끝 1초를 첫 1초에 겹쳐 녹여 이음새 없이 반복되게 다시 만들었다.
+// 마스코트 장면 영상(-622, -628): 원형 그리드 바닥 하나 위에 홀로그램 건물(왼쪽)과 너구리(오른쪽)가 함께 선 9:16(1440×2560),
+// 60fps, 10.7초 반복, 소리 없음. 생성 영상(720×1280, 24fps, 8초)을 다음 순서로 다시 만들었다(-628):
+// 끝 장면→첫 장면 사이를 RIFE 로 중간 장면 14장 보간해 잇고(겹쳐 섞으면 너구리가 두 겹으로 보였다), RIFE 로 60fps·0.8배 속도를
+// 영상에 넣고(생성 영상 움직임이 조금 빨랐다), Real-ESRGAN(animevideov3) ×2 로 키웠다. 그래서 재생 속도는 기본(1배)으로 둔다.
 // 카메라는 고정이라 영상 시간으로 기능 칩 강조를 맞춘다. 포스터는 첫 장면이다.
-// 생성 영상의 움직임이 조금 빨라 0.8배로 튼다(7초 반복 → 약 8.75초). 칩 강조 구간은 영상 안 시간(currentTime)이라 그대로 맞다.
-export const MASCOT_PLAYBACK_RATE = 0.8;
-
 export const MASCOT_MEDIA = {
   webm: '/media/mascot.webm',
   mp4: '/media/mascot.mp4',
@@ -19,16 +18,16 @@ interface SceneFeature {
   id: 'twin' | 'risk' | 'watch';
   icon: LucideIcon;
   label: string;
-  /** 이 칩을 강조하는 영상 시간 구간(초). 7초 반복 영상에서 잰 값: 스캔 상승 0.2~2.3, 층 주황 점등 2.8~3.15(이어 스캔 하강 ~3.9), 손목 시계 빛 4.35~4.95. */
+  /** 이 칩을 강조하는 영상 시간 구간(초). 10.7초 반복 영상 기준(생성 영상에서 잰 값 × 1.25): 스캔 상승 0.25~2.9, 층 주황 점등 3.5~3.95(이어 스캔 하강 ~4.9), 손목 시계 빛 5.45~6.2. */
   during: readonly [number, number];
 }
 
 // 기능은 장면 아래(바닥 원 밑)에 나란히 놓은 작은 칩으로 보이고, 영상의 해당 장면 동안만 밝게 강조한다(나머지는 어둡게). 예전에는 장면 속 대상 옆에 띄우고 연결선을 그었는데 화면 위아래로
 // 흩어져 시선이 크게 움직이고 장면이 복잡해 보였다(-622 피드백). 수치·"정상 운영 중" 같은 상태처럼 보이는 표시는 넣지 않는다.
 const FEATURES: readonly SceneFeature[] = [
-  { id: 'twin', icon: Box, label: '3D 현장 재현', during: [0, 2.6] },
-  { id: 'risk', icon: ShieldAlert, label: 'AI 위험 감지', during: [2.6, 4.1] },
-  { id: 'watch', icon: Watch, label: '워치 알림 연동', during: [4.1, 5.6] },
+  { id: 'twin', icon: Box, label: '3D 현장 재현', during: [0, 3.25] },
+  { id: 'risk', icon: ShieldAlert, label: 'AI 위험 감지', during: [3.25, 5.1] },
+  { id: 'watch', icon: Watch, label: '워치 알림 연동', during: [5.1, 7.0] },
 ];
 
 /** 영상 재생 시간에 맞는 기능 카드(없으면 null). */
@@ -125,11 +124,6 @@ export function LoginHero({ className }: { className?: string }) {
             disablePictureInPicture
             poster={MASCOT_MEDIA.poster}
             className={MEDIA_CLASS}
-            // 재생 속도는 소스를 읽을 때마다 기본값으로 돌아가 메타데이터를 읽은 뒤 다시 정한다.
-            onLoadedMetadata={(event) => {
-              event.currentTarget.defaultPlaybackRate = MASCOT_PLAYBACK_RATE;
-              event.currentTarget.playbackRate = MASCOT_PLAYBACK_RATE;
-            }}
             onTimeUpdate={(event) => setActive(activeFeatureAt(event.currentTarget.currentTime))}
           >
             <source src={MASCOT_MEDIA.webm} type="video/webm" />
