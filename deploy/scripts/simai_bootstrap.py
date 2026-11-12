@@ -1114,6 +1114,11 @@ class Supervisor:
         self.backoff_max_s = _env_float(env, "SIMAI_SUPERVISE_BACKOFF_MAX_S", 300)
         self.min_uptime_s = _env_float(env, "SIMAI_SUPERVISE_MIN_UPTIME_S", 60)
         self.max_fast = int(_env_float(env, "SIMAI_SUPERVISE_MAX_FAST_FAILURES", 5))
+        # PPE 생존 파일(S15P31A101-634): 띄운 뒤 이만큼은 보지 않고(가중치·CUDA 준비), 그 뒤 마지막 정상 주기가 이만큼 오래면 다시 띄운다.
+        # PPE 는 1초마다 적고 상태 근거 만료가 10초라, 30초면 일시 지연이 아니라 멈춤·연속 실패로 본다
+        self.ppe_alive_grace_s = _env_float(env, "SIMAI_PPE_ALIVE_GRACE_S", 120)
+        self.ppe_alive_stale_s = _env_float(env, "SIMAI_PPE_ALIVE_STALE_S", 30)
+        self.ppe_alive = Path(env.get("SIMAI_PPE_ALIVE") or root / "state" / "ppe.alive")
         self.nice = int(_env_float(env, "SIMAI_SIDECAR_NICE", 10))
         self.tick_s = _env_float(env, "SIMAI_SUPERVISE_TICK_S", 0.5)
         self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
@@ -1217,6 +1222,7 @@ class Supervisor:
                         e["SIMAI_AVATAR_SHARE"] = "1"  # PPE 입력도 아바타 입력 공유 파일이다(아바타가 꺼져 있어도 켠다)
                         e["SIMAI_PPE_RELAY"] = "1"  # PPE outbox 를 Tier 0 I1 로 대신 보낸다
                     if name == "ppe":
+                        e["SIMAI_PPE_ALIVE"] = str(self.ppe_alive)  # 감시 프로세스가 보는 생존 파일(-634)
                         e["SIMAI_PPE_GPU_MEMORY_FRACTION"] = str(fractions["ppe_fraction"])
                         e["SIMAI_PPE_WEIGHTS"] = str(self.root / ppe_weights["path"])
                         e["SIMAI_PPE_WEIGHTS_SHA256"] = str(ppe_weights["sha256"])
@@ -1430,6 +1436,8 @@ class Supervisor:
         if s.proc is None:
             if now < s.next_at or not self._gate_open(s) or not self._tier0_ready():
                 return  # 다시 띄우는 것도 Tier 0 표시 파일이 정상일 때만
+            if s.name == "ppe":
+                self.ppe_alive.unlink(missing_ok=True)  # 지난 프로세스가 남긴 값을 이번 것으로 보지 않는다(-634)
             try:
                 s.proc = self.spawn(s.name, s.argv, s.env, self.log_dir)
             except OSError as e:
@@ -1443,6 +1451,13 @@ class Supervisor:
             return
         rc = s.proc.poll()
         if rc is None:
+            stall = self._ppe_stall(s, now) if s.name == "ppe" else None
+            if stall is not None:
+                # 살아 있는 채 멈췄거나 매 주기 실패한다: 끝나기를 기다리면 R9·R11 이 조용히 나지 않는다(-634)
+                s.proc.signal(KILL)
+                s.proc.wait(10)
+                self._reap(s, now, stall)
+                return
             if not s.healthy:
                 if now - s.last_health >= 5:
                     s.last_health = now
@@ -1458,6 +1473,20 @@ class Supervisor:
                 s.fails = 0  # 오래 돌았다: 연속 실패를 잊는다
             return
         self._reap(s, now, f"종료 코드 {exit_code(rc)}")
+
+    def _ppe_stall(self, s: Service, now: float) -> str | None:
+        """PPE 생존 파일(-634)이 띄운 뒤 준비 시간이 지났는데 없거나 오래됐으면 그 이유, 아니면 None.
+        PPE 는 주기를 정상으로 끝낼 때만 적으므로 연속 실패와 멈춤을 함께 잡는다(services/ppe/alive.py)."""
+        if now - s.started < self.ppe_alive_grace_s:
+            return None
+        try:
+            beat_ms = int(self.ppe_alive.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            return f"띄운 뒤 {self.ppe_alive_grace_s:.0f}s 가 지나도 생존 파일이 없음(정상 주기 없음)"
+        age_s = (self.wall_ms() - beat_ms) / 1000
+        if age_s > self.ppe_alive_stale_s:
+            return f"생존 파일이 {age_s:.0f}s 동안 갱신되지 않음(살아 있는 채 멈춤·연속 실패)"
+        return None
 
     def _reap(self, s: Service, now: float, why: str) -> None:
         assert s.proc is not None

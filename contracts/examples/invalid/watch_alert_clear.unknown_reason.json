@@ -1,0 +1,13 @@
+{
+  "_note": "반례: 이유는 RESOLVED 뿐이다. 작업자 확인(ACK)은 해소가 아니라 알림을 지우는 이유가 될 수 없다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert_clear",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000635",
+  "sent_at": 1760342410500,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "reason": "ACKNOWLEDGED",
+    "sent_at": 1760342410480
+  }
+}

@@ -278,6 +278,7 @@ class I4Service : Service() {
         when (incoming) {
             is Incoming.Alert -> receive(incoming.alert)
             is Incoming.Binding -> onBinding(incoming.notice)
+            is Incoming.Clear -> clear(incoming.eventId)
             is Incoming.Heartbeat -> {
                 val now = System.currentTimeMillis()
                 heartbeat.onEc2Heartbeat(incoming, now)
@@ -372,6 +373,19 @@ class I4Service : Service() {
         syncVibration()
         val alert = tracked.alert
         sendAck(AckRecord(alert.alertMsgId, eventId, alert.eventSequence, AckKind.CONFIRMED, ackedAtMs = now, receivedAtMs = null))
+        if (board.pending.isEmpty()) notifier.clearAlert()
+    }
+
+    /**
+     * EC2 가 이벤트 해소를 알렸다(watch_alert_clear, S15P31A101-634). 그 알림을 지우고 진동을 맞춘다. 남은 확인 대기 알림이 없으면
+     * 알림창도 지운다. 확인이 아니라 ACK 를 보내지 않는다. 모르는 이벤트(이미 확인했거나 지웠다)면 아무것도 하지 않는다
+     */
+    private fun clear(eventId: String) {
+        val before = board
+        board = board.clear(eventId)
+        if (board === before) return
+        Log.i(TAG, "해소된 이벤트의 알림을 지운다 event_id=$eventId")
+        syncVibration()
         if (board.pending.isEmpty()) notifier.clearAlert()
     }
 

@@ -1,0 +1,14 @@
+{
+  "_note": "반례(1.1.0): last_received_at_ms 는 UTC ms 정수이거나 null 이다. 문자열 시각을 받지 않는다",
+  "schema_version": "1.1.0",
+  "msg_type": "ppe_view",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000639",
+  "sent_at": 1760342440520,
+  "source_id": "ec2",
+  "payload": {
+    "tier0_source_id": "tier0-01",
+    "snapshot_at_ms": 1760342440510,
+    "last_received_at_ms": "2026-11-12T10:00:00Z",
+    "people": []
+  }
+}

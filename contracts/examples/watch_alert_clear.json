@@ -1,0 +1,13 @@
+{
+  "_note": "R9 안전모 미착용 이벤트가 다시 착용으로 해소돼 그 알림을 받은 워치에서 지운다(S15P31A101-634)",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert_clear",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000634",
+  "sent_at": 1760342410500,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "reason": "RESOLVED",
+    "sent_at": 1760342410480
+  }
+}

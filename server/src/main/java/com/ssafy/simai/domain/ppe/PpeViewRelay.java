@@ -23,7 +23,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 class PpeViewRelay implements AutoCloseable {
 
     static final String MSG_TYPE = "ppe_view";
-    static final String SCHEMA_VERSION = "1.0.0";
+    static final String SCHEMA_VERSION = "1.1.0";
     private static final Logger log = LoggerFactory.getLogger(PpeViewRelay.class);
 
     private final PpeViewRepository views;

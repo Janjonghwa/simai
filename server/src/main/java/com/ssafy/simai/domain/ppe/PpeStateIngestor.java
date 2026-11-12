@@ -79,14 +79,16 @@ class PpeStateIngestor implements I1MessageIngestor {
     private final ObjectMapper mapper;
     private final TransactionTemplate transaction;
     private final ApplicationEventPublisher events;
+    private final PpeReceipts receipts;
 
     PpeStateIngestor(NamedParameterJdbcTemplate jdbc, ContractSchemas schemas, ObjectMapper mapper, TransactionTemplate transaction,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events, PpeReceipts receipts) {
         this.jdbc = jdbc;
         this.schemas = schemas;
         this.mapper = mapper;
         this.transaction = transaction;
         this.events = events;
+        this.receipts = receipts;
     }
 
     @Override
@@ -112,6 +114,8 @@ class PpeStateIngestor implements I1MessageIngestor {
         }
         JsonNode p = envelope.payload();
         PpeStateChecks.check(p);
+        // PPE 프로세스가 살아 있다는 근거(S15P31A101-634). 사람 0명·재전송·만료 메시지도 센다(관제 화면 'PPE 상태 수신 없음')
+        receipts.received(envelope.sourceId(), receivedAt);
         JsonNode people = p.get("people");
         if (people.isEmpty()) {
             return Outcome.STORED;

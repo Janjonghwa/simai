@@ -49,11 +49,13 @@ public class PpeViewRepository {
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final PpeReceipts receipts;
 
-    PpeViewRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock) {
+    PpeViewRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, PpeReceipts receipts) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
+        this.receipts = receipts;
     }
 
     /** 한 Tier 0 의 지금 스냅샷(ppe_view payload) */
@@ -66,6 +68,9 @@ public class PpeViewRepository {
         ObjectNode payload = mapper.createObjectNode();
         payload.put("tier0_source_id", sourceId);
         payload.put("snapshot_at_ms", now.toEpochMilli());
+        // ppe_view 1.1.0(S15P31A101-634): 이 Tier 0 의 ppe_state 를 마지막으로 받은 시각. 받은 적 없으면 null
+        receipts.lastReceived(sourceId).ifPresentOrElse(
+                at -> payload.put("last_received_at_ms", at.toEpochMilli()), () -> payload.putNull("last_received_at_ms"));
         ArrayNode people = payload.putArray("people");
         jdbc.query(SELECT, params, rs -> {
             people.add(person(rs, now));
@@ -73,13 +78,17 @@ public class PpeViewRepository {
         return payload;
     }
 
-    /** 촬영 시각이 범위 안인 상태를 가진 Tier 0 마다 하나씩(처음 상태 REST). 없으면 빈 목록 */
+    /**
+     * 촬영 시각이 범위 안인 상태를 가진 Tier 0, 그리고 이 EC2 가 시작된 뒤 ppe_state 를 받은 적이 있는 Tier 0 마다 하나씩(처음 상태 REST).
+     * 사람이 없어도 받은 적이 있으면 넣어 화면이 마지막 수신 시각을 볼 수 있게 한다(S15P31A101-634). 없으면 빈 목록
+     */
     public List<ObjectNode> snapshots() {
         Instant now = clock.instant();
-        List<String> sources = jdbc.queryForList("""
-                SELECT DISTINCT source_id FROM ppe_current_state WHERE observation_at >= :since ORDER BY source_id
+        java.util.TreeSet<String> sources = new java.util.TreeSet<>(jdbc.queryForList("""
+                SELECT DISTINCT source_id FROM ppe_current_state WHERE observation_at >= :since
                 """, new MapSqlParameterSource("since", OffsetDateTime.ofInstant(now.minus(WINDOW), ZoneOffset.UTC)),
-                String.class);
+                String.class));
+        sources.addAll(receipts.sources());
         List<ObjectNode> result = new ArrayList<>(sources.size());
         for (String source : sources) {
             result.add(snapshot(source));

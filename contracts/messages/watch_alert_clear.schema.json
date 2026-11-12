@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/watch_alert_clear.schema.json",
+  "title": "I4 watch_alert_clear",
+  "description": "EC2 → 워치(I4 WebSocket wss, 기기별 토큰). 이 워치로 보낸 위험 알림(watch_alert)의 이벤트가 해소(RESOLVED)됐다고 알린다(명세 부록 C.6, S15P31A101-634). 워치는 그 event_id 의 알림을 확인 대기 목록에서 빼고(진동·알림창도 멈춘다) 화면에 더는 보이지 않는다. 작업자 확인(watch_ack)이나 운영자 확인이 아니며, 워치는 이 메시지에 ACK 를 보내지 않는다. EC2 는 그 이벤트로 이 워치에 watch_alert 를 보낸 적이 있을 때만, 이벤트마다 기기당 한 번 보낸다. 끊긴 워치에는 보내지 않고 다시 이어질 때 그사이 해소된 것을 보낸다. 같은 event_id 를 다시 받거나 모르는 event_id 면 무시한다. 이전 워치 앱은 모르는 msg_type 을 무시하므로 EC2 를 먼저 올려도 된다(그 워치에는 해소 뒤에도 알림이 남는다). 사람 이름·World ID 는 싣지 않는다(닫힌 객체, 명세 11.4-5). 1.0.0 신설(S15P31A101-634).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "watch_alert_clear" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "reason", "sent_at"],
+      "properties": {
+        "event_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid_v7",
+          "description": "해소된 이벤트 ID. 그 이벤트로 보낸 watch_alert.payload.event_id 와 같다"
+        },
+        "reason": {
+          "enum": ["RESOLVED"],
+          "description": "알림을 지우는 이유. RESOLVED: 이벤트가 해소됐다(lifecycle RESOLVED). 다른 이유가 생기면 값을 더한다(마이너)"
+        },
+        "sent_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "EC2 가 이 통지를 정한(보낸) 시각(EC2 시계)"
+        }
+      }
+    }
+  }
+}

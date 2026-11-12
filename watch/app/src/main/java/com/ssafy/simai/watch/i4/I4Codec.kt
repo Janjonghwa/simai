@@ -33,6 +33,12 @@ sealed interface Incoming {
     /** watch_binding_notice(S15P31A101-510): 이 워치에 사람 배정이 생겼거나 풀렸다 */
     data class Binding(val notice: BindingNotice) : Incoming
 
+    /**
+     * watch_alert_clear(S15P31A101-634): [eventId] 의 이벤트가 해소됐으니 그 알림을 지운다. 확인(ACK)이 아니고 답하지 않는다.
+     * [reason] 은 지금 RESOLVED 뿐이고 새 값이 생길 수 있어(마이너) 모르는 값도 받아 지운다
+     */
+    data class Clear(val eventId: String, val reason: String) : Incoming
+
     /** 모르는 msg_type. 수신 측은 모르는 것을 무시한다(명세 12.1) */
     data class Unknown(val msgType: String) : Incoming
 }
@@ -67,6 +73,7 @@ class I4Codec(private val sourceId: String) {
             "watch_alert" -> Incoming.Alert(alertOf(doc, payload))
             "watch_heartbeat" -> heartbeatOf(doc, payload)
             "watch_binding_notice" -> Incoming.Binding(bindingOf(payload))
+            "watch_alert_clear" -> Incoming.Clear(requiredString(payload, "event_id"), requiredString(payload, "reason"))
             else -> Incoming.Unknown(msgType)
         }
     }

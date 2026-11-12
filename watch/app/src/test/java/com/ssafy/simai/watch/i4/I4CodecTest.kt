@@ -65,6 +65,19 @@ class I4CodecTest {
     }
 
     @Test
+    fun parsesTheContractAlertClearExample() {
+        // -634: 해소된 이벤트의 알림을 지우라는 통지
+        val clear = codec.parse(example("watch_alert_clear.json")) as Incoming.Clear
+        assertEquals("0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90", clear.eventId)
+        assertEquals("RESOLVED", clear.reason)
+        // event_id 가 없으면 무엇을 지울지 모르므로 버린다
+        assertThrows(IllegalArgumentException::class.java) { codec.parse(example("invalid/watch_alert_clear.missing_event_id.json")) }
+        // 새 이유 값(마이너)도 받아 지운다
+        val future = codec.parse(example("watch_alert_clear.json").replace("\"RESOLVED\"", "\"WORK_ENDED\"")) as Incoming.Clear
+        assertEquals("WORK_ENDED", future.reason)
+    }
+
+    @Test
     fun parsesTheEc2HeartbeatExample() {
         val hb = codec.parse(example("watch_heartbeat.ec2.json")) as Incoming.Heartbeat
         assertEquals(42L, hb.seq)

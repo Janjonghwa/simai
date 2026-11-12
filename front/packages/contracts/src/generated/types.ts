@@ -484,7 +484,7 @@ msg_type?: "watch_escalation"
 payload: WatchEscalationPayload
 })
 /**
- * EC2(source_id ec2) → 관제 화면 STOMP /topic/ppe 와 처음 상태 REST GET /api/ppe/current. EC2 가 I1 ppe_state 로 갱신한 사람별 화면용 현재 상태(ppe_current_state)를 한 장의 스냅샷으로 싣는다(명세 8.10, 12.3, 12.4, 13.3). 스냅샷이라 이번 메시지에 없는 사람은 '지금 보일 PPE 상태 없음'이다(이전 메시지 값을 이어 쓰지 않는다). 근거 프레임 키·local ID·모델 판 같은 내부 값은 싣지 않는다(사람·장비 객체는 닫힘. payload 최상위는 수신 측이 모르는 필드를 무시하는 계약 규칙대로 열어 둔다). 뷰어는 같은 world_id·identity_revision 의 world_state 트랙에만 붙이고, expires_at_ms 가 지나거나 EC2 연결이 끊기면 UNKNOWN 으로 보인다. PPE 표시는 경보가 아니다(경보는 R9 이벤트, 7.3). 1.0.0 신설(S15P31A101-531).
+ * EC2(source_id ec2) → 관제 화면 STOMP /topic/ppe 와 처음 상태 REST GET /api/ppe/current. EC2 가 I1 ppe_state 로 갱신한 사람별 화면용 현재 상태(ppe_current_state)를 한 장의 스냅샷으로 싣는다(명세 8.10, 12.3, 12.4, 13.3). 스냅샷이라 이번 메시지에 없는 사람은 '지금 보일 PPE 상태 없음'이다(이전 메시지 값을 이어 쓰지 않는다). 근거 프레임 키·local ID·모델 판 같은 내부 값은 싣지 않는다(사람·장비 객체는 닫힘. payload 최상위는 수신 측이 모르는 필드를 무시하는 계약 규칙대로 열어 둔다). 뷰어는 같은 world_id·identity_revision 의 world_state 트랙에만 붙이고, expires_at_ms 가 지나거나 EC2 연결이 끊기면 UNKNOWN 으로 보인다. PPE 표시는 경보가 아니다(경보는 R9 이벤트, 7.3). 1.0.0 신설(S15P31A101-531). 1.1.0 필드 추가(마이너, S15P31A101-634): 선택 last_received_at_ms(이 Tier 0 의 ppe_state 를 EC2 가 마지막으로 받은 시각, 사람이 0명인 메시지도 센다) — 관제 화면이 'PPE 상태 수신 없음'(PPE 프로세스가 안 떴거나 멈춤)을 안내하는 근거다. 이전 EC2 는 싣지 않는다.
  */
 export type PpeViewMessage = (Envelope & {
 msg_type?: "ppe_view"
@@ -871,6 +871,10 @@ tier0_source_id: string
  * UTC epoch 밀리초
  */
 snapshot_at_ms: number
+/**
+ * 1.1.0: EC2 가 이 Tier 0 의 ppe_state 를 마지막으로 받은 시각(EC2 시계). 사람이 0명인 메시지와 people 이 모두 버려진 메시지도 센다. 이 EC2 가 시작된 뒤 한 번도 받지 못했으면 null. 화면은 snapshot_at_ms 와의 차이로 수신 끊김을 안내한다. 경보·판정에는 쓰지 않는다
+ */
+last_received_at_ms?: (number | null)
 /**
  * 이 Tier 0 의 사람별 현재 상태 중 촬영 시각이 snapshot_at_ms − 60초 이후인 것(최신 촬영 순, 최대 64명). 빈 배열은 보일 상태가 없다는 뜻이다. 한 메시지에 같은 world_id 는 하나(계약 시험)
  * 
