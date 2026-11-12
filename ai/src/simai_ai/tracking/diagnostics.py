@@ -73,6 +73,8 @@ class _Stats:
     lifespan: Counter = field(default_factory=Counter)  # (TENTATIVE|CONFIRMED, bin)
     updated_cameras: Counter = field(default_factory=Counter)
     manager: Counter = field(default_factory=Counter)
+    max_confirmed: int = 0  # 한 tick 의 동시 확정(CONFIRMED·OCCLUDED) Track 최대 (-657)
+    max_duplicate_pairs: int = 0  # 한 tick 의 중복 의심 쌍(시점 분할 근거·POSSIBLE_DUPLICATE) 최대 (-657)
 
     def as_dict(self) -> dict[str, Any]:
         def nest(c: Counter) -> dict[str, dict[str, int]]:
@@ -108,6 +110,8 @@ class _Stats:
                 "lifespan_ms": nest(self.lifespan),
                 "updated_cameras": {str(k): int(v) for k, v in sorted(self.updated_cameras.items())},
                 "manager": {str(k): int(v) for k, v in sorted(self.manager.items())},
+                "max_confirmed": self.max_confirmed,
+                "max_duplicate_pairs": self.max_duplicate_pairs,
             },
         }
 
@@ -197,8 +201,17 @@ class TrackingDiagnostics:
                     for r in c.uncertain_reasons:
                         s.uncertain[str(r)] += 1
 
-    def observe_world(self, frame: WorldTrackFrame, manager_counts: Mapping[str, int] | None = None) -> None:
+    def observe_world(
+        self,
+        frame: WorldTrackFrame,
+        manager_counts: Mapping[str, int] | None = None,
+        duplicate_pairs: int | None = None,
+    ) -> None:
+        """duplicate_pairs: 이번 tick 의 중복 의심 쌍 수(`WorldTrackManager.duplicate_pair_count`, -657). 모르면 None."""
         t = frame.t
+        confirmed_now = sum(
+            1 for s in frame.tracks if s.lifecycle in (TrackLifecycle.CONFIRMED, TrackLifecycle.OCCLUDED)
+        )
         with self._lock:
             delta: Counter = Counter()
             if manager_counts is not None:
@@ -252,6 +265,9 @@ class TrackingDiagnostics:
                     s.lifespan[key] += 1
                 s.updated_cameras.update(cams)
                 s.manager.update(delta)
+                s.max_confirmed = max(s.max_confirmed, confirmed_now)
+                if duplicate_pairs is not None:
+                    s.max_duplicate_pairs = max(s.max_duplicate_pairs, duplicate_pairs)
 
     # ------------------------------------------------------------------ 읽기
 
@@ -286,10 +302,23 @@ def window_log_line(window: Mapping[str, Any]) -> str:
         rejected = {k: v for k, v in outcomes.items() if not k.startswith("PASS")}
         passes[pair] = {"pass": ok, **rejected}
     w = window.get("world", {})
+    m = w.get("manager", {})
+    lost = w.get("lost", {})
+    reid_back = m.get("reid.reentry_reconnected", 0) + m.get("reid.reentry_merged", 0)
+    geo_back = max(m.get("reconnect.done", 0) - m.get("reid.reentry_reconnected", 0), 0)
+    # -657: 갈라짐·재입장 판독 한 줄. 확정승격(TENTATIVE→CONFIRMED), 임시소멸(확정 못 하고 LOST), 동시확정최대(실제 인원과 비교),
+    # 중복쌍최대·활성병합(같은 사람 두 ID), 소실/되찾음(확정 소실 수 / 기하 재연결 + Re-ID 재입장·지연 병합)
+    split_line = (
+        f"확정승격 {m.get('lifecycle.confirmed', 0)}, 임시소멸 {lost.get('TENTATIVE', 0)}, "
+        f"동시확정최대 {w.get('max_confirmed', 0)}, 중복쌍최대 {w.get('max_duplicate_pairs', 0)}, "
+        f"활성병합 {m.get('revision.active_merge', 0)}, 그림자억제 {m.get('new_track.suppressed_disjoint_shadow', 0)}, "
+        f"소실/되찾음 {lost.get('CONFIRMED', 0)}/기하 {geo_back}+ReID {reid_back}, "
+        f"키거부 {m.get('reid.stature_rejected', 0)}, 키동률깨기 {m.get('reid.stature_tiebreak', 0)}"
+    )
     return (
         f"추적 계측 {window.get('span_ms', 0) / 1000:.0f}s: tick {window.get('ticks', 0)}, "
         f"늦은 카메라 비율 {lag}, 보간 view {window.get('views', {})}, 보간 탈락 {drops}, 쌍 {passes}, "
         f"클러스터 카메라 수 {window.get('cluster_cameras', {})}, 갱신 Track 카메라 수 {w.get('updated_cameras', {})}, "
         f"새 ID {w.get('manager', {}).get('new_track.created', 0)}, LOST {w.get('lost', {})}, 병합 {w.get('merged_away', 0)}, "
-        f"재연결 {w.get('reassociated', 0)}, 수명 {w.get('lifespan_ms', {})}, 분기 {w.get('manager', {})}"
+        f"재연결 {w.get('reassociated', 0)}, {split_line}, 수명 {w.get('lifespan_ms', {})}, 분기 {w.get('manager', {})}"
     )

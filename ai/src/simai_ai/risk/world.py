@@ -22,7 +22,7 @@ contracts/ 생성 타입(S15P31A101-24)이 simai_ai.contracts 에 들어오면 �
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -179,6 +179,9 @@ class WorldTrack:
     1.x 문서이거나 UNCERTAIN 이 아니면 None 이다. 확정값 head_z 는 이때 늘 None 이다"""
     head_z_uncertain_sigma: float | None = None
     """head_z_uncertain 의 σ(m). 값이 없거나 σ 를 모르면 None"""
+    aliases: tuple[str, ...] = field(default=(), compare=False)
+    """병합으로 이 ID 에 합쳐진 이전 ID(world_state aliases, 선택). R4 가 합쳐져 사라진 ID 의 이력을 버리는 데만 쓴다(-657).
+    판정 입력의 같음 비교에는 넣지 않는다(별칭 유무로 같은 관측이 달라지지 않는다)"""
 
     def __post_init__(self) -> None:
         # 스키마 allOf 의 조건부 규칙: 지지 표면을 모르면 접지점을 비운다(Z=0 대체 금지).
@@ -261,6 +264,9 @@ class WorldTrack:
             head_z_validity=head_validity,
             head_z_uncertain=uncertain_z,
             head_z_uncertain_sigma=uncertain_sigma,
+            aliases=tuple(
+                as_str(w, f"{at('aliases')}[{i}]") for i, w in enumerate(as_list(obj.get("aliases") or [], at("aliases")))
+            ),
         )
 
 

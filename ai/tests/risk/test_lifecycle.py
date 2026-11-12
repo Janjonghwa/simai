@@ -437,18 +437,28 @@ def test_identity_correction_rekeys_event_and_keeps_origin_ids(harness, track_js
     assert [s.event_id for s in h.tracker.active()] == [raised.event_id]
 
 
-def test_identity_correction_conflict_links_without_resolving(harness, track_json):
+def test_identity_correction_conflict_absorbs_duplicate_into_survivor(harness, track_json):
+    """-657 Lead 결정 2: 병합으로 같은 사람의 같은 위험 이벤트가 둘이 되면 옛 ID 의 이벤트를 남는 이벤트에 귀속(origin_world_ids)하고
+    RESOLVED(IDENTITY_MERGED, merge 기록)로 닫는다. 관측 해소가 아니므로 검증 상태는 그대로이고, 위험은 남는 이벤트가 잇는다."""
     h = harness()
     tracks = [track_json(world_id="w-0012"), track_json(world_id="w-0020")]
     h.step([finding(), finding(world_ids=("w-0020",))], tracks)
     old, other = sorted(h.tracker.active(), key=lambda s: s.world_ids)
-    (t,) = h.tracker.correct_identity(IdentityCorrection("w-0012", "w-0020", 5)).transitions
-    assert t.changes == (Change.IDENTITY_CONFLICT,) and t.state.related_event_id == other.event_id
-    # 옛 ID 는 더 관측되지 않으므로 UNVERIFIABLE 로 남고 해소되지 않는다.
+    step = h.tracker.correct_identity(IdentityCorrection("w-0012", "w-0020", 5))
+    (t,) = step.transitions
+    assert t.transition is Lifecycle.RESOLVED and t.changes == (Change.IDENTITY_MERGED,)
+    assert t.state.related_event_id == other.event_id and t.state.verification is old.verification
+    assert t.merge.to_payload() == {
+        "survivor_event_id": other.event_id, "survivor_world_id": "w-0020", "merged_world_id": "w-0012",
+        "identity_revision": 5,
+    }
+    assert t.to_payload()["merge"]["survivor_event_id"] == other.event_id
+    assert [s.event_id for s in h.tracker.active()] == [other.event_id]  # 유령 카드 없음
+    assert h.tracker.get(other.event_id).origin_world_ids == ("w-0020", "w-0012")
+    # 남는 이벤트는 자동 해소되지 않고 판정이 이어지는 동안 그대로다
     later = h.hold(10_000, [finding(world_ids=("w-0020",))], [track_json(world_id="w-0020")])
     assert all(t.transition is not Lifecycle.RESOLVED for t in transitions(later))
-    assert {s.event_id for s in h.tracker.active()} == {old.event_id, other.event_id}
-    assert h.tracker.get(old.event_id).verification is Verification.UNVERIFIABLE
+    assert [s.event_id for s in h.tracker.active()] == [other.event_id]
 
 
 def _split_harness(harness, track_json):

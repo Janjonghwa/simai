@@ -522,3 +522,34 @@ def test_escalation_entry_is_not_a_judgment_transition():
     assert not is_judgment_transition(base | {"escalation": {"escalation_id": ESC_ID}})
     assert is_judgment_transition(base)  # 대조: escalation 없는 SEVERITY 갱신은 판정이다
     assert is_judgment_transition(base | {"escalation": {"escalation_id": ESC_ID}, "resumed": True})
+
+
+# --- 병합 흡수 마감 (S15P31A101-657, risk_event_transition 2.3.0) ---------------------------------------
+
+
+def test_identity_merge_absorption_is_sent_as_resolution_v2_3_and_passes_contract(make, tmp_path, live_events,
+                                                                                    message_errors):
+    """병합으로 같은 사람의 같은 R4 가 둘이 되면 흡수된 쪽의 RESOLVED 는 계약 resolution(IDENTITY_MERGED)으로 바뀌어 그 기록만
+    2.3.0 으로 나가고 스키마를 통과한다(관측 해소가 아니라 VERIFIED 아님). 같은 메시지를 2.2.0 으로 보내면 계약 위반이다."""
+    from simai_ai.risk import Finding, IdentityCorrection, Severity
+
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, live_events.clock, ec2)
+    def r4(w):
+        return Finding(rule_id="R4", rule_version=1, severity=Severity.CRITICAL, world_ids=(w,),
+                       reasons=("head_drop", "low_posture_sustained"))
+
+    journal.append_step(live_events.step([r4("w-0059")]))
+    journal.append_step(live_events.step([r4("w-0059"), r4("w-0061")]))
+    survivor = next(s for s in live_events.tracker.active() if s.world_ids == ("w-0059",))
+    journal.append_step(live_events.tracker.correct_identity(IdentityCorrection("w-0061", "w-0059", 1)))
+    outbox.pump()
+    msg = ec2.messages[-1]
+    p = msg["payload"]
+    assert msg["schema_version"] == "2.3.0" and p["transition"] == "RESOLVED" and p["world_ids"] == ["w-0061"]
+    assert p["resolution"] == {"kind": "IDENTITY_MERGED", "survivor_event_id": survivor.event_id,
+                               "survivor_world_id": "w-0059", "merged_world_id": "w-0061"}
+    assert "merge" not in p
+    assert all(m["schema_version"] == "2.1.0" for m in ec2.messages[:-1])  # 다른 전이는 이전 판 그대로
+    assert [message_errors(m) for m in ec2.messages] == [[]] * len(ec2.messages), ec2.messages
+    assert message_errors(msg | {"schema_version": "2.2.0"})

@@ -137,6 +137,21 @@ R4_FALLBACK_CLEAR_DROP_M = 0.6
 R4_RECOVERY_VALID_MS = 3000
 """회복 확인(모듈 설명)을 끝내는 VALID 높은 머리 근거 누적 시간. lifecycle 기본 해소 유지(LifecyclePolicy.clear_hold_ms)와 같다"""
 _RECOVERY_GAP_CAP_MS = 500
+R4_RECOVERY_UNCERTAIN_MIN_M = 1.2
+"""-657 2대 관측 기립 회복: UNCERTAIN 머리라도 지면 기준 머리 높이가 이 값 이상(해소 임계 1.0 m + 0.2 m 여유)이고 아래 골반 조건을
+함께 채우면 회복 근거로 센다(관측값 두 가지가 함께 기립을 보일 때만, 머리 하나로 확정하지 않음)"""
+R4_RECOVERY_PELVIS_MIN_M = 0.65
+"""-657 2대 관측 기립 회복의 골반 조건: 관측 골반 − 접지 Z 가 이 값 이상(서기 약 0.9~1.0 m, 의자에 앉기 약 0.45~0.55 m)"""
+R4_TWIN_RADIUS_M = 1.35
+"""-657 시점 분할 분신 판단 반경(World Track 그림자 반경 상한과 같음)"""
+R4_TWIN_BORN_MS = 2500
+"""-657 분신 판단: 급하강을 처음 본 시각이 그 트랙의 첫 관측에서 이 시간 안이면 '낙상 도중 태어난' 트랙으로 본다"""
+R4_TWIN_STANDING_SAMPLES = 5
+"""-657 분신 판단: 지면 기준 머리 높이가 R4_TWIN_STANDING_M 이상인 표본이 이 수 미만이면 기립 이력이 없다(10 Hz 0.5 s)"""
+R4_TWIN_STANDING_M = 1.35
+"""-657 기립 이력 표본의 지면 기준 머리 높이 하한(앉기 약 1.25 m 보다 높게)"""
+REASON_TWIN_SUSPECT = "view_split_twin_suspect"
+"""-657: 기립 이력 없이 낙상 도중 태어난 트랙이 카메라가 겹치지 않는 근처 낙상 트랙의 분신으로 보여 발생 대신 유지한다"""
 """회복 확인 누적에서 두 VALID 표본 사이 간격을 이만큼까지만 센다(관측 공백을 근거 시간으로 세지 않음, 10 Hz 의 5배)"""
 # 판정 근거 코드
 REASON_HEAD_DROP = "head_drop"
@@ -223,6 +238,8 @@ class _Memory:
     recovering: bool = False  # 발생 뒤 회복 확인 중(모듈 설명). clear_candidate 로 지우지 않는다
     recover_valid_ms: float = 0.0  # 회복 확인 중 누적한 VALID 높은 머리 근거 시간
     recover_last_t: int | None = None  # 회복 확인 중 마지막 높은 표본 시각(직전이 VALID 일 때만)
+    first_seen: int = 0  # 이 이력을 시작한 판정 시각(-657 분신 판단)
+    standing: int = 0  # 기립 이력 표본 수(지면 기준 머리 ≥ R4_TWIN_STANDING_M, -657)
 
     def start_recovery(self) -> None:
         """발생(FALLEN·상실) 뒤 머리가 높아졌다: 후보를 버리고 회복 확인을 시작한다."""
@@ -340,9 +357,15 @@ class FallSuspectRule:
         s.last_global = now
         s.calibration_version = ctx.world.calibration_version
         present = {t.world_id: t for t in ctx.world.tracks}
+        merged = {alias for t in ctx.world.tracks for alias in t.aliases}
         findings: list[Finding] = []
         for world_id in sorted(set(present) | set(s.memory)):
             track = present.get(world_id)
+            if track is None and world_id in merged:
+                # -657: 병합으로 사라진 ID 다(남는 ID 의 aliases). 그 이력은 남는 ID 의 사람이므로 관측 상실 발생을 내지 않는다
+                del s.memory[world_id]
+                s.diagnostic_seen.pop(world_id, None)
+                continue
             if track is None:
                 finding = self._missing(s, world_id, now)
             else:
@@ -365,6 +388,7 @@ class FallSuspectRule:
             s.diagnostic_start = now
             s.diagnostic_counts.clear()
             heights.clear()
+        findings = self._hold_view_split_twins(s, present, findings)
         calib = ctx.calibration_confidence()
         if calib:  # 판정 경로가 여럿이라 끝에서 한 번에 붙인다(Finding 이 이유를 다시 정렬하고 needs_check 를 맞춘다)
             findings = [replace(f, confidence_reasons=f.confidence_reasons + tuple(calib)) for f in findings]
@@ -406,7 +430,9 @@ class FallSuspectRule:
         ):
             memory = None  # ID 교정·시간 역행: 다른 사람(또는 다른 재생)의 이력일 수 있다
         if memory is None:
-            memory = s.memory[track.world_id] = _Memory(revision=track.identity_revision, last_seen_global=now)
+            memory = s.memory[track.world_id] = _Memory(
+                revision=track.identity_revision, last_seen_global=now, first_seen=now
+            )
         memory.revision = track.identity_revision
         memory.last_seen_global = now
 
@@ -466,6 +492,8 @@ class FallSuspectRule:
         reading = self._reading(memory, track, head)
         if not fresh:
             return reading
+        if reading.height_m is not None and reading.height_m >= R4_TWIN_STANDING_M:
+            memory.standing += 1
         if memory.phase is not _Phase.NONE:
             memory.uncertain |= head.uncertain
             memory.z_unknown |= reading.support_code is not None
@@ -658,7 +686,7 @@ class FallSuspectRule:
         if not memory.recovering:
             return None
         t = track.t_last_valid
-        if head.uncertain:
+        if head.uncertain and not self._corroborated_standing(track, head):
             memory.recover_last_t = None  # VALID 연속이 끊긴다
         else:
             last = memory.recover_last_t
@@ -675,6 +703,61 @@ class FallSuspectRule:
             world_id, memory, confidence, (REASON_HEAD_UNCERTAIN_RECOVERY, *support), metrics,
             holding=True, candidate_flags=False,
         )  # fmt: skip
+
+    @staticmethod
+    def _corroborated_standing(track: WorldTrack, head: _Head) -> bool:
+        """-657 2대 관측 기립: UNCERTAIN 머리여도 관측 골반과 함께 기립을 보이면 회복 근거로 센다(명세 5.2 'UNCERTAIN head_z 만으로
+        낙상이 아니다를 확정하지 않는다'를 지키려고 머리 하나가 아니라 독립 관측 두 개를 요구한다).
+
+        지금 접지점(ground_anchor_xyz, 지지 표면 VALID)이 있고, 지면 기준 머리 ≥ R4_RECOVERY_UNCERTAIN_MIN_M, 관측 골반(pelvis_xyz)
+        − 접지 ≥ R4_RECOVERY_PELVIS_MIN_M, 2대 이상 카메라 관측일 때만. 마지막 접지·머리 변화 기준(모르는 지면)은 쓰지 않는다.
+        """
+        if track.ground_anchor_xyz is None or track.pelvis_xyz is None or len(track.cameras) < 2:
+            return False
+        support = track.ground_anchor_xyz[2]
+        return head.value - support >= R4_RECOVERY_UNCERTAIN_MIN_M and track.pelvis_xyz[2] - support >= R4_RECOVERY_PELVIS_MIN_M
+
+    def _hold_view_split_twins(
+        self, s: _Session, present: dict[str, WorldTrack], findings: list[Finding]
+    ) -> list[Finding]:
+        """-657: 기립 이력 없이 낙상 도중 태어난 트랙의 발생 판정을, 카메라가 겹치지 않는 근처의 먼저 본 낙상 트랙이 있으면 유지로
+        바꾼다(같은 사람의 시점 분할 분신이 R4 를 한 번 더 내는 것을 막음). 같은 카메라에 함께 보인(카메라가 겹치는) 두 사람의
+        동시 낙상은 그대로 둘 다 발생한다. 유지는 새 이벤트를 만들지 않고 이미 열린 이벤트는 지킨다.
+        """
+        out: list[Finding] = []
+        for f in findings:
+            twin = None if f.holding or len(f.world_ids) != 1 else self._twin_of(s, present, f.world_ids[0])
+            if twin is None:
+                out.append(f)
+                continue
+            s.diagnostic_counts["twin_held"] = s.diagnostic_counts.get("twin_held", 0) + 1
+            out.append(replace(f, holding=True, reasons=f.reasons + (REASON_TWIN_SUSPECT,)))
+        return out
+
+    @staticmethod
+    def _twin_of(s: _Session, present: dict[str, WorldTrack], world_id: str) -> str | None:
+        memory = s.memory.get(world_id)
+        track = present.get(world_id)
+        if memory is None or track is None or not track.cameras:
+            return None
+        if memory.standing >= R4_TWIN_STANDING_SAMPLES or memory.t_drop - memory.first_seen > R4_TWIN_BORN_MS:
+            return None
+        for other_id, other in present.items():
+            om = s.memory.get(other_id)
+            if (
+                other_id == world_id
+                or om is None
+                or om.phase is _Phase.NONE
+                or om.first_seen >= memory.first_seen
+                or not other.cameras
+                or set(other.cameras) & set(track.cameras)
+            ):
+                continue
+            dx = other.position_xy[0] - track.position_xy[0]
+            dy = other.position_xy[1] - track.position_xy[1]
+            if math.hypot(dx, dy) <= R4_TWIN_RADIUS_M:
+                return other_id
+        return None
 
     def _finding(
         self,

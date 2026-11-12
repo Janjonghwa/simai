@@ -221,10 +221,10 @@ def test_negative_control_reversed_order_duplicates_event(tmp_path) -> None:
     s = Site(tmp_path, loop_cls=ApplyBeforeCorrect)
     try:
         s.tick({"w-x": (INSIDE, 0)})
-        s.tick({"w-y": (INSIDE, 1)}, revisions=(merge("w-x", "w-y"),))
-        events = _r1_events(s.tracker)
-        assert len(events) == 2  # 새 ID 로 RAISED 가 먼저 생기고 교정은 연결(IDENTITY_CONFLICT)만 남긴다
-        assert {e.related_event_id for e in events} - {None}
+        result = s.tick({"w-y": (INSIDE, 1)}, revisions=(merge("w-x", "w-y"),))
+        raised = [t for st in result.steps for t in st.transitions if t.transition is Lifecycle.RAISED]
+        assert len(raised) == 1  # 새 ID 로 RAISED(중복 경보)가 먼저 생긴다
+        # -657: 다음 교정에서 흡수 마감이 유령 카드를 지워도, 이미 나간 중복 RAISED 는 되돌릴 수 없다(순서가 실제로 중요하다)
     finally:
         s.close()
 

@@ -19,6 +19,7 @@ acked_offset 을 영속 저장(AckedOffsetStore)한 뒤 앞으로 옮긴다. 그
 - 재전송을 마친 뒤 event_state_snapshot 을 보내는 일은 추적기 상태를 가진 쪽(서비스 조립)이 drained 를 보고 한다.
 - 운영자 종료 기록(lifecycle payload.close, S15P31A101-200)은 계약 resolution(risk_event_transition 2.0.0)으로 바꿔 보낸다.
 - 운영자 상향 기록(lifecycle payload.escalation, S15P31A101-272)은 받은 계약 operator_escalation 그대로라 바꾸지 않고 보낸다(2.1.0).
+- 병합 흡수 마감(lifecycle payload.merge, -657)은 계약 resolution(identity_merge_resolution, 2.3.0)으로 바꿔 그 기록만 2.3.0 으로 보낸다.
 """
 
 import logging
@@ -43,6 +44,8 @@ from simai_ai.risk.clock import Clock
 # 2.0.0 운영자 종료 해소 resolution: 있으면 RESOLVED 의 VERIFIED·evidence_ref 필수가 풀린다, S15P31A101-200,
 # 2.1.0 운영자 상향 escalation: 재개가 아닌 UPDATED 에만, S15P31A101-272)
 SCHEMA_VERSION = "2.1.0"
+# 2.3.0 병합 흡수 마감 resolution(IDENTITY_MERGED, -657). 그 기록에만 이 판을 붙이고 나머지 전이는 위 판 그대로 보낸다
+MERGE_SCHEMA_VERSION = "2.3.0"
 # 계약에서 선택(없어도 됨)이고 null 을 허용하지 않는 필드. lifecycle payload 는 비었을 때 null 로 싣는다.
 _OPTIONAL_NOT_NULL = ("ack", "related_event_id")
 _OPERATOR_ACK_KEYS = ("ack_id", "channel", "actor_role", "actor_id", "acked_at")
@@ -136,6 +139,20 @@ def operator_resolution(entry: JournalEntry) -> dict[str, Any]:
     return out
 
 
+def identity_merge_resolution(entry: JournalEntry) -> dict[str, Any]:
+    """저널 기록의 병합 흡수(payload.merge, lifecycle MergeRecord) → 계약 identity_merge_resolution(2.3.0, -657)."""
+    merge = entry.payload.get("merge")
+    if not isinstance(merge, Mapping) or entry.payload.get("transition") != "RESOLVED":
+        raise UnsendableEntry(entry, "병합 흡수 기록은 RESOLVED 전이에만 있다")
+    out: dict[str, Any] = {"kind": "IDENTITY_MERGED"}
+    for key in ("survivor_event_id", "survivor_world_id", "merged_world_id"):
+        value = merge.get(key)
+        if not isinstance(value, str) or not value:
+            raise UnsendableEntry(entry, f"병합 흡수 기록에 {key} 가 없다(계약 identity_merge_resolution 필수)")
+        out[key] = value
+    return out
+
+
 def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, Any]:
     """저널 기록 하나 → I1 risk_event_transition payload. 저널의 기록 자체는 바꾸지 않는다(복사본을 바꾼다).
 
@@ -163,6 +180,9 @@ def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, 
     if "close" in payload:
         payload["resolution"] = operator_resolution(entry)
         del payload["close"]
+    if payload.get("merge") is not None:
+        payload["resolution"] = identity_merge_resolution(entry)
+    payload.pop("merge", None)
     payload["journal_offset"] = entry.journal_offset
     payload["resent"] = resent
     return payload
@@ -177,6 +197,8 @@ def build_transition_message(
     schema_version: str = SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """저널 기록 하나를 I1 봉투 메시지로 만든다(payload 는 to_i1_transition_payload). msg_id 는 기록 때 정한 값."""
+    if entry.payload.get("merge") is not None:
+        schema_version = MERGE_SCHEMA_VERSION  # 병합 흡수 resolution 은 2.3.0 부터다
     return {
         "schema_version": schema_version,
         "msg_type": entry.kind,

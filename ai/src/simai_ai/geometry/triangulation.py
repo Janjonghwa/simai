@@ -461,6 +461,49 @@ def reprojection_errors_ideal(cameras: Sequence[RigCamera], targets: np.ndarray,
     return _errors_batch(_CameraStack.of(cameras), targets, mask, X)[0]
 
 
+def joint_consistency_px(
+    groups: Sequence[Sequence[UndistortedKeypoints]],
+    joints: Sequence[int],
+    min_confidence: float,
+) -> float | None:
+    """카메라가 겹치지 않는 여러 view 묶음을 관절마다 한 점으로 풀었을 때 재투영 오차 최댓값 (px, S15P31A101-657).
+
+    두 묶음이 같은 사람의 같은 관절을 보았는지 보는 검사다. 관절마다 묶음마다 그 관절을 본(신뢰도 기준 이상) view 가 하나
+    이상이고 모두 합쳐 3대 이상이어야 한다(한 묶음 2대만으로는 묶음 사이 관계를 볼 수 없다). 모자라면 None(모름, 지어내지
+    않음). 해가 없거나 카메라 뒤면 inf. 같은 카메라가 두 묶음에 있으면 ValueError(같은 카메라의 두 검출은 한 사람이 아니다).
+    결과는 판단에만 쓰고 관절·위치로 내보내지 않는다.
+    """
+    seen: set[str] = set()
+    for group in groups:
+        for u in group:
+            if u.camera_id in seen:
+                raise ValueError(f"같은 카메라가 두 묶음에 있다: {u.camera_id}")
+            seen.add(u.camera_id)
+    worst = 0.0
+    for j in joints:
+        cams: list[RigCamera] = []
+        normalized: list[np.ndarray] = []
+        weights: list[float] = []
+        targets: list[np.ndarray] = []
+        for group in groups:
+            used = [u for u in group if j < len(u.confidence) and bool(u.usable(min_confidence)[j])]
+            if not used:
+                return None
+            for u in used:
+                cams.append(u.camera)
+                normalized.append(u.normalized[j])
+                weights.append(float(u.confidence[j]))
+                targets.append(u.ideal_pixels[j])
+        if len(cams) < MIN_VIEWS + 1:
+            return None
+        tgt = np.array(targets)
+        X = triangulate_normalized(cams, np.array(normalized), np.array(weights), targets=tgt)
+        if X is None:
+            return math.inf
+        worst = max(worst, float(np.max(reprojection_errors_ideal(cams, tgt, X))))
+    return worst
+
+
 def max_ray_angle(cameras: Sequence[RigCamera], X: np.ndarray) -> float:
     """카메라 쌍마다 카메라 중심과 X 를 잇는 시선 직선 사이 각(0~π/2)의 최댓값(라디안).
 

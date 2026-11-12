@@ -179,6 +179,7 @@ def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
     """판정 전이인지(근거 world_state 가 있어야 하는지). 모르면 판정으로 본다(근거 없이 보내지 않는 쪽).
 
     판정이 아닌 전이: 확인(ack 를 싣거나 transition=ACKNOWLEDGED), 운영자 종료(close 를 실은 RESOLVED, 근거는 누가·왜),
+    병합 흡수 마감(merge 를 실은 RESOLVED, -657),
     운영자 상향(escalation 을 실은 재개가 아닌 UPDATED, S15P31A101-272),
     또는 재개가 아닌 UPDATED 중 변경 사유가 모두 복원·ID 교정(과 복원에 붙는 VERIFICATION)인 것. RAISED·관측 RESOLVED·재개·
     판정 UPDATED 는 판정 전이다.
@@ -187,6 +188,8 @@ def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
         return False
     if payload.get("close") is not None and payload.get("transition") == "RESOLVED":
         return False
+    if payload.get("merge") is not None and payload.get("transition") == "RESOLVED":
+        return False  # 병합 흡수 마감(-657): 관측 해소가 아니라 ID 병합 기록이 근거다
     if payload.get("escalation") is not None and payload.get("transition") == "UPDATED" and payload.get("resumed") is not True:
         return False
     if payload.get("transition") != "UPDATED" or payload.get("resumed") is True:
