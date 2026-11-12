@@ -20,6 +20,7 @@ import {
 import { SetupMap } from '@/features/setup/SetupMap';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
+import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
 import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
@@ -435,6 +436,8 @@ export function AiZoneDraftsPanel({
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
   const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
+  // 초안이 많아도 카드 두 장 높이까지만 보이고 나머지는 목록 안에서 스크롤한다.
+  const listRef = useTwoCardsMaxHeight();
 
   return (
     <Panel title="AI 위험 구역 초안" fill={1}>
@@ -443,7 +446,11 @@ export function AiZoneDraftsPanel({
       ) : visibleDrafts.length === 0 ? (
         <p className="text-xs text-muted-foreground">AI 구역 초안 없음</p>
       ) : (
-        <ul aria-label="AI 구역 초안 목록" className="flex flex-col gap-2.5">
+        <ul
+          ref={listRef}
+          aria-label="AI 구역 초안 목록"
+          className="relative flex flex-col gap-2.5 overflow-y-auto pr-1"
+        >
           {visibleDrafts.map((item) => {
             const isAccepted = acceptedDraftIds.includes(item.candidate_id);
             const isNoOpinion = item.no_opinion;

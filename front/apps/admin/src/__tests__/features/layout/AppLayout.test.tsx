@@ -9,9 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // 레이아웃이 알림 자리를 어디에 어떻게 두는지만 본다. 화면 조각은 대역으로 바꾼다.
 const route = vi.hoisted(() => ({
   staticData: {} as { fullBleed?: boolean; eventPanel?: boolean; dockOverlay?: boolean },
-  failure: true,
   alarm: true,
-  reSetup: false,
 }));
 
 vi.mock('@tanstack/react-router', () => ({
@@ -32,12 +30,6 @@ vi.mock('@/features/monitor/PpePolicyNotice', () => ({ PpePolicyNotice: () => nu
 vi.mock('@/features/monitor/PpeWorkNotice', () => ({ PpeWorkNotice: () => null }));
 vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
 vi.mock('@/features/ppe/usePpe', () => ({ usePpeSnapshot: vi.fn() }));
-vi.mock('@/features/layout/FailureBand', () => ({
-  FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),
-}));
-vi.mock('@/features/layout/ReSetupBanner', () => ({
-  ReSetupBanner: () => (route.reSetup ? <div data-testid="resetup" /> : null),
-}));
 vi.mock('@/features/events/AlarmBanner', () => ({
   AlarmBanner: ({ withPanel }: { withPanel: boolean }) =>
     route.alarm ? <div data-testid="alarm" data-with-panel={String(withPanel)} /> : null,
@@ -48,9 +40,7 @@ const ids = (el: HTMLElement) => [...el.children].map((child) => child.getAttrib
 
 beforeEach(() => {
   route.staticData = {};
-  route.failure = true;
   route.alarm = true;
-  route.reSetup = false;
 });
 afterEach(() => {
   cleanup();
@@ -58,16 +48,16 @@ afterEach(() => {
 });
 
 describe('AppLayout 알림 자리', () => {
-  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 장애 띠 아래 경보 배너, 그 아래 작업 세션 바를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
+  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 경보 배너 아래에 작업 세션 바를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
     route.staticData = { fullBleed: true, eventPanel: true };
     render(<AppLayout />);
 
     const box = notices();
-    expect(ids(box)).toEqual(['failure', 'alarm', 'session']);
+    expect(ids(box)).toEqual(['alarm', 'session']);
     expect(box.className).toContain('absolute');
     expect(box.className).toContain('inset-x-(--event-panel-inset)');
     expect(box.className).not.toContain('inset-x-5');
-    // 띄운 자리는 클릭을 통과시키고, 띠와 배너만 받는다(각자 pointer-events-auto).
+    // 띄운 자리는 클릭을 통과시키고, 배너만 받는다(각자 pointer-events-auto).
     expect(box.className).toContain('pointer-events-none');
     expect(screen.getByTestId('alarm').dataset.withPanel).toBe('true');
   });
@@ -98,7 +88,7 @@ describe('AppLayout 알림 자리', () => {
     render(<AppLayout />);
 
     const box = notices();
-    expect(ids(box)).toEqual(['failure', 'alarm']);
+    expect(ids(box)).toEqual(['alarm']);
     expect(box.className).toContain('absolute');
     expect(box.className).toContain('pointer-events-none');
     expect(box.className).toContain('inset-x-5');
@@ -110,7 +100,6 @@ describe('AppLayout 알림 자리', () => {
   });
 
   it('알릴 것이 없으면 자리가 비어 숨는다(empty:hidden)', () => {
-    route.failure = false;
     route.alarm = false;
     render(<AppLayout />);
 
@@ -142,18 +131,5 @@ describe('AppLayout 연결 상태', () => {
   it('연결이 열릴 때 지금 PPE 상태를 먼저 받는 훅(GET /api/ppe/current)을 부른다(-531)', () => {
     render(<AppLayout />);
     expect(vi.mocked(usePpeSnapshot)).toHaveBeenCalled();
-  });
-});
-
-describe('AppLayout 현장 세팅 다시 하기 배너 자리', () => {
-  it('장애 띠 아래, 경보 배너 위에 둔다(알릴 것이 없으면 자리를 차지하지 않는다)', () => {
-    route.reSetup = true;
-    render(<AppLayout />);
-    expect(ids(notices())).toEqual(['failure', 'resetup', 'alarm']);
-
-    cleanup();
-    route.reSetup = false;
-    render(<AppLayout />);
-    expect(ids(notices())).toEqual(['failure', 'alarm']);
   });
 });

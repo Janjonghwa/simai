@@ -1,27 +1,55 @@
 import { SupplementCaptureBody } from '@/features/setup/SupplementCaptureBody';
+import { rebakeApplied } from '@/features/setup/supplement';
 import type { SetupSessionResponse } from '@/features/setup/types';
 import { useSupplementCapture } from '@/features/setup/useSupplementCapture';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
 import { ACTION, H2, SECONDARY } from '@/features/tbm/styles';
 import { Button } from '@simai/ui/components/button';
+import { useEffect, useRef } from 'react';
 
 // 보정·생성 단계에서 '다음'을 눌렀을 때 뜨는 「맵 보강 촬영(선택)」 창(S15P31A101-607). 닫으면(Esc·바깥 클릭 포함) 그 단계에
-// 그대로 머물고, 아래 오른쪽 단추(올린 파일이 없으면 건너뛰기, 있으면 다음)를 누르면 구역 단계로 간다. 다시 굽는 중이어도 넘어갈 수 있다 —
-// 굽기는 서버에서 계속되고, 끝나면 구역 단계의 3D 가 새 맵으로 바뀐다.
+// 그대로 머문다. 아래 오른쪽 단추는 맵에 아직 안 들어간 파일이 있으면 다시 굽기, 올린 파일이 없으면 건너뛰기, 이미 다 굽고 새로 올린 게
+// 없으면 다음이다(건너뛰기·다음은 구역 단계로 간다). 눌러 시작한 다시 굽기가 새 맵으로 반영되면 창이 닫히고 보정·생성 단계의 3D 가
+// 새 맵으로 바뀐다. 구역 단계로 넘어가기 전에는 다음을 누를 때마다 이 창이 다시 뜬다.
 
 export function SupplementModal({
   session,
   onNext,
   onCancel,
+  onRebaked,
 }: {
   session: SetupSessionResponse;
   onNext: () => void;
   onCancel: () => void;
+  /** 다시 굽기가 새 맵으로 반영돼 창을 닫는다. */
+  onRebaked: () => void;
 }) {
   const capture = useSupplementCapture(session, 'FILE_UPLOAD');
   // 이 창이 올리는 중인 파일(취소할 수 있는 줄)이 있으면 창을 닫을 때 올리기가 멈추므로, 끝나기 전에는 넘어가지 않는다.
   const uploading = capture.rows.some((row) => row.actions.includes('cancel'));
   const hasFiles = uploading || (capture.supplement?.media.length ?? 0) > 0;
+  const rebaking = capture.rebakeView?.running ?? false;
+  const { rebake } = capture;
+
+  // 이 창이 굽는 것을 본 뒤 끝나 새 맵으로 반영되면 닫는다. 전에 끝난 굽기가 남아 있을 때 열어도 저절로 닫히지 않게 굽는 모습을 봐야 한다.
+  const sawRebaking = useRef(false);
+  useEffect(() => {
+    if (rebaking) {
+      sawRebaking.current = true;
+      return;
+    }
+    if (!sawRebaking.current || !rebake) return;
+    sawRebaking.current = false;
+    if (rebakeApplied(rebake)) onRebaked();
+  }, [rebaking, rebake, onRebaked]);
+
+  const label = rebaking
+    ? '다시 굽는 중'
+    : capture.canRebakeNow
+      ? '다시 굽기'
+      : hasFiles
+        ? '다음'
+        : '건너뛰기';
 
   return (
     <ModalDialog
@@ -39,8 +67,12 @@ export function SupplementModal({
           <Button variant="secondary" onClick={onCancel} className={SECONDARY}>
             닫기
           </Button>
-          <Button onClick={onNext} disabled={uploading} className={ACTION}>
-            {hasFiles ? '다음' : '건너뛰기'}
+          <Button
+            onClick={capture.canRebakeNow ? capture.startRebake : onNext}
+            disabled={uploading || rebaking || capture.rebakePending}
+            className={ACTION}
+          >
+            {label}
           </Button>
         </div>
       </div>

@@ -60,7 +60,7 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
   return (
     <div className="grid items-start gap-4 min-[960px]:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)]">
       <div className="min-w-0">
-        <ReportPanel workId={workId} editable withPrint draftable />
+        <ReportPanel workId={workId} editable withPrint draftable setupDone={setupDone} />
       </div>
       <div className="flex min-w-0 flex-col gap-3">
         <LayoutPreview

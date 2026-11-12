@@ -14,8 +14,6 @@ export const NEW_KEY = '__new__';
 export const NEW_ZONE_KIND = 'OPENING';
 export const NEW_EVAL_TYPE = 'VOLUME_3D';
 export const NEW_ZONE_SEVERITY: Severity = 'HIGH';
-/** 작업면이 붙은 구역의 심각도(늘 경고). 사용자가 고르지 못하고 저장할 때 이 값으로 맞춘다. */
-export const SURFACE_ZONE_SEVERITY: Severity = 'HIGH';
 /** 작업면이 붙은 구역의 판정 유형(높이가 있는 입체). 저장할 때 이 값으로 맞춘다. */
 export const SURFACE_ZONE_JUDGE_TYPE: JudgeType = NEW_EVAL_TYPE;
 /** 이름을 정하지 않은 새 구역의 기본 이름 앞부분(`구역 1`, `구역 2`…). */
@@ -54,7 +52,8 @@ export interface ZonePatch {
 
 /**
  * 구역(또는 새 구역) 하나의 저장 전 초안. box 는 고친 구역 상자(안 고쳤으면 null), surface 는 undefined 가 건드리지 않음,
- * 객체가 고친 작업면(새 구역의 기본 작업면을 고친 것 포함)이다. 작업면은 지우지 않는다.
+ * 객체가 고친 작업면이다. 새 구역은 고소 작업면을 체크하면 이 칸에 작업면이 들어가고(체크를 끄면 withoutSurface 로 뺀다),
+ * 기존 구역의 작업면은 지우지 않는다.
  */
 export interface TargetDraft {
   patch: ZonePatch;
@@ -93,7 +92,7 @@ export function defaultNewBox(zones: readonly ZoneBox[], limit: RoomLimit): View
   return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
 }
 
-/** 받은 구역이 이미 작업면 구역의 모양·높이·등급·판정 유형 그대로인지(그러면 작업면만 고쳐도 새 구역 버전이 필요 없다). */
+/** 받은 구역이 이미 작업면 구역의 모양·높이·판정 유형 그대로인지(그러면 작업면만 고쳐도 새 구역 버전이 필요 없다). */
 export function zoneFollowsSurface(zone: Zone, shape: ZoneShape): boolean {
   const samePoints =
     zone.polygon.length === shape.polygon_xy.length &&
@@ -106,7 +105,6 @@ export function zoneFollowsSurface(zone: Zone, shape: ZoneShape): boolean {
     samePoints &&
     zone.zBounds[0] === shape.z_min_m &&
     zone.zBounds[1] === shape.z_max_m &&
-    zone.severity === SURFACE_ZONE_SEVERITY &&
     zone.judgeType === SURFACE_ZONE_JUDGE_TYPE
   );
 }
@@ -224,10 +222,9 @@ export function newZoneForm(patch: ZonePatch, defaultName: string): ZoneForm {
   };
 }
 
-/** 작업면이 붙은 구역의 양식: 심각도·판정 유형은 고르지 못하고 작업면 구역 값으로 맞춘다. */
+/** 작업면이 붙은 구역의 양식: 판정 유형은 고르지 못하고 작업면 구역 값으로 맞춘다(심각도는 고른 값 그대로). */
 export const surfaceZoneForm = (form: ZoneForm): ZoneForm => ({
   ...form,
-  severity: SURFACE_ZONE_SEVERITY,
   judgeType: SURFACE_ZONE_JUDGE_TYPE,
 });
 
@@ -272,6 +269,12 @@ export function withoutName(draft: TargetDraft): TargetDraft {
   delete patch.name;
   return { ...draft, patch };
 }
+
+/** 작업면 칸을 뺀 초안(새 구역이 고소 작업면 체크를 끈 때). 초안이 없던 구역이면 빈 초안이다. */
+export const withoutSurface = (prev: TargetDraft | undefined): TargetDraft => ({
+  patch: prev?.patch ?? {},
+  box: prev?.box ?? null,
+});
 
 /** 작업면 칸을 그대로 이어받는 값(건드리지 않았으면 칸을 두지 않는다). */
 const keepSurface = (prev: TargetDraft | undefined) =>
@@ -331,14 +334,15 @@ export function withoutUnchangedSurface(
   linked: LinkedSurface | null,
 ): TargetDraft {
   if (draft.surface === undefined || surfaceChanged(draft.surface, linked)) return draft;
-  return { patch: draft.patch, box: draft.box };
+  return withoutSurface(draft);
 }
 
 // ---- 3D 로 내려 줄 값 ---------------------------------------------------------------------------
 
 /**
  * 3D 손잡이가 고칠 상자. 작업면이 있으면 작업면 상자다(구역은 작업면에서 계산하므로 손잡이가 없다. 회전한 작업면·형상 오류가
- * 있으면 없음). 작업면이 없으면(작업면 없이 만든 기존 구역) 구역 상자이고, 형상을 못 고치는 구역이면 null 이다.
+ * 있으면 없음). 작업면이 없으면(고소 작업면을 체크하지 않은 새 구역, 작업면 없이 만든 기존 구역) 구역 상자이고, 형상을 못
+ * 고치는 구역이면 null 이다.
  */
 export function boxEditOf(input: {
   key: string;

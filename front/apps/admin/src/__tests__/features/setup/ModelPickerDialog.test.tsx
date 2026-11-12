@@ -4,30 +4,40 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(cleanup);
 
-function renderDialog() {
+function renderDialog(reuseBlockedReason: string | null = null) {
   const onNew = vi.fn();
-  render(<ModelPickerDialog onNew={onNew} />);
+  const onReuse = vi.fn();
+  render(
+    <ModelPickerDialog onNew={onNew} onReuse={onReuse} reuseBlockedReason={reuseBlockedReason} />,
+  );
   const dialog = screen.getByRole('dialog', { name: '3D 공간' });
-  return { onNew, dialog, within: within(dialog) };
+  return { onNew, onReuse, dialog, within: within(dialog) };
 }
 
 describe('방식 고르기 창', () => {
-  it('새로 만들기와 이전 모델 쓰기 두 선택지를 보이고 새로 만들기에 예상 시간을 붙인다', () => {
-    const { within: inDialog } = renderDialog();
+  it('새로 만들기와 이전 모델 쓰기 두 선택지를 보이고 새로 만들기에 예상 시간을 붙이며, 막는 이유가 없으면 이전 모델 쓰기를 눌러 onReuse 를 부른다', () => {
+    const { onNew, onReuse, within: inDialog } = renderDialog();
     expect(inDialog.getByRole('heading', { name: '3D 공간' })).toBeTruthy();
     expect(inDialog.getByRole('button', { name: /^새로 3D 공간 만들기/ }).textContent).toContain(
       '예상 약 1분 30초',
     );
-    expect(inDialog.getByRole('button', { name: /^이전 모델 쓰기/ })).toBeTruthy();
+    const reuse = inDialog.getByRole('button', { name: /^이전 모델 쓰기/ }) as HTMLButtonElement;
+    expect(reuse.disabled).toBe(false);
+    expect(reuse.title).toBe('');
+    expect(reuse.textContent).toBe('이전 모델 쓰기');
+    fireEvent.click(reuse);
+    expect(onReuse).toHaveBeenCalledTimes(1);
+    expect(onNew).not.toHaveBeenCalled();
   });
 
-  it('이전 모델 쓰기는 늘 막혀 있고 이유를 글과 title 에 둔다', () => {
-    const { onNew, within: inDialog } = renderDialog();
+  it('이전 모델 쓰기를 막는 이유가 있으면 꺼지고 이유를 글과 title 에 둔다', () => {
+    const { onNew, onReuse, within: inDialog } = renderDialog('이전 모델이 없어요');
     const reuse = inDialog.getByRole('button', { name: /^이전 모델 쓰기/ }) as HTMLButtonElement;
     expect(reuse.disabled).toBe(true);
-    expect(reuse.title).toBe('지금은 쓸 수 없어요');
-    expect(reuse.textContent).toContain('지금은 쓸 수 없어요');
+    expect(reuse.title).toBe('이전 모델이 없어요');
+    expect(reuse.textContent).toContain('이전 모델이 없어요');
     fireEvent.click(reuse);
+    expect(onReuse).not.toHaveBeenCalled();
     expect(onNew).not.toHaveBeenCalled();
   });
 

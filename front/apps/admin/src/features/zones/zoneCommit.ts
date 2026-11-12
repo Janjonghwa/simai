@@ -74,8 +74,8 @@ export const renameRequestOf = (zone: Zone, name: string): ZoneCommitRequest => 
 });
 
 /**
- * 새 구역 만들기. 구역 몸체는 모양·양식 그대로다. 작업면이 있으면 새 작업면도 함께 만든다(구역 편집 화면의 새 구역은 늘
- * 작업면이 있고, 작업면 없이 만드는 쪽은 세팅의 AI 초안 수락이다).
+ * 새 구역 만들기. 구역 몸체는 모양·양식 그대로다. 작업면이 있으면 새 작업면도 함께 만든다(구역 편집 화면의 새 구역은
+ * 고소 작업면을 체크했을 때, 세팅의 AI 초안은 작업면을 믿을 수 있을 때).
  */
 export function createRequestOf(input: {
   form: ZoneForm;

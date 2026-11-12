@@ -353,7 +353,7 @@ describe('IncidentCard', () => {
     expect(chip?.className).not.toContain('sev-critical');
   });
 
-  it('사람을 담은 카메라가 있으면 카메라 버튼이 오른쪽 카메라 미리보기를 연다', () => {
+  it('사람을 담은 카메라가 있어도 CCTV 버튼은 이름 없이 오른쪽 카메라 미리보기를 연다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -364,28 +364,9 @@ describe('IncidentCard', () => {
     });
     const { card } = renderCard([entry()]);
 
-    const camera = within(card).getByRole('button', { name: /cam2로 확인/ });
-    fireEvent.click(camera);
+    fireEvent.click(within(card).getByRole('button', { name: 'CCTV로 확인' }));
     // CCTV 화면으로 옮기지 않고 실시간 관제 오른쪽 칸을 연다.
     expect(navigate).not.toHaveBeenCalled();
-    expect(useCamSplitStore.getState().split).toEqual({
-      cam: 'cam2',
-      target: { type: 'person', id: 'w-0015' },
-    });
-  });
-
-  it('담은 카메라가 없으면 카메라 이름 없이 CCTV 버튼이 첫 카메라 미리보기를 연다', () => {
-    useRealtimeStore.setState({
-      world: {
-        receivedAt: T,
-        payload: {
-          tracks: [{ world_id: 'w-0015', cameras: [] }],
-        } as unknown as WorldStatePayload,
-      },
-    });
-    const { card } = renderCard([entry()]);
-
-    fireEvent.click(within(card).getByRole('button', { name: 'CCTV로 확인' }));
     expect(useCamSplitStore.getState().split).toEqual({
       cam: ANY_CAMERA,
       target: { type: 'person', id: 'w-0015' },

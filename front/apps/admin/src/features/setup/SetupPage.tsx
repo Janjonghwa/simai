@@ -53,9 +53,10 @@ import { SetupZoneReviewCard } from '@/features/setup/SetupZoneReviewCard';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementModal } from '@/features/setup/SupplementModal';
-import type { ZoneDraftItem } from '@/features/setup/types';
+import type { SetupMode, ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
+import { useReuseBlockedReason } from '@/features/setup/useReuseScene';
 import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
@@ -210,6 +211,8 @@ function SetupWorkPage({
   const step1Active = stage === 0;
   const coverageQuery = useCoverageGuides(step1Active);
   const heightDefaultsQuery = useCameraHeightDefaults();
+  // 이전 모델 쓰기는 방식 고르기 창이 열려 있는 동안만 현재 관제 맵을 받아 켤지 정한다.
+  const reuseBlockedReason = useReuseBlockedReason(modelPickerOpen);
 
   const go = useCallback((next: Stage) => setStage(next), []);
 
@@ -231,7 +234,8 @@ function SetupWorkPage({
     createSession.session?.setup_session_id ??
     null;
 
-  const sessionQuery = useSetupSession(sessionId, Boolean(sessionId));
+  // 맵 보강 창이 열려 있는 동안은 끝난 세션도 계속 받는다(휴대폰으로 올린 파일과 다시 굽기 판정이 이 조회로만 온다).
+  const sessionQuery = useSetupSession(sessionId, Boolean(sessionId), supplementOpen);
   const currentSession = sessionQuery.data ?? retrySession.session ?? createSession.session ?? null;
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
@@ -344,7 +348,11 @@ function SetupWorkPage({
       retrySession.retry({ setupSessionId: sessionId, body: { camera_heights_m: cameraHeights } });
     if (currentSession.status === 'FAILED') retry();
     else if (currentSession.status === 'COMPLETED')
-      createSession.submit({ work_unit_id: workUnitId, camera_heights_m: cameraHeights });
+      createSession.submit({
+        work_unit_id: workUnitId,
+        camera_heights_m: cameraHeights,
+        mode: currentSession.requested_mode ?? undefined,
+      });
     else cancelMutation.mutate(sessionId, { onSuccess: retry });
   }, [
     sessionId,
@@ -357,13 +365,18 @@ function SetupWorkPage({
     workUnitId,
   ]);
 
-  const createSessionNow = useCallback(() => {
-    if (!heightValidation.valid || createSession.pending) return;
-    createSession.submit({
-      work_unit_id: workUnitId,
-      camera_heights_m: heightValidation.cameraHeightsM,
-    });
-  }, [heightValidation, createSession, workUnitId]);
+  // mode 를 생략하면 새 모델이다(서버가 NEW 로 본다).
+  const createSessionNow = useCallback(
+    (mode?: SetupMode) => {
+      if (!heightValidation.valid || createSession.pending) return;
+      createSession.submit({
+        work_unit_id: workUnitId,
+        camera_heights_m: heightValidation.cameraHeightsM,
+        mode,
+      });
+    },
+    [heightValidation, createSession, workUnitId],
+  );
 
   // 새 세션은 방식 고르기 창에서 '새로 3D 공간 만들기' 를 눌러야 만든다. 같은 세션의 재시도는 방식이 이미 정해졌으니 묻지 않는다.
   const submitStep1 = useCallback(() => {
@@ -379,6 +392,11 @@ function SetupWorkPage({
   const pickNewModel = useCallback(() => {
     setModelPickerOpen(false);
     createSessionNow();
+  }, [createSessionNow]);
+
+  const pickReuseModel = useCallback(() => {
+    setModelPickerOpen(false);
+    createSessionNow('REUSE');
   }, [createSessionNow]);
 
   // 옆 카메라 쌍의 겹침이 부족하면 보정이 실패할 수 있어 시작 전에 한 번 더 묻는다(높이를 고쳐 다시 시작할 때도 같다).
@@ -440,10 +458,11 @@ function SetupWorkPage({
     else go(ZONE_STAGE);
   }, [currentSession, go]);
 
+  const closeSupplement = useCallback(() => setSupplementOpen(false), []);
   const enterZoneStage = useCallback(() => {
-    setSupplementOpen(false);
+    closeSupplement();
     go(ZONE_STAGE);
-  }, [go]);
+  }, [closeSupplement, go]);
 
   const actions = deriveSetupActions(
     {
@@ -683,12 +702,19 @@ function SetupWorkPage({
           </SetupZoneStep>
         </ZoneSourceContext>
       )}
-      {modelPickerOpen && <ModelPickerDialog onNew={pickNewModel} />}
+      {modelPickerOpen && (
+        <ModelPickerDialog
+          onNew={pickNewModel}
+          onReuse={pickReuseModel}
+          reuseBlockedReason={reuseBlockedReason}
+        />
+      )}
       {supplementOpen && currentSession && (
         <SupplementModal
           session={currentSession}
           onNext={enterZoneStage}
-          onCancel={() => setSupplementOpen(false)}
+          onCancel={closeSupplement}
+          onRebaked={closeSupplement}
         />
       )}
     </div>

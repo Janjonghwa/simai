@@ -15,7 +15,7 @@ import { isAxisRect } from '@/features/zones/zones';
 // 가상 레이아웃 항목 ↔ 작업면·구역 변환(순수 계산). 작업을 시작하면 서버가 이 규칙으로 레이아웃 항목에서 구역을 만들고
 // (서버 요청서 '세부 규칙'), 관제는 같은 규칙으로 구역을 레이아웃 항목으로 되돌려 PUT /api/layouts 로 보낸다.
 // 고소 작업면 → 작업면 + 둘레 0.3 m 입체 구역, 개구부 → 바깥 0.3 m 구역. 옛 SCAFFOLD 는 고소 작업면으로 읽고 EQUIPMENT 는
-// 구역을 만들지 않는다. 구역 등급은 늘 경고(HIGH)이고 판정 유형은 입체(VOLUME_3D)다(zoneForm 의 surfaceZoneForm 이 맞춘다).
+// 구역을 만들지 않는다. 구역 등급은 서버가 경고(HIGH)로 정하고 판정 유형은 입체(VOLUME_3D)다(zoneForm 의 surfaceZoneForm 이 판정 유형을 맞춘다).
 
 /** 구역에서 되돌린 개구부 항목의 가로·세로가 이보다 작으면 되돌리지 않는다(3D 손잡이의 최소 크기와 같다, m). */
 const MIN_OPENING_SIZE_M = 0.2;

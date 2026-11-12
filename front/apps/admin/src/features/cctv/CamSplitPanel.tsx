@@ -27,7 +27,7 @@ import { cn } from '@simai/ui/lib/utils';
 import { Video, X } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 
-// 실시간 관제 오른쪽 카메라 미리보기. 이벤트 카드·경보 배너의 「camN로 확인」이 연다.
+// 실시간 관제 오른쪽 카메라 미리보기. 이벤트 카드·경보 배너의 「CCTV로 확인」이 연다.
 // 카메라 탭, CCTV 관제 화면과 같은 영상 칸, 이 사람의 사건 요약과 경보 확인·사건 상세를 한 칸에 둔다.
 // 영상은 관리자만 본다(명세 3.3). 다른 역할은 카메라 상태만 본다. 영상은 알림·판정에 쓰지 않는다.
 
@@ -74,14 +74,18 @@ function IncidentSummary({
   );
 }
 
+/** 카메라 이름 순서(cam2 가 cam10 앞). 중계가 알린 순서와 상관없이 「CCTV로 확인」이 여는 첫 카메라가 cam1 이 되게 한다. */
+const byCameraName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
+
 /**
- * 탭에 올리는 카메라: 중계가 이어졌으면 중계가 알린 카메라, 아니면 Tier 0 health 의 카메라.
- * 이름은 이 둘이 같다(예: cam_A). 이벤트의 카메라(world 트랙)도 같은 이름이라 「cam_A로 확인」이 맞는 탭을 연다.
+ * 탭에 올리는 카메라: 중계가 이어졌으면 중계가 알린 카메라, 아니면 Tier 0 health 의 카메라. 이름 순서로 둔다.
+ * 이름은 이 둘이 같다(예: cam_A). 이벤트의 카메라(world 트랙)도 같은 이름이라 추천 탭이 맞는 탭을 가리킨다.
  */
 function useCameraIds(relayed: boolean, healthIds: readonly string[]): readonly string[] {
   const link = useCctvStore((s) => s.link);
   const relayCameras = useCctvStore((s) => s.cameras);
-  return relayed && link === 'open' && relayCameras.length > 0 ? relayCameras : healthIds;
+  const ids = relayed && link === 'open' && relayCameras.length > 0 ? relayCameras : healthIds;
+  return useMemo(() => [...ids].sort(byCameraName), [ids]);
 }
 
 /** attach 가 없으면(관리자가 아님) 영상 없이 카메라 상태만 보인다. */

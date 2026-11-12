@@ -46,7 +46,11 @@ export function SupplementCaptureBody({
   const [copied, setCopied] = useState(false);
   const phoneUrl = phoneSupplementUrl(window.location.origin, sessionId);
   const view = capture.rebakeView;
-  const blockedText = rebakeBlockedText(capture.supplement?.rebake_blocked_reason);
+  // 맵에 넣을 파일이 있는데 서버가 굽게 해 주지 않을 때만 그 이유를 보인다(다시 굽기 단추는 창 아래 단추 줄에 있다)
+  const blockedText =
+    capture.pendingMedia.length > 0 && !capture.canRebakeNow
+      ? rebakeBlockedText(capture.supplement?.rebake_blocked_reason)
+      : null;
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -187,34 +191,23 @@ export function SupplementCaptureBody({
         </p>
       )}
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {view?.running ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            className={SOFT_BUTTON}
-            disabled={capture.cancelPending}
-            onClick={capture.cancelRebake}
-          >
-            다시 굽기 취소
-          </Button>
-        ) : (
-          <>
-            {!capture.supplement?.can_rebake && blockedText && (
-              <span className="text-muted-foreground">{blockedText}</span>
-            )}
+      {(view?.running || blockedText) && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {view?.running ? (
             <Button
               size="sm"
               variant="secondary"
               className={SOFT_BUTTON}
-              disabled={!capture.supplement?.can_rebake || capture.rebakePending}
-              onClick={capture.startRebake}
+              disabled={capture.cancelPending}
+              onClick={capture.cancelRebake}
             >
-              다시 굽기
+              다시 굽기 취소
             </Button>
-          </>
-        )}
-      </div>
+          ) : (
+            <span className="text-muted-foreground">{blockedText}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

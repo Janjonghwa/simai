@@ -12,7 +12,7 @@ import {
 } from '@/features/zones/zonePanelStyle';
 import { Input } from '@simai/ui/components/input';
 
-/** 이름·심각도(작업면이 붙은 구역은 이름만). 보내는 중이면 잠근다. */
+/** 이름·심각도(작업 중 레이아웃 구역은 이름만). 보내는 중이면 잠근다. */
 export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
   const { form, errors } = edit;
   return (
@@ -32,7 +32,7 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
           </span>
         )}
       </label>
-      {!edit.bound && !edit.layoutBound && <SeverityField edit={edit} />}
+      {!edit.layoutBound && <SeverityField edit={edit} />}
       {errors.judgeType && (
         <span role="alert" className={FIELD_NOTE_CLASS}>
           {errors.judgeType}
@@ -42,7 +42,7 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
   );
 }
 
-/** 심각도 칸. 작업면이 붙은 구역은 경고로 고정이라 보이지 않는다. */
+/** 심각도 칸. 작업 중 레이아웃 구역은 서버가 정해서 보이지 않는다. */
 function SeverityField({ edit }: { edit: ZoneEditing }) {
   const { form, errors } = edit;
   return (

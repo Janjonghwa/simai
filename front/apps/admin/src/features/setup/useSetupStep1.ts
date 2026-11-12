@@ -99,8 +99,9 @@ function isTerminalSession(session: SetupSessionResponse | undefined): boolean {
  * 세팅 시작 뒤 GET /api/setup-sessions/{id} 를 2초 주기로 조회한다.
  * 미리보기 Scene(preview_scene_version)·정식 고화질 Scene(scene_version)이 도착하면 세팅 화면은 그 버전을
  * GET /api/scenes/{scene_version}/view 로 새로 받아 뷰어를 자동 교체한다(편집 중인 초안은 유지). 지금 관제 Scene 은 보지 않는다.
+ * 끝난 세션은 조회를 멈추지만 keepPolling 이면 계속 받는다(맵 보강 창이 열려 있는 동안 휴대폰으로 올린 파일·다시 굽기 판정을 따라간다).
  */
-export function useSetupSession(sessionId: string | null, enabled = true) {
+export function useSetupSession(sessionId: string | null, enabled = true, keepPolling = false) {
   const active = Boolean(sessionId) && enabled;
   const query = useQuery({
     queryKey: setupSessionKey(sessionId ?? ''),
@@ -108,7 +109,7 @@ export function useSetupSession(sessionId: string | null, enabled = true) {
     enabled: active,
     refetchInterval: (q) => {
       if (!active) return false;
-      return isTerminalSession(q.state.data) ? false : SETUP_SESSION_POLL_MS;
+      return isTerminalSession(q.state.data) && !keepPolling ? false : SETUP_SESSION_POLL_MS;
     },
   });
 

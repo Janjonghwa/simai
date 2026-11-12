@@ -1,4 +1,5 @@
 import {
+  setupModeSchema,
   setupZoneDraftsResponseSchema,
   type CameraReceptionStatus,
   type Connectivity,
@@ -8,6 +9,7 @@ import {
   type CoverageRelayStatus,
   type CreateSetupSessionBody,
   type RetrySetupSessionBody,
+  type SetupMode,
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
   type SetupZoneDraftsResponseInput,
@@ -382,7 +384,12 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return session;
     }
     if (t - (session.started_at_ms ?? t) < previewReadyAfterMs) return session;
-    return updateSession(session.setup_session_id, PREVIEW_READY_PATCH);
+    return updateSession(
+      session.setup_session_id,
+      session.mode === 'REUSE'
+        ? { ...PREVIEW_READY_PATCH, preview_scene_version: null }
+        : PREVIEW_READY_PATCH,
+    );
   }
 
   /**
@@ -405,9 +412,14 @@ export function createSetupMock(options: SetupMockOptions = {}) {
 
   const supplement = createSupplementMock({ now, sessions, updateSession });
 
+  /** 새 세션의 모드 칸. mode 는 실제로 따른 모드, requested_mode 는 요청한 모드다(새 모델로 바뀌는 경우는 흉내 내지 않는다). */
+  const modePatch = (mode: SetupMode): Partial<SetupSessionResponse> => ({
+    mode,
+    requested_mode: mode,
+  });
   /** 새 세션의 World 다시 맞추기 판정(옵션이 있을 때만 싣는다). */
   const anchorPatch = (): Partial<SetupSessionResponse> =>
-    options.worldAnchorAccepted ? { mode: 'NEW', world_anchor: { accepted: true } } : {};
+    options.worldAnchorAccepted ? { world_anchor: { accepted: true } } : {};
   /** 목록 채우기가 읽는 지금 관제 구역. 개발 서버는 구역 mock 을 잇는다(bindLiveZones), 시험은 기본 빈 목록. */
   let liveZones: () => readonly SetupMockLiveZone[] = () => [];
   /** 확인 필요(needs_review)를 서버처럼 정리한다: 이어 쓰는 구역을 고치지 않은 항목만 true 를 남긴다. */
@@ -465,6 +477,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     const order = AUTO_STAGES.map((s) => s.stage);
     if (!target || order.indexOf(target.stage) <= order.indexOf(session.status)) return session;
     const idx = order.indexOf(target.stage);
+    // 이전 모델 재사용은 새 맵을 만들지 않아 미리보기·정식 맵 버전이 없다(서버와 같다).
+    const bakes = session.mode !== 'REUSE';
     const n = session.setup_session_id.slice(-4);
     const cams = Object.keys(session.camera_heights_m);
     return updateSession(session.setup_session_id, {
@@ -473,8 +487,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       progress_pct: target.pct,
       background_collection_pct: Object.fromEntries(cams.map((c) => [c, idx > 0 ? 100 : 60])),
       calibration_version: idx >= 2 ? `cal-setup-${n}` : null,
-      preview_scene_version: idx >= 4 ? `scene-preview-setup-${n}` : null,
-      scene_version: idx >= 6 ? (session.scene_version ?? `scene-setup-${n}`) : null,
+      preview_scene_version: bakes && idx >= 4 ? `scene-preview-setup-${n}` : null,
+      scene_version: bakes && idx >= 6 ? (session.scene_version ?? `scene-setup-${n}`) : null,
       height_checks:
         idx >= 4
           ? Object.fromEntries(
@@ -564,6 +578,13 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (typeof workUnitId !== 'number' || !Number.isInteger(workUnitId) || workUnitId < 1) {
         return problem(400, 'INVALID_SETUP_REQUEST', '유효한 작업 단위 ID가 필요합니다');
       }
+      // 서버처럼(SetupReuseMode.parseRequested) 모드를 생략하면 새 모델이고 NEW·REUSE 밖의 값은 400 이다.
+      const sentMode = Reflect.get(raw, 'mode');
+      const parsedMode = setupModeSchema.safeParse(sentMode ?? 'NEW');
+      if (!parsedMode.success) {
+        return problem(400, 'INVALID_SETUP_REQUEST', '세팅 모드가 올바르지 않습니다');
+      }
+      const requestedMode = parsedMode.data;
       // 서버처럼(SetupService.create) 끝나지 않은 세션이 있으면 새로 시작할 수 없다.
       const running = [...sessions.values()].some(
         (session) => session.status !== 'COMPLETED' && session.status !== 'FAILED',
@@ -603,6 +624,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       submittedBodies.push({
         work_unit_id: workUnitId,
         camera_heights_m: { ...submittedHeights },
+        ...(sentMode === undefined ? {} : { mode: requestedMode }),
       });
 
       const sessionId = `019a0000-0000-7000-8000-${String(++seq).padStart(12, '0')}`;
@@ -637,6 +659,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ready_at_ms: null,
         completed_at_ms: null,
         updated_at_ms: t,
+        ...modePatch(requestedMode),
         ...anchorPatch(),
       };
       sessions.set(sessionId, session);
@@ -748,6 +771,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ready_at_ms: null,
         completed_at_ms: null,
         updated_at_ms: t,
+        ...modePatch(prevSession.requested_mode ?? 'NEW'),
         ...anchorPatch(),
       };
       sessions.set(retriedSessionId, retried);

@@ -199,6 +199,21 @@ export interface RebakeView {
   media: RebakeMediaLine[];
 }
 
+/** 다시 굽기가 끝나 새 맵이 반영됐는지(원래 맵 유지·실패·취소·진행 중이면 false). */
+export function rebakeApplied(rebake: SupplementRebake): boolean {
+  if (rebake.status !== 'SUCCEEDED') return false;
+  return (rebake.outcome ?? rebake.result?.status ?? null) === 'APPLIED';
+}
+
+/** 서버에 올라와 있는데 맵에 아직 안 들어간 파일. 마지막으로 반영된 다시 굽기가 넣은 파일은 뺀다. */
+export function unbakedMedia(
+  media: readonly SupplementMedia[],
+  rebake: SupplementRebake | null,
+): SupplementMedia[] {
+  const baked = new Set(rebake && rebakeApplied(rebake) ? rebake.media_ids : []);
+  return media.filter((m) => m.status === 'UPLOADED' && !baked.has(m.media_id));
+}
+
 /** 다시 굽기 상태를 화면 문구로 바꾼다. 결과는 반영됨 / 원래 맵 유지 + 사유로만 말한다. */
 export function describeRebake(
   rebake: SupplementRebake,
@@ -254,8 +269,7 @@ export function describeRebake(
       media: lines,
     };
   }
-  const outcome = rebake.outcome ?? rebake.result?.status ?? null;
-  if (outcome === 'APPLIED') {
+  if (rebakeApplied(rebake)) {
     return {
       running: false,
       tone: 'ok',

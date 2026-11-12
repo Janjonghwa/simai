@@ -237,7 +237,7 @@ describe('createRequestOf(새 구역)', () => {
   const named = { ...newSurfaceDraft(newBox), name: '단상' };
   const cases: Case[] = [
     {
-      name: '작업면 초안이 null(세팅의 AI 초안 수락): 구역 CREATE 만, 작업면 키 없음',
+      name: '작업면 초안이 null(작업면을 체크하지 않은 새 구역, 세팅의 AI 초안): 구역 CREATE 만, 작업면 키 없음',
       request: createRequestOf({ form: newForm, shape: newShape, surface: null }),
       expected: { zone: { op: 'CREATE', body: newBody } },
     },

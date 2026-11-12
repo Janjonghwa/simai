@@ -296,6 +296,10 @@ export const supplementStateSchema = z.object({
 export type SupplementState = z.infer<typeof supplementStateSchema>;
 export type SupplementStateInput = z.input<typeof supplementStateSchema>;
 
+/** 세팅 모드(-614): NEW 새 모델 · REUSE 이전 모델 재사용. */
+export const setupModeSchema = z.enum(['NEW', 'REUSE']);
+export type SetupMode = z.infer<typeof setupModeSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -331,7 +335,9 @@ export const setupSessionResponseSchema = z.object({
   /** 맵 보강 촬영 상태(S15P31A101-607). 그 전 서버는 싣지 않는다. */
   supplement: supplementStateSchema.nullable().optional(),
   /** 실제로 따른 세팅 모드(-614): NEW 새 모델 · REUSE 이전 모델 재사용. 그 전 서버는 싣지 않는다(새 모델로 본다). */
-  mode: z.enum(['NEW', 'REUSE']).nullish().catch(null),
+  mode: setupModeSchema.nullish().catch(null),
+  /** 처음 요청한 세팅 모드(-614). REUSE 를 요청했다가 새 모델로 이어 가면 mode 는 NEW 이고 이 값은 REUSE 로 남는다. 다시 시작할 때 이어 쓴다. */
+  requested_mode: setupModeSchema.nullish().catch(null),
   /** 이 세션으로 세팅을 완료한 시각(C17, -615). 완료 전이면 null. 그 전 서버는 싣지 않는다. */
   setup_completed_at_ms: z.number().nullish(),
   /** World 다시 맞추기 판정 요약(-614). accepted 면 지금 관제 구역과 같은 World 라 기존 구역을 이어 쓸 수 있다. */
@@ -357,6 +363,8 @@ export type CompleteSetupResponse = z.infer<typeof completeSetupResponseSchema>;
 export interface CreateSetupSessionBody {
   work_unit_id: number;
   camera_heights_m: Record<string, number>;
+  /** 생략하면 새 모델(NEW). */
+  mode?: SetupMode;
 }
 
 export interface RetrySetupSessionBody {

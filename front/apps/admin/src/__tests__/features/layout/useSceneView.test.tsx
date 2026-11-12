@@ -1,5 +1,5 @@
 import { requestSceneView } from '@/features/layout/api';
-import { useSceneOrCurrent, useSceneView } from '@/features/layout/useSceneView';
+import { useSceneOrCurrent } from '@/features/layout/useSceneView';
 import type { ViewerSceneStatus } from '@/features/viewer3d';
 import { ApiError, createHttp } from '@/lib/http';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -76,7 +76,7 @@ describe('버전을 지정한 Scene 조회', () => {
   });
 
   it('받은 본문(CANDIDATE 포함)을 가공하지 않고 안정된 입력으로 감싼다', async () => {
-    const { result, rerender } = run(useSceneView, 'scene-preview-1');
+    const { result, rerender } = run(useSceneOrCurrent, 'scene-preview-1');
     expect(result.current.scene).toBeNull();
     await advance();
     expect(result.current.scene).toEqual({ ok: true, raw: VIEW });
@@ -88,16 +88,9 @@ describe('버전을 지정한 Scene 조회', () => {
     expect(result.current.onSceneStatusChange).toBe(callback);
   });
 
-  it('버전이 없으면 요청하지 않는다(현재 Scene 으로 갈음하지 않는다)', async () => {
-    const { result } = run(useSceneView, null);
-    await advance(30_000);
-    expect(api).not.toHaveBeenCalled();
-    expect(result.current.scene).toBeNull();
-  });
-
   it('404 는 뷰어에 "받지 못했다"로 넘기고, 10초마다 다시 받아 보이면 회복한다', async () => {
     api.mockRejectedValueOnce(NOT_FOUND);
-    const { result } = run(useSceneView, 'scene-preview-1');
+    const { result } = run(useSceneOrCurrent, 'scene-preview-1');
     await advance();
     expect(result.current.scene).toEqual({
       ok: false,
@@ -119,7 +112,7 @@ describe('버전을 지정한 Scene 조회', () => {
     ['망 끊김', new ApiError(0)],
   ])('%s 실패는 입력을 넘기지 않고 10초 뒤 회복한다', async (_, error) => {
     api.mockRejectedValueOnce(error);
-    const { result } = run(useSceneView, 'scene-preview-1');
+    const { result } = run(useSceneOrCurrent, 'scene-preview-1');
     await advance();
     expect(result.current.scene).toBeNull();
     await advance(10_000);
@@ -128,7 +121,7 @@ describe('버전을 지정한 Scene 조회', () => {
   });
 
   it('서명 만료 신호에 즉시 다시 받아 새 서명 주소를 넘긴다', async () => {
-    const { result } = run(useSceneView, 'scene-preview-1');
+    const { result } = run(useSceneOrCurrent, 'scene-preview-1');
     await advance();
     const renewed = { ...VIEW, gltf_url: '/scene.glb?signature=renewed' };
     api.mockResolvedValue(renewed);
