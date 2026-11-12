@@ -2,6 +2,7 @@ import {
   sameCalibratedCameraPoses,
   type CalibratedCameraPose,
 } from '@/features/viewer3d/cameras/cameraMarkers';
+import { MERGE_CARRY_GRACE_MS } from '@/features/viewer3d/data/identityCarry';
 import {
   DEFAULT_LAYERS,
   resolveLayers,
@@ -55,6 +56,13 @@ export const MAX_SELECT_WAIT_MS = 30_000;
 interface PendingSelect {
   target: ViewerTarget;
   focus: boolean;
+}
+
+/** 장면에서 빠진 선택·초점 사람. 그 ID 를 별칭으로 든 생존 트랙이 곧 오면 옮긴다(-661). */
+interface CarryPending {
+  id: string;
+  selected: boolean;
+  focused: boolean;
 }
 
 export interface ViewerState {
@@ -121,6 +129,11 @@ export interface ViewerState {
   setCameraPoses(input: readonly CalibratedCameraPose[] | undefined): void;
   /** 같은 객체면 바꾸지 않는다. 없으면 겹침을 지운다. */
   setFloorCoverage(input: FloorCoverage | null | undefined): void;
+  /**
+   * 병합으로 흡수된 사람 ID → 지금 그 사람의 World ID(-661, identityCarry.aliasOwners). 데이터 Store 의 World 를 받는
+   * 곳(ViewerShell) 하나가 넘긴다. 선택·초점 대상이 빠질 때 이 표로 생존 트랙을 찾는다. 상태가 아니라 다시 그리지 않는다.
+   */
+  setPersonAliases(owners: ReadonlyMap<string, string>): void;
   markReady(): void;
   markError(error: ViewerError): void;
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
@@ -195,6 +208,34 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       });
     };
 
+    // ID 병합 승계(-661). 선택·초점 사람이 빠질 때 그 ID 가 생존 트랙의 별칭이면 그 사람으로 옮긴다.
+    let aliasOwner: ReadonlyMap<string, string> = new Map();
+    let carry: CarryPending | null = null;
+    let carryTimer: ReturnType<typeof setTimeout> | null = null;
+    const dropCarry = () => {
+      if (carryTimer !== null) clearTimeout(carryTimer);
+      carryTimer = null;
+      carry = null;
+    };
+    /** 흡수된 ID 의 생존 트랙이 장면에 있으면 그 대상. */
+    const survivorOf = (id: string): ViewerTarget | null => {
+      const owner = aliasOwner.get(id);
+      if (owner === undefined) return null;
+      const target: ViewerTarget = { type: 'person', id: owner };
+      return get().targets.has(targetKey(target)) ? target : null;
+    };
+    /** 기다리던 승계를 이룬다. 그사이 다른 대상을 골랐으면 덮지 않는다. */
+    const tryCarry = () => {
+      if (!carry) return;
+      const target = survivorOf(carry.id);
+      if (!target) return;
+      const patch: Partial<ViewerState> = {};
+      if (carry.selected && get().selected === null) patch.selected = target;
+      if (carry.focused && get().focus === null) patch.focus = { target };
+      dropCarry();
+      if (patch.selected || patch.focus) set(patch);
+    };
+
     // 명령 대상이 지금 장면에 있는지 확인한다.
     const resolve = (input: unknown): { target: ViewerTarget } | CommandResult => {
       const target = parseTarget(input);
@@ -236,6 +277,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         targets.set(key, (targets.get(key) ?? 0) + 1);
         set({ targets });
         tryApply();
+        tryCarry();
       },
 
       unregisterTarget: (target) => {
@@ -249,18 +291,38 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
           return;
         }
         targets.delete(key);
-        // 장면에서 사라진 대상을 선택·초점으로 남겨 두지 않는다.
+        // 장면에서 사라진 대상을 선택·초점으로 남겨 두지 않는다. 병합으로 흡수된 사람이면 생존 트랙으로 옮긴다(-661).
         const { selected, focus } = get();
-        set({
-          targets,
-          selected: sameTarget(selected, target) ? null : selected,
-          focus: focus && sameTarget(focus.target, target) ? null : focus,
-        });
+        const wasSelected = sameTarget(selected, target);
+        const wasFocused = focus !== null && sameTarget(focus.target, target);
+        if (target.type !== 'person' || (!wasSelected && !wasFocused)) {
+          set({
+            targets,
+            selected: wasSelected ? null : selected,
+            focus: wasFocused ? null : focus,
+          });
+          return;
+        }
+        dropCarry();
+        const survivor = survivorOf(target.id);
+        if (survivor) {
+          set({
+            targets,
+            selected: wasSelected ? survivor : selected,
+            focus: wasFocused ? { target: survivor } : focus,
+          });
+          return;
+        }
+        // 별칭이 아직 안 왔다(같은 프레임의 처리 순서, 직후 프레임). 비워 두고 잠깐 기다린다.
+        set({ targets, selected: wasSelected ? null : selected, focus: wasFocused ? null : focus });
+        carry = { id: target.id, selected: wasSelected, focused: wasFocused };
+        carryTimer = setTimeout(dropCarry, MERGE_CARRY_GRACE_MS);
       },
 
       select: (input) => {
         const resolved = resolve(input);
         if (!('target' in resolved)) return resolved;
+        dropCarry();
         // 3D 클릭·다른 선택이 기다리던 요청보다 나중이다. 같은 대상이면 그 요청이 이뤄진 것이다.
         if (get().pendingSelect) {
           if (sameTarget(get().pendingSelect!.target, resolved.target)) settle('APPLIED');
@@ -275,6 +337,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         const focus = options?.focus === true;
         const target = parseTarget(input);
         if (!target) return { ok: false, reason: 'INVALID_TARGET' };
+        dropCarry();
         // 새 요청이 오면 기다리던 요청은 바뀐 것이다.
         settle('CANCELLED', 'REPLACED');
         const resolved = resolve(target);
@@ -304,6 +367,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       activate: (input) => {
         const resolved = resolve(input);
         if (!('target' in resolved)) return resolved;
+        dropCarry();
         set({
           selected: resolved.target,
           activated: { target: resolved.target },
@@ -312,6 +376,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       },
 
       clearSelection: () => {
+        dropCarry();
         settle('CANCELLED', 'SELECTION_CHANGED');
         if (get().selected !== null) set({ selected: null });
         return OK;
@@ -320,6 +385,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       focusOn: (input) => {
         const resolved = resolve(input);
         if (!('target' in resolved)) return resolved;
+        dropCarry();
         set({ focus: { target: resolved.target } });
         return OK;
       },
@@ -365,6 +431,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         if (next !== get().floorCoverage) set({ floorCoverage: next });
       },
 
+      setPersonAliases: (owners) => {
+        aliasOwner = owners;
+        tryCarry();
+      },
+
       markReady: () => {
         if (get().phase !== 'ready') set({ phase: 'ready', error: null });
         tryApply();
@@ -375,7 +446,10 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         set({ phase: 'error', error });
       },
 
-      dispose: () => settle('CANCELLED', 'UNMOUNTED'),
+      dispose: () => {
+        dropCarry();
+        settle('CANCELLED', 'UNMOUNTED');
+      },
 
       setTheme: (theme) => {
         if (get().theme !== theme) set({ theme });

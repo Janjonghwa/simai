@@ -113,19 +113,21 @@ class AppearancePipeline:
         self.people = {k: v for k, v in self.people.items() if k in active}
         self.pending = {k: v for k, v in self.pending.items() if k in active}
 
-    def track(self, track, t):
+    def track(self, track, t, *, identity_key=None):
+        """identity_key: 같은 사람으로 누적을 잇는 기준 차수(포즈 루프의 revision_base, 순수 병합이면 그대로). 없으면 트랙 차수."""
         wid = track["world_id"]
         acc = self.people.get(wid)
+        key = track["identity_revision"] if identity_key is None else identity_key
         if acc is not None:
             hold = bool(
                 track.get("avatar_update_hold", False)
                 or track.get("hold_appearance_update", False)
             )
             uncertain = track["identity_confidence"] == "IDENTITY_UNCERTAIN" or hold
-            if uncertain or acc.revision != track["identity_revision"]:
+            if uncertain or acc.revision != key:
                 self.pending.pop(wid, None)
             confidence = "IDENTITY_UNCERTAIN" if uncertain else track["identity_confidence"]
-            acc.track(track["identity_revision"], confidence, t)
+            acc.track(key, confidence, t)
 
     def register(self, wid, state, t):
         rig = state.baked.rig
@@ -136,7 +138,7 @@ class AppearancePipeline:
                                    camera_colors=self.camera_colors)
         old = self.people.get(wid)
         acc.last_confirmed = old.last_confirmed if old else None
-        acc.track(state.revision, "CONFIRMED", t)
+        acc.track(getattr(state, "revision_base", state.revision), "CONFIRMED", t)
         acc.stable = state.stable
         acc.ready = acc.stable >= self.config.freeze_frames
         self.people[wid] = acc
@@ -153,7 +155,8 @@ class AppearancePipeline:
         meshes = {}
         for person in frame.people:
             state = states[person.world_id]
-            if state.baked is not None and state.asset is not None and state.asset["identity_revision"] == state.revision:
+            if state.baked is not None and state.asset is not None and state.asset["identity_revision"] >= getattr(
+                    state, "revision_base", state.revision):
                 ref = snapshot["frames"].get(person.representative_camera)
                 if ref is None or abs(ref["capture_time_ms"] - doc["t"]) > self.config.sync_tolerance_ms:
                     continue
@@ -208,7 +211,9 @@ class AppearancePipeline:
                            else max(state.version, state.high_version) + 1)
                 state.high_version = version
                 asset = copy.deepcopy(state.asset)
-                asset.update(appearance_version=version, previous_appearance_version=max(state.history),
+                # 새 버전은 지금 트랙 차수로 적는다(순수 병합 뒤면 남는 ID 의 새 차수, S15P31A101-661)
+                asset.update(identity_revision=state.revision,
+                             appearance_version=version, previous_appearance_version=max(state.history),
                              created_at_ms=clock_ms(), calibration_version=frame.calibration_version,
                              input_provenance=copy.deepcopy(doc["input_provenance"]), face_policy=result.face_policy)
                 pending = (asset, result, t)

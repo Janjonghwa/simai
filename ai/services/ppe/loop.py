@@ -10,6 +10,7 @@
 - 접수 문(Tier 0 지연, 3.2)이 막으면 새 추론을 멈춘다. 누적된 상태는 계속 내보내 근거 만료로 UNKNOWN 이 되게 한다.
 - Tier 0 가 LIVE 가 아니면(정상 종료) 보내지 않는다.
 - 원본 영상은 이 주기 안에서만 쓰고 저장·기록하지 않는다(11장).
+- 트랙의 aliases·split_from(world_state 값 그대로)을 사람 관측에 실어 PpeJudge 가 순수 병합을 가린다(S15P31A101-661).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import uuid
 from simai_ai.ppe import FrameDetections, FrameObservations, PersonObservation, PpeJudge, associate_frame, build_ppe_state
 from simai_ai.ppe.classes import Candidate
 from simai_ai.io.channel_timing import ChannelTiming
+from simai_ai.tracking.identity_carry import split_marks
 
 log = logging.getLogger(__name__)
 
@@ -61,8 +63,13 @@ def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in (capture, epoch, seq)):
         return None
     persons = []
-    for track in doc.get("world", {}).get("tracks", []):
+    tracks = doc.get("world", {}).get("tracks", [])
+    marks = split_marks(tracks)   # 같은 차수로 갈라져 나간 Track(순수 병합 판정, S15P31A101-661)
+    for track in tracks:
         hold = bool(track.get("avatar_update_hold"))
+        revision = int(track.get("identity_revision") or 0)
+        aliases = tuple(str(a) for a in track.get("aliases") or ())
+        split_from = track.get("split_from") if isinstance(track.get("split_from"), str) else None
         confidence = UNCERTAIN if hold else str(track.get("identity_confidence") or "HIGH")
         for pc in track.get("per_camera", []):
             # 영상과 같은 프레임의 관측만 쓴다(5.5: 같은 카메라·같은 프레임·같은 촬영 시각)
@@ -72,11 +79,14 @@ def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple
                 continue
             persons.append(PersonObservation(
                 world_id=str(track["world_id"]),
-                identity_revision=int(track.get("identity_revision") or 0),
+                identity_revision=revision,
                 local_track_id=str(pc["local_track_id"]),
                 keypoints_2d=pc.get("keypoints_2d") or [],
                 identity_confidence=confidence,
                 joint_layout=str(pc.get("joint_layout") or "COCO17"),
+                aliases=aliases,
+                split_from=split_from,
+                split_source=(str(track["world_id"]), revision) in marks,
             ))
     return FrameObservations(camera_id, epoch, seq, capture, image_size, tuple(persons))
 
@@ -125,7 +135,9 @@ class PpeLoop:
     def diagnostics(self):
         source_timing = getattr(self.source, "timing", None)
         return {"loop": self.timing.summary(),
-                "source": None if source_timing is None else source_timing.summary()}
+                "source": None if source_timing is None else source_timing.summary(),
+                # 차수 상승 때 초기화(revision_reset)·순수 병합 승계(merge_carried) 수(S15P31A101-661 재생 확인용)
+                "identity": dict(self.judge.identity_events)}
 
     def _skip_reason(self, camera_id, ref, produced, *, published=False):
         if published and (not isinstance(produced, int) or isinstance(produced, bool)

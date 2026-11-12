@@ -4,6 +4,7 @@ import {
   NO_ZONES,
   type RejectReason,
 } from '@/features/viewer3d/data/contractAdapter';
+import { identityUncertainSince } from '@/features/viewer3d/data/identityCarry';
 import type {
   EventSource,
   HealthView,
@@ -185,7 +186,12 @@ export function createSpatialDataStore(): SpatialDataStore {
               bump('outOfOrder');
               return 'out_of_order';
             }
-            bump('world', { world: result.frame });
+            // 짧은 ID 불확실 동안 아바타 메시를 유지하려면 불확실이 이어진 시간을 알아야 한다(-661)
+            const since = identityUncertainSince(prev, result.frame);
+            bump('world', {
+              world:
+                since.size > 0 ? { ...result.frame, identityUncertainSince: since } : result.frame,
+            });
             return 'world';
           }
           case 'health': {

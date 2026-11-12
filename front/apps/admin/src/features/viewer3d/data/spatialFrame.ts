@@ -71,6 +71,11 @@ export interface WorldFrame {
   /** SIM·DATASET_GT 입력이면 true. 제품 성능·실제 관측으로 쓰지 않는다. 없으면 null. */
   isUpperBound: boolean | null;
   tracks: readonly TrackView[];
+  /**
+   * 같은 identity_revision 으로 IDENTITY_UNCERTAIN 이 이어지기 시작한 World 시각(키 world_id, -661). 데이터 Store 가
+   * 앞 프레임과 비교해 붙인다(identityCarry.identityUncertainSince). 없으면 이어진 시간을 모른다.
+   */
+  identityUncertainSince?: ReadonlyMap<string, number>;
 }
 
 export interface RiskEventView {

@@ -236,3 +236,24 @@ describe('reset', () => {
     expect(store.getState().ingest(scenarioWorld('risk-lifecycle', 1, T0), 1)).toBe('world');
   });
 });
+
+describe('ID 불확실 지속 시각(-661)', () => {
+  const uncertainWorld = (tick: number) => {
+    const raw = scenarioWorld('normal', tick, T0);
+    const [first] = raw.payload.tracks as { identity_confidence: string }[];
+    first!.identity_confidence = 'IDENTITY_UNCERTAIN';
+    return raw;
+  };
+
+  it('같은 차수로 이어진 IDENTITY_UNCERTAIN 의 시작 World 시각을 World 에 붙이고, 풀리면 뺀다', () => {
+    const store = createSpatialDataStore();
+    const s = () => store.getState();
+    s().ingest(uncertainWorld(1), 1);
+    const id = s().world!.tracks[0]!.worldId;
+    expect(s().world?.identityUncertainSince?.get(id)).toBe(T0 + TICK_MS);
+    s().ingest(uncertainWorld(3), 2);
+    expect(s().world?.identityUncertainSince?.get(id)).toBe(T0 + TICK_MS);
+    s().ingest(scenarioWorld('normal', 4, T0), 3);
+    expect(s().world?.identityUncertainSince).toBeUndefined();
+  });
+});

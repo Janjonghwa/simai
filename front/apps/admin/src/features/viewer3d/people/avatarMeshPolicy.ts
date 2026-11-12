@@ -17,6 +17,14 @@ export const AVATAR_STALL_MS = 1000;
 export const AVATAR_LATE_MS = 1000;
 /** 관절 회전 재생 지연(ms). 5 Hz 표본 간격보다 커서 거의 늘 두 표본 사이를 보간한다. */
 export const AVATAR_PLAYBACK_DELAY_MS = 250;
+/**
+ * identity_revision 이 그대로인 IDENTITY_UNCERTAIN 이 이만큼(World 시각, ms) 안이면 메시를 유지한다(-661).
+ * Tier 0 는 불확실 사유가 한 번 생기면 1.0 s(uncertain_hold_ms) 유지하고, 병합 뒤 일관성 확인은 자기 관측 3 프레임
+ * (merge_confirm_frames, 10 Hz 0.3 s) + 1.0 s 라 짧은 불확실은 대개 1.3 s 안에 끝난다. 여유를 둬 1.5 s 로 둔다.
+ * 그동안 워커는 새 포즈를 보내지 않으므로(외형·포즈 누적 일시정지) 끊김·늦음 기준도 이만큼 늘려 마지막 자세로 둔다.
+ * 위치·접지는 늘 Tier 0 값 그대로이고, 넘으면 지금처럼 캡슐로 돌아간다. 차수가 다르면 기다리지 않는다.
+ */
+export const AVATAR_IDENTITY_HOLD_MS = 1500;
 
 export const AVATAR_MESH_FALLBACKS = [
   'OFF',
@@ -32,7 +40,7 @@ export const AVATAR_MESH_FALLBACKS = [
   'ASSET_ERROR',
 ] as const;
 /**
- * OFF 메시 끔 · NO_POSE 포즈 없음 · IDENTITY ID 불확실이거나 교정 차수가 다름 · CALIBRATION 보정 버전 다름 ·
+ * OFF 메시 끔 · NO_POSE 포즈 없음 · IDENTITY ID 불확실(같은 차수로 1.5 s 넘게)이거나 교정 차수가 다름 · CALIBRATION 보정 버전 다름 ·
  * STALLED 1.0 s 넘게 새 포즈 없음 · HMR_LATE 촬영 시각이 World 보다 1000 ms 넘게 늦음 · NO_ASSET 자산 없음 ·
  * JOINT_MISMATCH 자산 관절 수와 포즈 길이가 다름 · NO_PELVIS Tier 0 pelvis 없음(정렬 불가) ·
  * ASSET_LOADING 자산 읽는 중 · ASSET_ERROR 자산 내려받기·sha256·리그 확인 실패.
@@ -93,15 +101,19 @@ export function avatarMeshStatus({
   });
   if (!enabled) return fallback('OFF');
   if (!avatar) return fallback('NO_POSE');
-  if (
-    track.identityConfidence === 'IDENTITY_UNCERTAIN' ||
-    avatar.identityRevision !== track.identityRevision
-  ) {
-    return fallback('IDENTITY');
+  if (avatar.identityRevision !== track.identityRevision) return fallback('IDENTITY');
+  // 같은 차수의 짧은 ID 불확실은 메시를 유지한다. 이어진 시간을 모르거나 길어지면 캡슐(-661).
+  let hold = 0;
+  if (track.identityConfidence === 'IDENTITY_UNCERTAIN') {
+    const since = world.identityUncertainSince?.get(track.worldId);
+    if (since === undefined || world.tLatestGlobal - since > AVATAR_IDENTITY_HOLD_MS) {
+      return fallback('IDENTITY');
+    }
+    hold = AVATAR_IDENTITY_HOLD_MS;
   }
   if (avatar.calibrationVersion !== world.calibrationVersion) return fallback('CALIBRATION');
-  if (base.poseAgeMs! > AVATAR_STALL_MS) return fallback('STALLED');
-  if (base.hmrLagMs! > AVATAR_LATE_MS) return fallback('HMR_LATE');
+  if (base.poseAgeMs! > AVATAR_STALL_MS + hold) return fallback('STALLED');
+  if (base.hmrLagMs! > AVATAR_LATE_MS + hold) return fallback('HMR_LATE');
   if (!avatar.asset) return fallback('NO_ASSET', avatar.assetRejected);
   if (avatar.asset.jointCount !== avatar.jointRotations.length) return fallback('JOINT_MISMATCH');
   if (!track.pelvis) return fallback('NO_PELVIS');

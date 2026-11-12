@@ -10,12 +10,18 @@
 유효 6칸은 최근 window_span_bins 칸(5초) 안에 있어야 한다. 상태를 바로 초기화하는 것은 identity_revision 이 오를 때, 같은 카메라
 local ID 의 주인이 바뀔 때, ID 불확실이 uncertain_reset_ms(3초)를 넘게 이어질 때다. 만료·트랙 정리는 현재 UTC로 판단해 마지막
 유효 근거 + 10초가 지나면 UNKNOWN 이다. 이 모듈은 World 위치·ID 를 만들거나 바꾸지 않는다.
+
+순수 병합(S15P31A101-661, simai_ai.tracking.identity_carry)은 예외다: identity_revision 이 올랐어도 aliases 에 새 ID 만 붙고
+분할 표시가 없으면 남는 ID 의 창·상태를 그대로 두고, 흡수된 ID 의 칸을 넘겨받은 뒤 흡수된 ID 는 지운다. 남는 ID 의 장비가
+비어 있으면(UNKNOWN, 유효 칸·대기 칸 없음) 흡수된 쪽을 통째로 옮기고, 둘 다 있으면 칸별로 합치되 엇갈리면 UNKNOWN 칸으로,
+확정 상태가 서로 반대면 UNKNOWN(CROSS_CAMERA_CONFLICT)으로 다시 쌓는다. 흡수된 ID 가 쓰던 local ID 를 남는 ID 가 이어받는
+것은 주인 변경이 아니다. 병합 직후의 IDENTITY_UNCERTAIN(LATE_REASSOCIATION)은 위 불확실 규칙(건너뛰기, 3초 초과 초기화)이 맡는다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .association import (
     ITEMS,
@@ -36,6 +42,7 @@ from .association import (
     Sample,
 )
 from .config import DEFAULT_CONFIG, PpeConfig
+from simai_ai.tracking.identity_carry import pure_merge_absorbed
 
 # 칸(500 ms) 결과
 B_WORN, B_NOT_WORN, B_CONFLICT, B_UNKNOWN, B_EMPTY = "WORN", "NOT_WORN", "CONFLICT", "UNKNOWN", "EMPTY"
@@ -78,6 +85,8 @@ class TrackState:
     skipped_bins: set[int] = field(default_factory=set)   # ID 불확실 프레임이 있던 칸(두 장비 모두 건너뜀)
     uncertain_since: int | None = None   # 지금 이어지는 ID 불확실의 첫 촬영 시각. 확실한 프레임이 오면 None
     uncertain_reset: bool = False        # 이번 불확실 구간에서 이미 초기화했는지
+    aliases: tuple[str, ...] = ()        # 마지막으로 본 world_state aliases(순수 병합 판정, S15P31A101-661)
+    split_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,8 @@ class PpeJudge:
         self.camera_epoch: dict[str, int] = {}
         self.local_owner: dict[tuple[str, int, str], tuple[str, int]] = {}
         self.dropped: dict[str, int] = {}
+        self.retired: dict[str, tuple[str, int]] = {}   # 병합으로 흡수된 ID → (남는 ID, 본 촬영 시각). 다시 오면 버린다
+        self.identity_events: dict[str, int] = {}   # 계측(판정에 쓰지 않음): 차수 상승 때 초기화·승계 수
         self.last_closed_bin: int | None = None
         self.latest_capture_time_ms = 0  # 접수한 프레임의 촬영 진행 시각. 입력이 멈추면 함께 멈춘다.
 
@@ -125,16 +136,34 @@ class PpeJudge:
 
         accepted: set[str] = set()
         for p in assoc.persons:
+            if p.world_id in self.retired:
+                self._drop("RETIRED_WORLD_ID")   # 병합으로 사라진 ID 의 늦은 관측
+                continue
             track = self.tracks.get(p.world_id)
             if track is None:
                 track = self.tracks[p.world_id] = TrackState(p.world_id, p.identity_revision,
-                                                             {i: ItemState() for i in ITEMS}, t)
+                                                             {i: ItemState() for i in ITEMS}, t,
+                                                             aliases=tuple(p.aliases), split_from=p.split_from)
+                # 처음 보는 남는 ID(예: 소실됐던 옛 ID 가 새 ID 를 흡수): 이미 쌓던 흡수 ID 의 칸을 넘겨받는다
+                known = [a for a in p.aliases if a in self.tracks and a != p.world_id]
+                if known and not p.split_source:
+                    self._absorb(track, known, t, b)
+                    self._count("merge_carried")
             if p.identity_revision < track.identity_revision:
                 self._drop("STALE_IDENTITY_REVISION")
                 continue
             if p.identity_revision > track.identity_revision:
-                self._reset(track, R_REVISION_CHANGED, b)
+                marks = {(p.world_id, p.identity_revision)} if p.split_source else set()
+                absorbed = pure_merge_absorbed(p.world_id, track.identity_revision, track.aliases, track.split_from,
+                                               p.identity_revision, p.aliases, p.split_from, marks)
+                if absorbed is None:
+                    self._reset(track, R_REVISION_CHANGED, b)
+                    self._count("revision_reset")
+                else:
+                    self._absorb(track, absorbed, t, b)
+                    self._count("merge_carried")
                 track.identity_revision = p.identity_revision
+                track.aliases, track.split_from = tuple(p.aliases), p.split_from
             uncertain = p.identity_confidence == "IDENTITY_UNCERTAIN"
             if uncertain:
                 # 불확실한 칸은 건너뛰고 확정 상태는 둔다. 불확실이 uncertain_reset_ms 를 넘게 이어지면 그때 초기화한다
@@ -151,7 +180,9 @@ class PpeJudge:
                 track.uncertain_since, track.uncertain_reset = None, False
             key = (cid, epoch, p.local_track_id)
             owner = self.local_owner.get(key)
-            if owner is not None and owner[0] != p.world_id and t - owner[1] <= self.cfg.mapping_ttl_ms:
+            # 흡수된 ID → 남는 ID 로의 이어받기는 주인 변경이 아니다(S15P31A101-661)
+            if owner is not None and owner[0] != p.world_id and owner[0] not in track.aliases \
+                    and t - owner[1] <= self.cfg.mapping_ttl_ms:
                 self._reset(track, R_MAPPING_CHANGED, b)
                 if owner[0] in self.tracks:
                     self._reset(self.tracks[owner[0]], R_MAPPING_CHANGED, b)
@@ -175,6 +206,26 @@ class PpeJudge:
 
     def _drop(self, reason: str) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + 1
+
+    def _count(self, event: str) -> None:
+        self.identity_events[event] = self.identity_events.get(event, 0) + 1
+
+    # ---- 순수 병합 승계(S15P31A101-661) -------------------------------------------------------------
+    def _absorb(self, survivor: TrackState, absorbed: Sequence[str], t: int, b: int) -> None:
+        """흡수된 ID 들의 칸·상태를 남는 ID 로 넘기고 지운다. 그 ID 가 쓰던 local ID 는 남는 ID 의 것으로 옮긴다."""
+        for wid in absorbed:
+            if wid == survivor.world_id:
+                continue
+            self.retired[wid] = (survivor.world_id, t)
+            self.local_owner = {k: ((survivor.world_id, v[1]) if v[0] == wid else v)
+                                for k, v in self.local_owner.items()}
+            src = self.tracks.pop(wid, None)
+            if src is None:
+                continue
+            for name, dst in survivor.items.items():
+                survivor.items[name] = _carry_item(dst, src.items[name], b)
+            survivor.skipped_bins |= src.skipped_bins
+            survivor.last_seen_ms = max(survivor.last_seen_ms, src.last_seen_ms)
 
     def _reset(self, track: TrackState, reason: str, start_bin: int) -> None:
         for item in track.items.values():
@@ -219,6 +270,7 @@ class PpeJudge:
             self.last_closed_bin = last_closed
         last_closed = self.last_closed_bin  # 순서 역전·촬영 시계 정지에도 닫은 칸을 다시 열지 않는다.
         out: dict[str, dict[str, ItemView]] = {}
+        self.retired = {k: v for k, v in self.retired.items() if now_ms - v[1] <= cfg.track_retention_ms}
         for wid in list(self.tracks):
             track = self.tracks[wid]
             if now_ms - track.last_seen_ms > cfg.track_retention_ms:
@@ -299,6 +351,50 @@ class PpeJudge:
         if (item.state == WORN and result == B_WORN) or (item.state == NOT_WORN and result == B_NOT_WORN):
             item.last_evidence_at = max(s.capture_time_ms for s in support)
             item.evidence = (list(support) + item.evidence)[: cfg.evidence_max_items]
+
+
+def _item_empty(item: ItemState) -> bool:
+    """확정 상태도, 유효 칸 결과도, 아직 닫지 않은 칸 표본도 없다."""
+    return item.state == UNKNOWN and not item.bins and not any(r in (B_WORN, B_NOT_WORN) for r in item.results.values())
+
+
+def _merge_result(a: str | None, b: str | None) -> str:
+    """같은 칸의 두 결과를 보수적으로 합친다: 같으면 그대로, 한쪽이 없거나 빈 칸이면 다른 쪽, 엇갈리면 충돌·UNKNOWN."""
+    if a is None or a == B_EMPTY:
+        return b if b is not None else B_EMPTY
+    if b is None or b == B_EMPTY or a == b:
+        return a
+    return B_CONFLICT if B_CONFLICT in (a, b) else B_UNKNOWN
+
+
+def _carry_item(dst: ItemState, src: ItemState, b: int) -> ItemState:
+    """순수 병합에서 남는 ID 의 장비 상태(dst)에 흡수된 ID 의 것(src)을 넘긴다. 새 ItemState 를 돌려준다."""
+    if _item_empty(src):
+        return dst
+    if _item_empty(dst):
+        return replace(src, bins={k: list(v) for k, v in src.bins.items()}, results=dict(src.results),
+                       evidence=list(src.evidence))
+    if dst.state in (WORN, NOT_WORN) and src.state in (WORN, NOT_WORN) and dst.state != src.state:
+        # 두 ID 가 반대 상태로 확정돼 있었다: 반대 근거와 같이 UNKNOWN 으로 두고 이번 칸부터 다시 쌓는다
+        return ItemState(state=UNKNOWN, reason=R_CROSS_CAMERA_CONFLICT, window_start_bin=b,
+                         last_processed_bin=dst.last_processed_bin)
+    out = replace(dst, bins={k: list(v) for k, v in dst.bins.items()}, results=dict(dst.results),
+                  evidence=list(dst.evidence))
+    lo = dst.window_start_bin
+    for k, r in src.results.items():
+        if lo is None or k >= lo:
+            out.results[k] = _merge_result(out.results.get(k), r)
+    for k, samples in src.bins.items():
+        if lo is not None and k < lo:
+            continue
+        mine = out.bins.setdefault(k, [])
+        for s in samples:
+            same = [x for x in mine if x.camera_id == s.camera_id]
+            if not same or any(x.kind != s.kind for x in same):
+                mine.append(s)   # 같은 카메라가 엇갈리면 둘 다 둬서 칸 결합이 충돌로 본다
+    if out.window_start_bin is None and out.bins:
+        out.window_start_bin = min(out.bins)
+    return out
 
 
 def _not_worn_window(window: Sequence[str], cfg: PpeConfig) -> bool:

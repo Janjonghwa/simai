@@ -18,7 +18,7 @@ def wait_until(predicate):
 
 
 def fake_pipeline(update):
-    return SimpleNamespace(retain=lambda *_: None, track=lambda *_: None, register=lambda *_: None,
+    return SimpleNamespace(retain=lambda *_: None, track=lambda *_, **__: None, register=lambda *_: None,
         update=update, config=SimpleNamespace(face_policy="EXCLUDED"))
 
 

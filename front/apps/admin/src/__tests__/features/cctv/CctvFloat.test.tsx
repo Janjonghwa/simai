@@ -107,6 +107,27 @@ describe('떠 있는 CCTV', () => {
     expect(screen.queryByLabelText('카메라 1 영상')).toBeNull();
   });
 
+  it('고른 사람 ID 가 병합으로 다른 트랙의 별칭이 되면 그 생존 트랙의 카메라로 다시 고른다(-661)', () => {
+    const at = Date.now();
+    useRealtimeStore.setState({
+      world: {
+        payload: { tracks: [{ world_id: 'p2', cameras: ['cam_A'] }] } as never,
+        receivedAt: at,
+      },
+    });
+    render(<CctvFloat selectedKey="person:p2" onClose={vi.fn()} />);
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    act(() =>
+      useRealtimeStore.setState({
+        world: {
+          payload: { tracks: [{ world_id: 'p1', aliases: ['p2'], cameras: ['cam_B'] }] } as never,
+          receivedAt: at + 100,
+        },
+      }),
+    );
+    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+  });
+
   it('연 창의 자리를 이벤트 패널에 알리고, 창이 내려가면 비운다', () => {
     // jsdom 은 배치를 하지 않아 창 자리를 심는다(기본 자리 top-32 left-24, 480×360).
     const scene = document.createElement('div');

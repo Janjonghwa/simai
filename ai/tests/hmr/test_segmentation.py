@@ -251,7 +251,7 @@ def test_loop_batches_four_cameras_once_reuses_masks_and_continues_on_seg_failur
     def record_appearance_masks(*args, **kwargs):
         appearance_masks.append(args[-1])
         updated.set()
-    loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_: None, register=lambda *_: None,
+    loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_, **__: None, register=lambda *_: None,
         config=SimpleNamespace(face_policy="OBSERVED"), update=record_appearance_masks)
     before = copy.deepcopy(source.item[0])
     try:
@@ -294,7 +294,7 @@ def test_loop_checks_admission_before_seg_and_again_before_hmr(rig):
     *_, model, loop, uploads = harness(rig, freeze=1)
     updated = threading.Event()
     loop.segmentation = SimpleNamespace(prepare=lambda *args: seg_calls.append(args) or {}, failed=False)
-    loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_: None, register=lambda *_: None,
+    loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_, **__: None, register=lambda *_: None,
         config=SimpleNamespace(face_policy="OBSERVED"), update=lambda *a, **kw: updated.set())
     try:
         loop.step()

@@ -119,6 +119,20 @@ def test_frame_observations_keep_same_frame_people_and_mark_held_tracks_uncertai
     assert frame_observations(other, "cam1", IMAGE).persons == ()
 
 
+def test_frame_observations_carry_aliases_and_split_marks():
+    """순수 병합 판정 근거(S15P31A101-661): 트랙의 aliases·split_from 과 같은 차수로 갈라져 나간 Track 표시."""
+    doc, _ = shared(1000, {"cam1": 5})
+    survivor = doc["world"]["tracks"][0]
+    survivor["aliases"] = ["w-0009"]
+    doc["world"]["tracks"].append({"world_id": "w-0020", "identity_revision": 2, "identity_confidence": "HIGH",
+                                   "split_from": "w-0012", "per_camera": []})
+    [p] = frame_observations(doc, "cam1", IMAGE).persons
+    assert (p.aliases, p.split_from, p.split_source) == (("w-0009",), None, True)
+    doc["world"]["tracks"][1]["identity_revision"] = 1   # 예전 분할(차수가 다름)은 표시가 아니다
+    [p] = frame_observations(doc, "cam1", IMAGE).persons
+    assert p.split_source is False
+
+
 def test_steady_helmet_becomes_worn_and_messages_pass_contract(validator):  # noqa: F811
     loop, source, _gate, det, out, clock = make_loop()
     run(loop, source, clock, 1_760_342_400_000, 20)

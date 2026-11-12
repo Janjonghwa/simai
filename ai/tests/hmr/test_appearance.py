@@ -400,3 +400,17 @@ def test_diagnostic_files_and_before_after_comparison(rig, tmp_path):
     comparison(before, after, output)
     figure = cv2.imdecode(np.frombuffer(output.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     assert figure.shape == (136, 96, 3)
+
+
+def test_pipeline_pure_merge_keeps_texture_accumulation_and_labels_new_version_with_new_revision(rig):
+    """S15P31A101-661: 순수 병합이면 포즈 루프의 revision_base 가 그대로라 누적을 잇고, 새 버전은 새 차수로 적는다."""
+    pipeline, state, messages, uploaded, args, _ = pipeline_scene(rig)
+    acc = pipeline.people["w-1"]
+    state.revision, state.revision_base = 1, 0
+    tr = {**args[1]["tracks"][0], "identity_revision": 1, "aliases": ["w-9"]}
+    pipeline.track(tr, 1001, identity_key=0)
+    assert pipeline.people["w-1"] is acc and acc.revision == 0 and acc.ready
+    pipeline.update(*args)
+    assert messages and messages[-1]["identity_revision"] == 1 and messages[-1]["appearance_version"] == 1
+    pipeline.track({**tr, "identity_revision": 2}, 1002)   # 분할·그 밖의 차수 상승: 트랙 차수로 누적을 비운다
+    assert acc.revision == 2 and acc.stable == 1
