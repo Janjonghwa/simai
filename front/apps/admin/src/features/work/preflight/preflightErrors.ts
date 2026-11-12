@@ -9,8 +9,8 @@ export function startErrorMessage(error: unknown): string {
   if (isWorkError(error, WORK_ERROR.NO_SIGNATURE)) return '참석자 서명이 필요합니다';
   if (isWorkError(error, WORK_ERROR.ALREADY_IN_PROGRESS)) return '진행 중인 다른 작업이 있어요';
   if (isWorkError(error, WORK_ERROR.SETUP_NOT_READY)) {
-    // 현장 단위로 막으므로 멈춘 세팅 하나가 모든 작업 시작을 막을 수 있다. 빠져나갈 길을 함께 알린다(-625 S9)
-    return '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작해 주세요. 세팅이 멈췄다면 현장 세팅 단계에서 세팅을 취소한 뒤 다시 하세요';
+    // 현장 단위로 막으므로 멈춘 세팅 하나가 모든 작업 시작을 막을 수 있다. 막는 세팅을 취소하는 단추가 이 글 옆에 붙는다(BlockingSetupNotice)
+    return '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작하거나, 세팅이 멈췄다면 세팅을 취소하세요';
   }
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.';

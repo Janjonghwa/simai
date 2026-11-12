@@ -285,6 +285,7 @@ export function CameraHeightPanel({
   onChange,
   submitError,
   onNavigateLiveWork,
+  errorAction,
   heightWarnings = [],
   retrySessionId = null,
   onRetryWithHeights,
@@ -295,6 +296,8 @@ export function CameraHeightPanel({
   onChange: (cameraId: string, value: string) => void;
   submitError: string | null;
   onNavigateLiveWork?: () => void;
+  /** 오류 글 옆에 놓을 단추(막는 세팅 취소 등). */
+  errorAction?: ReactNode;
   heightWarnings?: readonly HeightWarningItem[];
   retrySessionId?: string | null;
   onRetryWithHeights?: () => void;
@@ -403,6 +406,7 @@ export function CameraHeightPanel({
               진행 중인 작업으로 이동
             </Button>
           )}
+          {errorAction}
         </div>
       )}
     </Panel>

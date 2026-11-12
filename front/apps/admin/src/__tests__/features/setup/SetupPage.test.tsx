@@ -1,6 +1,11 @@
+import { workDayOf } from '@/__tests__/features/work/workFixture';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
-import { requestCameraHeightDefaults } from '@/features/setup/api';
+import {
+  createSetupSession,
+  requestCameraHeightDefaults,
+  setupZonePlanKey,
+} from '@/features/setup/api';
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
@@ -139,6 +144,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   server.events.removeAllListeners();
 });
 afterAll(() => server.close());
@@ -1357,4 +1363,198 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await waitFor(() => expect(useSetupFlowStore.getState().activeSessionId).toBeNull());
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
   }, 20_000);
+});
+
+describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
+  /** 다른 날짜 작업(3번)에 걸린 진행 중 세션을 목에 만들고, 작업 목록이 그 세션을 가리키게 한다. */
+  async function seedStuckSession() {
+    const stuck = await createSetupSession(api, {
+      work_unit_id: 3,
+      camera_heights_m: { cam1: 2.25, cam2: 2.3, cam3: 2.2, cam4: 2.35 },
+    });
+    server.use(
+      http.get('*/api/work-units', ({ request }) =>
+        new URL(request.url).searchParams.has('from')
+          ? HttpResponse.json({
+              works: [
+                workDayOf({
+                  work_id: '3',
+                  date: '2026-11-10',
+                  active_setup_session_id: stuck.setup_session_id,
+                }),
+              ],
+            })
+          : undefined,
+      ),
+    );
+    return stuck.setup_session_id;
+  }
+
+  /** 1단계에서 cam4 높이를 채우고 다음 → 방식 고르기까지 눌러 새 세팅을 요청한다. */
+  async function requestNewSetup() {
+    const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
+    fireEvent.change(cam4, { target: { value: '2.35' } });
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
+  }
+
+  it('다시 보정은 확인 뒤 0단계로 가고, 다시 시도하면 확인을 다시 묻지 않고 새 세션을 시작한다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    await goToZoneStep();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('지금 세팅을 취소하고 다시 보정할까요?'),
+    );
+    expect(await screen.findByLabelText('카메라 4 높이 (m)')).toBeTruthy();
+    // 눌렀을 때는 세션을 건드리지 않는다. 0단계의 다시 시도에서 새로 시작한다(방식 고르기 없음).
+    expect(setupMock.submittedBodies).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(setupMock.retryRequests).toHaveLength(0);
+    expect(setupMock.sessions.size).toBe(2);
+  }, 30_000);
+
+  it('편집한 구역 목록이 있으면 확인 글이 새 세팅으로 넘어가지 않는다고 알린다', async () => {
+    const { sessionId, client } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    await goToZoneStep();
+    client.setQueryData(setupZonePlanKey(sessionId), { items: [{ zone_id: null }], revision: 1 });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      '지금 세팅을 취소하고 다시 보정할까요? 이 세팅의 구역 목록은 새 세팅으로 넘어가지 않습니다.',
+    );
+  }, 30_000);
+
+  it('확인 창에서 취소하면 구역 단계에 남고 세션도 요청도 그대로다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...FINAL_PATCH });
+    await goToZoneStep();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('카메라 4 높이 (m)')).toBeNull();
+    expect(setupMock.retryRequests).toHaveLength(0);
+    expect(setupMock.sessions.get(sessionId)?.failure_code).toBeNull();
+  }, 30_000);
+
+  it('세팅을 완료한 작업에는 다시 보정이 없다(하루 1회)', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      ...FINAL_PATCH,
+      setup_completed_at_ms: SETUP_COMPLETED_AT_MS,
+    });
+    await enterZoneStep();
+
+    expect(await screen.findByTestId('setup-complete-card')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
+    expect(finishButton().disabled).toBe(false);
+  }, 30_000);
+
+  it('다른 날짜의 멈춘 세팅이 새 세팅을 막으면 그 날짜 세팅 취소 단추가 오류 옆에 뜨고, 취소하면 다시 시작할 수 있다', async () => {
+    const stuckId = await seedStuckSession();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderSetupPage();
+    await requestNewSetup();
+
+    const error = await screen.findByTestId('setup-submit-error');
+    expect(error.textContent).toContain('이미 진행 중인 세팅 세션이 있습니다');
+    const cancel = await within(error).findByRole('button', { name: '11월 10일 세팅 취소' });
+    fireEvent.click(cancel);
+    expect(confirmSpy).toHaveBeenCalledWith(
+      '11월 10일 작업의 세팅을 취소할까요? 취소하면 그 세팅은 처음부터 다시 해야 합니다.',
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('setup-submit-error')).toBeNull());
+    expect(setupMock.sessions.get(stuckId)?.failure_code).toBe('CANCELLED_BY_ADMIN');
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    pickNewModel();
+    await waitFor(() => expect(setupMock.sessions.size).toBe(2));
+    expect([...setupMock.sessions.values()].map((session) => session.work_unit_id)).toEqual([3, 1]);
+    confirmSpy.mockRestore();
+  }, 30_000);
+
+  it('막는 세팅의 취소를 확인 창에서 거절하면 요청 없이 오류가 그대로 남는다', async () => {
+    const stuckId = await seedStuckSession();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderSetupPage();
+    await requestNewSetup();
+
+    const error = await screen.findByTestId('setup-submit-error');
+    fireEvent.click(await within(error).findByRole('button', { name: '11월 10일 세팅 취소' }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(setupMock.sessions.get(stuckId)?.failure_code).toBeNull();
+    expect(screen.getByTestId('setup-submit-error')).toBeTruthy();
+    confirmSpy.mockRestore();
+  }, 30_000);
+
+  it('막는 세팅을 취소하다 실패하면 그 이유를 단추 옆에 보이고 오류는 남는다', async () => {
+    const stuckId = await seedStuckSession();
+    server.use(
+      http.post('*/api/setup-sessions/:id/cancel', () =>
+        HttpResponse.json(
+          { message: '이미 끝난 세팅 세션은 취소할 수 없습니다', code: 'SETUP_CANCEL_NOT_ALLOWED' },
+          { status: 409 },
+        ),
+      ),
+    );
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderSetupPage();
+    await requestNewSetup();
+
+    const error = await screen.findByTestId('setup-submit-error');
+    fireEvent.click(await within(error).findByRole('button', { name: '11월 10일 세팅 취소' }));
+    expect((await screen.findByTestId('blocking-setup-cancel-error')).textContent).toBe(
+      '이미 끝난 세팅 세션은 취소할 수 없습니다',
+    );
+    expect(setupMock.sessions.get(stuckId)?.failure_code).toBeNull();
+    expect(screen.getByTestId('setup-submit-error')).toBeTruthy();
+    confirmSpy.mockRestore();
+  }, 30_000);
+
+  it('작업 목록에서 막는 세션을 못 찾으면 단추 없이 오류 글만 보인다', async () => {
+    await seedStuckSession();
+    server.use(
+      http.get('*/api/work-units', ({ request }) =>
+        new URL(request.url).searchParams.has('from')
+          ? HttpResponse.json({
+              works: [workDayOf({ work_id: '3', active_setup_session_id: null })],
+            })
+          : undefined,
+      ),
+    );
+    renderSetupPage();
+    await requestNewSetup();
+
+    const error = await screen.findByTestId('setup-submit-error');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(within(error).queryByRole('button')).toBeNull();
+  }, 30_000);
+
+  it('보정·생성에서 세팅 취소가 실패하면 실패 이유를 보인다', async () => {
+    await startSetupSession();
+    server.use(
+      http.post('*/api/setup-sessions/:id/cancel', () =>
+        HttpResponse.json(
+          { message: '이미 끝난 세팅 세션은 취소할 수 없습니다', code: 'SETUP_CANCEL_NOT_ALLOWED' },
+          { status: 409 },
+        ),
+      ),
+    );
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: '세팅 취소' }));
+    const alert = await screen.findByTestId('setup-retry-error');
+    expect(alert.textContent).toBe('이미 끝난 세팅 세션은 취소할 수 없습니다');
+    confirmSpy.mockRestore();
+  }, 30_000);
 });

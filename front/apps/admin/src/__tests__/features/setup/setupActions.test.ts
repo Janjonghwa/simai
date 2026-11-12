@@ -25,6 +25,7 @@ const stateOf = (overrides: Partial<SetupActionState> = {}): SetupActionState =>
   showHeightNotice: false,
   canFinish: false,
   finishPending: false,
+  setupCompleted: false,
   ...overrides,
 });
 
@@ -82,6 +83,19 @@ describe('deriveSetupActions: 구역 단계', () => {
   it('단독 화면은 구역 단계에서 맨 오른쪽에 작업 관리로가 항상 있고, 세팅을 완료할 수 있어야 켜진다', () => {
     expect(summary(stateOf({ stage: 2 }))).toEqual(['다시 보정', '*작업 관리로(꺼짐)']);
     expect(summary(stateOf({ stage: 2, canFinish: true }))).toEqual(['다시 보정', '*작업 관리로']);
+  });
+
+  it('세팅을 완료한 작업은 다시 보정이 없고 마지막 단추만 남는다(하루 1회)', () => {
+    expect(summary(stateOf({ stage: 2, setupCompleted: true, canFinish: true }))).toEqual([
+      '*작업 관리로',
+    ]);
+    expect(
+      summary(stateOf({ stage: 2, embedded: true, setupCompleted: true, canFinish: true })),
+    ).toEqual(['*다음']);
+    // 완료 여부는 구역 단계 밖의 단추를 바꾸지 않는다
+    expect(summary(stateOf({ stage: 1, mapComplete: true, setupCompleted: true }))).toEqual([
+      '*다음',
+    ]);
   });
 
   it('날짜 화면 안은 마지막 단추가 다음이고 세팅을 완료할 수 있어야 켜진다', () => {

@@ -8,6 +8,7 @@ import {
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Check } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 // '작업 전 확인' 창: 보고서·가상 레이아웃을 확인했는지 체크하고, 참석자 서명이 1명 이상이면 '작업 시작'이 켜진다.
 // 서명이 없으면 이 창을 닫고 서명 창을 여는 '서명하기'가 있다. 시작이 거절되면 이유를 창 안에 보인다.
@@ -23,6 +24,7 @@ export function PreflightConfirmDialog({
   signerCount,
   pending,
   error,
+  errorAction = null,
   draftWarning = null,
   onSign,
   onStart,
@@ -35,6 +37,8 @@ export function PreflightConfirmDialog({
   pending: boolean;
   /** 시작이 거절됐을 때 보일 글. */
   error: string | null;
+  /** 오류 글 옆에 놓을 단추(막는 세팅 취소 등). */
+  errorAction?: ReactNode;
   /** AI 초안이 끝나지 않았을 때의 경고(-625). 시작을 막지 않는다. */
   draftWarning?: string | null;
   /** '서명하기': 이 창을 닫고 서명 창을 연다. */
@@ -89,9 +93,10 @@ export function PreflightConfirmDialog({
         </div>
         {draftWarning && <p className="text-[13px] text-sev-caution">{draftWarning}</p>}
         {error && (
-          <p role="alert" className="text-[13px] text-destructive">
-            {error}
-          </p>
+          <div className="flex flex-wrap items-center gap-2 text-[13px] text-destructive">
+            <p role="alert">{error}</p>
+            {errorAction}
+          </div>
         )}
       </div>
     </ConfirmDialog>

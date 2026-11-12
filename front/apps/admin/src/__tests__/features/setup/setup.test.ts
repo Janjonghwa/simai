@@ -33,6 +33,7 @@ import {
   isSetupBlockedByLiveWork,
   SETUP_LIVE_WORK_BLOCKED_TEXT,
   SETUP_WORKER_UNAVAILABLE_TEXT,
+  setupCancelErrorMessage,
   setupErrorMessage,
 } from '@/features/setup/setupErrorMessage';
 import {
@@ -992,5 +993,24 @@ describe('setupErrorMessage: 진행 중 작업 때문이 아닌 409', () => {
     const error = new ApiError(409, { code, serverMessage: '지금은 할 수 없는 상태입니다' });
     expect(isSetupBlockedByLiveWork(error)).toBe(false);
     expect(setupErrorMessage(error)).toBe('지금은 할 수 없는 상태입니다');
+  });
+});
+
+describe('setupCancelErrorMessage: 세팅 취소 실패 안내', () => {
+  it('알 수 없는 4xx 는 서버 문구를 그대로 보인다', () => {
+    const error = new ApiError(409, {
+      code: 'SETUP_CANCEL_NOT_ALLOWED',
+      serverMessage: '이미 끝난 세팅 세션은 취소할 수 없습니다',
+    });
+    expect(setupCancelErrorMessage(error)).toBe('이미 끝난 세팅 세션은 취소할 수 없습니다');
+  });
+
+  it('서버 문구가 없거나 4xx 가 아니면 취소 실패 기본 문구를 보인다(세팅 시작 문구가 아니다)', () => {
+    const fallback = '세팅을 취소하지 못했습니다. 잠시 후 다시 시도해 주세요';
+    expect(setupCancelErrorMessage(new ApiError(500, { serverMessage: '내부 오류' }))).toBe(
+      fallback,
+    );
+    expect(setupCancelErrorMessage(new ApiError(404))).toBe(fallback);
+    expect(setupCancelErrorMessage(new Error('x'))).toBe(fallback);
   });
 });

@@ -1,3 +1,4 @@
+import { BlockingSetupNotice } from '@/features/setup/BlockingSetupNotice';
 import { LayoutPreview } from '@/features/work/preflight/LayoutPreview';
 import {
   isSetupFinished,
@@ -81,6 +82,7 @@ export function PreflightStage({ day }: WorkStageProps) {
           signerCount={signers.count}
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}
+          errorAction={<BlockingSetupNotice error={start.error} onCancelled={resetStart} />}
           draftWarning={draftWarning(report)}
           onSign={() => setDialog('sign')}
           onStart={beginWork}
