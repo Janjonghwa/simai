@@ -3,6 +3,7 @@ import { DAY_PROGRESS, type DayProgress } from '@/features/work/types';
 import {
   dayKind,
   dayStatusOf,
+  draftWarning,
   EMPTY_WORK_NAME,
   formatDayTitle,
   isDraftPending,
@@ -151,6 +152,30 @@ describe('초안을 기다리는 중인가', () => {
     ).toBe(false);
     expect(isDraftPending(null, true)).toBe(false);
     expect(isDraftPending(undefined, true)).toBe(false);
+  });
+});
+
+describe('AI 초안 경고(-625)', () => {
+  const report = (overrides: Parameters<typeof workReportOf>[0]) => workReportOf(overrides);
+
+  it('초안을 만들지 않았거나(null)·실패했거나·아직 만드는 중이면 경고한다', () => {
+    expect(draftWarning(report({ draft_status: null }))).toBe(
+      'AI 초안을 만들지 않았습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.',
+    );
+    expect(draftWarning(report({ status: 'FAILED', draft_status: 'FAILED' }))).toBe(
+      'AI 초안을 만들지 못했습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.',
+    );
+    expect(draftWarning(report({ status: 'GENERATING', draft_status: 'GENERATING' }))).toBe(
+      'AI 초안을 아직 만드는 중입니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.',
+    );
+  });
+
+  it('초안이 끝났거나, 양식이 없거나(예전 보고서), 잠겼거나, 보고서가 없으면 경고하지 않는다', () => {
+    expect(draftWarning(report({ status: 'SUCCEEDED', draft_status: 'SUCCEEDED' }))).toBeNull();
+    expect(draftWarning(report({ draft_status: null, form: null }))).toBeNull();
+    expect(draftWarning(report({ draft_status: null, locked_at: 1 }))).toBeNull();
+    expect(draftWarning(null)).toBeNull();
+    expect(draftWarning(undefined)).toBeNull();
   });
 });
 

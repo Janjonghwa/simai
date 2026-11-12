@@ -11,7 +11,7 @@ import type { WorkDayItem } from '@/features/work/types';
 import { useSignatures } from '@/features/work/useSignatures';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
-import { isReportGenerating } from '@/features/work/workDay';
+import { draftWarning, isReportGenerating } from '@/features/work/workDay';
 import { useMemo } from 'react';
 
 // 단계 4 '작업 종료'. 서버 진행(progress)이 세 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED) → 보냄(SUBMITTED).
@@ -99,6 +99,10 @@ function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => 
           onConfirm={() => send.confirm(reportId)}
           onCancel={send.cancel}
         >
+          {/* AI 초안이 끝나지 않았으면 위험·대책·점검 칸이 빈 채 잠길 수 있다(-625). 막지는 않는다 */}
+          {draftWarning(report) && (
+            <p className="text-[13px] text-sev-caution">{draftWarning(report)}</p>
+          )}
           {send.error && <FailureNote text={sendErrorMessage(send.error)} />}
         </ConfirmDialog>
       )}

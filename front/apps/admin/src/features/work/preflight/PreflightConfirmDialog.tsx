@@ -23,6 +23,7 @@ export function PreflightConfirmDialog({
   signerCount,
   pending,
   error,
+  draftWarning = null,
   onSign,
   onStart,
   onCancel,
@@ -34,6 +35,8 @@ export function PreflightConfirmDialog({
   pending: boolean;
   /** 시작이 거절됐을 때 보일 글. */
   error: string | null;
+  /** AI 초안이 끝나지 않았을 때의 경고(-625). 시작을 막지 않는다. */
+  draftWarning?: string | null;
   /** '서명하기': 이 창을 닫고 서명 창을 연다. */
   onSign: () => void;
   onStart: () => void;
@@ -84,6 +87,7 @@ export function PreflightConfirmDialog({
             </>
           )}
         </div>
+        {draftWarning && <p className="text-[13px] text-sev-caution">{draftWarning}</p>}
         {error && (
           <p role="alert" className="text-[13px] text-destructive">
             {error}

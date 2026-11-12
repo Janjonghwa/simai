@@ -9,6 +9,7 @@ import com.ssafy.simai.domain.layout.LayoutZoneService;
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -31,11 +32,13 @@ public class WorkSessionService {
     private final Clock clock;
     private final LayoutZoneService layoutZones;
     private final TbmFormAiService formAi;
+    private final ApplicationEventPublisher events;
 
     public WorkSessionService(WorkUnitRepository works, WorkWrapUpRepository wrapUps, TbmReportService reports,
             SiteLookup sites, ConfigBundleService bundles, ObjectMapper mapper, Clock clock, LayoutZoneService layoutZones,
-            TbmFormAiService formAi) {
+            TbmFormAiService formAi, ApplicationEventPublisher events) {
         this.formAi = formAi;
+        this.events = events;
         this.works = works;
         this.wrapUps = wrapUps;
         this.reports = reports;
@@ -52,6 +55,8 @@ public class WorkSessionService {
         return bundles.publishWith(() -> {
             layoutZones.lock();
             ObjectNode work = works.startSession(site, workId, now);
+            // 같은 트랜잭션에서 미리보기 맵 뒤 대기 중인 세팅 굽기를 회수한다(S15P31A101-625). 묶음 발행 전이라 회수 결과와 어긋나지 않는다
+            events.publishEvent(new WorkStarted(site, workId));
             Long layout = work.path("layout_id").isNumber() ? work.path("layout_id").asLong() : null;
             layoutZones.sync(site, workId, layout, userId, java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
             return work;

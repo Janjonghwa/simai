@@ -98,6 +98,24 @@ export function isReportGenerating(report: WorkReport | null | undefined): boole
   return report?.status === 'GENERATING' || isEndingGenerating(report);
 }
 
+/**
+ * 작업 시작·보고서 보내기 확인창에 띄울 AI 초안 경고(-625). 날짜 작업 양식(form)이 있고 잠기지 않았는데 초안이 끝나지 않았으면
+ * 위험·대책·점검 칸이 비어 있을 수 있다고 알린다. 막지는 않는다(사람이 직접 채웠을 수 있다). 초안이 끝났거나 양식이 없으면 null.
+ */
+export function draftWarning(report: WorkReport | null | undefined): string | null {
+  if (!report || report.form === null || report.locked_at !== null) return null;
+  switch (report.draft_status) {
+    case null:
+      return 'AI 초안을 만들지 않았습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.';
+    case 'FAILED':
+      return 'AI 초안을 만들지 못했습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.';
+    case 'GENERATING':
+      return 'AI 초안을 아직 만드는 중입니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.';
+    default:
+      return null;
+  }
+}
+
 // ── 날짜 키 ──────────────────────────────────────────────────────────────────
 
 /** 날짜 키는 현장(브라우저) 시각의 'YYYY-MM-DD' 다. 문자열 순서가 날짜 순서와 같다. */

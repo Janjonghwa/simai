@@ -11,6 +11,7 @@ function Harness({
   signerCount = 0,
   pending = false,
   error = null,
+  draftWarning = null,
   initial = NO_CHECKS,
   onSign = vi.fn(),
   onStart = vi.fn(),
@@ -19,6 +20,7 @@ function Harness({
   signerCount?: number;
   pending?: boolean;
   error?: string | null;
+  draftWarning?: string | null;
   initial?: PreflightChecks;
   onSign?: () => void;
   onStart?: () => void;
@@ -32,6 +34,7 @@ function Harness({
       signerCount={signerCount}
       pending={pending}
       error={error}
+      draftWarning={draftWarning}
       onSign={onSign}
       onStart={onStart}
       onCancel={onCancel}
@@ -108,6 +111,28 @@ describe('PreflightConfirmDialog', () => {
       <Harness signerCount={1} pending initial={{ reportChecked: true, layoutChecked: true }} />,
     );
     expect(start().disabled).toBe(true);
+  });
+
+  it('AI 초안 경고가 있으면 보이되 작업 시작은 막지 않는다(-625)', () => {
+    const onStart = vi.fn();
+    const warning = 'AI 초안을 만들지 않았습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.';
+    render(
+      <Harness
+        signerCount={1}
+        draftWarning={warning}
+        initial={{ reportChecked: true, layoutChecked: true }}
+        onStart={onStart}
+      />,
+    );
+    expect(screen.getByText(warning)).toBeTruthy();
+    expect(start().disabled).toBe(false);
+    fireEvent.click(start());
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('AI 초안 경고가 없으면 경고 줄도 없다', () => {
+    render(<Harness signerCount={1} />);
+    expect(screen.queryByText(/AI 초안을/)).toBeNull();
   });
 
   it('시작이 거절됐으면 창 안에 이유를 보인다', () => {

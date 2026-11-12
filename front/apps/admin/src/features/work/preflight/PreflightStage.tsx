@@ -13,8 +13,10 @@ import { useSigners } from '@/features/work/preflight/useSigners';
 import { ZoneEditDialog } from '@/features/work/preflight/ZoneEditDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import type { WorkStageProps } from '@/features/work/stageProps';
+import { useWorkReport } from '@/features/work/useWorkReport';
 import { useStartWork } from '@/features/work/useWorkRun';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
+import { draftWarning } from '@/features/work/workDay';
 import { useZones } from '@/features/zones/useZones';
 import { useCallback, useMemo, useState } from 'react';
 
@@ -28,6 +30,8 @@ export function PreflightStage({ day }: WorkStageProps) {
   const workId = day.work_id;
   const signers = useSigners(workId, isSetupFinished(day.progress));
   const start = useStartWork();
+  // 확인창의 AI 초안 경고(-625). ReportPanel 과 같은 쿼리라 요청이 더 나가지 않는다
+  const { data: report } = useWorkReport(workId);
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
   const [checks, setChecks] = useState<PreflightChecks>(NO_CHECKS);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -77,6 +81,7 @@ export function PreflightStage({ day }: WorkStageProps) {
           signerCount={signers.count}
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}
+          draftWarning={draftWarning(report)}
           onSign={() => setDialog('sign')}
           onStart={beginWork}
           onCancel={closeDialog}
