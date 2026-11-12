@@ -17,7 +17,6 @@ import java.util.Optional;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -88,29 +87,38 @@ public class SceneRegenerateService {
         }
 
         OffsetDateTime now = OffsetDateTime.now(clock);
-        long requestId;
-        try {
-            MapSqlParameterSource params = new MapSqlParameterSource()
-                    .addValue("status", "REQUESTED")
-                    .addValue("reason", reason, Types.VARCHAR)
-                    .addValue("requestedBy", userId)
-                    .addValue("now", now);
-            requestId = jdbc.queryForObject("""
+        // 동시 요청은 진행 중 유일 색인에서 갈린다. 위반을 catch 하면 PostgreSQL 트랜잭션이 중단돼 뒤 조회가 실패하므로(500)
+        // 충돌은 ON CONFLICT 로 받아 빈 결과로 보고, 먼저 들어간 요청을 새 문장으로 읽어 409 로 답한다
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("status", "REQUESTED")
+                .addValue("reason", reason, Types.VARCHAR)
+                .addValue("requestedBy", userId)
+                .addValue("now", now);
+        List<Long> inserted = List.of();
+        // 충돌 뒤 조회 사이에 먼저 들어간 요청이 끝나면 진행 중 요청이 안 보인다. 그때는 한 번 더 넣어 본다
+        for (int attempt = 0; attempt < 2 && inserted.isEmpty(); attempt++) {
+            inserted = jdbc.queryForList("""
                     INSERT INTO scene_regenerate_request (status, reason, requested_by, created_at, updated_at)
                     VALUES (:status, :reason, :requestedBy, :now, :now)
+                    ON CONFLICT DO NOTHING
                     RETURNING id
                     """, params, Long.class);
-        } catch (DataIntegrityViolationException e) {
-            List<Long> current = jdbc.queryForList("""
-                    SELECT id FROM scene_regenerate_request
-                    WHERE status IN ('REQUESTED', 'CAPTURING', 'RECONSTRUCTING')
-                    ORDER BY id DESC LIMIT 1
-                    """, Map.of(), Long.class);
-            if (!current.isEmpty()) {
-                throw new SceneRegenerateInProgressException(current.getFirst());
+            if (inserted.isEmpty()) {
+                List<Long> current = jdbc.queryForList("""
+                        SELECT id FROM scene_regenerate_request
+                        WHERE status IN ('REQUESTED', 'CAPTURING', 'RECONSTRUCTING')
+                        ORDER BY id DESC LIMIT 1
+                        """, Map.of(), Long.class);
+                if (!current.isEmpty()) {
+                    throw new SceneRegenerateInProgressException(current.getFirst());
+                }
             }
-            throw e;
         }
+        if (inserted.isEmpty()) {
+            // 두 번 다 다른 요청과 엇갈렸다(극히 드묾). 진행 중 요청 id 는 모르지만 같은 409 로 다시 누르게 한다
+            throw new SceneRegenerateInProgressException(0L);
+        }
+        long requestId = inserted.getFirst();
 
         ObjectNode input = mapper.createObjectNode()
                 .put("request_id", requestId)

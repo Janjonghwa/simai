@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,7 +97,12 @@ public class TbmFormAiService implements DisposableBean {
             DraftStart start = drafts.begin(siteId, reportId);
             return new Started(start, buildDraftRequest(siteId, start));
         });
-        executor.submit(() -> runDraft(siteId, started.start(), started.request()));
+        try {
+            executor.submit(() -> runDraft(siteId, started.start(), started.request()));
+        } catch (RejectedExecutionException e) {
+            // 서버가 내려가는 중이다. GENERATING 으로 두면 이 보고서의 초안이 재시작 전까지 409 로 막힌다
+            failDraft(started.start().reportId(), "INTERRUPTED");
+        }
         ObjectNode accepted = mapper.createObjectNode();
         accepted.put("report_id", started.start().reportId());
         accepted.put("work_id", started.start().workId());
@@ -253,7 +259,8 @@ public class TbmFormAiService implements DisposableBean {
     }
 
     private void failDraft(long reportId, String reason) {
-        reports.completeFailed(reportId, reason, null, null, null, null, null, null, clock.instant());
+        AsyncFinish.withRetry("draft failure", reportId,
+                () -> reports.completeFailed(reportId, reason, null, null, null, null, null, null, clock.instant()));
     }
 
     /** 작업 종료 트랜잭션 커밋 뒤에만 부른다. 엔진이 실패해도 결정적 문장으로 마감한다. */
@@ -282,7 +289,8 @@ public class TbmFormAiService implements DisposableBean {
             String text = ending;
             boolean isFallback = fallback;
             String usedModel = model;
-            transaction.executeWithoutResult(s -> wrapUps.completeEnding(reportId, text, isFallback, usedModel));
+            AsyncFinish.withRetry("ending", reportId, () -> transaction.executeWithoutResult(
+                    s -> wrapUps.completeEnding(reportId, text, isFallback, usedModel)));
         });
     }
 

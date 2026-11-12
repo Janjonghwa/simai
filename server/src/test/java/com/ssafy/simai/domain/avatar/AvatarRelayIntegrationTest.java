@@ -170,13 +170,13 @@ class AvatarRelayIntegrationTest {
             ObjectNode up = (ObjectNode) appearanceUpdate.get("payload");
             up.put("appearance_version", 4);
             up.put("previous_appearance_version", 3);
-            ((ObjectNode) up.get("texture")).put("object_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/albedo.png");
-            ((ObjectNode) up.get("surface_source")).put("mask_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/surface_source.png");
+            ((ObjectNode) up.get("texture")).put("object_uri", "s3://simai-test-bucket/avatars/w-0012/e1760342000000/v4/albedo.png");
+            ((ObjectNode) up.get("surface_source")).put("mask_uri", "s3://simai-test-bucket/avatars/w-0012/e1760342000000/v4/surface_source.png");
             worker.send(appearanceUpdate);
             awaitAssetRows(3);
             assertThat(jdbc.queryForObject(
                     "SELECT mesh_uri FROM avatar_asset WHERE world_id = 'w-0012' AND appearance_version = 4", String.class))
-                    .isEqualTo("s3://simai-avatars/w-0012/e1760342000000/v3/mesh.glb");
+                    .isEqualTo("s3://simai-test-bucket/avatars/w-0012/e1760342000000/v3/mesh.glb");
 
             ObjectNode batch = example("avatar_pose_batch.json");
             JsonNode frame = viewer.awaitAvatarAfterSending(worker, batch);
@@ -334,11 +334,11 @@ class AvatarRelayIntegrationTest {
             faPayload.put("appearance_version", 4);
             faPayload.put("previous_appearance_version", 3);
             ((ObjectNode) faPayload.get("mesh"))
-                    .put("object_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/mesh.glb");
+                    .put("object_uri", "s3://simai-test-bucket/avatars/w-0012/e1760342000000/v4/mesh.glb");
             ((ObjectNode) faPayload.get("texture"))
-                    .put("object_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/albedo.png");
+                    .put("object_uri", "s3://simai-test-bucket/avatars/w-0012/e1760342000000/v4/albedo.png");
             ((ObjectNode) faPayload.get("surface_source"))
-                    .put("mask_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/surface_source.png");
+                    .put("mask_uri", "s3://simai-test-bucket/avatars/w-0012/e1760342000000/v4/surface_source.png");
             worker.send(futureIdentityAsset);
             awaitAssetRows(3);
 
@@ -408,19 +408,19 @@ class AvatarRelayIntegrationTest {
         HttpResponse<String> meshRes = get(http, meshPath, viewerJwt);
         assertThat(meshRes.statusCode()).isEqualTo(302);
         assertThat(meshRes.headers().firstValue(HttpHeaders.LOCATION)).hasValueSatisfying(loc -> assertThat(loc)
-                .startsWith("http://127.0.0.1:9000/simai-test-bucket/w-0012/e1760342000000/v3/mesh.glb?")
+                .startsWith("http://127.0.0.1:9000/simai-test-bucket/avatars/w-0012/e1760342000000/v3/mesh.glb?")
                 .contains("X-Amz-Signature="));
 
         HttpResponse<String> texRes = get(http, texturePath, viewerJwt);
         assertThat(texRes.statusCode()).isEqualTo(302);
         assertThat(texRes.headers().firstValue(HttpHeaders.LOCATION)).hasValueSatisfying(loc -> assertThat(loc)
-                .startsWith("http://127.0.0.1:9000/simai-test-bucket/w-0012/e1760342000000/v3/albedo.png?")
+                .startsWith("http://127.0.0.1:9000/simai-test-bucket/avatars/w-0012/e1760342000000/v3/albedo.png?")
                 .contains("X-Amz-Signature="));
 
         HttpResponse<String> maskRes = get(http, maskPath, viewerJwt);
         assertThat(maskRes.statusCode()).isEqualTo(302);
         assertThat(maskRes.headers().firstValue(HttpHeaders.LOCATION)).hasValueSatisfying(loc -> assertThat(loc)
-                .startsWith("http://127.0.0.1:9000/simai-test-bucket/w-0012/e1760342000000/v3/surface_source.png?")
+                .startsWith("http://127.0.0.1:9000/simai-test-bucket/avatars/w-0012/e1760342000000/v3/surface_source.png?")
                 .contains("X-Amz-Signature="));
 
         // 텍스처가 null 인 자산의 albedo.png 나 없는 버전·파일은 404
@@ -478,7 +478,11 @@ class AvatarRelayIntegrationTest {
     }
 
     private ObjectNode example(String name) throws Exception {
-        ObjectNode root = (ObjectNode) mapper.readTree(Files.readString(CONTRACTS.resolve("examples").resolve(name)));
+        // 계약 예시는 버킷 이름을 simai-avatars 로 적는다. 서버는 업로드 서명이 내준 꼴(우리 버킷의 avatars/ 아래)만 서명하므로
+        // 시험 버킷 주소로 바꿔 보낸다(실제 워커는 업로드 서명이 돌려준 object_uri 를 그대로 싣는다)
+        String json = Files.readString(CONTRACTS.resolve("examples").resolve(name))
+                .replace("s3://simai-avatars/", "s3://simai-test-bucket/avatars/");
+        ObjectNode root = (ObjectNode) mapper.readTree(json);
         root.put("msg_id", UUID.randomUUID().toString());
         return root;
     }

@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.avatar;
 
+import com.ssafy.simai.domain.upload.UploadPurpose;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.storage.ObjectStorage;
@@ -52,6 +53,12 @@ public class AvatarController {
 
         String objectUri = resolveFileUri(asset, file);
         if (objectUri == null) {
+            throw new BusinessException(ErrorCode.Avatar.AVATAR_ASSET_NOT_FOUND);
+        }
+        // 워커가 보낸 주소다. 아무 키나 서명해 주면 VIEWER 가 아바타 주소로 클립 등 다른 객체를 받을 수 있으므로,
+        // 업로드 서명이 내준 꼴(우리 버킷의 avatars/ 아래)만 서명한다(JobObjectSignService 등과 같은 규칙)
+        String allowed = storage.uri(UploadPurpose.AVATAR_ASSET.prefix() + "/");
+        if (!objectUri.startsWith(allowed) || objectUri.contains("..")) {
             throw new BusinessException(ErrorCode.Avatar.AVATAR_ASSET_NOT_FOUND);
         }
         String objectKey = extractObjectKey(objectUri);

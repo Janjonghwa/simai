@@ -159,6 +159,32 @@ class SiteSceneIntegrationTest {
     }
 
     @Test
+    void 고정_목록에_없는_FK_표_일일_일지가_있어도_site_id_를_바꾸지_않고_409_로_답한다() throws Exception {
+        // 고정 목록(DEPENDENTS)에 없던 report(V36 site FK)만 남긴다. 예전에는 FK 위반 500 이었다(S15P31A101-632)
+        jdbc.update("DELETE FROM calibration_version WHERE calibration_version IN (?, ?)", "cal-" + tag, "cal-un-" + tag);
+        boolean empty = jdbc.queryForObject("""
+                SELECT NOT EXISTS (SELECT 1 FROM zone) AND NOT EXISTS (SELECT 1 FROM static_object)
+                    AND NOT EXISTS (SELECT 1 FROM config_bundle) AND NOT EXISTS (SELECT 1 FROM calibration_version)
+                    AND NOT EXISTS (SELECT 1 FROM calibration_run) AND NOT EXISTS (SELECT 1 FROM scale_reference)
+                    AND NOT EXISTS (SELECT 1 FROM floor_plan) AND NOT EXISTS (SELECT 1 FROM scene_version)
+                    AND NOT EXISTS (SELECT 1 FROM bev_frame_set) AND NOT EXISTS (SELECT 1 FROM work_unit)
+                    AND NOT EXISTS (SELECT 1 FROM layout_plan) AND NOT EXISTS (SELECT 1 FROM setup_session)
+                """, Boolean.class);
+        assumeTrue(empty, "다른 시험의 현장 기록이 남아 있어 report 만 붙은 경우를 만들 수 없어 건너뜀");
+        Long reportId = jdbc.queryForObject("""
+                INSERT INTO report (report_kind, site_id, report_date, report_version, status)
+                VALUES ('DAILY', ?, DATE '2001-01-01', 1, 'SUCCEEDED') RETURNING report_id
+                """, Long.class, siteId);
+        try {
+            ObjectNode rename = MAPPER.createObjectNode().put("site_id", "site-" + tag);
+            assertThat(call("PUT", "/api/sites/current", admin(), rename, 409).get("code").asString()).isEqualTo("SITE_IN_USE");
+            assertThat(jdbc.queryForObject("SELECT site_id FROM site", String.class)).isEqualTo(siteId);
+        } finally {
+            jdbc.update("DELETE FROM report WHERE report_id = ?", reportId);
+        }
+    }
+
+    @Test
     void 관리자가_올린_glb_를_Scene_으로_등록하고_확정하면_현재_Scene_이_된다() throws Exception {
         String first = "scene-a-" + tag;
         String second = "scene-b-" + tag;

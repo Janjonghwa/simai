@@ -168,6 +168,38 @@ class SceneRegenerateIntegrationTest {
     }
 
     @Test
+    void 동시에_재생성을_요청하면_하나만_받고_나머지는_500_이_아니라_409_로_답한다() throws Exception {
+        // 앞 검사를 함께 지나 진행 중 유일 색인에서 갈리는 경우. 예전에는 위반을 catch 한 뒤 중단된 트랜잭션에서 조회해 500 이었다
+        String token = userToken("ADMIN");
+        int n = 4;
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(n);
+        try {
+            List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return mvc.perform(post("/api/scenes/regenerate")
+                                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content("{\"reason\":\"동시\"}"))
+                            .andReturn().getResponse().getStatus();
+                }));
+            }
+            start.countDown();
+            List<Integer> statuses = new java.util.ArrayList<>();
+            for (java.util.concurrent.Future<Integer> r : results) {
+                statuses.add(r.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertThat(statuses).containsOnly(202, 409);
+            assertThat(statuses).filteredOn(st -> st == 202).hasSize(1);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_regenerate_request", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
     void 진행_중_작업_LIVE_이면_재생성을_409_로_거부한다() throws Exception {
         String site = jdbc.queryForObject("SELECT site_id FROM site LIMIT 1", String.class);
         jdbc.update("""

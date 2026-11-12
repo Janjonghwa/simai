@@ -121,6 +121,10 @@ public class EventEscalationService {
                     || severityRank(proposed) <= severityRank(lockedEvent.severity()))) {
                 throw new BusinessException(ErrorCode.Event.ESCALATION_NOT_UPWARD);
             }
+            if ("APPROVED".equals(decision) && lockedEvent.gatewayId() == null) {
+                // 보낼 Tier 0 를 모르면 다시 보내기(gateway_id 로 고른다)로도 닿지 않아, 승인했는데 등급이 영영 안 오른다
+                throw new BusinessException(ErrorCode.Event.ESCALATION_NO_GATEWAY);
+            }
 
             jdbc.update("""
                     UPDATE vlm_assessment SET

@@ -290,7 +290,8 @@ class UploadSignIntegrationTest {
         sign(jwt("VIEWER"), photo()).andExpect(status().isForbidden());
         sign(jwt("ADMIN"), photo()).andExpect(status().isForbidden());
         // 서명은 맞지만 sub 가 user_id(숫자)가 아닌 반장 토큰은 500 이 아니라 403
-        sign(jwt("FOREMAN", "not-a-number"), photo()).andExpect(status().isForbidden());
+        // sub 가 계정 번호가 아닌 토큰은 해독기 검증(JwtConfig.validateClaims)에서 401 로 거절한다
+        sign(jwt("FOREMAN", "not-a-number"), photo()).andExpect(status().isUnauthorized());
         sign(null, photo()).andExpect(status().isUnauthorized());
         sign("not-a-token", photo()).andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE requested_by_user = ?", Long.class, userId))

@@ -7,6 +7,7 @@ import com.ssafy.simai.domain.tier0.i1.I1MessageIngestor;
 import com.ssafy.simai.domain.tier0.i1.InvalidI1Message;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -109,14 +110,26 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             return Outcome.STORED;
         }
 
+        // 원소 하나가 계약을 어겨도 동기화는 끝낸다. 여기서 던지면 동기화 모드가 남아 그 연결의 이후 전이가 모두 AUDIT_ONLY 로
+        // 억제되고, 분류 트랜잭션 안에서 던지면 연결을 닫아도 Tier 0 가 같은 스냅샷을 다시 보내 끊고 붙기를 되풀이한다.
+        // 뺀 이벤트는 다음 전이·스냅샷에서 다시 맞춘다
+        List<JsonNode> valid = new ArrayList<>();
         Set<UUID> activeIds = new LinkedHashSet<>();
         for (JsonNode event : active.values()) {
+            try {
+                RiskEventRepository.requireStateFields(event);
+                I1Json.requiredText(event, "lifecycle");
+            } catch (InvalidI1Message e) {
+                log.warn("I1 스냅샷의 활성 이벤트 하나를 계약 위반으로 뺀다: gateway={} reason={}", gatewayId, e.getMessage());
+                continue;
+            }
+            valid.add(event);
             activeIds.add(I1Json.requiredUuid(event, "event_id"));
         }
         held.replace(gatewayId, activeIds);
         Set<UUID> touched = tracker.touchedDuringSync();
         try {
-            transaction.executeWithoutResult(status -> classify(gatewayId, active, activeIds, touched));
+            transaction.executeWithoutResult(status -> classify(gatewayId, valid, activeIds, touched));
         } catch (RuntimeException e) {
             log.warn("I1 스냅샷 분류 실패라 연결을 닫아 스냅샷을 다시 받는다: gateway={} error={}", gatewayId,
                     e.getClass().getSimpleName());
@@ -147,14 +160,14 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         return Outcome.STORED;
     }
 
-    private void classify(String gatewayId, JsonNode active, Set<UUID> activeIds, Set<UUID> touched) {
-        for (JsonNode event : active.values()) {
+    private void classify(String gatewayId, List<JsonNode> active, Set<UUID> activeIds, Set<UUID> touched) {
+        for (JsonNode event : active) {
             events.ensureFromSnapshot(gatewayId, event);
         }
         Set<UUID> undecided = events.withoutDelivery(activeIds);
         Set<UUID> delayed = new LinkedHashSet<>(); // 스냅샷 순서대로 알린다
         Set<UUID> auditOnly = new HashSet<>();
-        for (JsonNode event : active.values()) {
+        for (JsonNode event : active) {
             UUID eventId = I1Json.requiredUuid(event, "event_id");
             if (undecided.contains(eventId) || touched.contains(eventId)) {
                 boolean hasEvidence = I1Json.time(event, "last_valid_observation_at") != null;

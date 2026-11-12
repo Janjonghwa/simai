@@ -95,6 +95,16 @@ class AuthIntegrationTest {
     }
 
     @Test
+    void 읽을_수_없는_본문도_code_를_싣는다() throws Exception {
+        // Spring MVC 표준 오류도 관제 앱이 code 로 가를 수 있게 HTTP 상태 이름을 싣는다(S15P31A101-632)
+        mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{not json"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    @Test
     void 아이디나_비밀번호가_비면_400() throws Exception {
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

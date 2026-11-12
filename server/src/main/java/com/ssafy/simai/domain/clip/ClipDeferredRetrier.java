@@ -47,6 +47,12 @@ class ClipDeferredRetrier {
         Instant now = clock.instant();
         for (Parked parked : deferral.due(now, BATCH)) {
             Deferrable ingestor = ingestors.get(parked.msgType());
+            if (ingestor == null) {
+                // 받는 쪽이 없어진 종류(배포로 빠진 수집기 등). 그대로 두면 NPE 로 매초 영원히 다시 시도한다
+                log.warn("보관한 I1 메시지의 종류를 처리할 수집기가 없어 버림: msg_type={} msg_id={}", parked.msgType(), parked.msgId());
+                deferral.remove(parked.msgId());
+                continue;
+            }
             try {
                 ingestor.apply(parked.envelope(), parked.receivedAt());
                 deferral.remove(parked.msgId());

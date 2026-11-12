@@ -137,6 +137,12 @@ final class CctvViewer {
         }
     }
 
+    boolean isClosed() {
+        synchronized (lock) {
+            return closed;
+        }
+    }
+
     void pong() {
         lastPongNanos = System.nanoTime();
     }
