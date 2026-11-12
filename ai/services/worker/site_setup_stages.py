@@ -534,7 +534,8 @@ class ProductionSiteSetupStages:
     def _fallback_summary(summary: Mapping[str, Any], reason: str) -> dict[str, Any]:
         out = dict(summary)
         out.update(status="FALLBACK", reason=reason)
-        out["media"] = [{**m, "status": sc.M_NOT_REGISTERED} if m["status"] == sc.M_USED else m
+        # 자리 잡았지만 굽기 실패·회수로 쓰지 않은 파일은 미등록(NOT_REGISTERED)과 구분한다(1.13.0, -652)
+        out["media"] = [{**m, "status": sc.M_REGISTERED_NOT_USED} if m["status"] == sc.M_USED else m
                         for m in out.get("media", [])]
         out.pop("captured_from_ms", None)
         out.pop("captured_to_ms", None)

@@ -67,7 +67,8 @@ M_USED = "USED"
 M_DOWNLOAD_FAILED = "DOWNLOAD_FAILED"
 M_UNREADABLE = "UNREADABLE"
 M_NO_FRAMES = "NO_FRAMES"
-M_NOT_REGISTERED = "NOT_REGISTERED"
+M_NOT_REGISTERED = "NOT_REGISTERED"  # 넣었지만 고정 카메라 World 에 자리 잡은 프레임이 하나도 없다
+M_REGISTERED_NOT_USED = "REGISTERED_NOT_USED"  # 1.13.0(-652): 자리 잡은 프레임은 있지만 맵에 쓰지 않았다(묶음 관문·병합·굽기 실패, 사유는 요약 reason)
 M_WIDE_FOV_REJECTED = "WIDE_FOV_REJECTED"
 
 MAX_MEDIA = 32  # 계약 supplement_media maxItems
@@ -89,9 +90,12 @@ class SupplementConfig:
     wide_exif_35mm: float = 16.0  # EXIF 35 mm 환산 초점 거리 < 이면 초광각·어안으로 보고 뺀다(가로 화각 약 97° 초과)
     wide_fov_deg: float = 100.0  # MapAnything 이 추정한 가로 화각 중앙값 > 이면 그 파일을 뺀다
     min_registered_ratio: float = 0.30  # 등록된 보조 프레임 / 넣은 보조 프레임 하한
-    align_worse_m: float = 0.02  # 고정 카메라 중심 잔차(중심만 맞춘 similarity)가 기준보다 이만큼 넘게 커지면 거부
-    reproj_worse_ratio: float = 1.25  # 고정 카메라끼리 왕복 재투영 중앙값이 기준×이 값 + reproj_worse_px 를 넘으면 거부
+    # 주 판정은 고정 카메라끼리 왕복 재투영(-652): 중앙값이 기준×이 값 + reproj_worse_px 를 넘으면 거부
+    reproj_worse_ratio: float = 1.25
     reproj_worse_px: float = 0.5
+    # 고정 카메라 중심 잔차(중심만 맞춘 similarity)의 절대 안전선(-652). 기준(고정 4대끼리)은 자기 자신에 맞춘 값이라 ≈0 이어서
+    # 상대 2 cm 는 사실상 절대 2 cm 였고, 14차 실측 6.3 cm(재투영 통과)를 거부했다. MapAnything 묶음 고유 흔들림 위 넉넉한 선
+    align_max_center_m: float = 0.08
     reg_samples: int = 2000  # 등록 검사에서 view 하나에서 뽑는 점 수
     reg_depth_tol: float = 0.05  # 깊이 일치 상대 허용치(cross_view_reprojection 과 같은 값)
     reg_min_agree: int = 150  # 깊이가 맞는 점 수 하한(2000 점 중 7.5%)
@@ -582,16 +586,18 @@ def gate_chunk(
     chunk_px: float | None,
     cfg: SupplementConfig,
 ) -> str | None:
-    """묶음 하나의 관문. 통과면 None, 아니면 사유 코드(먼저 걸린 것). 모르는 값은 통과로 채우지 않는다."""
+    """묶음 하나의 관문. 통과면 None, 아니면 사유 코드(먼저 걸린 것). 모르는 값은 통과로 채우지 않는다.
+
+    순서(-652): 등록 수 → 고정 카메라 재투영(주 판정, 기준 대비) → 중심 잔차 절대 안전선(align_max_center_m).
+    baseline_center_m 은 기록용이다(고정 4대를 자기 자신에 맞춘 값이라 ≈0, 비교 기준이 되지 못한다)."""
+    del baseline_center_m
     if selected <= 0 or registered <= 0 or registered < cfg.min_registered_ratio * selected:
         return R_TOO_FEW_REGISTERED
-    if chunk_center_m is None or not math.isfinite(chunk_center_m):
-        return R_ALIGNMENT_WORSE
-    if baseline_center_m is not None and chunk_center_m > baseline_center_m + cfg.align_worse_m:
-        return R_ALIGNMENT_WORSE
     if baseline_px is not None:
         if chunk_px is None or chunk_px > cfg.reproj_worse_ratio * baseline_px + cfg.reproj_worse_px:
             return R_FIXED_REPROJECTION_WORSE
+    if chunk_center_m is None or not math.isfinite(chunk_center_m) or chunk_center_m > cfg.align_max_center_m:
+        return R_ALIGNMENT_WORSE
     return None
 
 
@@ -867,9 +873,10 @@ def summary(
         if m.media_id in used:
             state = M_USED
         else:
-            state = st.get("status") or m.status or (M_NOT_REGISTERED if sel else M_NO_FRAMES)
-            if state == M_USED:
-                state = M_NOT_REGISTERED
+            state = st.get("status") or m.status
+            if state is None or state == M_USED:
+                # 묶음이 관문에 걸려 버려졌어도 자리 잡은 프레임이 있던 파일은 미등록과 구분한다(-652, 14차 요약이 전부 NOT_REGISTERED)
+                state = M_REGISTERED_NOT_USED if reg else (M_NOT_REGISTERED if sel else M_NO_FRAMES)
         rows.append({"media_id": m.media_id, "status": state, "frames_selected": sel, "frames_registered": reg})
     out: dict[str, Any] = {"status": status, "reason": None if status == "APPLIED" else reason, "input_role": INPUT_ROLE,
                            "media_count": len(media), "frames_selected": int(frames_selected),

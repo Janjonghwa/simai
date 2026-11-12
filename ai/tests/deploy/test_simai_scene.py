@@ -697,3 +697,13 @@ def test_scene_worker_id_override_reaches_child(bs, tmp_path, monkeypatch):
     code = "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(os.environ['SIMAI_WORKER_ID'])"
     assert bs.scene(["--env-file", str(env_file), "--", PY, "-c", code, str(output)], worker_id="worker-cli") == 0
     assert output.read_text(encoding="utf-8") == "worker-cli"
+
+
+def test_scene_child_gets_seg_weights_default_under_root(bs, tmp_path, monkeypatch):
+    """S15P31A101-652: 굽기 자식(보강 촬영·FRAME 입력)이 사람 분할 경로 SIMAI_SEG_WEIGHTS 를 받는다(14차 SEGMENTER_MISSING)."""
+    st = _setup(bs, tmp_path, monkeypatch)
+    monkeypatch.delenv("SIMAI_SEG_WEIGHTS", raising=False)
+    output = tmp_path / "seg.txt"
+    code = "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(os.environ['SIMAI_SEG_WEIGHTS'])"
+    assert bs.scene(["--", PY, "-c", code, str(output)]) == 0
+    assert output.read_text(encoding="utf-8") == str(st["root"] / "weights" / "yolo" / "yolo26x-seg.pt")

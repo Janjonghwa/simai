@@ -134,6 +134,36 @@ class ActiveConfig:
         )
 
 
+def applied_summary(active: ActiveConfig) -> str:
+    """새 묶음 적용 한 줄(-652). 14차 GPU 세션에서 적용 성공 기록이 없어 어떤 묶음·PPE 요구·R3 판으로 도는지 가리는 데 30분 넘게 걸렸다.
+    판정 스레드를 멈추지 않게 읽기 실패는 그 항목만 '?' 로 둔다."""
+    b = active.bundle
+
+    def part(read: Callable[[], str]) -> str:
+        try:
+            return read()
+        except Exception:  # noqa: BLE001 - 기록은 판정을 멈추지 않는다
+            return "?"
+
+    def ppe() -> str:
+        p = b.ppe_policy
+        if p is None:
+            return "안전모 없음(정책 없음)·조끼 없음"
+        return f"안전모 {p.helmet.value}·조끼 {p.vest.value if p.vest is not None else '없음'}(정책 {p.version}, 작업 {p.work_id})"
+
+    def r3() -> str:
+        found = [v for rid, v in b.rule_versions if rid == "R3"]
+        return str(found[0]) if found else "없음"
+
+    def surfaces() -> str:
+        ws = active.work_surfaces
+        return f"{len(ws.surfaces)}개" + (f"(형식 오류로 뺀 {len(ws.rejected)}개)" if ws.rejected else "")
+
+    return (f"구성 묶음 {active.config_version} 적용(applied_at {active.applied_at}): 보정 {b.calibration_version}, "
+            f"{part(ppe)}, R3 규칙 버전 {part(r3)}, 구역 {part(lambda: str(len({z.zone_id for z in b.zones})))}개·"
+            f"작업면 {part(surfaces)}")
+
+
 @dataclass(frozen=True)
 class AppliedRecord:
     """전환 기록(추가만). 리플레이·What-if 는 그 시각에 적용돼 있던 버전을 쓴다(3.2)."""
@@ -316,6 +346,7 @@ class ConfigSync:
                 self._applied.append(AppliedRecord(active.config_version, active.bundle.bundle_hash, applied_at))
                 self._acks.append(self._applied_ack(active))
                 self._update_state(f"{active.config_version} 전환")
+                log.info("%s", applied_summary(active))
             return self._active
 
     # --- 수신 -----------------------------------------------------------------------

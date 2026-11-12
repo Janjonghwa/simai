@@ -175,6 +175,8 @@ export const MEDIA_RESULT_LABEL: Record<string, string> = {
   NO_FRAMES: '붙지 않음 · 쓸 장면 없음',
   NOT_REGISTERED: '붙지 않음 · 고정 카메라 화면과 맞추지 못함',
   WIDE_FOV_REJECTED: '붙지 않음 · 초광각·어안 렌즈',
+  // 맞춰진 장면은 있었지만 묶음이 품질 기준에 걸렸거나 굽기가 실패해 넣지 않았다. 이유는 위 사유 문구(계약 1.13.0, S15P31A101-652)
+  REGISTERED_NOT_USED: '붙지 않음 · 화면과 맞췄지만 품질 기준에 걸려 넣지 않음',
 };
 
 export function mediaResultText(status: string): string {

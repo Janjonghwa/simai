@@ -55,7 +55,11 @@
     경고만 남긴다(그 상태로 세팅하면 STATIC_MODEL_MISSING. 'simai-bootstrap preflight' 로 확인). 끄려면 SIMAI_WORKER_SETUP_WEIGHTS=0.
   - vLLM·워커가 죽으면 그 프로세스 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자 포함), 지수 백오프 뒤 Tier 0 가 준비 상태일 때만
     다시 띄운다. 워커·아바타는 계속 재시도하고 vLLM 은 빠른 실패가 연달아 SIMAI_SUPERVISE_MAX_FAST_FAILURES(기본 5)번이면 포기한다. Tier 0 는 건드리지 않는다.
-  - Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 끝낸다. SIGTERM·SIGINT 를 받으면 워커 → vLLM → Tier 0 순서로
+  - Tier 0 가 비정상 종료(코드 0·2·3·5 밖, 신호로 죽음 포함)하면 사이드카(워커·vLLM·아바타·PPE)는 그대로 두고 Tier 0 그룹만 SIGKILL 로
+    정리한 뒤 백오프(SIMAI_TIER0_RESTART_BACKOFF_S 1초부터 두 배, SIMAI_TIER0_RESTART_BACKOFF_MAX_S 5초까지) 뒤 Tier 0 만 다시 띄운다(S15P31A101-652).
+    SIMAI_SUPERVISE_MIN_UPTIME_S(기본 60)초 안에 다시 죽는 일이 SIMAI_TIER0_MAX_RESTARTS(기본 5)번을 넘거나, 종료 코드가 0(정상 종료)·2(설정 오류)·
+    3(재시작 복구 거부, 운영 절차 필요)·5(file 입력 기록 실패)이면 다시 띄우지 않고 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 끝낸다.
+    SIGTERM·SIGINT 를 받으면 워커 → vLLM → Tier 0 순서로
     그룹에 SIGTERM, SIMAI_STOP_GRACE_S(기본 15)초 안에 안 끝나면 그룹 SIGKILL. docker stop 은 -t 60 이상으로 준다.
   - 출력은 줄마다 [tier0]·[vllm]·[worker] 접두로 표준 오류에, 원문은 $SIMAI_ROOT/logs/<이름>.log 에 덧붙인다.
   - vLLM·워커는 스레드 제한(OMP·MKL·OpenBLAS·NumExpr = SIMAI_SIDECAR_THREADS, 기본 1. torch intra-op 도 OMP 를 따른다)·nice(SIMAI_SIDECAR_NICE, 기본 10)·
@@ -167,6 +171,11 @@ PREFLIGHT_SETS = ("tier0", "avatar", "static", "vlm")
 PREFLIGHT_BINS = ("texrecon",)
 PREFLIGHT_MODULES = ("open3d", "ultralytics")
 SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 은 고른 한 판, pick_mapanything)
+# 사람 분할 가중치(yolo26x-seg): 목록에서는 아바타 묶음 항목(env SIMAI_AVATAR_SEG_WEIGHTS)이고 통합 이미지에 구워 둔다. 현장 세팅 보강 촬영(-605)·
+# 정적 맵 FRAME 입력은 같은 파일을 SIMAI_SEG_WEIGHTS 로 읽는다(reconstruct_tasks). 14차 GPU 세션에서 워커에 빠져 SEGMENTER_MISSING 이었다(-652)
+SEG_WEIGHTS_ENV = "SIMAI_SEG_WEIGHTS"
+SEG_MANIFEST_ENV = "SIMAI_AVATAR_SEG_WEIGHTS"
+SEG_DEFAULT_PATH = "weights/yolo/yolo26x-seg.pt"
 SCENE_MARKER_MAX_AGE_S = 30.0  # 이 안에 갱신된 Tier 0 표시 파일 = LIVE (gpu_session1 live_guard 의 marker_max_age_s 와 같음)
 SCENE_POLL_S = 0.5  # 장면 작업 실행 중 Tier 0 시작 확인 주기
 SCENE_STOP_GRACE_S = 10.0  # Tier 0 가 시작하면 장면 그룹 SIGTERM 뒤 SIGKILL 까지
@@ -176,6 +185,8 @@ TIER0_LOCK = ("locks", "tier0.lock")  # Tier 0 시작 의도(공유 잠금, Tier
 SCENE_LOCK = ("locks", "scene.lock")  # 장면 작업 실행 중(배타)
 SCENE_PGID = ("locks", "scene.pgid")  # 실행 중인 장면 그룹(pgid·시작 표지). 감시 부모가 멈추거나 죽어도 Tier 0 가 이것으로 회수한다
 CLEAN_STOP_SUFFIX = ".stopped"  # Tier 0 정상 종료 기록 = <표시 파일>.stopped (simai_ai.gpu.admission.clean_stop_path 와 같은 규칙, S15P31A101-403)
+# Tier 0 를 다시 띄우지 않는 종료 코드(services/tier0/__main__.py): 다시 띄워도 같은 결과이거나 운영자가 정한 종료다(S15P31A101-652)
+TIER0_NO_RESTART = {0: "정상 종료", 2: "설정 오류", 3: "재시작 복구 거부(운영 절차 필요)", 5: "file 입력 결과 기록 실패"}
 CLEAN_STOP_PHASE = "stopped_clean"
 SCENE_MAX_GPU_USED_MB = 1024  # 넘으면 다른 프로세스가 GPU 를 쓴다. 빈 GPU 는 0~수 MiB, 다른 프로세스의 빈 CUDA 문맥은 약 0.5 GiB, Tier 0·vLLM 은 수 GiB 이상
 FETCH_ATTEMPTS = 5
@@ -381,6 +392,19 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def seg_weights_entry(path: Path) -> dict | None:
+    """가중치 목록에서 사람 분할 항목(env SIMAI_AVATAR_SEG_WEIGHTS, 묶음 무관). 목록을 못 읽거나 없으면 None(경로는 기본값을 쓴다)."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entry = next((w for w in doc["weights"] if w.get("env") == SEG_MANIFEST_ENV), None)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if entry is None or not isinstance(entry.get("path"), str):
+        return None
+    rel = Path(entry["path"])
+    return None if rel.is_absolute() or ".." in rel.parts else entry
 
 
 def load_manifest(path: Path, wanted: str) -> list[dict]:
@@ -1091,7 +1115,8 @@ class Service:
 
 
 class Supervisor:
-    """Tier 0 → (Tier 0 준비) → 워커 가중치 → vLLM → 분석 워커. Tier 0 가 끝나면 나머지를 내리고 Tier 0 종료 코드로 끝난다."""
+    """Tier 0 → (Tier 0 준비) → 워커 가중치 → vLLM → 분석 워커. Tier 0 가 비정상 종료하면 Tier 0 만 백오프 뒤 다시 띄우고(-652),
+    정상·재시도 무의미 종료이거나 빠른 실패가 상한을 넘으면 나머지를 내리고 Tier 0 종료 코드로 끝난다."""
 
     def __init__(self, root: Path, services: list[str], tier0_argv: list[str], env: dict[str, str] | None = None, *,
                  spawn=Proc, ready=None, health=None, clock=time.monotonic, sleep=time.sleep, wall_ms=None,
@@ -1114,6 +1139,13 @@ class Supervisor:
         self.backoff_max_s = _env_float(env, "SIMAI_SUPERVISE_BACKOFF_MAX_S", 300)
         self.min_uptime_s = _env_float(env, "SIMAI_SUPERVISE_MIN_UPTIME_S", 60)
         self.max_fast = int(_env_float(env, "SIMAI_SUPERVISE_MAX_FAST_FAILURES", 5))
+        # Tier 0 자동 재기동(S15P31A101-652, 14차 GPU 세션: Tier 0 하나가 죽으면 사이드카까지 다 내려가 다시 띄우기 어려웠다).
+        # 1·2·4·5·5초: 일시 장애(입력·CUDA)는 곧 다시 잡고, 같은 원인으로 바로 죽는 경우는 상한(5번)에서 멈춘다
+        self.t0_backoff_s = _env_float(env, "SIMAI_TIER0_RESTART_BACKOFF_S", 1)
+        self.t0_backoff_max_s = _env_float(env, "SIMAI_TIER0_RESTART_BACKOFF_MAX_S", 5)
+        self.t0_max_restarts = int(_env_float(env, "SIMAI_TIER0_MAX_RESTARTS", 5))
+        self.t0_fails = 0  # Tier 0 가 SIMAI_SUPERVISE_MIN_UPTIME_S 안에 연달아 죽은 수
+        self.t0_next_at: float | None = None  # Tier 0 를 다시 띄울 시각(죽어 있는 동안만)
         # PPE 생존 파일(S15P31A101-634): 띄운 뒤 이만큼은 보지 않고(가중치·CUDA 준비), 그 뒤 마지막 정상 주기가 이만큼 오래면 다시 띄운다.
         # PPE 는 1초마다 적고 상태 근거 만료가 10초라, 30초면 일시 지연이 아니라 멈춤·연속 실패로 본다
         self.ppe_alive_grace_s = _env_float(env, "SIMAI_PPE_ALIVE_GRACE_S", 120)
@@ -1132,10 +1164,12 @@ class Supervisor:
             or root / "weights" / "hy-world-2.0" / "HY-WorldMirror-2.0"
         )
         self.setup_lama_path = Path(env.get("SIMAI_LAMA_WEIGHTS") or root / "weights" / "lama" / "big-lama.pt")
+        self.manifest = Path(env.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
+        self.setup_seg_entry = seg_weights_entry(self.manifest)
+        self.setup_seg_path = Path(env.get(SEG_WEIGHTS_ENV) or root / (self.setup_seg_entry or {}).get("path", SEG_DEFAULT_PATH))
         self.setup_weights = (env.get("SIMAI_WORKER_SETUP_WEIGHTS") or "1").strip() not in ("0", "false", "no", "off")
         self._setup_weights_thread: threading.Thread | None = None
         self.setup_weights_error: str | None = None
-        self.manifest = Path(env.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
         if ready is None:
             waiter = _load_waiter()
             ready = lambda: tier0_marker_ready(self.marker, waiter, self.t0_since_ms, self.t0_pid)  # noqa: E731
@@ -1233,6 +1267,7 @@ class Supervisor:
                     e.setdefault("SIMAI_WM2_MODEL", str(self.setup_wm2_dir))
                     e.setdefault("SIMAI_WORLDMIRROR_MODEL", str(self.setup_wm2_dir))
                     e.setdefault("SIMAI_LAMA_WEIGHTS", str(self.setup_lama_path))
+                    e.setdefault(SEG_WEIGHTS_ENV, str(self.setup_seg_path))  # 보강 촬영·FRAME 입력의 사람 분할(-652). 굽기 자식은 워커 환경을 잇는다
                     e.setdefault("SIMAI_VLLM_PORT", str(self.port))
                     e.setdefault("SIMAI_VLM_MODEL", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano")
             cache = cache_root / name
@@ -1373,6 +1408,11 @@ class Supervisor:
                 if (self.root / w["path"]).parent.resolve() in (want_ma, want_wm2)
                 or (self.root / w["path"]).resolve() == want_lama
             ]
+            # 사람 분할(아바타 묶음 항목, 통합 이미지는 구운 사본 링크): 아바타를 띄우지 않아도 보강 촬영이 쓰게 함께 둔다(-652)
+            seg = self.setup_seg_entry
+            if (seg is not None and (self.root / seg["path"]).resolve() == self.setup_seg_path.resolve()
+                    and all(w["name"] != seg["name"] for w in entries)):
+                entries.append(seg)
             rec["weights"] = ensure_weights(self.root, entries)
             rec["exit"] = EXIT_OK
             log(f"현장 세팅 정적 맵 가중치 준비({self.setup_model_dir}): "
@@ -1552,15 +1592,48 @@ class Supervisor:
                 rc = self._stop(t0)
                 self._record_pod_marker()
                 return exit_code(rc) if rc is not None else 128 + int(self.stop_signal)
-            rc = t0.proc.poll()
-            if rc is not None:
-                self._record_pod_marker()
-                log(f"Tier 0 종료(코드 {exit_code(rc)}) → 워커·vLLM 을 내리고 같은 코드로 끝낸다")
-                self._stop_sidecars()
-                t0.proc.signal(KILL)
-                return exit_code(rc)
+            if t0.proc is None:  # 죽은 Tier 0 를 다시 띄울 때를 기다린다(사이드카는 그대로, 표시 파일이 새로 생기기 전에는 새로 띄우지 않는다)
+                if self.t0_next_at is not None and self.clock() >= self.t0_next_at:
+                    try:
+                        self.start_tier0()
+                    except OSError as e:
+                        log(f"Tier 0 를 다시 띄우지 못함: {type(e).__name__}: {e} → 워커·vLLM 을 내리고 끝낸다")
+                        self._stop_sidecars()
+                        return EXIT_NOT_FOUND
+                    self.t0_next_at = None
+                    log(f"tier0 다시 시작 pid {t0.proc.pid} (연속 빠른 실패 {self.t0_fails}번)")
+            else:
+                rc = t0.proc.poll()
+                if rc is not None:
+                    self._record_pod_marker()
+                    t0.proc.signal(KILL)  # 그룹에 남은 손자 정리(GPU 메모리를 쥔 채 남지 않게)
+                    if self._tier0_restart(rc):
+                        # 죽은 Tier 0 가 남긴 running 표시 파일(15초 동안 신선)을 준비로 보지 않게: 다시 띄울 때 새 기동 시각을 잰다
+                        t0.proc, self.t0_since_ms = None, None
+                    else:
+                        self._stop_sidecars()
+                        return exit_code(rc)
             self.step()
             self.sleep(self.tick_s)
+
+    def _tier0_restart(self, rc: int) -> bool:
+        """Tier 0 가 rc 로 끝났다: 다시 띄울지 정하고 기록한다(True 면 t0_next_at 에 띄운다). 재시도해도 같은 결과인 종료는 다시 띄우지 않는다."""
+        code = exit_code(rc)
+        t0 = self.svc["tier0"]
+        if code in TIER0_NO_RESTART:
+            log(f"Tier 0 종료(코드 {code}, {TIER0_NO_RESTART[code]}) → 다시 띄우지 않고 워커·vLLM 을 내리고 같은 코드로 끝낸다")
+            return False
+        now = self.clock()
+        self.t0_fails = self.t0_fails + 1 if now - t0.started < self.min_uptime_s else 1
+        if self.t0_fails > self.t0_max_restarts:
+            log(f"Tier 0 종료(코드 {code}): {self.min_uptime_s:.0f}s 안에 다시 죽는 일이 {self.t0_fails}번(상한 {self.t0_max_restarts}) "
+                "→ 워커·vLLM 을 내리고 같은 코드로 끝낸다")
+            return False
+        delay = min(self.t0_backoff_max_s, self.t0_backoff_s * 2 ** min(30, self.t0_fails - 1))
+        self.t0_next_at = now + delay
+        log(f"Tier 0 비정상 종료(코드 {code}) → 사이드카는 그대로 두고 {delay:.0f}s 뒤 Tier 0 만 다시 띄운다"
+            f"(연속 빠른 실패 {self.t0_fails}/{self.t0_max_restarts}번)")
+        return True
 
 
 # ---------------------------------------------------------------- 장면 준비 모드 (S15P31A101-250)
@@ -1978,6 +2051,7 @@ def run_scene_child(root: Path, argv: list[str], extra_env: dict[str, str] | Non
     env.setdefault("SIMAI_WM2_MODEL", str(root / "weights" / "hy-world-2.0" / "HY-WorldMirror-2.0"))
     env.setdefault("SIMAI_WORLDMIRROR_MODEL", env["SIMAI_WM2_MODEL"])
     env.setdefault("SIMAI_LAMA_WEIGHTS", str(root / "weights" / "lama" / "big-lama.pt"))
+    env.setdefault(SEG_WEIGHTS_ENV, str(root / SEG_DEFAULT_PATH))  # 보강 촬영·FRAME 입력 사람 분할(-652). 파일이 없으면 그 단계만 건너뛴다
     if extra_env:
         env |= extra_env
     env["SIMAI_ROOT"] = str(root)  # 준비한 가중치 위치는 env 파일보다 우선
