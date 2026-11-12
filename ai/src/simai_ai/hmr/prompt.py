@@ -122,7 +122,7 @@ class HmrImageMap:
         homo = np.column_stack([xn, np.ones(len(xn))]) @ self.K_used.T
         return homo[:, :2] / homo[:, 2:3]
 
-    def prepare_image(self, image: np.ndarray) -> np.ndarray:
+    def prepare_image(self, image: np.ndarray, *, roi_box: Box | None = None) -> np.ndarray:
         """seg와 HMR이 함께 쓸 BGR 그림. 해상도와 K는 보정에 맞춘다."""
         if tuple(image.shape[1::-1]) != self.camera.image_size:
             raise ValueError("HMR 그림과 보정 해상도가 다르다")
@@ -133,6 +133,24 @@ class HmrImageMap:
         import cv2
 
         mx, my = self._image_remap
+        if roi_box is not None and valid_box(roi_box):
+            w, h = self.size
+            bx0, by0, bx1, by1 = (float(v) for v in roi_box)
+            pad = int(max(bx1 - bx0, by1 - by0, 64.0))
+            rx0 = max(0, int(math.floor(bx0)) - pad)
+            ry0 = max(0, int(math.floor(by0)) - pad)
+            rx1 = min(w, int(math.ceil(bx1)) + pad)
+            ry1 = min(h, int(math.ceil(by1)) + pad)
+            if 0 < (rx1 - rx0) * (ry1 - ry0) < w * h // 2:
+                out = np.zeros((h, w, image.shape[2]), dtype=image.dtype)
+                out[ry0:ry1, rx0:rx1] = cv2.remap(
+                    image,
+                    mx[ry0:ry1, rx0:rx1],
+                    my[ry0:ry1, rx0:rx1],
+                    cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                )
+                return out
         return cv2.remap(image, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
 
     @cached_property

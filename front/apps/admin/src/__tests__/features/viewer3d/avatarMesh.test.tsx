@@ -201,7 +201,7 @@ describe('되돌아가기 판정', () => {
     });
   });
 
-  it('경계값(끊김 500 ms·늦음 500 ms)은 아직 메시다', () => {
+  it('경계값(끊김 1000 ms·늦음 1000 ms)은 아직 메시다', () => {
     expect(status({ now: pose.receivedAt + AVATAR_STALL_MS }).use).toBe(true);
     expect(status({ avatar: { captureTimeMs: world.tLatestGlobal - AVATAR_LATE_MS } }).use).toBe(
       true,
@@ -230,7 +230,7 @@ describe('되돌아가기 판정', () => {
       asset: ready,
       now: T0 + lateTick * 100,
     });
-    expect(late).toMatchObject({ fallback: 'HMR_LATE', hmrLagMs: 800 });
+    expect(late).toMatchObject({ fallback: 'HMR_LATE', hmrLagMs: 1300 });
   });
 });
 
@@ -490,12 +490,12 @@ describe('PersonLayer 메시 연결', () => {
     expect(find('person-mesh')).toHaveLength(2);
   });
 
-  it('포즈가 끊긴 사람은 0.5초 뒤 캡슐로 돌아가고 다시 오면 메시로 돌아온다', async () => {
+  it('포즈가 끊긴 사람은 1.0초 뒤 캡슐로 돌아가고 다시 오면 메시로 돌아온다', async () => {
     await mount();
-    await settle(AVATAR_STALL[0] + 8);
+    await settle(AVATAR_STALL[0] + 10);
     expect(meshOf('w-0002')).toBeNull();
     expect(meshOf('w-0001')).not.toBeNull();
-    for (let n = AVATAR_STALL[0] + 9; n <= AVATAR_STALL[1] + 2; n++) await tick(n);
+    for (let n = AVATAR_STALL[0] + 12; n <= AVATAR_STALL[1] + 2; n++) await tick(n);
     expect(meshOf('w-0002')).not.toBeNull();
   });
 

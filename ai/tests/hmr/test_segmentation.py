@@ -258,46 +258,57 @@ def test_loop_batches_four_cameras_once_reuses_masks_and_continues_on_seg_failur
         loop.step()
         assert updated.wait(1)
         sender.tick()
-        assert len(calls) == 1 and len(calls[0]) == 4 and model.calls == 4 and uploads
+        # 포즈 루프는 사람당 대표 카메라 1대만 bbox 크롭으로 추론(model.calls == 1, prepared is None)하고,
+        # 전체 프레임 세그멘테이션은 백그라운드 외형 경로에서만 수행한다.
+        assert len(calls) == 1 and len(calls[0]) == 4 and model.calls == 1 and uploads
+        assert received == [None]
         assert source.item[0] == before
         assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
         if failure:
-            assert all(p is None for p in received) and appearance_masks == [{}]
+            assert appearance_masks == [{}]
         else:
-            assert len(appearance_masks[0]) == 4 and all(p.prompt.mask is not None for p in received)
+            assert len(appearance_masks[0]) == 4
             for cid in source.item[1]:
                 assert appearance_masks[0][("w-1", cid)].all()
         loop.step()  # 같은 촬영 시각은 seg도 반복하지 않는다.
         assert len(calls) == 1
+        updated.clear()
         clock[0] += 200
         source.item = full_snapshot(clock[0])
         loop.step()
-        assert len(calls) == (1 if failure else 2) and model.calls == 8
+        assert updated.wait(1)
+        assert len(calls) == (1 if failure else 2) and model.calls == 2
     finally:
         loop.close()
 
 
 def test_loop_checks_admission_before_seg_and_again_before_hmr(rig):
-    *_, model, loop, uploads = harness(rig)
+    *_, model, loop, uploads = harness(rig, freeze=1)
     seg_calls = []
-    loop.segmentation = SimpleNamespace(prepare=lambda *args: seg_calls.append(args) or {}, failed=True)
+    loop.segmentation = SimpleNamespace(prepare=lambda *args: seg_calls.append(args) or {}, failed=False)
     checks = iter([True, False])
     loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=next(checks)))
     loop.step()
     assert not seg_calls and not model.calls
-    *_, model, loop, uploads = harness(rig)
-    loop.segmentation = SimpleNamespace(prepare=lambda *args: seg_calls.append(args) or {}, failed=True)
-    checks = iter([True, True, False])
-    loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=next(checks)))
-    loop.step()
-    assert len(seg_calls) == 1 and not model.calls
+    # 포즈 루프는 seg를 호출하지 않고, 외형 작업자가 돌 때만 gate 확인 뒤 seg를 호출한다.
+    *_, model, loop, uploads = harness(rig, freeze=1)
+    updated = threading.Event()
+    loop.segmentation = SimpleNamespace(prepare=lambda *args: seg_calls.append(args) or {}, failed=False)
+    loop.appearance = SimpleNamespace(retain=lambda *_: None, track=lambda *_: None, register=lambda *_: None,
+        config=SimpleNamespace(face_policy="OBSERVED"), update=lambda *a, **kw: updated.set())
+    try:
+        loop.step()
+        assert updated.wait(1)
+        assert model.calls == 1 and len(seg_calls) == 1
+    finally:
+        loop.close()
 
 
 def test_disabled_seg_keeps_bbox_loop_working(rig):
     *_, model, loop, uploads = harness(rig, freeze=1)
     loop.segmentation = segmentation_from_env({"SIMAI_AVATAR_SEG": "0"})
     loop.step()
-    assert model.calls == 4 and uploads
+    assert model.calls == 1 and uploads
 
 
 def test_original_coordinate_mask_reaches_appearance_view_and_intersects_silhouette(rig):

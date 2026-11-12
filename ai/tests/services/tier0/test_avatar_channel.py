@@ -102,6 +102,8 @@ def test_perception_shares_exact_frame_observation_and_world_id_without_changing
     perception._share_avatar(frame, payload, 1200)
     assert calls[0][0]["world"]["tracks"][0]["per_camera"] == []  # 오래된 영상 연결 금지
     assert calls[0][0]["calibration"] is metadata["calibration"]  # 같은 rig 는 보정 직렬화 재사용
+    assert perception.avatar_share_offered == 2
+    assert perception.avatar_share_throttled == 1
     new_rig = make_rig()
     perception.associator = SimpleNamespace(replace_rig=lambda _r: None)
     perception.manager = SimpleNamespace(input_provenance={})
@@ -140,5 +142,56 @@ def test_reader_predicate_skips_loading_image_arrays_when_rejected(tmp_path):
         doc_ok, images_ok = LatestChannelReader(path).latest(predicate=lambda d: d["world"]["t"] == 500)
         assert doc_ok["world"]["t"] == 500
         np.testing.assert_array_equal(images_ok["cam1"], image)
+    finally:
+        writer.close()
+
+
+def test_crop_channel_reduces_4cam_payload_and_reconstructs_with_ring_buffer(tmp_path):
+    path = tmp_path / "latest.npz"
+    writer = LatestChannelWriter(path)
+    reader = LatestChannelReader(path, ring_slots=3)
+    h, w = 1296, 2304
+    raw_frames = {}
+    for idx, cid in enumerate(("cam1", "cam2", "cam3", "cam4")):
+        img = np.zeros((h, w, 3), np.uint8)
+        img[200:600, 300:500] = (10 + idx, 20 + idx, 30 + idx)
+        img[300:700, 1500:1700] = (40 + idx, 50 + idx, 60 + idx)
+        raw_frames[cid] = Frame(cid, 1000, "LIVE", {"stream_epoch": 1, "frame_sequence": 1}, image=img)
+    tracks = [
+        {
+            "world_id": "w-1",
+            "per_camera": [
+                {"camera_id": "cam1", "bbox": [300, 200, 500, 600], "estimated_capture_time": 1000,
+                 "frame_ref": {"stream_epoch": 1, "frame_sequence": 1}},
+                {"camera_id": "cam2", "bbox": [300, 200, 500, 600], "estimated_capture_time": 1000,
+                 "frame_ref": {"stream_epoch": 1, "frame_sequence": 1}},
+            ],
+        },
+        {
+            "world_id": "w-2",
+            "per_camera": [
+                {"camera_id": "cam1", "bbox": [1500, 300, 1700, 700], "estimated_capture_time": 1000,
+                 "frame_ref": {"stream_epoch": 1, "frame_sequence": 1}},
+                {"camera_id": "cam3", "bbox": [300, 200, 500, 600], "estimated_capture_time": 1000,
+                 "frame_ref": {"stream_epoch": 1, "frame_sequence": 1}},
+            ],
+        },
+    ]
+    try:
+        writer._write({"world": {"t": 1000, "tracks": tracks}}, raw_frames)
+        full_bytes = 4 * h * w * 3
+        assert writer.last_written_bytes < full_bytes // 10
+        assert path.stat().st_size < full_bytes // 10
+        doc, loaded1 = reader.latest()
+        assert doc["frames"]["cam4"]["crops_xyxy"] == []
+        assert len(doc["frames"]["cam1"]["crops_xyxy"]) == 2
+        assert loaded1["cam1"].shape == (h, w, 3)
+        np.testing.assert_array_equal(loaded1["cam1"][200:600, 300:500], raw_frames["cam1"].image[200:600, 300:500])
+        np.testing.assert_array_equal(loaded1["cam1"][300:700, 1500:1700], raw_frames["cam1"].image[300:700, 1500:1700])
+        assert not loaded1["cam4"].any()
+        # 링버퍼 슬롯 분리: 다음 읽기 동안 이전 반환 버퍼가 덮어써지지 않는다.
+        _, loaded2 = reader.latest()
+        assert loaded1["cam1"] is not loaded2["cam1"]
+        np.testing.assert_array_equal(loaded1["cam1"][200, 300], (10, 20, 30))
     finally:
         writer.close()

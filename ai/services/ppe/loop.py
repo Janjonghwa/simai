@@ -228,6 +228,15 @@ class PpeLoop:
             if obs is None:
                 self.counts["bad_frame"] += 1
                 continue
+            if not obs.persons:
+                self._last_frame[camera_id] = key
+                self.counts["empty_persons"] += 1
+                self.timing.record("camera_skip_empty_persons", camera=camera_id)
+                dets = FrameDetections(camera_id, obs.stream_epoch, obs.frame_sequence, obs.capture_time_ms,
+                                       obs.image_size, ())
+                with self.timing.measure("camera_association_ingest", camera=camera_id):
+                    self.judge.ingest(associate_frame(obs, dets, self.judge.cfg))
+                continue
             # 한 카메라 추론 중 부하 신호가 바뀔 수 있다. 관측 구성 뒤, 새 검출 직전에 다시 확인한다.
             with self.timing.measure("camera_gate", camera=camera_id):
                 admission = self.gate.check()
