@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.ssafy.simai.domain.setup.SetupCameraCheckFixtures;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
@@ -70,10 +71,18 @@ class SetupZonePlanIntegrationTest {
                 """, Long.class, site, user);
         String job = "job-zones-" + suffix;
         jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at) VALUES (?, 'site_setup','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb,now())", job);
+        // 카메라 확인 통과(S15P31A101-646): 구역 목록 저장·채우기는 통과한 보정에서만 받는다
         jdbc.update("""
-                INSERT INTO setup_session(setup_session_id,site_id,work_unit_id,job_id,status,camera_heights_m,height_tolerance_cm,requested_by,started_at,updated_at)
-                VALUES (?,?,?,?,'COMPLETED','{}'::jsonb,5,?,now(),now())
-                """, session, site, work, job, user);
+                INSERT INTO calibration_version (calibration_version, site_id, state, provider_source, reason, effective_at,
+                    calibration_ref, calibration_hash, created_at)
+                VALUES (?, ?, 'PROVISIONAL', 'G1_AUTO', 'setup', now(), 'file:///cal/zones.json', ?, now())
+                """, "cal-zones-" + suffix, site, "sha256:" + "b".repeat(64));
+        jdbc.update("""
+                INSERT INTO setup_session(setup_session_id,site_id,work_unit_id,job_id,status,camera_heights_m,height_tolerance_cm,requested_by,started_at,updated_at,
+                                          calibration_version,camera_check)
+                VALUES (?,?,?,?,'COMPLETED','{}'::jsonb,5,?,now(),now(),?,CAST(? AS jsonb))
+                """, session, site, work, job, user, "cal-zones-" + suffix,
+                SetupCameraCheckFixtures.passedJson(mapper, "cal-zones-" + suffix));
         jdbc.update("UPDATE work_unit SET active_setup_session_id = ? WHERE work_id = ?", session, work);
         // 이 시험만 보도록 지금 관제 구역을 비운다(트랜잭션이라 되돌려진다)
         jdbc.update("UPDATE static_object SET valid_to = now() WHERE valid_to IS NULL AND site_id = ?", site);
@@ -104,6 +113,30 @@ class SetupZonePlanIntegrationTest {
         putPlan(viewer, items, 2).andExpect(status().isForbidden());
         mvc.perform(get("/api/setup-sessions/{id}/zones", UUID.randomUUID()).header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void 카메라_확인을_통과하지_않은_보정에서는_구역_목록을_저장하거나_채우지_못한다() throws Exception {
+        // S15P31A101-646: 관제에서 뜰 카메라 경고는 세팅의 카메라 확인으로 먼저 통과해야 구역 단계로 간다. 읽기는 막지 않는다
+        ArrayNode items = mapper.createArrayNode();
+        items.addObject().put("source", "MANUAL").set("zone", zoneBody("확인 전"));
+        jdbc.update("UPDATE setup_session SET camera_check = CAST(? AS jsonb) WHERE setup_session_id = ?",
+                mapper.writeValueAsString(SetupCameraCheckFixtures.check(mapper, "cal-zones-" + suffix, "MEASURING")), session);
+        putPlan(admin, items, 0).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
+        seed(admin).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
+        mvc.perform(get("/api/setup-sessions/{id}/zones", session).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk());
+        // 다른 보정(재대여 전 보정)의 통과는 지금 보정의 통과가 아니다
+        jdbc.update("UPDATE setup_session SET camera_check = CAST(? AS jsonb) WHERE setup_session_id = ?",
+                SetupCameraCheckFixtures.passedJson(mapper, "cal-zones-old-" + suffix), session);
+        putPlan(admin, items, 0).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
+        jdbc.update("UPDATE setup_session SET camera_check = NULL WHERE setup_session_id = ?", session);
+        putPlan(admin, items, 0).andExpect(status().isConflict());
+        jdbc.update("UPDATE setup_session SET camera_check = CAST(? AS jsonb) WHERE setup_session_id = ?",
+                SetupCameraCheckFixtures.passedJson(mapper, "cal-zones-" + suffix), session);
+        putPlan(admin, items, 0).andExpect(status().isOk());
     }
 
     @Test

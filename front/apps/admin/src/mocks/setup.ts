@@ -310,6 +310,109 @@ export interface SetupMockLiveZone {
   layout_item_id?: string | null;
 }
 
+/**
+ * autoProgress 카메라 확인(S15P31A101-646): 보정 등록(JOINT_BA_AND_VERIFY, 7초) 뒤 사람을 기다리다(WAITING) 10초부터 걷는 것처럼
+ * 재고(MEASURING) 22초에 통과한다. 굽기(25~35초)가 끝나기 전에 통과해 '다음' 이 켜진다.
+ */
+const CAMERA_CHECK_TIMELINE = { calibratedAt: 7_000, walkingAt: 10_000, passedAt: 22_000 } as const;
+
+/** 서버(site_setup 1.13.0)와 같은 모양의 카메라 확인 값. 쌍은 세션 카메라 순서의 모든 쌍, 마주 보는 쌍은 시야가 겹치지 않는다. */
+export function buildCameraCheck(
+  cameraIds: readonly string[],
+  calibrationVersion: string,
+  status: NonNullable<SetupSessionResponse['camera_check']>['status'],
+  progressPct = status === 'PASSED' ? 100 : 0,
+): NonNullable<SetupSessionResponse['camera_check']> {
+  const done = status === 'PASSED' || status === 'FAILED';
+  const pairs: NonNullable<SetupSessionResponse['camera_check']>['pairs'] = {};
+  cameraIds.forEach((a, i) => {
+    cameraIds.slice(i + 1).forEach((b, k) => {
+      const j = i + 1 + k;
+      const neighbor = j - i === 1 || j - i === cameraIds.length - 1;
+      const samples = Math.round((neighbor ? 60 : 0) * (progressPct / 100));
+      const failedPair = status === 'FAILED' && i === 1 && j === 2;
+      pairs[`${a}-${b}`] = {
+        camera_ids: [a, b],
+        required: neighbor,
+        samples,
+        pass_rate: samples > 0 ? (failedPair ? 0.58 : 0.93) : null,
+        residual_median_px: samples > 0 ? (failedPair ? 9.4 : 3.1) : null,
+        verdict: !neighbor
+          ? 'NOT_OVERLAPPING'
+          : failedPair && done
+            ? 'FAIL'
+            : done
+              ? 'PASS'
+              : 'INSUFFICIENT',
+      };
+    });
+  });
+  const cameras = Object.fromEntries(
+    cameraIds.map((c) => [
+      c,
+      {
+        observed_views: Math.round(150 * (progressPct / 100)),
+        loo_samples: Math.round(90 * (progressPct / 100)),
+        loo_median_px: progressPct > 0 ? 2.4 : null,
+        verdict: (done ? 'PASS' : progressPct > 20 ? 'INSUFFICIENT' : 'NOT_OBSERVED') as
+          'PASS' | 'INSUFFICIENT' | 'NOT_OBSERVED',
+      },
+    ]),
+  );
+  const [first, second, third] = cameraIds;
+  return {
+    status,
+    calibration_version: calibrationVersion,
+    progress_pct: progressPct,
+    elapsed_s: Math.round((progressPct / 100) * 40),
+    pairs,
+    cameras,
+    problems:
+      status === 'FAILED' && second && third
+        ? [
+            {
+              kind: 'PAIR',
+              id: `${second}-${third}`,
+              camera_ids: [second, third],
+              reason: 'PASS_RATE_LOW',
+              message: `${second}–${third}: 두 카메라가 같은 사람을 같은 위치로 보지 못했습니다(통과율 58% < 75%)`,
+            },
+          ]
+        : status === 'INCOMPLETE' && first
+          ? [
+              {
+                kind: 'CHECK',
+                id: 'camera_check',
+                camera_ids: [],
+                reason: 'NOT_FINISHED',
+                message:
+                  '카메라 확인을 마치지 못했습니다. 한 사람이 모든 카메라에 보이도록 걸어야 합니다',
+              },
+            ]
+          : [],
+  };
+}
+
+/** 서버와 같은 모양의 보정 품질 게이트(옆 4쌍 홀드아웃 통과, 높이 차 1 cm). */
+export function buildQualityGate(
+  cameraIds: readonly string[],
+): NonNullable<SetupSessionResponse['quality_gate']> {
+  const pairs: NonNullable<SetupSessionResponse['quality_gate']>['pairs'] = {};
+  cameraIds.forEach((a, i) => {
+    const b = cameraIds[(i + 1) % cameraIds.length];
+    if (!b || b === a) return;
+    pairs[`${a}-${b}`] = {
+      camera_ids: [a, b],
+      holdout_tracks: 40,
+      median_px: 0.45 + i * 0.1,
+      p90_px: 0.9 + i * 0.2,
+      verdict: 'PASS',
+      reason: null,
+    };
+  });
+  return { verdict: 'PASSED', pairs, problems: [] };
+}
+
 /** autoProgress 단계표: 시작 뒤 이 시각(ms)부터 그 단계. */
 const AUTO_STAGES: readonly { at: number; stage: SetupSessionResponse['status']; pct: number }[] = [
   { at: 0, stage: 'COLLECTING_BACKGROUND', pct: 10 },
@@ -417,6 +520,20 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     mode,
     requested_mode: mode,
   });
+
+  /**
+   * 카메라 확인 관문(-646, 서버 SetupCameraCheck.passed). 서버는 확인 결과가 없어도 막지만, 이 mock 은 카메라 확인 값을 실은
+   * 세션만 막는다(그 값을 싣지 않는 기존 화면 시험이 그대로 돌게). 개발 서버(autoProgress)는 보정 뒤 값을 싣는다.
+   */
+  const cameraCheckBlocks = (session: SetupSessionResponse) =>
+    session.camera_check != null && session.camera_check_passed !== true;
+  const cameraCheckProblem = () =>
+    problem(
+      409,
+      'SETUP_CAMERA_CHECK_NOT_PASSED',
+      '카메라 확인을 통과하지 않았습니다. 한 사람이 30~60초 걸어 카메라 확인을 마치거나, 실패했으면 다시 보정하세요',
+    );
+
   /** 새 세션의 World 다시 맞추기 판정(옵션이 있을 때만 싣는다). */
   const anchorPatch = (): Partial<SetupSessionResponse> =>
     options.worldAnchorAccepted ? { world_anchor: { accepted: true } } : {};
@@ -463,6 +580,35 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     return { created, updated, kept, archived: [] as string[] };
   };
 
+  /** autoProgress 카메라 확인(-646): 보정 뒤 시간에 따라 WAITING → MEASURING → PASSED. 이미 끝났으면 그대로 둔다. */
+  function progressCameraCheck(
+    session: SetupSessionResponse,
+    elapsed: number,
+  ): SetupSessionResponse {
+    const calibration = session.calibration_version;
+    if (!calibration || elapsed < CAMERA_CHECK_TIMELINE.calibratedAt) return session;
+    const current = session.camera_check;
+    if (current && (current.status === 'PASSED' || current.status === 'FAILED')) return session;
+    const cams = Object.keys(session.camera_heights_m);
+    const { walkingAt, passedAt } = CAMERA_CHECK_TIMELINE;
+    const check =
+      elapsed >= passedAt
+        ? buildCameraCheck(cams, calibration, 'PASSED')
+        : elapsed >= walkingAt
+          ? buildCameraCheck(
+              cams,
+              calibration,
+              'MEASURING',
+              Math.min(99, Math.round(((elapsed - walkingAt) / (passedAt - walkingAt)) * 100)),
+            )
+          : buildCameraCheck(cams, calibration, 'WAITING');
+    return updateSession(session.setup_session_id, {
+      quality_gate: session.quality_gate ?? buildQualityGate(cams),
+      camera_check: check,
+      camera_check_passed: check.status === 'PASSED',
+    });
+  }
+
   /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션은 두지 않는다. */
   function progressSession(session: SetupSessionResponse): SetupSessionResponse {
     if (
@@ -473,6 +619,11 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return session;
     }
     const elapsed = now() - session.started_at_ms;
+    const advanced = progressStage(session, elapsed);
+    return progressCameraCheck(advanced, elapsed);
+  }
+
+  function progressStage(session: SetupSessionResponse, elapsed: number): SetupSessionResponse {
     const target = [...AUTO_STAGES].reverse().find((s) => elapsed >= s.at);
     const order = AUTO_STAGES.map((s) => s.stage);
     if (!target || order.indexOf(target.stage) <= order.indexOf(session.status)) return session;
@@ -830,6 +981,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (session.setup_completed_at_ms != null || session.status === 'FAILED') {
         return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
       }
+      if (cameraCheckBlocks(session)) return cameraCheckProblem();
       const raw: unknown = await request.json().catch(() => null);
       const items = typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'items') : undefined;
       const revision =
@@ -879,6 +1031,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (session.setup_completed_at_ms != null || session.status === 'FAILED') {
         return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
       }
+      if (cameraCheckBlocks(session)) return cameraCheckProblem();
       const reuse = session.mode === 'REUSE';
       if ((reuse || session.world_anchor?.accepted === true) && !zonePlans.has(id)) {
         const items = liveZones().map((zone) => ({
@@ -917,6 +1070,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
           '미리보기 맵이 나온 뒤에 완료할 수 있습니다',
         );
       }
+      if (cameraCheckBlocks(session)) return cameraCheckProblem();
       const unconfirmed = pendingOf(id);
       if (unconfirmed > 0) {
         return HttpResponse.json(

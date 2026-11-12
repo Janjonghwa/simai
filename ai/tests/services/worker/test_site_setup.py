@@ -354,6 +354,8 @@ def test_site_setup_height_mismatch_marks_camera_out_of_tolerance() -> None:
             created_at_ms=kw["created_at_ms"],
         ),
         clock_ms=lambda: 1760342410000,
+        # 높이 표시(±5 cm) 시험이다. 품질 게이트의 높이 상한(기본 10 cm, -646)은 아래 따로 시험한다
+        quality_gate={"height_max_diff_cm": 20.0},
     )
 
     ctx = JobContext(
@@ -1142,3 +1144,129 @@ def test_full_setup_reports_world_anchor_summary_without_mode() -> None:
     for snap in ctx.site_setup_history:
         assert schema_errors(snap, _PROGRESS) == []
     assert schema_errors(result, _RESULT) == []
+
+
+# --------------------------------------------------------------------------- S15P31A101-646 보정 품질 게이트·카메라 확인
+
+
+def test_quality_gate_height_mismatch_fails_with_problem_camera_snapshot() -> None:
+    """줄자 높이와 복원 높이 차가 품질 게이트 상한(기본 10 cm)을 넘으면 보정을 등록하지 않고 VALIDATION_REJECTED 로 끝낸다.
+    끝내기 전 스냅샷에 문제 카메라·사유를 실은 quality_gate(FAILED)를 보낸다(서버가 세션 조회에 싣는다)."""
+    req_msg = load_example("job_request.site_setup.json")
+    camera_ids = tuple(req_msg["payload"]["input"]["calibration_target"]["camera_ids"])
+    restored = {"cam1": 1.49, "cam2": 1.59, "cam3": 1.48, "cam4": 1.47}
+    points_m, unscaled_poses, intrinsics_by_cam, tracks_doc = _make_synthetic_room_and_tracks(
+        camera_ids=camera_ids, restored_heights_m=restored)
+    published: list[Any] = []
+    handler = SiteSetupHandler(
+        background_collector=lambda **kw: CleanBackgroundBundle("bundle-qg", dict.fromkeys(camera_ids, 100.0),
+                                                                tracks_doc=tracks_doc),
+        world_initializer=lambda **kw: build_world_from_pointcloud_and_poses(
+            site_id=kw["site_id"], camera_ids=kw["camera_ids"], camera_heights_m=kw["camera_heights_m"],
+            height_tolerance_cm=kw["height_tolerance_cm"], points_m=points_m, unscaled_poses=unscaled_poses,
+            intrinsics_by_cam=intrinsics_by_cam, created_at_ms=kw["created_at_ms"]),
+        calibration_publisher=lambda doc: published.append(doc) or str(doc["calibration_version"]),
+        clock_ms=lambda: 1760342410000,
+    )
+    ctx = JobContext("job-qg", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, req_msg["payload"]["input"])
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "VALIDATION_REJECTED" and "cam2" in exc.value.message
+    assert published == []  # 기준 미달 보정은 등록하지 않는다
+    last = ctx.site_setup_history[-1]
+    assert schema_errors(last, _PROGRESS) == []
+    assert last["status"] == "JOINT_BA_AND_VERIFY" and "calibration_version" not in last
+    gate = last["quality_gate"]
+    assert gate["verdict"] == "FAILED"
+    assert gate["cameras"]["cam2"]["verdict"] == "FAIL" and gate["cameras"]["cam2"]["reason"] == "HEIGHT_MISMATCH"
+    assert any(p["kind"] == "CAMERA" and p["id"] == "cam2" and p["reason"] == "HEIGHT_MISMATCH" for p in gate["problems"])
+
+
+def test_quality_gate_unit_rules() -> None:
+    from simai_ai.calibration.extrinsics.joint_ba_v2 import evaluate_quality_gate
+
+    def pair(tracks: int, median: float | None, p90: float | None) -> dict[str, Any]:
+        return {"holdout": tracks, "camera_ids": ["a", "b"], "after_holdout": {"median": median, "p90": p90}}
+
+    ok_heights = {"a": {"difference_cm": 4.3}, "b": {"difference_cm": -2.5}}
+    gate = evaluate_quality_gate({"a-b": pair(20, 0.45, 0.85)}, ok_heights)
+    assert gate["verdict"] == "PASSED" and gate["problems"] == []
+    gate = evaluate_quality_gate({"a-b": pair(2, 4.1, 4.8)}, ok_heights)
+    # 근거가 모자라면 통과가 아니라 확인 필요
+    assert gate["verdict"] == "NEEDS_CHECK" and gate["pairs"]["a-b"]["reason"] == "FEW_HOLDOUT"
+    gate = evaluate_quality_gate({"a-b": pair(20, 3.5, 4.0)}, ok_heights)
+    assert gate["verdict"] == "FAILED" and gate["pairs"]["a-b"]["reason"] == "HOLDOUT_ERROR_HIGH"
+    gate = evaluate_quality_gate({"a-b": pair(20, 1.0, 6.5)}, ok_heights)
+    assert gate["pairs"]["a-b"]["verdict"] == "FAIL"  # p90 상한
+    gate = evaluate_quality_gate({"a-b": pair(20, None, None)}, ok_heights)
+    assert gate["pairs"]["a-b"]["reason"] == "HOLDOUT_INVALID"
+    gate = evaluate_quality_gate({"a-b": pair(20, 0.5, 0.9)}, {"a": {"difference_cm": 10.4}, "b": {"difference_cm": 0}})
+    assert gate["verdict"] == "FAILED" and gate["cameras"]["a"]["reason"] == "HEIGHT_MISMATCH"
+    gate = evaluate_quality_gate({"a-b": pair(20, 0.5, 0.9)}, {"a": {"difference_cm": 10.4}}, {"height_max_diff_cm": 12})
+    assert gate["verdict"] == "PASSED" and gate["thresholds"]["height_max_diff_cm"] == 12.0
+
+
+class _FakeChecker:
+    """카메라 확인 실행기 대역: poll 마다 준비한 요약을 하나씩 낸다."""
+
+    def __init__(self, statuses: list[str]) -> None:
+        self.statuses = list(statuses)
+        self.started: list[tuple[str, str, list[Any]]] = []
+        self.stopped = 0
+        self.version = ""
+
+    def _summary(self, status: str) -> dict[str, Any]:
+        problems = [] if status in ("WAITING", "MEASURING", "PASSED") else [
+            {"kind": "CHECK", "id": "camera_check", "reason": "NOT_FINISHED", "message": "카메라 확인을 마치지 못했습니다"}]
+        return {"status": status, "calibration_version": self.version, "progress_pct": 100.0 if status == "PASSED" else 10.0,
+                "elapsed_s": 1.0, "thresholds": {"min_duration_s": 30.0, "max_duration_s": 120.0, "min_pair_samples": 30,
+                                                 "min_pair_pass_rate": 0.75, "max_pair_residual_median_px": 8.0,
+                                                 "min_camera_views": 30, "min_loo_samples": 20, "max_loo_median_px": 8.0,
+                                                 "min_evaluated_pairs": 3},
+                "pairs": {}, "cameras": {}, "problems": problems}
+
+    def start(self, setup_session_id: str, calibration_doc: Any, *, expires_at_ms: int, required_pairs: Any = ()) -> Any:
+        self.version = str(calibration_doc["calibration_version"])
+        self.started.append((setup_session_id, self.version, list(required_pairs)))
+        return self._summary("WAITING")
+
+    def poll(self) -> Any:
+        return self._summary(self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0])
+
+    def incomplete(self) -> Any:
+        return self._summary("INCOMPLETE")
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+def test_camera_check_runs_after_calibration_and_result_waits_for_pass() -> None:
+    checker = _FakeChecker(["MEASURING", "MEASURING", "PASSED"])
+    handler, inp, published = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, camera_check_poll_s=0.01,
+    )
+    ctx = JobContext("job-cc", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, inp, timeout_ms=600_000)
+    result = handler(ctx)
+    assert checker.started and checker.started[0][1] == result["calibration_version"] == published[0]["calibration_version"]
+    assert result["camera_check"]["status"] == "PASSED" and schema_errors(result, _RESULT) == []
+    assert result["quality_gate"]["verdict"] in ("PASSED", "NEEDS_CHECK")
+    seen = [s["camera_check"]["status"] for s in ctx.site_setup_history if "camera_check" in s]
+    assert seen and seen[0] == "WAITING"
+    assert all("camera_check" not in s for s in ctx.site_setup_history if s["progress_pct"] < 65)
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert checker.stopped >= 1
+
+
+def test_camera_check_not_finished_by_deadline_is_incomplete() -> None:
+    checker = _FakeChecker(["MEASURING"])
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, camera_check_poll_s=0.01, camera_check_margin_s=10_000.0,
+    )
+    ctx = JobContext("job-cc2", "0192a6f0-7c1e-7b3a-9f2d-000000000647", "site_setup", 1, inp, timeout_ms=600_000)
+    result = handler(ctx)
+    assert result["camera_check"]["status"] == "INCOMPLETE" and result["camera_check"]["problems"]
+    assert schema_errors(result, _RESULT) == []
+    assert checker.stopped >= 1

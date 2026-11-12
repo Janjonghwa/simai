@@ -30,6 +30,7 @@
       "detect_queue_depth": 8,                 검출 루프 → 판정 루프 사이 카메라별 최대 관측 대기 수 (초과 시 오래된 관측 버림, -383)
       "drift_watch_enabled": true,             사람 관절 보정 활성 시 틀어짐 감시(기본 true)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
+      "camera_check_enabled": true,            세팅 「카메라 확인」 입력 내보내기(기본 켜짐, LIVE 입력, 워커 요청 파일이 있을 때만 씀)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
       "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
@@ -219,6 +220,7 @@ class Tier0Settings:
     human_calibration_enabled: bool = False
     drift_watch_enabled: bool = True
     event_frames_enabled: bool = True
+    camera_check_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
     rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
@@ -240,6 +242,11 @@ class Tier0Settings:
     @property
     def baselines_file(self) -> Path:
         return self.state_dir / "calibration_baselines.json"
+
+    @property
+    def camera_check_dir(self) -> Path:
+        """세팅 「카메라 확인」(S15P31A101-646) 요청·view·기준선 폴더. 같은 Pod 의 분석 워커와 같은 state_dir 아래다"""
+        return self.state_dir / "camera-check"
 
     @property
     def live_marker(self) -> Path:
@@ -613,6 +620,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     event_frames_enabled = doc.get("event_frames_enabled", True)
     if not isinstance(event_frames_enabled, bool):
         raise Tier0ConfigError("event_frames_enabled 는 bool이다")
+    camera_check_enabled = doc.get("camera_check_enabled", True)
+    if not isinstance(camera_check_enabled, bool):
+        raise Tier0ConfigError("camera_check_enabled 는 bool이다")
     i1 = None if file is not None else _i1({**env, "SIMAI_TIER0_ID": gateway_id})
     control = None if file is not None else _control(env)
     if sim is not None:
@@ -626,6 +636,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         human_calibration_enabled=human_calibration == "1",
         drift_watch_enabled=drift_watch_enabled,
         event_frames_enabled=event_frames_enabled,
+        camera_check_enabled=camera_check_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
         rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),

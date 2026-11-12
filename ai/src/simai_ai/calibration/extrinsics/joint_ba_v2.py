@@ -71,6 +71,106 @@ DEFAULT_STAGE_A_CONFIG: dict[str, Any] = {
 }
 
 
+# 세팅 보정 절대 품질 게이트(S15P31A101-646). Stage A 합격은 초기 자세 대비 상대 악화(+1 px)만 보았다(초기 12 px 면 12.9 px
+# 도 통과). 아래 절대 상한·최소 홀드아웃·카메라 높이 차를 함께 본다. 근거: docs/design/S15P31A101-646-setup-camera-check.md
+# (V2 실험 Stage A 뒤 쌍별 홀드아웃 중앙값 0.2~2.2 px·p90 ≤ 3.2 px, 보정 전 7 px 대, 14차 높이 차 2.5~4.3 cm)
+DEFAULT_QUALITY_GATE: dict[str, Any] = {
+    "pair_holdout_median_max_px": 3.0,
+    "pair_holdout_p90_max_px": 6.0,
+    "min_holdout_tracks": 5,
+    "height_max_diff_cm": 10.0,
+}
+
+QUALITY_PASSED = "PASSED"
+QUALITY_NEEDS_CHECK = "NEEDS_CHECK"
+QUALITY_FAILED = "FAILED"
+
+
+def evaluate_quality_gate(
+    pair_metrics: Mapping[str, Mapping[str, Any]],
+    height_checks: Mapping[str, Mapping[str, Any]],
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stage A 결과의 절대 품질 판정(계약 site_setup#/$defs/quality_gate).
+
+    쌍: 홀드아웃 트랙이 min_holdout_tracks 미만이면 판단할 근거가 없어 NEEDS_CHECK(통과가 아니다. 세팅 「카메라 확인」이 사람으로
+    그 쌍을 확인해야 한다). 근거가 있으면 홀드아웃 중앙값·p90 이 상한 안이어야 PASS, 넘거나 투영이 깨졌으면(값 없음) FAIL.
+    카메라: 줄자 높이와 복원 높이 차가 height_max_diff_cm 을 넘으면 FAIL. 하나라도 FAIL 이면 FAILED, 아니면 NEEDS_CHECK 가
+    하나라도 있으면 NEEDS_CHECK, 모두 PASS 면 PASSED.
+    """
+    cfg = {**DEFAULT_QUALITY_GATE, **(dict(config) if config is not None else {})}
+    med_max = float(cfg["pair_holdout_median_max_px"])
+    p90_max = float(cfg["pair_holdout_p90_max_px"])
+    min_tracks = int(cfg["min_holdout_tracks"])
+    height_max = float(cfg["height_max_diff_cm"])
+    pairs: dict[str, dict[str, Any]] = {}
+    cameras: dict[str, dict[str, Any]] = {}
+    problems: list[dict[str, Any]] = []
+    for key in sorted(pair_metrics):
+        meta = pair_metrics[key]
+        held = meta.get("after_holdout") or {}
+        tracks = int(meta.get("holdout", 0) or 0)
+        median, p90 = held.get("median"), held.get("p90")
+        camera_ids = [str(c) for c in meta.get("camera_ids", ())]
+        if tracks < min_tracks:
+            verdict, reason = QUALITY_NEEDS_CHECK, "FEW_HOLDOUT"
+            message = f"{key}: 홀드아웃 대응점이 {tracks}개뿐이라(최소 {min_tracks}개) 사람 걷기로 확인해야 합니다"
+        elif median is None or p90 is None:
+            verdict, reason = QUALITY_FAILED, "HOLDOUT_INVALID"
+            message = f"{key}: 홀드아웃 대응점 투영이 깨졌습니다(카메라 뒤·해 없음)"
+        elif float(median) > med_max or float(p90) > p90_max:
+            verdict, reason = QUALITY_FAILED, "HOLDOUT_ERROR_HIGH"
+            message = (f"{key}: 홀드아웃 재투영 오차가 큽니다(중앙값 {float(median):.2f}px, p90 {float(p90):.2f}px, "
+                       f"상한 {med_max:g}/{p90_max:g}px)")
+        else:
+            verdict, reason, message = "PASS", None, None
+        entry: dict[str, Any] = {
+            "camera_ids": camera_ids,
+            "holdout_tracks": tracks,
+            "median_px": None if median is None else round(float(median), 4),
+            "p90_px": None if p90 is None else round(float(p90), 4),
+            "verdict": "PASS" if verdict == "PASS" else ("NEEDS_CHECK" if verdict == QUALITY_NEEDS_CHECK else "FAIL"),
+            "reason": reason,
+        }
+        pairs[key] = entry
+        if reason is not None:
+            problems.append({"kind": "PAIR", "id": key, "camera_ids": camera_ids, "reason": reason, "message": message})
+    for cid in sorted(height_checks):
+        diff = height_checks[cid].get("difference_cm")
+        diff_f = float(diff) if isinstance(diff, (int, float)) and not isinstance(diff, bool) else None
+        if diff_f is None or not math.isfinite(diff_f):
+            verdict, reason = "FAIL", "HEIGHT_UNKNOWN"
+            message = f"{cid}: 복원 높이를 알 수 없습니다"
+        elif abs(diff_f) > height_max:
+            verdict, reason = "FAIL", "HEIGHT_MISMATCH"
+            message = (f"{cid}: 줄자 높이와 복원 높이 차가 {diff_f:+.1f}cm 입니다(허용 ±{height_max:g}cm). "
+                       "높이 입력과 카메라 각도를 확인하세요")
+        else:
+            verdict, reason, message = "PASS", None, None
+        cameras[cid] = {"height_diff_cm": None if diff_f is None else round(diff_f, 2), "verdict": verdict, "reason": reason}
+        if reason is not None:
+            problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": reason, "message": message})
+    verdicts = [p["verdict"] for p in pairs.values()] + [c["verdict"] for c in cameras.values()]
+    if "FAIL" in verdicts:
+        overall = QUALITY_FAILED
+    elif "NEEDS_CHECK" in verdicts:
+        overall = QUALITY_NEEDS_CHECK
+    else:
+        overall = QUALITY_PASSED
+    return {
+        "verdict": overall,
+        "thresholds": {
+            "pair_holdout_median_max_px": med_max,
+            "pair_holdout_p90_max_px": p90_max,
+            "min_holdout_tracks": min_tracks,
+            "height_max_diff_cm": height_max,
+        },
+        "pairs": pairs,
+        "cameras": cameras,
+        "problems": problems,
+    }
+
+
 class StageAError(RuntimeError):
     """Structured failure raised during Stage A rotation BA or verification."""
 
@@ -1665,6 +1765,7 @@ def run_stage_a_rotation_ba(
         pair_holdout_medians[key] = round(float(med), 4) if med is not None else None
         pair_metrics[key] = {
             **pair_meta,
+            "camera_ids": [cam_ids[a], cam_ids[b]],
             "before_holdout": baseline["pairs"][key],
             "after_holdout": held["pairs"][key],
             "worsened": is_worse,

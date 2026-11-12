@@ -32,6 +32,14 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(
 이어가며(초안은 \"AI 의견 없음\"), 취소·시간 초과만 그대로 낸다. 프레임은 사람 지운 배경이라 얼굴이 원칙상 없지만 계약의 얼굴 정책
 (`face_policy`, BLURRED)을 함께 싣고, VLM 워커가 그 정책대로 얼굴 흐림 관문을 거친다.
 
+보정 품질 게이트(S15P31A101-646): (e) 뒤 Stage A 쌍별 홀드아웃 절대 상한·최소 홀드아웃 수·카메라 높이 차를 본다
+(`joint_ba_v2.evaluate_quality_gate`). FAILED 면 문제 쌍·카메라를 실은 `quality_gate` 스냅샷을 보내고 `VALIDATION_REJECTED` 로
+끝낸다(보정을 등록하지 않는다). NEEDS_CHECK(홀드아웃 부족) 쌍은 아래 카메라 확인의 필수 쌍이 된다.
+카메라 확인(S15P31A101-646): (f) 보정 등록 뒤 `camera_check` 실행기가 같은 Pod 의 Tier 0 에 관제 view 를 요청하고, 사람이 걷는
+동안 관제와 같은 계산(쌍 에피폴라·잔차 통과율, 한 카메라 제외 재투영, 4대 관측)으로 새 보정을 확인해 스냅샷 `camera_check` 로
+알린다. 미리보기·굽기와 함께 돌고(배경 수집은 이미 끝났다), 결과를 내기 전에 판정(PASSED·FAILED)을 기다린다. 마감까지 못 하면
+INCOMPLETE. 서버는 PASSED 전에는 구역 단계·세팅 완료를 거부한다.
+
 보조 촬영(입력 `supplement_media`, S15P31A101-605)은 (h) 굽기 주입점이 처리하고 `BakedScene.supplement` 요약을 돌려주면 결과
 `supplement` 로 싣는다. 보조 촬영 때문에 세팅을 실패시키지 않는다(주입점이 FALLBACK·SKIPPED 요약으로 바꾼다).
 `mode: SUPPLEMENT_REBAKE` 는 (a)~(g) 를 건너뛰고 `rebaker` 주입점 하나로 이 세션 맵만 보조 촬영을 넣어 다시 굽는다(BAKING_TEXTURE →
@@ -67,10 +75,12 @@ from simai_ai.calibration.criteria import (
 )
 from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
 from simai_ai.calibration.extrinsics.joint_ba_v2 import (
+    QUALITY_FAILED,
     ObjectScaleCrossChecker,
     StageAError,
     StageAResult,
     compute_height_checks,
+    evaluate_quality_gate,
     extract_tracks_from_backgrounds,
     run_stage_a_rotation_ba,
 )
@@ -365,6 +375,22 @@ class SupplementRebaker(Protocol):
     ) -> RebakeOutcome: ...
 
 
+class CameraChecker(Protocol):
+    """세팅 「카메라 확인」 실행기(`services.worker.camera_check.CameraCheckRunner`)."""
+
+    def start(self, setup_session_id: str, calibration_doc: Mapping[str, Any], *, expires_at_ms: int,
+              required_pairs: Sequence[tuple[str, str]] = ()) -> dict[str, Any]: ...
+
+    def poll(self) -> dict[str, Any] | None: ...
+
+    def incomplete(self) -> dict[str, Any] | None: ...
+
+    def stop(self) -> None: ...
+
+
+CAMERA_CHECK_FINAL = frozenset({"PASSED", "FAILED", "INCOMPLETE"})
+
+
 class TextureSceneBaker(Protocol):
     def __call__(
         self,
@@ -520,11 +546,20 @@ class SiteSetupHandler:
         background_poll_s: float = 2.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[threading.Event, float], Any] | None = None,
+        camera_check: CameraChecker | None = None,
+        camera_check_poll_s: float = 1.0,
+        camera_check_report_s: float = 3.0,
+        camera_check_margin_s: float = 20.0,
+        quality_gate: Mapping[str, Any] | None = None,
     ) -> None:
         """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
         live_notice: True 면 Tier 0 가 떠 있다는 로그만 남기고 굽는다(Tier 0 지연이 잠깐 늘 수 있음).
         background_wait_s: 배경 묶음이 완성되기를 기다리는 최대 초(0 이면 한 번만 본다). sleep(취소 신호, 초)의 기본은 신호 대기.
-        world_anchor: Stage A 뒤 보정 문서 → 이전 채택 World 로 옮긴(또는 사유만 기록한) 문서. 없으면 새 World 그대로(-584)."""
+        world_anchor: Stage A 뒤 보정 문서 → 이전 채택 World 로 옮긴(또는 사유만 기록한) 문서. 없으면 새 World 그대로(-584).
+        camera_check: 보정 등록 뒤 사람 걷기로 새 보정을 확인하는 실행기(-646). 없으면 확인하지 않는다(스냅샷에 싣지 않음).
+        camera_check_report_s: 상태가 그대로면 카메라 확인 스냅샷을 이 간격(초)보다 자주 보내지 않는다(EC2 하트비트 부하).
+        camera_check_margin_s: 결과를 내기 전 확인을 기다릴 때 실행 상한까지 남길 여유(초).
+        quality_gate: 보정 품질 게이트 기준 덮어쓰기(joint_ba_v2.DEFAULT_QUALITY_GATE 키)."""
         if background_wait_s < 0 or background_poll_s <= 0:
             raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
         self._collect_bg = background_collector
@@ -550,6 +585,17 @@ class SiteSetupHandler:
         self._clock_ms = clock_ms
         self._perf = perf_counter
         self._stage_a_target_s = float(stage_a_target_seconds)
+        self._camera_check = camera_check
+        self._cc_poll_s = float(camera_check_poll_s)
+        self._cc_report_s = float(camera_check_report_s)
+        self._cc_margin_s = float(camera_check_margin_s)
+        self._quality_gate_config = dict(quality_gate) if quality_gate is not None else None
+        self._emit_lock = threading.RLock()
+        self._last_payload: dict[str, Any] | None = None
+        self._quality_gate: dict[str, Any] | None = None
+        self._cc_summary: dict[str, Any] | None = None
+        self._cc_stop = threading.Event()
+        self._cc_thread: threading.Thread | None = None
 
     @staticmethod
     def _default_preview_builder(
@@ -612,16 +658,115 @@ class SiteSetupHandler:
         tolerance_cm = float(raw["height_tolerance_cm"])
         return setup_session_id, site_id, camera_ids, heights, tolerance_cm
 
-    @staticmethod
-    def _emit_progress(ctx: JobContext, payload: Mapping[str, Any]) -> None:
-        errs = schema_errors(dict(payload), SITE_SETUP_PROGRESS_SCHEMA)
-        if errs:
-            raise JobFailed(
-                "INTERNAL_CONTRACT_ERROR",
-                f"site_setup 진행 스냅샷이 계약을 위반했다: {'; '.join(errs)}",
-                retryable=False,
-            )
-        ctx.report_site_setup(payload)
+    def _with_checks(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """스냅샷·결과에 지금까지의 보정 품질 게이트와 카메라 확인 요약을 싣는다(-646). 다시 굽기(SUPPLEMENT_REBAKE)는 싣지 않는다."""
+        out = dict(payload)
+        if self._quality_gate is not None:
+            out["quality_gate"] = self._quality_gate
+        if self._cc_summary is not None:
+            out["camera_check"] = self._cc_summary
+        return out
+
+    def _emit_progress(self, ctx: JobContext, payload: Mapping[str, Any]) -> None:
+        with self._emit_lock:
+            snap = self._with_checks(payload)
+            errs = schema_errors(snap, SITE_SETUP_PROGRESS_SCHEMA)
+            if errs:
+                raise JobFailed(
+                    "INTERNAL_CONTRACT_ERROR",
+                    f"site_setup 진행 스냅샷이 계약을 위반했다: {'; '.join(errs)}",
+                    retryable=False,
+                )
+            ctx.report_site_setup(snap)
+            self._last_payload = dict(payload)
+
+    # ------------------------------------------------------------------ 카메라 확인(-646)
+
+    def _start_camera_check(self, ctx: JobContext, setup_session_id: str, calibration_doc: Mapping[str, Any],
+                            calibration_version: str) -> None:
+        """보정 등록 뒤 카메라 확인을 연다. 실행기가 없거나 열지 못하면 확인 없이 이어 간다(서버가 완료를 막는다)."""
+        if self._camera_check is None:
+            return
+        doc = copy.deepcopy(dict(calibration_doc))
+        doc["calibration_version"] = calibration_version
+        remaining = ctx.remaining_s()
+        expires_at = int(self._clock_ms()) + int(1000 * (remaining if remaining is not None else 900.0))
+        required = [tuple(p["camera_ids"]) for p in (self._quality_gate or {}).get("pairs", {}).values()
+                    if p.get("verdict") == "NEEDS_CHECK" and len(p.get("camera_ids", ())) == 2]
+        try:
+            summary = self._camera_check.start(setup_session_id, doc, expires_at_ms=expires_at,
+                                               required_pairs=required)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001 - 확인을 못 열어도 세팅 산출물은 낸다(완료는 서버가 막는다)
+            log.warning("작업 %s: 카메라 확인을 열지 못했다(%s: %s)", ctx.job_id, type(exc).__name__, exc)
+            return
+        with self._emit_lock:
+            self._cc_summary = summary
+        self._cc_stop.clear()
+        self._cc_thread = threading.Thread(target=self._camera_check_loop, args=(ctx,), name="site-setup-camera-check",
+                                           daemon=True)
+        self._cc_thread.start()
+
+    def _camera_check_loop(self, ctx: JobContext) -> None:
+        """보조 스레드: 새 view 를 평가하고 요약이 바뀌면 마지막 스냅샷에 실어 다시 보낸다(단계·진행률은 그대로)."""
+        assert self._camera_check is not None
+        last_sent = self._monotonic()
+        while not self._cc_stop.wait(self._cc_poll_s):
+            if ctx.cancelled.is_set():
+                return
+            try:
+                summary = self._camera_check.poll()
+            except Exception:  # noqa: BLE001
+                log.exception("작업 %s: 카메라 확인 평가 실패(다음 주기에 다시 본다)", ctx.job_id)
+                continue
+            if summary is None:
+                continue
+            with self._emit_lock:
+                previous = self._cc_summary or {}
+                if summary == previous:
+                    continue
+                if (summary.get("status") == previous.get("status")
+                        and self._monotonic() - last_sent < self._cc_report_s):
+                    continue  # 진행률만 바뀌었다: 다음 보고 때 싣는다
+                self._cc_summary = summary
+                last_sent = self._monotonic()
+                base = self._last_payload
+                if base is not None:
+                    try:
+                        self._emit_progress(ctx, base)
+                    except Exception:  # noqa: BLE001 - 하트비트 실패는 처리기 흐름이 다음 스냅샷에서 다시 낸다
+                        log.warning("작업 %s: 카메라 확인 스냅샷을 보내지 못했다", ctx.job_id, exc_info=True)
+            if summary.get("status") in CAMERA_CHECK_FINAL:
+                return
+
+    def _finish_camera_check(self, ctx: JobContext) -> None:
+        """결과를 내기 전에 카메라 확인 판정을 기다린다. 실행 상한 여유까지 못 하면 INCOMPLETE 로 닫는다."""
+        if self._camera_check is None or self._cc_summary is None:
+            return
+        while (self._cc_summary or {}).get("status") not in CAMERA_CHECK_FINAL:
+            self._check_cancelled(ctx)
+            remaining = ctx.remaining_s()
+            thread_alive = self._cc_thread is not None and self._cc_thread.is_alive()
+            if (remaining is not None and remaining <= self._cc_margin_s) or not thread_alive:
+                break
+            self._sleep(ctx.cancelled, min(self._cc_poll_s, max(0.05, (remaining or 1.0) - self._cc_margin_s)))
+        self._stop_camera_check_thread()
+        if (self._cc_summary or {}).get("status") not in CAMERA_CHECK_FINAL:
+            try:
+                summary = self._camera_check.incomplete()
+            except Exception:  # noqa: BLE001
+                log.exception("작업 %s: 카메라 확인 마감 처리 실패", ctx.job_id)
+                summary = None
+            if summary is not None:
+                with self._emit_lock:
+                    self._cc_summary = summary
+            log.warning("작업 %s: 카메라 확인을 마감 전에 끝내지 못했다(INCOMPLETE)", ctx.job_id)
+
+    def _stop_camera_check_thread(self) -> None:
+        self._cc_stop.set()
+        thread = self._cc_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+        self._cc_thread = None
 
     def _wait_for_backgrounds(
         self, ctx: JobContext, setup_session_id: str, site_id: str, camera_ids: tuple[str, ...],
@@ -782,12 +927,13 @@ class SiteSetupHandler:
         stage_seconds["READY_FOR_ZONES"] = 0.0
         metrics = {"stage_seconds": dict(stage_seconds), "joint_ba": stage_a.summary_metrics}
         self._emit_progress(ctx, {**joint_ba_snapshot, "status": "READY_FOR_ZONES", "progress_pct": 85, "metrics": metrics})
-        result: dict[str, Any] = {
+        self._finish_camera_check(ctx)
+        result: dict[str, Any] = self._with_checks({
             **joint_ba_snapshot,
             "status": "COMPLETED",
             "progress_pct": 100,
             "metrics": {**metrics, "total_seconds": round(max(0.0, self._perf() - t_start), 4)},
-        }
+        })
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:
             raise JobFailed("INTERNAL_CONTRACT_ERROR", f"site_setup 재사용 결과가 계약을 위반했다: {'; '.join(errs)}",
@@ -795,6 +941,20 @@ class SiteSetupHandler:
         return result
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
+        self._last_payload = None
+        self._quality_gate = None
+        self._cc_summary = None
+        try:
+            return self._run(ctx)
+        finally:
+            self._stop_camera_check_thread()
+            if self._camera_check is not None:
+                try:
+                    self._camera_check.stop()
+                except Exception:  # noqa: BLE001
+                    log.warning("작업 %s: 카메라 확인 요청을 닫지 못했다", ctx.job_id, exc_info=True)
+
+    def _run(self, ctx: JobContext) -> Mapping[str, Any]:
         t_start = self._perf()
         setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm = (
             self._validate_input(ctx.input)
@@ -901,6 +1061,22 @@ class SiteSetupHandler:
         except StageAError as exc:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
 
+        # 보정 절대 품질 게이트(-646): 상대 악화만이 아니라 절대 상한·최소 홀드아웃·카메라 높이 차를 본다
+        self._quality_gate = evaluate_quality_gate(stage_a.pair_metrics, stage_a.height_checks, self._quality_gate_config)
+        if self._quality_gate["verdict"] == QUALITY_FAILED:
+            stage_seconds["JOINT_BA_AND_VERIFY"] = round(max(0.0, self._perf() - t0), 4)
+            self._emit_progress(ctx, {
+                "setup_session_id": setup_session_id,
+                "status": "JOINT_BA_AND_VERIFY",
+                "progress_pct": 60,
+                "background_collection_pct": bg_pct,
+                "height_checks": stage_a.height_checks,
+                "metrics": {"stage_seconds": dict(stage_seconds), "joint_ba": stage_a.summary_metrics},
+                **mode_fields,
+            })
+            problems = "; ".join(p["message"] for p in self._quality_gate["problems"] if p["reason"] != "FEW_HOLDOUT")
+            raise JobFailed("VALIDATION_REJECTED", f"보정 품질 기준 미달: {problems}"[:480], retryable=False)
+
         # 등록·미리보기·굽기가 같은 World 를 쓰도록 여기서 한 번만 이전 World 로 옮긴다(-584)
         calibration_doc = stage_a.calibration_doc
         if self._anchor_world is not None:
@@ -952,6 +1128,8 @@ class SiteSetupHandler:
         if artifacts:
             joint_ba_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, joint_ba_snapshot)
+        # 사람 걷기 카메라 확인(-646). 배경 수집은 끝났으므로 미리보기·굽기와 함께 돈다
+        self._start_camera_check(ctx, setup_session_id, calibration_doc, calibration_version)
 
         if reuse_scene:
             # 같은 World 로 옮겨졌다: 미리보기·AI 구역 초안·굽기를 건너뛰고 새 보정만으로 끝낸다(현재 관제 맵 유지, -614)
@@ -1067,6 +1245,7 @@ class SiteSetupHandler:
         stage_seconds["BAKING_TEXTURE"] = round(
             max(0.0, self._perf() - t0), 4
         )
+        self._finish_camera_check(ctx)
         total_seconds = round(max(0.0, self._perf() - t_start), 4)
 
         result: dict[str, Any] = {
@@ -1100,6 +1279,7 @@ class SiteSetupHandler:
             result["artifacts"] = dict(artifacts)
         if supplement is not None:
             result["supplement"] = dict(supplement)
+        result = self._with_checks(result)
 
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:

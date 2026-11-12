@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import threading
@@ -67,7 +68,8 @@ from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
 from simai_ai.calibration.live_safety import SwapProbation
-from simai_ai.calibration.monitor import BaselineRecord, MonitorReport, MonitorStatus
+from simai_ai.calibration.camera_check import load_baseline as load_camera_check_baseline
+from simai_ai.calibration.monitor import BaselineRecord, CameraMonitorReport, MonitorReport, MonitorStatus
 from simai_ai.calibration.runtime import RuntimeCalibrationStore
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
@@ -98,6 +100,15 @@ from simai_ai.tracking.system_health import ProgressWatchdog
 from simai_ai.tracking.world_track import session_prefix_from_ms
 
 log = logging.getLogger("services.tier0")
+
+# 관절 재투영 감시(-540)가 DRIFTED 로 확정한 카메라를 융합에서 빼는 조건(S15P31A101-646). 세팅 「카메라 확인」에서 잰 검증된
+# 기준선이 있고, 창 중앙값이 기준선보다 크게 벗어날 때만 뺀다(관제 첫 10초 즉석 학습 기준선은 빼지 않고 의심으로만 둔다).
+REPROJECTION_EXCLUDE_RATIO = 2.5
+REPROJECTION_EXCLUDE_MARGIN_PX = 5.0
+# 융합에서 뺀 카메라를 되돌리는 재검증: 회전 복구 주기의 배경 비교에서 그 카메라가 세팅 기준과 맞는(순수 회전 적합, 최소 각도
+# 미만) 주기가 연속 이만큼이면 되돌린다. 같은 보정에서 되돌림은 카메라마다 이만큼만 하고, 그 뒤에는 재세팅 안내로 둔다
+REVALIDATE_STABLE_CYCLES = 3
+MAX_REVALIDATIONS = 2
 
 HOUSEKEEPING_S = 0.1
 JUDGE_OVERRUN_YIELD_S = 0.01  # 비공정한 판정 lock 의 즉시 재획득을 쉬어 정리 주기에 기회를 준다(9차 Pod 검증값, -375)
@@ -344,6 +355,11 @@ class Tier0Service:
         self.calibration_status: dict[str, Any] = {"last_rejection": None, "effective_at": None}
         self._re_setup_cameras: dict[str, dict[str, Any]] = {}
         """재세팅이 필요한 카메라(camera_id → reason·detected_at, judge_lock 안에서만 바꾼다). health.re_setup 이 싣는다(-480)"""
+        self._reprojection_excluded: dict[str, dict[str, Any]] = {}
+        """관절 재투영 감시로 융합에서 뺀 카메라(camera_id → since_ms·stable 주기 수). 배경 재검증으로 되돌린다(-646, judge_lock)"""
+        self._revalidations: dict[str, int] = {}
+        """이 보정에서 재검증으로 되돌린 횟수(카메라별). 새 보정이 활성화되면 비운다"""
+        self.camera_check_tap: Any | None = None
         self._calibration_message_cursor = 0
 
     def _event(self, name: str) -> None:
@@ -560,8 +576,10 @@ class Tier0Service:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
             self.drift_watch = self._drift_watch_factory(load_baselines(s.baselines_file))
         elif s.human_calibration_enabled and s.drift_watch_enabled:
-            self.drift_watch = BackgroundDriftWatch(self._apply_drift_report,
-                                                   baselines=load_baselines(s.baselines_file))
+            self.drift_watch = BackgroundDriftWatch(
+                self._apply_drift_report, baselines=load_baselines(s.baselines_file),
+                # 세팅 「카메라 확인」이 같은 Pod 에 남긴 검증 기준선(-646). 없으면 지금처럼 즉석 학습한다
+                baseline_lookup=lambda version: load_camera_check_baseline(s.camera_check_dir, version))
             self._drift_document = self.calibration.current()
             self.perception.observe_association = lambda assoc: self.drift_watch.offer(
                 self._drift_document, assoc, tuple(getattr(self.perception.feed, "camera_streams", {}).values()))
@@ -617,8 +635,9 @@ class Tier0Service:
                     self.calibration.current(), provenance, self.clean_background,
                     settings=s.rotation_recovery, now_ms=self.clock.now_ms, stop=self._stop,
                     propose=self._propose_rotation_calibration,
-                    on_drift_report=self._apply_drift_report,
+                    on_drift_report=lambda report, changed: self._apply_drift_report(report, changed, source="BACKGROUND"),
                     on_requires_setup=self._record_requires_setup,
+                    on_report=self._revalidate_excluded,
                     in_probation=lambda: self._swap_probation is not None,
                     reference_document=lambda: self.calibration.safety_reference()[0],
                 )
@@ -641,6 +660,13 @@ class Tier0Service:
             self.event_frames.attach(feed)
         if isinstance(self.drift_watch, BackgroundDriftWatch):
             self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
+        if s.camera_check_enabled and isinstance(feed, DetectorFeed):
+            # 세팅 「카메라 확인」 입력(-646): 워커가 요청 파일을 쓴 동안만 공통 시각 view 를 파일로 넘긴다(계산은 워커)
+            from services.tier0.camera_check_tap import CameraCheckTap
+
+            self.camera_check_tap = CameraCheckTap(s.camera_check_dir, self.clock.now_ms)
+            self.perception.observe_views = self.camera_check_tap.offer
+            self._spawn("tier0-camera-check-tap", lambda: self.camera_check_tap.run(self._stop))
         self.writer.start()
         self._event("journal_writer")
         self.checkpointer.start()
@@ -1051,6 +1077,8 @@ class Tier0Service:
                                        monitoring_degraded_reason=None, protected_cameras=None,
                                        setup_adoption=adoption)
         self._re_setup_cameras.clear()  # 재세팅이 끝났다: health.re_setup 을 비운다(-480)
+        self._reprojection_excluded.clear()
+        self._revalidations.clear()
         log.info("세팅 보정 채택: %s → %s (세션 %s, 묶음 %s, 새 World 기준)", previous_version, version,
                  doc.get("setup_session_id"), bundle.config_version)
         self._event(f"calibration_switched:{version}:{at_ms}")
@@ -1108,10 +1136,18 @@ class Tier0Service:
                                        suspect_cameras=None, suspect_reason=None,
                                        monitoring_degraded_reason=None, protected_cameras=None)
         self._re_setup_cameras.clear()  # 새 보정이 활성화됐다: health.re_setup 을 비운다(-480)
+        self._reprojection_excluded.clear()
+        self._revalidations.clear()
         self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
 
-    def _apply_drift_report(self, report: MonitorReport, changed_streams: tuple[str, ...]) -> None:
-        """보조 스레드에서 계산한 근거만 반영한다. 새 rig에 옛 근거를 적용하지 않는다."""
+    def _apply_drift_report(self, report: MonitorReport, changed_streams: tuple[str, ...],
+                            source: str = "REPROJECTION") -> None:
+        """보조 스레드에서 계산한 근거만 반영한다. 새 rig에 옛 근거를 적용하지 않는다.
+
+        source: REPROJECTION(관절 재투영 감시, -540) | BACKGROUND(배경 회전 복구). 관절 재투영 감시의 DRIFTED 는 검증된
+        기준선(세팅 「카메라 확인」)에서 크게 벗어날 때만 융합에서 빼고, 아니면 의심으로만 둔다(-646). 배경 근거(위치 이동·큰 회전)는
+        지금처럼 바로 뺀다.
+        """
         notify = []
         with self.judge_lock:
             if self._stop.is_set() or report.calibration_version != self.rig.calibration_version:
@@ -1155,8 +1191,15 @@ class Tier0Service:
                 for c in report.cameras
                 if c.status in (MonitorStatus.DRIFTED, MonitorStatus.STREAM_CHANGED)
             } | set(changed_streams)
+            if source == "REPROJECTION":
+                drifted_or_changed -= self._hold_reprojection_drift(report, changed_streams)
             if drifted_or_changed:
                 protected = self.perception.exclude_cameras(drifted_or_changed)
+                if source == "REPROJECTION":
+                    stream = set(changed_streams) | {c.camera_id for c in report.cameras
+                                                     if c.status is MonitorStatus.STREAM_CHANGED}
+                    for cid in sorted(drifted_or_changed - set(protected) - stream):
+                        self._note_reprojection_exclusion(cid)
                 if protected:
                     degraded_reason = (
                         f"감시 저하(최소 카메라 2대 보호로 융합 제외 보류): {', '.join(protected)}"
@@ -1215,6 +1258,92 @@ class Tier0Service:
                     self._on_camera_drifted(cid)
                 except Exception:
                     log.exception("카메라 재수집 콜백 실패: %s", cid)
+
+    @staticmethod
+    def _large_reprojection_deviation(camera: CameraMonitorReport) -> bool:
+        """검증된 기준선이 있고 창 중앙값이 기준선보다 크게 벗어났다(융합 제외 조건, -646)."""
+        base, median = camera.baseline_median_px, camera.window_median_px
+        if not camera.baseline_verified or base is None or median is None:
+            return False
+        return median >= max(base * REPROJECTION_EXCLUDE_RATIO, base + REPROJECTION_EXCLUDE_MARGIN_PX)
+
+    def _hold_reprojection_drift(self, report: MonitorReport, changed_streams: tuple[str, ...]) -> set[str]:
+        """판정 lock 안. 관절 재투영 감시의 DRIFTED 중 융합에 남길 카메라(의심으로만 표시).
+
+        즉석 학습 기준선(LEARNED_IN_OPERATION)은 감시 시작 때 사람이 있던 자리 기준이라 사람이 방 가장자리로 가면 오차가 커질 수
+        있다(14차 cam_A 오탐). 그런 카메라를 빼면 남은 카메라로 2대만 보이는 사람이 갈라진다(트랙 ID 3명이 4명으로). 실제 위치
+        이동과 큰 회전은 배경 회전 복구가 따로 잡아 뺀다.
+        """
+        held = set()
+        for camera in report.cameras:
+            if camera.status is not MonitorStatus.DRIFTED or camera.camera_id in changed_streams:
+                continue
+            if camera.camera_id in self._reprojection_excluded:
+                continue  # 이미 뺀 카메라
+            if not self._large_reprojection_deviation(camera):
+                held.add(camera.camera_id)
+        if held:
+            known = set(self.calibration_status.get("suspect_cameras") or ())
+            self.calibration_status["suspect_cameras"] = sorted(known | held)
+            self.calibration_status["suspect_reason"] = (
+                "카메라 틀어짐 의심(관절 재투영, 검증 기준선 없음 또는 작은 벗어남이라 융합 유지): "
+                + ", ".join(sorted(held)))
+        return held
+
+    def _note_reprojection_exclusion(self, camera_id: str) -> None:
+        """판정 lock 안. 관절 재투영 감시로 뺀 카메라를 재검증 대상으로 둔다. 되돌림을 다 쓴 카메라는 재세팅 안내로 둔다."""
+        if camera_id in self._reprojection_excluded:
+            return
+        self._reprojection_excluded[camera_id] = {"since_ms": self.clock.now_ms(), "stable": 0}
+        if self._revalidations.get(camera_id, 0) >= MAX_REVALIDATIONS:
+            known = self._re_setup_cameras.get(camera_id)
+            self._re_setup_cameras[camera_id] = {
+                "reason": f"재검증 뒤에도 관절 재투영 틀어짐 반복({MAX_REVALIDATIONS}회)",
+                "detected_at": self.clock.now_ms() if known is None else known["detected_at"],
+            }
+
+    def _revalidate_excluded(self, report: Mapping[str, Any]) -> None:
+        """회전 복구 주기 보고서로 관절 재투영 감시가 뺀 카메라를 재검증한다(-646, 보조 스레드에서 불림).
+
+        그 카메라의 배경이 세팅 기준 배경과 순수 회전으로 맞고 각도가 최소 각도 미만(움직이지 않음)인 주기가 연속
+        REVALIDATE_STABLE_CYCLES 번이면 융합에 되돌리고 그 카메라의 감시 확정을 푼다(다시 넘으면 지속 시간을 처음부터 쌓는다).
+        """
+        rot = self.rotation_recovery
+        if rot is None:
+            return
+        min_angle = rot.settings.config.min_angle_rad
+        rotations = report.get("rotations") or {}
+        back: list[str] = []
+        with self.judge_lock:
+            if self._stop.is_set() or rot.document.get("calibration_version") != self.rig.calibration_version:
+                return
+            for cid, state in self._reprojection_excluded.items():
+                fit = rotations.get(cid) if isinstance(rotations, Mapping) else None
+                angle_rad = None
+                if isinstance(fit, Mapping):
+                    angle_rad = fit.get("active_angle_rad", fit.get("angle_rad"))
+                stable = (isinstance(fit, Mapping) and fit.get("status") == "ROTATION"
+                          and isinstance(angle_rad, (int, float)) and not isinstance(angle_rad, bool)
+                          and math.isfinite(angle_rad) and angle_rad < min_angle)
+                state["stable"] = state["stable"] + 1 if stable else 0
+                if state["stable"] >= REVALIDATE_STABLE_CYCLES and self._revalidations.get(cid, 0) < MAX_REVALIDATIONS:
+                    back.append(cid)
+            if not back:
+                return
+            returned = self.perception.include_cameras(back)
+            version = self.rig.calibration_version
+            for cid in returned:
+                self._reprojection_excluded.pop(cid, None)
+                self._revalidations[cid] = self._revalidations.get(cid, 0) + 1
+                if self.drift_watch is not None and hasattr(self.drift_watch, "reset_camera"):
+                    self.drift_watch.reset_camera(version, cid)
+            suspects = [c for c in (self.calibration_status.get("suspect_cameras") or ()) if c not in returned]
+            self.calibration_status["suspect_cameras"] = suspects or None
+            if not suspects:
+                self.calibration_status["suspect_reason"] = None
+            self.calibration_status["last_revalidation"] = {"at_ms": self.clock.now_ms(), "cameras": list(returned)}
+        if returned:
+            log.warning("배경 재검증 통과(세팅 기준과 맞음): %s 를 3D 융합에 되돌린다", ", ".join(returned))
 
     def _accept_scene_reference(self, message):
         """자산 조회 없이 EC2의 현재 Scene 참조만 다음 world 프레임에 적용한다."""

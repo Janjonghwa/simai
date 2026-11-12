@@ -839,6 +839,8 @@ class SetupResultRegisterIntegrationTest {
             checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
+        // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다
+        node.set("camera_check", SetupCameraCheckFixtures.passed(mapper, newCalibration));
         return node;
     }
 

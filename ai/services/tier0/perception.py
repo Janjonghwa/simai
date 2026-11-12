@@ -44,7 +44,7 @@ from simai_ai.contact import ContactEstimator, SurfaceSet
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
-from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalTrackletBuffer
+from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalTrackletBuffer, LocalView
 from simai_ai.tracking.diagnostics import TrackingDiagnostics, window_log_line
 from simai_ai.tracking.stage_timing import StageTiming
 from simai_ai.tracking.local_tracker import (
@@ -538,6 +538,8 @@ class Perception:
         self._avatar_calibration_doc: dict[str, Any] | None = None
         self.observe_association = observe_association
         self.observe_frame = observe_frame
+        # 세팅 「카메라 확인」 입력(S15P31A101-646): 공통 시각 view 를 ROI 거르기 전에 넘긴다. 판정에 쓰지 않는 관찰자다
+        self.observe_views: Callable[[int, Sequence[LocalView]], None] | None = None
         if isinstance(feed, DetectorFeed):
             feed.avatar_enabled = avatar_writer is not None
         self._lock = threading.Lock()  # 카메라 상태(health 가 다른 스레드에서 읽는다)
@@ -554,7 +556,7 @@ class Perception:
 
     @property
     def excluded_cameras(self) -> tuple[str, ...]:
-        """DRIFTED·STREAM_CHANGED 등으로 새 보정 활성화(재세팅) 전까지 3D 융합에서 영구 제외한 카메라."""
+        """DRIFTED·STREAM_CHANGED 등으로 3D 융합에서 뺀 카메라. 새 보정 활성화(재세팅)나 재검증 통과(include_cameras)로 돌아온다."""
         return tuple(sorted(self._excluded_cameras))
 
     def exclude_cameras(
@@ -583,7 +585,7 @@ class Perception:
         if newly_excluded:
             self._excluded_cameras = frozenset(current)
             log.warning(
-                "틀어짐/스트림 변경 카메라를 3D 융합에서 제외한다(재세팅 전까지 복귀 안 함): %s",
+                "틀어짐/스트림 변경 카메라를 3D 융합에서 제외한다(재검증·재세팅 전까지): %s",
                 ", ".join(sorted(self._excluded_cameras)),
             )
         if protected:
@@ -593,6 +595,17 @@ class Perception:
                 ", ".join(protected),
             )
         return tuple(protected)
+
+    def include_cameras(self, camera_ids: Sequence[str] | set[str] | frozenset[str]) -> tuple[str, ...]:
+        """판정 lock 안. 재검증(배경이 세팅 기준과 맞음)을 통과한 카메라를 3D 융합에 되돌린다(S15P31A101-646).
+        되돌린 카메라를 돌려준다. 제외돼 있지 않던 카메라는 무시한다."""
+        if isinstance(camera_ids, str):
+            raise TypeError("camera_ids 는 카메라 ID 모음이어야 한다")
+        back = sorted(set(camera_ids) & self._excluded_cameras)
+        if back:
+            self._excluded_cameras = frozenset(self._excluded_cameras - set(back))
+            log.warning("재검증을 통과한 카메라를 3D 융합에 되돌린다: %s", ", ".join(back))
+        return tuple(back)
 
     def replace_rig(self, rig: CameraRig, provenance: Mapping[str, Any]) -> None:
         """판정 lock 안의 tick 경계 전용. World Track·접지·입력 버퍼는 유지한다(-344)."""
@@ -667,6 +680,11 @@ class Perception:
             self.lagging_ticks[c] += 1
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
+        if self.observe_views is not None:
+            try:
+                self.observe_views(t, views)
+            except Exception:
+                log.exception("카메라 확인 입력 공급 실패(판정은 계속한다)")
         self.people = max((sum(v.camera_id == c for v in views) for c in self.feed.camera_ids), default=0)
         # 혼잡할 때만 거른다(-574): 사람이 적으면 비용이 작고, 거르면 구역으로 다가오는 사람의 추적이 늦어
         # R5 접근 경보가 늦다(시나리오 시험 r1_enter_exit 등). 기준은 한 카메라에 보인 최대 인원

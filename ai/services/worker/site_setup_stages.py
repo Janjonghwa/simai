@@ -59,6 +59,7 @@ from simai_ai.scene.reconstruct import (
 )
 
 from .auto_static import AutoStaticSettings, calibration_document_path
+from .camera_check import CameraCheckRunner
 from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
@@ -770,9 +771,11 @@ class ProductionSiteSetupHandler:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[Any, float], Any] | None = None,
         world_anchor_enabled: bool = True,
+        camera_check_enabled: bool = True,
     ) -> None:
         self.store, self.settings, self.stages = store, settings, stages
         self._world_anchor_enabled = world_anchor_enabled
+        self._camera_check_enabled = camera_check_enabled
         self._clock_ms, self._live_gate, self._live_notice = clock_ms, live_gate, live_notice
         self._workspace, self._cross = workspace, object_cross_checker
         self._wait = {"background_wait_s": background_wait_s, "background_poll_s": background_poll_s, "sleep": sleep}
@@ -794,6 +797,9 @@ class ProductionSiteSetupHandler:
                     object_cross_checker=self._cross,
                     live_gate=self._live_gate, live_notice=self._live_notice, world_anchor=s.anchor_world,
                     clock_ms=self._clock_ms, **self._wait,
+                    # 세팅 「카메라 확인」(-646): 같은 state_dir 의 Tier 0 가 관제 view 를 넘긴다
+                    camera_check=CameraCheckRunner(self.settings.state_dir / "camera-check", clock_ms=self._clock_ms)
+                    if self._camera_check_enabled else None,
                 )
                 try:
                     return handler(ctx)

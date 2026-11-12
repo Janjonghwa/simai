@@ -822,6 +822,9 @@ public class SetupService {
         }
         // 쌍별 홀드아웃 오차(S15P31A101-602). 표시용이라 이 스냅샷에 없거나 어긋나면 null 이고 아래 COALESCE 로 이전 값을 둔다
         String pairHoldoutJson = SetupPairHoldout.fromSnapshot(mapper, snapshot);
+        // 보정 품질 게이트·카메라 확인(S15P31A101-646). 없거나 어긋나면 null 이고 아래 COALESCE 로 이전 값을 둔다
+        String qualityGateJson = SetupCameraCheck.qualityGate(mapper, snapshot);
+        String cameraCheckJson = SetupCameraCheck.cameraCheck(mapper, snapshot);
 
         OffsetDateTime now = utc(clock.instant());
         OffsetDateTime readyAt = session.readyAt() != null ? session.readyAt() : (readyOrLater ? now : null);
@@ -837,6 +840,8 @@ public class SetupService {
                     height_checks = CAST(:heightChecks AS jsonb),
                     object_cross_checks = CAST(:crossChecks AS jsonb),
                     pair_holdout = COALESCE(CAST(:pairHoldout AS jsonb), pair_holdout),
+                    quality_gate = COALESCE(CAST(:qualityGate AS jsonb), quality_gate),
+                    camera_check = COALESCE(CAST(:cameraCheck AS jsonb), camera_check),
                     calibration_version = :cal,
                     preview_scene_version = :previewScene,
                     scene_version = :scene,
@@ -864,6 +869,8 @@ public class SetupService {
                 .addValue("heightChecks", heightChecksJson)
                 .addValue("crossChecks", objectCrossChecksJson)
                 .addValue("pairHoldout", pairHoldoutJson)
+                .addValue("qualityGate", qualityGateJson)
+                .addValue("cameraCheck", cameraCheckJson)
                 .addValue("cal", calibrationVersion)
                 .addValue("previewScene", previewSceneVersion)
                 .addValue("scene", sceneVersion)
@@ -1588,6 +1595,7 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        pair_holdout::text AS pair_holdout,
+                       quality_gate::text AS quality_gate, camera_check::text AS camera_check,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
                        failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
                        requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
@@ -1766,6 +1774,16 @@ public class SetupService {
         // 쌍별 홀드아웃 오차(S15P31A101-602). 마지막으로 값을 실은 스냅샷 것, 받은 적 없으면 null
         String pairHoldoutRaw = rs.getString("pair_holdout");
         out.set("pair_holdout", pairHoldoutRaw == null ? mapper.nullNode() : mapper.readTree(pairHoldoutRaw));
+
+        // 보정 품질 게이트·카메라 확인(S15P31A101-646). 마지막으로 값을 실은 스냅샷 것, 받은 적 없으면 null.
+        // camera_check_passed 는 구역 단계·세팅 완료 관문과 같은 판단(PASSED 이고 그 확인의 보정이 세션 보정과 같다)
+        String qualityGateRaw = rs.getString("quality_gate");
+        out.set("quality_gate", qualityGateRaw == null ? mapper.nullNode() : mapper.readTree(qualityGateRaw));
+        String cameraCheckRaw = rs.getString("camera_check");
+        JsonNode cameraCheck = cameraCheckRaw == null ? mapper.nullNode() : mapper.readTree(cameraCheckRaw);
+        out.set("camera_check", cameraCheck);
+        out.put("camera_check_passed", SetupCameraCheck.passed(cameraCheck.path("status").asString(null),
+                cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version")));
 
         putText(out, "calibration_version", rs.getString("calibration_version"));
         putText(out, "preview_scene_version", rs.getString("preview_scene_version"));
