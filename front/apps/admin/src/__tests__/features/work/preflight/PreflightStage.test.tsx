@@ -365,6 +365,32 @@ describe('PreflightStage 서명·시작', () => {
     expect(started.progress).toBe('IN_PROGRESS');
   }, 30_000);
 
+  it('작업 중 보호구는 기본 둘 다 필수이고, 끈 장비는 NOT_REQUIRED 로 시작 요청에 싣는다(-654)', async () => {
+    const bodies: unknown[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && request.url.endsWith('/start')) {
+        void request
+          .clone()
+          .json()
+          .then((body: unknown) => bodies.push(body));
+      }
+    });
+    const day = await openToday();
+    renderStage(day);
+    await signAs('박반장');
+
+    const dialog = await openConfirmAndCheck();
+    const helmet = within(dialog).getByRole('checkbox', {
+      name: '안전모 필수',
+    }) as HTMLInputElement;
+    const vest = within(dialog).getByRole('checkbox', { name: '조끼 필수' }) as HTMLInputElement;
+    expect(helmet.checked && vest.checked).toBe(true);
+    fireEvent.click(vest);
+    fireEvent.click(within(dialog).getByRole('button', { name: '작업 시작' }));
+
+    await waitFor(() => expect(bodies).toEqual([{ helmet: 'REQUIRED', vest: 'NOT_REQUIRED' }]));
+  }, 30_000);
+
   it('확인창을 다시 열어도 앞서 켠 체크가 남아 있다', async () => {
     renderStage(await openToday());
     const dialog = await openConfirmAndCheck();

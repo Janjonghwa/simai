@@ -85,6 +85,9 @@ const workTypeCodeField = z
   .nullish()
   .transform((v) => (v && v.trim() !== '' ? v : null));
 
+/** 안전모·조끼 요구 값(계약 data/ppe_policy). 모르는 값이면 모름(undefined)으로 읽는다. */
+const ppeRequirementField = z.enum(['REQUIRED', 'NOT_REQUIRED']).optional().catch(undefined);
+
 export const tbmWorkUnitSchema = z.object({
   work_id: idString,
   status: z.enum(['PLANNED', 'IN_PROGRESS', 'DONE']).optional(),
@@ -108,6 +111,9 @@ export const tbmWorkUnitSchema = z.object({
     .object({ CRITICAL: z.number().int(), HIGH: z.number().int() })
     .partial()
     .nullish(),
+  // 작업 중 안전모·조끼 요구(S15P31A101-654, 기본 REQUIRED). 이전 서버는 칸을 주지 않는다(모름).
+  helmet: ppeRequirementField,
+  vest: ppeRequirementField,
 });
 export type TbmWorkUnit = z.infer<typeof tbmWorkUnitSchema>;
 

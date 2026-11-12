@@ -1,0 +1,8 @@
+{
+  "format_version": "1.2.0",
+  "version": "ppe-6",
+  "work_id": 13,
+  "effective_from_ms": 1760360000000,
+  "helmet": "REQUIRED",
+  "vest": "NOT_REQUIRED"
+}

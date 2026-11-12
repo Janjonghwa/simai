@@ -36,8 +36,9 @@ export function ppeReceipt(payloads: readonly PpeViewPayload[] | undefined): Ppe
 
 /**
  * 현장 Tier 0 가 지금 쓰는(가장 새로 적용된) 묶음의 PPE 요구가 작업 상태와 어긋나는가. 작업 시작·종료 묶음이 적용 대기·거부면 생긴다.
- * - 'not_applied': 작업이 진행 중인데 안전모 요구가 REQUIRED 가 아니거나 다른 작업의 요구다 → R9·R11 이 나지 않는다
- * - 'not_released': 진행 중인 작업이 없는데 아직 REQUIRED 다 → R9·R11 이 계속 나고 워치가 울린다
+ * - 'not_applied': 작업이 진행 중인데 적용 묶음의 요구가 그 작업의 것이 아니다(작업 없음·다른 작업) → R9·R11 이 나지 않는다.
+ *   그 작업이 장비를 끈 것(작업 중 NOT_REQUIRED, ppe_policy 1.2.0, S15P31A101-654)은 어긋남이 아니다
+ * - 'not_released': 진행 중인 작업이 없는데 아직 안전모나 조끼가 REQUIRED 다 → R9·R11 이 계속 나고 워치가 울린다
  * - null: 맞거나, 적용 묶음·요약을 모른다(ppe_policy 가 아예 없는 묶음은 기존 'PPE 요구 미수신' 안내가 맡는다)
  */
 export type PpeRequirementMismatch = 'not_applied' | 'not_released' | null;
@@ -48,9 +49,10 @@ export function ppeRequirementMismatch(
 ): PpeRequirementMismatch {
   const policy = bundles ? appliedBundle(bundles)?.ppe_policy : undefined;
   if (!policy) return null;
-  const required = policy.helmet === 'REQUIRED';
   if (activeWorkId !== null) {
-    return required && String(policy.work_id) === activeWorkId ? null : 'not_applied';
+    return policy.work_id !== null && String(policy.work_id) === activeWorkId
+      ? null
+      : 'not_applied';
   }
-  return required ? 'not_released' : null;
+  return policy.helmet === 'REQUIRED' || policy.vest === 'REQUIRED' ? 'not_released' : null;
 }

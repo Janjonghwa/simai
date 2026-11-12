@@ -1,7 +1,8 @@
 """World ID·identity_revision 별 안전모·조끼 상태 누적 (명세 5.5, 6장 PPE 상태).
 
 근거·칸의 시간은 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
-유효 칸 6개 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 6칸 모두 미착용일 때다.
+유효 칸 6개 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 마지막 칸이 미착용이고 나머지가
+미착용이거나 빈 칸(표본 없음, 추론 건너뜀) 1칸까지일 때다(S15P31A101-654). 착용·충돌·모호 칸이 하나라도 있으면 미착용이 아니다.
 반대 근거가 나오면 곧바로 반대 상태로 가지 않고 먼저 UNKNOWN 으로 두고 창을 다시 쌓는다(깜빡임 방지).
 
 유효 칸은 그 사람의 ID 대응이 불확실하지 않은 칸이다(S15P31A101-653). 한 프레임이라도 IDENTITY_UNCERTAIN(또는 분할 대기·swap
@@ -291,13 +292,19 @@ class PpeJudge:
         full = len(window) == cfg.window_bins
         if item.state != WORN and full and result == B_WORN and window.count(B_WORN) >= cfg.worn_min_bins:
             item.state, item.reason = WORN, R_WINDOW_WORN
-        elif item.state != NOT_WORN and full and all(r == B_NOT_WORN for r in window):
+        elif item.state != NOT_WORN and full and result == B_NOT_WORN and _not_worn_window(window, cfg):
             item.state, item.reason = NOT_WORN, R_WINDOW_NOT_WORN
         elif item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
             item.reason = _bin_reason(result, samples)
         if (item.state == WORN and result == B_WORN) or (item.state == NOT_WORN and result == B_NOT_WORN):
             item.last_evidence_at = max(s.capture_time_ms for s in support)
             item.evidence = (list(support) + item.evidence)[: cfg.evidence_max_items]
+
+
+def _not_worn_window(window: Sequence[str], cfg: PpeConfig) -> bool:
+    """미착용 창: 모두 미착용, 빈 칸(B_EMPTY)은 cfg.not_worn_max_empty_bins 칸까지. 착용·충돌·모호 칸은 하나도 없어야 한다."""
+    empty = window.count(B_EMPTY)
+    return empty <= cfg.not_worn_max_empty_bins and window.count(B_NOT_WORN) + empty == len(window)
 
 
 def _bin_reason(result: str, samples: Sequence[Sample]) -> str:

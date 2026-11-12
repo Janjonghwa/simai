@@ -54,12 +54,13 @@ public class WorkSessionService {
         this.layoutZones = layoutZones;
     }
 
-    public ObjectNode start(long workId, long userId) {
+    /** helmet·vest 는 이 작업의 안전모·조끼 요구(null 이면 저장된 값, 기본 필수, S15P31A101-654) */
+    public ObjectNode start(long workId, long userId, Boolean helmet, Boolean vest) {
         String site = sites.siteId();
         var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
         return bundles.publishWith(() -> {
             layoutZones.lock();
-            ObjectNode work = works.startSession(site, workId, now);
+            ObjectNode work = works.startSession(site, workId, now, helmet, vest);
             // 같은 트랜잭션에서 미리보기 맵 뒤 대기 중인 세팅 굽기를 회수한다(S15P31A101-625). 묶음 발행 전이라 회수 결과와 어긋나지 않는다
             events.publishEvent(new WorkStarted(site, workId));
             Long layout = work.path("layout_id").isNumber() ? work.path("layout_id").asLong() : null;

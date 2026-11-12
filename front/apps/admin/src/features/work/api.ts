@@ -118,14 +118,23 @@ export function fetchWorkUnit(http: Http, workId: string, signal?: AbortSignal) 
   return http(`/api/work-units/${enc(workId)}`, { schema: workDayItemSchema, signal });
 }
 
+/** 작업 중 안전모·조끼 요구(계약 data/ppe_policy 값). */
+export type PpeRequirement = 'REQUIRED' | 'NOT_REQUIRED';
+export interface StartPpe {
+  helmet: PpeRequirement;
+  vest: PpeRequirement;
+}
+
 /**
  * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 세팅을 완료하지 않았으면 409 WORK_SETUP_NOT_COMPLETED,
- * 서명이 없으면 409 WORK_NO_SIGNATURE(서버 검사 순서).
+ * 서명이 없으면 409 WORK_NO_SIGNATURE(서버 검사 순서). ppe 를 주면 이 작업의 안전모·조끼 요구로 저장하고 시작 묶음에 싣는다
+ * (S15P31A101-654, 없으면 서버에 저장된 값 = 기본 필수).
  */
-export function startWork(http: Http, workId: string) {
+export function startWork(http: Http, workId: string, ppe?: StartPpe) {
   return http(`/api/work-units/${enc(workId)}/start`, {
     method: 'POST',
     schema: workDayItemSchema,
+    ...(ppe ? { body: ppe } : {}),
   });
 }
 

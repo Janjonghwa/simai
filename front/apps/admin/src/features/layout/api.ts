@@ -4,14 +4,38 @@ import { z } from 'zod';
 
 // http 를 인자로 받는다. 테스트가 env 없이 createHttp 로 부를 수 있게 한다.
 
+/** 현장 규칙 기준(명세 7.4: 운영 OPERATION · 교실 시험 CLASSROOM_TEST, S15P31A101-654). */
+export const RULE_PROFILES = ['OPERATION', 'CLASSROOM_TEST'] as const;
+export type RuleProfile = (typeof RULE_PROFILES)[number];
+const ruleProfileField = z.enum(RULE_PROFILES).optional().catch(undefined);
+
 const currentSiteSchema = z.object({
   site_id: z.string().min(1),
   name: z.string().trim().min(1),
+  // 이전 서버는 칸을 주지 않는다(모름)
+  rule_profile: ruleProfileField,
 });
 
-/** SiteController.view 의 현장 식별자·이름만 사용한다. */
+/** SiteController.view 의 현장 식별자·이름·규칙 기준만 사용한다. */
 export function requestCurrentSite(http: Http, signal?: AbortSignal) {
   return http('/api/sites/current', { schema: currentSiteSchema, signal });
+}
+
+const ruleProfileChangeSchema = z.object({
+  rule_profile: z.enum(RULE_PROFILES),
+  /** 새로 만든 묶음. 만들지 못했으면 null 이고 publish_error 에 서버 오류 코드(설정은 저장됨, 다음 묶음부터 따른다). */
+  bundle: z.looseObject({ config_version: z.string() }).nullable(),
+  publish_error: z.string().nullable(),
+});
+export type RuleProfileChange = z.infer<typeof ruleProfileChangeSchema>;
+
+/** 현장 규칙 기준 바꾸기(PUT /api/sites/current/rule-profile, 관리자). 바꾸면 서버가 그 기준으로 새 구성 묶음을 발행한다. */
+export function putSiteRuleProfile(http: Http, ruleProfile: RuleProfile) {
+  return http('/api/sites/current/rule-profile', {
+    method: 'PUT',
+    body: { rule_profile: ruleProfile },
+    schema: ruleProfileChangeSchema,
+  });
 }
 
 /** viewer_health 메시지(봉투 포함). /topic/health 와 같은 계약 검사를 통과한 것만 받는다. */

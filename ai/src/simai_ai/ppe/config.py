@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-POLICY_VERSION = "ppe-policy-0.2.0"   # 0.2.0: ID 불확실 칸 건너뛰기·3초 초과 초기화·유효 6칸 5초 창(S15P31A101-653)
+# 0.2.0: ID 불확실 칸 건너뛰기·3초 초과 초기화·유효 6칸 5초 창(S15P31A101-653)
+# 0.3.0: 미착용 창에 빈 칸 1칸 허용(not_worn_max_empty_bins, S15P31A101-654)
+POLICY_VERSION = "ppe-policy-0.3.0"
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,9 @@ class PpeConfig:
     window_span_bins: int = 10                  # 유효 6칸을 찾는 최근 범위(5초). 오래된 근거로 확정하지 않게
     uncertain_reset_ms: int = 3_000             # ID 불확실이 이보다 길게 이어지면 상태를 초기화한다(S15P31A101-653, D2)
     worn_min_bins: int = 5
+    # 미착용 창(6칸)에 허용하는 빈 칸(표본 없음: 프레임 드롭·추론 건너뜀) 수. 마지막 칸은 미착용이어야 한다(S15P31A101-654,
+    # 14차 로비: 빈 칸 하나에 창 전체가 리셋돼 미착용이 확정되지 않았다). 착용·충돌·모호 칸은 그대로 막는다
+    not_worn_max_empty_bins: int = 1
     max_camera_skew_ms: int = 100
     bin_close_grace_ms: int = 100
     expiry_ms: int = 10_000

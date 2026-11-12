@@ -73,11 +73,19 @@ def test_policy_from_contract_example():
     assert policy.work_id == doc["work_id"]
 
 
-@pytest.mark.parametrize(("work_id", "helmet"), [(7, "NOT_REQUIRED"), (None, "REQUIRED")])
-def test_policy_requirement_follows_work(work_id, helmet):
-    """작업 기준(8.10): 작업이 있으면 REQUIRED, 없으면 NOT_REQUIRED. 스키마와 같은 규칙을 한 번 더 막는다."""
+def test_policy_requirement_follows_work():
+    """작업 기준(8.10): 작업이 없으면 NOT_REQUIRED. 스키마와 같은 규칙을 한 번 더 막는다."""
     with pytest.raises(RiskInputError):
-        PpePolicy(version="ppe-x", work_id=work_id, effective_from_ms=T0, helmet=helmet)
+        PpePolicy(version="ppe-x", work_id=None, effective_from_ms=T0, helmet="REQUIRED")
+
+
+def test_policy_work_may_turn_helmet_off():
+    """1.2.0(S15P31A101-654): 작업 중에도 안전모를 끈 작업이면 NOT_REQUIRED 이고 R9 를 판정하지 않는다."""
+    doc = json.loads((CONTRACTS / "examples" / "ppe_policy.helmet_only.json").read_text(encoding="utf-8"))
+    policy = PpePolicy.from_json(doc)
+    assert policy.helmet_required and not policy.vest_required
+    off = PpePolicy(version="ppe-x", work_id=7, effective_from_ms=T0, helmet="NOT_REQUIRED", vest="REQUIRED")
+    assert not off.helmet_required and off.vest_required
 
 
 # --- 안전모 상태 ---------------------------------------------------------------------------------------

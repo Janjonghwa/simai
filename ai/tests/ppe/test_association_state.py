@@ -136,6 +136,45 @@ def test_not_worn_needs_all_six_clear_bins():
     assert views["w1"]["helmet"].state == "NOT_WORN" and views["w1"]["vest"].state == "NOT_WORN"
 
 
+def _not_worn_bins(j, bins):
+    """bins 의 칸에만 미착용 프레임을 넣는다(빠진 칸은 표본 없는 빈 칸 = 프레임 드롭·추론 건너뜀)."""
+    for b in bins:
+        feed(j, "cam1", t_of(b), [person("w1")], [NO_HELMET(), NO_VEST()])
+
+
+def test_not_worn_tolerates_one_empty_bin():
+    """S15P31A101-654: 6칸 중 빈 칸 1칸은 허용한다(14차 로비: 빈 칸 하나에 창 전체가 리셋돼 미착용이 확정되지 않았다)."""
+    j = PpeJudge()
+    _not_worn_bins(j, [0, 1, 3, 4, 5])
+    views = j.evaluate(closed_after(5))
+    assert views["w1"]["helmet"].state == "NOT_WORN" and views["w1"]["vest"].state == "NOT_WORN"
+    assert views["w1"]["helmet"].valid_cells == 5 and views["w1"]["helmet"].evidence
+
+
+def test_not_worn_rejects_two_empty_bins():
+    j = PpeJudge()
+    _not_worn_bins(j, [0, 2, 4, 5])
+    assert state(j, closed_after(5)).state == "UNKNOWN"
+
+
+def test_not_worn_needs_last_bin_not_worn():
+    """빈 칸이 마지막이면 아직 확정하지 않고, 다음 칸이 미착용이면 그때 확정한다(근거 시각이 마지막 미착용 칸)."""
+    j = PpeJudge()
+    _not_worn_bins(j, [0, 1, 2, 3, 4])
+    assert state(j, closed_after(5)).state == "UNKNOWN"
+    _not_worn_bins(j, [6])
+    v = state(j, closed_after(6))
+    assert v.state == "NOT_WORN" and v.last_evidence_at == t_of(6)
+
+
+def test_empty_bin_does_not_excuse_unknown_bin():
+    """빈 칸 1칸과 모호(검출 없음) 칸 1칸이 함께면 미착용이 아니다. 착용·충돌·모호 칸은 그대로 막는다."""
+    j = PpeJudge()
+    _not_worn_bins(j, [0, 3, 4, 5])
+    feed(j, "cam1", t_of(2), [person("w1")], [])
+    assert state(j, closed_after(5)).state == "UNKNOWN"
+
+
 def test_missing_detection_is_not_not_worn_evidence():
     j = PpeJudge()
     for b in range(6):

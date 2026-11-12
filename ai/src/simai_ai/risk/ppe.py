@@ -1,7 +1,8 @@
 """R9·R11 입력: 안전모·조끼 요구(구성 묶음 `ppe_policy`)와 사람별 안전모·조끼 상태(I1 `ppe_state`) (명세 5.5, 7.2, 8.10, 12.3).
 
-- 요구(PpePolicy)는 작업 기준이다. 진행 중 작업이 있으면 현장 전체에서 안전모 REQUIRED, 없으면 NOT_REQUIRED 다. 조끼(`vest`,
-  ppe_policy 1.1.0, R11)는 선택이고 실으면 같은 규칙이며, 없으면 조끼 요구 없음이다(S15P31A101-548). 위치·구역은
+- 요구(PpePolicy)는 작업 기준이다. 진행 중 작업이 있으면 현장 전체에서 그 작업의 요구(1.1.x 까지 늘 REQUIRED, 1.2.0 부터
+  장비마다 끌 수 있고 기본 REQUIRED, S15P31A101-654), 없으면 NOT_REQUIRED 다. 조끼(`vest`, ppe_policy 1.1.0, R11)는 선택이고
+  실으면 같은 규칙이며, 없으면 조끼 요구 없음이다(S15P31A101-548). 위치·구역은
   보지 않는다. 내용 형식의 정본은 `contracts/data/ppe_policy.schema.json` 이고, 구성 묶음 검증(config.verify)이 스키마로 먼저
   검사한다. 여기서는 판정에 쓰는 값만 옮긴다.
 - 장비 상태(WearObservation, 안전모·조끼 각각)는 PPE 프로세스가 만든 `ppe_state` payload 의 사람 항목에서 옮긴다. 안전모는
@@ -78,9 +79,10 @@ class PpePolicy:
         object.__setattr__(self, "helmet", HelmetRequirement(self.helmet))
         if self.vest is not None:
             object.__setattr__(self, "vest", VestRequirement(self.vest))
-        # 스키마의 allOf 와 같은 규칙(진행 중 작업이 있으면 REQUIRED, 없으면 NOT_REQUIRED, 명세 7.2·8.10). 두 번 막는다.
+        # 스키마의 allOf 와 같은 규칙(진행 중 작업이 없으면 NOT_REQUIRED, 명세 7.2·8.10). 두 번 막는다. 작업 중 NOT_REQUIRED 는
+        # 1.2.0 부터 허용이고(S15P31A101-654), 1.1.x 문서의 작업 중 NOT_REQUIRED 는 스키마(config.verify)가 먼저 거부한다.
         for name, value in (("helmet", self.helmet), ("vest", self.vest)):
-            if value is not None and (self.work_id is None) != (value is HelmetRequirement.NOT_REQUIRED):
+            if value is not None and self.work_id is None and value is not HelmetRequirement.NOT_REQUIRED:
                 raise RiskInputError(
                     f"ppe_policy {self.version}: work_id {self.work_id!r} 와 {name} {value} 가 맞지 않는다"
                 )

@@ -99,6 +99,9 @@ export const workDayItemSchema = z.object({
   lead: orNull(z.string()),
   layout_id: orNull(z.number().int()),
   work_type: orNull(z.string().catch('')),
+  /** 작업 중 안전모·조끼 요구(S15P31A101-654). 서버 기본은 REQUIRED, 이전 서버는 칸이 없다(모름). */
+  helmet: z.enum(['REQUIRED', 'NOT_REQUIRED']).optional().catch(undefined),
+  vest: z.enum(['REQUIRED', 'NOT_REQUIRED']).optional().catch(undefined),
   /** 날짜 작업은 계획 인원이 없어 0 이다. */
   planned_people: z
     .number()
