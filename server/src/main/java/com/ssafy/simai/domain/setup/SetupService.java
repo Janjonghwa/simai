@@ -6,9 +6,11 @@ import com.ssafy.simai.domain.job.AnalysisJobService;
 import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
 import com.ssafy.simai.domain.job.JobFinished;
 import com.ssafy.simai.domain.job.JobProgress;
+import com.ssafy.simai.domain.job.JobStateChanged;
 import com.ssafy.simai.domain.scene.SceneActivationService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.scene.SceneService;
+import com.ssafy.simai.domain.work.WorkStarted;
 import com.ssafy.simai.domain.work.WorkUnitRepository;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
@@ -455,6 +457,69 @@ public class SetupService {
     private String jobIdOf(UUID setupSessionId) {
         return jdbc.queryForObject("SELECT job_id FROM setup_session WHERE setup_session_id = :id",
                 new MapSqlParameterSource("id", setupSessionId), String.class);
+    }
+
+    /**
+     * 작업이 시작되면(LIVE) 같은 현장에서 미리보기 맵 뒤(READY_FOR_ZONES·BAKING_TEXTURE) 재시도를 기다리는 세팅 굽기를 회수 완료로 닫는다
+     * (명세 3.2 5항, S15P31A101-625). 대여 중인 굽기는 하트비트 신호로 워커가 회수한다(-597). 대기열 작업은 회수할 주체가 없어
+     * 작업이 끝난 뒤 처음부터 다시 돌았고(재개 없음), 세션이 READY 전으로 돌아가 다음 작업 시작까지 막았다.
+     * 작업 시작 트랜잭션 안에서 돈다. 여기서 실패하면 작업 시작도 되돌아간다.
+     */
+    @EventListener
+    public void onWorkStarted(WorkStarted event) {
+        List<String> queued = jdbc.queryForList("""
+                SELECT s.job_id FROM setup_session s JOIN analysis_job j ON j.job_id = s.job_id
+                WHERE s.site_id = :site AND s.status IN ('READY_FOR_ZONES', 'BAKING_TEXTURE') AND j.status = 'QUEUED'
+                """, new MapSqlParameterSource("site", event.siteId()), String.class);
+        queued.forEach(this::reclaimQueuedBake);
+    }
+
+    /**
+     * 같은 현장 작업이 진행 중(LIVE)인데 세팅 작업이 재시도·대여 만료·반납으로 다시 대기열에 오면, 작업 뒤 처음부터 다시 돌지 않게
+     * 회수 완료로 닫는다(S15P31A101-625). 작업이 없으면 지금처럼 다시 대여된다. 대기열로 바꾼 트랜잭션 안에서 돈다.
+     */
+    @EventListener
+    public void onJobStateChanged(JobStateChanged event) {
+        if (!"site_setup".equals(event.jobType()) || !"QUEUED".equals(event.status())
+                || supplements.isRebakeJob(event.jobId())) {
+            return;
+        }
+        List<String> site = jdbc.queryForList("SELECT site_id FROM setup_session WHERE job_id = :job",
+                new MapSqlParameterSource("job", event.jobId()), String.class);
+        if (!site.isEmpty() && liveWorkInProgress(site.getFirst())) {
+            reclaimQueuedBake(event.jobId());
+        }
+    }
+
+    /**
+     * 대기 중인 세팅 작업의 세션이 미리보기 맵 뒤면 세션을 COMPLETED 로 닫고(새 모델은 bake_skipped=LIVE_WORK_STARTED, 정식 Scene 없음)
+     * 작업을 취소한다. 워커 회수(-597) 결과와 같은 상태다. 관제는 READY 때 현재 Scene 이 된 미리보기로 하고, 정식 맵은 작업 뒤 관리자가
+     * 다시 굽기(-607)로 얻는다(자동으로 다시 굽지 않는다). 세션을 먼저 닫아 취소 알림(JobFinished)이 세션을 FAILED 로 바꾸지 않게 한다.
+     */
+    private void reclaimQueuedBake(String jobId) {
+        // 하트비트·제출 경로와 같은 순서(작업 행 → 세션 행)로 잠근다
+        List<String> jobStatus = jdbc.queryForList("SELECT status FROM analysis_job WHERE job_id = :job FOR UPDATE",
+                new MapSqlParameterSource("job", jobId), String.class);
+        if (jobStatus.isEmpty() || !"QUEUED".equals(jobStatus.getFirst())) {
+            return;
+        }
+        SessionRow session = findByJobForUpdate(jobId);
+        if (session == null || !Set.of("READY_FOR_ZONES", "BAKING_TEXTURE").contains(session.status())
+                || session.sceneVersion() != null) {
+            return;
+        }
+        // 이전 모델 재사용(-614)은 굽기가 없어 bake_skipped 없이 끝난다(applySnapshotCore 와 같은 규칙)
+        String bakeSkipped = SetupReuseMode.REUSE.equals(session.mode()) ? null : BAKE_SKIPPED_LIVE_WORK;
+        OffsetDateTime now = utc(clock.instant());
+        jdbc.update("""
+                UPDATE setup_session
+                SET status = 'COMPLETED', bake_skipped = :bakeSkipped, completed_at = :now, updated_at = :now
+                WHERE setup_session_id = :id
+                """, new MapSqlParameterSource().addValue("id", session.setupSessionId())
+                .addValue("bakeSkipped", bakeSkipped).addValue("now", now));
+        jobs.cancel(jobId);
+        log.info("세팅 세션 {}: 작업 진행 중이라 대기 중인 정식 굽기(작업 {})를 회수했다(bake_skipped={})",
+                session.setupSessionId(), jobId, bakeSkipped);
     }
 
     /** 유효 대여의 하트비트에 실린 {@code site_setup} 진행 스냅샷을 검증·반영한다. */

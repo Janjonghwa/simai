@@ -165,7 +165,7 @@ class SetupSupplementIntegrationTest {
         jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", baseCalibration);
         jdbc.update("DELETE FROM job_lease");
         jdbc.update("DELETE FROM analysis_job");
-        jdbc.update("DELETE FROM work_unit WHERE name = ?", "보강촬영작업-" + suffix);
+        jdbc.update("DELETE FROM work_unit WHERE name LIKE ?", "보강촬영작업-" + suffix + "%");
         jdbc.update("DELETE FROM app_user WHERE login_id = ?", "setup-sup-admin-" + suffix);
         jdbc.update("DELETE FROM worker WHERE worker_id = ?", worker);
     }
@@ -553,7 +553,115 @@ class SetupSupplementIntegrationTest {
         jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
     }
 
+    @Test
+    void 미리보기_맵_뒤_재시도_대기_굽기는_작업_시작_때_회수_완료로_닫고_작업_뒤_다시_돌지_않는다() throws Exception {
+        // -625 S8: 굽기 중 재시도 가능한 실패(Pod 정지·대여 만료) 뒤 작업을 시작하면, 대기열 굽기를 회수할 주체가 없어 작업 뒤 처음부터
+        // 다시 돌고 세션이 READY 전으로 돌아가 다음 작업 시작이 409 였다(감사 재현)
+        seedCurrentCalibrationDocument();
+        Session s = bakingSession();
+        mvc.perform(callback(s, retryableFailure(s))).andExpect(status().isOk());
+        // 작업이 없으면 지금처럼 다음 시도를 기다린다(회수하지 않는다)
+        assertThat(jobStatus(s)).isEqualTo("QUEUED");
+        assertThat(sessionStatus(s)).isEqualTo("BAKING_TEXTURE");
+
+        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        assertReclaimed(s);
+        mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.bake_skipped").value("LIVE_WORK_STARTED"));
+
+        // 작업이 끝나도 세팅 작업은 다시 대여되지 않고, 다음 작업은 바로 시작된다
+        mvc.perform(post("/api/work-units/{id}/end", workUnitId).with(adminJwt())).andExpect(status().is2xxSuccessful());
+        leaseExpect(status().isNoContent());
+        long next = plannedWork("-next");
+        mvc.perform(post("/api/work-units/{id}/start", next).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", next);
+    }
+
+    @Test
+    void 작업_진행_중_굽기가_재시도_실패로_대기열에_오면_회수_완료로_닫는다() throws Exception {
+        // -625: 대여 중 굽기가 회수 신호를 받고도 결과를 내기 전에 재시도 가능한 실패를 내면 LIVE 중 다시 대기열에 온다
+        Session s = bakingSession();
+        jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now() WHERE work_id = ?", workUnitId);
+        mvc.perform(callback(s, retryableFailure(s))).andExpect(status().isOk());
+        assertReclaimed(s);
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+        leaseExpect(status().isNoContent());
+    }
+
+    @Test
+    void 작업_진행_중_굽기_대여가_만료돼_대기열에_오면_회수_완료로_닫는다() throws Exception {
+        // -625: 하트비트가 끊겨 대여가 만료되면(대여 요청마다 만료 처리) 같은 시도로 다시 대기한다. LIVE 중이면 그 자리에서 회수한다
+        Session s = bakingSession();
+        jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now() WHERE work_id = ?", workUnitId);
+        jdbc.update("UPDATE job_lease SET lease_expires_at = now() - interval '1 second' WHERE lease_id = ?::uuid", s.leaseId());
+        leaseExpect(status().isNoContent());
+        assertReclaimed(s);
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
+        leaseExpect(status().isNoContent());
+    }
+
     // ---------------------------------------------------------------- 도우미
+
+    /** 미리보기 맵(READY_FOR_ZONES) 뒤 정식 굽기 중(BAKING_TEXTURE)인 세션. 대여는 아직 유효하다 */
+    private Session bakingSession() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        Map<String, ObjectNode> r = ready(s);
+        ObjectNode bakingSnap = r.get("snapshot").deepCopy().put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
+        ObjectNode bake = ((ObjectNode) bakingSnap.get("artifacts")).putObject("bake_images").put("bundle_id", BUNDLE);
+        ArrayNode bakeImages = bake.putArray("images");
+        for (String cam : CAMERAS) {
+            ObjectNode image = mapper.createObjectNode().put("camera_id", cam);
+            image.setAll(put(prefix + "bake-" + cam + ".jpg", jpeg("bake-" + cam)));
+            bakeImages.add(image.put("face_policy", "OBSERVED"));
+        }
+        mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
+        return s;
+    }
+
+    private ObjectNode retryableFailure(Session s) {
+        long now = Instant.now().toEpochMilli();
+        ObjectNode failed = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId())
+                .put("job_type", "site_setup").put("status", "FAILED").put("started_at", now - 5_000).put("finished_at", now);
+        failed.putObject("error").put("code", "STATIC_MAPANYTHING_TIMEOUT").put("message", "시험: 재시도").put("retryable", true);
+        return failed;
+    }
+
+    /** 워커 회수(-597)와 같은 끝 상태: 세션 COMPLETED·bake_skipped·정식 Scene 없음, 세팅 작업 CANCELLED */
+    private void assertReclaimed(Session s) {
+        assertThat(sessionStatus(s)).isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT bake_skipped FROM setup_session WHERE setup_session_id = ?::uuid",
+                String.class, s.sessionId())).isEqualTo("LIVE_WORK_STARTED");
+        assertThat(jdbc.queryForObject("SELECT scene_version FROM setup_session WHERE setup_session_id = ?::uuid",
+                String.class, s.sessionId())).isNull();
+        assertThat(jobStatus(s)).isEqualTo("CANCELLED");
+        assertThat(currentScene()).isEqualTo(preview(s)); // 관제는 미리보기 맵으로 계속한다
+    }
+
+    private String jobStatus(Session s) {
+        return jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, s.jobId());
+    }
+
+    private String sessionStatus(Session s) {
+        return jdbc.queryForObject("SELECT status FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
+                s.sessionId());
+    }
+
+    /** 같은 현장·오늘의 PLANNED 작업 하나 더(정리는 cleanUpTables 가 이름 앞부분으로 한다) */
+    private long plannedWork(String nameSuffix) {
+        String name = "보강촬영작업-" + suffix + nameSuffix;
+        jdbc.update("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, now(), now() + interval '4 hours', 4, 'PLANNED', ?, now(), now())
+                """, site, LocalDate.now(), name, userId);
+        return jdbc.queryForObject("SELECT work_id FROM work_unit WHERE name = ?", Long.class, name);
+    }
 
     /** 작업 시작은 현재 보정 문서를 실은 구성 묶음을 만든다. 시험 기준 보정에 문서를 둔다(SetupZoneLayoutIntegrationTest 와 같은 방식) */
     private void seedCurrentCalibrationDocument() throws Exception {

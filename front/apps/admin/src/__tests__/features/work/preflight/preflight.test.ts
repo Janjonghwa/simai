@@ -115,7 +115,7 @@ describe('startErrorMessage', () => {
       '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.',
     );
     expect(startErrorMessage(httpError(WORK_ERROR.SETUP_NOT_READY))).toBe(
-      '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작해 주세요',
+      '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작해 주세요. 세팅이 멈췄다면 현장 세팅 단계에서 세팅을 취소한 뒤 다시 하세요',
     );
     expect(startErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe('시작하지 못했어요');
     expect(startErrorMessage(new ApiError(0))).toBe('시작하지 못했어요');

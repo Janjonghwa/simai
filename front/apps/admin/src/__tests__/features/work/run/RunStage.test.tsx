@@ -363,6 +363,43 @@ describe('RunStage — 종료', () => {
     expect(screen.queryByRole('button', { name: '완료' })).toBeNull();
   });
 
+  it.each([
+    [null, 'AI 초안을 만들지 않았습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.'],
+    ['FAILED', 'AI 초안을 만들지 못했습니다. 위험·대책·점검 칸이 비어 있을 수 있습니다.'],
+    ['SUCCEEDED', null],
+  ] as const)(
+    '보낼지 묻는 창은 AI 초안(%s)이 끝나지 않았으면 경고하되 보내기는 막지 않는다(-625)',
+    async (draftStatus, warning) => {
+      const workId = await prepare('ended');
+      const { latest } = await fetchReportsByWork(api, workId);
+      server.use(
+        http.get('*/api/reports/tbm', () =>
+          HttpResponse.json({
+            latest: {
+              ...latest,
+              status: draftStatus ?? 'PENDING',
+              draft_status: draftStatus,
+              wrap_up_status: 'SUCCEEDED',
+            },
+            versions: [],
+          }),
+        ),
+      );
+      renderStage();
+      await waitFor(() => expect(doneButton().disabled).toBe(false));
+      fireEvent.click(doneButton());
+      const dialog = screen.getByRole('dialog', { name: '보고서를 보낼까요?' });
+      if (warning) {
+        expect(within(dialog).getByText(warning)).toBeTruthy();
+      } else {
+        expect(within(dialog).queryByText(/AI 초안을/)).toBeNull();
+      }
+      expect(
+        (within(dialog).getByRole('button', { name: '보내기' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    },
+  );
+
   it('AI 초안을 쓰는 중(status GENERATING)이면 종료 미팅이 끝났어도 `완료` 는 꺼 두고, 다 쓰면 켠다', async () => {
     const workId = await prepare('ended');
     clock += ENDING_DELAY_MS;
