@@ -1,4 +1,5 @@
 import { isWorkError, WORK_ERROR } from '@/features/work/api';
+import { PastDayPage } from '@/features/work/past/PastDayPage';
 import { PreflightStage } from '@/features/work/preflight/PreflightStage';
 import { ReportStage } from '@/features/work/report/ReportStage';
 import { RunStage } from '@/features/work/run/RunStage';
@@ -23,6 +24,7 @@ import { useState, type ReactNode } from 'react';
 
 // 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 진행 상태 · 단계 줄) 아래에 단계 화면 하나를 보인다.
 // 단계는 서버 progress 가 정한다. 보고서 → 세팅(세션을 만들기 전이라 서버가 아직 REPORT)만 로컬 상태가 먼저 맡는다.
+// 보고서를 보내(제출·잠금) 달력으로 나간 뒤 그 날짜를 다시 열면(SUBMITTED) 단계 화면 대신 지난 날과 같은 다시 보기 화면(PastDayPage)을 보인다.
 
 /**
  * 로컬에서 먼저 넘기는 이동은 보고서 → 세팅뿐이다. 작업 전 확인(작업 시작 단추)은 서버가 세팅 완료(work_unit.setup_completed_at,
@@ -153,6 +155,8 @@ export function WorkDayPage({
   // 서버 progress 가 아직 못 따라온 이동(보고서 → 세팅)을 로컬이 먼저 맡는다. 서버가 따라잡을 때까지 다시 받는다.
   const [localStage, setLocalStage] = useState<WorkStageId>('report');
   const { kind, data, pending, error, refetch } = useOpenDay(date, todayKey, localStage);
+
+  if (data?.progress === 'SUBMITTED') return <PastDayPage date={date} />;
 
   return (
     // 아래 70px 은 우측 아래 단추 줄(WorkActionLayer)이 본문을 가리지 않게 비운다.
