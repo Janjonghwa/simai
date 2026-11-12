@@ -43,10 +43,18 @@ data class TrackedAlert(
 class AlertBoard private constructor(val items: List<TrackedAlert>) {
     constructor() : this(emptyList())
 
-    /** 아직 확인하지 않은 알림. 급한 등급이 먼저, 같으면 나중에 받은 것이 먼저 */
+    /**
+     * 아직 확인하지 않은 알림. 기한 안(ACTIVE, 지금 울리는 쪽)이 먼저, 그 안에서 급한 등급이 먼저, 같으면 나중에 받은 것이 먼저.
+     * 화면([current])과 진동([vibrating])이 같은 알림을 가리키게 한다(S15P31A101-634): 예전에는 등급만 봐서, 확인하지 않고 기한이 지난
+     * '고소'(HIGH) 가 화면에 남은 채 새로 온 '안전모'(CAUTION) 가 진동해 작업자가 무엇 때문에 울리는지 알 수 없었다
+     */
     val pending: List<TrackedAlert> =
         items.filter { it.phase != AlertPhase.ACKED }
-            .sortedWith(compareByDescending<TrackedAlert> { it.alert.severity.rank }.thenByDescending { it.receivedAtMs })
+            .sortedWith(
+                compareBy<TrackedAlert> { if (it.phase == AlertPhase.ACTIVE) 0 else 1 }
+                    .thenByDescending { it.alert.severity.rank }
+                    .thenByDescending { it.receivedAtMs },
+            )
 
     /** 화면에 보이는 알림. 확인하지 않은 것이 없으면 null */
     val current: TrackedAlert? get() = pending.firstOrNull()
@@ -81,6 +89,15 @@ class AlertBoard private constructor(val items: List<TrackedAlert>) {
     fun acknowledge(eventId: String, ackedAtMs: Long): AlertBoard {
         val target = items.firstOrNull { it.alert.eventId == eventId && it.phase != AlertPhase.ACKED } ?: return this
         return AlertBoard(items.map { if (it === target) it.copy(ackedAtMs = ackedAtMs) else it })
+    }
+
+    /**
+     * 이벤트가 해소돼 EC2 가 지우라고 알렸다(I4 watch_alert_clear, S15P31A101-634). 확인 대기 알림(ACTIVE·EXPIRED)을 목록에서 빼 화면·진동에서
+     * 사라지게 한다. 확인한 알림은 '확인함' 표시용으로 남긴다. 모르는 이벤트거나 이미 지웠으면 그대로다(같은 통지가 되풀이돼도 된다)
+     */
+    fun clear(eventId: String): AlertBoard {
+        if (items.none { it.alert.eventId == eventId && it.phase != AlertPhase.ACKED }) return this
+        return AlertBoard(items.filterNot { it.alert.eventId == eventId && it.phase != AlertPhase.ACKED })
     }
 
     /** 기한이 지난 확인 대기 알림을 EXPIRED 로 바꾼다. [nowMs] 는 [receive] 와 같은 단조 시계다. */

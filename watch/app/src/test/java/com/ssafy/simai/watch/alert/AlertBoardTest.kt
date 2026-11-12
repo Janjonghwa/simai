@@ -107,14 +107,60 @@ class AlertBoardTest {
     }
 
     @Test
-    fun vibrationFallsToTheMostSevereAlertThatIsStillActive() {
+    fun screenAndVibrationShowTheSameStillActiveAlert() {
+        // -634: 화면은 지금 울리는(기한 안) 알림을 먼저 보인다. 예전에는 기한 지난 더 급한 알림이 화면에 남아 진동과 글자가 달랐다
         val board = AlertBoard()
             .receive(alert("critical", AlertSeverity.CRITICAL, ackWithinMs = 1_000), 1_000)
             .receive(alert("high", AlertSeverity.HIGH, ackWithinMs = 60_000), 1_000)
             .expireDue(5_000)
-        // 화면에는 더 급한 위험이 남고, 진동은 아직 기한 안인 경고가 낸다
-        assertEquals("critical", board.current?.alert?.eventId)
+        assertEquals("high", board.current?.alert?.eventId)
         assertEquals("high", board.vibrating?.alert?.eventId)
+        assertEquals(1, board.others)
+        // 울리는 알림을 확인하면 기한 지난 위험이 다시 앞에 온다(확인 단추가 그것을 확인한다)
+        val acked = board.acknowledge("high", 6_000)
+        assertEquals("critical", acked.current?.alert?.eventId)
+        assertNull(acked.vibrating)
+    }
+
+    @Test
+    fun newHelmetCautionIsShownOverAnExpiredUnconfirmedHeightAlert() {
+        // 시연 장면 2→3: '고소'(HIGH)를 확인하지 않아 기한이 지났는데 '안전모'(CAUTION)가 오면 화면·진동 모두 '안전모'다
+        val board = AlertBoard()
+            .receive(alert("r3", AlertSeverity.HIGH, ackWithinMs = 10_000, word = "고소"), 1_000)
+            .expireDue(20_000)
+            .receive(alert("r9", AlertSeverity.CAUTION, ackWithinMs = 10_000, word = "안전모"), 21_000)
+        assertEquals("안전모", board.current?.alert?.word)
+        assertEquals("안전모", board.vibrating?.alert?.word)
+        // 둘 다 기한이 지나면 더 급한 쪽이 앞이다
+        assertEquals("고소", board.expireDue(40_000).current?.alert?.word)
+    }
+
+    @Test
+    fun clearRemovesAPendingAlertAndStopsItsVibration() {
+        val board = AlertBoard()
+            .receive(alert("r9", AlertSeverity.CAUTION, word = "안전모"), 1_000)
+            .receive(alert("r11", AlertSeverity.CAUTION, word = "조끼"), 2_000)
+        val cleared = board.clear("r11")
+        assertEquals("안전모", cleared.current?.alert?.word)
+        assertEquals("안전모", cleared.vibrating?.alert?.word)
+        assertEquals(0, cleared.others)
+        val empty = cleared.clear("r9")
+        assertNull(empty.current)
+        assertNull(empty.vibrating)
+    }
+
+    @Test
+    fun clearAlsoRemovesAnExpiredAlertButKeepsAcknowledgedOnesAndIgnoresUnknown() {
+        val board = AlertBoard()
+            .receive(alert("expired", ackWithinMs = 1_000), 1_000)
+            .receive(alert("acked"), 1_000)
+            .acknowledge("acked", 2_000)
+            .expireDue(5_000)
+        val cleared = board.clear("expired")
+        assertNull(cleared.current)
+        assertSame(cleared, cleared.clear("acked"))
+        assertEquals("acked", cleared.lastAcked?.alert?.eventId)
+        assertSame(cleared, cleared.clear("nope"))
     }
 
     @Test

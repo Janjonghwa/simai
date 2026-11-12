@@ -263,10 +263,18 @@ class WatchAlertIntegrationTest {
     @Test
     void UNBOUND_LOST_해소_REPLAY_INFO_이벤트는_보내지_않는다() throws Exception {
         Watch watch = watch(watchId, watchToken);
-        alerts.alert(liveEvent("R1", "CRITICAL", "RAISED", "LIVE", worldId));
+        UUID beforeBinding = liveEvent("R1", "CRITICAL", "RAISED", "LIVE", worldId);
+        alerts.alert(beforeBinding);
         assertThat(watch.poll(500)).as("배정 없음(UNBOUND)").isNull();
 
         bindings.bindManually(watchId, worldId, adminId);
+        // -634: 배정되면 배정 전에 난 그 사람의 열린 이벤트를 보낸다
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(beforeBinding.toString());
+        jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED' WHERE event_id = ?", beforeBinding);
+        alerts.alert(beforeBinding);
+        assertThat(watch.next("watch_alert_clear").path("payload").path("event_id").asString()).isEqualTo(beforeBinding.toString());
+        jdbc.update("DELETE FROM watch_alert WHERE event_id = ?", beforeBinding); // 아래 '기록도 없다' 확인과 섞이지 않게
+
         alerts.alert(liveEvent("R1", "CRITICAL", "RESOLVED", "LIVE", worldId));
         alerts.alert(liveEvent("R1", "CRITICAL", "RAISED", "REPLAY", worldId));
         alerts.alert(liveEvent("R1", "INFO", "RAISED", "LIVE", worldId));
@@ -297,6 +305,83 @@ class WatchAlertIntegrationTest {
         alerts.alert(event);
         assertThat(watch.poll(400)).as("등급이 내려가면 보내지 않는다").isNull();
         assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", event)).isEqualTo(2);
+    }
+
+    // ------------------------------------------------------------------ 해소 통지·재발송·AUDIT_ONLY (S15P31A101-634)
+
+    @Test
+    void 해소되면_알림을_받은_워치에_지움_통지를_한_번_보낸다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID event = liveEvent("R9", "CAUTION", "RAISED", "LIVE", worldId);
+        alerts.alert(event);
+        assertThat(watch.next("watch_alert").path("payload").path("word").asString()).isEqualTo("안전모");
+
+        jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED', resolved_at = now() WHERE event_id = ?", event);
+        events.publishEvent(new RiskEventsDelivered(List.of(event))); // 실제 경로: 해소 전이도 커밋 뒤 이 이벤트로 온다
+        JsonNode clear = watch.next("watch_alert_clear");
+        assertThat(schemas.violations("messages/watch_alert_clear", clear.toString())).isEmpty();
+        assertThat(clear.path("source_id").asString()).isEqualTo("ec2");
+        assertThat(clear.path("payload").path("event_id").asString()).isEqualTo(event.toString());
+        assertThat(clear.path("payload").path("reason").asString()).isEqualTo("RESOLVED");
+        waitUntil(() -> count("SELECT count(*) FROM watch_alert WHERE event_id = ? AND cleared_at IS NOT NULL", event) == 1, 3_000);
+
+        alerts.alert(event);
+        assertThat(watch.poll(400)).as("이벤트·워치마다 한 번").isNull();
+        alerts.escalateOverdue();
+        assertThat(jdbc.queryForObject("SELECT escalated_at FROM watch_alert WHERE event_id = ?", Timestamp.class, event))
+                .as("해소된 알림은 격상하지 않는다(기존 규칙)").isNull();
+    }
+
+    @Test
+    void 끊긴_동안_해소된_알림은_다시_이어질_때_지운다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch first = watch(watchId, watchToken);
+        UUID event = liveEvent("R11", "CAUTION", "RAISED", "LIVE", worldId);
+        alerts.alert(event);
+        first.next("watch_alert");
+        first.close();
+        waitUntil(() -> count("SELECT count(*) FROM watch_connection WHERE device_id = ? AND ended_at IS NULL", watchId) == 0, 3_000);
+
+        jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED', resolved_at = now() WHERE event_id = ?", event);
+        alerts.alert(event); // 끊겨 있어 보내지 않고 cleared_at 도 적지 않는다
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ? AND cleared_at IS NOT NULL", event)).isZero();
+
+        Watch again = watch(watchId, watchToken);
+        assertThat(again.next("watch_alert_clear").path("payload").path("event_id").asString()).isEqualTo(event.toString());
+        waitUntil(() -> count("SELECT count(*) FROM watch_alert WHERE event_id = ? AND cleared_at IS NOT NULL", event) == 1, 3_000);
+        assertThat(again.poll(400)).as("해소된 것은 다시 울리지 않는다").isNull();
+    }
+
+    @Test
+    void 감사_전용_AUDIT_ONLY_이벤트는_ACK_나_요약으로_다시_와도_보내지_않는다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID event = liveEvent("R9", "CAUTION", "RAISED", "LIVE", worldId);
+        jdbc.update("UPDATE risk_event SET delivery = 'AUDIT_ONLY' WHERE event_id = ?", event);
+        events.publishEvent(new RiskEventsDelivered(List.of(event))); // 관리자 ACK·요약 갱신이 내는 것과 같은 이벤트
+        assertThat(watch.poll(500)).as("재동기화에서 근거 없이 분류된 이벤트").isNull();
+
+        // 그 뒤 실시간 전이가 오면(REALTIME) 알린다
+        jdbc.update("UPDATE risk_event SET delivery = 'REALTIME' WHERE event_id = ?", event);
+        alerts.alert(event);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(event.toString());
+    }
+
+    @Test
+    void 연결되면_못_보낸_열린_이벤트를_보내되_오래된_것과_이미_보낸_것은_보내지_않는다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        UUID missed = liveEvent("R9", "CAUTION", "RAISED", "LIVE", worldId); // 워치가 끊겨 있는 동안 났다
+        alerts.alert(missed);
+        UUID stale = liveEvent("R11", "CAUTION", "RAISED", "LIVE", worldId);
+        jdbc.update("UPDATE risk_event SET raised_at = now() - interval '30 minutes' WHERE event_id = ?", stale);
+
+        Watch watch = watch(watchId, watchToken);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(missed.toString());
+        assertThat(watch.poll(500)).as("10분 넘게 갱신 없는 열린 이벤트는 새로 붙은 워치에 울리지 않는다").isNull();
+
+        alerts.resync(watchId);
+        assertThat(watch.poll(400)).as("이미 보낸 것은 다시 울리지 않는다").isNull();
     }
 
     @Test
@@ -631,19 +716,40 @@ class WatchAlertIntegrationTest {
             this.mapper = mapper;
         }
 
+        /** 기다리는 종류가 아니라 건너뛴 메시지. 하트비트·배정 알림이 아니면 뒤의 next·poll 이 먼저 본다(연결 직후 재동기화, -634) */
+        final java.util.ArrayDeque<JsonNode> skipped = new java.util.ArrayDeque<>();
+
         JsonNode next(String msgType) throws InterruptedException {
+            for (java.util.Iterator<JsonNode> it = skipped.iterator(); it.hasNext(); ) {
+                JsonNode m = it.next();
+                if (msgType.equals(m.path("msg_type").asString())) {
+                    it.remove();
+                    return m;
+                }
+            }
             long deadline = System.nanoTime() + 5_000_000_000L;
             while (System.nanoTime() < deadline) {
                 JsonNode m = received.poll(100, TimeUnit.MILLISECONDS);
                 if (m != null && msgType.equals(m.path("msg_type").asString())) {
                     return m;
                 }
+                if (m != null && !isSync(m)) {
+                    skipped.add(m);
+                }
             }
             throw new AssertionError(msgType + " 가 5초 안에 와야 한다");
         }
 
+        private static boolean isSync(JsonNode m) {
+            String type = m.path("msg_type").asString();
+            return "watch_heartbeat".equals(type) || "watch_binding_notice".equals(type);
+        }
+
         /** 하트비트 답·배정 알림(연결 때 붙는 동기화, -510)이 아닌 메시지 */
         JsonNode poll(long millis) throws InterruptedException {
+            if (!skipped.isEmpty()) {
+                return skipped.poll();
+            }
             long deadline = System.nanoTime() + millis * 1_000_000L;
             while (System.nanoTime() < deadline) {
                 JsonNode m = received.poll(50, TimeUnit.MILLISECONDS);

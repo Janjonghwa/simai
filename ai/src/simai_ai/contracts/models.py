@@ -2547,11 +2547,28 @@ class WatchAlert(Envelope):
     payload: Payload45
 
 
+class Payload46(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    event_id: DefsUuidV7
+    reason: Literal['RESOLVED']
+    sent_at: DefsTimestampMs
+
+
+class WatchAlertClear(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['watch_alert_clear'], Field(min_length=1)]
+    payload: Payload46
+
+
 class WorldId(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=64, min_length=1)]
 
 
-class Payload46(BaseModel):
+class Payload47(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2569,14 +2586,14 @@ class WatchBindingNotice(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_binding_notice'], Field(min_length=1)]
-    payload: Payload46
+    payload: Payload47
 
 
 class WorldId1(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload47(BaseModel):
+class Payload48(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2597,7 +2614,7 @@ class WatchEscalation(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_escalation'], Field(min_length=1)]
-    payload: Payload47
+    payload: Payload48
 
 
 class Echo(BaseModel):
@@ -2617,7 +2634,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload48(BaseModel):
+class Payload49(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2632,7 +2649,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload48
+    payload: Payload49
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -3449,6 +3466,7 @@ class Payload31(BaseModel):
     )
     tier0_source_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
     snapshot_at_ms: DefsTimestampMs
+    last_received_at_ms: DefsTimestampMs | None | MISSING = MISSING
     people: Annotated[list[PpeViewPersonView], Field(max_length=64, min_length=0)]
 
 
@@ -4242,7 +4260,7 @@ class VlmZoneDraftResult(BaseModel):
     drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
 
 
-class Payload49(BaseModel):
+class Payload50(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4259,7 +4277,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload49
+    payload: Payload50
 
 
 class Track(WorldStateWorldTrack):
@@ -4983,6 +5001,7 @@ class Contracts(BaseModel):
     vlm_zone_draft: VlmZoneDraft | MISSING = MISSING
     watch_ack: WatchAck | MISSING = MISSING
     watch_alert: WatchAlert | MISSING = MISSING
+    watch_alert_clear: WatchAlertClear | MISSING = MISSING
     watch_binding_notice: WatchBindingNotice | MISSING = MISSING
     watch_escalation: WatchEscalation | MISSING = MISSING
     watch_heartbeat: WatchHeartbeat | MISSING = MISSING

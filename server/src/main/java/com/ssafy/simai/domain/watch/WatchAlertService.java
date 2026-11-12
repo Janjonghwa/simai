@@ -51,6 +51,9 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>격상: sent_at + ack_within_ms 까지 VIBRATED ACK 가 EC2 에 닿지 않으면(NO_ACK) 또는 보내지 못하면(SEND_FAILED) escalated_at 을 적고
  *       관리자 화면에 watch_escalation(/topic/watch)을 보낸다. 한 알림에 한 번. 판정은 DB 시각 조건으로 해서 EC2 재시작 뒤에도 이어진다
  * </ul>
+ * 해소(S15P31A101-634): 보낸 알림의 이벤트가 해소되면 그 워치에 watch_alert_clear 를 한 번 보내 알림을 지우게 하고(cleared_at), 끊긴 워치는
+ * 다시 이어질 때 보낸다. 워치가 (다시) 연결되거나 배정되면 그 사람의 열린 실시간 이벤트 중 못 보낸 것을 보낸다(최근 10분 갱신분).
+ * 재동기화에서 감사 전용(AUDIT_ONLY)이 된 이벤트는 보내지 않는다.
  * 해소된 이벤트·10분 넘은 알림은 격상하지 않는다. CONFIRMED 만 와도(VIBRATED 를 잃어도) 받은 것으로 본다. 보내기는 송신 버퍼에 넣으면
  * 끝나 반쯤 끊긴 연결로 보낸 것은 SEND_FAILED 가 아니라 기한 뒤 NO_ACK 로 잡힌다. 해소 뒤 다시 활성(resumed)이면 새로 알린다.
  * 워치 ACK·격상은 운영자 확인(3.2)이 아니고 이벤트 상태를 바꾸지 않는다. CRITICAL·HIGH 의 현장 경보는 Tier 0·노트북이 이미 울린다.
@@ -64,7 +67,13 @@ import tools.jackson.databind.node.ObjectNode;
 public class WatchAlertService implements AutoCloseable {
 
     static final String ALERT_VERSION = "1.0.0";
+    static final String CLEAR_VERSION = "1.0.0";
     static final String ESCALATION_VERSION = "1.1.0";
+    /**
+     * 워치가 (다시) 연결되거나 배정될 때 다시 보낼 열린 이벤트의 범위: 이 시간 안에 갱신된 것만(S15P31A101-634). 오래 열린 채 남은 지난 관제의
+     * 이벤트를 새로 붙은 워치에 한꺼번에 울리지 않게 한다. 격상 판정의 10분과 같은 값이다
+     */
+    static final String RESEND_MAX_AGE = "10 minutes";
 
     /** 수동 알림 요청(컨트롤러가 JSON 을 옮긴 값. 검증은 sendManual 이 한다) */
     public record ManualRequest(String deviceId, String severity, String word, String direction, Integer ackWithinMs, Boolean needsCheck) {
@@ -160,14 +169,22 @@ public class WatchAlertService implements AutoCloseable {
         }
     }
 
-    /** 이 스레드(watch-alert)에서만 부른다. 시험은 직접 부른다 */
+    /**
+     * 이 스레드(watch-alert)에서만 부른다. 시험은 직접 부른다.
+     * 해소된 LIVE 이벤트면 그 이벤트로 알림을 받은 워치에 지우라는 통지를 보낸다(S15P31A101-634). 재동기화에서 근거 없이 감사 전용(AUDIT_ONLY)으로
+     * 분류된 이벤트는 실시간 알림이 아니므로 ACK·요약 갱신으로 다시 와도 보내지 않는다(명세 3.2, 11.3).
+     */
     void alert(UUID eventId) {
         Optional<LiveEvent> found = jdbc.query("""
                 SELECT event_id, event_sequence, resume_count, severity, needs_check, rule_id, world_ids FROM risk_event
                 WHERE event_id = :id AND source = 'LIVE' AND lifecycle <> 'RESOLVED' AND severity IN ('CRITICAL', 'HIGH', 'CAUTION')
-                  AND event_sequence >= 1
+                  AND event_sequence >= 1 AND delivery IS DISTINCT FROM 'AUDIT_ONLY'
                 """, new MapSqlParameterSource("id", eventId), liveEvent()).stream().findFirst();
-        if (found.isEmpty() || found.get().worldIds().isEmpty()) {
+        if (found.isEmpty()) {
+            clearIfResolved(eventId);
+            return;
+        }
+        if (found.get().worldIds().isEmpty()) {
             return;
         }
         LiveEvent event = found.get();
@@ -176,6 +193,103 @@ public class WatchAlertService implements AutoCloseable {
                 send(event, worldId, device);
             }
         });
+    }
+
+    /** 해소된 LIVE 이벤트면, 그 이벤트로 알림을 받았고 아직 지우지 않은 연결된 워치마다 watch_alert_clear 를 한 번 보낸다 */
+    private void clearIfResolved(UUID eventId) {
+        List<String> devices = jdbc.queryForList("""
+                SELECT DISTINCT w.device_id FROM watch_alert w JOIN risk_event r ON r.event_id = w.event_id AND r.source = w.source
+                WHERE w.event_id = :id AND w.origin = 'EVENT' AND w.cleared_at IS NULL AND r.lifecycle = 'RESOLVED'
+                """, new MapSqlParameterSource("id", eventId), String.class);
+        for (String device : devices) {
+            if (hub.isConnected(device)) { // 끊긴 워치는 다시 이어질 때(resync) 보낸다
+                sendClear(eventId, device);
+            }
+        }
+    }
+
+    /**
+     * 워치 하나에 지우라는 통지를 보내고, 보냈으면 그 이벤트·워치의 알림 행에 cleared_at 을 적는다. 보내지 못하면 적지 않아 다음 연결 때 다시 보낸다.
+     * 작업자 확인(ACK)이 아니고 워치는 이 통지에 ACK 하지 않는다. 이미 지운 이벤트는 워치가 무시한다(계약).
+     */
+    private void sendClear(UUID eventId, String deviceId) {
+        Instant now = clock.instant();
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("event_id", eventId.toString());
+        payload.put("reason", "RESOLVED");
+        payload.put("sent_at", now.toEpochMilli());
+        ObjectNode message = I1Envelope.outbound(mapper, now.toEpochMilli(), "watch_alert_clear", CLEAR_VERSION, payload);
+        if (!hub.send(deviceId, message)) {
+            return;
+        }
+        jdbc.update("""
+                UPDATE watch_alert SET cleared_at = :now
+                WHERE event_id = :id AND device_id = :device AND origin = 'EVENT' AND cleared_at IS NULL
+                """, new MapSqlParameterSource().addValue("id", eventId).addValue("device", deviceId).addValue("now", utc(now)));
+        log.info("워치 알림 지움 통지 보냄: event={} device={}", eventId, deviceId);
+    }
+
+    /** 워치가 (다시) 연결됐다(S15P31A101-634). 그사이 해소된 알림을 지우고, 배정된 사람의 열린 이벤트 중 못 보낸 것을 보낸다 */
+    @EventListener
+    void onConnected(WatchConnected connected) {
+        resyncLater(connected.deviceId());
+    }
+
+    /** 워치에 사람이 배정됐다(S15P31A101-634). 배정 전에 난 그 사람의 열린 이벤트를 보낸다. 풀린 쪽(사유 있음)은 할 일이 없다 */
+    @TransactionalEventListener(fallbackExecution = true)
+    void onBindingChanged(WatchBindingChanged changed) {
+        if (changed.unbindReason() == null) {
+            resyncLater(changed.deviceId());
+        }
+    }
+
+    private void resyncLater(String deviceId) {
+        try {
+            sender.execute(() -> {
+                try {
+                    resync(deviceId);
+                } catch (RuntimeException e) {
+                    log.warn("워치 재동기화 실패: device={}", deviceId, e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // 서버가 내려가는 중이다
+        }
+    }
+
+    /**
+     * 이 스레드(watch-alert)에서만 부른다. 시험은 직접 부른다.
+     * <ol>
+     *   <li>이 워치에 보냈는데 그사이 해소된 이벤트: 지우라는 통지
+     *   <li>이 워치에 배정된 사람의 열린 실시간 LIVE 이벤트(최근 RESEND_MAX_AGE 안에 갱신): 아직 보내지 않았으면 보낸다. 이미 보낸 것은 send 의 중복 방지로
+     *       다시 울리지 않는다(같거나 높은 등급 행이 있으면 넣지 않는다)
+     * </ol>
+     */
+    void resync(String deviceId) {
+        if (!hub.isConnected(deviceId)) {
+            return;
+        }
+        List<UUID> resolved = jdbc.queryForList("""
+                SELECT DISTINCT w.event_id FROM watch_alert w JOIN risk_event r ON r.event_id = w.event_id AND r.source = w.source
+                WHERE w.device_id = :device AND w.origin = 'EVENT' AND w.cleared_at IS NULL AND r.lifecycle = 'RESOLVED'
+                """, new MapSqlParameterSource("device", deviceId), UUID.class);
+        resolved.forEach(eventId -> sendClear(eventId, deviceId));
+        List<String> world = jdbc.queryForList("""
+                SELECT world_id FROM watch_binding WHERE device_id = :device AND unbound_at IS NULL
+                """, new MapSqlParameterSource("device", deviceId), String.class);
+        if (world.isEmpty()) {
+            return;
+        }
+        String worldId = world.getFirst();
+        List<LiveEvent> open = jdbc.query("""
+                SELECT event_id, event_sequence, resume_count, severity, needs_check, rule_id, world_ids FROM risk_event
+                WHERE source = 'LIVE' AND lifecycle <> 'RESOLVED' AND severity IN ('CRITICAL', 'HIGH', 'CAUTION')
+                  AND event_sequence >= 1 AND delivery IS DISTINCT FROM 'AUDIT_ONLY' AND :world = ANY(world_ids)
+                  AND COALESCE(updated_at, raised_at) > CAST(:now AS timestamptz) - interval '%s'
+                ORDER BY COALESCE(updated_at, raised_at)
+                """.formatted(RESEND_MAX_AGE), new MapSqlParameterSource().addValue("world", worldId)
+                        .addValue("now", utc(clock.instant())), liveEvent());
+        open.forEach(event -> send(event, worldId, deviceId));
     }
 
     private void send(LiveEvent event, String worldId, String deviceId) {

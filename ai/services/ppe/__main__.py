@@ -9,6 +9,8 @@ simai-bootstrap 이 띄울 때 넣는 환경:
   SIMAI_PPE_OUTBOX                  Tier 0 가 대신 보낼 메시지 폴더(없으면 /dev/shm/simai-ppe-outbox)
   SIMAI_TIER0_ID                    봉투 source_id(없으면 tier0-01, Tier 0 와 같다)
   SIMAI_PPE_MODEL_VERSION           ppe_state.model_version(없으면 아래 기본값)
+  SIMAI_PPE_ALIVE                   생존 파일(없으면 $SIMAI_ROOT/state/ppe.alive). 주기를 정상으로 끝낼 때 1초마다 시각을 적고
+                                    감시 프로세스가 오래되면 다시 띄운다(S15P31A101-634, alive.py)
 PPE 가 죽거나 멈춰도 Tier 0 는 계속 돈다(5.5). 종료 코드: 0 정상(SIGTERM), 2 설정·가중치 오류.
 """
 
@@ -29,6 +31,7 @@ from simai_ai.io.avatar_channel import LatestChannelReader, avatar_channel_path
 from simai_ai.io.ppe_outbox import PpeOutboxWriter, ppe_outbox_path
 from simai_ai.ppe.detector import PpeDetector
 
+from .alive import AliveWriter, alive_path
 from .loop import PpeLoop
 
 DEFAULT_MODEL_VERSION = "T1-v4-ALL-seed20261021-e08-e373a1048057"
@@ -78,12 +81,16 @@ def main() -> int:
     )
     logging.info("PPE 시작: stream_epoch=%d model=%s gpu_fraction=%.2f", stream_epoch, loop.model_version, fraction)
     report_at = time.monotonic() + REPORT_S
+    alive = AliveWriter(alive_path(env, root))
     while not stop.is_set():
         try:
             loop.step()
         except Exception:  # noqa: BLE001 - 한 주기 실패로 프로세스를 내리지 않는다(다음 프레임으로 계속)
             loop.counts["step_failed"] += 1
             logging.exception("PPE 주기 실패")
+        else:
+            # 정상 주기만 생존으로 친다. 실패가 이어지거나 step 이 멈추면 값이 낡아 감시 프로세스가 다시 띄운다(-634)
+            alive.beat(time.time_ns() // 1_000_000)
         if time.monotonic() >= report_at:
             logging.info("PPE 상태: seq=%d counts=%s gate=%s timing=%s", loop.state_sequence,
                          dict(loop.counts), gate.stats(), loop.diagnostics())

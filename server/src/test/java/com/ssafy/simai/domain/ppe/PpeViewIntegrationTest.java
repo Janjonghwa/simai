@@ -153,6 +153,36 @@ class PpeViewIntegrationTest {
     }
 
     @Test
+    void 사람이_없는_ppe_state_도_마지막_수신_시각으로_처음_상태_REST_에_실린다() throws Exception {
+        // -634: PPE 가 살아 있는지 화면이 알 근거. 사람 0명 메시지는 DB 행을 남기지 않지만 수신 시각은 남는다
+        ObjectNode empty = message(2_000L, 1, now);
+        ((ObjectNode) empty.get("payload")).putArray("people");
+        long before = Instant.now().toEpochMilli();
+        try (Tier0 tier0 = connect()) {
+            tier0.send(empty);
+            JsonNode mine = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (mine == null && System.nanoTime() < deadline) {
+                for (JsonNode payload : MAPPER.readTree(get(jwt("VIEWER")).body())) {
+                    if (sourceId.equals(payload.get("tier0_source_id").asString())) {
+                        mine = payload;
+                    }
+                }
+                if (mine == null) {
+                    Thread.sleep(100);
+                }
+            }
+            assertThat(mine).as("사람이 없어도 받은 적이 있는 Tier 0 는 스냅샷을 준다").isNotNull();
+            assertThat(mine.get("people")).isEmpty();
+            assertThat(mine.get("last_received_at_ms").asLong()).isBetween(before, mine.get("snapshot_at_ms").asLong());
+            ObjectNode envelope = MAPPER.createObjectNode().put("schema_version", "1.1.0").put("msg_type", "ppe_view")
+                    .put("msg_id", UUID.randomUUID().toString()).put("sent_at", now).put("source_id", "ec2");
+            envelope.set("payload", mine);
+            assertThat(schemas.violations("messages/ppe_view", MAPPER.writeValueAsString(envelope))).isEmpty();
+        }
+    }
+
+    @Test
     void 처음_상태_REST_는_로그인이_필요하다() throws Exception {
         assertThat(get(null).statusCode()).isEqualTo(401);
     }

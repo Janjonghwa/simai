@@ -1,0 +1,12 @@
+{
+  "_note": "반례: 어떤 알림을 지울지 모르면 보내지 않는다(event_id 필수)",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert_clear",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000637",
+  "sent_at": 1760342410500,
+  "source_id": "ec2",
+  "payload": {
+    "reason": "RESOLVED",
+    "sent_at": 1760342410480
+  }
+}

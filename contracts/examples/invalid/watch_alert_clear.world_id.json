@@ -1,0 +1,14 @@
+{
+  "_note": "반례: 사람을 가리키는 World ID 는 싣지 않는다(닫힌 객체, 명세 11.4-5)",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert_clear",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000636",
+  "sent_at": 1760342410500,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "reason": "RESOLVED",
+    "world_id": "w-0042",
+    "sent_at": 1760342410480
+  }
+}

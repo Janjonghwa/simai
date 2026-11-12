@@ -114,8 +114,9 @@ def _sup(bs, tmp_path, monkeypatch, world: World, services=("tier0", "vllm", "wo
     manifest.write_text(json.dumps({"weights": [{"name": "m", "sets": ["vlm"], "path": "weights/m.bin", "source": {"url": "x"},
                                                  "sha256": "0" * 64}]}), encoding="utf-8")
     monkeypatch.setattr(bs, "ensure_weights", fake_weights)
+    # 가짜 PPE 는 생존 파일(-634)을 쓰지 않는다. 그 시험(test_ppe_alive_*)만 준비 시간을 줄여 본다
     base = {"PATH": os.environ.get("PATH", ""), "SIMAI_WEIGHTS_MANIFEST": str(manifest), "SIMAI_STOP_GRACE_S": "1",
-            "HF_TOKEN": TOKEN, "HUGGING_FACE_HUB_TOKEN": TOKEN, **(env or {})}
+            "HF_TOKEN": TOKEN, "HUGGING_FACE_HUB_TOKEN": TOKEN, "SIMAI_PPE_ALIVE_GRACE_S": "1e9", **(env or {})}
     ready = None if real_ready else (lambda: (world.ready, "준비" if world.ready else "표시 파일 없음"))
     sup = bs.Supervisor(tmp_path / "simai", list(services), ["simai-tier0", "--config", "c.json"], base,
                         spawn=world.spawn, ready=ready, health=lambda: world.healthy, clock=lambda: world.now,
@@ -249,6 +250,59 @@ def test_ppe_stops_before_other_sidecars_and_avatar_share_is_not_duplicated(bs, 
     w.signals.clear()
     sup._stop_sidecars()
     assert [n for n, s in w.signals if s == signal.SIGTERM] == ["ppe", "avatar", "worker", "vllm"]
+
+
+def test_ppe_alive_file_restarts_a_ppe_that_is_alive_but_stalled(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-634: PPE 는 주기를 정상으로 끝낼 때만 생존 파일을 적는다. 프로세스가 살아 있어도 그 값이 오래되면
+    (멈춤·매 주기 실패) 감시 프로세스가 다시 띄운다. 준비 시간 안이거나 값이 새로우면 그대로 둔다."""
+    w = World()
+    wall = {"ms": 1_000_000}
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"), wall_ms=lambda: wall["ms"],
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_ppe_manifest(tmp_path)), "SIMAI_PPE_ALIVE_GRACE_S": "20",
+                    "SIMAI_PPE_ALIVE_STALE_S": "5"})
+    _start(sup, w)
+    w.ready = True
+    _settle(sup, w, 4)
+    assert w.spawned == ["tier0", "ppe"]
+    alive = Path(w.envs["ppe"]["SIMAI_PPE_ALIVE"])
+    assert alive == tmp_path / "simai" / "state" / "ppe.alive"
+    first = w.last("ppe")
+
+    # 준비 시간(20s) 안에는 파일이 없어도 그대로 둔다
+    _settle(sup, w, 10, dt=1.0)
+    assert first.rc is None
+    # 정상 주기: 값이 새로우면 그대로 둔다
+    for _ in range(15):
+        wall["ms"] += 1_000
+        alive.parent.mkdir(parents=True, exist_ok=True)
+        alive.write_text(str(wall["ms"]), encoding="ascii")
+        _settle(sup, w, 1, dt=1.0)
+    assert first.rc is None and w.spawned == ["tier0", "ppe"]
+
+    # 멈춤: 값이 5초 넘게 낡으면 죽이고 백오프 뒤 다시 띄운다(Tier 0 는 그대로)
+    wall["ms"] += 6_000
+    _settle(sup, w, 1, dt=1.0)
+    assert first.rc is not None and ("ppe", bs.KILL) in w.signals
+    assert sup.svc["tier0"].proc.rc is None
+    captured = capsys.readouterr()
+    assert "생존 파일이" in captured.out + captured.err
+    _settle(sup, w, 10, dt=1.0)
+    assert w.spawned == ["tier0", "ppe", "ppe"]
+    assert not alive.exists() or int(alive.read_text()) != wall["ms"] - 6_000  # 새 프로세스 전에 지난 값을 지웠다
+
+
+def test_ppe_alive_file_missing_after_grace_counts_as_stalled(bs, tmp_path, monkeypatch):
+    """한 번도 정상 주기를 못 끝냈으면(시작 직후 매 주기 실패) 준비 시간이 지나면 다시 띄운다(-634)."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"),
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_ppe_manifest(tmp_path)), "SIMAI_PPE_ALIVE_GRACE_S": "5"})
+    _start(sup, w)
+    w.ready = True
+    _settle(sup, w, 4)
+    first = w.last("ppe")
+    _settle(sup, w, 8, dt=1.0)
+    assert first.rc is not None
+    assert sup.svc["tier0"].proc.rc is None
 
 
 def _split_manifest(tmp_path) -> Path:
