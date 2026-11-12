@@ -1,5 +1,7 @@
 package com.ssafy.simai.domain.work;
 
+import com.ssafy.simai.domain.setup.SetupService;
+import com.ssafy.simai.domain.setup.SetupSessionBlockingException;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.ResultSet;
@@ -12,7 +14,9 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -192,12 +196,14 @@ public class WorkUnitRepository {
         // 같은 현장의 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이면 시작하지 않는다(명세 3.2 5항: 작업 시작은 미리보기 맵으로
         // 관제를 시작하고 뒤쪽 굽기만 회수한다). READY 전 단계(배경 수집·보정·MapAnything·미리보기)는 회수 대상이 아니라 LIVE 중에도
         // GPU 를 쓰고, 그 세팅의 보정은 작업이 끝날 때까지 Tier 0 에 발행되지 않는다(S15P31A101-624 M5)
-        Boolean setupNotReady = jdbc.queryForObject("""
-                SELECT EXISTS (SELECT 1 FROM setup_session WHERE site_id = :site AND status IN
-                    ('COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT'))
-                """, new MapSqlParameterSource("site", siteId), Boolean.class);
-        if (Boolean.TRUE.equals(setupNotReady)) {
-            throw new BusinessException(ErrorCode.Work.WORK_SETUP_NOT_READY);
+        // 막고 있는 세션과 그 작업을 응답에 싣는다. 다른 날짜 작업의 세션이면 화면이 찾아가 취소할 수 있게(S15P31A101-641)
+        List<Map<String, Object>> notReady = jdbc.queryForList("""
+                SELECT setup_session_id, work_unit_id FROM setup_session WHERE site_id = :site AND status IN (:pre)
+                ORDER BY started_at DESC LIMIT 1
+                """, new MapSqlParameterSource("site", siteId).addValue("pre", SetupService.PRE_READY_STATUSES));
+        if (!notReady.isEmpty()) {
+            throw new SetupSessionBlockingException(ErrorCode.Work.WORK_SETUP_NOT_READY,
+                    (UUID) notReady.getFirst().get("setup_session_id"), ((Number) notReady.getFirst().get("work_unit_id")).longValue());
         }
         List<Long> active = jdbc.queryForList(
                 "SELECT work_id FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'",

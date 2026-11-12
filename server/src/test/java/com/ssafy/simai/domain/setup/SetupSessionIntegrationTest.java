@@ -57,6 +57,9 @@ class SetupSessionIntegrationTest {
     @Autowired
     ContractSchemas schemas;
 
+    @Autowired
+    SetupQueueTimeout queueTimeout;
+
     private final String suffix = UUID.randomUUID().toString().substring(0, 8);
     private final String workerA = "worker-setup-a-" + suffix;
     private final String workerB = "worker-setup-b-" + suffix;
@@ -189,7 +192,9 @@ class SetupSessionIntegrationTest {
         mvc.perform(post("/api/setup-sessions").with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(emptyReq.toString()))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("SETUP_ALREADY_IN_PROGRESS"));
+                .andExpect(jsonPath("$.code").value("SETUP_ALREADY_IN_PROGRESS"))
+                .andExpect(jsonPath("$.setup_session_id").value(sessionId))
+                .andExpect(jsonPath("$.work_id").value(String.valueOf(workUnitId)));
 
         // 작업 단위 조회(GET /api/work-units/{id}, GET /api/work-units)에 active_setup_session_id 가 포함된다
         mvc.perform(get("/api/work-units/{id}", workUnitId).with(viewerJwt()))
@@ -578,6 +583,66 @@ class SetupSessionIntegrationTest {
         } finally {
             jdbc.update("DELETE FROM system_health WHERE gateway_id = ?", gateway);
         }
+    }
+
+    @Test
+    void GPU_가_가져가지_않은_세팅은_대기_시간을_넘기면_닫히고_새_세팅을_막지_않는다() throws Exception {
+        registerWorkers();
+        String sessionId = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn()).get("setup_session_id").asString();
+        String jobId = jdbc.queryForObject("SELECT job_id FROM setup_session WHERE setup_session_id = ?::uuid", String.class, sessionId);
+
+        // 아직 기준 시간(10분) 전이면 닫지 않는다
+        assertThat(queueTimeout.closeUnclaimed()).isZero();
+
+        // 한 번도 대여되지 않은 채 11분이 지났고 세팅 워커도 그동안 보이지 않았다(GPU 인스턴스가 꺼져 있음).
+        // 시험 DB 는 다른 시험과 함께 쓰므로 남은 워커의 접속 시각도 오래전으로 돌린다
+        jdbc.update("UPDATE analysis_job SET created_at = now() - interval '11 minutes' WHERE job_id = ?", jobId);
+        jdbc.update("UPDATE worker SET last_seen_at = now() - interval '1 day' WHERE last_seen_at IS NOT NULL");
+        assertThat(queueTimeout.closeUnclaimed()).isEqualTo(1);
+
+        assertThat(jdbc.queryForObject("SELECT status FROM setup_session WHERE setup_session_id = ?::uuid", String.class, sessionId))
+                .isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT failure_code FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
+                sessionId)).isEqualTo("SETUP_QUEUE_TIMEOUT");
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, jobId)).isEqualTo("CANCELLED");
+        // 다시 돌려도 이미 닫힌 세션은 건드리지 않는다
+        assertThat(queueTimeout.closeUnclaimed()).isZero();
+
+        // 막던 세션이 닫혀 같은 현장의 새 세팅을 시작할 수 있다
+        mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted());
+    }
+
+    @Test
+    void 세팅_워커가_보이는_동안은_닫지_않고_보이지_않게_되면_대여됐던_작업도_닫는다() throws Exception {
+        registerWorkers();
+        String sessionId = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn()).get("setup_session_id").asString();
+        String jobId = jdbc.queryForObject("SELECT job_id FROM setup_session WHERE setup_session_id = ?::uuid", String.class, sessionId);
+        mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk());
+        // 워커가 죽어 대여가 만료되고 작업이 다시 대기열로 돌아왔다. 작업은 11분 전에 들어왔다
+        jdbc.update("UPDATE job_lease SET status = 'EXPIRED' WHERE job_id = ?", jobId);
+        jdbc.update("UPDATE analysis_job SET status = 'QUEUED', created_at = now() - interval '11 minutes' WHERE job_id = ?", jobId);
+
+        // 방금 대여 요청을 보낸 워커가 있으면(GPU 가 켜져 있음) 기다린다
+        assertThat(queueTimeout.closeUnclaimed()).isZero();
+
+        // 대여 요청은 오래됐지만 다른 작업을 돌리며 하트비트를 보내는 워커가 있으면(바쁨) 기다린다
+        jdbc.update("UPDATE worker SET last_seen_at = now() - interval '1 day' WHERE last_seen_at IS NOT NULL");
+        jdbc.update("UPDATE job_lease SET status = 'ACTIVE', last_heartbeat_at = now() WHERE job_id = ?", jobId);
+        assertThat(queueTimeout.closeUnclaimed()).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM setup_session WHERE setup_session_id = ?::uuid", String.class, sessionId))
+                .isNotEqualTo("FAILED");
+
+        // 하트비트도 끊겼다(GPU 인스턴스가 꺼짐). 대여됐던 작업도 닫는다
+        jdbc.update("UPDATE job_lease SET status = 'EXPIRED' WHERE job_id = ?", jobId);
+        assertThat(queueTimeout.closeUnclaimed()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT failure_code FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
+                sessionId)).isEqualTo("SETUP_QUEUE_TIMEOUT");
     }
 
     private void registerWorkers() {

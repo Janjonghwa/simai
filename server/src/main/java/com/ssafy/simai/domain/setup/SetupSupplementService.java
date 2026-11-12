@@ -337,13 +337,6 @@ public class SetupSupplementService {
         }
     }
 
-    /** 같은 현장에 진행 중인 다시 굽기가 있는지(새 세팅 시작을 막는 데 쓴다. GPU 인스턴스는 하나다) */
-    boolean rebakeRunningInSite(String siteId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("""
-                SELECT EXISTS (SELECT 1 FROM setup_supplement_rebake r JOIN setup_session s ON s.setup_session_id = r.setup_session_id
-                               WHERE s.site_id = :site AND r.status IN ('QUEUED', 'RUNNING'))
-                """, new MapSqlParameterSource("site", siteId), Boolean.class));
-    }
 
     // ---------------------------------------------------------------- 진행·결과 받기(SetupService 가 부른다)
 

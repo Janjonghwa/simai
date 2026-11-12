@@ -1,6 +1,7 @@
 package com.ssafy.simai.global.exception;
 
 import com.ssafy.simai.domain.scene.SceneRegenerateInProgressException;
+import com.ssafy.simai.domain.setup.SetupSessionBlockingException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -24,6 +25,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ProblemDetail handleSceneRegenerateInProgress(SceneRegenerateInProgressException e) {
         ProblemDetail problem = problem(e.getErrorCode());
         problem.setProperty("request_id", e.requestId());
+        return problem;
+    }
+
+    @ExceptionHandler(SetupSessionBlockingException.class)
+    ProblemDetail handleSetupSessionBlocking(SetupSessionBlockingException e) {
+        ProblemDetail problem = problem(e.getErrorCode());
+        problem.setProperty("setup_session_id", e.setupSessionId().toString());
+        problem.setProperty("work_id", String.valueOf(e.workId()));
         return problem;
     }
 
