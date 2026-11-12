@@ -7,8 +7,8 @@ import {
   SetupZonePlanEditError,
   type SetupZonePlanView,
 } from '@/features/setup/setupZonePlan';
-import { SetupZonePlanCard } from '@/features/setup/SetupZonePlanCard';
 import type { SetupSessionResponse } from '@/features/setup/types';
+import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
 import { commitErrorText } from '@/features/zones/commitErrors';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
@@ -17,24 +17,18 @@ import { bodyOf, formOf } from '@/features/zones/zoneForm';
 import { readZones } from '@/features/zones/zones';
 import { ZoneSourceContext } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
+import { problem } from '@/mocks/problem';
 import { createSetupMock } from '@/mocks/setup';
 import { createZonesMock, MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  renderHook,
-  screen,
-  waitFor,
-} from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { http } from 'msw';
 import { setupServer } from 'msw/node';
 import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 세팅 구역 단계의 구역 저장(S15P31A101-615): 관제 구역(zones/commit) 대신 세션 구역 목록(-612 PUT)에 저장하고, 화면 목록도
-// 그 목록 기준이다. 이전 모델 재사용은 지금 관제 구역으로 채우고, 새 모델은 같은 World 일 때만 불러온다. 충돌(revision)은 다시 받는다.
+// 그 목록 기준이다. 이전 모델 재사용은 지금 관제 구역으로 채우고, 새 모델은 빈 목록에서 시작한다. 충돌(revision)은 다시 받는다.
 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
@@ -219,56 +213,81 @@ describe('세팅 구역 단계의 저장', () => {
   });
 });
 
-describe('세팅 구역 목록 카드', () => {
-  function showCard(sessionId: string) {
+describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
+  const plainWrapper = () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    function Harness() {
-      const session = useSetupSession(sessionId).data;
-      return session ? <SetupZonePlanCard session={session} /> : null;
-    }
-    render(
-      <QueryClientProvider client={client}>
-        <Harness />
-      </QueryClientProvider>,
+    return ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+  };
+  function seed(sessionId: string) {
+    renderHook(
+      () => {
+        const session = useSetupSession(sessionId).data ?? null;
+        useSeedSetupZonePlan(session);
+      },
+      { wrapper: plainWrapper() },
     );
   }
   const liveIds = () => readZones(MOCK_ZONES).map((z) => z.zoneId);
+  const planRequests = (sessionId: string, method: string) =>
+    requests.filter((r) => r === `${method} /api/setup-sessions/${sessionId}/zones`);
+  const kept = (zoneId: string) => ({
+    zone_id: zoneId,
+    source: 'MANUAL' as const,
+    candidate_id: null,
+    zone: null,
+    surface: null,
+  });
 
   it('이전 모델 재사용은 빈 목록을 지금 관제 구역(zone_id 유지)으로 한 번 채운다', async () => {
     const sessionId = await readySession({ mode: 'REUSE' });
-    showCard(sessionId);
+    seed(sessionId);
     await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1));
     const plan = await requestSetupZonePlan(api, sessionId);
     expect(plan.items.map((i) => i.zone_id)).toEqual(liveIds());
     expect(plan.items.every((i) => i.zone === null)).toBe(true);
-    expect(
-      await screen.findByText(
-        `구역 ${liveIds().length}개 · 세팅을 완료하면 이 목록이 관제 구역이 됩니다`,
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '지금 구역 불러오기' })).toBeNull();
+    expect(planRequests(sessionId, 'PUT')).toHaveLength(1);
   });
 
-  it('새 모델은 같은 World(world_anchor.accepted)일 때만 「지금 구역 불러오기」로 지금 구역을 더한다', async () => {
+  it('이전 모델 재사용이어도 이미 목록이 채워져 있으면 채우지 않는다', async () => {
+    const sessionId = await readySession({ mode: 'REUSE' });
+    setupMock.zonePlans.set(sessionId, { items: [kept('z-04')], revision: 3, updatedAt: 0 });
+    seed(sessionId);
+    await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
+    await act(async () => {});
+    expect(planRequests(sessionId, 'PUT')).toEqual([]);
+    expect(setupMock.zonePlans.get(sessionId)).toMatchObject({ revision: 3 });
+  });
+
+  it('새 모델은 빈 목록에서 시작하고 지금 관제 구역을 가져오지 않는다(World 가 같아도)', async () => {
     const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
-    showCard(sessionId);
+    seed(sessionId);
+    await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
+    await act(async () => {});
+    expect(planRequests(sessionId, 'PUT')).toEqual([]);
     expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
-    const button = (await screen.findByRole('button', {
-      name: '지금 구역 불러오기',
-    })) as HTMLButtonElement;
-    await waitFor(() => expect(button.disabled).toBe(false));
-    fireEvent.click(button);
-    await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1));
-    expect((await requestSetupZonePlan(api, sessionId)).items.map((i) => i.zone_id)).toEqual(
-      liveIds(),
-    );
   });
 
-  it('새 모델인데 World 가 새로 정해졌으면 불러오기를 끄고 새로 그리라고 안내한다', async () => {
-    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: false } });
-    showCard(sessionId);
-    expect(await screen.findByText(/지금 관제 구역을 불러오지 않습니다/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '지금 구역 불러오기' })).toBeNull();
-    expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
+  it('세션이 없으면(구역 단계가 아니거나 이미 완료) 목록을 받지도 채우지도 않는다', async () => {
+    await readySession({ mode: 'REUSE' });
+    renderHook(() => useSeedSetupZonePlan(null), { wrapper: plainWrapper() });
+    await act(async () => {});
+    expect(requests.some((r) => r.includes('/zones'))).toBe(false);
+  });
+
+  it('채우다 실패하면(목록 충돌) 조용히 넘어가고 같은 세션에서 다시 시도하지 않는다', async () => {
+    const sessionId = await readySession({ mode: 'REUSE' });
+    server.use(
+      http.put('*/api/setup-sessions/:id/zones', () =>
+        problem(409, 'SETUP_ZONE_PLAN_CONFLICT', '다른 곳에서 먼저 고친 세팅 구역 목록입니다'),
+      ),
+    );
+    seed(sessionId);
+    await waitFor(() => expect(planRequests(sessionId, 'PUT')).toHaveLength(1));
+    // 실패하면 목록을 다시 받지만(최신 revision) 같은 세션은 다시 채우지 않는다
+    await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(2));
+    await act(async () => {});
+    expect(planRequests(sessionId, 'PUT')).toHaveLength(1);
   });
 });

@@ -612,6 +612,8 @@ export interface SetupWaitingView {
   /** 높이 차이 허용값(cm). 서버가 주지 않았으면 null. */
   heightToleranceCm: number | null;
   previewReady: boolean;
+  /** 3D 맵이 완전히 만들어졌다(정밀 3D 맵까지 끝남). 이때부터 구역 단계로 넘어갈 수 있다. */
+  mapComplete: boolean;
   sceneTier: SceneTierStatusView;
   /** 왜 기다리는지(실패·정상 진행이면 null) */
   waitReason: SetupWaitReasonView | null;
@@ -711,6 +713,17 @@ export function isPreviewSceneReady(session: SetupSessionResponse | null | undef
     currentStage === 'READY_FOR_ZONES' ||
     currentStage === 'BAKING_TEXTURE' ||
     currentStage === 'COMPLETED'
+  );
+}
+
+/**
+ * 3D 맵이 완전히 만들어졌는지: 정밀 3D 맵까지 끝났거나, 작업 시작으로 정밀 굽기를 건너뛰고 끝난 세팅이다.
+ * 미리보기 맵만 있는 동안(정밀 맵을 굽는 중)은 구역 단계로 넘어가지 않는다.
+ */
+export function isSceneMapComplete(session: SetupSessionResponse | null | undefined): boolean {
+  if (!session || session.status === 'FAILED') return false;
+  return (
+    deriveSceneTierStatus(session).tier === 'FINAL' || session.bake_skipped === 'LIVE_WORK_STARTED'
   );
 }
 
@@ -837,6 +850,7 @@ export function deriveWaitingView(
     heightChecks: deriveHeightCheckRows(session),
     heightToleranceCm: session?.height_tolerance_cm ?? null,
     previewReady,
+    mapComplete: isSceneMapComplete(session),
     sceneTier: deriveSceneTierStatus(session),
     waitReason: failed ? null : deriveWaitReasonView(session?.wait_reason),
   };
@@ -872,11 +886,9 @@ export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
   };
 }
 
-/** 구역 단계 3D 칸 제목: 미리보기 맵·정밀 3D 맵과 그 Scene 버전. 세팅 맵이 아직이면 지금 현장 맵이다. */
+/** 구역 단계 3D 칸 제목: 미리보기 맵·정밀 3D 맵(Scene 버전은 보이지 않는다). 세팅 맵이 아직이면 지금 현장 맵이다. */
 export function zoneMapTitle(sceneTier: SceneTierStatusView): string {
-  if (sceneTier.tier === 'NONE') return MAP_TITLE[ZONE_STAGE];
-  const version = sessionSceneVersion(sceneTier);
-  return version ? `${sceneTier.label} · ${version}` : sceneTier.label;
+  return sceneTier.tier === 'NONE' ? MAP_TITLE[ZONE_STAGE] : sceneTier.label;
 }
 
 /**

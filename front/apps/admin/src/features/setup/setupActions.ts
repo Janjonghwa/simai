@@ -16,13 +16,14 @@ const STAGE_ACTIONS: Record<Stage, readonly ActionKey[]> = {
   2: ['restart'],
 };
 
+/** 정밀 3D 맵을 다 만들기 전에는 2단계 '다음' 이 꺼진다. */
+const CONFIRM_BLOCKED_TITLE = '3D 맵을 다 만들면 넘어갈 수 있어요';
 const CANCEL_LABEL = '세팅 취소';
 const RECHECK_LABEL = '카메라 다시 맞추기';
-/** 단독 화면의 구역 단계: 구역을 발행한 뒤 그 작업의 작업 관리로 돌아간다. */
+/** 단독 화면의 구역 단계 마지막 단추: 세팅을 완료한 뒤 그 작업의 작업 관리로 돌아간다. */
 const TO_WORK_LABEL = '작업 관리로';
-/** 날짜 화면 안의 구역 단계 마지막 단추(구역을 발행해야 켜진다). */
+/** 날짜 화면 안의 구역 단계 마지막 단추: 세팅을 완료한 뒤 다음 단계로 넘어간다. */
 const EMBEDDED_DONE_LABEL = '다음';
-const EMBEDDED_DONE_BLOCKED_TITLE = '구역을 저장하면 넘어갈 수 있어요';
 
 /** 세팅 화면 단추 하나. 주 단추(다음 단계로 가는 것)는 맨 오른쪽에 하나, 나머지는 보조 단추다. */
 export interface SetupActionButton {
@@ -42,28 +43,29 @@ export interface SetupActionState {
   embedded: boolean;
   /** 1단계 '다음' 이 꺼지는 때(카메라 높이가 틀렸거나 세션 요청 중). */
   startDisabled: boolean;
-  /** 미리보기 맵이 준비됐다(2단계 '다음' 이 켜진다). */
-  previewReady: boolean;
+  /** 3D 맵이 완전히 만들어졌다(정밀 3D 맵까지 끝나야 2단계 '다음' 이 켜진다). */
+  mapComplete: boolean;
   /** 세션이 아직 진행 중이라 취소할 수 있다. */
   sessionRunning: boolean;
   /** 세션 취소 요청 중. */
   cancelPending: boolean;
   /** 높이 불일치 안내가 떠서 '카메라 다시 맞추기' 가 있다. */
   showHeightNotice: boolean;
-  /** 이 세션의 구역을 발행했다. */
-  zonesPublished: boolean;
+  /** 구역 단계 마지막 단추를 누를 수 있다(세팅을 이미 완료했거나 지금 완료할 수 있다). */
+  canFinish: boolean;
+  /** 마지막 단추가 세팅 완료를 요청하는 중. */
+  finishPending: boolean;
 }
 
 export interface SetupActionHandlers extends Record<ActionKey, () => void> {
   cancelSession: () => void;
   recheckCameras: () => void;
-  /** 구역 단계 마지막 단추. */
+  /** 구역 단계 마지막 단추(아직 완료 전이면 세팅을 완료하고 넘어간다). */
   finish: () => void;
 }
 
 /**
  * 지금 단계에서 보일 단추들을 왼쪽부터 순서대로 돌려준다(보조 단추 먼저, 주 단추가 맨 오른쪽이라 단계가 바뀌어도 자리가 같다).
- * 단독 화면의 구역 단계는 구역을 발행하기 전에는 주 단추가 없다.
  */
 export function deriveSetupActions(
   state: SetupActionState,
@@ -71,7 +73,7 @@ export function deriveSetupActions(
 ): SetupActionButton[] {
   const disabledOf: Record<ActionKey, boolean> = {
     start: state.startDisabled,
-    confirm: !state.previewReady,
+    confirm: !state.mapComplete,
     restart: false,
   };
   const staged = STAGE_ACTIONS[state.stage].map((key): SetupActionButton => ({
@@ -80,6 +82,7 @@ export function deriveSetupActions(
     onClick: on[key],
     disabled: disabledOf[key],
     primary: !SECONDARY_ACTIONS.has(key),
+    title: key === 'confirm' && disabledOf[key] ? CONFIRM_BLOCKED_TITLE : undefined,
   }));
 
   const buttons = staged.filter((button) => !button.primary);
@@ -102,14 +105,13 @@ export function deriveSetupActions(
     });
   }
   buttons.push(...staged.filter((button) => button.primary));
-  if (state.stage === ZONE_STAGE && (state.embedded || state.zonesPublished)) {
+  if (state.stage === ZONE_STAGE) {
     buttons.push({
       key: 'finish',
       label: state.embedded ? EMBEDDED_DONE_LABEL : TO_WORK_LABEL,
       onClick: on.finish,
-      disabled: !state.zonesPublished,
+      disabled: !state.canFinish || state.finishPending,
       primary: true,
-      title: state.zonesPublished ? undefined : EMBEDDED_DONE_BLOCKED_TITLE,
     });
   }
   return buttons;

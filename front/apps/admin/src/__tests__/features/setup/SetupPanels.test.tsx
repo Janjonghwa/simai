@@ -1,10 +1,10 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { deriveStep1Coverage, deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
-import { CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
+import { AiZoneDraftsPanel, CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
 import { setupSessionResponseSchema, type CoverageGuidesResponse } from '@/features/setup/types';
-import { buildCoverageGuidePayload } from '@/mocks/setup';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/features/cctv/useCctvPreview', () => ({
@@ -187,6 +187,56 @@ describe('카메라 각도 표시', () => {
     cleanup();
     render(<CameraPanel coverage={deriveStep1Coverage(fresh)} />);
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('AI 위험 구역 초안 패널', () => {
+  const renderDrafts = (overrides: Partial<Parameters<typeof AiZoneDraftsPanel>[0]> = {}) => {
+    const onAcceptDraft = vi.fn();
+    const onDiscardDraft = vi.fn();
+    render(
+      <AiZoneDraftsPanel
+        draftsResponse={buildSetupZoneDraftsResponse('s1')}
+        acceptedDraftIds={[]}
+        discardedDraftIds={[]}
+        pendingDraftId={null}
+        acceptFailure={null}
+        onAcceptDraft={onAcceptDraft}
+        onDiscardDraft={onDiscardDraft}
+        {...overrides}
+      />,
+    );
+    return { onAcceptDraft, onDiscardDraft };
+  };
+
+  it('제목은 AI 위험 구역 초안뿐이고 배경 맵 단계 상태 줄은 없다', () => {
+    renderDrafts();
+    expect(screen.getByRole('heading', { name: 'AI 위험 구역 초안' })).toBeTruthy();
+    expect(screen.queryByText(/배경 맵 상태/)).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('status', { name: '배경 맵 단계 상태' })).toBeNull();
+  });
+
+  it('초안 목록과 수락·버리기 동작은 그대로다', () => {
+    const { onAcceptDraft, onDiscardDraft } = renderDrafts();
+    const list = screen.getByRole('list', { name: 'AI 구역 초안 목록' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(list).getByText('창가 개구부 추락 주의')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
+    expect(onAcceptDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate_id: 'cand-opening-1' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '전면 단상 작업면 후보 버리기' }));
+    expect(onDiscardDraft).toHaveBeenCalledWith('cand-surface-2');
+  });
+
+  it('분석 중이거나 초안이 없으면 그 상태를 글로 보인다', () => {
+    renderDrafts({ draftsResponse: buildSetupZoneDraftsResponse('s1', { status: 'QUEUED' }) });
+    expect(screen.getByText('AI 구역 초안 분석 중')).toBeTruthy();
+    cleanup();
+    renderDrafts({ draftsResponse: buildSetupZoneDraftsResponse('s1', { drafts: [] }) });
+    expect(screen.getByText('AI 구역 초안 없음')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
 

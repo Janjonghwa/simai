@@ -17,6 +17,7 @@ import {
   formatMinSec,
   formatRemainingKorean,
   isPreviewSceneReady,
+  isSceneMapComplete,
   MAX_CAMERA_HEIGHT_M,
   resolveHeightCameraIds,
   sessionSceneVersion,
@@ -514,6 +515,76 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     ).toBeNull();
   });
 
+  it('3D 맵이 다 만들어진 때(isSceneMapComplete)는 정밀 3D 맵까지 끝났거나 작업 시작으로 굽기를 건너뛴 세팅이다', () => {
+    const previewOnly: SetupSessionResponse = {
+      ...baseSession,
+      status: 'READY_FOR_ZONES',
+      stage: 'READY_FOR_ZONES',
+      progress_pct: 85,
+      preview_scene_version: 'scene-preview-1',
+    };
+    expect(isSceneMapComplete(null)).toBe(false);
+    expect(isSceneMapComplete(baseSession)).toBe(false);
+    expect(isSceneMapComplete(previewOnly)).toBe(false);
+    expect(
+      isSceneMapComplete({ ...previewOnly, status: 'BAKING_TEXTURE', stage: 'BAKING_TEXTURE' }),
+    ).toBe(false);
+
+    expect(
+      isSceneMapComplete({
+        ...previewOnly,
+        status: 'COMPLETED',
+        stage: 'COMPLETED',
+        progress_pct: 100,
+        scene_version: 'scene-final-1',
+      }),
+    ).toBe(true);
+    expect(
+      isSceneMapComplete({
+        ...previewOnly,
+        status: 'COMPLETED',
+        stage: 'COMPLETED',
+        progress_pct: 100,
+      }),
+    ).toBe(true);
+    expect(
+      isSceneMapComplete({
+        ...previewOnly,
+        status: 'BAKING_TEXTURE',
+        stage: 'BAKING_TEXTURE',
+        bake_skipped: 'LIVE_WORK_STARTED',
+      }),
+    ).toBe(true);
+    // 실패한 세션은 정식 Scene 이 있어도 구역 단계로 넘기지 않는다
+    expect(
+      isSceneMapComplete({ ...previewOnly, status: 'FAILED', scene_version: 'scene-final-1' }),
+    ).toBe(false);
+  });
+
+  it('대기 화면 요약(deriveWaitingView)의 mapComplete 는 미리보기 맵과 달리 정밀 3D 맵이 끝나야 켜진다', () => {
+    const previewOnly: SetupSessionResponse = {
+      ...baseSession,
+      status: 'BAKING_TEXTURE',
+      stage: 'BAKING_TEXTURE',
+      progress_pct: 85,
+      preview_scene_version: 'scene-preview-1',
+    };
+    expect(deriveWaitingView(previewOnly)).toMatchObject({
+      previewReady: true,
+      mapComplete: false,
+    });
+    expect(
+      deriveWaitingView({
+        ...previewOnly,
+        status: 'COMPLETED',
+        stage: 'COMPLETED',
+        progress_pct: 100,
+        scene_version: 'scene-final-1',
+      }),
+    ).toMatchObject({ previewReady: true, mapComplete: true });
+    expect(deriveWaitingView(null)).toMatchObject({ previewReady: false, mapComplete: false });
+  });
+
   it('VLM 구역 초안 응답 스키마(no_opinion 포함)를 검증하고 편집 상자(BoxBounds)로 변환한다', () => {
     const built = buildSetupZoneDraftsResponse('019a0000-0000-7000-8000-000000000001');
     const parsed = setupZoneDraftsResponseSchema.parse(built);
@@ -543,7 +614,7 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     expect(draftGhostsOf(drafts, [first!.candidate_id], [second!.candidate_id])).toEqual([]);
   });
 
-  it('구역 단계 3D 칸 제목은 세팅 맵 단계와 Scene 버전이고, 세팅 맵이 아직이면 3D 맵이다', () => {
+  it('구역 단계 3D 칸 제목은 세팅 맵 단계 이름뿐이고(Scene 버전은 붙이지 않는다), 세팅 맵이 아직이면 3D 맵이다', () => {
     expect(zoneMapTitle(deriveSceneTierStatus(baseSession))).toBe('3D 맵');
     const preview: SetupSessionResponse = {
       ...baseSession,
@@ -551,14 +622,14 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       stage: 'READY_FOR_ZONES',
       preview_scene_version: 'scene-preview-1',
     };
-    expect(zoneMapTitle(deriveSceneTierStatus(preview))).toBe('미리보기 맵 · scene-preview-1');
+    expect(zoneMapTitle(deriveSceneTierStatus(preview))).toBe('미리보기 맵');
     const final: SetupSessionResponse = {
       ...preview,
       status: 'COMPLETED',
       stage: 'COMPLETED',
       scene_version: 'scene-final-1',
     };
-    expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵 · scene-final-1');
+    expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵');
   });
 });
 

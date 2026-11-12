@@ -1,10 +1,5 @@
 import { createSetupSession } from '@/features/setup/api';
-import {
-  resetSetupFlowStore,
-  setActiveSetupSessionId,
-  setSupplementSkipped,
-  useSetupFlowStore,
-} from '@/features/setup/setup.store';
+import { resetSetupFlowStore } from '@/features/setup/setup.store';
 import type { UploadQueueDeps } from '@/features/setup/supplementUpload';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
 import { useSupplementCapture } from '@/features/setup/useSupplementCapture';
@@ -168,17 +163,5 @@ describe('맵 보강 촬영 훅 + mock', () => {
     await waitFor(() =>
       expect(result.current.capture.rebakeView?.detail).toBe('다시 굽기를 취소했습니다'),
     );
-  });
-});
-
-describe('맵 보강 촬영 건너뛰기', () => {
-  it('건너뛰기는 세션이 바뀌면 잊는다', () => {
-    setActiveSetupSessionId('a');
-    setSupplementSkipped(true);
-    expect(useSetupFlowStore.getState().supplementSkipped).toBe(true);
-    setActiveSetupSessionId('a');
-    expect(useSetupFlowStore.getState().supplementSkipped).toBe(true);
-    setActiveSetupSessionId('b');
-    expect(useSetupFlowStore.getState().supplementSkipped).toBe(false);
   });
 });

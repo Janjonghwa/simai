@@ -45,6 +45,8 @@ export interface ZoneCommitInput {
   target: ZoneTarget;
   /** 저장·추가가 끝나고 현장 판정으로 발행까지 됐을 때 부른다(발행이 실패하면 다시 보내기를 보이도록 부르지 않는다). */
   onCommitted?: () => void;
+  /** 구역을 추가했을 때 부른다. 있으면 만든 구역을 고르지 않고 이 함수가 대신한다(추가 양식을 접는 화면). */
+  onAdded?: () => void;
 }
 
 /**
@@ -141,6 +143,12 @@ export function useZoneCommit(input: ZoneCommitInput) {
     });
   };
 
+  /** 추가한 구역을 처리한다: onAdded 가 있으면 그것이, 없으면 만든 구역을 골라 연다. */
+  const afterAdd = (zoneId: string | undefined) => {
+    if (input.onAdded) input.onAdded();
+    else if (zoneId) target.openZone(zoneId);
+  };
+
   const add = async () => {
     if (zone || !shape || !input.addReady || busy || (!surface && input.workLayoutId == null))
       return;
@@ -157,7 +165,7 @@ export function useZoneCommit(input: ZoneCommitInput) {
           }),
         );
         removeZoneDraft(NEW_KEY);
-        if (id) target.openZone(id);
+        afterAdd(id);
         show(null, false);
         input.onCommitted?.();
       } catch (error) {
@@ -168,9 +176,9 @@ export function useZoneCommit(input: ZoneCommitInput) {
     if (!surface) return;
     const request = createRequestOf({ form, shape, surface });
     await send(request, (done) => {
-      // 만든 구역을 고르고 새 구역 양식은 처음 값으로 돌린다.
+      // 새 구역 양식은 처음 값으로 돌리고 만든 구역을 고른다.
       removeZoneDraft(NEW_KEY);
-      target.openZone(done.result.zone_id);
+      afterAdd(done.result.zone_id);
       finish(done);
     });
   };
