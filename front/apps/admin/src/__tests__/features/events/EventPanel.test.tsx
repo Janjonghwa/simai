@@ -169,8 +169,8 @@ describe('EventPanel 머리줄과 두 칸', () => {
   const head = () => screen.getByTestId('event-panel-head').textContent;
   const section = (name: string) => screen.getByRole('region', { name });
 
-  it('머리줄에 지금 추적 중인 작업자 수(놓친 트랙 제외)와 진행 중 사건 수를 보인다', () => {
-    setTracks(['CONFIRMED', 'OCCLUDED', 'LOST']);
+  it('머리줄에 지금 추적 중인 작업자 수(확정·가림만, 확정 전·놓친 트랙 제외)와 진행 중 사건 수를 보인다', () => {
+    setTracks(['CONFIRMED', 'OCCLUDED', 'LOST', 'TENTATIVE']);
     renderPanel([
       entry({ event_id: 'a', world_ids: ['w-0'] }),
       entry({ event_id: 'b', world_ids: ['w-1'] }),

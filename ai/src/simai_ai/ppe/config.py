@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 # 0.2.0: ID 불확실 칸 건너뛰기·3초 초과 초기화·유효 6칸 5초 창(S15P31A101-653)
 # 0.3.0: 미착용 창에 빈 칸 1칸 허용(not_worn_max_empty_bins, S15P31A101-654)
-POLICY_VERSION = "ppe-policy-0.3.0"
+# 0.4.0: 순수 병합(aliases 추가·분할 아님)이면 차수가 올라도 누적을 잇고 흡수 ID 칸을 넘겨받는다(S15P31A101-661)
+POLICY_VERSION = "ppe-policy-0.4.0"
 
 
 @dataclass(frozen=True)

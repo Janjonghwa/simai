@@ -1,5 +1,6 @@
+import { MERGE_CARRY_GRACE_MS } from '@/features/viewer3d/data/identityCarry';
 import { createViewerStore } from '@/features/viewer3d/viewer3d.store';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const WORKER = { type: 'person', id: 'w-1' } as const;
 const ZONE = { type: 'zone', id: 'z-1' } as const;
@@ -117,5 +118,74 @@ describe('createViewerStore', () => {
     store.getState().select(ZONE);
     store.getState().unregisterTarget({ type: 'object', id: 'none' });
     expect(store.getState().selected).toEqual(ZONE);
+  });
+});
+
+describe('ID 병합 승계(-661)', () => {
+  const SURVIVOR = { type: 'person', id: 'w-0' } as const;
+  afterEach(() => vi.useRealTimers());
+
+  function mergedStore() {
+    const store = readyStore();
+    store.getState().registerTarget(SURVIVOR);
+    store.getState().select(WORKER);
+    store.getState().focusOn(WORKER);
+    return store;
+  }
+
+  it('사라지는 사람 ID 가 이미 생존 트랙의 별칭이면 선택·초점을 그 사람으로 옮긴다', () => {
+    const store = mergedStore();
+    store.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    store.getState().unregisterTarget(WORKER);
+    expect(store.getState().selected).toEqual(SURVIVOR);
+    expect(store.getState().focus?.target).toEqual(SURVIVOR);
+  });
+
+  it('별칭이 유예 시간 안에 늦게 오면 그때 옮기고, 지나면 비운 채로 둔다', () => {
+    vi.useFakeTimers();
+    const store = mergedStore();
+    store.getState().unregisterTarget(WORKER);
+    expect(store.getState().selected).toBeNull();
+    vi.advanceTimersByTime(MERGE_CARRY_GRACE_MS - 1);
+    store.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    expect(store.getState().selected).toEqual(SURVIVOR);
+    expect(store.getState().focus?.target).toEqual(SURVIVOR);
+
+    const late = mergedStore();
+    late.getState().unregisterTarget(WORKER);
+    vi.advanceTimersByTime(MERGE_CARRY_GRACE_MS + 1);
+    late.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    expect(late.getState().selected).toBeNull();
+  });
+
+  it('기다리는 동안 다른 대상을 고르거나 선택을 풀면 옮기지 않는다', () => {
+    const store = mergedStore();
+    store.getState().unregisterTarget(WORKER);
+    store.getState().select(ZONE);
+    store.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    expect(store.getState().selected).toEqual(ZONE);
+
+    const cleared = mergedStore();
+    cleared.getState().unregisterTarget(WORKER);
+    cleared.getState().clearSelection();
+    cleared.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    expect(cleared.getState().selected).toBeNull();
+    expect(cleared.getState().focus).toBeNull();
+  });
+
+  it('생존 트랙이 장면에 아직 없으면 등록될 때 옮기고, 별칭이 아닌 사람은 지금처럼 비운다', () => {
+    const store = readyStore();
+    store.getState().select(WORKER);
+    store.getState().setPersonAliases(new Map([['w-1', 'w-0']]));
+    store.getState().unregisterTarget(WORKER);
+    expect(store.getState().selected).toBeNull();
+    store.getState().registerTarget(SURVIVOR);
+    expect(store.getState().selected).toEqual(SURVIVOR);
+
+    const other = mergedStore();
+    other.getState().setPersonAliases(new Map([['w-9', 'w-0']]));
+    other.getState().unregisterTarget(WORKER);
+    expect(other.getState().selected).toBeNull();
+    expect(other.getState().focus).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import {
   sha256Of,
 } from '@/features/viewer3d/people/avatarMesh';
 import {
+  AVATAR_IDENTITY_HOLD_MS,
   AVATAR_LATE_MS,
   AVATAR_STALL_MS,
   avatarMeshStatus,
@@ -199,6 +200,38 @@ describe('되돌아가기 판정', () => {
       use: false,
       fallback: reason,
     });
+  });
+
+  it('같은 차수의 짧은 IDENTITY_UNCERTAIN(1.5 s 안)은 마지막 자세로 메시를 유지하고, 길어지거나 차수가 다르면 캡슐(-661)', () => {
+    const uncertain = { identityConfidence: 'IDENTITY_UNCERTAIN' as const };
+    const since = (startedAt: number) => ({
+      identityUncertainSince: new Map([[track.worldId, startedAt]]),
+    });
+    const held = status({
+      track: uncertain,
+      world: since(world.tLatestGlobal - AVATAR_IDENTITY_HOLD_MS),
+    });
+    expect(held).toMatchObject({ use: true, fallback: null });
+    // 그동안 새 포즈가 없어도 끊김·늦음 기준이 유예만큼 늘어난다.
+    expect(
+      status({
+        track: uncertain,
+        world: since(world.tLatestGlobal - 500),
+        now: pose.receivedAt + AVATAR_STALL_MS + 400,
+      }).use,
+    ).toBe(true);
+    expect(
+      status({ track: uncertain, world: since(world.tLatestGlobal - AVATAR_IDENTITY_HOLD_MS - 1) }),
+    ).toMatchObject({ use: false, fallback: 'IDENTITY' });
+    expect(
+      status({
+        track: uncertain,
+        world: since(world.tLatestGlobal),
+        avatar: { identityRevision: track.identityRevision + 1 },
+      }),
+    ).toMatchObject({ use: false, fallback: 'IDENTITY' });
+    // 차수가 같아도 확실한 트랙이면 끊김 기준은 그대로다.
+    expect(status({ now: pose.receivedAt + AVATAR_STALL_MS + 400 }).fallback).toBe('STALLED');
   });
 
   it('경계값(끊김 1000 ms·늦음 1000 ms)은 아직 메시다', () => {

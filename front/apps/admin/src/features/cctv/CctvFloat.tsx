@@ -4,7 +4,7 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { CameraTile, StateTile } from '@/features/cctv/CctvPage';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
-import { bestCamera } from '@/features/events/incidents';
+import { bestCamera, currentPersonId } from '@/features/events/incidents';
 import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { env } from '@/lib/env';
@@ -92,6 +92,12 @@ function Content({
     requestedCamera?.cameraId && !baseIds.includes(requestedCamera.cameraId)
       ? [...baseIds, requestedCamera.cameraId]
       : baseIds;
+  const selectedTarget = targetOfKey(selectedKey);
+  const selectedPerson = selectedTarget?.type === 'person' ? selectedTarget.id : null;
+  // 고른 사람의 지금 World ID. 병합으로 그 ID 가 다른 트랙의 별칭이 되면 바뀐다(-661).
+  const personNow = useRealtimeStore((s) =>
+    currentPersonId(s.world?.payload.tracks, selectedPerson),
+  );
   useEffect(() => {
     const target = targetOfKey(selectedKey);
     const best = bestCamera(
@@ -104,6 +110,20 @@ function Content({
       setCamera(best);
     }
   }, [selectedKey]);
+  // 고른 사람이 병합으로 다른 World ID 에 흡수되면 그 사람(생존 트랙) 기준으로 다시 고른다. 처음 나타나거나 사라질 때는
+  // 그대로 둔다(카메라 마커로 고른 카메라를 덮지 않게).
+  const lastPerson = useRef(personNow);
+  useEffect(() => {
+    const prev = lastPerson.current;
+    lastPerson.current = personNow;
+    if (!prev || !personNow || prev === personNow) return;
+    const best = bestCamera(useRealtimeStore.getState().world?.payload.tracks, {
+      type: 'person',
+      id: personNow,
+    });
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (best) setCamera(best);
+  }, [personNow]);
   // 마운트 때 두 효과가 모두 돌므로 마커 요청이 뒤에 와야 사람 선택에 덮이지 않는다.
   useEffect(() => {
     if (!requestedCamera) return;

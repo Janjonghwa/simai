@@ -203,12 +203,30 @@ export function incidentOf(entries: readonly EventEntry[], eventId: string): Inc
 /** 카드 머리줄이 보이는 대표 규칙: 묶음에서 가장 높은 등급(진행 중 먼저). */
 export const topEntry = (incident: Incident): EventEntry => incident.entries[0]!;
 
+/** 이 ID 의 사람 트랙: 지금 world_id 이거나 병합(ID 교정)으로 aliases 에 들어간 이전 ID. 없으면 없다. */
+function personTrack<T extends Pick<WorldTrack, 'world_id' | 'aliases'>>(
+  tracks: readonly T[] | undefined,
+  id: string,
+): T | undefined {
+  return tracks?.find((t) => t.world_id === id || t.aliases?.includes(id));
+}
+
+/**
+ * 이 ID 의 사람이 지금 쓰는 World ID(-661). 병합으로 흡수된 ID 면 생존 트랙의 world_id 다. 없으면 null.
+ * 문자열을 돌려주므로 셀렉터로 써도 그 사람의 ID 가 바뀔 때만 다시 그린다.
+ */
+export function currentPersonId(
+  tracks: readonly Pick<WorldTrack, 'world_id' | 'aliases'>[] | undefined,
+  id: string | null | undefined,
+): string | null {
+  return id ? (personTrack(tracks, id)?.world_id ?? null) : null;
+}
+
 /** 이 사람을 지금 화면에 담고 있는 카메라 중 첫 번째. 사람이 아니거나 어느 카메라에도 없으면 없다. */
 export function bestCamera(
   tracks: readonly Pick<WorldTrack, 'world_id' | 'aliases' | 'cameras'>[] | undefined,
   target: Incident['target'],
 ): string | undefined {
-  if (!tracks || target?.type !== 'person') return undefined;
-  const track = tracks.find((t) => t.world_id === target.id || t.aliases?.includes(target.id));
-  return track?.cameras[0];
+  if (target?.type !== 'person') return undefined;
+  return personTrack(tracks, target.id)?.cameras[0];
 }

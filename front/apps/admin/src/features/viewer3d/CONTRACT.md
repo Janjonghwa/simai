@@ -206,11 +206,12 @@ AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회
 - 되돌아가기(하나라도 맞으면 기존 캡슐·골격 경로):
   1. 0.5 초 넘게 새 포즈 없음(`AVATAR_STALL_MS`)
   2. world_state `t_latest_global` − 포즈 `capture_time_ms` > 500 ms(`AVATAR_LATE_MS`)
-  3. 트랙 `IDENTITY_UNCERTAIN` 이거나 `identity_revision` 이 트랙과 다름
+  3. 트랙 `identity_revision` 이 포즈와 다르거나, 같은 차수로 `IDENTITY_UNCERTAIN` 이 1.5 초 넘게 이어짐(`AVATAR_IDENTITY_HOLD_MS`, -661. 그 안이면 마지막 자세로 메시를 유지하고 1·2 기준도 그만큼 늘린다)
   4. 포즈 `calibration_version` 이 world_state 와 다름
   5. 자산 없음·내려받기/sha256/리그 확인 실패·`joint_count` ≠ 관절 회전 길이, 그리고 Tier 0 pelvis 없음
 - 표시: 사람 이름표에는 메시 상태를 적지 않는다(사람 ID 만 적는다). 메시 사용 여부와 HMR 지연 수치는 상태 표시줄의 FE 몫이다.
 - `avatarMesh="off"` 면 포즈가 와도 늘 기존 경로다. 메시는 위험 판정·이벤트·선택 규칙을 바꾸지 않는다(같은 사람 대상 `{ type: 'person', id }`).
+- ID 병합 승계(-661): 선택·초점 대상인 사람 ID 가 장면에서 빠질 때 그 ID 가 지금 world 트랙의 `aliases` 에 있으면 선택·초점을 그 생존 트랙으로 옮긴다. 별칭이 아직 오지 않았으면 선택을 비우고 500 ms(`MERGE_CARRY_GRACE_MS`) 안에 별칭이 오면 옮긴다. 분할로 생긴 새 ID(`split_from`)로는 옮기지 않는다.
 
 ## 배경 사진 화질·출처 지도·접지 그림자·후처리(-360)
 

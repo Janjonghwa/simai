@@ -4,6 +4,8 @@
 ID 개정·카메라 보완·깜빡임·만료를 확인한다. 수치는 config 초기값 기준이다.
 """
 
+import dataclasses
+
 import pytest
 
 from simai_ai.ppe import association as pa
@@ -313,6 +315,117 @@ def test_local_id_handover_between_world_ids_resets_both():
     views = j.evaluate(closed_after(6))
     for wid in ("w1", "w2"):
         assert (views[wid]["helmet"].state, views[wid]["helmet"].reason) == ("UNKNOWN", ps.R_MAPPING_CHANGED)
+
+
+# ---- 순수 병합 승계(S15P31A101-661: aliases 에 새 ID 가 붙고 분할 아님이면 차수가 올라도 잇는다) --------------------
+def merged(wid="w1", *, rev=1, aliases=("w2",), split_from=None, split_source=False, **kw):
+    return dataclasses.replace(person(wid, rev=rev, **kw), aliases=tuple(aliases), split_from=split_from,
+                               split_source=split_source)
+
+
+def test_pure_merge_keeps_survivor_state_and_window():
+    j = PpeJudge()
+    _worn(j)
+    assert state(j, closed_after(5)).state == "WORN"
+    feed(j, "cam1", t_of(6), [merged()], [HELMET()])
+    v = state(j, closed_after(6))
+    assert (v.state, v.reason, j.tracks["w1"].identity_revision) == ("WORN", ps.R_WINDOW_WORN, 1)
+    assert v.last_evidence_at == t_of(6)   # 병합 뒤 착용 칸이 그대로 근거로 이어진다
+    assert j.identity_events == {"merge_carried": 1}
+
+
+def test_absorbed_track_window_moves_to_empty_survivor_and_absorbed_id_is_retired():
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w2", local="8")], [HELMET()])
+    assert state(j, closed_after(5), "w2").state == "WORN"
+    # 소실됐던 옛 ID w1 이 w2 를 흡수(남는 ID 를 PPE 가 처음 본다)
+    feed(j, "cam1", t_of(6), [merged("w1", rev=3, local="8")], [HELMET()])
+    views = j.evaluate(closed_after(6))
+    assert "w2" not in views and (views["w1"]["helmet"].state, views["w1"]["helmet"].reason) == ("WORN",
+                                                                                                ps.R_WINDOW_WORN)
+    assert views["w1"]["helmet"].reason != ps.R_MAPPING_CHANGED
+    feed(j, "cam2", t_of(7), [person("w2", local="c2")], [HELMET()])   # 흡수된 ID 의 늦은 관측은 버린다
+    assert j.dropped.get("RETIRED_WORLD_ID") == 1 and "w2" not in j.tracks
+
+
+def test_absorbed_window_moves_into_known_but_empty_survivor():
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7", drop=(1, 2, 3, 4)), person("w2", 900, local="8")],
+             [HELMET(900)])
+    views = j.evaluate(closed_after(5))
+    assert (views["w1"]["helmet"].state, views["w2"]["helmet"].state) == ("UNKNOWN", "WORN")
+    feed(j, "cam1", t_of(6), [merged("w1", cx=900, local="8")], [HELMET(900)])
+    v = state(j, closed_after(6))
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+
+
+def test_local_id_taken_over_from_absorbed_id_is_not_a_mapping_change():
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7"), person("w2", 900, local="8")], [HELMET(), HELMET(900)])
+    feed(j, "cam1", t_of(6), [merged("w1", cx=900, local="8")], [HELMET(900)])
+    v = state(j, closed_after(6))
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+
+
+def test_opposite_confirmed_states_on_merge_become_unknown():
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7"), person("w2", 900, local="8")], [HELMET(), NO_HELMET(900)])
+    views = j.evaluate(closed_after(5))
+    assert (views["w1"]["helmet"].state, views["w2"]["helmet"].state) == ("WORN", "NOT_WORN")
+    feed(j, "cam1", t_of(6), [merged("w1")], [])
+    v = state(j, closed_after(6))
+    assert (v.state, v.reason, v.evidence) == ("UNKNOWN", ps.R_CROSS_CAMERA_CONFLICT, ())
+
+
+def test_overlapping_bins_on_merge_are_conservative():
+    item_a, item_b = ps.ItemState(window_start_bin=0), ps.ItemState(window_start_bin=0)
+    item_a.results = {0: ps.B_WORN, 1: ps.B_WORN, 2: ps.B_EMPTY}
+    item_b.results = {0: ps.B_WORN, 1: ps.B_NOT_WORN, 2: ps.B_WORN, 3: ps.B_CONFLICT}
+    out = ps._carry_item(item_a, item_b, 4)
+    assert out.results == {0: ps.B_WORN, 1: ps.B_UNKNOWN, 2: ps.B_WORN, 3: ps.B_CONFLICT}
+    assert item_a.results[1] == ps.B_WORN   # 원본은 바꾸지 않는다
+
+
+def test_split_revision_change_resets():
+    j = PpeJudge()
+    _worn(j)
+    # 분할: 원래 ID 는 별칭 변화 없이 차수만 오른다
+    feed(j, "cam1", t_of(6), [merged(aliases=(), split_source=True)], [HELMET()])
+    v = state(j, closed_after(6))
+    assert (v.state, v.reason) == ("UNKNOWN", ps.R_REVISION_CHANGED)
+    assert j.identity_events == {"revision_reset": 1}
+
+
+def test_merge_overlapping_a_split_at_the_same_revision_resets():
+    j = PpeJudge()
+    _worn(j)
+    feed(j, "cam1", t_of(6), [merged(split_source=True)], [HELMET()])
+    assert state(j, closed_after(6)).state == "UNKNOWN"
+
+
+def test_new_split_from_resets_even_with_new_alias():
+    j = PpeJudge()
+    _worn(j)
+    feed(j, "cam1", t_of(6), [merged(split_from="w9")], [HELMET()])
+    assert state(j, closed_after(6)).state == "UNKNOWN"
+
+
+def test_short_uncertainty_after_pure_merge_keeps_state_but_long_one_resets():
+    j = PpeJudge()
+    _worn(j)
+    for b in (6, 7, 8):   # 병합 직후 LATE_REASSOCIATION 불확실 1.5초: 상태 유지
+        feed(j, "cam1", t_of(b), [merged(ident=UNCERTAIN)], [HELMET()])
+    assert state(j, closed_after(8)).state == "WORN"
+    j2 = PpeJudge()
+    _worn(j2)
+    for b in range(6, 14):   # 3초를 넘게 이어지면 지금처럼 초기화
+        feed(j2, "cam1", t_of(b), [merged(ident=UNCERTAIN)], [HELMET()])
+    v = state(j2, closed_after(13))
+    assert (v.state, v.reason) == ("UNKNOWN", pa.R_IDENTITY_UNCERTAIN)
 
 
 # ---- ID 불확실(S15P31A101-653: 표본은 버리고 확정 상태는 유지, 3초 초과면 초기화) ---------------------------

@@ -67,9 +67,11 @@ class AppearanceWorker:
                     if wid not in states:
                         continue
                     state = states[wid]
-                    self.pipeline.track(track, doc["t"])
+                    # 순수 병합으로 차수만 오른 사람은 같은 사람이다: 누적을 잇는 기준은 revision_base(S15P31A101-661)
+                    base = getattr(state, "revision_base", state.revision)
+                    self.pipeline.track(track, doc["t"], identity_key=base)
                     original, revision, generation = tokens[wid]
-                    key = (id(original), revision, generation, id(state.baked))
+                    key = (id(original), base, generation, id(state.baked))
                     if state.baked is not None and self._registered.get(wid) != key:
                         self.pipeline.register(wid, state, doc["t"])
                         self._registered[wid] = key

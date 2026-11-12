@@ -1,4 +1,5 @@
 import { CameraClickContext } from '@/features/viewer3d/cameras/CameraLayer';
+import { aliasOwners } from '@/features/viewer3d/data/identityCarry';
 import {
   createSpatialDataStore,
   type SpatialDataStore,
@@ -323,6 +324,17 @@ export function ViewerShell({
 
   // 기다리던 선택은 뷰어가 내려갈 때 UNMOUNTED 로 끝내고 타이머를 푼다.
   useEffect(() => () => store.getState().dispose(), [store]);
+
+  // ID 병합 승계(-661): World 를 받을 때마다 별칭 → 생존 ID 표를 뷰어 Store 에 넘긴다. 데이터 Store 구독은 같은 set 안에서
+  // 바로 불리므로 흡수된 사람의 장면 대상이 React 반영으로 빠지기 전에 표가 먼저 바뀐다.
+  useEffect(() => {
+    const push = (tracks: Parameters<typeof aliasOwners>[0]) =>
+      store.getState().setPersonAliases(aliasOwners(tracks));
+    push(data.getState().world?.tracks ?? []);
+    return data.subscribe((state, prev) => {
+      if (state.world !== prev.world) push(state.world?.tracks ?? []);
+    });
+  }, [store, data]);
 
   useEffect(() => {
     sceneStore.getState().setInput(scene);

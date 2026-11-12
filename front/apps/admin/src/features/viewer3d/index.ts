@@ -102,6 +102,7 @@ export { DEFAULT_LAYERS, VIEWER_LAYER_KEYS, VIEWER_LAYER_MODES } from '@/feature
 export type { ViewerLayerKey, ViewerLayerMode, ViewerLayers } from '@/features/viewer3d/layers';
 export type { AvatarMeshFetch } from '@/features/viewer3d/people/avatarMesh';
 export {
+  AVATAR_IDENTITY_HOLD_MS,
   AVATAR_LATE_MS,
   AVATAR_PLAYBACK_DELAY_MS,
   AVATAR_STALL_MS,

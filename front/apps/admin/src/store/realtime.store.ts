@@ -112,12 +112,17 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
 
 export type RealtimeStore = typeof useRealtimeStore;
 
+/** 인원수에 넣는 생명주기. 확정됐거나(CONFIRMED) 확정 뒤 잠시 가려진(OCCLUDED) 사람만 센다. */
+const COUNTED_LIFECYCLES: ReadonlySet<string> = new Set(['CONFIRMED', 'OCCLUDED']);
+
 /**
- * 지금 추적 중인 사람 수. 놓친(LOST) 트랙은 세지 않는다.
+ * 지금 추적 중인 사람 수. 확정(CONFIRMED)·가림(OCCLUDED)만 세고, 아직 확정 전(TENTATIVE)과 놓친(LOST) 트랙은
+ * 세지 않는다(S15P31A101-661: 같은 사람의 중복 ID 가 병합 전 잠깐 TENTATIVE 로 생겼다 사라지면 인원이 출렁인다).
  * 숫자를 돌려주므로 world 가 10Hz 로 와도 수가 바뀔 때만 구독한 화면을 다시 그린다.
  */
 export const selectTrackedCount = (state: Pick<RealtimeState, 'world'>): number =>
-  state.world?.payload.tracks.filter((track) => track.track_lifecycle !== 'LOST').length ?? 0;
+  state.world?.payload.tracks.filter((track) => COUNTED_LIFECYCLES.has(track.track_lifecycle))
+    .length ?? 0;
 
 /** /topic/health 는 1초마다 온다. 3번 연속 빠지면 끊긴 것으로 본다(명세 3장 하트비트, 13.2). */
 export const HEALTH_TIMEOUT_MS = 3000;

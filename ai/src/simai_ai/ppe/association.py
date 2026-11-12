@@ -51,6 +51,10 @@ class PersonObservation:
     identity_confidence: str = "HIGH"
     joint_layout: str = "COCO17"
     joint_source: str = "observed"
+    # World ID 교정 근거(world_state 트랙 값 그대로, S15P31A101-661). 순수 병합이면 누적을 잇는다(state.PpeJudge)
+    aliases: tuple[str, ...] = ()
+    split_from: str | None = None
+    split_source: bool = False   # 같은 world_state 에 이 ID·이 차수로 갈라져 나간 Track 이 있다(identity_carry.split_marks)
 
 
 @dataclass(frozen=True)

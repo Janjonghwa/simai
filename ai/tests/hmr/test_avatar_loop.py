@@ -164,6 +164,73 @@ def test_identity_change_freezes_again_and_does_not_inherit_other_id(rig):
     assert len(uploads) == 2 and loop.people["w-1"].version == 1
 
 
+def merged_snapshot(t, revision=1, aliases=("w-9",), uncertain=False, split_child=False):
+    item = snapshot(t, revision=revision, uncertain=uncertain)
+    tracks = item[0]["world"]["tracks"]
+    tracks[0]["aliases"] = list(aliases)
+    if split_child:   # 같은 차수로 w-1 에서 갈라져 나간 Track(병합과 분할이 겹침)
+        tracks.append({**copy.deepcopy(tracks[0]), "world_id": "w-5", "split_from": "w-1", "aliases": [],
+                       "per_camera": []})
+    return item
+
+
+def test_pure_merge_keeps_samples_and_asset_without_rebake(rig):
+    """S15P31A101-661: 순수 병합이면 남는 ID 의 자산을 그대로 쓰고 다시 굽지 않는다. 보낸 자산은 바꾸지 않는다."""
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=2)
+    for _ in range(2):
+        source.item = snapshot(clock[0])
+        loop.step()
+        clock[0] += 200
+    state = loop.people["w-1"]
+    assert len(uploads) == 1 and state.version == 0 and state.shape_frozen
+    sent_asset = copy.deepcopy(state.asset)
+    source.item = merged_snapshot(clock[0], uncertain=True)   # 병합 직후 LATE_REASSOCIATION 불확실
+    loop.step()
+    assert state.stable == 0 and len(state.samples) == 0 and state.revision == 1 and state.revision_base == 0
+    for _ in range(3):
+        clock[0] += 200
+        source.item = merged_snapshot(clock[0])
+        loop.step()
+    sender.tick()
+    assert len(uploads) == 1 and state.version == 0 and state.asset == sent_asset
+    poses = [p for m in sock.messages if m["msg_type"] == "avatar_pose_batch" for p in m["payload"]["poses"]]
+    assert poses[-1]["identity_revision"] == 1 and poses[-1]["appearance_version"] == 0
+    assets = [m["payload"] for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    assert [a["appearance_version"] for a in assets] == [0] and assets[0]["identity_revision"] == 0
+    assert loop.identity_events == {"merge_carried": 1, "merge_asset_kept": 1}
+
+
+def test_merge_overlapping_split_or_revision_without_alias_rebakes(rig):
+    for item_of in (lambda t: merged_snapshot(t, split_child=True), lambda t: merged_snapshot(t, aliases=())):
+        clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=2)
+        for _ in range(2):
+            source.item = snapshot(clock[0])
+            loop.step()
+            clock[0] += 200
+        assert len(uploads) == 1
+        source.item = item_of(clock[0])
+        loop.step()
+        assert loop.people["w-1"].revision_base == 1 and loop.identity_events == {"revision_reset": 1}
+        clock[0] += 200
+        source.item = item_of(clock[0])
+        loop.step()
+        assert len(uploads) == 2 and loop.people["w-1"].asset["identity_revision"] == 1
+
+
+def test_pure_merge_drops_absorbed_person_state(rig):
+    clock, source, *_, loop, _ = harness(rig, freeze=3)
+    meta, imgs = snapshot(clock[0])
+    t0 = meta["world"]["tracks"][0]
+    meta["world"]["tracks"] = [t0, {**copy.deepcopy(t0), "world_id": "w-2", "per_camera": []}]
+    source.item = meta, imgs
+    loop.step()
+    assert set(loop.people) == {"w-1", "w-2"}
+    clock[0] += 200
+    source.item = merged_snapshot(clock[0], aliases=("w-2",))
+    loop.step()
+    assert set(loop.people) == {"w-1"} and len(loop.people["w-1"].samples) == 2
+
+
 def test_uncertain_frame_preserves_samples_but_revision_clears_them(rig):
     clock, source, _, _, _, loop, _ = harness(rig, freeze=3)
     loop.step()
@@ -404,7 +471,7 @@ def test_optional_appearance_is_gate_controlled_and_failure_keeps_confirmed_pose
         updated.set()
         raise OSError("temporary upload error")
     loop.appearance = SimpleNamespace(retain=lambda *args: calls.append("retain"),
-        track=lambda *args: calls.append("track"), register=lambda *args: calls.append("register"),
+        track=lambda *args, **kwargs: calls.append("track"), register=lambda *args: calls.append("register"),
         update=update, config=SimpleNamespace(face_policy="EXCLUDED"))
     try:
         loop.step()

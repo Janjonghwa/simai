@@ -1,4 +1,11 @@
-"""상시 EXP-02 루프. 상류·모델·업로드·송신·시계를 주입하며 Tier 0 값은 읽기만 한다."""
+"""상시 EXP-02 루프. 상류·모델·업로드·송신·시계를 주입하며 Tier 0 값은 읽기만 한다.
+
+World ID 교정(S15P31A101-661): identity_revision 이 바뀌면 표본·안정 수를 비우고 새 차수로 다시 굽는다. 다만 순수 병합
+(aliases 에 새 ID 만 붙고 분할 아님, simai_ai.tracking.identity_carry)이면 남는 ID 의 표본·자산을 그대로 두고 다시 굽지
+않는다. 안정 수는 0 으로 둬 다시 안정될 때까지 외형 누적을 멈춘다(명세 20.4 '교정 직후 누적 멈춤', 포즈는 계속 보낸다). 이미 보낸 자산은 바꾸지 않는다(같은 버전을 다른 내용으로 보내지 않음): 자산 차수 < 포즈 차수는 설계
+'ID 교정 뒤 외형'에서 허용한다. `revision_base` 는 마지막으로 처음부터 다시 쌓기 시작한 차수이고, 자산 차수가 그 이상이면
+지금 사람의 자산이다(asset_current). 흡수된 ID 의 상태는 지운다(그 ID 의 자산은 다른 world_id 라 쓰지 않는다).
+"""
 
 from collections import Counter
 from dataclasses import dataclass, field
@@ -14,6 +21,7 @@ from simai_ai.hmr.appearance_worker import AppearanceWorker
 from simai_ai.hmr.multiview import aggregate_frame
 from simai_ai.hmr.pose import mhr_pose
 from simai_ai.hmr.prompt import valid_box
+from simai_ai.tracking.identity_carry import pure_merge_absorbed, split_marks
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +151,19 @@ class PersonState:
     shape_frozen: bool = False
     pending_target_frozen: bool = False
     pending_frames_used: int = 0
+    # World ID 교정 승계(S15P31A101-661): 마지막으로 처음부터 다시 쌓기 시작한 차수, 마지막으로 본 aliases·split_from
+    revision_base: int | None = None
+    aliases: tuple = ()
+    split_from: str | None = None
+
+    def __post_init__(self):
+        if self.revision_base is None:
+            self.revision_base = self.revision
+
+
+def asset_current(state) -> bool:
+    """지금 사람(마지막 초기화 뒤 같은 사람)의 자산인가. 순수 병합으로 차수만 오른 자산도 포함한다."""
+    return state.asset is not None and state.asset["identity_revision"] >= state.revision_base
 
 
 class _CountedUpload:
@@ -185,6 +206,7 @@ class AvatarLoop:
         # 계측(판정 불변, S15P31A101-412): 게이트 차단 사유 코드별 회차 수, 송신 대기열에 넣은 포즈 배치 수, 업로드·자산 확정 수.
         # 실제로 소켓에 쓴 배치 수는 송신기(sent_batches_total)가 센다.
         self.skip_reasons = Counter()
+        self.identity_events = Counter()  # 계측: 차수 변화 때 초기화(revision_reset)·순수 병합 승계(merge_carried, 자산 유지 merge_asset_kept)
         self.pose_enqueued = 0
         self.uploads = 0
         self.assets = 0
@@ -328,20 +350,38 @@ class AvatarLoop:
         rig = CameraRig.from_provider(SnapshotCalibration(snapshot["calibration"]))
         candidates, bodies, jobs = [], {}, []
         wid_counts = Counter(tr["world_id"] for tr in doc["tracks"] if tr.get("track_lifecycle") != "LOST")
+        marks = split_marks(doc["tracks"])
         for tr in doc["tracks"]:
             wid, rev = tr["world_id"], tr["identity_revision"]
             if wid not in active or wid_counts[wid] > 1:
                 continue
-            state = self.people.setdefault(wid, PersonState(rev))
+            aliases = tuple(tr.get("aliases") or ())
+            split_from = tr.get("split_from")
+            state = self.people.setdefault(wid, PersonState(rev, aliases=aliases, split_from=split_from))
             with self._state_lock:
                 if state.revision != rev:
-                    state.revision, state.stable, state.samples = rev, 0, []
-                    state.shape_frozen = False
-                    state.pending_glb = None
-                    state.pending_version = None
-                    state.pending_target_frozen = False
-                    state.pending_frames_used = 0
-                    state.generation += 1
+                    absorbed = pure_merge_absorbed(wid, state.revision, state.aliases, state.split_from,
+                                                   rev, aliases, split_from, marks)
+                    if absorbed is not None:
+                        # 순수 병합: 같은 사람이다. 표본·자산·굽는 중인 메시를 잇고 차수만 따른다(다시 굽지 않음).
+                        # 안정 수만 0 으로 둬 다시 안정될 때까지(30 프레임) 외형 누적·체형 확정을 멈춘다(명세 20.4)
+                        state.revision, state.stable = rev, 0
+                        for gone in absorbed:
+                            self.people.pop(gone, None)
+                        self.identity_events["merge_carried"] += 1
+                        if state.asset is not None:
+                            self.identity_events["merge_asset_kept"] += 1
+                    else:
+                        state.revision, state.stable, state.samples = rev, 0, []
+                        state.revision_base = rev
+                        state.shape_frozen = False
+                        state.pending_glb = None
+                        state.pending_version = None
+                        state.pending_target_frozen = False
+                        state.pending_frames_used = 0
+                        state.generation += 1
+                        self.identity_events["revision_reset"] += 1
+                    state.aliases, state.split_from = aliases, split_from
             if (
                 tr["identity_confidence"] == "IDENTITY_UNCERTAIN"
                 or tr.get("avatar_update_hold", False)
@@ -370,16 +410,12 @@ class AvatarLoop:
             if person.root_rotation is None or person.joint_rotations is None:
                 continue
             state = self.people[person.world_id]
-            needs_bake = (
-                state.asset is None
-                or state.asset["identity_revision"] != state.revision
-                or not state.shape_frozen
-            )
+            needs_bake = not asset_current(state) or not state.shape_frozen
             if needs_bake:
                 if state.pending_glb is None:
                     state.samples.append(bodies[(person.world_id, person.representative_camera)])
                     state.samples = state.samples[-self.freeze_frames:]
-                need_initial = state.asset is None or state.asset["identity_revision"] != state.revision
+                need_initial = not asset_current(state)
                 ready_final = (
                     not state.shape_frozen
                     and len(state.samples) >= self.freeze_frames
@@ -405,11 +441,7 @@ class AvatarLoop:
                         state.pending_version = self._reserve_version(state)
                     version = state.pending_version
                     uri = self._timed("upload", self._counted_upload, person.world_id, self.sender.epoch, version, glb)
-                    prev_same_rev = (
-                        state.asset
-                        if state.asset is not None and state.asset["identity_revision"] == state.revision
-                        else None
-                    )
+                    prev_same_rev = state.asset if asset_current(state) else None
                     asset = {"world_id": person.world_id, "stream_epoch": self.sender.epoch,
                              "identity_revision": state.revision, "appearance_version": version,
                              "previous_appearance_version": max(state.history) if state.history else None,

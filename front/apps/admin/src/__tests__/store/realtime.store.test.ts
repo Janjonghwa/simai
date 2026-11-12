@@ -3,9 +3,11 @@ import {
   HEALTH_TIMEOUT_MS,
   isLinkAlive,
   isWorldFresh,
+  selectTrackedCount,
   useRealtimeStore,
   WORLD_STALE_MS,
 } from '@/store/realtime.store';
+import type { WorldStatePayload } from '@simai/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -111,5 +113,16 @@ describe('isLinkAlive', () => {
     for (const phase of ['IDLE', 'CONNECTING', 'CLOSED'] as const) {
       expect(isLinkAlive({ phase, openedAt: T, health: health(T) }, T)).toBe(false);
     }
+  });
+});
+
+describe('selectTrackedCount', () => {
+  it('확정(CONFIRMED)·가림(OCCLUDED)만 세고 확정 전(TENTATIVE)·놓친(LOST) 트랙은 세지 않는다', () => {
+    const tracks = ['CONFIRMED', 'OCCLUDED', 'TENTATIVE', 'LOST', 'CONFIRMED'].map(
+      (track_lifecycle, i) => ({ world_id: `w-${i}`, track_lifecycle }),
+    );
+    const world = { receivedAt: T, payload: { tracks } as unknown as WorldStatePayload };
+    expect(selectTrackedCount({ world })).toBe(3);
+    expect(selectTrackedCount({ world: null })).toBe(0);
   });
 });
