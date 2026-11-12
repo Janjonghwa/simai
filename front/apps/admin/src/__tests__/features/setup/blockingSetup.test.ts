@@ -30,11 +30,13 @@ describe('isSetupSessionRunning', () => {
 });
 
 describe('isBlockedBySetupSession', () => {
-  it('새 세팅·작업 시작이 진행 중인 세팅 때문에 거절된 오류만 맞다', () => {
+  it('새 세팅이 진행 중인 세팅 때문에 거절된 오류만 맞다(작업 시작은 세팅 완료만 본다, -642)', () => {
     expect(isBlockedBySetupSession(new ApiError(409, { code: 'SETUP_ALREADY_IN_PROGRESS' }))).toBe(
       true,
     );
-    expect(isBlockedBySetupSession(new ApiError(409, { code: 'WORK_SETUP_NOT_READY' }))).toBe(true);
+    expect(isBlockedBySetupSession(new ApiError(409, { code: 'WORK_SETUP_NOT_COMPLETED' }))).toBe(
+      false,
+    );
     expect(isBlockedBySetupSession(new ApiError(409, { code: 'SETUP_ALREADY_COMPLETED' }))).toBe(
       false,
     );

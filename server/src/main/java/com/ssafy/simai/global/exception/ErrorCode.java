@@ -562,8 +562,9 @@ public sealed interface ErrorCode {
         WORK_DATE_PAST(HttpStatus.CONFLICT, "오늘 이전 날짜에는 작업을 새로 만들 수 없습니다"),
         WORK_NOT_TODAY(HttpStatus.CONFLICT, "작업 날짜가 오늘(Asia/Seoul)일 때만 할 수 있습니다"),
         WORK_NO_SIGNATURE(HttpStatus.CONFLICT, "작업을 시작하려면 참석자 서명이 1명 이상 있어야 합니다"),
-        // 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이면 시작하지 않는다(명세 3.2 5항, S15P31A101-624)
-        WORK_SETUP_NOT_READY(HttpStatus.CONFLICT, "현장 세팅이 미리보기 맵(구역 단계) 전이라 작업을 시작할 수 없습니다. 미리보기 맵이 나온 뒤 시작하세요");
+        // 이 작업의 세팅 완료(C17, work_unit.setup_completed_at) 전이면 시작하지 않는다(명세 16장 수정 54, S15P31A101-642).
+        // -624 의 현장 세팅 READY 전 거절(WORK_SETUP_NOT_READY)을 이 기준으로 합쳤다
+        WORK_SETUP_NOT_COMPLETED(HttpStatus.CONFLICT, "현장 세팅을 완료해야 작업을 시작할 수 있습니다. 세팅 화면에서 세팅 완료를 누른 뒤 시작하세요");
 
         private final HttpStatus status;
         private final String message;

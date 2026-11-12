@@ -10,7 +10,7 @@ import { api } from '@/lib/api';
 import { Button } from '@simai/ui/components/button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-// 현장을 막는 세팅(409 SETUP_ALREADY_IN_PROGRESS·WORK_SETUP_NOT_READY) 오류 글 옆에 두는 취소 단추.
+// 현장을 막는 세팅(409 SETUP_ALREADY_IN_PROGRESS) 오류 글 옆에 두는 취소 단추.
 // 막는 세션을 찾으면 「{M월 D일} 세팅 취소」 를 보이고, 확인한 뒤 취소하면 오류를 지워(onCancelled) 다시 시도할 수 있게 한다.
 // 못 찾으면(오래된 작업·맵 다시 굽기가 막는 경우 등) 아무것도 그리지 않는다.
 

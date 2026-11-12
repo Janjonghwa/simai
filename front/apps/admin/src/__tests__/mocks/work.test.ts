@@ -681,29 +681,36 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
     });
   });
 
-  it('같은 현장에 미리보기 맵(READY_FOR_ZONES) 전 세팅이 있으면 시작할 수 없다(WORK_SETUP_NOT_READY)', async () => {
-    const { work } = await readyToStart();
-    const other = startSession('9999'); // 다른 작업의 세팅이어도 같은 현장이다.
-    const blocked = { status: 409, code: WORK_ERROR.SETUP_NOT_READY };
-    for (const status of [
-      'COLLECTING_BACKGROUND',
-      'INITIAL_POSE_AND_WORLD',
-      'JOINT_BA_AND_VERIFY',
-      'PREVIEW_AND_VLM_DRAFT',
-    ] as const) {
-      other.status = status;
+  it('이 작업의 세팅을 완료하지 않으면 시작할 수 없다(WORK_SETUP_NOT_COMPLETED, 미리보기 맵만으로는 아니다)', async () => {
+    const work = await openToday();
+    const report = await latestOf(work.work_id);
+    await signReport(asAdmin, report.report_id, {
+      image: png(),
+      signerName: '박반장',
+      reportVersion: 1,
+    });
+    const blocked = { status: 409, code: WORK_ERROR.SETUP_NOT_COMPLETED };
+    expect(await failure(startWork(asAdmin, work.work_id))).toEqual(blocked);
+
+    const session = startSession(work.work_id);
+    for (const status of ['COLLECTING_BACKGROUND', 'READY_FOR_ZONES', 'BAKING_TEXTURE'] as const) {
+      session.status = status;
       expect(await failure(startWork(asAdmin, work.work_id))).toEqual(blocked);
     }
 
-    other.status = 'READY_FOR_ZONES';
+    finishSession(session); // 세팅 완료(-615): setup_completed_at_ms
     expect((await startWork(asAdmin, work.work_id)).status).toBe('IN_PROGRESS');
   });
 
-  it('시작 검사 순서: 예정 상태 → 오늘 날짜 → 서명 → 세팅 → 진행 중인 다른 작업', async () => {
+  it('시작 검사 순서: 예정 상태 → 오늘 날짜 → 세팅 완료 → 서명 → 진행 중인 다른 작업', async () => {
     const first = await openToday();
-    const setup = startSession('9999');
     const report = await latestOf(first.work_id);
-    // 서명이 없으면 세팅이 아직이어도 서명 오류가 먼저다.
+    // 세팅을 완료하지 않았으면 서명이 없어도 세팅 오류가 먼저다(세팅 → 작업 전 확인 → 시작).
+    expect(await failure(startWork(asAdmin, first.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.SETUP_NOT_COMPLETED,
+    });
+    mock.markSetupDone(first.work_id);
     expect(await failure(startWork(asAdmin, first.work_id))).toEqual({
       status: 409,
       code: WORK_ERROR.NO_SIGNATURE,
@@ -713,7 +720,6 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
       signerName: '박반장',
       reportVersion: 1,
     });
-    setup.status = 'READY_FOR_ZONES';
     await startWork(asAdmin, first.work_id);
 
     clock += 24 * 3_600_000;
@@ -729,13 +735,12 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
       signerName: '김일',
       reportVersion: 1,
     });
-    // 세팅이 아직이면 진행 중인 다른 작업이 있어도 세팅 오류가 먼저다.
-    setup.status = 'PREVIEW_AND_VLM_DRAFT';
+    // 세팅을 완료하지 않았으면 진행 중인 다른 작업이 있어도 세팅 오류가 먼저다.
     expect(await failure(startWork(asAdmin, next.work_id))).toEqual({
       status: 409,
-      code: WORK_ERROR.SETUP_NOT_READY,
+      code: WORK_ERROR.SETUP_NOT_COMPLETED,
     });
-    setup.status = 'COMPLETED';
+    mock.markSetupDone(next.work_id);
     expect(await failure(startWork(asAdmin, next.work_id))).toEqual({
       status: 409,
       code: WORK_ERROR.ALREADY_IN_PROGRESS,

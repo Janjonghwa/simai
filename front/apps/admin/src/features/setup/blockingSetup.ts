@@ -1,11 +1,12 @@
 import { requestSetupSession } from '@/features/setup/api';
 import type { SetupSessionResponse } from '@/features/setup/types';
-import { fetchWorkUnits, WORK_ERROR } from '@/features/work/api';
+import { fetchWorkUnits } from '@/features/work/api';
 import type { WorkDayItem } from '@/features/work/types';
 import { parseDateKey, toDateKey } from '@/features/work/workDay';
 import { ApiError, type Http } from '@/lib/http';
 
-// 멈춘 세팅 하나가 같은 현장의 새 세팅·작업 시작을 막을 때(409), 막는 세션을 작업 목록에서 찾아 취소할 수 있게 한다.
+// 멈춘 세팅 하나가 같은 현장의 새 세팅을 막을 때(409), 막는 세션을 작업 목록에서 찾아 취소할 수 있게 한다.
+// 작업 시작은 그 작업의 세팅 완료만 본다(409 WORK_SETUP_NOT_COMPLETED, -642). 다른 세팅이 막는 일은 세팅 시작 때만 생긴다.
 // 서버 409 본문에는 세션·작업 id 가 없다. 진행 중인 세션은 언제나 자기 작업의 active_setup_session_id 라서 그 값을 모아 세션을 조회한다.
 
 export const BLOCKING_SETUP_KEY = ['setup', 'blocking-session'] as const;
@@ -13,11 +14,8 @@ export const BLOCKING_SETUP_KEY = ['setup', 'blocking-session'] as const;
 /** 오늘부터 이만큼 전 날짜까지 작업을 훑는다(서버 작업 목록은 한 번에 92일까지 준다). */
 export const BLOCKING_SETUP_LOOKBACK_DAYS = 90;
 
-/** 현장의 새 세팅(SETUP_ALREADY_IN_PROGRESS)·작업 시작(WORK_SETUP_NOT_READY)을 막는 오류 코드. */
-const BLOCKED_BY_SETUP_CODES: ReadonlySet<string> = new Set([
-  'SETUP_ALREADY_IN_PROGRESS',
-  WORK_ERROR.SETUP_NOT_READY,
-]);
+/** 현장의 새 세팅을 막는 오류 코드(SETUP_ALREADY_IN_PROGRESS). */
+const BLOCKED_BY_SETUP_CODES: ReadonlySet<string> = new Set(['SETUP_ALREADY_IN_PROGRESS']);
 
 /** 세팅 세션이 아직 끝나지 않았다(완료·실패가 아니다). 취소할 수 있고 현장의 새 세팅을 막는다. */
 export function isSetupSessionRunning(session: SetupSessionResponse | null): boolean {

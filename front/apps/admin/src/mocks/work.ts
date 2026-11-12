@@ -29,7 +29,7 @@ import { http, HttpResponse } from 'msw/http';
 //   SETUP       그 작업의 세팅 세션이 있고 아직 끝나지 않았다(setupSessions 에서 읽는다)
 //   SETUP_DONE  세팅이 끝났다: 세팅 완료(POST .../complete, -615)로 setup_completed_at_ms 가 찍혔거나, markSetupDone 을 불렀다
 //               → 보고서 draft_status 가 GENERATING(draftDelayMs, 기본 2.5초) → SUCCEEDED 로 바뀌며 빈 칸이 채워진다
-//   IN_PROGRESS POST /start 뒤(날짜가 오늘이고 서명이 있을 때만)
+//   IN_PROGRESS POST /start 뒤(날짜가 오늘이고 세팅을 완료했고(-642) 서명이 있을 때만)
 //   ENDED       POST /end 뒤(새 판 없이 같은 보고서: wrap_up_status 가 GENERATING → draftDelayMs 뒤 SUCCEEDED, 그때 review.ending 이 비어 있으면
 //               종료 문장으로 채우고 form_revision+1. 서버 B10 의 날짜 작업 종료 미팅이다)
 //   SUBMITTED   POST /submit 뒤(작업이 ENDED 이고 초안·종료 미팅 채우기가 끝났을 때만, 이후 양식 수정·서명은 409 REPORT_LOCKED)
@@ -85,13 +85,6 @@ const RISK_BY_KIND: Partial<Record<DraftZone['kind'], { risk: string; measure: s
   EDGE: { risk: '바닥 가장자리 추락', measure: '임시 난간 설치, 접근 금지선' },
 };
 const OPENING_CHECK_ACTION = '덮개 설치 전까지 접근 통제';
-/** 서버가 작업 시작을 막는 세팅 단계: 미리보기 맵(READY_FOR_ZONES) 전이다(409 WORK_SETUP_NOT_READY, -624). */
-const SETUP_BEFORE_PREVIEW_MAP: readonly string[] = [
-  'COLLECTING_BACKGROUND',
-  'INITIAL_POSE_AND_WORLD',
-  'JOINT_BA_AND_VERIFY',
-  'PREVIEW_AND_VLM_DRAFT',
-];
 /** 서명자 역할: 참석자(작업 전 확인)와 결재자(서버는 받지만 화면은 쓰지 않는다). */
 const SIGNER_ROLES = ['PARTICIPANT', 'APPROVER'] as const;
 type SignerRole = (typeof SIGNER_ROLES)[number];
@@ -358,9 +351,6 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     signaturesOf(reportId).filter((s) => s.signer_role === 'PARTICIPANT');
   const sessionsOf = (work: MockWork) =>
     [...(options.setupSessions?.() ?? [])].filter((s) => String(s.work_unit_id) === work.work_id);
-  /** 같은 현장에 미리보기 맵 전인 세팅이 있는가(서버는 현장 단위로 본다). */
-  const hasSetupBeforePreviewMap = () =>
-    [...(options.setupSessions?.() ?? [])].some((s) => SETUP_BEFORE_PREVIEW_MAP.includes(s.status));
 
   // ── 상태 계산 ──────────────────────────────────────────────────────────────
 
@@ -722,7 +712,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       return HttpResponse.json(work ? viewWork(work) : past!.item);
     }),
 
-    // 작업 시작(서버 startSession 의 검사 순서): 예정(PLANNED) 상태 → 오늘 날짜 → 참석자 서명 1명 이상 → 미리보기 맵 전 세팅 없음
+    // 작업 시작(서버 startSession 의 검사 순서): 예정(PLANNED) 상태 → 오늘 날짜 → 이 작업의 세팅 완료(-642) → 참석자 서명 1명 이상
     // → 진행 중인 다른 작업 없음.
     http.post('*/api/work-units/:id/start', ({ request, params }) => {
       const work = dailyOf(String(params.id ?? ''));
@@ -733,14 +723,15 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         return problem(409, WORK_ERROR.INVALID_STATE, '이미 시작했거나 끝난 작업입니다');
       if (work.date !== todayKey())
         return problem(409, WORK_ERROR.NOT_TODAY, '작업 날짜에 시작할 수 있어요');
-      if (participantsOf(work.report.report_id).length < 1)
-        return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
-      if (hasSetupBeforePreviewMap())
+      syncSetup(work);
+      if (work.setupDoneAt === null)
         return problem(
           409,
-          WORK_ERROR.SETUP_NOT_READY,
-          '현장 세팅이 미리보기 맵 단계 전이라 작업을 시작할 수 없습니다',
+          WORK_ERROR.SETUP_NOT_COMPLETED,
+          '현장 세팅을 완료해야 작업을 시작할 수 있습니다',
         );
+      if (participantsOf(work.report.report_id).length < 1)
+        return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
       const active = works.find((w) => w.status === 'IN_PROGRESS');
       if (active) return problem(409, WORK_ERROR.ALREADY_IN_PROGRESS, active.name);
       work.status = 'IN_PROGRESS';

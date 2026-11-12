@@ -1,5 +1,4 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
-import { createSetupSession } from '@/features/setup/api';
 import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/viewer3d';
 import {
   deleteSignature,
@@ -13,7 +12,6 @@ import type { DayProgress, WorkDayItem } from '@/features/work/types';
 import { useWorkActionState, WorkActionProvider } from '@/features/work/WorkActionContext';
 import { api } from '@/lib/api';
 import { sceneHandlers } from '@/mocks/scenes';
-import { createSetupMock } from '@/mocks/setup';
 import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock, type WorkMock } from '@/mocks/work';
 import { createZonesMock } from '@/mocks/zones';
@@ -152,21 +150,28 @@ function ActionBar() {
   );
 }
 
-function renderStage(day: WorkDayItem) {
+function renderStage(day: WorkDayItem, onBackToSetup?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <WorkActionProvider>
-        <PreflightStage day={day} date={TODAY} todayKey={TODAY} onNext={vi.fn()} />
+        <PreflightStage
+          day={day}
+          date={TODAY}
+          todayKey={TODAY}
+          onNext={vi.fn()}
+          onBackToSetup={onBackToSetup}
+        />
         <ActionBar />
       </WorkActionProvider>
     </QueryClientProvider>,
   );
 }
 
-/** 오늘의 하루 작업을 서버 목에 만들어 화면에 넘길 작업 항목으로 돌려준다. */
+/** 오늘의 하루 작업을 서버 목에 만들고 세팅을 완료해(작업 시작 조건, -642) 화면에 넘길 작업 항목으로 돌려준다. */
 async function openToday(): Promise<WorkDayItem> {
   const created = await putDailyWorkUnit(api, TODAY);
+  workMock.markSetupDone(created.work_id);
   return workDayOf({ ...created, progress: 'SETUP_DONE' });
 }
 
@@ -406,6 +411,44 @@ describe('PreflightStage 서명·시작', () => {
     );
   }, 30_000);
 
+  it('세팅 완료 전(progress SETUP)이면 작업 시작을 끄고 안내와 세팅으로 단추를 보인다', async () => {
+    const created = await putDailyWorkUnit(api, TODAY);
+    const onBackToSetup = vi.fn();
+    renderStage(workDayOf({ ...created, progress: 'SETUP' }), onBackToSetup);
+    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    const dialog = await screen.findByRole('dialog', { name: '작업 전 확인' });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'TBM 보고서를 확인했습니다' }));
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '가상 레이아웃을 확인했습니다' }));
+    expect(
+      (within(dialog).getByRole('button', { name: '작업 시작' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(within(dialog).getByRole('alert').textContent).toBe(
+      '세팅을 완료해야 시작할 수 있습니다',
+    );
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '세팅으로' }));
+    expect(onBackToSetup).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull());
+    expect(requests.filter((r) => r.endsWith('/start'))).toEqual([]);
+  }, 30_000);
+
+  it('서버가 세팅 완료 전이라고 거절하면(409 WORK_SETUP_NOT_COMPLETED) 같은 안내와 세팅으로 단추를 보인다', async () => {
+    const created = await putDailyWorkUnit(api, TODAY);
+    // 화면은 세팅 완료(SETUP_DONE)로 알고 있지만 서버에는 완료 기록이 없다
+    const day = workDayOf({ ...created, progress: 'SETUP_DONE' });
+    const onBackToSetup = vi.fn();
+    renderStage(day, onBackToSetup);
+    await signAs('박반장');
+
+    const dialog = await openConfirmAndCheck();
+    fireEvent.click(within(dialog).getByRole('button', { name: '작업 시작' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(
+      '세팅을 완료해야 시작할 수 있습니다',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: '세팅으로' }));
+    expect(onBackToSetup).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
   it('시작 실패 안내는 확인창을 닫았다 다시 열면 사라진다', async () => {
     const day = await openToday();
     renderStage(day);
@@ -420,56 +463,5 @@ describe('PreflightStage 서명·시작', () => {
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     const reopened = await screen.findByRole('dialog', { name: '작업 전 확인' });
     expect(within(reopened).queryByRole('alert')).toBeNull();
-  }, 30_000);
-
-  it('멈춘 세팅이 작업 시작을 막으면 그 세팅 취소 단추가 안내 옆에 뜨고, 취소하면 다시 시작할 수 있다', async () => {
-    const setupMock = createSetupMock({ now: () => clock });
-    workMock = createWorkMock({
-      now: () => clock,
-      setupSessions: () => setupMock.sessions.values(),
-    });
-    server.use(...workMock.handlers, ...setupMock.handlers);
-    const day = await openToday();
-    const stuck = await createSetupSession(api, {
-      work_unit_id: Number(day.work_id),
-      camera_heights_m: { cam1: 2.25, cam2: 2.3, cam3: 2.2, cam4: 2.35 },
-    });
-    // 서버 목록 대역: 막는 세션이 이 작업에 걸려 있다.
-    server.use(
-      http.get('*/api/work-units', ({ request }) =>
-        new URL(request.url).searchParams.has('from')
-          ? HttpResponse.json({
-              works: [
-                workDayOf({
-                  work_id: day.work_id,
-                  date: TODAY,
-                  active_setup_session_id: stuck.setup_session_id,
-                }),
-              ],
-            })
-          : undefined,
-      ),
-    );
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
-    renderStage(day);
-    await signAs('박반장');
-    const dialog = await openConfirmAndCheck();
-    fireEvent.click(within(dialog).getByRole('button', { name: '작업 시작' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe(
-      '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작하거나, 세팅이 멈췄다면 세팅을 취소하세요',
-    );
-
-    fireEvent.click(await within(dialog).findByRole('button', { name: '11월 11일 세팅 취소' }));
-    expect(confirmSpy).toHaveBeenCalledWith(
-      '11월 11일 작업의 세팅을 취소할까요? 취소하면 그 세팅은 처음부터 다시 해야 합니다.',
-    );
-    await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull());
-    expect(setupMock.sessions.get(stuck.setup_session_id)?.failure_code).toBe('CANCELLED_BY_ADMIN');
-
-    fireEvent.click(within(dialog).getByRole('button', { name: '작업 시작' }));
-    await waitFor(async () =>
-      expect((await fetchWorkUnit(api, day.work_id)).progress).toBe('IN_PROGRESS'),
-    );
   }, 30_000);
 });

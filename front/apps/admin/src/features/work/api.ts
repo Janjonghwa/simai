@@ -36,7 +36,7 @@ const enc = encodeURIComponent;
 
 /**
  * 화면이 구분해서 안내해야 하는 서버 오류 코드(ProblemDetail 의 code).
- * 이름은 서버 구현(ErrorCode.Work·Report, -610·-611·-624)과 같다.
+ * 이름은 서버 구현(ErrorCode.Work·Report, -610·-611·-624·-642)과 같다.
  */
 export const WORK_ERROR = {
   /** 날짜가 오늘이 아닌 작업은 시작할 수 없다(409, -610). */
@@ -49,8 +49,8 @@ export const WORK_ERROR = {
   ALREADY_IN_PROGRESS: 'WORK_ALREADY_IN_PROGRESS',
   /** 참석자 서명이 한 명도 없어 작업을 시작할 수 없다(409, -610). */
   NO_SIGNATURE: 'WORK_NO_SIGNATURE',
-  /** 현장 세팅이 미리보기 맵(READY_FOR_ZONES) 전이라 작업을 시작할 수 없다(409, -624). */
-  SETUP_NOT_READY: 'WORK_SETUP_NOT_READY',
+  /** 이 작업의 세팅 완료(work_unit.setup_completed_at) 전이라 작업을 시작할 수 없다(409, -642. -624 의 WORK_SETUP_NOT_READY 를 합쳤다). */
+  SETUP_NOT_COMPLETED: 'WORK_SETUP_NOT_COMPLETED',
   /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제·제출이 막힌다. */
   REPORT_LOCKED: 'REPORT_LOCKED',
   /** 다른 곳에서 먼저 양식을 고쳤다(409). 다시 불러와야 한다. */
@@ -119,8 +119,8 @@ export function fetchWorkUnit(http: Http, workId: string, signal?: AbortSignal) 
 }
 
 /**
- * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 서명이 없으면 409 WORK_NO_SIGNATURE,
- * 현장 세팅이 미리보기 맵 전이면 409 WORK_SETUP_NOT_READY.
+ * 작업 시작. 날짜가 오늘이 아니면 409 WORK_NOT_TODAY, 세팅을 완료하지 않았으면 409 WORK_SETUP_NOT_COMPLETED,
+ * 서명이 없으면 409 WORK_NO_SIGNATURE(서버 검사 순서).
  */
 export function startWork(http: Http, workId: string) {
   return http(`/api/work-units/${enc(workId)}/start`, {

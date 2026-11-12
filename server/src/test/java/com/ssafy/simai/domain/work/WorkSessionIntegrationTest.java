@@ -199,6 +199,23 @@ class WorkSessionIntegrationTest {
     }
 
     @Test
+    void 세팅_완료_전에는_시작하지_않고_완료_뒤에_시작한다() throws Exception {
+        // S15P31A101-642: 새 맵·보정·구역은 세팅 완료(C17) 때 관제에 들어간다. 완료 전 시작은 이전 맵으로 관제하므로 막는다
+        long work = work(zone);
+        jdbc.update("UPDATE work_unit SET setup_completed_at = NULL WHERE work_id = ?", work);
+        Integer bundlesBefore = jdbc.queryForObject("SELECT count(*) FROM config_bundle", Integer.class);
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_COMPLETED"));
+        assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, work)).isEqualTo("PLANNED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle", Integer.class)).isEqualTo(bundlesBefore);
+
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", work);
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        end(work);
+    }
+
+    @Test
     void 시작과_종료는_관리자만_가능하고_없는_작업은_404다() throws Exception {
         long work = work(zone);
         String viewer = token("viewer", Role.VIEWER);
@@ -501,7 +518,10 @@ class WorkSessionIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(MAPPER.writeValueAsString(body)))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("PLANNED"))
                 .andExpect(jsonPath("$.actual_started_at").isEmpty()).andReturn().getResponse().getContentAsString();
-        return Long.parseLong(MAPPER.readTree(response).path("work_id").asString());
+        long id = Long.parseLong(MAPPER.readTree(response).path("work_id").asString());
+        // 작업 시작은 세팅 완료 뒤다(-642). 이 시험들은 세팅 뒤의 시작·종료를 보므로 세팅을 마친 작업으로 둔다
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", id);
+        return id;
     }
 
     private long report(long work, String state) {

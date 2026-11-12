@@ -548,23 +548,27 @@ class SetupSupplementIntegrationTest {
     }
 
     @Test
-    void 세팅이_미리보기_맵_전이면_작업을_시작하지_않고_READY_FOR_ZONES_뒤에는_시작한다() throws Exception {
-        // 명세 3.2 5항: 작업 시작은 미리보기 맵으로 관제를 시작하고 뒤쪽 굽기만 회수한다. READY 전 단계는 회수 대상이 아니다(-624 M5)
+    void 세팅을_완료해야_작업을_시작하고_미리보기_맵만_나온_세팅으로는_시작하지_않는다() throws Exception {
+        // -642: 작업 시작 기준은 이 작업의 세팅 완료(C17)다. 새 맵·보정·구역은 완료 때 관제에 들어가므로 READY 만으로는 이전 맵으로
+        // 관제한다. 완료는 READY_FOR_ZONES 뒤에만 되므로 -624 M5(READY 전 단계가 LIVE 중 GPU 를 씀)도 이 기준이 막는다
         seedCurrentCalibrationDocument();
         Session s = startSession(); // COLLECTING_BACKGROUND
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_READY"))
-                // 막고 있는 세션과 그 작업을 싣는다(다른 날짜 작업의 세션이어도 화면이 찾아가 취소한다, -641)
-                .andExpect(jsonPath("$.setup_session_id").value(s.sessionId()))
-                .andExpect(jsonPath("$.work_id").value(String.valueOf(workUnitId)));
+                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_COMPLETED"));
         assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, workUnitId))
                 .isEqualTo("PLANNED");
 
-        ready(s); // READY_FOR_ZONES: 미리보기 맵이 나왔다(현재 Scene 으로 켜는 일은 세팅 완료가 한다, -615)
+        ready(s); // READY_FOR_ZONES: 미리보기 맵이 나왔지만 아직 완료 전이다
+        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_COMPLETED"));
+
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        // 완료 뒤 아직 대여 중인 세팅(굽기)은 하트비트 신호로 워커가 회수한다(-597). 대기열 굽기 회수(-625)는 아래 시험이 본다
         jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
     }
 
@@ -592,6 +596,8 @@ class SetupSupplementIntegrationTest {
         mvc.perform(post("/api/work-units/{id}/end", workUnitId).with(adminJwt())).andExpect(status().is2xxSuccessful());
         leaseExpect(status().isNoContent());
         long next = plannedWork("-next");
+        // 다음 작업도 세팅을 마친 것으로 둔다(작업 시작은 그 작업의 세팅 완료 뒤다, -642)
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", next);
         mvc.perform(post("/api/work-units/{id}/start", next).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));

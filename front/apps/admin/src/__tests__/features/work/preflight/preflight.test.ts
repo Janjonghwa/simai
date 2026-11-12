@@ -11,6 +11,8 @@ import {
   addSignatureErrorMessage,
   deleteSignatureErrorMessage,
   draftErrorMessage,
+  isSetupRequiredError,
+  SETUP_REQUIRED_MESSAGE,
   SIGNER_LIMIT_MESSAGE,
   startErrorMessage,
 } from '@/features/work/preflight/preflightErrors';
@@ -114,9 +116,12 @@ describe('startErrorMessage', () => {
     expect(startErrorMessage(httpError(WORK_ERROR.INVALID_STATE))).toBe(
       '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.',
     );
-    expect(startErrorMessage(httpError(WORK_ERROR.SETUP_NOT_READY))).toBe(
-      '현장 세팅이 아직 진행 중이에요. 미리보기 맵이 나온 뒤 시작하거나, 세팅이 멈췄다면 세팅을 취소하세요',
+    expect(startErrorMessage(httpError(WORK_ERROR.SETUP_NOT_COMPLETED))).toBe(
+      SETUP_REQUIRED_MESSAGE,
     );
+    expect(SETUP_REQUIRED_MESSAGE).toBe('세팅을 완료해야 시작할 수 있습니다');
+    expect(isSetupRequiredError(httpError(WORK_ERROR.SETUP_NOT_COMPLETED))).toBe(true);
+    expect(isSetupRequiredError(httpError(WORK_ERROR.NO_SIGNATURE))).toBe(false);
     expect(startErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe('시작하지 못했어요');
     expect(startErrorMessage(new ApiError(0))).toBe('시작하지 못했어요');
     expect(startErrorMessage(new Error('x'))).toBe('시작하지 못했어요');

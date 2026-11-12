@@ -12,6 +12,8 @@ function Harness({
   pending = false,
   error = null,
   draftWarning = null,
+  setupCompleted = true,
+  onGoSetup,
   initial = NO_CHECKS,
   onSign = vi.fn(),
   onStart = vi.fn(),
@@ -21,6 +23,8 @@ function Harness({
   pending?: boolean;
   error?: string | null;
   draftWarning?: string | null;
+  setupCompleted?: boolean;
+  onGoSetup?: () => void;
   initial?: PreflightChecks;
   onSign?: () => void;
   onStart?: () => void;
@@ -35,6 +39,8 @@ function Harness({
       pending={pending}
       error={error}
       draftWarning={draftWarning}
+      setupCompleted={setupCompleted}
+      onGoSetup={onGoSetup}
       onSign={onSign}
       onStart={onStart}
       onCancel={onCancel}
@@ -68,6 +74,27 @@ describe('PreflightConfirmDialog', () => {
     // 체크를 하나 풀면 다시 꺼진다.
     fireEvent.click(checkReport());
     expect(start().disabled).toBe(true);
+  });
+
+  it('세팅 완료 전이면 체크·서명을 다 해도 작업 시작이 꺼지고 안내와 세팅으로 단추를 보인다(-642)', () => {
+    const onGoSetup = vi.fn();
+    render(
+      <Harness
+        signerCount={1}
+        setupCompleted={false}
+        onGoSetup={onGoSetup}
+        initial={{ reportChecked: true, layoutChecked: true }}
+      />,
+    );
+    expect(start().disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toBe('세팅을 완료해야 시작할 수 있습니다');
+    fireEvent.click(screen.getByRole('button', { name: '세팅으로' }));
+    expect(onGoSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it('세팅을 완료했으면 세팅으로 단추가 없다', () => {
+    render(<Harness signerCount={1} onGoSetup={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: '세팅으로' })).toBeNull();
   });
 
   it('체크를 다 해도 서명이 없으면 작업 시작은 꺼져 있다', () => {

@@ -37,6 +37,19 @@ export function stageOfProgress(progress: DayProgress): WorkStageId {
   }
 }
 
+/**
+ * 서버 진행 값의 진행 상태 글(날짜 화면 머리줄). 세팅 완료는 서버 work_unit.setup_completed_at 이 정하고(progress SETUP_DONE),
+ * 그때부터만 작업을 시작할 수 있다(서버 409 WORK_SETUP_NOT_COMPLETED, -642). 세팅 화면의 「세팅 완료」 카드도 같은 값을 본다.
+ */
+export const WORK_PHASE_LABELS: Record<DayProgress, string> = {
+  REPORT: '세팅 전',
+  SETUP: '세팅 중',
+  SETUP_DONE: '세팅 완료 · 시작 가능',
+  IN_PROGRESS: '관제 중',
+  ENDED: '끝남',
+  SUBMITTED: '끝남',
+};
+
 /** 단계 순서(0부터). 단계 줄에서 지난 단계(✓)·지금 단계를 가릴 때 쓴다. */
 export const stageIndexOf = (stage: WorkStageId): number => WORK_STAGE_IDS.indexOf(stage);
 

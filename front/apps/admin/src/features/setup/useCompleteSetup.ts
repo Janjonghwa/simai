@@ -45,10 +45,11 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
       setApplied(zones);
       queryClient.setQueryData(setupSessionKey(sessionId), view);
       void queryClient.invalidateQueries({ queryKey: setupSessionKey(sessionId) });
-      // 작업 관리의 진행(SETUP_DONE)·보고서 초안 상태를 다시 받는다
-      void queryClient.invalidateQueries({ queryKey: WORK_KEY });
-      // 관제가 보는 작업 목록(대기 화면 판정)도 15초 주기를 기다리지 않고 바로 다시 받는다
+      // 관제가 보는 작업 목록(대기 화면 판정)도 15초 주기를 기다리지 않고 바로 다시 받는다(-637)
       void queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
+      // 작업 관리의 진행(SETUP_DONE)·보고서 초안 상태를 다시 받는다. 돌려준 약속을 mutateAsync 가 기다리므로 완료(run)가 끝날 때
+      // 날짜 화면은 이미 SETUP_DONE 을 받아 작업 전 확인(작업 시작)으로 넘어가 있다(-642: 그 단계는 서버 progress 로만 연다)
+      return queryClient.invalidateQueries({ queryKey: WORK_KEY });
     },
     onError: (e, sessionId) => {
       setError(setupCompleteErrorMessage(e));

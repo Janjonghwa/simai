@@ -137,6 +137,21 @@ describe('WorkDayPage 머리줄', () => {
   });
 });
 
+describe('WorkDayPage 진행 상태(머리줄)', () => {
+  it.each([
+    ['REPORT', '세팅 전'],
+    ['SETUP', '세팅 중'],
+    ['SETUP_DONE', '세팅 완료 · 시작 가능'],
+    ['IN_PROGRESS', '관제 중'],
+    ['ENDED', '끝남'],
+    ['SUBMITTED', '끝남'],
+  ] as const)('서버 progress %s 는 %s 로 보인다', async (progress, label) => {
+    serverDay = { ...serverDay, progress };
+    renderDay();
+    await waitFor(() => expect(screen.getByTestId('work-phase').textContent).toBe(label));
+  });
+});
+
 describe('WorkDayPage 단계 선택', () => {
   it.each([
     ['REPORT', 'report-stage', 'TBM 보고서'],
@@ -181,8 +196,8 @@ describe('WorkDayPage 단계 선택', () => {
 });
 
 describe('WorkDayPage 다음(onNext)', () => {
-  it('서버 progress 가 아직 REPORT 여도 보고서 → 세팅 → 작업 전 확인으로 로컬에서 넘어간다', async () => {
-    renderDay();
+  it('서버 progress 가 아직 REPORT 여도 보고서 → 세팅은 로컬에서 넘어가지만, 작업 전 확인은 서버가 세팅 완료를 알린 뒤에만 연다', async () => {
+    const { client } = renderDay();
     await waitFor(() => expect(stageName()).toBe('report-stage'));
 
     fireEvent.click(screen.getByRole('button', { name: 'report-stage 다음' }));
@@ -190,8 +205,14 @@ describe('WorkDayPage 다음(onNext)', () => {
     expect(navState('TBM 보고서')).toBe('done');
     expect(navState('세팅')).toBe('current');
 
+    // 세팅 단계의 다음(onNext)은 단계를 옮기지 않는다: 작업 시작 단추가 있는 단계는 세팅 완료(setup_completed_at) 뒤다(-642)
     fireEvent.click(screen.getByRole('button', { name: 'setup-stage 다음' }));
-    expect(stageName()).toBe('preflight-stage');
+    expect(stageName()).toBe('setup-stage');
+    await serverMoves(client, 'SETUP');
+    expect(stageName()).toBe('setup-stage');
+
+    await serverMoves(client, 'SETUP_DONE');
+    await waitFor(() => expect(stageName()).toBe('preflight-stage'));
     expect(navState('세팅')).toBe('done');
     expect(navState('작업 전 확인')).toBe('current');
   });
