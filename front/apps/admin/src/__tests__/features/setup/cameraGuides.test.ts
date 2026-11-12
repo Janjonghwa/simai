@@ -112,10 +112,12 @@ describe('카메라 연결 요약과 신선도', () => {
   it('연결·확인 중·갈림 세 가지를 문구로 만든다', () => {
     expect(connectivitySummary(DB_IDS, 'CONNECTED', [DB_IDS], null)).toBe('4대 모두 연결');
     expect(connectivitySummary(DB_IDS, 'UNKNOWN', [DB_IDS], null)).toBe('연결 확인 중');
-    expect(connectivitySummary(DB_IDS, 'DISCONNECTED', split, null)).toBe('캠1·캠2 / 캠3·캠4 갈림');
+    expect(connectivitySummary(DB_IDS, 'DISCONNECTED', split, null)).toBe(
+      '카메라 1·카메라 2 / 카메라 3·카메라 4 갈림',
+    );
     expect(
       connectivitySummary(AI_IDS, 'DISCONNECTED', [['cam_A', 'cam_B', 'cam_C'], ['cam_D']], null),
-    ).toBe('캠1·캠2·캠3 / 캠4 갈림');
+    ).toBe('카메라 1·카메라 2·카메라 3 / 카메라 4 갈림');
   });
 
   it('연결된 카메라 수는 카메라 목록 길이를 센다', () => {
@@ -131,7 +133,7 @@ describe('카메라 연결 요약과 신선도', () => {
     expect(freshnessLabel(3400)).toBe('3초 전 확인');
     expect(connectivitySummary(DB_IDS, 'CONNECTED', [DB_IDS], 400)).toBe('4대 모두 연결 · 방금');
     expect(connectivitySummary(DB_IDS, 'DISCONNECTED', split, 2600)).toBe(
-      '캠1·캠2 / 캠3·캠4 갈림 · 2초 전 확인',
+      '카메라 1·카메라 2 / 카메라 3·카메라 4 갈림 · 2초 전 확인',
     );
   });
 });
@@ -145,18 +147,18 @@ describe('카메라 안내 문장과 영상 위 표시 값', () => {
     cameraGuideView(AI_IDS, guide('cam_B', ['cam_B', 'cam_C'], reason, direction, magnitude), []);
 
   it('방향과 크기로 문장을 만들고 쌍 이름을 괄호로 붙인다(카메라 이름은 넣지 않는다)', () => {
-    expect(view('RIGHT', 'MORE').text).toBe('오른쪽으로 더 돌려 주세요 (캠2–캠3)');
-    expect(view('LEFT', 'SMALL').text).toBe('왼쪽으로 조금 돌려 주세요 (캠2–캠3)');
+    expect(view('RIGHT', 'MORE').text).toBe('오른쪽으로 더 돌려 주세요 (카메라 2–카메라 3)');
+    expect(view('LEFT', 'SMALL').text).toBe('왼쪽으로 조금 돌려 주세요 (카메라 2–카메라 3)');
     // 받침 없는 방향(위·아래)은 '로', 받침 있는 방향(왼쪽·오른쪽)은 '으로'.
-    expect(view('UP', 'MORE').text).toBe('위로 더 돌려 주세요 (캠2–캠3)');
-    expect(view('DOWN', 'SMALL').text).toBe('아래로 조금 돌려 주세요 (캠2–캠3)');
-    expect(view('UP', 'NONE').text).toBe('위로 돌려 주세요 (캠2–캠3)');
+    expect(view('UP', 'MORE').text).toBe('위로 더 돌려 주세요 (카메라 2–카메라 3)');
+    expect(view('DOWN', 'SMALL').text).toBe('아래로 조금 돌려 주세요 (카메라 2–카메라 3)');
+    expect(view('UP', 'NONE').text).toBe('위로 돌려 주세요 (카메라 2–카메라 3)');
   });
 
   it('방향이 없거나 겹치는 곳 없음이면 각도 조정·무늬 있는 물건을 안내하고 꺾쇠는 그리지 않는다', () => {
     const none = view('NONE', 'NONE', 'NO_OVERLAP_VISIBLE');
     expect(none.text).toBe(
-      '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (캠2–캠3)',
+      '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (카메라 2–카메라 3)',
     );
     expect(none.direction).toBe('NONE');
     // 서버가 방향을 같이 줘도 겹치는 곳이 없다는 안내와 모순되는 꺾쇠는 그리지 않는다.
@@ -173,10 +175,10 @@ describe('카메라 안내 문장과 영상 위 표시 값', () => {
     const pairs = [pair('cam_B', 'cam_C', 'WEAK', centroids)];
     const asA = cameraGuideView(AI_IDS, guide('cam_B', ['cam_B', 'cam_C']), pairs);
     expect(asA.spot).toEqual([0.7, 0.5]);
-    expect(asA.neighborLabel).toBe('캠3');
+    expect(asA.neighborLabel).toBe('카메라 3');
     const asB = cameraGuideView(AI_IDS, guide('cam_C', ['cam_C', 'cam_B']), pairs);
     expect(asB.spot).toEqual([0.2, 0.4]);
-    expect(asB.neighborLabel).toBe('캠2');
+    expect(asB.neighborLabel).toBe('카메라 2');
     expect(view('RIGHT', 'SMALL').spot).toBeNull();
   });
 });

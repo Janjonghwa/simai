@@ -151,9 +151,9 @@ describe('R9 해소 원인', () => {
     expect(incidentTimeline(incident!, bundles).at(-1)).toEqual({
       at: T + 5_000,
       who: '시스템',
-      text: '작업 중 안전모 미착용 작업 종료로 해소',
+      text: '안전모 미착용 작업 종료로 해소',
     });
-    expect(incidentTimeline(incident!).at(-1)?.text).toBe('작업 중 안전모 미착용 해소');
+    expect(incidentTimeline(incident!).at(-1)?.text).toBe('안전모 미착용 해소');
   });
 
   it('해소된 LIVE R9 가 있을 때만 묶음 목록이 필요하다', () => {
@@ -226,7 +226,7 @@ describe('R11 조끼 요구와 해소', () => {
       mergeEvent(undefined, { ...event, config_version: 'cfg-1' }),
     ]);
     expect(incidentTimeline(incident!, bundles).at(-1)?.text).toBe(
-      '작업 중 조끼 미착용 조끼 요구 미수신으로 해소',
+      '조끼 미착용 조끼 요구 미수신으로 해소',
     );
   });
 });

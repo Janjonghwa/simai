@@ -5,6 +5,7 @@ import {
   type CalibratedCameraPose,
 } from '@/features/viewer3d';
 import { api } from '@/lib/api';
+import { useCameraOrderStore } from '@/lib/cameraNames';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
@@ -40,6 +41,7 @@ export function useCurrentCalibration() {
     queryFn: async ({ signal }): Promise<CurrentCalibrationResult> => {
       const raw = await requestCurrentCalibration(api, signal);
       const parsed = readCalibrationCameraPoses(raw);
+      useCameraOrderStore.getState().setCalibration(parsed.map((p) => p.cameraId));
       if (parsed.length === 0) {
         stablePosesRef.current = NO_CAMERA_POSES;
       } else if (!sameCalibratedCameraPoses(stablePosesRef.current, parsed)) {

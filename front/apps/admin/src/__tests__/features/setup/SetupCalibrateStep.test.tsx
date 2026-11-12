@@ -169,7 +169,9 @@ describe('보정·생성 실패 안내', () => {
     );
     const box = screen.getByRole('alert', { name: '세팅 실패 안내' });
     expect(box.textContent).toContain('카메라 정밀 보정 단계에서 멈췄어요');
-    expect(box.textContent).toContain('보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (캠1–캠2)');
+    expect(box.textContent).toContain(
+      '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 1–카메라 2)',
+    );
     expect(box.textContent).toContain(
       '카메라와 거치대를 단단히 고정하고 위치를 다시 맞춘 뒤 처음부터 다시 하세요.',
     );
@@ -206,7 +208,9 @@ describe('보정·생성 실패 안내', () => {
       }),
     );
     const box = within(screen.getByRole('alert', { name: '세팅 실패 안내' }));
-    expect(box.getByText('옆 카메라 캠1–캠2 사이에 같이 보이는 곳이 적어요')).toBeTruthy();
+    expect(
+      box.getByText('옆 카메라 카메라 1–카메라 2 사이에 같이 보이는 곳이 적어요'),
+    ).toBeTruthy();
     expect(box.queryByRole('button', { name: '다시 시도' })).toBeNull();
     expect(box.getAllByRole('button')).toHaveLength(1);
     fireEvent.click(box.getByRole('button', { name: '카메라 연결 관리로' }));
@@ -392,7 +396,7 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
     expect(screen.getByRole('alert', { name: '카메라 확인 문제' }).textContent).toContain('통과율');
     const failedRow = screen
       .getAllByRole('row')
-      .find((row) => row.textContent?.startsWith('캠2–캠3'))!;
+      .find((row) => row.textContent?.startsWith('카메라 2–카메라 3'))!;
     expect(failedRow.getAttribute('data-outcome')).toBe('fail');
     fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
     expect(onRecalibrate).toHaveBeenCalledOnce();

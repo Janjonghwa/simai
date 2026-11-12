@@ -127,7 +127,7 @@ describe('카메라 각도 표시', () => {
         }),
       },
       error: false,
-      expected: '오른쪽으로 조금 돌려 주세요 (캠1–캠2)',
+      expected: '오른쪽으로 조금 돌려 주세요 (카메라 1–카메라 2)',
     },
     {
       label: 'CONNECTED + 선택 보강만',
@@ -182,7 +182,7 @@ describe('카메라 각도 표시', () => {
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('보정이 실패할 수 있어요');
     expect(alert.textContent).toContain(
-      '캠2–캠3, 캠3–캠4 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요.',
+      '카메라 2–카메라 3, 카메라 3–카메라 4 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요.',
     );
     cleanup();
     render(<CameraPanel coverage={deriveStep1Coverage(fresh)} />);

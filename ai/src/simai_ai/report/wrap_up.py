@@ -8,20 +8,13 @@ import unicodedata
 from collections.abc import Callable
 from typing import Any
 
+from simai_ai.risk.names import RULE_DESCRIPTIONS, SEVERITY_LABELS
 from .llm import ChatClient, LlmConfigError, LlmError, LlmTimeout
 
 SEVERITIES = ("CRITICAL", "HIGH", "CAUTION", "INFO")
-# 관제 화면 features/events/constants.ts 의 SEVERITY_LABEL 과 같은 표기다.
-SEVERITY_LABELS = {"CRITICAL": "위험", "HIGH": "경고", "CAUTION": "주의", "INFO": "안내"}
 WORK_TYPES = frozenset(("SCAFFOLD_INSTALL", "OPENING_WORK", "HIGH_PLACE", "MATERIAL_HANDLING",
                         "EQUIPMENT_OP", "FLOOR_FINISHING", "GENERAL"))
 COUNT_FIELDS = ("event_count", "operator_ack_count", "operator_close_count", "outside_work_entry_count", "unacknowledged_critical_count")
-RULE_DESCRIPTIONS = {
-    "R1": "위험 구역 진입", "R2": "가장자리 근접", "R3": "고소 위치", "R4": "낙상 의심",
-    "R5": "진입 예측", "R6": "위험 구역 내 관측 상실", "R7": "구역 감시 능력 저하",
-    # 명세 7장 R8~R10, R11 조끼(-549). 이 사전에 없는 규칙이 오면 요청 전체를 거절해 대체 문장으로 간다.
-    "R8": "장비 근접", "R9": "안전모 미착용", "R10": "불확실 점유 근접", "R11": "조끼 미착용",
-}
 
 
 def validate_request(data: Any) -> dict[str, Any]:

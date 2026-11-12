@@ -12,6 +12,7 @@ import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { cssHex } from '@/features/viewer3d/palette';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
+import { useCameraNames } from '@/hooks/useCameraNames';
 import { Line } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import {
@@ -61,6 +62,7 @@ export function CameraLayer() {
   const selectedPersonId = useStore(viewerStore, (s) =>
     s.selected?.type === 'person' ? s.selected.id : null,
   );
+  const label = useCameraNames(cameraPoses.map((pose) => pose.cameraId));
   const inSessionEdit = useInSessionEdit(editStore);
   const inBoxEdit = Boolean(boxEditBinding?.boxEdit);
 
@@ -88,6 +90,7 @@ export function CameraLayer() {
           <CameraMarker
             key={pose.cameraId}
             pose={pose}
+            label={label(pose.cameraId)}
             highlighted={highlightedIds.has(pose.cameraId)}
           />
         ))}
@@ -95,7 +98,15 @@ export function CameraLayer() {
   );
 }
 
-function CameraMarker({ pose, highlighted }: { pose: CalibratedCameraPose; highlighted: boolean }) {
+function CameraMarker({
+  pose,
+  highlighted,
+  label,
+}: {
+  pose: CalibratedCameraPose;
+  highlighted: boolean;
+  label: string;
+}) {
   const onCameraClick = useContext(CameraClickContext);
   const palette = useScenePalette();
   const transform = useMemo(() => cameraMarkerTransform(pose), [pose]);
@@ -191,7 +202,7 @@ function CameraMarker({ pose, highlighted }: { pose: CalibratedCameraPose; highl
       position={transform.position}
       userData={{ cameraId: pose.cameraId, highlighted }}
     >
-      <LabelSprite text={pose.cameraId} y={0.28} height={0.22} color={labelColor} />
+      <LabelSprite text={label} y={0.28} height={0.22} color={labelColor} />
       <group name={`camera-rig:${pose.cameraId}`} quaternion={transform.quaternion}>
         {/* 카메라 본체 및 렌즈(클릭 시 CCTV 떠 있는 창을 연다). */}
         <mesh name={`camera-body:${pose.cameraId}`} position={[0, 0, -0.04]} onClick={handleClick}>

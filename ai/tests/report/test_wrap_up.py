@@ -59,7 +59,7 @@ def test_valid_numbers_are_kept_and_only_aggregates_enter_prompt():
 
 @pytest.mark.parametrize("bad", [
     lambda s: s.replace("위험 2건", "위험 1건").replace("경고 1건", "경고 2건"),
-    lambda s: s.replace("위험 구역 진입 2건", "위험 구역 진입 3건"),
+    lambda s: s.replace("위험구역 진입 2건", "위험구역 진입 3건"),
     lambda s: s + " 사망자 99명.",
     lambda s: s + " 확률 0.3%.",
     lambda s: s + " 사고 한건.",
@@ -251,9 +251,9 @@ def test_unknown_rule_is_rejected():
 def test_daily_style_with_multiple_rules_zones_and_unacknowledged_critical():
     text = (
         "작업 종료 미팅. 경보: 총 3건(위험 2건, 경고 1건), 최고 등급 위험. "
-        "주요 위험: 위험 구역 진입 2건, 가장자리 근접 1건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
+        "주요 위험: 위험구역 진입 2건, 추락 위험(가장자리) 1건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
         "조치: 운영자 확인 1건, 미확인 위험 경보 1건, 작업 외 진입 4건. 시간대: 초반 1건, 중반 1건, 후반 1건. "
-        "다음 작업 반영: 개구부 1 점검과 위험 구역 진입 예방 대책을 작업 전 TBM에 반영한다."
+        "다음 작업 반영: 개구부 1 점검과 위험구역 진입 예방 대책을 작업 전 TBM에 반영한다."
     )
     assert deterministic(REQUEST["facts"]) == text
     client = Client([text])
@@ -276,9 +276,9 @@ def test_sparse_counts_omit_zeroes_and_use_screen_labels(severity, label):
     validate_request(req)
     text = (
         f"작업 종료 미팅. 경보: 총 3건({label} 3건), 최고 등급 {label}. "
-        "주요 위험: 가장자리 근접 3건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
+        "주요 위험: 추락 위험(가장자리) 3건. 많이 발생한 구역: 개구부 1 2건, 개구부 2 1건. "
         "조치: 미확인 위험 경보 없음. 시간대: 초반 3건. "
-        "다음 작업 반영: 개구부 1 점검과 가장자리 근접 예방 대책을 작업 전 TBM에 반영한다."
+        "다음 작업 반영: 개구부 1 점검과 추락 위험(가장자리) 예방 대책을 작업 전 TBM에 반영한다."
     )
     assert deterministic(req["facts"]) == text
     assert numbers_match(text, req["facts"])
@@ -292,13 +292,13 @@ def test_follow_up_uses_most_frequent_rule_and_zone_and_keeps_positive_actions()
     req["facts"].update(rule_counts={"R1": 1, "R2": 2}, operator_close_count=2)
     validate_request(req)
     text = deterministic(req["facts"])
-    assert "주요 위험: 가장자리 근접 2건, 위험 구역 진입 1건" in text
-    assert "다음 작업 반영: 개구부 1 점검과 가장자리 근접 예방 대책" in text
+    assert "주요 위험: 추락 위험(가장자리) 2건, 위험구역 진입 1건" in text
+    assert "다음 작업 반영: 개구부 1 점검과 추락 위험(가장자리) 예방 대책" in text
     assert "운영자 종료 2건" in text and numbers_match(text, req["facts"])
     # 빈도가 같으면 규칙 번호로 결정해 입력 dict 순서에 흔들리지 않는다.
     req["facts"]["rule_counts"] = {"R10": 1, "R2": 1, "R1": 1}
     tied = deterministic(req["facts"])
-    assert "주요 위험: 위험 구역 진입 1건, 가장자리 근접 1건, 불확실 점유 근접 1건" in tied
+    assert "주요 위험: 위험구역 진입 1건, 추락 위험(가장자리) 1건, 불확실 점유 근접 1건" in tied
 
 
 def test_구역_없는_경보도_종료_미팅을_만든다():

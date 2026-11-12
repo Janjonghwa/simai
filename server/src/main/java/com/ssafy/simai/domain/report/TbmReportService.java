@@ -1,6 +1,8 @@
 package com.ssafy.simai.domain.report;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.rule.RuleCatalog;
+import com.ssafy.simai.domain.rule.SeverityNames;
 import com.ssafy.simai.domain.report.RiskEngineReportClient.EngineCallException;
 import com.ssafy.simai.domain.report.TbmReportRepository.ActiveRules;
 import com.ssafy.simai.domain.report.TbmReportRepository.GeneratingStart;
@@ -184,14 +186,7 @@ public class TbmReportService implements DisposableBean {
      * 이름표 붙은 짧은 문장, 0건 항목 생략, 등급은 화면 한국어. 계약이 날짜·작업명을 넘기지 않아 머리말은 "작업 종료 미팅".
      */
     static String wrapUpFallback(JsonNode facts) {
-        var labels = java.util.Map.of("CRITICAL", "위험", "HIGH", "경고", "CAUTION", "주의", "INFO", "안내");
-        // risk-engine wrap_up.RULE_DESCRIPTIONS 와 같은 사전(명세 7장 R1~R10, R11 조끼 -549)
-        var descriptions = java.util.Map.ofEntries(java.util.Map.entry("R1", "위험 구역 진입"),
-                java.util.Map.entry("R2", "가장자리 근접"), java.util.Map.entry("R3", "고소 위치"),
-                java.util.Map.entry("R4", "낙상 의심"), java.util.Map.entry("R5", "진입 예측"),
-                java.util.Map.entry("R6", "위험 구역 내 관측 상실"), java.util.Map.entry("R7", "구역 감시 능력 저하"),
-                java.util.Map.entry("R8", "장비 근접"), java.util.Map.entry("R9", "안전모 미착용"),
-                java.util.Map.entry("R10", "불확실 점유 근접"), java.util.Map.entry("R11", "조끼 미착용"));
+        var labels = SeverityNames.LABELS;
         List<String> clauses = new java.util.ArrayList<>(List.of("작업 종료 미팅"));
         long total = facts.path("event_count").asLong();
         if (total == 0) {
@@ -220,7 +215,7 @@ public class TbmReportService implements DisposableBean {
                 ? Integer.compare(ruleNo(a.getKey()), ruleNo(b.getKey())) : Long.compare(b.getValue(), a.getValue()));
         List<String> ruleText = new java.util.ArrayList<>();
         for (var r : rules) {
-            ruleText.add(descriptions.getOrDefault(r.getKey(), r.getKey()) + " " + r.getValue() + "건");
+            ruleText.add(RuleCatalog.titleOf(r.getKey()) + " " + r.getValue() + "건");
         }
         if (!ruleText.isEmpty()) {
             clauses.add("주요 위험: " + String.join(", ", ruleText));
@@ -262,7 +257,7 @@ public class TbmReportService implements DisposableBean {
         if (!rules.isEmpty()) {
             String where = facts.path("top_zones").isEmpty() ? ""
                     : facts.path("top_zones").get(0).path("name").asString() + " 점검과 ";
-            clauses.add("다음 작업 반영: " + where + descriptions.getOrDefault(rules.get(0).getKey(), rules.get(0).getKey())
+            clauses.add("다음 작업 반영: " + where + RuleCatalog.titleOf(rules.get(0).getKey())
                     + " 예방 대책을 작업 전 TBM에 반영한다");
         }
         return String.join(". ", clauses) + ".";

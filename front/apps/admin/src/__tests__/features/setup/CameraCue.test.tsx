@@ -18,10 +18,10 @@ afterEach(() => {
 });
 
 const guideView = (patch: Partial<CameraGuideView>): CameraGuideView => ({
-  text: '오른쪽으로 더 돌려 주세요 (캠2–캠3)',
+  text: '오른쪽으로 더 돌려 주세요 (카메라 2–카메라 3)',
   direction: 'RIGHT',
   magnitude: 'MORE',
-  neighborLabel: '캠3',
+  neighborLabel: '카메라 3',
   spot: null,
   ...patch,
 });
@@ -46,7 +46,7 @@ describe('카메라 영상 위 방향 안내', () => {
   it('같이 보는 곳은 영상 사각형 안의 비율 위치에 동그라미와 이웃 카메라 이름으로 둔다', () => {
     render(<CameraCue guide={guideView({ spot: [0.25, 0.6] })} aspect={4 / 3} />);
     const spot = screen.getByTestId('camera-cue-spot');
-    expect(spot.textContent).toBe('캠3');
+    expect(spot.textContent).toBe('카메라 3');
     expect(spot.style.left).toBe('25%');
     expect(spot.style.top).toBe('60%');
     // 위치를 잡는 틀은 영상이 그려지는 비율의 사각형이다.
@@ -107,7 +107,7 @@ describe('카메라 영상 칸의 방향 안내', () => {
     const tile = screen.getByLabelText('카메라 3 영상').parentElement!;
     expect(within(tile).getByTestId('camera-cue-arrow')).toBe(arrows[0]);
     const spot = within(tile).getByTestId('camera-cue-spot');
-    expect(spot.textContent).toBe('캠4');
+    expect(spot.textContent).toBe('카메라 4');
     expect(spot.style.left).toBe('79%');
     expect(spot.style.top).toBe('62%');
     expect(within(tile).getByText('카메라 3')).toBeTruthy();

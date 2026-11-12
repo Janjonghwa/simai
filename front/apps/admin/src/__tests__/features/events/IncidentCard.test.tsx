@@ -89,7 +89,7 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry()]);
 
     expect(within(card).getByText('위험')).toBeTruthy();
-    expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
+    expect(within(card).getByText('추락 위험(가장자리) · 개구부 구역')).toBeTruthy();
     expect(card.textContent).not.toMatch(/z-\d/);
     const chip = card.querySelector('[data-chip]');
     expect(chip?.getAttribute('data-chip')).toBe('unacked');
@@ -126,11 +126,11 @@ describe('IncidentCard', () => {
     expect(card.textContent).not.toContain('mw8y3hai');
   });
 
-  it('R1 주의 묶음은 규칙 이름을 위험 구역 근접으로 보인다', () => {
+  it('R1 주의 묶음은 규칙 이름을 위험구역 진입으로 보인다', () => {
     const { card } = renderCard([entry({ rule_id: 'R1', severity: 'CAUTION', zone_id: 'z-04' })]);
 
-    expect(within(card).getByText('위험 구역 근접 · 개구부 구역')).toBeTruthy();
-    expect(card.textContent).not.toContain('위험 구역 진입');
+    expect(within(card).getByText('위험구역 진입 · 개구부 구역')).toBeTruthy();
+    expect(card.textContent).not.toContain('위험 구역 근접');
   });
 
   it('개구부 수치와 나머지 규칙·구역은 카드에 없다(상세에만 있다)', () => {
@@ -142,7 +142,7 @@ describe('IncidentCard', () => {
     expect(card.textContent).not.toContain('0.82');
     expect(card.textContent).not.toContain('높이 차');
     // 대표 규칙(가장 높은 등급)과 그 구역만 보이고 나머지 규칙 이름·구역은 없다.
-    expect(within(card).queryByText('위험 구역 진입')).toBeNull();
+    expect(within(card).queryByText('위험구역 진입')).toBeNull();
     expect(card.textContent).not.toContain('단상 구역');
     expect(card.textContent).not.toMatch(/z-\d/);
     expect(card.querySelectorAll('li')).toHaveLength(0);
@@ -153,7 +153,7 @@ describe('IncidentCard', () => {
     const name = within(card).getByText('개구부 구역');
     expect(name.className).toBe('text-sm');
     expect(name.getAttribute('title')).toBeNull();
-    expect(within(card).getByText('개구부·가장자리 근접')).toBeTruthy();
+    expect(within(card).getByText('추락 위험(가장자리)')).toBeTruthy();
     expect(card.textContent).not.toMatch(/z-\d/);
     cleanup();
 
@@ -162,7 +162,7 @@ describe('IncidentCard', () => {
     expect(unknown.textContent).not.toContain('z-99');
   });
 
-  it('진입 예측만 셋째 줄에 N초 뒤 진입 예상을 보인다', () => {
+  it('위험구역 접근만 셋째 줄에 N초 뒤 진입 예상을 보인다', () => {
     const { card } = renderCard([
       entry({
         rule_id: 'R5',
@@ -177,14 +177,14 @@ describe('IncidentCard', () => {
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
-  it('작업 중 안전모 미착용(R9)은 구역 없이 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
+  it('안전모 미착용(R9)은 구역 없이 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
     // R9 는 사람 단위라 zone_id 가 없다(-519).
     const { card } = renderCard([
       entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {}, zone_id: null }),
     ]);
 
     expect(within(card).getByText('주의')).toBeTruthy();
-    expect(within(card).getByText('작업 중 안전모 미착용')).toBeTruthy();
+    expect(within(card).getByText('안전모 미착용')).toBeTruthy();
     expect(card.textContent).not.toMatch(/구역/);
     expect(card.querySelector('[data-chip]')).toBeNull();
   });

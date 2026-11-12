@@ -41,18 +41,18 @@ describe('deriveCameraCheckView', () => {
       CAMS,
     );
     expect(view.pairs.map((p) => p.label)).toEqual([
-      '캠1–캠2',
-      '캠1–캠3',
-      '캠1–캠4',
-      '캠2–캠3',
-      '캠2–캠4',
-      '캠3–캠4',
+      '카메라 1–카메라 2',
+      '카메라 1–카메라 3',
+      '카메라 1–카메라 4',
+      '카메라 2–카메라 3',
+      '카메라 2–카메라 4',
+      '카메라 3–카메라 4',
     ]);
-    const da = view.pairs.find((p) => p.label === '캠1–캠4')!;
+    const da = view.pairs.find((p) => p.label === '카메라 1–카메라 4')!;
     // 품질 게이트 키는 'cam_D-cam_A'(고리 순서)지만 camera_ids 로 맞춘다
     expect(da.holdoutMedianPx).toBeCloseTo(0.75);
     expect(da.outcome).toBe('pass');
-    const diagonal = view.pairs.find((p) => p.label === '캠1–캠3')!;
+    const diagonal = view.pairs.find((p) => p.label === '카메라 1–카메라 3')!;
     expect(diagonal.holdoutMedianPx).toBeNull();
     expect(diagonal.outcome).toBe('na');
     expect(view.passed).toBe(true);
@@ -68,7 +68,7 @@ describe('deriveCameraCheckView', () => {
       }),
       CAMS,
     );
-    expect(view.pairs.find((p) => p.label === '캠2–캠3')!.outcome).toBe('fail');
+    expect(view.pairs.find((p) => p.label === '카메라 2–카메라 3')!.outcome).toBe('fail');
     expect(cameraCheckFailed(view)).toBe(true);
     expect(view.problems[0]).toContain('통과율');
     expect(cameraCheckBlockReason(view)).toContain('다시 보정');
@@ -94,7 +94,7 @@ describe('deriveCameraCheckView', () => {
     ];
     const view = deriveCameraCheckView(session({ status: 'FAILED', quality_gate: gate }), CAMS);
     expect(view.status).toBe('NONE');
-    expect(view.pairs.find((p) => p.label === '캠2–캠3')!.outcome).toBe('fail');
+    expect(view.pairs.find((p) => p.label === '카메라 2–카메라 3')!.outcome).toBe('fail');
     expect(view.problems).toEqual(['cam_B-cam_C: 홀드아웃 재투영 오차가 큽니다']);
   });
 

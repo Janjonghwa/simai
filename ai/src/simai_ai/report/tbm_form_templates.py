@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from simai_ai.risk.names import RULE_DESCRIPTIONS
+
 # 점검 5줄: 코드 → 서버 문구(서버가 label 을 덮으므로 여기 문구는 LLM 에 뜻을 알려 주는 데만 쓴다). 순서가 양식 줄 순서다.
 CHECKS: tuple[tuple[str, str], ...] = (
     ("PPE", "안전모 등 보호구 착용 상태 확인"),
@@ -30,37 +32,37 @@ class TagTheme:
 
 # 규칙 태그 → 위험 주제. 예: R2(개구부·가장자리) → OPENING_GUARD, R3·R4(고소·낙상) → WORK_SURFACE_FALL.
 TAG_THEMES: dict[str, TagTheme] = {
-    "R1": TagTheme("위험 구역 진입", "ZONE_CONTROL",
+    "R1": TagTheme(RULE_DESCRIPTIONS["R1"], "ZONE_CONTROL",
                    "{where} 위험구역에 작업자가 들어가 다칠 위험",
                    "{where} 위험구역 경계를 표시하고 작업자 외 출입을 통제한다"),
-    "R2": TagTheme("가장자리 근접", "OPENING_GUARD",
+    "R2": TagTheme(RULE_DESCRIPTIONS["R2"], "OPENING_GUARD",
                    "{where} 개구부·단부 가장자리에 다가가 떨어질 위험",
                    "개구부 덮개를 고정하고 단부에 안전난간을 설치한 뒤 작업한다"),
-    "R3": TagTheme("고소 위치", "WORK_SURFACE_FALL",
+    "R3": TagTheme(RULE_DESCRIPTIONS["R3"], "WORK_SURFACE_FALL",
                    "{where} 높은 작업면에서 균형을 잃고 떨어질 위험",
                    "작업발판·난간 상태를 확인하고 안전대를 걸고 작업한다"),
-    "R4": TagTheme("낙상 의심", "WORK_SURFACE_FALL",
+    "R4": TagTheme(RULE_DESCRIPTIONS["R4"], "WORK_SURFACE_FALL",
                    "{where} 자재·장애물에 걸리거나 미끄러져 넘어질 위험",
                    "통로의 자재와 장애물을 치우고 바닥 상태를 확인한 뒤 작업한다"),
-    "R5": TagTheme("진입 예측", "ZONE_CONTROL",
+    "R5": TagTheme(RULE_DESCRIPTIONS["R5"], "ZONE_CONTROL",
                    "{where} 위험구역 쪽으로 이동하다 모르고 들어갈 위험",
                    "이동 동선을 위험구역과 떨어뜨려 정하고 동선을 작업자에게 알린다"),
-    "R6": TagTheme("위험 구역 내 관측 상실", "ZONE_CONTROL",
+    "R6": TagTheme(RULE_DESCRIPTIONS["R6"], "ZONE_CONTROL",
                    "{where} 위험구역 안 작업자가 가려져 위험을 놓칠 위험",
                    "위험구역 안에서는 2인 1조로 작업하고 서로 위치를 확인한다"),
-    "R7": TagTheme("구역 감시 능력 저하", "ZONE_CONTROL",
+    "R7": TagTheme(RULE_DESCRIPTIONS["R7"], "ZONE_CONTROL",
                    "{where} 자재·시야 가림으로 위험구역 감시가 약해질 위험",
                    "시야를 가리는 자재를 치우고 위험구역 감시자를 둔다"),
-    "R8": TagTheme("장비 근접", "ZONE_CONTROL",
+    "R8": TagTheme(RULE_DESCRIPTIONS["R8"], "ZONE_CONTROL",
                    "{where} 작업 장비에 가까이 다가가 부딪히거나 끼일 위험",
                    "장비 작업 반경을 표시하고 신호수를 배치한다"),
-    "R9": TagTheme("안전모 미착용", "PPE",
+    "R9": TagTheme(RULE_DESCRIPTIONS["R9"], "PPE",
                    "안전모를 쓰지 않아 떨어지는 물체에 머리를 다칠 위험",
                    "작업 전 안전모 착용과 턱끈 체결을 서로 확인한다"),
-    "R10": TagTheme("불확실 점유 근접", "ZONE_CONTROL",
+    "R10": TagTheme(RULE_DESCRIPTIONS["R10"], "ZONE_CONTROL",
                     "{where} 확인되지 않은 물체가 있는 곳에 다가갈 위험",
                     "작업 전 주변을 확인하고 확인되지 않은 곳은 출입을 통제한다"),
-    "R11": TagTheme("조끼 미착용", "PPE",
+    "R11": TagTheme(RULE_DESCRIPTIONS["R11"], "PPE",
                     "안전조끼를 입지 않아 장비 운전자 눈에 띄지 않을 위험",
                     "작업 전 안전조끼 착용을 서로 확인한다"),
 }

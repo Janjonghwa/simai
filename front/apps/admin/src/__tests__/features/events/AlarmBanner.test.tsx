@@ -133,7 +133,7 @@ describe('AlarmBanner', () => {
 
     expect(within(banner).getByText('위험')).toBeTruthy();
     expect(within(banner).getByRole('alert').textContent).toBe(
-      '개구부·가장자리 근접 · 0015 · 개구부 구역',
+      '추락 위험(가장자리) · 0015 · 개구부 구역',
     );
     // 사람은 끝번호만 보이고 전체 ID 는 올려 보면 나온다. 고정폭 글꼴도 쓰지 않는다.
     const person = within(banner).getByText('0015');
@@ -148,19 +148,19 @@ describe('AlarmBanner', () => {
   it('사람이 없는 경보는 구역 이름이 대상이고, 이름을 모르는 구역은 `구역`이며 구역 번호는 보이지 않는다', () => {
     live.entries = [{ ...alarm, event: { ...alarm.event, world_ids: [] } }];
     const named = renderBanner(true);
-    expect(within(named).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · 개구부 구역');
+    expect(within(named).getByRole('alert').textContent).toBe('추락 위험(가장자리) · 개구부 구역');
     expect(within(named).getByRole('button', { name: /개구부 구역 확인/ })).toBeTruthy();
     cleanup();
 
     live.entries = [{ ...alarm, event: { ...alarm.event, world_ids: [], zone_id: 'z-99' } }];
     expect(within(renderBanner(true)).getByRole('alert').textContent).toBe(
-      '개구부·가장자리 근접 · 구역',
+      '추락 위험(가장자리) · 구역',
     );
     cleanup();
 
     live.entries = [{ ...alarm, event: { ...alarm.event, zone_id: 'z-99' } }];
     const person = renderBanner(true);
-    expect(within(person).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · 0015');
+    expect(within(person).getByRole('alert').textContent).toBe('추락 위험(가장자리) · 0015');
     expect(person.textContent).not.toMatch(/z-\d/);
   });
 

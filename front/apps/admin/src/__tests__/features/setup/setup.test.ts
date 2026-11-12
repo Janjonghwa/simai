@@ -92,7 +92,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       '카메라 3',
       '카메라 4',
     ]);
-    expect(view.pairs[0]!.label).toBe('캠1–캠2');
+    expect(view.pairs[0]!.label).toBe('카메라 1–카메라 2');
   });
 
   it('CONNECTED 의 선택 보강(OPTIONAL_IMPROVE)은 돌리라는 지시로 보이지 않는다', () => {
@@ -162,16 +162,16 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     );
 
     expect(view.connectivity).toBe('DISCONNECTED');
-    expect(view.connectivitySummary).toBe('캠1·캠2·캠3 / 캠4 갈림 · 방금');
+    expect(view.connectivitySummary).toBe('카메라 1·카메라 2·카메라 3 / 카메라 4 갈림 · 방금');
     const cam3 = view.cameras.find((c) => c.id === 'cam3')!;
-    expect(cam3.guideLabel).toBe('오른쪽으로 조금 돌려 주세요 (캠3–캠4)');
+    expect(cam3.guideLabel).toBe('오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)');
     // 카메라 3 쪽 같이 보는 곳(쌍 cam3–cam4 의 centroid_a)과 이웃 이름.
     expect(cam3.guides).toEqual([
       {
-        text: '오른쪽으로 조금 돌려 주세요 (캠3–캠4)',
+        text: '오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)',
         direction: 'RIGHT',
         magnitude: 'SMALL',
-        neighborLabel: '캠4',
+        neighborLabel: '카메라 4',
         spot: [0.79, 0.62],
       },
     ]);
@@ -211,7 +211,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       false,
     );
     expect(view.cameras.find((c) => c.id === 'cam3')?.guideLabel).toBe(
-      '오른쪽으로 조금 돌려 주세요 (캠3–캠4) · 왼쪽으로 조금 돌려 주세요 (캠2–캠3)',
+      '오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4) · 왼쪽으로 조금 돌려 주세요 (카메라 2–카메라 3)',
     );
   });
 
@@ -253,7 +253,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(staleView.cameras.find((c) => c.id === 'cam2')?.statusLabel).toBe('영상 없음');
     expect(staleView.cameras.find((c) => c.id === 'cam4')?.statusLabel).toBe('끊김');
     expect(staleView.cameras.find((c) => c.id === 'cam2')?.guideLabel).toBe(
-      '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (캠2–캠3)',
+      '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (카메라 2–카메라 3)',
     );
 
     const errorView = deriveStep1Coverage(undefined, true);

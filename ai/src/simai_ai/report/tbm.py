@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from simai_ai.report.llm import ChatClient, ChatResult
+from simai_ai.risk.names import REPORT_NAME_GUIDE
 
 PROMPT_VERSION = "tbm-report-1"
 MAX_ATTEMPTS = 2  # 첫 초안 + 인용·형식 검사로 버린 뒤 한 번 더
@@ -100,7 +101,7 @@ def build_messages(inp: Mapping[str, Any]) -> list[dict[str, str]]:
         max_chars=max_chars,
     )
     messages = [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + "\n" + REPORT_NAME_GUIDE},
         {"role": "user", "content": json.dumps(facts, ensure_ascii=False, sort_keys=True)},
     ]
     assert_text_only(messages)

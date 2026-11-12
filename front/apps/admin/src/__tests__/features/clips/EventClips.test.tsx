@@ -160,17 +160,22 @@ function renderClips(item = event()) {
   return queryClient;
 }
 
-const playButton = (camera: string) => screen.getByRole('button', { name: `${camera} 재생` });
-const closeButton = (camera: string) => screen.getByRole('button', { name: `${camera} 닫기` });
-const video = (camera: string) => screen.getByLabelText(`${camera} 클립`) as HTMLVideoElement;
+const cameraName = (id: string) => `카메라 ${id.slice(-1)}`;
+
+const playButton = (camera: string) =>
+  screen.getByRole('button', { name: `${cameraName(camera)} 재생` });
+const closeButton = (camera: string) =>
+  screen.getByRole('button', { name: `${cameraName(camera)} 닫기` });
+const video = (camera: string) =>
+  screen.getByLabelText(`${cameraName(camera)} 클립`) as HTMLVideoElement;
 
 describe('EventClips', () => {
   it('관리자에게 카메라별 클립과 잘림·빈칸을 보이고, 재생을 누르기 전에는 주소를 받지 않는다', async () => {
     renderClips();
 
     const section = await screen.findByRole('region', { name: '클립' });
-    expect(await within(section).findByText('cam1')).toBeTruthy();
-    expect(within(section).getByText('cam2')).toBeTruthy();
+    expect(await within(section).findByText('카메라 1')).toBeTruthy();
+    expect(within(section).getByText('카메라 2')).toBeTruthy();
     expect(within(section).getByText('앞 잘림')).toBeTruthy();
     expect(within(section).getByText('프레임 빠짐')).toBeTruthy();
     // 촬영 구간은 시작 ~ 끝 순서다.
@@ -178,23 +183,23 @@ describe('EventClips', () => {
     expect(within(section).getAllByText(range)).toHaveLength(3);
     // 영상 주소를 받을 때 EC2 가 조회 기록을 남긴다. 상세를 열기만 해서는 받지 않는다.
     expect(urlCalls).toBe(0);
-    expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+    expect(screen.queryByLabelText('카메라 1 클립')).toBeNull();
   });
 
   it('재생을 누르면 주소를 받아 영상을 보이고 버튼이 닫기로 바뀌며, 닫았다 다시 재생해도 살아 있는 주소는 또 받지 않는다', async () => {
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4'));
     expect(urlCalls).toBe(1);
     // 브라우저 기본 메뉴의 내려받기를 감추고 우클릭 메뉴를 막는다.
     expect(video('cam1').getAttribute('controlslist')).toBe('nodownload');
     expect(fireEvent.contextMenu(video('cam1'))).toBe(false);
     // 영상이 열려 있는 동안 재생 버튼은 닫기다.
-    expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 1 재생' })).toBeNull();
 
     fireEvent.click(closeButton('cam1'));
-    expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+    expect(screen.queryByLabelText('카메라 1 클립')).toBeNull();
     expect(playButton('cam1')).toBeTruthy();
 
     // 다시 재생하면 영상을 새로 띄워 처음부터 튼다. 요청을 보냈다면 이 사이에 도착한다.
@@ -209,7 +214,7 @@ describe('EventClips', () => {
     urlGate = answer.closed;
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(urlCalls).toBe(1));
     expect(closeButton('cam1')).toBeTruthy();
     answer.open();
@@ -223,7 +228,7 @@ describe('EventClips', () => {
     urlExpiresIn = 1_000;
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(urlCalls).toBe(1));
     fireEvent.click(closeButton('cam1'));
     fireEvent.click(playButton('cam1'));
@@ -233,21 +238,21 @@ describe('EventClips', () => {
   it('재생이 실패하면 한 번만 새 주소를 받고, 또 실패하면 알린다', async () => {
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4'));
     fireEvent.error(video('cam1'));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-2.mp4'));
     fireEvent.error(video('cam1'));
 
     expect(await screen.findByText('재생하지 못했습니다')).toBeTruthy();
-    expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+    expect(screen.queryByLabelText('카메라 1 클립')).toBeNull();
     expect(urlCalls).toBe(2);
   });
 
   it('주소를 받은 지 오래된 뒤 재생이 실패하면(되감기 중 만료) 다시 받는다', async () => {
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4'));
     fireEvent.error(video('cam1'));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-2.mp4'));
@@ -269,7 +274,7 @@ describe('EventClips', () => {
     );
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     expect((await screen.findByRole('alert')).textContent).toBe('재생 주소를 받지 못했습니다');
   });
 
@@ -278,8 +283,8 @@ describe('EventClips', () => {
     renderClips();
 
     expect(await screen.findByText(/^삭제됨 · /)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'cam1 보존' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 1 재생' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 1 보존' })).toBeNull();
   });
 
   it('목록을 받은 뒤 지워진 클립을 재생하면(410 CLIP_DELETED) 알리고 목록을 다시 받아 삭제됨으로 그린다', async () => {
@@ -292,9 +297,9 @@ describe('EventClips', () => {
     );
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     expect(await screen.findByText(/^삭제됨 · /)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 1 재생' })).toBeNull();
   });
 
   describe('h264-annexb 클립(서버는 변환하지 않는다)', () => {
@@ -326,7 +331,7 @@ describe('EventClips', () => {
     it('저장소에서 받아 MP4 로 감싼 blob 으로 재생하고, 서명 주소에는 Authorization 을 싣지 않는다', async () => {
       renderClips();
 
-      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
       await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('blob:test/1'));
       expect(storageAuthorization).toBeNull();
       const blob = created[0]!;
@@ -341,7 +346,7 @@ describe('EventClips', () => {
       urlExpiresIn = 1_000;
       renderClips();
 
-      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
       await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('blob:test/1'));
       await act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
       fireEvent.click(closeButton('cam1'));
@@ -359,16 +364,16 @@ describe('EventClips', () => {
       storageStatus = 403;
       renderClips();
 
-      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
       expect((await screen.findByRole('alert')).textContent).toBe('영상을 받지 못했습니다');
-      expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+      expect(screen.queryByLabelText('카메라 1 클립')).toBeNull();
     });
 
     it('H.264 로 읽히지 않는 바이트면 알린다', async () => {
       storageBody = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
       renderClips();
 
-      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
       expect((await screen.findByRole('alert')).textContent).toBe('영상 형식을 읽지 못했습니다');
       expect(createObjectURL).not.toHaveBeenCalled();
     });
@@ -377,18 +382,18 @@ describe('EventClips', () => {
       urlFormat = { content_type: 'video/x-matroska', container: 'mkv' };
       renderClips();
 
-      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
       expect((await screen.findByRole('alert')).textContent).toBe('지원하지 않는 영상 형식입니다');
       expect(storageAuthorization).toBeUndefined();
     });
   });
 
-  const holdButton = () => screen.getByRole('button', { name: 'cam1 보존' });
+  const holdButton = () => screen.getByRole('button', { name: '카메라 1 보존' });
 
   it('HIGH 이벤트 클립은 관리자가 보존 표시를 붙이고 떼며, 서버 값으로 다시 그린다', async () => {
     renderClips();
 
-    await screen.findByRole('button', { name: 'cam1 보존' });
+    await screen.findByRole('button', { name: '카메라 1 보존' });
     expect(holdButton().getAttribute('aria-pressed')).toBe('false');
     const before = listCalls;
     fireEvent.click(holdButton());
@@ -405,7 +410,7 @@ describe('EventClips', () => {
     putGate = answer.closed;
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 보존' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 보존' }));
     await waitFor(() => expect(puts).toHaveLength(1));
     await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
     expect(holdButton().getAttribute('aria-pressed')).toBe('false');
@@ -420,14 +425,14 @@ describe('EventClips', () => {
 
     const section = await screen.findByRole('region', { name: '클립' });
     expect(await within(section).findByText('자동 보존')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'cam1 보존' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 1 보존' })).toBeNull();
   });
 
   it('CRITICAL 이벤트라도 서버가 자동 보존이라 하지 않은 클립(표시 꺼짐)은 보존 버튼이 있다', async () => {
     clips = [clip({ retention_hold: false, auto_retained: false })];
     renderClips(event({ severity: 'CRITICAL' }));
 
-    expect(await screen.findByRole('button', { name: 'cam1 보존' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '카메라 1 보존' })).toBeTruthy();
     expect(screen.queryByText('자동 보존')).toBeNull();
   });
 
@@ -435,7 +440,7 @@ describe('EventClips', () => {
     clips = [clip({ retention_hold: true, auto_retained: false })];
     renderClips();
 
-    const button = await screen.findByRole('button', { name: 'cam1 보존' });
+    const button = await screen.findByRole('button', { name: '카메라 1 보존' });
     expect(button.getAttribute('aria-pressed')).toBe('true');
     expect(screen.queryByText('자동 보존')).toBeNull();
   });
@@ -449,7 +454,7 @@ describe('EventClips', () => {
     clips = [clip({ retention_hold: true })];
     renderClips();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 보존' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 보존' }));
     expect((await screen.findByRole('alert')).textContent).toBe(
       '자동 보존 클립은 보존 표시를 뗄 수 없습니다',
     );
@@ -482,7 +487,7 @@ describe('EventClips', () => {
 
   it('목록을 다시 받지 못해도 받아 둔 클립과 보던 영상은 그대로 두고 실패를 알린다', async () => {
     const queryClient = renderClips();
-    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4'));
     const playing = video('cam1');
 
@@ -495,7 +500,7 @@ describe('EventClips', () => {
 
     expect(await screen.findByText('클립 목록을 받지 못했습니다')).toBeTruthy();
     expect(video('cam1')).toBe(playing);
-    expect(screen.getByText('cam3')).toBeTruthy();
+    expect(screen.getByText('카메라 3')).toBeTruthy();
   });
 
   it('상세를 보는 동안 다시 받아 늦게 올라온 클립을 보인다', async () => {
@@ -504,11 +509,11 @@ describe('EventClips', () => {
       clips = [];
       renderClips();
       await waitFor(() => expect(listCalls).toBe(1));
-      expect(screen.queryByText('cam1')).toBeNull();
+      expect(screen.queryByText('카메라 1')).toBeNull();
 
       clips = [clip()];
       await act(() => vi.advanceTimersByTimeAsync(5_000));
-      expect(await screen.findByText('cam1')).toBeTruthy();
+      expect(await screen.findByText('카메라 1')).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -567,6 +572,6 @@ describe('EventClips', () => {
       </QueryClientProvider>,
     );
     const detail = screen.getByRole('region', { name: '이벤트 클립' });
-    expect(await within(detail).findByRole('button', { name: 'cam1 재생' })).toBeTruthy();
+    expect(await within(detail).findByRole('button', { name: '카메라 1 재생' })).toBeTruthy();
   });
 });

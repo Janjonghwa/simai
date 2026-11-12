@@ -29,6 +29,8 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
 const T = 1_760_342_400_000;
 const CAMS = ['cam1', 'cam2', 'cam3', 'cam4'];
 
+const cameraName = (id: string) => `카메라 ${id.slice(-1)}`;
+
 function signIn(role: Role) {
   useSessionStore.setState({ session: { accessToken: 'token', user: { id: role, role } } });
 }
@@ -63,7 +65,7 @@ function openRelay() {
 
 const badge = (id: string) =>
   ['실시간', '끊김', '정지']
-    .map((state) => screen.queryByLabelText(`${id} 상태 ${state}`))
+    .map((state) => screen.queryByLabelText(`${cameraName(id)} 상태 ${state}`))
     .find(Boolean)!;
 
 beforeEach(() => {
@@ -89,9 +91,9 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
   it('카메라 4대를 4분할로 그리고 칸마다 이름과 상태를 보인다', () => {
     render(<CctvPage />);
     for (const id of CAMS) {
-      expect(screen.getByRole('button', { name: `${id} 크게 보기` })).toBeTruthy();
-      expect(screen.getByLabelText(`${id} 영상`).tagName).toBe('CANVAS');
-      expect(screen.getByText(id)).toBeTruthy();
+      expect(screen.getByRole('button', { name: `${cameraName(id)} 크게 보기` })).toBeTruthy();
+      expect(screen.getByLabelText(`${cameraName(id)} 영상`).tagName).toBe('CANVAS');
+      expect(screen.getByText(cameraName(id))).toBeTruthy();
     }
     // 이름 옆에 단계 글('표시 중')은 두지 않는다.
     expect(screen.queryByText('표시 중')).toBeNull();
@@ -158,22 +160,22 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
 
   it('칸을 누르면 그 칸을 크게 보고 같은 칸을 다시 누르면 4분할로 돌아간다', () => {
     render(<CctvPage />);
-    const canvas = screen.getByLabelText('cam2 영상');
-    fireEvent.click(screen.getByRole('button', { name: 'cam2 크게 보기' }));
+    const canvas = screen.getByLabelText('카메라 2 영상');
+    fireEvent.click(screen.getByRole('button', { name: '카메라 2 크게 보기' }));
 
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(3);
     // 캔버스는 다시 만들어지지 않는다(영상이 끊기지 않는다).
-    expect(screen.getByLabelText('cam2 영상')).toBe(canvas);
+    expect(screen.getByLabelText('카메라 2 영상')).toBe(canvas);
 
-    fireEvent.click(screen.getByRole('button', { name: 'cam2 작게 보기' }));
+    fireEvent.click(screen.getByRole('button', { name: '카메라 2 작게 보기' }));
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(4);
-    expect(screen.getByLabelText('cam2 영상')).toBe(canvas);
+    expect(screen.getByLabelText('카메라 2 영상')).toBe(canvas);
   });
 
   it('크게 본 화면에서도 상태와 4분할로 버튼이 있다', () => {
     render(<CctvPage />);
-    fireEvent.click(screen.getByRole('button', { name: 'cam1 크게 보기' }));
+    fireEvent.click(screen.getByRole('button', { name: '카메라 1 크게 보기' }));
     expect(badge('cam1').textContent).toBe('LIVE');
     fireEvent.click(screen.getByRole('button', { name: '4분할로 돌아가기' }));
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(4);
@@ -198,11 +200,14 @@ describe('CctvPage 관리자 · 확대·이동', () => {
   });
 
   function sizedTile(id: string) {
-    const tile = screen.getByRole('button', { name: new RegExp(`^${id} (크게|작게) 보기$`) });
+    const tile = screen.getByRole('button', {
+      name: new RegExp(`^${cameraName(id)} (크게|작게) 보기$`),
+    });
     vi.spyOn(tile, 'getBoundingClientRect').mockReturnValue(TILE_BOX as DOMRect);
     return tile;
   }
-  const canvasOf = (id: string) => screen.getByLabelText<HTMLCanvasElement>(`${id} 영상`);
+  const canvasOf = (id: string) =>
+    screen.getByLabelText<HTMLCanvasElement>(`${cameraName(id)} 영상`);
   const wheelUp = (tile: HTMLElement, deltaY = -500) =>
     fireEvent.wheel(tile, { deltaY, clientX: 400, clientY: 225 });
   const dragTo = (tile: HTMLElement, x: number, y: number) => {
@@ -244,7 +249,7 @@ describe('CctvPage 관리자 · 확대·이동', () => {
     dragTo(tile, 700, 225);
     expect(canvasOf('cam2').style.transform).toBe('');
     fireEvent.click(tile, { detail: 1 });
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBeTruthy();
   });
 
   it(`확대 중 ${DRAG_THRESHOLD_PX}px 넘게 끌면 옮겨지고, 놓은 뒤 이어지는 클릭은 크게 보기를 바꾸지 않는다`, () => {
@@ -257,10 +262,10 @@ describe('CctvPage 관리자 · 확대·이동', () => {
     // 오른쪽으로 100px(칸 폭의 1/8) 끌면 그림이 그만큼 따라온다.
     expect(canvasOf('cam2').style.transform).toBe(panZoomTransform(panBy(zoomedView, 0.125, 0)));
     fireEvent.click(tile, { detail: 1 });
-    expect(screen.getByRole('button', { name: 'cam2 크게 보기' })).toBe(tile);
+    expect(screen.getByRole('button', { name: '카메라 2 크게 보기' })).toBe(tile);
     // 삼킨 것은 그 한 번뿐이라 다음 클릭은 크게 보기로 바뀐다.
     fireEvent.click(tile, { detail: 1 });
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBe(tile);
   });
 
   it(`확대 중 ${DRAG_THRESHOLD_PX}px 이하로 움직인 누르기는 클릭이라 옮겨지지 않는다`, () => {
@@ -273,7 +278,7 @@ describe('CctvPage 관리자 · 확대·이동', () => {
     fireEvent.click(tile, { detail: 1 });
 
     expect(canvasOf('cam2').style.transform).toBe(before);
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBe(tile);
   });
 
   it('확대한 채 크게 보기와 4분할을 오가도 같은 캔버스에 같은 자리가 남는다', () => {
@@ -284,7 +289,7 @@ describe('CctvPage 관리자 · 확대·이동', () => {
     const zoomed = canvas.style.transform;
 
     fireEvent.click(tile);
-    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+    expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBe(tile);
     expect(canvasOf('cam2')).toBe(canvas);
     expect(canvas.style.transform).toBe(zoomed);
 
@@ -313,11 +318,11 @@ describe('CctvPage 관리자 · 중계가 이어지지 않았을 때', () => {
     render(<CctvPage />);
 
     expect(screen.getByRole('status').textContent).toBe('중계 끊김');
-    expect(screen.getByRole('img', { name: 'cam1 카메라 영상' })).toBeTruthy();
-    expect(screen.queryByLabelText('cam1 영상')).toBeNull();
+    expect(screen.getByRole('img', { name: '카메라 1 영상' })).toBeTruthy();
+    expect(document.querySelector('canvas')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'cam3 크게 보기' }));
-    expect(screen.getByRole('button', { name: 'cam3 작게 보기' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '카메라 3 크게 보기' }));
+    expect(screen.getByRole('button', { name: '카메라 3 작게 보기' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '4분할로 돌아가기' })).toBeTruthy();
   });
 });
@@ -375,7 +380,7 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
     expect(screen.queryAllByRole('button')).toHaveLength(0);
 
     const text = (id: string) =>
-      screen.getByRole('group', { name: `${id} 상태` }).lastElementChild?.textContent;
+      screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
     expect(text('cam1')).toBe('실시간');
     expect(text('cam3')).toBe('끊김');
     expect(screen.getAllByRole('group')).toHaveLength(4);
@@ -384,7 +389,7 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
   it('World 가 멈추면 정지로 보인다', () => {
     seedRealtime({ world: false });
     render(<CctvPage />);
-    const group = screen.getByRole('group', { name: 'cam1 상태' });
+    const group = screen.getByRole('group', { name: '카메라 1 상태' });
     expect(group.textContent).toMatch(/정지/);
   });
 

@@ -103,7 +103,7 @@ def test_raised_high_is_listed_with_contract_fields(h):
             "acknowledged": False,
             "severity": "HIGH",
             "sound_mode": "REPEAT",
-            "summary": "R1 z-04: dwell_s 1.40",
+            "summary": "위험구역 진입 z-04: dwell_s 1.40",
             "rule_id": "R1",
             "zone_id": "z-04",
         }
@@ -229,7 +229,7 @@ def test_latest_state_not_site_alert_is_dropped_even_if_older_was(h):
 def test_summary_is_injectable_and_never_empty(h):
     h.step([finding(metrics={})])
     [state] = h.tracker.active()
-    assert default_summary(state) == "R1 z-04"
+    assert default_summary(state) == "위험구역 진입 z-04"
     assert build_active_site_alerts([state], summarize=lambda s: "")[0]["summary"] == "R1"
     assert build_active_site_alerts([state], summarize=lambda s: "규칙 근거")[0]["summary"] == "규칙 근거"
 

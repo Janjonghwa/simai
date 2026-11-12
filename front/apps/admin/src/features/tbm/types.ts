@@ -4,6 +4,7 @@ import { TBM_ZONES, type LayoutItem, type TaskEval, type TbmTask } from '@/featu
 import { workPlaceLabel } from '@/features/tbm/workPlace';
 import { dayProgressSchema } from '@/features/work/types';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
+import { ruleName } from '@/lib/ruleNames';
 import { z } from 'zod';
 
 // TBM 작업(work_unit)·공종(work_type)·가상 레이아웃(layout_plan)·TBM 보고서(report) 스키마와 변환.
@@ -409,7 +410,7 @@ export function riskItemToEval(item: TbmReportRiskItem): TaskEval {
         ? `${zoneLabel} (${item.zone_id})`
         : posLabel
           ? `계획 위치 ${posLabel}`
-          : `${item.rule_id} 위험 항목`;
+          : `${ruleName(item.rule_id)} 위험 항목`;
 
   const metricParts = Object.entries(item.metrics).map(([k, v]) => {
     const label = METRIC_LABELS[k] ?? k;

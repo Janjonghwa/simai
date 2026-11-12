@@ -22,6 +22,7 @@ import type {
   SetupZoneDraftsResponse,
 } from '@/features/setup/types';
 import { api } from '@/lib/api';
+import { useCameraOrderStore } from '@/lib/cameraNames';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 // 세팅 1단계 및 2단계 이후 서버 데이터 훅(각도 헬퍼 폴링, 카메라 높이 기본값, 세팅 세션 시작·2초 주기 조회·재시도, AI 구역 초안 조회).
@@ -29,7 +30,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 export function useCoverageGuides(enabled = true) {
   const query = useQuery({
     queryKey: SETUP_COVERAGE_GUIDES_KEY,
-    queryFn: ({ signal }) => requestCoverageGuides(api, signal),
+    queryFn: async ({ signal }) => {
+      const data = await requestCoverageGuides(api, signal);
+      const ids = data.latest?.cameras.map((c) => c.camera_id) ?? [];
+      if (ids.length) useCameraOrderStore.getState().set(ids);
+      return data;
+    },
     enabled,
     refetchInterval: enabled ? COVERAGE_GUIDE_POLL_MS : false,
   });

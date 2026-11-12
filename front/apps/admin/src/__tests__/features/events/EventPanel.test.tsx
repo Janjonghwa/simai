@@ -160,7 +160,7 @@ describe('EventPanel 접기', () => {
   it('카드에 규칙·구역과 경과를 넘긴다', () => {
     renderPanel([entry()]);
     const card = screen.getByRole('article', { name: 'w-0015 이벤트' });
-    expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
+    expect(within(card).getByText('추락 위험(가장자리) · 개구부 구역')).toBeTruthy();
     expect(card.textContent).toMatch(/\d+(초|분|시간|일)( \d+(초|분|시간))? 전/);
   });
 });
@@ -467,10 +467,10 @@ describe('EventDetail 확인 필요', () => {
     expect(row({ zone_id: undefined })).toContain('구역 없음 · ');
     // 사람 단위 규칙(R9)은 구역을 보지 않아 구역 칸이 없다(-519).
     const r9 = row({ rule_id: 'R9', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r9).toContain('R9 작업 중 안전모 미착용');
+    expect(r9).toContain('R9 안전모 미착용');
     expect(r9).not.toMatch(/구역/);
     const r11 = row({ rule_id: 'R11', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r11).toContain('R11 작업 중 조끼 미착용');
+    expect(r11).toContain('R11 조끼 미착용');
     expect(r11).not.toMatch(/구역/);
   });
 
@@ -531,7 +531,7 @@ describe('EventDetail 확인 필요', () => {
       '작업 종료로 해소',
     );
     expect(within(ended).getByRole('region', { name: '타임라인' }).textContent).toContain(
-      `작업 중 ${equipment} 미착용 작업 종료로 해소`,
+      `${equipment} 미착용 작업 종료로 해소`,
     );
     cleanup();
 

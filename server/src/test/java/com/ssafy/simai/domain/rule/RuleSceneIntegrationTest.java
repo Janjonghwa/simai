@@ -101,7 +101,7 @@ class RuleSceneIntegrationTest {
         JsonNode rules = body.get("rules");
         assertThat(rules).hasSize(11);
         assertThat(rules.get(0).get("rule_id").asString()).isEqualTo("R1");
-        assertThat(rules.get(0).get("name").asString()).isEqualTo("위험 구역 진입");
+        assertThat(rules.get(0).get("name").asString()).isEqualTo("위험구역 진입");
         assertThat(rules.get(0).get("active").asBoolean()).isTrue();
         JsonNode r1 = rules.get(0).get("current");
         assertThat(r1.get("rule_version").asInt()).isEqualTo(1);
@@ -124,10 +124,10 @@ class RuleSceneIntegrationTest {
         assertThat(rules.get(9).get("active").asBoolean()).isFalse();
         // PPE 규칙(MVP, 시연 예외로 시드에는 있지만 이 시험의 적용 묶음에는 없어 비활성): R9·R11(-556)
         assertThat(rules.get(8).get("rule_id").asString()).isEqualTo("R9");
-        assertThat(rules.get(8).get("name").asString()).isEqualTo("작업 중 안전모 미착용");
+        assertThat(rules.get(8).get("name").asString()).isEqualTo("안전모 미착용");
         assertThat(rules.get(8).get("stage").asString()).isEqualTo("MVP");
         assertThat(rules.get(10).get("rule_id").asString()).isEqualTo("R11");
-        assertThat(rules.get(10).get("name").asString()).isEqualTo("작업 중 조끼 미착용");
+        assertThat(rules.get(10).get("name").asString()).isEqualTo("조끼 미착용");
         assertThat(rules.get(10).get("stage").asString()).isEqualTo("MVP");
         assertThat(rules.get(10).get("active").asBoolean()).isFalse();
         // 적용 기간: 교실 시험 판까지 모든 판, 값 없이

@@ -13,6 +13,8 @@ from typing import TextIO
 from simai_site_alert.core import ActiveAlert, ScreenState
 from simai_site_alert.link_status import CONTROL_HALTED, NORMAL, REMOTE_FAULT, Reason, SiteStatus
 
+SEVERITY_LABEL = {"CRITICAL": "위험", "HIGH": "경고", "CAUTION": "주의", "INFO": "안내"}
+
 CHANNEL_LABEL = {"CONTROL_ROOM": "관제 화면", "FOREMAN_PWA": "반장 PWA", "SITE_BUTTON": "현장 확인 버튼"}
 TEST_BANNER = "[시험] 시험 경보입니다. 실제 위험이 아닙니다. 소리가 들리고 화면이 보이는지 확인하세요."
 
@@ -77,7 +79,7 @@ def ack_text(alert: ActiveAlert) -> str:
 
 
 def alert_line(alert: ActiveAlert) -> str:
-    parts = [f"[{alert.severity}]"]
+    parts = [f"[{SEVERITY_LABEL.get(alert.severity, alert.severity)}]"]
     where = " · ".join(x for x in (alert.rule_id, alert.zone_id) if x)
     if where:
         parts.append(where)

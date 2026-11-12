@@ -22,6 +22,7 @@ import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/ty
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
+import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
@@ -490,7 +491,7 @@ export function AiZoneDraftsPanel({
                             : 'bg-sev-high/15 text-sev-high',
                         )}
                       >
-                        {item.recommended_severity}
+                        {SEVERITY_LABEL[item.recommended_severity]}
                       </Badge>
                     )}
                     {isAccepted && (
