@@ -42,6 +42,41 @@ export const zoneHeightChangeSchema = z
   .loose();
 export type ZoneHeightChange = z.infer<typeof zoneHeightChangeSchema>;
 
+/**
+ * 변경 의심 구역 VLM 의견(S15P31A101-631). 이전·이번 세팅의 같은 카메라 사진 크롭을 AI 가 비교한 유지·수정·삭제 권고 한 줄이다.
+ * 표시용 제안이라 구역 목록·확인 필요를 바꾸지 않는다. PENDING 은 초안 작업이 아직 끝나지 않았다는 뜻(서버가 붙인다).
+ */
+export const zoneAiOpinionStatusSchema = z.enum(['OPINION', 'NO_OPINION', 'PENDING']);
+export type ZoneAiOpinionStatus = z.infer<typeof zoneAiOpinionStatusSchema>;
+export const zoneAiActionSchema = z.enum(['KEEP', 'MODIFY', 'REMOVE']);
+export type ZoneAiAction = z.infer<typeof zoneAiActionSchema>;
+
+const cropBoxNorm = z.tuple([z.number(), z.number(), z.number(), z.number()]);
+
+/** 전·후 사진 한 장: 세팅 대표 프레임(CAMERA_FRAME) 서명 주소와 그 안의 구역 크롭 [u1, v1, u2, v2](0~1). */
+export const zoneOpinionPhotoSchema = z
+  .object({
+    image_url: z.string().nullish().default(null),
+    crop_box_norm: cropBoxNorm.nullish().default(null).catch(null),
+  })
+  .loose();
+export type ZoneOpinionPhoto = z.infer<typeof zoneOpinionPhotoSchema>;
+
+export const zoneAiOpinionSchema = z
+  .object({
+    status: zoneAiOpinionStatusSchema,
+    reason: z.string().nullish().default(null),
+    recommended_action: zoneAiActionSchema.nullish().default(null).catch(null),
+    rationale: z.string().nullish().default(null),
+    confidence: z.number().nullish().default(null),
+    camera_id: z.string().nullish().default(null),
+    before: zoneOpinionPhotoSchema.nullish().default(null).catch(null),
+    after: zoneOpinionPhotoSchema.nullish().default(null).catch(null),
+    image_expires_at_ms: z.number().nullish().default(null),
+  })
+  .loose();
+export type ZoneAiOpinion = z.infer<typeof zoneAiOpinionSchema>;
+
 export const zoneItemSchema = z.object({
   // 공백만 있는 ID 는 받지 않는다. 값은 자르지 않는다(이벤트의 zone_id 와 그대로 맞춘다).
   zone_id: z.string().refine((id) => id.trim() !== ''),
@@ -69,6 +104,8 @@ export const zoneItemSchema = z.object({
   needs_review: z.boolean().nullish(),
   // 세팅 구역 목록에서 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). 관제 구역·새 구역에는 없다.
   height_change: zoneHeightChangeSchema.nullish().catch(null),
+  // 세팅 구역 목록에서 변경 의심 구역의 AI 의견과 전후 사진(S15P31A101-631). 관제 구역·새 구역에는 없다.
+  ai_opinion: zoneAiOpinionSchema.nullish().catch(null),
 });
 
 export type ZoneItem = z.infer<typeof zoneItemSchema>;
@@ -209,6 +246,8 @@ export interface Zone extends ZoneBox {
   needsReview?: boolean;
   /** 세팅 구역 목록에서 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). */
   heightChange?: ZoneHeightChange | null;
+  /** 세팅 구역 목록에서 변경 의심 구역의 AI 의견과 전후 사진(S15P31A101-631). */
+  aiOpinion?: ZoneAiOpinion | null;
 }
 
 /** 3D 뷰어 Source 가 받는 구역 형식: 정식 구역 응답(zoneItemSchema) 배열. 뷰어(contractAdapter)가 다시 검사한다. */

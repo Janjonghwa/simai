@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/vlm_zone_draft.schema.json",
-  "title": "I5 vlm_zone_draft 1.0.0 입력·결과",
-  "description": "현장 세팅(site_setup) 미리보기 맵이 준비된 뒤 3D 점군·메시에서 기하 후보(단상·작업대 OBB, 바닥 개구부, 바닥 단부)를 뽑고 Cosmos-Reason2-2B(Cosmos3-Nano)가 구역 이름·종류·등급(CRITICAL/HIGH)·이유를 제안하는 초안 작업(명세 5.3·8.2, AGENTS 규칙 4·8). 초안은 관리자가 수락해 구성 묶음으로 발행하기 전까지 Tier 0 판정에 절대 쓰이지 않는다(safety_use=false).",
-  "schema_version": "1.0.0",
+  "title": "I5 vlm_zone_draft 1.1.0 입력·결과",
+  "description": "현장 세팅(site_setup) 미리보기 맵이 준비된 뒤 3D 점군·메시에서 기하 후보(단상·작업대 OBB, 바닥 개구부, 바닥 단부)를 뽑고 Cosmos-Reason2-2B(Cosmos3-Nano)가 구역 이름·종류·등급(CRITICAL/HIGH)·이유를 제안하는 초안 작업(명세 5.3·8.2, AGENTS 규칙 4·8). 초안은 관리자가 수락해 구성 묶음으로 발행하기 전까지 Tier 0 판정에 절대 쓰이지 않는다(safety_use=false). 1.1.0 필드 추가(마이너, S15P31A101-631): 입력 선택 suspected_zones(높이 비교 -630 이 변경 의심으로 판정한 이어 쓴 구역)·previous_setup_session_id·previous_calibration_version·previous_calibration_ref·previous_calibration_hash·previous_frames(이전 관제 Scene 을 만든 세팅 세션의 카메라 대표 프레임), 결과 선택 zone_opinions(구역마다 전·후 같은 카메라 크롭을 VLM 이 비교한 유지·수정·삭제 권고 한 줄, 얼굴 처리 프레임 크롭 정규화 좌표). 의견은 화면 표시용 제안이고 구역 목록·확인 필요·관제 구역을 바꾸지 않는다(AGENTS 규칙 4). 의견을 못 내면 NO_OPINION 과 사유만 적고 권고·이유를 지어내지 않는다(AGENTS 규칙 2). 1.0.0 처리기는 suspected_zones 를 닫힌 입력으로 거부하므로 워커를 먼저 배포한다.",
+  "schema_version": "1.1.0",
   "$defs": {
     "candidate_kind": {
       "type": "string",
@@ -20,6 +20,182 @@
     "vlm_opinion_status": {
       "type": "string",
       "enum": ["VLM", "NO_OPINION"]
+    },
+    "crop_box_norm": {
+      "type": "array",
+      "description": "프레임 안 크롭 영역 [u1, v1, u2, v2]. 프레임 너비·높이로 나눈 0~1 값이고 u1 < u2, v1 < v2 다(받는 쪽이 확인한다). 화면은 같은 프레임(CAMERA_FRAME)을 이 영역으로 잘라 보인다(1.1.0).",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number", "minimum": 0, "maximum": 1 }
+    },
+    "suspected_zone_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "높이 비교(S15P31A101-630)가 CHANGE_SUSPECTED 로 판정한 이어 쓴 구역 하나(1.1.0). 다각형·높이는 지금 관제 구역(zone) 값, 수치는 그 판정 값이다. World m.",
+      "required": ["zone_id", "polygon_xy"],
+      "properties": {
+        "zone_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "zone_kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "polygon_xy": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 64,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/vec2" }
+        },
+        "z_min_m": { "type": ["number", "null"] },
+        "z_max_m": { "type": ["number", "null"] },
+        "changed_area_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "max_height_diff_m": { "type": ["number", "null"], "minimum": 0 },
+        "max_diff_xy": {
+          "oneOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/vec2" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "zone_opinion_status": {
+      "type": "string",
+      "enum": ["OPINION", "NO_OPINION"]
+    },
+    "zone_opinion_reason": {
+      "type": "string",
+      "description": "NO_OPINION 사유(1.1.0). NO_PREVIOUS_FRAMES: 이전 세팅 사진·보정을 찾지 못함. PREVIOUS_FRAMES_UNAVAILABLE: 이전 사진을 받거나 얼굴 처리하지 못함. CURRENT_FRAMES_UNAVAILABLE: 이번 사진을 받거나 얼굴 처리하지 못함. CALIBRATION_UNAVAILABLE: 보정 문서를 읽지 못함. NOT_VISIBLE: 전·후 모두에서 잘 보이는 같은 카메라가 없음. VLM_UNAVAILABLE: VLM 을 쓸 수 없음. VLM_FAILED: 호출 실패·시간 초과·응답 형식 오류. TIME_BUDGET: 작업 시간 예산이 모자람. ZONE_LIMIT: 한 작업 구역 수 상한을 넘음.",
+      "enum": [
+        "NO_PREVIOUS_FRAMES",
+        "PREVIOUS_FRAMES_UNAVAILABLE",
+        "CURRENT_FRAMES_UNAVAILABLE",
+        "CALIBRATION_UNAVAILABLE",
+        "NOT_VISIBLE",
+        "VLM_UNAVAILABLE",
+        "VLM_FAILED",
+        "TIME_BUDGET",
+        "ZONE_LIMIT"
+      ]
+    },
+    "zone_opinion_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "변경 의심 구역 하나의 VLM 의견(1.1.0). 화면 표시용 제안이며 구역 목록·needs_review·관제 구역을 자동으로 바꾸지 않는다(AGENTS 규칙 4). 크롭은 둘 다 같은 camera_id 의 이전·이번 프레임 영역이다.",
+      "required": [
+        "zone_id",
+        "status",
+        "reason",
+        "recommended_action",
+        "rationale",
+        "confidence",
+        "camera_id",
+        "before_crop_box_norm",
+        "after_crop_box_norm",
+        "model_version",
+        "prompt_version"
+      ],
+      "properties": {
+        "zone_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "status": { "$ref": "#/$defs/zone_opinion_status" },
+        "reason": {
+          "oneOf": [
+            { "$ref": "#/$defs/zone_opinion_reason" },
+            { "type": "null" }
+          ]
+        },
+        "recommended_action": {
+          "oneOf": [
+            { "type": "string", "enum": ["KEEP", "MODIFY", "REMOVE"] },
+            { "type": "null" }
+          ],
+          "description": "유지(KEEP)·수정(MODIFY)·삭제(REMOVE) 권고. NO_OPINION 이면 null"
+        },
+        "rationale": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 200 },
+            { "type": "null" }
+          ],
+          "description": "무엇이 바뀌었는지와 권고 이유 한국어 한 줄. NO_OPINION 이면 null"
+        },
+        "confidence": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "camera_id": {
+          "oneOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+            { "type": "null" }
+          ]
+        },
+        "before_crop_box_norm": {
+          "oneOf": [
+            { "$ref": "#/$defs/crop_box_norm" },
+            { "type": "null" }
+          ]
+        },
+        "after_crop_box_norm": {
+          "oneOf": [
+            { "$ref": "#/$defs/crop_box_norm" },
+            { "type": "null" }
+          ]
+        },
+        "model_version": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        },
+        "prompt_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "OPINION" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reason": { "type": "null" },
+              "recommended_action": { "type": "string" },
+              "rationale": { "type": "string" },
+              "camera_id": { "type": "string" },
+              "model_version": { "type": "string" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "NO_OPINION" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reason": { "type": "string" },
+              "recommended_action": { "type": "null" },
+              "rationale": { "type": "null" },
+              "confidence": { "type": "null" },
+              "model_version": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "camera_id": { "type": "null" } },
+            "required": ["camera_id"]
+          },
+          "then": {
+            "properties": {
+              "before_crop_box_norm": { "type": "null" },
+              "after_crop_box_norm": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "before_crop_box_norm": { "type": "array" },
+              "after_crop_box_norm": { "type": "array" }
+            }
+          }
+        }
+      ]
     },
     "obb_3d": {
       "type": "object",
@@ -105,7 +281,30 @@
           "type": "array",
           "maxItems": 8,
           "items": { "$ref": "#/$defs/frame_input" }
+        },
+        "suspected_zones": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "변경 의심 구역(1.1.0, S15P31A101-631). 높이 차이가 큰 순으로 최대 8개. World 가 이어진 세팅에서만 싣는다. 있으면 결과에 zone_opinions 를 낸다.",
+          "items": { "$ref": "#/$defs/suspected_zone_input" }
+        },
+        "previous_setup_session_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid",
+          "description": "이전 관제 Scene 을 만든 세팅 세션(1.1.0). 추적용"
+        },
+        "previous_calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "previous_calibration_ref": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+        "previous_calibration_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+        "previous_frames": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "이전 세팅 세션의 카메라별 대표 프레임(CAMERA_FRAME, 1.1.0). 이번 frames 와 같은 방식으로 얼굴 처리 관문을 거친다. 없으면 의견은 NO_OPINION(NO_PREVIOUS_FRAMES)",
+          "items": { "$ref": "#/$defs/frame_input" }
         }
+      },
+      "dependentRequired": {
+        "previous_frames": ["suspected_zones", "previous_calibration_ref"],
+        "previous_calibration_ref": ["previous_calibration_version"]
       }
     },
     "draft_item": {
@@ -204,6 +403,12 @@
           "type": "array",
           "maxItems": 64,
           "items": { "$ref": "#/$defs/draft_item" }
+        },
+        "zone_opinions": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "입력 suspected_zones 마다 하나(1.1.0, S15P31A101-631). 결과의 status·model_version 은 drafts 기준이고, 의견은 항목마다 status·model_version 을 따로 적는다.",
+          "items": { "$ref": "#/$defs/zone_opinion_item" }
         }
       },
       "allOf": [

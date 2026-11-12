@@ -6,6 +6,9 @@
 - 프레임(S15P31A101-479): 세팅 워커가 올린 카메라별 대표 프레임(긴 변 1280 px 이하로 줄인 JPEG)이 `frames` 로 들어온다. 보정 문서의 `K` 는
   원본 해상도(`image_size`) 기준이라, 후보를 투영해 크롭하기 전에 프레임 크기에 맞춰 `K` 를 비례 축소한다(`_fit_cameras_to_frames`).
 - VLM 서버 비가용·시간 초과·응답 형식 오류 시에도 전체 초안 생성을 실패시키지 않고 결정적 기하 후보를 `"AI 의견 없음"`(`status="NO_OPINION"`)으로 돌려준다.
+- 변경 의심 구역 의견(1.1.0, S15P31A101-631): 입력에 `suspected_zones` 가 있으면 초안 뒤에 구역마다 이전·이번 세팅의 같은 카메라 크롭을 VLM 에
+  비교시켜 `zone_opinions` 를 낸다(`simai_ai.vlm.zone_opinion`). 이전 사진·보정을 못 읽거나 실패하면 그 구역만 `NO_OPINION`(사유)이고 작업은
+  실패시키지 않는다. 이전 프레임도 같은 얼굴 처리 관문을 거치며, 고른 카메라의 장만 처리한다.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -34,6 +37,12 @@ from simai_ai.vlm.zone_draft import (
     cameras_from_calibration,
     extract_geometry_candidates,
     load_points_from_bytes,
+)
+from simai_ai.vlm.zone_opinion import (
+    NoOpinionReason,
+    SuspectedZone,
+    ZoneOpinionConfig,
+    assess_zone_opinions,
 )
 
 from .handlers import JobContext, JobFailed
@@ -57,6 +66,7 @@ class VlmZoneDraftHandler:
         monotonic: Callable[[], float] = time.monotonic,
         local_frames: LocalFrames | None = None,
         geometry_config: ZoneGeometryConfig | None = None,
+        opinion_config: ZoneOpinionConfig | None = None,
         env: Mapping[str, str] = os.environ,
     ) -> None:
         self._store = store
@@ -67,6 +77,7 @@ class VlmZoneDraftHandler:
         self._monotonic = monotonic
         self._local_frames = local_frames
         self._geometry_config = geometry_config
+        self._opinion_config = opinion_config or ZoneOpinionConfig()
         self._env = env
 
     def __call__(self, ctx: JobContext) -> dict[str, Any]:
@@ -93,6 +104,12 @@ class VlmZoneDraftHandler:
             frames_by_camera=frames_by_camera,
             cameras_by_id=cameras_by_id,
         )
+        ctx.report_progress(0.8)
+
+        zone_opinions: list[dict[str, Any]] | None = None
+        if inp.get("suspected_zones"):
+            _check_cancelled(ctx)
+            zone_opinions = self._assess_opinions(ctx, inp, vlm_client, frames_by_camera, cameras_by_id)
         ctx.report_progress(0.95)
 
         elapsed_ms = max(0, round((self._monotonic() - started_s) * 1000))
@@ -108,6 +125,8 @@ class VlmZoneDraftHandler:
             "latency_ms": elapsed_ms,
             "drafts": [item.to_dict() for item in draft_items],
         }
+        if zone_opinions is not None:
+            result["zone_opinions"] = zone_opinions
         if errors := schema_errors(result, RESULT_SCHEMA):
             raise JobFailed("VLM_ZONE_DRAFT_OUTPUT_INVALID", "; ".join(errors))
         return result
@@ -148,8 +167,75 @@ class VlmZoneDraftHandler:
             )
         return cameras_from_calibration(doc)
 
+    def _assess_opinions(
+        self,
+        ctx: JobContext,
+        inp: Mapping[str, Any],
+        vlm_client: Any | None,
+        after_frames: Mapping[str, Any],
+        after_cameras: Mapping[str, CameraPose],
+    ) -> list[dict[str, Any]]:
+        """변경 의심 구역 의견(S15P31A101-631). 이전 사진·보정을 못 쓰면 모든 구역이 그 사유의 NO_OPINION 이다."""
+        zones = [SuspectedZone.from_dict(z) for z in inp["suspected_zones"]]
+        previous_frames = inp.get("previous_frames") or []
+        blocked: NoOpinionReason | None = None
+        before_cameras: dict[str, CameraPose] = {}
+        if not previous_frames or not inp.get("previous_calibration_ref"):
+            blocked = "NO_PREVIOUS_FRAMES"
+        elif not after_cameras:
+            blocked = "CALIBRATION_UNAVAILABLE"
+        else:
+            before_cameras = self._resolve_previous_cameras(ctx, inp)
+            if not before_cameras:
+                blocked = "CALIBRATION_UNAVAILABLE"
+        # 화면이 전·후 사진을 둘 다 보일 수 있는 카메라만 고른다(입력에 프레임이 있는 카메라)
+        allowed = {str(f["camera_id"]) for f in previous_frames} & {str(f["camera_id"]) for f in inp.get("frames") or []}
+
+        def before_frames(cameras: set[str]) -> Mapping[str, Any]:
+            # 크롭 박스가 정규화 좌표라 이전 프레임은 K 를 맞출 필요가 없다
+            return self._gate_frames(ctx, [f for f in previous_frames if str(f["camera_id"]) in cameras], "이전 세팅")
+
+        opinions = assess_zone_opinions(
+            zones,
+            vlm_client=vlm_client,
+            before_cameras=before_cameras,
+            after_cameras=after_cameras,
+            before_frames=before_frames,
+            after_frames=after_frames,
+            allowed_cameras=allowed,
+            blocked_reason=blocked,
+            remaining_s=ctx.remaining_s,
+            cfg=self._opinion_config,
+        )
+        log.info(
+            "job=%s zone_opinions=%s",
+            ctx.job_id,
+            [(o.zone_id, o.status, o.reason or o.recommended_action) for o in opinions],
+        )
+        return [o.to_dict() for o in opinions]
+
+    def _resolve_previous_cameras(self, ctx: JobContext, inp: Mapping[str, Any]) -> dict[str, CameraPose]:
+        """이전 세팅 보정. 읽지 못하면 빈 사전(의견만 NO_OPINION, 초안 작업은 계속)."""
+        ref = str(inp["previous_calibration_ref"])
+        try:
+            raw = self._get(ctx, ref)
+            doc = json.loads(raw)
+        except (JobFailed, ValueError) as e:
+            log.warning("job=%s 이전 보정 %s 을 읽지 못해 구역 의견을 건너뛴다: %s", ctx.job_id, ref, e)
+            return {}
+        if not isinstance(doc, Mapping):
+            return {}
+        expected_hash = inp.get("previous_calibration_hash")
+        if expected_hash and content_hash(doc) != expected_hash:
+            log.warning("job=%s 이전 보정 %s 의 content_hash 가 다르다", ctx.job_id, ref)
+            return {}
+        return cameras_from_calibration(doc)
+
     def _resolve_frames(self, ctx: JobContext, inp: Mapping[str, Any]) -> dict[str, Any]:
-        frames_in = inp.get("frames") or []
+        return self._gate_frames(ctx, inp.get("frames") or [], "이번 세팅")
+
+    def _gate_frames(self, ctx: JobContext, frames_in: Sequence[Mapping[str, Any]], label: str) -> dict[str, Any]:
+        """프레임을 받아 얼굴 처리 관문을 거친 `VlmFrame` 을 카메라별로 돌려준다. 실패하면 빈 사전(VLM 만 건너뛴다)."""
         if not frames_in or self._store is None or self._provider is None:
             return {}
         uri_to_cam = {str(f["frame_uri"]): str(f["camera_id"]) for f in frames_in if "frame_uri" in f and "camera_id" in f}
@@ -164,7 +250,7 @@ class VlmZoneDraftHandler:
             )
         except JobFailed as exc:
             # 프레임 다운로드/얼굴 검출 실패 시 VLM 만 건너뛰고 기하 후보는 살린다
-            log.warning("job=%s 프레임 준비 실패로 VLM 없이 기하 후보만 반환한다: %s", ctx.job_id, exc)
+            log.warning("job=%s %s 프레임 준비 실패로 VLM 없이 진행한다: %s", ctx.job_id, label, exc)
             return {}
         if gate.dropped:
             log.info(

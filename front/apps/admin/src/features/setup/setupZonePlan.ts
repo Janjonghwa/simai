@@ -1,6 +1,7 @@
 import { zoneHeightChangesSummarySchema } from '@/features/setup/types';
 import { staticObjectItemSchema, type StaticObjectBody } from '@/features/surfaces/types';
 import {
+  zoneAiOpinionSchema,
   zoneHeightChangeSchema,
   zoneItemSchema,
   type ZoneBody,
@@ -42,6 +43,8 @@ export const setupZonePlanItemSchema = z.object({
     .transform((v) => v ?? false),
   /** 이어 쓴 구역의 상면 높이 차이 판정(S15P31A101-630). 조회·저장 응답에만 붙고 PUT 요청 본문에는 보내지 않는다. */
   height_change: zoneHeightChangeSchema.nullish().catch(null),
+  /** 변경 의심 구역의 AI 의견과 전후 사진(S15P31A101-631). 조회·저장 응답에만 붙고 PUT 요청 본문에는 보내지 않는다. */
+  ai_opinion: zoneAiOpinionSchema.nullish().catch(null),
 });
 export type SetupZonePlanItem = z.infer<typeof setupZonePlanItemSchema>;
 
@@ -107,6 +110,7 @@ function zoneViewOf(
           ...current,
           needs_review: item.needs_review,
           height_change: item.height_change ?? null,
+          ai_opinion: item.ai_opinion ?? null,
         }
       : null;
   }
@@ -119,6 +123,7 @@ function zoneViewOf(
     valid_to: null,
     needs_review: item.needs_review,
     height_change: item.height_change ?? null,
+    ai_opinion: item.ai_opinion ?? null,
   };
   const parsed = zoneItemSchema.safeParse(merged);
   return parsed.success ? parsed.data : null;
@@ -282,6 +287,30 @@ export function toPlanRequestItems(items: readonly SetupZonePlanItem[]) {
 /** 확인이 필요한 항목 수(S15P31A101-629). 0 이어야 세팅을 완료할 수 있다. */
 export function pendingReviewCount(plan: SetupZonePlanView | undefined): number {
   return plan ? plan.items.filter((item) => item.needs_review).length : 0;
+}
+
+/** AI 의견을 기다리는 동안 다시 받을 간격(ms). */
+export const OPINION_PENDING_REFETCH_MS = 5_000;
+/** 전·후 사진 서명 주소가 끝나기 이만큼 전에 목록을 다시 받는다(ms). */
+const OPINION_URL_MARGIN_MS = 30_000;
+const OPINION_URL_MIN_REFETCH_MS = 15_000;
+
+/**
+ * 구역 목록을 다시 받을 간격(S15P31A101-631). AI 의견이 대기 중(PENDING)이면 짧게, 전·후 사진 서명 주소가 있으면 끝나기 전에,
+ * 둘 다 없으면 다시 받지 않는다(false).
+ */
+export function planRefetchIntervalMs(
+  plan: SetupZonePlanView | undefined,
+  now: number = Date.now(),
+): number | false {
+  if (!plan) return false;
+  const opinions = plan.items.map((item) => item.ai_opinion).filter((o) => o != null);
+  if (opinions.some((o) => o.status === 'PENDING')) return OPINION_PENDING_REFETCH_MS;
+  const expiries = opinions
+    .map((o) => o.image_expires_at_ms)
+    .filter((t): t is number => typeof t === 'number');
+  if (expiries.length === 0) return false;
+  return Math.max(Math.min(...expiries) - now - OPINION_URL_MARGIN_MS, OPINION_URL_MIN_REFETCH_MS);
 }
 
 /** 확인이 필요한 항목 중 높이 차이 판정이 '변화 없음(UNCHANGED)'인 구역 수(S15P31A101-630). */

@@ -2,6 +2,7 @@ import { ALARM_BORDER } from '@/features/events/alarmTone';
 import { SEVERITY_LABEL } from '@/features/events/constants';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { useSetupZoneReview } from '@/features/setup/useSetupZoneReview';
+import { ZoneOpinionBlock } from '@/features/setup/ZoneOpinionView';
 import type { Zone, ZoneHeightChangeStatus } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
 import { zonesForList } from '@/features/zones/zoneListOrder';
@@ -23,6 +24,8 @@ import { useMemo } from 'react';
 // 변경 의심(CHANGE_SUSPECTED)·변화 없음(UNCHANGED)·모름(UNKNOWN)을 표시한다.
 // 변경 의심 구역을 먼저 정렬·강조하고, 변화 없음은 '변화 없음 N개 모두 확인' 단추로 한 번에 확인을 권유하며, 모름·변경 의심은 개별 확인한다.
 // 확인 필요가 남아 있으면 세팅을 완료할 수 없다(서버 409 SETUP_ZONES_UNCONFIRMED).
+// 변경 의심 구역은 AI 의견(유지·수정·삭제 권고 한 줄)과 이전·이번 세팅 사진을 행 아래에 보인다(S15P31A101-631). 의견은 제안일 뿐
+// 확인·수정·삭제는 관리자가 직접 누른다.
 
 const ROW_BUTTON_CLASS = 'h-7 shrink-0 px-2 text-[12px]';
 
@@ -137,61 +140,67 @@ export function SetupZoneReviewCard({ sessionId }: { sessionId: string }) {
                 data-needs-review={zone.needsReview ? 'true' : undefined}
                 data-height-change={heightStatus}
                 className={cn(
-                  'flex items-center gap-1.5 rounded-md border-l-[3px] py-1 pl-2',
+                  'flex flex-col gap-1 rounded-md border-l-[3px] py-1 pl-2',
                   ALARM_BORDER[zone.severity],
                   suspected && zone.needsReview && 'bg-amber-500/10 ring-1 ring-amber-500/40',
                   zone.zoneId === selectedZoneId && 'bg-foreground/10',
                 )}
               >
-                <span className="sr-only">{`${SEVERITY_LABEL[zone.severity]} `}</span>
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 truncate',
-                    !zone.needsReview && 'text-muted-foreground',
-                    suspected && zone.needsReview && 'font-medium',
-                  )}
-                >
-                  {name}
-                </span>
-                {heightStatus && (
+                <div className="flex items-center gap-1.5">
+                  <span className="sr-only">{`${SEVERITY_LABEL[zone.severity]} `}</span>
                   <span
                     className={cn(
-                      'shrink-0 rounded border px-1.5 py-0.5 text-[11px] leading-none',
-                      HEIGHT_BADGE_CLASS[heightStatus],
+                      'min-w-0 flex-1 truncate',
+                      !zone.needsReview && 'text-muted-foreground',
+                      suspected && zone.needsReview && 'font-medium',
                     )}
                   >
-                    {HEIGHT_STATUS_LABEL[heightStatus]}
+                    {name}
                   </span>
-                )}
-                {zone.needsReview ? (
+                  {heightStatus && (
+                    <span
+                      className={cn(
+                        'shrink-0 rounded border px-1.5 py-0.5 text-[11px] leading-none',
+                        HEIGHT_BADGE_CLASS[heightStatus],
+                      )}
+                    >
+                      {HEIGHT_STATUS_LABEL[heightStatus]}
+                    </span>
+                  )}
+                  {zone.needsReview ? (
+                    <Button
+                      disabled={review.busy}
+                      aria-label={`${name} 확인`}
+                      onClick={() => review.confirm(zone.zoneId)}
+                      className={cn(PRIMARY_BUTTON_CLASS, ROW_BUTTON_CLASS)}
+                    >
+                      확인
+                    </Button>
+                  ) : (
+                    <span className="shrink-0 text-[11.5px] text-muted-foreground">확인됨</span>
+                  )}
                   <Button
-                    disabled={review.busy}
-                    aria-label={`${name} 확인`}
-                    onClick={() => review.confirm(zone.zoneId)}
-                    className={cn(PRIMARY_BUTTON_CLASS, ROW_BUTTON_CLASS)}
+                    variant="secondary"
+                    aria-label={`${name} 수정`}
+                    onClick={() => edit(zone.zoneId)}
+                    className={cn(BUTTON_CLASS, ROW_BUTTON_CLASS)}
                   >
-                    확인
+                    수정
                   </Button>
-                ) : (
-                  <span className="shrink-0 text-[11.5px] text-muted-foreground">확인됨</span>
-                )}
-                <Button
-                  variant="secondary"
-                  aria-label={`${name} 수정`}
-                  onClick={() => edit(zone.zoneId)}
-                  className={cn(BUTTON_CLASS, ROW_BUTTON_CLASS)}
-                >
-                  수정
-                </Button>
-                <Button
-                  variant="secondary"
-                  disabled={review.busy}
-                  aria-label={armed ? `${name} 삭제 확인` : `${name} 삭제`}
-                  onClick={() => remove(zone.zoneId)}
-                  className={cn(armed ? ARMED_DELETE_CLASS : DANGER_BUTTON_CLASS, ROW_BUTTON_CLASS)}
-                >
-                  {armed ? '삭제 확인' : '삭제'}
-                </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={review.busy}
+                    aria-label={armed ? `${name} 삭제 확인` : `${name} 삭제`}
+                    onClick={() => remove(zone.zoneId)}
+                    className={cn(
+                      armed ? ARMED_DELETE_CLASS : DANGER_BUTTON_CLASS,
+                      ROW_BUTTON_CLASS,
+                    )}
+                  >
+                    {armed ? '삭제 확인' : '삭제'}
+                  </Button>
+                </div>
+                {zone.aiOpinion && <ZoneOpinionBlock zoneName={name} opinion={zone.aiOpinion} />}
               </li>
             );
           })}

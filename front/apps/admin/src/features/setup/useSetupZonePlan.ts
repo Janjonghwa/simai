@@ -1,4 +1,5 @@
 import { requestSetupZonePlan, setupZonePlanKey } from '@/features/setup/api';
+import { planRefetchIntervalMs } from '@/features/setup/setupZonePlan';
 import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 
@@ -13,6 +14,8 @@ export function useSetupZonePlanQuery(sessionId: string | null) {
     enabled: sessionId !== null,
     staleTime: 0,
     refetchOnWindowFocus: false,
+    // AI 의견 대기 중이면 짧게, 전·후 사진 서명 주소가 끝나기 전에 다시 받는다(S15P31A101-631)
+    refetchInterval: (query) => planRefetchIntervalMs(query.state.data),
     retry: false,
   });
 }

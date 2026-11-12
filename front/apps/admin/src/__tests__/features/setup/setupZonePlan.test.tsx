@@ -4,11 +4,14 @@ import {
   confirmPlanItems,
   confirmUnchangedPlanItems,
   liveZonesAsItems,
+  OPINION_PENDING_REFETCH_MS,
   pendingReviewCount,
+  planRefetchIntervalMs,
   planZonesView,
   removePlanItem,
   SETUP_NEW_ZONE_PREFIX,
   SetupZonePlanEditError,
+  toPlanRequestItems,
   unchangedPendingReviewCount,
   type SetupZonePlanItem,
   type SetupZonePlanView,
@@ -266,6 +269,42 @@ describe('확인 필요(S15P31A101-629)', () => {
     expect(afterUnchanged.find((i) => i.zone_id === second)?.needs_review).toBe(true);
     expect(afterUnchanged.find((i) => i.zone_id === 'z-06')?.needs_review).toBe(true);
     expect(confirmUnchangedPlanItems(afterUnchanged)).toBeNull();
+  });
+
+  it('AI 의견(S15P31A101-631): 화면 구역에 의견을 싣고, 대기 중이면 짧게·사진 주소가 끝나기 전에 목록을 다시 받으며 저장 본문에는 보내지 않는다', () => {
+    const [first, second] = liveIds as [string, string];
+    const now = 1_000_000;
+    const box: [number, number, number, number] = [0.1, 0.1, 0.5, 0.5];
+    const opinion = {
+      status: 'OPINION' as const,
+      reason: null,
+      recommended_action: 'MODIFY' as const,
+      rationale: '단상이 옮겨졌습니다.',
+      confidence: 0.6,
+      camera_id: 'cam1',
+      before: { image_url: 'https://s/b.jpg', crop_box_norm: box },
+      after: { image_url: 'https://s/a.jpg', crop_box_norm: box },
+      image_expires_at_ms: now + 300_000,
+    };
+    const plan: SetupZonePlanView = {
+      ...emptyPlan,
+      items: [{ ...pending(first), ai_opinion: opinion }, pending(second)],
+    };
+    const zones = readZones(planZonesView(plan, MOCK_ZONES));
+    expect(zones.find((z) => z.zoneId === first)?.aiOpinion?.recommended_action).toBe('MODIFY');
+    expect(zones.find((z) => z.zoneId === second)?.aiOpinion).toBeUndefined();
+
+    expect(planRefetchIntervalMs(plan, now)).toBe(300_000 - 30_000);
+    const waiting: SetupZonePlanView = {
+      ...plan,
+      items: [{ ...pending(first), ai_opinion: { ...opinion, status: 'PENDING' } }],
+    };
+    expect(planRefetchIntervalMs(waiting, now)).toBe(OPINION_PENDING_REFETCH_MS);
+    expect(planRefetchIntervalMs(emptyPlan, now)).toBe(false);
+    expect(planRefetchIntervalMs(undefined, now)).toBe(false);
+
+    const body = toPlanRequestItems(plan.items);
+    expect(body.every((item) => !('ai_opinion' in item))).toBe(true);
   });
 });
 

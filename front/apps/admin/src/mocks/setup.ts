@@ -430,6 +430,52 @@ export interface RetrySetupRecord {
   body: RetrySetupSessionBody;
 }
 
+/** 세팅 대표 프레임처럼 보이는 가짜 사진(SVG 데이터 주소). after 면 단상 위 상자가 치워진 모습이다. */
+function mockSetupFrame(after: boolean): string {
+  const box = after
+    ? ''
+    : '<rect x="300" y="250" width="120" height="90" fill="#b07a3c" stroke="#5a3a17" stroke-width="3"/>';
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">` +
+    `<rect width="640" height="480" fill="#d9dde3"/>` +
+    `<polygon points="0,300 640,300 640,480 0,480" fill="#a9b0ba"/>` +
+    `<rect x="240" y="330" width="240" height="60" fill="#7c8592"/>` +
+    box +
+    `<text x="16" y="32" font-size="22" fill="#334">${after ? '이번 세팅' : '이전 세팅'} · cam1</text>` +
+    `</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** 변경 의심 구역 AI 의견 예시(S15P31A101-631). 첫 변경 의심 구역은 의견(삭제 권고), 나머지는 의견 없음. */
+function mockZoneOpinion(zoneId: string, zones: readonly { zone_id: string; status: string }[]) {
+  const first = zones.find((z) => z.status === 'CHANGE_SUSPECTED')?.zone_id === zoneId;
+  const photos = {
+    camera_id: 'cam1',
+    before: { image_url: mockSetupFrame(false), crop_box_norm: [0.3, 0.4, 0.8, 0.9] },
+    after: { image_url: mockSetupFrame(true), crop_box_norm: [0.3, 0.4, 0.8, 0.9] },
+    image_expires_at_ms: Date.now() + 5 * 60_000,
+  };
+  return first
+    ? {
+        status: 'OPINION',
+        reason: null,
+        recommended_action: 'REMOVE',
+        rationale: '단상 위 상자가 치워져 바닥만 남았습니다. 구역 삭제를 검토하세요.',
+        confidence: 0.7,
+        model_version: 'nvidia/Cosmos-Reason2-2B',
+        ...photos,
+      }
+    : {
+        status: 'NO_OPINION',
+        reason: 'VLM_FAILED',
+        recommended_action: null,
+        rationale: null,
+        confidence: null,
+        model_version: null,
+        ...photos,
+      };
+}
+
 export function createSetupMock(options: SetupMockOptions = {}) {
   const { now = Date.now } = options;
   const state: SetupMockState = {
@@ -576,7 +622,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         compared_cells: 0,
         changed_cells: null,
       };
-      return { ...item, height_change: found };
+      // 변경 의심 구역은 AI 의견과 전후 사진 예시를 붙인다(S15P31A101-631). 첫 구역은 의견, 그 밖은 의견 없음(사유)
+      const ai_opinion =
+        found.status === 'CHANGE_SUSPECTED' ? mockZoneOpinion(zoneId, zh.zones) : undefined;
+      return { ...item, height_change: found, ...(ai_opinion ? { ai_opinion } : {}) };
     });
     return {
       setup_session_id: id,

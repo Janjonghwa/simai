@@ -2640,6 +2640,16 @@ class VlmZoneDraftCandidateKind(
     root: Literal['ELEVATED_WORK_SURFACE', 'OPENING', 'FLOOR_EDGE']
 
 
+class VlmZoneDraftCropBoxNormItem(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class VlmZoneDraftCropBoxNorm(RootModel[list[VlmZoneDraftCropBoxNormItem]]):
+    root: Annotated[
+        list[VlmZoneDraftCropBoxNormItem], Field(max_length=4, min_length=4)
+    ]
+
+
 class TopHeightM(RootModel[StrictFloat]):
     root: Annotated[StrictFloat, Field(gt=0.0)]
 
@@ -2669,8 +2679,41 @@ class ModelVersion(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
+class VlmZoneDraftSuspectedZoneInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    zone_id: Annotated[StrictStr, Field(max_length=100, min_length=1)]
+    name: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = MISSING
+    zone_kind: Annotated[StrictStr | MISSING, Field(max_length=64, min_length=1)] = (
+        MISSING
+    )
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=64, min_length=3)]
+    z_min_m: StrictFloat | None | MISSING = MISSING
+    z_max_m: StrictFloat | None | MISSING = MISSING
+    changed_area_ratio: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = (
+        MISSING
+    )
+    max_height_diff_m: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = MISSING
+    max_diff_xy: DefsVec2 | None | MISSING = MISSING
+
+
 class VlmZoneDraftVlmOpinionStatus(RootModel[Literal['VLM', 'NO_OPINION']]):
     root: Literal['VLM', 'NO_OPINION']
+
+
+class Rationale(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+
+
+class VlmZoneDraftZoneOpinionReason(
+    RootModel[Literal['NO_PREVIOUS_FRAMES', 'PREVIOUS_FRAMES_UNAVAILABLE', 'CURRENT_FRAMES_UNAVAILABLE', 'CALIBRATION_UNAVAILABLE', 'NOT_VISIBLE', 'VLM_UNAVAILABLE', 'VLM_FAILED', 'TIME_BUDGET', 'ZONE_LIMIT']]
+):
+    root: Literal['NO_PREVIOUS_FRAMES', 'PREVIOUS_FRAMES_UNAVAILABLE', 'CURRENT_FRAMES_UNAVAILABLE', 'CALIBRATION_UNAVAILABLE', 'NOT_VISIBLE', 'VLM_UNAVAILABLE', 'VLM_FAILED', 'TIME_BUDGET', 'ZONE_LIMIT']
+
+
+class VlmZoneDraftZoneOpinionStatus(RootModel[Literal['OPINION', 'NO_OPINION']]):
+    root: Literal['OPINION', 'NO_OPINION']
 
 
 class Payload44(BaseModel):
@@ -4462,22 +4505,33 @@ class VlmZoneDraftInput(BaseModel):
     frames: Annotated[list[VlmZoneDraftFrameInput] | MISSING, Field(max_length=8)] = (
         MISSING
     )
+    suspected_zones: Annotated[
+        list[VlmZoneDraftSuspectedZoneInput] | MISSING, Field(max_length=8)
+    ] = MISSING
+    previous_setup_session_id: DefsUuid | MISSING = MISSING
+    previous_calibration_version: DefsVersionId | MISSING = MISSING
+    previous_calibration_ref: DefsObjectUri | MISSING = MISSING
+    previous_calibration_hash: DefsSha256 | MISSING = MISSING
+    previous_frames: Annotated[
+        list[VlmZoneDraftFrameInput] | MISSING, Field(max_length=8)
+    ] = MISSING
 
 
-class VlmZoneDraftResult(BaseModel):
+class VlmZoneDraftZoneOpinionItem(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    setup_session_id: DefsUuid
-    site_id: DefsVersionId
-    calibration_version: DefsVersionId
-    preview_scene_version: DefsVersionId
-    safety_use: Literal[False]
-    status: Literal['SUCCEEDED', 'NO_OPINION']
+    zone_id: Annotated[StrictStr, Field(max_length=100, min_length=1)]
+    status: VlmZoneDraftZoneOpinionStatus
+    reason: VlmZoneDraftZoneOpinionReason | None
+    recommended_action: Literal['KEEP', 'MODIFY', 'REMOVE'] | None
+    rationale: Rationale | None
+    confidence: Confidence | None
+    camera_id: DefsCameraId | None
+    before_crop_box_norm: VlmZoneDraftCropBoxNorm | None
+    after_crop_box_norm: VlmZoneDraftCropBoxNorm | None
     model_version: ModelVersion | None
     prompt_version: DefsVersionId
-    latency_ms: DefsDurationMs
-    drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
 
 
 class Payload50(BaseModel):
@@ -5044,6 +5098,25 @@ class TbmFormDraftResult(BaseModel):
     generator: Generator
     steps: Annotated[
         list[TbmFormDraftResultPipelineStep] | MISSING, Field(max_length=10)
+    ] = MISSING
+
+
+class VlmZoneDraftResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    site_id: DefsVersionId
+    calibration_version: DefsVersionId
+    preview_scene_version: DefsVersionId
+    safety_use: Literal[False]
+    status: Literal['SUCCEEDED', 'NO_OPINION']
+    model_version: ModelVersion | None
+    prompt_version: DefsVersionId
+    latency_ms: DefsDurationMs
+    drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
+    zone_opinions: Annotated[
+        list[VlmZoneDraftZoneOpinionItem] | MISSING, Field(max_length=8)
     ] = MISSING
 
 

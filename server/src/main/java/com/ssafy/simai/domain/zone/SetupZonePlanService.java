@@ -7,6 +7,7 @@ import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
 import com.ssafy.simai.domain.setup.SetupCameraCheck;
 import com.ssafy.simai.domain.setup.SetupZoneHeightChanges;
+import com.ssafy.simai.domain.setup.SetupZoneOpinions;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Timestamp;
@@ -73,9 +74,11 @@ public class SetupZonePlanService {
     private final TransactionTemplate transaction;
     private final ZoneRepository zones;
     private final StaticObjectRepository surfaces;
+    private final SetupZoneOpinions opinions;
 
     public SetupZonePlanService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, SiteLookup sites, Clock clock,
-            TransactionTemplate transaction, ZoneRepository zones, StaticObjectRepository surfaces) {
+            TransactionTemplate transaction, ZoneRepository zones, StaticObjectRepository surfaces,
+            SetupZoneOpinions opinions) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.sites = sites;
@@ -83,6 +86,7 @@ public class SetupZonePlanService {
         this.transaction = transaction;
         this.zones = zones;
         this.surfaces = surfaces;
+        this.opinions = opinions;
     }
 
     /** 응답: {setup_session_id, items, revision, updated_at}. 저장한 적이 없으면 빈 목록·revision 0 */
@@ -205,6 +209,8 @@ public class SetupZonePlanService {
                     rs.getString("zone_height_changes"), rs.getBoolean("has_previous_scene"));
         }).stream().findFirst().orElse(new SessionHeightState(false, null, null, false));
         Map<String, JsonNode> heightByZone = SetupZoneHeightChanges.indexByZoneId(mapper, heightState.zoneHeightChanges());
+        // 변경 의심 구역 VLM 의견과 전·후 사진(S15P31A101-631). 조회·저장 응답에만 붙고 저장 요청 본문으로는 받지 않는다
+        Map<String, JsonNode> opinionByZone = opinions.forSession(id);
 
         record Row(String items, int revision, Timestamp updatedAt) { }
         List<Row> rows = jdbc.query("""
@@ -224,6 +230,10 @@ public class SetupZonePlanService {
                         itemObj.set("height_change", SetupZoneHeightChanges.resolveForZone(
                                 mapper, zoneId, heightByZone, heightState.reuse(),
                                 heightState.anchorAccepted(), heightState.hasPreviousScene()));
+                        JsonNode opinion = zoneId == null ? null : opinionByZone.get(zoneId);
+                        if (opinion != null) {
+                            itemObj.set("ai_opinion", opinion);
+                        }
                     }
                 }
             }
