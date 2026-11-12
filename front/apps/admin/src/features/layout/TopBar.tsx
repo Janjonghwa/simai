@@ -21,7 +21,7 @@ import { Link } from '@tanstack/react-router';
 import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
 
 // 상단 바는 로고·현장명·시계·경보 소리 버튼(확인 권한이 있는 계정만)·관리자 메뉴만 둔다(관제 데모와 같다). 상태 값(System Health·데이터 연령·카메라·보정·구성·장면)은
-// 시스템 상태 화면에서 보고, 장애·연결 끊김은 상단 바 아래 장애 띠가 알린다.
+// 시스템 상태 화면에서 본다.
 
 const NONE = '—';
 

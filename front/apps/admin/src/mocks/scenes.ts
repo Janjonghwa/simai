@@ -14,7 +14,7 @@ const SIGNED_URL_TTL_MS = 5 * 60_000;
 const MOCK_CALIBRATION_VERSION = 'cal-mock-1';
 
 /** 서버가 Scene 버전으로 받는 형식(SceneService.SCENE_VERSION). 어긋나면 보이는 Scene 이 없어 404 다. */
-const SCENE_VERSION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+const SCENE_VERSION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,159}$/;
 
 /**
  * 아직 확정되지 않은(CANDIDATE) 보이는 Scene 의 버전 앞부분: 세팅의 미리보기·정밀 3D 맵(mocks/setup.ts), 보충 굽기

@@ -346,8 +346,12 @@ describe('설치 · 보정 1단계 화면', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     const dialog = screen.getByRole('dialog', { name: '3D 공간' });
-    const reuse = within(dialog).getByRole('button', { name: /^이전 모델 쓰기/ });
-    expect((reuse as HTMLButtonElement).disabled).toBe(true);
+    const reuse = within(dialog).getByRole('button', {
+      name: /^이전 모델 쓰기/,
+    }) as HTMLButtonElement;
+    // 지금 관제 맵이 기본 바닥(확정된 맵 없음)이라 이전 모델 쓰기는 막히고 이유를 보인다.
+    await waitFor(() => expect(reuse.textContent).toContain('이전 모델이 없어요'));
+    expect(reuse.disabled).toBe(true);
     // false = preventDefault 가 불렸다(Esc 로 닫히지 않는다).
     expect(fireEvent(dialog, new Event('cancel', { cancelable: true }))).toBe(false);
     expect(screen.getByRole('dialog', { name: '3D 공간' })).toBeTruthy();
@@ -355,7 +359,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
     pickNewModel();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
-    // 서버가 모르는 필드(mode 등)는 보내지 않는다.
+    // 새 모델은 mode 를 보내지 않는다(생략하면 서버가 NEW 로 본다).
     expect(Object.keys(setupMock.submittedBodies[0]!).sort()).toEqual([
       'camera_heights_m',
       'work_unit_id',
@@ -985,8 +989,9 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
   }, 20_000);
 
   it('이 세션의 미리보기 맵을 버전으로 받아(/view, 지금 관제 Scene 과 무관) 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
-    const requested = trackRequestedPaths();
     const { sessionId } = await startSetupSession();
+    // 방식 고르기 창이 열려 있는 동안 이전 모델 쓰기를 가리려고 받는 현재 맵은 세션을 시작하기 전 일이라 세지 않는다.
+    const requested = trackRequestedPaths();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
 
     const viewport = await screen.findByTestId('setup-preview-viewport', undefined, POLL_WAIT);
@@ -1014,7 +1019,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(true);
   }, 20_000);
 
-  it('세션의 Scene 을 받지 못하면(/view 404) 3D 칸 없이 진행 카드 열만 보인다', async () => {
+  it('세션의 Scene 을 받지 못하면(/view 404) 빈 3D 칸(로딩 표시)과 진행 카드 열이 보인다', async () => {
     server.use(
       http.get('*/api/scenes/:sceneVersion/view', () =>
         HttpResponse.json(
@@ -1023,13 +1028,15 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
         ),
       ),
     );
-    const requested = trackRequestedPaths();
     const { sessionId } = await startSetupSession();
+    const requested = trackRequestedPaths();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
 
     await waitFor(() => expect(requested).toContain('/api/scenes/scene-preview-1/view'), POLL_WAIT);
     expect(await screen.findByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
-    expect(screen.queryByTestId('setup-preview-viewport')).toBeNull();
+    const viewport = screen.getByTestId('setup-preview-viewport');
+    expect(within(viewport).queryByTestId('viewer3d')).toBeNull();
+    expect(viewport.getAttribute('aria-busy')).toBe('true');
     expect(requested).not.toContain('/api/scenes/current');
   }, 20_000);
 
@@ -1046,8 +1053,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
   }, 20_000);
 
   it('미리보기 맵이 도착해도 저절로 넘어가지 않고, 정밀 3D 맵이 끝난 뒤 구역 단계에 가면 수락해 만든 구역은 Scene 이 새 버전으로 바뀌어도 남고 3D 는 그 버전으로 바뀐다', async () => {
-    const requested = trackRequestedPaths();
     const { sessionId } = await startSetupSession();
+    const requested = trackRequestedPaths();
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
 
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });

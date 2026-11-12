@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 
 /**
  * 연결이 (다시) 열릴 때마다 지금 System Health 를 한 번 받아 채운다(명세 FR-5, 12.6 GET /api/health).
- * /topic/health 는 1초마다 오므로, 그 전까지 상단 바·시스템 상태·장애 띠가 비지 않게 한다.
+ * /topic/health 는 1초마다 오므로, 그 전까지 상단 바·시스템 상태가 비지 않게 한다.
  * 그 사이 더 새 health 를 받았으면 덮지 않고(seedHealth), 실패하면 /topic/health 를 기다린다(알리지 않는다).
  */
 export function useHealthSnapshot() {

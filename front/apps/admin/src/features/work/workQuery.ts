@@ -17,7 +17,7 @@ export function invalidateWork(client: QueryClient): Promise<unknown> {
 /**
  * 작업 시작·종료 뒤: 위에 더해 서버가 그때 발행하는 구성 묶음(안전모 요구 등, -518)·구역·작업면 적용 상태도 다시 받게 한다.
  * 서버가 시작·종료 때 새 구성 묶음을 발행하기 때문이다(features/tbm/useWorkSession 과 같다).
- * 관제가 보는 작업 목록(TBM_WORKS_KEY: 장애 띠·대기 화면·작업 바)도 15초 주기를 기다리지 않고 바로 다시 받는다.
+ * 관제가 보는 작업 목록(TBM_WORKS_KEY: 대기 화면·작업 바)도 15초 주기를 기다리지 않고 바로 다시 받는다.
  * 보고서를 먼저 새로 받고 나서 하루 작업·달력을 받는다. 종료하면 보고서의 wrap_up_status 가 GENERATING 으로 바뀌는데,
  * 하루 작업(ENDED)이 먼저 오면 종료 화면이 그 표시 없는 낡은 보고서로 마운트돼 `완료` 가 잠깐 켜지고 종료 미팅이 빈 채 보낼 수 있다.
  */

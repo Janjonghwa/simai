@@ -200,10 +200,12 @@ describe('CamSplitPanel 관리자', () => {
     expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
   });
 
-  it('어느 카메라인지 모르면(ANY_CAMERA) 첫 카메라를 보인다', () => {
+  it('어느 카메라인지 모르면(ANY_CAMERA) 중계가 알린 순서와 상관없이 이름이 앞선 카메라를 보인다', () => {
+    openRelay(['cam_C', 'cam_A', 'cam_D', 'cam_B']);
     openSplit(ANY_CAMERA);
     renderPanel();
 
+    expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_A');
     expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
   });
@@ -235,14 +237,14 @@ describe('CamSplitPanel 관리자', () => {
 });
 
 describe('CamSplitPanel 관리자 · 중계가 이어지지 않았을 때', () => {
-  it('그림 없이 Tier 0 카메라로 탭을 만들고, 칸에 연결 상태를 보인다', () => {
+  it('그림 없이 Tier 0 카메라로 탭을 만들고, 칸에 카메라 상태를 보인다', () => {
     seedRealtime();
     useCctvStore.getState().setLink('unavailable');
     openSplit('cam_C');
     renderPanel();
 
     expect(tabs()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
-    expect(screen.getByText('중계 끊김')).toBeTruthy();
+    expect(screen.getByLabelText('cam_C 상태 실시간')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
   });
 

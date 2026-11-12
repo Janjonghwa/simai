@@ -40,5 +40,7 @@ export interface ReportPanelProps {
    * 세팅 완료(-615) 커밋 뒤 서버가 초안을 시작하므로(작업내용을 골랐을 때), 시작된 뒤(GENERATING·SUCCEEDED)에는 단추가 보이지 않는다.
    */
   draftable?: boolean;
+  /** 세팅이 끝났는지. 끝났는데 서버가 아직 초안을 시작하지 않은 동안(PENDING)도 종이를 생성 중으로 가린다. 세팅이 끝난 뒤 화면(작업 전 확인)에서만 켠다. */
+  setupDone?: boolean;
   className?: string;
 }

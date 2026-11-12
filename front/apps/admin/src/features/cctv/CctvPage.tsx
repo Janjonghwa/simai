@@ -1,7 +1,6 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import {
   framesArriving,
-  isStale,
   remoteNotice,
   STATE_LABEL,
   stateText,
@@ -39,24 +38,11 @@ const FRAME_AGE_TICK_MS = 250;
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-sm backdrop-blur-[4px]';
 
-/** 칸의 마지막 프레임 시각(field)이 몇 초 전인지. 이 훅을 쓰는 칸만 다시 그린다. */
-function useSecondsSince(
-  cameraId: string,
-  field: 'lastCaptureMs' | 'lastDecodedMs',
-): number | undefined {
+/** 칸이 마지막 프레임을 그린 지 몇 초인지. 이 훅을 쓰는 칸만 다시 그린다. */
+function useSecondsSinceFrame(cameraId: string): number | undefined {
   const now = useNow(FRAME_AGE_TICK_MS);
-  const at = useCctvStore((s) => s.views[cameraId]?.[field]);
+  const at = useCctvStore((s) => s.views[cameraId]?.lastDecodedMs);
   return frameAgeSec(at, now);
-}
-
-function FrameAge({ cameraId }: { cameraId: string }) {
-  const age = useSecondsSince(cameraId, 'lastCaptureMs');
-  if (age === undefined) return null;
-  return (
-    <span className={cn('font-mono tabular-nums', isStale(age) && 'text-delay')}>
-      {age.toFixed(1)}초
-    </span>
-  );
 }
 
 /** 칸 오른쪽 위 상태. LIVE 점은 프레임이 실제로 들어올 때만 켠다. */
@@ -69,7 +55,7 @@ function StateBadge({
   state: CameraState;
   lastClock?: string;
 }) {
-  const sinceFrameSec = useSecondsSince(cameraId, 'lastDecodedMs');
+  const sinceFrameSec = useSecondsSinceFrame(cameraId);
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
   const live = state === 'live' && framesArriving(phase, link, sinceFrameSec);
@@ -115,7 +101,7 @@ function ZoomMap({ view }: { view: PanZoomView }) {
   );
 }
 
-/** 카메라 영상 칸. 이 화면의 4분할과 실시간 관제의 「cam 으로 확인」 패널이 함께 쓴다. */
+/** 카메라 영상 칸. 이 화면의 4분할과 실시간 관제의 「CCTV로 확인」 패널이 함께 쓴다. 왼쪽 위에는 카메라 이름만 둔다. */
 export function CameraTile({
   cameraId,
   attach,
@@ -152,11 +138,7 @@ export function CameraTile({
         )}
         style={{ transform: panZoomTransform(view) }}
       />
-      <span className={cn(CAPTION, 'top-2 left-2')}>
-        <span className="font-mono font-semibold">{cameraId}</span>
-        <span className={cn(!playing && 'font-semibold')}>{tileLabel(phase, link)}</span>
-        <FrameAge cameraId={cameraId} />
-      </span>
+      <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')}>{cameraId}</span>
       <StateBadge cameraId={cameraId} state={state} lastClock={lastClock} />
       <ZoomMap view={view} />
     </>

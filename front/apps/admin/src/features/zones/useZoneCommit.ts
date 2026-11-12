@@ -29,7 +29,7 @@ export interface ZoneCommitInput {
   shape: ZoneShape | null;
   form: ZoneForm;
   draft: TargetDraft | undefined;
-  /** 지금 보이는 작업면. 새 구역은 늘 있다(고치지 않았으면 기본 작업면). */
+  /** 지금 보이는 작업면. 새 구역은 고소 작업면을 체크했을 때만 있다. */
   surface: SurfaceDraft | null;
   linked: WorkSurface | null;
   /** 3D 에서 고른, 어느 구역에도 이어지지 않은 작업면. */
@@ -150,8 +150,7 @@ export function useZoneCommit(input: ZoneCommitInput) {
   };
 
   const add = async () => {
-    if (zone || !shape || !input.addReady || busy || (!surface && input.workLayoutId == null))
-      return;
+    if (zone || !shape || !input.addReady || busy) return;
     if (input.workLayoutId != null) {
       try {
         const id = await run(() =>
@@ -173,7 +172,6 @@ export function useZoneCommit(input: ZoneCommitInput) {
       }
       return;
     }
-    if (!surface) return;
     const request = createRequestOf({ form, shape, surface });
     await send(request, (done) => {
       // 새 구역 양식은 처음 값으로 돌리고 만든 구역을 고른다.

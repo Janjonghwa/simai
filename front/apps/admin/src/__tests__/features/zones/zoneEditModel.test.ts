@@ -275,16 +275,19 @@ describe('작업면 구역과 받은 구역 비교', () => {
     { severity: 'HIGH', judgeType: 'VOLUME_3D' },
   );
 
-  it('모양·높이·경고·입체 판정이 모두 같으면 이미 작업면을 따르는 구역이다', () => {
+  it('모양·높이·입체 판정이 모두 같으면 이미 작업면을 따르는 구역이다', () => {
     expect(zoneFollowsSurface(matching, shape)).toBe(true);
   });
 
-  it('하나라도 다르면 따르지 않는다(모양·높이·등급·판정 유형)', () => {
+  it('심각도는 사용자가 고르므로 위험이어도 작업면을 따르는 구역이다', () => {
+    expect(zoneFollowsSurface({ ...matching, severity: 'CRITICAL' }, shape)).toBe(true);
+  });
+
+  it('모양·높이·판정 유형 중 하나라도 다르면 따르지 않는다', () => {
     expect(
       zoneFollowsSurface({ ...matching, polygon: [...matching.polygon].reverse() }, shape),
     ).toBe(false);
     expect(zoneFollowsSurface({ ...matching, zBounds: [0, 2.5] }, shape)).toBe(false);
-    expect(zoneFollowsSurface({ ...matching, severity: 'CRITICAL' }, shape)).toBe(false);
     expect(zoneFollowsSurface({ ...matching, judgeType: 'GROUND_FOOTPRINT' }, shape)).toBe(false);
     expect(zoneFollowsSurface(matching, surfaceZoneShape({ ...geometry, yawRad: 0.3 }))).toBe(
       false,

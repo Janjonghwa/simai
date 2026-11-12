@@ -8,10 +8,16 @@ import {
   type SupplementState,
 } from '@/features/setup/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-afterEach(cleanup);
+const { api } = vi.hoisted(() => ({ api: vi.fn() }));
+vi.mock('@/lib/api', () => ({ api }));
+
+afterEach(() => {
+  cleanup();
+  api.mockReset();
+});
 
 const SESSION_ID = 'sess-1';
 
@@ -24,6 +30,27 @@ const uploadedFile = supplementMediaSchema.parse({
   status: 'UPLOADED',
   created_at_ms: 1,
   uploaded_at_ms: 2,
+});
+
+const appliedRebake = supplementRebakeSchema.parse({
+  rebake_id: 'rb-1',
+  status: 'SUCCEEDED',
+  progress_pct: 100,
+  media_ids: ['sup-1'],
+  outcome: 'APPLIED',
+  scene_activated: true,
+  requested_at_ms: 1,
+  completed_at_ms: 5,
+});
+
+const failedRebake = supplementRebakeSchema.parse({
+  rebake_id: 'rb-1',
+  status: 'FAILED',
+  progress_pct: 40,
+  media_ids: ['sup-1'],
+  failure_message: '굽지 못했습니다',
+  requested_at_ms: 1,
+  completed_at_ms: 5,
 });
 
 const runningRebake = supplementRebakeSchema.parse({
@@ -59,14 +86,28 @@ function session(patch: Partial<SupplementState> = {}): SetupSessionResponse {
 function renderModal(patch: Partial<SupplementState> = {}) {
   const onNext = vi.fn();
   const onCancel = vi.fn();
+  const onRebaked = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const ui = (next: Partial<SupplementState>) => (
     <QueryClientProvider client={client}>
-      <SupplementModal session={session(patch)} onNext={onNext} onCancel={onCancel} />
-    </QueryClientProvider>,
+      <SupplementModal
+        session={session(next)}
+        onNext={onNext}
+        onCancel={onCancel}
+        onRebaked={onRebaked}
+      />
+    </QueryClientProvider>
   );
+  const { rerender } = render(ui(patch));
   const dialog = screen.getByRole('dialog', { name: '맵 보강 촬영' });
-  return { onNext, onCancel, dialog, within: within(dialog) };
+  return {
+    onNext,
+    onCancel,
+    onRebaked,
+    dialog,
+    within: within(dialog),
+    update: (next: Partial<SupplementState>) => rerender(ui(next)),
+  };
 }
 
 describe('맵 보강 촬영 창', () => {
@@ -112,7 +153,8 @@ describe('맵 보강 촬영 창', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('올린 파일이 있으면 그 파일을 목록에 보이고 단추는 다음이며 누르면 onNext 를 부른다', () => {
+  it('맵에 아직 안 넣은 파일이 있으면 단추는 다시 굽기이고 누르면 굽기를 시작한다', async () => {
+    api.mockReturnValue(new Promise(() => undefined));
     const {
       onNext,
       onCancel,
@@ -125,12 +167,39 @@ describe('맵 보강 촬영 창', () => {
     const files = within(inDialog.getByRole('list', { name: '보강 촬영 파일' }));
     expect(files.getByText('walk.mp4')).toBeTruthy();
     expect(inDialog.queryByRole('button', { name: '건너뛰기' })).toBeNull();
-    fireEvent.click(inDialog.getByRole('button', { name: '다음' }));
-    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(inDialog.queryByRole('button', { name: '다음' })).toBeNull();
+    fireEvent.click(inDialog.getByRole('button', { name: '다시 굽기' }));
+    await waitFor(() => expect(api).toHaveBeenCalledTimes(1));
+    expect(String(api.mock.calls[0]![0])).toMatch(/supplement-rebake$/);
+    expect(onNext).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('다시 굽는 중이어도 다음으로 넘어갈 수 있다', () => {
+  it('파일이 있어도 서버가 굽게 해 주지 않으면 이유를 보이고 단추는 다음이다', () => {
+    const { onNext, within: inDialog } = renderModal({
+      media: [uploadedFile],
+      can_rebake: false,
+      rebake_blocked_reason: 'LIVE_WORK',
+    });
+    expect(inDialog.getByText(/진행 중인 작업이 있어 다시 굽지 않습니다/)).toBeTruthy();
+    expect(inDialog.queryByRole('button', { name: '다시 굽기' })).toBeNull();
+    fireEvent.click(inDialog.getByRole('button', { name: '다음' }));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('올린 파일을 다 맵에 넣었고 새로 올린 게 없으면 단추는 다음이다', () => {
+    const { onNext, within: inDialog } = renderModal({
+      media: [uploadedFile],
+      rebake: appliedRebake,
+      can_rebake: true,
+      rebake_blocked_reason: null,
+    });
+    expect(inDialog.queryByRole('button', { name: '다시 굽기' })).toBeNull();
+    fireEvent.click(inDialog.getByRole('button', { name: '다음' }));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('다시 굽는 중에는 단추가 꺼지고 굽기 취소가 보인다', () => {
     const { onNext, within: inDialog } = renderModal({
       media: [uploadedFile],
       rebake: runningRebake,
@@ -139,10 +208,48 @@ describe('맵 보강 촬영 창', () => {
     expect(inDialog.getByRole('status', { name: '다시 굽기 상태' }).textContent).toContain(
       '다시 굽는 중 40%',
     );
-    const next = inDialog.getByRole('button', { name: '다음' }) as HTMLButtonElement;
-    expect(next.disabled).toBe(false);
-    fireEvent.click(next);
-    expect(onNext).toHaveBeenCalledTimes(1);
+    const busy = inDialog.getByRole('button', { name: '다시 굽는 중' }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(inDialog.getByRole('button', { name: '다시 굽기 취소' })).toBeTruthy();
+    fireEvent.click(busy);
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it('굽는 것을 본 뒤 새 맵으로 반영되면 onRebaked 로 창을 닫는다', () => {
+    const { onRebaked, update } = renderModal({
+      media: [uploadedFile],
+      rebake: runningRebake,
+      rebake_blocked_reason: 'REBAKE_RUNNING',
+    });
+    expect(onRebaked).not.toHaveBeenCalled();
+    update({ media: [uploadedFile], rebake: appliedRebake, can_rebake: true });
+    expect(onRebaked).toHaveBeenCalledTimes(1);
+  });
+
+  it('굽기가 실패하거나 원래 맵을 유지하면 닫지 않고 결과를 보인다', () => {
+    const {
+      onRebaked,
+      update,
+      within: inDialog,
+    } = renderModal({
+      media: [uploadedFile],
+      rebake: runningRebake,
+      rebake_blocked_reason: 'REBAKE_RUNNING',
+    });
+    update({ media: [uploadedFile], rebake: failedRebake, can_rebake: true });
+    expect(onRebaked).not.toHaveBeenCalled();
+    expect(inDialog.getByRole('status', { name: '다시 굽기 상태' }).textContent).toContain(
+      '원래 맵 유지',
+    );
+  });
+
+  it('이미 반영된 굽기가 남아 있는 채 열면 저절로 닫히지 않는다', () => {
+    const { onRebaked } = renderModal({
+      media: [uploadedFile],
+      rebake: appliedRebake,
+      can_rebake: true,
+    });
+    expect(onRebaked).not.toHaveBeenCalled();
   });
 
   it('닫기 단추는 onCancel 만 부른다', () => {

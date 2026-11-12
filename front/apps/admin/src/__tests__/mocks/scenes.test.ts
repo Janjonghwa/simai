@@ -78,7 +78,7 @@ describe('Scene 보기 mock', () => {
     ['시연용 기본 Scene(DB 행이 아니다)', 'scene-demo'],
     ['대문자(형식 오류)', 'Scene-Preview-1'],
     ['점으로 시작(형식 오류)', '.scene-preview-1'],
-    ['63자 초과(형식 오류)', `scene-preview-${'a'.repeat(60)}`],
+    ['160자 초과(형식 오류)', `scene-preview-${'a'.repeat(160)}`],
   ])('%s 는 기본 바닥으로 갈음하지 않고 SCENE_VERSION_NOT_FOUND 404 다', async (_name, version) => {
     const response = await view(version);
     expect(response.status).toBe(404);

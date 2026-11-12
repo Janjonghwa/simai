@@ -247,7 +247,7 @@ describe('관제 관리자 편집 모드', () => {
   it('관제 화면을 떠나면 편집 모드만 끄고 고치던 초안은 남긴다', async () => {
     const view = renderMonitor(true);
     await screen.findByTestId('viewer3d');
-    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface'));
+    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '임시 초안' },
     });
@@ -260,16 +260,10 @@ describe('관제 관리자 편집 모드', () => {
   it('구역 등급 선택지는 CRITICAL(빨강)·HIGH(주황) 2종뿐이고 이벤트 CAUTION 표시는 유지된다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
-    // 새 구역은 작업면과 함께 시작해 등급 칸이 없다. 작업면 없이 만든 기존 구역(z-04)을 열어 본다.
-    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
     await screen.findByRole('option', { name: /개구부 구역/ });
-    act(
-      () =>
-        void fireEvent.change(screen.getByRole('combobox', { name: '구역 선택' }), {
-          target: { value: 'z-04' },
-        }),
-    );
+    // 새 구역은 경고로 시작하고 심각도를 위험·경고 중에서 고른다.
     const severity = screen.getByRole('combobox', { name: '심각도' });
+    expect(severity).toHaveProperty('value', 'HIGH');
     const options = within(severity).getAllByRole('option') as HTMLOptionElement[];
     expect(SEVERITY_CHOICES).toEqual(['CRITICAL', 'HIGH']);
     expect(options.map((o) => [o.value, o.textContent])).toEqual([
@@ -286,12 +280,15 @@ describe('관제 관리자 편집 모드', () => {
     expect(severityTone('CAUTION')).toBe('caution');
   });
 
-  it('새 구역은 작업면과 함께 시작해 작업면 OBB 와 둘레 0.30 m 구역(HIGH 고정, 등급 칸 없음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
+  it('고소 작업면을 체크한 새 구역은 작업면 OBB 와 둘레 0.30 m 구역(심각도 경고)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
     await screen.findByRole('option', { name: /개구부 구역/ });
 
-    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+    expect(screen.getByRole('combobox', { name: '심각도' })).toHaveProperty('value', 'HIGH');
+    // 작업면은 체크해야 붙는다: 체크하기 전에는 3D 손잡이가 구역 상자를 고친다.
+    expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone');
+    fireEvent.click(screen.getByRole('checkbox', { name: '고소 작업면' }));
     expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
 
     act(() =>

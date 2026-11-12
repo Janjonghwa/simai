@@ -29,6 +29,7 @@ import {
   surfaceChanged,
   surfaceZoneForm,
   targetChanged,
+  withoutSurface,
   withoutUnchangedSurface,
   withPatch,
   withSurface,
@@ -77,8 +78,9 @@ function usePendingPublish(
 /**
  * 구역 편집 화면의 상태와 동작. 구역(또는 새 구역) 하나를 고르면 이름·심각도·구역 상자·작업면(하나)을 고치고, 저장하면
  * 구역·작업면·구성 묶음 발행을 요청 하나로 보낸다(useZoneCommit). 고친 것은 구역마다 초안으로 남아 다른 구역으로 옮겨도
- * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면
- * 이은 구역의 작업면 모드로 열고, 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
+ * 잃지 않는다. 새 구역은 작업면 없이 시작하고, 고소 작업면을 체크하면 기본 작업면이 초안에 붙는다. 3D 손잡이는 편집 상자를
+ * boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면 이은 구역의 작업면 모드로 열고,
+ * 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
  * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 이때 편집 모드를 끝낸다).
  * addOnDemand 이면 새 구역 양식은 openAdd 를 불러야 열리고(그 전까지 collapsed), cancelAdd 나 추가 성공으로 다시 접힌다.
  * 접힌 동안에는 3D 에도 새 구역 상자를 내리지 않는다.
@@ -101,8 +103,6 @@ export function useZoneEditing(
   const picked = pickedSurface(pickedObjectId, surfaces, links);
   const target = useZoneTarget(viewport, picked.zoneId);
   const { zone, key } = target;
-  const [excludedLayoutId, setExcludedLayoutId] = useState<number | null>(null);
-  const withoutNewSurface = workLayoutId != null && excludedLayoutId === workLayoutId;
   // 새 구역 양식을 열어 둔 상태(addOnDemand 일 때만 쓴다). 다른 구역으로 옮겨도 그대로다.
   const [adding, setAdding] = useState(false);
   const { orphan } = picked;
@@ -115,22 +115,16 @@ export function useZoneEditing(
   const linked = zone ? (links.get(zone.zoneId) ?? null) : null;
   const draft: TargetDraft | undefined = drafts[key];
   const roomLimit = useRoomLimit();
-  // 작업면이 없는 구역의 상자. 새 구역은 방 가운데에서 시작하고, 새 구역의 작업면도 이 상자 가운데에 놓인다.
+  // 작업면이 없는 구역의 상자. 새 구역은 방 가운데에서 시작하고, 체크해 붙이는 새 작업면도 이 상자 가운데에 놓인다.
   const draftBox = draft?.box ?? null;
   const zoneBox = useMemo(
     () => draftBox ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit)),
     [draftBox, zone, zones, roomLimit],
   );
-  // 새 구역은 늘 작업면과 함께 시작한다(작업면은 지우거나 따로 더하지 않는다). 작업면 없이 만든 기존 구역은 작업면이 없다.
-  const surface = useMemo(
-    () =>
-      !zone && withoutNewSurface
-        ? null
-        : (currentSurface(draft, linked) ?? (zone ? null : newSurfaceDraft(zoneBox))),
-    [draft, linked, zone, zoneBox, withoutNewSurface],
-  );
-  // 작업면이 있으면 구역은 작업면에서 계산한다(모양은 작업면 둘레, 심각도는 경고, 판정 유형은 입체로 고정). 3D 손잡이도
-  // 작업면을 고친다.
+  // 새 구역은 고소 작업면을 체크해야 작업면이 붙는다(초안에 작업면이 있다). 기존 구역의 작업면은 지우거나 따로 더하지 않으며,
+  // 작업면 없이 만든 기존 구역은 작업면이 없다.
+  const surface = useMemo(() => currentSurface(draft, linked), [draft, linked]);
+  // 작업면이 있으면 구역은 작업면에서 계산한다(모양은 작업면 둘레, 판정 유형은 입체로 고정). 3D 손잡이도 작업면을 고친다.
   const bound = surface !== null;
   const surfaceShape = useMemo(
     () => (surface ? surfaceZoneShape(surface.geometry) : null),
@@ -219,6 +213,9 @@ export function useZoneEditing(
     edit((prev) => withPatch(prev, zone, patch), group);
   const setName = (name: string) => setPatch({ name }, NAME_EDIT_GROUP);
   const setSeverity = (severity: Severity) => setPatch({ severity });
+  // 새 구역의 고소 작업면 체크: 켜면 구역 상자 가운데에 기본 작업면을 붙이고, 끄면 작업면 초안을 뺀다.
+  const toggleNewSurface = () =>
+    edit((prev) => (surface ? withoutSurface(prev) : withSurface(prev, newSurfaceDraft(zoneBox))));
   const setSurfaceTop = (top: number) => {
     if (!surface) return;
     const geometry = { ...surface.geometry, topHeightM: top };
@@ -228,21 +225,16 @@ export function useZoneEditing(
   };
   const pick = (value: string) => {
     commit.disarm();
-    setExcludedLayoutId(null);
     if (value === NEW_KEY) setAdding(true);
     target.pick(value);
   };
-  // 새 구역 양식을 처음 값으로 돌린다: 입력하던 초안과 작업면 제외를 버린다.
-  const resetNewZone = () => {
-    removeZoneDraft(NEW_KEY);
-    setExcludedLayoutId(null);
-  };
+  // 새 구역 양식은 열 때와 취소할 때 처음 값으로 돌린다: 입력하던 초안(고소 작업면 체크 포함)을 버린다.
   const openAdd = () => {
-    resetNewZone();
+    removeZoneDraft(NEW_KEY);
     setAdding(true);
   };
   const cancelAdd = () => {
-    resetNewZone();
+    removeZoneDraft(NEW_KEY);
     commit.clearNotice();
     setAdding(false);
   };
@@ -267,10 +259,9 @@ export function useZoneEditing(
     errors,
     surface,
     surfaceErrors,
-    bound,
     layoutBound,
-    canToggleNewSurface: !zone && workLayoutId != null,
-    toggleNewSurface: () => setExcludedLayoutId(withoutNewSurface ? null : (workLayoutId ?? null)),
+    canToggleNewSurface: zone === null,
+    toggleNewSurface,
     shapeLocked,
     orphan,
     collapsed,

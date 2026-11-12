@@ -191,7 +191,7 @@ describe('AlarmBanner', () => {
     expect(within(banner).queryByRole('button', { name: '소리 켜기' })).toBeNull();
   });
 
-  it('카메라 버튼은 이벤트 패널이 있는 화면에만 있고, 사람을 담은 카메라가 없으면 이름 없이 CCTV 로 연다', () => {
+  it('CCTV 버튼은 이벤트 패널이 있는 화면에만 있고, 사람을 담은 카메라가 있어도 이름 없이 첫 카메라를 연다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -201,14 +201,8 @@ describe('AlarmBanner', () => {
       },
     });
     const withPanel = renderBanner(true);
-    fireEvent.click(within(withPanel).getByRole('button', { name: /cam3로 확인/ }));
+    fireEvent.click(within(withPanel).getByRole('button', { name: 'CCTV로 확인' }));
     expect(navigate).not.toHaveBeenCalled();
-    expect(useCamSplitStore.getState().split?.cam).toBe('cam3');
-    cleanup();
-
-    useRealtimeStore.setState({ world: null });
-    const untracked = renderBanner(true);
-    fireEvent.click(within(untracked).getByRole('button', { name: 'CCTV로 확인' }));
     expect(useCamSplitStore.getState().split?.cam).toBe(ANY_CAMERA);
     cleanup();
 

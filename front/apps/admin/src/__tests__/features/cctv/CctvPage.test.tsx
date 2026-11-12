@@ -86,12 +86,15 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     openRelay();
   });
 
-  it('카메라 4대를 4분할로 그리고 칸마다 상태를 보인다', () => {
+  it('카메라 4대를 4분할로 그리고 칸마다 이름과 상태를 보인다', () => {
     render(<CctvPage />);
     for (const id of CAMS) {
       expect(screen.getByRole('button', { name: `${id} 크게 보기` })).toBeTruthy();
       expect(screen.getByLabelText(`${id} 영상`).tagName).toBe('CANVAS');
+      expect(screen.getByText(id)).toBeTruthy();
     }
+    // 이름 옆에 단계 글('표시 중')은 두지 않는다.
+    expect(screen.queryByText('표시 중')).toBeNull();
     expect(screen.queryByRole('button', { name: '4분할로 돌아가기' })).toBeNull();
   });
 
@@ -125,12 +128,12 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     expect(badge('cam1').textContent).toBe('실시간');
   });
 
-  it('촬영 시각이 2초 늦어도 방금 받은 프레임이면 LIVE 이고 지연은 왼쪽 나이에만 보인다', () => {
+  it('촬영 시각이 2초 늦어도 방금 받은 프레임이면 LIVE 이고 칸에는 지연 초가 보이지 않는다', () => {
     const now = Date.now();
     useCctvStore.getState().played('cam1', now - 2_000, now);
     render(<CctvPage />);
     expect(badge('cam1').textContent).toBe('LIVE');
-    expect(screen.getByText(/^2\.[01]초$/).className).toContain('text-delay');
+    expect(screen.queryByText(/^\d+\.\d초$/)).toBeNull();
   });
 
   it('프레임을 받은 뒤 0.9초면 LIVE 이고 1.3초면 실시간이다', () => {

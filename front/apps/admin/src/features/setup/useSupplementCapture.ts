@@ -10,6 +10,7 @@ import {
   DEFAULT_SUPPLEMENT_LIMITS,
   describeRebake,
   supplementErrorMessage,
+  unbakedMedia,
 } from '@/features/setup/supplement';
 import {
   createSupplementUploadQueue,
@@ -180,6 +181,9 @@ export function useSupplementCapture(
     () => mergeUploadRows(serverMedia, uploads.items, rebaking),
     [serverMedia, uploads.items, rebaking],
   );
+  // 맵에 아직 안 들어간 파일이 있고 서버가 굽게 해 줄 때만 다시 구울 수 있다(서버 can_rebake 는 파일이 하나라도 있으면 켜진다)
+  const pendingMedia = useMemo(() => unbakedMedia(serverMedia, rebake), [serverMedia, rebake]);
+  const canRebakeNow = (supplement?.can_rebake ?? false) && pendingMedia.length > 0;
 
   const onRowAction = useCallback(
     (row: SupplementRow, action: SupplementRowAction) => {
@@ -201,6 +205,8 @@ export function useSupplementCapture(
     onRowAction,
     rebake,
     rebakeView: rebake ? describeRebake(rebake, serverMedia) : null,
+    pendingMedia,
+    canRebakeNow,
     ...actions,
   };
 }

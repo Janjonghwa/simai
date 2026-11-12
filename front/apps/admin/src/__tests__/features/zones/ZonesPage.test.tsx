@@ -240,6 +240,9 @@ const SHAPE_LOCKED_TEXT =
   '직사각형이 아니거나 높이가 없거나 바닥 판정인 구역은 형상을 고칠 수 없습니다.';
 const nameInput = () => screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
 const severitySelect = () => screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement;
+/** 새 구역의 「고소 작업면」 체크박스. 체크해야 작업면이 붙고 높이 칸이 나온다. */
+const surfaceCheckbox = () =>
+  screen.getByRole('checkbox', { name: '고소 작업면' }) as HTMLInputElement;
 /** Ctrl+Z. 돌려주는 값은 브라우저 기본 동작을 막지 않았는지(막았으면 false). */
 const pressUndo = (target: Window | Element = window, init: KeyboardEventInit = {}) =>
   fireEvent.keyDown(target, { code: 'KeyZ', key: 'z', ctrlKey: true, ...init });
@@ -279,7 +282,7 @@ describe('구역 편집 화면', () => {
     expect(log).toEqual([]);
   });
 
-  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 이름만(구역 번호 없음)이다. 새 구역은 이름과 고소 작업면만 고른다', async () => {
+  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 이름만(구역 번호 없음)이다. 새 구역은 이름·심각도·고소 작업면(체크)만 고른다', async () => {
     await renderPage();
     expect(optionTexts()).toEqual(['새 구역 추가', '개구부 구역', '단상 구역']);
     expect(screen.queryByText(/z-0\d/)).toBeNull();
@@ -287,17 +290,24 @@ describe('구역 편집 화면', () => {
     expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '구역 1');
     // 편집 도구에 제목(h1)은 없다. 화면 제목은 실시간 관제 화면이 가진다.
     expect(screen.queryByRole('heading')).toBeNull();
-    // 새 구역은 작업면과 함께 시작하므로 심각도는 고르지 않는다(구역은 작업면에서 계산한다).
-    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+    // 새 구역의 심각도는 경고로 시작하고 위험·경고 중에서 고른다.
+    expect(severitySelect().value).toBe('HIGH');
     // 구역 종류·판정 유형은 화면에 없다.
     expect(screen.queryByLabelText('판정 유형')).toBeNull();
     expect(screen.queryByLabelText('유형')).toBeNull();
     expect(button('구역 추가')).toBeTruthy();
-    // 고소 작업면은 처음부터 있고, 지우거나 따로 더하는 단추가 없다.
+    // 고소 작업면은 처음에 해제라 높이 칸이 없고, 체크하면 기본 작업면(상판 0.4 m)과 높이 칸이 생긴다.
     const surfaceCard = screen.getByRole('region', { name: '고소 작업면' });
+    expect(surfaceCheckbox().checked).toBe(false);
+    expect(screen.queryByLabelText('높이(m)')).toBeNull();
+    fireEvent.click(surfaceCheckbox());
+    expect(surfaceCheckbox().checked).toBe(true);
     expect(within(surfaceCard).getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
     expect(within(surfaceCard).queryByRole('button')).toBeNull();
     expect(screen.queryByRole('button', { name: '+ 고소 작업면 추가' })).toBeNull();
+    // 다시 해제하면 높이 칸이 사라진다.
+    fireEvent.click(surfaceCheckbox());
+    expect(screen.queryByLabelText('높이(m)')).toBeNull();
   });
 
   it('이미 저장된 주의 구역은 지금 값을 비활성 선택지로 보이고, 위험이나 경고를 다시 골라야 저장한다', async () => {
@@ -328,8 +338,9 @@ describe('구역 편집 화면', () => {
     expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('새 구역은 작업면과 함께 OPENING·VOLUME_3D·경고로 만들고 저장과 발행을 /commit 한 번(구역 CREATE + 작업면 CREATE, publish)으로 보낸다', async () => {
+  it('고소 작업면을 체크한 새 구역은 작업면과 함께 OPENING·VOLUME_3D·경고로 만들고 저장과 발행을 /commit 한 번(구역 CREATE + 작업면 CREATE, publish)으로 보낸다', async () => {
     await renderPage();
+    fireEvent.click(surfaceCheckbox());
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '새로 만든 구역' },
     });
@@ -370,6 +381,7 @@ describe('구역 편집 화면', () => {
 
   it('새 구역의 작업면 높이를 고쳐 추가하면 그 높이의 작업면을 만들고, 작업면 카드는 서버가 이은 작업면으로 그려진다', async () => {
     await renderPage();
+    fireEvent.click(surfaceCheckbox());
     const height = screen.getByLabelText('높이(m)');
     fireEvent.change(height, { target: { value: '0.9' } });
     fireEvent.keyDown(height, { key: 'Enter' });
@@ -396,7 +408,7 @@ describe('구역 편집 화면', () => {
     expect(optionTexts()).toContain('구역 1');
   });
 
-  it('이은 작업면(서버 zone_id)이 카드에 보이고, 작업면이 붙은 구역은 3D 손잡이가 작업면을 고치며 등급 칸과 구역·작업면 전환이 없다', async () => {
+  it('이은 작업면(서버 zone_id)이 카드에 보이고, 작업면이 붙은 구역은 3D 손잡이가 작업면을 고치며 심각도 칸이 있고 구역·작업면 전환이 없다', async () => {
     await renderPage();
     pick('z-02');
     expect(await screen.findByLabelText('높이(m)')).toHaveProperty('value', '0.40');
@@ -405,7 +417,8 @@ describe('구역 편집 화면', () => {
       kind: 'surface',
       box: { min: [1, 6.2, 0], max: [4, 8.4, 0.4] },
     });
-    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+    expect(severitySelect().value).toBe('HIGH');
+    expect(screen.queryByRole('checkbox', { name: '고소 작업면' })).toBeNull();
     expect(screen.queryByRole('group', { name: '3D 에서 조절할 대상' })).toBeNull();
     expect(screen.queryByRole('button', { name: '구역' })).toBeNull();
   });
@@ -968,12 +981,17 @@ describe('구역 편집 화면', () => {
       expect(nameInput().value).toBe('개구부 초안');
     });
 
-    it('새 구역은 구역 손잡이·등급 칸이 없고, 작업면 둘레(0.30 m) 직사각형·경고로 만든다', async () => {
+    it('고소 작업면을 체크한 새 구역은 구역 손잡이가 없고 3D 손잡이가 작업면을 고치며, 작업면 둘레(0.30 m) 직사각형으로 만든다', async () => {
       await renderPage();
-      expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+      // 체크하기 전에는 작업면이 없어 3D 손잡이가 구역 상자를 고친다.
+      expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone');
+      fireEvent.click(surfaceCheckbox());
+      expect(severitySelect().value).toBe('HIGH');
       expect(screen.queryByRole('button', { name: '구역' })).toBeNull();
       const start = useBoxEditStore.getState().boxEdit!;
       expect(start.kind).toBe('surface');
+      // 심각도는 작업면이 붙어도 고른 값 그대로 저장한다.
+      fireEvent.change(severitySelect(), { target: { value: 'CRITICAL' } });
 
       // 손잡이로 작업면을 옮기면 구역이 따라간다.
       const moved: ViewerEditBox = {
@@ -986,7 +1004,7 @@ describe('구역 편집 화면', () => {
       await waitFor(() => expect(commits).toHaveLength(1));
       const request = commits[0]!;
       if (request.zone.op !== 'CREATE') throw new Error('expected CREATE');
-      expect(request.zone.body.severity).toBe('HIGH');
+      expect(request.zone.body.severity).toBe('CRITICAL');
       const [cx, cy] = [(moved.min[0] + moved.max[0]) / 2, (moved.min[1] + moved.max[1]) / 2];
       expect(request.zone.body.polygon_xy).toEqual(
         [
@@ -1015,18 +1033,20 @@ describe('구역 편집 화면', () => {
       });
     });
 
-    it('이미 저장된 주의 구역에 작업면이 붙으면 경고로 맞춰 저장한다', async () => {
+    it('이미 저장된 주의 구역에 작업면이 붙어도 심각도 칸이 보이고, 위험이나 경고를 골라야 저장하며 고른 값 그대로 보낸다', async () => {
       await addZone({ name: '주의 구역', severity: 'CAUTION' });
       await linkDeskTo('z-00000001');
       await renderPage();
       pick('z-00000001');
       await screen.findByLabelText('높이(m)');
-      expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+      expect(severitySelect().value).toBe('CAUTION');
       rename('주의 구역 B');
+      expect((button('저장') as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.change(severitySelect(), { target: { value: 'CRITICAL' } });
       expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
       act(() => button('저장').click());
       await waitFor(() => expect(commits).toHaveLength(1));
-      expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', body: { severity: 'HIGH' } } });
+      expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', body: { severity: 'CRITICAL' } } });
     });
 
     it('직사각형이 아닌 구역에 작업면이 붙으면 형상 잠김 알림이 없다', async () => {
@@ -1454,6 +1474,7 @@ describe('구역 편집 화면', () => {
 
     it('새 구역의 작업면 높이를 고친 것도 되돌리면 기본 높이로 돌아온다', async () => {
       await renderPage();
+      fireEvent.click(surfaceCheckbox());
       const height = screen.getByLabelText('높이(m)');
       fireEvent.change(height, { target: { value: '0.9' } });
       fireEvent.keyDown(height, { key: 'Enter' });
@@ -1588,6 +1609,8 @@ describe('작업 레이아웃 구역 편집', () => {
     expect(writes()).toContain('PUT /api/layouts/101');
     expect(writes()).not.toContain(COMMIT);
     pick(NEW_KEY);
+    expect(screen.queryByLabelText('심각도')).toBeNull();
+    fireEvent.click(surfaceCheckbox());
     fireEvent.change(screen.getByLabelText('이름'), { target: { value: '새 작업면' } });
     fireEvent.click(button('구역 추가'));
     await waitFor(() =>
@@ -1599,7 +1622,7 @@ describe('작업 레이아웃 구역 편집', () => {
     );
     expect(writes()).not.toContain(COMMIT);
     pick(NEW_KEY);
-    fireEvent.click(button('작업면 제외'));
+    expect(surfaceCheckbox().checked).toBe(false);
     fireEvent.change(screen.getByLabelText('이름'), { target: { value: '새 개구부' } });
     fireEvent.click(button('구역 추가'));
     await waitFor(() =>
@@ -1639,7 +1662,7 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
     // 시작 단추는 사라지고 아래 제출 단추가 구역 추가다(같은 이름의 단추가 둘이면 getByRole 이 실패한다).
     expect(button('구역 추가')).toBeTruthy();
     expect(button('취소')).toBeTruthy();
-    expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: 'surface:__new__' });
+    expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: NEW_KEY, kind: 'zone' });
   });
 
   it('취소하면 다시 접히고 입력하던 이름·초안을 버려, 다시 펼치면 새 양식이다', async () => {
@@ -1708,6 +1731,8 @@ describe('구역 추가 단추로 여는 양식(addOnDemand)', () => {
     expectCollapsed();
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({ zone: { op: 'CREATE', body: { name: '새로 만든 구역' } } });
+    // 고소 작업면을 체크하지 않았으니 작업면은 만들지 않는다.
+    expect(commits[0]).not.toHaveProperty('surface');
     expect(onCommitted).toHaveBeenCalledTimes(1);
     expect(viewport.selectedKey).toBeNull();
     expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeUndefined();

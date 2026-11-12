@@ -3,8 +3,6 @@ import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventsStore } from '@/features/events/events.store';
 import { Dock } from '@/features/layout/Dock';
-import { FailureBand } from '@/features/layout/FailureBand';
-import { ReSetupBanner } from '@/features/layout/ReSetupBanner';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
@@ -18,7 +16,7 @@ import { Outlet, useMatches } from '@tanstack/react-router';
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 /**
- * 장면 위에 뜬 알림(장애 띠·경보 배너)이 차지하는 높이를 `--notices-h` 로 알린다(없으면 0).
+ * 장면 위에 뜬 알림(경보 배너·작업 세션 바 등)이 차지하는 높이를 `--notices-h` 로 알린다(없으면 0).
  * 장면 위 큰 창(사건 상세)이 알림을 가리지 않고 그 아래에서 시작하게 한다.
  */
 function useNoticesHeight(
@@ -51,7 +49,7 @@ const noticeInset = (eventPanel: boolean, camSplitOpen: boolean) => {
 };
 
 /**
- * 상단 바 아래 알림: 장애 띠, 현장 세팅 다시 하기 배너, 그 아래 경보 배너(실시간 관제는 그 아래에 작업 세션 바). 모든 화면에서 내용 위에 띄우고 본문을 밀거나 줄이지 않는다
+ * 상단 바 아래 알림: 경보 배너(실시간 관제는 그 아래에 작업 세션 바). 모든 화면에서 내용 위에 띄우고 본문을 밀거나 줄이지 않는다
  * (관제 데모와 같다). 알릴 것이 없으면 숨는다.
  */
 function Notices({
@@ -72,8 +70,6 @@ function Notices({
         noticeInset(eventPanel, camSplitOpen),
       )}
     >
-      <FailureBand />
-      <ReSetupBanner />
       <AlarmBanner withPanel={eventPanel} />
       {eventPanel && <WorkSessionBar />}
       {eventPanel && <PpePolicyNotice />}

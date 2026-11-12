@@ -9,13 +9,14 @@ import { useReportPaper } from '@/features/work/report/useReportPaper';
 import { formatDateTime, isReportLocked, reportFormOf } from '@/features/work/reportForm';
 import type { ReportPanelProps } from '@/features/work/stageProps';
 import { useStartReportDraft } from '@/features/work/useWorkReport';
+import { isDraftPending, isReportGenerating } from '@/features/work/workDay';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Printer, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 // TBM 보고서 종이 하나. 작업의 최신 판과 서명 목록을 스스로 읽어 그리고, 고칠 수 있으면 종이를 눌러 편집 창을 연다.
-// 출력은 종이 사본만 인쇄한다. 보고서가 아직 없으면(받는 중) 줄무늬 빈 종이다.
+// 출력은 종이 사본만 인쇄한다. 보고서가 아직 없으면(받는 중) 줄무늬 빈 종이다. 초안·종료 미팅을 쓰는 동안은 종이를 흐리게 가리고 「TBM 생성중..」을 띄운다.
 
 /** '저장했습니다' 가 보이는 시간(ms). */
 const SAVED_NOTICE_MS = 2_500;
@@ -25,6 +26,7 @@ export function ReportPanel({
   editable,
   withPrint = false,
   draftable = false,
+  setupDone = false,
   className,
 }: ReportPanelProps) {
   const { query, latest, paper } = useReportPaper(workId);
@@ -45,6 +47,9 @@ export function ReportPanel({
   const draftStatus = latest?.draft_status ?? null;
   const showDraft = draftable && canEdit && (draftStatus === null || draftStatus === 'FAILED');
   const hasTasks = reportFormOf(latest).info.tasks.length > 0;
+  // 초안이나 종료 미팅을 쓰는 동안. 작업내용이 없으면 서버가 초안을 시작하지 않으므로(PENDING 그대로) 세팅이 끝났어도 기다리지 않는다 — 종이를 가려 편집을 막지 않게
+  const generating =
+    draft.pending || isDraftPending(latest, setupDone && hasTasks) || isReportGenerating(latest);
 
   return (
     <div className={cn('flex min-h-0 flex-col gap-2.5', className)}>
@@ -91,8 +96,20 @@ export function ReportPanel({
         </div>
       )}
       {query.error && latest === null && <ReportLoadError onRetry={() => void query.refetch()} />}
-      <div className="min-h-0 flex-1 overflow-auto p-1">
-        <ReportView {...paper} editable={canEdit} onEdit={() => setEditing(true)} />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          inert={generating}
+          className={cn('min-h-0 flex-1 overflow-auto p-1', generating && 'blur-[3px] select-none')}
+        >
+          <ReportView {...paper} editable={canEdit} onEdit={() => setEditing(true)} />
+        </div>
+        {generating && (
+          <div role="status" className="absolute inset-0 grid place-items-center">
+            <span className="rounded-lg bg-card px-5 py-2.5 text-base font-bold text-foreground shadow-float ring-1 ring-border">
+              TBM 생성중..
+            </span>
+          </div>
+        )}
       </div>
       {editing && latest && (
         <ReportEditDialog

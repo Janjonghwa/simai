@@ -24,12 +24,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('CameraButton', () => {
-  it('사람을 담은 카메라가 있으면 그 카메라 이름으로 연다', () => {
+  it('사람을 담은 카메라가 있어도 카메라 이름 없이 첫 카메라를 연다', () => {
     setTracks([{ world_id: 'w-0015', cameras: ['cam_B', 'cam_A'] }]);
     render(<CameraButton target={person} variant="card" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'cam_B로 확인' }));
-    expect(useCamSplitStore.getState().split).toEqual({ cam: 'cam_B', target: person });
+    expect(screen.queryByText('cam_B')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'CCTV로 확인' }));
+    expect(useCamSplitStore.getState().split).toEqual({ cam: ANY_CAMERA, target: person });
   });
 
   it('추적이 없으면(world 를 못 받음) 카메라 이름 없이 첫 카메라를 연다', () => {

@@ -125,14 +125,11 @@ export function viewerHealthAt(
     outage,
     sceneMismatch = false,
     config = MOCK_CONFIG,
-    reSetup,
   }: {
     faults?: boolean;
     outage?: { kind: MockOutage; since: number };
     sceneMismatch?: boolean;
     config?: MockConfig;
-    /** 현장 세팅 다시 하기가 필요한 카메라(viewer_health 1.3.0). 주지 않으면 필드를 싣지 않는다(모름), 빈 배열은 '없음'. */
-    reSetup?: NonNullable<ViewerHealthPayload['re_setup']>;
   } = {},
 ): ViewerHealthMessage {
   const down = outage && t - outage.since >= DETECT_MS ? outage.kind : undefined;
@@ -158,7 +155,6 @@ export function viewerHealthAt(
       calibration_state: 'CALIBRATED',
       config,
       scene: sceneOf(sceneMismatch),
-      ...(reSetup === undefined ? {} : { re_setup: reSetup }),
       // Tier 0 가 들고 있는 이벤트 집합의 판(1.4.0). mock 은 집합을 한꺼번에 바꾸지 않아 늘 같다.
       held_events_revision: MOCK_HELD_REVISION,
       tier0_health: {
