@@ -4,7 +4,7 @@ import { formatTime } from '@/features/events/events';
 import { replayErrorLine } from '@/features/history/replay';
 import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/replayIndex';
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
-import type { Span } from '@/features/history/types';
+import type { Span, VideoSegment } from '@/features/history/types';
 import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
 import { useReplayFrame, useReplayNoData, type WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
@@ -28,22 +28,23 @@ function ReplayCctv({
   replay,
   index,
   holdMs,
-  range,
+  segments,
 }: {
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
   holdMs: number;
-  range: Span;
+  /** 작업 구간과 겹치는 영상 조각 전부. 지금 시각을 덮는 것만 골라 튼다. */
+  segments: readonly VideoSegment[];
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
-  const segments = useActiveSegments(replay, useReplaySegments(range));
+  const active = useActiveSegments(replay, segments);
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
     [people],
   );
-  if (segments.length > 0) return <ReplayVideoWall segments={segments} replay={replay} />;
+  if (active.length > 0) return <ReplayVideoWall segments={active} replay={replay} />;
   return (
     <CctvMockWall
       figures={figures}
@@ -67,10 +68,14 @@ function stageNotice(session: WorkReplay, range: Span): string | null {
   return allGap(session.index.gaps, range) ? '데이터 없음' : '잡힌 작업자가 없습니다.';
 }
 
-/** 가운데 칸: CCTV 목 화면. 기록을 받는 중·실패·없음이면 안내만 보인다. */
+/**
+ * 가운데 칸: CCTV 목 화면. 기록을 받는 중·실패·없음이면 안내만 보인다.
+ * 영상 조각 목록은 기록을 받는 동안 같이 받아 둔다(기록이 준비된 뒤에 요청하면 영상이 그만큼 늦게 켜진다).
+ */
 export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
+  const segments = useReplaySegments(range);
   const notice = stageNotice(session, range);
   if (notice !== null) return <Notice>{notice}</Notice>;
-  return <ReplayCctv replay={replay} index={index} holdMs={holdMs} range={range} />;
+  return <ReplayCctv replay={replay} index={index} holdMs={holdMs} segments={segments} />;
 }
