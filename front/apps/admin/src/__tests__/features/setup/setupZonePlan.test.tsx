@@ -1,10 +1,14 @@
 import { createSetupSession, requestSetupZonePlan } from '@/features/setup/api';
 import {
   applyCommitToPlan,
+  confirmPlanItems,
   liveZonesAsItems,
+  pendingReviewCount,
   planZonesView,
+  removePlanItem,
   SETUP_NEW_ZONE_PREFIX,
   SetupZonePlanEditError,
+  type SetupZonePlanItem,
   type SetupZonePlanView,
 } from '@/features/setup/setupZonePlan';
 import type { SetupSessionResponse } from '@/features/setup/types';
@@ -14,7 +18,7 @@ import { commitErrorText } from '@/features/zones/commitErrors';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
-import { readZones } from '@/features/zones/zones';
+import { readZones, toViewerZones } from '@/features/zones/zones';
 import { ZoneSourceContext } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
 import { problem } from '@/mocks/problem';
@@ -28,7 +32,8 @@ import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 세팅 구역 단계의 구역 저장(S15P31A101-615): 관제 구역(zones/commit) 대신 세션 구역 목록(-612 PUT)에 저장하고, 화면 목록도
-// 그 목록 기준이다. 이전 모델 재사용은 지금 관제 구역으로 채우고, 새 모델은 빈 목록에서 시작한다. 충돌(revision)은 다시 받는다.
+// 그 목록 기준이다. 같은 World 세팅은 서버 seed 로 지금 관제 구역을 채우고(재사용은 그대로, 새 모델 + World 이어짐은 확인 필요로,
+// S15P31A101-629), World 가 끊긴 새 모델은 빈 목록에서 시작한다. 충돌(revision)은 다시 받는다.
 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
@@ -43,7 +48,9 @@ beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
   setupMock = createSetupMock({ now: () => 1_800_000_000_000 });
-  server.resetHandlers(...createZonesMock().handlers, ...setupMock.handlers);
+  const zonesMock = createZonesMock();
+  setupMock.bindLiveZones(() => zonesMock.currentZones());
+  server.resetHandlers(...zonesMock.handlers, ...setupMock.handlers);
   requests = [];
   server.events.on('request:start', ({ request }) => {
     requests.push(`${request.method} ${new URL(request.url).pathname}`);
@@ -94,7 +101,14 @@ describe('목록 계산', () => {
       },
     );
     expect(created.items).toEqual([
-      { zone_id: null, source: 'AI', candidate_id: 'cand-1', zone: body('새 구역'), surface: null },
+      {
+        zone_id: null,
+        source: 'AI',
+        candidate_id: 'cand-1',
+        zone: body('새 구역'),
+        surface: null,
+        needs_review: false,
+      },
     ]);
     expect(created.result.zone_id).toBe(`${SETUP_NEW_ZONE_PREFIX}0`);
     expect(created.result.zone?.name).toBe('새 구역');
@@ -126,10 +140,62 @@ describe('목록 계산', () => {
 
   it('지금 관제 구역을 가져올 때 이미 목록에 있는 구역은 빼고 본문 없이(그대로 두기) 넣는다', () => {
     const items = liveZonesAsItems(MOCK_ZONES, [
-      { zone_id: 'z-04', source: 'MANUAL', candidate_id: null, zone: null, surface: null },
+      {
+        zone_id: 'z-04',
+        source: 'MANUAL',
+        candidate_id: null,
+        zone: null,
+        surface: null,
+        needs_review: false,
+      },
     ]);
     expect(items.some((i) => i.zone_id === 'z-04')).toBe(false);
     expect(items.every((i) => i.zone === null && i.source === 'MANUAL')).toBe(true);
+  });
+});
+
+describe('확인 필요(S15P31A101-629)', () => {
+  const pending = (zoneId: string): SetupZonePlanItem => ({
+    zone_id: zoneId,
+    source: 'MANUAL',
+    candidate_id: null,
+    zone: null,
+    surface: null,
+    needs_review: true,
+  });
+  const liveIds = readZones(MOCK_ZONES).map((z) => z.zoneId);
+  const reviewPlan: SetupZonePlanView = { ...emptyPlan, items: liveIds.map(pending) };
+
+  it('확인 필요 항목은 화면 구역·3D 입력에 needs_review 로 실리고 개수를 센다', () => {
+    expect(pendingReviewCount(reviewPlan)).toBe(liveIds.length);
+    expect(pendingReviewCount(undefined)).toBe(0);
+    const zones = readZones(planZonesView(reviewPlan, MOCK_ZONES));
+    expect(zones.every((z) => z.needsReview === true)).toBe(true);
+    expect(toViewerZones(zones).every((z) => z.needs_review === true)).toBe(true);
+    // 관제 구역은 확인 표시가 없다
+    expect(readZones(MOCK_ZONES).some((z) => z.needsReview)).toBe(false);
+    expect(toViewerZones(readZones(MOCK_ZONES)).some((z) => 'needs_review' in z)).toBe(false);
+  });
+
+  it('하나 확인·모두 확인·빼기는 목록을 고치고 바뀐 것이 없으면 null 이다', () => {
+    const [first, second] = liveIds as [string, string];
+    const one = confirmPlanItems(reviewPlan.items, [first])!;
+    expect(one.find((i) => i.zone_id === first)?.needs_review).toBe(false);
+    expect(one.find((i) => i.zone_id === second)?.needs_review).toBe(true);
+    const all = confirmPlanItems(one)!;
+    expect(all.every((i) => !i.needs_review)).toBe(true);
+    expect(confirmPlanItems(all)).toBeNull();
+    expect(removePlanItem(reviewPlan.items, first)?.map((i) => i.zone_id)).not.toContain(first);
+    expect(removePlanItem(reviewPlan.items, 'z-none')).toBeNull();
+  });
+
+  it('구역 편집으로 고치면(새 버전) 확인한 것으로 바뀐다', () => {
+    const [first] = liveIds as [string];
+    const updated = applyCommitToPlan(reviewPlan, MOCK_ZONES, {
+      zone: { op: 'UPDATE', zone_id: first, body: body('고친 구역') },
+    });
+    expect(updated.items.find((i) => i.zone_id === first)?.needs_review).toBe(false);
+    expect(pendingReviewCount({ ...reviewPlan, items: updated.items })).toBe(liveIds.length - 1);
   });
 });
 
@@ -230,8 +296,9 @@ describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
     );
   }
   const liveIds = () => readZones(MOCK_ZONES).map((z) => z.zoneId);
-  const planRequests = (sessionId: string, method: string) =>
-    requests.filter((r) => r === `${method} /api/setup-sessions/${sessionId}/zones`);
+  const planRequests = (sessionId: string, method: string, path = '/zones') =>
+    requests.filter((r) => r === `${method} /api/setup-sessions/${sessionId}${path}`);
+  const seedRequests = (sessionId: string) => planRequests(sessionId, 'POST', '/zones/seed');
   const kept = (zoneId: string) => ({
     zone_id: zoneId,
     source: 'MANUAL' as const,
@@ -240,32 +307,43 @@ describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
     surface: null,
   });
 
-  it('이전 모델 재사용은 빈 목록을 지금 관제 구역(zone_id 유지)으로 한 번 채운다', async () => {
+  it('이전 모델 재사용은 빈 목록을 지금 관제 구역(zone_id 유지)으로 확인 표시 없이 한 번 채운다', async () => {
     const sessionId = await readySession({ mode: 'REUSE' });
     seed(sessionId);
     await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1));
     const plan = await requestSetupZonePlan(api, sessionId);
     expect(plan.items.map((i) => i.zone_id)).toEqual(liveIds());
-    expect(plan.items.every((i) => i.zone === null)).toBe(true);
-    expect(planRequests(sessionId, 'PUT')).toHaveLength(1);
+    expect(plan.items.every((i) => i.zone === null && !i.needs_review)).toBe(true);
+    expect(seedRequests(sessionId)).toHaveLength(1);
+    expect(planRequests(sessionId, 'PUT')).toEqual([]);
   });
 
-  it('이전 모델 재사용이어도 이미 목록이 채워져 있으면 채우지 않는다', async () => {
-    const sessionId = await readySession({ mode: 'REUSE' });
+  it('새 모델 + World 이어짐은 지금 관제 구역을 확인 필요로 채운다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+    seed(sessionId);
+    await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1));
+    const plan = await requestSetupZonePlan(api, sessionId);
+    expect(plan.items.map((i) => i.zone_id)).toEqual(liveIds());
+    expect(plan.items.every((i) => i.needs_review)).toBe(true);
+    expect(pendingReviewCount(plan)).toBe(liveIds().length);
+  });
+
+  it('이미 목록이 채워져 있으면 채우지 않는다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
     setupMock.zonePlans.set(sessionId, { items: [kept('z-04')], revision: 3, updatedAt: 0 });
     seed(sessionId);
     await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
     await act(async () => {});
-    expect(planRequests(sessionId, 'PUT')).toEqual([]);
+    expect(seedRequests(sessionId)).toEqual([]);
     expect(setupMock.zonePlans.get(sessionId)).toMatchObject({ revision: 3 });
   });
 
-  it('새 모델은 빈 목록에서 시작하고 지금 관제 구역을 가져오지 않는다(World 가 같아도)', async () => {
-    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+  it('World 가 끊긴 새 모델은 빈 목록에서 시작하고 지금 관제 구역을 가져오지 않는다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: false } });
     seed(sessionId);
     await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
     await act(async () => {});
-    expect(planRequests(sessionId, 'PUT')).toEqual([]);
+    expect(seedRequests(sessionId)).toEqual([]);
     expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
   });
 
@@ -276,18 +354,17 @@ describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
     expect(requests.some((r) => r.includes('/zones'))).toBe(false);
   });
 
-  it('채우다 실패하면(목록 충돌) 조용히 넘어가고 같은 세션에서 다시 시도하지 않는다', async () => {
+  it('채우다 실패하면 목록을 다시 받고 같은 세션에서 다시 시도하지 않는다', async () => {
     const sessionId = await readySession({ mode: 'REUSE' });
     server.use(
-      http.put('*/api/setup-sessions/:id/zones', () =>
-        problem(409, 'SETUP_ZONE_PLAN_CONFLICT', '다른 곳에서 먼저 고친 세팅 구역 목록입니다'),
+      http.post('*/api/setup-sessions/:id/zones/seed', () =>
+        problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다'),
       ),
     );
     seed(sessionId);
-    await waitFor(() => expect(planRequests(sessionId, 'PUT')).toHaveLength(1));
-    // 실패하면 목록을 다시 받지만(최신 revision) 같은 세션은 다시 채우지 않는다
+    await waitFor(() => expect(seedRequests(sessionId)).toHaveLength(1));
     await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(2));
     await act(async () => {});
-    expect(planRequests(sessionId, 'PUT')).toHaveLength(1);
+    expect(seedRequests(sessionId)).toHaveLength(1);
   });
 });

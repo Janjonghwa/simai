@@ -412,6 +412,8 @@ export interface ZonesMock {
   layoutZones: LayoutZonesHooks;
   /** 상단 바 /topic/health 의 구성 묶음 상태(서버 ViewerHealthService 의 config 를 흉내 낸다). */
   config(): MockConfig;
+  /** 지금 유효한 구역(세팅 mock 의 목록 채우기가 읽는다, S15P31A101-629). */
+  currentZones(): readonly ZoneItem[];
   /** 다음 발행을 Tier 0 가 거부한다(REJECTED, 이전 묶음을 계속 쓴다). */
   rejectNextBundle(): void;
   /** 다음 발행 요청 하나를 서버 오류로 거절한다(묶음은 만들지 않는다). 409(보정·규칙·현장)·503(공개 주소). 기본은 보정 문서 없음이다. */
@@ -843,6 +845,7 @@ export function createZonesMock({
         sync: SYNC_BY_STATUS[statusAt(latest, t)],
       };
     },
+    currentZones: () => current(),
     rejectNextBundle: () => {
       rejectNext = true;
     },

@@ -373,3 +373,19 @@ describe('구역 표시 규칙', () => {
     expect(personOnRay([hit('zone:z-01'), hit('object:surface1'), hit('person-layer')])).toBeNull();
   });
 });
+
+describe('확인 전 구역 표시(S15P31A101-629)', () => {
+  it('확인 필요 구역은 같은 색으로 채움을 옅게, 윤곽을 흐린 점선으로 그리고 이름표에 확인 필요를 붙인다', () => {
+    const normal = zoneStyle('UNVERIFIED', false, PALETTE.dark, 'HIGH');
+    const review = zoneStyle('UNVERIFIED', false, PALETTE.dark, 'HIGH', true);
+    expect(review.color).toBe(normal.color);
+    expect(review.fillOpacity).toBeLessThan(normal.fillOpacity);
+    expect(review.edgeOpacity).toBeLessThan(normal.edgeOpacity);
+    expect(review.dashed).toBe(true);
+    expect(review.dashSize).toBeLessThan(normal.dashSize);
+    expect(review.stateLabel).toBe('확인 필요');
+    expect(zoneStyle('UNVERIFIED', true, PALETTE.dark, 'HIGH', true).edgeOpacity).toBe(1);
+    expect(zoneLabel({ name: '개구부', needsReview: true })).toBe('개구부 · 확인 필요');
+    expect(zoneLabel({ name: '개구부' })).toBe('개구부');
+  });
+});

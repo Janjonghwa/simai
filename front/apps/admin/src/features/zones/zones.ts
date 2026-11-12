@@ -64,6 +64,7 @@ function toZone(item: ZoneItem): Zone | null {
     layoutId: item.layout_id ?? null,
     layoutItemId: item.layout_item_id ?? null,
     shapeEditable: item.eval_type === 'VOLUME_3D' && zRange !== null && isAxisRect(item.polygon_xy),
+    ...(item.needs_review ? { needsReview: true } : {}),
   };
 }
 
@@ -118,5 +119,7 @@ export function toViewerZones(zones: readonly Zone[]): ViewerZones {
     valid_from: zone.validFrom,
     // 지금 유효한 버전만 읽으므로 valid_to 는 없다.
     valid_to: null,
+    // 세팅에서 확인 전인 이어 쓴 구역은 3D 가 옅게 구별해 그린다(S15P31A101-629).
+    ...(zone.needsReview ? { needs_review: true } : {}),
   }));
 }

@@ -12,6 +12,8 @@ import { z } from 'zod';
 // 세팅 구역 단계는 관제 구역(zones/commit)을 바로 바꾸지 않고 이 목록을 고친다. 세팅 완료가 목록을 한 번에 관제 구역으로 적용한다.
 // - 화면의 구역 목록은 목록 기준이다: zone_id 항목은 지금 관제 구역(본문이 있으면 그 본문으로), 새 항목은 임시 ID(setup-new-<순번>).
 // - 화면의 저장 요청(ZoneCommitRequest)은 목록 고치기로 바꾼다: 만들기 → 항목 추가, 새 버전 → 본문 바꾸기, 보관 → 항목 빼기.
+// - 확인 필요(needs_review, S15P31A101-629): 새 모델 + World 이어짐 세팅이 지금 관제 구역으로 채운 항목은 사람이 확인·수정·삭제하기
+//   전까지 true 다. 고치면(본문·작업면) 확인한 것으로 본다. 화면 구역에는 needs_review 를 실어 목록 카드·3D 가 구별해 그린다.
 
 export const SETUP_NEW_ZONE_PREFIX = 'setup-new-';
 const SETUP_NEW_SURFACE_PREFIX = 'setup-surface-';
@@ -31,6 +33,11 @@ export const setupZonePlanItemSchema = z.object({
     .transform((v) => v ?? null),
   zone: looseRecord.nullish().transform((v) => (v ?? null) as ZoneBody | null),
   surface: looseRecord.nullish().transform((v) => (v ?? null) as StaticObjectBody | null),
+  /** 사람이 아직 확인하지 않은 이어 쓴 구역(S15P31A101-629). 없으면 확인된 것. */
+  needs_review: z
+    .boolean()
+    .nullish()
+    .transform((v) => v ?? false),
 });
 export type SetupZonePlanItem = z.infer<typeof setupZonePlanItemSchema>;
 
@@ -89,7 +96,7 @@ function zoneViewOf(
   const item = items[index]!;
   const current = item.zone_id ? live.get(item.zone_id) : undefined;
   if (item.zone_id && !current && !item.zone) return null;
-  if (!item.zone) return current ?? null;
+  if (!item.zone) return current ? { ...current, needs_review: item.needs_review } : null;
   const merged = {
     ...(current ?? {}),
     ...item.zone,
@@ -97,6 +104,7 @@ function zoneViewOf(
     zone_version: current?.zone_version ?? 1,
     valid_from: current?.valid_from ?? 0,
     valid_to: null,
+    needs_review: item.needs_review,
   };
   const parsed = zoneItemSchema.safeParse(merged);
   return parsed.success ? parsed.data : null;
@@ -186,6 +194,7 @@ export function applyCommitToPlan(
       candidate_id: origin.candidateId,
       zone: request.zone.body,
       surface: surfaceBody ?? null,
+      needs_review: false,
     });
     index = items.length - 1;
   } else {
@@ -211,6 +220,8 @@ export function applyCommitToPlan(
       throw new SetupZonePlanEditError('세팅 중에는 기존 구역의 작업면만 따로 지울 수 없습니다');
     }
     if (surfaceBody !== undefined) item.surface = surfaceBody;
+    // 고친 구역은 사람이 본 것이다(서버도 본문·작업면이 있는 항목의 확인 필요를 지운다)
+    if (request.zone.op === 'UPDATE' || surfaceBody !== undefined) item.needs_review = false;
   }
   return {
     items,
@@ -238,16 +249,47 @@ export function liveZonesAsItems(
       candidate_id: null,
       zone: null,
       surface: null,
+      needs_review: false,
     }));
 }
 
 /** PUT 본문 항목(서버 Item 모양 그대로). */
 export function toPlanRequestItems(items: readonly SetupZonePlanItem[]) {
-  return items.map(({ zone_id, source, candidate_id, zone, surface }) => ({
+  return items.map(({ zone_id, source, candidate_id, zone, surface, needs_review }) => ({
     zone_id,
     source,
     candidate_id,
     zone,
     surface,
+    needs_review,
   }));
+}
+
+/** 확인이 필요한 항목 수(S15P31A101-629). 0 이어야 세팅을 완료할 수 있다. */
+export function pendingReviewCount(plan: SetupZonePlanView | undefined): number {
+  return plan ? plan.items.filter((item) => item.needs_review).length : 0;
+}
+
+/** 화면 ID 들(없으면 모두)의 확인 필요를 지운 목록. 바뀐 것이 없으면 null. */
+export function confirmPlanItems(
+  items: readonly SetupZonePlanItem[],
+  viewIds?: readonly string[],
+): SetupZonePlanItem[] | null {
+  const targets = viewIds ? new Set(viewIds) : null;
+  let changed = false;
+  const next = items.map((item, index) => {
+    if (!item.needs_review || (targets && !targets.has(planItemViewId(items, index)))) return item;
+    changed = true;
+    return { ...item, needs_review: false };
+  });
+  return changed ? next : null;
+}
+
+/** 화면 ID 의 항목을 뺀 목록(완료 때 그 구역은 보관된다). 목록에 없으면 null. */
+export function removePlanItem(
+  items: readonly SetupZonePlanItem[],
+  viewId: string,
+): SetupZonePlanItem[] | null {
+  const index = indexOfViewId(items, viewId);
+  return index < 0 ? null : items.filter((_, i) => i !== index);
 }

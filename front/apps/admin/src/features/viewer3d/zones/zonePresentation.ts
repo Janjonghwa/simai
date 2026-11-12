@@ -32,6 +32,18 @@ export interface ZoneStyle {
   stateLabel: string;
 }
 
+/**
+ * 세팅에서 사람이 아직 확인하지 않은 이어 쓴 구역(S15P31A101-629): 같은 심각도 색을 옅은 채움·흐린 촘촘한 점선으로 그려
+ * 확인한 구역(적용 상태 모양)과 구별한다. 선택하면 선은 짙어진다.
+ */
+const NEEDS_REVIEW_LOOK = {
+  fillScale: 0.35,
+  edgeOpacity: 0.5,
+  dashSize: 0.06,
+  gapSize: 0.14,
+  stateLabel: '확인 필요',
+} as const;
+
 /** 선택하면 채움이 이만큼 짙어진다. */
 const SELECTED_FILL_BOOST = 0.1;
 /** 가려진 부분의 선 불투명도는 보이는 선의 이 비율이다. */
@@ -88,8 +100,19 @@ export function zoneStyle(
   selected: boolean,
   palette: ScenePalette = PALETTE.dark,
   severity?: ZoneSeverity,
+  needsReview = false,
 ): ZoneStyle {
-  const base = STYLES[state];
+  const base = needsReview
+    ? {
+        ...STYLES[state],
+        fillOpacity: STYLES[state].fillOpacity * NEEDS_REVIEW_LOOK.fillScale,
+        edgeOpacity: NEEDS_REVIEW_LOOK.edgeOpacity,
+        dashed: true,
+        dashSize: NEEDS_REVIEW_LOOK.dashSize,
+        gapSize: NEEDS_REVIEW_LOOK.gapSize,
+        stateLabel: NEEDS_REVIEW_LOOK.stateLabel,
+      }
+    : STYLES[state];
   const edgeOpacity = selected ? 1 : base.edgeOpacity;
   return {
     ...base,
@@ -109,8 +132,11 @@ export const zoneStateLabel = (state: ZoneApplyState) => STYLES[state].stateLabe
 export const zoneHeightText = (zone: Pick<ZoneView, 'min' | 'max'>) =>
   `Z ${meters(zone.min[2])}–${meters(zone.max[2])}m`;
 
-/** 장면 이름표. 구역 이름만 적고, 위험은 색으로만 보인다. */
-export const zoneLabel = (zone: Pick<ZoneView, 'name'>) => zoneDisplayName(zone.name);
+/** 장면 이름표. 구역 이름만 적고, 위험은 색으로만 보인다. 세팅에서 확인 전인 구역은 '확인 필요'를 붙인다. */
+export const zoneLabel = (zone: Pick<ZoneView, 'name' | 'needsReview'>) =>
+  zone.needsReview
+    ? `${zoneDisplayName(zone.name)} · ${NEEDS_REVIEW_LOOK.stateLabel}`
+    : zoneDisplayName(zone.name);
 
 const PERSON_PREFIX = targetKey({ type: 'person', id: '' });
 

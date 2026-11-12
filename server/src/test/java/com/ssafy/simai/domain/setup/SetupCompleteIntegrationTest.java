@@ -361,6 +361,43 @@ class SetupCompleteIntegrationTest {
         assertThat(currentScene()).isEqualTo(preview);
     }
 
+    @Test
+    void 확인_필요_구역이_남으면_완료를_거부하고_모두_확인하면_완료한다() throws Exception {
+        Session s = startSession();
+        String preview = ready(s);
+        String existing = "z-review-" + suffix;
+        jdbc.update("""
+                INSERT INTO zone(zone_id,zone_version,site_id,name,zone_kind,eval_type,polygon,severity,valid_from,created_by)
+                VALUES (?,1,?,'이어 쓸 구역','OPENING','GROUND_FOOTPRINT',ST_GeomFromText('POLYGON((0 0,2 0,2 1,0 1,0 0))',0),'HIGH',now(),?)
+                """, existing, site, userId);
+        jdbc.update("""
+                UPDATE setup_session SET world_anchor = '{"accepted": true, "reason": "ANCHORED"}'::jsonb
+                WHERE setup_session_id = ?::uuid
+                """, s.sessionId());
+        // 새 모델 + World 이어짐: 지금 관제 구역을 확인 필요로 채운다(S15P31A101-629)
+        JsonNode seeded = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", s.sessionId()).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        int pending = 0;
+        for (JsonNode item : seeded.path("items")) {
+            if (item.path("needs_review").asBoolean(false)) pending++;
+        }
+        assertThat(pending).isPositive();
+
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_ZONES_UNCONFIRMED"))
+                .andExpect(jsonPath("$.unconfirmed_count").value(pending));
+        assertThat(jdbc.queryForObject("SELECT setup_completed_at IS NULL FROM work_unit WHERE work_id = ?", Boolean.class,
+                workUnitId)).isTrue();
+        assertThat(bundleCount()).isZero();
+
+        ArrayNode confirmed = (ArrayNode) seeded.path("items").deepCopy();
+        confirmed.forEach(item -> ((ObjectNode) item).put("needs_review", false));
+        putPlan(s.sessionId(), confirmed, 1).andExpect(status().isOk());
+        JsonNode done = body(mvc.perform(complete(s.sessionId())).andExpect(status().isOk()).andReturn());
+        assertThat(done.at("/applied_zones/kept").toString()).contains(existing);
+        assertThat(currentScene()).isEqualTo(preview);
+    }
+
     // ---------------------------------------------------------------- 도우미
 
     private record Session(String sessionId, String jobId, String leaseId) {

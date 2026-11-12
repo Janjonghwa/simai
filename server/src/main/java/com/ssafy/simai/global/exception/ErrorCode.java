@@ -148,6 +148,7 @@ public sealed interface ErrorCode {
         SETUP_ZONES_CLOSED(HttpStatus.CONFLICT, "세팅이 끝났거나 작업이 시작돼 세팅 구역 목록을 고칠 수 없습니다"),
         SETUP_ZONE_WORLD_MISMATCH(HttpStatus.CONFLICT, "World 좌표가 바뀐 세팅이라 기존 구역(zone_id)을 그대로 쓸 수 없습니다"),
         SETUP_ZONE_STALE(HttpStatus.CONFLICT, "목록의 기존 구역이 더 이상 관제 구역이 아닙니다"),
+        SETUP_ZONES_UNCONFIRMED(HttpStatus.CONFLICT, "확인이 필요한 구역이 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요"),
         ZONE_NOT_FOUND(HttpStatus.NOT_FOUND, "구역을 찾을 수 없습니다"),
         INVALID_ZONE(HttpStatus.BAD_REQUEST, "구역 값이 올바르지 않습니다(name·zone_kind 필수, eval_type 은 GROUND_FOOTPRINT·VOLUME_3D, severity 는 CRITICAL·HIGH·CAUTION·INFO)"),
         INVALID_POLYGON(HttpStatus.BAD_REQUEST, "다각형은 서로 다른 꼭짓점 3개 이상이고 자기 교차·넓이 0 이 없어야 합니다"),

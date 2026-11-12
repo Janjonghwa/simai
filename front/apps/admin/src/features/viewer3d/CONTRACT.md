@@ -35,6 +35,7 @@ READY 는 형상을 받아 검사했다는 뜻이다. 구성 묶음 발행이나
 - `eval_type` 은 GROUND_FOOTPRINT 또는 VOLUME_3D, `severity` 는 CRITICAL·HIGH·CAUTION·INFO, `zone_version` 은 1 이상 정수여야 한다. `valid_to` 가 있으면 지난 버전이라 뺀다.
 - VOLUME_3D 는 `z_min_m < z_max_m` 가 있어야 한다. 없으면 높이를 지어내지 않고 뺀다.
 - 같은 `zone_id` 가 둘 이상이면 어느 쪽이 지금 버전인지 몰라 모두 뺀다.
+- 세팅 화면이 싣는 `needs_review: true`(S15P31A101-629, 서버 응답에는 없음)는 형상·판정과 무관한 표시 힌트다. 그 구역은 옅은 채움·흐린 촘촘한 점선으로 그리고 이름표에 `확인 필요`를 붙인다.
 - 표시 형상(`shape`):
   - BOX: VOLUME_3D 축 정렬 직사각형이다. 상자로 그리고 3D 상자 편집을 쓸 수 있다.
   - PRISM: 직사각형이 아닌 VOLUME_3D 다. 다각형 기둥으로 그리고, 상자 편집은 `NOT_EDITABLE` 이다.

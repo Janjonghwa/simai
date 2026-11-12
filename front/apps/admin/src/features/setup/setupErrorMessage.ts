@@ -67,12 +67,16 @@ export const SETUP_COMPLETE_ERROR_TEXT: Record<string, string> = {
   SETUP_ZONE_STALE:
     '구역 목록의 기존 구역이 더 이상 관제 구역이 아니어서 목록을 다시 받았습니다. 확인한 뒤 다시 완료하세요',
   SETUP_ZONES_CLOSED: '세팅이 끝났거나 작업이 시작돼 구역을 적용할 수 없습니다',
+  SETUP_ZONES_UNCONFIRMED:
+    '확인이 필요한 구역이 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요',
   SUPPLEMENT_SETUP_COMPLETED: '세팅을 완료한 뒤에는 맵 보강 촬영·다시 굽기를 할 수 없습니다',
 };
 
 /** 세팅 완료 실패를 화면 안내 문구로 바꾼다. 모르는 4xx 는 서버 문구, 그 밖에는 기본 문구. */
 export function setupCompleteErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
+    // 확인 필요 거부는 서버 문구에 남은 개수가 있다(S15P31A101-629)
+    if (error.code === 'SETUP_ZONES_UNCONFIRMED' && error.serverMessage) return error.serverMessage;
     const known = error.code ? SETUP_COMPLETE_ERROR_TEXT[error.code] : undefined;
     if (known) return known;
     if (error.status >= 400 && error.status < 500 && error.serverMessage)

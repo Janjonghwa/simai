@@ -44,13 +44,21 @@ public class SetupZonePlanService {
     /**
      * 목록 항목. zone_id 가 있으면 지금 관제 구역을 이어 쓴다(zone 이 null 이면 그대로, 있으면 새 버전).
      * zone_id 가 없으면 새 구역(zone 필수). surface 는 그 구역의 작업면 새 값(null 이면 그대로·없음).
+     * needs_review(S15P31A101-629): 새 모델 + World 이어짐 세팅이 지금 관제 구역으로 채운 항목은 사람이 확인하기 전까지 true 다.
+     * 없으면 false(확인된 것). 저장할 때 이어 쓰는 구역을 고치지 않은 항목만 true 를 남긴다(고치면 확인한 것으로 본다).
      */
     public record Item(
             @JsonProperty("zone_id") String zoneId,
             @JsonProperty("source") String source,
             @JsonProperty("candidate_id") String candidateId,
             @JsonProperty("zone") ZoneRequest zone,
-            @JsonProperty("surface") StaticObjectRequest surface) {
+            @JsonProperty("surface") StaticObjectRequest surface,
+            @JsonProperty("needs_review") Boolean needsReview) {
+
+        /** 확인이 필요한 항목인지(null 은 false) */
+        public boolean pendingReview() {
+            return Boolean.TRUE.equals(needsReview);
+        }
     }
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -114,6 +122,50 @@ public class SetupZonePlanService {
                         WHERE setup_session_id = :id
                         """, p);
             }
+        });
+        return view(id);
+    }
+
+    /**
+     * 처음 목록 채우기(S15P31A101-629). 한 번도 저장하지 않은 목록(revision 0)만 지금 관제 구역(zone_id 를 잇고 본문은 비운다)으로
+     * 채운다. 이전 모델 재사용(REUSE)은 확인 표시 없이, 새 모델 + World 이어짐(world_anchor.accepted)은 needs_review=true 로 채운다.
+     * 레이아웃이 만든 구역은 레이아웃이 관리해(세팅 목록으로 고치지 못한다) 확인 표시를 달지 않는다.
+     * World 가 끊긴 새 모델은 기존 구역 좌표가 맞지 않아 채우지 않는다(빈 목록). 이미 저장한 목록이면 그대로 돌려준다.
+     */
+    public ObjectNode seed(String setupSessionId, long userId) {
+        UUID id = parseId(setupSessionId);
+        transaction.executeWithoutResult(s -> {
+            requireSession(id, true);
+            MapSqlParameterSource p = new MapSqlParameterSource("id", id).addValue("site", sites.siteId()).addValue("user", userId)
+                    .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+            record Mode(boolean reuse, boolean anchorAccepted) { }
+            Mode mode = jdbc.queryForObject("""
+                    SELECT mode = 'REUSE', COALESCE((world_anchor ->> 'accepted')::boolean, false)
+                    FROM setup_session WHERE setup_session_id = :id
+                    """, p, (rs, i) -> new Mode(rs.getBoolean(1), rs.getBoolean(2)));
+            if (mode == null || (!mode.reuse() && !mode.anchorAccepted())) {
+                return;
+            }
+            if (!jdbc.queryForList("SELECT revision FROM setup_session_zone_plan WHERE setup_session_id = :id FOR UPDATE",
+                    p, Integer.class).isEmpty()) {
+                return;
+            }
+            List<Item> items = jdbc.query("""
+                    SELECT DISTINCT zone_id, layout_item_id IS NOT NULL AS layout FROM zone
+                    WHERE site_id = :site AND valid_to IS NULL ORDER BY zone_id
+                    """, p, (rs, i) -> new Item(rs.getString("zone_id"), "MANUAL", null, null, null,
+                    !mode.reuse() && !rs.getBoolean("layout")));
+            if (items.size() > MAX_ITEMS) {
+                // 상한을 넘는 현장은 없지만, 넘으면 반쯤 채우지 않고 사람이 그리게 둔다
+                log.warn("Setup zone plan seed skipped: {} current zones exceed {}", items.size(), MAX_ITEMS);
+                return;
+            }
+            p.addValue("items", mapper.writeValueAsString(items));
+            jdbc.update("""
+                    INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
+                    VALUES (:id, CAST(:items AS jsonb), 1, :user, :now)
+                    ON CONFLICT (setup_session_id) DO NOTHING
+                    """, p);
         });
         return view(id);
     }
@@ -197,7 +249,9 @@ public class SetupZonePlanService {
                     || (candidate != null && (candidate.length() > MAX_ID || !candidates.add(candidate)))) {
                 throw invalid();
             }
-            out.add(new Item(zoneId, item.source(), candidate, item.zone(), item.surface()));
+            // 확인 필요는 이어 쓰는 구역을 그대로 둔 항목에만 남는다. 새 구역·고친 구역은 사람이 그렸거나 고쳤으니 확인된 것이다
+            boolean review = item.pendingReview() && zoneId != null && item.zone() == null && item.surface() == null;
+            out.add(new Item(zoneId, item.source(), candidate, item.zone(), item.surface(), review));
         }
         return out;
     }

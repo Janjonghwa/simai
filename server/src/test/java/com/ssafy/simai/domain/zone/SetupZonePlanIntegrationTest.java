@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.zone;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -200,6 +201,107 @@ class SetupZonePlanIntegrationTest {
         assertThat(result.kept()).containsExactly(layoutZone);
         assertThat(result.archived()).isEmpty();
         assertThat(currentVersion(layoutZone)).isEqualTo(1);
+    }
+
+    @Test
+    void 새_모델_World_이어짐이면_지금_관제_구역을_확인_필요로_한_번_채운다() throws Exception {
+        String a = zone("가");
+        String b = zone("나");
+        String layoutZone = layoutZone();
+        anchor(true);
+
+        JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
+        assertThat(seeded.path("revision").asInt()).isEqualTo(1);
+        assertThat(reviewOf(seeded, a)).isTrue();
+        assertThat(reviewOf(seeded, b)).isTrue();
+        // 레이아웃이 만든 구역은 세팅 목록으로 고치지 못해 확인 표시를 달지 않는다
+        assertThat(reviewOf(seeded, layoutZone)).isFalse();
+        assertThat(seeded.path("items").get(0).path("zone").isNull()).isTrue();
+
+        // 이미 채운(저장한) 목록은 다시 채우지 않는다
+        putPlan(admin, mapper.createArrayNode(), 1).andExpect(status().isOk());
+        JsonNode again = body(seed(admin).andExpect(status().isOk()));
+        assertThat(again.path("revision").asInt()).isEqualTo(2);
+        assertThat(again.path("items").size()).isZero();
+        seed(viewer).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 재사용은_확인_표시_없이_채우고_World_끊김은_채우지_않는다() throws Exception {
+        String a = zone("가");
+        // World 끊김(새 모델, 채택 아님): 빈 목록 그대로
+        JsonNode cut = body(seed(admin).andExpect(status().isOk()));
+        assertThat(cut.path("revision").asInt()).isZero();
+        assertThat(cut.path("items").size()).isZero();
+
+        jdbc.update("UPDATE setup_session SET requested_mode = 'REUSE', mode = 'REUSE' WHERE setup_session_id = ?", session);
+        JsonNode reuse = body(seed(admin).andExpect(status().isOk()));
+        assertThat(reuse.path("revision").asInt()).isEqualTo(1);
+        assertThat(reviewOf(reuse, a)).isFalse();
+        assertThat(applier.apply(session, true, user).kept()).containsExactly(a);
+    }
+
+    @Test
+    void 확인_수정_일괄_확인을_저장하고_확인_필요가_남으면_적용하지_않는다() throws Exception {
+        String a = zone("가");
+        String b = zone("나");
+        String c = zone("다");
+        anchor(true);
+        JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
+        assertThatThrownBy(() -> applier.apply(session, true, user)).isInstanceOf(SetupZonesUnconfirmedException.class)
+                .hasMessage("SETUP_ZONES_UNCONFIRMED").extracting("remaining").isEqualTo(3);
+
+        // 하나 확인, 하나 수정(본문을 보내면 확인 필요를 보내도 확인된 것으로 저장), 새 구역은 늘 확인된 것
+        ArrayNode items = (ArrayNode) seeded.path("items").deepCopy();
+        for (JsonNode item : items) {
+            String id = item.get("zone_id").asString();
+            if (id.equals(a)) ((ObjectNode) item).put("needs_review", false);
+            if (id.equals(b)) ((ObjectNode) item).set("zone", zoneBody("나 고침"));
+        }
+        items.addObject().put("source", "MANUAL").put("needs_review", true).set("zone", zoneBody("새 구역"));
+        JsonNode saved = body(putPlan(admin, items, 1).andExpect(status().isOk()));
+        assertThat(reviewOf(saved, a)).isFalse();
+        assertThat(reviewOf(saved, b)).isFalse();
+        assertThat(reviewOf(saved, c)).isTrue();
+        assertThat(saved.path("items").get(3).path("needs_review").asBoolean()).isFalse();
+        assertThatThrownBy(() -> applier.apply(session, true, user)).isInstanceOf(SetupZonesUnconfirmedException.class)
+                .extracting("remaining").isEqualTo(1);
+
+        // 남은 것 모두 확인
+        ArrayNode all = (ArrayNode) saved.path("items").deepCopy();
+        all.forEach(item -> ((ObjectNode) item).put("needs_review", false));
+        putPlan(admin, all, 2).andExpect(status().isOk());
+        SetupZoneApplier.ApplyResult result = applier.apply(session, true, user);
+        assertThat(result.kept()).containsExactlyInAnyOrder(a, c);
+        assertThat(result.updated()).containsExactly(b);
+        assertThat(result.created()).hasSize(1);
+    }
+
+    private void anchor(boolean accepted) {
+        jdbc.update("UPDATE setup_session SET world_anchor = jsonb_build_object('accepted', ?) WHERE setup_session_id = ?",
+                accepted, session);
+    }
+
+    private String layoutZone() {
+        String id = "z-plan-layout-" + suffix;
+        jdbc.update("""
+                INSERT INTO zone(zone_id,zone_version,site_id,name,zone_kind,eval_type,polygon,severity,valid_from,work_id,layout_item_id)
+                VALUES (?,1,?,'레이아웃','OPENING','GROUND_FOOTPRINT',ST_GeomFromText('POLYGON((0 0,2 0,2 1,0 1,0 0))',0),'HIGH',now(),?,'item-1')
+                """, id, site, work);
+        return id;
+    }
+
+    private static boolean reviewOf(JsonNode plan, String zoneId) {
+        for (JsonNode item : plan.path("items")) {
+            if (item.hasNonNull("zone_id") && zoneId.equals(item.get("zone_id").asString())) {
+                return item.path("needs_review").asBoolean(false);
+            }
+        }
+        throw new AssertionError("목록에 없는 구역: " + zoneId);
+    }
+
+    private ResultActions seed(String token) throws Exception {
+        return mvc.perform(post("/api/setup-sessions/{id}/zones/seed", session).header(HttpHeaders.AUTHORIZATION, token));
     }
 
     private int currentVersion(String zoneId) {

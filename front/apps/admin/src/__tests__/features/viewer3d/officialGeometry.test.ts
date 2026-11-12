@@ -464,3 +464,17 @@ describe('objectVersions 출처(그린 형상과 같은 행)', () => {
     });
   });
 });
+
+describe('확인 전 구역 힌트(needs_review, S15P31A101-629)', () => {
+  it('needs_review 가 true 일 때만 needsReview 를 붙이고 형상 검사는 그대로다', () => {
+    const marked = readOfficialZone(row({ needs_review: true }));
+    const plain = readOfficialZone(row());
+    expect('zone' in marked && marked.zone.needsReview).toBe(true);
+    expect('zone' in plain && 'needsReview' in plain.zone).toBe(false);
+    const footprint = readOfficialZone(
+      row({ eval_type: 'GROUND_FOOTPRINT', z_min_m: null, z_max_m: null, needs_review: true }),
+    );
+    expect('zone' in footprint && footprint.zone.needsReview).toBe(true);
+    expect(reasonOf(row({ needs_review: 'yes' }))).toBeNull();
+  });
+});

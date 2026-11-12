@@ -211,3 +211,25 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
     expect(toWorkAction([])).toBeNull();
   });
 });
+
+describe('deriveSetupActions: 확인 필요 구역(S15P31A101-629)', () => {
+  it('확인 필요 구역이 남으면 마지막 단추가 개수를 붙이고 꺼지며 이유를 title 로 알린다', () => {
+    expect(summary(stateOf({ stage: 2, canFinish: true, unconfirmedZones: 3 }))).toEqual([
+      '다시 보정',
+      '*작업 관리로 · 확인 필요 3개(꺼짐)',
+    ]);
+    const embedded = deriveSetupActions(
+      stateOf({ stage: 2, embedded: true, canFinish: true, unconfirmedZones: 1 }),
+      handlers(),
+    );
+    expect(toWorkAction(embedded)).toMatchObject({
+      label: '다음 · 확인 필요 1개',
+      enabled: false,
+      title: expect.stringContaining('확인') as unknown,
+    });
+    expect(summary(stateOf({ stage: 2, canFinish: true, unconfirmedZones: 0 }))).toEqual([
+      '다시 보정',
+      '*작업 관리로',
+    ]);
+  });
+});

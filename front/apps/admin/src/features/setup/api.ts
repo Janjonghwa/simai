@@ -166,6 +166,17 @@ export function saveSetupZonePlan(
 }
 
 /**
+ * 구역 단계 처음 목록 채우기(S15P31A101-629). 서버가 저장한 적 없는 목록만 지금 관제 구역으로 채운다: 이전 모델 재사용은 그대로,
+ * 새 모델 + World 이어짐은 확인 필요(needs_review)로. 이미 저장했거나 World 가 끊긴 세팅이면 지금 목록을 그대로 돌려준다.
+ */
+export function seedSetupZonePlan(http: Http, setupSessionId: string): Promise<SetupZonePlanView> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zones/seed`, {
+    method: 'POST',
+    schema: setupZonePlanViewSchema,
+  });
+}
+
+/**
  * 세팅을 완료한다(ADMIN): 구역 목록 적용 → 완료 기록 → (새 모델) 이 세션 맵 켜기 → 구성 묶음 한 번 발행.
  * 커밋 뒤 서버가 TBM AI 양식 초안을 시작한다.
  */
