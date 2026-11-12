@@ -66,7 +66,7 @@ public enum UploadPurpose {
         return Optional.empty();
     }
 
-    String prefix() {
+    public String prefix() {
         return prefix;
     }
 

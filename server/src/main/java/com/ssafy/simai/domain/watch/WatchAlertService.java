@@ -387,7 +387,23 @@ public class WatchAlertService implements AutoCloseable {
         for (ObjectNode payload : escalated) {
             log.info("워치 알림 격상: event={} device={} reason={}", payload.path("event_id").asString(),
                     payload.path("device_id").asString(), payload.path("reason").asString());
-            publisher.publish(RealtimeTopics.WATCH, "watch_escalation", ESCALATION_VERSION, payload);
+            try {
+                publisher.publish(RealtimeTopics.WATCH, "watch_escalation", ESCALATION_VERSION, payload);
+            } catch (RuntimeException e) {
+                // 격상 표시는 이미 커밋됐다. 그대로 두면 escalated_at IS NULL 조건에 다시 걸리지 않아 관리자 알림이 영영 안 나가므로
+                // 표시를 되돌려 다음 주기에 다시 격상한다
+                log.warn("워치 알림 격상 발행 실패라 다음 주기에 다시 한다: alert={}", payload.path("alert_msg_id").asString(), e);
+                try {
+                    jdbc.update("""
+                            UPDATE watch_alert SET escalated_at = NULL, escalation_reason = NULL
+                            WHERE alert_msg_id = CAST(:alert AS uuid) AND device_id = :device
+                            """, new MapSqlParameterSource("alert", payload.path("alert_msg_id").asString())
+                            .addValue("device", payload.path("device_id").asString()));
+                } catch (RuntimeException revert) {
+                    // 되돌리지 못해도 남은 격상 발행은 이어 간다
+                    log.warn("워치 알림 격상 표시를 되돌리지 못함: alert={}", payload.path("alert_msg_id").asString(), revert);
+                }
+            }
         }
     }
 

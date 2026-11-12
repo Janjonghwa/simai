@@ -187,6 +187,7 @@ public class RiskEventRepository {
      */
     public Recorded recordTransition(I1Envelope envelope, String deliveryMode, Instant receivedAt, int epoch) {
         JsonNode p = envelope.payload();
+        requireStateFields(p);
         Integer seq = integer(p, "event_sequence");
         if (seq == null || seq < 1) {
             throw new InvalidI1Message("event_sequence 가 1 이상이 아니다");
@@ -362,8 +363,31 @@ public class RiskEventRepository {
         return value == null ? null : value.toString();
     }
 
+    /**
+     * risk_event 의 NOT NULL 칸에 들어가는 계약 필수 필드(risk_event_transition·event_state_snapshot 공통)를 먼저 본다.
+     * 빠지면 DB 제약 오류(저장 실패, offset 미확인으로 같은 전이를 끝없이 다시 받음)가 아니라 계약 위반으로 거부한다.
+     */
+    static void requireStateFields(JsonNode p) {
+        requiredUuid(p, "event_id");
+        requiredText(p, "rule_id");
+        if (integer(p, "rule_version") == null) {
+            throw new InvalidI1Message("rule_version 이 비었다");
+        }
+        requiredText(p, "verification");
+        requiredText(p, "severity");
+        requiredText(p, "confidence");
+        if (bool(p, "needs_check") == null) {
+            throw new InvalidI1Message("needs_check 가 비었다");
+        }
+        if (textArray(p, "world_ids") == null) {
+            throw new InvalidI1Message("world_ids 가 비었다");
+        }
+    }
+
     /** 스냅샷의 활성 이벤트가 EC2 에 없으면 스냅샷 값으로 만든다(받지 못한 전이를 저널이 이미 정리한 경우). @return 새로 만들었으면 true */
     public boolean ensureFromSnapshot(String gatewayId, JsonNode active) {
+        requireStateFields(active);
+        requiredText(active, "lifecycle");
         return jdbc.update(ENSURE_FROM_SNAPSHOT, new MapSqlParameterSource()
                 .addValue("eventId", requiredUuid(active, "event_id"))
                 .addValue("gatewayId", gatewayId)

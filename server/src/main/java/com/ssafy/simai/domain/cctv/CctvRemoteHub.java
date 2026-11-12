@@ -102,7 +102,7 @@ public class CctvRemoteHub {
     });
 
     // 아래 상태는 this 잠금 안에서만 바꾼다. 프레임 나눠 주기는 viewers(복사 목록)와 cameras(바꿀 때 통째로)만 읽는다
-    private Source source;
+    private volatile Source source;
     private String helloText;
     private volatile Set<String> cameras;
     private final Map<String, String> codecTexts = new LinkedHashMap<>();
@@ -304,9 +304,15 @@ public class CctvRemoteHub {
         CctvViewer viewer = new CctvViewer(session, userId, properties.viewerQueueFrames(), properties.viewerQueueBytes());
         session.setTextMessageSizeLimit(4 * 1024);
         session.setBinaryMessageSizeLimit(4 * 1024);
+        // 닫힘 콜백(viewerClosed)이 이 속성으로 시청자를 찾는다. 목록에 넣은 뒤에 두면 그 사이 닫힌 연결이 목록에 영구히 남아
+        // 슬롯을 차지하고 demand 가 꺼지지 않으므로 먼저 둔다
+        session.getAttributes().put(CctvViewer.class.getName(), viewer);
         boolean accepted;
         synchronized (this) {
-            if (blocked) {
+            if (viewer.isClosed()) {
+                // 이 잠금 전에 닫힘 콜백이 이미 지나갔다(close 를 먼저 부르고 잠금을 잡으므로 여기서 보인다)
+                accepted = false;
+            } else if (blocked) {
                 viewer.endWith(statusText("monthly_quota"), MONTHLY_QUOTA_CLOSE);
                 accepted = false;
             } else if (viewers.size() >= properties.maxViewers()) {
@@ -332,7 +338,6 @@ public class CctvRemoteHub {
         }
         log.info("원격 CCTV 시청 {}: user={} session={} 시청자={}", accepted ? "시작" : "거절", userId, session.getId(),
                 viewers.size());
-        session.getAttributes().put(CctvViewer.class.getName(), viewer);
         Thread.ofVirtual().name("cctv-viewer-" + session.getId()).start(() -> viewer.sendLoop(this::countSent));
     }
 
@@ -536,6 +541,8 @@ public class CctvRemoteHub {
             if (now - v.lastPongNanos() > timeout) {
                 log.info("원격 CCTV 시청자가 pong 없이 끊는다: session={}", v.session.getId());
                 v.close();
+                // 닫힘 콜백을 기다리지 않고 바로 목록에서 뺀다(콜백이 다시 와도 remove 가 false 라 한 번만 처리된다)
+                viewerClosed(v.session);
                 Thread.ofVirtual().start(() -> v.closeQuietly(PONG_TIMEOUT_CLOSE));
             } else {
                 v.offerPing();

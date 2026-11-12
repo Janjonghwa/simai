@@ -64,12 +64,16 @@ class Tier0Relay implements AutoCloseable {
             publisher.count(RealtimeTopics.WORLD, "replaced");
             return;
         }
-        submit(worldExecutor, RealtimeTopics.WORLD, () -> {
+        boolean queued = submit(worldExecutor, RealtimeTopics.WORLD, () -> {
             I1Envelope latest = pendingWorld.remove(sourceId);
             if (latest != null) {
                 publisher.publish(RealtimeTopics.WORLD, WORLD_STATE, latest.schemaVersion(), latest.payload());
             }
         });
+        if (!queued) {
+            // 걸지 못한 채 항목을 남기면 이 Tier 0 의 다음 world_state 가 모두 "이미 걸려 있다"로 보고 영영 내보내지 않는다
+            pendingWorld.remove(sourceId);
+        }
     }
 
     @TransactionalEventListener(fallbackExecution = true)
@@ -81,7 +85,8 @@ class Tier0Relay implements AutoCloseable {
         }
     }
 
-    private void submit(ExecutorService executor, String topic, Runnable task) {
+    /** @return 대기열에 넣었으면 true */
+    private boolean submit(ExecutorService executor, String topic, Runnable task) {
         try {
             executor.execute(() -> {
                 try {
@@ -91,10 +96,12 @@ class Tier0Relay implements AutoCloseable {
                     log.warn("STOMP 발행 준비 실패: topic={}", topic, e);
                 }
             });
+            return true;
         } catch (RejectedExecutionException e) {
             // 서버가 내려가는 중이거나 대기열이 찼다
             publisher.count(topic, "failed");
             log.warn("STOMP 발행 대기열에 넣지 못함: topic={}", topic);
+            return false;
         }
     }
 

@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,7 +104,12 @@ public class TbmReportService implements DisposableBean {
         String siteId = sites.siteId();
         GeneratingStart started = transaction.execute(
                 s -> reports.createGenerating(siteId, request.workId(), userId, clock.instant()));
-        executor.submit(() -> runGeneration(siteId, started));
+        try {
+            executor.submit(() -> runGeneration(siteId, started));
+        } catch (RejectedExecutionException e) {
+            // 서버가 내려가는 중이다. GENERATING 으로 두면 이 작업이 재시작 전까지 409 로 막힌다
+            fail(started.reportId(), "INTERRUPTED", null, null, null);
+        }
         ObjectNode accepted = mapper.createObjectNode();
         accepted.put("report_id", started.reportId());
         accepted.put("work_id", started.workId());
@@ -165,7 +171,11 @@ public class TbmReportService implements DisposableBean {
                 text = wrapUpFallback(request.path("facts"));
                 log.warn("Using deterministic wrap-up for report {}", reportId);
             }
-            wrapUps.complete(reportId, text, fallback, model, clock.instant());
+            String finalText = text;
+            String finalModel = model;
+            boolean finalFallback = fallback;
+            AsyncFinish.withRetry("wrap-up", reportId,
+                    () -> wrapUps.complete(reportId, finalText, finalFallback, finalModel, clock.instant()));
         });
     }
 
@@ -194,9 +204,10 @@ public class TbmReportService implements DisposableBean {
         text.append("운영자 미확인 CRITICAL ").append(facts.path("unacknowledged_critical_count").asLong()).append("건. ");
         text.append("운영자 종료 ").append(facts.path("operator_close_count").asLong()).append("건. ");
         text.append("작업 외 진입 ").append(facts.path("outside_work_entry_count").asLong()).append("건.");
-        for (var phase : java.util.Map.of("early", "초반", "middle", "중반", "late", "후반").entrySet()) {
-            text.append(" 작업 ").append(phase.getValue()).append(" 이벤트 ")
-                    .append(facts.path("phase_counts").path(phase.getKey()).asLong()).append("건.");
+        // 초반 → 중반 → 후반 순서를 고정한다(Map.of 는 순회 순서가 실행마다 달라 "결정적" 문장이 바뀐다)
+        for (String[] phase : new String[][] {{"early", "초반"}, {"middle", "중반"}, {"late", "후반"}}) {
+            text.append(" 작업 ").append(phase[1]).append(" 이벤트 ")
+                    .append(facts.path("phase_counts").path(phase[0]).asLong()).append("건.");
         }
         if (!facts.path("first_event_min").isNull() && !facts.path("first_event_min").isMissingNode()) {
             text.append(" 첫 이벤트 시작 후 ").append(facts.path("first_event_min").asLong()).append("분.");
@@ -293,15 +304,19 @@ public class TbmReportService implements DisposableBean {
                         llmModel,
                         clock.instant());
             }
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
             log.warn("Unexpected error while generating TBM report {}", start.reportId(), e);
             Long ruleVer = activeRules != null ? activeRules.representativeRuleVersion() : null;
             fail(start.reportId(), "ENGINE_UNAVAILABLE", ruleVer, riskItems, zoneHistory);
+            if (e instanceof Error error) {
+                throw error;  // 마감은 남기고 JVM 오류는 숨기지 않는다
+            }
         }
     }
 
     private void fail(long reportId, String reason, Long ruleVersion, JsonNode riskItems, JsonNode zoneHistory) {
-        reports.completeFailed(reportId, reason, ruleVersion, riskItems, zoneHistory, null, null, null, clock.instant());
+        AsyncFinish.withRetry("failure", reportId, () -> reports.completeFailed(reportId, reason, ruleVersion, riskItems,
+                zoneHistory, null, null, null, clock.instant()));
     }
 
     /**

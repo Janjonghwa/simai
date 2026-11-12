@@ -473,8 +473,8 @@ public class ConfigBundleService {
                 ObjectNode s = surfaces.addObject();
                 s.put("surface_id", id);
                 s.put("top_height_m", Versioned.real(rs, "top_height_m"));
-                s.putArray("center_xy").add(obb.get("center").get(0).doubleValue()).add(obb.get("center").get(1).doubleValue());
-                s.putArray("size_xy").add(obb.get("size").get(0).doubleValue()).add(obb.get("size").get(1).doubleValue());
+                s.putArray("center_xy").add(obbAxis(obb, "center", 0, id)).add(obbAxis(obb, "center", 1, id));
+                s.putArray("size_xy").add(obbAxis(obb, "size", 0, id)).add(obbAxis(obb, "size", 1, id));
                 s.put("yaw_rad", obb.path("yaw_rad").doubleValue());
                 if (obb.has("top_height_sigma_m")) {
                     s.put("top_height_sigma_m", obb.get("top_height_sigma_m").doubleValue());
@@ -492,5 +492,14 @@ public class ConfigBundleService {
             items.add(new Item("STATIC_OBJECT", id, rs.getInt("object_version")));
         });
         return doc;
+    }
+
+    /** 저장 때 검사한 obb 의 축 값. 손상된 행은 NPE 대신 어느 작업면인지 밝혀 실패시킨다 */
+    private static double obbAxis(JsonNode obb, String field, int axis, String objectId) {
+        JsonNode v = obb == null ? null : obb.path(field).path(axis);
+        if (v == null || !v.isNumber()) {
+            throw new IllegalStateException("static_object " + objectId + " 의 obb." + field + "[" + axis + "] 가 수가 아니다");
+        }
+        return v.doubleValue();
     }
 }

@@ -32,12 +32,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.event.EventListener;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -105,7 +107,6 @@ public class SetupService {
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final TransactionTemplate requiresNew;
-    private final TransactionTemplate nested;
     private final ObjectMapper mapper;
     private final SiteLookup sites;
     private final AnalysisJobService jobs;
@@ -126,8 +127,6 @@ public class SetupService {
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        this.nested = new TransactionTemplate(transactionManager);
-        this.nested.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
         this.mapper = mapper;
         this.sites = sites;
         this.jobs = jobs;
@@ -902,6 +901,30 @@ public class SetupService {
         task.run();
     }
 
+    /**
+     * 바깥 트랜잭션이 있으면 SQL SAVEPOINT 로 감싸 실패한 부분만 되돌린다. JpaTransactionManager 의 PROPAGATION_NESTED 는
+     * HibernateJpaDialect 가 savepoint 를 지원하지 않아 쓸 수 없다. JdbcTemplate 은 JPA 트랜잭션과 같은 연결을 쓴다.
+     */
+    private void withSavepoint(Runnable action) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            action.run();
+            return;
+        }
+        JdbcTemplate plain = jdbc.getJdbcTemplate();
+        plain.execute("SAVEPOINT setup_side_effect");
+        try {
+            action.run();
+            plain.execute("RELEASE SAVEPOINT setup_side_effect");
+        } catch (RuntimeException | Error e) {
+            try {
+                plain.execute("ROLLBACK TO SAVEPOINT setup_side_effect");
+            } catch (RuntimeException rollback) {
+                e.addSuppressed(rollback);
+            }
+            throw e;
+        }
+    }
+
     /** 이 세션으로 세팅을 완료했는지(C17): 작업에 걸린 세션이고 작업의 setup_completed_at 이 있다 */
     private boolean setupCompleted(UUID setupSessionId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
@@ -913,7 +936,10 @@ public class SetupService {
     private void enqueueZoneDraftIfReadySafe(UUID setupSessionId, String siteId, String calibrationVersion,
             String previewSceneVersion) {
         try {
-            enqueueZoneDraftIfReady(setupSessionId, siteId, calibrationVersion, previewSceneVersion);
+            // 하트비트·제출 트랜잭션 안에서 돈다. SQL 오류를 삼키기만 하면 PostgreSQL 트랜잭션이 중단돼 바깥 커밋까지 롤백되므로
+            // savepoint 로 이 부분만 되돌린다
+            withSavepoint(() ->
+                    enqueueZoneDraftIfReady(setupSessionId, siteId, calibrationVersion, previewSceneVersion));
         } catch (RuntimeException e) {
             log.warn("세팅 세션 {} 의 vlm_zone_draft 작업 등록 실패(세팅 진행에는 영향 없음): {}", setupSessionId, e.getMessage());
         }
@@ -1020,10 +1046,58 @@ public class SetupService {
 
     private void handleZoneDraftFinishedSafe(JobFinished event) {
         try {
-            handleZoneDraftFinished(event);
+            // 작업 제출 트랜잭션 안의 리스너다. 위와 같은 까닭으로 savepoint 로 가둔다
+            withSavepoint(() -> handleZoneDraftFinished(event));
         } catch (RuntimeException e) {
             log.warn("vlm_zone_draft 작업 {} 결과 저장 실패(세팅 세션에는 영향 없음): {}", event.jobId(), e.getMessage());
         }
+    }
+
+    private static final Set<String> DRAFT_CANDIDATE_KINDS = Set.of("ELEVATED_WORK_SURFACE", "OPENING", "FLOOR_EDGE");
+    private static final Set<String> DRAFT_EVAL_TYPES = Set.of("GROUND_FOOTPRINT", "VOLUME_3D");
+    private static final Set<String> DRAFT_SEVERITIES = Set.of("CRITICAL", "HIGH");
+    private static final Set<String> DRAFT_VLM_STATUSES = Set.of("VLM", "NO_OPINION");
+
+    /** setup_zone_draft(V34) 제약을 먼저 본다. 어기면 이유, 맞으면 null */
+    static String draftProblem(JsonNode d) {
+        if (d == null || !d.isObject()) {
+            return "객체가 아님";
+        }
+        if (!textWithin(d, "candidate_id", 128) || !textWithin(d, "zone_kind", 64)) {
+            return "candidate_id·zone_kind 누락 또는 너무 김";
+        }
+        if (!textWithin(d, "recommended_name", 160) || !textWithin(d, "rationale", 500)) {
+            return "recommended_name·rationale 누락 또는 너무 김";
+        }
+        if (!DRAFT_CANDIDATE_KINDS.contains(d.path("candidate_kind").asString(""))
+                || !DRAFT_EVAL_TYPES.contains(d.path("eval_type").asString(""))
+                || !DRAFT_SEVERITIES.contains(d.path("recommended_severity").asString(""))
+                || !DRAFT_VLM_STATUSES.contains(d.path("vlm_status").asString(""))) {
+            return "candidate_kind·eval_type·recommended_severity·vlm_status 값이 목록 밖";
+        }
+        if (!d.path("polygon_xy").isArray() || d.get("polygon_xy").isEmpty()) {
+            return "polygon_xy 가 비었음";
+        }
+        if (!finiteFloat(d.get("z_min_m")) || !finiteFloat(d.get("z_max_m"))) {
+            return "z_min_m·z_max_m 이 유한한 수가 아님";
+        }
+        for (String optional : List.of("top_height_m", "confidence")) {
+            JsonNode n = d.get(optional);
+            if (n != null && !n.isNull() && !finiteFloat(n)) {
+                return optional + " 이 유한한 수가 아님";
+            }
+        }
+        return null;
+    }
+
+    private static boolean textWithin(JsonNode d, String field, int max) {
+        JsonNode n = d.get(field);
+        return n != null && n.isString() && n.asString().length() <= max;
+    }
+
+    /** real 열에 넣을 수(float 로 바꿔도 유한) */
+    private static boolean finiteFloat(JsonNode n) {
+        return n != null && n.isNumber() && Float.isFinite((float) n.doubleValue());
     }
 
     private void handleZoneDraftFinished(JobFinished event) {
@@ -1067,6 +1141,12 @@ public class SetupService {
             if (drafts != null && drafts.isArray()) {
                 for (int i = 0; i < drafts.size(); i++) {
                     JsonNode d = drafts.get(i);
+                    String problem = draftProblem(d);
+                    if (problem != null) {
+                        // 한 항목이 표 제약을 어기면 나머지 초안까지 잃지 않게 그 항목만 뺀다
+                        log.warn("vlm_zone_draft 작업 {} 의 초안 {} 를 뺀다: {}", event.jobId(), i, problem);
+                        continue;
+                    }
                     JsonNode topHNode = d.get("top_height_m");
                     Float topH = (topHNode != null && topHNode.isNumber()) ? (float) topHNode.doubleValue() : null;
                     JsonNode obbNode = d.get("obb");

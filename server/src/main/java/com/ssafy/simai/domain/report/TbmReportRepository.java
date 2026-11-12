@@ -324,6 +324,13 @@ public class TbmReportRepository {
     public void updateForm(String siteId, long reportId, JsonNode form, int expectedRevision) {
         MapSqlParameterSource p = new MapSqlParameterSource().addValue("siteId", siteId).addValue("reportId", reportId);
         record Target(int revision, boolean locked, boolean latest) { }
+        // 작업 행을 먼저 따로 잠근다(아래 renameDailyWork 가 바꾼다). 서명·제출·AI 초안이 work → report 순으로 잠그므로
+        // 같은 순서를 지켜야 교착이 나지 않는다. 한 문장의 FOR UPDATE OF w, r 은 잠그는 순서를 플랜이 정해 보장하지 못한다
+        jdbc.query("""
+                SELECT w.work_id FROM work_unit w
+                WHERE w.site_id = :siteId AND w.work_id = (SELECT work_id FROM report WHERE report_id = :reportId)
+                FOR UPDATE
+                """, p, (rs, i2) -> rs.getLong(1));
         List<Target> rows = jdbc.query("""
                 SELECT r.form_revision, r.locked_at IS NOT NULL AS locked,
                        r.report_version = (SELECT max(x.report_version) FROM report x WHERE x.work_id = r.work_id) AS latest

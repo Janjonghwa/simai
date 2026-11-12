@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.ssafy.simai.domain.auth.entity.RefreshToken;
 import com.ssafy.simai.domain.auth.repository.RefreshTokenRepository;
+import com.ssafy.simai.domain.auth.service.RefreshTokenCleaner;
 import com.ssafy.simai.domain.user.entity.AppUser;
 import com.ssafy.simai.domain.user.entity.Role;
 import com.ssafy.simai.domain.user.repository.AppUserRepository;
@@ -49,6 +50,9 @@ class RefreshTokenIntegrationTest {
 
     @Autowired
     PasswordEncoder passwordEncoder;
+
+    @Autowired
+    RefreshTokenCleaner cleaner;
 
     @Test
     void 로그인하면_갱신_토큰을_HttpOnly_쿠키로만_준다() throws Exception {
@@ -178,6 +182,27 @@ class RefreshTokenIntegrationTest {
                 UUID.randomUUID(), user.getId(), UUID.randomUUID(), sha256(raw), past.minusSeconds(3600), past));
 
         refresh(raw).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void 만료_뒤_7일이_지난_갱신_토큰_행만_지운다() throws Exception {
+        AppUser user = saveUser("viewer-1", Role.VIEWER);
+        Instant now = Instant.now();
+        UUID old = UUID.randomUUID();
+        UUID recent = UUID.randomUUID();
+        UUID live = UUID.randomUUID();
+        refreshTokens.saveAndFlush(new RefreshToken(old, user.getId(), UUID.randomUUID(), sha256("old-expired"),
+                now.minusSeconds(30 * 86400), now.minusSeconds(8 * 86400)));
+        refreshTokens.saveAndFlush(new RefreshToken(recent, user.getId(), UUID.randomUUID(), sha256("recent-expired"),
+                now.minusSeconds(20 * 86400), now.minusSeconds(86400)));
+        refreshTokens.saveAndFlush(new RefreshToken(live, user.getId(), UUID.randomUUID(), sha256("live"),
+                now, now.plusSeconds(3600)));
+
+        assertThat(cleaner.purgeExpired()).isGreaterThanOrEqualTo(1);
+
+        assertThat(refreshTokens.existsById(old)).isFalse();
+        assertThat(refreshTokens.existsById(recent)).isTrue();
+        assertThat(refreshTokens.existsById(live)).isTrue();
     }
 
     @Test

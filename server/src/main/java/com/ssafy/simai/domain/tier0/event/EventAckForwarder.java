@@ -76,8 +76,9 @@ public class EventAckForwarder {
                 """, new MapSqlParameterSource().addValue("g", connection.gatewayId()).addValue("window", RESEND_WINDOW)
                         .addValue("olderThan", olderThan),
                 (rs, i) -> {
-                    int target = rs.getInt("target_event_sequence");
-                    return new Ack(UUID.fromString(rs.getString("event_id")), rs.wasNull() ? null : target,
+                    // getInt 뒤 wasNull 은 바로 앞에 읽은 열 기준이라, 다른 열을 읽기 전에 NULL 을 그대로 받는다
+                    Integer target = rs.getObject("target_event_sequence", Integer.class);
+                    return new Ack(UUID.fromString(rs.getString("event_id")), target,
                             UUID.fromString(rs.getString("ack_id")), rs.getString("channel"), rs.getString("actor_role"),
                             String.valueOf(rs.getLong("actor_user_id")), rs.getTimestamp("acked_at").getTime());
                 });

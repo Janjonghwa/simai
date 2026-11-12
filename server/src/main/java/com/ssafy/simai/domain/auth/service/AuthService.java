@@ -36,7 +36,10 @@ public class AuthService {
         this.dummyHash = passwordEncoder.encode("simai-dummy-password");
     }
 
-    @Transactional
+    /**
+     * 트랜잭션으로 감싸지 않는다. BCrypt 비교(약 100 ms)를 DB 연결을 쥔 채 하면 로그인 요청이 몰릴 때 연결 풀이 말라
+     * Tier 0 수신·관제 API 까지 멈춘다. 계정 조회와 갱신 토큰 발급은 각자 짧은 트랜잭션으로 돈다.
+     */
     public AuthTokens login(LoginRequest request) {
         // BCrypt 가 받을 수 없는 길이는 어떤 계정의 비밀번호도 아니다(500 대신 같은 실패로 답한다)
         if (PasswordPolicy.tooLong(request.password())) {

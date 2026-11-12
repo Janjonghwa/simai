@@ -4,8 +4,10 @@ import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
@@ -110,8 +112,8 @@ class SiteController {
             if (newId == null || newId.equals(current)) {
                 return view(current);
             }
-            for (String table : DEPENDENTS) {
-                if (!jdbc.queryForList("SELECT 1 FROM " + table + " WHERE site_id = :id LIMIT 1", params).isEmpty()) {
+            for (String column : dependentColumns()) {
+                if (!jdbc.queryForList("SELECT 1 FROM " + column + " = :id LIMIT 1", params).isEmpty()) {
                     throw new BusinessException(ErrorCode.Site.SITE_IN_USE);
                 }
             }
@@ -127,6 +129,25 @@ class SiteController {
             jdbc.update("DELETE FROM site WHERE site_id = :id", params);
             return view(newId);
         });
+    }
+
+    /**
+     * site_id 를 바꾸지 못하게 하는 기록 위치("표 WHERE 열" 꼴). 고정 목록에 더해 site 를 FK 로 가리키는 표(카메라 제외)를
+     * 카탈로그에서 읽는다. 목록만 두면 새 마이그레이션이 FK 를 더할 때 빠져(V36 report 등) SITE_IN_USE 대신 FK 위반 500 이 난다.
+     * 표·열 이름은 카탈로그의 quote_ident 값이라 사용자 입력이 섞이지 않는다.
+     */
+    private Set<String> dependentColumns() {
+        Set<String> columns = new LinkedHashSet<>();
+        DEPENDENTS.forEach(table -> columns.add(table + " WHERE site_id"));
+        columns.addAll(jdbc.queryForList("""
+                SELECT format('%s WHERE %I', c.conrelid::regclass, a.attname)
+                FROM pg_constraint c
+                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+                WHERE c.contype = 'f' AND c.confrelid = 'site'::regclass AND c.conrelid <> 'camera'::regclass
+                  AND cardinality(c.conkey) = 1
+                ORDER BY 1
+                """, Map.of(), String.class));
+        return columns;
     }
 
     /** 현장 하나의 ID. 없거나 둘 이상이면 SITE_NOT_SINGLE(SiteLookup 과 같은 규칙) */
