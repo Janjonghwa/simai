@@ -9,6 +9,7 @@ import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock, type WorkMock } from '@/mocks/work';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -312,6 +313,8 @@ describe('서명·시작·종료·제출 훅', () => {
       report_version: 1,
     });
 
+    // 서버가 종료 미팅을 다 채운 뒤에야 제출을 받는다.
+    clock += DRAFT_DELAY_MS;
     await act(async () => {
       await result.current.submit.mutateAsync(first.report_id);
     });
@@ -356,5 +359,126 @@ describe('서명·시작·종료·제출 훅', () => {
     });
     await waitFor(() => expect(result.current.start.error).not.toBeNull());
     expect(workErrorOf(result.current.start.error)).toBe(WORK_ERROR.NOT_TODAY);
+  });
+});
+
+describe('제출 훅 — 거절된 뒤 다시 받기', () => {
+  const reportGets = () => requests.filter((r) => r === 'GET /api/reports/tbm').length;
+
+  it.each([
+    { status: 409, code: WORK_ERROR.REPORT_NOT_READY, refetch: true },
+    { status: 409, code: WORK_ERROR.REPORT_LOCKED, refetch: true },
+    { status: 409, code: WORK_ERROR.INVALID_STATE, refetch: true },
+    { status: 403, code: 'FORBIDDEN', refetch: false },
+  ])(
+    '제출이 $code 로 거절되면 보고서를 다시 받는다($refetch)',
+    async ({ status, code, refetch }) => {
+      const { wrapper } = setup();
+      const { result } = renderHook(() => ({ ...useDay(), submit: useSubmitReport() }), {
+        wrapper,
+      });
+      await waitFor(() => expect(result.current.report.data).toBeDefined());
+      const report = result.current.report.data as WorkReport;
+      server.use(
+        http.post('*/api/reports/tbm/:id/submit', () =>
+          HttpResponse.json({ code, message: '안 됨' }, { status }),
+        ),
+      );
+      const reports = reportGets();
+      await act(async () => {
+        await result.current.submit.mutateAsync(report.report_id).catch(() => undefined);
+      });
+      await waitFor(() => expect(result.current.submit.error).not.toBeNull());
+      if (refetch) {
+        await waitFor(() => expect(reportGets()).toBeGreaterThan(reports));
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(reportGets()).toBe(reports);
+      }
+    },
+  );
+});
+
+describe('서명 훅 — 거절된 뒤 다시 받기', () => {
+  const signatureGets = () =>
+    requests.filter((r) => /^GET \/api\/reports\/tbm\/\d+\/signatures$/.test(r)).length;
+  const reportGets = () => requests.filter((r) => r === 'GET /api/reports/tbm').length;
+
+  /** 하루를 열어 서명 목록과 보고서를 받아 둔 훅 묶음과 처음 보고서. */
+  async function mountSigners() {
+    const { wrapper } = setup();
+    const { result } = renderHook(
+      () => {
+        const base = useDay();
+        return {
+          ...base,
+          signatures: useSignatures(base.report.data?.report_id),
+          add: useAddSignature(),
+          remove: useDeleteSignature(),
+        };
+      },
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.signatures.data).toEqual([]));
+    return { result, report: result.current.report.data as WorkReport };
+  }
+
+  const reject = (status: number, code: string) =>
+    HttpResponse.json({ code, message: '안 됨' }, { status });
+
+  it.each([
+    { status: 409, code: WORK_ERROR.REPORT_LOCKED, refetch: true },
+    { status: 404, code: WORK_ERROR.SIGNATURE_NOT_FOUND, refetch: true },
+    { status: 409, code: WORK_ERROR.INVALID_STATE, refetch: false },
+  ])(
+    '서명 삭제가 $code 로 거절되면 서명 목록과 보고서를 다시 받는다($refetch)',
+    async ({ status, code, refetch }) => {
+      const { result, report } = await mountSigners();
+      server.use(
+        http.delete('*/api/reports/tbm/:id/signatures/:signatureId', () => reject(status, code)),
+      );
+      const [signatures, reports] = [signatureGets(), reportGets()];
+      await act(async () => {
+        await result.current.remove
+          .mutateAsync({ reportId: report.report_id, signatureId: '1' })
+          .catch(() => undefined);
+      });
+      await waitFor(() => expect(workErrorOf(result.current.remove.error)).toBe(code));
+      if (refetch) {
+        await waitFor(() => expect(signatureGets()).toBeGreaterThan(signatures));
+        await waitFor(() => expect(reportGets()).toBeGreaterThan(reports));
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(signatureGets()).toBe(signatures);
+        expect(reportGets()).toBe(reports);
+      }
+    },
+  );
+
+  it.each([
+    { code: WORK_ERROR.REPORT_LOCKED, refetch: true },
+    { code: WORK_ERROR.REPORT_VERSION_STALE, refetch: true },
+    { code: WORK_ERROR.SIGNATURE_LIMIT_REACHED, refetch: false },
+  ])('서명 추가가 $code 로 거절되면 보고서를 다시 받는다($refetch)', async ({ code, refetch }) => {
+    const { result, report } = await mountSigners();
+    server.use(http.post('*/api/reports/tbm/:id/signatures', () => reject(409, code)));
+    const reports = reportGets();
+    await act(async () => {
+      await result.current.add
+        .mutateAsync({
+          reportId: report.report_id,
+          reportVersion: report.report_version,
+          signerName: '박반장',
+          image: png(),
+        })
+        .catch(() => undefined);
+    });
+    await waitFor(() => expect(workErrorOf(result.current.add.error)).toBe(code));
+    if (refetch) {
+      await waitFor(() => expect(reportGets()).toBeGreaterThan(reports));
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(reportGets()).toBe(reports);
+    }
   });
 });

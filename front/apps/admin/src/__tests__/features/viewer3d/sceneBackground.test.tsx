@@ -57,12 +57,14 @@ const committed = (patch: Record<string, unknown> = {}) => ({
 
 interface Deferred {
   url: string;
+  /** 자산을 버전 키로 캐시할 때만 있다(COMMITTED). */
+  cacheVersion?: string;
   resolve(root: THREE.Object3D): void;
   reject(error: unknown): void;
 }
 let calls: Deferred[];
-const loader: SceneAssetLoader = (url) =>
-  new Promise((resolve, reject) => calls.push({ url, resolve, reject }));
+const loader: SceneAssetLoader = (url, cacheVersion) =>
+  new Promise((resolve, reject) => calls.push({ url, cacheVersion, resolve, reject }));
 
 /** 바닥 판 하나(World 0..side × 0..side, 두께 0.1, 기본 한 변 10m). glTF 처럼 이미 Three 축이다. */
 function asset(side = 10) {
@@ -183,6 +185,7 @@ describe('SceneBackground', () => {
     await mount();
     await setInput(committed());
     expect(calls.map((c) => c.url)).toEqual(['https://bucket.example/scene-demo-1.glb?sig=1']);
+    expect(calls[0]!.cacheVersion).toBe('scene-demo-1');
     expect(status().phase).toBe('LOADING');
     const a = asset();
     await settle(calls[0]!, a.root);
@@ -213,6 +216,26 @@ describe('SceneBackground', () => {
     const ray = new THREE.Raycaster(new THREE.Vector3(5, 5, -5), new THREE.Vector3(0, -1, 0));
     a.mesh.raycast(ray, hits);
     expect(hits).toHaveLength(0);
+  });
+
+  it('확정 전 CANDIDATE 자산도 보이지만 버전 키로 캐시하지 않는다', async () => {
+    await mount();
+    await setInput(
+      committed({
+        scene_version: 'scene-preview-1',
+        state: 'CANDIDATE',
+        committed_at_ms: null,
+        compatibility: undefined,
+      }),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cacheVersion).toBeUndefined();
+    const a = asset();
+    await settle(calls[0]!, a.root);
+
+    expect(find('scene-background:scene-preview-1')).toBe(a.root);
+    expect(status()).toMatchObject({ phase: 'LOADED', state: 'CANDIDATE', display: 'DIMMED' });
+    expect(floor().visible).toBe(false);
   });
 
   it('큰 보정 변화의 서버 판정은 자산 재적재 없이 원래 재질을 유지한다', async () => {

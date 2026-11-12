@@ -1,4 +1,11 @@
-import { endWork, startWork, submitReport } from '@/features/work/api';
+import {
+  endWork,
+  isWorkError,
+  startWork,
+  submitReport,
+  WORK_ERROR,
+  type WorkErrorCode,
+} from '@/features/work/api';
 import { invalidateAfterRun, invalidateWork, mutationResult } from '@/features/work/workQuery';
 import { api } from '@/lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -29,12 +36,25 @@ export function useEndWork() {
   return mutationResult(mutation);
 }
 
-/** 보고서 제출·잠금. 작업이 끝난 뒤에만(아니면 409 WORK_INVALID_STATE), 이미 제출했으면 409 REPORT_LOCKED. */
+/** 제출이 거절돼 보고서를 다시 받아야 하는 오류: 초안·종료 미팅을 쓰는 중이거나, 다른 곳에서 이미 제출했거나, 작업이 아직 안 끝났다. */
+const SUBMIT_REFETCH_ERRORS: readonly WorkErrorCode[] = [
+  WORK_ERROR.REPORT_NOT_READY,
+  WORK_ERROR.REPORT_LOCKED,
+  WORK_ERROR.INVALID_STATE,
+];
+
+/**
+ * 보고서 제출·잠금. 작업이 끝난 뒤에만(아니면 409 WORK_INVALID_STATE), 이미 제출했으면 409 REPORT_LOCKED,
+ * 초안이나 종료 미팅을 쓰는 중이면 409 REPORT_NOT_READY. 이 세 가지로 거절되면 화면이 옛 상태일 수 있어 보고서를 다시 받는다.
+ */
 export function useSubmitReport() {
   const client = useQueryClient();
   const mutation = useMutation({
     mutationFn: (reportId: number) => submitReport(api, reportId),
     onSuccess: () => invalidateWork(client),
+    onError: (error) => {
+      if (SUBMIT_REFETCH_ERRORS.some((code) => isWorkError(error, code))) invalidateWork(client);
+    },
   });
   return mutationResult(mutation);
 }

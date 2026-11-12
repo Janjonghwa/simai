@@ -23,6 +23,15 @@ const committed = (patch: Record<string, unknown> = {}) => ({
   gltf_expires_at_ms: NOW + 300_000,
   ...patch,
 });
+// GET /api/scenes/{scene_version}/view 의 세팅 미리보기: 확정 전이라 committed_at_ms 가 null 이고 current 가 더 실린다.
+const candidate = (patch: Record<string, unknown> = {}) =>
+  committed({
+    scene_version: 'scene-preview-1',
+    state: 'CANDIDATE',
+    committed_at_ms: null,
+    current: false,
+    ...patch,
+  });
 const defaultScene = (patch: Record<string, unknown> = {}) =>
   committed({
     scene_version: 'scene-default',
@@ -71,7 +80,7 @@ const sceneOf = (raw: unknown): CurrentScene => {
 };
 
 describe('readCurrentScene', () => {
-  it('COMMITTED·DEFAULT 응답을 그대로 읽는다(quality 는 쓰지 않는다)', () => {
+  it('COMMITTED·CANDIDATE·DEFAULT 응답을 그대로 읽는다(quality 는 쓰지 않는다)', () => {
     expect(sceneOf(committed())).toEqual({
       sceneVersion: 'scene-4',
       state: 'COMMITTED',
@@ -85,6 +94,16 @@ describe('readCurrentScene', () => {
       calibrationVersion: null,
       committedAtMs: null,
     });
+    // /view 의 CANDIDATE: 확정 시각이 없고 compatibility 도 없다. current 같은 모르는 필드는 무시한다.
+    expect(sceneOf(candidate())).toEqual({
+      sceneVersion: 'scene-preview-1',
+      state: 'CANDIDATE',
+      calibrationVersion: 'cal-2',
+      committedAtMs: null,
+      gltfUrl: 'https://bucket.example/scenes/scene-4.glb?X-Amz-Signature=abc',
+      gltfExpiresAtMs: NOW + 300_000,
+    });
+    expect(sceneOf(candidate({ calibration_version: null })).calibrationVersion).toBeNull();
     // 저장소를 쓸 수 없으면 주소 없이 Scene 정보만 온다.
     expect(sceneOf(committed({ gltf_url: null, gltf_expires_at_ms: null }))).toMatchObject({
       gltfUrl: null,
@@ -125,7 +144,16 @@ describe('readCurrentScene', () => {
     ['객체 아님', null, '응답이 객체가 아니다'],
     ['배열', [], '응답이 객체가 아니다'],
     ['버전 없음', committed({ scene_version: ' ' }), 'scene_version 이 비었다'],
-    ['상태 오류', committed({ state: 'DRAFT' }), 'state 는 COMMITTED 또는 DEFAULT 여야 한다'],
+    [
+      '상태 오류',
+      committed({ state: 'DRAFT' }),
+      'state 는 COMMITTED·CANDIDATE·DEFAULT 중 하나여야 한다',
+    ],
+    [
+      'CANDIDATE 인데 default true',
+      candidate({ default: true }),
+      'default 와 state 가 맞지 않는다',
+    ],
     ['default 불일치', committed({ default: true }), 'default 와 state 가 맞지 않는다'],
     ['default 누락', committed({ default: undefined }), 'default 와 state 가 맞지 않는다'],
     [
@@ -277,6 +305,20 @@ describe('sceneStatusOf', () => {
     expect(sceneStatusOf(input, IDLE_LOAD, MATCH)).toMatchObject({
       phase: 'LOADING',
       display: 'HIDDEN',
+    });
+  });
+
+  it('확정 전 CANDIDATE 도 COMMITTED 처럼 적재해 보인다', () => {
+    const input = { ok: true as const, raw: candidate() };
+    expect(sceneStatusOf(input, loaded('scene-preview-1'), UNKNOWN)).toMatchObject({
+      phase: 'LOADED',
+      state: 'CANDIDATE',
+      sceneVersion: 'scene-preview-1',
+      display: 'DIMMED',
+    });
+    expect(sceneStatusOf(input, IDLE_LOAD, UNKNOWN)).toMatchObject({
+      phase: 'LOADING',
+      state: 'CANDIDATE',
     });
   });
 

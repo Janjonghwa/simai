@@ -193,7 +193,7 @@ export function ViewerShell({
     return created;
   });
   const [edit] = useState(() => createEditStore(store, data, planned));
-  // 정적 배경 Scene(-59). 입력은 FE 가 받은 /api/scenes/current 결과 그대로다.
+  // 정적 배경 Scene(-59). 입력은 FE 가 받은 /api/scenes/current(또는 /api/scenes/{scene_version}/view) 결과 그대로다.
   const [sceneStore] = useState(() => {
     const created = createSceneStore();
     created.getState().setVdtOptions(resolveVdtOptions(vdt));

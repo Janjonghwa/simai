@@ -274,9 +274,9 @@ export const workReportSchema = z.object({
   header: orNull(reportHeaderSchema),
   /** 잠긴 시각(ms). 제출하면 찍히고 이후 양식 수정·서명은 409 REPORT_LOCKED. */
   locked_at: orNull(z.number()),
-  /** 제출 시각(ms)·제출한 계정(티켓 -611). */
+  /** 제출 시각(ms)·제출한 계정의 표시 이름(-611). */
   submitted_at: orNull(z.number()),
-  submitted_by: orNull(z.union([z.string(), z.number()]).transform(String)),
+  submitted_by_name: orNull(z.string()),
   signature_count: z
     .number()
     .int()
@@ -369,10 +369,9 @@ export interface SignatureRequestBody {
   signer_role?: 'PARTICIPANT';
   image_key: string;
   image_sha256: string;
-  notice_acknowledged?: boolean;
 }
 
-/** 서명 추가 응답(201). 첫 서명이 더는 잠그지 않아(-611) `locked_at` 은 보통 null 이다. */
+/** 서명 추가 응답(201). 첫 서명이 더는 잠그지 않아(-611) `locked_at` 은 제출 전에는 null 이다. */
 export const signatureResultSchema = z.object({
   signature_id: idString,
   report_id: z.number().int(),

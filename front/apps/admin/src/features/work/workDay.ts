@@ -90,6 +90,14 @@ export function isEndingGenerating(report: WorkReport | null | undefined): boole
   return report?.wrap_up_status === 'GENERATING';
 }
 
+/**
+ * 서버가 보고서를 쓰는 중이라 제출을 받지 않는가(409 REPORT_NOT_READY): AI 초안(`status` GENERATING)이나
+ * 종료 미팅(`wrap_up_status` GENERATING)을 쓰는 동안이다.
+ */
+export function isReportGenerating(report: WorkReport | null | undefined): boolean {
+  return report?.status === 'GENERATING' || isEndingGenerating(report);
+}
+
 // ── 날짜 키 ──────────────────────────────────────────────────────────────────
 
 /** 날짜 키는 현장(브라우저) 시각의 'YYYY-MM-DD' 다. 문자열 순서가 날짜 순서와 같다. */

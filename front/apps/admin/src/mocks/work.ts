@@ -17,12 +17,12 @@ import {
   type WorkReport,
   type WorkStatus,
 } from '@/features/work/types';
-import { dayKind, parseDateKey, toDateKey } from '@/features/work/workDay';
+import { dayKind, isReportGenerating, parseDateKey, toDateKey } from '@/features/work/workDay';
 import { historyWorks } from '@/mocks/history';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
 
-// 작업 관리 새 흐름(하루 = 작업 하나) mock. 서버 -609·-610·-611 이 아직 없어서 개발 서버·시험에서 하루 전체 흐름을 이 메모리 상태 하나로 돈다:
+// 작업 관리 새 흐름(하루 = 작업 하나) mock. 서버(-609·-610·-611·-624)를 따라 개발 서버·시험에서 하루 전체 흐름을 이 메모리 상태 하나로 돈다:
 //   날짜 열기(PUT daily) → 양식 저장 → 세팅 → 초안 → 서명 → 시작 → 종료 → 제출.
 // 상태 전이(progress):
 //   REPORT      날짜 작업만 있다(세션 없음)
@@ -32,13 +32,14 @@ import { http, HttpResponse } from 'msw/http';
 //   IN_PROGRESS POST /start 뒤(날짜가 오늘이고 서명이 있을 때만)
 //   ENDED       POST /end 뒤(새 판 없이 같은 보고서: wrap_up_status 가 GENERATING → draftDelayMs 뒤 SUCCEEDED, 그때 review.ending 이 비어 있으면
 //               종료 문장으로 채우고 form_revision+1. 서버 B10 의 날짜 작업 종료 미팅이다)
-//   SUBMITTED   POST /submit 뒤(작업이 ENDED 일 때만, 이후 양식 수정·서명은 409 REPORT_LOCKED)
+//   SUBMITTED   POST /submit 뒤(작업이 ENDED 이고 초안·종료 미팅 채우기가 끝났을 때만, 이후 양식 수정·서명은 409 REPORT_LOCKED)
 // 시계는 now() 로 주입한다(타이머를 쓰지 않는다. 초안 진행은 요청이 올 때 now() 로 계산한다).
 //
 // 기존 mocks/tbm.ts 의 작업 CRUD·옛 보고서 핸들러는 그대로 두고, 이 mock 이 아는 작업·보고서(daily 작업, 합성 지난 이력)에
 // 대해서만 먼저 답한다. 모르는 id·`?days=` 같은 옛 요청은 undefined 를 돌려 다음 핸들러로 넘긴다(handlers.ts 에서 먼저 등록).
 // 서명 올리기(POST /api/uploads/sign·PUT 업로드·서명 이미지)는 mocks/tbm.ts 의 것을 그대로 쓴다.
 // 서명은 서버처럼 보고서(report_id)별로 든다. 날짜 작업은 종료해도 같은 보고서라 서명이 그대로 남는다(예전 작업의 새 판 종료는 흉내 내지 않는다).
+// 서명·제출·시작의 검사 순서와 오류 코드는 서버(ReportSignatureController·TbmReportRepository.submit·WorkUnitRepository.startSession)를 따른다.
 // 오류 코드는 features/work/api 의 WORK_ERROR 를 쓴다(목 전용 코드만 아래 핸들러에 문자열로 있다).
 
 /** 날짜 작업 id·보고서 id 의 시작 번호. 옛 TBM mock 의 번호(작업 1~, 보고서 301~)와 겹치지 않게 크게 둔다. */
@@ -84,6 +85,18 @@ const RISK_BY_KIND: Partial<Record<DraftZone['kind'], { risk: string; measure: s
   EDGE: { risk: '바닥 가장자리 추락', measure: '임시 난간 설치, 접근 금지선' },
 };
 const OPENING_CHECK_ACTION = '덮개 설치 전까지 접근 통제';
+/** 서버가 작업 시작을 막는 세팅 단계: 미리보기 맵(READY_FOR_ZONES) 전이다(409 WORK_SETUP_NOT_READY, -624). */
+const SETUP_BEFORE_PREVIEW_MAP: readonly string[] = [
+  'COLLECTING_BACKGROUND',
+  'INITIAL_POSE_AND_WORLD',
+  'JOINT_BA_AND_VERIFY',
+  'PREVIEW_AND_VLM_DRAFT',
+];
+/** 서명자 역할: 참석자(작업 전 확인)와 결재자(서버는 받지만 화면은 쓰지 않는다). */
+const SIGNER_ROLES = ['PARTICIPANT', 'APPROVER'] as const;
+type SignerRole = (typeof SIGNER_ROLES)[number];
+const isSignerRole = (value: unknown): value is SignerRole =>
+  SIGNER_ROLES.some((role) => role === value);
 
 /** 세팅 mock(mocks/setup)의 세션 중 이 mock 이 읽는 칸. */
 export type MockSetupSession = Pick<
@@ -106,7 +119,7 @@ type MockReport = WorkReport & { form: ReportForm };
 interface MockSignature {
   signature_id: string;
   signer_name: string;
-  signer_role: 'PARTICIPANT';
+  signer_role: SignerRole;
   signed_at: number;
   report_version: number;
   image_url: string;
@@ -335,8 +348,14 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     }
     return list;
   };
+  /** 그 보고서의 참석자 서명(작업 시작·인원 상한·삭제가 세는 서명. 결재자 서명은 뺀다). */
+  const participantsOf = (reportId: number) =>
+    signaturesOf(reportId).filter((s) => s.signer_role === 'PARTICIPANT');
   const sessionsOf = (work: MockWork) =>
     [...(options.setupSessions?.() ?? [])].filter((s) => String(s.work_unit_id) === work.work_id);
+  /** 같은 현장에 미리보기 맵 전인 세팅이 있는가(서버는 현장 단위로 본다). */
+  const hasSetupBeforePreviewMap = () =>
+    [...(options.setupSessions?.() ?? [])].some((s) => SETUP_BEFORE_PREVIEW_MAP.includes(s.status));
 
   // ── 상태 계산 ──────────────────────────────────────────────────────────────
 
@@ -378,16 +397,12 @@ export function createWorkMock(options: WorkMockOptions = {}) {
 
   /**
    * 종료 미팅 채우기(서버 B10): 종료한 뒤 draftDelayMs 가 지나면 `review.ending` 이 비어 있을 때만 종료 문장으로 채우고(form_revision+1)
-   * wrap_up_status 를 SUCCEEDED 로 끝낸다. 그 사이 보고서가 잠겼으면 양식은 그대로 두고 FAILED.
+   * wrap_up_status 를 SUCCEEDED 로 끝낸다. 채우는 동안은 제출을 받지 않으므로(409 REPORT_NOT_READY) 그 사이 보고서가 잠기지 않는다.
    */
   function syncEnding(work: MockWork) {
     const { report, actual_started_at: startedAt, actual_ended_at: endedAt } = work;
     if (report.wrap_up_status !== 'GENERATING' || endedAt === null) return;
     if (now() - endedAt < draftDelayMs) return;
-    if (report.locked_at !== null) {
-      report.wrap_up_status = 'FAILED';
-      return;
-    }
     if (report.form.review.ending === '') {
       const total = endedAt - (startedAt ?? endedAt);
       report.form.review.ending = endingMeetingText(total, eventCountOf(work.event_counts));
@@ -519,7 +534,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         header: { date: w.date, name: w.name, from_ms: w.from_ms, to_ms: w.to_ms },
         locked_at: submittedAt,
         submitted_at: submittedAt,
-        submitted_by: submittedAt === null ? null : MOCK_LEADER.name,
+        submitted_by_name: submittedAt === null ? null : MOCK_LEADER.name,
         signature_count: signatures.length,
         content_sha256: null,
         wrap_up_summary: null,
@@ -647,7 +662,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
           header: null,
           locked_at: null,
           submitted_at: null,
-          submitted_by: null,
+          submitted_by_name: null,
           signature_count: 0,
           content_sha256: null,
           wrap_up_summary: null,
@@ -703,20 +718,27 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       return HttpResponse.json(work ? viewWork(work) : past!.item);
     }),
 
-    // 작업 시작: 오늘 날짜이고 서명이 있을 때만. 진행 중인 다른 작업이 있으면 안 된다.
+    // 작업 시작(서버 startSession 의 검사 순서): 예정(PLANNED) 상태 → 오늘 날짜 → 참석자 서명 1명 이상 → 미리보기 맵 전 세팅 없음
+    // → 진행 중인 다른 작업 없음.
     http.post('*/api/work-units/:id/start', ({ request, params }) => {
       const work = dailyOf(String(params.id ?? ''));
       if (!work) return undefined;
       const user = guard(request, true);
       if (user instanceof Response) return user;
-      if (work.date !== todayKey())
-        return problem(409, WORK_ERROR.NOT_TODAY, '작업 날짜에 시작할 수 있어요');
       if (work.status !== 'PLANNED')
         return problem(409, WORK_ERROR.INVALID_STATE, '이미 시작했거나 끝난 작업입니다');
+      if (work.date !== todayKey())
+        return problem(409, WORK_ERROR.NOT_TODAY, '작업 날짜에 시작할 수 있어요');
+      if (participantsOf(work.report.report_id).length < 1)
+        return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
+      if (hasSetupBeforePreviewMap())
+        return problem(
+          409,
+          WORK_ERROR.SETUP_NOT_READY,
+          '현장 세팅이 미리보기 맵 단계 전이라 작업을 시작할 수 없습니다',
+        );
       const active = works.find((w) => w.status === 'IN_PROGRESS');
       if (active) return problem(409, WORK_ERROR.ALREADY_IN_PROGRESS, active.name);
-      if (signaturesOf(work.report.report_id).length < 1)
-        return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
       work.status = 'IN_PROGRESS';
       work.actual_started_at = now();
       return HttpResponse.json(viewWork(work));
@@ -837,7 +859,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       });
     }),
 
-    // 제출·잠금: 작업이 끝난 뒤에만. 제출 뒤 양식 수정·서명은 409 REPORT_LOCKED.
+    // 제출·잠금(서버 TbmReportRepository.submit 의 검사 순서): 이미 제출 → 작업이 끝남(DONE) → 초안·종료 미팅을 쓰는 중이 아님.
+    // 제출 뒤 양식 수정·서명은 409 REPORT_LOCKED. 응답은 보고서 전체다.
     http.post('*/api/reports/tbm/:reportId/submit', async ({ request, params }) => {
       const user = guard(request, true);
       if (user instanceof Response) return user;
@@ -850,10 +873,12 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       if (work.status !== 'DONE')
         return problem(409, WORK_ERROR.INVALID_STATE, '작업이 끝난 뒤에 제출할 수 있습니다');
       sync(work);
+      if (isReportGenerating(report))
+        return problem(409, WORK_ERROR.REPORT_NOT_READY, '초안이나 종료 미팅을 쓰는 중입니다');
       const t = now();
       report.submitted_at = t;
       report.locked_at = t;
-      report.submitted_by = user.id;
+      report.submitted_by_name = user.id;
       report.content_sha256 = await sha256Hex(
         JSON.stringify({
           form: report.form,
@@ -868,6 +893,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     }),
 
     // 서명: 보고서가 있고 제출 전이면 된다(PENDING 도 허용, 첫 서명이 잠그지 않는다). 올리기는 tbm mock 의 uploads/sign 을 쓴다.
+    // 서버와 달리 올린 이미지 허가(upload_grant)는 보지 않고, 결재자(APPROVER) 서명이 보고서를 결재 잠금(REPORT_APPROVED)하는 것도 흉내 내지 않는다.
     http.get('*/api/reports/tbm/:reportId/signatures', ({ request, params }) => {
       const found = findReport(Number(params.reportId));
       if (!found) return undefined;
@@ -899,49 +925,50 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         typeof name !== 'string' ||
         name.trim() === '' ||
         [...name.trim()].length > SIGNER_NAME_MAX ||
-        role !== 'PARTICIPANT' ||
+        !isSignerRole(role) ||
         typeof imageKey !== 'string' ||
         typeof sha !== 'string' ||
         !/^(?:sha256:)?[0-9a-f]{64}$/.test(sha)
       )
-        return problem(400, 'INVALID_SIGNATURE', '서명 요청이 올바르지 않습니다');
+        return problem(400, WORK_ERROR.INVALID_SIGNATURE, '서명 요청이 올바르지 않습니다');
       if (found.kind === 'past') return problem(409, WORK_ERROR.REPORT_LOCKED, '잠긴 보고서입니다');
-      const { report } = found;
+      const { work, report } = found;
       if (report.locked_at !== null)
         return problem(409, WORK_ERROR.REPORT_LOCKED, '제출해 잠긴 보고서입니다');
       if (version !== report.report_version)
         return problem(409, WORK_ERROR.REPORT_VERSION_STALE, '새 보고서 버전이 있습니다');
-      const signatures = signaturesOf(report.report_id);
-      if (signatures.length >= SIGNATURE_MAX_COUNT)
+      if (role === 'PARTICIPANT' && participantsOf(report.report_id).length >= SIGNATURE_MAX_COUNT)
         return problem(
           409,
           WORK_ERROR.SIGNATURE_LIMIT_REACHED,
           '서명 인원 상한(50명)에 도달했습니다',
         );
+      sync(work);
       const entry: MockSignature = {
         signature_id: String(nextSignatureId++),
         signer_name: name.trim(),
-        signer_role: 'PARTICIPANT',
+        signer_role: role,
         signed_at: now(),
         report_version: report.report_version,
         image_url: imageUrlOf(request, imageKey),
       };
-      signatures.push(entry);
+      signaturesOf(report.report_id).push(entry);
       return HttpResponse.json(
         {
           signature_id: entry.signature_id,
           report_id: report.report_id,
           report_version: report.report_version,
           signer_name: entry.signer_name,
+          signer_role: entry.signer_role,
           signed_at: entry.signed_at,
           locked_at: null,
-          content_sha256: null,
+          content_sha256: await sha256Hex(JSON.stringify(report.form)),
         },
         { status: 201 },
       );
     }),
 
-    // 서명 삭제: 작업 시작 전에만(시작했으면 409), 제출했으면 409 REPORT_LOCKED.
+    // 서명 삭제(서버 검사 순서): 제출함 → 작업 시작 전(PLANNED)이어야 함 → 그 서명이 있어야 함(404 SIGNATURE_NOT_FOUND).
     http.delete('*/api/reports/tbm/:reportId/signatures/:signatureId', ({ request, params }) => {
       const found = findReport(Number(params.reportId));
       if (!found) return undefined;
@@ -957,9 +984,12 @@ export function createWorkMock(options: WorkMockOptions = {}) {
           WORK_ERROR.INVALID_STATE,
           '작업을 시작한 뒤에는 서명을 지울 수 없습니다',
         );
+      // 참석자 서명만 지운다(서버처럼 결재자 서명은 없는 것으로 본다).
       const signatures = signaturesOf(report.report_id);
-      const index = signatures.findIndex((s) => s.signature_id === String(params.signatureId));
-      if (index < 0) return problem(404, 'SIGNATURE_NOT_FOUND', '서명을 찾을 수 없습니다');
+      const index = signatures.findIndex(
+        (s) => s.signature_id === String(params.signatureId) && s.signer_role === 'PARTICIPANT',
+      );
+      if (index < 0) return problem(404, WORK_ERROR.SIGNATURE_NOT_FOUND, '서명을 찾을 수 없습니다');
       signatures.splice(index, 1);
       return new HttpResponse(null, { status: 204 });
     }),

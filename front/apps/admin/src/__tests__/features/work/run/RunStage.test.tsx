@@ -363,33 +363,66 @@ describe('RunStage — 종료', () => {
     expect(screen.queryByRole('button', { name: '완료' })).toBeNull();
   });
 
-  it('제출이 실패하면 확인창에 안내를 보이고 onSubmitted 는 부르지 않는다', async () => {
-    await prepare('ended');
+  it('AI 초안을 쓰는 중(status GENERATING)이면 종료 미팅이 끝났어도 `완료` 는 꺼 두고, 다 쓰면 켠다', async () => {
+    const workId = await prepare('ended');
     clock += ENDING_DELAY_MS;
+    const { latest } = await fetchReportsByWork(api, workId);
+    expect(latest?.wrap_up_status).toBe('SUCCEEDED');
+    let drafting = true;
     server.use(
-      http.post('*/api/reports/tbm/:id/submit', () =>
-        HttpResponse.json({ code: WORK_ERROR.INVALID_STATE, message: '안 됨' }, { status: 409 }),
-      ),
-    );
-    const onSubmitted = vi.fn();
-    renderStage(onSubmitted);
-    await waitFor(() =>
-      expect((screen.getByRole('button', { name: '완료' }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
-    );
-    fireEvent.click(screen.getByRole('button', { name: '완료' }));
-    fireEvent.click(
-      within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
-        name: '보내기',
+      http.get('*/api/reports/tbm', () => {
+        const status = drafting ? 'GENERATING' : 'SUCCEEDED';
+        return HttpResponse.json({
+          latest: { ...latest, status, draft_status: status },
+          versions: [],
+        });
       }),
     );
+    const reportGets = () => requests.filter((r) => r === 'GET /api/reports/tbm').length;
+    const before = reportGets();
+    renderStage();
+    await waitFor(() => expect(reportGets()).toBeGreaterThan(before));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(doneButton().disabled).toBe(true);
 
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      '보고서를 보내지 못했습니다. 다시 시도해 주세요.',
-    );
-    expect(onSubmitted).not.toHaveBeenCalled();
+    // 서버가 초안을 다 쓴 뒤 보고서를 다시 받으면(2초마다) 켜진다.
+    drafting = false;
+    await waitFor(() => expect(doneButton().disabled).toBe(false), { timeout: 5_000 });
   });
+
+  it.each([
+    [WORK_ERROR.REPORT_NOT_READY, '보고서를 쓰는 중이에요. 잠시 뒤 다시 보내 주세요'],
+    [WORK_ERROR.REPORT_LOCKED, '이미 제출한 보고서예요'],
+    [WORK_ERROR.INVALID_STATE, '작업이 아직 끝나지 않았어요'],
+    [WORK_ERROR.REPORT_VERSION_STALE, '보고서를 보내지 못했습니다. 다시 시도해 주세요.'],
+  ])(
+    '제출이 %s 로 실패하면 확인창에 그 안내를 보이고 onSubmitted 는 부르지 않는다',
+    async (code, message) => {
+      await prepare('ended');
+      clock += ENDING_DELAY_MS;
+      server.use(
+        http.post('*/api/reports/tbm/:id/submit', () =>
+          HttpResponse.json({ code, message: '안 됨' }, { status: 409 }),
+        ),
+      );
+      const onSubmitted = vi.fn();
+      renderStage(onSubmitted);
+      await waitFor(() =>
+        expect((screen.getByRole('button', { name: '완료' }) as HTMLButtonElement).disabled).toBe(
+          false,
+        ),
+      );
+      fireEvent.click(screen.getByRole('button', { name: '완료' }));
+      fireEvent.click(
+        within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
+          name: '보내기',
+        }),
+      );
+
+      expect((await screen.findByRole('alert')).textContent).toBe(message);
+      expect(onSubmitted).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('RunStage — 보냄', () => {

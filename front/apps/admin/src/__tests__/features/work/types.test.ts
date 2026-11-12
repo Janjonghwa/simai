@@ -111,6 +111,7 @@ describe('보고서 읽기', () => {
     expect(report.leader).toEqual({ user_id: 1, name: '김안전', org: null, title: '안전관리자' });
     expect(report.locked_at).toBeNull();
     expect(report.submitted_at).toBeNull();
+    expect(report.submitted_by_name).toBeNull();
     expect(report.signature_count).toBe(0);
   });
 
@@ -122,12 +123,12 @@ describe('보고서 읽기', () => {
       status: 'SUCCEEDED',
       locked_at: 10,
       submitted_at: 10,
-      submitted_by: 3,
+      submitted_by_name: '김안전',
       signature_count: 4,
     });
     expect(report.form).toBeNull();
     expect(report.form_revision).toBe(0);
-    expect(report.submitted_by).toBe('3');
+    expect(report.submitted_by_name).toBe('김안전');
     expect(report.signature_count).toBe(4);
   });
 

@@ -6,7 +6,7 @@ import {
   type ViewerModule,
 } from '@/features/layout/spatialHost/useViewerMode';
 import { useViewerSelection } from '@/features/layout/spatialHost/useViewerSelection';
-import { useCurrentScene } from '@/features/layout/useCurrentScene';
+import { useSceneOrCurrent } from '@/features/layout/useSceneView';
 import type {
   ExternalSpatialSource,
   Viewer3DHandle,
@@ -38,19 +38,22 @@ function usePublishRoomBounds(view: SpatialViewMode, sceneStatus: ViewerSceneSta
  * 구역·정적 객체 응답을 3D 입력(source)에 넣고, 구역 목록·선택을 3D 와 맞춰 화면 조각(구역 편집 패널·구역 목록)이
  * SpatialViewportContext 로 읽을 값(viewport)을 만든다. 실시간 관제 틀(SpatialViewportHost)과 세팅의 구역 단계가 같이 쓴다.
  * 3D 편집 상자·스캔 경계는 전역 저장소라 한 번에 한 틀만 띄운다(두 화면은 같이 뜨지 않는다).
+ * 배경은 sceneVersion 을 주면 그 버전(/api/scenes/{scene_version}/view, 세팅 세션의 확정 전 Scene), 없으면 지금 관제 Scene 이다.
  */
 export function useViewportHost({
   source,
   loadViewer,
   planFallbackMs,
+  sceneVersion = null,
 }: {
   source: ExternalSpatialSource | null;
   loadViewer: () => Promise<ViewerModule>;
   planFallbackMs: number;
+  sceneVersion?: string | null;
 }) {
   const viewer = useRef<Viewer3DHandle>(null);
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
-  const { scene, sceneStatus, onSceneStatusChange } = useCurrentScene();
+  const { scene, sceneStatus, onSceneStatusChange } = useSceneOrCurrent(sceneVersion);
   const mode = useViewerMode(loadViewer, planFallbackMs);
   const { view, viewerReady, onViewerReady, onViewerError } = mode;
   usePublishRoomBounds(view, sceneStatus);

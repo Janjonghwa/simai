@@ -137,6 +137,9 @@ describe('addSignatureErrorMessage', () => {
     expect(addSignatureErrorMessage(httpError(WORK_ERROR.REPORT_VERSION_STALE))).toBe(
       '보고서가 새로 바뀌었어요. 다시 서명해 주세요',
     );
+    expect(addSignatureErrorMessage(httpError(WORK_ERROR.INVALID_SIGNATURE, 400))).toBe(
+      '서명이 올바르지 않아요. 지우고 다시 써 주세요',
+    );
     expect(addSignatureErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe(
       '제출한 보고서에는 서명할 수 없어요',
     );
@@ -156,8 +159,9 @@ describe('deleteSignatureErrorMessage', () => {
     expect(deleteSignatureErrorMessage(httpError(WORK_ERROR.REPORT_LOCKED))).toBe(
       '제출한 보고서의 서명은 지울 수 없어요',
     );
-    expect(deleteSignatureErrorMessage(httpError('SIGNATURE_NOT_FOUND', 404))).toBe(
-      '서명을 지우지 못했어요',
+    expect(deleteSignatureErrorMessage(httpError(WORK_ERROR.SIGNATURE_NOT_FOUND, 404))).toBe(
+      '이미 지워진 서명이에요',
     );
+    expect(deleteSignatureErrorMessage(new ApiError(0))).toBe('서명을 지우지 못했어요');
   });
 });

@@ -11,6 +11,7 @@ import {
   putDailyWorkUnit,
   saveReportForm,
   signReport,
+  startReportDraft,
   startWork,
   submitReport,
   uploadSignatureImage,
@@ -21,9 +22,12 @@ import {
 import { blankReportForm } from '@/features/work/reportForm';
 import {
   SIGNATURE_MAX_BYTES,
+  SIGNATURE_MAX_COUNT,
+  signatureResultSchema,
   workReportSchema,
   workSignaturesResponseSchema,
   type ReportForm,
+  type SignatureRequestBody,
   type WorkReport,
 } from '@/features/work/types';
 import { ApiError, createHttp } from '@/lib/http';
@@ -102,6 +106,22 @@ const fetchReport = (reportId: number): Promise<WorkReport> =>
 const latestOf = async (workId: string): Promise<WorkReport> =>
   must((await fetchReportsByWork(asAdmin, workId)).latest);
 const formOf = (report: WorkReport): ReportForm => must(report.form);
+
+/** 서명 추가 요청 본문 샘플(올린 이미지를 mock 이 보지 않아 키·해시는 아무 값이다). */
+const signatureBody = (overrides: Partial<SignatureRequestBody> = {}): SignatureRequestBody => ({
+  report_version: 1,
+  signer_name: '김일',
+  image_key: 'signatures/a.png',
+  image_sha256: 'a'.repeat(64),
+  ...overrides,
+});
+/** 결재자 서명(화면은 보내지 않아 요청 함수의 본문 타입에는 없다). */
+const postApprover = (reportId: number) =>
+  asAdmin(`/api/reports/tbm/${reportId}/signatures`, {
+    method: 'POST',
+    body: { ...signatureBody({ signer_name: '결재자' }), signer_role: 'APPROVER' },
+    schema: signatureResultSchema,
+  });
 
 /** 세팅 세션이 시작됐다가 끝나고 구역이 한 번 저장됐다. */
 function startSession(workId: string) {
@@ -481,7 +501,7 @@ describe('작업 관리 mock: 서명', () => {
     expect((await latestOf(work.work_id)).signature_count).toBe(2);
     expect(await failure(deleteSignature(asAdmin, report.report_id, first.signature_id))).toEqual({
       status: 404,
-      code: null,
+      code: WORK_ERROR.SIGNATURE_NOT_FOUND,
     });
   });
 
@@ -499,23 +519,28 @@ describe('작업 관리 mock: 서명', () => {
   it('요청 값·판·인원을 검사한다', async () => {
     const work = await openToday();
     const report = await latestOf(work.work_id);
-    const body = {
-      report_version: 1,
-      signer_name: '김일',
-      image_key: 'signatures/a.png',
-      image_sha256: 'a'.repeat(64),
-    };
+    const body = signatureBody();
+    const invalid = { status: 400, code: WORK_ERROR.INVALID_SIGNATURE };
     expect(
       await failure(postSignature(asAdmin, report.report_id, { ...body, signer_name: ' ' })),
-    ).toEqual({ status: 400, code: null });
+    ).toEqual(invalid);
     expect(
       await failure(
         postSignature(asAdmin, report.report_id, { ...body, signer_name: '가'.repeat(41) }),
       ),
-    ).toEqual({ status: 400, code: null });
+    ).toEqual(invalid);
     expect(
       await failure(postSignature(asAdmin, report.report_id, { ...body, image_sha256: 'zz' })),
-    ).toEqual({ status: 400, code: null });
+    ).toEqual(invalid);
+    expect(
+      await failure(
+        asAdmin(`/api/reports/tbm/${report.report_id}/signatures`, {
+          method: 'POST',
+          body: { ...body, signer_role: 'WITNESS' },
+          schema: signatureResultSchema,
+        }),
+      ),
+    ).toEqual(invalid);
     expect(
       await failure(postSignature(asAdmin, report.report_id, { ...body, report_version: 2 })),
     ).toEqual({
@@ -529,6 +554,71 @@ describe('작업 관리 mock: 서명', () => {
       status: 409,
       code: WORK_ERROR.SIGNATURE_LIMIT_REACHED,
     });
+  });
+
+  it('서명 응답은 서버처럼 역할과 내용 해시(문자열)를 담고, 요청 본문에는 notice_acknowledged 를 싣지 않는다', async () => {
+    const work = await openToday();
+    const report = await latestOf(work.work_id);
+    let sent: unknown = null;
+    server.use(
+      http.post('*/api/reports/tbm/:id/signatures', async ({ request }) => {
+        sent = await request.clone().json();
+      }),
+    );
+    await signReport(asAdmin, report.report_id, {
+      image: png(),
+      signerName: '박반장',
+      reportVersion: 1,
+    });
+    expect(sent).toEqual({
+      report_version: 1,
+      signer_name: '박반장',
+      signer_role: 'PARTICIPANT',
+      image_key: expect.any(String),
+      image_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const response = await fetch(`${BASE}/api/reports/tbm/${report.report_id}/signatures`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer mock-token.admin', 'Content-Type': 'application/json' },
+      body: JSON.stringify(signatureBody()),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      report_id: report.report_id,
+      signer_role: 'PARTICIPANT',
+      locked_at: null,
+      content_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  });
+
+  it('결재자(APPROVER) 서명도 받지만 시작·인원 상한·삭제는 참석자 서명만 본다', async () => {
+    const work = await openToday();
+    mock.markSetupDone(work.work_id);
+    const report = await latestOf(work.work_id);
+    const approver = await postApprover(report.report_id);
+    expect(approver.signer_name).toBe('결재자');
+    expect((await fetchSignatures(asAdmin, report.report_id)).map((s) => s.signer_role)).toEqual([
+      'APPROVER',
+    ]);
+    expect((await latestOf(work.work_id)).signature_count).toBe(1);
+    expect(await failure(startWork(asAdmin, work.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.NO_SIGNATURE,
+    });
+    expect(
+      await failure(deleteSignature(asAdmin, report.report_id, approver.signature_id)),
+    ).toEqual({ status: 404, code: WORK_ERROR.SIGNATURE_NOT_FOUND });
+
+    for (let i = 0; i < SIGNATURE_MAX_COUNT; i += 1) {
+      await postSignature(asAdmin, report.report_id, signatureBody({ signer_name: `참석자${i}` }));
+    }
+    expect(await failure(postSignature(asAdmin, report.report_id, signatureBody()))).toEqual({
+      status: 409,
+      code: WORK_ERROR.SIGNATURE_LIMIT_REACHED,
+    });
+    await postApprover(report.report_id);
+    await startWork(asAdmin, work.work_id);
   });
 
   it('서명은 보고서(report_id)에 모이고 종료해도 같은 보고서라 그대로 남는다(version 을 주면 그 판의 서명이다)', async () => {
@@ -584,6 +674,67 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
     expect(await failure(startWork(asAdmin, work.work_id))).toEqual({
       status: 409,
       code: WORK_ERROR.INVALID_STATE,
+    });
+  });
+
+  it('같은 현장에 미리보기 맵(READY_FOR_ZONES) 전 세팅이 있으면 시작할 수 없다(WORK_SETUP_NOT_READY)', async () => {
+    const { work } = await readyToStart();
+    const other = startSession('9999'); // 다른 작업의 세팅이어도 같은 현장이다.
+    const blocked = { status: 409, code: WORK_ERROR.SETUP_NOT_READY };
+    for (const status of [
+      'COLLECTING_BACKGROUND',
+      'INITIAL_POSE_AND_WORLD',
+      'JOINT_BA_AND_VERIFY',
+      'PREVIEW_AND_VLM_DRAFT',
+    ] as const) {
+      other.status = status;
+      expect(await failure(startWork(asAdmin, work.work_id))).toEqual(blocked);
+    }
+
+    other.status = 'READY_FOR_ZONES';
+    expect((await startWork(asAdmin, work.work_id)).status).toBe('IN_PROGRESS');
+  });
+
+  it('시작 검사 순서: 예정 상태 → 오늘 날짜 → 서명 → 세팅 → 진행 중인 다른 작업', async () => {
+    const first = await openToday();
+    const setup = startSession('9999');
+    const report = await latestOf(first.work_id);
+    // 서명이 없으면 세팅이 아직이어도 서명 오류가 먼저다.
+    expect(await failure(startWork(asAdmin, first.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.NO_SIGNATURE,
+    });
+    await signReport(asAdmin, report.report_id, {
+      image: png(),
+      signerName: '박반장',
+      reportVersion: 1,
+    });
+    setup.status = 'READY_FOR_ZONES';
+    await startWork(asAdmin, first.work_id);
+
+    clock += 24 * 3_600_000;
+    // 시작한 작업은 날짜가 지난 뒤에도 날짜(NOT_TODAY)가 아니라 상태(INVALID_STATE) 오류다.
+    expect(await failure(startWork(asAdmin, first.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.INVALID_STATE,
+    });
+
+    const next = await putDailyWorkUnit(asAdmin, TOMORROW);
+    await signReport(asAdmin, (await latestOf(next.work_id)).report_id, {
+      image: png(),
+      signerName: '김일',
+      reportVersion: 1,
+    });
+    // 세팅이 아직이면 진행 중인 다른 작업이 있어도 세팅 오류가 먼저다.
+    setup.status = 'PREVIEW_AND_VLM_DRAFT';
+    expect(await failure(startWork(asAdmin, next.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.SETUP_NOT_READY,
+    });
+    setup.status = 'COMPLETED';
+    expect(await failure(startWork(asAdmin, next.work_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.ALREADY_IN_PROGRESS,
     });
   });
 
@@ -683,18 +834,77 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
     expect(formOf(done).review.ending).toBe('직접 적은 종료 미팅');
   });
 
-  it('종료 미팅을 채우기 전에 제출해 잠그면 양식은 그대로 두고 FAILED 로 끝난다', async () => {
+  it('종료 미팅을 채우는 동안 제출하면 409 REPORT_NOT_READY 이고 잠그지 않으며, 다 채우면 제출된다', async () => {
     const { work } = await readyToStart();
     await startWork(asAdmin, work.work_id);
     clock += 60_000;
     await endWork(asAdmin, work.work_id);
-    await submitReport(asAdmin, (await latestOf(work.work_id)).report_id);
+    const { report_id: reportId } = await latestOf(work.work_id);
+
+    const notReady = { status: 409, code: WORK_ERROR.REPORT_NOT_READY };
+    expect(await failure(submitReport(asAdmin, reportId))).toEqual(notReady);
+    clock += DRAFT_DELAY_MS - 1;
+    expect(await failure(submitReport(asAdmin, reportId))).toEqual(notReady);
+    expect(await latestOf(work.work_id)).toMatchObject({
+      wrap_up_status: 'GENERATING',
+      locked_at: null,
+      submitted_at: null,
+    });
+
+    clock += 1;
+    await submitReport(asAdmin, reportId);
+    const submitted = await latestOf(work.work_id);
+    expect(submitted.wrap_up_status).toBe('SUCCEEDED');
+    expect(formOf(submitted).review.ending).not.toBe('');
+    expect(submitted.locked_at).not.toBeNull();
+  });
+
+  it('AI 초안을 쓰는 중(status GENERATING)이어도 제출은 409 REPORT_NOT_READY 다', async () => {
+    const { work } = await readyToStart();
+    await startWork(asAdmin, work.work_id);
+    clock += 60_000;
+    await endWork(asAdmin, work.work_id);
+    clock += DRAFT_DELAY_MS;
+    const filled = await latestOf(work.work_id);
+    expect(filled).toMatchObject({ status: 'SUCCEEDED', wrap_up_status: 'SUCCEEDED' });
+    const ended = await saveReportForm(asAdmin, filled.report_id, {
+      form: { ...formOf(filled), info: { ...formOf(filled).info, tasks: [{ code: 'REBAR' }] } },
+      form_revision: filled.form_revision,
+    });
+
+    await startReportDraft(asAdmin, ended.report_id);
+    expect(await latestOf(work.work_id)).toMatchObject({
+      status: 'GENERATING',
+      wrap_up_status: 'SUCCEEDED',
+    });
+    expect(await failure(submitReport(asAdmin, ended.report_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.REPORT_NOT_READY,
+    });
 
     clock += DRAFT_DELAY_MS;
-    const done = await latestOf(work.work_id);
-    expect(done.wrap_up_status).toBe('FAILED');
-    expect(formOf(done).review.ending).toBe('');
-    expect(done.locked_at).not.toBeNull();
+    await submitReport(asAdmin, ended.report_id);
+    expect((await latestOf(work.work_id)).locked_at).not.toBeNull();
+  });
+
+  it('제출 검사 순서: 이미 제출 → 작업이 안 끝남 → 쓰는 중', async () => {
+    const { work, report } = await readyToStart();
+    await startWork(asAdmin, work.work_id);
+    // 진행 중이고 초안도 쓰는 중이어도 작업이 안 끝났다는 오류가 먼저다.
+    expect(await failure(submitReport(asAdmin, report.report_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.INVALID_STATE,
+    });
+
+    clock += 60_000;
+    await endWork(asAdmin, work.work_id);
+    clock += DRAFT_DELAY_MS;
+    await submitReport(asAdmin, report.report_id);
+    // 제출한 뒤에는 쓰는 중이 아니어도 이미 제출했다는 오류다.
+    expect(await failure(submitReport(asAdmin, report.report_id))).toEqual({
+      status: 409,
+      code: WORK_ERROR.REPORT_LOCKED,
+    });
   });
 
   it('제출하면 잠기고 이후 양식 수정·서명·삭제는 REPORT_LOCKED 다', async () => {
@@ -718,7 +928,7 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
     expect(submitted).toMatchObject({
       submitted_at: clock,
       locked_at: clock,
-      submitted_by: 'admin',
+      submitted_by_name: 'admin',
     });
     expect(submitted.content_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(await fetchWorkUnit(asAdmin, work.work_id)).toMatchObject({
@@ -826,6 +1036,7 @@ describe('작업 관리 mock: 월 목록과 지난 이력', () => {
     const report = must(latest);
     expect(report).toMatchObject({ status: 'SUCCEEDED', draft_status: 'SUCCEEDED' });
     expect(report.submitted_at).not.toBeNull();
+    expect(report.submitted_by_name).toBe('김안전');
     expect(formOf(report).info.tasks).toEqual([{ text: item.name }]);
     expect(formOf(report).review.ending).toMatch(
       /^작업 종료 · 총 작업 시간 \d{2}:\d{2}:\d{2}, 사건 \d+건$/,

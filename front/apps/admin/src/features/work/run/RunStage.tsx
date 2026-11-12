@@ -3,6 +3,7 @@ import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import { AppliedStatusCard } from '@/features/work/run/AppliedStatusCard';
 import { EventListCard } from '@/features/work/run/EventListCard';
+import { sendErrorMessage } from '@/features/work/run/runErrors';
 import { RunStatusCard } from '@/features/work/run/RunStatusCard';
 import { useEndRun, useSendReport } from '@/features/work/run/useRunActions';
 import type { RunStageProps } from '@/features/work/stageProps';
@@ -10,7 +11,7 @@ import type { WorkDayItem } from '@/features/work/types';
 import { useSignatures } from '@/features/work/useSignatures';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
-import { isEndingGenerating } from '@/features/work/workDay';
+import { isReportGenerating } from '@/features/work/workDay';
 import { useMemo } from 'react';
 
 // 단계 4 '작업 종료'. 서버 진행(progress)이 세 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED) → 보냄(SUBMITTED).
@@ -66,13 +67,14 @@ function RunningView({ day }: { day: WorkDayItem }) {
 
 /**
  * 2. 종료: 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다). `완료` 가 보낼지 묻는다.
- * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 채우는 중에 보내면 빈 채 잠기므로 `완료` 는 그동안 꺼 둔다.
+ * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 서버는 종료 미팅이나 AI 초안(`status`)을
+ * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `완료` 는 그동안 꺼 둔다.
  */
 function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => void }) {
   const { data: report } = useWorkReport(day.work_id);
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
-  const filling = isEndingGenerating(report);
+  const filling = isReportGenerating(report);
   const action = useMemo<WorkActionConfig>(
     () => ({
       label: '완료',
@@ -97,7 +99,7 @@ function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => 
           onConfirm={() => send.confirm(reportId)}
           onCancel={send.cancel}
         >
-          {send.failed && <FailureNote text="보고서를 보내지 못했습니다. 다시 시도해 주세요." />}
+          {send.error && <FailureNote text={sendErrorMessage(send.error)} />}
         </ConfirmDialog>
       )}
     </>

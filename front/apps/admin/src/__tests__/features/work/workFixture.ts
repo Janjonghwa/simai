@@ -47,7 +47,7 @@ export function workReportOf(overrides: Partial<WorkReport> = {}): WorkReport {
     header: null,
     locked_at: null,
     submitted_at: null,
-    submitted_by: null,
+    submitted_by_name: null,
     signature_count: 0,
     content_sha256: null,
     wrap_up_summary: null,
