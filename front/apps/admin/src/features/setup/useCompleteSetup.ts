@@ -7,6 +7,7 @@ import {
 import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
 import { setupCompleteErrorMessage } from '@/features/setup/setupErrorMessage';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
+import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { ZONES_KEY } from '@/features/zones/api';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
@@ -45,6 +46,8 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
       void queryClient.invalidateQueries({ queryKey: setupSessionKey(sessionId) });
       // 작업 관리의 진행(SETUP_DONE)·보고서 초안 상태를 다시 받는다
       void queryClient.invalidateQueries({ queryKey: WORK_KEY });
+      // 관제가 보는 작업 목록(대기 화면 판정)도 15초 주기를 기다리지 않고 바로 다시 받는다
+      void queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
     },
     onError: (e, sessionId) => {
       setError(setupCompleteErrorMessage(e));
