@@ -1,10 +1,14 @@
 """World ID·identity_revision 별 안전모·조끼 상태 누적 (명세 5.5, 6장 PPE 상태).
 
 근거·칸의 시간은 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
-약 3초(6칸) 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 칸이 착용일 때, 미착용은 6칸 모두 미착용일 때다.
+유효 칸 6개 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 6칸 모두 미착용일 때다.
 반대 근거가 나오면 곧바로 반대 상태로 가지 않고 먼저 UNKNOWN 으로 두고 창을 다시 쌓는다(깜빡임 방지).
-만료·트랙 정리는 현재 UTC로 판단해 마지막 유효 근거 + 10초가 지나면 UNKNOWN 이다. identity_revision 이 오르거나 같은 카메라 local ID 의 주인이 바뀌거나
-ID 대응이 불확실하면 이전 근거를 넘기지 않는다. 이 모듈은 World 위치·ID 를 만들거나 바꾸지 않는다.
+
+유효 칸은 그 사람의 ID 대응이 불확실하지 않은 칸이다(S15P31A101-653). 한 프레임이라도 IDENTITY_UNCERTAIN(또는 분할 대기·swap
+의심 보류)인 칸은 건너뛴다: 창에 넣지 않고 근거로도 쓰지 않되 확정 상태는 유지한다(근거를 더하지 않으므로 만료 시각은 늘지 않는다).
+유효 6칸은 최근 window_span_bins 칸(5초) 안에 있어야 한다. 상태를 바로 초기화하는 것은 identity_revision 이 오를 때, 같은 카메라
+local ID 의 주인이 바뀔 때, ID 불확실이 uncertain_reset_ms(3초)를 넘게 이어질 때다. 만료·트랙 정리는 현재 UTC로 판단해 마지막
+유효 근거 + 10초가 지나면 UNKNOWN 이다. 이 모듈은 World 위치·ID 를 만들거나 바꾸지 않는다.
 """
 
 from __future__ import annotations
@@ -46,6 +50,8 @@ R_MAPPING_CHANGED = "IDENTITY_MAPPING_CHANGED"
 R_NO_OBSERVATION = "NO_OBSERVATION"
 
 RESET_REASONS = (R_REVISION_CHANGED, R_MAPPING_CHANGED, R_IDENTITY_UNCERTAIN)
+# UNKNOWN 으로 다시 쌓는 동안 칸 사유로 덮지 않는 사유. ID 불확실은 유효 칸이 다시 들어오면 그 칸의 사유로 바꾼다
+_STICKY_REASONS = (R_CONTRARY, R_CROSS_CAMERA_CONFLICT, R_REVISION_CHANGED, R_MAPPING_CHANGED)
 _REASON_PRIORITY = (R_SHARED_DETECTION, R_CONFLICTING_CLASSES, R_PARTIAL_OVERLAP, R_IDENTITY_UNCERTAIN,
                     R_KEYPOINTS_NOT_OBSERVED, R_REGION_NOT_CLEAR, R_REGION_NOT_OBSERVABLE, R_NO_DETECTION)
 
@@ -68,6 +74,9 @@ class TrackState:
     identity_revision: int
     items: dict[str, ItemState]
     last_seen_ms: int
+    skipped_bins: set[int] = field(default_factory=set)   # ID 불확실 프레임이 있던 칸(두 장비 모두 건너뜀)
+    uncertain_since: int | None = None   # 지금 이어지는 ID 불확실의 첫 촬영 시각. 확실한 프레임이 오면 None
+    uncertain_reset: bool = False        # 이번 불확실 구간에서 이미 초기화했는지
 
 
 @dataclass(frozen=True)
@@ -125,8 +134,20 @@ class PpeJudge:
             if p.identity_revision > track.identity_revision:
                 self._reset(track, R_REVISION_CHANGED, b)
                 track.identity_revision = p.identity_revision
-            if p.identity_confidence == "IDENTITY_UNCERTAIN":
-                self._reset(track, R_IDENTITY_UNCERTAIN, b + 1)   # 불확실한 칸은 새 창에 넣지 않는다
+            uncertain = p.identity_confidence == "IDENTITY_UNCERTAIN"
+            if uncertain:
+                # 불확실한 칸은 건너뛰고 확정 상태는 둔다. 불확실이 uncertain_reset_ms 를 넘게 이어지면 그때 초기화한다
+                track.skipped_bins.add(b)
+                if track.uncertain_since is None or t < track.uncertain_since:
+                    track.uncertain_since = t
+                if not track.uncertain_reset and t - track.uncertain_since > self.cfg.uncertain_reset_ms:
+                    self._reset(track, R_IDENTITY_UNCERTAIN, b)
+                    track.uncertain_reset = True
+                for item in track.items.values():   # 확정 전이면 사유를 보인다(확정 상태는 건드리지 않는다)
+                    if item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
+                        item.reason = R_IDENTITY_UNCERTAIN
+            elif track.uncertain_since is not None and t > track.uncertain_since:
+                track.uncertain_since, track.uncertain_reset = None, False
             key = (cid, epoch, p.local_track_id)
             owner = self.local_owner.get(key)
             if owner is not None and owner[0] != p.world_id and t - owner[1] <= self.cfg.mapping_ttl_ms:
@@ -135,7 +156,8 @@ class PpeJudge:
                     self._reset(self.tracks[owner[0]], R_MAPPING_CHANGED, b)
             self.local_owner[key] = (p.world_id, t)
             track.last_seen_ms = max(track.last_seen_ms, t)
-            accepted.add(p.world_id)
+            if not uncertain:   # 불확실한 프레임의 표본은 창에도 근거에도 넣지 않는다
+                accepted.add(p.world_id)
 
         for s in assoc.samples:
             track = self.tracks.get(s.world_id)
@@ -201,17 +223,20 @@ class PpeJudge:
             if now_ms - track.last_seen_ms > cfg.track_retention_ms:
                 del self.tracks[wid]
                 continue
-            out[wid] = {name: self._evaluate_item(item, last_closed, now_ms) for name, item in track.items.items()}
+            out[wid] = {name: self._evaluate_item(item, track.skipped_bins, last_closed, now_ms)
+                        for name, item in track.items.items()}
+            # 창 범위보다 오래된 건너뜀 칸은 더 볼 일이 없다
+            track.skipped_bins = {k for k in track.skipped_bins if k > last_closed - cfg.window_span_bins}
         return out
 
-    def _evaluate_item(self, item: ItemState, last_closed: int, now_ms: int) -> ItemView:
+    def _evaluate_item(self, item: ItemState, skipped: set[int], last_closed: int, now_ms: int) -> ItemView:
         cfg = self.cfg
         if item.window_start_bin is None and item.bins:
             item.window_start_bin = min(item.bins)
         if item.window_start_bin is not None:
             start = item.window_start_bin if item.last_processed_bin is None else item.last_processed_bin + 1
             for b in range(max(start, item.window_start_bin), last_closed + 1):
-                self._step(item, b)
+                self._step(item, b, skipped)
                 item.last_processed_bin = b
         if item.state in (WORN, NOT_WORN) and item.last_evidence_at is not None \
                 and now_ms > item.last_evidence_at + cfg.expiry_ms:
@@ -221,7 +246,7 @@ class PpeJudge:
             item.results = {k: v for k, v in item.results.items() if k > last_closed}
             item.evidence, item.last_evidence_at = [], None
             return ItemView(UNKNOWN, R_EXPIRED, (), expired_at, None, 0, 0.0)
-        window = self._window(item, last_closed)
+        window = self._window(item, last_closed, skipped)
         valid = [r for r in window if r in (B_WORN, B_NOT_WORN)]
         support = 0.0
         if valid and item.state in (WORN, NOT_WORN):
@@ -233,18 +258,25 @@ class PpeJudge:
         return ItemView(item.state, item.reason, evidence, item.last_evidence_at if evidence else None, expires,
                         len(valid), support)
 
-    def _window(self, item: ItemState, last_b: int) -> list[str]:
+    def _window(self, item: ItemState, last_b: int, skipped: set[int]) -> list[str]:
+        """최근 window_span_bins 칸 안에서 건너뛰지 않은 칸의 결과 중 마지막 window_bins 개(오래된 것부터)."""
         if item.window_start_bin is None:
             return []
-        lo = max(item.window_start_bin, last_b - self.cfg.window_bins + 1)
-        return [item.results.get(b, B_EMPTY) for b in range(lo, last_b + 1)]
+        lo = max(item.window_start_bin, last_b - self.cfg.window_span_bins + 1)
+        valid = [b for b in range(lo, last_b + 1) if b not in skipped]
+        return [item.results.get(b, B_EMPTY) for b in valid[-self.cfg.window_bins:]]
 
-    def _step(self, item: ItemState, b: int) -> None:
+    def _step(self, item: ItemState, b: int, skipped: set[int]) -> None:
         cfg = self.cfg
         samples = item.bins.pop(b, [])
+        if b in skipped:
+            # ID 대응이 불확실한 칸: 결과도 근거도 남기지 않고 확정 상태는 그대로 둔다
+            if item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
+                item.reason = R_IDENTITY_UNCERTAIN
+            return
         result, support = self.combine_bin(samples)
         item.results[b] = result
-        for old in [k for k in item.results if k < b - cfg.window_bins]:
+        for old in [k for k in item.results if k <= b - cfg.window_span_bins]:
             del item.results[old]
         contrary = (item.state == WORN and result in (B_NOT_WORN, B_CONFLICT)) or \
                    (item.state == NOT_WORN and result in (B_WORN, B_CONFLICT))
@@ -255,13 +287,13 @@ class PpeJudge:
             item.results = {b: result}
             item.last_evidence_at, item.evidence = None, []
             return
-        window = self._window(item, b)
+        window = self._window(item, b, skipped)
         full = len(window) == cfg.window_bins
         if item.state != WORN and full and result == B_WORN and window.count(B_WORN) >= cfg.worn_min_bins:
             item.state, item.reason = WORN, R_WINDOW_WORN
         elif item.state != NOT_WORN and full and all(r == B_NOT_WORN for r in window):
             item.state, item.reason = NOT_WORN, R_WINDOW_NOT_WORN
-        elif item.state == UNKNOWN and item.reason not in (R_CONTRARY, R_CROSS_CAMERA_CONFLICT, *RESET_REASONS):
+        elif item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
             item.reason = _bin_reason(result, samples)
         if (item.state == WORN and result == B_WORN) or (item.state == NOT_WORN and result == B_NOT_WORN):
             item.last_evidence_at = max(s.capture_time_ms for s in support)

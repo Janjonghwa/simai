@@ -52,7 +52,7 @@ System Health의 lag 기준 초기값은 DEGRADED 600ms(6.6 capture_to_risk p95)
 | RiskEvent Lifecycle | RAISED / UPDATED / RESOLVED | 위험 이벤트의 진행 |
 | RiskEvent Verification | VERIFIED / UNVERIFIABLE | 해소 여부를 관측으로 확인할 수 있는지 |
 | Alert Channel | BOUND / UNBOUND / LOST | 개인 알림 채널 상태(부록 C, 워치) |
-| PPE | WORN / NOT_WORN / UNKNOWN | 안전모·조끼 각각. 근거가 10초 갱신되지 않거나 ID 대응이 바뀌거나 연결이 끊기면 UNKNOWN(5.5) |
+| PPE | WORN / NOT_WORN / UNKNOWN | 안전모·조끼 각각. 근거가 10초 갱신되지 않거나 ID 대응이 바뀌거나 ID 불확실이 3초 넘게 이어지거나 연결이 끊기면 UNKNOWN(5.5) |
 | Config Sync | CURRENT / PENDING / UNVERIFIED / STALE | CURRENT: EC2 가 마지막으로 알린 묶음과 활성 묶음이 같음이 확인됨. PENDING: 알린 더 새 묶음을 검증·전환 중. UNVERIFIED: 연결 단절 또는 (재)연결 뒤 알림을 아직 못 받아 최신 여부 확인 불가. STALE: EC2 가 알린 묶음과 다르다는 것이 확인됨(경과 시간 기준이 아님, 거부한 묶음 포함, 3.2). 어느 상태든 판정은 계속 |
 | World Track | TENTATIVE / CONFIRMED / OCCLUDED / LOST (+ IDENTITY_UNCERTAIN 표시) | 추적 관리 생명주기(5.2). 위험 판단용 관측 상태와 별도 |
 
