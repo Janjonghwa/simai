@@ -102,9 +102,9 @@ describe('LoginHero', () => {
 
     for (const [seconds, expected] of [
       [1, ['3D 현장 재현']],
-      [4, ['AI 위험 감지']],
-      [6, ['워치 알림 연동']],
-      [8, []],
+      [5, ['AI 위험 감지']],
+      [8, ['워치 알림 연동']],
+      [10.3, []],
     ] as const) {
       Object.defineProperty(video, 'currentTime', { configurable: true, value: seconds });
       act(() => {
