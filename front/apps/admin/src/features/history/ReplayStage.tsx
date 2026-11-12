@@ -6,9 +6,16 @@ import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/repl
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
 import type { Span, VideoSegment } from '@/features/history/types';
 import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
-import { useReplayFrame, useReplayNoData, type WorkReplay } from '@/features/history/useWorkReplay';
+import {
+  useReplayFrame,
+  useReplayNoData,
+  useReplayPending,
+  type WorkReplay,
+} from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useCallback, useMemo, type ReactNode } from 'react';
+
+const LOADING_LINE = '기록을 불러오는 중입니다…';
 
 function Notice({ children }: { children: ReactNode }) {
   return (
@@ -23,6 +30,7 @@ function Notice({ children }: { children: ReactNode }) {
  * 목 화면은 재생 시각에 보이는 World 기록의 사람을 그리고, 기록이 바뀔 때만 다시 그린다.
  * 데이터 없음이면 사람을 그리지 않고 흐리게 둔다(마지막 기록을 이어 그리지 않는다, FR-28). 기록이 없어도 기록 없는 구간
  * 밖이면 그 시각에 아무도 없던 것이라 빈 화면을 그대로 보인다.
+ * 아직 받지 못한 뒷구간의 시각이면 목 화면 대신 불러오는 중 안내를 보인다(영상은 기록과 상관없이 튼다).
  */
 function ReplayCctv({
   replay,
@@ -39,12 +47,14 @@ function ReplayCctv({
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
   const active = useActiveSegments(replay, segments);
+  const pending = useReplayPending(replay, index);
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
     [people],
   );
   if (active.length > 0) return <ReplayVideoWall segments={active} replay={replay} />;
+  if (pending) return <Notice>{LOADING_LINE}</Notice>;
   return (
     <CctvMockWall
       figures={figures}
@@ -63,7 +73,7 @@ interface ReplayStageProps {
 /** 화면 가운데 안내 한 줄. 보일 기록이 있으면 null. 기록이 하나도 없을 때 전부 기록 없는 구간이면 데이터 없음이고, 아니면 잡힌 사람이 없던 것이다. */
 function stageNotice(session: WorkReplay, range: Span): string | null {
   if (session.failed) return replayErrorLine(session.error);
-  if (session.loading || !session.replay) return '기록을 불러오는 중입니다…';
+  if (session.loading || !session.replay) return LOADING_LINE;
   if (!session.index || !isEmptyReplay(session.index)) return null;
   return allGap(session.index.gaps, range) ? '데이터 없음' : '잡힌 작업자가 없습니다.';
 }

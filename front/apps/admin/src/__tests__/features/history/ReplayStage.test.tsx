@@ -126,6 +126,7 @@ describe('ReplayStage 영상 조각 목록', () => {
           workers: [],
           events: [],
           gaps: [],
+          pending: null,
         } as never,
       }),
     );
@@ -143,5 +144,51 @@ describe('ReplayStage 영상 조각 목록', () => {
     expect(screen.getByText('기록을 불러오는 중입니다…')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(videoRequests).toHaveLength(0);
+  });
+});
+
+describe('ReplayStage 아직 받지 못한 뒷구간', () => {
+  /** 앞 구간(T 부터 T+1초)만 받은 색인. 그 뒤는 아직 못 받았다. */
+  const partial = {
+    frames: [{ t: T, ids: [], tracks: [] }],
+    workers: [],
+    events: [],
+    gaps: [],
+    pending: { from: T + 1_000, to: RANGE.to },
+  } as never;
+  const ready = (playhead: number): WorkReplay => ({
+    ...LOADING,
+    loading: false,
+    replay: replayAt(playhead),
+    index: partial,
+  });
+
+  it('재생 시각이 받지 못한 구간이고 그 시각을 덮는 영상도 없으면 불러오는 중 안내를 보인다', async () => {
+    // 영상 조각이 모두 재생 시각(T+5초) 뒤에서 시작한다.
+    server.use(
+      http.get('http://api.test/api/videos', () =>
+        HttpResponse.json({
+          segments: [
+            {
+              segment_id: 'later',
+              camera_id: 'cam_A',
+              segment_start_capture_ms: T + 60_000,
+              segment_end_capture_ms: T + 120_000,
+            },
+          ],
+        }),
+      ),
+    );
+    renderStage(ready(T + 5_000));
+
+    expect(await screen.findByText('기록을 불러오는 중입니다…')).toBeTruthy();
+    expect(screen.queryByTestId('video-wall')).toBeNull();
+  });
+
+  it('받지 못한 구간이어도 그 시각을 덮는 영상이 있으면 영상은 기록과 상관없이 보인다', async () => {
+    renderStage(ready(T + 5_000));
+
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
+    expect(screen.queryByText('기록을 불러오는 중입니다…')).toBeNull();
   });
 });

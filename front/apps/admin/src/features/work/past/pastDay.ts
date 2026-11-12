@@ -26,3 +26,14 @@ export function firstMoment(index: ReplayIndex): number | null {
   if (firstFrame === undefined) return null;
   return index.events.find((event) => event.raisedAt >= firstFrame)?.raisedAt ?? firstFrame;
 }
+
+/** 재생 상태 중 사용자가 건드렸는지 가르는 데 쓰는 칸. */
+interface PlaybackPlace {
+  getStatus: () => { playhead: number | null; playing: boolean };
+}
+
+/** 우리가 옮겨 둔 자리(at)에 그대로 멈춰 있는지. 사용자가 옮기거나 재생했으면 false 다. */
+export function untouched(replay: PlaybackPlace, at: number): boolean {
+  const status = replay.getStatus();
+  return status.playhead === at && !status.playing;
+}

@@ -49,6 +49,7 @@ export interface ReplayStatus {
 
 export interface ReplaySpatialSource extends SpatialSource {
   readonly kind: 'REPLAY';
+  /** 지금 재생 중인 기록. updateLog 로 바뀌면 새 객체다. */
   readonly log: ReplayLog;
   /** 지금 구독 중인 수. 누수 확인용이다. */
   readonly subscriberCount: number;
@@ -63,6 +64,11 @@ export interface ReplaySpatialSource extends SpatialSource {
   stepFrame(direction: 1 | -1): boolean;
   /** 배속. 0 보다 큰 유한한 수만 받는다. */
   setSpeed(speed: number): boolean;
+  /**
+   * 기록을 더 받아 늘어난 새 기록으로 바꾼다. 재생 시각·재생 중·배속은 그대로 두고, 구독마다 지금 시각의 상태를 처음부터 다시 보낸다.
+   * 시각 범위(start·end)가 지금 기록과 같아야 한다. 다르면 아무것도 바꾸지 않고 false 다.
+   */
+  updateLog(next: ReplayLog): boolean;
 }
 
 export interface ReplaySourceOptions {
@@ -88,9 +94,10 @@ interface Feed {
 let created = 0;
 
 export function createReplaySource(
-  log: ReplayLog,
+  initialLog: ReplayLog,
   options: ReplaySourceOptions = {},
 ): ReplaySpatialSource {
+  let log = initialLog;
   const now = options.now ?? Date.now;
   const gapMs = options.gapMs ?? REPLAY_GAP_MS;
   const tickMs = options.tickMs ?? REPLAY_TICK_MS;
@@ -215,7 +222,9 @@ export function createReplaySource(
   return {
     id,
     kind: 'REPLAY',
-    log,
+    get log() {
+      return log;
+    },
     get subscriberCount() {
       return feeds.size;
     },
@@ -277,6 +286,17 @@ export function createReplaySource(
       playhead = current();
       if (anchor) anchor = { wall: now(), t: playhead! };
       speed = next;
+      notify();
+      return true;
+    },
+    updateLog(next) {
+      if (next.start !== log.start || next.end !== log.end) return false;
+      // 재생 중이면 시계가 가리키는 시각을 먼저 굳히고, 새 기록으로 그 시각의 상태를 다시 보낸다.
+      playhead = current();
+      if (anchor) anchor = { wall: now(), t: playhead! };
+      log = next;
+      [...feeds].forEach((feed) => deliver(feed, true));
+      sync();
       notify();
       return true;
     },

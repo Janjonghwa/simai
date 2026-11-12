@@ -4,7 +4,8 @@ import { ReplayStage } from '@/features/history/ReplayStage';
 import { useReplayStatus, useWorkReplay, type WorkReplay } from '@/features/history/useWorkReplay';
 import { EventLog } from '@/features/history/WorkLists';
 import { worksLoadingLine } from '@/features/history/works';
-import { dayWorksOf, firstMoment, workChoiceLabel } from '@/features/work/past/pastDay';
+import type { ReplaySpatialSource } from '@/features/viewer3d';
+import { dayWorksOf, firstMoment, untouched, workChoiceLabel } from '@/features/work/past/pastDay';
 import { PastReportPanel } from '@/features/work/past/PastReportPanel';
 import type { PastDayProps } from '@/features/work/stageProps';
 import type { WorkDayItem } from '@/features/work/types';
@@ -14,7 +15,7 @@ import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
 import { ChevronLeft } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 지난 날짜 다시 보기: 옛 히스토리의 다시 보기(타임라인·CCTV 다시 보기·이벤트 로그)에서 작업자 목록을 빼고 그날 TBM 보고서를 넣었다.
 // 같은 부품(useWorkReplay·ReplayStage·ReplayTimeline·EventLog)을 그대로 쓴다. 오른쪽 열은 보고서와 이벤트 로그를 탭으로 나눈다.
@@ -158,10 +159,16 @@ export function PastDayPage({ date }: PastDayProps) {
   const { replay, index, range } = session;
   const pickEvent = useCallback((event: EventRow) => seekTo(replay, event.raisedAt), [replay]);
 
-  // 처음 보일 시각: 첫 사건, 없으면 첫 기록.
+  // 처음 보일 시각: 첫 사건, 없으면 첫 기록. 긴 작업은 앞 구간만 받은 채 화면이 뜨고 뒤 구간에서 첫 사건이 나올 수 있어,
+  // 우리가 옮겨 둔 자리를 사용자가 그대로 두는 동안에만 새 시각으로 옮긴다(옮기거나 재생했으면 그 자리를 지킨다).
   const start = useMemo(() => (index ? firstMoment(index) : null), [index]);
+  const placed = useRef<{ replay: ReplaySpatialSource; at: number } | null>(null);
   useEffect(() => {
-    if (replay && start !== null) seekTo(replay, start);
+    if (!replay || start === null) return;
+    const mine = placed.current?.replay === replay ? placed.current : null;
+    if (mine && !untouched(replay, mine.at)) return;
+    placed.current = { replay, at: start };
+    seekTo(replay, start);
   }, [replay, start]);
 
   const head = (
