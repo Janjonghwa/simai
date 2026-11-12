@@ -175,6 +175,8 @@ export interface ZoneView {
   severity?: ZoneSeverity;
   /** BE 정식 구역 정보. DEMO 구역은 없다. */
   official?: OfficialZoneInfo;
+  /** 세팅 구역 목록에서 사람이 아직 확인하지 않은 이어 쓴 구역(needs_review, S15P31A101-629). 옅게 그리고 이름표에 적는다. */
+  needsReview?: boolean;
 }
 
 /** 구역 형상 출처. DEMO_UNCONFIRMED 개발용 DEMO 상자 · BE_ZONES_V1 BE GET /api/zones 응답(-120). */

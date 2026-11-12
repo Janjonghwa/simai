@@ -6,6 +6,7 @@ import {
 } from '@/features/setup/api';
 import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
 import { setupCompleteErrorMessage } from '@/features/setup/setupErrorMessage';
+import { pendingReviewCount } from '@/features/setup/setupZonePlan';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
 import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { ZONES_KEY } from '@/features/zones/api';
@@ -51,6 +52,10 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
     },
     onError: (e, sessionId) => {
       setError(setupCompleteErrorMessage(e));
+      // 확인 필요가 남았으면(다른 곳에서 목록을 고친 사이) 목록을 다시 받아 카드·단추가 남은 개수를 보이게 한다
+      if (e instanceof ApiError && e.code === 'SETUP_ZONES_UNCONFIRMED') {
+        void queryClient.invalidateQueries({ queryKey: setupZonePlanKey(sessionId) });
+      }
       // 목록의 기존 구역이 그 사이 바뀌었거나 이미 완료됐으면 목록·관제 구역·세션을 다시 받는다
       if (
         e instanceof ApiError &&
@@ -72,6 +77,15 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
     setChecking(true);
     try {
       const plan = await requestSetupZonePlan(api, id);
+      queryClient.setQueryData(setupZonePlanKey(id), plan);
+      // 확인 필요 구역이 남았으면 서버도 거부한다(409 SETUP_ZONES_UNCONFIRMED). 보내지 않고 같은 안내를 보인다
+      const unconfirmed = pendingReviewCount(plan);
+      if (unconfirmed > 0) {
+        setError(
+          `확인이 필요한 구역 ${unconfirmed}개가 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요`,
+        );
+        return false;
+      }
       if (plan.items.length === 0 && !window.confirm(EMPTY_ZONE_PLAN_CONFIRM)) return false;
     } catch (e) {
       setError(setupCompleteErrorMessage(e));
@@ -86,7 +100,7 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
       // 실패 안내와 목록 다시 받기는 변이의 onError 가 이미 했다
       return false;
     }
-  }, [id, pending, mutateAsync]);
+  }, [id, pending, mutateAsync, queryClient]);
 
   return { run, pending, error, applied };
 }

@@ -1,13 +1,17 @@
 package com.ssafy.simai.domain.setup;
 
+import com.ssafy.simai.domain.zone.SetupZonesUnconfirmedException;
+import com.ssafy.simai.global.exception.GlobalExceptionHandler;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -87,6 +91,15 @@ class SetupController {
         done.zones().kept().forEach(applied.putArray("kept")::add);
         done.zones().archived().forEach(applied.putArray("archived")::add);
         return out;
+    }
+
+    /** 세팅 완료의 확인 필요 구역 거부(409 SETUP_ZONES_UNCONFIRMED, S15P31A101-629): 남은 개수를 문구와 unconfirmed_count 로 싣는다 */
+    @ExceptionHandler(SetupZonesUnconfirmedException.class)
+    ProblemDetail zonesUnconfirmed(SetupZonesUnconfirmedException e) {
+        ProblemDetail problem = GlobalExceptionHandler.problem(e.getErrorCode());
+        problem.setDetail("확인이 필요한 구역 " + e.remaining() + "개가 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요");
+        problem.setProperty("unconfirmed_count", e.remaining());
+        return problem;
     }
 
     /** 맵 보강 촬영 파일 하나의 서명 PUT 주소(S15P31A101-607). 응답은 파일 기록 + upload{method,url,headers,expires_at_ms} */

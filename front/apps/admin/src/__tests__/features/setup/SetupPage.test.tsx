@@ -104,9 +104,11 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
 
 let setupMock = createSetupMock();
 // 구역·정적 객체 mock 은 초안 수락이 구역을 저장하므로 시험마다 새로 만든다. 구역 단계 3D 는 현재 배경·정적 객체를 받는다.
-const baseHandlers = () => {
+const baseHandlers = (setup?: ReturnType<typeof createSetupMock>) => {
   const objects = createStaticObjectsMock();
   const zonesMock = createZonesMock({ staticObjects: objects.store });
+  // 구역 단계의 처음 목록 채우기(-629)가 지금 관제 구역을 읽는다
+  setup?.bindLiveZones(() => zonesMock.currentZones());
   return [...zonesMock.handlers, ...sceneHandlers, ...objects.handlers];
 };
 
@@ -140,7 +142,7 @@ beforeEach(() => {
       ],
     }),
   });
-  server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
+  server.resetHandlers(...baseHandlers(setupMock), ...setupMock.handlers);
 });
 afterEach(() => {
   cleanup();
@@ -1337,6 +1339,75 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       const items = setupMock.zonePlans.get(sessionId)!.items as { zone_id: string; zone: null }[];
       expect(items.length).toBeGreaterThan(0);
       expect(items.every((item) => item.zone_id && item.zone === null)).toBe(true);
+      // 재사용은 확인 표시가 없다(S15P31A101-629)
+      expect(items.every((item) => !(item as { needs_review?: boolean }).needs_review)).toBe(true);
+      expect(screen.queryByTestId('setup-zone-review-card')).toBeNull();
+    }, 20_000);
+
+    it('새 모델 + World 이어짐 세션은 지금 관제 구역을 확인 필요로 채우고 모두 확인해야 세팅을 완료할 수 있다', async () => {
+      const { sessionId } = await startSetupSession();
+      setupMock.updateSession(sessionId, {
+        ...FINAL_PATCH,
+        mode: 'NEW',
+        world_anchor: { accepted: true },
+      });
+      await goToZoneStep();
+      await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1), POLL_WAIT);
+      const total = setupMock.zonePlans.get(sessionId)!.items.length;
+      expect(total).toBeGreaterThan(1);
+
+      const card = await screen.findByTestId('setup-zone-review-card', undefined, POLL_WAIT);
+      await waitFor(() =>
+        expect(within(card).getByRole('status').textContent).toContain(`확인 필요 ${total}개`),
+      );
+      const blocked = screen.getByRole('button', {
+        name: `작업 관리로 · 확인 필요 ${total}개`,
+      }) as HTMLButtonElement;
+      expect(blocked.disabled).toBe(true);
+
+      // 하나 확인하면 남은 개수가 줄고, 확인 필요 구역이 목록 위에 있다
+      const firstRow = card.querySelector('li[data-needs-review="true"]') as HTMLElement;
+      fireEvent.click(within(firstRow).getByRole('button', { name: /확인$/ }));
+      await waitFor(() =>
+        expect(within(card).getByRole('status').textContent).toContain(`확인 필요 ${total - 1}개`),
+      );
+      const rows = within(card).getAllByRole('listitem');
+      expect(rows[0]!.getAttribute('data-needs-review')).toBe('true');
+      expect(rows.at(-1)!.getAttribute('data-needs-review')).toBeNull();
+
+      fireEvent.click(within(card).getByRole('button', { name: `남은 ${total - 1}개 모두 확인` }));
+      await waitFor(() => expect(finishButton().disabled).toBe(false), POLL_WAIT);
+      expect(
+        setupMock.zonePlans
+          .get(sessionId)!
+          .items.every((item) => !(item as { needs_review?: boolean }).needs_review),
+      ).toBe(true);
+      fireEvent.click(finishButton());
+      await waitFor(() => expect(navigateMock).toHaveBeenCalledWith(workPage));
+    }, 20_000);
+
+    it('확인 필요가 남은 채 서버가 완료를 거부하면 남은 개수 안내를 보인다', async () => {
+      await zoneStepSession();
+      server.use(
+        http.post('*/api/setup-sessions/:id/complete', () =>
+          HttpResponse.json(
+            {
+              status: 409,
+              code: 'SETUP_ZONES_UNCONFIRMED',
+              detail:
+                '확인이 필요한 구역 2개가 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요',
+              unconfirmed_count: 2,
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      fireEvent.click(finishButton());
+      expect(
+        await screen.findByText(/확인이 필요한 구역 2개가 남아 있습니다/, undefined, POLL_WAIT),
+      ).toBeTruthy();
+      expect(navigateMock).not.toHaveBeenCalled();
     }, 20_000);
   });
 

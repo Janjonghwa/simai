@@ -6,6 +6,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -40,5 +41,14 @@ class SetupZonePlanController {
     ObjectNode put(@PathVariable String id, @RequestBody(required = false) PutRequest request, @AuthenticationPrincipal Jwt jwt) {
         return plans.put(id, request == null ? null : request.items(), request == null ? null : request.revision(),
                 Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 구역 단계에 처음 들어올 때 목록 채우기(S15P31A101-629): 저장한 적 없는 목록만 지금 관제 구역으로 채운다(재사용은 그대로,
+     * 새 모델 + World 이어짐은 needs_review=true). 이미 저장한 목록·World 끊김은 그대로 돌려준다. 응답은 GET 과 같다
+     */
+    @PostMapping("/api/setup-sessions/{id}/zones/seed")
+    ObjectNode seed(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
+        return plans.seed(id, Long.parseLong(jwt.getSubject()));
     }
 }

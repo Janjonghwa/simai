@@ -48,14 +48,15 @@ import {
   CameraMapPanel,
   CameraPanel,
 } from '@/features/setup/SetupPanels';
-import type { SetupZonePlanView } from '@/features/setup/setupZonePlan';
+import { pendingReviewCount, type SetupZonePlanView } from '@/features/setup/setupZonePlan';
+import { SetupZoneReviewCard } from '@/features/setup/SetupZoneReviewCard';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementModal } from '@/features/setup/SupplementModal';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
-import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
+import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
   useCameraHeightDefaults,
@@ -65,6 +66,7 @@ import {
   useSetupSession,
   useSetupZoneDrafts,
 } from '@/features/setup/useSetupStep1';
+import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { useWorkAction } from '@/features/work/WorkActionContext';
 import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { ZonesPage } from '@/features/zones/ZonesPage';
@@ -95,7 +97,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
 // 완료 뒤에는 구역 편집·AI 초안 수락을 감춘다(완료 뒤 구역 수정은 관제 화면 구역 편집).
 // 완료 전 구역 단계의 구역 편집·AI 초안 수락·3D 구역 표시는 관제 구역이 아니라 세션 구역 목록(-612) 기준이다(ZoneSourceContext).
-// 이전 모델 재사용은 구역 단계에 들어오면 빈 목록을 지금 관제 구역으로 한 번 채운다(useSeedSetupZonePlan). 새 모델은 빈 목록에서 시작한다.
+// 같은 World 세팅은 구역 단계에 들어오면 빈 목록을 지금 관제 구역으로 한 번 채운다(useSeedSetupZonePlan, 서버 seed): 이전 모델 재사용은
+// 그대로, 새 모델 + World 이어짐은 구역마다 '확인 필요'로 채워 오른쪽 칸 「이어 쓴 구역 확인」 카드에서 확인·수정·삭제한다(S15P31A101-629).
+// 확인 필요가 남아 있으면 마지막 단추(세팅 완료)가 '확인 필요 n개'를 붙이고 꺼진다. World 가 끊긴 새 모델은 빈 목록에서 시작한다.
 
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
@@ -286,6 +290,11 @@ function SetupWorkPage({
     () => (sessionId && !foreignSession && !completed ? { sessionId } : null),
     [sessionId, foreignSession, completed],
   );
+  // 확인 필요 구역 수(S15P31A101-629). 남아 있으면 세팅을 완료할 수 없다
+  const zonePlanQuery = useSetupZonePlanQuery(
+    stage === ZONE_STAGE ? (zoneSource?.sessionId ?? null) : null,
+  );
+  const unconfirmedZones = zoneSource ? pendingReviewCount(zonePlanQuery.data) : 0;
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
   const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
@@ -448,6 +457,7 @@ function SetupWorkPage({
       canFinish: completed || canCompleteSetup(currentSession),
       finishPending: completion.pending,
       setupCompleted: completed,
+      unconfirmedZones: completed ? 0 : unconfirmedZones,
     },
     {
       start: requestStep1Submit,
@@ -644,6 +654,9 @@ function SetupWorkPage({
                   다시 시도
                 </Button>
               </div>
+            )}
+            {zoneSource && (reviewsCarriedZones(currentSession) || unconfirmedZones > 0) && (
+              <SetupZoneReviewCard sessionId={zoneSource.sessionId} />
             )}
             {!completed && (
               <AiZoneDraftsPanel

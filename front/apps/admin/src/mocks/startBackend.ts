@@ -51,6 +51,8 @@ export async function startMockBackend() {
     onCommit: setupMock.completeAfterZonesCommit,
   });
   tbmMock.bindLayoutZones(zones.layoutZones);
+  // 세팅 구역 단계의 처음 목록 채우기(-629)는 지금 관제 구역을 읽는다
+  setupMock.bindLiveZones(() => zones.currentZones());
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
   const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
     broker,

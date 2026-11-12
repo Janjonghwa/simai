@@ -60,7 +60,8 @@ public class SetupZoneApplier {
     /**
      * sameWorld: 이 세팅이 지금 관제 구역과 같은 World 인지(이전 모델 쓰기, 또는 새로 만들기에서 world_anchor.accepted).
      * false 인데 목록에 기존 zone_id 가 있으면 409 SETUP_ZONE_WORLD_MISMATCH(좌표가 새 3D 와 맞지 않는다).
-     * 목록의 zone_id 가 지금 관제 구역이 아니면 409 SETUP_ZONE_STALE.
+     * 목록의 zone_id 가 지금 관제 구역이 아니면 409 SETUP_ZONE_STALE. 확인 필요(needs_review) 항목이 남았으면 409
+     * SETUP_ZONES_UNCONFIRMED(남은 개수와 함께, S15P31A101-629).
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public ApplyResult apply(UUID setupSessionId, boolean sameWorld, long actorUserId) {
@@ -86,6 +87,11 @@ public class SetupZoneApplier {
                 throw new BusinessException(ErrorCode.Config.SETUP_ZONE_STALE);
             }
             listed.add(item.zoneId());
+        }
+        // 새 모델 + World 이어짐으로 채운 구역을 사람이 다 보기 전에는 적용하지 않는다(S15P31A101-629)
+        int unconfirmed = (int) items.stream().filter(SetupZonePlanService.Item::pendingReview).count();
+        if (unconfirmed > 0) {
+            throw new SetupZonesUnconfirmedException(unconfirmed);
         }
 
         List<String> archived = new ArrayList<>();

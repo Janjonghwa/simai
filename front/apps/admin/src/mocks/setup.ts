@@ -295,6 +295,17 @@ export interface SetupMockOptions {
    * 맵 보강 촬영 다시 굽기(S15P31A101-607)까지 mock 으로 해 볼 수 있다.
    */
   autoProgress?: boolean;
+  /**
+   * 새로 만든 세션을 새 모델 + World 이어짐(world_anchor.accepted)으로 둔다(S15P31A101-629). 구역 단계에 들어가면 지금 관제 구역
+   * (bindLiveZones)을 확인 필요로 채운다. 없으면 World 끊김처럼 빈 목록에서 시작한다.
+   */
+  worldAnchorAccepted?: boolean;
+}
+
+/** 목록 채우기(seed)가 읽는 지금 관제 구역(zone_id, 레이아웃 항목이면 layout_item_id). */
+export interface SetupMockLiveZone {
+  zone_id: string;
+  layout_item_id?: string | null;
 }
 
 /** autoProgress 단계표: 시작 뒤 이 시각(ms)부터 그 단계. */
@@ -393,6 +404,26 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   }
 
   const supplement = createSupplementMock({ now, sessions, updateSession });
+
+  /** 새 세션의 World 다시 맞추기 판정(옵션이 있을 때만 싣는다). */
+  const anchorPatch = (): Partial<SetupSessionResponse> =>
+    options.worldAnchorAccepted ? { mode: 'NEW', world_anchor: { accepted: true } } : {};
+  /** 목록 채우기가 읽는 지금 관제 구역. 개발 서버는 구역 mock 을 잇는다(bindLiveZones), 시험은 기본 빈 목록. */
+  let liveZones: () => readonly SetupMockLiveZone[] = () => [];
+  /** 확인 필요(needs_review)를 서버처럼 정리한다: 이어 쓰는 구역을 고치지 않은 항목만 true 를 남긴다. */
+  const normalizeReview = (item: unknown): unknown => {
+    const record = item as Record<string, unknown>;
+    const review =
+      record.needs_review === true &&
+      record.zone_id != null &&
+      record.zone == null &&
+      record.surface == null;
+    return { ...record, needs_review: review };
+  };
+  const pendingOf = (id: string) =>
+    (zonePlans.get(id)?.items ?? []).filter(
+      (item) => (item as Record<string, unknown>).needs_review === true,
+    ).length;
 
   /** 세션별 구역 목록(-612). 저장한 적이 없으면 없다(빈 목록·revision 0). */
   const zonePlans = new Map<string, { items: unknown[]; revision: number; updatedAt: number }>();
@@ -606,6 +637,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ready_at_ms: null,
         completed_at_ms: null,
         updated_at_ms: t,
+        ...anchorPatch(),
       };
       sessions.set(sessionId, session);
       return HttpResponse.json(session, { status: 202 });
@@ -716,6 +748,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ready_at_ms: null,
         completed_at_ms: null,
         updated_at_ms: t,
+        ...anchorPatch(),
       };
       sessions.set(retriedSessionId, retried);
       retryRequests.push({
@@ -800,7 +833,40 @@ export function createSetupMock(options: SetupMockOptions = {}) {
           '다른 곳에서 먼저 고친 세팅 구역 목록입니다',
         );
       }
-      zonePlans.set(id, { items: items as unknown[], revision: revision + 1, updatedAt: t });
+      zonePlans.set(id, {
+        items: (items as unknown[]).map(normalizeReview),
+        revision: revision + 1,
+        updatedAt: t,
+      });
+      return HttpResponse.json(planView(id));
+    }),
+
+    // 처음 목록 채우기(-629): 저장한 적 없는 목록만. 재사용은 그대로, 새 모델 + World 이어짐은 확인 필요로, World 끊김은 채우지 않는다
+    http.post('*/api/setup-sessions/:id/zones/seed', ({ request, params }) => {
+      const t = now();
+      const user = readLiveUser(request, t);
+      if (!user) return unauthorized();
+      if (user.role !== 'ADMIN') return problem(403, 'FORBIDDEN', '관리자만 저장할 수 있습니다');
+      const id = String(params.id ?? '');
+      const session = sessions.get(id);
+      if (!session) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      if (session.setup_completed_at_ms != null || session.status === 'FAILED') {
+        return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
+      }
+      const reuse = session.mode === 'REUSE';
+      if ((reuse || session.world_anchor?.accepted === true) && !zonePlans.has(id)) {
+        const items = liveZones().map((zone) => ({
+          zone_id: zone.zone_id,
+          source: 'MANUAL',
+          candidate_id: null,
+          zone: null,
+          surface: null,
+          needs_review: !reuse && zone.layout_item_id == null,
+        }));
+        zonePlans.set(id, { items, revision: 1, updatedAt: t });
+      }
       return HttpResponse.json(planView(id));
     }),
 
@@ -827,6 +893,18 @@ export function createSetupMock(options: SetupMockOptions = {}) {
           '미리보기 맵이 나온 뒤에 완료할 수 있습니다',
         );
       }
+      const unconfirmed = pendingOf(id);
+      if (unconfirmed > 0) {
+        return HttpResponse.json(
+          {
+            status: 409,
+            code: 'SETUP_ZONES_UNCONFIRMED',
+            detail: `확인이 필요한 구역 ${unconfirmed}개가 남아 있습니다. 구역마다 확인·수정·삭제한 뒤 세팅을 완료하세요`,
+            unconfirmed_count: unconfirmed,
+          },
+          { status: 409 },
+        );
+      }
       const done = updateSession(id, { setup_completed_at_ms: t });
       return HttpResponse.json({ ...supplement.withView(done), applied_zones: appliedOf(id) });
     }),
@@ -845,5 +923,9 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     completeAfterZonesCommit,
     setZoneDrafts,
     zonePlans,
+    /** 목록 채우기가 읽을 지금 관제 구역을 잇는다(개발 서버: 구역 mock). */
+    bindLiveZones(read: () => readonly SetupMockLiveZone[]) {
+      liveZones = read;
+    },
   };
 }

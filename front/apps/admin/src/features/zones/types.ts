@@ -46,6 +46,8 @@ export const zoneItemSchema = z.object({
   // 이 버전이 유효해진 시각(epoch ms, 서버가 저장할 때 정한다). 지금 버전은 valid_to 가 없다.
   valid_from: z.number(),
   valid_to: z.number().nullable(),
+  // 세팅 구역 목록에서 사람이 아직 확인하지 않은 이어 쓴 구역(S15P31A101-629). 관제 구역 응답에는 없다. 3D 가 구별해 그린다.
+  needs_review: z.boolean().nullish(),
 });
 
 export type ZoneItem = z.infer<typeof zoneItemSchema>;
@@ -180,6 +182,8 @@ export interface Zone extends ZoneBox {
   layoutItemId: string | null;
   /** 입체 판정이고 바닥이 축에 맞춘 직사각형이며 높이가 있어야 상자 편집기로 형상을 고칠 수 있다. */
   shapeEditable: boolean;
+  /** 세팅 구역 목록에서 확인이 필요한 이어 쓴 구역(S15P31A101-629). 관제 구역은 없다(false). */
+  needsReview?: boolean;
 }
 
 /** 3D 뷰어 Source 가 받는 구역 형식: 정식 구역 응답(zoneItemSchema) 배열. 뷰어(contractAdapter)가 다시 검사한다. */

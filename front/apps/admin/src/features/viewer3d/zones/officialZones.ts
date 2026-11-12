@@ -164,6 +164,8 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
     validFrom: isFiniteNumber(item.valid_from) ? item.valid_from : null,
   };
   const name = isText(item.name) ? item.name : '';
+  // 세팅 화면이 싣는 표시 힌트(S15P31A101-629). 형상·판정과 무관하고 true 일 때만 붙인다.
+  const review = item.needs_review === true ? { needsReview: true } : {};
   const xs = polygon.points.map(([x]) => x);
   const ys = polygon.points.map(([, y]) => y);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
@@ -177,6 +179,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
         max: worldPoint(x1, y1, 0),
         shape: 'FOOTPRINT',
         official,
+        ...review,
       },
     };
   }
@@ -184,7 +187,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
   const rectangle = rectangleToAabb(polygon.points, zMin, zMax);
   return {
     zone: rectangle.ok
-      ? { zoneId, name, min: rectangle.min, max: rectangle.max, shape: 'BOX', official }
+      ? { zoneId, name, min: rectangle.min, max: rectangle.max, shape: 'BOX', official, ...review }
       : {
           zoneId,
           name,
@@ -192,6 +195,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
           max: worldPoint(x1, y1, zMax),
           shape: 'PRISM',
           official,
+          ...review,
         },
   };
 }

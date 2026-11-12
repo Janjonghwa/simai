@@ -139,7 +139,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
   const edges = useMemo(() => boxEdges([sx, sy, sz]), [sx, sy, sz]);
   const guides = useMemo(() => aerialGuides([sx, sy, sz], py), [sx, sy, sz, py]);
   if (!box) return null;
-  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone));
+  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone), zone.needsReview);
 
   return (
     <group name={`zone-entry:${zone.zoneId}`}>
@@ -238,7 +238,7 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
     () => (footprint ? ringEdges(points, FLOOR_GUIDE_LIFT) : prismEdges(points, zMin, zMax)),
     [footprint, points, zMin, zMax],
   );
-  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone));
+  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone), zone.needsReview);
   const riskLook = risk && riskStyle(risk, palette);
   const [lx, ly] = labelVertex(points);
   // 기둥은 윗면 높이, 바닥 판정(FOOTPRINT)은 바닥에 둔다.

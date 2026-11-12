@@ -89,7 +89,7 @@ public class SetupCompletionService {
     /**
      * 세팅을 완료한다. 거부(모두 409, 없으면 404): 세션 없음 SETUP_SESSION_NOT_FOUND, 이미 완료 SETUP_ALREADY_COMPLETED,
      * 미리보기 전·실패 SETUP_NOT_READY_TO_COMPLETE, 작업에 걸린 세션 아님 SETUP_SESSION_NOT_ACTIVE, 오늘 아님 WORK_NOT_TODAY,
-     * 작업 PLANNED 아님 WORK_INVALID_STATE, 같은 현장 관제 중 SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK, 구역 적용 오류(SETUP_ZONE_*)는 그대로.
+     * 작업 PLANNED 아님 WORK_INVALID_STATE, 같은 현장 관제 중 SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK, 구역 적용 오류(SETUP_ZONE_*, 확인 필요가 남으면 SETUP_ZONES_UNCONFIRMED)는 그대로.
      */
     public Completed complete(UUID setupSessionId, long actorUserId) {
         String siteId = sites.siteId();

@@ -37,7 +37,8 @@ const signedIn = (account: MockAccount) =>
 // 작업면은 앱이 살아 있는 동안 상태를 둔다. 구성 묶음 mock(startBackend 의 createZonesMock)이 발행 때 지금 작업면을 싣도록 같은 인스턴스를 나눈다.
 export const staticObjectsMock = createStaticObjectsMock();
 // 개발 서버에서는 세팅 세션이 시간으로 진행한다(약 13초에 구역 단계, 35초에 완료). 구역 단계와 맵 보강 촬영 다시 굽기(S15P31A101-607)까지 해 볼 수 있다.
-export const setupMock = createSetupMock({ autoProgress: true });
+// 새 세션은 World 이어짐(world_anchor.accepted)으로 두어, 구역 단계에서 지금 관제 구역을 확인 필요로 채우는 흐름(-629)을 해 볼 수 있다.
+export const setupMock = createSetupMock({ autoProgress: true, worldAnchorAccepted: true });
 // 작업 관리 새 흐름(하루 작업·날짜 보고서·서명·제출). 세팅 mock 의 세션으로 세팅 중·끝남을 안다. 같은 경로를 쓰는 옛 TBM mock·세팅 mock·
 // 히스토리 mock 보다 먼저 답해야 해서(모르는 작업·요청은 undefined 로 넘긴다) 아래 목록에서 그 앞에 둔다.
 export const workMock = createWorkMock({ setupSessions: () => setupMock.sessions.values() });

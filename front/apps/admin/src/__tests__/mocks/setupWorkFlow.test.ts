@@ -3,7 +3,10 @@ import {
   completeSetupSession,
   createSetupSession,
   requestSetupSession,
+  saveSetupZonePlan,
+  seedSetupZonePlan,
 } from '@/features/setup/api';
+import { confirmPlanItems } from '@/features/setup/setupZonePlan';
 import { fetchWorkUnit, putDailyWorkUnit } from '@/features/work/api';
 import { commitZone } from '@/features/zones/api';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
@@ -28,19 +31,21 @@ const CAMERA_HEIGHTS = { cam1: 2.7, cam2: 2.7, cam3: 2.7, cam4: 2.7 };
 let clock = T0;
 const now = () => clock;
 let setupMock: ReturnType<typeof createSetupMock>;
+let anchored = false;
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
   clock = T0;
-  setupMock = createSetupMock({ now });
+  setupMock = createSetupMock({ now, worldAnchorAccepted: anchored });
   const workMock = createWorkMock({
     now,
     setupSessions: () => setupMock.sessions.values(),
     draftDelayMs: DRAFT_DELAY_MS,
   });
   const zonesMock = createZonesMock({ now, onCommit: setupMock.completeAfterZonesCommit });
+  setupMock.bindLiveZones(() => zonesMock.currentZones());
   // 실제 handlers.ts 와 같은 순서: 작업 mock 이 먼저 답하고 모르는 요청은 세팅 mock 으로 넘어간다.
   server.resetHandlers(...workMock.handlers, ...zonesMock.handlers, ...setupMock.handlers);
 });
@@ -228,5 +233,34 @@ describe('개발 서버 세팅 mock: 세팅 완료(POST .../complete, -615)', ()
     const session = await requestSetupSession(http, sessionId);
     expect(session.supplement?.can_upload).toBe(false);
     expect(session.supplement?.rebake_blocked_reason).toBe('SETUP_COMPLETED');
+  });
+});
+
+describe('새 모델 + World 이어짐의 확인 필요 구역(S15P31A101-629)', () => {
+  beforeAll(() => {
+    anchored = true;
+  });
+  afterAll(() => {
+    anchored = false;
+  });
+
+  it('구역 목록을 지금 관제 구역으로 확인 필요로 채우고, 남아 있으면 완료를 409 로 거부하며 모두 확인하면 완료한다', async () => {
+    const { sessionId } = await startSetupFor();
+    setupMock.updateSession(sessionId, { status: 'READY_FOR_ZONES', stage: 'READY_FOR_ZONES' });
+    const seeded = await seedSetupZonePlan(http, sessionId);
+    expect(seeded.revision).toBe(1);
+    expect(seeded.items.length).toBe(readZones(MOCK_ZONES).length);
+    expect(seeded.items.every((item) => item.needs_review)).toBe(true);
+    // 다시 불러도 채우지 않는다
+    expect((await seedSetupZonePlan(http, sessionId)).revision).toBe(1);
+
+    const rejected = await completeSetupSession(http, sessionId).catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(ApiError);
+    expect((rejected as ApiError).code).toBe('SETUP_ZONES_UNCONFIRMED');
+    expect((rejected as ApiError).serverMessage).toContain(`${seeded.items.length}개`);
+
+    await saveSetupZonePlan(http, sessionId, confirmPlanItems(seeded.items)!, seeded.revision);
+    const done = await completeSetupSession(http, sessionId);
+    expect(done.setup_completed_at_ms).not.toBeNull();
   });
 });

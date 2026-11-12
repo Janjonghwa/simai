@@ -25,6 +25,10 @@ const TO_WORK_LABEL = '작업 관리로';
 /** 날짜 화면 안의 구역 단계 마지막 단추: 세팅을 완료한 뒤 다음 단계로 넘어간다. */
 const EMBEDDED_DONE_LABEL = '다음';
 
+/** 확인 필요 구역이 남아 마지막 단추가 꺼질 때 단추 옆(글자)에 붙이는 개수와 꺼진 이유(S15P31A101-629). */
+export const unconfirmedZonesLabel = (count: number) => `확인 필요 ${count}개`;
+const UNCONFIRMED_TITLE = '이어 쓴 구역을 모두 확인(또는 수정·삭제)하면 세팅을 완료할 수 있어요';
+
 /** 세팅 화면 단추 하나. 주 단추(다음 단계로 가는 것)는 맨 오른쪽에 하나, 나머지는 보조 단추다. */
 export interface SetupActionButton {
   key: string;
@@ -57,6 +61,8 @@ export interface SetupActionState {
   finishPending: boolean;
   /** 세팅을 완료했다(하루 1회). 완료한 작업은 다시 보정할 수 없다. */
   setupCompleted: boolean;
+  /** 아직 확인하지 않은 이어 쓴 구역 수(완료 전에만 센다, S15P31A101-629). 남아 있으면 마지막 단추가 꺼진다. */
+  unconfirmedZones?: number;
 }
 
 export interface SetupActionHandlers extends Record<ActionKey, () => void> {
@@ -110,12 +116,15 @@ export function deriveSetupActions(
   }
   buttons.push(...staged.filter((button) => button.primary));
   if (state.stage === ZONE_STAGE) {
+    const unconfirmed = state.unconfirmedZones ?? 0;
+    const label = state.embedded ? EMBEDDED_DONE_LABEL : TO_WORK_LABEL;
     buttons.push({
       key: 'finish',
-      label: state.embedded ? EMBEDDED_DONE_LABEL : TO_WORK_LABEL,
+      label: unconfirmed > 0 ? `${label} · ${unconfirmedZonesLabel(unconfirmed)}` : label,
       onClick: on.finish,
-      disabled: !state.canFinish || state.finishPending,
+      disabled: !state.canFinish || state.finishPending || unconfirmed > 0,
       primary: true,
+      title: unconfirmed > 0 ? UNCONFIRMED_TITLE : undefined,
     });
   }
   return buttons;
