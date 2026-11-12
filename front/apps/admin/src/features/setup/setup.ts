@@ -419,7 +419,7 @@ export interface WaitingStageRowView extends WaitingStageDef {
 }
 
 /**
- * 막대 5단계 표시. 표시 진행률(시간으로 부드럽게 채운 값)로 끝난·지금·남은 단계와 지금 단계의 구간 안 비율을 정한다.
+ * 막대 5단계 표시. 서버 진행률로 끝난·지금·남은 단계와 지금 단계의 구간 안 비율을 정한다.
  * 실패한 단계는 마지막 서버 진행률로 정한 인덱스(failedStageIndex)를 받는다.
  */
 export function deriveStageRows(
@@ -637,10 +637,15 @@ export const CANDIDATE_KIND_LABEL: Record<ZoneDraftCandidateKind, string> = {
   FLOOR_EDGE: '바닥 단차·가장자리',
 };
 
-/** 진행률(0~100)에서 목표 1분 30초(90초) 기준 남은 초를 추정한다. */
-export function estimateRemainingSeconds(progressPct: number): number {
+/** 목표 시간은 하한으로만 쓴다. 관측 속도가 느리면 늘리며, 하위 작업 비율은 시간 비율이 아니므로 최소 15초 여유를 둔다. */
+export function estimateRemainingSeconds(progressPct: number, elapsedSec = 0): number {
   const clamped = Math.max(0, Math.min(100, progressPct));
-  return Math.max(0, Math.round(((100 - clamped) / 100) * SETUP_TARGET_DURATION_SEC));
+  if (clamped === 100) return 0;
+  const observedDuration = clamped > 0 ? (Math.max(0, elapsedSec) * 100) / clamped : 0;
+  return Math.max(
+    15,
+    Math.ceil(((100 - clamped) / 100) * Math.max(SETUP_TARGET_DURATION_SEC, observedDuration)),
+  );
 }
 
 /** 남은 초를 한국어 안내 문자열(예: "약 1분 30초", "약 45초")로 바꾼다. */
@@ -809,7 +814,12 @@ export function deriveWaitingView(
   const rawStage: SetupSessionStage = session?.stage ?? session?.status ?? 'COLLECTING_BACKGROUND';
   const failed = session?.status === 'FAILED' || rawStage === 'FAILED';
   const progressPct = session?.progress_pct ?? 0;
-  const remainingSec = estimateRemainingSeconds(progressPct);
+  const elapsedSec = Math.max(
+    0,
+    ((session?.updated_at_ms ?? 0) - (session?.started_at_ms ?? session?.updated_at_ms ?? 0)) /
+      1000,
+  );
+  const remainingSec = estimateRemainingSeconds(progressPct, elapsedSec);
 
   const failedStageIndex = !failed
     ? null

@@ -321,6 +321,7 @@ class ProductionSiteSetupStages:
         height_tolerance_cm: float,
         backgrounds: CleanBackgroundBundle,
         created_at_ms: int,
+        progress: Callable[[float], None] | None = None,
     ) -> InitialWorldReconstruction:
         from simai_ai.calibration.world_frame.inputs import (
             load_mapanything_run,
@@ -360,9 +361,15 @@ class ProductionSiteSetupStages:
             (self.root / "images" / f"{im['camera_id']}.image").write_bytes(raw)
         write_json(self.root / "calibration.json", prior)
         write_json(self.root / "job.json", {"input": job_input, "run_id": self._run_id, "image_hashes": hashes})
+        if progress is not None:
+            progress(1 / 5)
 
         self._run_stage("prepare")
+        if progress is not None:
+            progress(2 / 5)
         self._run_stage("mapanything")
+        if progress is not None:
+            progress(3 / 5)
         prepared_doc = load_prepared(self.root / "prepared")
         run = load_mapanything_run(self.root / "mapanything", prepared=prepared_doc)
         cams = {c["camera_id"]: c for c in prior["cameras"]}
@@ -378,11 +385,16 @@ class ProductionSiteSetupStages:
             }
             for cid in camera_ids if cid in cams
         }
-        return build_world_from_pointcloud_and_poses(
+        if progress is not None:
+            progress(4 / 5)
+        result = build_world_from_pointcloud_and_poses(
             site_id=site_id, camera_ids=camera_ids, camera_heights_m=camera_heights_m,
             height_tolerance_cm=height_tolerance_cm, points_m=run.all_points(), unscaled_poses=poses,
             intrinsics_by_cam=intrinsics, created_at_ms=created_at_ms,
         )
+        if progress is not None:
+            progress(1.0)
+        return result
 
     # ------------------------------------------------------------------ (f) World 다시 맞추기
     def anchor_world(self, calibration_doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -422,13 +434,17 @@ class ProductionSiteSetupStages:
 
     # ------------------------------------------------------------------ (g)
     def preview(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
-                backgrounds: CleanBackgroundBundle) -> PreviewDraftResult:
+                backgrounds: CleanBackgroundBundle, progress: Callable[[float], None] | None = None) -> PreviewDraftResult:
         self._run_stage("preview")
+        if progress is not None:
+            progress(1 / 2)
         doc = self._read_stage_doc("preview.json", "preview")
         glb = next((a for a in doc["assets"] if a["kind"] == "GLTF_VISUAL"), None)
         if glb is None:
             raise JobFailed("STATIC_OUTPUT_INVALID", "미리보기 산출물에 GLB 가 없다", retryable=False)
         ref = self._upload_asset(glb)
+        if progress is not None:
+            progress(1.0)
         return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref,
                                   floor_coverage=self._read_floor_coverage())
 
@@ -500,8 +516,11 @@ class ProductionSiteSetupStages:
 
     # ------------------------------------------------------------------ (h)
     def bake(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
-             backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
+             backgrounds: CleanBackgroundBundle, preview_scene_version: str,
+             progress: Callable[[float], None] | None = None) -> BakedScene:
         summary = self.supplement() if self.ctx.input.get("supplement_media") else None
+        if progress is not None:
+            progress(1 / 4)
         if summary is not None and summary["status"] == "APPLIED":
             try:
                 glb = self._bake_glb()
@@ -515,7 +534,11 @@ class ProductionSiteSetupStages:
         else:
             glb = self._bake_glb()
         sc.annotate_bake(self.root, summary)
+        if progress is not None:
+            progress(3 / 4)
         ref = self._upload_asset(glb)
+        if progress is not None:
+            progress(1.0)
         return BakedScene(f"scene-{self._run_id}"[:160], ref, summary)
 
     def _bake_glb(self) -> Mapping[str, Any]:

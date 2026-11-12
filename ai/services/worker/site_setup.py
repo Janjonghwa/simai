@@ -323,6 +323,7 @@ class WorldInitializer(Protocol):
         height_tolerance_cm: float,
         backgrounds: CleanBackgroundBundle,
         created_at_ms: int,
+        progress: Callable[[float], None] | None = None,
     ) -> InitialWorldReconstruction: ...
 
 
@@ -338,6 +339,7 @@ class PreviewSceneBuilder(Protocol):
         site_id: str,
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
+        progress: Callable[[float], None] | None = None,
     ) -> PreviewDraftResult: ...
 
 
@@ -400,6 +402,7 @@ class TextureSceneBaker(Protocol):
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
         preview_scene_version: str,
+        progress: Callable[[float], None] | None = None,
     ) -> str | BakedScene: ...
 
 
@@ -592,6 +595,8 @@ class SiteSetupHandler:
         self._quality_gate_config = dict(quality_gate) if quality_gate is not None else None
         self._emit_lock = threading.RLock()
         self._last_payload: dict[str, Any] | None = None
+        self._last_snapshot: dict[str, Any] | None = None
+        self._last_progress_at = float("-inf")
         self._quality_gate: dict[str, Any] | None = None
         self._cc_summary: dict[str, Any] | None = None
         self._cc_stop = threading.Event()
@@ -604,6 +609,7 @@ class SiteSetupHandler:
         site_id: str,
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
+        progress: Callable[[float], None] | None = None,
     ) -> PreviewDraftResult:
         cal_ver = str(calibration_doc["calibration_version"])
         short = hashlib.sha256(
@@ -622,6 +628,7 @@ class SiteSetupHandler:
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
         preview_scene_version: str,
+        progress: Callable[[float], None] | None = None,
     ) -> str:
         cal_ver = str(calibration_doc["calibration_version"])
         short = hashlib.sha256(
@@ -670,6 +677,8 @@ class SiteSetupHandler:
     def _emit_progress(self, ctx: JobContext, payload: Mapping[str, Any]) -> None:
         with self._emit_lock:
             snap = self._with_checks(payload)
+            if snap == self._last_snapshot:
+                return
             errs = schema_errors(snap, SITE_SETUP_PROGRESS_SCHEMA)
             if errs:
                 raise JobFailed(
@@ -679,6 +688,23 @@ class SiteSetupHandler:
                 )
             ctx.report_site_setup(snap)
             self._last_payload = dict(payload)
+            self._last_snapshot = copy.deepcopy(snap)
+            self._last_progress_at = self._monotonic()
+
+    def _subprogress(self, ctx: JobContext, base: Mapping[str, Any], start: float,
+                     end: float) -> Callable[[float], None]:
+        """실제로 끝난 하위 작업 비율만 환산한다. 구간 끝 스냅샷은 호출자가 별도로 보낸다."""
+        def report(fraction: float) -> None:
+            self._check_cancelled(ctx)
+            pct = round(start + (end - start) * min(1.0, max(0.0, fraction)), 1)
+            with self._emit_lock:
+                previous = self._last_payload or {}
+                if pct <= float(previous.get("progress_pct", -1)):
+                    return
+                if self._monotonic() - self._last_progress_at < 1.0:
+                    return
+                self._emit_progress(ctx, {**base, "progress_pct": pct})
+        return report
 
     # ------------------------------------------------------------------ 카메라 확인(-646)
 
@@ -774,7 +800,7 @@ class SiteSetupHandler:
     ) -> tuple[CleanBackgroundBundle, dict[str, float]]:
         """(a) 묶음이 완성될 때까지 최대 background_wait_s 동안 다시 본다. 수집률이 바뀌면 COLLECTING_BACKGROUND 하트비트.
 
-        진행률은 0~14 구간에서 단조 증가(서버가 같은 대여의 감소를 거절)하고, 카메라별 수집률은 실제 값을 그대로 싣는다
+        진행률은 가장 느린 카메라 기준으로 0~14 구간에서 단조 증가(서버가 같은 대여의 감소를 거절)하고, 카메라별 수집률은 실제 값을 그대로 싣는다
         (활성 보정이 바뀌어 묶음을 새로 모으면 내려갈 수 있다). 시간이 다하면 재시도 가능한 BACKGROUND_INCOMPLETE."""
         deadline = self._monotonic() + self._bg_wait_s
         best_pct = 0.0
@@ -794,7 +820,7 @@ class SiteSetupHandler:
                     f"사람 지운 배경 수집 미완료 카메라: {missing} ({pct}), {self._bg_wait_s:g}s 대기",
                     retryable=True,
                 )
-            best_pct = max(best_pct, round(14.0 * sum(pct.values()) / (100.0 * len(pct)), 1))
+            best_pct = max(best_pct, round(14.0 * min(pct.values()) / 100.0, 1))
             key = (best_pct, tuple(pct[c] for c in camera_ids))
             if key != last_sent:
                 self._emit_progress(ctx, {
@@ -942,6 +968,8 @@ class SiteSetupHandler:
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         self._last_payload = None
+        self._last_snapshot = None
+        self._last_progress_at = float("-inf")
         self._quality_gate = None
         self._cc_summary = None
         try:
@@ -993,6 +1021,8 @@ class SiteSetupHandler:
         # ------------------------------------------------------------------
         self._check_cancelled(ctx)
         t0 = self._perf()
+        initial_snapshot = {**(self._last_payload or {}), "status": "INITIAL_POSE_AND_WORLD"}
+        self._emit_progress(ctx, initial_snapshot)
         try:
             init_world = self._init_world(
                 setup_session_id=setup_session_id,
@@ -1002,6 +1032,7 @@ class SiteSetupHandler:
                 height_tolerance_cm=height_tolerance_cm,
                 backgrounds=bg_bundle,
                 created_at_ms=created_at_ms,
+                progress=self._subprogress(ctx, initial_snapshot, 15, 39),
             )
         except JobFailed:
             raise
@@ -1038,6 +1069,8 @@ class SiteSetupHandler:
         # ------------------------------------------------------------------
         self._check_cancelled(ctx)
         t0 = self._perf()
+        refining_snapshot = {**(self._last_payload or {}), "status": "JOINT_BA_AND_VERIFY"}
+        self._emit_progress(ctx, refining_snapshot)
         try:
             tracks_source = (
                 bg_bundle.tracks_doc
@@ -1046,8 +1079,10 @@ class SiteSetupHandler:
                     bg_bundle.frames_by_cam,
                     init_world.calibration_doc,
                     matcher=self._feature_matcher,
+                    progress=self._subprogress(ctx, refining_snapshot, 40, 48),
                 )
             )
+            self._subprogress(ctx, refining_snapshot, 40, 48)(1)
             stage_a: StageAResult = run_stage_a_rotation_ba(
                 init_world.calibration_doc,
                 tracks_source,
@@ -1057,6 +1092,7 @@ class SiteSetupHandler:
                 stage_target_seconds=self._stage_a_target_s,
                 object_cross_checker=self._object_cross_checker,
                 backgrounds_by_cam=bg_bundle.frames_by_cam if bg_bundle.frames_by_cam else None,
+                progress=self._subprogress(ctx, refining_snapshot, 48, 59),
             )
         except StageAError as exc:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
@@ -1077,6 +1113,8 @@ class SiteSetupHandler:
             problems = "; ".join(p["message"] for p in self._quality_gate["problems"] if p["reason"] != "FEW_HOLDOUT")
             raise JobFailed("VALIDATION_REJECTED", f"보정 품질 기준 미달: {problems}"[:480], retryable=False)
 
+        self._subprogress(ctx, refining_snapshot, 59, 61)(1)
+
         # 등록·미리보기·굽기가 같은 World 를 쓰도록 여기서 한 번만 이전 World 로 옮긴다(-584)
         calibration_doc = stage_a.calibration_doc
         if self._anchor_world is not None:
@@ -1095,6 +1133,7 @@ class SiteSetupHandler:
                             ctx.job_id, anchor["reason"])
         if anchor is not None:
             mode_fields = {**mode_fields, "world_anchor": anchor}
+        self._subprogress(ctx, {**refining_snapshot, **mode_fields}, 61, 63)(1)
         published = self._publish_calibration(copy.deepcopy(calibration_doc))
         artifacts: dict[str, Any] = {}
         if isinstance(published, PublishedCalibration):
@@ -1140,16 +1179,22 @@ class SiteSetupHandler:
         # ------------------------------------------------------------------
         self._check_cancelled(ctx)
         t0 = self._perf()
+        preview_progress = {**joint_ba_snapshot, "status": "PREVIEW_AND_VLM_DRAFT"}
+        self._emit_progress(ctx, preview_progress)
         preview = self._build_preview(
             setup_session_id=setup_session_id,
             site_id=site_id,
             calibration_doc=calibration_doc,
             backgrounds=bg_bundle,
+            progress=self._subprogress(ctx, preview_progress, 65, 75),
         )
+        self._subprogress(ctx, preview_progress, 65, 75)(1)
         camera_frames = self._publish_camera_frames(ctx, setup_session_id, camera_ids, bg_bundle)
+        self._subprogress(ctx, preview_progress, 75, 77)(1)
         # 미리보기·굽기가 읽는 같은 사진. 서버가 미리보기를 현재 Scene 으로 올리기(READY_FOR_ZONES) 전에 등록돼야 관제 화면이
         # 그 Scene 의 사진을 처음 물을 때 받는다. 서버는 대여로 미리보기·정식 Scene 둘 다에 묶는다
         bake_images = self._publish_bake_inputs(ctx, setup_session_id, camera_ids, bg_bundle)
+        self._subprogress(ctx, preview_progress, 77, 79)(1)
         stage_seconds["PREVIEW_AND_VLM_DRAFT"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -1223,7 +1268,7 @@ class SiteSetupHandler:
         baking_snapshot = {
             **ready_snapshot,
             "status": "BAKING_TEXTURE",
-            "progress_pct": 95,
+            "progress_pct": 85,
         }
         self._emit_progress(ctx, baking_snapshot)
 
@@ -1233,6 +1278,7 @@ class SiteSetupHandler:
             calibration_doc=calibration_doc,
             backgrounds=bg_bundle,
             preview_scene_version=preview.preview_scene_version,
+            progress=self._subprogress(ctx, baking_snapshot, 85, 94),
         )
         supplement: Mapping[str, Any] | None = None
         if isinstance(baked, BakedScene):
@@ -1245,6 +1291,7 @@ class SiteSetupHandler:
         stage_seconds["BAKING_TEXTURE"] = round(
             max(0.0, self._perf() - t0), 4
         )
+        self._emit_progress(ctx, {**baking_snapshot, "progress_pct": 95})
         self._finish_camera_check(ctx)
         total_seconds = round(max(0.0, self._perf() - t_start), 4)
 

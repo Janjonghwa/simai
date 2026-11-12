@@ -1426,6 +1426,7 @@ def extract_tracks_from_backgrounds(
     *,
     config: Mapping[str, Any] | None = None,
     matcher: Callable[[np.ndarray, np.ndarray], Sequence[Mapping[str, Any]]] | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
     """Extract and geometrically filter background feature tracks from clean backgrounds.
 
@@ -1559,6 +1560,8 @@ def extract_tracks_from_backgrounds(
             "geometric_kept": int(valid.sum()),
             "essential": E.tolist(),
         }
+        if progress is not None:
+            progress((pair_index + 1) / (len(pairs) + 1))
 
     before_q = len(tracks)
     tracks = quarantine_shared_keypoints(tracks, merge_radius_px=merge_radius_px)
@@ -1575,6 +1578,8 @@ def extract_tracks_from_backgrounds(
             )
         rec["holdout_insufficient"] = rec["holdout"] < cfg["min_holdout_per_pair"]
 
+    if progress is not None:
+        progress(1.0)
     return {
         "tracks": tracks,
         "backgrounds": {cid: {"windows": len(loaded[cid])} for cid in cam_ids},
@@ -1658,6 +1663,7 @@ def run_stage_a_rotation_ba(
     cone_observation: TriangulatedCone | None = None,
     disagreement_tolerance: float = 0.05,
     record_scale_estimation: bool = False,
+    progress: Callable[[float], None] | None = None,
 ) -> StageAResult:
     """Run V2 Stage A rotation-only Projected Joint BA (`center_sigma=None`).
 
@@ -1727,8 +1733,12 @@ def run_stage_a_rotation_ba(
         anchor_camera_id=anchor_camera_id,
         v0_results=v0_results,
     )
+    if progress is not None:
+        progress(1 / 6)
 
     baseline = evaluate(tracks, K, R0, C0, cameras=cam_ids, pairs=pairs)
+    if progress is not None:
+        progress(2 / 6)
     problem = ProjectedProblem(
         train,
         K,
@@ -1741,9 +1751,13 @@ def run_stage_a_rotation_ba(
         pairs=pairs,
     )
     R_a, C_a, _, info = problem.solve(R0, C0)
+    if progress is not None:
+        progress(3 / 6)
     held = evaluate(tracks, K, R_a, C_a, cameras=cam_ids, pairs=pairs)
     all_after = evaluate(tracks, K, R_a, C_a, cameras=cam_ids, pairs=pairs, split="all")
     poses_diff = pose_change(R_a, C_a, R0, C0, heights_m, cameras=cam_ids)
+    if progress is not None:
+        progress(4 / 6)
 
     stage_seconds = float(time.perf_counter() - stage_started)
     within_time = stage_seconds <= float(cfg["stage_target_seconds"])
@@ -1823,6 +1837,8 @@ def run_stage_a_rotation_ba(
         disagreement_tolerance=disagreement_tolerance,
         height_tolerance_cm=height_tolerance_cm,
     )
+    if progress is not None:
+        progress(5 / 6)
     if cone is not None:
         s_applied = float(scale_est["applied_scale"])
         dz_applied = float(scale_est["floor_offset_m"])
@@ -1898,6 +1914,8 @@ def run_stage_a_rotation_ba(
     if cone is not None or record_scale_estimation:
         summary_metrics["scale_source"] = str(scale_est["scale_source"])
         summary_metrics["scale_estimation"] = scale_est
+    if progress is not None:
+        progress(1.0)
     return StageAResult(
         calibration_doc=new_doc,
         calibration_version=resolved_version,

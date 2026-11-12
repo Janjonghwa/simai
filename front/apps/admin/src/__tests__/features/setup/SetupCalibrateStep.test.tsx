@@ -3,13 +3,16 @@ import { deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
 import { setupSessionResponseSchema } from '@/features/setup/types';
 import { buildCameraCheck, buildQualityGate } from '@/mocks/setup';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // 미리보기 3D 칸이 읽는 현재 Scene 조회(@/lib/api → env)는 여기서 쓰지 않는다. 3D 배치는 SetupPage 시험이 본다.
 vi.mock('@/lib/api', () => ({ api: vi.fn() }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const check = (over: Record<string, unknown> = {}) => ({
   input_height_m: 2.25,
@@ -73,7 +76,7 @@ describe('보정·생성 진행 카드(5단계 막대)', () => {
     expect(rows.map((row) => row.textContent)).toEqual([
       '배경 수집완료',
       '3D 공간·좌표계완료',
-      '카메라 정밀 보정50%',
+      '카메라 정밀 보정진행 중 · 0분 00초 경과50%',
       '미리보기 맵·구역 초안대기',
       '정밀 3D 맵대기',
     ]);
@@ -84,8 +87,45 @@ describe('보정·생성 진행 카드(5단계 막대)', () => {
     ).toBe('50');
     expect(
       screen.getByRole('progressbar', { name: '세팅 진행률' }).getAttribute('aria-valuenow'),
-    ).toBe('53');
-    expect(screen.getByText('진행 53%')).toBeTruthy();
+    ).toBe('52.5');
+    expect(screen.getByText('진행 52.5%')).toBeTruthy();
+  });
+
+  it('서버 값이 그대로면 시간이 지나도 막대는 오르지 않고 현재 단계 시간만 흐른다', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-12T00:00:00Z'));
+    const start = Date.now();
+    const props = (pct: number, updated: number, id = 's1') => ({
+      waiting: deriveWaitingView(
+        sessionOf({
+          setup_session_id: id,
+          progress_pct: pct,
+          started_at_ms: start - 120_000,
+          updated_at_ms: updated,
+        }),
+      ),
+      onRetry: vi.fn(),
+      onReturnToStep1: vi.fn(),
+    });
+    const view = render(<SetupCalibrateStep {...props(50, start - 10_000)} />);
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByText('진행 50%')).toBeTruthy();
+    expect(screen.getByText('진행 중 · 1분 10초 경과')).toBeTruthy();
+    expect(
+      screen
+        .getByRole('progressbar', { name: '카메라 정밀 보정 진행률' })
+        .getAttribute('aria-valuenow'),
+    ).toBe('40');
+    // 같은 단계에서 하위 진행을 받아도 단계 시간은 유지한다.
+    view.rerender(<SetupCalibrateStep {...props(55, Date.now())} />);
+    expect(screen.getByText('진행 55%')).toBeTruthy();
+    expect(screen.getByText('진행 중 · 1분 10초 경과')).toBeTruthy();
+    view.rerender(<SetupCalibrateStep {...props(67, Date.now())} />);
+    expect(screen.getByText('진행 중 · 0분 00초 경과')).toBeTruthy();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.getByText('진행 중 · 0분 05초 경과')).toBeTruthy();
+    view.rerender(<SetupCalibrateStep {...props(67, Date.now(), 's2')} />);
+    expect(screen.getByText('진행 중 · 0분 00초 경과')).toBeTruthy();
   });
 
   it('배경을 모으는 동안만 비켜 달라는 안내와 카메라별 수집률을 단계 아래에 보인다', () => {

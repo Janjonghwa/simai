@@ -22,7 +22,6 @@ import {
   NARROW_COLUMN,
   SetupPreviewSplit,
 } from '@/features/setup/SetupPreviewModel';
-import { useSmoothProgress } from '@/features/setup/smoothProgress';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
@@ -31,8 +30,7 @@ import { useEffect, useState } from 'react';
 
 // 세팅 2단계 '보정·생성'. 진행 카드(5단계 막대) · 실패 안내 · 높이 불일치 안내 · 보정 검증 결과 표를 한 열에 쌓고,
 // 미리보기 맵이 준비되면(85%) 왼쪽에 3D 미리보기를 둔다(SetupPreviewSplit).
-// 막대·단계별 %·'진행 N%' 는 서버 값 사이를 시간으로 채운 부드러운 값이고, 실패 단계와 높이 안내 시점은 서버 값으로만 정한다.
-// 부드러운 값은 진행 카드 안에서만 계산해, 값이 바뀌어도 3D 미리보기 칸은 다시 그려지지 않는다.
+// 막대·단계별 %·'진행 N%' 는 서버 값만 쓴다. 경과 시간만 진행 카드 안에서 갱신한다.
 
 /** 새 진행 정보 없이 이만큼(초) 지나면 멈춘 것으로 알린다. */
 const STALLED_AFTER_SEC = 30;
@@ -92,7 +90,6 @@ function ProgressCard({
   waiting: SetupWaitingView;
   pollingError: boolean;
 }) {
-  const shownPct = useSmoothProgress(waiting.progressPct, !waiting.failed);
   const [now, setNow] = useState(() => Date.now());
   const [openedAt] = useState(() => Date.now());
   useEffect(() => {
@@ -105,8 +102,17 @@ function ProgressCard({
     Math.floor((now - (waiting.updatedAtMs ?? waiting.startedAtMs ?? openedAt)) / 1000),
   );
   const stalled = !waiting.failed && !waiting.previewReady && unchanged >= STALLED_AFTER_SEC;
-  const percent = Math.round(shownPct);
-  const rows = deriveStageRows(shownPct, waiting.failedStageIndex);
+  const percent = waiting.progressPct;
+  const rows = deriveStageRows(waiting.progressPct, waiting.failedStageIndex);
+  const currentIndex = rows.find((row) => row.status === 'current')?.index;
+  const stageKey = `${waiting.sessionId}:${currentIndex}`;
+  const enteredAt = (currentIndex === 0 ? waiting.startedAtMs : waiting.updatedAtMs) ?? openedAt;
+  const [stageClock, setStageClock] = useState({ key: stageKey, since: enteredAt });
+  if (stageClock.key !== stageKey) {
+    // 같은 단계의 하위 진행·카메라 확인 updated_at 은 경과 시간을 초기화하지 않는다.
+    setStageClock({ key: stageKey, since: waiting.updatedAtMs ?? now });
+  }
+  const stageElapsed = Math.max(0, Math.floor((now - stageClock.since) / 1000));
 
   return (
     <Card size="sm">
@@ -154,6 +160,15 @@ function ProgressCard({
                   {row.label}
                 </span>
                 <span className={cn('font-mono text-xs font-medium', VALUE_TONE[row.status])}>
+                  {row.status === 'current' && (
+                    <span className="mr-2 inline-flex items-center gap-1 text-muted-foreground">
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none"
+                      />
+                      진행 중 · {formatMinSec(stageElapsed)} 경과
+                    </span>
+                  )}
                   {stageValueText(row)}
                 </span>
               </div>
