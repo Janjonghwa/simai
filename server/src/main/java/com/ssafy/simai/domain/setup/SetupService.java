@@ -220,14 +220,19 @@ public class SetupService {
             if (Boolean.TRUE.equals(live)) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_BLOCKED_BY_LIVE_WORK);
             }
-            List<UUID> running = jdbc.queryForList("""
-                    SELECT setup_session_id FROM setup_session
-                    WHERE site_id = :site AND status NOT IN ('COMPLETED', 'FAILED')
-                    LIMIT 1
-                    """, new MapSqlParameterSource("site", siteId), UUID.class);
-            // 맵 보강 다시 굽기(S15P31A101-607)도 같은 GPU 의 site_setup 작업이다. 끝나기 전에는 새 세팅을 시작하지 않는다
-            if (!running.isEmpty() || supplements.rebakeRunningInSite(siteId)) {
-                throw new BusinessException(ErrorCode.Setup.SETUP_ALREADY_IN_PROGRESS);
+            // 맵 보강 다시 굽기(S15P31A101-607)도 같은 GPU 의 site_setup 작업이다. 끝나기 전에는 새 세팅을 시작하지 않는다.
+            // 막고 있는 세션(다시 굽기면 그 세션)과 작업을 응답에 싣는다(S15P31A101-641)
+            List<Map<String, Object>> running = jdbc.queryForList("""
+                    SELECT setup_session_id, work_unit_id FROM setup_session s
+                    WHERE site_id = :site AND (status NOT IN ('COMPLETED', 'FAILED')
+                        OR EXISTS (SELECT 1 FROM setup_supplement_rebake r
+                                   WHERE r.setup_session_id = s.setup_session_id AND r.status IN ('QUEUED', 'RUNNING')))
+                    ORDER BY (status NOT IN ('COMPLETED', 'FAILED')) DESC, started_at DESC LIMIT 1
+                    """, new MapSqlParameterSource("site", siteId));
+            if (!running.isEmpty()) {
+                throw new SetupSessionBlockingException(ErrorCode.Setup.SETUP_ALREADY_IN_PROGRESS,
+                        (UUID) running.getFirst().get("setup_session_id"),
+                        ((Number) running.getFirst().get("work_unit_id")).longValue());
             }
             if (!hasActiveSetupWorker()) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_WORKER_UNAVAILABLE);
@@ -436,21 +441,83 @@ public class SetupService {
         if ("COMPLETED".equals(session.status()) || "FAILED".equals(session.status())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_CANCEL_NOT_ALLOWED);
         }
+        closeAndCancelJobs(setupSessionId, "CANCELLED_BY_ADMIN", "관리자가 세팅을 취소했습니다");
+        return getInSite(siteId, setupSessionId);
+    }
+
+    /** 세팅을 마치기 전에 세션을 FAILED 로 닫고 세팅·구역 초안 대기 작업을 취소한다(관리자 취소, 대기 시간 초과) */
+    private void closeAndCancelJobs(UUID setupSessionId, String code, String message) {
         OffsetDateTime now = utc(clock.instant());
         // 먼저 세션을 FAILED 로 닫아 둔다. 작업 취소 알림(JobFinished)이 와도 닫힌 세션은 그대로 둔다
         jdbc.update("""
                 UPDATE setup_session
-                SET status = 'FAILED', failure_code = 'CANCELLED_BY_ADMIN', failure_message = :msg,
+                SET status = 'FAILED', failure_code = :code, failure_message = :msg,
                     completed_at = :now, updated_at = :now
                 WHERE setup_session_id = :id
-                """, new MapSqlParameterSource().addValue("id", setupSessionId)
-                .addValue("msg", "관리자가 세팅을 취소했습니다").addValue("now", now));
+                """, new MapSqlParameterSource().addValue("id", setupSessionId).addValue("code", code)
+                .addValue("msg", message).addValue("now", now));
         List<String> draftJobs = jdbc.queryForList("""
                 SELECT job_id FROM setup_zone_draft_run WHERE setup_session_id = :id AND status = 'QUEUED'
                 """, new MapSqlParameterSource("id", setupSessionId), String.class);
         jobs.cancel(jobIdOf(setupSessionId));
         draftJobs.forEach(jobs::cancel);
-        return getInSite(siteId, setupSessionId);
+    }
+
+    /** 미리보기 맵(READY_FOR_ZONES) 전 단계. 같은 현장의 작업 시작을 막는다(WorkUnitRepository.start) */
+    public static final List<String> PRE_READY_STATUSES =
+            List.of("COLLECTING_BACKGROUND", "INITIAL_POSE_AND_WORLD", "JOINT_BA_AND_VERIFY", "PREVIEW_AND_VLM_DRAFT");
+
+    /**
+     * 세팅 작업을 받을 수 있는 워커가 cutoff 뒤로 보였는가. 대여 요청 시각(worker.last_seen_at)만 보면 다른 작업을 오래 돌리는
+     * 바쁜 워커를 없는 것으로 보므로, 그 워커가 쥔 진행 중 대여의 하트비트도 함께 본다.
+     */
+    private static final String SETUP_WORKER_SEEN_SINCE = """
+            EXISTS (SELECT 1 FROM worker w
+                    WHERE w.revoked_at IS NULL AND 'site_setup' = ANY(w.job_types)
+                      AND (w.last_seen_at > :cutoff
+                           OR EXISTS (SELECT 1 FROM job_lease l WHERE l.worker_id = w.worker_id AND l.status = 'ACTIVE'
+                                        AND l.last_heartbeat_at > :cutoff)))
+            """;
+
+    /**
+     * 미리보기 맵 전 세션의 세팅 작업이 cutoff 전에 들어와 지금 대기 중이고, 세팅을 받을 워커가 cutoff 뒤로 한 번도 보이지 않았으면
+     * 세션을 SETUP_QUEUE_TIMEOUT 으로 닫고 작업을 취소한다(S15P31A101-641). GPU 인스턴스가 꺼져 있으면 작업이 대기열에 끝없이 남아
+     * 같은 현장의 새 세팅과 작업 시작을 모두 막기 때문이다. 워커가 보였으면(다른 작업으로 바쁨 등) 기다린다. 대여됐다가 워커가 죽어
+     * 다시 대기열로 돌아온 작업도 같은 규칙으로 닫힌다.
+     * 잠금은 대여와 같은 순서(작업 → 세션)로 잡고, 작업을 지금 대여 중이면(SKIP LOCKED) 건너뛴다.
+     * @return 닫았으면 true
+     */
+    @Transactional
+    public boolean failUnclaimed(UUID setupSessionId, Instant cutoff) {
+        MapSqlParameterSource params = new MapSqlParameterSource("id", setupSessionId).addValue("cutoff", utc(cutoff));
+        List<String> job = jdbc.queryForList("""
+                SELECT j.job_id FROM analysis_job j JOIN setup_session s ON s.job_id = j.job_id
+                WHERE s.setup_session_id = :id AND j.status = 'QUEUED' AND j.created_at <= :cutoff
+                  AND NOT\s""" + SETUP_WORKER_SEEN_SINCE + """
+                FOR UPDATE OF j SKIP LOCKED
+                """, params, String.class);
+        if (job.isEmpty()) {
+            return false;
+        }
+        Boolean preReady = jdbc.queryForObject("""
+                SELECT status IN (:pre) FROM setup_session WHERE setup_session_id = :id FOR UPDATE
+                """, params.addValue("pre", PRE_READY_STATUSES), Boolean.class);
+        if (!Boolean.TRUE.equals(preReady)) {
+            return false;
+        }
+        closeAndCancelJobs(setupSessionId, "SETUP_QUEUE_TIMEOUT",
+                "GPU 서버가 세팅 작업을 가져가지 않아 세팅을 닫았습니다. GPU 서버를 켠 뒤 다시 세팅하세요");
+        log.warn("세팅 워커가 보이지 않아 대기 중인 세팅을 시간 초과로 닫았다: session={} job={}", setupSessionId, job.getFirst());
+        return true;
+    }
+
+    /** 대기 시간 초과 후보: 미리보기 맵 전 세션 중 작업이 cutoff 전에 들어와 대기 중이고 세팅 워커가 cutoff 뒤로 보이지 않은 것 */
+    public List<UUID> unclaimedBefore(Instant cutoff) {
+        return jdbc.queryForList("""
+                SELECT s.setup_session_id FROM setup_session s JOIN analysis_job j ON j.job_id = s.job_id
+                WHERE s.status IN (:pre) AND j.status = 'QUEUED' AND j.created_at <= :cutoff
+                  AND NOT\s""" + SETUP_WORKER_SEEN_SINCE,
+                new MapSqlParameterSource("pre", PRE_READY_STATUSES).addValue("cutoff", utc(cutoff)), UUID.class);
     }
 
     private String jobIdOf(UUID setupSessionId) {

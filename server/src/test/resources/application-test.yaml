@@ -27,6 +27,9 @@ simai:
     path-style: true
     access-key: test-only-access-key
     secret-key: test-only-secret-key
+  setup:
+    # 시험은 세팅 대기 시간 초과를 직접 부른다(SetupSessionIntegrationTest). 주기 점검이 다른 시험의 세션을 닫지 않게 길게 둔다
+    queue-check-interval: 1h
   floor-plan:
     # 시험은 대조를 직접 부른다(FloorPlanIntegrationTest). 주기 대조가 다른 시험 도중 작업을 넣지 않게 길게 둔다
     reconcile-interval: 1h

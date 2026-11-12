@@ -308,7 +308,8 @@ class SetupSupplementIntegrationTest {
         ObjectNode create = mapper.createObjectNode().put("work_unit_id", workUnitId);
         create.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
         mvc.perform(post("/api/setup-sessions").with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content(create.toString()))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_ALREADY_IN_PROGRESS"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_ALREADY_IN_PROGRESS"))
+                .andExpect(jsonPath("$.setup_session_id").value(s.sessionId()));
         // 진행 중 다시 굽기가 쓰는 파일은 뺄 수 없다
         mvc.perform(delete("/api/setup-sessions/{id}/supplement-media/{m}", s.sessionId(), photo).with(adminJwt()))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SUPPLEMENT_MEDIA_IN_USE"));
@@ -553,7 +554,10 @@ class SetupSupplementIntegrationTest {
         Session s = startSession(); // COLLECTING_BACKGROUND
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_READY"));
+                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_READY"))
+                // 막고 있는 세션과 그 작업을 싣는다(다른 날짜 작업의 세션이어도 화면이 찾아가 취소한다, -641)
+                .andExpect(jsonPath("$.setup_session_id").value(s.sessionId()))
+                .andExpect(jsonPath("$.work_id").value(String.valueOf(workUnitId)));
         assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, workUnitId))
                 .isEqualTo("PLANNED");
 
