@@ -144,7 +144,6 @@ describe('WorkDayPage 진행 상태(머리줄)', () => {
     ['SETUP_DONE', '세팅 완료 · 시작 가능'],
     ['IN_PROGRESS', '관제 중'],
     ['ENDED', '끝남'],
-    ['SUBMITTED', '끝남'],
   ] as const)('서버 progress %s 는 %s 로 보인다', async (progress, label) => {
     serverDay = { ...serverDay, progress };
     renderDay();
@@ -159,7 +158,6 @@ describe('WorkDayPage 단계 선택', () => {
     ['SETUP_DONE', 'preflight-stage', '작업 전 확인'],
     ['IN_PROGRESS', 'run-stage', '작업 종료'],
     ['ENDED', 'run-stage', '작업 종료'],
-    ['SUBMITTED', 'run-stage', '작업 종료'],
   ] as const)(
     '서버 progress %s 는 %s 를 열고 단계 줄의 현재가 그 단계다',
     async (progress, stub, label) => {

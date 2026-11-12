@@ -14,8 +14,9 @@ import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkAction
 import { draftWarning, isReportGenerating } from '@/features/work/workDay';
 import { useMemo } from 'react';
 
-// 단계 4 '작업 종료'. 서버 진행(progress)이 세 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED) → 보냄(SUBMITTED).
-// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`다음` → `완료`, 보낸 뒤에는 없음).
+// 단계 4 '작업 종료'. 서버 진행(progress)이 두 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED).
+// 보낸(SUBMITTED) 뒤에는 날짜 화면이 이 단계 대신 지난 날과 같은 다시 보기 화면을 보인다(WorkDayPage).
+// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`다음` → `완료`).
 
 const SPLIT =
   'grid grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] items-start gap-4 max-[960px]:grid-cols-1';
@@ -110,24 +111,12 @@ function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => 
   );
 }
 
-/** 3. 보냄: 잠긴 보고서. 단추는 없다. */
-function SubmittedView({ day }: { day: WorkDayItem }) {
-  useWorkAction(null);
-  return (
-    <div className="min-w-0">
-      <ReportPanel workId={day.work_id} editable={false} withPrint />
-    </div>
-  );
-}
-
 export function RunStage({ day, onSubmitted }: RunStageProps) {
   switch (day.progress) {
     case 'IN_PROGRESS':
       return <RunningView day={day} />;
     case 'ENDED':
       return <EndedView day={day} onSubmitted={onSubmitted} />;
-    case 'SUBMITTED':
-      return <SubmittedView day={day} />;
     default:
       return null;
   }

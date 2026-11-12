@@ -359,9 +359,8 @@ describe('RunStage — 종료', () => {
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
     expect(requests.filter((r) => r.endsWith('/submit'))).toHaveLength(1);
-    // 서버 진행이 SUBMITTED 로 바뀌어 잠긴 보고서만 남는다.
-    await waitFor(() => expect(reportPanel().dataset.editable).toBe('false'));
-    expect(screen.queryByRole('button', { name: '완료' })).toBeNull();
+    // 서버 진행이 SUBMITTED 로 바뀌면 이 단계는 비고(날짜 화면이 다시 보기 화면을 보인다) `완료` 도 사라진다.
+    await waitFor(() => expect(screen.queryByRole('button', { name: '완료' })).toBeNull());
   });
 
   it.each([
@@ -461,19 +460,4 @@ describe('RunStage — 종료', () => {
       expect(onSubmitted).not.toHaveBeenCalled();
     },
   );
-});
-
-describe('RunStage — 보냄', () => {
-  it('잠긴 보고서만 보이고 단추는 없다', async () => {
-    const workId = await prepare('submitted');
-    renderStage();
-    await waitFor(() => expect(screen.getByTestId('report-panel')).toBeTruthy());
-    expect(reportPanel().dataset).toMatchObject({
-      work: workId,
-      editable: 'false',
-      print: 'true',
-    });
-    expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.queryByRole('heading', { name: '작업 현황' })).toBeNull();
-  });
 });
