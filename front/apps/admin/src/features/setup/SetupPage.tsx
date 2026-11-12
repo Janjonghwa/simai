@@ -4,7 +4,10 @@ import {
   requestWorkUnitSetupSessionId,
   setupSessionKey,
   setupWorkUnitSessionKey,
+  setupZonePlanKey,
 } from '@/features/setup/api';
+import { isSetupSessionRunning } from '@/features/setup/blockingSetup';
+import { BlockingSetupNotice } from '@/features/setup/BlockingSetupNotice';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
 import { ModelPickerDialog } from '@/features/setup/ModelPickerDialog';
 import {
@@ -33,7 +36,11 @@ import {
   SetupCompleteCard,
   setupCompleted,
 } from '@/features/setup/SetupCompleteCard';
-import { blockedLiveWorkId, isSetupBlockedByLiveWork } from '@/features/setup/setupErrorMessage';
+import {
+  blockedLiveWorkId,
+  isSetupBlockedByLiveWork,
+  setupCancelErrorMessage,
+} from '@/features/setup/setupErrorMessage';
 import { SetupMap } from '@/features/setup/SetupMap';
 import {
   AiZoneDraftsPanel,
@@ -41,6 +48,7 @@ import {
   CameraMapPanel,
   CameraPanel,
 } from '@/features/setup/SetupPanels';
+import type { SetupZonePlanView } from '@/features/setup/setupZonePlan';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementModal } from '@/features/setup/SupplementModal';
@@ -50,7 +58,6 @@ import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
 import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
-  submitErrorText,
   useCameraHeightDefaults,
   useCoverageGuides,
   useCreateSetupSession,
@@ -99,13 +106,19 @@ const TONE_BADGE: Record<SetupTone, string> = {
 
 /** 세션이 아직 없는 1단계 머리에 보이는 글자. */
 const STEP1_LABEL = '세팅 1단계 · 카메라 확인';
-/** 구역 단계의 '다시 보정'을 눌렀을 때 묻는 글. */
-const RESTART_CONFIRM_TEXT = '다시 보정할까요? 카메라 연결 관리부터 다시 시작합니다.';
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
 /** 레이아웃 반영을 하지 않는 화면(날짜 화면 안)이 구역 저장에 넘기는 반영 함수. */
 const skipLayoutSync = async () => {};
+
+/** 구역 단계의 '다시 보정'을 눌렀을 때 묻는 글. */
+const RESTART_CONFIRM_TEXT = '지금 세팅을 취소하고 다시 보정할까요?';
+const RESTART_ZONES_LOST_TEXT = ' 이 세팅의 구역 목록은 새 세팅으로 넘어가지 않습니다.';
+
+/** '다시 보정' 확인 글. 구역 목록은 세션마다 따로라 새 세팅으로 넘어가지 않으니 구역이 있으면 함께 알린다(-612). */
+const restartConfirmText = (zoneCount: number): string =>
+  zoneCount > 0 ? RESTART_CONFIRM_TEXT + RESTART_ZONES_LOST_TEXT : RESTART_CONFIRM_TEXT;
 
 /** 작업 없이 세팅 화면을 열면 어느 작업의 세팅인지 모르므로 작업 관리로 돌려보낸다(작업 id 를 지어내지 않는다). */
 function SetupNeedsWork() {
@@ -254,10 +267,7 @@ function SetupWorkPage({
       queryClient.setQueryData(setupSessionKey(session.setup_session_id), session);
     },
   });
-  const sessionRunning =
-    currentSession !== null &&
-    currentSession.status !== 'COMPLETED' &&
-    currentSession.status !== 'FAILED';
+  const sessionRunning = isSetupSessionRunning(currentSession);
   const handleCancelSession = useCallback(() => {
     if (!sessionId || cancelMutation.isPending) return;
     if (!window.confirm('진행 중인 세팅을 취소할까요? 취소하면 처음부터 다시 시작해야 합니다.'))
@@ -266,11 +276,6 @@ function SetupWorkPage({
   }, [sessionId, cancelMutation]);
 
   // 구역 단계의 '다시 보정'은 카메라 연결 관리(1단계)부터 다시 시작하므로 세팅 취소처럼 한 번 묻는다.
-  const handleRestart = useCallback(() => {
-    if (!window.confirm(RESTART_CONFIRM_TEXT)) return;
-    go(0);
-  }, [go]);
-
   // 세팅을 완료했다(C17). 완료 뒤에는 구역 편집·초안 수락을 감춘다
   const completed = setupCompleted(currentSession);
   const completion = useCompleteSetup(currentSession);
@@ -401,6 +406,16 @@ function SetupWorkPage({
     setStage(0);
   }, [currentSession]);
 
+  // 구역 단계의 '다시 보정': 확인을 받고 카메라 연결 관리(0단계)로 돌아간다. 진행 중인 세션은 0단계에서 다시 시도할 때 취소하고 이어 간다.
+  const handleRestart = useCallback(() => {
+    const zoneCount = sessionId
+      ? (queryClient.getQueryData<SetupZonePlanView>(setupZonePlanKey(sessionId))?.items.length ??
+        0)
+      : 0;
+    if (!window.confirm(restartConfirmText(zoneCount))) return;
+    returnToStep1();
+  }, [sessionId, queryClient, returnToStep1]);
+
   // 구역 단계의 마지막 단추: 아직 완료 전이면 세팅을 먼저 완료하고(취소·실패면 머문다), 날짜 화면 안이면 그 화면이 다음 단계로 넘기고,
   // 단독 화면이면 그 작업의 작업 관리로 돌아간다.
   const runCompletion = completion.run;
@@ -432,6 +447,7 @@ function SetupWorkPage({
       showHeightNotice: waiting.showHeightNotice,
       canFinish: completed || canCompleteSetup(currentSession),
       finishPending: completion.pending,
+      setupCompleted: completed,
     },
     {
       start: requestStep1Submit,
@@ -445,8 +461,18 @@ function SetupWorkPage({
   useWorkAction(embedded ? toWorkAction(actions) : null);
 
   const step1RawError = retrySession.rawError ?? createSession.rawError ?? cancelMutation.error;
-  const step1Error =
-    retrySession.error ?? createSession.error ?? submitErrorText(cancelMutation.error);
+  // 취소 실패는 그 취소를 요청한 세션 화면에서만 보인다(다시 시도로 새 세션이 되면 지난 실패를 지운다)
+  const cancelError =
+    cancelMutation.error && cancelMutation.variables === sessionId
+      ? setupCancelErrorMessage(cancelMutation.error)
+      : null;
+  const step1Error = retrySession.error ?? createSession.error ?? cancelError;
+  // 막는 세팅을 취소했으니 거절 오류를 지워 다시 시도할 수 있게 한다.
+  const clearStep1Error = () => {
+    createSession.reset();
+    retrySession.reset();
+    cancelMutation.reset();
+  };
   const step1BlockedByLiveWork = isSetupBlockedByLiveWork(step1RawError);
   const retryBlockedByLiveWork = isSetupBlockedByLiveWork(retrySession.rawError);
 
@@ -561,6 +587,9 @@ function SetupWorkPage({
               onNavigateLiveWork={
                 step1BlockedByLiveWork ? () => navigateToBlockedWork(step1RawError) : undefined
               }
+              errorAction={
+                <BlockingSetupNotice error={step1RawError} onCancelled={clearStep1Error} />
+              }
               heightWarnings={waiting.heightWarnings}
               retrySessionId={returnForHeightRetry ? sessionId : null}
               onRetryWithHeights={requestStep1Submit}
@@ -583,7 +612,7 @@ function SetupWorkPage({
             pollingError={sessionQuery.error}
             onRetry={handleRetryFailedSession}
             retryPending={retrySession.pending}
-            retryError={retrySession.error}
+            retryError={retrySession.error ?? cancelError}
             onNavigateLiveWork={
               retryBlockedByLiveWork
                 ? () => navigateToBlockedWork(retrySession.rawError)

@@ -39,6 +39,19 @@ export function setupErrorMessage(error: unknown): string {
   return '현장 세팅을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요';
 }
 
+/** 진행 중인 세팅 취소(POST /api/setup-sessions/{id}/cancel) 실패를 화면 안내 문구로 바꾼다. 모르는 4xx 는 서버 문구, 그 밖에는 기본 문구. */
+export function setupCancelErrorMessage(error: unknown): string {
+  if (
+    error instanceof ApiError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.serverMessage
+  ) {
+    return error.serverMessage;
+  }
+  return '세팅을 취소하지 못했습니다. 잠시 후 다시 시도해 주세요';
+}
+
 /** 세팅 완료(POST /api/setup-sessions/{id}/complete, -615) 거부 코드별 안내. */
 export const SETUP_COMPLETE_ERROR_TEXT: Record<string, string> = {
   SETUP_ALREADY_COMPLETED:

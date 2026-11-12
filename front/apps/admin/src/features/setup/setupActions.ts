@@ -55,6 +55,8 @@ export interface SetupActionState {
   canFinish: boolean;
   /** 마지막 단추가 세팅 완료를 요청하는 중. */
   finishPending: boolean;
+  /** 세팅을 완료했다(하루 1회). 완료한 작업은 다시 보정할 수 없다. */
+  setupCompleted: boolean;
 }
 
 export interface SetupActionHandlers extends Record<ActionKey, () => void> {
@@ -76,14 +78,16 @@ export function deriveSetupActions(
     confirm: !state.mapComplete,
     restart: false,
   };
-  const staged = STAGE_ACTIONS[state.stage].map((key): SetupActionButton => ({
-    key,
-    label: ACTION_LABEL[key],
-    onClick: on[key],
-    disabled: disabledOf[key],
-    primary: !SECONDARY_ACTIONS.has(key),
-    title: key === 'confirm' && disabledOf[key] ? CONFIRM_BLOCKED_TITLE : undefined,
-  }));
+  const staged = STAGE_ACTIONS[state.stage]
+    .filter((key) => !(key === 'restart' && state.setupCompleted))
+    .map((key): SetupActionButton => ({
+      key,
+      label: ACTION_LABEL[key],
+      onClick: on[key],
+      disabled: disabledOf[key],
+      primary: !SECONDARY_ACTIONS.has(key),
+      title: key === 'confirm' && disabledOf[key] ? CONFIRM_BLOCKED_TITLE : undefined,
+    }));
 
   const buttons = staged.filter((button) => !button.primary);
   if (state.stage === 1 && state.sessionRunning) {
