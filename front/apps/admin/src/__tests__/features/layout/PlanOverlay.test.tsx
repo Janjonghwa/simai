@@ -9,9 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // 평면 그림(LivePlan)은 따로 시험하므로 자리표시자로 바꾼다.
 vi.mock('@/features/plan/LivePlan', () => ({ LivePlan: () => <div data-testid="live-plan" /> }));
 
-const work = (status: TbmWorkUnit['status']): TbmWorkUnit => ({
+const work = (status: TbmWorkUnit['status'], progress: TbmWorkUnit['progress']): TbmWorkUnit => ({
   work_id: '1',
   status,
+  progress,
   date: todayIsoDate(),
   name: '작업',
   from_ms: 1,
@@ -39,13 +40,15 @@ function renderOverlay(works?: TbmWorkUnit[]) {
 afterEach(cleanup);
 
 describe('PlanOverlay', () => {
-  it('오늘 남은 작업이 없어 대기 화면이 덮는 동안은 inert 다', () => {
-    expect(renderOverlay([work('DONE')]).hasAttribute('inert')).toBe(true);
+  it('지금 관제할 작업이 없어 대기 화면이 덮는 동안은 inert 다', () => {
+    expect(renderOverlay([work('DONE', 'ENDED')]).hasAttribute('inert')).toBe(true);
+    cleanup();
+    expect(renderOverlay([work('PLANNED', 'REPORT')]).hasAttribute('inert')).toBe(true);
   });
 
-  it('작업 목록을 받기 전이거나 오늘 남은 작업이 있으면 inert 가 아니다', () => {
+  it('작업 목록을 받기 전이거나 세팅을 마친 작업이 있으면 inert 가 아니다', () => {
     expect(renderOverlay().hasAttribute('inert')).toBe(false);
     cleanup();
-    expect(renderOverlay([work('PLANNED')]).hasAttribute('inert')).toBe(false);
+    expect(renderOverlay([work('PLANNED', 'SETUP_DONE')]).hasAttribute('inert')).toBe(false);
   });
 });

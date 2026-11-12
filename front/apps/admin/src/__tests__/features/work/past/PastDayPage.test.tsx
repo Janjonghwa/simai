@@ -169,6 +169,55 @@ describe('PastDayPage — 머리', () => {
     expect(screen.queryByRole('tablist')).toBeNull();
   });
 
+  it('끝나지 않은 작업(보고서·세팅·작업 중)만 있는 날은 달력 칸이 빈칸이므로 `기록된 작업이 없습니다.`', async () => {
+    server.use(
+      http.get('*/api/work-units', () =>
+        HttpResponse.json({
+          works: [
+            workDayOf({ work_id: '8101', date: YESTERDAY, progress: 'REPORT' }),
+            workDayOf({ work_id: '8102', date: YESTERDAY, progress: 'SETUP' }),
+            workDayOf({
+              work_id: '8103',
+              date: YESTERDAY,
+              progress: 'IN_PROGRESS',
+              actual_started_at: new Date(2026, 10, 10, 9, 0).getTime(),
+            }),
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByText('기록된 작업이 없습니다.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '달력' })).toBeTruthy();
+    expect(screen.queryByTestId('replay-stage')).toBeNull();
+    expect(screen.queryByTestId('report-panel')).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
+  });
+
+  it('끝난 작업과 끝나지 않은 작업이 섞인 날은 끝난 작업만 보인다', async () => {
+    server.use(
+      http.get('*/api/work-units', () =>
+        HttpResponse.json({
+          works: [
+            workDayOf({ work_id: '8201', date: YESTERDAY, progress: 'IN_PROGRESS' }),
+            workDayOf({
+              work_id: '8202',
+              date: YESTERDAY,
+              progress: 'ENDED',
+              actual_started_at: new Date(2026, 10, 10, 9, 0).getTime(),
+              actual_ended_at: new Date(2026, 10, 10, 10, 0).getTime(),
+            }),
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByTestId('report-panel')).toBeTruthy();
+    expect(screen.getByTestId('report-panel').dataset.work).toBe('8202');
+    // 끝난 작업이 하나뿐이라 작업 선택기가 없다.
+    expect(screen.queryByRole('group', { name: '작업 선택' })).toBeNull();
+  });
+
   it('작업 목록을 못 받으면 안내를 보인다', async () => {
     server.use(http.get('*/api/work-units', () => new HttpResponse(null, { status: 500 })));
     renderPage();
@@ -260,7 +309,14 @@ describe('PastDayPage — 본문', () => {
     server.use(
       http.get('*/api/work-units', () =>
         HttpResponse.json({
-          works: [workDayOf({ work_id: '8002', date: YESTERDAY, progress: 'REPORT' })],
+          works: [
+            workDayOf({
+              work_id: '8002',
+              date: YESTERDAY,
+              progress: 'SUBMITTED',
+              actual_started_at: null,
+            }),
+          ],
         }),
       ),
     );

@@ -1,15 +1,15 @@
-import { DAY_PROGRESS, type DayProgress, type WorkDayItem } from '@/features/work/types';
+import type { DayProgress, WorkDayItem } from '@/features/work/types';
 import {
-  dayStatusOf,
+  isEndedWork,
   parseDateKey,
   toDateKey,
+  TODAY_ACTION,
   WEEKDAY_NAMES,
   type DateKey,
   type DayKind,
-  type DayStatusKey,
 } from '@/features/work/workDay';
 
-// 작업 관리 달력의 순수 계산: 그 달이 걸치는 주·칸, 달 이동, 칸 칩, 그날 작업 요약. 시계에 기대지 않는다.
+// 작업 관리 달력의 순수 계산: 그 달이 걸치는 주·칸, 달 이동, 칸 표시, 그날 작업 요약. 시계에 기대지 않는다.
 
 /** 달력이 보이는 달. month 는 1~12 다. */
 export interface CalendarMonth {
@@ -70,69 +70,43 @@ export function groupByDate(works: readonly WorkDayItem[]): Map<DateKey, WorkDay
   return groups;
 }
 
-// ── 칸 칩 ────────────────────────────────────────────────────────────────────
+// ── 칸 표시 ──────────────────────────────────────────────────────────────────
 
-/** 칩 색 계열. todo 주색 윤곽 · active 주색 옅은 면 · ended 경고색 · done 초록 · neutral 중립. */
-export type ChipTone = 'todo' | 'active' | 'ended' | 'done' | 'neutral';
+/**
+ * 칸에 보이는 표시. 작업 종료(ended)는 끝난 날의 상태라 알약 없이 아이콘과 글자로만 보이고(작업을 끝내면 보고서 제출까지 하므로
+ * 종료와 제출을 나누지 않는다), 단추(action)는 오늘 칸에서 지금 할 일을 알린다.
+ */
+export type DayMark = { kind: 'ended' | 'action'; label: string };
 
-export interface DayChip {
-  label: string;
-  tone: ChipTone;
-}
+const ENDED_MARK: DayMark = { kind: 'ended', label: '작업 종료' };
 
-const TONE_OF_STATUS: Record<DayStatusKey, ChipTone> = {
-  none: 'neutral',
-  report: 'neutral',
-  setting: 'active',
-  setup: 'neutral',
-  running: 'active',
-  ended: 'ended',
-  done: 'done',
-};
+/** 오늘 작업이 없거나 진행 값을 모르면 보고서 단계로 본다(오늘 칸은 '작업 시작' 단추가 된다). */
+const IDLE_PROGRESS: DayProgress = 'REPORT';
 
-/** 오늘 칸은 아직 아무것도 안 했어도 칩을 보여, 눌러서 시작하는 칸이라는 걸 알린다. */
-const TODAY_IDLE_CHIP: DayChip = { label: '보고서 작성 전', tone: 'todo' };
-
-/** 서버 진행 값(`dayStatusOf` 의 글)으로 만든 칩. 진행 값을 모르면 null. */
-function chipOfProgress(progress: DayProgress | null | undefined): DayChip | null {
-  const status = dayStatusOf(progress);
-  return status.label === '' ? null : { label: status.label, tone: TONE_OF_STATUS[status.key] };
-}
-
-/** 오늘·예정인 날 칩에 쓸 작업: 하루 작업(daily)이 있으면 그것, 없으면 첫 작업. */
+/** 오늘 칸 표시에 쓸 작업: 하루 작업(daily)이 있으면 그것, 없으면 첫 작업. */
 const primaryWorkOf = (works: readonly WorkDayItem[]): WorkDayItem | undefined =>
   works.find((work) => work.daily) ?? works[0];
 
-/** 지난 날 작업의 진행 값. 진행 값을 모르는 옛 응답은 실제로 끝난 작업이면 제출한 것(완료)으로, 아니면 null(칩 없음)로 본다. */
-const pastProgressOf = (work: WorkDayItem): DayProgress | null =>
-  work.progress ?? (work.actual_ended_at !== null ? 'SUBMITTED' : null);
+/** 지난 날 표시: 끝난 작업(`isEndedWork`)이 하나라도 있으면 작업 종료, 없으면 null(빈칸)이다. */
+const pastMarkOf = (works: readonly WorkDayItem[]): DayMark | null =>
+  works.some(isEndedWork) ? ENDED_MARK : null;
 
-/** 진행 순서(작을수록 덜 진행됐다). 진행 값을 모르면(null) 가장 앞이다. */
-const progressRank = (progress: DayProgress | null): number =>
-  progress === null ? -1 : DAY_PROGRESS.indexOf(progress);
-
-/**
- * 지난 날 칩의 진행 값: 하루 작업(daily)이 있으면 그것, 없으면 가장 덜 진행된 작업의 것이다
- * (옛 작업이 여럿인 날은 하나라도 제출하지 못했으면 '완료' 로 보이지 않는다).
- */
-function pastDayProgress(works: readonly WorkDayItem[]): DayProgress | null {
-  const daily = works.find((work) => work.daily);
-  const progresses = (daily ? [daily] : works).map(pastProgressOf);
-  return progresses.reduce((least, next) =>
-    progressRank(next) < progressRank(least) ? next : least,
-  );
+/** 오늘 표시: 그 날 작업(`primaryWorkOf`)의 진행 값이 정한 지금 할 일 단추. 제출했으면 할 일이 없어 작업 종료 표시다. */
+function todayMarkOf(works: readonly WorkDayItem[]): DayMark {
+  const action = TODAY_ACTION[primaryWorkOf(works)?.progress ?? IDLE_PROGRESS];
+  return action === null ? ENDED_MARK : { kind: 'action', label: action };
 }
 
-/**
- * 칸 칩은 서버가 준 진행 값(`progress`)의 글을 그대로 보인다(다시 계산하지 않는다). 지난 날은 `pastDayProgress` 를 따르고
- * 작업이 없으면 칩이 없다. 오늘·예정인 날은 그 날 작업(`primaryWorkOf`)의 진행 값이고, 작업이 없으면 오늘만
- * '보고서 작성 전', 예정인 날은 비운다.
- */
-export function dayChipOf(works: readonly WorkDayItem[], kind: DayKind): DayChip | null {
-  if (kind === 'past') return works.length > 0 ? chipOfProgress(pastDayProgress(works)) : null;
-  return (
-    chipOfProgress(primaryWorkOf(works)?.progress) ?? (kind === 'today' ? TODAY_IDLE_CHIP : null)
-  );
+/** 칸 표시. 지난 날은 끝난 작업의 상태, 오늘은 지금 할 일 단추이고, 예정인 날은 늘 비운다. */
+export function dayMarkOf(works: readonly WorkDayItem[], kind: DayKind): DayMark | null {
+  switch (kind) {
+    case 'past':
+      return pastMarkOf(works);
+    case 'today':
+      return todayMarkOf(works);
+    case 'future':
+      return null;
+  }
 }
 
 // ── 지난 날 요약 ─────────────────────────────────────────────────────────────
@@ -144,10 +118,13 @@ export interface DaySummary {
   high: number;
 }
 
-export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary {
+/** 지난 날 요약. 끝난 작업(`isEndedWork`)만 세고, 끝난 작업이 없으면 null(빈칸)이다. */
+export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null {
+  const ended = works.filter(isEndedWork);
+  if (ended.length === 0) return null;
   return {
-    count: works.length,
-    critical: works.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
-    high: works.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
+    count: ended.length,
+    critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
+    high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
   };
 }

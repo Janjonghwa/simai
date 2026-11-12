@@ -1,4 +1,4 @@
-import { hasRemainingWork, todayWorks } from '@/features/monitor/todayWorks';
+import { hasMonitorableWork, todayWorks } from '@/features/monitor/todayWorks';
 import type { TbmWorkUnit } from '@/features/tbm/types';
 import { describe, expect, it } from 'vitest';
 
@@ -42,18 +42,52 @@ describe('오늘 작업', () => {
   });
 });
 
-describe('남은 작업(대기 화면 판정)', () => {
-  it('작업이 없거나 모두 끝났으면 남은 작업이 없다', () => {
-    expect(hasRemainingWork([])).toBe(false);
-    expect(hasRemainingWork([work({ status: 'DONE' }), work({ status: 'DONE' })])).toBe(false);
+describe('관제할 작업(대기 화면 판정)', () => {
+  it('작업이 없거나 모두 끝났으면 관제할 작업이 없다', () => {
+    expect(hasMonitorableWork([])).toBe(false);
+    expect(
+      hasMonitorableWork([
+        work({ status: 'DONE', progress: 'ENDED' }),
+        work({ status: 'DONE', progress: 'SUBMITTED' }),
+      ]),
+    ).toBe(false);
   });
 
-  it('예정이거나 진행 중인 작업이 하나라도 있으면 남은 작업이 있다', () => {
-    expect(hasRemainingWork([work({ status: 'DONE' }), work({ status: 'PLANNED' })])).toBe(true);
-    expect(hasRemainingWork([work({ status: 'IN_PROGRESS' })])).toBe(true);
+  it.each(['REPORT', 'SETUP'] as const)(
+    '진행 값이 %s 인 예정 작업은 세팅이 끝나기 전이라 관제할 작업이 아니다',
+    (progress) => {
+      expect(hasMonitorableWork([work({ status: 'PLANNED', progress })])).toBe(false);
+    },
+  );
+
+  it('세팅을 마친(SETUP_DONE) 예정 작업은 관제할 작업이다', () => {
+    expect(hasMonitorableWork([work({ status: 'PLANNED', progress: 'SETUP_DONE' })])).toBe(true);
   });
 
-  it('상태를 모르는 작업은 남은 것으로 본다(없다고 단정하지 않는다)', () => {
-    expect(hasRemainingWork([work({ status: undefined })])).toBe(true);
+  it('작업 중이면 진행 값을 몰라도 관제할 작업이다', () => {
+    expect(hasMonitorableWork([work({ status: 'IN_PROGRESS' })])).toBe(true);
+    expect(hasMonitorableWork([work({ status: 'IN_PROGRESS', progress: null })])).toBe(true);
+    expect(hasMonitorableWork([work({ status: 'IN_PROGRESS', progress: 'IN_PROGRESS' })])).toBe(
+      true,
+    );
+  });
+
+  it('끝난 작업(DONE)은 진행 값이 무엇이든 관제할 작업이 아니다', () => {
+    expect(hasMonitorableWork([work({ status: 'DONE', progress: 'SETUP_DONE' })])).toBe(false);
+  });
+
+  it('상태와 진행 값을 모두 모르는 작업은 관제할 작업으로 보지 않는다(잠근 채로 둔다)', () => {
+    expect(hasMonitorableWork([work({ status: undefined })])).toBe(false);
+    expect(hasMonitorableWork([work({ status: undefined, progress: null })])).toBe(false);
+  });
+
+  it('여러 작업 중 하나라도 관제할 작업이면 있다고 본다', () => {
+    expect(
+      hasMonitorableWork([
+        work({ status: 'DONE', progress: 'ENDED' }),
+        work({ status: 'PLANNED', progress: 'REPORT' }),
+        work({ status: 'PLANNED', progress: 'SETUP_DONE' }),
+      ]),
+    ).toBe(true);
   });
 });

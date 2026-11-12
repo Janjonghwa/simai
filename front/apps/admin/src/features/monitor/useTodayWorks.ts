@@ -1,5 +1,5 @@
 import { useNow } from '@/features/layout/useNow';
-import { hasRemainingWork, todayWorks } from '@/features/monitor/todayWorks';
+import { hasMonitorableWork, todayWorks } from '@/features/monitor/todayWorks';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { todayIsoDate } from '@/features/tbm/taskInput';
@@ -10,7 +10,7 @@ const TODAY_RECHECK_MS = 60_000;
 
 /**
  * loading: 아직 모름(받는 중). error: 받지 못했고 받아 둔 것도 없음.
- * ready: standby 는 오늘 남은 작업(예정·진행 중)이 없어 대기 화면을 보일 때다.
+ * ready: standby 는 지금 관제할 작업(작업 중이거나 세팅을 마친 작업)이 없어 대기 화면을 보일 때다.
  */
 export type TodayWorks =
   { state: 'loading' } | { state: 'error' } | { state: 'ready'; standby: boolean };
@@ -24,7 +24,7 @@ export function useTodayWorks(options: { passive?: boolean } = {}): TodayWorks {
   const today = todayIsoDate(new Date(useNow(TODAY_RECHECK_MS)));
   return useMemo<TodayWorks>(() => {
     if (monitor.state !== 'ready') return monitor;
-    return { state: 'ready', standby: !hasRemainingWork(todayWorks(monitor.works, today)) };
+    return { state: 'ready', standby: !hasMonitorableWork(todayWorks(monitor.works, today)) };
   }, [monitor, today]);
 }
 

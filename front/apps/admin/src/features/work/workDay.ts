@@ -1,6 +1,6 @@
-import type { DayProgress, WorkReport } from '@/features/work/types';
+import type { DayProgress, WorkDayItem, WorkReport } from '@/features/work/types';
 
-// 하루 작업의 순수 계산: 진행 단계 ↔ 화면 단계, 달력 칸 상태, 날짜 키 도우미. 시계에 직접 기대지 않는다(오늘 키는 인자로 받는다).
+// 하루 작업의 순수 계산: 진행 단계 ↔ 화면 단계, 달력 칸 표시에 쓰는 진행 값 판정, 날짜 키 도우미. 시계에 직접 기대지 않는다(오늘 키는 인자로 받는다).
 
 // ── 화면 단계 ────────────────────────────────────────────────────────────────
 
@@ -46,29 +46,32 @@ export const EMPTY_WORK_NAME = '작업';
 /** 화면에 보일 작업 이름(서버 이름이 비어 있으면 `EMPTY_WORK_NAME`). */
 export const workNameOf = (name: string): string => name || EMPTY_WORK_NAME;
 
-// ── 달력 칸 상태 ─────────────────────────────────────────────────────────────
+// ── 달력 칸 표시 ─────────────────────────────────────────────────────────────
 
-/** 달력 칸 칩 상태 이름. */
-export type DayStatusKey = 'none' | 'report' | 'setting' | 'setup' | 'running' | 'ended' | 'done';
-export interface DayStatus {
-  key: DayStatusKey;
-  /** 칩에 보이는 글. 작업이 없는 날은 ''. */
-  label: string;
+/**
+ * 오늘 칸 단추 글: 서버 진행 값마다 지금 할 일이다. 제출(SUBMITTED)은 할 일이 없어 단추 대신 완료 표시가 되므로 null 이다.
+ */
+export const TODAY_ACTION: Record<DayProgress, string | null> = {
+  REPORT: '작업 시작',
+  SETUP: '세팅 이어하기',
+  SETUP_DONE: '작업 전 확인',
+  IN_PROGRESS: '관제 중',
+  ENDED: '보고서 보내기',
+  SUBMITTED: null,
+};
+
+/** 작업의 진행 값. 진행 값을 모르는 옛 응답은 실제로 끝난 작업이면 제출한 것(SUBMITTED)으로, 아니면 null 로 본다. */
+export function workProgressOf(work: WorkDayItem): DayProgress | null {
+  return work.progress ?? (work.actual_ended_at !== null ? 'SUBMITTED' : null);
 }
 
-const DAY_STATUS: Record<DayProgress, DayStatus> = {
-  REPORT: { key: 'report', label: '보고서 작성' },
-  SETUP: { key: 'setting', label: '세팅 중' },
-  SETUP_DONE: { key: 'setup', label: '세팅 완료' },
-  IN_PROGRESS: { key: 'running', label: '진행 중' },
-  ENDED: { key: 'ended', label: '작업 종료' },
-  SUBMITTED: { key: 'done', label: '완료' },
-};
-const NO_DAY_STATUS: DayStatus = { key: 'none', label: '' };
-
-/** 달력 칸 칩(프로토타입 dayStatus). 작업이 없거나 진행 값을 모르면 칩이 없다. */
-export function dayStatusOf(progress: DayProgress | null | undefined): DayStatus {
-  return progress ? DAY_STATUS[progress] : NO_DAY_STATUS;
+/**
+ * 끝난 작업(종료 ENDED·제출 SUBMITTED)인가. 시작한 작업은 그날 안에 반드시 끝난다고 보고,
+ * 지난 날 달력 칸과 지난 날짜 화면은 끝난 작업만 다룬다.
+ */
+export function isEndedWork(work: WorkDayItem): boolean {
+  const progress = workProgressOf(work);
+  return progress === 'ENDED' || progress === 'SUBMITTED';
 }
 
 /**

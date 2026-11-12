@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { hasMonitorableWork, todayWorks } from '@/features/monitor/todayWorks';
+import { requestTbmWorks } from '@/features/tbm/api';
 import {
   deleteSignature,
   endWork,
@@ -1059,6 +1061,39 @@ describe('작업 관리 mock: 월 목록과 지난 이력', () => {
       ),
     ).toEqual(locked);
     expect(await failure(submitReport(asAdmin, report.report_id))).toEqual(locked);
+  });
+});
+
+describe('작업 관리 mock: 관제가 읽는 작업 목록', () => {
+  it('범위 없는 목록이 날짜 작업을 진행 값과 함께 옛 TBM 작업 뒤에 이어 붙여, 세팅이 끝나야 관제가 풀린다', async () => {
+    server.resetHandlers(
+      ...mock.handlers,
+      ...createTbmMock({ deferDaysToHistory: true, dailyWorks: mock.workItems }).handlers,
+      ...createHistoryMock({ now }).handlers,
+    );
+    const work = await openToday();
+    const monitorList = () => requestTbmWorks(asAdmin);
+    const progressOf = async () =>
+      (await monitorList()).find((w) => w.work_id === work.work_id)?.progress;
+    const monitorable = async () => hasMonitorableWork(todayWorks(await monitorList(), TODAY));
+
+    expect((await monitorList()).some((w) => w.work_id === '1')).toBe(true);
+    expect(await progressOf()).toBe('REPORT');
+    expect(await monitorable()).toBe(false);
+
+    const session = startSession(work.work_id);
+    expect(await progressOf()).toBe('SETUP');
+    expect(await monitorable()).toBe(false);
+
+    finishSession(session);
+    expect(await progressOf()).toBe('SETUP_DONE');
+    expect(await monitorable()).toBe(true);
+  });
+
+  it('날짜 작업 mock 을 잇지 않으면 옛 TBM 작업만 준다', async () => {
+    await openToday();
+    const list = await requestTbmWorks(asAdmin);
+    expect(list.map((w) => w.work_id)).toEqual(['1', '2', '3']);
   });
 });
 

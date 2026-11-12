@@ -24,9 +24,10 @@ function renderMinimap(works?: TbmWorkUnit[]) {
   return screen.getByTestId('plan-minimap');
 }
 
-const work = (status: TbmWorkUnit['status']): TbmWorkUnit => ({
+const work = (status: TbmWorkUnit['status'], progress: TbmWorkUnit['progress']): TbmWorkUnit => ({
   work_id: '1',
   status,
+  progress,
   date: todayIsoDate(),
   name: '작업',
   from_ms: 1,
@@ -42,14 +43,16 @@ const work = (status: TbmWorkUnit['status']): TbmWorkUnit => ({
 afterEach(() => cleanup());
 
 describe('PlanMinimap', () => {
-  it('오늘 남은 작업이 없어 대기 화면이 덮는 동안은 inert 라 Tab 으로도 눌리지 않는다', () => {
-    expect(renderMinimap([work('DONE')]).hasAttribute('inert')).toBe(true);
+  it('지금 관제할 작업이 없어 대기 화면이 덮는 동안은 inert 라 Tab 으로도 눌리지 않는다', () => {
+    expect(renderMinimap([work('DONE', 'ENDED')]).hasAttribute('inert')).toBe(true);
+    cleanup();
+    expect(renderMinimap([work('PLANNED', 'REPORT')]).hasAttribute('inert')).toBe(true);
   });
 
-  it('작업 목록을 받기 전이거나 오늘 남은 작업이 있으면 inert 가 아니다', () => {
+  it('작업 목록을 받기 전이거나 세팅을 마친 작업이 있으면 inert 가 아니다', () => {
     expect(renderMinimap().hasAttribute('inert')).toBe(false);
     cleanup();
-    expect(renderMinimap([work('PLANNED')]).hasAttribute('inert')).toBe(false);
+    expect(renderMinimap([work('PLANNED', 'SETUP_DONE')]).hasAttribute('inert')).toBe(false);
   });
 
   it('왼쪽 아래에 칼럼 폭의 정사각형으로 고정되고, 크기 조절 손잡이는 없다', () => {
