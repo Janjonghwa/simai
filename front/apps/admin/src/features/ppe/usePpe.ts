@@ -1,6 +1,12 @@
 import { useNow } from '@/features/layout/useNow';
 import { requestPpeCurrent } from '@/features/ppe/api';
-import { itemStates, personPpe, type PersonPpe, type PpeState } from '@/features/ppe/ppeView';
+import {
+  itemStates,
+  personPpe,
+  ppeLabels,
+  type PersonPpe,
+  type PpeState,
+} from '@/features/ppe/ppeView';
 import { api } from '@/lib/api';
 import { isLinkAlive, useRealtimeStore } from '@/store/realtime.store';
 import { useQuery } from '@tanstack/react-query';
@@ -84,6 +90,15 @@ export function usePpeGearStates(): {
     helmets: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'helmet')),
     vests: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'vest')),
   };
+}
+
+/**
+ * 3D 이름표 뒤에 붙일 사람별 PPE 글(뷰어 `personBadges` 에 워치 글과 함께 넘긴다, S15P31A101-656).
+ * 착용이 아닌 사람만 담는다. 글이 바뀔 때만 새 객체다(근거 경과 시각은 10초 단위라 1초마다 바뀌지 않는다).
+ */
+export function usePpeLabels(): Readonly<Record<string, string>> {
+  const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
+  return useSameRecord(ppeLabels(snapshots, tracksOf(trackKey), now, linkAlive));
 }
 
 /**

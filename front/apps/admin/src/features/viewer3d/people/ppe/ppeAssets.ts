@@ -2,7 +2,6 @@ import helmetUrl from '@/features/viewer3d/people/ppe/assets/helmet.glb?url';
 import vestUrl from '@/features/viewer3d/people/ppe/assets/vest.glb?url';
 import { createContext, useContext, useEffect, useState } from 'react';
 import {
-  EdgesGeometry,
   Mesh,
   MeshStandardMaterial,
   Vector3,
@@ -18,8 +17,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 export interface GearAsset {
   /** 단위 상자 모양. 원점은 안전모 = 모자 아래 가운데, 조끼 = 위쪽 가운데. */
   geometry: BufferGeometry;
-  /** 모름 상태에서 보이는 외곽선. */
-  edges: BufferGeometry;
   /** 기본 색 텍스처(채도를 낮춰 구웠다). */
   map: Texture | null;
 }
@@ -28,9 +25,6 @@ export interface PpeAssets {
   helmet: GearAsset;
   vest: GearAsset;
 }
-
-/** 외곽선을 긋는 모서리 각도(도). 이보다 완만한 면 사이는 긋지 않는다. */
-const EDGE_ANGLE_DEG = 30;
 
 /** 안전모는 아래 가운데, 조끼는 위쪽 가운데를 원점으로 삼는다. */
 export type GearPivot = 'BOTTOM' | 'TOP';
@@ -59,7 +53,7 @@ export function normalizeGear(scene: Object3D, pivot: GearPivot): GearAsset | nu
   geometry.computeBoundingSphere();
   const material = mesh.material;
   const map = material instanceof MeshStandardMaterial ? material.map : null;
-  return { geometry, edges: new EdgesGeometry(geometry, EDGE_ANGLE_DEG), map };
+  return { geometry, map };
 }
 
 /** 받아 온 GLB 두 개를 장비로 바꾼다. 읽지 못하거나 메시가 없으면 null. */

@@ -39,7 +39,7 @@ export type ViewerMode = (typeof VIEWER_MODES)[number];
 export const VIEWER_TARGET_TYPES = ['person', 'zone', 'object', 'planned'] as const;
 export type ViewerTargetType = (typeof VIEWER_TARGET_TYPES)[number];
 
-/** 사람에게 붙는 안전모·조끼의 상태(명세 13.3). WORN 실물, UNKNOWN 반투명, NOT_WORN 형상 없음(하나라도 미착용이면 머리 위 경고 표식). */
+/** 사람에게 붙는 안전모·조끼의 상태(명세 13.3). WORN 만 실물로 그리고 UNKNOWN·NOT_WORN 은 형상 없음(하나라도 미착용이면 머리 위 경고 표식). */
 export type PersonHelmetState = 'WORN' | 'NOT_WORN' | 'UNKNOWN';
 
 export interface ViewerTarget {

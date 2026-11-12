@@ -391,13 +391,7 @@ function PersonAvatar({
                       : 'NONE'
                 }
               />
-              <PpeGear
-                helmet={helmet}
-                vest={vest}
-                motion={motion}
-                opacity={OPACITY[tone]}
-                outlineColor={palette.person.unknown}
-              />
+              <PpeGear helmet={helmet} vest={vest} motion={motion} opacity={OPACITY[tone]} />
               {notWorn && <PpeWarningMark figure={motion} fallbackY={HELMET_Y} />}
             </group>
           ) : pose.kind === 'BODY' ? (
@@ -416,14 +410,7 @@ function PersonAvatar({
                 <CapsuleBody color={palette.person} tone={tone} selected={selected} />
               )}
               {/* 캡슐·아바타 메시 사람은 캡슐 자리에 붙인다(메시 머리·등뼈에 맞추기는 명세 19.1 미결). 개발용 모델은 크기가 달라 뺀다. */}
-              {!model && (
-                <PpeGear
-                  helmet={helmet}
-                  vest={vest}
-                  opacity={OPACITY[tone]}
-                  outlineColor={palette.person.unknown}
-                />
-              )}
+              {!model && <PpeGear helmet={helmet} vest={vest} opacity={OPACITY[tone]} />}
             </group>
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />

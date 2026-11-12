@@ -116,11 +116,11 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 
 - World ID → 짧은 글. 그 사람의 이름표(사람 ID, 늘 보임) 끝에 ` · 글` 로 붙는다.
 - 내용으로 비교한다: 렌더마다 새 객체를 넘겨도 내용이 같으면 Store 를 바꾸지 않는다. 빼거나 비우면 모두 지운다.
-- 사람 이름을 넣지 않는다(익명 World ID 원칙, 명세 11.4-5). 관제 앱은 워치 채널 상태(연결·끊김)를 넣는다.
+- 사람 이름을 넣지 않는다(익명 World ID 원칙, 명세 11.4-5). 관제 앱은 워치 채널 상태(연결·끊김)와, 착용이 아닐 때 PPE 상태(예: `안전모 미착용 · 조끼 모름(30초 전)`, -656)를 `·` 로 이어 넣는다.
 
 ## 사람 안전모·조끼 형상(`personHelmets`·`personVests` prop, -531·-552)
 
-- World ID → `PersonHelmetState`(WORN·NOT_WORN·UNKNOWN), 안전모는 `personHelmets`, 조끼는 `personVests`. 명세 13.3 표현: WORN 은 GLB 실물(채도를 낮춰 경보 색과 헷갈리지 않게), UNKNOWN 은 같은 형상 반투명+외곽선, NOT_WORN 은 그 장비를 그리지 않는다. 둘 중 하나라도 NOT_WORN 이면 머리 위 빨간 경고 표식 하나.
+- World ID → `PersonHelmetState`(WORN·NOT_WORN·UNKNOWN), 안전모는 `personHelmets`, 조끼는 `personVests`. 명세 13.3 표현: WORN 은 GLB 실물(채도를 낮춰 경보 색과 헷갈리지 않게), UNKNOWN·NOT_WORN 은 그 장비를 그리지 않는다(-656: 반투명 형상은 착용과 구분되지 않았다). 둘 중 하나라도 NOT_WORN 이면 머리 위 빨간 경고 표식 하나.
 - 뷰어는 PPE 를 다시 판정하지 않는다. 같은 World ID·`identity_revision`·만료·EC2 연결은 호스트가 따져 붙일 사람만 넘긴다. 키가 없는 사람은 그리지 않는다.
 - 위치: Tier 0 골격 막대는 양쪽 귀 가운데에 안전모, 어깨·골반 관절로 조끼 크기를 맞춘다. 캡슐과 아바타 메시 사람은 캡슐 몸의 고정 자리에 장비와 표식을 둔다(메시 머리에 정밀하게 맞추지 않는다, 19.1 미결). 높이 모름 기둥은 표식만 있고 장비는 없다. 클릭을 받지 않는다.
 - 경보가 아니다(경보는 R9 이벤트). 내용이 같으면 Store 를 바꾸지 않는다.

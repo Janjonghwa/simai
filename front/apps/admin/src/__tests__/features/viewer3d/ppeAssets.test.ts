@@ -45,7 +45,6 @@ describe('normalizeGear', () => {
     const gear = normalizeGear(scene, 'BOTTOM')!;
     expect(gear.map).toBe(map);
     expect(gear.geometry).not.toBe(geometry);
-    expect(gear.edges.getAttribute('position').count).toBeGreaterThan(0);
   });
 
   it('메시가 없는 장면이면 null 이다', () => {

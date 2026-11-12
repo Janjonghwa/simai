@@ -25,7 +25,8 @@ import { useSceneCameraImages } from '@/features/layout/useSceneCameraImages';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
-import { usePpeGearStates } from '@/features/ppe/usePpe';
+import { withPpeLabels } from '@/features/ppe/ppeView';
+import { usePpeGearStates, usePpeLabels } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useWatchBadges, useWatchBindDetector } from '@/features/watch/useWatch';
 import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
@@ -126,9 +127,15 @@ export function SpatialViewportHost({
   const showEventPanel = eventPanel && !editing;
   // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다. 관제에서는 보이기만 한다.
   const layers = editing || !eventPanel ? ZONE_EDIT_LAYERS : MONITOR_LAYERS;
-  // 사람 이름표 뒤 워치 채널 상태(-342). 배정·연결이 바뀔 때만 새 객체다
-  const personBadges = useWatchBadges();
-  // 사람에게 붙는 안전모·조끼와 미착용 경고 표식(-531·-552, 명세 13.3). 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인에서 정한다
+  // 사람 이름표 뒤 글: 워치 채널 상태(-342)와, 착용이 아닐 때 PPE 상태·마지막 근거 시각(-656, 명세 13.3).
+  // 둘 다 내용이 바뀔 때만 새 객체이고, 뷰어도 내용으로 비교한다
+  const watchBadges = useWatchBadges();
+  const ppeLabels = usePpeLabels();
+  const personBadges = useMemo(
+    () => withPpeLabels(watchBadges, ppeLabels),
+    [watchBadges, ppeLabels],
+  );
+  // 사람에게 붙는 착용 안전모·조끼와 미착용 경고 표식(-531·-552·-656, 명세 13.3)
   const { helmets: personHelmets, vests: personVests } = usePpeGearStates();
   // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
   useWatchBindDetector();
