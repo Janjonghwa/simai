@@ -14,12 +14,15 @@ import {
   newSurfaceDraft,
   newZoneForm,
   nextZoneName,
+  resizeBox,
   surfaceBox,
   surfaceBoxEditable,
   surfaceChanged,
   surfaceDraftOf,
   surfaceOfBox,
+  takenZoneNames,
   targetChanged,
+  uniqueZoneName,
   withoutName,
   withoutUnchangedSurface,
   withPatch,
@@ -31,6 +34,7 @@ import {
   type TargetDraft,
 } from '@/features/zones/zoneEditModel';
 import { surfaceZoneShape } from '@/features/zones/zoneShape';
+import type { RoomLimit } from '@/lib/roomLimit';
 import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
 import { describe, expect, it } from 'vitest';
 
@@ -246,19 +250,75 @@ describe('초안 갱신', () => {
 describe('nextZoneName', () => {
   const named = (...names: string[]) => names.map((name) => ({ name }));
 
-  it('구역이 없으면 `구역 1` 이다', () => {
-    expect(nextZoneName([])).toBe('구역 1');
+  it('구역이 없으면 `위험구역 1`, 작업면 구역이면 `고소작업면 A` 다', () => {
+    expect(nextZoneName([])).toBe('위험구역 1');
+    expect(nextZoneName([], 'surface')).toBe('고소작업면 A');
+    expect(nextZoneName([], 'opening')).toBe('개구부 1');
   });
 
-  it('겹치지 않는 가장 작은 번호를 붙인다(빈 번호도 채운다)', () => {
-    expect(nextZoneName(named('구역 1'))).toBe('구역 2');
-    expect(nextZoneName(named('구역 1', '구역 3'))).toBe('구역 2');
-    expect(nextZoneName(named('구역 2'))).toBe('구역 1');
+  it('겹치지 않는 가장 작은 구분자를 붙인다(빈 구분자도 채운다)', () => {
+    expect(nextZoneName(named('위험구역 1'))).toBe('위험구역 2');
+    expect(nextZoneName(named('위험구역 1', '위험구역 3'))).toBe('위험구역 2');
+    expect(nextZoneName(named('위험구역 2'))).toBe('위험구역 1');
+    expect(nextZoneName(named('고소작업면 A', '고소작업면 C'), 'surface')).toBe('고소작업면 B');
   });
 
-  it('다른 이름의 구역이나 번호 없는 `구역` 은 번호를 차지하지 않고, 앞뒤 공백은 같은 이름으로 본다', () => {
-    expect(nextZoneName(named('개구부 구역', '단상 구역', '구역', '새 구역'))).toBe('구역 1');
-    expect(nextZoneName(named(' 구역 1 '))).toBe('구역 2');
+  it('다른 이름의 구역이나 구분자 없는 종류 이름은 구분자를 차지하지 않고, 앞뒤 공백은 같은 이름으로 본다', () => {
+    expect(nextZoneName(named('개구부 구역', '단상 구역', '위험구역', '구역 1'))).toBe(
+      '위험구역 1',
+    );
+    expect(nextZoneName(named(' 위험구역 1 '))).toBe('위험구역 2');
+  });
+
+  it('A~Z 를 다 쓰면 숫자로 이어 간다', () => {
+    const all = named(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `고소작업면 ${c}`));
+    expect(nextZoneName(all, 'surface')).toBe('고소작업면 27');
+  });
+});
+
+describe('uniqueZoneName', () => {
+  const named = (...names: string[]) => names.map((name) => ({ name }));
+
+  it('활성 구역과 겹치지 않으면 그대로(앞뒤 공백만 뗀다)', () => {
+    expect(uniqueZoneName(' 작업대 상판 ', named('단상'), 'surface')).toBe('작업대 상판');
+  });
+
+  it('겹치면 끝의 구분자를 떼고 비어 있는 가장 작은 구분자를 붙인다', () => {
+    expect(uniqueZoneName('작업대 상판', named('작업대 상판'), 'surface')).toBe('작업대 상판 A');
+    expect(uniqueZoneName('작업대 상판', named('작업대 상판', '작업대 상판 A'), 'surface')).toBe(
+      '작업대 상판 B',
+    );
+    expect(uniqueZoneName('고소작업면 A', named('고소작업면 A'), 'surface')).toBe('고소작업면 B');
+    expect(uniqueZoneName('개구부 1', named('개구부 1', '개구부 2'), 'opening')).toBe('개구부 3');
+  });
+});
+
+describe('takenZoneNames', () => {
+  it('지금 고치는 구역을 빼고 앞뒤 공백을 뗀 이름들이다', () => {
+    const zones = [
+      { zoneId: 'z-1', name: ' 개구부 1 ' },
+      { zoneId: 'z-2', name: '단상' },
+    ];
+    expect([...takenZoneNames(zones, 'z-2')]).toEqual(['개구부 1']);
+    expect(takenZoneNames(zones).size).toBe(2);
+  });
+});
+
+describe('resizeBox', () => {
+  const box = { min: [2, 3, 0], max: [4, 6, 2] } as ViewerEditBox;
+  const room: RoomLimit = { min: [0, 0, 0], max: [10, 10, 5] };
+
+  it('가로·세로는 가운데를 두고 늘이고 줄이며, 높이는 바닥을 두고 위를 옮긴다', () => {
+    expect(resizeBox(box, 0, 3, room)).toEqual({ min: [1.5, 3, 0], max: [4.5, 6, 2] });
+    expect(resizeBox(box, 1, 1, room)).toEqual({ min: [2, 4, 0], max: [4, 5, 2] });
+    expect(resizeBox(box, 2, 2.5, room)).toEqual({ min: [2, 3, 0], max: [4, 6, 2.5] });
+  });
+
+  it('교실 범위를 넘는 쪽은 경계에서 자르고, 숫자가 아니거나 최소 크기보다 작으면 null 이다', () => {
+    expect(resizeBox(box, 0, 8, room)).toEqual({ min: [0, 3, 0], max: [7, 6, 2] });
+    expect(resizeBox(box, 0, 0.1, room)).toBeNull();
+    expect(resizeBox(box, 2, 0.01, room)).toBeNull();
+    expect(resizeBox(box, 1, Number.NaN, room)).toBeNull();
   });
 });
 

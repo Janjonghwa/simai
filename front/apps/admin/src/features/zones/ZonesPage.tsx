@@ -13,6 +13,7 @@ import {
   type ZonePanelPlacement,
 } from '@/features/zones/zonePanelStyle';
 import { ZoneSelect } from '@/features/zones/ZoneSelect';
+import { ZoneSizeCard } from '@/features/zones/ZoneSizeCard';
 import { Button } from '@simai/ui/components/button';
 import type { ReactNode } from 'react';
 
@@ -27,7 +28,7 @@ interface ZonesPageProps {
   workLayoutId?: number | null;
   /** 구역 고르기 줄 오른쪽에 붙는 버튼(addOnDemand 로 접혀 있는 동안에는 줄째 보이지 않는다). */
   headerAction?: ReactNode;
-  /** 저장·추가가 발행까지 끝났을 때 부른다. */
+  /** 저장·추가가 발행까지 끝났을 때 부른다(관제는 넘기지 않아 저장 뒤에도 편집 끝내기 전까지 편집을 이어 간다). */
   onCommitted?: () => void;
   /**
    * 새 구역 양식을 '구역 추가' 단추를 눌러야 연다(세팅의 구역 단계: AI 초안을 먼저 보이고 놓친 곳만 사람이 더한다). 기존 구역을
@@ -39,7 +40,7 @@ interface ZonesPageProps {
 /**
  * 구역 편집 도구(명세 FR-15·FR-16): 관제에서는 3D 위 왼쪽 패널, 세팅의 구역 단계에서는 3D 옆 칸. 관리자가 아니면 아무것도
  * 그리지 않는다(실시간 관제의 편집 모드는 관리자에게만 열리지만 세팅 화면은 역할을 확인하지 않아 여기서 막는다). 관제는 편집
- * 끝내기 버튼(headerAction)과 저장 뒤 편집 모드를 끝내는 함수(onCommitted)를 넘기고, 세팅 화면은 자리(inline)만 넘긴다.
+ * 끝내기 버튼(headerAction)을 넘기고 저장 뒤에도 편집을 이어 가며(S15P31A101-651), 세팅 화면은 자리(inline)만 넘긴다.
  */
 export function ZonesPage(props: ZonesPageProps) {
   const isAdmin = useCurrentRole() === 'ADMIN';
@@ -97,6 +98,7 @@ function ZoneEditPanel({
         <>
           <ZoneAttributesCard edit={edit} />
           <SurfaceCard edit={edit} />
+          <ZoneSizeCard edit={edit} />
           <ZoneActions edit={edit} />
         </>
       )}

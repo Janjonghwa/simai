@@ -16,7 +16,7 @@ import {
   SURFACE_ID_FIELD,
   ZONE_ID_FIELD,
 } from '@/features/zones/commitCache';
-import { CommitBlockedError } from '@/features/zones/commitErrors';
+import { CommitBlockedError, CommitInFlightError } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest, ZoneCommitResult } from '@/features/zones/types';
 import { useZoneSource, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
@@ -28,9 +28,17 @@ import {
   type QueryClient,
   type QueryKey,
 } from '@tanstack/react-query';
+import { useCallback } from 'react';
 
 /** 저장 mutation 키. */
 const COMMIT_MUTATION_KEY = [...ZONES_KEY, 'commit'] as const;
+
+/**
+ * 지금 저장을 보내고 있는 화면(QueryClient). 14차 로비에서 같은 새 구역이 2.3 s 간격으로 두 번 만들어졌다(cfg-67·68). 저장 단추마다
+ * 한 번에 하나만 보내지만(useExclusiveRun) 훅 인스턴스가 다르면(관제 편집 패널·세팅 초안 수락·구역 목록 이름 바꾸기) 서로 모르므로,
+ * 화면 단위로 한 번 더 막는다.
+ */
+const committing = new WeakSet<QueryClient>();
 
 /** 서버가 구성 묶음을 만들지 못해 구역·작업면 저장까지 모두 되돌린 오류 이름(ProblemDetail code). */
 const BUNDLE_FAILURE_CODES: ReadonlySet<string> = new Set([
@@ -172,7 +180,7 @@ export function useZoneCommitMutation(
 ) {
   const queryClient = useQueryClient();
   const planSource = useZoneSource(explicitSource);
-  return useMutation({
+  const mutation = useMutation({
     mutationKey: COMMIT_MUTATION_KEY,
     mutationFn: async (input: CommitInput): Promise<CommitDone> => {
       if (planSource) return saveToPlan(queryClient, planSource, input);
@@ -208,4 +216,19 @@ export function useZoneCommitMutation(
       if (needsRefetch(error)) invalidateCommitted(queryClient);
     },
   });
+  const mutate = mutation.mutateAsync;
+  /** 앞 저장이 끝나지 않았으면 보내지 않고 CommitInFlightError 를 던진다(받은 쪽은 알림 없이 무시한다). */
+  const mutateAsync = useCallback(
+    async (input: CommitInput): Promise<CommitDone> => {
+      if (committing.has(queryClient)) throw new CommitInFlightError();
+      committing.add(queryClient);
+      try {
+        return await mutate(input);
+      } finally {
+        committing.delete(queryClient);
+      }
+    },
+    [queryClient, mutate],
+  );
+  return { ...mutation, mutateAsync };
 }

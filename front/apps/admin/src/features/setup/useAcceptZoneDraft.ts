@@ -2,7 +2,7 @@ import { acceptedByZones, draftCreateRequest } from '@/features/setup/draftZone'
 import { markSetupZoneDraftAccepted, useSetupFlowStore } from '@/features/setup/setup.store';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
-import { commitErrorText } from '@/features/zones/commitErrors';
+import { commitErrorText, CommitInFlightError } from '@/features/zones/commitErrors';
 import { publishErrorText } from '@/features/zones/useConfigApply';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
@@ -52,7 +52,7 @@ export function useAcceptZoneDraft(
     setFailure(null);
     try {
       const result = await commit.mutateAsync({
-        request: draftCreateRequest(item),
+        request: draftCreateRequest(item, zones),
         zone: null,
         linked: null,
         origin: { source: 'AI', candidateId: id },
@@ -65,7 +65,9 @@ export function useAcceptZoneDraft(
         });
       }
     } catch (error) {
-      setFailure({ candidateId: id, text: commitErrorText(error) });
+      // 다른 저장이 아직 끝나지 않아 보내지 않았다(두 번 누름). 실패로 보이지 않는다.
+      if (!(error instanceof CommitInFlightError))
+        setFailure({ candidateId: id, text: commitErrorText(error) });
     } finally {
       sending.current = false;
       setPendingId(null);

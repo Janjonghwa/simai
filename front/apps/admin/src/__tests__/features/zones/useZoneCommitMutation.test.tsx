@@ -3,7 +3,7 @@ import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import { useWorkSurfaces } from '@/features/surfaces/useWorkSurfaces';
 import { BUNDLES_KEY, requestBundles, ZONES_KEY } from '@/features/zones/api';
-import { CommitBlockedError } from '@/features/zones/commitErrors';
+import { CommitBlockedError, CommitInFlightError } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { useZoneCommitMutation, type CommitInput } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
@@ -321,6 +321,28 @@ describe('useZoneCommitMutation: 저장 성공', () => {
       ]),
     );
     await waitFor(() => expect(zoneIn(view, result.zone_id).name).toBe('새 구역'));
+  });
+
+  it('앞 저장이 끝나기 전의 두 번째 저장은 보내지 않고 CommitInFlightError 를 던진다(다른 훅 인스턴스여도, S15P31A101-651)', async () => {
+    const view = await run();
+    // 같은 화면(QueryClient)의 다른 저장 훅(예: 세팅 초안 수락·구역 목록 이름 바꾸기).
+    const other = renderHook(() => useZoneCommitMutation(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    const input: CommitInput = { request: createBoth(), zone: null, linked: null };
+    let second: unknown;
+    await act(async () => {
+      const first = view.result.current.commit.mutateAsync(input);
+      second = await other.result.current.mutateAsync(input).catch((e: unknown) => e);
+      await first;
+    });
+    expect(second).toBeInstanceOf(CommitInFlightError);
+    expect(sent('POST', '/api/zones/commit')).toHaveLength(1);
+    // 끝난 뒤에는 다시 보낼 수 있다.
+    await commit(view, { request: createZoneOnly(), zone: null, linked: null });
+    expect(sent('POST', '/api/zones/commit')).toHaveLength(2);
   });
 
   it('구역 ARCHIVE: 구역과, 응답이 알려 준 보관한 작업면을 목록에서 뺀다(화면의 linked 가 아니라 응답 값)', async () => {

@@ -1,5 +1,8 @@
 import {
+  arrowAxis,
+  arrowSign,
   BOX_EDIT_HANDLES,
+  boxCenter,
   handleRank,
   type BoxEditArrow,
   type BoxEditHandle,
@@ -25,16 +28,31 @@ import {
   RING_OPACITY,
   SHAFT,
 } from '@/features/viewer3d/editing/boxEditStyle';
+import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
 import { createHandleRaycast } from '@/features/viewer3d/editing/handleInput';
 import type { ViewerTheme } from '@/features/viewer3d/palette';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
-import type { ThreeBox } from '@/features/viewer3d/worldCoordinates';
+import {
+  worldPoint,
+  worldToThree,
+  type ThreeBox,
+  type ThreePoint,
+} from '@/features/viewer3d/worldCoordinates';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
-import { DoubleSide, type Color, type Group, type Mesh } from 'three';
+import {
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type RefObject,
+  type SetStateAction,
+} from 'react';
+import { DoubleSide, Vector3, type Color, type Group, type Mesh } from 'three';
 import { useStore } from 'zustand';
 
 // 제어형 상자 편집 조작기의 손잡이: 가운데 구(바닥 이동)와 면별 화살표. 그리기와 포인터 이벤트 연결만 맡고 끌기 계산은 boxEditDrag 가 한다.
+// 화살표는 그 면의 바깥 가운데에 놓아 가운데 구와 겹치지 않게 하고 어느 면이 움직이는지 보이게 한다(S15P31A101-651). 화살표가
+// 놓인 곳은 끌기 축(상자 가운데를 지나는 그 축 직선) 위라 끌기 계산은 그대로다.
 
 type HandleRaycast = ReturnType<typeof createHandleRaycast>;
 
@@ -70,17 +88,46 @@ function pickedHandle(event: ThreeEvent<PointerEvent>, own: BoxEditHandle): BoxE
   return best ?? own;
 }
 
-/** 카메라 거리에 비례해 키워 화면에서 늘 같은 크기로 보이게 하고, 링은 카메라를 향하게 한다. */
-function useConstantScreenSize(group: RefObject<Group | null>, ring: RefObject<Mesh | null>) {
+const worldPosition = new Vector3();
+
+/** 카메라 거리에 비례해 키워 화면에서 늘 같은 크기로 보이게 하는 묶음. ring 을 주면 그 링이 카메라를 향하게 한다. */
+function ScreenSized({
+  name,
+  position,
+  ring,
+  children,
+}: {
+  name: string;
+  position: ThreePoint;
+  ring?: RefObject<Mesh | null>;
+  children: ReactNode;
+}) {
+  const group = useRef<Group>(null);
   useFrame(({ camera }) => {
     if (!group.current) return;
-    group.current.scale.setScalar(camera.position.distanceTo(group.current.position) * GIZMO_K);
-    ring.current?.quaternion.copy(camera.quaternion);
+    group.current.getWorldPosition(worldPosition);
+    group.current.scale.setScalar(camera.position.distanceTo(worldPosition) * GIZMO_K);
+    ring?.current?.quaternion.copy(camera.quaternion);
   });
+  return (
+    <group ref={group} name={name} position={position}>
+      {children}
+    </group>
+  );
+}
+
+/** 화살표를 놓을 그 면의 가운데(World 상자 → Three). 상자 가운데에서 그 축만 움직이는 면(최소·최대)으로 옮긴다. */
+function faceCenter(box: ViewerEditBox, arrow: BoxEditArrow): ThreePoint {
+  const center = [...boxCenter(box)] as [number, number, number];
+  const axis = arrowAxis(arrow);
+  center[axis] = arrowSign(arrow) > 0 ? box.max[axis] : box.min[axis];
+  return worldToThree(worldPoint(center[0], center[1], center[2]));
 }
 
 interface BoxHandlesProps {
   box: ThreeBox;
+  /** 같은 상자의 World 값. 화살표를 놓을 면의 가운데를 여기서 잰다. */
+  worldBox: ViewerEditBox;
   /** 보여 줄 손잡이(move 가 맨 앞). */
   handles: readonly BoxEditHandle[];
   hovered: BoxEditHandle | null;
@@ -89,14 +136,20 @@ interface BoxHandlesProps {
   onHover: Dispatch<SetStateAction<BoxEditHandle | null>>;
 }
 
-/** 상자 가운데에 놓는 손잡이 묶음. 호버·끌기 상태는 부모가 쥐고 여기서는 모양만 정한다. */
-export function BoxHandles({ box, handles, hovered, dragging, drag, onHover }: BoxHandlesProps) {
+/** 손잡이 묶음: 가운데 구는 상자 가운데, 화살표는 각 면의 바깥 가운데. 호버·끌기 상태는 부모가 쥐고 여기서는 모양만 정한다. */
+export function BoxHandles({
+  box,
+  worldBox,
+  handles,
+  hovered,
+  dragging,
+  drag,
+  onHover,
+}: BoxHandlesProps) {
   const get = useThree((s) => s.get);
   const theme = useStore(useViewerStore(), (s) => s.theme);
   const [raycast] = useState(() => createHandleRaycast(get));
-  const group = useRef<Group>(null);
   const ring = useRef<Mesh>(null);
-  useConstantScreenSize(group, ring);
 
   const eventsOf = (handle: BoxEditHandle): HandleEvents => ({
     onPointerDown: (event) => {
@@ -109,7 +162,7 @@ export function BoxHandles({ box, handles, hovered, dragging, drag, onHover }: B
   });
 
   return (
-    <group ref={group} name="box-edit-handles" position={box.position}>
+    <group name="box-edit-handles">
       {handles.map((handle) => {
         const on = dragging ? dragging === handle : hovered === handle;
         const view = {
@@ -120,9 +173,17 @@ export function BoxHandles({ box, handles, hovered, dragging, drag, onHover }: B
           events: eventsOf(handle),
         };
         return handle === 'move' ? (
-          <MoveHandle key={handle} ringRef={ring} {...view} />
+          <ScreenSized key={handle} name="box-edit-at:move" position={box.position} ring={ring}>
+            <MoveHandle ringRef={ring} {...view} />
+          </ScreenSized>
         ) : (
-          <ArrowHandle key={handle} handle={handle} {...view} />
+          <ScreenSized
+            key={handle}
+            name={`box-edit-at:${handle}`}
+            position={faceCenter(worldBox, handle)}
+          >
+            <ArrowHandle handle={handle} {...view} />
+          </ScreenSized>
         );
       })}
     </group>

@@ -5,13 +5,21 @@ import type { SurfaceGeometry } from '@/features/surfaces/types';
 import type { ViewerEditBox } from '@/features/viewer3d';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { createRequestOf } from '@/features/zones/zoneCommit';
-import { newZoneForm, surfaceZoneForm, type SurfaceDraft } from '@/features/zones/zoneEditModel';
+import {
+  newZoneForm,
+  surfaceZoneForm,
+  uniqueZoneName,
+  type AutoNameKind,
+  type SurfaceDraft,
+} from '@/features/zones/zoneEditModel';
 import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
 import { r3, SURFACE_ZONE_MARGIN_M, surfaceZoneShape } from '@/features/zones/zoneShape';
 
 // 세팅 AI 구역 초안 → 구역 저장 요청(순수 계산). 고소 작업면 초안은 작업면과 그 둘레 구역(관제에서 작업면을 추가할 때와 같은
 // surfaceZoneShape)이고, 그 밖(개구부·바닥 가장자리, 상판 높이를 믿을 수 없는 작업면)은 AI 다각형을 바깥으로
 // SURFACE_ZONE_MARGIN_M 민 구역이다. 늘 AI 원본 초안에서 계산하므로 같은 초안을 몇 번 계산해도 한 번만 넓혀진다.
+// 방 축에 거의 나란한 초안은 축 정렬 직사각형으로 맞춰 구역 편집기의 3D 손잡이로 고칠 수 있게 하고, 이름은 활성 구역과 겹치지
+// 않게 구분자를 붙인다(S15P31A101-651).
 
 type Point = readonly [number, number];
 
@@ -22,6 +30,18 @@ const SURFACE_TOP_MAX_M = 3;
 const MITER_LIMIT = 2;
 /** 구역 좌표가 초안 계산과 같다고 볼 차이(m). 서버가 돌려준 좌표와 견준다. */
 const SAME_POINT_EPS_M = 1e-4;
+/**
+ * 방 축(World X·Y)에서 이 각(rad)보다 덜 틀어진 초안은 축 정렬로 맞춘다. AI(zone_draft.py axis_snap_max_deg)와 같은 10° 로,
+ * 이 값을 넣기 전에 만든 초안(14차 작업대 81.9°)도 수락할 때 맞춘다. 회전한 상자는 구역 편집기의 손잡이로 고칠 수 없다.
+ */
+export const AXIS_SNAP_MAX_RAD = (10 * Math.PI) / 180;
+const HALF_PI = Math.PI / 2;
+
+/** 방향(rad)이 가장 가까운 World 축 방향(0·±π/2·π)에서 틀어진 각. */
+function axisOffset(angle: number): number {
+  const a = Math.abs(wrapYaw(angle)) % HALF_PI;
+  return Math.min(a, HALF_PI - a);
+}
 
 /** 초안 하나로 만들 구역: 양식·모양과, 고소 작업면이면 함께 만들 작업면. */
 interface DraftZonePlan {
@@ -34,18 +54,49 @@ interface DraftZonePlan {
  * 고소 작업면 초안의 작업면 형상. 작업면 초안이고 obb 가 있으며 상판 높이(top_height_m, 없으면 obb 높이)가 믿을 만한
  * 범위이고 형상 검사를 통과할 때만 만든다. 아니면 null(지어내지 않는다).
  */
-export function draftSurfaceGeometry(item: ZoneDraftItem): SurfaceGeometry | null {
+export function draftSurfaceGeometry(item: ZoneDraftItem, snap = true): SurfaceGeometry | null {
   const { obb } = item;
   if (item.candidate_kind !== 'ELEVATED_WORK_SURFACE' || obb === null) return null;
   const top = item.top_height_m ?? obb.size[2];
   if (!(top >= SURFACE_TOP_MIN_M && top <= SURFACE_TOP_MAX_M)) return null;
-  const geometry: SurfaceGeometry = {
-    centerXy: [obb.center[0], obb.center[1]],
-    sizeXy: [obb.size[0], obb.size[1]],
-    yawRad: wrapYaw(obb.yaw_rad),
-    topHeightM: top,
-  };
+  const yaw = wrapYaw(obb.yaw_rad);
+  const geometry: SurfaceGeometry =
+    snap && yaw !== 0 && axisOffset(yaw) < AXIS_SNAP_MAX_RAD
+      ? {
+          centerXy: [obb.center[0], obb.center[1]],
+          sizeXy: aabbSize(obb.size[0], obb.size[1], yaw),
+          yawRad: 0,
+          topHeightM: top,
+        }
+      : {
+          centerXy: [obb.center[0], obb.center[1]],
+          sizeXy: [obb.size[0], obb.size[1]],
+          yawRad: yaw,
+          topHeightM: top,
+        };
   return geometryErrors(geometry) === null ? geometry : null;
+}
+
+/** 가로·세로 w·d 를 yaw 만큼 돌린 직사각형을 덮는 축 정렬 상자의 가로·세로(0.001 m). AI 가 축에 맞춘 상자처럼 조금 크다. */
+function aabbSize(w: number, d: number, yaw: number): [number, number] {
+  const [cos, sin] = [Math.abs(Math.cos(yaw)), Math.abs(Math.sin(yaw))];
+  return [r3(w * cos + d * sin), r3(w * sin + d * cos)];
+}
+
+/** 네 변이 모두 방 축에 거의 나란한 사각형이면 그 축 정렬 경계 상자의 네 꼭짓점(반시계), 아니면 그대로. */
+function snapOutline(hull: readonly Point[]): readonly Point[] {
+  if (hull.length !== 4) return hull;
+  const nearAxis = hull.every((p, i) => {
+    const q = hull[(i + 1) % hull.length]!;
+    return axisOffset(Math.atan2(q[1] - p[1], q[0] - p[0])) < AXIS_SNAP_MAX_RAD;
+  });
+  if (!nearAxis) return hull;
+  const xs = hull.map((p) => p[0]);
+  const ys = hull.map((p) => p[1]);
+  return boxCorners({
+    min: [Math.min(...xs), Math.min(...ys), 0],
+    max: [Math.max(...xs), Math.max(...ys), 0],
+  });
 }
 
 /** o→a 와 o→b 의 외적. 양수면 o→a→b 가 왼쪽(반시계)으로 돈다. */
@@ -123,10 +174,10 @@ const boxCorners = ({ min, max }: ViewerEditBox): Point[] => [
  * 작업면이 없는 초안의 구역 모양: AI 다각형의 볼록 껍질을 SURFACE_ZONE_MARGIN_M 바깥으로 민 다각형. 점이 한 직선 위에만
  * 있으면 초안 상자(boxOfDraftItem)의 바닥을 쓴다. 높이는 초안 상자 그대로다(바닥 아래는 자르고, 너무 낮으면 2 m).
  */
-function draftZoneShape(item: ZoneDraftItem): ZoneShape {
+function draftZoneShape(item: ZoneDraftItem, snap: boolean): ZoneShape {
   const box = boxOfDraftItem(item);
   const hull = convexHull(item.polygon_xy);
-  const outline = hull.length >= 3 ? hull : boxCorners(box);
+  const outline = hull.length >= 3 ? (snap ? snapOutline(hull) : hull) : boxCorners(box);
   return {
     polygon_xy: bufferConvexPolygon(outline, SURFACE_ZONE_MARGIN_M),
     z_min_m: r3(box.min[2]),
@@ -134,10 +185,28 @@ function draftZoneShape(item: ZoneDraftItem): ZoneShape {
   };
 }
 
-/** 초안 하나로 만들 구역. 작업면을 믿을 수 있으면 작업면 구역, 아니면 AI 다각형을 민 일반 구역이다. */
-function planOf(item: ZoneDraftItem): DraftZonePlan {
-  const name = item.recommended_name;
-  const geometry = draftSurfaceGeometry(item);
+/** 작업면이 아닌 초안의 자동 이름 종류(구분자 모양). */
+const NAME_KIND_OF: Record<ZoneDraftItem['candidate_kind'], AutoNameKind> = {
+  ELEVATED_WORK_SURFACE: 'zone',
+  OPENING: 'opening',
+  FLOOR_EDGE: 'edge',
+};
+
+/**
+ * 초안 하나로 만들 구역. 작업면을 믿을 수 있으면 작업면 구역, 아니면 AI 다각형을 민 일반 구역이다. 이름은 AI 추천 이름이되
+ * 활성 구역(zones)과 겹치면 구분자를 붙인다. snap 이면 방 축에 거의 나란한 초안을 축 정렬로 맞춘다.
+ */
+function planOf(
+  item: ZoneDraftItem,
+  zones: readonly Pick<Zone, 'name'>[] = [],
+  snap = true,
+): DraftZonePlan {
+  const geometry = draftSurfaceGeometry(item, snap);
+  const name = uniqueZoneName(
+    item.recommended_name,
+    zones,
+    geometry ? 'surface' : NAME_KIND_OF[item.candidate_kind],
+  );
   if (geometry) {
     return {
       form: surfaceZoneForm(newZoneForm({ name }, name)),
@@ -147,14 +216,19 @@ function planOf(item: ZoneDraftItem): DraftZonePlan {
   }
   return {
     form: newZoneForm({ name, severity: item.recommended_severity }, name),
-    shape: draftZoneShape(item),
+    shape: draftZoneShape(item, snap),
     surface: null,
   };
 }
 
-/** 초안을 수락할 때 보낼 구역 만들기 요청(관제의 구역 추가와 같은 POST /api/zones/commit). */
-export const draftCreateRequest = (item: ZoneDraftItem): ZoneCommitRequest =>
-  createRequestOf(planOf(item));
+/**
+ * 초안을 수락할 때 보낼 구역 만들기 요청(관제의 구역 추가와 같은 POST /api/zones/commit). zones 는 이름이 겹치지 않게 볼 활성
+ * 구역이다.
+ */
+export const draftCreateRequest = (
+  item: ZoneDraftItem,
+  zones: readonly Pick<Zone, 'name'>[] = [],
+): ZoneCommitRequest => createRequestOf(planOf(item, zones));
 
 /** 두 다각형이 같은 꼭짓점들인지(시작점·순서와 상관없이, 오차 SAME_POINT_EPS_M 안). */
 function samePolygon(a: readonly Point[], b: readonly Point[]): boolean {
@@ -165,7 +239,7 @@ function samePolygon(a: readonly Point[], b: readonly Point[]): boolean {
 
 /**
  * 이미 구역으로 만든 초안 ID: 초안에서 계산한 구역 다각형이 지금 구역 중 하나와 같다. 새로 고쳐 수락 기록을 잊어도 같은
- * 초안으로 구역을 또 만들지 않게 한다.
+ * 초안으로 구역을 또 만들지 않게 한다. 축 정렬로 맞추기 전에 수락한 구역도 알아보도록 맞추지 않은 다각형과도 견준다.
  */
 export function acceptedByZones(
   drafts: readonly ZoneDraftItem[],
@@ -173,8 +247,8 @@ export function acceptedByZones(
 ): string[] {
   return drafts
     .filter((item) => {
-      const polygon = planOf(item).shape.polygon_xy;
-      return zones.some((zone) => samePolygon(zone.polygon, polygon));
+      const polygons = [planOf(item).shape.polygon_xy, planOf(item, [], false).shape.polygon_xy];
+      return zones.some((zone) => polygons.some((polygon) => samePolygon(zone.polygon, polygon)));
     })
     .map((item) => item.candidate_id);
 }

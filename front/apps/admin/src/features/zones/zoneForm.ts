@@ -57,23 +57,33 @@ export interface ZoneFormErrors {
   severity?: string;
 }
 
-/** 이름 검사 문구. 저장해도 되면 undefined. savedName 은 받은 구역의 이름이다. */
-export function nameError(name: string, savedName: string): string | undefined {
+/** 다른 활성 구역과 이름이 같을 때 문구. */
+export const DUPLICATE_NAME_ERROR = '같은 이름의 구역이 있습니다.';
+
+/**
+ * 이름 검사 문구. 저장해도 되면 undefined. savedName 은 받은 구역의 이름, taken 은 다른 활성 구역들의 이름(앞뒤 공백을 뗀
+ * 것)이다. 길이·겹침은 서버에 없는 화면 제한이라 새로 고친 이름에만 둔다(받은 이름이 다른 칸 저장을 막지 않는다).
+ */
+export function nameError(
+  name: string,
+  savedName: string,
+  taken?: ReadonlySet<string>,
+): string | undefined {
   const trimmed = name.trim();
   if (trimmed === '') return '이름을 입력하세요.';
-  // 길이 제한은 서버에 없는 화면 제한이라 새로 고친 이름에만 둔다(받은 긴 이름이 다른 칸 저장을 막지 않는다).
-  if (trimmed !== savedName.trim() && trimmed.length > NAME_MAX)
-    return `이름은 ${NAME_MAX}자까지입니다.`;
+  if (trimmed === savedName.trim()) return undefined;
+  if (trimmed.length > NAME_MAX) return `이름은 ${NAME_MAX}자까지입니다.`;
+  if (taken?.has(trimmed)) return DUPLICATE_NAME_ERROR;
   return undefined;
 }
 
-/** saved 는 받은 구역의 값, hasHeight 는 높이(z_min_m·z_max_m)가 있는지다. */
+/** saved 는 받은 구역의 값, hasHeight 는 높이(z_min_m·z_max_m)가 있는지, taken 은 다른 활성 구역들의 이름이다. */
 export function formErrors(
   form: ZoneForm,
-  { saved, hasHeight }: { saved: ZoneForm; hasHeight: boolean },
+  { saved, hasHeight, taken }: { saved: ZoneForm; hasHeight: boolean; taken?: ReadonlySet<string> },
 ): ZoneFormErrors {
   const errors: ZoneFormErrors = {};
-  const name = nameError(form.name, saved.name);
+  const name = nameError(form.name, saved.name, taken);
   if (name) errors.name = name;
   // 서버(INVALID_Z_RANGE)·계약: VOLUME_3D 는 높이가 있어야 한다.
   if (form.judgeType === 'VOLUME_3D' && !hasHeight)
@@ -118,8 +128,8 @@ export function bodyOf(zone: Zone, form: ZoneForm, shape: ZoneShape | null): Zon
 }
 
 /** 새 구역 양식 검사. 이름·판정 유형은 저장과 같은 규칙이고, 유형은 골라야 한다. 상자는 숫자 칸이 미리 걸러 늘 높이가 있다. */
-export function newZoneErrors(form: ZoneForm): ZoneFormErrors {
-  const errors = formErrors(form, { saved: { ...form, name: '' }, hasHeight: true });
+export function newZoneErrors(form: ZoneForm, taken?: ReadonlySet<string>): ZoneFormErrors {
+  const errors = formErrors(form, { saved: { ...form, name: '' }, hasHeight: true, taken });
   if (form.zoneType === '') errors.zoneType = '유형을 고르세요.';
   return errors;
 }

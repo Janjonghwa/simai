@@ -303,8 +303,11 @@ describe('관제 관리자 편집 모드', () => {
     act(() => addBtn.click());
 
     await waitFor(() => expect(commits).toHaveLength(1));
-    // 추가가 발행까지 끝나면 편집 모드가 저절로 끝난다.
-    await waitFor(() => expect(useZoneEditModeStore.getState().editing).toBe(false));
+    // 추가가 발행까지 끝나도 편집 모드는 그대로이고 만든 구역이 골라진다(편집 끝내기 전까지 이어서 고친다, S15P31A101-651).
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '고소작업면 A'),
+    );
+    expect(useZoneEditModeStore.getState().editing).toBe(true);
     expect(commits[0]).toMatchObject({
       zone: {
         op: 'CREATE',
@@ -336,7 +339,7 @@ describe('관제 관리자 편집 모드', () => {
     });
   });
 
-  it('기존 구역을 고쳐 저장하면 발행까지 끝난 뒤 편집 모드가 저절로 끝나고, 다시 + 로 열면 새 구역 양식이다', async () => {
+  it('기존 구역을 고쳐 저장해도 편집 끝내기 전까지 편집 모드가 이어지고, 끝낸 뒤 다시 + 로 열면 새 구역 양식이다', async () => {
     renderMonitor();
     await screen.findByTestId('viewer3d');
     const list = await screen.findByRole('region', { name: '위험 구역' });
@@ -351,11 +354,21 @@ describe('관제 관리자 편집 모드', () => {
     });
     act(() => screen.getByRole('button', { name: '저장' }).click());
 
+    await waitFor(() => expect(commits).toHaveLength(1));
+    expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', zone_id: 'z-04' }, publish: true });
+    // 저장해도 패널은 남아 같은 구역을 이어서 고칠 수 있다(저장 단추는 다시 바뀐 것이 생길 때까지 꺼진다).
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: '저장' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
+    expect(useZoneEditModeStore.getState().editing).toBe(true);
+
+    act(() => screen.getByRole('button', { name: '편집 끝내기' }).click());
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull(),
     );
-    expect(commits).toHaveLength(1);
-    expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', zone_id: 'z-04' }, publish: true });
 
     // 저장한 구역이 선택돼 있어도 + 는 그 구역이 아니라 새 구역 양식을 연다.
     act(() => screen.getByRole('button', { name: '새 구역 추가' }).click());

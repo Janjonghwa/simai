@@ -15,7 +15,7 @@ import math
 import struct
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -30,6 +30,14 @@ CandidateKind = Literal["ELEVATED_WORK_SURFACE", "OPENING", "FLOOR_EDGE"]
 EvalType = Literal["GROUND_FOOTPRINT", "VOLUME_3D"]
 DraftSeverity = Literal["CRITICAL", "HIGH"]
 VlmOpinionStatus = Literal["VLM", "NO_OPINION"]
+
+# 'AI 의견 없음' 초안의 종류 이름. 관제 구역 편집기의 자동 이름(zoneEditModel.ts AUTO_ZONE_NAME)과 같은 말을 쓴다.
+DEFAULT_NAME_BY_KIND: Mapping[CandidateKind, str] = {
+    "ELEVATED_WORK_SURFACE": "고소작업면",
+    "OPENING": "개구부",
+    "FLOOR_EDGE": "바닥 단부",
+}
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 SYSTEM_PROMPT = (
     "당신은 산업·교실 안전 관제 플랫폼 simai 의 위험구역 초안 보조 모델이다.\n"
@@ -103,6 +111,10 @@ class ZoneGeometryConfig:
     min_floor_edge_length_m: float = 0.60
     floor_edge_strip_width_m: float = 0.30
     max_candidates: int = 16
+    # 주축이 방 축(World +X·+Y, 세팅 때 벽에 맞춘다)과 이 각도(도)보다 덜 틀어졌으면 축 정렬(yaw=0)로 맞춘다(S15P31A101-651).
+    # 미리보기 점구름의 PCA 주축은 상판 반사·가림으로 수 도씩 흔들리는데, 회전한 상자는 구역 편집기에서 손잡이로 고칠 수 없다.
+    # 10° 는 14차 로비 실측(작업대 81.9° = 축에서 8.1°)을 넣고 실제로 비스듬히 놓인 물체(보통 15° 이상)는 남기는 값이다.
+    axis_snap_max_deg: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -353,7 +365,9 @@ def _extract_elevated_surfaces(
         if top_height_m < cfg.min_elevated_z_m:
             continue
 
-        cx, cy, lx, ly, yaw_rad, corners_xy = _fit_obb_2d(top_pts[:, :2], min_extent_m=res)
+        cx, cy, lx, ly, yaw_rad, corners_xy = _fit_obb_2d(
+            top_pts[:, :2], min_extent_m=res, axis_snap_rad=math.radians(cfg.axis_snap_max_deg)
+        )
         area_m2 = lx * ly
         if area_m2 < cfg.min_surface_area_m2 or area_m2 > cfg.max_surface_area_m2:
             continue
@@ -457,7 +471,9 @@ def _extract_openings_and_edges(
             comp_pts = deep_pts[in_comp]
             if len(comp_pts) < cfg.min_opening_points:
                 continue
-            cx, cy, lx, ly, yaw_rad, corners_xy = _fit_obb_2d(comp_pts[:, :2], min_extent_m=res)
+            cx, cy, lx, ly, yaw_rad, corners_xy = _fit_obb_2d(
+                comp_pts[:, :2], min_extent_m=res, axis_snap_rad=math.radians(cfg.axis_snap_max_deg)
+            )
             area_m2 = lx * ly
             z_min_m = float(np.min(comp_pts[:, 2]))
             touches_border = any(r == 0 or r == ny - 1 or c == 0 or c == nx - 1 for r, c in comp_cells)
@@ -509,7 +525,12 @@ def _extract_openings_and_edges(
                 [[xmin + (c + 0.5) * res, ymin + (r + 0.5) * res] for r, c in comp_cells],
                 dtype=np.float64,
             )
-            _, _, lx, ly, _, corners_xy = _fit_obb_2d(cell_centers, min_extent_m=res, pad_m=res * 0.5)
+            _, _, lx, ly, _, corners_xy = _fit_obb_2d(
+                cell_centers,
+                min_extent_m=res,
+                pad_m=res * 0.5,
+                axis_snap_rad=math.radians(cfg.axis_snap_max_deg),
+            )
             area_m2 = lx * ly
             if not (cfg.min_opening_area_m2 <= area_m2 <= cfg.max_opening_area_m2):
                 continue
@@ -599,13 +620,24 @@ def _is_enclosed_by(comp_cells: Sequence[tuple[int, int]], floor_occ: np.ndarray
     return border_total > 0 and (border_floor / border_total) >= 0.75
 
 
+def _axis_offset_rad(yaw_rad: float) -> float:
+    """(-π/2, π/2] 의 yaw 가 가장 가까운 World 축 방향(0 또는 ±π/2)에서 틀어진 각(rad)."""
+    a = abs(yaw_rad)
+    return min(a, abs(math.pi / 2 - a))
+
+
 def _fit_obb_2d(
     xy: np.ndarray,
     *,
     min_extent_m: float,
     pad_m: float = 0.0,
+    axis_snap_rad: float = 0.0,
 ) -> tuple[float, float, float, float, float, tuple[tuple[float, float], ...]]:
-    """2D 점들의 주축(PCA) 유향 경계 상자(중심, 가로·세로 길이, yaw_rad, 반시계 4꼭짓점)."""
+    """2D 점들의 주축(PCA) 유향 경계 상자(중심, 가로·세로 길이, yaw_rad, 반시계 4꼭짓점).
+
+    주축이 World 축(0·±π/2)에서 `axis_snap_rad` 보다 덜 틀어졌으면 yaw=0 으로 두고 World 축 기준 경계 상자를 잰다
+    (점을 모두 덮으므로 회전 상자보다 조금 크다).
+    """
     mean = xy.mean(axis=0)
     centered = xy - mean
     if len(xy) >= 3:
@@ -619,6 +651,8 @@ def _fit_obb_2d(
                 yaw_rad -= math.pi
             elif yaw_rad <= -math.pi / 2:
                 yaw_rad += math.pi
+            if _axis_offset_rad(yaw_rad) < axis_snap_rad:
+                yaw_rad = 0.0
         else:
             yaw_rad = 0.0
     else:
@@ -800,22 +834,26 @@ def default_draft_for_candidate(
     *,
     evidence_cameras: Sequence[str] = (),
 ) -> ZoneDraftItem:
-    """VLM 비가용·실패 시 결정적 기하 후보를 'AI 의견 없음' 초안으로 변환한다."""
+    """VLM 비가용·실패 시 결정적 기하 후보를 'AI 의견 없음' 초안으로 변환한다.
+
+    이름은 종류 이름(구분자 없음)이고, `assess_geometry_candidates` 가 끝에 `unique_draft_names` 로 구분자를 붙인다.
+    `index` 는 예전 호출과 맞추려고 남긴 인자다.
+    """
     if candidate.candidate_kind == "ELEVATED_WORK_SURFACE":
         zone_kind = "WORK_SURFACE"
         eval_type: EvalType = "VOLUME_3D"
         severity: DraftSeverity = "HIGH"
-        name = f"고소 작업면 후보 {index}"
+        name = DEFAULT_NAME_BY_KIND["ELEVATED_WORK_SURFACE"]
     elif candidate.candidate_kind == "OPENING":
         zone_kind = "OPENING"
         eval_type = "GROUND_FOOTPRINT"
         severity = "CRITICAL"
-        name = f"바닥 개구부 후보 {index}"
+        name = DEFAULT_NAME_BY_KIND["OPENING"]
     else:
         zone_kind = "FLOOR_EDGE"
         eval_type = "GROUND_FOOTPRINT"
         severity = "CRITICAL"
-        name = f"바닥 단부 후보 {index}"
+        name = DEFAULT_NAME_BY_KIND["FLOOR_EDGE"]
 
     return ZoneDraftItem(
         candidate_id=candidate.candidate_id,
@@ -1032,6 +1070,47 @@ def assess_geometry_candidates(
         except (VlmError, ValueError, TypeError):
             drafts.append(default_draft_for_candidate(cand, idx, evidence_cameras=evidence_cams))
 
+    drafts = unique_draft_names(drafts)
     if any_vlm_succeeded and model_version:
         return drafts, "SUCCEEDED", model_version
     return drafts, "NO_OPINION", None
+
+
+def _separator(kind: CandidateKind, n: int) -> str:
+    """n(1부터)번째 구분자. 고소 작업면은 A·B·…(26개 넘으면 27·28…), 그 밖은 1·2·…."""
+    if kind == "ELEVATED_WORK_SURFACE" and n <= len(_LETTERS):
+        return _LETTERS[n - 1]
+    return str(n)
+
+
+def unique_draft_names(drafts: Sequence[ZoneDraftItem]) -> list[ZoneDraftItem]:
+    """초안 이름에 구분자를 붙여 한 번의 초안 안에서 겹치지 않게 한다(S15P31A101-651).
+
+    - 'AI 의견 없음' 초안(종류 이름)은 늘 `종류 + 구분자`(고소작업면 A, 개구부 1)다.
+    - VLM 이 준 이름은 같은 이름이 둘 이상일 때만 구분자를 붙인다(작업대 상판 A·B). 하나뿐이면 그대로 둔다.
+    - 이미 쓴 이름(다른 초안의 이름이나 앞서 붙인 이름)은 건너뛴다. 관제의 활성 구역과 겹치는지는 수락하는 화면이 본다.
+    """
+    counts: dict[str, int] = {}
+    for d in drafts:
+        counts[d.recommended_name] = counts.get(d.recommended_name, 0) + 1
+    used = {d.recommended_name for d in drafts if not _needs_separator(d, counts)}
+    next_n: dict[str, int] = {}
+    out: list[ZoneDraftItem] = []
+    for d in drafts:
+        base = d.recommended_name
+        if not _needs_separator(d, counts):
+            out.append(d)
+            continue
+        n = next_n.get(base, 1)
+        name = f"{base} {_separator(d.candidate_kind, n)}"
+        while name in used:
+            n += 1
+            name = f"{base} {_separator(d.candidate_kind, n)}"
+        next_n[base] = n + 1
+        used.add(name)
+        out.append(replace(d, recommended_name=name))
+    return out
+
+
+def _needs_separator(draft: ZoneDraftItem, counts: Mapping[str, int]) -> bool:
+    return draft.vlm_status == "NO_OPINION" or counts[draft.recommended_name] > 1

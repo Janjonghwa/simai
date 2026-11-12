@@ -279,3 +279,69 @@ describe('acceptedByZones', () => {
     expect(acceptedByZones(drafts, [])).toEqual([]);
   });
 });
+
+describe('방 축에 거의 나란한 초안의 축 정렬(S15P31A101-651)', () => {
+  it('10° 안으로 기운 작업면은 yaw 0 이고 기운 상판을 덮는 축 정렬 크기다', () => {
+    const yaw = 0.1;
+    const geometry = draftSurfaceGeometry(draftOf(SURFACE_INPUT, { obb: obbOf(yaw) }))!;
+    expect(geometry.yawRad).toBe(0);
+    expect(geometry.centerXy).toEqual([5, 0.8]);
+    expect(geometry.sizeXy[0]).toBeCloseTo(3 * Math.cos(yaw) + 0.6 * Math.sin(yaw), 3);
+    expect(geometry.sizeXy[1]).toBeCloseTo(3 * Math.sin(yaw) + 0.6 * Math.cos(yaw), 3);
+  });
+
+  it('세로축(±90°)에서 10° 안이면 가로·세로가 바뀐 축 정렬이다(14차 작업대 81.9°)', () => {
+    const yaw = 1.4289;
+    const geometry = draftSurfaceGeometry(draftOf(SURFACE_INPUT, { obb: obbOf(yaw) }))!;
+    expect(geometry.yawRad).toBe(0);
+    expect(geometry.sizeXy[0]).toBeLessThan(geometry.sizeXy[1]);
+    // 축 정렬 작업면 구역은 직사각형이다(편집기 손잡이가 뜬다).
+    const body = zoneBodyOf(draftCreateRequest(draftOf(SURFACE_INPUT, { obb: obbOf(yaw) })));
+    expect(new Set(body.polygon_xy.map(([x]) => x)).size).toBe(2);
+    expect(new Set(body.polygon_xy.map(([, y]) => y)).size).toBe(2);
+  });
+
+  it('10° 보다 많이 기운 작업면은 회전을 그대로 둔다', () => {
+    expect(draftSurfaceGeometry(draftOf(SURFACE_INPUT, { obb: obbOf(0.2) }))?.yawRad).toBe(0.2);
+  });
+
+  it('작업면이 없는 초안도 네 변이 축에 거의 나란하면 경계 상자를 0.3 m 민 직사각형이다', () => {
+    const tilted = rotatedRect(7.8, 8.4, 1.6, 0.8, 0.08);
+    const body = zoneBodyOf(draftCreateRequest(draftOf(OPENING_INPUT, { polygon_xy: tilted })));
+    const xs = tilted.map(([x]) => x);
+    const ys = tilted.map(([, y]) => y);
+    expect(body.polygon_xy).toHaveLength(4);
+    expect(Math.min(...body.polygon_xy.map(([x]) => x))).toBeCloseTo(Math.min(...xs) - 0.3, 2);
+    expect(Math.max(...body.polygon_xy.map(([, y]) => y))).toBeCloseTo(Math.max(...ys) + 0.3, 2);
+    expect(new Set(body.polygon_xy.map(([x]) => x)).size).toBe(2);
+    // 많이 기운 윤곽은 그대로 돈 다각형이다.
+    const rotated = rotatedRect(7.8, 8.4, 1.6, 0.8, 0.5);
+    const kept = zoneBodyOf(draftCreateRequest(draftOf(OPENING_INPUT, { polygon_xy: rotated })));
+    expect(new Set(kept.polygon_xy.map(([x]) => x)).size).toBe(4);
+  });
+
+  it('축 정렬 전에 수락한(기운 모양 그대로의) 구역도 이미 만든 초안으로 본다', () => {
+    const item = draftOf(SURFACE_INPUT, { obb: obbOf(0.1) });
+    const oldPolygon = surfaceZoneShape({ ...SURFACE_GEOMETRY, yawRad: 0.1 }).polygon_xy;
+    expect(acceptedByZones([item], [{ polygon: oldPolygon }])).toEqual(['cand-surface-2']);
+  });
+});
+
+describe('초안 이름(S15P31A101-651)', () => {
+  it('활성 구역과 겹치지 않으면 AI 추천 이름 그대로다', () => {
+    expect(zoneBodyOf(draftCreateRequest(SURFACE, [{ name: '단상' }])).name).toBe(
+      '전면 단상 작업면 후보',
+    );
+  });
+
+  it('겹치면 구분자를 붙인다: 작업면은 A·B, 개구부는 1·2', () => {
+    const surfaceName = (zones: { name: string }[]) =>
+      zoneBodyOf(
+        draftCreateRequest(draftOf(SURFACE_INPUT, { recommended_name: '작업대 상판' }), zones),
+      ).name;
+    expect(surfaceName([{ name: '작업대 상판' }])).toBe('작업대 상판 A');
+    expect(surfaceName([{ name: '작업대 상판' }, { name: '작업대 상판 A' }])).toBe('작업대 상판 B');
+    const opening = draftOf(OPENING_INPUT, { recommended_name: '개구부 1' });
+    expect(zoneBodyOf(draftCreateRequest(opening, [{ name: '개구부 1' }])).name).toBe('개구부 2');
+  });
+});

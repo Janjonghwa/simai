@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import struct
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -22,10 +23,12 @@ from simai_ai.vlm.zone_draft import (
     GeometryCandidate,
     ZoneGeometryConfig,
     assess_geometry_candidates,
+    default_draft_for_candidate,
     extract_geometry_candidates,
     load_points_from_bytes,
     parse_candidate_vlm_response,
     select_candidate_crops,
+    unique_draft_names,
 )
 
 
@@ -333,3 +336,86 @@ def test_parse_candidate_vlm_response_rejects_bad_payload():
             ),
             cand,
         )
+
+
+def _rotated_platform(deg: float, top_z: float = 0.75) -> np.ndarray:
+    """(1.2, 0.8) 중심 1.2×0.6 m 상판을 deg 만큼 돌린 점군."""
+    xs = np.arange(-0.6, 0.6 + 1e-6, 0.04)
+    ys = np.arange(-0.3, 0.3 + 1e-6, 0.04)
+    gx, gy = np.meshgrid(xs, ys)
+    t = np.radians(deg)
+    x = 1.2 + gx.ravel() * np.cos(t) - gy.ravel() * np.sin(t)
+    y = 0.8 + gx.ravel() * np.sin(t) + gy.ravel() * np.cos(t)
+    return np.column_stack([x, y, np.full(x.size, top_z)])
+
+
+@pytest.mark.parametrize("deg", [6.0, -6.0, 84.0])
+def test_elevated_surface_near_room_axis_snaps_to_axis_aligned(deg):
+    """방 축(0·±90°)에서 10° 안으로 틀어진 상판은 yaw=0 축 정렬 상자로 맞춘다(S15P31A101-651)."""
+    pts = np.vstack([_make_flat_floor(), _rotated_platform(deg)])
+    elev = next(c for c in extract_geometry_candidates(pts) if c.candidate_kind == "ELEVATED_WORK_SURFACE")
+    assert elev.obb is not None
+    assert elev.obb.yaw_rad == 0.0
+    xs = sorted({round(p[0], 6) for p in elev.polygon_xy})
+    ys = sorted({round(p[1], 6) for p in elev.polygon_xy})
+    assert len(xs) == 2 and len(ys) == 2  # 꼭짓점이 축 정렬 직사각형
+    assert elev.obb.center[0] == pytest.approx(1.2, abs=0.1)
+    assert elev.obb.center[1] == pytest.approx(0.8, abs=0.1)
+
+
+def test_elevated_surface_clearly_rotated_keeps_yaw():
+    """30° 비스듬히 놓인 상판은 회전을 그대로 둔다."""
+    pts = np.vstack([_make_flat_floor(), _rotated_platform(30.0)])
+    elev = next(c for c in extract_geometry_candidates(pts) if c.candidate_kind == "ELEVATED_WORK_SURFACE")
+    assert elev.obb is not None
+    assert elev.obb.yaw_rad == pytest.approx(np.radians(30.0), abs=np.radians(3.0))
+
+
+def test_axis_snap_disabled_keeps_small_yaw():
+    """axis_snap_max_deg=0 이면 예전처럼 PCA 주축을 그대로 쓴다."""
+    pts = np.vstack([_make_flat_floor(), _rotated_platform(6.0)])
+    cands = extract_geometry_candidates(pts, ZoneGeometryConfig(axis_snap_max_deg=0.0))
+    elev = next(c for c in cands if c.candidate_kind == "ELEVATED_WORK_SURFACE")
+    assert elev.obb is not None
+    assert elev.obb.yaw_rad == pytest.approx(np.radians(6.0), abs=np.radians(2.0))
+
+
+def _cand(cid: str, kind: str) -> GeometryCandidate:
+    return GeometryCandidate(
+        candidate_id=cid,
+        candidate_kind=kind,  # type: ignore[arg-type]
+        polygon_xy=((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+        z_min_m=0.0,
+        z_max_m=2.5,
+        top_height_m=0.75 if kind == "ELEVATED_WORK_SURFACE" else None,
+    )
+
+
+def test_default_draft_names_are_kind_plus_separator():
+    """'AI 의견 없음' 초안 이름은 종류 + 구분자(고소작업면 A·B, 개구부 1, 바닥 단부 1)다."""
+    cands = [
+        _cand("cand-elevated-01", "ELEVATED_WORK_SURFACE"),
+        _cand("cand-elevated-02", "ELEVATED_WORK_SURFACE"),
+        _cand("cand-opening-01", "OPENING"),
+        _cand("cand-edge-01", "FLOOR_EDGE"),
+    ]
+    drafts, status, _ = assess_geometry_candidates(cands, vlm_client=None)
+    assert status == "NO_OPINION"
+    assert [d.recommended_name for d in drafts] == ["고소작업면 A", "고소작업면 B", "개구부 1", "바닥 단부 1"]
+
+
+def test_unique_draft_names_suffixes_only_duplicate_vlm_names():
+    """VLM 이 같은 이름을 여러 번 주면 구분자를 붙이고, 하나뿐인 이름은 그대로 둔다."""
+    elevated = [_cand(f"cand-elevated-0{i}", "ELEVATED_WORK_SURFACE") for i in (1, 2, 3)]
+    named = [
+        replace(default_draft_for_candidate(c, 1), recommended_name=n, vlm_status="VLM")
+        for c, n in zip(elevated, ["작업대 상판", "작업대 상판", "단상"], strict=True)
+    ]
+    out = unique_draft_names(named)
+    assert [d.recommended_name for d in out] == ["작업대 상판 A", "작업대 상판 B", "단상"]
+    # 이미 있는 이름(VLM 이 준 '고소작업면 A')은 건너뛴다
+    clash = [
+        replace(default_draft_for_candidate(elevated[0], 1), recommended_name="고소작업면 A", vlm_status="VLM"),
+        default_draft_for_candidate(elevated[1], 2),
+    ]
+    assert [d.recommended_name for d in unique_draft_names(clash)] == ["고소작업면 A", "고소작업면 B"]

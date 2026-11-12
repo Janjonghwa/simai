@@ -2,6 +2,7 @@ import type { Zone } from '@/features/zones/types';
 import { defaultNewBox } from '@/features/zones/zoneEditModel';
 import {
   bodyOf,
+  DUPLICATE_NAME_ERROR,
   formErrors,
   formOf,
   NAME_INPUT_MAX,
@@ -188,6 +189,23 @@ describe('zoneForm', () => {
       [3, 5.5],
     ]);
     expect(body).toMatchObject({ zone_kind: 'LIFTING', z_min_m: 0, z_max_m: 2 });
+  });
+});
+
+describe('이름 겹침(S15P31A101-651)', () => {
+  const taken = new Set(['개구부 1', '고소작업면 A']);
+
+  it('다른 활성 구역과 같은 이름으로 고치면 막고, 받은 이름 그대로면 겹쳐도 막지 않는다', () => {
+    expect(nameError(' 개구부 1 ', '단상', taken)).toBe(DUPLICATE_NAME_ERROR);
+    expect(nameError('개구부 2', '단상', taken)).toBeUndefined();
+    // 예전에 겹친 이름으로 저장된 구역은 이름을 안 고쳤으면 다른 칸 저장을 막지 않는다.
+    expect(nameError('개구부 1', '개구부 1', taken)).toBeUndefined();
+  });
+
+  it('새 구역 양식도 겹친 이름을 막는다', () => {
+    const form = { ...NEW_ZONE_FORM, zoneType: 'LIFTING', name: '고소작업면 A' };
+    expect(newZoneErrors(form, taken).name).toBe(DUPLICATE_NAME_ERROR);
+    expect(newZoneErrors(form).name).toBeUndefined();
   });
 });
 
