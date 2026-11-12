@@ -4,10 +4,17 @@ import type { AvatarPoseView } from '@/features/viewer3d/people/avatarFrame';
 // EXP-02 메시를 그릴지, 기본 캡슐(-44·-56 경로)로 되돌아갈지 정한다(docs/design/avatar-pose-stream.md '뷰어 구동').
 // 하나라도 맞으면 되돌아간다. 위치·접지·관측 상태는 늘 Tier 0(world_state)이고 여기서 바꾸지 않는다.
 
-/** 새 포즈가 이만큼 오지 않으면 끊김(뷰어 수신 기준, ms). 명세 20.4 초기값. */
-export const AVATAR_STALL_MS = 500;
-/** world_state t_latest_global − 포즈 촬영 시각이 이만큼 넘으면 늦음(ms). 명세 20.4 초기값. */
-export const AVATAR_LATE_MS = 500;
+/**
+ * 새 포즈가 이만큼 오지 않으면 끊김(뷰어 수신 기준, ms).
+ * Tier 0 공유 채널 기록 주기(5 Hz, 200 ms) + 대표 카메라 HMR 추론 + 중계·WS 전달 지터를 감안해 1000 ms 로 둔다(-650).
+ * 아바타 포즈 허용 나이를 늘려도 위치·접지·위험 판정은 늘 Tier 0(world_state, 10 Hz)가 정본이다.
+ */
+export const AVATAR_STALL_MS = 1000;
+/**
+ * world_state t_latest_global − 포즈 촬영 시각이 이만큼 넘으면 늦음(ms).
+ * 5 Hz 공유 채널 표본 간격(200 ms)과 부하 시 아바타 자체 감속(최대 800 ms)을 수용하도록 1000 ms 로 둔다(-650).
+ */
+export const AVATAR_LATE_MS = 1000;
 /** 관절 회전 재생 지연(ms). 5 Hz 표본 간격보다 커서 거의 늘 두 표본 사이를 보간한다. */
 export const AVATAR_PLAYBACK_DELAY_MS = 250;
 
@@ -26,7 +33,7 @@ export const AVATAR_MESH_FALLBACKS = [
 ] as const;
 /**
  * OFF 메시 끔 · NO_POSE 포즈 없음 · IDENTITY ID 불확실이거나 교정 차수가 다름 · CALIBRATION 보정 버전 다름 ·
- * STALLED 0.5 s 넘게 새 포즈 없음 · HMR_LATE 촬영 시각이 World 보다 500 ms 넘게 늦음 · NO_ASSET 자산 없음 ·
+ * STALLED 1.0 s 넘게 새 포즈 없음 · HMR_LATE 촬영 시각이 World 보다 1000 ms 넘게 늦음 · NO_ASSET 자산 없음 ·
  * JOINT_MISMATCH 자산 관절 수와 포즈 길이가 다름 · NO_PELVIS Tier 0 pelvis 없음(정렬 불가) ·
  * ASSET_LOADING 자산 읽는 중 · ASSET_ERROR 자산 내려받기·sha256·리그 확인 실패.
  */

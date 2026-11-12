@@ -106,7 +106,7 @@ def test_freeze_upload_then_schema_valid_poses_without_mutating_tier0(rig):
     source.item = snapshot(clock[0])
     loop.step()
     sender.tick()
-    assert len(uploads) == 1 and model.calls == 8
+    assert len(uploads) == 1 and model.calls == 2
     asset, batch = sock.messages
     assert asset["msg_type"] == "avatar_asset" and batch["msg_type"] == "avatar_pose_batch"
     assert _schema_errors("avatar_asset", asset) == []
@@ -136,7 +136,11 @@ def test_marker_unknown_or_over_budget_never_infers(tmp_path, rig, load):
 
 
 def test_gate_checked_before_each_person_camera_call(rig):
-    *_, model, loop, uploads = harness(rig)
+    clock, source, *_, model, loop, uploads = harness(rig)
+    meta, imgs = snapshot(clock[0])
+    t0 = meta["world"]["tracks"][0]
+    meta["world"]["tracks"] = [t0, {**copy.deepcopy(t0), "world_id": "w-2"}]
+    source.item = meta, imgs
     checks = iter([True, True, False])
     loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=next(checks)))
     loop.step()
@@ -164,11 +168,18 @@ def test_uncertain_frame_preserves_samples_but_revision_clears_them(rig):
     clock, source, _, _, _, loop, _ = harness(rig, freeze=3)
     loop.step()
     state = loop.people["w-1"]
-    assert len(state.samples) == 1
+    assert len(state.samples) == 1 and state.stable == 1
     clock[0] += 200
     source.item = snapshot(clock[0], uncertain=True)
     loop.step()
-    assert len(state.samples) == 1 and state.stable == 0
+    # 같은 identity_revision에서 IDENTITY_UNCERTAIN·avatar_update_hold 구간은 stable을 0으로 초기화하지 않고 일시정지한다.
+    assert len(state.samples) == 1 and state.stable == 1
+    clock[0] += 200
+    held = snapshot(clock[0])
+    held[0]["world"]["tracks"][0]["avatar_update_hold"] = True
+    source.item = held
+    loop.step()
+    assert len(state.samples) == 1 and state.stable == 1
     clock[0] += 200
     source.item = snapshot(clock[0], revision=1, uncertain=True)
     loop.step()
@@ -179,7 +190,7 @@ def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
     clock, source, sock, sender, model, loop, _ = harness(rig)
     clock[0] += DEFAULT_MAX_AGE_MS + 1
     loop.step()
-    assert model.calls == 0
+    assert model.calls == 0 and loop.stale_inputs == 1
     source.item = snapshot(clock[0])
     for ref in source.item[0]["frames"].values():
         ref["frame_ref"]["frame_sequence"] = 999
@@ -193,13 +204,14 @@ def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
         (-1, False),
         (0, True),
         (500, True),
-        (550, False),
+        (1000, True),
+        (1050, False),
         (DEFAULT_MAX_AGE_MS, True),
         (DEFAULT_MAX_AGE_MS + 1, False),
     ],
 )
 def test_freshness_since_tier0_produced_boundaries(rig, age_ms, expected_admitted):
-    assert DEFAULT_MAX_AGE_MS == 500
+    assert DEFAULT_MAX_AGE_MS == 1000
     clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
     assert loop.max_age_ms == DEFAULT_MAX_AGE_MS
     assert sender.max_age_ms == DEFAULT_MAX_AGE_MS
@@ -209,12 +221,13 @@ def test_freshness_since_tier0_produced_boundaries(rig, age_ms, expected_admitte
     loop.step()
     sender.tick()
     if expected_admitted:
-        assert model.calls == 4 and len(uploads) == 1
+        assert model.calls == 1 and len(uploads) == 1
         batches = [m for m in sock.messages if m["msg_type"] == "avatar_pose_batch"]
         assert len(batches) == 1
         assert batches[0]["payload"]["poses"][0]["capture_time_ms"] == capture_t
     else:
         assert model.calls == 0 and not uploads and not sock.messages
+        assert loop.stale_inputs == 1
 
 
 def test_old_capture_fresh_tier0_output_is_sent_with_original_capture_time(rig):
@@ -223,7 +236,7 @@ def test_old_capture_fresh_tier0_output_is_sent_with_original_capture_time(rig):
     clock[0] += 5000
     loop.step()
     sender.tick()
-    assert model.calls == 4 and sender.sent_batches_total == 1
+    assert model.calls == 1 and sender.sent_batches_total == 1
     assert sock.messages[-1]["payload"]["poses"][0]["capture_time_ms"] == T0
 
 
@@ -232,7 +245,7 @@ def test_unknown_production_time_is_rejected(rig, produced):
     _, source, _, _, model, loop, _ = harness(rig)
     source.item[0]["produced_at_ms"] = produced
     loop.step()
-    assert model.calls == 0
+    assert model.calls == 0 and loop.stale_inputs == 1
 
 
 def test_sender_rejects_pose_when_tier0_output_ages_in_send_queue():
@@ -241,7 +254,7 @@ def test_sender_rejects_pose_when_tier0_output_ages_in_send_queue():
     sender = AvatarSender(lambda: sock, clock_ms=lambda: clock[0], monotonic=lambda: 0)
     sender.tick()
     sender.poses([{"world_id": "w-1", "capture_time_ms": T0 - 5000}], produced_at_ms=T0)
-    clock[0] += 501
+    clock[0] += DEFAULT_MAX_AGE_MS + 1
     sender.tick()
     assert sender.sent_batches_total == 0
 
@@ -288,14 +301,14 @@ def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume
     clock[0] = T0 + 10_000
     write_marker((250.0, 280.0))
     at(10)
-    assert model.calls == 4
+    assert model.calls == 1
 
     # 열린 뒤 큐 대기 초과 1건 창: 계속 추론하고 자산·포즈까지 보낸다.
     clock[0] = T0 + 15_000
     write_marker((260.0, 300.0), qwe=1)
     at(15)
     sender.tick()
-    assert model.calls == 8 and len(uploads) == 1
+    assert model.calls == 2 and len(uploads) == 1
     assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
     assert loop.pose_enqueued == 1 and loop.uploads == 1 and loop.assets == 1 and sender.sent_batches_total == 1
 
@@ -303,7 +316,7 @@ def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume
     clock[0] = T0 + 20_000
     write_marker((300.0, 672.0))
     at(20)
-    assert model.calls == 8 and loop.skip_reasons["over_budget"] == 1
+    assert model.calls == 2 and loop.skip_reasons["over_budget"] == 1
 
     # 통과 창이 다시 오면 10초 안정 뒤 추론을 재개한다(9초 시점은 아직 대기).
     clock[0] = T0 + 25_000
@@ -313,9 +326,9 @@ def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume
     clock[0] = T0 + 30_000
     write_marker((255.0, 285.0))
     at(34)
-    assert model.calls == 8 and loop.skip_reasons["stabilizing"] >= 3
+    assert model.calls == 2 and loop.skip_reasons["stabilizing"] >= 3
     at(35)
-    assert model.calls == 12
+    assert model.calls == 3
 
     stats = loop.gate.stats()
     assert stats["resets"] == {"over_budget": 1} and stats["queue_wait_tolerated_windows"] == 2
@@ -339,7 +352,7 @@ def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_pa
     try:
         writer._write({"world": meta["world"], "calibration": meta["calibration"], "produced_at_ms": clock[0]}, frames)
         loop.step()
-        assert model.calls == 4
+        assert model.calls == 1
         # 중복 시각(t == last_t)과 신선도 초과(clock - t > DEFAULT_MAX_AGE_MS)에서는 predicate 가 거짓이라 영상을 읽지 않는다.
         calls = []
         orig_latest = reader.latest
@@ -349,7 +362,7 @@ def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_pa
             return res
         reader.latest = spy_latest
         loop.step()
-        assert calls[-1] == {} and model.calls == 4
+        assert calls[-1] == {} and model.calls == 1 and loop.duplicate_inputs == 1 and loop.stale_inputs == 0
         clock[0] += DEFAULT_MAX_AGE_MS + 100
         stale = DEFAULT_MAX_AGE_MS + 1
         meta2, imgs2 = snapshot(clock[0] - stale)
@@ -358,7 +371,7 @@ def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_pa
         writer._write({"world": meta2["world"], "calibration": meta2["calibration"],
                        "produced_at_ms": clock[0] - stale}, frames2)
         loop.step()
-        assert calls[-1] == {} and model.calls == 4
+        assert calls[-1] == {} and model.calls == 1 and loop.duplicate_inputs == 1 and loop.stale_inputs == 1
     finally:
         writer.close()
 
@@ -516,3 +529,125 @@ def test_body_adapter_uses_calibration_and_drops_translation(monkeypatch, rig, n
     assert candidate.prompt_world_id == "w-1" and candidate.prompt_identity_revision == 2
     assert candidate.joint_rotations[:2] == ([0., 0., 0.], [0., 0., 0.])
     np.testing.assert_array_equal(candidate.keypoints_cam[0], [2., 3., 4.])
+
+
+def test_representative_camera_selection_prefers_unoccluded_more_keypoints_larger_bbox(rig):
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    chosen_cameras = []
+    orig_infer = model.infer
+
+    def spy_infer(image, obs, track, cam):
+        chosen_cameras.append(cam.camera_id)
+        return orig_infer(image, obs, track, cam)
+
+    model.infer = spy_infer
+    meta, imgs = snapshot(clock[0])
+    track = meta["world"]["tracks"][0]
+    # cam_A: 큰 bbox지만 다른 사람(w-2)에 의해 절반 이상 가려짐
+    # cam_B: 가림 없음, 관절 10개 관측, 중간 bbox
+    # cam_C: 가림 없음, 관절 15개 관측, 가장 큰 bbox -> 대표 카메라로 선택되어야 함
+    # cam_D: 가림 없음, 관절 5개 관측, 작은 bbox
+    for pc in track["per_camera"]:
+        cid = pc["camera_id"]
+        if cid == "cam_A":
+            pc["bbox"] = [100.0, 100.0, 500.0, 900.0]
+            pc["keypoints_2d"] = [[200.0, 200.0, 0.9]] * 17
+        elif cid == "cam_B":
+            pc["bbox"] = [100.0, 100.0, 300.0, 600.0]
+            pc["keypoints_2d"] = [[200.0, 200.0, 0.9]] * 10 + [None] * 7
+        elif cid == "cam_C":
+            pc["bbox"] = [100.0, 100.0, 450.0, 850.0]
+            pc["keypoints_2d"] = [[200.0, 200.0, 0.9]] * 15 + [None] * 2
+        elif cid == "cam_D":
+            pc["bbox"] = [100.0, 100.0, 200.0, 300.0]
+            pc["keypoints_2d"] = [[150.0, 150.0, 0.9]] * 5 + [None] * 12
+    occluder = {
+        **copy.deepcopy(track),
+        "world_id": "w-2",
+        "per_camera": [{
+            "camera_id": "cam_A",
+            "local_track_id": "occ-1",
+            "bbox": [100.0, 100.0, 500.0, 900.0],
+            "keypoints_2d": [None] * 17,
+            "joint_layout": "COCO17",
+            "estimated_capture_time": clock[0],
+            "frame_ref": {"stream_epoch": 0, "frame_sequence": 1},
+        }],
+    }
+    meta["world"]["tracks"] = [track, occluder]
+    source.item = (meta, imgs)
+    loop.step()
+    assert chosen_cameras == ["cam_C", "cam_A"]
+
+
+def test_two_stage_baking_publishes_initial_mesh_at_5_and_upgrades_at_30(rig):
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=30)
+    assert loop.initial_freeze_frames == 5 and loop.freeze_frames == 30
+    for step_idx in range(1, 5):
+        source.item = snapshot(clock[0])
+        loop.step()
+        clock[0] += 200
+        assert not uploads
+    # 근접(avatar_update_hold) 2프레임과 IDENTITY_UNCERTAIN 1프레임이 끼어도 stable은 리셋되지 않고 일시정지된다.
+    for hold_idx in range(3):
+        item = snapshot(clock[0], uncertain=(hold_idx == 2))
+        if hold_idx < 2:
+            item[0]["world"]["tracks"][0]["avatar_update_hold"] = True
+        source.item = item
+        loop.step()
+        clock[0] += 200
+    assert loop.people["w-1"].stable == 4 and len(loop.people["w-1"].samples) == 4 and not uploads
+    # 5번째 정상 샘플: 초기 메시(version 0, frozen=False, frames_used=5) 즉시 발행 및 포즈 송신 시작
+    source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert len(uploads) == 1
+    state = loop.people["w-1"]
+    assert state.version == 0 and not state.shape_frozen
+    assert state.asset["shape"] == {"representation": "MHR", "frozen": False, "frames_used": 5}
+    assert _schema_errors("avatar_asset", sock.messages[0]) == []
+    assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
+    # 6~29번째 정상 샘플 동안은 추가 업로드 없이 초기 메시(version 0)로 포즈만 계속 보낸다.
+    for _ in range(6, 30):
+        clock[0] += 200
+        source.item = snapshot(clock[0])
+        loop.step()
+    assert len(uploads) == 1 and state.version == 0 and len(state.samples) == 29
+    # 30번째 정상 샘플: 정밀 메시(version 1, previous=0, frozen=True, frames_used=30)로 업그레이드
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert len(uploads) == 2 and state.version == 1 and state.shape_frozen and state.samples == []
+    assert state.asset["appearance_version"] == 1
+    assert state.asset["previous_appearance_version"] == 0
+    assert state.asset["shape"] == {"representation": "MHR", "frozen": True, "frames_used": 30}
+    asset_msgs = [m for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    assert _schema_errors("avatar_asset", asset_msgs[-1]) == []
+
+
+def test_self_throttling_widens_interval_when_tier0_pressure_rises(rig):
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    interval = [200]
+    loop.gate = SimpleNamespace(
+        check=lambda: SimpleNamespace(admit=True),
+        recommended_interval_ms=lambda: interval[0],
+    )
+    # t=T0: 첫 추론 수행
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert model.calls == 1 and loop.throttled == 0
+    # 부하 상승으로 권장 주기가 600ms로 넓어지면 +200ms, +400ms 회차는 자체 감속으로 건너뛰고 +600ms에 추론한다.
+    interval[0] = 600
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert model.calls == 1 and loop.throttled == 1 and loop.skip_reasons["self_throttle"] == 1
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert model.calls == 1 and loop.throttled == 2
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert model.calls == 2 and loop.throttled == 2

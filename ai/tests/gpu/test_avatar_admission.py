@@ -266,3 +266,36 @@ def test_processing_window_measures_p95_samples_running_work_and_failed_work():
     failed = window.take()
     assert failed["unknown"] == 1 and failed["lag_ms_p95"] is None and failed["lag_ms_max"] is None
 
+
+def test_avatar_admission_gate_recommends_progressive_self_throttle_intervals(tmp_path):
+    """Tier 0 judge/detect p95 예산 대비 비율에 따라 200->400->600->800ms 권고 주기를 계산한다."""
+    path = tmp_path / "tier0.live"
+    clock = Clock()
+    g = gate(path, clock=clock)
+
+    # 1. judge p95 65ms (<=70%) -> 200ms (5 Hz)
+    write_marker(path, processing={"judge": sample(65.0), "detect_required": False}, mtime=clock.t)
+    assert g.check().admit
+    assert g.recommended_interval_ms() == 200
+    assert g.stats()["recommended_interval_ms"] == 200
+
+    # 2. judge p95 80ms (70~85%) -> 400ms (2.5 Hz)
+    write_marker(path, processing={"judge": sample(80.0), "detect_required": False}, mtime=clock.t)
+    assert g.check().admit
+    assert g.recommended_interval_ms() == 400
+
+    # 3. detect p95 135ms / 150ms = 0.90 (85~100%) -> 600ms (1.67 Hz)
+    write_marker(
+        path,
+        processing={"judge": sample(60.0), "detect": sample(135.0), "detect_required": True},
+        mtime=clock.t,
+    )
+    assert g.check().admit
+    assert g.recommended_interval_ms() == 600
+
+    # 4. judge p95 115ms (>100%, T_block 이전) -> 800ms (1.25 Hz)
+    write_marker(path, processing={"judge": sample(115.0), "detect_required": False}, mtime=clock.t)
+    assert g.check().admit
+    assert g.recommended_interval_ms() == 800
+
+

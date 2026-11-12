@@ -407,6 +407,23 @@ AVATAR_JUDGE_BUDGET_MS = 100
 AVATAR_DETECT_BUDGET_MS = 150
 AVATAR_OVER_BUDGET_HOLD_S = 10.0
 AVATAR_EXTREME_LAG_MS = 1000
+AVATAR_BASE_INTERVAL_MS = 200
+AVATAR_THROTTLE_CAUTION_RATIO = 0.70
+AVATAR_THROTTLE_HIGH_RATIO = 0.85
+AVATAR_THROTTLE_CAUTION_INTERVAL_MS = 400
+AVATAR_THROTTLE_HIGH_INTERVAL_MS = 600
+AVATAR_THROTTLE_OVER_INTERVAL_MS = 800
+
+
+def avatar_recommended_interval_ms(pressure: float) -> int:
+    """Tier 0 처리 부하 비율(p95/예산 최댓값)에 따른 아바타 추론 권장 최소 주기(ms)."""
+    if pressure <= AVATAR_THROTTLE_CAUTION_RATIO:
+        return AVATAR_BASE_INTERVAL_MS
+    if pressure <= AVATAR_THROTTLE_HIGH_RATIO:
+        return AVATAR_THROTTLE_CAUTION_INTERVAL_MS
+    if pressure <= 1.0:
+        return AVATAR_THROTTLE_HIGH_INTERVAL_MS
+    return AVATAR_THROTTLE_OVER_INTERVAL_MS
 
 
 class AvatarAdmissionGate(AdmissionGate):
@@ -436,6 +453,19 @@ class AvatarAdmissionGate(AdmissionGate):
         self.extreme_lag_ms = float(extreme_lag_ms)
         self._over_since: float | None = None
         self._blocked = False
+        self._last_pressure: float = 0.0
+        self._recommended_interval_ms: int = AVATAR_BASE_INTERVAL_MS
+
+    def recommended_interval_ms(self) -> int:
+        """가장 최근 표시 파일 평가 기준 권장 아바타 추론 최소 주기(ms)."""
+        with self._lock:
+            return self._recommended_interval_ms
+
+    def _stats(self) -> dict[str, Any]:
+        out = super()._stats()
+        out["recommended_interval_ms"] = self._recommended_interval_ms
+        out["pressure"] = round(self._last_pressure, 3)
+        return out
 
     def _check(self) -> Admission:
         now = self._monotonic()
@@ -520,6 +550,9 @@ class AvatarAdmissionGate(AdmissionGate):
                 # 옛 표시 파일 호환: lag_ms_p95 필드가 없으면 창 최댓값(p95 의 보수적 상한)을 쓴다.
                 lag_p95 = lag_max
             parsed.append((stage, budget, lag_p95, lag_max, has_p95))
+        pressure = max((lag_p95 / float(budget) for _stage, budget, lag_p95, _lag_max, _has_p95 in parsed), default=0.0)
+        self._last_pressure = pressure
+        self._recommended_interval_ms = avatar_recommended_interval_ms(pressure)
         for stage, _budget, _lag_p95, lag_max, _has_p95 in parsed:
             if lag_max >= self.extreme_lag_ms:
                 return ("refuse", OVER_BUDGET,

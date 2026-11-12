@@ -27,6 +27,24 @@ class FastBodyModel:
         self.estimator = SAM3DBodyEstimator(sam_3d_body_model=model, model_cfg=cfg, human_detector=None,
                                           human_segmentor=None, fov_estimator=None)
         self.rig = load_mhr_rig(checkpoint / "assets/mhr_model.pt")
+        self._image_maps = {}
+
+    def _image_map(self, camera):
+        maps = getattr(self, "_image_maps", None)
+        if maps is None:
+            maps = self._image_maps = {}
+        key = (
+            camera.camera_id,
+            np.asarray(camera.K, dtype=np.float64).tobytes(),
+            tuple(camera.image_size),
+            camera.distortion_model,
+            tuple(camera.distortion_coeffs),
+        )
+        imap = maps.get(key)
+        if imap is None:
+            imap = HmrImageMap(camera, camera.K)
+            maps[key] = imap
+        return imap
 
     def infer(self, image, observation, track, camera, *, prepared=None):
         import cv2
@@ -35,11 +53,11 @@ class FastBodyModel:
         if tuple(image.shape[1::-1]) != tuple(camera.image_size):
             raise ValueError("HMR 그림과 보정 해상도가 다르다")
         # 원본 bbox를 같은 K의 왜곡 제거 그림으로 옮긴다. 알 수 없으면 실패한다.
-        imap = HmrImageMap(camera, camera.K)
+        imap = self._image_map(camera)
         box = imap.bbox(observation["bbox"]) if prepared is None else prepared.prompt.bbox
         if box is None:
             raise ValueError("HMR bbox 왜곡 제거 실패")
-        undistorted = imap.prepare_image(image) if prepared is None else prepared.image
+        undistorted = imap.prepare_image(image, roi_box=box) if prepared is None else prepared.image
         mask_args = {}
         if prepared is not None and prepared.prompt.mask is not None:
             mask_args["masks"] = np.asarray(prepared.prompt.mask, dtype=np.uint8)[None]

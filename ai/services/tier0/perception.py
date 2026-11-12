@@ -536,6 +536,8 @@ class Perception:
         self._last_avatar_t: int | None = None
         self._avatar_calibration_rig: CameraRig | None = None
         self._avatar_calibration_doc: dict[str, Any] | None = None
+        self.avatar_share_offered = 0
+        self.avatar_share_throttled = 0
         self.observe_association = observe_association
         self.observe_frame = observe_frame
         # 세팅 「카메라 확인」 입력(S15P31A101-646): 공통 시각 view 를 ROI 거르기 전에 넘긴다. 판정에 쓰지 않는 관찰자다
@@ -727,7 +729,8 @@ class Perception:
         )
         if self.avatar_writer is not None:
             try:
-                self._share_avatar(frame, payload, t_latest)
+                with self.timing.measure("avatar_share", self.people):
+                    self._share_avatar(frame, payload, t_latest)
             except Exception:  # 보조 출력 실패가 판정 경로에 전파되지 않는다
                 log.warning("아바타 입력 공유 실패", exc_info=False)
         return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest, lagging=fusion.lagging)
@@ -744,6 +747,7 @@ class Perception:
         period_ms = int(round(period_s * 1000))
         last_t = getattr(self, "_last_avatar_t", None)
         if last_t is not None and 0 <= t_latest - last_t < period_ms:
+            self.avatar_share_throttled = getattr(self, "avatar_share_throttled", 0) + 1
             return
         images = dict(getattr(self.feed, "avatar_frames", {}))
         observations = getattr(self.feed, "avatar_observations", {})
@@ -790,3 +794,4 @@ class Perception:
                                                       "input_provenance": provenance}, "calibration": calibration}, images)
         if offered is not False:
             self._last_avatar_t = t_latest
+            self.avatar_share_offered = getattr(self, "avatar_share_offered", 0) + 1

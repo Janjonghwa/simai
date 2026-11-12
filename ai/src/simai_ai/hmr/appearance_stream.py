@@ -170,7 +170,7 @@ class AppearancePipeline:
                 views = []
                 for obs in tracks[wid].get("per_camera", []):
                     cid, ref = obs["camera_id"], snapshot["frames"].get(obs["camera_id"])
-                    if (cid not in person.candidates or cid not in images or ref is None
+                    if (cid not in rig.cameras or cid not in images or ref is None
                             or ref["frame_ref"] != obs["frame_ref"]):
                         continue
                     # 메시가 없는 다른 사람(불확실/아직 체형 고정 전)은 bbox 전체를 가림막으로 뺀다.

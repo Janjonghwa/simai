@@ -79,6 +79,50 @@ class AppearanceWorker:
                         acc.stable = state.stable
                         acc.ready = state.stable >= self.pipeline.config.freeze_frames
 
+                seg = getattr(self.loop, "segmentation", None)
+                if not masks and seg is not None and not getattr(seg, "failed", False) and rig is not None:
+                    has_people_map = isinstance(getattr(self.pipeline, "people", None), dict)
+                    pending_map = getattr(self.pipeline, "pending", {}) or {}
+                    seg_jobs = []
+                    for track in doc["tracks"]:
+                        wid = track["world_id"]
+                        if wid not in states:
+                            continue
+                        if (
+                            track.get("identity_confidence") == "IDENTITY_UNCERTAIN"
+                            or track.get("avatar_update_hold", False)
+                            or track.get("hold_appearance_update", False)
+                        ):
+                            continue
+                        if has_people_map:
+                            acc = self.pipeline.people.get(wid)
+                            if (
+                                acc is None
+                                or not acc.ready
+                                or wid in pending_map
+                                or (acc.last_sample >= 0 and doc["t"] - acc.last_sample < acc.config.sample_interval_ms)
+                            ):
+                                continue
+                        for obs in track.get("per_camera", []):
+                            cid = obs["camera_id"]
+                            ref = (snapshot.get("frames") or {}).get(cid) if isinstance(snapshot, dict) else None
+                            if (
+                                cid not in images
+                                or cid not in rig.cameras
+                                or ref is None
+                                or ref["frame_ref"] != obs["frame_ref"]
+                                or abs(doc["t"] - ref["capture_time_ms"]) > 100
+                            ):
+                                continue
+                            seg_jobs.append((track, obs))
+                    if seg_jobs and admit():
+                        prepared = self.loop._timed("segmentation", seg.prepare, seg_jobs, images, rig)
+                        masks = {
+                            key: val.original_mask
+                            for key, val in prepared.items()
+                            if getattr(val, "original_mask", None) is not None
+                        }
+
                 def reserve(wid):
                     with self.loop._state_lock:
                         if not self._valid(tokens):

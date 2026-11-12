@@ -369,3 +369,19 @@ def test_more_than_64_people_skips_the_message(people):
     clock.t = 1030
     loop.step()
     assert out.messages == [] and loop.counts["too_many_people"] == 1
+
+
+def test_empty_person_camera_skips_gpu_inference_and_advances_watermark():
+    loop, source, _gate, det, _out, clock = make_loop()
+    doc, images = shared(1000, {"cam1": 1, "cam2": 1}, cams=("cam1", "cam2"))
+    # cam2에는 사람이 없도록 per_camera에서 cam2 관측만 제거한다.
+    doc["world"]["tracks"][0]["per_camera"] = [
+        pc for pc in doc["world"]["tracks"][0]["per_camera"] if pc["camera_id"] == "cam1"
+    ]
+    source.value = (doc, images)
+    clock.t = 1030
+    loop.step()
+    assert len(det.calls) == 1
+    assert loop.counts["inferred"] == 1 and loop.counts["empty_persons"] == 1
+    assert loop._last_frame["cam2"] == (3, 1)
+    assert "cam2" not in loop._last_infer_at

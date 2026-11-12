@@ -40,7 +40,7 @@ export const SCENARIOS = [
   {
     key: 'avatar-mesh',
     label: '아바타 메시(EXP-02)',
-    hint: '5 Hz avatar_frame(합성 리그). w-0002 2초 끊김·w-0001 0.8초 늦음 → 캡슐, w-0003 자산 404 → 캡슐',
+    hint: '5 Hz avatar_frame(합성 리그). w-0002 2초 끊김·w-0001 1.3초 늦음 → 캡슐, w-0003 자산 404 → 캡슐',
   },
   {
     key: 'avatar-crowd-1',
@@ -743,10 +743,10 @@ export function scenarioTick(key: ScenarioKey, tick: number, t0: number): Scenar
 
 /** avatar_frame 간격(tick). 10 Hz World 의 절반, 5 Hz. */
 export const AVATAR_EVERY = 2;
-/** 평소 HMR 지연(촬영 → World 최신, ms). 되돌아가기 기준(500 ms) 안이다. */
+/** 평소 HMR 지연(촬영 → World 최신, ms). 되돌아가기 기준(1000 ms) 안이다. */
 export const AVATAR_LAG_MS = 300;
-/** 늦음 구간의 지연(ms). 기준을 넘어 캡슐로 돌아간다. */
-export const AVATAR_LATE_LAG_MS = 800;
+/** 늦음 구간의 지연(ms). 기준(1000 ms)을 넘어 캡슐로 돌아간다. */
+export const AVATAR_LATE_LAG_MS = 1300;
 /** 주기 안 tick 구간. w-0002 포즈 끊김, w-0001 늦음. */
 export const AVATAR_STALL = [50, 70] as const;
 export const AVATAR_LATE = [80, 100] as const;
