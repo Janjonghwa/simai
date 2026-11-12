@@ -1,4 +1,9 @@
-import { LoginHero, MASCOT_MEDIA } from '@/features/auth/LoginHero';
+import {
+  LoginHeadline,
+  LoginHero,
+  MASCOT_MEDIA,
+  MASCOT_PLAYBACK_RATE,
+} from '@/features/auth/LoginHero';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -48,6 +53,19 @@ describe('LoginHero', () => {
     expect(screen.queryByTestId('login-hero-poster')).toBeNull();
   });
 
+  it('영상은 메타데이터를 읽은 뒤 조금 느리게(0.8배) 튼다', () => {
+    stubReducedMotion(false);
+    const { container } = render(<LoginHero />);
+    const video = container.querySelector('video') as HTMLVideoElement;
+
+    act(() => {
+      video.dispatchEvent(new Event('loadedmetadata'));
+    });
+    expect(MASCOT_PLAYBACK_RATE).toBe(0.8);
+    expect(video.playbackRate).toBe(MASCOT_PLAYBACK_RATE);
+    expect(video.defaultPlaybackRate).toBe(MASCOT_PLAYBACK_RATE);
+  });
+
   it('움직임 줄이기 설정이면 영상 없이 첫 장면만 보이고, 설정을 바꾸면 따라간다', () => {
     const setReduced = stubReducedMotion(true);
     const { container } = render(<LoginHero />);
@@ -60,25 +78,66 @@ describe('LoginHero', () => {
     expect(screen.queryByTestId('login-hero-poster')).toBeNull();
   });
 
-  it('기능 세 줄을 목록으로 보인다', () => {
+  it('헤드라인은 두 줄이다(왼쪽 폼 묶음에 둔다)', () => {
+    render(<LoginHeadline />);
+
+    expect(screen.getByText('현장은 입체적으로.')).toBeTruthy();
+    expect(screen.getByText('위험은 한발 먼저.')).toBeTruthy();
+  });
+
+  it('장면 아래 기능 칩 세 개를 보인다(상태처럼 보이는 수치는 없다)', () => {
     stubReducedMotion(false);
     render(<LoginHero />);
 
-    expect(screen.getAllByRole('listitem')).toHaveLength(3);
-    expect(screen.getByText('실시간 위험 판정')).toBeTruthy();
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      '3D 현장 재현',
+      'AI 위험 감지',
+      '워치 알림 연동',
+    ]);
+    expect(screen.getByTestId('login-hero-features').textContent).not.toMatch(/\d+\s*%|정상/);
   });
 
-  it('글자는 위 칸, 영상은 그 아래 칸에 따로 두고 영상을 키워 자르지 않고 맞춘다(글자가 마스코트를 덮지 않는다)', () => {
+  it('영상은 장면 칸을 채운다(cover)', () => {
     stubReducedMotion(false);
     const { container } = render(<LoginHero />);
 
-    const list = screen.getByRole('list');
     const media = screen.getByTestId('login-hero-media');
     const video = container.querySelector('video');
     expect(media.contains(video)).toBe(true);
-    expect(media.contains(list)).toBe(false);
-    expect(list.compareDocumentPosition(media) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(video?.classList.contains('object-contain')).toBe(true);
-    expect(video?.classList.contains('object-cover')).toBe(false);
+    expect(media.classList.contains('aspect-[9/16]')).toBe(true);
+    expect(video?.classList.contains('object-cover')).toBe(true);
+  });
+
+  it('영상 재생 시간에 맞춰 해당 기능 칩만 강조한다', () => {
+    stubReducedMotion(false);
+    const { container } = render(<LoginHero />);
+    const video = container.querySelector('video') as HTMLVideoElement;
+    const activeLabels = () =>
+      screen
+        .getAllByRole('listitem')
+        .filter((item) => item.dataset.active === 'true')
+        .map((item) => item.textContent);
+
+    for (const [seconds, expected] of [
+      [1, ['3D 현장 재현']],
+      [3, ['AI 위험 감지']],
+      [4.5, ['워치 알림 연동']],
+      [6.5, []],
+    ] as const) {
+      Object.defineProperty(video, 'currentTime', { configurable: true, value: seconds });
+      act(() => {
+        video.dispatchEvent(new Event('timeupdate'));
+      });
+      expect(activeLabels()).toEqual(expected);
+    }
+  });
+
+  it('움직임 줄이기 설정이면 기능 칩을 강조하지 않는다', () => {
+    stubReducedMotion(true);
+    render(<LoginHero />);
+
+    expect(screen.getAllByRole('listitem').every((item) => item.dataset.active === 'false')).toBe(
+      true,
+    );
   });
 });
