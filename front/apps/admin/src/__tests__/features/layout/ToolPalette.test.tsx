@@ -26,10 +26,14 @@ vi.mock('@/features/layout/useSceneRegenerate', () => ({
 const onResetView = vi.fn();
 const onRetry3d = vi.fn();
 
-/** 오늘 작업 하나(대기 화면 판정용). */
-const todayWork = (status: 'PLANNED' | 'IN_PROGRESS' | 'DONE'): TbmWorkUnit => ({
+/** 오늘 작업 하나(대기 화면 판정용). 진행 값은 서버가 작업마다 싣는 값이다. */
+const todayWork = (
+  status: 'PLANNED' | 'IN_PROGRESS' | 'DONE',
+  progress: NonNullable<TbmWorkUnit['progress']>,
+): TbmWorkUnit => ({
   work_id: '1',
   status,
+  progress,
   date: todayIsoDate(),
   name: '작업',
   from_ms: 0,
@@ -131,14 +135,17 @@ describe('ToolPalette CCTV 창 버튼', () => {
 describe('ToolPalette: 대기 화면이 위를 덮을 때', () => {
   const palette = () => screen.getByRole('group', { name: '도구' });
 
-  it('오늘 남은 작업이 없어 대기 화면이 뜨면 눌러도 Tab 으로도 닿지 않게 막는다(inert)', () => {
-    renderPalette({}, 'ADMIN', [todayWork('DONE')]);
+  it.each([
+    ['작업이 끝났으면', [todayWork('DONE', 'ENDED')]],
+    ['세팅이 끝나기 전이면', [todayWork('PLANNED', 'REPORT')]],
+  ] as const)('%s 대기 화면이 떠 눌러도 Tab 으로도 닿지 않게 막는다(inert)', (_name, works) => {
+    renderPalette({}, 'ADMIN', [...works]);
     expect(palette().hasAttribute('inert')).toBe(true);
   });
 
   it.each([
-    ['예정 작업이 남아 있으면', [todayWork('PLANNED')]],
-    ['진행 중인 작업이 있으면', [todayWork('IN_PROGRESS')]],
+    ['세팅을 마친 작업이 있으면', [todayWork('PLANNED', 'SETUP_DONE')]],
+    ['진행 중인 작업이 있으면', [todayWork('IN_PROGRESS', 'IN_PROGRESS')]],
     ['작업 목록을 아직 모르면', undefined],
   ] as const)('%s 막지 않는다', (_name, works) => {
     renderPalette({}, 'ADMIN', works && [...works]);
@@ -147,7 +154,7 @@ describe('ToolPalette: 대기 화면이 위를 덮을 때', () => {
 
   it('구역 편집 중에는 대기 화면을 그리지 않으므로 막지 않는다', () => {
     act(() => startZoneEdit());
-    renderPalette({}, 'ADMIN', [todayWork('DONE')]);
+    renderPalette({}, 'ADMIN', [todayWork('DONE', 'ENDED')]);
     expect(palette().hasAttribute('inert')).toBe(false);
   });
 });

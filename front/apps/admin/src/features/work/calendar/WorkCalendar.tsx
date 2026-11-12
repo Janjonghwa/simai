@@ -1,6 +1,6 @@
 import { CalendarCell } from '@/features/work/calendar/CalendarCell';
 import {
-  dayChipOf,
+  dayMarkOf,
   groupByDate,
   monthCells,
   monthOfKey,
@@ -16,6 +16,7 @@ import { Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 // 작업 관리 첫 화면: 큰 월 달력. 날짜를 누르면 그 날로 간다(지난 날 = 다시 보기, 오늘·예정 = 작업 흐름).
+// 지난 날 칸은 끝난 작업(종료·제출)만 보이고, 오늘 칸은 지금 할 일 단추를 보이고, 예정인 날 칸은 비어 있다.
 // 한 화면에 맞춘다: 폭 1080 가운데, 아래 80px 비움(5주는 높이 720 에 맞고 6주는 스크롤).
 
 export function WorkCalendar({
@@ -101,8 +102,8 @@ export function WorkCalendar({
               day={day}
               inMonth={inMonth}
               isToday={kind === 'today'}
-              chip={dayChipOf(works, kind)}
-              summary={kind === 'past' && works.length > 0 ? summarizeWorks(works) : null}
+              mark={dayMarkOf(works, kind)}
+              summary={kind === 'past' ? summarizeWorks(works) : null}
               onPick={onPick}
             />
           );

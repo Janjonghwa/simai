@@ -13,7 +13,7 @@ import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { todayIsoDate } from '@/features/tbm/taskInput';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -55,11 +55,12 @@ afterEach(() => {
   useSessionStore.setState(useSessionStore.getInitialState(), true);
 });
 
-/** 서버가 주는 작업 한 건(GET /api/work-units). 시각은 epoch ms 숫자다. */
+/** 서버가 주는 작업 한 건(GET /api/work-units). 시각은 epoch ms 숫자다. 기본은 날짜만 열린 작업(보고서 작성 단계)이다. */
 function serverWork(patch: Record<string, unknown> = {}) {
   return {
     work_id: '12',
     status: 'PLANNED',
+    progress: 'REPORT',
     date: TODAY,
     name: '양중 작업',
     from_ms: STARTED - 30 * MIN,
@@ -79,12 +80,22 @@ function serverWork(patch: Record<string, unknown> = {}) {
 }
 
 const inProgress = (patch: Record<string, unknown> = {}) =>
-  serverWork({ status: 'IN_PROGRESS', actual_started_at: STARTED, ...patch });
+  serverWork({
+    status: 'IN_PROGRESS',
+    progress: 'IN_PROGRESS',
+    actual_started_at: STARTED,
+    ...patch,
+  });
+
+/** 세팅을 마치고 작업 전 확인을 기다리는 작업(아직 시작 전이라 상태는 예정이다). */
+const setupDone = (patch: Record<string, unknown> = {}) =>
+  serverWork({ progress: 'SETUP_DONE', ...patch });
 
 /** 오늘 끝난 작업. */
 const done = (patch: Record<string, unknown> = {}) =>
   serverWork({
     status: 'DONE',
+    progress: 'ENDED',
     actual_started_at: STARTED - 300 * MIN,
     actual_ended_at: STARTED - 60 * MIN,
     ...patch,
@@ -190,29 +201,60 @@ describe('세션 바', () => {
     expect(bar.textContent).toContain('작업 구역 현장 전체');
   });
 
-  it('오늘 남은 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
+  it('오늘 관제할 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
     serveWorks([done({ work_id: '5' }), done({ work_id: '6' })]);
     renderMonitor();
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });
-    expect(within(waiting).getByText('진행 중인 작업이 없습니다')).toBeTruthy();
-    expect(within(waiting).getByText('작업을 시작하면 관제가 시작됩니다.')).toBeTruthy();
+    expect(within(waiting).getByText('오늘 세팅이 끝나지 않았습니다')).toBeTruthy();
+    expect(within(waiting).getByText('세팅을 마치면 관제가 시작됩니다.')).toBeTruthy();
     expect(sessionBar()).toBeNull();
 
     fireEvent.click(within(waiting).getByRole('button', { name: '작업 관리로' }));
     expect(navigate).toHaveBeenCalledWith({ to: '/work' });
   });
 
-  it('오늘 예정 작업이 남아 있으면 진행 중인 작업이 없어도 대기 화면은 없다', async () => {
-    serveWorks([done({ work_id: '5' }), serverWork({ work_id: '6' })]);
+  it.each([
+    ['보고서 작성(REPORT)', serverWork({ work_id: '6' })],
+    ['세팅 중(SETUP)', serverWork({ work_id: '6', progress: 'SETUP' })],
+  ])('오늘 예정 작업이 %s 단계면 대기 화면을 보인다', async (_stage, pending) => {
+    serveWorks([done({ work_id: '5' }), pending]);
+    renderMonitor();
+    expect(await screen.findByRole('region', { name: '관제 대기' })).toBeTruthy();
+    expect(sessionBar()).toBeNull();
+  });
+
+  it('오늘 작업의 진행 값과 상태를 모르면 대기 화면으로 잠근다', async () => {
+    serveWorks([serverWork({ work_id: '6', progress: null, status: undefined })]);
+    renderMonitor();
+    expect(await screen.findByRole('region', { name: '관제 대기' })).toBeTruthy();
+  });
+
+  it('세팅을 마친 예정 작업이 있으면 진행 중인 작업이 없어도 대기 화면은 없다', async () => {
+    serveWorks([done({ work_id: '5' }), setupDone({ work_id: '6' })]);
     renderMonitor();
     await waitFor(() => expect(sessionBar()).toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(standby()).toBeNull();
   });
 
-  it('오늘 날짜가 아닌 예정 작업은 남은 작업으로 세지 않아 대기 화면을 보인다', async () => {
-    serveWorks([serverWork({ work_id: '7', date: YESTERDAY })]);
+  it('작업을 끝내면(DONE) 다시 대기 화면이 된다', async () => {
+    serveWorks([inProgress()]);
+    const queryClient = renderMonitor();
+    await screen.findByRole('region', { name: '작업 세션' });
+    expect(standby()).toBeNull();
+
+    act(() => {
+      queryClient.setQueryData(TBM_WORKS_KEY, [
+        done({ work_id: '12', actual_started_at: STARTED, actual_ended_at: STARTED + 30 * MIN }),
+      ]);
+    });
+    expect(await screen.findByRole('region', { name: '관제 대기' })).toBeTruthy();
+    expect(sessionBar()).toBeNull();
+  });
+
+  it('오늘 날짜가 아닌 예정 작업은 세팅을 마쳤어도 관제할 작업으로 세지 않아 대기 화면을 보인다', async () => {
+    serveWorks([setupDone({ work_id: '7', date: YESTERDAY })]);
     renderMonitor();
     expect(await screen.findByRole('region', { name: '관제 대기' })).toBeTruthy();
   });
@@ -328,7 +370,7 @@ describe('작업 외 진입 배지', () => {
 describe('대기 화면이 아래 층을 막는다', () => {
   const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
 
-  it('오늘 남은 작업이 없으면 왼쪽 칼럼(위험 구역 목록)은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
+  it('오늘 관제할 작업이 없으면 왼쪽 칼럼(위험 구역 목록)은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
     serveWorks([done({ work_id: '5' })]);
     renderMonitor();
 
@@ -340,8 +382,8 @@ describe('대기 화면이 아래 층을 막는다', () => {
     expect(waiting.closest('[inert]')).toBeNull();
   });
 
-  it('오늘 예정 작업이 있으면 왼쪽 칼럼이 막히지 않고 대기 화면도 없다', async () => {
-    serveWorks([serverWork({ work_id: '6' })]);
+  it('세팅을 마친 오늘 작업이 있으면 왼쪽 칼럼이 막히지 않고 대기 화면도 없다', async () => {
+    serveWorks([setupDone({ work_id: '6' })]);
     const queryClient = renderMonitor();
 
     // 칼럼은 작업 목록을 받기 전에도 그려지므로, 목록이 들어온 뒤에 막히지 않았는지 본다.

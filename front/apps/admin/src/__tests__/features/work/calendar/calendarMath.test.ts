@@ -1,6 +1,6 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
 import {
-  dayChipOf,
+  dayMarkOf,
   groupByDate,
   monthCells,
   monthOfKey,
@@ -9,7 +9,7 @@ import {
   summarizeWorks,
   weeksOfMonth,
 } from '@/features/work/calendar/calendarMath';
-import type { DayProgress } from '@/features/work/types';
+import { DAY_PROGRESS, type DayProgress } from '@/features/work/types';
 import { describe, expect, it } from 'vitest';
 
 describe('weeksOfMonth · startWeekday', () => {
@@ -77,30 +77,52 @@ describe('groupByDate · summarizeWorks', () => {
     expect(groups.get('2026-11-11')).toBeUndefined();
   });
 
-  it('작업 수와 위험(CRITICAL)·경고(HIGH)를 더한다(없는 칸은 0)', () => {
+  it('끝난 작업(종료·제출)만 세고, 작업 수와 위험(CRITICAL)·경고(HIGH)를 더한다(없는 칸은 0)', () => {
     expect(
       summarizeWorks([
-        workDayOf({ event_counts: { CRITICAL: 2, HIGH: 1 } }),
-        workDayOf({ event_counts: { CRITICAL: 1 } }),
-        workDayOf({ event_counts: null }),
+        workDayOf({ progress: 'SUBMITTED', event_counts: { CRITICAL: 2, HIGH: 1 } }),
+        workDayOf({ progress: 'ENDED', event_counts: { CRITICAL: 1 } }),
+        workDayOf({ progress: 'SUBMITTED', event_counts: null }),
       ]),
     ).toEqual({ count: 3, critical: 3, high: 1 });
-    expect(summarizeWorks([])).toEqual({ count: 0, critical: 0, high: 0 });
+  });
+
+  it('끝나지 않은 작업은 건수에도 위험·경고에도 들어가지 않는다', () => {
+    expect(
+      summarizeWorks([
+        workDayOf({ progress: 'SUBMITTED', event_counts: { CRITICAL: 1, HIGH: 2 } }),
+        workDayOf({ progress: 'IN_PROGRESS', event_counts: { CRITICAL: 5, HIGH: 5 } }),
+        workDayOf({ progress: 'SETUP', event_counts: { CRITICAL: 7 } }),
+        workDayOf({ progress: 'REPORT' }),
+      ]),
+    ).toEqual({ count: 1, critical: 1, high: 2 });
+  });
+
+  it('끝난 작업이 없으면 요약이 없다(빈칸)', () => {
+    expect(summarizeWorks([])).toBeNull();
+    expect(
+      summarizeWorks([workDayOf({ progress: 'IN_PROGRESS' }), workDayOf({ progress: 'REPORT' })]),
+    ).toBeNull();
   });
 });
 
-describe('dayChipOf', () => {
-  it('지난 날은 그날 작업의 진행 상태를 따른다(제출하지 않은 날은 완료가 아니다)', () => {
-    const chip = (progress: DayProgress) => dayChipOf([workDayOf({ progress })], 'past');
-    expect(chip('SUBMITTED')).toEqual({ label: '완료', tone: 'done' });
-    expect(chip('ENDED')).toEqual({ label: '작업 종료', tone: 'ended' });
-    expect(chip('REPORT')).toEqual({ label: '보고서 작성', tone: 'neutral' });
-    expect(chip('SETUP_DONE')).toEqual({ label: '세팅 완료', tone: 'neutral' });
-    expect(chip('IN_PROGRESS')).toEqual({ label: '진행 중', tone: 'active' });
-    expect(dayChipOf([], 'past')).toBeNull();
+describe('dayMarkOf — 지난 날', () => {
+  const ENDED = { kind: 'ended', label: '작업 종료' };
+  const mark = (progress: DayProgress) => dayMarkOf([workDayOf({ progress })], 'past');
+
+  it('종료(ENDED)와 제출(SUBMITTED)은 둘 다 작업 종료다(종료와 제출을 나누지 않는다)', () => {
+    expect(mark('ENDED')).toEqual(ENDED);
+    expect(mark('SUBMITTED')).toEqual(ENDED);
   });
 
-  it('지난 날 진행 값을 모르는 옛 응답은 실제로 끝난 작업만 완료이고 아니면 칩이 없다', () => {
+  it('끝나지 않은 작업(보고서·세팅·세팅 완료·작업 중)만 있는 지난 날은 빈칸이다', () => {
+    for (const progress of ['REPORT', 'SETUP', 'SETUP_DONE', 'IN_PROGRESS'] as const) {
+      expect(mark(progress)).toBeNull();
+    }
+    expect(dayMarkOf([], 'past')).toBeNull();
+  });
+
+  it('진행 값을 모르는 옛 응답은 실제로 끝난 작업만 작업 종료이고 아니면 빈칸이다', () => {
     const ended = workDayOf({ work_id: '1', daily: false, progress: null, actual_ended_at: 1_000 });
     const notEnded = workDayOf({
       work_id: '2',
@@ -108,50 +130,60 @@ describe('dayChipOf', () => {
       progress: null,
       actual_ended_at: null,
     });
-    expect(dayChipOf([ended], 'past')).toEqual({ label: '완료', tone: 'done' });
-    expect(dayChipOf([notEnded], 'past')).toBeNull();
-    // 덜 끝난 작업이 하나 끼어 있으면 그 날은 완료가 아니다.
-    expect(dayChipOf([ended, notEnded], 'past')).toBeNull();
+    expect(dayMarkOf([ended], 'past')).toEqual(ENDED);
+    expect(dayMarkOf([notEnded], 'past')).toBeNull();
+    // 끝나지 않은 작업은 건너뛰고 끝난 작업만 본다.
+    expect(dayMarkOf([ended, notEnded], 'past')).toEqual(ENDED);
   });
 
-  it('지난 날 하루 작업(daily)이 있으면 그것을, 없으면 가장 덜 진행된 작업을 따른다', () => {
+  it('끝난 작업이 하나라도 있으면 제출 여부·순서와 상관없이 작업 종료다', () => {
     const submitted = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
     const ended = workDayOf({ work_id: '2', daily: false, progress: 'ENDED' });
-    const daily = workDayOf({ work_id: '3', daily: true, progress: 'REPORT' });
-    // 옛 작업 중 하나만 제출하지 못했어도(순서와 상관없이) 그 날은 작업 종료다.
-    expect(dayChipOf([submitted, ended], 'past')?.label).toBe('작업 종료');
-    expect(dayChipOf([ended, submitted], 'past')?.label).toBe('작업 종료');
-    expect(dayChipOf([submitted, submitted], 'past')?.label).toBe('완료');
-    expect(dayChipOf([submitted, ended, daily], 'past')?.label).toBe('보고서 작성');
+    expect(dayMarkOf([submitted, ended], 'past')).toEqual(ENDED);
+    expect(dayMarkOf([ended, submitted], 'past')).toEqual(ENDED);
+    expect(dayMarkOf([submitted, submitted], 'past')).toEqual(ENDED);
   });
 
-  it('오늘·예정인 날은 그날 작업의 진행 상태를 따른다', () => {
-    const chip = (progress: DayProgress, kind: 'today' | 'future') =>
-      dayChipOf([workDayOf({ progress })], kind);
-    expect(chip('REPORT', 'today')).toEqual({ label: '보고서 작성', tone: 'neutral' });
-    expect(chip('SETUP', 'today')).toEqual({ label: '세팅 중', tone: 'active' });
-    expect(chip('SETUP_DONE', 'today')).toEqual({ label: '세팅 완료', tone: 'neutral' });
-    expect(chip('IN_PROGRESS', 'today')).toEqual({ label: '진행 중', tone: 'active' });
-    expect(chip('ENDED', 'today')).toEqual({ label: '작업 종료', tone: 'ended' });
-    expect(chip('SUBMITTED', 'today')).toEqual({ label: '완료', tone: 'done' });
-    expect(chip('REPORT', 'future')).toEqual({ label: '보고서 작성', tone: 'neutral' });
+  it('끝나지 않은 작업이 섞여 있어도 표시는 끝난 작업만 따른다', () => {
+    const submitted = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
+    const running = workDayOf({ work_id: '2', daily: true, progress: 'IN_PROGRESS' });
+    const report = workDayOf({ work_id: '3', daily: true, progress: 'REPORT' });
+    expect(dayMarkOf([submitted, running, report], 'past')).toEqual(ENDED);
+  });
+});
+
+describe('dayMarkOf — 오늘', () => {
+  const action = (label: string) => ({ kind: 'action', label });
+  const mark = (progress: DayProgress | null) => dayMarkOf([workDayOf({ progress })], 'today');
+
+  it('진행 값마다 지금 할 일 단추 글이다(제출하면 단추 없이 작업 종료 표시)', () => {
+    expect(mark('REPORT')).toEqual(action('작업 시작'));
+    expect(mark('SETUP')).toEqual(action('세팅 이어하기'));
+    expect(mark('SETUP_DONE')).toEqual(action('작업 전 확인'));
+    expect(mark('IN_PROGRESS')).toEqual(action('관제 중'));
+    expect(mark('ENDED')).toEqual(action('보고서 보내기'));
+    expect(mark('SUBMITTED')).toEqual({ kind: 'ended', label: '작업 종료' });
   });
 
-  it('작업이 없는 날은 오늘만 보고서 작성 전(주색 윤곽), 예정인 날은 비운다', () => {
-    expect(dayChipOf([], 'today')).toEqual({ label: '보고서 작성 전', tone: 'todo' });
-    expect(dayChipOf([], 'future')).toBeNull();
-    // 진행 값을 모르는 작업(null)도 없는 것과 같다.
-    expect(dayChipOf([workDayOf({ progress: null })], 'today')).toEqual({
-      label: '보고서 작성 전',
-      tone: 'todo',
-    });
-    expect(dayChipOf([workDayOf({ progress: null })], 'future')).toBeNull();
+  it('작업이 없거나 진행 값을 모르는 작업이면 작업 시작이다', () => {
+    expect(dayMarkOf([], 'today')).toEqual(action('작업 시작'));
+    expect(mark(null)).toEqual(action('작업 시작'));
   });
 
   it('하루 작업(daily)이 있으면 그것을 따르고, 없으면 첫 작업을 따른다', () => {
     const old = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
     const daily = workDayOf({ work_id: '2', daily: true, progress: 'SETUP' });
-    expect(dayChipOf([old, daily], 'today')?.label).toBe('세팅 중');
-    expect(dayChipOf([old], 'today')?.label).toBe('완료');
+    expect(dayMarkOf([old, daily], 'today')).toEqual(action('세팅 이어하기'));
+    expect(dayMarkOf([old], 'today')).toEqual({ kind: 'ended', label: '작업 종료' });
+  });
+});
+
+describe('dayMarkOf — 예정인 날', () => {
+  it('작업이 있든 없든 언제나 비운다', () => {
+    expect(dayMarkOf([], 'future')).toBeNull();
+    for (const progress of DAY_PROGRESS) {
+      expect(dayMarkOf([workDayOf({ progress })], 'future')).toBeNull();
+    }
+    expect(dayMarkOf([workDayOf({ progress: null })], 'future')).toBeNull();
   });
 });

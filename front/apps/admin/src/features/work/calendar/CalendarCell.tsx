@@ -1,27 +1,37 @@
-import type { ChipTone, DayChip, DaySummary } from '@/features/work/calendar/calendarMath';
+import type { DayMark, DaySummary } from '@/features/work/calendar/calendarMath';
 import type { DateKey } from '@/features/work/workDay';
-import { Badge } from '@simai/ui/components/badge';
+import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
+import { Flag } from 'lucide-react';
 
-// 달력 칸 하나: 날짜 + (오늘이면 '오늘' 태그) + 칩. 지난 날은 작업 건수와 위험·경고 수를 더 보인다.
+// 달력 칸 하나: 날짜 + (오늘이면 '오늘' 태그) + 표시. 지난 날은 작업 건수와 위험·경고 수를 더 보인다.
 
-const CHIP_TONE: Record<ChipTone, string> = {
-  todo: 'border-primary bg-transparent text-point-soft',
-  active: 'border-primary bg-primary/16 text-point-soft',
-  ended: 'border-delay bg-delay/14 text-delay',
-  done: 'border-ok bg-ok/14 text-ok',
-  neutral: 'border-border bg-surface-2 text-muted-foreground',
-};
-
-function Chip({ chip, className }: { chip: DayChip; className?: string }) {
+/** 끝난 날의 표시: 알약 없이 작은 아이콘 + 글자(주황은 지연 전용이라 쓰지 않는다). */
+function EndedMark({ label, className }: { label: string; className?: string }) {
   return (
-    <Badge
-      variant="outline"
-      className={cn('h-[22px] px-2.5 font-semibold', CHIP_TONE[chip.tone], className)}
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground',
+        className,
+      )}
     >
-      {chip.label}
-    </Badge>
+      <Flag aria-hidden className="size-3.5" />
+      {label}
+    </span>
   );
+}
+
+/**
+ * 오늘 칸의 지금 할 일. 칸 전체가 이미 `<button>` 이라 그 안에 단추를 또 두지 못하므로 단추 모양만 한 `span` 이고,
+ * 누르면 칸을 누른 것과 같다(그 날로 간다).
+ */
+function ActionLabel({ label }: { label: string }) {
+  return <span className={buttonVariants({ size: 'sm' })}>{label}</span>;
+}
+
+function Mark({ mark, className }: { mark: DayMark; className?: string }) {
+  if (mark.kind === 'action') return <ActionLabel label={mark.label} />;
+  return <EndedMark label={mark.label} className={className} />;
 }
 
 /** 위험·경고 수. 0 은 회색이고, 둘 다 0 이면 '위험·경고 없음'. */
@@ -44,7 +54,7 @@ export function CalendarCell({
   day,
   inMonth,
   isToday,
-  chip,
+  mark,
   summary,
   onPick,
 }: {
@@ -54,9 +64,9 @@ export function CalendarCell({
   /** false 면 앞뒤 달의 날짜라 흐리게 보인다(누르면 그 날로 간다). */
   inMonth: boolean;
   isToday: boolean;
-  /** 그 날의 상태 칩. 없으면 칩이 없다. */
-  chip: DayChip | null;
-  /** 지난 날 요약(작업 건수·위험·경고). 지난 날이 아니거나 작업이 없으면 null. */
+  /** 그 날의 표시(작업 종료·오늘의 단추). 없으면 비어 있다. */
+  mark: DayMark | null;
+  /** 지난 날 요약(작업 건수·위험·경고). 지난 날이 아니거나 끝난 작업이 없으면 null. */
   summary: DaySummary | null;
   onPick: (dateKey: DateKey) => void;
 }) {
@@ -70,7 +80,7 @@ export function CalendarCell({
         'flex min-w-0 flex-col items-start gap-1 rounded-[12px] border border-border bg-card px-2.5 py-2 text-left text-foreground',
         'transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
         !inMonth && 'opacity-45',
-        isToday && 'border-primary ring-1 ring-primary',
+        isToday && 'border-2 border-primary bg-primary/10 hover:bg-primary/16',
       )}
     >
       <span className="flex w-full items-center gap-1.5">
@@ -80,7 +90,7 @@ export function CalendarCell({
             오늘
           </span>
         )}
-        {summary && chip && <Chip chip={chip} className="ml-auto" />}
+        {summary && mark && <Mark mark={mark} className="ml-auto" />}
       </span>
       {summary && (
         <>
@@ -88,7 +98,7 @@ export function CalendarCell({
           <EventCounts critical={summary.critical} high={summary.high} />
         </>
       )}
-      {!summary && chip && <Chip chip={chip} />}
+      {!summary && mark && <Mark mark={mark} />}
     </button>
   );
 }

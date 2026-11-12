@@ -128,21 +128,34 @@ describe('WorkCalendar', () => {
     expect(screen.getByRole('heading', { name: '2026년 12월' })).toBeTruthy();
   });
 
-  it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 보고서 작성 전 칩이 있다', async () => {
+  it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 작업 시작 단추 모양이 있다', async () => {
     renderCalendar();
     const today = cellOf('11월 11일');
     expect(within(today).getByText('오늘')).toBeTruthy();
-    expect(within(today).getByText('보고서 작성 전')).toBeTruthy();
-    // 오늘 태그·작성 전 칩은 오늘 칸에만 있다.
-    expect(screen.getAllByText('보고서 작성 전')).toHaveLength(1);
+    expect(within(today).getByText('작업 시작')).toBeTruthy();
+    // 오늘 태그·작업 시작 단추는 오늘 칸에만 있다.
+    expect(screen.getAllByText('작업 시작')).toHaveLength(1);
     expect(screen.getAllByText('오늘', { selector: 'span' })).toHaveLength(1);
     await screen.findByText('작업 2건');
   });
 
-  it('지난 날 + 작업 있음: 완료 칩, 작업 건수, 위험·경고 합계를 보인다', async () => {
+  it('오늘 칸은 옅은 주색 면과 2px 주색 테두리로 강조하고, 다른 칸은 그렇지 않다', async () => {
+    renderCalendar();
+    const today = cellOf('11월 11일');
+    expect(today.className).toContain('bg-primary/10');
+    expect(today.className).toContain('border-2');
+    expect(today.className).toContain('border-primary');
+    expect(today.className).not.toContain('ring-1');
+    const other = cellOf('11월 12일');
+    expect(other.className).not.toContain('bg-primary/10');
+    expect(other.className).not.toContain('border-primary');
+    await screen.findByText('작업 2건');
+  });
+
+  it('지난 날 + 작업 있음: 작업 종료 표시, 작업 건수, 위험·경고 합계를 보인다', async () => {
     renderCalendar();
     const day = cellOf('11월 9일');
-    expect(await within(day).findByText('완료')).toBeTruthy();
+    expect(await within(day).findByText('작업 종료')).toBeTruthy();
     expect(within(day).getByText('작업 2건')).toBeTruthy();
     expect(within(day).getByText('위험 3')).toBeTruthy();
     expect(within(day).getByText('경고 1')).toBeTruthy();
@@ -163,60 +176,113 @@ describe('WorkCalendar', () => {
     expect(within(day).getByText('경고 2').className).not.toContain('text-muted-foreground');
   });
 
-  it('지난 날 칩은 서버 progress 를 따른다: 제출 전·시작 전인 날은 완료가 아니다', async () => {
+  it('지난 날 표시는 제출 여부와 상관없이 작업 종료다(종료·제출·진행 값 없는 옛 응답 모두)', async () => {
     works = [
       past('p1', '2026-11-09', { progress: 'ENDED' }),
-      daily('2026-11-10', { progress: 'REPORT' }),
-      past('p3', '2026-11-08', { progress: null, actual_ended_at: 1_000 }),
-      past('p4', '2026-11-07', { progress: null, actual_ended_at: null }),
+      past('p2', '2026-11-08', { progress: 'SUBMITTED' }),
+      past('p3', '2026-11-07', { progress: null, actual_ended_at: 1_000 }),
     ];
     renderCalendar();
-    expect(await within(cellOf('11월 9일')).findByText('작업 종료')).toBeTruthy();
-    expect(within(cellOf('11월 10일')).getByText('보고서 작성')).toBeTruthy();
-    expect(within(cellOf('11월 8일')).getByText('완료')).toBeTruthy();
-    // 진행 값을 모르는데 끝나지도 않은 작업은 칩 없이 요약만 있다.
-    expect(within(cellOf('11월 7일')).queryByText('완료')).toBeNull();
-    expect(within(cellOf('11월 7일')).getByText('작업 1건')).toBeTruthy();
+    const ended = within(cellOf('11월 9일'));
+    expect(await ended.findByText('작업 종료')).toBeTruthy();
+    expect(ended.getByText('작업 1건')).toBeTruthy();
+    expect(within(cellOf('11월 8일')).getByText('작업 종료')).toBeTruthy();
+    // 진행 값을 모르는 옛 응답도 실제로 끝났으면 작업 종료로 본다.
+    expect(within(cellOf('11월 7일')).getByText('작업 종료')).toBeTruthy();
   });
 
-  it('작업 목의 지난 이력에서 제출하지 않은 마지막 날은 작업 종료, 그 전 날은 완료로 보인다', async () => {
+  it('작업 종료 표시는 알약이 아니라 아이콘과 글자뿐이다(흐린 글자색)', async () => {
+    works = [past('p1', '2026-11-09', { progress: 'ENDED' })];
+    renderCalendar();
+    const ended = await within(cellOf('11월 9일')).findByText('작업 종료');
+    expect(ended.className).toContain('text-muted-foreground');
+    expect(ended.className).not.toMatch(/border|bg-/);
+    expect(ended.querySelector('svg')).not.toBeNull();
+  });
+
+  it('지난 날에 끝나지 않은 작업(보고서·세팅·세팅 완료·작업 중)만 있으면 빈칸이다', async () => {
+    works = [
+      daily('2026-11-10', { progress: 'REPORT' }),
+      daily('2026-11-09', { progress: 'SETUP' }),
+      daily('2026-11-08', { progress: 'SETUP_DONE' }),
+      daily('2026-11-07', { progress: 'IN_PROGRESS' }),
+      past('p5', '2026-11-06', { progress: null, actual_ended_at: null }),
+      // 같은 날 끝난 작업이 있으면 끝난 작업만 센다.
+      past('p6', '2026-11-05', { progress: 'SUBMITTED', event_counts: { CRITICAL: 1 } }),
+      daily('2026-11-05', { progress: 'IN_PROGRESS', event_counts: { CRITICAL: 9, HIGH: 9 } }),
+    ];
+    renderCalendar();
+    const counted = within(cellOf('11월 5일'));
+    expect(await counted.findByText('작업 1건')).toBeTruthy();
+    expect(counted.getByText('위험 1')).toBeTruthy();
+    expect(counted.getByText('경고 0')).toBeTruthy();
+    for (const day of [10, 9, 8, 7, 6]) {
+      const empty = cellOf(`11월 ${day}일`);
+      expect(empty.textContent).toBe(String(day));
+    }
+  });
+
+  it('작업 목의 지난 이력은 제출한 날도 제출하지 않은 날도 작업 종료로 보인다', async () => {
     server.use(...createWorkMock({ now: () => NOW }).handlers);
     renderCalendar();
     expect(await within(cellOf('11월 10일')).findByText('작업 종료')).toBeTruthy();
-    expect(within(cellOf('11월 9일')).getByText('완료')).toBeTruthy();
+    expect(within(cellOf('11월 9일')).getByText('작업 종료')).toBeTruthy();
   });
 
-  it('작업이 없는 지난 날은 칩도 요약도 없다', async () => {
+  it('작업이 없는 지난 날은 표시도 요약도 없다', async () => {
     renderCalendar();
     await screen.findByText('작업 2건');
     const empty = cellOf('11월 5일');
     expect(empty.textContent).toBe('5');
   });
 
-  it('오늘·예정인 날의 칩은 그날 작업의 진행 상태(progress)를 따른다', async () => {
-    works = [
-      daily('2026-11-11', { progress: 'SETUP' }),
-      daily('2026-11-12', { progress: 'REPORT' }),
-      daily('2026-11-13', { progress: 'SETUP_DONE' }),
-    ];
+  it.each([
+    ['REPORT', '작업 시작'],
+    ['SETUP', '세팅 이어하기'],
+    ['SETUP_DONE', '작업 전 확인'],
+    ['IN_PROGRESS', '관제 중'],
+    ['ENDED', '보고서 보내기'],
+  ] as const)('오늘 칸 단추 글: 진행 값 %s 이면 `%s`', async (progress, label) => {
+    works = [daily(TODAY, { progress })];
     renderCalendar();
-    expect(await within(cellOf('11월 11일')).findByText('세팅 중')).toBeTruthy();
-    expect(within(cellOf('11월 12일')).getByText('보고서 작성')).toBeTruthy();
-    expect(within(cellOf('11월 13일')).getByText('세팅 완료')).toBeTruthy();
-    // 작업이 있으니 오늘 칸에 보고서 작성 전 칩은 더 없다.
-    expect(screen.queryByText('보고서 작성 전')).toBeNull();
-    // 작업이 없는 예정인 날은 칩이 없다.
-    expect(cellOf('11월 14일').textContent).toBe('14');
+    const button = await within(cellOf('11월 11일')).findByText(label);
+    // 칸 전체가 이미 단추라 안에 단추를 또 두지 않는다(단추 모양의 span).
+    expect(button.tagName).toBe('SPAN');
+    expect(button.className).toContain('bg-primary');
+    expect(cellOf('11월 11일').querySelectorAll('button')).toHaveLength(0);
   });
 
-  it('작업 종료·완료 칩은 오늘 칸에서도 각자의 상태 글을 보인다', async () => {
-    works = [daily('2026-11-11', { progress: 'ENDED' })];
+  it('오늘 작업을 제출했으면 단추 없이 작업 종료 표시다', async () => {
+    works = [daily(TODAY, { progress: 'SUBMITTED' })];
     renderCalendar();
-    expect(await within(cellOf('11월 11일')).findByText('작업 종료')).toBeTruthy();
-    works = [daily('2026-11-11', { progress: 'SUBMITTED' })];
-    cleanup();
+    const today = within(cellOf('11월 11일'));
+    const done = await today.findByText('작업 종료');
+    expect(done.className).toContain('text-muted-foreground');
+    expect(done.className).not.toContain('bg-primary');
+    expect(today.queryByText('작업 시작')).toBeNull();
+  });
+
+  it('오늘 칸의 단추 모양을 눌러도 칸처럼 그 날로 간다', async () => {
+    const { onPick } = renderCalendar();
+    fireEvent.click(within(cellOf('11월 11일')).getByText('작업 시작'));
+    expect(onPick).toHaveBeenCalledTimes(1);
+    expect(onPick).toHaveBeenCalledWith(TODAY);
+    await screen.findByText('작업 2건');
+  });
+
+  it('예정인 날은 작업이 있어도 아무것도 그리지 않는다', async () => {
+    works = [
+      past('p1', '2026-11-09'),
+      daily('2026-11-12', { progress: 'REPORT' }),
+      daily('2026-11-13', { progress: 'SETUP_DONE' }),
+      daily('2026-11-14', { progress: 'SUBMITTED' }),
+    ];
     renderCalendar();
-    expect(await within(cellOf('11월 11일')).findByText('완료')).toBeTruthy();
+    // 작업 목록이 칸에 들어온 뒤에도(지난 날 칸에 작업 건수가 보인다) 예정인 칸은 날짜만 있다.
+    await screen.findByText('작업 1건');
+    for (const day of [12, 13, 14, 15]) {
+      expect(cellOf(`11월 ${day}일`).textContent).toBe(String(day));
+    }
   });
 
   it('이전·다음 달 단추로 달을 옮기고 그 달이 걸치는 칸 전체의 작업을 받는다', async () => {
@@ -260,10 +326,13 @@ describe('WorkCalendar', () => {
     await screen.findByText('작업 2건');
   });
 
-  it('달 밖 날짜에도 그 날 작업의 칩이 보인다', async () => {
-    works = [daily('2026-12-02', { progress: 'REPORT' })];
-    renderCalendar();
-    expect(await within(cellOf('12월 2일')).findByText('보고서 작성')).toBeTruthy();
+  it('달 밖 날짜에도 그 날 작업의 표시가 보인다', async () => {
+    // 10월 달력의 첫 줄은 9월 27~30일(달 밖, 지난 날)이다.
+    works = [past('p1', '2026-09-30', { progress: 'SUBMITTED' })];
+    renderCalendar({ focusDate: '2026-10-15' });
+    const outside = within(cellOf('9월 30일'));
+    expect(await outside.findByText('작업 종료')).toBeTruthy();
+    expect(outside.getByText('작업 1건')).toBeTruthy();
   });
 
   it('알림이 있으면 머리줄에 보인다', async () => {

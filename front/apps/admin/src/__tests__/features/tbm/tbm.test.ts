@@ -1,3 +1,4 @@
+import { readTbmWorks } from '@/features/tbm/api';
 import {
   createTask,
   inputToWorkUnitBody,
@@ -263,5 +264,33 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     expect(isFallbackApiError(netErr)).toBe(true);
     expect(isFallbackApiError(serverErr)).toBe(true);
     expect(isFallbackApiError(noLayoutErr)).toBe(false);
+  });
+});
+
+describe('작업 목록 읽기(진행 값)', () => {
+  const raw = (patch: Record<string, unknown> = {}) => ({
+    work_id: 7,
+    date: '2026-11-12',
+    name: '작업',
+    from_ms: 1,
+    to_ms: 2,
+    planned_people: 1,
+    ...patch,
+  });
+
+  it('서버가 준 진행 값을 그대로 읽는다', () => {
+    expect(readTbmWorks([raw({ progress: 'SETUP_DONE' })])[0]?.progress).toBe('SETUP_DONE');
+  });
+
+  it('진행 값이 없는 응답(옛 서버·옛 mock)도 작업으로 읽는다', () => {
+    const [work] = readTbmWorks([raw()]);
+    expect(work?.work_id).toBe('7');
+    expect(work?.progress ?? null).toBeNull();
+  });
+
+  it('모르는 진행 값이 와도 작업을 버리지 않고 모름(null)으로 읽는다', () => {
+    const [work] = readTbmWorks([raw({ status: 'IN_PROGRESS', progress: 'PAUSED' })]);
+    expect(work?.status).toBe('IN_PROGRESS');
+    expect(work?.progress).toBeNull();
   });
 });

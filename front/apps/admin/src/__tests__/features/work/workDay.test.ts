@@ -1,22 +1,24 @@
-import { workReportOf } from '@/__tests__/features/work/workFixture';
+import { workDayOf, workReportOf } from '@/__tests__/features/work/workFixture';
 import { DAY_PROGRESS, type DayProgress } from '@/features/work/types';
 import {
   dayKind,
-  dayStatusOf,
   draftWarning,
   EMPTY_WORK_NAME,
   formatDayTitle,
   isDraftPending,
+  isEndedWork,
   isEndingGenerating,
   pad2,
   parseDateKey,
   stageIndexOf,
   stageOfProgress,
   toDateKey,
+  TODAY_ACTION,
   WORK_STAGE_IDS,
   WORK_STAGE_LABELS,
   WORK_STAGES,
   workNameOf,
+  workProgressOf,
 } from '@/features/work/workDay';
 import { describe, expect, it } from 'vitest';
 
@@ -52,21 +54,39 @@ describe('단계 표', () => {
   });
 });
 
-describe('달력 칸 상태', () => {
-  it('진행 값마다 프로토타입 dayStatus 의 글이다', () => {
-    expect(DAY_PROGRESS.map((p) => dayStatusOf(p))).toEqual([
-      { key: 'report', label: '보고서 작성' },
-      { key: 'setting', label: '세팅 중' },
-      { key: 'setup', label: '세팅 완료' },
-      { key: 'running', label: '진행 중' },
-      { key: 'ended', label: '작업 종료' },
-      { key: 'done', label: '완료' },
+describe('오늘 칸 단추 글', () => {
+  it('진행 값마다 지금 할 일이고, 제출(SUBMITTED)만 단추가 없다(null)', () => {
+    expect(DAY_PROGRESS.map((p) => TODAY_ACTION[p])).toEqual([
+      '작업 시작',
+      '세팅 이어하기',
+      '작업 전 확인',
+      '관제 중',
+      '보고서 보내기',
+      null,
     ]);
   });
+});
 
-  it('작업이 없거나 진행 값을 모르는 날은 칩이 없다', () => {
-    expect(dayStatusOf(null)).toEqual({ key: 'none', label: '' });
-    expect(dayStatusOf(undefined)).toEqual({ key: 'none', label: '' });
+describe('작업의 진행 값 · 끝난 작업', () => {
+  it('서버 진행 값이 있으면 그대로 쓴다', () => {
+    for (const progress of DAY_PROGRESS) {
+      expect(workProgressOf(workDayOf({ progress }))).toBe(progress);
+    }
+  });
+
+  it('진행 값을 모르는 옛 응답은 실제로 끝난 작업이면 제출(SUBMITTED), 아니면 null 이다', () => {
+    expect(workProgressOf(workDayOf({ progress: null, actual_ended_at: 1_000 }))).toBe('SUBMITTED');
+    expect(workProgressOf(workDayOf({ progress: null, actual_ended_at: null }))).toBeNull();
+  });
+
+  it('종료(ENDED)·제출(SUBMITTED)한 작업만 끝난 작업이다', () => {
+    const ended = DAY_PROGRESS.filter((progress) => isEndedWork(workDayOf({ progress })));
+    expect(ended).toEqual(['ENDED', 'SUBMITTED']);
+  });
+
+  it('진행 값을 모르는 옛 응답은 actual_ended_at 이 있을 때만 끝난 작업이다', () => {
+    expect(isEndedWork(workDayOf({ progress: null, actual_ended_at: 1_000 }))).toBe(true);
+    expect(isEndedWork(workDayOf({ progress: null, actual_ended_at: null }))).toBe(false);
   });
 });
 

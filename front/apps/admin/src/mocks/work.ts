@@ -152,7 +152,7 @@ interface MockWork {
 }
 
 /** 작업 항목 JSON(GET /api/work-units 의 한 건). */
-interface WorkItemJson {
+export interface WorkItemJson {
   work_id: string;
   date: string;
   name: string;
@@ -1012,6 +1012,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
   return {
     handlers,
     markSetupDone,
+    /** 날짜 작업 전부를 서버 목록(GET /api/work-units)의 한 건 모양으로, 진행 값(progress)과 함께. */
+    workItems: () => works.map(viewWork),
     /** 그 작업의 초안이 FAILED 로 끝나게 한다(초안 실패 화면 시험용). */
     failDraft(workId: string) {
       const work = dailyOf(workId);

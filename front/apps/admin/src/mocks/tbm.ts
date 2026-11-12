@@ -230,6 +230,11 @@ export interface CreateTbmMockOptions {
    * true 이면 GET /api/work-units?days=... 요청을 다음 핸들러(createHistoryMock)에 넘긴다.
    */
   deferDaysToHistory?: boolean;
+  /**
+   * 작업 관리의 날짜 작업(createWorkMock 의 workItems). 서버는 날짜 작업도 같은 목록에 진행 값(progress)과 함께 주므로,
+   * 관제가 읽는 GET /api/work-units(범위 없음)에 이 목의 작업 뒤로 이어 붙인다. 없으면 이 목의 작업만 준다.
+   */
+  dailyWorks?: () => readonly TbmWorkUnit[];
 }
 
 /** 서버처럼(WorkUnitRepository) 구역 작업의 place 가 비어 있으면 구역의 이름을 채워 내려 준다. */
@@ -476,7 +481,9 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       if (options.deferDaysToHistory && url.searchParams.has('days')) {
         return undefined;
       }
-      return HttpResponse.json({ works: works.map(withZonePlace) });
+      return HttpResponse.json({
+        works: [...works.map(withZonePlace), ...(options.dailyWorks?.() ?? [])],
+      });
     }),
   ];
 
