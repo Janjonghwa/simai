@@ -704,7 +704,10 @@ function Get-HealPlan {
     [int]$TunnelStaleSeconds = 300,
     [bool]$PowerCfgOk = $true,
     [string]$SavedMode = '',
-    [bool]$RelayAlive = $true
+    [bool]$RelayAlive = $true,
+    [bool]$RunArgsKnown = $false,      # 관제(run)를 다시 띄울 Pod 주소·포트가 상태 파일에 있다(S15P31A101-652)
+    [int]$RecentModeRestarts = 0,      # 최근 창 되살리기 횟수(Get-RecentModeRestartCount)
+    [int]$MaxModeRestarts = 3
   )
   $actions = @()
   if ($SshdStatus -ne 'Missing') {
@@ -724,12 +727,53 @@ function Get-HealPlan {
   if (-not $PowerCfgOk) {
     $actions += 'fix-powercfg'
   }
+  # 창이 죽었으면 이전 모드로 다시 띄운다(-652). 같은 원인으로 거듭 죽으면(최근 MaxModeRestarts 번) 되살리지 않고 알리기만 한다
+  $canRestart = $RecentModeRestarts -lt $MaxModeRestarts
   if (($SavedMode -eq 'preview') -and (-not $RelayAlive)) {
-    $actions += 'restart-preview'
+    $actions += $(if ($canRestart) { 'restart-preview' } else { 'notify-mode-flapping' })
   } elseif (($SavedMode -eq 'run') -and (-not $RelayAlive)) {
-    $actions += 'notify-run-dead'
+    $actions += $(if ($RunArgsKnown -and $canRestart) { 'restart-run' } elseif ($RunArgsKnown) { 'notify-mode-flapping' } else { 'notify-run-dead' })
   }
   return ,$actions
+}
+
+function Test-ModeTreeAlive {
+  # 순수 함수(S15P31A101-652): 모드 창 PID 목록·PID 파일 시각·프로세스 표(Id·Name·ParentId·Created)로 창이 제대로 살아 있는지 본다.
+  # 창은 'powershell -NoExit' 라 안의 프로그램(uv → simai-relay·simai-site-alert)이 죽어도 창은 열린 채 남는다. 11-09 미리보기가
+  # 죽었는데 heal 은 창 PID 만 보고 '이상 없음'이었다. 그래서 ① PID 마다 powershell/pwsh 가 있고 ② PID 파일을 쓴 뒤(+StartSlackSeconds)
+  # 시작한 프로세스가 아니며(PID 재사용) ③ ChildRequiredPids 의 창은 uv·python·simai-* 자식이 하나 이상 있어야 한다(conhost 는 세지 않는다).
+  param(
+    [int[]]$Pids = @(),
+    [object[]]$Processes = @(),
+    [nullable[datetime]]$PidFileTime = $null,
+    [int[]]$ChildRequiredPids = @(),
+    [int]$StartSlackSeconds = 5
+  )
+  if ($Pids.Count -eq 0) { return $false }
+  foreach ($p in $Pids) {
+    $proc = @($Processes | Where-Object { $_.Id -eq $p }) | Select-Object -First 1
+    if ((-not $proc) -or ([string]$proc.Name -notmatch '^(powershell|pwsh)(\.exe)?$')) { return $false }
+    if (($null -ne $PidFileTime) -and ($null -ne $proc.Created) -and ($proc.Created -gt $PidFileTime.AddSeconds($StartSlackSeconds))) { return $false }
+  }
+  foreach ($p in $ChildRequiredPids) {
+    $kids = @($Processes | Where-Object { ($_.ParentId -eq $p) -and ([string]$_.Name -match '^(uv|python|pythonw|simai-[a-z-]+)(\.exe)?$') })
+    if ($kids.Count -eq 0) { return $false }
+  }
+  return $true
+}
+
+function Get-RecentModeRestartCount {
+  # 순수 함수(S15P31A101-652): heal 로그 줄에서 최근 WindowMinutes 분 안의 창 되살리기(미리보기·관제) 횟수.
+  param([string[]]$Lines = @(), [datetime]$Now = (Get-Date), [int]$WindowMinutes = 30)
+  $n = 0
+  foreach ($line in $Lines) {
+    if ($line -notmatch '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.+)$') { continue }
+    $stamp, $msg = $Matches[1], $Matches[2]  # 다음 -match 가 $Matches 를 바꾸기 전에 꺼낸다
+    if ($msg -notmatch '창이 죽어 다시 시작') { continue }
+    $ts = [datetime]::ParseExact($stamp, 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+    if ((($Now - $ts).TotalMinutes) -le $WindowMinutes) { $n++ }
+  }
+  return $n
 }
 
 function Write-HealLog([string]$m) {
@@ -793,14 +837,17 @@ function Get-TunnelState {
 }
 
 function Test-ModeProcessesAlive {
+  # 창 PID 와 그 안의 프로그램(자식)을 함께 본다(Test-ModeTreeAlive, S15P31A101-652). 관제는 [터널, 경보 단말, 영상 중계] 순이고
+  # 터널 창은 끊겨 3초 쉬는 동안 자식이 없을 수 있어 자식은 보지 않는다. 미리보기는 [영상 중계] 하나다.
   if (-not (Test-Path $PidFile)) { return $false }
-  $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json)
+  $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json | ForEach-Object { [int]$_ })
   if ($pids.Count -eq 0) { return $false }
-  foreach ($p in $pids) {
-    $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
-    if ((-not $proc) -or ($proc.ProcessName -notmatch '^(powershell|pwsh)$')) { return $false }
-  }
-  return $true
+  $need = if ($pids.Count -ge 3) { @($pids[1..($pids.Count - 1)]) } else { $pids }
+  $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+    [pscustomobject]@{ Id = [int]$_.ProcessId; Name = [string]$_.Name; ParentId = [int]$_.ParentProcessId; Created = $_.CreationDate }
+  })
+  if ($procs.Count -eq 0) { return $true }  # 프로세스 표를 못 읽으면 모른다: 멀쩡한 창을 죽이지 않는다
+  return Test-ModeTreeAlive -Pids $pids -Processes $procs -PidFileTime (Get-Item $PidFile).LastWriteTime -ChildRequiredPids $need
 }
 
 function Do-RestartTunnel([switch]$Quiet) {
@@ -839,6 +886,8 @@ function Do-Heal {
     Write-HealLog '카메라 헬퍼 재시작'
   }
   $relayAlive = if ($savedMode) { Test-ModeProcessesAlive } else { $true }
+  $healLines = if (Test-Path $HealLog) { @(Get-Content -LiteralPath $HealLog -Encoding UTF8 -Tail 200) } else { @() }
+  $recentRestarts = Get-RecentModeRestartCount -Lines $healLines -Now $now
 
   $plan = Get-HealPlan `
     -SshdStatus $sshdStatus `
@@ -850,7 +899,9 @@ function Do-Heal {
     -Now $now `
     -PowerCfgOk $pcfg.Ok `
     -SavedMode $savedMode `
-    -RelayAlive $relayAlive
+    -RelayAlive $relayAlive `
+    -RunArgsKnown ([bool]($resume -and $resume.Args)) `
+    -RecentModeRestarts $recentRestarts
 
   if ($plan.Count -eq 0) {
     Say '자가 복구(heal): 이상 없음'
@@ -903,18 +954,26 @@ function Do-Heal {
     Say '복구: 역터널 예약 작업 시작'
   }
 
-  if ($plan -contains 'restart-preview') {
+  if (($plan -contains 'restart-preview') -or ($plan -contains 'restart-run')) {
     if ($resume -and $resume.Args) {
+      # 새 모드가 시작하며 남은 창(안의 프로그램만 죽은 창 포함)을 먼저 닫는다(Do-Run·Do-Preview 의 Do-Stop)
       Start-InSession $resume.Args $resume.Label
-      Write-HealLog "미리보기 창이 죽어 다시 시작($($resume.Args))"
-      Say '복구: 미리보기 창 다시 시작'
+      $what = if ($resume.Mode -eq 'run') { '관제' } else { '미리보기' }
+      Write-HealLog "$what 창이 죽어 다시 시작($($resume.Args))"
+      Say "복구: $what 창 다시 시작"
     }
+  } elseif ($plan -contains 'notify-mode-flapping') {
+    $lastHealLine = if ($healLines.Count) { [string]$healLines[-1] } else { '' }
+    if ($lastHealLine -notmatch '되살리지 않음') {
+      Write-HealLog "창이 30분 안에 $recentRestarts 번 다시 죽어 되살리지 않음(로그 확인: logs relay)"
+    }
+    Warn "창이 30분 안에 $recentRestarts 번 다시 죽었다. 자동으로 되살리지 않는다: logs relay 로 원인을 보고 다시 시작한다."
   } elseif ($plan -contains 'notify-run-dead') {
     $lastHealLine = if (Test-Path $HealLog) { [string](Get-Content -LiteralPath $HealLog -Encoding UTF8 -Tail 1) } else { '' }
     if ($lastHealLine -notmatch '관제가 꺼짐') {
-      Write-HealLog '관제가 꺼짐(창 죽음 — Pod 주소가 바뀌었을 수 있어 자동 복구 안 함)'
+      Write-HealLog '관제가 꺼짐(창 죽음 — Pod 주소 기록이 없어 자동 복구 안 함)'
     }
-    Warn '관제가 꺼짐: 관제(run) 창이 죽어 있다(자동 재시작 안 함). Pod 주소를 확인하고 run-remote(gw.sh live)로 다시 시작한다.'
+    Warn '관제가 꺼짐: 관제(run) 창이 죽어 있고 Pod 주소 기록이 없다(자동 재시작 안 함). run-remote(gw.sh live)로 다시 시작한다.'
   }
 }
 

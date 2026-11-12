@@ -231,6 +231,33 @@ describe('다시 굽기 결과 문구', () => {
     ).toMatchObject({ title: '원래 맵 유지', detail: '다시 굽기가 실패했습니다 · 시간 초과' });
     expect(describeRebake(rebake({ status: 'CANCELLED' })).detail).toBe('다시 굽기를 취소했습니다');
   });
+
+  it('맞춰졌지만 관문에 걸린 파일은 맞추지 못한 파일과 다른 문구다(S15P31A101-652)', () => {
+    const fallback = rebake({
+      outcome: 'FALLBACK',
+      reason: 'ALIGNMENT_WORSE',
+      result: {
+        status: 'FALLBACK',
+        reason: 'ALIGNMENT_WORSE',
+        media_count: 2,
+        frames_selected: 41,
+        frames_registered: 40,
+        media: [
+          {
+            media_id: 'sup-1',
+            status: 'REGISTERED_NOT_USED',
+            frames_selected: 40,
+            frames_registered: 40,
+          },
+          { media_id: 'sup-2', status: 'NOT_REGISTERED', frames_selected: 1, frames_registered: 0 },
+        ],
+      },
+    });
+    expect(describeRebake(fallback, media).media.map((m) => m.text)).toEqual([
+      '붙지 않음 · 화면과 맞췄지만 품질 기준에 걸려 넣지 않음',
+      '붙지 않음 · 고정 카메라 화면과 맞추지 못함',
+    ]);
+  });
 });
 
 describe('보강 촬영 오류 문구', () => {

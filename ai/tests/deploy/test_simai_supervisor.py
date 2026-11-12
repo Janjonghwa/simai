@@ -753,6 +753,35 @@ def test_worker_start_prepares_setup_mapanything_weights_after_vlm(bs, tmp_path,
     assert next(r for r in rec if r["stage"] == "setup-weights")["exit"] == 0
 
 
+def test_setup_weights_include_person_seg_for_supplement_and_worker_env_points_to_it(bs, tmp_path, monkeypatch):
+    """S15P31A101-652: 아바타를 띄우지 않아도 세팅 가중치 단계가 사람 분할(목록 env SIMAI_AVATAR_SEG_WEIGHTS)을 함께 두고,
+    워커 환경 SIMAI_SEG_WEIGHTS 가 그 경로다(14차 보강 촬영 SEGMENTER_MISSING)."""
+    manifest = _setup_manifest(tmp_path)
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
+    doc["weights"].append({"name": "seg", "sets": ["avatar"], "path": "weights/yolo/yolo26x-seg.pt", "source": {"url": "x"},
+                           "sha256": "0" * 64, "env": "SIMAI_AVATAR_SEG_WEIGHTS"})
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "worker"), env={"SIMAI_WEIGHTS_MANIFEST": str(manifest)})
+    assert sup.svc["worker"].env["SIMAI_SEG_WEIGHTS"] == str(tmp_path / "simai" / "weights" / "yolo" / "yolo26x-seg.pt")
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 3)
+    _join_setup(sup)
+    assert sup.weight_calls == [["ma-model", "ma-config", "seg"]]
+    # 운영자가 다른 경로를 주면 그 값을 쓰고 목록 항목은 받지 않는다
+    w2 = World()
+    (tmp_path / "b").mkdir()
+    sup2 = _sup(bs, tmp_path / "b", monkeypatch, w2, services=("tier0", "worker"),
+                env={"SIMAI_WEIGHTS_MANIFEST": str(manifest), "SIMAI_SEG_WEIGHTS": str(tmp_path / "own-seg.pt")})
+    assert sup2.svc["worker"].env["SIMAI_SEG_WEIGHTS"] == str(tmp_path / "own-seg.pt")
+    _start(sup2, w2)
+    w2.ready = w2.healthy = True
+    _settle(sup2, w2, 3)
+    _join_setup(sup2)
+    assert sup2.weight_calls == [["ma-model", "ma-config"]]
+
+
 def test_setup_weights_failure_warns_but_keeps_worker(bs, tmp_path, monkeypatch, capsys):
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "worker"),
@@ -784,8 +813,9 @@ def test_setup_weights_can_be_turned_off_and_skipped_without_worker(bs, tmp_path
     assert sup2._setup_weights_thread is None
 
 
-@pytest.mark.parametrize("rc, want", [(0, 0), (5, 5), (-9, 137)])
+@pytest.mark.parametrize("rc, want", [(0, 0), (2, 2), (3, 3), (5, 5)])
 def test_tier0_exit_stops_worker_then_vllm_and_returns_same_code(bs, tmp_path, monkeypatch, rc, want):
+    """정상 종료·설정 오류·재시작 복구 거부·file 기록 실패는 다시 띄워도 같다: 예전처럼 전체를 내린다(-652)."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w)
     sup.spawn = w.spawn
@@ -802,6 +832,87 @@ def test_tier0_exit_stops_worker_then_vllm_and_returns_same_code(bs, tmp_path, m
     term = [n for n, s in w.signals if s == signal.SIGTERM]
     assert term == ["worker", "vllm"]  # Tier 0 는 이미 끝났다. 워커 먼저
     assert ("tier0", bs.KILL) in w.signals  # Tier 0 그룹에 남은 것 정리
+
+
+def _record_tier0_spawns(sup, w) -> list[float]:
+    at: list[float] = []
+    real_spawn = w.spawn
+
+    def spawn(name, argv, env, log_dir):
+        if name == "tier0":
+            at.append(w.now)
+        return real_spawn(name, argv, env, log_dir)
+    sup.spawn = spawn
+    return at
+
+
+def test_tier0_crash_restarts_only_tier0_after_backoff_and_keeps_sidecars(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-652: Tier 0 가 비정상 종료(SIGKILL)하면 사이드카에는 신호를 보내지 않고 1초 백오프 뒤 Tier 0 만 다시 띄운다.
+    의도적 종료 신호는 예전처럼 워커 → vLLM → Tier 0 순서로 내린다."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+    spawn_at = _record_tier0_spawns(sup, w)
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now == 20:
+            sup.svc["tier0"].proc.rc = -9
+        if w.now == 40:
+            sup.request_stop(signal.SIGTERM)
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert w.spawned.count("tier0") == 2 and w.spawned.count("worker") == 1 and w.spawned.count("vllm") == 1
+    assert spawn_at[1] - 20 == 1  # 첫 재기동 백오프 1초
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["worker", "vllm", "tier0"]
+    assert w.signals[0] == ("tier0", bs.KILL)  # 죽은 Tier 0 그룹의 손자는 바로 정리(사이드카 신호 없음)
+    assert "Tier 0 만 다시 띄운다" in capsys.readouterr().err
+
+
+def test_tier0_fast_crash_loop_backs_off_1_2_4_5_then_gives_up_like_before(bs, tmp_path, monkeypatch):
+    """빨리(SIMAI_SUPERVISE_MIN_UPTIME_S 안에) 연달아 죽으면 1·2·4·5·5초로 늘려 다시 띄우고, 상한(5번)을 넘으면 사이드카를 내리고 같은 코드로 끝낸다."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+    spawn_at = _record_tier0_spawns(sup, w)
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        t0 = sup.svc["tier0"]
+        if t0.proc is not None and w.now - t0.started >= 3:
+            t0.proc.rc = 1  # 띄운 뒤 3초마다 예외로 죽는다
+    sup.sleep = ticking
+    assert sup.run() == 1
+    gaps = [b - a - 3 for a, b in zip(spawn_at, spawn_at[1:])]
+    assert gaps == [1, 2, 4, 5, 5] and len(spawn_at) == 6
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["worker", "vllm"]
+
+
+def test_tier0_long_run_resets_crash_count_and_hides_stale_marker(bs, tmp_path, monkeypatch):
+    """오래 돈 뒤 죽으면 연속 실패를 1부터 다시 센다. 죽은 동안에는 기동 시각을 비워 죽은 Tier 0 의 표시 파일을 준비로 보지 않는다."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, env={"SIMAI_TIER0_MAX_RESTARTS": "1"})
+    w.ready = w.healthy = True
+    seen = {}
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now in (100, 200):
+            sup.svc["tier0"].proc.rc = -11
+        if w.now in (101, 201):
+            seen[w.now] = (sup.svc["tier0"].proc, sup.t0_since_ms, sup.t0_fails)
+        if w.now == 230:
+            sup.request_stop(signal.SIGTERM)
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert seen[101] == (None, None, 1) and seen[201] == (None, None, 1)
+    assert w.spawned.count("tier0") == 3
 
 
 def test_signal_stops_worker_vllm_tier0_in_order(bs, tmp_path, monkeypatch):
@@ -1308,7 +1419,9 @@ def test_real_vllm_crash_kills_its_grandchild_restarts_and_tier0_stays(tmp_path)
 
 @posix_only
 def test_real_tier0_exit_brings_down_others_with_same_code(tmp_path):
-    p, events, _root = _real(tmp_path, FAKE_TIER0_EXIT_AFTER_S="6", FAKE_TIER0_EXIT_CODE="7", FAKE_VLLM_HEALTH_AFTER_S="0.2")
+    # 비정상 종료는 Tier 0 만 다시 띄운다(-652). 재기동 상한 0 이면 예전처럼 나머지를 내리고 같은 코드로 끝낸다
+    p, events, _root = _real(tmp_path, FAKE_TIER0_EXIT_AFTER_S="6", FAKE_TIER0_EXIT_CODE="7", FAKE_VLLM_HEALTH_AFTER_S="0.2",
+                             SIMAI_TIER0_MAX_RESTARTS="0")
     try:
         rc, out = _finish(p, timeout=90)
     finally:
@@ -1418,6 +1531,8 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     orig_sup = bs.Supervisor
 
     def make_sup(r, services, tier0_argv, env=None, **kw):
+        # 비정상 종료 코드를 그대로 돌려주는지 본다: Tier 0 재기동(-652)은 끄고 예전 경로를 탄다
+        env = {**(os.environ if env is None else env), "SIMAI_TIER0_MAX_RESTARTS": "0"}
         sup = orig_sup(
             r, services, tier0_argv, env=env, spawn=w.spawn,
             ready=lambda: (w.ready, "ready" if w.ready else "waiting"),
@@ -1737,6 +1852,7 @@ def test_preflight_checks_wm2_repo_when_configured_and_worker_gets_wm2_lama_envs
     w_env = sup.svc["worker"].env
     assert w_env["SIMAI_WM2_MODEL"].endswith(os.path.join("weights", "hy-world-2.0", "HY-WorldMirror-2.0"))
     assert w_env["SIMAI_LAMA_WEIGHTS"].endswith(os.path.join("weights", "lama", "big-lama.pt"))
+    assert w_env["SIMAI_SEG_WEIGHTS"].endswith(os.path.join("weights", "yolo", "yolo26x-seg.pt"))  # -652
 
     root = tmp_path / "simai"
     manifest = tmp_path / "manifest.json"

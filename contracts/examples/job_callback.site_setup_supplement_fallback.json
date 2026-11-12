@@ -237,7 +237,7 @@
         "media": [
           {
             "media_id": "sup-01",
-            "status": "NOT_REGISTERED",
+            "status": "REGISTERED_NOT_USED",
             "frames_selected": 40,
             "frames_registered": 3
           }

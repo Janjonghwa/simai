@@ -171,6 +171,8 @@ def test_bake_failure_with_supplement_rebakes_without_it(tmp_path: Path) -> None
     assert stages.ran == ["supplement", "bake", "bake"]
     assert baked.supplement["status"] == "FALLBACK" and baked.supplement["reason"] == sc.R_BAKE_FAILED
     assert all(m["status"] != "USED" for m in baked.supplement["media"])
+    # 자리 잡았던 파일은 미등록이 아니라 '등록됐지만 쓰지 않음'(1.13.0, -652)
+    assert {m["status"] for m in baked.supplement["media"] if m["frames_registered"]} == {sc.M_REGISTERED_NOT_USED}
     assert schema_errors(dict(baked.supplement), SUMMARY_SCHEMA) == []
     assert store.puts[-1][1] == b"glb-base" and not (s.root / "prepared_base").exists()
 

@@ -44,9 +44,64 @@ Describe 'Get-HealPlan 순수 판정 함수' {
     ($plan -join ',') | Should Be 'restart-preview'
   }
 
-  It 'run(관제) 모드에서 창이 죽었으면 되살리지 않고 notify-run-dead 만 돌려준다' {
+  It 'run(관제) 모드에서 창이 죽었고 Pod 주소 기록이 없으면 되살리지 않고 notify-run-dead 만 돌려준다' {
     $plan = Get-HealPlan -SavedMode 'run' -RelayAlive $false -Now $now
     ($plan -join ',') | Should Be 'notify-run-dead'
+  }
+
+  It 'run(관제) 모드에서 창이 죽었고 Pod 주소 기록이 있으면 이전 모드로 restart-run (S15P31A101-652)' {
+    $plan = Get-HealPlan -SavedMode 'run' -RelayAlive $false -RunArgsKnown $true -Now $now
+    ($plan -join ',') | Should Be 'restart-run'
+  }
+
+  It '최근 30분에 3번 되살렸으면 더 되살리지 않고 notify-mode-flapping (S15P31A101-652)' {
+    (Get-HealPlan -SavedMode 'preview' -RelayAlive $false -RecentModeRestarts 3 -Now $now) -join ',' | Should Be 'notify-mode-flapping'
+    (Get-HealPlan -SavedMode 'run' -RelayAlive $false -RunArgsKnown $true -RecentModeRestarts 3 -Now $now) -join ',' | Should Be 'notify-mode-flapping'
+    (Get-HealPlan -SavedMode 'preview' -RelayAlive $false -RecentModeRestarts 2 -Now $now) -join ',' | Should Be 'restart-preview'
+  }
+}
+
+Describe 'Test-ModeTreeAlive 창과 안의 프로그램 생존 (S15P31A101-652)' {
+  $t0 = [datetime]::ParseExact('2026-11-09 09:00:00', 'yyyy-MM-dd HH:mm:ss', $null)
+  function P($id, $name, $parent, $created) { [pscustomobject]@{ Id = $id; Name = $name; ParentId = $parent; Created = $created } }
+
+  It '미리보기 창이 열려 있어도 안의 중계(uv)가 죽고 conhost 만 남았으면 죽은 것으로 본다(11-09)' {
+    $procs = @((P 100 'powershell.exe' 1 $t0), (P 101 'conhost.exe' 100 $t0))
+    (Test-ModeTreeAlive -Pids @(100) -Processes $procs -PidFileTime $t0 -ChildRequiredPids @(100)) | Should Be $false
+  }
+
+  It '창과 uv 자식이 있으면 살아 있다' {
+    $procs = @((P 100 'powershell.exe' 1 $t0), (P 101 'conhost.exe' 100 $t0), (P 102 'uv.exe' 100 $t0.AddSeconds(1)))
+    (Test-ModeTreeAlive -Pids @(100) -Processes $procs -PidFileTime $t0 -ChildRequiredPids @(100)) | Should Be $true
+  }
+
+  It '창 PID 가 없거나 PID 파일 뒤에 시작한 다른 powershell(PID 재사용)이면 죽은 것으로 본다' {
+    (Test-ModeTreeAlive -Pids @(100) -Processes @() -PidFileTime $t0) | Should Be $false
+    $reused = @((P 100 'powershell.exe' 1 $t0.AddHours(2)), (P 102 'uv.exe' 100 $t0.AddHours(2)))
+    (Test-ModeTreeAlive -Pids @(100) -Processes $reused -PidFileTime $t0 -ChildRequiredPids @(100)) | Should Be $false
+    $other = @((P 100 'notepad.exe' 1 $t0))
+    (Test-ModeTreeAlive -Pids @(100) -Processes $other -PidFileTime $t0) | Should Be $false
+  }
+
+  It '관제는 터널 창 자식을 보지 않고(재연결 대기) 경보 단말·중계 창 자식은 본다' {
+    $procs = @((P 10 'powershell.exe' 1 $t0), (P 20 'powershell.exe' 1 $t0), (P 30 'powershell.exe' 1 $t0),
+      (P 21 'uv.exe' 20 $t0), (P 31 'uv.exe' 30 $t0))
+    (Test-ModeTreeAlive -Pids @(10, 20, 30) -Processes $procs -PidFileTime $t0 -ChildRequiredPids @(20, 30)) | Should Be $true
+    $alertDead = @($procs | Where-Object { $_.Id -ne 21 })
+    (Test-ModeTreeAlive -Pids @(10, 20, 30) -Processes $alertDead -PidFileTime $t0 -ChildRequiredPids @(20, 30)) | Should Be $false
+  }
+}
+
+Describe 'Get-RecentModeRestartCount 최근 창 되살리기 횟수 (S15P31A101-652)' {
+  It '30분 안의 미리보기·관제 되살리기만 센다' {
+    $now = [datetime]::ParseExact('2026-11-09 10:00:00', 'yyyy-MM-dd HH:mm:ss', $null)
+    $lines = @(
+      '2026-11-09 09:00:00 미리보기 창이 죽어 다시 시작(preview)',
+      '2026-11-09 09:40:00 미리보기 창이 죽어 다시 시작(preview)',
+      '2026-11-09 09:45:00 역터널 재시작(ssh 프로세스 없음)',
+      '2026-11-09 09:55:00 관제 창이 죽어 다시 시작(run -PodIp 1.2.3.4 -ControlPort 1 -VideoPort 2)'
+    )
+    (Get-RecentModeRestartCount -Lines $lines -Now $now) | Should Be 2
   }
 }
 

@@ -631,4 +631,31 @@ GPU 세션 전에 EC2 호스트에서 저장소의 `deploy/ec2/deploy.sh`를 `/o
 /opt/simai/bin/freeze.sh off
 ```
 
+### GPU 세션 시작·끝 절차 (S15P31A101-652, 14차 세션 기준)
+
+14차 세션에서 동결을 처음 써 보니 설치·해제 순서가 문서에 흩어져 있었다. 아래 순서를 그대로 따른다(EC2 호스트). `/opt/simai/repo` 는 마지막 배포가 푼 dev 판이다(`REVISION` 파일). 그 뒤 머지된 스크립트 변경을 넣으려면 먼저 배포가 끝났는지 본다.
+
+**시작 (Pod 를 켜기 전)**
+
+```sh
+# 1) 배포 스크립트·동결 스크립트 설치(저장소 판과 다르면 다시). 배포가 쓰는 것은 설치본이다
+cd /opt/simai/repo && cat REVISION
+sudo install -m 755 deploy/ec2/deploy.sh /opt/simai/bin/deploy.sh
+sudo install -m 755 deploy/ec2/freeze.sh /opt/simai/bin/freeze.sh
+cmp deploy/ec2/deploy.sh /opt/simai/bin/deploy.sh && cmp deploy/ec2/freeze.sh /opt/simai/bin/freeze.sh
+# 2) 동결: 세션 길이 + 여유(보통 4~6시간). 진행 중 배포가 있으면 끝난 뒤 걸린다
+sudo /opt/simai/bin/freeze.sh on --hours 5 --reason "14차 GPU 세션"
+sudo /opt/simai/bin/freeze.sh status     # "동결 중 (사유·만료 UTC·설정자)" 확인
+# 3) 워커 토큰 발급(세션 워커 ID), Pod 기동·게이트웨이 run-remote 는 그다음
+```
+
+**끝 (이 순서로)**
+
+1. 게이트웨이를 미리보기로 돌린다(`gw.sh preview` → 관제 창 3개를 닫고 카메라 미리보기만). 녹화를 했으면 녹화 폴더 `manifest.json` 이 생겼는지 본다.
+2. Pod 서비스를 내린다(감시 프로세스에 SIGTERM: 워커 → vLLM → Tier 0 순서). 결과 묶음·로그(`$SIMAI_ROOT/logs`, `runs/`)를 노트북으로 가져온 뒤 Pod 를 Stop 한다(볼륨이 없다).
+3. 이번 세션 워커 토큰을 폐기한다(`worker-token.sh revoke <워커 ID>`).
+4. 동결을 푼다: `sudo /opt/simai/bin/freeze.sh off` → `status` 가 `동결 없음`.
+5. 동결 중 건너뛴 머지가 있으면(Jenkins 로그 "동결 중 … 배포 건너뜀") dev 최신으로 배포를 다시 실행한다. 자동으로 다시 배포되지 않는다.
+6. Pod 임시 수정(환경 파일·코드 덧댐)은 세션 기록에 적고 MR 로 옮긴다(다음 이미지에 반영되기 전에는 Pod 를 새로 켜면 사라진다).
+
 시간은 1~168 정수다. 사유·만료 UTC·설정자는 `/opt/simai/deploy.freeze`에 기록한다. 동결 중 Jenkins 로그에는 사유·만료와 배포 건너뜀이 표시되고 성공으로 끝난다. 만료되면 경고 후 배포한다. 건너뛴 커밋은 자동으로 다시 배포되지 않으므로 세션 후 배포를 다시 실행한다.

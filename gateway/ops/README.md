@@ -85,7 +85,7 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
   2. **sshd 실패 시 자동 재시작 옵션**: `sc.exe failure sshd reset= 86400 actions= restart/5000/restart/5000/restart/60000` 이 없으면 설정한다.
   3. **원격 역터널(`simai-gateway-remote`)**: 예약 작업이 `Running` 이 아니면 시작한다. 역터널 `ssh` 프로세스가 없거나 터널 로그의 마지막 성공 시각 이후 5분(300초) 넘게 지났으면 예약 작업을 멈추고 EC2 `~/simai-gateway/free-ports.sh` 로 옛 세션을 정리한 뒤 다시 시작한다.
   4. **절전 설정(`powercfg`)**: AC 전원 기준 화면 끄기(`monitor-timeout-ac 0`), 절전(`standby-timeout-ac 0`), 덮개 닫기 동작(`LIDACTION 0`, 아무 것도 안 함)이 바뀌었으면 0으로 되돌린다.
-  5. **중계 모드**: 마지막으로 사용자가 고른 모드(`C:\simai-local\gateway-mode.txt`)가 `preview`(미리보기) 계열인데 창 프로세스가 죽어 있으면 자동으로 다시 띄운다. **`run`(관제) 모드는 Pod 주소·포트가 바뀌었을 수 있으므로 자동으로 되살리지 않고**, heal 로그와 `status` 에 `"관제가 꺼짐"` 으로만 알린다.
+  5. **중계 모드**: 마지막으로 사용자가 고른 모드(`C:\simai-local\gateway-mode.txt`)의 창이 죽어 있으면 그 모드로 다시 띄운다(미리보기, 그리고 상태 파일에 Pod 주소·포트가 있는 `run`(관제), S15P31A101-652). 창 PID 만이 아니라 창 안의 프로그램(uv·simai-relay·simai-site-alert 자식)까지 본다: 창은 `-NoExit` 라 중계가 죽어도 열린 채 남아 11-09 에 heal 이 "이상 없음"이었다(관제 터널 창은 재연결 대기 중 자식이 없어 창만 본다). 30분 안에 3번 되살렸는데 또 죽으면 더 되살리지 않고 heal 로그에 `되살리지 않음` 을 남긴다. Pod 주소 기록이 없는 `run` 은 예전처럼 `"관제가 꺼짐"` 으로만 알린다.
 
 ### 2. 개발 노트북 원격 CLI (`gateway/ops/gw.sh`)
 
@@ -114,4 +114,4 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 | **역터널 끊김** | EC2 `127.0.0.1:2222` 리슨 없음 | 역터널 루프가 5초마다 재접속을 시도하며, 작업이나 프로세스가 죽었으면 `simai-gateway-heal`(5분 주기)이 재시작한다. 5분 뒤에도 안 열리면 현장에서 전원·로그인·유선 LAN 을 확인한다. |
 | **EC2 옛 세션이 2222 점유** | 게이트웨이 망 순단 뒤 EC2 에 옛 `sshd` 세션이 남아 새 역터널 포워딩이 거절됨 | 역터널 루프(20초 미만 끊김 시) 또는 `simai-gateway-heal` / `gw.sh restart-tunnel` 이 EC2 `~/simai-gateway/free-ports.sh`(`sudo -n ss`/`kill`)를 호출해 옛 세션을 정리하고 다시 연결한다. |
 | **절전(Modern Standby)·덮개 닫기** | 시간 경과나 덮개 닫기로 절전 진입 후 망·중계 끊김 | `Do-RemoteSetup`(6번)과 `simai-gateway-heal`(5분 주기)이 AC 화면·절전·덮개 닫기 동작을 항상 `0`(아무 것도 안 함)으로 되돌린다. |
-| **미리보기/관제 창 종료** | 중계 프로세스 비정상 종료 | `preview` 모드는 `simai-gateway-heal`(5분 주기)이 로그인 세션에서 다시 띄운다. `run`(관제) 모드는 Pod 주소 변경 가능성이 있어 자동 재시작하지 않고 `status` 와 `heal` 로그에 `"관제가 꺼짐"` 을 표시하므로, Pod 확인 후 `gw.sh live ...` 로 다시 켠다. |
+| **미리보기/관제 창 종료** | 중계 프로세스 비정상 종료(창은 열린 채 안의 프로그램만 죽은 경우 포함) | `simai-gateway-heal`(5분 주기)이 이전 모드(미리보기, 또는 마지막 Pod 주소의 관제)로 로그인 세션에서 다시 띄운다(30분에 3번까지). 그 뒤에도 죽거나 Pod 주소 기록이 없으면 `heal` 로그·`status` 에 남기므로 `gw.sh logs relay` 로 원인을 보고 `gw.sh live ...` 로 다시 켠다. Pod 를 바꿨으면 heal 이 옛 주소로 띄울 수 있으니 새 주소로 `gw.sh live` 를 다시 준다. |

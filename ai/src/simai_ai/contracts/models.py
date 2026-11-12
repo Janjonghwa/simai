@@ -1981,7 +1981,7 @@ class MediaItem(BaseModel):
         extra='forbid',
     )
     media_id: Annotated[StrictStr, Field(pattern='^[A-Za-z0-9_-]{1,64}$')]
-    status: Literal['USED', 'DOWNLOAD_FAILED', 'UNREADABLE', 'NO_FRAMES', 'NOT_REGISTERED', 'WIDE_FOV_REJECTED']
+    status: Literal['USED', 'DOWNLOAD_FAILED', 'UNREADABLE', 'NO_FRAMES', 'NOT_REGISTERED', 'WIDE_FOV_REJECTED', 'REGISTERED_NOT_USED']
     frames_selected: Annotated[StrictInt, Field(ge=0)]
     frames_registered: Annotated[StrictInt, Field(ge=0)]
 

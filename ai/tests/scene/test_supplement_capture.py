@@ -309,9 +309,14 @@ def test_model_k_roundtrips_crop_resize() -> None:
     ({}, None),
     ({"registered": 2}, sc.R_TOO_FEW_REGISTERED),  # 2/10 < 30 %
     ({"registered": 0, "selected": 0}, sc.R_TOO_FEW_REGISTERED),
-    ({"chunk_center_m": 0.071}, sc.R_ALIGNMENT_WORSE),  # 0.05 + 0.02 초과
-    ({"chunk_center_m": 0.069}, None),
+    ({"chunk_center_m": 0.081}, sc.R_ALIGNMENT_WORSE),  # 절대 안전선 8 cm 초과(-652)
+    ({"chunk_center_m": 0.079}, None),
+    ({"chunk_center_m": 0.079, "baseline_center_m": 0.00001}, None),  # 기준(고정 4대 자기 맞춤 ≈0)과 비교하지 않는다
     ({"chunk_center_m": None}, sc.R_ALIGNMENT_WORSE),  # 모르면 통과로 채우지 않는다
+    # 14차 GPU 세션 실측(40/40 등록, 재투영 4.546 → 4.777 px, 중심 0.00001 → 0.063 m): 예전 2 cm 상대 기준은 거부, 지금은 통과
+    ({"baseline_center_m": 0.00001, "chunk_center_m": 0.063, "baseline_px": 4.546, "chunk_px": 4.777,
+      "selected": 40, "registered": 40}, None),
+    ({"chunk_center_m": 0.2, "chunk_px": 9.0}, sc.R_FIXED_REPROJECTION_WORSE),  # 재투영이 주 판정(먼저 본다)
     ({"chunk_px": 4.0 * 1.25 + 0.51}, sc.R_FIXED_REPROJECTION_WORSE),
     ({"chunk_px": 4.0 * 1.25 + 0.49}, None),
     ({"chunk_px": None}, sc.R_FIXED_REPROJECTION_WORSE),
@@ -392,6 +397,23 @@ def test_supplement_rejects_wide_fov_media_and_skips_without_segmenter(tmp_path:
     _request(root2, [("ok", 21)])
     out2 = sc.run_supplement(root2, infer=_FakeMapAnything(truth), person_mask=None, cfg=sc.SupplementConfig())
     assert out2["status"] == "SKIPPED" and out2["reason"] == sc.R_SEGMENTER_MISSING and _summary_errors(out2) == []
+
+
+def test_gate_rejected_chunk_keeps_registered_media_distinct_from_not_registered(tmp_path: Path) -> None:
+    """S15P31A101-652: 묶음이 관문에 걸려 FALLBACK 이어도 자리 잡은 프레임이 있던 파일은 REGISTERED_NOT_USED, 없던 파일만 NOT_REGISTERED."""
+    root = _site(tmp_path)
+    wrong = _look_at((1.0, 1.0, 0.5), (1.0, 5.0, 2.5))
+    truth = {f"g{i}": (GOOD_POSES[i], _K(120.0), None) for i in range(3)}
+    truth["bad"] = (GOOD_POSES[3], _K(120.0), wrong)
+    _request(root, [("g0", 1), ("g1", 2), ("g2", 3), ("bad", 4)])
+    cfg = sc.SupplementConfig(align_max_center_m=-1.0)  # 등록은 되지만 중심 잔차 안전선에 반드시 걸리게
+    out = sc.run_supplement(root, infer=_FakeMapAnything(truth), person_mask=_no_people, cfg=cfg)
+    assert _summary_errors(out) == []
+    assert out["status"] == "FALLBACK" and out["reason"] == sc.R_ALIGNMENT_WORSE and out["frames_registered"] == 3
+    rows = {m["media_id"]: (m["status"], m["frames_registered"]) for m in out["media"]}
+    assert rows == {"g0": ("REGISTERED_NOT_USED", 1), "g1": ("REGISTERED_NOT_USED", 1), "g2": ("REGISTERED_NOT_USED", 1),
+                    "bad": ("NOT_REGISTERED", 0)}
+    assert not (root / "prepared_base").exists()  # 기준 맵 유지
 
 
 def test_chunked_inference_keeps_fixed_views_in_every_chunk_and_drops_only_bad_chunk(tmp_path: Path) -> None:

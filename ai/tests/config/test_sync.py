@@ -612,3 +612,32 @@ def test_failed_receive_cleanup_keeps_resend_in_flight(kit):
     # 앞선 수신의 finally 가 다시 받은 항목을 지우지 않았다
     assert sync._inflight.get("cfg-13") is resent[0]
     assert sync.state is S.PENDING
+
+
+def test_switch_logs_one_info_line_with_bundle_ppe_r3_and_counts(kit, caplog):
+    """S15P31A101-652: 새 묶음 적용 전환 때 INFO 한 줄(config_version·보정·안전모·조끼·R3 규칙 버전·구역 수·작업면 수).
+    14차 GPU 세션에서 적용 성공 기록이 없어 어떤 묶음으로 도는지 가리는 데 30분 넘게 걸렸다."""
+    import logging
+
+    sync = make_sync(kit)
+    sync.on_connected()
+    ppe = {"format_version": "1.0.0", "version": "ppe-3", "work_id": 7, "effective_from_ms": 1760342000000,
+           "helmet": "REQUIRED"}
+    assert sync.receive(kit.publish("cfg-66", rule_versions=(("R1", 1), ("R3", 1001)), ppe_policy=ppe)).accepted
+    with caplog.at_level(logging.INFO, logger="simai_ai.config.sync"):
+        sync.begin_tick()
+        sync.begin_tick()  # 전환이 없는 tick 은 다시 적지 않는다
+    lines = [r for r in caplog.records if "적용(applied_at" in r.getMessage()]
+    assert len(lines) == 1 and lines[0].levelno == logging.INFO
+    msg = lines[0].getMessage()
+    for part in ("구성 묶음 cfg-66", "보정 cal-cfg-66", "안전모 REQUIRED·조끼 없음(정책 ppe-3, 작업 7)",
+                 "R3 규칙 버전 1001", "구역 1개", "작업면 0개(형식 오류로 뺀 1개)"):
+        assert part in msg, msg
+
+    caplog.clear()
+    kit.clock.advance(1000)
+    assert sync.receive(kit.publish("cfg-67")).accepted
+    with caplog.at_level(logging.INFO, logger="simai_ai.config.sync"):
+        sync.begin_tick()
+    msg = next(r.getMessage() for r in caplog.records if "적용(applied_at" in r.getMessage())
+    assert "안전모 없음(정책 없음)·조끼 없음" in msg and "R3 규칙 버전 없음" in msg
