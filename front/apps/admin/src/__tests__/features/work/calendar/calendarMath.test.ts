@@ -1,11 +1,13 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
 import {
+  cellAriaLabel,
   dayMarkOf,
   groupByDate,
   monthCells,
   monthOfKey,
   shiftMonth,
   startWeekday,
+  summarizeMonth,
   summarizeWorks,
   weeksOfMonth,
 } from '@/features/work/calendar/calendarMath';
@@ -66,7 +68,7 @@ describe('shiftMonth · monthOfKey', () => {
   });
 });
 
-describe('groupByDate · summarizeWorks', () => {
+describe('groupByDate · summarizeWorks · summarizeMonth', () => {
   it('작업을 날짜 키별로 묶는다', () => {
     const a = workDayOf({ work_id: '1', date: '2026-11-09' });
     const b = workDayOf({ work_id: '2', date: '2026-11-09' });
@@ -104,13 +106,83 @@ describe('groupByDate · summarizeWorks', () => {
       summarizeWorks([workDayOf({ progress: 'IN_PROGRESS' }), workDayOf({ progress: 'REPORT' })]),
     ).toBeNull();
   });
+
+  it('월간 요약은 그 달 안(inMonth)에서 끝난 작업이 있는 날 수와 위험·경고 합계를 구하고 달 밖·예정·미종료는 뺀다', () => {
+    // 2026년 10월 달력 칸: 9월 27~30일(달 밖) + 10월 1~31일(그 달)
+    const cells = monthCells({ year: 2026, month: 10 });
+    const byDate = groupByDate([
+      // 달 밖 지난 날: 빼야 함
+      workDayOf({
+        work_id: 'out',
+        date: '2026-09-30',
+        progress: 'SUBMITTED',
+        event_counts: { CRITICAL: 9, HIGH: 9 },
+      }),
+      // 같은 날 작업 2건이라도 작업 일수는 1일로 센다
+      workDayOf({
+        work_id: 'd1a',
+        date: '2026-10-05',
+        progress: 'SUBMITTED',
+        event_counts: { CRITICAL: 2, HIGH: 1 },
+      }),
+      workDayOf({
+        work_id: 'd1b',
+        date: '2026-10-05',
+        progress: 'ENDED',
+        event_counts: { CRITICAL: 1 },
+      }),
+      // 이벤트 0건인 끝난 날
+      workDayOf({
+        work_id: 'd2',
+        date: '2026-10-08',
+        progress: 'SUBMITTED',
+        event_counts: { CRITICAL: 0, HIGH: 0 },
+      }),
+      // 미종료 지난 날: 빼야 함
+      workDayOf({
+        work_id: 'unfinished',
+        date: '2026-10-09',
+        progress: 'IN_PROGRESS',
+        event_counts: { CRITICAL: 4, HIGH: 4 },
+      }),
+      // 오늘(10월 15일) 끝난 작업은 포함한다
+      workDayOf({
+        work_id: 'today-done',
+        date: '2026-10-15',
+        progress: 'SUBMITTED',
+        event_counts: { HIGH: 2 },
+      }),
+      // 예정인 날: 빼야 함
+      workDayOf({
+        work_id: 'future',
+        date: '2026-10-20',
+        progress: 'SUBMITTED',
+        event_counts: { CRITICAL: 5, HIGH: 5 },
+      }),
+    ]);
+
+    expect(summarizeMonth(cells, byDate, '2026-10-15')).toEqual({
+      days: 3,
+      critical: 3,
+      high: 3,
+    });
+  });
+
+  it('그 달에 끝난 작업이 없으면 월간 요약은 모두 0 이다', () => {
+    const cells = monthCells({ year: 2026, month: 11 });
+    expect(summarizeMonth(cells, new Map(), '2026-11-11')).toEqual({
+      days: 0,
+      critical: 0,
+      high: 0,
+    });
+  });
 });
 
 describe('dayMarkOf — 지난 날', () => {
-  const ENDED = { kind: 'ended', label: '작업 종료' };
+  const ENDED = { kind: 'ended' } as const;
   const mark = (progress: DayProgress) => dayMarkOf([workDayOf({ progress })], 'past');
 
-  it('종료(ENDED)와 제출(SUBMITTED)은 둘 다 작업 종료다(종료와 제출을 나누지 않는다)', () => {
+  it('종료(ENDED)와 제출(SUBMITTED)은 둘 다 완료 표시다(종료와 제출을 나누지 않는다)', () => {
     expect(mark('ENDED')).toEqual(ENDED);
     expect(mark('SUBMITTED')).toEqual(ENDED);
   });
@@ -122,7 +194,7 @@ describe('dayMarkOf — 지난 날', () => {
     expect(dayMarkOf([], 'past')).toBeNull();
   });
 
-  it('진행 값을 모르는 옛 응답은 실제로 끝난 작업만 작업 종료이고 아니면 빈칸이다', () => {
+  it('진행 값을 모르는 옛 응답은 실제로 끝난 작업만 완료 표시이고 아니면 빈칸이다', () => {
     const ended = workDayOf({ work_id: '1', daily: false, progress: null, actual_ended_at: 1_000 });
     const notEnded = workDayOf({
       work_id: '2',
@@ -136,7 +208,7 @@ describe('dayMarkOf — 지난 날', () => {
     expect(dayMarkOf([ended, notEnded], 'past')).toEqual(ENDED);
   });
 
-  it('끝난 작업이 하나라도 있으면 제출 여부·순서와 상관없이 작업 종료다', () => {
+  it('끝난 작업이 하나라도 있으면 제출 여부·순서와 상관없이 완료 표시다', () => {
     const submitted = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
     const ended = workDayOf({ work_id: '2', daily: false, progress: 'ENDED' });
     expect(dayMarkOf([submitted, ended], 'past')).toEqual(ENDED);
@@ -156,13 +228,13 @@ describe('dayMarkOf — 오늘', () => {
   const action = (label: string) => ({ kind: 'action', label });
   const mark = (progress: DayProgress | null) => dayMarkOf([workDayOf({ progress })], 'today');
 
-  it('진행 값마다 지금 할 일 단추 글이다(제출하면 단추 없이 작업 종료 표시)', () => {
+  it('진행 값마다 지금 할 일 단추 글이다(제출하면 단추 없이 완료 표시)', () => {
     expect(mark('REPORT')).toEqual(action('작업 시작'));
     expect(mark('SETUP')).toEqual(action('세팅 이어하기'));
     expect(mark('SETUP_DONE')).toEqual(action('작업 전 확인'));
     expect(mark('IN_PROGRESS')).toEqual(action('관제 중'));
     expect(mark('ENDED')).toEqual(action('보고서 보내기'));
-    expect(mark('SUBMITTED')).toEqual({ kind: 'ended', label: '작업 종료' });
+    expect(mark('SUBMITTED')).toEqual({ kind: 'ended' });
   });
 
   it('작업이 없거나 진행 값을 모르는 작업이면 작업 시작이다', () => {
@@ -174,7 +246,7 @@ describe('dayMarkOf — 오늘', () => {
     const old = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
     const daily = workDayOf({ work_id: '2', daily: true, progress: 'SETUP' });
     expect(dayMarkOf([old, daily], 'today')).toEqual(action('세팅 이어하기'));
-    expect(dayMarkOf([old], 'today')).toEqual({ kind: 'ended', label: '작업 종료' });
+    expect(dayMarkOf([old], 'today')).toEqual({ kind: 'ended' });
   });
 });
 
@@ -185,5 +257,59 @@ describe('dayMarkOf — 예정인 날', () => {
       expect(dayMarkOf([workDayOf({ progress })], 'future')).toBeNull();
     }
     expect(dayMarkOf([workDayOf({ progress: null })], 'future')).toBeNull();
+  });
+});
+
+describe('cellAriaLabel', () => {
+  it('날짜에 더해 오늘 할 일·지난 날 완료 및 위험·경고 수를 담는다', () => {
+    expect(
+      cellAriaLabel({
+        dateKey: '2026-11-11',
+        day: 11,
+        kind: 'today',
+        mark: { kind: 'action', label: '세팅 이어하기' },
+        summary: null,
+      }),
+    ).toBe('11월 11일, 오늘, 세팅 이어하기');
+
+    expect(
+      cellAriaLabel({
+        dateKey: '2026-11-11',
+        day: 11,
+        kind: 'today',
+        mark: { kind: 'ended' },
+        summary: null,
+      }),
+    ).toBe('11월 11일, 오늘, 작업 완료');
+
+    expect(
+      cellAriaLabel({
+        dateKey: '2026-11-09',
+        day: 9,
+        kind: 'past',
+        mark: { kind: 'ended' },
+        summary: { count: 2, critical: 3, high: 1 },
+      }),
+    ).toBe('11월 9일, 작업 2건 완료, 위험 3건, 경고 1건');
+
+    expect(
+      cellAriaLabel({
+        dateKey: '2026-11-05',
+        day: 5,
+        kind: 'past',
+        mark: null,
+        summary: null,
+      }),
+    ).toBe('11월 5일');
+
+    expect(
+      cellAriaLabel({
+        dateKey: '2026-11-12',
+        day: 12,
+        kind: 'future',
+        mark: null,
+        summary: null,
+      }),
+    ).toBe('11월 12일');
   });
 });

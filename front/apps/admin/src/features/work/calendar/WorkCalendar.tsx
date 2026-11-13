@@ -5,6 +5,7 @@ import {
   monthCells,
   monthOfKey,
   shiftMonth,
+  summarizeMonth,
   summarizeWorks,
   weeksOfMonth,
   type CalendarMonth,
@@ -15,8 +16,8 @@ import { Button } from '@simai/ui/components/button';
 import { Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-// 작업 관리 첫 화면: 큰 월 달력. 날짜를 누르면 그 날로 간다(지난 날 = 다시 보기, 오늘·예정 = 작업 흐름).
-// 지난 날 칸은 끝난 작업(종료·제출)만 보이고 작업하지 않은 지난 날은 누를 수 없다. 오늘 칸은 지금 할 일 단추를 보이고, 예정인 날 칸은 비어 있다.
+// 작업 관리 첫 화면: 작업 히스토리 달력 + 오늘 작업 진입점. 날짜를 누르면 그 날로 간다(지난 날 = 다시 보기, 오늘·예정 = 작업 흐름).
+// 지난 날 칸은 끝난 작업(종료·제출)만 간결하게 보이고 작업하지 않은 지난 날은 누를 수 없다(-670). 오늘 칸은 지금 할 일 주 단추를 크게 보이고, 예정인 날 칸은 차분히 비운다.
 // 한 화면에 맞춘다: 폭 1080 가운데, 아래 80px 비움(5주는 높이 720 에 맞고 6주는 스크롤).
 
 export function WorkCalendar({
@@ -35,10 +36,14 @@ export function WorkCalendar({
 }) {
   const [month, setMonth] = useState<CalendarMonth>(() => monthOfKey(focusDate));
   const cells = useMemo(() => monthCells(month), [month]);
-  // 달 밖 칸에도 칩이 보이도록 그 달이 걸치는 칸 전체의 날짜 범위를 받는다.
+  // 달 밖 칸에도 표시가 보이도록 그 달이 걸치는 칸 전체의 날짜 범위를 받는다.
   const range = { from: cells[0]!.key, to: cells[cells.length - 1]!.key };
   const { data, error, refetch } = useWorkDays(range);
   const byDate = useMemo(() => groupByDate(data ?? []), [data]);
+  const monthSummary = useMemo(
+    () => (data ? summarizeMonth(cells, byDate, todayKey) : null),
+    [data, cells, byDate, todayKey],
+  );
 
   return (
     <div className="mx-auto flex min-h-[calc(100vh-140px)] w-full max-w-[1080px] flex-none flex-col gap-3.5 pb-20">
@@ -73,14 +78,38 @@ export function WorkCalendar({
             </Button>
           </span>
         )}
-        {notice && (
-          <span
-            role="status"
-            className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-ok"
-          >
-            <Check aria-hidden className="size-4" />
-            {notice}
-          </span>
+        {(notice || monthSummary) && (
+          <div className="ml-auto flex flex-wrap items-center gap-3.5">
+            {notice && (
+              <span
+                role="status"
+                className="flex items-center gap-1.5 text-sm font-semibold text-ok"
+              >
+                <Check aria-hidden className="size-4" />
+                {notice}
+              </span>
+            )}
+            {monthSummary && (
+              <p
+                aria-label="월간 요약"
+                className="rounded-lg border border-border/70 bg-card/80 px-3 py-1 text-[13px] text-muted-foreground tabular-nums"
+              >
+                <span>작업 {monthSummary.days}일</span>
+                {' · '}
+                <span
+                  className={
+                    monthSummary.critical > 0 ? 'font-semibold text-sev-critical' : undefined
+                  }
+                >
+                  위험 {monthSummary.critical}건
+                </span>
+                {' · '}
+                <span className={monthSummary.high > 0 ? 'font-semibold text-sev-high' : undefined}>
+                  경고 {monthSummary.high}건
+                </span>
+              </p>
+            )}
+          </div>
         )}
       </header>
       <div
@@ -102,7 +131,7 @@ export function WorkCalendar({
               dateKey={key}
               day={day}
               inMonth={inMonth}
-              isToday={kind === 'today'}
+              kind={kind}
               mark={dayMarkOf(works, kind)}
               summary={summary}
               disabled={kind === 'past' && summary === null}
