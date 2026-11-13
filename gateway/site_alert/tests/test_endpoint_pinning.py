@@ -82,7 +82,7 @@ def test_contract_example_parses(contract_validator) -> None:
     contract_validator("tier0_endpoint", doc)
     ep = parse_endpoint(doc)
     assert ep.control_url() == "wss://203.0.113.24:44464/control"
-    assert ep.video_ports == {"cam1": 44465, "cam2": 44466, "cam3": 44467, "cam4": 44468}
+    assert ep.video_ports == {"cam_A": 44465, "cam_B": 44466, "cam_C": 44467, "cam_D": 44468}
     assert ep.tls_public_key_sha256 == doc["payload"]["tls_public_key_sha256"]
 
 
