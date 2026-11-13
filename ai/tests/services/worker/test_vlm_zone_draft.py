@@ -53,7 +53,7 @@ CAL_DOC = {
     "calibration_version": "cal-setup-12",
     "cameras": [
         {
-            "camera_id": "cam1",
+            "camera_id": "cam_A",
             "intrinsics": {"fx": 200.0, "fy": 200.0, "cx": 160.0, "cy": 120.0},
             "extrinsics": {
                 "R": [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
@@ -312,7 +312,7 @@ def _opinion_input(**overrides):
         previous_calibration_version="cal-setup-11",
         previous_calibration_ref=PREV_CAL_REF,
         previous_calibration_hash=CAL_HASH,
-        previous_frames=[{"camera_id": "cam1", "frame_uri": PREV_FRAME_URI, "face_policy": "BLURRED"}],
+        previous_frames=[{"camera_id": "cam_A", "frame_uri": PREV_FRAME_URI, "face_policy": "BLURRED"}],
     )
     inp.update(overrides)
     for key in [k for k, v in inp.items() if v is None]:
@@ -333,7 +333,7 @@ def test_suspected_zones_get_before_after_crop_opinions_after_drafts():
     assert result["drafts"][0]["vlm_status"] == "VLM"  # 초안은 그대로
     (op,) = result["zone_opinions"]
     assert op["zone_id"] == "zone-platform-1" and op["status"] == "OPINION"
-    assert op["recommended_action"] == "REMOVE" and op["camera_id"] == "cam1" and op["reason"] is None
+    assert op["recommended_action"] == "REMOVE" and op["camera_id"] == "cam_A" and op["reason"] is None
     assert op["model_version"] == "nvidia/Cosmos-Reason2-2B" and op["prompt_version"] == "vlm-zone-opinion-1.0"
     for box in (op["before_crop_box_norm"], op["after_crop_box_norm"]):
         assert 0.0 <= box[0] < box[2] <= 1.0 and 0.0 <= box[1] < box[3] <= 1.0
@@ -366,7 +366,7 @@ def test_vlm_failure_on_opinion_keeps_photos_for_the_screen():
     assert schema_errors(result, RESULT_SCHEMA) == []
     (op,) = result["zone_opinions"]
     assert op["status"] == "NO_OPINION" and op["reason"] == "VLM_FAILED"
-    assert op["camera_id"] == "cam1" and op["before_crop_box_norm"] and op["after_crop_box_norm"]
+    assert op["camera_id"] == "cam_A" and op["before_crop_box_norm"] and op["after_crop_box_norm"]
 
 
 def test_no_suspected_zones_means_no_zone_opinions_key():
