@@ -95,6 +95,7 @@ export const tbmWorkUnitSchema = z.object({
   // 서버가 하루 작업마다 싣는 진행 값(REPORT·SETUP·SETUP_DONE·…). 관제는 세팅이 끝났는지 이것으로 안다.
   // 모르는 값이 와도 작업이 목록에서 빠지지 않게 null(모름)로 읽는다.
   progress: dayProgressSchema.nullish().catch(null),
+  setup_completed_at: z.union([z.string(), z.number()]).nullish(),
   actual_started_at: z.union([z.string(), z.number()]).nullish(),
   actual_ended_at: z.union([z.string(), z.number()]).nullish(),
   active_setup_session_id: z.string().nullish(),

@@ -14,7 +14,12 @@ const AUTH = { Authorization: 'Bearer mock-token.admin', 'Content-Type': 'applic
 describe('세팅 mock autoProgress', () => {
   it('시작 뒤 시간이 지나면 미리보기·정식 맵까지 단계가 앞으로만 넘어가고 supplement 를 싣는다', async () => {
     let clock = 1_000;
-    const mock = createSetupMock({ now: () => clock, autoProgress: true });
+    // 입력 높이를 현장 실제 높이와 같게 둬 -670 의 높이 불일치 멈춤(정밀 보정 진입)에 걸리지 않게 한다.
+    const mock = createSetupMock({
+      now: () => clock,
+      autoProgress: true,
+      cameraHeightsM: { cam1: 2.4 },
+    });
     server.resetHandlers(...mock.handlers);
     const created = (await (
       await fetch('http://api.test/api/setup-sessions', {

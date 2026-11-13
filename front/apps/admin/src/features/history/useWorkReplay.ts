@@ -2,9 +2,11 @@ import { ec2Now } from '@/features/events/format';
 import { planWindows, replayKey, requestReplay, requestWorks } from '@/features/history/api';
 import { chooseStep, fitLog, holdFor, replayFiles } from '@/features/history/replay';
 import {
+  allGap,
   frameAt,
   indexReplay,
   inPending,
+  isEmptyReplay,
   noDataAt,
   type Frame,
   type ReplayIndex,
@@ -20,7 +22,13 @@ import {
   type WindowSlots,
 } from '@/features/history/replayWindows';
 import type { ReplayResponse, Span, WorkUnit, WorkUnitsResponse } from '@/features/history/types';
-import { readWorks, replayRange, startedWorks } from '@/features/history/works';
+import {
+  DAY_FALLBACK_NOTICE,
+  dayReplayRange,
+  readWorks,
+  replayRange,
+  startedWorks,
+} from '@/features/history/works';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
 import { HISTORY_WORKS_KEY } from '@/lib/queryKeys';
@@ -226,7 +234,7 @@ function useReplayPlayback(replay: ReplaySpatialSource | null) {
 
 /** 작업 구간 다시 보기의 상태. 앞 구간을 받기 전이면 replay·index 가 null 이다. */
 export interface WorkReplay {
-  /** 다시 보는 구간(실제 시작~종료, 진행 중이면 연 시각까지). 길이가 없으면 null 이다. */
+  /** 다시 보는 구간(작업 구간, 또는 작업 구간이 전부 gap 일 때 넓힌 그날 구간). 길이가 없으면 null 이다. */
   range: Span | null;
   stepMs: number;
   holdMs: number;
@@ -236,6 +244,8 @@ export interface WorkReplay {
   error: Error | null;
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
+  /** 작업 구간에 기록이 없어 그날 관제 기록으로 넓혔을 때 타임라인 위에 띄울 안내. 아니면 null. */
+  notice?: string | null;
 }
 
 /** 지금의 EC2 시각(화면 시계에 서버와의 차이를 더한다). */
@@ -249,8 +259,21 @@ function useSeenAt(workId: string | undefined): number | null {
   return seen !== null && seen.workId === workId ? seen.at : null;
 }
 
+/** 작업 구간(workRange)의 기록이 전부 gap 이고, 그날 구간(dayRange)이 작업 구간과 다르면 그날 구간으로 넓힌다. */
+function shouldFallbackToDay(
+  built: Built | null,
+  workRange: Span | null,
+  dayRange: Span | null,
+): boolean {
+  if (!built || !workRange || !dayRange) return false;
+  if (dayRange.from === workRange.from && dayRange.to === workRange.to) return false;
+  const { index } = built;
+  return index.pending === null && isEmptyReplay(index) && allGap(index.gaps, workRange);
+}
+
 /**
- * 작업 구간 다시 보기. 실제 시작~종료 구간의 기록을 받아 재생 Source(-187)를 만든다.
+ * 작업 구간 다시 보기. 세팅 완료·실제 시작~실제 종료 구간의 기록을 받아 재생 Source(-187)를 만든다.
+ * 그 구간에 기록이 하나도 없으면(전부 gap) 그날(Asia/Seoul 00:00~24:00, 오늘이면 지금까지) 구간으로 넓히고 안내(notice)를 실어 돌려준다.
  * 긴 작업은 기록을 여러 창으로 나눠 받는다. 앞 창부터 이어서 받은 구간이 생기면 그것만으로 화면을 먼저 띄우고, 나머지가 오는 대로
  * 같은 재생 Source 의 기록을 늘린다(받은 구간이 2배가 될 때마다와 전부 받았을 때). 아직 못 받은 뒷구간은 index.pending 이다.
  * 진행 중인 작업은 그 작업이 화면에 처음 보인 때(EC2 시계)까지를 보고(화면을 연 뒤에 시작한 작업도 시작 뒤 구간이 된다),
@@ -259,10 +282,20 @@ function useSeenAt(workId: string | undefined): number | null {
  */
 export function useWorkReplay(work: WorkUnit | undefined): WorkReplay {
   const seenAt = useSeenAt(work?.work_id);
-  const range = useMemo(
+  const workRange = useMemo(
     () => (work && seenAt !== null ? replayRange(work, seenAt) : null),
     [work, seenAt],
   );
+  const dayRange = useMemo(
+    () => (work && seenAt !== null ? dayReplayRange(work.date, seenAt) : null),
+    [work, seenAt],
+  );
+  // 작업 구간이 전부 gap 이 확인된 키(work_id:from:to)를 기억해 그날 구간으로 넓힌다.
+  const [fallbackOfKey, setFallbackOfKey] = useState<string | null>(null);
+  const workKey = work && workRange ? `${work.work_id}:${workRange.from}:${workRange.to}` : null;
+  const useDayFallback = workKey !== null && fallbackOfKey === workKey && dayRange !== null;
+  const range = useDayFallback ? dayRange : workRange;
+
   const stepMs = range ? chooseStep(range.from, range.to) : 0;
   const key = work && range ? `${work.work_id}:${range.from}:${range.to}` : null;
   const plan = useMemo(() => (range ? planWindows({ ...range, stepMs }) : []), [range, stepMs]);
@@ -274,23 +307,35 @@ export function useWorkReplay(work: WorkUnit | undefined): WorkReplay {
     plan,
     available: data.available,
   });
-  useReplayPlayback(built?.replay ?? null);
+
+  const needsFallback =
+    !useDayFallback && workKey !== null && shouldFallbackToDay(built, workRange, dayRange);
+  if (needsFallback && fallbackOfKey !== workKey) {
+    setFallbackOfKey(workKey);
+  }
+
+  const activeRange = needsFallback ? dayRange : range;
+  const activeStepMs = activeRange ? chooseStep(activeRange.from, activeRange.to) : 0;
+  const activeBuilt = needsFallback ? null : built;
+
+  useReplayPlayback(activeBuilt?.replay ?? null);
 
   // 재생 엔진 코드(three.js)는 첫 창을 기다리는 동안 미리 받아 둔다.
   useEffect(() => {
     if (key !== null) loadViewer().catch(() => undefined);
   }, [key]);
 
-  const failed = data.failed || loadFailed;
+  const failed = !needsFallback && (data.failed || loadFailed);
   return {
-    range,
-    stepMs,
-    holdMs: built?.holdMs ?? holdFor(stepMs),
-    loading: range !== null && built === null && !failed,
+    range: activeRange,
+    stepMs: activeStepMs,
+    holdMs: activeBuilt?.holdMs ?? holdFor(activeStepMs),
+    loading: activeRange !== null && activeBuilt === null && !failed,
     failed,
-    error: data.error,
-    replay: built?.replay ?? null,
-    index: built?.index ?? null,
+    error: needsFallback ? null : data.error,
+    replay: activeBuilt?.replay ?? null,
+    index: activeBuilt?.index ?? null,
+    notice: useDayFallback || needsFallback ? DAY_FALLBACK_NOTICE : null,
   };
 }
 
