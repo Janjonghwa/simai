@@ -20,7 +20,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 규칙 버전 조회(GET /api/rules, S15P31A101-264, 명세 7.1·11.4-1·12.6, FR-113). 현재 규칙은 Tier 0 가 적용했다고 알린(config_ack APPLIED,
  * config_bundle.applied_at) 이 현장의 마지막 구성 묶음이 실은 판이다(config_bundle_item). 발행했지만 아직 적용 전이거나 거부된 묶음은
- * 현재가 아니고 pending_config_version 으로만 알린다. 적용된 묶음이 없으면 묶음을 만들 때와 같은 선택(RuleSelection)으로 운영 판을 준다.
+ * 현재가 아니고 pending_config_version 으로만 알린다. 적용된 묶음이 없으면 묶음을 만들 때와 같은 선택(RuleSelection)으로 현장 규칙 기준
+ * (site.rule_profile, 기본 교실 시험, S15P31A101-669)의 판을 준다.
  * R1~R11 은 활성 여부와 함께 모두 싣고(확장 규칙은 비활성), 적용 기간은 versions 에 모든 판의 valid_from·valid_to 로 싣는다.
  */
 @Repository
@@ -52,16 +53,18 @@ class RuleViews {
                 WHERE site_id = :site AND applied_at IS NOT NULL ORDER BY applied_at DESC, issued_at DESC LIMIT 1
                 """, site);
         String configVersion = applied.isEmpty() ? null : (String) applied.getFirst().get("config_version");
-        // V6 전 묶음은 프로필이 비어 있다. 그때는 운영이었다
-        String profile = applied.isEmpty() || applied.getFirst().get("rule_profile") == null
-                ? OPERATION : (String) applied.getFirst().get("rule_profile");
+        // 적용된 묶음이 없으면 다음 묶음이 고를 현장 규칙 기준(기본 교실 시험, S15P31A101-669).
+        // V6 전 묶음은 프로필이 비어 있다. 그때는 운영이었다(실은 판이 운영 판이라 기록대로 둔다)
+        String profile = applied.isEmpty()
+                ? jdbc.queryForObject(RuleSelection.SITE_PROFILE, site, String.class)
+                : applied.getFirst().get("rule_profile") == null ? OPERATION : (String) applied.getFirst().get("rule_profile");
         List<ObjectNode> selected = configVersion != null
                 ? jdbc.query("SELECT " + COLUMNS + """
                         FROM config_bundle_item i JOIN rule_version r ON r.rule_id = i.item_id AND r.rule_version = i.item_version
                         WHERE i.config_version = :v AND i.item_type = 'RULE' ORDER BY
                         """ + RULE_ORDER, new MapSqlParameterSource("v", configVersion), (rs, i) -> current(rs))
                 : jdbc.query("SELECT " + COLUMNS + " FROM (" + RuleSelection.ACTIVE_FOR_PROFILE + ") r ORDER BY " + RULE_ORDER,
-                        new MapSqlParameterSource("profile", OPERATION), (rs, i) -> current(rs));
+                        new MapSqlParameterSource("profile", profile), (rs, i) -> current(rs));
         Map<String, ObjectNode> byRule = new LinkedHashMap<>();
         selected.forEach(v -> byRule.put(v.get("rule_id").asString(), v));
 

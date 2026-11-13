@@ -24,7 +24,7 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 | 보정 문서 | 관리자가 올린다. 같은 버전은 같은 문서(해시)만 다시 받고, 다르면 409 | Tier 0 는 보정을 주소·해시로만 알려 EC2 에 본문이 없다(사용자 결정 2026-10-26) |
 | 묶음 버전 | `cfg-<n>`(1부터), 구성 요소 버전 `cfg-<n>-zones`·`-rules`·`-geometry`·`-ppe`, 보정은 `calibration_version` | 발행을 advisory lock 으로 한 줄로 세운다 |
 | 묶음에 넣는 구역·작업면 | 지금 유효한 버전만(`valid_to` 없음) | Tier 0 는 같은 ID 의 유효 구간이 겹치면 거부한다 |
-| 규칙 | `rule_profile` OPERATION·CLASSROOM_TEST. 규칙 ID 마다 하나: 교실 시험이면 그 규칙의 교실 시험 버전, 없으면 운영 버전. 없으면 이전 묶음의 프로필, 처음은 OPERATION | 7.4 별도 rule_version, 등록부(R__rule_versions) |
+| 규칙 | `rule_profile` OPERATION·CLASSROOM_TEST. 규칙 ID 마다 하나: 교실 시험이면 그 규칙의 교실 시험 버전, 없으면 운영 버전. 본문에 없으면 현장 설정 `site.rule_profile`(기본 CLASSROOM_TEST, S15P31A101-654·-669) | 7.4 별도 rule_version, 등록부(R__rule_versions) |
 | 구성 요소 내용 형식 | Tier 0 임시 형식(`ai/src/simai_ai/config/bundle.py` 표) 그대로. 구역은 `Zone.from_json` 키만(`zone_version` 은 문자열) | 내용 형식은 계약 범위 밖 |
 | 파일 주소 | `https://<공개 주소>/api/config-bundles/{version}/files/{name}?sig=<HMAC>`. JWT 없이 열리고 서명이 틀리면 404 | Tier 0 는 헤더 없이 https GET 만 한다. 주소가 매니페스트에 들어가 해시가 고정되므로 만료를 두지 않는다 |
 | 서명 키 | JWT 서명 키에서 용도 이름으로 뽑은 HMAC 키 | 새 비밀 값을 늘리지 않는다. JWT 키를 바꾸면 이전 묶음 주소가 닫힌다 |
