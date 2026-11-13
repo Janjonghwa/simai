@@ -16,6 +16,18 @@
 - World Track: 새로 나타난 ID(appeared: 새 발급 + 병합으로 되살아난 소실 후보. 새 발급만은 manager 의 new_track.created),
   LOST(TENTATIVE·확정 뒤), 병합으로 사라짐, 늦은 재연결, 상태별 누적 시간, LOST 까지 수명 분포,
   위치를 갱신한 Track 의 관측 카메라 수 분포, 그리고 `WorldTrackManager.diag` 의 분기 사유 횟수(재연결 실패 사유 등).
+- World 신원(S15P31A101-684): 클러스터 횟수(uncertain_reasons)가 아니라 World Track 시간으로 센다.
+  - identity_ms: (CONFIRMED|TENTATIVE 묶음, identity_confidence) 별 Track·시간(ms). CONFIRMED 묶음은 CONFIRMED·OCCLUDED.
+  - uncertain_reason_ms / uncertain_sole_ms: 확정 묶음 Track 이 IDENTITY_UNCERTAIN 인 동안 사유별 시간과, 그 사유 하나만
+    남아 있던 시간. 사유가 여럿이면 reason_ms 는 겹쳐 세어지므로 합이 불확실 시간보다 클 수 있다. 원인 비중은 sole 로 본다.
+  - uncertain_hold_only_ms: 이번 시각에 새로 붙은 사유 없이 uncertain_hold_ms 유지로만 불확실이던 시간.
+  - uncertain_raised: 확정 묶음 Track 에 사유가 새로 붙은(갱신된) Track·tick 수.
+  - uncertain_episodes: 불확실 구간이 끝난 원인(CLEARED 확신 회복, LOST, MERGED_AWAY 병합으로 사라짐)별 길이 분포.
+    끝나지 않은 구간은 summary 의 uncertain_open 으로 본다.
+  - local_key_moves / local_key_swaps: (카메라, 로컬 트랙)이 살아 있는 다른 World ID 로 옮겨 간 횟수와, 같은 tick 에 두 ID 가
+    서로의 로컬 트랙을 맞바꾼 쌍 수. 정답 없이 보는 swap 대리 지표다(로컬 추적기 자체의 swap 은 잡지 못한다). 병합으로
+    사라진 ID 의 로컬 트랙을 넘겨받은 것은 세지 않는다.
+  시간은 state_ms 와 같이 직전 tick 의 상태에 그 사이 시간을 붙인다.
 
 현재 시각을 읽지 않는다. 모든 시각은 공통 시각 t(UTC ms)다. 다른 스레드(상태 파일)가 읽으므로 lock 으로 감싼다.
 """
@@ -32,9 +44,11 @@ from typing import Any
 
 from simai_ai.geometry.interpolation import FrameDrop
 from simai_ai.tracking.cross_view import AssociationFrame, LocalView
-from simai_ai.tracking.world_track import TrackLifecycle, WorldTrackFrame
+from simai_ai.tracking.world_track import IdentityConfidence, TrackLifecycle, WorldTrackFrame
 
 DEFAULT_WINDOW_MS = 30_000
+UNCERTAIN_EPISODE_EDGES_MS = (100, 300, 1000, 2000, 5000, 10_000, 30_000, 60_000)
+_CONFIRMED_GROUP = (TrackLifecycle.CONFIRMED, TrackLifecycle.OCCLUDED)
 RESIDUAL_EDGES_PX = (2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 30.0)
 EPIPOLAR_EDGES_PX = (5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0)
 LIFESPAN_EDGES_MS = (300, 500, 1000, 2000, 5000, 10_000, 30_000, 60_000, 300_000)
@@ -75,6 +89,14 @@ class _Stats:
     manager: Counter = field(default_factory=Counter)
     max_confirmed: int = 0  # 한 tick 의 동시 확정(CONFIRMED·OCCLUDED) Track 최대 (-657)
     max_duplicate_pairs: int = 0  # 한 tick 의 중복 의심 쌍(시점 분할 근거·POSSIBLE_DUPLICATE) 최대 (-657)
+    identity_ms: Counter = field(default_factory=Counter)  # (CONFIRMED|TENTATIVE, confidence) (-684)
+    uncertain_reason_ms: Counter = field(default_factory=Counter)  # flag
+    uncertain_sole_ms: Counter = field(default_factory=Counter)  # flag
+    uncertain_hold_only_ms: int = 0
+    uncertain_raised: Counter = field(default_factory=Counter)  # flag
+    uncertain_episodes: Counter = field(default_factory=Counter)  # (end cause, bin)
+    local_key_moves: int = 0
+    local_key_swaps: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         def nest(c: Counter) -> dict[str, dict[str, int]]:
@@ -113,6 +135,16 @@ class _Stats:
                 "max_confirmed": self.max_confirmed,
                 "max_duplicate_pairs": self.max_duplicate_pairs,
             },
+            "identity": {
+                "identity_ms": nest(self.identity_ms),
+                "uncertain_reason_ms": {str(k): int(v) for k, v in sorted(self.uncertain_reason_ms.items())},
+                "uncertain_sole_ms": {str(k): int(v) for k, v in sorted(self.uncertain_sole_ms.items())},
+                "uncertain_hold_only_ms": self.uncertain_hold_only_ms,
+                "uncertain_raised": {str(k): int(v) for k, v in sorted(self.uncertain_raised.items())},
+                "uncertain_episodes_ms": nest(self.uncertain_episodes),
+                "local_key_moves": self.local_key_moves,
+                "local_key_swaps": self.local_key_swaps,
+            },
         }
 
 
@@ -121,6 +153,91 @@ class _Alive:
     first_t: int
     lifecycle: TrackLifecycle
     confirmed: bool
+    confidence: IdentityConfidence | None = None
+    flags: tuple[str, ...] = ()
+    raised: tuple[str, ...] = ()
+    uncertain_since: int | None = None
+    """확정 묶음에서 IDENTITY_UNCERTAIN 이 시작된 시각(구간이 열려 있을 때만)"""
+
+
+@dataclass
+class _IdentityTick:
+    """한 tick 의 World 신원 계측(-684). observe_world 가 lock 안에서 만들고 마지막에 두 집계(누계·창)에 더한다."""
+
+    identity_ms: Counter = field(default_factory=Counter)
+    reason_ms: Counter = field(default_factory=Counter)
+    sole_ms: Counter = field(default_factory=Counter)
+    hold_only_ms: int = 0
+    raised: Counter = field(default_factory=Counter)
+    episodes: Counter = field(default_factory=Counter)
+    moves: int = 0
+    swaps: int = 0
+
+    def add_time(self, a: _Alive, dt: int) -> None:
+        """직전 tick 의 상태(a)에 그 사이 시간 dt 를 붙인다(state_ms 와 같은 규칙)."""
+        if dt <= 0 or a.confidence is None:
+            return
+        if a.lifecycle in _CONFIRMED_GROUP:
+            group = "CONFIRMED"
+        elif a.lifecycle is TrackLifecycle.TENTATIVE:
+            group = "TENTATIVE"
+        else:
+            return
+        self.identity_ms[(group, str(a.confidence))] += dt
+        if group != "CONFIRMED" or a.confidence is not IdentityConfidence.IDENTITY_UNCERTAIN:
+            return
+        for f in a.flags:
+            self.reason_ms[f] += dt
+        if len(a.flags) == 1:
+            self.sole_ms[a.flags[0]] += dt
+        if not a.raised:
+            self.hold_only_ms += dt
+
+    def update(self, a: _Alive, snap: Any, t: int) -> None:
+        """이번 tick 스냅샷으로 a 의 신원 상태를 바꾸고 불확실 구간을 열고 닫는다. LOST 구간 닫기는 호출자가 한다."""
+        a.confidence = snap.identity_confidence
+        a.flags = tuple(str(f) for f in snap.identity_flags)
+        a.raised = tuple(str(f) for f in snap.identity_flags_raised)
+        if snap.lifecycle is TrackLifecycle.LOST:
+            return
+        confirmed = snap.lifecycle in _CONFIRMED_GROUP
+        if confirmed:
+            for f in a.raised:
+                self.raised[f] += 1
+        uncertain = confirmed and snap.identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN
+        if uncertain and a.uncertain_since is None:
+            a.uncertain_since = t
+        elif not uncertain:
+            self.end_episode(a, "CLEARED", t)
+
+    def end_episode(self, a: _Alive, cause: str, t: int) -> None:
+        if a.uncertain_since is None:
+            return
+        self.episodes[(cause, _bin(t - a.uncertain_since, UNCERTAIN_EPISODE_EDGES_MS))] += 1
+        a.uncertain_since = None
+
+    def observe_keys(self, frame: WorldTrackFrame, owner: dict[Any, str], present: set[str]) -> None:
+        """로컬 트랙이 살아 있는 다른 World ID 로 옮겨 간 것과, 같은 tick 에 두 ID 가 맞바꾼 쌍을 센다."""
+        moves: list[tuple[str, str]] = []
+        for snap in frame.tracks:
+            for k in snap.local_keys:
+                prev = owner.get(k)
+                if prev is not None and prev != snap.world_id and prev in present:
+                    moves.append((prev, snap.world_id))
+                owner[k] = snap.world_id
+        self.moves += len(moves)
+        seen = set(moves)
+        self.swaps += len({frozenset(m) for m in moves if (m[1], m[0]) in seen})
+
+    def apply(self, s: _Stats) -> None:
+        s.identity_ms.update(self.identity_ms)
+        s.uncertain_reason_ms.update(self.reason_ms)
+        s.uncertain_sole_ms.update(self.sole_ms)
+        s.uncertain_hold_only_ms += self.hold_only_ms
+        s.uncertain_raised.update(self.raised)
+        s.uncertain_episodes.update(self.episodes)
+        s.local_key_moves += self.moves
+        s.local_key_swaps += self.swaps
 
 
 class TrackingDiagnostics:
@@ -138,6 +255,8 @@ class TrackingDiagnostics:
         self._world_t: int | None = None
         self._alive: dict[str, _Alive] = {}
         self._manager_seen: Counter = Counter()
+        self._key_owner: dict[Any, str] = {}
+        """(카메라, 로컬 트랙) → 마지막으로 붙은 World ID (살아 있는 ID 만, -684 swap 대리 지표)"""
 
     def _both(self) -> tuple[_Stats, _Stats]:
         return self._total, self._window
@@ -228,17 +347,22 @@ class TrackingDiagnostics:
             lifespans: list[tuple[str, str]] = []
             state_ms: Counter = Counter()
             cams: Counter = Counter()
+            identity = _IdentityTick()
             for a in self._alive.values():
                 state_ms[str(a.lifecycle)] += dt
+                identity.add_time(a, dt)
             for gone in [w for w in self._alive if w not in present]:
+                identity.end_episode(self._alive[gone], "MERGED_AWAY", t)
                 del self._alive[gone]
                 merged += 1  # LOST 를 내지 않고 사라진 ID 는 병합(ID 교정)으로 사라진 것이다
+            identity.observe_keys(frame, self._key_owner, present)
             for snap in frame.tracks:
                 a = self._alive.get(snap.world_id)
                 if a is None:
                     if snap.world_id not in reassociated:
                         appeared += 1
                     a = self._alive[snap.world_id] = _Alive(t, snap.lifecycle, False)
+                identity.update(a, snap, t)
                 a.lifecycle = snap.lifecycle
                 if snap.lifecycle is not TrackLifecycle.TENTATIVE and snap.lifecycle is not TrackLifecycle.LOST:
                     a.confirmed = True
@@ -251,7 +375,11 @@ class TrackingDiagnostics:
                     else:
                         lost_t += 1
                     lifespans.append((kind, _bin(t - a.first_t, LIFESPAN_EDGES_MS)))
+                    identity.end_episode(a, "LOST", t)
                     del self._alive[snap.world_id]
+            alive_ids = set(self._alive)
+            for k in [k for k, w in self._key_owner.items() if w not in alive_ids]:
+                del self._key_owner[k]
             for s in self._both():
                 s.appeared += appeared
                 s.lost["TENTATIVE"] += lost_t
@@ -268,6 +396,7 @@ class TrackingDiagnostics:
                 s.max_confirmed = max(s.max_confirmed, confirmed_now)
                 if duplicate_pairs is not None:
                     s.max_duplicate_pairs = max(s.max_duplicate_pairs, duplicate_pairs)
+                identity.apply(s)
 
     # ------------------------------------------------------------------ 읽기
 
@@ -289,6 +418,7 @@ class TrackingDiagnostics:
         with self._lock:
             out = self._total.as_dict()
             out["alive_tracks"] = len(self._alive)
+            out["identity"]["uncertain_open"] = sum(1 for a in self._alive.values() if a.uncertain_since is not None)
             return out
 
 
@@ -315,8 +445,18 @@ def window_log_line(window: Mapping[str, Any]) -> str:
         f"소실/되찾음 {lost.get('CONFIRMED', 0)}/기하 {geo_back}+ReID {reid_back}, "
         f"키거부 {m.get('reid.stature_rejected', 0)}, 키동률깨기 {m.get('reid.stature_tiebreak', 0)}"
     )
+    ident = window.get("identity", {})
+    confirmed_ms = ident.get("identity_ms", {}).get("CONFIRMED", {})
+    total_ms = sum(confirmed_ms.values())
+    unc_ms = confirmed_ms.get("IDENTITY_UNCERTAIN", 0)
+    ratio = f"{unc_ms / total_ms:.3f}" if total_ms else "-"
+    identity_line = (
+        f"확정 불확실 비율 {ratio}(유지만 {ident.get('uncertain_hold_only_ms', 0)}ms), "
+        f"단독 사유 {ident.get('uncertain_sole_ms', {})}, 로컬 트랙 이동/맞바꿈 "
+        f"{ident.get('local_key_moves', 0)}/{ident.get('local_key_swaps', 0)}"
+    )
     return (
-        f"추적 계측 {window.get('span_ms', 0) / 1000:.0f}s: tick {window.get('ticks', 0)}, "
+        f"추적 계측 {window.get('span_ms', 0) / 1000:.0f}s: tick {window.get('ticks', 0)}, {identity_line}, "
         f"늦은 카메라 비율 {lag}, 보간 view {window.get('views', {})}, 보간 탈락 {drops}, 쌍 {passes}, "
         f"클러스터 카메라 수 {window.get('cluster_cameras', {})}, 갱신 Track 카메라 수 {w.get('updated_cameras', {})}, "
         f"새 ID {w.get('manager', {}).get('new_track.created', 0)}, LOST {w.get('lost', {})}, 병합 {w.get('merged_away', 0)}, "

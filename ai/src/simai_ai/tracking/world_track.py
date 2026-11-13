@@ -513,6 +513,14 @@ class WorldTrackConfig:
     reid_gallery_max_entries: int = 16
     reid_gallery_max_per_slot: int = 2
     reid_min_co_visibility: float = 0.35
+    reid_split_respect_distinct: bool = True
+    """S15P31A101-684 ID-01: Re-ID 확장 억제 분기도 병합 금지 반증(_is_distinct)을 먼저 적용한다. False 는 이전 동작(재생 비교용)"""
+    reid_query_visibility: bool = True
+    """S15P31A101-684 ID-03: 갤러리 외형 비교에 질의 특징의 부위 가시성을 넘겨 공통 가시 부위가 없으면 비교하지 않는다.
+    False 는 이전 동작(가시성 없이 비교, 재생 비교용)"""
+    shadow_clears_ambiguity: bool = True
+    """S15P31A101-684 ID-02: 시점 분할 그림자로 확인해 거른 클러스터와 다툰 것만으로 붙은 신원 애매 사유를 이번 시각에서
+    지운다. 그림자가 아닌 진짜 경쟁 클러스터가 함께 있으면 지우지 않는다. False 는 이전 동작(재생 비교용)"""
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
@@ -526,6 +534,9 @@ class WorldTrackConfig:
             "reid_enabled",
             "reid_swap_correction_enabled",
             "reid_dormant_enabled",
+            "reid_split_respect_distinct",
+            "reid_query_visibility",
+            "shadow_clears_ambiguity",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} 는 bool 이어야 한다")
@@ -692,6 +703,9 @@ class WorldTrackSnapshot:
     """이번 시각에 붙은 (카메라, 로컬 트랙)"""
     identity_flags: tuple[IdentityFlag, ...] = ()
     """유지 중인 IDENTITY_UNCERTAIN 사유"""
+    identity_flags_raised: tuple[IdentityFlag, ...] = ()
+    """identity_flags 중 이번 시각에 새로 붙은(갱신된) 사유. 나머지는 uncertain_hold_ms 유지로만 남은 것이다. 판정에 쓰지 않는
+    계측용 값이다(S15P31A101-684, `tracking.diagnostics`)"""
     aliases: tuple[str, ...] = ()
     """병합으로 이 ID 에 합쳐진 이전 ID"""
     filter_sigma_xy: tuple[float, float] = (0.0, 0.0)
@@ -1388,6 +1402,11 @@ class WorldTrackManager:
                     continue
                 assigned[tr.world_id] = c
                 taken.add(id(c))
+        # -684 ID-02: AMBIGUOUS_TRACK_MATCH 의 원인이 "아직 아무 Track 도 받지 않은 경쟁 클러스터"뿐인 Track 과 그 클러스터들.
+        # 6단계에서 그 클러스터가 모두 이 Track 의 시점 분할 그림자로 확인되면 같은 사람을 두 묶음이 본 것이라 사유를 지운다
+        ambiguity_rivals: dict[str, set[int]] = {}
+        ambiguity_fixed: set[str] = set()
+        """다른 Track 과 다퉈 애매한 Track (그림자 확인으로 지우지 않는다)"""
         for wid, c in assigned.items():
             chosen = costs[(wid, id(c))]
             rival_tracks = [
@@ -1400,12 +1419,18 @@ class WorldTrackManager:
             ]
             if rival_tracks or rival_clusters:
                 flags[wid].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                if rival_tracks or any(oc is o for o in rival_clusters for oc in assigned.values()):
+                    ambiguity_fixed.add(wid)
+                else:
+                    ambiguity_rivals.setdefault(wid, set()).update(id(o) for o in rival_clusters)
                 for other in rival_tracks:
                     flags[other].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                    ambiguity_fixed.add(other)
                 for o in rival_clusters:
                     for other, oc in assigned.items():
                         if oc is o:
                             flags[other].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                            ambiguity_fixed.add(other)
 
         # 4단계: IDENTITY_UNCERTAIN 클러스터는 후보가 하나뿐일 때만 붙인다
         for c in anchored:
@@ -1530,6 +1555,9 @@ class WorldTrackManager:
             # 두 묶음이 한 점으로 맞으므로 신원이 애매하지 않아 IDENTITY_UNCERTAIN 은 붙이지 않는다(설계 문서).
             shadow_of = self._shadow_target(c, applied, holder, cluster_of) if cfg.shadow_suppression_enabled else None
             if shadow_of is not None:
+                rivals = ambiguity_rivals.get(shadow_of)
+                if rivals is not None:
+                    rivals.discard(id(c))
                 self.diag["new_track.suppressed_disjoint_shadow"] += 1
                 continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
             target, ambiguous, _unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
@@ -1689,6 +1717,17 @@ class WorldTrackManager:
             if any(r in self._restored for r in tr.restored_candidates):
                 flags.setdefault(wid, set()).add(IdentityFlag.RESTORED_TRACK_CANDIDATE)
 
+        # -684 ID-02: 애매함의 원인이던 경쟁 클러스터가 모두 이 Track 의 그림자로 확인됐으면 그 사유를 지운다. 다른 Track 과
+        # 다퉜거나(ambiguity_fixed), swap 의심 중이면(같은 사유를 swap 검사도 붙인다) 그대로 둔다
+        if cfg.shadow_clears_ambiguity:
+            for wid, rivals in ambiguity_rivals.items():
+                tr = self._tracks.get(wid)
+                if rivals or wid in ambiguity_fixed or tr is None or tr.swap_suspected_until >= t:
+                    continue
+                if IdentityFlag.AMBIGUOUS_TRACK_MATCH in flags.get(wid, ()):
+                    flags[wid].discard(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                    self.diag["identity.shadow_ambiguity_cleared"] += 1
+
         for wid, fs in flags.items():
             tr = self._tracks.get(wid)
             if tr is None:
@@ -1818,7 +1857,10 @@ class WorldTrackManager:
                     candidates.append((distance, wid))
                     continue
 
-            # 3) Re-ID 외형 일치로 확인된 분리 나머지 억제 (소유 이력 만료 또는 최대 반경 reid_split_max_radius_m 내)
+            # 3) Re-ID 외형 일치로 확인된 분리 나머지 억제 (소유 이력 만료 또는 최대 반경 reid_split_max_radius_m 내).
+            # 외형이 같아도 동시 관측으로 이미 다른 사람이라고 확인된 쌍은 억제하지 않는다(-684 ID-01, 같은 복장 두 사람)
+            if is_distinct and cfg.reid_split_respect_distinct:
+                continue
             if reid_on and sim is not None and distance <= cfg.reid_split_max_radius_m:
                 shadows = self._shadows_of(wid)  # 같은 사람의 분신 Track 은 경쟁자가 아니다(-657)
                 best_other = max(
@@ -2572,9 +2614,14 @@ class WorldTrackManager:
             result = None
         else:
             best = -1.0
+            # -684 ID-03: 질의 특징의 부위 가시성을 넘긴다. 공통으로 보이는 부위가 없으면 갤러리가 비교하지 않는다(None)
+            use_visibility = self.config.reid_query_visibility
             for f in feats:
                 sim = gallery.similarity(
-                    f.embedding, camera_id=f.camera_id, face_embedding=getattr(f, "face_embedding", None)
+                    f.embedding,
+                    camera_id=f.camera_id,
+                    query_visibility=getattr(f, "visibility", None) if use_visibility else None,
+                    face_embedding=getattr(f, "face_embedding", None),
                 )
                 if sim is not None and sim > best:
                     best = sim
@@ -3082,6 +3129,7 @@ class WorldTrackManager:
             association_id=applied.cluster.association_id if applied is not None else None,
             local_keys=tuple(sorted(applied.cluster.keys)) if applied is not None else (),
             identity_flags=tuple(sorted(held)),
+            identity_flags_raised=tuple(sorted(f for f in held if tr.flags[f] == t)),
             aliases=tuple(tr.aliases),
             filter_sigma_xy=(float(filt[0]), float(filt[1])),
             restored_candidates=tr.restored_candidates,
