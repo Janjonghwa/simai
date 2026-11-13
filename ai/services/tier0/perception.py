@@ -749,49 +749,70 @@ class Perception:
         if last_t is not None and 0 <= t_latest - last_t < period_ms:
             self.avatar_share_throttled = getattr(self, "avatar_share_throttled", 0) + 1
             return
+        # 판정 스레드에서는 이 tick 의 참조만 잡는다(검출 스레드는 avatar_frames·avatar_observations 를 새 dict 로 바꿔 끼우므로
+        # 잡은 참조는 이후 바뀌지 않는다). 문서 조립은 같은 순수 함수가 하고, 곁가지 분리(-662)가 켜져 있으면 그 조립을
+        # 판정 lock 밖의 조정 스레드로 미룬다. 꺼져 있으면 지금처럼 여기서 조립한다(결과 문서는 같다).
         images = dict(getattr(self.feed, "avatar_frames", {}))
         observations = getattr(self.feed, "avatar_observations", {})
-        tracks = []
-        for snapshot, track in zip(frame.tracks, payload["tracks"], strict=True):
-            per_camera = []
-            for cid, local_id in snapshot.local_keys:
-                obs, image = observations.get(cid), images.get(cid)
-                if obs is None or image is None or abs(t_latest - image.estimated_capture_time) > 100:
-                    continue
-                for detection in obs.detections:
-                    if detection.local_track_id == local_id:
-                        d = detection.detection
-                        per_camera.append({"camera_id": cid, "local_track_id": str(local_id),
-                                           "bbox": list(d.bbox), "keypoints_2d": list(d.keypoints_2d),
-                                           "joint_layout": "COCO17", "estimated_capture_time": obs.estimated_capture_time_ms,
-                                           "frame_ref": dict(image.frame_ref)})
-            avatar_hold = bool(
-                getattr(snapshot, "avatar_update_hold", False)
-                or track.get("identity_confidence") == "IDENTITY_UNCERTAIN"
-            )
-            tracks.append({
-                **track,
-                "per_camera": per_camera,
-                "avatar_update_hold": avatar_hold,
-                "hold_appearance_update": avatar_hold,
-            })
         rig = self.rig
         calibration = getattr(self, "_avatar_calibration_doc", None)
         if calibration is None or getattr(self, "_avatar_calibration_rig", None) is not rig:
-            cameras = [{"camera_id": cid, "K": cam.K.tolist(), "R": cam.R.tolist(), "t": cam.t.tolist(),
-                        "image_size": list(cam.image_size),
-                        "distortion": {"model": cam.distortion_model, "coeffs": list(cam.distortion_coeffs)}}
-                       for cid, cam in rig.cameras.items()]
-            calibration = {"calibration_version": rig.calibration_version, "provider_source": rig.provider_source,
-                           "state": rig.state, "coordinate_frame": {"frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z"},
-                           "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
+            calibration = avatar_calibration_document(rig)
             self._avatar_calibration_rig = rig
             self._avatar_calibration_doc = calibration
-        provenance = dict(payload["input_provenance"])
-        provenance["tracks"] = {"source": "TIER0_LIVE", "provider_version": "tier0-avatar-1"}
-        offered = self.avatar_writer.offer({"world": {"t": t_latest, "calibration_version": rig.calibration_version,
-                                                      "coordinate_frame": calibration["coordinate_frame"], "tracks": tracks,
-                                                      "input_provenance": provenance}, "calibration": calibration}, images)
+
+        def build() -> dict[str, Any]:
+            return avatar_metadata(frame, payload, t_latest, images, observations, rig, calibration)
+
+        offer_deferred = getattr(self.avatar_writer, "offer_deferred", None)
+        if offer_deferred is not None:
+            offered = offer_deferred(build, images)
+        else:
+            offered = self.avatar_writer.offer(build(), images)
         if offered is not False:
             self._last_avatar_t = t_latest
             self.avatar_share_offered = getattr(self, "avatar_share_offered", 0) + 1
+
+
+def avatar_calibration_document(rig: CameraRig) -> dict[str, Any]:
+    """아바타 입력 공유 문서의 보정 부분(rig 가 바뀔 때만 다시 만든다)."""
+    cameras = [{"camera_id": cid, "K": cam.K.tolist(), "R": cam.R.tolist(), "t": cam.t.tolist(),
+                "image_size": list(cam.image_size),
+                "distortion": {"model": cam.distortion_model, "coeffs": list(cam.distortion_coeffs)}}
+               for cid, cam in rig.cameras.items()]
+    return {"calibration_version": rig.calibration_version, "provider_source": rig.provider_source,
+            "state": rig.state, "coordinate_frame": {"frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z"},
+            "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
+
+
+def avatar_metadata(frame, payload, t_latest, images, observations, rig, calibration) -> dict[str, Any]:
+    """아바타 입력 공유 문서(world·calibration). 입력은 판정 tick 에서 잡은 참조이고 바꾸지 않는다(어느 스레드에서 불러도 같다)."""
+    tracks = []
+    for snapshot, track in zip(frame.tracks, payload["tracks"], strict=True):
+        per_camera = []
+        for cid, local_id in snapshot.local_keys:
+            obs, image = observations.get(cid), images.get(cid)
+            if obs is None or image is None or abs(t_latest - image.estimated_capture_time) > 100:
+                continue
+            for detection in obs.detections:
+                if detection.local_track_id == local_id:
+                    d = detection.detection
+                    per_camera.append({"camera_id": cid, "local_track_id": str(local_id),
+                                       "bbox": list(d.bbox), "keypoints_2d": list(d.keypoints_2d),
+                                       "joint_layout": "COCO17", "estimated_capture_time": obs.estimated_capture_time_ms,
+                                       "frame_ref": dict(image.frame_ref)})
+        avatar_hold = bool(
+            getattr(snapshot, "avatar_update_hold", False)
+            or track.get("identity_confidence") == "IDENTITY_UNCERTAIN"
+        )
+        tracks.append({
+            **track,
+            "per_camera": per_camera,
+            "avatar_update_hold": avatar_hold,
+            "hold_appearance_update": avatar_hold,
+        })
+    provenance = dict(payload["input_provenance"])
+    provenance["tracks"] = {"source": "TIER0_LIVE", "provider_version": "tier0-avatar-1"}
+    return {"world": {"t": t_latest, "calibration_version": rig.calibration_version,
+                      "coordinate_frame": calibration["coordinate_frame"], "tracks": tracks,
+                      "input_provenance": provenance}, "calibration": calibration}

@@ -137,7 +137,8 @@ def avatar_channel_path(
 
 class LatestChannelWriter:
     def __init__(self, path: Path, *, period_s: float = DEFAULT_PERIOD_S, clock_ms=None,
-                 timing: ChannelTiming | None = None) -> None:
+                 timing: ChannelTiming | None = None, start: bool = True) -> None:
+        """start=False: 쓰기 스레드를 띄우지 않는다(다른 프로세스가 `_publish` 만 부를 때, S15P31A101-662)."""
         self.path = path
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -149,7 +150,8 @@ class LatestChannelWriter:
         self.dropped = self.errors = 0
         self.last_written_bytes = 0
         self._thread = threading.Thread(target=self._run, name="avatar-ipc", daemon=True)
-        self._thread.start()
+        if start:
+            self._thread.start()
 
     def offer(self, metadata, frames) -> bool:
         if not self._lock.acquire(blocking=False):
@@ -165,6 +167,11 @@ class LatestChannelWriter:
 
     def _write(self, metadata, frames) -> None:
         started = self.timing.clock()
+        refs, image_arrays, total_crop_bytes = self._prepare(metadata, frames)
+        self._publish(metadata, refs, image_arrays, total_crop_bytes, started=started)
+
+    def _prepare(self, metadata, frames) -> tuple[dict[str, Any], dict[str, np.ndarray], int]:
+        """카메라별 크롭 배열과 참조 표를 만든다(파일은 쓰지 않는다). 프로세스 분리 경로는 이것만 부모에서 부른다(-662)."""
         image_arrays = {}
         refs = {}
         world = metadata.get("world") if isinstance(metadata, Mapping) else None
@@ -205,6 +212,12 @@ class LatestChannelWriter:
                 image_arrays[key] = image
                 total_crop_bytes += int(image.nbytes)
             refs[cid] = ref_entry
+        return refs, image_arrays, total_crop_bytes
+
+    def _publish(self, metadata, refs, image_arrays, total_crop_bytes: int, *, started: float | None = None) -> None:
+        """참조 표·배열을 NPZ 로 원자적으로 게시한다(임시 파일 → os.replace → 완료 표식)."""
+        if started is None:
+            started = self.timing.clock()
         publication_id = uuid.uuid4().hex
         doc = {"format": "simai.avatar-input@1", **metadata, "frames": refs,
                "publication_id": publication_id}
@@ -263,7 +276,8 @@ class LatestChannelWriter:
     def close(self) -> None:
         self._stop.set()
         self._wake.set()
-        self._thread.join(timeout=0.2)
+        if self._thread.is_alive():
+            self._thread.join(timeout=0.2)
 
 
 class LatestChannelReader:

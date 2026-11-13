@@ -64,7 +64,8 @@
   - 출력은 줄마다 [tier0]·[vllm]·[worker] 접두로 표준 오류에, 원문은 $SIMAI_ROOT/logs/<이름>.log 에 덧붙인다.
   - vLLM·워커는 스레드 제한(OMP·MKL·OpenBLAS·NumExpr = SIMAI_SIDECAR_THREADS, 기본 1. torch intra-op 도 OMP 를 따른다)·nice(SIMAI_SIDECAR_NICE, 기본 10)·
     CPU 고정(SIMAI_SIDECAR_CPUS, 기본 auto = 쓸 수 있는 vCPU n = min(affinity 개수, cgroup 할당량 올림)이 8 이상이면 affinity 뒤쪽 n//2 개,
-    none·'4-7,10'. 계산 결과는 시작 로그 한 줄), 세 프로세스 모두 다른
+    none·'4-7,10'. 계산 결과는 시작 로그 한 줄). Tier 0 는 SIMAI_TIER0_CPUS(기본 auto = 사이드카를 묶었을 때만 남은 앞쪽 n - n//2 개,
+    none 이면 묶지 않음, S15P31A101-662), 세 프로세스 모두 다른
     TRITON_CACHE_DIR·TORCHINDUCTOR_CACHE_DIR·CUDA_CACHE_PATH(SIMAI_CACHE_ROOT, 기본 /tmp/simai-cache/<이름>/)로 띄운다.
     vLLM 기본값: --max-model-len SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768, SIMAI_VLLM_EXTRA_ARGS 에 있으면 그 값),
     --quantization SIMAI_VLLM_QUANTIZATION(fp8, none·빈 값이면 비활성, SIMAI_VLLM_EXTRA_ARGS 에 --quantization/-q 가 있으면 그 값, S15P31A101-525),
@@ -1049,6 +1050,35 @@ def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None)
     return out
 
 
+def tier0_cpus(spec: str | None, avail: list[int], sidecar: set[int] | None,
+               quota: float | None = None) -> set[int] | None:
+    """Tier 0 를 묶을 CPU(S15P31A101-662). auto(기본): 사이드카를 뒤쪽에 묶었을 때만 같은 n(= min(affinity 개수, cgroup 할당량 올림))의
+    앞쪽 n - n//2 개(사이드카와 겹치지 않는다). 사이드카를 묶지 않았으면(8 미만·none) Tier 0 도 묶지 않는다. none: 묶지 않음(되돌리기).
+    '0-5' 꼴: 그 목록(쓸 수 있는 것과 겹치는 것만, 사이드카와 겹치면 사용 오류). Tier 0 가 띄우는 자식(배경 누적·곁가지)은 물려받는다."""
+    spec = (spec or "auto").strip().lower()
+    if spec in ("none", "off"):
+        return None
+    if spec == "auto":
+        if not sidecar:
+            return None
+        n = len(avail) if quota is None else min(len(avail), math.ceil(quota))
+        front = [c for c in avail if c not in sidecar][:n - n // 2]
+        return set(front) or None
+    out: set[int] = set()
+    try:
+        for part in spec.split(","):
+            a, _, b = part.strip().partition("-")
+            out |= set(range(int(a), int(b or a) + 1))
+    except ValueError as e:
+        raise BootstrapError(EXIT_USAGE, f"SIMAI_TIER0_CPUS={spec!r} 형식 오류(예: auto, none, 0-5)") from e
+    out &= set(avail)
+    if not out:
+        raise BootstrapError(EXIT_USAGE, f"SIMAI_TIER0_CPUS={spec!r} 에 쓸 수 있는 CPU 가 없다(쓸 수 있는 {avail})")
+    if sidecar and out & sidecar:
+        raise BootstrapError(EXIT_USAGE, f"SIMAI_TIER0_CPUS={spec!r} 가 사이드카 CPU {_cpu_ranges(sidecar)} 와 겹친다")
+    return out
+
+
 def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str, float]:
     """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker·ppe)을 계산·검증한다 (S15P31A101-382·-525).
 
@@ -1197,9 +1227,12 @@ class Supervisor:
         avail = usable_cpus()
         quota, quota_src = cgroup_vcpu()
         self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), avail, quota)
+        self.tier0_cpus = tier0_cpus(env.get("SIMAI_TIER0_CPUS"), avail, self.cpus, quota)
         self.cpu_note = (f"CPU 묶기({env.get('SIMAI_SIDECAR_CPUS') or 'auto'}): affinity {len(avail)}개, cgroup 상한 "
                          f"{f'{quota} vCPU ({quota_src})' if quota is not None else '없음·못 읽음'} → vLLM·워커 "
-                         f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 묶지 않음")
+                         f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 "
+                         f"({env.get('SIMAI_TIER0_CPUS') or 'auto'}) "
+                         f"{f'{_cpu_ranges(self.tier0_cpus)} ({len(self.tier0_cpus)}개)' if self.tier0_cpus else '묶지 않음'}")
         self.cpu_note += f", Tier 0 수치 연산 스레드 {tier0_threads}개 (OMP/MKL/OpenBLAS/NumExpr)"
         # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
         cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
@@ -1487,6 +1520,8 @@ class Supervisor:
             if s.name != "tier0":
                 s.proc.renice(self.nice)
                 s.proc.pin(self.cpus)
+            else:
+                s.proc.pin(self.tier0_cpus)  # 앞쪽 코어(-662, SIMAI_TIER0_CPUS=none 이면 묶지 않음)
             log(f"{s.name} 시작 pid {s.proc.pid}: {shlex.join(s.argv)}")
             return
         rc = s.proc.poll()
@@ -1571,6 +1606,7 @@ class Supervisor:
         t0 = self.svc["tier0"]
         self.t0_since_ms = self.wall_ms()  # 띄우기 전에 잰다: 이 시각보다 먼저 쓴 표시 파일은 이번 Tier 0 의 것이 아니다
         t0.proc = self.spawn("tier0", t0.argv, t0.env, self.log_dir)
+        t0.proc.pin(self.tier0_cpus)  # 사이드카와 겹치지 않는 앞쪽 코어(-662). 엔진 빌드 자식도 물려받는다
         self.t0_pid = t0.proc.pid
         t0.started = self.clock()
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -39,6 +40,14 @@ def main(argv: list[str] | None = None) -> int:
     except Tier0ConfigError as e:
         print(f"services.tier0: 설정 오류: {e}", file=sys.stderr)
         return 2
+    from simai_ai.gpu.cv_threads import limit_cv2_threads
+
+    try:  # 자원 격리(-662): cv2 병렬 구간이 판정·검출 스레드의 CPU 를 빼앗지 않게(SIMAI_CV2_THREADS=keep 이면 그대로)
+        cv2_threads = limit_cv2_threads(os.environ)
+    except ValueError as e:
+        print(f"services.tier0: 설정 오류: {e}", file=sys.stderr)
+        return 2
+    logging.getLogger("services.tier0").info("cv2 스레드: %s", "그대로" if cv2_threads is None else cv2_threads)
     stop = threading.Event()
 
     def on_signal(signum: int, _frame: object) -> None:

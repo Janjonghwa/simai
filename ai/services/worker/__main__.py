@@ -44,6 +44,7 @@ from typing import Any
 
 from simai_ai.gpu.admission import AdmissionGate
 from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
+from simai_ai.gpu.cv_threads import limit_cv2_threads
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.scene.reconstruct_process import ProcessStages
 from simai_ai.vlm.client import VlmError, VlmSettings
@@ -156,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         print("services.worker: SIMAI_EC2_BASE_URL·SIMAI_WORKER_TOKEN 이 필요하다 (.env)", file=sys.stderr)
         return 2
 
+    try:  # 자원 격리(-662): 같은 Pod 의 Tier 0 CPU 를 덜 빼앗게 cv2 스레드를 묶는다(SIMAI_CV2_THREADS=keep 이면 그대로)
+        cv2_threads = limit_cv2_threads(os.environ)
+    except ValueError as e:
+        print(f"services.worker: {e}", file=sys.stderr)
+        return 2
+    logging.getLogger("services.worker").info("cv2 스레드: %s", "그대로" if cv2_threads is None else cv2_threads)
     try:
         gpu = WorkerGpuSettings.from_env(os.environ)
     except BudgetError as e:

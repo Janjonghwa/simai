@@ -46,6 +46,7 @@ class StageTiming:
                 ordered = sorted(v[idx] for v in vals)
                 metrics[name + "_ms"] = {
                     "mean": round(sum(ordered) / len(ordered), 3),
+                    "p50": round(ordered[math.ceil(len(ordered) * 0.50) - 1], 3),  # -662 추가(기존 키 의미 그대로)
                     "p95": round(ordered[math.ceil(len(ordered) * 0.95) - 1], 3),
                     "max": round(ordered[-1], 3),
                 }
