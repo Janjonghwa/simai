@@ -3,8 +3,14 @@ import type { ReplayStatus } from '@/features/viewer3d';
 
 // 다시 보기에서 CCTV 칸에 상시 영상 조각을 틀기 위한 계산. 화면 없이 시험한다.
 
-/** 영상이 재생 시각과 이만큼(초) 넘게 어긋나면 위치를 다시 맞춘다. 매 tick 마다 맞추면 영상이 끊긴다. */
+/** 재생 중 영상이 재생 시각과 이만큼(초) 넘게 어긋나면 위치를 다시 맞춘다. 매 tick 마다 맞추면 영상이 끊긴다. */
 export const DRIFT_S = 0.5;
+
+/**
+ * 멈춤 중에는 한 프레임(25 fps, 40 ms)보다 어긋나면 맞춘다. 멈춘 화면을 3D 다시 보기와 견줘 볼 때 같은 프레임이어야 한다
+ * (게이트웨이 녹화 mp4 는 PTS 가 촬영 시각이라 currentTime 이 그대로 그 시각의 프레임이다, S15P31A101-668).
+ */
+export const PAUSED_DRIFT_S = 0.04;
 
 /** <video> 가 받는 재생 속도 범위. 넘는 배속은 가까운 값으로 둔다. */
 const MIN_RATE = 0.0625;
@@ -40,7 +46,7 @@ export interface VideoLike {
   pause: () => void;
 }
 
-/** 영상을 재생 시각·재생 중·배속에 맞춘다. 기록이 비어 시각이 없으면 두고 본다. */
+/** 영상을 재생 시각·재생 중·배속에 맞춘다. 기록이 비어 시각이 없으면 두고 본다. 오차는 재생 중 DRIFT_S, 멈춤 중 PAUSED_DRIFT_S 이내다. */
 export function syncVideo(
   video: VideoLike,
   segment: VideoSegment,
@@ -48,7 +54,8 @@ export function syncVideo(
 ): void {
   if (status.playhead === null) return;
   const target = segmentOffsetS(segment, status.playhead);
-  if (Math.abs(video.currentTime - target) > DRIFT_S) video.currentTime = target;
+  const drift = status.playing ? DRIFT_S : PAUSED_DRIFT_S;
+  if (Math.abs(video.currentTime - target) > drift) video.currentTime = target;
   const rate = Math.min(MAX_RATE, Math.max(MIN_RATE, status.speed));
   if (video.playbackRate !== rate) video.playbackRate = rate;
   if (status.playing && video.paused) video.play().catch(() => {});

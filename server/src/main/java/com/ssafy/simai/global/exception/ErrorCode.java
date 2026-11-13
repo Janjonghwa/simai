@@ -523,6 +523,39 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** 게이트웨이 녹화 작업 구간 업로드(S15P31A101-668, 기기 토큰) */
+    enum Recording implements ErrorCode {
+        INVALID_RECORDING_QUERY(HttpStatus.BAD_REQUEST, "조회 시각이 맞지 않습니다(from·to 는 UTC 밀리초, from ≤ to, 24시간 이내)"),
+        INVALID_RECORDING_SEGMENT(HttpStatus.BAD_REQUEST, "녹화 조각 기록이 계약(messages/recording_segment 1.x)에 맞지 않습니다"),
+        // 객체 키가 이 기기가 이 조각에 받은 업로드(RECORDING_SEGMENT)가 아니거나 형식·크기·해시가 다르다
+        RECORDING_UPLOAD_MISMATCH(HttpStatus.BAD_REQUEST, "녹화 조각이 발급한 업로드와 다릅니다"),
+        // 조각이 그 작업의 구간(세팅 완료 → 작업 종료) 밖이거나 작업이 끝나지 않았다(사용자 결정 2026-11-13)
+        OUTSIDE_WORK_WINDOW(HttpStatus.CONFLICT, "녹화 조각이 끝난 작업의 구간 밖입니다"),
+        // 첫 프레임이 보관 기간(14일)보다 오래됐다. 올리자마자 지울 것은 받지 않는다
+        RECORDING_EXPIRED(HttpStatus.GONE, "보관 기간(14일)이 지난 녹화입니다"),
+        // 같은 segment_id 로 다른 내용이 왔다(기록은 고치지 않는다, AGENTS 6)
+        RECORDING_SEGMENT_CONFLICT(HttpStatus.CONFLICT, "같은 조각 ID 로 다른 내용이 이미 기록돼 있습니다"),
+        RECORDING_NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "현장 노트북(LAPTOP)으로 등록된 기기만 녹화를 올릴 수 있습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Recording(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** 현장 등록·수정(S15P31A101-322) */
     enum Site implements ErrorCode {
         INVALID_SITE(HttpStatus.BAD_REQUEST, "현장 값이 올바르지 않습니다(site_id 는 소문자·숫자·- 1~63자, name 1~100자, world_origin 은 객체)"),

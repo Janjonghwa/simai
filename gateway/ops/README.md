@@ -43,6 +43,13 @@ Pod 공개 IP 와 17000·17001 의 바깥 매핑 포트를 묻고(`C:\simai-loca
 
 끄기(`4`)는 세 창의 프로세스 트리를 끝낸다.
 
+**녹화 작업 구간 업로드(S15P31A101-668).** 관제 모드를 끄면(`4`, `stop`) 관제 중 녹화(`C:\simai-local\recordings\live-*`)에서 그날 작업 구간
+(세팅 완료 → 작업 종료)만 재인코딩 없이 mp4 로 포장해 S3 에 백그라운드로 올린다(로그 `C:\simai-local\gateway-upload.log`, 녹화 폴더마다 `upload-state.json`).
+관제 중에는 올리지 않는다: 관제를 다시 시작하면 업로드를 끄고, 업로드 도구도 조각마다 모드 파일을 보고 멈춘다(다음 관제 종료 때 이어서).
+작업이 아직 끝나지 않았으면 그 녹화는 남겨 두고 다음 종료 때 다시 묻는다. 올린 영상은 14일 뒤 EC2 삭제 작업이 지우고, 원본 녹화는 노트북에 그대로 둔다.
+이번만 끄려면 `simai-gateway.cmd stop -NoRecordingUpload`(원격 `gw.sh stop --no-upload`), 늘 끄려면 `.env` 에 `SIMAI_RECORDING_UPLOAD=off`.
+지금 바로 올리려면 `simai-gateway.cmd upload-recordings`(원격 `gw.sh upload`). 설계 `docs/design/S15P31A101-668-recording-s3-playback.md`.
+
 ## GPU Pod 가 없을 때
 
 관제(3)는 Pod 가 있어야 의미가 있다. Pod 없이 켜 두면 터널·중계가 계속 다시 붙으려 하고, 경보 단말은 "관제 중단" 을 띄우며,
@@ -96,10 +103,11 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 | `gateway/ops/gw.sh status` | 한 화면 상태 확인: 현재 모드(관제 창 사망 시 `관제가 꺼짐`), 창 PID 생존, 녹화 폴더·용량·버린 프레임 수, `sshd` 상태·시작 유형·실패 옵션, 역터널 작업·프로세스·마지막 연결 시각, 카메라 RTSP 응답(`n / 4`), 저장소 커밋, 디스크 여유, 절전 설정 이상 여부, `heal` 로그 마지막 3줄 |
 | `gateway/ops/gw.sh live <PodIP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv]` | 로그인 세션에서 관제(창 3개: 터널·경보 단말·영상 중계 + 기본 동시 녹화) 시작 후 `status` 출력 |
 | `gateway/ops/gw.sh preview` | 로그인 세션에서 카메라 미리보기(Tier 0 전송 없음, 원격 시청 포함) 시작 후 `status` 출력 |
-| `gateway/ops/gw.sh stop` | 관제·미리보기 창 종료 후 `status` 출력 |
+| `gateway/ops/gw.sh stop [--no-upload]` | 관제·미리보기 창 종료 후 `status` 출력. 관제를 끄면 녹화 작업 구간 업로드를 백그라운드로 시작(`--no-upload` 면 안 함, -668) |
+| `gateway/ops/gw.sh upload` | 녹화 작업 구간 업로드를 지금 백그라운드로 시작(로그인 세션 예약 작업 `simai-gateway-upload`) 후 `status` 출력 |
 | `gateway/ops/gw.sh update` | 현재 모드를 잠시 멈추고 로그인 세션 예약 작업(`simai-gateway-update`)으로 `git pull --ff-only` + `uv sync` 수행 후 이전 모드 복원 및 `status` 출력 |
 | `gateway/ops/gw.sh heal` | 자가 복구(`heal`) 즉시 실행 후 `status` 출력 |
-| `gateway/ops/gw.sh logs <relay\|tunnel\|update\|heal> [N]` | 지정한 로그(`C:\simai-local\gateway-*.log`)의 마지막 `N`줄(기본 40줄) 출력 |
+| `gateway/ops/gw.sh logs <relay\|tunnel\|update\|heal\|upload> [N]` | 지정한 로그(`C:\simai-local\gateway-*.log`)의 마지막 `N`줄(기본 40줄) 출력 |
 | `gateway/ops/gw.sh restart-tunnel` | 역터널 중지 → EC2 옛 포트 정리(`free-ports.sh`) → 역터널 예약 작업 재시작 후 `status` 출력 |
 | `gateway/ops/gw.sh ssh` | 게이트웨이 대화형 SSH 셸 접속 |
 | `gateway/ops/gw.sh help` | 명령 도움말 출력 |

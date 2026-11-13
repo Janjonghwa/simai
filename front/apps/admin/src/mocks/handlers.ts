@@ -1,6 +1,7 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { createFloorPlanMock } from '@/mocks/floorPlan';
 import { createHistoryMock } from '@/mocks/history';
+import { createRecordingVideoMock } from '@/mocks/recordings';
 import { sceneHandlers } from '@/mocks/scenes';
 import { createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
@@ -143,4 +144,6 @@ export const handlers = [
   ...setupMock.handlers,
   // 히스토리 작업 목록·구간 기록(그때그때 합성한다). 오늘 작업은 TBM 목의 작업이라 시작·종료가 따라온다.
   ...createHistoryMock({ liveWorks: () => tbmMock.works }).handlers,
+  // 관제 녹화 작업 구간 영상(끝난 작업의 카메라별 mp4 조각, S15P31A101-668).
+  ...createRecordingVideoMock({ liveWorks: () => tbmMock.works }).handlers,
 ];

@@ -17,10 +17,11 @@ show_help() {
   live <PodIP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv]
                                           관제 시작(run-remote: 터널·경보 단말·영상 중계·동시 녹화 및 카메라 헬퍼) 후 status
   preview                                 카메라 미리보기와 헬퍼(preview-remote: Tier 0 전송 없음) 후 status
-  stop                                    관제·미리보기 끄기 후 status
+  stop [--no-upload]                      관제·미리보기 끄기 후 status. 관제를 끄면 그날 작업 구간 녹화를 S3 로 백그라운드 업로드(-668)
+  upload                                  녹화 작업 구간 업로드를 지금 백그라운드로 시작(upload-recordings) 후 status
   update                                  원격 갱신(update-remote: git pull --ff-only + uv sync 후 이전 모드 복원)
   heal                                    자가 복구 즉시 실행(sshd·역터널·절전·미리보기 점검·복구) 후 status
-  logs <relay|helper|tunnel|update|heal> [N]     지정한 로그의 마지막 N줄 출력(기본 40줄)
+  logs <relay|helper|tunnel|update|heal|upload> [N]  지정한 로그의 마지막 N줄 출력(기본 40줄)
   restart-tunnel                          역터널 재시작(EC2 옛 포트 정리 free-ports.sh + 예약 작업 재시작) 후 status
   ssh                                     게이트웨이 대화형 SSH 셸 접속
   help                                    이 도움말 출력 (인자 없이 실행해도 출력)
@@ -131,7 +132,7 @@ case "$cmd" in
     gw status
     ;;
   stop)
-    gw stop
+    if [ "${2:-}" = "--no-upload" ] || [ "${2:-}" = "-NoRecordingUpload" ]; then gw stop -NoRecordingUpload; else gw stop; fi
     gw status
     ;;
   update)
@@ -145,12 +146,16 @@ case "$cmd" in
     gw status
     ;;
   logs)
-    [ $# -ge 2 ] || { echo "사용: gw.sh logs <relay|helper|tunnel|update|heal> [줄수(기본 40)]" >&2; exit 2; }
+    [ $# -ge 2 ] || { echo "사용: gw.sh logs <relay|helper|tunnel|update|heal|upload> [줄수(기본 40)]" >&2; exit 2; }
     lines="${3:-40}"
     gw logs "$2" -Lines "$lines"
     ;;
   restart-tunnel)
     gw restart-tunnel
+    gw status
+    ;;
+  upload)
+    gw upload-recordings
     gw status
     ;;
   ssh)

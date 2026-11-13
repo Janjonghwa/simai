@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "segment_id": "019a7c3e-5f40-7a1b-9c2d-3e4f5a6b7c8d",
+  "recording_id": "live-20261113-091500",
+  "work_id": 42,
+  "camera_id": "cam_A",
+  "stream_epochs": [
+    0
+  ],
+  "segment_start_capture_ms": 1794614400000,
+  "segment_end_capture_ms": 1794614700040,
+  "frame_count": 7501,
+  "starts_with_keyframe": true,
+  "has_gaps": false,
+  "content_type": "video/mp4",
+  "container": "mp4",
+  "size_bytes": 41943040,
+  "sha256": "sha256:5f407a1b9c2d3e4f5a6b7c8d019a7c3e5f407a1b9c2d3e4f5a6b7c8d019a7c3e",
+  "face_redaction": "NONE",
+  "created_at_ms": 1794640000000,
+  "object_key": "recording-segments/019a7c3e-5f40-7a1b-9c2d-3e4f5a6b7c8d.mp4",
+  "uploaded_at_ms": 1794640012000,
+  "upload_attempts": 1
+}
