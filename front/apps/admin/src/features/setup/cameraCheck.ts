@@ -1,4 +1,4 @@
-import { cameraShortLabel, pairLabel } from '@/features/setup/cameraLabels';
+import { cameraShortLabel, neighborPairs, pairLabel } from '@/features/setup/cameraLabels';
 import type { CameraCheck, QualityGate, SetupSessionResponse } from '@/features/setup/types';
 
 // 세팅 「보정 검증 결과」 쌍별 표와 「카메라 확인」 카드(S15P31A101-646, docs/design/S15P31A101-646-setup-camera-check.md).
@@ -61,7 +61,7 @@ function pairOutcome(
   return 'pending';
 }
 
-/** 세션 조회의 quality_gate·camera_check·camera_check_passed 를 표와 카드로 바꾼다. 카메라 쌍은 세션 카메라 순서로 모두 만든다. */
+/** 세션 조회의 quality_gate·camera_check·camera_check_passed 를 표와 카드로 바꾼다. 카메라 쌍은 보정이 쓰는 옆 쌍만 카메라 순서로 만든다(마주 보는 쌍은 서버가 판정을 줘도 표에 두지 않는다). */
 export function deriveCameraCheckView(
   session: SetupSessionResponse | null | undefined,
   cameraIds: readonly string[],
@@ -70,26 +70,21 @@ export function deriveCameraCheckView(
   const check = session?.camera_check ?? null;
   const holdouts = Object.values(gate?.pairs ?? {});
   const checks = Object.values(check?.pairs ?? {});
-  const pairs: CameraCheckPairRow[] = [];
-  for (let i = 0; i < cameraIds.length; i++) {
-    for (let j = i + 1; j < cameraIds.length; j++) {
-      const a = cameraIds[i]!;
-      const b = cameraIds[j]!;
-      const holdout = holdouts.find((p) => sameIds(p.camera_ids, a, b));
-      const pc = checks.find((p) => sameIds(p.camera_ids, a, b));
-      pairs.push({
-        key: `${a}|${b}`,
-        label: pairLabel(cameraIds, a, b),
-        holdoutMedianPx: holdout?.median_px ?? null,
-        holdoutP90Px: holdout?.p90_px ?? null,
-        holdoutVerdict: holdout?.verdict ?? null,
-        passRate: pc?.pass_rate ?? null,
-        samples: pc?.samples ?? 0,
-        checkVerdict: pc?.verdict ?? null,
-        outcome: pairOutcome(holdout, pc),
-      });
-    }
-  }
+  const pairs: CameraCheckPairRow[] = neighborPairs(cameraIds).map(({ a, b }) => {
+    const holdout = holdouts.find((p) => sameIds(p.camera_ids, a, b));
+    const pc = checks.find((p) => sameIds(p.camera_ids, a, b));
+    return {
+      key: `${a}|${b}`,
+      label: pairLabel(cameraIds, a, b),
+      holdoutMedianPx: holdout?.median_px ?? null,
+      holdoutP90Px: holdout?.p90_px ?? null,
+      holdoutVerdict: holdout?.verdict ?? null,
+      passRate: pc?.pass_rate ?? null,
+      samples: pc?.samples ?? 0,
+      checkVerdict: pc?.verdict ?? null,
+      outcome: pairOutcome(holdout, pc),
+    };
+  });
   const cameras: CameraCheckCameraRow[] = Object.entries(check?.cameras ?? {})
     .map(([cameraId, c]) => ({
       cameraId,

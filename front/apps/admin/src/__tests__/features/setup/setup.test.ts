@@ -77,14 +77,14 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(view.connectivitySummary).toBe('4대 모두 연결 · 방금');
     // 부족한 쌍은 마주 보는 쌍(1–3, 2–4)뿐이라 보정이 실패할 위험은 없다.
     expect(view.riskyPairs).toEqual([]);
-    expect(view.pairs.map((p) => p.gradeLabel)).toEqual([
-      '충분',
-      '부족',
-      '충분',
-      '충분',
-      '부족',
-      '약함',
+    // 지도에는 옆 카메라 4쌍만 있다(마주 보는 쌍은 서버가 등급을 줘도 뺀다).
+    expect(view.pairs.map((p) => p.label)).toEqual([
+      '카메라 1–카메라 2',
+      '카메라 1–카메라 4',
+      '카메라 2–카메라 3',
+      '카메라 3–카메라 4',
     ]);
+    expect(view.pairs.map((p) => p.gradeLabel)).toEqual(['충분', '충분', '충분', '약함']);
     expect(view.cameras.every((c) => c.statusLabel === '정상')).toBe(true);
     expect(view.cameras.map((c) => c.label)).toEqual([
       '카메라 1',

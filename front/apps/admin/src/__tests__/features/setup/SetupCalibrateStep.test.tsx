@@ -370,7 +370,7 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
     return onRecalibrate;
   }
 
-  it('재는 중에는 안내와 진행률을 보이고 쌍별 표에 6쌍이 있다', () => {
+  it('재는 중에는 안내와 진행률을 보이고 쌍별 표에 옆 카메라 4쌍이 있다', () => {
     renderCheck(
       readySession({
         camera_check: buildCameraCheck(CAMS, 'cal-9', 'MEASURING', 40),
@@ -385,7 +385,7 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
         .getAttribute('aria-valuenow'),
     ).toBe('40');
     const table = screen.getByRole('table', { name: '카메라 쌍별 검증' });
-    expect(within(table).getAllByRole('row')).toHaveLength(7);
+    expect(within(table).getAllByRole('row')).toHaveLength(5);
     expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
   });
 

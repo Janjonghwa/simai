@@ -204,14 +204,14 @@ async function goToZoneStep() {
 }
 
 describe('세팅 화면 임베드', () => {
-  it('자기 제목과 머리줄 단추를 그리지 않고 1단계 다음을 아래 단추 줄에 등록한다(1단계 안내 줄·단계 줄은 남는다)', async () => {
+  it('자기 제목과 머리줄 단추를 그리지 않고 1단계 다음을 아래 단추 줄에 등록한다(단계 줄만 남는다)', async () => {
     renderEmbedded();
     await screen.findByLabelText('카메라 4 높이 (m)');
 
     const page = within(screen.getByTestId('page'));
     expect(page.queryByRole('heading', { level: 1 })).toBeNull();
     expect(page.queryByRole('button', { name: '다음' })).toBeNull();
-    expect(page.getByText('세팅 1단계 · 카메라 확인')).toBeTruthy();
+    expect(page.queryByText('세팅 1단계 · 카메라 확인')).toBeNull();
     const steps = within(page.getByRole('list', { name: '보정 단계' }));
     expect(steps.getAllByRole('listitem').map((step) => step.textContent)).toEqual([
       '1카메라 연결 관리',
@@ -241,7 +241,7 @@ describe('세팅 화면 임베드', () => {
 
     // 미리보기 맵만 있는 동안은 꺼져 있고 이유를 title 로 알린다
     setupMock.updateSession(sessionId, PREVIEW_PATCH);
-    await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT);
     expect(mainButton().disabled).toBe(true);
     expect(mainButton().title).toBe('3D 맵을 다 만들면 넘어갈 수 있어요');
 

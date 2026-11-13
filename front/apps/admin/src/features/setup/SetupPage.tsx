@@ -26,7 +26,6 @@ import {
   validateHeightFields,
   ZONE_STAGE,
   zoneMapTitle,
-  type SetupTone,
   type Stage,
 } from '@/features/setup/setup';
 import {
@@ -80,7 +79,6 @@ import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSo
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { api } from '@/lib/api';
 import { Alert } from '@simai/ui/components/alert';
-import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -112,15 +110,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 그대로, 새 모델 + World 이어짐은 구역마다 '확인 필요'로 채워 오른쪽 칸 「이어 쓴 구역 확인」 카드에서 확인·수정·삭제한다(S15P31A101-629).
 // 확인 필요가 남아 있으면 마지막 단추(세팅 완료)가 '확인 필요 n개'를 붙이고 꺼진다. World 가 끊긴 새 모델은 빈 목록에서 시작한다.
 
-const TONE_BADGE: Record<SetupTone, string> = {
-  ok: 'bg-ok/15 text-ok',
-  active: 'bg-primary/15 text-point-soft',
-  delay: 'bg-delay/15 text-delay',
-  idle: 'bg-surface-3 text-muted-foreground',
-};
-
-/** 세션이 아직 없는 1단계 머리에 보이는 글자. */
-const STEP1_LABEL = '세팅 1단계 · 카메라 확인';
+/**
+ * 날짜 화면 안의 본문 높이: 화면 높이에서 틀(상단 바 60 + 본문 위아래 여백 28 + 날짜 줄 28·간격 14 + 아래 메뉴 자리 96)을 뺀 값이다.
+ * 이렇게 묶어 두면 어느 단계에서도 페이지 스크롤이 생기지 않고, 긴 오른쪽 열은 그 안에서만 스크롤한다.
+ * 바닥 474 = 단계 줄 42 + 간격 12 + 두 칸 최소 420.
+ */
+const EMBEDDED_BODY = 'h-[max(474px,calc(100dvh-226px))] flex-none';
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
@@ -257,9 +252,14 @@ function SetupWorkPage({
   // 이어받을 세션이 없다고 확인된 새 세팅이면 카메라 연결 관리보다 먼저 방식을 묻는다.
   const noSessionToResume =
     activeSessionId === null && workUnitSessionQuery.isFetched && !workUnitSessionQuery.data;
-  const modelPickerOpen = stage === 0 && sessionId === null && noSessionToResume && mode === null;
-  // 이전 모델 쓰기는 방식 고르기 창이 열려 있는 동안만 현재 관제 맵을 받아 켤지 정한다.
-  const reuseBlockedReason = useReuseBlockedReason(modelPickerOpen);
+  const modePickable = stage === 0 && sessionId === null && mode === null;
+  // 이전 모델 쓰기를 켤지는 현재 관제 맵으로 정한다. 창이 뜰 수 있는 때부터 받아 이어받을 세션 조회와 같이 돌린다.
+  const reuse = useReuseBlockedReason(modePickable);
+  const modelPickerOpen = modePickable && noSessionToResume && !reuse.checking;
+  // 이어받을 세션을 찾는 중이거나 창에 쓸 값을 기다리는 중에는 본문을 그리지 않는다: 본문과 창이 같이 뜬다.
+  const entryPending =
+    (activeSessionId === null && !workUnitSessionQuery.isFetched) ||
+    (modePickable && noSessionToResume && reuse.checking);
 
   // 맵 보강 창이 열려 있는 동안은 끝난 세션도 계속 받는다(휴대폰으로 올린 파일과 다시 굽기 판정이 이 조회로만 온다).
   const sessionQuery = useSetupSession(sessionId, Boolean(sessionId), supplementOpen);
@@ -538,7 +538,7 @@ function SetupWorkPage({
       finish: () => void finish(),
     },
   );
-  useWorkAction(embedded ? toWorkAction(actions) : null);
+  useWorkAction(embedded && !entryPending ? toWorkAction(actions) : null);
 
   const step1RawError =
     resumeSession.rawError ??
@@ -573,64 +573,29 @@ function SetupWorkPage({
     [navigate],
   );
 
+  const bodyClass = cn('flex flex-col gap-3', embedded ? EMBEDDED_BODY : 'min-h-0 flex-1');
+  if (entryPending) return <div className={bodyClass} />;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
+    <div className={bodyClass}>
       {!embedded && <PageTitle>설치 · 보정</PageTitle>}
-      {/* 배지가 없는 단계에서도 같은 높이를 지켜 아래 두 칸이 단계마다 같은 자리에 온다. */}
-      <div className="flex min-h-7 flex-wrap items-center gap-3">
-        {stage === 0 ? (
-          <>
-            <Badge
-              className={cn(
-                'h-auto rounded-md px-2.5 py-0.5 text-[13px] font-semibold',
-                TONE_BADGE[coverage.connectivityTone],
-              )}
+      {!embedded && (
+        <div className="flex flex-wrap justify-end gap-2">
+          {actions.map((action) => (
+            <Button
+              key={action.key}
+              size="lg"
+              variant={action.primary ? undefined : 'secondary'}
+              className={cn('px-4', !action.primary && 'bg-surface-3 hover:bg-surface-3/70')}
+              disabled={action.disabled}
+              title={action.title}
+              onClick={action.onClick}
             >
-              {coverage.connectivitySummary}
-            </Badge>
-            {coverage.calculationFailed && (
-              <Badge
-                aria-label="각도 안내 계산 실패"
-                className="h-auto rounded-md bg-surface-3 px-2.5 py-0.5 text-[13px] font-semibold text-muted-foreground"
-              >
-                계산 실패
-              </Badge>
-            )}
-          </>
-        ) : (
-          <>
-            {waiting.sceneTier.tier !== 'NONE' && (
-              <Badge
-                aria-label={`맵 단계 ${waiting.sceneTier.label}`}
-                className={cn(
-                  'h-auto rounded-md px-2.5 py-0.5 font-mono text-[13px] font-semibold',
-                  waiting.sceneTier.tier === 'FINAL' ? TONE_BADGE.ok : TONE_BADGE.active,
-                )}
-              >
-                {waiting.sceneTier.label}
-              </Badge>
-            )}
-          </>
-        )}
-        {stage === 0 && <span className="text-muted-foreground">{STEP1_LABEL}</span>}
-        {!embedded && (
-          <div className="ml-auto flex flex-wrap gap-2">
-            {actions.map((action) => (
-              <Button
-                key={action.key}
-                size="lg"
-                variant={action.primary ? undefined : 'secondary'}
-                className={cn('px-4', !action.primary && 'bg-surface-3 hover:bg-surface-3/70')}
-                disabled={action.disabled}
-                title={action.title}
-                onClick={action.onClick}
-              >
-                {action.label}
-              </Button>
-            ))}
-          </div>
-        )}
-      </div>
+              {action.label}
+            </Button>
+          ))}
+        </div>
+      )}
 
       <ol aria-label="보정 단계" className="grid grid-cols-3 gap-2">
         {STEPS.map((label, k) => {
@@ -768,7 +733,7 @@ function SetupWorkPage({
           onNew={() => setMode('NEW')}
           onReuse={() => setMode('REUSE')}
           onClose={exitModelPicker}
-          reuseBlockedReason={reuseBlockedReason}
+          reuseBlockedReason={reuse.reason}
         />
       )}
       {supplementOpen && currentSession && (
