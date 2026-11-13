@@ -1,5 +1,6 @@
 """실제 CPU 입력 준비·World 정렬·정점색 폴백을 작은 합성 자료로 확인한다."""
 import json
+import os
 import subprocess
 import threading
 import sys
