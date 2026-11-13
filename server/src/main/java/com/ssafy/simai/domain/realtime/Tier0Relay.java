@@ -37,8 +37,8 @@ class Tier0Relay implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Tier0Relay.class);
     private static final String WORLD_STATE = "world_state";
     private static final String RISK_EVENT = "risk_event";
-    // 2.3.0: 지금 Tier 0 가 들고 있는지 held_by_tier0 를 싣는다(S15P31A101-595)
-    private static final String RISK_EVENT_VERSION = "2.3.0";
+    // 2.3.0: 지금 Tier 0 가 들고 있는지 held_by_tier0 를 싣는다(S15P31A101-595). 2.4.0: resolution 에 병합 흡수 마감 IDENTITY_MERGED 도 받는다(-664)
+    private static final String RISK_EVENT_VERSION = "2.4.0";
     // 이벤트 발행 대기 상한. 전이는 많아야 초당 수십 개라 넘치면 DB·브로커가 멈춘 것이다
     private static final int EVENT_QUEUE_LIMIT = 10_000;
 

@@ -26,6 +26,17 @@ const operatorResolution = z.object({
   reason: z.string(),
 });
 
+// 병합 흡수 마감(risk_event 2.4.0, S15P31A101-657). World ID 병합으로 같은 사람의 같은 위험이 남는 이벤트에 이어져 흡수된 쪽을 닫은 기록이다.
+// 운영자 종료가 아니고 관측 해소도 아니다. 화면이 쓰지 않는 칸은 선택으로 둬 칸 하나 탓에 목록 전체를 버리지 않는다.
+const identityMergeResolution = z.object({
+  kind: z.literal('IDENTITY_MERGED'),
+  survivor_event_id: z.string().optional(),
+  survivor_world_id: z.string().optional(),
+  merged_world_id: z.string().optional(),
+});
+
+const eventResolution = z.discriminatedUnion('kind', [operatorResolution, identityMergeResolution]);
+
 const operatorEscalation = z.object({
   escalation_id: z.string().optional(),
   basis: z.string().optional(),
@@ -112,7 +123,7 @@ export const eventItemSchema = z.object({
   acks: z.array(operatorAck).optional(),
   delivery: z.enum(['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY']).optional(),
   held_by_tier0: z.boolean().optional(),
-  resolution: operatorResolution.optional(),
+  resolution: eventResolution.optional(),
   escalations: z.array(operatorEscalation).optional(),
   assessments: z.array(vlmAssessment).optional(),
   summaries: z.array(eventSummarySchema).optional(),

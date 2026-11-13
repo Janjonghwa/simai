@@ -32,7 +32,7 @@ import {
   withoutStaleAcked,
   type EventEntry,
 } from '@/features/events/events';
-import type { EventItem } from '@/features/events/types';
+import { eventsPageSchema, type EventItem } from '@/features/events/types';
 import { zoneNameOf } from '@/features/zones/zoneName';
 import { describe, expect, it } from 'vitest';
 
@@ -511,6 +511,41 @@ describe('사건 상세', () => {
       at: T + 1_000,
       who: '운영자',
       text: '추락 위험(가장자리) 종료',
+    });
+  });
+});
+
+describe('병합 흡수 마감(IDENTITY_MERGED, S15P31A101-657)', () => {
+  const merged = {
+    kind: 'IDENTITY_MERGED' as const,
+    survivor_event_id: '0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e92',
+    survivor_world_id: 'w-lobby-0059',
+    merged_world_id: 'w-lobby-0061',
+  };
+
+  it('이벤트 목록 응답에 병합 흡수 resolution 이 있어도 목록 전체를 받는다', () => {
+    const closed = item({
+      event_id: 'e-2',
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 1_000,
+      resolution: merged,
+    });
+    expect(eventsPageSchema.safeParse({ content: [closed, item()] }).success).toBe(true);
+  });
+
+  it('알 수 없는 resolution 종류는 여전히 거부한다', () => {
+    const bad = { ...item(), resolution: { kind: 'SOMETHING_ELSE' } };
+    expect(eventsPageSchema.safeParse({ content: [bad] }).success).toBe(false);
+  });
+
+  it('병합 흡수는 운영자 종료로도 해소로도 적지 않는다', () => {
+    const [incident] = groupIncidents([
+      entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000, resolution: merged }),
+    ]);
+    expect(incidentTimeline(incident!).at(-1)).toEqual({
+      at: T + 1_000,
+      who: '시스템',
+      text: '추락 위험(가장자리) 같은 사람 ID 병합으로 이어짐',
     });
   });
 });
