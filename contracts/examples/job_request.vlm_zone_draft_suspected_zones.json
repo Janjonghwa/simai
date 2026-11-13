@@ -26,16 +26,16 @@
       "pointcloud_uri": "s3://simai-bucket/static-3d/scene-setup-12-preview/pointcloud.ply",
       "frames": [
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam1.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam_A.jpg",
           "face_policy": "BLURRED",
           "estimated_capture_time_ms": 1760342400100,
           "timestamp_source": "RECEIVE_ESTIMATED",
           "timestamp_uncertainty_ms": 15
         },
         {
-          "camera_id": "cam2",
-          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam2.jpg",
+          "camera_id": "cam_B",
+          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam_B.jpg",
           "face_policy": "BLURRED",
           "estimated_capture_time_ms": 1760342400105,
           "timestamp_source": "RECEIVE_ESTIMATED",
@@ -112,13 +112,13 @@
       "previous_calibration_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "previous_frames": [
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-bucket/job-objects/site_setup/job-20261101-0430/0192a6f0-7c1e-7b3a-9f2d-0000000004a1/frame-cam1.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-bucket/job-objects/site_setup/job-20261101-0430/0192a6f0-7c1e-7b3a-9f2d-0000000004a1/frame-cam_A.jpg",
           "face_policy": "BLURRED"
         },
         {
-          "camera_id": "cam2",
-          "frame_uri": "s3://simai-bucket/job-objects/site_setup/job-20261101-0430/0192a6f0-7c1e-7b3a-9f2d-0000000004a1/frame-cam2.jpg",
+          "camera_id": "cam_B",
+          "frame_uri": "s3://simai-bucket/job-objects/site_setup/job-20261101-0430/0192a6f0-7c1e-7b3a-9f2d-0000000004a1/frame-cam_B.jpg",
           "face_policy": "BLURRED"
         }
       ]

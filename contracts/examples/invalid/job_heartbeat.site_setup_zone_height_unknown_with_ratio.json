@@ -16,7 +16,7 @@
       "calibration_version": "cal-lobby-init-63000000-jba2-5a3c9e01",
       "preview_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,

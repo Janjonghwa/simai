@@ -105,14 +105,14 @@ const EC2_FIELDS = ['auto_retained', 'deleted_at_ms', 'uploaded_at_ms', 'receive
 const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
 describe('클립 mock', () => {
-  it('클립은 위험 구간이 끝나고 올라간 뒤에 생기고, cam2 는 앞이 잘리고 cam3 는 프레임이 빠진다', async () => {
+  it('클립은 위험 구간이 끝나고 올라간 뒤에 생기고, cam_B 는 앞이 잘리고 cam_C 는 프레임이 빠진다', async () => {
     events.set('e-high', event('e-high'));
     t = T + 20_000 + 4_000 - 1;
     expect(await list('e-high')).toEqual([]);
 
     t = ALL_UPLOADED;
     const clips = await list('e-high');
-    expect(clips.map((c) => c.camera_id)).toEqual(['cam1', 'cam2', 'cam3']);
+    expect(clips.map((c) => c.camera_id)).toEqual(['cam_A', 'cam_B', 'cam_C']);
     expect(clips.map((c) => [c.truncated_start, c.has_gaps])).toEqual([
       [false, false],
       [true, false],

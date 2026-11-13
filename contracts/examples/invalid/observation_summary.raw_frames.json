@@ -11,7 +11,7 @@
     "calibration_version": "cal-7",
     "cameras": [
       {
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "frames_processed": 12,
         "detections": 23,
         "max_detections_per_frame": 2,
@@ -24,7 +24,7 @@
         "last_capture": 1760342400940
       },
       {
-        "camera_id": "cam2",
+        "camera_id": "cam_B",
         "frames_processed": 0,
         "detections": 0,
         "local_tracks": 0,
@@ -34,7 +34,7 @@
     "archive_uri": "volume://AP-JP-1/simai/observation_2d/2026-10-13/tier0-01/part-0007.parquet",
     "frames": [
       {
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "stream_epoch": 12,
         "frame_sequence": 10324,
         "detections": []

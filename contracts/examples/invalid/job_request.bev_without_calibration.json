@@ -21,15 +21,15 @@
       "frame_source": "LIVE",
       "frames": [
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-site/empty/cam1-0001.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-site/empty/cam_A-0001.jpg",
           "estimated_capture_time_ms": 1760342000000,
           "timestamp_source": "RECEIVE_ESTIMATED",
           "timestamp_uncertainty_ms": 25
         },
         {
-          "camera_id": "cam2",
-          "frame_uri": "s3://simai-site/empty/cam2-0001.jpg",
+          "camera_id": "cam_B",
+          "frame_uri": "s3://simai-site/empty/cam_B-0001.jpg",
           "estimated_capture_time_ms": 1760342000000,
           "timestamp_source": "RECEIVE_ESTIMATED",
           "timestamp_uncertainty_ms": 25

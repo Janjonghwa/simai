@@ -8,7 +8,7 @@
   "calibration_version": "cal-0",
   "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
   "input_provenance": {
-    "frames": { "source": "FILE", "dataset_id": "classroom-empty/2026-10-20", "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
+    "frames": { "source": "FILE", "dataset_id": "classroom-empty/2026-10-20", "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "camera_ids": ["cam_A", "cam_B", "cam_C", "cam_D"] },
     "calibration": { "source": "G1_AUTO", "calibration_version": "cal-0" },
     "is_upper_bound": false
   },
@@ -35,7 +35,7 @@
       "floor_tilt_deg": 0.42
     },
     "map_cameras": {
-      "cam1": {
+      "cam_A": {
         "image_size": [2304, 1296],
         "K": [
           [1100.0, 0.0, 1152.0],
@@ -82,8 +82,8 @@
     "previous_fill_ratio": 0.08,
     "unrevealed_ratio": 0.02,
     "camera_background_quality": {
-      "cam1": { "previous_fill_ratio": 0.16, "unrevealed_ratio": 0.0 },
-      "cam2": { "previous_fill_ratio": 0.0, "unrevealed_ratio": 0.08 }
+      "cam_A": { "previous_fill_ratio": 0.16, "unrevealed_ratio": 0.0 },
+      "cam_B": { "previous_fill_ratio": 0.0, "unrevealed_ratio": 0.08 }
     },
     "failure_cases": ["창문 반사로 벽면 깊이 누락", "카메라 바로 아래 사각"],
     "notes": "책상 GT 미측정"

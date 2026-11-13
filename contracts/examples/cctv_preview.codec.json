@@ -2,7 +2,7 @@
   "kind": "codec",
   "protocol": "simai-cctv-preview/1",
   "codec_info": {
-    "camera_id": "cam1",
+    "camera_id": "cam_A",
     "stream_epoch": 1761609600000,
     "codec": "H264",
     "profile": "High",

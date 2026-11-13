@@ -670,12 +670,12 @@ describe('카드 표시 계산', () => {
 
   it('카메라는 사람이 지금 담긴 카메라 중 첫 번째이고, 사람이 아니거나 없으면 없다', () => {
     const tracks: Parameters<typeof bestCamera>[0] = [
-      { world_id: 'w-1', cameras: ['cam2', 'cam1'] },
+      { world_id: 'w-1', cameras: ['cam_B', 'cam_A'] },
       { world_id: 'w-2', aliases: ['w-9'], cameras: [] },
-      { world_id: 'w-3', aliases: ['w-8'], cameras: ['cam3'] },
+      { world_id: 'w-3', aliases: ['w-8'], cameras: ['cam_C'] },
     ];
-    expect(bestCamera(tracks, { type: 'person', id: 'w-1' })).toBe('cam2');
-    expect(bestCamera(tracks, { type: 'person', id: 'w-8' })).toBe('cam3');
+    expect(bestCamera(tracks, { type: 'person', id: 'w-1' })).toBe('cam_B');
+    expect(bestCamera(tracks, { type: 'person', id: 'w-8' })).toBe('cam_C');
     expect(bestCamera(tracks, { type: 'person', id: 'w-2' })).toBeUndefined();
     expect(bestCamera(tracks, { type: 'zone', id: 'z-1' })).toBeUndefined();
     expect(bestCamera(undefined, { type: 'person', id: 'w-1' })).toBeUndefined();

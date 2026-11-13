@@ -12,7 +12,7 @@
     "policy_version": "ppe-policy-0.1.0",
     "input_mode": "FULL_FRAME",
     "input_provenance": {
-      "frames": { "source": "LIVE", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
+      "frames": { "source": "LIVE", "camera_ids": ["cam_A", "cam_B", "cam_C", "cam_D"] },
       "calibration": { "source": "G1_AUTO", "calibration_version": "cal-7" },
       "tracks": { "source": "TIER0_LIVE", "provider_version": "tier0-0.1.0" },
       "is_upper_bound": false
@@ -30,8 +30,8 @@
           "last_evidence_at_ms": 1760342400400,
           "expires_at_ms": 1760342410400,
           "evidence": [
-            { "camera_id": "cam2", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "WORN", "confidence": 0.91, "region_quality": 0.88 },
-            { "camera_id": "cam1", "stream_epoch": 3, "frame_sequence": 90198, "capture_time_ms": 1760342399900, "local_track_id": "c1-41", "candidate_state": "WORN", "confidence": 0.84, "region_quality": 0.72 }
+            { "camera_id": "cam_B", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "WORN", "confidence": 0.91, "region_quality": 0.88 },
+            { "camera_id": "cam_A", "stream_epoch": 3, "frame_sequence": 90198, "capture_time_ms": 1760342399900, "local_track_id": "c1-41", "candidate_state": "WORN", "confidence": 0.84, "region_quality": 0.72 }
           ]
         },
         "vest": {
@@ -42,7 +42,7 @@
           "last_evidence_at_ms": 1760342400400,
           "expires_at_ms": 1760342410400,
           "evidence": [
-            { "camera_id": "cam2", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "NOT_WORN", "confidence": 0.86, "region_quality": 0.9 }
+            { "camera_id": "cam_B", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "NOT_WORN", "confidence": 0.86, "region_quality": 0.9 }
           ]
         }
       },

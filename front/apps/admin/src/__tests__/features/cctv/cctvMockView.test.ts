@@ -11,12 +11,12 @@ import {
 import { ROOM, toPlan } from '@/features/plan/plan';
 import { describe, expect, it } from 'vitest';
 
-const cam1 = CCTV_CAMS.find((cam) => cam.id === 'cam1')!;
+const cam_A = CCTV_CAMS.find((cam) => cam.id === 'cam_A')!;
 const center = { x: ROOM.width / 2, y: ROOM.depth / 2 };
 
 describe('CCTV 모의 화면 투영', () => {
   it('카메라 앞의 점은 화면 안에 투영한다', () => {
-    const p = cctvProj(cam1)(3, 3, 1)!;
+    const p = cctvProj(cam_A)(3, 3, 1)!;
     expect(p).not.toBeNull();
     expect(p.x).toBeGreaterThan(0);
     expect(p.x).toBeLessThan(CCTV_W);
@@ -26,11 +26,11 @@ describe('CCTV 모의 화면 투영', () => {
   });
 
   it('카메라 뒤의 점은 null 이다', () => {
-    expect(cctvProj(cam1)(cam1.x - 3, cam1.y - 3, 0)).toBeNull();
+    expect(cctvProj(cam_A)(cam_A.x - 3, cam_A.y - 3, 0)).toBeNull();
   });
 
   it('모서리 카메라 네 대 모두 방 가운데를 화면 가운데 가까이에 본다', () => {
-    expect(CCTV_CAMS.map((cam) => cam.id)).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
+    expect(CCTV_CAMS.map((cam) => cam.id)).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     for (const cam of CCTV_CAMS) {
       const p = cctvProj(cam)(center.x, center.y, 0)!;
       expect(p.x).toBeCloseTo(CCTV_W / 2, 5);
@@ -39,11 +39,11 @@ describe('CCTV 모의 화면 투영', () => {
   });
 
   it('경로는 카메라 뒤 점에서 끊고 다음 점부터 다시 긋는다', () => {
-    const project = cctvProj(cam1);
+    const project = cctvProj(cam_A);
     const path = cctvPath(project, [
       [2, 2],
       [3, 3],
-      [cam1.x - 3, cam1.y - 3],
+      [cam_A.x - 3, cam_A.y - 3],
       [4, 4],
       [5, 5],
     ]);
@@ -55,9 +55,9 @@ describe('CCTV 모의 화면 투영', () => {
   });
 
   it('사람은 먼 사람부터 그리고 카메라 뒤 사람은 뺀다', () => {
-    const figures = cctvFigures(cctvProj(cam1), [
+    const figures = cctvFigures(cctvProj(cam_A), [
       { id: 'near', x: 2, y: 2 },
-      { id: 'behind', x: cam1.x - 3, y: cam1.y - 3 },
+      { id: 'behind', x: cam_A.x - 3, y: cam_A.y - 3 },
       { id: 'far', x: 8, y: 8 },
     ]);
     expect(figures.map((f) => f.id)).toEqual(['far', 'near']);

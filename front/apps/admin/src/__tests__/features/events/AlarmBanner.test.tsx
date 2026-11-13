@@ -196,7 +196,7 @@ describe('AlarmBanner', () => {
       world: {
         receivedAt: T,
         payload: {
-          tracks: [{ world_id: 'w-0015', cameras: ['cam3'] }],
+          tracks: [{ world_id: 'w-0015', cameras: ['cam_C'] }],
         } as unknown as WorldStatePayload,
       },
     });

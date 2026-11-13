@@ -20,7 +20,7 @@
     SIMAI_TIER0_TOKEN           Tier 0 토큰 (비밀, Authorization: Bearer)
     SIMAI_TIER0_ID              Tier 0 인스턴스 ID, 봉투 source_id·gateway_id (기본 tier0-01)
     SIMAI_TIER0_CONTROL_PORT    I0 제어 WebSocket(wss) 대칭 매핑 요청 번호 (예: 70000)
-    SIMAI_TIER0_VIDEO_PORTS     카메라별 영상 TLS 포트 요청 번호 "cam1:70001,cam2:70002,..." (카메라가 포트를 같이 써도 된다)
+    SIMAI_TIER0_VIDEO_PORTS     카메라별 영상 TLS 포트 요청 번호 "cam_A:70001,cam_B:70002,..." (카메라가 포트를 같이 써도 된다)
     SIMAI_TIER0_TLS_CERT_FILE   Tier 0 TLS 서버 인증서 PEM 경로 (공개키 지문 계산용, 비밀 키 파일이 아니다)
     SIMAI_PUBLIC_HOST           공개 IPv4 (사이트 무관 이름, 먼저 읽는다)
     SIMAI_PUBLIC_PORT_<요청 번호> 실제 공개 포트 (사이트 무관 이름, 먼저 읽는다)
@@ -175,7 +175,7 @@ class PortRequest:
 
 
 def parse_video_ports(text: str) -> list[PortRequest]:
-    """`cam1:70001,cam2:70002` → VIDEO 요청 목록. 형식이 틀리면 ValueError."""
+    """`cam_A:70001,cam_B:70002` → VIDEO 요청 목록. 형식이 틀리면 ValueError."""
     out: list[PortRequest] = []
     for item in (s.strip() for s in text.split(",")):
         if not item:

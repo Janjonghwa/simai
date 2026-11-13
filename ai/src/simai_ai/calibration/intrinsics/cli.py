@@ -2,7 +2,7 @@
 
     uv run python -m simai_ai.calibration.intrinsics.cli --session ../gateway/recorder/sessions/classroom.toml
     uv run python -m simai_ai.calibration.intrinsics.cli --rtsp cam_A=192.168.0.11 --rtsp cam_B=192.168.0.12:554/stream1
-    uv run python -m simai_ai.calibration.intrinsics.cli --file cam1=a.mp4 --file cam2=b.mp4 --frames-source SIM
+    uv run python -m simai_ai.calibration.intrinsics.cli --file cam_A=a.mp4 --file cam_B=b.mp4 --frames-source SIM
 
 입력(카메라 RTSP 또는 시험용 영상 파일, 여러 대)을 `--duration` 초 동안 `--interval` 초 간격으로 메모리에만 받아 시간 중앙값
 배경을 만들고, 카메라별로 AnyCalib → GeoCalib → 고전 기준 순서(`--backends`)로 추정한 뒤 같은 렌즈 4대 공통값을 합쳐

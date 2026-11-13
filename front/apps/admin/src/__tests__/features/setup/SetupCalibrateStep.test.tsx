@@ -31,7 +31,7 @@ const sessionOf = (over: Record<string, unknown> = {}) =>
     status: 'JOINT_BA_AND_VERIFY',
     stage: 'JOINT_BA_AND_VERIFY',
     progress_pct: 50,
-    camera_heights_m: { cam1: 2.25, cam2: 2.3 },
+    camera_heights_m: { cam_A: 2.25, cam_B: 2.3 },
     height_tolerance_cm: 5,
     started_at_ms: Date.now(),
     updated_at_ms: Date.now(),
@@ -136,7 +136,7 @@ describe('보정·생성 진행 카드(5단계 막대)', () => {
         status: 'COLLECTING_BACKGROUND',
         stage: 'COLLECTING_BACKGROUND',
         progress_pct: 7.5,
-        background_collection_pct: { cam1: 50, cam2: 80 },
+        background_collection_pct: { cam_A: 50, cam_B: 80 },
       }),
     );
     expect(stages()[0]!.textContent).toContain('50%');
@@ -147,7 +147,7 @@ describe('보정·생성 진행 카드(5단계 막대)', () => {
     cleanup();
 
     renderStep(
-      sessionOf({ progress_pct: 20, background_collection_pct: { cam1: 100, cam2: 100 } }),
+      sessionOf({ progress_pct: 20, background_collection_pct: { cam_A: 100, cam_B: 100 } }),
     );
     expect(screen.queryByText('배경을 모으는 동안 카메라 앞에서 비켜 주세요.')).toBeNull();
     expect(screen.queryByLabelText('카메라별 배경 수집 진행률')).toBeNull();
@@ -166,7 +166,7 @@ describe('보정·생성 실패 안내', () => {
       failedSession({
         progress_pct: 40,
         failure_code: 'VALIDATION_REJECTED',
-        failure_message: "worsened_pairs=['cam1-cam2']",
+        failure_message: "worsened_pairs=['cam_A-cam_B']",
       }),
     );
     const box = screen.getByRole('alert', { name: '세팅 실패 안내' });
@@ -206,7 +206,7 @@ describe('보정·생성 실패 안내', () => {
       failedSession({
         progress_pct: 40,
         failure_code: 'INSUFFICIENT_FEATURES',
-        failure_message: 'Insufficient raw feature matches on pair cam1-cam2: 7',
+        failure_message: 'Insufficient raw feature matches on pair cam_A-cam_B: 7',
       }),
     );
     const box = within(screen.getByRole('alert', { name: '세팅 실패 안내' }));
@@ -246,7 +246,7 @@ describe('보정·생성 실패 안내', () => {
       failedSession({
         progress_pct: 70,
         failure_code: 'TIMEOUT',
-        height_checks: { cam1: check({ within_tolerance: false, difference_cm: 41 }) },
+        height_checks: { cam_A: check({ within_tolerance: false, difference_cm: 41 }) },
       }),
     );
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeNull();
@@ -258,13 +258,13 @@ describe('보정 검증 결과 표', () => {
     sessionOf({
       progress_pct: 70,
       height_checks: {
-        cam1: check(),
-        cam2: check({
+        cam_A: check(),
+        cam_B: check({
           input_height_m: 2.3,
           restored_height_m: 2.71,
           difference_cm: 41,
           within_tolerance: false,
-          guidance: 'cam2 높이를 다시 재서 입력해 주세요',
+          guidance: 'cam_B 높이를 다시 재서 입력해 주세요',
         }),
       },
       ...over,
@@ -301,8 +301,8 @@ describe('보정 검증 결과 표', () => {
     renderStep(
       withChecks({
         height_checks: {
-          cam1: check({ difference_cm: 0.5, within_tolerance: false }),
-          cam2: check({ difference_cm: 41, within_tolerance: true }),
+          cam_A: check({ difference_cm: 0.5, within_tolerance: false }),
+          cam_B: check({ difference_cm: 41, within_tolerance: true }),
         },
       }),
     );
@@ -318,7 +318,7 @@ describe('보정 검증 결과 표', () => {
       withChecks({
         height_tolerance_cm: undefined,
         height_checks: {
-          cam1: check({ restored_height_m: null, difference_cm: null, within_tolerance: false }),
+          cam_A: check({ restored_height_m: null, difference_cm: null, within_tolerance: false }),
         },
       }),
     );
@@ -330,7 +330,7 @@ describe('보정 검증 결과 표', () => {
   it('높이 불일치 안내는 서버 문구를 그대로 보이고, 서버가 높이를 확인하기 전(40% 미만)에는 숨긴다', () => {
     renderStep(withChecks());
     expect(screen.getByRole('alert', { name: '카메라 높이 불일치 경고' }).textContent).toContain(
-      'cam2 높이를 다시 재서 입력해 주세요',
+      'cam_B 높이를 다시 재서 입력해 주세요',
     );
     cleanup();
     renderStep(withChecks({ progress_pct: 39 }));
@@ -341,14 +341,14 @@ describe('보정 검증 결과 표', () => {
 });
 
 describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
-  const CAMS = ['cam1', 'cam2', 'cam3', 'cam4'];
+  const CAMS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
   const readySession = (over: Record<string, unknown> = {}) =>
     // 미리보기 전(3D 칸 없음): 보정 등록(65%) 뒤부터 카메라 확인이 돈다
     sessionOf({
       status: 'JOINT_BA_AND_VERIFY',
       stage: 'JOINT_BA_AND_VERIFY',
       progress_pct: 65,
-      camera_heights_m: { cam1: 2.44, cam2: 2.44, cam3: 2.48, cam4: 2.48 },
+      camera_heights_m: { cam_A: 2.44, cam_B: 2.44, cam_C: 2.48, cam_D: 2.48 },
       calibration_version: 'cal-9',
       quality_gate: buildQualityGate(CAMS),
       ...over,

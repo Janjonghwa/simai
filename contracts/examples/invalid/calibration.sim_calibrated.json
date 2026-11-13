@@ -11,7 +11,7 @@
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [1920, 1080],
       "K": [[1000.0, 0.0, 960.0], [0.0, 1000.0, 540.0], [0.0, 0.0, 1.0]],
       "distortion": { "model": "NONE", "coeffs": [] },

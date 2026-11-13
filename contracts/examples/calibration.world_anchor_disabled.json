@@ -19,7 +19,7 @@
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [
         1920,
         1080
@@ -80,7 +80,7 @@
       }
     },
     {
-      "camera_id": "cam2",
+      "camera_id": "cam_B",
       "image_size": [
         1920,
         1080
@@ -141,7 +141,7 @@
       }
     },
     {
-      "camera_id": "cam3",
+      "camera_id": "cam_C",
       "image_size": [
         1920,
         1080
@@ -202,7 +202,7 @@
       }
     },
     {
-      "camera_id": "cam4",
+      "camera_id": "cam_D",
       "image_size": [
         1920,
         1080
@@ -270,7 +270,7 @@
     "floor_plane_disagreement_m": 0.018,
     "floor_coverage_ratio": 0.86
   },
-  "content_hash": "sha256:5c39d25e69dcc7de7214ee8693945f48f5d4813e8f715902148c2dc73fbc16d6",
+  "content_hash": "sha256:a77e14f725724aaa402f0957c8f1340d16c83b93e674e7314effa03ea13c93d4",
   "previous_calibration_version": "cal-1-jba2-setup",
   "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000585",
   "world_anchor": {

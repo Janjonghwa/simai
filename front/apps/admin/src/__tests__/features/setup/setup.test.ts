@@ -50,7 +50,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
   it('보정 단계 순서에서 1단계는 카메라 연결 관리이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
     expect(STEPS).toEqual(['카메라 연결 관리', '보정·생성', '구역']);
     expect(STEPS[ZONE_STAGE]).toBe('구역');
-    expect(DEFAULT_CAMERA_IDS).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
+    expect(DEFAULT_CAMERA_IDS).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     expect(CAMERA_CORNERS).toHaveLength(4);
   });
 
@@ -106,9 +106,9 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     const latest = buildCoverageGuidePayload({
       connectivity: 'CONNECTED',
       guides: [
-        optional('cam1', ['cam1', 'cam2']),
-        optional('cam2', ['cam1', 'cam2']),
-        optional('cam3', ['cam3', 'cam4']),
+        optional('cam_A', ['cam_A', 'cam_B']),
+        optional('cam_B', ['cam_A', 'cam_B']),
+        optional('cam_C', ['cam_C', 'cam_D']),
       ],
     });
     const view = deriveStep1Coverage(
@@ -139,8 +139,8 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       connectivity: 'DISCONNECTED',
       guides: [
         {
-          camera_id: 'cam3',
-          pair: ['cam3', 'cam4'],
+          camera_id: 'cam_C',
+          pair: ['cam_C', 'cam_D'],
           direction: 'RIGHT',
           magnitude: 'SMALL',
           reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
@@ -163,10 +163,10 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
 
     expect(view.connectivity).toBe('DISCONNECTED');
     expect(view.connectivitySummary).toBe('카메라 1·카메라 2·카메라 3 / 카메라 4 갈림 · 방금');
-    const cam3 = view.cameras.find((c) => c.id === 'cam3')!;
-    expect(cam3.guideLabel).toBe('오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)');
-    // 카메라 3 쪽 같이 보는 곳(쌍 cam3–cam4 의 centroid_a)과 이웃 이름.
-    expect(cam3.guides).toEqual([
+    const cam_C = view.cameras.find((c) => c.id === 'cam_C')!;
+    expect(cam_C.guideLabel).toBe('오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)');
+    // 카메라 3 쪽 같이 보는 곳(쌍 cam_C–cam_D 의 centroid_a)과 이웃 이름.
+    expect(cam_C.guides).toEqual([
       {
         text: '오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)',
         direction: 'RIGHT',
@@ -182,15 +182,15 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       connectivity: 'DISCONNECTED',
       guides: [
         {
-          camera_id: 'cam3',
-          pair: ['cam3', 'cam4'],
+          camera_id: 'cam_C',
+          pair: ['cam_C', 'cam_D'],
           direction: 'RIGHT',
           magnitude: 'SMALL',
           reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
         },
         {
-          camera_id: 'cam3',
-          pair: ['cam2', 'cam3'],
+          camera_id: 'cam_C',
+          pair: ['cam_B', 'cam_C'],
           direction: 'LEFT',
           magnitude: 'SMALL',
           reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
@@ -210,7 +210,7 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       },
       false,
     );
-    expect(view.cameras.find((c) => c.id === 'cam3')?.guideLabel).toBe(
+    expect(view.cameras.find((c) => c.id === 'cam_C')?.guideLabel).toBe(
       '오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4) · 왼쪽으로 조금 돌려 주세요 (카메라 2–카메라 3)',
     );
   });
@@ -218,11 +218,11 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
   it('NO_VIDEO·STALE·계산 실패(UNKNOWN) 상태를 구분하고 진행을 막지 않는다', () => {
     const latest = buildCoverageGuidePayload({
       connectivity: 'UNKNOWN',
-      cameraStatuses: { cam2: 'NO_VIDEO', cam4: 'STALE' },
+      cameraStatuses: { cam_B: 'NO_VIDEO', cam_D: 'STALE' },
       guides: [
         {
-          camera_id: 'cam2',
-          pair: ['cam2', 'cam3'],
+          camera_id: 'cam_B',
+          pair: ['cam_B', 'cam_C'],
           direction: 'NONE',
           magnitude: 'NONE',
           reason_code: 'NO_OVERLAP_VISIBLE',
@@ -248,11 +248,11 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(staleView.connectivitySummary).toBe('연결 확인 중 · 12초 전 확인');
     expect(staleView.stale).toBe(true);
     expect(staleView.calculationFailed).toBe(true);
-    expect(staleView.noVideoCameras).toEqual(['cam2']);
-    expect(staleView.staleCameras).toEqual(['cam4']);
-    expect(staleView.cameras.find((c) => c.id === 'cam2')?.statusLabel).toBe('영상 없음');
-    expect(staleView.cameras.find((c) => c.id === 'cam4')?.statusLabel).toBe('끊김');
-    expect(staleView.cameras.find((c) => c.id === 'cam2')?.guideLabel).toBe(
+    expect(staleView.noVideoCameras).toEqual(['cam_B']);
+    expect(staleView.staleCameras).toEqual(['cam_D']);
+    expect(staleView.cameras.find((c) => c.id === 'cam_B')?.statusLabel).toBe('영상 없음');
+    expect(staleView.cameras.find((c) => c.id === 'cam_D')?.statusLabel).toBe('끊김');
+    expect(staleView.cameras.find((c) => c.id === 'cam_B')?.guideLabel).toBe(
       '겹치는 곳이 없습니다. 각도를 조정하거나 겹치는 곳에 무늬 있는 물건을 두세요 (카메라 2–카메라 3)',
     );
 
@@ -270,21 +270,21 @@ describe('카메라 높이 기본값 채움·검증', () => {
       site_id: 'classroom-1',
       height_tolerance_cm: 5,
       camera_heights_m: {
-        cam1: 2.25,
-        cam2: 2.3,
-        cam3: 2.2,
-        cam4: null,
+        cam_A: 2.25,
+        cam_B: 2.3,
+        cam_C: 2.2,
+        cam_D: null,
       },
       all_present: false,
     };
 
     const cameraIds = resolveHeightCameraIds(defaultsResponse);
-    expect(cameraIds).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
+    expect(cameraIds).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
 
     const fields = deriveHeightFields(cameraIds, defaultsResponse.camera_heights_m, {});
     expect(fields).toEqual([
       {
-        cameraId: 'cam1',
+        cameraId: 'cam_A',
         defaultHeightM: 2.25,
         rawValue: '2.25',
         required: false,
@@ -293,7 +293,7 @@ describe('카메라 높이 기본값 채움·검증', () => {
         valueM: 2.25,
       },
       {
-        cameraId: 'cam2',
+        cameraId: 'cam_B',
         defaultHeightM: 2.3,
         rawValue: '2.3',
         required: false,
@@ -302,7 +302,7 @@ describe('카메라 높이 기본값 채움·검증', () => {
         valueM: 2.3,
       },
       {
-        cameraId: 'cam3',
+        cameraId: 'cam_C',
         defaultHeightM: 2.2,
         rawValue: '2.2',
         required: false,
@@ -311,7 +311,7 @@ describe('카메라 높이 기본값 채움·검증', () => {
         valueM: 2.2,
       },
       {
-        cameraId: 'cam4',
+        cameraId: 'cam_D',
         defaultHeightM: null,
         rawValue: '',
         required: true,
@@ -323,27 +323,27 @@ describe('카메라 높이 기본값 채움·검증', () => {
 
     expect(validateHeightFields(fields)).toEqual({
       valid: false,
-      missingIds: ['cam4'],
+      missingIds: ['cam_D'],
       invalidIds: [],
       cameraHeightsM: {
-        cam1: 2.25,
-        cam2: 2.3,
-        cam3: 2.2,
+        cam_A: 2.25,
+        cam_B: 2.3,
+        cam_C: 2.2,
       },
     });
 
     const filled = deriveHeightFields(cameraIds, defaultsResponse.camera_heights_m, {
-      cam4: '2.35',
+      cam_D: '2.35',
     });
     expect(validateHeightFields(filled)).toEqual({
       valid: true,
       missingIds: [],
       invalidIds: [],
       cameraHeightsM: {
-        cam1: 2.25,
-        cam2: 2.3,
-        cam3: 2.2,
-        cam4: 2.35,
+        cam_A: 2.25,
+        cam_B: 2.3,
+        cam_C: 2.2,
+        cam_D: 2.35,
       },
     });
   });
@@ -351,16 +351,16 @@ describe('카메라 높이 기본값 채움·검증', () => {
   it(`0 이하이거나 ${MAX_CAMERA_HEIGHT_M}m 초과인 값은 거부한다`, () => {
     const fields = deriveHeightFields(
       DEFAULT_CAMERA_IDS,
-      { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
-      { cam1: '0', cam2: '25' },
+      { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
+      { cam_A: '0', cam_B: '25' },
     );
     expect(validateHeightFields(fields)).toEqual({
       valid: false,
       missingIds: [],
-      invalidIds: ['cam1', 'cam2'],
+      invalidIds: ['cam_A', 'cam_B'],
       cameraHeightsM: {
-        cam3: 2.2,
-        cam4: 2.2,
+        cam_C: 2.2,
+        cam_D: 2.2,
       },
     });
   });
@@ -383,9 +383,9 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     status: 'COLLECTING_BACKGROUND',
     stage: 'COLLECTING_BACKGROUND',
     progress_pct: 0,
-    camera_heights_m: { cam1: 2.25, cam2: 2.3, cam3: 2.2, cam4: 2.35 },
+    camera_heights_m: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
     height_tolerance_cm: 5,
-    background_collection_pct: { cam1: 50, cam2: 50, cam3: 40, cam4: 60 },
+    background_collection_pct: { cam_A: 50, cam_B: 50, cam_C: 40, cam_D: 60 },
     height_checks: null,
     height_warnings: [],
     object_cross_checks: null,
@@ -441,24 +441,24 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     const warned = deriveHeightWarnings({
       ...baseSession,
       height_checks: {
-        cam1: {
+        cam_A: {
           input_height_m: 2.25,
           restored_height_m: 2.24,
           difference_cm: 1.0,
           within_tolerance: true,
           guidance: null,
         },
-        cam2: {
+        cam_B: {
           input_height_m: 2.3,
           restored_height_m: 2.15,
           difference_cm: 15.0,
           within_tolerance: false,
-          guidance: 'cam2 입력 높이(2.30m)와 복원 높이(2.15m)가 15.0cm 차이납니다',
+          guidance: 'cam_B 입력 높이(2.30m)와 복원 높이(2.15m)가 15.0cm 차이납니다',
         },
       },
     });
     expect(warned).toHaveLength(1);
-    expect(warned[0]?.cameraId).toBe('cam2');
+    expect(warned[0]?.cameraId).toBe('cam_B');
     expect(warned[0]?.differenceCm).toBe(15.0);
 
     expect(isPreviewSceneReady(baseSession)).toBe(false);
@@ -650,7 +650,7 @@ describe('세팅 대기 이유 안내(S15P31A101-583)', () => {
       work_unit_id: 1,
       status: 'FAILED',
       progress_pct: 0,
-      camera_heights_m: { cam1: 2.4 },
+      camera_heights_m: { cam_A: 2.4 },
       wait_reason: { code: 'WORKER_NOT_POLLING', since_ms: 1 },
     });
     expect(deriveWaitingView(session).waitReason).toBeNull();
@@ -795,7 +795,7 @@ describe('보정·생성 실패 단계(마지막 서버 진행률로 추정)', (
       status: 'FAILED',
       stage: 'FAILED',
       progress_pct: 0,
-      camera_heights_m: { cam1: 2.4, cam2: 2.4 },
+      camera_heights_m: { cam_A: 2.4, cam_B: 2.4 },
       ...over,
     });
 
@@ -890,11 +890,11 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
       status: 'JOINT_BA_AND_VERIFY',
       stage: 'JOINT_BA_AND_VERIFY',
       progress_pct: 50,
-      camera_heights_m: { cam1: 2.25, cam2: 2.3 },
+      camera_heights_m: { cam_A: 2.25, cam_B: 2.3 },
       height_tolerance_cm: 5,
       height_checks: {
-        cam1: check(),
-        cam2: check({
+        cam_A: check(),
+        cam_B: check({
           input_height_m: 2.3,
           restored_height_m: null,
           difference_cm: null,
@@ -907,14 +907,14 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
   it('세션의 height_checks 를 서버 판정 그대로 행으로 바꾸고 없으면 빈 배열이다', () => {
     expect(deriveHeightCheckRows(session())).toEqual([
       {
-        cameraId: 'cam1',
+        cameraId: 'cam_A',
         inputHeightM: 2.25,
         restoredHeightM: 2.26,
         differenceCm: 1,
         withinTolerance: true,
       },
       {
-        cameraId: 'cam2',
+        cameraId: 'cam_B',
         inputHeightM: 2.3,
         restoredHeightM: null,
         differenceCm: null,
@@ -928,7 +928,7 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
   it('허용 오차 안에 있어도 서버가 안 맞다고 하면 안 맞는 행이다(허용값으로 다시 계산하지 않는다)', () => {
     const rows = deriveHeightCheckRows(
       session({
-        height_checks: { cam1: check({ difference_cm: 0.5, within_tolerance: false }) },
+        height_checks: { cam_A: check({ difference_cm: 0.5, within_tolerance: false }) },
       }),
     );
     expect(rows[0]!.withinTolerance).toBe(false);
@@ -936,7 +936,7 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
 
   it('카메라 id 와 허용 오차는 세션에서 읽는다', () => {
     const view = deriveWaitingView(session());
-    expect(view.cameraIds).toEqual(['cam1', 'cam2']);
+    expect(view.cameraIds).toEqual(['cam_A', 'cam_B']);
     expect(view.heightToleranceCm).toBe(5);
     expect(
       deriveWaitingView(session({ height_tolerance_cm: undefined })).heightToleranceCm,
@@ -944,7 +944,7 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
   });
 
   it('높이 불일치 안내는 서버가 높이를 확인한 뒤(40%~)나 미리보기 맵이 준비된 뒤에만, 실패가 아닐 때 보인다', () => {
-    const mismatch = { cam2: check({ within_tolerance: false, difference_cm: 41 }) };
+    const mismatch = { cam_B: check({ within_tolerance: false, difference_cm: 41 }) };
     const noticeAt = (over: Record<string, unknown>) =>
       deriveWaitingView(session({ height_checks: mismatch, ...over })).showHeightNotice;
     expect(noticeAt({ progress_pct: 39 })).toBe(false);
@@ -952,7 +952,7 @@ describe('보정 검증 결과·높이 안내 표시 시점', () => {
     expect(noticeAt({ progress_pct: 20, preview_scene_version: 'scene-preview-1' })).toBe(true);
     expect(noticeAt({ progress_pct: 70, status: 'FAILED', stage: 'FAILED' })).toBe(false);
     expect(
-      deriveWaitingView(session({ height_checks: { cam1: check() }, progress_pct: 70 }))
+      deriveWaitingView(session({ height_checks: { cam_A: check() }, progress_pct: 70 }))
         .showHeightNotice,
     ).toBe(false);
   });
@@ -968,7 +968,7 @@ describe('세팅 세션의 Scene 버전', () => {
         status: final ? 'COMPLETED' : 'BAKING_TEXTURE',
         stage: final ? 'COMPLETED' : 'BAKING_TEXTURE',
         progress_pct: 90,
-        camera_heights_m: { cam1: 2.4 },
+        camera_heights_m: { cam_A: 2.4 },
         preview_scene_version: preview,
         scene_version: final,
       }),

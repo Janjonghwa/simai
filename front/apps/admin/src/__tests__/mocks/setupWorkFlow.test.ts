@@ -26,7 +26,7 @@ const BASE = 'http://api.test';
 const TODAY = '2026-11-11';
 const T0 = new Date(2026, 10, 11, 9, 0).getTime();
 const DRAFT_DELAY_MS = 2_500;
-const CAMERA_HEIGHTS = { cam1: 2.7, cam2: 2.7, cam3: 2.7, cam4: 2.7 };
+const CAMERA_HEIGHTS = { cam_A: 2.7, cam_B: 2.7, cam_C: 2.7, cam_D: 2.7 };
 
 let clock = T0;
 const now = () => clock;

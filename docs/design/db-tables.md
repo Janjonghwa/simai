@@ -232,7 +232,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `camera_id` | text | PK | `camera_id` | 예: cam1 |
+| `camera_id` | text | PK | `camera_id` | 예: cam_A |
 | `site_id` | text | FK>site.site_id, NN |  |  |
 | `model` | text | NN |  | 예: Tapo C110 |
 | `hardware_version` | text |  |  |  |

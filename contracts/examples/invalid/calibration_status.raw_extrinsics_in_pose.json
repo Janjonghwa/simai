@@ -12,7 +12,7 @@
   "latest_uploaded_version": "cal-1",
   "camera_poses": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "position_xyz": [0.0, 0.0, 2.5],
       "forward_xyz": [0.0, 1.0, 0.0],
       "hfov_rad": 1.53,

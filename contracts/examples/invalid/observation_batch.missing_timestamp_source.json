@@ -10,14 +10,14 @@
     "joint_layout": "COCO17",
     "frames": [
       {
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "stream_epoch": 12,
         "frame_sequence": 10324,
         "estimated_capture_time_ms": 1760342400100,
         "timestamp_uncertainty_ms": 18,
         "detections": [
           {
-            "local_track_id": "cam1-t7",
+            "local_track_id": "cam_A-t7",
             "bbox": [
               812,
               300,
@@ -38,7 +38,7 @@
         ]
       },
       {
-        "camera_id": "cam3",
+        "camera_id": "cam_C",
         "stream_epoch": 9,
         "frame_sequence": 88411,
         "estimated_capture_time_ms": 1760342400112,

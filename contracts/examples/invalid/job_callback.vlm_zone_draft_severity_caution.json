@@ -34,7 +34,7 @@
           "recommended_severity": "CAUTION",
           "rationale": "낮은 등급(CAUTION)은 위험구역 초안에서 허용하지 않는다.",
           "vlm_status": "VLM",
-          "evidence_cameras": ["cam1"]
+          "evidence_cameras": ["cam_A"]
         }
       ]
     }

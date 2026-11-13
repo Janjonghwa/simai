@@ -18,14 +18,14 @@ describe('세팅 mock autoProgress', () => {
     const mock = createSetupMock({
       now: () => clock,
       autoProgress: true,
-      cameraHeightsM: { cam1: 2.4 },
+      cameraHeightsM: { cam_A: 2.4 },
     });
     server.resetHandlers(...mock.handlers);
     const created = (await (
       await fetch('http://api.test/api/setup-sessions', {
         method: 'POST',
         headers: AUTH,
-        body: JSON.stringify({ work_unit_id: 1, camera_heights_m: { cam1: 2.4 } }),
+        body: JSON.stringify({ work_unit_id: 1, camera_heights_m: { cam_A: 2.4 } }),
       })
     ).json()) as { setup_session_id: string };
     const get = async () =>

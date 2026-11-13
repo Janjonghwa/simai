@@ -255,7 +255,7 @@ function observed(
     head_z_sigma: 0.05,
     head_z_validity: 'VALID',
     velocity: [round((nx - x) * 10), round((ny - y) * 10), 0],
-    cameras: ['cam1', 'cam3'],
+    cameras: ['cam_A', 'cam_C'],
     ...(id === 'w-0001' ? { skeleton: skeleton([x, y]) } : {}),
   };
 }
@@ -320,7 +320,7 @@ function unknownZTrack(tick: number, t: number) {
     head_z: null,
     head_z_sigma: null,
     head_z_validity: 'UNAVAILABLE',
-    cameras: ['cam2'],
+    cameras: ['cam_B'],
   };
 }
 
@@ -426,7 +426,7 @@ function crowdTrack(i: number, tick: number, t: number) {
     head_z_sigma: 0.05,
     head_z_validity: 'VALID',
     velocity: [round(speed * Math.cos(heading)), round(speed * Math.sin(heading)), 0],
-    cameras: ['cam1', 'cam2', 'cam3'],
+    cameras: ['cam_A', 'cam_B', 'cam_C'],
     skeleton: crowdSkeleton(i, tick, [x, y], heading),
   };
 }

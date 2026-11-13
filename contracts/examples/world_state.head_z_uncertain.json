@@ -39,8 +39,8 @@
         "head_z_sigma": 0.04,
         "head_z_validity": "UNCERTAIN",
         "cameras": [
-          "cam2",
-          "cam3"
+          "cam_B",
+          "cam_C"
         ],
         "skeleton": {
           "joint_layout": "COCO17",

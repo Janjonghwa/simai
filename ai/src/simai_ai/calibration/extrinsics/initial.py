@@ -149,7 +149,7 @@ def _auto_view_map(views: Mapping[str, Any]) -> dict[str, str]:
     by_camera: dict[str, list[str]] = {}
     for name in views:
         parts = name.split("_")
-        # cam_A_01 → cam_A, cam1 → cam1 (뒤의 번호 조각 하나만 뗀다)
+        # cam_A_01 → cam_A, cam_A → cam_A (뒤의 번호 조각 하나만 뗀다)
         cid = "_".join(parts[:-1]) if len(parts) > 1 and parts[-1].isdigit() else name
         by_camera.setdefault(cid, []).append(name)
     dup = {cid: names for cid, names in by_camera.items() if len(names) > 1}

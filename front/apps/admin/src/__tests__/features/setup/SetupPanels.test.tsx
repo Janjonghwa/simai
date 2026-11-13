@@ -18,7 +18,7 @@ afterEach(() => {
   useCctvStore.getState().reset();
 });
 
-/** 기본 카메라 4대(cam1~cam4)로 만든 1단계 카메라 목록. */
+/** 기본 카메라 4대(cam_A~cam_D)로 만든 1단계 카메라 목록. */
 const defaultCoverage = () => deriveStep1Coverage(undefined);
 
 describe('세팅 카메라 지도와 영상', () => {
@@ -26,7 +26,7 @@ describe('세팅 카메라 지도와 영상', () => {
     '실시간 연결 %s 에서도 영상 4칸을 지도 양옆에 그 카메라 모서리 높이대로 놓는다',
     (live) => {
       if (live) {
-        useCctvStore.getState().hello(['cam1', 'cam2', 'cam3', 'cam4']);
+        useCctvStore.getState().hello(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
         useCctvStore.getState().setLink('open');
       }
       render(<CameraMapPanel coverage={defaultCoverage()} />);
@@ -103,7 +103,7 @@ describe('카메라 각도 표시', () => {
         latest: buildCoverageGuidePayload({
           connectivity: 'CONNECTED',
           guides: [],
-          cameraStatuses: { cam1: status },
+          cameraStatuses: { cam_A: status },
         }),
       },
       error: false,
@@ -117,8 +117,8 @@ describe('카메라 각도 표시', () => {
           connectivity: 'DISCONNECTED',
           guides: [
             {
-              camera_id: 'cam1',
-              pair: ['cam1', 'cam2'],
+              camera_id: 'cam_A',
+              pair: ['cam_A', 'cam_B'],
               direction: 'RIGHT',
               magnitude: 'SMALL',
               reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
@@ -136,8 +136,8 @@ describe('카메라 각도 표시', () => {
         latest: buildCoverageGuidePayload({
           guides: [
             {
-              camera_id: 'cam1',
-              pair: ['cam1', 'cam2'],
+              camera_id: 'cam_A',
+              pair: ['cam_A', 'cam_B'],
               direction: 'RIGHT',
               magnitude: 'SMALL',
               reason_code: 'OPTIONAL_IMPROVE',
@@ -171,10 +171,10 @@ describe('카메라 각도 표시', () => {
       latest: buildCoverageGuidePayload({
         guides: [],
         pairs: [
-          pair('cam1', 'cam2', 'ENOUGH'),
-          pair('cam2', 'cam3', 'LACK'),
-          pair('cam3', 'cam4', 'LACK'),
-          pair('cam1', 'cam3', 'LACK'),
+          pair('cam_A', 'cam_B', 'ENOUGH'),
+          pair('cam_B', 'cam_C', 'LACK'),
+          pair('cam_C', 'cam_D', 'LACK'),
+          pair('cam_A', 'cam_C', 'LACK'),
         ],
       }),
     };

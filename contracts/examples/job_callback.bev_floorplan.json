@@ -67,8 +67,8 @@
         }
       },
       "cameras_used": [
-        "cam1",
-        "cam2"
+        "cam_A",
+        "cam_B"
       ],
       "cameras_skipped": {},
       "coverage_ratio": 0.71,
@@ -101,8 +101,8 @@
         "frames": {
           "source": "LIVE",
           "camera_ids": [
-            "cam1",
-            "cam2"
+            "cam_A",
+            "cam_B"
           ]
         },
         "calibration": {

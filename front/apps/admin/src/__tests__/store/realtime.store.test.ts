@@ -64,12 +64,12 @@ describe('realtime.store', () => {
     store.seedHealth(withLag(T - 1000, 900)); // 더 오래된 조회 값은 버리므로 표본도 쌓지 않는다.
     store.receiveHealth(withLag(T + 1000, 200));
     expect(selectTier0LagMs(useRealtimeStore.getState())).toBe(150);
-    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam1')).toBeTypeOf('number');
+    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam_A')).toBeTypeOf('number');
 
     const lost = health(T + 2000);
     store.receiveHealth({ ...lost, payload: { ...lost.payload, tier0_link: 'DISCONNECTED' } });
     expect(selectTier0LagMs(useRealtimeStore.getState())).toBeUndefined();
-    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam1')).toBeUndefined();
+    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam_A')).toBeUndefined();
   });
 
   it('reset 하면 로그인 전 상태로 돌아간다', () => {

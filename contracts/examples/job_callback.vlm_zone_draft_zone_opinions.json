@@ -66,8 +66,8 @@
           "rationale": "바닥(Z=0) 대비 약 0.75m 높이의 수평 상판이 관측되어 작업대 추락 주의 구역으로 제안합니다.",
           "vlm_status": "VLM",
           "evidence_cameras": [
-            "cam1",
-            "cam2"
+            "cam_A",
+            "cam_B"
           ],
           "confidence": 0.86
         },
@@ -103,7 +103,7 @@
           "rationale": "바닥면 내부에 주변 Z=0 평면보다 낮은 빈 영역이 검출되어 개구부 추락 위험(CRITICAL) 구역으로 제안합니다.",
           "vlm_status": "VLM",
           "evidence_cameras": [
-            "cam1"
+            "cam_A"
           ],
           "confidence": 0.91
         }
@@ -116,7 +116,7 @@
           "recommended_action": "MODIFY",
           "rationale": "단상 위 상자 더미가 치워져 상판 높이가 낮아졌습니다. 구역 높이를 다시 맞추길 권합니다.",
           "confidence": 0.72,
-          "camera_id": "cam1",
+          "camera_id": "cam_A",
           "before_crop_box_norm": [
             0.31,
             0.22,
@@ -139,7 +139,7 @@
           "recommended_action": null,
           "rationale": null,
           "confidence": null,
-          "camera_id": "cam2",
+          "camera_id": "cam_B",
           "before_crop_box_norm": [
             0.05,
             0.4,

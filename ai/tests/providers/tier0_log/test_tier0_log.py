@@ -324,8 +324,8 @@ def test_example_values_pass_through_unchanged(tmp_path):
     w12, w13 = doc["tracks"]
     assert w12["per_camera"] == [
         {
-            "camera_id": "cam1",
-            "local_track_id": "cam1-t7",
+            "camera_id": "cam_A",
+            "local_track_id": "cam_A-t7",
             "bbox": [812, 300, 1020, 860],
             "keypoints_2d": [[910, 340, 0.95], None],
             "joint_layout": "COCO17",

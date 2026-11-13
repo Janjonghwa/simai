@@ -18,7 +18,7 @@
     "input": {
       "calibration_version": "cal-7",
       "frame_uris": [
-        "s3://simai-site/empty/cam1-0001.jpg"
+        "s3://simai-site/empty/cam_A-0001.jpg"
       ]
     }
   }

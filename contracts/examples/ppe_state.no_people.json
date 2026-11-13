@@ -12,7 +12,7 @@
     "policy_version": "ppe-policy-0.1.0",
     "input_mode": "FULL_FRAME",
     "input_provenance": {
-      "frames": { "source": "FILE", "dataset_id": "replay/rec-20261028-020819z-walk-calibration", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
+      "frames": { "source": "FILE", "dataset_id": "replay/rec-20261028-020819z-walk-calibration", "camera_ids": ["cam_A", "cam_B", "cam_C", "cam_D"] },
       "tracks": { "source": "TIER0_LOG", "provider_version": "tier0-0.1.0" },
       "is_upper_bound": false
     },

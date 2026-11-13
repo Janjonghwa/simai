@@ -30,10 +30,10 @@
     "outliers": [],
     "residuals": {
       "camera_heights_cm": {
-        "cam1": -1.8,
-        "cam2": 1.4,
-        "cam3": 0.9,
-        "cam4": -0.5
+        "cam_A": -1.8,
+        "cam_B": 1.4,
+        "cam_C": 0.9,
+        "cam_D": -0.5
       },
       "props": [
         {
@@ -43,10 +43,10 @@
           "measured_m": 0.6774,
           "residual_cm": 0.24,
           "cameras": [
-            "cam1",
-            "cam2",
-            "cam3",
-            "cam4"
+            "cam_A",
+            "cam_B",
+            "cam_C",
+            "cam_D"
           ]
         },
         {
@@ -56,9 +56,9 @@
           "measured_m": 0.3688,
           "residual_cm": -0.12,
           "cameras": [
-            "cam1",
-            "cam3",
-            "cam4"
+            "cam_A",
+            "cam_C",
+            "cam_D"
           ]
         }
       ]
@@ -72,10 +72,10 @@
     "tilt_deg": 1.056,
     "max_tilt_deg": 3.0,
     "used_cameras": [
-      "cam1",
-      "cam2",
-      "cam3",
-      "cam4"
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
     ],
     "missing_cameras": [],
     "unknown_cameras": [],
@@ -85,34 +85,34 @@
     ],
     "estimation_method": "REGULARIZED_SMALL_ROTATION_LSQ",
     "observed_heights_m": {
-      "cam1": 2.44,
-      "cam2": 2.44,
-      "cam3": 2.48,
-      "cam4": 2.48
+      "cam_A": 2.44,
+      "cam_B": 2.44,
+      "cam_C": 2.48,
+      "cam_D": 2.48
     },
     "estimated_heights_before_m": {
-      "cam1": 2.3592,
-      "cam2": 2.3821,
-      "cam3": 2.5417,
-      "cam4": 2.5528
+      "cam_A": 2.3592,
+      "cam_B": 2.3821,
+      "cam_C": 2.5417,
+      "cam_D": 2.5528
     },
     "estimated_heights_after_m": {
-      "cam1": 2.4318,
-      "cam2": 2.4481,
-      "cam3": 2.4712,
-      "cam4": 2.4889
+      "cam_A": 2.4318,
+      "cam_B": 2.4481,
+      "cam_C": 2.4712,
+      "cam_D": 2.4889
     },
     "residuals_before_cm": {
-      "cam1": -8.08,
-      "cam2": -5.79,
-      "cam3": 6.17,
-      "cam4": 7.28
+      "cam_A": -8.08,
+      "cam_B": -5.79,
+      "cam_C": 6.17,
+      "cam_D": 7.28
     },
     "residuals_after_cm": {
-      "cam1": -0.82,
-      "cam2": 0.81,
-      "cam3": -0.88,
-      "cam4": 0.89
+      "cam_A": -0.82,
+      "cam_B": 0.81,
+      "cam_C": -0.88,
+      "cam_D": 0.89
     },
     "residual_rms_before_cm": 6.89,
     "residual_rms_after_cm": 0.85,
@@ -122,7 +122,7 @@
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [
         1920,
         1080
@@ -183,7 +183,7 @@
       }
     },
     {
-      "camera_id": "cam2",
+      "camera_id": "cam_B",
       "image_size": [
         1920,
         1080
@@ -244,7 +244,7 @@
       }
     },
     {
-      "camera_id": "cam3",
+      "camera_id": "cam_C",
       "image_size": [
         1920,
         1080
@@ -305,7 +305,7 @@
       }
     },
     {
-      "camera_id": "cam4",
+      "camera_id": "cam_D",
       "image_size": [
         1920,
         1080
@@ -366,7 +366,7 @@
       }
     }
   ],
-  "content_hash": "sha256:97744a83f9737c6f5d618deadf9bf6d9da0d71084a9f3e499d76b353db617400",
+  "content_hash": "sha256:4629f9bb42fa0cd916f2ec97edc097f18483aafa8cbede49cb41ed77b73d1100",
   "previous_calibration_version": "cal-0",
   "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452"
 }

@@ -13,7 +13,7 @@ import type {
 } from '@/features/setup/types';
 import { describe, expect, it } from 'vitest';
 
-const DB_IDS = ['cam1', 'cam2', 'cam3', 'cam4'];
+const DB_IDS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
 const AI_IDS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
 
 const pair = (
@@ -45,22 +45,22 @@ const guide = (
 describe('보일 안내 거르기', () => {
   it('옆 카메라 쌍의 안내만 남기고 마주 보는 쌍(대각)의 안내는 숨긴다', () => {
     const guides = [
-      guide('cam1', ['cam1', 'cam2']),
-      guide('cam1', ['cam1', 'cam3']),
-      guide('cam4', ['cam4', 'cam1']),
-      guide('cam2', ['cam2', 'cam4']),
+      guide('cam_A', ['cam_A', 'cam_B']),
+      guide('cam_A', ['cam_A', 'cam_C']),
+      guide('cam_D', ['cam_D', 'cam_A']),
+      guide('cam_B', ['cam_B', 'cam_D']),
     ];
     expect(visibleGuides(DB_IDS, guides, []).map((g) => g.pair)).toEqual([
-      ['cam1', 'cam2'],
-      ['cam4', 'cam1'],
+      ['cam_A', 'cam_B'],
+      ['cam_D', 'cam_A'],
     ]);
   });
 
   it('선택 보강(OPTIONAL_IMPROVE)은 숨기되 그 쌍 등급이 LACK 이면 쌍 순서와 상관없이 보인다', () => {
-    const optional = guide('cam2', ['cam2', 'cam3'], 'OPTIONAL_IMPROVE');
-    const enough = [pair('cam2', 'cam3', 'ENOUGH')];
-    const weak = [pair('cam2', 'cam3', 'WEAK')];
-    const lackReversed = [pair('cam3', 'cam2', 'LACK')];
+    const optional = guide('cam_B', ['cam_B', 'cam_C'], 'OPTIONAL_IMPROVE');
+    const enough = [pair('cam_B', 'cam_C', 'ENOUGH')];
+    const weak = [pair('cam_B', 'cam_C', 'WEAK')];
+    const lackReversed = [pair('cam_C', 'cam_B', 'LACK')];
     expect(visibleGuides(DB_IDS, [optional], enough)).toEqual([]);
     expect(visibleGuides(DB_IDS, [optional], weak)).toEqual([]);
     expect(visibleGuides(DB_IDS, [optional], [])).toEqual([]);
@@ -68,9 +68,9 @@ describe('보일 안내 거르기', () => {
   });
 
   it('겹치는 곳 없음(NO_OVERLAP_VISIBLE)과 그 밖의 이유 코드는 등급과 상관없이 보인다', () => {
-    const noOverlap = guide('cam2', ['cam2', 'cam3'], 'NO_OVERLAP_VISIBLE', 'NONE', 'NONE');
-    const edge = guide('cam3', ['cam3', 'cam4']);
-    const pairs = [pair('cam2', 'cam3', 'ENOUGH'), pair('cam3', 'cam4', 'ENOUGH')];
+    const noOverlap = guide('cam_B', ['cam_B', 'cam_C'], 'NO_OVERLAP_VISIBLE', 'NONE', 'NONE');
+    const edge = guide('cam_C', ['cam_C', 'cam_D']);
+    const pairs = [pair('cam_B', 'cam_C', 'ENOUGH'), pair('cam_C', 'cam_D', 'ENOUGH')];
     expect(visibleGuides(DB_IDS, [noOverlap, edge], pairs)).toEqual([noOverlap, edge]);
   });
 
@@ -83,30 +83,30 @@ describe('보일 안내 거르기', () => {
 describe('보정이 실패할 수 있는 쌍', () => {
   it('옆 쌍 가운데 등급이 LACK 인 쌍만 돌려준다(마주 보는 쌍·다른 등급 제외)', () => {
     const pairs = [
-      pair('cam1', 'cam2', 'ENOUGH'),
-      pair('cam1', 'cam3', 'LACK'),
-      pair('cam2', 'cam3', 'LACK'),
-      pair('cam2', 'cam4', 'LACK'),
-      pair('cam3', 'cam4', 'WEAK'),
-      pair('cam4', 'cam1', 'LACK'),
-      pair('cam1', 'cam4', 'UNKNOWN'),
+      pair('cam_A', 'cam_B', 'ENOUGH'),
+      pair('cam_A', 'cam_C', 'LACK'),
+      pair('cam_B', 'cam_C', 'LACK'),
+      pair('cam_B', 'cam_D', 'LACK'),
+      pair('cam_C', 'cam_D', 'WEAK'),
+      pair('cam_D', 'cam_A', 'LACK'),
+      pair('cam_A', 'cam_D', 'UNKNOWN'),
     ];
     expect(riskyPairs(DB_IDS, pairs).map((p) => `${p.a}–${p.b}`)).toEqual([
-      'cam2–cam3',
-      'cam4–cam1',
+      'cam_B–cam_C',
+      'cam_D–cam_A',
     ]);
   });
 
   it('위험한 쌍이 없으면 빈 배열이다', () => {
-    expect(riskyPairs(DB_IDS, [pair('cam1', 'cam2', 'WEAK')])).toEqual([]);
+    expect(riskyPairs(DB_IDS, [pair('cam_A', 'cam_B', 'WEAK')])).toEqual([]);
     expect(riskyPairs(DB_IDS, [])).toEqual([]);
   });
 });
 
 describe('카메라 연결 요약과 신선도', () => {
   const split = [
-    ['cam1', 'cam2'],
-    ['cam3', 'cam4'],
+    ['cam_A', 'cam_B'],
+    ['cam_C', 'cam_D'],
   ];
 
   it('연결·확인 중·갈림 세 가지를 문구로 만든다', () => {
@@ -121,7 +121,7 @@ describe('카메라 연결 요약과 신선도', () => {
   });
 
   it('연결된 카메라 수는 카메라 목록 길이를 센다', () => {
-    expect(connectivitySummary(['cam1', 'cam2', 'cam3'], 'CONNECTED', [], null)).toBe(
+    expect(connectivitySummary(['cam_A', 'cam_B', 'cam_C'], 'CONNECTED', [], null)).toBe(
       '3대 모두 연결',
     );
   });

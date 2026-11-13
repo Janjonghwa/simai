@@ -17,12 +17,12 @@ const UPLOAD_MS = 4_000;
 const UPLOAD_STAGGER_MS = 1_500;
 /** 위험 구간이 끝난 뒤 서버가 클립을 만들기까지(ms). */
 const CREATE_DELAY_MS = 500;
-const CAMERAS = ['cam1', 'cam2', 'cam3'] as const;
+const CAMERAS = ['cam_A', 'cam_B', 'cam_C'] as const;
 /** 링 버퍼에 앞부분이 없어 첫 구간이 늦게 시작하는 카메라와 그 늦는 시간(ms). */
-const TRUNCATED_CAMERA = 'cam2';
+const TRUNCATED_CAMERA = 'cam_B';
 const TRUNCATED_START_MS = 6_000;
 /** 구간 안에 프레임 빈칸이 있는 카메라. */
-const GAPPED_CAMERA = 'cam3';
+const GAPPED_CAMERA = 'cam_C';
 /** 시험 영상의 프레임 속도와 프레임당 크기(바이트). */
 const FPS = 15;
 const BYTES_PER_FRAME = 800;
@@ -38,7 +38,7 @@ type Camera = (typeof CAMERAS)[number];
 
 const frameCountOf = (start: number, end: number) => Math.round(((end - start) / 1000) * FPS);
 
-/** 클립의 촬영 구간과 올라간 시각. cam2 의 첫 구간은 앞부분이 없어 늦게 시작한다. */
+/** 클립의 촬영 구간과 올라간 시각. cam_B 의 첫 구간은 앞부분이 없어 늦게 시작한다. */
 function windowOf(anchor: number, resume: number, camera: Camera) {
   const truncatedStart = camera === TRUNCATED_CAMERA && resume === 0;
   const start = anchor - PRE_MS + (truncatedStart ? TRUNCATED_START_MS : 0);

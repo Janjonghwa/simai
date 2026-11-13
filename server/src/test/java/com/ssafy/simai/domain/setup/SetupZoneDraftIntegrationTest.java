@@ -324,13 +324,13 @@ class SetupZoneDraftIntegrationTest {
                 .andExpect(jsonPath("$.scene_version").value(bakedScene));
     }
 
-    private ObjectNode createRequest(double cam1, double cam2, double cam3, double cam4) {
+    private ObjectNode createRequest(double cam_A, double cam_B, double cam_C, double cam_D) {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
         req.putObject("camera_heights_m")
-                .put("cam1", cam1)
-                .put("cam2", cam2)
-                .put("cam3", cam3)
-                .put("cam4", cam4);
+                .put("cam_A", cam_A)
+                .put("cam_B", cam_B)
+                .put("cam_C", cam_C)
+                .put("cam_D", cam_D);
         return req;
     }
 
@@ -340,13 +340,13 @@ class SetupZoneDraftIntegrationTest {
                 .put("status", status)
                 .put("progress_pct", progressPct);
         ObjectNode checks = node.putObject("height_checks");
-        checks.putObject("cam1").put("input_height_m", 2.42).put("restored_height_m", 2.42)
+        checks.putObject("cam_A").put("input_height_m", 2.42).put("restored_height_m", 2.42)
                 .put("difference_cm", 0.0).put("within_tolerance", true);
-        checks.putObject("cam2").put("input_height_m", 2.48).put("restored_height_m", 2.48)
+        checks.putObject("cam_B").put("input_height_m", 2.48).put("restored_height_m", 2.48)
                 .put("difference_cm", 0.0).put("within_tolerance", true);
-        checks.putObject("cam3").put("input_height_m", 2.45).put("restored_height_m", 2.45)
+        checks.putObject("cam_C").put("input_height_m", 2.45).put("restored_height_m", 2.45)
                 .put("difference_cm", 0.0).put("within_tolerance", true);
-        checks.putObject("cam4").put("input_height_m", 2.51).put("restored_height_m", 2.51)
+        checks.putObject("cam_D").put("input_height_m", 2.51).put("restored_height_m", 2.51)
                 .put("difference_cm", 0.0).put("within_tolerance", true);
         return node;
     }
@@ -408,7 +408,7 @@ class SetupZoneDraftIntegrationTest {
         obb.putArray("center").add(0.0).add(0.0).add(0.375);
         obb.putArray("size").add(1.2).add(0.8).add(0.75);
         obb.put("yaw_rad", 0.0);
-        d1.putArray("evidence_cameras").add("cam1").add("cam2");
+        d1.putArray("evidence_cameras").add("cam_A").add("cam_B");
 
         ObjectNode d2 = drafts.addObject()
                 .put("candidate_id", "cand-open-01")
@@ -425,7 +425,7 @@ class SetupZoneDraftIntegrationTest {
                 .put("vlm_status", "VLM")
                 .put("confidence", 0.91);
         addPolygon(d2, -1.2, -0.8, -0.4, -0.1);
-        d2.putArray("evidence_cameras").add("cam1");
+        d2.putArray("evidence_cameras").add("cam_A");
         return res;
     }
 
@@ -459,7 +459,7 @@ class SetupZoneDraftIntegrationTest {
         obb.putArray("center").add(0.0).add(0.0).add(0.375);
         obb.putArray("size").add(1.2).add(0.8).add(0.75);
         obb.put("yaw_rad", 0.0);
-        d1.putArray("evidence_cameras").add("cam1");
+        d1.putArray("evidence_cameras").add("cam_A");
         return res;
     }
 

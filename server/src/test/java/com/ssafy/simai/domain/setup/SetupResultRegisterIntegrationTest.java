@@ -307,34 +307,34 @@ class SetupResultRegisterIntegrationTest {
         ObjectNode jointSnap = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0).put("calibration_version", newCalibration);
         jointSnap.putObject("artifacts").set("calibration_document", put(prefix + "calibration-" + newCalibration + ".json", calDoc));
         ObjectNode jointBa = jointSnap.putObject("metrics").putObject("joint_ba")
-                .put("anchor_camera_id", "cam1").put("converged", true).put("stage_seconds", 12.5).put("valid_points", 900)
+                .put("anchor_camera_id", "cam_A").put("converged", true).put("stage_seconds", 12.5).put("valid_points", 900)
                 .put("holdout_worsening_tolerance_px", 1.0);
-        ObjectNode pair = jointBa.putObject("pair_holdout").putObject("cam1-cam2");
+        ObjectNode pair = jointBa.putObject("pair_holdout").putObject("cam_A-cam_B");
         pair.putObject("before").put("n", 40).put("invalid", 1).put("median", 2.4).put("p90", 4.0).put("p95", 5.1);
         pair.putObject("after").put("n", 40).put("invalid", 0).put("median", 1.1).put("p90", 2.0).putNull("p95");
-        jointBa.putObject("pair_holdout_median_px").put("cam1-cam2", 1.1).putNull("cam3-cam4");
+        jointBa.putObject("pair_holdout_median_px").put("cam_A-cam_B", 1.1).putNull("cam_C-cam_D");
         mvc.perform(heartbeat(s, 0.65, jointSnap)).andExpect(status().isOk());
 
         JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
                 .andExpect(status().isOk()).andReturn());
         JsonNode cameras = view.get("cameras");
         assertThat(cameras).hasSize(4);
-        JsonNode cam1 = cameras.get(0);
-        assertThat(cam1.get("camera_id").asString()).isEqualTo("cam1");
-        assertThat(cam1.get("yaw_rad").asDouble()).isCloseTo(Math.PI / 4, org.assertj.core.data.Offset.offset(1e-6));
-        assertThat(cam1.get("pitch_rad").asDouble()).isNegative();
-        assertThat(cam1.get("image_size").get(0).asInt()).isEqualTo(1920);
-        assertThat(cam1.get("camera_height_m").asDouble()).isEqualTo(2.19);
-        assertThat(cam1.at("/reprojection_error_px/median").asDouble()).isEqualTo(1.8);
-        assertThat(cam1.at("/reprojection_error_px/p95").asDouble()).isEqualTo(4.6);
-        assertThat(cam1.get("world_anchor").isNull()).isTrue();
+        JsonNode cam_A = cameras.get(0);
+        assertThat(cam_A.get("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(cam_A.get("yaw_rad").asDouble()).isCloseTo(Math.PI / 4, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(cam_A.get("pitch_rad").asDouble()).isNegative();
+        assertThat(cam_A.get("image_size").get(0).asInt()).isEqualTo(1920);
+        assertThat(cam_A.get("camera_height_m").asDouble()).isEqualTo(2.19);
+        assertThat(cam_A.at("/reprojection_error_px/median").asDouble()).isEqualTo(1.8);
+        assertThat(cam_A.at("/reprojection_error_px/p95").asDouble()).isEqualTo(4.6);
+        assertThat(cam_A.get("world_anchor").isNull()).isTrue();
         JsonNode holdout = view.get("pair_holdout");
         assertThat(holdout.get("holdout_worsening_tolerance_px").asDouble()).isEqualTo(1.0);
-        assertThat(holdout.at("/pairs/cam1-cam2/before/median").asDouble()).isEqualTo(2.4);
-        assertThat(holdout.at("/pairs/cam1-cam2/after/p95").isNull()).isTrue();
-        assertThat(holdout.at("/pairs/cam1-cam2/median_px").asDouble()).isEqualTo(1.1);
-        assertThat(holdout.at("/pairs/cam3-cam4/before").isNull()).isTrue();
-        assertThat(holdout.at("/pairs/cam3-cam4/median_px").isNull()).isTrue();
+        assertThat(holdout.at("/pairs/cam_A-cam_B/before/median").asDouble()).isEqualTo(2.4);
+        assertThat(holdout.at("/pairs/cam_A-cam_B/after/p95").isNull()).isTrue();
+        assertThat(holdout.at("/pairs/cam_A-cam_B/median_px").asDouble()).isEqualTo(1.1);
+        assertThat(holdout.at("/pairs/cam_C-cam_D/before").isNull()).isTrue();
+        assertThat(holdout.at("/pairs/cam_C-cam_D/median_px").isNull()).isTrue();
 
         // 지표 없는 다음 스냅샷은 이전 쌍별 값을 지우지 않는다
         ObjectNode later = snapshot(s.sessionId(), "PREVIEW_AND_VLM_DRAFT", 70.0).put("calibration_version", newCalibration);
@@ -449,7 +449,7 @@ class SetupResultRegisterIntegrationTest {
     void 진행_중_작업이_있으면_세팅을_시작하지_않고_세팅_도중_작업이_시작되면_새_보정_묶음을_발행하지_않는다() throws Exception {
         jdbc.update("UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = now() WHERE work_id = ?", workUnitId);
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        req.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         mvc.perform(post("/api/setup-sessions").with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(req.toString()))
                 .andExpect(status().isConflict())
@@ -532,16 +532,16 @@ class SetupResultRegisterIntegrationTest {
         ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calibrationDocument(newCalibration, s.sessionId()));
         ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
         ArrayNode frames = mapper.createArrayNode();
-        for (String cam : List.of("cam1", "cam2", "cam3", "cam4")) {
+        for (String cam : List.of("cam_A", "cam_B", "cam_C", "cam_D")) {
             frames.add(frameRef(cam, put(prefix + "frame-" + cam + ".jpg", jpeg(cam)), "BLURRED"));
         }
         // 이 세션의 예전 시도(다른 대여)가 남긴 더 최근 프레임: 미리보기를 등록한 그 시도의 프레임만 입력에 싣는다
         jdbc.update("""
                 INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256, size_bytes,
                     registered_at, camera_id, face_policy)
-                VALUES (?::uuid, 'CAMERA_FRAME', 'cam1@eeeeeeeeeeee', 'job-old', ?::uuid, ?, ?, 10, now() + interval '1 hour', 'cam1',
+                VALUES (?::uuid, 'CAMERA_FRAME', 'cam_A@eeeeeeeeeeee', 'job-old', ?::uuid, ?, ?, 10, now() + interval '1 hour', 'cam_A',
                     'EXCLUDED')
-                """, s.sessionId(), UUID.randomUUID().toString(), BUCKET + "job-objects/site_setup/job-old/lease-old/frame-cam1.jpg",
+                """, s.sessionId(), UUID.randomUUID().toString(), BUCKET + "job-objects/site_setup/job-old/lease-old/frame-cam_A.jpg",
                 "e".repeat(64));
 
         String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
@@ -557,18 +557,19 @@ class SetupResultRegisterIntegrationTest {
                 SELECT camera_id || ':' || face_policy || ':' || version FROM setup_session_artifact
                 WHERE setup_session_id = ?::uuid AND kind = 'CAMERA_FRAME' AND job_id = ? ORDER BY camera_id
                 """, String.class, s.sessionId(), s.jobId()))
-                .containsExactly("cam1:BLURRED:cam1@" + sha256Hex(jpeg("cam1")).substring(0, 12),
-                        "cam2:BLURRED:cam2@" + sha256Hex(jpeg("cam2")).substring(0, 12),
-                        "cam3:BLURRED:cam3@" + sha256Hex(jpeg("cam3")).substring(0, 12),
-                        "cam4:BLURRED:cam4@" + sha256Hex(jpeg("cam4")).substring(0, 12));
+                .containsExactly("cam_A:BLURRED:cam_A@" + sha256Hex(jpeg("cam_A")).substring(0, 12),
+                        "cam_B:BLURRED:cam_B@" + sha256Hex(jpeg("cam_B")).substring(0, 12),
+                        "cam_C:BLURRED:cam_C@" + sha256Hex(jpeg("cam_C")).substring(0, 12),
+                        "cam_D:BLURRED:cam_D@" + sha256Hex(jpeg("cam_D")).substring(0, 12));
 
         JsonNode draftInput = mapper.readTree(jdbc.queryForObject(
                 "SELECT input::text FROM analysis_job WHERE job_type = 'vlm_zone_draft'", String.class));
         JsonNode inputFrames = draftInput.get("frames");
         assertThat(inputFrames).isNotNull();
         assertThat(inputFrames.size()).isEqualTo(4);
+        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
         for (int i = 0; i < 4; i++) {
-            String cam = "cam" + (i + 1);
+            String cam = cams[i];
             assertThat(inputFrames.get(i).get("camera_id").asString()).isEqualTo(cam);
             assertThat(inputFrames.get(i).get("frame_uri").asString()).isEqualTo(BUCKET + prefix + "frame-" + cam + ".jpg");
             assertThat(inputFrames.get(i).get("face_policy").asString()).isEqualTo("BLURRED");
@@ -606,30 +607,30 @@ class SetupResultRegisterIntegrationTest {
     void 해시_JPEG_경로_카메라_집합이_어긋난_프레임은_거부하고_등록하지_않는다() throws Exception {
         Session s = startSession();
         String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
-        byte[] ok = jpeg("cam1");
+        byte[] ok = jpeg("cam_A");
 
         // 알린 sha256 이 올린 바이트와 다름
-        assertFrameRejected(s, frameRef("cam1", put(prefix + "frame-a.jpg", ok).put("sha256", "0".repeat(64)), "BLURRED"));
+        assertFrameRejected(s, frameRef("cam_A", put(prefix + "frame-a.jpg", ok).put("sha256", "0".repeat(64)), "BLURRED"));
         // JPEG 가 아님(PNG 바이트)
-        assertFrameRejected(s, frameRef("cam1", put(prefix + "frame-b.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1, 2}), "BLURRED"));
+        assertFrameRejected(s, frameRef("cam_A", put(prefix + "frame-b.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1, 2}), "BLURRED"));
         // 이 작업이 아닌 다른 작업의 결과 경로
-        assertFrameRejected(s, frameRef("cam1", put("job-objects/site_setup/job-other/" + s.leaseId() + "/frame-c.jpg", ok), "BLURRED"));
+        assertFrameRejected(s, frameRef("cam_A", put("job-objects/site_setup/job-other/" + s.leaseId() + "/frame-c.jpg", ok), "BLURRED"));
         // 세션에 없는 카메라
         assertFrameRejected(s, frameRef("camX", put(prefix + "frame-d.jpg", ok), "BLURRED"));
         // 올리지 않은 객체
-        assertFrameRejected(s, frameRef("cam1", mapper.createObjectNode().put("uri", BUCKET + prefix + "frame-missing.jpg")
+        assertFrameRejected(s, frameRef("cam_A", mapper.createObjectNode().put("uri", BUCKET + prefix + "frame-missing.jpg")
                 .put("sha256", sha256Hex(ok)).put("size_bytes", ok.length), "BLURRED"));
         // 같은 스냅샷에 카메라 중복
         ObjectNode dup = put(prefix + "frame-e.jpg", ok);
         ObjectNode dupSnap = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0);
-        dupSnap.putObject("artifacts").putArray("camera_frames").add(frameRef("cam1", dup, "BLURRED")).add(frameRef("cam1", dup, "EXCLUDED"));
+        dupSnap.putObject("artifacts").putArray("camera_frames").add(frameRef("cam_A", dup, "BLURRED")).add(frameRef("cam_A", dup, "EXCLUDED"));
         mvc.perform(heartbeat(s, 0.65, dupSnap)).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_session_artifact", Integer.class)).isZero();
         // 올바른 프레임은 받는다(거부가 세션을 망가뜨리지 않았다)
         ObjectNode fine = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0);
-        fine.putObject("artifacts").putArray("camera_frames").add(frameRef("cam2", put(prefix + "frame-ok.jpg", jpeg("cam2")), "EXCLUDED"));
+        fine.putObject("artifacts").putArray("camera_frames").add(frameRef("cam_B", put(prefix + "frame-ok.jpg", jpeg("cam_B")), "EXCLUDED"));
         mvc.perform(heartbeat(s, 0.65, fine)).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT face_policy FROM setup_session_artifact WHERE kind = 'CAMERA_FRAME'", String.class))
                 .isEqualTo("EXCLUDED");
@@ -655,7 +656,7 @@ class SetupResultRegisterIntegrationTest {
         ObjectNode bakingSnap = readySnap.deepCopy().put("status", "BAKING_TEXTURE").put("progress_pct", 95.0);
         ObjectNode bake = ((ObjectNode) bakingSnap.get("artifacts")).putObject("bake_images").put("bundle_id", bundle);
         ArrayNode images = bake.putArray("images");
-        for (String cam : List.of("cam2", "cam1")) {
+        for (String cam : List.of("cam_B", "cam_A")) {
             images.add(frameRef(cam, put(prefix + "bake-" + cam + ".jpg", jpeg("bake-" + cam)), "OBSERVED"));
         }
         mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
@@ -666,26 +667,26 @@ class SetupResultRegisterIntegrationTest {
                 SELECT camera_id || ':' || face_policy || ':' || bundle_id || ':' || version FROM setup_session_artifact
                 WHERE setup_session_id = ?::uuid AND kind = 'BAKE_IMAGE' ORDER BY camera_id
                 """, String.class, s.sessionId()))
-                .containsExactly("cam1:OBSERVED:" + bundle + ":cam1@" + s.leaseId(), "cam2:OBSERVED:" + bundle + ":cam2@" + s.leaseId());
+                .containsExactly("cam_A:OBSERVED:" + bundle + ":cam_A@" + s.leaseId(), "cam_B:OBSERVED:" + bundle + ":cam_B@" + s.leaseId());
 
         ObjectNode body = sceneCameraImages.images(preview);
         assertThat(body.path("bundle_id").asString()).isEqualTo(bundle);
         assertThat(body.path("source").asString()).isEqualTo("SITE_SETUP");
         assertThat(body.path("images")).hasSize(2);
-        assertThat(body.path("images").get(0).path("url").asString()).isEqualTo("https://storage.test/" + prefix + "bake-cam1.jpg");
+        assertThat(body.path("images").get(0).path("url").asString()).isEqualTo("https://storage.test/" + prefix + "bake-cam_A.jpg");
         assertThat(schemas.violations("messages/scene_camera_images", body.toString())).isEmpty();
 
         // 세팅 미리보기가 현재 Scene 이면(완료가 켠다) scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
         mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(preview);
         ObjectNode current = sceneService.current();
-        assertThat(current.at("/map_cameras/cam1/pose_source").asString()).isEqualTo("CALIBRATION");
-        assertThat(current.at("/map_cameras/cam4/K").size()).isEqualTo(3);
+        assertThat(current.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("CALIBRATION");
+        assertThat(current.at("/map_cameras/cam_D/K").size()).isEqualTo(3);
 
         // 세션 밖 카메라, JPEG 가 아닌 사진은 거부한다(묶음 ID·얼굴 정책 형식은 계약 검사가 먼저 막는다)
         List<ObjectNode> badImages = List.of(
                 frameRef("camX", put(prefix + "bake-x.jpg", jpeg("x")), "OBSERVED"),
-                frameRef("cam3", put(prefix + "bake-y.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1}), "OBSERVED"));
+                frameRef("cam_C", put(prefix + "bake-y.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1}), "OBSERVED"));
         for (ObjectNode badImage : badImages) {
             ObjectNode snap = bakingSnap.deepCopy();
             ObjectNode badBake = ((ObjectNode) snap.get("artifacts")).putObject("bake_images").put("bundle_id", bundle);
@@ -781,7 +782,7 @@ class SetupResultRegisterIntegrationTest {
 
     private Session startSession() throws Exception {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        req.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(req.toString()))
                 .andExpect(status().isAccepted()).andReturn());
@@ -819,7 +820,7 @@ class SetupResultRegisterIntegrationTest {
         ArrayNode cameras = (ArrayNode) doc.get("cameras");
         JsonNode template = cameras.get(0);
         cameras.removeAll();
-        for (String cam : List.of("cam1", "cam2", "cam3", "cam4")) {
+        for (String cam : List.of("cam_A", "cam_B", "cam_C", "cam_D")) {
             cameras.add(((ObjectNode) template.deepCopy()).put("camera_id", cam));
         }
         doc.remove("content_hash");
@@ -834,9 +835,10 @@ class SetupResultRegisterIntegrationTest {
 
     private ObjectNode withChecks(ObjectNode node) {
         ObjectNode checks = node.putObject("height_checks");
+        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
         double[] heights = {2.42, 2.48, 2.45, 2.51};
         for (int i = 0; i < 4; i++) {
-            checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
+            checks.putObject(cams[i]).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
         // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다

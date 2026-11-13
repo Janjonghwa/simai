@@ -12,7 +12,7 @@ import tools.jackson.databind.node.ObjectNode;
  * {@code pair_holdout{before,after}}(1.4.0)·{@code pair_holdout_median_px}(1.1.0)·{@code holdout_worsening_tolerance_px} 다.
  * <pre>
  * {"holdout_worsening_tolerance_px": 1.0 | null,
- *  "pairs": {"cam1-cam2": {"before": {n, invalid, median, p90, p95} | null, "after": {...} | null, "median_px": 0.8 | null}}}
+ *  "pairs": {"cam_A-cam_B": {"before": {n, invalid, median, p90, p95} | null, "after": {...} | null, "median_px": 0.8 | null}}}
  * </pre>
  * 쌍 키는 워커가 보낸 그대로다({@code <camera_id>-<camera_id>}, 카메라 ID 에 '-' 가 있을 수 있어 나누지 않는다).
  * 표시용이라 이 스냅샷에 값이 없거나 형식이 어긋나면 null 을 돌려주고(세션은 이전 값을 유지), 스냅샷 자체를 거부하지 않는다.

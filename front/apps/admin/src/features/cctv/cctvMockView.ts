@@ -17,10 +17,10 @@ export interface CctvCam {
 const CAM_INSET = 0.4;
 
 export const CCTV_CAMS: readonly CctvCam[] = [
-  { id: 'cam1', x: -CAM_INSET, y: -CAM_INSET, dir: '북서' },
-  { id: 'cam2', x: ROOM.width + CAM_INSET, y: -CAM_INSET, dir: '북동' },
-  { id: 'cam3', x: -CAM_INSET, y: ROOM.depth + CAM_INSET, dir: '남서' },
-  { id: 'cam4', x: ROOM.width + CAM_INSET, y: ROOM.depth + CAM_INSET, dir: '남동' },
+  { id: 'cam_A', x: -CAM_INSET, y: -CAM_INSET, dir: '북서' },
+  { id: 'cam_B', x: ROOM.width + CAM_INSET, y: -CAM_INSET, dir: '북동' },
+  { id: 'cam_C', x: -CAM_INSET, y: ROOM.depth + CAM_INSET, dir: '남서' },
+  { id: 'cam_D', x: ROOM.width + CAM_INSET, y: ROOM.depth + CAM_INSET, dir: '남동' },
 ];
 
 /** 화면 크기(SVG viewBox, 16:9). */

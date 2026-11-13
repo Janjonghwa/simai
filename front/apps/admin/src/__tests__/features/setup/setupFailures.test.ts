@@ -2,7 +2,7 @@ import { failureGuide, SETUP_FAILURES } from '@/features/setup/setupFailures';
 import { describe, expect, it } from 'vitest';
 
 const LETTERS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
-const NUMBERS = ['cam1', 'cam2', 'cam3', 'cam4'];
+const LEGACY_NUMBERS = ['cam1', 'cam2', 'cam3', 'cam4'];
 
 describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
   it('같은 상태로 다시 시도해 볼 만한 실패만 다시 시도를 허용한다', () => {
@@ -41,7 +41,7 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
       '분석 서버가 켜져 있는지 확인한 뒤 다시 시도하세요.',
     ],
   ])('%s 는 원인과 해결을 준다', (code, title, fix) => {
-    const guide = failureGuide(code, null, NUMBERS);
+    const guide = failureGuide(code, null, LETTERS);
     expect(guide.title).toBe(title);
     expect(guide.fix).toBe(fix);
     expect(guide.retry).toBe(SETUP_FAILURES[code]!.retry);
@@ -49,7 +49,7 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
 
   it('표에 없는 코드와 코드가 없는 실패는 폴백(다시 시도 가능)이다', () => {
     for (const code of ['RECONSTRUCT_FAILED', 'constructor', null]) {
-      expect(failureGuide(code, 'whatever', NUMBERS)).toEqual({
+      expect(failureGuide(code, 'whatever', LETTERS)).toEqual({
         title: '서버에서 세팅을 끝내지 못했어요',
         fix: '잠시 뒤 다시 시도하세요. 계속되면 관리자에게 알려 주세요.',
         retry: true,
@@ -87,13 +87,16 @@ describe('실패 메시지에서 카메라 쌍 뽑기', () => {
     expect(guide.retry).toBe(false);
   });
 
-  it('DB 카메라 id(cam1-cam2 꼴)도 같은 방식으로 읽는다', () => {
+  it('레거시 숫자형 카메라 id(cam1-cam2 꼴)도 같은 방식으로 읽는다', () => {
     expect(
-      failureGuide('VALIDATION_REJECTED', "worsened_pairs=['cam1-cam2', 'cam3-cam4']", NUMBERS)
-        .title,
+      failureGuide(
+        'VALIDATION_REJECTED',
+        "worsened_pairs=['cam1-cam2', 'cam3-cam4']",
+        LEGACY_NUMBERS,
+      ).title,
     ).toBe('보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 1–카메라 2, 카메라 3–카메라 4)');
     expect(
-      failureGuide('INSUFFICIENT_FEATURES', 'matches on pair cam4-cam1: 3', NUMBERS).title,
+      failureGuide('INSUFFICIENT_FEATURES', 'matches on pair cam4-cam1: 3', LEGACY_NUMBERS).title,
     ).toBe('옆 카메라 카메라 4–카메라 1 사이에 같이 보이는 곳이 적어요');
   });
 

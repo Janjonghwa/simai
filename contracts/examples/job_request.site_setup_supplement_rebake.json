@@ -20,17 +20,17 @@
       "work_unit_id": 12,
       "site_id": "classroom-1",
       "camera_heights_m": {
-        "cam1": 1.5,
-        "cam2": 1.5,
-        "cam3": 1.5,
-        "cam4": 1.5
+        "cam_A": 1.5,
+        "cam_B": 1.5,
+        "cam_C": 1.5,
+        "cam_D": 1.5
       },
       "calibration_target": {
         "camera_ids": [
-          "cam1",
-          "cam2",
-          "cam3",
-          "cam4"
+          "cam_A",
+          "cam_B",
+          "cam_C",
+          "cam_D"
         ],
         "method": "BACKGROUND_JOINT_BA_V2",
         "world_frame": "AUTO_FLOOR_Z_UP_METERS"
@@ -80,29 +80,29 @@
           "bundle_id": "bundle-0123456789abcdef0123456789abcdef",
           "images": [
             {
-              "camera_id": "cam1",
-              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam1.jpg",
+              "camera_id": "cam_A",
+              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam_A.jpg",
               "sha256": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
               "size_bytes": 1048576,
               "face_policy": "OBSERVED"
             },
             {
-              "camera_id": "cam2",
-              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam2.jpg",
+              "camera_id": "cam_B",
+              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam_B.jpg",
               "sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
               "size_bytes": 1048576,
               "face_policy": "OBSERVED"
             },
             {
-              "camera_id": "cam3",
-              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam3.jpg",
+              "camera_id": "cam_C",
+              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam_C.jpg",
               "sha256": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
               "size_bytes": 1048576,
               "face_policy": "OBSERVED"
             },
             {
-              "camera_id": "cam4",
-              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam4.jpg",
+              "camera_id": "cam_D",
+              "uri": "s3://simai-objects/worker-jobs/job-20261017-0041/bake-cam_D.jpg",
               "sha256": "b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4",
               "size_bytes": 1048576,
               "face_policy": "OBSERVED"

@@ -39,7 +39,7 @@
       "t_latest_global": 1760342400100,
       "cameras": [
         {
-          "id": "cam1",
+          "id": "cam_A",
           "fps": 14.8,
           "last_capture": 1760342400100,
           "sync_offset_ms": 6,
@@ -68,7 +68,7 @@
           }
         },
         {
-          "id": "cam2",
+          "id": "cam_B",
           "fps": 0,
           "last_capture": null,
           "sync_offset_ms": null,

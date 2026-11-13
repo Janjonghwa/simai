@@ -54,7 +54,7 @@ class SystemMetricIntegrationTest {
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     /**
      * 계약 예시 health.json 하나에서 나오는 지표 수. 전체 7(pipeline_lag·capture_to_risk·gpu 둘·송신 버림 둘·시계 차이, 하한 지연은 예시에 없음),
-     * cam1 13(fps·sync_offset·timestamp_uncertainty·frame_age·queue_wait·max_result_gap + frames 7), cam2 1(fps 0, 나머지는 null·없음)
+     * cam_A 13(fps·sync_offset·timestamp_uncertainty·frame_age·queue_wait·max_result_gap + frames 7), cam_B 1(fps 0, 나머지는 null·없음)
      */
     private static final int PER_HEALTH = 7 + 13 + 1;
 
@@ -99,10 +99,10 @@ class SystemMetricIntegrationTest {
                 .containsEntry("pipeline_lag_ms/", 120.0).containsEntry("capture_to_risk_ms/", 480.0)
                 .containsEntry("gpu_util/", 0.71).containsEntry("gpu_memory_used_ratio/", 0.62)
                 .containsEntry("ec2_world_state_drops_disconnected/", 41.0).containsEntry("laptop_clock_offset_ms/", -12.5)
-                .containsEntry("fps/cam1", 14.8).containsEntry("frame_age_ms/cam1", 210.0).containsEntry("queue_wait_ms/cam1", 40.0)
-                .containsEntry("frames_received/cam1", 25.0).containsEntry("camera_to_gateway_gap_max_ms/cam1", 80.0)
+                .containsEntry("fps/cam_A", 14.8).containsEntry("frame_age_ms/cam_A", 210.0).containsEntry("queue_wait_ms/cam_A", 40.0)
+                .containsEntry("frames_received/cam_A", 25.0).containsEntry("camera_to_gateway_gap_max_ms/cam_A", 80.0)
                 // 받지 못한 카메라의 FPS 0 은 쓰고, 잴 수 없는(null) 동기 오프셋은 쓰지 않는다
-                .containsEntry("fps/cam2", 0.0).doesNotContainKey("sync_offset_ms/cam2").doesNotContainKey("frame_age_ms/cam2");
+                .containsEntry("fps/cam_B", 0.0).doesNotContainKey("sync_offset_ms/cam_B").doesNotContainKey("frame_age_ms/cam_B");
         assertThat(jdbc.queryForObject("""
                 SELECT labels->>'p50' FROM system_metric WHERE source_id = ? AND metric = 'capture_to_risk_ms' ORDER BY measured_at LIMIT 1
                 """, String.class, gatewayId)).isEqualTo("310");
@@ -110,7 +110,7 @@ class SystemMetricIntegrationTest {
         JsonNode body = get("/api/metrics?source_id=" + gatewayId + "&metric=pipeline_lag_ms,fps&from=" + (baseMs - 1) + "&to="
                 + (baseMs + 2000), "ADMIN", 200);
         assertThat(body.get("truncated").booleanValue()).isFalse();
-        // (출처, 지표, 카메라) 순: fps/cam1, fps/cam2, pipeline_lag_ms
+        // (출처, 지표, 카메라) 순: fps/cam_A, fps/cam_B, pipeline_lag_ms
         assertThat(body.get("series")).hasSize(3);
         JsonNode lag = body.get("series").get(2);
         assertThat(lag.get("metric").stringValue()).isEqualTo("pipeline_lag_ms");
@@ -118,14 +118,14 @@ class SystemMetricIntegrationTest {
         assertThat(lag.get("unit").stringValue()).isEqualTo("ms");
         assertThat(lag.get("points")).hasSize(2);
         assertThat(lag.get("points").get(0).get("t").longValue()).isEqualTo(baseMs);
-        assertThat(body.get("series").get(0).get("camera_id").stringValue()).isEqualTo("cam1");
+        assertThat(body.get("series").get(0).get("camera_id").stringValue()).isEqualTo("cam_A");
 
         // 상태 패널: 계열마다 가장 늦은 한 점
-        JsonNode latest = get("/api/metrics?source_id=" + gatewayId + "&camera_id=cam1&latest=true&from=" + (baseMs - 1) + "&to="
+        JsonNode latest = get("/api/metrics?source_id=" + gatewayId + "&camera_id=cam_A&latest=true&from=" + (baseMs - 1) + "&to="
                 + (baseMs + 2000), "ADMIN", 200);
         assertThat(latest.get("series")).hasSize(13);
         for (JsonNode series : latest.get("series")) {
-            assertThat(series.get("camera_id").stringValue()).isEqualTo("cam1");
+            assertThat(series.get("camera_id").stringValue()).isEqualTo("cam_A");
             assertThat(series.get("points")).hasSize(1);
             assertThat(series.get("points").get(0).get("t").longValue()).isEqualTo(baseMs + 1000);
         }

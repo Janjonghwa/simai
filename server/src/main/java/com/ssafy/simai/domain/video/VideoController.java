@@ -17,7 +17,7 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 상시 영상 조회(S15P31A101-330, 관리자). 얼굴 흐림 없는 원본이라 이벤트 클립처럼 관리자만 본다(11.5·14장).
  * <pre>
- * GET /api/videos?from=ms&amp;to=ms&amp;camera_id=cam1   → {from, to, segments[]}  (주소 없음, 24시간 이내)
+ * GET /api/videos?from=ms&amp;to=ms&amp;camera_id=cam_A   → {from, to, segments[]}  (주소 없음, 24시간 이내)
  * GET /api/videos/{segmentId}                     → {segment_id, url, expires_at_ms, content_type, container} (조회 기록)
  * </pre>
  */

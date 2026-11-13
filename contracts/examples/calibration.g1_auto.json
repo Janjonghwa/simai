@@ -11,7 +11,7 @@
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [1920, 1080],
       "K": [[1010.0, 0.0, 960.0], [0.0, 1010.0, 540.0], [0.0, 0.0, 1.0]],
       "distortion": {"model": "OPENCV_PINHOLE", "coeffs": [-0.29, 0.088, 0.0, 0.0, -0.011]},
@@ -21,7 +21,7 @@
       "reprojection_error_px": {"median": 1.2, "p95": 3.4}
     },
     {
-      "camera_id": "cam2",
+      "camera_id": "cam_B",
       "image_size": [1920, 1080],
       "K": [[1010.0, 0.0, 960.0], [0.0, 1010.0, 540.0], [0.0, 0.0, 1.0]],
       "distortion": {"model": "OPENCV_PINHOLE", "coeffs": [-0.29, 0.088, 0.0, 0.0, -0.011]},
@@ -31,7 +31,7 @@
       "reprojection_error_px": {"median": 1.4, "p95": 3.9}
     },
     {
-      "camera_id": "cam3",
+      "camera_id": "cam_C",
       "image_size": [1920, 1080],
       "K": [[1010.0, 0.0, 960.0], [0.0, 1010.0, 540.0], [0.0, 0.0, 1.0]],
       "distortion": {"model": "OPENCV_PINHOLE", "coeffs": [-0.29, 0.088, 0.0, 0.0, -0.011]},
@@ -41,7 +41,7 @@
       "reprojection_error_px": {"median": 1.1, "p95": 3.1}
     },
     {
-      "camera_id": "cam4",
+      "camera_id": "cam_D",
       "image_size": [1920, 1080],
       "K": [[1010.0, 0.0, 960.0], [0.0, 1010.0, 540.0], [0.0, 0.0, 1.0]],
       "distortion": {"model": "OPENCV_PINHOLE", "coeffs": [-0.29, 0.088, 0.0, 0.0, -0.011]},
@@ -58,5 +58,5 @@
     "floor_plane_disagreement_m": 0.018,
     "floor_coverage_ratio": 0.86
   },
-  "content_hash": "sha256:0f1bf9c84d67066566608cff792bf67d6e2316866f1a239926e0c2230a7c2ec5"
+  "content_hash": "sha256:71c9f3a0db140445ee1c37d3613dfb704f2a6c1364983f18f26d2244e9485938"
 }

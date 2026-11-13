@@ -19,25 +19,25 @@
       "preview_scene_version": "scene-setup-12-preview",
       "config_version": "cfg-12",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 1.5,
           "restored_height_m": 1.52,
           "difference_cm": 2,
           "within_tolerance": true
         },
-        "cam2": {
+        "cam_B": {
           "input_height_m": 1.5,
           "restored_height_m": 1.52,
           "difference_cm": 2,
           "within_tolerance": true
         },
-        "cam3": {
+        "cam_C": {
           "input_height_m": 1.5,
           "restored_height_m": 1.52,
           "difference_cm": 2,
           "within_tolerance": true
         },
-        "cam4": {
+        "cam_D": {
           "input_height_m": 1.5,
           "restored_height_m": 1.52,
           "difference_cm": 2,

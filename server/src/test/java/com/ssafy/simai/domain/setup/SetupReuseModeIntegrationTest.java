@@ -375,8 +375,9 @@ class SetupReuseModeIntegrationTest {
         ObjectNode payload = mapper.createObjectNode().put("calibration_version", version).put("calibration_state", "CALIBRATED")
                 .put("world_frame_id", worldFrameId);
         ArrayNode poses = payload.putArray("camera_poses");
+        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
         for (int i = 1; i <= 4; i++) {
-            ObjectNode pose = poses.addObject().put("camera_id", "cam" + i);
+            ObjectNode pose = poses.addObject().put("camera_id", cams[i - 1]);
             pose.set("R", mapper.valueToTree(new double[][] {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
             pose.set("t", mapper.valueToTree(new double[] {-i, 0, -2.44}));
         }
@@ -412,7 +413,7 @@ class SetupReuseModeIntegrationTest {
 
     private RequestBuilder create(String mode) {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.44).put("cam2", 2.44).put("cam3", 2.48).put("cam4", 2.48);
+        req.putObject("camera_heights_m").put("cam_A", 2.44).put("cam_B", 2.44).put("cam_C", 2.48).put("cam_D", 2.48);
         if (mode != null) {
             req.put("mode", mode);
         }
@@ -462,9 +463,10 @@ class SetupReuseModeIntegrationTest {
 
     private ObjectNode withChecks(ObjectNode node) {
         ObjectNode checks = node.putObject("height_checks");
+        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
         double[] heights = {2.44, 2.44, 2.48, 2.48};
         for (int i = 0; i < 4; i++) {
-            checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
+            checks.putObject(cams[i]).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
         // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다

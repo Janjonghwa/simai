@@ -27,7 +27,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 }));
 
 const T = 1_760_342_400_000;
-// 실제 중계·Tier 0 health 가 쓰는 카메라 이름이다(관제 데모의 cam1~cam4 가 아니다).
+// 실제 중계·Tier 0 health 가 쓰는 카메라 이름이다(관제 데모의 cam_A~cam_D 가 아니다).
 const CAMS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
 
 const attach = vi.fn();
@@ -193,7 +193,7 @@ describe('CamSplitPanel 관리자', () => {
   });
 
   it('목록에 없는 카메라를 요청하면 첫 카메라를 보인다', () => {
-    openSplit('cam2');
+    openSplit('cam_X');
     renderPanel();
 
     expect(screen.getByRole('tab', { selected: true }).textContent).toBe('카메라 1');

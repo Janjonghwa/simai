@@ -133,7 +133,7 @@ class VideoPurgeIntegrationTest {
                 INSERT INTO video_segment (segment_id, gateway_id, camera_id, stream_epochs, segment_start_capture_at,
                     segment_end_capture_at, frame_count, starts_with_keyframe, has_gaps, content_type, container, size_bytes, sha256,
                     face_redaction, segment_created_at, delete_after, object_key, uploaded_at, received_at)
-                VALUES (?, ?, 'cam1', '{1}', ?, ?, 10, true, false, 'video/h264', 'h264-annexb', 10, 'sha256:x', 'NONE', ?, ?, ?, ?, ?)
+                VALUES (?, ?, 'cam_A', '{1}', ?, ?, 10, true, false, 'video/h264', 'h264-annexb', 10, 'sha256:x', 'NONE', ?, ?, ?, ?, ?)
                 """, id, gatewayId, t, t, t, Timestamp.from(deleteAfter), key, t, t);
         return key;
     }

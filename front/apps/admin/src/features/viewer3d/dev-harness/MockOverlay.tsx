@@ -147,7 +147,7 @@ function CctvBody() {
     <>
       <p className="smk-hint">카메라 4대 자리표시자 · 영상은 연결하지 않는다</p>
       <div className="smk-tiles">
-        {['cam1', 'cam2', 'cam3', 'cam4'].map((camera) => (
+        {['cam_A', 'cam_B', 'cam_C', 'cam_D'].map((camera) => (
           <div key={camera} className="smk-tile">
             {camera} 자리표시자
           </div>

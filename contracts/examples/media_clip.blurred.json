@@ -13,7 +13,7 @@
     "rule_id": "R2",
     "severity": "CRITICAL",
     "source": "LIVE",
-    "camera_id": "cam1",
+    "camera_id": "cam_A",
     "stream_epochs": [
       12
     ],

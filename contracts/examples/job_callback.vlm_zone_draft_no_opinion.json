@@ -45,7 +45,7 @@
           "recommended_severity": "HIGH",
           "rationale": "AI 의견 없음",
           "vlm_status": "NO_OPINION",
-          "evidence_cameras": ["cam1", "cam2"],
+          "evidence_cameras": ["cam_A", "cam_B"],
           "confidence": null
         }
       ]

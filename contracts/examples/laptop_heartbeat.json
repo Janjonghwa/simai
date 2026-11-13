@@ -10,10 +10,10 @@
       "control": "CONNECTED",
       "last_message_at": 1760342400900,
       "video_cameras": [
-        "cam1",
-        "cam2",
-        "cam3",
-        "cam4"
+        "cam_A",
+        "cam_B",
+        "cam_C",
+        "cam_D"
       ]
     },
     "site_display": "REMOTE_FAULT",
@@ -27,7 +27,7 @@
     },
     "cameras": [
       {
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "rtsp": "CONNECTED",
         "stream_epoch": 12,
         "last_frame_sequence": 10349,

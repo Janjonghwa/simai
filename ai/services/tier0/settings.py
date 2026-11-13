@@ -9,7 +9,7 @@
       "calibration_file": "calibration.json",  보정 문서(contracts/providers/calibration). SIM 은 기본 run_dir/calibration.json,
                                                LIVE·file 은 필수(외부 파라미터 포함, 없으면 시작하지 않는다)
       "input": {"mode": "sim", "run_dir": "...", "anchor_wall_ms": 1760342400000, "arrival_lag_ms": 60},
-               {"mode": "live", "camera_ids": ["cam1", "cam2", "cam3", "cam4"],
+               {"mode": "live", "camera_ids": ["cam_A", "cam_B", "cam_C", "cam_D"],
                 "decoder": "cpu",                    cpu(기본, PyAV CPU) | nvdec(선택). nvdec 을 골랐는데 NVDEC 이 없으면 시작하지 않는다
                 "max_queue_wait_ms": 150, "queue_depth": 1}   프레임 최신성 정책(명세 5.1 초기값)
                {"mode": "file", "session_dir": "recordings/rec-...",   녹화 재생(gateway/recorder 세션, S15P31A101-215)
@@ -577,7 +577,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
             max_backlog_ms=_int(input_doc, "max_backlog_ms", 500, minimum=1),
         )
     elif mode == "live":
-        camera_ids = _camera_ids(input_doc, ["cam1", "cam2", "cam3", "cam4"])  # type: ignore[assignment]
+        camera_ids = _camera_ids(input_doc, ["cam_A", "cam_B", "cam_C", "cam_D"])  # type: ignore[assignment]
         decoder, wait, depth = _freshness(input_doc)
         live = LiveInputSettings(decoder=decoder, max_queue_wait_ms=wait, queue_depth=depth)
     elif mode == "file":

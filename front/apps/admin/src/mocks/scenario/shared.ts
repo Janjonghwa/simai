@@ -8,7 +8,7 @@ export const SOURCE_ID = 'ec2';
 export const VERSIONS = { calibration: 'cal-7', scene: 'scene-3', config: 'cfg-12' } as const;
 /** Scene 불일치 흉내에서 Tier 0 가 아직 판정에 쓰는 이전 Scene. */
 export const PREVIOUS_SCENE = 'scene-2';
-export const CAMERAS = ['cam1', 'cam2', 'cam3', 'cam4'] as const;
+export const CAMERAS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'] as const;
 export type CameraId = (typeof CAMERAS)[number];
 
 /** health 의 구성 묶음 상태(명세 FR-17). 구역 mock 이 발행·ACK 를 흉내 내며 바꾼다. */
@@ -28,7 +28,7 @@ export const LATEST_GLOBAL_LAG_MS = 120;
 /** 소수 둘째 자리까지 반올림. */
 export const r2 = (value: number) => Math.round(value * 100) / 100;
 
-/** 바퀴(EVENT_CYCLE_MS) 안에서 cam3 가 키프레임을 기다리는 구간(ms). 시스템 상태 화면의 빈칸·비정상 카메라를 보인다. */
+/** 바퀴(EVENT_CYCLE_MS) 안에서 cam_C 가 키프레임을 기다리는 구간(ms). 시스템 상태 화면의 빈칸·비정상 카메라를 보인다. */
 const CAM3_DOWN = { from: 20_000, to: 26_000 } as const;
 
 export const cam3DownAt = (t: number) => {
@@ -36,9 +36,9 @@ export const cam3DownAt = (t: number) => {
   return inCycle >= CAM3_DOWN.from && inCycle < CAM3_DOWN.to;
 };
 
-/** 시각 t 에 영상을 보내는 카메라만 남긴다. cam3 가 키프레임을 기다리는 동안은 cam3 로 관측하지 않는다. */
+/** 시각 t 에 영상을 보내는 카메라만 남긴다. cam_C 가 키프레임을 기다리는 동안은 cam_C 로 관측하지 않는다. */
 export const sending = (ids: readonly CameraId[], t: number) =>
-  ids.filter((id) => id !== 'cam3' || !cam3DownAt(t));
+  ids.filter((id) => id !== 'cam_C' || !cam3DownAt(t));
 
 /** UUID 끝 12자리(16진). */
 export const uuidTail = (n: number) => (n % 2 ** 48).toString(16).padStart(12, '0');

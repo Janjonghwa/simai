@@ -61,7 +61,7 @@ class CalibrationStatusIntegrationTest {
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     private static final String METRIC = "simai.i1.messages";
     /** 계약 예시 calibration.json 의 content_hash(Python 으로 잰 값, CalibrationContentHashTest). 같은 내용의 문서를 올리면 이 해시가 된다 */
-    private static final String EXAMPLE_HASH = "sha256:75ffde54159aff5cf3cc892429f920c2b3d12ce45c3b35af89eb6f54393ae846";
+    private static final String EXAMPLE_HASH = "sha256:7fff3f6f2cc18ca7124d9c438290eb7df01a785b8d1d80f8544bf5925630c54a";
 
     @LocalServerPort
     int port;
@@ -128,7 +128,7 @@ class CalibrationStatusIntegrationTest {
         assertThat(current.get("reason").asString()).isEqualTo("INITIAL");
         assertThat(current.get("updated_at").asLong()).isEqualTo(base);
         assertThat(current.get("effective_at").asLong()).isEqualTo(base + 600);
-        assertThat(current.get("cameras").get(0).get("camera_id").asString()).isEqualTo("cam2");
+        assertThat(current.get("cameras").get(0).get("camera_id").asString()).isEqualTo("cam_B");
         assertThat(current.get("cameras").get(0).at("/reprojection_error_px/p95").asDouble()).isEqualTo(8.9);
         assertThat(current.get("document_uploaded").asBoolean()).isFalse();
         assertThat(current.get("camera_poses").isArray()).isTrue();
@@ -358,15 +358,15 @@ class CalibrationStatusIntegrationTest {
             tier0.send(next);
         }
         awaitCount(() -> messages(prefix + "-b"), 1);
-        guide(prefix + "-a", "cam1", "이전 보정의 안내");
-        guide(prefix + "-b", "cam3", "카메라 3번이 너무 아래를 봄");
+        guide(prefix + "-a", "cam_A", "이전 보정의 안내");
+        guide(prefix + "-b", "cam_C", "카메라 3번이 너무 아래를 봄");
         guide(prefix + "-b", null, "남쪽 벽을 따라 한 번 더 걸어 주세요");
 
         JsonNode body = call("/api/cameras/coverage-guides", admin(), 200);
 
         assertThat(body.get("calibration_version").asString()).isEqualTo(prefix + "-b");
         assertThat(body.get("guides")).hasSize(2);
-        assertThat(body.get("guides").get(0).get("camera_id").asString()).isEqualTo("cam3");
+        assertThat(body.get("guides").get(0).get("camera_id").asString()).isEqualTo("cam_C");
         assertThat(body.get("guides").get(0).get("message").asString()).isEqualTo("카메라 3번이 너무 아래를 봄");
         assertThat(body.get("guides").get(0).at("/metrics/floor_coverage_ratio").asDouble()).isEqualTo(0.42);
         assertThat(body.get("guides").get(1).get("camera_id").isNull()).isTrue();
@@ -487,35 +487,35 @@ class CalibrationStatusIntegrationTest {
 
         JsonNode poses = current.get("camera_poses");
         assertThat(poses).hasSize(4);
-        JsonNode cam1 = poses.get(0);
-        assertThat(cam1.get("camera_id").asString()).isEqualTo("cam1");
+        JsonNode cam_A = poses.get(0);
+        assertThat(cam_A.get("camera_id").asString()).isEqualTo("cam_A");
         // C = -R^T t -> (0.20, 0.20, 2.50) m
-        assertThat(cam1.get("position_xyz").get(0).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
-        assertThat(cam1.get("position_xyz").get(1).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
-        assertThat(cam1.get("position_xyz").get(2).asDouble()).isCloseTo(2.4998, Offset.offset(1e-3));
+        assertThat(cam_A.get("position_xyz").get(0).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam_A.get("position_xyz").get(1).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam_A.get("position_xyz").get(2).asDouble()).isCloseTo(2.4998, Offset.offset(1e-3));
         // 정면 단위 벡터 R[2]
-        double fx = cam1.get("forward_xyz").get(0).asDouble();
-        double fy = cam1.get("forward_xyz").get(1).asDouble();
-        double fz = cam1.get("forward_xyz").get(2).asDouble();
+        double fx = cam_A.get("forward_xyz").get(0).asDouble();
+        double fy = cam_A.get("forward_xyz").get(1).asDouble();
+        double fz = cam_A.get("forward_xyz").get(2).asDouble();
         assertThat(fx).isCloseTo(0.7574, Offset.offset(1e-3));
         assertThat(fy).isCloseTo(0.5581, Offset.offset(1e-3));
         assertThat(fz).isCloseTo(-0.3388, Offset.offset(1e-3));
         assertThat(Math.sqrt(fx * fx + fy * fy + fz * fz)).isCloseTo(1.0, Offset.offset(1e-6));
         // hfov_rad = 2 * atan(1920 / (2 * 1010.0))
-        assertThat(cam1.get("hfov_rad").asDouble())
+        assertThat(cam_A.get("hfov_rad").asDouble())
                 .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
         // 원문 R, t, K, distortion 은 노출하지 않는다
-        assertThat(cam1.has("R")).isFalse();
-        assertThat(cam1.has("t")).isFalse();
-        assertThat(cam1.has("K")).isFalse();
-        assertThat(cam1.has("distortion")).isFalse();
+        assertThat(cam_A.has("R")).isFalse();
+        assertThat(cam_A.has("t")).isFalse();
+        assertThat(cam_A.has("K")).isFalse();
+        assertThat(cam_A.has("distortion")).isFalse();
 
-        JsonNode cam2 = poses.get(1);
-        assertThat(cam2.get("camera_id").asString()).isEqualTo("cam2");
-        assertThat(cam2.get("position_xyz").get(0).asDouble()).isCloseTo(7.7996, Offset.offset(1e-3));
-        assertThat(cam2.get("position_xyz").get(1).asDouble()).isCloseTo(0.2004, Offset.offset(1e-3));
-        assertThat(cam2.get("position_xyz").get(2).asDouble()).isCloseTo(2.4994, Offset.offset(1e-3));
-        assertThat(cam2.get("hfov_rad").asDouble())
+        JsonNode cam_B = poses.get(1);
+        assertThat(cam_B.get("camera_id").asString()).isEqualTo("cam_B");
+        assertThat(cam_B.get("position_xyz").get(0).asDouble()).isCloseTo(7.7996, Offset.offset(1e-3));
+        assertThat(cam_B.get("position_xyz").get(1).asDouble()).isCloseTo(0.2004, Offset.offset(1e-3));
+        assertThat(cam_B.get("position_xyz").get(2).asDouble()).isCloseTo(2.4994, Offset.offset(1e-3));
+        assertThat(cam_B.get("hfov_rad").asDouble())
                 .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
 
         // 저장된 문서의 회전 행렬이 비직교이거나 JSON 이 깨졌으면 지어내지 않고 빈 배열을 준다

@@ -5,20 +5,20 @@
   "expires_at_ms": 1762050300000,
   "images": [
     {
-      "camera_id": "cam1",
-      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam1.jpg?X-Amz-Signature=example"
+      "camera_id": "cam_A",
+      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam_A.jpg?X-Amz-Signature=example"
     },
     {
-      "camera_id": "cam2",
-      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam2.jpg?X-Amz-Signature=example"
+      "camera_id": "cam_B",
+      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam_B.jpg?X-Amz-Signature=example"
     },
     {
-      "camera_id": "cam3",
-      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam3.jpg?X-Amz-Signature=example"
+      "camera_id": "cam_C",
+      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam_C.jpg?X-Amz-Signature=example"
     },
     {
-      "camera_id": "cam4",
-      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam4.jpg?X-Amz-Signature=example"
+      "camera_id": "cam_D",
+      "url": "https://simai-site.s3.ap-northeast-2.amazonaws.com/job-objects/site_setup/job-20261020-0001/0192a6f0-7c1e-7b3a-9f2d-000000000311/bake-cam_D.jpg?X-Amz-Signature=example"
     }
   ]
 }

@@ -23,10 +23,10 @@
       "anchor_capture_ms": 1760342400000,
       "clips": [
         {
-          "clip_id": "clip-0192a6f1-cam1-0",
-          "camera_id": "cam1",
-          "object_key": "clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264",
-          "clip_uri": "s3://simai-site/clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264",
+          "clip_id": "clip-0192a6f1-cam_A-0",
+          "camera_id": "cam_A",
+          "object_key": "clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam_A-0.h264",
+          "clip_uri": "s3://simai-site/clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam_A-0.h264",
           "clip_start_capture_ms": 1760342380000,
           "clip_end_capture_ms": 1760342420000,
           "frame_count": 200,

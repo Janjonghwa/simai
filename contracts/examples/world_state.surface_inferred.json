@@ -47,8 +47,8 @@
         "z_validity": "UNCERTAIN",
         "head_z": null,
         "cameras": [
-          "cam2",
-          "cam4"
+          "cam_B",
+          "cam_D"
         ]
       },
       {
@@ -78,8 +78,8 @@
         "z_validity": "UNAVAILABLE",
         "head_z": null,
         "cameras": [
-          "cam1",
-          "cam3"
+          "cam_A",
+          "cam_C"
         ]
       }
     ]

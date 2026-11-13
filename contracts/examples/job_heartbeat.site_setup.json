@@ -13,10 +13,10 @@
       "status": "JOINT_BA_AND_VERIFY",
       "progress_pct": 65,
       "background_collection_pct": {
-        "cam1": 100,
-        "cam2": 100,
-        "cam3": 100,
-        "cam4": 100
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
       },
       "calibration_version": "cal-setup-12-jba2-3f9c2a10",
       "artifacts": {

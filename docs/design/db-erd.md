@@ -937,7 +937,7 @@ erDiagram
 | 계획·시뮬레이션 | PLANNED·WHAT_IF 결과는 `sim` 스키마의 별도 테이블. `risk_event.source` 는 LIVE·REPLAY 만 | 11.3, 11.4 |
 | 열거값 | PostgreSQL enum 대신 `text` + CHECK | Flyway 로 값 추가가 쉽다 |
 | hypertable 보관·압축 | 좌표·골격·health 는 상시 삭제 없이 7일 뒤 압축, `system_metric`·`device_heartbeat` 는 30일. 디스크 70% 초과 시 `skeleton_3d` 30일 | 11.5, 16장, EC2 디스크 320 GB. 추정은 `db-verification.md` 6장 |
-| 기준 데이터 시드 | 현장 `classroom-1`(교실 테스트베드)·카메라 `cam1`~`cam4` 는 V2 시드. 계약 예시·Tier 0·게이트웨이가 쓰는 ID 그대로이고, 카메라 ID 에 설치 위치를 넣지 않는다(위치는 보정이 정함). RTSP 주소·계정은 DB 에 넣지 않는다. `rule_version` 은 ai 규칙 등록부(`simai_ai.risk.rule_catalog`)에서 자동 생성 | 16장, 14장 |
+| 기준 데이터 시드 | 현장 `classroom-1`(교실 테스트베드)·카메라 `cam_A`~`cam_D` 는 Flyway 시드(V2·V69). 계약 예시·Tier 0·게이트웨이가 쓰는 ID 그대로이고, 카메라 ID 에 설치 위치를 넣지 않는다(위치는 보정이 정함). RTSP 주소·계정은 DB 에 넣지 않는다. `rule_version` 은 ai 규칙 등록부(`simai_ai.risk.rule_catalog`)에서 자동 생성 | 16장, 14장 |
 | I1 재전송 제거 | 추가만 하는 수신 기록은 봉투 `msg_id` 를 PK 나 유일 키로 둔다: `tier0_endpoint`(V8), `calibration_update_message`(V10), `media_clip_retention`(V11, 관리자 기록은 비움), `i1_deferred_message`(V11) | 12.1, S15P31A101-290·263·261 |
 | 기기·워커 토큰 | `device`·`worker` 의 `token_hash` 유일(V5). 요청마다 해시로 찾고 두 주체가 같은 해시를 갖지 않는다 | 14장, S15P31A101-222 |
 | 운영자 종료 멱등 키 | `event_close.idempotency_key`(유일)에 REST 요청 키, `close_id` 는 EC2 발급 PK | 12.6, 16장 |
