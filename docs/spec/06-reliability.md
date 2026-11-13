@@ -52,8 +52,8 @@ System Health의 lag 기준 초기값은 DEGRADED 600ms(6.6 capture_to_risk p95)
 | RiskEvent Lifecycle | RAISED / UPDATED / RESOLVED | 위험 이벤트의 진행 |
 | RiskEvent Verification | VERIFIED / UNVERIFIABLE | 해소 여부를 관측으로 확인할 수 있는지 |
 | Alert Channel | BOUND / UNBOUND / LOST | 개인 알림 채널 상태(부록 C, 워치) |
-| PPE | WORN / NOT_WORN / UNKNOWN | 안전모·조끼 각각. 근거가 10초 갱신되지 않거나 ID 대응이 바뀌거나 ID 불확실이 3초 넘게 이어지거나 연결이 끊기면 UNKNOWN(5.5) |
-| Config Sync | CURRENT / PENDING / UNVERIFIED / STALE | CURRENT: EC2 가 마지막으로 알린 묶음과 활성 묶음이 같음이 확인됨. PENDING: 알린 더 새 묶음을 검증·전환 중. UNVERIFIED: 연결 단절 또는 (재)연결 뒤 알림을 아직 못 받아 최신 여부 확인 불가. STALE: EC2 가 알린 묶음과 다르다는 것이 확인됨(경과 시간 기준이 아님, 거부한 묶음 포함, 3.2). 어느 상태든 판정은 계속 |
+| PPE | WORN / NOT_WORN / UNKNOWN | 안전모·조끼 각각. 근거가 10초 갱신되지 않거나 순수 병합이 아닌 ID 대응·차수 변경(분할·교차 swap 등)이 있거나 ID 불확실이 3초 넘게 이어지거나 연결이 끊기면 UNKNOWN(순수 병합 `pure_merge` 는 상태·창 승계, 5.5) |
+| Config Sync | CURRENT / PENDING / UNVERIFIED / STALE | CURRENT: EC2 가 마지막으로 알린 묶음과 활성 묶음이 같음이 확인됨. PENDING: 알린 더 새 묶음을 검증·전환 중(원자적 전환 시 버전·구역 수·PPE 요구 INFO 로그 기록). UNVERIFIED: 연결 단절 또는 (재)연결 뒤 알림을 아직 못 받아 최신 여부 확인 불가. STALE: EC2 가 알린 묶음과 다르다는 것이 확인됨(경과 시간 기준이 아님, 거부한 묶음 포함, 3.2). 어느 상태든 판정은 계속 |
 | World Track | TENTATIVE / CONFIRMED / OCCLUDED / LOST (+ IDENTITY_UNCERTAIN 표시) | 추적 관리 생명주기(5.2). 위험 판단용 관측 상태와 별도 |
 
 Region 상태는 Scene 상태와 이름이 겹치지 않게 VALID/CHANGING을 쓴다. 카메라 1대가 끊겨도 나머지가 관측하면 시스템 전체를 UNSAFE_UNKNOWN으로 만들지 않고, 그 카메라만 보던 구역의 감시 능력 저하를 표시한다(R7).
@@ -70,6 +70,7 @@ MVP는 보정으로 확정한 바닥 평면과 사전에 등록한 정적 객체
 - 관측이 사라져 해소를 확인할 수 없으면 이벤트는 활성으로 남고 검증 상태만 UNVERIFIABLE이 된다. 자동 해소하지 않는다.
 - ACKNOWLEDGED는 운영자가 확인했다는 속성이며 해소가 아니다.
 - **운영자 종료.** 사람이 없는 구역 대상 이벤트(R7 형태)는 감시 확보 근거가 와야 해소된다. 카메라를 치웠거나 구역을 구성에서 뺐거나 재시작으로 복원돼 근거가 오지 않으면 관제 화면 관리자가 확인하고 닫는다(`event_close`: 관리자 계정·사유·요청 시각·멱등 키). 종료는 관측으로 해소를 확인한 것이 아니다. 검증 상태를 바꾸지 않고 누가·왜를 종료 근거로 저널에 남긴다(해소 전이에 운영자 종료 해소 `resolution` 을 싣는다. EC2·뷰어는 이를 관측 해소와 구분해 보여 준다). 사람 대상 이벤트(재관측으로만 해소), HIGH·CRITICAL, 마지막 판정에 그 이벤트의 위험 판정이 있는(지금 조건이 성립) 이벤트는 거부한다. 종료한 이벤트는 재개하지 않는다: 재개는 관측 해소 뒤의 재발생이고, 종료 뒤 같은 (규칙, 구역)이 다시 조건을 채우면 새 이벤트다. 같은 명령(멱등 키)은 한 번만 기록하고, 종료는 저널의 해소 기록이라 재시작 복원·재동기화로 다시 열리지 않는다.
+- **병합 흡수 마감(`IDENTITY_MERGED`).** 한 사람이 일시적으로 두 World ID 로 나뉘어 같은 `(rule_id, zone_id)` 활성 이벤트를 양쪽 트랙에 각각 만든 뒤 다시 하나의 World ID 로 병합(5.2)되면, 생존 트랙의 활성 이벤트 하나로 합치고 흡수되어 사라진 트랙의 중복 활성 이벤트는 `RESOLVED`(`resolution.kind = "IDENTITY_MERGED"`, `survivor_event_id`·`survivor_world_id`·`merged_world_id`, 12.3·12.4)로 닫는다(`docs/design/S15P31A101-657-track-duplicate-guard.md`). 이 마감은 위험 소멸을 관측으로 확인한 해소가 아니라 생존 이벤트로의 귀속 정리이므로 검증 상태를 바꾸지 않고 `VERIFIED` 나 판정 `evidence_ref` 를 요구하지 않으며, 흡수된 중복 이벤트의 현장 경보는 내리고 다시 재개하지 않는다(해당 인물의 위험 감시·알림은 생존 이벤트가 계속 맡는다).
 - 발생·해소 임계값을 분리하고(히스테리시스), 해소는 일정 시간 유지 후 확정한다.
 - 발생과 해소 시점 모두 근거(카메라, 좌표, 보정·Scene·규칙 버전)를 기록한다.
 
@@ -80,7 +81,7 @@ MVP는 보정으로 확정한 바닥 평면과 사전에 등록한 정적 객체
 | 카메라 1대 중단 | 프레임 수신 중단 | 해당 구역 감시 저하 표시(R7, 관제 화면 안내), 객체는 시간 모델대로 전환 |
 | 시간 동기화 이탈 | 카메라 간 오프셋 증가, 노트북–Pod 시계 차이 불확실성 증가(100ms 초과) | 해당 카메라 융합 제외, DEGRADED |
 | 노트북–Pod 시계 차이 모름 | 교환 표본 없음·유지 시간(60초) 초과·제어 채널 끊김, 보정 lag 가 불확실성 밖 음수 | UNSAFE_UNKNOWN, 관측 상태는 gap 기준 유지, 해소 확정 금지(6.1) |
-| 캘리브레이션 틀어짐 | 재투영 오차 증가, 해상도 변경 | DRIFTED, 자동 재보정(원인 카메라를 가렸고 해상도·화각이 그대로일 때만). 사람이 없으면 ‘감시 근거 없음’으로 상태 유지(4.4) |
+| 캘리브레이션 틀어짐 | 정적 배경 특징점·에피폴라 오차 상승, 세팅 「카메라 확인」 기준선 대비 관절 재투영 급등, 해상도·화각 변경 | DRIFTED, 미세 회전이면 배경 중심 고정 자동 회전 복구(`rotfix`), 큰 회전·위치 이동은 재세팅 안내 + 시야 이탈 구역 R7 표시. 세팅 기준선이 있는 보정에서 재투영 급등 카메라는 융합 제외 후 배경 3회 연속 정상(`< 0.5°`) 확인 시 복귀(4.4) |
 | 노트북 → RunPod 업로드 단절·지연 | 하트비트, 프레임 도착 지연 | 판정 불가 구간은 UNSAFE_UNKNOWN, 노트북이 현장 “관제 중단” 5초 이내 |
 | RunPod Tier 0 중단 | 노트북·EC2 측 하트비트, `t_latest_global` 정체 | 위치 추적·판정 정지, UNSAFE_UNKNOWN, 현장 “관제 중단” 5초 이내, 관리자 “관제 정지” 10초 이내 |
 | RunPod Tier 0 → EC2 단절 | 하트비트, 노트북 → EC2 하트비트 | 판정·현장 경보 유지(노트북 표시 “원격 관제 장애”), 이벤트 outbox 저장 후 재동기화, 관제 화면 전달은 지연. EC2는 노트북 하트비트로 Tier 0 정상을 확인하면 관리자에 “원격 전달 단절(현장 경보 동작 중)” 10초 이내 |
@@ -113,4 +114,4 @@ LIVE 판정이 RunPod Tier 0에 있으므로 지연을 세 구간으로 나눠 �
 |---|---|---|
 | Tier 0 기하 단계 | World Track 갱신 한 번의 왜곡 제거·카메라 간 연결·삼각측량·관절 게이트(CPU, 10 Hz) | 10명 p95 50ms, 5명 p95 25ms |
 
-기하 단계 목표는 시연 GPU 인스턴스(3.12. 정하기 전에는 검증에 쓰는 GPU 인스턴스)의 CPU 에서 잰 값으로 판정한다(측정 방법은 `docs/design/tier0-geometry-budget.md`).
+기하 단계 목표는 시연 GPU 인스턴스(3.12. 정하기 전에는 검증에 쓰는 GPU 인스턴스)의 CPU 에서 잰 값으로 판정한다(측정 방법은 `docs/design/tier0-geometry-budget.md`). 병목 분리를 위해 Tier 0 는 5초 창마다 내부 구간별 지연(`input` 수신·디코드, `detector` 큐·TRT 검출·2D 추적, `judge` 틱·교차 시점 삼각측량·World 추적·아바타 공유·위험 판정·I1 큐, `i1_timing`, 각 표본 수·`p50`·`p95`·`max`), 루프 깨어남 지연(`loop_timing`), 프로세스·스레드별 CPU 사용률(`thread_cpu`), 아바타 공유 파일 쓰기 오프로딩 상태(`avatar_share.offload`)를 GPU 상태 표시 파일(`$SIMAI_ROOT/state/tier0.live`)에 기록하고 30초 간격으로 `[tier0] stage_timing` 요약 로그를 남기며(I1 `health` 스키마 변경 없음), 앞·뒤 CPU 코어 격리(`SIMAI_TIER0_CPUS=auto` / `SIMAI_SIDECAR_CPUS=auto`, `SIMAI_CV2_THREADS=1`, 3.12)와 그래프 분할 메모이제이션·벡터화·tick 캐시·경량 직렬화 최적화(5.2; 9인 노트북 CPU 벤치마크 판정 루프 p50 `144 → 72 ms`, p95 `187 → 90 ms`)를 적용한다(`docs/design/S15P31A101-662-tier0-stage-latency.md`, `docs/design/S15P31A101-663-judge-core-optimize.md`).
