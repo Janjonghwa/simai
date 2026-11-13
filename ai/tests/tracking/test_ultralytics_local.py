@@ -77,6 +77,26 @@ def test_pose_result_edge_cases():
         )
 
 
+def test_pose_result_matches_per_joint_isfinite():
+    """사람 단위 isfinite(S15P31A101-663)가 관절별 np.isfinite([u, v, c]).all() 과 같은 None·값(비트 단위)을 낸다."""
+    rng = np.random.default_rng(663)
+    for dtype in (np.float16, np.float32, np.float64):
+        kp = rng.normal(500.0, 300.0, (4, 17, 3)).astype(dtype)
+        kp[..., 2] = rng.random((4, 17))
+        noise = rng.random((4, 17, 3))
+        kp[noise < 0.05] = np.nan
+        kp[noise > 0.95] = np.inf
+        result = Obj(boxes=FakeBoxes(np.tile([[0, 0, 50, 100]], (4, 1)), [0.9] * 4, [0] * 4),
+                     keypoints=Obj(data=FakeTensor(kp)))
+        for i, det in enumerate(pose_detections_from_result(result)):
+            for (u, v, c), got in zip(kp[i], det.keypoints_2d, strict=True):
+                if not np.isfinite([u, v, c]).all():
+                    assert got is None
+                else:
+                    want = (float(u), float(v), float(c))
+                    assert got == want and all(type(x) is float for x in got)
+
+
 @pytest.mark.parametrize("kind", list(TrackerKind))
 def test_backend_runs_without_image(kind):
     pytest.importorskip("ultralytics.trackers")

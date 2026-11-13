@@ -131,9 +131,12 @@ def pose_detections_from_result(result: Any) -> tuple[PoseDetection, ...]:
             continue
         kps: tuple[Keypoint, ...] = ()
         if kp_data is not None and len(kp_data) > i:
+            # 관절마다 np.isfinite 를 부르지 않고 사람 한 명의 관절 전체를 한 번에 본다(-663). tolist 는 float() 와 같은 값이다
+            rows = kp_data[i].reshape(-1, 3)
+            finite = np.isfinite(rows).all(axis=1).tolist()
             kps = tuple(
-                (float(u), float(v), float(c)) if np.isfinite([u, v, c]).all() else None
-                for u, v, c in kp_data[i].reshape(-1, 3)
+                (float(u), float(v), float(c)) if ok else None
+                for (u, v, c), ok in zip(rows.tolist(), finite, strict=True)
             )
         out.append(PoseDetection(bbox=tuple(float(v) for v in xyxy[i]), score=float(conf[i]), keypoints_2d=kps))
     return tuple(out)

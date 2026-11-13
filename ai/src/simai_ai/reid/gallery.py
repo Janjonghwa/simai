@@ -105,6 +105,9 @@ class TrackGallery:
         self.state: str = "ACTIVE"
         self.last_updated_ms: int | None = None
         self.dormant_since_ms: int | None = None
+        self.version = 0
+        """항목(외형·얼굴)을 바꿀 수 있는 호출마다 1 씩 는다. 유사도는 항목과 질의로만 정해지므로 호출자가 같은 갤러리·같은
+        version·같은 질의의 유사도를 다시 쓸 수 있다(S15P31A101-663, World Track 의 tick 안 재사용)"""
 
     @property
     def entries(self) -> tuple[GalleryEntry, ...]:
@@ -148,6 +151,7 @@ class TrackGallery:
         """트랙 갤러리에 새 관측 특징을 추가하거나 슬롯/용량 규칙에 따라 교체한다."""
         import numpy as np
 
+        self.version += 1  # 거절돼 바뀌지 않아도 올린다(다시 계산할 뿐 결과는 같다)
         vis = visibility if visibility is not None else PartVisibility.all_visible()
         if not vis.any_visible or quality_score < self.config.min_quality_score:
             return False
