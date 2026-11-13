@@ -42,10 +42,23 @@ case "$action" in
         ;;
     off) rm -f "$file"; echo 'freeze: 동결 해제' ;;
     status)
-        if [ ! -f "$file" ]; then echo 'freeze: 동결 없음'; exit 0; fi
-        expires=$(sed -n '1p' "$file")
-        case "$expires" in ''|*[!0-9]*) fail '동결 파일의 만료 시각이 올바르지 않다' ;; esac
-        state='동결 중'; [ "$expires" -gt "$(date -u +%s)" ] || state='동결 만료'
-        echo "freeze: $state (사유: $(sed -n '2p' "$file"), 만료: $(date -u -d "@$expires" '+%Y-%m-%d %H:%M:%S UTC'), 설정자: $(sed -n '3p' "$file"))"
+        if [ ! -f "$file" ]; then
+            echo 'freeze: 동결 없음'
+        else
+            expires=$(sed -n '1p' "$file")
+            case "$expires" in ''|*[!0-9]*) fail '동결 파일의 만료 시각이 올바르지 않다' ;; esac
+            state='동결 중'; [ "$expires" -gt "$(date -u +%s)" ] || state='동결 만료'
+            echo "freeze: $state (사유: $(sed -n '2p' "$file"), 만료: $(date -u -d "@$expires" '+%Y-%m-%d %H:%M:%S UTC'), 설정자: $(sed -n '3p' "$file"))"
+        fi
+        # 진행 중 작업·세팅으로 deploy.sh 가 미룬 배포(S15P31A101-676). 기록 형식은 deploy.sh 의 HOLD 설명
+        hold=$SIMAI/pending/hold
+        utc() { case "$1" in ''|*[!0-9]*) echo '?' ;; *) date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC' ;; esac; }
+        if [ -d "$SIMAI/pending" ] && [ ! -x "$SIMAI/pending" ]; then
+            echo 'freeze: 자동 보류 확인 못 함(pending 디렉터리 권한, sudo 로 다시 본다)'
+        elif [ -f "$hold" ]; then
+            echo "freeze: 자동 보류 중 (커밋: $(sed -n '1p' "$hold" | cut -c1-12), 사유: $(sed -n '4p' "$hold"), 처음 보류: $(utc "$(sed -n '2p' "$hold")"), 마지막 보류: $(utc "$(sed -n '3p' "$hold")"), 자동 배포 시도: $(sed -n '5p' "$hold")회)"
+        else
+            echo 'freeze: 자동 보류 없음'
+        fi
         ;;
 esac
