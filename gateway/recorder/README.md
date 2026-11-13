@@ -81,18 +81,22 @@ uv run simai-recorder verify <세션 디렉터리>     # manifest 의 sha256·�
 uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션은 파일에서 manifest 를 다시 계산
 ```
 
-### 작업 구간 S3 업로드 (S15P31A101-668)
+### 작업 구간 S3 업로드 (S15P31A101-668·693)
 
-관제가 끝난 뒤 그날 작업 구간(작업 시작 → 작업 종료, S15P31A101-679, EC2 `GET /api/devices/recordings/windows`)과 겹치는 프레임만 카메라·epoch 별 키프레임
-조각(5분)으로 잘라 재인코딩 없이 mp4 로 포장하고(PyAV, ffmpeg `-c copy` 와 같음) S3 에 올린 뒤 EC2 에 등록한다
+웹 작업 종료 뒤 그날 작업 구간(작업 시작 → 작업 종료, S15P31A101-679, EC2 `GET /api/devices/recordings/windows`)과 겹치는 프레임만 카메라·epoch 별 키프레임
+조각(중계 녹화는 30초 이후 키프레임에서 닫힌 파일, 기존 녹화는 최대 5분)으로 잘라 재인코딩 없이 mp4 로 포장하고(PyAV, ffmpeg `-c copy` 와 같음) S3 에 올린 뒤 EC2 에 등록한다
 (`POST /api/uploads/sign` RECORDING_SEGMENT → PUT → `POST /api/devices/recordings/segments`, 계약 `recording_windows`·`recording_segment`).
-mp4 프레임 PTS = 촬영 시각 − 조각 시작이라 프레임이 빠져도 시각이 밀리지 않는다. 게이트웨이 도우미가 관제 종료 때 띄운다(`gateway/ops/README.md`).
+mp4 프레임 PTS = 촬영 시각 − 조각 시작이라 프레임이 빠져도 시각이 밀리지 않는다. 게이트웨이 도우미가 관제 시작 때 업로드 작업자를 띄워 기존 기기 REST를 10초 간격으로 조회한다. 관제 중에도 종료 작업의 닫힌 파일만 읽고 진행 상태를 보고한다(`gateway/ops/README.md`).
 
 ```sh
 uv run simai-recorder upload --root C:/simai-local/recordings --mode-file C:/simai-local/gateway-mode.txt   # .env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN
 ```
 
 코드는 `src/simai_recorder/upload/`(plan·mux·client·runner), 시험 `tests/test_upload.py`. 설계 `docs/design/S15P31A101-668-recording-s3-playback.md`.
+
+업로드 상태·배포 순서·남은 위험은 `docs/design/S15P31A101-693-end-upload-replay.md`를 따른다.
+중계 녹화는 같은 I0 epoch 안에서 `epoch_NNNN_part_SEQUENCE.*` 파일을 추가하며 `.closed`가 있는 파일만 업로드한다.
+manifest 1.3.0의 `part_start_sequence`가 원래 프레임 번호를 보존한다. 관제 정지 뒤 강제 종료된 마지막 파일은 세션 확정으로 회수한다.
 
 ## 녹화 형식
 

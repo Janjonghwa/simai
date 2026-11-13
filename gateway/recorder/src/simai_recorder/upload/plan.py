@@ -113,16 +113,18 @@ def _frame_ms(paths: SegmentPaths) -> int:
     return round(1000 / fps) if fps > 0 else DEFAULT_FRAME_MS
 
 
-def read_tracks(recording_dir: Path) -> list[EpochTrack]:
+def read_tracks(recording_dir: Path, *, closed_only: bool = False) -> list[EpochTrack]:
     """녹화 폴더의 카메라 디렉터리(epoch_*.codec_info.json 이 있는 하위 폴더)마다 epoch 순서로."""
     tracks: list[EpochTrack] = []
     for camera_dir in sorted(p for p in recording_dir.iterdir() if p.is_dir()):
         if not any(camera_dir.glob(f"epoch_*{CODEC_INFO_SUFFIX}")):
             continue
         for paths in camera_segments(camera_dir):
+            if closed_only and not paths.closed.exists():
+                continue
             rows = _read_rows(paths)
             if rows:
-                epoch = int(paths.codec_info.name[len("epoch_"): -len(CODEC_INFO_SUFFIX)])
+                epoch = int(json.loads(paths.codec_info.read_text(encoding="utf-8"))["stream_epoch"])
                 tracks.append(EpochTrack(camera_dir.name, epoch, paths, tuple(rows), _frame_ms(paths)))
     return tracks
 

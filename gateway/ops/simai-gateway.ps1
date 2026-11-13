@@ -2,7 +2,7 @@
 # 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격 · 9 상태 · h 자가 복구)
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
 # 원격(S15P31A101-394·424): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 gw.sh (status/live/preview/stop/update/heal/logs/restart-tunnel/upload/ssh)
-# 녹화 업로드(S15P31A101-668): 관제를 끄면(stop, 관제 모드였을 때만) 그날 작업 구간만 mp4 로 S3 에 백그라운드로 올린다. 끄려면 -NoRecordingUpload 또는 .env SIMAI_RECORDING_UPLOAD=off
+# 녹화 업로드(S15P31A101-693): 관제 시작 때 작업자를 띄우고 웹에서 끝난 작업의 닫힌 파일만 S3에 백그라운드로 올린다. 끄려면 -NoRecordingUpload 또는 .env SIMAI_RECORDING_UPLOAD=off
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
   [Parameter(Position = 0)]
@@ -249,12 +249,11 @@ function Finalize-RecordingManifest([string]$recDir = '') {
     $target = ([IO.File]::ReadAllText($RecordDirFile, $Utf8)).Trim()
   }
   if ((-not $target) -or (-not (Test-Path (Join-Path $target 'session.json')))) { return }
-  if (Test-Path (Join-Path $target 'manifest.json')) { return }
   if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return }
   $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   Push-Location $RelayDir
   try {
-    uv run python -c "import sys; from pathlib import Path; from simai_recorder.manifest import write_manifest; write_manifest(Path(sys.argv[1]))" "$target" 2>$null | Out-Null
+    uv run python -c "import sys; from pathlib import Path; from simai_recorder.manifest import finalize_stopped_session; finalize_stopped_session(Path(sys.argv[1]))" "$target" 2>$null | Out-Null
   } catch { } finally {
     Pop-Location
     $ErrorActionPreference = $old
@@ -272,14 +271,17 @@ function Do-Stop([switch]$Quiet, [switch]$NoUpload) {
   $modeText = if (Test-Path $ModeFile) { (Get-Content $ModeFile -Raw -Encoding UTF8).Trim() } else { '' }
   $upload = Test-UploadAfterStop -ModeText $modeText -NoUpload:($NoUpload -or $NoRecordingUpload)
   if (-not (Test-Path $PidFile)) {
-    Finalize-RecordingManifest
+    # PID 기록이 없으면 작성자 종료를 증명할 수 없어 열린 파일은 확정하지 않는다.
     Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
     if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }
     if ($upload) { Start-RecordingUpload }
     return
   }
   foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
-    if (Get-Process -Id $p -ErrorAction SilentlyContinue) { taskkill /PID $p /T /F | Out-Null }
+    if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
+      taskkill /PID $p /T /F | Out-Null
+      if (Get-Process -Id $p -ErrorAction SilentlyContinue) { Fail '녹화 프로세스를 종료하지 못해 파일 확정을 미룬다' }
+    }
   }
   Finalize-RecordingManifest
   Remove-Item $PidFile -Force
@@ -289,8 +291,8 @@ function Do-Stop([switch]$Quiet, [switch]$NoUpload) {
 }
 
 # ---------- 녹화 작업 구간 업로드 (S15P31A101-668, 설계 docs/design/S15P31A101-668-recording-s3-playback.md) ----------
-# 관제가 끝난 뒤에만 돈다. 중계 venv 의 simai_recorder(경로 의존)로 C:\simai-local\recordings\live-* 중 끝나지 않은 녹화를 이어 올린다.
-# 관제가 다시 시작되면(run) 이 프로세스를 끄고, 업로드 도구도 조각마다 모드 파일을 보고 스스로 멈춘다.
+# 기존 기기 REST를 10초 간격으로 조회한다. 종료 작업의 닫힌 파일만 올린다. 중계 venv 의 simai_recorder(경로 의존)로 C:\simai-local\recordings\live-* 중 끝나지 않은 녹화를 이어 올린다.
+# 상시 소켓은 추가하지 않는다. 관제가 끝나고 남은 업로드가 없으면 작업자를 종료한다.
 function Get-RecordingUploadArgs {
   return @('run', 'python', '-m', 'simai_recorder', 'upload', '--root', $RecordingsRoot, '--mode-file', $ModeFile,
     '--env-file', (Join-Path $Root '.env'))
@@ -327,6 +329,9 @@ function Start-RecordingUpload {
   Say "녹화 작업 구간 업로드를 백그라운드로 시작했다(로그 $UploadLog, gw.sh logs upload)"
 }
 function Do-UploadWorker {
+  $uploadMutex = [Threading.Mutex]::new($false, 'Local\SimaiRecordingUpload')
+  try { $acquired = $uploadMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }
+  if (-not $acquired) { $uploadMutex.Dispose(); return }
   New-Item -ItemType Directory -Force $LocalDir | Out-Null
   Set-Content -LiteralPath $UploadPidFile -Value $PID -Encoding ascii
   Rotate-LogIfNeeded $UploadLog
@@ -336,13 +341,21 @@ function Do-UploadWorker {
   try {
     $env:PYTHONUTF8 = '1'
     $uploadArgs = Get-RecordingUploadArgs
-    & uv @uploadArgs 2>&1 | ForEach-Object { Add-Content -LiteralPath $UploadLog -Value "$_" -Encoding UTF8 }
-    $code = $LASTEXITCODE
-    Add-Content -LiteralPath $UploadLog -Value "=== 끝(코드 ${code}: 0 끝남, 1 실패 조각 있음, 2 설정 오류, 3 관제 중이라 멈춤) ===" -Encoding UTF8
+    do {
+      & uv @uploadArgs 2>&1 | ForEach-Object { Add-Content -LiteralPath $UploadLog -Value "$_" -Encoding UTF8 }
+      $code = $LASTEXITCODE
+      if ($code -eq 2) { break }
+      $monitoring = (Test-Path $ModeFile) -and (Get-Content $ModeFile -Raw -Encoding UTF8).Trim().StartsWith('관제')
+      if (-not $monitoring -and $code -eq 0) { break }
+      Start-Sleep -Seconds 10
+    } while ($true)
+    Add-Content -LiteralPath $UploadLog -Value "=== 끝(코드 $code) ===" -Encoding UTF8
   } finally {
     Pop-Location
     $ErrorActionPreference = $old
     Remove-Item $UploadPidFile -Force -ErrorAction SilentlyContinue
+    $uploadMutex.ReleaseMutex()
+    $uploadMutex.Dispose()
   }
 }
 
@@ -369,9 +382,8 @@ function Do-Run {
   if (-not $s.VideoPort) { $s.VideoPort = [int](Read-Host 'Pod 17001 의 바깥 매핑 포트') }
   ($s | ConvertTo-Json) | Set-Content $StateFile -Encoding ascii
 
-  # 관제 중에는 녹화를 올리지 않는다(노트북 업로드는 I0 중계·CCTV 원격 시청이 쓴다, S15P31A101-668)
+  # 이전 세션을 정리한 뒤 종료 작업 업로더를 하나만 유지한다.
   Do-Stop -Quiet -NoUpload
-  Stop-RecordingUpload
   if ((Test-Tcp '127.0.0.1' 17000 300) -or (Test-Tcp '127.0.0.1' 17001 300)) { Fail '127.0.0.1:17000/17001 을 이미 다른 프로그램이 쓰고 있다(예전 터널 창을 닫는다)' }
 
   # EC2 까지만 SSH 하나, EC2→Pod 는 연결마다 따로 TCP(카메라별 독립 연결, 명세 12.2). TLS 는 Tier 0 가 끝낸다.
@@ -399,6 +411,7 @@ function Do-Run {
   Start-CameraHelper
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
   "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel, $recordLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
+  if (-not $NoRecordingUpload) { Start-RecordingUpload }
   Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel, $recordLabel. 끌 때는 메뉴 4"
 }
 

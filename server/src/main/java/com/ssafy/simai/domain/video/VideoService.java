@@ -72,7 +72,55 @@ class VideoService {
         body.put("from", from.toEpochMilli());
         body.put("to", to.toEpochMilli());
         body.putArray("segments").addAll(rows);
+        body.putArray("recording_uploads").addAll(recordingUploads(from, to));
         return body;
+    }
+
+    /** 조각 등록만으로는 미녹화·업로드 미완료를 구분할 수 없어 기기의 확정 계획과 대조한다. */
+    private List<ObjectNode> recordingUploads(Instant from, Instant to) {
+        MapSqlParameterSource params = new MapSqlParameterSource("from", utc(from)).addValue("to", utc(to))
+                .addValue("stale", utc(clock.instant().minus(Duration.ofMinutes(5))));
+        return jdbc.query("""
+                SELECT w.work_id, w.actual_ended_at,
+                    count(p.work_id) AS reports, sum(p.expected_segments) AS expected,
+                    coalesce(sum(p.failed_segments), 0) AS failed,
+                    coalesce(bool_and(p.sealed), false) AS sealed,
+                    coalesce(bool_or(p.received_at < :stale), false) AS stale,
+                    coalesce(sum((SELECT count(*) FROM video_segment v WHERE v.work_id = p.work_id
+                        AND v.gateway_id = p.gateway_id AND v.recording_id = p.recording_id
+                        AND v.origin = 'GATEWAY_RECORDING')), 0) AS uploaded
+                FROM work_unit w LEFT JOIN recording_upload_progress p ON p.work_id = w.work_id
+                WHERE w.actual_started_at < :to AND w.actual_ended_at > :from
+                    AND w.actual_ended_at > w.actual_started_at
+                GROUP BY w.work_id, w.actual_ended_at ORDER BY w.work_id
+                """, params, (rs, i) -> {
+                    int expected = rs.getInt("expected");
+                    int uploaded = rs.getInt("uploaded");
+                    int failed = rs.getInt("failed");
+                    boolean reported = rs.getInt("reports") > 0;
+                    boolean complete = reported && rs.getBoolean("sealed") && uploaded == expected && failed == 0;
+                    String status;
+                    if (!rs.getTimestamp("actual_ended_at").toInstant().plus(Duration.ofDays(14)).isAfter(clock.instant())) {
+                        status = "EXPIRED";
+                    } else if (!reported) {
+                        status = "WAITING";
+                    } else if (complete) {
+                        status = expected == 0 ? "NO_RECORDING" : "COMPLETED";
+                    } else if (failed > 0 || rs.getBoolean("stale")) {
+                        status = "FAILED";
+                    } else {
+                        status = "UPLOADING";
+                    }
+                    ObjectNode node = mapper.createObjectNode();
+                    node.put("schema_version", "1.0.0");
+                    node.put("work_id", rs.getLong("work_id"));
+                    node.put("status", status);
+                    if (reported) node.put("expected_segments", expected);
+                    else node.putNull("expected_segments");
+                    node.put("uploaded_segments", uploaded);
+                    node.put("failed_segments", failed);
+                    return node;
+                });
     }
 
     /** 재생 주소. 서명에 성공했을 때만 조회 기록을 남긴다(주소를 받지 못했으면 열람이 아니다) */

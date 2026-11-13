@@ -180,6 +180,7 @@ class FakeServer:
         self.register_error = register_error
         self.calls: list[tuple[str, str]] = []
         self.registered: list[dict] = []
+        self.progress: list[dict] = []
         self.objects: dict[str, bytes] = {}
         self.auth: set[str] = set()
 
@@ -198,6 +199,9 @@ class FakeServer:
             body = {"schema_version": "1.0.0", "from_ms": 0, "to_ms": 0, "windows": self.windows,
                     "open_work": self.open_work, "retention_days": 14}
             return _Response(json.dumps(body).encode())
+        if url.endswith("/api/devices/recordings/progress"):
+            self.progress.append(json.loads(request.data))
+            return _Response(b'{"status":"ACCEPTED"}')
         if url.endswith("/api/uploads/sign"):
             req = json.loads(request.data)
             assert req["purpose"] == "RECORDING_SEGMENT" and req["content_type"] == "video/mp4"
@@ -229,6 +233,8 @@ def test_작업_구간만_올리고_등록_본문이_계약에_맞으며_다시_
     summary = _uploader(server, NOW).run(tmp_path)
     assert summary.uploaded == 2 and summary.failed == 0 and summary.exit_code == 0
     assert server.auth == {"Bearer test-token"}
+    for report in server.progress:
+        contract_validator("recording_upload_progress", report)
     for record in server.registered:
         contract_validator("recording_segment", record)
         key = record["object_key"]
@@ -257,6 +263,7 @@ def test_끊겼다_이어_올리면_올린_조각은_건너뛰고_남은_것만_
     state = json.loads((rec / STATE_FILE).read_text(encoding="utf-8"))
     dropped = sorted(state["segments"])[0]
     del state["segments"][dropped]
+    state["windows"] = {}
     state["status"] = "pending"
     (rec / STATE_FILE).write_text(json.dumps(state), encoding="utf-8")
     second = FakeServer(windows)
@@ -272,16 +279,17 @@ def test_진행_중_작업이_겹치면_올릴_것만_올리고_녹화는_남겨
     assert json.loads((rec / STATE_FILE).read_text(encoding="utf-8"))["status"] == "pending"
 
 
-def test_관제_중이면_아무것도_올리지_않고_멈추며_미리보기는_막지_않는다(tmp_path):
+def test_관제_중에도_끝난_작업의_닫힌_조각은_올린다(tmp_path):
     make_recording(tmp_path)
     mode = tmp_path / "gateway-mode.txt"
     mode.write_text("\ufeff관제 Pod 1.2.3.4 제어 1 영상 2, 원격 시청 켬, 녹화 C:\\x (11-13 09:15)", encoding="utf-8")
     server = FakeServer([{"work_id": 1, "start_ms": capture_ms(0), "end_ms": capture_ms(59)}])
     summary = _uploader(server, NOW, mode).run(tmp_path)
-    assert summary.deferred and summary.exit_code == 3 and server.calls == []
+    assert summary.uploaded == 1 and summary.exit_code == 0
+    assert server.progress[-1]["sealed"] is True
     mode.write_text("미리보기(전송 없음), 원격 시청 켬 (11-13 09:15)", encoding="utf-8")
     assert not monitoring_active(mode)
-    assert _uploader(server, NOW, mode).run(tmp_path).uploaded == 1
+    assert _uploader(server, NOW, mode).run(tmp_path).uploaded == 0
 
 
 def test_거절된_조각은_rejected_로_적고_다시_올리지_않는다(tmp_path):
@@ -346,3 +354,92 @@ def test_env_로_끄면_업로드_명령이_바로_끝난다(tmp_path, capsys):
 
 def test_시험_영상_시각_기준():
     assert Fraction(1, 1000) * 40 == Fraction(1, 25)
+
+
+def test_열린_녹화는_닫힌_파일만_읽고_웹_종료를_다음_조회에_반영한다(tmp_path, monkeypatch):
+    rec = make_recording(tmp_path)
+    (rec / "session.json").write_text(json.dumps({"started_at_ms": T0, "ended_at_ms": None,
+        "cameras": [{"camera_id": "cam_A"}]}), encoding="utf-8")
+    marker = rec / "cam_A" / "epoch_0000.closed"
+    marker.unlink()
+    server = FakeServer([], open_work=True)
+    uploader = _uploader(server, NOW)
+    uploader.run(tmp_path)
+    assert server.registered == [] and read_tracks(rec, closed_only=True) == []
+    server.windows = [{"work_id": 42, "start_ms": capture_ms(0), "end_ms": capture_ms(47)}]
+    server.open_work = False
+    uploader.run(tmp_path)
+    assert server.progress[-1]["expected_segments"] == 0
+    assert server.progress[-1]["sealed"] is False
+    marker.touch()
+    result = uploader.run(tmp_path)
+    assert result.uploaded == 1 and rec.name in result.pending_recordings
+    assert server.progress[-1]["sealed"] is True
+    assert uploader.run(tmp_path).uploaded == 0
+
+
+def test_회전한_파일만_공개하고_epoch와_프레임_sequence를_유지한다(tmp_path):
+    packets = _packets(make_video(tmp_path / "rotate.h264", frames=FRAMES, gop=GOP))
+    rec = tmp_path / "live-rotate"
+    writer = SegmentWriter(rec / "cam_A", {"camera_id": "cam_A", "stream_epoch": 3, "nominal_fps": 25}, False)
+    writer.rotate_after_ms = 400
+    for i, packet in enumerate(packets):
+        writer.write({"frame_sequence": i, "keyframe": bool(packet.is_keyframe),
+                      "estimated_capture_time_ms": capture_ms(i)}, bytes(packet))
+    closed = read_tracks(rec, closed_only=True)
+    assert len(closed) == 5
+    assert [t.frames[0].sequence for t in closed] == [0, 10, 20, 30, 40]
+    assert all(t.stream_epoch == 3 for t in closed)
+    assert not writer.paths.closed.exists()
+    writer.close()
+    tracks = read_tracks(rec, closed_only=True)
+    chunks = plan_chunks(rec.name, tracks, [Window(42, capture_ms(0), capture_ms(59))])
+    assert len(chunks) == 6 and len({c.segment_id for c in chunks}) == 6
+    for chunk in chunks:
+        mux_chunk(chunk, tmp_path / f"{chunk.segment_id}.mp4")
+
+
+def test_파일_재생도_같은_epoch의_회전한_조각을_전부_이어_읽는다(tmp_path):
+    from simai_recorder.clock import FakeClock
+    from simai_recorder.sources import FileSource
+
+    packets = _packets(make_video(tmp_path / "source.h264", frames=FRAMES, gop=GOP))
+    writer = SegmentWriter(tmp_path / "cam_A", {"stream_epoch": 0, "nominal_fps": 25}, False)
+    writer.rotate_after_ms = 400
+    for i, packet in enumerate(packets):
+        writer.write({"frame_sequence": i, "keyframe": bool(packet.is_keyframe),
+                      "estimated_capture_time_ms": capture_ms(i)}, bytes(packet))
+    writer.close()
+    source = FileSource(tmp_path / "cam_A" / "epoch_0000.h264", FakeClock(), realtime=False)
+    source.open()
+    frames = []
+    while (packet := source.read()) is not None:
+        frames.append(packet)
+    source.release()
+    assert len(frames) == FRAMES
+
+
+def test_여러_녹화의_계획을_먼저_알린_뒤_업로드한다(tmp_path):
+    make_recording(tmp_path, name="live-first")
+    make_recording(tmp_path, name="live-second", t0_shift=10_000)
+    server = FakeServer([{"work_id": 42, "start_ms": T0, "end_ms": T0 + 20_000}])
+    result = _uploader(server, NOW).run(tmp_path)
+    assert result.uploaded == 2
+    first_sign = next(i for i, (_, url) in enumerate(server.calls) if url.endswith('/api/uploads/sign'))
+    assert sum(url.endswith('/api/devices/recordings/progress') for _, url in server.calls[:first_sign]) >= 2
+    assert {p['recording_id'] for p in server.progress[:2]} == {'live-first', 'live-second'}
+    assert all(not p['sealed'] for p in server.progress[:2])
+
+
+def test_확정된_빈_녹화와_진행중_빈_녹화를_구분한다(tmp_path):
+    rec = tmp_path / 'live-empty'
+    rec.mkdir()
+    session = {'started_at_ms': T0, 'ended_at_ms': None, 'cameras': [{'camera_id': 'cam_A'}]}
+    (rec / 'session.json').write_text(json.dumps(session), encoding='utf-8')
+    server = FakeServer([{'work_id': 42, 'start_ms': T0, 'end_ms': T0 + 1000}])
+    assert _uploader(server, NOW).run(tmp_path).exit_code == 3
+    assert server.progress[-1]['expected_segments'] == 0 and not server.progress[-1]['sealed']
+    session['ended_at_ms'] = T0 + 2000
+    (rec / 'session.json').write_text(json.dumps(session), encoding='utf-8')
+    assert _uploader(server, NOW).run(tmp_path).exit_code == 0
+    assert server.progress[-1]['expected_segments'] == 0 and server.progress[-1]['sealed']

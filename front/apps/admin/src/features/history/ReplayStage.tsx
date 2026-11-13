@@ -47,13 +47,14 @@ function ReplayCctv({
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [failed, setFailed] = useState<ReadonlyMap<string, string>>(() => new Map());
   const playable = useMemo(
     () => segments.filter((segment) => !failed.has(segment.segment_id)),
     [segments, failed],
   );
   const onFailed = useCallback(
-    (id: string) => setFailed((held) => (held.has(id) ? held : new Set(held).add(id))),
+    (id: string, message = '영상을 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.') =>
+      setFailed((held) => (held.has(id) ? held : new Map(held).set(id, message))),
     [],
   );
   const active = useActiveSegments(replay, playable);
@@ -63,15 +64,30 @@ function ReplayCctv({
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
     [people],
   );
-  if (active.length > 0)
-    return <ReplayVideoWall segments={active} replay={replay} onFailed={onFailed} />;
-  if (pending) return <Notice>{LOADING_LINE}</Notice>;
+  const wall =
+    active.length > 0 ? (
+      <ReplayVideoWall segments={active} replay={replay} onFailed={onFailed} />
+    ) : pending ? (
+      <Notice>{LOADING_LINE}</Notice>
+    ) : (
+      <CctvMockWall
+        figures={figures}
+        frozen={noData}
+        badge={noData ? '데이터 없음' : frame ? formatTime(frame.t) : '작업자 없음'}
+      />
+    );
   return (
-    <CctvMockWall
-      figures={figures}
-      frozen={noData}
-      badge={noData ? '데이터 없음' : frame ? formatTime(frame.t) : '작업자 없음'}
-    />
+    <div className="flex h-full min-h-0 flex-col">
+      {failed.size > 0 && (
+        <p role="status" className="p-2 text-sm text-muted-foreground">
+          {Array.from(new Set(failed.values())).join(' ')}
+          <button type="button" className="ml-3" onClick={() => setFailed(new Map())}>
+            영상 다시 확인
+          </button>
+        </p>
+      )}
+      <div className="min-h-0 flex-1">{wall}</div>
+    </div>
   );
 }
 
@@ -95,8 +111,30 @@ function stageNotice(session: WorkReplay, range: Span): string | null {
  */
 export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
-  const segments = useReplaySegments(range);
+  const { segments, message, refresh, canRefresh } = useReplaySegments(range);
   const notice = stageNotice(session, range);
-  if (notice !== null) return <Notice>{notice}</Notice>;
-  return <ReplayCctv replay={replay} index={index} holdMs={holdMs} segments={segments} />;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {message && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 p-2 text-sm text-muted-foreground"
+        >
+          <span>{message}</span>
+          {canRefresh && (
+            <button type="button" onClick={() => void refresh()}>
+              다시 확인
+            </button>
+          )}
+        </div>
+      )}
+      <div className="min-h-0 flex-1">
+        {notice !== null ? (
+          <Notice>{notice}</Notice>
+        ) : (
+          <ReplayCctv replay={replay} index={index} holdMs={holdMs} segments={segments} />
+        )}
+      </div>
+    </div>
+  );
 }

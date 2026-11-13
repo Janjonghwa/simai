@@ -132,6 +132,12 @@ class Ec2Client:
     def windows(self, from_ms: int, to_ms: int) -> dict[str, Any]:
         return self._json("작업 구간 조회", "GET", f"/api/devices/recordings/windows?from={from_ms}&to={to_ms}")
 
+    def progress(self, work_id: int, recording_id: str, expected: int, failed: int, sealed: bool) -> dict[str, Any]:
+        return self._json("업로드 진행 보고", "POST", "/api/devices/recordings/progress", {
+            "schema_version": "1.0.0", "work_id": work_id, "recording_id": recording_id,
+            "expected_segments": expected, "failed_segments": failed, "sealed": sealed,
+        })
+
     def sign(self, segment_id: str, size_bytes: int, sha256_hex: str) -> dict[str, Any]:
         body = {"purpose": "RECORDING_SEGMENT", "content_type": "video/mp4", "size_bytes": size_bytes,
                 "sha256": sha256_hex, "segment_id": segment_id}

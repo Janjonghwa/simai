@@ -97,6 +97,50 @@ class RecordingSegmentIntegrationTest {
     }
 
     @Test
+    void 종료_작업의_진행보고와_등록수를_대조하고_권한과_미녹화를_구분한다() throws Exception {
+        String url = "/api/videos?from=" + started.toEpochMilli() + "&to=" + ended.toEpochMilli();
+        ObjectNode progress = MAPPER.createObjectNode();
+        progress.put("schema_version", "1.0.0");
+        progress.put("work_id", workId);
+        progress.put("recording_id", "live-test");
+        progress.put("expected_segments", 0);
+        progress.put("failed_segments", 0);
+        progress.put("sealed", false);
+        postJson("/api/devices/recordings/progress", watchToken, progress, 403);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("WAITING");
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("UPLOADING");
+        progress.put("sealed", true);
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("NO_RECORDING");
+        progress.put("expected_segments", 1);
+        progress.put("failed_segments", 1);
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("FAILED");
+        progress.put("failed_segments", 0);
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("UPLOADING");
+        long start = started.toEpochMilli();
+        UUID id = uuid7(start);
+        sign(id, 4096);
+        ObjectNode segment = segment(id, start, start + 300_040, 4096);
+        segment.put("recording_id", "live-test");
+        postJson("/api/devices/recordings/segments", laptopToken, segment, 200);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("COMPLETED");
+        progress.put("expected_segments", 2);
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        jdbc.update("UPDATE recording_upload_progress SET received_at = now() - interval '6 minutes' WHERE work_id = ?", workId);
+        assertThat(uploadStatus(get(url, admin(), 200))).isEqualTo("FAILED");
+    }
+
+    private String uploadStatus(JsonNode body) {
+        for (JsonNode upload : body.get("recording_uploads")) {
+            if (upload.get("work_id").asLong() == workId) return upload.get("status").asString();
+        }
+        throw new AssertionError("작업 업로드 상태 없음");
+    }
+
+    @Test
     void 끝난_작업의_구간을_알려_주고_올린_조각을_기록해_관리자_다시_보기에_mp4_로_보인다() throws Exception {
         long from = setupDone.minus(Duration.ofHours(1)).toEpochMilli();
         long to = ended.plus(Duration.ofHours(1)).toEpochMilli();

@@ -88,7 +88,7 @@ _OFF = {"0", "off", "false", "no"}
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
-    """관제 녹화의 작업 구간을 mp4 로 포장해 올린다. 끝 코드: 0 끝남·없음, 1 실패 조각 있음, 2 설정 오류, 3 관제 중이라 멈춤."""
+    """관제 녹화의 작업 구간을 mp4 로 포장해 올린다. 끝 코드: 0 끝남·없음, 1 실패 조각 있음, 2 설정 오류, 3 녹화·작업 종료 대기."""
     import logging
     import os
 
@@ -135,10 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     ver = sub.add_parser("verify", help="manifest 의 해시·크기와 파일을 비교한다")
     ver.add_argument("session_dir")
     ver.set_defaults(func=cmd_verify)
-    up = sub.add_parser("upload", help="관제가 끝난 뒤 녹화의 작업 구간만 mp4 로 S3 에 올린다 (S15P31A101-668)")
+    up = sub.add_parser("upload", help="종료된 작업의 닫힌 녹화 조각만 mp4 로 S3 에 올린다 (S15P31A101-668)")
     up.add_argument("--root", default=str(Path("C:/simai-local/recordings")), help="녹화 루트 (live-* 폴더들)")
     up.add_argument("--recording", default=None, help="이 녹화 폴더 하나만")
-    up.add_argument("--mode-file", default=None, help="게이트웨이 모드 파일. '관제' 로 시작하면 멈춘다")
+    up.add_argument("--mode-file", default=None, help="게이트웨이 모드 파일. 구형 녹화의 열린 파일을 제외할 때 사용")
     up.add_argument("--env-file", default=str(REPO_ROOT / ".env"), help="SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN .env")
     up.add_argument("--parallel", type=int, default=2, help="동시 업로드 조각 수 (기본 2)")
     up.set_defaults(func=cmd_upload)

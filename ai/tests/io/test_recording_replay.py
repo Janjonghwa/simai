@@ -179,3 +179,18 @@ def test_damaged_or_incomplete_sessions_are_refused_with_a_clear_error(session, 
     with pytest.raises(ValueError) as e:
         RecordingReplay(session, camera_ids=cameras)
     assert expect in str(e.value)
+
+
+def test_같은_epoch_파일_조각_사이에_재접속을_만들지_않는다(tmp_path):
+    from dataclasses import replace
+    from simai_ai.io.sources import _read_segment, _replay_camera
+
+    session = write_session(tmp_path, "rec-parts", {"cam_A": [_seg("cam_A", 0, 3, start=T0)]})
+    doc = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    segment = _read_segment(session, "cam_A", doc["cameras"][0]["segments"][0], None)
+    second = replace(segment, frames=tuple(replace(ref, header=replace(ref.header, frame_sequence=i + 3))
+                                          for i, ref in enumerate(segment.frames)))
+    messages = list(_replay_camera("cam_A", [segment, second]))
+    assert sum(isinstance(m.message, I0CodecInfo) for m in messages) == 1
+    assert all(m.message is not None for m in messages)
+    assert [m.message.header.frame_sequence for m in messages if isinstance(m.message, I0Frame)] == list(range(6))

@@ -1,7 +1,7 @@
 """녹화 폴더마다 작업 구간 조각을 올리고 이어 올리기 상태를 남긴다 (S15P31A101-668).
 
 - 대상: 녹화 루트의 `live-*` 폴더(session.json 이 있는 것) 중 상태가 done 이 아닌 것. 첫 프레임이 14일보다 오래됐으면 올리지 않고 done(expired).
-- 관제 중 미룸: 시작할 때와 조각마다 관제 모드 파일(gateway-mode.txt 가 "관제" 로 시작)을 보고, 관제 중이면 멈춘다(사용자 결정).
+- 관제 중에도 종료 작업을 올린다. 진행 중 녹화는 닫힘 표시가 있는 파일만 읽고 다음 조회를 기다린다.
 - 작업이 아직 안 끝났으면(recording_windows.open_work) 그 녹화는 pending 으로 두고 다음 실행 때 다시 묻는다.
 - 조각마다: 임시 mp4(<녹화>/.upload/<segment_id>.mp4) → sha256 → 서명 → PUT(시도마다 새 서명) → 등록 → 상태 기록 → 임시 파일 삭제.
   같은 조각은 같은 segment_id 라 다시 올려도 EC2 가 DUPLICATE 로 받는다. 4xx 로 거절된 조각은 rejected 로 적고 다시 하지 않는다.
@@ -57,7 +57,7 @@ class RunSummary:
     def exit_code(self) -> int:
         if self.failed:
             return 1
-        return 3 if self.deferred else 0
+        return 3 if self.deferred or self.pending_recordings else 0
 
 
 class _State:
@@ -169,26 +169,41 @@ class Uploader:
 
     def run(self, root: Path, only: Path | None = None) -> RunSummary:
         summary = RunSummary()
-        for recording in [only] if only else find_recordings(root):
-            if self.busy():
-                log.info("관제 중이라 업로드를 멈춘다(다음 관제 종료 때 이어서)")
-                summary.deferred = True
-                break
+        recordings = [only] if only else find_recordings(root)
+        # 모든 녹화의 미확정 계획을 먼저 보고한다. 첫 녹화 완료만 보고 화면이 폴링을 멈추지 않게 한다.
+        for recording in recordings:
+            self.upload_recording(recording, summary, plan_only=True)
+        if summary.failed:
+            return summary
+        for recording in recordings:
             self.upload_recording(recording, summary)
             if summary.deferred:
                 break
         return summary
 
-    def upload_recording(self, recording: Path, summary: RunSummary) -> None:
+    def upload_recording(self, recording: Path, summary: RunSummary, *, plan_only: bool = False) -> None:
         state = _State(recording / STATE_FILE)
         if state.done:
             return
         name = recording.name
-        tracks = read_tracks(recording)
-        span = recording_span(tracks)
+        try:
+            session = json.loads((recording / "session.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            summary.failed += 1
+            return
+        active = "ended_at_ms" in session and session["ended_at_ms"] is None
+        tracks = []
+        span = None
+        # 열린 파일은 읽지 않는다. 빈 녹화도 세션 범위로 물어 확정된 0개와 미보고를 구분한다.
+        if session.get("started_at_ms") is not None:
+            span = (int(session["started_at_ms"]), int(session.get("ended_at_ms") or self.now_ms()))
+        else:
+            tracks = read_tracks(recording, closed_only=active or self.busy())
+            span = recording_span(tracks)
         if span is None:
-            state.finish("done", self.now_ms(), "프레임 없음")
-            summary.done_recordings.append(name)
+            if not active:
+                state.finish("done", self.now_ms(), "프레임 없음")
+                summary.done_recordings.append(name)
             return
         if span[0] <= self.now_ms() - RETENTION_MS:
             state.finish("done", self.now_ms(), "보관 기간(14일) 지남")
@@ -201,25 +216,63 @@ class Uploader:
             summary.failed += 1
             summary.pending_recordings.append(name)
             return
-        chunks = [c for c in plan_chunks(name, tracks, windows)
+        # 이미 확정한 작업은 조각 메타데이터를 다시 수 GB씩 읽지 않는다. 구간 시각도 키에 넣어 재개 작업과 구분한다.
+        cached = state.data.setdefault("windows", {})
+
+        def window_key(window: Window) -> str:
+            return f"{window.work_id}:{window.start_ms}:{window.end_ms}"
+
+        todo = [w for w in windows if window_key(w) not in cached]
+        if todo and not tracks:
+            tracks = read_tracks(recording, closed_only=active)
+        planned = plan_chunks(name, tracks, todo)
+        chunks = [c for c in planned
                   if (state.segment(c.segment_id) or {}).get("status") not in ("uploaded", "rejected")]
-        log.info("%s: 작업 구간 %d개, 올릴 조각 %d개%s", name, len(windows), len(chunks),
-                 " (진행 중 작업 있음)" if open_work else "")
         failed_before = summary.failed
-        with ThreadPoolExecutor(max_workers=self.parallel) as pool:
-            list(pool.map(lambda c: self._upload_chunk(recording, c, state, summary), chunks))
-        if summary.deferred or summary.failed > failed_before or open_work:
-            note = "관제 중 멈춤" if summary.deferred else ("진행 중 작업" if open_work else "실패 조각 있음")
-            state.finish("pending", self.now_ms(), note)
+
+        cameras = {c["camera_id"] for c in session.get("cameras", [])}
+        latest: dict[str, int] = {}
+        for track in tracks:
+            latest[track.camera_id] = max(latest.get(track.camera_id, -1), track.frames[-1].capture_ms)
+
+        def report() -> None:
+            for window in windows:
+                saved = cached.get(window_key(window))
+                if saved:
+                    self.client.progress(window.work_id, name, saved["expected"], saved["failed"], True)
+                    continue
+                work_chunks = [c for c in planned if c.work_id == window.work_id]
+                failed = sum((state.segment(c.segment_id) or {}).get("status") in ("failed", "rejected")
+                             for c in work_chunks)
+                sealed = not active or bool(cameras and all(latest.get(c, -1) >= window.end_ms for c in cameras))
+                self.client.progress(window.work_id, name, len(work_chunks), failed, sealed and not plan_only)
+                terminal = all((state.segment(c.segment_id) or {}).get("status") in ("uploaded", "rejected")
+                               for c in work_chunks)
+                if sealed and terminal and not plan_only:
+                    cached[window_key(window)] = {"expected": len(work_chunks), "failed": failed}
+
+        try:
+            report()
+            if plan_only:
+                return
+            last_report = self.now_ms()
+            with ThreadPoolExecutor(max_workers=self.parallel) as pool:
+                for _ in pool.map(lambda c: self._upload_chunk(recording, c, state, summary), chunks):
+                    if self.now_ms() - last_report >= 10_000:
+                        report()
+                        last_report = self.now_ms()
+            report()
+        except (TransientError, RequestRejected) as e:
+            log.warning("%s: 진행 보고 실패(%s)", name, e)
+            summary.failed += 1
+        if summary.failed > failed_before or open_work or active:
+            state.finish("pending", self.now_ms(), "녹화 진행 중 또는 재시도 대기")
             summary.pending_recordings.append(name)
         else:
             state.finish("done", self.now_ms())
             summary.done_recordings.append(name)
 
     def _upload_chunk(self, recording: Path, chunk: Chunk, state: _State, summary: RunSummary) -> None:
-        if summary.deferred or self.busy():
-            summary.deferred = True
-            return
         temp = recording / TEMP_DIR / f"{chunk.segment_id}.mp4"
         try:
             created = self.now_ms()
@@ -240,6 +293,7 @@ class Uploader:
             summary.rejected += 1
             log.warning("거절 %s %s: %s", chunk.camera_id, chunk.segment_id, e)
         except (TransientError, OSError, ValueError, av_error()) as e:
+            state.set_segment(chunk, "failed", self.now_ms())
             summary.failed += 1
             log.warning("실패 %s %s: %s (다음에 다시)", chunk.camera_id, chunk.segment_id, type(e).__name__)
         finally:

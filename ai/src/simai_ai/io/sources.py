@@ -588,7 +588,9 @@ def _repair_capture_times(
 
 def _replay_camera(camera_id: str, segments: Sequence[_Segment]) -> Iterator[ReplayMessage]:
     for i, seg in enumerate(segments):
-        yield ReplayMessage(seg.frames[0].release_ms, camera_id, seg.codec)
+        # 같은 I0 epoch의 파일 회전은 재접속이 아니다. 코덱·연결 종료는 epoch 경계에서만 낸다.
+        if i == 0 or segments[i - 1].stream_epoch != seg.stream_epoch:
+            yield ReplayMessage(seg.frames[0].release_ms, camera_id, seg.codec)
         with seg.video.open("rb") as f:
             for ref in seg.frames:
                 f.seek(ref.offset)
@@ -596,7 +598,7 @@ def _replay_camera(camera_id: str, segments: Sequence[_Segment]) -> Iterator[Rep
                 if len(data) != ref.size:
                     raise OSError(f"{camera_id}/epoch {seg.stream_epoch}: 영상 파일이 짧다 ({seg.video.name})")
                 yield ReplayMessage(ref.release_ms, camera_id, I0Frame(ref.header, data))
-        if i + 1 < len(segments):
+        if i + 1 < len(segments) and segments[i + 1].stream_epoch != seg.stream_epoch:
             yield ReplayMessage(seg.frames[-1].release_ms, camera_id, None)  # 재접속 전 연결 끝
 
 
@@ -624,7 +626,8 @@ class RecordingReplay:
         self.camera_ids = ids
         self._segments: dict[str, tuple[_Segment, ...]] = {}
         for cid in ids:
-            segs = sorted(cameras[cid]["segments"], key=lambda s: s["stream_epoch"])
+            segs = sorted(cameras[cid]["segments"],
+                          key=lambda s: (s["stream_epoch"], (s.get("frame_sequence_range") or [0])[0]))
             model = CaptureClockModel.from_manifest(cameras[cid]["capture_time_model"]) if repair_capture_time else None
             read = tuple(_read_segment(self.session_dir, cid, s, model) for s in segs if s["frame_count"] > 0)
             if not read:

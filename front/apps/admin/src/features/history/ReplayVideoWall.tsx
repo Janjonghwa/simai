@@ -9,6 +9,7 @@ import { useReplayStatus } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useCameraNames } from '@/hooks/useCameraNames';
 import { api } from '@/lib/api';
+import { ApiError } from '@/lib/http';
 import { cn } from '@simai/ui/lib/utils';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
@@ -41,7 +42,16 @@ function useSegmentSource(segment: VideoSegment) {
   const source = query.data;
   // 감싼 영상의 blob 주소는 새 영상으로 바뀌거나 칸이 사라질 때 해제한다.
   useEffect(() => () => source?.release(), [source]);
-  return { url: source?.url, failed: query.isError, refetch: query.refetch };
+  const error = query.error;
+  const errorLine =
+    error instanceof ApiError && error.status === 403
+      ? '영상 조회 권한이 없습니다.'
+      : error instanceof ApiError && error.status === 401
+        ? '로그인이 만료되었습니다. 다시 로그인해 주세요.'
+        : error instanceof ApiError && error.status === 410
+          ? '영상 보관 기간이 만료되었습니다.'
+          : '영상을 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.';
+  return { url: source?.url, failed: query.isError, refetch: query.refetch, errorLine };
 }
 
 function SegmentTile({
@@ -56,10 +66,10 @@ function SegmentTile({
   replay: ReplaySpatialSource | null;
   focused: boolean;
   onToggle: () => void;
-  onFailed?: (segmentId: string) => void;
+  onFailed?: (segmentId: string, message?: string) => void;
   label: string;
 }) {
-  const { url, failed, refetch } = useSegmentSource(segment);
+  const { url, failed, refetch, errorLine } = useSegmentSource(segment);
   const status = useReplayStatus(replay);
   const video = useRef<HTMLVideoElement>(null);
   // 서명 주소가 만료돼(5분) 이어 받기가 막히면 <video> 가 오류를 낸다. 주소를 한 번 다시 받아 같은 재생 시각으로 잇고, 그래도 안 되면 뺀다.
@@ -71,12 +81,15 @@ function SegmentTile({
 
   // 주소를 받지 못했으면 이 조각은 뺀다(남은 조각이 없으면 3D 다시 보기로 돌아간다).
   useEffect(() => {
-    if (failed) onFailed?.(segment.segment_id);
-  }, [failed, onFailed, segment.segment_id]);
+    if (failed) onFailed?.(segment.segment_id, errorLine);
+  }, [failed, onFailed, segment.segment_id, errorLine]);
 
   const onVideoError = () => {
     if (renewed) {
-      onFailed?.(segment.segment_id);
+      onFailed?.(
+        segment.segment_id,
+        '영상을 재생하지 못했습니다. 네트워크 연결 또는 영상 형식을 확인해 주세요.',
+      );
       return;
     }
     setRenewed(true);
@@ -131,7 +144,7 @@ export function ReplayVideoWall({
 }: {
   segments: readonly VideoSegment[];
   replay: ReplaySpatialSource | null;
-  onFailed?: (segmentId: string) => void;
+  onFailed?: (segmentId: string, message?: string) => void;
 }) {
   const label = useCameraNames(segments.map((segment) => segment.camera_id));
   const byCamera = new Map(segments.map((segment) => [segment.camera_id, segment]));
