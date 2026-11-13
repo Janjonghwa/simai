@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from .cpu_budget import default_bake_threads
 from .reconstruct import ReconstructionError
 
 
@@ -18,6 +19,12 @@ class ProcessStages:
         self.env = dict(os.environ if env is None else env)
         # 모델/허브의 묵시적인 다운로드를 막는다. 가중치는 bootstrap 이 준비한다.
         self.env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", YOLO_OFFLINE="true", YOLO_AUTOINSTALL="false")
+        # 자식 프로세스의 수치 연산 스레드 기본값을 가용 코어의 절반으로 묶어 Tier 0 의 컨테이너 CFS 몫을 남긴다(-672).
+        # OpenCV 는 1(-662 와 같음). 1 로 묶으면 굽기·재구성 CPU 단계가 몇 배 느려진다.
+        half = str(default_bake_threads())
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            self.env.setdefault(var, half)
+        self.env.setdefault("SIMAI_CV2_THREADS", "1")
 
     def run(self, stage: str, root: Path, *, timeout_s: float, cancelled: threading.Event) -> None:
         if cancelled.is_set():

@@ -485,3 +485,43 @@ def test_cli_rejects_nonempty_out_and_bad_terms(tm, tmp_path):
     assert (tmp_path / "x").read_text(encoding="utf-8") == "keep"
     assert tm.main([*base, "--out", str(tmp_path / "new"), "--terms", "foo"]) == tm.EXIT_CONFIG
     assert not (tmp_path / "new").exists()
+
+
+def test_resolve_num_threads_caps_default_bake_threads_and_process_stages_limits_env(monkeypatch):
+    """-672: 224코어 호스트·24 vCPU 컨테이너에서 num_threads=0 이 224개 스레드를 만들지 않고 가용 코어의 절반(12)으로 묶이며,
+    ProcessStages 기본 환경변수(수치 연산 절반·OpenCV 1)와 reconstruct_tasks.main 진입점이 스레드를 제한한다."""
+    from simai_ai.scene import cpu_budget
+    from simai_ai.scene import reconstruct_tasks as tasks
+    from simai_ai.scene import texture_mesh as scene_tm
+    from simai_ai.scene.reconstruct_process import ProcessStages
+
+    monkeypatch.delenv("SIMAI_BAKE_NUM_THREADS", raising=False)
+    monkeypatch.setattr(cpu_budget.os, "cpu_count", lambda: 224)
+    monkeypatch.setattr(cpu_budget, "cgroup_cpu_quota", lambda: 24)
+    if hasattr(cpu_budget.os, "sched_getaffinity"):
+        monkeypatch.setattr(cpu_budget.os, "sched_getaffinity", lambda _pid: set(range(224)))
+    assert scene_tm.resolve_num_threads(0) == 12
+    assert scene_tm.resolve_num_threads(8) == 8
+
+    monkeypatch.setattr(cpu_budget, "usable_cpu_count", lambda: 2)
+    assert scene_tm.resolve_num_threads(0) == 1
+
+    monkeypatch.setenv("SIMAI_BAKE_NUM_THREADS", "6")
+    assert scene_tm.resolve_num_threads(0) == 6
+    monkeypatch.delenv("SIMAI_BAKE_NUM_THREADS", raising=False)
+
+    monkeypatch.setattr(cpu_budget, "usable_cpu_count", lambda: 24)
+    stage_env = ProcessStages(env={}).env
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert stage_env[var] == "12"
+    assert stage_env["SIMAI_CV2_THREADS"] == "1"
+
+    cv2_calls: list[int] = []
+    import types
+
+    monkeypatch.setitem(sys.modules, "cv2", types.SimpleNamespace(setNumThreads=cv2_calls.append))
+    monkeypatch.setattr(sys, "argv", ["reconstruct_tasks", "bake", "dummy_root"])
+    monkeypatch.setattr(tasks, "bake", lambda _root: None)
+    assert tasks.main() == 0
+    assert cv2_calls == [1]
+

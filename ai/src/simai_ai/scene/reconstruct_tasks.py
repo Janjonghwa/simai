@@ -683,7 +683,14 @@ def run_final_map_pipeline(
             "--jira-key",
             "S15P31A101-539",
         ]
-        code = tm.main(args)
+        prev_omp = os.environ.get("OMP_NUM_THREADS")
+        try:
+            code = tm.main(args)
+        finally:
+            if prev_omp is None:
+                os.environ.pop("OMP_NUM_THREADS", None)
+            else:
+                os.environ["OMP_NUM_THREADS"] = prev_omp
         if code:
             return _fail(f"FINAL_MAP_TEXTURE_MESH_FAILED:exit_{code}")
         raw_rec = read_json(tsdf_dir / "metrics.json")
@@ -847,7 +854,14 @@ def bake(root: Path) -> None:
             "--jira-key", "S15P31A101-364"]
     if opts.get("plane_cleanup", False):
         args.append("--plane-cleanup")
-    code = tm.main(args)
+    prev_omp = os.environ.get("OMP_NUM_THREADS")
+    try:
+        code = tm.main(args)
+    finally:
+        if prev_omp is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = prev_omp
     if code:
         raise ReconstructionError("STATIC_BAKE_EMPTY" if code == tm.EXIT_EMPTY else "STATIC_BAKE_TOOL_FAILED", f"texture_mesh 종료 {code}")
     rec = read_json(root / "textured" / "metrics.json")
@@ -1090,6 +1104,9 @@ def measure(root: Path) -> None:
 
 
 def main() -> int:
+    from simai_ai.gpu.cv_threads import limit_cv2_threads
+
+    limit_cv2_threads(os.environ)
     stage, root_arg = sys.argv[1:]
     root = Path(root_arg)
     try:

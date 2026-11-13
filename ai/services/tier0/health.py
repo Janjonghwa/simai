@@ -195,7 +195,7 @@ class HealthReporter:
             return [{"code": str(code), "since_ms": since} for code, since in sorted(self._warning_since.items())]
 
     def evaluate(self) -> HealthSnapshot:
-        with self._lock:  # 판정 루프와 같은 lock: 카메라 시각·구성 묶음을 한 시점으로 읽는다
+        with self._lock:  # 카메라 시각·구성 묶음·게이트를 직렬화해 읽는다(판정 lock 을 기다리지 않는다, -672)
             gateway_ok = bool(self._gateway_ok())
             ec2_ok = bool(self._ec2_connected())
             capture_clock: CaptureClock = SAME_CLOCK if self._capture_clock is None else self._capture_clock(gateway_ok)

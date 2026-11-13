@@ -527,10 +527,10 @@ class Tier0Service:
                                        or bool(self.calibration_status.get("suspect_cameras"))
                                        or bool(self.calibration_status.get("monitoring_degraded_reason"))),
             re_setup=self.re_setup_field,
-            lock=self.judge_lock,
+            # 판정 lock 을 넘기지 않는다(-672): I1 1Hz health 송신이 긴 판정 tick·보정 전환에 막혀 EC2 가 3s 응답 없음으로 오판하지 않게
         )
         self.resync = SiteAlertResync(
-            active_states=lambda: self.judge.active_states(), send=self._send_laptop_health, clock=self.clock,
+            active_states=lambda: self.judge.active_states_snapshot(), send=self._send_laptop_health, clock=self.clock,
             lock=self.judge_lock, ready=lambda: self._restored,
         )
         # R9 입력: PPE outbox 를 중계(SIMAI_PPE_RELAY=1)할 때 같은 메시지로 채운다. 없으면 비어 있어 R9 는 새로 나지 않는다
@@ -983,10 +983,13 @@ class Tier0Service:
             }
 
     def re_setup_field(self) -> list[dict[str, Any]]:
-        """health.re_setup 값(계약 2.2.0): 재세팅이 필요한 카메라 목록(camera_id 오름차순), 없으면 빈 배열. 판정은 건드리지 않는다."""
-        with self.judge_lock:
-            return [{"camera_id": cid, "reason": item["reason"], "detected_at": item["detected_at"]}
-                    for cid, item in sorted(self._re_setup_cameras.items())]
+        """health.re_setup 값(계약 2.2.0): 재세팅이 필요한 카메라 목록(camera_id 오름차순), 없으면 빈 배열. 판정은 건드리지 않는다.
+
+        판정 lock 을 기다리지 않고 불변 항목 사본을 읽는다(-672).
+        """
+        items = list(self._re_setup_cameras.items())
+        return [{"camera_id": cid, "reason": item["reason"], "detected_at": item["detected_at"]}
+                for cid, item in sorted(items)]
 
     def _propose_rotation_calibration(self, document, report, generation: int) -> bool:
         with self.judge_lock:
@@ -1374,13 +1377,18 @@ class Tier0Service:
                 self.perception.scene_version = version
 
     def _calibration_messages(self):
-        """I1 신뢰 대기열 source. 재시작 때 같은 msg_id의 전환 이력을 다시 보내 유실을 막는다."""
-        with self.judge_lock:
-            records = self.calibration.transitions[self._calibration_message_cursor:]
-            messages = [self.link.publisher.envelope.make("calibration_update", r["payload"], msg_id=r["msg_id"])
-                        for r in records]
-            self._calibration_message_cursor += len(records)
-            return messages
+        """I1 신뢰 대기열 source. 재시작 때 같은 msg_id의 전환 이력을 다시 보내 유실을 막는다.
+
+        RuntimeCalibrationStore._head 는 copy-on-write 불변 사본 교체이므로, 새 전환 이력이 없을 때는
+        판정 lock 획득과 JSON 복사를 건너뛰어 100Hz I1 발행 스레드가 판정 lock 에 막히지 않게 한다(-672).
+        """
+        records = self.calibration.transitions_since(self._calibration_message_cursor)
+        if not records:
+            return []
+        messages = [self.link.publisher.envelope.make("calibration_update", r["payload"], msg_id=r["msg_id"])
+                    for r in records]
+        self._calibration_message_cursor += len(records)
+        return messages
 
     def _config_health_fields(self) -> dict[str, Any]:
         fields = dict(self.config_sync.health_fields())

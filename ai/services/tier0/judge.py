@@ -195,6 +195,10 @@ class JudgmentLoop:
         with self.lock:
             return self.tracker.active()
 
+    def active_states_snapshot(self) -> tuple[EventState, ...]:
+        """판정 lock 을 잡지 않고 마지막 tick·확인 뒤의 불변 활성 이벤트 상태 사본을 돌려준다(-672: I1 health 가 판정 lock 에 막히지 않게)."""
+        return tuple(self._view_states.values())
+
     def current_state(self, event_id: str) -> EventState | None:
         """스냅샷 콜백: 판정 lock 을 잡지 않고 마지막 tick·확인 뒤의 불변 사본을 읽는다(lock 순서, 모듈 설명 8)."""
         return self._view_states.get(event_id)
