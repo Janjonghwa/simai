@@ -28,6 +28,12 @@ REQUEST = json.loads((EXAMPLES / "job_request.vlm_zone_draft.json").read_text(en
 FACE_KPS = ((110.0, 110.0, 0.9), (104.0, 100.0, 0.9), (116.0, 100.0, 0.9), (95.0, 102.0, 0.8), (125.0, 102.0, 0.8))
 
 
+@pytest.fixture(autouse=True)
+def _legacy_zone_draft_mode(monkeypatch):
+    """이 파일의 시험은 시연 개구부 스위치를 끈 이전 동작을 본다(S15P31A101-671). 켠 동작은 test_vlm_zone_draft_opening.py."""
+    monkeypatch.setenv("SIMAI_ZONE_DRAFT_OPENING_ONLY", "0")
+
+
 def _make_cloud_json() -> bytes:
     # 단상 1개(z=0.75) + 평평한 바닥(z=0.0)
     xs = np.arange(-1.5, 1.5, 0.08)
