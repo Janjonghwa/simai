@@ -424,6 +424,14 @@ const AUTO_STAGES: readonly { at: number; stage: SetupSessionResponse['status'];
   { at: 35_000, stage: 'COMPLETED', pct: 100 },
 ];
 
+/**
+ * autoProgress 멈춤(서버·워커에 요청한 paused_reason·resume 계약): 처음 높이 기본값을 현장의 실제 높이로 보고, 입력이 이만큼(m)
+ * 넘게 다르면 카메라 정밀 보정에서 품질 게이트 실패로 멈춘다(-646 게이트의 높이 차 ±10 cm 와 같다).
+ */
+const MOCK_PAUSE_HEIGHT_DIFF_M = 0.1;
+/** 멈추는 단계(카메라 정밀 보정)의 시작 진행률. */
+const MOCK_PAUSE_PCT = 40;
+
 export interface RetrySetupRecord {
   sessionId: string;
   retriedSessionId: string;
@@ -490,6 +498,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     latestGuide:
       options.latestGuide !== undefined ? options.latestGuide : buildCoverageGuidePayload(),
   };
+
+  // 멈춤 판정의 기준인 현장 실제 높이(처음 기본값)와, 멈춘 세션의 멈춘 시각(이어 가면 그만큼 시작 시각을 미룬다).
+  const actualHeightsM = { ...state.cameraHeightsM };
+  const pausedAt = new Map<string, number>();
 
   const submittedBodies: CreateSetupSessionBody[] = [];
   const retryRequests: RetrySetupRecord[] = [];
@@ -679,16 +691,71 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     });
   }
 
-  /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션은 두지 않는다. */
+  /** 입력 높이가 실제 높이와 MOCK_PAUSE_HEIGHT_DIFF_M 넘게 다른 카메라와 그 차이(cm). */
+  function heightMismatches(session: SetupSessionResponse): { cameraId: string; diffCm: number }[] {
+    return Object.entries(session.camera_heights_m).flatMap(([cameraId, input]) => {
+      const actual = actualHeightsM[cameraId];
+      if (actual == null || Math.abs(input - actual) <= MOCK_PAUSE_HEIGHT_DIFF_M) return [];
+      return [{ cameraId, diffCm: Math.round((actual - input) * 1000) / 10 }];
+    });
+  }
+
+  /** 카메라 정밀 보정에 들어설 때 높이가 크게 틀리면 멈춘다(품질 게이트 실패 문제와 높이 검사를 싣는다). */
+  function pauseIfHeightsOff(session: SetupSessionResponse, elapsed: number) {
+    const verifyAt = AUTO_STAGES.find((s) => s.stage === 'JOINT_BA_AND_VERIFY')!.at;
+    if (elapsed < verifyAt || session.calibration_version) return null;
+    const mismatches = heightMismatches(session);
+    if (mismatches.length === 0) return null;
+    const cams = Object.keys(session.camera_heights_m);
+    const label = (cameraId: string) => `카메라 ${cams.indexOf(cameraId) + 1}`;
+    pausedAt.set(session.setup_session_id, now());
+    return updateSession(session.setup_session_id, {
+      status: 'JOINT_BA_AND_VERIFY',
+      stage: 'JOINT_BA_AND_VERIFY',
+      progress_pct: MOCK_PAUSE_PCT,
+      paused_reason: 'QUALITY_GATE',
+      height_checks: Object.fromEntries(
+        Object.entries(session.camera_heights_m).map(([c, h]) => {
+          const miss = mismatches.find((m) => m.cameraId === c);
+          return [
+            c,
+            {
+              input_height_m: h,
+              restored_height_m: Math.round((h + (miss ? miss.diffCm / 100 : 0.01)) * 100) / 100,
+              difference_cm: miss ? miss.diffCm : 1,
+              within_tolerance: !miss,
+              guidance: null,
+            },
+          ];
+        }),
+      ),
+      quality_gate: {
+        verdict: 'FAILED',
+        pairs: {},
+        problems: mismatches.map((m) => ({
+          kind: 'CAMERA',
+          id: m.cameraId,
+          camera_ids: [m.cameraId],
+          reason: 'HEIGHT_MISMATCH',
+          message: `${label(m.cameraId)} 높이가 ${Math.abs(m.diffCm).toFixed(1)} cm 안 맞습니다. 거치대 높이를 확인하세요.`,
+        })),
+      },
+    });
+  }
+
+  /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션과 멈춘 세션은 두지 않는다. */
   function progressSession(session: SetupSessionResponse): SetupSessionResponse {
     if (
       !options.autoProgress ||
       session.status === 'FAILED' ||
+      session.paused_reason ||
       session.started_at_ms === undefined
     ) {
       return session;
     }
     const elapsed = now() - session.started_at_ms;
+    const paused = pauseIfHeightsOff(session, elapsed);
+    if (paused) return paused;
     const advanced = progressStage(session, elapsed);
     return progressCameraCheck(advanced, elapsed);
   }
@@ -930,6 +997,40 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         failure_message: '관리자가 세팅을 취소했습니다',
       });
       return HttpResponse.json(cancelled);
+    }),
+
+    // 멈춘 세팅 이어 가기(서버·워커에 요청한 계약): 고친 높이를 싣고 멈춘 단계부터 다시 돈다. 멈춘 동안은 시간이 흐르지 않은 것으로 본다.
+    http.post('*/api/setup-sessions/:id/resume', async ({ request, params }) => {
+      const t = now();
+      if (!readLiveUser(request, t)) return unauthorized();
+      const id = String(params.id ?? '');
+      const found = sessions.get(id);
+      if (!found) return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      if (!found.paused_reason || found.status === 'FAILED') {
+        return problem(409, 'SETUP_RESUME_NOT_ALLOWED', '멈춘 세팅 세션만 이어 갈 수 있습니다');
+      }
+      const raw: unknown = await request.json().catch(() => ({}));
+      const rawHeights =
+        typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'camera_heights_m') : undefined;
+      const heights: Record<string, number> = { ...found.camera_heights_m };
+      if (typeof rawHeights === 'object' && rawHeights !== null) {
+        for (const [camId, val] of Object.entries(rawHeights)) {
+          if (typeof val === 'number' && Number.isFinite(val) && val > 0 && val <= 20) {
+            heights[camId] = val;
+            state.cameraHeightsM[camId] = val;
+          }
+        }
+      }
+      const pausedSince = pausedAt.get(id) ?? t;
+      pausedAt.delete(id);
+      const resumed = updateSession(id, {
+        camera_heights_m: heights,
+        paused_reason: null,
+        quality_gate: null,
+        height_checks: null,
+        started_at_ms: (found.started_at_ms ?? t) + (t - pausedSince),
+      });
+      return HttpResponse.json(resumed);
     }),
 
     http.post('*/api/setup-sessions/:id/retry', async ({ request, params }) => {

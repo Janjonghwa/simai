@@ -409,7 +409,7 @@ export const WAITING_STAGES: readonly WaitingStageDef[] = [
 /** 카메라 높이 확인(서버 height_checks)은 3D 공간을 만든 직후(2번째 단계가 끝나는 40%)부터 알린다. */
 const HEIGHT_NOTICE_FROM_PCT = WAITING_STAGES[1]!.to;
 
-export type WaitingStepStatus = 'done' | 'current' | 'upcoming' | 'failed';
+export type WaitingStepStatus = 'done' | 'current' | 'upcoming' | 'failed' | 'paused';
 
 export interface WaitingStageRowView extends WaitingStageDef {
   index: number;
@@ -425,6 +425,7 @@ export interface WaitingStageRowView extends WaitingStageDef {
 export function deriveStageRows(
   shownPct: number,
   failedStageIndex: number | null,
+  pausedStageIndex: number | null = null,
 ): WaitingStageRowView[] {
   return WAITING_STAGES.map((def, index) => {
     const fraction = Math.max(0, Math.min(1, (shownPct - def.from) / (def.to - def.from)));
@@ -432,6 +433,9 @@ export function deriveStageRows(
     if (failedStageIndex !== null) {
       status =
         index === failedStageIndex ? 'failed' : index < failedStageIndex ? 'done' : 'upcoming';
+    } else if (pausedStageIndex !== null) {
+      status =
+        index === pausedStageIndex ? 'paused' : index < pausedStageIndex ? 'done' : 'upcoming';
     } else if (fraction >= 1) {
       status = 'done';
     } else if (shownPct >= def.from) {
@@ -600,6 +604,8 @@ export interface SetupWaitingView {
   cameraIds: string[];
   /** 실패한 단계(WAITING_STAGES 인덱스). 실패가 아니면 null. 마지막 서버 진행률로 정한다. */
   failedStageIndex: number | null;
+  /** 보정 문제로 멈춰 사람이 고치기를 기다리는 단계(WAITING_STAGES 인덱스, 서버 paused_reason). 멈추지 않았으면 null. */
+  pausedStageIndex: number | null;
   backgroundCollection: { cameraId: string; pct: number }[];
   failed: boolean;
   failureCode: string | null;
@@ -836,6 +842,10 @@ export function deriveWaitingView(
 
   const heightWarnings = deriveHeightWarnings(session);
   const previewReady = isPreviewSceneReady(session);
+  const pausedStageIndex =
+    failed || !session?.paused_reason
+      ? null
+      : Math.min(WAITING_STAGES.length - 1, Math.max(0, STAGE_ORDER[rawStage]));
 
   return {
     sessionId: session?.setup_session_id ?? null,
@@ -848,6 +858,7 @@ export function deriveWaitingView(
     remainingLabel: formatRemainingKorean(remainingSec),
     cameraIds: Object.keys(session?.camera_heights_m ?? {}),
     failedStageIndex,
+    pausedStageIndex,
     backgroundCollection,
     failed,
     failureCode: session?.failure_code ?? null,

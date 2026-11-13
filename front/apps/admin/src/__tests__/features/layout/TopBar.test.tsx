@@ -7,7 +7,6 @@ import { useSessionStore, type Role } from '@/store/session.store';
 import type { ViewerHealthPayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { delay } from 'msw';
 import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import type { ReactNode } from 'react';
@@ -69,13 +68,12 @@ afterEach(() => {
 });
 
 describe('TopBar', () => {
-  it('로고·서버 현장명·시계·관리자 메뉴만 두고 상태 값(System Health·데이터·카메라·보정·구성·장면)은 보이지 않는다', async () => {
+  it('로고·시계·관리자 메뉴만 두고 현장명·상태 값(System Health·데이터·카메라·보정·구성·장면)은 보이지 않는다', () => {
     seed({ scene: MISMATCH });
     const { container } = renderTopBar();
-    await screen.findByText(site.name);
 
     const text = container.querySelector('header')!.textContent!;
-    expect(text).toContain(site.name);
+    expect(text).not.toContain(site.name);
     expect(text).not.toContain('교실 테스트베드');
     expect(text).not.toContain('10×10m');
     for (const label of ['NOMINAL', '데이터', '카메라', '보정', '구성', '장면', 'scene-3']) {
@@ -117,41 +115,6 @@ describe('TopBar', () => {
     expect(container.textContent).not.toContain('지연');
   });
 
-  it('스캔 유무와 관계없이 서버 현장명만 보인다', async () => {
-    seed();
-    const { container } = renderTopBar();
-    await screen.findByText(site.name);
-    const name = () => container.querySelector('header > span')!.textContent;
-    expect(name()).toBe(site.name);
-
-    act(() => useRoomBoundsStore.getState().set({ min: [0, 0, 0], max: [7.2, 5.8, 3] }));
-    expect(name()).toBe(site.name);
-
-    act(() => useRoomBoundsStore.getState().set(null));
-    expect(name()).toBe(site.name);
-  });
-
-  it('로딩 중에는 현장 이름과 목업 크기를 비운다', () => {
-    server.use(
-      http.get('*/api/sites/current', async () => {
-        await delay('infinite');
-        return HttpResponse.json(site);
-      }),
-    );
-    const { container } = renderTopBar();
-    expect(container.querySelector('header > span')!.textContent).toBe('');
-  });
-
-  it.each([
-    HttpResponse.json({ message: '조회 실패' }, { status: 503 }),
-    HttpResponse.json({ site_id: 'broken', name: 42 }),
-  ])('실패하거나 응답 형식이 다르면 교실 문구를 대신 표시하지 않는다', async (response) => {
-    server.use(http.get('*/api/sites/current', () => response.clone()));
-    const { container, client } = renderTopBar();
-    await waitFor(() => expect(client.getQueryState(['sites', 'current'])?.status).toBe('error'));
-    expect(container.querySelector('header > span')!.textContent).toBe('');
-  });
-
   it('관리자 메뉴는 화이트·다크 모드와 로그아웃뿐이다(설치 · 보정은 작업 관리 단계 줄의 세팅으로 들어간다)', async () => {
     seed();
     renderTopBar();
@@ -179,11 +142,11 @@ describe('TopBar', () => {
     seed();
     signInAs('ADMIN');
     renderTopBar();
-    await screen.findByText(site.name);
 
     act(() => fireEvent.click(screen.getByRole('button', { name: /관리자/ })));
+    // 현장 기준은 메뉴를 열 때 받으므로 받은 뒤 체크된다.
     const operation = await screen.findByRole('menuitemradio', { name: '운영 (고소 2.0m)' });
-    expect(operation.getAttribute('aria-checked')).toBe('true');
+    await waitFor(() => expect(operation.getAttribute('aria-checked')).toBe('true'));
     act(() =>
       fireEvent.click(screen.getByRole('menuitemradio', { name: '교실 시험 (고소 0.35m)' })),
     );

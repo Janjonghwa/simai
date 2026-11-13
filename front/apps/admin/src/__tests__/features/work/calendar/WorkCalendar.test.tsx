@@ -229,11 +229,18 @@ describe('WorkCalendar', () => {
     expect(within(cellOf('11월 9일')).getByText('작업 종료')).toBeTruthy();
   });
 
-  it('작업이 없는 지난 날은 표시도 요약도 없다', async () => {
-    renderCalendar();
+  it('작업이 없는 지난 날은 표시도 요약도 없고 누를 수 없다', async () => {
+    const { onPick } = renderCalendar();
     await screen.findByText('작업 2건');
-    const empty = cellOf('11월 5일');
+    const empty = cellOf('11월 5일') as HTMLButtonElement;
     expect(empty.textContent).toBe('5');
+    expect(empty.disabled).toBe(true);
+    fireEvent.click(empty);
+    expect(onPick).not.toHaveBeenCalled();
+    // 끝난 작업이 있는 지난 날·오늘·예정인 날은 누를 수 있다.
+    for (const label of ['11월 9일', '11월 11일', '11월 20일']) {
+      expect((cellOf(label) as HTMLButtonElement).disabled).toBe(false);
+    }
   });
 
   it.each([
@@ -308,8 +315,9 @@ describe('WorkCalendar', () => {
     expect(screen.getByRole('heading', { name: '2026년 11월' })).toBeTruthy();
   });
 
-  it('칸을 누르면 그 날짜 키로 알린다(지난 날·오늘·예정인 날 모두)', () => {
+  it('칸을 누르면 그 날짜 키로 알린다(지난 날·오늘·예정인 날 모두)', async () => {
     const { onPick } = renderCalendar();
+    await screen.findByText('작업 2건');
     fireEvent.click(cellOf('11월 9일'));
     fireEvent.click(cellOf('11월 11일'));
     fireEvent.click(cellOf('11월 20일'));

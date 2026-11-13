@@ -434,6 +434,12 @@ export const setupSessionResponseSchema = z.object({
   camera_check_passed: z.boolean().nullish().catch(null),
   /** 구역별 상면 높이 차이 판정 요약(-630). 그 전 서버·워커는 싣지 않는다(null) */
   zone_height_changes: zoneHeightChangesSummarySchema.nullish().catch(null),
+  /**
+   * 보정에 문제가 있어(품질 게이트 실패 등) 모델 생성을 멈추고 사람이 고치기를 기다리는 까닭 코드. 멈추지 않았으면 null.
+   * 멈춘 세션은 단계(status)를 그대로 두고, 고친 높이를 실어 POST /api/setup-sessions/{id}/resume 으로 멈춘 곳부터 이어 간다.
+   * 서버·워커에 요청한 계약이라 그 전 서버는 싣지 않는다(멈추지 않고 지금처럼 실패로 끝낸다).
+   */
+  paused_reason: z.string().nullish().catch(null),
 });
 export type SetupSessionResponse = z.infer<typeof setupSessionResponseSchema>;
 
@@ -461,6 +467,11 @@ export interface CreateSetupSessionBody {
 
 export interface RetrySetupSessionBody {
   camera_heights_m?: Record<string, number>;
+}
+
+/** 멈춘 세팅을 이어 가기(POST /api/setup-sessions/{id}/resume): 카메라 연결 관리에서 고친 높이. */
+export interface ResumeSetupSessionBody {
+  camera_heights_m: Record<string, number>;
 }
 
 // ---- VLM 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455) ----

@@ -147,8 +147,16 @@ describe('WorkPage', () => {
   });
 
   it('달력의 칸을 누르면 날짜를 열라고 알리고, 지난 날이면 지난 날짜 화면이 뜬다', async () => {
+    // 작업한 지난 날만 눌린다.
+    server.use(
+      http.get('*/api/work-units', () =>
+        HttpResponse.json({ works: [workDayOf({ date: '2026-11-09', progress: 'SUBMITTED' })] }),
+      ),
+    );
     renderPage();
-    fireEvent.click(screen.getByRole('button', { name: '11월 9일' }));
+    const past = screen.getByRole('button', { name: '11월 9일' });
+    await waitFor(() => expect((past as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(past);
     expect(calls).toEqual(['2026-11-09']);
     expect(stageName()).toBe('past-day');
   });

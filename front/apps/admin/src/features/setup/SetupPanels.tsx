@@ -291,6 +291,7 @@ export function CameraHeightPanel({
   heightWarnings = [],
   retrySessionId = null,
   onRetryWithHeights,
+  retryLabel = '다시 시도',
   retryPending = false,
   canSubmitHeights = true,
 }: {
@@ -303,6 +304,8 @@ export function CameraHeightPanel({
   heightWarnings?: readonly HeightWarningItem[];
   retrySessionId?: string | null;
   onRetryWithHeights?: () => void;
+  /** 고친 높이로 다시 하는 단추 글(멈춘 세팅은 이어서 만들기). */
+  retryLabel?: string;
   retryPending?: boolean;
   canSubmitHeights?: boolean;
 }) {
@@ -392,7 +395,7 @@ export function CameraHeightPanel({
             disabled={!canSubmitHeights || retryPending}
             onClick={onRetryWithHeights}
           >
-            다시 시도
+            {retryLabel}
           </Button>
         </div>
       )}

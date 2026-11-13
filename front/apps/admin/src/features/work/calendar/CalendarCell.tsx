@@ -56,18 +56,21 @@ export function CalendarCell({
   isToday,
   mark,
   summary,
+  disabled,
   onPick,
 }: {
   dateKey: DateKey;
   /** 칸에 보이는 날짜 숫자. */
   day: number;
-  /** false 면 앞뒤 달의 날짜라 흐리게 보인다(누르면 그 날로 간다). */
+  /** false 면 앞뒤 달의 날짜라 흐리게 보인다(누를 수 있으면 그 날로 간다). */
   inMonth: boolean;
   isToday: boolean;
   /** 그 날의 표시(작업 종료·오늘의 단추). 없으면 비어 있다. */
   mark: DayMark | null;
   /** 지난 날 요약(작업 건수·위험·경고). 지난 날이 아니거나 끝난 작업이 없으면 null. */
   summary: DaySummary | null;
+  /** 작업하지 않은 지난 날이라 누를 수 없다. */
+  disabled: boolean;
   onPick: (dateKey: DateKey) => void;
 }) {
   const [, month] = dateKey.split('-');
@@ -75,12 +78,13 @@ export function CalendarCell({
     <button
       type="button"
       aria-label={`${Number(month)}월 ${day}일`}
+      disabled={disabled}
       onClick={() => onPick(dateKey)}
       className={cn(
         'flex min-w-0 flex-col items-start gap-1 rounded-[12px] border border-border bg-card px-2.5 py-2 text-left text-foreground',
-        'transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+        'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring enabled:hover:bg-surface-2',
         !inMonth && 'opacity-45',
-        isToday && 'border-2 border-primary bg-primary/10 hover:bg-primary/16',
+        isToday && 'border-2 border-primary bg-primary/10 enabled:hover:bg-primary/16',
       )}
     >
       <span className="flex w-full items-center gap-1.5">

@@ -69,7 +69,7 @@ describe('보강 촬영 파일 검사', () => {
       kind: 'VIDEO',
     });
     const bigVideo = checkSupplementFile(file('a.mp4', 1025 * MB, 'video/mp4'), limits, EMPTY);
-    expect(bigVideo).toEqual({ ok: false, reason: '동영상은 1.0 GB까지 올릴 수 있습니다' });
+    expect(bigVideo).toEqual({ ok: false, reason: '동영상은 1 GB까지 올릴 수 있습니다' });
     const bigPhoto = checkSupplementFile(file('a.jpg', 51 * MB, 'image/jpeg'), limits, EMPTY);
     expect(bigPhoto).toEqual({ ok: false, reason: '사진은 50 MB까지 올릴 수 있습니다' });
     expect(
@@ -80,7 +80,7 @@ describe('보강 촬영 파일 검사', () => {
         count: 4,
         totalBytes: 3.8 * 1024 * MB,
       }),
-    ).toEqual({ ok: false, reason: '합계 4.0 GB를 넘습니다' });
+    ).toEqual({ ok: false, reason: '합계 4 GB를 넘습니다' });
     expect(checkSupplementFile(file('a.gif', MB, 'image/gif'), limits, EMPTY).ok).toBe(false);
     expect(checkSupplementFile(file('a.png', 0, 'image/png'), limits, EMPTY).ok).toBe(false);
   });

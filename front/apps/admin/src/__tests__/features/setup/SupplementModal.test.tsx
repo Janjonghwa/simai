@@ -133,6 +133,7 @@ describe('맵 보강 촬영 창', () => {
     expect(input.type).toBe('file');
     expect(input.multiple).toBe(true);
     expect(inDialog.getByRole('button', { name: '파일 고르기' })).toBeTruthy();
+    expect(inDialog.getByText('동영상 1 GB · 사진 50 MB · 합계 4 GB까지')).toBeTruthy();
   });
 
   it('올릴 수 없는 세션이면 파일 고르기 대신 이유를 보인다', () => {
@@ -224,6 +225,33 @@ describe('맵 보강 촬영 창', () => {
     expect(onRebaked).not.toHaveBeenCalled();
     update({ media: [uploadedFile], rebake: appliedRebake, can_rebake: true });
     expect(onRebaked).toHaveBeenCalledTimes(1);
+  });
+
+  it('다시 구웠는데 붙은 게 없으면(원래 맵 유지) 다시 굽기 옆에 건너뛰기가 있고 누르면 onNext 를 부른다', () => {
+    const { onNext, within: inDialog } = renderModal({
+      media: [uploadedFile],
+      rebake: failedRebake,
+      can_rebake: true,
+      rebake_blocked_reason: null,
+    });
+    expect(inDialog.getByRole('button', { name: '다시 굽기' })).toBeTruthy();
+    fireEvent.click(inDialog.getByRole('button', { name: '건너뛰기' }));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('아직 다시 굽지 않았거나 굽는 중이면 다시 굽기 옆에 건너뛰기가 없다', () => {
+    const { within: inDialog, update } = renderModal({
+      media: [uploadedFile],
+      can_rebake: true,
+      rebake_blocked_reason: null,
+    });
+    expect(inDialog.queryByRole('button', { name: '건너뛰기' })).toBeNull();
+    update({
+      media: [uploadedFile],
+      rebake: runningRebake,
+      rebake_blocked_reason: 'REBAKE_RUNNING',
+    });
+    expect(inDialog.queryByRole('button', { name: '건너뛰기' })).toBeNull();
   });
 
   it('굽기가 실패하거나 원래 맵을 유지하면 닫지 않고 결과를 보인다', () => {

@@ -7,11 +7,17 @@ afterEach(cleanup);
 function renderDialog(reuseBlockedReason: string | null = null) {
   const onNew = vi.fn();
   const onReuse = vi.fn();
+  const onClose = vi.fn();
   render(
-    <ModelPickerDialog onNew={onNew} onReuse={onReuse} reuseBlockedReason={reuseBlockedReason} />,
+    <ModelPickerDialog
+      onNew={onNew}
+      onReuse={onReuse}
+      onClose={onClose}
+      reuseBlockedReason={reuseBlockedReason}
+    />,
   );
   const dialog = screen.getByRole('dialog', { name: '3D 공간' });
-  return { onNew, onReuse, dialog, within: within(dialog) };
+  return { onNew, onReuse, onClose, dialog, within: within(dialog) };
 }
 
 describe('방식 고르기 창', () => {
@@ -54,12 +60,19 @@ describe('방식 고르기 창', () => {
     expect(onNew).toHaveBeenCalledTimes(1);
   });
 
-  it('Esc(cancel)는 막혀 창이 열린 채 남고, 바깥(창 자체)을 눌러도 닫히지 않는다', () => {
-    const { onNew, dialog } = renderDialog();
-    // false = preventDefault 가 불렸다(브라우저는 이때 창을 닫지 않는다).
-    expect(fireEvent(dialog, new Event('cancel', { cancelable: true }))).toBe(false);
+  it('바깥(어두운 바탕 = 창 자체)을 누르거나 Esc 를 누르면 고르지 않고 onClose 를 부른다', () => {
+    const { onNew, onReuse, onClose, dialog } = renderDialog();
     fireEvent.click(dialog);
-    expect(screen.getByRole('dialog', { name: '3D 공간' }).hasAttribute('open')).toBe(true);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(2);
     expect(onNew).not.toHaveBeenCalled();
+    expect(onReuse).not.toHaveBeenCalled();
+  });
+
+  it('창 안의 빈 곳을 누르면 닫히지 않는다', () => {
+    const { onClose, within: inDialog } = renderDialog();
+    fireEvent.click(inDialog.getByRole('heading', { name: '3D 공간' }));
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -17,19 +17,15 @@ import {
   type WaitingStepStatus,
 } from '@/features/setup/setup';
 import { failureGuide } from '@/features/setup/setupFailures';
-import {
-  CALIBRATE_COLUMN,
-  NARROW_COLUMN,
-  SetupPreviewSplit,
-} from '@/features/setup/SetupPreviewModel';
+import { SetupPreviewCard, SetupSplit } from '@/features/setup/SetupPreviewModel';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 import { TriangleAlert } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
-// 세팅 2단계 '보정·생성'. 진행 카드(5단계 막대) · 실패 안내 · 높이 불일치 안내 · 보정 검증 결과 표를 한 열에 쌓고,
-// 미리보기 맵이 준비되면(85%) 왼쪽에 3D 미리보기를 둔다(SetupPreviewSplit).
+// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 · 높이 불일치 안내 ·
+// 보정 검증 결과 표를 쌓는다. 왼쪽은 미리보기 맵이 준비되기 전(85%)에는 1단계의 카메라 시야·실시간 영상, 준비되면 3D 미리보기다.
 // 막대·단계별 %·'진행 N%' 는 서버 값만 쓴다. 경과 시간만 진행 카드 안에서 갱신한다.
 
 /** 새 진행 정보 없이 이만큼(초) 지나면 멈춘 것으로 알린다. */
@@ -40,12 +36,14 @@ const VALUE_TONE: Record<WaitingStepStatus, string> = {
   current: 'text-foreground',
   upcoming: 'text-muted-foreground',
   failed: 'font-semibold text-delay',
+  paused: 'font-semibold text-delay',
 };
 
 function stageValueText(row: WaitingStageRowView): string {
   if (row.status === 'done') return '완료';
   if (row.status === 'upcoming') return '대기';
   if (row.status === 'failed') return '실패';
+  if (row.status === 'paused') return '멈춤';
   return `${Math.round(row.stagePct)}%`;
 }
 
@@ -101,9 +99,17 @@ function ProgressCard({
     0,
     Math.floor((now - (waiting.updatedAtMs ?? waiting.startedAtMs ?? openedAt)) / 1000),
   );
-  const stalled = !waiting.failed && !waiting.previewReady && unchanged >= STALLED_AFTER_SEC;
+  const stalled =
+    !waiting.failed &&
+    waiting.pausedStageIndex === null &&
+    !waiting.previewReady &&
+    unchanged >= STALLED_AFTER_SEC;
   const percent = waiting.progressPct;
-  const rows = deriveStageRows(waiting.progressPct, waiting.failedStageIndex);
+  const rows = deriveStageRows(
+    waiting.progressPct,
+    waiting.failedStageIndex,
+    waiting.pausedStageIndex,
+  );
   const currentIndex = rows.find((row) => row.status === 'current')?.index;
   const stageKey = `${waiting.sessionId}:${currentIndex}`;
   const enteredAt = (currentIndex === 0 ? waiting.startedAtMs : waiting.updatedAtMs) ?? openedAt;
@@ -183,7 +189,7 @@ function ProgressCard({
                 <div
                   className={cn(
                     'h-full transition-[width] duration-500 ease-out motion-reduce:transition-none',
-                    row.status === 'failed' ? 'bg-delay' : 'bg-primary',
+                    row.status === 'failed' || row.status === 'paused' ? 'bg-delay' : 'bg-primary',
                   )}
                   style={{ width: `${Math.round(row.stagePct)}%` }}
                 />
@@ -246,6 +252,44 @@ function FailureNotice({
           </Button>
         )}
         <Button size="sm" variant={guide.retry ? 'secondary' : 'default'} onClick={onReturnToStep1}>
+          카메라 연결 관리로
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 멈춤 안내: 보정에 문제가 있어 모델 생성을 멈췄다(서버 paused_reason). 원인 문장은 품질 게이트 문제, 없으면 높이 불일치 문구다.
+ * 카메라 연결 관리에서 고치고 '다음' 을 누르면 같은 세션이 멈춘 곳부터 이어 간다.
+ */
+function PausedNotice({
+  stageIndex,
+  problems,
+  onReturnToStep1,
+}: {
+  stageIndex: number;
+  problems: readonly string[];
+  onReturnToStep1: () => void;
+}) {
+  const stage = WAITING_STAGES[stageIndex];
+  return (
+    <div
+      role="alert"
+      aria-label="세팅 멈춤 안내"
+      className="flex flex-col gap-1.5 rounded-lg bg-delay/15 px-3.5 py-3 text-sm"
+    >
+      <span className="font-semibold text-delay">
+        {stage ? `${stage.label}에서 멈췄어요` : '모델 생성을 멈췄어요'}
+      </span>
+      {problems.map((problem) => (
+        <span key={problem} className="text-foreground">
+          {problem}
+        </span>
+      ))}
+      <span className="text-foreground">고친 뒤 다음을 누르면 멈춘 곳부터 이어서 만듭니다.</span>
+      <div className="mt-1">
+        <Button size="sm" onClick={onReturnToStep1}>
           카메라 연결 관리로
         </Button>
       </div>
@@ -538,6 +582,7 @@ function CameraCheckCard({
 
 export function SetupCalibrateStep({
   waiting,
+  cameraView,
   cameraCheck,
   showCameraCheck = false,
   onRecalibrate,
@@ -549,6 +594,8 @@ export function SetupCalibrateStep({
   onReturnToStep1,
 }: {
   waiting: SetupWaitingView;
+  /** 미리보기 맵이 준비되기 전 왼쪽 칸(1단계의 카메라 시야·실시간 영상). */
+  cameraView: ReactNode;
   /** 보정 품질 게이트·카메라 확인(S15P31A101-646). 없으면 쌍별 표·카메라 확인 카드를 그리지 않는다. */
   cameraCheck?: CameraCheckView;
   /** 보정이 등록돼 카메라 확인 카드를 보일 때(실패 세션 제외). */
@@ -569,6 +616,17 @@ export function SetupCalibrateStep({
           waiting={waiting}
           retryPending={retryPending}
           onRetry={onRetry}
+          onReturnToStep1={onReturnToStep1}
+        />
+      )}
+      {waiting.pausedStageIndex !== null && (
+        <PausedNotice
+          stageIndex={waiting.pausedStageIndex}
+          problems={
+            cameraCheck?.problems.length
+              ? cameraCheck.problems
+              : waiting.heightWarnings.map((warning) => warning.message)
+          }
           onReturnToStep1={onReturnToStep1}
         />
       )}
@@ -603,10 +661,11 @@ export function SetupCalibrateStep({
     </>
   );
 
-  // 미리보기 맵이 준비되기 전에는 진행 카드 하나를 가운데에 둔다. 준비되면 3D 칸이 왼쪽에 생긴다.
-  return waiting.previewReady ? (
-    <SetupPreviewSplit sceneTier={waiting.sceneTier}>{column}</SetupPreviewSplit>
-  ) : (
-    <div className={cn(NARROW_COLUMN, CALIBRATE_COLUMN)}>{column}</div>
+  return (
+    <SetupSplit
+      left={waiting.previewReady ? <SetupPreviewCard sceneTier={waiting.sceneTier} /> : cameraView}
+    >
+      {column}
+    </SetupSplit>
   );
 }

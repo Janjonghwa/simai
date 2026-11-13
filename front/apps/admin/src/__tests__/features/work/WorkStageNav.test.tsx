@@ -32,6 +32,16 @@ describe('WorkStageNav', () => {
     expect(stateOf('세팅')).toBe('todo');
   });
 
+  it('작업이 끝나면 지금 단계(작업 종료)도 ✓ 이고 굵게 지금 단계로 남는다', () => {
+    render(<WorkStageNav stage="run" finished />);
+    for (const label of ['TBM 보고서', '세팅', '작업 전 확인', '작업 종료']) {
+      expect(stateOf(label)).toBe('done');
+    }
+    expect(itemOf('작업 종료')?.textContent).toBe('작업 종료');
+    expect(itemOf('작업 종료')?.getAttribute('aria-current')).toBe('step');
+    expect(screen.getByText('작업 종료').className).toContain('font-bold');
+  });
+
   it('표시만 한다: 단추가 없고 눌러도 아무것도 바뀌지 않는다', () => {
     render(<WorkStageNav stage="setup" />);
     expect(screen.queryAllByRole('button')).toEqual([]);
