@@ -659,3 +659,69 @@ def test_write_floor_coverage_moves_points_to_world_and_counts_cameras(tmp_path)
     np.savez(tmp_path / "mapanything" / "pointcloud.npz", points_xyz=table)
     assert tasks.write_floor_coverage(tmp_path, M) is None
     assert not (tmp_path / "floor_coverage.json").exists()
+
+
+def test_bake_default_num_threads_caps_on_many_core_host_and_restores_omp_env(tmp_path, monkeypatch):
+    """-672: 224코어 호스트·24 vCPU 컨테이너에서 num_threads=0 이 224개 스레드를 만들지 않고 가용 코어의 절반(12)으로 묶이며,
+    texture_mesh 실행 뒤 OMP_NUM_THREADS 를 원래 값으로 되돌린다."""
+    from simai_ai.scene import cpu_budget
+    from simai_ai.scene import texture_mesh as tm
+
+    monkeypatch.delenv("SIMAI_BAKE_NUM_THREADS", raising=False)
+    monkeypatch.setattr(cpu_budget.os, "cpu_count", lambda: 224)
+    monkeypatch.setattr(cpu_budget, "cgroup_cpu_quota", lambda: 24)
+    if hasattr(cpu_budget.os, "sched_getaffinity"):
+        monkeypatch.setattr(cpu_budget.os, "sched_getaffinity", lambda _pid: set(range(224)))
+    assert tm.resolve_num_threads(0) == 12
+    assert tm.resolve_num_threads(8) == 8
+
+    # 가용 코어가 적으면 그 절반(최소 1)
+    monkeypatch.setattr(cpu_budget, "usable_cpu_count", lambda: 2)
+    assert tm.resolve_num_threads(0) == 1
+
+    # 환경변수 SIMAI_BAKE_NUM_THREADS 로 명시한 양수는 그대로 존중한다
+    monkeypatch.setenv("SIMAI_BAKE_NUM_THREADS", "6")
+    assert tm.resolve_num_threads(0) == 6
+    monkeypatch.delenv("SIMAI_BAKE_NUM_THREADS", raising=False)
+
+    # ProcessStages 기본 환경변수: 수치 연산은 가용 코어의 절반, cv2 는 1
+    monkeypatch.setattr(cpu_budget, "usable_cpu_count", lambda: 2)
+    stage_env = ProcessStages(env={}).env
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert stage_env[var] == "1"
+    assert stage_env["SIMAI_CV2_THREADS"] == "1"
+
+    # bake 안에서 tm.main 이 OMP_NUM_THREADS 를 높여도 끝나면 원래 값("1")으로 복원한다
+    synthetic(tmp_path)
+    job = read_json(tmp_path / "job.json")
+    job.update(run_id="omp-restore-run")
+    write_json(tmp_path / "job.json", job)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1")
+    monkeypatch.setitem(sys.modules, "open3d", types.ModuleType("open3d"))
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: "fake-texrecon")
+
+    def fake_main_mutating_omp(args):
+        os.environ["OMP_NUM_THREADS"] = "224"
+        out = tmp_path / "textured"
+        out.mkdir(exist_ok=True)
+        (out / "scene.glb").write_bytes(b"fake-glb")
+        (out / "surface_source_0000.png").write_bytes(b"fake-lossless-map")
+        write_json(
+            out / "metrics.json",
+            {
+                "geometry": {"faces": 100, "vertices": 60, "decimated": False},
+                "bakes": {
+                    "area": {
+                        "glb": "scene.glb",
+                        "glb_triangles": 100,
+                        "ratios_area": {"OBSERVED": 1.0, "INTERPOLATED": 0.0, "UNOBSERVED": 0.0, "ESTIMATED_PLANE": 0.0},
+                    }
+                },
+            },
+        )
+        return 0
+
+    monkeypatch.setattr(tm, "main", fake_main_mutating_omp)
+    tasks.bake(tmp_path)
+    assert os.environ.get("OMP_NUM_THREADS") == "1"
+

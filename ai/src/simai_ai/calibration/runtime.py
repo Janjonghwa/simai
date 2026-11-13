@@ -325,6 +325,13 @@ class RuntimeCalibrationStore(CalibrationProvider):
     def transitions(self):
         return _copy(self._head["transitions"])
 
+    def transitions_since(self, cursor: int) -> list[dict[str, Any]]:
+        """cursor 이후에 추가된 보정 전환 이력만 복사해 돌려준다. 새 이력이 없으면 복사하지 않고 빈 배열을 돌려준다(-672)."""
+        records = self._head["transitions"]
+        if cursor >= len(records):
+            return []
+        return _copy(records[cursor:])
+
     def prepare(self, document, report):
         doc, audit = _copy(document), _copy(report)
         self.last_validation = validate_candidate(doc, audit, self.current())

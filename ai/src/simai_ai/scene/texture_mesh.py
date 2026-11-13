@@ -73,11 +73,22 @@ BLUR_SIGMA_PX = 8.0  # 빼고 굽기 보조 지표: 두 그림을 비교 영역 
 OCCLUSION_TOL = 0.05  # 텍스처 가림: 이 카메라 깊이가 면보다 5% 넘게 앞이면 메시에 없는 가림체로 본다(run_hybrid_depth 충돌 기준과 같다)
 
 
+from .cpu_budget import default_bake_threads, usable_cpu_count  # noqa: E402  (S15P31A101-672)
+
+
 def resolve_num_threads(num_threads: int) -> int:
-    """0 이하이면 가용 CPU 코어 전체(`os.cpu_count() or 1`)로 풀고, 양수면 그대로 돌려준다."""
-    if int(num_threads) <= 0:
-        return max(1, os.cpu_count() or 1)
-    return int(num_threads)
+    """양수면 그대로 돌려주고, 0 이하이면 SIMAI_BAKE_NUM_THREADS 또는 가용 코어의 절반(Tier 0 몫을 남김, -672)으로 정한다."""
+    if int(num_threads) > 0:
+        return int(num_threads)
+    env_raw = os.environ.get("SIMAI_BAKE_NUM_THREADS", "").strip()
+    if env_raw:
+        try:
+            env_val = int(env_raw)
+            if env_val > 0:
+                return env_val
+        except ValueError:
+            pass
+    return default_bake_threads()
 
 
 def configure_cpu_threads(num_threads: int) -> int:
