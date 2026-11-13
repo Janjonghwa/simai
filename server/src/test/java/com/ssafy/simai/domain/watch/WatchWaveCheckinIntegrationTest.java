@@ -48,7 +48,8 @@ import tools.jackson.databind.node.ObjectNode;
 @ActiveProfiles("test")
 class WatchWaveCheckinIntegrationTest {
 
-    private static final java.util.concurrent.atomic.AtomicLong NEXT_T0 = new java.util.concurrent.atomic.AtomicLong();
+    /** world_state 를 이만큼 넣을 때마다 대조 스레드가 처리하길 기다린다(대기열 상한의 절반) */
+    private static final int FEED_BATCH = WatchMotionMatcher.MAX_PENDING_WORLD / 2;
     /** 손 흔들기 진폭 벡터(m): 사람마다 방향이 다르다 */
     private static final double[][] AMP = {{0.10, 0.04, 0.08}, {0.03, 0.12, 0.06}, {0.09, 0.09, 0.0}};
     private static final double[] PHASE = {0.0, 1.1, 2.3};
@@ -90,7 +91,7 @@ class WatchWaveCheckinIntegrationTest {
                 INSERT INTO app_user (login_id, password_hash, role, created_at) VALUES (?, 'x', 'ADMIN', now()) RETURNING user_id
                 """, Long.class, "wave-admin-" + tag);
         adminId = id == null ? -1 : id;
-        t0 = NEXT_T0.updateAndGet(prev -> Math.max(System.currentTimeMillis() / 100 * 100 + 3_600_000L / 60, prev + 60_000));
+        t0 = WatchMatchTestTimes.nextT0();
     }
 
     @AfterEach
@@ -231,8 +232,14 @@ class WatchWaveCheckinIntegrationTest {
     private void run(List<Watch> watches, long from, long to, double[] freq, String[] unused, boolean samePhase) throws Exception {
         int before = count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)", (Object[]) watchIds);
         Random noise = new Random(7);
+        int fed = 0;
         for (long t = from; t < to; t += 100) {
             matcher.onWorldState(world(t0 + t, freq, samePhase, noise));
+            // 실제로는 10 Hz 로 들어온다. 몇 초 분량을 한꺼번에 넣으면 대조 스레드가 밀린 사이(주기 대조의 DB 쓰기, 부하)
+            // 쌓인 것이 MAX_PENDING_WORLD 를 넘어 버려져 손목 표본이 빈다(-674). 절반마다 처리될 때까지 기다린다
+            if (++fed % FEED_BATCH == 0) {
+                matcher.awaitInputs();
+            }
         }
         int windows = 0;
         for (long start = from; start + 4_000 <= to; start += 2_000) {
@@ -242,8 +249,9 @@ class WatchWaveCheckinIntegrationTest {
             }
         }
         int expected = before + windows * 3;
-        waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)", (Object[]) watchIds) >= expected,
-                5_000);
+        // 창이 다 저장되기 전에 대조하면 점수가 모자라 엉뚱하게 실패한다. 조건 대기라 상한은 넉넉히 둔다
+        assertThat(waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)",
+                (Object[]) watchIds) >= expected, 30_000)).as("워치 특징 창 %d 개 저장", expected).isTrue();
     }
 
     private double phase(int i, boolean samePhase) {
@@ -410,11 +418,15 @@ class WatchWaveCheckinIntegrationTest {
         return n == null ? 0 : n;
     }
 
-    private static void waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
+    private static boolean waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
-        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
             Thread.sleep(50);
         }
+        return true;
     }
 
     private static final class Watch implements AutoCloseable {

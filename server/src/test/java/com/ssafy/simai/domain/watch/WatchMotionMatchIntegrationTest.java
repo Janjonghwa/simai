@@ -49,7 +49,8 @@ class WatchMotionMatchIntegrationTest {
 
     private static final double[] FREQ = {1.6, 1.9, 2.2};
     private static final double[] PHASE = {0.0, 1.3, 2.6};
-    private static final java.util.concurrent.atomic.AtomicLong NEXT_T0 = new java.util.concurrent.atomic.AtomicLong();
+    /** world_state 를 이만큼 넣을 때마다 대조 스레드가 처리하길 기다린다(대기열 상한의 절반) */
+    private static final int FEED_BATCH = WatchMotionMatcher.MAX_PENDING_WORLD / 2;
 
     @LocalServerPort
     int port;
@@ -88,9 +89,9 @@ class WatchMotionMatchIntegrationTest {
                 INSERT INTO app_user (login_id, password_hash, role, created_at) VALUES (?, 'x', 'ADMIN', now()) RETURNING user_id
                 """, Long.class, "match-admin-" + tag);
         adminId = id == null ? -1 : id;
-        // 시험마다 World 시각을 60초씩 띄운다. 같은 리듬의 사람이 앞 시험에서 같은 시각에 남아 있으면 두 사람을 구별할 수 없어
-        // (점수 차이 문턱) 잇지 않는다. 대조는 World 시각으로 '지금'을 보므로 늘 앞으로만 간다
-        t0 = NEXT_T0.updateAndGet(prev -> Math.max(System.currentTimeMillis() / 100 * 100, prev + 60_000));
+        // 시험마다 World 시각을 띄운다. 같은 리듬의 사람이 앞 시험(손 흔들기 시험 클래스 포함)에서 같은 시각에 남아 있으면 두 사람을
+        // 구별할 수 없어(점수 차이 문턱) 잇지 않는다. 대조는 World 시각으로 '지금'을 보므로 두 클래스가 한 계수기로 늘 앞으로만 간다
+        t0 = WatchMatchTestTimes.nextT0();
     }
 
     @AfterEach
@@ -183,9 +184,14 @@ class WatchMotionMatchIntegrationTest {
         ObjectNode broken = gait(0, t0 + 40_000, true);
         ((ObjectNode) broken.get("payload")).put("window_end_ms", t0 + 39_000);
         watches.get(0).send(broken);
-        Thread.sleep(500);
+        // 고정 0.5 s 대신: 같은 연결로 새 창 하나를 더 보내 그것이 저장될 때까지 기다린다. 한 연결의 메시지는 순서대로
+        // 대조 스레드 하나에 쌓이므로, 그 창이 저장됐으면 앞의 두 창은 이미 처리됐다. 그 창은 끝이 마지막 World 시각과
+        // 벽시계보다 앞이고 트랙 표본이 없어 아직 점수에 들어가지 않는다
+        watches.get(0).send(gait(0, t0 + 44_000, true));
+        assertThat(waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id = ?", watchIds[0]) > features,
+                30_000)).as("표지 창 저장").isTrue();
         matcher.matchNow();
-        assertThat(count("SELECT count(*) FROM watch_feature WHERE device_id = ?", watchIds[0])).isEqualTo(features);
+        assertThat(count("SELECT count(*) FROM watch_feature WHERE device_id = ?", watchIds[0])).isEqualTo(features + 1);
         assertThat(jdbc.queryForList("SELECT world_id FROM watch_binding WHERE device_id = ? AND unbound_at IS NULL",
                 String.class, watchIds[0])).containsExactly(worldIds[0]);
     }
@@ -207,8 +213,14 @@ class WatchMotionMatchIntegrationTest {
     /** [from, to) 를 world_state 10 Hz 로 흘리고, 창마다 워치가 gait_features 를 보낸다. 모든 창이 저장될 때까지 기다린다 */
     private void walk(List<Watch> watches, long from, long to, boolean walking) throws Exception {
         int before = count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)", (Object[]) watchIds);
+        int fed = 0;
         for (long t = from; t < to; t += 100) {
             matcher.onWorldState(world(t0 + t, 0, walking));
+            // 실제로는 10 Hz 로 들어온다. 몇 초 분량을 한꺼번에 넣으면 대조 스레드가 밀린 사이(주기 대조의 DB 쓰기, 부하)
+            // 쌓인 것이 MAX_PENDING_WORLD 를 넘어 버려져 표본이 빈다(-674). 절반마다 처리될 때까지 기다린다
+            if (++fed % FEED_BATCH == 0) {
+                matcher.awaitInputs();
+            }
         }
         int windows = 0;
         for (long start = from; start + 4_000 <= to; start += 2_000) {
@@ -218,8 +230,9 @@ class WatchMotionMatchIntegrationTest {
             }
         }
         int expected = before + windows * 3;
-        waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)", (Object[]) watchIds) >= expected,
-                5_000);
+        // 창이 다 저장되기 전에 대조하면 점수가 모자라 엉뚱하게 실패한다. 조건 대기라 상한은 넉넉히 둔다
+        assertThat(waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id IN (?, ?, ?)",
+                (Object[]) watchIds) >= expected, 30_000)).as("워치 특징 창 %d 개 저장", expected).isTrue();
     }
 
     private WorldStateStored world(long t, int revisionOfFirst) {
@@ -348,11 +361,15 @@ class WatchMotionMatchIntegrationTest {
         return n == null ? 0 : n;
     }
 
-    private static void waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
+    private static boolean waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
-        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
             Thread.sleep(50);
         }
+        return true;
     }
 
     private static final class Watch implements AutoCloseable {

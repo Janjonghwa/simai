@@ -190,6 +190,14 @@ public class WatchMotionMatcher implements DisposableBean {
         submit(() -> ingestGait(received));
     }
 
+    /**
+     * 시험용: 앞서 넘긴 world_state·gait_features 를 다 처리할 때까지 기다린다(대조는 하지 않는다). 시험이 몇 초 분량의
+     * world_state 를 한꺼번에 넣을 때 {@link #MAX_PENDING_WORLD} 를 넘겨 버려지지 않게 중간중간 부른다(S15P31A101-674)
+     */
+    void awaitInputs() throws InterruptedException, ExecutionException {
+        executor.submit(() -> { }).get();
+    }
+
     /** 시험용: 앞서 넘긴 world_state·gait_features 를 다 처리한 뒤 한 번 대조한다 */
     void matchNow() throws InterruptedException, ExecutionException {
         executor.submit(this::match).get();

@@ -10,6 +10,19 @@ import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// API·STOMP 주소를 쓰지 않는 도메인(.invalid)으로 둔다. 이 파일은 @/lib/api 를 그대로 써서 주소가 실행 환경의
+// VITE_API_BASE_URL 을 따랐고, https://simai.live 이면 MSW 가 응답을 흉내 내도 시험마다 실제 TLS 연결이 한 번씩 나갔다
+// (S15P31A101-674 TLS 탐침 4회). 처리기는 */api/… 로 걸려 있어 주소가 바뀌어도 그대로 받는다.
+vi.mock('@/lib/env', () => ({
+  env: {
+    VITE_API_BASE_URL: 'https://tbm-layout.invalid',
+    VITE_STOMP_URL: 'wss://tbm-layout.invalid/ws',
+    VITE_CCTV_PREVIEW_URL: 'ws://127.0.0.1:47032',
+    VITE_API_MOCK: false,
+    VITE_API_REAL: [],
+  },
+}));
+
 // 3D 뷰어는 jsdom 에서 그릴 수 없다(WebGL·ResizeObserver 없음). 진짜 뷰어를 띄우면 오류 경계로 쓰러지며 MSW 가 못 막는
 // 실제 연결이 나가 CI 에서 TLS 오류(ERR_TLS_CERT_ALTNAME_INVALID)로 깨졌다. /zones·관제 시험처럼 자리표시로 바꾸고,
 // 편집 동작은 대화상자 패널(숫자·추가·삭제·가져오기)과 layoutEditorModel 시험으로 확인한다.

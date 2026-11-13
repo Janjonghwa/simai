@@ -124,6 +124,13 @@ afterEach(() => {
   useSessionStore.setState({ session: undefined });
 });
 
+/**
+ * 첫 화면의 목록(구역·작업면·구성 묶음)이 mock 에서 도착하기를 기다리는 상한. 파일의 첫 시험은 첫 요청 준비(fetch·MSW·응답
+ * 스키마 첫 검사)와 첫 그리기를 같이 치러 CPU 가 바쁘면 기본 1 s 를 넘겼다(S15P31A101-674, 바쁜 루프 부하에서 1.4 s).
+ * 도착 대기는 시험 대상 동작이 아니라 준비라서 시험 시간(5 s) 안에서 넉넉히 기다린다.
+ */
+const ARRIVAL = { timeout: 3_000 };
+
 async function renderPage({
   surfaces = true,
   onCommitted,
@@ -142,11 +149,16 @@ async function renderPage({
     </QueryClientProvider>,
   );
   // 접힌 화면에는 드롭다운이 없어 구역 목록이 도착했는지를 캐시로 본다.
-  if (addOnDemand) await waitFor(() => expect(client.getQueryData(ZONES_KEY)).toBeDefined());
-  else await screen.findByRole('option', { name: /개구부 구역/ });
+  if (addOnDemand) {
+    await waitFor(() => expect(client.getQueryData(ZONES_KEY)).toBeDefined(), ARRIVAL);
+  } else {
+    await screen.findByRole('option', { name: /개구부 구역/ }, ARRIVAL);
+  }
   // 작업면 목록과 구성 묶음 목록이 도착해야 이은 작업면·발행 전이 맞다.
-  if (surfaces) await waitFor(() => expect(client.getQueryData(['static-objects'])).toBeDefined());
-  await waitFor(() => expect(client.getQueryData(['config-bundles'])).toBeDefined());
+  if (surfaces) {
+    await waitFor(() => expect(client.getQueryData(['static-objects'])).toBeDefined(), ARRIVAL);
+  }
+  await waitFor(() => expect(client.getQueryData(['config-bundles'])).toBeDefined(), ARRIVAL);
   return { ...view, client };
 }
 
@@ -1436,10 +1448,16 @@ describe('구역 편집 화면', () => {
       await renderPage();
       pick('z-04');
       await waitFor(noSurfaceCard);
-      for (let i = 0; i < HISTORY_LIMIT; i++) {
-        rename(`이름 ${i}`);
-        fireEvent.change(severitySelect(), { target: { value: i % 2 ? 'HIGH' : 'CRITICAL' } });
-      }
+      // 기록을 상한까지 채운다. 화면으로 이름·심각도를 200번 고쳐 채우면 고칠 때마다 화면 전체를 다시 그려 전체 시험에서
+      // 4 s 넘게 걸리고 부하가 걸리면 5 s 시간 초과가 났다(S15P31A101-674). 앞 단계는 store 로 채우고(고치기 전 초안이 없던
+      // 단계), 끌기 직전의 고침과 끌기는 화면으로 한다. 단계마다 묶음 이름이 달라 서로 합쳐지지 않는다.
+      act(() => {
+        for (let i = 0; i < HISTORY_LIMIT; i++) {
+          useZoneEditStore.getState().record('z-04', `채움 ${i}`);
+        }
+      });
+      expect(useZoneEditStore.getState().history['z-04']).toHaveLength(HISTORY_LIMIT);
+      rename(`이름 ${HISTORY_LIMIT - 1}`);
       pressPointer();
       dragTo(MOVED_Z04_BOX);
       rename('끄는 중 이름');
@@ -1654,6 +1672,13 @@ describe('작업 레이아웃 구역 편집', () => {
         ),
       ).toBe(true),
     );
+    // mock 서버에 항목이 생긴 것만으로는 화면이 추가를 마무리했는지 모른다. 화면은 새 구역 초안을 지우고 만든 구역을 열어
+    // 드롭다운이 그 구역으로 바뀐다. 그 전에 새 구역을 고르면 드롭다운 값이 아직 새 구역이라 바뀜이 일어나지 않고, 뒤이어
+    // 만든 작업면 구역이 열려(고소 작업면 켬) 아래 단정이 깨졌다(S15P31A101-674 반복 실행). 만든 구역이 열리길 기다린다.
+    await waitFor(() => {
+      expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeUndefined();
+      expect(picker().value).not.toBe(NEW_KEY);
+    });
     expect(writes()).not.toContain(COMMIT);
     pick(NEW_KEY);
     expect(surfaceCheckbox().checked).toBe(false);

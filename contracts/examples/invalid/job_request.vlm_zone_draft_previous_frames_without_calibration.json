@@ -6,7 +6,7 @@
   "source_id": "ec2",
   "payload": {
     "job_id": "job-20261113-0631",
-    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006b1",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006c3",
     "attempt": 1,
     "max_attempts": 2,
     "job_type": "vlm_zone_draft",
