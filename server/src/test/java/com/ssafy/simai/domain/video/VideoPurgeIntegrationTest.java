@@ -52,6 +52,8 @@ class VideoPurgeIntegrationTest {
     @AfterEach
     void cleanUp() {
         jdbc.update("DELETE FROM upload_grant WHERE object_key LIKE ?", "video-segments/" + gatewayId + "-%");
+        jdbc.update("DELETE FROM upload_grant WHERE object_key LIKE ?", "recording-segments/" + gatewayId + "-%");
+        jdbc.update("DELETE FROM device WHERE device_id = ?", gatewayId);
         jdbc.update("DELETE FROM video_segment WHERE gateway_id = ?", gatewayId);
     }
 
@@ -99,6 +101,20 @@ class VideoPurgeIntegrationTest {
     }
 
     @Test
+    void 게이트웨이_녹화_조각_발급도_기록이_오지_않으면_만료_14일_뒤에_지운다() {
+        // S15P31A101-668: RECORDING_SEGMENT 는 기기가 받는다. 올린 뒤 등록이 끝내 오지 않은 객체도 같은 규칙으로 지운다
+        String old = recordingGrant(now.minus(Duration.ofDays(15)));
+        String recent = recordingGrant(now.minus(Duration.ofDays(1)));
+
+        purge.purge(now);
+
+        verify(storage).delete(old);
+        verify(storage, never()).delete(recent);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE object_key = ?", Integer.class, old)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE object_key = ?", Integer.class, recent)).isOne();
+    }
+
+    @Test
     void 저장소가_설정되지_않았으면_아무것도_하지_않는다() {
         when(storage.configured()).thenReturn(false);
         String key = segment(now.minusSeconds(1));
@@ -129,6 +145,19 @@ class VideoPurgeIntegrationTest {
                 INSERT INTO upload_grant (object_key, purpose, requester, content_type, size_bytes, sha256, issued_at, expires_at)
                 VALUES (?, 'VIDEO_SEGMENT', 'TIER0', 'video/h264', 10, ?, ?, ?)
                 """, key, "b".repeat(64), Timestamp.from(expiresAt.minusSeconds(300)), Timestamp.from(expiresAt));
+        return key;
+    }
+
+    /** 쓰이지 않은 RECORDING_SEGMENT 발급 한 행(기기) */
+    private String recordingGrant(Instant expiresAt) {
+        String key = "recording-segments/" + gatewayId + "-" + UUID.randomUUID() + ".mp4";
+        jdbc.update("INSERT INTO device (device_id, kind, token_hash, issued_at) VALUES (?, 'LAPTOP', 'x', now()) ON CONFLICT DO NOTHING",
+                gatewayId);
+        jdbc.update("""
+                INSERT INTO upload_grant (object_key, purpose, requester, requested_by_device, content_type, size_bytes, sha256,
+                    issued_at, expires_at)
+                VALUES (?, 'RECORDING_SEGMENT', 'DEVICE', ?, 'video/mp4', 10, ?, ?, ?)
+                """, key, gatewayId, "b".repeat(64), Timestamp.from(expiresAt.minusSeconds(300)), Timestamp.from(expiresAt));
         return key;
     }
 

@@ -192,3 +192,20 @@ Describe 'Build-RelayCommand 및 Get-RecordingStatusInfo 관제 동시 녹화 (S
   }
 }
 
+
+Describe '녹화 작업 구간 업로드 (S15P31A101-668)' {
+  It '관제 모드를 끌 때만 업로드를 띄운다(미리보기·꺼짐·-NoRecordingUpload 는 아님)' {
+    Test-UploadAfterStop -ModeText '관제 Pod 1.2.3.4 제어 40001 영상 40002, 원격 시청 켬, 녹화 C:\simai-local\recordings\live-1 (11-13 09:15)' | Should Be $true
+    Test-UploadAfterStop -ModeText '미리보기(전송 없음), 원격 시청 켬 (11-13 09:15)' | Should Be $false
+    Test-UploadAfterStop -ModeText '' | Should Be $false
+    Test-UploadAfterStop -ModeText '관제 Pod 1.2.3.4' -NoUpload | Should Be $false
+  }
+
+  It '업로드는 중계 venv 에서 녹화 루트·모드 파일·.env 를 넘겨 simai_recorder upload 를 부른다' {
+    $a = Get-RecordingUploadArgs
+    ($a[0..4] -join ' ') | Should Be 'run python -m simai_recorder upload'
+    $a[$a.IndexOf('--root') + 1] | Should Be $RecordingsRoot
+    $a[$a.IndexOf('--mode-file') + 1] | Should Be $ModeFile
+    ($a[$a.IndexOf('--env-file') + 1]).EndsWith('.env') | Should Be $true
+  }
+}

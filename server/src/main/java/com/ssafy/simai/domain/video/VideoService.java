@@ -62,7 +62,7 @@ class VideoService {
                 .addValue("camera", cameraId);
         List<ObjectNode> rows = jdbc.query("""
                 SELECT segment_id, gateway_id, camera_id, segment_start_capture_at, segment_end_capture_at, frame_count,
-                    starts_with_keyframe, has_gaps, content_type, container, size_bytes, delete_after, deleted_at
+                    starts_with_keyframe, has_gaps, content_type, container, size_bytes, delete_after, deleted_at, origin
                 FROM video_segment
                 WHERE segment_start_capture_at <= :to AND segment_end_capture_at >= :from
                   AND segment_start_capture_at >= :lookback%s
@@ -122,6 +122,8 @@ class VideoService {
         n.put("container", rs.getString("container"));
         n.put("size_bytes", rs.getLong("size_bytes"));
         n.put("delete_after_ms", rs.getTimestamp("delete_after").getTime());
+        // TIER0(상시 조각) · GATEWAY_RECORDING(관제가 끝난 뒤 게이트웨이가 올린 작업 구간 mp4, S15P31A101-668)
+        n.put("origin", rs.getString("origin"));
         Timestamp deletedAt = rs.getTimestamp("deleted_at");
         if (deletedAt == null) {
             n.putNull("deleted_at_ms");

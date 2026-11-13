@@ -79,7 +79,8 @@ public class UploadSignService {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
 
         UUID eventId = (purpose == UploadPurpose.TICKET_PHOTO || purpose == UploadPurpose.AVATAR_ASSET
-                || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.SCENE_GLTF
+                || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.RECORDING_SEGMENT
+                || purpose == UploadPurpose.SCENE_GLTF
                 || purpose == UploadPurpose.STATIC_RECONSTRUCT_INPUT || purpose == UploadPurpose.REPORT_SIGNATURE)
                 ? null
                 : request.eventId();
@@ -141,7 +142,7 @@ public class UploadSignService {
                 }
                 yield purpose.prefix() + "/" + request.eventId() + "/" + UUID.randomUUID() + extension;
             }
-            case VIDEO_SEGMENT -> {
+            case VIDEO_SEGMENT, RECORDING_SEGMENT -> {
                 // 키는 segment_id 로 정해져 다시 받아도 같다(클립처럼 재시도마다 새 주소를 받는다)
                 // 기록(video_segment)은 uuid_v7 만 받는다. 다른 판이면 올려도 기록이 거부돼 고아 객체만 남는다
                 if (request.segmentId() == null || request.segmentId().version() != 7) {
@@ -205,7 +206,7 @@ public class UploadSignService {
     }
 
     /**
-     * sha256 은 올릴 내용의 SHA-256 16진수. clip_id 는 EVENT_CLIP, event_id 는 EVENT_*, segment_id 는 VIDEO_SEGMENT 에 필요하고,
+     * sha256 은 올릴 내용의 SHA-256 16진수. clip_id 는 EVENT_CLIP, event_id 는 EVENT_*, segment_id 는 VIDEO_SEGMENT·RECORDING_SEGMENT 에 필요하고,
      * AVATAR_ASSET 은 선택으로 world_id·stream_epoch·appearance_version·file_name 을 함께 보낼 수 있다.
      * STATIC_RECONSTRUCT_INPUT 은 선택으로 bundle_id(bundle-<32자리 16진수>)와 file_name(확장자 없는 카메라 ID·calibration)을 함께 보낸다.
      */

@@ -69,6 +69,17 @@ class VideoPurgeService {
         }
     }
 
+    /** 그 목적의 쓰이지 않은 발급 객체. 목적 값은 이 클래스의 상수만 넣는다(사용자 입력 아님) */
+    private Batch orphans(String purpose, Instant now) {
+        return drain("""
+                SELECT grant_id::text AS id, object_key FROM upload_grant
+                WHERE purpose = '%s' AND used_at IS NULL AND expires_at <= :cutoff
+                  AND grant_id::text <> ALL(CAST(:failed AS text[]))
+                ORDER BY expires_at LIMIT 1 FOR UPDATE SKIP LOCKED
+                """.formatted(purpose), new MapSqlParameterSource("cutoff", utc(now.minus(orphanGrantAfter))),
+                "DELETE FROM upload_grant WHERE grant_id = CAST(:id AS bigint)", now);
+    }
+
     /** 한 주기. 저장소가 설정되지 않았으면 아무것도 하지 않는다(서명도 내지 않으므로 지울 객체도 없다) */
     Result purge(Instant now) {
         if (!storage.configured()) {
@@ -81,14 +92,11 @@ class VideoPurgeService {
                 """.formatted(OVERDUE), new MapSqlParameterSource("now", utc(now)),
                 "UPDATE video_segment SET deleted_at = :now WHERE segment_id = CAST(:id AS uuid)", now);
         // 업로드 주소를 받고 조각 기록이 끝내 오지 않은 객체. 마지막 발급 뒤 보관 기간이 지난 것만 지운다(그 사이 늦게 온 기록은 쓰인 발급이 된다)
-        Batch orphans = drain("""
-                SELECT grant_id::text AS id, object_key FROM upload_grant
-                WHERE purpose = 'VIDEO_SEGMENT' AND used_at IS NULL AND expires_at <= :cutoff
-                  AND grant_id::text <> ALL(CAST(:failed AS text[]))
-                ORDER BY expires_at LIMIT 1 FOR UPDATE SKIP LOCKED
-                """, new MapSqlParameterSource("cutoff", utc(now.minus(orphanGrantAfter))),
-                "DELETE FROM upload_grant WHERE grant_id = CAST(:id AS bigint)", now);
-        Result result = new Result(segments.done(), orphans.done(), segments.failed() + orphans.failed());
+        Batch videoOrphans = orphans("VIDEO_SEGMENT", now);
+        // 게이트웨이 녹화 조각(S15P31A101-668)도 같은 규칙. 목적마다 따로 골라 부분 색인(upload_grant_unused_*_idx)을 쓴다
+        Batch recordingOrphans = orphans("RECORDING_SEGMENT", now);
+        Result result = new Result(segments.done(), videoOrphans.done() + recordingOrphans.done(),
+                segments.failed() + videoOrphans.failed() + recordingOrphans.failed());
         if (result.failed() > 0) {
             log.warn("영상 조각 삭제 작업: 지운 조각 {}, 쓰이지 않은 업로드 객체 {}, 지우지 못함 {}(다음 주기에 다시)",
                     result.deleted(), result.orphans(), result.failed());

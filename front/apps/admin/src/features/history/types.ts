@@ -90,6 +90,8 @@ const videoSegmentSchema = z.object({
   segment_end_capture_ms: z.number(),
   /** 보관 기간이 끝나 EC2 가 객체를 지운 시각. 지운 조각은 목록에 남지만 재생할 수 없다. */
   deleted_at_ms: z.number().nullish(),
+  /** TIER0(상시 조각) · GATEWAY_RECORDING(관제가 끝난 뒤 게이트웨이가 올린 작업 구간 mp4, S15P31A101-668). 화면은 구분 없이 튼다. */
+  origin: z.string().nullish(),
 });
 export type VideoSegment = z.infer<typeof videoSegmentSchema>;
 

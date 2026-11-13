@@ -19,6 +19,9 @@ public enum UploadPurpose {
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
     // 상시 영상 조각(video_segment, S15P31A101-330). 카메라 하나 × 1분 남짓이라 클립보다 작게 잡는다. Tier 0 만 올린다
     VIDEO_SEGMENT("video-segments", ClipFormat.extensions(), 128L << 20, Set.of(Requester.Kind.TIER0)),
+    // 게이트웨이 녹화 작업 구간 조각(S15P31A101-668). 관제가 끝난 뒤 노트북이 재인코딩 없이 mp4 로 포장해 올린다. 기기만, mp4 만.
+    // 기록은 POST /api/devices/recordings/segments(recording_segment) → video_segment(origin GATEWAY_RECORDING)
+    RECORDING_SEGMENT("recording-segments", Map.of(ClipFormat.MP4.contentType(), ".mp4"), 128L << 20, Set.of(Requester.Kind.DEVICE)),
     // 조치 완료 사진(반장 PWA, FR-41)
     TICKET_PHOTO("ticket-photos", Map.of("image/jpeg", ".jpg", "image/png", ".png", "image/webp", ".webp"), 20L << 20,
             Set.of(Requester.Kind.USER)),

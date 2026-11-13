@@ -1,13 +1,14 @@
 ﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393 / S15P31A101-424). 설명은 같은 폴더 README.md.
 # 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격 · 9 상태 · h 자가 복구)
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
-# 원격(S15P31A101-394·424): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 gw.sh (status/live/preview/stop/update/heal/logs/restart-tunnel/ssh)
+# 원격(S15P31A101-394·424): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 gw.sh (status/live/preview/stop/update/heal/logs/restart-tunnel/upload/ssh)
+# 녹화 업로드(S15P31A101-668): 관제를 끄면(stop, 관제 모드였을 때만) 그날 작업 구간만 mp4 로 S3 에 백그라운드로 올린다. 끄려면 -NoRecordingUpload 또는 .env SIMAI_RECORDING_UPLOAD=off
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel')][string]$Command = 'menu',
+  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel', 'upload-recordings', 'upload-worker')][string]$Command = 'menu',
   [Parameter(Position = 1)]
-  [string]$LogKind = '',       # logs 대상: relay | helper | tunnel | update | heal
+  [string]$LogKind = '',       # logs 대상: relay | helper | tunnel | update | heal | upload
   [Parameter(Position = 2)]
   [int]$Lines = 40,            # logs 출력 줄 수(기본 40)
   [string]$PodIp = '',
@@ -23,7 +24,9 @@ param(
   # 관제(run, run-remote)는 기본으로 C:\simai-local\recordings\live-<yyyyMMdd-HHmmss> 에 중계 송신 프레임을 그대로 녹화한다(S15P31A101-554).
   # 녹화를 끄려면 -NoRecord 를 준다. 미리보기(preview, preview-remote)는 녹화하지 않는다.
   [switch]$NoRecord,
-  [string]$RecordDir = ''
+  [string]$RecordDir = '',
+  # 관제를 끈 뒤(stop) 녹화의 작업 구간 업로드를 이번만 띄우지 않는다(S15P31A101-668). 늘 끄려면 .env SIMAI_RECORDING_UPLOAD=off
+  [switch]$NoRecordingUpload
 )
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -59,6 +62,9 @@ $AlertDir = Join-Path $Root 'gateway\site_alert'
 $HelperDir = Join-Path $Root 'gateway\camera_helper'
 $HelperPidFile = Join-Path $LocalDir 'gateway-helper.pid'
 $HelperLog = Join-Path $LocalDir 'gateway-helper.log'
+$UploadPidFile = Join-Path $LocalDir 'gateway-upload.pid'
+$UploadLog = Join-Path $LocalDir 'gateway-upload.log'
+$UploadTask = 'simai-gateway-upload'
 
 function Say($m) { Write-Host "[gateway] $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "[gateway] 주의: $m" -ForegroundColor Yellow }
@@ -255,12 +261,21 @@ function Finalize-RecordingManifest([string]$recDir = '') {
   }
 }
 
-function Do-Stop([switch]$Quiet) {
+# 관제를 끈 뒤 녹화 업로드를 띄울지(S15P31A101-668). 관제(run) 모드를 끌 때만이고 미리보기·켜 둔 것 없음이면 띄우지 않는다
+function Test-UploadAfterStop([string]$ModeText, [switch]$NoUpload) {
+  if ($NoUpload) { return $false }
+  return [bool]($ModeText -and $ModeText.Trim().StartsWith('관제'))
+}
+
+function Do-Stop([switch]$Quiet, [switch]$NoUpload) {
   Stop-CameraHelper
+  $modeText = if (Test-Path $ModeFile) { (Get-Content $ModeFile -Raw -Encoding UTF8).Trim() } else { '' }
+  $upload = Test-UploadAfterStop -ModeText $modeText -NoUpload:($NoUpload -or $NoRecordingUpload)
   if (-not (Test-Path $PidFile)) {
     Finalize-RecordingManifest
     Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
     if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }
+    if ($upload) { Start-RecordingUpload }
     return
   }
   foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
@@ -270,6 +285,65 @@ function Do-Stop([switch]$Quiet) {
   Remove-Item $PidFile -Force
   Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
   if (-not $Quiet) { Say '관제·미리보기 창을 껐다' }
+  if ($upload) { Start-RecordingUpload }
+}
+
+# ---------- 녹화 작업 구간 업로드 (S15P31A101-668, 설계 docs/design/S15P31A101-668-recording-s3-playback.md) ----------
+# 관제가 끝난 뒤에만 돈다. 중계 venv 의 simai_recorder(경로 의존)로 C:\simai-local\recordings\live-* 중 끝나지 않은 녹화를 이어 올린다.
+# 관제가 다시 시작되면(run) 이 프로세스를 끄고, 업로드 도구도 조각마다 모드 파일을 보고 스스로 멈춘다.
+function Get-RecordingUploadArgs {
+  return @('run', 'python', '-m', 'simai_recorder', 'upload', '--root', $RecordingsRoot, '--mode-file', $ModeFile,
+    '--env-file', (Join-Path $Root '.env'))
+}
+function Test-RecordingUpload {
+  if (-not (Test-Path $UploadPidFile)) { return $false }
+  $uploadId = 0
+  if (-not [int]::TryParse((Get-Content $UploadPidFile -Raw).Trim(), [ref]$uploadId)) { return $false }
+  $proc = Get-Process -Id $uploadId -ErrorAction SilentlyContinue
+  return [bool]($proc -and $proc.ProcessName -match '^(powershell|pwsh)$')
+}
+function Stop-RecordingUpload {
+  if (Test-RecordingUpload) {
+    taskkill /PID ([int](Get-Content $UploadPidFile -Raw)) /T /F | Out-Null
+    Say '녹화 업로드를 멈췄다(다음 관제 종료 때 이어서)'
+  }
+  Remove-Item $UploadPidFile -Force -ErrorAction SilentlyContinue
+}
+function Start-RecordingUpload {
+  if (Test-RecordingUpload) { Say '녹화 업로드가 이미 돌고 있다'; return }
+  if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Warn 'uv 가 없어 녹화 업로드를 띄우지 않았다'; return }
+  $scriptPath = Join-Path $Root 'gateway\ops\simai-gateway.ps1'
+  if (-not (Test-Path $scriptPath)) { $scriptPath = $PSCommandPath }
+  if ($env:SSH_CONNECTION) {
+    # ssh 세션에서 띄운 프로세스는 세션이 끝나면 함께 죽는다 → 로그인 사용자 세션의 예약 작업으로 띄운다(Start-InSession 과 같은 이유)
+    $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" upload-worker"
+    $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+    $pri = New-ScheduledTaskPrincipal -UserId (Get-GatewayUser) -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $UploadTask -Action $act -Principal $pri -Force | Out-Null
+    Start-ScheduledTask -TaskName $UploadTask
+  } else {
+    Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, 'upload-worker' | Out-Null
+  }
+  Say "녹화 작업 구간 업로드를 백그라운드로 시작했다(로그 $UploadLog, gw.sh logs upload)"
+}
+function Do-UploadWorker {
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Set-Content -LiteralPath $UploadPidFile -Value $PID -Encoding ascii
+  Rotate-LogIfNeeded $UploadLog
+  [IO.File]::AppendAllText($UploadLog, ("=== {0:yyyy-MM-dd HH:mm:ss} 녹화 업로드 ===`r`n" -f (Get-Date)), $Utf8)
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  Push-Location $RelayDir
+  try {
+    $env:PYTHONUTF8 = '1'
+    $uploadArgs = Get-RecordingUploadArgs
+    & uv @uploadArgs 2>&1 | ForEach-Object { Add-Content -LiteralPath $UploadLog -Value "$_" -Encoding UTF8 }
+    $code = $LASTEXITCODE
+    Add-Content -LiteralPath $UploadLog -Value "=== 끝(코드 ${code}: 0 끝남, 1 실패 조각 있음, 2 설정 오류, 3 관제 중이라 멈춤) ===" -Encoding UTF8
+  } finally {
+    Pop-Location
+    $ErrorActionPreference = $old
+    Remove-Item $UploadPidFile -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Build-RelayCommand([string]$title, [string]$sendArg, [string]$recordDir = '') {
@@ -295,7 +369,9 @@ function Do-Run {
   if (-not $s.VideoPort) { $s.VideoPort = [int](Read-Host 'Pod 17001 의 바깥 매핑 포트') }
   ($s | ConvertTo-Json) | Set-Content $StateFile -Encoding ascii
 
-  Do-Stop -Quiet
+  # 관제 중에는 녹화를 올리지 않는다(노트북 업로드는 I0 중계·CCTV 원격 시청이 쓴다, S15P31A101-668)
+  Do-Stop -Quiet -NoUpload
+  Stop-RecordingUpload
   if ((Test-Tcp '127.0.0.1' 17000 300) -or (Test-Tcp '127.0.0.1' 17001 300)) { Fail '127.0.0.1:17000/17001 을 이미 다른 프로그램이 쓰고 있다(예전 터널 창을 닫는다)' }
 
   # EC2 까지만 SSH 하나, EC2→Pod 는 연결마다 따로 TCP(카메라별 독립 연결, 명세 12.2). TLS 는 Tier 0 가 끝낸다.
@@ -1104,6 +1180,7 @@ function Get-RecordingStatusInfo {
 
 function Do-Status {
   Say "카메라 헬퍼: $(if (Test-CameraHelper) { '실행 중' } else { '꺼짐' }) (로그 $HelperLog)"
+  Say "녹화 업로드: $(if (Test-RecordingUpload) { '올리는 중' } else { '쉬는 중' }) (로그 $UploadLog)"
   $rawMode = '꺼짐'
   if (Test-Path $ModeFile) { $rawMode = (Get-Content $ModeFile -Raw).Trim() }
   $pids = @()
@@ -1192,10 +1269,11 @@ function Do-Logs {
     'tunnel' = $TunnelLog
     'update' = $UpdateLog
     'heal'   = $HealLog
+    'upload' = $UploadLog
   }
   $k = if ($LogKind) { $LogKind.Trim().ToLower() } else { '' }
   if (-not $map.ContainsKey($k)) {
-    Fail "logs 종류는 relay | helper | tunnel | update | heal 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|helper|tunnel|update|heal> [-Lines 40])"
+    Fail "logs 종류는 relay | helper | tunnel | update | heal | upload 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|helper|tunnel|update|heal|upload> [-Lines 40])"
   }
   $path = $map[$k]
   if (-not (Test-Path $path)) {
@@ -1275,6 +1353,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
     'update' { Do-Update } 'update-remote' { Do-UpdateRemote }
     'heal' { Do-Heal } 'logs' { Do-Logs } 'restart-tunnel' { Do-RestartTunnel }
+    'upload-recordings' { Start-RecordingUpload } 'upload-worker' { Do-UploadWorker }
     'dev-remote' { Do-DevRemote } 'rdp' { Do-Rdp }
     default { Show-Menu }
   }

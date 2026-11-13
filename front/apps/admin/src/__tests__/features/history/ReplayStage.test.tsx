@@ -4,7 +4,7 @@ import type { WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplayStatus } from '@/features/viewer3d';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,8 +15,20 @@ vi.mock('@/lib/api', async () => {
 });
 // 영상 칸은 어느 조각을 틀라고 받았는지만 보인다(<video>·S3 는 쓰지 않는다).
 vi.mock('@/features/history/ReplayVideoWall', () => ({
-  ReplayVideoWall: ({ segments }: { segments: readonly VideoSegment[] }) => (
-    <div data-testid="video-wall">{segments.map((s) => s.segment_id).join(',')}</div>
+  ReplayVideoWall: ({
+    segments,
+    onFailed,
+  }: {
+    segments: readonly VideoSegment[];
+    onFailed?: (id: string) => void;
+  }) => (
+    <>
+      <div data-testid="video-wall">{segments.map((s) => s.segment_id).join(',')}</div>
+      {/* 시험: 영상을 끝내 받지 못한 경우를 흉내 낸다 */}
+      <button type="button" onClick={() => segments.forEach((s) => onFailed?.(s.segment_id))}>
+        영상 실패
+      </button>
+    </>
   ),
 }));
 
@@ -190,5 +202,26 @@ describe('ReplayStage 아직 받지 못한 뒷구간', () => {
 
     await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
     expect(screen.queryByText('기록을 불러오는 중입니다…')).toBeNull();
+  });
+});
+
+describe('ReplayStage 영상 실패', () => {
+  it('재생 시각을 덮는 영상을 끝내 받지 못하면 그 조각을 빼고 3D 다시 보기(목 화면)로 돌아간다', async () => {
+    renderStage({
+      ...LOADING,
+      loading: false,
+      replay: replayAt(T + 5_000),
+      index: {
+        frames: [{ t: T, ids: [], tracks: [] }],
+        workers: [],
+        events: [],
+        gaps: [],
+        pending: null,
+      } as never,
+    });
+
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toContain('cover'));
+    fireEvent.click(screen.getByRole('button', { name: '영상 실패' }));
+    await waitFor(() => expect(screen.queryByTestId('video-wall')).toBeNull());
   });
 });

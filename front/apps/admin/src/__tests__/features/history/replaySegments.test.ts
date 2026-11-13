@@ -1,6 +1,7 @@
 import {
   activeSegments,
   DRIFT_S,
+  PAUSED_DRIFT_S,
   segmentOffsetS,
   syncVideo,
   type VideoLike,
@@ -95,11 +96,11 @@ describe('syncVideo', () => {
     expect(segmentOffsetS(segment(), T + 12_500)).toBe(12.5);
   });
 
-  it('어긋남이 허용 안이면 위치를 두고, 넘으면 다시 맞춘다', () => {
-    const near = video({ currentTime: 10 });
+  it('재생 중 어긋남이 허용 안이면 위치를 두고, 넘으면 다시 맞춘다', () => {
+    const near = video({ currentTime: 10, paused: false });
     syncVideo(near, segment(), {
       playhead: T + 10_000 + DRIFT_S * 1000 - 1,
-      playing: false,
+      playing: true,
       speed: 1,
     });
     expect(near.currentTime).toBe(10);
@@ -107,6 +108,28 @@ describe('syncVideo', () => {
     const far = video({ currentTime: 10 });
     syncVideo(far, segment(), { playhead: T + 20_000, playing: false, speed: 1 });
     expect(far.currentTime).toBe(20);
+  });
+
+  it('멈춤 중에는 한 프레임(40 ms)보다 어긋나면 그 시각으로 맞춘다(3D 다시 보기와 같은 프레임)', () => {
+    const near = video({ currentTime: 10 });
+    syncVideo(near, segment(), {
+      playhead: T + 10_000 + PAUSED_DRIFT_S * 1000 - 1,
+      playing: false,
+      speed: 1,
+    });
+    expect(near.currentTime).toBe(10);
+
+    const off = video({ currentTime: 10 });
+    syncVideo(off, segment(), { playhead: T + 10_200, playing: false, speed: 1 });
+    expect(off.currentTime).toBeCloseTo(10.2);
+  });
+
+  it('녹화 mp4(PTS = 촬영 시각 − 조각 시작)는 빠진 프레임 뒤에서도 재생 시각 그대로의 위치다', () => {
+    // 게이트웨이 조각(S15P31A101-668): 조각 시작 = 첫 프레임 촬영 시각이라 위치 = 재생 시각 − 조각 시작
+    const recording = segment({ segment_start_capture_ms: T + 400, origin: 'GATEWAY_RECORDING' });
+    const v = video({ currentTime: 0 });
+    syncVideo(v, recording, { playhead: T + 1_600, playing: false, speed: 1 });
+    expect(v.currentTime).toBeCloseTo(1.2);
   });
 
   it('재생 중이면 틀고 멈추면 세우고, 배속을 맞춘다', () => {

@@ -1358,6 +1358,61 @@ class RecordingManifestTimeRangeMs(RootModel[list[DefsTimestampMs]]):
     root: Annotated[list[DefsTimestampMs], Field(max_length=2, min_length=2)]
 
 
+class RecordingSegment(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    segment_id: DefsUuidV7
+    recording_id: Annotated[
+        StrictStr, Field(pattern='^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+    ]
+    work_id: Annotated[StrictInt, Field(ge=1)]
+    camera_id: DefsCameraId
+    stream_epochs: Annotated[list[StreamEpoch], Field(max_length=1, min_length=1)]
+    segment_start_capture_ms: DefsTimestampMs
+    segment_end_capture_ms: DefsTimestampMs
+    frame_count: Annotated[StrictInt, Field(ge=1)]
+    starts_with_keyframe: Literal[True]
+    has_gaps: StrictBool
+    content_type: Literal['video/mp4']
+    container: Literal['mp4']
+    timestamp_mapping: Literal['PTS_FROM_CAPTURE_MS']
+    size_bytes: Annotated[StrictInt, Field(ge=1, le=134217728)]
+    sha256: DefsSha256
+    face_redaction: Literal['NONE']
+    created_at_ms: DefsTimestampMs
+    object_key: Annotated[
+        StrictStr,
+        Field(
+            pattern='^recording-segments/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.mp4$'
+        ),
+    ]
+    uploaded_at_ms: DefsTimestampMs
+    upload_attempts: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+
+
+class Window(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    work_id: Annotated[StrictInt, Field(ge=1)]
+    start_ms: DefsTimestampMs
+    end_ms: DefsTimestampMs
+
+
+class RecordingWindows(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    from_ms: DefsTimestampMs
+    to_ms: DefsTimestampMs
+    windows: list[Window]
+    open_work: StrictBool
+    retention_days: Literal[14]
+
+
 class Payload32(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3787,7 +3842,7 @@ class Payload33(DefsSeverityUpwardOnly, DefsNeedsCheckMatchesReasons):
     acks: list[DefsOperatorAck] | MISSING = MISSING
     delivery: Literal['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY'] | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
-    resolution: DefsOperatorResolution | MISSING = MISSING
+    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
     held_by_tier0: StrictBool | MISSING = MISSING
     escalations: list[DefsOperatorEscalation] | MISSING = MISSING
 
@@ -5273,6 +5328,8 @@ class Contracts(BaseModel):
     ppe_state: PpeState | MISSING = MISSING
     ppe_view: PpeView | MISSING = MISSING
     recording_manifest: RecordingManifest | MISSING = MISSING
+    recording_segment: RecordingSegment | MISSING = MISSING
+    recording_windows: RecordingWindows | MISSING = MISSING
     risk_alert: RiskAlert | MISSING = MISSING
     risk_event: RiskEvent | MISSING = MISSING
     risk_event_transition: RiskEventTransition | MISSING = MISSING

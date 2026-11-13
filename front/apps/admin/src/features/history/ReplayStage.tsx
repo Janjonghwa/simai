@@ -13,7 +13,7 @@ import {
   type WorkReplay,
 } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
-import { useCallback, useMemo, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 
 const LOADING_LINE = '기록을 불러오는 중입니다…';
 
@@ -26,7 +26,8 @@ function Notice({ children }: { children: ReactNode }) {
 }
 
 /**
- * CCTV 4화면. 재생 시각을 덮는 상시 영상 조각이 있으면 그 영상을 카메라 칸마다 틀고, 없으면 목 화면이다.
+ * CCTV 4화면. 재생 시각을 덮는 영상 조각(상시 조각·관제 뒤 올린 녹화 mp4)이 있으면 그 영상을 카메라 칸마다 틀고, 없으면 목 화면이다.
+ * 영상을 끝내 받지 못한 조각은 빼고, 남은 조각이 없으면 목 화면(3D 다시 보기)으로 돌아간다(S15P31A101-668).
  * 목 화면은 재생 시각에 보이는 World 기록의 사람을 그리고, 기록이 바뀔 때만 다시 그린다.
  * 데이터 없음이면 사람을 그리지 않고 흐리게 둔다(마지막 기록을 이어 그리지 않는다, FR-28). 기록이 없어도 기록 없는 구간
  * 밖이면 그 시각에 아무도 없던 것이라 빈 화면을 그대로 보인다.
@@ -46,14 +47,24 @@ function ReplayCctv({
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
-  const active = useActiveSegments(replay, segments);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const playable = useMemo(
+    () => segments.filter((segment) => !failed.has(segment.segment_id)),
+    [segments, failed],
+  );
+  const onFailed = useCallback(
+    (id: string) => setFailed((held) => (held.has(id) ? held : new Set(held).add(id))),
+    [],
+  );
+  const active = useActiveSegments(replay, playable);
   const pending = useReplayPending(replay, index);
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
     [people],
   );
-  if (active.length > 0) return <ReplayVideoWall segments={active} replay={replay} />;
+  if (active.length > 0)
+    return <ReplayVideoWall segments={active} replay={replay} onFailed={onFailed} />;
   if (pending) return <Notice>{LOADING_LINE}</Notice>;
   return (
     <CctvMockWall

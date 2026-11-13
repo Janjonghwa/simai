@@ -1,8 +1,10 @@
-"""명령줄: record / manifest / verify.
+"""명령줄: record / manifest / verify / upload.
 
     uv run simai-recorder record --config sessions/example.toml --seconds 600
     uv run simai-recorder manifest <세션 디렉터리>     # 파일에서 manifest 를 다시 계산
     uv run simai-recorder verify <세션 디렉터리>       # 해시·크기 확인 (Network Volume 에 올린 뒤)
+    uv run simai-recorder upload --root C:/simai-local/recordings --mode-file C:/simai-local/gateway-mode.txt
+                                                     # 관제가 끝난 뒤 작업 구간만 mp4 로 S3 에 (S15P31A101-668)
 """
 
 from __future__ import annotations
@@ -81,6 +83,40 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+#: .env 에서 업로드를 끄는 값(SIMAI_RECORDING_UPLOAD)
+_OFF = {"0", "off", "false", "no"}
+
+
+def cmd_upload(args: argparse.Namespace) -> int:
+    """관제 녹화의 작업 구간을 mp4 로 포장해 올린다. 끝 코드: 0 끝남·없음, 1 실패 조각 있음, 2 설정 오류, 3 관제 중이라 멈춤."""
+    import logging
+    import os
+
+    from simai_recorder.upload.client import Ec2Client
+    from simai_recorder.upload.runner import Uploader
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    env = load_env(Path(args.env_file))
+    env.update({k: v for k, v in os.environ.items() if k.startswith("SIMAI_")})
+    if (env.get("SIMAI_RECORDING_UPLOAD") or "").strip().lower() in _OFF:
+        print("녹화 업로드 꺼짐(.env SIMAI_RECORDING_UPLOAD)")
+        return 0
+    clock = SystemClock()
+    try:
+        client = Ec2Client(env.get("SIMAI_EC2_BASE_URL", ""), (env.get("SIMAI_DEVICE_TOKEN") or "").strip(),
+                           sleep=clock.sleep)
+    except ValueError as e:
+        print(f"설정 오류: {e}", file=sys.stderr)
+        return 2
+    uploader = Uploader(client, clock.now_ms, mode_file=Path(args.mode_file) if args.mode_file else None,
+                        parallel=args.parallel, sleep=clock.sleep)
+    summary = uploader.run(Path(args.root), Path(args.recording) if args.recording else None)
+    print(f"녹화 업로드: 올림 {summary.uploaded}, 이미 있음 {summary.duplicate}, 거절 {summary.rejected}, 실패 {summary.failed}, "
+          f"끝난 녹화 {len(summary.done_recordings)}, 남은 녹화 {len(summary.pending_recordings)}"
+          f"{', 관제 중이라 멈춤' if summary.deferred else ''}")
+    return summary.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="simai-recorder", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -99,6 +135,13 @@ def main(argv: list[str] | None = None) -> int:
     ver = sub.add_parser("verify", help="manifest 의 해시·크기와 파일을 비교한다")
     ver.add_argument("session_dir")
     ver.set_defaults(func=cmd_verify)
+    up = sub.add_parser("upload", help="관제가 끝난 뒤 녹화의 작업 구간만 mp4 로 S3 에 올린다 (S15P31A101-668)")
+    up.add_argument("--root", default=str(Path("C:/simai-local/recordings")), help="녹화 루트 (live-* 폴더들)")
+    up.add_argument("--recording", default=None, help="이 녹화 폴더 하나만")
+    up.add_argument("--mode-file", default=None, help="게이트웨이 모드 파일. '관제' 로 시작하면 멈춘다")
+    up.add_argument("--env-file", default=str(REPO_ROOT / ".env"), help="SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN .env")
+    up.add_argument("--parallel", type=int, default=2, help="동시 업로드 조각 수 (기본 2)")
+    up.set_defaults(func=cmd_upload)
     args = ap.parse_args(argv)
     try:
         return args.func(args)
