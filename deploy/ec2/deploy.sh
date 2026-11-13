@@ -5,7 +5,7 @@
 #   입구 두 개:
 #   - Jenkins: SSH_ORIGINAL_COMMAND = "deploy <커밋 40자>", 표준 입력 = 그 커밋의 git archive(tar)
 #   - 보류 배포: deploy.sh pending (deploy-pending.sh 가 호스트 타이머로 부른다. 강제 명령 SSH 로는 인자를 줄 수 없다)
-#   순서: 동결 확인 → 진행 중 작업·세팅 확인(있으면 보류, S15P31A101-676) → 소스 풀기 → bake ec2 → 다시 확인
+#   순서: 동결 확인 → 진행 중 작업·세팅·Tier 0 연결·녹화 업로드 확인(있으면 보류, S15P31A101-676·-682) → 소스 풀기 → bake ec2 → 다시 확인
 #         → (마이그레이션이 바뀌었으면) DB 덤프 → SIMAI_TAG 바꾸기 → up --wait → https 확인 → 오래된 이미지 정리
 #   실패하면 이전 소스·이전 태그로 다시 띄우고 1 로 끝난다(스키마는 돌아오지 않는다. 덤프로 되살린다)
 set -eu
@@ -23,19 +23,11 @@ MIGRATION=server/src/main/resources/db/migration
 PENDING=$SIMAI/pending
 # hold 의 줄: 1 커밋, 2 처음 보류 epoch(대체돼도 유지, 안전장치 기준), 3 마지막 보류 epoch, 4 사유, 5 자동 배포 시도 횟수
 HOLD=$PENDING/hold
-# 안전장치로 넘긴 진행 항목(작업 종료를 잊은 경우 등). 다음 배포부터 이 항목으로는 보류하지 않는다
+# 안전장치로 넘긴 진행 항목의 키(항목 줄의 앞 두 칸, 작업 종료를 잊은 경우 등). 다음 배포부터 이 키로는 보류하지 않는다
 IGNORED=$PENDING/ignored
 DB_CONTAINER=simai-ec2-db-1
 # 보류 배포가 연달아 실패하면 몇 번까지 다시 해 볼지. 넘으면 새 커밋이 오거나 손으로 배포할 때까지 멈춘다
 PENDING_MAX_ATTEMPTS=3
-# 진행 중 작업: 작업 시작을 눌렀고 아직 끝내지 않았다(V30 의 CHECK 로 status = 'IN_PROGRESS' 와 같다).
-# 진행 중 세팅: SetupService 가 새 세팅을 막는 조건과 같다. 종결 상태는 COMPLETED·FAILED 뿐이고(V33 CHECK, 관리자 취소도 FAILED),
-# 끝난 세션이라도 맵 보강 다시 굽기(setup_supplement_rebake)가 QUEUED·RUNNING 이면 진행 중이다
-ACTIVE_SQL="SELECT 'work ' || work_id FROM work_unit WHERE actual_started_at IS NOT NULL AND actual_ended_at IS NULL
-UNION ALL
-SELECT 'setup ' || setup_session_id FROM setup_session s WHERE s.status NOT IN ('COMPLETED', 'FAILED')
-    OR EXISTS (SELECT 1 FROM setup_supplement_rebake r
-               WHERE r.setup_session_id = s.setup_session_id AND r.status IN ('QUEUED', 'RUNNING'))"
 
 fail() { echo "deploy: $*" >&2; exit 2; }
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$PENDING/history.log" || true; }
@@ -93,12 +85,54 @@ if [ -f "$SIMAI/deploy.freeze" ]; then
 fi
 
 env_get() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
-# 보류 안전장치(시간). 이만큼 지나도록 보류가 풀리지 않으면 진행 중이어도 배포한다(작업 종료를 잊은 경우)
-HOLD_MAX_HOURS=$(env_get SIMAI_DEPLOY_HOLD_MAX_HOURS)
-case "$HOLD_MAX_HOURS" in
-    '') HOLD_MAX_HOURS=12 ;;
-    0*|*[!0-9]*) echo "deploy: 경고: SIMAI_DEPLOY_HOLD_MAX_HOURS 가 1 이상 정수가 아니라 12시간으로 본다" >&2; HOLD_MAX_HOURS=12 ;;
-esac
+# .env 의 1 이상 정수 설정. $1 이름 $2 기본값 $3 단위(경고용). 비었으면 기본값, 틀렸으면 경고하고 기본값
+env_int() {
+    v=$(env_get "$1")
+    case "$v" in
+        '') v=$2 ;;
+        0*|*[!0-9]*) echo "deploy: 경고: $1 이 1 이상 정수가 아니라 $2$3으로 본다" >&2; v=$2 ;;
+    esac
+    printf '%s' "$v"
+}
+# 보류 안전장치(시간). 이만큼 지나도록 보류가 풀리지 않으면 진행 중이어도 배포한다(작업 종료를 잊은 경우·Pod 를 켜 둔 채 둔 경우)
+HOLD_MAX_HOURS=$(env_int SIMAI_DEPLOY_HOLD_MAX_HOURS 12 시간)
+# Tier 0 가 붙어 있다고 볼 최근 health 수신 범위(분, S15P31A101-682). health 는 I1 이 붙어 있으면 작업과 무관하게 1 Hz 로 온다
+HOLD_TIER0_MINUTES=$(env_int SIMAI_DEPLOY_HOLD_TIER0_MINUTES 3 분)
+# 녹화 업로드 중으로 볼 최근 RECORDING_SEGMENT 업로드 주소 발급 범위(분, S15P31A101-682). 게이트웨이는 조각(5분·최대 120MB)마다 새로 받는다
+HOLD_UPLOAD_MINUTES=$(env_int SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES 10 분)
+# Tier 0·업로드가 이어진 구간의 시작을 찾을 때 거슬러 볼 시간. 안전장치보다 길어야 같은 연결의 키가 안전장치 전에 바뀌지 않는다
+HOLD_LOOKBACK_HOURS=$((HOLD_MAX_HOURS * 2))
+
+# 진행 항목을 한 줄에 하나 낸다. 앞 두 칸이 키(안전장치가 넘긴 항목을 가리는 단위)이고 나머지는 표시용이다.
+# - 작업 "work <work_id>": 작업 시작을 눌렀고 아직 끝내지 않았다(V30 의 CHECK 로 status = 'IN_PROGRESS' 와 같다).
+# - 세팅 "setup <uuid>": SetupService 가 새 세팅을 막는 조건과 같다. 종결 상태는 COMPLETED·FAILED 뿐이고(V33 CHECK, 관리자 취소도 FAILED),
+#   끝난 세션이라도 맵 보강 다시 굽기(setup_supplement_rebake)가 QUEUED·RUNNING 이면 진행 중이다.
+# - Tier 0 연결 "tier0 <이어진 구간 시작 epoch> <마지막 수신 epoch>" (S15P31A101-682): 서버가 system_health 를 받은 시각
+#   (received_at, EC2 시계)이 최근 HOLD_TIER0_MINUTES 분 안이다. reported_at(Tier 0 시계)은 청크를 고르는 데만 쓴다(1시간 여유).
+#   미래 시각 행(가짜 기록)은 보지 않는다. 구간 시작 = 수신 간격이 HOLD_TIER0_MINUTES 분을 넘은 마지막 지점이라 Pod 를 껐다 켜면 새 키다.
+# - 녹화 업로드 "upload <이어진 구간 시작 epoch> <최근 발급 건수>" (S15P31A101-682): upload_grant 의 RECORDING_SEGMENT 발급
+#   (issued_at, EC2 시계)이 최근 HOLD_UPLOAD_MINUTES 분 안이다. 구간 시작은 Tier 0 와 같은 방식이다.
+ACTIVE_SQL="SELECT 'work ' || work_id FROM work_unit WHERE actual_started_at IS NOT NULL AND actual_ended_at IS NULL
+UNION ALL
+SELECT 'setup ' || setup_session_id FROM setup_session s WHERE s.status NOT IN ('COMPLETED', 'FAILED')
+    OR EXISTS (SELECT 1 FROM setup_supplement_rebake r
+               WHERE r.setup_session_id = s.setup_session_id AND r.status IN ('QUEUED', 'RUNNING'))
+UNION ALL
+SELECT 'tier0 ' || floor(extract(epoch FROM coalesce(max(t) FILTER (WHERE gap > make_interval(mins => $HOLD_TIER0_MINUTES)), min(t))))::bigint
+       || ' ' || floor(extract(epoch FROM max(t)))::bigint
+FROM (SELECT received_at AS t, received_at - lag(received_at) OVER (ORDER BY received_at) AS gap FROM system_health
+      WHERE reported_at > now() - make_interval(hours => $HOLD_LOOKBACK_HOURS + 1)
+        AND received_at > now() - make_interval(hours => $HOLD_LOOKBACK_HOURS)
+        AND received_at <= now() + interval '1 minute') h
+HAVING max(t) > now() - make_interval(mins => $HOLD_TIER0_MINUTES)
+UNION ALL
+SELECT 'upload ' || floor(extract(epoch FROM coalesce(max(t) FILTER (WHERE gap > make_interval(mins => $HOLD_UPLOAD_MINUTES)), min(t))))::bigint
+       || ' ' || count(*) FILTER (WHERE t > now() - make_interval(mins => $HOLD_UPLOAD_MINUTES))
+FROM (SELECT issued_at AS t, issued_at - lag(issued_at) OVER (ORDER BY issued_at) AS gap FROM upload_grant
+      WHERE purpose = 'RECORDING_SEGMENT'
+        AND issued_at > now() - make_interval(hours => $HOLD_LOOKBACK_HOURS)
+        AND issued_at <= now() + interval '1 minute') g
+HAVING max(t) > now() - make_interval(mins => $HOLD_UPLOAD_MINUTES)"
 
 mkdir -p "$PENDING"
 if [ "$MODE" = ssh ]; then
@@ -109,35 +143,51 @@ if [ "$MODE" = ssh ]; then
     if ! { [ -s "$INPUT" ] && tar -tf "$INPUT" > /dev/null; }; then fail "입력이 tar 가 아니다($COMMIT)"; fi
 fi
 
-# 진행 중 작업·세팅을 한 줄에 하나("work 48", "setup <uuid>")로 낸다. 읽기 전용 트랜잭션이다. 묻지 못하면 1
+# 진행 항목(ACTIVE_SQL 설명)을 한 줄에 하나 낸다. 읽기 전용 트랜잭션이다. 묻지 못하면 1
 active_items() {
     out=$(timeout 30 docker exec -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000' \
         "$DB_CONTAINER" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d simai -tA -c "$ACTIVE_SQL") || return 1
     out=$(printf '%s\n' "$out" | sed '/^$/d')
-    if printf '%s\n' "$out" | grep -Evx '(work [0-9]+|setup [0-9a-f-]{36})?' > /dev/null; then
+    if printf '%s\n' "$out" | grep -Evx '(work [0-9]+|setup [0-9a-f-]{36}|tier0 [0-9]+ [0-9]+|upload [0-9]+ [0-9]+)?' > /dev/null; then
         echo "deploy: DB 응답을 알아볼 수 없다: $(printf '%s\n' "$out" | head -n 1)" >&2
         return 1
     fi
     printf '%s' "$out"
 }
 
+# 항목 줄 → 사유("작업 48", "세팅 <uuid>", "Tier 0 연결(마지막 보고 <UTC>)", "녹화 업로드 3건")를 ", " 로 잇는다
+reason_text() {
+    printf '%s\n' "$1" | while read -r kind key detail; do
+        case "$kind" in
+            work) echo "작업 $key" ;;
+            setup) echo "세팅 $key" ;;
+            tier0) echo "Tier 0 연결(마지막 보고 $(date -u -d "@$detail" '+%Y-%m-%d %H:%M:%S UTC'))" ;;
+            upload) echo "녹화 업로드 ${detail}건" ;;
+        esac
+    done | awk 'NR > 1 { printf ", " } { printf "%s", $0 }'
+}
+
 # 보류해야 하면 0 이고 REASON 에 사유를 둔다. DB 를 묻지 못하면 경고하고 1(배포가 영원히 막히지 않게 한다)
 should_hold() {
     REASON=
-    if ! items=$(active_items); then
-        echo "deploy: 경고: DB 에서 진행 중 작업·세팅을 확인하지 못해 보류하지 않고 배포한다" >&2
+    if ! all=$(active_items); then
+        echo "deploy: 경고: DB 에서 진행 중 작업·세팅·Tier 0 연결·녹화 업로드를 확인하지 못해 보류하지 않고 배포한다" >&2
         return 1
     fi
+    items=$all
     if [ -n "$items" ] && [ -s "$IGNORED" ]; then
-        items=$(printf '%s\n' "$items" | grep -vxF -f "$IGNORED" || true)
+        # 키(앞 두 칸)로 가린다. Tier 0·업로드는 키가 이어진 구간의 시작이라 표시 칸(마지막 수신·건수)이 바뀌어도 같은 항목이다
+        items=$(printf '%s\n' "$items" | awk 'NR == FNR { ignored[$1 " " $2] = 1; next } !(($1 " " $2) in ignored)' "$IGNORED" -)
     fi
     [ -n "$items" ] || return 1
-    REASON=$(printf '%s\n' "$items" | sed 's/^work /작업 /; s/^setup /세팅 /' | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
+    REASON=$(reason_text "$items")
     first=$(hold_field 2)
     case "$first" in ''|*[!0-9]*) return 0 ;; esac
     if [ $(( $(date -u +%s) - first )) -ge $(( HOLD_MAX_HOURS * 3600 )) ]; then
         echo "deploy: 경고: 보류가 ${HOLD_MAX_HOURS}시간을 넘어 진행 중($REASON)이어도 배포한다. 이 항목으로는 다시 보류하지 않는다" >&2
-        printf '%s\n' "$items" > "$IGNORED"
+        # 지금 진행 중인 항목 전부(전에 넘긴 것 포함)의 키를 남긴다. 전에 넘긴 것을 빼고 쓰면 그 항목이 다음 배포를 다시 보류한다.
+        # 끝난 항목은 여기서 빠진다(작업·세팅 ID 와 구간 시작은 다시 나오지 않는다)
+        printf '%s\n' "$all" | awk '{ print $1 " " $2 }' > "$IGNORED"
         log "안전장치 ${HOLD_MAX_HOURS}시간: 진행 중($REASON)이어도 배포 $COMMIT"
         return 1
     fi
@@ -170,14 +220,14 @@ hold_input() {
         echo "deploy: 이전 보류($(printf %s "$old" | cut -c1-12))를 이번 커밋으로 대체했다"
     fi
     log "보류 $COMMIT ($REASON)"
-    echo "deploy: 작업·세팅 진행 중이라 배포 보류($REASON) — $TAG 를 저장했고 끝나면 자동으로 배포한다"
+    echo "deploy: 작업·세팅·GPU 세션 진행 중이라 배포 보류($REASON) — $TAG 를 저장했고 끝나면 자동으로 배포한다"
 }
 
 if should_hold; then
     if [ "$MODE" = ssh ]; then
         hold_input
     else
-        echo "deploy: 아직 작업·세팅 진행 중($REASON) — 보류 배포 $TAG 는 다음 차례에 본다"
+        echo "deploy: 아직 작업·세팅·GPU 세션 진행 중($REASON) — 보류 배포 $TAG 는 다음 차례에 본다"
     fi
     exit 0
 fi
@@ -185,7 +235,7 @@ if [ "$MODE" = pending ]; then
     # 시작 전에 시도를 센다. 중간에 실패해 끝나도(set -e) 횟수가 남아 같은 커밋을 끝없이 다시 하지 않는다
     write_hold "$(hold_field 2)" "$(hold_field 3)" "$(hold_field 4)" $((attempts + 1))
     log "보류 배포 시도 $((attempts + 1)) $COMMIT"
-    echo "deploy: 진행 중 작업·세팅이 없어 보류한 배포를 실행한다 ($TAG, 시도 $((attempts + 1)))"
+    echo "deploy: 진행 중 작업·세팅·GPU 세션이 없어 보류한 배포를 실행한다 ($TAG, 시도 $((attempts + 1)))"
 fi
 
 PREV=$(env_get SIMAI_TAG)
@@ -201,14 +251,14 @@ echo "$TAG" > "$SIMAI/repo.new/REVISION"
 
 (cd "$SIMAI/repo.new" && TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl --progress=plain ec2)
 
-# 이미지를 만드는 몇 분 사이에 작업·세팅이 시작됐을 수 있다. 서비스를 건드리기 직전에 한 번 더 본다(만든 이미지는 캐시로 남는다)
+# 이미지를 만드는 몇 분 사이에 작업·세팅·Tier 0 연결이 시작됐을 수 있다. 서비스를 건드리기 직전에 한 번 더 본다(만든 이미지는 캐시로 남는다)
 if should_hold; then
     rm -rf "$SIMAI/repo.new"
     if [ "$MODE" = ssh ]; then
         hold_input
     else
         write_hold "$(hold_field 2)" "$(hold_field 3)" "$(hold_field 4)" "$attempts"
-        echo "deploy: 이미지를 만드는 동안 작업·세팅이 시작돼($REASON) 보류 배포를 다음 차례로 미룬다"
+        echo "deploy: 이미지를 만드는 동안 작업·세팅·GPU 세션이 시작돼($REASON) 보류 배포를 다음 차례로 미룬다"
     fi
     exit 0
 fi

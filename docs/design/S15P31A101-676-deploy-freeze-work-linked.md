@@ -1,5 +1,6 @@
 # S15P31A101-676 배포 동결을 작업 시작·종료와 세팅에 자동 연동
 
+- 후속: S15P31A101-682 가 보류 항목에 Tier 0 연결(`system_health` 최근 수신)·녹화 업로드(`RECORDING_SEGMENT` 최근 발급)를 더하고, 안전장치가 넘긴 항목을 키(앞 두 칸)로 가리도록 바꿨다(`docs/design/S15P31A101-682-deploy-hold-gaps.md`). 아래 SQL·항목 형식은 -676 판이다.
 - 관련: S15P31A101-582(수동 동결 `freeze.sh`, `docs/design/deploy-freeze-heartbeat.md`), S15P31A101-254(자동 배포, `docs/design/ec2-deploy.md`), 명세 3.12·18(운영).
 - 코드: `deploy/ec2/deploy.sh`(판단·보류·배포), `deploy/ec2/deploy-pending.sh`(타이머 입구), `deploy/ec2/freeze.sh`(status 에 보류 표시), `deploy/ec2/systemd/simai-deploy-pending.{service,timer}`, `deploy/ec2/install-host.sh`. 절차: `deploy/README.md` "작업·세팅 연동 자동 보류".
 - 시험: `ai/tests/deploy/test_ec2_deploy_hold.py`(가짜 docker·flock·curl·timeout 로 셸 스크립트를 돌린다), `test_ec2_freeze.py`.
