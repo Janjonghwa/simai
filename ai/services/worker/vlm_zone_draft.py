@@ -9,6 +9,9 @@
 - 변경 의심 구역 의견(1.1.0, S15P31A101-631): 입력에 `suspected_zones` 가 있으면 초안 뒤에 구역마다 이전·이번 세팅의 같은 카메라 크롭을 VLM 에
   비교시켜 `zone_opinions` 를 낸다(`simai_ai.vlm.zone_opinion`). 이전 사진·보정을 못 읽거나 실패하면 그 구역만 `NO_OPINION`(사유)이고 작업은
   실패시키지 않는다. 이전 프레임도 같은 얼굴 처리 관문을 거치며, 고른 카메라의 장만 처리한다.
+- 시연 개구부 스위치(S15P31A101-671): `SIMAI_ZONE_DRAFT_OPENING_ONLY`(기본 켬)이면 후보를 `OPENING` 으로 제한하고 단상 사이 낮은·빈 자리
+  후보·가려진 바닥 빈 칸 거르기·겹침 합치기를 켠 뒤, 얼굴 처리된 프레임의 노랑·검정 줄무늬 비율로 순위를 매겨 VLM 에 '표시된 개구부인가'를
+  묻는다(아니면 버림, `SIMAI_ZONE_DRAFT_MAX_OPENINGS` 개까지). 끄면 이전 동작 그대로다. 계약(입력·결과 스키마)은 바뀌지 않는다.
 """
 
 from __future__ import annotations
@@ -29,13 +32,15 @@ from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings
 from simai_ai.vlm.face_blur import Decoder, KeypointProvider
 from simai_ai.vlm.zone_draft import (
-    PROMPT_VERSION,
     CameraPose,
     GeometryCandidate,
+    ZoneDraftOptions,
     ZoneGeometryConfig,
     assess_geometry_candidates,
+    assess_opening_candidates,
     cameras_from_calibration,
     extract_geometry_candidates,
+    filter_and_dedup_candidates,
     load_points_from_bytes,
 )
 from simai_ai.vlm.zone_opinion import (
@@ -79,6 +84,10 @@ class VlmZoneDraftHandler:
         self._geometry_config = geometry_config
         self._opinion_config = opinion_config or ZoneOpinionConfig()
         self._env = env
+        # 스위치는 처리기를 만들 때 한 번 읽는다(S15P31A101-671). 켜져 있으면 기하 설정에 개구부 전용 설정을 덧씌운다
+        self._options = ZoneDraftOptions.from_env(env)
+        if self._options.opening_only:
+            self._geometry_config = self._options.geometry_config(geometry_config)
 
     def __call__(self, ctx: JobContext) -> dict[str, Any]:
         started_s = self._monotonic()
@@ -87,22 +96,39 @@ class VlmZoneDraftHandler:
             raise JobFailed("VLM_ZONE_DRAFT_INPUT_INVALID", "; ".join(errors))
 
         _check_cancelled(ctx)
-        candidates = self._resolve_candidates(ctx, inp)
+        # 보정을 먼저 읽는다: 가려진 바닥 빈 칸 거르기(S15P31A101-671)가 원본 해상도 카메라로 가시성을 본다
+        calibration_cameras = self._resolve_cameras(ctx, inp)
+        candidates = self._resolve_candidates(ctx, inp, calibration_cameras)
         ctx.report_progress(0.4)
 
         _check_cancelled(ctx)
-        cameras_by_id = self._resolve_cameras(ctx, inp)
         frames_by_camera = self._resolve_frames(ctx, inp)
-        cameras_by_id = _fit_cameras_to_frames(cameras_by_id, frames_by_camera)
+        cameras_by_id = _fit_cameras_to_frames(calibration_cameras, frames_by_camera)
         ctx.report_progress(0.6)
 
         _check_cancelled(ctx)
         vlm_client = self._open_client(ctx.remaining_s())
-        draft_items, status, model_version = assess_geometry_candidates(
-            candidates,
-            vlm_client=vlm_client,
-            frames_by_camera=frames_by_camera,
-            cameras_by_id=cameras_by_id,
+        if self._options.opening_only:
+            draft_items, status, model_version = assess_opening_candidates(
+                candidates,
+                vlm_client=vlm_client,
+                frames_by_camera=frames_by_camera,
+                cameras_by_id=cameras_by_id,
+                options=self._options,
+            )
+        else:
+            draft_items, status, model_version = assess_geometry_candidates(
+                candidates,
+                vlm_client=vlm_client,
+                frames_by_camera=frames_by_camera,
+                cameras_by_id=cameras_by_id,
+            )
+        log.info(
+            "job=%s opening_only=%s candidates=%s drafts=%s",
+            ctx.job_id,
+            self._options.opening_only,
+            [(c.candidate_id, c.source) for c in candidates],
+            [(d.candidate_id, d.recommended_name, d.vlm_status, d.rationale) for d in draft_items],
         )
         ctx.report_progress(0.8)
 
@@ -121,7 +147,7 @@ class VlmZoneDraftHandler:
             "safety_use": False,
             "status": status,
             "model_version": model_version,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": self._options.prompt_version,
             "latency_ms": elapsed_ms,
             "drafts": [item.to_dict() for item in draft_items],
         }
@@ -131,10 +157,15 @@ class VlmZoneDraftHandler:
             raise JobFailed("VLM_ZONE_DRAFT_OUTPUT_INVALID", "; ".join(errors))
         return result
 
-    def _resolve_candidates(self, ctx: JobContext, inp: Mapping[str, Any]) -> list[GeometryCandidate]:
+    def _resolve_candidates(
+        self, ctx: JobContext, inp: Mapping[str, Any], cameras: Mapping[str, CameraPose] | None = None
+    ) -> list[GeometryCandidate]:
         raw_cands = inp.get("geometry_candidates")
         if raw_cands is not None:
-            return [GeometryCandidate.from_dict(c) for c in raw_cands]
+            given = [GeometryCandidate.from_dict(c) for c in raw_cands]
+            if self._options.opening_only and self._geometry_config is not None:
+                return filter_and_dedup_candidates(given, self._geometry_config)
+            return given
 
         uri = inp.get("pointcloud_uri") or inp.get("preview_scene_uri")
         if not uri or self._store is None:
@@ -145,7 +176,7 @@ class VlmZoneDraftHandler:
             points_xyz = load_points_from_bytes(raw_bytes, str(uri))
         except ValueError as e:
             raise JobFailed("VLM_ZONE_DRAFT_SCENE_INVALID", f"{uri}: {e}") from e
-        return extract_geometry_candidates(points_xyz, config=self._geometry_config)
+        return extract_geometry_candidates(points_xyz, config=self._geometry_config, cameras=cameras)
 
     def _resolve_cameras(self, ctx: JobContext, inp: Mapping[str, Any]) -> dict[str, CameraPose]:
         cal_ref = inp.get("calibration_ref")
