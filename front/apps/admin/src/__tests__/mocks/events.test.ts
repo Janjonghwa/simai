@@ -311,7 +311,10 @@ describe('close(운영자 종료)', () => {
         reason: '오탐',
       },
     });
-    expect(closed?.payload.resolution?.close_id).toEqual(expect.any(String));
+    const resolution = closed?.payload.resolution;
+    expect(resolution?.kind === 'OPERATOR_CLOSED' ? resolution.close_id : undefined).toEqual(
+      expect.any(String),
+    );
     expect(published).toEqual([closed]);
     expect(validateMessage('risk_event', closed).ok).toBe(true);
 

@@ -221,7 +221,10 @@ delivery?: ("REALTIME" | "DELAYED_ACTIVE" | "AUDIT_ONLY")
  * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
  */
 related_event_id?: string
-resolution?: OperatorResolution
+/**
+ * 관측이 아닌 해소(6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다. 운영자 종료(2.0.0, kind OPERATOR_CLOSED)와 병합 흡수 마감(2.4.0, kind IDENTITY_MERGED, S15P31A101-657 이 I1 risk_event_transition 2.3.0 에 더한 것을 EC2 가 그대로 싣는다)
+ */
+resolution?: (OperatorResolution | IdentityMergeResolution)
 /**
  * 지금 Tier 0 가 이 LIVE 이벤트를 활성으로 들고 있는가(2.3.0, S15P31A101-595). EC2 가 Tier 0 의 마지막 재동기화 스냅샷(event_state_snapshot.active_events)과 그 뒤 실시간 전이로 접은 집합에 있고, 그 Tier 0 에서 I1 메시지를 마지막으로 받은 지 유예 시간(초기값 60초) 안이면 true. EC2 가 다시 뜬 뒤 스냅샷을 받기 전, Tier 0 가 꺼진 지 유예 시간이 지난 뒤, 다른(새) Tier 0 의 스냅샷에 없으면 false. 만든 때의 값이라 바뀌면 /topic/events 나 목록 다시 받기(viewer_health.held_events_revision)로 고친다. 해소 여부·등급을 바꾸지 않는 표시용 파생값이다
  */
@@ -665,7 +668,7 @@ export interface RuleMetrics {
 [k: string]: number
 }
 /**
- * 운영자 종료 해소(2.0.0, 6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다
+ * 운영자 종료 해소(명세 6.4, S15P31A101-200). 관측으로 해소를 확인한 것이 아니라 관제 화면 관리자가 누가·왜를 남기고 닫았다. 이 값이 있는 해소는 검증 상태 VERIFIED·판정 근거(evidence_ref)를 요구하지 않는다. 값은 I1 event_close.close 그대로다
  */
 export interface OperatorResolution {
 kind: "OPERATOR_CLOSED"
@@ -684,6 +687,24 @@ actor_id: string
  */
 requested_at: number
 reason: string
+}
+/**
+ * 병합 흡수 마감(명세 5.2 ID 교정·6.4, S15P31A101-657, risk_event_transition 2.3.0). 관측 해소가 아니라 World ID 병합으로 같은 사람의 같은 규칙·구역 위험 이벤트가 둘이 되어, 흡수된 쪽(merged_world_id 로 열린 이벤트)을 남는 이벤트(survivor_event_id)에 귀속하고 닫았다. 위험은 남는 이벤트가 그대로 이어 간다(자동 해소 아님). 이 값이 있는 해소는 검증 상태 VERIFIED·판정 근거(evidence_ref)를 요구하지 않는다. 화면은 이 카드를 남는 이벤트에 합쳐 보이면 된다
+ */
+export interface IdentityMergeResolution {
+kind: "IDENTITY_MERGED"
+/**
+ * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
+ */
+survivor_event_id: string
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+survivor_world_id: string
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+merged_world_id: string
 }
 /**
  * 운영자 상향(명세 5.4, 6.4, FR-116, S15P31A101-206). VLM 상향 의견(proposed_severity)을 관제 화면 관리자가 승인해 LIVE 이벤트 등급을 올린 기록이다. 판정이 아니므로 전이의 evidence_ref 는 직전 판정 근거(모르면 null)다. 상향만 가능하고 하향·해소·끄기는 표현할 수 없다. 거절은 EC2 에만 기록하고 Tier 0 로 보내지 않는다. 값은 I1 event_escalate.escalation 그대로다

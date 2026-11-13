@@ -11,6 +11,11 @@
       "then": { "properties": { "payload": { "not": { "required": ["resolution"] } } } }
     },
     {
+      "description": "병합 흡수 마감 resolution(kind IDENTITY_MERGED)은 2.4.0 부터다",
+      "if": { "properties": { "schema_version": { "pattern": "^(1[.]|2[.][0-3][.])" } }, "required": ["schema_version"] },
+      "then": { "properties": { "payload": { "properties": { "resolution": { "not": { "properties": { "kind": { "const": "IDENTITY_MERGED" } }, "required": ["kind"] } } } } } }
+    },
+    {
       "description": "운영자 상향 기록(escalations)은 2.1.0 부터다",
       "if": { "properties": { "schema_version": { "pattern": "^(1[.]|2[.]0[.])" } }, "required": ["schema_version"] },
       "then": { "properties": { "payload": { "not": { "required": ["escalations"] } } } }
@@ -82,8 +87,11 @@
         },
         "related_event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
         "resolution": {
-          "$ref": "../common/defs.schema.json#/$defs/operator_resolution",
-          "description": "운영자 종료 해소(2.0.0, 6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다"
+          "oneOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/operator_resolution" },
+            { "$ref": "../common/defs.schema.json#/$defs/identity_merge_resolution" }
+          ],
+          "description": "관측이 아닌 해소(6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다. 운영자 종료(2.0.0, kind OPERATOR_CLOSED)와 병합 흡수 마감(2.4.0, kind IDENTITY_MERGED, S15P31A101-657 이 I1 risk_event_transition 2.3.0 에 더한 것을 EC2 가 그대로 싣는다)"
         },
         "held_by_tier0": {
           "type": "boolean",

@@ -145,9 +145,9 @@ class ContractExamplesRoundTripTest {
 
     /**
      * 서로 다른 객체 갈래의 oneOf(진짜 합 타입)라 생성기가 Object 로 만드는 필드. 서버는 이 필드를 생성 클래스가 아니라 JsonNode 로 다룬다.
-     * risk_event_transition 2.3.0 resolution = 운영자 종료 | 병합 흡수(S15P31A101-657, RiskEventRepository 가 JsonNode 로 저장)
+     * risk_event_transition 2.3.0·risk_event 2.4.0 resolution = 운영자 종료 | 병합 흡수(S15P31A101-657, RiskEventRepository 가 JsonNode 로 저장)
      */
-    private static final java.util.Set<String> INTENTIONAL_UNIONS = java.util.Set.of("RiskEventTransitionPayload.resolution");
+    private static final java.util.Set<String> INTENTIONAL_UNIONS = java.util.Set.of("RiskEventTransitionPayload.resolution", "RiskEventPayload.resolution");
 
     @Test
     void generatedFieldsKeepTheirTypes() throws Exception {

@@ -123,11 +123,13 @@ function ruleTimeline(
   const resolvedAt = isActive(event) ? null : (event.resolved_at ?? eventTime(event));
   if (resolvedAt !== null) {
     const closed = event.resolution?.kind === 'OPERATOR_CLOSED';
-    const release = closed ? null : ppeReleaseOf(event, bundles);
+    // 병합 흡수 마감(S15P31A101-657)은 위험이 사라진 게 아니라 같은 사람의 남는 이벤트로 이어진 것이다. '해소'라 적지 않는다.
+    const merged = event.resolution?.kind === 'IDENTITY_MERGED';
+    const release = closed || merged ? null : ppeReleaseOf(event, bundles);
     items.push({
       at: resolvedAt,
       who: closed ? '운영자' : '시스템',
-      text: `${rule} ${closed ? '종료' : release ? PPE_RELEASE_LABEL[release] : '해소'}`,
+      text: `${rule} ${closed ? '종료' : merged ? '같은 사람 ID 병합으로 이어짐' : release ? PPE_RELEASE_LABEL[release] : '해소'}`,
     });
   }
   return items;

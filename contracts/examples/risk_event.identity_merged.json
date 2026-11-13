@@ -1,0 +1,29 @@
+{
+  "schema_version": "2.4.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000657",
+  "sent_at": 1760342460120,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e91",
+    "rule_id": "R4",
+    "rule_version": 1,
+    "source": "LIVE",
+    "lifecycle": "RESOLVED",
+    "verification": "UNVERIFIABLE",
+    "severity": "CRITICAL",
+    "confidence": "LOW",
+    "needs_check": true,
+    "confidence_reasons": ["JOINT_UNCERTAIN"],
+    "resume_count": 0,
+    "world_ids": ["w-lobby-0061"],
+    "zone_id": null,
+    "metrics": { "head_drop_m": 1.268 },
+    "rationale": null,
+    "proposed_severity": null,
+    "event_sequence": 3,
+    "related_event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e92",
+    "resolved_at": 1760342460030,
+    "resolution": {"kind":"IDENTITY_MERGED","survivor_event_id":"0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e92","survivor_world_id":"w-lobby-0059","merged_world_id":"w-lobby-0061"}
+  }
+}
