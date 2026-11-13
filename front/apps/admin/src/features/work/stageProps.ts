@@ -14,6 +14,8 @@ export interface WorkStageProps {
   onNext: () => void;
   /** 세팅 화면으로 돌아가 달라는 요청(작업 시작이 세팅 완료 전이라 막혔을 때, -642). 날짜 화면이 서버 progress 를 다시 받는다. */
   onBackToSetup?: () => void;
+  /** 보고서로 돌아가 달라는 요청(세팅 방식을 고르지 않고 창을 닫았을 때). 세션을 만들기 전이라 서버 progress 는 아직 보고서다. */
+  onBackToReport?: () => void;
 }
 
 /** 작업 종료 단계: 보고서를 보내면(제출·잠금) 달력으로 나가도록 날짜 화면에 알린다. */

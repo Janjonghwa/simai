@@ -60,7 +60,7 @@ describe('useTodayWorks', () => {
   it.each(['REPORT', 'SETUP'] as const)(
     '오늘 작업의 진행 값이 %s 이면(세팅 전) standby 다',
     (progress) => {
-      expect(standbyOf([work({ progress })])).toMatchObject({ state: 'ready', standby: true });
+      expect(standbyOf([work({ progress })])).toMatchObject({ state: 'ready', standby: 'setup' });
     },
   );
 
@@ -70,27 +70,27 @@ describe('useTodayWorks', () => {
   ] as const)('오늘 작업의 진행 값이 %s 이면 standby 가 풀린다', (progress, status) => {
     expect(standbyOf([work({ status, progress })])).toMatchObject({
       state: 'ready',
-      standby: false,
+      standby: null,
     });
   });
 
-  it('작업이 끝나면(DONE) 다시 standby 다', () => {
+  it('작업이 끝나면(DONE) 다시 standby 이고, 종류는 작업이 끝남이다', () => {
     expect(standbyOf([work({ status: 'DONE', progress: 'ENDED' })])).toMatchObject({
       state: 'ready',
-      standby: true,
+      standby: 'ended',
     });
   });
 
   it('진행 값도 상태도 모르면 standby 로 잠근다', () => {
     expect(standbyOf([work({ status: undefined })])).toMatchObject({
       state: 'ready',
-      standby: true,
+      standby: 'setup',
     });
   });
 
   it('오늘이 아닌 날의 예정 작업은 세팅을 마쳤어도 관제할 작업이 아니다', () => {
     const old = work({ work_id: 'old', date: '2026-11-04', progress: 'SETUP_DONE' });
-    expect(standbyOf([work({ work_id: 'b' }), old])).toMatchObject({ standby: true });
+    expect(standbyOf([work({ work_id: 'b' }), old])).toMatchObject({ standby: 'setup' });
   });
 
   it('자정을 넘기면 오늘이 바뀌어 어제 세팅을 마친 예정 작업은 관제할 작업이 아니다', () => {
@@ -98,12 +98,12 @@ describe('useTodayWorks', () => {
     const { result } = renderHook(() => useTodayWorks({ passive: true }), {
       wrapper: wrapperWith([work({ status: 'PLANNED', progress: 'SETUP_DONE' })]),
     });
-    expect(result.current).toMatchObject({ standby: false });
+    expect(result.current).toMatchObject({ standby: null });
 
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
-    expect(result.current).toMatchObject({ state: 'ready', standby: true });
+    expect(result.current).toMatchObject({ state: 'ready', standby: 'setup' });
   });
 });
 

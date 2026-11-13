@@ -264,6 +264,7 @@ describe('세팅 대기 이유 표시(S15P31A101-583)', () => {
     vi.setSystemTime(NOW);
     render(
       <SetupCalibrateStep
+        cameraView={<div data-testid="camera-view" />}
         waiting={deriveWaitingView(session(waitReason, status))}
         onRetry={vi.fn()}
         onReturnToStep1={vi.fn()}

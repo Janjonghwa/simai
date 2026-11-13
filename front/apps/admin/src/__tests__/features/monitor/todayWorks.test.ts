@@ -1,4 +1,4 @@
-import { hasMonitorableWork, todayWorks } from '@/features/monitor/todayWorks';
+import { hasMonitorableWork, standbyKindOf, todayWorks } from '@/features/monitor/todayWorks';
 import type { TbmWorkUnit } from '@/features/tbm/types';
 import { describe, expect, it } from 'vitest';
 
@@ -89,5 +89,30 @@ describe('관제할 작업(대기 화면 판정)', () => {
         work({ status: 'PLANNED', progress: 'SETUP_DONE' }),
       ]),
     ).toBe(true);
+  });
+});
+
+describe('대기 화면 종류', () => {
+  it('관제할 작업이 있으면 대기가 아니다', () => {
+    expect(standbyKindOf([work({ status: 'IN_PROGRESS', progress: 'IN_PROGRESS' })])).toBeNull();
+  });
+
+  it('오늘 작업이 모두 끝났으면(종료·제출) 작업이 끝남이다', () => {
+    expect(
+      standbyKindOf([
+        work({ status: 'DONE', progress: 'ENDED' }),
+        work({ work_id: '2', status: 'DONE', progress: 'SUBMITTED' }),
+      ]),
+    ).toBe('ended');
+  });
+
+  it('작업이 없거나 세팅 전인 작업이 남았으면 세팅 전이다', () => {
+    expect(standbyKindOf([])).toBe('setup');
+    expect(
+      standbyKindOf([
+        work({ status: 'DONE', progress: 'SUBMITTED' }),
+        work({ work_id: '2', progress: 'REPORT' }),
+      ]),
+    ).toBe('setup');
   });
 });

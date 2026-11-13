@@ -1,4 +1,8 @@
-import { describeRebake, uploadBlockedText } from '@/features/setup/supplement';
+import {
+  describeRebake,
+  supplementLimitText,
+  uploadBlockedText,
+} from '@/features/setup/supplement';
 import { SupplementUploadList } from '@/features/setup/SupplementUploadList';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
 import { useSupplementCapture } from '@/features/setup/useSupplementCapture';
@@ -124,6 +128,9 @@ export function SupplementPhonePage({ sessionId }: { sessionId: string }) {
           disabled={!capture.canUpload}
           onFiles={capture.addFiles}
         />
+        <p className="text-center text-xs text-muted-foreground">
+          {supplementLimitText(capture.limits)}
+        </p>
       </div>
 
       <SupplementUploadList

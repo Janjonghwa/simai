@@ -20,3 +20,19 @@ export const hasMonitorableWork = (works: readonly TbmWorkUnit[]): boolean =>
       work.status !== 'DONE' &&
       (work.status === 'IN_PROGRESS' || isSetupFinished(work.progress ?? null)),
   );
+
+/** 끝난 작업(종료·제출)인가. */
+const isEndedWork = (work: TbmWorkUnit): boolean =>
+  work.status === 'DONE' || work.progress === 'ENDED' || work.progress === 'SUBMITTED';
+
+/** 대기 화면의 종류: 세팅이 끝나지 않음(setup) · 오늘 작업이 모두 끝남(ended). */
+export type StandbyKind = 'setup' | 'ended';
+
+/**
+ * 오늘 작업으로 정하는 대기 화면. 관제할 작업이 있으면 null(대기 아님)이고, 오늘 작업이 있는데 모두 끝났으면 ended,
+ * 그 밖(작업이 없거나 세팅 전인 작업이 남음)은 setup 이다.
+ */
+export function standbyKindOf(works: readonly TbmWorkUnit[]): StandbyKind | null {
+  if (hasMonitorableWork(works)) return null;
+  return works.length > 0 && works.every(isEndedWork) ? 'ended' : 'setup';
+}

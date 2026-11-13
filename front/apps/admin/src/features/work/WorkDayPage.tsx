@@ -10,9 +10,9 @@ import { WorkActionProvider } from '@/features/work/WorkActionContext';
 import { WorkActionLayer } from '@/features/work/WorkActionLayer';
 import {
   formatDayTitle,
+  isEndedWork,
   stageIndexOf,
   stageOfProgress,
-  WORK_PHASE_LABELS,
   type DayKind,
   type WorkStageId,
 } from '@/features/work/workDay';
@@ -22,7 +22,7 @@ import { Button } from '@simai/ui/components/button';
 import { ChevronLeft } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
-// 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 진행 상태 · 단계 줄) 아래에 단계 화면 하나를 보인다.
+// 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 단계 줄) 아래에 단계 화면 하나를 보인다.
 // 단계는 서버 progress 가 정한다. 보고서 → 세팅(세션을 만들기 전이라 서버가 아직 REPORT)만 로컬 상태가 먼저 맡는다.
 // 보고서를 보내(제출·잠금) 달력으로 나간 뒤 그 날짜를 다시 열면(SUBMITTED) 단계 화면 대신 지난 날과 같은 다시 보기 화면(PastDayPage)을 보인다.
 
@@ -40,14 +40,11 @@ const KIND_CHIP: Partial<Record<DayKind, string>> = { today: '오늘', future: '
 function DayHeader({
   date,
   kind,
-  phase = null,
   onBack,
   children,
 }: {
   date: string;
   kind: DayKind;
-  /** 서버 progress 의 진행 상태 글(세팅 전·세팅 중·세팅 완료·관제 중·끝남). 작업을 열기 전에는 없다. */
-  phase?: string | null;
   onBack: () => void;
   children?: ReactNode;
 }) {
@@ -60,11 +57,6 @@ function DayHeader({
       </Button>
       <h2 className="text-[17px] font-bold whitespace-nowrap">{formatDayTitle(date)}</h2>
       {chip && <Badge variant="outline">{chip}</Badge>}
-      {phase && (
-        <Badge variant="secondary" data-testid="work-phase">
-          {phase}
-        </Badge>
-      )}
       {children}
     </header>
   );
@@ -119,6 +111,7 @@ function OpenedDay({
     todayKey,
     onNext: () => onLocalStage(NEXT_STAGE[stage] ?? stage),
     // 작업 시작이 세팅 완료 전이라 막혔을 때 세팅으로 돌아간다. 로컬은 세팅까지만 앞서므로 서버 progress 를 다시 받으면 따라간다
+    onBackToReport: () => onLocalStage('report'),
     onBackToSetup: () => {
       onLocalStage('setup');
       onRefresh();
@@ -127,8 +120,8 @@ function OpenedDay({
 
   return (
     <>
-      <DayHeader date={date} kind={kind} phase={WORK_PHASE_LABELS[progress]} onBack={onBack}>
-        <WorkStageNav stage={stage} />
+      <DayHeader date={date} kind={kind} onBack={onBack}>
+        <WorkStageNav stage={stage} finished={isEndedWork(day)} />
       </DayHeader>
       {stage === 'report' && <ReportStage {...stageProps} />}
       {stage === 'setup' && <SetupStage {...stageProps} />}

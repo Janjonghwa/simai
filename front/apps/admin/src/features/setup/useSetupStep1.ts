@@ -5,6 +5,7 @@ import {
   requestCoverageGuides,
   requestSetupSession,
   requestSetupZoneDrafts,
+  resumeSetupSession,
   retrySetupSession,
   SETUP_COVERAGE_GUIDES_KEY,
   SETUP_HEIGHT_DEFAULTS_KEY,
@@ -17,6 +18,7 @@ import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
 import { rebakeRunning } from '@/features/setup/supplement';
 import type {
   CreateSetupSessionBody,
+  ResumeSetupSessionBody,
   RetrySetupSessionBody,
   SetupSessionResponse,
   SetupZoneDraftsResponse,
@@ -27,7 +29,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 // 세팅 1단계 및 2단계 이후 서버 데이터 훅(각도 헬퍼 폴링, 카메라 높이 기본값, 세팅 세션 시작·2초 주기 조회·재시도, AI 구역 초안 조회).
 
-export function useCoverageGuides(enabled = true) {
+/** 각도 헬퍼. poll 이면 주기로 다시 받고, 아니면 한 번 받아 둔 값을 쓴다(보정·생성의 카메라 시야 칸). */
+export function useCoverageGuides(enabled = true, poll = enabled) {
   const query = useQuery({
     queryKey: SETUP_COVERAGE_GUIDES_KEY,
     queryFn: async ({ signal }) => {
@@ -37,7 +40,7 @@ export function useCoverageGuides(enabled = true) {
       return data;
     },
     enabled,
-    refetchInterval: enabled ? COVERAGE_GUIDE_POLL_MS : false,
+    refetchInterval: enabled && poll ? COVERAGE_GUIDE_POLL_MS : false,
   });
   return {
     data: query.data,
@@ -154,6 +157,34 @@ export function useRetrySetupSession(onRetried?: (session: SetupSessionResponse)
     rawError: mutation.error,
     session: mutation.data ?? null,
     reset: mutation.reset,
+  };
+}
+
+/** 멈춘 세팅(paused_reason)을 고친 높이로 이어 가기. 같은 세션이 멈춘 단계부터 다시 돈다. */
+export function useResumeSetupSession(onResumed?: (session: SetupSessionResponse) => void) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: ({
+      setupSessionId,
+      body,
+    }: {
+      setupSessionId: string;
+      body: ResumeSetupSessionBody;
+    }) => resumeSetupSession(api, setupSessionId, body),
+    onSuccess: (session) => {
+      queryClient.setQueryData(setupSessionKey(session.setup_session_id), session);
+      onResumed?.(session);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: SETUP_HEIGHT_DEFAULTS_KEY });
+    },
+  });
+
+  return {
+    resume: mutation.mutate,
+    pending: mutation.isPending,
+    error: submitErrorText(mutation.error),
+    rawError: mutation.error,
   };
 }
 

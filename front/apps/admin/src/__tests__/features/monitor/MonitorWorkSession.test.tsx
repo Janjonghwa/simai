@@ -201,8 +201,21 @@ describe('세션 바', () => {
     expect(bar.textContent).toContain('작업 구역 현장 전체');
   });
 
-  it('오늘 관제할 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
+  it('오늘 작업이 모두 끝났으면 세션 바 대신 작업이 끝났다는 대기 화면을 보인다', async () => {
     serveWorks([done({ work_id: '5' }), done({ work_id: '6' })]);
+    renderMonitor();
+
+    const waiting = await screen.findByRole('region', { name: '관제 대기' });
+    expect(within(waiting).getByText('오늘 작업이 끝났습니다')).toBeTruthy();
+    expect(within(waiting).queryByText('오늘 세팅이 끝나지 않았습니다')).toBeNull();
+    expect(sessionBar()).toBeNull();
+
+    fireEvent.click(within(waiting).getByRole('button', { name: '작업 관리로' }));
+    expect(navigate).toHaveBeenCalledWith({ to: '/work' });
+  });
+
+  it('오늘 세팅을 마친 작업이 없으면 세션 바 대신 세팅 대기 화면을 보인다', async () => {
+    serveWorks([serverWork({ work_id: '6', progress: 'SETUP' })]);
     renderMonitor();
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });

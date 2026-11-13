@@ -62,10 +62,17 @@ export function kindOfContentType(contentType: string): SupplementMediaKind | nu
 }
 
 export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '')} GB`;
+  }
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+/** 올릴 수 있는 크기 한도 한 줄: 파일 하나(동영상·사진)와 합계. */
+export function supplementLimitText(limits: SupplementLimits): string {
+  return `동영상 ${formatBytes(limits.max_video_bytes)} · 사진 ${formatBytes(limits.max_image_bytes)} · 합계 ${formatBytes(limits.max_total_bytes)}까지`;
 }
 
 export type FileCheck =

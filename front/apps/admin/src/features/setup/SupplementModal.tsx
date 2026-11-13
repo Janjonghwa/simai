@@ -9,7 +9,7 @@ import { useEffect, useRef } from 'react';
 
 // 보정·생성 단계에서 '다음'을 눌렀을 때 뜨는 「맵 보강 촬영(선택)」 창(S15P31A101-607). 닫으면(Esc·바깥 클릭 포함) 그 단계에
 // 그대로 머문다. 아래 오른쪽 단추는 맵에 아직 안 들어간 파일이 있으면 다시 굽기, 올린 파일이 없으면 건너뛰기, 이미 다 굽고 새로 올린 게
-// 없으면 다음이다(건너뛰기·다음은 구역 단계로 간다). 눌러 시작한 다시 굽기가 새 맵으로 반영되면 창이 닫히고 보정·생성 단계의 3D 가
+// 없으면 다음이다(건너뛰기·다음은 구역 단계로 간다). 다시 구웠는데 붙은 게 없으면(원래 맵 유지) 다시 굽기 옆에 건너뛰기도 둔다. 눌러 시작한 다시 굽기가 새 맵으로 반영되면 창이 닫히고 보정·생성 단계의 3D 가
 // 새 맵으로 바뀐다. 구역 단계로 넘어가기 전에는 다음을 누를 때마다 이 창이 다시 뜬다.
 
 export function SupplementModal({
@@ -30,6 +30,8 @@ export function SupplementModal({
   const hasFiles = uploading || (capture.supplement?.media.length ?? 0) > 0;
   const rebaking = capture.rebakeView?.running ?? false;
   const { rebake } = capture;
+  // 다시 구웠지만 붙은 게 없어 원래 맵을 유지했다. 다시 굽기만 남기면 넘어갈 길이 없어 건너뛰기를 같이 둔다.
+  const keptOriginal = rebake !== null && !rebaking && !rebakeApplied(rebake);
 
   // 이 창이 굽는 것을 본 뒤 끝나 새 맵으로 반영되면 닫는다. 전에 끝난 굽기가 남아 있을 때 열어도 저절로 닫히지 않게 굽는 모습을 봐야 한다.
   const sawRebaking = useRef(false);
@@ -67,13 +69,25 @@ export function SupplementModal({
           <Button variant="secondary" onClick={onCancel} className={SECONDARY}>
             닫기
           </Button>
-          <Button
-            onClick={capture.canRebakeNow ? capture.startRebake : onNext}
-            disabled={uploading || rebaking || capture.rebakePending}
-            className={ACTION}
-          >
-            {label}
-          </Button>
+          <div className="flex items-center gap-2">
+            {keptOriginal && capture.canRebakeNow && (
+              <Button
+                variant="secondary"
+                onClick={onNext}
+                disabled={uploading || capture.rebakePending}
+                className={SECONDARY}
+              >
+                건너뛰기
+              </Button>
+            )}
+            <Button
+              onClick={capture.canRebakeNow ? capture.startRebake : onNext}
+              disabled={uploading || rebaking || capture.rebakePending}
+              className={ACTION}
+            >
+              {label}
+            </Button>
+          </div>
         </div>
       </div>
     </ModalDialog>

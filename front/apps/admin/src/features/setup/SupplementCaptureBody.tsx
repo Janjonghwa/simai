@@ -1,6 +1,7 @@
 import {
   phoneSupplementUrl,
   rebakeBlockedText,
+  supplementLimitText,
   uploadBlockedText,
   type RebakeTone,
 } from '@/features/setup/supplement';
@@ -114,6 +115,7 @@ export function SupplementCaptureBody({
           <p className="text-muted-foreground">
             액션캠·DSLR 동영상(mp4·mov)이나 사진(jpg·png)을 여기에 끌어 놓으세요
           </p>
+          <p className="text-xs text-muted-foreground">{supplementLimitText(capture.limits)}</p>
           <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()}>
             파일 고르기
           </Button>

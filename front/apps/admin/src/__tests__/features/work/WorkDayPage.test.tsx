@@ -137,36 +137,29 @@ describe('WorkDayPage 머리줄', () => {
   });
 });
 
-describe('WorkDayPage 진행 상태(머리줄)', () => {
-  it.each([
-    ['REPORT', '세팅 전'],
-    ['SETUP', '세팅 중'],
-    ['SETUP_DONE', '세팅 완료 · 시작 가능'],
-    ['IN_PROGRESS', '관제 중'],
-    ['ENDED', '끝남'],
-  ] as const)('서버 progress %s 는 %s 로 보인다', async (progress, label) => {
-    serverDay = { ...serverDay, progress };
-    renderDay();
-    await waitFor(() => expect(screen.getByTestId('work-phase').textContent).toBe(label));
-  });
-});
-
 describe('WorkDayPage 단계 선택', () => {
   it.each([
-    ['REPORT', 'report-stage', 'TBM 보고서'],
-    ['SETUP', 'setup-stage', '세팅'],
-    ['SETUP_DONE', 'preflight-stage', '작업 전 확인'],
-    ['IN_PROGRESS', 'run-stage', '작업 종료'],
-    ['ENDED', 'run-stage', '작업 종료'],
+    ['REPORT', 'report-stage', 'TBM 보고서', 'current'],
+    ['SETUP', 'setup-stage', '세팅', 'current'],
+    ['SETUP_DONE', 'preflight-stage', '작업 전 확인', 'current'],
+    ['IN_PROGRESS', 'run-stage', '작업 종료', 'current'],
+    ['ENDED', 'run-stage', '작업 종료', 'done'],
   ] as const)(
-    '서버 progress %s 는 %s 를 열고 단계 줄의 현재가 그 단계다',
-    async (progress, stub, label) => {
+    '서버 progress %s 는 %s 를 열고 단계 줄의 %s 단계가 %s 다',
+    async (progress, stub, label, state) => {
       serverDay = { ...serverDay, progress };
       renderDay();
       await waitFor(() => expect(stageName()).toBe(stub));
-      expect(navState(label)).toBe('current');
+      expect(navState(label)).toBe(state);
     },
   );
+
+  it('머리줄에 진행 상태 글(세팅 전·관제 중·끝남 등)을 보이지 않는다', async () => {
+    serverDay = { ...serverDay, progress: 'ENDED' };
+    renderDay();
+    await waitFor(() => expect(stageName()).toBe('run-stage'));
+    expect(screen.queryByText('끝남')).toBeNull();
+  });
 
   it('지난 단계는 완료(✓), 남은 단계는 대기로 보인다', async () => {
     serverDay = { ...serverDay, progress: 'SETUP_DONE' };

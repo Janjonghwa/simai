@@ -18,6 +18,7 @@ import {
   type CreateSetupSessionBody,
   type IssuedSupplementMedia,
   type IssueSupplementMediaBody,
+  type ResumeSetupSessionBody,
   type RetrySetupSessionBody,
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
@@ -90,6 +91,19 @@ export function retrySetupSession(
   body: RetrySetupSessionBody = {},
 ): Promise<SetupSessionResponse> {
   return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/retry`, {
+    method: 'POST',
+    body,
+    schema: setupSessionResponseSchema,
+  });
+}
+
+/** 멈춘 세팅 세션(paused_reason)을 고친 높이로 멈춘 곳부터 이어 간다(서버·워커에 요청한 계약). */
+export function resumeSetupSession(
+  http: Http,
+  setupSessionId: string,
+  body: ResumeSetupSessionBody,
+): Promise<SetupSessionResponse> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/resume`, {
     method: 'POST',
     body,
     schema: setupSessionResponseSchema,

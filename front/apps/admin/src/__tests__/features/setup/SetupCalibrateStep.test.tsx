@@ -49,6 +49,7 @@ function renderStep(
   const onReturnToStep1 = handlers.onReturnToStep1 ?? vi.fn();
   render(
     <SetupCalibrateStep
+      cameraView={<div data-testid="camera-view" />}
       waiting={deriveWaitingView(session)}
       onRetry={onRetry}
       retryPending={handlers.retryPending}
@@ -104,6 +105,7 @@ describe('보정·생성 진행 카드(5단계 막대)', () => {
           updated_at_ms: updated,
         }),
       ),
+      cameraView: null,
       onRetry: vi.fn(),
       onReturnToStep1: vi.fn(),
     });
@@ -356,6 +358,7 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
     const waiting = deriveWaitingView(session);
     render(
       <SetupCalibrateStep
+        cameraView={<div data-testid="camera-view" />}
         waiting={waiting}
         cameraCheck={deriveCameraCheckView(session, waiting.cameraIds)}
         showCameraCheck

@@ -6,7 +6,6 @@ import { BrandMark, Wordmark } from '@/features/layout/BrandMark';
 import { RuleProfileMenu } from '@/features/layout/RuleProfileMenu';
 import { clockLabel } from '@/features/layout/status';
 import { useThemeStore } from '@/features/layout/theme.store';
-import { useCurrentSite } from '@/features/layout/useCurrentSite';
 import { useNow } from '@/features/layout/useNow';
 import { useLinkAlive } from '@/hooks/useLinkAlive';
 import { isLagHigh, LAG_WINDOW_MS } from '@/lib/tier0Lag';
@@ -23,7 +22,7 @@ import { cn } from '@simai/ui/lib/utils';
 import { Link } from '@tanstack/react-router';
 import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
 
-// 상단 바는 로고·현장명·Tier 0 처리 지연·시계·경보 소리 버튼(확인 권한이 있는 계정만)·관리자 메뉴(관리자는 현장 규칙 기준 포함, -654)만
+// 상단 바는 로고·Tier 0 처리 지연·시계·경보 소리 버튼(확인 권한이 있는 계정만)·관리자 메뉴(관리자는 현장 규칙 기준 포함, -654)만
 // 둔다(관제 데모와 같다). 상태 값(System Health·데이터 연령·카메라·보정·구성·장면)은 시스템 상태 화면에서 본다.
 
 const NONE = '—';
@@ -93,7 +92,6 @@ function AccountMenu() {
 }
 
 export function TopBar({ floating }: { floating: boolean }) {
-  const site = useCurrentSite();
   return (
     <header
       className={cn(
@@ -105,7 +103,6 @@ export function TopBar({ floating }: { floating: boolean }) {
         <BrandMark />
         <Wordmark />
       </Link>
-      <span className="text-[13px] whitespace-nowrap text-muted-foreground">{site?.name}</span>
       <div className="ml-auto flex items-center gap-x-3">
         <Tier0Lag />
         <Ec2Clock />
