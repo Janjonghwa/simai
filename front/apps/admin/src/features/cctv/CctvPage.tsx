@@ -2,6 +2,7 @@ import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import {
   framesArriving,
   remoteNotice,
+  showsState,
   STATE_LABEL,
   stateText,
   tileLabel,
@@ -20,6 +21,8 @@ import { PageTitle } from '@/features/layout/PageTitle';
 import { useNow } from '@/features/layout/useNow';
 import { useCameraNames } from '@/hooks/useCameraNames';
 import { env } from '@/lib/env';
+import { isLagHigh } from '@/lib/tier0Lag';
+import { selectCameraLagMs, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useCallback } from 'react';
@@ -27,7 +30,8 @@ import { useCallback } from 'react';
 // CCTV 관제(명세 3.3·16장, FR-133): 현장 노트북 영상 중계가 이미 받은 카메라 4대 H.264 를 WebCodecs 로 원본 해상도 그대로
 // 4분할에 그린다. 한 칸을 누르면 그 칸을 크게, 나머지를 옆에 둔다. 같은 노트북이면 루프백(127.0.0.1)으로, 아니면 EC2 원격 시청
 // (S15P31A101-400, 저장 없이 나눠 줌, 보는 사람이 있을 때만 게이트웨이가 올림)으로 받는다. 영상은 알림·판정에 쓰지 않는다.
-// 영상은 관리자만 본다. 다른 역할은 카메라 상태(실시간·끊김·정지)만 본다.
+// 영상은 관리자만 본다. 다른 역할은 카메라 상태(실시간·끊김)만 본다. 정지(지금 값을 모름)는 배지를 두지 않고(S15P31A101-665),
+// 실시간이면 Tier 0 가 잰 카메라 지연(ms)을 함께 보인다(lib/tier0Lag).
 // 관리자인데 이어지지 않은 동안(연결 중·붙지 못함·끊김·WebCodecs 없음·원격 멈춤)은 상태 한 줄과 그 아래 모의 화면을 보인다.
 // 영상 칸은 휠로 확대하고 확대 중에는 끌어서 옮긴다(usePanZoom). 캔버스에 CSS transform 만 주므로 그리기는 그대로다.
 
@@ -39,6 +43,21 @@ const FRAME_AGE_TICK_MS = 250;
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-sm backdrop-blur-[4px]';
 
+/** 실시간 칸의 카메라 지연(ms, 최근 몇 초 평균). 실시간이 아니거나 모르면 undefined. */
+function useCameraLag(cameraId: string, state: CameraState): number | undefined {
+  return useRealtimeStore((s) => (state === 'live' ? selectCameraLagMs(s, cameraId) : undefined));
+}
+
+/** 지연 글(「· 180 ms」). 기준을 넘으면 지연 색이다. */
+function LagSuffix({ lagMs }: { lagMs: number | undefined }) {
+  if (lagMs === undefined) return null;
+  return (
+    <span className={cn('font-mono', isLagHigh(lagMs) && 'font-semibold text-delay')}>
+      · {lagMs} ms
+    </span>
+  );
+}
+
 /** 칸이 마지막 프레임을 그린 지 몇 초인지. 이 훅을 쓰는 칸만 다시 그린다. */
 function useSecondsSinceFrame(cameraId: string): number | undefined {
   const now = useNow(FRAME_AGE_TICK_MS);
@@ -46,21 +65,15 @@ function useSecondsSinceFrame(cameraId: string): number | undefined {
   return frameAgeSec(at, now);
 }
 
-/** 칸 오른쪽 위 상태. LIVE 점은 프레임이 실제로 들어올 때만 켠다. */
-function StateBadge({
-  cameraId,
-  state,
-  lastClock,
-}: {
-  cameraId: string;
-  state: CameraState;
-  lastClock?: string;
-}) {
+/** 칸 오른쪽 위 상태. LIVE 점은 프레임이 실제로 들어올 때만 켠다. 정지는 배지를 두지 않는다. */
+function StateBadge({ cameraId, state }: { cameraId: string; state: CameraState }) {
   const label = useCameraNames();
   const sinceFrameSec = useSecondsSinceFrame(cameraId);
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
+  const lagMs = useCameraLag(cameraId, state);
   const live = state === 'live' && framesArriving(phase, link, sinceFrameSec);
+  if (!showsState(state)) return null;
   return (
     <span
       className={cn(CAPTION, 'top-2 right-2', state !== 'live' && 'font-semibold')}
@@ -72,8 +85,9 @@ function StateBadge({
           <span className="font-mono">LIVE</span>
         </>
       ) : (
-        stateText(state, lastClock)
+        STATE_LABEL[state]
       )}
+      <LagSuffix lagMs={lagMs} />
     </span>
   );
 }
@@ -108,13 +122,11 @@ export function CameraTile({
   cameraId,
   attach,
   state,
-  lastClock,
   wall,
 }: {
   cameraId: string;
   attach: Attach;
   state: CameraState;
-  lastClock?: string;
   /** 크게 보기 배치(CctvWall)에서만. 없으면 누르는 칸이 아니라 영상만 보인다. */
   wall?: WallTile;
 }) {
@@ -132,7 +144,7 @@ export function CameraTile({
       <canvas
         ref={ref}
         aria-label={`${label(cameraId)} 영상`}
-        // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(정지·끊김)는 오른쪽 위 배지로 알린다 —
+        // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(끊김)는 오른쪽 위 배지로 알린다 —
         // Pod 가 없을 때 들어오는 영상까지 45% 로 흐려 물빠진 색으로 보였다(2026-11-02)
         className={cn(
           'size-full origin-top-left object-contain',
@@ -144,7 +156,7 @@ export function CameraTile({
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
-      <StateBadge cameraId={cameraId} state={state} lastClock={lastClock} />
+      <StateBadge cameraId={cameraId} state={state} />
       <ZoomMap view={view} />
     </>
   );
@@ -170,17 +182,10 @@ export function CameraTile({
   );
 }
 
-/** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. */
-export function StateTile({
-  cameraId,
-  state,
-  lastClock,
-}: {
-  cameraId: string;
-  state: CameraState;
-  lastClock?: string;
-}) {
+/** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. 정지는 상태 글을 두지 않는다. */
+export function StateTile({ cameraId, state }: { cameraId: string; state: CameraState }) {
   const label = useCameraNames();
+  const lagMs = useCameraLag(cameraId, state);
   return (
     <div
       role="group"
@@ -190,18 +195,25 @@ export function StateTile({
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
-      <span
-        className={cn('text-xl', state === 'live' ? 'font-medium' : 'font-semibold text-delay')}
-      >
-        {stateText(state, lastClock)}
-      </span>
+      {showsState(state) && (
+        <span
+          className={cn(
+            'text-xl',
+            state === 'live'
+              ? cn('font-medium', lagMs !== undefined && isLagHigh(lagMs) && 'text-delay')
+              : 'font-semibold text-delay',
+          )}
+        >
+          {stateText(state, lagMs)}
+        </span>
+      )}
     </div>
   );
 }
 
 /** 영상 없이 카메라 상태만(관리자가 아닌 역할). 카메라 목록은 Tier 0 health 에서 온다. */
 function StatesOnly() {
-  const { cameras, lastClock, stateOf } = useCameraStates();
+  const { cameras, stateOf } = useCameraStates();
   if (cameras.length === 0) {
     return (
       <p role="status" className="text-muted-foreground">
@@ -213,7 +225,7 @@ function StatesOnly() {
     <CctvWall
       ids={cameras.map((camera) => camera.id)}
       focusable={false}
-      tile={(id) => <StateTile cameraId={id} state={stateOf(id)} lastClock={lastClock} />}
+      tile={(id) => <StateTile cameraId={id} state={stateOf(id)} />}
     />
   );
 }
@@ -262,7 +274,7 @@ function AdminCctv() {
 function AdminWall({ attach }: { attach: Attach }) {
   const link = useCctvStore((s) => s.link);
   const cameras = useCctvStore((s) => s.cameras);
-  const { lastClock, stateOf } = useCameraStates();
+  const { stateOf } = useCameraStates();
 
   if (link !== 'open') return <MockWithStatus link={link} />;
   if (cameras.length === 0)
@@ -271,13 +283,7 @@ function AdminWall({ attach }: { attach: Attach }) {
     <CctvWall
       ids={cameras}
       tile={(id, wall) => (
-        <CameraTile
-          cameraId={id}
-          attach={attach}
-          state={stateOf(id)}
-          lastClock={lastClock}
-          wall={wall}
-        />
+        <CameraTile cameraId={id} attach={attach} state={stateOf(id)} wall={wall} />
       )}
     />
   );

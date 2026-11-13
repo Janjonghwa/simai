@@ -115,7 +115,7 @@ describe('AlarmBanner', () => {
     fireEvent.click(within(banner).getByRole('button', { name: '상세' }));
 
     expect(useEventsStore.getState().openEventId).toBe('e-1');
-    expect(navigate).toHaveBeenCalledWith({ to: '/' });
+    expect(navigate).toHaveBeenCalledWith({ to: '/live' });
   });
 
   it('이벤트 패널이 있는 화면에서는 그 자리에서 상세를 연다', () => {

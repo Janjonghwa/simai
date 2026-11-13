@@ -1,4 +1,4 @@
-import { cameraState, framesArriving, stateText } from '@/features/cctv/cctv';
+import { cameraState, framesArriving, showsState, stateText } from '@/features/cctv/cctv';
 import { healthCameras } from '@/features/cctv/cctvCameras';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import type { HealthSnapshot } from '@/store/realtime.store';
@@ -72,11 +72,16 @@ describe('cameraState', () => {
     expect(cameraState(camera(undefined), true)).toBe('frozen');
   });
 
-  it('칸 글은 정지일 때만 마지막 데이터 시각을 붙인다', () => {
-    expect(stateText('live', '14:31:02')).toBe('실시간');
-    expect(stateText('down', '14:31:02')).toBe('끊김');
-    expect(stateText('frozen', '14:31:02')).toBe('정지 · 14:31:02');
-    expect(stateText('frozen')).toBe('정지');
+  it('칸 글은 실시간일 때만 카메라 지연(ms)을 붙인다', () => {
+    expect(stateText('live', 180)).toBe('실시간 · 180 ms');
+    expect(stateText('live')).toBe('실시간');
+    expect(stateText('down', 180)).toBe('끊김');
+  });
+
+  it('정지는 배지를 두지 않고 끊김·실시간은 둔다', () => {
+    expect(showsState('frozen')).toBe(false);
+    expect(showsState('down')).toBe(true);
+    expect(showsState('live')).toBe(true);
   });
 });
 

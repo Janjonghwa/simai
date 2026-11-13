@@ -13,7 +13,7 @@ import {
 import { CctvWall } from '@/features/cctv/CctvWall';
 import { DIMMED, LIVE_DOT, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
-import { clockLabel, lastDataClock } from '@/features/layout/status';
+import { clockLabel } from '@/features/layout/status';
 import { useNow } from '@/features/layout/useNow';
 import { cameraLabel } from '@/lib/cameraNames';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -141,10 +141,8 @@ function LiveClock() {
   return <>LIVE {clockLabel(offset, now) ?? '—'}</>;
 }
 
-/** 실시간 배지 글: 멈췄으면 마지막 데이터 시각, 아니면 LIVE 시계. */
-export function LiveBadge({ frozen }: { frozen: boolean }) {
-  const last = useRealtimeStore((s) => lastDataClock(s.health));
-  if (frozen) return <>정지 · {last ?? '—'}</>;
+/** 실시간 배지 글: LIVE 시계. World 가 멈췄을 때(정지)는 부르는 쪽이 배지를 두지 않는다(S15P31A101-665). */
+export function LiveBadge() {
   return (
     <>
       <i aria-hidden className={LIVE_DOT} />
@@ -191,15 +189,17 @@ function Tile({
         </b>{' '}
         {dir} 모서리
       </span>
-      <span
-        className={cn(
-          PILL,
-          'right-2 inline-flex items-center gap-1.5 font-mono',
-          (down || frozen) && 'text-slate-400',
-        )}
-      >
-        {down ? '끊김' : badge}
-      </span>
+      {(down || badge != null) && (
+        <span
+          className={cn(
+            PILL,
+            'right-2 inline-flex items-center gap-1.5 font-mono',
+            (down || frozen) && 'text-slate-400',
+          )}
+        >
+          {down ? '끊김' : badge}
+        </span>
+      )}
     </button>
   );
 }
@@ -211,7 +211,7 @@ interface CctvMockWallProps {
   down?: ReadonlySet<string>;
   /** 그림이 멈췄다(흐리게). */
   frozen?: boolean;
-  /** 각 칸 오른쪽 위 글(신호 없는 칸은 "끊김"). */
+  /** 각 칸 오른쪽 위 글(신호 없는 칸은 "끊김"). null 이면 신호 없는 칸 말고는 두지 않는다. */
   badge: ReactNode;
 }
 
@@ -256,7 +256,7 @@ export function CctvDemo() {
       figures={livePeople}
       down={down}
       frozen={!fresh}
-      badge={<LiveBadge frozen={!fresh} />}
+      badge={fresh ? <LiveBadge /> : null}
     />
   );
 }

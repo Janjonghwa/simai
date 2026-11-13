@@ -94,7 +94,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
 
   const showDetail = () => {
     openEvent(event.event_id);
-    if (!withPanel) void navigate({ to: '/' });
+    if (!withPanel) void navigate({ to: '/live' });
   };
 
   return (

@@ -1,5 +1,12 @@
 import type { ExternalSpatialSource } from '@/features/viewer3d';
 import { useCameraOrderStore } from '@/lib/cameraNames';
+import {
+  averageCameraLag,
+  averageLag,
+  lagSample,
+  pushLagSample,
+  type LagSample,
+} from '@/lib/tier0Lag';
 import type { PpeViewPayload, ViewerHealthPayload, WorldStatePayload } from '@simai/contracts';
 import { create } from 'zustand';
 
@@ -32,6 +39,8 @@ export interface RealtimeState {
   /** 마지막으로 연결이 열린 시각. 연결 뒤 health 를 아직 못 받았을 때 끊김 판단의 기준이다. */
   openedAt: number | null;
   health: HealthSnapshot | null;
+  /** 최근 health 의 Tier 0 처리 지연 표본(lib/tier0Lag). 상단 바·CCTV 칸이 평균을 보인다. 모르면 빈 배열. */
+  lagSamples: readonly LagSample[];
   /** 가장 새 World 상태(t_latest_global 기준). 3D 뷰어 없이 그리는 2D 비상 화면이 쓴다(명세 13.6). */
   world: WorldSnapshot | null;
   /**
@@ -65,6 +74,7 @@ const INITIAL = {
   phase: 'IDLE',
   openedAt: null,
   health: null,
+  lagSamples: [],
   world: null,
   worldResync: false,
   ppe: {},
@@ -83,9 +93,14 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
   setSource: (source) => set({ source }),
   setPhase: (phase) => set({ phase }),
   opened: (at) => set({ phase: 'OPEN', openedAt: at, worldResync: true }),
-  receiveHealth: (health) => set({ health }),
+  receiveHealth: (health) =>
+    set((s) => ({ health, lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)) })),
   seedHealth: (health) =>
-    set((s) => (s.health && s.health.payload.as_of >= health.payload.as_of ? s : { health })),
+    set((s) =>
+      s.health && s.health.payload.as_of >= health.payload.as_of
+        ? s
+        : { health, lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)) },
+    ),
   receiveWorld: (world) =>
     set((s) =>
       s.world &&
@@ -123,6 +138,16 @@ const COUNTED_LIFECYCLES: ReadonlySet<string> = new Set(['CONFIRMED', 'OCCLUDED'
 export const selectTrackedCount = (state: Pick<RealtimeState, 'world'>): number =>
   state.world?.payload.tracks.filter((track) => COUNTED_LIFECYCLES.has(track.track_lifecycle))
     .length ?? 0;
+
+/** 최근 몇 초 평균 Tier 0 처리 지연(ms). 모르면 undefined. 숫자라 값이 바뀔 때만 다시 그린다. */
+export const selectTier0LagMs = (state: Pick<RealtimeState, 'lagSamples'>): number | undefined =>
+  averageLag(state.lagSamples);
+
+/** 최근 몇 초 평균 카메라별 지연(ms). 모르면 undefined. */
+export const selectCameraLagMs = (
+  state: Pick<RealtimeState, 'lagSamples'>,
+  cameraId: string,
+): number | undefined => averageCameraLag(state.lagSamples, cameraId);
 
 /** /topic/health 는 1초마다 온다. 3번 연속 빠지면 끊긴 것으로 본다(명세 3장 하트비트, 13.2). */
 export const HEALTH_TIMEOUT_MS = 3000;

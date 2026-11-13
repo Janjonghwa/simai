@@ -3,6 +3,8 @@ import {
   HEALTH_TIMEOUT_MS,
   isLinkAlive,
   isWorldFresh,
+  selectCameraLagMs,
+  selectTier0LagMs,
   selectTrackedCount,
   useRealtimeStore,
   WORLD_STALE_MS,
@@ -49,6 +51,25 @@ describe('realtime.store', () => {
     // 더 새 조회 값은 받는다(재연결 직후 등).
     store.seedHealth(health(T + 3000));
     expect(useRealtimeStore.getState().health?.payload.as_of).toBe(health(T + 3000).payload.as_of);
+  });
+
+  it('health 를 받을 때마다 Tier 0 지연 표본을 쌓아 평균을 내고, Tier 0 와 끊긴 health 가 오면 비운다', () => {
+    const store = useRealtimeStore.getState();
+    const withLag = (at: number, lag: number) => {
+      const h = health(at);
+      const tier0 = h.payload.tier0_health as Record<string, unknown>;
+      return { ...h, payload: { ...h.payload, tier0_health: { ...tier0, pipeline_lag_ms: lag } } };
+    };
+    store.receiveHealth(withLag(T, 100));
+    store.seedHealth(withLag(T - 1000, 900)); // 더 오래된 조회 값은 버리므로 표본도 쌓지 않는다.
+    store.receiveHealth(withLag(T + 1000, 200));
+    expect(selectTier0LagMs(useRealtimeStore.getState())).toBe(150);
+    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam1')).toBeTypeOf('number');
+
+    const lost = health(T + 2000);
+    store.receiveHealth({ ...lost, payload: { ...lost.payload, tier0_link: 'DISCONNECTED' } });
+    expect(selectTier0LagMs(useRealtimeStore.getState())).toBeUndefined();
+    expect(selectCameraLagMs(useRealtimeStore.getState(), 'cam1')).toBeUndefined();
   });
 
   it('reset 하면 로그인 전 상태로 돌아간다', () => {

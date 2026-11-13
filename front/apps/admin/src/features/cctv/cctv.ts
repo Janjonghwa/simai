@@ -72,9 +72,15 @@ export function cameraState(camera: HealthCamera | undefined, fresh: boolean): C
   return fresh ? 'live' : 'frozen';
 }
 
-/** 칸에 보일 상태 글. 정지는 마지막으로 데이터를 받은 시각이 있으면 함께 보인다. */
-export function stateText(state: CameraState, lastClock?: string): string {
-  if (state === 'frozen' && lastClock) return `${STATE_LABEL[state]} · ${lastClock}`;
+/**
+ * 칸에 상태 글(배지)을 보일지. 정지(지금 값을 모름)는 배지를 두지 않는다(S15P31A101-665: 관제 중 수시로 뜨는 '정지'가 끊김처럼
+ * 읽혔다). 끊김은 그대로 보인다.
+ */
+export const showsState = (state: CameraState) => state !== 'frozen';
+
+/** 칸에 보일 상태 글. 실시간이면 Tier 0 가 잰 카메라 지연(ms)을 알 때 함께 보인다. */
+export function stateText(state: CameraState, lagMs?: number): string {
+  if (state === 'live' && lagMs !== undefined) return `${STATE_LABEL[state]} · ${lagMs} ms`;
   return STATE_LABEL[state];
 }
 

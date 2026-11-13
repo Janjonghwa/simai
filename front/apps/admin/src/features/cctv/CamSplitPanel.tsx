@@ -91,7 +91,7 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   const setCam = useCamSplitStore((s) => s.setCam);
   const close = useCamSplitStore((s) => s.close);
   const { entries } = useLiveEvents();
-  const { cameras, fresh, lastClock, stateOf } = useCameraStates();
+  const { cameras, fresh, stateOf } = useCameraStates();
   const best = useRealtimeStore((s) => bestCamera(s.world?.payload.tracks, split.target));
   const healthIds = useMemo(() => cameras.map((camera) => camera.id), [cameras]);
   const ids = useCameraIds(attach !== undefined, healthIds);
@@ -132,9 +132,12 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
             {label(camId)}
           </b>
         )}
-        <span className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-0.5 font-mono text-xs">
-          {down ? '끊김' : fresh ? <LiveBadge frozen={false} /> : <LiveBadge frozen />}
-        </span>
+        {/* World 가 멈췄을 때(정지)는 배지를 두지 않는다(S15P31A101-665). 끊김은 그대로 보인다. */}
+        {(down || fresh) && (
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-0.5 font-mono text-xs">
+            {down ? '끊김' : <LiveBadge />}
+          </span>
+        )}
         <button
           type="button"
           aria-label="CCTV 닫기 (Esc)"
@@ -191,15 +194,9 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
             카메라 상태를 받지 못했습니다
           </p>
         ) : attach ? (
-          <CameraTile
-            key={camId}
-            cameraId={camId}
-            attach={attach}
-            state={state}
-            lastClock={lastClock}
-          />
+          <CameraTile key={camId} cameraId={camId} attach={attach} state={state} />
         ) : (
-          <StateTile cameraId={camId} state={state} lastClock={lastClock} />
+          <StateTile cameraId={camId} state={state} />
         )}
       </div>
       {down && best && best !== camId && ids.includes(best) && (
