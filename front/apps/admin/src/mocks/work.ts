@@ -156,6 +156,7 @@ export interface WorkItemJson {
   from_ms: number;
   to_ms: number;
   active_setup_session_id: string | null;
+  setup_completed_at?: number | null;
   actual_started_at: number | null;
   actual_ended_at: number | null;
   event_counts: { CRITICAL: number; HIGH: number } | null;
@@ -447,6 +448,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       from_ms: work.from_ms,
       to_ms: work.to_ms,
       active_setup_session_id: activeSessionId(work),
+      setup_completed_at: work.setupDoneAt,
       actual_started_at: work.actual_started_at,
       actual_ended_at: work.actual_ended_at,
       event_counts: { ...work.event_counts },
@@ -549,6 +551,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
           from_ms: w.from_ms,
           to_ms: w.to_ms,
           active_setup_session_id: null,
+          setup_completed_at: w.setup_completed_at ?? w.actual_started_at,
           actual_started_at: w.actual_started_at,
           actual_ended_at: w.actual_ended_at,
           event_counts: w.event_counts,
