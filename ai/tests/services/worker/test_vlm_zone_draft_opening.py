@@ -57,7 +57,7 @@ CAL_DOC = {
     "calibration_version": "cal-setup-12",
     "cameras": [
         {
-            "camera_id": "cam1",
+            "camera_id": "cam_A",
             "intrinsics": {"fx": 200.0, "fy": 200.0, "cx": 160.0, "cy": 120.0},
             # 단상 위 3 m 에서 내려다본다
             "extrinsics": {"R": [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], "t": [-1.4, 1.4, 3.0]},
@@ -104,7 +104,7 @@ class _FakeVlm:
 def _input() -> dict:
     inp = copy.deepcopy(REQUEST["payload"]["input"])
     inp["calibration_hash"] = content_hash(CAL_DOC)
-    inp["frames"] = [f for f in inp["frames"] if f["camera_id"] == "cam1"]
+    inp["frames"] = [f for f in inp["frames"] if f["camera_id"] == "cam_A"]
     return inp
 
 
@@ -146,7 +146,7 @@ def test_default_switch_asks_opening_question_and_keeps_confirmed_opening():
     assert call["response_format"] == OPENING_RESPONSE_FORMAT
     (draft,) = result["drafts"]
     assert draft["recommended_name"] == "단상 개구부" and draft["recommended_severity"] == "CRITICAL"
-    assert draft["vlm_status"] == "VLM" and draft["evidence_cameras"] == ["cam1"]
+    assert draft["vlm_status"] == "VLM" and draft["evidence_cameras"] == ["cam_A"]
 
 
 def test_vlm_saying_not_an_opening_leaves_no_draft():
