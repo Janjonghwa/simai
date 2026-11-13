@@ -175,7 +175,9 @@ class Ec2Server:
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._main, daemon=True)
         self._thread.start()
-        assert self._ready.wait(5)
+        # 서버 스레드가 포트를 열 때까지의 조건 대기다(열리면 바로 지나간다). 5 s 고정 상한은 CPU 가 바쁜 전체 시험에서
+        # websockets 첫 import·TLS 문맥 준비가 늦어 넘긴 적이 있다(S15P31A101-674, crash_recovery_g3)
+        assert self._ready.wait(30)
 
     def _main(self) -> None:
         asyncio.set_event_loop(self._loop)

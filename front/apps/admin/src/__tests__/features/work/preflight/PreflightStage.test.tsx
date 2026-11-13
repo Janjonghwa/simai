@@ -70,8 +70,11 @@ const fakeViewer = vi.hoisted(() => ({
   phase: 'ready' as ViewerStatus['phase'],
   clearSelection: vi.fn(),
 }));
-vi.mock('@/features/viewer3d', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/features/viewer3d')>();
+// 진짜 입구(importOriginal)를 펼치지 않는다. 입구는 three·R3F·drei·후처리 묶음을 끌어와 화면이 3D 를 동적으로 받을 때 처음
+// 변환·적재에 부하 없이도 10 s 가 걸려 15 s 대기를 넘겼다(S15P31A101-674). 이 화면이 런타임에 쓰는 것은 뷰어와 구역 입력
+// Source 뿐이라, Source 는 three 를 쓰지 않는 data/spatialSource 에서 바로 가져온다.
+vi.mock('@/features/viewer3d', async () => {
+  const { createExternalSource } = await import('@/features/viewer3d/data/spatialSource');
   const { useEffect, useImperativeHandle } = await import('react');
   function FakeViewer(props: Viewer3DProps) {
     const { ref, onStatusChange } = props;
@@ -87,7 +90,7 @@ vi.mock('@/features/viewer3d', async (importOriginal) => {
     }, [onStatusChange]);
     return <div data-testid="viewer3d" />;
   }
-  return { ...actual, Viewer3D: FakeViewer };
+  return { Viewer3D: FakeViewer, createExternalSource };
 });
 
 const TODAY = '2026-11-11';
@@ -182,6 +185,13 @@ const draw = () =>
     pointerId: 1,
   });
 
+/**
+ * 서명 추가처럼 mock 서버를 한 번 오가는(서명 목록 조회, 이미지 만들기·올리기·목록 다시 받기) 대기의 상한. 기본 1 s 는
+ * CPU 가 바쁜 반복 실행에서 넘긴 적이 있다(S15P31A101-674, 「서명자 1명」 못 찾음). 이 대기는 준비라서, 쓰는 시험의
+ * 시간 제한(30 s) 안에서 넉넉히 둔다.
+ */
+const ROUND_TRIP = { timeout: 5_000 };
+
 /** 서명 창을 열어 한 명을 추가하고 완료로 닫는다. */
 async function signAs(name: string) {
   fireEvent.click(screen.getByRole('button', { name: '서명하기' }));
@@ -189,9 +199,9 @@ async function signAs(name: string) {
   fireEvent.change(within(dialog).getByLabelText('서명자 이름'), { target: { value: name } });
   draw();
   const add = within(dialog).getByRole('button', { name: '서명 추가' });
-  await waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false), ROUND_TRIP);
   fireEvent.click(add);
-  await waitFor(() => expect(within(dialog).getByText('서명자 1명')).toBeTruthy());
+  await waitFor(() => expect(within(dialog).getByText('서명자 1명')).toBeTruthy(), ROUND_TRIP);
   fireEvent.click(within(dialog).getByRole('button', { name: '완료' }));
   await waitFor(() => expect(screen.queryByRole('dialog', { name: '참석자 서명' })).toBeNull());
 }

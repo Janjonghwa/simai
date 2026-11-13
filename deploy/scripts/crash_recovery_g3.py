@@ -4,7 +4,8 @@
 두 부분으로 나눠 같은 볼륨 경로에서 돈다. GPU 를 쓰지 않는다(SIM 2D keypoint).
 
 1. 서비스(S15P31A101-171 실제 Tier 0 프로세스 `python -m services.tier0`, SIM 입력, 로컬 wss EC2 흉내·노트북 시험 상대):
-   - 전이 직후: 노트북이 R1 local_alert(RAISED)를 받자마자 kill -9 (저널 fsync 전일 수도 있다)
+   - 전이 직후: 노트북이 R1 local_alert(RAISED)를 받자마자 kill -9 (저널 fsync 전일 수도 있다). 노트북이 붙기 전에 R1 이 나
+     한 번뿐인 local_alert 를 놓쳤으면 EC2 가 받은 R1 RAISED 전이를 신호로 쓴다(fsync 뒤, 결과의 trigger 에 적는다)
    - ACK 직후: 현장 확인(site_ack) → alarm_stop 을 받자마자 kill -9
    - 체크포인트 기록 중: 체크포인트 주기를 50 ms 로 두고 checkpoints/*.tmp 가 보이면 kill -9 (여러 번)
    매번 다시 띄우고, 종료 시점 저널을 payload 로만 접은 정답(site_driver.journal_truth)과
@@ -243,13 +244,28 @@ class ServiceRun:
 
     def run(self) -> None:
         laptop = self.laptop
-        proc = self.start(self.cfg)
+        # 노트북은 Tier 0 를 띄우기 전에 붙기 시작한다(0.2 s 마다 다시 붙는다). 띄운 뒤(기동 확인 3 s)에 붙이면 첫 프레임 뒤
+        # 약 0.2 s 에 나는 R1 의 local_alert 가 노트북 연결보다 먼저 나가 부하에서 놓쳤다(S15P31A101-674)
         laptop.start()
+        proc = self.start(self.cfg)
 
         # 1) 전이 직후
-        sc = self._scenario("service_after_transition", "D-G3-11", "R1 local_alert(RAISED) 수신 직후 kill -9")
-        self.wait(lambda: any(m["payload"]["rule_id"] == "R1" and m["payload"]["lifecycle"] == "RAISED"
-                              for m in laptop.all_messages("local_alert")), "R1 local_alert")
+        sc = self._scenario("service_after_transition", "D-G3-11",
+                            "R1 local_alert(RAISED) 수신 직후 kill -9 (놓쳤으면 EC2 R1 RAISED 전이)")
+
+        def r1_raised() -> str | None:
+            # local_alert 는 그때 붙은 노트북에만 한 번 간다. 제어 채널이 열리고 노트북이 붙기 전(기동이 느린 부하)에 R1 이 나면
+            # 다시 오지 않는다. EC2 전이는 저널에서 재전송되므로 같은 R1 RAISED 를 놓치지 않는다(fsync 뒤라 신호가 조금 늦다)
+            if any(m["payload"]["rule_id"] == "R1" and m["payload"]["lifecycle"] == "RAISED"
+                   for m in laptop.all_messages("local_alert")):
+                return "local_alert"
+            if any(m["payload"]["rule_id"] == "R1" and m["payload"]["transition"] == "RAISED"
+                   for m in self.transitions()):
+                return "ec2_transition"
+            return None
+
+        self.wait(lambda: r1_raised() is not None, "R1 RAISED(local_alert 또는 EC2 전이)")
+        sc["trigger"] = r1_raised()
         self.kill9(proc)
         proc = self._restart_and_compare(sc, self.cfg)
 
@@ -296,6 +312,11 @@ class ServiceRun:
 
         # 4) 마지막: 사람이 그대로 서 있는 동안 복원 이벤트가 해소되지 않는지 보고 정상 종료
         time.sleep(3)
+        # 구역 대상 복원 이벤트(R7 형태)는 감시 확보 근거(VERIFIED)가 해소 유지 시간(3 s)만큼 이어져야 해소된다. 앞 프로세스들은
+        # 4~5 s 만에 kill 되고(다시 RESTORED, 새 구간) 마지막도 3 s 뒤 끝내면, 부하로 재시작 직후 판정이 늦을 때 그 안에 해소되지
+        # 못해 「근거로 해소됨」을 볼 수 없었다(S15P31A101-674). 아직 열린 구역 복원 이벤트가 있으면 해소될 때까지 조건 대기한다
+        # (상한 30 s, 넘겨도 오류로 보지 않고 결과에 그대로 남긴다). 사람 대상 복원 이벤트는 그동안 더 오래 지켜볼 뿐이다.
+        self.ts.wait_until(lambda: not self._open_restored_zone_events(), timeout=30, step=0.2)
         from test_tier0_e2e import _graceful
 
         code = _graceful(proc)
@@ -312,6 +333,21 @@ class ServiceRun:
         final["restored_zone_events"] = sorted(
             {p["event_id"] for p in payloads if p["event_id"] in self.restored_events and not p["world_ids"]})
         final["restored_zone_resolved_with_evidence"] = zone_ok
+
+    def _open_restored_zone_events(self) -> list[str]:
+        """복원된 적 있는 구역 대상(world_ids 빈) 이벤트 중 마지막 RESTORED 뒤에 아직 해소 전이가 없는 것."""
+        by_event: dict[str, list[dict]] = {}
+        for m in self.transitions():
+            by_event.setdefault(m["payload"]["event_id"], []).append(m["payload"])
+        open_ids = []
+        for eid in self.restored_events:
+            ps = by_event.get(eid, [])
+            if not ps or any(p["world_ids"] for p in ps):
+                continue
+            last_restore = max((p["event_sequence"] for p in ps if "RESTORED" in (p.get("changes") or [])), default=-1)
+            if not any(p["transition"] == "RESOLVED" and p["event_sequence"] > last_restore for p in ps):
+                open_ids.append(eid)
+        return open_ids
 
     def _scenario(self, name: str, item: str, what: str) -> dict:
         sc = {"name": name, "part": "service", "item": item, "what": what, "started_at": now_ms()}

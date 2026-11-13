@@ -1,4 +1,4 @@
-import { createSetupSession } from '@/features/setup/api';
+import { createSetupSession, SETUP_SESSION_POLL_MS, setupSessionKey } from '@/features/setup/api';
 import { resetSetupFlowStore } from '@/features/setup/setup.store';
 import type { UploadQueueDeps } from '@/features/setup/supplementUpload';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
@@ -59,13 +59,25 @@ function run(sessionId: string) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return renderHook(
+  const view = renderHook(
     () => {
       const session = useSetupSession(sessionId).data;
       return { session, capture: useSupplementCapture(session, 'FILE_UPLOAD', { put, hash }) };
     },
     { wrapper },
   );
+  /**
+   * mock 시계를 옮긴 뒤 세션 조회를 바로 한 번 한다. 실제 2초 주기(SETUP_SESSION_POLL_MS)를 기다리면 시험 하나가 주기 두 번에
+   * 4 s 넘게 걸려 전체 시험 부하에서 5 s 시간 초과가 났다(S15P31A101-674). 주기 조회 자체는 useSetupSession 시험이 본다.
+   */
+  const pollNow = () => act(() => client.refetchQueries({ queryKey: setupSessionKey(sessionId) }));
+  /** 지금 세션 조회의 주기(ms, 멈췄으면 false). 끝난 세션도 다시 굽는 동안은 계속 조회하는지 본다. */
+  const pollInterval = () => {
+    const query = client.getQueryCache().find({ queryKey: setupSessionKey(sessionId) })!;
+    const interval = query.observers[0]!.options.refetchInterval;
+    return typeof interval === 'function' ? interval(query as never) : interval;
+  };
+  return { ...view, pollNow, pollInterval };
 }
 
 const video = (name: string) => new File([new Uint8Array(64)], name, { type: 'video/mp4' });
@@ -74,8 +86,10 @@ const photo = (name: string) => new File([new Uint8Array(64)], name, { type: 'im
 describe('맵 보강 촬영 훅 + mock', () => {
   it('올리고 다시 구우면 진행률을 거쳐 반영됨이 되고 세션 맵이 새 버전으로 바뀐다', async () => {
     const id = await completedSession();
-    const { result } = run(id);
+    const { result, pollNow, pollInterval } = run(id);
     await waitFor(() => expect(result.current.capture.supplement?.can_upload).toBe(true));
+    // 끝난 세션이라 조회를 멈춰 둔다
+    expect(pollInterval()).toBe(false);
     expect(result.current.capture.supplement?.rebake_blocked_reason).toBe('NO_MEDIA');
 
     act(() => result.current.capture.addFiles([video('walk.mp4'), photo('gopro-wide.jpg')]));
@@ -95,34 +109,34 @@ describe('맵 보강 촬영 훅 + mock', () => {
     await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('다시 굽기 대기 중'));
     // 다시 굽는 중에는 그 파일을 빼지 못한다
     expect(result.current.capture.rows.every((r) => r.actions.length === 0)).toBe(true);
+    // 다시 굽는 동안은 끝난 세션도 2초마다 조회한다(아래 pollNow 는 그 조회를 앞당길 뿐이다)
+    expect(pollInterval()).toBe(SETUP_SESSION_POLL_MS);
 
     clock += 6_500;
-    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('다시 굽는 중 50%'), {
-      timeout: 4_000,
-    });
+    await pollNow();
+    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('다시 굽는 중 50%'));
     clock += 10_000;
-    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('반영됨'), {
-      timeout: 4_000,
-    });
+    await pollNow();
+    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('반영됨'));
     expect(result.current.capture.rebakeView?.media.map((m) => [m.name, m.text])).toEqual([
       ['walk.mp4', '반영됨'],
       ['gopro-wide.jpg', '붙지 않음 · 초광각·어안 렌즈'],
     ]);
     expect(result.current.session?.scene_version).toMatch(/^scene-supplement-/);
+    expect(pollInterval()).toBe(false);
   });
 
   it('사진 두 장뿐이면 원래 맵 유지(사유)로 끝나고 맵 버전은 그대로다', async () => {
     const id = await completedSession();
-    const { result } = run(id);
+    const { result, pollNow } = run(id);
     await waitFor(() => expect(result.current.capture.canUpload).toBe(true));
     act(() => result.current.capture.addFiles([photo('a.jpg'), photo('b.jpg')]));
     await waitFor(() => expect(result.current.capture.supplement?.can_rebake).toBe(true));
     act(() => result.current.capture.startRebake());
     await waitFor(() => expect(result.current.capture.rebake?.status).toBe('QUEUED'));
     clock += 20_000;
-    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('원래 맵 유지'), {
-      timeout: 4_000,
-    });
+    await pollNow();
+    await waitFor(() => expect(result.current.capture.rebakeView?.title).toBe('원래 맵 유지'));
     expect(result.current.capture.rebakeView?.detail).toBe(
       '고정 카메라 화면과 맞춰진 장면이 너무 적습니다',
     );
