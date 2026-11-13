@@ -638,11 +638,9 @@ GPU 세션 전에 EC2 호스트에서 저장소의 `deploy/ec2/deploy.sh`를 `/o
 **시작 (Pod 를 켜기 전)**
 
 ```sh
-# 1) 배포 스크립트·동결 스크립트 설치(저장소 판과 다르면 다시). 배포가 쓰는 것은 설치본이다
+# 1) 배포·동결·보류 배포 스크립트와 타이머 설치(저장소 판과 다르면 다시). 배포가 쓰는 것은 설치본이다
 cd /opt/simai/repo && cat REVISION
-sudo install -m 755 deploy/ec2/deploy.sh /opt/simai/bin/deploy.sh
-sudo install -m 755 deploy/ec2/freeze.sh /opt/simai/bin/freeze.sh
-cmp deploy/ec2/deploy.sh /opt/simai/bin/deploy.sh && cmp deploy/ec2/freeze.sh /opt/simai/bin/freeze.sh
+sudo sh deploy/ec2/install-host.sh     # 복사·cmp·타이머 켜기까지 한다(아래 "작업·세팅 연동 자동 보류")
 # 2) 동결: 세션 길이 + 여유(보통 4~6시간). 진행 중 배포가 있으면 끝난 뒤 걸린다
 sudo /opt/simai/bin/freeze.sh on --hours 5 --reason "14차 GPU 세션"
 sudo /opt/simai/bin/freeze.sh status     # "동결 중 (사유·만료 UTC·설정자)" 확인
@@ -655,7 +653,38 @@ sudo /opt/simai/bin/freeze.sh status     # "동결 중 (사유·만료 UTC·설�
 2. Pod 서비스를 내린다(감시 프로세스에 SIGTERM: 워커 → vLLM → Tier 0 순서). 결과 묶음·로그(`$SIMAI_ROOT/logs`, `runs/`)를 노트북으로 가져온 뒤 Pod 를 Stop 한다(볼륨이 없다).
 3. 이번 세션 워커 토큰을 폐기한다(`worker-token.sh revoke <워커 ID>`).
 4. 동결을 푼다: `sudo /opt/simai/bin/freeze.sh off` → `status` 가 `동결 없음`.
-5. 동결 중 건너뛴 머지가 있으면(Jenkins 로그 "동결 중 … 배포 건너뜀") dev 최신으로 배포를 다시 실행한다. 자동으로 다시 배포되지 않는다.
+5. 동결 중 건너뛴 머지가 있으면(Jenkins 로그 "동결 중 … 배포 건너뜀") dev 최신으로 배포를 다시 실행한다. 수동 동결로 건너뛴 커밋은 자동으로 다시 배포되지 않는다(작업·세팅 진행 중이라 **보류**한 커밋만 타이머가 배포한다).
 6. Pod 임시 수정(환경 파일·코드 덧댐)은 세션 기록에 적고 MR 로 옮긴다(다음 이미지에 반영되기 전에는 Pod 를 새로 켜면 사라진다).
 
 시간은 1~168 정수다. 사유·만료 UTC·설정자는 `/opt/simai/deploy.freeze`에 기록한다. 동결 중 Jenkins 로그에는 사유·만료와 배포 건너뜀이 표시되고 성공으로 끝난다. 만료되면 경고 후 배포한다. 건너뛴 커밋은 자동으로 다시 배포되지 않으므로 세션 후 배포를 다시 실행한다.
+
+### 작업·세팅 연동 자동 보류 (S15P31A101-676)
+
+수동 동결 말고도, 배포 직전에 진행 중인 작업·세팅이 있으면 deploy.sh 가 배포를 **보류**하고 끝나면 자동으로 배포한다. 설계: `docs/design/S15P31A101-676-deploy-freeze-work-linked.md`.
+
+- **판단**(같은 `deploy.lock` 안, 수동 동결 확인 다음): `docker exec simai-ec2-db-1 psql` 로 운영 DB 를 읽기 전용 트랜잭션으로 묻는다. 진행 중 작업 = `work_unit.actual_started_at IS NOT NULL AND actual_ended_at IS NULL`, 진행 중 세팅 = `setup_session.status` 가 COMPLETED·FAILED 가 아니거나 그 세션의 맵 보강 다시 굽기가 QUEUED·RUNNING. 이미지를 만든 뒤 서비스를 건드리기 직전에 한 번 더 본다.
+- **보류**: Jenkins 가 보낸 tar 를 `/opt/simai/pending/<커밋>.tar` 로 두고 `/opt/simai/pending/hold`(커밋·처음 보류·마지막 보류·사유·시도 횟수)를 쓴다. 보류는 하나뿐이다. 새 커밋이 오면 이전 보류를 대체하고 처음 보류 시각은 이어받는다. Jenkins 로그: `작업·세팅 진행 중이라 배포 보류(작업 48)`, 빌드는 성공.
+- **자동 실행**: `simai-deploy-pending.timer` 가 3분마다(앞 실행이 끝나고 3분 뒤) `/opt/simai/bin/deploy-pending.sh` → `deploy.sh pending` 을 부른다. 보류가 없으면 바로 끝난다. 수동 동결 중이면 하지 않는다. 진행 중이 없으면 저장한 tar 로 같은 배포를 하고 성공하면 보류를 지운다. 실패하면 보류를 남기고 3번까지 다시 해 본 뒤 멈춘다(새 커밋이 오면 다시 시작). 다른 배포가 잠금을 쥐고 있으면 다음 차례로 넘긴다.
+- **12시간 안전장치**: 처음 보류에서 12시간이 지나면 진행 중이어도 배포하고 경고를 남긴다(작업 종료를 잊은 경우). 그때 진행 중이던 항목은 `pending/ignored` 에 적어 다음부터 그 항목으로는 보류하지 않는다. 시간은 `/opt/simai/.env` 의 `SIMAI_DEPLOY_HOLD_MAX_HOURS`(정수, 기본 12)로 바꾼다.
+- **DB 를 묻지 못하면**(컨테이너 없음·오류·30초 초과·알아볼 수 없는 응답) 보류하지 않고 지금처럼 배포하며 경고한다. 배포가 영원히 막히지 않게 하기 위해서다.
+- 수동 동결과의 관계: 동결이 늘 우선이다. 동결 중에 온 커밋은 지금처럼 건너뛰고(저장하지 않는다), 동결 전부터 있던 보류는 동결이 풀린 뒤 타이머가 배포한다.
+
+설치(EC2, 머지되어 `/opt/simai/repo` 에 풀린 뒤 한 번. 스크립트·유닛을 고치면 다시):
+
+```sh
+cd /opt/simai/repo && cat REVISION
+sudo sh deploy/ec2/install-host.sh          # 배포 사용자가 ubuntu 가 아니면 인자로 준다
+systemctl list-timers simai-deploy-pending.timer --no-pager
+```
+
+`install-host.sh` 는 deploy.sh·freeze.sh·deploy-pending.sh 를 `/opt/simai/bin` 에 복사(cmp 확인)하고, `/opt/simai/pending`(배포 사용자, 750)을 만들고, 유닛 두 개(`deploy/ec2/systemd/`)를 `/etc/systemd/system` 에 넣어 타이머를 켠다. authorized_keys 는 건드리지 않는다.
+
+확인:
+
+```sh
+sudo /opt/simai/bin/freeze.sh status          # 동결 줄 + "자동 보류 중 (커밋·사유·처음/마지막 보류·시도)" 또는 "자동 보류 없음"
+journalctl -u simai-deploy-pending -n 50 --no-pager
+cat /opt/simai/pending/history.log            # 보류·대체·시도·완료·안전장치 기록(UTC)
+```
+
+보류를 버리려면(그 커밋을 배포하지 않기로 했을 때): `sudo rm /opt/simai/pending/hold /opt/simai/pending/<커밋>.tar`. 다음 머지가 다시 보류·배포한다. 손 배포(`SSH_ORIGINAL_COMMAND='deploy <커밋>'`)도 같은 확인을 거쳐 보류된다. 진행 중이어도 바로 배포해야 하면 작업을 끝내거나 안전장치 시간을 줄인다.

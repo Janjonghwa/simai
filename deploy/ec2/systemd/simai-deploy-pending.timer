@@ -1,0 +1,12 @@
+# 3분마다 보류 배포를 본다(S15P31A101-676). 보류가 없으면 아무것도 하지 않고 끝난다
+[Unit]
+Description=simai pending deploy check every 3 minutes (S15P31A101-676)
+
+[Timer]
+# 타이머를 켠 1분 뒤 처음, 그다음은 앞 실행이 끝나고 3분 뒤(배포가 길어도 겹치지 않는다)
+OnActiveSec=1min
+OnBootSec=5min
+OnUnitInactiveSec=3min
+
+[Install]
+WantedBy=timers.target

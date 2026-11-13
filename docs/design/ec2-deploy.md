@@ -99,7 +99,8 @@ dev 에 push(머지)되면 Jenkins 작업 `simai` 가 검사(`docs/design/ci-pip
 ```
 Jenkins(컨테이너)  git archive HEAD | ssh ubuntu@host.docker.internal "deploy <커밋>"
 호스트 sshd        authorized_keys 의 Jenkins 키 → /opt/simai/bin/deploy.sh 만 실행(command=)
-deploy.sh          tar 풀기(repo.new) → bake ec2 → repo 바꾸기 → SIMAI_TAG → up -d --wait → https 확인 → 오래된 이미지 정리
+deploy.sh          (진행 중 작업·세팅이면 tar 를 pending/ 에 보류, S15P31A101-676) → tar 풀기(repo.new) → bake ec2 → repo 바꾸기
+                   → SIMAI_TAG → up -d --wait → https 확인 → 오래된 이미지 정리
                    실패: repo·SIMAI_TAG 를 이전 판으로 돌리고 up, Jenkins 빌드 실패(GitLab ✘)
 ```
 
@@ -120,8 +121,9 @@ deploy.sh          tar 풀기(repo.new) → bake ec2 → repo 바꾸기 → SIMA
 ### 준비 (한 번)
 
 ```sh
-# 1. 배포 스크립트 설치. 저장소의 deploy/ec2/deploy.sh 를 고치면 다시 한다(Jenkins 가 바꿀 수 없게 저장소 밖에 둔다)
-install -D -m 755 /opt/simai/repo/deploy/ec2/deploy.sh /opt/simai/bin/deploy.sh
+# 1. 배포 스크립트 설치. 저장소의 deploy/ec2/ 스크립트를 고치면 다시 한다(Jenkins 가 바꿀 수 없게 저장소 밖에 둔다)
+#    deploy.sh·freeze.sh·deploy-pending.sh 복사와 보류 배포 타이머(S15P31A101-676, deploy/README.md "작업·세팅 연동 자동 보류")
+sudo sh /opt/simai/repo/deploy/ec2/install-host.sh
 
 # 2. Jenkins 에 host.docker.internal 을 준다(compose 의 extra_hosts). 돌던 빌드가 없을 때
 cd /opt/simai/repo && docker compose --env-file /opt/simai/.env -f deploy/ec2/compose.yaml up -d jenkins
