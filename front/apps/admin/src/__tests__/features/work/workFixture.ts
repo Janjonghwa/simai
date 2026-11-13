@@ -19,7 +19,6 @@ export function workDayOf(overrides: Partial<WorkDayItem> = {}): WorkDayItem {
     from_ms: new Date(2026, 10, 11, 7, 30).getTime(),
     to_ms: new Date(2026, 10, 11, 17, 0).getTime(),
     active_setup_session_id: null,
-    setup_completed_at: null,
     actual_started_at: null,
     actual_ended_at: null,
     event_counts: null,

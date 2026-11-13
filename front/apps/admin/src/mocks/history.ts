@@ -70,8 +70,6 @@ export interface HistoryMockWork {
   from_ms: number;
   to_ms: number;
   status: 'PLANNED' | 'IN_PROGRESS' | 'DONE';
-  /** 세팅 완료 시각(서버 work_unit.setup_completed_at). 세팅 완료 전이면 null 이다. */
-  setup_completed_at?: number | null;
   /** 실제 시작·종료(서버 work_unit.actual_*). 시작 전이면 둘 다 null, 진행 중이면 종료만 null 이다. */
   actual_started_at: number | null;
   actual_ended_at: number | null;
@@ -109,7 +107,6 @@ function scenarioWorks(day: number, now: number, lastHasNoRecord: boolean): Hist
       from_ms: from,
       to_ms: to,
       status: ended ? 'DONE' : started ? 'IN_PROGRESS' : 'PLANNED',
-      setup_completed_at: started ? from : null,
       actual_started_at: started ? from : null,
       actual_ended_at: ended ? to : null,
       zone_id: task.zone,
@@ -125,7 +122,6 @@ const msOrNull = (value: string | number | null | undefined) =>
 
 /** TBM 목(/api/work-units)의 작업을 히스토리 응답 모양으로. 시작·종료는 그 목이 기록한 값이다. */
 function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
-  const setupDone = msOrNull(work.setup_completed_at);
   const started = msOrNull(work.actual_started_at);
   const ended = msOrNull(work.actual_ended_at);
   return {
@@ -135,7 +131,6 @@ function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
     from_ms: work.from_ms,
     to_ms: work.to_ms,
     status: work.status ?? 'PLANNED',
-    setup_completed_at: setupDone ?? started,
     actual_started_at: started,
     actual_ended_at: ended,
     zone_id: work.zone_id,

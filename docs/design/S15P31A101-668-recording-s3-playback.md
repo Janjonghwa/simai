@@ -10,7 +10,7 @@ S15P31A101-668. 관제 중 노트북 게이트웨이가 남긴 4대 녹화(-554)
 
 | 항목 | 결정 |
 |---|---|
-| 올리는 범위 | 그날 작업 구간 = 세팅 완료(`work_unit.setup_completed_at`) → 작업 종료(`actual_ended_at`). 작업 시작(`actual_started_at`)이 세팅 완료보다 이르면 작업 시작부터. 시험으로 켰다 끈 관제 전체는 올리지 않는다 |
+| 올리는 범위 | 그날 작업 구간 = 작업 시작(`actual_started_at`) → 작업 종료(`actual_ended_at`). 처음에는 세팅 완료(`setup_completed_at`)부터로 넓혔으나 S15P31A101-679(작업 시작 = 관제 시작)에서 되돌렸다. 시험으로 켰다 끈 관제 전체는 올리지 않는다 |
 | 올리는 때 | **관제가 끝난 뒤.** 관제 중 노트북 업로드는 I0 중계·CCTV 원격 시청이 쓴다 |
 | 저장 위치 | 지금 S3 버킷(시드니) 그대로. **14일 뒤 삭제.** EC2 디스크에는 두지 않는다 |
 | 형식 | 재인코딩 없이 mp4 로 포장만(H.264 그대로) |
@@ -50,7 +50,7 @@ S15P31A101-668. 관제 중 노트북 게이트웨이가 남긴 4대 녹화(-554)
 ### 1.4 작업 구간 계산(EC2)
 
 - 대상: `actual_started_at` 이 있고 `[구간 시작, actual_ended_at]` 이 질의 범위와 겹치는 `work_unit`.
-  구간 시작 = `least(setup_completed_at, actual_started_at)`(세팅 완료가 없으면 작업 시작), 끝 = `actual_ended_at`.
+  구간 시작 = `actual_started_at`(S15P31A101-679 에서 `least(setup_completed_at, actual_started_at)` 를 되돌림), 끝 = `actual_ended_at`.
 - 진행 중(`IN_PROGRESS`, 끝 없음)인 작업이 범위와 겹치면 `open_work: true`. 게이트웨이는 그 녹화를 미루고 다음 실행 때 다시 묻는다(작업 마무리를 관제 끈 뒤에 하는 경우).
 - 현장 구분: 기기(`device`)에 현장이 묶여 있지 않고 MVP 는 현장 하나다(명세 16장). 모든 현장의 작업을 본다(남은 위험 참고).
 

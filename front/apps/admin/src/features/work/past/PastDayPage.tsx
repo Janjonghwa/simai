@@ -196,19 +196,16 @@ export function PastDayPage({ date }: PastDayProps) {
     <div className="flex shrink-0 flex-col gap-3 pb-24">
       {head}
       {range ? (
-        <>
-          {session.notice && <p className="text-sm text-muted-foreground">{session.notice}</p>}
-          <ReplayTimeline
-            replay={replay}
-            index={index}
-            holdMs={session.holdMs}
-            from={range.from}
-            to={range.to}
-            stepMs={session.stepMs}
-            disabled={replay === null || (index !== null && isEmptyReplay(index))}
-            onJump={pickEvent}
-          />
-        </>
+        <ReplayTimeline
+          replay={replay}
+          index={index}
+          holdMs={session.holdMs}
+          from={range.from}
+          to={range.to}
+          stepMs={session.stepMs}
+          disabled={replay === null || (index !== null && isEmptyReplay(index))}
+          onJump={pickEvent}
+        />
       ) : (
         <p className="text-muted-foreground">아직 다시 볼 구간이 없습니다.</p>
       )}

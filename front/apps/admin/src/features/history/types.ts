@@ -10,11 +10,9 @@ export const workUnitSchema = z.object({
   /** 작업 날짜(현장 시각, YYYY-MM-DD). 목록을 날짜로 묶는다. */
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   name: z.string(),
-  /** 계획 시각. 다시 보는 구간은 세팅 완료·실제 시작~실제 종료(setup_completed_at·actual_*)를 쓴다. */
+  /** 계획 시각. 다시 보는 구간은 실제 시작·종료(actual_*)를 쓴다. */
   from_ms: z.number(),
   to_ms: z.number(),
-  /** 세팅 완료 시각(EC2 시계). 세팅 완료 전이면 null 이다. */
-  setup_completed_at: z.number().nullish(),
   /** 실제 작업 시작·종료 시각(EC2 시계). 시작 전이면 둘 다 null, 진행 중이면 종료만 null 이다. */
   actual_started_at: z.number().nullish(),
   actual_ended_at: z.number().nullish(),

@@ -18,7 +18,6 @@ import {
 } from '@/features/history/replayIndex';
 import type { ReplayResponse, WorkUnit } from '@/features/history/types';
 import {
-  dayReplayRange,
   formatDate,
   groupByDate,
   readWorks,
@@ -78,62 +77,20 @@ describe('작업 다시 보기 계산', () => {
     expect(startedWorks([])).toEqual([]);
   });
 
-  it('다시 볼 구간은 세팅 완료·실제 시작 중 이른 시각부터 실제 종료까지이고, 진행 중이면 지금까지다', () => {
+  it('다시 볼 구간은 실제 시작부터 실제 종료까지이고, 진행 중이면 지금까지다', () => {
     const done = work({ actual_started_at: T0 + 10, actual_ended_at: T0 + 500 });
     expect(replayRange(done, T0 + 9_999)).toEqual({ from: T0 + 10, to: T0 + 500 });
     const running = work({ actual_started_at: T0 + 10 });
     expect(replayRange(running, T0 + 700)).toEqual({ from: T0 + 10, to: T0 + 700 });
-    // 11월 12일 작업 48번과 같은 상황: 세팅 완료(14:32:07) 뒤 한참 뒤에 시작(15:26:14)·종료(15:26:27, 13초).
-    // 세팅 완료 시각부터 작업 종료까지를 다시 보는 구간으로 잡는다.
-    const setupDone = Date.parse('2026-11-12T14:32:07+09:00');
-    const started = Date.parse('2026-11-12T15:26:14+09:00');
-    const ended = Date.parse('2026-11-12T15:26:27+09:00');
-    const work48 = work({
-      date: '2026-11-12',
-      setup_completed_at: setupDone,
-      actual_started_at: started,
-      actual_ended_at: ended,
-    });
-    expect(replayRange(work48, ended + 60_000)).toEqual({ from: setupDone, to: ended });
-    // 세팅 완료만 있거나, 실제 시작이 세팅 완료보다 이른 경우도 있는 것 중 이른 시각을 쓴다.
-    expect(
-      replayRange(work({ setup_completed_at: T0 + 5, actual_started_at: null }), T0 + 100),
-    ).toEqual({ from: T0 + 5, to: T0 + 100 });
-    expect(
-      replayRange(
-        work({
-          setup_completed_at: T0 + 50,
-          actual_started_at: T0 + 10,
-          actual_ended_at: T0 + 100,
-        }),
-        T0 + 200,
-      ),
-    ).toEqual({ from: T0 + 10, to: T0 + 100 });
   });
 
-  it('세팅 완료와 실제 시작이 모두 없거나 구간 길이가 0 이면 다시 볼 구간이 없다', () => {
+  it('시작 전이거나 구간 길이가 0 이면 다시 볼 구간이 없다', () => {
     expect(replayRange(work(), T0 + 1)).toBeNull();
     const justStarted = work({ actual_started_at: T0 + 10 });
     expect(replayRange(justStarted, T0 + 10)).toBeNull();
     expect(replayRange(justStarted, T0)).toBeNull();
     const zeroLength = work({ actual_started_at: T0 + 10, actual_ended_at: T0 + 10 });
     expect(replayRange(zeroLength, T0 + 99)).toBeNull();
-  });
-
-  it('그날 범위(dayReplayRange)는 Asia/Seoul 00:00~24:00 이고, 오늘이면 지금까지다', () => {
-    const dayStart = Date.parse('2026-11-12T00:00:00+09:00');
-    const dayEnd = Date.parse('2026-11-13T00:00:00+09:00');
-    // 지난 날(now 가 그날 24:00 뒤)은 00:00~24:00 전체다.
-    expect(dayReplayRange('2026-11-12', dayEnd + 3_600_000)).toEqual({
-      from: dayStart,
-      to: dayEnd,
-    });
-    // 오늘(now 가 그날 안)은 00:00~now 다.
-    const noon = Date.parse('2026-11-12T12:30:00+09:00');
-    expect(dayReplayRange('2026-11-12', noon)).toEqual({ from: dayStart, to: noon });
-    // 아직 오지 않은 날이나 잘못된 날짜는 null 이다.
-    expect(dayReplayRange('2026-11-12', dayStart)).toBeNull();
-    expect(dayReplayRange('엉터리', noon)).toBeNull();
   });
 
   it('날짜별로 새 날짜부터 묶고, 날짜 안에서는 시작 시각순이다', () => {

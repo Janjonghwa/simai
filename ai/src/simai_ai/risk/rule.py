@@ -155,6 +155,11 @@ class RuleState:
     def view(self, origin: str) -> RuleStateView:
         return RuleStateView(self._by_origin.setdefault(str(origin), {}))
 
+    def reset(self, origin: str) -> None:
+        """그 출처의 규칙 기억을 모두 비운다. 작업 시작으로 감시를 다시 켤 때 쓴다(S15P31A101-679): 작업 전에는 판정하지 않아
+        기억(R4 머리 높이 이력)이 멈춰 있으므로, 이전 작업의 이력과 새 작업의 관측을 섞지 않는다."""
+        self._by_origin.pop(str(origin), None)
+
 
 @dataclass(frozen=True)
 class RuleContext:

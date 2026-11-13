@@ -64,10 +64,11 @@ class RecordingSegmentIntegrationTest {
     private final String watch = "watch-rec-" + tag;
     private final String watchToken = "test-only-rec-watch-" + tag;
     private final String camera = "cam_" + tag;
-    /** 작업 구간: 세팅 완료(2일 전 09:00 꼴) → 작업 종료(+8시간). 작업 시작은 세팅 완료 30분 뒤 */
+    /** 세팅 완료(2일 전 09:00 꼴). 작업 시작은 그 30분 뒤, 작업 구간은 작업 시작 → 작업 종료(+8시간)다(-679, 세팅 완료는 구간이 아니다) */
     private final Instant setupDone = Instant.now().minus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS)
             .plusMillis((long) (Math.random() * 3_600_000L));
-    private final Instant ended = setupDone.plus(Duration.ofHours(8));
+    private final Instant started = setupDone.plus(Duration.ofMinutes(30));
+    private final Instant ended = started.plus(Duration.ofHours(8));
     private String site;
     private long adminId;
     private long workId;
@@ -81,7 +82,7 @@ class RecordingSegmentIntegrationTest {
         adminId = jdbc.queryForObject("INSERT INTO app_user (login_id, password_hash, role, created_at)"
                 + " VALUES (?, 'x', 'ADMIN', now()) RETURNING user_id", Long.class, "rec-admin-" + tag);
         site = jdbc.queryForObject("SELECT site_id FROM site ORDER BY site_id LIMIT 1", String.class);
-        workId = doneWork(site, setupDone, setupDone.plus(Duration.ofMinutes(30)), ended);
+        workId = doneWork(site, setupDone, started, ended);
     }
 
     @AfterEach
@@ -107,14 +108,14 @@ class RecordingSegmentIntegrationTest {
             }
         }
         assertThat(mine).as(windows.toString()).isNotNull();
-        // 세팅 완료가 작업 시작보다 이르면 세팅 완료부터
-        assertThat(mine.get("start_ms").asLong()).isEqualTo(setupDone.toEpochMilli());
+        // 작업 시작부터(세팅 완료가 더 일러도 그 사이는 관제 전이라 올리지 않는다, -679)
+        assertThat(mine.get("start_ms").asLong()).isEqualTo(started.toEpochMilli());
         assertThat(mine.get("end_ms").asLong()).isEqualTo(ended.toEpochMilli());
         assertThat(windows.get("retention_days").asInt()).isEqualTo(14);
         assertThat(windows.get("schema_version").asString()).isEqualTo("1.0.0");
 
         // 구간 시작 10 s 전 키프레임부터 자른 5분 조각
-        long start = setupDone.toEpochMilli() - 10_000;
+        long start = started.toEpochMilli() - 10_000;
         UUID id = uuid7(start);
         String key = sign(id, 4096);
         assertThat(key).isEqualTo("recording-segments/" + id + ".mp4");
@@ -170,13 +171,19 @@ class RecordingSegmentIntegrationTest {
 
     @Test
     void 구간_밖_보관_지남_발급과_다름_계약_위반_같은_ID_다른_내용은_거부한다() throws Exception {
-        long inside = setupDone.toEpochMilli() + 60_000;
+        long inside = started.toEpochMilli() + 60_000;
         // 구간 시작보다 30 s 넘게 이른 조각
         UUID early = uuid7(inside);
         sign(early, 100);
-        long earlyStart = setupDone.toEpochMilli() - 40_000;
+        long earlyStart = started.toEpochMilli() - 40_000;
         assertThat(code(post("/api/devices/recordings/segments", laptopToken, segment(early, earlyStart, earlyStart + 1000, 100)), 409))
                 .isEqualTo("OUTSIDE_WORK_WINDOW");
+        // 세팅 완료 뒤·작업 시작 전 조각(관제 전)도 구간 밖이다(-679)
+        UUID beforeStart = uuid7(inside);
+        sign(beforeStart, 100);
+        long setupStart = setupDone.toEpochMilli() + 60_000;
+        assertThat(code(post("/api/devices/recordings/segments", laptopToken,
+                segment(beforeStart, setupStart, setupStart + 1000, 100)), 409)).isEqualTo("OUTSIDE_WORK_WINDOW");
         // 작업 종료 뒤로 넘는 조각
         UUID late = uuid7(inside);
         sign(late, 100);
@@ -222,7 +229,7 @@ class RecordingSegmentIntegrationTest {
 
     @Test
     void 노트북만_올리고_업로드_목적은_기기만_mp4_만_받는다() throws Exception {
-        long inside = setupDone.toEpochMilli() + 60_000;
+        long inside = started.toEpochMilli() + 60_000;
         assertThat(code(http.send(getRequest("/api/devices/recordings/windows?from=0&to=1000", watchToken),
                 HttpResponse.BodyHandlers.ofString()), 403)).isEqualTo("RECORDING_NOT_A_LAPTOP");
         get("/api/devices/recordings/windows?from=0&to=1000", admin(), 401);

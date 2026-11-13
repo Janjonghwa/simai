@@ -41,6 +41,13 @@ payload 를 돌려준다(build_i1_link 가 신뢰 대기열로 보낸다). 종�
 중복을 거른 뒤(EventJournal.has_escalation_id) escalate → 저널 → 상향 재경보 local_alert → 클립(CRITICAL 보존 표시)이고
 event_escalate_result payload 를 돌려준다(docs/design/tier0-recovery.md "운영자 상향").
 
+작업 시작 = 관제 시작(S15P31A101-679, 사용자 결정 2026-11-13): 이 tick 의 묶음이 작업 진행 중이 아니면(ActiveConfig.work_in_progress,
+ppe_policy.work_id null) 4) 판정을 하지 않고 LifecycleTracker.stand_down 으로 감시를 내린다. 활성 이벤트는 그 tick 에 닫고(RESOLVED,
+현장 경보 해제) 새 이벤트·현장 경보·워치는 없다. 인지·ID 교정·world_state·체크포인트는 그대로 돈다(사람 위치·3D·CCTV 화면은
+작업 전에도 보인다). 작업 진행 중으로 바뀌는 tick 에 규칙 기억(RuleState)을 비우고 판정을 다시 켠다. 진행 중 작업이 바로 다른 작업으로
+바뀌면(종료 묶음을 건너뛴 경우) 같은 tick 에 이전 작업 이벤트를 닫고 새 작업으로 판정한다. 재시작 뒤에는 보관 묶음(또는 EC2 가 다시
+보낸 최신 묶음)의 work_id 로 같은 상태가 된다: 작업 밖이면 첫 실제 World tick 에 복원 이벤트도 닫는다(따로 저장할 상태가 없다).
+
 판정 출처(-215): 판정은 추적기의 출처(LifecycleTracker.origin)로 한다. LIVE 가 아닌 출처(file 입력의 REPLAY)는 7.3 표가
 채널을 주지 않아 현장 경보 신호가 없고, Tier 0 저널(LIVE 전용 계약)에 넣지 않는다. 확정 전이는 record_transitions(JSONL
 출력 등)로만 넘긴다.
@@ -115,6 +122,8 @@ class JudgeStats:
     reseeds: int = 0
     errors: int = 0
     calibration_state_unknown: int = 0  # 활성 보정 상태를 읽지 못해 UNCALIBRATED 로 판정한 tick
+    idle_ticks: int = 0  # 작업 진행 중이 아니라 판정하지 않은 tick(S15P31A101-679)
+    work_end_closes: int = 0  # 작업 진행 중이 아니라 닫은 이벤트 수
 
 
 @dataclass(frozen=True)
@@ -184,6 +193,10 @@ class JudgmentLoop:
         self.stats = JudgeStats()
         self._last: tuple[dict[str, Any], str] | None = None  # 마지막 실제 World(payload, world_state msg_id)
         self._last_frame: WorldTrackFrame | None = None  # 그 World 의 World Track 결과(입력 정지 tick 의 연결 판단)
+        # 마지막으로 판정을 켠 작업(work_id, ppe_policy 없는 묶음은 0). None 이면 판정을 켠 적이 없거나 지금 꺼져 있다(-679)
+        self._monitored_work: int | None = None
+        self._work_state_logged: bool | None = None
+        self._idle_steps: tuple[LifecycleStep, ...] = ()  # 이 tick 에 감시를 내리며 낸 단계(_monitoring_on)
         # 판정 상태의 불변 사본(스냅샷 콜백용, lock 없이 읽는다). 바꿔 끼우기만 한다(참조 대입은 원자적)
         self._view_states: Mapping[str, EventState] = {}
         self._view_risk: Mapping[str, tuple[int, int]] = {}
@@ -224,6 +237,7 @@ class JudgmentLoop:
             feed.detect_once()  # 비동기 검출 스레드가 없는 경로(단건 tick·녹화 재생)도 검출·로컬추적은 판정 lock 밖에서 한다
         with self.timing.measure("judge_tick", lambda: getattr(self.perception, "people", 0)), self.lock:
             self.stats.ticks += 1
+            self._idle_steps = ()
             if self._begin_tick is not None:
                 self._begin_tick()  # 보정도 인지 전에 같은 경계에서만 전환한다(-344)
             active = self.config_sync.begin_tick()  # 1) 구성 묶음 전환 경계
@@ -253,6 +267,8 @@ class JudgmentLoop:
             return TickResult(None, version, None, ())
         payload, msg_id = self._last
         world = WorldState.from_payload_fast(payload)  # from_payload 와 같은 결과·같은 예외, 위치 문구만 늦게 만든다(-663)
+        if not self._monitoring_on(active, world, msg_id):
+            return TickResult(None, version, msg_id, self._idle_steps)
         state = (self._active_calibration_state()
                  if payload["calibration_version"] == self.perception.rig.calibration_version
                  else self._last_calibration_state)
@@ -263,7 +279,7 @@ class JudgmentLoop:
         self.stats.frozen_evaluations += 1
         self._record(step)
         self._note_risk(evaluation)
-        return TickResult(None, version, msg_id, (step,))
+        return TickResult(None, version, msg_id, self._idle_steps + (step,))
 
     def _ppe(self) -> Any:
         """이 tick 의 안전모 상태 스냅샷. 읽기 실패는 빈 스냅샷(모름)이다: 판정 tick 을 잃지 않고 모르는 착용을 지어내지 않는다."""
@@ -314,10 +330,12 @@ class JudgmentLoop:
             steps.append(step)
         related = self._related(perceived.frame)  # 3) 교정 뒤, 같은 lock 안. 복원 Track 판단(로그)은 묶음이 없어도 한다
         evaluation: Evaluation | None = None
+        world = None if active is None else WorldState.from_payload_fast(payload)  # from_payload 와 같은 결과·같은 예외(-663)
+        monitoring_on = active is not None and world is not None and self._monitoring_on(active, world, msg_id)
+        steps.extend(self._idle_steps)  # 감시를 내리며 닫은 단계(작업 진행 중 아님, 또는 다른 작업으로 바로 바뀜, -679)
         if active is None:
             self.stats.no_config_ticks += 1
-        else:
-            world = WorldState.from_payload_fast(payload)  # from_payload 와 같은 결과·같은 예외(-663)
+        elif monitoring_on and world is not None:
             with self.timing.measure("risk_evaluate", len(payload["tracks"])):
                 evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
                                              calibration_state=self._last_calibration_state,
@@ -492,6 +510,37 @@ class JudgmentLoop:
             for c in self.perception.camera_clocks()
         )
         return MonitoringState(cameras=cameras, zone_cameras=self._coverage)
+
+    def _monitoring_on(self, active: ActiveConfig, world: WorldState, msg_id: str) -> bool:
+        """이 tick 에 위험 판정을 할지(작업 시작 = 관제 시작, -679). 작업 진행 중이 아니면 감시를 내리고(stand_down) False 다.
+        진행 중 작업이 다른 작업으로 바로 바뀌면(A → B) 이전 작업 이벤트를 닫는다. 판정을 다시 켤 때 규칙 기억을 비운다.
+        시작 직후(판정을 켠 적 없음) 작업 중이면 닫지 않는다: 재시작으로 복원한 이벤트는 그 작업의 것이다. 감시 내림 단계는
+        _idle_steps 에 둔다(호출부가 TickResult 에 싣는다)."""
+        self._idle_steps = ()
+        on = active.work_in_progress
+        work = (active.work_id or 0) if on else None
+        if on and work == self._monitored_work:
+            return True
+        if self._work_state_logged is not on or work != self._monitored_work:
+            if on:
+                log.info("작업 진행 중(work_id=%s, 묶음 %s): 위험 판정·경보를 켠다", active.work_id, active.config_version)
+            else:
+                log.info("작업 진행 중이 아니다(묶음 %s): 위험 판정·경보를 끄고 열린 이벤트를 닫는다", active.config_version)
+            self._work_state_logged = on
+        if not on or self._monitored_work is not None:  # 꺼짐, 또는 작업 A → B
+            step = self.tracker.stand_down(world, config_version=active.config_version, evidence_ref=msg_id)
+            if step.transitions or step.local_signals:
+                self.stats.work_end_closes += len(step.transitions)
+                self._record(step)
+                self._idle_steps = (step,)
+                self._risk_seen.clear()
+        if not on:
+            self._monitored_work = None
+            self.stats.idle_ticks += 1
+            return False
+        active.engine.state.reset(self.tracker.origin)  # 작업 전 멈춘 기억(R4 이력)을 새 작업에 섞지 않는다
+        self._monitored_work = work
+        return True
 
     def _note_risk(self, evaluation: Evaluation) -> None:
         keys = {EventKey.of(f) for f in evaluation.findings if not f.holding}

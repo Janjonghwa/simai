@@ -83,7 +83,7 @@ uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션
 
 ### 작업 구간 S3 업로드 (S15P31A101-668)
 
-관제가 끝난 뒤 그날 작업 구간(세팅 완료 → 작업 종료, EC2 `GET /api/devices/recordings/windows`)과 겹치는 프레임만 카메라·epoch 별 키프레임
+관제가 끝난 뒤 그날 작업 구간(작업 시작 → 작업 종료, S15P31A101-679, EC2 `GET /api/devices/recordings/windows`)과 겹치는 프레임만 카메라·epoch 별 키프레임
 조각(5분)으로 잘라 재인코딩 없이 mp4 로 포장하고(PyAV, ffmpeg `-c copy` 와 같음) S3 에 올린 뒤 EC2 에 등록한다
 (`POST /api/uploads/sign` RECORDING_SEGMENT → PUT → `POST /api/devices/recordings/segments`, 계약 `recording_windows`·`recording_segment`).
 mp4 프레임 PTS = 촬영 시각 − 조각 시작이라 프레임이 빠져도 시각이 밀리지 않는다. 게이트웨이 도우미가 관제 종료 때 띄운다(`gateway/ops/README.md`).
