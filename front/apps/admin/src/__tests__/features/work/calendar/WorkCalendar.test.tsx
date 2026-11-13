@@ -193,7 +193,7 @@ describe('WorkCalendar', () => {
     expect(cellOf('12월 1일').className).not.toContain('opacity-45');
   });
 
-  it('지난 날 + 작업 있음: 작업 종료 글자 대신 작은 완료 아이콘, 작업 건수, 색 점 + 숫자, 위쪽 빨간 점을 보인다', async () => {
+  it('지난 날 + 작업 있음: 작업 종료 글자 대신 작은 완료 아이콘, 작업 건수, 색 점 + 숫자를 보이고 날짜 옆 빨간 점은 없다(-677)', async () => {
     renderCalendar();
     await screen.findByText('작업 2건');
     const day = cellOf('11월 9일');
@@ -201,8 +201,8 @@ describe('WorkCalendar', () => {
     expect(endedIconOf(day)?.getAttribute('class')).toContain('text-muted-foreground');
     expect(screen.queryByText('작업 종료')).toBeNull();
     expect(within(day).getByText('작업 2건')).toBeTruthy();
-    // 위험이 있는 날은 칸 위쪽에 작은 빨간 점이 붙는다.
-    expect(topCriticalDotOf(day)?.className).toContain('bg-sev-critical');
+    // 날짜 옆 빨간 점은 위험 수와 중복이라 그리지 않는다(-677).
+    expect(topCriticalDotOf(day)).toBeNull();
     // 위험·경고는 작은 색 점 + 숫자로 보인다.
     expect(criticalBadgeOf(day)?.textContent).toBe('3');
     expect(criticalBadgeOf(day)?.className).toContain('text-sev-critical');
@@ -212,7 +212,7 @@ describe('WorkCalendar', () => {
     expect(highBadgeOf(day)?.querySelector('.bg-sev-high')).not.toBeNull();
   });
 
-  it('위험·경고가 둘 다 0 이거나 모르면 아무 문구도 그리지 않고(위험·경고 없음 제거), 경고만 있으면 위쪽 빨간 점 없이 경고만 보인다', async () => {
+  it('위험·경고가 둘 다 0 이거나 모르면 아무 문구도 그리지 않고(위험·경고 없음 제거), 경고만 있으면 경고만 보인다', async () => {
     renderCalendar();
     await screen.findByText('작업 2건');
     for (const label of ['11월 8일', '11월 10일']) {
