@@ -785,3 +785,170 @@ def test_ppe_snapshot_failure_does_not_lose_the_tick(tmp_path) -> None:
         assert [e.rule_id for e in s.tracker.active()] == ["R1"]
     finally:
         s.close()
+
+
+# --- 작업 시작 = 관제 시작 (S15P31A101-679, 사용자 결정 2026-11-13) ------------------------------------
+
+def _ppe(version: str, work_id: int | None) -> dict:
+    """EC2 가 작업 상태로 만드는 ppe_policy(작업이 없으면 work_id null·요구 없음)."""
+    return {"format_version": "1.2.0", "version": version, "work_id": work_id, "effective_from_ms": T0 - 60_000,
+            "helmet": "REQUIRED" if work_id is not None else "NOT_REQUIRED",
+            "vest": "REQUIRED" if work_id is not None else "NOT_REQUIRED"}
+
+
+def _switch(s: Site, version: str, issued_at: int, work_id: int | None) -> None:
+    """작업 시작·종료처럼 새 ppe_policy 를 실은 묶음을 받는다(다음 tick 경계에서 전환)."""
+    message, fetcher = _bundle(version, issued_at, ppe_policy=_ppe(f"ppe-{version}", work_id))
+    s.fetcher.blobs.update(fetcher.blobs)
+    assert s.config_sync.receive(message).accepted
+
+
+def _messages(s: Site) -> list[dict]:
+    from simai_ai.eventlog.outbox import build_transition_message
+
+    return [build_transition_message(e, resent=False, sent_at=T0, source_id=ts.GATEWAY) for e in s.flush()]
+
+
+def test_before_work_start_no_event_or_site_alert_even_inside_zone_but_world_state_continues(tmp_path) -> None:
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-idle", None))
+    try:
+        for _ in range(5):
+            result = s.tick({"w-x": (INSIDE, 0)})
+            assert result.steps == ()
+        assert s.tracker.active() == () and s.tracker.pending() == {}
+        assert [k for k, _ in s.i0] == []  # 현장 경보기·워치 없음
+        assert len(s.offered) == 5  # 추적·world_state(화면)는 계속
+        assert s.loop.stats.idle_ticks == 5 and s.loop.stats.evaluated == 0
+        assert s.flush() == []  # 저널(→ EC2 이벤트·관제 알림) 없음
+    finally:
+        s.close()
+
+
+def test_work_start_turns_judgment_on_and_work_end_closes_open_event_and_site_alert(tmp_path) -> None:
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-idle", None))
+    try:
+        s.tick({"w-x": (INSIDE, 0)})
+        _switch(s, "cfg-2", T0 + 5, 48)  # 작업 시작
+        s.tick({"w-x": (INSIDE, 0)})
+        [event] = s.tracker.active()
+        assert event.rule_id == "R1" and event.local_alerted
+        _switch(s, "cfg-3", T0 + 300, None)  # 작업 종료: 사람은 아직 구역 안
+        closing = s.tick({"w-x": (INSIDE, 0)})
+        assert s.tracker.active() == ()
+        [transition] = [t for step in closing.steps for t in step.transitions]
+        assert transition.transition.value == "RESOLVED"
+        assert [c.value for c in transition.changes] == ["VERSION", "CLEARED", "WORK_ENDED"]
+        assert transition.evidence_ref == closing.evidence_ref == s.offered[-1][1]
+        for _ in range(3):
+            assert s.tick({"w-x": (INSIDE, 0)}).steps == ()  # 종료 뒤에는 다시 나지 않는다
+        alerts = [p["lifecycle"] for k, p in s.i0 if k == "local_alert"]
+        assert alerts == ["RAISED", "RESOLVED"]  # 현장 경보기·워치가 꺼진다
+        messages = _messages(s)
+    finally:
+        s.close()
+    assert [(m["payload"]["transition"], m["payload"]["verification"]) for m in messages] == [
+        ("RAISED", "VERIFIED"), ("RESOLVED", "VERIFIED")]
+    for message in messages:  # 관측 해소 규칙(VERIFIED·근거)을 지키는 계약 문서다(resolution 없음)
+        assert schema_errors(message, "risk_event_transition") == [], schema_errors(message, "risk_event_transition")
+        assert "resolution" not in message["payload"]
+
+
+def test_unverifiable_event_is_still_closed_at_work_end_and_pending_is_dropped(tmp_path) -> None:
+    """관측을 잃어 UNVERIFIABLE 인 이벤트도 작업 종료로 닫히고, 지속 대기 중인 키는 관측 상실로 발생하지 않는다."""
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-work", 7),
+             policy=LifecyclePolicy(persistence=Persistence(3, 3), persistence_by_rule={}, clear_hold_ms=300))
+    try:
+        for _ in range(3):
+            s.tick({"w-x": (INSIDE, 0)})
+        s.tick({"w-y": (INSIDE, 0)})  # w-y 는 지속 조건(3/3)을 세는 중
+        [event] = s.tracker.active()
+        assert event.world_ids == ("w-x",) and event.verification.value == "UNVERIFIABLE"  # w-x 가 사라졌다
+        assert s.tracker.pending()
+        _switch(s, "cfg-2", T0 + 900, None)
+        s.tick({})  # 아무도 보이지 않는다: 대기 중 관측 상실이어도 발생하지 않는다
+        assert s.tracker.active() == () and s.tracker.pending() == {}
+        entries = [e.payload for e in s.flush()]
+    finally:
+        s.close()
+    assert [(list(p["world_ids"]), p["transition"], p["verification"]) for p in entries][-1] == (
+        ["w-x"], "RESOLVED", "VERIFIED")
+    assert not any(list(p["world_ids"]) == ["w-y"] for p in entries)
+
+
+def test_work_end_during_input_stop_closes_with_last_world(tmp_path) -> None:
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-work", 7))
+    try:
+        s.tick({"w-x": (INSIDE, 0)})
+        assert len(s.tracker.active()) == 1
+        _switch(s, "cfg-2", T0 + 300, None)
+        s.clock.advance(100)
+        frozen = s.loop.tick()  # 새 프레임 없음: 마지막 World 로 감시를 내린다
+        assert frozen.perceived is None and s.tracker.active() == ()
+        [transition] = [t for step in frozen.steps for t in step.transitions]
+        assert transition.evidence_ref == s.offered[-1][1]
+    finally:
+        s.close()
+
+
+def test_switch_to_another_work_closes_previous_events_and_resets_rule_memory(tmp_path) -> None:
+    """종료 묶음을 건너뛰고 작업 A → B 로 바로 바뀌면 같은 tick 에 A 의 이벤트를 닫고 B 로 판정한다."""
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-a", 7))
+    try:
+        s.tick({"w-x": (INSIDE, 0)})
+        [first] = s.tracker.active()
+        memory = s.config_sync.active.engine.state
+        memory.view(Origin.LIVE).slot(("R4", 1), lambda: "이전 작업 이력")
+        _switch(s, "cfg-2", T0 + 300, 8)
+        result = s.tick({"w-x": (INSIDE, 0)})
+        transitions = [t for step in result.steps for t in step.transitions]
+        assert [(t.event_id == first.event_id, t.transition.value) for t in transitions] == [
+            (True, "RESOLVED"), (False, "RAISED")]
+        assert memory.view(Origin.LIVE).slot(("R4", 1), lambda: "새 작업") == "새 작업"
+    finally:
+        s.close()
+
+
+def test_restart_outside_work_closes_restored_events_on_first_world(tmp_path) -> None:
+    """재시작 뒤 보관 묶음이 작업 밖이면 복원한 활성 이벤트를 첫 실제 World tick 에 닫는다(따로 저장한 상태 없이 묶음으로 복원)."""
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-work", 7))
+    try:
+        s.tick({"w-x": (INSIDE, 0)})
+        [event] = s.tracker.active()
+    finally:
+        s.close()
+    restarted = Site(tmp_path / "after", ppe_policy=_ppe("ppe-idle", None))
+    try:
+        restored = restarted.tracker.restore([event])
+        restarted.loop._record(restored)
+        restarted.tick({"w-x": (INSIDE, 0)})
+        assert restarted.tracker.active() == ()
+        kinds = [(p["transition"], list(p["changes"])) for p in (e.payload for e in restarted.flush())]
+    finally:
+        restarted.close()
+    assert kinds[0] == ("UPDATED", ["RESTORED", "VERIFICATION"])
+    assert kinds[-1][0] == "RESOLVED" and "WORK_ENDED" in kinds[-1][1]
+
+
+def test_restart_during_work_keeps_restored_events(tmp_path) -> None:
+    """반례: 재시작 뒤 보관 묶음이 같은 작업 중이면 복원 이벤트를 닫지 않는다(처음 판정을 켜는 tick 은 감시 내림이 아니다)."""
+    s = Site(tmp_path, ppe_policy=_ppe("ppe-work", 7))
+    try:
+        s.tick({"w-x": (INSIDE, 0)})
+        [event] = s.tracker.active()
+    finally:
+        s.close()
+    restarted = Site(tmp_path / "after", ppe_policy=_ppe("ppe-work", 7))
+    try:
+        restarted.tracker.restore([event])
+        restarted.tick({"w-x": (INSIDE, 0)})
+        assert [e.event_id for e in restarted.tracker.active()] == [event.event_id]
+        assert restarted.loop.stats.work_end_closes == 0
+    finally:
+        restarted.close()
+
+
+def test_bundle_without_ppe_policy_keeps_judging(site) -> None:
+    """ppe_policy 가 없는 묶음(-518 이전 EC2·시험)은 작업 정보가 없다는 뜻이라 이전처럼 판정한다(모르는 채로 경보를 끄지 않는다)."""
+    site.tick({"w-x": (INSIDE, 0)})
+    assert [e.rule_id for e in site.tracker.active()] == ["R1"]
+    assert site.loop.stats.idle_ticks == 0

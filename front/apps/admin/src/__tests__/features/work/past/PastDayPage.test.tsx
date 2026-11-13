@@ -18,7 +18,6 @@ const navigate = vi.hoisted(() => vi.fn());
 const engine = vi.hoisted(() => ({
   replay: null as unknown,
   index: null as unknown,
-  notice: null as string | null,
   works: [] as string[],
 }));
 
@@ -52,7 +51,6 @@ vi.mock('@/features/history/useWorkReplay', async (importOriginal) => {
         error: null,
         replay: work ? engine.replay : null,
         index: work ? engine.index : null,
-        notice: work ? engine.notice : null,
       };
     },
   };
@@ -84,7 +82,6 @@ afterEach(() => {
   navigate.mockClear();
   engine.replay = null;
   engine.index = null;
-  engine.notice = null;
   engine.works = [];
 });
 
@@ -409,16 +406,6 @@ describe('PastDayPage — 본문', () => {
     expect(screen.queryByTestId('replay-stage')).toBeNull();
     expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
     expect(screen.getByTestId('report-panel').dataset.work).toBe('8002');
-  });
-
-  it('작업 구간에 기록이 없어 그날 관제 기록으로 넓혔으면 타임라인 위에 안내를 보인다', async () => {
-    fakeReplay();
-    engine.notice = '작업 구간에 기록이 없어 그날 관제 기록을 보여 줍니다.';
-    renderPage();
-    expect(
-      await screen.findByText('작업 구간에 기록이 없어 그날 관제 기록을 보여 줍니다.'),
-    ).toBeTruthy();
-    expect(screen.getByRole('region', { name: '타임라인' })).toBeTruthy();
   });
 });
 

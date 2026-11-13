@@ -44,7 +44,7 @@ Pod 공개 IP 와 17000·17001 의 바깥 매핑 포트를 묻고(`C:\simai-loca
 끄기(`4`)는 세 창의 프로세스 트리를 끝낸다.
 
 **녹화 작업 구간 업로드(S15P31A101-668).** 관제 모드를 끄면(`4`, `stop`) 관제 중 녹화(`C:\simai-local\recordings\live-*`)에서 그날 작업 구간
-(세팅 완료 → 작업 종료)만 재인코딩 없이 mp4 로 포장해 S3 에 백그라운드로 올린다(로그 `C:\simai-local\gateway-upload.log`, 녹화 폴더마다 `upload-state.json`).
+(작업 시작 → 작업 종료, S15P31A101-679)만 재인코딩 없이 mp4 로 포장해 S3 에 백그라운드로 올린다(로그 `C:\simai-local\gateway-upload.log`, 녹화 폴더마다 `upload-state.json`).
 관제 중에는 올리지 않는다: 관제를 다시 시작하면 업로드를 끄고, 업로드 도구도 조각마다 모드 파일을 보고 멈춘다(다음 관제 종료 때 이어서).
 작업이 아직 끝나지 않았으면 그 녹화는 남겨 두고 다음 종료 때 다시 묻는다. 올린 영상은 14일 뒤 EC2 삭제 작업이 지우고, 원본 녹화는 노트북에 그대로 둔다.
 이번만 끄려면 `simai-gateway.cmd stop -NoRecordingUpload`(원격 `gw.sh stop --no-upload`), 늘 끄려면 `.env` 에 `SIMAI_RECORDING_UPLOAD=off`.

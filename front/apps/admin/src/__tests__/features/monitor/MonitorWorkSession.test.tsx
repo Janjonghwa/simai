@@ -166,6 +166,7 @@ function renderMonitor(events: EventItem[] = []) {
 
 const sessionBar = () => screen.queryByRole('region', { name: '작업 세션' });
 const standby = () => screen.queryByRole('region', { name: '관제 대기' });
+const idleNotice = () => screen.queryByRole('region', { name: '관제 상태' });
 const cardNames = () =>
   screen.queryAllByRole('article').map((card) => card.getAttribute('aria-label'));
 const card = (name: string) => screen.getByRole('article', { name });
@@ -249,6 +250,33 @@ describe('세션 바', () => {
     await waitFor(() => expect(sessionBar()).toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(standby()).toBeNull();
+  });
+
+  it('세팅을 마쳤지만 작업을 시작하지 않았으면 경보 배너 아래 자리에 「작업 시작 전 · 경보 꺼짐」을 짧게 보인다(-679)', async () => {
+    serveWorks([setupDone({ work_id: '6' })]);
+    renderMonitor();
+    const notice = await screen.findByRole('region', { name: '관제 상태' });
+    expect(notice.textContent).toBe('작업 시작 전 · 경보 꺼짐');
+    expect(sessionBar()).toBeNull();
+    expect(standby()).toBeNull();
+  });
+
+  it('작업을 시작하면 「작업 시작 전 · 경보 꺼짐」 대신 세션 바가 보이고, 대기 화면일 때는 그 표시가 없다', async () => {
+    serveWorks([setupDone({ work_id: '6' })]);
+    const queryClient = renderMonitor();
+    await screen.findByRole('region', { name: '관제 상태' });
+    act(() => {
+      queryClient.setQueryData(TBM_WORKS_KEY, [inProgress({ work_id: '6' })]);
+    });
+    await screen.findByRole('region', { name: '작업 세션' });
+    expect(idleNotice()).toBeNull();
+    act(() => {
+      queryClient.setQueryData(TBM_WORKS_KEY, [
+        done({ work_id: '6', actual_started_at: STARTED, actual_ended_at: STARTED + 30 * MIN }),
+      ]);
+    });
+    await screen.findByRole('region', { name: '관제 대기' });
+    expect(idleNotice()).toBeNull();
   });
 
   it('작업을 끝내면(DONE) 다시 대기 화면이 된다', async () => {

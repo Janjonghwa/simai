@@ -105,6 +105,21 @@ class ActiveConfig:
     def zones(self) -> tuple[Zone, ...]:
         return self.bundle.zones
 
+    @property
+    def work_id(self) -> int | None:
+        """진행 중 작업(ppe_policy.work_id). 묶음에 ppe_policy 가 없거나 작업이 없으면 None."""
+        policy = self.bundle.ppe_policy
+        return None if policy is None else policy.work_id
+
+    @property
+    def work_in_progress(self) -> bool:
+        """작업 진행 중인지(작업 시작 = 관제 시작, S15P31A101-679). EC2 는 모든 묶음에 그때 작업 상태로 만든 ppe_policy 를 싣고
+        작업 시작·종료 때 새 묶음을 낸다(work_id: 진행 중 작업, 없으면 null). Tier 0 는 이 값이 False 인 묶음으로는 위험 판정을
+        하지 않는다(이벤트·현장 경보·워치 없음, 추적·world_state 는 계속). ppe_policy 가 없는 묶음(-518 이전 EC2·시험 묶음)은
+        작업 정보가 없다는 뜻이라 이전 동작대로 판정한다(경보를 모르는 채로 끄지 않는다)."""
+        policy = self.bundle.ppe_policy
+        return policy is None or policy.work_id is not None
+
     @cached_property
     def work_surfaces(self) -> WorkSurfaceSet:
         """이 묶음 Operational Geometry 의 등록 작업면(명세 7.5, R2·R3·R5 입력). ContactEstimator 와 같은 항목을 읽고 형식이

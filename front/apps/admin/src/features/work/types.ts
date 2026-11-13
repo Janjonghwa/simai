@@ -90,8 +90,6 @@ export const workDayItemSchema = z.object({
   to_ms: z.number(),
   /** 진행 중인 세팅 세션 id. 없으면 null. */
   active_setup_session_id: orNull(z.string()),
-  /** 세팅 완료 시각(ms). 세팅 완료 전이면 null. */
-  setup_completed_at: orNull(z.number()),
   actual_started_at: orNull(z.number()),
   actual_ended_at: orNull(z.number()),
   /** 구간에 발생한 이벤트 수(등급별). 모르면 null. */

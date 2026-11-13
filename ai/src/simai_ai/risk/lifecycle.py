@@ -39,6 +39,10 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
 - 운영자 상향(S15P31A101-272, escalate): 관리자가 승인한 VLM 상향 의견을 같은 event_id 의 UPDATED 전이(escalation)로 남기고
   규칙 상향과 같이 다시 울린다(3.10). 지금 등급보다 높을 때만 받는다. 올린 등급은 해소될 때까지 바닥값이라 이후 규칙 판정이
   낮추지 않는다(5.4 하향 불가, 명세에 규칙 판정과의 관계가 없어 정한 기본안). 재개하면 바닥값을 비운다.
+- 감시 내림(S15P31A101-679, stand_down): 작업 시작 = 관제 시작이다. 작업 진행 중이 아닌 구성 묶음(ppe_policy.work_id null)으로
+  판정하는 tick 에는 판정을 반영하지 않고 이 메서드로 활성 이벤트를 모두 그 tick 에 닫는다(RESOLVED, 변경 사유 CLEARED·WORK_ENDED).
+  R9 요구 해제와 같은 '구성으로 확정된 해소'라 관측 위치와 관계없이 VERIFIED 로 닫고 근거는 그 tick 의 world_state 다(명세 7.2 R9,
+  v1.3 수정 67 선례). 현장 경보를 낸 이벤트는 AlertClear 를 낸다. 지속 대기·재개 후보·연결 힌트도 버린다(작업 사이를 잇지 않는다).
 - 확인 필요(7.1): 이벤트의 confidence_reasons 가 비어 있지 않은 상태다. needs_check 는 그 결과로 맞춰 둔다
   (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
@@ -161,6 +165,7 @@ class Change(StrEnum):
     CLEARED = "CLEARED"  # 해소 확정
     OPERATOR_CLOSED = "OPERATOR_CLOSED"  # 관리자의 구역 대상 이벤트 종료(event_close, S15P31A101-200). 관측 해소가 아니다
     ESCALATED = "ESCALATED"  # 관리자가 승인한 VLM 상향 의견으로 등급을 올림(event_escalate, S15P31A101-272). 판정이 아니다
+    WORK_ENDED = "WORK_ENDED"  # 작업 진행 중이 아닌 묶음으로 감시를 내려 닫음(stand_down, S15P31A101-679). 저널·진단용, I1 계약 필드 아님
 
 
 _CHANGE_ORDER = {c: i for i, c in enumerate(Change)}
@@ -1476,6 +1481,70 @@ class LifecycleTracker:
                 self._resolved[active.state.key] = _Resolved(active.state, evaluation.observation_time)
             if active.state.local_alerted:
                 signals.append(AlertClear(**self._signal_fields(active.state, frame.occurred_at)))
+
+    # --- 감시 내림(작업 진행 중 아님) -----------------------------------------------------
+
+    def stand_down(self, world: WorldState, *, config_version: str, evidence_ref: str) -> LifecycleStep:
+        """작업 진행 중이 아닌 tick(작업 시작 전·종료 뒤, S15P31A101-679). 판정을 반영하지 않고 감시를 내린다.
+
+        - 활성 이벤트는 모두 이 tick 에 닫는다: RESOLVED(변경 사유 CLEARED·WORK_ENDED, 검증 상태가 바뀌면 VERIFICATION·버전이 바뀌면
+          VERSION). 작업 종료는 구성으로 확정된 사실이라 R9 요구 해제처럼 VERIFIED 로 닫는다(관측 위치와 무관, 해소 유지 시간 없음).
+          근거(evidence_ref)는 이 tick 의 world_state msg_id 다(계약: 관측 해소는 VERIFIED·근거 필수, resolution 없음).
+        - 현장 경보를 낸 이벤트는 AlertClear 를 낸다(현장 경보기·워치가 꺼진다).
+        - 지속 대기 중인 키, 재개 후보(해소 이벤트), 재시작 연결 힌트를 버린다. 대기 중 관측 상실 발생(_persist)도 하지 않는다.
+          다음 작업의 위험은 새 이벤트다.
+        활성 이벤트가 없으면 빈 단계다(매 tick 불러도 된다).
+        """
+        if not config_version:
+            raise RiskInputError("stand_down: config_version 이 비었다")
+        if not evidence_ref:
+            raise RiskInputError("stand_down: evidence_ref(그 tick 의 world_state msg_id)가 비었다")
+        evaluated_at = self._clock.now_ms()
+        if evaluated_at < self._last_evaluated_at:
+            raise LifecycleError(f"판정 시각이 뒤로 갔다 ({self._last_evaluated_at} → {evaluated_at})")
+        self._last_evaluated_at = evaluated_at
+        observation_time = world.t_latest_global
+        if self._last_observation_time is None or observation_time > self._last_observation_time:
+            self._last_observation_time = observation_time
+        self._pending.clear()
+        self._related_hint.clear()
+        self._resolved.clear()
+        tracks = {t.world_id: t for t in world.tracks}
+        transitions: list[EventTransition] = []
+        signals: list[LocalSignal] = []
+        for active in self._sorted_active():
+            state = active.state
+            changes = {Change.CLEARED, Change.WORK_ENDED}
+            if state.verification is not Verification.VERIFIED:
+                changes.add(Change.VERIFICATION)
+            if (config_version, world.calibration_version, world.scene_version) != (
+                state.config_version, state.calibration_version, state.scene_version,
+            ):
+                changes.add(Change.VERSION)
+            active.condition_present = False
+            active.update(
+                verification=Verification.VERIFIED,
+                evaluated_at=evaluated_at,
+                observation_time=observation_time,
+                config_version=config_version,
+                calibration_version=world.calibration_version,
+                scene_version=world.scene_version,
+                event_sequence=state.event_sequence + 1,
+                lifecycle=Lifecycle.RESOLVED,
+            )
+            active.mark_emitted()
+            transitions.append(EventTransition(
+                state=active.state,
+                transition=Lifecycle.RESOLVED,
+                changes=_ordered(changes),
+                occurred_at=evaluated_at,
+                evidence=tuple(TrackEvidence.of(w, tracks.get(w)) for w in active.state.world_ids),
+                evidence_ref=evidence_ref,
+            ))
+            self._drop(active)
+            if active.state.local_alerted:
+                signals.append(AlertClear(**self._signal_fields(active.state, evaluated_at)))
+        return LifecycleStep(tuple(transitions), tuple(signals))
 
     # --- 확인(ACK) -------------------------------------------------------------------
 

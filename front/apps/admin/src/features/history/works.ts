@@ -13,10 +13,6 @@ const CLOCK = new Intl.DateTimeFormat('ko-KR', {
   hourCycle: 'h23',
 });
 
-const DAY_MS = 86_400_000;
-/** 작업 구간에 기록이 없을 때 그날 관제 기록으로 넓혔음을 알리는 안내 한 줄. */
-export const DAY_FALLBACK_NOTICE = '작업 구간에 기록이 없어 그날 관제 기록을 보여 줍니다.';
-
 /** 받은 작업 목록에서 형식이 맞는 것만 고른다. */
 export function readWorks(items: readonly unknown[]): WorkUnit[] {
   return items.flatMap((item) => {
@@ -32,40 +28,14 @@ export function readWorks(items: readonly unknown[]): WorkUnit[] {
 export const startedWorks = (works: readonly WorkUnit[]): WorkUnit[] =>
   works.filter((work) => work.actual_started_at != null);
 
-/** 세팅 완료(setup_completed_at)와 실제 시작(actual_started_at) 중 있는 것의 이른 쪽. 둘 다 없으면 null. */
-function earliestStartOf(
-  work: Pick<WorkUnit, 'setup_completed_at' | 'actual_started_at'>,
-): number | null {
-  const setup = work.setup_completed_at ?? null;
-  const started = work.actual_started_at ?? null;
-  if (setup === null) return started;
-  if (started === null) return setup;
-  return Math.min(setup, started);
-}
-
 /**
- * 다시 볼 구간: 시작 = min(setup_completed_at, actual_started_at)(둘 중 있는 것), 끝 = actual_ended_at(진행 중이면 now).
- * 시작 기록이 둘 다 없거나 길이가 없으면 null 이다(방금 시작했거나 시작과 같은 시각에 끝난 작업은 서버도 구간으로 받지 않는다: from < to).
+ * 다시 볼 구간: 실제 시작부터 실제 종료까지(진행 중이면 now 까지). 시작 전이거나 길이가 없으면 null 이다
+ * (방금 시작했거나 시작과 같은 시각에 끝난 작업은 서버도 구간으로 받지 않는다: from < to).
  */
-export function replayRange(
-  work: Pick<WorkUnit, 'setup_completed_at' | 'actual_started_at' | 'actual_ended_at'>,
-  now: number,
-): Span | null {
-  const from = earliestStartOf(work);
-  if (from === null) return null;
+export function replayRange(work: WorkUnit, now: number): Span | null {
+  const from = work.actual_started_at;
+  if (from == null) return null;
   const to = work.actual_ended_at ?? now;
-  return to > from ? { from, to } : null;
-}
-
-/**
- * 작업 날짜(현장 날짜 Asia/Seoul YYYY-MM-DD)의 하루 구간: 00:00~24:00, 오늘(now 가 그날 24:00 전)이면 지금까지(now).
- * 날짜 형식이 틀리거나 아직 오지 않은 날(now <= 00:00)이면 null 이다.
- */
-export function dayReplayRange(date: string, now: number): Span | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  const from = Date.parse(`${date}T00:00:00+09:00`);
-  if (!Number.isFinite(from)) return null;
-  const to = Math.min(from + DAY_MS, now);
   return to > from ? { from, to } : null;
 }
 

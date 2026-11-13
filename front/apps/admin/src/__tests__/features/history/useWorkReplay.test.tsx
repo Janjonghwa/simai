@@ -133,14 +133,11 @@ afterEach(async () => {
   cleanup();
 });
 
-function setup(
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-  work: WorkUnit = WORK,
-) {
+function setup(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return { client, ...renderHook(() => useWorkReplay(work), { wrapper }) };
+  return { client, ...renderHook(() => useWorkReplay(WORK), { wrapper }) };
 }
 
 /** 지금까지 만든 색인이 가진 World 기록 시각들. */
@@ -265,107 +262,5 @@ describe('useWorkReplay: 창 단위로 이어 받기', () => {
     expect(second.result.current.index!.frames).toHaveLength(5);
     expect(requests).toHaveLength(0);
     expect(engine.created).toBe(2);
-  });
-
-  it('세팅 완료가 실제 시작보다 이르면 세팅 완료부터 종료까지를 구간으로 받아 기록을 보여 준다(11월 12일 작업 48번)', async () => {
-    const setupDone = Date.parse('2026-11-12T14:32:07+09:00');
-    const started = Date.parse('2026-11-12T15:26:14+09:00');
-    const ended = Date.parse('2026-11-12T15:26:27+09:00');
-    const recordedAt = Date.parse('2026-11-12T15:00:00+09:00');
-    const work48: WorkUnit = {
-      work_id: '48',
-      date: '2026-11-12',
-      name: '작업 48',
-      from_ms: Date.parse('2026-11-12T00:00:00+09:00'),
-      to_ms: Date.parse('2026-11-13T00:00:00+09:00'),
-      setup_completed_at: setupDone,
-      actual_started_at: started,
-      actual_ended_at: ended,
-      zone_id: null,
-      planned_people: 0,
-    };
-    server.use(
-      http.get('http://api.test/api/replay', ({ request }) => {
-        const query = new URL(request.url).searchParams;
-        const from = Number(query.get('from'));
-        const to = Number(query.get('to'));
-        requests.push(from);
-        return HttpResponse.json({
-          from,
-          to,
-          step_ms: Number(query.get('step_ms')),
-          // 작업 구간(15:26:14~15:26:27) 안에는 기록이 없고 세팅 완료 뒤(15:00:00)에만 기록이 있다.
-          world_states: [world(recordedAt)],
-          initial_events: [],
-          events: [],
-          gaps: [{ from: Date.parse('2026-11-12T15:23:00+09:00'), to }],
-        });
-      }),
-    );
-
-    const { result } = setup(undefined, work48);
-    await waitFor(() => expect(result.current.replay).not.toBeNull());
-    expect(result.current.range).toEqual({ from: setupDone, to: ended });
-    expect(frameTimes(result.current.index)).toEqual([recordedAt]);
-    expect(result.current.notice).toBeNull();
-    expect(requests).toEqual([setupDone]);
-  });
-
-  it('작업 구간 전체가 기록 없는 구간(gap)이면 그날(Asia/Seoul 00:00~24:00) 구간으로 넓히고 안내를 싣는다', async () => {
-    const dayStart = Date.parse('2026-11-12T00:00:00+09:00');
-    const dayEnd = Date.parse('2026-11-13T00:00:00+09:00');
-    const started = Date.parse('2026-11-12T15:26:14+09:00');
-    const ended = Date.parse('2026-11-12T15:26:27+09:00');
-    const recordedAt = Date.parse('2026-11-12T14:10:00+09:00');
-    const shortWork: WorkUnit = {
-      work_id: '48-no-setup',
-      date: '2026-11-12',
-      name: '작업 48',
-      from_ms: dayStart,
-      to_ms: dayEnd,
-      setup_completed_at: null,
-      actual_started_at: started,
-      actual_ended_at: ended,
-      zone_id: null,
-      planned_people: 0,
-    };
-    server.use(
-      http.get('http://api.test/api/replay', ({ request }) => {
-        const query = new URL(request.url).searchParams;
-        const from = Number(query.get('from'));
-        const to = Number(query.get('to'));
-        requests.push(from);
-        if (from === started && to === ended) {
-          return HttpResponse.json({
-            from,
-            to,
-            step_ms: Number(query.get('step_ms')),
-            world_states: [],
-            initial_events: [],
-            events: [],
-            gaps: [{ from, to }],
-          });
-        }
-        return HttpResponse.json({
-          from,
-          to,
-          step_ms: Number(query.get('step_ms')),
-          world_states: from <= recordedAt && recordedAt <= to ? [world(recordedAt)] : [],
-          initial_events: [],
-          events: [],
-          gaps: [],
-        });
-      }),
-    );
-
-    const { result } = setup(undefined, shortWork);
-    await waitFor(() =>
-      expect(result.current.notice).toBe('작업 구간에 기록이 없어 그날 관제 기록을 보여 줍니다.'),
-    );
-    await waitFor(() => expect(result.current.index?.pending).toBeNull());
-    expect(result.current.range).toEqual({ from: dayStart, to: dayEnd });
-    expect(frameTimes(result.current.index)).toEqual([recordedAt]);
-    expect(requests[0]).toBe(started);
-    expect(requests[1]).toBe(dayStart);
   });
 });

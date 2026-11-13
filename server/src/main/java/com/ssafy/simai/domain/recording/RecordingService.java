@@ -26,7 +26,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 게이트웨이 녹화 작업 구간 업로드(S15P31A101-668, 기기 토큰). 설계 docs/design/S15P31A101-668-recording-s3-playback.md.
  * <ul>
- * <li>작업 구간 조회(recording_windows 1.0.0): 범위와 겹치는 끝난 작업의 구간 = least(세팅 완료, 작업 시작) → 작업 종료.
+ * <li>작업 구간 조회(recording_windows 1.0.0): 범위와 겹치는 끝난 작업의 구간 = 작업 시작 → 작업 종료(작업 시작 = 관제 시작,
+ *     S15P31A101-679 에서 -668 의 세팅 완료부터 넓히기를 되돌렸다).
  *     진행 중 작업이 겹치면 open_work 로 알려 게이트웨이가 그 녹화를 미룬다(사용자 결정 2026-11-13).</li>
  * <li>조각 등록(recording_segment 1.0.0): 계약 검사 → 그 작업 구간 안 → 이 기기가 받은 RECORDING_SEGMENT 발급과 키·형식·크기·해시가 같음 →
  *     video_segment 한 행(origin GATEWAY_RECORDING, delete_after = 첫 프레임 촬영 시각 + 14일). 삭제·재생 주소·조회 기록은 domain/video 그대로다.</li>
@@ -52,7 +53,8 @@ class RecordingService {
     private static final long MAX_EPOCH_MS = 253_402_300_799_999L;
     private static final String PREFIX = "recording-segments/";
 
-    private static final String WORK_START = "LEAST(setup_completed_at, actual_started_at)";
+    /** 작업 구간 시작 = 작업 시작(관제 시작, S15P31A101-679). 작업 전에는 경보가 없으므로 기록·업로드도 작업 구간만이다 */
+    private static final String WORK_START = "actual_started_at";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ContractSchemas schemas;
@@ -69,7 +71,7 @@ class RecordingService {
         this.clock = clock;
     }
 
-    /** recording_windows 1.0.0. LEAST 는 NULL 을 건너뛰므로 세팅 완료가 없으면 작업 시작이다 */
+    /** recording_windows 1.0.0. 구간은 작업 시작 → 작업 종료 */
     ObjectNode windows(String deviceId, Instant from, Instant to) {
         requireLaptop(deviceId);
         if (from.isAfter(to) || Duration.between(from, to).compareTo(MAX_RANGE) > 0) {
