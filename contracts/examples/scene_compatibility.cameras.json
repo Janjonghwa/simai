@@ -7,8 +7,8 @@
   "max_center_delta_m": 0.12,
   "max_rotation_delta_rad": 0.01,
   "cameras": [
-    {"camera_id": "cam1", "center_delta_m": 0.02, "rotation_delta_rad": 0.004},
-    {"camera_id": "cam2", "center_delta_m": 0.12, "rotation_delta_rad": 0.01},
-    {"camera_id": "cam3", "center_delta_m": 0.0, "rotation_delta_rad": 0.0}
+    {"camera_id": "cam_A", "center_delta_m": 0.02, "rotation_delta_rad": 0.004},
+    {"camera_id": "cam_B", "center_delta_m": 0.12, "rotation_delta_rad": 0.01},
+    {"camera_id": "cam_C", "center_delta_m": 0.0, "rotation_delta_rad": 0.0}
   ]
 }

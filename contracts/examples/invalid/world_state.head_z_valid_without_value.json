@@ -40,8 +40,8 @@
         "head_z_sigma": null,
         "head_z_validity": "VALID",
         "cameras": [
-          "cam2",
-          "cam3"
+          "cam_B",
+          "cam_C"
         ],
         "skeleton": {
           "joint_layout": "COCO17",

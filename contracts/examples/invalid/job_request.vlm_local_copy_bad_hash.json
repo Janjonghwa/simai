@@ -34,21 +34,21 @@
       "observation_time": 1760342400100,
       "frames": [
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-events/0192a6f0/cam1-10324-blur.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-events/0192a6f0/cam_A-10324-blur.jpg",
           "estimated_capture_time_ms": 1760342400100,
           "timestamp_source": "RECEIVE_ESTIMATED",
           "timestamp_uncertainty_ms": 18,
           "face_policy": "BLURRED",
           "local_copy": {
-            "path": "event-frames/0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f/0-cam1-1760342400100.jpg",
+            "path": "event-frames/0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f/0-cam_A-1760342400100.jpg",
             "sha256": "deadbeef",
             "size_bytes": 412337
           }
         },
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-events/0192a6f0/cam1-10249-blur.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-events/0192a6f0/cam_A-10249-blur.jpg",
           "estimated_capture_time_ms": 1760342397000,
           "timestamp_source": "RECEIVE_ESTIMATED",
           "timestamp_uncertainty_ms": 18,

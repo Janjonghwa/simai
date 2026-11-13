@@ -22,10 +22,10 @@ class CalibrationContentHashTest {
 
     @ParameterizedTest
     @CsvSource({
-        "examples/calibration.json, sha256:75ffde54159aff5cf3cc892429f920c2b3d12ce45c3b35af89eb6f54393ae846",
-        "examples/calibration.g1_auto.json, sha256:0f1bf9c84d67066566608cff792bf67d6e2316866f1a239926e0c2230a7c2ec5",
-        "examples/calibration.world_frame_manual.json, sha256:273468488ca345c664578a292859b76f353c0ac5ccf80c86d8cd3b50557239c2",
-        "examples/calibration.world_frame_wall_and_floor.json, sha256:5c1b6f1ffd73a114db72dde88052c78b31ad3b3d168e44dc952c601ab373cb20"
+        "examples/calibration.json, sha256:7fff3f6f2cc18ca7124d9c438290eb7df01a785b8d1d80f8544bf5925630c54a",
+        "examples/calibration.g1_auto.json, sha256:71c9f3a0db140445ee1c37d3613dfb704f2a6c1364983f18f26d2244e9485938",
+        "examples/calibration.world_frame_manual.json, sha256:7bc82f81f9a77fc0af288def3f17f4f47c7c42624e406868d9858a30439c8d23",
+        "examples/calibration.world_frame_wall_and_floor.json, sha256:c1b81a3e27c309b4a79bf024aa1a7a07316d7cbd3313426ad347981f9ee15466"
     })
     void 계약_예시_보정_문서의_해시가_Python_과_같다(String file, String expected) throws Exception {
         assertThat(CalibrationContentHash.of(MAPPER.readTree(Files.readString(CONTRACTS.resolve(file))))).isEqualTo(expected);

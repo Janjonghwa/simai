@@ -93,7 +93,7 @@ class PpeStateIntegrationTest {
                 FROM ppe_state WHERE source_id = ? AND world_id = ?
                 """, sourceId, worn);
         assertThat(row).containsEntry("helmet_state", "WORN").containsEntry("vest_state", "NOT_WORN")
-                .containsEntry("camera", "cam2").containsEntry("tracks", "TIER0_LIVE");
+                .containsEntry("camera", "cam_B").containsEntry("tracks", "TIER0_LIVE");
         assertThat(current(worn)).containsEntry("helmet_state", "WORN").containsEntry("state_sequence", 10L);
         assertThat(current(unknown)).containsEntry("helmet_state", "UNKNOWN");
     }

@@ -124,17 +124,17 @@ beforeEach(() => {
   fakeViewer.focus.mockReset();
   setupMock = createSetupMock({
     cameraHeightsM: {
-      cam1: 2.25,
-      cam2: 2.3,
-      cam3: 2.2,
-      cam4: null,
+      cam_A: 2.25,
+      cam_B: 2.3,
+      cam_C: 2.2,
+      cam_D: null,
     },
     latestGuide: buildCoverageGuidePayload({
       connectivity: 'DISCONNECTED',
       guides: [
         {
-          camera_id: 'cam3',
-          pair: ['cam3', 'cam4'],
+          camera_id: 'cam_C',
+          pair: ['cam_C', 'cam_D'],
           direction: 'RIGHT',
           magnitude: 'SMALL',
           reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
@@ -203,8 +203,8 @@ describe('설치 · 보정 작업 연결', () => {
 
   it('검색 값의 workUnitId 로 세팅을 시작하고 발행 뒤에는 그 작업의 작업 관리로 돌아간다', async () => {
     renderSetupPage(5);
-    const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
-    fireEvent.change(cam4, { target: { value: '2.35' } });
+    const cam_D = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
+    fireEvent.change(cam_D, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
@@ -318,10 +318,10 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(setupMock.submittedBodies[0]).toEqual({
       work_unit_id: 1,
       camera_heights_m: {
-        cam1: 2.25,
-        cam2: 2.3,
-        cam3: 2.2,
-        cam4: 2.35,
+        cam_A: 2.25,
+        cam_B: 2.3,
+        cam_C: 2.2,
+        cam_D: 2.35,
       },
     });
 
@@ -330,10 +330,10 @@ describe('설치 · 보정 1단계 화면', () => {
     const nextDefaults = await requestCameraHeightDefaults(api);
     expect(nextDefaults.all_present).toBe(true);
     expect(nextDefaults.camera_heights_m).toEqual({
-      cam1: 2.25,
-      cam2: 2.3,
-      cam3: 2.2,
-      cam4: 2.35,
+      cam_A: 2.25,
+      cam_B: 2.3,
+      cam_C: 2.2,
+      cam_D: 2.35,
     });
   });
 
@@ -506,14 +506,14 @@ describe('설치 · 보정 1단계 화면', () => {
     /** 카메라 2–3 쌍이 부족한 응답과 높이가 모두 찬 상태로 세팅 화면을 연다. */
     async function openWithLackPair(lack: boolean) {
       setupMock = createSetupMock({
-        cameraHeightsM: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
+        cameraHeightsM: { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
         latestGuide: buildCoverageGuidePayload({
           guides: [],
           pairs: [
-            pairOf('cam1', 'cam2', 'ENOUGH'),
-            pairOf('cam2', 'cam3', lack ? 'LACK' : 'ENOUGH'),
-            pairOf('cam3', 'cam4', 'ENOUGH'),
-            pairOf('cam4', 'cam1', 'ENOUGH'),
+            pairOf('cam_A', 'cam_B', 'ENOUGH'),
+            pairOf('cam_B', 'cam_C', lack ? 'LACK' : 'ENOUGH'),
+            pairOf('cam_C', 'cam_D', 'ENOUGH'),
+            pairOf('cam_D', 'cam_A', 'ENOUGH'),
           ],
         }),
       });
@@ -559,7 +559,7 @@ describe('설치 · 보정 1단계 화면', () => {
       await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
       expect(setupMock.submittedBodies[0]).toMatchObject({
         work_unit_id: 1,
-        camera_heights_m: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
+        camera_heights_m: { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
       });
       await waitForCalibrationStep();
       expect(screen.queryByRole('dialog')).toBeNull();
@@ -618,16 +618,16 @@ describe('설치 · 보정 1단계 화면', () => {
 
   it('STALE·영상 없음(NO_VIDEO)·계산 실패(UNKNOWN) 상태를 표시하고 다음으로 가는 것을 막지 않는다', async () => {
     setupMock = createSetupMock({
-      cameraHeightsM: { cam1: 2.2, cam2: 2.2, cam3: 2.2, cam4: 2.2 },
+      cameraHeightsM: { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
       guideStatus: 'STALE',
       guideStale: true,
       latestGuide: buildCoverageGuidePayload({
         connectivity: 'UNKNOWN',
-        cameraStatuses: { cam2: 'NO_VIDEO' },
+        cameraStatuses: { cam_B: 'NO_VIDEO' },
         guides: [
           {
-            camera_id: 'cam2',
-            pair: ['cam2', 'cam3'],
+            camera_id: 'cam_B',
+            pair: ['cam_B', 'cam_C'],
             direction: 'NONE',
             magnitude: 'NONE',
             reason_code: 'NO_OVERLAP_VISIBLE',
@@ -674,7 +674,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
 const POLL_WAIT = { timeout: 8_000 };
 
-/** cam4 높이를 채워 세팅을 시작하고 보정·생성 화면(2단계)의 세션 id 를 돌려준다. */
+/** cam_D 높이를 채워 세팅을 시작하고 보정·생성 화면(2단계)의 세션 id 를 돌려준다. */
 async function startSetupSession() {
   const view = renderSetupPage();
   const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
@@ -721,35 +721,35 @@ const SETUP_COMPLETED_AT_MS = 1_800_000_000_000;
 /** 카메라 2번 높이만 41cm 어긋난 높이 검산(서버 height_checks). */
 const HEIGHT_MISMATCH = {
   height_checks: {
-    cam1: {
+    cam_A: {
       input_height_m: 2.25,
       restored_height_m: 2.26,
       difference_cm: 1,
       within_tolerance: true,
       guidance: null,
     },
-    cam2: {
+    cam_B: {
       input_height_m: 2.3,
       restored_height_m: 2.71,
       difference_cm: 41,
       within_tolerance: false,
-      guidance: 'cam2 높이를 다시 재서 입력해 주세요',
+      guidance: 'cam_B 높이를 다시 재서 입력해 주세요',
     },
   },
 } as const;
 
-/** 카메라 연결 관리(1단계)로 돌아온 화면에서 cam2 높이를 2.7 로 고친다('다시 시도' 직전까지). */
+/** 카메라 연결 관리(1단계)로 돌아온 화면에서 cam_B 높이를 2.7 로 고친다('다시 시도' 직전까지). */
 async function editCam2Height() {
   const cam2Input = (await screen.findByLabelText('카메라 2 높이 (m)')) as HTMLInputElement;
   expect(cam2Input.value).toBe('2.3');
   fireEvent.change(cam2Input, { target: { value: '2.7' } });
 }
 
-/** 높이 불일치 안내를 띄우고 '카메라 다시 맞추기' 로 1단계 높이 칸에 돌아와 cam2 높이를 2.7 로 고친다. */
+/** 높이 불일치 안내를 띄우고 '카메라 다시 맞추기' 로 1단계 높이 칸에 돌아와 cam_B 높이를 2.7 로 고친다. */
 async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionResponse>) {
   setupMock.updateSession(sessionId, { ...HEIGHT_MISMATCH, ...patch });
   const warning = await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-  expect(warning.textContent).toContain('cam2 높이를 다시 재서 입력해 주세요');
+  expect(warning.textContent).toContain('cam_B 높이를 다시 재서 입력해 주세요');
   fireEvent.click(screen.getByRole('button', { name: '카메라 다시 맞추기' }));
   await editCam2Height();
 }
@@ -870,7 +870,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     });
     expect(
       screen.getByRole('alert', { name: '카메라 높이 불일치 수정 안내' }).textContent,
-    ).toContain('cam2');
+    ).toContain('cam_B');
 
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
 
@@ -878,7 +878,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('CANCELLED_BY_ADMIN');
     expect(setupMock.retryRequests[0]!.sessionId).toBe(sessionId);
-    expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
+    expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam_B).toBe(2.7);
     await waitForTrackedSession(setupMock.retryRequests[0]!.retriedSessionId);
     expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
   }, 20_000);
@@ -890,7 +890,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
 
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
-    expect(setupMock.submittedBodies[1]!.camera_heights_m.cam2).toBe(2.7);
+    expect(setupMock.submittedBodies[1]!.camera_heights_m.cam_B).toBe(2.7);
     expect(setupMock.retryRequests).toHaveLength(0);
     expect(setupMock.sessions.size).toBe(2);
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 수정 안내' })).toBeNull();
@@ -915,7 +915,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
-    expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
+    expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam_B).toBe(2.7);
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('VALIDATION_REJECTED');
     expect(setupMock.submittedBodies).toHaveLength(1);
   }, 20_000);
@@ -933,8 +933,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
         problems: [
           {
             kind: 'CAMERA',
-            id: 'cam2',
-            camera_ids: ['cam2'],
+            id: 'cam_B',
+            camera_ids: ['cam_B'],
             reason: 'HEIGHT_MISMATCH',
             message: '카메라 2 높이가 40.0 cm 안 맞습니다.',
           },
@@ -954,7 +954,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     // 재시도·취소 없이 같은 세션이 고친 높이로 이어 간다.
     await waitFor(() => expect(setupMock.sessions.get(sessionId)?.paused_reason).toBeNull());
-    expect(setupMock.sessions.get(sessionId)?.camera_heights_m.cam2).toBe(2.7);
+    expect(setupMock.sessions.get(sessionId)?.camera_heights_m.cam_B).toBe(2.7);
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBeNull();
     expect(setupMock.retryRequests).toHaveLength(0);
     expect(setupMock.sessions.size).toBe(1);
@@ -1582,7 +1582,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
   async function seedStuckSession() {
     const stuck = await createSetupSession(api, {
       work_unit_id: 3,
-      camera_heights_m: { cam1: 2.25, cam2: 2.3, cam3: 2.2, cam4: 2.35 },
+      camera_heights_m: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
     });
     server.use(
       http.get('*/api/work-units', ({ request }) =>
@@ -1602,10 +1602,10 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     return stuck.setup_session_id;
   }
 
-  /** 1단계에서 cam4 높이를 채우고 다음 → 방식 고르기까지 눌러 새 세팅을 요청한다. */
+  /** 1단계에서 cam_D 높이를 채우고 다음 → 방식 고르기까지 눌러 새 세팅을 요청한다. */
   async function requestNewSetup() {
-    const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
-    fireEvent.change(cam4, { target: { value: '2.35' } });
+    const cam_D = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
+    fireEvent.change(cam_D, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
   }

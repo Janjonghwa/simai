@@ -103,7 +103,7 @@ class MediaClipIntegrationTest {
     @Test
     void 받은_클립은_이벤트_목록에_보이고_발급을_쓰인_것으로_표시하며_CRITICAL_은_자동_보존_이력을_남긴다() throws Exception {
         UUID event = event("CRITICAL");
-        ObjectNode clip = clip(event, "cam1", 0, "CRITICAL", true);
+        ObjectNode clip = clip(event, "cam_A", 0, "CRITICAL", true);
 
         send(clip);
 
@@ -113,7 +113,7 @@ class MediaClipIntegrationTest {
         JsonNode item = list.get("clips").get(0);
         JsonNode p = clip.get("payload");
         assertThat(item.get("clip_id").asString()).isEqualTo(p.get("clip_id").asString());
-        assertThat(item.get("camera_id").asString()).isEqualTo("cam1");
+        assertThat(item.get("camera_id").asString()).isEqualTo("cam_A");
         assertThat(item.get("resume_count").asInt()).isZero();
         assertThat(item.get("clip_start_capture_ms").asLong()).isEqualTo(p.get("clip_start_capture_ms").asLong());
         assertThat(item.get("clip_end_capture_ms").asLong()).isEqualTo(p.get("clip_end_capture_ms").asLong());
@@ -130,7 +130,7 @@ class MediaClipIntegrationTest {
     @Test
     void 재생_주소는_관리자에게만_서명_주소로_주고_요청마다_조회_기록을_남긴다() throws Exception {
         UUID event = event("HIGH");
-        ObjectNode clip = clip(event, "cam2", 0, "HIGH", false);
+        ObjectNode clip = clip(event, "cam_B", 0, "HIGH", false);
         send(clip);
         awaitCount(() -> clips(event), 1);
         String clipId = clip.at("/payload/clip_id").asString();
@@ -169,8 +169,8 @@ class MediaClipIntegrationTest {
     void 관리자는_HIGH_클립의_보존_표시를_붙이고_떼며_바뀔_때만_이력을_남기고_CRITICAL_은_떼지_못한다() throws Exception {
         UUID high = event("HIGH");
         UUID critical = event("CRITICAL");
-        ObjectNode highClip = clip(high, "cam1", 0, "HIGH", false);
-        ObjectNode criticalClip = clip(critical, "cam1", 0, "CRITICAL", true);
+        ObjectNode highClip = clip(high, "cam_A", 0, "HIGH", false);
+        ObjectNode criticalClip = clip(critical, "cam_A", 0, "CRITICAL", true);
         send(highClip);
         send(criticalClip);
         awaitCount(() -> clips(high) + clips(critical), 2);
@@ -201,7 +201,7 @@ class MediaClipIntegrationTest {
     @Test
     void 보낸_뒤_CRITICAL_로_오르면_Tier0_보존_기록이_표시를_켜고_재전송은_한_번만_남긴다() throws Exception {
         UUID event = event("HIGH");
-        ObjectNode clip = clip(event, "cam3", 0, "HIGH", false);
+        ObjectNode clip = clip(event, "cam_C", 0, "HIGH", false);
         send(clip);
         awaitCount(() -> clips(event), 1);
         String clipId = clip.at("/payload/clip_id").asString();
@@ -226,26 +226,26 @@ class MediaClipIntegrationTest {
     @Test
     void 발급과_다른_기록_같은_구간의_다른_클립_다른_게이트웨이는_버리고_재전송은_중복_이벤트_전_클립은_실패로_센다() throws Exception {
         UUID event = event("HIGH");
-        ObjectNode ok = clip(event, "cam1", 0, "HIGH", false);
-        ObjectNode otherHash = clip(event, "cam2", 0, "HIGH", false);
+        ObjectNode ok = clip(event, "cam_A", 0, "HIGH", false);
+        ObjectNode otherHash = clip(event, "cam_B", 0, "HIGH", false);
         ((ObjectNode) otherHash.get("payload")).put("sha256", "sha256:" + "0".repeat(64));
-        ObjectNode noGrant = clip(event, "cam3", 0, "HIGH", false);
+        ObjectNode noGrant = clip(event, "cam_C", 0, "HIGH", false);
         jdbc.update("DELETE FROM upload_grant WHERE object_key = ?", noGrant.at("/payload/object_key").asString());
-        ObjectNode sameSpan = clip(event, "cam1", 0, "HIGH", false);
-        ObjectNode otherGateway = clip(event, "cam4", 0, "HIGH", false);
+        ObjectNode sameSpan = clip(event, "cam_A", 0, "HIGH", false);
+        ObjectNode otherGateway = clip(event, "cam_D", 0, "HIGH", false);
         ((ObjectNode) otherGateway.get("payload")).put("gateway_id", "tier0-someone-else");
         UUID missing = UUID.fromString(uuid7());
-        ObjectNode beforeEvent = clip(missing, "cam1", 0, "HIGH", false);
+        ObjectNode beforeEvent = clip(missing, "cam_A", 0, "HIGH", false);
         // 형식과 담는 방식이 어긋나면 화면이 재생하지 못한다
         ObjectNode wrongContainer = clip(event, "cam5", 0, "HIGH", false);
         ((ObjectNode) wrongContainer.get("payload")).put("container", "mp4");
         // 다른 Tier 0 의 이벤트, REPLAY 이벤트에는 클립이 없다
         UUID foreign = event("HIGH");
         jdbc.update("UPDATE risk_event SET gateway_id = 'tier0-someone-else' WHERE event_id = ?", foreign);
-        ObjectNode foreignEvent = clip(foreign, "cam1", 0, "HIGH", false);
+        ObjectNode foreignEvent = clip(foreign, "cam_A", 0, "HIGH", false);
         UUID replay = event("HIGH");
         jdbc.update("UPDATE risk_event SET source = 'REPLAY' WHERE event_id = ?", replay);
-        ObjectNode replayEvent = clip(replay, "cam1", 0, "HIGH", false);
+        ObjectNode replayEvent = clip(replay, "cam_A", 0, "HIGH", false);
         // 서명은 형식을 소문자로 바꿔 발급한다. 기록이 대문자여도 같은 형식이다
         ObjectNode upperType = clip(event, "cam6", 0, "HIGH", false);
         ((ObjectNode) upperType.get("payload")).put("content_type", "Video/H264");
@@ -285,7 +285,7 @@ class MediaClipIntegrationTest {
     void 이벤트보다_먼저_온_클립과_클립보다_먼저_온_보존_기록은_보관했다가_앞선_메시지가_오면_저장한다() throws Exception {
         UUID event = UUID.fromString(uuid7());
         events.add(event);
-        ObjectNode clip = clip(event, "cam1", 0, "HIGH", false);
+        ObjectNode clip = clip(event, "cam_A", 0, "HIGH", false);
         String clipId = clip.at("/payload/clip_id").asString();
         ObjectNode retention = message("media_clip_retention.json");
         ((ObjectNode) retention.get("payload")).put("clip_id", clipId).put("event_id", event.toString())
@@ -320,7 +320,7 @@ class MediaClipIntegrationTest {
             throws Exception {
         UUID event = UUID.fromString(uuid7());
         events.add(event);
-        ObjectNode clip = clip(event, "cam1", 0, "HIGH", false);
+        ObjectNode clip = clip(event, "cam_A", 0, "HIGH", false);
         String clipId = clip.at("/payload/clip_id").asString();
 
         // 처음 받은 클립을 보관한 상태를 직접 만든다. 다음 시도를 미뤄 재시도가 먼저 저장하지 않게 한다(재시도가 보관 행을 읽은 뒤
@@ -355,11 +355,11 @@ class MediaClipIntegrationTest {
     @Test
     void 보존_표시가_꺼진_CRITICAL_클립은_켜서_저장하고_전이와_등급이_다르거나_지운_클립의_보존_기록은_반영하지_않는다() throws Exception {
         UUID critical = event("CRITICAL");
-        ObjectNode unheld = clip(critical, "cam1", 0, "CRITICAL", false);
+        ObjectNode unheld = clip(critical, "cam_A", 0, "CRITICAL", false);
         UUID high = event("HIGH");
         // 클립을 만든 전이(event_sequence 1)는 HIGH 인데 CRITICAL 이라 적은 클립
-        ObjectNode wrongSeverity = clip(high, "cam1", 0, "CRITICAL", true);
-        ObjectNode highClip = clip(high, "cam2", 0, "HIGH", false);
+        ObjectNode wrongSeverity = clip(high, "cam_A", 0, "CRITICAL", true);
+        ObjectNode highClip = clip(high, "cam_B", 0, "HIGH", false);
         double invalidBefore = counter("media_clip", "invalid");
 
         send(unheld);
@@ -386,7 +386,7 @@ class MediaClipIntegrationTest {
     @Test
     void 보존_표시가_있는_HIGH_클립은_자동_보존이_아니라_관리자가_떼고_다른_Tier0_의_보존_기록은_버린다() throws Exception {
         UUID event = event("HIGH");
-        ObjectNode clip = clip(event, "cam1", 0, "HIGH", true);
+        ObjectNode clip = clip(event, "cam_A", 0, "HIGH", true);
         send(clip);
         awaitCount(() -> clips(event), 1);
         String clipId = clip.at("/payload/clip_id").asString();

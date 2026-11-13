@@ -20,10 +20,10 @@
       "dataset_id": "classroom-empty/2026-10-20",
       "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "camera_ids": [
-        "cam1",
-        "cam2",
-        "cam3",
-        "cam4"
+        "cam_A",
+        "cam_B",
+        "cam_C",
+        "cam_D"
       ]
     },
     "calibration": {

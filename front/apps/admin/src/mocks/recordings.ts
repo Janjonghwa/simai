@@ -12,7 +12,7 @@ import { http, HttpResponse } from 'msw/http';
 // 시험 H.264 스트림을 브라우저에서 mp4 로 감싼 blob 주소를 준다(영상 파일은 저장소에 두지 않는다). 시험 영상은 조각보다 짧아
 // 끝에서 마지막 프레임에 멈춘다.
 
-const CAMERAS = ['cam1', 'cam2', 'cam3', 'cam4'] as const;
+const CAMERAS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'] as const;
 const SEGMENT_MS = 5 * 60_000;
 const RETENTION_MS = 14 * 86_400_000;
 /** 서명 주소 수명(서버 download-ttl 5분과 같다). */

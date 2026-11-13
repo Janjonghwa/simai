@@ -18,7 +18,7 @@
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [
         1920,
         1080

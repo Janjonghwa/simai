@@ -5,7 +5,7 @@ import type { HealthSnapshot } from '@/store/realtime.store';
 import type { ViewerHealthPayload } from '@simai/contracts';
 import { describe, expect, it } from 'vitest';
 
-// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam3 가 키프레임을 기다린다.
+// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam_C 가 키프레임을 기다린다.
 const T = 1_760_342_400_000;
 
 function snapshot(t = T, change: Partial<ViewerHealthPayload> = {}): HealthSnapshot {
@@ -15,13 +15,13 @@ function snapshot(t = T, change: Partial<ViewerHealthPayload> = {}): HealthSnaps
 describe('healthCameras', () => {
   it('tier0_health.cameras 의 id·status·last_capture 를 읽는다', () => {
     const cameras = healthCameras(snapshot());
-    expect(cameras.map((camera) => camera.id)).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
-    expect(cameras[0]).toEqual({ id: 'cam1', status: 'OK', lastCaptureMs: T - 120 });
+    expect(cameras.map((camera) => camera.id)).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
+    expect(cameras[0]).toEqual({ id: 'cam_A', status: 'OK', lastCaptureMs: T - 120 });
   });
 
   it('키프레임을 기다리는 카메라는 status 만 있고 촬영 시각이 없다', () => {
-    const cam3 = healthCameras(snapshot(T + 20_000)).find((camera) => camera.id === 'cam3');
-    expect(cam3).toEqual({ id: 'cam3', status: 'WAITING_KEYFRAME', lastCaptureMs: undefined });
+    const cam_C = healthCameras(snapshot(T + 20_000)).find((camera) => camera.id === 'cam_C');
+    expect(cam_C).toEqual({ id: 'cam_C', status: 'WAITING_KEYFRAME', lastCaptureMs: undefined });
   });
 
   it('health 가 없거나 Tier 0 와 끊겼으면 비운다', () => {
@@ -33,22 +33,22 @@ describe('healthCameras', () => {
     const health = snapshot(T, {
       tier0_health: {
         cameras: [
-          { id: 'cam1', status: 7, last_capture: 'x' },
+          { id: 'cam_A', status: 7, last_capture: 'x' },
           { status: 'OK' },
-          { id: 'cam2', status: 'NO_SIGNAL', last_capture: null },
+          { id: 'cam_B', status: 'NO_SIGNAL', last_capture: null },
         ],
       },
     });
     expect(healthCameras(health)).toEqual([
-      { id: 'cam1', status: undefined, lastCaptureMs: undefined },
-      { id: 'cam2', status: 'NO_SIGNAL', lastCaptureMs: undefined },
+      { id: 'cam_A', status: undefined, lastCaptureMs: undefined },
+      { id: 'cam_B', status: 'NO_SIGNAL', lastCaptureMs: undefined },
     ]);
     expect(healthCameras(snapshot(T, { tier0_health: { cameras: 'x' } }))).toEqual([]);
   });
 });
 
 describe('cameraState', () => {
-  const camera = (status?: string) => ({ id: 'cam1', status });
+  const camera = (status?: string) => ({ id: 'cam_A', status });
 
   it('status OK 이고 World 가 들어오면 실시간이다', () => {
     expect(cameraState(camera('OK'), true)).toBe('live');

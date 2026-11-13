@@ -358,7 +358,7 @@ describe('IncidentCard', () => {
       world: {
         receivedAt: T,
         payload: {
-          tracks: [{ world_id: 'w-0015', cameras: ['cam2', 'cam1'] }],
+          tracks: [{ world_id: 'w-0015', cameras: ['cam_B', 'cam_A'] }],
         } as unknown as WorldStatePayload,
       },
     });

@@ -158,9 +158,9 @@ class CctvRemoteIntegrationTest {
         gw.send(new TextMessage(example("cctv_preview")));
         String codec = example("cctv_preview.codec");
         gw.send(new TextMessage(codec));
-        byte[] delta = frame("cam1", 1, false, new byte[] {0, 0, 0, 1, 0x41, 1, 2});
-        byte[] key = frame("cam1", 2, true, new byte[] {0, 0, 0, 1, 0x65, 3, 4, 5});
-        byte[] delta2 = frame("cam1", 3, false, new byte[] {0, 0, 0, 1, 0x41, 6});
+        byte[] delta = frame("cam_A", 1, false, new byte[] {0, 0, 0, 1, 0x41, 1, 2});
+        byte[] key = frame("cam_A", 2, true, new byte[] {0, 0, 0, 1, 0x65, 3, 4, 5});
+        byte[] delta2 = frame("cam_A", 3, false, new byte[] {0, 0, 0, 1, 0x41, 6});
         byte[] unknownCamera = frame("camX", 4, true, new byte[] {0, 0, 0, 1, 0x65});
         gw.send(new BinaryMessage(delta));
         gw.send(new BinaryMessage(key));
@@ -179,8 +179,8 @@ class CctvRemoteIntegrationTest {
         assertStatus(v2.next(), "live");
         assertThat(text(v2.next()).path("kind").asString()).isEqualTo("hello");
         assertThat(text(v2.next()).path("kind").asString()).isEqualTo("codec");
-        byte[] delta3 = frame("cam1", 5, false, new byte[] {0, 0, 0, 1, 0x41, 7});
-        byte[] key2 = frame("cam1", 6, true, new byte[] {0, 0, 0, 1, 0x65, 8});
+        byte[] delta3 = frame("cam_A", 5, false, new byte[] {0, 0, 0, 1, 0x41, 7});
+        byte[] key2 = frame("cam_A", 6, true, new byte[] {0, 0, 0, 1, 0x65, 8});
         gw.send(new BinaryMessage(delta3));
         gw.send(new BinaryMessage(key2));
         assertThat(binary(v2.next())).isEqualTo(key2);
@@ -237,7 +237,7 @@ class CctvRemoteIntegrationTest {
         v.next();
 
         hub.quotaBytesForTest(2_000);
-        byte[] key = frame("cam1", 1, true, new byte[3_000]);
+        byte[] key = frame("cam_A", 1, true, new byte[3_000]);
         gw.send(new BinaryMessage(key));
         assertThat(binary(v.next())).isEqualTo(key);
         JsonNode quota = text(v.next());

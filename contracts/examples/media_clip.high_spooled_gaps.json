@@ -13,7 +13,7 @@
     "rule_id": "R1",
     "severity": "HIGH",
     "source": "LIVE",
-    "camera_id": "cam3",
+    "camera_id": "cam_C",
     "stream_epochs": [
       12,
       13

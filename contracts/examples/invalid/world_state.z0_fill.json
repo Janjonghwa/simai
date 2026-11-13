@@ -26,7 +26,7 @@
         "contact_validity": "UNAVAILABLE",
         "z_validity": "UNAVAILABLE",
         "head_z": null,
-        "cameras": ["cam2"]
+        "cameras": ["cam_B"]
       }
     ]
   }

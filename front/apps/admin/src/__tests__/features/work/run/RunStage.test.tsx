@@ -72,9 +72,9 @@ vi.mock('@/features/zones/useZones', () => ({
 }));
 vi.mock('@/features/cctv/useCameraStates', () => ({
   useCameraStates: () => ({
-    cameras: [{ id: 'cam1' }, { id: 'cam2' }, { id: 'cam3' }, { id: 'cam4' }],
+    cameras: [{ id: 'cam_A' }, { id: 'cam_B' }, { id: 'cam_C' }, { id: 'cam_D' }],
     fresh: true,
-    stateOf: (id: string) => (id === 'cam4' ? 'down' : 'live'),
+    stateOf: (id: string) => (id === 'cam_D' ? 'down' : 'live'),
   }),
 }));
 

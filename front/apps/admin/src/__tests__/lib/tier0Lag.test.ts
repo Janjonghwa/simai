@@ -25,9 +25,9 @@ const tier0 = (lag: number | null) => ({
   pipeline_lag_ms: lag,
   t_latest_global: T - 100,
   cameras: [
-    { id: 'cam1', status: 'OK', last_capture: T - 100 },
-    { id: 'cam2', status: 'OK', last_capture: T - 160 },
-    { id: 'cam3', status: 'NO_SIGNAL', last_capture: null },
+    { id: 'cam_A', status: 'OK', last_capture: T - 100 },
+    { id: 'cam_B', status: 'OK', last_capture: T - 160 },
+    { id: 'cam_C', status: 'NO_SIGNAL', last_capture: null },
   ],
 });
 
@@ -42,8 +42,8 @@ describe('lagSample', () => {
     expect(lagSample(payload(tier0(180)))).toEqual({
       at: T,
       lagMs: 180,
-      // cam1 은 가장 새 촬영이라 T_lag 그대로, cam2 는 60ms 더 묵었다. 촬영 시각이 없는 cam3 는 없다.
-      cameras: { cam1: 180, cam2: 240 },
+      // cam_A 은 가장 새 촬영이라 T_lag 그대로, cam_B 는 60ms 더 묵었다. 촬영 시각이 없는 cam_C 는 없다.
+      cameras: { cam_A: 180, cam_B: 240 },
     });
   });
 
@@ -63,20 +63,20 @@ describe('lagSample', () => {
   });
 
   it('카메라 촬영 시각이 t_latest_global 보다 새도 지연은 0 아래로 내려가지 않는다', () => {
-    const doc = { ...tier0(10), cameras: [{ id: 'cam1', status: 'OK', last_capture: T }] };
-    expect(lagSample(payload(doc))?.cameras).toEqual({ cam1: 0 });
+    const doc = { ...tier0(10), cameras: [{ id: 'cam_A', status: 'OK', last_capture: T }] };
+    expect(lagSample(payload(doc))?.cameras).toEqual({ cam_A: 0 });
   });
 });
 
 describe('pushLagSample · 평균', () => {
   it('창 길이 안의 표본만 두고 평균을 정수로 낸다', () => {
     let samples: readonly LagSample[] = [];
-    samples = pushLagSample(samples, sample(T, 100, { cam1: 150 }));
-    samples = pushLagSample(samples, sample(T + 1000, 201, { cam1: 250 }));
+    samples = pushLagSample(samples, sample(T, 100, { cam_A: 150 }));
+    samples = pushLagSample(samples, sample(T + 1000, 201, { cam_A: 250 }));
     expect(averageLag(samples)).toBe(151);
-    expect(averageCameraLag(samples, 'cam1')).toBe(200);
+    expect(averageCameraLag(samples, 'cam_A')).toBe(200);
 
-    samples = pushLagSample(samples, sample(T + LAG_WINDOW_MS + 500, 300, { cam1: 300 }));
+    samples = pushLagSample(samples, sample(T + LAG_WINDOW_MS + 500, 300, { cam_A: 300 }));
     // T 표본은 창 밖으로 빠진다.
     expect(samples.map((s) => s.at)).toEqual([T + 1000, T + LAG_WINDOW_MS + 500]);
   });
@@ -94,8 +94,8 @@ describe('pushLagSample · 평균', () => {
   });
 
   it('가장 새 표본에 그 카메라 값이 없으면 카메라 지연은 모른다', () => {
-    const samples = [sample(T, 100, { cam1: 150 }), sample(T + 1000, 100, {})];
-    expect(averageCameraLag(samples, 'cam1')).toBeUndefined();
+    const samples = [sample(T, 100, { cam_A: 150 }), sample(T + 1000, 100, {})];
+    expect(averageCameraLag(samples, 'cam_A')).toBeUndefined();
   });
 
   it('명세 6.1 DEGRADED 기준(600ms)을 넘어야 지연 색이다', () => {

@@ -49,8 +49,8 @@ SELECT pg_temp.must_fail('같은 저널 위치 두 번', $q$INSERT INTO risk_eve
 
 -- 클립: (event_id, resume_count, camera_id) 하나
 INSERT INTO media_clip (clip_id, event_id, gateway_id, event_sequence, resume_count, rule_id, severity, source, camera_id, stream_epochs, anchor_capture_at, requested_start_at, requested_end_at, clip_start_capture_at, clip_end_capture_at, frame_count, starts_with_keyframe, truncated_start, truncated_end, has_gaps, content_type, container, size_bytes, sha256, face_redaction, clip_created_at, delete_after, retention_hold, object_key, uploaded_at, received_at)
-VALUES (gen_random_uuid(), '01900000-0000-7000-8000-000000000001', 'gw-1', 1, 0, 'R1', 'HIGH', 'LIVE', 'cam1', ARRAY[0], now(), now(), now(), now(), now(), 10, true, false, false, false, 'video/mp4', 'mp4', 1, 'h', 'NONE', now(), now() + interval '14 days', false, 'k1', now(), now());
-SELECT pg_temp.must_fail('같은 구간 클립 두 번', $q$INSERT INTO media_clip (clip_id, event_id, gateway_id, event_sequence, resume_count, rule_id, severity, source, camera_id, stream_epochs, anchor_capture_at, requested_start_at, requested_end_at, clip_start_capture_at, clip_end_capture_at, frame_count, starts_with_keyframe, truncated_start, truncated_end, has_gaps, content_type, container, size_bytes, sha256, face_redaction, clip_created_at, delete_after, retention_hold, object_key, uploaded_at, received_at) VALUES (gen_random_uuid(), '01900000-0000-7000-8000-000000000001', 'gw-1', 1, 0, 'R1', 'HIGH', 'LIVE', 'cam1', ARRAY[0], now(), now(), now(), now(), now(), 10, true, false, false, false, 'video/mp4', 'mp4', 1, 'h', 'NONE', now(), now(), false, 'k2', now(), now())$q$);
+VALUES (gen_random_uuid(), '01900000-0000-7000-8000-000000000001', 'gw-1', 1, 0, 'R1', 'HIGH', 'LIVE', 'cam_A', ARRAY[0], now(), now(), now(), now(), now(), 10, true, false, false, false, 'video/mp4', 'mp4', 1, 'h', 'NONE', now(), now() + interval '14 days', false, 'k1', now(), now());
+SELECT pg_temp.must_fail('같은 구간 클립 두 번', $q$INSERT INTO media_clip (clip_id, event_id, gateway_id, event_sequence, resume_count, rule_id, severity, source, camera_id, stream_epochs, anchor_capture_at, requested_start_at, requested_end_at, clip_start_capture_at, clip_end_capture_at, frame_count, starts_with_keyframe, truncated_start, truncated_end, has_gaps, content_type, container, size_bytes, sha256, face_redaction, clip_created_at, delete_after, retention_hold, object_key, uploaded_at, received_at) VALUES (gen_random_uuid(), '01900000-0000-7000-8000-000000000001', 'gw-1', 1, 0, 'R1', 'HIGH', 'LIVE', 'cam_A', ARRAY[0], now(), now(), now(), now(), now(), 10, true, false, false, false, 'video/mp4', 'mp4', 1, 'h', 'NONE', now(), now(), false, 'k2', now(), now())$q$);
 
 -- 운영자 종료: REST 멱등 키는 유일, close_id 는 EC2 발급
 INSERT INTO event_close (close_id, idempotency_key, event_id, actor_user_id, requested_at, reason)
@@ -59,7 +59,7 @@ SELECT pg_temp.must_fail('같은 멱등 키 두 번', $q$INSERT INTO event_close
 
 -- World 상태(hypertable): 10일 전·지금 두 행, 오래된 청크 압축 뒤에도 리플레이 질의 Q1 이 된다
 INSERT INTO world_track_state (observation_at, world_id, msg_id, gateway_id, t_last_valid, observation_state, track_lifecycle, identity_confidence, identity_revision, position, position_xy_sigma, support_surface_validity, contact_validity, z_validity, cameras, calibration_version, scene_version, received_at)
-SELECT ts, 'w1', gen_random_uuid(), 'gw-1', ts, 'OBSERVED', 'ACTIVE', 'HIGH', 0, ST_SetSRID(ST_MakePoint(1, 2), 0), ARRAY[0.1, 0.1]::real[], 'VALID', 'VALID', 'VALID', ARRAY['cam1'], 'cal-1', 'scene-1', ts
+SELECT ts, 'w1', gen_random_uuid(), 'gw-1', ts, 'OBSERVED', 'ACTIVE', 'HIGH', 0, ST_SetSRID(ST_MakePoint(1, 2), 0), ARRAY[0.1, 0.1]::real[], 'VALID', 'VALID', 'VALID', ARRAY['cam_A'], 'cal-1', 'scene-1', ts
 FROM (VALUES (now() - interval '10 days'), (now())) v(ts);
 SELECT count(*) AS compressed_chunks FROM (SELECT compress_chunk(c) FROM show_chunks('world_track_state', older_than => interval '7 days') c) s;
 DO $$ BEGIN

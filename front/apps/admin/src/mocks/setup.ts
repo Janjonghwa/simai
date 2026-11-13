@@ -54,7 +54,7 @@ export interface BuildCoverageGuideOptions {
 export function buildCoverageGuidePayload(
   options: BuildCoverageGuideOptions = {},
 ): CoverageGuidePayload {
-  const cameraIds = options.cameraIds ?? ['cam1', 'cam2', 'cam3', 'cam4'];
+  const cameraIds = options.cameraIds ?? ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
   const computedAtMs = options.computedAtMs ?? 1_793_690_000_000;
   const connectivity = options.connectivity ?? 'CONNECTED';
   const cameraStatuses = options.cameraStatuses ?? {};
@@ -68,7 +68,7 @@ export function buildCoverageGuidePayload(
     };
   });
 
-  const [c0 = 'cam1', c1 = 'cam2', c2 = 'cam3', c3 = 'cam4'] = cameraIds;
+  const [c0 = 'cam_A', c1 = 'cam_B', c2 = 'cam_C', c3 = 'cam_D'] = cameraIds;
 
   const defaultPairs: CoveragePairItem[] = [
     {
@@ -189,7 +189,7 @@ export function buildDefaultZoneDraftItems(): ZoneDraftItemInput[] {
       recommended_severity: 'CRITICAL',
       rationale: '바닥 개구부 경계가 검출되어 추락 위험 구역으로 제안합니다.',
       vlm_status: 'VLM',
-      evidence_cameras: ['cam1', 'cam2'],
+      evidence_cameras: ['cam_A', 'cam_B'],
       confidence: 0.86,
     },
     {
@@ -217,7 +217,7 @@ export function buildDefaultZoneDraftItems(): ZoneDraftItemInput[] {
       recommended_severity: 'HIGH',
       rationale: '기하 단차 후보만 검출되었으며 AI 의견 없음(기본값)으로 표시합니다.',
       vlm_status: 'NO_OPINION',
-      evidence_cameras: ['cam3', 'cam4'],
+      evidence_cameras: ['cam_C', 'cam_D'],
       confidence: null,
     },
   ];
@@ -255,11 +255,12 @@ export function buildSetupZoneDraftsResponse(
 export const SETUP_FAILURE_SCENARIOS = {
   INSUFFICIENT_FEATURES: {
     progress_pct: 40,
-    failure_message: 'Insufficient raw feature matches on pair cam2-cam3: 7',
+    failure_message: 'Insufficient raw feature matches on pair cam_B-cam_C: 7',
   },
   VALIDATION_REJECTED: {
     progress_pct: 40,
-    failure_message: "Calibration validation rejected: worsened_pairs=['cam1-cam2', 'cam3-cam4']",
+    failure_message:
+      "Calibration validation rejected: worsened_pairs=['cam_A-cam_B', 'cam_C-cam_D']",
   },
   TIMEOUT: {
     progress_pct: 40,
@@ -449,7 +450,7 @@ function mockSetupFrame(after: boolean): string {
     `<polygon points="0,300 640,300 640,480 0,480" fill="#a9b0ba"/>` +
     `<rect x="240" y="330" width="240" height="60" fill="#7c8592"/>` +
     box +
-    `<text x="16" y="32" font-size="22" fill="#334">${after ? '이번 세팅' : '이전 세팅'} · cam1</text>` +
+    `<text x="16" y="32" font-size="22" fill="#334">${after ? '이번 세팅' : '이전 세팅'} · cam_A</text>` +
     `</svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
@@ -458,7 +459,7 @@ function mockSetupFrame(after: boolean): string {
 function mockZoneOpinion(zoneId: string, zones: readonly { zone_id: string; status: string }[]) {
   const first = zones.find((z) => z.status === 'CHANGE_SUSPECTED')?.zone_id === zoneId;
   const photos = {
-    camera_id: 'cam1',
+    camera_id: 'cam_A',
     before: { image_url: mockSetupFrame(false), crop_box_norm: [0.3, 0.4, 0.8, 0.9] },
     after: { image_url: mockSetupFrame(true), crop_box_norm: [0.3, 0.4, 0.8, 0.9] },
     image_expires_at_ms: Date.now() + 5 * 60_000,
@@ -491,7 +492,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     heightToleranceCm: DEFAULT_TOLERANCE_CM,
     cameraHeightsM: options.cameraHeightsM
       ? { ...options.cameraHeightsM }
-      : { cam1: 2.7, cam2: 2.7, cam3: 2.7, cam4: 2.7 },
+      : { cam_A: 2.7, cam_B: 2.7, cam_C: 2.7, cam_D: 2.7 },
     guideStatus: options.guideStatus ?? 'OK',
     guideStale: options.guideStale ?? options.guideStatus === 'STALE',
     guideError: options.guideError ?? false,

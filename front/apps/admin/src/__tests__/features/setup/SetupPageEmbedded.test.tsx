@@ -80,7 +80,7 @@ beforeEach(() => {
   useZoneEditStore.getState().clear();
   navigateMock.mockReset();
   setupMock = createSetupMock({
-    cameraHeightsM: { cam1: 2.25, cam2: 2.3, cam3: 2.2, cam4: null },
+    cameraHeightsM: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: null },
     latestGuide: buildCoverageGuidePayload({ connectivity: 'DISCONNECTED' }),
   });
   server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
@@ -149,12 +149,12 @@ const currentStepText = () =>
     .getAllByRole('listitem')
     .find((step) => step.getAttribute('aria-current') === 'step')?.textContent;
 
-/** 1단계에서 cam4 높이를 채워 '다음' → 방식 고르기 '새로 3D 공간 만들기' 로 세션을 만들고 그 세션 id 를 돌려준다. */
+/** 1단계에서 cam_D 높이를 채워 '다음' → 방식 고르기 '새로 3D 공간 만들기' 로 세션을 만들고 그 세션 id 를 돌려준다. */
 async function startSetupSession() {
   const view = renderEmbedded();
-  const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
+  const cam_D = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
   await waitFor(() => expect(mainButton().disabled).toBe(true));
-  fireEvent.change(cam4, { target: { value: '2.35' } });
+  fireEvent.change(cam_D, { target: { value: '2.35' } });
   await waitFor(() => expect(mainButton().disabled).toBe(false));
   fireEvent.click(mainButton());
   const dialog = screen.getByRole('dialog', { name: '3D 공간' });
@@ -284,12 +284,12 @@ describe('세팅 화면 임베드', () => {
     setupMock.updateSession(sessionId, {
       ...PREVIEW_PATCH,
       height_checks: {
-        cam2: {
+        cam_B: {
           input_height_m: 2.3,
           restored_height_m: 2.71,
           difference_cm: 41,
           within_tolerance: false,
-          guidance: 'cam2 높이를 다시 재서 입력해 주세요',
+          guidance: 'cam_B 높이를 다시 재서 입력해 주세요',
         },
       },
     });

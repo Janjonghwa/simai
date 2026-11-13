@@ -15,7 +15,7 @@
     "calibration_hash": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "cameras": [
       {
-        "camera_id": "cam2",
+        "camera_id": "cam_B",
         "reprojection_error_px": {
           "median": 3.4,
           "p95": 8.9

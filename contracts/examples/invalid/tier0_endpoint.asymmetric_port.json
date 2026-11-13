@@ -16,25 +16,25 @@
       },
       {
         "role": "VIDEO",
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "requested_port": 70001,
         "public_port": 44465
       },
       {
         "role": "VIDEO",
-        "camera_id": "cam2",
+        "camera_id": "cam_B",
         "requested_port": 70002,
         "public_port": 44466
       },
       {
         "role": "VIDEO",
-        "camera_id": "cam3",
+        "camera_id": "cam_C",
         "requested_port": 70003,
         "public_port": 44467
       },
       {
         "role": "VIDEO",
-        "camera_id": "cam4",
+        "camera_id": "cam_D",
         "requested_port": 70004,
         "public_port": 44468
       }

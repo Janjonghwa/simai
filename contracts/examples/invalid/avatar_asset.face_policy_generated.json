@@ -18,10 +18,10 @@
       "frames": {
         "source": "LIVE",
         "camera_ids": [
-          "cam1",
-          "cam2",
-          "cam3",
-          "cam4"
+          "cam_A",
+          "cam_B",
+          "cam_C",
+          "cam_D"
         ]
       },
       "calibration": {

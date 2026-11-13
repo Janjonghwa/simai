@@ -13,10 +13,10 @@
       "status": "PREVIEW_AND_VLM_DRAFT",
       "progress_pct": 80,
       "background_collection_pct": {
-        "cam1": 100,
-        "cam2": 100,
-        "cam3": 100,
-        "cam4": 100
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
       },
       "calibration_version": "cal-setup-12-jba2-3f9c2a10",
       "artifacts": {
@@ -32,29 +32,29 @@
         },
         "camera_frames": [
           {
-            "camera_id": "cam1",
-            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam1.jpg",
+            "camera_id": "cam_A",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam_A.jpg",
             "sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
             "size_bytes": 214733,
             "face_policy": "BLURRED"
           },
           {
-            "camera_id": "cam2",
-            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam2.jpg",
+            "camera_id": "cam_B",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam_B.jpg",
             "sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
             "size_bytes": 198021,
             "face_policy": "BLURRED"
           },
           {
-            "camera_id": "cam3",
-            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam3.jpg",
+            "camera_id": "cam_C",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam_C.jpg",
             "sha256": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
             "size_bytes": 207455,
             "face_policy": "BLURRED"
           },
           {
-            "camera_id": "cam4",
-            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam4.jpg",
+            "camera_id": "cam_D",
+            "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/frame-cam_D.jpg",
             "sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
             "size_bytes": 221908,
             "face_policy": "BLURRED"
@@ -63,25 +63,25 @@
       },
       "preview_scene_version": "scene-preview-job-20261017-0041-0192a6f0",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam2": {
+        "cam_B": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam3": {
+        "cam_C": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam4": {
+        "cam_D": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,

@@ -83,14 +83,14 @@ describe('카메라 영상 칸의 방향 안내', () => {
     age_ms: 0,
     latest: buildCoverageGuidePayload({
       connectivity: 'DISCONNECTED',
-      cameraStatuses: { cam3: status },
+      cameraStatuses: { cam_C: status },
       guides,
     }),
   });
   const cam3Guide: CoverageGuideItem[] = [
     {
-      camera_id: 'cam3',
-      pair: ['cam3', 'cam4'],
+      camera_id: 'cam_C',
+      pair: ['cam_C', 'cam_D'],
       direction: 'RIGHT',
       magnitude: 'MORE',
       reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
@@ -103,7 +103,7 @@ describe('카메라 영상 칸의 방향 안내', () => {
     expect(arrows).toHaveLength(1);
     expect(arrows[0]!.getAttribute('data-direction')).toBe('RIGHT');
     expect(arrows[0]!.querySelectorAll('svg')).toHaveLength(2);
-    // 카메라 3 의 칸(오른쪽 열 아래)에 있고, 같이 보는 곳은 쌍 cam3–cam4 의 카메라 3 쪽 값이다.
+    // 카메라 3 의 칸(오른쪽 열 아래)에 있고, 같이 보는 곳은 쌍 cam_C–cam_D 의 카메라 3 쪽 값이다.
     const tile = screen.getByLabelText('카메라 3 영상').parentElement!;
     expect(within(tile).getByTestId('camera-cue-arrow')).toBe(arrows[0]);
     const spot = within(tile).getByTestId('camera-cue-spot');
@@ -121,7 +121,7 @@ describe('카메라 영상 칸의 방향 안내', () => {
       parseFloat(screen.getByTestId('camera-cue-spot').parentElement!.style.aspectRatio);
     expect(aspectOf()).toBeCloseTo(16 / 9);
     unmount();
-    useCctvStore.getState().codec('cam3', 1280, 960);
+    useCctvStore.getState().codec('cam_C', 1280, 960);
     render(<CameraMapPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />);
     expect(aspectOf()).toBeCloseTo(4 / 3);
   });

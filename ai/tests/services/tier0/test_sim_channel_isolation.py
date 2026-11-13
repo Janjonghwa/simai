@@ -105,7 +105,8 @@ def test_file_input_ignores_production_channels(tmp_path) -> None:
 
 def test_live_input_keeps_production_channels(tmp_path) -> None:
     s = load_settings(_config(tmp_path, {"mode": "live"}), env=PROD_ENV)
-    assert s.input_mode == "live" and s.i1 is not None and s.i1.url == "wss://simai.live/ws/tier0"
+    assert s.input_mode == "live" and s.camera_ids == ("cam_A", "cam_B", "cam_C", "cam_D")
+    assert s.i1 is not None and s.i1.url == "wss://simai.live/ws/tier0"
     assert s.control is not None and s.control.host == "0.0.0.0"
 
 

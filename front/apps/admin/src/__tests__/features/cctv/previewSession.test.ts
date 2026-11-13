@@ -129,7 +129,7 @@ function setup() {
   };
 }
 
-const hello = { kind: 'hello', protocol: 'simai-cctv-preview/1', cameras: ['cam1', 'cam2'] };
+const hello = { kind: 'hello', protocol: 'simai-cctv-preview/1', cameras: ['cam_A', 'cam_B'] };
 const codec = (cameraId: string, epoch = 5) => ({
   kind: 'codec',
   protocol: 'simai-cctv-preview/1',
@@ -175,12 +175,12 @@ describe('미리보기 연결', () => {
     const t = setup();
     t.socket().open();
     t.socket().text(hello);
-    t.socket().text(codec('cam1'));
-    t.socket().frame('cam1', 0, true);
+    t.socket().text(codec('cam_A'));
+    t.socket().frame('cam_A', 0, true);
     t.socket().drop();
     const s = useCctvStore.getState();
     expect(showsNotice(s.link, s.everOpened)).toBe(false);
-    expect(tileLabel(s.views.cam1?.phase, s.link)).toBe('중계 끊김');
+    expect(tileLabel(s.views.cam_A?.phase, s.link)).toBe('중계 끊김');
     expect(t.decoders[0].state).toBe('closed');
   });
 
@@ -192,8 +192,8 @@ describe('미리보기 연결', () => {
   it('멈추면 소켓과 디코더를 닫고 다시 붙지 않는다', () => {
     const t = setup();
     t.socket().open();
-    t.socket().text(codec('cam1'));
-    t.socket().frame('cam1', 0, true);
+    t.socket().text(codec('cam_A'));
+    t.socket().frame('cam_A', 0, true);
     t.session.stop();
     expect(t.socket().closed).toBe(true);
     expect(t.decoders[0].state).toBe('closed');
@@ -207,33 +207,33 @@ describe('카메라별 디코딩', () => {
     const t = setup();
     t.socket().open();
     t.socket().text(hello);
-    expect(useCctvStore.getState().cameras).toEqual(['cam1', 'cam2']);
-    expect(tileLabel(useCctvStore.getState().views.cam2?.phase, 'open')).toBe('영상 없음');
+    expect(useCctvStore.getState().cameras).toEqual(['cam_A', 'cam_B']);
+    expect(tileLabel(useCctvStore.getState().views.cam_B?.phase, 'open')).toBe('영상 없음');
 
-    t.socket().frame('cam1', 0, true); // codec 전: 버림
-    t.socket().text(codec('cam1'));
-    expect(useCctvStore.getState().views.cam1).toMatchObject({
+    t.socket().frame('cam_A', 0, true); // codec 전: 버림
+    t.socket().text(codec('cam_A'));
+    expect(useCctvStore.getState().views.cam_A).toMatchObject({
       phase: 'waiting_keyframe',
       width: 2304,
       height: 1296,
     });
-    t.socket().frame('cam1', 1, false); // 키프레임 전: 버림
+    t.socket().frame('cam_A', 1, false); // 키프레임 전: 버림
     expect(t.decoders).toHaveLength(0);
 
-    t.socket().frame('cam1', 50, true);
+    t.socket().frame('cam_A', 50, true);
     const [d] = t.decoders;
     expect(d.configs).toEqual([
       { codec: 'avc1.64002A', codedWidth: 2304, codedHeight: 1296, optimizeForLatency: true },
     ]);
     expect(d.chunks[0]).toMatchObject({ type: 'key', timestamp: (T0 + 50 * 40) * 1000 });
     expect(nalTypes(d.chunks[0].data)).toEqual([7, 8, 5]); // SPS·PPS 를 앞에 붙였다
-    t.socket().frame('cam1', 51, false);
+    t.socket().frame('cam_A', 51, false);
     expect(d.chunks[1]).toMatchObject({ type: 'delta' });
     expect(nalTypes(d.chunks[1].data)).toEqual([1]);
 
     const frame = d.emit();
-    expect(t.rendered).toEqual([{ cameraId: 'cam1', frame }]);
-    expect(useCctvStore.getState().views.cam1).toMatchObject({
+    expect(t.rendered).toEqual([{ cameraId: 'cam_A', frame }]);
+    expect(useCctvStore.getState().views.cam_A).toMatchObject({
       phase: 'playing',
       lastCaptureMs: T0 + 51 * 40,
       lastDecodedMs: T0,
@@ -243,13 +243,13 @@ describe('카메라별 디코딩', () => {
   it('다른 stream_epoch 의 프레임은 넣지 않고 새 codec 이면 디코더를 새로 만든다', () => {
     const t = setup();
     t.socket().open();
-    t.socket().text(codec('cam1', 5));
-    t.socket().frame('cam1', 0, true, 5);
-    t.socket().frame('cam1', 0, true, 6); // 아직 codec 이 오지 않은 epoch
+    t.socket().text(codec('cam_A', 5));
+    t.socket().frame('cam_A', 0, true, 5);
+    t.socket().frame('cam_A', 0, true, 6); // 아직 codec 이 오지 않은 epoch
     expect(t.decoders[0].chunks).toHaveLength(1);
-    t.socket().text(codec('cam1', 6));
+    t.socket().text(codec('cam_A', 6));
     expect(t.decoders[0].state).toBe('closed');
-    t.socket().frame('cam1', 0, true, 6);
+    t.socket().frame('cam_A', 0, true, 6);
     expect(t.decoders).toHaveLength(2);
     expect(t.decoders[1].chunks).toHaveLength(1);
   });
@@ -257,31 +257,31 @@ describe('카메라별 디코딩', () => {
   it('디코더가 밀리면 다음 키프레임까지 건너뛴다', () => {
     const t = setup();
     t.socket().open();
-    t.socket().text(codec('cam1'));
-    t.socket().frame('cam1', 0, true);
+    t.socket().text(codec('cam_A'));
+    t.socket().frame('cam_A', 0, true);
     const [d] = t.decoders;
     d.decodeQueueSize = MAX_DECODE_QUEUE + 1;
-    t.socket().frame('cam1', 1, false);
-    t.socket().frame('cam1', 2, false);
+    t.socket().frame('cam_A', 1, false);
+    t.socket().frame('cam_A', 2, false);
     expect(d.chunks).toHaveLength(1);
-    expect(useCctvStore.getState().views.cam1?.phase).toBe('waiting_keyframe');
+    expect(useCctvStore.getState().views.cam_A?.phase).toBe('waiting_keyframe');
     d.decodeQueueSize = 0;
-    t.socket().frame('cam1', 3, false);
+    t.socket().frame('cam_A', 3, false);
     expect(d.chunks).toHaveLength(1);
-    t.socket().frame('cam1', 50, true);
+    t.socket().frame('cam_A', 50, true);
     expect(d.chunks.map((c) => c.type)).toEqual(['key', 'key']);
   });
 
   it('디코더 오류면 표시하고 다음 키프레임에서 새 디코더로 다시 시작한다', () => {
     const t = setup();
     t.socket().open();
-    t.socket().text(codec('cam1'));
-    t.socket().frame('cam1', 0, true);
+    t.socket().text(codec('cam_A'));
+    t.socket().frame('cam_A', 0, true);
     t.decoders[0].error();
-    expect(useCctvStore.getState().views.cam1?.phase).toBe('decode_error');
-    t.socket().frame('cam1', 1, false);
+    expect(useCctvStore.getState().views.cam_A?.phase).toBe('decode_error');
+    t.socket().frame('cam_A', 1, false);
     expect(t.decoders).toHaveLength(1);
-    t.socket().frame('cam1', 50, true);
+    t.socket().frame('cam_A', 50, true);
     expect(t.decoders).toHaveLength(2);
     expect(t.decoders[1].chunks[0].type).toBe('key');
   });
@@ -289,20 +289,20 @@ describe('카메라별 디코딩', () => {
   it('화면 상태의 촬영 시각과 받은 시각은 카메라마다 0.25초에 한 번까지만 바꾼다', () => {
     const t = setup();
     t.socket().open();
-    t.socket().text(codec('cam1'));
-    t.socket().frame('cam1', 0, true);
+    t.socket().text(codec('cam_A'));
+    t.socket().frame('cam_A', 0, true);
     const [d] = t.decoders;
     d.emit();
-    t.socket().frame('cam1', 1, false);
+    t.socket().frame('cam_A', 1, false);
     d.emit();
-    expect(useCctvStore.getState().views.cam1).toMatchObject({
+    expect(useCctvStore.getState().views.cam_A).toMatchObject({
       lastCaptureMs: T0,
       lastDecodedMs: T0,
     });
     t.advance(250);
-    t.socket().frame('cam1', 2, false);
+    t.socket().frame('cam_A', 2, false);
     d.emit();
-    expect(useCctvStore.getState().views.cam1).toMatchObject({
+    expect(useCctvStore.getState().views.cam_A).toMatchObject({
       lastCaptureMs: T0 + 80,
       lastDecodedMs: T0 + 250,
     });

@@ -138,7 +138,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `job_lease` | 작업 대여: 만료·하트비트·반납(12.5) |
 | `watch_display_name_history` · `person_world_name_history` · `person_unidentified_number_history` · `person_world_merge_log` | 관제 화면 운영 표시 이름 추가 전용 이력(`V65`): 워치 기기별 기본 표시 이름 이력, 당일(`site_id, operational_date, world_id`) 수동 표시 이름 이력, 당일 미확인 일련번호(`미확인 N`) 부여 이력, 순수 병합 시 수동 이름·미확인 번호 승계 감사 기록(11.4-5·13.2·14장, `docs/design/S15P31A101-658-person-name-label.md`) |
 
-계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera` 는 Flyway 시드(현장 `classroom-1`, 카메라 `cam1`~`cam4`)로, `rule_version` 은 AI 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션으로 넣는다(16장).
+계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera` 는 Flyway 시드(현장 `classroom-1`, 카메라 `cam_A`~`cam_D`, V69)로, `rule_version` 은 AI 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션으로 넣는다(16장).
 
 ## 11.7 보정·설치
 

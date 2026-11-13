@@ -35,7 +35,7 @@ function session(patch: Partial<SetupSessionResponse> = {}): SetupSessionRespons
     work_unit_id: 3,
     status: 'COMPLETED',
     progress_pct: 100,
-    camera_heights_m: { cam1: 2.4 },
+    camera_heights_m: { cam_A: 2.4 },
     preview_scene_version: 'scene-preview-1',
     ...patch,
   });

@@ -3,5 +3,5 @@
   "kind": "status",
   "protocol": "simai-cctv-preview/1",
   "state": "live",
-  "cameras": ["cam1"]
+  "cameras": ["cam_A"]
 }

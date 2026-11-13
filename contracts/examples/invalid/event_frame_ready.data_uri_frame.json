@@ -9,15 +9,15 @@
     "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
     "frames": [
       {
-        "camera_id": "cam1",
+        "camera_id": "cam_A",
         "frame_uri": "data:image/jpeg;base64,/9j/2Q==",
         "estimated_capture_time_ms": 1760342400100,
         "timestamp_source": "RECEIVE_ESTIMATED",
         "timestamp_uncertainty_ms": 18
       },
       {
-        "camera_id": "cam3",
-        "frame_uri": "s3://simai-events/0192a6f0/cam3-88411.jpg",
+        "camera_id": "cam_C",
+        "frame_uri": "s3://simai-events/0192a6f0/cam_C-88411.jpg",
         "estimated_capture_time_ms": 1760342400112,
         "timestamp_source": "RECEIVE_ESTIMATED",
         "timestamp_uncertainty_ms": 22

@@ -14,32 +14,32 @@
       "progress_pct": 85,
       "mode": "REUSE_SCENE",
       "background_collection_pct": {
-        "cam1": 100,
-        "cam2": 100,
-        "cam3": 100,
-        "cam4": 100
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
       },
       "calibration_version": "cal-lobby-init-61400000-jba2-5a3c9e01",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam2": {
+        "cam_B": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam3": {
+        "cam_C": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam4": {
+        "cam_D": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
@@ -61,7 +61,7 @@
           "READY_FOR_ZONES": 0.0
         },
         "joint_ba": {
-          "anchor_camera_id": "cam1",
+          "anchor_camera_id": "cam_A",
           "converged": true,
           "stage_seconds": 3.42,
           "valid_points": 412
@@ -83,10 +83,10 @@
           "height_max_diff_cm": 10.0
         },
         "pairs": {
-          "cam1-cam2": {
+          "cam_A-cam_B": {
             "camera_ids": [
-              "cam1",
-              "cam2"
+              "cam_A",
+              "cam_B"
             ],
             "holdout_tracks": 103,
             "median_px": 0.451,
@@ -94,10 +94,10 @@
             "verdict": "PASS",
             "reason": null
           },
-          "cam2-cam3": {
+          "cam_B-cam_C": {
             "camera_ids": [
-              "cam2",
-              "cam3"
+              "cam_B",
+              "cam_C"
             ],
             "holdout_tracks": 103,
             "median_px": 0.48,
@@ -105,10 +105,10 @@
             "verdict": "PASS",
             "reason": null
           },
-          "cam3-cam4": {
+          "cam_C-cam_D": {
             "camera_ids": [
-              "cam3",
-              "cam4"
+              "cam_C",
+              "cam_D"
             ],
             "holdout_tracks": 2,
             "median_px": 2.234,
@@ -116,10 +116,10 @@
             "verdict": "WARN",
             "reason": "FEW_HOLDOUT"
           },
-          "cam4-cam1": {
+          "cam_D-cam_A": {
             "camera_ids": [
-              "cam4",
-              "cam1"
+              "cam_D",
+              "cam_A"
             ],
             "holdout_tracks": 53,
             "median_px": 0.233,
@@ -129,22 +129,22 @@
           }
         },
         "cameras": {
-          "cam1": {
+          "cam_A": {
             "height_diff_cm": 1.1,
             "verdict": "PASS",
             "reason": null
           },
-          "cam2": {
+          "cam_B": {
             "height_diff_cm": 1.1,
             "verdict": "PASS",
             "reason": null
           },
-          "cam3": {
+          "cam_C": {
             "height_diff_cm": 1.1,
             "verdict": "PASS",
             "reason": null
           },
-          "cam4": {
+          "cam_D": {
             "height_diff_cm": 1.1,
             "verdict": "PASS",
             "reason": null
@@ -153,13 +153,13 @@
         "problems": [
           {
             "kind": "PAIR",
-            "id": "cam3-cam4",
+            "id": "cam_C-cam_D",
             "camera_ids": [
-              "cam3",
-              "cam4"
+              "cam_C",
+              "cam_D"
             ],
             "reason": "FEW_HOLDOUT",
-            "message": "cam3-cam4: 홀드아웃 대응점이 2개뿐이라(최소 5개) 사람 걷기로 확인해야 합니다"
+            "message": "cam_C-cam_D: 홀드아웃 대응점이 2개뿐이라(최소 5개) 사람 걷기로 확인해야 합니다"
           }
         ]
       },
@@ -180,10 +180,10 @@
           "min_evaluated_pairs": 3
         },
         "pairs": {
-          "cam1-cam2": {
+          "cam_A-cam_B": {
             "camera_ids": [
-              "cam1",
-              "cam2"
+              "cam_A",
+              "cam_B"
             ],
             "required": true,
             "samples": 41,
@@ -194,10 +194,10 @@
               "RESIDUAL": 3
             }
           },
-          "cam1-cam3": {
+          "cam_A-cam_C": {
             "camera_ids": [
-              "cam1",
-              "cam3"
+              "cam_A",
+              "cam_C"
             ],
             "required": false,
             "samples": 0,
@@ -205,10 +205,10 @@
             "residual_median_px": null,
             "verdict": "NOT_OVERLAPPING"
           },
-          "cam1-cam4": {
+          "cam_A-cam_D": {
             "camera_ids": [
-              "cam1",
-              "cam4"
+              "cam_A",
+              "cam_D"
             ],
             "required": true,
             "samples": 0,
@@ -216,10 +216,10 @@
             "residual_median_px": null,
             "verdict": "INSUFFICIENT"
           },
-          "cam2-cam3": {
+          "cam_B-cam_C": {
             "camera_ids": [
-              "cam2",
-              "cam3"
+              "cam_B",
+              "cam_C"
             ],
             "required": true,
             "samples": 12,
@@ -231,10 +231,10 @@
               "RESIDUAL": 3
             }
           },
-          "cam2-cam4": {
+          "cam_B-cam_D": {
             "camera_ids": [
-              "cam2",
-              "cam4"
+              "cam_B",
+              "cam_D"
             ],
             "required": true,
             "samples": 0,
@@ -242,10 +242,10 @@
             "residual_median_px": null,
             "verdict": "INSUFFICIENT"
           },
-          "cam3-cam4": {
+          "cam_C-cam_D": {
             "camera_ids": [
-              "cam3",
-              "cam4"
+              "cam_C",
+              "cam_D"
             ],
             "required": true,
             "samples": 0,
@@ -255,28 +255,28 @@
           }
         },
         "cameras": {
-          "cam1": {
+          "cam_A": {
             "observed_views": 64,
             "loo_samples": 0,
             "loo_median_px": null,
             "loo_p95_px": null,
             "verdict": "INSUFFICIENT"
           },
-          "cam2": {
+          "cam_B": {
             "observed_views": 58,
             "loo_samples": 0,
             "loo_median_px": null,
             "loo_p95_px": null,
             "verdict": "INSUFFICIENT"
           },
-          "cam3": {
+          "cam_C": {
             "observed_views": 22,
             "loo_samples": 0,
             "loo_median_px": null,
             "loo_p95_px": null,
             "verdict": "NOT_OBSERVED"
           },
-          "cam4": {
+          "cam_D": {
             "observed_views": 40,
             "loo_samples": 0,
             "loo_median_px": null,

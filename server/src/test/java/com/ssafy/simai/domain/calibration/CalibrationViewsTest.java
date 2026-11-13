@@ -25,32 +25,32 @@ class CalibrationViewsTest {
 
         assertThat(poses).hasSize(4);
 
-        JsonNode cam1 = poses.get(0);
-        assertThat(cam1.get("camera_id").asString()).isEqualTo("cam1");
-        assertThat(cam1.get("position_xyz").get(0).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
-        assertThat(cam1.get("position_xyz").get(1).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
-        assertThat(cam1.get("position_xyz").get(2).asDouble()).isCloseTo(2.4998, Offset.offset(1e-3));
-        double fx = cam1.get("forward_xyz").get(0).asDouble();
-        double fy = cam1.get("forward_xyz").get(1).asDouble();
-        double fz = cam1.get("forward_xyz").get(2).asDouble();
+        JsonNode cam_A = poses.get(0);
+        assertThat(cam_A.get("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(cam_A.get("position_xyz").get(0).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam_A.get("position_xyz").get(1).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam_A.get("position_xyz").get(2).asDouble()).isCloseTo(2.4998, Offset.offset(1e-3));
+        double fx = cam_A.get("forward_xyz").get(0).asDouble();
+        double fy = cam_A.get("forward_xyz").get(1).asDouble();
+        double fz = cam_A.get("forward_xyz").get(2).asDouble();
         assertThat(fx).isCloseTo(0.7574, Offset.offset(1e-3));
         assertThat(fy).isCloseTo(0.5581, Offset.offset(1e-3));
         assertThat(fz).isCloseTo(-0.3388, Offset.offset(1e-3));
         assertThat(Math.sqrt(fx * fx + fy * fy + fz * fz)).isCloseTo(1.0, Offset.offset(1e-6));
-        assertThat(cam1.get("hfov_rad").asDouble())
+        assertThat(cam_A.get("hfov_rad").asDouble())
                 .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
 
-        assertThat(cam1.has("R")).isFalse();
-        assertThat(cam1.has("t")).isFalse();
-        assertThat(cam1.has("K")).isFalse();
-        assertThat(cam1.has("distortion")).isFalse();
+        assertThat(cam_A.has("R")).isFalse();
+        assertThat(cam_A.has("t")).isFalse();
+        assertThat(cam_A.has("K")).isFalse();
+        assertThat(cam_A.has("distortion")).isFalse();
 
-        JsonNode cam2 = poses.get(1);
-        assertThat(cam2.get("camera_id").asString()).isEqualTo("cam2");
-        assertThat(cam2.get("position_xyz").get(0).asDouble()).isCloseTo(7.7996, Offset.offset(1e-3));
-        assertThat(cam2.get("position_xyz").get(1).asDouble()).isCloseTo(0.2004, Offset.offset(1e-3));
-        assertThat(cam2.get("position_xyz").get(2).asDouble()).isCloseTo(2.4994, Offset.offset(1e-3));
-        assertThat(cam2.get("hfov_rad").asDouble())
+        JsonNode cam_B = poses.get(1);
+        assertThat(cam_B.get("camera_id").asString()).isEqualTo("cam_B");
+        assertThat(cam_B.get("position_xyz").get(0).asDouble()).isCloseTo(7.7996, Offset.offset(1e-3));
+        assertThat(cam_B.get("position_xyz").get(1).asDouble()).isCloseTo(0.2004, Offset.offset(1e-3));
+        assertThat(cam_B.get("position_xyz").get(2).asDouble()).isCloseTo(2.4994, Offset.offset(1e-3));
+        assertThat(cam_B.get("hfov_rad").asDouble())
                 .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
     }
 

@@ -30,7 +30,7 @@
           "resolved_at": 1760342460340,
           "resolution": "OBSERVED",
           "action_status": "DONE",
-          "frame_uri": "s3://simai-site/events/0192a6f1/cam1.jpg"
+          "frame_uri": "s3://simai-site/events/0192a6f1/cam_A.jpg"
         },
         {
           "event_id": "0192a6f1-0a00-7c00-8a00-000000000007",

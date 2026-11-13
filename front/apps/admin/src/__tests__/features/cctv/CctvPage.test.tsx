@@ -25,11 +25,11 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
   useCctvPreview: vi.fn(() => ({ attach: vi.fn(), resume })),
 }));
 
-// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam3 가 키프레임을 기다린다.
+// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam_C 가 키프레임을 기다린다.
 const T = 1_760_342_400_000;
-const CAMS = ['cam1', 'cam2', 'cam3', 'cam4'];
+const CAMS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
 
-const cameraName = (id: string) => `카메라 ${id.slice(-1)}`;
+const cameraName = (id: string) => `카메라 ${CAMS.indexOf(id) + 1}`;
 
 function signIn(role: Role) {
   useSessionStore.setState({ session: { accessToken: 'token', user: { id: role, role } } });
@@ -54,13 +54,13 @@ function seedRealtime({
   });
 }
 
-/** 중계가 열려 카메라 4대를 알렸고 cam1 만 영상을 그리는 중이다. */
+/** 중계가 열려 카메라 4대를 알렸고 cam_A 만 영상을 그리는 중이다. */
 function openRelay() {
   const store = useCctvStore.getState();
   store.setLink('open');
   store.hello(CAMS);
-  store.codec('cam1', 2304, 1296);
-  store.played('cam1', Date.now(), Date.now());
+  store.codec('cam_A', 2304, 1296);
+  store.played('cam_A', Date.now(), Date.now());
 }
 
 const badge = (id: string) =>
@@ -102,51 +102,51 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
 
   it('LIVE 점은 프레임이 들어오는 칸에만 있고 나머지는 상태 글만 보인다', () => {
     render(<CctvPage />);
-    expect(badge('cam1').textContent).toBe('LIVE');
-    expect(badge('cam1').querySelector('i')).not.toBeNull();
-    // cam2 는 health 가 정상이지만 영상 프레임이 아직 오지 않는다.
-    expect(badge('cam2').textContent).toBe('실시간');
-    expect(badge('cam2').querySelector('i')).toBeNull();
+    expect(badge('cam_A').textContent).toBe('LIVE');
+    expect(badge('cam_A').querySelector('i')).not.toBeNull();
+    // cam_B 는 health 가 정상이지만 영상 프레임이 아직 오지 않는다.
+    expect(badge('cam_B').textContent).toBe('실시간');
+    expect(badge('cam_B').querySelector('i')).toBeNull();
   });
 
   it('키프레임을 기다리는 카메라는 끊김이다', () => {
     seedRealtime({ at: T + 20_000 });
     render(<CctvPage />);
-    expect(badge('cam3').textContent).toBe('끊김');
-    expect(badge('cam1').textContent).toBe('LIVE');
+    expect(badge('cam_C').textContent).toBe('끊김');
+    expect(badge('cam_A').textContent).toBe('LIVE');
   });
 
   it('World 가 멈추면(정지) 배지를 두지 않는다(S15P31A101-665)', () => {
     seedRealtime({ world: false });
     render(<CctvPage />);
-    expect(badge('cam1')).toBeUndefined();
+    expect(badge('cam_A')).toBeUndefined();
     expect(screen.queryByText(/정지/)).toBeNull();
   });
 
   it('Tier 0 가 잰 카메라 지연을 알면 실시간 배지에 ms 로 함께 보이고, 기준을 넘으면 지연 색이다', () => {
     useRealtimeStore.setState({
-      lagSamples: [{ at: T, lagMs: 150, cameras: { cam1: 180, cam2: 720 } }],
+      lagSamples: [{ at: T, lagMs: 150, cameras: { cam_A: 180, cam_B: 720 } }],
     });
     render(<CctvPage />);
-    expect(badge('cam1').textContent).toBe('LIVE· 180 ms');
-    expect(badge('cam2').textContent).toBe('실시간· 720 ms');
-    expect(within(badge('cam2')).getByText('· 720 ms').className).toContain('text-delay');
+    expect(badge('cam_A').textContent).toBe('LIVE· 180 ms');
+    expect(badge('cam_B').textContent).toBe('실시간· 720 ms');
+    expect(within(badge('cam_B')).getByText('· 720 ms').className).toContain('text-delay');
     // 지연을 모르는 칸은 상태 글만 보인다.
-    expect(badge('cam3').textContent).toBe('실시간');
+    expect(badge('cam_C').textContent).toBe('실시간');
   });
 
   it('프레임이 1초 넘게 끊기면 LIVE 점을 끈다', () => {
     const now = Date.now();
-    useCctvStore.getState().played('cam1', now, now - 2_000);
+    useCctvStore.getState().played('cam_A', now, now - 2_000);
     render(<CctvPage />);
-    expect(badge('cam1').textContent).toBe('실시간');
+    expect(badge('cam_A').textContent).toBe('실시간');
   });
 
   it('촬영 시각이 2초 늦어도 방금 받은 프레임이면 LIVE 이고 칸에는 지연 초가 보이지 않는다', () => {
     const now = Date.now();
-    useCctvStore.getState().played('cam1', now - 2_000, now);
+    useCctvStore.getState().played('cam_A', now - 2_000, now);
     render(<CctvPage />);
-    expect(badge('cam1').textContent).toBe('LIVE');
+    expect(badge('cam_A').textContent).toBe('LIVE');
     expect(screen.queryByText(/^\d+\.\d초$/)).toBeNull();
   });
 
@@ -154,17 +154,17 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     vi.useFakeTimers();
     try {
       const now = Date.now();
-      useCctvStore.getState().played('cam1', now, now);
+      useCctvStore.getState().played('cam_A', now, now);
       render(<CctvPage />);
       act(() => {
         vi.advanceTimersByTime(900);
       });
-      expect(badge('cam1').textContent).toBe('LIVE');
+      expect(badge('cam_A').textContent).toBe('LIVE');
       act(() => {
         // 다시 재는 간격(0.25초)이 있어, 기준(1초)을 한 번 이상 지난 뒤 잰 값이 나오도록 넉넉히 넘긴다.
         vi.advanceTimersByTime(400);
       });
-      expect(badge('cam1').textContent).toBe('실시간');
+      expect(badge('cam_A').textContent).toBe('실시간');
     } finally {
       vi.useRealTimers();
     }
@@ -188,7 +188,7 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
   it('크게 본 화면에서도 상태와 4분할로 버튼이 있다', () => {
     render(<CctvPage />);
     fireEvent.click(screen.getByRole('button', { name: '카메라 1 크게 보기' }));
-    expect(badge('cam1').textContent).toBe('LIVE');
+    expect(badge('cam_A').textContent).toBe('LIVE');
     fireEvent.click(screen.getByRole('button', { name: '4분할로 돌아가기' }));
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(4);
   });
@@ -231,48 +231,48 @@ describe('CctvPage 관리자 · 확대·이동', () => {
 
   it('휠을 위로 굴리면 영상이 포인터 밑을 기준으로 확대되고 작은 지도가 뜬다', () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
-    expect(canvasOf('cam2').style.transform).toBe('');
+    const tile = sizedTile('cam_B');
+    expect(canvasOf('cam_B').style.transform).toBe('');
     expect(screen.queryByRole('img', { name: '확대한 자리' })).toBeNull();
 
     wheelUp(tile);
 
-    expect(canvasOf('cam2').style.transform).toBe(panZoomTransform(zoomedView));
+    expect(canvasOf('cam_B').style.transform).toBe(panZoomTransform(zoomedView));
     const area = screen.getByRole('img', { name: '확대한 자리' }).firstElementChild as HTMLElement;
     const rect = visibleRect(zoomedView);
     expect(parseFloat(area.style.left)).toBeCloseTo(rect.left * 100, 3);
     expect(parseFloat(area.style.width)).toBeCloseTo(rect.width * 100, 3);
     // 다른 칸은 그대로다.
-    expect(canvasOf('cam1').style.transform).toBe('');
+    expect(canvasOf('cam_A').style.transform).toBe('');
   });
 
   it('휠은 페이지 스크롤을 막고, 아래로 굴려 1배까지 줄이면 확대가 풀린다', () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
+    const tile = sizedTile('cam_B');
     expect(wheelUp(tile)).toBe(false);
     fireEvent.wheel(tile, { deltaY: 5000, clientX: 400, clientY: 225 });
-    expect(canvasOf('cam2').style.transform).toBe('');
+    expect(canvasOf('cam_B').style.transform).toBe('');
     expect(screen.queryByRole('img', { name: '확대한 자리' })).toBeNull();
   });
 
   it('확대하기 전에는 끌어도 옮겨지지 않고 누르면 그대로 크게 보기로 바뀐다', () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
+    const tile = sizedTile('cam_B');
     dragTo(tile, 700, 225);
-    expect(canvasOf('cam2').style.transform).toBe('');
+    expect(canvasOf('cam_B').style.transform).toBe('');
     fireEvent.click(tile, { detail: 1 });
     expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBeTruthy();
   });
 
   it(`확대 중 ${DRAG_THRESHOLD_PX}px 넘게 끌면 옮겨지고, 놓은 뒤 이어지는 클릭은 크게 보기를 바꾸지 않는다`, () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
+    const tile = sizedTile('cam_B');
     wheelUp(tile);
 
     dragTo(tile, 500, 225);
 
     // 오른쪽으로 100px(칸 폭의 1/8) 끌면 그림이 그만큼 따라온다.
-    expect(canvasOf('cam2').style.transform).toBe(panZoomTransform(panBy(zoomedView, 0.125, 0)));
+    expect(canvasOf('cam_B').style.transform).toBe(panZoomTransform(panBy(zoomedView, 0.125, 0)));
     fireEvent.click(tile, { detail: 1 });
     expect(screen.getByRole('button', { name: '카메라 2 크게 보기' })).toBe(tile);
     // 삼킨 것은 그 한 번뿐이라 다음 클릭은 크게 보기로 바뀐다.
@@ -282,27 +282,27 @@ describe('CctvPage 관리자 · 확대·이동', () => {
 
   it(`확대 중 ${DRAG_THRESHOLD_PX}px 이하로 움직인 누르기는 클릭이라 옮겨지지 않는다`, () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
+    const tile = sizedTile('cam_B');
     wheelUp(tile);
-    const before = canvasOf('cam2').style.transform;
+    const before = canvasOf('cam_B').style.transform;
 
     dragTo(tile, 400 + DRAG_THRESHOLD_PX, 225);
     fireEvent.click(tile, { detail: 1 });
 
-    expect(canvasOf('cam2').style.transform).toBe(before);
+    expect(canvasOf('cam_B').style.transform).toBe(before);
     expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBe(tile);
   });
 
   it('확대한 채 크게 보기와 4분할을 오가도 같은 캔버스에 같은 자리가 남는다', () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
-    const canvas = canvasOf('cam2');
+    const tile = sizedTile('cam_B');
+    const canvas = canvasOf('cam_B');
     wheelUp(tile);
     const zoomed = canvas.style.transform;
 
     fireEvent.click(tile);
     expect(screen.getByRole('button', { name: '카메라 2 작게 보기' })).toBe(tile);
-    expect(canvasOf('cam2')).toBe(canvas);
+    expect(canvasOf('cam_B')).toBe(canvas);
     expect(canvas.style.transform).toBe(zoomed);
 
     fireEvent.click(tile);
@@ -311,15 +311,15 @@ describe('CctvPage 관리자 · 확대·이동', () => {
 
   it('+ 는 확대하고 0 은 1배로 되돌린다. 브라우저 확대 키(Ctrl)는 건드리지 않는다', () => {
     render(<CctvPage />);
-    const tile = sizedTile('cam2');
+    const tile = sizedTile('cam_B');
     fireEvent.keyDown(tile, { key: '+' });
-    expect(canvasOf('cam2').style.transform).not.toBe('');
+    expect(canvasOf('cam_B').style.transform).not.toBe('');
 
     expect(fireEvent.keyDown(tile, { key: '0', ctrlKey: true })).toBe(true);
-    expect(canvasOf('cam2').style.transform).not.toBe('');
+    expect(canvasOf('cam_B').style.transform).not.toBe('');
 
     expect(fireEvent.keyDown(tile, { key: '0' })).toBe(false);
-    expect(canvasOf('cam2').style.transform).toBe('');
+    expect(canvasOf('cam_B').style.transform).toBe('');
   });
 });
 
@@ -393,8 +393,8 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
 
     const text = (id: string) =>
       screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
-    expect(text('cam1')).toBe('실시간');
-    expect(text('cam3')).toBe('끊김');
+    expect(text('cam_A')).toBe('실시간');
+    expect(text('cam_C')).toBe('끊김');
     expect(screen.getAllByRole('group')).toHaveLength(4);
   });
 
@@ -408,14 +408,14 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
   it('실시간 칸은 Tier 0 가 잰 카메라 지연(ms)을 함께 보인다', () => {
     seedRealtime({ at: T + 20_000 });
     useRealtimeStore.setState({
-      lagSamples: [{ at: T, lagMs: 150, cameras: { cam1: 180, cam3: 400 } }],
+      lagSamples: [{ at: T, lagMs: 150, cameras: { cam_A: 180, cam_C: 400 } }],
     });
     render(<CctvPage />);
     const text = (id: string) =>
       screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
-    expect(text('cam1')).toBe('실시간 · 180 ms');
-    // 끊김(cam3 키프레임 대기)에는 붙이지 않는다.
-    expect(text('cam3')).toBe('끊김');
+    expect(text('cam_A')).toBe('실시간 · 180 ms');
+    // 끊김(cam_C 키프레임 대기)에는 붙이지 않는다.
+    expect(text('cam_C')).toBe('끊김');
   });
 
   it('Tier 0 상태를 받지 못하면 안내 한 줄만 보인다', () => {

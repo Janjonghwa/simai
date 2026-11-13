@@ -372,12 +372,12 @@ class SetupCompleteIntegrationTest {
         ObjectNode gate = snap.putObject("quality_gate").put("verdict", "NEEDS_CHECK");
         gate.putObject("thresholds").put("pair_holdout_median_max_px", 3.0).put("pair_holdout_p90_max_px", 6.0)
                 .put("min_holdout_tracks", 5).put("height_max_diff_cm", 10.0);
-        ObjectNode pair = gate.putObject("pairs").putObject("cam3-cam4");
-        pair.putArray("camera_ids").add("cam3").add("cam4");
+        ObjectNode pair = gate.putObject("pairs").putObject("cam_C-cam_D");
+        pair.putArray("camera_ids").add("cam_C").add("cam_D");
         pair.put("holdout_tracks", 2).put("median_px", 2.2).put("p90_px", 3.2).put("verdict", "NEEDS_CHECK").put("reason", "FEW_HOLDOUT");
-        gate.putObject("cameras").putObject("cam1").put("height_diff_cm", 1.1).put("verdict", "PASS").putNull("reason");
-        gate.putArray("problems").addObject().put("kind", "PAIR").put("id", "cam3-cam4").put("reason", "FEW_HOLDOUT")
-                .put("message", "cam3-cam4: 홀드아웃 대응점이 2개뿐이라 사람 걷기로 확인해야 합니다");
+        gate.putObject("cameras").putObject("cam_A").put("height_diff_cm", 1.1).put("verdict", "PASS").putNull("reason");
+        gate.putArray("problems").addObject().put("kind", "PAIR").put("id", "cam_C-cam_D").put("reason", "FEW_HOLDOUT")
+                .put("message", "cam_C-cam_D: 홀드아웃 대응점이 2개뿐이라 사람 걷기로 확인해야 합니다");
         ObjectNode artifacts = snap.putObject("artifacts");
         artifacts.set("calibration_document", calRef(s));
         artifacts.set("preview_scene", previewRef(s));
@@ -386,7 +386,7 @@ class SetupCompleteIntegrationTest {
         JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isOk()).andReturn());
         assertThat(view.path("camera_check").path("status").asString()).isEqualTo("FAILED");
-        assertThat(view.path("camera_check").path("problems").get(0).path("id").asString()).isEqualTo("cam1-cam2");
+        assertThat(view.path("camera_check").path("problems").get(0).path("id").asString()).isEqualTo("cam_A-cam_B");
         assertThat(view.path("camera_check_passed").asBoolean()).isFalse();
         assertThat(view.path("quality_gate").path("verdict").asString()).isEqualTo("NEEDS_CHECK");
         mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
@@ -479,7 +479,7 @@ class SetupCompleteIntegrationTest {
 
     private RequestBuilder create() {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        req.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         return post("/api/setup-sessions").with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content(req.toString());
     }
 
@@ -540,7 +540,7 @@ class SetupCompleteIntegrationTest {
         ArrayNode cameras = (ArrayNode) doc.get("cameras");
         JsonNode template = cameras.get(0);
         cameras.removeAll();
-        for (String cam : List.of("cam1", "cam2", "cam3", "cam4")) {
+        for (String cam : List.of("cam_A", "cam_B", "cam_C", "cam_D")) {
             cameras.add(((ObjectNode) template.deepCopy()).put("camera_id", cam));
         }
         doc.remove("content_hash");
@@ -553,9 +553,10 @@ class SetupCompleteIntegrationTest {
 
     private ObjectNode withChecks(ObjectNode node) {
         ObjectNode checks = node.putObject("height_checks");
+        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
         double[] heights = {2.42, 2.48, 2.45, 2.51};
         for (int i = 0; i < 4; i++) {
-            checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
+            checks.putObject(cams[i]).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
         // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다

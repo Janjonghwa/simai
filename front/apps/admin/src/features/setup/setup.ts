@@ -43,7 +43,7 @@ export const MAP_TITLE: Record<Exclude<Stage, 1>, string> = {
 /** 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 세팅 화면 전용 톤. */
 export type SetupTone = 'ok' | 'active' | 'delay' | 'idle';
 
-export const DEFAULT_CAMERA_IDS = ['cam1', 'cam2', 'cam3', 'cam4'] as const;
+export const DEFAULT_CAMERA_IDS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'] as const;
 
 /** 교실 4모서리 좌표(m, 인접 고리 A–B–C–D–A 순서: 왼쪽 위 → 오른쪽 위 → 오른쪽 아래 → 왼쪽 아래). */
 export const CAMERA_CORNERS: readonly Point[] = [
@@ -699,7 +699,7 @@ export function deriveHeightWarnings(
 
   for (const warn of session.height_warnings ?? []) {
     const matchedCam = Object.keys(session.camera_heights_m).find((camId) => warn.includes(camId));
-    const camId = matchedCam ?? 'cam1';
+    const camId = matchedCam ?? 'cam_A';
     if (!seen.has(camId)) {
       seen.add(camId);
       out.push({

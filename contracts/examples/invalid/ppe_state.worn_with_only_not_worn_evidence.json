@@ -16,10 +16,10 @@
       "frames": {
         "source": "LIVE",
         "camera_ids": [
-          "cam1",
-          "cam2",
-          "cam3",
-          "cam4"
+          "cam_A",
+          "cam_B",
+          "cam_C",
+          "cam_D"
         ]
       },
       "calibration": {
@@ -46,7 +46,7 @@
           "expires_at_ms": 1760342410400,
           "evidence": [
             {
-              "camera_id": "cam2",
+              "camera_id": "cam_B",
               "stream_epoch": 3,
               "frame_sequence": 90211,
               "capture_time_ms": 1760342400400,
@@ -56,7 +56,7 @@
               "region_quality": 0.88
             },
             {
-              "camera_id": "cam1",
+              "camera_id": "cam_A",
               "stream_epoch": 3,
               "frame_sequence": 90198,
               "capture_time_ms": 1760342399900,
@@ -76,7 +76,7 @@
           "expires_at_ms": 1760342410400,
           "evidence": [
             {
-              "camera_id": "cam2",
+              "camera_id": "cam_B",
               "stream_epoch": 3,
               "frame_sequence": 90211,
               "capture_time_ms": 1760342400400,

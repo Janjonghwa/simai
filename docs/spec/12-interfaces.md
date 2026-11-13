@@ -55,7 +55,7 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
       "position_xy_sigma": [0.08, 0.08], "ground_anchor_sigma": [0.06, 0.06, 0.03], "head_z_sigma": 0.05,
       "velocity": [0.9, 0.1, 0.0],
       "head_z": 1.68, "head_z_validity": "VALID", "z_validity": "VALID",
-      "cameras": ["cam1", "cam3"],
+      "cameras": ["cam_A", "cam_C"],
       "skeleton": {"joints": [[3.40, 5.01, 0.92]], "visible": [true], "validity": ["VALID"], "joint_source": ["observed"]}
     }]
   }
@@ -67,7 +67,7 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
   "msg_type": "health",
   "payload": {
     "system_health": "NOMINAL",
-    "cameras": [{"id": "cam1", "fps": 14.8, "last_capture": 1760342400100, "sync_offset_ms": 6, "sync_valid": true, "status": "OK"}],
+    "cameras": [{"id": "cam_A", "fps": 14.8, "last_capture": 1760342400100, "sync_offset_ms": 6, "sync_valid": true, "status": "OK"}],
     "pipeline_lag_ms": 120,
     "calibration_state": "CALIBRATED",
     "tier0_warnings": [],

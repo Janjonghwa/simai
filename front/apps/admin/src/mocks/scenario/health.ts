@@ -37,7 +37,7 @@ const waveAt = (t: number, shift = 0) => Math.floor(t / 1000 + shift) % WAVE_STE
 
 /**
  * 카메라 한 대의 Tier 0 health. 키프레임을 기다리면 처리 FPS 는 0 이고(계약 필수 값),
- * 잴 수 없는 값은 null 이거나 싣지 않는다(예제의 cam2 와 같다).
+ * 잴 수 없는 값은 null 이거나 싣지 않는다(예제의 cam_B 와 같다).
  */
 function cameraHealth(id: CameraId, index: number, t: number, down: CameraDown | false) {
   if (down) {
@@ -92,7 +92,7 @@ function cameraDownOf(
   cam3Down: boolean,
 ): CameraDown | false {
   if (down === 'laptop') return 'NO_SIGNAL';
-  return id === 'cam3' && cam3Down ? 'WAITING_KEYFRAME' : false;
+  return id === 'cam_C' && cam3Down ? 'WAITING_KEYFRAME' : false;
 }
 
 function laptopOf(
@@ -114,7 +114,7 @@ function sceneOf(sceneMismatch: boolean): ViewerHealthPayload['scene'] {
 export const MOCK_HELD_REVISION = 'mock-0';
 
 /**
- * /topic/health: 시각 t(ms)의 관제 상태. 데이터 연령은 0.2초 안팎이고, 바퀴마다 cam3 가 잠깐 키프레임을 기다린다.
+ * /topic/health: 시각 t(ms)의 관제 상태. 데이터 연령은 0.2초 안팎이고, 바퀴마다 cam_C 가 잠깐 키프레임을 기다린다.
  * faults 가 false 면 고장 흉내 없이 늘 정상이다(시각과 상관없이 NOMINAL 을 기대하는 시험).
  * outage 를 주면 그 시각부터 데이터가 끊기고, 3초 뒤부터 EC2 가 장애(remote_state)를 알린다.
  * sceneMismatch 면 Tier 0 가 이전 Scene 으로 판정한다고 알린다(명세 FR-12).

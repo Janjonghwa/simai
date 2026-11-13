@@ -79,10 +79,10 @@ export const OBJECTS: FixtureBox[] = [
 
 // 교실 네 모서리 위 2.6m(World).
 export const CAMERAS = [
-  { id: 'cam1', x: 0, y: 10, z: 2.6 },
-  { id: 'cam2', x: 10, y: 10, z: 2.6 },
-  { id: 'cam3', x: 0, y: 0, z: 2.6 },
-  { id: 'cam4', x: 10, y: 0, z: 2.6 },
+  { id: 'cam_A', x: 0, y: 10, z: 2.6 },
+  { id: 'cam_B', x: 10, y: 10, z: 2.6 },
+  { id: 'cam_C', x: 0, y: 0, z: 2.6 },
+  { id: 'cam_D', x: 10, y: 0, z: 2.6 },
 ];
 
 export interface FixtureEvent {

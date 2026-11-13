@@ -74,7 +74,7 @@ const emptyPlan: SetupZonePlanView = { setup_session_id: 's', items: [], revisio
 async function readySession(patch: Partial<SetupSessionResponse> = {}): Promise<string> {
   const created = await createSetupSession(api, {
     work_unit_id: 1,
-    camera_heights_m: { cam1: 2.4 },
+    camera_heights_m: { cam_A: 2.4 },
   });
   setupMock.updateSession(created.setup_session_id, {
     status: 'READY_FOR_ZONES',
@@ -281,7 +281,7 @@ describe('확인 필요(S15P31A101-629)', () => {
       recommended_action: 'MODIFY' as const,
       rationale: '단상이 옮겨졌습니다.',
       confidence: 0.6,
-      camera_id: 'cam1',
+      camera_id: 'cam_A',
       before: { image_url: 'https://s/b.jpg', crop_box_norm: box },
       after: { image_url: 'https://s/a.jpg', crop_box_norm: box },
       image_expires_at_ms: now + 300_000,

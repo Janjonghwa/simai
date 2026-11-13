@@ -74,7 +74,7 @@ def _write(root: Path, name: str, doc: Any) -> None:
 
 def _bake_ok(root: Path) -> None:
     (root / "scene.glb").write_bytes(b"glb-" + (b"sup" if (root / "prepared_base").exists() else b"base"))
-    _write(root, "bake.json", {"assets": [GLB], "map_cameras": {"cam1": {}}})
+    _write(root, "bake.json", {"assets": [GLB], "map_cameras": {"cam_A": {}}})
 
 
 def _bake_fail_with_supplement(root: Path) -> None:
@@ -228,7 +228,7 @@ def test_supplement_stage_cancel_is_not_swallowed(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- SUPPLEMENT_REBAKE
 def _cal_doc() -> dict[str, Any]:
     cams = []
-    for i, cid in enumerate(("cam1", "cam2", "cam3", "cam4")):
+    for i, cid in enumerate(("cam_A", "cam_B", "cam_C", "cam_D")):
         C = np.array([float(i), 0.0, 1.52])
         R = np.diag([1.0, -1.0, -1.0])
         cams.append({"camera_id": cid, "K": [[100, 0, 80], [0, 100, 45], [0, 0, 1]], "R": R.tolist(),
@@ -266,13 +266,13 @@ def test_rebake_applied_builds_root_from_base_and_uploads_new_scene(tmp_path: Pa
     seen: list = []
     out = _rebake(s, seen)
     assert stages.ran == ["prepare", "mapanything", "supplement", "bake"]  # 배경·보정·미리보기 단계 없음
-    assert (s.root / "images" / "cam3.image").read_bytes() == b"jpeg-cam3"
+    assert (s.root / "images" / "cam_C.image").read_bytes() == b"jpeg-cam_C"
     assert json.loads((s.root / "calibration.json").read_text(encoding="utf-8"))["calibration_version"] == "cal-setup-12"
     job = json.loads((s.root / "job.json").read_text(encoding="utf-8"))
-    assert [im["camera_id"] for im in job["input"]["images"]] == ["cam1", "cam2", "cam3", "cam4"]
+    assert [im["camera_id"] for im in job["input"]["images"]] == ["cam_A", "cam_B", "cam_C", "cam_D"]
     assert out.scene_version == "scene-job-1-lease-1" and out.scene_asset is not None
-    assert seen and seen[0]["cam1"]["restored_height_m"] == pytest.approx(1.52)
-    assert out.height_checks["cam1"]["within_tolerance"] is True
+    assert seen and seen[0]["cam_A"]["restored_height_m"] == pytest.approx(1.52)
+    assert out.height_checks["cam_A"]["within_tolerance"] is True
 
 
 def test_rebake_fallback_keeps_base_scene_without_baking(tmp_path: Path) -> None:
@@ -395,7 +395,7 @@ def test_handler_rebake_reports_progress_and_contract_valid_results(tmp_path: Pa
     summary = sc.summary(status="APPLIED", reason=None, media=[sc.MediaInput("sup-01", "VIDEO", None)],
                          frames_selected=3, frames_registered=3, used_media=["sup-01"])
     checks = {c: {"input_height_m": 1.5, "restored_height_m": 1.52, "difference_cm": 2.0, "within_tolerance": True}
-              for c in ("cam1", "cam2", "cam3", "cam4")}
+              for c in ("cam_A", "cam_B", "cam_C", "cam_D")}
 
     def rebaker(**kw: Any) -> RebakeOutcome:
         kw["on_height_checks"](checks)

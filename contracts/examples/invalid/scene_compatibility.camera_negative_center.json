@@ -7,6 +7,6 @@
   "max_center_delta_m": 0.02,
   "max_rotation_delta_rad": 0.004,
   "cameras": [
-    {"camera_id": "cam1", "center_delta_m": -0.02, "rotation_delta_rad": 0.004}
+    {"camera_id": "cam_A", "center_delta_m": -0.02, "rotation_delta_rad": 0.004}
   ]
 }

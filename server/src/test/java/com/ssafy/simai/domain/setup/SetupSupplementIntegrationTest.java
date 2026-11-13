@@ -68,7 +68,7 @@ class SetupSupplementIntegrationTest {
     private static final Path CONTRACTS = Path.of(System.getProperty("simai.contracts.dir", "../contracts"));
     private static final String BUCKET = "s3://simai-test-bucket/";
     private static final String BUNDLE = "bundle-" + "0123456789abcdef0123456789abcdef";
-    private static final List<String> CAMERAS = List.of("cam1", "cam2", "cam3", "cam4");
+    private static final List<String> CAMERAS = List.of("cam_A", "cam_B", "cam_C", "cam_D");
 
     @Autowired
     MockMvc mvc;
@@ -306,7 +306,7 @@ class SetupSupplementIntegrationTest {
         mvc.perform(post("/api/setup-sessions/{id}/supplement-rebake", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SUPPLEMENT_REBAKE_IN_PROGRESS"));
         ObjectNode create = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        create.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        create.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         mvc.perform(post("/api/setup-sessions").with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content(create.toString()))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_ALREADY_IN_PROGRESS"))
                 .andExpect(jsonPath("$.setup_session_id").value(s.sessionId()));
@@ -831,7 +831,7 @@ class SetupSupplementIntegrationTest {
 
     private Session startSession() throws Exception {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        req.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(req.toString()))
                 .andExpect(status().isAccepted()).andReturn());
@@ -883,7 +883,7 @@ class SetupSupplementIntegrationTest {
         ObjectNode checks = node.putObject("height_checks");
         double[] heights = {2.42, 2.48, 2.45, 2.51};
         for (int i = 0; i < 4; i++) {
-            checks.putObject("cam" + (i + 1)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
+            checks.putObject(CAMERAS.get(i)).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
                     .put("difference_cm", 0.0).put("within_tolerance", true);
         }
         // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다

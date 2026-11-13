@@ -14,7 +14,7 @@ const T = 1_760_342_400_000;
 
 const clip = (change: Partial<Clip> = {}): Clip => ({
   clip_id: 'c-1',
-  camera_id: 'cam1',
+  camera_id: 'cam_A',
   resume_count: 0,
   clip_start_capture_ms: T - 20_000,
   clip_end_capture_ms: T + 20_000,
@@ -137,10 +137,10 @@ describe('클립 표시 계산', () => {
 
   it('위험 구간(재개 횟수)별로 묶고 묶음 안은 카메라 순이다', () => {
     const groups = groupClips([
-      clip({ clip_id: 'a', camera_id: 'cam3', resume_count: 1 }),
-      clip({ clip_id: 'b', camera_id: 'cam2' }),
-      clip({ clip_id: 'c', camera_id: 'cam1', resume_count: 1 }),
-      clip({ clip_id: 'd', camera_id: 'cam1' }),
+      clip({ clip_id: 'a', camera_id: 'cam_C', resume_count: 1 }),
+      clip({ clip_id: 'b', camera_id: 'cam_B' }),
+      clip({ clip_id: 'c', camera_id: 'cam_A', resume_count: 1 }),
+      clip({ clip_id: 'd', camera_id: 'cam_A' }),
     ]);
     expect(groups.map((g) => [g.resumeCount, g.clips.map((c) => c.clip_id)])).toEqual([
       [0, ['d', 'b']],

@@ -13,7 +13,7 @@
     "finished_at": 1760342401700,
     "error": {
       "code": "INPUT_FETCH_FAILED",
-      "message": "s3://simai-site/empty/cam1-0001.jpg 내려받기 실패",
+      "message": "s3://simai-site/empty/cam_A-0001.jpg 내려받기 실패",
       "retryable": true
     }
   }

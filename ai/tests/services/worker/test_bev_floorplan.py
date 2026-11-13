@@ -71,7 +71,7 @@ class FakeStore:
 @pytest.fixture
 def store() -> FakeStore:
     s = FakeStore()
-    for cam in ("cam1", "cam2", "cam3", "cam4"):
+    for cam in ("cam_A", "cam_B", "cam_C", "cam_D"):
         s.objects[f"s3://simai-site/empty/{cam}-0001.npy"] = _npy(np.full((1080, 1920, 3), 128, dtype=np.uint8))
     return s
 
@@ -85,7 +85,7 @@ def bev_input(**over) -> dict:
         "frames": [
             {"camera_id": cam, "frame_uri": f"s3://simai-site/empty/{cam}-0001.npy", "estimated_capture_time_ms": T_CAPTURE,
              "timestamp_source": "RECEIVE_ESTIMATED", "timestamp_uncertainty_ms": 25}
-            for cam in ("cam1", "cam2", "cam3", "cam4")
+            for cam in ("cam_A", "cam_B", "cam_C", "cam_D")
         ],
         "scene_version": "scene-3",
     }
@@ -116,9 +116,9 @@ def test_e2e_lease_run_upload_submit_and_result_passes_contract(ec2, run_main, s
     assert meta["calibration_version"] == r["calibration_version"] == "cal-1"
     assert r["scene_version"] is None  # 입력에 scene-3 이 있어도 정적 3D 층을 쓰지 않았다
     assert (r["purpose"], r["safety_use"]) == ("OVERVIEW_DISPLAY_ONLY", False)
-    assert r["cameras_used"] == ["cam1", "cam2", "cam3", "cam4"] and r["coverage_ratio"] > 0
+    assert r["cameras_used"] == ["cam_A", "cam_B", "cam_C", "cam_D"] and r["coverage_ratio"] > 0
     assert r["input_provenance"] == {
-        "frames": {"source": "LIVE", "camera_ids": ["cam1", "cam2", "cam3", "cam4"]},
+        "frames": {"source": "LIVE", "camera_ids": ["cam_A", "cam_B", "cam_C", "cam_D"]},
         "calibration": {"source": "G1_AUTO", "calibration_version": "cal-1"},
         "is_upper_bound": False,
     }
@@ -165,7 +165,7 @@ def test_calibration_version_must_match_input(store):
 
 
 def test_frame_size_mismatch_is_rejected(store):
-    store.objects["s3://simai-site/empty/cam1-0001.npy"] = _npy(np.zeros((10, 10, 3), dtype=np.uint8))
+    store.objects["s3://simai-site/empty/cam_A-0001.npy"] = _npy(np.zeros((10, 10, 3), dtype=np.uint8))
     with pytest.raises(JobFailed) as e:
         handler_for(store)(ctx_for(bev_input()))
     assert (e.value.code, e.value.retryable) == ("BEV_INPUT_REJECTED", False)

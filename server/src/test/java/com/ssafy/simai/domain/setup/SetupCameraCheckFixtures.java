@@ -22,16 +22,16 @@ public final class SetupCameraCheckFixtures {
                 .put("min_duration_s", 30.0).put("max_duration_s", 120.0).put("min_pair_samples", 30)
                 .put("min_pair_pass_rate", 0.75).put("max_pair_residual_median_px", 8.0).put("min_camera_views", 30)
                 .put("min_loo_samples", 20).put("max_loo_median_px", 8.0).put("min_evaluated_pairs", 3);
-        ObjectNode pair = check.putObject("pairs").putObject("cam1-cam2");
-        pair.putArray("camera_ids").add("cam1").add("cam2");
+        ObjectNode pair = check.putObject("pairs").putObject("cam_A-cam_B");
+        pair.putArray("camera_ids").add("cam_A").add("cam_B");
         pair.put("required", true).put("samples", 60).put("pass_rate", 0.95).put("residual_median_px", 2.4)
                 .put("verdict", "PASSED".equals(status) ? "PASS" : "FAIL");
-        check.putObject("cameras").putObject("cam1").put("observed_views", 120).put("loo_samples", 80)
+        check.putObject("cameras").putObject("cam_A").put("observed_views", 120).put("loo_samples", 80)
                 .put("loo_median_px", 2.1).put("loo_p95_px", 5.0).put("verdict", "PASS");
         var problems = check.putArray("problems");
         if (!"PASSED".equals(status) && !"WAITING".equals(status) && !"MEASURING".equals(status)) {
-            problems.addObject().put("kind", "PAIR").put("id", "cam1-cam2").put("reason", "PASS_RATE_LOW")
-                    .put("message", "cam1–cam2: 두 카메라가 같은 사람을 같은 위치로 보지 못했습니다");
+            problems.addObject().put("kind", "PAIR").put("id", "cam_A-cam_B").put("reason", "PASS_RATE_LOW")
+                    .put("message", "cam_A–cam_B: 두 카메라가 같은 사람을 같은 위치로 보지 못했습니다");
         }
         return check;
     }

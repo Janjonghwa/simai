@@ -14,10 +14,10 @@
       "frames": {
         "source": "LIVE",
         "camera_ids": [
-          "cam1",
-          "cam2",
-          "cam3",
-          "cam4"
+          "cam_A",
+          "cam_B",
+          "cam_C",
+          "cam_D"
         ]
       },
       "calibration": {
@@ -76,8 +76,8 @@
           0.0
         ],
         "cameras": [
-          "cam1",
-          "cam3"
+          "cam_A",
+          "cam_C"
         ],
         "skeleton": {
           "joint_layout": "COCO17",
@@ -148,8 +148,8 @@
           0.0
         ],
         "cameras": [
-          "cam1",
-          "cam3"
+          "cam_A",
+          "cam_C"
         ],
         "skeleton": {
           "joint_layout": "COCO17",

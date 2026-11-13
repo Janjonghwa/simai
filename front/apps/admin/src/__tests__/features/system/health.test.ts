@@ -4,7 +4,7 @@ import type { HealthSnapshot } from '@/store/realtime.store';
 import type { ViewerHealthMessage, ViewerHealthPayload } from '@simai/contracts';
 import { describe, expect, it } from 'vitest';
 
-// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam3 가 키프레임을 기다린다.
+// T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam_C 가 키프레임을 기다린다.
 const T = 1_760_342_400_000;
 
 function snapshot(t = T, change: Partial<ViewerHealthPayload> = {}): HealthSnapshot {
@@ -29,9 +29,9 @@ const tier0Lost = (t = T) =>
 describe('cameraRows', () => {
   it('카메라별 상태·FPS·시각 차이·손실 3종·큐 대기를 단위와 함께 만든다', () => {
     const rows = cameraRows(snapshot());
-    expect(rows.map((row) => row.id)).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
+    expect(rows.map((row) => row.id)).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     expect(rows[0]).toEqual({
-      id: 'cam1',
+      id: 'cam_A',
       status: '정상',
       ok: true,
       fps: '14.6',
@@ -50,9 +50,9 @@ describe('cameraRows', () => {
   });
 
   it('계약 예제를 칸마다 그대로 옮긴다', () => {
-    const [cam1, cam2] = cameraRows(example('viewer_health'));
-    expect(cam1).toEqual({
-      id: 'cam1',
+    const [cam_A, cam_B] = cameraRows(example('viewer_health'));
+    expect(cam_A).toEqual({
+      id: 'cam_A',
       status: '정상',
       ok: true,
       fps: '14.8',
@@ -62,13 +62,13 @@ describe('cameraRows', () => {
       skipped: '10',
       queueWaitP95: '40 ms',
     });
-    expect(cam2).toEqual({ id: 'cam2', status: '키프레임 대기', ok: false, fps: '0.0' });
+    expect(cam_B).toEqual({ id: 'cam_B', status: '키프레임 대기', ok: false, fps: '0.0' });
   });
 
   it('키프레임을 기다리는 카메라는 처리 FPS 0 을 그대로 보이고, 잴 수 없는 칸은 비운다', () => {
-    const cam3 = cameraRows(snapshot(T + 20_000)).find((row) => row.id === 'cam3');
-    expect(cam3).toEqual({
-      id: 'cam3',
+    const cam_C = cameraRows(snapshot(T + 20_000)).find((row) => row.id === 'cam_C');
+    expect(cam_C).toEqual({
+      id: 'cam_C',
       status: '키프레임 대기',
       ok: false,
       fps: '0.0',
@@ -126,21 +126,21 @@ describe('cameraRows', () => {
       tier0_health: {
         cameras: [
           {
-            id: 'cam1',
+            id: 'cam_A',
             status: 'REBOOTING',
             fps: '15',
             sync_offset_ms: 4,
             frames: { gateway_to_runpod_loss: 'x', skipped_by_policy: 3 },
           },
-          { id: 'cam2', status: 7, queue_wait_ms: 'slow', frames: 'x' },
+          { id: 'cam_B', status: 7, queue_wait_ms: 'slow', frames: 'x' },
           { id: 3, status: 'OK' },
           'x',
         ],
       },
     });
     expect(cameraRows(health)).toEqual([
-      { id: 'cam1', status: 'REBOOTING', ok: false, syncOffset: '4 ms', skipped: '3' },
-      { id: 'cam2', ok: false },
+      { id: 'cam_A', status: 'REBOOTING', ok: false, syncOffset: '4 ms', skipped: '3' },
+      { id: 'cam_B', ok: false },
     ]);
   });
 

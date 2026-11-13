@@ -125,9 +125,9 @@ class SetupZoneOpinionIntegrationTest {
                 """, prevSession, site, workUnitId, prevJob, userId, prevCalibration, prevPreview, prevScene);
         artifact(prevSession, "PREVIEW_SCENE", prevPreview, prevJob, prevLease, "s3://test/prev-preview.glb", null);
         artifact(prevSession, "SCENE", prevScene, prevJob, prevLease, "s3://test/prev-scene.glb", null);
-        artifact(prevSession, "CAMERA_FRAME", "cam1@old", prevJob, UUID.randomUUID(), prevFrame("old", "cam1"), "cam1");
-        artifact(prevSession, "CAMERA_FRAME", "cam1@aaa", prevJob, prevLease, prevFrame(prevLease.toString(), "cam1"), "cam1");
-        artifact(prevSession, "CAMERA_FRAME", "cam2@aaa", prevJob, prevLease, prevFrame(prevLease.toString(), "cam2"), "cam2");
+        artifact(prevSession, "CAMERA_FRAME", "cam_A@old", prevJob, UUID.randomUUID(), prevFrame("old", "cam_A"), "cam_A");
+        artifact(prevSession, "CAMERA_FRAME", "cam_A@aaa", prevJob, prevLease, prevFrame(prevLease.toString(), "cam_A"), "cam_A");
+        artifact(prevSession, "CAMERA_FRAME", "cam_B@aaa", prevJob, prevLease, prevFrame(prevLease.toString(), "cam_B"), "cam_B");
         // 지금 관제 구역(이어 쓴 구역)
         zone(zoneNear, "가까운 단상", "POLYGON((0 0,2 0,2 1,0 1,0 0))");
         zone(zoneFar, "먼 개구부", "POLYGON((3 3,4 3,4 4,3 4,3 3))");
@@ -183,7 +183,7 @@ class SetupZoneOpinionIntegrationTest {
         jdbc.update("UPDATE setup_session SET world_anchor = '{\"accepted\": true}'::jsonb, zone_height_changes = CAST(? AS jsonb) "
                 + "WHERE setup_session_id = ?", zoneHeightChanges().toString(), sessionId);
         artifact(sessionId, "PREVIEW_SCENE", previewScene, setupJobId, UUID.fromString(setupLease), "s3://test/preview.glb", null);
-        artifact(sessionId, "CAMERA_FRAME", "cam1@bbb", setupJobId, UUID.fromString(setupLease), afterFrame(setupJobId, setupLease), "cam1");
+        artifact(sessionId, "CAMERA_FRAME", "cam_A@bbb", setupJobId, UUID.fromString(setupLease), afterFrame(setupJobId, setupLease), "cam_A");
         jdbc.update("""
                 INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
                 VALUES (?, CAST(? AS jsonb), 1, ?, now())
@@ -216,7 +216,7 @@ class SetupZoneOpinionIntegrationTest {
         assertThat(input.get("previous_calibration_ref").asString()).isEqualTo("s3://test/cal-op-prev.json");
         assertThat(input.get("previous_calibration_hash").asString()).isEqualTo("sha256:" + "a".repeat(64));
         assertThat(input.get("previous_frames").size()).isEqualTo(2);
-        assertThat(input.at("/previous_frames/0/frame_uri").asString()).isEqualTo(prevFrame(prevLease.toString(), "cam1"));
+        assertThat(input.at("/previous_frames/0/frame_uri").asString()).isEqualTo(prevFrame(prevLease.toString(), "cam_A"));
         assertThat(input.at("/frames/0/frame_uri").asString()).isEqualTo(afterFrame(setupJobId, setupLease));
 
         // 3) 워커 결과(의견 하나 + 의견 없음 하나)를 저장한다
@@ -225,7 +225,7 @@ class SetupZoneOpinionIntegrationTest {
         ArrayNode ops = result.putArray("zone_opinions");
         ObjectNode far = ops.addObject().put("zone_id", zoneFar).put("status", "OPINION").putNull("reason")
                 .put("recommended_action", "REMOVE").put("rationale", "개구부 덮개가 덮여 바닥이 평평해졌습니다.").put("confidence", 0.7)
-                .put("camera_id", "cam1").put("model_version", "nvidia/Cosmos-Reason2-2B").put("prompt_version", "vlm-zone-opinion-1.0");
+                .put("camera_id", "cam_A").put("model_version", "nvidia/Cosmos-Reason2-2B").put("prompt_version", "vlm-zone-opinion-1.0");
         far.putArray("before_crop_box_norm").add(0.1).add(0.2).add(0.5).add(0.6);
         far.putArray("after_crop_box_norm").add(0.12).add(0.2).add(0.52).add(0.6);
         ops.addObject().put("zone_id", zoneNear).put("status", "NO_OPINION").put("reason", "NOT_VISIBLE")
@@ -241,11 +241,11 @@ class SetupZoneOpinionIntegrationTest {
         JsonNode farOp = itemOf(view, zoneFar).get("ai_opinion");
         assertThat(farOp.get("status").asString()).isEqualTo("OPINION");
         assertThat(farOp.get("recommended_action").asString()).isEqualTo("REMOVE");
-        assertThat(farOp.get("camera_id").asString()).isEqualTo("cam1");
+        assertThat(farOp.get("camera_id").asString()).isEqualTo("cam_A");
         assertThat(farOp.at("/before/image_url").asString())
-                .isEqualTo("https://storage.test/job-objects/site_setup/" + prevJob + "/" + prevLease + "/frame-cam1.jpg");
+                .isEqualTo("https://storage.test/job-objects/site_setup/" + prevJob + "/" + prevLease + "/frame-cam_A.jpg");
         assertThat(farOp.at("/after/image_url").asString())
-                .isEqualTo("https://storage.test/job-objects/site_setup/" + setupJobId + "/" + setupLease + "/frame-cam1.jpg");
+                .isEqualTo("https://storage.test/job-objects/site_setup/" + setupJobId + "/" + setupLease + "/frame-cam_A.jpg");
         assertThat(farOp.at("/before/crop_box_norm/2").asDouble()).isEqualTo(0.5);
         assertThat(farOp.get("image_expires_at_ms").isNumber()).isTrue();
         JsonNode nearOp = itemOf(view, zoneNear).get("ai_opinion");
@@ -283,7 +283,7 @@ class SetupZoneOpinionIntegrationTest {
     @Test
     void 콜백_의견_항목의_모양을_먼저_본다() {
         ObjectNode ok = mapper.createObjectNode().put("zone_id", "z").put("status", "NO_OPINION").put("reason", "VLM_FAILED")
-                .putNull("recommended_action").putNull("rationale").putNull("confidence").put("camera_id", "cam1")
+                .putNull("recommended_action").putNull("rationale").putNull("confidence").put("camera_id", "cam_A")
                 .putNull("model_version").put("prompt_version", "p");
         ok.putArray("before_crop_box_norm").add(0.1).add(0.1).add(0.4).add(0.4);
         ok.putArray("after_crop_box_norm").add(0.1).add(0.1).add(0.4).add(0.4);
@@ -341,7 +341,7 @@ class SetupZoneOpinionIntegrationTest {
     }
 
     private static String afterFrame(String jobId, String lease) {
-        return "s3://test/job-objects/site_setup/" + jobId + "/" + lease + "/frame-cam1.jpg";
+        return "s3://test/job-objects/site_setup/" + jobId + "/" + lease + "/frame-cam_A.jpg";
     }
 
     private void artifact(UUID session, String kind, String version, String jobId, UUID lease, String uri, String camera) {
@@ -375,7 +375,7 @@ class SetupZoneOpinionIntegrationTest {
 
     private ObjectNode createRequest() {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        req.putObject("camera_heights_m").put("cam1", 2.42).put("cam2", 2.48).put("cam3", 2.45).put("cam4", 2.51);
+        req.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", 2.48).put("cam_C", 2.45).put("cam_D", 2.51);
         return req;
     }
 
@@ -383,7 +383,7 @@ class SetupZoneOpinionIntegrationTest {
         ObjectNode node = mapper.createObjectNode().put("setup_session_id", sessionId.toString()).put("status", stage)
                 .put("progress_pct", pct);
         ObjectNode checks = node.putObject("height_checks");
-        Map<String, Double> heights = Map.of("cam1", 2.42, "cam2", 2.48, "cam3", 2.45, "cam4", 2.51);
+        Map<String, Double> heights = Map.of("cam_A", 2.42, "cam_B", 2.48, "cam_C", 2.45, "cam_D", 2.51);
         heights.forEach((cam, h) -> checks.putObject(cam).put("input_height_m", h).put("restored_height_m", h)
                 .put("difference_cm", 0.0).put("within_tolerance", true));
         return node;

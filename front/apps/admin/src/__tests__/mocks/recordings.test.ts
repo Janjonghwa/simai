@@ -23,11 +23,11 @@ const viewer = createHttp({ baseUrl: BASE, getToken: () => 'mock-token.viewer' }
 describe('recordingSegments', () => {
   it('끝난 작업의 작업 구간만 카메라마다 이어진 5분 조각으로 나눈다', () => {
     const segments = recordingSegments([done]);
-    const cam1 = segments.filter((s) => s.camera_id === 'cam1');
-    expect(cam1[0]!.segment_start_capture_ms).toBe(done.actual_started_at);
-    expect(cam1.at(-1)!.segment_end_capture_ms).toBe(done.actual_ended_at);
-    for (let i = 1; i < cam1.length; i++) {
-      expect(cam1[i]!.segment_start_capture_ms).toBe(cam1[i - 1]!.segment_end_capture_ms);
+    const cam_A = segments.filter((s) => s.camera_id === 'cam_A');
+    expect(cam_A[0]!.segment_start_capture_ms).toBe(done.actual_started_at);
+    expect(cam_A.at(-1)!.segment_end_capture_ms).toBe(done.actual_ended_at);
+    for (let i = 1; i < cam_A.length; i++) {
+      expect(cam_A[i]!.segment_start_capture_ms).toBe(cam_A[i - 1]!.segment_end_capture_ms);
     }
     expect(new Set(segments.map((s) => s.camera_id)).size).toBe(4);
     expect(segments.every((s) => s.container === 'mp4' && s.origin === 'GATEWAY_RECORDING')).toBe(
@@ -41,7 +41,7 @@ describe('GET /api/videos mock', () => {
   it('관리자는 작업 구간과 겹치는 조각 목록과 mp4 재생 주소를 받는다', async () => {
     const from = done.actual_started_at! + 60_000;
     const { segments } = await requestVideoSegments(admin, { from, to: from + 1_000 });
-    expect(segments.map((s) => s.camera_id).sort()).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
+    expect(segments.map((s) => s.camera_id).sort()).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     const url = await requestVideoUrl(admin, segments[0]!.segment_id);
     expect(url.container).toBe('mp4');
     expect(url.url).toBe('blob:test-mp4');

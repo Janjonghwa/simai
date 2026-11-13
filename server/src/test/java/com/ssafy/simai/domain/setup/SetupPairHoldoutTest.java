@@ -15,7 +15,7 @@ class SetupPairHoldoutTest {
     /** 계약 필수 칸만 채운 metrics.joint_ba */
     private static ObjectNode jointBa() {
         return MAPPER.createObjectNode()
-                .put("anchor_camera_id", "cam1").put("converged", true).put("stage_seconds", 3.0).put("valid_points", 10);
+                .put("anchor_camera_id", "cam_A").put("converged", true).put("stage_seconds", 3.0).put("valid_points", 10);
     }
 
     private static ObjectNode root(ObjectNode jointBa) {
@@ -35,7 +35,7 @@ class SetupPairHoldoutTest {
         ObjectNode pair = jointBa.putObject("pair_holdout").putObject("cam_a-cam-b");
         pair.set("before", stats(2.0));
         pair.set("after", stats(1.0).putNull("p95"));
-        jointBa.putObject("pair_holdout_median_px").put("cam_a-cam-b", 1.0).putNull("cam3-cam4");
+        jointBa.putObject("pair_holdout_median_px").put("cam_a-cam-b", 1.0).putNull("cam_C-cam_D");
 
         JsonNode out = MAPPER.readTree(SetupPairHoldout.fromSnapshot(MAPPER, root(jointBa)));
         assertThat(out.get("holdout_worsening_tolerance_px").asDouble()).isEqualTo(1.0);
@@ -44,19 +44,19 @@ class SetupPairHoldoutTest {
         assertThat(out.at("/pairs/cam_a-cam-b/before/n").asInt()).isEqualTo(30);
         assertThat(out.at("/pairs/cam_a-cam-b/after/p95").isNull()).isTrue();
         assertThat(out.at("/pairs/cam_a-cam-b/median_px").asDouble()).isEqualTo(1.0);
-        assertThat(out.at("/pairs/cam3-cam4/before").isNull()).isTrue();
-        assertThat(out.at("/pairs/cam3-cam4/after").isNull()).isTrue();
-        assertThat(out.at("/pairs/cam3-cam4/median_px").isNull()).isTrue();
+        assertThat(out.at("/pairs/cam_C-cam_D/before").isNull()).isTrue();
+        assertThat(out.at("/pairs/cam_C-cam_D/after").isNull()).isTrue();
+        assertThat(out.at("/pairs/cam_C-cam_D/median_px").isNull()).isTrue();
     }
 
     @Test
     void 중앙값만_온_옛_스냅샷도_받고_허용_오차가_없으면_null_이다() {
         ObjectNode jointBa = jointBa();
-        jointBa.putObject("pair_holdout_median_px").put("cam1-cam2", 0.8);
+        jointBa.putObject("pair_holdout_median_px").put("cam_A-cam_B", 0.8);
         JsonNode out = MAPPER.readTree(SetupPairHoldout.fromSnapshot(MAPPER, root(jointBa)));
         assertThat(out.get("holdout_worsening_tolerance_px").isNull()).isTrue();
-        assertThat(out.at("/pairs/cam1-cam2/median_px").asDouble()).isEqualTo(0.8);
-        assertThat(out.at("/pairs/cam1-cam2/before").isNull()).isTrue();
+        assertThat(out.at("/pairs/cam_A-cam_B/median_px").asDouble()).isEqualTo(0.8);
+        assertThat(out.at("/pairs/cam_A-cam_B/before").isNull()).isTrue();
     }
 
     @Test
@@ -69,23 +69,23 @@ class SetupPairHoldoutTest {
         assertThat(SetupPairHoldout.fromSnapshot(MAPPER, root(emptyPairs))).isNull();
 
         ObjectNode negative = jointBa();
-        ObjectNode pair = negative.putObject("pair_holdout").putObject("cam1-cam2");
+        ObjectNode pair = negative.putObject("pair_holdout").putObject("cam_A-cam_B");
         pair.set("before", stats(1.0));
         pair.set("after", stats(1.0).put("median", -1.0));
         assertThat(SetupPairHoldout.fromSnapshot(MAPPER, root(negative))).isNull();
 
         ObjectNode missingAfter = jointBa();
-        missingAfter.putObject("pair_holdout").putObject("cam1-cam2").set("before", stats(1.0));
+        missingAfter.putObject("pair_holdout").putObject("cam_A-cam_B").set("before", stats(1.0));
         assertThat(SetupPairHoldout.fromSnapshot(MAPPER, root(missingAfter))).isNull();
 
         ObjectNode fractionalCount = jointBa();
-        ObjectNode p2 = fractionalCount.putObject("pair_holdout").putObject("cam1-cam2");
+        ObjectNode p2 = fractionalCount.putObject("pair_holdout").putObject("cam_A-cam_B");
         p2.set("before", stats(1.0).put("n", 1.5));
         p2.set("after", stats(1.0));
         assertThat(SetupPairHoldout.fromSnapshot(MAPPER, root(fractionalCount))).isNull();
 
         ObjectNode badMedian = jointBa();
-        badMedian.putObject("pair_holdout_median_px").put("cam1-cam2", "1.0");
+        badMedian.putObject("pair_holdout_median_px").put("cam_A-cam_B", "1.0");
         assertThat(SetupPairHoldout.fromSnapshot(MAPPER, root(badMedian))).isNull();
     }
 }

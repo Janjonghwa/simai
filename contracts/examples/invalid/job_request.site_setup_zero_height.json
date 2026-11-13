@@ -20,17 +20,17 @@
       "work_unit_id": 12,
       "site_id": "classroom-1",
       "camera_heights_m": {
-        "cam1": 0,
-        "cam2": 1.5,
-        "cam3": 1.5,
-        "cam4": 1.5
+        "cam_A": 0,
+        "cam_B": 1.5,
+        "cam_C": 1.5,
+        "cam_D": 1.5
       },
       "calibration_target": {
         "camera_ids": [
-          "cam1",
-          "cam2",
-          "cam3",
-          "cam4"
+          "cam_A",
+          "cam_B",
+          "cam_C",
+          "cam_D"
         ],
         "method": "BACKGROUND_JOINT_BA_V2",
         "world_frame": "AUTO_FLOOR_Z_UP_METERS"

@@ -22,7 +22,7 @@ const WORKERS = [
 ] as const;
 
 /** 작업자를 관측하는 카메라. */
-const TRACK_CAMERAS: readonly CameraId[] = ['cam1', 'cam2', 'cam3'];
+const TRACK_CAMERAS: readonly CameraId[] = ['cam_A', 'cam_B', 'cam_C'];
 /** 마지막 유효 관측이 보낸 시각보다 늦은 만큼(ms). 트랙의 frame_age_ms 와 같다. */
 const FRAME_AGE_MS = 140;
 /** 골반·머리 높이(m). */

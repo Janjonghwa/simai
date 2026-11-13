@@ -41,7 +41,7 @@ const hash: UploadQueueDeps['hash'] = () => Promise.resolve(null);
 async function completedSession(): Promise<string> {
   const created = await createSetupSession(api, {
     work_unit_id: 1,
-    camera_heights_m: { cam1: 2.4 },
+    camera_heights_m: { cam_A: 2.4 },
   });
   mock.updateSession(created.setup_session_id, {
     status: 'COMPLETED',
@@ -146,7 +146,7 @@ describe('맵 보강 촬영 훅 + mock', () => {
   it('정식 맵 굽기 중에는 올릴 수 있지만 다시 굽기는 막히고, 빼기·취소가 된다', async () => {
     const created = await createSetupSession(api, {
       work_unit_id: 1,
-      camera_heights_m: { cam1: 2.4 },
+      camera_heights_m: { cam_A: 2.4 },
     });
     const id = created.setup_session_id;
     mock.updateSession(id, {

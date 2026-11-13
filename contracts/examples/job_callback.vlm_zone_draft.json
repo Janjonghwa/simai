@@ -45,7 +45,7 @@
           "recommended_severity": "HIGH",
           "rationale": "바닥(Z=0) 대비 약 0.75m 높이의 수평 상판이 관측되어 작업대 추락 주의 구역으로 제안합니다.",
           "vlm_status": "VLM",
-          "evidence_cameras": ["cam1", "cam2"],
+          "evidence_cameras": ["cam_A", "cam_B"],
           "confidence": 0.86
         },
         {
@@ -67,7 +67,7 @@
           "recommended_severity": "CRITICAL",
           "rationale": "바닥면 내부에 주변 Z=0 평면보다 낮은 빈 영역이 검출되어 개구부 추락 위험(CRITICAL) 구역으로 제안합니다.",
           "vlm_status": "VLM",
-          "evidence_cameras": ["cam1"],
+          "evidence_cameras": ["cam_A"],
           "confidence": 0.91
         }
       ]

@@ -136,8 +136,8 @@ describe('AppliedStatusCard', () => {
     data.scene = { ok: true, raw: {} };
     data.zonesRaw = [];
     data.zoneCount = 5;
-    data.cameras = [{ id: 'cam1' }, { id: 'cam2' }, { id: 'cam3' }, { id: 'cam4' }];
-    data.down = ['cam2', 'cam4'];
+    data.cameras = [{ id: 'cam_A' }, { id: 'cam_B' }, { id: 'cam_C' }, { id: 'cam_D' }];
+    data.down = ['cam_B', 'cam_D'];
     render(<AppliedStatusCard />);
     expect(screen.getByRole('heading', { name: '관제 적용 상태' })).toBeTruthy();
     expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual([

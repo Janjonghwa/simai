@@ -20,9 +20,9 @@
     "tilt_deg": 4.584,
     "max_tilt_deg": -3.0,
     "used_cameras": [
-      "cam1",
-      "cam2",
-      "cam3"
+      "cam_A",
+      "cam_B",
+      "cam_C"
     ],
     "observation_sources": [
       "POINTCLOUD_FLOOR_RANSAC",
@@ -30,21 +30,21 @@
     ],
     "estimation_method": "UNCONSTRAINED_GUESS",
     "residuals_before_cm": {
-      "cam1": -12.0,
-      "cam2": 4.0,
-      "cam3": 8.0
+      "cam_A": -12.0,
+      "cam_B": 4.0,
+      "cam_C": 8.0
     },
     "residuals_after_cm": {
-      "cam1": -12.0,
-      "cam2": 4.0,
-      "cam3": 8.0
+      "cam_A": -12.0,
+      "cam_B": 4.0,
+      "cam_C": 8.0
     },
     "rejection_reason": "기울기 보정량 4.58° > 상한 3.00°"
   },
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
-      "camera_id": "cam1",
+      "camera_id": "cam_A",
       "image_size": [
         1920,
         1080

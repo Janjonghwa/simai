@@ -81,7 +81,7 @@ class _ScriptedTransport:
 
 def _make_synthetic_room_and_tracks(
     *,
-    camera_ids: tuple[str, ...] = ("cam1", "cam2", "cam3", "cam4"),
+    camera_ids: tuple[str, ...] = ("cam_A", "cam_B", "cam_C", "cam_D"),
     restored_heights_m: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, dict[str, CameraPose], dict[str, dict[str, Any]], dict[str, Any]]:
     """바닥(Z=0)과 두 수직 벽(X=0, Y=0) 점구름 + 4대 카메라 포즈 + 2-view 배경 특징점 트랙."""
@@ -331,8 +331,8 @@ def test_site_setup_worker_e2e_stage_heartbeats_and_callback_contract() -> None:
 def test_site_setup_height_mismatch_marks_camera_out_of_tolerance() -> None:
     req_msg = load_example("job_request.site_setup.json")
     camera_ids = tuple(req_msg["payload"]["input"]["calibration_target"]["camera_ids"])
-    # cam2 의 실제 높이가 1.59m 로 입력(1.50m)과 +9cm 차이(> ±5cm 허용 오차)가 나도록 설정
-    restored = {"cam1": 1.49, "cam2": 1.59, "cam3": 1.48, "cam4": 1.47}
+    # cam_B 의 실제 높이가 1.59m 로 입력(1.50m)과 +9cm 차이(> ±5cm 허용 오차)가 나도록 설정
+    restored = {"cam_A": 1.49, "cam_B": 1.59, "cam_C": 1.48, "cam_D": 1.47}
     points_m, unscaled_poses, intrinsics_by_cam, tracks_doc = _make_synthetic_room_and_tracks(
         camera_ids=camera_ids,
         restored_heights_m=restored,
@@ -369,9 +369,9 @@ def test_site_setup_height_mismatch_marks_camera_out_of_tolerance() -> None:
     result = handler(ctx)
     assert schema_errors(result, {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/result"}) == []
     hc = result["height_checks"]
-    assert hc["cam2"]["within_tolerance"] is False
-    assert hc["cam2"]["difference_cm"] > 5.0
-    assert hc["cam1"]["within_tolerance"] is True
+    assert hc["cam_B"]["within_tolerance"] is False
+    assert hc["cam_B"]["difference_cm"] > 5.0
+    assert hc["cam_A"]["within_tolerance"] is True
 
 
 def test_site_setup_failures_and_deterministic_retry() -> None:
@@ -389,7 +389,7 @@ def test_site_setup_failures_and_deterministic_retry() -> None:
         if not state["ready"]:
             return CleanBackgroundBundle(
                 bundle_id="bundle-incomplete",
-                collection_pct_by_cam={"cam1": 100.0, "cam2": 60.0, "cam3": 100.0, "cam4": 100.0},
+                collection_pct_by_cam={"cam_A": 100.0, "cam_B": 60.0, "cam_C": 100.0, "cam_D": 100.0},
                 tracks_doc=tracks_doc,
             )
         return CleanBackgroundBundle(
@@ -1240,7 +1240,7 @@ def test_quality_gate_height_mismatch_fails_with_problem_camera_snapshot() -> No
     끝내기 전 스냅샷에 문제 카메라·사유를 실은 quality_gate(FAILED)를 보낸다(서버가 세션 조회에 싣는다)."""
     req_msg = load_example("job_request.site_setup.json")
     camera_ids = tuple(req_msg["payload"]["input"]["calibration_target"]["camera_ids"])
-    restored = {"cam1": 1.49, "cam2": 1.59, "cam3": 1.48, "cam4": 1.47}
+    restored = {"cam_A": 1.49, "cam_B": 1.59, "cam_C": 1.48, "cam_D": 1.47}
     points_m, unscaled_poses, intrinsics_by_cam, tracks_doc = _make_synthetic_room_and_tracks(
         camera_ids=camera_ids, restored_heights_m=restored)
     published: list[Any] = []
@@ -1257,15 +1257,15 @@ def test_quality_gate_height_mismatch_fails_with_problem_camera_snapshot() -> No
     ctx = JobContext("job-qg", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, req_msg["payload"]["input"])
     with pytest.raises(JobFailed) as exc:
         handler(ctx)
-    assert exc.value.code == "VALIDATION_REJECTED" and "cam2" in exc.value.message
+    assert exc.value.code == "VALIDATION_REJECTED" and "cam_B" in exc.value.message
     assert published == []  # 기준 미달 보정은 등록하지 않는다
     last = ctx.site_setup_history[-1]
     assert schema_errors(last, _PROGRESS) == []
     assert last["status"] == "JOINT_BA_AND_VERIFY" and "calibration_version" not in last
     gate = last["quality_gate"]
     assert gate["verdict"] == "FAILED"
-    assert gate["cameras"]["cam2"]["verdict"] == "FAIL" and gate["cameras"]["cam2"]["reason"] == "HEIGHT_MISMATCH"
-    assert any(p["kind"] == "CAMERA" and p["id"] == "cam2" and p["reason"] == "HEIGHT_MISMATCH" for p in gate["problems"])
+    assert gate["cameras"]["cam_B"]["verdict"] == "FAIL" and gate["cameras"]["cam_B"]["reason"] == "HEIGHT_MISMATCH"
+    assert any(p["kind"] == "CAMERA" and p["id"] == "cam_B" and p["reason"] == "HEIGHT_MISMATCH" for p in gate["problems"])
 
 
 def test_quality_gate_unit_rules() -> None:

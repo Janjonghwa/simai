@@ -14,33 +14,33 @@
       "progress_pct": 85,
       "mode": "FULL_SETUP",
       "background_collection_pct": {
-        "cam1": 100,
-        "cam2": 100,
-        "cam3": 100,
-        "cam4": 100
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
       },
       "calibration_version": "cal-lobby-init-63000000-jba2-5a3c9e01",
       "preview_scene_version": "scene-preview-job-20261112-0630-0192a6f0-7c1e-7b3a-9f2d-00000000063b",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam2": {
+        "cam_B": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam3": {
+        "cam_C": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,
           "within_tolerance": true
         },
-        "cam4": {
+        "cam_D": {
           "input_height_m": 2.44,
           "restored_height_m": 2.451,
           "difference_cm": 1.1,

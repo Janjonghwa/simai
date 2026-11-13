@@ -13,10 +13,10 @@
       "status": "PREVIEW_AND_VLM_DRAFT",
       "progress_pct": 80,
       "background_collection_pct": {
-        "cam1": 100,
-        "cam2": 100,
-        "cam3": 100,
-        "cam4": 100
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
       },
       "artifacts": {
         "floor_coverage": {
@@ -37,25 +37,25 @@
       },
       "preview_scene_version": "scene-preview-job-20261017-0041-0192a6f0",
       "height_checks": {
-        "cam1": {
+        "cam_A": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam2": {
+        "cam_B": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam3": {
+        "cam_C": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,
           "within_tolerance": true
         },
-        "cam4": {
+        "cam_D": {
           "input_height_m": 2.4,
           "restored_height_m": 2.41,
           "difference_cm": 1.0,

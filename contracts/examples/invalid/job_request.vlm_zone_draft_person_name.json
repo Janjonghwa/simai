@@ -23,8 +23,8 @@
       "person_name": "홍길동",
       "frames": [
         {
-          "camera_id": "cam1",
-          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam1.jpg",
+          "camera_id": "cam_A",
+          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam_A.jpg",
           "face_policy": "OBSERVED"
         }
       ]

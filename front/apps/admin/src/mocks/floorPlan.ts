@@ -95,7 +95,7 @@ function floorPlanBody(state: FloorPlanMockState, now: number, image: string, ge
       ],
       world_bounds: { min_xy: [...MIN_XY], max_xy: [...MAX_XY] },
     },
-    cameras_used: ['cam1', 'cam2', 'cam3'],
+    cameras_used: ['cam_A', 'cam_B', 'cam_C'],
     cameras_skipped: {},
     coverage_ratio: 0.82,
     room_outline: {

@@ -45,7 +45,7 @@ afterEach(() => {
 async function sessionAt(status: SetupSessionResponse['status']): Promise<string> {
   const created = await createSetupSession(api, {
     work_unit_id: 1,
-    camera_heights_m: { cam1: 2.4 },
+    camera_heights_m: { cam_A: 2.4 },
   });
   mock.updateSession(created.setup_session_id, {
     status,

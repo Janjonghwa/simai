@@ -107,8 +107,8 @@ def test_contract_example_gives_contract_result():
     call = vlm.calls[0]
     assert call["response_format"] == RESPONSE_FORMAT and "등급을 내리거나" in call["system"]
     # 촬영 시각 순: 직전 프레임(-3.1초) → 이벤트 시점 프레임
-    assert [f.source for f in call["frames"]] == ["s3://simai-events/0192a6f0/cam1-10249-blur.jpg",
-                                                  "s3://simai-events/0192a6f0/cam1-10324-blur.jpg"]
+    assert [f.source for f in call["frames"]] == ["s3://simai-events/0192a6f0/cam_A-10249-blur.jpg",
+                                                  "s3://simai-events/0192a6f0/cam_A-10324-blur.jpg"]
     assert "-3.1초" in call["prompt"] and "+0.0초" in call["prompt"] and "R2(개구부·가장자리 근접)" in call["prompt"]
     assert "edge_distance_m=1.4" in call["prompt"] and "머리 높이 1.68 m" in call["prompt"]
 
@@ -162,7 +162,7 @@ def test_critical_event_never_gets_opinion(proposed, caplog):
 
 def test_frames_after_observation_time_are_dropped():
     inp = _input()
-    later = dict(inp["frames"][0], frame_uri="s3://simai-events/0192a6f0/cam1-10400-blur.jpg",
+    later = dict(inp["frames"][0], frame_uri="s3://simai-events/0192a6f0/cam_A-10400-blur.jpg",
                  estimated_capture_time_ms=inp["observation_time"] + 2000)
     inp["frames"].append(later)
     vlm = FakeVlm(_answer())

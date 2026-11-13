@@ -141,10 +141,10 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.height_tolerance_cm").value(5.0))
                 .andExpect(jsonPath("$.all_present").value(false))
                 .andReturn());
-        assertThat(initial.at("/camera_heights_m/cam1").isNull()).isTrue();
-        assertThat(initial.at("/camera_heights_m/cam2").isNull()).isTrue();
-        assertThat(initial.at("/camera_heights_m/cam3").isNull()).isTrue();
-        assertThat(initial.at("/camera_heights_m/cam4").isNull()).isTrue();
+        assertThat(initial.at("/camera_heights_m/cam_A").isNull()).isTrue();
+        assertThat(initial.at("/camera_heights_m/cam_B").isNull()).isTrue();
+        assertThat(initial.at("/camera_heights_m/cam_C").isNull()).isTrue();
+        assertThat(initial.at("/camera_heights_m/cam_D").isNull()).isTrue();
 
         // 기본값도 없고 요청에도 높이가 없으면 400 CAMERA_HEIGHT_REQUIRED
         ObjectNode emptyReq = mapper.createObjectNode().put("work_unit_id", workUnitId);
@@ -155,7 +155,7 @@ class SetupSessionIntegrationTest {
 
         // 0 이하 높이 또는 존재하지 않는 카메라 ID는 400 INVALID_SETUP_REQUEST(저장되지 않음)
         ObjectNode zeroReq = mapper.createObjectNode().put("work_unit_id", workUnitId);
-        zeroReq.putObject("camera_heights_m").put("cam1", 0.0).put("cam2", 2.4).put("cam3", 2.4).put("cam4", 2.4);
+        zeroReq.putObject("camera_heights_m").put("cam_A", 0.0).put("cam_B", 2.4).put("cam_C", 2.4).put("cam_D", 2.4);
         mvc.perform(post("/api/setup-sessions").with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(zeroReq.toString()))
                 .andExpect(status().isBadRequest())
@@ -172,10 +172,10 @@ class SetupSessionIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.all_present").value(true))
                 .andReturn());
-        assertThat(savedDefaults.at("/camera_heights_m/cam1").doubleValue()).isEqualTo(2.42);
-        assertThat(savedDefaults.at("/camera_heights_m/cam2").doubleValue()).isEqualTo(2.48);
-        assertThat(savedDefaults.at("/camera_heights_m/cam3").doubleValue()).isEqualTo(2.45);
-        assertThat(savedDefaults.at("/camera_heights_m/cam4").doubleValue()).isEqualTo(2.51);
+        assertThat(savedDefaults.at("/camera_heights_m/cam_A").doubleValue()).isEqualTo(2.42);
+        assertThat(savedDefaults.at("/camera_heights_m/cam_B").doubleValue()).isEqualTo(2.48);
+        assertThat(savedDefaults.at("/camera_heights_m/cam_C").doubleValue()).isEqualTo(2.45);
+        assertThat(savedDefaults.at("/camera_heights_m/cam_D").doubleValue()).isEqualTo(2.51);
 
         // 이제 워커를 등록하고 camera_heights_m 없이(저장된 기본값 사용) 세션을 시작하면 202 Accepted
         registerWorkers();
@@ -186,7 +186,7 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.progress_pct").value(0.0))
                 .andReturn());
         String sessionId = created.get("setup_session_id").asString();
-        assertThat(created.at("/camera_heights_m/cam1").doubleValue()).isEqualTo(2.42);
+        assertThat(created.at("/camera_heights_m/cam_A").doubleValue()).isEqualTo(2.42);
 
         // 같은 현장에 진행 중인 세션이 있으면 두 번째 생성은 409 SETUP_ALREADY_IN_PROGRESS
         mvc.perform(post("/api/setup-sessions").with(adminJwt())
@@ -261,15 +261,15 @@ class SetupSessionIntegrationTest {
         // 1) COLLECTING_BACKGROUND 하트비트
         ObjectNode snap1 = progressSnapshot(sessionId, "COLLECTING_BACKGROUND", 25.0);
         snap1.putObject("background_collection_pct")
-                .put("cam1", 100.0).put("cam2", 80.0).put("cam3", 90.0).put("cam4", 75.0);
+                .put("cam_A", 100.0).put("cam_B", 80.0).put("cam_C", 90.0).put("cam_D", 75.0);
         mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, leaseA, 0.25, snap1))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.payload.status").value("ACTIVE"));
 
-        // 2) JOINT_BA_AND_VERIFY 하트비트 + 높이 검사(cam2 가 +7.0 cm 로 허용치 5 cm 초과) + 삼각콘·개구부 표지판 교차 확인
+        // 2) JOINT_BA_AND_VERIFY 하트비트 + 높이 검사(cam_B 가 +7.0 cm 로 허용치 5 cm 초과) + 삼각콘·개구부 표지판 교차 확인
         ObjectNode snap2 = progressSnapshot(sessionId, "JOINT_BA_AND_VERIFY", 55.0);
         snap2.putObject("background_collection_pct")
-                .put("cam1", 100.0).put("cam2", 100.0).put("cam3", 100.0).put("cam4", 100.0);
+                .put("cam_A", 100.0).put("cam_B", 100.0).put("cam_C", 100.0).put("cam_D", 100.0);
         snap2.set("height_checks", heightChecks(2.42, 2.40, -2.0, true,
                 2.48, 2.55, 7.0, false,
                 2.45, 2.46, 1.0, true,
@@ -287,10 +287,10 @@ class SetupSessionIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("JOINT_BA_AND_VERIFY"))
                 .andExpect(jsonPath("$.progress_pct").value(55.0))
-                .andExpect(jsonPath("$.height_checks.cam2.within_tolerance").value(false))
+                .andExpect(jsonPath("$.height_checks.cam_B.within_tolerance").value(false))
                 .andReturn());
-        assertThat(midView.at("/height_checks/cam2/guidance").asString())
-                .isEqualTo("카메라 cam2 높이가 7.0 cm 안 맞음 — 거치대 확인");
+        assertThat(midView.at("/height_checks/cam_B/guidance").asString())
+                .isEqualTo("카메라 cam_B 높이가 7.0 cm 안 맞음 — 거치대 확인");
         assertThat(midView.get("height_warnings")).hasSize(1);
         assertThat(midView.at("/object_cross_checks/0/kind").asString()).isEqualTo("TRAFFIC_CONE");
 
@@ -327,7 +327,7 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.code").value("SETUP_RETRY_NOT_ALLOWED"));
 
         // 워커가 최종 실패(retryable=false)를 보고하면 세션이 FAILED 가 되고 실패 사유가 기록되지만 기본 높이는 보존된다
-        mvc.perform(submitCallback(tokenB, workerB, failedCallback(jobId, leaseB, "BA_DIVERGED", "카메라 cam2 거치대 흔들림")))
+        mvc.perform(submitCallback(tokenB, workerB, failedCallback(jobId, leaseB, "BA_DIVERGED", "카메라 cam_B 거치대 흔들림")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.payload.status").value("ACCEPTED"));
 
@@ -335,15 +335,15 @@ class SetupSessionIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("FAILED"))
                 .andExpect(jsonPath("$.failure_code").value("BA_DIVERGED"))
-                .andExpect(jsonPath("$.failure_message").value("카메라 cam2 거치대 흔들림"));
+                .andExpect(jsonPath("$.failure_message").value("카메라 cam_B 거치대 흔들림"));
 
         mvc.perform(get("/api/setup-sessions/camera-height-defaults").with(adminJwt()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.camera_heights_m.cam2").value(2.48));
+                .andExpect(jsonPath("$.camera_heights_m.cam_B").value(2.48));
 
-        // 실패한 세션을 cam2 높이만 2.55 m 로 고쳐 retry 하면 새 세션이 만들어지고 기본값도 2.55 m 로 갱신된다
+        // 실패한 세션을 cam_B 높이만 2.55 m 로 고쳐 retry 하면 새 세션이 만들어지고 기본값도 2.55 m 로 갱신된다
         ObjectNode retryBody = mapper.createObjectNode();
-        retryBody.putObject("camera_heights_m").put("cam2", 2.55);
+        retryBody.putObject("camera_heights_m").put("cam_B", 2.55);
         JsonNode retried = body(mvc.perform(post("/api/setup-sessions/{id}/retry", sessionId).with(adminJwt())
                         .contentType(MediaType.APPLICATION_JSON).content(retryBody.toString()))
                 .andExpect(status().isAccepted())
@@ -352,8 +352,8 @@ class SetupSessionIntegrationTest {
                 .andReturn());
         String retrySessionId = retried.get("setup_session_id").asString();
         String retryJobId = retried.get("job_id").asString();
-        assertThat(retried.at("/camera_heights_m/cam1").doubleValue()).isEqualTo(2.42);
-        assertThat(retried.at("/camera_heights_m/cam2").doubleValue()).isEqualTo(2.55);
+        assertThat(retried.at("/camera_heights_m/cam_A").doubleValue()).isEqualTo(2.42);
+        assertThat(retried.at("/camera_heights_m/cam_B").doubleValue()).isEqualTo(2.55);
 
         // 재시도 작업을 대여받아 READY_FOR_ZONES → COMPLETED 까지 완료
         String retryLease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
@@ -549,13 +549,13 @@ class SetupSessionIntegrationTest {
             // 4) 배경 수집 하트비트: 덜 모인 카메라만 싣는다
             ObjectNode snap = progressSnapshot(sessionId, "COLLECTING_BACKGROUND", 10.0);
             snap.putObject("background_collection_pct")
-                    .put("cam1", 100.0).put("cam2", 100.0).put("cam3", 15.0).put("cam4", 100.0);
+                    .put("cam_A", 100.0).put("cam_B", 100.0).put("cam_C", 15.0).put("cam_D", 100.0);
             mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.1, snap)).andExpect(status().isOk());
             JsonNode collecting = body(mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
                     .andExpect(status().isOk()).andReturn());
             assertThat(collecting.at("/wait_reason/code").asString()).isEqualTo("BACKGROUND_INCOMPLETE");
             assertThat(collecting.at("/wait_reason/cameras")).hasSize(1);
-            assertThat(collecting.at("/wait_reason/cameras/0/camera_id").asString()).isEqualTo("cam3");
+            assertThat(collecting.at("/wait_reason/cameras/0/camera_id").asString()).isEqualTo("cam_C");
             assertThat(collecting.at("/wait_reason/cameras/0/collection_pct").asDouble()).isEqualTo(15.0);
 
             // 5) 워커가 Tier 0 우선으로 반납하고 그 뒤 대여를 묻지 않는다 → 워커 근거
@@ -652,13 +652,13 @@ class SetupSessionIntegrationTest {
         }
     }
 
-    private ObjectNode createRequest(double cam1, double cam2, double cam3, double cam4) {
+    private ObjectNode createRequest(double cam_A, double cam_B, double cam_C, double cam_D) {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
         req.putObject("camera_heights_m")
-                .put("cam1", cam1)
-                .put("cam2", cam2)
-                .put("cam3", cam3)
-                .put("cam4", cam4);
+                .put("cam_A", cam_A)
+                .put("cam_B", cam_B)
+                .put("cam_C", cam_C)
+                .put("cam_D", cam_D);
         return req;
     }
 
@@ -675,13 +675,13 @@ class SetupSessionIntegrationTest {
             double in3, double res3, double diff3, boolean ok3,
             double in4, double res4, double diff4, boolean ok4) {
         ObjectNode checks = mapper.createObjectNode();
-        checks.putObject("cam1").put("input_height_m", in1).put("restored_height_m", res1)
+        checks.putObject("cam_A").put("input_height_m", in1).put("restored_height_m", res1)
                 .put("difference_cm", diff1).put("within_tolerance", ok1);
-        checks.putObject("cam2").put("input_height_m", in2).put("restored_height_m", res2)
+        checks.putObject("cam_B").put("input_height_m", in2).put("restored_height_m", res2)
                 .put("difference_cm", diff2).put("within_tolerance", ok2);
-        checks.putObject("cam3").put("input_height_m", in3).put("restored_height_m", res3)
+        checks.putObject("cam_C").put("input_height_m", in3).put("restored_height_m", res3)
                 .put("difference_cm", diff3).put("within_tolerance", ok3);
-        checks.putObject("cam4").put("input_height_m", in4).put("restored_height_m", res4)
+        checks.putObject("cam_D").put("input_height_m", in4).put("restored_height_m", res4)
                 .put("difference_cm", diff4).put("within_tolerance", ok4);
         return checks;
     }

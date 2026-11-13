@@ -19,7 +19,7 @@ const opinion = (patch: Record<string, unknown> = {}): ZoneAiOpinion =>
     recommended_action: 'REMOVE',
     rationale: '단상 위 상자가 치워져 바닥만 남았습니다.',
     confidence: 0.7,
-    camera_id: 'cam1',
+    camera_id: 'cam_A',
     before: { image_url: 'https://storage.test/before.jpg', crop_box_norm: [0.25, 0.5, 0.75, 1] },
     after: { image_url: 'https://storage.test/after.jpg', crop_box_norm: [0.25, 0.5, 0.75, 1] },
     image_expires_at_ms: 1,
@@ -68,10 +68,10 @@ describe('ZoneOpinionView', () => {
     render(<ZoneOpinionBlock zoneName="중앙 단상" opinion={opinion()} />);
     expect(screen.getByText('삭제 권고')).toBeTruthy();
     expect(screen.getByText('단상 위 상자가 치워져 바닥만 남았습니다.')).toBeTruthy();
-    const before = screen.getByAltText('이전 세팅 · cam1') as HTMLImageElement;
+    const before = screen.getByAltText('이전 세팅 · cam_A') as HTMLImageElement;
     expect(before.src).toBe('https://storage.test/before.jpg');
     expect(before.style.left).toBe('-50%');
-    expect((screen.getByAltText('이번 세팅 · cam1') as HTMLImageElement).src).toBe(
+    expect((screen.getByAltText('이번 세팅 · cam_A') as HTMLImageElement).src).toBe(
       'https://storage.test/after.jpg',
     );
 

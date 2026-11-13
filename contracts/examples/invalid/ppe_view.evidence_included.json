@@ -21,7 +21,7 @@
           "expires_at_ms": 1760342410400,
           "evidence": [
             {
-              "camera_id": "cam2",
+              "camera_id": "cam_B",
               "local_track_id": "c2-17"
             }
           ]
