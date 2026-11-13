@@ -16,7 +16,7 @@ import type { ZoneDraftItem } from '@/features/setup/types';
 import { cn } from '@simai/ui/lib/utils';
 import { memo } from 'react';
 
-// 위에서 내려다본 교실(m)에 1단계는 4대 카메라와 6쌍 연결 상태(충분·약함·부족·미확인)를,
+// 위에서 내려다본 교실(m)에 1단계는 4대 카메라와 옆 카메라 4쌍 연결 상태(충분·약함·부족·미확인)를,
 // 이후 단계는 검증 지점·평면도를 그린다. 색은 위험 등급색(sev-*)과 겹치지 않는 토큰만 쓴다.
 
 const HALO = { paintOrder: 'stroke', strokeWidth: 0.09, strokeLinejoin: 'round' } as const;
@@ -125,7 +125,6 @@ const Furniture = memo(function Furniture() {
 });
 
 function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
-  let diagIdx = 0;
   return (
     <g aria-label="카메라 쌍 연결 선">
       {pairs.map((pair) => {
@@ -133,7 +132,6 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
         const [x2, y2] = toPlan(...pair.to);
         const mx = (x1 + x2) / 2;
         const my = (y1 + y2) / 2;
-        const diagOffset = pair.isDiagonal ? (diagIdx++ % 2 === 0 ? -0.55 : 0.65) : 0;
         const dash =
           pair.grade === 'ENOUGH' ? undefined : pair.grade === 'WEAK' ? '0.24 0.14' : '0.1 0.12';
         const width = pair.grade === 'ENOUGH' ? 0.09 : pair.grade === 'WEAK' ? 0.075 : 0.05;
@@ -150,7 +148,7 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
             />
             <text
               x={mx}
-              y={my + diagOffset}
+              y={my}
               fontSize={0.25}
               fontWeight={600}
               textAnchor="middle"

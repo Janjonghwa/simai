@@ -6,7 +6,12 @@ import {
   visibleGuides,
   type CameraGuideView,
 } from '@/features/setup/cameraGuides';
-import { cameraLabel, isNeighborPair, pairLabel } from '@/features/setup/cameraLabels';
+import {
+  cameraLabel,
+  isNeighborPair,
+  neighborPairs,
+  pairLabel,
+} from '@/features/setup/cameraLabels';
 import type {
   CameraHeightDefaultsResponse,
   CameraReceptionStatus,
@@ -120,7 +125,6 @@ export interface CoveragePairView {
   b: string;
   from: Point;
   to: Point;
-  isDiagonal: boolean;
   grade: PairGrade;
   gradeLabel: string;
   tone: SetupTone;
@@ -140,16 +144,6 @@ export interface Step1CoverageView {
   pairs: CoveragePairView[];
   /** 겹침이 부족해 보정이 실패할 수 있는 옆 카메라 쌍 이름. 예: ['캠2–캠3'] */
   riskyPairs: string[];
-}
-
-function defaultPairsForCameras(cameraIds: readonly string[]): { a: string; b: string }[] {
-  const out: { a: string; b: string }[] = [];
-  for (let i = 0; i < cameraIds.length; i++) {
-    for (let j = i + 1; j < cameraIds.length; j++) {
-      out.push({ a: cameraIds[i]!, b: cameraIds[j]! });
-    }
-  }
-  return out;
 }
 
 /**
@@ -218,10 +212,12 @@ export function deriveStep1Coverage(
   const calculationFailed =
     fetchError || (!empty && latest !== null && latest.connectivity === 'UNKNOWN');
 
+  // 지도에는 보정이 쓰는 옆 카메라 쌍만 둔다(마주 보는 쌍은 서버가 판정을 줘도 그리지 않는다).
+  const neighborLatest = latestPairs.filter((p) => isNeighborPair(cameraIds, p.a, p.b));
   const rawPairs =
-    latestPairs.length > 0
-      ? latestPairs
-      : defaultPairsForCameras(cameraIds).map(({ a, b }) => ({
+    neighborLatest.length > 0
+      ? neighborLatest
+      : neighborPairs(cameraIds).map(({ a, b }) => ({
           a,
           b,
           raw_matches: null,
@@ -239,7 +235,6 @@ export function deriveStep1Coverage(
     b: p.b,
     from: cornerByCam.get(p.a) ?? CAMERA_CORNERS[0]!,
     to: cornerByCam.get(p.b) ?? CAMERA_CORNERS[1]!,
-    isDiagonal: !isNeighborPair(cameraIds, p.a, p.b),
     grade: p.grade,
     gradeLabel: PAIR_GRADE_LABEL[p.grade],
     tone: pairTone(p.grade),

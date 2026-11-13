@@ -17,3 +17,16 @@ export function isNeighborPair(cameraIds: readonly string[], a: string, b: strin
   const gap = Math.abs(i - j);
   return gap === 1 || gap === cameraIds.length - 1;
 }
+
+/** 옆 카메라 쌍을 카메라 순서대로 모두 돌려준다(1–2, 1–4, 2–3, 3–4). 마주 보는 쌍은 화면에 두지 않는다. */
+export function neighborPairs(cameraIds: readonly string[]): { a: string; b: string }[] {
+  const out: { a: string; b: string }[] = [];
+  for (let i = 0; i < cameraIds.length; i++) {
+    for (let j = i + 1; j < cameraIds.length; j++) {
+      const a = cameraIds[i]!;
+      const b = cameraIds[j]!;
+      if (isNeighborPair(cameraIds, a, b)) out.push({ a, b });
+    }
+  }
+  return out;
+}

@@ -30,7 +30,7 @@ const session = (patch: Record<string, unknown> = {}): SetupSessionResponse =>
   });
 
 describe('deriveCameraCheckView', () => {
-  it('6쌍을 모두 만들고 보정 홀드아웃·사람 통과율을 카메라 짝으로 맞춘다(키 순서와 무관)', () => {
+  it('옆 카메라 4쌍을 만들고 보정 홀드아웃·사람 통과율을 카메라 짝으로 맞춘다(키 순서와 무관)', () => {
     const gate = buildQualityGate(CAMS);
     const view = deriveCameraCheckView(
       session({
@@ -42,19 +42,17 @@ describe('deriveCameraCheckView', () => {
     );
     expect(view.pairs.map((p) => p.label)).toEqual([
       '카메라 1–카메라 2',
-      '카메라 1–카메라 3',
       '카메라 1–카메라 4',
       '카메라 2–카메라 3',
-      '카메라 2–카메라 4',
       '카메라 3–카메라 4',
     ]);
     const da = view.pairs.find((p) => p.label === '카메라 1–카메라 4')!;
     // 품질 게이트 키는 'cam_D-cam_A'(고리 순서)지만 camera_ids 로 맞춘다
     expect(da.holdoutMedianPx).toBeCloseTo(0.75);
     expect(da.outcome).toBe('pass');
-    const diagonal = view.pairs.find((p) => p.label === '카메라 1–카메라 3')!;
-    expect(diagonal.holdoutMedianPx).toBeNull();
-    expect(diagonal.outcome).toBe('na');
+    // 마주 보는 쌍(1–3, 2–4)은 서버가 판정을 줘도 표에 두지 않는다.
+    expect(view.pairs.find((p) => p.label === '카메라 1–카메라 3')).toBeUndefined();
+    expect(view.pairs.find((p) => p.label === '카메라 2–카메라 4')).toBeUndefined();
     expect(view.passed).toBe(true);
     expect(cameraCheckBlockReason(view)).toBeNull();
     expect(cameraCheckGuide(view)).toBeNull();

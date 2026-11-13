@@ -9,7 +9,6 @@ import { z } from 'zod';
 
 const REUSE_SCENE_KEY = ['setup', 'reuse-scene'] as const;
 
-const CHECKING = '확인하는 중이에요';
 const CHECK_FAILED = '이전 모델을 확인하지 못했어요';
 const NO_SCENE = '이전 모델이 없어요';
 
@@ -23,8 +22,15 @@ function reuseBlockedReason(raw: unknown): string | null {
   return parsed.data.state === 'COMMITTED' ? null : NO_SCENE;
 }
 
-/** 창이 열려 있는 동안만 현재 맵을 받아, 이전 모델을 쓸 수 없는 이유를 돌려준다. 쓸 수 있으면 null. */
-export function useReuseBlockedReason(open: boolean): string | null {
+export interface ReuseCheck {
+  /** 첫 응답을 기다리는 중이다. 창은 이것이 끝난 뒤에 열어 안의 글자가 바뀌지 않게 한다. */
+  checking: boolean;
+  /** 이전 모델을 쓸 수 없는 이유. 쓸 수 있으면 null. */
+  reason: string | null;
+}
+
+/** 켜져 있는 동안 현재 맵을 받아, 이전 모델을 쓸 수 있는지 돌려준다. 창이 뜨기 전부터 켜 두면 창이 뜰 때 결과가 이미 있다. */
+export function useReuseBlockedReason(enabled: boolean): ReuseCheck {
   const query = useQuery({
     queryKey: REUSE_SCENE_KEY,
     queryFn: async ({ signal }) => {
@@ -35,9 +41,9 @@ export function useReuseBlockedReason(open: boolean): string | null {
         throw error;
       }
     },
-    enabled: open,
+    enabled,
   });
-  if (query.isPending) return CHECKING;
-  if (query.isError) return CHECK_FAILED;
-  return query.data ?? null;
+  if (query.isPending) return { checking: true, reason: null };
+  if (query.isError) return { checking: false, reason: CHECK_FAILED };
+  return { checking: false, reason: query.data ?? null };
 }

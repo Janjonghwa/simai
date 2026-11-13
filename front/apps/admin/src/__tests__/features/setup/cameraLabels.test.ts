@@ -3,6 +3,7 @@ import {
   cameraNumber,
   cameraShortLabel,
   isNeighborPair,
+  neighborPairs,
   pairLabel,
 } from '@/features/setup/cameraLabels';
 import { describe, expect, it } from 'vitest';
@@ -45,5 +46,16 @@ describe('옆 카메라 쌍 판정', () => {
     expect(isNeighborPair(CAMERA_IDS, 'cam_D', 'cam_B')).toBe(false);
     expect(isNeighborPair(CAMERA_IDS, 'cam_B', 'cam_B')).toBe(false);
     expect(isNeighborPair(CAMERA_IDS, 'cam_A', 'cam9')).toBe(false);
+  });
+
+  it('옆 카메라 쌍만 카메라 순서대로 돌려주고 마주 보는 쌍은 뺀다', () => {
+    expect(neighborPairs(CAMERA_IDS)).toEqual([
+      { a: 'cam_A', b: 'cam_B' },
+      { a: 'cam_A', b: 'cam_D' },
+      { a: 'cam_B', b: 'cam_C' },
+      { a: 'cam_C', b: 'cam_D' },
+    ]);
+    expect(neighborPairs(LEGACY_IDS)).toHaveLength(4);
+    expect(neighborPairs([])).toEqual([]);
   });
 });

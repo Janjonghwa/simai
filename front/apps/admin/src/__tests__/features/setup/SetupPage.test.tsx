@@ -191,6 +191,13 @@ async function waitForTrackedSession(sessionId: string) {
 /** 화면 전체의 글(대화상자 등 틀 밖 요소 포함). */
 const pageText = () => document.body.textContent ?? '';
 
+/** 각도 안내 첫 응답이 와서 카메라 패널이 '확인 중' 을 벗어날 때까지 기다린다. */
+async function waitForCoverage() {
+  const heading = await screen.findByRole('heading', { name: '카메라 연결 · 방향 안내' });
+  const panel = within(heading.closest('[data-slot=card]')!);
+  await waitFor(() => expect(panel.queryByText('확인 중')).toBeNull());
+}
+
 describe('설치 · 보정 작업 연결', () => {
   it('작업 id 없이 열면 세팅을 시작하지 않고 작업 관리로 돌려보내는 안내를 보인다', () => {
     renderSetupPage(null);
@@ -225,13 +232,13 @@ describe('세팅 화면 재진입', () => {
 });
 
 describe('설치 · 보정 1단계 화면', () => {
-  it('본문은 남은 높이를 채우는 한 덩어리로 묶고 자기 아래 여백은 두지 않는다(주 메뉴 여백은 틀이 둔다)', () => {
+  it('본문은 남은 높이를 채우는 한 덩어리로 묶고 자기 아래 여백은 두지 않는다(주 메뉴 여백은 틀이 둔다)', async () => {
     const { container } = renderSetupPage();
     const page = container.firstElementChild!;
     expect(page.classList.contains('flex-1')).toBe(true);
     expect(page.classList.contains('min-h-0')).toBe(true);
     expect(page.className).not.toContain('pb-[');
-    expect(page.contains(screen.getByLabelText('카메라 1 높이 (m)'))).toBe(true);
+    expect(page.contains(await screen.findByLabelText('카메라 1 높이 (m)'))).toBe(true);
   });
 
   it('보정 단계 아래에 지도와 카메라 영상을 한 카드로 보이고 규칙 표는 두지 않는다(관리자가 아닌 역할도)', async () => {
@@ -244,10 +251,12 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('1단계 머리줄에는 세팅 1단계 안내만 보이고 세션·보정 버전 같은 코드 글은 없다', async () => {
+  it('1단계 단계 줄 위에는 안내 글이나 연결 배지가 없고 세션·보정 버전 같은 코드 글도 없다', async () => {
     renderSetupPage();
     await screen.findByLabelText('카메라 1 높이 (m)');
-    expect(screen.getByText('세팅 1단계 · 카메라 확인')).toBeTruthy();
+    await waitForCoverage();
+    expect(screen.queryByText('세팅 1단계 · 카메라 확인')).toBeNull();
+    expect(screen.queryByText(/모두 연결/)).toBeNull();
     expect(pageText()).not.toContain('세션 019a');
     expect(pageText()).not.toContain('cal-');
   });
@@ -369,6 +378,33 @@ describe('설치 · 보정 1단계 화면', () => {
     await waitForCalibrationStep();
   });
 
+  it('이전 모델 조회가 끝나기 전에는 단계 줄도 3D 공간 창도 없고, 끝나면 같이 뜨며 창 안 글자가 바뀌지 않는다', async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get('*/api/scenes/current', async () => {
+        await held;
+        return HttpResponse.json({ status: 404, code: 'SCENE_NOT_FOUND' }, { status: 404 });
+      }),
+    );
+    renderSetupPage();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+    expect(screen.queryByRole('list', { name: '보정 단계' })).toBeNull();
+
+    release();
+    const dialog = await screen.findByRole('dialog', { name: '3D 공간' });
+    expect(screen.getByRole('list', { name: '보정 단계' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: /^이전 모델 쓰기/ }).textContent).toContain(
+      '이전 모델이 없어요',
+    );
+    expect(pageText()).not.toContain('확인하는 중이에요');
+  });
+
   it('세팅 시작이 409(SETUP_BLOCKED_BY_LIVE_WORK)로 거절되면 진행 중 작업 종료 안내와 작업 이동 링크를 제공한다', async () => {
     // 1) 서버 현재 응답(작업 정보 없음) -> 일반 문구 + /work 이동
     server.use(
@@ -464,12 +500,10 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(within(alert).queryByRole('button', { name: '진행 중인 작업으로 이동' })).toBeNull();
   });
 
-  it('연결 상태 3종(DISCONNECTED / CONNECTED / UNKNOWN), 쌍 등급, 방향 안내 문구를 표시한다', async () => {
+  it('쌍 등급·방향 안내 문구를 표시하고 4대가 연결되면 카메라마다 각도 양호를 보인다', async () => {
     renderSetupPage();
 
-    expect(
-      await screen.findByText('카메라 1·카메라 2·카메라 3 / 카메라 4 갈림 · 1초 전 확인'),
-    ).toBeTruthy();
+    await waitForCoverage();
     expect(
       screen.getAllByText('오른쪽으로 조금 돌려 주세요 (카메라 3–카메라 4)').length,
     ).toBeGreaterThan(0);
@@ -477,10 +511,12 @@ describe('설치 · 보정 1단계 화면', () => {
     const edges = within(screen.getByLabelText('카메라 쌍 연결 선'));
     expect(edges.getAllByLabelText(/충분$/).length).toBeGreaterThan(0);
     expect(edges.getAllByLabelText(/약함$/).length).toBeGreaterThan(0);
-    expect(edges.getAllByLabelText(/부족$/).length).toBeGreaterThan(0);
+    // 마주 보는 쌍(1–3, 2–4)은 서버가 부족이라고 줘도 지도에 그리지 않는다.
+    expect(edges.queryByLabelText(/카메라 1–카메라 3|카메라 2–카메라 4/)).toBeNull();
+    expect(edges.queryByLabelText(/부족$/)).toBeNull();
     expect(screen.queryByRole('list', { name: '카메라 쌍 매칭 등급' })).toBeNull();
 
-    // CONNECTED 상태로 바꾸면 "4대 모두 연결" 과 "다음" 버튼을 보인다
+    // CONNECTED 상태로 바꾸면 카메라마다 "각도 양호" 와 "다음" 버튼을 보인다
     cleanup();
     setupMock.state.latestGuide = buildCoverageGuidePayload({
       connectivity: 'CONNECTED',
@@ -488,7 +524,8 @@ describe('설치 · 보정 1단계 화면', () => {
     });
     renderSetupPage();
 
-    expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
+    await waitForCoverage();
+    expect(screen.getAllByText('각도 양호').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '다음' })).toBeTruthy();
   });
 
@@ -521,7 +558,7 @@ describe('설치 · 보정 1단계 화면', () => {
       renderSetupPage();
       await screen.findByRole('dialog', { name: '3D 공간' });
       await pickNewModel();
-      expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
+      await waitForCoverage();
       await waitFor(() =>
         expect((screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement).value).toBe('2.2'),
       );
@@ -573,7 +610,7 @@ describe('설치 · 보정 1단계 화면', () => {
       await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     });
 
-    it('확인창이 열린 채 이어받기로 단계가 바뀌면 사라지고, 1단계로 돌아와도 다시 뜨지 않는다', async () => {
+    it('이어받을 세션을 찾는 동안에는 1단계를 그리지 않아 확인창이 뜨지 않고, 1단계로 돌아와도 다시 뜨지 않는다', async () => {
       await openWithLackPair(true);
       fireEvent.click(screen.getByRole('button', { name: '다음' }));
       fireEvent.click(
@@ -588,7 +625,7 @@ describe('설치 · 보정 1단계 화면', () => {
       cleanup();
       resetSetupFlowStore();
 
-      // 이어받을 세션 조회가 늦게 끝나도록 붙잡아 두고, 그 사이 확인창을 연다.
+      // 이어받을 세션 조회가 늦게 끝나도록 붙잡아 둔다.
       let release = () => {};
       const held = new Promise<void>((resolve) => {
         release = resolve;
@@ -600,12 +637,12 @@ describe('설치 · 보정 1단계 화면', () => {
         }),
       );
       renderSetupPage();
-      expect(await screen.findByText('4대 모두 연결 · 1초 전 확인')).toBeTruthy();
-      await waitFor(() =>
-        expect((screen.getByLabelText('카메라 4 높이 (m)') as HTMLInputElement).value).toBe('2.2'),
-      );
-      fireEvent.click(screen.getByRole('button', { name: '다음' }));
-      expect(screen.getByRole('dialog', { name: '보정이 실패할 수 있어요' })).toBeTruthy();
+      // 찾는 동안은 단계 줄도 1단계 본문도 없다(1단계가 잠깐 비치지 않는다).
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(screen.queryByRole('list', { name: '보정 단계' })).toBeNull();
+      expect(screen.queryByLabelText('카메라 4 높이 (m)')).toBeNull();
 
       release();
       const failure = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
@@ -616,7 +653,7 @@ describe('설치 · 보정 1단계 화면', () => {
     }, 20_000);
   });
 
-  it('STALE·영상 없음(NO_VIDEO)·계산 실패(UNKNOWN) 상태를 표시하고 다음으로 가는 것을 막지 않는다', async () => {
+  it('STALE·영상 없음(NO_VIDEO)·계산 실패(UNKNOWN)여도 카메라별 상태를 보이고 다음으로 가는 것을 막지 않는다', async () => {
     setupMock = createSetupMock({
       cameraHeightsM: { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
       guideStatus: 'STALE',
@@ -639,8 +676,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
     renderSetupPage();
 
-    expect(await screen.findByText('연결 확인 중 · 12초 전 확인')).toBeTruthy();
-    expect(screen.getByText('계산 실패')).toBeTruthy();
+    await waitForCoverage();
     // 카메라별 상태·안내는 오른쪽 카메라 패널 행에 보인다.
     const cameraPanel = within(
       screen.getByRole('heading', { name: '카메라 연결 · 방향 안내' }).closest('[data-slot=card]')!,
@@ -660,7 +696,7 @@ describe('설치 · 보정 1단계 화면', () => {
     setupMock.state.guideError = true;
     renderSetupPage();
 
-    expect(await screen.findByText('계산 실패')).toBeTruthy();
+    await screen.findByLabelText('카메라 1 높이 (m)');
     const proceedOnFailure = screen.getByRole('button', {
       name: '다음',
     }) as HTMLButtonElement;
@@ -997,7 +1033,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       stage: 'BAKING_TEXTURE',
       status: 'BAKING_TEXTURE',
     });
-    await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT);
     // 3D 미리보기가 나오면 카메라 시야 칸이 3D 칸으로 바뀐다.
     expect(screen.getByTestId('setup-preview-viewport')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toBeNull();
@@ -1030,10 +1066,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(pageText()).not.toContain(sessionId);
     expect(pageText()).not.toContain('세션 019a');
 
-    // 서버가 보정 버전·미리보기 Scene 을 알려 줘도 머리줄에는 맵 단계 이름만 나온다.
+    // 서버가 보정 버전·미리보기 Scene 을 알려 줘도 3D 칸 제목에는 맵 단계 이름만 나온다.
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
-    const badge = await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
-    expect(badge.textContent).toBe('미리보기 맵');
     expect(await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT)).toBeTruthy();
     for (const code of hiddenCodes) expect(pageText()).not.toContain(code);
 
@@ -1114,7 +1148,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
 
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
-    await screen.findByLabelText('맵 단계 미리보기 맵', undefined, POLL_WAIT);
+    await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT);
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
     // 보강 촬영으로 정밀 3D 맵을 다시 굽는 중이어도 이전 정밀 맵이 있어 구역 단계에 갈 수 있다(세션을 계속 조회한다)
     setupMock.updateSession(sessionId, {
@@ -1271,7 +1305,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
   it('머리글에는 구역 편집(관제 이동) 단추가 없고 구역 단계에서만 맨 오른쪽에 작업 관리로 하나가 있으며, 오른쪽 칸에 구역 목록·완료 카드는 없다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...FINAL_PATCH });
-    await screen.findByLabelText('맵 단계 정밀 3D 맵', undefined, POLL_WAIT);
+    await screen.findByRole('heading', { name: '정밀 3D 맵' }, POLL_WAIT);
     expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
     await goToZoneStep();
 
@@ -1394,7 +1428,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     it('이전 모델 재사용 세션은 구역 단계에 들어서면 빈 구역 목록을 지금 관제 구역으로 채운다(보정·생성 단계에서는 채우지 않는다)', async () => {
       const { sessionId } = await startSetupSession();
       setupMock.updateSession(sessionId, { ...FINAL_PATCH, mode: 'REUSE' });
-      await screen.findByLabelText('맵 단계 정밀 3D 맵', undefined, POLL_WAIT);
+      await screen.findByRole('heading', { name: '정밀 3D 맵' }, POLL_WAIT);
       expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
 
       await goToZoneStep();

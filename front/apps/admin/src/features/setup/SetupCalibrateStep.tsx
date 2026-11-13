@@ -408,7 +408,7 @@ const formatPx = (median: number | null, p90: number | null) =>
 const formatRate = (rate: number | null) => (rate === null ? '—' : `${Math.round(rate * 100)}%`);
 
 /**
- * 쌍별 검증(S15P31A101-646): 카메라 6쌍마다 세팅 보정의 배경 홀드아웃 오차(중앙값/p90 px)와 카메라 확인의 사람 통과율, 종합 판정.
+ * 쌍별 검증(S15P31A101-646): 옆 카메라 4쌍마다 세팅 보정의 배경 홀드아웃 오차(중앙값/p90 px)와 카메라 확인의 사람 통과율, 종합 판정.
  * 관제의 쌍 연결 검사와 같은 계산이라, 여기서 실패한 쌍은 관제에서 같은 사람을 둘로 가르기 쉽다.
  */
 function PairResultCard({ view }: { view: CameraCheckView }) {
