@@ -48,6 +48,11 @@ def test_counts_lagging_pairs_and_world_lifecycle(run_dir) -> None:
     assert w["appeared"] >= w["manager"]["new_track.created"] >= 1
     assert w["updated_cameras"].get("3", 0) > 0
     assert sum(w["state_ms"].values()) > 0
+    # -684: 확정 묶음 신원 시간의 합은 CONFIRMED·OCCLUDED 상태 시간과 같다(같은 규칙으로 직전 tick 상태에 붙인다)
+    ident = s["identity"]
+    confirmed_ms = w["state_ms"].get("CONFIRMED", 0) + w["state_ms"].get("OCCLUDED", 0)
+    assert sum(ident["identity_ms"].get("CONFIRMED", {}).values()) == confirmed_ms > 0
+    assert ident["local_key_swaps"] == 0  # 한 사람 장면
     json.dumps(s)  # 상태 파일에 그대로 쓴다
     line = window_log_line(p.diagnostics.take_window(results[-1].t))
     assert line.startswith("추적 계측") and SLOW in line
