@@ -215,4 +215,18 @@ describe('WorkPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '달력' }));
     expect(screen.queryByRole('status')).toBeNull();
   });
+
+  it('작업 관리 화면(달력·지난 날·오늘)에서만 바탕 모눈을 낮추는 가림막을 깐다', async () => {
+    renderPage();
+    expect(screen.getByTestId('work-grid-veil').className).toContain('bg-background/75');
+    cleanup();
+
+    renderPage('2026-11-10');
+    expect(screen.getByTestId('work-grid-veil').className).toContain('bg-background/75');
+    cleanup();
+
+    renderPage(TODAY);
+    await waitFor(() => expect(stageName()).toBe('run-stage'));
+    expect(screen.getByTestId('work-grid-veil').className).toContain('bg-background/75');
+  });
 });

@@ -1,5 +1,6 @@
 import type { DayProgress, WorkDayItem } from '@/features/work/types';
 import {
+  dayKind,
   isEndedWork,
   parseDateKey,
   toDateKey,
@@ -9,7 +10,7 @@ import {
   type DayKind,
 } from '@/features/work/workDay';
 
-// 작업 관리 달력의 순수 계산: 그 달이 걸치는 주·칸, 달 이동, 칸 표시, 그날 작업 요약. 시계에 기대지 않는다.
+// 작업 관리 달력의 순수 계산: 그 달이 걸치는 주·칸, 달 이동, 칸 표시, 그날·그달 작업 요약, 접근성 이름. 시계에 기대지 않는다.
 
 /** 달력이 보이는 달. month 는 1~12 다. */
 export interface CalendarMonth {
@@ -73,12 +74,12 @@ export function groupByDate(works: readonly WorkDayItem[]): Map<DateKey, WorkDay
 // ── 칸 표시 ──────────────────────────────────────────────────────────────────
 
 /**
- * 칸에 보이는 표시. 작업 종료(ended)는 끝난 날의 상태라 알약 없이 아이콘과 글자로만 보이고(작업을 끝내면 보고서 제출까지 하므로
- * 종료와 제출을 나누지 않는다), 단추(action)는 오늘 칸에서 지금 할 일을 알린다.
+ * 칸에 보이는 표시. 완료(ended)는 끝난 날의 상태라 글자 반복 없이 작은 완료 아이콘으로만 보이고(작업을 끝내면 보고서 제출까지 하므로
+ * 종료와 제출을 나누지 않는다), 단추(action)는 오늘 칸에서 지금 할 일을 주 단추로 알린다.
  */
-export type DayMark = { kind: 'ended' | 'action'; label: string };
+export type DayMark = { kind: 'ended' } | { kind: 'action'; label: string };
 
-const ENDED_MARK: DayMark = { kind: 'ended', label: '작업 종료' };
+const ENDED_MARK: DayMark = { kind: 'ended' };
 
 /** 오늘 작업이 없거나 진행 값을 모르면 보고서 단계로 본다(오늘 칸은 '작업 시작' 단추가 된다). */
 const IDLE_PROGRESS: DayProgress = 'REPORT';
@@ -87,17 +88,17 @@ const IDLE_PROGRESS: DayProgress = 'REPORT';
 const primaryWorkOf = (works: readonly WorkDayItem[]): WorkDayItem | undefined =>
   works.find((work) => work.daily) ?? works[0];
 
-/** 지난 날 표시: 끝난 작업(`isEndedWork`)이 하나라도 있으면 작업 종료, 없으면 null(빈칸)이다. */
+/** 지난 날 표시: 끝난 작업(`isEndedWork`)이 하나라도 있으면 완료 표시, 없으면 null(빈칸)이다. */
 const pastMarkOf = (works: readonly WorkDayItem[]): DayMark | null =>
   works.some(isEndedWork) ? ENDED_MARK : null;
 
-/** 오늘 표시: 그 날 작업(`primaryWorkOf`)의 진행 값이 정한 지금 할 일 단추. 제출했으면 할 일이 없어 작업 종료 표시다. */
+/** 오늘 표시: 그 날 작업(`primaryWorkOf`)의 진행 값이 정한 지금 할 일 단추. 제출했으면 할 일이 없어 완료 표시다. */
 function todayMarkOf(works: readonly WorkDayItem[]): DayMark {
   const action = TODAY_ACTION[primaryWorkOf(works)?.progress ?? IDLE_PROGRESS];
   return action === null ? ENDED_MARK : { kind: 'action', label: action };
 }
 
-/** 칸 표시. 지난 날은 끝난 작업의 상태, 오늘은 지금 할 일 단추이고, 예정인 날은 늘 비운다. */
+/** 칸 표시. 지난 날은 끝난 작업의 완료 표시, 오늘은 지금 할 일 단추이고, 예정인 날은 늘 비운다. */
 export function dayMarkOf(works: readonly WorkDayItem[], kind: DayKind): DayMark | null {
   switch (kind) {
     case 'past':
@@ -109,7 +110,7 @@ export function dayMarkOf(works: readonly WorkDayItem[], kind: DayKind): DayMark
   }
 }
 
-// ── 지난 날 요약 ─────────────────────────────────────────────────────────────
+// ── 지난 날·월간 요약 ────────────────────────────────────────────────────────
 
 /** 그날 작업 요약: 작업 수와 위험(CRITICAL)·경고(HIGH) 이벤트 합계. */
 export interface DaySummary {
@@ -127,4 +128,63 @@ export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null
     critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
     high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
   };
+}
+
+/** 월간 요약: 그 달에 끝난 작업이 있는 날 수와 위험(CRITICAL)·경고(HIGH) 합계. */
+export interface MonthSummary {
+  days: number;
+  critical: number;
+  high: number;
+}
+
+/**
+ * 이미 받은 달력 범위 작업으로 그 달(`inMonth`)의 월간 요약을 계산한다.
+ * 달 밖 칸과 예정인 날은 빼고, 끝난 작업(`summarizeWorks`)이 있는 날만 작업 일수와 위험·경고를 더한다.
+ */
+export function summarizeMonth(
+  cells: readonly CalendarDay[],
+  byDate: ReadonlyMap<DateKey, readonly WorkDayItem[]>,
+  todayKey: DateKey,
+): MonthSummary {
+  let days = 0;
+  let critical = 0;
+  let high = 0;
+  for (const cell of cells) {
+    if (!cell.inMonth || dayKind(cell.key, todayKey) === 'future') continue;
+    const summary = summarizeWorks(byDate.get(cell.key) ?? []);
+    if (!summary) continue;
+    days += 1;
+    critical += summary.critical;
+    high += summary.high;
+  }
+  return { days, critical, high };
+}
+
+/**
+ * 달력 칸의 접근성 이름: 날짜에 더해 오늘이면 할 일(제출했으면 작업 완료), 지난 작업 날이면 완료 건수와 위험·경고 수를 담아
+ * 화면 낭독기가 완료 아이콘·색 점만으로 정보를 잃지 않게 한다.
+ */
+export function cellAriaLabel({
+  dateKey,
+  day,
+  kind,
+  mark,
+  summary,
+}: {
+  dateKey: DateKey;
+  day: number;
+  kind: DayKind;
+  mark: DayMark | null;
+  summary: DaySummary | null;
+}): string {
+  const [, month] = dateKey.split('-');
+  const base = `${Number(month)}월 ${day}일`;
+  if (kind === 'today') {
+    const status = mark?.kind === 'action' ? mark.label : '작업 완료';
+    return `${base}, 오늘, ${status}`;
+  }
+  if (summary) {
+    return `${base}, 작업 ${summary.count}건 완료, 위험 ${summary.critical}건, 경고 ${summary.high}건`;
+  }
+  return base;
 }
