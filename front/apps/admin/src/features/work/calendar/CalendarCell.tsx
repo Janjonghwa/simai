@@ -112,7 +112,6 @@ export function CalendarCell({
   onPick: (dateKey: DateKey) => void;
 }) {
   const isToday = kind === 'today';
-  const hasCritical = summary !== null && summary.critical > 0;
   return (
     <button
       type="button"
@@ -144,13 +143,6 @@ export function CalendarCell({
           <span className="rounded-[4px] bg-primary px-1.5 text-[11px] leading-[18px] font-bold text-primary-foreground">
             오늘
           </span>
-        )}
-        {hasCritical && (
-          <span
-            aria-hidden
-            data-slot="critical-top-dot"
-            className="size-1.5 shrink-0 rounded-full bg-sev-critical"
-          />
         )}
         {mark?.kind === 'ended' && <EndedMark className="ml-auto" />}
       </span>
