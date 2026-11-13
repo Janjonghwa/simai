@@ -13,7 +13,7 @@ import { DRAG_THRESHOLD_PX } from '@/hooks/useFloatSpot';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 현장 노트북 중계(WebSocket·WebCodecs)는 붙이지 않는다. 연결·카메라 단계는 cctv.store 에 직접 넣는다.
@@ -116,11 +116,23 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     expect(badge('cam1').textContent).toBe('LIVE');
   });
 
-  it('World 가 멈추면 정지이고 LIVE 점이 꺼진다', () => {
+  it('World 가 멈추면(정지) 배지를 두지 않는다(S15P31A101-665)', () => {
     seedRealtime({ world: false });
     render(<CctvPage />);
-    expect(badge('cam1').textContent).toMatch(/^정지/);
-    expect(badge('cam1').querySelector('i')).toBeNull();
+    expect(badge('cam1')).toBeUndefined();
+    expect(screen.queryByText(/정지/)).toBeNull();
+  });
+
+  it('Tier 0 가 잰 카메라 지연을 알면 실시간 배지에 ms 로 함께 보이고, 기준을 넘으면 지연 색이다', () => {
+    useRealtimeStore.setState({
+      lagSamples: [{ at: T, lagMs: 150, cameras: { cam1: 180, cam2: 720 } }],
+    });
+    render(<CctvPage />);
+    expect(badge('cam1').textContent).toBe('LIVE· 180 ms');
+    expect(badge('cam2').textContent).toBe('실시간· 720 ms');
+    expect(within(badge('cam2')).getByText('· 720 ms').className).toContain('text-delay');
+    // 지연을 모르는 칸은 상태 글만 보인다.
+    expect(badge('cam3').textContent).toBe('실시간');
   });
 
   it('프레임이 1초 넘게 끊기면 LIVE 점을 끈다', () => {
@@ -386,11 +398,24 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
     expect(screen.getAllByRole('group')).toHaveLength(4);
   });
 
-  it('World 가 멈추면 정지로 보인다', () => {
+  it('World 가 멈추면(정지) 상태 글을 두지 않는다', () => {
     seedRealtime({ world: false });
     render(<CctvPage />);
     const group = screen.getByRole('group', { name: '카메라 1 상태' });
-    expect(group.textContent).toMatch(/정지/);
+    expect(group.textContent).toBe('카메라 1');
+  });
+
+  it('실시간 칸은 Tier 0 가 잰 카메라 지연(ms)을 함께 보인다', () => {
+    seedRealtime({ at: T + 20_000 });
+    useRealtimeStore.setState({
+      lagSamples: [{ at: T, lagMs: 150, cameras: { cam1: 180, cam3: 400 } }],
+    });
+    render(<CctvPage />);
+    const text = (id: string) =>
+      screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
+    expect(text('cam1')).toBe('실시간 · 180 ms');
+    // 끊김(cam3 키프레임 대기)에는 붙이지 않는다.
+    expect(text('cam3')).toBe('끊김');
   });
 
   it('Tier 0 상태를 받지 못하면 안내 한 줄만 보인다', () => {

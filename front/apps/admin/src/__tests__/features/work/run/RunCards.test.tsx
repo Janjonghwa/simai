@@ -45,7 +45,6 @@ vi.mock('@/features/cctv/useCameraStates', () => ({
   useCameraStates: () => ({
     cameras: data.cameras,
     fresh: true,
-    lastClock: undefined,
     stateOf: (id: string) => (data.down.includes(id) ? 'down' : 'live'),
   }),
 }));

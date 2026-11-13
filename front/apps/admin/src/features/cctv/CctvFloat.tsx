@@ -85,7 +85,7 @@ function Content({
   const [camera, setCamera] = useState(requestedCamera?.cameraId ?? '');
   const link = useCctvStore((s) => s.link);
   const relayIds = useCctvStore((s) => s.cameras);
-  const { cameras, stateOf, lastClock } = useCameraStates();
+  const { cameras, stateOf } = useCameraStates();
   const baseIds =
     attach && link === 'open' && relayIds.length ? relayIds : cameras.map((c) => c.id);
   const ids =
@@ -151,14 +151,9 @@ function Content({
         <div className="min-h-0 flex-1 p-2">
           <div key={current} className="min-h-0 min-w-0">
             {attach ? (
-              <CameraTile
-                cameraId={current}
-                attach={attach}
-                state={stateOf(current)}
-                lastClock={lastClock}
-              />
+              <CameraTile cameraId={current} attach={attach} state={stateOf(current)} />
             ) : (
-              <StateTile cameraId={current} state={stateOf(current)} lastClock={lastClock} />
+              <StateTile cameraId={current} state={stateOf(current)} />
             )}
           </div>
         </div>

@@ -74,7 +74,6 @@ vi.mock('@/features/cctv/useCameraStates', () => ({
   useCameraStates: () => ({
     cameras: [{ id: 'cam1' }, { id: 'cam2' }, { id: 'cam3' }, { id: 'cam4' }],
     fresh: true,
-    lastClock: undefined,
     stateOf: (id: string) => (id === 'cam4' ? 'down' : 'live'),
   }),
 }));

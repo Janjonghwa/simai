@@ -85,6 +85,38 @@ describe('TopBar', () => {
     expect(container.querySelector('.bg-stripes')).toBeNull();
   });
 
+  it('Tier 0 가 잰 처리 지연의 최근 평균을 시계 옆에 ms 로 보이고, 기준(600ms)을 넘으면 지연 색이다', () => {
+    seed();
+    useRealtimeStore.setState({
+      lagSamples: [
+        { at: T, lagMs: 140, cameras: {} },
+        { at: T + 1000, lagMs: 220, cameras: {} },
+      ],
+    });
+    renderTopBar();
+    const lag = screen.getByText('지연 180 ms');
+    expect(lag.className).not.toContain('text-delay');
+
+    act(() =>
+      useRealtimeStore.setState({ lagSamples: [{ at: T + 2000, lagMs: 700, cameras: {} }] }),
+    );
+    expect(screen.getByText('지연 700 ms').className).toContain('text-delay');
+  });
+
+  it('지연을 모르거나 EC2 와 끊겼으면 지연을 보이지 않는다(지어내지 않음)', () => {
+    seed();
+    const { container } = renderTopBar();
+    expect(container.textContent).not.toContain('지연');
+
+    act(() =>
+      useRealtimeStore.setState({
+        phase: 'CLOSED',
+        lagSamples: [{ at: T, lagMs: 140, cameras: {} }],
+      }),
+    );
+    expect(container.textContent).not.toContain('지연');
+  });
+
   it('스캔 유무와 관계없이 서버 현장명만 보인다', async () => {
     seed();
     const { container } = renderTopBar();

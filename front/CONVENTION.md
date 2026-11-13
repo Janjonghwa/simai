@@ -12,7 +12,7 @@ front/
         routes/         라우트 정의 (TanStack Router 파일 라우트). _app.tsx 아래가 공통 레이아웃을 쓰는 화면
         features/       화면별 도메인 폴더
           layout/       상단 바·하단 메뉴(도크) 등 공통 레이아웃
-          monitor/      실시간 관제 화면 (3D 장면 또는 2D 평면 위에 이벤트 패널, 3D·2D 전환)
+          monitor/      실시간 관제 화면 (/live): 3D 장면 또는 2D 평면 위에 이벤트 패널, 3D·2D 전환. 첫 화면(/)은 작업 관리(/work)로 보낸다
           events/       위험 이벤트 목록·상세·ACK·경보 배너·경보음
           plan/         2D 평면 (3D 가 멈췄을 때의 비상 화면, BEV 2D 개요). three.js 없이 SVG
           zones/        구역 조회·속성 입력·저장(새 버전)·현장 적용(구성 묶음 발행)·구역 편집 화면
@@ -151,4 +151,4 @@ git 훅 (`front/.husky/`):
 - 이벤트 패널은 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고(`features/events/panelBox.ts`), ▾ 로 접는다. 머리줄에 지금 추적 중인 작업자 수와 진행 중 사건 수가 있고, 목록은 「진행 중」(사람별 묶음)과 「최근 해소」(해소된 발생을 사람·규칙·구역별로 묶고 `resume_count` 와 새 `event_id` 를 더해 「N회 발생」)로 나뉜다(`eventSections`). 카드는 작업자 칩과 규칙 줄(등급·규칙 이름·구역, 확인 필요·지연 알림)만 보이고, 규칙 줄을 누르면 장면 위 사건 상세 창(같은 대상의 규칙 전부, 근거·AI 설명·클립·처리(ACK)·타임라인)이 열린다. 「CCTV로 확인」은 CCTV 관제 화면의 카메라 칸(`CameraTile`)을 오른쪽에 연다.
 - 지도 위 이름표는 늘 띄우지 않고 한 대상에 1초 머물 때만 보인다(2D 는 `features/plan/HoverTip` 말풍선, 3D 는 이름표 스프라이트). 3D 는 선택한 대상과 위험이 걸린 대상의 이름표를 늘 보인다.
 - 2D 평면은 연결이 끊겼거나 world 가 1.5초 넘게 없으면(`isWorldFresh`) 흐리게 그린다. 경보 대상은 병합 전 ID(`aliases`)까지 본다. 확인 대기는 점멸에 더해 선을 굵게 해 움직임 줄이기 설정에서도 구분한다.
-- 관제 화면의 상단 바와 하단 메뉴는 `features/layout`에 있다. 실시간 관제처럼 상단 바 아래까지 화면을 채우는 화면은 라우트에 `staticData: { fullBleed: true }`를 준다. 하단 메뉴가 본문 위에 반투명하게 떠 있어도 되는 화면(CCTV 관제·작업 관리)은 `staticData: { dockOverlay: true }`를 주어 본문 아래의 독 자리 여백(90px)을 줄인다.
+- 관제 화면의 상단 바와 하단 메뉴는 `features/layout`에 있다. 하단 메뉴 순서는 작업 관리 → 실시간 관제 → CCTV 관제다. 상단 바·CCTV 칸의 지연(ms)은 Tier 0 가 자기 시계로 잰 `health.pipeline_lag_ms`(카메라별은 같은 health 의 `t_latest_global − last_capture` 를 더함)의 최근 평균만 쓰고(`lib/tier0Lag`), 브라우저 시계로 촬영 시각을 빼지 않는다. 모르면 숨긴다. 실시간 관제처럼 상단 바 아래까지 화면을 채우는 화면은 라우트에 `staticData: { fullBleed: true }`를 준다. 하단 메뉴가 본문 위에 반투명하게 떠 있어도 되는 화면(CCTV 관제·작업 관리)은 `staticData: { dockOverlay: true }`를 주어 본문 아래의 독 자리 여백(90px)을 줄인다.
