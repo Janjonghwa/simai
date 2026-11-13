@@ -223,7 +223,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `established_calibration_version` | text | FK>calibration_version.calibration_version |  | 좌표계를 정한 보정 |
 | `current_floor_plan_id` | bigint | FK>floor_plan.floor_plan_id |  | 현재 BEV 평면도 |
 | `migrated_from` | jsonb |  |  | 좌표계 이전 이력 |
-| `rule_profile` | text | NN, 기본 OPERATION, CK(OPERATION·CLASSROOM_TEST) |  | 현장 규칙 기준. 이후 모든 구성 묶음이 이 값으로 규칙 판을 고른다(이전 묶음 상속보다 우선, V61, S15P31A101-654) |
+| `rule_profile` | text | NN, 기본 CLASSROOM_TEST(V67), CK(OPERATION·CLASSROOM_TEST) |  | 현장 규칙 기준. 이후 모든 구성 묶음이 이 값으로 규칙 판을 고른다(이전 묶음 상속보다 우선, V61, S15P31A101-654). 시연 고정으로 기본·기존 행 교실 시험(V67, S15P31A101-669) |
 | `created_at` | ts | NN |  |  |
 
 #### `camera` — 카메라 장비 정보

@@ -37,7 +37,7 @@ S15P31A101-264. 명세 3.7(정적 배경), 4.5(Scene 은 CALIBRATED 뒤에만), 
 
 | 항목 | 정한 값 | 근거 |
 |---|---|---|
-| 현재 규칙 | Tier 0 가 적용했다고 알린(`config_bundle.applied_at`, config_ack APPLIED) 이 현장의 마지막 묶음이 실은 판(`config_bundle_item` RULE)과 그 묶음의 `rule_profile`. 발행만 하고 아직 적용 전이거나 거부된 더 새 묶음은 `pending_config_version` 으로만 알린다. 적용된 묶음이 없으면 운영 프로필의 유효 판(`RuleSelection`, 묶음을 만들 때와 같은 질의) | 관제 화면이 "지금 현장에서 판정에 쓰는 규칙"을 보게. 거부된 묶음의 규칙을 현재로 보이면 판정 기준을 잘못 안내한다 |
+| 현재 규칙 | Tier 0 가 적용했다고 알린(`config_bundle.applied_at`, config_ack APPLIED) 이 현장의 마지막 묶음이 실은 판(`config_bundle_item` RULE)과 그 묶음의 `rule_profile`. 발행만 하고 아직 적용 전이거나 거부된 더 새 묶음은 `pending_config_version` 으로만 알린다. 적용된 묶음이 없으면 현장 규칙 기준(`site.rule_profile`, 기본 교실 시험, S15P31A101-669)의 유효 판(`RuleSelection`, 묶음을 만들 때와 같은 질의) | 관제 화면이 "지금 현장에서 판정에 쓰는 규칙"을 보게. 거부된 묶음의 규칙을 현재로 보이면 판정 기준을 잘못 안내한다 |
 | 규칙 목록 | R1~R10 을 7.1 표 순서로 모두 싣고 이름·단계(MVP·EXTENSION)·활성 여부를 준다. 판이 없는 규칙은 `active=false`, `current=null`. 7.1 표 밖의 판이 생기면 이름 없이 뒤에 싣는다 | 작업 "R1~R10 활성 여부·임계값". 확장 규칙(R8~R10)도 비활성으로 보인다 |
 | R6 | 자기 판이 없다. 감싼 규칙의 `thresholds.r6` 가 설정 객체이면 그 규칙으로 적용되므로 `applied_with` 에 싣고, 하나라도 있으면 활성(`r6: null` 은 꺼진 것). 등록부가 R6 자기 판을 두면 그 판도 `current` 로 싣는다 | ai 등록부가 R6 값을 감싼 규칙에 함께 적는다(rule_catalog.py) |
 | 적용 기간 | `versions` 에 모든 판(닫힌 판·교실 시험 판 포함)의 `valid_from_ms`·`valid_to_ms` 만 싣는다(값 없이) | FR-113 "적용 기간 조회". 값까지 모두 실으면 화면에 쓰지 않는 무게가 붙는다 |

@@ -47,6 +47,7 @@ import tools.jackson.databind.node.ObjectNode;
  * </ul>
  * 규칙 프로필은 현장 설정(site.rule_profile)을 따른다. 이전 묶음의 프로필을 잇지 않는다(S15P31A101-654,
  * docs/design/S15P31A101-654-ppe-r3-demo.md). 프로필을 지정한 발행은 현장 설정도 그 값으로 바꾼다.
+ * 기본은 교실 시험이다(S15P31A101-669, 시연 고정. 현장 행이 없을 때도 교실 시험).
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -55,6 +56,8 @@ public class ConfigBundleService {
     public static final String OPERATION = "OPERATION";
     public static final String CLASSROOM_TEST = "CLASSROOM_TEST";
     static final Set<String> RULE_PROFILES = Set.of(OPERATION, CLASSROOM_TEST);
+    /** 현장 설정이 없을 때의 규칙 기준. 시연 고정으로 교실 시험(S15P31A101-669, DB 기본값 V67 과 같다) */
+    public static final String DEFAULT_RULE_PROFILE = RuleSelection.DEFAULT_PROFILE;
     private static final String VERSION_PREFIX = "cfg-";
     private static final Logger log = LoggerFactory.getLogger(ConfigBundleService.class);
 
@@ -122,14 +125,14 @@ public class ConfigBundleService {
         }
     }
 
-    /** 현장 규칙 기준(site.rule_profile). 현장 행이 없으면 운영 */
+    /** 현장 규칙 기준(site.rule_profile). 현장 행이 없으면 교실 시험(DEFAULT_RULE_PROFILE) */
     public String ruleProfile() {
         return siteRuleProfile(sites.siteId());
     }
 
     private String siteRuleProfile(String siteId) {
         return jdbc.queryForList("SELECT rule_profile FROM site WHERE site_id = :site",
-                new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(OPERATION);
+                new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(DEFAULT_RULE_PROFILE);
     }
 
     private void saveRuleProfile(String siteId, String ruleProfile) {

@@ -510,7 +510,8 @@ public class TbmReportRepository {
             rows = jdbc.query(
                     "SELECT r.rule_id, r.rule_version, r.legal_basis FROM (" + RuleSelection.ACTIVE_FOR_PROFILE
                             + ") r ORDER BY length(r.rule_id), r.rule_id",
-                    new MapSqlParameterSource("profile", "OPERATION"),
+                    // 적용된 묶음이 없으면 다음 묶음이 고를 현장 규칙 기준의 판(기본 교실 시험, S15P31A101-669)
+                    new MapSqlParameterSource("profile", jdbc.queryForObject(RuleSelection.SITE_PROFILE, site, String.class)),
                     (rs, i) -> new RuleRow(rs.getString("rule_id"), rs.getInt("rule_version"), rs.getString("legal_basis")));
         }
         long repVersion = rows.stream().mapToLong(RuleRow::ruleVersion).max().orElse(1L);

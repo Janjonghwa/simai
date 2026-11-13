@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.rule;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
@@ -202,6 +203,23 @@ class RuleSceneIntegrationTest {
         assertThat(r2.at("/thresholds/profile/height_threshold_m").asDouble()).isEqualTo(0.35);
         // 감싼 규칙이 없으면 R6 도 비활성
         assertThat(body.get("rules").get(5).get("active").asBoolean()).isFalse();
+    }
+
+    /** S15P31A101-669: 적용된 묶음이 없으면 현장 규칙 기준(기본 교실 시험)의 판을 준다. 묶음을 만들 때와 같은 선택이다 */
+    @Test
+    void 적용된_묶음이_없으면_현장_기준인_교실_시험_판을_준다() throws Exception {
+        // 시험 DB 를 함께 쓰는 다른 시험이 적용된 묶음을 남겼으면 이 경우를 만들 수 없다
+        assumeTrue(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE applied_at IS NOT NULL", Long.class) == 0);
+        assertThat(jdbc.queryForObject("SELECT rule_profile FROM site WHERE site_id = 'classroom-1'", String.class))
+                .isEqualTo("CLASSROOM_TEST");
+
+        JsonNode body = get("/api/rules", token("VIEWER"), 200);
+
+        assertThat(body.get("rule_profile").asString()).isEqualTo("CLASSROOM_TEST");
+        assertThat(body.get("config_version").isNull()).isTrue();
+        JsonNode r3 = body.get("rules").get(2).get("current");
+        assertThat(r3.get("rule_version").asInt()).isEqualTo(1001);
+        assertThat(r3.at("/thresholds/profile/height_threshold_m").asDouble()).isEqualTo(0.35);
     }
 
     @Test

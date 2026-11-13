@@ -43,9 +43,9 @@ const BUNDLE_LIST_LIMIT = 20;
 /** 묶음이 가리키는 보정 문서 버전·거부 사유(고정 흉내). */
 const CALIBRATION_VERSION = 'cal-7';
 const REJECT_REASON = 'VALIDATION_FAILED';
-/** 발행 요청이 고를 수 있는 규칙 프로필. 안 고르면 앞의 것(운영)이다. */
+/** 발행 요청이 고를 수 있는 규칙 프로필. 안 고르면 현장 기본인 교실 시험이다(S15P31A101-669). */
 const RULE_PROFILES = ['OPERATION', 'CLASSROOM_TEST'] as const;
-const DEFAULT_RULE_PROFILE = RULE_PROFILES[0];
+const DEFAULT_RULE_PROFILE = 'CLASSROOM_TEST' satisfies (typeof RULE_PROFILES)[number];
 /** Tier 0 가 새 구성 묶음을 받아 ACK 하기까지 걸리는 시간(ms) 흉내. */
 const ACK_DELAY_MS = 3_000;
 /** 구역 다각형 꼭짓점 수의 범위(서버 검사). */
