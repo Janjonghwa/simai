@@ -31,6 +31,8 @@
       "drift_watch_enabled": true,             사람 관절 보정 활성 시 틀어짐 감시(기본 true)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
       "camera_check_enabled": true,            세팅 「카메라 확인」 입력 내보내기(기본 켜짐, LIVE 입력, 워커 요청 파일이 있을 때만 씀)
+      "offload_side_work": false,              판정에 안 끼는 곁가지 일(아바타 입력 공유 파일 쓰기)을 spawn 자식 프로세스로 뺀다
+                                               (기본 끔. 끄면 지금 경로 그대로, docs/design/S15P31A101-662-tier0-stage-latency.md)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
       "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
@@ -42,6 +44,8 @@
 
     SIMAI_ROOT                       Network Volume 루트 (기본 /workspace/simai). state_dir 기본값의 부모
     SIMAI_TIER0_HUMAN_CALIBRATION    사람 관절 보정 감시·후보 경로 (기본 0, 1이면 켬)
+    SIMAI_TIER0_OFFLOAD_SIDE_WORK    곁가지 일 프로세스 분리 (0 또는 1, 있으면 설정 파일 offload_side_work 보다 우선, -662)
+    SIMAI_TIER0_CUDA_STREAM_PRIORITY 검출 CUDA 스트림 우선순위 normal(기본)·high (자원 격리, yolo_detector, -662)
     SIMAI_TIER0_ID                   Tier 0 인스턴스 ID (기본 tier0-01)
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
     SIMAI_TIER0_WEIGHTS              엔진이 없을 때 ultralytics 로 여는 가중치(.pt) 경로 (느리다, 경고를 남긴다)
@@ -221,6 +225,10 @@ class Tier0Settings:
     drift_watch_enabled: bool = True
     event_frames_enabled: bool = True
     camera_check_enabled: bool = True
+    offload_side_work: bool = False
+    cuda_stream_priority: str = "normal"
+    """검출 CUDA 스트림 우선순위 normal·high(SIMAI_TIER0_CUDA_STREAM_PRIORITY, -662)"""
+    """판정에 안 끼는 곁가지 일(아바타 입력 공유 쓰기)을 spawn 자식 프로세스로 뺀다(기본 끔, S15P31A101-662)"""
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
     rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
@@ -623,6 +631,17 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     camera_check_enabled = doc.get("camera_check_enabled", True)
     if not isinstance(camera_check_enabled, bool):
         raise Tier0ConfigError("camera_check_enabled 는 bool이다")
+    offload_side_work = doc.get("offload_side_work", False)
+    if not isinstance(offload_side_work, bool):
+        raise Tier0ConfigError("offload_side_work 는 bool이다")
+    offload_env = (env.get("SIMAI_TIER0_OFFLOAD_SIDE_WORK") or "").strip()
+    if offload_env:
+        if offload_env not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_OFFLOAD_SIDE_WORK 는 0 또는 1이다")
+        offload_side_work = offload_env == "1"
+    cuda_stream_priority = (env.get("SIMAI_TIER0_CUDA_STREAM_PRIORITY") or "normal").strip().lower()
+    if cuda_stream_priority not in ("normal", "high"):
+        raise Tier0ConfigError("SIMAI_TIER0_CUDA_STREAM_PRIORITY 는 normal 또는 high 다")
     i1 = None if file is not None else _i1({**env, "SIMAI_TIER0_ID": gateway_id})
     control = None if file is not None else _control(env)
     if sim is not None:
@@ -637,6 +656,8 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         drift_watch_enabled=drift_watch_enabled,
         event_frames_enabled=event_frames_enabled,
         camera_check_enabled=camera_check_enabled,
+        offload_side_work=offload_side_work,
+        cuda_stream_priority=cuda_stream_priority,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
         rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),

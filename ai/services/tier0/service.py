@@ -66,6 +66,7 @@ from services.tier0.perception import DetectorFeed, FrameFeed, Perception, PoseD
 from services.tier0.restore_link import RestoreLink
 from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
+from services.tier0.thread_cpu import ThreadCpuSampler
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
 from simai_ai.calibration.live_safety import SwapProbation
 from simai_ai.calibration.camera_check import load_baseline as load_camera_check_baseline
@@ -96,6 +97,7 @@ from simai_ai.tracking.clock_sync import Tier0Clock, Tier0ClockSync
 from simai_ai.tracking.decision_time import ClockAwareVerification, DecisionClock
 from simai_ai.tracking.gateway_link import GatewayLinkMonitor
 from simai_ai.tracking.local_tracker import BackendFactory, MultiCameraLocalTracker
+from simai_ai.tracking.stage_timing import StageTiming
 from simai_ai.tracking.system_health import ProgressWatchdog
 from simai_ai.tracking.world_track import session_prefix_from_ms
 
@@ -115,6 +117,7 @@ JUDGE_OVERRUN_YIELD_S = 0.01  # 비공정한 판정 lock 의 즉시 재획득을
 DETECT_IDLE_WAIT_MAX_S = 0.005  # 새 프레임이 아직 없을 때 검출 루프가 짧게 쉬는 상한(-383)
 STATUS_EVERY_S = 1.0
 MARKER_EVERY_S = 5.0
+STAGE_TIMING_EVERY_S = 30.0  # [tier0] stage_timing 줄 주기
 QUEUE_WAIT_EXCEEDED = str(SkipReason.QUEUE_WAIT_EXCEEDED)  # LIVE 입력 추론 대기 상한 초과(지연 표본에 싣는다)
 
 # 입력별 판정 출처. 녹화 재생은 REPLAY: 실제 알림 채널로 나가지 않는다(AGENTS 규칙 5, 명세 7장·부록 E). 없으면 LIVE
@@ -361,6 +364,10 @@ class Tier0Service:
         """이 보정에서 재검증으로 되돌린 횟수(카메라별). 새 보정이 활성화되면 비운다"""
         self.camera_check_tap: Any | None = None
         self._calibration_message_cursor = 0
+        # 기존 30초 stage_timing 줄에 더하는 계측(S15P31A101-662, 판정에 쓰지 않음): 루프 깨어남 지연(GIL 대기 근사)·스레드 CPU
+        self.loop_timing = StageTiming()
+        self.cpu_sampler = ThreadCpuSampler()
+        self.thread_cpu: dict[str, Any] | None = None
 
     def _event(self, name: str) -> None:
         self.events.append(name)
@@ -480,7 +487,14 @@ class Tier0Service:
         if s.env.get("SIMAI_AVATAR_SHARE") == "1":
             from simai_ai.io.avatar_channel import LatestChannelWriter, avatar_channel_path
             root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
-            avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
+            if s.offload_side_work:
+                # 곁가지 분리(-662, 기본 끔): 문서 조립은 판정 lock 밖 조정 스레드, NPZ 쓰기는 spawn 자식. 결과 파일 형식은 같다
+                from services.tier0.side_work import OffloadedChannelWriter
+
+                avatar_writer = OffloadedChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
+                log.info("곁가지 일 프로세스 분리 켬: 아바타 입력 공유 쓰기")
+            else:
+                avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
                                      input_provenance=provenance, avatar_writer=avatar_writer,
                                      roi_enabled=s.roi_filter.enabled, roi_margin_m=s.roi_filter.margin_m,
@@ -867,7 +881,7 @@ class Tier0Service:
             raise Tier0StartError(f"{s.input_mode.upper()} 입력: 검출기가 없다(SIMAI_TIER0_ENGINE={s.engine_path!r}, "
                                   f"SIMAI_TIER0_WEIGHTS={s.weights_path!r} 둘 다 없음)", 4)
         try:
-            return UltralyticsPoseDetector(model, imgsz=s.imgsz)
+            return UltralyticsPoseDetector(model, imgsz=s.imgsz, high_priority_stream=s.cuda_stream_priority == "high")
         except DetectorUnavailable as e:
             raise Tier0StartError(f"{s.input_mode.upper()} 입력: {e}", 4) from e
         except Exception as e:  # noqa: BLE001 - 엔진·가중치를 읽지 못함(손상·GPU 불일치)
@@ -1482,7 +1496,7 @@ class Tier0Service:
                 log.exception("검출 루프 단계 실패")
                 processed = 0
             if processed <= 0:
-                self._stop.wait(idle_wait)
+                self._wait_measured("detect_wake_lag", idle_wait)
                 next_at = time.monotonic()
                 continue
             next_at += period
@@ -1490,7 +1504,7 @@ class Tier0Service:
             if delay < 0:
                 next_at = time.monotonic()
                 continue
-            self._stop.wait(delay)
+            self._wait_measured("detect_wake_lag", delay)
 
     def _run_judge(self) -> None:
         period = self.settings.tick_ms / 1000.0
@@ -1534,11 +1548,40 @@ class Tier0Service:
             if delay < 0:
                 next_at = time.monotonic()
                 delay = JUDGE_OVERRUN_YIELD_S
-            self._stop.wait(delay)
+            self._wait_measured("judge_wake_lag", delay)
+
+    def _wait_measured(self, stage: str, delay: float) -> bool:
+        """루프 쉬기. 깨어난 시각이 예정보다 늦은 만큼을 기록한다(OS 스케줄링 + GIL 다시 잡기 대기 근사, -662). 멈춤이면 True."""
+        target = time.perf_counter() + delay
+        if self._stop.wait(delay):
+            return True
+        self.loop_timing.record(stage, None, max(0.0, (time.perf_counter() - target) * 1000))
+        return False
+
+    def _side_work_status(self) -> dict[str, Any]:
+        """곁가지 분리 스위치와 상태(-662). 아바타 공유가 꺼져 있으면 avatar 는 None."""
+        writer = getattr(getattr(self, "perception", None), "avatar_writer", None)
+        return {"offload": self.settings.offload_side_work,
+                "avatar": writer.status() if hasattr(writer, "status") else None}
+
+    def _frame_age_fields(self) -> dict[str, Any] | None:
+        """카메라별 촬영→추론 시작 프레임 나이 p95·대기 최댓값(I0Ingest 기존 표본, 업로드·디코딩 포함). LIVE 가 아니면 None."""
+        live = self.live_input
+        if live is None:
+            return None
+        out: dict[str, Any] = {}
+        for cam in live.camera_ids:
+            counts = live.ingest.log.counts(cam)
+            out[cam] = {"frame_age_ms_p95": counts["frame_age_ms_p95"], "queue_wait_ms_max": counts["queue_wait_ms_max"]}
+        return out
 
     def _run_housekeeping(self) -> None:
         last_status = last_marker = last_timing = time.monotonic()
-        while not self._stop.wait(HOUSEKEEPING_S):
+        try:
+            self.cpu_sampler.sample()  # 첫 30초 창의 기준
+        except Exception:  # noqa: BLE001
+            log.debug("스레드 CPU 기준 표본 실패", exc_info=True)
+        while not self._wait_measured("housekeeping_wake_lag", HOUSEKEEPING_S):
             try:
                 if self.clock_sync is not None and self.control is not None and self.control.connected:
                     if self.clock_sync.request_due():
@@ -1556,8 +1599,13 @@ class Tier0Service:
                     self._check_warnings()
                     if self.drift_watch is not None:
                         save_baselines(self.settings.baselines_file, self.drift_watch.baselines())
-                if now - last_timing >= 30.0:
+                if now - last_timing >= STAGE_TIMING_EVERY_S:
                     last_timing = now
+                    try:
+                        self.thread_cpu = self.cpu_sampler.sample()
+                    except Exception:  # noqa: BLE001 - 계측 실패가 정리 주기를 멈추지 않는다
+                        self.thread_cpu = None
+                    link = self.link
                     log.info("[tier0] stage_timing %s", json.dumps({
                         "judge": self.perception.timing.summary(),
                         "roi_filtered": dict(self.perception.roi_filtered),
@@ -1565,6 +1613,12 @@ class Tier0Service:
                                      if isinstance(self.perception.feed, DetectorFeed) else None),
                         "input": None if self.live_input is None else self.live_input.bridge.timing.summary(),
                         "reid": None if self.reid_collector is None else self.reid_collector.status(),
+                        # -662 추가: 촬영→추론 시작 프레임 나이·대기, I1 직렬화·송신, 루프 깨어남 지연, 스레드 CPU, 곁가지
+                        "frame_age": self._frame_age_fields(),
+                        "i1": None if link is None else link.client.timing.summary(),
+                        "loops": self.loop_timing.summary(),
+                        "thread_cpu": self.thread_cpu,
+                        "side_work": self._side_work_status(),
                     }))
                 if now - last_marker >= MARKER_EVERY_S:
                     last_marker = now
@@ -1653,13 +1707,19 @@ class Tier0Service:
             "laptop_connected": self.control is not None and self.control.connected,
             "marker_error": self.marker_error,
             "avatar_share": None if avatar_writer is None else {
-                "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
+                "dropped": avatar_writer.dropped, "errors": avatar_writer.errors,
+                # 곁가지 분리(-662) 상태·재시작 수. 꺼져 있으면 None
+                "offload": avatar_writer.status() if hasattr(avatar_writer, "status") else None},
             "reid": None if self.reid_collector is None else self.reid_collector.status(),
             "reid_submission": (self.perception.feed.reid_submission_status()
                                 if isinstance(getattr(self.perception, "feed", None), DetectorFeed) else None),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "input_timing": None if self.live_input is None else self.live_input.bridge.timing.summary(),
             "stage_timing": self.perception.timing.summary(),
+            # -662: I1 직렬화·송신, 루프 깨어남 지연(GIL 대기 근사), 마지막 30초 스레드 CPU(아직 없으면 None)
+            "i1_timing": None if self.link is None else self.link.client.timing.summary(),
+            "loop_timing": self.loop_timing.summary(),
+            "thread_cpu": self.thread_cpu,
             "roi_filtered": dict(self.perception.roi_filtered),
             "detector_timing": (self.perception.feed.timing.summary()
                                 if isinstance(self.perception.feed, DetectorFeed) else None),

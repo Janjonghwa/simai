@@ -10,6 +10,7 @@ from pathlib import Path
 
 from simai_ai.gpu.admission import AvatarAdmissionGate
 from simai_ai.gpu.budget import WorkerGpuSettings
+from simai_ai.gpu.cv_threads import limit_cv2_threads
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.hmr.runtime import FastBodyModel
 from simai_ai.hmr.diagnostics import exception_summary
@@ -31,6 +32,8 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     try:
+        cv2_threads = limit_cv2_threads(env)  # 자원 격리(-662): 같은 Pod 의 Tier 0 CPU 를 덜 빼앗게(keep 이면 그대로)
+        logging.info("cv2 스레드: %s", "그대로" if cv2_threads is None else cv2_threads)
         base, token = env.get("SIMAI_EC2_BASE_URL", ""), env.get("SIMAI_WORKER_TOKEN", "")
         if not base or not token:
             raise ValueError("EC2 주소·워커 토큰 필요")

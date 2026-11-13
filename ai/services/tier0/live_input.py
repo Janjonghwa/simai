@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -75,12 +76,15 @@ class I0Bridge:
         if n == 1 or n % 100 == 0:
             log.warning("%s %s 오류 %d회째 (%s: %s)", camera_id, where, n, type(error).__name__, error)
 
-    def _deliver(self, message: I0Message, camera_id: str) -> None:
+    def _deliver(self, message: I0Message, camera_id: str, started: float | None = None) -> None:
         if self._clips is not None:
             try:
                 self._clips(message)
             except Exception as e:  # noqa: BLE001 - 링 버퍼 오류가 디코딩 경로를 막지 않는다
                 self._count(camera_id, "clips", e)
+        if started is not None:
+            # 수신 처리(I0 기록 → 메시지 변환 → 클립 링 버퍼). 소켓 읽기·TLS 는 넣지 않는다(-662). 디코딩은 아래 구간
+            self.timing.record("frame_receive", None, (time.perf_counter() - started) * 1000)
         try:
             with self.timing.measure("frame_receive_decode"):
                 self._ingest.receive(message)
@@ -91,7 +95,8 @@ class I0Bridge:
         self._deliver(codec_info_from_contract(codec_info), codec_info["camera_id"])
 
     def on_frame(self, header: Mapping[str, Any], data: bytes) -> None:
-        self._deliver(frame_from_contract(header, data), header["camera_id"])
+        started = time.perf_counter()
+        self._deliver(frame_from_contract(header, data), header["camera_id"], started)
 
     def on_disconnected(self, camera_id: str) -> None:
         """연결 끝: 다음 연결의 코덱 정보·키프레임까지 관측 없음(대기 프레임·준비 상태 무효화, 번호·손실 기록은 유지).

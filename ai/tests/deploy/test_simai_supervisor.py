@@ -554,9 +554,10 @@ def test_sidecar_cpus_use_cgroup_quota_and_log_it(bs, tmp_path, monkeypatch, cap
             sup.request_stop(signal.SIGTERM)
     sup.sleep = ticking
     assert sup.run() == 0
-    assert w.last("vllm").cpus == w.last("worker").cpus == set(range(212, 224)) and w.last("tier0").cpus is None
+    # Tier 0 는 같은 n(24)의 앞쪽 12개(-662): 사이드카와 겹치지 않는다
+    assert w.last("vllm").cpus == w.last("worker").cpus == set(range(212, 224)) and w.last("tier0").cpus == set(range(12))
     err = capsys.readouterr().err
-    assert "affinity 224개" in err and "23.8 vCPU" in err and "212-223 (12개)" in err
+    assert "affinity 224개" in err and "23.8 vCPU" in err and "212-223 (12개)" in err and "0-11 (12개)" in err
 
 
 @pytest.mark.parametrize("spec", ["x-y", "20-30"])
@@ -566,15 +567,37 @@ def test_bad_sidecar_cpus_is_usage_error(bs, spec):
     assert e.value.code == bs.EXIT_USAGE
 
 
-def test_sidecars_are_pinned_tier0_is_not(bs, tmp_path, monkeypatch):
+@pytest.mark.parametrize("env, tier0", [
+    ({}, set(range(6))),  # 기본 auto: 사이드카 뒤쪽 6개, Tier 0 앞쪽 6개(-662)
+    ({"SIMAI_TIER0_CPUS": "none"}, None),  # 되돌리기: Tier 0 는 묶지 않는다(-662 전과 같다)
+])
+def test_sidecars_are_pinned_back_and_tier0_front(bs, tmp_path, monkeypatch, env, tier0):
     monkeypatch.setattr(bs, "usable_cpus", lambda: list(range(12)))
     monkeypatch.setattr(bs, "cgroup_vcpu", lambda read=None: (None, None))  # 시험 기계의 실제 cgroup 할당량에 기대지 않는다
     w = World()
-    sup = _sup(bs, tmp_path, monkeypatch, w)
+    sup = _sup(bs, tmp_path, monkeypatch, w, env=env)
     _start(sup, w)
     w.ready = w.healthy = True
     _settle(sup, w, 12)
-    assert w.last("vllm").cpus == w.last("worker").cpus == set(range(6, 12)) and w.last("tier0").cpus is None
+    assert w.last("vllm").cpus == w.last("worker").cpus == set(range(6, 12)) and w.last("tier0").cpus == tier0
+
+
+@pytest.mark.parametrize("spec, avail, sidecar, quota, want", [
+    (None, list(range(16)), set(range(8, 16)), None, set(range(8))),
+    ("auto", list(range(4)), None, None, None),  # 사이드카를 묶지 않으면 Tier 0 도 묶지 않는다
+    ("auto", list(range(224)), set(range(212, 224)), 23.8, set(range(12))),  # 할당량 24 → 앞쪽 12
+    ("none", list(range(16)), set(range(8, 16)), None, None),
+    ("0-3", list(range(16)), set(range(8, 16)), None, {0, 1, 2, 3}),
+])
+def test_tier0_cpu_affinity_rule(bs, spec, avail, sidecar, quota, want):
+    assert bs.tier0_cpus(spec, avail, sidecar, quota) == want
+
+
+@pytest.mark.parametrize("spec", ["x", "100-120", "6-9"])
+def test_bad_tier0_cpus_is_usage_error(bs, spec):
+    with pytest.raises(bs.BootstrapError) as e:
+        bs.tier0_cpus(spec, list(range(16)), set(range(8, 16)))
+    assert e.value.code == bs.EXIT_USAGE
 
 
 def test_worker_env_file_goes_through_wait_tier0_only_for_worker(bs, tmp_path, monkeypatch):

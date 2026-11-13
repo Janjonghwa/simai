@@ -75,6 +75,7 @@ from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, Backoff
 from services.tier0.health import HEALTH_SCHEMA_VERSION
 from services.tier0.serial_tls import SerialTLSContext, SerialTLSSocket
 from simai_ai.risk import Clock
+from simai_ai.tracking.stage_timing import StageTiming
 from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
 log = logging.getLogger("services.tier0.i1")
@@ -550,6 +551,8 @@ class I1Client:
         self._failures = 0
         self.stats = I1Stats()
         self.last_error: str | None = None
+        # 송신 스레드의 직렬화·송신 시간(S15P31A101-662, 판정에 쓰지 않음). world_state 와 나머지를 나눠 센다
+        self.timing = StageTiming()
 
     # --- 구성 -----------------------------------------------------------------------
 
@@ -902,6 +905,8 @@ class I1Client:
                     self._cond.notify_all()
 
     def _send(self, conn: Connection, message: Mapping[str, Any]) -> None:
+        stage = "world_state" if message.get("msg_type") == "world_state" else "other"
+        started = time.perf_counter()
         try:  # JSON 에 NaN·Infinity 를 싣지 않는다(계약 수는 유한)
             text = json.dumps(message, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         except (TypeError, ValueError) as e:
@@ -909,6 +914,8 @@ class I1Client:
                 self.stats.unserializable += 1
             log.error("I1 %s 를 JSON 으로 만들 수 없어 버렸다 (%s)", message.get("msg_type"), type(e).__name__)
             raise Unserializable(str(message.get("msg_type"))) from None
+        serialized = time.perf_counter()
+        self.timing.record(f"i1_serialize.{stage}", None, (serialized - started) * 1000)
         try:
             with self._send_lock:
                 with self._cond:
@@ -925,6 +932,7 @@ class I1Client:
             self.last_error = error
             abort_connection(conn)  # 닫기 프레임을 보내려다 다시 막히지 않게 소켓부터 끊는다
             raise SendFailed(error) from None
+        self.timing.record(f"i1_send.{stage}", None, (time.perf_counter() - serialized) * 1000)
         kind = str(message.get("msg_type"))
         with self._cond:
             self.stats.sent[kind] = self.stats.sent.get(kind, 0) + 1

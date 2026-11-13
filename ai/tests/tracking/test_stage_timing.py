@@ -13,7 +13,7 @@ def test_wall_cpu_people_buckets_are_bounded_and_use_injected_clocks():
     summary = timing.summary()
     assert summary["tick"]["4"] == {
         "count": 3, "window_samples": 2,
-        "wall_ms": {"mean": 250., "p95": 300., "max": 300.},
-        "thread_cpu_ms": {"mean": 10., "p95": 10., "max": 10.},
+        "wall_ms": {"mean": 250., "p50": 200., "p95": 300., "max": 300.},
+        "thread_cpu_ms": {"mean": 10., "p50": 10., "p95": 10., "max": 10.},
     }
     assert "unknown" in summary["decode"] and "7+" in summary["tick"]
