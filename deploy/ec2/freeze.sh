@@ -50,7 +50,7 @@ case "$action" in
             state='동결 중'; [ "$expires" -gt "$(date -u +%s)" ] || state='동결 만료'
             echo "freeze: $state (사유: $(sed -n '2p' "$file"), 만료: $(date -u -d "@$expires" '+%Y-%m-%d %H:%M:%S UTC'), 설정자: $(sed -n '3p' "$file"))"
         fi
-        # 진행 중 작업·세팅으로 deploy.sh 가 미룬 배포(S15P31A101-676). 기록 형식은 deploy.sh 의 HOLD 설명
+        # 진행 중 작업·세팅·Tier 0 연결·녹화 업로드로 deploy.sh 가 미룬 배포(S15P31A101-676·-682). 기록 형식은 deploy.sh 의 HOLD 설명
         hold=$SIMAI/pending/hold
         utc() { case "$1" in ''|*[!0-9]*) echo '?' ;; *) date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC' ;; esac; }
         if [ -d "$SIMAI/pending" ] && [ ! -x "$SIMAI/pending" ]; then

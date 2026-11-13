@@ -99,7 +99,7 @@ dev 에 push(머지)되면 Jenkins 작업 `simai` 가 검사(`docs/design/ci-pip
 ```
 Jenkins(컨테이너)  git archive HEAD | ssh ubuntu@host.docker.internal "deploy <커밋>"
 호스트 sshd        authorized_keys 의 Jenkins 키 → /opt/simai/bin/deploy.sh 만 실행(command=)
-deploy.sh          (진행 중 작업·세팅이면 tar 를 pending/ 에 보류, S15P31A101-676) → tar 풀기(repo.new) → bake ec2 → repo 바꾸기
+deploy.sh          (진행 중 작업·세팅·Tier 0 연결·녹화 업로드면 tar 를 pending/ 에 보류, S15P31A101-676·-682) → tar 풀기(repo.new) → bake ec2 → repo 바꾸기
                    → SIMAI_TAG → up -d --wait → https 확인 → 오래된 이미지 정리
                    실패: repo·SIMAI_TAG 를 이전 판으로 돌리고 up, Jenkins 빌드 실패(GitLab ✘)
 ```

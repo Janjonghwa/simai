@@ -1,4 +1,4 @@
-"""배포 보류·보류 배포 자동 실행(S15P31A101-676). deploy.sh·deploy-pending.sh·freeze.sh 를 가짜 docker·flock·curl 로 돌린다.
+"""배포 보류·보류 배포 자동 실행(S15P31A101-676, Tier 0 연결·녹화 업로드 -682). deploy.sh·deploy-pending.sh·freeze.sh 를 가짜 docker·flock·curl 로 돌린다.
 
 실제 EC2·Docker 는 쓰지 않는다. 가짜 docker 는 `exec`(DB 조회) 응답을 파일로 받고 부른 명령을 기록한다.
 """
@@ -146,6 +146,17 @@ class Host:
             else None
         )
 
+    def set_env(self, **extra):
+        lines = ["SIMAI_TAG=old", "SIMAI_DOMAIN=example.test"]
+        lines += [f"{key}={value}" for key, value in extra.items()]
+        (self.root / ".env").write_text(
+            "".join(f"{line}\n" for line in lines), encoding="utf-8", newline="\n"
+        )
+
+    def ignored(self):
+        path = self.pending / "ignored"
+        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
     def age_hold(self, hours):
         lines = self.hold()
         lines[1] = str(int(time.time()) - int(hours * 3600))
@@ -198,7 +209,13 @@ def test_nothing_in_progress_deploys(host):
 
 
 @pytest.mark.parametrize(
-    "rc,out", [(1, None), (None, "ERROR: relation does not exist")]
+    "rc,out",
+    [
+        (1, None),
+        (None, "ERROR: relation does not exist"),
+        (None, "tier0 1700000000"),  # 표시 칸(마지막 수신)이 빠진 줄
+        (None, "upload x 3"),
+    ],
 )
 def test_db_failure_deploys_with_warning(host, rc, out):
     host.db(*([out] if out else []), rc=rc)
@@ -263,7 +280,7 @@ def test_pending_runs_after_work_ends(host):
     host.db("work 48")
     assert host.deploy(COMMIT_A).returncode == 0
     still = host.run("deploy-pending.sh")
-    assert still.returncode == 0 and "아직 작업·세팅 진행 중(작업 48)" in still.stdout
+    assert still.returncode == 0 and "아직 작업·세팅·GPU 세션 진행 중(작업 48)" in still.stdout
     assert host.hold()[0] == COMMIT_A and host.revision() is None
     host.db()
     done = host.run("deploy-pending.sh")
@@ -371,6 +388,136 @@ def test_pending_work_started_during_bake_keeps_attempts(host):
     result = host.run("deploy-pending.sh")
     assert result.returncode == 0 and "다음 차례로 미룬다" in result.stdout
     assert host.hold()[4] == "0" and host.revision() is None
+
+
+def utc(epoch):
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(epoch))
+
+
+# --- S15P31A101-682: Tier 0 연결·녹화 업로드 ---
+# 최근/오래됨의 판정은 DB(ACTIVE_SQL)가 한다. 가짜 DB 는 "최근"이면 줄을 내고 "오래됨"이면 내지 않는다.
+# SQL 조건(임계값·시계·구간 시작)은 docker 기록에 남은 SQL 문으로 확인한다.
+
+
+def test_tier0_recent_holds_with_last_report_reason(host):
+    last = int(time.time()) - 20
+    host.db(f"tier0 {last - 3600} {last}")
+    result = host.deploy(COMMIT_A)
+    assert result.returncode == 0, result.stderr
+    reason = f"Tier 0 연결(마지막 보고 {utc(last)})"
+    assert f"배포 보류({reason})" in result.stdout
+    assert host.hold()[3] == reason and host.revision() is None
+    sql = host.docker_log()
+    # 서버 수신 시각(EC2 시계)으로 최근 3분, 구간을 찾는 창은 안전장치의 두 배(24시간), 미래 시각은 보지 않는다
+    assert "FROM system_health" in sql
+    assert "HAVING max(t) > now() - make_interval(mins => 3)" in sql
+    assert "received_at > now() - make_interval(hours => 24)" in sql
+    assert "received_at <= now() + interval '1 minute'" in sql
+    status = host.run("freeze.sh", "status").stdout
+    assert f"자동 보류 중 (커밋: aaaaaaaaaaaa, 사유: {reason}" in status
+
+
+def test_tier0_stale_deploys_and_pending_runs_after_pod_stops(host):
+    last = int(time.time()) - 20
+    host.db(f"tier0 {last - 600} {last}")
+    assert host.deploy(COMMIT_A).returncode == 0
+    still = host.run("deploy-pending.sh")
+    assert "아직 작업·세팅·GPU 세션 진행 중(Tier 0 연결" in still.stdout
+    assert host.revision() is None
+    host.db()  # Pod 를 껐다: 마지막 health 가 3분보다 오래돼 DB 가 줄을 내지 않는다
+    done = host.run("deploy-pending.sh")
+    assert done.returncode == 0, done.stderr
+    assert "배포 완료" in done.stdout and host.revision() == COMMIT_A[:12]
+    assert host.hold() is None
+
+
+def test_recording_upload_recent_holds_and_stale_deploys(host):
+    host.db(f"upload {int(time.time()) - 900} 3")
+    result = host.deploy(COMMIT_A)
+    assert result.returncode == 0, result.stderr
+    assert "배포 보류(녹화 업로드 3건)" in result.stdout
+    sql = host.docker_log()
+    assert "purpose = 'RECORDING_SEGMENT'" in sql
+    assert "HAVING max(t) > now() - make_interval(mins => 10)" in sql
+    host.db()  # 마지막 발급이 10분보다 오래됐다
+    done = host.run("deploy-pending.sh")
+    assert done.returncode == 0 and host.revision() == COMMIT_A[:12]
+
+
+def test_combined_reason_order(host):
+    now = int(time.time())
+    host.db("work 48", f"tier0 {now - 600} {now - 5}", f"upload {now - 300} 2")
+    result = host.deploy(COMMIT_A)
+    expected = f"작업 48, Tier 0 연결(마지막 보고 {utc(now - 5)}), 녹화 업로드 2건"
+    assert f"배포 보류({expected})" in result.stdout and host.hold()[3] == expected
+
+
+def test_minutes_configurable_and_invalid_falls_back(host):
+    host.set_env(
+        SIMAI_DEPLOY_HOLD_TIER0_MINUTES=5,
+        SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES=20,
+        SIMAI_DEPLOY_HOLD_MAX_HOURS=6,
+    )
+    host.db()
+    assert host.deploy(COMMIT_A).returncode == 0
+    sql = host.docker_log()
+    assert "make_interval(mins => 5)" in sql and "make_interval(mins => 20)" in sql
+    assert "make_interval(hours => 12)" in sql  # 창 = 안전장치 6시간의 두 배
+    host.set_env(SIMAI_DEPLOY_HOLD_TIER0_MINUTES="03", SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES="x")
+    (host.fake / "docker.log").unlink()
+    result = host.deploy(COMMIT_B)
+    assert "SIMAI_DEPLOY_HOLD_TIER0_MINUTES 이 1 이상 정수가 아니라 3분" in result.stderr
+    assert "SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES 이 1 이상 정수가 아니라 10분" in result.stderr
+    sql = host.docker_log()
+    assert "make_interval(mins => 3)" in sql and "make_interval(mins => 10)" in sql
+
+
+def test_tier0_safety_cap_ignores_same_connection_until_pod_restarts(host):
+    now = int(time.time())
+    start = now - 13 * 3600
+    host.db(f"tier0 {start} {now - 60}")
+    assert host.deploy(COMMIT_A).returncode == 0
+    host.age_hold(12.1)
+    host.db(f"tier0 {start} {now - 2}")  # 마지막 수신은 바뀌어도 이어진 구간의 시작(키)은 같다
+    result = host.run("deploy-pending.sh")
+    assert result.returncode == 0, result.stderr
+    assert "12시간을 넘어 진행 중(Tier 0 연결" in result.stderr
+    assert host.revision() == COMMIT_A[:12] and host.hold() is None
+    assert host.ignored() == [f"tier0 {start}"]
+    # 같은 연결이 이어지는 동안은 다음 커밋을 보류하지 않는다
+    assert host.deploy(COMMIT_B).returncode == 0 and host.revision() == COMMIT_B[:12]
+    # Pod 를 껐다 켜면(새 구간 시작) 다시 보류한다
+    host.db(f"tier0 {now - 30} {now - 1}")
+    held = host.deploy(COMMIT_A)
+    assert "배포 보류(Tier 0 연결" in held.stdout and host.revision() == COMMIT_B[:12]
+
+
+def test_safety_cap_keeps_previously_ignored_items(host):
+    # 예전에 넘긴 작업 48(작업 종료를 잊음)이 다음 안전장치 뒤에도 넘긴 채로 남는다(-676 판은 덮어써 잃었다)
+    (host.pending).mkdir(parents=True, exist_ok=True)
+    (host.pending / "ignored").write_text("work 48\n", encoding="utf-8", newline="\n")
+    now = int(time.time())
+    host.db("work 48", f"tier0 {now - 600} {now - 3}")
+    held = host.deploy(COMMIT_A)
+    assert "배포 보류(Tier 0 연결" in held.stdout and "작업 48" not in held.stdout
+    host.age_hold(12.1)
+    assert host.run("deploy-pending.sh").returncode == 0
+    assert host.revision() == COMMIT_A[:12]
+    assert sorted(host.ignored()) == sorted(["work 48", f"tier0 {now - 600}"])
+    assert host.deploy(COMMIT_B).returncode == 0 and host.revision() == COMMIT_B[:12]
+
+
+def test_upload_safety_cap_uses_run_start_as_key(host):
+    now = int(time.time())
+    host.db(f"upload {now - 3600} 4")
+    assert host.deploy(COMMIT_A).returncode == 0
+    host.age_hold(12.1)
+    host.db(f"upload {now - 3600} 1")
+    assert host.run("deploy-pending.sh").returncode == 0
+    assert host.ignored() == [f"upload {now - 3600}"]
+    host.db(f"upload {now - 60} 1")  # 업로드를 쉬었다가(10분 넘게) 새로 시작했다
+    held = host.deploy(COMMIT_B)
+    assert "배포 보류(녹화 업로드 1건)" in held.stdout
 
 
 def test_usage_without_command_fails(host):
