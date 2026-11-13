@@ -21,12 +21,14 @@ contracts/ 생성 타입(S15P31A101-24)이 simai_ai.contracts 에 들어오면 �
 - 수신 측은 모르는 필드를 무시한다(명세 12.1).
 """
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from simai_ai.risk._parse import (
+    INT64_MAX,
     RiskInputError,
     as_bool,
     as_enum,
@@ -295,6 +297,173 @@ class WorldState:
             scene_version=as_str(require(payload, "scene_version", where), f"{where}.scene_version"),
             tracks=tuple(WorldTrack.from_json(t, f"{where}.tracks[{i}]") for i, t in enumerate(tracks)),
         )
+
+    @classmethod
+    def from_payload_fast(cls, payload: Mapping[str, Any]) -> "WorldState":
+        """`from_payload` 와 같은 결과(같은 값의 객체, 같은 예외)를 위치 문자열 없이 만든다(S15P31A101-663).
+
+        판정 루프가 매 tick 자기 프로세스에서 만든 payload 를 다시 옮길 때 쓴다. 검사는 `from_payload` 와 같고, 하나라도
+        걸리면 `from_payload` 를 그대로 불러 같은 RiskInputError(같은 위치 문구)를 낸다. 걸리지 않으면 같은 변환(정수 → float,
+        배열 → tuple, 문자열 → 열거형, UNCERTAIN head_z 옮기기)으로 같은 dataclass 를 만든다. 교차 필드 규칙(__post_init__)은
+        같은 생성자라 그대로 검사한다.
+        """
+        try:
+            return _fast_world_state(payload)
+        except _Fallback:
+            return cls.from_payload(payload)
+
+
+class _Fallback(Exception):
+    """빠른 경로의 검사 실패: 위치 문구가 있는 느린 경로로 다시 한다."""
+
+
+def _f_number(value: Any) -> float:
+    # as_number 와 같은 검사
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise _Fallback
+    try:
+        number = float(value)
+    except OverflowError:
+        raise _Fallback from None
+    if not math.isfinite(number):
+        raise _Fallback
+    return number
+
+
+def _f_opt_number(value: Any) -> float | None:
+    return None if value is None else _f_number(value)
+
+
+def _f_list(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        raise _Fallback
+    return value
+
+
+def _f_vec(value: Any, n: int) -> tuple[float, ...]:
+    items = _f_list(value)
+    if len(items) != n:
+        raise _Fallback
+    return tuple(_f_number(v) for v in items)
+
+
+def _f_opt_vec(value: Any, n: int) -> tuple[float, ...] | None:
+    return None if value is None else _f_vec(value, n)
+
+
+def _f_str(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise _Fallback
+    return value
+
+
+def _f_int(value: Any, minimum: int | None = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _Fallback
+    if minimum is not None and value < minimum:
+        raise _Fallback
+    return value
+
+
+def _f_timestamp(value: Any) -> int:
+    value = _f_int(value, 0)
+    if value > INT64_MAX:
+        raise _Fallback
+    return value
+
+
+def _f_enum(cls: Any, value: Any) -> Any:
+    try:
+        return cls(value)
+    except ValueError:
+        raise _Fallback from None
+
+
+_MISSING = object()
+
+
+def _f_req(obj: Mapping[str, Any], key: str) -> Any:
+    value = obj.get(key, _MISSING)
+    if value is _MISSING:
+        raise _Fallback
+    return value
+
+
+def _f_skeleton(obj: Any) -> Skeleton:
+    if not isinstance(obj, Mapping):
+        raise _Fallback
+    joints = _f_list(_f_req(obj, "joints"))
+    visible = []
+    for v in _f_list(_f_req(obj, "visible")):
+        if not isinstance(v, bool):
+            raise _Fallback
+        visible.append(v)
+    return Skeleton(
+        joint_layout=_f_enum(JointLayout, _f_req(obj, "joint_layout")),
+        joints=tuple(_f_opt_vec(j, 3) for j in joints),
+        visible=tuple(visible),
+        validity=tuple(_f_enum(Validity, v) for v in _f_list(_f_req(obj, "validity"))),
+        joint_source=tuple(_f_enum(JointSource, v) for v in _f_list(_f_req(obj, "joint_source"))),
+    )
+
+
+def _f_track(obj: Any) -> WorldTrack:
+    # WorldTrack.from_json 과 같은 순서·같은 변환
+    if not isinstance(obj, Mapping):
+        raise _Fallback
+    skeleton = obj.get("skeleton")
+    head_validity = _f_enum(Validity, obj["head_z_validity"]) if "head_z_validity" in obj else None
+    head_z = _f_opt_number(_f_req(obj, "head_z"))
+    head_sigma = _f_opt_number(obj.get("head_z_sigma"))
+    uncertain_z: float | None = None
+    uncertain_sigma: float | None = None
+    if head_validity is Validity.UNCERTAIN:
+        uncertain_z, uncertain_sigma, head_z, head_sigma = head_z, head_sigma, None, None
+    frame_age = obj.get("frame_age_ms")
+    if frame_age is not None:
+        frame_age = _f_number(frame_age)
+        if frame_age < 0:
+            raise _Fallback
+    support_id = _f_req(obj, "support_surface_id")
+    return WorldTrack(
+        world_id=_f_str(_f_req(obj, "world_id")),
+        t_last_valid=_f_timestamp(_f_req(obj, "t_last_valid")),
+        observation_state=_f_enum(ObservationState, _f_req(obj, "observation_state")),
+        track_lifecycle=_f_enum(TrackLifecycle, _f_req(obj, "track_lifecycle")),
+        identity_confidence=_f_enum(IdentityConfidence, _f_req(obj, "identity_confidence")),
+        identity_revision=_f_int(_f_req(obj, "identity_revision"), 0),
+        position_xy=_f_vec(_f_req(obj, "position_xy"), 2),
+        position_xy_sigma=_f_vec(_f_req(obj, "position_xy_sigma"), 2),
+        pelvis_xyz=_f_opt_vec(_f_req(obj, "pelvis_xyz"), 3),
+        ground_anchor_xyz=_f_opt_vec(_f_req(obj, "ground_anchor_xyz"), 3),
+        support_surface_id=None if support_id is None else _f_str(support_id),
+        support_surface_validity=_f_enum(SupportSurfaceValidity, _f_req(obj, "support_surface_validity")),
+        contact_validity=_f_enum(Validity, _f_req(obj, "contact_validity")),
+        z_validity=_f_enum(Validity, _f_req(obj, "z_validity")),
+        head_z=head_z,
+        cameras=tuple(_f_str(c) for c in _f_list(_f_req(obj, "cameras"))),
+        frame_age_ms=frame_age,
+        ground_anchor_sigma=_f_opt_vec(obj.get("ground_anchor_sigma"), 3),
+        head_z_sigma=head_sigma,
+        velocity=_f_opt_vec(obj.get("velocity"), 3),
+        skeleton=None if skeleton is None else _f_skeleton(skeleton),
+        head_z_validity=head_validity,
+        head_z_uncertain=uncertain_z,
+        head_z_uncertain_sigma=uncertain_sigma,
+        aliases=tuple(_f_str(w) for w in _f_list(obj.get("aliases") or [])),
+    )
+
+
+def _fast_world_state(payload: Any) -> WorldState:
+    if not isinstance(payload, Mapping):
+        raise _Fallback
+    tracks = _f_list(_f_req(payload, "tracks"))
+    return WorldState(
+        t_latest_global=_f_timestamp(_f_req(payload, "t_latest_global")),
+        calibration_version=_f_str(_f_req(payload, "calibration_version")),
+        scene_version=_f_str(_f_req(payload, "scene_version")),
+        tracks=tuple(_f_track(t) for t in tracks),
+    )
 
 
 def _opt_duration(value: Any, where: str) -> float | None:

@@ -379,6 +379,17 @@ class _Flag:
     """막은 병합의 두 클러스터 키 합. 뒤에 더 많은 근거로 한 클러스터가 되었으면 애매함이 풀린 것으로 보고 붙이지 않는다"""
 
 
+@dataclass
+class _AssignMemo:
+    """`_assign_graph` 한 번 동안의 순수 계산 결과(S15P31A101-663). 키는 입력 그대로라 같은 키면 같은 결과다."""
+
+    linkage: dict[tuple[tuple[TrackKey, ...], tuple[TrackKey, ...]], tuple[float, bool]] = field(default_factory=dict)
+    distance: dict[tuple[tuple[TrackKey, TrackKey], tuple[TrackKey, TrackKey]], float | None] = field(
+        default_factory=dict
+    )
+    hips: dict[tuple[TrackKey, ...], bool] = field(default_factory=dict)
+
+
 class CrossViewAssociator:
     """시각마다 view 를 클러스터로 묶는다. 시각은 늘어나는 순서로만 넣는다(연결 이력이 시각 순서에 기댄다)."""
 
@@ -399,6 +410,10 @@ class CrossViewAssociator:
         """직전 `_pairs`/`_pair` 호출에서 구한 쌍별 2-view 삼각측량 관절 XYZ (관절 수, 3)"""
         self._prepared_now: dict[TrackKey, _Prepared] = {}
         """이번 시각 view 준비 결과 (4대 묶음 허용의 엉덩이 한 점 재투영 검사용, -657)"""
+        self._memo: _AssignMemo | None = None
+        """`_assign_graph` 한 번 동안만 있는 순수 함수 결과 재사용(S15P31A101-663). 그 밖에서는 None 이라 매번 계산한다"""
+        self._threshold_memo: dict[tuple[str, str], tuple[float, float]] | None = None
+        """`_pairs` 한 번 동안만 있는 카메라 쌍 잔차 문턱 재사용(S15P31A101-663). 잔차 표본은 `_pairs` 뒤에만 바뀐다"""
         self._previous: dict[str, frozenset[TrackKey]] = {}
         self._issued = 0
         self._last_t: int | None = None
@@ -596,6 +611,13 @@ class CrossViewAssociator:
         쌍 하나씩 `_pair` 로 계산한 것과 결과가 같다(부동소수 연산 순서만 다르다). 문턱을 넘은 쌍의 판정 근거(일관된
         관절 수, 잔차 중앙값, 높이 범위 밖 관절 수, 바닥 가설 거리)도 카메라 쌍마다 행렬로 한 번에 구한다(S15P31A101-237).
         """
+        self._threshold_memo = {}
+        try:
+            return self._pairs_compute(prepared)
+        finally:
+            self._threshold_memo = None
+
+    def _pairs_compute(self, prepared: dict[TrackKey, _Prepared]) -> dict[tuple[TrackKey, TrackKey], PairEvidence]:
         cfg = self.config
         self._last_pair_joints = {}
         by_camera: dict[str, list[TrackKey]] = {}
@@ -768,7 +790,15 @@ class CrossViewAssociator:
         outside 는 그중 높이 범위 밖 관절 수다. gap(바닥 가설 거리)은 기록·비용에만 쓴다. 가설 높이보다 높은 면 위
         사람일 수 있으므로 이 값으로는 탈락시키지 않는다."""
         cfg = self.config
-        marginal_px, gate_px = self.pair_residual_thresholds(a[0], b[0])
+        memo = self._threshold_memo
+        if memo is None:
+            marginal_px, gate_px = self.pair_residual_thresholds(a[0], b[0])
+        else:
+            # `_pairs` 안에서는 잔차 표본이 바뀌지 않으므로 같은 카메라 쌍(순서 그대로)의 문턱은 같다
+            thresholds = memo.get((a[0], b[0]))
+            if thresholds is None:
+                thresholds = memo[(a[0], b[0])] = self.pair_residual_thresholds(a[0], b[0])
+            marginal_px, gate_px = thresholds
         base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
         if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
             return PairEvidence(a, b, **base, reject=RejectReason.TRIANGULATION)
@@ -1002,7 +1032,27 @@ class CrossViewAssociator:
           시간 연결 간선이 있어도 끊는다.
         - 경계 잔차 해소: `a` 와 `b` 사이에 강한 간선(비경계 통과 쌍 또는 시간 간선이 이긴 통과 쌍)이 하나 이상 있으면
           (`strong_evidence >= 1`) 경계 잔차 병합으로 막지 않는다.
+
+        `_assign_graph` 안에서는 같은 `(a, b)`(순서 그대로) 결과를 다시 쓴다(S15P31A101-663). 입력(pairs·pair_joints·
+        prior_pairs·연결 이력·이번 시각 view)이 그 호출 동안 바뀌지 않는 순수 계산이라 결과가 같다.
         """
+        memo = self._memo
+        if memo is None:
+            return self._graph_linkage_compute(a, b, pairs, pair_joints, prior_pairs)
+        key = (tuple(a), tuple(b))
+        hit = memo.linkage.get(key)
+        if hit is None:
+            hit = memo.linkage[key] = self._graph_linkage_compute(a, b, pairs, pair_joints, prior_pairs)
+        return hit
+
+    def _graph_linkage_compute(
+        self,
+        a: Sequence[TrackKey],
+        b: Sequence[TrackKey],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+    ) -> tuple[float, bool]:
         cfg = self.config
         if cfg.same_camera_exclusive and {k[0] for k in a} & {k[0] for k in b}:
             return math.inf, False
@@ -1038,9 +1088,18 @@ class CrossViewAssociator:
             if four_view_soft and not self._four_view_hips_consistent(union_keys):
                 return math.inf, False
         tol_3d = cfg.cluster_3d_consistency_m if residual_soft_pks else cfg.max_pair_3d_disagreement_m
-        joint_sets = [pair_joints[pk] for pk in feasible_pks if pk in pair_joints]
-        for ja, jb in itertools.combinations(joint_sets, 2):
-            d3 = _pair_3d_distance(ja, jb)
+        joint_pks = [pk for pk in feasible_pks if pk in pair_joints]
+        memo = self._memo
+        for pk_a, pk_b in itertools.combinations(joint_pks, 2):
+            if memo is None:
+                d3 = _pair_3d_distance(pair_joints[pk_a], pair_joints[pk_b])
+            else:
+                # 두 쌍의 3D 어긋남은 대칭(뺄셈 부호만 바뀌고 노름·중앙값은 같다)이라 정렬한 키로 다시 쓴다
+                dkey = (pk_a, pk_b) if pk_a <= pk_b else (pk_b, pk_a)
+                if dkey in memo.distance:
+                    d3 = memo.distance[dkey]
+                else:
+                    d3 = memo.distance[dkey] = _pair_3d_distance(pair_joints[pk_a], pair_joints[pk_b])
             if d3 is not None and d3 > tol_3d:
                 return math.inf, False
 
@@ -1086,6 +1145,16 @@ class CrossViewAssociator:
     def _four_view_hips_consistent(self, keys: Sequence[TrackKey]) -> bool:
         """4대 view 를 엉덩이마다 한 점으로 풀었을 때 재투영 오차 최댓값이 four_view_pelvis_reprojection_px 안인지 (-657).
         엉덩이를 본 view 가 3대 미만이면 모름이라 허용하지 않는다."""
+        memo = self._memo
+        if memo is None:
+            return self._four_view_hips_compute(keys)
+        key = tuple(keys)
+        hit = memo.hips.get(key)
+        if hit is None:
+            hit = memo.hips[key] = self._four_view_hips_compute(keys)
+        return hit
+
+    def _four_view_hips_compute(self, keys: Sequence[TrackKey]) -> bool:
         prepared = self._prepared_now
         if any(k not in prepared for k in keys):
             return False
@@ -1116,19 +1185,25 @@ class CrossViewAssociator:
             return None
         adj: dict[int, list[int]] = {u: [] for u in active}
         valid_edges: list[tuple[int, int]] = []
-        for idx_a, i in enumerate(active):
-            for j in active[idx_a + 1 :]:
-                c = float(cost[i, j])
-                if not (c < cfg.new_cluster_cost) or blocked[i, j] or marginal[i, j]:
-                    continue
-                shares_a = (member & member[i]).any(axis=1)
-                shares_b = (member & member[j]).any(axis=1)
-                near = (shares_b & (cost[i] - c < cfg.ambiguity_margin)) | (
-                    shares_a & (cost[j] - c < cfg.ambiguity_margin)
-                )
-                near[[i, j]] = False
-                if near.any():
-                    continue
+        # 허용 간선: 비용 문턱 안·막지 않음·비경계이고, 두 끝 중 하나와 카메라를 나누는 다른 클러스터가 애매함 범위 안에
+        # 없는 쌍. 쌍마다 행 하나씩 계산하던 것을 (후보 쌍, 클러스터) 행렬로 한 번에 계산한다(S15P31A101-663). 원소별
+        # 뺄셈·비교라 쌍 하나씩 계산한 값과 같고, 죽은 클러스터는 카메라 소속이 비어 있어 결과에 영향이 없다.
+        act = np.asarray(active)
+        open_ = (cost[np.ix_(act, act)] < cfg.new_cluster_cost) & ~blocked[np.ix_(act, act)]
+        open_ &= ~marginal[np.ix_(act, act)]
+        rows, cols = np.nonzero(np.triu(open_, k=1))  # 행 우선 = (i, j) 이중 반복 순서
+        if len(rows):
+            ei, ej = act[rows], act[cols]
+            shares = (member[:, None, :] & member[None, :, :]).any(axis=2)  # shares[i, k]: i 와 k 가 카메라를 나눔
+            c = cost[ei, ej][:, None]
+            near = (shares[ej] & (cost[ei] - c < cfg.ambiguity_margin)) | (
+                shares[ei] & (cost[ej] - c < cfg.ambiguity_margin)
+            )
+            span = np.arange(len(ei))
+            near[span, ei] = False
+            near[span, ej] = False
+            keep = ~near.any(axis=1)
+            for i, j in zip(ei[keep].tolist(), ej[keep].tolist()):
                 adj[i].append(j)
                 adj[j].append(i)
                 valid_edges.append((i, j))
@@ -1252,8 +1327,22 @@ class CrossViewAssociator:
         flags: list[_Flag],
     ) -> list[_Work]:
         """시간 간선(temporal prior)과 제약 그래프 분할(Constrained Graph Clustering)로 클러스터를 묶는다 (S15P31A101-464)."""
-        cfg = self.config
         self._prepared_now = prepared
+        self._memo = _AssignMemo()
+        try:
+            return self._assign_graph_compute(prepared, pairs, pair_joints, prior_pairs, flags)
+        finally:
+            self._memo = None
+
+    def _assign_graph_compute(
+        self,
+        prepared: dict[TrackKey, _Prepared],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+        flags: list[_Flag],
+    ) -> list[_Work]:
+        cfg = self.config
         works = [_Work([k]) for k in sorted(prepared)]
         n = len(works)
         row = {w.keys[0]: r for r, w in enumerate(works)}
@@ -1622,13 +1711,28 @@ def _pair_3d_distance(ja: np.ndarray, jb: np.ndarray) -> float | None:
     both = valid_a & valid_b
     if both.any():
         dists = np.linalg.norm(ja[both] - jb[both], axis=1)
-        joint_d = float(np.median(dists))
+        joint_d = _median_1d(dists)
         return max(pelvis_d, joint_d) if pelvis_d is not None else joint_d
     if pelvis_d is not None:
         return pelvis_d
     ca = np.nanmedian(ja[valid_a, :2], axis=0)
     cb = np.nanmedian(jb[valid_b, :2], axis=0)
     return float(np.linalg.norm(ca - cb))
+
+
+def _median_1d(values: np.ndarray) -> float:
+    """1차원 배열의 `float(np.median(values))` 와 비트 단위로 같은 값(S15P31A101-663: np.median 의 호출 고정 비용이 배정에서 컸다).
+
+    np.median 은 가운데 하나(홀수) 또는 가운데 둘의 평균(짝수, 두 값의 합 / 2)이고 NaN 이 하나라도 있으면 NaN 이다.
+    정렬해도 가운데 값은 같다(정렬하면 NaN 은 맨 뒤)."""
+    ordered = np.sort(values)
+    n = len(ordered)
+    if math.isnan(ordered[-1]):
+        return math.nan
+    mid = n // 2
+    if n % 2:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
 
 
 def _joint_noise_weights(n_joints: int) -> np.ndarray:

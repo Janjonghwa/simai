@@ -1117,6 +1117,8 @@ class WorldTrackManager:
         self.appearance_cost_fn = appearance_cost_fn
         self.feature_lookup = feature_lookup
         self._tick_features: dict[TrackKey, LocalTrackFeature | None] = {}
+        self._gallery_sim_memo: dict[tuple[str, tuple[TrackKey, ...]], tuple[Any, int, float | None]] = {}
+        """이번 tick (World ID, 클러스터 키) → (갤러리, 그 version, 유사도). tick 특징을 다시 읽을 때 비운다(S15P31A101-663)"""
         self.galleries = ReidGalleryStore(
             GalleryConfig(dormant_ttl_ms=max(1, self.config.reid_dormant_ttl_ms))
         )
@@ -1284,6 +1286,7 @@ class WorldTrackManager:
         # 비동기 결과는 tick 경계에서 로컬 키당 한 번만 읽는다. 같은 tick의 후보/갤러리가
         # 서로 다른 임베딩을 보지 않으며, 이후 도착한 결과는 다음 tick에 반영한다(-499).
         self._tick_features = {}
+        self._gallery_sim_memo = {}
         if self.feature_lookup is not None and cfg.reid_enabled:
             for key in sorted({key for cluster in frame.clusters for key in cluster.keys}):
                 self._tick_features[key] = self.feature_lookup(key[0], key[1], t)
@@ -2558,15 +2561,26 @@ class WorldTrackManager:
         gallery = self.galleries.get(world_id)
         if gallery is None or len(gallery) == 0:
             return None
+        # 결과는 갤러리 항목과 클러스터 키의 tick 특징(update 첫머리에 한 번 읽음)으로만 정해진다. 같은 tick 에 같은
+        # 갤러리 객체·같은 version 이면 다시 쓴다(배정 비용·스왑 검사·갤러리 갱신이 같은 짝을 여러 번 묻는다, S15P31A101-663)
+        memo_key = (world_id, cluster.keys)
+        hit = self._gallery_sim_memo.get(memo_key)
+        if hit is not None and hit[0] is gallery and hit[1] == gallery.version:
+            return hit[2]
         feats = self._cluster_features(cluster, t)
         if not feats:
-            return None
-        best = -1.0
-        for f in feats:
-            sim = gallery.similarity(f.embedding, camera_id=f.camera_id, face_embedding=getattr(f, "face_embedding", None))
-            if sim is not None and sim > best:
-                best = sim
-        return best if best >= 0.0 else None
+            result = None
+        else:
+            best = -1.0
+            for f in feats:
+                sim = gallery.similarity(
+                    f.embedding, camera_id=f.camera_id, face_embedding=getattr(f, "face_embedding", None)
+                )
+                if sim is not None and sim > best:
+                    best = sim
+            result = best if best >= 0.0 else None
+        self._gallery_sim_memo[memo_key] = (gallery, gallery.version, result)
+        return result
 
     def _cluster_track_sim(
         self,

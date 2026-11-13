@@ -248,7 +248,7 @@ class JudgmentLoop:
         if active is None or self._last is None:
             return TickResult(None, version, None, ())
         payload, msg_id = self._last
-        world = WorldState.from_payload(payload)
+        world = WorldState.from_payload_fast(payload)  # from_payload 와 같은 결과·같은 예외, 위치 문구만 늦게 만든다(-663)
         state = (self._active_calibration_state()
                  if payload["calibration_version"] == self.perception.rig.calibration_version
                  else self._last_calibration_state)
@@ -313,7 +313,7 @@ class JudgmentLoop:
         if active is None:
             self.stats.no_config_ticks += 1
         else:
-            world = WorldState.from_payload(payload)
+            world = WorldState.from_payload_fast(payload)  # from_payload 와 같은 결과·같은 예외(-663)
             with self.timing.measure("risk_evaluate", len(payload["tracks"])):
                 evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
                                              calibration_state=self._last_calibration_state,
