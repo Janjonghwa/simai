@@ -266,6 +266,12 @@ public class GpuSessionService implements Tier0SessionTokens {
                 new MapSqlParameterSource("ids", List.copyOf(ids)), (rs, i) -> UUID.fromString(rs.getString("id"))));
     }
 
+    /** 이 워커가 지금 열린 GPU 세션에 묶여 있는지(GPU 캐시 서명, S15P31A101-700) */
+    public boolean openSessionForWorker(String workerId) {
+        return !jdbc.queryForList("SELECT 1 FROM gpu_session s WHERE s.worker_id = :worker AND " + OPEN + " LIMIT 1",
+                new MapSqlParameterSource("worker", workerId), Integer.class).isEmpty();
+    }
+
     @Override
     public Optional<UUID> activeSessionForTier0Token(String tokenSha256Hex) {
         return jdbc.query("SELECT s.session_id::text AS id FROM gpu_session s WHERE s.tier0_token_hash = :hash AND " + OPEN,

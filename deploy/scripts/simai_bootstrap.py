@@ -4,6 +4,8 @@
     simai-bootstrap tier0 [Tier 0 인자...]      준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0). 옵션으로 시작해도(--config ...) tier0
                                                 SIMAI_SERVICES 에 vllm·worker·avatar·ppe 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타·PPE (아래)
     simai-bootstrap                             (인자 없음) 이 사용법만 보이고 64 로 끝난다(아무것도 띄우지 않음. 이미지 기본 CMD 는 tier0 를 명시한다)
+    simai-bootstrap auto                        이미지 기본 CMD(S15P31A101-700): 부팅 비밀값 환경 변수(SIMAI_GPU_BOOT_SECRET·_ID·SIMAI_EC2_BASE_URL)가
+                                                있으면 simai-gpu-boot auto(GPU 세션 등록 → 캐시 → preflight → lobby 자동)로 exec, 없으면 tier0 와 같다
     simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
                                                 Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 --services(기본 넷 다)만 따르고
                                                 SIMAI_SERVICES 는 보지 않는다. 워커 ID 는 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)
@@ -152,7 +154,9 @@ MIN_CC = (8, 0)  # Ampere 이상
 MIN_VRAM_MB = 22_500  # 24GB급(A10·L4 는 nvidia-smi 에서 약 23,000 MiB 로 보인다)
 MIN_WORKER_VRAM_MB = 45_000  # 48GB급(A40·L40S 는 약 46,000 MiB). 그보다 작으면 분석 부하를 같은 GPU 에 올리지 않는다(명세 3.12)
 TOKEN_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")  # 자식 환경에서 지울 이름. 읽는 것은 HF_TOKEN 하나
-SECRET_ENVS = (*TOKEN_ENVS, "SIMAI_WORKER_TOKEN", "SIMAI_TIER0_TOKEN")
+# GPU 자동 부팅 비밀 값(S15P31A101-700): 부팅 비밀값·Tier 0 TLS 비밀 키. simai-gpu-boot 만 읽고 여기서는 지우기·가리기만 한다
+BOOT_SECRET_ENVS = ("SIMAI_GPU_BOOT_SECRET", "SIMAI_TIER0_TLS_PRIVATE_KEY")
+SECRET_ENVS = (*TOKEN_ENVS, "SIMAI_WORKER_TOKEN", "SIMAI_TIER0_TOKEN", *BOOT_SECRET_ENVS)
 _hf_token: str | None = None  # take_token() 이 환경에서 꺼내 둔 값. _request·_redact 만 쓴다
 _extra_secrets: set[str] = set()  # 파일에서 읽은 비밀 토큰(_redact 가 로그·기록에서 가린다)
 TIER0_CMD = "simai-tier0"
@@ -217,11 +221,14 @@ def take_token() -> None:
     _hf_token = os.environ.pop("HF_TOKEN", None) or None
     for k in TOKEN_ENVS:
         os.environ.pop(k, None)
+    for k in BOOT_SECRET_ENVS:  # auto 가 아닌 경로에서는 쓰지 않는다: 어느 자식에도 넘기지 않는다
+        if v := os.environ.pop(k, None):
+            _extra_secrets.add(v)
 
 
 def child_env() -> dict[str, str]:
     """자식 프로세스 환경: 지금 환경에서 토큰 이름을 뺀 사본(take_token 전에 불려도 새지 않게)."""
-    return with_image_pythonpath({k: v for k, v in os.environ.items() if k not in TOKEN_ENVS})
+    return with_image_pythonpath({k: v for k, v in os.environ.items() if k not in TOKEN_ENVS and k not in BOOT_SECRET_ENVS})
 
 
 def with_image_pythonpath(env: dict[str, str]) -> dict[str, str]:
@@ -2938,8 +2945,20 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    take_token()  # 어떤 분기·자식 실행보다 먼저
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["auto"]:
+        # GPU 자동 부팅(S15P31A101-700): 비밀 값을 꺼내기 전에 넘긴다(simai-gpu-boot 가 맨 먼저 꺼내 자기 안에만 든다)
+        boot = [k for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_GPU_BOOT_ID", "SIMAI_EC2_BASE_URL") if os.environ.get(k)]
+        if os.environ.get("SIMAI_GPU_BOOT_SECRET"):
+            if len(boot) < 3:
+                take_token()
+                log("auto: SIMAI_GPU_BOOT_SECRET 은 있는데 SIMAI_GPU_BOOT_ID·SIMAI_EC2_BASE_URL 이 없다 → 시작하지 않는다 "
+                    f"(템플릿 환경 변수 확인, 종료 코드 {EXIT_USAGE})")
+                return EXIT_USAGE
+            execvp([*shlex.split(os.environ.get("SIMAI_GPU_BOOT_CMD") or "simai-gpu-boot"), "auto"])
+            return EXIT_OK
+        args = ["tier0", *args[1:]]  # 부팅 비밀값이 없으면 지금까지의 기본(CMD tier0)과 같다
+    take_token()  # 어떤 분기·자식 실행보다 먼저
     if args[:1] in (["-h"], ["--help"]):
         print(__doc__, file=sys.stderr)
         execvp([TIER0_CMD, "--help"])

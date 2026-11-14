@@ -32,6 +32,7 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `scripts/session1_live.py` | LIVE 입력 Pod 확인(-182): 컨테이너 vCPU·CPU 모델 기록, 4스트림 CPU 디코딩 처리량(카메라별 스레드, 판정)·NVDEC 열림·gpu 시험·NVDEC 처리량(참고), LIVE 기동 하네스(기본 디코더 CPU)·10명 기하 처리 시간 |
 | `scripts/session1_gpu_priority.py` | Tier 0 GPU 우선 보호 Pod 측정(-60 P0~P7): LIVE 하네스 + `tier0_priority_probe` |
 | `scripts/i0_link_measure.py` | 막힌 망 I0 예비 경로 측정(-288, 4차 세션 ④): `pod`(Tier 0 LIVE + 표시 파일 기록)·`laptop`(녹화 재생 relay + 제어 채널, gateway/relay 환경)·`summarize`(두 경로를 한 JSON·표로)·`token-hash`. 절차는 `docs/design/runpod-environment.md` "I0 443 예비 경로 측정" |
+| `scripts/simai_gpu_boot.py` | 이미지의 `simai-gpu-boot`(S15P31A101-700): 부팅 비밀값으로 GPU 세션 등록 → 토큰 파일 → GPU 캐시(S3, 워커 토큰 서명) → 시작 묶음 → preflight → lobby → 단계 보고. 기본 CMD `auto` 가 부른다(아래 "GPU 자동 부팅") |
 | `scripts/wait_tier0_ready.py` | 이미지의 `simai-wait-tier0`: 분석 워커를 Tier 0 표시 파일 `phase=running`·`reserve.state=OK` 뒤에 띄운다(아래 "분석 워커") |
 
 Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·EC2 경유 기본 경로·443 최후 예비 경로, 세션 큐 항목·예상 시간은 `docs/design/runpod-environment.md` 에 있다.
@@ -135,11 +136,12 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 
 ## simai-bootstrap (이미지 기본 진입점, S15P31A101-205)
 
-어느 GPU·지역·사이트에서든 같은 순서로 시작한다. 진입점은 `tini → simai-start(SSH) → simai-bootstrap` 이고 기본 인자는 `tier0` 이다.
+어느 GPU·지역·사이트에서든 같은 순서로 시작한다. 진입점은 `tini → simai-start(SSH) → simai-bootstrap` 이고 기본 인자는 `auto` 다(S15P31A101-700: 부팅 비밀값 환경 변수가 있으면 GPU 자동 부팅, 없으면 `tier0` 와 같다).
 
 | 명령 | 하는 일 |
 |---|---|
-| `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`). 이미지 기본 CMD 가 `tier0` 를 명시한다 |
+| `auto` | 이미지 기본 CMD(S15P31A101-700). `SIMAI_GPU_BOOT_SECRET`·`SIMAI_GPU_BOOT_ID`·`SIMAI_EC2_BASE_URL` 가 모두 있으면 비밀 값을 꺼내기 전에 `simai-gpu-boot auto` 로 exec(아래 "GPU 자동 부팅"), 비밀값만 있고 나머지가 없으면 64, 비밀값이 없으면 `tier0` 와 같다 |
+| `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`). 부팅 비밀값 없는 `auto` 가 이것이다 |
 | (인자 없음) | 사용법만 보이고 64 로 끝난다. 아무것도 띄우지 않는다(S15P31A101-414: 10차 세션에서 SSH 셸의 맨 `simai-bootstrap` 이 예전 교실 기본값으로 Tier 0 를 띄웠다). 컨테이너 시작 경로(CMD `tier0`, 시작 명령 `sleep infinity`)는 그대로다 |
 | `lobby [로비 인자...]` | 로비 LIVE 통합 기동(S15P31A101-382): `endpoint.json`·`tier0-live.json`·`pod.jsonl` 구성 → 단일 `Supervisor` 로 `tier0,vllm,worker,avatar` 를 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 `--services` 만 따르고 `SIMAI_SERVICES` 는 보지 않는다, 워커 ID 는 `--worker-id` → `SIMAI_WORKER_ID` → 토큰 파일 이름(S15P31A101-414, 아래 "로비 LIVE 통합 기동") |
 | `queue [gpu_session1 run 인자]` | 준비 → GPU 1차 세션 큐(저장소 사본 `$SIMAI_SESSION_REPO`, 기본 `$SIMAI_ROOT/setup/session1/repo`). 엔진 첫 빌드 시간은 큐 b 항목이 재므로 엔진 준비는 하지 않는다 |
@@ -175,7 +177,7 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | 공개 HTTP 포트 | 8080(막힌 망 최후 예비 SSH·I0 의 wstunnel, `https://<POD_ID>-8080.proxy.runpod.net`. 아래 "막힌 망 최후 예비 SSH") |
 | 공개 TCP 포트 | 22(SSH, 키 인증만), 17000(I0 제어)·17001(I0 영상) 노출(매핑된 바깥 포트는 콘솔 또는 Pod 의 `RUNPOD_TCP_PORT_22`·`RUNPOD_TCP_PORT_17000`·`RUNPOD_TCP_PORT_17001`, 아래 "SSAFY 망 기본 경로", 명세 3.12). 공개 TCP 70000 이상 대칭 포트 요청은 새 RunPod 템플릿 화면이 1~65535 만 받아 할 수 없으므로 TCP 22·17000·17001 을 노출해 SSAFY 망 기본(EC2 경유)·직접 연결에 쓰고, 최후 예비인 443 터널 LIVE 는 공개 TCP 포트 없이 돌린다(`SIMAI_TUNNEL_ALLOW=17000,17001`, S15P31A101-311·-392) |
 | 공개 주소 환경 변수 | Tier 0 가 읽는 순서(앞이 우선, 값이 있는 첫 이름만 쓰고 틀린 값이면 오류): 공개 IP `SIMAI_PUBLIC_HOST` → `RUNPOD_PUBLIC_IP`, 공개 포트 `SIMAI_PUBLIC_PORT_<번호>` → `RUNPOD_TCP_PORT_<번호>`. 어느 것도 없으면 등록·기동 오류. RunPod 는 자동으로 들어오고 그 밖의 사이트는 사람이 사이트 무관 이름으로 넣는다. Vast 이름은 docs.vast.ai 로 확인하지 못해 읽지 않는다 |
-| 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
+| 시작 명령 | 비움(이미지 기본: `simai-bootstrap auto` = 부팅 비밀값이 있으면 GPU 자동 부팅, 없으면 `tier0`). 손 경로·검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue`·`lobby` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
 | 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 최후 예비 SSH), 최후 예비로 I0 를 443 터널로 보낼 때만 `SIMAI_TUNNEL_ALLOW=17000,17001`(비밀 아님, 아래 "I0 터널"). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
 | 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID`(EC2 에 등록한 ID. 토큰과 짝이 다르면 대여가 401. `simai-bootstrap` 감시 모드·lobby·after-live 는 비어 있으면 토큰 파일 이름 `<워커 ID>.token` 에서 정한다, S15P31A101-414), `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.30`, `SIMAI_VLLM_QUANTIZATION=fp8`(기본 `fp8`, `none`·빈 값이면 비활성, S15P31A101-525), `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(10), `SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`(2), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`, `SIMAI_SETUP_WORLD_ANCHOR`(auto, `off` 면 현장 세팅이 새 보정을 이전 채택 World 에 맞추지 않음, docs/design/world-reanchor.md). 값의 뜻은 docs/design/tier0-gpu-priority.md |
@@ -630,6 +632,42 @@ GPU 세션 전에 EC2 호스트에서 저장소의 `deploy/ec2/deploy.sh`를 `/o
 /opt/simai/bin/freeze.sh status
 /opt/simai/bin/freeze.sh off
 ```
+
+### GPU 자동 부팅 (`simai-gpu-boot`, S15P31A101-700)
+
+팀원 누구나 GPU 를 켜면 사람 조작 없이 관제 준비까지 간다(설계 `docs/design/S15P31A101-700-gpu-auto-boot.md`, 서버 쪽 등록은 S15P31A101-699).
+이미지 기본 CMD `auto` 가 아래 환경 변수를 보면 `simai-gpu-boot auto` 가 이 순서로 한다: 비밀 값 꺼내기 → GPU·공급자 사실 → TLS 키 → EC2 `POST /api/gpu/sessions` 등록 →
+토큰을 권한 600 파일(`$SIMAI_ROOT/../.simai-private/gpu-session/<워커 ID>.token`·`tier0.token`)에 → 보고 시작(`gpu_session_report`, 단계마다 + `report.interval_ms` 마다) →
+GPU 캐시(S3, 워커 토큰 서명: TensorRT 엔진·Re-ID 는 Tier 0 전에 받고 vLLM 컴파일 캐시는 뒤에서) → 시작 묶음(보정 sha256 확인·기기 토큰 지문·TLS) →
+`simai-bootstrap preflight --sets tier0` → `simai-bootstrap lobby …`(자식) → 단계 보고 WEIGHTS → ENGINE → TIER0 → VLLM → READY → 없던 캐시를 올린다.
+실패하면 컨테이너를 끝내지 않고 FAILED(+`reason_code`)를 계속 보고하며 기다린다(공급자가 컨테이너를 다시 띄워 진짜 세션을 밀어내지 않게). 그 상태에서 손 경로(아래)로 이어 갈 수 있다.
+EC2 가 세션을 끝내면(409 `GPU_SESSION_ENDED`) lobby 를 멈추고, 같은 컨테이너 디스크로 다시 떠도 다시 등록하지 않는다(`/var/tmp/simai-gpu-boot/ended.json`). SIGTERM 이면 lobby 를 멈추고 `ENDED`(`PROVIDER_STOP`).
+
+**RunPod 템플릿 환경 변수·Secrets(값은 템플릿에 쓰지 않는다).** 위 "RunPod 템플릿"·"Pod형" 의 값에 더한다.
+
+| 이름 | 어디에 | 값 |
+|---|---|---|
+| `SIMAI_GPU_BOOT_SECRET` | RunPod Secret `{{ RUNPOD_SECRET_simai_gpu_boot_secret }}` | EC2 `admin gpu-boot register --id <ID> --worker-id <워커 ID>` 가 한 번 보여 준 부팅 비밀값(새면 `admin gpu-boot revoke`) |
+| `SIMAI_GPU_BOOT_ID` | 템플릿 환경 변수(비밀 아님) | 위 `--id` 값(예: `gpu-boot-runpod`) |
+| `SIMAI_EC2_BASE_URL` | 템플릿 환경 변수 | `https://simai.live` |
+| `SIMAI_TIER0_TLS_PRIVATE_KEY` | RunPod Secret `{{ RUNPOD_SECRET_simai_tier0_tls_key }}` | 지금 쓰는 고정 Tier 0 TLS 비밀 키(PEM 또는 PEM 의 base64 한 줄). 노트북 고정 지문 그대로 |
+| `SIMAI_TIER0_TLS_CERT_PEM` | 템플릿 환경 변수(공개) 또는 Secret | 그 키의 인증서(PEM 또는 base64 한 줄) |
+| `SIMAI_TIER0_PINNED_SPKI_SHA256` | 템플릿 환경 변수(선택, 공개) | 노트북 `SIMAI_TIER0_PINNED_SPKI_SHA256` 과 같은 값. 다르면 기동 전에 FAILED `TLS_PIN_MISMATCH` |
+| `HF_TOKEN` | RunPod Secret `{{ RUNPOD_SECRET_hf_token }}` | 그대로(가중치를 받는 preflight·lobby 자식에만 넘긴다) |
+| `SIMAI_IMAGE_DIGEST` | 템플릿 환경 변수 | 이미지 다이제스트(등록 `image_digest`, 모르면 null) |
+| `SIMAI_GPU_PROVIDER` | 선택 | `RUNPOD`(없으면 `RUNPOD_POD_ID` 로 판단)·`AWS`·`MANUAL` |
+| `SIMAI_PRICE_PER_HOUR_USD` | 선택(S15P31A101-702 가 켤 때 넣는다) | 시간당 가격. 없으면 null |
+| `SIMAI_BOOT_SERVICES` | 선택 | lobby `--services`(기본 lobby 기본 `tier0,vllm,worker,avatar`. PPE 를 켜려면 `tier0,vllm,worker,avatar,ppe`) |
+| `SIMAI_TIER0_ADVERTISE_HOST` | 선택 | Tier 0 가 I1 `tier0_endpoint` 로 알리는 주소(기본 `127.0.0.1` = SSAFY 망 기본 경로, 노트북이 EC2 SSH 로컬 포워드로 붙는다. 직접 연결이면 공개 IP). 포트는 TCP 17000(제어)·17001(영상, 카메라 넷 공용) |
+
+RunPod 이 자동으로 넣는 `RUNPOD_POD_ID`·`RUNPOD_DC_ID`·`RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_17000`·`_17001`·`_22` 는 등록 메시지(`instance_id`·`region`·`public_host`·`ports`)로 간다.
+AWS·VM 은 같은 자리에 `SIMAI_INSTANCE_ID`·`SIMAI_REGION`·`SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>`(매핑이 없으면 듣는 포트 그대로)를 넣는다(S15P31A101-703).
+선택 조정: `SIMAI_BOOT_CACHE_WAIT_S`(Tier 0 전 캐시 받기 상한, 600), `SIMAI_BOOT_VLLM_READY_TIMEOUT_S`(Tier 0 준비 뒤 vLLM 을 기다리는 상한, 1800 → 넘으면 READY + "vLLM 미준비"),
+`SIMAI_BOOT_VLLM_CACHE_SETTLE_S`(vLLM /health 뒤 컴파일 캐시를 올리기까지, 60).
+
+**손 경로(예비).** 시작 명령을 `sleep infinity` 로 띄우면 `auto` 가 돌지 않아 지금까지처럼 `prep-pod`·`start-lobby`(워커 토큰 발급·시작 묶음·Re-ID 업로드·`simai-bootstrap lobby`) 그대로다.
+자동 부팅이 FAILED 로 기다리는 Pod 에서는 이미 받은 토큰 파일(`gpu-session/session.json` 에 경로)과 `gpu-session/lobby-bundle/` 을 `start-lobby` 의 `--worker-token-file`·`--tier0-token-file`·`--bundle-dir` 로 그대로 쓴다.
+Re-ID 캐시가 아직 없으면 손으로 `$SIMAI_ROOT/reid` 에 올린 뒤 `simai-gpu-boot seed-reid` 로 한 번 올린다(자동 부팅은 READY 뒤 그 폴더가 있고 캐시에 없으면 스스로 올린다).
 
 ### GPU 세션 시작·끝 절차 (S15P31A101-652, 14차 세션 기준)
 

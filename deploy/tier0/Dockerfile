@@ -93,9 +93,11 @@ COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
 COPY --chmod=0755 deploy/scripts/wait_tier0_ready.py /usr/local/bin/simai-wait-tier0
 # 어느 GPU·지역·사이트에서든 같은 순서로 준비하는 시작 스크립트와 가중치 목록 (S15P31A101-205, deploy/README "simai-bootstrap")
 COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstrap
+# GPU 자동 부팅(S15P31A101-700): 부팅 비밀값이 있으면 기본 CMD auto 가 이것으로 넘긴다(GPU 세션 등록 → 캐시 → preflight → lobby)
+COPY --chmod=0755 deploy/scripts/simai_gpu_boot.py /usr/local/bin/simai-gpu-boot
 # 윈도 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 빌드에서 CR 을 뺀다(check_image.sh 는 결과를 다시 검사한다)
-RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap
-RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap
+RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap /usr/local/bin/simai-gpu-boot
+RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap /usr/local/bin/simai-gpu-boot
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # 실행 중에 패키지를 설치하지 않는다(ultralytics 자동 설치 끔). 없는 의존성은 실패로 드러나야 한다.
@@ -109,9 +111,10 @@ ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     YOLO_CONFIG_DIR=/tmp/ultralytics \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
-# 기본 CMD tier0 = 준비 → Tier 0(인자 없는 simai-bootstrap 은 사용법만 보이고 64, S15P31A101-414). 'sleep infinity'·bash 같은 다른 명령은 준비 없이 그대로 실행한다.
+# 기본 CMD auto(S15P31A101-700) = 부팅 비밀값 환경 변수가 있으면 simai-gpu-boot auto, 없으면 지금까지의 tier0(준비 → Tier 0)와 같다.
+# 인자 없는 simai-bootstrap 은 사용법만 보이고 64(S15P31A101-414). 'sleep infinity'·bash 같은 다른 명령은 준비 없이 그대로 실행한다(손 경로).
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-bootstrap"]
-CMD ["tier0"]
+CMD ["auto"]
 
 # ---------------------------------------------------------------- 통합 이미지 의존성 (Tier 0 층 위에 워커 층)
 FROM tier0-deps AS unified-deps
@@ -296,8 +299,9 @@ COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstr
 # HMR 실행 도우미(fastcfg 링크·체크포인트 확인, exp02 이미지와 같은 파일). 가중치 묶음은 이미지에 정하지 않으므로(기본 tier0) 부를 때 준다:
 #   SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python .../run_image.py --calibration ... --no-render   (세션 큐 u2 도 SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue)
 COPY --chmod=0755 deploy/exp02/entrypoint.sh /usr/local/bin/simai-exp02
-RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap /usr/local/bin/simai-exp02
-RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap
+COPY --chmod=0755 deploy/scripts/simai_gpu_boot.py /usr/local/bin/simai-gpu-boot
+RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap /usr/local/bin/simai-exp02 /usr/local/bin/simai-gpu-boot
+RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap /usr/local/bin/simai-gpu-boot
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # SIMAI_SERVICES: simai-bootstrap tier0 가 띄울 프로세스(Tier 0 → vLLM 서버 → 분석 워커). 'tier0' 로 주면 Tier 0 단독(tier0 이미지와 같은 동작).
@@ -321,5 +325,6 @@ ENV SIMAI_IMAGE_KIND=unified \
     YOLO_CONFIG_DIR=/tmp/ultralytics \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics
 
+# 기본 CMD auto(S15P31A101-700): 부팅 비밀값이 있으면 GPU 자동 부팅, 없으면 tier0. 손 경로는 시작 명령 'sleep infinity' 로 띄운다
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-bootstrap"]
-CMD ["tier0"]
+CMD ["auto"]

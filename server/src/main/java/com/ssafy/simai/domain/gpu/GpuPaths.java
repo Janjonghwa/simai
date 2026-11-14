@@ -9,6 +9,8 @@ public final class GpuPaths {
     public static final String REPORTS = "/api/gpu/sessions/*/reports";
     /** GET: 상태 조회(관리자 JWT) */
     public static final String CURRENT = "/api/gpu/sessions/current";
+    /** POST: GPU 캐시(TensorRT 엔진·vLLM 컴파일·Re-ID) 받기·올리기 서명(그 세션 워커 토큰, 워커 체인 /api/worker/**, S15P31A101-700) */
+    public static final String CACHE_SIGN = "/api/worker/gpu-cache/sign";
     /** GET: 현장 게이트웨이용 가장 최근 세션(기기 토큰, LAPTOP, S15P31A101-701). /api/devices/** 라 기기 체인이 본다 */
     public static final String DEVICE_SESSION = "/api/devices/gpu-session";
     /** POST: 게이트웨이 자동 전환 상태(기기 토큰, LAPTOP, S15P31A101-701) */
