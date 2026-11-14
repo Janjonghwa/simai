@@ -1,4 +1,5 @@
 import { ROOM } from '@/features/plan/plan';
+import { cameraBadgeOf, type CameraBadge } from '@/features/setup/cameraBadge';
 import {
   cameraGuideView,
   connectivitySummary,
@@ -92,11 +93,6 @@ export function pairTone(grade: PairGrade): SetupTone {
   return 'idle';
 }
 
-export function cameraStatusTone(status: CameraReceptionStatus): SetupTone {
-  if (status === 'OK') return 'ok';
-  return 'delay';
-}
-
 export function connectivityTone(connectivity: Connectivity, stale: boolean): SetupTone {
   if (stale) return 'delay';
   if (connectivity === 'CONNECTED') return 'ok';
@@ -109,12 +105,16 @@ export interface CoverageCameraView {
   /** 화면에 쓰는 이름. 예: '카메라 2' */
   label: string;
   corner: Point;
-  status: CameraReceptionStatus;
+  /** 각도 안내가 준 수신 상태. 그 카메라 항목이 없으면 null(근거 없음, 정상으로 미루지 않는다, S15P31A101-691). */
+  status: CameraReceptionStatus | null;
   statusLabel: string;
+  /** 카메라 칸에 보이는 배지 하나(연결 끊김 → 직전 보정과 달라짐 → 겹침 부족 → 각도 확인 필요 → 준비됨, 모르면 확인 중). */
+  badge: CameraBadge;
   /** 이 카메라에 보이는 안내(영상 위 표시와 오른쪽 카드 문장). 없으면 빈 배열. */
   guides: CameraGuideView[];
-  /** 오른쪽 카드 한 줄: 안내 문장들, 없으면 결과가 신선할 때 '각도 양호', 아니면 '—'. */
+  /** 「자세히」 한 줄: 안내 문장들, 없으면 결과가 신선할 때 '각도 양호', 아니면 '—'. */
   guideLabel: string;
+  /** 배지 톤(2D 지도의 카메라 점 색). */
   tone: SetupTone;
 }
 
@@ -145,6 +145,16 @@ export interface Step1CoverageView {
   pairs: CoveragePairView[];
   /** 겹침이 부족해 보정이 실패할 수 있는 옆 카메라 쌍 이름. 예: ['캠2–캠3'] */
   riskyPairs: string[];
+  /** 배지 근거가 지금 것인지(수신 상태를 지금 안다). 아니면 카메라 배지는 「확인 중」이다. */
+  fresh: boolean;
+}
+
+/** 각도 안내 밖의 배지 근거(S15P31A101-691). */
+export interface Step1BadgeEvidence {
+  /** 받아 둔 각도 안내가 이 브라우저에서 오래됐다(서버 stale_after_ms 를 넘김, 조회를 쉬는 동안). */
+  expired?: boolean;
+  /** 직전 보정과 달라진 카메라(재사용 판정 changed_cameras). */
+  changedCameras?: readonly string[];
 }
 
 /**
@@ -155,6 +165,7 @@ export function deriveStep1Coverage(
   response: CoverageGuidesResponse | undefined,
   fetchError = false,
   fallbackCameraIds: readonly string[] = DEFAULT_CAMERA_IDS,
+  evidence: Step1BadgeEvidence = {},
 ): Step1CoverageView {
   const latest = response?.latest ?? null;
   const empty = !fetchError && (!response || response.status === 'EMPTY' || latest === null);
@@ -173,39 +184,52 @@ export function deriveStep1Coverage(
 
   const noVideoCameras: string[] = [];
   const staleCameras: string[] = [];
-  const resultFresh =
+  // 수신 상태를 지금 아는지(받은 결과가 있고 서버·브라우저 기준으로 오래되지 않았다)와, 겹침·각도 판정까지 지금 것인지
+  const receptionFresh =
     response?.status === 'OK' &&
     !response.stale &&
     !fetchError &&
-    latest !== null &&
-    latest.connectivity !== 'UNKNOWN';
+    !evidence.expired &&
+    latest !== null;
+  const resultFresh = receptionFresh && latest.connectivity !== 'UNKNOWN';
 
   const latestPairs = latest?.pairs ?? [];
   const guides = visibleGuides(cameraIds, latest?.guides ?? [], latestPairs);
+  const lacking = riskyPairs(cameraIds, latestPairs);
+  const changed = new Set(evidence.changedCameras ?? []);
 
   const cameras: CoverageCameraView[] = cameraIds.map((id, idx) => {
     const item = latest?.cameras.find((c) => c.camera_id === id);
-    const status: CameraReceptionStatus = item?.status ?? 'OK';
-    if (latest && status === 'NO_VIDEO') noVideoCameras.push(id);
-    if (latest && status === 'STALE') staleCameras.push(id);
+    const status: CameraReceptionStatus | null = item?.status ?? null;
+    if (status === 'NO_VIDEO') noVideoCameras.push(id);
+    if (status === 'STALE') staleCameras.push(id);
     // 한 카메라에 안내가 둘 이상이면 모두 이어 붙인다.
     const cameraGuides = guides
       .filter((g) => g.camera_id === id)
       .map((g) => cameraGuideView(cameraIds, g, latestPairs));
+    const badge = cameraBadgeOf({
+      status,
+      fresh: receptionFresh,
+      judged: resultFresh,
+      changed: changed.has(id),
+      lowOverlap: lacking.some((p) => p.a === id || p.b === id),
+      hasGuide: cameraGuides.length > 0,
+    });
     return {
       id,
       label: cameraLabel(cameraIds, id),
       corner: CAMERA_CORNERS[idx % CAMERA_CORNERS.length]!,
       status,
-      statusLabel: latest ? CAMERA_STATUS_LABEL[status] : '확인 중',
+      statusLabel: status === null ? '확인 중' : CAMERA_STATUS_LABEL[status],
+      badge,
       guides: cameraGuides,
       guideLabel:
         cameraGuides.length > 0
           ? cameraGuides.map((g) => g.text).join(' · ')
-          : resultFresh && item?.status === 'OK'
+          : resultFresh && status === 'OK'
             ? '각도 양호'
             : '—',
-      tone: latest ? cameraStatusTone(status) : 'idle',
+      tone: badge.tone,
     };
   });
 
@@ -257,7 +281,8 @@ export function deriveStep1Coverage(
     staleCameras,
     cameras,
     pairs,
-    riskyPairs: riskyPairs(cameraIds, latestPairs).map((p) => pairLabel(cameraIds, p.a, p.b)),
+    riskyPairs: lacking.map((p) => pairLabel(cameraIds, p.a, p.b)),
+    fresh: receptionFresh,
   };
 }
 

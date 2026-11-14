@@ -3,7 +3,9 @@ import { deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
 import { setupSessionResponseSchema } from '@/features/setup/types';
 import { buildCameraCheck, buildQualityGate } from '@/mocks/setup';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // 미리보기 3D 칸이 읽는 현재 Scene 조회(@/lib/api → env)는 여기서 쓰지 않는다. 3D 배치는 SetupPage 시험이 본다.
@@ -65,7 +67,10 @@ const stages = () =>
 describe('보정·생성 진행 카드(5단계 막대)', () => {
   it('5단계를 순서대로 보이고 끝난 단계는 완료, 지금 단계는 구간 안 %, 남은 단계는 대기로 보인다', () => {
     renderStep(sessionOf({ progress_pct: 52.5 }));
-    expect(screen.getByRole('heading', { name: '보정·생성' })).toBeTruthy();
+    // 5단계 막대·단계별 %·경과 시간은 「자세히 · 진행 단계」(닫힘) 안에 있다(S15P31A101-691)
+    const details = screen.getByRole('group', { name: '진행 단계 자세히' });
+    expect(details.hasAttribute('open')).toBe(false);
+    expect(within(details).getByRole('heading', { name: '진행 단계' })).toBeTruthy();
     const rows = stages();
     expect(rows.map((row) => row.getAttribute('data-status'))).toEqual([
       'done',
@@ -382,6 +387,12 @@ describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이
     expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
   });
 
+  it('옛 품질 게이트 멈춤(paused_reason QUALITY_GATE)도 멈춤 안내를 그리지 않는다(PausedNotice 삭제, S15P31A101-691)', () => {
+    renderCheck(readySession({ paused_reason: 'QUALITY_GATE' }));
+    expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라 연결 관리로' })).toBeNull();
+  });
+
   it('카메라 확인 걷기 대기(paused_reason CAMERA_CHECK)는 보정 멈춤 안내로 보이지 않는다', () => {
     renderCheck(
       readySession({
@@ -406,5 +417,76 @@ describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이
       .getAllByRole('row')
       .find((row) => row.textContent?.startsWith('카메라 2–카메라 3'))!;
     expect(failedRow.getAttribute('data-outcome')).toBe('fail');
+  });
+});
+
+describe('보정·생성 화면 정리(S15P31A101-691)', () => {
+  const props = (session: ReturnType<typeof sessionOf>) => ({
+    cameraView: <div data-testid="camera-view" />,
+    waiting: deriveWaitingView(session),
+    onRetry: vi.fn(),
+    onReturnToStep1: vi.fn(),
+  });
+
+  it('왼쪽은 카메라 영상 탭이 기본이고, 미리보기 맵이 생겨도 저절로 3D 로 바뀌지 않으며 탭을 눌러야 3D 가 보인다', () => {
+    // 3D 탭은 Scene 조회(Query)를 쓴다. 받지 못해도(api 대역) 빈 틀은 그린다
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { rerender } = render(<SetupCalibrateStep {...props(sessionOf())} />, { wrapper });
+    const mapTab = screen.getByRole('tab', { name: '3D 미리보기' }) as HTMLButtonElement;
+    expect(mapTab.disabled).toBe(true);
+    expect(screen.getByRole('tab', { name: '카메라 영상' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByTestId('camera-view')).toBeTruthy();
+
+    const ready = sessionOf({
+      status: 'BAKING_TEXTURE',
+      stage: 'BAKING_TEXTURE',
+      progress_pct: 90,
+      preview_scene_version: 'scene-preview-1',
+    });
+    rerender(<SetupCalibrateStep {...props(ready)} />);
+    expect(screen.getByTestId('camera-view')).toBeTruthy();
+    expect(screen.queryByTestId('setup-preview-viewport')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '3D 미리보기' }));
+    expect(screen.queryByTestId('camera-view')).toBeNull();
+    expect(screen.getByTestId('setup-preview-viewport')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '카메라 영상' }));
+    expect(screen.getByTestId('camera-view')).toBeTruthy();
+  });
+
+  it('오른쪽 맨 위는 지금 할 일 한 장(무엇이 / 어떻게)과 전체 진행 막대 하나다', () => {
+    render(
+      <SetupCalibrateStep
+        {...props(sessionOf({ progress_pct: 52.5 }))}
+        nextStep={{
+          title: '카메라를 보정하고 있어요',
+          detail: '끝나면 카메라 확인 걷기 창이 열려요',
+          tone: 'idle',
+        }}
+      />,
+    );
+    const card = screen.getByTestId('setup-next-step');
+    expect(within(card).getByRole('heading', { name: '지금 할 일' })).toBeTruthy();
+    expect(within(card).getByRole('status').textContent).toBe('카메라를 보정하고 있어요');
+    expect(within(card).getByText('끝나면 카메라 확인 걷기 창이 열려요')).toBeTruthy();
+    expect(
+      within(card).getByRole('progressbar', { name: '전체 진행' }).getAttribute('aria-valuenow'),
+    ).toBe('52.5');
+    // 단계별 막대는 지금 할 일 카드에 없다
+    expect(within(card).queryByRole('list', { name: '보정·생성 단계' })).toBeNull();
+  });
+
+  it('맵 보강 촬영은 「자세히 · 맵 보강」에서만 연다(여는 함수를 줄 때만 보인다)', () => {
+    const onOpenSupplement = vi.fn();
+    const { rerender } = render(<SetupCalibrateStep {...props(sessionOf())} />);
+    expect(screen.queryByRole('group', { name: '맵 보강 자세히' })).toBeNull();
+    rerender(<SetupCalibrateStep {...props(sessionOf())} onOpenSupplement={onOpenSupplement} />);
+    const details = screen.getByRole('group', { name: '맵 보강 자세히' });
+    fireEvent.click(within(details).getByRole('button', { name: '맵 보강 촬영' }));
+    expect(onOpenSupplement).toHaveBeenCalledTimes(1);
   });
 });

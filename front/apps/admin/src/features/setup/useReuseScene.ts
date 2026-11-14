@@ -27,7 +27,11 @@ export interface ReuseChoiceState {
   blocked: ReuseBlocked | null;
   /** 고를 수 있을 때 덧붙이는 한 줄(카메라 변화를 아직 모름). 없으면 null. */
   note: string | null;
+  /** 직전 보정과 달라진 카메라(카메라 배지 「직전 보정과 달라짐」 근거, S15P31A101-691). 모르면 빈 배열. */
+  changedCameras: readonly string[];
 }
+
+const NONE: readonly string[] = [];
 
 const CHECK_FAILED: ReuseBlocked = {
   what: '이전 맵을 확인하지 못했어요',
@@ -46,7 +50,7 @@ export function changedCamerasLabel(
 export function reuseChoiceOf(
   check: ReuseCheck,
   cameraIds: readonly string[],
-): Omit<ReuseChoiceState, 'checking'> {
+): Omit<ReuseChoiceState, 'checking' | 'changedCameras'> {
   if (check.available) {
     return {
       blocked: null,
@@ -78,6 +82,13 @@ export function reuseChoiceOf(
   }
 }
 
+/** 직전 보정과 달라진 카메라: 서버가 카메라 변화(CHANGED)라고 판정했을 때만(-540 관제 회전 감시·직전 재사용 거부). */
+export function changedCamerasOf(check: ReuseCheck): readonly string[] {
+  return check.camera_status === 'CHANGED' || check.blocked_reason === 'CAMERA_CHANGED'
+    ? check.changed_cameras
+    : NONE;
+}
+
 /** 켜져 있는 동안(1단계) 재사용 판정을 받아 둔다. */
 export function useReuseChoice(enabled: boolean, cameraIds: readonly string[]): ReuseChoiceState {
   const query = useQuery({
@@ -87,7 +98,13 @@ export function useReuseChoice(enabled: boolean, cameraIds: readonly string[]): 
     staleTime: 0,
     refetchInterval: enabled ? REUSE_CHECK_POLL_MS : false,
   });
-  if (query.data) return { checking: false, ...reuseChoiceOf(query.data, cameraIds) };
-  if (query.isError) return { checking: false, blocked: CHECK_FAILED, note: null };
-  return { checking: enabled, blocked: null, note: null };
+  if (query.data)
+    return {
+      checking: false,
+      ...reuseChoiceOf(query.data, cameraIds),
+      changedCameras: changedCamerasOf(query.data),
+    };
+  if (query.isError)
+    return { checking: false, blocked: CHECK_FAILED, note: null, changedCameras: NONE };
+  return { checking: enabled, blocked: null, note: null, changedCameras: NONE };
 }

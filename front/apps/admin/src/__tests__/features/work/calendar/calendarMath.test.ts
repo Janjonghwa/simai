@@ -244,17 +244,17 @@ describe('dayMarkOf — 오늘', () => {
   const mark = (progress: DayProgress | null) => dayMarkOf([workDayOf({ progress })], 'today');
 
   it('진행 값마다 지금 할 일 단추 글이다(제출하면 단추 없이 완료 표시)', () => {
-    expect(mark('REPORT')).toEqual(action('작업 시작'));
+    expect(mark('REPORT')).toEqual(action('오늘 작업 준비'));
     expect(mark('SETUP')).toEqual(action('세팅 이어하기'));
     expect(mark('SETUP_DONE')).toEqual(action('작업 전 확인'));
     expect(mark('IN_PROGRESS')).toEqual(action('관제 중'));
-    expect(mark('ENDED')).toEqual(action('보고서 보내기'));
+    expect(mark('ENDED')).toEqual(action('보고서 제출'));
     expect(mark('SUBMITTED')).toEqual({ kind: 'ended' });
   });
 
-  it('작업이 없거나 진행 값을 모르는 작업이면 작업 시작이다', () => {
-    expect(dayMarkOf([], 'today')).toEqual(action('작업 시작'));
-    expect(mark(null)).toEqual(action('작업 시작'));
+  it('작업이 없거나 진행 값을 모르는 작업이면 오늘 작업 준비다', () => {
+    expect(dayMarkOf([], 'today')).toEqual(action('오늘 작업 준비'));
+    expect(mark(null)).toEqual(action('오늘 작업 준비'));
   });
 
   it('하루 작업(daily)이 있으면 그것을 따르고, 없으면 첫 작업을 따른다', () => {

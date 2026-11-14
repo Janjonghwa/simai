@@ -1,7 +1,11 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { deriveStep1Coverage, deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
-import { AiZoneDraftsPanel, CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
+import {
+  AiZoneDraftsPanel,
+  CameraStatusDetails,
+  CameraVideoPanel,
+} from '@/features/setup/SetupPanels';
 import { setupSessionResponseSchema, type CoverageGuidesResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -21,42 +25,52 @@ afterEach(() => {
 /** 기본 카메라 4대(cam_A~cam_D)로 만든 1단계 카메라 목록. */
 const defaultCoverage = () => deriveStep1Coverage(undefined);
 
-describe('세팅 카메라 지도와 영상', () => {
+describe('세팅 카메라 영상(S15P31A101-691: 2×2 칸, 겹침 2D 지도는 「자세히」)', () => {
   it.each([false, true])(
-    '실시간 연결 %s 에서도 영상 4칸을 지도 양옆에 그 카메라 모서리 높이대로 놓는다',
+    '실시간 연결 %s 에서도 영상 4칸을 교실 모서리 위치대로(위 왼쪽·위 오른쪽·아래 왼쪽·아래 오른쪽) 놓고 2D 지도는 없다',
     (live) => {
       if (live) {
         useCctvStore.getState().hello(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
         useCctvStore.getState().setLink('open');
       }
-      render(<CameraMapPanel coverage={defaultCoverage()} />);
-      const canvasIds = (group: HTMLElement) =>
-        within(group)
-          .getAllByLabelText(/영상$/)
-          .map((canvas) => canvas.getAttribute('aria-label'));
-      // 위쪽 모서리(카메라 1·2) 영상이 위, 아래쪽 모서리(카메라 4·3) 영상이 아래다.
-      expect(canvasIds(screen.getByRole('group', { name: '왼쪽 카메라 영상' }))).toEqual([
+      render(<CameraVideoPanel coverage={defaultCoverage()} />);
+      const canvasIds = within(screen.getByRole('group', { name: '카메라 영상' }))
+        .getAllByLabelText(/영상$/)
+        .map((canvas) => canvas.getAttribute('aria-label'));
+      expect(canvasIds).toEqual([
         '카메라 1 영상',
-        '카메라 4 영상',
-      ]);
-      expect(canvasIds(screen.getByRole('group', { name: '오른쪽 카메라 영상' }))).toEqual([
         '카메라 2 영상',
+        '카메라 4 영상',
         '카메라 3 영상',
       ]);
-      expect(screen.getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
+      expect(screen.queryByRole('img', { name: /위에서 본 보정 화면/ })).toBeNull();
       expect(screen.getAllByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toHaveLength(1);
     },
   );
 
+  it('칸마다 이름표에 배지 하나만 달고, 근거가 없으면 정상으로 미루지 않고 「확인 중」이다', () => {
+    render(<CameraVideoPanel coverage={defaultCoverage()} />);
+    const tile = screen.getByLabelText('카메라 1 영상').parentElement!;
+    expect(within(tile).getByText('확인 중').getAttribute('data-badge')).toBe('CHECKING');
+    expect(within(tile).queryByText('정상')).toBeNull();
+  });
+
+  it('보정·생성 단계(배지 끔·제목 없음)는 영상만 보인다', () => {
+    render(<CameraVideoPanel coverage={defaultCoverage()} showBadges={false} title={null} />);
+    expect(screen.queryByText('확인 중')).toBeNull();
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.getAllByLabelText(/^카메라 \d 영상$/)).toHaveLength(4);
+  });
+
   it('영상이 오지 않는 칸은 흐리게 두고 상태를 글로 보인다', () => {
-    render(<CameraMapPanel coverage={defaultCoverage()} />);
+    render(<CameraVideoPanel coverage={defaultCoverage()} />);
     const tile = screen.getByLabelText('카메라 1 영상');
     expect(tile.className).toContain('opacity-45');
     expect(tile.parentElement!.textContent).toContain('카메라 1');
   });
 
   it('영상 칸은 누르는 단추가 아니다(크게 보기 없음)', () => {
-    render(<CameraMapPanel coverage={defaultCoverage()} />);
+    render(<CameraVideoPanel coverage={defaultCoverage()} />);
     expect(screen.queryByRole('button', { name: /크게 보기|작게 보기/ })).toBeNull();
   });
 });
@@ -73,7 +87,7 @@ const fresh: CoverageGuidesResponse = {
   latest,
 };
 
-describe('카메라 각도 표시', () => {
+describe('「자세히 · 카메라 상태」의 카메라 각도 표시', () => {
   it.each([
     { label: '확인 중', response: undefined, error: false, expected: '—' },
     { label: '계산 요청 실패', response: fresh, error: true, expected: '—' },
@@ -149,13 +163,13 @@ describe('카메라 각도 표시', () => {
       expected: '각도 양호',
     },
   ])('$label', ({ response, error, expected }) => {
-    render(<CameraPanel coverage={deriveStep1Coverage(response, error)} />);
+    render(<CameraStatusDetails coverage={deriveStep1Coverage(response, error)} />);
     const row = screen.getByText('카메라 1', { selector: 'b' }).closest('li')!;
     expect(within(row).getByText(expected)).toBeTruthy();
     if (expected !== '각도 양호') expect(within(row).queryByText('각도 양호')).toBeNull();
   });
 
-  it('옆 카메라 쌍의 겹침이 부족하면 오른쪽 카드에 보정 실패 위험을 쌍 이름과 함께 알리고, 아니면 알리지 않는다', () => {
+  it('옆 카메라 쌍의 겹침이 부족하면 「자세히」에 보정 실패 위험을 쌍 이름과 함께 알리고, 아니면 알리지 않는다', () => {
     const pair = (a: string, b: string, grade: 'ENOUGH' | 'LACK') => ({
       a,
       b,
@@ -178,15 +192,22 @@ describe('카메라 각도 표시', () => {
         ],
       }),
     };
-    render(<CameraPanel coverage={deriveStep1Coverage(lackNeighbors)} />);
+    render(<CameraStatusDetails coverage={deriveStep1Coverage(lackNeighbors)} />);
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('보정이 실패할 수 있어요');
     expect(alert.textContent).toContain(
       '카메라 2–카메라 3, 카메라 3–카메라 4 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요.',
     );
     cleanup();
-    render(<CameraPanel coverage={deriveStep1Coverage(fresh)} />);
+    render(<CameraStatusDetails coverage={deriveStep1Coverage(fresh)} />);
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('「자세히」는 처음 닫혀 있고 겹침 2D 지도를 안에 둔다', () => {
+    render(<CameraStatusDetails coverage={deriveStep1Coverage(fresh)} />);
+    const details = screen.getByRole('group', { name: '카메라 상태 자세히' });
+    expect(details.hasAttribute('open')).toBe(false);
+    expect(within(details).getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
   });
 });
 

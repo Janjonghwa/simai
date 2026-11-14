@@ -1,8 +1,9 @@
 import {
-  appliedZonesSummary,
   canCompleteSetup,
+  emptyZonePlanConfirm,
   SetupCompleteCard,
   setupCompleted,
+  setupSummaryRows,
 } from '@/features/setup/SetupCompleteCard';
 import {
   SETUP_COMPLETE_ERROR_TEXT,
@@ -23,7 +24,7 @@ const COMPLETED_AT_MS = 1_800_000_000_000;
 const sessionOf = (patch: Partial<SetupSessionResponse>) =>
   ({ setup_completed_at_ms: null, ...patch }) as SetupSessionResponse;
 
-describe('setupCompleted·canCompleteSetup·appliedZonesSummary', () => {
+describe('setupCompleted·canCompleteSetup·완료 요약·빈 구역 확인 글', () => {
   const base = sessionOf({});
   it('완료 시각이 있으면 완료한 세션이다', () => {
     expect(setupCompleted(base)).toBe(false);
@@ -43,10 +44,60 @@ describe('setupCompleted·canCompleteSetup·appliedZonesSummary', () => {
     expect(canCompleteSetup(null)).toBe(false);
   });
 
-  it('적용 결과는 개수만 짧게 보인다', () => {
+  it('완료 요약은 사용 맵·카메라 확인·구역 수·저장 결과를 줄마다 보이고 0 인 항목은 뺀다(S15P31A101-691)', () => {
+    const camera = (verdict: string) => ({
+      observed_views: 40,
+      loo_samples: 0,
+      loo_median_px: null,
+      verdict,
+    });
+    const done = sessionOf({
+      status: 'COMPLETED',
+      mode: 'NEW',
+      scene_version: 'scene-final-1',
+      camera_check_passed: true,
+      camera_check: {
+        cameras: {
+          cam_A: camera('PASS'),
+          cam_B: camera('PASS'),
+          cam_C: camera('PASS'),
+          cam_D: camera('PASS'),
+        },
+      } as unknown as SetupSessionResponse['camera_check'],
+    });
     expect(
-      appliedZonesSummary({ created: ['a', 'b'], updated: ['c'], kept: [], archived: ['d'] }),
-    ).toBe('구역 적용: 새로 2 · 고침 1 · 유지 0 · 보관 1');
+      setupSummaryRows(done, { created: ['a', 'b'], updated: ['c'], kept: [], archived: ['d'] }),
+    ).toEqual([
+      { label: '사용 맵', value: '새 맵 · 정밀 3D 맵' },
+      { label: '카메라 확인', value: '카메라 4대 모두 통과' },
+      { label: '위험 구역', value: '3개' },
+      { label: '저장 결과', value: '관제 구역에 적용 · 새로 2 · 고침 1 · 보관 1' },
+    ]);
+    // 이전 맵 재사용 · 카메라 확인 결과 없음 · 적용 결과를 모름(다른 화면에서 완료) → 아는 줄만
+    expect(setupSummaryRows(sessionOf({ status: 'COMPLETED', mode: 'REUSE' }), null)).toEqual([
+      { label: '사용 맵', value: '이전 맵 재사용' },
+    ]);
+    expect(
+      setupSummaryRows(sessionOf({ status: 'COMPLETED', mode: 'REUSE' }), {
+        created: [],
+        updated: [],
+        kept: [],
+        archived: [],
+      }).slice(1),
+    ).toEqual([
+      { label: '위험 구역', value: '없음' },
+      { label: '저장 결과', value: '바뀐 구역 없음' },
+    ]);
+  });
+
+  it('구역 목록이 비었을 때 확인 글은 보관될 관제 구역 수와 이름을 적고, 모르면 개수 없이 묻는다', () => {
+    expect(emptyZonePlanConfirm(['개구부', '작업대 A', '작업대 B', '사다리'])).toBe(
+      '저장한 구역이 없습니다. 완료하면 지금 관제 구역 4개(개구부, 작업대 A, 작업대 B 외 1개)가 모두 보관되고 위험 구역 없이 관제합니다. 그래도 세팅을 완료할까요?',
+    );
+    expect(emptyZonePlanConfirm([])).toContain('지금 관제 구역도 없습니다');
+    expect(emptyZonePlanConfirm(null)).toBe(
+      '저장한 구역이 없어 지금 관제 구역이 모두 보관됩니다. 그래도 세팅을 완료할까요?',
+    );
   });
 });
 
@@ -57,7 +108,7 @@ describe('세팅 완료 상태 카드', () => {
     expect(screen.queryByRole('button', { name: '세팅 완료' })).toBeNull();
   });
 
-  it('완료한 세션은 완료 시각과 안내를 보이고, 방금 받은 적용 결과가 없으면 개수 줄은 없다', () => {
+  it('완료한 세션은 완료 시각과 안내를 보이고, 방금 받은 적용 결과가 없으면 구역·저장 줄은 없다', () => {
     render(
       <SetupCompleteCard
         session={sessionOf({ status: 'COMPLETED', setup_completed_at_ms: COMPLETED_AT_MS })}
@@ -66,18 +117,21 @@ describe('세팅 완료 상태 카드', () => {
     expect(screen.getByRole('heading', { name: '세팅 완료' })).toBeTruthy();
     expect(screen.getByRole('status').textContent).toMatch(/에 세팅을 완료했습니다$/);
     expect(screen.getByText(/구역 수정은 관제 화면의 구역 편집에서/)).toBeTruthy();
-    expect(screen.queryByText(/구역 적용:/)).toBeNull();
+    expect(screen.queryByText('저장 결과')).toBeNull();
+    expect(screen.getByText('사용 맵')).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('방금 완료한 화면은 적용 결과 개수를 함께 보인다', () => {
+  it('방금 완료한 화면은 구역 수와 저장 결과를 함께 보인다', () => {
     render(
       <SetupCompleteCard
         session={sessionOf({ status: 'COMPLETED', setup_completed_at_ms: COMPLETED_AT_MS })}
         applied={{ created: ['a'], updated: [], kept: ['b', 'c'], archived: [] }}
       />,
     );
-    expect(screen.getByText('구역 적용: 새로 1 · 고침 0 · 유지 2 · 보관 0')).toBeTruthy();
+    const summary = screen.getByLabelText('세팅 요약');
+    expect(summary.textContent).toContain('위험 구역3개');
+    expect(summary.textContent).toContain('관제 구역에 적용 · 새로 1 · 그대로 2');
   });
 });
 

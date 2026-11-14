@@ -19,7 +19,8 @@ import { useMemo } from 'react';
 
 // 단계 4 '작업 종료'. 서버 진행(progress)이 두 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED).
 // 보낸(SUBMITTED) 뒤에는 날짜 화면이 이 단계 대신 지난 날과 같은 다시 보기 화면을 보인다(WorkDayPage).
-// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`다음` → `보고서 제출` / `한 번 더 실행`).
+// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`작업 종료` → `보고서 제출` / `한 번 더 실행`,
+// S15P31A101-691: 진행 중의 `다음` 이 실제로는 종료라 이름을 `작업 종료` 로 바꿨다).
 // 한 번 더 실행(S15P31A101-696): 같은 날 리허설 뒤 본 시연. 보고서를 내기 전이면 작업 전 확인(서명 재확인·보호구)을 거쳐 실행 2 를 연다.
 // 진행 중 화면의 경과·사건·관제 적용은 지금 실행 기준이다.
 
@@ -34,7 +35,7 @@ function FailureNote({ text }: { text: string }) {
   );
 }
 
-/** 1. 진행 중: 왼쪽 보고서(보내기 전까지 고칠 수 있다), 오른쪽 작업 현황·사건·관제 적용 상태. `다음` 이 종료를 묻는다. */
+/** 1. 진행 중: 왼쪽 보고서(제출 전까지 고칠 수 있다), 오른쪽 작업 현황·사건·관제 적용 상태. `작업 종료` 가 종료를 묻는다. */
 function RunningView({ day }: { day: WorkDayItem }) {
   const end = useEndRun(day.work_id);
   // 지금 실행의 시작(실행 2 면 실행 2 시작). 옛 서버(runs 없음)는 작업 시작이다
@@ -44,7 +45,12 @@ function RunningView({ day }: { day: WorkDayItem }) {
   const { data: report } = useWorkReport(day.work_id);
   const signers = useSignatures(report?.report_id).data;
   const action = useMemo<WorkActionConfig>(
-    () => ({ label: '다음', enabled: !end.pending, pending: end.pending, onClick: end.request }),
+    () => ({
+      label: '작업 종료',
+      enabled: !end.pending,
+      pending: end.pending,
+      onClick: end.request,
+    }),
     [end.pending, end.request],
   );
   useWorkAction(action);
@@ -80,7 +86,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
  * 2. 종료: 위에 현장 경보 종료 확인(종료 묶음 적용, -692)과 실행 기록, 아래 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다).
  * `보고서 제출` 이 보낼지 묻고, `한 번 더 실행` 은 작업 전 확인으로 간다(S15P31A101-696, 보고서는 하루 끝에 한 번 낸다).
  * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 서버는 종료 미팅이나 AI 초안(`status`)을
- * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `완료` 는 그동안 꺼 둔다.
+ * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `보고서 제출` 은 그동안 꺼 둔다.
  */
 function EndedView({
   day,
@@ -120,9 +126,9 @@ function EndedView({
       </div>
       {send.open && reportId !== undefined && (
         <ConfirmDialog
-          title="보고서를 보낼까요?"
-          description="보낸 뒤에는 고칠 수 없습니다."
-          confirmLabel="보내기"
+          title="보고서를 제출할까요?"
+          description="제출한 뒤에는 고칠 수 없습니다."
+          confirmLabel="제출"
           pending={send.pending}
           onConfirm={() => send.confirm(reportId)}
           onCancel={send.cancel}

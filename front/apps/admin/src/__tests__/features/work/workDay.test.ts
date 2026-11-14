@@ -57,11 +57,11 @@ describe('단계 표', () => {
 describe('오늘 칸 단추 글', () => {
   it('진행 값마다 지금 할 일이고, 제출(SUBMITTED)만 단추가 없다(null)', () => {
     expect(DAY_PROGRESS.map((p) => TODAY_ACTION[p])).toEqual([
-      '작업 시작',
+      '오늘 작업 준비',
       '세팅 이어하기',
       '작업 전 확인',
       '관제 중',
-      '보고서 보내기',
+      '보고서 제출',
       null,
     ]);
   });

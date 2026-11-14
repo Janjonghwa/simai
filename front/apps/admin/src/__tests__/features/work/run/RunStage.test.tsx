@@ -240,7 +240,7 @@ describe('RunStage — 진행 중', () => {
     // 구역 수는 이번 작업 묶음이 현장에 적용됐을 때 그 묶음의 값이다. 묶음 목록이 없으면 줄을 만들지 않는다(-692)
     expect(screen.queryByText(/구역 \d+개 적용됨/)).toBeNull();
     expect(screen.getByText('카메라 3/4 연결')).toBeTruthy();
-    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole('button', { name: '작업 종료' }) as HTMLButtonElement).disabled).toBe(
       false,
     );
   });
@@ -252,10 +252,10 @@ describe('RunStage — 진행 중', () => {
     expect(screen.getByText('0건')).toBeTruthy();
   });
 
-  it('`다음` 은 종료 확인창을 열고, 취소하면 종료하지 않으며, 종료하면 종료 모양(`보고서 제출`)으로 바뀐다', async () => {
+  it('`작업 종료` 는 종료 확인창을 열고, 취소하면 종료하지 않으며, 종료하면 종료 모양(`보고서 제출`)으로 바뀐다', async () => {
     await prepare('running');
     renderStage();
-    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
 
     const dialog = screen.getByRole('dialog', { name: '작업을 종료할까요?' });
     fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
@@ -263,7 +263,7 @@ describe('RunStage — 진행 중', () => {
     expect(requests.some((r) => r.endsWith('/end'))).toBe(false);
 
     clock = T0 + 65 * MIN;
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '작업 종료' }));
     fireEvent.click(
       within(screen.getByRole('dialog', { name: '작업을 종료할까요?' })).getByRole('button', {
         name: '종료',
@@ -285,7 +285,7 @@ describe('RunStage — 진행 중', () => {
       ),
     );
     renderStage();
-    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
     fireEvent.click(
       within(screen.getByRole('dialog', { name: '작업을 종료할까요?' })).getByRole('button', {
         name: '종료',
@@ -327,7 +327,7 @@ describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
     expect(screen.getByText('1건')).toBeTruthy();
 
     clock = T0 + 150 * MIN;
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '작업 종료' }));
     fireEvent.click(
       within(screen.getByRole('dialog', { name: '작업을 종료할까요?' })).getByRole('button', {
         name: '종료',
@@ -400,16 +400,16 @@ describe('RunStage — 종료', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
-    const dialog = screen.getByRole('dialog', { name: '보고서를 보낼까요?' });
-    expect(within(dialog).getByText('보낸 뒤에는 고칠 수 없습니다.')).toBeTruthy();
+    const dialog = screen.getByRole('dialog', { name: '보고서를 제출할까요?' });
+    expect(within(dialog).getByText('제출한 뒤에는 고칠 수 없습니다.')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(requests.some((r) => r.endsWith('/submit'))).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
     fireEvent.click(
-      within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
-        name: '보내기',
+      within(screen.getByRole('dialog', { name: '보고서를 제출할까요?' })).getByRole('button', {
+        name: '제출',
       }),
     );
 
@@ -444,14 +444,14 @@ describe('RunStage — 종료', () => {
       renderStage();
       await waitFor(() => expect(doneButton().disabled).toBe(false));
       fireEvent.click(doneButton());
-      const dialog = screen.getByRole('dialog', { name: '보고서를 보낼까요?' });
+      const dialog = screen.getByRole('dialog', { name: '보고서를 제출할까요?' });
       if (warning) {
         expect(within(dialog).getByText(warning)).toBeTruthy();
       } else {
         expect(within(dialog).queryByText(/AI 초안을/)).toBeNull();
       }
       expect(
-        (within(dialog).getByRole('button', { name: '보내기' }) as HTMLButtonElement).disabled,
+        (within(dialog).getByRole('button', { name: '제출' }) as HTMLButtonElement).disabled,
       ).toBe(false);
     },
   );
@@ -507,8 +507,8 @@ describe('RunStage — 종료', () => {
       );
       fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
       fireEvent.click(
-        within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
-          name: '보내기',
+        within(screen.getByRole('dialog', { name: '보고서를 제출할까요?' })).getByRole('button', {
+          name: '제출',
         }),
       );
 

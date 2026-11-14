@@ -2,7 +2,7 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { CameraCue } from '@/features/setup/CameraCue';
 import type { CameraGuideView } from '@/features/setup/cameraGuides';
 import { deriveStep1Coverage } from '@/features/setup/setup';
-import { CameraMapPanel } from '@/features/setup/SetupPanels';
+import { CameraVideoPanel } from '@/features/setup/SetupPanels';
 import type { CoverageGuideItem, CoverageGuidesResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload } from '@/mocks/setup';
 import { cleanup, render, screen, within } from '@testing-library/react';
@@ -98,7 +98,7 @@ describe('카메라 영상 칸의 방향 안내', () => {
   ];
 
   it('안내가 가리키는 카메라 영상에만 꺾쇠와 이웃 카메라 동그라미를 얹고 이름표는 카메라 이름이다', () => {
-    render(<CameraMapPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />);
+    render(<CameraVideoPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />);
     const arrows = screen.getAllByTestId('camera-cue-arrow');
     expect(arrows).toHaveLength(1);
     expect(arrows[0]!.getAttribute('data-direction')).toBe('RIGHT');
@@ -115,26 +115,26 @@ describe('카메라 영상 칸의 방향 안내', () => {
 
   it('영상이 그려지는 사각형의 비율은 중계가 알린 영상 크기를 따르고 아직 모르면 16:9 로 본다', () => {
     const { unmount } = render(
-      <CameraMapPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />,
+      <CameraVideoPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />,
     );
     const aspectOf = () =>
       parseFloat(screen.getByTestId('camera-cue-spot').parentElement!.style.aspectRatio);
     expect(aspectOf()).toBeCloseTo(16 / 9);
     unmount();
     useCctvStore.getState().codec('cam_C', 1280, 960);
-    render(<CameraMapPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />);
+    render(<CameraVideoPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />);
     expect(aspectOf()).toBeCloseTo(4 / 3);
   });
 
-  it('카메라 상태가 정상이 아니면 이름표 뒤에 상태를 붙이고 영상 위 안내는 얹지 않는다', () => {
-    render(<CameraMapPanel coverage={deriveStep1Coverage(response('NO_VIDEO', cam3Guide))} />);
+  it('카메라 영상이 끊겼으면 배지는 「연결 끊김」 하나이고 영상 위 안내는 얹지 않는다', () => {
+    render(<CameraVideoPanel coverage={deriveStep1Coverage(response('NO_VIDEO', cam3Guide))} />);
     expect(screen.queryByTestId('camera-cue-arrow')).toBeNull();
     const tile = screen.getByLabelText('카메라 3 영상').parentElement!;
-    expect(within(tile).getByText('카메라 3 · 영상 없음')).toBeTruthy();
+    expect(within(tile).getByText('연결 끊김')).toBeTruthy();
   });
 
   it('안내가 없는 카메라는 꺾쇠도 동그라미도 없다', () => {
-    render(<CameraMapPanel coverage={deriveStep1Coverage(response('OK', []))} />);
+    render(<CameraVideoPanel coverage={deriveStep1Coverage(response('OK', []))} />);
     expect(screen.queryByTestId('camera-cue-arrow')).toBeNull();
     expect(screen.queryByTestId('camera-cue-spot')).toBeNull();
   });

@@ -1,7 +1,6 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
-import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import { SetupPage } from '@/features/setup/SetupPage';
 import type { SetupSessionResponse } from '@/features/setup/types';
@@ -18,6 +17,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { delay, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** 저장한 구역이 없을 때 완료 전에 묻는 글(지금 관제 구역을 구체적으로 적는다, S15P31A101-691). */
+const EMPTY_ZONES_CONFIRM = expect.stringContaining('저장한 구역이 없');
 
 // 세팅 화면을 날짜 화면 안에 끼운 모양(embedded): 자기 제목·머리줄 단추 없이 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록한다.
 // 단계별 라벨·켜짐은 단독 화면(SetupPage.test.tsx)의 머리줄 단추와 같아야 한다. 3D 뷰어·구역 편집 도구는 대역으로 둔다.
@@ -200,12 +202,11 @@ const FINAL_PATCH: Partial<SetupSessionResponse> = {
   calibration_version: 'cal-8',
 };
 
-/** 3D 맵이 다 만들어져 켜진 주 단추(다음)를 눌러 맵 보강 촬영 창을 건너뛰고 구역 단계에 들어선다. */
+/** 3D 맵이 다 만들어져 켜진 주 단추(다음)를 눌러 구역 단계에 들어선다(맵 보강 창은 끼어들지 않는다, S15P31A101-691). */
 async function enterZoneStep() {
   await waitFor(() => expect(mainButton().disabled).toBe(false), POLL_WAIT);
   fireEvent.click(mainButton());
-  const dialog = await screen.findByRole('dialog', { name: '맵 보강 촬영' }, POLL_WAIT);
-  fireEvent.click(within(dialog).getByRole('button', { name: '건너뛰기' }));
+  expect(screen.queryByRole('dialog', { name: '맵 보강 촬영' })).toBeNull();
 }
 
 /** 구역 단계에 들어서서 구역 편집 도구 대역을 돌려준다. */
@@ -251,11 +252,20 @@ describe('세팅 화면 임베드', () => {
       within(screen.getByTestId('page')).queryByRole('button', { name: '현재 시도 중단' }),
     ).toBeNull();
 
-    // 미리보기 맵만 있는 동안은 꺼져 있고 이유를 title 로 알린다
+    // 미리보기 맵만 있는 동안은 꺼져 있고 이유를 title 과 「지금 할 일」 본문에 알린다(S15P31A101-691)
     setupMock.updateSession(sessionId, PREVIEW_PATCH);
-    await screen.findByRole('heading', { name: '미리보기 맵' }, POLL_WAIT);
+    await waitFor(
+      () =>
+        expect(
+          (screen.getByRole('tab', { name: '3D 미리보기' }) as HTMLButtonElement).disabled,
+        ).toBe(false),
+      POLL_WAIT,
+    );
     expect(mainButton().disabled).toBe(true);
     expect(mainButton().title).toBe('3D 맵을 다 만들면 넘어갈 수 있어요');
+    expect(screen.getByTestId('setup-next-step').textContent).toContain(
+      '다 만들면 「다음」이 켜집니다',
+    );
 
     setupMock.updateSession(sessionId, FINAL_PATCH);
     await waitFor(() => expect(mainButton().disabled).toBe(false), POLL_WAIT);
@@ -353,7 +363,7 @@ describe('세팅 화면 임베드', () => {
 
     fireEvent.click(mainButton());
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    expect(confirm).toHaveBeenCalledWith(EMPTY_ZONE_PLAN_CONFIRM);
+    expect(confirm).toHaveBeenCalledWith(EMPTY_ZONES_CONFIRM);
     expect(setupMock.sessions.get(sessionId)?.setup_completed_at_ms ?? null).not.toBeNull();
     expect(navigateMock).not.toHaveBeenCalled();
   }, 20_000);
@@ -365,7 +375,7 @@ describe('세팅 화면 임베드', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     fireEvent.click(mainButton());
-    await waitFor(() => expect(confirm).toHaveBeenCalledWith(EMPTY_ZONE_PLAN_CONFIRM));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(EMPTY_ZONES_CONFIRM));
     await waitFor(() => expect(mainButton().disabled).toBe(false));
     expect(onDone).not.toHaveBeenCalled();
     expect(setupMock.sessions.get(sessionId)?.setup_completed_at_ms ?? null).toBeNull();

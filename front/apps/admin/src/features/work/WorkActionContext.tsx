@@ -22,9 +22,9 @@ export interface WorkActionSecondary {
   disabled?: boolean;
 }
 
-/** 오른쪽 아래 단추 줄의 모양. 주 단추는 보통 '다음', 마지막 단계만 '완료'다. */
+/** 오른쪽 아래 단추 줄의 모양. 주 단추는 보통 '다음'이고, 작업 종료 단계는 '작업 종료' → '보고서 제출'이다. */
 export interface WorkActionConfig {
-  /** 주 단추 글자: '다음' · '완료' 등. */
+  /** 주 단추 글자: '다음' · '작업 종료' · '보고서 제출' 등. */
   label: string;
   /** false 면 눌리지 않는다. 이유를 알려 줄 때는 title 을 함께 준다. */
   enabled: boolean;

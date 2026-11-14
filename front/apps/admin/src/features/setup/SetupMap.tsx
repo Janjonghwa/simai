@@ -184,9 +184,9 @@ function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
               fontSize={0.22}
               className={cn('font-mono', PAIR_TEXT[cam.tone])}
             >
-              {cam.status === 'OK'
+              {cam.badge.kind === 'READY'
                 ? cameraShortLabel(cameraIds, cam.id)
-                : `${cameraShortLabel(cameraIds, cam.id)} (${cam.statusLabel})`}
+                : `${cameraShortLabel(cameraIds, cam.id)} (${cam.badge.label})`}
             </text>
           </g>
         );

@@ -1,5 +1,6 @@
 import { type CameraCheckView, type PairOutcome } from '@/features/setup/cameraCheck';
 import { cameraLabel } from '@/features/setup/cameraLabels';
+import type { NextStep } from '@/features/setup/nextStep';
 import {
   deriveStageRows,
   formatMinSec,
@@ -12,17 +13,20 @@ import {
   type WaitingStepStatus,
 } from '@/features/setup/setup';
 import { failureGuide } from '@/features/setup/setupFailures';
-import { SetupPreviewCard, SetupSplit } from '@/features/setup/SetupPreviewModel';
+import { Details, NextStepCard } from '@/features/setup/SetupPanels';
+import { SetupPreviewViewport, SetupSplit } from '@/features/setup/SetupPreviewModel';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 import { TriangleAlert } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 
-// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 ·
-// 「자세히」(높이 불일치 안내·보정 검증 결과 표, -690 부터 접어 둔다)를 쌓는다. 높이 확인을 기다리는 멈춤은 높이 확인 창이 맡는다. 왼쪽은 미리보기 맵이 준비되기 전(85%)에는 1단계의 카메라 시야·실시간 영상, 준비되면 3D 미리보기다.
-// 막대·단계별 %·'진행 N%' 는 서버 값만 쓴다. 경과 시간만 진행 카드 안에서 갱신한다.
-// 카메라 확인(사람 걷기)은 맵 앞에서 큰 걷기 창(CameraCheckModal, S15P31A101-687)이 맡는다. 이 칸에는 쌍별 검증 표만 남긴다.
+// 세팅 2단계 '보정·생성'(S15P31A101-691 정리). 1단계와 같은 두 칸 배치(SetupSplit).
+// 왼쪽: 카메라 영상 4칸이 끝까지 보이고, 미리보기 맵이 준비되면(85%) 「3D 미리보기」 탭으로 바꿔 볼 수 있다(저절로 바꾸지 않는다).
+// 오른쪽: 「지금 할 일」 카드 한 장(무엇이 / 어떻게 + 전체 진행 막대 하나)과 실패 안내. 진단(5단계 막대·단계별 %·경과 시간·대기 이유
+// 덧붙임·카메라별 배경 수집 %·높이 불일치 문구·복원 높이 표·쌍별 px 표)은 관리자용 「자세히」로 접는다. 막대·%는 서버 값만 쓴다.
+// 사람이 움직일 일(배경 촬영·높이 확인·카메라 확인 걷기)은 큰 창이 맡는다(-686·-690·-687). 맵 보강 촬영은 '다음' 에 끼어들지 않고
+// 「자세히 · 맵 보강」에서만 연다. 서버가 더는 내지 않는 옛 품질 게이트 멈춤 안내(PausedNotice)는 지웠다(-690 메모).
 
 /** 새 진행 정보 없이 이만큼(초) 지나면 멈춘 것으로 알린다. */
 const STALLED_AFTER_SEC = 30;
@@ -120,7 +124,7 @@ function ProgressCard({
     <Card size="sm">
       <CardHeader>
         <CardTitle>
-          <h2>보정·생성</h2>
+          <h2>진행 단계</h2>
         </CardTitle>
         <CardAction className="flex items-baseline gap-2 font-mono text-xs">
           <span
@@ -267,44 +271,6 @@ function FailureNotice({
           variant={guide.retry || newMap ? 'secondary' : 'default'}
           onClick={onReturnToStep1}
         >
-          카메라 연결 관리로
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * 멈춤 안내: 보정에 문제가 있어 모델 생성을 멈췄다(서버 paused_reason). 원인 문장은 품질 게이트 문제, 없으면 높이 불일치 문구다.
- * 카메라 연결 관리에서 고치고 '다음' 을 누르면 같은 세션이 멈춘 곳부터 이어 간다.
- */
-function PausedNotice({
-  stageIndex,
-  problems,
-  onReturnToStep1,
-}: {
-  stageIndex: number;
-  problems: readonly string[];
-  onReturnToStep1: () => void;
-}) {
-  const stage = WAITING_STAGES[stageIndex];
-  return (
-    <div
-      role="alert"
-      aria-label="세팅 멈춤 안내"
-      className="flex flex-col gap-1.5 rounded-lg bg-delay/15 px-3.5 py-3 text-sm"
-    >
-      <span className="font-semibold text-delay">
-        {stage ? `${stage.label}에서 멈췄어요` : '모델 생성을 멈췄어요'}
-      </span>
-      {problems.map((problem) => (
-        <span key={problem} className="text-foreground">
-          {problem}
-        </span>
-      ))}
-      <span className="text-foreground">고친 뒤 다음을 누르면 멈춘 곳부터 이어서 만듭니다.</span>
-      <div className="mt-1">
-        <Button size="sm" onClick={onReturnToStep1}>
           카메라 연결 관리로
         </Button>
       </div>
@@ -486,9 +452,82 @@ function PairResultCard({ view }: { view: CameraCheckView }) {
   );
 }
 
+/** 오른쪽 「지금 할 일」 카드 아래의 전체 진행 막대 하나(단계별 %는 「자세히」). */
+function OverallBar({ percent }: { percent: number }) {
+  return (
+    <div
+      role="progressbar"
+      aria-label="전체 진행"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3"
+    >
+      <div
+        className="h-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none"
+        style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
+      />
+    </div>
+  );
+}
+
+type LeftTab = 'cameras' | 'map';
+
+const TAB =
+  'h-7 rounded-md px-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50';
+const TAB_ON = 'bg-primary text-primary-foreground';
+const TAB_OFF = 'text-muted-foreground enabled:hover:bg-surface-3';
+
+/**
+ * 왼쪽 칸: 「카메라 영상」(기본, 끝까지 보임)과 「3D 미리보기」(미리보기 맵이 생긴 뒤) 탭. 3D 는 사용자가 고를 때만 보인다
+ * (S15P31A101-691: 예전에는 85% 에서 카메라 영상이 3D 로 저절로 바뀌었다).
+ */
+function CalibrateLeft({
+  cameraView,
+  waiting,
+}: {
+  cameraView: ReactNode;
+  waiting: SetupWaitingView;
+}) {
+  const [tab, setTab] = useState<LeftTab>('cameras');
+  const showMap = tab === 'map' && waiting.previewReady;
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <div role="tablist" aria-label="왼쪽 칸 보기" className="flex items-center gap-1">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!showMap}
+            className={cn(TAB, showMap ? TAB_OFF : TAB_ON)}
+            onClick={() => setTab('cameras')}
+          >
+            카메라 영상
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={showMap}
+            disabled={!waiting.previewReady}
+            title={waiting.previewReady ? undefined : '미리보기 맵이 생기면 볼 수 있어요'}
+            className={cn(TAB, showMap ? TAB_ON : TAB_OFF)}
+            onClick={() => setTab('map')}
+          >
+            3D 미리보기
+          </button>
+        </div>
+      </CardHeader>
+      <CardContent role="tabpanel" className="min-h-0 flex-1">
+        {showMap ? <SetupPreviewViewport sceneTier={waiting.sceneTier} /> : cameraView}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SetupCalibrateStep({
   waiting,
   cameraView,
+  nextStep = null,
   cameraCheck,
   showCameraCheck = false,
   pollingError = false,
@@ -499,10 +538,13 @@ export function SetupCalibrateStep({
   changedCameras,
   onNavigateLiveWork,
   onReturnToStep1,
+  onOpenSupplement,
 }: {
   waiting: SetupWaitingView;
-  /** 미리보기 맵이 준비되기 전 왼쪽 칸(1단계의 카메라 시야·실시간 영상). */
+  /** 왼쪽 「카메라 영상」 탭(카메라 영상 4칸). */
   cameraView: ReactNode;
+  /** 오른쪽 「지금 할 일」(실패면 null: 실패 안내가 대신한다). */
+  nextStep?: NextStep | null;
   /** 보정 품질 게이트·카메라 확인(S15P31A101-646). 없으면 쌍별 표를 그리지 않는다. 카메라 확인 자체는 걷기 창이 한다(-687). */
   cameraCheck?: CameraCheckView;
   /** 보정이 등록돼 쌍별 표를 보일 때(실패 세션 제외). */
@@ -517,10 +559,16 @@ export function SetupCalibrateStep({
   changedCameras?: readonly string[];
   onNavigateLiveWork?: () => void;
   onReturnToStep1: () => void;
+  /** 맵 보강 촬영 창을 연다(미리보기 맵이 있을 때만 준다). 없으면 「자세히 · 맵 보강」을 두지 않는다. */
+  onOpenSupplement?: () => void;
 }) {
   const column = (
     <>
-      <ProgressCard waiting={waiting} pollingError={pollingError} />
+      {nextStep && (
+        <NextStepCard step={nextStep}>
+          <OverallBar percent={waiting.progressPct} />
+        </NextStepCard>
+      )}
       {waiting.failed && (
         <FailureNotice
           waiting={waiting}
@@ -528,17 +576,6 @@ export function SetupCalibrateStep({
           onRetry={onRetry}
           onRetryNewMap={onRetryNewMap}
           changedCameras={changedCameras}
-          onReturnToStep1={onReturnToStep1}
-        />
-      )}
-      {waiting.pausedStageIndex !== null && !waiting.heightCheckPending && (
-        <PausedNotice
-          stageIndex={waiting.pausedStageIndex}
-          problems={
-            cameraCheck?.problems.length
-              ? cameraCheck.problems
-              : waiting.heightWarnings.map((warning) => warning.message)
-          }
           onReturnToStep1={onReturnToStep1}
         />
       )}
@@ -556,34 +593,44 @@ export function SetupCalibrateStep({
           )}
         </div>
       )}
+      <Details label="진행 단계 자세히" summary="자세히 · 진행 단계">
+        <ProgressCard waiting={waiting} pollingError={pollingError} />
+      </Details>
       {(waiting.showHeightNotice || waiting.heightChecks.length > 0) && (
         // 높이는 3D 공간을 만든 직후 높이 확인 창에서 이미 확인했다(-690). 거치대 문구·복원 높이 표는 접어 둔다
-        <details aria-label="카메라 높이 자세히" className="rounded-xl bg-card px-3.5 py-2.5">
-          <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
-            자세히 · 카메라 높이
-          </summary>
-          <div className="mt-2.5 flex flex-col gap-2.5">
-            {waiting.showHeightNotice && <HeightNotice warnings={waiting.heightWarnings} />}
-            {waiting.heightChecks.length > 0 && (
-              <ResultCard
-                rows={waiting.heightChecks}
-                cameraIds={waiting.cameraIds}
-                toleranceCm={waiting.heightToleranceCm}
-              />
-            )}
-          </div>
-        </details>
+        <Details label="카메라 높이 자세히" summary="자세히 · 카메라 높이">
+          {waiting.showHeightNotice && <HeightNotice warnings={waiting.heightWarnings} />}
+          {waiting.heightChecks.length > 0 && (
+            <ResultCard
+              rows={waiting.heightChecks}
+              cameraIds={waiting.cameraIds}
+              toleranceCm={waiting.heightToleranceCm}
+            />
+          )}
+        </Details>
       )}
       {cameraCheck && (showCameraCheck || cameraCheck.qualityVerdict !== null) && (
-        <PairResultCard view={cameraCheck} />
+        <Details label="카메라 쌍 검증 자세히" summary="자세히 · 카메라 쌍 검증">
+          <PairResultCard view={cameraCheck} />
+        </Details>
+      )}
+      {onOpenSupplement && (
+        <Details label="맵 보강 자세히" summary="자세히 · 맵 보강">
+          <p className="text-xs text-muted-foreground">
+            카메라가 못 보는 곳을 휴대폰·사진으로 찍어 올리면 맵을 다시 구워 빈 곳을 채웁니다(선택).
+          </p>
+          <div>
+            <Button size="sm" variant="secondary" onClick={onOpenSupplement}>
+              맵 보강 촬영
+            </Button>
+          </div>
+        </Details>
       )}
     </>
   );
 
   return (
-    <SetupSplit
-      left={waiting.previewReady ? <SetupPreviewCard sceneTier={waiting.sceneTier} /> : cameraView}
-    >
+    <SetupSplit left={<CalibrateLeft cameraView={cameraView} waiting={waiting} />}>
       {column}
     </SetupSplit>
   );

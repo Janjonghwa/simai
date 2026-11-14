@@ -1,12 +1,80 @@
+import { deriveSceneTierStatus } from '@/features/setup/setup';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 
-// 세팅을 끝낸 뒤 구역 단계 오른쪽 칸에 남는 「세팅 완료」 상태 카드(C17, S15P31A101-615). 완료는 구역 단계 아래 오른쪽 단추가
+// 세팅을 끝낸 뒤 구역 단계 오른쪽 칸에 남는 「세팅 완료」 요약 카드(C17, S15P31A101-615). 완료는 구역 단계 아래 오른쪽 단추가
 // useCompleteSetup 으로 부른다. 완료 뒤에는 이 세팅으로 구역·보강을 고치지 않는다(하루 1회).
+// S15P31A101-691: 개수 한 줄 대신 사용 맵 · 카메라 확인 · 구역 · 저장 결과를 줄마다 보인다(모르는 값은 줄을 빼고 지어내지 않는다).
 
-/** 세팅 구역 목록이 비었을 때 완료 전에 묻는 문구(목록에 없는 관제 구역은 보관된다). */
-export const EMPTY_ZONE_PLAN_CONFIRM =
-  '저장한 구역이 없어 지금 관제 구역이 모두 보관됩니다. 그래도 세팅을 완료할까요?';
+/**
+ * 세팅 구역 목록이 비었을 때 완료 전에 묻는 문구(목록에 없는 관제 구역은 보관된다). 지금 관제 구역 이름을 알면 몇 개·무엇이 보관되는지
+ * 구체적으로 쓴다(S15P31A101-691). 이름을 모르면 개수 없이 묻는다.
+ */
+export function emptyZonePlanConfirm(liveZoneNames: readonly string[] | null): string {
+  if (liveZoneNames === null)
+    return '저장한 구역이 없어 지금 관제 구역이 모두 보관됩니다. 그래도 세팅을 완료할까요?';
+  if (liveZoneNames.length === 0)
+    return '저장한 구역이 없습니다. 완료하면 위험 구역 없이 관제합니다(지금 관제 구역도 없습니다). 그래도 세팅을 완료할까요?';
+  const shown = liveZoneNames.slice(0, 3).join(', ');
+  const more = liveZoneNames.length > 3 ? ` 외 ${liveZoneNames.length - 3}개` : '';
+  return `저장한 구역이 없습니다. 완료하면 지금 관제 구역 ${liveZoneNames.length}개(${shown}${more})가 모두 보관되고 위험 구역 없이 관제합니다. 그래도 세팅을 완료할까요?`;
+}
+
+/** 완료 요약 한 줄(이름 · 값). */
+export interface SetupSummaryRow {
+  label: string;
+  value: string;
+}
+
+/** 사용 맵 이름. 이전 맵 재사용은 맵을 새로 만들지 않았다. */
+function mapLabel(session: SetupSessionResponse): string {
+  if (session.mode === 'REUSE') return '이전 맵 재사용';
+  return deriveSceneTierStatus(session).tier === 'FINAL'
+    ? '새 맵 · 정밀 3D 맵'
+    : '새 맵 · 미리보기 맵';
+}
+
+/** 카메라 확인 결과(카메라마다 PASS 인 수 / 전체). 확인 결과가 없으면 null(줄을 뺀다). */
+function cameraCheckLabel(session: SetupSessionResponse): string | null {
+  const cameras = Object.values(session.camera_check?.cameras ?? {});
+  if (cameras.length === 0) return session.camera_check_passed ? '통과' : null;
+  const passed = cameras.filter((c) => c.verdict === 'PASS').length;
+  if (session.camera_check_passed === true && passed === cameras.length)
+    return `카메라 ${cameras.length}대 모두 통과`;
+  return session.camera_check_passed === true
+    ? `통과 (카메라 ${passed}/${cameras.length}대 확인)`
+    : `카메라 ${passed}/${cameras.length}대 통과`;
+}
+
+/** 저장 결과 한 줄(0 인 항목은 뺀다). */
+function appliedLabel(applied: AppliedZones): string {
+  const parts = [
+    applied.created.length > 0 ? `새로 ${applied.created.length}` : null,
+    applied.updated.length > 0 ? `고침 ${applied.updated.length}` : null,
+    applied.kept.length > 0 ? `그대로 ${applied.kept.length}` : null,
+    applied.archived.length > 0 ? `보관 ${applied.archived.length}` : null,
+  ].filter((part) => part !== null);
+  return parts.length > 0 ? `관제 구역에 적용 · ${parts.join(' · ')}` : '바뀐 구역 없음';
+}
+
+/**
+ * 완료 요약 줄(S15P31A101-691): 사용 맵 · 카메라 확인 · 구역 수 · 저장 결과. applied 는 방금 완료한 이 화면에서만 있으므로
+ * 없으면 구역·저장 줄을 빼고(다른 화면에서 이미 완료) 지어내지 않는다.
+ */
+export function setupSummaryRows(
+  session: SetupSessionResponse,
+  applied: AppliedZones | null,
+): SetupSummaryRow[] {
+  const rows: SetupSummaryRow[] = [{ label: '사용 맵', value: mapLabel(session) }];
+  const check = cameraCheckLabel(session);
+  if (check) rows.push({ label: '카메라 확인', value: check });
+  if (applied) {
+    const zones = applied.created.length + applied.updated.length + applied.kept.length;
+    rows.push({ label: '위험 구역', value: zones > 0 ? `${zones}개` : '없음' });
+    rows.push({ label: '저장 결과', value: appliedLabel(applied) });
+  }
+  return rows;
+}
 
 const READY_STAGES = new Set(['READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']);
 
@@ -18,11 +86,6 @@ export function setupCompleted(session: SetupSessionResponse | null | undefined)
 /** 세팅을 완료할 수 있는 때: 미리보기 맵 이후(구역 단계)이고 아직 완료 전. */
 export function canCompleteSetup(session: SetupSessionResponse | null | undefined): boolean {
   return session != null && READY_STAGES.has(session.status) && !setupCompleted(session);
-}
-
-/** 적용 결과 한 줄(개수만). */
-export function appliedZonesSummary(applied: AppliedZones): string {
-  return `구역 적용: 새로 ${applied.created.length} · 고침 ${applied.updated.length} · 유지 ${applied.kept.length} · 보관 ${applied.archived.length}`;
 }
 
 function timeOf(ms: number): string {
@@ -45,11 +108,18 @@ export function SetupCompleteCard({
           <h3>세팅 완료</h3>
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-1 text-sm">
+      <CardContent className="flex flex-col gap-2 text-sm">
         <p role="status" className="font-semibold text-ok">
           {timeOf(session.setup_completed_at_ms)}에 세팅을 완료했습니다
         </p>
-        {applied && <p className="text-xs text-muted-foreground">{appliedZonesSummary(applied)}</p>}
+        <dl aria-label="세팅 요약" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+          {setupSummaryRows(session, applied).map((row) => (
+            <div key={row.label} className="contents">
+              <dt className="text-muted-foreground">{row.label}</dt>
+              <dd className="font-medium">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
         <p className="text-xs text-muted-foreground">
           이 세팅으로는 구역·맵 보강을 더 고치지 않습니다. 구역 수정은 관제 화면의 구역 편집에서
           하세요.
