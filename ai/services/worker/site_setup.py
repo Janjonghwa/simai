@@ -11,7 +11,9 @@
     같은 점구름·포즈로 World 를 다시 맞추고(MapAnything 다시 안 돌림) 그 높이로 이어 간다. 맞았거나 확인한 높이는 품질 게이트가 같은
     높이 비교로 다시 거절하지 않는다. 답이 없으면 입력 높이로 진행(TIMED_OUT, 게이트 높이 상한 그대로)
     (-462 정물 교차 확인은 `object_cross_checker` 확장 지점만 둔다)
-(e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
+(e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`). 비유한(NaN·Inf) 삼각측량은
+    처리기 오류가 아니라 `VALIDATION_REJECTED` 로 끝내고, 메시지에 그 카메라 쌍(`nonfinite_pairs`)과 배경 표본이 적은 카메라를
+    원인 후보로 싣는다(S15P31A101-711). 배경 촬영 상태에 READY 아닌 카메라가 남으면 (a) 에서 기다리고 Stage A 로 넘기지 않는다
 (f) JOINT_BA_AND_VERIFY: (선택 `world_anchor`) 카메라가 움직이지 않았으면 새 보정을 이전 채택 보정의 World 로 옮긴 뒤
     새 `calibration_version` 보정 문서 등록(덮어쓰지 않음). 미리보기·굽기·map_cameras 는 이 문서를 기준으로 정렬한다(S15P31A101-584)
 (f') JOINT_BA_AND_VERIFY(65%): 「카메라 확인」(S15P31A101-646, 맵 앞으로 옮김 S15P31A101-687). 관리자의 「걷기 시작」을 기다렸다가
@@ -100,6 +102,7 @@ from simai_ai.calibration.extrinsics.joint_ba_v2 import (
     HEIGHT_REVIEW_SETTLED,
     HEIGHT_REVIEW_TIMED_OUT,
     QUALITY_FAILED,
+    NonfiniteTriangulationError,
     ObjectScaleCrossChecker,
     StageAError,
     StageAResult,
@@ -182,11 +185,19 @@ class CleanBackgroundBundle:
     capture: Mapping[str, Any] | None = None
 
     def missing_cameras(self, camera_ids: Sequence[str]) -> list[str]:
-        """아직 쓸 수 없는 카메라(수집률 100 미만, 또는 트랙 문서가 없는데 배경 이미지가 비었음)."""
+        """아직 쓸 수 없는 카메라(수집률 100 미만, 트랙 문서가 없는데 배경 이미지가 비었음, 또는 세팅 배경 촬영 상태가 READY 아님).
+
+        촬영 상태(-686)에 INSUFFICIENT_SAMPLES 등이 남은 카메라가 있으면 묶음이 있어도 Stage A 로 넘기지 않는다(-711). 시한 안에서
+        계속 기다리고, 끝내 못 채우면 그 카메라를 알리는 BACKGROUND_INCOMPLETE 로 멈춘다.
+        """
+        states = (self.capture or {}).get("cameras")
+        states = states if isinstance(states, Mapping) else {}
         out = []
         for cid in camera_ids:
             pct = float(self.collection_pct_by_cam.get(cid, 0.0))
-            if pct < 100.0 - 1e-6 or (self.tracks_doc is None and not self.frames_by_cam.get(cid)):
+            entry = states.get(cid)
+            not_ready = isinstance(entry, Mapping) and entry.get("state") != "READY"
+            if pct < 100.0 - 1e-6 or not_ready or (self.tracks_doc is None and not self.frames_by_cam.get(cid)):
                 out.append(cid)
         return out
 
@@ -293,6 +304,30 @@ def world_anchor_summary(calibration_doc: Mapping[str, Any]) -> dict[str, Any] |
     if not accepted:
         out["changed_cameras"] = _changed_cameras(rec)
     return out
+
+
+# 세팅 배경 표본이 최소 수(-686, 12장)의 이 배수 아래면 비유한 Stage A 실패의 원인 후보로 알린다(-711). 최소 수 바로 위면 유효 마스크
+# 과반 규칙(드러난 횟수 ≥ ⌈n/2⌉)이 겨우 성립해 배경(특징점)이 흐리거나 비어 있을 수 있다
+BACKGROUND_THIN_FACTOR = 2
+
+
+def _background_hint(bundle: CleanBackgroundBundle, camera_ids: Sequence[str]) -> str:
+    """비유한 삼각측량 실패 메시지에 붙일 원인 후보: 배경 표본이 적거나 READY 가 아닌 카메라. 모르면 빈 글."""
+    capture = bundle.capture if isinstance(bundle.capture, Mapping) else {}
+    cameras = capture.get("cameras")
+    required = capture.get("required_samples")
+    if not isinstance(cameras, Mapping) or not isinstance(required, int) or isinstance(required, bool) or required < 1:
+        return ""
+    thin = []
+    for cid in camera_ids:
+        entry = cameras.get(cid)
+        if not isinstance(entry, Mapping):
+            continue
+        count = entry.get("sample_count")
+        count = count if isinstance(count, int) and not isinstance(count, bool) else None
+        if entry.get("state") != "READY" or (count is not None and count < BACKGROUND_THIN_FACTOR * required):
+            thin.append(f"{cid} {entry.get('state')} {count}/{required}")
+    return f"; 배경 표본이 적은 카메라: {', '.join(thin)}" if thin else ""
 
 
 def _number(value: Any) -> float | None:
@@ -1019,8 +1054,9 @@ class SiteSetupHandler:
                 last_sent = key
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                states = {cid: cam.get("state") for cid, cam in (capture or {}).get("cameras", {}).items()
-                          if cid in missing}
+                required = (capture or {}).get("required_samples")
+                states = {cid: (f"{cam.get('state')} {cam.get('sample_count')}/{required}" if required else cam.get("state"))
+                          for cid, cam in (capture or {}).get("cameras", {}).items() if cid in missing}
                 raise JobFailed(
                     "BACKGROUND_INCOMPLETE",
                     f"사람 지운 배경 수집 미완료 카메라: {missing} ({pct}{', ' + str(states) if states else ''}), "
@@ -1450,7 +1486,15 @@ class SiteSetupHandler:
                 progress=self._subprogress(ctx, refining_snapshot, 48, 59),
             )
         except StageAError as exc:
-            raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
+            message = exc.message
+            if exc.nonfinite_pairs:
+                message += _background_hint(bg_bundle, camera_ids)
+            raise JobFailed(exc.code, message[:480], retryable=exc.retryable) from exc
+        except NonfiniteTriangulationError as exc:
+            # Stage A 밖(특징 트랙 등)에서 올라온 비유한 삼각측량도 처리기 오류(HANDLER_ERROR)가 아니라 검증 실패로 끝낸다(-711)
+            message = f"Stage A rejected: nonfinite triangulation, nonfinite_pairs={list(exc.pairs)}"
+            raise JobFailed("VALIDATION_REJECTED", (message + _background_hint(bg_bundle, camera_ids))[:480],
+                            retryable=False) from exc
 
         # 보정 절대 품질 게이트(-646): 상대 악화만이 아니라 절대 상한·최소 홀드아웃·카메라 높이 차를 본다
         # 앞의 높이 빠른 확인에서 맞았거나 관리자가 확인한 높이는 같은 높이 비교로 다시 거절하지 않는다(-690)

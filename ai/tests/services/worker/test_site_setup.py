@@ -775,6 +775,62 @@ def test_background_wait_times_out_retryably_and_honours_cancel() -> None:
     assert exc2.value.code == "CANCELLED"
 
 
+def _capture(cams: tuple[str, ...], counts: dict[str, int], states: dict[str, str] | None = None) -> dict[str, Any]:
+    return {"since_ms": 1760342400000, "required_samples": 12, "sample_interval_ms": 1_000, "cameras": {
+        c: {"state": (states or {}).get(c, "READY"), "sample_count": counts[c], "person_visible": False} for c in cams}}
+
+
+def test_background_camera_not_ready_never_enters_stage_a_and_names_the_camera() -> None:
+    """묶음이 있어도 촬영 상태에 INSUFFICIENT_SAMPLES 카메라가 남으면 Stage A 로 가지 않고 시한 뒤 그 카메라로 멈춘다(-711)."""
+    t = _FakeTime()
+
+    def collector(td: Any, cams: tuple[str, ...]) -> CleanBackgroundBundle:
+        counts = {**dict.fromkeys(cams, 48), cams[-1]: 11}
+        return CleanBackgroundBundle("bundle-x", dict.fromkeys(cams, 100.0), tracks_doc=td,
+                                     capture=_capture(cams, counts, {cams[-1]: "INSUFFICIENT_SAMPLES"}))
+
+    handler, inp, published = _room_handler(collector, background_wait_s=10.0, background_poll_s=4.0,
+                                            monotonic=t.monotonic, sleep=t.sleep)
+    ctx = JobContext("job-bg-thin", "0192a6f0-7c1e-7b3a-9f2d-000000000324", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    cam_d = inp["calibration_target"]["camera_ids"][-1]
+    assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True
+    assert f"'{cam_d}': 'INSUFFICIENT_SAMPLES 11/12'" in exc.value.message
+    assert {s["status"] for s in ctx.site_setup_history} == {"COLLECTING_BACKGROUND"} and published == []
+    assert all(schema_errors(s, _PROGRESS) == [] for s in ctx.site_setup_history)
+
+
+def test_nonfinite_stage_a_triangulation_fails_as_validation_rejected_not_handler_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """16차: Stage A 의 비유한 삼각측량이 HANDLER_ERROR 로 처리기를 죽였다. 이제 VALIDATION_REJECTED 와 원인 후보(-711)."""
+    import simai_ai.calibration.extrinsics.joint_ba_v2 as jba
+
+    original = jba.triangulate
+
+    def nan_for_b_c(uv: Any, pair: Any, *a: Any, **kw: Any) -> np.ndarray:
+        xyz = original(uv, pair, *a, **kw)
+        return np.full_like(xyz, np.nan) if tuple(pair) == (1, 2) else xyz
+
+    monkeypatch.setattr(jba, "triangulate", nan_for_b_c)
+
+    def collector(td: Any, cams: tuple[str, ...]) -> CleanBackgroundBundle:
+        counts = {**dict.fromkeys(cams, 48), cams[-1]: 12}  # 최소 12장에 겨우 닿은 카메라
+        return CleanBackgroundBundle("bundle-x", dict.fromkeys(cams, 100.0), tracks_doc=td,
+                                     capture=_capture(cams, counts))
+
+    handler, inp, published = _room_handler(collector)
+    cams = inp["calibration_target"]["camera_ids"]
+    ctx = JobContext("job-nonfinite", "0192a6f0-7c1e-7b3a-9f2d-000000000325", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "VALIDATION_REJECTED" and exc.value.retryable is False
+    assert f"nonfinite_pairs=['{cams[1]}-{cams[2]}']" in exc.value.message  # 화면이 이 쌍을 뽑아 보인다(setupFailures.ts)
+    assert f"배경 표본이 적은 카메라: {cams[-1]} READY 12/12" in exc.value.message
+    assert len(exc.value.message) <= 480 and published == []
+
+
 def test_bake_runs_while_tier0_marker_is_live_and_logs(caplog: pytest.LogCaptureFixture) -> None:
     """세팅은 진행 중 작업이 없을 때만 시작하므로 Tier 0 표시 파일(live_notice)이 있어도 굽는다(재시도 → 서버 400 방지)."""
     handler, inp, _ = _room_handler(
