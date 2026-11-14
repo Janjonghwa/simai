@@ -3,12 +3,14 @@
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
 # 원격(S15P31A101-394·424): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 gw.sh (status/live/preview/stop/update/heal/logs/restart-tunnel/upload/ssh)
 # 녹화 업로드(S15P31A101-693): 관제 시작 때 작업자를 띄우고 웹에서 끝난 작업의 닫힌 파일만 S3에 백그라운드로 올린다. 끄려면 -NoRecordingUpload 또는 .env SIMAI_RECORDING_UPLOAD=off
+# GPU 세션 자동 전환(S15P31A101-701): 예약 작업 simai-gateway-auto 가 기기 토큰으로 EC2 를 15초마다 조회해 팀원이 켠 GPU 세션이 준비되면 관제로,
+#   세션이 끝나거나 5분 넘게 안 보이면 미리보기로 바꾼다. 수동 명령이 우선한다. 끄기 auto off(또는 .env SIMAI_GATEWAY_AUTO_SWITCH=off), 상태 auto status
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel', 'upload-recordings', 'upload-worker')][string]$Command = 'menu',
+  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel', 'upload-recordings', 'upload-worker', 'auto')][string]$Command = 'menu',
   [Parameter(Position = 1)]
-  [string]$LogKind = '',       # logs 대상: relay | helper | tunnel | update | heal | upload
+  [string]$LogKind = '',       # logs 대상: relay | helper | tunnel | update | heal | upload | auto. auto 의 하위 명령: status | on | off | once | worker
   [Parameter(Position = 2)]
   [int]$Lines = 40,            # logs 출력 줄 수(기본 40)
   [string]$PodIp = '',
@@ -26,7 +28,11 @@ param(
   [switch]$NoRecord,
   [string]$RecordDir = '',
   # 관제를 끈 뒤(stop) 녹화의 작업 구간 업로드를 이번만 띄우지 않는다(S15P31A101-668). 늘 끄려면 .env SIMAI_RECORDING_UPLOAD=off
-  [switch]$NoRecordingUpload
+  [switch]$NoRecordingUpload,
+  # 자동 전환(S15P31A101-701)이 띄운 run·preview 라는 표시(모드 주인 auto). 사람이 친 명령은 주인 manual 이 되어 자동 전환이 덮어쓰지 않는다
+  [switch]$Auto,
+  # heal·update-remote 가 이전 모드를 되살릴 때: 모드 주인을 바꾸지 않는다
+  [switch]$KeepOwner
 )
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -65,6 +71,17 @@ $HelperLog = Join-Path $LocalDir 'gateway-helper.log'
 $UploadPidFile = Join-Path $LocalDir 'gateway-upload.pid'
 $UploadLog = Join-Path $LocalDir 'gateway-upload.log'
 $UploadTask = 'simai-gateway-upload'
+$AutoStateFile = Join-Path $LocalDir 'gateway-auto.json'        # 자동 전환 마지막 판단(상태 표시·다음 판단의 유예 기준)
+$AutoOffFile = Join-Path $LocalDir 'gateway-auto-off.txt'       # 있으면 자동 전환 끔(auto off)
+$OwnerFile = Join-Path $LocalDir 'gateway-mode-owner.json'      # 지금 모드를 누가 정했나(auto | manual)
+$AutoLog = Join-Path $LocalDir 'gateway-auto.log'
+$AutoTask = 'simai-gateway-auto'
+$AutoPollSeconds = 15            # EC2 조회 주기(설계 문서 근거)
+$AutoGraceSecondsDefault = 300   # 관제 대상이 안 보여도 미리보기로 되돌리지 않는 유예(설계 문서 근거). .env SIMAI_GATEWAY_AUTO_REVERT_SECONDS, 60 미만은 60
+$AutoReportSeconds = 300         # 판단이 그대로여도 EC2 에 다시 알리는 주기(EC2 재배포로 메모리가 비면 다시 채운다)
+$AutoMaxFailures = 3             # 30분 안에 전환이 이만큼 실패하면 잠시 멈춘다(heal 의 되살리기 상한과 같은 수)
+$TunnelControlPort = 17000       # Do-Run 터널이 여는 로컬 포트(EC2 터널 방식에서 tier0_endpoint 가 가리키는 곳)
+$TunnelVideoPort = 17001
 
 function Say($m) { Write-Host "[gateway] $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "[gateway] 주의: $m" -ForegroundColor Yellow }
@@ -161,6 +178,7 @@ function Ensure-Shortcut {
 function Do-Setup {
   Need git; Need uv; Need ssh
   if (Test-Path $PidFile) { Fail '관제가 켜져 있다. 4(관제 끄기) 뒤에 갱신한다(Windows 는 실행 중 파일이 잠겨 설치가 실패한다).' }
+  Stop-AutoTask   # 설치 중 자동 전환이 관제를 띄우면 uv sync 가 잠긴 파일로 실패한다. 끝에 다시 등록·시작한다
   New-Item -ItemType Directory -Force (Split-Path $Root), $LocalDir, $SshDir | Out-Null
   Save-GatewayUser
   $selfBefore = $null
@@ -188,6 +206,8 @@ function Do-Setup {
   Check-Env
   Sync-Clock
   Register-HealTask
+  Register-AutoTask
+  Start-AutoTask
   Ensure-Shortcut
   Say '설치·갱신 끝. 처음이면 다음은 2(점검).'
   if ($InRepo -and ((Get-FileHash $PSCommandPath).Hash -ne $selfBefore)) {
@@ -383,10 +403,10 @@ function Do-Run {
   if (-not $s.PodIp) { $s.PodIp = (Read-Host 'Pod 공개 IP').Trim() }
   if (-not $s.ControlPort) { $s.ControlPort = [int](Read-Host 'Pod 17000 의 바깥 매핑 포트') }
   if (-not $s.VideoPort) { $s.VideoPort = [int](Read-Host 'Pod 17001 의 바깥 매핑 포트') }
-  ($s | ConvertTo-Json) | Set-Content $StateFile -Encoding ascii
-
   # 이전 세션을 정리한 뒤 종료 작업 업로더를 하나만 유지한다.
+  # Pod 주소는 이전 창을 끈 뒤에 쓴다: 끄기가 실패하면(녹화 확정 보류) 상태 파일이 아직 도는 이전 관제를 가리켜야 heal·자동 전환이 헷갈리지 않는다(S15P31A101-701)
   Do-Stop -Quiet -NoUpload
+  ($s | ConvertTo-Json) | Set-Content $StateFile -Encoding ascii
   if ((Test-Tcp '127.0.0.1' 17000 300) -or (Test-Tcp '127.0.0.1' 17001 300)) { Fail '127.0.0.1:17000/17001 을 이미 다른 프로그램이 쓰고 있다(예전 터널 창을 닫는다)' }
 
   # EC2 까지만 SSH 하나, EC2→Pod 는 연결마다 따로 TCP(카메라별 독립 연결, 명세 12.2). TLS 는 Tier 0 가 끝낸다.
@@ -614,6 +634,9 @@ while ($true) {
   Start-ScheduledTask -TaskName $TunnelTask
   # 6) 자가 복구 감시 예약 작업(부팅·로그온·5분마다)
   Register-HealTask
+  # 7) GPU 세션 자동 전환 작업자(로그인 때, S15P31A101-701)
+  Register-AutoTask
+  Start-AutoTask
   Start-Sleep 5
   $on = Ec2 "ss -ltnH 'sport = :2222' | wc -l"
   if ([int]($on | Select-Object -Last 1) -ge 1) { Say '역터널 열림(EC2 127.0.0.1:2222·13389). 개발 노트북에서 gw.sh status / ssh simai-gw / 8(원격 데스크톱)' }
@@ -704,15 +727,21 @@ function Get-ResumeMode {
   if ($m.StartsWith('관제')) {
     $s = Load-State
     if ($s.PodIp -and $s.ControlPort -and $s.VideoPort) {
-      return @{ Mode = 'run'; Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra$recExtra"; Label = '관제(창 3개)' }
+      return @{ Mode = 'run'; Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra$recExtra -KeepOwner"; Label = '관제(창 3개)' }
     }
     return @{ Mode = 'run'; Args = ''; Label = '관제(창 3개)' }
   }
-  if ($m.StartsWith('미리보기')) { return @{ Mode = 'preview'; Args = "preview$extra"; Label = '카메라 미리보기' } }
+  if ($m.StartsWith('미리보기')) { return @{ Mode = 'preview'; Args = "preview$extra -KeepOwner"; Label = '카메라 미리보기' } }
   return $null
 }
 
 function Do-UpdateRemote {
+  # 갱신하는 동안 자동 전환이 꺼진 모드를 보고 미리보기를 띄우지 않게 작업자를 멈췄다가, 끝나면 새 코드로 다시 띄운다(S15P31A101-701)
+  Stop-AutoTask
+  try { Invoke-UpdateRemote } finally { Start-AutoTask }
+}
+
+function Invoke-UpdateRemote {
   $resume = Get-ResumeMode
   if (Test-Path $PidFile) { Say "갱신하려고 지금 모드를 멈춘다(끝나면 되돌림: $(if ($resume) { $resume.Label } else { '없음' }))"; Do-Stop -Quiet }
   New-Item -ItemType Directory -Force $LocalDir | Out-Null
@@ -799,7 +828,8 @@ function Get-HealPlan {
     [bool]$RelayAlive = $true,
     [bool]$RunArgsKnown = $false,      # 관제(run)를 다시 띄울 Pod 주소·포트가 상태 파일에 있다(S15P31A101-652)
     [int]$RecentModeRestarts = 0,      # 최근 창 되살리기 횟수(Get-RecentModeRestartCount)
-    [int]$MaxModeRestarts = 3
+    [int]$MaxModeRestarts = 3,
+    [string]$AutoTaskState = 'Running' # 자동 전환 작업자 예약 작업 상태(Missing 이면 등록, S15P31A101-701)
   )
   $actions = @()
   if ($SshdStatus -ne 'Missing') {
@@ -819,6 +849,8 @@ function Get-HealPlan {
   if (-not $PowerCfgOk) {
     $actions += 'fix-powercfg'
   }
+  if ($AutoTaskState -eq 'Missing') { $actions += 'register-auto-task' }
+  elseif ($AutoTaskState -ne 'Running') { $actions += 'start-auto-task' }
   # 창이 죽었으면 이전 모드로 다시 띄운다(-652). 같은 원인으로 거듭 죽으면(최근 MaxModeRestarts 번) 되살리지 않고 알리기만 한다
   $canRestart = $RecentModeRestarts -lt $MaxModeRestarts
   if (($SavedMode -eq 'preview') -and (-not $RelayAlive)) {
@@ -993,14 +1025,15 @@ function Do-Heal {
     -SavedMode $savedMode `
     -RelayAlive $relayAlive `
     -RunArgsKnown ([bool]($resume -and $resume.Args)) `
-    -RecentModeRestarts $recentRestarts
+    -RecentModeRestarts $recentRestarts `
+    -AutoTaskState (Get-AutoTaskState)
 
   if ($plan.Count -eq 0) {
     Say '자가 복구(heal): 이상 없음'
     return
   }
 
-  $needAdmin = ($plan -contains 'set-sshd-automatic') -or ($plan -contains 'start-sshd') -or ($plan -contains 'set-sshd-failure') -or ($plan -contains 'fix-powercfg')
+  $needAdmin = ($plan -contains 'set-sshd-automatic') -or ($plan -contains 'start-sshd') -or ($plan -contains 'set-sshd-failure') -or ($plan -contains 'fix-powercfg') -or ($plan -contains 'register-auto-task')
   if ($needAdmin -and (-not (Test-Admin))) {
     $ht = Get-ScheduledTask -TaskName $HealTask -ErrorAction SilentlyContinue
     if ($ht) {
@@ -1033,6 +1066,18 @@ function Do-Heal {
       Write-HealLog "절전 설정(AC) 복구(이전: 화면=$($pcfg.MonitorAc)초, 절전=$($pcfg.StandbyAc)초, 덮개=$($pcfg.LidAc))"
       Say '복구: 절전 설정(AC 화면·절전·덮개 동작 0)'
     }
+    if ($plan -contains 'register-auto-task') {
+      # git pull(update)로 이 기능이 들어온 게이트웨이는 다음 heal 에서 작업자가 생긴다
+      Register-AutoTask
+      Start-AutoTask
+      Write-HealLog "자동 전환 작업자 예약 작업($AutoTask) 등록·시작"
+      Say '복구: 자동 전환 작업자 등록·시작'
+    }
+  }
+  if ($plan -contains 'start-auto-task') {
+    # 로그인한 사용자 세션 작업이라 로그인 전에는 시작되지 않는다(다음 heal 이 다시 본다). 기록은 남기지 않는다(5분마다 쌓이지 않게)
+    Start-AutoTask
+    Say '복구: 자동 전환 작업자 시작'
   }
 
   if ($plan -contains 'restart-tunnel') {
@@ -1214,6 +1259,7 @@ function Do-Status {
     $alive = [bool]($proc -and ($proc.ProcessName -match '^(powershell|pwsh)$'))
     Say "  창 PID $p : $(if ($alive) { '살아 있음' } else { '죽음' })"
   }
+  Show-AutoStatus
 
   $relayTail = if (Test-Path $RelayLog) { @(Get-Content -LiteralPath $RelayLog -Encoding UTF8 -Tail 120 -ErrorAction SilentlyContinue) } else { @() }
   $recInfo = Get-RecordingStatusInfo -ModeText $rawMode -RelayLogLines $relayTail
@@ -1286,10 +1332,11 @@ function Do-Logs {
     'update' = $UpdateLog
     'heal'   = $HealLog
     'upload' = $UploadLog
+    'auto'   = $AutoLog
   }
   $k = if ($LogKind) { $LogKind.Trim().ToLower() } else { '' }
   if (-not $map.ContainsKey($k)) {
-    Fail "logs 종류는 relay | helper | tunnel | update | heal | upload 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|helper|tunnel|update|heal|upload> [-Lines 40])"
+    Fail "logs 종류는 relay | helper | tunnel | update | heal | upload | auto 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|helper|tunnel|update|heal|upload|auto> [-Lines 40])"
   }
   $path = $map[$k]
   if (-not (Test-Path $path)) {
@@ -1336,6 +1383,510 @@ function Do-Rdp {
   } finally { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
 }
 
+# ---------- GPU 세션 자동 전환 (S15P31A101-701, 설계 docs/design/S15P31A101-701-gateway-auto-switch.md) ----------
+# 예약 작업 simai-gateway-auto(로그인 사용자 세션, 숨김)가 15초마다 기기 토큰으로 EC2 를 조회한다:
+#   GET /api/devices/gpu-session(계약 gpu_session_status) → 세션이 살아 있나, EC2 터널이 붙을 실제 주소·바깥 포트, 그 세션 Tier 0 가 I1 에 붙었나
+#   GET /api/endpoints/tier0(계약 tier0_endpoint, 정본)   → 고정 지문 확인, 루프백(터널) 포트가 17000·17001 인지
+# 준비되면 run(관제), 관제 대상이 유예(5분) 넘게 안 보이면 preview(미리보기)로 바꾼다. 전환은 사람이 쓰는 원격 명령과 같은 길(Start-InSession → run·preview
+# → Do-Stop 으로 녹화 확정)을 쓴다. 조회가 실패하면(모름) 모드를 바꾸지 않는다. 사람이 run·preview·stop 을 치면 그 뒤 새로 등록된 세션이 나올 때까지 손대지 않는다.
+
+function Get-EnvValue([string]$Name) {
+  # .env 값 하나(없으면 ''). 기기 토큰 같은 비밀 값이 있어 화면·로그에 찍지 않는다
+  $p = Join-Path $Root '.env'
+  if (-not (Test-Path $p)) { return '' }
+  foreach ($line in [IO.File]::ReadAllLines($p)) {
+    if (($line -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$') -and ($Matches[1] -eq $Name)) {
+      $v = $Matches[2]
+      if (($v.Length -ge 2) -and (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'")))) { $v = $v.Substring(1, $v.Length - 2) }
+      return $v
+    }
+  }
+  return ''
+}
+
+function Get-NowMs { return [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+
+function Write-AutoLog([string]$m) {
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Rotate-LogIfNeeded $AutoLog
+  [IO.File]::AppendAllText($AutoLog, ("{0:yyyy-MM-dd HH:mm:ss} {1}`r`n" -f (Get-Date), ($m -replace '[\r\n]+', ' ')), $Utf8)
+}
+
+function Get-AutoSettings {
+  # 켬·끔과 유예 시간. 끔: .env SIMAI_GATEWAY_AUTO_SWITCH=off(배포 설정) 또는 auto off(현장에서 잠시)
+  $grace = 0
+  [void][int]::TryParse((Get-EnvValue 'SIMAI_GATEWAY_AUTO_REVERT_SECONDS').Trim(), [ref]$grace)
+  if ($grace -le 0) { $grace = $AutoGraceSecondsDefault } elseif ($grace -lt 60) { $grace = 60 }
+  $envOff = (Get-EnvValue 'SIMAI_GATEWAY_AUTO_SWITCH').Trim().ToLower() -in @('off', '0', 'false', 'no')
+  $localOff = Test-Path $AutoOffFile
+  $by = if ($envOff) { 'env' } elseif ($localOff) { 'local' } else { '' }
+  return @{ Enabled = (-not $by); DisabledBy = $by; GraceSeconds = $grace }
+}
+
+function Get-ModeOwner {
+  # @{ Owner = 'auto' | 'manual' | ''; AtMs; Command }. 파일이 없으면 Owner ''(이 기능 전의 게이트웨이)
+  $o = @{ Owner = ''; AtMs = [long]0; Command = '' }
+  if (Test-Path $OwnerFile) {
+    try {
+      $j = Get-Content -LiteralPath $OwnerFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ([string]$j.owner -in @('auto', 'manual')) { $o.Owner = [string]$j.owner; $o.AtMs = [long]$j.at_ms; $o.Command = [string]$j.command }
+    } catch { }
+  }
+  return $o
+}
+
+function Set-ModeOwner([string]$Owner, [string]$CommandName) {
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  $doc = [ordered]@{ owner = $Owner; at_ms = (Get-NowMs); command = $CommandName }
+  [IO.File]::WriteAllText($OwnerFile, ($doc | ConvertTo-Json -Compress), $Utf8)
+}
+
+function Set-OwnerForCommand([string]$CommandName) {
+  # run·preview·stop 을 시작할 때 부른다. -KeepOwner(heal·갱신 복원)는 그대로 두고, -Auto 는 auto, 그 밖(사람)은 manual
+  if ($KeepOwner) { return }
+  try {
+    if ($Auto) { Set-ModeOwner 'auto' $CommandName }
+    else { Set-ModeOwner 'manual' $CommandName; Write-AutoLog "수동 명령 $CommandName → 자동 전환은 새 GPU 세션이 등록될 때까지 모드를 바꾸지 않는다" }
+  } catch { Warn "모드 주인 기록 실패: $($_.Exception.Message)" }
+}
+
+function Get-ModeInfo([string]$ModeText = '') {
+  # 순수 함수: 모드 파일 글(Do-Run 은 '관제 Pod <IP> 제어 <포트> 영상 <포트>, …', Do-Preview 는 '미리보기(…') → 모드와 실제로 띄운 관제 대상
+  $t = if ($ModeText) { $ModeText.Trim() } else { '' }
+  if ($t.StartsWith('관제')) {
+    if ($t -match '^관제 Pod (\S+) 제어 (\d+) 영상 (\d+)') {
+      return @{ Mode = 'run'; Target = @{ Host = $Matches[1]; ControlPort = [int]$Matches[2]; VideoPort = [int]$Matches[3] } }
+    }
+    return @{ Mode = 'run'; Target = $null }
+  }
+  if ($t.StartsWith('미리보기')) { return @{ Mode = 'preview'; Target = $null } }
+  return @{ Mode = ''; Target = $null }
+}
+
+function Test-SameTarget($A, $B) {
+  if ((-not $A) -or (-not $B)) { return $false }
+  return (([string]$A.Host -eq [string]$B.Host) -and ([int]$A.ControlPort -eq [int]$B.ControlPort) -and ([int]$A.VideoPort -eq [int]$B.VideoPort))
+}
+
+function Test-PortNumber($v) {
+  return ((($v -is [int]) -or ($v -is [long])) -and ([long]$v -ge 1) -and ([long]$v -le 65535))
+}
+
+function ConvertTo-GpuTarget($Session) {
+  # 순수 함수: gpu_session_status.session → 터널 대상 @{ Ok; Target = @{ Host; ControlPort; VideoPort }; Error; Detail }.
+  # 값이 run 명령줄(Start-InSession)에 들어가므로 계약 모양 그대로인지 엄격히 본다(주소 문자 제한·정수 포트)
+  $bad = { param($d) @{ Ok = $false; Target = $null; Error = 'PORTS_UNSUPPORTED'; Detail = $d } }
+  if (-not $Session) { return (& $bad '세션 없음') }
+  $h = [string]$Session.public_host
+  if (($h.Length -gt 253) -or ($h -notmatch '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$')) { return (& $bad '공개 주소 형식이 틀렸다') }
+  $ctrl = @(); $video = @()
+  foreach ($p in @($Session.ports)) {
+    if (-not $p) { continue }
+    if (-not (Test-PortNumber $p.public_port)) { return (& $bad '포트가 1~65535 정수가 아니다') }
+    if ([string]$p.role -eq 'CONTROL') { $ctrl += [int]$p.public_port }
+    elseif ([string]$p.role -eq 'VIDEO') { $video += [int]$p.public_port }
+  }
+  $ctrl = @($ctrl | Sort-Object -Unique); $video = @($video | Sort-Object -Unique)
+  if ($ctrl.Count -ne 1) { return (& $bad "CONTROL 포트가 하나가 아니다($($ctrl.Count))") }
+  if ($video.Count -ne 1) { return (& $bad "VIDEO 포트가 한 번호가 아니다($($video.Count), 터널은 영상 포트 하나만 연다)") }
+  return @{ Ok = $true; Target = @{ Host = $h; ControlPort = $ctrl[0]; VideoPort = $video[0] }; Error = ''; Detail = '' }
+}
+
+function Get-PinnedFingerprints([string]$Raw = '') {
+  # .env SIMAI_TIER0_PINNED_SPKI_SHA256(쉼표로 여러 개, 키 교체 기간) → 소문자 목록. 형식이 틀린 항목은 버린다
+  return @(($Raw -split ',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -match '^sha256:[0-9a-f]{64}$' })
+}
+
+function Get-EndpointCheck($Endpoint, [string[]]$Pins = @(), [string]$SessionFingerprint = '') {
+  # 순수 함수: tier0_endpoint(조회 응답 봉투)와 고정 지문 목록 → @{ Ok; Reason; Fingerprint; Detail }.
+  # 조회 값만으로 신뢰할 키를 바꾸지 않는다(relay·site_alert 와 같은 규칙). 지문이 목록에 없으면 전환하지 않는다
+  $p = if ($Endpoint) { $Endpoint.payload } else { $null }
+  if ((-not $p) -or ([string]$Endpoint.msg_type -ne 'tier0_endpoint')) { return @{ Ok = $false; Reason = 'ENDPOINT_UNAVAILABLE'; Fingerprint = ''; Detail = 'tier0_endpoint 형식이 아니다' } }
+  $fp = ([string]$p.tls_public_key_sha256).ToLower()
+  if ($fp -notmatch '^sha256:[0-9a-f]{64}$') { return @{ Ok = $false; Reason = 'ENDPOINT_UNAVAILABLE'; Fingerprint = ''; Detail = '지문 형식이 틀렸다' } }
+  if ($Pins.Count -eq 0) { return @{ Ok = $false; Reason = 'PIN_MISMATCH'; Fingerprint = $fp; Detail = '고정 지문이 없다(.env SIMAI_TIER0_PINNED_SPKI_SHA256)' } }
+  if ($Pins -notcontains $fp) { return @{ Ok = $false; Reason = 'PIN_MISMATCH'; Fingerprint = $fp; Detail = "엔드포인트 지문 $($fp.Substring(7, 12))… 이 고정 목록에 없다" } }
+  $sfp = if ($SessionFingerprint) { $SessionFingerprint.ToLower() } else { '' }
+  if ($sfp -and ($Pins -notcontains $sfp)) { return @{ Ok = $false; Reason = 'PIN_MISMATCH'; Fingerprint = $sfp; Detail = "세션 등록 지문 $($sfp.Substring(7, 12))… 이 고정 목록에 없다" } }
+  if ([string]$p.public_ip -match '^127\.') {
+    # EC2 터널 방식: 중계·경보 단말은 127.0.0.1 의 이 포트로 붙는다. 터널이 여는 17000·17001 과 다르면 관제가 이어지지 않는다
+    $ctrl = @($p.ports | Where-Object { [string]$_.role -eq 'CONTROL' } | ForEach-Object { [int]$_.public_port } | Sort-Object -Unique)
+    $video = @($p.ports | Where-Object { [string]$_.role -eq 'VIDEO' } | ForEach-Object { [int]$_.public_port } | Sort-Object -Unique)
+    if (($ctrl.Count -ne 1) -or ($ctrl[0] -ne $TunnelControlPort) -or ($video.Count -ne 1) -or ($video[0] -ne $TunnelVideoPort)) {
+      return @{ Ok = $false; Reason = 'ENDPOINT_PORTS_MISMATCH'; Fingerprint = $fp; Detail = "루프백 엔드포인트 포트(제어 $($ctrl -join '/') 영상 $($video -join '/'))가 터널($TunnelControlPort·$TunnelVideoPort)과 다르다" }
+    }
+  }
+  return @{ Ok = $true; Reason = ''; Fingerprint = $fp; Detail = '' }
+}
+
+function Get-AutoSwitchPlan {
+  # 순수 함수: 지금 모드·주인·조회 결과로 이번 판단을 정한다. 돌려줌 @{ Action = none|run|preview; Reason; Detail; Target; ReleaseManual; LastGoodAtMs }.
+  # 규칙(설계 문서): 꺼짐·바쁨·조회 실패(모름)는 그대로 둔다. 수동 주인은 그 뒤 등록된 세션이 나와야 푼다. 준비된 새 대상이면 바로 관제로,
+  # 관제 대상이 안 보이면(세션 끝·없음·Tier 0 끊김·다른 세션) 마지막으로 본 때부터 GraceSeconds 가 지나야 미리보기로. 자동 주인인데 꺼져 있으면 미리보기.
+  param(
+    [bool]$Enabled = $true,
+    [bool]$Busy = $false,
+    [string]$Owner = 'auto',
+    [long]$ManualAtMs = 0,
+    [string]$Mode = '',
+    [hashtable]$CurrentTarget = $null,
+    [string]$FetchError = '',          # '' | EC2_UNREACHABLE | AUTH_FAILED | INVALID_RESPONSE
+    [object]$Session = $null,          # gpu_session_status.session
+    [hashtable]$Target = $null,        # ConvertTo-GpuTarget 의 Target(없으면 null)
+    [string]$TargetError = '',
+    [string]$EndpointReason = '',      # '' 이면 엔드포인트·지문 괜찮음
+    [string]$EndpointDetail = '',
+    [long]$NowMs = 0,
+    [long]$LastGoodAtMs = 0,
+    [int]$GraceSeconds = 300,
+    [int]$RecentFailures = 0,
+    [int]$MaxFailures = 3
+  )
+  $r = @{ Action = 'none'; Reason = ''; Detail = ''; Target = $null; ReleaseManual = $false; LastGoodAtMs = $LastGoodAtMs }
+  if (-not $Enabled) { $r.Reason = 'DISABLED'; $r.LastGoodAtMs = 0; return $r }   # 다시 켜면 유예를 새로 센다
+  if ($Busy) { $r.Reason = 'BUSY'; return $r }
+  if ($FetchError) { $r.Reason = $FetchError; $r.Detail = '모르면 모드를 그대로 둔다'; return $r }
+  $active = [bool]($Session -and ([string]$Session.state -eq 'ACTIVE'))
+  $tier0Up = $active -and ([string]$Session.tier0_link -eq 'CONNECTED')
+  if ($Owner -eq 'manual') {
+    if ($active -and ([long]$Session.registered_at_ms -gt $ManualAtMs)) { $r.ReleaseManual = $true }
+    else { $r.Reason = 'MANUAL_HOLD'; $r.Detail = '수동 명령 뒤 새로 등록된 GPU 세션이 없다(auto on 으로 풀기)'; $r.Target = $CurrentTarget; $r.LastGoodAtMs = 0; return $r }
+  }
+  $isRun = ($Mode -eq 'run')
+  if (-not $isRun) { $r.LastGoodAtMs = 0 }
+  $sameTarget = $isRun -and (Test-SameTarget $CurrentTarget $Target)
+  if ($sameTarget -and $tier0Up) {
+    $r.Reason = 'RUNNING'; $r.Target = $CurrentTarget; $r.LastGoodAtMs = $NowMs; return $r
+  }
+  if ($isRun -and ($r.LastGoodAtMs -le 0)) { $r.LastGoodAtMs = $NowMs }   # 본 기록이 없으면(작업자 재시작·수동 관제를 넘겨받음) 지금부터 유예
+  $ready = $tier0Up -and $Target -and (-not $EndpointReason)
+  if ($ready) {
+    if ($RecentFailures -ge $MaxFailures) { $r.Reason = 'BACKOFF'; $r.Detail = "30분 안에 전환 $RecentFailures 번 실패(logs auto)"; return $r }
+    $r.Action = 'run'; $r.Reason = 'READY'; $r.Target = $Target; return $r
+  }
+  # 새 관제 대상이 없다: 왜인지
+  $why = $EndpointReason
+  if (-not $Session) { $why = 'NO_SESSION' }
+  elseif (-not $active) { $why = 'SESSION_ENDED' }
+  elseif (-not $Target) { $why = $(if ($TargetError) { $TargetError } else { 'PORTS_UNSUPPORTED' }) }
+  elseif (-not $tier0Up) { $why = $(if ($sameTarget) { 'TIER0_LOST' } else { 'WAITING_TIER0' }) }
+  $whyDetail = if ($EndpointReason -and ($why -eq $EndpointReason)) { $EndpointDetail } else { '' }
+  if ($isRun) {
+    $r.Target = $CurrentTarget
+    $leftMs = ($GraceSeconds * 1000) - ($NowMs - $r.LastGoodAtMs)
+    if ($leftMs -gt 0) { $r.Reason = 'GRACE'; $r.Detail = "$why, 미리보기까지 $([math]::Ceiling($leftMs / 1000))초"; return $r }
+    if ($RecentFailures -ge $MaxFailures) { $r.Reason = 'BACKOFF'; $r.Detail = "30분 안에 전환 $RecentFailures 번 실패(logs auto)"; return $r }
+    $r.Action = 'preview'; $r.Target = $null
+    $r.Reason = if ($why -in @('NO_SESSION', 'SESSION_ENDED', 'TIER0_LOST')) { $why } else { 'SESSION_ENDED' }
+    $r.Detail = "관제 대상이 $GraceSeconds 초 넘게 안 보임($why)"
+    return $r
+  }
+  if ($Mode -eq '') {
+    if ($RecentFailures -ge $MaxFailures) { $r.Reason = 'BACKOFF'; $r.Detail = "30분 안에 전환 $RecentFailures 번 실패(logs auto)"; return $r }
+    $r.Action = 'preview'; $r.Reason = 'MODE_OFF'; $r.Detail = "자동 주인인데 꺼져 있다($why)"; return $r
+  }
+  $r.Reason = $why; $r.Detail = $whyDetail
+  return $r
+}
+
+function Invoke-DeviceRequest([string]$Method, [string]$Path, [string]$Body = '') {
+  # 기기 토큰 REST. @{ Status = HTTP 코드(연결 실패 0); Json; Error }. 토큰은 헤더에만 싣고 오류 문장에 넣지 않는다.
+  $base = (Get-EnvValue 'SIMAI_EC2_BASE_URL').Trim().TrimEnd('/')
+  $token = (Get-EnvValue 'SIMAI_DEVICE_TOKEN').Trim()
+  if ((-not $base) -or (-not $token)) { return @{ Status = 0; Json = $null; Error = '.env 에 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN 이 없다' } }
+  if (($base -notmatch '^https://') -and ($base -notmatch '^http://(127\.0\.0\.1|localhost)(:\d+)?$')) { return @{ Status = 0; Json = $null; Error = 'EC2 주소는 https 만 쓴다' } }
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+  $req = @{ Uri = "$base$Path"; Method = $Method; UseBasicParsing = $true; TimeoutSec = 8; MaximumRedirection = 0; ErrorAction = 'Stop'
+    Headers = @{ Authorization = "Bearer $token"; Accept = 'application/json' } }
+  if ($Body) { $req.Body = [Text.Encoding]::UTF8.GetBytes($Body); $req.ContentType = 'application/json; charset=utf-8' }
+  try {
+    $resp = Invoke-WebRequest @req
+    $json = $null
+    if ($resp.Content) { try { $json = $resp.Content | ConvertFrom-Json } catch { return @{ Status = [int]$resp.StatusCode; Json = $null; Error = '응답이 JSON 이 아니다' } } }
+    return @{ Status = [int]$resp.StatusCode; Json = $json; Error = '' }
+  } catch {
+    $code = 0
+    try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch { }
+    $kind = if ($code) { "HTTP $code" } else { $_.Exception.GetType().Name }
+    return @{ Status = $code; Json = $null; Error = $kind }
+  }
+}
+
+function Get-AutoObservation([hashtable]$Settings) {
+  # EC2 두 곳을 조회해 판단 재료를 만든다. 실패는 까닭 코드로만 돌려준다(모드를 바꾸지 않는 쪽)
+  $o = @{ FetchError = ''; FetchDetail = ''; Session = $null; Target = $null; TargetError = ''; TargetDetail = ''; EndpointReason = ''; EndpointDetail = ''; Fingerprint = '' }
+  $r = Invoke-DeviceRequest 'GET' '/api/devices/gpu-session'
+  if ($r.Status -eq 200 -and $r.Json -and ([string]$r.Json.schema_version -match '^1\.')) {
+    $o.Session = $r.Json.session
+  } elseif ($r.Status -in @(401, 403)) { $o.FetchError = 'AUTH_FAILED'; $o.FetchDetail = "$($r.Error) (기기 토큰·LAPTOP 기기인지 확인)"; return $o }
+  elseif (($r.Status -eq 0) -or ($r.Status -ge 500)) { $o.FetchError = 'EC2_UNREACHABLE'; $o.FetchDetail = $r.Error; return $o }
+  else { $o.FetchError = 'INVALID_RESPONSE'; $o.FetchDetail = "$($r.Error) $(if ($r.Status -eq 404) { '(EC2 가 이 기능 전 판일 수 있다)' })".Trim(); return $o }
+
+  $s = $o.Session
+  if ((-not $s) -or ([string]$s.state -ne 'ACTIVE')) { return $o }
+  $t = ConvertTo-GpuTarget $s
+  if ($t.Ok) { $o.Target = $t.Target } else { $o.TargetError = $t.Error; $o.TargetDetail = $t.Detail; return $o }
+  if ([string]$s.tier0_link -ne 'CONNECTED') { return $o }
+  $e = Invoke-DeviceRequest 'GET' '/api/endpoints/tier0'
+  if ($e.Status -eq 404) { $o.EndpointReason = 'ENDPOINT_MISSING'; $o.EndpointDetail = 'Tier 0 엔드포인트 등록이 아직 없다'; return $o }
+  if (($e.Status -ne 200) -or (-not $e.Json)) { $o.EndpointReason = 'ENDPOINT_UNAVAILABLE'; $o.EndpointDetail = $e.Error; return $o }
+  $sfp = if ($s.tls_public_key_sha256) { [string]$s.tls_public_key_sha256 } else { '' }
+  $c = Get-EndpointCheck -Endpoint $e.Json -Pins (Get-PinnedFingerprints (Get-EnvValue 'SIMAI_TIER0_PINNED_SPKI_SHA256')) -SessionFingerprint $sfp
+  $o.Fingerprint = $c.Fingerprint
+  if (-not $c.Ok) { $o.EndpointReason = $c.Reason; $o.EndpointDetail = $c.Detail }
+  return $o
+}
+
+function Read-AutoState {
+  $st = @{ last_good_at_ms = [long]0; failures = @(); last_reported_at_ms = [long]0; last_report_key = ''; last_log_key = ''
+    last_switch = $null; last = $null }
+  if (Test-Path $AutoStateFile) {
+    try {
+      $j = Get-Content -LiteralPath $AutoStateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      $st.last_good_at_ms = [long]$j.last_good_at_ms
+      $st.failures = @($j.failures | Where-Object { $_ } | ForEach-Object { [long]$_ })
+      $st.last_reported_at_ms = [long]$j.last_reported_at_ms
+      $st.last_report_key = [string]$j.last_report_key
+      $st.last_log_key = [string]$j.last_log_key
+      $st.last_switch = $j.last_switch
+      $st.last = $j.last
+    } catch { }
+  }
+  return $st
+}
+
+function Write-AutoState([hashtable]$State) {
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  [IO.File]::WriteAllText($AutoStateFile, ($State | ConvertTo-Json -Depth 6), $Utf8)
+}
+
+function Test-SwitchBusy {
+  # 다른 전환(run·preview 예약 작업)이나 원격 갱신이 도는 중이면 이번 판단을 건너뛴다
+  foreach ($name in @($RunTask, 'simai-gateway-update')) {
+    $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if ($t -and ([string]$t.State -eq 'Running')) { return $true }
+  }
+  return $false
+}
+
+function Get-AutoTaskState {
+  $t = Get-ScheduledTask -TaskName $AutoTask -ErrorAction SilentlyContinue
+  if ($t) { return [string]$t.State } else { return 'Missing' }
+}
+
+function Register-AutoTask {
+  # 로그인한 사용자 세션의 숨김 작업. 관제 창을 띄우는 예약 작업(simai-gateway-run)을 고쳐야 해서 관리자 권한(Highest, 게이트웨이 계정은 관리자)으로 돈다.
+  # 등록은 관리자(1·6)나 heal(SYSTEM)이 한다. 죽으면 1분 뒤 다시 뜬다
+  try {
+    $gwUser = Get-GatewayUser
+    $scriptPath = Join-Path $Root 'gateway\ops\simai-gateway.ps1'
+    if (-not (Test-Path $scriptPath)) { $scriptPath = $PSCommandPath }
+    $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" auto worker"
+    $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+    $trg = New-ScheduledTaskTrigger -AtLogOn -User $gwUser
+    $pri = New-ScheduledTaskPrincipal -UserId $gwUser -LogonType Interactive -RunLevel Highest
+    $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $AutoTask -Action $act -Trigger $trg -Principal $pri -Settings $set -Force | Out-Null
+    Say "자동 전환 작업자 예약 작업 등록·갱신: $AutoTask (로그인 때, $gwUser 세션)"
+  } catch { Warn "자동 전환 작업자 등록 실패(관리자 권한으로 1 또는 6, 또는 다음 heal): $($_.Exception.Message)" }
+}
+
+function Start-AutoTask {
+  if (-not (Get-ScheduledTask -TaskName $AutoTask -ErrorAction SilentlyContinue)) { return }
+  try { Start-ScheduledTask -TaskName $AutoTask -ErrorAction Stop } catch { }
+}
+
+function Stop-AutoTask {
+  if (-not (Get-ScheduledTask -TaskName $AutoTask -ErrorAction SilentlyContinue)) { return }
+  try { Stop-ScheduledTask -TaskName $AutoTask -ErrorAction Stop } catch { }
+}
+
+function Start-AutoMode([string]$ModeArgs, [string]$Label) {
+  # 사람이 쓰는 원격 명령(run-remote·preview-remote)·heal 과 같은 길: 로그인 사용자 세션 예약 작업(simai-gateway-run)으로 run·preview 를 띄운다.
+  # 작업자의 자식으로 띄우지 않는다: 갱신·설치가 작업자 예약 작업을 멈출 때 작업 스케줄러가 자식 창(관제·녹화)까지 끝내지 않게 하려는 것이다.
+  # 그래서 작업자는 예약 작업을 고칠 수 있게 관리자 권한(RunLevel Highest)으로 돈다(Register-AutoTask).
+  Start-InSession $ModeArgs $Label
+}
+
+function Wait-ModeApplied([string]$WantMode, [hashtable]$WantTarget, [int]$Seconds = 60) {
+  # 모드 파일이 새 모드를 가리킬 때까지 본다(Do-Run·Do-Preview 는 창을 띄운 뒤 마지막에 쓴다). Start-InSession 은 20초만 기다리는데
+  # Do-Run 은 이전 창 끄기·녹화 확정(최대 10초)·터널 대기(최대 10초)·경보 단말 3초라 그보다 길 수 있어 60초까지 본다(맞으면 바로 끝)
+  for ($i = 0; $i -le ($Seconds * 2); $i++) {
+    $text = if (Test-Path $ModeFile) { (Get-Content $ModeFile -Raw -Encoding UTF8) } else { '' }
+    $mi = Get-ModeInfo $text
+    if (($mi.Mode -eq $WantMode) -and (($WantMode -ne 'run') -or (Test-SameTarget $mi.Target $WantTarget))) { return $true }
+    if ($i -lt ($Seconds * 2)) { Start-Sleep -Milliseconds 500 }
+  }
+  return $false
+}
+
+function ConvertTo-AutoReport([hashtable]$Plan, [hashtable]$Obs, [bool]$Enabled, [string]$Owner, [string]$ModeAfter, $SwitchOk, [long]$NowMs) {
+  # 순수 함수: 판단 → gateway_switch_state 1.0.0 본문(계약). 비밀 값은 싣지 않는다
+  $modeCode = @{ 'run' = 'RUN'; 'preview' = 'PREVIEW'; '' = 'OFF' }[$ModeAfter]
+  $decision = @{ 'none' = 'NONE'; 'run' = 'SWITCH_RUN'; 'preview' = 'SWITCH_PREVIEW' }[$Plan.Action]
+  $sid = $null
+  if ($Obs -and $Obs.Session -and ([string]$Obs.Session.session_id -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) { $sid = [string]$Obs.Session.session_id }
+  $target = $null
+  if ($Plan.Target -and ([string]$Plan.Target.Host -match '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$')) {
+    $target = [ordered]@{ public_host = [string]$Plan.Target.Host; control_port = [int]$Plan.Target.ControlPort; video_port = [int]$Plan.Target.VideoPort }
+  }
+  $doc = [ordered]@{
+    schema_version = '1.0.0'; observed_at_ms = $NowMs; auto_enabled = $Enabled
+    owner = $(if ($Owner -eq 'manual') { 'MANUAL' } else { 'AUTO' }); mode = $modeCode; decision = $decision
+    switch_ok = $(if ($decision -eq 'NONE') { $null } else { [bool]$SwitchOk }); reason_code = $Plan.Reason; session_id = $sid; target = $target
+  }
+  if (($Plan.Reason -eq 'PIN_MISMATCH') -and $Obs -and ($Obs.Fingerprint -match '^sha256:[0-9a-f]{64}$')) { $doc.tls_public_key_sha256 = $Obs.Fingerprint }
+  return $doc
+}
+
+function Invoke-AutoSwitchCycle {
+  # 한 번 판단하고(필요하면 전환), 상태 파일·로그·EC2 에 남긴다. 작업자가 15초마다 부른다
+  $now = Get-NowMs
+  $st = Read-AutoState
+  $settings = Get-AutoSettings
+  $own = Get-ModeOwner
+  $modeText = if (Test-Path $ModeFile) { (Get-Content $ModeFile -Raw -Encoding UTF8) } else { '' }
+  $mi = Get-ModeInfo $modeText
+  if (-not $own.Owner) {
+    # 이 기능 전부터 켜 둔 모드: 관제는 사람이 켠 것으로(모드 파일 시각부터 수동), 미리보기·꺼짐은 평상시라 자동으로 넘겨받는다
+    $at = if (Test-Path $ModeFile) { [DateTimeOffset]::new((Get-Item $ModeFile).LastWriteTimeUtc).ToUnixTimeMilliseconds() } else { $now }
+    $own = @{ Owner = $(if ($mi.Mode -eq 'run') { 'manual' } else { 'auto' }); AtMs = $at; Command = '이전 모드 넘겨받음' }
+    [IO.File]::WriteAllText($OwnerFile, ([ordered]@{ owner = $own.Owner; at_ms = $own.AtMs; command = $own.Command } | ConvertTo-Json -Compress), $Utf8)
+  }
+  $busy = $settings.Enabled -and (Test-SwitchBusy)
+  $obs = @{ FetchError = ''; FetchDetail = ''; Session = $null; Target = $null; TargetError = ''; TargetDetail = ''; EndpointReason = ''; EndpointDetail = ''; Fingerprint = '' }
+  if ($settings.Enabled -and -not $busy) { $obs = Get-AutoObservation $settings }
+  $window = $now - 30 * 60 * 1000
+  $failures = @($st.failures | Where-Object { $_ -ge $window })
+  $plan = Get-AutoSwitchPlan -Enabled $settings.Enabled -Busy $busy -Owner $own.Owner -ManualAtMs $own.AtMs -Mode $mi.Mode -CurrentTarget $mi.Target `
+    -FetchError $obs.FetchError -Session $obs.Session -Target $obs.Target -TargetError $obs.TargetError -EndpointReason $obs.EndpointReason `
+    -EndpointDetail $obs.EndpointDetail -NowMs $now -LastGoodAtMs $st.last_good_at_ms -GraceSeconds $settings.GraceSeconds `
+    -RecentFailures $failures.Count -MaxFailures $AutoMaxFailures
+  if ($obs.FetchError) { $plan.Detail = (@($obs.FetchDetail, '모르면 모드를 그대로 둔다') | Where-Object { $_ }) -join ', ' }
+  elseif ((-not $plan.Detail) -and $obs.TargetDetail) { $plan.Detail = $obs.TargetDetail }
+  if ($plan.ReleaseManual) {
+    Set-ModeOwner 'auto' '새 GPU 세션 등록'
+    $own.Owner = 'auto'
+    Write-AutoLog "수동 우선 해제: 수동 명령($($own.Command)) 뒤 새 GPU 세션 $([string]$obs.Session.session_id) 이 등록됨"
+  }
+
+  $switchOk = $null
+  $modeAfter = $mi.Mode
+  if ($plan.Action -ne 'none') {
+    # 사람이 고른 원격 시청·녹화 끔은 이어 간다(기본은 켬)
+    $extra = ''
+    if ($modeText -match '원격 시청 끔') { $extra += ' -NoRemoteCctv' }
+    if ($plan.Action -eq 'run') {
+      if ($modeText -match '녹화 끔') { $extra += ' -NoRecord' }
+      $t = $plan.Target
+      Write-AutoLog "관제로 전환: $($t.Host) 제어 $($t.ControlPort) 영상 $($t.VideoPort) (세션 $([string]$obs.Session.session_id), 까닭 $($plan.Reason))"
+      Start-AutoMode "run -PodIp $($t.Host) -ControlPort $($t.ControlPort) -VideoPort $($t.VideoPort) -Auto$extra" '관제(자동 전환)'
+      $switchOk = Wait-ModeApplied 'run' $t
+    } else {
+      Write-AutoLog "미리보기로 전환: $($plan.Reason) ($($plan.Detail))"
+      Start-AutoMode "preview -Auto$extra" '카메라 미리보기(자동 전환)'
+      $switchOk = Wait-ModeApplied 'preview' $null
+    }
+    $after = Get-ModeInfo $(if (Test-Path $ModeFile) { (Get-Content $ModeFile -Raw -Encoding UTF8) } else { '' })
+    $modeAfter = $after.Mode
+    if ($switchOk) {
+      if ($plan.Action -eq 'run') { $plan.LastGoodAtMs = $now }
+      Write-AutoLog "전환 끝: $($plan.Action)"
+    } else {
+      $failures += $now
+      Write-AutoLog "전환 실패: $($plan.Action) 새 모드 기록이 없다(로그 relay·heal 확인, 30분 안에 $($failures.Count) 번째)"
+    }
+    $st.last_switch = [ordered]@{ at_ms = $now; action = $plan.Action; ok = [bool]$switchOk; reason = $plan.Reason }
+  }
+
+  # 로그: 판단이 바뀔 때만(15초마다 쌓지 않는다)
+  $logKey = "$($plan.Reason)|$($own.Owner)|$modeAfter|$([string]$obs.Session.session_id)|$($settings.Enabled)"
+  if (($plan.Action -eq 'none') -and ($logKey -ne $st.last_log_key)) {
+    Write-AutoLog "판단: $($plan.Reason)$(if ($plan.Detail) { " ($($plan.Detail))" }) · 모드 $(if ($modeAfter) { $modeAfter } else { '꺼짐' }) · 주인 $($own.Owner)"
+  }
+  $st.last_log_key = $logKey
+
+  # EC2 에 알림: 판단이 바뀌었거나 전환했거나 5분이 지났을 때(실패해도 다음에 다시)
+  $report = ConvertTo-AutoReport -Plan $plan -Obs $obs -Enabled $settings.Enabled -Owner $own.Owner -ModeAfter $modeAfter -SwitchOk $switchOk -NowMs $now
+  $reportKey = "$($report.reason_code)|$($report.owner)|$($report.mode)|$($report.session_id)|$($report.auto_enabled)"
+  if (($plan.Action -ne 'none') -or ($reportKey -ne $st.last_report_key) -or (($now - $st.last_reported_at_ms) -ge $AutoReportSeconds * 1000)) {
+    $sent = Invoke-DeviceRequest 'POST' '/api/devices/gpu-session/gateway-state' ($report | ConvertTo-Json -Depth 4 -Compress)
+    if ($sent.Status -eq 204) { $st.last_reported_at_ms = $now; $st.last_report_key = $reportKey }
+  }
+
+  $st.last_good_at_ms = $plan.LastGoodAtMs
+  $st.failures = @($failures)
+  $sess = $obs.Session
+  $st.last = [ordered]@{
+    at_ms = $now; enabled = $settings.Enabled; disabled_by = $settings.DisabledBy; grace_seconds = $settings.GraceSeconds
+    owner = $own.Owner; owner_command = $own.Command; mode = $modeAfter; action = $plan.Action; reason = $plan.Reason; detail = [string]$plan.Detail
+    session_id = $(if ($sess) { [string]$sess.session_id } else { '' }); session_state = $(if ($sess) { [string]$sess.state } else { '' })
+    stage = $(if ($sess) { [string]$sess.stage } else { '' }); tier0_link = $(if ($sess) { [string]$sess.tier0_link } else { '' })
+    target = $(if ($plan.Target) { "$($plan.Target.Host):$($plan.Target.ControlPort)/$($plan.Target.VideoPort)" } else { '' })
+  }
+  Write-AutoState $st
+  return $plan
+}
+
+function Show-AutoStatus {
+  $settings = Get-AutoSettings
+  $own = Get-ModeOwner
+  $taskState = Get-AutoTaskState
+  $onLabel = if ($settings.Enabled) { '켬' } elseif ($settings.DisabledBy -eq 'env') { '끔(.env SIMAI_GATEWAY_AUTO_SWITCH)' } else { '끔(auto off, 켜기: auto on)' }
+  $ownLabel = if ($own.Owner) { "$($own.Owner)($($own.Command), $([DateTimeOffset]::FromUnixTimeMilliseconds($own.AtMs).LocalDateTime.ToString('MM-dd HH:mm')))" } else { '기록 없음' }
+  Say "자동 전환: $onLabel, 모드 주인 $ownLabel, 작업자=$taskState, 유예 $($settings.GraceSeconds)초 (로그 $AutoLog)"
+  $st = Read-AutoState
+  if ($st.last) {
+    $l = $st.last
+    $when = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$l.at_ms).LocalDateTime.ToString('MM-dd HH:mm:ss')
+    $sid = [string]$l.session_id
+    $sess = if ($sid) { "세션 $($sid.Substring(0, [math]::Min(8, $sid.Length))) $($l.session_state)/$($l.stage) Tier0 $($l.tier0_link)" } else { '세션 없음' }
+    $line = "  마지막 판단 $when : $($l.reason)$(if ($l.detail) { " ($($l.detail))" }), $sess$(if ($l.target) { ", 대상 $($l.target)" })"
+    if ($l.reason -in @('PIN_MISMATCH', 'AUTH_FAILED', 'BACKOFF', 'PORTS_UNSUPPORTED', 'ENDPOINT_PORTS_MISMATCH', 'INVALID_RESPONSE')) { Warn $line.Trim() } else { Say $line }
+  }
+  if ($st.last_switch) {
+    $w = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$st.last_switch.at_ms).LocalDateTime.ToString('MM-dd HH:mm:ss')
+    Say "  마지막 전환 $w : $($st.last_switch.action) $(if ($st.last_switch.ok) { '성공' } else { '실패' }) ($($st.last_switch.reason))"
+  }
+}
+
+function Do-AutoWorker {
+  $m = [Threading.Mutex]::new($false, 'Local\SimaiGatewayAuto')
+  try { $acquired = $m.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }
+  if (-not $acquired) { $m.Dispose(); return }
+  try {
+    Write-AutoLog "자동 전환 작업자 시작($AutoPollSeconds 초마다 조회)"
+    while ($true) {
+      try { [void](Invoke-AutoSwitchCycle) } catch { Write-AutoLog "판단 중 오류: $($_.Exception.Message)" }
+      Start-Sleep -Seconds $AutoPollSeconds
+    }
+  } finally { $m.ReleaseMutex(); $m.Dispose() }
+}
+
+function Do-Auto {
+  $sub = if ($LogKind) { $LogKind.Trim().ToLower() } else { 'status' }
+  switch ($sub) {
+    'status' { Show-AutoStatus }
+    'on' {
+      Remove-Item $AutoOffFile -Force -ErrorAction SilentlyContinue
+      Set-ModeOwner 'auto' 'auto on'
+      Write-AutoLog 'auto on: 자동 전환 켬, 수동 우선 해제'
+      Say '자동 전환을 켰다(수동 우선도 풀었다). 다음 조회(15초 안)부터 GPU 세션을 따라간다.'
+      if ((Get-AutoSettings).DisabledBy -eq 'env') { Warn '.env 의 SIMAI_GATEWAY_AUTO_SWITCH=off 가 남아 있어 아직 꺼져 있다' }
+      Start-AutoTask
+    }
+    'off' {
+      New-Item -ItemType Directory -Force $LocalDir | Out-Null
+      [IO.File]::WriteAllText($AutoOffFile, ("auto off {0:yyyy-MM-dd HH:mm:ss}" -f (Get-Date)), $Utf8)
+      Write-AutoLog 'auto off: 자동 전환 끔(지금 모드는 그대로)'
+      Say '자동 전환을 껐다. 지금 모드는 그대로 두고, 다시 켜려면 auto on.'
+    }
+    'once' { $p = Invoke-AutoSwitchCycle; Say "이번 판단: $($p.Action) $($p.Reason)"; Show-AutoStatus }
+    'worker' { Do-AutoWorker }
+    default { Fail 'auto 하위 명령은 status | on | off | once | worker 중 하나다(예: simai-gateway.cmd auto off)' }
+  }
+}
+
 # ---------- 메뉴 ----------
 function Show-Menu {
   while ($true) {
@@ -1351,11 +1902,13 @@ function Show-Menu {
     Write-Host ' 8  [개발 노트북] 게이트웨이 원격 데스크톱'
     Write-Host ' 9  지금 상태(모드·창·sshd·역터널·카메라·디스크·절전·heal)'
     Write-Host ' h  heal (지금 점검·복구: sshd·역터널·절전·미리보기)'
+    Write-Host ' a  GPU 세션 자동 전환 상태 (켜기·끄기: simai-gateway.cmd auto on|off)'
     Write-Host ' q  나가기'
     $c = Read-Host '선택'
     try {
       switch ($c) {
-        '1' { Do-Setup } '2' { Do-Check } '3' { Do-Run } '4' { Do-Stop } '5' { Do-Preview }
+        '1' { Do-Setup } '2' { Do-Check } '3' { Set-OwnerForCommand 'run(메뉴)'; Do-Run } '4' { Set-OwnerForCommand 'stop(메뉴)'; Do-Stop }
+        '5' { Set-OwnerForCommand 'preview(메뉴)'; Do-Preview } 'a' { Show-AutoStatus }
         '6' { Do-RemoteSetup } '7' { Do-DevRemote } '8' { Do-Rdp } '9' { Do-Status }
         'h' { Do-Heal } 'heal' { Do-Heal } 'q' { return } default { }
       }
@@ -1365,7 +1918,10 @@ function Show-Menu {
 
 if ($MyInvocation.InvocationName -ne '.') {
   switch ($Command) {
-    'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } 'preview' { Do-Preview }
+    'setup' { Do-Setup } 'check' { Do-Check }
+    # 사람이 친 run·stop·preview 는 모드 주인을 manual 로 남겨 자동 전환이 덮어쓰지 않게 한다(-Auto 는 자동 전환, -KeepOwner 는 heal·갱신 복원, S15P31A101-701)
+    'run' { Set-OwnerForCommand 'run'; Do-Run } 'stop' { Set-OwnerForCommand 'stop'; Do-Stop } 'preview' { Set-OwnerForCommand 'preview'; Do-Preview }
+    'auto' { Do-Auto }
     'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
     'update' { Do-Update } 'update-remote' { Do-UpdateRemote }
     'heal' { Do-Heal } 'logs' { Do-Logs } 'restart-tunnel' { Do-RestartTunnel }

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "observed_at_ms": 1794657675000,
+  "auto_enabled": true,
+  "owner": "AUTO",
+  "mode": "PREVIEW",
+  "decision": "NONE",
+  "switch_ok": null,
+  "reason_code": "PIN_MISMATCH",
+  "session_id": "6f1c2d4e-8a9b-4c0d-9e1f-2a3b4c5d6e7f",
+  "target": null,
+  "tls_public_key_sha256": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+}

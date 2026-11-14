@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/gpu_session_status.schema.json",
+  "title": "현장 게이트웨이용 GPU 세션 상태 (gpu_session_status)",
+  "description": "EC2 → 현장 게이트웨이(노트북) `GET /api/devices/gpu-session`(기기 토큰, LAPTOP 만. 워치 토큰은 403) 응답. 1.0.0 신설(S15P31A101-701). 게이트웨이가 팀원이 켠 GPU 세션을 사람 손 없이 따라가 관제(EC2 경유 SSH 터널 + 중계 송신)로 바꾸고, 세션이 끝나면 미리보기로 되돌리는 데 쓴다. 가장 최근 GPU 세션(열려 있든 끝났든) 하나를 싣고, 등록이 한 번도 없으면 `session: null` 이다. 노트북이 I0 로 접속할 주소·TLS 지문의 정본은 여전히 I1 `tier0_endpoint`(GET /api/endpoints/tier0)다. 이 응답의 `public_host`·`ports` 는 EC2 터널 방식에서 게이트웨이가 EC2→인스턴스 포워드를 만들 실제 공개 주소·바깥 포트(인스턴스가 `gpu_session_register` 로 알린 값 그대로, EC2 는 고치지 않는다)이고, `state`·`tier0_link` 는 세션이 살아 있는지와 그 세션 Tier 0 가 I1 로 붙어 있는지다. 노트북 전환에 쓰지 않는 칸(공급자·인스턴스 ID·가격·워커 ID·SSH 포트 등)은 싣지 않는다. 비밀 값은 없다. 공통 봉투를 쓰지 않는 기기 REST 응답이고 모든 객체가 닫힌 값 객체다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "server_time_ms", "session"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "server_time_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "EC2 시계의 응답 시각" },
+    "session": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/session" }],
+      "description": "가장 최근 GPU 세션. 등록이 한 번도 없으면 null"
+    }
+  },
+  "$defs": {
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "state",
+        "stage",
+        "public_host",
+        "ports",
+        "tls_public_key_sha256",
+        "registered_at_ms",
+        "last_report_at_ms",
+        "ended_at_ms",
+        "end_reason",
+        "tier0_link"
+      ],
+      "properties": {
+        "session_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "GPU 세션 ID(gpu_session_register_result 와 같은 값)" },
+        "state": {
+          "enum": ["ACTIVE", "ENDED"],
+          "description": "ACTIVE: 열려 있다. ENDED: 끝났다(종료 보고·새 등록에 밀림·무응답·부팅 비밀값 폐기·관리자 정지). 끝난 세션은 다시 열리지 않는다"
+        },
+        "stage": {
+          "enum": ["REGISTERED", "WEIGHTS", "ENGINE", "TIER0", "VLLM", "READY", "FAILED", "ENDED"],
+          "description": "마지막 진행 보고의 단계(gpu_session_report). 진행 보고가 아직 없으면 REGISTERED"
+        },
+        "public_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$",
+          "description": "인스턴스 공개 주소(IPv4 또는 DNS 이름). 스킴·포트·경로 없이"
+        },
+        "ports": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/port" },
+          "description": "인스턴스가 등록한 공개 포트 중 CONTROL·VIDEO 만(SSH 는 싣지 않는다)"
+        },
+        "tls_public_key_sha256": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/sha256" }, { "type": "null" }],
+          "description": "인스턴스가 등록 때 알린 Tier 0 TLS 공개키 지문. 알리지 않았으면 null. 게이트웨이는 조회 값만으로 신뢰할 키를 바꾸지 않는다(미리 고정한 지문 목록에 있어야 한다)"
+        },
+        "registered_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "EC2 시계의 등록 시각" },
+        "last_report_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "EC2 가 이 세션의 등록·보고를 마지막으로 받은 시각" },
+        "ended_at_ms": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+          "description": "끝난 시각(EC2 시계). 열려 있으면 null"
+        },
+        "end_reason": {
+          "enum": ["END_REPORTED", "SUPERSEDED", "STALE", "BOOT_SECRET_REVOKED", "ADMIN_STOPPED", null],
+          "description": "끝난 까닭. 열려 있으면 null"
+        },
+        "tier0_link": {
+          "$ref": "../common/defs.schema.json#/$defs/link_state",
+          "description": "이 세션 Tier 0 토큰으로 연 I1 연결이 지금 열려 있는지. 끝난 세션은 늘 DISCONNECTED"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "ACTIVE" } }, "required": ["state"] },
+          "then": { "properties": { "ended_at_ms": { "type": "null" }, "end_reason": { "const": null } } },
+          "else": {
+            "properties": {
+              "ended_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+              "end_reason": { "enum": ["END_REPORTED", "SUPERSEDED", "STALE", "BOOT_SECRET_REVOKED", "ADMIN_STOPPED"] },
+              "tier0_link": { "const": "DISCONNECTED" }
+            }
+          }
+        }
+      ]
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "public_port"],
+      "properties": {
+        "role": { "enum": ["CONTROL", "VIDEO"], "description": "CONTROL: I0 제어 WebSocket(wss). VIDEO: 카메라 영상 TLS" },
+        "public_port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "밖에서 접속할 포트(EC2 터널 방식에서는 EC2 가 이 포트로 인스턴스에 붙는다)" },
+        "requested_port": { "type": "integer", "minimum": 1, "description": "인스턴스가 요청·내부에서 듣는 번호(등록에 있었으면)" }
+      }
+    }
+  }
+}

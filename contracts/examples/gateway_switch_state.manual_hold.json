@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "observed_at_ms": 1794657675000,
+  "auto_enabled": true,
+  "owner": "MANUAL",
+  "mode": "RUN",
+  "decision": "NONE",
+  "switch_ok": null,
+  "reason_code": "MANUAL_HOLD",
+  "session_id": null,
+  "target": { "public_host": "198.51.100.7", "control_port": 41001, "video_port": 41002 }
+}

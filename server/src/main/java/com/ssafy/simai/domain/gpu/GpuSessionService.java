@@ -32,6 +32,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -293,6 +294,46 @@ public class GpuSessionService implements Tier0SessionTokens {
                 ORDER BY s.registered_at DESC, s.session_id
                 LIMIT 1
                 """, Map.of(), (rs, i) -> view(rs, now, tier0Connected)).stream().findFirst();
+    }
+
+    /**
+     * 현장 게이트웨이용 가장 최근 세션(S15P31A101-701, 계약 messages/gpu_session_status 의 session). 노트북 전환에 쓰는 칸만 싣고
+     * 포트는 CONTROL·VIDEO 만 남긴다(공급자·인스턴스 ID·가격·워커 ID·SSH 포트는 노트북에 주지 않는다).
+     */
+    public Optional<ObjectNode> latestForGateway(Predicate<UUID> tier0Connected) {
+        return latest(tier0Connected).map(this::gatewayView);
+    }
+
+    /** 폐기되지 않은 현장 노트북(LAPTOP) 기기인지 */
+    public boolean isLaptop(String deviceId) {
+        List<String> kind = jdbc.queryForList("SELECT kind FROM device WHERE device_id = :id AND revoked_at IS NULL",
+                new MapSqlParameterSource("id", deviceId), String.class);
+        return !kind.isEmpty() && "LAPTOP".equals(kind.getFirst());
+    }
+
+    private ObjectNode gatewayView(ObjectNode full) {
+        ObjectNode node = mapper.createObjectNode();
+        for (String field : List.of("session_id", "state", "stage", "public_host")) {
+            node.set(field, full.get(field));
+        }
+        ArrayNode ports = node.putArray("ports");
+        for (JsonNode port : full.get("ports")) {
+            String role = port.path("role").stringValue("");
+            if (!role.equals("CONTROL") && !role.equals("VIDEO")) {
+                continue;
+            }
+            ObjectNode copy = ports.addObject();
+            copy.put("role", role);
+            copy.set("public_port", port.get("public_port"));
+            if (present(port, "requested_port")) {
+                copy.set("requested_port", port.get("requested_port"));
+            }
+        }
+        for (String field : List.of("tls_public_key_sha256", "registered_at_ms", "last_report_at_ms", "ended_at_ms", "end_reason",
+                "tier0_link")) {
+            node.set(field, full.get(field));
+        }
+        return node;
     }
 
     private ObjectNode view(ResultSet rs, Instant now, Predicate<UUID> tier0Connected) throws SQLException {

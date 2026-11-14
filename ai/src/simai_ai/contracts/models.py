@@ -646,6 +646,22 @@ class GaitFeatures(Envelope):
     payload: Payload16
 
 
+class GatewaySwitchStateTarget(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    public_host: Annotated[
+        StrictStr,
+        Field(
+            max_length=253,
+            min_length=1,
+            pattern='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$',
+        ),
+    ]
+    control_port: Annotated[StrictInt, Field(ge=1, le=65535)]
+    video_port: Annotated[StrictInt, Field(ge=1, le=65535)]
+
+
 class GpuSessionRegisterPort(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -733,6 +749,39 @@ class GpuSessionReport(Envelope):
     )
     msg_type: Annotated[Literal['gpu_session_report'], Field(min_length=1)]
     payload: Payload19
+
+
+class GpuSessionStatusPort(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    role: Literal['CONTROL', 'VIDEO']
+    public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
+    requested_port: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+
+
+class GpuSessionStatusSession(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    session_id: DefsUuid
+    state: Literal['ACTIVE', 'ENDED']
+    stage: Literal['REGISTERED', 'WEIGHTS', 'ENGINE', 'TIER0', 'VLLM', 'READY', 'FAILED', 'ENDED']
+    public_host: Annotated[
+        StrictStr,
+        Field(
+            max_length=253,
+            min_length=1,
+            pattern='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$',
+        ),
+    ]
+    ports: Annotated[list[GpuSessionStatusPort], Field(max_length=32)]
+    tls_public_key_sha256: DefsSha256 | None
+    registered_at_ms: DefsTimestampMs
+    last_report_at_ms: DefsTimestampMs
+    ended_at_ms: DefsTimestampMs | None
+    end_reason: Literal['END_REPORTED', 'SUPERSEDED', 'STALE', 'BOOT_SECRET_REVOKED', 'ADMIN_STOPPED'] | None
+    tier0_link: DefsLinkState
 
 
 class HealthActiveSiteAlert(BaseModel):
@@ -3766,6 +3815,23 @@ class FrameHeader(DefsFrameKey, DefsCaptureTime):
     received_at_ms: DefsTimestampMs | MISSING = MISSING
 
 
+class GatewaySwitchState(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    observed_at_ms: DefsTimestampMs
+    auto_enabled: StrictBool
+    owner: Literal['AUTO', 'MANUAL']
+    mode: Literal['RUN', 'PREVIEW', 'OFF']
+    decision: Literal['NONE', 'SWITCH_RUN', 'SWITCH_PREVIEW']
+    switch_ok: StrictBool | None
+    reason_code: Literal['DISABLED', 'MANUAL_HOLD', 'BUSY', 'EC2_UNREACHABLE', 'AUTH_FAILED', 'INVALID_RESPONSE', 'NO_SESSION', 'SESSION_ENDED', 'WAITING_TIER0', 'ENDPOINT_MISSING', 'ENDPOINT_UNAVAILABLE', 'PIN_MISMATCH', 'PORTS_UNSUPPORTED', 'ENDPOINT_PORTS_MISMATCH', 'RUNNING', 'GRACE', 'READY', 'TIER0_LOST', 'MODE_OFF', 'BACKOFF']
+    session_id: DefsUuid | None
+    target: GatewaySwitchStateTarget | None
+    tls_public_key_sha256: DefsSha256 | MISSING = MISSING
+
+
 class Payload17(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3835,6 +3901,15 @@ class GpuSessionRegisterResult(Envelope):
     msg_type: Annotated[Literal['gpu_session_register_result'], Field(min_length=1)]
     source_id: Annotated[Literal['ec2'], Field(min_length=1)]
     payload: Payload18
+
+
+class GpuSessionStatus(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    server_time_ms: DefsTimestampMs
+    session: GpuSessionStatusSession | None
 
 
 class Payload20(BaseModel):
@@ -5587,9 +5662,11 @@ class Contracts(BaseModel):
     event_state_snapshot: EventStateSnapshot | MISSING = MISSING
     frame_header: FrameHeader | MISSING = MISSING
     gait_features: GaitFeatures | MISSING = MISSING
+    gateway_switch_state: GatewaySwitchState | MISSING = MISSING
     gpu_session_register: GpuSessionRegister | MISSING = MISSING
     gpu_session_register_result: GpuSessionRegisterResult | MISSING = MISSING
     gpu_session_report: GpuSessionReport | MISSING = MISSING
+    gpu_session_status: GpuSessionStatus | MISSING = MISSING
     health: Health | MISSING = MISSING
     human_mesh_output: HumanMeshOutput | MISSING = MISSING
     incident_summary: IncidentSummary | MISSING = MISSING

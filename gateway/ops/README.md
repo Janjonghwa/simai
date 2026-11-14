@@ -6,7 +6,7 @@
 | 파일 | 하는 일 |
 |---|---|
 | `simai-gateway.cmd` | 더블클릭 → 메뉴. 명령줄 `simai-gateway.cmd run -PodIp … -ControlPort … -VideoPort …` |
-| `simai-gateway.ps1` | 1 설치·갱신, 2 점검, 3 관제 시작, 4 끄기, 5 카메라 미리보기만, 6~8 원격(S15P31A101-394), 9 상태, h 자가 복구(`heal`), SSH 전용 `update-remote`·`logs`·`restart-tunnel`(S15P31A101-414·424) (Windows PowerShell 5.1) |
+| `simai-gateway.ps1` | 1 설치·갱신, 2 점검, 3 관제 시작, 4 끄기, 5 카메라 미리보기만, 6~8 원격(S15P31A101-394), 9 상태, h 자가 복구(`heal`), a GPU 세션 자동 전환 상태, SSH 전용 `update-remote`·`logs`·`restart-tunnel`(S15P31A101-414·424), `auto status/on/off/once`(S15P31A101-701) (Windows PowerShell 5.1) |
 | `gw.sh` | 개발 노트북(Git Bash)에서 한 줄로 게이트웨이 상태·관제·미리보기·갱신·자가 복구·로그·접속 실패 진단을 수행하는 원격 CLI(S15P31A101-424) |
 | `make-gateway-usb.ps1` | 개발 노트북에서 첫 설치용 폴더(도우미 + 비밀 묶음)를 만든다 |
 | `../relay/configs/lobby.toml` | 로비 카메라 cam_A~D 주소(공유기 DHCP 예약 사설 IP, 계정 없음) |
@@ -60,6 +60,26 @@ Pod 없이 카메라만 보려면 `5`(미리보기만, 원격이면 `gw.sh previ
 원격 시청 업로드(`--remote-cctv`)를 준다. 같은 노트북 브라우저나 로그인한 관리자의 다른 PC 의 simai.live CCTV 화면에서 본다
 (원격 시청을 끄려면 `-NoRemoteCctv`).
 
+## GPU 세션 자동 전환 (S15P31A101-701)
+
+팀원 누구나 GPU 를 켜면 사람 손 없이 관제가 준비되게, 게이트웨이가 팀원이 켠 GPU 세션을 따라간다. 설계 `docs/design/S15P31A101-701-gateway-auto-switch.md`.
+
+- 예약 작업 `simai-gateway-auto`(로그인 때, 게이트웨이 계정 세션, 숨김)가 **15초마다** 기기 토큰으로 EC2 를 조회한다:
+  `GET /api/devices/gpu-session`(세션이 살아 있나, EC2 터널이 붙을 Pod 공개 IP·바깥 포트, 그 세션 Tier 0 가 I1 에 붙었나)과
+  `GET /api/endpoints/tier0`(Tier 0 TLS 지문이 `.env` 의 `SIMAI_TIER0_PINNED_SPKI_SHA256` 에 있나, 터널 포트 17000·17001 인가).
+- **관제로**: 세션이 열려 있고 Tier 0 가 붙었고 지문이 맞으면 `run -PodIp … -ControlPort … -VideoPort …` 를 원격 명령과 같은 길(로그인 세션 예약 작업)로 띄운다.
+  같은 주소·포트로 이미 관제 중이면 다시 띄우지 않는다(같은 Pod 가 다시 등록해도). 지문이 다르면 전환하지 않고 `PIN_MISMATCH` 를 남긴다.
+- **미리보기로**: 관제 대상(세션 끝·없음·Tier 0 끊김·다른 세션)이 **5분** 넘게 안 보이면 `preview` 로 되돌린다. Tier 0 재시작·EC2 재배포(1~2분)에는 그대로다.
+  EC2 조회가 실패하면(모름) 몇 분이 지나도 모드를 바꾸지 않는다. 바꾸려면 `.env` `SIMAI_GATEWAY_AUTO_REVERT_SECONDS`(60 이상).
+- **수동 우선**: 사람이 `run`·`preview`·`stop`(메뉴 3·4·5, `gw.sh live/preview/stop`, `run-remote`·`preview-remote`)을 치면 그 뒤 **새로 등록된 GPU 세션**이 나올 때까지
+  자동 전환은 모드를 바꾸지 않는다. 바로 자동으로 돌리려면 `simai-gateway.cmd auto on`(원격 `gw.sh auto on`). heal·`update` 가 되살리는 모드는 주인을 바꾸지 않는다.
+- **끄기**: `simai-gateway.cmd auto off`(원격 `gw.sh auto off`, 지금 모드는 그대로, `auto on` 으로 다시 켬). 늘 끄려면 `.env` 에 `SIMAI_GATEWAY_AUTO_SWITCH=off`.
+- **녹화**: 전환은 늘 `Do-Stop`(창 종료 확인 → 녹화 확정)을 지나고, 관제 → 미리보기면 기존처럼 녹화 업로드를 띄운다. 끄기가 실패하면 전환하지 않고 세 번 실패하면 30분 안에서는 멈춘다(`BACKOFF`).
+- **상태**: `status`(9)·`auto status`·`gw.sh auto` 에 켬·끔, 모드 주인, 마지막 판단과 까닭(`READY`·`RUNNING`·`GRACE`·`WAITING_TIER0`·`PIN_MISMATCH`·`MANUAL_HOLD`·`EC2_UNREACHABLE` 등), 마지막 전환.
+  로그 `C:\simai-local\gateway-auto.log`(`gw.sh logs auto`, 판단이 바뀔 때만). EC2 에는 `POST /api/devices/gpu-session/gateway-state` 로 알리고(바뀔 때·5분마다),
+  관리자 `GET /api/gpu/sessions/current` 의 `gateway` 로 보인다.
+- 처음 적용: `gw.sh update` 뒤 다음 heal(5분 안)이 작업자를 등록·시작한다. 바로 하려면 현장 `1`(관리자) 또는 `gw.sh heal`. 서버(-701 판)가 먼저 배포돼 있어야 한다(아니면 `INVALID_RESPONSE`).
+
 ## 원격 설정 (S15P31A101-394)
 
 게이트웨이가 EC2 로 역터널을 걸어 두고(EC2 `127.0.0.1:2222` → 게이트웨이 sshd, `127.0.0.1:13389` → 원격 데스크톱),
@@ -93,6 +113,7 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
   3. **원격 역터널(`simai-gateway-remote`)**: 예약 작업이 `Running` 이 아니면 시작한다. 역터널 `ssh` 프로세스가 없거나 터널 로그의 마지막 성공 시각 이후 5분(300초) 넘게 지났으면 예약 작업을 멈추고 EC2 `~/simai-gateway/free-ports.sh` 로 옛 세션을 정리한 뒤 다시 시작한다.
   4. **절전 설정(`powercfg`)**: AC 전원 기준 화면 끄기(`monitor-timeout-ac 0`), 절전(`standby-timeout-ac 0`), 덮개 닫기 동작(`LIDACTION 0`, 아무 것도 안 함)이 바뀌었으면 0으로 되돌린다.
   5. **중계 모드**: 마지막으로 사용자가 고른 모드(`C:\simai-local\gateway-mode.txt`)의 창이 죽어 있으면 그 모드로 다시 띄운다(미리보기, 그리고 상태 파일에 Pod 주소·포트가 있는 `run`(관제), S15P31A101-652). 창 PID 만이 아니라 창 안의 프로그램(uv·simai-relay·simai-site-alert 자식)까지 본다: 창은 `-NoExit` 라 중계가 죽어도 열린 채 남아 11-09 에 heal 이 "이상 없음"이었다(관제 터널 창은 재연결 대기 중 자식이 없어 창만 본다). 30분 안에 3번 되살렸는데 또 죽으면 더 되살리지 않고 heal 로그에 `되살리지 않음` 을 남긴다. Pod 주소 기록이 없는 `run` 은 예전처럼 `"관제가 꺼짐"` 으로만 알린다.
+  6. **자동 전환 작업자(`simai-gateway-auto`, S15P31A101-701)**: 예약 작업이 없으면 등록하고(SYSTEM 이라 관리자 권한), 멈춰 있으면 시작한다(로그인 전에는 다음 heal 이 다시 본다).
 
 ### 2. 개발 노트북 원격 CLI (`gateway/ops/gw.sh`)
 
@@ -107,7 +128,8 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 | `gateway/ops/gw.sh upload` | 녹화 작업 구간 업로드를 지금 백그라운드로 시작(로그인 세션 예약 작업 `simai-gateway-upload`) 후 `status` 출력 |
 | `gateway/ops/gw.sh update` | 현재 모드를 잠시 멈추고 로그인 세션 예약 작업(`simai-gateway-update`)으로 `git pull --ff-only` + `uv sync` 수행 후 이전 모드 복원 및 `status` 출력 |
 | `gateway/ops/gw.sh heal` | 자가 복구(`heal`) 즉시 실행 후 `status` 출력 |
-| `gateway/ops/gw.sh logs <relay\|tunnel\|update\|heal\|upload> [N]` | 지정한 로그(`C:\simai-local\gateway-*.log`)의 마지막 `N`줄(기본 40줄) 출력 |
+| `gateway/ops/gw.sh logs <relay\|tunnel\|update\|heal\|upload\|auto> [N]` | 지정한 로그(`C:\simai-local\gateway-*.log`)의 마지막 `N`줄(기본 40줄) 출력 |
+| `gateway/ops/gw.sh auto [status\|on\|off\|once]` | GPU 세션 자동 전환(S15P31A101-701) 상태 / 켜기(수동 우선도 풂) / 끄기(지금 모드 그대로) / 한 번 판단 |
 | `gateway/ops/gw.sh restart-tunnel` | 역터널 중지 → EC2 옛 포트 정리(`free-ports.sh`) → 역터널 예약 작업 재시작 후 `status` 출력 |
 | `gateway/ops/gw.sh ssh` | 게이트웨이 대화형 SSH 셸 접속 |
 | `gateway/ops/gw.sh help` | 명령 도움말 출력 |
