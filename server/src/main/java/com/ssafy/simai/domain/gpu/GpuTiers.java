@@ -23,6 +23,9 @@ final class GpuTiers {
     static final String LIMITED = "LIMITED";
     static final String RISKY = "RISKY";
 
+    /** 공급자가 이름·ID 자리에 채우는 빈 값(RunPod 카탈로그의 id "unknown" 등, S15P31A101-713). 빈 글자도 같다 */
+    private static final Pattern PLACEHOLDER = Pattern.compile("(?i)\\s*(unknown|n/?a|none|null|-)?\\s*");
+
     /** H100·H200 계열 이름(공급자 ID·표시 이름·AWS "p5.48xlarge · H100 ×8" 모두). GH200 처럼 앞에 글자가 붙은 것은 빼고 H1000 같은 것도 뺀다 */
     private static final Pattern FAMILY = Pattern.compile("(?i)(?<![a-z0-9])H(100|200)(?![0-9])");
 
@@ -70,6 +73,23 @@ final class GpuTiers {
     static boolean recommended(String gpuType, String name, Integer memoryGb) {
         boolean family = (gpuType != null && FAMILY.matcher(gpuType).find()) || (name != null && FAMILY.matcher(name).find());
         return family && (memoryGb == null || memoryGb >= RECOMMENDED_MIN_GB);
+    }
+
+    /** VRAM 값 정리: 0 이하(공급자가 모를 때 채우는 0)는 모름(null)으로 본다. 0 GB 를 「위험」으로 그리지 않는다(S15P31A101-713) */
+    static Integer memory(Integer memoryGb) {
+        return memoryGb == null || memoryGb <= 0 ? null : memoryGb;
+    }
+
+    /**
+     * 카탈로그 항목을 켜기 표의 행으로 보일지(S15P31A101-713). ID·이름이 있고(빈 값·"unknown" 아님) VRAM 이 0 보다 크면 보인다.
+     * 이름·VRAM 을 모르는 항목은 고를 근거(등급·추천)가 없어 행을 만들지 않는다. 선호 GPU 는 이 규칙과 상관없이 행이 있다(호출부).
+     */
+    static boolean listable(String gpuType, String name, Integer memoryGb) {
+        return known(gpuType) && known(name) && memory(memoryGb) != null;
+    }
+
+    private static boolean known(String text) {
+        return text != null && !PLACEHOLDER.matcher(text).matches();
     }
 
     /** 칸 재고 → 켤 수 있는지. HIGH·MEDIUM·LOW → true, NONE·칸 없음 → false, UNKNOWN(AWS 처럼 실시간 재고를 모름) → null */

@@ -360,6 +360,7 @@ class GpuPowerIntegrationTest {
     @Test
     void 재고_표는_카탈로그의_모든_GPU_를_추천과_VRAM_등급_순으로_싣고_기본은_추천_중_켤_수_있는_첫_칸이다() throws Exception {
         // S15P31A101-705: 선호는 A40(추천 아님) 하나. B200 은 카탈로그에만 있고 어느 지역에도 없다
+        // S15P31A101-713: 이름·VRAM 을 모르는 항목(id "unknown" · 0 GB, 이름 없음 · 0 GB)은 행이 되지 않는다
         catalog = """
                 {"gpus":[
                   {"id":"NVIDIA RTX A4000","name":"RTX A4000","memory":16,"price":{"secure":0.25},
@@ -372,7 +373,10 @@ class GpuPowerIntegrationTest {
                   {"id":"NVIDIA H200","name":"H200 SXM","memory":141,"price":{"secure":3.99},
                    "dataCenters":[{"id":"EU-RO-1","name":"Europe Romania 1","availability":"HIGH"}]},
                   {"id":"%s","name":"H100 PCIe","memory":80,"price":{"secure":2.39},
-                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"NONE"}]}
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"NONE"}]},
+                  {"id":"unknown","name":"unknown","memory":0,"price":{"secure":0.10},
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"HIGH"}]},
+                  {"id":"NVIDIA Mystery","memory":0,"price":{"secure":0.20}}
                 ]}""".formatted(PCIE);
         ObjectNode body = settingsBody(null, 30);
         body.putArray("preferred_gpu_types").add("NVIDIA A40");

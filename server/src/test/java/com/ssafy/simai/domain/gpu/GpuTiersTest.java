@@ -47,4 +47,23 @@ class GpuTiersTest {
         assertThat(GpuTiers.available(null)).isFalse();
         assertThat(GpuTiers.available("UNKNOWN")).isNull();
     }
+
+    @Test
+    void 이름이나_VRAM_을_모르는_카탈로그_항목은_행이_되지_않고_0GB_는_모름이다() {
+        // S15P31A101-713: 16차 세션의 「unknown · 0 GB · 위험」 행
+        assertThat(GpuTiers.listable("unknown", "unknown", 0)).isFalse();
+        assertThat(GpuTiers.listable("unknown", "H100 SXM", 80)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", "Unknown", 48)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", " ", 48)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", null, 48)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", "N/A", 48)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", "A40", 0)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", "A40", null)).isFalse();
+        assertThat(GpuTiers.listable("NVIDIA A40", "A40", 48)).isTrue();
+        assertThat(GpuTiers.listable("g6e.xlarge", "g6e.xlarge · NVIDIA L40S ×1", 45)).isTrue();
+        assertThat(GpuTiers.listable("NVIDIA RTX A4000", "RTX A4000", 16)).isTrue(); // 작아도 이름·VRAM 을 알면 행(위험)
+        assertThat(GpuTiers.memory(0)).isNull();
+        assertThat(GpuTiers.memory(-1)).isNull();
+        assertThat(GpuTiers.memory(24)).isEqualTo(24);
+    }
 }
