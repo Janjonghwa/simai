@@ -23,6 +23,12 @@ unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 # 터널 경로 비밀값은 wstunnel 에만(환경 변수로) 넘긴다. 넘겨받은 명령을 포함해 다른 어느 자식에도 넘기지 않고 출력하지 않는다
 tunnel_prefix=${SIMAI_TUNNEL_PREFIX-}
 unset SIMAI_TUNNEL_PREFIX
+# GPU 자동 부팅 비밀 값(S15P31A101-700: 부팅 비밀값·Tier 0 TLS 비밀 키)도 HF 토큰처럼 넘겨받은 명령(simai-bootstrap auto → simai-gpu-boot)에만 넘긴다
+boot_secret=${SIMAI_GPU_BOOT_SECRET-}
+boot_secret_set=${SIMAI_GPU_BOOT_SECRET+1}
+tls_key=${SIMAI_TIER0_TLS_PRIVATE_KEY-}
+tls_key_set=${SIMAI_TIER0_TLS_PRIVATE_KEY+1}
+unset SIMAI_GPU_BOOT_SECRET SIMAI_TIER0_TLS_PRIVATE_KEY
 
 SSH_DIR=${SIMAI_SSH_DIR:-/root/.ssh}
 CONF_DIR=${SIMAI_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}
@@ -130,5 +136,7 @@ fi
 if [ "$#" -eq 0 ]; then
   set -- bash
 fi
+if [ -n "$boot_secret_set" ]; then export SIMAI_GPU_BOOT_SECRET="$boot_secret"; fi
+if [ -n "$tls_key_set" ]; then export SIMAI_TIER0_TLS_PRIVATE_KEY="$tls_key"; fi
 if [ -n "$hf_token_set" ]; then export HF_TOKEN="$hf_token"; fi
 exec "$@"

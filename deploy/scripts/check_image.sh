@@ -227,6 +227,9 @@ FAKE_GPU=(-e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06
 # 기본 진입점 simai-bootstrap(S15P31A101-205): 볼륨이 없으면 컨테이너 디스크를 쓰고, GPU 가 없으면 가중치를 받기 전에 코드 3
 if [ "$T0LIKE" = 1 ]; then
 expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
+# 기본 CMD auto(S15P31A101-700): 부팅 비밀값만 있고 ID·EC2 주소가 없으면 등록하지 않고 64, simai-gpu-boot 가 설치돼 있다
+expect "auto 부팅 환경 변수 누락" 64 "SIMAI_GPU_BOOT_ID" -e SIMAI_GPU_BOOT_SECRET=not-a-real-secret "$IMG"
+expect "simai-gpu-boot --help" 0 "simai-gpu-boot" --entrypoint /usr/local/bin/simai-gpu-boot "$IMG" --help
 # 아래는 simai-tier0(엔진 준비 진입점)를 직접 부른다: 부트스트랩 뒤 단계의 볼륨·가중치·해시·GPU 처리
 T0=(--entrypoint /usr/local/bin/simai-tier0)
 expect "볼륨 없음" 2 "Network Volume" "${T0[@]}" "$IMG"

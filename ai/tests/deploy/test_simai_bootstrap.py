@@ -364,6 +364,12 @@ def test_simai_start_drops_hf_token_before_any_helper_command():
     exports = [i for i, ln in code if "export HF_TOKEN" in ln]
     exec_at = max(i for i, ln in code if ln.strip() == 'exec "$@"')
     assert len(exports) == 1 and [i for i, _ in code if exports[0] < i] == [exec_at]
+    # GPU 자동 부팅 비밀 값(S15P31A101-700)도 맨 앞에서 지우고 exec 바로 앞(HF 토큰 내보내기 앞)에서만 다시 내보낸다
+    unset_boot_at = next(i for i, ln in code if ln.strip() == "unset SIMAI_GPU_BOOT_SECRET SIMAI_TIER0_TLS_PRIVATE_KEY")
+    boot_exports = [i for i, ln in code if "export SIMAI_GPU_BOOT_SECRET" in ln or "export SIMAI_TIER0_TLS_PRIVATE_KEY" in ln]
+    last_helper = max(i for i, ln in code if any(h in ln for h in helpers))
+    assert unset_boot_at < first_helper and len(boot_exports) == 2
+    assert all(last_helper < i < exports[0] for i in boot_exports)
 
 
 def test_ssh_key_lines_with_options_or_control_chars_are_dropped(gs, tmp_path):

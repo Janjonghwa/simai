@@ -97,12 +97,23 @@ public class ObjectStorage implements AutoCloseable {
      * (휴대폰이 큰 동영상의 해시를 미리 계산하지 못하는 세팅 보강 촬영 업로드, S15P31A101-607).
      */
     public SignedRequest signPut(String key, String contentType, long sizeBytes, String sha256Hex) {
+        return signPut(key, contentType, sizeBytes, sha256Hex, false);
+    }
+
+    /**
+     * ifAbsent 면 조건부 쓰기(If-None-Match: *)를 서명에 묶는다. 같은 키에 이미 객체가 있으면 저장소가 412 로 거부해 덮어쓰지 않는다
+     * (GPU 캐시처럼 키가 내용 조합으로 정해지고 먼저 올린 것이 이기는 객체, S15P31A101-700, AGENTS 규칙 6).
+     */
+    public SignedRequest signPut(String key, String contentType, long sizeBytes, String sha256Hex, boolean ifAbsent) {
         requireConfigured();
         PutObjectRequest.Builder builder = PutObjectRequest.builder()
                 .bucket(properties.bucket())
                 .key(key)
                 .contentType(contentType)
                 .contentLength(sizeBytes);
+        if (ifAbsent) {
+            builder.ifNoneMatch("*");
+        }
         if (sha256Hex != null) {
             builder.checksumSHA256(Base64.getEncoder().encodeToString(HexFormat.of().parseHex(sha256Hex)));
         }
