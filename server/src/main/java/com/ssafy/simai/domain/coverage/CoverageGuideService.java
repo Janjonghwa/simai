@@ -8,8 +8,11 @@ import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -24,7 +27,7 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * <ul>
  *   <li>게이트웨이 별도 CPU 프로세스가 보내는 {@code POST /api/devices/coverage-guides} 요청을
- *       {@code contracts/messages/coverage_guide.schema.json} 1.0.0 및 의미 불변식으로 검증하고,
+ *       {@code contracts/messages/coverage_guide.schema.json} 1.x 및 의미 불변식으로 검증하고,
  *       현장·기기 귀속({@code device.kind = 'LAPTOP'}, {@code source_id == deviceId})을 확인한 뒤
  *       메모리에 최신 결과 1건만 보관한다(DB 에 쌓지 않는다).</li>
  *   <li>관리자가 {@code GET /api/cameras/coverage-guides} 를 부르면 최신 결과를 돌려주되,
@@ -32,6 +35,9 @@ import tools.jackson.databind.node.ObjectNode;
  *       마지막 관리자 조회 시각을 기록한다.</li>
  *   <li>기기 POST 응답에는 최근 {@code demandTtl}(초기 15 s) 안에 관리자 조회가 있었는지 나타내는
  *       {@code active_demand} 를 실어 게이트웨이 헬퍼(-446)가 계산을 켜고 끄게 한다.</li>
+ *   <li>S15P31A101-712: 수요가 켜져 있으면 응답에 「이전 맵 재사용」 대상 맵의 기준 사진·렌즈({@code reuse_reference},
+ *       {@link CoverageReuseReference})를 싣고, 헬퍼가 돌려준 coverage_guide 1.1.0 {@code reuse_view_check} 는 각도 안내와 따로
+ *       최신 1건을 둔다({@code viewCheckTtl} 동안 재사용 판정 근거, {@link #reuseViewCheck}).</li>
  * </ul>
  */
 @Service
@@ -47,8 +53,10 @@ public class CoverageGuideService {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final CoverageGuideProperties properties;
+    private final CoverageReuseReference reuseReference;
 
     private final AtomicReference<StoredGuide> latest = new AtomicReference<>();
+    private final AtomicReference<StoredView> latestView = new AtomicReference<>();
     private final AtomicReference<Instant> lastAdminQueryAt = new AtomicReference<>();
 
     public CoverageGuideService(
@@ -58,7 +66,8 @@ public class CoverageGuideService {
             CalibrationViews calibrationViews,
             ObjectMapper mapper,
             Clock clock,
-            CoverageGuideProperties properties) {
+            CoverageGuideProperties properties,
+            CoverageReuseReference reuseReference) {
         this.schemas = schemas;
         this.jdbc = jdbc;
         this.sites = sites;
@@ -66,6 +75,7 @@ public class CoverageGuideService {
         this.mapper = mapper;
         this.clock = clock;
         this.properties = properties;
+        this.reuseReference = reuseReference;
     }
 
     /** 게이트웨이 기기가 올린 최신 카메라 각도 안내를 검증·보관하고 수요 신호를 돌려준다. */
@@ -87,6 +97,10 @@ public class CoverageGuideService {
         StoredGuide previous = latest.get();
         if (!(previous != null && !hasRealPairResult(body) && hasRealPairResult(previous.payload()))) {
             latest.set(new StoredGuide(((ObjectNode) body).deepCopy(), deviceId, siteId, now));
+        }
+        JsonNode view = body.get("reuse_view_check");
+        if (view != null && view.isObject()) {
+            latestView.set(new StoredView(((ObjectNode) view).deepCopy(), now));
         }
         return buildPostResponse(siteId, deviceId, now);
     }
@@ -146,9 +160,41 @@ public class CoverageGuideService {
         return node;
     }
 
+    /**
+     * 재사용 시점 확인(S15P31A101-712): 이 맵({@code sceneVersion})의 기준 사진과 비교한 최신 결과가 {@code viewCheckTtl} 안이면
+     * 그 결과. 다른 맵 기준이거나 오래됐거나 없으면 비어 있다(근거 없음, 막지 않는다).
+     */
+    public Optional<ViewCheck> reuseViewCheck(String sceneVersion) {
+        StoredView stored = latestView.get();
+        if (stored == null || sceneVersion == null
+                || !sceneVersion.equals(stored.payload().path("scene_version").asString(null))
+                || Duration.between(stored.receivedAt(), clock.instant()).compareTo(properties.viewCheckTtl()) > 0) {
+            return Optional.empty();
+        }
+        List<String> changed = new ArrayList<>();
+        int same = 0;
+        for (JsonNode camera : stored.payload().path("cameras")) {
+            String status = camera.path("status").asString("");
+            if ("CHANGED".equals(status)) {
+                changed.add(camera.path("camera_id").asString(""));
+            } else if ("SAME".equals(status)) {
+                same++;
+            }
+        }
+        return Optional.of(new ViewCheck(changed.stream().sorted().toList(), changed.isEmpty() && same == 4));
+    }
+
+    /**
+     * @param changedCameras 서로 다른 키프레임 2회 연속 달라짐이 확인된 카메라(오름차순)
+     * @param allSame        카메라 4대 모두 이전 맵 때와 같은 시점
+     */
+    public record ViewCheck(List<String> changedCameras, boolean allSame) {
+    }
+
     /** 시험에서 메모리 상태를 초기화할 때 쓴다. */
     public void clearForTest() {
         latest.set(null);
+        latestView.set(null);
         lastAdminQueryAt.set(null);
     }
 
@@ -169,6 +215,9 @@ public class CoverageGuideService {
             res.put("last_admin_query_at_ms", lastQuery.toEpochMilli());
             res.put("demand_until_ms", lastQuery.plus(properties.demandTtl()).toEpochMilli());
         }
+        // 수요가 있을 때만 재사용 기준을 싣는다(헬퍼는 그때만 비교한다). 기준이 없으면 null
+        ObjectNode reference = activeDemand && reuseReference != null ? reuseReference.current(siteId) : null;
+        res.set("reuse_reference", reference);
         return res;
     }
 
@@ -245,6 +294,19 @@ public class CoverageGuideService {
             }
         }
 
+        JsonNode view = body.get("reuse_view_check");
+        if (view != null) {
+            Set<String> viewCameras = new HashSet<>();
+            for (JsonNode cam : view.path("cameras")) {
+                if (!viewCameras.add(cam.path("camera_id").asString(""))) {
+                    throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
+                }
+            }
+            if (!viewCameras.equals(cameraIds)) {
+                throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
+            }
+        }
+
         for (JsonNode guide : body.path("guides")) {
             String camId = guide.path("camera_id").asString("");
             if (!cameraIds.contains(camId)) {
@@ -262,5 +324,8 @@ public class CoverageGuideService {
     }
 
     private record StoredGuide(ObjectNode payload, String sourceId, String siteId, Instant receivedAt) {
+    }
+
+    private record StoredView(ObjectNode payload, Instant receivedAt) {
     }
 }

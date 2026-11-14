@@ -579,7 +579,8 @@ export interface RetrySetupSessionBody {
 /**
  * 「이전 맵 재사용」을 지금 고를 수 있는지(GET /api/setup-sessions/reuse-check, S15P31A101-689).
  * blocked_reason: NO_SCENE(이전 맵 없음)·SCENE_MISMATCH(맵이 지금 보정과 다른 World)·CAMERA_CHANGED(직전 보정과 달라진 카메라).
- * camera_status: CHANGED·NOT_DETECTED(관제 감시가 달라진 카메라를 보지 못함)·UNKNOWN(근거 없음, 막지 않는다).
+ * camera_status: CHANGED·NOT_DETECTED(관제 감시가 달라진 카메라를 보지 못함, 또는 시점 확인이 4대 모두 같음)·UNKNOWN(근거 없음, 막지 않는다).
+ * camera_source: TIER0_DRIFT(관제 회전 감시)·VIEW_MATCH(1단계 헬퍼가 이전 맵 사진과 지금 화면을 비교, S15P31A101-712)·LAST_SETUP_REJECTED.
  */
 export const reuseCheckSchema = z.object({
   available: z.boolean(),

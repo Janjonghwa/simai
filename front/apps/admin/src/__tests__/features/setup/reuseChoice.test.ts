@@ -1,5 +1,9 @@
 import type { ReuseCheck } from '@/features/setup/types';
-import { changedCamerasLabel, reuseChoiceOf } from '@/features/setup/useReuseScene';
+import {
+  changedCamerasLabel,
+  changedCamerasOf,
+  reuseChoiceOf,
+} from '@/features/setup/useReuseScene';
 import { describe, expect, it } from 'vitest';
 
 // 1단계 「이전 맵 재사용」 판정 → 화면 문구(S15P31A101-689)
@@ -57,5 +61,23 @@ describe('reuseChoiceOf', () => {
 
   it('현장 목록에 없는 카메라 ID 는 번호를 지어내지 않고 원문 그대로 둔다', () => {
     expect(changedCamerasLabel(CAMS, ['cam_C', 'cam_X'])).toBe('카메라 3·cam_X');
+  });
+
+  it('1단계 시점 확인(VIEW_MATCH)이 막으면 「카메라가 바뀐 것 같아요」와 이전 맵 화면과 다르다는 이유를 보인다(S15P31A101-712)', () => {
+    const changed = check({
+      available: false,
+      blocked_reason: 'CAMERA_CHANGED',
+      camera_status: 'CHANGED',
+      changed_cameras: ['cam_B', 'cam_C'],
+      camera_source: 'VIEW_MATCH',
+    });
+    expect(reuseChoiceOf(changed, CAMS).blocked).toEqual({
+      what: '카메라가 바뀐 것 같아요(카메라 2·카메라 3)',
+      how: '이전 맵을 만들 때와 화면이 달라요 · 새 맵 만들기를 골라 주세요',
+    });
+    expect(changedCamerasOf(changed)).toEqual(['cam_B', 'cam_C']);
+    expect(reuseChoiceOf({ ...changed, changed_cameras: [] }, CAMS).blocked?.what).toBe(
+      '카메라가 바뀐 것 같아요',
+    );
   });
 });

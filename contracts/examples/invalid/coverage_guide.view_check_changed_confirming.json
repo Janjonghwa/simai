@@ -1,0 +1,184 @@
+{
+  "_expect_error": "CHANGED 의 사유는 ROTATED·MOVED·VIEW_DIFFERENT 만(확인 중은 UNKNOWN)",
+  "schema_version": "1.1.0",
+  "source_id": "gw-lobby",
+  "computed_at_ms": 1793690000000,
+  "valid_until_ms": 1793690010000,
+  "capture_skew_ms": 840,
+  "params": {
+    "image_width_px": 1024,
+    "max_keypoints": 1024,
+    "ransac_threshold_px": 2.0,
+    "enough_min_inliers": 30,
+    "weak_min_inliers": 15,
+    "min_inlier_ratio": 0.1,
+    "intrinsics_source": "STORED"
+  },
+  "cameras": [
+    {
+      "camera_id": "cam_A",
+      "status": "OK",
+      "frame_ts_ms": 1793689999500
+    },
+    {
+      "camera_id": "cam_B",
+      "status": "OK",
+      "frame_ts_ms": 1793689999120
+    },
+    {
+      "camera_id": "cam_C",
+      "status": "OK",
+      "frame_ts_ms": 1793689999960
+    },
+    {
+      "camera_id": "cam_D",
+      "status": "OK",
+      "frame_ts_ms": 1793689999680
+    }
+  ],
+  "pairs": [
+    {
+      "a": "cam_A",
+      "b": "cam_B",
+      "raw_matches": 249,
+      "inliers": 135,
+      "inlier_ratio": 0.54,
+      "grade": "ENOUGH",
+      "centroid_a": [
+        0.62,
+        0.55
+      ],
+      "centroid_b": [
+        0.31,
+        0.58
+      ]
+    },
+    {
+      "a": "cam_A",
+      "b": "cam_C",
+      "raw_matches": 52,
+      "inliers": 4,
+      "inlier_ratio": 0.08,
+      "grade": "LACK",
+      "centroid_a": null,
+      "centroid_b": null
+    },
+    {
+      "a": "cam_A",
+      "b": "cam_D",
+      "raw_matches": 148,
+      "inliers": 62,
+      "inlier_ratio": 0.42,
+      "grade": "ENOUGH",
+      "centroid_a": [
+        0.28,
+        0.51
+      ],
+      "centroid_b": [
+        0.69,
+        0.49
+      ]
+    },
+    {
+      "a": "cam_B",
+      "b": "cam_C",
+      "raw_matches": 182,
+      "inliers": 84,
+      "inlier_ratio": 0.46,
+      "grade": "ENOUGH",
+      "centroid_a": [
+        0.67,
+        0.53
+      ],
+      "centroid_b": [
+        0.34,
+        0.56
+      ]
+    },
+    {
+      "a": "cam_B",
+      "b": "cam_D",
+      "raw_matches": 44,
+      "inliers": 3,
+      "inlier_ratio": 0.07,
+      "grade": "LACK",
+      "centroid_a": null,
+      "centroid_b": null
+    },
+    {
+      "a": "cam_C",
+      "b": "cam_D",
+      "raw_matches": 110,
+      "inliers": 22,
+      "inlier_ratio": 0.2,
+      "grade": "WEAK",
+      "centroid_a": [
+        0.71,
+        0.52
+      ],
+      "centroid_b": [
+        0.29,
+        0.54
+      ]
+    }
+  ],
+  "connectivity": "CONNECTED",
+  "components": [
+    [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ]
+  ],
+  "guides": [
+    {
+      "camera_id": "cam_C",
+      "pair": [
+        "cam_C",
+        "cam_D"
+      ],
+      "direction": "RIGHT",
+      "magnitude": "SMALL",
+      "reason_code": "WEAK_PAIR_EDGE_CLUSTER"
+    }
+  ],
+  "reuse_view_check": {
+    "scene_version": "scene-lobby-setup-bc13ef6f",
+    "calibration_version": "cal-lobby-init-bc13ef6f-jba2-efddde78",
+    "cameras": [
+      {
+        "camera_id": "cam_A",
+        "status": "SAME",
+        "reason": null,
+        "matches": 412,
+        "inlier_ratio": 0.93,
+        "rotation_rad": 0.0041
+      },
+      {
+        "camera_id": "cam_B",
+        "status": "CHANGED",
+        "reason": "CONFIRMING",
+        "matches": 138,
+        "inlier_ratio": 0.41,
+        "rotation_rad": null
+      },
+      {
+        "camera_id": "cam_C",
+        "status": "CHANGED",
+        "reason": "ROTATED",
+        "matches": 96,
+        "inlier_ratio": 0.88,
+        "rotation_rad": 0.2443
+      },
+      {
+        "camera_id": "cam_D",
+        "status": "UNKNOWN",
+        "reason": "CONFIRMING",
+        "matches": 21,
+        "inlier_ratio": null,
+        "rotation_rad": null
+      }
+    ]
+  }
+}

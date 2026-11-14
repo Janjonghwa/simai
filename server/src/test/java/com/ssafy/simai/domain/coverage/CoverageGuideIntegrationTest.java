@@ -318,6 +318,57 @@ class CoverageGuideIntegrationTest {
         assertThat(getCoverageGuides().at("/latest/computed_at_ms").asLong()).isEqualTo(t0.toEpochMilli());
     }
 
+    @Test
+    void 재사용_시점_확인은_각도_안내와_따로_보관해_같은_맵_기준_60초_동안만_근거로_쓴다() throws Exception {
+        Instant t0 = Instant.parse("2026-11-15T01:00:00Z");
+        clock.set(t0);
+        String raw = Files.readString(CONTRACTS.resolve("examples/coverage_guide.reuse_view_check.json"));
+        ObjectNode withView = (ObjectNode) mapper.readTree(raw);
+        withView.put("source_id", laptopId);
+        withView.put("computed_at_ms", t0.toEpochMilli());
+        withView.put("valid_until_ms", t0.toEpochMilli() + 10_000L);
+        String scene = withView.at("/reuse_view_check/scene_version").asString();
+
+        // 수요가 없으면 재사용 기준을 싣지 않는다(키는 있고 null)
+        JsonNode res = postCoverageGuide(withView);
+        assertThat(res.get("active_demand").asBoolean()).isFalse();
+        assertThat(res.get("reuse_reference").isNull()).isTrue();
+
+        // 예시: cam_B·cam_C CHANGED, cam_A SAME, cam_D 확인 중
+        CoverageGuideService.ViewCheck view = coverageGuideService.reuseViewCheck(scene).orElseThrow();
+        assertThat(view.changedCameras()).containsExactly("cam_B", "cam_C");
+        assertThat(view.allSame()).isFalse();
+        assertThat(coverageGuideService.reuseViewCheck("scene-other")).isEmpty();
+
+        // 시점 확인이 없는 1.0.0 보고는 보관한 시점 확인을 지우지 않는다
+        postCoverageGuide(validGuidePayload(laptopId, t0.toEpochMilli() + 1_000L));
+        assertThat(coverageGuideService.reuseViewCheck(scene)).isPresent();
+
+        clock.advance(Duration.ofSeconds(61));
+        assertThat(coverageGuideService.reuseViewCheck(scene)).isEmpty();
+
+        // 시점 확인 카메라가 각도 안내 카메라와 다르면 400
+        ObjectNode wrong = withView.deepCopy();
+        ((ObjectNode) wrong.at("/reuse_view_check/cameras/3")).put("camera_id", "cam_X");
+        mockMvc.perform(post("/api/devices/coverage-guides")
+                        .header("Authorization", "Bearer " + laptopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(wrong)))
+                .andExpect(status().isBadRequest());
+
+        // 4대 모두 SAME 이면 allSame
+        ObjectNode same = withView.deepCopy();
+        same.put("computed_at_ms", clock.instant().toEpochMilli());
+        same.put("valid_until_ms", clock.instant().toEpochMilli() + 10_000L);
+        for (JsonNode cam : (ArrayNode) same.at("/reuse_view_check/cameras")) {
+            ((ObjectNode) cam).put("status", "SAME").putNull("reason");
+        }
+        postCoverageGuide(same);
+        CoverageGuideService.ViewCheck allSame = coverageGuideService.reuseViewCheck(scene).orElseThrow();
+        assertThat(allSame.changedCameras()).isEmpty();
+        assertThat(allSame.allSame()).isTrue();
+    }
+
     private ObjectNode validGuidePayload(String sourceId, long computedAtMs) throws Exception {
         String raw = Files.readString(CONTRACTS.resolve("examples/coverage_guide.json"));
         ObjectNode node = (ObjectNode) mapper.readTree(raw);
