@@ -4,9 +4,12 @@
 prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages`, 취소·시간 제한 지킴)로 돌린다. 그 폴더 레이아웃은
 `static_reconstruct` 와 같다(images/·calibration.json·job.json). 그래서 -451 미리보기 맵·굽기 코드를 그대로 쓴다.
 
-- (a) `collect`: Tier 0 가 내보낸 사람 지운 배경 묶음(SIMAI_STATE_DIR/clean-background)을 읽는다. 아직 덜 됐으면 `status.json` 의
-  카메라별 표본 수로 수집률(완성 전 최대 99)을 돌려주고, 처리기가 `SIMAI_SETUP_BACKGROUND_WAIT_S`(기본 240 s)까지 다시 본다
-  (그래도 안 되면 재시도 가능한 `BACKGROUND_INCOMPLETE`). 묶음의 마지막 관측 시각이 보정 문서 created_at 이 된다(S15P31A101-473).
+- (a) `collect`: 세팅을 시작한 시각(첫 호출 때 처리기 시계)을 표본 하한으로 Tier 0 에 배경 촬영을 요청하고
+  (`SIMAI_STATE_DIR/clean_background/regenerate.request.json` 의 `fresh_since_ms`, S15P31A101-686), 그 뒤 표본만으로 만든 묶음이
+  READY 가 될 때까지 응답의 카메라별 상태(표본 수·사람 가림·영상 없음)를 수집률과 `background_capture` 로 돌려준다. 옛 완성 묶음·
+  세팅 기준은 쓰지 않는다(15차: 카메라를 돌린 뒤에도 회전 중 화면 묶음을 써서 FLOOR_NOT_FOUND). 처리기가
+  `SIMAI_SETUP_BACKGROUND_WAIT_S`(기본 240 s)까지 다시 보고, 그래도 안 되면 재시도 가능한 `BACKGROUND_INCOMPLETE`. 작업이 끝나면
+  (성공·실패·취소) 남은 요청을 거둔다. 묶음의 마지막 관측 시각이 보정 문서 created_at 이 된다(S15P31A101-473).
 - (b) 내부 파라미터: Tier 0 활성 보정 문서의 K·왜곡을 재사용한다. 없으면 `INTRINSICS_UNAVAILABLE` 로 끝낸다(무마커 추정 경로는 이 처리기에 아직
   연결하지 않았다, 지어내지 않는다).
 - (c)(d) `initialize`: prepare → mapanything 단계 → `build_world_from_pointcloud_and_poses`(바닥 Z=0, 벽 +X, 모서리 원점, 카메라 높이 축척).
@@ -44,6 +47,7 @@ import os
 import shutil
 import tempfile
 import threading
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -99,11 +103,17 @@ SUPPLEMENT_MIN_REMAINING_S = 900.0
 SUPPLEMENT_MAX_MEDIA_BYTES = 4 << 30  # 계약 size_bytes 상한(4 GiB)
 # 보조 촬영을 넣을 수 없는 굽기 경로: 방식 2 는 보정 자세로 WorldMirror 를 조건 거는데 보조 프레임에는 보정 자세가 없다
 SUPPLEMENT_UNSUPPORTED_PATHS = ("method2", "method2_calib_wm2", "auto")
-# Tier 0 묶음은 카메라마다 최소 20장 × 5 s ≈ 100 s 걸린다(services/tier0/settings.py CleanBackgroundSettings).
-# 기다림 기본 240 s = 그 두 배 남짓 + 묶음 조립·사람이 오래 가린 카메라 여유. 실행 상한(서버 900 s) 안에서 복원·굽기 시간을 남긴다
+# 세팅 배경 촬영은 카메라마다 최소 12장 × 1 s ≈ 12 s(services/tier0/settings.py CleanBackgroundSettings.setup_*, -686).
+# 기다림 기본 240 s = 사람이 화면 밖으로 나가 그 카메라만 다시 찍을 여유. 실행 상한(서버 900 s) 안에서 복원·굽기 시간을 남긴다
 DEFAULT_BACKGROUND_WAIT_S = 240.0
 DEFAULT_BACKGROUND_POLL_S = 2.0
-TIER0_MIN_SAMPLES_PER_CAMERA = 20  # Tier 0 기본값. 수집률 표시에만 쓴다(완성 판정은 Tier 0 의 ready·묶음 COMPLETE)
+# Tier 0 가 아직 응답하지 않았을 때 표시에 쓰는 카메라당 최소 표본 수(Tier 0 기본값). 응답이 오면 그 값을 쓴다
+SETUP_CAPTURE_DEFAULT_REQUIRED = 12
+# 하한 뒤 이만큼 지나도 Tier 0 가 이 카메라 프레임을 하나도 못 받았으면(또는 응답이 없으면) 영상 없음으로 보인다
+CAPTURE_NO_VIDEO_GRACE_MS = 5_000
+CAPTURE_REQUEST = "regenerate.request.json"
+CAPTURE_RESPONSE = "regenerate.response.json"
+CAPTURE_STATES = ("READY", "INSUFFICIENT_SAMPLES", "PERSON_OCCLUDED", "NO_VIDEO")  # 계약 site_setup 1.16.0
 FRAME_MAX_LONG_SIDE_PX = 1280  # 구역 초안용 프레임 긴 변 상한(VLM 크롭에 충분, 업로드는 작게)
 FRAME_JPEG_QUALITY = 90
 # 굽기 입력 사진(VDT) 상한. Tier 0 배경은 이미 JPEG(카메라 해상도, 보통 1 MB 안팎)라 그대로 올린다. 서버 MAX_BAKE_IMAGE_BYTES 와 같다
@@ -154,30 +164,8 @@ def world_anchor_enabled_from_env(env: Mapping[str, str]) -> bool:
     return raw == "auto"
 
 
-def _partial_collection_pct(settings: AutoStaticSettings, camera_ids: Sequence[str], prior_version: str | None) -> dict[str, float]:
-    """묶음이 완성되기 전 카메라별 수집률(Tier 0 status.json 의 표본 수). 완성 전이라 최대 99. 다른 보정의 수집이면 0."""
-    zeros = {cid: 0.0 for cid in camera_ids}
-    try:
-        status = json.loads((settings.clean_background_dir / "status.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return zeros
-    if not isinstance(status, dict) or not isinstance(status.get("cameras"), dict):
-        return zeros
-    if prior_version is not None and status.get("calibration_version") != prior_version:
-        return zeros
-    out = {}
-    for cid in camera_ids:
-        cam = status["cameras"].get(cid)
-        if not isinstance(cam, dict):
-            out[cid] = 0.0
-            continue
-        if cam.get("ready") is True or cam.get("exported") is True:
-            out[cid] = 99.0  # 카메라는 됐고 묶음 조립을 기다린다
-            continue
-        n = cam.get("sample_count")
-        ok = isinstance(n, int) and not isinstance(n, bool) and n > 0
-        out[cid] = round(min(99.0, 100.0 * n / TIER0_MIN_SAMPLES_PER_CAMERA), 2) if ok else 0.0
-    return out
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _observed_until_ms(path: Path, meta: Mapping[str, Any]) -> int | None:
@@ -246,21 +234,6 @@ def _bake_image_jpeg(raw: bytes) -> bytes | None:
     return out if 0 < len(out) <= BAKE_IMAGE_MAX_BYTES else None
 
 
-def _bundle_dir(settings: AutoStaticSettings) -> tuple[Path, str] | None:
-    root = settings.clean_background_dir
-    try:
-        status = json.loads((root / "status.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(status, dict) or status.get("complete") is not True:
-        return None
-    version, bundle = status.get("calibration_version"), status.get("bundle")
-    if not isinstance(version, str) or not isinstance(bundle, str):
-        return None
-    path = root / version / Path(bundle).name
-    return (path, version) if (path / "COMPLETE").is_file() else None
-
-
 class ProductionSiteSetupStages:
     """대여 하나의 단계 어댑터 묶음. 같은 작업 폴더·객체 저장소·취소 신호를 단계들이 공유한다."""
 
@@ -287,36 +260,129 @@ class ProductionSiteSetupStages:
         self._rebaking = False  # SUPPLEMENT_REBAKE 는 모든 GPU 단계를 작업 시작(LIVE)으로 회수한다(-621)
         self._prev_glb_loaded = False
         self._prev_glb_bytes: bytes | None = None
+        self._capture: dict[str, int] | None = None  # 이 대여의 배경 촬영 요청(request_id·since_ms, -686)
 
     # ------------------------------------------------------------------ (a)
     def collect(self, *, setup_session_id: str, site_id: str, camera_ids: Sequence[str]) -> CleanBackgroundBundle:
-        found = _bundle_dir(self.settings)
-        if found is None:
-            prior = self._load_calibration(self.settings)
-            prior_version = None if prior is None else str(prior.get("calibration_version"))
-            return CleanBackgroundBundle("", _partial_collection_pct(self.settings, camera_ids, prior_version))
-        path, version = found
+        """세팅 시작 뒤 표본만으로 만든 배경 묶음을 Tier 0 에 요청하고 상태를 돌려준다(-686). 처리기가 다 될 때까지 다시 부른다.
+
+        첫 호출 때 처리기 시계를 표본 하한(since_ms)으로 요청을 쓰고, 그 뒤로는 응답만 읽는다. 다 되기 전에는 묶음 ID 가 빈
+        `CleanBackgroundBundle`(수집률 최대 99)과 카메라별 상태 `capture` 를 돌려준다. Tier 0 가 요청을 닫았거나(시간 초과) READY
+        묶음이 이 요청·활성 보정과 맞지 않으면 재시도 가능한 BACKGROUND_INCOMPLETE 로 끝낸다(옛 묶음으로 대신하지 않는다).
+        """
+        now = int(self._clock_ms())
+        if self._capture is None:
+            self._capture = {"request_id": max(1, now), "since_ms": max(0, now)}
+            self._write_capture_request(setup_session_id)
+        request_id, since = self._capture["request_id"], self._capture["since_ms"]
+        response = self._read_capture_response()
+        mine = response if response is not None and response.get("request_id") == request_id else None
+        if mine is not None and mine.get("status") == "NOT_READY":
+            raise JobFailed("BACKGROUND_INCOMPLETE",
+                            f"Tier 0 가 배경 촬영 요청을 닫았다({mine.get('reason')})", retryable=True)
+        required = _int_or_none((mine or {}).get("required_samples")) or SETUP_CAPTURE_DEFAULT_REQUIRED
+        reported = (mine or {}).get("cameras")
+        reported = reported if isinstance(reported, Mapping) else {}
+        cameras: dict[str, dict[str, Any]] = {}
+        pct: dict[str, float] = {}
+        for cid in camera_ids:
+            entry = reported.get(cid)
+            entry = entry if isinstance(entry, Mapping) else {}
+            count = max(0, _int_or_none(entry.get("sample_count")) or 0)
+            state = entry.get("state") if entry.get("state") in CAPTURE_STATES else "INSUFFICIENT_SAMPLES"
+            last_frame = _int_or_none(entry.get("last_frame_ms"))
+            if (count == 0 and state != "NO_VIDEO" and (last_frame is None or last_frame < since)
+                    and now - since >= CAPTURE_NO_VIDEO_GRACE_MS):
+                state = "NO_VIDEO"  # Tier 0 응답이 없거나 멈춘 경우도 처리기 시계로 알린다
+            person = entry.get("person_visible")
+            cameras[cid] = {"state": state, "sample_count": count,
+                            "person_visible": person if isinstance(person, bool) else None}
+            pct[cid] = 99.0 if state == "READY" else round(min(99.0, 100.0 * count / required), 2)
+        capture: dict[str, Any] = {"since_ms": since, "required_samples": required, "cameras": cameras}
+        interval = _int_or_none((mine or {}).get("sample_interval_ms"))
+        if interval is not None and interval > 0:
+            capture["sample_interval_ms"] = interval
+        if mine is None or mine.get("status") != "READY":
+            return CleanBackgroundBundle("", pct, capture=capture)
+        return self._ready_bundle(mine, camera_ids, capture)
+
+    def _ready_bundle(self, response: Mapping[str, Any], camera_ids: Sequence[str],
+                      capture: Mapping[str, Any]) -> CleanBackgroundBundle:
+        assert self._capture is not None
+        since = self._capture["since_ms"]
+        path = Path(str(response.get("bundle_path") or ""))
+        version = response.get("calibration_version")
         try:
             meta = read_json(path / "clean_backgrounds.json")
             cameras = meta["cameras"]
-        except (OSError, ValueError, KeyError):
-            return CleanBackgroundBundle(path.name, {cid: 0.0 for cid in camera_ids})
+            complete = (path / "COMPLETE").is_file()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise JobFailed("BACKGROUND_INCOMPLETE", f"배경 묶음을 읽지 못했다: {type(exc).__name__}", retryable=True) from exc
+        if not complete or meta.get("sample_since_ms") != since or meta.get("calibration_version") != version:
+            raise JobFailed("BACKGROUND_INCOMPLETE", "배경 묶음이 이 세팅의 촬영 요청과 맞지 않는다", retryable=True)
+        prior = self._load_calibration(self.settings)
+        if prior is not None and prior.get("calibration_version") != version:
+            # 묶음과 활성 보정이 다르면 그 묶음의 내부 파라미터·해상도를 믿을 수 없다
+            raise JobFailed("BACKGROUND_INCOMPLETE", "배경 묶음과 활성 보정 버전이 다르다", retryable=True)
         pct: dict[str, float] = {}
         frames: dict[str, list[Path]] = {}
         for cid in camera_ids:
             entry = cameras.get(cid) if isinstance(cameras, dict) else None
             image = None if not isinstance(entry, dict) else entry.get("image")
             ok = isinstance(entry, dict) and entry.get("ready") is True and isinstance(image, str) and (path / image).is_file()
-            pct[cid] = 100.0 if ok else 0.0
-            if ok:
-                frames[cid] = [path / image]
+            if not ok:
+                raise JobFailed("BACKGROUND_INCOMPLETE", f"배경 묶음에 쓸 수 있는 {cid} 배경이 없다", retryable=True)
+            pct[cid] = 100.0
+            frames[cid] = [path / image]
         self._bundle_dir = path
-        prior = self._load_calibration(self.settings)
-        if prior is not None and prior.get("calibration_version") != version:
-            # 묶음과 활성 보정이 다르면 그 묶음의 내부 파라미터·해상도를 믿을 수 없다. 새 묶음을 기다린다.
-            return CleanBackgroundBundle(path.name, {cid: 0.0 for cid in camera_ids})
         self._prior = prior
-        return CleanBackgroundBundle(path.name, pct, frames, observed_until_ms=_observed_until_ms(path, meta))
+        log.info("작업 %s 세팅 배경 촬영 완료: 묶음 %s (표본 하한 %s)", self.ctx.job_id, path.name, since)
+        return CleanBackgroundBundle(path.name, pct, frames, observed_until_ms=_observed_until_ms(path, meta),
+                                     capture=capture)
+
+    def _write_capture_request(self, setup_session_id: str) -> None:
+        assert self._capture is not None
+        control = self.settings.state_dir / "clean_background"
+        doc = {
+            "request_id": self._capture["request_id"],
+            "requested_at_ms": self._capture["since_ms"],
+            "fresh_since_ms": self._capture["since_ms"],
+            "purpose": "SITE_SETUP",
+            "setup_session_id": setup_session_id,
+        }
+        try:
+            control.mkdir(parents=True, exist_ok=True)
+            tmp = control / f".request-{uuid.uuid4().hex}.tmp"
+            try:
+                tmp.write_text(json.dumps(doc), encoding="utf-8")
+                tmp.replace(control / CAPTURE_REQUEST)
+            finally:
+                tmp.unlink(missing_ok=True)
+        except OSError as exc:
+            raise JobFailed("SETUP_IO_FAILED", f"배경 촬영 요청을 쓰지 못했다: {type(exc).__name__}", retryable=True) from exc
+        log.info("작업 %s 세팅 배경 촬영 요청: request_id=%s 표본 하한=%s", self.ctx.job_id, doc["request_id"], doc["fresh_since_ms"])
+
+    def _read_capture_response(self) -> dict[str, Any] | None:
+        try:
+            doc = json.loads((self.settings.state_dir / "clean_background" / CAPTURE_RESPONSE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return doc if isinstance(doc, dict) else None
+
+    def release_capture(self) -> None:
+        """이 대여가 쓴 배경 촬영 요청이 아직 남아 있으면 거둔다(Tier 0 는 요청이 사라지면 평소 표본 간격으로 돌아간다)."""
+        if self._capture is None:
+            return
+        request = self.settings.state_dir / "clean_background" / CAPTURE_REQUEST
+        try:
+            doc = json.loads(request.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(doc, dict) and doc.get("request_id") == self._capture["request_id"]:
+            try:
+                request.unlink(missing_ok=True)
+            except OSError:
+                log.warning("작업 %s: 배경 촬영 요청을 거두지 못했다", self.ctx.job_id)
 
     # ------------------------------------------------------------------ (b)~(d)
     def initialize(
@@ -945,6 +1011,8 @@ class ProductionSiteSetupHandler:
                 except Exception:
                     s.keep_failure_logs()
                     raise
+                finally:
+                    s.release_capture()
         except OSError as exc:
             raise JobFailed("SETUP_IO_FAILED", type(exc).__name__, retryable=True) from exc
 

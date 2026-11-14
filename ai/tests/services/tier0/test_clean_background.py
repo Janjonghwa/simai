@@ -421,32 +421,56 @@ def test_regenerate_exports_new_bundle_and_not_ready(tmp_path):
     assert original.is_dir() and not request.exists()
 
 
-def test_rolling_update_reference_fallback_and_reset(tmp_path):
+def test_rolling_update_never_falls_back_to_reference(tmp_path):
+    """-686: 최근 창이 모자란 카메라를 세팅 기준(REFERENCE_FALLBACK)으로 대신하지 않는다. 모자라면 NOT_READY 와 카메라별 사유."""
     import cv2
 
     w = worker(tmp_path)
     collect(w)
     reference_dir, reference_meta = w._reference["cam_A"]
     reference_image = (reference_dir / reference_meta["cameras"]["cam_A"]["image"]).read_bytes()
-    assert w._regenerate_bundle(w._active)
-    meta = json.loads((w._complete / "clean_backgrounds.json").read_text(encoding="utf-8"))
-    assert all(record["background_source"] == "REFERENCE_FALLBACK" for record in meta["cameras"].values())
+    assert w._full_samples(w._active) == 4  # 표본 3장 < 가득 찬 창 4장
+    assert not w._regenerate_bundle(w._active)
+    w.control.mkdir(parents=True)
+    (w.control / "regenerate.request.json").write_text(json.dumps({"request_id": 3, "requested_at_ms": 300}), "utf-8")
+    w.process_one()
+    response = json.loads((w.control / "regenerate.response.json").read_text(encoding="utf-8"))
+    assert response["status"] == "NOT_READY" and response["bundle_path"] is None
+    assert response["cameras"]["cam_B"] == {"state": "INSUFFICIENT_SAMPLES", "sample_count": 3}
     for at in (300, 400, 500, 600):
         frame, detections = pair("cam_A", at)
         frame.image[:] = 150
         assert w.offer(frame, detections)
         w.process_one()
+    assert not w._regenerate_bundle(w._active)  # cam_A 만 찼다. 나머지는 옛 기준으로 대신하지 않는다
+    for cid in IDS[1:]:
+        for at in (300, 400):
+            assert w.offer(*pair(cid, at, person=True))
+            w.process_one()
     assert w._regenerate_bundle(w._active)
     meta = json.loads((w._complete / "clean_backgrounds.json").read_text(encoding="utf-8"))
-    assert meta["cameras"]["cam_A"]["background_source"] == "RECENT"
-    assert meta["cameras"]["cam_B"]["background_source"] == "REFERENCE_FALLBACK"
+    assert {record["background_source"] for record in meta["cameras"].values()} == {"RECENT"}
     assert cv2.imread(str(w._complete / "cam_A.jpg"))[0, 0, 0] == 150
     assert (reference_dir / "cam_A.jpg").read_bytes() == reference_image
     w.reset_camera("cam_A")
     w.process_one()
     assert w.accumulator.camera_status("cam_A").sample_count == 0
-    assert (reference_dir / "cam_A.jpg").read_bytes() == reference_image
-    assert not w._regenerate_bundle(w._active)  # 이전 자세의 기준은 현재 보정에 쓸 수 없다.
+    assert not w._regenerate_bundle(w._active)
+
+
+def test_full_window_is_reachable_under_memory_cap(tmp_path):
+    """-686: 메모리 상한이 카메라당 최대 표본 수(60)보다 먼저 축출하면 '가득 찬 창' 은 상한이 허용하는 수다(영원히 못 채우지 않는다)."""
+    sample_bytes = 20 * 30 * 3 + 20 * 30  # BGR + 마스크
+    settings = replace(CleanBackgroundSettings(), offload=False, sample_interval_ms=100, min_samples_per_camera=3,
+                       max_samples_per_camera=60, max_bytes=sample_bytes * 4 * 5)
+    w = BackgroundCleanBackground(document(), PROV, settings=settings, state_dir=tmp_path, stop=threading.Event())
+    for at in range(0, 1200, 100):
+        for cid in IDS:
+            assert w.offer(*pair(cid, at, person=True))
+            w.process_one()
+    assert {w.accumulator.camera_status(cid).sample_count for cid in IDS} == {5}
+    assert w._full_samples(w._active) == 5
+    assert w._regenerate_bundle(w._active)
 
 
 def test_reveal_count_and_temporal_variance_exclude_pixels(tmp_path):
@@ -686,3 +710,154 @@ def test_offload_falls_back_to_in_process_when_shm_is_small(tmp_path, monkeypatc
         assert w.accumulator.camera_status("cam_A").sample_count == 1
     finally:
         w.close()
+
+
+# ---------------------------------------------------------------------------- S15P31A101-686 세팅 배경 촬영
+def _fresh_worker(tmp_path, **kwargs):
+    # 평소 간격 2 s(보관 창 8 s), 세팅 촬영 간격 50 ms·최소 3장
+    settings = replace(CleanBackgroundSettings(), sample_interval_ms=2_000, min_samples_per_camera=3,
+                       max_samples_per_camera=4, max_bytes=100_000, setup_sample_interval_ms=50,
+                       setup_min_samples_per_camera=3, **kwargs)
+    return BackgroundCleanBackground(document(), PROV, settings=settings, state_dir=tmp_path, stop=threading.Event())
+
+
+def _old_bundle(w):
+    """회전 전 화면(밝기 90, 걷는 사람)으로 첫 묶음을 완성한다."""
+    for at in (0, 2_000, 4_000):
+        for cid in IDS:
+            assert w.offer(*pair(cid, at, person=True))
+            assert w.process_one()
+    assert w._complete is not None
+    return w._complete
+
+
+def _request_fresh(w, request_id, since):
+    w.control.mkdir(parents=True, exist_ok=True)
+    doc = {"request_id": request_id, "requested_at_ms": since, "fresh_since_ms": since, "purpose": "SITE_SETUP"}
+    (w.control / "regenerate.request.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _response(w):
+    return json.loads((w.control / "regenerate.response.json").read_text(encoding="utf-8"))
+
+
+def _rotated(cid, at, value=150, box=None):
+    """회전한 뒤 화면(밝기 value). box 가 있으면 그 자리에 계속 서 있는 사람."""
+    frame, detections = pair(cid, at)
+    frame.image[:] = value
+    if box is not None:
+        detections = CameraDetections(cid, 1, at, at, "FILE", None, (PoseDetection(box, .9, (None,) * 17),))
+    return frame, detections
+
+
+def test_fresh_capture_ignores_old_bundle_and_samples_before_request(tmp_path):
+    """옛 완성 묶음이 있고 요청 전 표본이 링에 남아 있어도, 요청 시각 뒤 표본만으로 새 묶음을 만든다(15차 회전 뒤 실패 재현)."""
+    import cv2
+
+    w = _fresh_worker(tmp_path)
+    original = _old_bundle(w)
+    assert read_status(w)["complete"] is True
+    _request_fresh(w, 7, 7_000)
+    assert w.offer(*pair("cam_A", 6_500))  # 요청 전 표본(회전 전 화면)
+    w.process_one()
+    first = _response(w)
+    assert first["status"] == "COLLECTING" and first["request_id"] == 7 and first["sample_since_ms"] == 7_000
+    assert first["required_samples"] == 3 and first["sample_interval_ms"] == 50
+    assert {c["sample_count"] for c in first["cameras"].values()} == {0}
+    assert w._complete == original  # 수집 중에는 기존 묶음 포인터를 건드리지 않는다
+    for at in (7_000, 7_050, 7_100):  # 촬영 중 간격은 50 ms 로 줄어든다(평소 2 s 면 7_050 은 버려진다)
+        for cid in IDS:
+            assert w.offer(*_rotated(cid, at))
+            w.process_one()
+    done = _response(w)
+    assert done["status"] == "READY" and done["request_id"] == 7
+    assert {c["state"] for c in done["cameras"].values()} == {"READY"}
+    bundle = Path(done["bundle_path"])
+    assert bundle != original and bundle == w._complete and (bundle / "COMPLETE").is_file()
+    assert Path(read_status(w)["bundle"]) == bundle
+    meta = json.loads((bundle / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    assert meta["sample_since_ms"] == 7_000
+    for record in meta["cameras"].values():
+        assert record["background_source"] == "RECENT" and record["sample_since_ms"] == 7_000
+        assert record["time_range_ms"][0] >= 7_000 and record["sample_count"] == 3
+        assert abs(int(cv2.imread(str(bundle / record["image"]))[5, 5, 0]) - 150) <= 2
+    assert not (w.control / "regenerate.request.json").exists() and w._fresh is None
+    assert read_status(w)["setup_capture"] is None
+    # 촬영이 끝나면 평소 간격(2 s)으로 돌아간다
+    assert not w.offer(*_rotated("cam_A", 7_160))
+
+
+def test_fresh_capture_reports_person_and_missing_video_per_camera_in_process(tmp_path):
+    """한 카메라에 사람이 계속 서 있고 한 카메라는 영상이 없으면 그 카메라만 사유와 함께 남고 묶음을 만들지 않는다."""
+    w = _fresh_worker(tmp_path, offload=False)
+    original = _old_bundle(w)
+    _request_fresh(w, 9, 10_000)
+    w.process_one()  # 표본 없이도 새 요청이면 응답한다
+    assert {c["state"] for c in _response(w)["cameras"].values()} == {"INSUFFICIENT_SAMPLES"}
+    assert read_status(w)["setup_capture"] == {"request_id": 9, "since_ms": 10_000}
+    for at in (10_000, 10_100, 15_100):
+        for cid in ("cam_A", "cam_B"):
+            assert w.offer(*_rotated(cid, at))
+            w.process_one()
+        assert w.offer(*_rotated("cam_C", at, box=(5, 5, 15, 15)))
+        w.process_one()
+    got = _response(w)
+    assert got["status"] == "COLLECTING" and got["bundle_path"] is None
+    assert got["cameras"]["cam_A"]["state"] == got["cameras"]["cam_B"]["state"] == "READY"
+    assert got["cameras"]["cam_C"]["state"] == "PERSON_OCCLUDED" and got["cameras"]["cam_C"]["person_visible"] is True
+    assert got["cameras"]["cam_C"]["never_revealed_ratio"] > 0.02
+    assert got["cameras"]["cam_D"] == {"state": "NO_VIDEO", "sample_count": 0, "person_visible": None,
+                                       "never_revealed_ratio": None, "last_frame_ms": 4_000}
+    assert w._complete == original and (w.control / "regenerate.request.json").exists()
+    # 사람이 화면 밖으로 나가면 cam_C 는 이어서 찍혀 준비된다(다른 카메라는 다시 찍지 않는다)
+    for at in (15_200, 15_300, 15_400):
+        assert w.offer(*_rotated("cam_C", at))
+        w.process_one()
+    assert _response(w)["cameras"]["cam_C"]["state"] == "READY"
+    assert _response(w)["cameras"]["cam_D"]["state"] == "NO_VIDEO"
+    # 워커가 요청을 거두면 촬영 모드가 끝나 평소 간격으로 돌아간다
+    (w.control / "regenerate.request.json").unlink()
+    w.process_one()
+    assert w._fresh is None
+    assert not w.offer(*_rotated("cam_A", 15_170))
+
+
+def test_fresh_capture_expires_when_never_complete(tmp_path):
+    w = _fresh_worker(tmp_path, offload=False, setup_capture_max_ms=1_000)
+    _request_fresh(w, 11, 0)
+    for at in (0, 600, 1_200):
+        assert w.offer(*_rotated("cam_A", at))
+        w.process_one()
+    got = _response(w)
+    assert got["status"] == "NOT_READY" and got["reason"] == "CAPTURE_EXPIRED"
+    assert not (w.control / "regenerate.request.json").exists() and w._fresh is None
+
+
+def test_capture_state_rules():
+    from services.tier0.clean_background import capture_state
+    from simai_ai.calibration.world_frame.clean_background import CameraBackgroundStatus
+
+    def st(count, ready=False, never=0.0, last_cover=0.0):
+        return CameraBackgroundStatus("cam_A", count, (1, 2) if count else None, never if count else None, 0.0,
+                                      (30, 20), 0, ready, last_cover if count else None)
+
+    kw = {"required": 3, "max_unrevealed_ratio": 0.02, "since_ms": 1_000}
+    assert capture_state(st(3, ready=True), last_frame_ms=2_000, observed_now_ms=2_000, **kw) == "READY"
+    assert capture_state(st(0), last_frame_ms=None, observed_now_ms=5_999, **kw) == "INSUFFICIENT_SAMPLES"
+    assert capture_state(st(0), last_frame_ms=900, observed_now_ms=6_000, **kw) == "NO_VIDEO"
+    assert capture_state(st(0), last_frame_ms=6_000, observed_now_ms=6_000, **kw) == "INSUFFICIENT_SAMPLES"
+    assert capture_state(st(1, last_cover=0.1), last_frame_ms=2_000, observed_now_ms=2_000, **kw) == "PERSON_OCCLUDED"
+    assert capture_state(st(3, never=0.05), last_frame_ms=2_000, observed_now_ms=2_000, **kw) == "PERSON_OCCLUDED"
+    assert capture_state(st(2), last_frame_ms=2_000, observed_now_ms=2_000, **kw) == "INSUFFICIENT_SAMPLES"
+
+
+def test_setup_capture_settings_defaults_and_validation(tmp_path, recording):
+    settings = _settings(tmp_path, recording, anchor_ms=1000)
+    cb = settings.clean_background
+    assert (cb.setup_sample_interval_ms, cb.setup_min_samples_per_camera, cb.setup_capture_max_ms) == (1000, 12, 600_000)
+    path = tmp_path / "tier0.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["clean_background"] = {"setup_min_samples_per_camera": 61}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    with pytest.raises(Tier0ConfigError):
+        load_settings(path, env={})

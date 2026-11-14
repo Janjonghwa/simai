@@ -6,6 +6,7 @@ import {
   setupWorkUnitSessionKey,
   setupZonePlanKey,
 } from '@/features/setup/api';
+import { BackgroundCaptureModal } from '@/features/setup/BackgroundCaptureModal';
 import { isSetupSessionRunning } from '@/features/setup/blockingSetup';
 import { BlockingSetupNotice } from '@/features/setup/BlockingSetupNotice';
 import {
@@ -60,6 +61,7 @@ import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementModal } from '@/features/setup/SupplementModal';
 import type { SetupMode, ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
+import { useBackgroundCapture } from '@/features/setup/useBackgroundCapture';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
 import { useReuseBlockedReason } from '@/features/setup/useReuseScene';
 import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
@@ -101,6 +103,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 단추(다음·다시 보정·세션 취소·카메라 다시 맞추기·작업 관리로)는 setupActions 가 한 곳에서 정한다. 단독 화면(/setup)은 머리줄에 그리고,
 // 날짜 화면 안(embedded)은 같은 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록하며 구역 단계의 마지막 단추는 '다음'(onDone)이다.
 // 「맵 보강 촬영(선택)」은 보정·생성의 '다음'에서 뜨는 창이다(SupplementModal, S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
+// 「배경 촬영」 창(BackgroundCaptureModal, S15P31A101-686): 1단계 '다음' 이 먼저 이 창을 띄우고 「시작」을 눌러야 세션을 만든다. 세팅 시작 뒤 새로
+// 찍은 화면만 쓰므로 카메라 앞을 비우게 하고, 카메라별 촬영 상태(사람 보임·영상 없음)를 보이다가 다 찍으면 저절로 닫힌다.
 // 구역 단계의 마지막 단추가 세팅 완료(C17, S15P31A101-615)를 먼저 부르고(useCompleteSetup) 성공하면 넘어간다: 구역 목록 적용·이 세션 맵 켜기·
 // 구성 묶음 발행을 한 번에 한다. 실패하면 구역 편집 아래에 안내하고 머문다. 완료하면 오른쪽 칸에는 「세팅 완료」 상태 카드만 남는다.
 // 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
@@ -349,6 +353,17 @@ function SetupWorkPage({
     [heightDefaultsQuery.data, coverageQuery.data],
   );
 
+  const capture = useBackgroundCapture({
+    stage,
+    session: currentSession,
+    cameraIds,
+    starting:
+      createSession.pending ||
+      retrySession.pending ||
+      resumeSession.pending ||
+      cancelMutation.isPending,
+  });
+
   const effectiveHeightDefaults =
     returnForHeightRetry && currentSession?.camera_heights_m
       ? currentSession.camera_heights_m
@@ -448,16 +463,33 @@ function SetupWorkPage({
     else void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
   }, [onExit, navigate, workUnitId]);
 
+  // 세션을 만들기 전에 배경 촬영 창을 띄운다(-686). 멈춘 세팅을 이어 가는 경우만 배경을 다시 찍지 않아 바로 보낸다.
+  const resumesPaused =
+    returnForHeightRetry &&
+    Boolean(sessionId) &&
+    Boolean(currentSession?.paused_reason) &&
+    currentSession?.status !== 'FAILED';
+  const beginCapture = capture.begin;
+  const beginStep1Submit = useCallback(() => {
+    if (resumesPaused) submitStep1();
+    else beginCapture();
+  }, [resumesPaused, submitStep1, beginCapture]);
+
+  const startCapture = useCallback(() => {
+    capture.start();
+    submitStep1();
+  }, [capture, submitStep1]);
+
   // 옆 카메라 쌍의 겹침이 부족하면 보정이 실패할 수 있어 시작 전에 한 번 더 묻는다(높이를 고쳐 다시 시작할 때도 같다).
   const requestStep1Submit = useCallback(() => {
     if (coverage.riskyPairs.length > 0) setRiskConfirmPairs(coverage.riskyPairs);
-    else submitStep1();
-  }, [coverage.riskyPairs, submitStep1]);
+    else beginStep1Submit();
+  }, [coverage.riskyPairs, beginStep1Submit]);
 
   const confirmRiskySubmit = useCallback(() => {
     setRiskConfirmPairs(null);
-    submitStep1();
-  }, [submitStep1]);
+    beginStep1Submit();
+  }, [beginStep1Submit]);
 
   const handleRetryFailedSession = useCallback(() => {
     if (!sessionId || retrySession.pending) return;
@@ -573,6 +605,13 @@ function SetupWorkPage({
     [navigate],
   );
 
+  // 배경 촬영 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686)
+  const cameraMap = capture.open ? (
+    <div aria-hidden className="min-h-0 rounded-xl bg-card" />
+  ) : (
+    <CameraMapPanel coverage={coverage} />
+  );
+
   const bodyClass = cn('flex flex-col gap-3', embedded ? EMBEDDED_BODY : 'min-h-0 flex-1');
   if (entryPending) return <div className={bodyClass} />;
 
@@ -627,7 +666,7 @@ function SetupWorkPage({
       </ol>
 
       {stage === 0 ? (
-        <SetupSplit left={<CameraMapPanel coverage={coverage} />}>
+        <SetupSplit left={cameraMap}>
           <CameraPanel coverage={coverage} />
           <CameraHeightPanel
             fields={heightFields}
@@ -658,7 +697,7 @@ function SetupWorkPage({
         currentSession && (
           <SetupCalibrateStep
             waiting={waiting}
-            cameraView={<CameraMapPanel coverage={coverage} />}
+            cameraView={cameraMap}
             cameraCheck={cameraCheck}
             showCameraCheck={
               cameraCheck.gated && Boolean(currentSession.calibration_version) && !waiting.failed
@@ -734,6 +773,20 @@ function SetupWorkPage({
           onReuse={() => setMode('REUSE')}
           onClose={exitModelPicker}
           reuseBlockedReason={reuse.reason}
+        />
+      )}
+      {capture.open && (
+        <BackgroundCaptureModal
+          view={capture.view}
+          secondsLeft={capture.secondsLeft}
+          waitingForWorker={capture.waitingForWorker}
+          onStart={startCapture}
+          onCancel={capture.view.phase === 'ready' ? capture.close : handleCancelSession}
+          onRetry={handleRetryFailedSession}
+          onClose={capture.close}
+          cancelPending={cancelMutation.isPending}
+          retryPending={retrySession.pending}
+          error={capture.view.phase === 'failed' ? retrySession.error : null}
         />
       )}
       {supplementOpen && currentSession && (

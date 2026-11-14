@@ -169,6 +169,12 @@ async function pickNewModel() {
   fireEvent.click(within(dialog).getByRole('button', { name: /^새로 3D 공간 만들기/ }));
 }
 
+/** 1단계 '다음' 뒤 뜨는 배경 촬영 창(-686)에서 「시작」을 눌러 세션을 만든다. */
+async function pressCaptureStart() {
+  const dialog = await screen.findByRole('dialog', { name: '배경 촬영' });
+  fireEvent.click(within(dialog).getByRole('button', { name: '시작' }));
+}
+
 /** 단계 줄('보정 단계')에서 지금 단계(aria-current="step")인 항목의 글. */
 const currentStepText = () =>
   within(screen.getByRole('list', { name: '보정 단계' }))
@@ -214,6 +220,7 @@ describe('설치 · 보정 작업 연결', () => {
     fireEvent.change(cam_D, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toMatchObject({ work_unit_id: 5 });
   });
@@ -322,6 +329,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
     await pickNewModel();
     fireEvent.click(submitButton);
+    await pressCaptureStart();
 
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toEqual({
@@ -368,6 +376,7 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(setupMock.submittedBodies).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     // 새 모델은 mode 를 보내지 않는다(생략하면 서버가 NEW 로 본다). 다음은 창을 다시 묻지 않는다.
     expect(Object.keys(setupMock.submittedBodies[0]!).sort()).toEqual([
@@ -427,6 +436,7 @@ describe('설치 · 보정 1단계 화면', () => {
     fireEvent.change(cam4Input, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
 
     const alert = await screen.findByTestId('setup-submit-error');
     expect(alert.textContent).toContain(
@@ -454,6 +464,7 @@ describe('설치 · 보정 1단계 화면', () => {
 
     // 방식은 처음에 고른 것을 그대로 쓴다(다시 묻지 않는다).
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
     await waitFor(() => {
       expect(screen.getByTestId('setup-submit-error').textContent).toContain(
         '진행 중인 작업(배관 점검)이 있어 세팅을 시작할 수 없습니다. 작업을 종료한 뒤 다시 시도하세요',
@@ -491,6 +502,7 @@ describe('설치 · 보정 1단계 화면', () => {
     fireEvent.change(cam4Input, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
 
     const alert = await screen.findByTestId('setup-submit-error');
     expect(alert.textContent).toContain(
@@ -593,13 +605,14 @@ describe('설치 · 보정 1단계 화면', () => {
           },
         ),
       );
+      await pressCaptureStart();
       await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
       expect(setupMock.submittedBodies[0]).toMatchObject({
         work_unit_id: 1,
         camera_heights_m: { cam_A: 2.2, cam_B: 2.2, cam_C: 2.2, cam_D: 2.2 },
       });
       await waitForCalibrationStep();
-      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByRole('dialog', { name: '보정이 실패할 수 있어요' })).toBeNull();
     });
 
     it('위험이 없으면 확인창 없이 바로 세션을 만든다', async () => {
@@ -607,6 +620,7 @@ describe('설치 · 보정 1단계 화면', () => {
       expect(screen.queryByRole('alert')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: '다음' }));
       expect(screen.queryByRole('dialog', { name: '보정이 실패할 수 있어요' })).toBeNull();
+      await pressCaptureStart();
       await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     });
 
@@ -619,6 +633,7 @@ describe('설치 · 보정 1단계 화면', () => {
           { name: '그대로 진행' },
         ),
       );
+      await pressCaptureStart();
       await waitFor(() => expect(setupMock.sessions.size).toBe(1));
       const sessionId = [...setupMock.sessions.keys()][0]!;
       setupMock.failSession(sessionId, 'VALIDATION_REJECTED');
@@ -703,6 +718,7 @@ describe('설치 · 보정 1단계 화면', () => {
     await waitFor(() => expect(proceedOnFailure.disabled).toBe(false));
     await pickNewModel();
     fireEvent.click(proceedOnFailure);
+    await pressCaptureStart();
 
     await waitForCalibrationStep();
   });
@@ -718,6 +734,7 @@ async function startSetupSession() {
   fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
   await pickNewModel();
   fireEvent.click(screen.getByRole('button', { name: '다음' }));
+  await pressCaptureStart();
   await waitFor(() => expect(setupMock.sessions.size).toBe(1));
   const sessionId = [...setupMock.sessions.keys()][0]!;
   await waitForCalibrationStep();
@@ -909,6 +926,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     ).toContain('cam_B');
 
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await pressCaptureStart();
 
     // 서버 retry 는 실패한 세션만 받으므로 진행 중인 세션은 먼저 취소(→ FAILED)한 뒤 재시도한다.
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
@@ -924,6 +942,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await pressCaptureStart();
 
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
     expect(setupMock.submittedBodies[1]!.camera_heights_m.cam_B).toBe(2.7);
@@ -946,6 +965,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     fireEvent.click(within(alert).getByRole('button', { name: '카메라 연결 관리로' }));
     await editCam2Height();
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await pressCaptureStart();
 
     // 같은 세션의 서버 retry 라서 방식을 다시 고르지 않는다.
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
@@ -1003,6 +1023,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await pressCaptureStart();
 
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
@@ -1017,6 +1038,18 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(steps[1]!.getAttribute('aria-current')).toBe('step');
     expect(screen.getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '검증 지점' })).toBeNull();
+    // 배경을 찍는 동안은 배경 촬영 창이 카메라 영상을 띄우고 아래 칸의 영상은 내린다(-686). 다 찍으면 창이 저절로 닫힌다.
+    expect(screen.getByRole('dialog', { name: '배경 촬영' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toBeNull();
+    setupMock.updateSession(sessionId, {
+      stage: 'INITIAL_POSE_AND_WORLD',
+      status: 'INITIAL_POSE_AND_WORLD',
+      progress_pct: 20,
+    });
+    await waitFor(
+      () => expect(screen.queryByRole('dialog', { name: '배경 촬영' })).toBeNull(),
+      POLL_WAIT,
+    );
     // 3D 미리보기 전에는 왼쪽 칸이 1단계와 같은 카메라 시야(실시간 영상 + 위에서 본 지도)다.
     expect(screen.getByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toBeTruthy();
     expect(screen.getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
@@ -1642,6 +1675,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     fireEvent.change(cam_D, { target: { value: '2.35' } });
     await pickNewModel();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
   }
 
   it('다시 보정은 확인 뒤 0단계로 가고, 다시 시도하면 확인을 다시 묻지 않고 새 세션을 시작한다', async () => {
@@ -1659,6 +1693,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     expect(setupMock.submittedBodies).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await pressCaptureStart();
     expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
@@ -1723,6 +1758,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     expect(setupMock.sessions.get(stuckId)?.failure_code).toBe('CANCELLED_BY_ADMIN');
 
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
     await waitFor(() => expect(setupMock.sessions.size).toBe(2));
     expect([...setupMock.sessions.values()].map((session) => session.work_unit_id)).toEqual([3, 1]);
     confirmSpy.mockRestore();
@@ -1802,4 +1838,109 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     expect(alert.textContent).toBe('이미 끝난 세팅 세션은 취소할 수 없습니다');
     confirmSpy.mockRestore();
   }, 30_000);
+});
+
+describe('배경 촬영 창(S15P31A101-686)', () => {
+  const captureDialog = () => screen.getByRole('dialog', { name: '배경 촬영' });
+
+  it('1단계 다음은 배경 촬영 창만 띄우고, 「시작」을 눌러야 세션을 만들며 Esc 로 닫히지 않는다', async () => {
+    renderSetupPage();
+    const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
+    await waitFor(() => expect(cam1Input.value).toBe('2.25'));
+    fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
+    await pickNewModel();
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '배경 촬영' });
+    expect(within(dialog).getByRole('status').textContent).toContain(
+      '모두 카메라 화면 밖으로 이동한 뒤',
+    );
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(4);
+    expect(setupMock.submittedBodies).toHaveLength(0);
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(screen.getByRole('dialog', { name: '배경 촬영' })).toBeTruthy();
+
+    // 시작 전 취소는 세션 없이 1단계에 머문다
+    fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
+    expect(screen.queryByRole('dialog', { name: '배경 촬영' })).toBeNull();
+    expect(setupMock.submittedBodies).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    await waitForCalibrationStep();
+    expect(captureDialog()).toBeTruthy();
+  }, 20_000);
+
+  it('카메라별 촬영 상태를 사용자 말로 보이고, 다음 단계로 넘어가면 저절로 닫힌다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      background_capture: {
+        since_ms: 1_763_020_800_000,
+        required_samples: 12,
+        sample_interval_ms: 1000,
+        cameras: {
+          cam_A: { state: 'READY', sample_count: 14, person_visible: false },
+          cam_B: { state: 'INSUFFICIENT_SAMPLES', sample_count: 6, person_visible: false },
+          cam_C: { state: 'PERSON_OCCLUDED', sample_count: 5, person_visible: true },
+          cam_D: { state: 'NO_VIDEO', sample_count: 0, person_visible: null },
+        },
+      },
+    });
+    await waitFor(
+      () => expect(captureDialog().textContent).toContain('카메라 3 앞에 사람이 보입니다'),
+      POLL_WAIT,
+    );
+    const dialog = captureDialog();
+    expect(dialog.textContent).toContain('화면 밖으로 이동하면 촬영을 이어갑니다');
+    expect(dialog.textContent).toContain('영상이 들어오지 않습니다');
+    expect(dialog.textContent).toContain('촬영 중 6/12');
+    expect(within(dialog).getByRole('status').textContent).toContain(
+      '카메라 3, 카메라 4만 이어서 찍습니다',
+    );
+    expect(within(dialog).getByLabelText('남은 시간').textContent).toMatch(/^\d+초$/);
+
+    setupMock.updateSession(sessionId, {
+      stage: 'INITIAL_POSE_AND_WORLD',
+      status: 'INITIAL_POSE_AND_WORLD',
+      progress_pct: 20,
+    });
+    await waitFor(
+      () => expect(screen.queryByRole('dialog', { name: '배경 촬영' })).toBeNull(),
+      POLL_WAIT,
+    );
+  }, 20_000);
+
+  it('배경을 끝내 못 찍어 끝나면 그 카메라를 알리고 다시 촬영하면 같은 높이로 다시 시도한다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      status: 'FAILED',
+      stage: 'FAILED',
+      failure_code: 'BACKGROUND_INCOMPLETE',
+      failure_message: '사람 지운 배경 수집 미완료',
+      background_capture: {
+        since_ms: 1_763_020_800_000,
+        required_samples: 12,
+        cameras: {
+          cam_A: { state: 'READY', sample_count: 12 },
+          cam_B: { state: 'READY', sample_count: 12 },
+          cam_C: { state: 'PERSON_OCCLUDED', sample_count: 12, person_visible: true },
+          cam_D: { state: 'READY', sample_count: 12 },
+        },
+      },
+    });
+    await waitFor(
+      () =>
+        expect(within(captureDialog()).getByRole('status').textContent).toContain(
+          '배경을 다 찍지 못했습니다: 카메라 3',
+        ),
+      POLL_WAIT,
+    );
+    fireEvent.click(within(captureDialog()).getByRole('button', { name: '다시 촬영' }));
+    await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.retryRequests[0]!.sessionId).toBe(sessionId);
+    await waitForTrackedSession(setupMock.retryRequests[0]!.retriedSessionId);
+    // 새 세션도 배경 수집부터라 창은 촬영 중으로 남는다
+    expect(within(captureDialog()).getByRole('button', { name: '촬영 취소' })).toBeTruthy();
+  }, 20_000);
 });

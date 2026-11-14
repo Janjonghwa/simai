@@ -1850,6 +1850,25 @@ class SiteSetup(RootModel[Any]):
     root: Any
 
 
+class Cameras(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    state: Literal['READY', 'INSUFFICIENT_SAMPLES', 'PERSON_OCCLUDED', 'NO_VIDEO']
+    sample_count: Annotated[StrictInt, Field(ge=0)]
+    person_visible: StrictBool | None | MISSING = MISSING
+
+
+class SiteSetupBackgroundCapture(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    since_ms: DefsTimestampMs
+    required_samples: Annotated[StrictInt, Field(ge=1, le=1000)]
+    sample_interval_ms: Annotated[StrictInt | MISSING, Field(ge=1, le=600000)] = MISSING
+    cameras: Annotated[dict[str, Cameras], Field(max_length=16, min_length=1)]
+
+
 class SiteSetupBakeImageRef(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1902,7 +1921,7 @@ class Pairs(BaseModel):
     rejects: dict[str, RejectsAdditionalProperty] | MISSING = MISSING
 
 
-class Cameras(BaseModel):
+class Cameras1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2111,7 +2130,7 @@ class Pairs1(BaseModel):
     reason: Literal['FEW_HOLDOUT', 'HOLDOUT_INVALID', 'HOLDOUT_ERROR_HIGH'] | None
 
 
-class Cameras1(BaseModel):
+class Cameras2(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2127,7 +2146,7 @@ class SiteSetupQualityGate(BaseModel):
     verdict: Literal['PASSED', 'NEEDS_CHECK', 'FAILED']
     thresholds: Thresholds1
     pairs: Annotated[dict[str, Pairs1], Field(max_length=256)]
-    cameras: Annotated[dict[str, Cameras1], Field(max_length=64)]
+    cameras: Annotated[dict[str, Cameras2], Field(max_length=64)]
     problems: Annotated[list[SiteSetupCheckProblem], Field(max_length=64)]
 
 
@@ -4274,7 +4293,7 @@ class SiteSetupCameraCheck(BaseModel):
     elapsed_s: Annotated[StrictFloat, Field(ge=0.0)]
     thresholds: Thresholds
     pairs: Annotated[dict[str, Pairs], Field(max_length=256)]
-    cameras: Annotated[dict[str, Cameras], Field(max_length=64)]
+    cameras: Annotated[dict[str, Cameras1], Field(max_length=64)]
     problems: Annotated[list[SiteSetupCheckProblem], Field(max_length=64)]
     baseline: Baseline | MISSING = MISSING
 
@@ -5087,6 +5106,7 @@ class SiteSetupProgress(SiteSetupReuseRules):
     background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
         MISSING
     )
+    background_capture: SiteSetupBackgroundCapture | MISSING = MISSING
     calibration_version: Annotated[
         StrictStr | MISSING, Field(max_length=160, min_length=1)
     ] = MISSING

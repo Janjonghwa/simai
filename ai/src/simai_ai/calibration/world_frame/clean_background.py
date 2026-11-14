@@ -12,6 +12,8 @@
   "충분히 찼다"(`is_camera_ready` / `is_ready`)로 판단한다.
 - 내보내기(`export` / `export_prepared`)는 카메라별 배경 사진(`<camera_id>.jpg`), 메타 JSON(`clean_backgrounds.json`),
   그리고 `calibration.world_frame.prepare.prepare_inputs` 와 바로 이어지는 이미지 경로 사전을 낸다.
+- 상태·합성·내보내기에 `since_ms` 를 주면 그 시각 이후 표본만 쓴다(세팅 시작 뒤 새로 찍은 표본만, S15P31A101-686).
+  이때 준비 판단의 최소 표본 수는 `min_samples` 로 바꿀 수 있다(못 채운 비율 상한은 같다).
 """
 
 from __future__ import annotations
@@ -116,6 +118,8 @@ class CameraBackgroundStatus:
     image_size: tuple[int, int] | None
     bytes_used: int
     ready: bool
+    last_person_cover_ratio: float | None = None
+    """마지막 표본의 사람 가림 비율(0 이면 사람 없음). 표본이 없으면 None (S15P31A101-686 세팅 촬영 안내용)."""
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -127,6 +131,9 @@ class CameraBackgroundStatus:
             "image_size": list(self.image_size) if self.image_size is not None else None,
             "bytes_used": self.bytes_used,
             "ready": self.ready,
+            "last_person_cover_ratio": (
+                round(self.last_person_cover_ratio, 6) if self.last_person_cover_ratio is not None else None
+            ),
         }
 
 
@@ -347,9 +354,30 @@ class CleanBackgroundAccumulator:
             self._samples[cid].clear()
         self._image_sizes.pop(cid, None)
 
-    def camera_status(self, camera_id: str) -> CameraBackgroundStatus:
-        """카메라 한 대의 누적 상태(표본 수, 시각 범위, 못 채운 비율, 사람 가림 평균 비율, 준비 여부)를 돌려준다."""
+    def _window(self, camera_id: str, since_ms: int | None) -> list[_Sample]:
+        """카메라 표본 중 `since_ms` 이후(포함) 것만. None 이면 전부."""
         q = self._ensure_camera(camera_id)
+        if since_ms is None:
+            return list(q)
+        require_ms("since_ms", since_ms)
+        return [s for s in q if s.capture_time_ms >= since_ms]
+
+    def _required(self, min_samples: int | None) -> int:
+        return self.config.min_samples_per_camera if min_samples is None else _positive_int("min_samples", min_samples)
+
+    def camera_status(
+        self,
+        camera_id: str,
+        *,
+        since_ms: int | None = None,
+        min_samples: int | None = None,
+    ) -> CameraBackgroundStatus:
+        """카메라 한 대의 누적 상태(표본 수, 시각 범위, 못 채운 비율, 사람 가림 평균 비율, 준비 여부)를 돌려준다.
+
+        `since_ms` 를 주면 그 시각 이후 표본만 센다. `min_samples` 는 준비 판단의 최소 표본 수(기본 설정값)다.
+        """
+        q = self._window(camera_id, since_ms)
+        required = self._required(min_samples)
         if not q:
             return CameraBackgroundStatus(
                 camera_id=camera_id,
@@ -365,10 +393,7 @@ class CleanBackgroundAccumulator:
         never_ratio = float(1.0 - ever_revealed.mean())
         mean_cover = float(np.mean([s.person_cover_ratio for s in q]))
         count = len(q)
-        ready = (
-            count >= self.config.min_samples_per_camera
-            and never_ratio < self.config.max_unrevealed_ratio
-        )
+        ready = count >= required and never_ratio < self.config.max_unrevealed_ratio
         return CameraBackgroundStatus(
             camera_id=camera_id,
             sample_count=count,
@@ -378,6 +403,7 @@ class CleanBackgroundAccumulator:
             image_size=self._image_sizes[camera_id],
             bytes_used=sum(s.byte_size for s in q),
             ready=ready,
+            last_person_cover_ratio=q[-1].person_cover_ratio,
         )
 
     def status(self) -> dict[str, CameraBackgroundStatus]:
@@ -395,9 +421,16 @@ class CleanBackgroundAccumulator:
             return False
         return all(self.is_camera_ready(cid) for cid in targets)
 
-    def synthesize_camera(self, camera_id: str) -> tuple[np.ndarray, CameraBackgroundStatus]:
-        """카메라 한 대의 사람 지운 배경 영상(BGR uint8)과 상태를 만든다."""
-        q = self._ensure_camera(camera_id)
+    def synthesize_camera(
+        self,
+        camera_id: str,
+        *,
+        since_ms: int | None = None,
+        min_samples: int | None = None,
+    ) -> tuple[np.ndarray, CameraBackgroundStatus]:
+        """카메라 한 대의 사람 지운 배경 영상(BGR uint8)과 상태를 만든다(`since_ms` 면 그 뒤 표본만)."""
+        q = self._window(camera_id, since_ms)
+        required = self._required(min_samples)
         if not q:
             raise ValueError(f"{camera_id}: 누적된 표본이 없다")
         bg, never_mask = compute_masked_median_background(
@@ -408,10 +441,7 @@ class CleanBackgroundAccumulator:
         never_ratio = float(never_mask.mean())
         mean_cover = float(np.mean([s.person_cover_ratio for s in q]))
         count = len(q)
-        ready = (
-            count >= self.config.min_samples_per_camera
-            and never_ratio < self.config.max_unrevealed_ratio
-        )
+        ready = count >= required and never_ratio < self.config.max_unrevealed_ratio
         st = CameraBackgroundStatus(
             camera_id=camera_id,
             sample_count=count,
@@ -421,6 +451,7 @@ class CleanBackgroundAccumulator:
             image_size=self._image_sizes[camera_id],
             bytes_used=sum(s.byte_size for s in q),
             ready=ready,
+            last_person_cover_ratio=q[-1].person_cover_ratio,
         )
         return bg, st
 
@@ -431,8 +462,12 @@ class CleanBackgroundAccumulator:
         calibration_version: str,
         camera_ids: Sequence[str] | None = None,
         require_ready: bool = True,
+        since_ms: int | None = None,
+        min_samples: int | None = None,
     ) -> CleanBackgroundExport:
         """카메라별 사람 지운 배경 사진(`<camera_id>.jpg`)과 메타 JSON(`clean_backgrounds.json`)을 새 폴더에 내보낸다.
+
+        `since_ms` 를 주면 그 시각 이후 표본만으로 만들고 메타 카메라 항목에 `sample_since_ms` 로 남긴다.
 
         반환된 `export.images`(`dict[str, Path]`)는 `calibration.world_frame.prepare.prepare_inputs(images, ...)` 의
         첫 인자로 바로 넘길 수 있다.
@@ -451,11 +486,11 @@ class CleanBackgroundAccumulator:
 
         synthesized: list[tuple[str, np.ndarray, CameraBackgroundStatus]] = []
         for cid in targets:
-            bg, st = self.synthesize_camera(cid)
+            bg, st = self.synthesize_camera(cid, since_ms=since_ms, min_samples=min_samples)
             if require_ready and not st.ready:
                 raise ValueError(
                     f"{cid}: 배경 누적이 아직 충분하지 않다 "
-                    f"(samples={st.sample_count}/{self.config.min_samples_per_camera}, "
+                    f"(samples={st.sample_count}/{self._required(min_samples)}, "
                     f"never_revealed_ratio={st.never_revealed_ratio:.4f}, limit={self.config.max_unrevealed_ratio})"
                 )
             synthesized.append((cid, bg, st))
@@ -483,6 +518,8 @@ class CleanBackgroundAccumulator:
                 "ready": st.ready,
                 "calibration_version": calibration_version,
             }
+            if since_ms is not None:
+                cameras_meta[cid]["sample_since_ms"] = since_ms
 
         meta_doc: dict[str, Any] = {
             "format": CLEAN_BACKGROUND_FORMAT,
