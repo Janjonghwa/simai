@@ -338,8 +338,22 @@ export type QualityGate = z.infer<typeof qualityGateSchema>;
 
 export const cameraCheckSchema = z
   .object({
-    status: z.enum(['WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']),
+    /** AWAITING_START(site_setup 1.19.0, -687): 보정이 끝나 「걷기 시작」을 기다린다(시도 없음). */
+    status: z.enum(['AWAITING_START', 'WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']),
     calibration_version: z.string(),
+    /** 지금(마지막) 확인 시도(-687). 「확인만 다시」마다 번호가 오른다. 1.18.0 이전 워커는 싣지 않는다. */
+    attempt: z
+      .object({
+        no: z.number(),
+        id: z.string(),
+        started_at_ms: z.number(),
+        expires_at_ms: z.number(),
+      })
+      .loose()
+      .nullish()
+      .catch(null),
+    /** 워커가 관리자의 「걷기 시작」·「확인만 다시」를 기다리는 마감(-687, 워커 시계). 기다리지 않으면 없음. */
+    user_wait: z.object({ until_ms: z.number(), wait_s: z.number() }).loose().nullish().catch(null),
     progress_pct: z.number(),
     elapsed_s: z.number(),
     pairs: z.record(
@@ -363,6 +377,8 @@ export const cameraCheckSchema = z
           loo_samples: z.number(),
           loo_median_px: z.number().nullable(),
           verdict: z.enum(['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OBSERVED']),
+          /** 최근 1.5초 안에 이 카메라에 사람이 보였다(-687, 걷기 창 표시용). */
+          person_visible: z.boolean().optional(),
         })
         .loose(),
     ),
@@ -370,6 +386,20 @@ export const cameraCheckSchema = z
   })
   .loose();
 export type CameraCheck = z.infer<typeof cameraCheckSchema>;
+
+/**
+ * 걷기 창이 쓰는 카메라 확인 단계(서버 camera_check_phase, -687). AWAITING_START 걷기 시작 대기 · STARTING 요청을 보냈고 워커가 아직
+ * 시도를 열지 않음 · WALKING 시도 중 · RETRY_WAIT 실패해 확인만 다시 대기 · PASSED · FAILED(더는 다시 확인을 받지 않음).
+ */
+export const cameraCheckPhaseSchema = z.enum([
+  'AWAITING_START',
+  'STARTING',
+  'WALKING',
+  'RETRY_WAIT',
+  'PASSED',
+  'FAILED',
+]);
+export type CameraCheckPhase = z.infer<typeof cameraCheckPhaseSchema>;
 
 /** 세팅 구역 상면 높이 차이 판정 요약(site_setup 1.15.0 zone_height_changes, S15P31A101-630). */
 export const zoneHeightChangesSummarySchema = z
@@ -498,11 +528,15 @@ export const setupSessionResponseSchema = z.object({
   camera_check: cameraCheckSchema.nullish().catch(null),
   /** 서버 관문 판정(-646): PASSED 이고 그 확인의 보정이 세션 보정과 같다. 그 전 서버는 싣지 않는다(null) */
   camera_check_passed: z.boolean().nullish().catch(null),
+  /** 걷기 창 단계(-687). 그 전 서버는 싣지 않는다(null, 걷기 창 없이 시도 중으로만 본다) */
+  camera_check_phase: cameraCheckPhaseSchema.nullish().catch(null),
+  /** 관리자의 마지막 「걷기 시작」·「확인만 다시」 요청(-687). 없으면 null */
+  camera_check_request: z.object({ attempt: z.number() }).loose().nullish().catch(null),
   /** 구역별 상면 높이 차이 판정 요약(-630). 그 전 서버·워커는 싣지 않는다(null) */
   zone_height_changes: zoneHeightChangesSummarySchema.nullish().catch(null),
   /**
    * 모델 생성을 멈추고 사람을 기다리는 까닭 코드. 멈추지 않았으면 null. 서버는 HEIGHT_CHECK(-690: 워커가 카메라 높이 확인을
-   * 기다린다)만 낸다. 멈춘 세션은 단계(status)를 그대로 두고, 높이를 실어 POST /api/setup-sessions/{id}/resume 으로 멈춘 곳부터 이어 간다.
+   * 기다린다)와 CAMERA_CHECK(-687: 워커가 카메라 확인 걷기 시작·확인만 다시를 기다린다, 걷기 창이 받는다)를 낸다. 멈춘 세션은 단계(status)를 그대로 두고, 높이를 실어 POST /api/setup-sessions/{id}/resume 으로 멈춘 곳부터 이어 간다.
    */
   paused_reason: z.string().nullish().catch(null),
 });

@@ -913,6 +913,13 @@ class HeightDecision(BaseModel):
     ]
 
 
+class CameraCheckStart(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    attempt: Annotated[StrictInt, Field(ge=1)]
+
+
 class Payload21(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -927,6 +934,7 @@ class Payload21(BaseModel):
     )
     live_work_active: StrictBool | MISSING = MISSING
     height_decision: HeightDecision | MISSING = MISSING
+    camera_check_start: CameraCheckStart | MISSING = MISSING
 
 
 class JobLeaseStatus(Envelope):
@@ -1905,6 +1913,25 @@ class SiteSetupBakeImages(BaseModel):
     images: Annotated[list[SiteSetupBakeImageRef], Field(max_length=16, min_length=1)]
 
 
+class Attempt(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    no: Annotated[StrictInt, Field(ge=1)]
+    id: Annotated[StrictStr, Field(pattern='^[A-Za-z0-9_-]{1,64}$')]
+    started_at_ms: DefsTimestampMs
+    expires_at_ms: DefsTimestampMs
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+
+
+class UserWait(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    until_ms: DefsTimestampMs
+    wait_s: Annotated[StrictFloat, Field(ge=0.0)]
+
+
 class Thresholds(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1947,6 +1974,7 @@ class Cameras1(BaseModel):
     loo_median_px: Annotated[StrictFloat | None, Field(ge=0.0)]
     loo_p95_px: Annotated[StrictFloat | None, Field(ge=0.0)]
     verdict: Literal['PASS', 'FAIL', 'INSUFFICIENT', 'NOT_OBSERVED']
+    person_visible: StrictBool | MISSING = MISSING
 
 
 ValuesPxAdditionalProperty = TypeAliasType(
@@ -4325,7 +4353,9 @@ class SiteSetupCameraCheck(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    status: Literal['WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']
+    status: Literal['AWAITING_START', 'WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']
+    attempt: Attempt | MISSING = MISSING
+    user_wait: UserWait | MISSING = MISSING
     calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
     progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
     elapsed_s: Annotated[StrictFloat, Field(ge=0.0)]

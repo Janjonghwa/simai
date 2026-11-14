@@ -340,10 +340,10 @@ describe('보정 검증 결과 표', () => {
   });
 });
 
-describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
+describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이 맡는다(S15P31A101-687)', () => {
   const CAMS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
   const readySession = (over: Record<string, unknown> = {}) =>
-    // 미리보기 전(3D 칸 없음): 보정 등록(65%) 뒤부터 카메라 확인이 돈다
+    // 미리보기 전(3D 칸 없음): 보정 등록(65%) 뒤 맵 전에 카메라 확인을 한다
     sessionOf({
       status: 'JOINT_BA_AND_VERIFY',
       stage: 'JOINT_BA_AND_VERIFY',
@@ -354,7 +354,7 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
       ...over,
     });
 
-  function renderCheck(session: ReturnType<typeof sessionOf>, onRecalibrate = vi.fn()) {
+  function renderCheck(session: ReturnType<typeof sessionOf>) {
     const waiting = deriveWaitingView(session);
     render(
       <SetupCalibrateStep
@@ -362,58 +362,49 @@ describe('카메라 확인 카드·쌍별 검증 표(S15P31A101-646)', () => {
         waiting={waiting}
         cameraCheck={deriveCameraCheckView(session, waiting.cameraIds)}
         showCameraCheck
-        onRecalibrate={onRecalibrate}
         onRetry={vi.fn()}
         onReturnToStep1={vi.fn()}
       />,
     );
-    return onRecalibrate;
   }
 
-  it('재는 중에는 안내와 진행률을 보이고 쌍별 표에 옆 카메라 4쌍이 있다', () => {
+  it('작은 카메라 확인 카드는 없고 쌍별 표에 옆 카메라 4쌍이 있다', () => {
     renderCheck(
       readySession({
         camera_check: buildCameraCheck(CAMS, 'cal-9', 'MEASURING', 40),
         camera_check_passed: false,
       }),
     );
-    const card = screen.getByRole('heading', { name: '카메라 확인' }).closest('[data-slot=card]')!;
-    expect(card.textContent).toContain('계속 걸어 주세요');
-    expect(
-      within(card as HTMLElement)
-        .getByRole('progressbar', { name: '카메라 확인 진행률' })
-        .getAttribute('aria-valuenow'),
-    ).toBe('40');
+    expect(screen.queryByRole('heading', { name: '카메라 확인' })).toBeNull();
+    expect(screen.queryByRole('progressbar', { name: '카메라 확인 진행률' })).toBeNull();
     const table = screen.getByRole('table', { name: '카메라 쌍별 검증' });
     expect(within(table).getAllByRole('row')).toHaveLength(5);
     expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
   });
 
-  it('실패하면 원인과 다시 보정을 보이고 누르면 다시 보정을 부른다', () => {
-    const onRecalibrate = renderCheck(
+  it('카메라 확인 걷기 대기(paused_reason CAMERA_CHECK)는 보정 멈춤 안내로 보이지 않는다', () => {
+    renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'AWAITING_START'),
+        camera_check_passed: false,
+        camera_check_phase: 'AWAITING_START',
+        paused_reason: 'CAMERA_CHECK',
+      }),
+    );
+    expect(screen.queryByRole('button', { name: '카메라 연결 관리로' })).toBeNull();
+    expect(screen.queryByText(/멈췄습니다/)).toBeNull();
+  });
+
+  it('실패한 쌍은 표에서 실패로 보인다', () => {
+    renderCheck(
       readySession({
         camera_check: buildCameraCheck(CAMS, 'cal-9', 'FAILED', 100),
         camera_check_passed: false,
       }),
     );
-    expect(screen.getByRole('alert', { name: '카메라 확인 문제' }).textContent).toContain('통과율');
     const failedRow = screen
       .getAllByRole('row')
       .find((row) => row.textContent?.startsWith('카메라 2–카메라 3'))!;
     expect(failedRow.getAttribute('data-outcome')).toBe('fail');
-    fireEvent.click(screen.getByRole('button', { name: '다시 보정' }));
-    expect(onRecalibrate).toHaveBeenCalledOnce();
-  });
-
-  it('통과하면 통과로 보이고 안내가 없다', () => {
-    renderCheck(
-      readySession({
-        camera_check: buildCameraCheck(CAMS, 'cal-9', 'PASSED'),
-        camera_check_passed: true,
-      }),
-    );
-    const card = screen.getByRole('heading', { name: '카메라 확인' }).closest('[data-slot=card]')!;
-    expect(card.textContent).toContain('통과');
-    expect(within(card as HTMLElement).queryByRole('status')).toBeNull();
   });
 });

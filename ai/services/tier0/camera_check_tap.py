@@ -5,6 +5,9 @@
 `<state>/camera-check/sessions/<setup_session_id>/views.jsonl` 에 덧붙인다. 계산(새 보정으로 연결·재투영)은 워커가 한다:
 Tier 0 판정 스레드의 지연(13·14차 혼잡 때 GIL 붕괴·지연 폭증)을 늘리지 않으려고 여기서는 복사·직렬화만 하고, 파일 쓰기는
 보조 스레드가 한다(대기열이 차면 버린다). 요청이 없거나 만료되면 아무것도 하지 않는다. 판정·위치에는 관여하지 않는다.
+
+시도(S15P31A101-687): 요청에 `attempt_id` 가 있으면 `sessions/<setup_session_id>/<attempt_id>/views.jsonl` 에 적는다. 「확인만 다시」로
+시도가 바뀌면 대기열에 남은 이전 시도 줄은 이전 시도 폴더로 가서 새 시도에 섞이지 않는다. 줄 수 상한도 시도마다 센다.
 """
 
 from __future__ import annotations
@@ -25,10 +28,12 @@ log = logging.getLogger(__name__)
 
 REQUEST_FILE = "request.json"
 _SESSION_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+_ATTEMPT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def session_views_path(root: Path, setup_session_id: str) -> Path:
-    return Path(root) / "sessions" / setup_session_id / "views.jsonl"
+def session_views_path(root: Path, setup_session_id: str, attempt_id: str | None = None) -> Path:
+    base = Path(root) / "sessions" / setup_session_id
+    return (base / attempt_id if attempt_id else base) / "views.jsonl"
 
 
 class CameraCheckTap:
@@ -43,12 +48,13 @@ class CameraCheckTap:
         self._period_ms = int(1000 / max_rate_hz)
         self._check_ms = check_interval_ms
         self._max_lines = max_lines
-        self._queue: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue(maxsize=queue_size)
+        self._queue: queue.Queue[tuple[tuple[str, str | None], dict[str, Any]] | None] = queue.Queue(maxsize=queue_size)
         self._session: str | None = None
+        self._attempt: str | None = None
         self._expires_at: int | None = None
         self._next_check = 0
         self._last_t: int | None = None
-        self._lines: dict[str, int] = {}
+        self._lines: dict[tuple[str, str | None], int] = {}
         self.dropped = 0
         self.written = 0
         self.errors = 0
@@ -67,13 +73,18 @@ class CameraCheckTap:
             return
         session = doc.get("setup_session_id") if isinstance(doc, dict) else None
         expires = doc.get("expires_at_ms") if isinstance(doc, dict) else None
+        attempt = doc.get("attempt_id") if isinstance(doc, dict) else None
         if not isinstance(session, str) or not _SESSION_RE.match(session):
             self._session = None
             return
-        if session != self._session:
-            log.info("카메라 확인 입력 내보내기 시작: 세팅 세션 %s", session)
+        if attempt is not None and (not isinstance(attempt, str) or not _ATTEMPT_RE.match(attempt)):
+            self._session = None  # 형식이 틀린 시도 ID 는 경로에 쓰지 않는다
+            return
+        if session != self._session or attempt != self._attempt:
+            log.info("카메라 확인 입력 내보내기 시작: 세팅 세션 %s, 시도 %s", session, attempt or "-")
             self._last_t = None
         self._session = session
+        self._attempt = attempt
         self._expires_at = expires if isinstance(expires, int) and not isinstance(expires, bool) else None
 
     def offer(self, t: int, views: Sequence[LocalView]) -> None:
@@ -85,13 +96,14 @@ class CameraCheckTap:
             return
         if self._last_t is not None and t - self._last_t < self._period_ms:
             return
-        if self._lines.get(session, 0) >= self._max_lines:
+        key = (session, self._attempt)
+        if self._lines.get(key, 0) >= self._max_lines:
             return
         self._last_t = t
         line = views_to_json(t, views)
         try:
-            self._queue.put_nowait((session, line))
-            self._lines[session] = self._lines.get(session, 0) + 1
+            self._queue.put_nowait((key, line))
+            self._lines[key] = self._lines.get(key, 0) + 1
         except queue.Full:
             self.dropped += 1
 
@@ -105,9 +117,9 @@ class CameraCheckTap:
                 continue
             if item is None:
                 return
-            session, line = item
+            (session, attempt), line = item
             try:
-                path = session_views_path(self.root, session)
+                path = session_views_path(self.root, session, attempt)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -118,4 +130,5 @@ class CameraCheckTap:
                     log.warning("카메라 확인 입력을 쓰지 못했다(판정은 계속한다, %d회)", self.errors)
 
     def status(self) -> dict[str, Any]:
-        return {"session": self._session, "written": self.written, "dropped": self.dropped, "errors": self.errors}
+        return {"session": self._session, "attempt": self._attempt, "written": self.written, "dropped": self.dropped,
+                "errors": self.errors}

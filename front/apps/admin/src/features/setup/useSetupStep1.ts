@@ -12,6 +12,7 @@ import {
   SETUP_SESSION_POLL_MS,
   setupSessionKey,
   setupZoneDraftsKey,
+  startCameraCheck,
 } from '@/features/setup/api';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
 import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
@@ -185,6 +186,24 @@ export function useResumeSetupSession(onResumed?: (session: SetupSessionResponse
     pending: mutation.isPending,
     error: submitErrorText(mutation.error),
     rawError: mutation.error,
+  };
+}
+
+/** 카메라 확인 걷기 창의 「걷기 시작」·「확인만 다시」(-687). 응답 세션을 바로 캐시에 넣어 창이 「시작하는 중」으로 바뀐다. */
+export function useStartCameraCheck() {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: ({ setupSessionId, attempt }: { setupSessionId: string; attempt: number }) =>
+      startCameraCheck(api, setupSessionId, attempt),
+    onSuccess: (session) => {
+      queryClient.setQueryData(setupSessionKey(session.setup_session_id), session);
+    },
+  });
+
+  return {
+    start: mutation.mutate,
+    pending: mutation.isPending,
+    error: submitErrorText(mutation.error),
   };
 }
 

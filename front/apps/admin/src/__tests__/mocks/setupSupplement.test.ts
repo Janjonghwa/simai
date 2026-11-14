@@ -81,4 +81,61 @@ describe('세팅 mock autoProgress', () => {
     expect(done.scene_version).toBeTruthy();
     expect(done.supplement?.rebake_blocked_reason).toBe('NO_MEDIA');
   });
+
+  it('카메라 확인 걷기(-687)를 켜면 보정 뒤 맵 단계 전에 멈추고, 걷기 시작·표본 부족·확인만 다시·통과 뒤에야 미리보기로 간다', async () => {
+    let clock = 1_000;
+    const mock = createSetupMock({
+      now: () => clock,
+      autoProgress: true,
+      cameraCheckWalk: true,
+      cameraCheckIncompleteAttempts: 1,
+      cameraHeightsM: { cam_A: 2.4 },
+    });
+    server.resetHandlers(...mock.handlers);
+    const created = (await (
+      await fetch('http://api.test/api/setup-sessions', {
+        method: 'POST',
+        headers: AUTH,
+        body: JSON.stringify({ work_unit_id: 1, camera_heights_m: { cam_A: 2.4 } }),
+      })
+    ).json()) as { setup_session_id: string };
+    const url = `http://api.test/api/setup-sessions/${created.setup_session_id}`;
+    const get = async () =>
+      setupSessionResponseSchema.parse(await (await fetch(url, { headers: AUTH })).json());
+    const start = (attempt: number) =>
+      fetch(`${url}/camera-check/start`, {
+        method: 'POST',
+        headers: AUTH,
+        body: JSON.stringify({ attempt }),
+      });
+
+    clock += 20_000;
+    const waiting = await get();
+    expect(waiting.status).toBe('JOINT_BA_AND_VERIFY');
+    expect(waiting.preview_scene_version).toBeNull();
+    expect(waiting.camera_check_phase).toBe('AWAITING_START');
+    expect(waiting.paused_reason).toBe('CAMERA_CHECK');
+    clock += 60_000;
+    expect((await get()).status).toBe('JOINT_BA_AND_VERIFY'); // 기다리는 동안 맵 단계가 흐르지 않는다
+
+    expect((await start(2)).status).toBe(409); // 다음 번호가 아니다
+    expect((await start(1)).status).toBe(200);
+    clock += 5_000;
+    expect((await get()).camera_check_phase).toBe('WALKING');
+    clock += 10_000;
+    const retry = await get();
+    expect(retry.camera_check_phase).toBe('RETRY_WAIT');
+    expect(retry.camera_check?.problems[0]?.reason).toBe('FEW_SAMPLES');
+    expect(retry.preview_scene_version).toBeNull();
+
+    expect((await start(2)).status).toBe(200);
+    clock += 13_000;
+    const passed = await get();
+    expect(passed.camera_check_phase).toBe('PASSED');
+    expect(passed.camera_check_passed).toBe(true);
+    clock += 5_000;
+    const ready = await get();
+    expect(ready.status).toBe('READY_FOR_ZONES');
+    expect(ready.preview_scene_version).toBeTruthy();
+  });
 });

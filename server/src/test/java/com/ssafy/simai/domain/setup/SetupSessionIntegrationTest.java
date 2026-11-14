@@ -478,7 +478,7 @@ class SetupSessionIntegrationTest {
         JsonNode before = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.85, readySnap))
                 .andExpect(status().isOk()).andReturn());
         assertThat(schemas.violations("messages/job_lease_status", before.toString())).isEmpty();
-        assertThat(before.at("/schema_version").asString()).isEqualTo("2.2.0");
+        assertThat(before.at("/schema_version").asString()).isEqualTo("2.3.0");
         assertThat(before.at("/payload/live_work_active").booleanValue()).isFalse();
         assertThat(before.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
 
@@ -749,6 +749,126 @@ class SetupSessionIntegrationTest {
         mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.40, wrongCams))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+    }
+
+    @Test
+    void 카메라_확인은_걷기_시작을_기다리고_요청이_하트비트로_가며_늦은_이전_시도는_지금_시도를_덮지_않는다() throws Exception {
+        registerWorkers();
+        JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn());
+        String sessionId = created.get("setup_session_id").asString();
+        String jobId = created.get("job_id").asString();
+        String lease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
+                .at("/payload/lease_id").asString();
+        String start = "/api/setup-sessions/{id}/camera-check/start";
+
+        // 워커가 걷기를 기다리기 전에는 시작할 수 없다
+        mvc.perform(post(start, sessionId).with(adminJwt()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_START_NOT_ALLOWED"));
+
+        // 보정 등록(65%) 뒤 맵 전에 걷기 시작을 기다린다(site_setup 1.19.0)
+        ObjectNode awaiting = cameraCheckSnapshot(sessionId, "AWAITING_START", 0, true);
+        JsonNode waitingBeat = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65, awaiting))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", waitingBeat.toString())).isEmpty();
+        assertThat(waitingBeat.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(2_000);
+        assertThat(waitingBeat.at("/payload/camera_check_start").isMissingNode()).isTrue();
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused_reason").value("CAMERA_CHECK"))
+                .andExpect(jsonPath("$.camera_check_phase").value("AWAITING_START"))
+                .andExpect(jsonPath("$.camera_check.user_wait.wait_s").value(412.0))
+                .andExpect(jsonPath("$.camera_check_passed").value(false));
+
+        // 열람 계정은 누를 수 없고, 화면이 본 다음 번호가 다르면(늦은 이전 화면) 409
+        mvc.perform(post(start, sessionId).with(viewerJwt())).andExpect(status().isForbidden());
+        mvc.perform(post(start, sessionId).with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content("{\"attempt\":2}"))
+                .andExpect(status().isConflict());
+        mvc.perform(post(start, sessionId).with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content("{\"attempt\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.camera_check_phase").value("STARTING"))
+                .andExpect(jsonPath("$.paused_reason").isEmpty())
+                .andExpect(jsonPath("$.camera_check_request.attempt").value(1))
+                .andExpect(jsonPath("$.camera_check_request.lease_id").value(lease));
+        // 워커가 열기 전에 두 번 눌러도 같은 요청이다
+        mvc.perform(post(start, sessionId).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.camera_check_request.attempt").value(1));
+
+        // 다음 하트비트 응답이 시도 요청을 싣는다(job_lease_status 2.3.0)
+        JsonNode startBeat = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65, awaiting))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", startBeat.toString())).isEmpty();
+        assertThat(startBeat.at("/payload/camera_check_start/attempt").intValue()).isEqualTo(1);
+
+        // 시도 1 이 표본 부족으로 끝나 확인만 다시를 기다린다
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65,
+                cameraCheckSnapshot(sessionId, "MEASURING", 1, false))).andExpect(status().isOk());
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(jsonPath("$.camera_check_phase").value("WALKING"))
+                .andExpect(jsonPath("$.paused_reason").isEmpty());
+        ObjectNode incomplete1 = cameraCheckSnapshot(sessionId, "INCOMPLETE", 1, true);
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65, incomplete1)).andExpect(status().isOk());
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(jsonPath("$.camera_check_phase").value("RETRY_WAIT"))
+                .andExpect(jsonPath("$.paused_reason").value("CAMERA_CHECK"))
+                .andExpect(jsonPath("$.camera_check_attempts.length()").value(1))
+                .andExpect(jsonPath("$.camera_check_attempts[0].status").value("INCOMPLETE"))
+                .andExpect(jsonPath("$.camera_check_attempts[0].reasons[0]").value("FEW_SAMPLES"));
+        mvc.perform(post(start, sessionId).with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content("{\"attempt\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.camera_check_request.attempt").value(2));
+
+        // 시도 2 진행 중에 늦게 온 시도 1 스냅샷은 지금 시도를 덮지 않고 기록도 겹치지 않는다
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65,
+                cameraCheckSnapshot(sessionId, "MEASURING", 2, false))).andExpect(status().isOk());
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65, incomplete1)).andExpect(status().isOk());
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(jsonPath("$.camera_check.attempt.no").value(2))
+                .andExpect(jsonPath("$.camera_check_phase").value("WALKING"))
+                .andExpect(jsonPath("$.camera_check_attempts.length()").value(1));
+
+        // 통과하면 더는 걷기를 받지 않고 주기도 평소로 돌아간다
+        JsonNode passedBeat = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.65,
+                cameraCheckSnapshot(sessionId, "PASSED", 2, false))).andExpect(status().isOk()).andReturn());
+        assertThat(passedBeat.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(jsonPath("$.camera_check_phase").value("PASSED"))
+                .andExpect(jsonPath("$.paused_reason").isEmpty())
+                .andExpect(jsonPath("$.camera_check_attempts.length()").value(2))
+                .andExpect(jsonPath("$.camera_check_attempts[1].status").value("PASSED"));
+        mvc.perform(post(start, sessionId).with(adminJwt())).andExpect(status().isConflict());
+    }
+
+    /** JOINT_BA_AND_VERIFY(65%) 스냅샷에 카메라 확인 하나(site_setup 1.19.0). attemptNo 0 이면 시도 없음 */
+    private ObjectNode cameraCheckSnapshot(String sessionId, String status, int attemptNo, boolean userWait) {
+        String cal = "cal-classroom-1-init-0452aa00-jba2-68700001";
+        ObjectNode snap = progressSnapshot(sessionId, "JOINT_BA_AND_VERIFY", 65.0);
+        ObjectNode check = snap.putObject("camera_check").put("status", status).put("calibration_version", cal)
+                .put("progress_pct", "PASSED".equals(status) ? 100.0 : 40.0).put("elapsed_s", 12.0);
+        check.putObject("thresholds").put("min_duration_s", 30.0).put("max_duration_s", 120.0).put("min_pair_samples", 30)
+                .put("min_pair_pass_rate", 0.75).put("max_pair_residual_median_px", 8.0).put("min_camera_views", 30)
+                .put("min_loo_samples", 20).put("max_loo_median_px", 12.0).put("min_evaluated_pairs", 3);
+        check.putObject("pairs");
+        check.putObject("cameras").putObject("cam_D").put("observed_views", 12).put("loo_samples", 0).putNull("loo_median_px")
+                .putNull("loo_p95_px").put("verdict", "NOT_OBSERVED").put("person_visible", true);
+        ArrayNode problems = check.putArray("problems");
+        if ("INCOMPLETE".equals(status) || "FAILED".equals(status)) {
+            problems.addObject().put("kind", "CAMERA").put("id", "cam_D").put("reason", "FEW_SAMPLES")
+                    .put("message", "cam_D 에서 사람이 충분히 보이지 않았습니다(12/30)").putArray("camera_ids").add("cam_D");
+        }
+        if (attemptNo > 0) {
+            check.putObject("attempt").put("no", attemptNo).put("id", "lease01-" + attemptNo)
+                    .put("started_at_ms", 1_760_342_600_000L + attemptNo * 200_000L)
+                    .put("expires_at_ms", 1_760_342_750_000L + attemptNo * 200_000L).put("calibration_version", cal);
+        }
+        if (userWait) {
+            check.putObject("user_wait").put("until_ms", 1_760_343_004_000L).put("wait_s", 412.0);
+        }
+        return snap;
     }
 
     /** cam_B 만 inputB·restoredB·verdictB, 나머지는 세션 입력(2.42·2.45·2.51)과 맞는 height_review */

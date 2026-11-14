@@ -20,7 +20,7 @@ import type {
 import { api } from '@/lib/api';
 import { problem } from '@/mocks/problem';
 import { sceneHandlers } from '@/mocks/scenes';
-import { buildCoverageGuidePayload, createSetupMock } from '@/mocks/setup';
+import { buildCameraCheck, buildCoverageGuidePayload, createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock } from '@/mocks/zones';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
@@ -1140,6 +1140,84 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(details.hasAttribute('open')).toBe(false);
     expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeNull();
+  }, 20_000);
+
+  it('카메라 확인은 맵 전에 큰 걷기 창에서 「걷기 시작」으로 시작하고, 표본 부족이면 확인만 다시가 주 단추이며 통과하면 닫힌다(-687)', async () => {
+    const { sessionId } = await startSetupSession();
+    const cams = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
+    const attempt = (no: number) => ({ no, id: `l-${no}`, started_at_ms: 1, expires_at_ms: 2 });
+    setupMock.updateSession(sessionId, {
+      status: 'JOINT_BA_AND_VERIFY',
+      stage: 'JOINT_BA_AND_VERIFY',
+      progress_pct: 65,
+      calibration_version: 'cal-687',
+      camera_check: {
+        ...buildCameraCheck(cams, 'cal-687', 'AWAITING_START'),
+        user_wait: { until_ms: 1, wait_s: 400 },
+      },
+      camera_check_passed: false,
+      camera_check_phase: 'AWAITING_START',
+      paused_reason: 'CAMERA_CHECK',
+    });
+
+    const dialog = await screen.findByRole('dialog', { name: '카메라 확인' }, POLL_WAIT);
+    expect(within(dialog).getByRole('status').textContent).toContain('30초');
+    expect(dialog.textContent).toContain('약 7분 안에 시작하지 않으면');
+    // 보정 멈춤 안내(카메라 연결 관리로)는 띄우지 않는다. 걷는 동안 실수로 닫히지 않는다
+    expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: '카메라 확인' })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '걷기 시작' }));
+    await waitFor(() =>
+      expect(setupMock.sessions.get(sessionId)?.camera_check_request?.attempt).toBe(1),
+    );
+
+    // 시도 1 이 카메라 4 표본 부족으로 끝나면 같은 창에 안내하고 「확인만 다시(30초)」 가 주 단추다
+    const shortage = buildCameraCheck(cams, 'cal-687', 'INCOMPLETE', 70);
+    setupMock.updateSession(sessionId, {
+      camera_check: {
+        ...shortage,
+        attempt: attempt(1),
+        user_wait: { until_ms: 1, wait_s: 300 },
+        problems: [
+          {
+            kind: 'CAMERA',
+            id: 'cam_D',
+            camera_ids: ['cam_D'],
+            reason: 'FEW_SAMPLES',
+            message: 'x',
+          },
+        ],
+      },
+      camera_check_phase: 'RETRY_WAIT',
+      paused_reason: 'CAMERA_CHECK',
+    });
+    const retryDialog = await screen.findByRole('dialog', { name: '카메라 확인' });
+    expect((await within(retryDialog).findByRole('alert', undefined, POLL_WAIT)).textContent).toBe(
+      '카메라 4에서 사람이 충분히 보이지 않았습니다',
+    );
+    expect(within(retryDialog).getByRole('status').textContent).toContain(
+      '표시된 구간을 지나며 30초만 다시 걸어 주세요',
+    );
+    expect(within(retryDialog).getByRole('button', { name: '현재 시도 중단' })).toBeTruthy();
+    fireEvent.click(within(retryDialog).getByRole('button', { name: '확인만 다시(30초)' }));
+    await waitFor(() =>
+      expect(setupMock.sessions.get(sessionId)?.camera_check_request?.attempt).toBe(2),
+    );
+    // 보정은 그대로다(다시 시도·새 세션 없음)
+    expect(setupMock.retryRequests).toHaveLength(0);
+    expect(setupMock.sessions.size).toBe(1);
+
+    setupMock.updateSession(sessionId, {
+      camera_check: { ...buildCameraCheck(cams, 'cal-687', 'PASSED'), attempt: attempt(2) },
+      camera_check_passed: true,
+      camera_check_phase: 'PASSED',
+      paused_reason: null,
+    });
+    await waitFor(
+      () => expect(screen.queryByRole('dialog', { name: '카메라 확인' })).toBeNull(),
+      POLL_WAIT,
+    );
   }, 20_000);
 
   it('끝난 세션을 고친 높이로 새로 시작할 때는 1단계에서 고른 방식으로 바로 만든다(따로 묻는 창 없음)', async () => {

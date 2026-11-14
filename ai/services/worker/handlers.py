@@ -82,6 +82,10 @@ class JobContext:
     # {"decision": "CONFIRMED"|"CORRECTED", "camera_heights_m": {...}}. 처음 받은 값만 둔다(한 번 정한 결정은 바뀌지 않는다)
     _height_decision: dict[str, Any] | None = None
     height_decided: threading.Event = field(default_factory=threading.Event)
+    # EC2 가 하트비트 응답(job_lease_status 2.3.0 camera_check_start)으로 알린 관리자의 카메라 확인 「걷기 시작」·「확인만 다시」
+    # 가장 최근 시도 번호(-687). 늦게 온 작은 번호는 무시한다(지금까지 받은 가장 큰 번호만 둔다). 0 = 아직 요청 없음
+    _camera_check_start: int = 0
+    _camera_check_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def note_height_decision(self, decision: Mapping[str, Any]) -> bool:
         """하트비트 스레드가 부른다. 처음 받은 결정이면 True."""
@@ -98,6 +102,20 @@ class JobContext:
             return None
         return {"decision": self._height_decision["decision"],
                 "camera_heights_m": dict(self._height_decision["camera_heights_m"])}
+
+    def note_camera_check_start(self, attempt: int) -> bool:
+        """하트비트 스레드가 부른다. 지금까지보다 큰 시도 번호면 True(새 요청)."""
+        with self._camera_check_lock:
+            if attempt <= self._camera_check_start:
+                return False
+            self._camera_check_start = int(attempt)
+            return True
+
+    @property
+    def camera_check_start(self) -> int:
+        """관리자가 요청한 가장 최근 카메라 확인 시도 번호(없으면 0)."""
+        with self._camera_check_lock:
+            return self._camera_check_start
 
     def __post_init__(self) -> None:
         self.monotonic = safe_monotonic(self.monotonic)

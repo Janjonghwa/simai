@@ -1,8 +1,8 @@
 import {
   cameraCheckBlockReason,
   cameraCheckFailed,
-  cameraCheckGuide,
   deriveCameraCheckView,
+  deriveCameraWalkView,
 } from '@/features/setup/cameraCheck';
 import {
   deriveSetupActions,
@@ -55,7 +55,6 @@ describe('deriveCameraCheckView', () => {
     expect(view.pairs.find((p) => p.label === '카메라 2–카메라 4')).toBeUndefined();
     expect(view.passed).toBe(true);
     expect(cameraCheckBlockReason(view)).toBeNull();
-    expect(cameraCheckGuide(view)).toBeNull();
   });
 
   it('실패한 쌍과 원인 문장을 보이고 다음을 막는다', () => {
@@ -117,7 +116,29 @@ describe('deriveCameraCheckView', () => {
     );
     expect(view.status).toBe('NONE');
     expect(view.pairs.every((p) => p.outcome === 'pending')).toBe(true);
-    expect(cameraCheckGuide(view)).toContain('보정이 끝나면');
+    expect(view.phase).toBeNull();
+  });
+
+  it('걷기 창 단계를 아는 서버면 확인만 다시 대기(RETRY_WAIT)는 다시 보정 실패가 아니다', () => {
+    const retry = deriveCameraCheckView(
+      session({
+        camera_check: buildCameraCheck(CAMS, 'cal-646', 'INCOMPLETE', 40),
+        camera_check_passed: false,
+        camera_check_phase: 'RETRY_WAIT',
+      }),
+      CAMS,
+    );
+    expect(cameraCheckFailed(retry)).toBe(false);
+    const closed = deriveCameraCheckView(
+      session({
+        status: 'FAILED',
+        camera_check: buildCameraCheck(CAMS, 'cal-646', 'INCOMPLETE', 40),
+        camera_check_passed: false,
+        camera_check_phase: 'FAILED',
+      }),
+      CAMS,
+    );
+    expect(cameraCheckFailed(closed)).toBe(true);
   });
 });
 
@@ -208,5 +229,111 @@ describe('mock: 카메라 확인 진행과 관문', () => {
     });
     expect(parsed.camera_check?.problems[0]?.reason).toBe('NOT_FINISHED');
     expect(parsed.quality_gate?.verdict).toBe('PASSED');
+  });
+});
+
+describe('걷기 창(S15P31A101-687)', () => {
+  const withPhase = (patch: Record<string, unknown>) =>
+    session({ status: 'JOINT_BA_AND_VERIFY', progress_pct: 65, ...patch });
+
+  it('걷기 시작 대기면 창을 열고 다음 시도는 1, 수치는 아직 보이지 않는다', () => {
+    const walk = deriveCameraWalkView(
+      withPhase({
+        camera_check: {
+          ...buildCameraCheck(CAMS, 'cal-646', 'AWAITING_START'),
+          user_wait: { until_ms: 1, wait_s: 412.4 },
+        },
+        camera_check_phase: 'AWAITING_START',
+        paused_reason: 'CAMERA_CHECK',
+      }),
+      CAMS,
+    );
+    expect(walk.open).toBe(true);
+    expect(walk.nextAttempt).toBe(1);
+    expect(walk.waitSeconds).toBe(412);
+    expect(walk.cameras.map((c) => c.label)).toEqual([
+      '카메라 1',
+      '카메라 2',
+      '카메라 3',
+      '카메라 4',
+    ]);
+    expect(walk.cameras.every((c) => c.observed === 0 && c.visible === null)).toBe(true);
+  });
+
+  it('걷는 중이면 카메라별 사람 보임과 관측 수를 보이고, 통과하면 창을 닫는다', () => {
+    const check = buildCameraCheck(CAMS, 'cal-646', 'MEASURING', 50);
+    check.cameras.cam_C!.person_visible = false;
+    check.cameras.cam_A!.person_visible = true;
+    const walking = deriveCameraWalkView(
+      withPhase({
+        camera_check: {
+          ...check,
+          attempt: { no: 1, id: 'l-1', started_at_ms: 1, expires_at_ms: 2 },
+        },
+        camera_check_phase: 'WALKING',
+      }),
+      CAMS,
+    );
+    expect(walking.open).toBe(true);
+    expect(walking.cameras.find((c) => c.id === 'cam_A')!.visible).toBe(true);
+    expect(walking.cameras.find((c) => c.id === 'cam_C')!.visible).toBe(false);
+    expect(walking.cameras[0]!.observed).toBe(75);
+    expect(walking.progressPct).toBe(50);
+    const passed = deriveCameraWalkView(
+      withPhase({
+        camera_check: buildCameraCheck(CAMS, 'cal-646', 'PASSED'),
+        camera_check_phase: 'PASSED',
+      }),
+      CAMS,
+    );
+    expect(passed.open).toBe(false);
+  });
+
+  it('표본 부족은 카메라 번호로, 기하 실패는 위치 불일치로 나눠 안내하고 다음 시도 번호를 올린다', () => {
+    const shortage = buildCameraCheck(CAMS, 'cal-646', 'INCOMPLETE', 70);
+    shortage.problems = [
+      { kind: 'CAMERA', id: 'cam_D', camera_ids: ['cam_D'], reason: 'FEW_SAMPLES', message: 'x' },
+    ];
+    const retry = deriveCameraWalkView(
+      withPhase({
+        camera_check: {
+          ...shortage,
+          attempt: { no: 1, id: 'l-1', started_at_ms: 1, expires_at_ms: 2 },
+          user_wait: { until_ms: 1, wait_s: 200 },
+        },
+        camera_check_phase: 'RETRY_WAIT',
+      }),
+      CAMS,
+    );
+    expect(retry.failure).toEqual({
+      kind: 'shortage',
+      title: '카메라 4에서 사람이 충분히 보이지 않았습니다',
+      action: '표시된 구간을 지나며 30초만 다시 걸어 주세요',
+    });
+    expect(retry.nextAttempt).toBe(2);
+    expect(retry.cameras.find((c) => c.id === 'cam_D')!.flagged).toBe(true);
+
+    const geometry = deriveCameraWalkView(
+      withPhase({
+        camera_check: {
+          ...buildCameraCheck(CAMS, 'cal-646', 'FAILED', 100),
+          attempt: { no: 2, id: 'l-2', started_at_ms: 1, expires_at_ms: 2 },
+          user_wait: { until_ms: 1, wait_s: 100 },
+        },
+        camera_check_phase: 'RETRY_WAIT',
+      }),
+      CAMS,
+    );
+    expect(geometry.failure?.kind).toBe('geometry');
+    expect(geometry.failure?.title).toBe('카메라 2, 카메라 3 위치가 보정과 맞지 않습니다');
+    expect(geometry.nextAttempt).toBe(3);
+  });
+
+  it('걷기 창 단계를 모르는 이전 서버면 창을 열지 않는다', () => {
+    const walk = deriveCameraWalkView(
+      withPhase({ camera_check: buildCameraCheck(CAMS, 'cal-646', 'MEASURING', 20) }),
+      CAMS,
+    );
+    expect(walk.open).toBe(false);
   });
 });

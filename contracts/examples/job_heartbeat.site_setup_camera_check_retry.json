@@ -1,0 +1,192 @@
+{
+  "schema_version": "2.18.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000690",
+  "sent_at": 1760342752000,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": 0.65,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "JOINT_BA_AND_VERIFY",
+      "progress_pct": 65,
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "height_checks": {
+        "cam_A": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.504,
+          "difference_cm": 0.4,
+          "within_tolerance": true
+        },
+        "cam_B": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.496,
+          "difference_cm": -0.4,
+          "within_tolerance": true
+        },
+        "cam_C": {
+          "input_height_m": 1.38,
+          "restored_height_m": 1.381,
+          "difference_cm": 0.1,
+          "within_tolerance": true
+        },
+        "cam_D": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.509,
+          "difference_cm": 0.9,
+          "within_tolerance": true
+        }
+      },
+      "calibration_version": "cal-classroom-1-init-0452aa00-jba2-68700001",
+      "camera_check": {
+        "status": "INCOMPLETE",
+        "calibration_version": "cal-classroom-1-init-0452aa00-jba2-68700001",
+        "progress_pct": 71.4,
+        "elapsed_s": 118.6,
+        "thresholds": {
+          "min_duration_s": 30.0,
+          "max_duration_s": 120.0,
+          "min_pair_samples": 30,
+          "min_pair_pass_rate": 0.75,
+          "max_pair_residual_median_px": 8.0,
+          "min_camera_views": 30,
+          "min_loo_samples": 20,
+          "max_loo_median_px": 12.0,
+          "min_evaluated_pairs": 3
+        },
+        "pairs": {
+          "cam_A-cam_B": {
+            "camera_ids": [
+              "cam_A",
+              "cam_B"
+            ],
+            "required": true,
+            "samples": 64,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "PASS"
+          },
+          "cam_A-cam_C": {
+            "camera_ids": [
+              "cam_A",
+              "cam_C"
+            ],
+            "required": true,
+            "samples": 35,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "PASS"
+          },
+          "cam_A-cam_D": {
+            "camera_ids": [
+              "cam_A",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 12,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_B-cam_C": {
+            "camera_ids": [
+              "cam_B",
+              "cam_C"
+            ],
+            "required": true,
+            "samples": 41,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "PASS"
+          },
+          "cam_B-cam_D": {
+            "camera_ids": [
+              "cam_B",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 9,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_C-cam_D": {
+            "camera_ids": [
+              "cam_C",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 6,
+            "pass_rate": 0.94,
+            "residual_median_px": 3.4,
+            "verdict": "INSUFFICIENT"
+          }
+        },
+        "cameras": {
+          "cam_A": {
+            "observed_views": 141,
+            "loo_samples": 88,
+            "loo_median_px": 6.9,
+            "loo_p95_px": 13.1,
+            "verdict": "PASS",
+            "person_visible": false
+          },
+          "cam_B": {
+            "observed_views": 136,
+            "loo_samples": 90,
+            "loo_median_px": 6.1,
+            "loo_p95_px": 11.8,
+            "verdict": "PASS",
+            "person_visible": false
+          },
+          "cam_C": {
+            "observed_views": 98,
+            "loo_samples": 61,
+            "loo_median_px": 7.2,
+            "loo_p95_px": 14.0,
+            "verdict": "PASS",
+            "person_visible": false
+          },
+          "cam_D": {
+            "observed_views": 14,
+            "loo_samples": 3,
+            "loo_median_px": 8.1,
+            "loo_p95_px": 9.0,
+            "verdict": "NOT_OBSERVED",
+            "person_visible": false
+          }
+        },
+        "problems": [
+          {
+            "kind": "CAMERA",
+            "id": "cam_D",
+            "camera_ids": [
+              "cam_D"
+            ],
+            "reason": "FEW_SAMPLES",
+            "message": "카메라 cam_D 에서 사람이 충분히 보이지 않았습니다(14/30). 표시된 구간을 지나며 30초만 다시 걸어 주세요"
+          }
+        ],
+        "user_wait": {
+          "until_ms": 1760343004000,
+          "wait_s": 252.0
+        },
+        "attempt": {
+          "no": 1,
+          "id": "0192a6f0-1",
+          "started_at_ms": 1760342600000,
+          "expires_at_ms": 1760342750000,
+          "calibration_version": "cal-classroom-1-init-0452aa00-jba2-68700001"
+        }
+      }
+    }
+  },
+  "_comment": "S15P31A101-687: 첫 걷기(시도 1)가 상한 150초 안에 cam_D 표본을 못 채워 INCOMPLETE(표본 부족)로 끝났다. 보정은 그대로 두고 user_wait 를 다시 실어 「확인만 다시」(시도 2)를 기다린다. 맵은 아직 굽지 않았다"
+}

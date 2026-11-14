@@ -8,6 +8,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "calibration"))
 
 import test_camera_check as cc
@@ -102,6 +104,34 @@ def test_tap_writes_only_while_request_exists_and_throttles(tmp_path):
     assert len(ts) == tap.written and 9 <= len(ts) <= 10  # 10 Hz 입력을 5 Hz 로 줄인다
     assert all(b - a >= 200 for a, b in itertools.pairwise(ts))
     assert max(ts) < cc.T0 + 30_000
+
+
+def test_attempts_use_separate_view_folders_so_late_old_lines_do_not_mix(tmp_path):
+    """S15P31A101-687: 「확인만 다시」는 새 시도 ID 로 연다. Tier 0 는 시도 폴더에 적고, 대기열에 남은 이전 시도 줄은 이전 폴더로 간다."""
+    truth = cc._doc()
+    runner = _runner(tmp_path)
+    idle = runner.idle(truth)
+    assert idle["status"] == "WAITING" and not (tmp_path / REQUEST_FILE).exists()  # 걷기 시작 전에는 요청을 쓰지 않는다
+    runner.start(SESSION, truth, expires_at_ms=cc.T0 + 600_000, attempt_id="lease01-1")
+    assert json.loads((tmp_path / REQUEST_FILE).read_text(encoding="utf-8"))["attempt_id"] == "lease01-1"
+
+    now = [cc.T0]
+    tap = CameraCheckTap(tmp_path, lambda: now[0], check_interval_ms=1)
+    frames = cc._walk(truth, seconds=4)
+    tap.offer(*frames[0])
+    runner.start(SESSION, truth, expires_at_ms=cc.T0 + 600_000, attempt_id="lease01-2")
+    now[0] += 5
+    tap.offer(*frames[5])
+    tap._queue.put_nowait(None)  # 대기열 끝 표시: 보조 스레드 대신 그 자리에서 비운다(이전 시도 줄이 먼저 들어 있다)
+    tap.run(threading.Event())
+    old = session_views_path(tmp_path, SESSION, "lease01-1")
+    new = session_views_path(tmp_path, SESSION, "lease01-2")
+    assert old.exists() and len(old.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(new.read_text(encoding="utf-8").splitlines()) == 1
+    summary = runner.poll()
+    assert runner.lines_read == 1 and summary["status"] in ("WAITING", "MEASURING")
+    with pytest.raises(ValueError):
+        runner.start(SESSION, truth, expires_at_ms=cc.T0 + 1, attempt_id="../x")
 
 
 def test_tap_ignores_bad_request(tmp_path):

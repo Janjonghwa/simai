@@ -87,6 +87,12 @@ def test_lease_status_from_contract_examples():
     bad = copy.deepcopy(load_example("job_lease_status.active_height_decision.json"))
     bad["payload"]["height_decision"]["camera_heights_m"]["cam_C"] = -1
     assert LeaseStatus.from_message(bad).height_decision is None  # 선택 값이 틀리면 대여는 두고 결정만 버린다
+    started = LeaseStatus.from_message(load_example("job_lease_status.active_camera_check_start.json"))
+    assert started.camera_check_start == 2 and started.heartbeat_interval_ms == 2000
+    assert LeaseStatus.from_message(load_example("job_lease_status.active.json")).camera_check_start is None
+    bad = copy.deepcopy(load_example("job_lease_status.active_camera_check_start.json"))
+    bad["payload"]["camera_check_start"]["attempt"] = True
+    assert LeaseStatus.from_message(bad).camera_check_start is None  # 선택 값이 틀리면 대여는 두고 요청만 버린다
     assert LeaseStatus.from_message(load_example("job_lease_status.duplicate.json")).status == "DUPLICATE"
     rejected = LeaseStatus.from_message(load_example("job_lease_status.rejected_expired.json"))
     assert (rejected.status, rejected.reason) == ("REJECTED", "LEASE_EXPIRED")

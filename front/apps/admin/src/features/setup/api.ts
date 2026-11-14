@@ -100,6 +100,22 @@ export function retrySetupSession(
   });
 }
 
+/**
+ * 카메라 확인 걷기 창의 「걷기 시작」·「확인만 다시(30초)」(S15P31A101-687). attempt 는 화면이 본 다음 시도 번호다(다르면 409:
+ * 늦게 온 이전 화면의 누름이 새 시도를 더 열지 않는다). 보정은 그대로 두고 걷기만 다시 잰다.
+ */
+export function startCameraCheck(
+  http: Http,
+  setupSessionId: string,
+  attempt: number,
+): Promise<SetupSessionResponse> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/camera-check/start`, {
+    method: 'POST',
+    body: { attempt },
+    schema: setupSessionResponseSchema,
+  });
+}
+
 /** 멈춘 세팅 세션(paused_reason)을 고친 높이로 멈춘 곳부터 이어 간다(서버·워커에 요청한 계약). */
 export function resumeSetupSession(
   http: Http,

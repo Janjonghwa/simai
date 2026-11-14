@@ -210,6 +210,41 @@ def test_incomplete_freezes_summary():
     assert ev.final and ev.summary()["status"] == INCOMPLETE
 
 
+def test_incomplete_names_the_sample_shortage_so_the_screen_can_guide_a_retry():
+    """S15P31A101-687: INCOMPLETE 는 표본 부족 사유만 싣는다. 사람이 없었으면 NO_PERSON, 덜 보인 카메라는 그 카메라 FEW_SAMPLES."""
+    truth = _doc()
+    nobody = CameraCheckEvaluator(truth, CFG, monitor_config=MON)
+    nobody.observe(T0, [])
+    out = nobody.incomplete()
+    assert [p["reason"] for p in out["problems"]] == ["NO_PERSON"]
+    assert schema_errors(out, CAMERA_CHECK_SCHEMA) == []
+
+    ev = CameraCheckEvaluator(truth, CFG, monitor_config=MON)
+    for t, views in _walk(truth, seconds=8, cameras=("cam1", "cam2", "cam3")):
+        ev.observe(t, views)
+    for t, views in _walk(truth, seconds=1, cameras=("cam4",)):
+        ev.observe(t + 8_000, views)
+    out = ev.incomplete()
+    reasons = {(p["reason"], p["id"]) for p in out["problems"]}
+    assert reasons == {("FEW_SAMPLES", "cam4")}
+    assert out["problems"][0]["camera_ids"] == ["cam4"]
+    assert schema_errors(out, CAMERA_CHECK_SCHEMA) == []
+
+
+def test_person_visible_follows_the_latest_view_time():
+    truth = _doc()
+    ev = CameraCheckEvaluator(truth, CFG, monitor_config=MON)
+    frames = _walk(truth, seconds=2)
+    for t, views in frames:
+        ev.observe(t, views)
+    assert all(c["person_visible"] for c in ev.summary()["cameras"].values())
+    later = frames[-1][0] + 2_000
+    ev.observe(later, [dataclasses.replace(v, view=dataclasses.replace(v.view, t=later))
+                       for v in frames[-1][1] if v.camera_id != "cam3"])
+    cams = ev.summary()["cameras"]
+    assert cams["cam3"]["person_visible"] is False and cams["cam1"]["person_visible"] is True
+
+
 def test_views_json_round_trip_keeps_pixels_and_nulls():
     truth = _doc()
     t, views = _walk(truth, seconds=1)[0]

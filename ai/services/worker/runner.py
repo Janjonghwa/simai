@@ -301,6 +301,7 @@ class Worker:
             beat.next_heartbeat = now + beat.interval
             self._note_live_work(lease, ctx, status)
             self._note_height_decision(lease, ctx, status)
+            self._note_camera_check_start(lease, ctx, status)
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
@@ -376,6 +377,7 @@ class Worker:
             beat.next_heartbeat = now + beat.interval
             self._note_live_work(lease, ctx, status)
             self._note_height_decision(lease, ctx, status)
+            self._note_camera_check_start(lease, ctx, status)
             return None
 
     @staticmethod
@@ -384,6 +386,13 @@ class Worker:
         if status.height_decision is not None and ctx.note_height_decision(status.height_decision):
             log.info("작업 %s(%s): 관리자의 카메라 높이 확인 결정을 받았다(%s)", lease.job_id, lease.job_type,
                      status.height_decision["decision"])
+
+    @staticmethod
+    def _note_camera_check_start(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:
+        """EC2 가 관리자의 카메라 확인 시도 요청을 알리면(job_lease_status 2.3.0, -687) 처리기에 넘긴다. 더 큰 번호만 받는다."""
+        if status.camera_check_start is not None and ctx.note_camera_check_start(status.camera_check_start):
+            log.info("작업 %s(%s): 관리자가 카메라 확인 시도 %d 를 요청했다", lease.job_id, lease.job_type,
+                     status.camera_check_start)
 
     @staticmethod
     def _note_live_work(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:

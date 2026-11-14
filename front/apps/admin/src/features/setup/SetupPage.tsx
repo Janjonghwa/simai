@@ -13,7 +13,9 @@ import {
   cameraCheckBlockReason,
   cameraCheckFailed,
   deriveCameraCheckView,
+  deriveCameraWalkView,
 } from '@/features/setup/cameraCheck';
+import { CameraCheckModal } from '@/features/setup/CameraCheckModal';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
 import { heightsChanged } from '@/features/setup/heightCheck';
 import { HeightCheckModal } from '@/features/setup/HeightCheckModal';
@@ -22,6 +24,7 @@ import {
   deriveStep1Coverage,
   deriveWaitingView,
   draftGhostsOf,
+  pausedForHeights,
   resolveHeightCameraIds,
   sessionSceneVersion,
   STEPS,
@@ -65,6 +68,7 @@ import { SupplementModal } from '@/features/setup/SupplementModal';
 import type { SetupMode, SetupSessionResponse, ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useBackgroundCapture } from '@/features/setup/useBackgroundCapture';
+import { useWalkCountdown } from '@/features/setup/useCameraWalk';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
 import { useReuseChoice } from '@/features/setup/useReuseScene';
 import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
@@ -77,6 +81,7 @@ import {
   useRetrySetupSession,
   useSetupSession,
   useSetupZoneDrafts,
+  useStartCameraCheck,
 } from '@/features/setup/useSetupStep1';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { useWorkAction } from '@/features/work/WorkActionContext';
@@ -114,6 +119,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // HEIGHT_CHECK) 1단계와 같은 높이 입력 칸을 크게 띄운다. 고친 값으로 진행하거나 「실측이 맞음」으로 진행하면(POST .../resume) 저절로 닫힌다.
 // 「배경 촬영」 창(BackgroundCaptureModal, S15P31A101-686): 1단계 '다음' 이 먼저 이 창을 띄우고 「시작」을 눌러야 세션을 만든다. 세팅 시작 뒤 새로
 // 찍은 화면만 쓰므로 카메라 앞을 비우게 하고, 카메라별 촬영 상태(사람 보임·영상 없음)를 보이다가 다 찍으면 저절로 닫힌다.
+// 「카메라 확인」 걷기 창(CameraCheckModal, S15P31A101-687): 보정이 끝나면 맵을 굽기 전에 워커가 걷기 시작을 기다린다(서버 camera_check_phase).
+// 「걷기 시작」을 눌러야 30초 걷기 확인이 시작되고(POST .../camera-check/start), 통과하면 저절로 닫히고 맵을 굽는다. 실패하면 보정은
+// 그대로 두고 「확인만 다시(30초)」, 「현재 시도 중단」은 보조다. 창이 열린 동안 아래 칸 영상은 내린다(영상 연결은 한 번에 하나).
 // 구역 단계의 마지막 단추가 세팅 완료(C17, S15P31A101-615)를 먼저 부르고(useCompleteSetup) 성공하면 넘어간다: 구역 목록 적용·이 세션 맵 켜기·
 // 구성 묶음 발행을 한 번에 한다. 실패하면 구역 편집 아래에 안내하고 머문다. 완료하면 오른쪽 칸에는 「세팅 완료」 상태 카드만 남는다.
 // 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
@@ -311,6 +319,13 @@ function SetupWorkPage({
     () => deriveCameraCheckView(currentSession, waiting.cameraIds),
     [currentSession, waiting.cameraIds],
   );
+  // 맵 앞 카메라 확인 걷기 창(S15P31A101-687)
+  const walk = useMemo(
+    () => deriveCameraWalkView(currentSession, waiting.cameraIds),
+    [currentSession, waiting.cameraIds],
+  );
+  const walkSeconds = useWalkCountdown(walk.phase, walk.attemptNo);
+  const startWalk = useStartCameraCheck();
 
   // 이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 이 작업의 세션을 서버에서 다시 찾는다(위 이어받기). 찾기 전에는
   // 1단계에서 기다린다.
@@ -488,7 +503,7 @@ function SetupWorkPage({
         body: { camera_heights_m: cameraHeights, mode },
       });
     // 보정 문제로 멈춘 세션은 처음부터가 아니라 멈춘 곳부터 이어 간다.
-    if (currentSession.paused_reason && currentSession.status !== 'FAILED')
+    if (pausedForHeights(currentSession) && currentSession.status !== 'FAILED')
       resumeSession.resume({
         setupSessionId: sessionId,
         body: { camera_heights_m: cameraHeights },
@@ -567,7 +582,7 @@ function SetupWorkPage({
   const resumesPaused =
     returnForHeightRetry &&
     Boolean(sessionId) &&
-    Boolean(currentSession?.paused_reason) &&
+    pausedForHeights(currentSession) &&
     currentSession?.status !== 'FAILED';
   const beginCapture = capture.begin;
   const beginStep1Submit = useCallback(() => {
@@ -732,12 +747,24 @@ function SetupWorkPage({
     [navigate],
   );
 
-  // 배경 촬영 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686)
-  const cameraMap = capture.open ? (
-    <div aria-hidden className="min-h-0 rounded-xl bg-card" />
-  ) : (
-    <CameraMapPanel coverage={coverage} />
+  // 카메라 확인 걷기 창(-687): 2단계에서 워커가 걷기를 기다리거나 확인 중일 때. 다른 창(배경 촬영·높이 확인)이 먼저다
+  const walkOpen = stage === 1 && walk.open && !capture.open && !heightReview;
+  const startWalkRequest = startWalk.start;
+  const requestWalk = useCallback(
+    (attempt: number) => {
+      if (!sessionId || startWalk.pending) return;
+      startWalkRequest({ setupSessionId: sessionId, attempt });
+    },
+    [sessionId, startWalk.pending, startWalkRequest],
   );
+
+  // 배경 촬영·걷기 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686·-687)
+  const cameraMap =
+    capture.open || walkOpen ? (
+      <div aria-hidden className="min-h-0 rounded-xl bg-card" />
+    ) : (
+      <CameraMapPanel coverage={coverage} />
+    );
 
   const bodyClass = cn('flex flex-col gap-3', embedded ? EMBEDDED_BODY : 'min-h-0 flex-1');
   if (entryPending) return <div className={bodyClass} />;
@@ -809,7 +836,7 @@ function SetupWorkPage({
             heightWarnings={waiting.heightWarnings}
             retrySessionId={returnForHeightRetry ? sessionId : null}
             onRetryWithHeights={requestStep1Submit}
-            retryLabel={currentSession?.paused_reason ? '이어서 만들기' : undefined}
+            retryLabel={pausedForHeights(currentSession) ? '이어서 만들기' : undefined}
             retryPending={restartPending}
             canSubmitHeights={heightValidation.valid}
           />
@@ -830,7 +857,6 @@ function SetupWorkPage({
             showCameraCheck={
               cameraCheck.gated && Boolean(currentSession.calibration_version) && !waiting.failed
             }
-            onRecalibrate={handleRestart}
             pollingError={sessionQuery.error}
             onRetry={handleRetryFailedSession}
             onRetryNewMap={handleRetryNewMap}
@@ -909,6 +935,17 @@ function SetupWorkPage({
           cancelPending={cancelMutation.isPending}
           retryPending={retrySession.pending}
           error={capture.view.phase === 'failed' ? retrySession.error : null}
+        />
+      )}
+      {walkOpen && (
+        <CameraCheckModal
+          view={walk}
+          secondsLeft={walkSeconds}
+          onStart={requestWalk}
+          onStop={stopAttempt}
+          startPending={startWalk.pending}
+          stopPending={cancelMutation.isPending}
+          error={startWalk.error}
         />
       )}
       {heightReview && !capture.open && (

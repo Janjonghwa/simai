@@ -14,6 +14,9 @@
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
 (f) JOINT_BA_AND_VERIFY: (선택 `world_anchor`) 카메라가 움직이지 않았으면 새 보정을 이전 채택 보정의 World 로 옮긴 뒤
     새 `calibration_version` 보정 문서 등록(덮어쓰지 않음). 미리보기·굽기·map_cameras 는 이 문서를 기준으로 정렬한다(S15P31A101-584)
+(f') JOINT_BA_AND_VERIFY(65%): 「카메라 확인」(S15P31A101-646, 맵 앞으로 옮김 S15P31A101-687). 관리자의 「걷기 시작」을 기다렸다가
+    사람 걷기로 새 보정을 확인한다. 통과해야 (g)·(h)(REUSE 는 결과)로 간다. 실패면 「확인만 다시」를 기다리고, 대기 마감까지 통과하지
+    못하거나 확인 채널을 열지 못하면 맵을 굽지 않고 실패한다
 (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록 + 카메라별 대표 프레임 업로드·등록
     (`artifacts.camera_frames`, S15P31A101-479: 서버가 이 스냅샷으로 AI 구역 초안 작업을 만들 때 VLM 크롭 입력으로 싣는다)
     + 미리보기·굽기에 쓰는 카메라별 사람 지운 배경 사진 업로드(`artifacts.bake_images`, S15P31A101-593: 서버가 이 대여의
@@ -40,10 +43,14 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 수집기가 세팅 배경 촬�
 보정 품질 게이트(S15P31A101-646): (e) 뒤 Stage A 쌍별 홀드아웃 절대 상한·최소 홀드아웃 수·카메라 높이 차를 본다
 (`joint_ba_v2.evaluate_quality_gate`). FAILED 면 문제 쌍·카메라를 실은 `quality_gate` 스냅샷을 보내고 `VALIDATION_REJECTED` 로
 끝낸다(보정을 등록하지 않는다). NEEDS_CHECK(홀드아웃 부족) 쌍은 아래 카메라 확인의 필수 쌍이 된다.
-카메라 확인(S15P31A101-646): (f) 보정 등록 뒤 `camera_check` 실행기가 같은 Pod 의 Tier 0 에 관제 view 를 요청하고, 사람이 걷는
-동안 관제와 같은 계산(쌍 에피폴라·잔차 통과율, 한 카메라 제외 재투영, 4대 관측)으로 새 보정을 확인해 스냅샷 `camera_check` 로
-알린다. 미리보기·굽기와 함께 돌고(배경 수집은 이미 끝났다), 결과를 내기 전에 판정(PASSED·FAILED)을 기다린다. 마감까지 못 하면
-INCOMPLETE. 서버는 PASSED 전에는 구역 단계·세팅 완료를 거부한다.
+카메라 확인(S15P31A101-646 → -687): (f) 보정 등록 뒤 맵을 만들기 전에 한다. 처리기는 `camera_check` AWAITING_START + `user_wait`
+스냅샷을 보내고 하트비트 응답의 관리자 요청(job_lease_status 2.3.0 camera_check_start, 시도 번호)을 기다린다. 요청이 오면 실행기가
+같은 Pod 의 Tier 0 에 그 시도의 관제 view 를 요청하고, 사람이 걷는 동안 관제와 같은 계산(쌍 에피폴라·잔차 통과율, 한 카메라 제외
+재투영, 4대 관측)으로 새 보정을 확인한다. 시도가 FAILED(기하)·INCOMPLETE(표본 부족, 시도 상한 `camera_check_attempt_s`)면 보정은
+그대로 두고 `user_wait` 를 다시 실어 「확인만 다시」(번호 + 1)를 기다린다. 늦게 온 같거나 작은 번호는 무시한다. 대기 마감(관리자 대기
+상한과 실행 상한 − 맵 몫 중 짧은 쪽)까지 통과하지 못하면 `CAMERA_CHECK_NOT_PASSED`, 시도를 열지 못하거나 Tier 0 view 가 한 줄도 오지
+않으면 `CAMERA_CHECK_UNAVAILABLE` 로 끝낸다. 둘 다 미리보기·굽기를 한 번도 부르지 않는다. 서버는 PASSED 전에는 구역 단계·세팅 완료를
+거부한다(이제 맵 전에 정해지므로 뒤에서 처음 막히지 않는다).
 
 보조 촬영(입력 `supplement_media`, S15P31A101-605)은 (h) 굽기 주입점이 처리하고 `BakedScene.supplement` 요약을 돌려주면 결과
 `supplement` 로 싣는다. 보조 촬영 때문에 세팅을 실패시키지 않는다(주입점이 FALLBACK·SKIPPED 요약으로 바꾼다).
@@ -439,8 +446,10 @@ class SupplementRebaker(Protocol):
 class CameraChecker(Protocol):
     """세팅 「카메라 확인」 실행기(`services.worker.camera_check.CameraCheckRunner`)."""
 
+    def idle(self, calibration_doc: Mapping[str, Any], *, required_pairs: Sequence[tuple[str, str]] = ()) -> dict[str, Any]: ...
+
     def start(self, setup_session_id: str, calibration_doc: Mapping[str, Any], *, expires_at_ms: int,
-              required_pairs: Sequence[tuple[str, str]] = ()) -> dict[str, Any]: ...
+              required_pairs: Sequence[tuple[str, str]] = (), attempt_id: str | None = None) -> dict[str, Any]: ...
 
     def poll(self) -> dict[str, Any] | None: ...
 
@@ -450,6 +459,9 @@ class CameraChecker(Protocol):
 
 
 CAMERA_CHECK_FINAL = frozenset({"PASSED", "FAILED", "INCOMPLETE"})
+CAMERA_CHECK_AWAITING_START = "AWAITING_START"  # site_setup 1.19.0 camera_check.status(-687)
+CAMERA_CHECK_NOT_PASSED = "CAMERA_CHECK_NOT_PASSED"  # 대기 마감까지 통과하지 못함(맵 굽지 않음)
+CAMERA_CHECK_UNAVAILABLE = "CAMERA_CHECK_UNAVAILABLE"  # 확인 채널(같은 Pod 의 Tier 0 view)을 열지 못함(맵 굽지 않음)
 
 
 class TextureSceneBaker(Protocol):
@@ -620,20 +632,29 @@ class SiteSetupHandler:
         camera_check: CameraChecker | None = None,
         camera_check_poll_s: float = 1.0,
         camera_check_report_s: float = 3.0,
-        camera_check_margin_s: float = 20.0,
+        camera_check_wait_s: float = 600.0,
+        camera_check_attempt_s: float = 150.0,
+        camera_check_reserve_s: float = 420.0,
+        camera_check_reuse_reserve_s: float = 30.0,
+        camera_check_min_s: float = 45.0,
+        camera_check_channel_s: float = 15.0,
         quality_gate: Mapping[str, Any] | None = None,
         height_review_wait_s: float = 180.0,
         height_review_poll_s: float = 1.0,
-        height_review_reserve_s: float = 360.0,
+        height_review_reserve_s: float = 540.0,
         height_review_max_relative_diff: float = HEIGHT_REVIEW_MAX_RELATIVE_DIFF,
     ) -> None:
         """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
         live_notice: True 면 Tier 0 가 떠 있다는 로그만 남기고 굽는다(Tier 0 지연이 잠깐 늘 수 있음).
         background_wait_s: 배경 묶음이 완성되기를 기다리는 최대 초(0 이면 한 번만 본다). sleep(취소 신호, 초)의 기본은 신호 대기.
         world_anchor: Stage A 뒤 보정 문서 → 이전 채택 World 로 옮긴(또는 사유만 기록한) 문서. 없으면 새 World 그대로(-584).
-        camera_check: 보정 등록 뒤 사람 걷기로 새 보정을 확인하는 실행기(-646). 없으면 확인하지 않는다(스냅샷에 싣지 않음).
+        camera_check: 보정 등록 뒤 맵 전에 사람 걷기로 새 보정을 확인하는 실행기(-646·-687). 없으면 확인하지 않는다(스냅샷에 싣지 않음).
         camera_check_report_s: 상태가 그대로면 카메라 확인 스냅샷을 이 간격(초)보다 자주 보내지 않는다(EC2 하트비트 부하).
-        camera_check_margin_s: 결과를 내기 전 확인을 기다릴 때 실행 상한까지 남길 여유(초).
+        camera_check_wait_s: 카메라 확인 단계 전체(관리자 「걷기 시작」·「확인만 다시」 대기와 걷기)의 상한(초). 실행 상한까지
+        camera_check_reserve_s(NEW: 미리보기·굽기 몫) 또는 camera_check_reuse_reserve_s(REUSE: 결과 제출 몫)를 남기도록 줄인다.
+        camera_check_attempt_s: 시도 하나의 상한(초). 넘도록 판정을 못 하면 그 시도는 INCOMPLETE(표본 부족).
+        camera_check_min_s: 단계에 이만큼도 못 쓰면 확인을 열지 않고 실패한다(걷기 30초 + 들어서는 시간).
+        camera_check_channel_s: 시도를 열고 이 시간 안에 Tier 0 view 가 한 줄도 오지 않으면 확인 채널이 없다고 보고 실패한다.
         quality_gate: 보정 품질 게이트 기준 덮어쓰기(joint_ba_v2.DEFAULT_QUALITY_GATE 키).
         height_review_wait_s: 카메라 높이 빠른 확인(-690)에서 관리자 결정을 기다리는 최대 초. 실행 상한까지 height_review_reserve_s
         (뒤 단계 몫)를 남기도록 줄인다. 넘으면 입력 높이 그대로 진행(TIMED_OUT, 품질 게이트 높이 차 상한은 그대로).
@@ -642,6 +663,9 @@ class SiteSetupHandler:
             raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
         if height_review_wait_s < 0 or height_review_poll_s <= 0 or height_review_reserve_s < 0:
             raise ValueError("height_review_wait_s·height_review_reserve_s 는 0 이상, height_review_poll_s 는 양수다")
+        if (camera_check_poll_s <= 0 or camera_check_attempt_s <= 0 or camera_check_channel_s <= 0
+                or min(camera_check_wait_s, camera_check_reserve_s, camera_check_reuse_reserve_s, camera_check_min_s) < 0):
+            raise ValueError("camera_check_poll_s·attempt_s·channel_s 는 양수, wait_s·reserve_s·min_s 는 0 이상이다")
         self._collect_bg = background_collector
         self._init_world = world_initializer
         self._publish_calibration = calibration_publisher or (
@@ -668,7 +692,12 @@ class SiteSetupHandler:
         self._camera_check = camera_check
         self._cc_poll_s = float(camera_check_poll_s)
         self._cc_report_s = float(camera_check_report_s)
-        self._cc_margin_s = float(camera_check_margin_s)
+        self._cc_wait_s = float(camera_check_wait_s)
+        self._cc_attempt_s = float(camera_check_attempt_s)
+        self._cc_reserve_s = float(camera_check_reserve_s)
+        self._cc_reuse_reserve_s = float(camera_check_reuse_reserve_s)
+        self._cc_min_s = float(camera_check_min_s)
+        self._cc_channel_s = float(camera_check_channel_s)
         self._quality_gate_config = dict(quality_gate) if quality_gate is not None else None
         self._hr_wait_s = float(height_review_wait_s)
         self._hr_poll_s = float(height_review_poll_s)
@@ -680,8 +709,7 @@ class SiteSetupHandler:
         self._last_progress_at = float("-inf")
         self._quality_gate: dict[str, Any] | None = None
         self._cc_summary: dict[str, Any] | None = None
-        self._cc_stop = threading.Event()
-        self._cc_thread: threading.Thread | None = None
+        self._cc_sent_at = float("-inf")
 
     @staticmethod
     def _default_preview_builder(
@@ -787,93 +815,154 @@ class SiteSetupHandler:
                 self._emit_progress(ctx, {**base, "progress_pct": pct})
         return report
 
-    # ------------------------------------------------------------------ 카메라 확인(-646)
+    # ------------------------------------------------------------------ 카메라 확인(-646 → 맵 앞·시도 -687)
 
-    def _start_camera_check(self, ctx: JobContext, setup_session_id: str, calibration_doc: Mapping[str, Any],
-                            calibration_version: str) -> None:
-        """보정 등록 뒤 카메라 확인을 연다. 실행기가 없거나 열지 못하면 확인 없이 이어 간다(서버가 완료를 막는다)."""
-        if self._camera_check is None:
+    def _set_camera_check(self, ctx: JobContext, base: Mapping[str, Any], summary: Mapping[str, Any], *,
+                          force: bool) -> None:
+        """카메라 확인 요약을 단계 스냅샷(base, 65%)에 실어 보낸다. 상태가 그대로면 report_s 보다 자주 보내지 않는다."""
+        with self._emit_lock:
+            previous = self._cc_summary or {}
+            if not force and summary.get("status") == previous.get("status") and (
+                    self._monotonic() - self._cc_sent_at < self._cc_report_s):
+                return
+            self._cc_summary = dict(summary)
+            self._cc_sent_at = self._monotonic()
+            self._emit_progress(ctx, base)
+
+    def _user_wait(self, stage_deadline: float) -> dict[str, Any]:
+        left = max(0.0, stage_deadline - self._monotonic())
+        return {"until_ms": int(self._clock_ms() + 1000 * left), "wait_s": round(float(left), 1)}
+
+    @staticmethod
+    def _attempt_id(ctx: JobContext, no: int) -> str:
+        """시도 ID = 대여 앞 8자리 + 번호(계약 attempt.id 패턴, Tier 0 가 이 시도 view 를 적는 폴더 이름)."""
+        prefix = re.sub(r"[^A-Za-z0-9]", "", str(ctx.lease_id))[:8] or "lease"
+        return f"{prefix}-{no}"
+
+    def _run_camera_check(self, ctx: JobContext, base: Mapping[str, Any], setup_session_id: str,
+                          calibration_doc: Mapping[str, Any], calibration_version: str, *, reserve_s: float) -> None:
+        """보정 등록 뒤·맵 전 카메라 확인(-687). 통과하면 돌아오고, 아니면 JobFailed(맵을 굽지 않는다).
+
+        1) AWAITING_START + user_wait 를 보내고 관리자의 「걷기 시작」(ctx.camera_check_start ≥ 1)을 기다린다.
+        2) 시도를 열어(attempt_id 별 view 폴더) poll 한다. PASSED 면 끝. FAILED·INCOMPLETE(시도 상한)면 user_wait 를 다시 싣고
+           「확인만 다시」(지금 번호보다 큰 번호)를 기다린다. 늦게 온 같거나 작은 번호는 무시한다.
+        3) 단계 마감(min(대기 상한, 실행 상한 − reserve_s))까지 통과하지 못하면 CAMERA_CHECK_NOT_PASSED. 시도를 열지 못하거나 Tier 0 view
+           가 channel_s 동안 한 줄도 오지 않으면 CAMERA_CHECK_UNAVAILABLE."""
+        checker = self._camera_check
+        if checker is None:
             return
         doc = copy.deepcopy(dict(calibration_doc))
         doc["calibration_version"] = calibration_version
-        remaining = ctx.remaining_s()
-        expires_at = int(self._clock_ms()) + int(1000 * (remaining if remaining is not None else 900.0))
         required = [tuple(p["camera_ids"]) for p in (self._quality_gate or {}).get("pairs", {}).values()
                     if p.get("verdict") == "NEEDS_CHECK" and len(p.get("camera_ids", ())) == 2]
+        remaining = ctx.remaining_s()
+        budget = self._cc_wait_s if remaining is None else min(self._cc_wait_s, remaining - reserve_s)
+        if budget < self._cc_min_s:
+            raise JobFailed(CAMERA_CHECK_NOT_PASSED,
+                            f"카메라 확인에 쓸 시간이 남지 않아 맵을 만들지 않았습니다(남은 {remaining or 0:.0f}초, "
+                            f"맵 몫 {reserve_s:.0f}초). 세팅을 다시 시작하세요", retryable=False)
         try:
-            summary = self._camera_check.start(setup_session_id, doc, expires_at_ms=expires_at,
-                                               required_pairs=required)  # type: ignore[arg-type]
-        except Exception as exc:  # noqa: BLE001 - 확인을 못 열어도 세팅 산출물은 낸다(완료는 서버가 막는다)
-            log.warning("작업 %s: 카메라 확인을 열지 못했다(%s: %s)", ctx.job_id, type(exc).__name__, exc)
-            return
-        with self._emit_lock:
-            self._cc_summary = summary
-        self._cc_stop.clear()
-        self._cc_thread = threading.Thread(target=self._camera_check_loop, args=(ctx,), name="site-setup-camera-check",
-                                           daemon=True)
-        self._cc_thread.start()
-
-    def _camera_check_loop(self, ctx: JobContext) -> None:
-        """보조 스레드: 새 view 를 평가하고 요약이 바뀌면 마지막 스냅샷에 실어 다시 보낸다(단계·진행률은 그대로)."""
-        assert self._camera_check is not None
-        last_sent = self._monotonic()
-        while not self._cc_stop.wait(self._cc_poll_s):
-            if ctx.cancelled.is_set():
-                return
+            idle = dict(checker.idle(doc, required_pairs=required))  # type: ignore[arg-type]
+        except Exception as exc:  # 확인을 열 수 없으면 맵을 굽지 않는다
+            raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
+                            f"카메라 확인을 준비하지 못했습니다({type(exc).__name__}: {exc})"[:480], retryable=False) from exc
+        stage_deadline = self._monotonic() + budget
+        log.info("작업 %s: 카메라 확인 단계(보정 %s): 관리자의 걷기 시작을 최대 %.0fs 기다린다(맵 몫 %.0fs 남김)",
+                 ctx.job_id, calibration_version, budget, reserve_s)
+        self._set_camera_check(ctx, base, {**idle, "status": CAMERA_CHECK_AWAITING_START,
+                                           "user_wait": self._user_wait(stage_deadline)}, force=True)
+        attempt_no = 0
+        attempt: dict[str, Any] | None = None
+        attempt_started = attempt_deadline = 0.0
+        last: dict[str, Any] = idle
+        waiting_user = True
+        while True:
+            self._check_cancelled(ctx)
+            now = self._monotonic()
+            if waiting_user:
+                requested = ctx.camera_check_start
+                if requested > attempt_no and stage_deadline - now > 0:
+                    attempt_no = requested
+                    attempt_s = min(self._cc_attempt_s, stage_deadline - now)
+                    started_ms = int(self._clock_ms())
+                    attempt = {"no": attempt_no, "id": self._attempt_id(ctx, attempt_no), "started_at_ms": started_ms,
+                               "expires_at_ms": started_ms + int(1000 * attempt_s),
+                               "calibration_version": calibration_version}
+                    try:
+                        first = checker.start(setup_session_id, doc, expires_at_ms=attempt["expires_at_ms"],
+                                              required_pairs=required, attempt_id=attempt["id"])  # type: ignore[arg-type]
+                    except Exception as exc:  # 확인 채널을 열지 못하면 맵을 굽지 않는다
+                        raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
+                                        f"카메라 확인을 열지 못했습니다({type(exc).__name__}: {exc})"[:480],
+                                        retryable=False) from exc
+                    log.info("작업 %s: 카메라 확인 시도 %d 시작(%s, 상한 %.0fs)", ctx.job_id, attempt_no, attempt["id"],
+                             attempt_s)
+                    attempt_started, attempt_deadline = now, now + attempt_s
+                    waiting_user = False
+                    last = {k: v for k, v in first.items() if k != "user_wait"}
+                    last["attempt"] = attempt
+                    self._set_camera_check(ctx, base, last, force=True)
+                    continue
+                if now >= stage_deadline:
+                    break
+                self._sleep(ctx.cancelled, min(self._cc_poll_s, stage_deadline - now))
+                continue
             try:
-                summary = self._camera_check.poll()
+                polled = checker.poll()
             except Exception:
                 log.exception("작업 %s: 카메라 확인 평가 실패(다음 주기에 다시 본다)", ctx.job_id)
-                continue
-            if summary is None:
-                continue
-            with self._emit_lock:
-                previous = self._cc_summary or {}
-                if summary == previous:
-                    continue
-                if (summary.get("status") == previous.get("status")
-                        and self._monotonic() - last_sent < self._cc_report_s):
-                    continue  # 진행률만 바뀌었다: 다음 보고 때 싣는다
-                self._cc_summary = summary
-                last_sent = self._monotonic()
-                base = self._last_payload
-                if base is not None:
-                    try:
-                        self._emit_progress(ctx, base)
-                    except Exception:
-                        log.warning("작업 %s: 카메라 확인 스냅샷을 보내지 못했다", ctx.job_id, exc_info=True)
-            if summary.get("status") in CAMERA_CHECK_FINAL:
+                polled = None
+            if polled is not None:
+                last = {k: v for k, v in polled.items() if k != "user_wait"}
+                last["attempt"] = attempt
+            status = last.get("status")
+            if status == "PASSED":
+                self._set_camera_check(ctx, base, last, force=True)
+                log.info("작업 %s: 카메라 확인 시도 %d 통과. 맵 단계로 간다", ctx.job_id, attempt_no)
                 return
+            lines = getattr(checker, "lines_read", None)
+            if isinstance(lines, int) and lines == 0 and now - attempt_started >= self._cc_channel_s:
+                checker.stop()
+                raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
+                                f"카메라 확인 입력(Tier 0 관제 view)이 {self._cc_channel_s:.0f}초 동안 오지 않았습니다. "
+                                "관제 연결을 확인한 뒤 세팅을 다시 시작하세요", retryable=False)
+            if status not in CAMERA_CHECK_FINAL and now >= attempt_deadline:
+                closed = checker.incomplete()
+                if closed is not None:
+                    last = {k: v for k, v in closed.items() if k != "user_wait"}
+                    last["attempt"] = attempt
+                    status = last.get("status")
+            if status in CAMERA_CHECK_FINAL:
+                log.warning("작업 %s: 카메라 확인 시도 %d %s: %s", ctx.job_id, attempt_no, status,
+                            [p.get("reason") for p in last.get("problems", [])])
+                waiting_user = True
+                if stage_deadline - self._monotonic() < self._cc_min_s:
+                    break  # 다시 걸을 시간이 없다. 마감 처리
+                last = {**last, "user_wait": self._user_wait(stage_deadline)}
+                self._set_camera_check(ctx, base, last, force=True)
+                continue
+            self._set_camera_check(ctx, base, last, force=False)
+            self._sleep(ctx.cancelled, max(0.01, min(self._cc_poll_s, attempt_deadline - now)))
+        self._close_camera_check(ctx, base, last, attempt, budget)
 
-    def _finish_camera_check(self, ctx: JobContext) -> None:
-        """결과를 내기 전에 카메라 확인 판정을 기다린다. 실행 상한 여유까지 못 하면 INCOMPLETE 로 닫는다."""
-        if self._camera_check is None or self._cc_summary is None:
-            return
-        while (self._cc_summary or {}).get("status") not in CAMERA_CHECK_FINAL:
-            self._check_cancelled(ctx)
-            remaining = ctx.remaining_s()
-            thread_alive = self._cc_thread is not None and self._cc_thread.is_alive()
-            if (remaining is not None and remaining <= self._cc_margin_s) or not thread_alive:
-                break
-            self._sleep(ctx.cancelled, min(self._cc_poll_s, max(0.05, (remaining or 1.0) - self._cc_margin_s)))
-        self._stop_camera_check_thread()
-        if (self._cc_summary or {}).get("status") not in CAMERA_CHECK_FINAL:
-            try:
-                summary = self._camera_check.incomplete()
-            except Exception:
-                log.exception("작업 %s: 카메라 확인 마감 처리 실패", ctx.job_id)
-                summary = None
-            if summary is not None:
-                with self._emit_lock:
-                    self._cc_summary = summary
-            log.warning("작업 %s: 카메라 확인을 마감 전에 끝내지 못했다(INCOMPLETE)", ctx.job_id)
-
-    def _stop_camera_check_thread(self) -> None:
-        self._cc_stop.set()
-        thread = self._cc_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
-        self._cc_thread = None
+    def _close_camera_check(self, ctx: JobContext, base: Mapping[str, Any], last: Mapping[str, Any],
+                            attempt: Mapping[str, Any] | None, budget: float) -> NoReturn:
+        """대기 마감: 더는 다시 확인을 받지 않는다. user_wait 를 뺀 마지막 요약을 남기고 맵 없이 실패로 끝낸다."""
+        if self._camera_check is not None:
+            self._camera_check.stop()
+        final = {k: v for k, v in last.items() if k != "user_wait"}
+        if final.get("status") not in ("FAILED", "INCOMPLETE"):
+            # 걷기 시작을 받지 못했다(AWAITING_START 그대로). 시도가 없으니 표본 부족이 아니라 시작 안 함이다
+            final["status"] = "INCOMPLETE"
+            final["problems"] = [{"kind": "CHECK", "id": "camera_check", "camera_ids": [], "reason": "NOT_STARTED",
+                                  "message": "걷기 시작을 받지 못했습니다. 세팅을 다시 시작하세요"}]
+        self._set_camera_check(ctx, base, final, force=True)
+        reasons = "; ".join(str(p.get("message")) for p in final.get("problems", []))
+        no = int(attempt["no"]) if attempt is not None else 0
+        log.warning("작업 %s: 카메라 확인을 대기 마감(%.0fs)까지 통과하지 못해 맵을 만들지 않는다(시도 %d)", ctx.job_id, budget, no)
+        what = "「걷기 시작」을 받지 못해" if attempt is None else f"{no}번 걸었지만 통과하지 못해"
+        raise JobFailed(CAMERA_CHECK_NOT_PASSED, f"카메라 확인을 {what} 맵을 만들지 않았습니다: {reasons}"[:480],
+                        retryable=False)
 
     def _wait_for_backgrounds(
         self, ctx: JobContext, setup_session_id: str, site_id: str, camera_ids: tuple[str, ...],
@@ -1173,7 +1262,6 @@ class SiteSetupHandler:
                 **zhc_fields,
             },
         )
-        self._finish_camera_check(ctx)
         result: dict[str, Any] = self._with_checks({
             **joint_ba_snapshot,
             "status": "COMPLETED",
@@ -1193,10 +1281,10 @@ class SiteSetupHandler:
         self._last_progress_at = float("-inf")
         self._quality_gate = None
         self._cc_summary = None
+        self._cc_sent_at = float("-inf")
         try:
             return self._run(ctx)
         finally:
-            self._stop_camera_check_thread()
             if self._camera_check is not None:
                 try:
                     self._camera_check.stop()
@@ -1411,8 +1499,10 @@ class SiteSetupHandler:
         if artifacts:
             joint_ba_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, joint_ba_snapshot)
-        # 사람 걷기 카메라 확인(-646). 배경 수집은 끝났으므로 미리보기·굽기와 함께 돈다
-        self._start_camera_check(ctx, setup_session_id, calibration_doc, calibration_version)
+        # 사람 걷기 카메라 확인(-646 → -687): 맵(미리보기·굽기) 전에 끝낸다. 통과하지 못하면 여기서 실패하고 맵을 한 번도 굽지 않는다.
+        # 관리자의 「걷기 시작」·「확인만 다시」를 기다리는 동안 NEW 는 미리보기·굽기 몫, REUSE 는 결과 제출 몫을 실행 상한에 남긴다
+        self._run_camera_check(ctx, joint_ba_snapshot, setup_session_id, calibration_doc, calibration_version,
+                               reserve_s=self._cc_reuse_reserve_s if reuse_scene else self._cc_reserve_s)
 
         if reuse_scene:
             # 같은 World 로 옮겨졌다: 미리보기·AI 구역 초안·굽기를 건너뛰고 새 보정만으로 끝낸다(현재 관제 맵 유지, -614)
@@ -1549,7 +1639,6 @@ class SiteSetupHandler:
             max(0.0, self._perf() - t0), 4
         )
         self._emit_progress(ctx, {**baking_snapshot, "progress_pct": 95})
-        self._finish_camera_check(ctx)
         total_seconds = round(max(0.0, self._perf() - t_start), 4)
 
         result: dict[str, Any] = {

@@ -52,7 +52,8 @@ from simai_ai.providers.base import CalibrationProvider
 from simai_ai.providers.contract import is_finite_number
 from simai_ai.tracking.cross_view import CrossViewAssociator, LocalView, RejectReason
 
-# 계약 site_setup#/$defs/camera_check 의 상태
+# 계약 site_setup#/$defs/camera_check 의 상태. AWAITING_START 는 워커 처리기가 시도 전에 싣는다(평가기는 시도 하나만 본다)
+AWAITING_START = "AWAITING_START"
 WAITING = "WAITING"
 MEASURING = "MEASURING"
 PASSED = "PASSED"
@@ -69,6 +70,13 @@ NOT_OBSERVED = "NOT_OBSERVED"
 
 # 기하 근거가 아닌 탈락(공통 관절 부족·시야 밖)은 통과율에 넣지 않는다
 _NON_GEOMETRIC = frozenset({RejectReason.FEW_COMMON_JOINTS, RejectReason.NO_FOV_OVERLAP})
+
+# 표본 부족(사람이 덜 걸었다) 사유. 기하 실패(PASS_RATE_LOW·RESIDUAL_HIGH·REPROJECTION_HIGH·NO_PASSING_PAIR)와 화면 안내가 다르다
+# (S15P31A101-687: "카메라 4에서 사람이 충분히 보이지 않았습니다 / 표시된 구간을 지나며 30초만 다시 걸어 주세요")
+SAMPLE_SHORTAGE_REASONS = frozenset({"FEW_SAMPLES", "NO_PERSON", "NOT_FINISHED", "NOT_OBSERVED", "NOT_CONFIRMED", "FEW_PAIRS"})
+PERSON_VISIBLE_WINDOW_MS = 1_500
+"""걷기 창의 카메라별 「사람 보임」: 마지막 view 시각 기준 이 시간 안에 그 카메라에 사람이 있었다(Tier 0 가 최대 5 Hz 로 넘기므로
+약 7표본, 걸음 중 한두 프레임 검출이 빠져도 깜빡이지 않는다). 표시용이다"""
 
 
 @dataclass(frozen=True)
@@ -178,6 +186,7 @@ class CameraCheckEvaluator:
                 self._pairs[pair_key(a, b)] = _PairStats((a, b), (a, b) not in skipped)
         self._required_extra = {pair_key(a, b) for a, b in required_pairs if a in self._cameras and b in self._cameras}
         self._views: dict[str, int] = {cid: 0 for cid in ids}
+        self._seen_t: dict[str, int] = {}
         self._loo: dict[str, list[float]] = {cid: [] for cid in ids}
         self._loo_ambiguous: dict[str, int] = {cid: 0 for cid in ids}
         self._first_t: int | None = None
@@ -219,6 +228,7 @@ class CameraCheckEvaluator:
             per_camera.setdefault(v.camera_id, []).append(v)
         for cid in per_camera:
             self._views[cid] += 1
+            self._seen_t[cid] = t
         evidence = {}
         for p in assoc.pairs:
             evidence[(p.a, p.b)] = p
@@ -300,12 +310,15 @@ class CameraCheckEvaluator:
             verdict = INSUFFICIENT
         if closing and verdict == NOT_OBSERVED:
             verdict = FAIL
+        seen = self._seen_t.get(cid)
         return {
             "observed_views": self._views[cid],
             "loo_samples": len(values),
             "loo_median_px": None if median is None else round(median, 3),
             "loo_p95_px": None if p95 is None else round(p95, 3),
             "verdict": verdict,
+            "person_visible": bool(seen is not None and self._last_t is not None
+                                   and self._last_t - seen <= PERSON_VISIBLE_WINDOW_MS),
         }
 
     def _ready_to_close(self) -> bool:
@@ -354,17 +367,46 @@ class CameraCheckEvaluator:
         return out
 
     def incomplete(self) -> dict[str, Any]:
-        """판정 전에 시간이 다했다(작업 마감). 지금까지의 값으로 INCOMPLETE 를 고정한다."""
+        """판정 전에 시간이 다했다(시도 상한·작업 마감). 지금까지의 값으로 INCOMPLETE 를 고정한다.
+
+        문제는 표본 부족 사유만 싣는다(S15P31A101-687): 사람이 하나도 안 보였으면 NO_PERSON, 관측이 모자란 카메라마다 FEW_SAMPLES,
+        카메라는 채웠는데 필수 쌍의 동시 관측이 모자라면 그 쌍 FEW_SAMPLES, 그래도 없으면(걸은 시간 부족) NOT_FINISHED."""
         if self._final is not None:
             return self.summary()
         out = self.summary()
         if out["status"] in FINAL_STATUSES:
             return out
         out["status"] = INCOMPLETE
-        out["problems"] = [{"kind": "CHECK", "id": "camera_check", "reason": "NOT_FINISHED",
-                            "message": "카메라 확인을 마치지 못했습니다. 한 사람이 모든 카메라에 보이도록 걸어야 합니다"}]
+        out["problems"] = self._shortage_problems(out)
         self._final = json.loads(json.dumps(out))
         return out
+
+    def _shortage_problems(self, out: Mapping[str, Any]) -> list[dict[str, Any]]:
+        cfg = self.config
+        retry = "표시된 구간을 지나며 30초만 다시 걸어 주세요"
+        if self._first_t is None:
+            return [{"kind": "CHECK", "id": "camera_check", "camera_ids": [], "reason": "NO_PERSON",
+                     "message": "어느 카메라에서도 사람이 보이지 않았습니다. 한 사람이 카메라 4대에 모두 보이도록 "
+                                "30초만 다시 걸어 주세요"}]
+        problems: list[dict[str, Any]] = []
+        for cid, cam in out["cameras"].items():
+            if cam["observed_views"] < cfg.min_camera_views:
+                problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "FEW_SAMPLES",
+                                 "message": f"{cid} 에서 사람이 충분히 보이지 않았습니다"
+                                            f"({cam['observed_views']}/{cfg.min_camera_views}). {retry}"})
+        if not problems:
+            for key, pair in out["pairs"].items():
+                if pair["required"] and pair["samples"] < cfg.min_pair_samples:
+                    a, b = pair["camera_ids"]
+                    problems.append({"kind": "PAIR", "id": key, "camera_ids": [a, b], "reason": "FEW_SAMPLES",
+                                     "message": f"{a}–{b}: 두 카메라에 한 사람이 함께 보인 시간이 모자랍니다"
+                                                f"({pair['samples']}/{cfg.min_pair_samples}). 두 카메라가 함께 보는 곳을 지나며 "
+                                                "30초만 다시 걸어 주세요"})
+        if not problems:
+            problems.append({"kind": "CHECK", "id": "camera_check", "camera_ids": [], "reason": "NOT_FINISHED",
+                             "message": f"사람이 보인 시간이 {self._span_ms() / 1000:.0f}초로 모자랍니다"
+                                        f"(최소 {cfg.min_duration_ms / 1000:.0f}초). 30초 동안 계속 걸어 주세요"})
+        return problems[:64]
 
     def baseline_record(self) -> BaselineRecord:
         """통과한 카메라의 한 카메라 제외 재투영 중앙값(관제 감시와 같은 통계). 표본이 모자란 카메라는 넣지 않는다(모르면 비움)."""
