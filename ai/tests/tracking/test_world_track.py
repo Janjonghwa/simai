@@ -329,8 +329,9 @@ def test_uncertain_cluster_between_two_tracks_is_not_forced(rig):
         assert IdentityFlag.CROSS_VIEW_UNCERTAIN in tr.identity_flags
 
 
-def test_uncertain_cluster_with_single_candidate_is_attached_and_flagged(rig):
-    m = _manager()
+@pytest.mark.parametrize("per_reason", [True, False])
+def test_uncertain_cluster_with_single_candidate_is_attached_and_flagged(rig, per_reason):
+    m = _manager(uncertain_hold_per_reason=per_reason)
     frames = _walk(m, rig, 5)
     wid = frames[-1].tracks[0].world_id
     t = T + 5 * DT
@@ -338,10 +339,15 @@ def test_uncertain_cluster_with_single_candidate_is_attached_and_flagged(rig):
     tr = f.track(wid)
     assert tr.updated
     assert tr.identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN
-    # 사유는 uncertain_hold_ms 동안 유지된다
     later = _walk(m, rig, 11, start=6)
-    assert later[9].tracks[0].identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN  # 1 s 째(포함)
-    assert later[10].tracks[0].identity_confidence is IdentityConfidence.HIGH  # 1 s 가 지나면 풀린다
+    if per_reason:
+        # -698 ID-5: Cross-view 불확실은 관측 순간 사유라 uncertain_hold_transient_ms(300 ms) 동안만 유지된다
+        assert later[2].tracks[0].identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN  # 300 ms 째(포함)
+        assert later[3].tracks[0].identity_confidence is IdentityConfidence.HIGH
+    else:
+        # 이전 동작: 모든 사유가 uncertain_hold_ms(1 s) 동안 유지된다
+        assert later[9].tracks[0].identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN  # 1 s 째(포함)
+        assert later[10].tracks[0].identity_confidence is IdentityConfidence.HIGH  # 1 s 가 지나면 풀린다
 
 
 def test_uncertain_cluster_far_from_tracks_becomes_new_uncertain_id(rig):

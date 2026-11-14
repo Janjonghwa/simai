@@ -457,7 +457,30 @@ class WorldTrackConfig:
     """-657 병합 금지 쌍 유지 시간: 같은 시각 같은 카메라의 별도 검출(또는 도달 불가 관측)을 마지막으로 본 뒤 이 시간 동안만
     병합 금지로 본다. 함께 보이는 동안은 매 시각 갱신된다. 분할로 생긴 쌍은 시간과 무관하게 남는다(진동 방지)"""
     uncertain_hold_ms: int = 1000
-    """IDENTITY_UNCERTAIN 을 마지막 사유 뒤 이 시간 동안 유지한다 (깜박임 방지, 보수적)"""
+    """IDENTITY_UNCERTAIN 을 마지막 사유 뒤 이 시간 동안 유지한다 (깜박임 방지, 보수적). uncertain_hold_per_reason 이면
+    상태 사유(분할·재연결·중복 후보·복원 후보)에만 쓰고, 관측 순간 사유는 uncertain_hold_transient_ms 를 쓴다"""
+    uncertain_hold_transient_ms: int = 300
+    """S15P31A101-698 ID-5: 매 시각 다시 판정되는 관측 순간 사유(TWO_VIEW_COMPETITOR_JOINT, AMBIGUOUS_TRACK_MATCH,
+    CROSS_VIEW_UNCERTAIN)의 유지 시간(3 tick). 근거가 이어지면 매 시각 다시 붙으므로 불확실이 끊기지 않는다"""
+    uncertain_hold_per_reason: bool = True
+    """S15P31A101-698 ID-5: 사유별 유지 시간 사용. False 면 모든 사유에 uncertain_hold_ms(이전 동작, 재생 비교용)"""
+    uncertain_hold_near_m: float = 1.0
+    """S15P31A101-698 ID-5 보완: 관측 순간 사유가 붙을 때 다른 Track(LOST 제외)이 이 거리(m, XY) 안에 있으면 그 사유도
+    uncertain_hold_ms 동안 유지한다. 로비 맞바꿈 구간 표시를 76 → 87 % 로 올리고 로비 불확실 시간은 거의 그대로(28.9 → 29.0 %)다.
+    대가로 모여 서서 대화하는 장면의 불확실 시간이 늘어난다(Panoptic 41.8 → 51.2 %). 0 이면 끈다"""
+    uncertain_jump_margin_m: float = 0.5
+    """S15P31A101-698 ID-5 보완 A: 측정 위치가 직전 측정에서 max_speed_mps × 경과 시간 + 이 값(m)보다 멀리 뛰면 다른 사람
+    관측을 넘겨받았을 수 있다고 보고, 그 Track 과 uncertain_jump_neighbor_m 안의 Track 에 AMBIGUOUS_TRACK_MATCH 를 붙여
+    uncertain_hold_ms 동안 유지한다. 0 이면 끈다"""
+    uncertain_jump_neighbor_m: float = 1.0
+    """S15P31A101-698 ID-5 보완 A: 위치 급변 Track 의 상대로 볼 거리(m, XY)"""
+    uncertain_hold_hidden_m: float = 1.0
+    """S15P31A101-698 ID-5 보완 B: 가려진(그 시각 갱신 없음) Track 이 이 거리(m, XY) 안에 다른 Track(LOST 제외)을 두고 있으면
+    이미 붙어 있는 관측 순간 사유를 끄지 않는다(새 사유는 만들지 않는다). 0 이면 끈다"""
+    two_view_identity_torso_only: bool = True
+    """S15P31A101-698 ID-6: 2대 클러스터도 몸통 관절(양 엉덩이·양 어깨)이 2대 관측 경쟁 후보일 때만 신원을
+    IDENTITY_UNCERTAIN 으로 올린다. 끝 관절(손목·발목·얼굴)의 경쟁은 관절 게이트가 그 관절만 UNCERTAIN 으로 둔다.
+    False 면 2대 클러스터의 어느 관절 경쟁이든 신원 불확실(이전 동작, 재생 비교용)"""
     max_speed_mps: float = 2.0
     max_extrapolation_ms: int = 500
     accel_sigma_xy_mps2: float = 2.0
@@ -537,6 +560,8 @@ class WorldTrackConfig:
             "reid_split_respect_distinct",
             "reid_query_visibility",
             "shadow_clears_ambiguity",
+            "uncertain_hold_per_reason",
+            "two_view_identity_torso_only",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} 는 bool 이어야 한다")
@@ -574,6 +599,7 @@ class WorldTrackConfig:
             "key_ttl_ms",
             "split_suppression_owner_ttl_ms",
             "uncertain_hold_ms",
+            "uncertain_hold_transient_ms",
             "max_extrapolation_ms",
             "restore_max_age_ms",
             "temporal_time_weight",
@@ -589,6 +615,9 @@ class WorldTrackConfig:
             raise ValueError("reconnect_min_cameras 는 2 이상이어야 한다 (로컬 트랙 하나는 독립 근거가 아니다)")
         if self.reconnect_crowd_radius_m < 0:
             raise ValueError("reconnect_crowd_radius_m 은 0 이상이어야 한다")
+        for name in ("uncertain_hold_near_m", "uncertain_jump_margin_m", "uncertain_jump_neighbor_m", "uncertain_hold_hidden_m"):
+            if not getattr(self, name) >= 0:
+                raise ValueError(f"{name} 은 0 이상이어야 한다")
         for name in (
             "gate_base_m",
             "gate_max_m",
@@ -920,6 +949,14 @@ class _Track:
     비용 보너스·일반 주인 판단은 `key_ttl_ms`, 분할 나머지 판단은 `split_suppression_owner_ttl_ms` 창을 쓴다"""
     flags: dict[IdentityFlag, int] = field(default_factory=dict)
     """IDENTITY_UNCERTAIN 사유 → 마지막으로 붙은 시각"""
+    long_hold_flags: dict[IdentityFlag, int] = field(default_factory=dict)
+    """-698 ID-5 보완: 맞바꿈 위험(가까운 사람·swap 의심·위치 급변) 중에 붙은 관측 순간 사유 → 그 시각.
+    flags 의 같은 시각이면 uncertain_hold_ms 로 유지"""
+    jump_t: int = -1
+    """-698 ID-5 보완 A: 직전 측정에서 갈 수 없는 거리로 뛴 측정을 받은 시각"""
+    hidden_hold_t: int = -1
+    """-698 ID-5 보완 B: 가려진 채 가까이 다른 사람이 있던 마지막 시각. 그 뒤 uncertain_hold_transient_ms 까지 관측 순간 사유를
+    끄지 않는다"""
     reacquired_until: int = -1
     """연결 이력 없이 게이트만으로 다시 잡은 뒤 MEDIUM 으로 두는 시각"""
     origin_of: dict[TrackKey, tuple[str, int]] = field(default_factory=dict)
@@ -1526,7 +1563,7 @@ class WorldTrackManager:
             for k in c.cluster.keys:
                 self._take_key(k, tr, t, set(assigned))
                 owner[k] = wid
-            if _competitor_flag(result.gated, c.cluster):
+            if _competitor_flag(result.gated, c.cluster, cfg):
                 flags[wid].add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
             if result.pelvis is not None and reacquired and tr.lifecycle is TrackLifecycle.OCCLUDED:
                 tr.reacquired_until = t + cfg.uncertain_hold_ms
@@ -1588,7 +1625,7 @@ class WorldTrackManager:
                     tr.confirm_left = cfg.merge_confirm_frames
                     linked.add(target)
                     new_flags = flags.setdefault(target, set())
-                    if _competitor_flag(result.gated, c.cluster):
+                    if _competitor_flag(result.gated, c.cluster, cfg):
                         new_flags.add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
                     if was_lost:
                         reassociated.append(target)
@@ -1631,7 +1668,7 @@ class WorldTrackManager:
             new_flags = set()
             if c.uncertain:
                 new_flags.add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
-            if _competitor_flag(gated, c.cluster):
+            if _competitor_flag(gated, c.cluster, cfg):
                 new_flags.add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
             if ambiguous:
                 new_flags.add(IdentityFlag.REASSOCIATION_AMBIGUOUS)
@@ -1728,12 +1765,56 @@ class WorldTrackManager:
                     flags[wid].discard(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
                     self.diag["identity.shadow_ambiguity_cleared"] += 1
 
+        # -698 ID-5 보완: 관측 순간 사유는 300 ms 만 유지하지만, 맞바꿈 위험 중에 붙은 것은 상태 사유처럼 uncertain_hold_ms
+        # 동안 유지한다. ID 맞바꿈은 여러 tick 에 걸쳐 일어나 짧은 유지로는 표시가 중간중간 꺼진다(2026-11-14 로비 녹화 497~506 s).
+        # - C: swap 의심(swap_suspected_until) 중. 의심이 붙이는 AMBIGUOUS_TRACK_MATCH 가 의심 기간보다 먼저 꺼지지 않게 한다
+        # - A: 위치 급변(jump_t == t). 뛴 Track 과 uncertain_jump_neighbor_m 안의 Track 에 AMBIGUOUS_TRACK_MATCH 를 붙인다
+        # - B: 다른 사람(LOST 가 아닌 Track)이 uncertain_hold_near_m 안에 있음(0 이면 끔)
+        risky: dict[str, str] = {}
+        if cfg.uncertain_hold_per_reason:
+            live = [(w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST]
+            jumped = [o for _, o in live if o.jump_t == t]
+            for j in jumped:
+                for w, o in live:
+                    if o is j or float(np.linalg.norm(o.kf.x[:2] - j.kf.x[:2])) <= cfg.uncertain_jump_neighbor_m:
+                        flags.setdefault(w, set()).add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                        risky[w] = "jump"
+            for w, o in live:
+                if w not in risky and o.swap_suspected_until >= t:
+                    risky[w] = "swap_suspect"
+            if cfg.uncertain_hold_near_m > 0:
+                for w, fs in flags.items():
+                    o = self._tracks.get(w)
+                    if w in risky or o is None or not any(f in _TRANSIENT_FLAGS for f in fs):
+                        continue
+                    if any(w2 != w and float(np.linalg.norm(o2.kf.x[:2] - o.kf.x[:2])) <= cfg.uncertain_hold_near_m
+                           for w2, o2 in live):
+                        risky[w] = "near"
+        # - B: 가려진(이번 시각 갱신 없음) 채 uncertain_hold_hidden_m 안에 다른 사람이 있으면, 이미 붙어 있는 관측 순간 사유를
+        #   끄지 않는다(새 사유를 만들지는 않는다). 가려진 동안에는 사유가 다시 붙지 않아 300 ms 뒤 꺼지는데, 맞바꿈은 대개
+        #   사람이 붙어 가려진 사이에 일어난다(로비 녹화 497~506 s 의 꺼진 tick 대부분)
+        if cfg.uncertain_hold_per_reason and cfg.uncertain_hold_hidden_m > 0:
+            live = [(w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST]
+            for w, o in live:
+                if o.t_last_valid >= t or not any(f in _TRANSIENT_FLAGS for f in o.flags):
+                    continue
+                if any(w2 != w and float(np.linalg.norm(o2.kf.x[:2] - o.kf.x[:2])) <= cfg.uncertain_hold_hidden_m
+                       for w2, o2 in live):
+                    o.hidden_hold_t = t
+                    self.diag["identity.transient_hold_hidden"] += 1
         for wid, fs in flags.items():
             tr = self._tracks.get(wid)
             if tr is None:
                 continue
+            long_hold = wid in risky
             for f in fs:
                 tr.flags[f] = t
+                if long_hold and f in _TRANSIENT_FLAGS:
+                    tr.long_hold_flags[f] = t
+                else:
+                    tr.long_hold_flags.pop(f, None)
+            if long_hold:
+                self.diag[f"identity.transient_hold_{risky[wid]}"] += 1
 
         # 확정 지연 (-657): 카메라가 겹치지 않는 확정 Track 근처에서 저신뢰로 갱신된 TENTATIVE 는 확정을 늦춘다(그림자일 수 있다)
         self._delay_confirmation(applied)
@@ -2407,6 +2488,8 @@ class WorldTrackManager:
             survivor.keys[k] = max(kt, survivor.keys.get(k, kt))
         for f, ft in retired.flags.items():
             survivor.flags[f] = max(ft, survivor.flags.get(f, ft))
+        for f, ft in retired.long_hold_flags.items():
+            survivor.long_hold_flags[f] = max(ft, survivor.long_hold_flags.get(f, ft))
         candidates = [*survivor.restored_candidates, *retired.restored_candidates]
         survivor.restored_candidates = tuple(dict.fromkeys(candidates))
         survivor.restored_excluded = (survivor.restored_excluded | retired.restored_excluded) - set(candidates)
@@ -3075,6 +3158,14 @@ class WorldTrackManager:
         if measurement is None:
             return _Applied(cluster, gated, None)
         z, sigma = measurement
+        cfg = self.config
+        if cfg.uncertain_jump_margin_m > 0 and tr.path:
+            # -698 ID-5 보완 A: 직전 측정에서 사람이 갈 수 없는 거리로 뛴 측정은 다른 사람 관측을 넘겨받았을 수 있다
+            pt, pxy = tr.path[-1]
+            if t > pt and float(np.linalg.norm(z[:2] - pxy)) > (
+                cfg.max_speed_mps * (t - pt) / 1000.0 + cfg.uncertain_jump_margin_m
+            ):
+                tr.jump_t = t
         tr.kf.update(t, z, sigma)
         tr.t_last_valid = t
         tr.hits += 1
@@ -3083,8 +3174,13 @@ class WorldTrackManager:
 
     def _snapshot(self, tr: _Track, t: int, applied: _Applied | None) -> WorldTrackSnapshot:
         cfg = self.config
-        held = {f for f, ft in tr.flags.items() if t - ft <= cfg.uncertain_hold_ms}
+        held = {
+            f for f, ft in tr.flags.items()
+            if t - ft <= (cfg.uncertain_hold_ms if tr.long_hold_flags.get(f) == ft else _hold_ms(cfg, f))
+            or (f in _TRANSIENT_FLAGS and t - tr.hidden_hold_t <= cfg.uncertain_hold_transient_ms)
+        }
         tr.flags = {f: ft for f, ft in tr.flags.items() if f in held}
+        tr.long_hold_flags = {f: ft for f, ft in tr.long_hold_flags.items() if f in held}
         cameras: tuple[str, ...] = ()
         if applied is not None:
             cameras = tuple(sorted(applied.gated.camera_ids))
@@ -3196,17 +3292,37 @@ def _prepare(cluster: ViewCluster) -> _Cluster:
     return _Cluster(cluster, np.mean(np.array(xy, dtype=float), axis=0), False)
 
 
-def _competitor_flag(gated: GatedSkeleton, cluster: ViewCluster) -> bool:
+_TRANSIENT_FLAGS = frozenset(
+    {IdentityFlag.TWO_VIEW_COMPETITOR_JOINT, IdentityFlag.AMBIGUOUS_TRACK_MATCH, IdentityFlag.CROSS_VIEW_UNCERTAIN}
+)
+"""S15P31A101-698 ID-5: 매 시각 다시 판정되는 관측 순간 사유. 나머지(분할·재연결·중복·복원 후보)는 상태 사유다"""
+
+_TORSO_JOINTS = (COCO17_L_SHOULDER, COCO17_R_SHOULDER, COCO17_L_HIP, COCO17_R_HIP)
+
+
+def _hold_ms(cfg: WorldTrackConfig, flag: IdentityFlag) -> int:
+    """사유의 IDENTITY_UNCERTAIN 유지 시간(-698 ID-5)."""
+    if cfg.uncertain_hold_per_reason and flag in _TRANSIENT_FLAGS:
+        return cfg.uncertain_hold_transient_ms
+    return cfg.uncertain_hold_ms
+
+
+def _competitor_flag(gated: GatedSkeleton, cluster: ViewCluster, cfg: WorldTrackConfig | None = None) -> bool:
     """관절 유효성 게이트의 2대 관측 경쟁 후보를 Track 의 IDENTITY_UNCERTAIN 으로 올릴지.
 
-    경쟁 후보 관절 자체는 게이트가 이미 UNCERTAIN 으로 낮췄다(위험 규칙은 "확인 필요"). 사람 신원까지 불확실하다고 보는
-    것은 연결 근거가 2대뿐인 클러스터이거나, 위치 근거인 엉덩이 관절이 경쟁 후보일 때다. 3대 이상이 맞춘 사람의 손목
-    하나가 2대 관측 경쟁 후보라고 신원 전체를 불확실로 두지 않는다.
+    경쟁 후보 관절 자체는 게이트가 이미 UNCERTAIN 으로 낮췄다(위험 규칙은 "확인 필요"). 3대 이상이 맞춘 사람은 위치 근거인
+    엉덩이 관절이 경쟁 후보일 때만 신원을 불확실로 둔다. 2대뿐인 클러스터는 연결 근거가 약하므로, -698 ID-6 부터는 몸통
+    관절(양 어깨·양 엉덩이) 중 하나가 경쟁 후보일 때 신원을 불확실로 둔다. 손목·발목·얼굴만의 경쟁은 그 관절만 UNCERTAIN 이다.
+    cfg.two_view_identity_torso_only 가 False 면 2대 클러스터는 어느 관절 경쟁이든 신원 불확실(이전 동작)이다.
     """
     if not gated.identity_uncertain_candidate:
         return False
     if len(cluster.views) <= 2:
-        return True
+        if cfg is None or not cfg.two_view_identity_torso_only:
+            return True
+        return any(
+            j < len(gated.joints) and GateIssue.TWO_VIEW_COMPETITOR in gated.joints[j].reasons for j in _TORSO_JOINTS
+        )
     return any(
         GateIssue.TWO_VIEW_COMPETITOR in gated.joints[j].reasons for j in (COCO17_L_HIP, COCO17_R_HIP)
     )
