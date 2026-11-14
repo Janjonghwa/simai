@@ -1,4 +1,6 @@
-"""JSON-compatible coverage_guide 1.0.0 messages; no images or keypoint arrays."""
+"""JSON-compatible coverage_guide 1.0.0/1.1.0 messages; no images or keypoint arrays.
+
+1.1.0 (S15P31A101-712) adds the optional reuse_view_check summary (status/reason/counts only)."""
 
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ class CameraFrame:
 
 def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame],
                   pairs: list[PairMetrics], judge: CoverageJudge, *, ttl_ms: int = 10_000,
-                  stale_ms: int = DEFAULT_STALE_MS) -> dict:
+                  stale_ms: int = DEFAULT_STALE_MS, reuse_view_check: dict | None = None) -> dict:
     if not source_id or computed_at_ms < 0 or ttl_ms <= 0:
         raise ValueError("source_id, nonnegative UTC milliseconds, and positive TTL are required")
     if len(cameras) != 4 or {c.camera_id for c in cameras} != set(CAMERAS):
@@ -44,7 +46,11 @@ def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame
         for key in ("centroid_a", "centroid_b"):
             record[key] = list(record[key]) if record[key] is not None else None
         pair_records.append(record)
-    return {"schema_version": "1.0.0", "source_id": source_id, "computed_at_ms": computed_at_ms,
-            "valid_until_ms": computed_at_ms + ttl_ms, "capture_skew_ms": skew,
-            "params": asdict(judge.params), "cameras": camera_records, "pairs": pair_records,
-            "connectivity": state, "components": components, "guides": instructions}
+    message = {"schema_version": "1.0.0", "source_id": source_id, "computed_at_ms": computed_at_ms,
+               "valid_until_ms": computed_at_ms + ttl_ms, "capture_skew_ms": skew,
+               "params": asdict(judge.params), "cameras": camera_records, "pairs": pair_records,
+               "connectivity": state, "components": components, "guides": instructions}
+    if reuse_view_check is not None:
+        message["schema_version"] = "1.1.0"
+        message["reuse_view_check"] = reuse_view_check
+    return message

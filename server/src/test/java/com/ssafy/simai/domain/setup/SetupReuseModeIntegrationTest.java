@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.ssafy.simai.domain.coverage.CoverageGuideService;
 import com.ssafy.simai.domain.health.ViewerHealthService;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
@@ -91,6 +92,10 @@ class SetupReuseModeIntegrationTest {
     @MockitoSpyBean
     ViewerHealthService health;
 
+    /** 세팅 1단계 헬퍼의 재사용 시점 확인(S15P31A101-712)만 바꿔 본다. 기본은 결과 없음(모름) */
+    @MockitoSpyBean
+    CoverageGuideService coverageGuides;
+
     private final String suffix = UUID.randomUUID().toString().substring(0, 8);
     private final String worker = "worker-setup-reuse-" + suffix;
     private final String baseCalibration = "cal-reuse-base-" + suffix;
@@ -141,6 +146,7 @@ class SetupReuseModeIntegrationTest {
 
         token = machines.registerWorker(worker, List.of("site_setup")).token();
         doReturn(null).when(health).reSetupCameraIds();
+        doReturn(Optional.empty()).when(coverageGuides).reuseViewCheck(anyString());
     }
 
     @AfterEach
@@ -445,6 +451,45 @@ class SetupReuseModeIntegrationTest {
         assertThat(quiet.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
         assertThat(quiet.get("available").asBoolean()).isTrue();
         mvc.perform(get("/api/setup-sessions/reuse-check").with(viewerJwt())).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 헬퍼_시점_확인이_카메라가_바뀐_것으로_보면_재사용을_막고_4대가_같으면_막지_않는다() throws Exception {
+        commitBaseScene();
+        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of("cam_B", "cam_C"), false)))
+                .when(coverageGuides).reuseViewCheck(baseScene);
+        JsonNode changed = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(changed.get("available").asBoolean()).isFalse();
+        assertThat(changed.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
+        assertThat(changed.get("camera_status").asString()).isEqualTo("CHANGED");
+        assertThat(changed.get("camera_source").asString()).isEqualTo("VIEW_MATCH");
+        assertThat(changed.at("/changed_cameras/0").asString()).isEqualTo("cam_B");
+        assertThat(changed.at("/changed_cameras/1").asString()).isEqualTo("cam_C");
+        // 화면을 건너뛴 시작도 같은 판정으로 막고, 새 맵은 막지 않는다
+        mvc.perform(create("REUSE")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
+
+        // Tier 0 회전 감시가 먼저다
+        doReturn(List.of("cam_A")).when(health).reSetupCameraIds();
+        JsonNode drift = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(drift.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
+        doReturn(null).when(health).reSetupCameraIds();
+
+        // 4대 모두 같은 시점이면 Tier 0 가 없어도 「달라진 카메라 없음」
+        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of(), true)))
+                .when(coverageGuides).reuseViewCheck(baseScene);
+        JsonNode same = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(same.get("available").asBoolean()).isTrue();
+        assertThat(same.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
+        assertThat(same.get("camera_source").isNull()).isTrue();
+
+        // 일부가 아직 확인 중(UNKNOWN)이면 모름 그대로, 막지 않는다
+        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of(), false)))
+                .when(coverageGuides).reuseViewCheck(baseScene);
+        JsonNode partial = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(partial.get("available").asBoolean()).isTrue();
+        assertThat(partial.get("camera_status").asString()).isEqualTo("UNKNOWN");
+        mvc.perform(create("REUSE")).andExpect(status().isAccepted());
     }
 
     // ------------------------------------------------------------------ 도우미

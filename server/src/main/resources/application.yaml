@@ -151,3 +151,5 @@ simai:
     # 세팅 1단계 카메라 각도 헬퍼 중계(S15P31A101-447, 설계 docs/design/coverage-guide-relay.md). 수신 후 10 s 넘으면 STALE, 관리자 조회 후 15 s 동안 active_demand=true
     stale-after: ${SIMAI_COVERAGE_GUIDE_STALE_AFTER:10s}
     demand-ttl: ${SIMAI_COVERAGE_GUIDE_DEMAND_TTL:15s}
+    # 재사용 시점 확인(S15P31A101-712) 결과를 재사용 판정 근거로 쓰는 시간
+    view-check-ttl: ${SIMAI_COVERAGE_GUIDE_VIEW_CHECK_TTL:60s}

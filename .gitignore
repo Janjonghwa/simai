@@ -18,6 +18,8 @@ build/
 .pnpm-store/
 .vite/
 coverage/
+# 자바 패키지 domain/coverage 는 시험 커버리지 산출물이 아니다
+!server/src/**/coverage/
 *.local
 # vite-plugin-pwa 개발용 Service Worker
 dev-dist/

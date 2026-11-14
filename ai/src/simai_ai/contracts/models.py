@@ -234,6 +234,14 @@ class InlierRatio(RootModel[StrictFloat]):
     root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
 
 
+class Matches(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class RotationRad(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=3.141592653589793)]
+
+
 class DefsAckChannel(RootModel[Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']]):
     root: Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']
 
@@ -3589,6 +3597,18 @@ class CoverageGuidePairMatchItem(BaseModel):
     centroid_b: CoverageGuideNormalizedPoint | None
 
 
+class CoverageGuideViewCheckItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    status: Literal['SAME', 'CHANGED', 'UNKNOWN']
+    reason: Literal['ROTATED', 'MOVED', 'VIEW_DIFFERENT', 'NO_REFERENCE', 'NO_VIDEO', 'STALE', 'NO_TEXTURE', 'OCCLUDED', 'CONFIRMING', 'STREAM_MISMATCH', 'ERROR'] | None
+    matches: Matches | None
+    inlier_ratio: InlierRatio | None
+    rotation_rad: RotationRad | None
+
+
 class DefsCaptureTime(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -5268,25 +5288,15 @@ class ConfigBundle(Envelope):
     payload: Payload8
 
 
-class CoverageGuide(BaseModel):
+class CoverageGuideReuseViewCheck(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0.0']
-    source_id: DefsInstanceId
-    computed_at_ms: DefsTimestampMs
-    valid_until_ms: DefsTimestampMs
-    capture_skew_ms: CaptureSkewMs | None
-    params: CoverageGuideCoverageParams
+    scene_version: DefsVersionId
+    calibration_version: DefsVersionId
     cameras: Annotated[
-        list[CoverageGuideCameraStatusItem], Field(max_length=4, min_length=4)
+        list[CoverageGuideViewCheckItem], Field(max_length=4, min_length=4)
     ]
-    pairs: Annotated[
-        list[CoverageGuidePairMatchItem], Field(max_length=6, min_length=6)
-    ]
-    connectivity: Literal['CONNECTED', 'DISCONNECTED', 'UNKNOWN']
-    components: Annotated[list[Component], Field(max_length=4, min_length=1)]
-    guides: Annotated[list[CoverageGuideCameraGuideItem], Field(max_length=12)]
 
 
 class HumanMeshOutput2(HumanMeshOutputPoseFrame):
@@ -5572,6 +5582,28 @@ class Calibration(BaseModel):
     content_hash: DefsSha256 | MISSING = MISSING
     previous_calibration_version: DefsVersionId | MISSING = MISSING
     setup_session_id: DefsUuid | MISSING = MISSING
+
+
+class CoverageGuide(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0', '1.1.0']
+    source_id: DefsInstanceId
+    computed_at_ms: DefsTimestampMs
+    valid_until_ms: DefsTimestampMs
+    capture_skew_ms: CaptureSkewMs | None
+    params: CoverageGuideCoverageParams
+    cameras: Annotated[
+        list[CoverageGuideCameraStatusItem], Field(max_length=4, min_length=4)
+    ]
+    pairs: Annotated[
+        list[CoverageGuidePairMatchItem], Field(max_length=6, min_length=6)
+    ]
+    connectivity: Literal['CONNECTED', 'DISCONNECTED', 'UNKNOWN']
+    components: Annotated[list[Component], Field(max_length=4, min_length=1)]
+    guides: Annotated[list[CoverageGuideCameraGuideItem], Field(max_length=12)]
+    reuse_view_check: CoverageGuideReuseViewCheck | MISSING = MISSING
 
 
 class HumanMeshOutput1(HumanMeshOutputAvatarAsset):

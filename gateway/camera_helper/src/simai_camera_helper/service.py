@@ -19,6 +19,7 @@ from .judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics, Params
 from .message import DEFAULT_STALE_MS, CameraFrame, build_message
 from .offline import DEFAULT_WEIGHTS
 from .progress import DEFAULT_STALL_SECONDS, Progress, bounded_setting, log_round, watchdog_loop
+from .view_check import ViewChecker, describe
 
 LOG = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[4]
@@ -142,6 +143,20 @@ class Client:
         self.demand_path = demand_path
         self.source_id = source_id or "laptop-01"
         self.opener = urllib.request.build_opener(NoRedirect())
+        # 재사용 시점 확인 기준(S15P31A101-712): 수요 응답의 reuse_reference(활성 수요일 때만 EC2 가 싣는다)
+        self._reference_lock = threading.Lock()
+        self._reference: dict | None = None
+
+    def note_response(self, res) -> None:
+        """수요가 실린 응답(GET 수요·POST 결과)이면 재사용 기준을 그 값으로 바꾼다(없으면 비운다)."""
+        if isinstance(res, dict) and isinstance(res.get("active_demand"), bool):
+            reference = res.get("reuse_reference")
+            with self._reference_lock:
+                self._reference = reference if res["active_demand"] and isinstance(reference, dict) else None
+
+    def reuse_reference(self) -> dict | None:
+        with self._reference_lock:
+            return self._reference
 
     def __repr__(self) -> str:
         return f"Client(base={self.base!r}, demand_path={self.demand_path!r})"
@@ -168,10 +183,13 @@ class Client:
                 raise
             now_ms = time.time_ns() // 1_000_000
             res = self.request(GUIDES_PATH, idle_message(self.source_id, now_ms))
+        self.note_response(res)
         return res.get("active_demand") is True
 
     def post(self, message: dict) -> dict:
-        return self.request(GUIDES_PATH, message)
+        res = self.request(GUIDES_PATH, message)
+        self.note_response(res)
+        return res
 
 
 def retry_post(client, message: dict, active, sleep=time.sleep, attempts: int = 4, on_demand=None) -> bool:
@@ -304,6 +322,19 @@ def preview_loop(
             frames.clear()
 
 
+def reuse_view_check(viewer: ViewChecker, reference, snapshot: dict, frames: list[CameraFrame],
+                     round_ts_ms: int, stale_ms: int) -> dict | None:
+    """재사용 기준이 있을 때만 같은 카메라끼리 시점을 비교한다(S15P31A101-712). 실패해도 각도 안내는 그대로 보낸다."""
+    if reference is None:
+        return None
+    statuses = {f.camera_id: f.status(round_ts_ms, stale_ms) for f in frames}
+    try:
+        return viewer.check(reference, snapshot, statuses)
+    except Exception:  # noqa: BLE001 - 서명 주소·응답 본문은 기록하지 않는다
+        LOG.warning("reuse view check failed")
+        return None
+
+
 def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     token = env.get("SIMAI_DEVICE_TOKEN", "").strip()
     if token:
@@ -335,6 +366,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
 
     matcher = None
     judge = None
+    viewer = ViewChecker()
     last_timestamps: dict[str, int] | None = None
     try:
         while not stop_event.wait(0.5):
@@ -383,14 +415,20 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                 if not active.is_set():
                     continue
                 last_timestamps = timestamps
+                frames_now = [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS]
+                view = reuse_view_check(viewer, getattr(client, "reuse_reference", lambda: None)(),
+                                        snapshot, frames_now, round_ts_ms, stale_ms)
                 message = build_message(
                     source_id,
                     round_ts_ms,
-                    [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS],
+                    frames_now,
                     pairs,
                     judge,
                     stale_ms=stale_ms,
+                    reuse_view_check=view,
                 )
+                if view is not None:
+                    LOG.info("reuse view %s", describe(view))
                 grades = [p["grade"] for p in message["pairs"]]
                 progress.phase("posting")
                 sent = retry_post(client, message, active.is_set, sleep=stop_event.wait,

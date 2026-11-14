@@ -67,6 +67,15 @@ export function reuseChoiceOf(
       };
     case 'CAMERA_CHANGED': {
       const names = changedCamerasLabel(cameraIds, check.changed_cameras);
+      if (check.camera_source === 'VIEW_MATCH')
+        // 1단계 헬퍼가 이전 맵을 만들 때의 카메라 사진과 지금 화면을 비교했다(S15P31A101-712)
+        return {
+          blocked: {
+            what: names ? `카메라가 바뀐 것 같아요(${names})` : '카메라가 바뀐 것 같아요',
+            how: `이전 맵을 만들 때와 화면이 달라요 · ${NEW_MAP_HOW}`,
+          },
+          note: null,
+        };
       return {
         blocked: {
           what: names
@@ -82,7 +91,7 @@ export function reuseChoiceOf(
   }
 }
 
-/** 직전 보정과 달라진 카메라: 서버가 카메라 변화(CHANGED)라고 판정했을 때만(-540 관제 회전 감시·직전 재사용 거부). */
+/** 직전 보정과 달라진 카메라: 서버가 카메라 변화(CHANGED)라고 판정했을 때만(-540 관제 회전 감시·1단계 시점 확인(-712)·직전 재사용 거부). */
 export function changedCamerasOf(check: ReuseCheck): readonly string[] {
   return check.camera_status === 'CHANGED' || check.blocked_reason === 'CAMERA_CHANGED'
     ? check.changed_cameras
