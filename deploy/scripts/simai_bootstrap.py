@@ -796,6 +796,17 @@ def execvp(argv: list[str]) -> None:  # 시험에서 바꿔 끼운다
     os.execvpe(argv[0], argv, child_env())
 
 
+def gpu_boot_env() -> dict[str, str]:
+    """simai-gpu-boot 에만 넘기는 환경(S15P31A101-707): 부팅 비밀값·TLS 비밀 키·HF 토큰(TOKEN_ENVS 둘 다)을 지우지 않는다.
+    16차 GPU 세션에서 auto 가 execvp(child_env) 로 넘겨 simai-gpu-boot 가 SIMAI_GPU_BOOT_SECRET 을 못 받고 64 로 끝나 Pod 이 16초마다
+    재시작했다. 받은 쪽(simai-gpu-boot take_secrets)이 맨 먼저 꺼내 자기 안에만 든다. 다른 자식은 계속 child_env 다."""
+    return with_image_pythonpath(dict(os.environ))
+
+
+def exec_gpu_boot(argv: list[str]) -> None:  # 시험에서 바꿔 끼운다
+    os.execvpe(argv[0], argv, gpu_boot_env())
+
+
 # ---------------------------------------------------------------- 감시 프로세스 (S15P31A101-246)
 
 
@@ -2958,7 +2969,7 @@ def main(argv: list[str] | None = None) -> int:
                 log("auto: SIMAI_GPU_BOOT_SECRET(또는 SIMAI_SECRETS_SOURCE)은 있는데 SIMAI_GPU_BOOT_ID·SIMAI_EC2_BASE_URL 이 없다 → 시작하지 않는다 "
                     f"(템플릿 환경 변수 확인, 종료 코드 {EXIT_USAGE})")
                 return EXIT_USAGE
-            execvp([*shlex.split(os.environ.get("SIMAI_GPU_BOOT_CMD") or "simai-gpu-boot"), "auto"])
+            exec_gpu_boot([*shlex.split(os.environ.get("SIMAI_GPU_BOOT_CMD") or "simai-gpu-boot"), "auto"])
             return EXIT_OK
         args = ["tier0", *args[1:]]  # 부팅 비밀값이 없으면 지금까지의 기본(CMD tier0)과 같다
     take_token()  # 어떤 분기·자식 실행보다 먼저

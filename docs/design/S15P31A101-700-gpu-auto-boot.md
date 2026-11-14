@@ -108,9 +108,24 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
 ## 비밀 값 처리
 
 - `simai-start` 가 `SIMAI_GPU_BOOT_SECRET`·`SIMAI_TIER0_TLS_PRIVATE_KEY` 를 HF 토큰처럼 맨 앞에서 지우고 exec 바로 앞에서만 내보낸다(ssh-keygen·sshd·SSH 환경 파일에 없음, 이름에 SECRET·PRIVATE).
-- `simai-bootstrap auto` 는 비밀 값을 꺼내기 전에 `simai-gpu-boot` 로 exec 한다. 다른 모드는 두 이름을 환경에서 지우고(`take_token`) 자식 환경에서 빼며 `_redact` 대상에 넣는다.
+- `simai-bootstrap auto` 는 비밀 값을 꺼내기 전에 `simai-gpu-boot` 로 exec 한다. 이 exec 만 비밀 값을 지우지 않은 환경(`gpu_boot_env`)을 쓴다(S15P31A101-707, 아래).
+  다른 모드는 두 이름을 환경에서 지우고(`take_token`) 자식 환경에서 빼며 `_redact` 대상에 넣는다.
 - `simai-gpu-boot` 는 시작하자마자 꺼내 자기 안에만 들고, 자식에는 HF 토큰만 가중치를 받는 `simai-bootstrap`(preflight·lobby)에 넘긴다. 토큰은 파일 경로로만 넘긴다(lobby 명령줄에 원문 없음).
   로그는 비밀 값·`hf_…`·서명 주소 쿼리를 가린다. 보고 `detail` 도 가리고 500자로 자른다.
+
+### S15P31A101-707: auto → simai-gpu-boot 넘김 버그(16차 GPU 세션)
+
+화면으로 켠 RunPod Pod 이 16초마다 재시작했다(`simai-gpu-boot: 부팅 환경 변수가 없다: SIMAI_GPU_BOOT_SECRET`, 64). RunPod Secret 은 컨테이너 PID 1 환경에 있었다.
+원인: auto 분기가 `execvp()`(= `os.execvpe(..., child_env())`)로 넘겨, `child_env` 가 지우는 TOKEN_ENVS·BOOT_SECRET_ENVS 가 simai-gpu-boot 에 가지 않았다.
+앞 시험은 `execvp` 를 바꿔 끼우고 `os.environ` 을 봐서, 또는 simai-gpu-boot 를 바로 불러서 이 연결을 못 봤다.
+
+- 고침: `exec_gpu_boot` → `gpu_boot_env()`(지금 환경 그대로 + `with_image_pythonpath`). 부팅 비밀값·TLS 비밀 키·`HF_TOKEN`·`HUGGING_FACE_HUB_TOKEN`
+  (simai-gpu-boot `take_secrets` 가 꺼내는 이름과 같다)을 유지한다. 다른 자식 exec(tier0·그대로 넘기는 명령 등)는 그대로 `child_env`.
+- 시험: `ai/tests/deploy/test_boot_secret_handoff.py` 가 실제 프로세스로 `simai-start`(sshd 끔) → `simai_bootstrap.py auto` → 가짜 simai-gpu-boot
+  (`SIMAI_GPU_BOOT_CMD`, 비밀 값 길이만 기록)를 돌려 세 값이 가고, 같은 사슬의 그대로 넘기는 명령에는 안 가는지 본다. 고치기 전 코드로 돌리면 실패한다.
+  Windows 의 `os.execvpe` 는 진짜 exec 가 아니고 uv 런처에서 가끔 Segmentation fault 로 죽어, Windows 에서만 실행기가 이를 '같은 인자·환경으로 띄우고 기다리기'로
+  바꾼다(넘기는 환경은 실제 코드가 만든 것, Linux CI 는 진짜 exec).
+- 남은 위험: 실제 Pod 에서 재확인은 다음 GPU 세션. simai-gpu-boot 가 HF 토큰을 받는 이름을 늘리면 `gpu_boot_env` 는 환경 전체를 넘기므로 따로 고칠 것은 없다.
 
 ## 정한 수치와 근거
 
@@ -180,4 +195,4 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
   `deploy/tier0/Dockerfile`(CMD `auto`, 설치)·`Dockerfile.dockerignore`, 문서 `deploy/README.md` "GPU 자동 부팅".
 - 서버: `server/src/main/java/com/ssafy/simai/domain/gpu/GpuCacheService.java`·`GpuCacheController.java`·`GpuPaths.java`, `GpuSessionService.openSessionForWorker`, `global/storage/ObjectStorage.signPut(..., ifAbsent)`.
 - 시험: `ai/tests/deploy/test_simai_gpu_boot.py`(가짜 EC2·S3·nvidia-smi·simai-bootstrap: 등록·토큰 파일·시작 묶음·lobby 인자·단계·ENDED·409 뒤 재등록 없음·실패 사유·캐시 왕복·키·안전한 풀기·비밀 값 가리기·auto 넘김),
-  `ai/tests/deploy/test_simai_bootstrap.py`(simai-start 비밀 값 순서), `server/src/test/java/com/ssafy/simai/domain/gpu/GpuCacheIntegrationTest.java`.
+  `ai/tests/deploy/test_simai_bootstrap.py`(simai-start 비밀 값 순서), `ai/tests/deploy/test_boot_secret_handoff.py`(실제 exec 사슬의 비밀 값 넘김, -707), `server/src/test/java/com/ssafy/simai/domain/gpu/GpuCacheIntegrationTest.java`.
