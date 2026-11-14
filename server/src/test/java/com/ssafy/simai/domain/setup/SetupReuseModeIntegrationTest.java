@@ -323,15 +323,19 @@ class SetupReuseModeIntegrationTest {
         ((ObjectNode) ready.get("artifacts")).set("preview_scene", previewRef);
         mvc.perform(heartbeat(s, 0.85, ready)).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(baseScene);
-        // 새 모델로 이어 간 세션(World 다시 맞추기 거부)의 완료는 이 세션 미리보기를 켠다
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(preview);
+        // 새 모델로 이어 간 세션(World 다시 맞추기 거부)은 새 모델과 같이 정밀 맵까지 기다린다(S15P31A101-688)
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
 
         String baked = "scene-" + s.jobId() + "-" + s.leaseId();
         ObjectNode result = ready.deepCopy().put("status", "COMPLETED").put("progress_pct", 100.0).put("scene_version", baked);
         ((ObjectNode) result.get("artifacts")).set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
         mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(baseScene);
+        // 완료가 이 세션 정밀 맵을 켠다(미리보기는 관제 맵이 되지 않는다)
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(baked);
+        assertThat(currentScene()).isNotEqualTo(preview);
         JsonNode done = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
         assertThat(done.get("status").asString()).isEqualTo("COMPLETED");
         assertThat(done.get("mode").asString()).isEqualTo("NEW");

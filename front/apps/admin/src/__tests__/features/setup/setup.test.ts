@@ -511,7 +511,9 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       bakingTexture: false,
       label: '미리보기 맵',
     });
-    expect(deriveSceneTierStatus(skipped).description).toContain('정밀 텍스처 굽기를 건너뜀');
+    expect(deriveSceneTierStatus(skipped).description).toContain(
+      '이 세팅으로는 완료할 수 없습니다',
+    );
     // 모르는 값은 null 로 보고 기존 판정(정식 Scene 없는 COMPLETED)을 따른다
     expect(
       setupSessionResponseSchema.parse({ ...previewSession, bake_skipped: 'SOMETHING_NEW' })
@@ -519,7 +521,7 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     ).toBeNull();
   });
 
-  it('3D 맵이 다 만들어진 때(isSceneMapComplete)는 정밀 3D 맵까지 끝났거나 작업 시작으로 굽기를 건너뛴 세팅이다', () => {
+  it('3D 맵이 다 만들어진 때(isSceneMapComplete)는 새 모델이면 정밀 3D 맵까지 끝난 세팅이다(-688: 굽기를 회수한 세팅은 아니다)', () => {
     const previewOnly: SetupSessionResponse = {
       ...baseSession,
       status: 'READY_FOR_ZONES',
@@ -543,22 +545,32 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
         scene_version: 'scene-final-1',
       }),
     ).toBe(true);
+    // 정밀 맵 없이 끝난 새 모델(회수)은 맵이 다 만들어지지 않았다. 서버도 완료를 거부한다(SETUP_FINAL_MAP_SKIPPED)
     expect(
       isSceneMapComplete({
         ...previewOnly,
         status: 'COMPLETED',
         stage: 'COMPLETED',
         progress_pct: 100,
-      }),
-    ).toBe(true);
-    expect(
-      isSceneMapComplete({
-        ...previewOnly,
-        status: 'BAKING_TEXTURE',
-        stage: 'BAKING_TEXTURE',
         bake_skipped: 'LIVE_WORK_STARTED',
       }),
-    ).toBe(true);
+    ).toBe(false);
+    // 이전 맵 재사용은 기존 맵 맞추기가 채택된 미리보기 단계 이후면 맵 조건을 채운다
+    const reuse: SetupSessionResponse = {
+      ...previewOnly,
+      mode: 'REUSE',
+      preview_scene_version: null,
+    };
+    expect(isSceneMapComplete(reuse)).toBe(false);
+    expect(isSceneMapComplete({ ...reuse, world_anchor: { accepted: true } })).toBe(true);
+    expect(
+      isSceneMapComplete({
+        ...reuse,
+        status: 'JOINT_BA_AND_VERIFY',
+        stage: 'JOINT_BA_AND_VERIFY',
+        world_anchor: { accepted: true },
+      }),
+    ).toBe(false);
     // 실패한 세션은 정식 Scene 이 있어도 구역 단계로 넘기지 않는다
     expect(
       isSceneMapComplete({ ...previewOnly, status: 'FAILED', scene_version: 'scene-final-1' }),

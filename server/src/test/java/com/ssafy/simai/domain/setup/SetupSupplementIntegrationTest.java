@@ -559,16 +559,34 @@ class SetupSupplementIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, workUnitId))
                 .isEqualTo("PLANNED");
 
-        ready(s); // READY_FOR_ZONES: 미리보기 맵이 나왔지만 아직 완료 전이다
+        Map<String, ObjectNode> r = ready(s); // READY_FOR_ZONES: 미리보기 맵이 나왔지만 아직 완료 전이다
+        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_COMPLETED"));
+        // 새 모델은 미리보기로 완료하지 않는다(S15P31A101-688). 그래서 미리보기만 나온 세팅으로는 작업도 시작하지 않는다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("WORK_SETUP_NOT_COMPLETED"));
 
+        // 정밀 맵까지 끝난 뒤 완료하면 시작한다. 남은 굽기가 없으니 작업 시작이 회수할 것도 없다
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview(s)).put("scene_version", baked);
+        ObjectNode artifacts = result.putObject("artifacts");
+        artifacts.set("calibration_document", r.get("calibration"));
+        artifacts.set("preview_scene", r.get("preview"));
+        artifacts.set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
+        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
         mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(baked);
         mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
-        // 완료 뒤 아직 대여 중인 세팅(굽기)은 하트비트 신호로 워커가 회수한다(-597). 대기열 굽기 회수(-625)는 아래 시험이 본다
+        assertThat(jdbc.queryForObject("SELECT bake_skipped FROM setup_session WHERE setup_session_id = ?::uuid",
+                String.class, s.sessionId())).isNull();
         jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", workUnitId);
     }
 
@@ -583,17 +601,22 @@ class SetupSupplementIntegrationTest {
         assertThat(jobStatus(s)).isEqualTo("QUEUED");
         assertThat(sessionStatus(s)).isEqualTo("BAKING_TEXTURE");
 
-        mvc.perform(post("/api/work-units/{id}/start", workUnitId).with(adminJwt()))
+        // 같은 현장에서 세팅을 마친 다른 작업을 시작한다(-688: 이 세션은 정밀 맵 전이라 아직 완료할 수 없다)
+        long live = plannedWork("-live");
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now() WHERE work_id = ?", live);
+        mvc.perform(post("/api/work-units/{id}/start", live).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
         assertReclaimed(s);
         mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.bake_skipped").value("LIVE_WORK_STARTED"));
+                .andExpect(jsonPath("$.bake_skipped").value("LIVE_WORK_STARTED"))
+                // 정밀 맵이 없어 이 세션으로는 세팅을 완료할 수 없다(작업이 끝난 뒤 다시 세팅한다)
+                .andExpect(jsonPath("$.complete_blocked_reason").value("SETUP_FINAL_MAP_SKIPPED"));
 
         // 작업이 끝나도 세팅 작업은 다시 대여되지 않고, 다음 작업은 바로 시작된다
-        mvc.perform(post("/api/work-units/{id}/end", workUnitId).with(adminJwt())).andExpect(status().is2xxSuccessful());
+        mvc.perform(post("/api/work-units/{id}/end", live).with(adminJwt())).andExpect(status().is2xxSuccessful());
         leaseExpect(status().isNoContent());
         long next = plannedWork("-next");
         // 다음 작업도 세팅을 마친 것으로 둔다(작업 시작은 그 작업의 세팅 완료 뒤다, -642)
@@ -629,7 +652,10 @@ class SetupSupplementIntegrationTest {
 
     // ---------------------------------------------------------------- 도우미
 
-    /** 미리보기 맵(READY_FOR_ZONES) 뒤 정식 굽기 중(BAKING_TEXTURE)이고 세팅을 완료한(-615, 미리보기가 관제 맵) 세션. 대여는 아직 유효하다 */
+    /**
+     * 미리보기 맵(READY_FOR_ZONES) 뒤 정식 굽기 중(BAKING_TEXTURE)인 세션. 대여는 아직 유효하다. 새 모델은 정밀 맵 전에 완료하지 않으므로
+     * (S15P31A101-688) 이 세션으로는 완료하지 않는다. 회수는 같은 현장의 다른 작업(세팅을 마친 작업)이 시작될 때 일어난다
+     */
     private Session bakingSession() throws Exception {
         Session s = startSession();
         String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
@@ -643,8 +669,6 @@ class SetupSupplementIntegrationTest {
             bakeImages.add(image.put("face_policy", "OBSERVED"));
         }
         mvc.perform(heartbeat(s, 0.95, bakingSnap)).andExpect(status().isOk());
-        // 작업 시작 전 절차: 세팅 완료가 미리보기를 관제 맵으로 켠다(-615). 정식 굽기는 계속 돈다
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         return s;
     }
 
@@ -664,7 +688,7 @@ class SetupSupplementIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT scene_version FROM setup_session WHERE setup_session_id = ?::uuid",
                 String.class, s.sessionId())).isNull();
         assertThat(jobStatus(s)).isEqualTo("CANCELLED");
-        assertThat(currentScene()).isEqualTo(preview(s)); // 관제는 세팅 완료가 켠 미리보기 맵으로 계속한다
+        assertThat(currentScene()).isNotEqualTo(preview(s)); // 미리보기는 관제 맵이 되지 않는다(-688, 완료하지 않은 세션)
     }
 
     private String jobStatus(Session s) {

@@ -56,7 +56,15 @@ export function setupCancelErrorMessage(error: unknown): string {
 export const SETUP_COMPLETE_ERROR_TEXT: Record<string, string> = {
   SETUP_ALREADY_COMPLETED:
     '이 작업은 세팅을 이미 완료했습니다(하루 1회). 구역 수정은 관제 화면에서 하세요',
-  SETUP_NOT_READY_TO_COMPLETE: '미리보기 맵이 나온 뒤에 세팅을 완료할 수 있습니다',
+  // 세션 쪽 완료 조건(서버 SetupCompletionGate, S15P31A101-688). 서버 문구와 같은 뜻이다
+  SETUP_NOT_READY_TO_COMPLETE:
+    '세팅이 아직 끝나지 않았거나 실패했습니다. 새 맵은 정밀 3D 맵까지, 이전 맵 재사용은 기존 맵 맞추기까지 끝나야 완료할 수 있습니다',
+  SETUP_FINAL_MAP_NOT_READY:
+    '정밀 3D 맵을 만드는 중입니다. 정밀 맵이 다 만들어진 뒤에 세팅을 완료할 수 있습니다',
+  SETUP_FINAL_MAP_SKIPPED:
+    '다른 작업이 시작돼 정밀 3D 맵 굽기가 멈췄습니다. 이 세팅으로는 완료할 수 없으니 작업이 끝난 뒤 세팅을 다시 하세요',
+  SETUP_CAMERA_CHECK_NOT_PASSED:
+    '카메라 확인을 통과하지 않았습니다. 걷기 창에서 한 사람이 30초 걸어 카메라 확인을 마치세요',
   SETUP_SESSION_NOT_ACTIVE: '이 작업에 더 새로운 세팅이 있어 이 세팅으로는 완료할 수 없습니다',
   WORK_NOT_TODAY: '작업 날짜가 오늘일 때만 세팅을 완료할 수 있습니다',
   WORK_INVALID_STATE: '작업이 이미 시작됐거나 끝나 세팅을 완료할 수 없습니다',

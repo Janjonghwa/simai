@@ -1,3 +1,5 @@
+import { completeMapBlockedReason } from '@/features/setup/setup';
+import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import {
   setupModeSchema,
   setupZoneDraftsResponseSchema,
@@ -34,12 +36,6 @@ const PREVIEW_READY_PATCH = {
   calibration_version: 'cal-8',
 } as const satisfies Partial<SetupSessionResponse>;
 const DEFAULT_TOLERANCE_CM = 5.0;
-/** 세팅 완료(POST .../complete)를 받는 단계: 미리보기 맵 이후(서버 SetupCompletionService 와 같음). */
-const COMPLETABLE_STAGES: ReadonlySet<string> = new Set([
-  'READY_FOR_ZONES',
-  'BAKING_TEXTURE',
-  'COMPLETED',
-]);
 const STALE_AFTER_MS = 10_000;
 const DEMAND_TTL_MS = 15_000;
 
@@ -612,9 +608,9 @@ export function createSetupMock(options: SetupMockOptions = {}) {
 
   /**
    * 세팅 세션의 구역을 발행했을 때(POST /api/zones/commit 의 setup_session_id) 세팅에 보이는 일: 아직 안 끝난 세션을 COMPLETED 로
-   * 보내고 구역을 처음 발행한 시각(zones_committed_at)을 남긴다(개발 서버에서 굽기 끝을 기다리지 않게). 작업 관리의 '세팅 끝'
-   * (SETUP_DONE)은 이것이 아니라 세팅 완료(POST .../complete, -615)의 setup_completed_at_ms 로 정한다(서버와 같음).
-   * 없는 세션·실패한 세션은 그대로 둔다.
+   * 보내고 구역을 처음 발행한 시각(zones_committed_at)을 남긴다(개발 서버에서 굽기 끝을 기다리지 않게). 새 모델이면 정밀 맵도 끝난
+   * 것으로 둔다(세팅 완료는 정밀 맵 뒤에만 된다, -688). 작업 관리의 '세팅 끝'(SETUP_DONE)은 이것이 아니라 세팅 완료
+   * (POST .../complete, -615)의 setup_completed_at_ms 로 정한다(서버와 같음). 없는 세션·실패한 세션은 그대로 둔다.
    */
   function completeAfterZonesCommit(sessionId: string, at: number = now()): void {
     const session = sessions.get(sessionId);
@@ -623,6 +619,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       status: 'COMPLETED',
       stage: 'COMPLETED',
       progress_pct: 100,
+      scene_version:
+        session.mode === 'REUSE'
+          ? null
+          : (session.scene_version ?? `scene-setup-${session.setup_session_id.slice(-4)}`),
       zones_committed_at: session.zones_committed_at ?? at,
       completed_at_ms: session.completed_at_ms ?? at,
     });
@@ -1429,7 +1429,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return HttpResponse.json(planView(id));
     }),
 
-    // 세팅 완료(C17, -615): 미리보기 맵 이후·완료 전만 받는다. 완료 시각을 남기고 적용 결과(구역은 개발 서버에서 따로 저장)를 돌려준다
+    // 세팅 완료(C17, -615): 새 모델은 정밀 맵 뒤, 재사용은 기존 맵 맞추기 뒤·완료 전만 받는다(-688, 화면 completeMapBlockedReason 과
+    // 같은 판정). 완료 시각을 남기고 적용 결과(구역은 개발 서버에서 따로 저장)를 돌려준다
     http.post('*/api/setup-sessions/:id/complete', ({ request, params }) => {
       const t = now();
       const user = readLiveUser(request, t);
@@ -1445,14 +1446,12 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (session.setup_completed_at_ms != null) {
         return problem(409, 'SETUP_ALREADY_COMPLETED', '이 작업은 세팅을 이미 완료했습니다');
       }
-      if (!COMPLETABLE_STAGES.has(session.status)) {
-        return problem(
-          409,
-          'SETUP_NOT_READY_TO_COMPLETE',
-          '미리보기 맵이 나온 뒤에 완료할 수 있습니다',
-        );
-      }
+      const mapBlocked = completeMapBlockedReason(session);
+      const mapProblem = (code: string) =>
+        problem(409, code, SETUP_COMPLETE_ERROR_TEXT[code] ?? '세팅을 완료할 수 없습니다');
+      if (mapBlocked === 'SETUP_NOT_READY_TO_COMPLETE') return mapProblem(mapBlocked);
       if (cameraCheckBlocks(session)) return cameraCheckProblem();
+      if (mapBlocked) return mapProblem(mapBlocked);
       const unconfirmed = pendingOf(id);
       if (unconfirmed > 0) {
         return HttpResponse.json(

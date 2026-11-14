@@ -21,6 +21,10 @@ from services.worker.client import LeaseClient
 from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
+    SETUP_BUDGET_CAMERA_CHECK_S,
+    SETUP_BUDGET_HEIGHT_REVIEW_S,
+    SETUP_BUDGET_MAP_S,
+    SETUP_TIME_BUDGET_S,
     BakedScene,
     BakeImageRef,
     BakeImages,
@@ -1408,13 +1412,14 @@ def test_camera_check_waits_for_walk_start_and_passes_before_any_map_step() -> N
     box: dict[str, JobContext] = {}
     handler._sleep = _press(box, t, {5.0: 1})
     ctx = box["ctx"] = JobContext("job-cc", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, inp,
-                                  timeout_ms=900_000)
+                                  timeout_ms=1_800_000)
     result = handler(ctx)
 
     assert events == ["start:0192a6f0-1", "passed", "preview", "bake"]
     checks = _checks(ctx)
     assert checks[0]["status"] == "AWAITING_START" and "attempt" not in checks[0]
-    assert checks[0]["user_wait"]["wait_s"] == pytest.approx(900.0 - 420.0, abs=5.0)  # 실행 상한 − 맵 몫(대기 상한 600 s 보다 짧다)
+    # 실행 상한 1,800 s(-688)면 맵 몫(600 s)을 남기고도 카메라 확인 몫(600 s)을 그대로 쓴다
+    assert checks[0]["user_wait"]["wait_s"] == pytest.approx(SETUP_BUDGET_CAMERA_CHECK_S, abs=1.0)
     started = next(c for c in checks if c.get("attempt"))
     assert started["attempt"]["no"] == 1 and started["attempt"]["id"] == "0192a6f0-1" and "user_wait" not in started
     assert started["attempt"]["calibration_version"] == result["calibration_version"]
@@ -1509,7 +1514,8 @@ def test_camera_check_channel_failure_fails_with_zero_bakes(case: str) -> None:
 
 
 def test_camera_check_budget_leaves_the_map_share_of_the_execution_limit() -> None:
-    """대기 상한은 실행 상한에서 맵 몫(NEW 420 s)을 뺀 만큼으로 줄인다. 그만큼도 안 남으면 확인을 열지 않고 맵 없이 실패한다."""
+    """실행 상한이 예산 합보다 짧으면(옛 EC2 등) 대기는 실행 상한에서 맵 몫(NEW 600 s, -688)을 뺀 만큼으로 줄인다. 그만큼도 안 남으면
+    확인을 열지 않고 맵 없이 실패한다(맵 몫은 사람 대기에 내주지 않는다)."""
     events: list[str] = []
     t = _FakeTime()
     checker = _FakeChecker([["PASSED"]], events=events)
@@ -1517,10 +1523,10 @@ def test_camera_check_budget_leaves_the_map_share_of_the_execution_limit() -> No
     box: dict[str, JobContext] = {}
     handler._sleep = _press(box, t, {1.0: 1})
     ctx = box["ctx"] = JobContext("job-cc-budget", "0192a6f0-7c1e-7b3a-9f2d-000000000651", "site_setup", 1, inp,
-                                  timeout_ms=600_000)
+                                  timeout_ms=780_000)
     handler(ctx)
     wait = _checks(ctx)[0]["user_wait"]["wait_s"]
-    assert 150.0 < wait <= 180.0  # 600 − 420 − 앞 단계 시간
+    assert 150.0 < wait <= 180.0  # 780 − 600 − 앞 단계 시간
 
     checker = _FakeChecker([["PASSED"]])
     handler, inp, _ = _room_handler(
@@ -1674,7 +1680,7 @@ def _reviews(ctx: JobContext) -> list[dict[str, Any]]:
     return out
 
 
-def _ctx(name: str, inp: dict[str, Any], t: _FakeTime, timeout_ms: int = 900_000) -> JobContext:
+def _ctx(name: str, inp: dict[str, Any], t: _FakeTime, timeout_ms: int = 1_800_000) -> JobContext:
     return JobContext(name, "0192a6f0-7c1e-7b3a-9f2d-000000000690", "site_setup", 1, inp, timeout_ms=timeout_ms,
                       monotonic=t.monotonic)
 
@@ -1735,7 +1741,7 @@ def test_height_review_wait_is_capped_by_the_remaining_budget_and_cancel_still_s
     """실행 상한까지 뒤 단계 몫(reserve)을 남기도록 대기를 줄인다. 남는 시간이 없으면 기다리지 않는다. 취소는 기다리는 중에도 멈춘다."""
     loose_gate = {"height_max_diff_cm": 50.0}
     handler, inp, _, t = _height_handler(_ONE_LOW, quality_gate=loose_gate)
-    ctx = _ctx("job-hr4", inp, t, timeout_ms=580_000)  # 뒤 단계 몫 540 s(-687)
+    ctx = _ctx("job-hr4", inp, t, timeout_ms=1_300_000)  # 뒤 단계 몫 1,260 s = Stage A 60 + 카메라 확인 600 + 맵 600(-688)
     handler(ctx)
     review = _reviews(ctx)[0]
     assert review["status"] == "AWAITING_CONFIRMATION" and review["wait_s"] == pytest.approx(40.0, abs=0.5)
@@ -1755,6 +1761,35 @@ def test_height_review_wait_is_capped_by_the_remaining_budget_and_cancel_still_s
     with pytest.raises(JobFailed) as exc:
         handler(ctx)
     assert exc.value.code == "CANCELLED"
+
+
+def test_human_waits_never_eat_the_map_share_of_the_execution_limit() -> None:
+    """S15P31A101-688: 실행 상한(1,800 s)은 사람 대기 몫과 기계 몫의 합이다. 높이 확인을 끝까지(180 s) 기다리고 카메라 확인 걷기 시작을
+    대기 마감 직전에 눌러도, 통과한 뒤 맵(미리보기·굽기)에 맵 몫(600 s) 이상이 남는다(통과한 확인을 굽기 시간 초과로 버리지 않는다)."""
+    assert SETUP_TIME_BUDGET_S == pytest.approx(1800.0)
+    events: list[str] = []
+    checker = _FakeChecker([["PASSED"]], events=events)
+    box: dict[str, JobContext] = {}
+    left_at_bake: list[float] = []
+
+    def bake(**kw: Any) -> Any:
+        left_at_bake.append(box["ctx"].remaining_s())
+        return SiteSetupHandler._default_texture_baker(**kw)
+
+    handler, inp, _, t = _height_handler(_ONE_LOW, quality_gate={"height_max_diff_cm": 50.0}, camera_check=checker,
+                                         camera_check_poll_s=1.0, texture_baker=bake)
+    ctx = box["ctx"] = _ctx("job-budget", inp, t, timeout_ms=1_800_000)
+    # 높이 결정은 오지 않는다(180 s 를 다 기다림). 카메라 확인 단계는 그 뒤 600 s 이고, 마감 20 s 전에 「걷기 시작」
+    stage_end = SETUP_BUDGET_HEIGHT_REVIEW_S + SETUP_BUDGET_CAMERA_CHECK_S
+    handler._sleep = _press(box, t, {stage_end - 20.0: 1})
+    result = handler(ctx)
+
+    assert _reviews(ctx)[0]["wait_s"] == pytest.approx(SETUP_BUDGET_HEIGHT_REVIEW_S)
+    assert _reviews(ctx)[-1]["status"] == "TIMED_OUT"
+    assert _checks(ctx)[0]["user_wait"]["wait_s"] == pytest.approx(SETUP_BUDGET_CAMERA_CHECK_S, abs=1.0)
+    assert result["camera_check"]["status"] == "PASSED"
+    assert len(left_at_bake) == 1 and left_at_bake[0] >= SETUP_BUDGET_MAP_S
+    assert t.now <= stage_end
 
 
 def test_height_review_same_multiplier_error_passes_and_known_decision_skips_the_wait() -> None:

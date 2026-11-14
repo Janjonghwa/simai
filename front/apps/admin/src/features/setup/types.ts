@@ -528,6 +528,12 @@ export const setupSessionResponseSchema = z.object({
   camera_check: cameraCheckSchema.nullish().catch(null),
   /** 서버 관문 판정(-646): PASSED 이고 그 확인의 보정이 세션 보정과 같다. 그 전 서버는 싣지 않는다(null) */
   camera_check_passed: z.boolean().nullish().catch(null),
+  /**
+   * 세팅 완료를 막는 세션 쪽 이유(S15P31A101-688, 서버 SetupCompletionGate 와 같은 판정). 완료할 수 있으면 null.
+   * SETUP_NOT_READY_TO_COMPLETE · SETUP_CAMERA_CHECK_NOT_PASSED · SETUP_FINAL_MAP_NOT_READY · SETUP_FINAL_MAP_SKIPPED.
+   * 그 전 서버는 싣지 않는다(undefined, 화면이 같은 규칙으로 계산한다)
+   */
+  complete_blocked_reason: z.string().nullish().catch(null),
   /** 걷기 창 단계(-687). 그 전 서버는 싣지 않는다(null, 걷기 창 없이 시도 중으로만 본다) */
   camera_check_phase: cameraCheckPhaseSchema.nullish().catch(null),
   /** 관리자의 마지막 「걷기 시작」·「확인만 다시」 요청(-687). 없으면 null */

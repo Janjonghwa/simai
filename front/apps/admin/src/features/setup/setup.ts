@@ -759,15 +759,51 @@ export function isPreviewSceneReady(session: SetupSessionResponse | null | undef
   );
 }
 
+const COMPLETE_READY_STAGES: ReadonlySet<string> = new Set([
+  'READY_FOR_ZONES',
+  'BAKING_TEXTURE',
+  'COMPLETED',
+]);
+
 /**
- * 3D 맵이 완전히 만들어졌는지: 정밀 3D 맵까지 끝났거나, 작업 시작으로 정밀 굽기를 건너뛰고 끝난 세팅이다.
- * 미리보기 맵만 있는 동안(정밀 맵을 굽는 중)은 구역 단계로 넘어가지 않는다.
+ * 세팅 완료를 막는 맵 쪽 이유(서버 SetupCompletionGate 의 맵 판정과 같다, S15P31A101-688). 맵이 준비됐으면 null.
+ * 새 모델은 정밀 3D 맵(scene_version)이 있어야 하고 미리보기로는 완료하지 않는다. 이전 맵 재사용은 미리보기 단계 이후이고 기존 맵
+ * 맞추기(world_anchor)가 채택됐어야 한다.
+ */
+export function completeMapBlockedReason(
+  session: SetupSessionResponse | null | undefined,
+): 'SETUP_NOT_READY_TO_COMPLETE' | 'SETUP_FINAL_MAP_NOT_READY' | 'SETUP_FINAL_MAP_SKIPPED' | null {
+  if (!session || !COMPLETE_READY_STAGES.has(session.status)) return 'SETUP_NOT_READY_TO_COMPLETE';
+  if (session.mode === 'REUSE') {
+    return session.world_anchor?.accepted === true ? null : 'SETUP_NOT_READY_TO_COMPLETE';
+  }
+  if (session.scene_version) return null;
+  return session.bake_skipped ? 'SETUP_FINAL_MAP_SKIPPED' : 'SETUP_FINAL_MAP_NOT_READY';
+}
+
+/**
+ * 세팅 완료(POST .../complete)를 막는 세션 쪽 이유. 완료할 수 있으면 null. 서버가 complete_blocked_reason 을 실으면 그 값을 그대로
+ * 따르고(완료 요청과 같은 판정), 싣지 않는 이전 서버면 같은 순서로 계산한다: 단계 → 카메라 확인 → 정밀 맵.
+ * 작업 쪽 조건(오늘·관제 중·확인 필요 구역)은 완료 요청이 따로 거부한다.
+ */
+export function completeBlockedReason(
+  session: SetupSessionResponse | null | undefined,
+): string | null {
+  if (!session) return 'SETUP_NOT_READY_TO_COMPLETE';
+  if (session.complete_blocked_reason !== undefined) return session.complete_blocked_reason ?? null;
+  const map = completeMapBlockedReason(session);
+  if (map === 'SETUP_NOT_READY_TO_COMPLETE') return map;
+  if (session.camera_check_passed === false) return 'SETUP_CAMERA_CHECK_NOT_PASSED';
+  return map;
+}
+
+/**
+ * 3D 맵이 완전히 만들어졌는지(세팅 완료의 맵 조건과 같다, S15P31A101-688): 새 모델은 정밀 3D 맵까지 끝났고, 재사용은 기존 맵
+ * 맞추기가 채택됐다. 미리보기 맵만 있는 동안(정밀 맵을 굽는 중)이나 작업 시작으로 굽기가 회수된 세팅은 구역 단계로 넘어가지 않는다.
  */
 export function isSceneMapComplete(session: SetupSessionResponse | null | undefined): boolean {
   if (!session || session.status === 'FAILED') return false;
-  return (
-    deriveSceneTierStatus(session).tier === 'FINAL' || session.bake_skipped === 'LIVE_WORK_STARTED'
-  );
+  return completeMapBlockedReason(session) === null;
 }
 
 /** 현재 세션의 Scene 단계(미리보기 맵 vs 고화질 정식 Scene 자동 교체)를 계산한다. */
@@ -780,7 +816,8 @@ export function deriveSceneTierStatus(
   const bakingTexture = currentStage === 'BAKING_TEXTURE';
 
   // 작업 시작(LIVE)으로 정밀 굽기를 회수하고 끝난 세팅(site_setup 1.7.0 bake_skipped, S15P31A101-597, 명세 3.2 5항).
-  // COMPLETED 여도 정식 Scene 이 없으니 '정밀 3D 맵'으로 보이지 않고 미리보기 맵으로 관제 중임을 밝힌다
+  // COMPLETED 여도 정식 Scene 이 없으니 '정밀 3D 맵'으로 보이지 않는다. 새 모델은 정밀 맵 전에 완료하지 않으므로(-688) 이 세팅으로는
+  // 완료할 수 없음을 밝힌다
   if (session?.bake_skipped === 'LIVE_WORK_STARTED' && !finalSceneVersion) {
     return {
       tier: 'PREVIEW',
@@ -788,7 +825,8 @@ export function deriveSceneTierStatus(
       finalSceneVersion: null,
       bakingTexture: false,
       label: '미리보기 맵',
-      description: '작업 시작으로 정밀 텍스처 굽기를 건너뜀 · 미리보기 맵으로 관제 중',
+      description:
+        '다른 작업이 시작돼 정밀 맵 굽기가 멈춤 · 이 세팅으로는 완료할 수 없습니다(작업이 끝난 뒤 다시 세팅)',
     };
   }
 

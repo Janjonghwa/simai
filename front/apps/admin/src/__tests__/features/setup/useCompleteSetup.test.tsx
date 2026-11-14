@@ -52,6 +52,8 @@ async function sessionAt(status: SetupSessionResponse['status']): Promise<string
     stage: status,
     calibration_version: 'cal-1',
     preview_scene_version: 'scene-preview-1',
+    // 새 모델은 정밀 3D 맵 뒤에만 완료한다(-688). 완료하는 시험은 COMPLETED 로 연다
+    scene_version: status === 'COMPLETED' ? 'scene-final-1' : null,
   });
   return created.setup_session_id;
 }
@@ -83,7 +85,7 @@ async function renderCompletion(id: string | null) {
 
 describe('useCompleteSetup', () => {
   it('저장한 구역이 없으면 보관 경고를 묻고, 취소하면 완료하지 않고 false 를 돌려준다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const { result, run } = await renderCompletion(id);
 
@@ -94,7 +96,7 @@ describe('useCompleteSetup', () => {
   });
 
   it('확인하면 완료를 부르고 true 를 돌려주며 적용 결과와 완료한 세션을 남긴다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { result, run } = await renderCompletion(id);
 
@@ -110,7 +112,7 @@ describe('useCompleteSetup', () => {
   });
 
   it('구역 목록을 저장했으면 묻지 않고 완료한다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     server.use(
       http.get('*/api/setup-sessions/:id/zones', ({ params }) =>
         HttpResponse.json({
@@ -128,7 +130,7 @@ describe('useCompleteSetup', () => {
   });
 
   it('거부되면 코드별 안내를 error 에 두고 false 를 돌려주며, 다시 시도하면 안내를 지우고 다시 부른다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     server.use(
       http.post('*/api/setup-sessions/:id/complete', () =>
@@ -153,7 +155,7 @@ describe('useCompleteSetup', () => {
   it.each(['SETUP_ZONE_STALE', 'SETUP_ALREADY_COMPLETED'])(
     '%s 로 거부되면 구역 목록·관제 구역·세션을 다시 받도록 무효화한다',
     async (code) => {
-      const id = await sessionAt('READY_FOR_ZONES');
+      const id = await sessionAt('COMPLETED');
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       server.use(
         http.post('*/api/setup-sessions/:id/complete', () => problem(409, code, '서버 안내')),
@@ -170,7 +172,7 @@ describe('useCompleteSetup', () => {
   );
 
   it('그 밖의 거부는 구역 목록을 다시 받지 않는다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     server.use(
       http.post('*/api/setup-sessions/:id/complete', () =>
@@ -185,7 +187,7 @@ describe('useCompleteSetup', () => {
   });
 
   it('구역 목록을 받지 못하면 완료를 부르지 않고 안내와 함께 false 를 돌려준다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     let completeCalls = 0;
     server.use(
       http.get('*/api/setup-sessions/:id/zones', () => problem(500, 'INTERNAL', '서버 오류')),
@@ -206,7 +208,7 @@ describe('useCompleteSetup', () => {
   });
 
   it('요청하는 동안 pending 이 켜지고 그동안 다시 부르면 아무것도 하지 않는다', async () => {
-    const id = await sessionAt('READY_FOR_ZONES');
+    const id = await sessionAt('COMPLETED');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     server.use(http.post('*/api/setup-sessions/:id/complete', () => delay('infinite')));
     const { result } = await renderCompletion(id);

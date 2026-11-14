@@ -104,7 +104,8 @@ SUPPLEMENT_MAX_MEDIA_BYTES = 4 << 30  # 계약 size_bytes 상한(4 GiB)
 # 보조 촬영을 넣을 수 없는 굽기 경로: 방식 2 는 보정 자세로 WorldMirror 를 조건 거는데 보조 프레임에는 보정 자세가 없다
 SUPPLEMENT_UNSUPPORTED_PATHS = ("method2", "method2_calib_wm2", "auto")
 # 세팅 배경 촬영은 카메라마다 최소 12장 × 1 s ≈ 12 s(services/tier0/settings.py CleanBackgroundSettings.setup_*, -686).
-# 기다림 기본 240 s = 사람이 화면 밖으로 나가 그 카메라만 다시 찍을 여유. 실행 상한(서버 900 s) 안에서 복원·굽기 시간을 남긴다
+# 기다림 기본 240 s = 사람이 화면 밖으로 나가 그 카메라만 다시 찍을 여유. 실행 상한(서버 1,800 s)의 배경 촬영 몫
+# (site_setup.SETUP_BUDGET_BACKGROUND_S, -688)이라 복원·높이 확인·카메라 확인·굽기 몫을 깎지 않는다
 DEFAULT_BACKGROUND_WAIT_S = 240.0
 DEFAULT_BACKGROUND_POLL_S = 2.0
 # Tier 0 가 아직 응답하지 않았을 때 표시에 쓰는 카메라당 최소 표본 수(Tier 0 기본값). 응답이 오면 그 값을 쓴다

@@ -214,7 +214,7 @@ describe('개발 서버 세팅 mock: 시간이 지나면 미리보기 맵이 준
 });
 
 describe('개발 서버 세팅 mock: 세팅 완료(POST .../complete, -615)', () => {
-  it('미리보기 맵 전에는 SETUP_NOT_READY_TO_COMPLETE, 완료 뒤 다시 누르면 SETUP_ALREADY_COMPLETED 이고 보강은 막힌다', async () => {
+  it('미리보기 맵 전에는 SETUP_NOT_READY_TO_COMPLETE, 미리보기만 있으면 SETUP_FINAL_MAP_NOT_READY(-688), 완료 뒤 다시 누르면 SETUP_ALREADY_COMPLETED 이고 보강은 막힌다', async () => {
     const { sessionId } = await startSetupFor();
     await expect(completeSetupSession(http, sessionId)).rejects.toMatchObject({
       code: 'SETUP_NOT_READY_TO_COMPLETE',
@@ -225,6 +225,14 @@ describe('개발 서버 세팅 mock: 세팅 완료(POST .../complete, -615)', ()
       stage: 'READY_FOR_ZONES',
       preview_scene_version: 'scene-preview-1',
       calibration_version: 'cal-8',
+    });
+    await expect(completeSetupSession(http, sessionId)).rejects.toMatchObject({
+      code: 'SETUP_FINAL_MAP_NOT_READY',
+    });
+    setupMock.updateSession(sessionId, {
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      scene_version: 'scene-final-1',
     });
     await completeSetupSession(http, sessionId);
     await expect(completeSetupSession(http, sessionId)).rejects.toMatchObject({
@@ -246,7 +254,11 @@ describe('새 모델 + World 이어짐의 확인 필요 구역(S15P31A101-629)',
 
   it('구역 목록을 지금 관제 구역으로 확인 필요로 채우고, 남아 있으면 완료를 409 로 거부하며 모두 확인하면 완료한다', async () => {
     const { sessionId } = await startSetupFor();
-    setupMock.updateSession(sessionId, { status: 'READY_FOR_ZONES', stage: 'READY_FOR_ZONES' });
+    setupMock.updateSession(sessionId, {
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      scene_version: 'scene-final-1',
+    });
     const seeded = await seedSetupZonePlan(http, sessionId);
     expect(seeded.revision).toBe(1);
     expect(seeded.items.length).toBe(readZones(MOCK_ZONES).length);

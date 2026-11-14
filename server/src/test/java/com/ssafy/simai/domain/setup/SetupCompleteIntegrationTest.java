@@ -182,6 +182,10 @@ class SetupCompleteIntegrationTest {
         ArrayNode items = mapper.createArrayNode();
         items.addObject().put("source", "MANUAL").set("zone", zoneBody("세팅 완료 새 구역"));
         putPlan(s.sessionId(), items, 0).andExpect(status().isOk());
+        // 새 모델은 정밀 맵까지 기다린다(S15P31A101-688). 정밀 맵이 완료 전에 와도 관제 맵·묶음은 그대로다
+        String baked = baked(s, preview);
+        assertThat(currentScene()).isNotEqualTo(baked);
+        assertThat(bundleCount()).isZero();
 
         // 발행 시점: 같은 트랜잭션에서 완료 기록과 적용한 구역이 이미 보여야 한다(적용 → 완료 기록 → 발행)
         List<Boolean> completedAtPublish = new CopyOnWriteArrayList<>();
@@ -219,10 +223,10 @@ class SetupCompleteIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM config_bundle_item WHERE config_version = ? AND item_type = 'ZONE' AND item_id = ?
                 """, Integer.class, configVersion, createdZone)).isEqualTo(1);
-        // 새 모델: 이 세션 맵(굽기 전이라 미리보기)을 켠다
-        assertThat(currentScene()).isEqualTo(preview);
+        // 새 모델: 이 세션의 정밀 맵을 켠다
+        assertThat(currentScene()).isEqualTo(baked);
         assertThat(jdbc.queryForObject("SELECT actor FROM scene_activation WHERE scene_version = ? ORDER BY activated_at DESC LIMIT 1",
-                String.class, preview)).isEqualTo("setup:" + s.sessionId());
+                String.class, baked)).isEqualTo("setup:" + s.sessionId());
         verify(tbmFormAi, timeout(5_000)).tryStartDraftForWork(workUnitId);
         assertThat(committedAtTbm).containsExactly(true);
 
@@ -252,37 +256,53 @@ class SetupCompleteIntegrationTest {
     }
 
     @Test
-    void 완료_뒤_도착한_정식_맵은_미리보기를_교체하고_묶음을_다시_만들지_않는다() throws Exception {
+    void 새_모델은_정밀_맵_전에는_완료를_거부하고_세션_조회가_같은_이유를_싣는다() throws Exception {
+        // S15P31A101-688: 미리보기(85%)로 완료하면 남은 굽기가 작업 시작으로 회수돼 맵이 미리보기 품질로 남는다. 정밀 맵까지 기다린다
         Session s = startSession();
+        assertThat(blockedReason(s)).isEqualTo("SETUP_NOT_READY_TO_COMPLETE");
         String preview = ready(s);
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(preview);
+        assertThat(blockedReason(s)).isEqualTo("SETUP_FINAL_MAP_NOT_READY");
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
+        mvc.perform(heartbeat(s, 0.9, withChecks(snapshot(s.sessionId(), "BAKING_TEXTURE", 90.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview))).andExpect(status().isOk());
+        assertThat(blockedReason(s)).isEqualTo("SETUP_FINAL_MAP_NOT_READY");
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
+        assertThat(jdbc.queryForObject("SELECT setup_completed_at IS NULL FROM work_unit WHERE work_id = ?", Boolean.class,
+                workUnitId)).isTrue();
+        assertThat(bundleCount()).isZero();
 
-        String prefix = prefix(s);
-        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
-        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
-                .put("calibration_version", newCalibration).put("preview_scene_version", preview).put("scene_version", baked);
-        ObjectNode artifacts = result.putObject("artifacts");
-        artifacts.set("calibration_document", calRef(s));
-        artifacts.set("preview_scene", previewRef(s));
-        artifacts.set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
-        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        String baked = baked(s, preview);
+        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
+        assertThat(view.has("complete_blocked_reason")).isTrue();
+        assertThat(view.get("complete_blocked_reason").isNull()).isTrue();
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
         assertThat(currentScene()).isEqualTo(baked);
         assertThat(bundleCount()).isEqualTo(1);
+    }
+
+    @Test
+    void 작업_시작으로_굽기를_회수한_새_모델_세팅은_완료할_수_없다() throws Exception {
+        Session s = startSession();
+        String preview = ready(s);
+        // 같은 현장 다른 작업의 시작으로 정식 굽기를 회수한 COMPLETED(-597·-625): 정밀 맵이 없다
+        jdbc.update("""
+                UPDATE setup_session SET status = 'COMPLETED', bake_skipped = 'LIVE_WORK_STARTED', completed_at = now()
+                WHERE setup_session_id = ?::uuid
+                """, s.sessionId());
+        assertThat(blockedReason(s)).isEqualTo("SETUP_FINAL_MAP_SKIPPED");
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_SKIPPED"));
+        assertThat(currentScene()).isNotEqualTo(preview);
+        assertThat(bundleCount()).isZero();
     }
 
     @Test
     void 완료_전에_끝난_정식_맵은_올리지_않고_완료가_그_맵을_켠다() throws Exception {
         Session s = startSession();
         String preview = ready(s);
-        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
-        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
-                .put("calibration_version", newCalibration).put("preview_scene_version", preview).put("scene_version", baked);
-        ObjectNode artifacts = result.putObject("artifacts");
-        artifacts.set("calibration_document", calRef(s));
-        artifacts.set("preview_scene", previewRef(s));
-        artifacts.set("scene", put(prefix(s) + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
-        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        String baked = baked(s, preview);
         assertThat(currentScene()).isNotEqualTo(baked);
         assertThat(bundleCount()).isZero();
 
@@ -301,6 +321,10 @@ class SetupCompleteIntegrationTest {
         mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SETUP_NOT_READY_TO_COMPLETE"));
         String preview = ready(s);
+        // 새 모델은 정밀 맵 전에는 완료하지 않는다(S15P31A101-688)
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
+        String baked = baked(s, preview);
         // 열람자는 못 한다
         mvc.perform(post("/api/setup-sessions/{id}/complete", s.sessionId()).with(viewerJwt())).andExpect(status().isForbidden());
 
@@ -346,7 +370,7 @@ class SetupCompleteIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT setup_completed_at IS NULL FROM work_unit WHERE work_id = ?", Boolean.class,
                 workUnitId)).isTrue();
         assertThat(bundleCount()).isZero();
-        assertThat(currentScene()).isNotEqualTo(preview);
+        assertThat(currentScene()).isNotEqualTo(baked);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM zone WHERE zone_id = ? AND valid_to IS NULL", Integer.class, existing))
                 .isEqualTo(1);
         verify(tbmFormAi, never()).tryStartDraftForWork(anyLong());
@@ -358,7 +382,7 @@ class SetupCompleteIntegrationTest {
                 """, s.sessionId());
         mvc.perform(complete(s.sessionId())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.applied_zones.kept[0]").value(existing));
-        assertThat(currentScene()).isEqualTo(preview);
+        assertThat(currentScene()).isEqualTo(baked);
     }
 
     @Test
@@ -389,6 +413,7 @@ class SetupCompleteIntegrationTest {
         assertThat(view.path("camera_check").path("problems").get(0).path("id").asString()).isEqualTo("cam_A-cam_B");
         assertThat(view.path("camera_check_passed").asBoolean()).isFalse();
         assertThat(view.path("quality_gate").path("verdict").asString()).isEqualTo("NEEDS_CHECK");
+        assertThat(view.path("complete_blocked_reason").asString()).isEqualTo("SETUP_CAMERA_CHECK_NOT_PASSED");
         mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
         assertThat(bundleCount()).isZero();
@@ -400,13 +425,16 @@ class SetupCompleteIntegrationTest {
         assertThat(view.path("camera_check").path("status").asString()).isEqualTo("PASSED");
         assertThat(view.path("camera_check_passed").asBoolean()).isTrue();
         assertThat(view.path("quality_gate").path("verdict").asString()).isEqualTo("NEEDS_CHECK");
+        // 통과한 뒤에는 정밀 맵만 남는다(S15P31A101-688)
+        assertThat(view.path("complete_blocked_reason").asString()).isEqualTo("SETUP_FINAL_MAP_NOT_READY");
+        baked(s, preview);
         mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
     }
 
     @Test
     void 확인_필요_구역이_남으면_완료를_거부하고_모두_확인하면_완료한다() throws Exception {
         Session s = startSession();
-        String preview = ready(s);
+        String baked = baked(s, ready(s));
         String existing = "z-review-" + suffix;
         jdbc.update("""
                 INSERT INTO zone(zone_id,zone_version,site_id,name,zone_kind,eval_type,polygon,severity,valid_from,created_by)
@@ -437,7 +465,7 @@ class SetupCompleteIntegrationTest {
         putPlan(s.sessionId(), confirmed, 1).andExpect(status().isOk());
         JsonNode done = body(mvc.perform(complete(s.sessionId())).andExpect(status().isOk()).andReturn());
         assertThat(done.at("/applied_zones/kept").toString()).contains(existing);
-        assertThat(currentScene()).isEqualTo(preview);
+        assertThat(currentScene()).isEqualTo(baked);
     }
 
     // ---------------------------------------------------------------- 도우미
@@ -467,6 +495,26 @@ class SetupCompleteIntegrationTest {
         artifacts.set("preview_scene", previewRef(s));
         mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
         return preview;
+    }
+
+    /** 정밀 맵 굽기 끝(COMPLETED 결과): 정식 GLB 등록. 정밀 맵 버전을 돌려준다 */
+    private String baked(Session s, String preview) throws Exception {
+        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview).put("scene_version", baked);
+        ObjectNode artifacts = result.putObject("artifacts");
+        artifacts.set("calibration_document", calRef(s));
+        artifacts.set("preview_scene", previewRef(s));
+        artifacts.set("scene", put(prefix(s) + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
+        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        return baked;
+    }
+
+    /** 세션 조회의 complete_blocked_reason(완료할 수 있으면 null) */
+    private String blockedReason(Session s) throws Exception {
+        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
+                .andExpect(status().isOk()).andReturn());
+        return view.path("complete_blocked_reason").isNull() ? null : view.path("complete_blocked_reason").asString();
     }
 
     private int bundleCount() {
