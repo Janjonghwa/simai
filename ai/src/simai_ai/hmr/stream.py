@@ -16,8 +16,9 @@ from time import perf_counter
 from typing import Protocol
 
 from simai_ai.geometry.rig import CameraRig
-from simai_ai.hmr.gltf_export import build_skinned_glb
 from simai_ai.hmr.appearance_worker import AppearanceWorker
+from simai_ai.hmr.diagnostics import is_upload_conflict
+from simai_ai.hmr.gltf_export import build_skinned_glb
 from simai_ai.hmr.multiview import aggregate_frame
 from simai_ai.hmr.pose import mhr_pose
 from simai_ai.hmr.prompt import valid_box
@@ -196,6 +197,8 @@ class AvatarLoop:
         else:
             self.initial_freeze_frames = max(1, min(int(initial_freeze_frames), freeze_frames))
         self.people = {}
+        self._high_versions = {}
+        self._last_versions = {}
         self.last_t = -1
         self.last_infer_ms = -1
         self.skipped = 0
@@ -223,10 +226,23 @@ class AvatarLoop:
         if self._appearance_worker is not None:
             self._appearance_worker.close()
 
-    def _reserve_version(self, state):
+    def _reserve_version(self, state, wid=None):
         with self._state_lock:
-            state.high_version = max(state.version, state.high_version) + 1
+            high = max(state.version, state.high_version)
+            if wid is not None:
+                high = max(high, self._high_versions.get(wid, -1))
+            state.high_version = high + 1
+            if wid is not None:
+                self._high_versions[wid] = state.high_version
             return state.high_version
+
+    def _previous_version(self, wid, state, version):
+        if version <= 0:
+            return None
+        if state.history:
+            return max(state.history)
+        prev = self._last_versions.get(wid, version - 1)
+        return prev if 0 <= prev < version else version - 1
 
     def _commit_appearance(self):
         if self._appearance_worker is None or not self.gate.check().admit:
@@ -243,10 +259,14 @@ class AvatarLoop:
                 if (state is not original or state.revision != revision or state.generation != generation
                         or state.stable == 0 or asset["appearance_version"] <= max(state.history, default=-1)):
                     continue
-                asset = {**asset, "previous_appearance_version": max(state.history, default=None)}
+                version = asset["appearance_version"]
+                asset = {**asset, "previous_appearance_version": self._previous_version(wid, state, version)}
                 self.sender.discard_poses()
                 self.sender.asset(asset)
-                state.asset, state.version = asset, asset["appearance_version"]
+                state.asset, state.version = asset, version
+                state.high_version = max(state.high_version, version)
+                self._high_versions[wid] = max(self._high_versions.get(wid, -1), state.high_version)
+                self._last_versions[wid] = max(self._last_versions.get(wid, -1), version)
                 state.history[state.version] = asset
                 self.assets += 1
 
@@ -345,6 +365,11 @@ class AvatarLoop:
         self.last_t = t
         active = {tr["world_id"] for tr in doc["tracks"] if tr.get("track_lifecycle") != "LOST"}
         with self._state_lock:
+            for wid, st in self.people.items():
+                if max(st.version, st.high_version) >= 0:
+                    self._high_versions[wid] = max(self._high_versions.get(wid, -1), st.version, st.high_version)
+                if st.version >= 0:
+                    self._last_versions[wid] = max(self._last_versions.get(wid, -1), st.version)
             self.people = {wid: st for wid, st in self.people.items() if wid in active}
         self.sender.retain(active)
         rig = CameraRig.from_provider(SnapshotCalibration(snapshot["calibration"]))
@@ -357,8 +382,16 @@ class AvatarLoop:
                 continue
             aliases = tuple(tr.get("aliases") or ())
             split_from = tr.get("split_from")
-            state = self.people.setdefault(wid, PersonState(rev, aliases=aliases, split_from=split_from))
             with self._state_lock:
+                state = self.people.get(wid)
+                if state is None:
+                    state = PersonState(
+                        rev,
+                        high_version=self._high_versions.get(wid, -1),
+                        aliases=aliases,
+                        split_from=split_from,
+                    )
+                    self.people[wid] = state
                 if state.revision != rev:
                     absorbed = pure_merge_absorbed(wid, state.revision, state.aliases, state.split_from,
                                                    rev, aliases, split_from, marks)
@@ -438,13 +471,18 @@ class AvatarLoop:
                         state.pending_frames_used = len(state.samples)
                     glb = state.pending_glb
                     if state.pending_version is None:
-                        state.pending_version = self._reserve_version(state)
+                        state.pending_version = self._reserve_version(state, person.world_id)
                     version = state.pending_version
-                    uri = self._timed("upload", self._counted_upload, person.world_id, self.sender.epoch, version, glb)
+                    try:
+                        uri = self._timed("upload", self._counted_upload, person.world_id, self.sender.epoch, version, glb)
+                    except Exception as error:
+                        if is_upload_conflict(error):
+                            state.pending_version = self._reserve_version(state, person.world_id)
+                        raise
                     prev_same_rev = state.asset if asset_current(state) else None
                     asset = {"world_id": person.world_id, "stream_epoch": self.sender.epoch,
                              "identity_revision": state.revision, "appearance_version": version,
-                             "previous_appearance_version": max(state.history) if state.history else None,
+                             "previous_appearance_version": self._previous_version(person.world_id, state, version),
                              "created_at_ms": self.clock_ms(), "calibration_version": frame.calibration_version,
                              "model_version": self.model.model_version, "input_provenance": doc["input_provenance"],
                              "mesh": {"format": "GLB_SKINNED", "object_uri": uri, "sha256": glb.sha256,
@@ -464,6 +502,12 @@ class AvatarLoop:
                              "face_policy": "OBSERVED"}
                     state.asset, state.version = asset, version
                     state.high_version = max(state.high_version, version)
+                    self._high_versions[person.world_id] = max(
+                        self._high_versions.get(person.world_id, -1), state.high_version
+                    )
+                    self._last_versions[person.world_id] = max(
+                        self._last_versions.get(person.world_id, -1), version
+                    )
                     state.history[version] = asset
                     if state.pending_target_frozen:
                         state.shape_frozen = True

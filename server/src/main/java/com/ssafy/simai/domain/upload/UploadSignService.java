@@ -16,6 +16,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -37,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class UploadSignService {
 
+    private static final Logger log = LoggerFactory.getLogger(UploadSignService.class);
     private static final Pattern SHA256 = Pattern.compile("^[0-9a-f]{64}$");
     private static final Pattern WORLD_ID = Pattern.compile("^[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,63}$");
     private static final Pattern AVATAR_FILE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");
@@ -119,6 +122,8 @@ public class UploadSignService {
                 RETURNING grant_id
                 """, params, Long.class);
         if (granted.isEmpty()) {
+            log.warn("업로드 키 충돌 거부: purpose={} key={} requester={} sizeBytes={} sha256={}",
+                    purpose.name(), key, who.kind().stored(), size, sha256);
             throw new BusinessException(ErrorCode.Storage.UPLOAD_KEY_CONFLICT);
         }
         // 서명이 실패하면(자격 증명 없음 등 503) 트랜잭션이 되돌아가 발급 기록도 남지 않는다

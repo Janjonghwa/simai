@@ -203,16 +203,27 @@ class UploadSignIntegrationTest {
                 .containsEntry("requested_by_worker", workerId)
                 .containsEntry("sha256", SHA);
 
-        // 같은 내용으로 재시도하면 같은 키로 다시 서명받는다
+        // 같은 내용으로 재시도하면 만료 전·후 모두 같은 키로 멱등하게 다시 서명받는다
+        assertThat(ok(sign(worker, meshReq)).get("object_key").stringValue()).isEqualTo(expectedKey);
+        jdbc.update("UPDATE upload_grant SET expires_at = now() - interval '1 second' WHERE object_key = ?", expectedKey);
         assertThat(ok(sign(worker, meshReq)).get("object_key").stringValue()).isEqualTo(expectedKey);
 
-        // 다른 내용(해시)으로 같은 버전 경로를 덮어쓰려 하면 만료 뒤에도 409 로 거부한다(규칙 6)
+        // 다른 내용(해시·크기)으로 같은 버전 경로를 덮어쓰려 하면 만료 뒤에도 409 로 거부하고, 다음 버전으로는 발급한다(규칙 6, S15P31A101-695)
         jdbc.update("UPDATE upload_grant SET expires_at = now() - interval '1 second' WHERE object_key = ?", expectedKey);
         Map<String, Object> overwriteReq = new HashMap<>(meshReq);
         overwriteReq.put("sha256", "b".repeat(64));
         sign(worker, overwriteReq)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("UPLOAD_KEY_CONFLICT"));
+        Map<String, Object> sizeConflictReq = new HashMap<>(meshReq);
+        sizeConflictReq.put("size_bytes", 1843208);
+        sign(worker, sizeConflictReq)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("UPLOAD_KEY_CONFLICT"));
+        Map<String, Object> nextVersionReq = new HashMap<>(overwriteReq);
+        nextVersionReq.put("appearance_version", 4);
+        assertThat(ok(sign(worker, nextVersionReq)).get("object_key").stringValue())
+                .isEqualTo("avatars/w-0012/e1760342000000/v4/mesh.glb");
 
         // 표면 출처 지도(file_name 지정)와 식별자 없는 기본 요청도 동작한다
         JsonNode maskSigned = ok(sign(worker, Map.of(

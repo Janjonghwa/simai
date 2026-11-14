@@ -462,6 +462,78 @@ def test_upload_retry_reuses_identical_bytes_for_same_asset_version(rig):
     assert loop.people["w-1"].asset is not None
 
 
+def test_upload_409_conflict_advances_pending_version_without_rebake_and_validates_contract(rig):
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    attempts = []
+    bake_calls = [0]
+    orig_bake = model.bake
+
+    def spy_bake(samples):
+        bake_calls[0] += 1
+        return orig_bake(samples)
+
+    model.bake = spy_bake
+
+    def upload(wid, epoch, version, glb):
+        attempts.append((version, glb))
+        if version == 0:
+            raise ValueError("아바타 업로드 서명 실패 HTTP=409")
+        return f"s3://avatars/{wid}/e{epoch}/v{version}/mesh.glb"
+
+    loop.upload = upload
+    with pytest.raises(ValueError, match="HTTP=409"):
+        loop.step()
+    assert bake_calls[0] == 1 and loop.people["w-1"].pending_version == 1
+
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert [v for v, _ in attempts] == [0, 1]
+    assert attempts[0][1] is attempts[1][1] and bake_calls[0] == 1
+    asset, batch = sock.messages
+    assert asset["payload"]["appearance_version"] == 1
+    assert asset["payload"]["previous_appearance_version"] == 0
+    assert _schema_errors("avatar_asset", asset) == []
+    assert _schema_errors("avatar_pose_batch", batch) == []
+    assert violations(batch=batch, assets=[asset]) == []
+
+
+def test_track_lost_and_reentry_preserves_monotonic_version_in_same_epoch(rig):
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    versions = []
+
+    def upload(wid, epoch, version, glb):
+        versions.append(version)
+        return f"s3://avatars/{wid}/e{epoch}/v{version}/mesh.glb"
+
+    loop.upload = upload
+    loop.step()
+    sender.tick()
+    assert versions == [0] and loop.people["w-1"].version == 0
+
+    # 일시적으로 LOST 처리되어 active 에서 빠진 회차
+    clock[0] += 200
+    lost_meta, lost_imgs = snapshot(clock[0])
+    lost_meta["world"]["tracks"][0]["track_lifecycle"] = "LOST"
+    source.item = (lost_meta, lost_imgs)
+    loop.step()
+    assert "w-1" not in loop.people
+
+    # 같은 stream_epoch 안에서 같은 world_id 가 다시 ACTIVE 로 들어오면 v1 로 이어진다.
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert versions == [0, 1]
+    assert loop.people["w-1"].version == 1
+    assert loop.people["w-1"].asset["previous_appearance_version"] == 0
+    assets = [m for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    batches = [m for m in sock.messages if m["msg_type"] == "avatar_pose_batch"]
+    assert _schema_errors("avatar_asset", assets[-1]) == []
+    assert violations(batch=batches[-1], assets=assets) == []
+
+
 def test_optional_appearance_is_gate_controlled_and_failure_keeps_confirmed_poses(rig, caplog):
     clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
     calls = []

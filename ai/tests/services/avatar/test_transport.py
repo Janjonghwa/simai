@@ -11,7 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from services.avatar import transport
 from services.avatar.transport import AvatarSender, AvatarUpload
-from simai_ai.hmr.diagnostics import exception_summary
+from simai_ai.hmr.diagnostics import exception_summary, is_upload_conflict
+from simai_ai.hmr.stream import AvatarLoop
+from tests.hmr.conftest import make_rig
+from tests.hmr.test_avatar_loop import Model, Socket, snapshot
 
 
 class FakeWebSocketServer:
@@ -204,3 +207,96 @@ def test_minute_batch_count_counts_successful_sends_only_and_logs_zero_during_re
     now[0] = 120.
     sender.tick()
     assert "pose_batches=0" in caplog.text and "connected=False" in caplog.text
+
+
+def test_upload_same_hash_is_idempotent_and_409_conflict_advances_version_in_loop(monkeypatch):
+    grants = {}
+    sign_versions = []
+    put_failures = [True]
+
+    def post(path, body, timeout):
+        assert path == "/api/uploads/sign"
+        leaf = body.get("file_name", "mesh.glb")
+        key = f"avatars/{body['world_id']}/e{body['stream_epoch']}/v{body['appearance_version']}/{leaf}"
+        sign_versions.append(body["appearance_version"])
+        fingerprint = (body["content_type"], body["size_bytes"], body["sha256"])
+        if key in grants and grants[key] != fingerprint:
+            return SimpleNamespace(status=409, body={"code": "UPLOAD_KEY_CONFLICT"})
+        grants[key] = fingerprint
+        return SimpleNamespace(
+            status=200,
+            body={
+                "object_uri": f"s3://bucket/{key}",
+                "method": "PUT",
+                "upload_url": f"https://storage.test/{key}?sig=private",
+                "headers": {"Content-Type": body["content_type"]},
+            },
+        )
+
+    class Result:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def open_request(request, timeout):
+        if put_failures and put_failures.pop(0):
+            raise OSError("일시적 PUT 실패")
+        return Result()
+
+    monkeypatch.setattr(transport, "HttpTransport", lambda base, token: SimpleNamespace(post=post))
+    monkeypatch.setattr(transport, "build_opener", lambda *args: SimpleNamespace(open=open_request))
+
+    upload = AvatarUpload("https://ec2.test", "private-worker-token")
+    glb_same = SimpleNamespace(data=b"glb-a", size_bytes=5, sha256="sha256:" + "a" * 64)
+    with pytest.raises(OSError):
+        upload("w-0", 1000, 0, glb_same)
+    # 같은 해시·크기 재요청은 같은 버전(v0)으로 멱등 서명되어 성공한다.
+    assert upload("w-0", 1000, 0, glb_same) == "s3://bucket/avatars/w-0/e1000/v0/mesh.glb"
+    assert sign_versions == [0, 0]
+
+    # 이미 v0 에 다른 해시가 등록된 상태(Session 15 재현): 첫 회차는 409 로 실패하되 pending_version 이 1 로 전진한다.
+    sign_versions.clear()
+    grants["avatars/w-1/e1000/v0/mesh.glb"] = ("model/gltf-binary", 999, "0" * 64)
+    rig = make_rig()
+    clock = [1000]
+    source = SimpleNamespace(item=snapshot(clock[0]))
+    source.latest = lambda: source.item
+    sock = Socket()
+    sender = AvatarSender(lambda: sock, clock_ms=lambda: clock[0], monotonic=lambda: clock[0] / 1000, stream_epoch=1000)
+    sender.tick()
+    gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=True))
+    model = Model(rig)
+    loop = AvatarLoop(source, gate, model, upload, sender, clock_ms=lambda: clock[0], freeze_frames=1)
+
+    with pytest.raises(ValueError, match="HTTP=409") as exc_info:
+        loop.step()
+    assert is_upload_conflict(exc_info.value)
+    assert loop.people["w-1"].pending_version == 1
+
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert sign_versions == [0, 1]
+    assert loop.people["w-1"].version == 1
+    assert loop.people["w-1"].asset["previous_appearance_version"] == 0
+
+    # 트랙이 LOST 로 빠졌다가 같은 stream_epoch 에 다시 들어와도 v0 으로 돌아가지 않고 v2 로 진행한다.
+    clock[0] += 200
+    empty_meta, empty_imgs = snapshot(clock[0])
+    empty_meta["world"]["tracks"] = []
+    source.item = (empty_meta, empty_imgs)
+    loop.step()
+    assert "w-1" not in loop.people
+
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert sign_versions == [0, 1, 2]
+    assert loop.people["w-1"].version == 2
+    assert loop.people["w-1"].asset["previous_appearance_version"] == 1
+
