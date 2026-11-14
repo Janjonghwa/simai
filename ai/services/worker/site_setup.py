@@ -52,6 +52,10 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 수집기가 세팅 배경 촬�
 않으면 `CAMERA_CHECK_UNAVAILABLE` 로 끝낸다. 둘 다 미리보기·굽기를 한 번도 부르지 않는다. 서버는 PASSED 전에는 구역 단계·세팅 완료를
 거부한다(이제 맵 전에 정해지므로 뒤에서 처음 막히지 않는다).
 
+시간 예산(S15P31A101-688): 실행 상한 1,800 s 는 배경 촬영·초기 복원·높이 확인·Stage A·카메라 확인·맵 몫(`SETUP_BUDGET_*`)의 합이다.
+사람 대기(높이 확인·카메라 확인)는 각자 상한과 "남은 시간 − 뒤 단계 몫" 중 짧은 쪽까지만 기다려 뒤의 맵 몫(600 s)을 깎지 않는다.
+서버는 새 모델 세팅을 정밀 맵(scene_version)이 나온 뒤에만 완료시킨다(미리보기로 완료하지 않는다).
+
 보조 촬영(입력 `supplement_media`, S15P31A101-605)은 (h) 굽기 주입점이 처리하고 `BakedScene.supplement` 요약을 돌려주면 결과
 `supplement` 로 싣는다. 보조 촬영 때문에 세팅을 실패시키지 않는다(주입점이 FALLBACK·SKIPPED 요약으로 바꾼다).
 `mode: SUPPLEMENT_REBAKE` 는 (a)~(g) 를 건너뛰고 `rebaker` 주입점 하나로 이 세션 맵만 보조 촬영을 넣어 다시 굽는다(BAKING_TEXTURE →
@@ -463,6 +467,21 @@ CAMERA_CHECK_AWAITING_START = "AWAITING_START"  # site_setup 1.19.0 camera_check
 CAMERA_CHECK_NOT_PASSED = "CAMERA_CHECK_NOT_PASSED"  # 대기 마감까지 통과하지 못함(맵 굽지 않음)
 CAMERA_CHECK_UNAVAILABLE = "CAMERA_CHECK_UNAVAILABLE"  # 확인 채널(같은 Pod 의 Tier 0 view)을 열지 못함(맵 굽지 않음)
 
+# ---- 세팅 작업 시간 예산(S15P31A101-688, docs/design/S15P31A101-688-new-complete-time-budget.md) ----
+# 실행 상한(EC2 SetupService.SETUP_TIMEOUT_MS 1,800 s) = 아래 몫의 합. 사람이 기다리는 몫(배경 촬영·높이 확인·카메라 확인)은 각자 상한까지만
+# 쓰고 "남은 시간 − 뒤 단계 몫"으로도 줄여, 사람이 오래 기다려도 뒤의 기계 몫(특히 맵 몫)을 깎지 않는다. 그래서 앞에서 통과한 카메라 확인이
+# 굽기 시간 초과로 버려지지 않는다. 기계 몫은 15차 실측(배경 뒤 초기 복원~보정 등록 약 60 s, 미리보기 약 18 s)과 굽기 추정(약 5분)에 여유를 둔 값이다
+SETUP_BUDGET_BACKGROUND_S = 240.0  # (a) 배경 촬영(사람이 화면 밖으로, -686). site_setup_stages.DEFAULT_BACKGROUND_WAIT_S 와 같다
+SETUP_BUDGET_INITIAL_S = 120.0  # (b~c) 내부 파라미터·MapAnything 초기 복원·World(15차 약 40 s)
+SETUP_BUDGET_HEIGHT_REVIEW_S = 180.0  # (d) 높이 확인 대기(-690). 줄자로 한 대를 다시 재고 입력하는 1~2분
+SETUP_BUDGET_STAGE_A_S = 60.0  # (e~f) Stage A·품질 게이트·보정 등록(15차 약 20 s)
+SETUP_BUDGET_CAMERA_CHECK_S = 600.0  # (f') 카메라 확인: 걷기 시작 대기·시도(최대 150 s)·확인만 다시(-687)
+# (g~h) 맵: 미리보기 약 18 s + 정밀 굽기 약 300 s(15차 세팅 2 는 208 s 째 취소, Pod 추정 100~155 s·노트북 245 s)
+# + 굽기 실패 시 폴백 상한 120 s + GLB 업로드·등록·결과 제출 여유
+SETUP_BUDGET_MAP_S = 600.0
+SETUP_TIME_BUDGET_S = (SETUP_BUDGET_BACKGROUND_S + SETUP_BUDGET_INITIAL_S + SETUP_BUDGET_HEIGHT_REVIEW_S
+                       + SETUP_BUDGET_STAGE_A_S + SETUP_BUDGET_CAMERA_CHECK_S + SETUP_BUDGET_MAP_S)  # 1,800 s
+
 
 class TextureSceneBaker(Protocol):
     def __call__(
@@ -632,16 +651,16 @@ class SiteSetupHandler:
         camera_check: CameraChecker | None = None,
         camera_check_poll_s: float = 1.0,
         camera_check_report_s: float = 3.0,
-        camera_check_wait_s: float = 600.0,
+        camera_check_wait_s: float = SETUP_BUDGET_CAMERA_CHECK_S,
         camera_check_attempt_s: float = 150.0,
-        camera_check_reserve_s: float = 420.0,
+        camera_check_reserve_s: float = SETUP_BUDGET_MAP_S,
         camera_check_reuse_reserve_s: float = 30.0,
         camera_check_min_s: float = 45.0,
         camera_check_channel_s: float = 15.0,
         quality_gate: Mapping[str, Any] | None = None,
-        height_review_wait_s: float = 180.0,
+        height_review_wait_s: float = SETUP_BUDGET_HEIGHT_REVIEW_S,
         height_review_poll_s: float = 1.0,
-        height_review_reserve_s: float = 540.0,
+        height_review_reserve_s: float = SETUP_BUDGET_STAGE_A_S + SETUP_BUDGET_CAMERA_CHECK_S + SETUP_BUDGET_MAP_S,
         height_review_max_relative_diff: float = HEIGHT_REVIEW_MAX_RELATIVE_DIFF,
     ) -> None:
         """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
@@ -651,13 +670,14 @@ class SiteSetupHandler:
         camera_check: 보정 등록 뒤 맵 전에 사람 걷기로 새 보정을 확인하는 실행기(-646·-687). 없으면 확인하지 않는다(스냅샷에 싣지 않음).
         camera_check_report_s: 상태가 그대로면 카메라 확인 스냅샷을 이 간격(초)보다 자주 보내지 않는다(EC2 하트비트 부하).
         camera_check_wait_s: 카메라 확인 단계 전체(관리자 「걷기 시작」·「확인만 다시」 대기와 걷기)의 상한(초). 실행 상한까지
-        camera_check_reserve_s(NEW: 미리보기·굽기 몫) 또는 camera_check_reuse_reserve_s(REUSE: 결과 제출 몫)를 남기도록 줄인다.
+        camera_check_reserve_s(NEW: 맵 몫 SETUP_BUDGET_MAP_S) 또는 camera_check_reuse_reserve_s(REUSE: 결과 제출 몫)를 남기도록 줄인다(-688).
         camera_check_attempt_s: 시도 하나의 상한(초). 넘도록 판정을 못 하면 그 시도는 INCOMPLETE(표본 부족).
         camera_check_min_s: 단계에 이만큼도 못 쓰면 확인을 열지 않고 실패한다(걷기 30초 + 들어서는 시간).
         camera_check_channel_s: 시도를 열고 이 시간 안에 Tier 0 view 가 한 줄도 오지 않으면 확인 채널이 없다고 보고 실패한다.
         quality_gate: 보정 품질 게이트 기준 덮어쓰기(joint_ba_v2.DEFAULT_QUALITY_GATE 키).
         height_review_wait_s: 카메라 높이 빠른 확인(-690)에서 관리자 결정을 기다리는 최대 초. 실행 상한까지 height_review_reserve_s
-        (뒤 단계 몫)를 남기도록 줄인다. 넘으면 입력 높이 그대로 진행(TIMED_OUT, 품질 게이트 높이 차 상한은 그대로).
+        (뒤 단계 몫 = Stage A·등록 + 카메라 확인 전체 + 맵, -688: 높이 대기가 카메라 확인·맵 시간을 먹지 않게)를 남기도록 줄인다.
+        넘으면 입력 높이 그대로 진행(TIMED_OUT, 품질 게이트 높이 차 상한은 그대로).
         height_review_poll_s: 기다리는 동안 결정을 다시 보는 간격(초). 결정은 하트비트 응답으로 들어온다."""
         if background_wait_s < 0 or background_poll_s <= 0:
             raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
@@ -1302,6 +1322,11 @@ class SiteSetupHandler:
         # 이전 모델 재사용(-614): World 다시 맞추기 판정 전까지는 요청한 REUSE_SCENE 을 스냅샷에 싣는다. FULL_SETUP 은 지금처럼 싣지 않는다
         requested_reuse = ctx.input.get("mode") == MODE_REUSE_SCENE
         mode_fields: dict[str, Any] = {"mode": MODE_REUSE_SCENE} if requested_reuse else {}
+        remaining = ctx.remaining_s()
+        if remaining is not None and remaining < SETUP_TIME_BUDGET_S - 30.0:
+            # 옛 EC2(실행 상한 900 s)면 사람 대기 몫이 먼저 줄어든다(높이 확인을 묻지 않거나 카메라 확인 대기가 짧아짐). 맵 몫은 지킨다
+            log.warning("작업 %s: 실행 상한까지 %.0fs 로 세팅 시간 예산 합(%.0fs)보다 짧다. 사람 대기 몫을 줄여 맵 몫(%.0fs)을 지킨다",
+                        ctx.job_id, remaining, SETUP_TIME_BUDGET_S, self._cc_reserve_s)
 
         # ------------------------------------------------------------------
         # (a) COLLECTING_BACKGROUND

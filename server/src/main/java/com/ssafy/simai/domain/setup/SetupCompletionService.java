@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,7 +32,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <ol>
  *   <li>세션 구역 목록을 관제 구역으로 적용한다({@link SetupZoneApplier#apply}, 묶음 발행 없음).
  *   <li>{@code work_unit.setup_completed_at} 을 기록한다(달력 SETUP_DONE, 하루 1회).
- *   <li>새 모델(NEW)이면 이 세션의 최종 맵(다시 굽기 반영분 &gt; 정식 맵 &gt; 미리보기)을 현재 Scene 으로 켠다. 이전 모델 재사용(REUSE)은 지금 맵을 둔다.
+ *   <li>새 모델(NEW)이면 이 세션의 정밀 맵(다시 굽기 반영분 또는 정식 맵)을 현재 Scene 으로 켠다. 미리보기로는 완료하지 않는다
+ *       (S15P31A101-688, {@link SetupCompletionGate}). 이전 모델 재사용(REUSE)은 지금 맵을 둔다.
  *   <li>구성 묶음을 이 세션 보정과 함께 한 번 발행한다(Tier 0 전송은 커밋 뒤).
  * </ol>
  * 커밋 뒤에는 그 작업의 TBM AI 양식 초안을 시작한다(결과를 기다리지 않고, 실패해도 완료는 성공).
@@ -44,8 +44,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class SetupCompletionService {
 
     private static final Logger log = LoggerFactory.getLogger(SetupCompletionService.class);
-    private static final Set<String> READY_OR_LATER = Set.of("READY_FOR_ZONES", "BAKING_TEXTURE", "COMPLETED");
-
     /** 완료 결과: 적용한 구역과 만든 구성 묶음 */
     public record Completed(long workUnitId, SetupZoneApplier.ApplyResult zones, String configVersion, String sceneVersion) {
     }
@@ -80,7 +78,7 @@ public class SetupCompletionService {
     }
 
     private record SessionRow(long workUnitId, String status, String mode, boolean anchorAccepted, String calibrationVersion,
-            String previewSceneVersion, String sceneVersion, String cameraCheckStatus, String cameraCheckCalibration) {
+            String sceneVersion, String bakeSkipped, String cameraCheckStatus, String cameraCheckCalibration) {
     }
 
     private record WorkRow(String status, UUID activeSetupSessionId, boolean completed) {
@@ -88,7 +86,9 @@ public class SetupCompletionService {
 
     /**
      * 세팅을 완료한다. 거부(모두 409, 없으면 404): 세션 없음 SETUP_SESSION_NOT_FOUND, 이미 완료 SETUP_ALREADY_COMPLETED,
-     * 미리보기 전·실패 SETUP_NOT_READY_TO_COMPLETE, 카메라 확인 미통과 SETUP_CAMERA_CHECK_NOT_PASSED(-646), 작업에 걸린 세션 아님 SETUP_SESSION_NOT_ACTIVE, 오늘 아님 WORK_NOT_TODAY,
+     * 세션 쪽 판정({@link SetupCompletionGate}: 미리보기 전·실패·재사용 World 미채택 SETUP_NOT_READY_TO_COMPLETE, 카메라 확인 미통과
+     * SETUP_CAMERA_CHECK_NOT_PASSED(-646), 새 모델 정밀 맵 굽는 중 SETUP_FINAL_MAP_NOT_READY·굽기 회수 SETUP_FINAL_MAP_SKIPPED(-688)),
+     * 작업에 걸린 세션 아님 SETUP_SESSION_NOT_ACTIVE, 오늘 아님 WORK_NOT_TODAY,
      * 작업 PLANNED 아님 WORK_INVALID_STATE, 같은 현장 관제 중 SETUP_COMPLETE_BLOCKED_BY_LIVE_WORK, 구역 적용 오류(SETUP_ZONE_*, 확인 필요가 남으면 SETUP_ZONES_UNCONFIRMED)는 그대로.
      */
     public Completed complete(UUID setupSessionId, long actorUserId) {
@@ -103,12 +103,13 @@ public class SetupCompletionService {
             if (work.completed()) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_ALREADY_COMPLETED);
             }
-            if (!READY_OR_LATER.contains(session.status())) {
-                throw new BusinessException(ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE);
-            }
-            // 관제에서 뜰 카메라 경고는 세팅의 같은 검사(카메라 확인)로 먼저 통과해야 한다(S15P31A101-646)
-            if (!SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion())) {
-                throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
+            // 세션 쪽 정본 판정(S15P31A101-688): 단계 → (재사용) World 채택 → 카메라 확인(-646) → (새 모델) 정밀 맵.
+            // 세션 조회의 complete_blocked_reason 도 같은 판정이다
+            ErrorCode.Setup blocked = SetupCompletionGate.blockedReason(session.status(), session.mode(), session.anchorAccepted(),
+                    session.sceneVersion(), session.bakeSkipped(),
+                    SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion()));
+            if (blocked != null) {
+                throw new BusinessException(blocked);
             }
             if (!setupSessionId.equals(work.activeSetupSessionId())) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_ACTIVE);
@@ -136,7 +137,7 @@ public class SetupCompletionService {
                     WHERE site_id = :site AND work_id = :work
                     """, new MapSqlParameterSource("now", utcNow).addValue("site", siteId).addValue("work", session.workUnitId()));
 
-            // 3) Scene: 새 모델은 이 세션의 최종 맵을 켠다. 재사용은 지금 관제 맵을 그대로 둔다
+            // 3) Scene: 새 모델은 이 세션의 정밀 맵을 켠다. 재사용은 지금 관제 맵을 그대로 둔다
             String sceneVersion = reuse ? null : finalScene(setupSessionId, session);
             if (sceneVersion != null) {
                 scenes.activate(siteId, sceneVersion, "setup:" + setupSessionId,
@@ -164,19 +165,15 @@ public class SetupCompletionService {
     }
 
     /**
-     * 이 세션의 최종 맵: 다시 굽기 APPLIED 가 옮긴 맵 또는 정식 맵(setup_session.scene_version), 없으면(굽기 중·회수) 미리보기.
-     * 이 세션이 등록한 Scene 만 켠다. 없으면 완료할 맵이 없다(409)
+     * 이 세션의 정밀 맵: 다시 굽기 APPLIED 가 옮긴 맵 또는 정식 맵(setup_session.scene_version). 이 세션이 등록한 Scene 만 켠다.
+     * 미리보기로 대신하지 않는다(S15P31A101-688). 정밀 맵이 없으면 판정({@link SetupCompletionGate})이 먼저 막고, 이 세션 귀속이 아니면 409
      */
     private String finalScene(UUID setupSessionId, SessionRow session) {
         if (session.sceneVersion() != null
                 && artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.SCENE, session.sceneVersion())) {
             return session.sceneVersion();
         }
-        if (session.previewSceneVersion() != null
-                && artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.PREVIEW_SCENE, session.previewSceneVersion())) {
-            return session.previewSceneVersion();
-        }
-        throw new BusinessException(ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE);
+        throw new BusinessException(ErrorCode.Setup.SETUP_FINAL_MAP_NOT_READY);
     }
 
     /** TBM 양식 초안은 부가 작업이다. 커밋된 구역을 읽도록 다른 스레드에서 새 트랜잭션으로 시작하고 기다리지 않는다 */
@@ -197,7 +194,7 @@ public class SetupCompletionService {
     private SessionRow lockSession(String siteId, UUID setupSessionId) {
         List<SessionRow> rows = jdbc.query("""
                 SELECT work_unit_id, status, mode, COALESCE((world_anchor ->> 'accepted')::boolean, false) AS anchor_accepted,
-                       calibration_version, preview_scene_version, scene_version,
+                       calibration_version, scene_version, bake_skipped,
                        camera_check ->> 'status' AS camera_check_status,
                        camera_check ->> 'calibration_version' AS camera_check_calibration
                 FROM setup_session
@@ -206,7 +203,7 @@ public class SetupCompletionService {
                 """, new MapSqlParameterSource("site", siteId).addValue("id", setupSessionId),
                 (rs, i) -> new SessionRow(rs.getLong("work_unit_id"), rs.getString("status"), rs.getString("mode"),
                         rs.getBoolean("anchor_accepted"), rs.getString("calibration_version"),
-                        rs.getString("preview_scene_version"), rs.getString("scene_version"),
+                        rs.getString("scene_version"), rs.getString("bake_skipped"),
                         rs.getString("camera_check_status"), rs.getString("camera_check_calibration")));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);

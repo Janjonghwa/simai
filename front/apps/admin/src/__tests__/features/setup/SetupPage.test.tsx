@@ -1715,7 +1715,12 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     it('이전 모델 재사용 세션은 구역 단계에 들어서면 빈 구역 목록을 지금 관제 구역으로 채운다(보정·생성 단계에서는 채우지 않는다)', async () => {
       const { sessionId } = await startSetupSession();
-      setupMock.updateSession(sessionId, { ...FINAL_PATCH, mode: 'REUSE' });
+      // 재사용은 기존 맵 맞추기가 채택돼야 맵 조건을 채운다(서버 READY 규칙·완료 판정과 같다, -688)
+      setupMock.updateSession(sessionId, {
+        ...FINAL_PATCH,
+        mode: 'REUSE',
+        world_anchor: { accepted: true },
+      });
       await waitForPreviewTab();
       expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
 

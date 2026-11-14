@@ -1,4 +1,4 @@
-import { deriveSceneTierStatus } from '@/features/setup/setup';
+import { completeBlockedReason, deriveSceneTierStatus } from '@/features/setup/setup';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 
@@ -76,16 +76,17 @@ export function setupSummaryRows(
   return rows;
 }
 
-const READY_STAGES = new Set(['READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']);
-
 /** 이 세션으로 세팅을 완료했는지(서버 setup_completed_at_ms). */
 export function setupCompleted(session: SetupSessionResponse | null | undefined): boolean {
   return session?.setup_completed_at_ms != null;
 }
 
-/** 세팅을 완료할 수 있는 때: 미리보기 맵 이후(구역 단계)이고 아직 완료 전. */
+/**
+ * 세팅을 완료할 수 있는 때: 아직 완료 전이고 세션 쪽 완료 조건(서버 complete_blocked_reason 과 같은 판정, S15P31A101-688)을 모두
+ * 채웠다 — 새 모델은 정밀 3D 맵까지, 재사용은 기존 맵 맞추기까지, 둘 다 카메라 확인 통과. 미리보기 맵만으로는 완료하지 않는다.
+ */
 export function canCompleteSetup(session: SetupSessionResponse | null | undefined): boolean {
-  return session != null && READY_STAGES.has(session.status) && !setupCompleted(session);
+  return session != null && !setupCompleted(session) && completeBlockedReason(session) === null;
 }
 
 function timeOf(ms: number): string {

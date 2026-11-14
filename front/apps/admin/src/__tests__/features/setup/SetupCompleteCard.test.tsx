@@ -1,3 +1,4 @@
+import { completeBlockedReason } from '@/features/setup/setup';
 import {
   canCompleteSetup,
   emptyZonePlanConfirm,
@@ -32,16 +33,51 @@ describe('setupCompleted·canCompleteSetup·완료 요약·빈 구역 확인 글
     expect(setupCompleted(null)).toBe(false);
   });
 
-  it('미리보기 맵 이후이고 완료 전일 때만 완료할 수 있다', () => {
-    expect(canCompleteSetup({ ...base, status: 'PREVIEW_AND_VLM_DRAFT' })).toBe(false);
-    expect(canCompleteSetup({ ...base, status: 'READY_FOR_ZONES' })).toBe(true);
-    expect(canCompleteSetup({ ...base, status: 'BAKING_TEXTURE' })).toBe(true);
-    expect(canCompleteSetup({ ...base, status: 'COMPLETED' })).toBe(true);
-    expect(canCompleteSetup({ ...base, status: 'FAILED' })).toBe(false);
-    expect(canCompleteSetup({ ...base, status: 'COMPLETED', setup_completed_at_ms: 1 })).toBe(
-      false,
-    );
+  it('새 모델은 정밀 3D 맵이 나온 뒤·완료 전일 때만 완료할 수 있다(-688: 미리보기로는 완료하지 않는다)', () => {
+    const preview = { ...base, preview_scene_version: 'scene-preview-1' };
+    expect(canCompleteSetup({ ...preview, status: 'PREVIEW_AND_VLM_DRAFT' })).toBe(false);
+    expect(canCompleteSetup({ ...preview, status: 'READY_FOR_ZONES' })).toBe(false);
+    expect(canCompleteSetup({ ...preview, status: 'BAKING_TEXTURE' })).toBe(false);
+    expect(
+      canCompleteSetup({ ...preview, status: 'COMPLETED', bake_skipped: 'LIVE_WORK_STARTED' }),
+    ).toBe(false);
+    const baked = { ...preview, status: 'COMPLETED', scene_version: 'scene-final-1' } as const;
+    expect(canCompleteSetup(baked)).toBe(true);
+    expect(canCompleteSetup({ ...baked, status: 'FAILED' })).toBe(false);
+    expect(canCompleteSetup({ ...baked, camera_check_passed: false })).toBe(false);
+    expect(canCompleteSetup({ ...baked, setup_completed_at_ms: 1 })).toBe(false);
     expect(canCompleteSetup(null)).toBe(false);
+  });
+
+  it('재사용은 기존 맵 맞추기가 채택된 미리보기 단계 이후면 완료할 수 있다', () => {
+    const reuse = { ...base, mode: 'REUSE', status: 'READY_FOR_ZONES' } as const;
+    expect(canCompleteSetup(reuse)).toBe(false);
+    expect(canCompleteSetup({ ...reuse, world_anchor: { accepted: true } })).toBe(true);
+  });
+
+  it('서버가 complete_blocked_reason 을 실으면 그 판정을 그대로 따른다', () => {
+    const baked = { ...base, status: 'COMPLETED', scene_version: 'scene-final-1' } as const;
+    expect(completeBlockedReason(baked)).toBeNull();
+    expect(
+      canCompleteSetup({ ...baked, complete_blocked_reason: 'SETUP_CAMERA_CHECK_NOT_PASSED' }),
+    ).toBe(false);
+    expect(
+      canCompleteSetup({
+        ...base,
+        status: 'READY_FOR_ZONES',
+        complete_blocked_reason: null,
+      }),
+    ).toBe(true);
+    expect(
+      completeBlockedReason({ ...base, status: 'READY_FOR_ZONES', preview_scene_version: 'p' }),
+    ).toBe('SETUP_FINAL_MAP_NOT_READY');
+    expect(
+      completeBlockedReason({
+        ...base,
+        status: 'BAKING_TEXTURE',
+        camera_check_passed: false,
+      }),
+    ).toBe('SETUP_CAMERA_CHECK_NOT_PASSED');
   });
 
   it('완료 요약은 사용 맵·카메라 확인·구역 수·저장 결과를 줄마다 보이고 0 인 항목은 뺀다(S15P31A101-691)', () => {
@@ -139,6 +175,8 @@ describe('세팅 완료 거부 안내', () => {
   it.each([
     'SETUP_ALREADY_COMPLETED',
     'SETUP_NOT_READY_TO_COMPLETE',
+    'SETUP_FINAL_MAP_NOT_READY',
+    'SETUP_FINAL_MAP_SKIPPED',
     'SETUP_SESSION_NOT_ACTIVE',
     'WORK_NOT_TODAY',
     'WORK_INVALID_STATE',

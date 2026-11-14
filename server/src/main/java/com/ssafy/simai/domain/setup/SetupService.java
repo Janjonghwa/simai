@@ -90,7 +90,14 @@ public class SetupService {
             java.util.regex.Pattern.compile("^[0-9a-f]{64}$");
     private static final double MAX_CAMERA_HEIGHT_M = 20.0;
     private static final int SETUP_MAX_ATTEMPTS = 2;
-    private static final int SETUP_TIMEOUT_MS = 900_000;
+    /**
+     * 세팅 작업 한 시도의 실행 상한(S15P31A101-688). 사람 대기 몫과 기계 몫을 따로 잡아 더한 값이다(워커 site_setup.py SETUP_BUDGET_*):
+     * 배경 촬영 240 s + 초기 복원 120 s + 높이 확인 대기 180 s + Stage A·보정 등록 60 s + 카메라 확인 대기·걷기 600 s
+     * + 맵(미리보기·정밀 굽기·폴백·제출) 600 s = 1,800 s. 워커는 사람 대기를 각자 상한과 "남은 시간 − 뒤 단계 몫" 중 짧은 쪽으로만
+     * 기다려, 사람이 오래 기다려도 맵 몫(600 s)이 줄지 않는다(앞에서 통과한 카메라 확인을 굽기 시간 초과로 버리지 않는다).
+     * 살아 있는지는 대여 하트비트(유지 시간)가 따로 본다. 이 값은 멈춘 채 살아 있는 작업의 마지막 울타리다
+     */
+    private static final int SETUP_TIMEOUT_MS = 1_800_000;
 
     private static final List<String> ORDERED_STAGES = List.of(
             "COLLECTING_BACKGROUND",
@@ -697,8 +704,9 @@ public class SetupService {
 
     /**
      * 대기 중인 세팅 작업의 세션이 미리보기 맵 뒤면 세션을 COMPLETED 로 닫고(새 모델은 bake_skipped=LIVE_WORK_STARTED, 정식 Scene 없음)
-     * 작업을 취소한다. 워커 회수(-597) 결과와 같은 상태다. 관제는 세팅 완료(C17, -615)가 켠 미리보기로 하고, 정식 맵은 작업 뒤 관리자가
-     * 다시 굽기(-607)로 얻는다(자동으로 다시 굽지 않는다). 세션을 먼저 닫아 취소 알림(JobFinished)이 세션을 FAILED 로 바꾸지 않게 한다.
+     * 작업을 취소한다. 워커 회수(-597) 결과와 같은 상태다. 새 모델 세션은 정밀 맵이 없어 이 세션으로는 세팅을 완료할 수 없다
+     * (S15P31A101-688, SETUP_FINAL_MAP_SKIPPED: 작업이 끝난 뒤 세팅을 다시 한다). 세션을 먼저 닫아 취소 알림(JobFinished)이 세션을
+     * FAILED 로 바꾸지 않게 한다.
      */
     private void reclaimQueuedBake(String jobId) {
         // 하트비트·제출 경로와 같은 순서(작업 행 → 세션 행)로 잠근다
@@ -2093,8 +2101,9 @@ public class SetupService {
         String qualityGateRaw = rs.getString("quality_gate");
         out.set("quality_gate", qualityGateRaw == null ? mapper.nullNode() : mapper.readTree(qualityGateRaw));
         out.set("camera_check", cameraCheck);
-        out.put("camera_check_passed", SetupCameraCheck.passed(cameraCheck.path("status").asString(null),
-                cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version")));
+        boolean cameraCheckPassed = SetupCameraCheck.passed(cameraCheck.path("status").asString(null),
+                cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version"));
+        out.put("camera_check_passed", cameraCheckPassed);
         // 걷기 창 단계(AWAITING_START|STARTING|WALKING|RETRY_WAIT|PASSED|FAILED, 받은 적 없으면 null)·마지막 요청·끝난 시도 기록(-687)
         if (cameraCheckPhase == null) {
             out.putNull("camera_check_phase");
@@ -2120,6 +2129,16 @@ public class SetupService {
         out.put("requested_mode", rs.getString("requested_mode"));
         putText(out, "reuse_fallback_reason", rs.getString("reuse_fallback_reason"));
         SetupReuseMode.putWorldAnchor(mapper, out, rs.getString("world_anchor"));
+        // 세팅 완료를 막는 세션 쪽 이유(S15P31A101-688, 완료 POST 와 같은 판정 SetupCompletionGate). 완료할 수 있으면 null.
+        // 화면은 이 값으로 완료 단추를 켜고 끈다(작업 쪽 조건 — 오늘·관제 중·확인 필요 구역 — 은 완료 요청이 따로 거부한다)
+        ErrorCode.Setup completeBlocked = SetupCompletionGate.blockedReason(status, rs.getString("mode"),
+                out.path("world_anchor").path("accepted").asBoolean(false), rs.getString("scene_version"),
+                rs.getString("bake_skipped"), cameraCheckPassed);
+        if (completeBlocked == null) {
+            out.putNull("complete_blocked_reason");
+        } else {
+            out.put("complete_blocked_reason", completeBlocked.name());
+        }
         String zoneHeightChangesRaw = rs.getString("zone_height_changes");
         out.set("zone_height_changes",
                 zoneHeightChangesRaw == null ? mapper.nullNode() : mapper.readTree(zoneHeightChangesRaw));

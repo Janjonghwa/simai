@@ -239,27 +239,11 @@ class SetupResultRegisterIntegrationTest {
                 newCalibration)).isZero();
         assertThat(currentScene()).isNotEqualTo(preview);
 
-        // 세팅 완료(C17): 미리보기를 현재 Scene 으로 켜고 새 보정을 실은 구성 묶음을 한 번 발행해 세션에 연결한다
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.setup_completed_at_ms").isNumber());
-        String configVersion = jdbc.queryForObject(
-                "SELECT config_version FROM config_bundle WHERE calibration_version = ?", String.class, newCalibration);
-        assertThat(configVersion).startsWith("cfg-");
-        assertThat(jdbc.queryForObject("SELECT content FROM config_bundle_file WHERE config_version = ? AND name = 'calibration'",
-                byte[].class, configVersion)).isEqualTo(calDoc);
-        assertThat(jdbc.queryForObject("SELECT config_version FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
-                s.sessionId())).isEqualTo(configVersion);
-        assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, preview))
-                .isEqualTo("COMMITTED");
-        // 굽기 도중 관리자가 묶음을 발행해도(Tier 0 가 아직 새 보정을 알리기 전) 새 보정을 싣는다
-        JsonNode during = configs.publish(null, userId);
-        assertThat(during.get("calibration_version").asString()).isEqualTo(newCalibration);
-        // 세팅 화면·뷰어가 보는 현재 Scene 이 이 세션의 미리보기(PREVIEW 표시 유지)
-        assertThat(currentScene()).isEqualTo(preview);
-        assertThat(jdbc.queryForObject("SELECT quality::text FROM scene_version WHERE scene_version = ?", String.class, preview))
-                .contains("scene_tier=PREVIEW").contains("safety_use=false");
+        // 새 모델은 미리보기로 완료하지 않는다(S15P31A101-688): 정밀 맵까지 기다린다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
 
-        // 3) 결과 SUCCEEDED: 정식 GLB 등록, 세션 COMPLETED, 새 보정을 실은 구성 묶음 발행·연결
+        // 3) 결과 SUCCEEDED: 정식 GLB 등록, 세션 COMPLETED. 완료 전이라 관제 맵·묶음은 그대로다(완료가 이 정밀 맵을 켠다)
         String baked = "scene-" + s.jobId() + "-" + s.leaseId();
         ObjectNode sceneRef = put(prefix + "scene.glb", "glb-baked-texture".getBytes(StandardCharsets.UTF_8));
         ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
@@ -271,22 +255,37 @@ class SetupResultRegisterIntegrationTest {
         mvc.perform(callback(s, succeeded(s, result)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.payload.status").value("ACCEPTED"));
+        assertThat(currentScene()).isNotEqualTo(baked);
+        assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, baked))
+                .isEqualTo("CANDIDATE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
+                newCalibration)).isZero();
 
-        // 현재 Scene 이 이 세션의 미리보기였으므로 정식 Scene 으로 교체
+        // 4) 세팅 완료(C17): 정밀 맵을 현재 Scene 으로 켜고 새 보정을 실은 구성 묶음을 한 번 발행해 세션에 연결한다
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.setup_completed_at_ms").isNumber());
+        String configVersion = jdbc.queryForObject(
+                "SELECT config_version FROM config_bundle WHERE calibration_version = ?", String.class, newCalibration);
+        assertThat(configVersion).startsWith("cfg-");
+        assertThat(jdbc.queryForObject("SELECT content FROM config_bundle_file WHERE config_version = ? AND name = 'calibration'",
+                byte[].class, configVersion)).isEqualTo(calDoc);
+        assertThat(jdbc.queryForObject("SELECT config_version FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
+                s.sessionId())).isEqualTo(configVersion);
         assertThat(currentScene()).isEqualTo(baked);
         assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, baked))
                 .isEqualTo("COMMITTED");
-        // 결과 성공 때는 이미 그 보정의 묶음이 있으니 다시 만들지 않는다(완료 1개 + 굽기 중 관리자 발행분 = 2개)
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
-                newCalibration)).isEqualTo(2);
-        String latestConfig = during.get("config_version").asString();
+        // 미리보기는 관제 맵이 되지 않는다(후보로 남는다)
+        assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE scene_version = ?", String.class, preview))
+                .isEqualTo("CANDIDATE");
+        // 완료 뒤 관리자가 묶음을 발행해도 새 보정을 싣는다
+        JsonNode later = configs.publish(null, userId);
+        assertThat(later.get("calibration_version").asString()).isEqualTo(newCalibration);
         mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.calibration_version").value(newCalibration))
                 .andExpect(jsonPath("$.preview_scene_version").value(preview))
-                .andExpect(jsonPath("$.scene_version").value(baked))
-                .andExpect(jsonPath("$.config_version").value(latestConfig));
+                .andExpect(jsonPath("$.scene_version").value(baked));
         assertThat(jdbc.queryForList("SELECT kind FROM setup_session_artifact WHERE setup_session_id = ?::uuid ORDER BY kind",
                 String.class, s.sessionId())).containsExactly("CALIBRATION", "PREVIEW_SCENE", "SCENE");
     }
@@ -489,7 +488,8 @@ class SetupResultRegisterIntegrationTest {
         artifacts.set("calibration_document", calRef);
         artifacts.set("preview_scene", previewRef);
         mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+        // -688 전에 미리보기로 완료한 세션(배포 전에 남은 것). 지금은 새 모델이 미리보기로 완료하지 않는다
+        legacyPreviewCompletion(s, preview);
         assertThat(currentScene()).isEqualTo(preview);
 
         // 관리자가 다른 후보 Scene 을 현재로 고른다
@@ -676,13 +676,6 @@ class SetupResultRegisterIntegrationTest {
         assertThat(body.path("images").get(0).path("url").asString()).isEqualTo("https://storage.test/" + prefix + "bake-cam_A.jpg");
         assertThat(schemas.violations("messages/scene_camera_images", body.toString())).isEmpty();
 
-        // 세팅 미리보기가 현재 Scene 이면(완료가 켠다) scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(preview);
-        ObjectNode current = sceneService.current();
-        assertThat(current.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("CALIBRATION");
-        assertThat(current.at("/map_cameras/cam_D/K").size()).isEqualTo(3);
-
         // 세션 밖 카메라, JPEG 가 아닌 사진은 거부한다(묶음 ID·얼굴 정책 형식은 계약 검사가 먼저 막는다)
         List<ObjectNode> badImages = List.of(
                 frameRef("camX", put(prefix + "bake-x.jpg", jpeg("x")), "OBSERVED"),
@@ -694,6 +687,14 @@ class SetupResultRegisterIntegrationTest {
             mvc.perform(heartbeat(s, 0.95, snap)).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
         }
+
+        // 세팅 정밀 맵이 현재 Scene 이면(완료가 켠다, -688) scene_output 이 없어도 그 보정 문서의 자세가 map_cameras 로 실린다
+        String baked = bake(s, prefix, calRef, previewRef, preview);
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(baked);
+        ObjectNode current = sceneService.current();
+        assertThat(current.at("/map_cameras/cam_A/pose_source").asString()).isEqualTo("CALIBRATION");
+        assertThat(current.at("/map_cameras/cam_D/K").size()).isEqualTo(3);
     }
 
     @Test
@@ -720,13 +721,6 @@ class SetupResultRegisterIntegrationTest {
         assertThat(jdbc.queryForList("SELECT content ->> 'cells' FROM floor_coverage WHERE calibration_version = ?",
                 String.class, newCalibration)).containsExactly("..1222");
 
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(preview);
-        ObjectNode current = sceneService.current();
-        assertThat(current.at("/floor_coverage/calibration_version").asString()).isEqualTo(newCalibration);
-        assertThat(current.at("/floor_coverage/cells").asString()).isEqualTo("..1222");
-        assertThat(current.at("/floor_coverage/cols").asInt()).isEqualTo(3);
-
         // 스냅샷과 다른 보정 버전, cols × rows 와 다른 칸 수는 거부한다(칸 문자·필드 형식은 계약 검사가 먼저 막는다)
         for (ObjectNode bad : List.of(floorCoverage(baseCalibration, "..1222"), floorCoverage(newCalibration, "..12"))) {
             ObjectNode snap = bakingSnap.deepCopy();
@@ -734,6 +728,14 @@ class SetupResultRegisterIntegrationTest {
             mvc.perform(heartbeat(s, 0.95, snap)).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
         }
+
+        String baked = bake(s, prefix, calRef, previewRef, preview);
+        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
+        assertThat(currentScene()).isEqualTo(baked);
+        ObjectNode current = sceneService.current();
+        assertThat(current.at("/floor_coverage/calibration_version").asString()).isEqualTo(newCalibration);
+        assertThat(current.at("/floor_coverage/cells").asString()).isEqualTo("..1222");
+        assertThat(current.at("/floor_coverage/cols").asInt()).isEqualTo(3);
     }
 
     private ObjectNode floorCoverage(String calibrationVersion, String cells) {
@@ -770,6 +772,25 @@ class SetupResultRegisterIntegrationTest {
 
     private RequestBuilder complete(String sessionId) {
         return post("/api/setup-sessions/{id}/complete", sessionId).with(adminJwt());
+    }
+
+    /** 정밀 맵 굽기 결과(COMPLETED)를 보낸다. 새 모델은 정밀 맵까지 기다려야 세팅을 완료한다(S15P31A101-688). 정밀 맵 버전을 돌려준다 */
+    private String bake(Session s, String prefix, ObjectNode calRef, ObjectNode previewRef, String preview) throws Exception {
+        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode result = withChecks(snapshot(s.sessionId(), "COMPLETED", 100.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview).put("scene_version", baked);
+        ObjectNode resultArtifacts = result.putObject("artifacts");
+        resultArtifacts.set("calibration_document", calRef);
+        resultArtifacts.set("preview_scene", previewRef);
+        resultArtifacts.set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
+        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
+        return baked;
+    }
+
+    /** -688 전에 미리보기로 완료한 세션(배포 전에 남은 것): 완료 기록과 이 세션 미리보기 현재화만 남긴다 */
+    private void legacyPreviewCompletion(Session s, String preview) {
+        jdbc.update("UPDATE work_unit SET setup_completed_at = now(), updated_at = now() WHERE work_id = ?", workUnitId);
+        sceneActivations.activate(site, preview, "setup:" + s.sessionId(), "-688 전 미리보기 완료(시험)");
     }
 
     private String currentScene() {

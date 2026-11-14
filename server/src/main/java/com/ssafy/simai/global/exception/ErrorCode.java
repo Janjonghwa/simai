@@ -727,7 +727,13 @@ public sealed interface ErrorCode {
         SETUP_REUSE_CAMERA_CHANGED(HttpStatus.CONFLICT, "카메라가 직전 세팅과 달라져 이전 맵을 재사용할 수 없습니다. 새 맵으로 세팅하세요"),
         SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다"),
         // 세팅 완료(C17, S15P31A101-615)
-        SETUP_NOT_READY_TO_COMPLETE(HttpStatus.CONFLICT, "미리보기 맵이 나온(구역 단계 이후) 세팅 세션만 완료할 수 있습니다"),
+        // 완료 판정 정본은 SetupCompletionGate(S15P31A101-688). 새 모델은 정밀 맵까지, 재사용은 기존 맵 맞추기까지 끝나야 한다
+        SETUP_NOT_READY_TO_COMPLETE(HttpStatus.CONFLICT,
+                "세팅이 아직 끝나지 않았거나 실패했습니다. 새 맵은 정밀 3D 맵까지, 이전 맵 재사용은 기존 맵 맞추기까지 끝나야 완료할 수 있습니다"),
+        SETUP_FINAL_MAP_NOT_READY(HttpStatus.CONFLICT,
+                "정밀 3D 맵을 만드는 중입니다. 정밀 맵이 다 만들어진 뒤에 세팅을 완료할 수 있습니다"),
+        SETUP_FINAL_MAP_SKIPPED(HttpStatus.CONFLICT,
+                "다른 작업이 시작돼 정밀 3D 맵 굽기가 멈췄습니다. 이 세팅으로는 완료할 수 없으니 작업이 끝난 뒤 세팅을 다시 하세요"),
         SETUP_CAMERA_CHECK_NOT_PASSED(HttpStatus.CONFLICT,
                 "카메라 확인을 통과하지 않았습니다. 걷기 창에서 한 사람이 30초 걸어 카메라 확인을 마치세요"),
         SETUP_SESSION_NOT_ACTIVE(HttpStatus.CONFLICT, "이 작업에 지금 걸린 세팅 세션이 아니라 완료할 수 없습니다"),

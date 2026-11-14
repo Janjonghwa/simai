@@ -214,8 +214,9 @@ public class WorkUnitRepository {
         }
         // 이 작업의 세팅 완료(C17, setup_completed_at) 뒤에만 시작한다(명세 16장 수정 54 "세팅 완료 후에만 LIVE 관제 시작",
         // S15P31A101-642). 새 맵·보정·구역은 세팅 완료 때 관제에 들어가므로, 완료 없이 시작하면 이전 맵·보정·구역으로 관제한다.
-        // 세팅 완료는 미리보기 맵(READY_FOR_ZONES) 뒤에만 되므로 -624 의 현장 세팅 READY 전 거절도 이 기준에 들어 있다.
-        // 완료 뒤 남은 정식 굽기는 시작 때 회수한다(대기열 -625, 대여 중 -597). 예전 작업(daily=false)도 같은 기준이다
+        // 세팅 완료는 새 모델이면 정밀 맵까지, 재사용이면 기존 맵 맞추기까지 끝나야 되므로(S15P31A101-688 SetupCompletionGate)
+        // -624 의 현장 세팅 READY 전 거절과 "미리보기로 관제 시작"(남은 굽기 회수) 금지도 이 기준에 들어 있다. 같은 현장의 다른
+        // 세팅이 굽는 중이면 그 굽기는 시작 때 회수한다(대기열 -625, 대여 중 -597). 예전 작업(daily=false)도 같은 기준이다
         if (!work.path("setup_completed_at").isNumber()) {
             throw new BusinessException(ErrorCode.Work.WORK_SETUP_NOT_COMPLETED);
         }
