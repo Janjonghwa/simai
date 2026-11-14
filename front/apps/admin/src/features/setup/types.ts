@@ -384,6 +384,26 @@ export const zoneHeightChangesSummarySchema = z
   .loose();
 export type ZoneHeightChangesSummary = z.infer<typeof zoneHeightChangesSummarySchema>;
 
+/** 세팅 배경 촬영 진행(site_setup 1.16.0 background_capture, S15P31A101-686). 세팅 시작 뒤 새로 찍은 표본 수와 카메라별 상태. */
+export const backgroundCaptureSchema = z
+  .object({
+    since_ms: z.number(),
+    required_samples: z.number().int().positive(),
+    sample_interval_ms: z.number().optional(),
+    cameras: z.record(
+      z.string(),
+      z
+        .object({
+          state: z.enum(['READY', 'INSUFFICIENT_SAMPLES', 'PERSON_OCCLUDED', 'NO_VIDEO']),
+          sample_count: z.number().int().min(0),
+          person_visible: z.boolean().nullish(),
+        })
+        .loose(),
+    ),
+  })
+  .loose();
+export type BackgroundCapture = z.infer<typeof backgroundCaptureSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -396,6 +416,8 @@ export const setupSessionResponseSchema = z.object({
   camera_heights_m: z.record(z.string(), z.number().positive()),
   height_tolerance_cm: z.number().positive().optional(),
   background_collection_pct: z.record(z.string(), z.number()).optional(),
+  /** 세팅 배경 촬영 진행(-686). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
+  background_capture: backgroundCaptureSchema.nullish().catch(null),
   height_checks: heightChecksSchema.nullable().optional().default(null),
   height_warnings: z.array(z.string()).optional().default([]),
   object_cross_checks: z.unknown().nullable().optional(),

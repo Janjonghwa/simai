@@ -5,6 +5,8 @@
 - 판정/검출 스레드의 `offer`는 참조만 유계 큐에 넘기고(블로킹·프레임 복사 금지),
   전용 코디네이터가 `multiprocessing.shared_memory` 고정 슬롯과 유계 메타 큐(`put_nowait`)로 자식에 전달한다.
 - `settings.offload=False`이면 기존 인프로세스 경로로 동작한다.
+- 세팅 배경 촬영(S15P31A101-686): 워커가 `regenerate.request.json` 에 `fresh_since_ms` 를 실어 보내면, 그 요청이 열려 있는 동안
+  표본 간격을 `setup_sample_interval_ms` 로 줄이고 그 시각 이후 표본만으로 카메라별 상태·묶음을 만든다(옛 묶음·기준 대체 없음).
 """
 
 from __future__ import annotations
@@ -73,6 +75,52 @@ class _ShmSlot:
 
 def _json(path: Path, doc: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _empty_status(cid: str) -> CameraBackgroundStatus:
+    return CameraBackgroundStatus(
+        camera_id=cid,
+        sample_count=0,
+        time_range_ms=None,
+        never_revealed_ratio=None,
+        mean_person_cover_ratio=None,
+        image_size=None,
+        bytes_used=0,
+        ready=False,
+    )
+
+
+# 세팅 배경 촬영의 카메라별 상태(계약 site_setup 1.16.0 background_capture.cameras.*.state, S15P31A101-686)
+CAPTURE_READY = "READY"
+CAPTURE_INSUFFICIENT = "INSUFFICIENT_SAMPLES"
+CAPTURE_PERSON = "PERSON_OCCLUDED"
+CAPTURE_NO_VIDEO = "NO_VIDEO"
+# 다른 카메라 관측 시각이 하한을 이만큼 지났는데 이 카메라 프레임이 하한 뒤로 하나도 없으면 영상 없음(세팅 간격 1 s 의 5배)
+NO_VIDEO_GRACE_MS = 5_000
+
+
+def capture_state(
+    status: CameraBackgroundStatus,
+    *,
+    required: int,
+    max_unrevealed_ratio: float,
+    last_frame_ms: int | None,
+    since_ms: int,
+    observed_now_ms: int,
+) -> str:
+    """세팅 촬영 하한 뒤 표본으로 본 카메라 한 대의 상태. observed_now_ms 는 카메라들의 마지막 관측 시각(데이터 시계)."""
+    if status.ready:
+        return CAPTURE_READY
+    if status.sample_count == 0:
+        no_frame = last_frame_ms is None or last_frame_ms < since_ms
+        return CAPTURE_NO_VIDEO if no_frame and observed_now_ms - since_ms >= NO_VIDEO_GRACE_MS else CAPTURE_INSUFFICIENT
+    person_now = (status.last_person_cover_ratio or 0.0) > 0.0
+    hidden = (
+        status.sample_count >= required
+        and status.never_revealed_ratio is not None
+        and status.never_revealed_ratio >= max_unrevealed_ratio
+    )
+    return CAPTURE_PERSON if person_now or hidden else CAPTURE_INSUFFICIENT
 
 
 def _small_samples_for_camera(
@@ -183,8 +231,12 @@ def _clean_background_worker_main(
     config: CleanBackgroundConfig,
     cmd_queue: Any,
     res_queue: Any,
+    horizon_ms: int | None = None,
 ) -> None:
-    """spawn 자식 프로세스 진입점: 카메라별 표본 링버퍼·마스크·nanmedian 합성·유효 마스크를 전담한다."""
+    """spawn 자식 프로세스 진입점: 카메라별 표본 링버퍼·마스크·nanmedian 합성·유효 마스크를 전담한다.
+
+    horizon_ms: 표본 보관 창(관측 시각 기준). 누적기 간격은 세팅 촬영의 짧은 간격이라 평소 창을 따로 받는다(-686).
+    """
     for env_key in (
         "OPENBLAS_NUM_THREADS",
         "OMP_NUM_THREADS",
@@ -209,7 +261,7 @@ def _clean_background_worker_main(
     rotation_side: int | None = None
     rotation_samples: dict[str, dict[int, tuple[Any, np.ndarray, np.ndarray]]] = {}
     shm_cache: dict[str, SharedMemory] = {}
-    horizon = config.sample_interval_ms * config.max_samples_per_camera
+    horizon = horizon_ms if horizon_ms is not None else config.sample_interval_ms * config.max_samples_per_camera
 
     def get_shm(name: str) -> SharedMemory:
         shm = shm_cache.get(name)
@@ -351,13 +403,30 @@ def _clean_background_worker_main(
                             },
                         )
                     )
+                elif cmd == "status_since":
+                    _, _, since_ms, min_samples = msg
+                    res_queue.put(
+                        (
+                            "ok",
+                            req_id,
+                            {
+                                "statuses": {
+                                    cid: accumulator.camera_status(cid, since_ms=since_ms, min_samples=min_samples)
+                                    for cid in accumulator.camera_ids
+                                },
+                                "worker_pid": os.getpid(),
+                            },
+                        )
+                    )
                 elif cmd == "export":
-                    _, _, out_dir_str, calibration_version, camera_ids, require_ready = msg
+                    _, _, out_dir_str, calibration_version, camera_ids, require_ready, since_ms, min_samples = msg
                     exported = accumulator.export(
                         Path(out_dir_str),
                         calibration_version=calibration_version,
                         camera_ids=camera_ids,
                         require_ready=require_ready,
+                        since_ms=since_ms,
+                        min_samples=min_samples,
                     )
                     res_queue.put(
                         (
@@ -371,8 +440,11 @@ def _clean_background_worker_main(
                         )
                     )
                 elif cmd == "mask_unknown":
-                    _, _, folder_str, cid, doc = msg
-                    samples = list(accumulator._samples.get(cid, ()))
+                    _, _, folder_str, cid, doc, since_ms = msg
+                    samples = [
+                        s for s in accumulator._samples.get(cid, ())
+                        if since_ms is None or s.capture_time_ms >= since_ms
+                    ]
                     if not samples:
                         raise ValueError(f"{cid}: 누적된 표본이 없다")
                     updates = _mask_unknown_with_samples(
@@ -469,16 +541,7 @@ class _OffloadAccumulatorProxy:
         st = self._statuses.get(cid)
         if st is not None:
             return st
-        return CameraBackgroundStatus(
-            camera_id=cid,
-            sample_count=0,
-            time_range_ms=None,
-            never_revealed_ratio=None,
-            mean_person_cover_ratio=None,
-            image_size=None,
-            bytes_used=0,
-            ready=False,
-        )
+        return _empty_status(cid)
 
     def status(self) -> dict[str, CameraBackgroundStatus]:
         return {cid: self.camera_status(cid) for cid in sorted(self._statuses)}
@@ -503,12 +566,16 @@ class _OffloadAccumulatorProxy:
         calibration_version: str,
         camera_ids: Sequence[str] | None = None,
         require_ready: bool = True,
+        since_ms: int | None = None,
+        min_samples: int | None = None,
     ) -> CleanBackgroundExport:
         return self._owner._worker_export(
             out_dir,
             calibration_version=calibration_version,
             camera_ids=camera_ids,
             require_ready=require_ready,
+            since_ms=since_ms,
+            min_samples=min_samples,
         )
 
 
@@ -572,8 +639,10 @@ class BackgroundCleanBackground:
             {c["camera_id"]: 0 for c in document["cameras"]},
         )
         self._active: _Context | None = None
+        # 누적기는 세팅 촬영의 짧은 간격까지 받고, 평소 간격은 offer 가 지킨다(-686). 보관 창은 평소 간격 기준 그대로다
+        self._horizon_ms = settings.sample_interval_ms * settings.max_samples_per_camera
         config = CleanBackgroundConfig(
-            sample_interval_ms=settings.sample_interval_ms,
+            sample_interval_ms=min(settings.sample_interval_ms, settings.setup_sample_interval_ms),
             min_samples_per_camera=settings.min_samples_per_camera,
             max_samples_per_camera=settings.max_samples_per_camera,
             max_bytes=settings.max_bytes,
@@ -615,6 +684,10 @@ class BackgroundCleanBackground:
         self._rotation_samples: dict[str, dict[int, tuple[Any, np.ndarray, np.ndarray]]] = {}
         self._rotation_lock = threading.Lock()
         self._rotation_views: dict[str, dict] = {}
+        # 세팅 배경 촬영 요청(-686). 열려 있는 동안 offer 가 짧은 간격으로 표본을 받는다
+        self._fresh: dict[str, Any] | None = None
+        # 카메라별 마지막으로 받은 프레임 관측 시각(간격 때문에 버린 프레임 포함). 영상 없음 판단용
+        self._last_seen: dict[str, int] = {}
         _LIVE_INSTANCES.add(self)
 
     @property
@@ -641,7 +714,7 @@ class BackgroundCleanBackground:
         self._res_queue = self._mp_ctx.Queue()
         self._process = self._mp_ctx.Process(
             target=_clean_background_worker_main,
-            args=(self.accumulator.config, self._cmd_queue, self._res_queue),
+            args=(self.accumulator.config, self._cmd_queue, self._res_queue, self._horizon_ms),
             name="tier0-clean-bg-worker",
             daemon=True,
         )
@@ -920,6 +993,8 @@ class BackgroundCleanBackground:
         calibration_version: str,
         camera_ids: Sequence[str] | None = None,
         require_ready: bool = True,
+        since_ms: int | None = None,
+        min_samples: int | None = None,
     ) -> CleanBackgroundExport:
         if not self._ensure_worker():
             raise RuntimeError("배경 누적 작업자가 비활성화되었다")
@@ -929,15 +1004,30 @@ class BackgroundCleanBackground:
             calibration_version,
             tuple(camera_ids) if camera_ids is not None else None,
             bool(require_ready),
+            since_ms,
+            min_samples,
         )
         self.accumulator._update_statuses(payload["statuses"])
         return payload["exported"]
 
-    def _worker_mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any]) -> None:
+    def _worker_mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any], since_ms: int | None) -> None:
         if not self._ensure_worker():
             raise RuntimeError("배경 누적 작업자가 비활성화되었다")
-        payload = self._call_worker("mask_unknown", str(Path(folder)), cid, doc)
+        payload = self._call_worker("mask_unknown", str(Path(folder)), cid, doc, since_ms)
         doc["cameras"][cid].update(payload["updates"])
+
+    def _statuses_since(self, ctx: _Context, since_ms: int, min_samples: int) -> dict[str, CameraBackgroundStatus]:
+        """세팅 촬영 하한(since_ms) 뒤 표본만 센 카메라별 상태. 표본이 한 장도 없는 카메라도 빈 상태로 채운다."""
+        if self.settings.offload:
+            if not self._ensure_worker():
+                raise RuntimeError("배경 누적 작업자가 비활성화되었다")
+            statuses = dict(self._call_worker("status_since", int(since_ms), int(min_samples))["statuses"])
+        else:
+            statuses = {
+                cid: self.accumulator.camera_status(cid, since_ms=since_ms, min_samples=min_samples)
+                for cid in self.accumulator.camera_ids
+            }
+        return {cid: statuses.get(cid) or _empty_status(cid) for cid in ctx.generations}
 
     def _worker_synthesize_camera(self, cid: str) -> tuple[np.ndarray, CameraBackgroundStatus]:
         if not self._ensure_worker():
@@ -969,8 +1059,11 @@ class BackgroundCleanBackground:
         generation = ctx.generations.get(cid)
         if generation is None:
             return False
+        self._last_seen[cid] = at
+        # 세팅 배경 촬영 중에는 짧은 간격으로 받는다(-686)
+        interval = self.settings.setup_sample_interval_ms if self._fresh is not None else self.settings.sample_interval_ms
         previous = self._last_offer.get(cid)
-        if previous is not None and previous[0] == generation and at - previous[1] < self.settings.sample_interval_ms:
+        if previous is not None and previous[0] == generation and at - previous[1] < interval:
             return False
         size = int(getattr(frame.image, "nbytes", 0))
         if size <= 0 or not self._queue_lock.acquire(blocking=False):
@@ -1075,7 +1168,7 @@ class BackgroundCleanBackground:
                     self._expire_samples(cid, frame.estimated_capture_time)
                     if self._rotation_side is not None:
                         self._publish_rotation(cid)
-            self._regenerate(ctx)
+            self._regenerate(ctx, changed)
             if changed:
                 self._export_ready(ctx)
                 self.last_error = None
@@ -1087,15 +1180,31 @@ class BackgroundCleanBackground:
         except _WorkerStoppedError:
             return False
 
-    def _regenerate(self, ctx: _Context) -> None:
+    def _regenerate(self, ctx: _Context, changed: bool = True) -> None:
+        """배경 다시 만들기 요청(`regenerate.request.json`)을 처리한다.
+
+        - `fresh_since_ms` 가 있는 요청(세팅 배경 촬영, -686): 그 시각 이후 표본만 센다. 카메라마다 세팅 최소 표본 수가 모이고 못 채운
+          비율이 상한 아래가 될 때까지 요청을 열어 두고, 새 표본이 들어올 때마다 카메라별 상태(COLLECTING)를 응답한다. 다 되면 그
+          표본만으로 묶음을 만들어 READY 로 닫는다. 옛 묶음·세팅 기준으로 대신하지 않는다.
+        - 그 밖의 요청(관제 중 다시 만들기): 최근 창이 가득 찬(메모리 상한 안에서 도달 가능한 수) 카메라만 쓴다. 한 대라도 모자라면
+          NOT_READY 와 카메라별 사유로 닫는다(세팅 기준 대체 없음).
+        """
         request = self.control / "regenerate.request.json"
         if not request.is_file():
+            if self._fresh is not None:
+                log.info("clean_background 세팅 촬영 요청이 사라져 촬영 모드를 끝낸다 request_id=%s", self._fresh["request_id"])
+                self._fresh = None
+                self._write_status(ctx)
             return
         try:
             doc = json.loads(request.read_text(encoding="utf-8"))
             request_id = doc["request_id"]
             if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id < 1:
                 raise ValueError("invalid request_id")
+            if "fresh_since_ms" in doc:
+                self._regenerate_fresh(ctx, request, doc, request_id, changed)
+                return
+            self._fresh = None
             requested_at = doc.get("requested_at_ms")
             if isinstance(requested_at, int) and not isinstance(requested_at, bool):
                 if self.settings.offload:
@@ -1103,31 +1212,129 @@ class BackgroundCleanBackground:
                 else:
                     for cid in ctx.generations:
                         self._expire_samples(cid, requested_at)
-            ready = self._regenerate_bundle(ctx)
+            full = self._full_samples(ctx)
+            cameras = self._recent_cameras(ctx, full)
+            ready = all(c["state"] == CAPTURE_READY for c in cameras.values()) and self._regenerate_bundle(ctx, full)
             if not ready:
                 self._complete = None
-            response = {
+            self._write_status(ctx)
+            self._respond({
                 "request_id": request_id,
                 "bundle_path": str(self._complete) if ready else None,
                 "camera_ids": sorted(ctx.generations),
                 "calibration_version": ctx.version,
                 "status": "READY" if ready else "NOT_READY",
                 "reason": None if ready else "BACKGROUND_NOT_READY",
-            }
-            self.control.mkdir(parents=True, exist_ok=True)
-            tmp = self.control / f".response-{uuid.uuid4().hex}.tmp"
-            try:
-                _json(tmp, response)
-                tmp.replace(self.control / "regenerate.response.json")
-            finally:
-                tmp.unlink(missing_ok=True)
-            # 새 요청이 도착했다면 지우지 않는다.
-            if json.loads(request.read_text(encoding="utf-8")) == doc:
-                request.unlink(missing_ok=True)
-            self._write_status(ctx)
+                "required_samples": full,
+                "cameras": cameras,
+            })
+            self._close_request(request, doc)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
             log.exception("잘못된 배경 재생성 요청")
             request.unlink(missing_ok=True)
+            self._fresh = None
+
+    def _regenerate_fresh(
+        self, ctx: _Context, request: Path, doc: Mapping[str, Any], request_id: int, changed: bool,
+    ) -> None:
+        since = doc["fresh_since_ms"]
+        if not isinstance(since, int) or isinstance(since, bool) or since < 0:
+            raise ValueError("invalid fresh_since_ms")
+        started = self._fresh is None or self._fresh["doc"] != doc
+        if started:
+            self._fresh = {"request_id": request_id, "since_ms": since, "doc": dict(doc)}
+            log.info("clean_background 세팅 촬영 시작 request_id=%s since_ms=%s", request_id, since)
+        elif not changed:
+            return  # 새 표본이 없으면 상태도 같다
+        required = self.settings.setup_min_samples_per_camera
+        observed_now = max([since, *(self._last_seen.get(cid, since) for cid in ctx.generations)])
+        statuses = self._statuses_since(ctx, since, required)
+        cameras = {
+            cid: {
+                "state": capture_state(
+                    st, required=required, max_unrevealed_ratio=self.accumulator.config.max_unrevealed_ratio,
+                    last_frame_ms=self._last_seen.get(cid), since_ms=since, observed_now_ms=observed_now,
+                ),
+                "sample_count": st.sample_count,
+                "person_visible": None if st.last_person_cover_ratio is None else st.last_person_cover_ratio > 0.0,
+                "never_revealed_ratio": None if st.never_revealed_ratio is None else round(st.never_revealed_ratio, 6),
+                "last_frame_ms": self._last_seen.get(cid),
+            }
+            for cid, st in statuses.items()
+        }
+        response: dict[str, Any] = {
+            "request_id": request_id,
+            "purpose": doc.get("purpose"),
+            "bundle_path": None,
+            "camera_ids": sorted(ctx.generations),
+            "calibration_version": ctx.version,
+            "status": "COLLECTING",
+            "reason": None,
+            "sample_since_ms": since,
+            "required_samples": required,
+            "sample_interval_ms": self.settings.setup_sample_interval_ms,
+            "cameras": cameras,
+        }
+        if all(c["state"] == CAPTURE_READY for c in cameras.values()):
+            if self._assemble_bundle(ctx, since_ms=since, min_samples=required, extra={"sample_since_ms": since}):
+                self._write_status(ctx)  # 응답보다 먼저: 워커가 READY 를 보고 status.json 의 묶음을 곧바로 확인한다
+                self._respond({**response, "status": "READY", "bundle_path": str(self._complete)})
+                self._close_request(request, doc)
+                log.info("clean_background 세팅 촬영 완료 request_id=%s bundle=%s", request_id, self._complete)
+                return
+        elif observed_now - since > self.settings.setup_capture_max_ms:
+            self._respond({**response, "status": "NOT_READY", "reason": "CAPTURE_EXPIRED"})
+            self._close_request(request, doc)
+            log.warning("clean_background 세팅 촬영 요청이 %d ms 안에 끝나지 않아 닫는다 request_id=%s",
+                        self.settings.setup_capture_max_ms, request_id)
+            self._write_status(ctx)
+            return
+        self._respond(response)
+        if started:
+            self._write_status(ctx)
+
+    def _respond(self, response: Mapping[str, Any]) -> None:
+        self.control.mkdir(parents=True, exist_ok=True)
+        tmp = self.control / f".response-{uuid.uuid4().hex}.tmp"
+        try:
+            _json(tmp, response)
+            tmp.replace(self.control / "regenerate.response.json")
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _close_request(self, request: Path, doc: Mapping[str, Any]) -> None:
+        # 새 요청이 도착했다면 지우지 않는다.
+        if json.loads(request.read_text(encoding="utf-8")) == doc:
+            request.unlink(missing_ok=True)
+        self._fresh = None
+
+    def _full_samples(self, ctx: _Context) -> int:
+        """관제 중 다시 만들기의 '가득 찬 창' 표본 수: 최대 표본 수와 메모리 상한이 카메라마다 허용하는 수 중 작은 값.
+
+        2304×1296 표본 1장(BGR+마스크)은 약 12 MB 라 2.2 GiB 상한에서 4대면 카메라당 약 48장에서 축출이 시작된다.
+        최대 표본 수(60)를 그대로 요구하면 영원히 못 채워 늘 다른 경로로 빠졌다(-686). 최소 표본 수보다 작게는 두지 않는다.
+        """
+        statuses = [self.accumulator.camera_status(cid) for cid in ctx.generations]
+        per_sample = max((st.bytes_used / st.sample_count for st in statuses if st.sample_count), default=0.0)
+        cap = self.settings.max_samples_per_camera
+        if per_sample > 0 and ctx.generations:
+            cap = min(cap, int(self.settings.max_bytes // (per_sample * len(ctx.generations))))
+        return max(self.settings.min_samples_per_camera, cap)
+
+    def _recent_cameras(self, ctx: _Context, full: int) -> dict[str, dict[str, Any]]:
+        out = {}
+        for cid in ctx.generations:
+            st = self.accumulator.camera_status(cid)
+            if st.ready and st.sample_count >= full:
+                state = CAPTURE_READY
+            elif st.sample_count == 0:
+                state = CAPTURE_NO_VIDEO
+            elif st.sample_count >= self.settings.min_samples_per_camera and not st.ready:
+                state = CAPTURE_PERSON
+            else:
+                state = CAPTURE_INSUFFICIENT
+            out[cid] = {"state": state, "sample_count": st.sample_count}
+        return out
 
     def _expire_samples(self, cid: str, now_ms: int) -> None:
         # 기존 설정으로 창 길이를 조절한다. 공백이 있으면 오래된 표본을 보관하지 않는다.
@@ -1138,7 +1345,7 @@ class BackgroundCleanBackground:
             return
         samples = self.accumulator._samples.get(cid)
         if samples is not None:
-            horizon = self.settings.sample_interval_ms * self.settings.max_samples_per_camera
+            horizon = self._horizon_ms
             while samples and samples[0].capture_time_ms < now_ms - horizon:
                 samples.popleft()
             if not samples:
@@ -1217,12 +1424,12 @@ class BackgroundCleanBackground:
         bg, valid = synthesize_samples(view["samples"])
         return bg, valid, view["signature"][2]
 
-    def _mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any]) -> None:
-        """관측 횟수가 부족하거나 시간에 따라 변하는 픽셀은 유효 마스크에서 제외한다."""
+    def _mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any], since_ms: int | None = None) -> None:
+        """관측 횟수가 부족하거나 시간에 따라 변하는 픽셀은 유효 마스크에서 제외한다(since_ms 면 그 뒤 표본만 본다)."""
         if self.settings.offload:
-            self._worker_mask_unknown(folder, cid, doc)
+            self._worker_mask_unknown(folder, cid, doc, since_ms)
             return
-        samples = list(self.accumulator._samples[cid])
+        samples = [s for s in self.accumulator._samples[cid] if since_ms is None or s.capture_time_ms >= since_ms]
         _mask_unknown_with_samples(
             samples,
             self.accumulator.config.rows_per_chunk,
@@ -1232,53 +1439,57 @@ class BackgroundCleanBackground:
             doc,
         )
 
-    def _regenerate_bundle(self, ctx: _Context) -> bool:
-        """가득 찬 최근 창을 쓰고, 부족한 카메라는 세팅 기준을 명시적으로 대체한다."""
-        if not all(cid in self._reference for cid in ctx.generations):
-            return False
-        # 다른 자세/해상도의 기준 이미지를 현재 보정에 맞는 것처럼 내보내지 않는다.
+    def _regenerate_bundle(self, ctx: _Context, full: int | None = None) -> bool:
+        """가득 찬 최근 창(메모리 상한 안에서 도달 가능한 표본 수)만 쓴다. 한 대라도 모자라면 만들지 않는다.
+
+        예전에는 모자란 카메라를 세팅 기준(REFERENCE_FALLBACK)으로 대신했는데, 회전 등으로 시점이 바뀐 뒤에도 옛 화면을 써서
+        15차 세팅이 FLOOR_NOT_FOUND 로 실패했다(-686). 이제 대신하지 않는다(모르면 비운다).
+        """
+        full = self._full_samples(ctx) if full is None else full
         for cid in ctx.generations:
-            reference_doc = self._reference[cid][1]
-            reference_generation = reference_doc["camera_generations"].get(cid)
             status = self.accumulator.camera_status(cid)
-            full = status.ready and status.sample_count >= self.settings.max_samples_per_camera
-            if not full and reference_generation != ctx.generations[cid]:
+            if not (status.ready and status.sample_count >= full):
                 return False
+        return self._assemble_bundle(ctx, since_ms=None, min_samples=None, extra={})
+
+    def _assemble_bundle(
+        self, ctx: _Context, *, since_ms: int | None, min_samples: int | None, extra: Mapping[str, Any],
+    ) -> bool:
+        """카메라마다 (since_ms 뒤) 표본으로 배경·유효 마스크를 만들어 새 UUID 묶음으로 공개하고 `_complete` 로 둔다."""
         version_dir = self.root / ctx.version
         staging = version_dir / f".pending-{uuid.uuid4().hex}"
         target = version_dir / f"bundle-{uuid.uuid4().hex}"
         try:
             staging.mkdir(parents=True)
-            cameras = {}
+            cameras: dict[str, Any] = {}
+            base: dict[str, Any] | None = None
             for cid in sorted(ctx.generations):
-                status = self.accumulator.camera_status(cid)
-                full = status.ready and status.sample_count >= self.settings.max_samples_per_camera
-                if full:
-                    temp = staging / f"camera-{uuid.uuid4().hex}"
-                    result = self.accumulator.export(temp, calibration_version=ctx.version, camera_ids=[cid])
-                    self._mask_unknown(temp, cid, result.metadata)
-                    record = result.metadata["cameras"][cid]
-                    record["background_source"] = "RECENT"
-                    folder = temp
-                else:
-                    folder, ref_doc = self._reference[cid]
-                    record = copy.deepcopy(ref_doc["cameras"][cid])
-                    record["background_source"] = "REFERENCE_FALLBACK"
-                    record["reference_calibration_version"] = record["calibration_version"]
-                    record["calibration_version"] = ctx.version
+                temp = staging / f"camera-{uuid.uuid4().hex}"
+                try:
+                    result = self.accumulator.export(
+                        temp, calibration_version=ctx.version, camera_ids=[cid], since_ms=since_ms, min_samples=min_samples,
+                    )
+                except ValueError as exc:
+                    log.warning("clean_background 묶음 조립 중 %s 가 준비되지 않았다: %s", cid, exc)
+                    return False
+                self._mask_unknown(temp, cid, result.metadata, since_ms)
+                record = result.metadata["cameras"][cid]
+                record["background_source"] = "RECENT"
                 for name in (record["image"], record["valid_mask"]):
-                    shutil.copyfile(folder / name, staging / name)
-                if full:
-                    shutil.rmtree(folder)
+                    shutil.copyfile(temp / name, staging / name)
+                shutil.rmtree(temp)
                 cameras[cid] = record
+                base = base or result.metadata
+            assert base is not None
             meta = {
-                **copy.deepcopy(next(iter(self._reference.values()))[1]),
+                **{k: v for k, v in base.items() if k != "cameras"},
                 "cameras": cameras,
                 "calibration_version": ctx.version,
                 "input_provenance": ctx.provenance,
                 "camera_generations": dict(ctx.generations),
                 "complete": True,
                 "ready": True,
+                **extra,
             }
             _json(staging / "clean_backgrounds.json", meta)
             _json(
@@ -1384,6 +1595,10 @@ class BackgroundCleanBackground:
             "bundle": None if self._complete is None else str(self._complete),
             "queue_dropped": self.dropped,
             "last_error": self.last_error,
+            # 세팅 배경 촬영 중이면 그 요청과 표본 하한(-686). 진단용
+            "setup_capture": None if self._fresh is None else {
+                "request_id": self._fresh["request_id"], "since_ms": self._fresh["since_ms"],
+            },
         }
         staging = self.root / f".status-{uuid.uuid4().hex}.tmp"
         try:

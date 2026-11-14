@@ -72,7 +72,9 @@ def _settings(tmp_path: Path) -> AutoStaticSettings:
     return AutoStaticSettings(state_dir=tmp_path / "state")
 
 
-def _bundle(settings: AutoStaticSettings, *, ready: dict[str, bool] | None = None, version: str = VERSION) -> Path:
+def _bundle(settings: AutoStaticSettings, *, ready: dict[str, bool] | None = None, version: str = VERSION,
+            since: int | None = None) -> Path:
+    """Tier 0 가 쓴 것과 같은 모양의 완성 묶음. since 가 있으면 세팅 촬영 묶음(-686)이다."""
     root = settings.clean_background_dir
     path = root / version / BUNDLE
     path.mkdir(parents=True)
@@ -80,41 +82,115 @@ def _bundle(settings: AutoStaticSettings, *, ready: dict[str, bool] | None = Non
     for cid in CAMS:
         (path / f"{cid}.png").write_bytes(b"png")
         cameras[cid] = {"camera_id": cid, "ready": (ready or {}).get(cid, True), "image": f"{cid}.png"}
+    meta: dict[str, Any] = {"cameras": cameras, "calibration_version": version}
+    if since is not None:
+        meta["sample_since_ms"] = since
     (path / "COMPLETE").write_text("{}", encoding="utf-8")
-    (path / "clean_backgrounds.json").write_text(json.dumps({"cameras": cameras}), encoding="utf-8")
+    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
     (root / "status.json").write_text(json.dumps({"complete": True, "bundle": str(path), "calibration_version": version}), encoding="utf-8")
     return path
 
 
-def _stages(tmp_path: Path, stages: _Stages, store: _Store | None = None, *, prior: dict[str, Any] | None = None) -> ProductionSiteSetupStages:
+def _stages(tmp_path: Path, stages: _Stages, store: _Store | None = None, *, prior: dict[str, Any] | None = None,
+            clock: Any = None) -> ProductionSiteSetupStages:
     root = tmp_path / "root"
     root.mkdir(exist_ok=True)
     return ProductionSiteSetupStages(
-        _ctx(), store or _Store(), _settings(tmp_path), stages, root, clock_ms=lambda: 1,
+        _ctx(), store or _Store(), _settings(tmp_path), stages, root, clock_ms=clock or (lambda: 1),
         calibration_loader=lambda _s: prior,
     )
 
 
-def test_collect_without_bundle_reports_zero_so_handler_can_retry(tmp_path: Path) -> None:
-    got = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}).collect(
-        setup_session_id="s", site_id="site", camera_ids=CAMS)
-    assert got.collection_pct_by_cam == dict.fromkeys(CAMS, 0.0)
+def _control(settings: AutoStaticSettings) -> Path:
+    return settings.state_dir / "clean_background"
 
 
-def test_collect_reads_complete_bundle_and_per_camera_ready(tmp_path: Path) -> None:
-    path = _bundle(_settings(tmp_path), ready={"cam_C": False})
-    got = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}).collect(
-        setup_session_id="s", site_id="site", camera_ids=CAMS)
-    assert got.bundle_id == BUNDLE
-    assert got.collection_pct_by_cam == {"cam_A": 100.0, "cam_B": 100.0, "cam_C": 0.0, "cam_D": 100.0}
-    assert got.frames_by_cam["cam_A"] == [path / "cam_A.png"]
+def _request(settings: AutoStaticSettings) -> dict[str, Any]:
+    return json.loads((_control(settings) / "regenerate.request.json").read_text(encoding="utf-8"))
 
 
-def test_collect_rejects_bundle_of_another_calibration_version(tmp_path: Path) -> None:
-    _bundle(_settings(tmp_path))
-    got = _stages(tmp_path, _Stages(), prior={"calibration_version": "cal-other"}).collect(
-        setup_session_id="s", site_id="site", camera_ids=CAMS)
-    assert set(got.collection_pct_by_cam.values()) == {0.0}
+def _respond(settings: AutoStaticSettings, doc: dict[str, Any]) -> None:
+    _control(settings).mkdir(parents=True, exist_ok=True)
+    (_control(settings) / "regenerate.response.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_collect_requests_fresh_capture_and_never_uses_existing_bundle(tmp_path: Path) -> None:
+    """-686: 옛 완성 묶음(회전 중 화면)이 있어도 쓰지 않고, 세팅 시작 시각을 하한으로 Tier 0 에 새 촬영을 요청한다."""
+    settings = _settings(tmp_path)
+    _bundle(settings)
+    _respond(settings, {"request_id": 99, "status": "READY", "bundle_path": str(settings.clean_background_dir)})  # 남의 응답
+    clock = {"t": 5_000}
+    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}, clock=lambda: clock["t"])
+    got = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert got.bundle_id == "" and got.collection_pct_by_cam == dict.fromkeys(CAMS, 0.0)
+    assert got.missing_cameras(CAMS) == list(CAMS)
+    assert _request(settings) == {"request_id": 5_000, "requested_at_ms": 5_000, "fresh_since_ms": 5_000,
+                                  "purpose": "SITE_SETUP", "setup_session_id": "s"}
+    assert got.capture == {"since_ms": 5_000, "required_samples": 12, "cameras": {
+        cid: {"state": "INSUFFICIENT_SAMPLES", "sample_count": 0, "person_visible": None} for cid in CAMS}}
+    clock["t"] = 11_000  # 다시 불러도 요청은 그대로(하한이 밀리지 않는다). Tier 0 응답이 없으면 5 s 뒤 영상 없음
+    again = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert _request(settings)["fresh_since_ms"] == 5_000
+    assert {c["state"] for c in again.capture["cameras"].values()} == {"NO_VIDEO"}
+
+
+def test_collect_reports_per_camera_capture_states(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}, clock=lambda: 1_000)
+    s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    _respond(settings, {"request_id": 1_000, "status": "COLLECTING", "required_samples": 12, "sample_interval_ms": 1_000,
+                        "cameras": {
+                            "cam_A": {"state": "READY", "sample_count": 14, "person_visible": False, "last_frame_ms": 15_000},
+                            "cam_B": {"state": "INSUFFICIENT_SAMPLES", "sample_count": 9, "person_visible": False},
+                            "cam_C": {"state": "PERSON_OCCLUDED", "sample_count": 5, "person_visible": True},
+                            "cam_D": {"state": "NO_VIDEO", "sample_count": 0, "person_visible": None}}})
+    got = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert got.collection_pct_by_cam == {"cam_A": 99.0, "cam_B": 75.0, "cam_C": 41.67, "cam_D": 0.0}
+    assert got.capture["sample_interval_ms"] == 1_000 and got.capture["required_samples"] == 12
+    assert got.capture["cameras"]["cam_C"] == {"state": "PERSON_OCCLUDED", "sample_count": 5, "person_visible": True}
+    assert got.capture["cameras"]["cam_D"]["state"] == "NO_VIDEO"
+    assert got.missing_cameras(CAMS) == list(CAMS)  # 묶음이 나오기 전에는 아무 카메라도 쓰지 않는다
+
+
+def test_collect_ready_bundle_must_match_this_request_and_calibration(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}, clock=lambda: 2_000)
+    s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    path = _bundle(settings, since=2_000)
+    meta = json.loads((path / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    for i, cid in enumerate(CAMS):
+        meta["cameras"][cid]["time_range_ms"] = [2_000, 14_000 + i]
+    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
+    ready = {"request_id": 2_000, "status": "READY", "bundle_path": str(path), "calibration_version": VERSION,
+             "required_samples": 12, "cameras": {cid: {"state": "READY", "sample_count": 12} for cid in CAMS}}
+    _respond(settings, ready)
+    got = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert got.bundle_id == BUNDLE and got.missing_cameras(CAMS) == []
+    assert got.collection_pct_by_cam == dict.fromkeys(CAMS, 100.0)
+    assert got.frames_by_cam["cam_A"] == [path / "cam_A.png"] and got.observed_until_ms == 14_003
+    # 다른 촬영 하한으로 만든 묶음·다른 보정의 묶음은 받지 않는다(옛 묶음으로 대신하지 않는다)
+    meta["sample_since_ms"] = 1_000
+    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(JobFailed) as exc:
+        s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True
+    meta["sample_since_ms"] = 2_000
+    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
+    other = _stages(tmp_path, _Stages(), prior={"calibration_version": "cal-other"}, clock=lambda: 2_000)
+    with pytest.raises(JobFailed):
+        other.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+
+
+def test_collect_fails_retryably_when_tier0_closes_request(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}, clock=lambda: 3_000)
+    s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    _respond(settings, {"request_id": 3_000, "status": "NOT_READY", "reason": "CAPTURE_EXPIRED", "cameras": {}})
+    with pytest.raises(JobFailed) as exc:
+        s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert exc.value.code == "BACKGROUND_INCOMPLETE" and "CAPTURE_EXPIRED" in exc.value.message
+    s.release_capture()
+    assert not (_control(settings) / "regenerate.request.json").exists()
 
 
 def test_initialize_without_active_calibration_fails_without_inventing_intrinsics(tmp_path: Path) -> None:
@@ -352,55 +428,31 @@ def test_load_active_calibration_reads_tier0_store_and_ignores_unreadable(tmp_pa
 
 
 # ---------------------------------------------------------------------------- S15P31A101-473
-def _status(settings: AutoStaticSettings, cameras: dict[str, dict[str, Any]], *, version: str = VERSION) -> None:
-    root = settings.clean_background_dir
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "status.json").write_text(json.dumps({"calibration_version": version, "cameras": cameras, "complete": False,
-                                                  "bundle": None}), encoding="utf-8")
-
-
-def test_collect_reports_partial_collection_from_tier0_status(tmp_path: Path) -> None:
-    """묶음 완성 전에는 Tier 0 status.json 의 표본 수로 수집률(최대 99)을 알린다. 다른 보정의 수집은 0."""
-    settings = _settings(tmp_path)
-    _status(settings, {"cam_A": {"sample_count": 5}, "cam_B": {"sample_count": 40, "ready": True},
-                       "cam_C": {"sample_count": 19}, "cam_D": {"sample_count": 0, "exported": True}})
-    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION})
-    got = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
-    assert got.collection_pct_by_cam == {"cam_A": 25.0, "cam_B": 99.0, "cam_C": 95.0, "cam_D": 99.0}
-    assert got.missing_cameras(CAMS) == list(CAMS)
-    other = _stages(tmp_path, _Stages(), prior={"calibration_version": "cal-other"})
-    assert set(other.collect(setup_session_id="s", site_id="site", camera_ids=CAMS).collection_pct_by_cam.values()) == {0.0}
-
-
-def test_collect_sets_observed_until_from_bundle_time_ranges(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
-    path = _bundle(settings)
-    meta = json.loads((path / "clean_backgrounds.json").read_text(encoding="utf-8"))
-    for i, cid in enumerate(CAMS):
-        meta["cameras"][cid]["time_range_ms"] = [1_000, 2_000 + i]
-    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
-    got = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}).collect(
-        setup_session_id="s", site_id="site", camera_ids=CAMS)
-    assert got.observed_until_ms == 2_003 and got.missing_cameras(CAMS) == []
-
-
-def test_production_handler_waits_for_bundle_with_heartbeats(tmp_path: Path) -> None:
-    """운영 처리기: 묶음이 없으면 설정한 시간까지 다시 보며 COLLECTING_BACKGROUND 수집률을 보낸 뒤 재시도 가능하게 끝난다."""
+def test_production_handler_waits_with_capture_heartbeats_and_releases_request(tmp_path: Path) -> None:
+    """운영 처리기: 새 촬영 묶음이 없으면 설정한 시간까지 다시 보며 카메라별 촬영 상태를 계약 모양으로 보내고, 끝나면 요청을 거둔다."""
     settings = _settings(tmp_path)
     cams = _ctx().input["calibration_target"]["camera_ids"]
-    _status(settings, {cid: {"sample_count": 10} for cid in cams})
+    _bundle(settings)  # 옛 완성 묶음이 있어도 쓰지 않는다
     now = {"t": 0.0}
 
     def sleep(event: Any, seconds: float) -> None:
         now["t"] += seconds
 
-    handler = ProductionSiteSetupHandler(_Store(), settings, _Stages(), clock_ms=lambda: 1, workspace=tmp_path,
-                                         background_wait_s=6.0, background_poll_s=2.0, monotonic=lambda: now["t"], sleep=sleep)
+    handler = ProductionSiteSetupHandler(_Store(), settings, _Stages(), clock_ms=lambda: 10_000 + int(now["t"] * 1000),
+                                         workspace=tmp_path, background_wait_s=6.0, background_poll_s=2.0,
+                                         monotonic=lambda: now["t"], sleep=sleep)
     ctx = _ctx()
     with pytest.raises(JobFailed) as exc:
         handler(ctx)
     assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True and now["t"] == 6.0
-    assert ctx.site_setup_history[0]["background_collection_pct"] == dict.fromkeys(cams, 50.0)
+    first, last = ctx.site_setup_history[0], ctx.site_setup_history[-1]
+    assert first["background_collection_pct"] == dict.fromkeys(cams, 0.0)
+    assert first["background_capture"]["since_ms"] == 10_000
+    assert {c["state"] for c in first["background_capture"]["cameras"].values()} == {"INSUFFICIENT_SAMPLES"}
+    # 마지막(6 s 뒤) 스냅샷이 시간 초과 전에 나가 화면이 어느 카메라가 왜 못 됐는지 안다
+    assert {c["state"] for c in last["background_capture"]["cameras"].values()} == {"NO_VIDEO"}
+    assert "NO_VIDEO" in exc.value.message
+    assert not (_control(settings) / "regenerate.request.json").exists()
 
 
 def test_background_wait_settings_from_env() -> None:

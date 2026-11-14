@@ -21,7 +21,8 @@
     받을 자리로 남긴다(지금 서버가 워커에 주는 그런 신호는 없다, S15P31A101-473)
 
 (a) 는 Tier 0 묶음이 완성될 때까지 `background_wait_s` 동안 `background_poll_s` 마다 다시 보고, 그동안 카메라별 수집률을
-COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(`created_at`)은 배경 묶음의 마지막 관측 시각
+COLLECTING_BACKGROUND 하트비트로 보낸다. 수집기가 세팅 배경 촬영 상태(`CleanBackgroundBundle.capture`)를 주면 같은 스냅샷의
+`background_capture`(카메라별 READY·INSUFFICIENT_SAMPLES·PERSON_OCCLUDED·NO_VIDEO, S15P31A101-686)로 싣는다. 보정 문서의 생성 시각(`created_at`)은 배경 묶음의 마지막 관측 시각
 (`CleanBackgroundBundle.observed_until_ms`)으로 정해 재시도해도 같은 입력이면 같은 문서(sha256)가 나온다(S15P31A101-473).
 
 산출물을 객체 저장소에 올린 주입점은 그 객체 참조(`ObjectRef`)를 함께 돌려주고, 처리기는 그 뒤 스냅샷·결과의 선택 `artifacts`
@@ -153,6 +154,8 @@ class CleanBackgroundBundle:
     tracks_doc: Mapping[str, Any] | None = None
     # 묶음의 마지막 관측 시각(UTC ms). 있으면 보정 문서 created_at 으로 쓴다(재시도 결정론). 모르면 None → 처리기 시계
     observed_until_ms: int | None = None
+    # 세팅 배경 촬영 진행(계약 site_setup 1.16.0 background_capture, -686). 모르면 None(싣지 않는다)
+    capture: Mapping[str, Any] | None = None
 
     def missing_cameras(self, camera_ids: Sequence[str]) -> list[str]:
         """아직 쓸 수 없는 카메라(수집률 100 미만, 또는 트랙 문서가 없는데 배경 이미지가 비었음)."""
@@ -814,7 +817,7 @@ class SiteSetupHandler:
         (활성 보정이 바뀌어 묶음을 새로 모으면 내려갈 수 있다). 시간이 다하면 재시도 가능한 BACKGROUND_INCOMPLETE."""
         deadline = self._monotonic() + self._bg_wait_s
         best_pct = 0.0
-        last_sent: tuple[float, tuple[float, ...]] | None = None
+        last_sent: tuple[float, tuple[float, ...], str] | None = None
         while True:
             self._check_cancelled(ctx)
             bundle = self._collect_bg(setup_session_id=setup_session_id, site_id=site_id, camera_ids=camera_ids)
@@ -823,24 +826,30 @@ class SiteSetupHandler:
             missing = bundle.missing_cameras(camera_ids)
             if not missing:
                 return bundle, pct
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
-                raise JobFailed(
-                    "BACKGROUND_INCOMPLETE",
-                    f"사람 지운 배경 수집 미완료 카메라: {missing} ({pct}), {self._bg_wait_s:g}s 대기",
-                    retryable=True,
-                )
+            # 마지막 상태도 화면에 남도록 시간 초과 판단보다 먼저 보낸다(어느 카메라가 왜 못 됐는지, -686)
             best_pct = max(best_pct, round(14.0 * min(pct.values()) / 100.0, 1))
-            key = (best_pct, tuple(pct[c] for c in camera_ids))
+            capture = dict(bundle.capture) if bundle.capture is not None else None
+            key = (best_pct, tuple(pct[c] for c in camera_ids), repr(capture))
             if key != last_sent:
                 self._emit_progress(ctx, {
                     "setup_session_id": setup_session_id,
                     "status": "COLLECTING_BACKGROUND",
                     "progress_pct": best_pct,
                     "background_collection_pct": pct,
+                    **({"background_capture": capture} if capture is not None else {}),
                     **(mode_fields or {}),
                 })
                 last_sent = key
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                states = {cid: cam.get("state") for cid, cam in (capture or {}).get("cameras", {}).items()
+                          if cid in missing}
+                raise JobFailed(
+                    "BACKGROUND_INCOMPLETE",
+                    f"사람 지운 배경 수집 미완료 카메라: {missing} ({pct}{', ' + str(states) if states else ''}), "
+                    f"{self._bg_wait_s:g}s 대기",
+                    retryable=True,
+                )
             self._sleep(ctx.cancelled, min(self._bg_poll_s, remaining))
 
     def _publish_camera_frames(

@@ -51,7 +51,8 @@ const TONE_BADGE: Record<SetupTone, string> = {
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-xs backdrop-blur-[4px]';
 
-function readPreviewUrls() {
+/** 카메라 영상 미리보기 주소(현장 노트북 중계, 안 되면 EC2 원격 시청). 배경 촬영 창(-686)도 같은 값을 쓴다. */
+export function readPreviewUrls() {
   const raw = import.meta.env as Record<string, unknown>;
   const localUrl =
     typeof raw.VITE_CCTV_PREVIEW_URL === 'string' && raw.VITE_CCTV_PREVIEW_URL.trim() !== ''

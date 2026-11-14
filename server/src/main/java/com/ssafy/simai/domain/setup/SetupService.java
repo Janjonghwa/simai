@@ -839,6 +839,8 @@ public class SetupService {
         String cameraCheckJson = SetupCameraCheck.cameraCheck(mapper, snapshot);
         // 구역별 상면 높이 차이 판정(S15P31A101-630). 없거나 어긋나면 null 이고 같은 대여 안에서는 이전 값을 둔다
         String zoneHeightChangesJson = SetupZoneHeightChanges.fromSnapshot(mapper, snapshot);
+        // 세팅 배경 촬영 진행(S15P31A101-686). 없거나 어긋나면 null 이고 같은 대여 안에서는 이전 값을 둔다
+        String backgroundCaptureJson = SetupBackgroundCapture.fromSnapshot(mapper, snapshot);
 
         OffsetDateTime now = utc(clock.instant());
         OffsetDateTime readyAt = session.readyAt() != null ? session.readyAt() : (readyOrLater ? now : null);
@@ -868,6 +870,7 @@ public class SetupService {
                     reuse_fallback_reason = :fallback,
                     world_anchor = COALESCE(CAST(:worldAnchor AS jsonb), CASE WHEN :keepAnchor THEN world_anchor END),
                     zone_height_changes = COALESCE(CAST(:zoneHeightChanges AS jsonb), CASE WHEN :keepAnchor THEN zone_height_changes END),
+                    background_capture = COALESCE(CAST(:backgroundCapture AS jsonb), CASE WHEN :keepAnchor THEN background_capture END),
                     updated_at = :now
                 WHERE setup_session_id = :id
                 """, new MapSqlParameterSource()
@@ -876,6 +879,7 @@ public class SetupService {
                 .addValue("fallback", mode.fallbackReason())
                 .addValue("worldAnchor", mode.worldAnchorJson())
                 .addValue("zoneHeightChanges", zoneHeightChangesJson)
+                .addValue("backgroundCapture", backgroundCaptureJson)
                 // 재대여는 처음부터 다시 하므로 앞선 대여의 World 다시 맞추기 결과를 두지 않는다
                 .addValue("keepAnchor", sameLease)
                 .addValue("leaseId", nextLeaseId)
@@ -1715,6 +1719,7 @@ public class SetupService {
                        failure_code, failure_message, bake_skipped, requested_by, started_at, ready_at, completed_at, updated_at,
                        requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
                        zone_height_changes::text AS zone_height_changes,
+                       background_capture::text AS background_capture,
                        (SELECT w.setup_completed_at FROM work_unit w
                         WHERE w.work_id = setup_session.work_unit_id
                           AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
@@ -1861,6 +1866,9 @@ public class SetupService {
         out.set("camera_heights_m", mapper.readTree(rs.getString("camera_heights_m")));
         out.put("height_tolerance_cm", rs.getDouble("height_tolerance_cm"));
         out.set("background_collection_pct", mapper.readTree(rs.getString("background_collection_pct")));
+        // 세팅 배경 촬영 진행(S15P31A101-686). 마지막으로 값을 실은 스냅샷 것, 받은 적 없으면 null
+        String backgroundCaptureRaw = rs.getString("background_capture");
+        out.set("background_capture", backgroundCaptureRaw == null ? mapper.nullNode() : mapper.readTree(backgroundCaptureRaw));
 
         String heightChecksRaw = rs.getString("height_checks");
         ArrayNode warnings = mapper.createArrayNode();

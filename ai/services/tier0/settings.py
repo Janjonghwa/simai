@@ -152,6 +152,12 @@ class CleanBackgroundSettings:
     max_bytes: int = 2_200 * 1024 * 1024
     queue_depth: int = 4
     max_pending_bytes: int = 64 * 1024 * 1024
+    # 세팅 배경 촬영(S15P31A101-686): 워커가 세팅을 시작한 뒤 이 간격으로 표본을 모으고 카메라마다 이만큼 모이면 묶음을 만든다.
+    # 1 s x 12장 = 최소 약 12 s(화면 카운트다운 20 s 안). 근거는 docs/design/S15P31A101-686-fresh-setup-background.md
+    setup_sample_interval_ms: int = 1_000
+    setup_min_samples_per_camera: int = 12
+    # 워커가 사라져 요청이 남아도 촬영 모드(짧은 간격)를 이만큼(관측 시각 기준) 뒤에 스스로 끝낸다
+    setup_capture_max_ms: int = 600_000
 
 
 @dataclass(frozen=True)
@@ -333,9 +339,12 @@ def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
     values = {key: _int(doc, key, default, minimum=1) for key, default in (
         ("sample_interval_ms", 5_000), ("min_samples_per_camera", 20),
         ("max_samples_per_camera", 60), ("max_bytes", 2_200 * 1024 * 1024),
-        ("queue_depth", 4), ("max_pending_bytes", 64 * 1024 * 1024))}
+        ("queue_depth", 4), ("max_pending_bytes", 64 * 1024 * 1024),
+        ("setup_sample_interval_ms", 1_000), ("setup_min_samples_per_camera", 12), ("setup_capture_max_ms", 600_000))}
     if values["min_samples_per_camera"] > values["max_samples_per_camera"]:
         raise Tier0ConfigError("clean_background 최소 표본 수가 최대 표본 수보다 크다")
+    if values["setup_min_samples_per_camera"] > values["max_samples_per_camera"]:
+        raise Tier0ConfigError("clean_background 세팅 최소 표본 수가 최대 표본 수보다 크다")
     output = _path(base, doc["output_dir"], "clean_background.output_dir") if "output_dir" in doc else None
     return CleanBackgroundSettings(enabled=enabled, offload=offload, output_dir=output, **values)
 

@@ -262,9 +262,22 @@ class SetupSessionIntegrationTest {
         ObjectNode snap1 = progressSnapshot(sessionId, "COLLECTING_BACKGROUND", 25.0);
         snap1.putObject("background_collection_pct")
                 .put("cam_A", 100.0).put("cam_B", 80.0).put("cam_C", 90.0).put("cam_D", 75.0);
+        // 세팅 배경 촬영 진행(site_setup 1.16.0, S15P31A101-686): 카메라별 상태를 세션에 남겨 화면이 그 카메라만 다시 안내한다
+        ObjectNode capture = snap1.putObject("background_capture")
+                .put("since_ms", 1_763_020_800_000L).put("required_samples", 12).put("sample_interval_ms", 1000);
+        ObjectNode captureCams = capture.putObject("cameras");
+        captureCams.putObject("cam_A").put("state", "READY").put("sample_count", 14).put("person_visible", false);
+        captureCams.putObject("cam_B").put("state", "INSUFFICIENT_SAMPLES").put("sample_count", 9);
+        captureCams.putObject("cam_C").put("state", "PERSON_OCCLUDED").put("sample_count", 5).put("person_visible", true);
+        captureCams.putObject("cam_D").put("state", "NO_VIDEO").put("sample_count", 0).putNull("person_visible");
         mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, leaseA, 0.25, snap1))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.payload.status").value("ACTIVE"));
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.background_capture.required_samples").value(12))
+                .andExpect(jsonPath("$.background_capture.cameras.cam_C.state").value("PERSON_OCCLUDED"))
+                .andExpect(jsonPath("$.background_capture.cameras.cam_D.state").value("NO_VIDEO"));
 
         // 2) JOINT_BA_AND_VERIFY 하트비트 + 높이 검사(cam_B 가 +7.0 cm 로 허용치 5 cm 초과) + 삼각콘·개구부 표지판 교차 확인
         ObjectNode snap2 = progressSnapshot(sessionId, "JOINT_BA_AND_VERIFY", 55.0);
@@ -288,6 +301,8 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.status").value("JOINT_BA_AND_VERIFY"))
                 .andExpect(jsonPath("$.progress_pct").value(55.0))
                 .andExpect(jsonPath("$.height_checks.cam_B.within_tolerance").value(false))
+                // 값이 없는 뒤 스냅샷은 같은 대여 안에서 마지막 촬영 진행을 둔다
+                .andExpect(jsonPath("$.background_capture.cameras.cam_A.state").value("READY"))
                 .andReturn());
         assertThat(midView.at("/height_checks/cam_B/guidance").asString())
                 .isEqualTo("카메라 cam_B 높이가 7.0 cm 안 맞음 — 거치대 확인");

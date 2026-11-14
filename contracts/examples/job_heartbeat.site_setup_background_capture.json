@@ -1,0 +1,34 @@
+{
+  "schema_version": "2.15.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000686",
+  "sent_at": 1760342415400,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "COLLECTING_BACKGROUND",
+      "progress_pct": 5.8,
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 75,
+        "cam_C": 41.67,
+        "cam_D": 0
+      },
+      "background_capture": {
+        "since_ms": 1760342400400,
+        "required_samples": 12,
+        "sample_interval_ms": 1000,
+        "cameras": {
+          "cam_A": {"state": "READY", "sample_count": 14, "person_visible": false},
+          "cam_B": {"state": "INSUFFICIENT_SAMPLES", "sample_count": 9, "person_visible": false},
+          "cam_C": {"state": "PERSON_OCCLUDED", "sample_count": 5, "person_visible": true},
+          "cam_D": {"state": "NO_VIDEO", "sample_count": 0}
+        }
+      }
+    }
+  }
+}

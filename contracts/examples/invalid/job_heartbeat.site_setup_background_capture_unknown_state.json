@@ -1,0 +1,25 @@
+{
+  "_expect_error": "background_capture.cameras.*.state 는 READY·INSUFFICIENT_SAMPLES·PERSON_OCCLUDED·NO_VIDEO 중 하나다",
+  "schema_version": "2.15.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000687",
+  "sent_at": 1760342415400,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "COLLECTING_BACKGROUND",
+      "progress_pct": 5.8,
+      "background_capture": {
+        "since_ms": 1760342400400,
+        "required_samples": 12,
+        "cameras": {
+          "cam_A": {"state": "REFERENCE_FALLBACK", "sample_count": 0}
+        }
+      }
+    }
+  }
+}
