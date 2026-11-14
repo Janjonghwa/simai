@@ -82,7 +82,7 @@ export type DayMark = { kind: 'ended' } | { kind: 'action'; label: string };
 
 const ENDED_MARK: DayMark = { kind: 'ended' };
 
-/** 오늘 작업이 없거나 진행 값을 모르면 보고서 단계로 본다(오늘 칸은 '작업 시작' 단추가 된다). */
+/** 오늘 작업이 없거나 진행 값을 모르면 보고서 단계로 본다(오늘 칸은 '오늘 작업 준비' 단추가 된다). */
 const IDLE_PROGRESS: DayProgress = 'REPORT';
 
 /** 오늘 칸 표시에 쓸 작업: 하루 작업(daily)이 있으면 그것, 없으면 첫 작업. */

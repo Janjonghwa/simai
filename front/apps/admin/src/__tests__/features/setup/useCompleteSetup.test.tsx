@@ -1,5 +1,5 @@
 import { createSetupSession, setupSessionKey, setupZonePlanKey } from '@/features/setup/api';
-import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
+import { emptyZonePlanConfirm } from '@/features/setup/SetupCompleteCard';
 import {
   SETUP_COMPLETE_ERROR_TEXT,
   setupCompleteErrorMessage,
@@ -88,7 +88,7 @@ describe('useCompleteSetup', () => {
     const { result, run } = await renderCompletion(id);
 
     expect(await run()).toBe(false);
-    expect(confirm).toHaveBeenCalledWith(EMPTY_ZONE_PLAN_CONFIRM);
+    expect(confirm).toHaveBeenCalledWith(emptyZonePlanConfirm(null));
     expect(mock.sessions.get(id)?.setup_completed_at_ms ?? null).toBeNull();
     expect(result.current.completion).toMatchObject({ pending: false, error: null, applied: null });
   });

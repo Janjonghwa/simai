@@ -5,7 +5,7 @@ import { Loader2 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-// 날짜 화면 우측 아래 단추 줄(주 단추 '다음'·'완료' + 보조 단추). 하단 메뉴(Dock)가 뜨는 층에 얹어 Dock 과 같은 줄에 놓는다.
+// 날짜 화면 우측 아래 단추 줄(주 단추 '다음'·'작업 종료'·'보고서 제출' + 보조 단추). 하단 메뉴(Dock)가 뜨는 층에 얹어 Dock 과 같은 줄에 놓는다.
 // Dock 은 AppLayout 의 본문(<main>) 옆 상자에 absolute(bottom-3.5, 높이 70)로 떠 있고 본문 좌우 여백은 20px 이라, 같은 상자에
 // right-5·bottom-3.5·높이 70 으로 얹고 단추(높이 44)를 세로 가운데에 둔다. <main> 은 스크롤되므로 그 안에 absolute 로 두지 않는다.
 

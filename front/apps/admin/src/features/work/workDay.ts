@@ -50,13 +50,15 @@ export const workNameOf = (name: string): string => name || EMPTY_WORK_NAME;
 
 /**
  * 오늘 칸 단추 글: 서버 진행 값마다 지금 할 일이다. 제출(SUBMITTED)은 할 일이 없어 단추 대신 완료 표시가 되므로 null 이다.
+ * S15P31A101-691: 보고서 단계는 날짜를 열어 준비(보고서·세팅)를 시작하는 것이라 「작업 시작」(실제 시작은 작업 전 확인의 단추)과
+ * 헷갈리지 않게 「오늘 작업 준비」, 종료 뒤는 작업 종료 단계 단추와 같은 「보고서 제출」이다.
  */
 export const TODAY_ACTION: Record<DayProgress, string | null> = {
-  REPORT: '작업 시작',
+  REPORT: '오늘 작업 준비',
   SETUP: '세팅 이어하기',
   SETUP_DONE: '작업 전 확인',
   IN_PROGRESS: '관제 중',
-  ENDED: '보고서 보내기',
+  ENDED: '보고서 제출',
   SUBMITTED: null,
 };
 

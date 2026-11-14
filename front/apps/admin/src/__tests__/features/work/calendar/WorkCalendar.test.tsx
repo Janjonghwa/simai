@@ -156,16 +156,16 @@ describe('WorkCalendar', () => {
     expect(ranges).toEqual(['2026-11-01..2026-12-05']);
   });
 
-  it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 작업 시작 주 단추 모양이 크게 들어간다', async () => {
+  it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 오늘 작업 준비 주 단추 모양이 크게 들어간다', async () => {
     renderCalendar();
     const today = cellOf('11월 11일');
     expect(within(today).getByText('오늘')).toBeTruthy();
-    const cta = within(today).getByText('작업 시작');
+    const cta = within(today).getByText('오늘 작업 준비');
     expect(cta.className).toContain('w-full');
     expect(cta.className).toContain('h-9');
     expect(cta.className).toContain('bg-primary');
-    // 오늘 태그·작업 시작 단추는 오늘 칸에만 있다.
-    expect(screen.getAllByText('작업 시작')).toHaveLength(1);
+    // 오늘 태그·오늘 작업 준비 단추는 오늘 칸에만 있다.
+    expect(screen.getAllByText('오늘 작업 준비')).toHaveLength(1);
     expect(screen.getAllByText('오늘', { selector: 'span' })).toHaveLength(1);
     await screen.findByText('작업 2건');
   });
@@ -326,7 +326,7 @@ describe('WorkCalendar', () => {
   it('접근성: aria-label 에 날짜와 요약(위험·경고 수, 오늘이면 할 일)을 담는다', async () => {
     renderCalendar();
     await screen.findByText('작업 2건');
-    expect(cellOf('11월 11일').getAttribute('aria-label')).toBe('11월 11일, 오늘, 작업 시작');
+    expect(cellOf('11월 11일').getAttribute('aria-label')).toBe('11월 11일, 오늘, 오늘 작업 준비');
     expect(cellOf('11월 9일').getAttribute('aria-label')).toBe(
       '11월 9일, 작업 2건 완료, 위험 3건, 경고 1건',
     );
@@ -338,11 +338,11 @@ describe('WorkCalendar', () => {
   });
 
   it.each([
-    ['REPORT', '작업 시작'],
+    ['REPORT', '오늘 작업 준비'],
     ['SETUP', '세팅 이어하기'],
     ['SETUP_DONE', '작업 전 확인'],
     ['IN_PROGRESS', '관제 중'],
-    ['ENDED', '보고서 보내기'],
+    ['ENDED', '보고서 제출'],
   ] as const)('오늘 칸 단추 글: 진행 값 %s 이면 `%s`', async (progress, label) => {
     works = [daily(TODAY, { progress })];
     renderCalendar();
@@ -361,13 +361,13 @@ describe('WorkCalendar', () => {
     renderCalendar();
     const today = cellOf('11월 11일');
     await waitFor(() => expect(endedIconOf(today)).not.toBeNull());
-    expect(within(today).queryByText('작업 시작')).toBeNull();
+    expect(within(today).queryByText('오늘 작업 준비')).toBeNull();
     expect(today.getAttribute('aria-label')).toBe('11월 11일, 오늘, 작업 완료');
   });
 
   it('오늘 칸의 단추 모양을 눌러도 칸처럼 그 날로 간다(바로 시작하지 않음)', async () => {
     const { onPick } = renderCalendar();
-    fireEvent.click(within(cellOf('11월 11일')).getByText('작업 시작'));
+    fireEvent.click(within(cellOf('11월 11일')).getByText('오늘 작업 준비'));
     expect(onPick).toHaveBeenCalledTimes(1);
     expect(onPick).toHaveBeenCalledWith(TODAY);
     await screen.findByText('작업 2건');

@@ -4,12 +4,14 @@ import {
   setupSessionKey,
   setupZonePlanKey,
 } from '@/features/setup/api';
-import { EMPTY_ZONE_PLAN_CONFIRM } from '@/features/setup/SetupCompleteCard';
+import { emptyZonePlanConfirm } from '@/features/setup/SetupCompleteCard';
 import { setupCompleteErrorMessage } from '@/features/setup/setupErrorMessage';
 import { pendingReviewCount } from '@/features/setup/setupZonePlan';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
 import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { ZONES_KEY } from '@/features/zones/api';
+import type { ZonesResponse } from '@/features/zones/types';
+import { readZones } from '@/features/zones/zones';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { WORK_KEY } from '@/lib/queryKeys';
@@ -87,7 +89,12 @@ export function useCompleteSetup(session: SetupSessionResponse | null): Complete
         );
         return false;
       }
-      if (plan.items.length === 0 && !window.confirm(EMPTY_ZONE_PLAN_CONFIRM)) return false;
+      if (plan.items.length === 0) {
+        // 보관될 지금 관제 구역(앱 틀이 받아 둔 캐시). 받기 전이면 개수 없이 묻는다(S15P31A101-691)
+        const live = queryClient.getQueryData<ZonesResponse>(ZONES_KEY);
+        const names = live ? readZones(live).map((zone) => zone.name) : null;
+        if (!window.confirm(emptyZonePlanConfirm(names))) return false;
+      }
     } catch (e) {
       setError(setupCompleteErrorMessage(e));
       return false;

@@ -3,9 +3,11 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { ROOM } from '@/features/plan/plan';
+import type { CameraBadge } from '@/features/setup/cameraBadge';
 import { CameraCue } from '@/features/setup/CameraCue';
 import { CALIBRATION_RISK_TITLE } from '@/features/setup/cameraGuides';
 import { cameraLabel } from '@/features/setup/cameraLabels';
+import type { NextStep } from '@/features/setup/nextStep';
 import {
   CAMERA_HEIGHT_HELP,
   CANDIDATE_KIND_LABEL,
@@ -32,7 +34,8 @@ import { cn } from '@simai/ui/lib/utils';
 import { TriangleAlert } from 'lucide-react';
 import { useCallback, type ReactNode } from 'react';
 
-// 세팅 화면 패널: 1단계 2D 지도 양옆의 카메라 영상(기존 디코딩 재사용)·카메라 연결/방향 안내·카메라 높이 입력, 이후 단계 요약.
+// 세팅 화면 패널: 카메라 영상 4칸(칸마다 배지 하나, 기존 디코딩 재사용)·「지금 할 일」 카드·「자세히」(카메라 상태·겹침 2D 지도)·
+// 카메라 높이 입력, 이후 단계 요약(S15P31A101-691 정리).
 // 색은 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 토큰만 쓴다.
 
 const DOT: Record<SetupTone, string> = {
@@ -111,28 +114,33 @@ function Row({ children }: { children: ReactNode }) {
   return <li className="flex flex-1 items-center gap-2.5 px-0.5 py-1 text-sm">{children}</li>;
 }
 
-/** 영상 칸 비율: 보통 16:9 이고, 폭이 모자라면 4:3 까지 좁아진다(영상은 칸 안에 비율대로 담겨 위아래에 빈 띠가 생긴다). */
+/** 영상 칸 비율(중계가 영상 크기를 알리기 전). */
 const TILE_ASPECT = 16 / 9;
-const TILE_MIN_ASPECT = 4 / 3;
-/** 같은 쪽 영상 두 칸 사이 간격과, 영상 열·지도 사이 간격(px). */
-const TILE_GAP_PX = 12;
-const SIDE_GAP_PX = 16;
-/** 영상 칸 높이 = (지도 높이 − 칸 간격) / 2. 위쪽 칸은 지도 위 끝, 아래쪽 칸은 지도 아래 끝에 맞는다. */
-const TILE_HEIGHT = `calc((var(--h) - ${TILE_GAP_PX}px) / 2)`;
-/** 영상 열 폭: 16:9 로 맞추되 지도와 양옆 열이 컨테이너에 들어가는 폭을 넘지 않는다. */
-const TILE_COLUMN_WIDTH = `min(calc(${TILE_HEIGHT} * ${TILE_ASPECT}), calc((100cqw - var(--h) - ${2 * SIDE_GAP_PX}px) / 2))`;
-/** 영상 열이 가장 좁은 4:3 일 때 전체 폭 = 지도 높이 × (1 + 4/3) − 칸 간격 × 4/3 + 열 간격 2개. */
-const MIN_ASPECT_FIXED_WIDTH_PX = 2 * SIDE_GAP_PX - TILE_GAP_PX * TILE_MIN_ASPECT;
-/** 지도 높이: 카드 안 남은 높이에 맞추되, 그 폭에 영상 두 열(최소 4:3)과 지도가 들어가는 높이를 넘지 않는다. */
-const MAP_HEIGHT = `min(100cqh, calc((100cqw - ${MIN_ASPECT_FIXED_WIDTH_PX}px) / ${1 + TILE_MIN_ASPECT}))`;
 
-/** 카메라 영상 한 칸(16:9). 영상이 오지 않을 때는 흐리게 두고 이유를 글로 보인다. */
+/** 배지 톤 → 배지 모양(위험 등급색과 겹치지 않는 토큰). */
+function CameraBadgeChip({ badge }: { badge: CameraBadge }) {
+  return (
+    <Badge
+      data-badge={badge.kind}
+      className={cn('h-auto rounded px-1.5 py-0.5 text-xs font-semibold', TONE_BADGE[badge.tone])}
+    >
+      {badge.label}
+    </Badge>
+  );
+}
+
+/**
+ * 카메라 영상 한 칸. 이름표에는 카메라 이름과 배지 하나만 둔다(S15P31A101-691). 영상이 오지 않을 때만 칸을 흐리게 하고 영상 상태를
+ * 덧붙인다(카메라 상태가 아니라 이 화면의 영상 중계 상태다). 각도 안내가 있으면 영상 위에 꺾쇠·같이 보는 곳을 얹는다.
+ */
 function CameraTile({
   camera,
   attach,
+  showBadge,
 }: {
   camera: CoverageCameraView;
   attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
+  showBadge: boolean;
 }) {
   const phase = useCctvStore((s) => s.views[camera.id]?.phase);
   const videoWidth = useCctvStore((s) => s.views[camera.id]?.width);
@@ -144,120 +152,131 @@ function CameraTile({
     [attach, camera.id],
   );
   const aspect = videoWidth && videoHeight ? videoWidth / videoHeight : TILE_ASPECT;
+  const cues = showBadge && camera.status === 'OK' && camera.badge.kind !== 'DISCONNECTED';
   return (
-    <div className="w-full" style={{ height: TILE_HEIGHT }}>
-      <div className={cn(TILE_FRAME, 'bg-surface-2')}>
-        <canvas
-          ref={ref}
-          aria-label={`${camera.label} 영상`}
-          className={cn('size-full object-contain', !playing && DIMMED)}
-        />
-        {camera.status === 'OK' &&
-          camera.guides.map((guide) => (
-            <CameraCue key={guide.text} guide={guide} aspect={aspect} />
-          ))}
-        <span className={cn(CAPTION, 'top-2 left-2')}>
-          <Dot tone={camera.tone} />
-          <span className="font-semibold">
-            {camera.status === 'OK' ? camera.label : `${camera.label} · ${camera.statusLabel}`}
-          </span>
-          <span>{tileLabel(phase, link)}</span>
-        </span>
-      </div>
+    <div className={cn(TILE_FRAME, 'min-h-0 bg-surface-2')}>
+      <canvas
+        ref={ref}
+        aria-label={`${camera.label} 영상`}
+        className={cn('size-full object-contain', !playing && DIMMED)}
+      />
+      {cues &&
+        camera.guides.map((guide) => <CameraCue key={guide.text} guide={guide} aspect={aspect} />)}
+      <span className={cn(CAPTION, 'top-2 left-2')}>
+        <span className="font-semibold">{camera.label}</span>
+        {showBadge && <CameraBadgeChip badge={camera.badge} />}
+        {!playing && <span className="text-muted-foreground">{tileLabel(phase, link)}</span>}
+      </span>
     </div>
   );
 }
 
-/** 지도 한쪽 옆의 영상 칸들. 카메라가 지도 위쪽 모서리에 있으면 위, 아래쪽 모서리에 있으면 아래에 붙는다. */
-function CameraTileColumn({
-  label,
-  cameras,
-  attach,
-}: {
-  label: string;
-  cameras: readonly CoverageCameraView[];
-  attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
-}) {
-  return (
-    <div role="group" aria-label={label} className="flex flex-col justify-between gap-3">
-      {cameras.map((camera) => (
-        <div
-          key={camera.id}
-          className={cn(cameras.length === 1 && camera.corner[1] < ROOM.depth / 2 && 'mt-auto')}
-        >
-          <CameraTile camera={camera} attach={attach} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** 모서리 위치로 나눈 카메라 목록(왼쪽·오른쪽, 각각 위에서 아래로). */
-function camerasBySide(cameras: readonly CoverageCameraView[]) {
-  const top = (a: CoverageCameraView, b: CoverageCameraView) => b.corner[1] - a.corner[1];
-  const isLeft = (camera: CoverageCameraView) => camera.corner[0] < ROOM.width / 2;
-  return {
-    left: cameras.filter(isLeft).sort(top),
-    right: cameras.filter((camera) => !isLeft(camera)).sort(top),
-  };
+/** 교실 모서리 위치대로 2×2 칸 순서(위 왼쪽 → 위 오른쪽 → 아래 왼쪽 → 아래 오른쪽). */
+function camerasByCorner(cameras: readonly CoverageCameraView[]): CoverageCameraView[] {
+  const top = (camera: CoverageCameraView) => camera.corner[1] >= ROOM.depth / 2;
+  return [...cameras].sort((a, b) => Number(top(b)) - Number(top(a)) || a.corner[0] - b.corner[0]);
 }
 
 /**
- * 1단계 2D 지도와 카메라 영상을 한 카드로 묶는다. 지도는 가운데, 카메라 영상은 그 카메라가 있는 모서리 쪽 양옆에 둔다
- * (위쪽 카메라 영상은 지도 위 끝, 아래쪽 카메라 영상은 지도 아래 끝에 맞춘다). 카드는 놓인 칸의 높이를 꽉 채우고, 지도는
- * 그 안에서 가능한 크게 가운데에 둔다. 영상이 오지 않는 칸은 흐리게 두고 상태를 글로 보인다.
+ * 세팅의 카메라 영상 4칸(2×2, 교실 모서리 위치대로). 1단계와 보정·생성 단계 끝까지 같은 자리에 보인다(S15P31A101-691). 1단계는 칸마다
+ * 배지 하나를 단다(showBadges). 보정·생성 중에는 각도 안내를 다시 받지 않아 배지 근거가 없으므로 배지를 달지 않는다.
+ * 겹침 2D 지도는 「자세히」로 옮겼다(CameraStatusDetails).
  */
-export function CameraMapPanel({ coverage }: { coverage: Step1CoverageView }) {
+export function CameraVideoPanel({
+  coverage,
+  showBadges = true,
+  title = MAP_TITLE[0],
+}: {
+  coverage: Step1CoverageView;
+  showBadges?: boolean;
+  /** 카드 제목. 보정·생성 단계처럼 위에 탭이 있으면 null 로 제목을 뺀다. */
+  title?: string | null;
+}) {
   const { localUrl, stompUrl } = readPreviewUrls();
   const { attach } = useCctvPreview(localUrl, stompUrl);
-  const { left, right } = camerasBySide(coverage.cameras);
+  const body = (
+    <div
+      role="group"
+      aria-label="카메라 영상"
+      className="grid size-full min-h-0 grid-cols-2 grid-rows-2 gap-3"
+    >
+      {camerasByCorner(coverage.cameras).map((camera) => (
+        <CameraTile key={camera.id} camera={camera} attach={attach} showBadge={showBadges} />
+      ))}
+    </div>
+  );
+  if (title === null) return body;
   return (
     <Card size="sm">
       <CardHeader>
         <CardTitle>
-          <h2>{MAP_TITLE[0]}</h2>
+          <h2>{title}</h2>
         </CardTitle>
       </CardHeader>
-      <CardContent className="[container-type:size] min-h-0 flex-1">
-        <div
-          className="flex size-full items-center justify-center"
-          style={{ gap: SIDE_GAP_PX, ['--h' as string]: MAP_HEIGHT }}
+      <CardContent className="min-h-0 flex-1">{body}</CardContent>
+    </Card>
+  );
+}
+
+/** 오른쪽 칸 맨 위 「지금 할 일」 카드 한 장(S15P31A101-691). 무엇이 / 어떻게 두 줄과, 있으면 진행 막대 같은 덧붙임(children). */
+export function NextStepCard({ step, children }: { step: NextStep; children?: ReactNode }) {
+  return (
+    <Card size="sm" data-testid="setup-next-step" data-tone={step.tone}>
+      <CardHeader>
+        <CardTitle>
+          <h2>지금 할 일</h2>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1.5">
+        <p
+          role="status"
+          className={cn(
+            'text-sm font-semibold',
+            step.tone === 'delay' ? 'text-delay' : step.tone === 'ok' ? 'text-ok' : '',
+          )}
         >
-          <div style={{ height: 'var(--h)', width: TILE_COLUMN_WIDTH }}>
-            <CameraTileColumn label="왼쪽 카메라 영상" cameras={left} attach={attach} />
-          </div>
-          <div style={{ height: 'var(--h)', width: 'var(--h)' }}>
-            <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
-          </div>
-          <div style={{ height: 'var(--h)', width: TILE_COLUMN_WIDTH }}>
-            <CameraTileColumn label="오른쪽 카메라 영상" cameras={right} attach={attach} />
-          </div>
-        </div>
+          {step.title}
+        </p>
+        <p className="text-sm text-muted-foreground">{step.detail}</p>
+        {children}
       </CardContent>
     </Card>
   );
 }
 
-/**
- * 1단계 카메라별 수신 상태·회전 방향 안내와, 옆 카메라 쌍 겹침이 부족하면 보정 실패 위험 안내. 카메라 쌍 등급은 2D 지도의
- * 연결선에 보인다. 칸이 남으면 행 사이 여백이 고르게 늘어난다.
- */
-export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
+/** 접어 두는 관리자용 「자세히」 묶음 하나(처음에는 닫힘). label 은 묶음 이름(예: '카메라 높이 자세히'), summary 는 접힌 줄 글. */
+export function Details({
+  label,
+  summary,
+  children,
+}: {
+  label: string;
+  summary: string;
+  children: ReactNode;
+}) {
   return (
-    <Panel title="카메라 연결 · 방향 안내" dense fill={2}>
+    <details aria-label={label} className="rounded-xl bg-card px-3.5 py-2.5">
+      <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+        {summary}
+      </summary>
+      <div className="mt-2.5 flex flex-col gap-2.5">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * 1단계 「자세히 · 카메라 상태」(관리자용, 처음엔 닫힘): 카메라마다 배지와 각도 안내 문장, 연결 요약, 겹침이 부족한 옆 쌍 안내,
+ * 위에서 본 겹침 2D 지도(옆 카메라 4쌍 등급). 기본 화면은 영상 칸 배지와 「지금 할 일」만 보인다(S15P31A101-691).
+ */
+export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView }) {
+  return (
+    <Details label="카메라 상태 자세히" summary="자세히 · 카메라 상태">
       <Rows>
         {coverage.cameras.map((cam) => (
           <Row key={cam.id}>
             <Dot tone={cam.tone} />
             <b>{cam.label}</b>
-            <Badge
-              className={cn(
-                'h-auto rounded px-1.5 py-0.5 font-mono text-xs font-medium',
-                TONE_BADGE[cam.tone],
-              )}
-            >
-              {cam.statusLabel}
-            </Badge>
+            <CameraBadgeChip badge={cam.badge} />
             <span
               className={cn(
                 'ml-auto min-w-0 text-right text-xs',
@@ -269,6 +288,7 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
           </Row>
         ))}
       </Rows>
+      <p className="text-xs text-muted-foreground">{coverage.connectivitySummary}</p>
       {coverage.riskyPairs.length > 0 && (
         <Alert className="border-delay/30 bg-delay/10 text-delay">
           <TriangleAlert aria-hidden />
@@ -279,7 +299,10 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
           </AlertDescription>
         </Alert>
       )}
-    </Panel>
+      <div className="aspect-square w-full">
+        <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
+      </div>
+    </Details>
   );
 }
 

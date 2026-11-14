@@ -14,6 +14,7 @@ import {
   setupZoneDraftsKey,
   startCameraCheck,
 } from '@/features/setup/api';
+import { coverageFreshUntil } from '@/features/setup/cameraBadge';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
 import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
 import { rebakeRunning } from '@/features/setup/supplement';
@@ -27,6 +28,7 @@ import type {
 import { api } from '@/lib/api';
 import { useCameraOrderStore } from '@/lib/cameraNames';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 
 // 세팅 1단계 및 2단계 이후 서버 데이터 훅(각도 헬퍼 폴링, 카메라 높이 기본값, 세팅 세션 시작·2초 주기 조회·재시도, AI 구역 초안 조회).
 
@@ -47,7 +49,30 @@ export function useCoverageGuides(enabled = true, poll = enabled) {
     data: query.data,
     pending: query.isPending,
     error: query.isError,
+    /** 마지막으로 받은 시각(이 브라우저 시계, 받은 적 없으면 0). */
+    receivedAt: query.dataUpdatedAt,
   };
+}
+
+/**
+ * 받아 둔 각도 안내가 이 브라우저에서 오래됐는지(S15P31A101-691). 서버 기준(stale_after_ms)에서 받을 때의 나이(age_ms)를 뺀 때가
+ * 지나면 true 다. 조회를 쉬거나 실패해 새 응답이 오지 않으면 카메라 배지가 「확인 중」으로 바뀐다. 만료 시각에 한 번만 다시 그린다.
+ */
+export function useCoverageExpired(
+  data: { age_ms: number | null; stale_after_ms?: number } | undefined,
+  receivedAt: number,
+): boolean {
+  const until =
+    data && receivedAt > 0
+      ? coverageFreshUntil(receivedAt, data.age_ms, data.stale_after_ms)
+      : null;
+  const [expiredAt, setExpiredAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (until === null) return;
+    const timer = window.setTimeout(() => setExpiredAt(until), Math.max(0, until - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [until]);
+  return until !== null && expiredAt === until;
 }
 
 export function useCameraHeightDefaults(enabled = true) {

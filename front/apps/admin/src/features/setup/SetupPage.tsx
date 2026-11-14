@@ -19,6 +19,7 @@ import { CameraCheckModal } from '@/features/setup/CameraCheckModal';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
 import { heightsChanged } from '@/features/setup/heightCheck';
 import { HeightCheckModal } from '@/features/setup/HeightCheckModal';
+import { calibrateNextStep, step1NextStep } from '@/features/setup/nextStep';
 import {
   deriveHeightFields,
   deriveStep1Coverage,
@@ -56,8 +57,9 @@ import { SetupModeChoice } from '@/features/setup/SetupModeChoice';
 import {
   AiZoneDraftsPanel,
   CameraHeightPanel,
-  CameraMapPanel,
-  CameraPanel,
+  CameraStatusDetails,
+  CameraVideoPanel,
+  NextStepCard,
 } from '@/features/setup/SetupPanels';
 import { SetupSplit } from '@/features/setup/SetupPreviewModel';
 import { pendingReviewCount, type SetupZonePlanView } from '@/features/setup/setupZonePlan';
@@ -75,6 +77,7 @@ import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useS
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
   useCameraHeightDefaults,
+  useCoverageExpired,
   useCoverageGuides,
   useCreateSetupSession,
   useResumeSetupSession,
@@ -104,17 +107,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // (배경 촬영·높이 확인)을 서버 세션 상태에서 다시 연다. 세팅이 구역 단계까지 갔으면(완료 또는 세션 구역 목록 저장) 구역 단계로 연다.
 // 세션이 생기기 전에는 2·3단계로 갈 수 없다.
 // 2단계(보정·생성): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
-// 5단계 막대(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안 → 정밀 3D 맵)·진행률·경과 시간,
+// 「지금 할 일」과 전체 진행 막대 하나(5단계 막대·단계별 %·경과 시간은 「자세히 · 진행 단계」),
 // 실패 시 원인·해결 + 다시 시도(POST /api/setup-sessions/{id}/retry)·카메라 연결 관리로, 높이 불일치 시 카메라 다시 맞추기(1단계 복귀 후 재시도),
-// 보정 문제로 멈추면(paused_reason) 카메라 연결 관리에서 고친 뒤 '다음' 이 같은 세션을 멈춘 곳부터 이어 간다(POST .../resume),
-// 미리보기 맵이 준비되면(85%) 3D 미리보기와 보정 검증 결과 표를 보이고 '다음' 으로 구역 단계에 간다(저절로 넘어가지 않는다).
-// 1·2단계는 같은 두 칸 배치(SetupSplit)이고, 2단계 왼쪽은 3D 미리보기 전까지 1단계의 카메라 시야·실시간 영상이다.
+// 높이 확인 멈춤(paused_reason HEIGHT_CHECK)은 높이 확인 창이 같은 세션을 이어 간다(POST .../resume, -690),
+// 3D 맵이 다 만들어지면 '다음' 으로 구역 단계에 간다(저절로 넘어가지 않는다).
+// 1·2단계는 같은 두 칸 배치(SetupSplit)이고, 2단계 왼쪽은 카메라 영상 4칸이 끝까지 보이며 미리보기 맵이 생기면 「3D 미리보기」 탭이 켜진다.
 // 3단계(구역): 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
 // 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
 // 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 세팅 완료 뒤 작업 관리(/work?workUnitId=) 복귀.
 // 단추(다음·다시 보정·세션 취소·카메라 다시 맞추기·작업 관리로)는 setupActions 가 한 곳에서 정한다. 단독 화면(/setup)은 머리줄에 그리고,
 // 날짜 화면 안(embedded)은 같은 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록하며 구역 단계의 마지막 단추는 '다음'(onDone)이다.
-// 「맵 보강 촬영(선택)」은 보정·생성의 '다음'에서 뜨는 창이다(SupplementModal, S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
+// 「맵 보강 촬영(선택)」 창(SupplementModal, S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다. S15P31A101-691
+// 부터 '다음' 에 끼어들지 않고 보정·생성의 「자세히 · 맵 보강」에서만 연다(창의 건너뛰기·다음은 창만 닫는다: '다음' 의 맵 완성 관문을 건너뛰지 않게).
+// 화면 정리(S15P31A101-691): 카메라 영상 4칸은 1·2단계 끝까지 보이고(3D 미리보기는 탭), 칸마다 배지 하나(cameraBadge), 오른쪽은
+// 「지금 할 일」 카드 한 장(nextStep: 무엇이 / 어떻게, '다음' 이 꺼진 이유 포함)과 입력(맵 방식·높이)만 두고 진단은 「자세히」로 접는다.
 // 「카메라 높이 확인」 창(HeightCheckModal, S15P31A101-690): 3D 공간을 만든 직후 워커가 카메라 높이가 서로 맞지 않는다고 보면(paused_reason
 // HEIGHT_CHECK) 1단계와 같은 높이 입력 칸을 크게 띄운다. 고친 값으로 진행하거나 「실측이 맞음」으로 진행하면(POST .../resume) 저절로 닫힌다.
 // 「배경 촬영」 창(BackgroundCaptureModal, S15P31A101-686): 1단계 '다음' 이 먼저 이 창을 띄우고 「시작」을 눌러야 세션을 만든다. 세팅 시작 뒤 새로
@@ -221,7 +227,7 @@ function SetupWorkPage({
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
   // 1단계에서 사용자가 고른 맵 방식(S15P31A101-689). 고르지 않았으면 null 이고 지금 세션의 요청 방식, 없으면 이전 맵 재사용이 기본이다.
   const [pickedMode, setPickedMode] = useState<SetupMode | null>(null);
-  // 보정·생성의 '다음'을 눌렀을 때 뜨는 맵 보강 촬영 창.
+  // 보정·생성의 「자세히 · 맵 보강」에서 여는 맵 보강 촬영 창.
   const [supplementOpen, setSupplementOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -311,9 +317,10 @@ function SetupWorkPage({
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
 
-  // 각도 헬퍼는 1단계에서 주기로 받고, 보정·생성의 왼쪽 카메라 시야 칸(3D 미리보기 전)에서는 받아 둔 값을 쓴다.
-  const cameraViewShown = stage === 0 || (stage === 1 && !waiting.previewReady);
+  // 각도 헬퍼는 1단계에서 주기로 받고, 보정·생성의 왼쪽 카메라 영상 칸에서는 받아 둔 값을 쓴다(카메라 목록·순서만 쓰고 배지는 달지 않는다).
+  const cameraViewShown = stage === 0 || stage === 1;
   const coverageQuery = useCoverageGuides(cameraViewShown, stage === 0);
+  const coverageExpired = useCoverageExpired(coverageQuery.data, coverageQuery.receivedAt);
   // 보정 검증 쌍별 표·카메라 확인(S15P31A101-646). 통과 전에는 2단계 '다음' 이 꺼진다
   const cameraCheck = useMemo(
     () => deriveCameraCheckView(currentSession, waiting.cameraIds),
@@ -467,11 +474,6 @@ function SetupWorkPage({
     });
   }, [sessionId, checkValidation, resumeSession.pending, resumeHeights]);
 
-  const coverage = useMemo(
-    () => deriveStep1Coverage(coverageQuery.data, coverageQuery.error, cameraIds),
-    [coverageQuery.data, coverageQuery.error, cameraIds],
-  );
-
   const onChangeHeight = useCallback((cameraId: string, value: string) => {
     setHeightEdits((prev) => ({ ...prev, [cameraId]: value }));
   }, []);
@@ -488,6 +490,17 @@ function SetupWorkPage({
   // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
   const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
   const modePending = mode === 'REUSE' && reuse.checking;
+
+  // 카메라 칸 배지 근거(S15P31A101-691): 각도 안내(연결·겹침·각도, 오래되면 확인 중) + 재사용 판정의 달라진 카메라
+  const changedCameras = reuse.changedCameras;
+  const coverage = useMemo(
+    () =>
+      deriveStep1Coverage(coverageQuery.data, coverageQuery.error, cameraIds, {
+        expired: coverageExpired,
+        changedCameras,
+      }),
+    [coverageQuery.data, coverageQuery.error, cameraIds, coverageExpired, changedCameras],
+  );
 
   /**
    * 높이를 고쳐 세팅을 다시 시작한다. 서버 규칙(SetupService)에 맞춰 세션 상태로 가른다: 서버 retry 는 실패한 세션만 받고
@@ -674,17 +687,10 @@ function SetupWorkPage({
     else void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
   }, [completed, runCompletion, onDone, navigate, workUnitId]);
 
-  // 보정·생성의 '다음': 보강 촬영을 할 수 있으면(미리보기 맵이 있다) 창으로 먼저 보이고, 아니면 바로 구역 단계로 간다.
-  const confirmCalibration = useCallback(() => {
-    if (supplementVisible(currentSession)) setSupplementOpen(true);
-    else go(ZONE_STAGE);
-  }, [currentSession, go]);
-
+  // 보정·생성의 '다음': 바로 구역 단계로 간다. 맵 보강 촬영은 끼어들지 않고 「자세히 · 맵 보강」에서만 연다(S15P31A101-691).
+  const confirmCalibration = useCallback(() => go(ZONE_STAGE), [go]);
+  const openSupplement = useCallback(() => setSupplementOpen(true), []);
   const closeSupplement = useCallback(() => setSupplementOpen(false), []);
-  const enterZoneStage = useCallback(() => {
-    closeSupplement();
-    go(ZONE_STAGE);
-  }, [closeSupplement, go]);
 
   const actions = deriveSetupActions(
     {
@@ -758,13 +764,33 @@ function SetupWorkPage({
     [sessionId, startWalk.pending, startWalkRequest],
   );
 
-  // 배경 촬영·걷기 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686·-687)
+  // 배경 촬영·걷기 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686·-687).
+  // 1단계는 칸마다 배지를 달고, 보정·생성은 탭 안에 영상만 둔다(각도 안내를 다시 받지 않아 배지 근거가 없다).
   const cameraMap =
     capture.open || walkOpen ? (
-      <div aria-hidden className="min-h-0 rounded-xl bg-card" />
+      <div
+        aria-hidden
+        className={cn('min-h-0', stage === 0 ? 'rounded-xl bg-card' : 'size-full rounded-lg')}
+      />
+    ) : stage === 0 ? (
+      <CameraVideoPanel coverage={coverage} />
     ) : (
-      <CameraMapPanel coverage={coverage} />
+      <CameraVideoPanel coverage={coverage} showBadges={false} title={null} />
     );
+
+  const step1Step = step1NextStep({
+    coverage,
+    heights: heightValidation,
+    heightCameraIds: cameraIds,
+    modePending,
+    submitting: restartPending,
+  });
+  const calibrateStep = calibrateNextStep({
+    waiting,
+    pollingError: sessionQuery.error,
+    walkOpen,
+    cameraCheckBlocked: completed ? null : cameraCheckBlockReason(cameraCheck),
+  });
 
   const bodyClass = cn('flex flex-col gap-3', embedded ? EMBEDDED_BODY : 'min-h-0 flex-1');
   if (entryPending) return <div className={bodyClass} />;
@@ -821,8 +847,8 @@ function SetupWorkPage({
 
       {stage === 0 ? (
         <SetupSplit left={cameraMap}>
+          <NextStepCard step={step1Step} />
           <SetupModeChoice mode={mode} onChange={setPickedMode} reuse={reuse} />
-          <CameraPanel coverage={coverage} />
           <CameraHeightPanel
             fields={heightFields}
             onChange={onChangeHeight}
@@ -840,6 +866,7 @@ function SetupWorkPage({
             retryPending={restartPending}
             canSubmitHeights={heightValidation.valid}
           />
+          <CameraStatusDetails coverage={coverage} />
           {riskConfirmPairs !== null && (
             <CameraRiskDialog
               riskyPairs={riskConfirmPairs}
@@ -853,6 +880,8 @@ function SetupWorkPage({
           <SetupCalibrateStep
             waiting={waiting}
             cameraView={cameraMap}
+            nextStep={calibrateStep}
+            onOpenSupplement={supplementVisible(currentSession) ? openSupplement : undefined}
             cameraCheck={cameraCheck}
             showCameraCheck={
               cameraCheck.gated && Boolean(currentSession.calibration_version) && !waiting.failed
@@ -964,7 +993,7 @@ function SetupWorkPage({
       {supplementOpen && currentSession && (
         <SupplementModal
           session={currentSession}
-          onNext={enterZoneStage}
+          onNext={closeSupplement}
           onCancel={closeSupplement}
           onRebaked={closeSupplement}
         />
