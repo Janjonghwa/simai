@@ -3,6 +3,7 @@ import {
   averageLag,
   isLagHigh,
   LAG_WINDOW_MS,
+  lagLevel,
   lagSample,
   pushLagSample,
   type LagSample,
@@ -98,8 +99,17 @@ describe('pushLagSample · 평균', () => {
     expect(averageCameraLag(samples, 'cam_A')).toBeUndefined();
   });
 
-  it('명세 6.1 DEGRADED 기준(600ms)을 넘어야 지연 색이다', () => {
-    expect(isLagHigh(600)).toBe(false);
-    expect(isLagHigh(601)).toBe(true);
+  it('명세 6.1 DEGRADED 기준(600ms) 이상이면 지연 색이다', () => {
+    expect(isLagHigh(599)).toBe(false);
+    expect(isLagHigh(600)).toBe(true);
+  });
+
+  it('지연 단계는 300ms 미만 초록, 600ms 미만 노랑, 그 이상 빨강이다(S15P31A101-704)', () => {
+    expect(lagLevel(0)).toBe('ok');
+    expect(lagLevel(299)).toBe('ok');
+    expect(lagLevel(300)).toBe('warn');
+    expect(lagLevel(599)).toBe('warn');
+    expect(lagLevel(600)).toBe('high');
+    expect(lagLevel(2000)).toBe('high');
   });
 });

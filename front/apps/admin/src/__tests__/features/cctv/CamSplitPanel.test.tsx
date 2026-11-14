@@ -237,14 +237,15 @@ describe('CamSplitPanel 관리자', () => {
 });
 
 describe('CamSplitPanel 관리자 · 중계가 이어지지 않았을 때', () => {
-  it('그림 없이 Tier 0 카메라로 탭을 만들고, 칸에 카메라 상태를 보인다', () => {
+  it('그림 없이 Tier 0 카메라로 탭을 만들고, 칸 오른쪽 위에 그 카메라의 판정 지연을 보인다', () => {
     seedRealtime();
+    useRealtimeStore.setState({ lagSamples: [{ at: 0, lagMs: 150, cameras: { cam_C: 180 } }] });
     useCctvStore.getState().setLink('unavailable');
     openSplit('cam_C');
     renderPanel();
 
     expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
-    expect(screen.getByLabelText('카메라 3 상태 실시간')).toBeTruthy();
+    expect(screen.getByLabelText('카메라 3 판정 지연 180 ms').textContent).toBe('180 ms');
     expect(screen.queryByRole('img')).toBeNull();
   });
 
