@@ -280,6 +280,9 @@ function Do-Stop([switch]$Quiet, [switch]$NoUpload) {
   foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
     if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
       taskkill /PID $p /T /F | Out-Null
+      # taskkill 은 종료를 요청만 한다. 프로세스 트리가 실제로 끝날 때까지 잠시 기다린 뒤 판정한다(바로 보면 종료 중인 창을 실패로 본다)
+      $deadline = (Get-Date).AddSeconds(10)
+      while ((Get-Process -Id $p -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }
       if (Get-Process -Id $p -ErrorAction SilentlyContinue) { Fail '녹화 프로세스를 종료하지 못해 파일 확정을 미룬다' }
     }
   }
