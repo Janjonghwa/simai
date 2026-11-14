@@ -646,6 +646,95 @@ class GaitFeatures(Envelope):
     payload: Payload16
 
 
+class GpuSessionRegisterPort(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    role: Literal['CONTROL', 'VIDEO', 'SSH']
+    public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
+    requested_port: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+
+
+class Report(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    interval_ms: Annotated[StrictInt, Field(ge=1000, le=600000)]
+    stale_after_ms: Annotated[StrictInt, Field(ge=1000)]
+
+
+class GpuSessionRegisterResultSecretToken(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(pattern='^[A-Za-z0-9_-]{43}$')]
+
+
+class GpuSessionRegisterResultSignedFile(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    uri: Annotated[StrictStr, Field(pattern='^https://\\S+$')]
+    sha256: DefsSha256
+
+
+MeasuredHeightsMAdditionalProperty = TypeAliasType(
+    "MeasuredHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0, le=20.0)]
+)
+
+
+class Calibration2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    version: Annotated[StrictStr, Field(min_length=1)]
+    uri: Annotated[StrictStr, Field(pattern='^https://\\S+$')]
+    sha256: DefsSha256
+
+
+class Config(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    config_version: Annotated[StrictStr, Field(min_length=1)]
+    manifest: GpuSessionRegisterResultSignedFile
+    calibration: Calibration2
+
+
+class GpuSessionRegisterResultStart(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    ec2_base_url: Annotated[StrictStr, Field(pattern='^https://[^/\\s]+$')]
+    site_id: Annotated[StrictStr, Field(min_length=1)]
+    camera_ids: list[DefsCameraId]
+    measured_heights_m: dict[str, MeasuredHeightsMAdditionalProperty]
+    laptop_token_sha256: list[DefsSha256]
+    scene_version: Annotated[StrictStr | None, Field(min_length=1)]
+    config: Config | None
+
+
+class ReasonCode(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(pattern='^[A-Z][A-Z0-9_]{0,63}$')]
+
+
+class Payload19(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    session_id: DefsUuid
+    stage: Literal['WEIGHTS', 'ENGINE', 'TIER0', 'VLLM', 'READY', 'FAILED', 'ENDED']
+    reason_code: ReasonCode | None
+    detail: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
+    progress: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    reported_at: DefsTimestampMs
+
+
+class GpuSessionReport(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['gpu_session_report'], Field(min_length=1)]
+    payload: Payload19
+
+
 class HealthActiveSiteAlert(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -920,7 +1009,7 @@ class CameraCheckStart(BaseModel):
     attempt: Annotated[StrictInt, Field(ge=1)]
 
 
-class Payload21(BaseModel):
+class Payload24(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -942,7 +1031,7 @@ class JobLeaseStatus(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['job_lease_status'], Field(min_length=1)]
-    payload: Payload21
+    payload: Payload24
 
 
 class JobRequestJobType(
@@ -951,7 +1040,7 @@ class JobRequestJobType(
     root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup', 'vlm_zone_draft']
 
 
-class Payload23(BaseModel):
+class Payload26(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -966,10 +1055,10 @@ class JournalAck(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['journal_ack'], Field(min_length=1)]
-    payload: Payload23
+    payload: Payload26
 
 
-class Tier0(BaseModel):
+class Tier01(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -1005,12 +1094,12 @@ class Camera1(BaseModel):
     camera_to_gateway_gap_max_ms: DefsDurationMs | MISSING = MISSING
 
 
-class Payload24(BaseModel):
+class Payload27(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
     heartbeat_seq: Annotated[StrictInt, Field(ge=0)]
-    tier0: Tier0
+    tier0: Tier01
     ec2: Ec2 | MISSING = MISSING
     site_display: Literal['NORMAL', 'CONTROL_HALTED', 'REMOTE_FAULT', 'AI_DELAY']
     alarm: Alarm | MISSING = MISSING
@@ -1022,10 +1111,10 @@ class LaptopHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['laptop_heartbeat'], Field(min_length=1)]
-    payload: Payload24
+    payload: Payload27
 
 
-class Payload25(BaseModel):
+class Payload28(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1051,14 +1140,14 @@ class LocalAlert(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['local_alert'], Field(min_length=1)]
-    payload: Payload25
+    payload: Payload28
 
 
 class StreamEpoch(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0)]
 
 
-class Payload26(BaseModel):
+class Payload29(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
         regex_engine="python-re",
@@ -1110,10 +1199,10 @@ class MediaClip(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['media_clip'], Field(min_length=1)]
-    payload: Payload26
+    payload: Payload29
 
 
-class Payload27(BaseModel):
+class Payload30(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -1133,7 +1222,7 @@ class MediaClipRetention(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['media_clip_retention'], Field(min_length=1)]
-    payload: Payload27
+    payload: Payload30
 
 
 class ObservationBatchDetection(BaseModel):
@@ -1466,7 +1555,7 @@ class RecordingWindows(BaseModel):
     retention_days: Literal[14]
 
 
-class Payload32(BaseModel):
+class Payload35(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1488,10 +1577,10 @@ class RiskAlert(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['risk_alert'], Field(min_length=1)]
-    payload: Payload32
+    payload: Payload35
 
 
-class Payload341(BaseModel):
+class Payload371(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1499,7 +1588,7 @@ class Payload341(BaseModel):
     resumed: Literal[False] | MISSING = MISSING
 
 
-class Payload342(BaseModel):
+class Payload372(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1581,7 +1670,7 @@ class PositionId(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
-class ReasonCode(RootModel[StrictStr]):
+class ReasonCode1(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(pattern='^[a-z][a-z0-9_]*$')]
 
 
@@ -1595,7 +1684,7 @@ class RiskPlanResultRiskItem1(BaseModel):
     position_ids: Annotated[list[PositionId], Field(min_length=1)]
     zone_id: Annotated[StrictStr | None, Field(min_length=1)]
     metrics: DefsRuleMetrics
-    reason_codes: list[ReasonCode]
+    reason_codes: list[ReasonCode1]
     confidence_reasons: DefsConfidenceReasons
 
 
@@ -1609,7 +1698,7 @@ class RiskPlanResultRiskItem2(BaseModel):
     position_ids: list[PositionId]
     zone_id: Annotated[StrictStr, Field(min_length=1)]
     metrics: DefsRuleMetrics
-    reason_codes: list[ReasonCode]
+    reason_codes: list[ReasonCode1]
     confidence_reasons: DefsConfidenceReasons
 
 
@@ -1619,7 +1708,7 @@ class RiskPlanResultRiskItem(
     root: RiskPlanResultRiskItem1 | RiskPlanResultRiskItem2
 
 
-class Config(BaseModel):
+class Config1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -1816,7 +1905,7 @@ class Performance1(BaseModel):
     gpu_model: StrictStr | MISSING = MISSING
 
 
-class Payload37(BaseModel):
+class Payload40(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -1829,7 +1918,7 @@ class SceneReference(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['scene_reference'], Field(min_length=1)]
-    payload: Payload37
+    payload: Payload40
 
 
 class SceneRegenerate(RootModel[Any]):
@@ -2355,7 +2444,7 @@ class Image(BaseModel):
     kind: Literal['CLEAN_BACKGROUND', 'FRAME']
 
 
-class Payload40(BaseModel):
+class Payload43(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2373,7 +2462,7 @@ class StaticReconstructSubmitResult(Envelope):
     msg_type: Annotated[
         Literal['static_reconstruct_submit_result'], Field(min_length=1)
     ]
-    payload: Payload40
+    payload: Payload43
 
 
 class Review1(BaseModel):
@@ -2670,7 +2759,7 @@ class Tier0EndpointPortMapping(BaseModel):
     public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
-class Payload42(BaseModel):
+class Payload45(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
         regex_engine="python-re",
@@ -2708,7 +2797,7 @@ class VideoSegment(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['video_segment'], Field(min_length=1)]
-    payload: Payload42
+    payload: Payload45
 
 
 class Laptop(BaseModel):
@@ -2723,7 +2812,7 @@ class DataAgeMs(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0)]
 
 
-class Config1(BaseModel):
+class Config2(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2884,7 +2973,7 @@ class VlmZoneDraftZoneOpinionStatus(RootModel[Literal['OPINION', 'NO_OPINION']])
     root: Literal['OPINION', 'NO_OPINION']
 
 
-class Payload44(BaseModel):
+class Payload47(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2901,10 +2990,10 @@ class WatchAck(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_ack'], Field(min_length=1)]
-    payload: Payload44
+    payload: Payload47
 
 
-class Payload45(BaseModel):
+class Payload48(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2927,10 +3016,10 @@ class WatchAlert(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_alert'], Field(min_length=1)]
-    payload: Payload45
+    payload: Payload48
 
 
-class Payload46(BaseModel):
+class Payload49(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2944,14 +3033,14 @@ class WatchAlertClear(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_alert_clear'], Field(min_length=1)]
-    payload: Payload46
+    payload: Payload49
 
 
 class WorldId(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=64, min_length=1)]
 
 
-class Payload47(BaseModel):
+class Payload50(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2969,14 +3058,14 @@ class WatchBindingNotice(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_binding_notice'], Field(min_length=1)]
-    payload: Payload47
+    payload: Payload50
 
 
 class WorldId1(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload48(BaseModel):
+class Payload51(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2997,7 +3086,7 @@ class WatchEscalation(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_escalation'], Field(min_length=1)]
-    payload: Payload48
+    payload: Payload51
 
 
 class Echo(BaseModel):
@@ -3017,7 +3106,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload49(BaseModel):
+class Payload52(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3032,7 +3121,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload49
+    payload: Payload52
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -3679,6 +3768,77 @@ class FrameHeader(DefsFrameKey, DefsCaptureTime):
 
 class Payload17(BaseModel):
     model_config = ConfigDict(
+        extra='forbid',
+    )
+    provider: Literal['RUNPOD', 'AWS', 'MANUAL']
+    instance_id: Annotated[
+        StrictStr, Field(pattern='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+    ]
+    gpu_type: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    gpu_count: Annotated[StrictInt | MISSING, Field(ge=1, le=16)] = MISSING
+    region: Annotated[StrictStr | None, Field(max_length=64, min_length=1)]
+    public_host: Annotated[
+        StrictStr,
+        Field(
+            max_length=253,
+            min_length=1,
+            pattern='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$',
+        ),
+    ]
+    ports: Annotated[list[GpuSessionRegisterPort], Field(max_length=32, min_length=2)]
+    image_digest: DefsSha256 | None
+    price_per_hour_usd: Annotated[StrictFloat | None, Field(ge=0.0)]
+    tls_public_key_sha256: DefsSha256 | MISSING = MISSING
+
+
+class GpuSessionRegister(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['gpu_session_register'], Field(min_length=1)]
+    payload: Payload17
+
+
+class Worker(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    worker_id: DefsInstanceId
+    token: GpuSessionRegisterResultSecretToken
+
+
+class Tier0(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    gateway_id: DefsInstanceId
+    token: GpuSessionRegisterResultSecretToken
+
+
+class Payload18(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    session_id: DefsUuid
+    registered_at: DefsTimestampMs
+    superseded_session_ids: list[DefsUuid]
+    worker: Worker
+    tier0: Tier0
+    report: Report
+    start: GpuSessionRegisterResultStart
+
+
+class GpuSessionRegisterResult(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['gpu_session_register_result'], Field(min_length=1)]
+    source_id: Annotated[Literal['ec2'], Field(min_length=1)]
+    payload: Payload18
+
+
+class Payload20(BaseModel):
+    model_config = ConfigDict(
         extra='allow',
     )
     system_health: DefsSystemHealth
@@ -3709,7 +3869,7 @@ class Health(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['health'], Field(min_length=1)]
-    payload: Payload17
+    payload: Payload20
 
 
 class HumanMeshOutputCommonFields(BaseModel):
@@ -3741,7 +3901,7 @@ class HumanMeshOutputPoseFrame(HumanMeshOutputCommonFields):
     quality: Quality | MISSING = MISSING
 
 
-class Payload18(BaseModel):
+class Payload21(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3760,10 +3920,10 @@ class JobCallback(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['job_callback'], Field(min_length=1)]
-    payload: Payload18
+    payload: Payload21
 
 
-class Payload20(BaseModel):
+class Payload23(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3776,10 +3936,10 @@ class JobLeaseRequest(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['job_lease_request'], Field(min_length=1)]
-    payload: Payload20
+    payload: Payload23
 
 
-class Payload22(BaseModel):
+class Payload25(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3802,7 +3962,7 @@ class JobRequest(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['job_request'], Field(min_length=1)]
-    payload: Payload22
+    payload: Payload25
 
 
 class ObservationBatchFrameObservation(DefsFrameKey, DefsCaptureTime):
@@ -3812,7 +3972,7 @@ class ObservationBatchFrameObservation(DefsFrameKey, DefsCaptureTime):
     detections: list[ObservationBatchDetection]
 
 
-class Payload29(BaseModel):
+class Payload32(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -3828,10 +3988,10 @@ class ObservationSummary(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['observation_summary'], Field(min_length=1)]
-    payload: Payload29
+    payload: Payload32
 
 
-class Payload30(BaseModel):
+class Payload33(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -3850,10 +4010,10 @@ class PpeState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['ppe_state'], Field(min_length=1)]
-    payload: Payload30
+    payload: Payload33
 
 
-class Payload31(BaseModel):
+class Payload34(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3868,7 +4028,7 @@ class PpeView(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['ppe_view'], Field(min_length=1)]
-    payload: Payload31
+    payload: Payload34
 
 
 class RecordingManifestConsent(BaseModel):
@@ -3925,7 +4085,7 @@ class RecordingManifestSegment(BaseModel):
     integrity: Integrity
 
 
-class Payload33(DefsSeverityUpwardOnly, DefsNeedsCheckMatchesReasons):
+class Payload36(DefsSeverityUpwardOnly, DefsNeedsCheckMatchesReasons):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3966,10 +4126,10 @@ class RiskEvent(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['risk_event'], Field(min_length=1)]
-    payload: Payload33
+    payload: Payload36
 
 
-class Payload343(DefsNeedsCheckMatchesReasons):
+class Payload373(DefsNeedsCheckMatchesReasons):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4004,7 +4164,7 @@ class Payload343(DefsNeedsCheckMatchesReasons):
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
-class Payload344(Payload341, Payload343):
+class Payload374(Payload371, Payload373):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4039,7 +4199,7 @@ class Payload344(Payload341, Payload343):
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
-class Payload345(Payload342, Payload343):
+class Payload375(Payload372, Payload373):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4074,7 +4234,7 @@ class Payload345(Payload342, Payload343):
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
-class Payload346(Payload341, Payload343):
+class Payload376(Payload371, Payload373):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4109,7 +4269,7 @@ class Payload346(Payload341, Payload343):
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
-class Payload347(Payload342, Payload343):
+class Payload377(Payload372, Payload373):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4144,8 +4304,8 @@ class Payload347(Payload342, Payload343):
     escalation: DefsOperatorEscalation | MISSING = MISSING
 
 
-class Payload34(RootModel[Payload344 | Payload345 | Payload346 | Payload347]):
-    root: Payload344 | Payload345 | Payload346 | Payload347
+class Payload37(RootModel[Payload374 | Payload375 | Payload376 | Payload377]):
+    root: Payload374 | Payload375 | Payload376 | Payload377
 
 
 class RiskEventTransition(Envelope):
@@ -4153,7 +4313,7 @@ class RiskEventTransition(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['risk_event_transition'], Field(min_length=1)]
-    payload: Payload34
+    payload: Payload37
 
 
 class RiskPlanRequestLayout(BaseModel):
@@ -4176,7 +4336,7 @@ class RiskPlanRequestRuleSet(BaseModel):
     rule_versions: Annotated[list[RiskPlanRequestRuleVersionRef], Field(min_length=1)]
 
 
-class Payload36(BaseModel):
+class Payload39(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -4201,7 +4361,7 @@ class RiskPlanResult(Envelope):
     )
     msg_type: Annotated[Literal['risk_plan_result'], Field(min_length=1)]
     source_id: Annotated[Literal['risk-engine-01'], Field(min_length=1)]
-    payload: Payload36
+    payload: Payload39
 
 
 class RunRecord(BaseModel):
@@ -4222,7 +4382,7 @@ class RunRecord(BaseModel):
     env_hash: StrictStr
     model_version: StrictStr
     weights_hash: DefsSha256 | MISSING = MISSING
-    config: Config
+    config: Config1
     input_provenance: DefsInputProvenance
     gpu: Gpu
     started_at: DefsTimestampMs
@@ -4318,7 +4478,7 @@ class Ack1(DefsOperatorAck):
     actor_id: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload38(BaseModel):
+class Payload41(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4332,7 +4492,7 @@ class SiteAck(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['site_ack'], Field(min_length=1)]
-    payload: Payload38
+    payload: Payload41
 
 
 class SiteSetupArtifacts(BaseModel):
@@ -4404,7 +4564,7 @@ class Input(BaseModel):
     regenerate_quality: SceneRegenerateRegenerateQuality | MISSING = MISSING
 
 
-class Payload39(BaseModel):
+class Payload42(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4418,7 +4578,7 @@ class StaticReconstructSubmit(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['static_reconstruct_submit'], Field(min_length=1)]
-    payload: Payload39
+    payload: Payload42
 
 
 class Check(BaseModel):
@@ -4492,7 +4652,7 @@ class TbmFormEndingRequest(BaseModel):
     facts: TbmFormEndingRequestFacts
 
 
-class Payload41(BaseModel):
+class Payload44(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -4515,7 +4675,7 @@ class Tier0Endpoint(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['tier0_endpoint'], Field(min_length=1)]
-    payload: Payload41
+    payload: Payload44
 
 
 class Scene(BaseModel):
@@ -4545,7 +4705,7 @@ class PersonName(BaseModel):
     name_source: Literal['WORLD_MANUAL', 'WATCH_DEVICE', 'UNIDENTIFIED']
 
 
-class Payload43(BaseModel):
+class Payload46(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4556,7 +4716,7 @@ class Payload43(BaseModel):
     laptop: Laptop
     data_age_ms: DataAgeMs | None
     calibration_state: DefsCalibrationState
-    config: Config1
+    config: Config2
     scene: Scene
     tier0_health: dict[str, Any] | None
     re_setup: list[ReSetupItem] | MISSING = MISSING
@@ -4573,7 +4733,7 @@ class ViewerHealth(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
-    payload: Payload43
+    payload: Payload46
 
 
 class Frame2(DefsCaptureTime):
@@ -4705,7 +4865,7 @@ class VlmZoneDraftZoneOpinionItem(BaseModel):
     prompt_version: DefsVersionId
 
 
-class Payload50(BaseModel):
+class Payload53(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -4722,7 +4882,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload50
+    payload: Payload53
 
 
 class Track(WorldStateWorldTrack):
@@ -5079,7 +5239,7 @@ class HumanMeshOutputAvatarAsset(HumanMeshOutputCommonFields):
     consent_ref: StrictStr | MISSING = MISSING
 
 
-class Payload28(BaseModel):
+class Payload31(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -5093,7 +5253,7 @@ class ObservationBatch(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['observation_batch'], Field(min_length=1)]
-    payload: Payload28
+    payload: Payload31
 
 
 class RecordingManifestCamera(BaseModel):
@@ -5115,7 +5275,7 @@ class RecordingManifestCamera(BaseModel):
     segments: list[RecordingManifestSegment]
 
 
-class Payload35(BaseModel):
+class Payload38(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -5133,7 +5293,7 @@ class RiskPlanRequest(Envelope):
     )
     msg_type: Annotated[Literal['risk_plan_request'], Field(min_length=1)]
     source_id: Annotated[Literal['ec2'], Field(min_length=1)]
-    payload: Payload35
+    payload: Payload38
 
 
 class JointBa(BaseModel):
@@ -5351,7 +5511,7 @@ class HumanMeshOutput(RootModel[HumanMeshOutput1 | HumanMeshOutput2]):
     root: HumanMeshOutput1 | HumanMeshOutput2
 
 
-class Payload19(BaseModel):
+class Payload22(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -5366,7 +5526,7 @@ class JobHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
-    payload: Payload19
+    payload: Payload22
 
 
 class RecordingManifest(
@@ -5427,6 +5587,9 @@ class Contracts(BaseModel):
     event_state_snapshot: EventStateSnapshot | MISSING = MISSING
     frame_header: FrameHeader | MISSING = MISSING
     gait_features: GaitFeatures | MISSING = MISSING
+    gpu_session_register: GpuSessionRegister | MISSING = MISSING
+    gpu_session_register_result: GpuSessionRegisterResult | MISSING = MISSING
+    gpu_session_report: GpuSessionReport | MISSING = MISSING
     health: Health | MISSING = MISSING
     human_mesh_output: HumanMeshOutput | MISSING = MISSING
     incident_summary: IncidentSummary | MISSING = MISSING

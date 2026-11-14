@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "gpu_session_register",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000006991",
+  "sent_at": 1794700800000,
+  "source_id": "gpu-boot-runpod",
+  "payload": {
+    "provider": "RUNPOD",
+    "instance_id": "a1b2c3d4e5f6g7",
+    "gpu_type": "NVIDIA H100 80GB HBM3",
+    "gpu_count": 1,
+    "region": "AP-JP-1",
+    "public_host": "203.0.113.24",
+    "ports": [
+      {
+        "role": "CONTROL",
+        "public_port": 17000,
+        "requested_port": 70000
+      },
+      {
+        "role": "VIDEO",
+        "public_port": 17001,
+        "requested_port": 70001
+      },
+      {
+        "role": "SSH",
+        "public_port": 22113,
+        "requested_port": 22
+      }
+    ],
+    "image_digest": "sha256:92af16d5320bcf20e39b8c5a2028f33ec3f390454c761a81205d8fb4bb6c8b3c",
+    "price_per_hour_usd": 2.99,
+    "tls_public_key_sha256": "sha256:5f1d7c2a9e8b4f3a6d0c1b2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a"
+  }
+}

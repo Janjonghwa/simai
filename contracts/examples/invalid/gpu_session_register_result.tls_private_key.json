@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "gpu_session_register_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000006993",
+  "sent_at": 1794700800120,
+  "source_id": "ec2",
+  "payload": {
+    "session_id": "6f9b2c1e-3d4a-4b5c-8d7e-0f1a2b3c4d5e",
+    "registered_at": 1794700800120,
+    "superseded_session_ids": [
+      "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+    ],
+    "worker": {
+      "worker_id": "worker-gpu-01",
+      "token": "EXAMPLE-not-a-real-worker-token-0000000000a"
+    },
+    "tier0": {
+      "gateway_id": "tier0-lobby-s9",
+      "token": "EXAMPLE-not-a-real-tier0-token-00000000000b",
+      "tls_private_key": "-----BEGIN PRIVATE KEY-----"
+    },
+    "report": {
+      "interval_ms": 60000,
+      "stale_after_ms": 600000
+    },
+    "start": {
+      "ec2_base_url": "https://simai.example",
+      "site_id": "lobby",
+      "camera_ids": [
+        "cam_A",
+        "cam_B",
+        "cam_C",
+        "cam_D"
+      ],
+      "measured_heights_m": {
+        "cam_A": 2.44,
+        "cam_B": 2.44,
+        "cam_C": 2.48,
+        "cam_D": 2.48
+      },
+      "laptop_token_sha256": [
+        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+      ],
+      "scene_version": "scene-job-7a1b",
+      "config": {
+        "config_version": "cfg-41",
+        "manifest": {
+          "uri": "https://simai.example/api/config-bundles/cfg-41/files/manifest?sig=EXAMPLEsig1",
+          "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "calibration": {
+          "version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097",
+          "uri": "https://simai.example/api/config-bundles/cfg-41/files/calibration?sig=EXAMPLEsig2",
+          "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      }
+    }
+  },
+  "_expect_error": "TLS 비밀 키는 싣지 못한다"
+}

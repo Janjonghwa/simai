@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "gpu_session_report",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000006996",
+  "sent_at": 1794700860000,
+  "source_id": "gpu-boot-runpod",
+  "payload": {
+    "session_id": "6f9b2c1e-3d4a-4b5c-8d7e-0f1a2b3c4d5e",
+    "stage": "FAILED",
+    "reason_code": null,
+    "detail": "TensorRT 엔진 빌드 실패(종료 코드 3)",
+    "reported_at": 1794700860000
+  },
+  "_expect_error": "FAILED 는 사유 코드 필수"
+}

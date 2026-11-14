@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/gpu_session_register.schema.json",
+  "title": "GPU gpu_session_register",
+  "description": "GPU 인스턴스(Pod) → EC2 GPU 세션 등록(S15P31A101-699, 명세 3.12 'GPU 인스턴스는 한 시점에 하나', 14). 공급자(RunPod·AWS·손으로 켠 인스턴스)와 무관하게 같은 메시지다. 【전송】 POST /api/gpu/sessions, 헤더 Authorization: Bearer <부팅 비밀값>(공급자 비밀 저장소 RunPod Secrets·AWS Secrets Manager 로만 받는다. 메시지에 넣지 않는다). 봉투 source_id 는 그 부팅 비밀값의 ID(관리 명령 `admin gpu-boot register --id` 의 값)와 같아야 한다(틀리면 401). 성공은 201 + gpu_session_register_result. 【EC2 동작】 같은 시점 GPU 세션은 하나라 열린 세션이 있으면 먼저 끝내고(end_reason SUPERSEDED, 그 세션의 Tier 0 토큰 폐기·I1 연결 끊기·워커 토큰 폐기) 새 세션을 연다. 이번 세션용 워커 토큰(부팅 비밀값에 묶인 워커 ID 를 새 토큰으로)과 Tier 0 토큰을 새로 발급해 결과로 한 번만 돌려준다. 같은 Pod 가 다시 등록해도 새 세션이다(재시도는 이전 토큰을 무효로 만든다). 【무엇을 싣나】 등록 시점에 Pod 가 아는 사실만. 모르는 값은 null 로 싣고 지어내지 않는다(AGENTS 규칙 2). 비밀 값(HF 토큰, TLS 비밀 키, 공급자 API 키)은 싣지 못하게 payload·포트 항목을 닫는다(additionalProperties: false). 노트북 접속에 쓰는 Tier 0 엔드포인트의 정본은 여전히 I1 tier0_endpoint 다(이 메시지의 포트는 관리 화면·감시용 기록).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "gpu_session_register" },
+    "payload": {
+      "type": "object",
+      "required": ["provider", "instance_id", "gpu_type", "region", "public_host", "ports", "image_digest", "price_per_hour_usd"],
+      "properties": {
+        "provider": {
+          "enum": ["RUNPOD", "AWS", "MANUAL"],
+          "description": "GPU 공급자. MANUAL 은 사람이 손으로 켠 인스턴스(공급자 API 로 끄지 않는다)"
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "description": "공급자의 인스턴스 ID(RunPod RUNPOD_POD_ID, AWS i-…). 공급자 API 로 끌 때 쓴다(S15P31A101-702)"
+        },
+        "gpu_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "GPU 이름(nvidia-smi --query-gpu=name 값, 예: NVIDIA H100 80GB HBM3)"
+        },
+        "gpu_count": { "type": "integer", "minimum": 1, "maximum": 16, "description": "GPU 수. 모르면 싣지 않는다" },
+        "region": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "데이터센터·지역(RunPod RUNPOD_DC_ID 예: AP-JP-1, AWS ap-northeast-2). 모르면 null"
+        },
+        "public_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$",
+          "description": "인스턴스 공개 주소(IPv4 또는 DNS 이름, RunPod RUNPOD_PUBLIC_IP). 스킴·포트·경로 없이"
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/port" },
+          "allOf": [
+            { "contains": { "properties": { "role": { "const": "CONTROL" } }, "required": ["role"] } },
+            { "contains": { "properties": { "role": { "const": "VIDEO" } }, "required": ["role"] } }
+          ],
+          "description": "공개 포트. 제어(I0 wss)·영상(I0 TLS) 포트는 반드시, SSH 는 열려 있으면 싣는다"
+        },
+        "image_digest": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/sha256" }, { "type": "null" }],
+          "description": "실행 중인 컨테이너 이미지 다이제스트(SIMAI_IMAGE_DIGEST, deploy/README 'env_hash'). 모르면 null(로컬 이미지 ID 로 채우지 않는다)"
+        },
+        "price_per_hour_usd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "공급자가 알려 준 시간당 가격(USD). 모르면 null(0 으로 채우지 않는다)"
+        },
+        "tls_public_key_sha256": {
+          "$ref": "../common/defs.schema.json#/$defs/sha256",
+          "description": "Tier 0 TLS 서버 공개키 지문(SubjectPublicKeyInfo DER 의 SHA-256, tier0_endpoint 와 같은 값). 키를 이미 가졌으면 싣는다. 비밀 키는 싣지 않는다"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+
+  "$defs": {
+    "port": {
+      "type": "object",
+      "description": "공개 포트 하나",
+      "required": ["role", "public_port"],
+      "properties": {
+        "role": { "enum": ["CONTROL", "VIDEO", "SSH"], "description": "CONTROL: I0 제어 WebSocket(wss). VIDEO: 카메라 영상 TLS. SSH: 개발 접속(키 인증만)" },
+        "public_port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "밖에서 접속할 포트" },
+        "requested_port": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "인스턴스가 요청·내부에서 듣는 번호(RunPod 대칭 매핑은 70000 이상, RUNPOD_TCP_PORT_<번호>). 모르면 싣지 않는다"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

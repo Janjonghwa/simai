@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "gpu_session_register_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000006994",
+  "sent_at": 1794700800120,
+  "source_id": "ec2",
+  "payload": {
+    "session_id": "6f9b2c1e-3d4a-4b5c-8d7e-0f1a2b3c4d5e",
+    "registered_at": 1794700800120,
+    "superseded_session_ids": [],
+    "worker": {
+      "worker_id": "worker-gpu-01",
+      "token": "EXAMPLE-not-a-real-worker-token-0000000000a"
+    },
+    "tier0": {
+      "gateway_id": "tier0-lobby-s9",
+      "token": "EXAMPLE-not-a-real-tier0-token-00000000000b"
+    },
+    "report": {
+      "interval_ms": 60000,
+      "stale_after_ms": 600000
+    },
+    "start": {
+      "ec2_base_url": "https://simai.example",
+      "site_id": "lobby",
+      "camera_ids": [
+        "cam1",
+        "cam2"
+      ],
+      "measured_heights_m": {
+        "cam1": 2.49
+      },
+      "laptop_token_sha256": [],
+      "scene_version": null,
+      "config": null
+    }
+  }
+}

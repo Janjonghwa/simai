@@ -49,6 +49,15 @@ public final class I1Connection {
         return session.isOpen();
     }
 
+    /**
+     * 업그레이드 요청을 인증한 주체 이름(Tier0TokenAuthenticationFilter): 환경 변수 토큰이면 tier0, GPU 세션 토큰이면
+     * gpu-session:&lt;세션 ID&gt;(S15P31A101-699). 세션이 끝나면 이것으로 그 연결을 찾아 끊는다. 모르면 null
+     */
+    public String principalName() {
+        java.security.Principal principal = session.getPrincipal();
+        return principal == null ? null : principal.getName();
+    }
+
     synchronized void bind(String sourceId) {
         if (gatewayId == null) {
             gatewayId = sourceId;
