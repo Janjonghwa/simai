@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
-  "title": "I5 site_setup 1.17.0 입력·단계·결과",
+  "title": "I5 site_setup 1.19.0 입력·단계·결과",
   "$defs": {
     "input": {
       "type": "object",
@@ -2071,12 +2071,71 @@
       "properties": {
         "status": {
           "enum": [
+            "AWAITING_START",
             "WAITING",
             "MEASURING",
             "PASSED",
             "FAILED",
             "INCOMPLETE"
-          ]
+          ],
+          "description": "1.19.0(S15P31A101-687): AWAITING_START = 보정이 끝나 관리자의 「걷기 시작」을 기다린다(아직 시도 없음, attempt 없음, user_wait 필수). 시도마다 WAITING(아직 사람 없음) → MEASURING → PASSED | FAILED | INCOMPLETE(시도 상한까지 근거를 못 채움)"
+        },
+        "attempt": {
+          "type": "object",
+          "required": [
+            "no",
+            "id",
+            "started_at_ms",
+            "expires_at_ms",
+            "calibration_version"
+          ],
+          "properties": {
+            "no": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "이 대여 안의 시도 번호(1부터). job_lease_status camera_check_start.attempt 와 같은 번호"
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "description": "워커가 만든 시도 ID(대여 앞 8자리 + 번호). 같은 Pod 의 Tier 0 가 이 시도의 view 를 따로 적는 폴더 이름이라 늦게 쓰인 이전 시도 view 가 섞이지 않는다"
+            },
+            "started_at_ms": {
+              "$ref": "../common/defs.schema.json#/$defs/timestamp_ms"
+            },
+            "expires_at_ms": {
+              "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+              "description": "이 시도의 상한(워커 시계). 넘도록 판정을 못 하면 INCOMPLETE"
+            },
+            "calibration_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "description": "이 시도가 잰 보정(카메라 확인의 calibration_version 과 같다)"
+            }
+          },
+          "additionalProperties": false,
+          "description": "1.19.0 선택(S15P31A101-687): 지금(마지막) 확인 시도. 확인만 다시 하면 번호가 하나 오르고 보정은 그대로다. AWAITING_START 에는 싣지 않는다"
+        },
+        "user_wait": {
+          "type": "object",
+          "required": [
+            "until_ms",
+            "wait_s"
+          ],
+          "properties": {
+            "until_ms": {
+              "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+              "description": "워커가 관리자의 「걷기 시작」·「확인만 다시」를 기다리는 마감(워커 시계). 넘으면 맵을 만들지 않고 CAMERA_CHECK_NOT_PASSED 로 끝낸다"
+            },
+            "wait_s": {
+              "type": "number",
+              "minimum": 0,
+              "description": "이 스냅샷을 보낼 때 남은 대기 초"
+            }
+          },
+          "additionalProperties": false,
+          "description": "1.19.0 선택(S15P31A101-687): 워커가 관리자 입력을 기다리는 중. AWAITING_START 는 필수, FAILED·INCOMPLETE 에 있으면 「확인만 다시」를 받는다, WAITING·MEASURING·PASSED 에는 싣지 않는다"
         },
         "calibration_version": {
           "type": "string",
@@ -2262,6 +2321,10 @@
                   "INSUFFICIENT",
                   "NOT_OBSERVED"
                 ]
+              },
+              "person_visible": {
+                "type": "boolean",
+                "description": "1.19.0 선택(S15P31A101-687): 마지막 view 시각 기준 최근 1.5초 안에 이 카메라에 사람이 보였다(걷기 창의 카메라별 표시용, 판정에 쓰지 않는다)"
               }
             },
             "additionalProperties": false
@@ -2356,9 +2419,56 @@
               }
             }
           }
+        },
+        {
+          "description": "1.19.0: AWAITING_START 는 관리자 대기(user_wait)가 있고 시도(attempt)가 없다",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "AWAITING_START"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "user_wait"
+            ],
+            "not": {
+              "required": [
+                "attempt"
+              ]
+            }
+          }
+        },
+        {
+          "description": "1.19.0: 시도 중(WAITING·MEASURING)·통과(PASSED)에는 관리자 대기가 없다",
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "WAITING",
+                  "MEASURING",
+                  "PASSED"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "user_wait"
+              ]
+            }
+          }
         }
       ],
-      "description": "1.14.0(S15P31A101-646): 세팅 「카메라 확인」. 보정 등록 뒤 한 사람이 30~60초 걷는 동안 같은 Pod 의 Tier 0 관제 view(YOLO 관절·로컬 트랙·시각 보간 그대로)를 새 보정 후보로 관제와 같은 계산에 넣는다: 쌍은 Cross-view 쌍 근거의 통과율·삼각측량 잔차 중앙값(그 시각 두 카메라에 사람 하나일 때만 센다, 공통 관절 부족·시야 밖은 뺌), 카메라는 사람 관측 수와 한 카메라 제외 재투영 중앙값(관제 틀어짐 감시와 같은 통계). WAITING(아직 사람 없음) → MEASURING → PASSED | FAILED, 작업 마감까지 못 하면 INCOMPLETE. 쌍 verdict: 근거가 min_pair_samples 이상이면 PASS|FAIL, 모자라면 INSUFFICIENT, 새 보정 기하로 시야가 겹치지 않으면 NOT_OVERLAPPING(required false). required 는 겹치는 쌍과 품질 게이트 NEEDS_CHECK 쌍이다. EC2 는 status PASSED 이고 calibration_version 이 세션 보정과 같을 때만 구역 단계·세팅 완료를 받는다. Tier 0 위치·판정에는 쓰지 않는다."
+      "description": "1.14.0(S15P31A101-646): 세팅 「카메라 확인」. 보정 등록 뒤 한 사람이 30~60초 걷는 동안 같은 Pod 의 Tier 0 관제 view(YOLO 관절·로컬 트랙·시각 보간 그대로)를 새 보정 후보로 관제와 같은 계산에 넣는다: 쌍은 Cross-view 쌍 근거의 통과율·삼각측량 잔차 중앙값(그 시각 두 카메라에 사람 하나일 때만 센다, 공통 관절 부족·시야 밖은 뺌), 카메라는 사람 관측 수와 한 카메라 제외 재투영 중앙값(관제 틀어짐 감시와 같은 통계). WAITING(아직 사람 없음) → MEASURING → PASSED | FAILED, 작업 마감까지 못 하면 INCOMPLETE. 쌍 verdict: 근거가 min_pair_samples 이상이면 PASS|FAIL, 모자라면 INSUFFICIENT, 새 보정 기하로 시야가 겹치지 않으면 NOT_OVERLAPPING(required false). required 는 겹치는 쌍과 품질 게이트 NEEDS_CHECK 쌍이다. EC2 는 status PASSED 이고 calibration_version 이 세션 보정과 같을 때만 구역 단계·세팅 완료를 받는다. Tier 0 위치·판정에는 쓰지 않는다. 1.19.0(S15P31A101-687): 맵 앞에서 확인한다. 워커는 보정 등록(JOINT_BA_AND_VERIFY 65%) 뒤 AWAITING_START + user_wait 로 관리자의 「걷기 시작」(job_lease_status 2.3.0 camera_check_start)을 기다렸다가 시도(attempt)를 열고, PASSED 일 때만 미리보기·정밀 맵 굽기(NEW)나 결과(REUSE)로 간다. 시도가 FAILED·INCOMPLETE 면 user_wait 를 다시 싣고 「확인만 다시」(같은 보정, 번호 + 1)를 기다린다. 대기 마감까지 통과하지 못하거나 확인 채널(같은 Pod 의 Tier 0 view)을 열지 못하면 맵을 굽지 않고 CAMERA_CHECK_NOT_PASSED·CAMERA_CHECK_UNAVAILABLE 로 실패한다. INCOMPLETE 의 문제는 표본 부족 사유(FEW_SAMPLES·NO_PERSON·NOT_FINISHED)이고, 기하 실패는 FAILED 의 PASS_RATE_LOW·RESIDUAL_HIGH·REPROJECTION_HIGH·NO_PASSING_PAIR 다. 1.18.0 이전 워커는 attempt·user_wait 를 싣지 않고 굽기와 함께 확인한다."
     },
     "previous_scene_ref": {
       "type": "object",

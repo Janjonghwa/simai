@@ -1,9 +1,4 @@
-import {
-  cameraCheckFailed,
-  cameraCheckGuide,
-  type CameraCheckView,
-  type PairOutcome,
-} from '@/features/setup/cameraCheck';
+import { type CameraCheckView, type PairOutcome } from '@/features/setup/cameraCheck';
 import { cameraLabel } from '@/features/setup/cameraLabels';
 import {
   deriveStageRows,
@@ -24,9 +19,10 @@ import { cn } from '@simai/ui/lib/utils';
 import { TriangleAlert } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 
-// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 · 카메라 확인 ·
+// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 ·
 // 「자세히」(높이 불일치 안내·보정 검증 결과 표, -690 부터 접어 둔다)를 쌓는다. 높이 확인을 기다리는 멈춤은 높이 확인 창이 맡는다. 왼쪽은 미리보기 맵이 준비되기 전(85%)에는 1단계의 카메라 시야·실시간 영상, 준비되면 3D 미리보기다.
 // 막대·단계별 %·'진행 N%' 는 서버 값만 쓴다. 경과 시간만 진행 카드 안에서 갱신한다.
+// 카메라 확인(사람 걷기)은 맵 앞에서 큰 걷기 창(CameraCheckModal, S15P31A101-687)이 맡는다. 이 칸에는 쌍별 검증 표만 남긴다.
 
 /** 새 진행 정보 없이 이만큼(초) 지나면 멈춘 것으로 알린다. */
 const STALLED_AFTER_SEC = 30;
@@ -490,121 +486,11 @@ function PairResultCard({ view }: { view: CameraCheckView }) {
   );
 }
 
-const CHECK_STATUS_TEXT: Record<CameraCheckView['status'], string> = {
-  NONE: '대기',
-  WAITING: '사람 기다리는 중',
-  MEASURING: '확인 중',
-  PASSED: '통과',
-  FAILED: '실패',
-  INCOMPLETE: '못 마침',
-};
-
-/**
- * 카메라 확인(S15P31A101-646): 보정 뒤 한 사람이 30~60초 걷는 동안 관제와 같은 검사(쌍 연결·한 카메라 제외 재투영·4대 관측)를
- * 새 보정으로 잰다. 통과해야 구역 단계로 간다. 실패하면 원인과 '다시 보정' 을 보인다.
- */
-function CameraCheckCard({
-  view,
-  onRecalibrate,
-}: {
-  view: CameraCheckView;
-  onRecalibrate: () => void;
-}) {
-  const failed = cameraCheckFailed(view);
-  const guide = cameraCheckGuide(view);
-  const percent = view.passed ? 100 : Math.round(view.progressPct);
-  return (
-    <Card size="sm" aria-label="카메라 확인">
-      <CardHeader>
-        <CardTitle>
-          <h2>카메라 확인</h2>
-        </CardTitle>
-        <CardAction
-          className={cn(
-            'font-mono text-xs',
-            view.passed ? 'text-ok' : failed ? 'font-semibold text-delay' : 'text-muted-foreground',
-          )}
-        >
-          {view.passed ? '통과' : CHECK_STATUS_TEXT[view.status]}
-          {view.elapsedS > 0 && ` · ${Math.round(view.elapsedS)}초`}
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {guide && (
-          <p role="status" className={cn('text-sm', failed ? 'text-delay' : 'text-foreground')}>
-            {guide}
-          </p>
-        )}
-        {!failed && (
-          <div
-            role="progressbar"
-            aria-label="카메라 확인 진행률"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={percent}
-            className="h-1.5 overflow-hidden rounded-full bg-surface-3"
-          >
-            <div
-              className={cn(
-                'h-full transition-[width] duration-500 ease-out motion-reduce:transition-none',
-                view.passed ? 'bg-ok' : 'bg-primary',
-              )}
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-        )}
-        {view.cameras.length > 0 && (
-          <ul
-            aria-label="카메라별 확인"
-            className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs"
-          >
-            {view.cameras.map((cam) => (
-              <li
-                key={cam.cameraId}
-                className={cn(
-                  cam.verdict === 'PASS'
-                    ? 'text-ok'
-                    : cam.verdict === 'FAIL'
-                      ? 'font-semibold text-delay'
-                      : 'text-muted-foreground',
-                )}
-              >
-                {cam.label}{' '}
-                {cam.verdict === 'NOT_OBSERVED' ? '사람 안 보임' : `${cam.observedViews}회`}
-                {cam.looMedianPx !== null && ` · ${cam.looMedianPx.toFixed(1)}px`}
-              </li>
-            ))}
-          </ul>
-        )}
-        {view.problems.length > 0 && (
-          <ul
-            role="alert"
-            aria-label="카메라 확인 문제"
-            className="flex flex-col gap-1 text-xs text-delay"
-          >
-            {view.problems.map((message) => (
-              <li key={message}>{message}</li>
-            ))}
-          </ul>
-        )}
-        {failed && (
-          <div>
-            <Button size="sm" onClick={onRecalibrate}>
-              다시 보정
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 export function SetupCalibrateStep({
   waiting,
   cameraView,
   cameraCheck,
   showCameraCheck = false,
-  onRecalibrate,
   pollingError = false,
   retryPending = false,
   retryError = null,
@@ -617,11 +503,10 @@ export function SetupCalibrateStep({
   waiting: SetupWaitingView;
   /** 미리보기 맵이 준비되기 전 왼쪽 칸(1단계의 카메라 시야·실시간 영상). */
   cameraView: ReactNode;
-  /** 보정 품질 게이트·카메라 확인(S15P31A101-646). 없으면 쌍별 표·카메라 확인 카드를 그리지 않는다. */
+  /** 보정 품질 게이트·카메라 확인(S15P31A101-646). 없으면 쌍별 표를 그리지 않는다. 카메라 확인 자체는 걷기 창이 한다(-687). */
   cameraCheck?: CameraCheckView;
-  /** 보정이 등록돼 카메라 확인 카드를 보일 때(실패 세션 제외). */
+  /** 보정이 등록돼 쌍별 표를 보일 때(실패 세션 제외). */
   showCameraCheck?: boolean;
-  onRecalibrate?: () => void;
   pollingError?: boolean;
   retryPending?: boolean;
   retryError?: string | null;
@@ -670,9 +555,6 @@ export function SetupCalibrateStep({
             </Button>
           )}
         </div>
-      )}
-      {cameraCheck && showCameraCheck && (
-        <CameraCheckCard view={cameraCheck} onRecalibrate={onRecalibrate ?? onReturnToStep1} />
       )}
       {(waiting.showHeightNotice || waiting.heightChecks.length > 0) && (
         // 높이는 3D 공간을 만든 직후 높이 확인 창에서 이미 확인했다(-690). 거치대 문구·복원 높이 표는 접어 둔다

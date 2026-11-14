@@ -1,0 +1,14 @@
+{
+  "schema_version": "2.3.0",
+  "msg_type": "job_lease_status",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000688",
+  "sent_at": 1760342580510,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "status": "ACCEPTED",
+    "camera_check_start": {"attempt": 1}
+  },
+  "_comment": "반례: 카메라 확인 걷기 시작 요청은 ACTIVE 응답에만 싣는다"
+}

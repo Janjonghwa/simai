@@ -1,0 +1,19 @@
+{
+  "schema_version": "2.3.0",
+  "msg_type": "job_lease_status",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000687",
+  "sent_at": 1760342580510,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "status": "ACTIVE",
+    "lease_expires_at": 1760342760510,
+    "live_work_active": false,
+    "heartbeat_interval_ms": 2000,
+    "camera_check_start": {
+      "attempt": 2
+    }
+  },
+  "_comment": "S15P31A101-687: site_setup 대여 하트비트 응답. 첫 걷기가 표본 부족(INCOMPLETE)으로 끝난 뒤 관리자가 「확인만 다시」를 눌렀다(시도 2). 관리자 입력을 기다리는 동안 주기는 2초"
+}

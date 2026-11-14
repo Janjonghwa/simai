@@ -48,6 +48,8 @@ class SetupController {
     record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
                  @JsonProperty("mode") String mode) { }
     record Resume(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
+    /** attempt: 화면이 본 다음 시도 번호(선택). 다르면 409(늦게 온 이전 화면의 누름, S15P31A101-687) */
+    record CameraCheckStart(@JsonProperty("attempt") Integer attempt) { }
 
     @GetMapping("/camera-height-defaults")
     @PreAuthorize("hasRole('ADMIN')")
@@ -96,6 +98,17 @@ class SetupController {
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode resume(@PathVariable UUID id, @RequestBody Resume request, @AuthenticationPrincipal Jwt jwt) {
         return setups.resume(id, request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 카메라 확인 걷기 창의 「걷기 시작」·「확인만 다시(30초)」(S15P31A101-687). 워커가 관리자 입력을 기다리는 세션(paused_reason
+     * CAMERA_CHECK)만 받는다. 보정은 그대로 두고 걷기만 다시 잰다. 409 SETUP_CAMERA_CHECK_START_NOT_ALLOWED
+     */
+    @PostMapping("/{id}/camera-check/start")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode startCameraCheck(@PathVariable UUID id, @RequestBody(required = false) CameraCheckStart request,
+            @AuthenticationPrincipal Jwt jwt) {
+        return setups.startCameraCheck(id, request == null ? null : request.attempt(), Long.parseLong(jwt.getSubject()));
     }
 
     /**

@@ -309,6 +309,14 @@ export interface SetupMockOptions {
    * 이 값으로 막는다.
    */
   reuseCheck?: ReuseCheck;
+  /**
+   * autoProgress 의 맵 앞 카메라 확인 걷기(S15P31A101-687, 개발 서버용). 켜면 보정 뒤(9초) 단계를 멈추고 걷기 시작을 기다린다
+   * (camera_check_phase AWAITING_START, paused_reason CAMERA_CHECK). POST .../camera-check/start 뒤 12초 걸으면 통과하고 멈췄던
+   * 시간만큼 미뤄 미리보기·굽기로 이어 간다. 끄면 카메라 확인 값을 싣지 않는다(기존 시험).
+   */
+  cameraCheckWalk?: boolean;
+  /** 걷기 시도 중 처음 이만큼은 표본 부족(INCOMPLETE)으로 끝나 「확인만 다시」를 기다린다(기본 0). */
+  cameraCheckIncompleteAttempts?: number;
 }
 
 /** 목록 채우기(seed)가 읽는 지금 관제 구역(zone_id, 레이아웃 항목이면 layout_item_id). */
@@ -318,10 +326,10 @@ export interface SetupMockLiveZone {
 }
 
 /**
- * autoProgress 카메라 확인(S15P31A101-646): 보정 등록(JOINT_BA_AND_VERIFY, 7초) 뒤 사람을 기다리다(WAITING) 10초부터 걷는 것처럼
- * 재고(MEASURING) 22초에 통과한다. 굽기(25~35초)가 끝나기 전에 통과해 '다음' 이 켜진다.
+ * autoProgress 카메라 확인 걷기(S15P31A101-687, cameraCheckWalk): 보정 등록 뒤(시작 9초) 맵 단계 전에 걷기 시작을 기다리고, 시작하면
+ * 1초 뒤 걷는 중, 12초 뒤 결과다. 워커 대기 상한(600 s)을 user_wait 로 싣는다.
  */
-const CAMERA_CHECK_TIMELINE = { calibratedAt: 7_000, walkingAt: 10_000, passedAt: 22_000 } as const;
+const CAMERA_WALK = { awaitAt: 9_000, startingMs: 1_000, resultMs: 12_000, waitS: 600 } as const;
 
 /** 서버(site_setup 1.13.0)와 같은 모양의 카메라 확인 값. 쌍은 세션 카메라 순서의 모든 쌍, 마주 보는 쌍은 시야가 겹치지 않는다. */
 export function buildCameraCheck(
@@ -523,6 +531,9 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   // 멈춤 판정의 기준인 현장 실제 높이(처음 기본값)와, 멈춘 세션의 멈춘 시각(이어 가면 그만큼 시작 시각을 미룬다).
   const actualHeightsM = { ...state.cameraHeightsM };
   const pausedAt = new Map<string, number>();
+  // 카메라 확인 걷기(-687): 단계를 멈춘 시각(통과하면 그만큼 시작 시각을 미룬다)과 지금 시도의 시작 시각·번호
+  const walkPausedAt = new Map<string, number>();
+  const walkAttempts = new Map<string, { at: number; attempt: number }>();
 
   const submittedBodies: CreateSetupSessionBody[] = [];
   // 서버처럼 작업의 지금 세팅 세션(work_unit.active_setup_session_id)은 세션을 만들거나 다시 시도하면 그 세션이 된다(작업마다).
@@ -708,32 +719,102 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     return { created, updated, kept, archived: [] as string[] };
   };
 
-  /** autoProgress 카메라 확인(-646): 보정 뒤 시간에 따라 WAITING → MEASURING → PASSED. 이미 끝났으면 그대로 둔다. */
-  function progressCameraCheck(
-    session: SetupSessionResponse,
-    elapsed: number,
-  ): SetupSessionResponse {
-    const calibration = session.calibration_version;
-    if (!calibration || elapsed < CAMERA_CHECK_TIMELINE.calibratedAt) return session;
-    const current = session.camera_check;
-    if (current && (current.status === 'PASSED' || current.status === 'FAILED')) return session;
+  /** 걷기 대기 마감(user_wait). 목업은 대기 상한을 그대로 싣는다. */
+  const walkWait = () => ({
+    until_ms: now() + CAMERA_WALK.waitS * 1000,
+    wait_s: CAMERA_WALK.waitS,
+  });
+
+  /** 보정 뒤 맵 단계 전에 걷기 시작을 기다린다(-687). 이미 확인했거나 기다리는 중이면 null. */
+  function awaitWalkStart(session: SetupSessionResponse, elapsed: number) {
+    if (!options.cameraCheckWalk || elapsed < CAMERA_WALK.awaitAt || session.camera_check_phase)
+      return null;
+    const advanced = progressStage(session, CAMERA_WALK.awaitAt - 1);
+    const calibration = advanced.calibration_version;
+    if (!calibration) return null;
     const cams = Object.keys(session.camera_heights_m);
-    const { walkingAt, passedAt } = CAMERA_CHECK_TIMELINE;
-    const check =
-      elapsed >= passedAt
-        ? buildCameraCheck(cams, calibration, 'PASSED')
-        : elapsed >= walkingAt
-          ? buildCameraCheck(
-              cams,
-              calibration,
-              'MEASURING',
-              Math.min(99, Math.round(((elapsed - walkingAt) / (passedAt - walkingAt)) * 100)),
-            )
-          : buildCameraCheck(cams, calibration, 'WAITING');
+    // 조회가 늦어도 단계는 보정 직후(awaitAt)에 멈춘 것으로 본다(통과하면 그 뒤부터 이어 간다)
+    walkPausedAt.set(
+      session.setup_session_id,
+      (session.started_at_ms ?? now()) + CAMERA_WALK.awaitAt,
+    );
     return updateSession(session.setup_session_id, {
-      quality_gate: session.quality_gate ?? buildQualityGate(cams),
-      camera_check: check,
-      camera_check_passed: check.status === 'PASSED',
+      status: 'JOINT_BA_AND_VERIFY',
+      stage: 'JOINT_BA_AND_VERIFY',
+      progress_pct: 65,
+      quality_gate: advanced.quality_gate ?? buildQualityGate(cams),
+      camera_check: {
+        ...buildCameraCheck(cams, calibration, 'AWAITING_START'),
+        user_wait: walkWait(),
+      },
+      camera_check_passed: false,
+      camera_check_phase: 'AWAITING_START',
+      paused_reason: 'CAMERA_CHECK',
+    });
+  }
+
+  /** 걷기 시도 진행(-687): 시작하는 중 → 걷는 중(카메라별 사람 보임이 번갈아 바뀜) → 통과 또는 표본 부족. */
+  function progressWalk(session: SetupSessionResponse): SetupSessionResponse {
+    const id = session.setup_session_id;
+    const walk = walkAttempts.get(id);
+    const calibration = session.calibration_version;
+    if (!walk || !calibration) return session;
+    const cams = Object.keys(session.camera_heights_m);
+    const t = now() - walk.at;
+    const attempt = {
+      no: walk.attempt,
+      id: `mock-${walk.attempt}`,
+      started_at_ms: walk.at,
+      expires_at_ms: walk.at + 150_000,
+    };
+    if (t < CAMERA_WALK.startingMs) return session;
+    if (t < CAMERA_WALK.resultMs) {
+      const pct = Math.min(99, Math.round((t / CAMERA_WALK.resultMs) * 100));
+      const check = buildCameraCheck(cams, calibration, 'MEASURING', pct);
+      const tick = Math.floor(t / 1000);
+      cams.forEach((c, i) => {
+        const cam = check.cameras[c];
+        if (cam) cam.person_visible = (tick + i) % 3 !== 0;
+      });
+      return updateSession(id, {
+        camera_check: { ...check, attempt },
+        camera_check_phase: 'WALKING',
+        paused_reason: null,
+      });
+    }
+    walkAttempts.delete(id);
+    if (walk.attempt <= (options.cameraCheckIncompleteAttempts ?? 0)) {
+      const last = cams[cams.length - 1] ?? 'cam_D';
+      const check = buildCameraCheck(cams, calibration, 'INCOMPLETE', 70);
+      const lastCam = check.cameras[last];
+      if (lastCam) lastCam.observed_views = 14;
+      return updateSession(id, {
+        camera_check: {
+          ...check,
+          attempt,
+          user_wait: walkWait(),
+          problems: [
+            {
+              kind: 'CAMERA',
+              id: last,
+              camera_ids: [last],
+              reason: 'FEW_SAMPLES',
+              message: `${last} 에서 사람이 충분히 보이지 않았습니다(14/30). 표시된 구간을 지나며 30초만 다시 걸어 주세요`,
+            },
+          ],
+        },
+        camera_check_phase: 'RETRY_WAIT',
+        paused_reason: 'CAMERA_CHECK',
+      });
+    }
+    const pausedSince = walkPausedAt.get(id) ?? now();
+    walkPausedAt.delete(id);
+    return updateSession(id, {
+      camera_check: { ...buildCameraCheck(cams, calibration, 'PASSED'), attempt },
+      camera_check_passed: true,
+      camera_check_phase: 'PASSED',
+      paused_reason: null,
+      started_at_ms: (session.started_at_ms ?? now()) + (now() - pausedSince),
     });
   }
 
@@ -794,11 +875,15 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     ) {
       return session;
     }
+    // 걷기 시도 중(-687)에는 맵 단계가 흐르지 않는다
+    if (session.camera_check_phase === 'STARTING' || session.camera_check_phase === 'WALKING')
+      return progressWalk(session);
     const elapsed = now() - session.started_at_ms;
     const paused = pauseIfHeightsOff(session, elapsed);
     if (paused) return paused;
-    const advanced = progressStage(session, elapsed);
-    return progressCameraCheck(advanced, elapsed);
+    const walkPause = awaitWalkStart(session, elapsed);
+    if (walkPause) return walkPause;
+    return progressStage(session, elapsed);
   }
 
   function progressStage(session: SetupSessionResponse, elapsed: number): SetupSessionResponse {
@@ -1050,6 +1135,35 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         failure_message: '관리자가 세팅을 취소했습니다',
       });
       return HttpResponse.json(cancelled);
+    }),
+
+    // 카메라 확인 걷기 시작·확인만 다시(-687): 걷기를 기다리는 세션만 받는다. attempt 는 화면이 본 다음 번호(다르면 409)
+    http.post('*/api/setup-sessions/:id/camera-check/start', async ({ request, params }) => {
+      const t = now();
+      if (!readLiveUser(request, t)) return unauthorized();
+      const id = String(params.id ?? '');
+      const found = sessions.get(id);
+      if (!found) return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      const next = (found.camera_check?.attempt?.no ?? 0) + 1;
+      const raw: unknown = await request.json().catch(() => ({}));
+      const asked =
+        typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'attempt') : undefined;
+      const waiting =
+        found.camera_check_phase === 'AWAITING_START' || found.camera_check_phase === 'RETRY_WAIT';
+      if (!waiting || found.status === 'FAILED' || (typeof asked === 'number' && asked !== next)) {
+        return problem(
+          409,
+          'SETUP_CAMERA_CHECK_START_NOT_ALLOWED',
+          '카메라 확인 걷기를 기다리는 세팅 세션만 걷기를 시작할 수 있습니다',
+        );
+      }
+      walkAttempts.set(id, { at: t, attempt: next });
+      const started = updateSession(id, {
+        camera_check_request: { attempt: next },
+        camera_check_phase: 'STARTING',
+        paused_reason: null,
+      });
+      return HttpResponse.json(started);
     }),
 
     // 높이 확인에 답하기(-690): 워커가 확인을 기다리는 세션만 받고, 고친 높이면 CORRECTED·같으면 CONFIRMED 로 멈춘 단계부터 다시 돈다.

@@ -1,0 +1,175 @@
+{
+  "schema_version": "2.18.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000689",
+  "sent_at": 1760342592000,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": 0.65,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "JOINT_BA_AND_VERIFY",
+      "progress_pct": 65,
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "height_checks": {
+        "cam_A": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.504,
+          "difference_cm": 0.4,
+          "within_tolerance": true
+        },
+        "cam_B": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.496,
+          "difference_cm": -0.4,
+          "within_tolerance": true
+        },
+        "cam_C": {
+          "input_height_m": 1.38,
+          "restored_height_m": 1.381,
+          "difference_cm": 0.1,
+          "within_tolerance": true
+        },
+        "cam_D": {
+          "input_height_m": 1.5,
+          "restored_height_m": 1.509,
+          "difference_cm": 0.9,
+          "within_tolerance": true
+        }
+      },
+      "calibration_version": "cal-classroom-1-init-0452aa00-jba2-68700001",
+      "camera_check": {
+        "status": "AWAITING_START",
+        "calibration_version": "cal-classroom-1-init-0452aa00-jba2-68700001",
+        "progress_pct": 0.0,
+        "elapsed_s": 0.0,
+        "thresholds": {
+          "min_duration_s": 30.0,
+          "max_duration_s": 120.0,
+          "min_pair_samples": 30,
+          "min_pair_pass_rate": 0.75,
+          "max_pair_residual_median_px": 8.0,
+          "min_camera_views": 30,
+          "min_loo_samples": 20,
+          "max_loo_median_px": 12.0,
+          "min_evaluated_pairs": 3
+        },
+        "pairs": {
+          "cam_A-cam_B": {
+            "camera_ids": [
+              "cam_A",
+              "cam_B"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_A-cam_C": {
+            "camera_ids": [
+              "cam_A",
+              "cam_C"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_A-cam_D": {
+            "camera_ids": [
+              "cam_A",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_B-cam_C": {
+            "camera_ids": [
+              "cam_B",
+              "cam_C"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_B-cam_D": {
+            "camera_ids": [
+              "cam_B",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          },
+          "cam_C-cam_D": {
+            "camera_ids": [
+              "cam_C",
+              "cam_D"
+            ],
+            "required": true,
+            "samples": 0,
+            "pass_rate": null,
+            "residual_median_px": null,
+            "verdict": "INSUFFICIENT"
+          }
+        },
+        "cameras": {
+          "cam_A": {
+            "observed_views": 0,
+            "loo_samples": 0,
+            "loo_median_px": null,
+            "loo_p95_px": null,
+            "verdict": "NOT_OBSERVED",
+            "person_visible": false
+          },
+          "cam_B": {
+            "observed_views": 0,
+            "loo_samples": 0,
+            "loo_median_px": null,
+            "loo_p95_px": null,
+            "verdict": "NOT_OBSERVED",
+            "person_visible": false
+          },
+          "cam_C": {
+            "observed_views": 0,
+            "loo_samples": 0,
+            "loo_median_px": null,
+            "loo_p95_px": null,
+            "verdict": "NOT_OBSERVED",
+            "person_visible": false
+          },
+          "cam_D": {
+            "observed_views": 0,
+            "loo_samples": 0,
+            "loo_median_px": null,
+            "loo_p95_px": null,
+            "verdict": "NOT_OBSERVED",
+            "person_visible": false
+          }
+        },
+        "problems": [],
+        "user_wait": {
+          "until_ms": 1760343004000,
+          "wait_s": 412.0
+        }
+      }
+    }
+  },
+  "_comment": "S15P31A101-687: 보정을 등록한 뒤(65%) 맵을 굽기 전에 관리자의 「걷기 시작」을 기다린다. 화면은 걷기 창을 띄우고, 누르면 다음 하트비트 응답의 camera_check_start(시도 1)로 워커가 확인을 연다"
+}

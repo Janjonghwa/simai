@@ -12,6 +12,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -35,6 +36,9 @@ import tools.jackson.databind.ObjectMapper;
  */
 @Service
 class JobLeaseService {
+
+    /** 워커가 알린 camera_check 가 시도 중인 상태(-687). 관리자 입력 대기는 user_wait 로 따로 본다 */
+    private static final Set<String> CAMERA_CHECK_RUNNING = Set.of("AWAITING_START", "WAITING", "MEASURING");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -148,31 +152,44 @@ class JobLeaseService {
         if ("site_setup".equals(job.jobType())) {
             // 같은 현장에 진행 중 작업이 있으면 정식 굽기를 회수하라고 알린다(명세 3.2 5항, job_lease_status 2.1.0, -597).
             // 세팅은 진행 중 작업이 없을 때만 시작하므로(-467 409) true 는 세팅 도중 작업이 시작됐다는 뜻이다
-            // 관리자의 카메라 높이 확인 결정이 있으면 싣고(job_lease_status 2.2.0, -690), 확인을 기다리는 동안은 주기를 줄인다
-            HeightSignal height = heightSignal(jobId);
-            return active.withSiteSetupSignal(height.awaiting() ? JobMessages.SITE_SETUP_HEIGHT_WAIT_HEARTBEAT_INTERVAL_MS
-                    : JobMessages.SITE_SETUP_HEARTBEAT_INTERVAL_MS, liveWorkAtJobSite(jobId), height.decision());
+            // 관리자의 카메라 높이 확인 결정이 있으면 싣고(job_lease_status 2.2.0, -690), 확인을 기다리는 동안은 주기를 줄인다.
+            // 카메라 확인 시도 요청은 이 대여에 한 것만 싣는다(2.3.0, -687: 재대여한 워커는 처음부터 걷기 시작을 기다린다)
+            HeightSignal height = heightSignal(jobId, leaseId);
+            int interval = height.awaiting() ? JobMessages.SITE_SETUP_HEIGHT_WAIT_HEARTBEAT_INTERVAL_MS
+                    : height.cameraCheckActive() ? JobMessages.SITE_SETUP_CAMERA_CHECK_HEARTBEAT_INTERVAL_MS
+                    : JobMessages.SITE_SETUP_HEARTBEAT_INTERVAL_MS;
+            return active.withSiteSetupSignal(interval, liveWorkAtJobSite(jobId), height.decision(), height.cameraCheckStart());
         }
         return active;
     }
 
-    /** 이 작업 세팅 세션의 높이 확인 결정(워커에 보낼 decision·camera_heights_m)과 확인 대기 여부. 세션이 없으면(맵 보강 다시 굽기) 둘 다 없음 */
-    private HeightSignal heightSignal(String jobId) {
+    /**
+     * 이 작업 세팅 세션의 높이 확인 결정(워커에 보낼 decision·camera_heights_m)·확인 대기 여부와, 이 대여의 카메라 확인 시도 요청·
+     * 카메라 확인 중 여부(-687: 워커가 마지막으로 알린 camera_check 가 시도 중이거나 관리자 입력 대기). 세션이 없으면(맵 보강 다시 굽기) 모두 없음
+     */
+    private HeightSignal heightSignal(String jobId, UUID leaseId) {
         List<HeightSignal> rows = jdbc.query("""
                 SELECT height_review ->> 'status' AS review_status,
                        CASE WHEN height_decision IS NULL THEN NULL ELSE jsonb_build_object(
                            'decision', height_decision -> 'decision',
-                           'camera_heights_m', height_decision -> 'camera_heights_m')::text END AS decision
+                           'camera_heights_m', height_decision -> 'camera_heights_m')::text END AS decision,
+                       CASE WHEN camera_check_request ->> 'lease_id' = :leaseId
+                           THEN (camera_check_request ->> 'attempt')::int END AS camera_check_start,
+                       camera_check ->> 'status' AS camera_check_status,
+                       (camera_check -> 'user_wait') IS NOT NULL AS camera_check_waiting
                 FROM setup_session WHERE job_id = :jobId
-                """, new MapSqlParameterSource("jobId", jobId), (rs, i) -> {
+                """, new MapSqlParameterSource("jobId", jobId).addValue("leaseId", leaseId.toString()), (rs, i) -> {
             String decision = rs.getString("decision");
+            Integer start = rs.getObject("camera_check_start", Integer.class);
+            String check = rs.getString("camera_check_status");
+            boolean checking = rs.getBoolean("camera_check_waiting") || (check != null && CAMERA_CHECK_RUNNING.contains(check));
             return new HeightSignal("AWAITING_CONFIRMATION".equals(rs.getString("review_status")) && decision == null,
-                    decision == null ? null : mapper.readTree(decision));
+                    decision == null ? null : mapper.readTree(decision), start, checking);
         });
-        return rows.isEmpty() ? new HeightSignal(false, null) : rows.getFirst();
+        return rows.isEmpty() ? new HeightSignal(false, null, null, false) : rows.getFirst();
     }
 
-    private record HeightSignal(boolean awaiting, JsonNode decision) {
+    private record HeightSignal(boolean awaiting, JsonNode decision, Integer cameraCheckStart, boolean cameraCheckActive) {
     }
 
     /** site_setup 입력의 현장에 IN_PROGRESS 작업이 있는가 */

@@ -531,6 +531,58 @@ public class SetupService {
         return getInSite(siteId, setupSessionId);
     }
 
+    /**
+     * 카메라 확인 걷기 창의 「걷기 시작」·「확인만 다시」(S15P31A101-687). 워커가 관리자 입력을 기다리는(camera_check.user_wait) 세션만
+     * 받고, 다음 시도 번호(워커가 알린 시도 + 1)를 이 대여의 요청으로 둔다. 워커는 하트비트 응답(job_lease_status 2.3.0
+     * camera_check_start)으로 받아 같은 보정으로 걷기만 다시 잰다. 이미 보낸 요청을 워커가 아직 열지 않았으면 같은 번호로 다시 눌러도
+     * 그대로 돌려준다(두 번 누름). expectedAttempt 가 있으면(화면이 본 다음 번호) 다를 때 409 — 늦게 온 이전 화면의 누름이 새 시도를
+     * 더 열지 않게 한다.
+     */
+    public ObjectNode startCameraCheck(UUID setupSessionId, Integer expectedAttempt, long userId) {
+        String siteId = sites.siteId();
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT status, progress_lease_id, camera_check::text AS camera_check,
+                       camera_check_request::text AS camera_check_request
+                FROM setup_session WHERE site_id = :site AND setup_session_id = :id FOR UPDATE
+                """, new MapSqlParameterSource().addValue("site", siteId).addValue("id", setupSessionId));
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
+        }
+        Map<String, Object> row = rows.getFirst();
+        String status = (String) row.get("status");
+        UUID leaseId = (UUID) row.get("progress_lease_id");
+        JsonNode check = row.get("camera_check") == null ? null : mapper.readTree((String) row.get("camera_check"));
+        JsonNode request = row.get("camera_check_request") == null ? null
+                : mapper.readTree((String) row.get("camera_check_request"));
+        if ("COMPLETED".equals(status) || "FAILED".equals(status) || leaseId == null) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_START_NOT_ALLOWED);
+        }
+        int requested = SetupCameraCheck.requestFor(request, leaseId);
+        if (SetupCameraCheck.pending(request, check, leaseId)) {
+            if (expectedAttempt != null && expectedAttempt != requested) {
+                throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_START_NOT_ALLOWED);
+            }
+            return getInSite(siteId, setupSessionId);
+        }
+        int nextNo = SetupCameraCheck.attemptNo(check) + 1;
+        if (!SetupCameraCheck.awaitingUser(check) || (expectedAttempt != null && expectedAttempt != nextNo)) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_START_NOT_ALLOWED);
+        }
+        Instant now = clock.instant();
+        ObjectNode next = mapper.createObjectNode();
+        next.put("attempt", nextNo);
+        next.put("lease_id", leaseId.toString());
+        next.put("requested_by", userId);
+        next.put("requested_at_ms", now.toEpochMilli());
+        jdbc.update("""
+                UPDATE setup_session SET camera_check_request = CAST(:request AS jsonb), updated_at = :now
+                WHERE setup_session_id = :id
+                """, new MapSqlParameterSource().addValue("id", setupSessionId)
+                .addValue("request", mapper.writeValueAsString(next)).addValue("now", utc(now)));
+        log.info("세팅 세션 {}: 카메라 확인 시도 {} 요청(대여 {})", setupSessionId, nextNo, leaseId);
+        return getInSite(siteId, setupSessionId);
+    }
+
     /** 세팅을 마치기 전에 세션을 FAILED 로 닫고 세팅·구역 초안 대기 작업을 취소한다(관리자 취소, 대기 시간 초과) */
     private void closeAndCancelJobs(UUID setupSessionId, String code, String message) {
         OffsetDateTime now = utc(clock.instant());
@@ -922,6 +974,15 @@ public class SetupService {
         // 보정 품질 게이트·카메라 확인(S15P31A101-646). 없거나 어긋나면 null 이고 아래 COALESCE 로 이전 값을 둔다
         String qualityGateJson = SetupCameraCheck.qualityGate(mapper, snapshot);
         String cameraCheckJson = SetupCameraCheck.cameraCheck(mapper, snapshot);
+        // 카메라 확인 시도(S15P31A101-687). 같은 대여 안에서 이미 받은 것보다 작은 시도 번호(늦게 온 이전 시도)는 지금 시도를 덮지 않고,
+        // 재대여는 처음부터 다시 하므로 값 없는 스냅샷이면 앞선 대여의 카메라 확인을 지운다(걷기 창이 지난 대여의 실패를 보이지 않게).
+        // 끝난 시도는 camera_check_attempts 에 한 번씩 덧붙인다(덮어쓰지 않음)
+        JsonNode cameraCheckNode = cameraCheckJson == null ? null : snapshot.get("camera_check");
+        int cameraCheckAttempt = SetupCameraCheck.attemptNo(cameraCheckNode);
+        String cameraCheckAttemptRecord = cameraCheckJson == null ? null
+                : SetupCameraCheck.attemptRecord(mapper, cameraCheckNode, nextLeaseIdOf(leaseId, session));
+        String cameraCheckAttemptId = cameraCheckAttemptRecord == null ? null
+                : cameraCheckNode.path("attempt").path("id").asString();
         // 구역별 상면 높이 차이 판정(S15P31A101-630). 없거나 어긋나면 null 이고 같은 대여 안에서는 이전 값을 둔다
         String zoneHeightChangesJson = SetupZoneHeightChanges.fromSnapshot(mapper, snapshot);
         // 세팅 배경 촬영 진행(S15P31A101-686). 없거나 어긋나면 null 이고 같은 대여 안에서는 이전 값을 둔다
@@ -942,7 +1003,17 @@ public class SetupService {
                     object_cross_checks = CAST(:crossChecks AS jsonb),
                     pair_holdout = COALESCE(CAST(:pairHoldout AS jsonb), pair_holdout),
                     quality_gate = COALESCE(CAST(:qualityGate AS jsonb), quality_gate),
-                    camera_check = COALESCE(CAST(:cameraCheck AS jsonb), camera_check),
+                    camera_check = CASE
+                        WHEN CAST(:cameraCheck AS jsonb) IS NULL THEN CASE WHEN :keepAnchor THEN camera_check END
+                        WHEN :keepAnchor AND COALESCE((camera_check -> 'attempt' ->> 'no')::int, 0) > :cameraCheckAttempt
+                            THEN camera_check
+                        ELSE CAST(:cameraCheck AS jsonb) END,
+                    camera_check_attempts = CASE
+                        WHEN CAST(:cameraCheckAttemptRecord AS jsonb) IS NULL
+                            OR jsonb_array_length(camera_check_attempts) >= :maxAttemptRecords
+                            OR camera_check_attempts @> jsonb_build_array(jsonb_build_object('id', CAST(:cameraCheckAttemptId AS text)))
+                            THEN camera_check_attempts
+                        ELSE camera_check_attempts || jsonb_build_array(CAST(:cameraCheckAttemptRecord AS jsonb)) END,
                     calibration_version = :cal,
                     preview_scene_version = :previewScene,
                     scene_version = :scene,
@@ -980,6 +1051,10 @@ public class SetupService {
                 .addValue("pairHoldout", pairHoldoutJson)
                 .addValue("qualityGate", qualityGateJson)
                 .addValue("cameraCheck", cameraCheckJson)
+                .addValue("cameraCheckAttempt", cameraCheckAttempt)
+                .addValue("cameraCheckAttemptRecord", cameraCheckAttemptRecord)
+                .addValue("cameraCheckAttemptId", cameraCheckAttemptId)
+                .addValue("maxAttemptRecords", SetupCameraCheck.MAX_ATTEMPT_RECORDS)
                 .addValue("cal", calibrationVersion)
                 .addValue("previewScene", previewSceneVersion)
                 .addValue("scene", sceneVersion)
@@ -1000,6 +1075,10 @@ public class SetupService {
                     .addValue("workId", session.workUnitId())
                     .addValue("now", now));
         }
+    }
+
+    private static UUID nextLeaseIdOf(UUID leaseId, SessionRow session) {
+        return leaseId != null ? leaseId : session.progressLeaseId();
     }
 
     /**
@@ -1806,6 +1885,8 @@ public class SetupService {
                        zone_height_changes::text AS zone_height_changes,
                        background_capture::text AS background_capture,
                        height_review::text AS height_review, height_decision::text AS height_decision,
+                       camera_check_request::text AS camera_check_request,
+                       camera_check_attempts::text AS camera_check_attempts,
                        (SELECT w.setup_completed_at FROM work_unit w
                         WHERE w.work_id = setup_session.work_unit_id
                           AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
@@ -1962,8 +2043,18 @@ public class SetupService {
         out.set("height_review", heightReview);
         out.set("height_decision", heightDecisionRaw == null ? mapper.nullNode() : mapper.readTree(heightDecisionRaw));
         boolean open = !"COMPLETED".equals(status) && !"FAILED".equals(status);
+        // 카메라 확인 단계(S15P31A101-687). 워커가 걷기 시작·확인만 다시를 기다리면 paused_reason = CAMERA_CHECK(화면이 걷기 창을 띄운다)
+        String cameraCheckRaw = rs.getString("camera_check");
+        JsonNode cameraCheck = cameraCheckRaw == null ? mapper.nullNode() : mapper.readTree(cameraCheckRaw);
+        String cameraCheckRequestRaw = rs.getString("camera_check_request");
+        JsonNode cameraCheckRequest = cameraCheckRequestRaw == null ? mapper.nullNode() : mapper.readTree(cameraCheckRequestRaw);
+        SetupCameraCheck.Phase cameraCheckPhase = SetupCameraCheck.phase(open, cameraCheck, cameraCheckRequest,
+                rs.getObject("progress_lease_id", UUID.class));
         if (open && SetupHeightReview.awaiting(heightReview.path("status").asString(null), heightDecisionRaw)) {
             out.put("paused_reason", SetupHeightReview.PAUSED_REASON);
+        } else if (cameraCheckPhase == SetupCameraCheck.Phase.AWAITING_START
+                || cameraCheckPhase == SetupCameraCheck.Phase.RETRY_WAIT) {
+            out.put("paused_reason", SetupCameraCheck.PAUSED_REASON);
         } else {
             out.putNull("paused_reason");
         }
@@ -2001,11 +2092,18 @@ public class SetupService {
         // camera_check_passed 는 구역 단계·세팅 완료 관문과 같은 판단(PASSED 이고 그 확인의 보정이 세션 보정과 같다)
         String qualityGateRaw = rs.getString("quality_gate");
         out.set("quality_gate", qualityGateRaw == null ? mapper.nullNode() : mapper.readTree(qualityGateRaw));
-        String cameraCheckRaw = rs.getString("camera_check");
-        JsonNode cameraCheck = cameraCheckRaw == null ? mapper.nullNode() : mapper.readTree(cameraCheckRaw);
         out.set("camera_check", cameraCheck);
         out.put("camera_check_passed", SetupCameraCheck.passed(cameraCheck.path("status").asString(null),
                 cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version")));
+        // 걷기 창 단계(AWAITING_START|STARTING|WALKING|RETRY_WAIT|PASSED|FAILED, 받은 적 없으면 null)·마지막 요청·끝난 시도 기록(-687)
+        if (cameraCheckPhase == null) {
+            out.putNull("camera_check_phase");
+        } else {
+            out.put("camera_check_phase", cameraCheckPhase.name());
+        }
+        out.set("camera_check_request", cameraCheckRequest);
+        String attemptsRaw = rs.getString("camera_check_attempts");
+        out.set("camera_check_attempts", attemptsRaw == null ? mapper.createArrayNode() : mapper.readTree(attemptsRaw));
 
         putText(out, "calibration_version", rs.getString("calibration_version"));
         putText(out, "preview_scene_version", rs.getString("preview_scene_version"));

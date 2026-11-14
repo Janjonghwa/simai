@@ -87,6 +87,7 @@ class FakeEC2:
         self.down: set[str] = set()  # 계속 끊긴 종류
         self.live_work: set[str] = set()  # 하트비트 ACTIVE 에 live_work_active true 를 싣는 작업(job_lease_status 2.1.0, -597)
         self.height_decisions: dict[str, dict[str, Any]] = {}  # 하트비트 ACTIVE 에 싣는 높이 확인 결정(job_lease_status 2.2.0, -690)
+        self.camera_check_starts: dict[str, int] = {}  # 하트비트 ACTIVE 에 싣는 카메라 확인 시도 요청(job_lease_status 2.3.0, -687)
         self._seq = itertools.count()
         self._cond = threading.Condition()
 
@@ -242,6 +243,8 @@ class FakeEC2:
         extra = {"live_work_active": True} if rec.job_id in self.live_work else {}
         if rec.job_id in self.height_decisions:
             extra["height_decision"] = self.height_decisions[rec.job_id]
+        if rec.job_id in self.camera_check_starts:
+            extra["camera_check_start"] = {"attempt": self.camera_check_starts[rec.job_id]}
         return self._status(ids, "ACTIVE", sent_at=now, lease_expires_at=rec.expires_at, **extra)
 
     def _result(self, path: str, body: dict[str, Any]) -> Response:

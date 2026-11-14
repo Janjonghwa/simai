@@ -16,10 +16,10 @@ final class JobMessages {
     /** job_request 3.7.0(site_setup 입력, -452). 워커 클라이언트는 메이저 3 만 본다 */
     static final String JOB_REQUEST_VERSION = "3.8.0";
     /**
-     * job_lease_status 2.2.0(site_setup 작업 시작 신호 live_work_active -597, 카메라 높이 확인 결정 height_decision -690).
-     * 워커는 모르는 필드를 무시한다
+     * job_lease_status 2.3.0(site_setup 작업 시작 신호 live_work_active -597, 카메라 높이 확인 결정 height_decision -690,
+     * 카메라 확인 시도 요청 camera_check_start -687). 워커는 모르는 필드를 무시한다
      */
-    static final String LEASE_STATUS_VERSION = "2.2.0";
+    static final String LEASE_STATUS_VERSION = "2.3.0";
     /**
      * site_setup 대여의 하트비트 주기(응답 heartbeat_interval_ms 로 바꿈). 작업 시작 뒤 정식 굽기 회수가 이 주기만큼 늦으므로
      * 기본 10 s 보다 짧게 둔다(명세 3.2 5항 "즉시 회수", -597). 세팅 중에만 쓰여 요청 수 증가는 작다
@@ -30,6 +30,11 @@ final class JobMessages {
      * 창에서 「진행」을 누른 뒤 워커가 이어 가기까지 이 주기만큼 늦는다. 기다리는 동안(최대 수 분)만 쓰여 요청 수 증가는 작다
      */
     static final int SITE_SETUP_HEIGHT_WAIT_HEARTBEAT_INTERVAL_MS = 2_000;
+    /**
+     * site_setup 대여가 카메라 확인 중인 동안(관리자 「걷기 시작」·「확인만 다시」 대기와 걷기, -687)의 하트비트 주기. 높이 확인과 같은
+     * 이유로 2 s: 단추를 누른 뒤 워커가 시도를 열기까지 최대 이만큼 늦고, 걷기 창의 카메라별 진행도 이 주기로 다시 실린다
+     */
+    static final int SITE_SETUP_CAMERA_CHECK_HEARTBEAT_INTERVAL_MS = 2_000;
     /** 90초 서버 중단과 재시도 여유를 포함한 대여 유지 시간. 주기는 기존 10초를 유지한다. */
     static final long LEASE_HOLD_MS = 180_000;
     static final int HEARTBEAT_INTERVAL_MS = 10_000;
@@ -84,6 +89,9 @@ final class JobMessages {
         }
         if (status.heightDecision() != null) {
             p.set("height_decision", status.heightDecision());
+        }
+        if (status.cameraCheckStart() != null) {
+            p.putObject("camera_check_start").put("attempt", status.cameraCheckStart());
         }
         return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_lease_status", LEASE_STATUS_VERSION, p);
     }

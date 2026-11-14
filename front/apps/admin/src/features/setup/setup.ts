@@ -821,6 +821,17 @@ export function deriveHeightCheckRows(
 }
 
 /** GET /api/setup-sessions/{id} 응답에서 대기 화면 표시 모델을 계산한다. */
+/** 서버 paused_reason: 워커가 카메라 확인 걷기 시작·확인만 다시를 기다린다(-687). 걷기 창이 받고, 높이 이어 가기 멈춤이 아니다. */
+export const CAMERA_CHECK_PAUSE = 'CAMERA_CHECK';
+
+/**
+ * 보정 입력(높이)을 고쳐 같은 세션을 이어 갈 멈춤인가(POST .../resume). paused_reason 이 있고 카메라 확인 걷기 대기가 아니다(-687:
+ * 걷기 대기는 걷기 창의 「걷기 시작」으로 이어 간다).
+ */
+export function pausedForHeights(session: SetupSessionResponse | null | undefined): boolean {
+  return Boolean(session?.paused_reason) && session?.paused_reason !== CAMERA_CHECK_PAUSE;
+}
+
 export function deriveWaitingView(
   session: SetupSessionResponse | null | undefined,
 ): SetupWaitingView {
@@ -850,7 +861,7 @@ export function deriveWaitingView(
   const heightWarnings = deriveHeightWarnings(session);
   const previewReady = isPreviewSceneReady(session);
   const pausedStageIndex =
-    failed || !session?.paused_reason
+    failed || !pausedForHeights(session)
       ? null
       : Math.min(WAITING_STAGES.length - 1, Math.max(0, STAGE_ORDER[rawStage]));
 

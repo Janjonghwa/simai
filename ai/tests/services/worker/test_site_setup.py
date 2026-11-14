@@ -1310,69 +1310,250 @@ def test_quality_gate_unit_rules() -> None:
 
 
 class _FakeChecker:
-    """카메라 확인 실행기 대역: poll 마다 준비한 요약을 하나씩 낸다."""
+    """카메라 확인 실행기 대역: 시도마다 poll 이 준비한 상태를 하나씩 낸다(마지막 값은 되풀이). 호출 순서를 events 에 남긴다."""
 
-    def __init__(self, statuses: list[str]) -> None:
-        self.statuses = list(statuses)
-        self.started: list[tuple[str, str, list[Any]]] = []
+    def __init__(self, attempts: list[list[str]], *, events: list[str] | None = None, lines_read: int = 10,
+                 start_error: Exception | None = None) -> None:
+        self.attempts = [list(a) for a in attempts]
+        self.statuses: list[str] = []
+        self.started: list[tuple[str, str, list[Any], str | None]] = []
         self.stopped = 0
+        self.incompletes = 0
         self.version = ""
+        self.lines_read = lines_read
+        self.start_error = start_error
+        self.events = events if events is not None else []
 
     def _summary(self, status: str) -> dict[str, Any]:
         problems = [] if status in ("WAITING", "MEASURING", "PASSED") else [
-            {"kind": "CHECK", "id": "camera_check", "reason": "NOT_FINISHED", "message": "카메라 확인을 마치지 못했습니다"}]
+            {"kind": "CAMERA", "id": "cam_D", "camera_ids": ["cam_D"],
+             "reason": "FEW_SAMPLES" if status == "INCOMPLETE" else "REPROJECTION_HIGH",
+             "message": "cam_D 에서 사람이 충분히 보이지 않았습니다"}]
         return {"status": status, "calibration_version": self.version, "progress_pct": 100.0 if status == "PASSED" else 10.0,
                 "elapsed_s": 1.0, "thresholds": {"min_duration_s": 30.0, "max_duration_s": 120.0, "min_pair_samples": 30,
                                                  "min_pair_pass_rate": 0.75, "max_pair_residual_median_px": 8.0,
-                                                 "min_camera_views": 30, "min_loo_samples": 20, "max_loo_median_px": 8.0,
+                                                 "min_camera_views": 30, "min_loo_samples": 20, "max_loo_median_px": 12.0,
                                                  "min_evaluated_pairs": 3},
-                "pairs": {}, "cameras": {}, "problems": problems}
+                "pairs": {}, "cameras": {"cam_D": {"observed_views": 3, "loo_samples": 0, "loo_median_px": None,
+                                                   "loo_p95_px": None, "verdict": "NOT_OBSERVED", "person_visible": True}},
+                "problems": problems}
 
-    def start(self, setup_session_id: str, calibration_doc: Any, *, expires_at_ms: int, required_pairs: Any = ()) -> Any:
+    def idle(self, calibration_doc: Any, *, required_pairs: Any = ()) -> Any:
         self.version = str(calibration_doc["calibration_version"])
-        self.started.append((setup_session_id, self.version, list(required_pairs)))
+        return self._summary("WAITING")
+
+    def start(self, setup_session_id: str, calibration_doc: Any, *, expires_at_ms: int, required_pairs: Any = (),
+              attempt_id: str | None = None) -> Any:
+        if self.start_error is not None:
+            raise self.start_error
+        self.version = str(calibration_doc["calibration_version"])
+        self.started.append((setup_session_id, self.version, list(required_pairs), attempt_id))
+        self.statuses = self.attempts.pop(0) if self.attempts else ["MEASURING"]
+        self.events.append(f"start:{attempt_id}")
         return self._summary("WAITING")
 
     def poll(self) -> Any:
-        return self._summary(self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0])
+        status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+        if status == "PASSED":
+            self.events.append("passed")
+        return self._summary(status)
 
     def incomplete(self) -> Any:
+        self.incompletes += 1
         return self._summary("INCOMPLETE")
 
     def stop(self) -> None:
         self.stopped += 1
 
 
-def test_camera_check_runs_after_calibration_and_result_waits_for_pass() -> None:
-    checker = _FakeChecker(["MEASURING", "MEASURING", "PASSED"])
-    handler, inp, published = _room_handler(
-        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
-        camera_check=checker, camera_check_poll_s=0.01,
-    )
-    ctx = JobContext("job-cc", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, inp, timeout_ms=600_000)
-    result = handler(ctx)
-    assert checker.started and checker.started[0][1] == result["calibration_version"] == published[0]["calibration_version"]
-    assert result["camera_check"]["status"] == "PASSED" and schema_errors(result, _RESULT) == []
-    assert result["quality_gate"]["verdict"] in ("PASSED", "NEEDS_CHECK")
-    seen = [s["camera_check"]["status"] for s in ctx.site_setup_history if "camera_check" in s]
-    assert seen and seen[0] == "WAITING"
-    assert all("camera_check" not in s for s in ctx.site_setup_history if s["progress_pct"] < 65)
-    for snap in ctx.site_setup_history:
-        assert schema_errors(snap, _PROGRESS) == []
-    assert checker.stopped >= 1
+def _recording(name: str, events: list[str], fn: Any) -> Any:
+    def run(**kw: Any) -> Any:
+        events.append(name)
+        return fn(**kw)
+    return run
 
 
-def test_camera_check_not_finished_by_deadline_is_incomplete() -> None:
-    checker = _FakeChecker(["MEASURING"])
+def _cc_room(checker: _FakeChecker, events: list[str], t: _FakeTime, **kw: Any) -> tuple[SiteSetupHandler, dict[str, Any]]:
     handler, inp, _ = _room_handler(
         lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
-        camera_check=checker, camera_check_poll_s=0.01, camera_check_margin_s=10_000.0,
+        camera_check=checker, camera_check_poll_s=1.0, monotonic=t.monotonic, sleep=t.sleep,
+        preview_builder=_recording("preview", events, SiteSetupHandler._default_preview_builder),
+        texture_baker=_recording("bake", events, SiteSetupHandler._default_texture_baker),
+        **kw,
     )
-    ctx = JobContext("job-cc2", "0192a6f0-7c1e-7b3a-9f2d-000000000647", "site_setup", 1, inp, timeout_ms=600_000)
+    return handler, inp
+
+
+def _press(ctx_box: dict[str, JobContext], t: _FakeTime, plan: dict[float, int]) -> Any:
+    """가짜 잠: 시각이 plan 의 키를 지나면 그 번호로 관리자 「걷기 시작」·「확인만 다시」를 누른다(하트비트 응답 대역)."""
+    def sleep(event: Any, seconds: float) -> None:
+        t.sleeps.append(seconds)
+        t.now += seconds
+        for at, attempt in sorted(plan.items()):
+            if t.now >= at:
+                ctx_box["ctx"].note_camera_check_start(attempt)
+    return sleep
+
+
+def _checks(ctx: JobContext) -> list[dict[str, Any]]:
+    return [s["camera_check"] for s in ctx.site_setup_history if "camera_check" in s]
+
+
+def test_camera_check_waits_for_walk_start_and_passes_before_any_map_step() -> None:
+    """보정 등록(65%) 뒤 AWAITING_START + user_wait 로 「걷기 시작」을 기다리고, 시도 1 이 통과해야 미리보기·굽기를 부른다."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["MEASURING", "PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {5.0: 1})
+    ctx = box["ctx"] = JobContext("job-cc", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, inp,
+                                  timeout_ms=900_000)
     result = handler(ctx)
-    assert result["camera_check"]["status"] == "INCOMPLETE" and result["camera_check"]["problems"]
+
+    assert events == ["start:0192a6f0-1", "passed", "preview", "bake"]
+    checks = _checks(ctx)
+    assert checks[0]["status"] == "AWAITING_START" and "attempt" not in checks[0]
+    assert checks[0]["user_wait"]["wait_s"] == pytest.approx(900.0 - 420.0, abs=5.0)  # 실행 상한 − 맵 몫(대기 상한 600 s 보다 짧다)
+    started = next(c for c in checks if c.get("attempt"))
+    assert started["attempt"]["no"] == 1 and started["attempt"]["id"] == "0192a6f0-1" and "user_wait" not in started
+    assert started["attempt"]["calibration_version"] == result["calibration_version"]
+    first_map = next(i for i, s in enumerate(ctx.site_setup_history) if s["status"] == "PREVIEW_AND_VLM_DRAFT")
+    assert all(s["camera_check"]["status"] == "PASSED" for s in ctx.site_setup_history[first_map:])
+    assert all(s["status"] == "JOINT_BA_AND_VERIFY" for s in ctx.site_setup_history if "camera_check" in s
+               and s["camera_check"]["status"] != "PASSED")
+    assert result["camera_check"]["status"] == "PASSED" and result["camera_check"]["attempt"]["no"] == 1
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
     assert schema_errors(result, _RESULT) == []
     assert checker.stopped >= 1
+
+
+def test_camera_check_retry_keeps_the_calibration_and_ignores_a_late_old_request() -> None:
+    """시도 1 이 기하 실패(FAILED)면 user_wait 를 다시 싣고 「확인만 다시」를 기다린다. 늦게 온 같은 번호(1)는 무시하고 2 에서 같은
+    보정으로 다시 잰다. 실패한 시도 동안 맵은 굽지 않는다."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["MEASURING", "FAILED"], ["PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1, 30.0: 1, 60.0: 2})
+    ctx = box["ctx"] = JobContext("job-cc-retry", "0192a6f0-7c1e-7b3a-9f2d-000000000647", "site_setup", 1, inp,
+                                  timeout_ms=900_000)
+    result = handler(ctx)
+
+    assert events == ["start:0192a6f0-1", "start:0192a6f0-2", "passed", "preview", "bake"]
+    assert len(checker.started) == 2 and checker.started[0][1] == checker.started[1][1] == result["calibration_version"]
+    failed = next(c for c in _checks(ctx) if c["status"] == "FAILED")
+    assert failed["attempt"]["no"] == 1 and failed["user_wait"]["wait_s"] > 0
+    assert failed["problems"][0]["reason"] == "REPROJECTION_HIGH"
+    assert result["camera_check"]["attempt"]["no"] == 2 and "user_wait" not in result["camera_check"]
+
+
+def test_camera_check_attempt_cap_closes_as_incomplete_with_sample_shortage_then_retry_passes() -> None:
+    """시도 상한까지 판정을 못 하면 그 시도는 INCOMPLETE(표본 부족)로 닫고 다시 확인을 기다린다."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["MEASURING"], ["PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t, camera_check_attempt_s=20.0)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1, 40.0: 2})
+    ctx = box["ctx"] = JobContext("job-cc-cap", "0192a6f0-7c1e-7b3a-9f2d-000000000648", "site_setup", 1, inp)
+    handler(ctx)
+
+    assert checker.incompletes == 1
+    incomplete = next(c for c in _checks(ctx) if c["status"] == "INCOMPLETE")
+    assert incomplete["problems"][0]["reason"] == "FEW_SAMPLES" and incomplete["user_wait"]
+    assert events[-2:] == ["preview", "bake"]
+
+
+def test_camera_check_without_walk_start_fails_with_zero_bakes() -> None:
+    """대기 마감까지 「걷기 시작」이 없으면 CAMERA_CHECK_NOT_PASSED 로 끝나고 미리보기·굽기를 한 번도 부르지 않는다."""
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]])
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, camera_check_wait_s=60.0, monotonic=t.monotonic, sleep=t.sleep,
+        preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+        frame_publisher=_must_not_run("카메라 프레임"), bake_image_publisher=_must_not_run("굽기 입력 사진"),
+    )
+    ctx = JobContext("job-cc-idle", "0192a6f0-7c1e-7b3a-9f2d-000000000649", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "CAMERA_CHECK_NOT_PASSED" and not exc.value.retryable
+    assert checker.started == []
+    last = _checks(ctx)[-1]
+    assert last["status"] == "INCOMPLETE" and last["problems"][0]["reason"] == "NOT_STARTED" and "user_wait" not in last
+    assert schema_errors(ctx.site_setup_history[-1], _PROGRESS) == []
+    assert max(s["progress_pct"] for s in ctx.site_setup_history) == 65
+
+
+@pytest.mark.parametrize("case", ["no_views", "start_error"])
+def test_camera_check_channel_failure_fails_with_zero_bakes(case: str) -> None:
+    """확인 채널을 열지 못하면(시작 오류, Tier 0 view 가 한 줄도 오지 않음) CAMERA_CHECK_UNAVAILABLE 이고 맵을 굽지 않는다."""
+    t = _FakeTime()
+    checker = _FakeChecker([["WAITING"]], lines_read=0,
+                           start_error=OSError("camera-check 폴더 쓰기 실패") if case == "start_error" else None)
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, monotonic=t.monotonic,
+        preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+    )
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {0.5: 1})
+    ctx = box["ctx"] = JobContext("job-cc-chan", "0192a6f0-7c1e-7b3a-9f2d-000000000650", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "CAMERA_CHECK_UNAVAILABLE" and not exc.value.retryable
+    assert checker.stopped >= 1
+
+
+def test_camera_check_budget_leaves_the_map_share_of_the_execution_limit() -> None:
+    """대기 상한은 실행 상한에서 맵 몫(NEW 420 s)을 뺀 만큼으로 줄인다. 그만큼도 안 남으면 확인을 열지 않고 맵 없이 실패한다."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1})
+    ctx = box["ctx"] = JobContext("job-cc-budget", "0192a6f0-7c1e-7b3a-9f2d-000000000651", "site_setup", 1, inp,
+                                  timeout_ms=600_000)
+    handler(ctx)
+    wait = _checks(ctx)[0]["user_wait"]["wait_s"]
+    assert 150.0 < wait <= 180.0  # 600 − 420 − 앞 단계 시간
+
+    checker = _FakeChecker([["PASSED"]])
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+    )
+    ctx = JobContext("job-cc-short", "0192a6f0-7c1e-7b3a-9f2d-000000000652", "site_setup", 1, inp, timeout_ms=450_000)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "CAMERA_CHECK_NOT_PASSED" and checker.started == []
+
+
+def test_reuse_scene_checks_cameras_before_ready_for_zones() -> None:
+    """REUSE_SCENE 채택도 카메라 확인을 통과해야 READY_FOR_ZONES·결과로 간다(맵 몫 대신 결과 제출 몫만 남긴다)."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]], events=events)
+    handler, _, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=_anchor_hook(True), calibration_publisher=_doc_publisher([]), camera_check=checker,
+        monotonic=t.monotonic, preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+    )
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1})
+    ctx = box["ctx"] = JobContext("job-cc-reuse", "0192a6f0-7c1e-7b3a-9f2d-000000000653", "site_setup", 1, _reuse_input(),
+                                  timeout_ms=600_000)
+    result = handler(ctx)
+    assert _checks(ctx)[0]["user_wait"]["wait_s"] == pytest.approx(600.0 - 30.0, abs=30.0) or \
+        _checks(ctx)[0]["user_wait"]["wait_s"] == pytest.approx(600.0, abs=1.0)
+    ready = next(i for i, s in enumerate(ctx.site_setup_history) if s["status"] == "READY_FOR_ZONES")
+    passed = next(i for i, s in enumerate(ctx.site_setup_history) if s.get("camera_check", {}).get("status") == "PASSED")
+    assert passed < ready and result["camera_check"]["status"] == "PASSED"
+    assert schema_errors(result, _RESULT) == []
 
 
 # ---------------------------------------------------------------------------- S15P31A101-630
@@ -1554,7 +1735,7 @@ def test_height_review_wait_is_capped_by_the_remaining_budget_and_cancel_still_s
     """실행 상한까지 뒤 단계 몫(reserve)을 남기도록 대기를 줄인다. 남는 시간이 없으면 기다리지 않는다. 취소는 기다리는 중에도 멈춘다."""
     loose_gate = {"height_max_diff_cm": 50.0}
     handler, inp, _, t = _height_handler(_ONE_LOW, quality_gate=loose_gate)
-    ctx = _ctx("job-hr4", inp, t, timeout_ms=400_000)
+    ctx = _ctx("job-hr4", inp, t, timeout_ms=580_000)  # 뒤 단계 몫 540 s(-687)
     handler(ctx)
     review = _reviews(ctx)[0]
     assert review["status"] == "AWAITING_CONFIRMATION" and review["wait_s"] == pytest.approx(40.0, abs=0.5)
