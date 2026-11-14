@@ -55,6 +55,25 @@ export function prepStep(status: GpuStatus | undefined): number | null {
   return 1;
 }
 
+/**
+ * VLM(vLLM) 준비 상태(S15P31A101-706). 열린 GPU 세션의 부팅 단계로만 판단한다(-700 보고).
+ * LOADING: 단계 VLLM(Tier 0 는 준비됐고 VLM 가중치 31.5GB 받기·vLLM 기동 대기)
+ * TIMED_OUT: READY 인데 단계 설명이 「vLLM 미준비(시한 초과)…」 계열(VLM 근거·보고서 없이 관제)
+ * READY: 그 밖의 READY. UNKNOWN: 세션 없음(손으로 켠 GPU 등)·관리자 아님(상태 없음)·그 밖의 단계 → 화면은 지금 동작 그대로
+ */
+export type VlmReadiness = 'LOADING' | 'TIMED_OUT' | 'READY' | 'UNKNOWN';
+
+/** 부팅이 vLLM 시한 초과 READY 에 싣는 설명의 공통 부분(deploy/scripts/simai_gpu_boot.py lobby_stage) */
+export const VLLM_TIMEOUT_MARK = 'vLLM 미준비';
+
+export function vlmReadiness(status: GpuStatus | undefined): VlmReadiness {
+  const session = status?.session;
+  if (!session || session.state !== 'ACTIVE') return 'UNKNOWN';
+  if (session.stage === 'VLLM') return 'LOADING';
+  if (session.stage !== 'READY') return 'UNKNOWN';
+  return session.stage_detail?.includes(VLLM_TIMEOUT_MARK) ? 'TIMED_OUT' : 'READY';
+}
+
 /** 켜져 있거나 켜는 중이라 끄기 대상이 있는지(없으면 패널이 켜기를 보인다) */
 export function isGpuOn(status: GpuStatus | undefined): boolean {
   if (!status) return false;

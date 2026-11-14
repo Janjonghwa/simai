@@ -9,6 +9,7 @@ import {
   needsTierConfirm,
   prepStep,
   tierWarning,
+  vlmReadiness,
 } from '@/features/gpu/gpuStatus';
 import type { GpuLaunch, GpuOfferCell, GpuSession, GpuStatus } from '@/features/gpu/types';
 import { describe, expect, it } from 'vitest';
@@ -147,6 +148,33 @@ describe('gpuErrorReason', () => {
       ),
     ).toBe('켜기 실패 (재고 없음)');
     expect(gpuErrorReason(status({ power: 'OFF' }))).toBeNull();
+  });
+});
+
+describe('vlmReadiness(S15P31A101-706)', () => {
+  it('VLLM 단계는 받는 중, READY 는 준비, 시한 초과 설명이 붙은 READY 는 시한 초과', () => {
+    expect(vlmReadiness(status({ power: 'CONNECTED', session: session({ stage: 'VLLM' }) }))).toBe(
+      'LOADING',
+    );
+    expect(vlmReadiness(status({ power: 'CONNECTED', session: session({ stage: 'READY' }) }))).toBe(
+      'READY',
+    );
+    const timedOut = session({
+      stage: 'READY',
+      stage_detail: 'vLLM 미준비(시한 초과): VLM 근거·보고서 없이 관제',
+    });
+    expect(vlmReadiness(status({ power: 'CONNECTED', session: timedOut }))).toBe('TIMED_OUT');
+  });
+
+  it('세션 없음·끝난 세션·관리자 아님(상태 없음)·그 밖의 단계는 모름(지금 동작 그대로)', () => {
+    expect(vlmReadiness(undefined)).toBe('UNKNOWN');
+    expect(vlmReadiness(status({ power: 'CONNECTED' }))).toBe('UNKNOWN');
+    expect(vlmReadiness(status({ session: session({ stage: 'VLLM', state: 'ENDED' }) }))).toBe(
+      'UNKNOWN',
+    );
+    expect(vlmReadiness(status({ power: 'PREPARING', session: session({ stage: 'TIER0' }) }))).toBe(
+      'UNKNOWN',
+    );
   });
 });
 
