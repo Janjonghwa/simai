@@ -425,6 +425,45 @@ def test_lobby_exit_maps_to_failed(gb, world):
     t.join(timeout=30)
 
 
+@pytest.mark.parametrize("mb, services, note", [
+    (81559.0, None, None),            # H100 80GB: lobby 기본
+    (46068.0, None, None),            # L40S·A40 48GB급: lobby 기본(VLM 몫은 19.1 미결)
+    (44999.0, "tier0", "24GB급"),      # 48GB급 미만: Tier 0 관제만
+    (23028.0, "tier0", "24GB급"),      # A10 24GB
+    (20470.0, "tier0", "최소 사양"),    # 24GB급 미만: tier0 + 경고
+    (None, None, None),               # 모르면 lobby 기본(preflight 가 멈춘다)
+])
+def test_boot_services_by_vram(gb, mb, services, note):
+    """S15P31A101-705: SIMAI_BOOT_SERVICES 가 비면 VRAM 으로 lobby 서비스 기본값을 정한다"""
+    got, why = gb.boot_services({}, {"memory_total_mb": mb}, 45_000, 22_500)
+    assert got == services
+    assert (why is None) if note is None else (note in why)
+
+
+def test_boot_services_explicit_value_wins(gb):
+    assert gb.boot_services({"SIMAI_BOOT_SERVICES": " tier0,vllm "}, {"memory_total_mb": 23028.0}, 45_000, 22_500) == ("tier0,vllm", None)
+    assert gb.boot_services({"SIMAI_BOOT_SERVICES": "tier0"}, {"memory_total_mb": 81559.0}, 45_000, 22_500) == ("tier0", None)
+
+
+def test_small_gpu_runs_tier0_only_and_reports_the_reduction(gb, world):
+    """24GB급 GPU: lobby 를 tier0 로 띄우고(vLLM 을 기다리지 않음) 단계 보고 설명에 축소 사실을 남긴다"""
+    (world["fake"] / "smi.py").write_text(FAKE_SMI.replace("NVIDIA H100 80GB HBM3, 9.0, 81559", "NVIDIA A10, 8.6, 23028"),
+                                          encoding="utf-8")
+    boot = _boot(gb, world)
+    t, _ = _run_bg(boot)
+    ec2 = world["ec2"]
+    assert _wait(lambda: any(r["stage"] == "READY" for r in ec2.reports)), ec2.reports
+    boot.stop.set()
+    t.join(timeout=30)
+    assert json.loads((world["fake"] / "lobby.json").read_text())["argv"][-2:] == ["--services", "tier0"]
+    assert json.loads((world["fake"] / "preflight.json").read_text())["argv"][-2:] == ["--services", "tier0"]
+    assert any("Tier 0 관제만" in (r.get("detail") or "") for r in ec2.reports if r["stage"] == "WEIGHTS")
+    ready = next(r for r in ec2.reports if r["stage"] == "READY")
+    assert "Tier 0 관제만" in ready["detail"]
+    assert "vLLM 미준비" not in ready["detail"]  # vLLM 을 띄우지 않으니 기다리지도 않는다
+    assert "관제만" not in (ec2.reports[-1].get("detail") or "")  # ENDED 에는 붙이지 않는다
+
+
 # ---------------------------------------------------------------- 캐시
 
 

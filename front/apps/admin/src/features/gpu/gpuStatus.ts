@@ -1,5 +1,5 @@
 import { GPU_ERROR } from '@/features/gpu/api';
-import type { GpuStatus, GpuStock } from '@/features/gpu/types';
+import type { GpuOfferCell, GpuStatus, GpuTier } from '@/features/gpu/types';
 import { ApiError } from '@/lib/http';
 
 // 상단바 GPU 점·정보창·패널이 쓰는 순수 계산(S15P31A101-702). 서버 상태(GET /api/gpu/sessions/current 의 power·launch·session)를
@@ -8,6 +8,7 @@ import { ApiError } from '@/lib/http';
 /** 상단바 점: 초록 연결 / 노랑(깜빡임) 준비 중 / 회색 꺼짐 / 빨강 오류 */
 export type GpuDot = 'CONNECTED' | 'PREPARING' | 'OFF' | 'ERROR';
 
+/** 점 상태 글. 상단바에는 「GPU」만 두고(-705) 이 글은 정보창 첫 줄과 화면 읽기 이름에 쓴다 */
 export const DOT_LABEL: Record<GpuDot, string> = {
   CONNECTED: 'GPU 연결',
   PREPARING: 'GPU 준비 중',
@@ -112,13 +113,73 @@ export const STOP_BLOCK_TEXT: Record<'LIVE' | 'SETUP', string> = {
   SETUP: '세팅 중에는 끌 수 없습니다',
 };
 
-export const STOCK_LABEL: Record<GpuStock, string> = {
-  HIGH: '많음',
-  MEDIUM: '보통',
-  LOW: '적음',
-  NONE: '없음',
-  UNKNOWN: '모름',
+/**
+ * 칸 재고 글(S15P31A101-705): 1개 이상이면 되므로 등급(많음·보통·적음)은 쓰지 않는다. 켤 수 있음 / 없음 / 모름(AWS, 고를 수 있음).
+ * 공급자가 개수를 주면 「n개」. 서버가 available 을 싣지 않았으면(-705 이전) 재고 등급에서 고른다.
+ */
+export function cellAvailable(cell: GpuOfferCell | undefined): boolean | null {
+  if (!cell) return false;
+  if (cell.available !== undefined) return cell.available;
+  if (cell.stock === 'UNKNOWN') return null;
+  return cell.stock !== 'NONE';
+}
+
+export function availabilityLabel(cell: GpuOfferCell | undefined): string {
+  const available = cellAvailable(cell);
+  if (available === null) return '모름';
+  if (!available) return '없음';
+  return cell?.count != null && cell.count > 0 ? `${cell.count}개` : '켤 수 있음';
+}
+
+/** 고를 수 있는 칸: 없음이 아니고(모름은 고를 수 있음) 가격 상한 안 */
+export function cellUsable(cell: GpuOfferCell | undefined): boolean {
+  return cell !== undefined && cellAvailable(cell) !== false && cell.within_cap;
+}
+
+/** VRAM 등급 글. 추천 등급(80GB급)은 따로 표시하지 않는다(추천 표시는 H100·H200 계열의 「추천」) */
+export const TIER_LABEL: Record<Exclude<GpuTier, 'RECOMMENDED'>, string> = {
+  BELOW_RECOMMENDED: '권장 미만',
+  LIMITED: '제한',
+  RISKY: '위험',
 };
+
+/**
+ * VRAM 등급 색(사용자 결정 2026-11-14, front/CONVENTION.md 의 위험 등급 색 예외): 권장 미만 노랑 / 제한 주황 / 위험 빨강.
+ * -704 카메라 지연 배지·-702 GPU 점과 같은 신호등 쓰임이다.
+ */
+export const TIER_TONE: Record<Exclude<GpuTier, 'RECOMMENDED'>, string> = {
+  BELOW_RECOMMENDED: 'text-sev-caution ring-sev-caution/50',
+  LIMITED: 'text-sev-high ring-sev-high/50',
+  RISKY: 'text-sev-critical ring-sev-critical/50',
+};
+
+/** 확인창 경고 글 색(TIER_TONE 과 같은 색) */
+export const TIER_TEXT: Record<Exclude<GpuTier, 'RECOMMENDED'>, string> = {
+  BELOW_RECOMMENDED: 'text-sev-caution',
+  LIMITED: 'text-sev-high',
+  RISKY: 'text-sev-critical',
+};
+
+/**
+ * 켜기 확인창의 등급 경고. 제한·위험은 「이 GPU 로는 ○○ 가 안 됩니다」를 보이고 확인을 거쳐 켠다(막지 않음).
+ * 문구는 부팅의 서비스 축소(deploy/scripts/simai_gpu_boot.py boot_services)와 맞춘다: 24~47GB 는 Tier 0 관제만(분석 워커가 없어 세팅도 안 됨).
+ */
+export function tierWarning(tier: GpuTier | null | undefined): string | null {
+  switch (tier) {
+    case 'LIMITED':
+      return '이 GPU 로는 세팅(맵 굽기)·VLM 근거·아바타가 안 됩니다. VRAM 48GB급 미만이라 Tier 0 관제만 켭니다.';
+    case 'RISKY':
+      return '이 GPU 로는 관제 준비가 실패할 수 있습니다. VRAM 24GB급 미만이라 Tier 0 최소 사양에 못 미치고 세팅·VLM 근거·아바타도 안 됩니다(개발·시험용).';
+    case 'BELOW_RECOMMENDED':
+      return 'VRAM 80GB급 미만이라 VLM 근거·아바타가 메모리 부족으로 늦거나 빠질 수 있습니다.';
+    default:
+      return null;
+  }
+}
+
+/** 확인을 한 번 더 받아야 하는 등급(제한·위험) */
+export const needsTierConfirm = (tier: GpuTier | null | undefined) =>
+  tier === 'LIMITED' || tier === 'RISKY';
 
 /** "1시간 5분", "12분", "1분 미만" */
 export function formatElapsed(ms: number): string {
@@ -145,7 +206,7 @@ export function gpuErrorMessage(error: unknown): string {
       case GPU_ERROR.OUT_OF_STOCK:
         return '고른 GPU·지역에 재고가 없습니다. 다른 칸을 고르세요.';
       case GPU_ERROR.PRICE_OVER_CAP:
-        return '시간당 가격이 GPU 설정의 상한보다 높습니다.';
+        return '시간당 가격이 GPU 설정(설정 → GPU)의 상한보다 높습니다.';
       case GPU_ERROR.STOP_BLOCKED_LIVE:
         return `${STOP_BLOCK_TEXT.LIVE}. 작업을 먼저 종료하세요.`;
       case GPU_ERROR.STOP_BLOCKED_SETUP:
@@ -153,7 +214,7 @@ export function gpuErrorMessage(error: unknown): string {
       case GPU_ERROR.STOP_UNSUPPORTED:
         return '손으로 켠 GPU 는 여기서 끌 수 없습니다.';
       case GPU_ERROR.NOT_CONFIGURED:
-        return 'GPU 공급자 설정(API 키 또는 템플릿 ID)이 없습니다. GPU 설정을 확인하세요.';
+        return 'GPU 공급자 설정(API 키 또는 템플릿 ID)이 없습니다. 설정의 GPU 구역을 확인하세요.';
       case GPU_ERROR.INVALID_SETTINGS:
         return '입력 값을 확인하세요.';
       case GPU_ERROR.PROVIDER_ERROR:

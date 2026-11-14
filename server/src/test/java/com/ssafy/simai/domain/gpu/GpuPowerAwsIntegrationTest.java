@@ -143,14 +143,25 @@ class GpuPowerAwsIntegrationTest {
                 .andExpect(jsonPath("$.providers[1].configured").value(true));
 
         // 선호 종류 g6e 먼저, 선호 가용 영역 2a 먼저. 실시간 재고를 모르니 UNKNOWN(고를 수 있음), 서브넷 없는 2c 는 NONE
+        // S15P31A101-705: 선호 밖 카탈로그 종류(p5.48xlarge, H100)도 행으로 위에 보이지만 재고를 모르니 기본은 선호 g6e 다
+        api.zones.put("p5.48xlarge", Set.of("ap-northeast-2a"));
+        api.specs.put("p5.48xlarge", new AwsGpuApi.GpuSpec("NVIDIA H100", 8, 80));
         mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.provider").value("AWS"))
                 .andExpect(jsonPath("$.default.gpu_type").value(G6E))
                 .andExpect(jsonPath("$.default.region").value("ap-northeast-2a"))
-                .andExpect(jsonPath("$.cells[0].stock").value("UNKNOWN"))
-                .andExpect(jsonPath("$.cells[0].price_per_hour_usd").value(2.7565))
-                .andExpect(jsonPath("$.gpu_types[0].name").value(G6E + " · NVIDIA L40S ×1"));
+                .andExpect(jsonPath("$.gpu_types[0].gpu_type").value("p5.48xlarge"))
+                .andExpect(jsonPath("$.gpu_types[0].recommended").value(true))
+                .andExpect(jsonPath("$.gpu_types[0].tier").value("RECOMMENDED"))
+                .andExpect(jsonPath("$.gpu_types[0].available").isEmpty())
+                .andExpect(jsonPath("$.gpu_types[1].name").value(G6E + " · NVIDIA L40S ×1"))
+                .andExpect(jsonPath("$.gpu_types[1].tier").value("BELOW_RECOMMENDED"))
+                .andExpect(jsonPath("$.cells[2].gpu_type").value(G6E))
+                .andExpect(jsonPath("$.cells[2].region").value("ap-northeast-2a"))
+                .andExpect(jsonPath("$.cells[2].stock").value("UNKNOWN"))
+                .andExpect(jsonPath("$.cells[2].available").isEmpty())
+                .andExpect(jsonPath("$.cells[2].price_per_hour_usd").value(2.7565));
 
         JsonNode launch = mapper.readTree(launch().andExpect(status().isCreated()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8));

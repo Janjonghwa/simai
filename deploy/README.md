@@ -657,7 +657,7 @@ EC2 가 세션을 끝내면(409 `GPU_SESSION_ENDED`) lobby 를 멈추고, 같은
 | `SIMAI_IMAGE_DIGEST` | 템플릿 환경 변수 | 이미지 다이제스트(등록 `image_digest`, 모르면 null) |
 | `SIMAI_GPU_PROVIDER` | 선택 | `RUNPOD`(없으면 `RUNPOD_POD_ID` 로 판단)·`AWS`·`MANUAL` |
 | `SIMAI_PRICE_PER_HOUR_USD` | 선택(S15P31A101-702 가 켤 때 넣는다) | 시간당 가격. 없으면 null |
-| `SIMAI_BOOT_SERVICES` | 선택 | lobby `--services`(기본 lobby 기본 `tier0,vllm,worker,avatar`. PPE 를 켜려면 `tier0,vllm,worker,avatar,ppe`) |
+| `SIMAI_BOOT_SERVICES` | 선택 | lobby `--services`(기본 lobby 기본 `tier0,vllm,worker,avatar`. PPE 를 켜려면 `tier0,vllm,worker,avatar,ppe`). 비우면 VRAM 으로 정한다(S15P31A101-705): 48GB급(45,000 MiB) 이상 lobby 기본, 그 미만 `tier0`(세팅·VLM·아바타 꺼짐, 24GB급 미만은 경고) — 줄인 사실은 단계 보고 설명(stage_detail)에 붙는다 |
 | `SIMAI_TIER0_ADVERTISE_HOST` | 선택 | Tier 0 가 I1 `tier0_endpoint` 로 알리는 주소(기본 `127.0.0.1` = SSAFY 망 기본 경로, 노트북이 EC2 SSH 로컬 포워드로 붙는다. 직접 연결이면 공개 IP). 포트는 TCP 17000(제어)·17001(영상, 카메라 넷 공용) |
 
 RunPod 이 자동으로 넣는 `RUNPOD_POD_ID`·`RUNPOD_DC_ID`·`RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_17000`·`_17001`·`_22` 는 등록 메시지(`instance_id`·`region`·`public_host`·`ports`)로 간다.

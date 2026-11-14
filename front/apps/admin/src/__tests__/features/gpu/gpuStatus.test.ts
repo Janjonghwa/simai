@@ -1,12 +1,16 @@
 import {
+  availabilityLabel,
+  cellUsable,
   formatElapsed,
   gpuDot,
   gpuErrorReason,
   gpuSummary,
   isGpuOn,
+  needsTierConfirm,
   prepStep,
+  tierWarning,
 } from '@/features/gpu/gpuStatus';
-import type { GpuLaunch, GpuSession, GpuStatus } from '@/features/gpu/types';
+import type { GpuLaunch, GpuOfferCell, GpuSession, GpuStatus } from '@/features/gpu/types';
 import { describe, expect, it } from 'vitest';
 
 const T = 1_793_000_000_000;
@@ -152,5 +156,43 @@ describe('formatElapsed', () => {
     expect(formatElapsed(12 * 60_000)).toBe('12분');
     expect(formatElapsed(65 * 60_000)).toBe('1시간 5분');
     expect(formatElapsed(120 * 60_000)).toBe('2시간');
+  });
+});
+
+describe('재고 글·VRAM 등급(S15P31A101-705)', () => {
+  const cell = (change: Partial<GpuOfferCell> = {}): GpuOfferCell => ({
+    gpu_type: 'g',
+    region: 'r',
+    stock: 'HIGH',
+    price_per_hour_usd: 1,
+    within_cap: true,
+    ...change,
+  });
+
+  it('등급 글 없이 켤 수 있음·없음·모름, 공급자가 개수를 주면 n개', () => {
+    expect(availabilityLabel(cell({ available: true }))).toBe('켤 수 있음');
+    expect(availabilityLabel(cell({ stock: 'LOW' }))).toBe('켤 수 있음'); // available 없는 옛 응답
+    expect(availabilityLabel(cell({ stock: 'NONE', available: false }))).toBe('없음');
+    expect(availabilityLabel(cell({ stock: 'UNKNOWN', available: null }))).toBe('모름');
+    expect(availabilityLabel(cell({ available: true, count: 3 }))).toBe('3개');
+    expect(availabilityLabel(undefined)).toBe('없음');
+  });
+
+  it('모름은 고를 수 있고 없음·가격 상한 밖은 못 고른다', () => {
+    expect(cellUsable(cell({ stock: 'UNKNOWN', available: null }))).toBe(true);
+    expect(cellUsable(cell({ stock: 'NONE', available: false }))).toBe(false);
+    expect(cellUsable(cell({ within_cap: false }))).toBe(false);
+    expect(cellUsable(undefined)).toBe(false);
+  });
+
+  it('제한·위험만 확인을 더 받고, 경고는 안 되는 것을 말한다', () => {
+    expect(needsTierConfirm('LIMITED')).toBe(true);
+    expect(needsTierConfirm('RISKY')).toBe(true);
+    expect(needsTierConfirm('BELOW_RECOMMENDED')).toBe(false);
+    expect(needsTierConfirm(null)).toBe(false);
+    expect(tierWarning('LIMITED')).toContain('세팅(맵 굽기)·VLM 근거·아바타가 안 됩니다');
+    expect(tierWarning('RISKY')).toContain('Tier 0 최소 사양');
+    expect(tierWarning('RECOMMENDED')).toBeNull();
+    expect(tierWarning(undefined)).toBeNull();
   });
 });

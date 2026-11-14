@@ -1,16 +1,16 @@
 import { gpuErrorMessage } from '@/features/gpu/gpuStatus';
 import type { GpuSettings, GpuSettingsBody } from '@/features/gpu/types';
 import { useGpuSettings } from '@/features/gpu/useGpu';
-import { ModalDialog } from '@/features/tbm/ModalDialog';
 import { Button } from '@simai/ui/components/button';
 import { Input } from '@simai/ui/components/input';
 import { Label } from '@simai/ui/components/label';
 import { Textarea } from '@simai/ui/components/textarea';
 import { useState } from 'react';
 
-// GPU 설정(S15P31A101-702, 관리자 메뉴 「GPU 설정」, 관리자만). 저장하면 서버에 새 버전으로 쌓인다(이력, 덮어쓰지 않음).
-// 공급자·선호 GPU 목록(한 줄에 하나, 위가 먼저)·선호 지역 목록·클라우드 종류·온디맨드/스팟·시간당 가격 상한(비우면 없음)·
-// 자동 정지 분(0 이면 끔)·RunPod 템플릿 ID. 비밀 값(API 키·부팅 비밀값)은 화면에 두지 않는다(EC2 .env·RunPod Secrets).
+// GPU 설정(S15P31A101-702, -705 부터 관리자 「설정」 페이지의 GPU 구역, 관리자만). 저장하면 서버에 새 버전으로 쌓인다(이력, 덮어쓰지 않음).
+// 공급자·선호 GPU 목록(한 줄에 하나, 위가 먼저. -705 부터 켜기 표는 모든 GPU 를 보이고 이 목록은 정렬·기본 선택에만 쓴다)·선호 지역 목록·
+// 클라우드 종류·온디맨드/스팟·시간당 가격 상한(비우면 없음)·자동 정지 분(0 이면 끔)·RunPod 템플릿 ID.
+// 비밀 값(API 키·부팅 비밀값)은 화면에 두지 않는다(EC2 .env·RunPod Secrets).
 // AWS(S15P31A101-703): 선호 GPU 칸이 인스턴스 종류, 선호 지역 칸이 가용 영역이고 시작 템플릿·서브넷·보안 그룹 칸을 더 받는다.
 // 서버에서 AWS 를 켜지 않았거나 자격 증명이 없으면 공급자 목록에 「준비 안 됨」으로 보인다.
 
@@ -75,15 +75,21 @@ export function toBody(form: GpuSettingsForm): GpuSettingsBody | string {
   };
 }
 
-export function GpuSettingsDialog({ onClose }: { onClose: () => void }) {
-  const { data, loading, loadError, save, saving, saveError } = useGpuSettings(true);
+export function GpuSettingsSection() {
+  const { data, loading, loadError, save, saving, saveError, saved } = useGpuSettings(true);
   return (
-    <ModalDialog label="GPU 설정" onClose={onClose} className="w-[min(560px,calc(100vw-32px))]">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3">
-        <h2 className="text-base font-semibold">GPU 설정</h2>
-        {data?.settings.version_id != null && (
-          <span className="text-xs text-muted-foreground">버전 {data.settings.version_id}</span>
-        )}
+    <section
+      aria-labelledby="settings-gpu"
+      className="flex flex-col rounded-xl bg-card text-card-foreground ring-1 ring-border"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+        <h2 id="settings-gpu" className="text-base font-semibold">
+          GPU
+        </h2>
+        <span className="flex items-center gap-3 text-xs text-muted-foreground">
+          {saved && <span role="status">저장했습니다</span>}
+          {data?.settings.version_id != null && <span>버전 {data.settings.version_id}</span>}
+        </span>
       </div>
       {loading && <p className="p-5 text-sm text-muted-foreground">불러오는 중…</p>}
       {loadError && (
@@ -98,11 +104,10 @@ export function GpuSettingsDialog({ onClose }: { onClose: () => void }) {
           providers={data.providers}
           saving={saving}
           error={saveError ? gpuErrorMessage(saveError) : null}
-          onSave={(body) => save(body, { onSuccess: onClose })}
-          onCancel={onClose}
+          onSave={(body) => save(body)}
         />
       )}
-    </ModalDialog>
+    </section>
   );
 }
 
@@ -112,14 +117,12 @@ function SettingsForm({
   saving,
   error,
   onSave,
-  onCancel,
 }: {
   initial: GpuSettingsForm;
   providers: { id: string; configured: boolean }[];
   saving: boolean;
   error: string | null;
   onSave: (body: GpuSettingsBody) => void;
-  onCancel: () => void;
 }) {
   const [form, setForm] = useState<GpuSettingsForm>(initial);
   const [invalid, setInvalid] = useState<string | null>(null);
@@ -300,8 +303,16 @@ function SettingsForm({
         </p>
       )}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
-          취소
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => {
+            setForm(initial);
+            setInvalid(null);
+          }}
+          disabled={saving}
+        >
+          되돌리기
         </Button>
         <Button type="submit" disabled={saving}>
           {saving ? '저장 중…' : '저장'}

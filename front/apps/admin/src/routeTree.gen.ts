@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
 import { Route as AppLiveRouteImport } from './routes/_app/live'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as AppTbmRouteImport } from './routes/_app/tbm'
 import { Route as AppWorkRouteImport } from './routes/_app/work'
@@ -48,6 +49,11 @@ const AppCctvRoute = AppCctvRouteImport.update({
 const AppLiveRoute = AppLiveRouteImport.update({
   id: '/live',
   path: '/live',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSetupRoute = AppSetupRouteImport.update({
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
   '/live': typeof AppLiveRoute
+  '/settings': typeof AppSettingsRoute
   '/setup': typeof AppSetupRoute
   '/tbm': typeof AppTbmRoute
   '/work': typeof AppWorkRoute
@@ -99,6 +106,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
   '/live': typeof AppLiveRoute
+  '/settings': typeof AppSettingsRoute
   '/setup': typeof AppSetupRoute
   '/tbm': typeof AppTbmRoute
   '/work': typeof AppWorkRoute
@@ -113,6 +121,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_app/cctv': typeof AppCctvRoute
   '/_app/live': typeof AppLiveRoute
+  '/_app/settings': typeof AppSettingsRoute
   '/_app/setup': typeof AppSetupRoute
   '/_app/tbm': typeof AppTbmRoute
   '/_app/work': typeof AppWorkRoute
@@ -128,6 +137,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/cctv'
     | '/live'
+    | '/settings'
     | '/setup'
     | '/tbm'
     | '/work'
@@ -140,6 +150,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/cctv'
     | '/live'
+    | '/settings'
     | '/setup'
     | '/tbm'
     | '/work'
@@ -153,6 +164,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/_app/cctv'
     | '/_app/live'
+    | '/_app/settings'
     | '/_app/setup'
     | '/_app/tbm'
     | '/_app/work'
@@ -212,6 +224,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppLiveRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/setup': {
       id: '/_app/setup'
       path: '/setup'
@@ -260,6 +279,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppCctvRoute: typeof AppCctvRoute
   AppLiveRoute: typeof AppLiveRoute
+  AppSettingsRoute: typeof AppSettingsRoute
   AppSetupRoute: typeof AppSetupRoute
   AppTbmRoute: typeof AppTbmRoute
   AppWorkRoute: typeof AppWorkRoute
@@ -271,6 +291,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppCctvRoute: AppCctvRoute,
   AppLiveRoute: AppLiveRoute,
+  AppSettingsRoute: AppSettingsRoute,
   AppSetupRoute: AppSetupRoute,
   AppTbmRoute: AppTbmRoute,
   AppWorkRoute: AppWorkRoute,

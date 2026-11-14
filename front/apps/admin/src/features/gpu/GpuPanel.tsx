@@ -14,7 +14,7 @@ export function GpuPanel({ onClose }: { onClose: () => void }) {
   const { status } = useGpuStatus();
   const on = isGpuOn(status);
   return (
-    <ModalDialog label="GPU" onClose={onClose} className="w-[min(640px,calc(100vw-32px))]">
+    <ModalDialog label="GPU" onClose={onClose} className="w-[min(760px,calc(100vw-32px))]">
       <div className="flex items-center justify-between border-b border-border px-5 py-3">
         <h2 className="text-base font-semibold">{on ? 'GPU' : 'GPU 켜기'}</h2>
       </div>

@@ -46,8 +46,10 @@ function renderTopBar() {
   };
 }
 
+const navigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
+  useNavigate: () => navigate,
 }));
 vi.mock('@/features/auth/useLogout', () => ({ useLogout: () => () => undefined }));
 
@@ -77,6 +79,7 @@ afterEach(() => {
   useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useRoomBoundsStore.setState(useRoomBoundsStore.getInitialState(), true);
+  navigate.mockReset();
 });
 
 describe('TopBar', () => {
@@ -105,7 +108,9 @@ describe('TopBar', () => {
     });
     const { container } = renderTopBar();
     expect(container.querySelector('header')!.textContent).not.toContain('판정 지연');
-    expect(screen.getByTestId('gpu-indicator').textContent).toBe('GPU 연결');
+    // 상단바 글은 「GPU」만, 상태는 화면 읽기 이름에(S15P31A101-705)
+    expect(screen.getByTestId('gpu-indicator').textContent).toBe('GPU');
+    expect(screen.getByTestId('gpu-indicator').getAttribute('aria-label')).toBe('GPU 연결');
 
     act(() => fireEvent.mouseEnter(screen.getByTestId('gpu-indicator')));
     const lag = screen.getByText('판정 지연 180 ms');
@@ -132,13 +137,13 @@ describe('TopBar', () => {
     expect(container.textContent).not.toContain('지연');
   });
 
-  it('GPU(Tier 0)가 꺼져 있으면(EC2 는 이어짐) 점은 「GPU 꺼짐」이고 판정 지연을 숨긴다(S15P31A101-704)', () => {
+  it('GPU(Tier 0)가 꺼져 있으면(EC2 는 이어짐) 점 상태는 「GPU 꺼짐」이고 판정 지연을 숨긴다(S15P31A101-704)', () => {
     seed({ tier0_link: 'DISCONNECTED' });
     // 끊기기 전 표본이 남아 있어도 보이지 않는다.
     useRealtimeStore.setState({ lagSamples: [{ at: T, lagMs: 140, cameras: {} }] });
     const { container } = renderTopBar();
     act(() => fireEvent.mouseEnter(screen.getByTestId('gpu-indicator')));
-    expect(screen.getByTestId('gpu-indicator').textContent).toBe('GPU 꺼짐');
+    expect(screen.getByTestId('gpu-indicator').getAttribute('aria-label')).toBe('GPU 꺼짐');
     expect(container.textContent).not.toContain('지연');
     expect(container.textContent).not.toContain('끊김');
 
@@ -147,20 +152,23 @@ describe('TopBar', () => {
     expect(screen.getByText('판정 지연 140 ms')).toBeTruthy();
   });
 
-  it('관리자 메뉴는 화이트·다크 모드와 로그아웃뿐이다(설치 · 보정은 작업 관리 단계 줄의 세팅으로 들어간다)', async () => {
+  it('계정 메뉴는 「설정」 진입과 로그아웃뿐이고 설정을 누르면 설정 페이지로 간다(S15P31A101-705)', async () => {
     seed();
     renderTopBar();
 
     act(() => fireEvent.click(screen.getByRole('button', { name: /—/ })));
-    const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
-    expect(items).toEqual(['화이트 모드', '로그아웃']);
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual(['설정', '로그아웃']);
+    act(() => fireEvent.click(items[0]!));
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings' });
   });
 
   it.each([
-    ['ADMIN', ['화이트 모드', 'GPU 설정', '로그아웃']],
-    ['FOREMAN', ['화이트 모드', '로그아웃']],
+    ['ADMIN', ['설정', '로그아웃']],
+    ['FOREMAN', ['설정', '로그아웃']],
+    ['VIEWER', ['설정', '로그아웃']],
   ] as const)(
-    '%s 메뉴에 규칙 기준 선택이 없고 GPU 설정은 관리자에게만 있다(-669, -702)',
+    '%s 메뉴에 규칙 기준 선택·화면 모드·GPU 설정이 없다(설정 페이지로 옮김, -669, -705)',
     async (role, expected) => {
       seed();
       signInAs(role);
