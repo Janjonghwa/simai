@@ -48,6 +48,10 @@ export const requestGpuLaunch = (http: Http, body: GpuLaunchBody): Promise<GpuLa
 export const requestGpuStop = (http: Http): Promise<unknown> =>
   http('/api/gpu/stop', { method: 'POST', schema: z.unknown() });
 
+/** 관리자 화면 조작 신호(S15P31A101-708). 서버는 마지막 시각만 메모리에 두고 Tier 0 연결 중 자동 정지의 사용으로 센다 */
+export const requestGpuPresence = (http: Http): Promise<unknown> =>
+  http('/api/gpu/presence', { method: 'POST', schema: z.unknown() });
+
 export const requestGpuSettings = (
   http: Http,
   signal?: AbortSignal,

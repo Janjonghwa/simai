@@ -2,6 +2,7 @@ import { GpuInfoLines } from '@/features/gpu/GpuInfoLines';
 import { GpuPanel } from '@/features/gpu/GpuPanel';
 import { DOT_LABEL, type GpuDot } from '@/features/gpu/gpuStatus';
 import { useGpuStatus } from '@/features/gpu/useGpu';
+import { useGpuPresence } from '@/features/gpu/useGpuPresence';
 import { cn } from '@simai/ui/lib/utils';
 import { useState } from 'react';
 
@@ -18,7 +19,9 @@ const DOT_COLOR: Record<GpuDot, string> = {
 };
 
 export function GpuIndicator() {
-  const { isAdmin, dot } = useGpuStatus();
+  const { isAdmin, status, dot } = useGpuStatus();
+  // 상단바는 관리자 화면마다 있으므로 여기서 조작 신호를 보낸다(GPU 가 켜져 있을 때만, -708)
+  useGpuPresence(isAdmin && status?.power !== undefined && status.power !== 'OFF');
   const [hover, setHover] = useState(false);
   const [open, setOpen] = useState(false);
   const label = DOT_LABEL[dot];

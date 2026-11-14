@@ -28,6 +28,7 @@ import tools.jackson.databind.node.ObjectNode;
  * GET  /api/gpu/offers     → {provider, gpu_types, regions, cells: [{gpu_type, region, stock, price_per_hour_usd, within_cap}], default}
  * POST /api/gpu/launches   {gpu_type?, region?} → 201 launch     둘 다 없으면 선호 순서 × 재고 × 가격 상한으로 고른다
  * POST /api/gpu/stop       → 204                                관제(LIVE)·세팅 중이면 409 GPU_STOP_BLOCKED_LIVE·_SETUP
+ * POST /api/gpu/presence   → 204                                관리자 화면 조작 신호(S15P31A101-708, 마지막 시각만 메모리에 둔다)
  * </pre>
  */
 @RestController
@@ -84,6 +85,12 @@ class GpuPowerController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void stop(@AuthenticationPrincipal Jwt jwt) {
         power.stop(userId(jwt));
+    }
+
+    @PostMapping("/api/gpu/presence")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void presence() {
+        power.presence();
     }
 
     private static String text(JsonNode body, String field) {

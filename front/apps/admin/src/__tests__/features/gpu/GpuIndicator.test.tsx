@@ -22,6 +22,7 @@ const A4000 = 'NVIDIA RTX A4000';
 let current: Record<string, unknown> | null = null;
 const posts: string[] = [];
 const launchBodies: unknown[] = [];
+let presences = 0;
 
 const offers = {
   provider: 'RUNPOD',
@@ -143,6 +144,10 @@ const server = setupServer(
     posts.push('stop');
     return new HttpResponse(null, { status: 204 });
   }),
+  http.post('*/api/gpu/presence', () => {
+    presences += 1;
+    return new HttpResponse(null, { status: 204 });
+  }),
 );
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
@@ -151,6 +156,8 @@ afterEach(() => {
   server.resetHandlers();
   posts.length = 0;
   launchBodies.length = 0;
+  presences = 0;
+  vi.restoreAllMocks();
   useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
 });
@@ -392,6 +399,40 @@ describe('GpuIndicator', () => {
     expect(posts).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '끄기' })));
     await waitFor(() => expect(posts).toEqual(['stop']));
+  });
+
+  it('GPU 가 켜져 있으면 화면 입력 뒤 1분에 한 번만 조작 신호를 보내고 화면이 안 보이면 보내지 않는다(-708)', async () => {
+    current = statusOf('CONNECTED', {
+      launch: launchView(),
+      session: sessionView('READY', 'CONNECTED'),
+    });
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('CONNECTED'));
+    const t0 = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    fireEvent.pointerDown(document.body);
+    fireEvent.keyDown(document.body, { key: 'a' });
+    await waitFor(() => expect(presences).toBe(1));
+    now.mockReturnValue(t0 + 59_000);
+    fireEvent.keyDown(document.body, { key: 'a' });
+    now.mockReturnValue(t0 + 61_000);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    fireEvent.pointerDown(document.body);
+    visibility.mockReturnValue('visible');
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(presences).toBe(2));
+  });
+
+  it('GPU 가 꺼져 있으면 조작 신호를 보내지 않는다(-708)', async () => {
+    current = statusOf('OFF');
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
+    fireEvent.pointerDown(document.body);
+    fireEvent.keyDown(document.body, { key: 'a' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(presences).toBe(0);
   });
 
   it('관리자가 아니면 상태를 묻지 않고 Tier 0 연결로만 점을 그리며 누를 수 없다(정보창에 상태는 보인다)', () => {
