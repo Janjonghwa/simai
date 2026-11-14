@@ -12,6 +12,7 @@ import numpy as np
 from simai_ai.hmr.appearance import AppearanceAccumulator, AppearanceConfig, AppearanceView
 from simai_ai.hmr.appearance_quality import CameraColors
 from simai_ai.hmr.appearance_report import save_result
+from simai_ai.hmr.diagnostics import is_upload_conflict
 from simai_ai.hmr.lbs import global_matrices, node_matrices, posed_rotations, skin_vertices
 from simai_ai.hmr.multiview import COCO17_INDEX
 from simai_ai.hmr.rotation import rotvec_to_matrix
@@ -211,9 +212,10 @@ class AppearancePipeline:
                            else max(state.version, state.high_version) + 1)
                 state.high_version = version
                 asset = copy.deepcopy(state.asset)
+                prev_version = max(state.history) if state.history else (version - 1 if version > 0 else None)
                 # 새 버전은 지금 트랙 차수로 적는다(순수 병합 뒤면 남는 ID 의 새 차수, S15P31A101-661)
                 asset.update(identity_revision=state.revision,
-                             appearance_version=version, previous_appearance_version=max(state.history),
+                             appearance_version=version, previous_appearance_version=prev_version,
                              created_at_ms=clock_ms(), calibration_version=frame.calibration_version,
                              input_provenance=copy.deepcopy(doc["input_provenance"]), face_policy=result.face_policy)
                 pending = (asset, result, t)
@@ -222,10 +224,21 @@ class AppearancePipeline:
             if not admit():
                 continue
             version = asset["appearance_version"]
-            texture_uri = upload.png(wid, sender.epoch, version, "albedo.png", result.albedo)
-            if not admit():
-                continue
-            mask_uri = upload.png(wid, sender.epoch, version, "surface_source.png", result.surface)
+            try:
+                texture_uri = upload.png(wid, sender.epoch, version, "albedo.png", result.albedo)
+                if not admit():
+                    continue
+                mask_uri = upload.png(wid, sender.epoch, version, "surface_source.png", result.surface)
+            except Exception as error:
+                if is_upload_conflict(error):
+                    next_version = (reserve_version(wid) if reserve_version is not None
+                                    else max(state.version, state.high_version, version) + 1)
+                    state.high_version = max(state.high_version, next_version)
+                    asset["appearance_version"] = next_version
+                    asset["previous_appearance_version"] = (
+                        max(state.history) if state.history else (next_version - 1 if next_version > 0 else None)
+                    )
+                raise
             if not admit():
                 continue
             asset["texture"] = {"object_uri": texture_uri, "sha256": result.albedo.sha256,

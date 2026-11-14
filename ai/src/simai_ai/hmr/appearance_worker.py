@@ -129,7 +129,7 @@ class AppearanceWorker:
                     with self.loop._state_lock:
                         if not self._valid(tokens):
                             raise RuntimeError("외형 요청의 신원이 바뀜")
-                        return self.loop._reserve_version(self.loop.people[wid])
+                        return self.loop._reserve_version(self.loop.people[wid], wid)
 
                 sender = SimpleNamespace(epoch=self.loop.sender.epoch, asset=assets.append)
                 self.loop._timed("appearance", self.pipeline.update, frame, doc, snapshot, images, rig, states,

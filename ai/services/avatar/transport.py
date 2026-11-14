@@ -52,7 +52,9 @@ class AvatarUpload:
             body["file_name"] = file_name
         response = self.http.post("/api/uploads/sign", body, 15)
         if response.status != 200 or not response.body:
-            raise ValueError(f"아바타 업로드 서명 실패 HTTP={response.status}")
+            error = ValueError(f"아바타 업로드 서명 실패 HTTP={response.status}")
+            error.status = response.status
+            raise error
         signed = response.body
         if urlsplit(signed["upload_url"]).scheme != "https" or signed.get("method") != "PUT":
             raise ValueError("아바타 업로드는 HTTPS PUT이어야 한다")
