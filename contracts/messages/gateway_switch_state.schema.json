@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/gateway_switch_state.schema.json",
+  "title": "현장 게이트웨이 자동 전환 상태 (gateway_switch_state)",
+  "description": "현장 게이트웨이(노트북) → EC2 `POST /api/devices/gpu-session/gateway-state`(기기 토큰, LAPTOP 만) → 204. 1.0.0 신설(S15P31A101-701). 게이트웨이 자동 전환(GPU 세션을 따라 관제 ↔ 미리보기)의 지금 판단과 전환 결과를 알린다. 판단이 바뀌거나 전환을 시도했을 때, 그리고 바뀌지 않아도 5분마다 보낸다(EC2 재배포 뒤 다시 채우려고). EC2 는 기기마다 마지막 상태만 메모리에 두고 서버 로그에 남기며 관리자 GPU 세션 조회(`GET /api/gpu/sessions/current`의 `gateway`)로 보여 준다. 판정·알림에는 쓰지 않는다(Tier 0 판정과 무관한 운영 표시). 비밀 값(기기 토큰 등)은 싣지 않는다. 공통 봉투를 쓰지 않는 기기 REST 본문이고 모든 객체가 닫힌 값 객체다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at_ms", "auto_enabled", "owner", "mode", "decision", "switch_ok", "reason_code", "session_id", "target"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "observed_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "게이트웨이 시계의 판단 시각" },
+    "auto_enabled": { "type": "boolean", "description": "자동 전환이 켜져 있는지(.env SIMAI_GATEWAY_AUTO_SWITCH=off 나 `auto off` 면 false)" },
+    "owner": {
+      "enum": ["AUTO", "MANUAL"],
+      "description": "지금 모드를 누가 정했나. MANUAL 이면 자동 전환은 그 뒤 새로 등록된 GPU 세션이 나올 때까지(또는 `auto on`) 모드를 바꾸지 않는다"
+    },
+    "mode": { "enum": ["RUN", "PREVIEW", "OFF"], "description": "판단 직후 게이트웨이 모드. RUN=관제(터널·경보 단말·중계 송신), PREVIEW=카메라 미리보기(전송 없음), OFF=꺼짐" },
+    "decision": {
+      "enum": ["NONE", "SWITCH_RUN", "SWITCH_PREVIEW"],
+      "description": "이번 판단. NONE 은 모드를 그대로 둔다"
+    },
+    "switch_ok": {
+      "type": ["boolean", "null"],
+      "description": "전환을 시도했으면 새 모드가 시작 기록을 남겼는지. NONE 이면 null"
+    },
+    "reason_code": {
+      "enum": [
+        "DISABLED",
+        "MANUAL_HOLD",
+        "BUSY",
+        "EC2_UNREACHABLE",
+        "AUTH_FAILED",
+        "INVALID_RESPONSE",
+        "NO_SESSION",
+        "SESSION_ENDED",
+        "WAITING_TIER0",
+        "ENDPOINT_MISSING",
+        "ENDPOINT_UNAVAILABLE",
+        "PIN_MISMATCH",
+        "PORTS_UNSUPPORTED",
+        "ENDPOINT_PORTS_MISMATCH",
+        "RUNNING",
+        "GRACE",
+        "READY",
+        "TIER0_LOST",
+        "MODE_OFF",
+        "BACKOFF"
+      ],
+      "description": "까닭. DISABLED 자동 전환 꺼짐, MANUAL_HOLD 수동 우선, BUSY 다른 전환·갱신 진행 중, EC2_UNREACHABLE·AUTH_FAILED·INVALID_RESPONSE 조회 실패(모르면 모드를 그대로 둔다), NO_SESSION 등록된 세션 없음, SESSION_ENDED 세션 끝남, WAITING_TIER0 세션은 열렸으나 Tier 0 가 아직 I1 에 붙지 않음, ENDPOINT_MISSING 엔드포인트 등록 없음(404), ENDPOINT_UNAVAILABLE 엔드포인트 조회 실패, PIN_MISMATCH Tier 0 TLS 지문이 고정 목록에 없음(전환하지 않음), PORTS_UNSUPPORTED 세션 주소·포트로 터널을 만들 수 없음(CONTROL 하나·VIDEO 한 포트가 아님), ENDPOINT_PORTS_MISMATCH 루프백 엔드포인트가 터널 포트(17000·17001)와 다름, RUNNING 같은 대상으로 이미 관제 중, GRACE 관제 대상이 잠시 안 보이지만 유예 시간 안, READY 새 세션 준비됨(관제로 전환), TIER0_LOST 같은 세션 Tier 0 가 유예 시간 넘게 끊김(미리보기로), MODE_OFF 자동 소유인데 꺼져 있음(미리보기로), BACKOFF 전환 실패가 잦아 잠시 멈춤"
+    },
+    "session_id": {
+      "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/uuid" }, { "type": "null" }],
+      "description": "판단에 쓴 가장 최근 GPU 세션. 모르면 null"
+    },
+    "target": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/target" }],
+      "description": "관제 대상(EC2 터널이 붙을 인스턴스 주소·포트). 관제 중이거나 관제로 전환할 때만, 아니면 null"
+    },
+    "tls_public_key_sha256": {
+      "$ref": "../common/defs.schema.json#/$defs/sha256",
+      "description": "PIN_MISMATCH 일 때 받은 지문(공개 값). 그 밖에는 싣지 않는다"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "NONE" } }, "required": ["decision"] },
+      "then": { "properties": { "switch_ok": { "type": "null" } } },
+      "else": { "properties": { "switch_ok": { "type": "boolean" } } }
+    }
+  ],
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_host", "control_port", "video_port"],
+      "properties": {
+        "public_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$"
+        },
+        "control_port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "인스턴스 CONTROL 바깥 포트(게이트웨이 127.0.0.1:17000 이 여기로)" },
+        "video_port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "인스턴스 VIDEO 바깥 포트(게이트웨이 127.0.0.1:17001 이 여기로)" }
+      }
+    }
+  }
+}

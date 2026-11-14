@@ -1,0 +1,13 @@
+{
+  "_expect_error": "정의되지 않은 까닭 코드",
+  "schema_version": "1.0.0",
+  "observed_at_ms": 1794657675000,
+  "auto_enabled": true,
+  "owner": "AUTO",
+  "mode": "PREVIEW",
+  "decision": "NONE",
+  "switch_ok": null,
+  "reason_code": "SOMETHING_ELSE",
+  "session_id": null,
+  "target": null
+}

@@ -221,3 +221,315 @@ Describe '종료 확인 없는 녹화 보호 (S15P31A101-693)' {
     Assert-MockCalled Finalize-RecordingManifest -Times 0 -Exactly
   }
 }
+
+
+
+Describe 'GPU 세션 자동 전환 순수 판정 (S15P31A101-701)' {
+  $pin = 'sha256:' + ('a' * 64)
+  $other = 'sha256:' + ('b' * 64)
+  $now = [long]1794657675000
+  function Sess([string]$State = 'ACTIVE', [string]$Link = 'CONNECTED', [long]$RegAt = 1794657000000, [string]$PodHost = '203.0.113.24', [int]$Ctrl = 40123, [int]$Video = 40124) {
+    [pscustomobject]@{ session_id = '6f1c2d4e-8a9b-4c0d-9e1f-2a3b4c5d6e7f'; state = $State; stage = 'READY'; public_host = $PodHost
+      ports = @([pscustomobject]@{ role = 'CONTROL'; public_port = $Ctrl }, [pscustomobject]@{ role = 'VIDEO'; public_port = $Video })
+      tls_public_key_sha256 = $null; registered_at_ms = $RegAt; tier0_link = $Link }
+  }
+  $tA = @{ Host = '203.0.113.24'; ControlPort = 40123; VideoPort = 40124 }
+  $tB = @{ Host = '198.51.100.7'; ControlPort = 41001; VideoPort = 41002 }
+
+  It '모드 파일에서 관제 대상을 읽는다(Do-Run 이 쓴 글)' {
+    $mi = Get-ModeInfo '관제 Pod 203.0.113.24 제어 40123 영상 40124, 원격 시청 켬, 녹화 C:\simai-local\recordings\live-1 (11-14 09:00)'
+    $mi.Mode | Should Be 'run'
+    (Test-SameTarget $mi.Target $tA) | Should Be $true
+    (Get-ModeInfo '미리보기(전송 없음), 원격 시청 켬 (11-14 09:00)').Mode | Should Be 'preview'
+    (Get-ModeInfo '').Mode | Should Be ''
+  }
+
+  It '세션 주소·포트를 터널 대상으로 바꾸고 SSH 는 무시, 명령줄에 넣지 못할 값은 거부한다' {
+    $t = ConvertTo-GpuTarget (Sess)
+    $t.Ok | Should Be $true
+    (Test-SameTarget $t.Target $tA) | Should Be $true
+    $s = Sess; $s.ports += [pscustomobject]@{ role = 'SSH'; public_port = 22113 }
+    (ConvertTo-GpuTarget $s).Ok | Should Be $true
+    (ConvertTo-GpuTarget (Sess -PodHost '1.2.3.4; calc')).Error | Should Be 'PORTS_UNSUPPORTED'
+    $two = Sess; $two.ports += [pscustomobject]@{ role = 'VIDEO'; public_port = 40125 }
+    (ConvertTo-GpuTarget $two).Ok | Should Be $false
+    $str = Sess; $str.ports[0].public_port = '40123 -NoRecord'
+    (ConvertTo-GpuTarget $str).Ok | Should Be $false
+  }
+
+  It '엔드포인트 지문이 고정 목록에 없으면 PIN_MISMATCH, 루프백 포트가 터널과 다르면 ENDPOINT_PORTS_MISMATCH' {
+    function Ep([string]$Fp, [string]$Ip = '127.0.0.1', [int]$Ctrl = 17000, [int]$Video = 17001) {
+      [pscustomobject]@{ msg_type = 'tier0_endpoint'; payload = [pscustomobject]@{ public_ip = $Ip; tls_public_key_sha256 = $Fp
+        ports = @([pscustomobject]@{ role = 'CONTROL'; public_port = $Ctrl }, [pscustomobject]@{ role = 'VIDEO'; camera_id = 'cam_A'; public_port = $Video },
+          [pscustomobject]@{ role = 'VIDEO'; camera_id = 'cam_B'; public_port = $Video }) } }
+    }
+    (Get-EndpointCheck (Ep $pin) @($pin)).Ok | Should Be $true
+    $bad = Get-EndpointCheck (Ep $other) @($pin)
+    $bad.Reason | Should Be 'PIN_MISMATCH'
+    $bad.Fingerprint | Should Be $other
+    (Get-EndpointCheck (Ep $pin) @()).Reason | Should Be 'PIN_MISMATCH'
+    (Get-EndpointCheck (Ep $pin) @($pin) $other).Reason | Should Be 'PIN_MISMATCH'
+    (Get-EndpointCheck (Ep $pin -Ctrl 17002) @($pin)).Reason | Should Be 'ENDPOINT_PORTS_MISMATCH'
+    (Get-EndpointCheck (Ep $pin -Ip '203.0.113.24' -Ctrl 40123 -Video 40124) @($pin)).Ok | Should Be $true
+    (Get-PinnedFingerprints " $pin , sha256:short,$($other.ToUpper())").Count | Should Be 2
+  }
+
+  It '미리보기에서 세션이 준비되면 관제로, Tier 0 가 아직이면 기다린다' {
+    $p = Get-AutoSwitchPlan -Mode 'preview' -Session (Sess) -Target $tA -NowMs $now
+    $p.Action | Should Be 'run'
+    $p.Reason | Should Be 'READY'
+    (Test-SameTarget $p.Target $tA) | Should Be $true
+    $w = Get-AutoSwitchPlan -Mode 'preview' -Session (Sess -Link 'DISCONNECTED') -Target $tA -NowMs $now
+    $w.Action | Should Be 'none'
+    $w.Reason | Should Be 'WAITING_TIER0'
+  }
+
+  It '같은 대상으로 이미 관제 중이면 다시 전환하지 않는다(새 세션이 같은 주소로 다시 등록해도)' {
+    $p = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session (Sess) -Target $tA -NowMs $now -LastGoodAtMs ($now - 600000)
+    $p.Action | Should Be 'none'
+    $p.Reason | Should Be 'RUNNING'
+    $p.LastGoodAtMs | Should Be $now
+  }
+
+  It '짧은 끊김(Tier 0 재시작·EC2 재배포 2분)에는 되돌리지 않고 유예가 지나면 미리보기로' {
+    $g = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session (Sess -Link 'DISCONNECTED') -Target $tA -NowMs $now -LastGoodAtMs ($now - 120000)
+    $g.Action | Should Be 'none'
+    $g.Reason | Should Be 'GRACE'
+    $l = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session (Sess -Link 'DISCONNECTED') -Target $tA -NowMs $now -LastGoodAtMs ($now - 301000)
+    $l.Action | Should Be 'preview'
+    $l.Reason | Should Be 'TIER0_LOST'
+    $e = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session (Sess -State 'ENDED' -Link 'DISCONNECTED') -NowMs $now -LastGoodAtMs ($now - 120000)
+    $e.Reason | Should Be 'GRACE'
+    $e2 = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session (Sess -State 'ENDED' -Link 'DISCONNECTED') -NowMs $now -LastGoodAtMs ($now - 400000)
+    $e2.Action | Should Be 'preview'
+    $e2.Reason | Should Be 'SESSION_ENDED'
+    (Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -Session $null -NowMs $now -LastGoodAtMs ($now - 400000)).Reason | Should Be 'NO_SESSION'
+  }
+
+  It 'EC2 조회가 실패하면(모름) 유예가 지나도 모드를 그대로 둔다' {
+    $p = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tA -FetchError 'EC2_UNREACHABLE' -NowMs $now -LastGoodAtMs ($now - 3600000)
+    $p.Action | Should Be 'none'
+    $p.Reason | Should Be 'EC2_UNREACHABLE'
+    $p.LastGoodAtMs | Should Be ($now - 3600000)
+  }
+
+  It '다른 세션이 준비되면 바로 새 대상으로 관제를 옮긴다' {
+    $p = Get-AutoSwitchPlan -Mode 'run' -CurrentTarget $tB -Session (Sess) -Target $tA -NowMs $now -LastGoodAtMs ($now - 1000)
+    $p.Action | Should Be 'run'
+    (Test-SameTarget $p.Target $tA) | Should Be $true
+  }
+
+  It '수동 명령이 우선한다: 그 뒤 등록된 세션이 나와야 자동 전환이 다시 움직인다' {
+    $hold = Get-AutoSwitchPlan -Owner 'manual' -ManualAtMs ($now - 1000) -Mode 'run' -CurrentTarget $tB -Session (Sess -RegAt ($now - 60000)) -Target $tA -NowMs $now
+    $hold.Action | Should Be 'none'
+    $hold.Reason | Should Be 'MANUAL_HOLD'
+    $offHold = Get-AutoSwitchPlan -Owner 'manual' -ManualAtMs ($now - 1000) -Mode '' -Session $null -NowMs $now
+    $offHold.Reason | Should Be 'MANUAL_HOLD'
+    $rel = Get-AutoSwitchPlan -Owner 'manual' -ManualAtMs ($now - 120000) -Mode 'preview' -Session (Sess -RegAt ($now - 60000)) -Target $tA -NowMs $now
+    $rel.ReleaseManual | Should Be $true
+    $rel.Action | Should Be 'run'
+  }
+
+  It '지문이 맞지 않으면 전환하지 않고 까닭을 남긴다' {
+    $p = Get-AutoSwitchPlan -Mode 'preview' -Session (Sess) -Target $tA -EndpointReason 'PIN_MISMATCH' -EndpointDetail '엔드포인트 지문이 고정 목록에 없다' -NowMs $now
+    $p.Action | Should Be 'none'
+    $p.Reason | Should Be 'PIN_MISMATCH'
+    $p.Detail | Should Be '엔드포인트 지문이 고정 목록에 없다'
+  }
+
+  It '꺼짐·바쁨·전환 실패 반복은 움직이지 않고, 자동 주인인데 꺼져 있으면 미리보기를 띄운다' {
+    (Get-AutoSwitchPlan -Enabled $false -Mode 'preview' -Session (Sess) -Target $tA -NowMs $now).Reason | Should Be 'DISABLED'
+    (Get-AutoSwitchPlan -Busy $true -Mode 'preview' -Session (Sess) -Target $tA -NowMs $now).Reason | Should Be 'BUSY'
+    (Get-AutoSwitchPlan -Mode 'preview' -Session (Sess) -Target $tA -NowMs $now -RecentFailures 3).Reason | Should Be 'BACKOFF'
+    $off = Get-AutoSwitchPlan -Mode '' -Session $null -NowMs $now
+    $off.Action | Should Be 'preview'
+    $off.Reason | Should Be 'MODE_OFF'
+  }
+
+  It 'heal 은 자동 전환 작업자가 없으면 등록하고 멈춰 있으면 시작한다' {
+    (Get-HealPlan -AutoTaskState 'Missing') -join ',' | Should Be 'register-auto-task'
+    (Get-HealPlan -AutoTaskState 'Ready') -join ',' | Should Be 'start-auto-task'
+    (Get-HealPlan -AutoTaskState 'Running').Count | Should Be 0
+  }
+
+  It 'EC2 에 보내는 전환 상태는 계약 모양이고 PIN_MISMATCH 때만 지문을 싣는다' {
+    $plan = @{ Action = 'none'; Reason = 'PIN_MISMATCH'; Target = $null }
+    $obs = @{ Session = (Sess); Fingerprint = $other }
+    $r = ConvertTo-AutoReport -Plan $plan -Obs $obs -Enabled $true -Owner 'auto' -ModeAfter 'preview' -SwitchOk $null -NowMs $now
+    $r.decision | Should Be 'NONE'
+    ($null -eq $r.switch_ok) | Should Be $true
+    $r.mode | Should Be 'PREVIEW'
+    $r.tls_public_key_sha256 | Should Be $other
+    $r2 = ConvertTo-AutoReport -Plan @{ Action = 'run'; Reason = 'READY'; Target = $tA } -Obs $obs -Enabled $true -Owner 'auto' -ModeAfter 'run' -SwitchOk $true -NowMs $now
+    $r2.decision | Should Be 'SWITCH_RUN'
+    $r2.switch_ok | Should Be $true
+    $r2.target.control_port | Should Be 40123
+    $r2.Contains('tls_public_key_sha256') | Should Be $false
+  }
+}
+
+Describe 'GPU 세션 자동 전환 한 번 돌리기(가짜 EC2 응답, S15P31A101-701)' {
+  $pin = 'sha256:' + ('a' * 64)
+  $LocalDir = Join-Path $TestDrive 'local'
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  $ModeFile = Join-Path $LocalDir 'gateway-mode.txt'
+  $AutoStateFile = Join-Path $LocalDir 'gateway-auto.json'
+  $AutoOffFile = Join-Path $LocalDir 'gateway-auto-off.txt'
+  $OwnerFile = Join-Path $LocalDir 'gateway-mode-owner.json'
+  $AutoLog = Join-Path $LocalDir 'gateway-auto.log'
+  $runText = '관제 Pod 203.0.113.24 제어 40123 영상 40124, 원격 시청 켬, 녹화 C:\simai-local\recordings\live-1 (11-14 09:00)'
+  $previewText = '미리보기(전송 없음), 원격 시청 켬 (11-14 09:00)'
+  $Bom = New-Object System.Text.UTF8Encoding $true
+  function Reset([string]$Mode, [string]$Owner = 'auto', [long]$OwnerAt = 1) {
+    Remove-Item (Join-Path $LocalDir '*') -Force -ErrorAction SilentlyContinue
+    if ($Mode) { [IO.File]::WriteAllText($ModeFile, $Mode, $Bom) }
+    [IO.File]::WriteAllText($OwnerFile, ('{"owner":"' + $Owner + '","at_ms":' + $OwnerAt + ',"command":"test"}'), $Utf8)
+  }
+  function SessionJson([string]$State = 'ACTIVE', [string]$Link = 'CONNECTED', [long]$RegAt = 1794657000000) {
+    $ended = if ($State -eq 'ENDED') { '1794661200000' } else { 'null' }
+    $reason = if ($State -eq 'ENDED') { '"END_REPORTED"' } else { 'null' }
+    ('{"schema_version":"1.0.0","server_time_ms":1794657660000,"session":{"session_id":"6f1c2d4e-8a9b-4c0d-9e1f-2a3b4c5d6e7f","state":"' + $State +
+      '","stage":"READY","public_host":"203.0.113.24","ports":[{"role":"CONTROL","public_port":40123,"requested_port":17000},{"role":"VIDEO","public_port":40124}],' +
+      '"tls_public_key_sha256":null,"registered_at_ms":' + $RegAt + ',"last_report_at_ms":1794657600000,"ended_at_ms":' + $ended + ',"end_reason":' + $reason +
+      ',"tier0_link":"' + $Link + '"}}') | ConvertFrom-Json
+  }
+  function EndpointJson([string]$Fp) {
+    ('{"schema_version":"1.0.0","msg_type":"tier0_endpoint","msg_id":"0190c3f0-0000-7000-8000-000000000001","sent_at":1,"source_id":"tier0-lobby-s9",' +
+      '"payload":{"gateway_id":"tier0-lobby-s9","public_ip":"127.0.0.1","ports":[{"role":"CONTROL","requested_port":70000,"public_port":17000},' +
+      '{"role":"VIDEO","camera_id":"cam_A","requested_port":70001,"public_port":17001}],"tls_public_key_sha256":"' + $Fp + '","registered_at":1}}') | ConvertFrom-Json
+  }
+
+  Mock Get-EnvValue { if ($Name -eq 'SIMAI_TIER0_PINNED_SPKI_SHA256') { return $pin } return '' }
+  Mock Test-SwitchBusy { $false }
+  Mock Write-Host { }
+
+  Context '세션이 준비되면 관제로 전환하고 상태·EC2 에 남긴다' {
+    It '세션이 준비되면 관제로 전환하고 상태·EC2 에 남긴다' {
+      Reset $previewText
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (SessionJson); Error = '' } } -ParameterFilter { $Path -eq '/api/devices/gpu-session' }
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (EndpointJson $pin); Error = '' } } -ParameterFilter { $Path -eq '/api/endpoints/tier0' }
+      Mock Invoke-DeviceRequest { @{ Status = 204; Json = $null; Error = '' } } -ParameterFilter { $Method -eq 'POST' }
+      Mock Start-AutoMode { [IO.File]::WriteAllText($ModeFile, $runText, $Bom) }
+      $p = Invoke-AutoSwitchCycle
+      $p.Reason | Should Be 'READY'
+      Assert-MockCalled Start-AutoMode -Times 1 -Exactly -ParameterFilter { $ModeArgs -eq 'run -PodIp 203.0.113.24 -ControlPort 40123 -VideoPort 40124 -Auto' }
+      Assert-MockCalled Invoke-DeviceRequest -Times 1 -Exactly -ParameterFilter { ($Method -eq 'POST') -and ($Body -match '"decision":"SWITCH_RUN"') -and ($Body -match '"switch_ok":true') }
+      $st = Get-Content $AutoStateFile -Raw | ConvertFrom-Json
+      $st.last.reason | Should Be 'READY'
+      $st.last_switch.ok | Should Be $true
+      ($st.last_good_at_ms -gt 0) | Should Be $true
+
+      # 다음 판단: 같은 대상으로 관제 중이니 다시 전환하지 않는다
+      $p2 = Invoke-AutoSwitchCycle
+      $p2.Reason | Should Be 'RUNNING'
+      Assert-MockCalled Start-AutoMode -Times 1 -Exactly
+    }
+  }
+
+  Context '세션이 끝나도 유예 안에서는 그대로, 유예가 지나면 미리보기로 되돌린다' {
+    It '세션이 끝나도 유예 안에서는 그대로, 유예가 지나면 미리보기로 되돌린다' {
+      Reset $runText
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (SessionJson -State 'ENDED' -Link 'DISCONNECTED'); Error = '' } } -ParameterFilter { $Path -eq '/api/devices/gpu-session' }
+      Mock Invoke-DeviceRequest { @{ Status = 204; Json = $null; Error = '' } } -ParameterFilter { $Method -eq 'POST' }
+      Mock Start-AutoMode { [IO.File]::WriteAllText($ModeFile, $previewText, $Bom) }
+      [IO.File]::WriteAllText($AutoStateFile, ('{"last_good_at_ms":' + ((Get-NowMs) - 60000) + ',"failures":[]}'), $Utf8)
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'GRACE'
+      Assert-MockCalled Start-AutoMode -Times 0 -Exactly
+      [IO.File]::WriteAllText($AutoStateFile, ('{"last_good_at_ms":' + ((Get-NowMs) - 301000) + ',"failures":[]}'), $Utf8)
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'SESSION_ENDED'
+      Assert-MockCalled Start-AutoMode -Times 1 -Exactly -ParameterFilter { $ModeArgs -eq 'preview -Auto' }
+    }
+  }
+
+  Context 'EC2 가 응답하지 않으면(재배포) 오래 관제 대상을 못 봤어도 그대로 둔다' {
+    It 'EC2 가 응답하지 않으면(재배포) 오래 관제 대상을 못 봤어도 그대로 둔다' {
+      Reset $runText
+      Mock Invoke-DeviceRequest { @{ Status = 0; Json = $null; Error = 'WebException' } }
+      Mock Start-AutoMode { }
+      [IO.File]::WriteAllText($AutoStateFile, ('{"last_good_at_ms":' + ((Get-NowMs) - 3600000) + ',"failures":[]}'), $Utf8)
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'EC2_UNREACHABLE'
+      Assert-MockCalled Start-AutoMode -Times 0 -Exactly
+    }
+  }
+
+  Context '지문이 맞지 않으면 전환하지 않고 상태에 사유를 남긴다' {
+    It '지문이 맞지 않으면 전환하지 않고 상태에 사유를 남긴다' {
+      Reset $previewText
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (SessionJson); Error = '' } } -ParameterFilter { $Path -eq '/api/devices/gpu-session' }
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (EndpointJson ('sha256:' + ('c' * 64))); Error = '' } } -ParameterFilter { $Path -eq '/api/endpoints/tier0' }
+      Mock Invoke-DeviceRequest { @{ Status = 204; Json = $null; Error = '' } } -ParameterFilter { $Method -eq 'POST' }
+      Mock Start-AutoMode { }
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'PIN_MISMATCH'
+      Assert-MockCalled Start-AutoMode -Times 0 -Exactly
+      Assert-MockCalled Invoke-DeviceRequest -Times 1 -Exactly -ParameterFilter { ($Method -eq 'POST') -and ($Body -match '"reason_code":"PIN_MISMATCH"') -and ($Body -match 'cccccccc') }
+      (Get-Content $AutoStateFile -Raw -Encoding UTF8 | ConvertFrom-Json).last.detail | Should Match '고정 목록에 없다'
+    }
+  }
+
+  Context '수동으로 켠 관제는 새 세션이 그 전에 등록된 것이면 덮어쓰지 않는다' {
+    It '수동으로 켠 관제는 새 세션이 그 전에 등록된 것이면 덮어쓰지 않는다' {
+      Reset ('관제 Pod 198.51.100.7 제어 41001 영상 41002, 원격 시청 켬, 녹화 C:\x (11-14 09:00)') 'manual' (Get-NowMs)
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (SessionJson -RegAt ((Get-NowMs) - 60000)); Error = '' } } -ParameterFilter { $Path -eq '/api/devices/gpu-session' }
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (EndpointJson $pin); Error = '' } } -ParameterFilter { $Path -eq '/api/endpoints/tier0' }
+      Mock Invoke-DeviceRequest { @{ Status = 204; Json = $null; Error = '' } } -ParameterFilter { $Method -eq 'POST' }
+      Mock Start-AutoMode { }
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'MANUAL_HOLD'
+      Assert-MockCalled Start-AutoMode -Times 0 -Exactly
+      (Get-ModeOwner).Owner | Should Be 'manual'
+    }
+  }
+
+  Context '전환이 시작 기록을 남기지 못하면 실패를 세고 30분에 3번이면 멈춘다' {
+    It '전환이 시작 기록을 남기지 못하면 실패를 세고 30분에 3번이면 멈춘다' {
+      Reset $previewText
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (SessionJson); Error = '' } } -ParameterFilter { $Path -eq '/api/devices/gpu-session' }
+      Mock Invoke-DeviceRequest { @{ Status = 200; Json = (EndpointJson $pin); Error = '' } } -ParameterFilter { $Path -eq '/api/endpoints/tier0' }
+      Mock Invoke-DeviceRequest { @{ Status = 204; Json = $null; Error = '' } } -ParameterFilter { $Method -eq 'POST' }
+      Mock Start-AutoMode { }
+      Mock Wait-ModeApplied { $false }
+      1..3 | ForEach-Object { (Invoke-AutoSwitchCycle).Reason | Should Be 'READY' }
+      (Invoke-AutoSwitchCycle).Reason | Should Be 'BACKOFF'
+      Assert-MockCalled Start-AutoMode -Times 3 -Exactly
+      @((Get-Content $AutoStateFile -Raw | ConvertFrom-Json).failures).Count | Should Be 3
+    }
+  }
+
+  Context '사람이 친 run·preview·stop 은 주인을 manual 로, -Auto 는 auto 로, -KeepOwner 는 그대로 둔다' {
+    It '사람이 친 run·preview·stop 은 주인을 manual 로, -Auto 는 auto 로, -KeepOwner 는 그대로 둔다' {
+      Reset $previewText 'auto' 1
+      Set-OwnerForCommand 'stop'
+      (Get-ModeOwner).Owner | Should Be 'manual'
+      $Auto = $true
+      Set-OwnerForCommand 'run'
+      (Get-ModeOwner).Owner | Should Be 'auto'
+      $Auto = $false; $KeepOwner = $true
+      Set-OwnerForCommand 'run'
+      (Get-ModeOwner).Owner | Should Be 'auto'
+    }
+  }
+
+  Context '이 기능 전부터 켜 둔 관제는 수동으로, 미리보기는 자동으로 넘겨받는다' {
+    It '이 기능 전부터 켜 둔 관제는 수동으로, 미리보기는 자동으로 넘겨받는다' {
+      Remove-Item (Join-Path $LocalDir '*') -Force -ErrorAction SilentlyContinue
+      [IO.File]::WriteAllText($ModeFile, $runText, $Bom)
+      Mock Invoke-DeviceRequest { @{ Status = 0; Json = $null; Error = 'x' } }
+      [void](Invoke-AutoSwitchCycle)
+      (Get-ModeOwner).Owner | Should Be 'manual'
+      Remove-Item (Join-Path $LocalDir '*') -Force -ErrorAction SilentlyContinue
+      [IO.File]::WriteAllText($ModeFile, $previewText, $Bom)
+      [void](Invoke-AutoSwitchCycle)
+      (Get-ModeOwner).Owner | Should Be 'auto'
+    }
+  }
+
+  Context 'heal·갱신이 되살리는 명령은 모드 주인을 바꾸지 않는다(-KeepOwner)' {
+    It 'heal·갱신이 되살리는 명령은 모드 주인을 바꾸지 않는다(-KeepOwner)' {
+      $StateFile = Join-Path $LocalDir 'gateway-pod.json'
+      [IO.File]::WriteAllText($StateFile, '{"PodIp":"203.0.113.24","ControlPort":40123,"VideoPort":40124}', $Utf8)
+      [IO.File]::WriteAllText($ModeFile, $runText, $Bom)
+      (Get-ResumeMode).Args | Should Be 'run -PodIp 203.0.113.24 -ControlPort 40123 -VideoPort 40124 -KeepOwner'
+      [IO.File]::WriteAllText($ModeFile, $previewText, $Bom)
+      (Get-ResumeMode).Args | Should Be 'preview -KeepOwner'
+    }
+  }
+}

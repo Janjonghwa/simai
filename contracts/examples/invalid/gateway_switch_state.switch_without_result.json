@@ -1,0 +1,13 @@
+{
+  "_expect_error": "전환을 시도했으면 switch_ok 가 참·거짓이어야 한다",
+  "schema_version": "1.0.0",
+  "observed_at_ms": 1794657675000,
+  "auto_enabled": true,
+  "owner": "AUTO",
+  "mode": "PREVIEW",
+  "decision": "SWITCH_PREVIEW",
+  "switch_ok": null,
+  "reason_code": "SESSION_ENDED",
+  "session_id": null,
+  "target": null
+}

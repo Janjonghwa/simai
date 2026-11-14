@@ -16,12 +16,14 @@ show_help() {
   status                                  게이트웨이 전체 상태(모드·창·녹화·sshd·역터널·카메라·커밋·디스크·절전·heal 로그)
   live <PodIP> <17000 매핑> <17001 매핑> [--no-record] [--no-remote-cctv]
                                           관제 시작(run-remote: 터널·경보 단말·영상 중계·동시 녹화 및 카메라 헬퍼) 후 status
+                                          (live·preview·stop 은 수동 명령이라 자동 전환이 새 GPU 세션 등록 전까지 덮어쓰지 않는다)
   preview                                 카메라 미리보기와 헬퍼(preview-remote: Tier 0 전송 없음) 후 status
   stop [--no-upload]                      관제·미리보기 끄기 후 status. 관제를 끄면 그날 작업 구간 녹화를 S3 로 백그라운드 업로드(-668)
   upload                                  녹화 작업 구간 업로드를 지금 백그라운드로 시작(upload-recordings) 후 status
   update                                  원격 갱신(update-remote: git pull --ff-only + uv sync 후 이전 모드 복원)
   heal                                    자가 복구 즉시 실행(sshd·역터널·절전·미리보기 점검·복구) 후 status
-  logs <relay|helper|tunnel|update|heal|upload> [N]  지정한 로그의 마지막 N줄 출력(기본 40줄)
+  logs <relay|helper|tunnel|update|heal|upload|auto> [N]  지정한 로그의 마지막 N줄 출력(기본 40줄)
+  auto [status|on|off|once]               GPU 세션 자동 전환(-701) 상태·켜기(수동 우선도 풂)·끄기(지금 모드 그대로)·한 번 판단 후 status
   restart-tunnel                          역터널 재시작(EC2 옛 포트 정리 free-ports.sh + 예약 작업 재시작) 후 status
   ssh                                     게이트웨이 대화형 SSH 셸 접속
   help                                    이 도움말 출력 (인자 없이 실행해도 출력)
@@ -146,13 +148,22 @@ case "$cmd" in
     gw status
     ;;
   logs)
-    [ $# -ge 2 ] || { echo "사용: gw.sh logs <relay|helper|tunnel|update|heal|upload> [줄수(기본 40)]" >&2; exit 2; }
+    [ $# -ge 2 ] || { echo "사용: gw.sh logs <relay|helper|tunnel|update|heal|upload|auto> [줄수(기본 40)]" >&2; exit 2; }
     lines="${3:-40}"
     gw logs "$2" -Lines "$lines"
     ;;
   restart-tunnel)
     gw restart-tunnel
     gw status
+    ;;
+  auto)
+    sub="${2:-status}"
+    case "$sub" in
+      status|on|off|once) ;;
+      *) echo "사용: gw.sh auto [status|on|off|once]" >&2; exit 2 ;;
+    esac
+    gw auto "$sub"
+    [ "$sub" = "status" ] || gw status
     ;;
   upload)
     gw upload-recordings

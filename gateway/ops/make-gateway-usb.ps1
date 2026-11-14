@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $RepoEnv) { $RepoEnv = Join-Path $PSScriptRoot '..\..\.env' }
 $RepoEnv = (Resolve-Path $RepoEnv).Path
-$pattern = '^\s*(RTSP_[A-Za-z0-9_]+|SIMAI_EC2_BASE_URL|SIMAI_DEVICE_TOKEN|SIMAI_TIER0_PINNED_SPKI_SHA256|SIMAI_TIER0_CONTROL_PATH|SIMAI_LAPTOP_ID|SIMAI_RELAY_STATUS_PORT)\s*='
+$pattern = '^\s*(RTSP_[A-Za-z0-9_]+|SIMAI_EC2_BASE_URL|SIMAI_DEVICE_TOKEN|SIMAI_TIER0_PINNED_SPKI_SHA256|SIMAI_TIER0_CONTROL_PATH|SIMAI_LAPTOP_ID|SIMAI_RELAY_STATUS_PORT|SIMAI_GATEWAY_AUTO_SWITCH|SIMAI_GATEWAY_AUTO_REVERT_SECONDS)\s*='
 $lines = @()
 foreach ($line in [IO.File]::ReadAllLines($RepoEnv)) { if ($line -match $pattern) { $lines += $line } }
 $names = $lines | ForEach-Object { ($_ -split '=', 2)[0].Trim() }

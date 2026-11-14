@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "observed_at_ms": 1794657675000,
+  "auto_enabled": true,
+  "owner": "AUTO",
+  "mode": "RUN",
+  "decision": "SWITCH_RUN",
+  "switch_ok": true,
+  "reason_code": "READY",
+  "session_id": "6f1c2d4e-8a9b-4c0d-9e1f-2a3b4c5d6e7f",
+  "target": { "public_host": "203.0.113.24", "control_port": 40123, "video_port": 40124 }
+}

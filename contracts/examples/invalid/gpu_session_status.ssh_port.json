@@ -1,0 +1,18 @@
+{
+  "_expect_error": "SSH 포트는 싣지 않는다(CONTROL·VIDEO 만)",
+  "schema_version": "1.0.0",
+  "server_time_ms": 1794657660000,
+  "session": {
+    "session_id": "6f1c2d4e-8a9b-4c0d-9e1f-2a3b4c5d6e7f",
+    "state": "ACTIVE",
+    "stage": "TIER0",
+    "public_host": "203.0.113.24",
+    "ports": [{ "role": "CONTROL", "public_port": 40123 }, { "role": "SSH", "public_port": 22113 }],
+    "tls_public_key_sha256": null,
+    "registered_at_ms": 1794657000000,
+    "last_report_at_ms": 1794657600000,
+    "ended_at_ms": null,
+    "end_reason": null,
+    "tier0_link": "DISCONNECTED"
+  }
+}

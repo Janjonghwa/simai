@@ -796,7 +796,10 @@ public sealed interface ErrorCode {
         // 부팅 비밀값이 등록 도중 폐기됐다(관리 명령과 겹침)
         GPU_BOOT_REVOKED(HttpStatus.UNAUTHORIZED, "폐기된 부팅 비밀값입니다"),
         // EC2 공개 주소(SIMAI_PUBLIC_BASE_URL)가 https 로 설정되지 않아 기동 설정을 줄 수 없다. 토큰은 발급하지 않는다
-        EC2_BASE_URL_MISSING(HttpStatus.SERVICE_UNAVAILABLE, "EC2 공개 주소가 설정되지 않아 GPU 세션을 등록할 수 없습니다");
+        EC2_BASE_URL_MISSING(HttpStatus.SERVICE_UNAVAILABLE, "EC2 공개 주소가 설정되지 않아 GPU 세션을 등록할 수 없습니다"),
+        // 게이트웨이 자동 전환(S15P31A101-701): 세션 주소는 현장 노트북만 본다(워치 토큰은 403)
+        GPU_NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "현장 노트북(LAPTOP)으로 등록된 기기만 GPU 세션 상태를 보고 전환 상태를 알릴 수 있습니다"),
+        INVALID_GATEWAY_STATE(HttpStatus.BAD_REQUEST, "게이트웨이 전환 상태가 계약(messages/gateway_switch_state 1.x)에 맞지 않습니다");
 
         private final HttpStatus status;
         private final String message;
