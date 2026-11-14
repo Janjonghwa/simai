@@ -127,12 +127,13 @@ public class SetupService {
     private final SceneCompatibility compatibility;
     private final WorkUnitRepository workUnits;
     private final SetupZoneOpinions opinions;
+    private final SetupReuseCheck reuseCheck;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
             SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits,
-            SetupZoneOpinions opinions) {
+            SetupZoneOpinions opinions, SetupReuseCheck reuseCheck) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -149,6 +150,7 @@ public class SetupService {
         this.compatibility = compatibility;
         this.workUnits = workUnits;
         this.opinions = opinions;
+        this.reuseCheck = reuseCheck;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -432,13 +434,26 @@ public class SetupService {
 
     /** 실패한 세팅 세션을 재시도해 새 세션을 만든다(새 카메라 높이가 있으면 기본값과 함께 갱신). */
     public ObjectNode retry(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId) {
+        return retry(setupSessionId, cameraHeightsM, userId, null);
+    }
+
+    /**
+     * 실패(취소 포함)한 세팅 세션을 다시 시도해 새 세션을 만든다. {@code mode}(REST NEW | REUSE)를 주면 그 방식으로, 없으면 처음 요청한
+     * 방식 그대로다(-614). 새 시도의 방식은 새 세션의 requested_mode 로 저장된다(S15P31A101-689: 실패·취소 뒤에도 방식을 다시 고른다).
+     */
+    public ObjectNode retry(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId, String mode) {
         String siteId = sites.siteId();
         SessionRow existing = findForUpdateOrView(siteId, setupSessionId, false);
         if (!"FAILED".equals(existing.status())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_RETRY_NOT_ALLOWED);
         }
-        // 재시도는 처음 요청한 모드 그대로(-614)
-        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId, existing.requestedMode());
+        String requested = mode == null ? existing.requestedMode() : SetupReuseMode.parseRequested(mode);
+        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId, requested);
+    }
+
+    /** 「이전 맵 재사용」을 지금 고를 수 있는지와 그 이유(S15P31A101-689, GET /api/setup-sessions/reuse-check) */
+    public ObjectNode reuseCheck() {
+        return reuseCheck.toJson(reuseCheck.check(sites.siteId()));
     }
 
     /**
@@ -832,7 +847,8 @@ public class SetupService {
 
         boolean readyOrLater = READY_OR_LATER_STAGES.contains(stage);
         // 새 모델 / 이전 모델 재사용(-614). 재사용은 미리보기·정식 Scene·구역 초안이 없다(현재 관제 맵을 그대로 쓴다)
-        SetupReuseMode.Applied mode = SetupReuseMode.read(mapper, session.requestedMode(), session.mode(), sameLease, snapshot);
+        SetupReuseMode.Applied mode = SetupReuseMode.read(mapper, session.requestedMode(), session.mode(), sameLease,
+                readyOrLater, snapshot);
         String calibrationVersion = optionalText(snapshot, "calibration_version", session.calibrationVersion());
         String previewSceneVersion = optionalText(snapshot, "preview_scene_version", session.previewSceneVersion());
         String sceneVersion = optionalText(snapshot, "scene_version", session.sceneVersion());
@@ -1592,22 +1608,18 @@ public class SetupService {
     /**
      * 이전 모델 재사용(-614)은 현재 관제 맵(현장당 하나)과 그 보정이 있어야 한다. 현재 맵이 Tier 0 의 지금 보정과 다른 World 로 판정되면
      * 새 보정을 그 World 에 맞춰도 맵과 어긋나므로 막는다(판정을 모르면 막지 않는다. 워커의 World 다시 맞추기가 다시 확인한다).
+     * 직전 보정과 달라진 카메라가 확인되면(Tier 0 회전 감시·직전 재사용 거부) 막는다(S15P31A101-689, 화면 선택과 같은 판단).
      */
     private void requireReusableScene(String siteId) {
-        List<String[]> current = jdbc.query("SELECT s.scene_version, s.calibration_version FROM ("
-                + SceneService.CURRENT_COMMITTED + """
-                ) s JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
-                WHERE s.site_id = :site
-                LIMIT 1
-                """, new MapSqlParameterSource("site", siteId),
-                (rs, i) -> new String[] {rs.getString("scene_version"), rs.getString("calibration_version")});
-        if (current.isEmpty()) {
-            throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_SCENE_MISSING);
+        SetupReuseCheck.Result check = reuseCheck.check(siteId);
+        if (check.blockedReason() == null) {
+            return;
         }
-        JsonNode compat = compatibility.current(current.getFirst()[0], current.getFirst()[1]);
-        if ("MISMATCH".equals(compat.path("verification").asString(""))) {
-            throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_SCENE_MISMATCH);
-        }
+        throw new BusinessException(switch (check.blockedReason()) {
+            case SetupReuseCheck.NO_SCENE -> ErrorCode.Setup.SETUP_REUSE_SCENE_MISSING;
+            case SetupReuseCheck.SCENE_MISMATCH -> ErrorCode.Setup.SETUP_REUSE_SCENE_MISMATCH;
+            default -> ErrorCode.Setup.SETUP_REUSE_CAMERA_CHANGED;
+        });
     }
 
     /**

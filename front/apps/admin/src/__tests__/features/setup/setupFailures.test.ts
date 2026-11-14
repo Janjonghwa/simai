@@ -14,8 +14,25 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
       VALIDATION_REJECTED: false,
       TIMEOUT: true,
       CANCELLED_BY_ADMIN: true,
+      REUSE_WORLD_REJECTED: false,
       LEASE_EXPIRED: true,
     });
+  });
+
+  it('REUSE_WORLD_REJECTED: 달라진 카메라와 새 맵으로 다시 하기를 두 줄로 보인다(S15P31A101-689)', () => {
+    const guide = failureGuide('REUSE_WORLD_REJECTED', 'cam_B 이(가) 직전 세팅과 달라져', LETTERS, [
+      'cam_B',
+      'cam_D',
+    ]);
+    expect(guide).toEqual({
+      title: '카메라 2·카메라 4의 위치나 방향이 직전 세팅과 달라졌어요',
+      fix: '새 맵으로 다시 하세요.',
+      retry: false,
+      newMap: true,
+    });
+    expect(failureGuide('REUSE_WORLD_REJECTED', null, LETTERS).title).toBe(
+      '카메라를 직전 세팅과 맞추지 못해 이전 맵을 쓸 수 없어요',
+    );
   });
 
   it.each([
@@ -53,6 +70,7 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
         title: '서버에서 세팅을 끝내지 못했어요',
         fix: '잠시 뒤 다시 시도하세요. 계속되면 관리자에게 알려 주세요.',
         retry: true,
+        newMap: false,
       });
     }
   });

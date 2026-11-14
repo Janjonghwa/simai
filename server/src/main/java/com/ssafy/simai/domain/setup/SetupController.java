@@ -44,7 +44,9 @@ class SetupController {
     record Create(@JsonProperty("work_unit_id") Long workUnitId,
                   @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
                   @JsonProperty("mode") String mode) { }
-    record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
+    /** mode: 없으면 처음 요청한 방식 그대로, NEW | REUSE 면 그 방식으로 다시 시도한다(S15P31A101-689) */
+    record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
+                 @JsonProperty("mode") String mode) { }
     record Resume(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
 
     @GetMapping("/camera-height-defaults")
@@ -58,6 +60,14 @@ class SetupController {
         return setups.create(request.workUnitId(), request.cameraHeightsM(), Long.parseLong(jwt.getSubject()), null,
                 request.mode());
     }
+
+    /**
+     * 「이전 맵 재사용」을 지금 고를 수 있는지(S15P31A101-689). {available, blocked_reason(NO_SCENE|SCENE_MISMATCH|CAMERA_CHANGED|null),
+     * scene_version, calibration_version, camera_status(CHANGED|NOT_DETECTED|UNKNOWN), changed_cameras, camera_source}
+     */
+    @GetMapping("/reuse-check")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode reuseCheck() { return setups.reuseCheck(); }
 
     @GetMapping("/{id}")
     ObjectNode get(@PathVariable UUID id) { return setups.get(id); }
@@ -74,7 +84,8 @@ class SetupController {
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode retry(@PathVariable UUID id, @RequestBody(required = false) Retry request,
             @AuthenticationPrincipal Jwt jwt) {
-        return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
+        return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()),
+                request == null ? null : request.mode());
     }
 
     /**

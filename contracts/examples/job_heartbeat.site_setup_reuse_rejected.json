@@ -1,0 +1,34 @@
+{
+  "schema_version": "2.17.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000689",
+  "sent_at": 1760342410600,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261111-0614",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000614",
+      "status": "JOINT_BA_AND_VERIFY",
+      "progress_pct": 62,
+      "mode": "REUSE_SCENE",
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "world_anchor": {
+        "accepted": false,
+        "reason": "CENTER_RESIDUAL_EXCEEDED",
+        "reference_calibration_version": "cal-lobby-init-079f00cd-jba2-55083185",
+        "max_center_residual_m": 0.4127,
+        "max_orientation_change_rad": 0.0811,
+        "changed_cameras": [
+          "cam_B"
+        ]
+      }
+    }
+  }
+}

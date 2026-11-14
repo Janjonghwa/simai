@@ -17,7 +17,6 @@ import {
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
 import { heightsChanged } from '@/features/setup/heightCheck';
 import { HeightCheckModal } from '@/features/setup/HeightCheckModal';
-import { ModelPickerDialog } from '@/features/setup/ModelPickerDialog';
 import {
   deriveHeightFields,
   deriveStep1Coverage,
@@ -33,6 +32,7 @@ import {
 } from '@/features/setup/setup';
 import {
   discardSetupZoneDraft,
+  followServerSetupSession,
   setActiveSetupSessionId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
@@ -49,6 +49,7 @@ import {
   setupCancelErrorMessage,
 } from '@/features/setup/setupErrorMessage';
 import { SetupMap } from '@/features/setup/SetupMap';
+import { SetupModeChoice } from '@/features/setup/SetupModeChoice';
 import {
   AiZoneDraftsPanel,
   CameraHeightPanel,
@@ -61,11 +62,11 @@ import { SetupZoneReviewCard } from '@/features/setup/SetupZoneReviewCard';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import { supplementVisible } from '@/features/setup/supplement';
 import { SupplementModal } from '@/features/setup/SupplementModal';
-import type { SetupMode, ZoneDraftItem } from '@/features/setup/types';
+import type { SetupMode, SetupSessionResponse, ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useBackgroundCapture } from '@/features/setup/useBackgroundCapture';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
-import { useReuseBlockedReason } from '@/features/setup/useReuseScene';
+import { useReuseChoice } from '@/features/setup/useReuseScene';
 import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
@@ -91,8 +92,12 @@ import { Check } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
-// 처음(이어받을 세션이 없을 때)에는 1단계보다 먼저 「3D 공간」 창으로 새 모델·이전 모델을 고른다. 고르지 않고 닫으면 세팅에서 나간다.
-// 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력. 세션이 생기기 전에는 2·3단계로 갈 수 없다.
+// 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력, 「맵」 방식 선택(S15P31A101-689: 이전 맵 재사용이
+// 기본이고 세션이 있든 실패·취소했든 늘 고를 수 있다. 이전 맵이 없거나 카메라가 직전 세팅과 달라졌으면 재사용을 끄고 이유를 두 줄로 보인다).
+// 「세팅 취소」는 진행 중인 시도가 있으면 멈추고 세팅에서 나가고, 2단계의 「현재 시도 중단」은 시도만 멈추고 1단계로 돌아가 방식을 다시 고르게 한다.
+// 새로고침·다른 탭: 작업의 서버 세션(work_unit.active_setup_session_id)을 주기로 보고, 다른 세션으로 바뀌었으면 그 세션의 단계·대기 창
+// (배경 촬영·높이 확인)을 서버 세션 상태에서 다시 연다. 세팅이 구역 단계까지 갔으면(완료 또는 세션 구역 목록 저장) 구역 단계로 연다.
+// 세션이 생기기 전에는 2·3단계로 갈 수 없다.
 // 2단계(보정·생성): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
 // 5단계 막대(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안 → 정밀 3D 맵)·진행률·경과 시간,
 // 실패 시 원인·해결 + 다시 시도(POST /api/setup-sessions/{id}/retry)·카메라 연결 관리로, 높이 불일치 시 카메라 다시 맞추기(1단계 복귀 후 재시도),
@@ -124,6 +129,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
  * 바닥 474 = 단계 줄 42 + 간격 12 + 두 칸 최소 420.
  */
 const EMBEDDED_BODY = 'h-[max(474px,calc(100dvh-226px))] flex-none';
+
+/** 작업의 서버 세션을 다시 보는 주기(다른 탭·새로고침에서 바뀐 시도를 따라간다, S15P31A101-689). */
+const WORK_SESSION_POLL_MS = 5_000;
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
@@ -170,7 +178,7 @@ export interface SetupPageProps {
   embedded?: boolean;
   /** 구역 단계의 마지막 단추로 세팅을 완료한 뒤. 주면 작업 관리로 이동하지 않고 이것을 부른다(날짜 화면이 다음 단계로 넘긴다). */
   onDone?: () => void;
-  /** 처음 뜨는 「3D 공간」 창을 고르지 않고 닫았을 때. 주면 그것을 부르고(날짜 화면은 보고서로 돌아간다), 없으면 작업 관리로 간다. */
+  /** 「세팅 취소」로 세팅에서 나갈 때. 주면 그것을 부르고(날짜 화면은 보고서로 돌아간다), 없으면 작업 관리로 간다. */
   onExit?: () => void;
 }
 
@@ -203,8 +211,8 @@ function SetupWorkPage({
   const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
   // 위험 확인창이 열린 동안 보이는 쌍 이름(열 때 붙잡아 둔다: 열린 사이 안내가 바뀌어도 문장이 비지 않는다). 닫혀 있으면 null.
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
-  // 「3D 공간」 창에서 고른 방식. 세션이 없으면 카메라 연결 관리보다 먼저 묻고, '다음' 이 이 방식으로 세션을 만든다.
-  const [mode, setMode] = useState<SetupMode | null>(null);
+  // 1단계에서 사용자가 고른 맵 방식(S15P31A101-689). 고르지 않았으면 null 이고 지금 세션의 요청 방식, 없으면 이전 맵 재사용이 기본이다.
+  const [pickedMode, setPickedMode] = useState<SetupMode | null>(null);
   // 보정·생성의 '다음'을 눌렀을 때 뜨는 맵 보강 촬영 창.
   const [supplementOpen, setSupplementOpen] = useState(false);
   const navigate = useNavigate();
@@ -214,37 +222,38 @@ function SetupWorkPage({
 
   // 새로고침·다른 화면에서 돌아왔을 때: 이 작업에 진행 중인(또는 끝난) 세션이 있으면 이어받아 대기 화면·구역 단계로 연다.
   // 세션 ID 를 메모리에만 두면 다시 시작하다 409 가 나므로 서버의 work_unit.active_setup_session_id 를 정본으로 본다.
+  // 이어받은 뒤에도 주기로 다시 보아 다른 탭에서 새로 시작·다시 시도한 세션을 따라간다(S15P31A101-689).
   const workUnitSessionQuery = useQuery({
     queryKey: setupWorkUnitSessionKey(workUnitId),
     queryFn: ({ signal }) => requestWorkUnitSetupSessionId(api, workUnitId, signal),
-    enabled: activeSessionId === null,
     retry: false,
     staleTime: 0,
+    refetchInterval: WORK_SESSION_POLL_MS,
   });
-  const resumedRef = useRef(false);
-  useEffect(() => {
-    const resumeId = workUnitSessionQuery.data;
-    if (resumedRef.current || activeSessionId !== null || !resumeId) return;
-    resumedRef.current = true;
-    setActiveSetupSessionId(resumeId);
-    setStage(1);
-  }, [workUnitSessionQuery.data, activeSessionId]);
+  // 이 화면이 새로 시작·다시 시도하며 떠난 세션. 서버 조회가 그보다 늦게 와도 그 세션으로 되돌아가지 않는다.
+  const supersededRef = useRef<string | null>(null);
+  // 서버 세션으로 옮겨 단계를 서버 상태에서 다시 정할 세션(구역 단계까지 갔는지 보고 나면 지운다).
+  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const heightDefaultsQuery = useCameraHeightDefaults();
 
   const go = useCallback((next: Stage) => setStage(next), []);
 
-  const createSession = useCreateSetupSession(() => {
-    setHeightEdits({});
-    setReturnForHeightRetry(false);
-    go(1);
-  });
-
-  const retrySession = useRetrySetupSession(() => {
-    setHeightEdits({});
-    setReturnForHeightRetry(false);
-    go(1);
-  });
+  // 이 화면이 새 시도를 만들면 떠난 세션을 기억하고 작업의 서버 세션 값을 새 세션으로 맞춰 둔다(다른 탭 따라가기와 엇갈리지 않게).
+  const queryClient = useQueryClient();
+  const startedHere = useCallback(
+    (next: SetupSessionResponse) => {
+      supersededRef.current = useSetupFlowStore.getState().activeSessionId;
+      queryClient.setQueryData(setupWorkUnitSessionKey(workUnitId), next.setup_session_id);
+      setHeightEdits({});
+      setReturnForHeightRetry(false);
+      setPickedMode(null);
+      go(1);
+    },
+    [queryClient, workUnitId, go],
+  );
+  const createSession = useCreateSetupSession(startedHere);
+  const retrySession = useRetrySetupSession(startedHere);
 
   // 멈춘 세팅을 고친 높이로 이어 가면 같은 세션이 멈춘 곳부터 돈다(보정·생성으로 돌아간다).
   const resumeSession = useResumeSetupSession(() => {
@@ -260,21 +269,37 @@ function SetupWorkPage({
     createSession.session?.setup_session_id ??
     null;
 
-  // 이어받을 세션이 없다고 확인된 새 세팅이면 카메라 연결 관리보다 먼저 방식을 묻는다.
-  const noSessionToResume =
-    activeSessionId === null && workUnitSessionQuery.isFetched && !workUnitSessionQuery.data;
-  const modePickable = stage === 0 && sessionId === null && mode === null;
-  // 이전 모델 쓰기를 켤지는 현재 관제 맵으로 정한다. 창이 뜰 수 있는 때부터 받아 이어받을 세션 조회와 같이 돌린다.
-  const reuse = useReuseBlockedReason(modePickable);
-  const modelPickerOpen = modePickable && noSessionToResume && !reuse.checking;
-  // 이어받을 세션을 찾는 중이거나 창에 쓸 값을 기다리는 중에는 본문을 그리지 않는다: 본문과 창이 같이 뜬다.
-  const entryPending =
-    (activeSessionId === null && !workUnitSessionQuery.isFetched) ||
-    (modePickable && noSessionToResume && reuse.checking);
+  // 이어받을 세션을 찾는 중에는 본문을 그리지 않는다(1단계가 잠깐 보였다 대기 화면으로 바뀌지 않게).
+  const entryPending = activeSessionId === null && !workUnitSessionQuery.isFetched;
 
   // 맵 보강 창이 열려 있는 동안은 끝난 세션도 계속 받는다(휴대폰으로 올린 파일과 다시 굽기 판정이 이 조회로만 온다).
   const sessionQuery = useSetupSession(sessionId, Boolean(sessionId), supplementOpen);
   const currentSession = sessionQuery.data ?? retrySession.session ?? createSession.session ?? null;
+
+  // 작업의 서버 세션이 이 화면이 따르는 세션과 다르면 옮긴다: 처음 열 때(새로고침), 따르던 세션이 끝났거나 다른 작업의 것일 때(다른 탭에서
+  // 다시 시도·새로 시작). 따르던 세션이 진행 중이면 옮기지 않는다(같은 현장에 진행 중 세션은 하나라 서버 값이 늦게 온 것이다).
+  const serverSessionId = workUnitSessionQuery.data ?? null;
+  const followedSettled =
+    currentSession === null ||
+    currentSession.work_unit_id !== workUnitId ||
+    currentSession.status === 'FAILED' ||
+    currentSession.status === 'COMPLETED';
+  useEffect(() => {
+    if (!serverSessionId || serverSessionId === activeSessionId) return;
+    if (serverSessionId === supersededRef.current) return;
+    if (activeSessionId !== null && !followedSettled) return;
+    followServerSetupSession(serverSessionId);
+  }, [serverSessionId, activeSessionId, followedSettled]);
+  // 서버 세션으로 옮겼으면 그 세션의 대기 화면(2단계)에서 다시 시작하고, 구역 단계까지 갔는지는 아래에서 서버 상태로 본다
+  const restoreSessionId = useSetupFlowStore((s) => s.restoreSessionId);
+  const [handledRestore, setHandledRestore] = useState<string | null>(null);
+  if (restoreSessionId !== null && restoreSessionId !== handledRestore) {
+    setHandledRestore(restoreSessionId);
+    setRestoringId(restoreSessionId);
+    setPickedMode(null);
+    setReturnForHeightRetry(false);
+    setStage(1);
+  }
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
 
@@ -314,7 +339,6 @@ function SetupWorkPage({
   }, [foreignSession]);
 
   // 워커가 죽거나 작업이 멈춰 같은 현장의 새 세팅이 409 로 막힐 때 관리자가 진행 중 세션을 취소한다.
-  const queryClient = useQueryClient();
   const cancelMutation = useMutation({
     mutationFn: (id: string) => cancelSetupSession(api, id),
     onSuccess: (session) => {
@@ -340,10 +364,29 @@ function SetupWorkPage({
     () => (sessionId && !foreignSession && !completed ? { sessionId } : null),
     [sessionId, foreignSession, completed],
   );
+  // 서버 세션으로 옮긴 뒤 그 세팅이 구역 단계까지 갔는지(완료했거나 세션 구역 목록을 저장했다) 보고 구역 단계로 연다(S15P31A101-689)
+  const restoring =
+    restoringId !== null &&
+    restoringId === sessionId &&
+    currentSession?.setup_session_id === sessionId;
+  const restoreChecksPlan = restoring && canCompleteSetup(currentSession);
   // 확인 필요 구역 수(S15P31A101-629). 남아 있으면 세팅을 완료할 수 없다
   const zonePlanQuery = useSetupZonePlanQuery(
-    stage === ZONE_STAGE ? (zoneSource?.sessionId ?? null) : null,
+    stage === ZONE_STAGE || restoreChecksPlan ? (zoneSource?.sessionId ?? null) : null,
   );
+  const planRevision = zonePlanQuery.data?.revision;
+  const planFailed = zonePlanQuery.isError;
+  if (restoring && currentSession) {
+    if (setupCompleted(currentSession)) {
+      setStage(ZONE_STAGE);
+      setRestoringId(null);
+    } else if (!restoreChecksPlan) {
+      setRestoringId(null);
+    } else if (planRevision !== undefined || planFailed) {
+      if ((planRevision ?? 0) > 0) setStage(ZONE_STAGE);
+      setRestoringId(null);
+    }
+  }
   const unconfirmedZones = zoneSource ? pendingReviewCount(zonePlanQuery.data) : 0;
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
@@ -424,6 +467,13 @@ function SetupWorkPage({
     resumeSession.pending ||
     cancelMutation.isPending;
 
+  // 「맵」 방식(S15P31A101-689). 1단계에서는 이전 맵 재사용을 고를 수 있는지 늘 받아 둔다(세션 유무·실패·취소와 무관)
+  const reuse = useReuseChoice(stage === 0, cameraIds);
+  const wantedMode: SetupMode = pickedMode ?? currentSession?.requested_mode ?? 'REUSE';
+  // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
+  const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
+  const modePending = mode === 'REUSE' && reuse.checking;
+
   /**
    * 높이를 고쳐 세팅을 다시 시작한다. 서버 규칙(SetupService)에 맞춰 세션 상태로 가른다: 서버 retry 는 실패한 세션만 받고
    * 끝난 세션은 새로 시작하며, 진행 중인 세션이 있으면 새로 시작할 수 없어 먼저 취소한 뒤 재시도한다.
@@ -431,8 +481,12 @@ function SetupWorkPage({
   const restartWithHeights = useCallback(() => {
     if (!sessionId || !currentSession || !heightValidation.valid || restartPending) return;
     const cameraHeights = heightValidation.cameraHeightsM;
+    // 다시 시도도 1단계에서 고른 방식으로 한다(서버가 새 세션의 requested_mode 로 저장한다)
     const retry = () =>
-      retrySession.retry({ setupSessionId: sessionId, body: { camera_heights_m: cameraHeights } });
+      retrySession.retry({
+        setupSessionId: sessionId,
+        body: { camera_heights_m: cameraHeights, mode },
+      });
     // 보정 문제로 멈춘 세션은 처음부터가 아니라 멈춘 곳부터 이어 간다.
     if (currentSession.paused_reason && currentSession.status !== 'FAILED')
       resumeSession.resume({
@@ -444,7 +498,7 @@ function SetupWorkPage({
       createSession.submit({
         work_unit_id: workUnitId,
         camera_heights_m: cameraHeights,
-        mode: currentSession.requested_mode ?? undefined,
+        mode: mode === 'REUSE' ? 'REUSE' : undefined,
       });
     else cancelMutation.mutate(sessionId, { onSuccess: retry });
   }, [
@@ -457,6 +511,7 @@ function SetupWorkPage({
     createSession,
     cancelMutation,
     workUnitId,
+    mode,
   ]);
 
   // mode 를 생략하면 새 모델이다(서버가 NEW 로 본다).
@@ -472,10 +527,10 @@ function SetupWorkPage({
     [heightValidation, createSession, workUnitId],
   );
 
-  // 새 세션은 처음에 고른 방식으로 만든다(새 모델은 mode 를 생략한다). 같은 세션의 재시도는 방식이 이미 정해졌으니 묻지 않는다.
+  // 1단계에서 고른 방식으로 시작한다(새 맵은 mode 를 생략한다). 실패·취소한 시도가 있으면 그 시도의 다시 시도로 이어 고른 방식을 보낸다.
   const submitStep1 = useCallback(() => {
-    if (!heightValidation.valid) return;
-    if (returnForHeightRetry && sessionId) {
+    if (!heightValidation.valid || modePending) return;
+    if ((returnForHeightRetry && sessionId) || (sessionId && currentSession?.status === 'FAILED')) {
       restartWithHeights();
       return;
     }
@@ -483,18 +538,30 @@ function SetupWorkPage({
     createSessionNow(mode === 'REUSE' ? 'REUSE' : undefined);
   }, [
     heightValidation,
+    modePending,
     returnForHeightRetry,
     sessionId,
+    currentSession,
     restartWithHeights,
     createSession,
     createSessionNow,
     mode,
   ]);
 
-  const exitModelPicker = useCallback(() => {
+  // 「세팅 취소」: 진행 중인 시도가 있으면 멈추고 세팅에서 나간다(날짜 화면은 보고서로, 단독 화면은 그 작업의 작업 관리로).
+  const leaveSetup = useCallback(() => {
     if (onExit) onExit();
     else void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
   }, [onExit, navigate, workUnitId]);
+  const exitSetup = useCallback(() => {
+    if (cancelMutation.isPending) return;
+    if (!sessionRunning || !sessionId) {
+      leaveSetup();
+      return;
+    }
+    if (!window.confirm('진행 중인 시도를 멈추고 세팅에서 나갈까요?')) return;
+    cancelMutation.mutate(sessionId, { onSuccess: leaveSetup });
+  }, [cancelMutation, sessionRunning, sessionId, leaveSetup]);
 
   // 세션을 만들기 전에 배경 촬영 창을 띄운다(-686). 멈춘 세팅을 이어 가는 경우만 배경을 다시 찍지 않아 바로 보낸다.
   const resumesPaused =
@@ -534,6 +601,20 @@ function SetupWorkPage({
     });
   }, [sessionId, retrySession, currentSession]);
 
+  // 재사용이 카메라 변화로 멈춘 시도(REUSE_WORLD_REJECTED)를 관리자가 새 맵으로 다시 한다(저절로 넘어가지 않는다, S15P31A101-689)
+  const handleRetryNewMap = useCallback(() => {
+    if (!sessionId || retrySession.pending) return;
+    retrySession.retry({
+      setupSessionId: sessionId,
+      body: {
+        ...(currentSession?.camera_heights_m
+          ? { camera_heights_m: currentSession.camera_heights_m }
+          : {}),
+        mode: 'NEW',
+      },
+    });
+  }, [sessionId, retrySession, currentSession]);
+
   /** 카메라 연결 관리(1단계)로 돌아가 고쳐서 다시 시작한다. 실패 안내와 높이 불일치가 같이 쓴다. */
   const returnToStep1 = useCallback(() => {
     if (currentSession?.camera_heights_m) {
@@ -546,6 +627,18 @@ function SetupWorkPage({
     setReturnForHeightRetry(true);
     setStage(0);
   }, [currentSession]);
+
+  // 2단계 「현재 시도 중단」: 이 시도만 멈추고 1단계로 돌아가 방식·높이를 다시 고르게 한다(세팅에서 나가지 않는다)
+  const stopAttempt = useCallback(() => {
+    if (!sessionId || cancelMutation.isPending) return;
+    if (
+      !window.confirm(
+        '현재 시도를 멈출까요? 카메라 연결 관리에서 맵 방식을 다시 골라 시작할 수 있습니다.',
+      )
+    )
+      return;
+    cancelMutation.mutate(sessionId, { onSuccess: returnToStep1 });
+  }, [sessionId, cancelMutation, returnToStep1]);
 
   // 구역 단계의 '다시 보정': 확인을 받고 카메라 연결 관리(0단계)로 돌아간다. 진행 중인 세션은 0단계에서 다시 시도할 때 취소하고 이어 간다.
   const handleRestart = useCallback(() => {
@@ -582,7 +675,7 @@ function SetupWorkPage({
     {
       stage,
       embedded,
-      startDisabled: !heightValidation.valid || restartPending,
+      startDisabled: !heightValidation.valid || restartPending || modePending,
       mapComplete: waiting.mapComplete,
       sessionRunning,
       cancelPending: cancelMutation.isPending,
@@ -598,7 +691,8 @@ function SetupWorkPage({
       start: requestStep1Submit,
       confirm: confirmCalibration,
       restart: handleRestart,
-      cancelSession: handleCancelSession,
+      cancelSession: stopAttempt,
+      exitSetup,
       recheckCameras: returnToStep1,
       finish: () => void finish(),
     },
@@ -700,6 +794,7 @@ function SetupWorkPage({
 
       {stage === 0 ? (
         <SetupSplit left={cameraMap}>
+          <SetupModeChoice mode={mode} onChange={setPickedMode} reuse={reuse} />
           <CameraPanel coverage={coverage} />
           <CameraHeightPanel
             fields={heightFields}
@@ -738,6 +833,8 @@ function SetupWorkPage({
             onRecalibrate={handleRestart}
             pollingError={sessionQuery.error}
             onRetry={handleRetryFailedSession}
+            onRetryNewMap={handleRetryNewMap}
+            changedCameras={currentSession.world_anchor?.changed_cameras ?? undefined}
             retryPending={retrySession.pending}
             retryError={retrySession.error ?? cancelError}
             onNavigateLiveWork={
@@ -799,14 +896,6 @@ function SetupWorkPage({
             )}
           </SetupZoneStep>
         </ZoneSourceContext>
-      )}
-      {modelPickerOpen && (
-        <ModelPickerDialog
-          onNew={() => setMode('NEW')}
-          onReuse={() => setMode('REUSE')}
-          onClose={exitModelPicker}
-          reuseBlockedReason={reuse.reason}
-        />
       )}
       {capture.open && (
         <BackgroundCaptureModal

@@ -5,6 +5,11 @@ import { create } from 'zustand';
 
 interface SetupFlowState {
   activeSessionId: string | null;
+  /**
+   * 작업의 서버 세션(work_unit.active_setup_session_id)을 따라 옮긴 세션(S15P31A101-689: 새로고침·다른 탭). 세팅 화면은 이 값이 바뀌면
+   * 그 세션의 단계를 서버 상태에서 다시 정한다. 화면에서 직접 시작·다시 시도한 세션은 여기에 넣지 않는다.
+   */
+  restoreSessionId: string | null;
   acceptedDraftIds: string[];
   discardedDraftIds: string[];
   zonesCommitted: boolean;
@@ -12,6 +17,7 @@ interface SetupFlowState {
 
 const INITIAL_STATE: SetupFlowState = {
   activeSessionId: null,
+  restoreSessionId: null,
   acceptedDraftIds: [],
   discardedDraftIds: [],
   zonesCommitted: false,
@@ -33,6 +39,12 @@ export function setActiveSetupSessionId(sessionId: string | null) {
       zonesCommitted: false,
     };
   });
+}
+
+/** 작업의 서버 세션으로 옮긴다(새로고침·다른 탭에서 바뀐 시도, S15P31A101-689). 세션 고르기와 같고 다시 정할 세션으로 표시한다. */
+export function followServerSetupSession(sessionId: string) {
+  setActiveSetupSessionId(sessionId);
+  useSetupFlowStore.setState({ restoreSessionId: sessionId });
 }
 
 /** AI 구역 초안 하나로 구역을 만들었다(수락)고 기록한다. */

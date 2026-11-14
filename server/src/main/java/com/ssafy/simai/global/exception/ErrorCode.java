@@ -722,6 +722,7 @@ public sealed interface ErrorCode {
         // 이전 모델 재사용 세팅(S15P31A101-614)
         SETUP_REUSE_SCENE_MISSING(HttpStatus.CONFLICT, "현재 관제 맵(Scene)과 그 보정이 있어야 이전 모델을 재사용할 수 있습니다. 새 모델로 세팅하세요"),
         SETUP_REUSE_SCENE_MISMATCH(HttpStatus.CONFLICT, "현재 관제 맵이 지금 보정과 다른 World 라 이전 모델을 재사용할 수 없습니다. 새 모델로 세팅하세요"),
+        SETUP_REUSE_CAMERA_CHANGED(HttpStatus.CONFLICT, "카메라가 직전 세팅과 달라져 이전 맵을 재사용할 수 없습니다. 새 맵으로 세팅하세요"),
         SUPPLEMENT_REUSED_SCENE(HttpStatus.CONFLICT, "이전 모델을 재사용한 세팅은 이 세션의 맵이 없어 보강 촬영·다시 굽기를 할 수 없습니다"),
         // 세팅 완료(C17, S15P31A101-615)
         SETUP_NOT_READY_TO_COMPLETE(HttpStatus.CONFLICT, "미리보기 맵이 나온(구역 단계 이후) 세팅 세션만 완료할 수 있습니다"),

@@ -36,20 +36,35 @@ const summary = (state: SetupActionState) =>
   );
 
 describe('deriveSetupActions: 단계별 단추', () => {
+  it('1단계 세팅 취소(나가기)는 처리기를 주면 다음 왼쪽 보조 단추로 놓이고 취소 요청 중에는 꺼진다(S15P31A101-689)', () => {
+    const on = { ...handlers(), exitSetup: vi.fn() };
+    const buttons = deriveSetupActions(stateOf({ stage: 0 }), on);
+    expect(buttons.map((b) => b.label)).toEqual(['세팅 취소', '다음']);
+    buttons[0]!.onClick();
+    expect(on.exitSetup).toHaveBeenCalledTimes(1);
+    expect(deriveSetupActions(stateOf({ stage: 0, cancelPending: true }), on)[0]!.disabled).toBe(
+      true,
+    );
+    // 2단계에는 나가기가 아니라 현재 시도 중단만 있다
+    expect(
+      deriveSetupActions(stateOf({ stage: 1, sessionRunning: true }), on).map((b) => b.label),
+    ).toEqual(['현재 시도 중단', '다음']);
+  });
+
   it('1단계는 주 단추 하나(다음)이고 높이가 틀렸거나 요청 중이면 꺼진다', () => {
     expect(summary(stateOf({ stage: 0 }))).toEqual(['*다음']);
     expect(summary(stateOf({ stage: 0, startDisabled: true }))).toEqual(['*다음(꺼짐)']);
   });
 
-  it('2단계는 3D 맵을 다 만들어야 다음이 켜지고, 진행 중 세션은 세팅 취소가 먼저 있다', () => {
+  it('2단계는 3D 맵을 다 만들어야 다음이 켜지고, 진행 중 세션은 현재 시도 중단이 먼저 있다', () => {
     expect(summary(stateOf({ stage: 1 }))).toEqual(['*다음(꺼짐)']);
     expect(summary(stateOf({ stage: 1, mapComplete: true }))).toEqual(['*다음']);
     expect(summary(stateOf({ stage: 1, sessionRunning: true }))).toEqual([
-      '세팅 취소',
+      '현재 시도 중단',
       '*다음(꺼짐)',
     ]);
     expect(summary(stateOf({ stage: 1, sessionRunning: true, cancelPending: true }))).toEqual([
-      '세팅 취소(꺼짐)',
+      '현재 시도 중단(꺼짐)',
       '*다음(꺼짐)',
     ]);
   });
@@ -64,12 +79,12 @@ describe('deriveSetupActions: 단계별 단추', () => {
     expect(ready[0]?.title).toBeUndefined();
   });
 
-  it('높이 불일치 안내가 있으면 세팅 취소 뒤에 카메라 다시 맞추기가 놓이고 주 단추는 맨 오른쪽이다', () => {
+  it('높이 불일치 안내가 있으면 현재 시도 중단 뒤에 카메라 다시 맞추기가 놓이고 주 단추는 맨 오른쪽이다', () => {
     expect(
       summary(
         stateOf({ stage: 1, sessionRunning: true, showHeightNotice: true, mapComplete: true }),
       ),
-    ).toEqual(['세팅 취소', '카메라 다시 맞추기', '*다음']);
+    ).toEqual(['현재 시도 중단', '카메라 다시 맞추기', '*다음']);
   });
 
   it('세션 취소·카메라 다시 맞추기는 2단계에만 있다', () => {
@@ -139,7 +154,7 @@ describe('deriveSetupActions: 구역 단계', () => {
     expect(on.start).toHaveBeenCalledTimes(1);
     run(stateOf({ stage: 1 }), '다음');
     expect(on.confirm).toHaveBeenCalledTimes(1);
-    run(stateOf({ stage: 1, sessionRunning: true }), '세팅 취소');
+    run(stateOf({ stage: 1, sessionRunning: true }), '현재 시도 중단');
     expect(on.cancelSession).toHaveBeenCalledTimes(1);
     run(stateOf({ stage: 1, showHeightNotice: true }), '카메라 다시 맞추기');
     expect(on.recheckCameras).toHaveBeenCalledTimes(1);
@@ -162,7 +177,7 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
     );
     expect(config).toMatchObject({ label: '다음', enabled: true });
     expect(config?.secondary?.map((item) => item.label)).toEqual([
-      '세팅 취소',
+      '현재 시도 중단',
       '카메라 다시 맞추기',
     ]);
     config?.onClick();
@@ -185,7 +200,7 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
       ),
     );
     expect(config?.secondary?.map((item) => [item.label, item.disabled])).toEqual([
-      ['세팅 취소', true],
+      ['현재 시도 중단', true],
       ['카메라 다시 맞추기', false],
     ]);
   });

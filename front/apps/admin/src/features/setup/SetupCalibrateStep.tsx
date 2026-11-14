@@ -224,14 +224,24 @@ function FailureNotice({
   waiting,
   retryPending,
   onRetry,
+  onRetryNewMap,
+  changedCameras,
   onReturnToStep1,
 }: {
   waiting: SetupWaitingView;
   retryPending: boolean;
   onRetry: () => void;
+  onRetryNewMap?: () => void;
+  changedCameras?: readonly string[];
   onReturnToStep1: () => void;
 }) {
-  const guide = failureGuide(waiting.failureCode, waiting.failureMessage, waiting.cameraIds);
+  const guide = failureGuide(
+    waiting.failureCode,
+    waiting.failureMessage,
+    waiting.cameraIds,
+    changedCameras,
+  );
+  const newMap = guide.newMap && onRetryNewMap !== undefined;
   const stage =
     waiting.failedStageIndex === null ? undefined : WAITING_STAGES[waiting.failedStageIndex];
   return (
@@ -251,7 +261,16 @@ function FailureNotice({
             다시 시도
           </Button>
         )}
-        <Button size="sm" variant={guide.retry ? 'secondary' : 'default'} onClick={onReturnToStep1}>
+        {newMap && (
+          <Button size="sm" disabled={retryPending} onClick={onRetryNewMap}>
+            새 맵으로 다시 하기
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant={guide.retry || newMap ? 'secondary' : 'default'}
+          onClick={onReturnToStep1}
+        >
           카메라 연결 관리로
         </Button>
       </div>
@@ -590,6 +609,8 @@ export function SetupCalibrateStep({
   retryPending = false,
   retryError = null,
   onRetry,
+  onRetryNewMap,
+  changedCameras,
   onNavigateLiveWork,
   onReturnToStep1,
 }: {
@@ -605,6 +626,10 @@ export function SetupCalibrateStep({
   retryPending?: boolean;
   retryError?: string | null;
   onRetry: () => void;
+  /** 이전 맵 재사용이 카메라 변화로 멈춘 시도를 새 맵으로 다시 한다(S15P31A101-689). */
+  onRetryNewMap?: () => void;
+  /** 직전 세팅과 달라진 카메라(세션 world_anchor.changed_cameras). */
+  changedCameras?: readonly string[];
   onNavigateLiveWork?: () => void;
   onReturnToStep1: () => void;
 }) {
@@ -616,6 +641,8 @@ export function SetupCalibrateStep({
           waiting={waiting}
           retryPending={retryPending}
           onRetry={onRetry}
+          onRetryNewMap={onRetryNewMap}
+          changedCameras={changedCameras}
           onReturnToStep1={onReturnToStep1}
         />
       )}

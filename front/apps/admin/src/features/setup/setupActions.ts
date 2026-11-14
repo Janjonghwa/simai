@@ -18,7 +18,10 @@ const STAGE_ACTIONS: Record<Stage, readonly ActionKey[]> = {
 
 /** 정밀 3D 맵을 다 만들기 전에는 2단계 '다음' 이 꺼진다. */
 const CONFIRM_BLOCKED_TITLE = '3D 맵을 다 만들면 넘어갈 수 있어요';
-const CANCEL_LABEL = '세팅 취소';
+/** 2단계: 이 시도만 멈추고 1단계로 돌아가 방식을 다시 고른다(S15P31A101-689). */
+const STOP_ATTEMPT_LABEL = '현재 시도 중단';
+/** 1단계: 진행 중인 시도가 있으면 멈추고 세팅에서 나간다. */
+const EXIT_LABEL = '세팅 취소';
 const RECHECK_LABEL = '카메라 다시 맞추기';
 /** 단독 화면의 구역 단계 마지막 단추: 세팅을 완료한 뒤 그 작업의 작업 관리로 돌아간다. */
 const TO_WORK_LABEL = '작업 관리로';
@@ -73,7 +76,10 @@ export interface SetupActionState {
 }
 
 export interface SetupActionHandlers extends Record<ActionKey, () => void> {
+  /** 2단계 「현재 시도 중단」. */
   cancelSession: () => void;
+  /** 1단계 「세팅 취소」(세팅에서 나간다). 없으면 단추를 두지 않는다. */
+  exitSetup?: () => void;
   recheckCameras: () => void;
   /** 구역 단계 마지막 단추(아직 완료 전이면 세팅을 완료하고 넘어간다). */
   finish: () => void;
@@ -108,10 +114,19 @@ export function deriveSetupActions(
     }));
 
   const buttons = staged.filter((button) => !button.primary);
+  if (state.stage === 0 && on.exitSetup) {
+    buttons.push({
+      key: 'exit',
+      label: EXIT_LABEL,
+      onClick: on.exitSetup,
+      disabled: state.cancelPending,
+      primary: false,
+    });
+  }
   if (state.stage === 1 && state.sessionRunning) {
     buttons.push({
       key: 'cancel',
-      label: CANCEL_LABEL,
+      label: STOP_ATTEMPT_LABEL,
       onClick: on.cancelSession,
       disabled: state.cancelPending,
       primary: false,

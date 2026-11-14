@@ -482,7 +482,16 @@ export const setupSessionResponseSchema = z.object({
   /** 이 세션으로 세팅을 완료한 시각(C17, -615). 완료 전이면 null. 그 전 서버는 싣지 않는다. */
   setup_completed_at_ms: z.number().nullish(),
   /** World 다시 맞추기 판정 요약(-614). accepted 면 지금 관제 구역과 같은 World 라 기존 구역을 이어 쓸 수 있다. */
-  world_anchor: z.object({ accepted: z.boolean() }).loose().nullish().catch(null),
+  world_anchor: z
+    .object({
+      accepted: z.boolean(),
+      reason: z.string().nullish().catch(null),
+      /** 거부일 때 직전 보정과 달라진 카메라(site_setup 1.18.0, S15P31A101-689). 모르면 없음 */
+      changed_cameras: z.array(z.string()).nullish().catch(null),
+    })
+    .loose()
+    .nullish()
+    .catch(null),
   /** 보정 절대 품질 게이트(-646). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
   quality_gate: qualityGateSchema.nullish().catch(null),
   /** 세팅 카메라 확인(-646). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
@@ -523,7 +532,24 @@ export interface CreateSetupSessionBody {
 
 export interface RetrySetupSessionBody {
   camera_heights_m?: Record<string, number>;
+  /** 다시 시도할 방식(S15P31A101-689). 생략하면 처음 요청한 방식 그대로다. */
+  mode?: SetupMode;
 }
+
+/**
+ * 「이전 맵 재사용」을 지금 고를 수 있는지(GET /api/setup-sessions/reuse-check, S15P31A101-689).
+ * blocked_reason: NO_SCENE(이전 맵 없음)·SCENE_MISMATCH(맵이 지금 보정과 다른 World)·CAMERA_CHANGED(직전 보정과 달라진 카메라).
+ * camera_status: CHANGED·NOT_DETECTED(관제 감시가 달라진 카메라를 보지 못함)·UNKNOWN(근거 없음, 막지 않는다).
+ */
+export const reuseCheckSchema = z.object({
+  available: z.boolean(),
+  blocked_reason: z.string().nullish().catch(null),
+  scene_version: z.string().nullish().catch(null),
+  camera_status: z.enum(['CHANGED', 'NOT_DETECTED', 'UNKNOWN']).catch('UNKNOWN'),
+  changed_cameras: z.array(z.string()).catch([]),
+  camera_source: z.string().nullish().catch(null),
+});
+export type ReuseCheck = z.infer<typeof reuseCheckSchema>;
 
 /** 멈춘 세팅을 이어 가기(POST /api/setup-sessions/{id}/resume): 높이 확인 창에서 확인하거나 고친 높이(-690). */
 export interface ResumeSetupSessionBody {

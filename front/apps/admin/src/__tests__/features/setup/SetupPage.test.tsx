@@ -163,10 +163,10 @@ function renderSetupPage(workUnitId: number | null = 1) {
   };
 }
 
-/** 세팅을 처음 열면 1단계보다 먼저 뜨는 방식 고르기 창에서 '새로 3D 공간 만들기' 를 누른다(세션 POST 는 그 뒤 '다음' 에서 나간다). */
+/** 1단계 「맵」 방식에서 '새 맵 만들기' 를 고른다(S15P31A101-689, 세션 POST 는 그 뒤 '다음' 에서 나간다). */
 async function pickNewModel() {
-  const dialog = await screen.findByRole('dialog', { name: '3D 공간' });
-  fireEvent.click(within(dialog).getByRole('button', { name: /^새로 3D 공간 만들기/ }));
+  const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+  fireEvent.click(within(group).getByRole('radio', { name: /^새 맵 만들기/ }));
 }
 
 /** 1단계 '다음' 뒤 뜨는 배경 촬영 창(-686)에서 「시작」을 눌러 세션을 만든다. */
@@ -236,6 +236,42 @@ describe('세팅 화면 재진입', () => {
     expect(resumeMock.submittedBodies).toHaveLength(0);
     expect(screen.queryByText(/cal-8/)).toBeNull();
   });
+
+  it('새로고침했을 때 그 세팅을 이미 완료했으면 서버 세션 상태로 구역 단계를 연다(S15P31A101-689)', async () => {
+    const created = await createSetupSession(api, {
+      work_unit_id: 5,
+      camera_heights_m: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+    });
+    setupMock.updateSession(created.setup_session_id, {
+      ...FINAL_PATCH,
+      setup_completed_at_ms: SETUP_COMPLETED_AT_MS,
+    });
+    renderSetupPage(5);
+    await waitForTrackedSession(created.setup_session_id);
+    await waitFor(() => expect(currentStepText()).toBe('3구역'), POLL_WAIT);
+    expect(setupMock.submittedBodies).toHaveLength(1);
+  });
+
+  it('다른 탭에서 새 시도를 시작하면(작업의 서버 세션이 바뀌면) 끝난 시도에서 그 시도로 옮겨 대기 화면을 연다(S15P31A101-689)', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      stage: 'FAILED',
+      status: 'FAILED',
+      failure_code: 'CANCELLED_BY_ADMIN',
+      failure_message: '관리자가 세팅을 취소했습니다',
+    });
+    await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    // 다른 탭: 같은 작업으로 새 세션을 만든다(서버가 작업의 지금 세션을 바꾼다)
+    const other = await createSetupSession(api, {
+      work_unit_id: 1,
+      camera_heights_m: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+    });
+    await waitForTrackedSession(other.setup_session_id);
+    await waitForCalibrationStep();
+    expect(screen.queryByRole('alert', { name: '세팅 실패 안내' })).toBeNull();
+    // 새 시도는 배경 수집 중이라 배경 촬영 창을 서버 상태에서 다시 연다
+    expect(await screen.findByRole('dialog', { name: '배경 촬영' })).toBeTruthy();
+  }, 20_000);
 });
 
 describe('설치 · 보정 1단계 화면', () => {
@@ -354,64 +390,92 @@ describe('설치 · 보정 1단계 화면', () => {
     });
   });
 
-  it('세션이 없으면 카메라 연결 관리보다 먼저 3D 공간 창이 뜨고, 바깥을 누르면 세션 없이 나가며, 고르면 그 방식으로 다음이 세션을 만든다', async () => {
+  it('1단계 맵 방식은 늘 있고, 이전 맵이 없으면 재사용을 끄고 이유를 두 줄로 보이며 새 맵으로 다음이 mode 없이 세션을 만든다', async () => {
     renderSetupPage();
-    const dialog = await screen.findByRole('dialog', { name: '3D 공간' });
-    const reuse = within(dialog).getByRole('button', {
-      name: /^이전 모델 쓰기/,
+    const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+    const reuse = within(group).getByRole('radio', {
+      name: /^이전 맵 재사용/,
     }) as HTMLButtonElement;
-    // 지금 관제 맵이 기본 바닥(확정된 맵 없음)이라 이전 모델 쓰기는 막히고 이유를 보인다.
-    await waitFor(() => expect(reuse.textContent).toContain('이전 모델이 없어요'));
-    expect(reuse.disabled).toBe(true);
-    // 바깥(어두운 바탕)을 누르면 고르지 않고 세팅에서 나간다(단독 화면은 그 작업의 작업 관리로).
-    fireEvent.click(dialog);
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '1' } });
-    expect(setupMock.submittedBodies).toHaveLength(0);
+    const fresh = within(group).getByRole('radio', { name: /^새 맵 만들기/ });
+    // 목업 현장은 이전 맵이 없다(reuse-check NO_SCENE): 재사용은 꺼지고 무엇이/어떻게 두 줄, 새 맵이 골라져 있다
+    await waitFor(() => expect(reuse.disabled).toBe(true));
+    const note = within(reuse).getByRole('note', { name: '이전 맵을 쓸 수 없는 이유' });
+    expect(note.textContent).toContain('이전 맵이 없어요');
+    expect(note.textContent).toContain('새 맵 만들기를 골라 주세요');
+    expect(fresh.getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('dialog')).toBeNull();
 
-    await pickNewModel();
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     const cam1Input = (await screen.findByLabelText('카메라 1 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam1Input.value).toBe('2.25'));
     fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
-    expect(setupMock.submittedBodies).toHaveLength(0);
-
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     await pressCaptureStart();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
-    // 새 모델은 mode 를 보내지 않는다(생략하면 서버가 NEW 로 본다). 다음은 창을 다시 묻지 않는다.
+    // 새 맵은 mode 를 보내지 않는다(생략하면 서버가 NEW 로 본다)
     expect(Object.keys(setupMock.submittedBodies[0]!).sort()).toEqual([
       'camera_heights_m',
       'work_unit_id',
     ]);
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitForCalibrationStep();
   });
 
-  it('이전 모델 조회가 끝나기 전에는 단계 줄도 3D 공간 창도 없고, 끝나면 같이 뜨며 창 안 글자가 바뀌지 않는다', async () => {
-    let release = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
+  it('이전 맵을 쓸 수 있으면 재사용이 기본이라 다음이 mode REUSE 로 만들고, 카메라 변화를 모르면 시작 뒤 확인한다고 한 줄 붙인다', async () => {
+    setupMock = createSetupMock({
+      cameraHeightsM: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+      reuseCheck: {
+        available: true,
+        blocked_reason: null,
+        scene_version: 'scene-prev-1',
+        camera_status: 'UNKNOWN',
+        changed_cameras: [],
+        camera_source: null,
+      },
     });
-    server.use(
-      http.get('*/api/scenes/current', async () => {
-        await held;
-        return HttpResponse.json({ status: 404, code: 'SCENE_NOT_FOUND' }, { status: 404 });
-      }),
-    );
+    server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
     renderSetupPage();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
-    expect(screen.queryByRole('list', { name: '보정 단계' })).toBeNull();
+    const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+    const reuse = within(group).getByRole('radio', {
+      name: /^이전 맵 재사용/,
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(reuse.getAttribute('aria-checked')).toBe('true'));
+    await waitFor(() => expect(reuse.disabled).toBe(false));
+    expect(reuse.textContent).toContain('기본 · 약 1~2분');
+    expect(reuse.textContent).toContain('카메라가 그대로인지는 시작한 뒤 확인해요');
+    const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
+    await waitFor(() => expect(cam4.value).toBe('2.35'));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    expect(setupMock.submittedBodies[0]).toMatchObject({ mode: 'REUSE' });
+  });
 
-    release();
-    const dialog = await screen.findByRole('dialog', { name: '3D 공간' });
-    expect(screen.getByRole('list', { name: '보정 단계' })).toBeTruthy();
-    expect(within(dialog).getByRole('button', { name: /^이전 모델 쓰기/ }).textContent).toContain(
-      '이전 모델이 없어요',
-    );
-    expect(pageText()).not.toContain('확인하는 중이에요');
+  it('카메라가 직전 세팅과 달라졌으면 재사용을 끄고 그 카메라를 보이며 새 맵이 골라진다(시작은 사용자가 누른다)', async () => {
+    setupMock = createSetupMock({
+      cameraHeightsM: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+      reuseCheck: {
+        available: false,
+        blocked_reason: 'CAMERA_CHANGED',
+        scene_version: 'scene-prev-1',
+        camera_status: 'CHANGED',
+        changed_cameras: ['cam_B'],
+        camera_source: 'TIER0_DRIFT',
+      },
+    });
+    server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
+    renderSetupPage();
+    await waitForCoverage();
+    const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+    const reuse = within(group).getByRole('radio', {
+      name: /^이전 맵 재사용/,
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(reuse.disabled).toBe(true));
+    expect(reuse.textContent).toContain('카메라 2의 위치나 방향이 직전 세팅과 달라졌어요');
+    expect(
+      within(group)
+        .getByRole('radio', { name: /^새 맵 만들기/ })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(setupMock.submittedBodies).toHaveLength(0);
   });
 
   it('세팅 시작이 409(SETUP_BLOCKED_BY_LIVE_WORK)로 거절되면 진행 중 작업 종료 안내와 작업 이동 링크를 제공한다', async () => {
@@ -568,7 +632,6 @@ describe('설치 · 보정 1단계 화면', () => {
       });
       server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
       renderSetupPage();
-      await screen.findByRole('dialog', { name: '3D 공간' });
       await pickNewModel();
       await waitForCoverage();
       await waitFor(() =>
@@ -873,18 +936,50 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(stageStates()).toEqual(['done', 'done', 'current', 'upcoming', 'upcoming']);
   }, 20_000);
 
-  it('보정·생성의 세팅 취소는 확인 창 뒤 세션을 취소하고 실패 안내로 바뀐다', async () => {
+  it('보정·생성의 현재 시도 중단은 확인 창 뒤 세션을 취소하고 1단계로 돌아가며, 다른 방식으로 다음을 누르면 그 방식으로 다시 시도한다', async () => {
     const { sessionId } = await startSetupSession();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    fireEvent.click(await screen.findByRole('button', { name: '세팅 취소' }));
+    fireEvent.click(await screen.findByRole('button', { name: '현재 시도 중단' }));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
-    const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
-    expect(alert.textContent).toContain('배경 수집 단계에서 멈췄어요');
-    expect(alert.textContent).toContain('세팅을 취소했어요');
-    expect(within(alert).getByRole('button', { name: '다시 시도' })).toBeTruthy();
-    expect(sessionId).toBeTruthy();
+    await waitFor(() => expect(setupMock.sessions.get(sessionId)?.status).toBe('FAILED'));
+    await waitFor(() => expect(currentStepText()).toBe('1카메라 연결 관리'), POLL_WAIT);
+    expect(navigateMock).not.toHaveBeenCalled();
+    // 실패·취소한 시도가 있어도 맵 방식을 다시 고를 수 있다
+    const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+    fireEvent.click(within(group).getByRole('radio', { name: /^새 맵 만들기/ }));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await pressCaptureStart();
+    await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.retryRequests[0]).toMatchObject({ sessionId, mode: 'NEW' });
+    await waitForTrackedSession(setupMock.retryRequests[0]!.retriedSessionId);
     confirmSpy.mockRestore();
-  }, 20_000);
+  }, 30_000);
+
+  it('이전 맵 재사용이 카메라 변화로 멈추면 무엇이/어떻게 두 줄과 새 맵으로 다시 하기를 보이고, 누르면 mode NEW 로 다시 시도한다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      stage: 'FAILED',
+      status: 'FAILED',
+      progress_pct: 62,
+      requested_mode: 'REUSE',
+      mode: 'REUSE',
+      failure_code: 'REUSE_WORLD_REJECTED',
+      failure_message: '카메라 cam_C 이(가) 직전 세팅과 달라져 이전 맵을 쓸 수 없습니다',
+      world_anchor: {
+        accepted: false,
+        reason: 'CENTER_RESIDUAL_EXCEEDED',
+        changed_cameras: ['cam_C'],
+      },
+    });
+    const alert = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(alert.textContent).toContain('카메라 3의 위치나 방향이 직전 세팅과 달라졌어요');
+    expect(alert.textContent).toContain('새 맵으로 다시 하세요.');
+    expect(within(alert).queryByRole('button', { name: '다시 시도' })).toBeNull();
+    fireEvent.click(within(alert).getByRole('button', { name: '새 맵으로 다시 하기' }));
+    await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.retryRequests[0]).toMatchObject({ sessionId, mode: 'NEW' });
+    await waitForTrackedSession(setupMock.retryRequests[0]!.retriedSessionId);
+  }, 30_000);
 
   it('실패하면 어느 단계에서 멈췄는지와 원인·해결을 보이고, 다시 시도하면 retry 요청 뒤 새 세션을 추적한다', async () => {
     const { sessionId } = await startSetupSession();
@@ -988,9 +1083,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await pressCaptureStart();
 
     // 같은 세션의 서버 retry 라서 방식을 다시 고르지 않는다.
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam_B).toBe(2.7);
     expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('VALIDATION_REJECTED');
     expect(setupMock.submittedBodies).toHaveLength(1);
@@ -1049,16 +1142,15 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeNull();
   }, 20_000);
 
-  it('끝난 세션을 고친 높이로 새로 시작할 때도 방식 고르기 창을 띄우지 않는다', async () => {
+  it('끝난 세션을 고친 높이로 새로 시작할 때는 1단계에서 고른 방식으로 바로 만든다(따로 묻는 창 없음)', async () => {
     const { sessionId } = await startSetupSession();
 
     await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     await pressCaptureStart();
 
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: '배경 촬영' })).toBeTruthy();
   }, 20_000);
 
   it('보정·생성은 정밀 3D 맵이 다 만들어져야 다음이 켜지고(미리보기 맵만으로는 꺼짐) 저절로 구역으로 넘어가지 않으며 처음부터 다시 단추는 없다', async () => {
@@ -1144,7 +1236,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
   it('이 세션의 미리보기 맵을 버전으로 받아(/view, 지금 관제 Scene 과 무관) 왼쪽에 3D 미리보기를 직접 그리고 오른쪽에 진행 카드와 결과 표를 둔다', async () => {
     const { sessionId } = await startSetupSession();
-    // 방식 고르기 창이 열려 있는 동안 이전 모델 쓰기를 가리려고 받는 현재 맵은 세션을 시작하기 전 일이라 세지 않는다.
+    // 1단계의 이전 맵 재사용 판정(reuse-check)은 세션을 시작하기 전 일이라 세지 않는다.
     const requested = trackRequestedPaths();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH, ...HEIGHT_MISMATCH });
 
@@ -1700,7 +1792,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     return stuck.setup_session_id;
   }
 
-  /** 1단계에서 cam_D 높이를 채우고 다음 → 방식 고르기까지 눌러 새 세팅을 요청한다. */
+  /** 1단계에서 cam_D 높이를 채우고 「맵」 새 맵 만들기 → 다음으로 새 세팅을 요청한다. */
   async function requestNewSetup() {
     const cam_D = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
     fireEvent.change(cam_D, { target: { value: '2.35' } });
@@ -1720,12 +1812,11 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
       expect.stringContaining('지금 세팅을 취소하고 다시 보정할까요?'),
     );
     expect(await screen.findByLabelText('카메라 4 높이 (m)')).toBeTruthy();
-    // 눌렀을 때는 세션을 건드리지 않는다. 0단계의 다시 시도에서 새로 시작한다(방식 고르기 없음).
+    // 눌렀을 때는 세션을 건드리지 않는다. 0단계의 다시 시도에서 1단계에서 고른 방식으로 새로 시작한다.
     expect(setupMock.submittedBodies).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     await pressCaptureStart();
-    expect(screen.queryByRole('dialog', { name: '3D 공간' })).toBeNull();
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
     expect(setupMock.retryRequests).toHaveLength(0);
@@ -1852,7 +1943,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     expect(within(error).queryByRole('button')).toBeNull();
   }, 30_000);
 
-  it('보정·생성에서 세팅 취소가 실패하면 실패 이유를 보인다', async () => {
+  it('보정·생성에서 현재 시도 중단이 실패하면 실패 이유를 보인다', async () => {
     await startSetupSession();
     server.use(
       http.post('*/api/setup-sessions/:id/cancel', () =>
@@ -1864,7 +1955,7 @@ describe('멈춘 세팅에서 빠져나갈 길(-640)', () => {
     );
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-    fireEvent.click(await screen.findByRole('button', { name: '세팅 취소' }));
+    fireEvent.click(await screen.findByRole('button', { name: '현재 시도 중단' }));
     const alert = await screen.findByTestId('setup-retry-error');
     expect(alert.textContent).toBe('이미 끝난 세팅 세션은 취소할 수 없습니다');
     confirmSpy.mockRestore();

@@ -51,8 +51,9 @@ INCOMPLETE. 서버는 PASSED 전에는 구역 단계·세팅 완료를 거부한
 COMPLETED). 새 보정·미리보기를 만들지 않고, 보조 촬영이 적용되지 않으면 새 Scene 도 올리지 않는다(결과 scene_version = 기준).
 `mode: REUSE_SCENE`(이전 모델 재사용, S15P31A101-614)은 (a)~(f) 를 그대로 하고, (f) 의 World 다시 맞추기가 채택되면 (g)·(h) 를
 건너뛰어 JOINT_BA_AND_VERIFY → READY_FOR_ZONES → COMPLETED 로 새 보정만 낸다(현재 관제 맵 유지, 보정 문서 artifacts·높이 확인은
-그대로 싣는다). 거부되거나 기록이 없으면 같은 작업 안에서 FULL_SETUP 으로 이어 가고 그 스냅샷부터 `mode: FULL_SETUP` +
-`reuse_fallback_reason` 을 싣는다. 모든 모드에서 보정 문서에 world_anchor 가 있으면 그 요약(`world_anchor`)을 (f) 스냅샷부터 싣는다.
+그대로 싣는다). 거부되거나 기록이 없으면 새 맵(FULL_SETUP)으로 저절로 이어 가지 않는다(S15P31A101-689): `mode: REUSE_SCENE` 그대로
+거부 요약(`world_anchor`, 달라진 카메라 `changed_cameras`)을 실은 스냅샷을 보내고 새 보정을 등록하지 않은 채 `REUSE_WORLD_REJECTED` 로
+실패한다(관리자가 새 맵을 고른다). 모든 모드에서 보정 문서에 world_anchor 가 있으면 그 요약(`world_anchor`)을 (f) 스냅샷부터 싣는다.
 
 굽기 입력 사진(`bake_image_publisher`, S15P31A101-593)은 VDT(Visual 층, 장식)용 보조 산출물이다. 카메라 프레임과 같이 올리지 못해도
 세팅을 실패시키지 않고 사진 없이 이어간다(취소·시간 초과만 그대로). 같은 사진이 이미 GLB 텍스처로 구워졌으므로 얼굴 정책은 외형
@@ -69,7 +70,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 import numpy as np
 
@@ -254,6 +255,10 @@ BAKE_SKIPPED_LIVE_WORK = "LIVE_WORK_STARTED"  # site_setup 1.7.0 bake_skipped(-5
 
 MODE_REUSE_SCENE = "REUSE_SCENE"  # site_setup 1.11.0 입력 mode(-614): 현재 관제 맵을 그대로 쓰고 보정만 다시 한다
 NO_ANCHOR_REFERENCE = "NO_REFERENCE"  # site_setup 1.11.0 world_anchor_summary.reason: 보정 문서에 world_anchor 가 없다
+# REUSE_SCENE 의 World 다시 맞추기가 거부되면 새 맵으로 이어 가지 않고 이 코드로 실패한다(job_callback error.code, S15P31A101-689)
+REUSE_WORLD_REJECTED = "REUSE_WORLD_REJECTED"
+# 카메라가 움직였을 가능성으로 거부한 사유(그 밖은 비교할 기준이 없거나 꺼짐)
+MOVED_ANCHOR_REASONS = frozenset({"CENTER_RESIDUAL_EXCEEDED", "SCALE_OUT_OF_RANGE", "ORIENTATION_CHANGE_EXCEEDED"})
 
 
 def world_anchor_summary(calibration_doc: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -274,7 +279,33 @@ def world_anchor_summary(calibration_doc: Mapping[str, Any]) -> dict[str, Any] |
         value = rec.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             out[key] = float(value)
+    if not accepted:
+        out["changed_cameras"] = _changed_cameras(rec)
     return out
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _changed_cameras(rec: Mapping[str, Any]) -> list[str]:
+    """거부된 world_anchor 에서 한도를 넘은 카메라(site_setup 1.18.0 changed_cameras, S15P31A101-689).
+
+    카메라별 배치 잔차·방향 변화가 문서의 한도를 넘은 카메라만 고른다. 한도나 카메라별 값이 없으면(축척 차이·비교 못 함) 빈 목록이다
+    (어느 카메라인지 지어내지 않는다)."""
+    limits = rec.get("limits") if isinstance(rec.get("limits"), Mapping) else {}
+    changed: set[str] = set()
+    for values_key, limit_key in (("center_residuals_m", "max_center_residual_m"),
+                                  ("orientation_changes_rad", "max_orientation_change_rad")):
+        limit = _number(limits.get(limit_key))
+        values = rec.get(values_key)
+        if limit is None or not isinstance(values, Mapping):
+            continue
+        for camera_id, value in values.items():
+            number = _number(value)
+            if number is not None and number > limit:
+                changed.add(str(camera_id))
+    return sorted(changed)[:16]
 
 
 class BakeReclaimed(Exception):
@@ -1094,6 +1125,28 @@ class SiteSetupHandler:
             compared_scene_version=compared_scene_version,
         )
 
+    def _reject_reuse(self, ctx: JobContext, refining_snapshot: Mapping[str, Any], mode_fields: Mapping[str, Any],
+                      anchor: Mapping[str, Any]) -> NoReturn:
+        """REUSE_SCENE 의 World 다시 맞추기 거부(S15P31A101-689): 거부 요약을 실은 스냅샷을 보내고 실패로 끝낸다.
+
+        -614 는 같은 작업 안에서 전체 세팅(새 맵)으로 이어 갔지만, 사용자 결정(11-13~14)으로 저절로 새 맵으로 넘어가지 않는다. 스냅샷은
+        mode=REUSE_SCENE 그대로(판정 전과 같은 모드) world_anchor(accepted=false, changed_cameras)를 싣고, 새 보정 문서는 등록하지 않는다
+        (Tier 0 는 지금 보정을 그대로 쓴다). 서버는 이 요약을 세션에 두고 화면이 "카메라 n 이 직전 세팅과 달라졌습니다 / 새 맵으로 다시 하세요"
+        를 보인다. 같은 입력으로 다시 대여해도 결과가 같으므로 재시도하지 않는다(retryable=False)."""
+        last_pct = float((self._last_payload or {}).get("progress_pct", 0.0))
+        self._emit_progress(ctx, {**refining_snapshot, **mode_fields, "progress_pct": max(62.0, last_pct + 0.1),
+                                  "world_anchor": dict(anchor)})
+        changed = list(anchor.get("changed_cameras") or [])
+        if changed:
+            message = f"카메라 {', '.join(changed)} 이(가) 직전 세팅과 달라져 이전 맵을 쓸 수 없습니다. 새 맵으로 다시 하세요"
+        elif anchor["reason"] in MOVED_ANCHOR_REASONS:
+            message = "카메라 배치가 직전 세팅과 달라져 이전 맵을 쓸 수 없습니다. 새 맵으로 다시 하세요"
+        else:
+            message = "직전 세팅과 비교할 수 없어 이전 맵을 쓸 수 없습니다. 새 맵으로 다시 하세요"
+        log.warning("작업 %s: 이전 맵 재사용을 요청했지만 World 다시 맞추기가 거부돼(%s, 카메라 %s) 실패로 멈춘다",
+                    ctx.job_id, anchor["reason"], changed or "-")
+        raise JobFailed(REUSE_WORLD_REJECTED, f"{message} ({anchor['reason']})"[:480], retryable=False)
+
     def _finish_reuse(
         self, ctx: JobContext, joint_ba_snapshot: Mapping[str, Any], stage_seconds: dict[str, float],
         stage_a: StageAResult, t_start: float,
@@ -1316,12 +1369,12 @@ class SiteSetupHandler:
             if anchor is not None and anchor["accepted"]:
                 reuse_scene = True
             else:
-                # 카메라가 움직였거나 비교할 기준이 없다: 같은 작업 안에서 전체 세팅으로 이어 간다(배경·보정은 이미 끝났다, -614)
+                # 카메라가 움직였거나 비교할 기준이 없다. 새 맵(약 13분)으로 저절로 넘어가지 않고 여기서 멈춘다(S15P31A101-689):
+                # 거부 요약(달라진 카메라)을 실은 스냅샷을 먼저 보내고, 새 보정은 등록하지 않은 채 실패로 끝낸다. 관리자가 새 맵을 고른다
                 if anchor is None:
-                    anchor = {"accepted": False, "reason": NO_ANCHOR_REFERENCE, "reference_calibration_version": None}
-                mode_fields = {"mode": "FULL_SETUP", "reuse_fallback_reason": anchor["reason"]}
-                log.warning("작업 %s: 이전 모델 재사용을 요청했지만 World 다시 맞추기가 거부돼(%s) 새 모델 세팅으로 이어 간다",
-                            ctx.job_id, anchor["reason"])
+                    anchor = {"accepted": False, "reason": NO_ANCHOR_REFERENCE, "reference_calibration_version": None,
+                              "changed_cameras": []}
+                self._reject_reuse(ctx, refining_snapshot, mode_fields, anchor)
         if anchor is not None:
             mode_fields = {**mode_fields, "world_anchor": anchor}
         self._subprogress(ctx, {**refining_snapshot, **mode_fields}, 61, 63)(1)
