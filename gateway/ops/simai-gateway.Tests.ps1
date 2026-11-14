@@ -26,12 +26,44 @@ Describe 'Get-HealPlan 순수 판정 함수' {
     ($plan -join ',') | Should Be 'start-tunnel-task'
   }
 
-  It '역터널 프로세스가 없거나 마지막 성공이 300초를 넘었으면 restart-tunnel 을 포함한다' {
+  It '역터널 ssh 프로세스가 없으면 restart-tunnel 을 포함한다' {
     $p1 = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $false -TunnelLastSuccessAt $now -Now $now
     ($p1 -join ',') | Should Be 'restart-tunnel'
+  }
 
-    $p2 = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $now.AddMinutes(-10) -Now $now
+  It '성공 기록이 없어도 ssh 가 살아 있으면 재시작하지 않는다(16차 세션 5분마다 재시작, S15P31A101-709)' {
+    $p = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $null -Now $now
+    $p.Count | Should Be 0
+    $p2 = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $null -TunnelEc2Listening $true -Now $now
+    $p2.Count | Should Be 0
+  }
+
+  It '성공 기록이 오래되고 ssh 가 죽었으면 재시작한다(S15P31A101-709)' {
+    $p = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $false -TunnelLastSuccessAt $now.AddMinutes(-10) -Now $now
+    ($p -join ',') | Should Be 'restart-tunnel'
+    $p2 = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $false -TunnelLastSuccessAt $null -Now $now
     ($p2 -join ',') | Should Be 'restart-tunnel'
+  }
+
+  It '성공 기록이 최근이면 재시작하지 않는다(EC2 답이 없다고 와도, S15P31A101-709)' {
+    $p = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $now.AddSeconds(-60) -Now $now
+    $p.Count | Should Be 0
+    $p2 = Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $now.AddSeconds(-60) -TunnelEc2Listening $false -Now $now
+    $p2.Count | Should Be 0
+  }
+
+  It '기록이 오래됐고 ssh 가 살아 있으면 EC2 가 포트 없다고 답할 때만 재시작한다(모르면 그대로, S15P31A101-709)' {
+    $old = $now.AddMinutes(-10)
+    (Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $old -Now $now).Count | Should Be 0
+    (Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $old -TunnelEc2Listening $true -Now $now).Count | Should Be 0
+    ((Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $old -TunnelEc2Listening $false -Now $now) -join ',') | Should Be 'restart-tunnel'
+    ((Get-HealPlan -TunnelTaskState 'Running' -TunnelProcessAlive $true -TunnelLastSuccessAt $null -TunnelEc2Listening $false -Now $now) -join ',') | Should Be 'restart-tunnel'
+  }
+
+  It 'Test-TunnelRecordFresh 는 기록 없음을 최근이 아님(모름)으로, 300초 안을 최근으로 본다' {
+    Test-TunnelRecordFresh -LastSuccessAt $null -Now $now | Should Be $false
+    Test-TunnelRecordFresh -LastSuccessAt $now.AddSeconds(-300) -Now $now | Should Be $true
+    Test-TunnelRecordFresh -LastSuccessAt $now.AddSeconds(-301) -Now $now | Should Be $false
   }
 
   It '절전 설정이 바뀌었으면 fix-powercfg 를 포함한다' {
@@ -127,6 +159,29 @@ Describe 'Get-TunnelLogInfo 역터널 로그 해석' {
     $info = Get-TunnelLogInfo -Lines $lines -ProcessAlive $false -Now $now
     $info.LastEvent | Should Be 'disconnect'
     $info.LastSuccessAt.ToString('yyyy-MM-dd HH:mm:ss') | Should Be '2026-11-03 10:20:00'
+  }
+
+  It '옛 판 스크립트가 ANSI(CP949)로 쓴 줄과 UTF-8 줄이 섞여도 연결을 읽는다(S15P31A101-709)' {
+    $cp949 = [Text.Encoding]::GetEncoding(949)
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $bytes = @()
+    $bytes += $cp949.GetBytes("2026-11-03 09:00:00 연결`r`n")
+    $bytes += $cp949.GetBytes("2026-11-03 09:30:00 끊김(코드 255)`r`n")
+    $bytes += [byte[]](0xEF, 0xBB, 0xBF)   # 중간에 낀 BOM
+    $bytes += $utf8.GetBytes("2026-11-03 09:30:05 연결`r`n")
+    $lines = ConvertFrom-TunnelLogBytes -Bytes ([byte[]]$bytes) -Fallback $cp949
+    $lines.Count | Should Be 3
+    $lines[0] | Should Be '2026-11-03 09:00:00 연결'
+    $lines[2] | Should Be '2026-11-03 09:30:05 연결'
+    $info = Get-TunnelLogInfo -Lines $lines -ProcessAlive $true -Now $now
+    $info.LastConnectAt.ToString('yyyy-MM-dd HH:mm:ss') | Should Be '2026-11-03 09:30:05'
+    $info.LastSuccessAt | Should Be $now
+  }
+
+  It '로그가 없으면 마지막 성공은 null(모름)이다' {
+    $info = Get-TunnelLogInfo -Lines @() -ProcessAlive $true -Now $now
+    $info.LastSuccessAt | Should Be $null
+    (ConvertFrom-TunnelLogBytes -Bytes ([byte[]]@())).Count | Should Be 0
   }
 }
 

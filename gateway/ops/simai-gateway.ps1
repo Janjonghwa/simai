@@ -783,7 +783,8 @@ function Get-TunnelLogInfo {
   $lastSuccess = $null
   $firstTs = $null
   $lastKind = ''
-  foreach ($line in $Lines) {
+  foreach ($raw in $Lines) {
+    $line = ([string]$raw).TrimStart([char]0xFEFF)   # 파일 중간에 낀 BOM 때문에 줄을 놓치지 않는다(S15P31A101-709)
     if ($line -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.+)$') {
       $ts = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
       $msg = $Matches[2]
@@ -813,6 +814,33 @@ function Get-TunnelLogInfo {
   }
 }
 
+function ConvertFrom-TunnelLogBytes {
+  # 순수 함수(S15P31A101-709): 역터널 로그 바이트를 줄 목록으로. 줄마다 UTF-8 로 읽고, UTF-8 이 아니면 대체 인코딩(기본: 시스템 ANSI, 한국어 Windows 는 CP949)으로 읽는다.
+  # -394 판 역터널 스크립트는 Add-Content 에 -Encoding 이 없어 PS 5.1 기본(ANSI)으로 '연결' 을 썼다. 이 줄을 UTF-8 로만 읽으면 '연결' 이 깨져
+  # 마지막 연결이 '기록 없음' 이 된다(-424 판 스크립트는 UTF-8 로 쓰지만, 게이트웨이의 스크립트 파일은 6(원격 열기 설정)을 다시 돌려야 바뀐다).
+  param([byte[]]$Bytes = @(), [Text.Encoding]$Fallback = [Text.Encoding]::Default)
+  $strict = New-Object System.Text.UTF8Encoding($false, $true)
+  $lines = New-Object System.Collections.Generic.List[string]
+  $start = 0
+  for ($i = 0; $i -le $Bytes.Length; $i++) {
+    if (($i -lt $Bytes.Length) -and ($Bytes[$i] -ne 10)) { continue }
+    $len = $i - $start
+    if (($len -gt 0) -and ($Bytes[$start + $len - 1] -eq 13)) { $len-- }
+    if ($len -gt 0) {
+      try { $text = $strict.GetString($Bytes, $start, $len) } catch { $text = $Fallback.GetString($Bytes, $start, $len) }
+      $lines.Add($text.TrimStart([char]0xFEFF))
+    }
+    $start = $i + 1
+  }
+  return ,([string[]]$lines.ToArray())
+}
+
+function Test-TunnelRecordFresh {
+  # 순수 함수(S15P31A101-709): 역터널 마지막 성공 기록이 StaleSeconds 안이면 true. 기록이 없으면(설치 직후·로그 없음) false = 모른다(오래됨과 다르다).
+  param([nullable[datetime]]$LastSuccessAt = $null, [datetime]$Now = (Get-Date), [int]$StaleSeconds = 300)
+  return (($null -ne $LastSuccessAt) -and ((($Now - $LastSuccessAt).TotalSeconds) -le $StaleSeconds))
+}
+
 function Get-HealPlan {
   # 순수 함수: 현재 게이트웨이 상태(서비스·예약 작업·터널 로그 시각·절전·모드)를 받아 수행할 복구 조치 목록을 돌려준다.
   param(
@@ -824,6 +852,7 @@ function Get-HealPlan {
     [nullable[datetime]]$TunnelLastSuccessAt = $null,
     [datetime]$Now = (Get-Date),
     [int]$TunnelStaleSeconds = 300,
+    [nullable[bool]]$TunnelEc2Listening = $null,  # EC2 127.0.0.1:2222 리슨 여부(null = 안 봤거나 못 봄, S15P31A101-709)
     [bool]$PowerCfgOk = $true,
     [string]$SavedMode = '',
     [bool]$RelayAlive = $true,
@@ -839,11 +868,15 @@ function Get-HealPlan {
     if (-not $SshdFailureConfigured) { $actions += 'set-sshd-failure' }
   }
   if ($TunnelTaskState -ne 'Missing') {
-    $stale = ($null -ne $TunnelLastSuccessAt) -and ((($Now - $TunnelLastSuccessAt).TotalSeconds) -gt $TunnelStaleSeconds)
     if ($TunnelTaskState -ne 'Running') {
       $actions += 'start-tunnel-task'
     }
-    if ((-not $TunnelProcessAlive) -or $stale) {
+    # 재시작은 진짜 끊겼을 때만(S15P31A101-709): ssh 가 없거나, 기록이 최근이 아닌데 EC2 가 포트가 없다고 답했을 때.
+    # ssh 가 살아 있으면 ServerAliveInterval 15·CountMax 3 이라 끊긴 연결은 45초 안에 ssh 가 끝나고 루프가 다시 붙는다.
+    # 기록이 없거나 오래됐다는 것만으로는 재시작하지 않는다: 16차 세션에서 '기록 없음'을 오래됨으로 봐 5분마다 멀쩡한 터널을 끊었다.
+    $fresh = Test-TunnelRecordFresh -LastSuccessAt $TunnelLastSuccessAt -Now $Now -StaleSeconds $TunnelStaleSeconds
+    $ec2Down = ($null -ne $TunnelEc2Listening) -and (-not $TunnelEc2Listening)
+    if ((-not $TunnelProcessAlive) -or ((-not $fresh) -and $ec2Down)) {
       $actions += 'restart-tunnel'
     }
   }
@@ -923,18 +956,53 @@ function Stop-TunnelProcesses {
   }
 }
 
-function Invoke-FreePortsOnEc2 {
+function Get-GatewayEc2SshArgs {
+  # heal(SYSTEM)에는 자기 .ssh 가 없어 게이트웨이 사용자의 설정·키·known_hosts 로 EC2 에 붙는다(known_hosts 가 없으면 BatchMode 에서 호스트 키 확인이 실패한다)
   $gwUser = Get-GatewayUser
-  $uSshCfg = Join-Path "C:\Users\$gwUser\.ssh" 'config'
-  $uPem = Join-Path "C:\Users\$gwUser\.ssh" 'K15A101T.pem'
+  $uSsh = "C:\Users\$gwUser\.ssh"
+  $uSshCfg = Join-Path $uSsh 'config'
+  $uPem = Join-Path $uSsh 'K15A101T.pem'
+  $uKnown = Join-Path $uSsh 'known_hosts'
+  $a = @()
+  if ((Test-Path $uSshCfg) -and (Test-Path $uPem)) { $a += @('-F', $uSshCfg, '-i', $uPem) }
+  if (Test-Path $uKnown) { $a += @('-o', "UserKnownHostsFile=$uKnown") }
+  return $a + @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'simai-ec2')
+}
+
+function Invoke-FreePortsOnEc2 {
+  $sshArgs = Get-GatewayEc2SshArgs
   $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   try {
-    if ((Test-Path $uSshCfg) -and (Test-Path $uPem)) {
-      ssh -F $uSshCfg -i $uPem -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' 2>$null | Out-Null
-    } else {
-      ssh -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' 2>$null | Out-Null
-    }
+    ssh @sshArgs '~/simai-gateway/free-ports.sh' 2>$null | Out-Null
   } catch { } finally { $ErrorActionPreference = $old }
+}
+
+function Test-TunnelListeningOnEc2 {
+  # S15P31A101-709: EC2 127.0.0.1:2222 에 역터널이 열려 있으면 $true, 없으면 $false, EC2 에 못 붙거나 답을 못 읽으면 $null(모름 → 재시작 근거로 쓰지 않는다)
+  $sshArgs = Get-GatewayEc2SshArgs
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    $out = @(ssh @sshArgs "ss -ltnH 'sport = :2222' | wc -l" 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $n = 0
+    if ([int]::TryParse(([string]($out | Select-Object -Last 1)).Trim(), [ref]$n)) { return ($n -ge 1) }
+    return $null
+  } catch { return $null } finally { $ErrorActionPreference = $old }
+}
+
+function Read-TunnelLogLines([int]$Tail = 200) {
+  # 역터널 스크립트가 쓰는 중에도 읽게 공유 모드로 연다. 옛 판(ANSI)·새 판(UTF-8) 줄이 섞여도 줄마다 맞게 읽는다(S15P31A101-709)
+  if (-not (Test-Path $TunnelLog)) { return ,@() }
+  try {
+    $fs = New-Object System.IO.FileStream($TunnelLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+      $ms = New-Object System.IO.MemoryStream
+      $fs.CopyTo($ms)
+      $lines = ConvertFrom-TunnelLogBytes -Bytes $ms.ToArray()
+    } finally { $fs.Dispose() }
+  } catch { return ,@() }
+  if ($lines.Count -gt $Tail) { $lines = $lines[($lines.Count - $Tail)..($lines.Count - 1)] }
+  return ,([string[]]$lines)
 }
 
 function Get-TunnelState {
@@ -942,7 +1010,7 @@ function Get-TunnelState {
   $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
   $tState = if ($t) { [string]$t.State } else { 'Missing' }
   $sshAlive = Test-TunnelSshAlive
-  $lines = if (Test-Path $TunnelLog) { @(Get-Content -LiteralPath $TunnelLog -Encoding UTF8 -Tail 200) } else { @() }
+  $lines = Read-TunnelLogLines -Tail 200
   $info = Get-TunnelLogInfo -Lines $lines -ProcessAlive $sshAlive -Now $now
   $lastConnLabel = if ($null -ne $info.LastConnectAt) {
     $s = $info.LastConnectAt.ToString('yyyy-MM-dd HH:mm:ss')
@@ -950,13 +1018,13 @@ function Get-TunnelState {
     elseif ($null -ne $info.LastDisconnectAt) { "$s (마지막 끊김 $($info.LastDisconnectAt.ToString('HH:mm:ss')))" }
     else { $s }
   } else { '기록 없음' }
-  $lastSucc = if ($null -ne $info.LastSuccessAt) { $info.LastSuccessAt } else { [datetime]::MinValue }
+  # 기록이 없으면 null 로 둔다(모름). 예전에는 [datetime]::MinValue 로 바꿔 heal 이 '오래됨'으로 보고 5분마다 재시작했다(S15P31A101-709)
   return @{
     TaskState        = $tState
     ProcessAlive     = $sshAlive
     LastConnectAt    = $info.LastConnectAt
     LastDisconnectAt = $info.LastDisconnectAt
-    LastSuccessAt    = $lastSucc
+    LastSuccessAt    = $info.LastSuccessAt
     LastConnectLabel = $lastConnLabel
   }
 }
@@ -1003,6 +1071,11 @@ function Do-Heal {
   $sshdStart = if ($svc) { [string]$svc.StartType } else { 'Missing' }
   $sshdFailOk = if ($svc) { Test-SshdFailureConfigured } else { $false }
   $tState = Get-TunnelState
+  # ssh 는 살아 있는데 성공 기록이 최근이 아니면(기록 없음·옛 판 로그) 그것만으로 재시작하지 않고 EC2 에 포트가 열렸는지 물어본다(S15P31A101-709)
+  $tunnelEc2 = $null
+  if (($tState.TaskState -ne 'Missing') -and $tState.ProcessAlive -and (-not (Test-TunnelRecordFresh -LastSuccessAt $tState.LastSuccessAt -Now $now))) {
+    $tunnelEc2 = Test-TunnelListeningOnEc2
+  }
   $pcfg = Get-PowerCfgStatus
   $resume = Get-ResumeMode
   $savedMode = if ($resume) { $resume.Mode } else { '' }
@@ -1021,6 +1094,7 @@ function Do-Heal {
     -TunnelTaskState $tState.TaskState `
     -TunnelProcessAlive $tState.ProcessAlive `
     -TunnelLastSuccessAt $tState.LastSuccessAt `
+    -TunnelEc2Listening $tunnelEc2 `
     -Now $now `
     -PowerCfgOk $pcfg.Ok `
     -SavedMode $savedMode `
@@ -1082,7 +1156,7 @@ function Do-Heal {
   }
 
   if ($plan -contains 'restart-tunnel') {
-    $reason = if ($tState.TaskState -ne 'Running') { "작업 상태=$($tState.TaskState)" } elseif (-not $tState.ProcessAlive) { 'ssh 프로세스 없음' } else { "마지막 성공 오래됨($($tState.LastConnectLabel))" }
+    $reason = if ($tState.TaskState -ne 'Running') { "작업 상태=$($tState.TaskState)" } elseif (-not $tState.ProcessAlive) { 'ssh 프로세스 없음' } else { "EC2 에 역터널 포트 없음(마지막 연결 $($tState.LastConnectLabel))" }
     Do-RestartTunnel -Quiet
     Write-HealLog "역터널 재시작($reason)"
     Say "복구: 역터널 재시작($reason)"
