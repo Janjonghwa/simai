@@ -86,6 +86,7 @@ class FakeEc2:
         self.errors: list[str] = []
         self.end_after_reports: int | None = None
         self.headers_seen: list[dict] = []
+        self.put_status: int | None = None  # 정하면 서명 PUT 에 이 코드만 준다(저장소 쓰기 거부 403 등)
         self.v_reg, self.v_rep = _validator("gpu_session_register"), _validator("gpu_session_report")
         self.v_res = _validator("gpu_session_register_result")
         outer = self
@@ -125,7 +126,7 @@ class FakeEc2:
                     if auth != f"Bearer {WORKER_TOKEN}":
                         return self._send(401, {"code": "UNAUTHORIZED"})
                     outer.signs.append(body)
-                    key = f"gpu-cache/{body['kind']}/{body['cache_key']}.tar"
+                    key = f"job-objects/gpu_cache/{body['kind']}/{body['cache_key']}.tar"  # 서버 GpuCacheService.PREFIX
                     have = outer.objects.get(key)
                     base = f"http://127.0.0.1:{outer.port}"
                     if body["method"] == "GET":
@@ -154,6 +155,8 @@ class FakeEc2:
                 data = self._body()
                 outer.headers_seen.append({k.lower(): v for k, v in self.headers.items()})
                 if path.startswith("/put/"):
+                    if outer.put_status is not None:
+                        return self._send(outer.put_status)
                     if path[5:] in outer.objects:
                         return self._send(412)
                     outer.objects[path[5:]] = data
@@ -279,7 +282,7 @@ def test_auto_registers_writes_private_files_and_reaches_ready_then_reports_ende
     ec2, fake = world["ec2"], world["fake"]
     # Re-ID 묶음은 캐시에 있다(지난 세션이 올림) → Tier 0 전에 받아 COPE 경로를 lobby 환경에 넣는다
     reid = _tar_bytes({"cope/configs/MSMT17/cope.yml": b"x", "weights/cope_msmt17.pth": b"w", "clip-cache/ViT-B-16.pt": b"c"})
-    ec2.objects[f"gpu-cache/reid/{gb.reid_cache_key({})}.tar"] = reid
+    ec2.objects[f"job-objects/gpu_cache/reid/{gb.reid_cache_key({})}.tar"] = reid
     boot = _boot(gb, world)
     t, box = _run_bg(boot)
     assert _wait(lambda: any(r["stage"] == "READY" for r in ec2.reports)), ec2.reports
@@ -483,12 +486,35 @@ def test_cache_store_then_hit_and_never_overwrites(gb, world, tmp_path):
     assert cache.fetch("trt-engine", "h100/sm_90/abc", dest) == "hit"
     assert (dest / "m" / "sm_90" / "trt10" / "a.engine").read_bytes() == b"engine"
     # 받은 내용이 기록된 해시와 다르면 쓰지 않는다
-    key = "gpu-cache/trt-engine/h100/sm_90/abc.tar"
+    key = "job-objects/gpu_cache/trt-engine/h100/sm_90/abc.tar"
     good = ec2.objects[key]
     ec2.objects[key] = good[:-1] + b"\x01"
     real_sign = cache._sign
     cache._sign = lambda *a, **k: {**real_sign(*a, **k), "sha256": hashlib.sha256(good).hexdigest()}
     assert cache.fetch("trt-engine", "h100/sm_90/abc", tmp_path / "bad") == "error"
+
+
+def test_cache_put_403_is_denied_noted_and_boot_goes_on(gb, world, tmp_path):
+    """S15P31A101-710: 서명은 받았는데 저장소가 쓰기를 403 으로 거부하면 「캐시 경로 쓰기 거부(S3 403)」를 보고 설명에 남기고 캐시 없이 진행한다."""
+    ec2 = world["ec2"]
+    ec2.put_status = 403
+    notes: list[str] = []
+    cache = gb.GpuCache(gb.Http(allow_http=True), ec2.url, WORKER_TOKEN, tmp_path / "t", notice=notes.append)
+    src = tmp_path / "reid"
+    (src / "cope").mkdir(parents=True)
+    (src / "cope" / "a.yml").write_text("x")
+    assert cache.store("reid", "cope-1", src, ["cope"]) == "denied"
+    assert notes == ["캐시 경로 쓰기 거부(S3 403)"]
+    assert "job-objects/gpu_cache/reid/cope-1.tar" not in ec2.objects
+    assert not list((tmp_path / "t").iterdir())  # 묶음 tar 는 지운다
+
+    rep = gb.Reporter(gb.Http(allow_http=True), ec2.url, "gpu-boot-runpod", SECRET, "s-1", 3600)
+    rep.set("READY", detail="관제 가능")
+    rep.add_note(gb.GpuCache.DENIED_NOTE)
+    rep.add_note(gb.GpuCache.DENIED_NOTE)  # 같은 말은 한 번만
+    assert rep.payload()["detail"] == "관제 가능 · 캐시 경로 쓰기 거부(S3 403)"
+    rep.set("READY", detail="관제 가능")  # 다음 단계 설명에도 붙는다
+    assert rep.state["detail"] == "관제 가능 · 캐시 경로 쓰기 거부(S3 403)" and rep.state["stage"] == "READY"
 
 
 def test_safe_extract_rejects_escaping_paths(gb, tmp_path):

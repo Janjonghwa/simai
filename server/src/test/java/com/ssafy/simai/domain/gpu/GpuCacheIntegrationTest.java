@@ -76,7 +76,7 @@ class GpuCacheIntegrationTest {
         issued("worker", "register", "--id", workerId, "--job-types", "vlm_rationale");
         bootSecret = issued("gpu-boot", "register", "--id", bootId, "--worker-id", workerId);
         when(storage.configured()).thenReturn(true);
-        when(storage.head(anyString())).thenReturn(Optional.empty());
+        when(storage.headOrAbsentIfForbidden(anyString())).thenReturn(Optional.empty());
         when(storage.signGet(anyString())).thenAnswer(call -> new ObjectStorage.SignedRequest(
                 "https://objects.test/" + call.getArgument(0) + "?sig=get", Map.of(), Instant.now().plusSeconds(300)));
         when(storage.signPut(anyString(), anyString(), anyLong(), anyString(), eq(true))).thenAnswer(call ->
@@ -91,17 +91,21 @@ class GpuCacheIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.hit").value(false))
-                .andExpect(jsonPath("$.object_key").value("gpu-cache/trt-engine/nvidia-h100-80gb-hbm3/sm_90/0123456789abcdef.tar"))
+                .andExpect(jsonPath("$.object_key")
+                        .value("job-objects/gpu_cache/trt-engine/nvidia-h100-80gb-hbm3/sm_90/0123456789abcdef.tar"))
                 .andExpect(jsonPath("$.url").doesNotExist());
+        // 존재 확인은 403 을 없음으로 보는 HEAD 만 쓴다(다른 경로의 head 는 403 을 오류로 본다, S15P31A101-710)
+        verify(storage, never()).head(anyString());
 
-        when(storage.head("gpu-cache/reid/cope-1.tar")).thenReturn(Optional.of(new ObjectStorage.ObjectHead(1234, SHA)));
+        when(storage.headOrAbsentIfForbidden("job-objects/gpu_cache/reid/cope-1.tar"))
+                .thenReturn(Optional.of(new ObjectStorage.ObjectHead(1234, SHA)));
         MvcResult hit = sign(worker, "GET", "reid", "cope-1", null, null).andExpect(status().isOk()).andReturn();
         JsonNode body = mapper.readTree(hit.getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(body.get("hit").booleanValue()).isTrue();
         assertThat(body.get("sha256").stringValue()).isEqualTo(SHA);
         assertThat(body.get("size_bytes").longValue()).isEqualTo(1234);
         assertThat(body.get("method").stringValue()).isEqualTo("GET");
-        assertThat(body.get("url").stringValue()).startsWith("https://objects.test/gpu-cache/reid/cope-1.tar");
+        assertThat(body.get("url").stringValue()).startsWith("https://objects.test/job-objects/gpu_cache/reid/cope-1.tar");
     }
 
     @Test
@@ -112,14 +116,17 @@ class GpuCacheIntegrationTest {
                 .andExpect(jsonPath("$.hit").value(false))
                 .andExpect(jsonPath("$.method").value("PUT"))
                 .andExpect(jsonPath("$.headers.if-none-match").value("*"));
-        verify(storage).signPut("gpu-cache/vllm-compile/sm_90/abc.tar", GpuCacheService.CONTENT_TYPE, 10_000L, SHA, true);
+        verify(storage).signPut("job-objects/gpu_cache/vllm-compile/sm_90/abc.tar", GpuCacheService.CONTENT_TYPE, 10_000L, SHA,
+                true);
 
-        when(storage.head("gpu-cache/vllm-compile/sm_90/abd.tar")).thenReturn(Optional.of(new ObjectStorage.ObjectHead(9, SHA)));
+        when(storage.headOrAbsentIfForbidden("job-objects/gpu_cache/vllm-compile/sm_90/abd.tar"))
+                .thenReturn(Optional.of(new ObjectStorage.ObjectHead(9, SHA)));
         sign(worker, "PUT", "vllm-compile", "sm_90/abd", 10_000L, SHA)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.hit").value(true))
                 .andExpect(jsonPath("$.url").doesNotExist());
-        verify(storage, never()).signPut(eq("gpu-cache/vllm-compile/sm_90/abd.tar"), anyString(), anyLong(), anyString(), eq(true));
+        verify(storage, never()).signPut(eq("job-objects/gpu_cache/vllm-compile/sm_90/abd.tar"), anyString(), anyLong(),
+                anyString(), eq(true));
     }
 
     @Test

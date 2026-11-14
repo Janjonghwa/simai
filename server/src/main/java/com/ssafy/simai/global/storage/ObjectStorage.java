@@ -179,6 +179,20 @@ public class ObjectStorage implements AutoCloseable {
      * 체크섬을 기록하지 않은 저장소·객체는 sha256Hex 가 null 이다(모름). 세팅 결과 GLB 를 Scene 후보로 등록하기 전에 본다(S15P31A101-467).
      */
     public Optional<ObjectHead> head(String key) {
+        return head(key, false);
+    }
+
+    /**
+     * head 와 같되 저장소가 403 을 주면 없음으로 본다(GPU 캐시 전용, S15P31A101-710). S3 는 ListBucket 권한이 없는 자격 증명으로 없는 객체를
+     * HEAD 하면 404 대신 403 을 준다(16차 GPU 세션에서 캐시 서명이 전부 503 이 된 원인 후보). 정말 그 경로 권한이 없어서 403 이었다면
+     * 이어서 내는 받기·올리기 서명 주소도 저장소가 403 으로 거부하므로, 결과는 「캐시 없음」·「올리기 실패」로 끝나고 틀린 데이터는 생기지 않는다.
+     * 다른 경로(녹화·장면·세팅 결과 등)는 head 를 써 403 을 그대로 STORAGE_UNAVAILABLE 로 본다.
+     */
+    public Optional<ObjectHead> headOrAbsentIfForbidden(String key) {
+        return head(key, true);
+    }
+
+    private Optional<ObjectHead> head(String key, boolean forbiddenAsAbsent) {
         requireConfigured();
         try {
             HeadObjectResponse head = client.headObject(HeadObjectRequest.builder().bucket(properties.bucket()).key(key)
@@ -196,6 +210,11 @@ public class ObjectStorage implements AutoCloseable {
             return Optional.of(new ObjectHead(head.contentLength(), hex));
         } catch (AwsServiceException e) {
             if (e.statusCode() == 404) {
+                return Optional.empty();
+            }
+            if (forbiddenAsAbsent && e.statusCode() == 403) {
+                log.info("객체 정보 HEAD 403 → 없음으로 본다(ListBucket 없는 자격 증명은 없는 객체도 403): code={}",
+                        e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
                 return Optional.empty();
             }
             log.warn("객체 저장소에서 객체 정보를 읽지 못했다: status={} code={}", e.statusCode(),

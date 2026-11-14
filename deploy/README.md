@@ -638,9 +638,10 @@ GPU 세션 전에 EC2 호스트에서 저장소의 `deploy/ec2/deploy.sh`를 `/o
 팀원 누구나 GPU 를 켜면 사람 조작 없이 관제 준비까지 간다(설계 `docs/design/S15P31A101-700-gpu-auto-boot.md`, 서버 쪽 등록은 S15P31A101-699).
 이미지 기본 CMD `auto` 가 아래 환경 변수를 보면 `simai-gpu-boot auto` 가 이 순서로 한다: 비밀 값 꺼내기 → GPU·공급자 사실 → TLS 키 → EC2 `POST /api/gpu/sessions` 등록 →
 토큰을 권한 600 파일(`$SIMAI_ROOT/../.simai-private/gpu-session/<워커 ID>.token`·`tier0.token`)에 → 보고 시작(`gpu_session_report`, 단계마다 + `report.interval_ms` 마다) →
-GPU 캐시(S3, 워커 토큰 서명: TensorRT 엔진·Re-ID 는 Tier 0 전에 받고 vLLM 컴파일 캐시는 뒤에서) → 시작 묶음(보정 sha256 확인·기기 토큰 지문·TLS) →
+GPU 캐시(S3 `job-objects/gpu_cache/`, 워커 토큰 서명: TensorRT 엔진·Re-ID 는 Tier 0 전에 받고 vLLM 컴파일 캐시는 뒤에서) → 시작 묶음(보정 sha256 확인·기기 토큰 지문·TLS) →
 `simai-bootstrap preflight --sets tier0` → `simai-bootstrap lobby …`(자식) → 단계 보고 WEIGHTS → ENGINE → TIER0 → VLLM → READY → 없던 캐시를 올린다.
 실패하면 컨테이너를 끝내지 않고 FAILED(+`reason_code`)를 계속 보고하며 기다린다(공급자가 컨테이너를 다시 띄워 진짜 세션을 밀어내지 않게). 그 상태에서 손 경로(아래)로 이어 갈 수 있다.
+캐시 올리기가 저장소에서 403 이면 보고 설명에 「캐시 경로 쓰기 거부(S3 403)」가 붙고 캐시 없이 진행한다(서버 키의 S3 권한을 확인한다, S15P31A101-710).
 EC2 가 세션을 끝내면(409 `GPU_SESSION_ENDED`) lobby 를 멈추고, 같은 컨테이너 디스크로 다시 떠도 다시 등록하지 않는다(`/var/tmp/simai-gpu-boot/ended.json`). SIGTERM 이면 lobby 를 멈추고 `ENDED`(`PROVIDER_STOP`).
 
 **RunPod 템플릿 환경 변수·Secrets(값은 템플릿에 쓰지 않는다).** 위 "RunPod 템플릿"·"Pod형" 의 값에 더한다.

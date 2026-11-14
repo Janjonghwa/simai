@@ -50,6 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -448,6 +449,7 @@ class Reporter:
         self.state: dict = {"stage": "WEIGHTS", "reason_code": None, "detail": None, "progress": None}
         # 모든 단계 설명 뒤에 붙일 한 줄(VRAM 으로 서비스를 줄였다는 사실, S15P31A101-705). 보고 계약은 그대로(stage_detail 칸)
         self.note: str | None = None
+        self._base_detail: str | None = None  # note 를 붙이기 전 단계 설명(add_note 가 다시 붙인다)
         self.ended = threading.Event()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -461,14 +463,26 @@ class Reporter:
 
     def set(self, stage: str, reason: str | None = None, detail: str | None = None, progress: float | None = None) -> None:
         assert stage in STAGES
+        base = detail
         if self.note and stage != "ENDED":
             detail = f"{detail} · {self.note}" if detail else self.note
         with self._lock:
+            self._base_detail = base
             changed = (stage, reason, detail) != (self.state["stage"], self.state["reason_code"], self.state["detail"])
             self.state = {"stage": stage, "reason_code": reason, "detail": detail, "progress": progress}
         if changed:
             log(f"단계 {stage}" + (f" ({reason})" if reason else "") + (f": {detail}" if detail else ""))
             self._wake.set()
+
+    def add_note(self, text: str) -> None:
+        """단계와 무관하게 알게 된 사실(캐시 경로 쓰기 거부 등, S15P31A101-710)을 note 에 더하고 지금 단계 설명에 바로 붙인다. 같은 말은 한 번만."""
+        with self._lock:
+            if self.note and text in self.note:
+                return
+            self.note = f"{self.note} · {text}" if self.note else text
+            s, base = dict(self.state), self._base_detail
+        if s["stage"] != "ENDED":
+            self.set(s["stage"], s["reason_code"], base, s["progress"])
 
     def payload(self) -> dict:
         with self._lock:
@@ -596,11 +610,17 @@ def make_tar(base: Path, members: list[str], out: Path) -> tuple[int, str]:
 
 
 class GpuCache:
-    """gpu-cache/<kind>/<key>.tar. 받기: 서명 GET → sha256 확인(저장소가 기록한 해시를 모르면 쓰지 않음) → 안전하게 풀기.
-    올리기: tar → sha256 → 서명 PUT(없을 때만, If-None-Match) → 412 면 이미 있음. 실패해도 기동은 계속한다(캐시는 시간만 줄인다)."""
+    """객체 키는 서버가 정한다(job-objects/gpu_cache/<kind>/<key>.tar, S15P31A101-710). 이쪽은 kind·cache_key 만 보내고 받은 서명 주소만 쓴다.
+    받기: 서명 GET → sha256 확인(저장소가 기록한 해시를 모르면 쓰지 않음) → 안전하게 풀기.
+    올리기: tar → sha256 → 서명 PUT(없을 때만, If-None-Match) → 412 면 이미 있음, 403 이면 캐시 경로 쓰기 거부(서버 키 권한, 보고에 남김).
+    실패해도 기동은 계속한다(캐시는 시간만 줄인다)."""
 
-    def __init__(self, http: Http, ec2: str, worker_token: str, tmp: Path) -> None:
+    DENIED_NOTE = "캐시 경로 쓰기 거부(S3 403)"
+
+    def __init__(self, http: Http, ec2: str, worker_token: str, tmp: Path,
+                 notice: Callable[[str], None] | None = None) -> None:
         self.http, self.ec2, self.token, self.tmp = http, ec2, worker_token, tmp
+        self.notice = notice  # 보고 설명에 남길 한 줄(Reporter.add_note)
         self.results: dict[str, str] = {}
 
     def _sign(self, kind: str, key: str, method: str, size: int | None = None, sha: str | None = None) -> dict | None:
@@ -671,6 +691,12 @@ class GpuCache:
             out.unlink(missing_ok=True)
         if status == 412:
             return self._done(f"{kind}:store", "exists")
+        if status == 403:
+            # 서버가 HEAD 403 을 없음으로 보고 서명은 줬지만 저장소가 쓰기를 거부했다(서버 키에 그 경로 PutObject 권한 없음). 캐시 없이 진행한다
+            log(f"캐시 {kind} 올리기 실패: {self.DENIED_NOTE}: {sig.get('object_key')} → 캐시 없이 진행(서버 키 권한 확인 필요)")
+            if self.notice is not None:
+                self.notice(self.DENIED_NOTE)
+            return self._done(f"{kind}:store", "denied")
         if status not in (200, 201, 204):
             log(f"캐시 {kind} 올리기 HTTP {status}")
             return self._done(f"{kind}:store", "error")
@@ -1013,7 +1039,7 @@ class Boot:
             f"토큰 파일 {self.private}")
         rep = self.reporter = Reporter(self.http, ec2, boot_id, secret, session_id, result["report"]["interval_ms"] / 1000)
         rep.start()
-        self.cache = GpuCache(self.http, ec2, result["worker"]["token"], self.root / "tmp" / "gpu-cache")
+        self.cache = GpuCache(self.http, ec2, result["worker"]["token"], self.root / "tmp" / "gpu-cache", notice=rep.add_note)
         try:
             if tls_error is not None:
                 raise tls_error
