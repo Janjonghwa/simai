@@ -141,7 +141,11 @@ public class GpuPowerService {
 
     // ---------------------------------------------------------------- 재고
 
-    /** 지금 설정의 공급자에서 선호 GPU × 지역 표와 기본 선택 */
+    /**
+     * 지금 설정의 공급자 재고 표와 기본 선택(S15P31A101-705: 행은 공급자 카탈로그의 모든 GPU, 선호 목록은 정렬·기본 선택용).
+     * 행은 추천(H100·H200 계열) → VRAM 등급 → 선호 순서 → VRAM 큰 순 → 이름 순이고, 칸마다 켤 수 있음(available: true·false·모름 null)을 준다.
+     * 기존 stock 칸은 그대로 둔다(추가만).
+     */
     public ObjectNode offers() {
         GpuSettings s = settings.current();
         GpuProvider provider = configuredProvider(s.provider());
@@ -154,34 +158,39 @@ public class GpuPowerService {
         body.put("interruptible", s.interruptible());
         body.put("max_price_per_hour_usd", s.maxPricePerHourUsd());
         ArrayNode gpus = body.putArray("gpu_types");
-        for (String gpu : table.gpuTypes) {
-            ObjectNode row = gpus.addObject();
-            row.put("gpu_type", gpu);
-            GpuOffer any = table.anyOffer.get(gpu);
-            row.put("name", any == null || any.gpuName() == null ? gpu : any.gpuName());
-            if (any == null || any.memoryGb() == null) {
-                row.putNull("memory_gb");
+        for (Row row : table.rows) {
+            ObjectNode node = gpus.addObject();
+            node.put("gpu_type", row.gpuType());
+            node.put("name", row.name());
+            if (row.memoryGb() == null) {
+                node.putNull("memory_gb");
             } else {
-                row.put("memory_gb", any.memoryGb());
+                node.put("memory_gb", row.memoryGb());
             }
+            node.put("preferred", row.preferredRank() != Integer.MAX_VALUE);
+            node.put("recommended", row.recommended());
+            node.put("tier", row.tier());
+            node.put("available", rowAvailable(table, row.gpuType()));
         }
         ArrayNode regions = body.putArray("regions");
         for (String region : table.regions) {
-            ObjectNode row = regions.addObject();
-            row.put("region", region);
-            row.put("name", table.regionNames.getOrDefault(region, region));
-            row.put("preferred", s.regions().contains(region));
+            ObjectNode node = regions.addObject();
+            node.put("region", region);
+            node.put("name", table.regionNames.getOrDefault(region, region));
+            node.put("preferred", s.regions().contains(region));
         }
         ArrayNode cells = body.putArray("cells");
-        for (String gpu : table.gpuTypes) {
+        for (Row row : table.rows) {
             for (String region : table.regions) {
-                GpuOffer offer = table.cell(gpu, region);
+                GpuOffer offer = table.cell(row.gpuType(), region);
                 ObjectNode cell = cells.addObject();
-                cell.put("gpu_type", gpu);
+                cell.put("gpu_type", row.gpuType());
                 cell.put("region", region);
-                cell.put("stock", offer == null ? "NONE" : offer.stock());
+                String stock = offer == null ? "NONE" : offer.stock();
+                cell.put("stock", stock);
+                cell.put("available", GpuTiers.available(stock));
                 // 칸 가격(AWS 스팟은 가용 영역마다 다르다), 칸이 없으면 그 GPU 의 아무 가격
-                BigDecimal price = offer != null && offer.pricePerHourUsd() != null ? offer.pricePerHourUsd() : table.price(gpu);
+                BigDecimal price = offer != null && offer.pricePerHourUsd() != null ? offer.pricePerHourUsd() : table.price(row.gpuType());
                 cell.put("price_per_hour_usd", price);
                 cell.put("within_cap", withinCap(price, s.maxPricePerHourUsd()));
             }
@@ -198,10 +207,24 @@ public class GpuPowerService {
         return body;
     }
 
+    /** 행 하나가 보이는 지역 중 어디서든 켤 수 있는지: 한 칸이라도 true 면 true, 아니면 모름이 있으면 null, 아니면 false */
+    private static Boolean rowAvailable(Table table, String gpuType) {
+        boolean unknown = false;
+        for (String region : table.regions) {
+            GpuOffer offer = table.cell(gpuType, region);
+            Boolean available = GpuTiers.available(offer == null ? null : offer.stock());
+            if (Boolean.TRUE.equals(available)) {
+                return true;
+            }
+            unknown |= available == null;
+        }
+        return unknown ? null : false;
+    }
+
     // ---------------------------------------------------------------- 켜기
 
     /**
-     * 켠다. gpuType·region 이 없으면 선호 순서 × 재고 × 가격 상한으로 고른다. 이미 켜져 있거나 켜는 중이면 GPU_ALREADY_ON.
+     * 켠다. gpuType·region 이 없으면 추천 → 선호 순서 × 선호 지역 × 재고 × 가격 상한으로 고른다(autoPick). 이미 켜져 있거나 켜는 중이면 GPU_ALREADY_ON.
      * @return 켠 요청 보기(launch)
      */
     public ObjectNode launch(Long userId, String gpuType, String region) {
@@ -225,7 +248,7 @@ public class GpuPowerService {
             if (gpuType == null || region == null || !GPU_TYPE.matcher(gpuType).matches() || !REGION.matcher(region).matches()) {
                 throw new BusinessException(ErrorCode.Gpu.INVALID_GPU_SETTINGS);
             }
-            chosen = all.stream().filter(o -> o.gpuType().equals(gpuType) && o.region().equals(region) && o.inStock()).findFirst()
+            chosen = all.stream().filter(o -> gpuType.equals(o.gpuType()) && region.equals(o.region()) && o.inStock()).findFirst()
                     .orElseThrow(() -> new BusinessException(ErrorCode.Gpu.GPU_OUT_OF_STOCK));
             if (!withinCap(chosen.pricePerHourUsd(), s.maxPricePerHourUsd())) {
                 throw new BusinessException(ErrorCode.Gpu.GPU_PRICE_OVER_CAP);
@@ -608,8 +631,12 @@ public class GpuPowerService {
     }
 
     private List<GpuOffer> fetchOffers(GpuProvider provider, GpuSettings s) {
+        // 후보 = 선호 목록 + 공급자 카탈로그 후보(AWS 처럼 물어볼 종류를 알아야 하는 공급자, S15P31A101-705). RunPod 은 목록 전체를 준다
+        Set<String> candidates = new LinkedHashSet<>(s.gpuTypes());
+        candidates.addAll(provider.catalogGpuTypes());
         try {
-            return provider.offers(new OfferQuery(s.cloudType(), 1, s.gpuTypes(), s.regions(), s.interruptible(), network(provider.id(), s)));
+            return provider.offers(new OfferQuery(s.cloudType(), 1, List.copyOf(candidates), s.regions(), s.interruptible(),
+                    network(provider.id(), s)));
         } catch (GpuProviderException e) {
             log.warn("GPU 재고 조회 실패: {}", e.code());
             throw new BusinessException("NOT_CONFIGURED".equals(e.code()) ? ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED
@@ -617,12 +644,25 @@ public class GpuPowerService {
         }
     }
 
-    /** 선호 GPU 순서가 먼저, 그 안에서 선호 지역 순서. 재고가 있고 가격 상한 안인 첫 칸 */
+    /**
+     * 기본 선택(S15P31A101-705): ① 추천 GPU(표 순서라 선호 순서가 먼저) 중 켤 수 있다고 확인된(재고 HIGH·MEDIUM·LOW) 첫 칸 →
+     * ② 없으면 선호 GPU 순서로 재고가 있거나 모르는(UNKNOWN, AWS) 첫 칸. 둘 다 선호 지역 순서 안, 가격 상한 안이다.
+     * ①에서 모름을 빼는 까닭: AWS 는 모든 칸이 모름이라 선호(g6e 등)보다 비싼 추천(p5.48xlarge 시간당 약 76달러)이 기본이 되면 안 된다.
+     * GPU 를 지역보다 먼저 보는 것은 -702 와 같다(엔진 캐시가 GPU 종류별). 선호 밖 지역은 자동으로 고르지 않는다(EC2·노트북과의
+     * 지연이 커질 수 있어 사람이 표에서 고른다).
+     */
     static Optional<GpuOffer> autoPick(GpuSettings s, List<GpuOffer> offers) {
-        for (String gpu : s.gpuTypes()) {
+        List<String> recommended = rows(s, offers).stream().filter(Row::recommended).map(Row::gpuType).toList();
+        Optional<GpuOffer> hit = firstCell(s, offers, recommended, true);
+        return hit.isPresent() ? hit : firstCell(s, offers, s.gpuTypes(), false);
+    }
+
+    private static Optional<GpuOffer> firstCell(GpuSettings s, List<GpuOffer> offers, List<String> gpus, boolean knownStock) {
+        for (String gpu : gpus) {
             for (String region : s.regions()) {
                 Optional<GpuOffer> hit = offers.stream()
-                        .filter(o -> o.gpuType().equals(gpu) && o.region().equals(region) && o.inStock()
+                        .filter(o -> gpu.equals(o.gpuType()) && region.equals(o.region())
+                                && (knownStock ? Boolean.TRUE.equals(GpuTiers.available(o.stock())) : o.inStock())
                                 && withinCap(o.pricePerHourUsd(), s.maxPricePerHourUsd()))
                         .findFirst();
                 if (hit.isPresent()) {
@@ -633,8 +673,17 @@ public class GpuPowerService {
         return Optional.empty();
     }
 
+    /** 추천 행(표 순서) → 선호 목록(순서). 재고 없음 오류 구분·표에 더 보일 지역 고르기에 쓴다 */
+    private static List<String> candidates(GpuSettings s, List<GpuOffer> offers) {
+        Set<String> order = new LinkedHashSet<>();
+        rows(s, offers).stream().filter(Row::recommended).map(Row::gpuType).forEach(order::add);
+        order.addAll(s.gpuTypes());
+        return List.copyOf(order);
+    }
+
     private static boolean anyInStock(GpuSettings s, List<GpuOffer> offers) {
-        return offers.stream().anyMatch(o -> o.inStock() && s.gpuTypes().contains(o.gpuType()) && s.regions().contains(o.region()));
+        List<String> gpus = candidates(s, offers);
+        return offers.stream().anyMatch(o -> o.inStock() && gpus.contains(o.gpuType()) && s.regions().contains(o.region()));
     }
 
     static boolean withinCap(BigDecimal price, BigDecimal cap) {
@@ -644,29 +693,70 @@ public class GpuPowerService {
         return price != null && price.compareTo(cap) <= 0;
     }
 
-    /** 표: 선호 GPU(순서) × 선호 지역(순서) + 선호 GPU 재고가 있는 다른 지역 몇 곳 */
+    /** 표 한 행(GPU 종류). preferredRank 는 선호 목록 순서(아니면 Integer.MAX_VALUE) */
+    record Row(String gpuType, String name, Integer memoryGb, int preferredRank, boolean recommended, String tier) {
+    }
+
+    /**
+     * 행: 공급자 카탈로그의 모든 GPU + (카탈로그에 없어도) 선호 GPU. 정렬은 추천 → VRAM 등급 → 선호 순서 → VRAM 큰 순 → 이름 순.
+     * 이름·VRAM 은 그 종류의 첫 값(모르면 이름은 ID, VRAM 은 null).
+     */
+    static List<Row> rows(GpuSettings s, List<GpuOffer> offers) {
+        Map<String, String> names = new LinkedHashMap<>();
+        Map<String, Integer> memory = new HashMap<>();
+        for (GpuOffer o : offers) {
+            if (o.gpuType() == null) {
+                continue;
+            }
+            names.putIfAbsent(o.gpuType(), o.gpuName() == null ? o.gpuType() : o.gpuName());
+            if (o.memoryGb() != null) {
+                memory.putIfAbsent(o.gpuType(), o.memoryGb());
+            }
+        }
+        for (String gpu : s.gpuTypes()) {
+            names.putIfAbsent(gpu, gpu);
+        }
+        List<Row> rows = new ArrayList<>();
+        for (Map.Entry<String, String> e : names.entrySet()) {
+            Integer mem = memory.get(e.getKey());
+            int rank = s.gpuTypes().indexOf(e.getKey());
+            rows.add(new Row(e.getKey(), e.getValue(), mem, rank < 0 ? Integer.MAX_VALUE : rank,
+                    GpuTiers.recommended(e.getKey(), e.getValue(), mem), GpuTiers.tier(mem)));
+        }
+        rows.sort(Comparator.comparing((Row r) -> !r.recommended())
+                .thenComparingInt(r -> GpuTiers.rank(r.tier()))
+                .thenComparingInt(Row::preferredRank)
+                .thenComparing(Row::memoryGb, Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(Row::name));
+        return rows;
+    }
+
+    /** 표: 모든 행 × (선호 지역(순서) + 추천·선호 GPU 재고가 있는 다른 지역 몇 곳) */
     private static Table table(GpuSettings s, List<GpuOffer> offers) {
         Table t = new Table();
-        t.gpuTypes.addAll(s.gpuTypes());
+        t.rows.addAll(rows(s, offers));
+        Set<String> focus = new LinkedHashSet<>(candidates(s, offers));
         Set<String> regions = new LinkedHashSet<>(s.regions());
         offers.stream()
-                .filter(o -> s.gpuTypes().contains(o.gpuType()) && o.inStock() && !s.regions().contains(o.region()))
+                .filter(o -> o.region() != null && focus.contains(o.gpuType()) && o.inStock() && !s.regions().contains(o.region()))
                 .map(GpuOffer::region).distinct().sorted(Comparator.naturalOrder()).limit(EXTRA_REGIONS).forEach(regions::add);
         t.regions.addAll(regions);
         for (GpuOffer o : offers) {
+            // 지역 없는 칸 = 카탈로그에만 있고 어느 지역에도 없는 GPU(행만 생기고 칸은 없음 = 없음). 가격은 행에 보인다
+            t.anyOffer.putIfAbsent(o.gpuType(), o);
+            if (o.region() == null) {
+                continue;
+            }
             if (o.regionName() != null) {
                 t.regionNames.putIfAbsent(o.region(), o.regionName());
             }
-            if (s.gpuTypes().contains(o.gpuType())) {
-                t.anyOffer.putIfAbsent(o.gpuType(), o);
-                t.cells.put(o.gpuType() + "\n" + o.region(), o);
-            }
+            t.cells.put(o.gpuType() + "\n" + o.region(), o);
         }
         return t;
     }
 
     private static final class Table {
-        final List<String> gpuTypes = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         final List<String> regions = new ArrayList<>();
         final Map<String, String> regionNames = new HashMap<>();
         final Map<String, GpuOffer> anyOffer = new HashMap<>();

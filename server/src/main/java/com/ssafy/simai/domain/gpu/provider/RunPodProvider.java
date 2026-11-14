@@ -99,8 +99,10 @@ public class RunPodProvider implements GpuProvider {
                 price = priceNode.decimalValue().multiply(BigDecimal.valueOf(Math.max(1, query.gpuCount())));
             }
             JsonNode dataCenters = gpu.get("dataCenters");
-            if (dataCenters == null || !dataCenters.isArray()) {
-                continue; // 어디에도 없다(문서: 없으면 빠진다). 서비스가 선호 칸을 NONE 으로 채운다
+            if (dataCenters == null || !dataCenters.isArray() || dataCenters.isEmpty()) {
+                // 어디에도 없다(문서: 없으면 빠진다). 카탈로그 행으로만 남긴다(지역 null·NONE, 켜기 패널의 모든 GPU 행, S15P31A101-705)
+                offers.add(new GpuOffer(id, name, memory, null, null, "NONE", price));
+                continue;
             }
             for (JsonNode dc : dataCenters) {
                 String region = text(dc, "id");

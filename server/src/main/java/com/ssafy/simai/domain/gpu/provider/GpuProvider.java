@@ -21,6 +21,14 @@ public interface GpuProvider {
     /** 지금 재고·시간당 가격(GPU 종류 × 지역). 재고가 없는 칸도 NONE 으로 싣는다(공급자가 아는 만큼) */
     List<GpuOffer> offers(OfferQuery query) throws GpuProviderException;
 
+    /**
+     * 공급자 카탈로그 후보(S15P31A101-705). 재고 조회에 선호 목록과 함께 넘길 GPU 종류. 목록 전체를 내주는 공급자(RunPod)는 비워 둔다.
+     * 물어볼 종류를 알아야 하는 공급자(AWS)는 아는 GPU 인스턴스 종류를 준다(켜기 패널이 모든 GPU 를 행으로 보이게).
+     */
+    default List<String> catalogGpuTypes() {
+        return List.of();
+    }
+
     /** 인스턴스를 만든다. 성공하면 공급자 인스턴스 ID(G1 등록의 instance_id 와 같은 값) */
     CreatedInstance create(LaunchSpec spec) throws GpuProviderException;
 
@@ -30,9 +38,8 @@ public interface GpuProvider {
     /** 인스턴스 상태. 없으면 GONE */
     InstanceState state(String instanceId) throws GpuProviderException;
 
-    /** 재고 조회 조건 */
     /**
-     * 재고 조회 조건. gpuTypes·regions·interruptible·network 는 설정의 선호 목록이다. 목록 전체를 내주는 공급자(RunPod)는 보지 않고,
+     * 재고 조회 조건. gpuTypes 는 설정의 선호 목록 + {@link #catalogGpuTypes()}, regions·interruptible·network 는 설정 값이다. 목록 전체를 내주는 공급자(RunPod)는 보지 않고,
      * 후보를 알아야 묻는 공급자(AWS: 인스턴스 종류·가용 영역·스팟 가격·서브넷)가 쓴다(S15P31A101-703).
      */
     record OfferQuery(String cloudType, int gpuCount, List<String> gpuTypes, List<String> regions, boolean interruptible,
@@ -66,6 +73,7 @@ public interface GpuProvider {
      * 재고 한 칸.
      * @param gpuType 공급자 GPU 종류 ID(만들기에 그대로 쓴다. AWS 는 인스턴스 종류)
      * @param stock HIGH·MEDIUM·LOW·NONE, 또는 UNKNOWN(제공은 되는데 실시간 재고를 알 수 없음: AWS 는 만들어 봐야 안다)
+     * @param region 지역 ID. null 이면 카탈로그에만 있고 어느 지역에도 없는 GPU(stock NONE, 켜기 패널에 행만 보인다, S15P31A101-705)
      * @param pricePerHourUsd 시간당 가격(RunPod: 온디맨드 GPU 1대 × gpuCount, AWS: 인스턴스 1대의 온디맨드 또는 스팟). 모르면 null
      */
     record GpuOffer(String gpuType, String gpuName, Integer memoryGb, String region, String regionName, String stock,

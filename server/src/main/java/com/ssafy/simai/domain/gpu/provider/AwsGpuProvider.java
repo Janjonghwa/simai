@@ -104,6 +104,9 @@ public class AwsGpuProvider implements GpuProvider {
         Map<String, BigDecimal> spot = query.interruptible() ? api.spotPrices(types) : Map.of();
         List<GpuOffer> offers = new ArrayList<>();
         for (String type : types) {
+            if (offered.getOrDefault(type, Set.of()).isEmpty()) {
+                continue; // 이 리전에서 팔지 않는 종류(카탈로그 후보, S15P31A101-705)는 가격도 묻지 않는다
+            }
             BigDecimal onDemandPrice = query.interruptible() ? null : onDemandPrice(type);
             AwsGpuApi.GpuSpec spec = specs.get(type);
             String name = spec == null ? type : type + " · " + spec.gpuName() + " ×" + spec.gpuCount();
@@ -118,6 +121,12 @@ public class AwsGpuProvider implements GpuProvider {
             }
         }
         return offers;
+    }
+
+    /** 아는 서울 GPU 인스턴스 종류(예비 가격표의 키, 설계 -703 후보 표). 켜기 패널이 선호 목록 밖 종류도 행으로 보이게 함께 묻는다(S15P31A101-705) */
+    @Override
+    public List<String> catalogGpuTypes() {
+        return List.copyOf(aws.onDemandPrices().keySet());
     }
 
     @Override

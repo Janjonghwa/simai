@@ -83,34 +83,96 @@ export function createGpuMock() {
     };
   };
 
-  const offers = () => ({
-    provider: settings.provider,
-    cloud_type: settings.cloud_type,
-    interruptible: settings.interruptible,
-    max_price_per_hour_usd: settings.max_price_per_hour_usd,
-    gpu_types: settings.preferred_gpu_types.map((id, i) => ({
-      gpu_type: id,
-      name: id.replace('NVIDIA ', ''),
-      memory_gb: i < 3 ? 80 : null,
-    })),
-    regions: settings.preferred_regions.map((r) => ({ region: r, name: r, preferred: true })),
-    cells: settings.preferred_gpu_types.flatMap((g, gi) =>
-      settings.preferred_regions.map((r, ri) => ({
-        gpu_type: g,
-        region: r,
-        stock: gi === 0 && ri === 0 ? 'NONE' : gi + ri === 1 ? 'LOW' : 'HIGH',
-        price_per_hour_usd: 2.99 - gi * 0.3,
-        within_cap:
-          settings.max_price_per_hour_usd === null ||
-          2.99 - gi * 0.3 <= settings.max_price_per_hour_usd,
+  // 카탈로그 흉내(S15P31A101-705): 선호 GPU + 그 밖 몇 종. 서버처럼 추천 → VRAM 등급 → 선호 순서로 정렬해 둔다(등급 규칙은 서버 GpuTiers)
+  const CATALOG = [
+    { id: 'NVIDIA H200', name: 'H200 SXM', mem: 141, price: 3.99 },
+    { id: 'NVIDIA H100 80GB HBM3', name: 'H100 SXM', mem: 80, price: 2.99 },
+    { id: 'NVIDIA H100 NVL', name: 'H100 NVL', mem: 94, price: 2.79 },
+    { id: 'NVIDIA H100 PCIe', name: 'H100 PCIe', mem: 80, price: 2.39 },
+    { id: 'NVIDIA A100 80GB PCIe', name: 'A100 PCIe', mem: 80, price: 1.64 },
+    { id: 'NVIDIA L40S', name: 'L40S', mem: 48, price: 0.86 },
+    { id: 'NVIDIA GeForce RTX 4090', name: 'RTX 4090', mem: 24, price: 0.69 },
+    { id: 'NVIDIA RTX A4000', name: 'RTX A4000', mem: 16, price: 0.25 },
+  ];
+  const tierOf = (mem: number) =>
+    mem >= 74 ? 'RECOMMENDED' : mem >= 44 ? 'BELOW_RECOMMENDED' : mem >= 22 ? 'LIMITED' : 'RISKY';
+  const recommendedOf = (name: string) => /(^|[^A-Za-z0-9])H(100|200)(?![0-9])/.test(name);
+  const rows = () => {
+    const known = new Set(CATALOG.map((c) => c.id));
+    const all = [
+      ...CATALOG,
+      ...settings.preferred_gpu_types
+        .filter((id) => !known.has(id))
+        .map((id) => ({ id, name: id, mem: null as number | null, price: 1 })),
+    ];
+    const rank = (id: string) => {
+      const i = settings.preferred_gpu_types.indexOf(id);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    const tierRank = (mem: number | null) =>
+      mem === null
+        ? 4
+        : ['RECOMMENDED', 'BELOW_RECOMMENDED', 'LIMITED', 'RISKY'].indexOf(tierOf(mem));
+    return all
+      .map((c) => ({ ...c, rec: recommendedOf(c.name) && (c.mem === null || c.mem >= 74) }))
+      .sort(
+        (a, b) =>
+          Number(b.rec) - Number(a.rec) ||
+          tierRank(a.mem) - tierRank(b.mem) ||
+          rank(a.id) - rank(b.id) ||
+          (b.mem ?? -1) - (a.mem ?? -1),
+      );
+  };
+  const stockOf = (gi: number, ri: number) =>
+    gi === 1 && ri === 0 ? 'NONE' : (gi + ri) % 4 === 3 ? 'NONE' : 'HIGH';
+
+  const offers = () => {
+    const list = rows();
+    const cells = list.flatMap((g, gi) =>
+      settings.preferred_regions.map((r, ri) => {
+        const stock = stockOf(gi, ri);
+        return {
+          gpu_type: g.id,
+          region: r,
+          stock,
+          available: stock !== 'NONE',
+          price_per_hour_usd: g.price,
+          within_cap:
+            settings.max_price_per_hour_usd === null || g.price <= settings.max_price_per_hour_usd,
+        };
+      }),
+    );
+    const usable = (id: string, r: string) =>
+      cells.some((c) => c.gpu_type === id && c.region === r && c.available && c.within_cap);
+    const order = [...list.filter((g) => g.rec).map((g) => g.id), ...settings.preferred_gpu_types];
+    let pick: { gpu_type: string; region: string } | null = null;
+    for (const id of order) {
+      const r = settings.preferred_regions.find((region) => usable(id, region));
+      if (r) {
+        pick = { gpu_type: id, region: r };
+        break;
+      }
+    }
+    return {
+      provider: settings.provider,
+      cloud_type: settings.cloud_type,
+      interruptible: settings.interruptible,
+      max_price_per_hour_usd: settings.max_price_per_hour_usd,
+      gpu_types: list.map((g) => ({
+        gpu_type: g.id,
+        name: g.name,
+        memory_gb: g.mem,
+        preferred: settings.preferred_gpu_types.includes(g.id),
+        recommended: g.rec,
+        tier: g.mem === null ? null : tierOf(g.mem),
+        available: cells.some((c) => c.gpu_type === g.id && c.available),
       })),
-    ),
-    default:
-      settings.preferred_gpu_types.length > 0 && settings.preferred_regions.length > 1
-        ? { gpu_type: settings.preferred_gpu_types[0], region: settings.preferred_regions[1] }
-        : null,
-    fetched_at_ms: Date.now(),
-  });
+      regions: settings.preferred_regions.map((r) => ({ region: r, name: r, preferred: true })),
+      cells,
+      default: pick,
+      fetched_at_ms: Date.now(),
+    };
+  };
 
   const settingsView = () => ({
     version_id: settingsVersion,

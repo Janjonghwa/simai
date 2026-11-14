@@ -446,6 +446,8 @@ class Reporter:
         self.http, self.ec2, self.boot_id, self.secret, self.session_id = http, ec2, boot_id, secret, session_id
         self.interval_s = max(1.0, interval_s)
         self.state: dict = {"stage": "WEIGHTS", "reason_code": None, "detail": None, "progress": None}
+        # 모든 단계 설명 뒤에 붙일 한 줄(VRAM 으로 서비스를 줄였다는 사실, S15P31A101-705). 보고 계약은 그대로(stage_detail 칸)
+        self.note: str | None = None
         self.ended = threading.Event()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -459,6 +461,8 @@ class Reporter:
 
     def set(self, stage: str, reason: str | None = None, detail: str | None = None, progress: float | None = None) -> None:
         assert stage in STAGES
+        if self.note and stage != "ENDED":
+            detail = f"{detail} · {self.note}" if detail else self.note
         with self._lock:
             changed = (stage, reason, detail) != (self.state["stage"], self.state["reason_code"], self.state["detail"])
             self.state = {"stage": stage, "reason_code": reason, "detail": detail, "progress": progress}
@@ -788,6 +792,25 @@ def lobby_stage(marker_doc: dict | None, started_ms: int, want_vllm: bool, vllm_
     return "READY", None
 
 
+def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
+    """lobby 서비스 기본값을 VRAM(nvidia-smi memory.total, MiB)으로 정한다(S15P31A101-705, 명세 3.12 최소 사양).
+    SIMAI_BOOT_SERVICES 가 있으면 그 값을 그대로 쓴다(명시값 우선). 돌려주는 것은 (services 또는 None = lobby 기본, 보고에 붙일 한 줄).
+    - 48GB급 이상(min_worker_mb, 45,000 MiB): lobby 기본(tier0,vllm,worker,avatar). 48~79GB 의 VLM 몫은 19.1 미결이라 그대로 둔다
+    - 24GB급(min_tier0_mb 22,500 ~ 45,000 MiB): tier0. 분석 워커가 없으니 세팅(site_setup)·맵 굽기·VLM·아바타가 안 된다
+    - 그보다 작음: tier0 + 경고. preflight 가 Tier 0 최소 사양 미만으로 멈춰 GPU_TOO_SMALL 이 될 수 있다(개발·시험용)
+    - VRAM 을 모름: lobby 기본(preflight 가 사양을 모르면 멈춘다)"""
+    explicit = (env.get("SIMAI_BOOT_SERVICES") or "").strip()
+    if explicit:
+        return explicit, None
+    mb = gpu.get("memory_total_mb")
+    if not isinstance(mb, (int, float)) or isinstance(mb, bool) or mb >= min_worker_mb:
+        return None, None
+    gib = mb / 1024
+    if mb >= min_tier0_mb:
+        return "tier0", f"VRAM {gib:.1f} GiB(24GB급): Tier 0 관제만, 세팅·맵 굽기·VLM·아바타 꺼짐"
+    return "tier0", f"VRAM {gib:.1f} GiB: Tier 0 최소 사양(24GB급) 미만, 개발·시험용(준비 실패 가능)"
+
+
 def lobby_failure(code: int, stage: str) -> tuple[str, str]:
     if code == 5 and stage == "ENGINE":
         return "ENGINE_BUILD_FAILED", "TensorRT 엔진 빌드 실패(종료 코드 5)"
@@ -1012,6 +1035,11 @@ class Boot:
         reid_dir, reid_key = self.root / "reid", reid_cache_key(env)
         engines = Path(env.get("SIMAI_ENGINE_CACHE") or self.root / "engines")
         vllm_dir = self.cache_root / "vllm"
+        # VRAM 별 lobby 서비스(명시값 우선). 줄였으면 모든 단계 보고 설명에 남긴다(작은 GPU 에서 vLLM OOM 으로 「준비 실패」만 보이지 않게)
+        services, note = boot_services(env, gpu, self.bs.MIN_WORKER_VRAM_MB, self.bs.MIN_VRAM_MB)
+        if note:
+            rep.note = note
+            log(f"서비스 축소: {note} (--services {services}, 바꾸려면 SIMAI_BOOT_SERVICES)")
         rep.set("WEIGHTS", detail="캐시·Tier 0 가중치·시작 묶음")
 
         # 뒤에서: vLLM 컴파일 캐시(vLLM 은 VLM 가중치 뒤에 뜨므로 Tier 0 를 막지 않는다). 다른 이름으로 풀고 아직 없을 때만 옮긴다
@@ -1046,7 +1074,6 @@ class Boot:
             no_config = e
 
         # Tier 0 가중치·GPU 예산·런타임(세팅·VLM 가중치는 lobby 가 Tier 0 준비 뒤 뒤에서 받는다)
-        services = (env.get("SIMAI_BOOT_SERVICES") or "").strip() or None
         pre = [*self.bootstrap_cmd, "preflight", "--sets", "tier0", *(["--services", services] if services else [])]
         code = subprocess.run(pre, env=self.child_env(), stdout=subprocess.DEVNULL, check=False).returncode
         if code != 0:

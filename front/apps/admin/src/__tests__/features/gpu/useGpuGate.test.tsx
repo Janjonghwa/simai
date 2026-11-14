@@ -118,7 +118,7 @@ describe('useGpuGate', () => {
     expect(off.textContent).toContain('세팅과 관제에는 GPU가 필요합니다(약 5~7분)');
     act(() => fireEvent.click(screen.getByRole('button', { name: 'GPU 켜기' })));
     // 켜기 표가 열린다
-    expect(await screen.findByRole('button', { name: 'H100 SXM AP-JP-1 많음' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'H100 SXM AP-JP-1 켤 수 있음' })).toBeTruthy();
     act(() => fireEvent.click(screen.getByRole('button', { name: '취소' })));
     act(() => fireEvent.click(screen.getByRole('button', { name: '취소' })));
     expect(screen.queryByTestId('gpu-gate-off')).toBeNull();

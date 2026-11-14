@@ -58,13 +58,27 @@ export type GpuStatus = z.infer<typeof gpuStatusSchema>;
 export const gpuStockSchema = z.enum(['HIGH', 'MEDIUM', 'LOW', 'NONE', 'UNKNOWN']);
 export type GpuStock = z.infer<typeof gpuStockSchema>;
 
+// VRAM 등급(S15P31A101-705, 서버 GpuTiers 가 정한다. 명세 3.12 최소 사양): 80GB급 추천 / 48GB급 권장 미만 / 24GB급 제한(Tier 0 관제만) / 그 미만 위험(경계 74·44·22GB)
+export const gpuTierSchema = z.enum(['RECOMMENDED', 'BELOW_RECOMMENDED', 'LIMITED', 'RISKY']);
+export type GpuTier = z.infer<typeof gpuTierSchema>;
+
+// 행은 공급자 카탈로그의 모든 GPU(서버가 추천 → VRAM 등급 → 선호 순서로 정렬해 준다, -705).
+// available: 켤 수 있음 true / 없음 false / 모름 null(AWS). 공급자가 개수를 주면 count 로 「n개」를 보인다(지금은 어느 공급자도 주지 않음).
 export const gpuOffersSchema = z.object({
   provider: z.string(),
   cloud_type: z.string(),
   interruptible: z.boolean(),
   max_price_per_hour_usd: nullableNumber,
   gpu_types: z.array(
-    z.object({ gpu_type: z.string(), name: z.string(), memory_gb: nullableNumber }),
+    z.object({
+      gpu_type: z.string(),
+      name: z.string(),
+      memory_gb: nullableNumber,
+      preferred: z.boolean().optional(),
+      recommended: z.boolean().optional(),
+      tier: gpuTierSchema.nullable().optional(),
+      available: z.boolean().nullable().optional(),
+    }),
   ),
   regions: z.array(z.object({ region: z.string(), name: z.string(), preferred: z.boolean() })),
   cells: z.array(
@@ -72,6 +86,8 @@ export const gpuOffersSchema = z.object({
       gpu_type: z.string(),
       region: z.string(),
       stock: gpuStockSchema,
+      available: z.boolean().nullable().optional(),
+      count: nullableNumber.optional(),
       price_per_hour_usd: nullableNumber,
       within_cap: z.boolean(),
     }),
@@ -81,6 +97,7 @@ export const gpuOffersSchema = z.object({
 });
 export type GpuOffers = z.infer<typeof gpuOffersSchema>;
 export type GpuOfferCell = GpuOffers['cells'][number];
+export type GpuOfferRow = GpuOffers['gpu_types'][number];
 
 export const gpuSettingsSchema = z.object({
   version_id: nullableNumber,
@@ -107,7 +124,7 @@ export const gpuSettingsResponseSchema = z.object({
 });
 export type GpuSettingsResponse = z.infer<typeof gpuSettingsResponseSchema>;
 
-/** 켜기 요청. 비우면 서버가 선호 순서 × 재고 × 가격 상한으로 고른다 */
+/** 켜기 요청. 비우면 서버가 추천 → 선호 순서 × 재고 × 가격 상한으로 고른다 */
 export interface GpuLaunchBody {
   gpu_type?: string;
   region?: string;

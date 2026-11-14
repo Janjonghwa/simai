@@ -22,6 +22,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -354,6 +355,62 @@ class GpuPowerIntegrationTest {
                 .content(mapper.writeValueAsString(settingsBody(null, 30)))).andExpect(status().isForbidden());
         mvc.perform(post("/api/gpu/launches").header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isForbidden());
         mvc.perform(post("/api/gpu/stop").header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 재고_표는_카탈로그의_모든_GPU_를_추천과_VRAM_등급_순으로_싣고_기본은_추천_중_켤_수_있는_첫_칸이다() throws Exception {
+        // S15P31A101-705: 선호는 A40(추천 아님) 하나. B200 은 카탈로그에만 있고 어느 지역에도 없다
+        catalog = """
+                {"gpus":[
+                  {"id":"NVIDIA RTX A4000","name":"RTX A4000","memory":16,"price":{"secure":0.25},
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"HIGH"}]},
+                  {"id":"NVIDIA A40","name":"A40","memory":48,"price":{"secure":0.44},
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"MEDIUM"}]},
+                  {"id":"NVIDIA GeForce RTX 4090","name":"RTX 4090","memory":24,"price":{"secure":0.69},
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"LOW"}]},
+                  {"id":"NVIDIA B200","name":"B200","memory":180,"price":{"secure":5.99}},
+                  {"id":"NVIDIA H200","name":"H200 SXM","memory":141,"price":{"secure":3.99},
+                   "dataCenters":[{"id":"EU-RO-1","name":"Europe Romania 1","availability":"HIGH"}]},
+                  {"id":"%s","name":"H100 PCIe","memory":80,"price":{"secure":2.39},
+                   "dataCenters":[{"id":"AP-JP-1","name":"Asia Japan 1","availability":"NONE"}]}
+                ]}""".formatted(PCIE);
+        ObjectNode body = settingsBody(null, 30);
+        body.putArray("preferred_gpu_types").add("NVIDIA A40");
+        mvc.perform(post("/api/gpu/settings").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(body))).andExpect(status().isCreated());
+
+        JsonNode offers = mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8).transform(this::read);
+        // 추천(H100·H200 계열) → VRAM 등급 → 선호 순서 → VRAM 큰 순
+        List<String> rows = new ArrayList<>();
+        offers.get("gpu_types").forEach(g -> rows.add(g.get("gpu_type").stringValue() + "/" + g.get("tier").stringValue() + "/"
+                + g.get("recommended").booleanValue() + "/" + g.get("preferred").booleanValue() + "/" + g.get("available")));
+        assertThat(rows).containsExactly(
+                "NVIDIA H200/RECOMMENDED/true/false/true",
+                PCIE + "/RECOMMENDED/true/false/false",
+                "NVIDIA B200/RECOMMENDED/false/false/false",
+                "NVIDIA A40/BELOW_RECOMMENDED/false/true/true",
+                "NVIDIA GeForce RTX 4090/LIMITED/false/false/true",
+                "NVIDIA RTX A4000/RISKY/false/false/true");
+        // 칸: 재고 등급(stock)은 그대로, 켤 수 있음(available)을 더한다. 지역 없는 B200 도 행 × 지역 칸이 있다(없음, 가격은 보인다)
+        List<String> regions = new ArrayList<>();
+        offers.get("regions").forEach(r -> regions.add(r.get("region").stringValue()));
+        assertThat(regions).containsExactly("AP-JP-1", "EU-RO-1");
+        assertThat(offers.get("cells").size()).isEqualTo(12);
+        JsonNode first = offers.get("cells").get(0);
+        assertThat(first.get("gpu_type").stringValue() + "/" + first.get("region").stringValue() + "/" + first.get("stock").stringValue()
+                + "/" + first.get("available").booleanValue()).isEqualTo("NVIDIA H200/AP-JP-1/NONE/false");
+        JsonNode b200 = offers.get("cells").get(4);
+        assertThat(b200.get("gpu_type").stringValue()).isEqualTo("NVIDIA B200");
+        assertThat(b200.get("available").booleanValue()).isFalse();
+        assertThat(b200.get("price_per_hour_usd").decimalValue()).isEqualByComparingTo("5.99");
+        // 기본: 추천 중 켤 수 있는 첫 칸(선호 A40 보다 먼저)
+        assertThat(offers.get("default").get("gpu_type").stringValue()).isEqualTo("NVIDIA H200");
+        assertThat(offers.get("default").get("region").stringValue()).isEqualTo("EU-RO-1");
+
+        // 선호 밖·추천 아닌 GPU 도 표에서 골라 켤 수 있다(등급은 막지 않는다)
+        launch("NVIDIA RTX A4000", "AP-JP-1").andExpect(status().isCreated());
+        assertThat(created.getFirst().get("gpuTypeIds").get(0).stringValue()).isEqualTo("NVIDIA RTX A4000");
     }
 
     @Test

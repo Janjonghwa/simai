@@ -16,6 +16,8 @@ vi.mock('@/lib/api', async () => {
 const T = 1_760_342_400_000;
 const H100 = 'NVIDIA H100 80GB HBM3';
 const PCIE = 'NVIDIA H100 PCIe';
+const RTX4090 = 'NVIDIA GeForce RTX 4090';
+const A4000 = 'NVIDIA RTX A4000';
 
 let current: Record<string, unknown> | null = null;
 const posts: string[] = [];
@@ -26,9 +28,44 @@ const offers = {
   cloud_type: 'SECURE',
   interruptible: false,
   max_price_per_hour_usd: 3,
+  // S15P31A101-705: 카탈로그의 모든 GPU(서버가 추천 → VRAM 등급 순으로 정렬해 준다)
   gpu_types: [
-    { gpu_type: H100, name: 'H100 SXM', memory_gb: 80 },
-    { gpu_type: PCIE, name: 'H100 PCIe', memory_gb: 80 },
+    {
+      gpu_type: H100,
+      name: 'H100 SXM',
+      memory_gb: 80,
+      preferred: true,
+      recommended: true,
+      tier: 'RECOMMENDED',
+      available: true,
+    },
+    {
+      gpu_type: PCIE,
+      name: 'H100 PCIe',
+      memory_gb: 80,
+      preferred: true,
+      recommended: true,
+      tier: 'RECOMMENDED',
+      available: true,
+    },
+    {
+      gpu_type: RTX4090,
+      name: 'RTX 4090',
+      memory_gb: 24,
+      preferred: false,
+      recommended: false,
+      tier: 'LIMITED',
+      available: true,
+    },
+    {
+      gpu_type: A4000,
+      name: 'RTX A4000',
+      memory_gb: 16,
+      preferred: false,
+      recommended: false,
+      tier: 'RISKY',
+      available: null,
+    },
   ],
   regions: [
     { region: 'AP-JP-1', name: 'Asia Japan 1', preferred: true },
@@ -55,6 +92,38 @@ const offers = {
       region: 'EU-RO-1',
       stock: 'NONE',
       price_per_hour_usd: 2.39,
+      within_cap: true,
+    },
+    {
+      gpu_type: RTX4090,
+      region: 'AP-JP-1',
+      stock: 'HIGH',
+      available: true,
+      price_per_hour_usd: 0.69,
+      within_cap: true,
+    },
+    {
+      gpu_type: RTX4090,
+      region: 'EU-RO-1',
+      stock: 'NONE',
+      available: false,
+      price_per_hour_usd: 0.69,
+      within_cap: true,
+    },
+    {
+      gpu_type: A4000,
+      region: 'AP-JP-1',
+      stock: 'UNKNOWN',
+      available: null,
+      price_per_hour_usd: 0.25,
+      within_cap: true,
+    },
+    {
+      gpu_type: A4000,
+      region: 'EU-RO-1',
+      stock: 'NONE',
+      available: false,
+      price_per_hour_usd: 0.25,
       within_cap: true,
     },
   ],
@@ -165,13 +234,19 @@ describe('GpuIndicator', () => {
       'GPU 연결',
     ],
     ['ERROR', { launch: launchView(), session: sessionView('FAILED') }, 'ERROR', 'GPU 오류'],
-  ])('서버 %s 는 점 %s 와 짧은 글자만 보인다', async (power, extra, dot, label) => {
-    current = statusOf(power, extra);
-    signInAs('ADMIN');
-    renderIndicator();
-    await waitFor(() => expect(indicator().dataset.dot).toBe(dot));
-    expect(indicator().textContent).toBe(label);
-  });
+  ])(
+    '서버 %s 는 점 %s 와 「GPU」 글자만 보이고 상태는 화면 읽기 이름·정보창 첫 줄에 있다(-705)',
+    async (power, extra, dot, label) => {
+      current = statusOf(power, extra);
+      signInAs('ADMIN');
+      renderIndicator();
+      await waitFor(() => expect(indicator().dataset.dot).toBe(dot));
+      expect(indicator().textContent).toBe('GPU');
+      expect(indicator().getAttribute('aria-label')).toBe(label);
+      act(() => fireEvent.mouseEnter(indicator()));
+      expect(screen.getByRole('tooltip').firstElementChild?.textContent).toBe(label);
+    },
+  );
 
   it('마우스를 올리면 종류·지역, 경과·예상 비용, 판정 지연, 준비 단계를 보인다', async () => {
     current = statusOf('PREPARING', { launch: launchView(), session: sessionView('ENGINE') });
@@ -197,30 +272,84 @@ describe('GpuIndicator', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
-  it('누르면 켜기 패널: 기본은 서버가 고른 칸이고 다른 GPU 를 고르면 엔진 캐시 안내 뒤 확인을 거쳐 켠다', async () => {
+  it('누르면 켜기 패널: 모든 GPU 행에 켤 수 있음·없음·모름, 기본은 서버가 고른 칸이고 다른 GPU 는 엔진 캐시 안내 뒤 확인을 거쳐 켠다', async () => {
     current = statusOf('OFF');
     signInAs('ADMIN');
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
-    const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 많음' });
+    const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     expect(def.getAttribute('aria-pressed')).toBe('true');
+    // 행 순서는 서버가 준 대로(추천이 위), 추천·등급 표시, 등급 글(많음·적음)은 없다
+    const rows = screen.getAllByRole('rowheader').map((h) => h.textContent);
+    expect(rows).toEqual([
+      'H100 SXM80GB추천',
+      'H100 PCIe80GB추천',
+      'RTX 409024GB제한',
+      'RTX A400016GB위험',
+    ]);
+    expect(screen.queryByText(/많음|보통|적음/)).toBeNull();
+    // 모름은 고를 수 있고, 없음은 못 고른다
+    expect(
+      (screen.getByRole('button', { name: 'RTX A4000 AP-JP-1 모름' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: 'RTX 4090 EU-RO-1 없음' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     expect(
       (screen.getByRole('button', { name: 'H100 SXM AP-JP-1 없음' }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(screen.queryByText(/엔진 캐시가 GPU 종류별/)).toBeNull();
 
-    act(() => fireEvent.click(screen.getByRole('button', { name: 'H100 PCIe AP-JP-1 적음' })));
+    act(() =>
+      fireEvent.click(screen.getByRole('button', { name: 'H100 PCIe AP-JP-1 켤 수 있음' })),
+    );
     expect(
       screen.getByText(/엔진 캐시가 GPU 종류별이라 첫 실행은 엔진 빌드로 몇 분 더 걸립니다/),
     ).toBeTruthy();
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     const confirm = screen.getByTestId('gpu-launch-confirm');
-    expect(confirm.textContent).toContain('H100 PCIe · AP-JP-1 · 시간당 $2.39');
+    expect(confirm.textContent).toContain('H100 PCIe (80GB) · AP-JP-1 · 시간당 $2.39');
     expect(posts).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     await waitFor(() => expect(posts).toEqual(['launch']));
     expect(launchBodies).toEqual([{ gpu_type: PCIE, region: 'AP-JP-1' }]);
+  });
+
+  it.each([
+    ['RTX 4090 AP-JP-1 켤 수 있음', RTX4090, /세팅\(맵 굽기\)·VLM 근거·아바타가 안 됩니다/],
+    ['RTX A4000 AP-JP-1 모름', A4000, /관제 준비가 실패할 수 있습니다/],
+  ])(
+    'VRAM 제한·위험 GPU 는 막지 않고 「안 됩니다」 경고 확인을 거쳐 켠다(-705): %s',
+    async (name, gpu, text) => {
+      current = statusOf('OFF');
+      signInAs('ADMIN');
+      renderIndicator();
+      await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
+      act(() => fireEvent.click(indicator()));
+      const cell = await screen.findByRole('button', { name });
+      act(() => fireEvent.click(cell));
+      act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
+      const warning = screen.getByTestId('gpu-tier-warning');
+      expect(warning.textContent).toMatch(text);
+      expect(warning.getAttribute('role')).toBe('alert');
+      expect(posts).toEqual([]);
+      act(() => fireEvent.click(screen.getByRole('button', { name: '그래도 켜기' })));
+      await waitFor(() => expect(launchBodies).toEqual([{ gpu_type: gpu, region: 'AP-JP-1' }]));
+    },
+  );
+
+  it('추천 GPU 를 켤 때는 등급 경고가 없다', async () => {
+    current = statusOf('OFF');
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
+    act(() => fireEvent.click(indicator()));
+    await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
+    act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
+    expect(screen.queryByTestId('gpu-tier-warning')).toBeNull();
+    expect(screen.getByTestId('gpu-launch-confirm').textContent).toContain('H100 SXM (80GB)');
   });
 
   it('기본 칸 그대로 켜면 서버가 고르게 빈 본문을 보낸다', async () => {
@@ -229,7 +358,7 @@ describe('GpuIndicator', () => {
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
-    await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 많음' });
+    await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     await waitFor(() => expect(launchBodies).toEqual([{}]));
@@ -265,10 +394,13 @@ describe('GpuIndicator', () => {
     await waitFor(() => expect(posts).toEqual(['stop']));
   });
 
-  it('관리자가 아니면 상태를 묻지 않고 Tier 0 연결로만 점을 그리며 누를 수 없다', () => {
+  it('관리자가 아니면 상태를 묻지 않고 Tier 0 연결로만 점을 그리며 누를 수 없다(정보창에 상태는 보인다)', () => {
     signInAs('VIEWER');
     renderIndicator();
     expect(indicator().dataset.dot).toBe('OFF');
     expect((indicator() as HTMLButtonElement).disabled).toBe(true);
+    expect(indicator().getAttribute('aria-label')).toBe('GPU 꺼짐');
+    act(() => fireEvent.mouseEnter(indicator()));
+    expect(screen.getByRole('tooltip').textContent).toBe('GPU 꺼짐');
   });
 });

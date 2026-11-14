@@ -1,4 +1,4 @@
-import { GpuSettingsDialog, toBody, toForm } from '@/features/gpu/GpuSettingsDialog';
+import { GpuSettingsSection, toBody, toForm } from '@/features/gpu/GpuSettingsSection';
 import type { GpuSettings } from '@/features/gpu/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -49,16 +49,19 @@ afterEach(() => {
   saved.length = 0;
 });
 
-describe('GpuSettingsDialog', () => {
-  it('지금 설정을 채워 보이고, 고쳐 저장하면 새 버전 본문을 보낸 뒤 닫는다(비밀 값 칸은 없다)', async () => {
-    const onClose = vi.fn();
-    render(
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <GpuSettingsDialog onClose={onClose} />
-      </QueryClientProvider>,
-    );
+function renderSection() {
+  return render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <GpuSettingsSection />
+    </QueryClientProvider>,
+  );
+}
+
+describe('GpuSettingsSection', () => {
+  it('설정 페이지 GPU 구역: 지금 설정을 채워 보이고, 고쳐 저장하면 새 버전 본문을 보내고 저장했다고 알린다(비밀 값 칸은 없다)', async () => {
+    renderSection();
     const gpus = (await screen.findByLabelText('선호 GPU (위가 먼저)')) as HTMLTextAreaElement;
     expect(gpus.value).toBe('NVIDIA H100 80GB HBM3\nNVIDIA H100 PCIe');
     expect(screen.getByText('버전 3')).toBeTruthy();
@@ -78,7 +81,7 @@ describe('GpuSettingsDialog', () => {
     );
     act(() => fireEvent.click(screen.getByLabelText('스팟(중단될 수 있음)')));
     act(() => fireEvent.click(screen.getByRole('button', { name: '저장' })));
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('저장했습니다'));
     expect(saved).toEqual([
       {
         provider: 'RUNPOD',
@@ -97,14 +100,7 @@ describe('GpuSettingsDialog', () => {
   });
 
   it('AWS 를 고르면 인스턴스 종류·가용 영역 이름과 시작 템플릿·서브넷·보안 그룹 칸을 보이고 그대로 보낸다(S15P31A101-703)', async () => {
-    const onClose = vi.fn();
-    render(
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <GpuSettingsDialog onClose={onClose} />
-      </QueryClientProvider>,
-    );
+    renderSection();
     await screen.findByLabelText('선호 GPU (위가 먼저)');
     act(() => fireEvent.change(screen.getByLabelText('공급자'), { target: { value: 'AWS' } }));
     expect(screen.queryByLabelText('RunPod 템플릿 ID')).toBeNull();
@@ -129,7 +125,7 @@ describe('GpuSettingsDialog', () => {
       }),
     );
     act(() => fireEvent.click(screen.getByRole('button', { name: '저장' })));
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({
       provider: 'AWS',
       preferred_gpu_types: ['g6e.2xlarge', 'g7e.2xlarge'],
@@ -140,14 +136,8 @@ describe('GpuSettingsDialog', () => {
     });
   });
 
-  it('틀린 입력은 보내지 않고 까닭을 보인다', async () => {
-    render(
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <GpuSettingsDialog onClose={() => undefined} />
-      </QueryClientProvider>,
-    );
+  it('틀린 입력은 보내지 않고 까닭을 보이며, 되돌리기는 불러온 값으로 돌린다', async () => {
+    renderSection();
     await screen.findByLabelText('선호 GPU (위가 먼저)');
     act(() =>
       fireEvent.change(screen.getByLabelText('선호 GPU (위가 먼저)'), { target: { value: '  ' } }),
@@ -155,6 +145,11 @@ describe('GpuSettingsDialog', () => {
     act(() => fireEvent.click(screen.getByRole('button', { name: '저장' })));
     expect(screen.getByRole('alert').textContent).toBe('선호 GPU 를 하나 이상 적으세요.');
     expect(saved).toEqual([]);
+    act(() => fireEvent.click(screen.getByRole('button', { name: '되돌리기' })));
+    expect((screen.getByLabelText('선호 GPU (위가 먼저)') as HTMLTextAreaElement).value).toBe(
+      'NVIDIA H100 80GB HBM3\nNVIDIA H100 PCIe',
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('toBody: 빈 가격은 상한 없음, 빈 템플릿은 null, 자동 정지 범위 검사', () => {
