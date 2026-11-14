@@ -551,7 +551,8 @@ def test_redact_hides_secrets_and_signed_query(gb):
 def test_bootstrap_auto_hands_over_only_with_full_boot_env(monkeypatch):
     bs = load_script("simai_bootstrap")
     calls = []
-    monkeypatch.setattr(bs, "execvp", lambda argv: calls.append((argv, os.environ.get("SIMAI_GPU_BOOT_SECRET"))))
+    monkeypatch.setattr(bs, "execvp", lambda argv: calls.append((argv, "child_env")))  # auto 는 이 길로 가면 안 된다(-707)
+    monkeypatch.setattr(bs, "exec_gpu_boot", lambda argv: calls.append((argv, bs.gpu_boot_env().get("SIMAI_GPU_BOOT_SECRET"))))
     for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_GPU_BOOT_ID", "SIMAI_EC2_BASE_URL", "SIMAI_GPU_BOOT_CMD"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SIMAI_GPU_BOOT_SECRET", SECRET)
@@ -705,7 +706,8 @@ def test_aws_secrets_rejected_or_unavailable_does_not_register(gb, world):
 def test_bootstrap_auto_hands_over_with_aws_secrets_source(monkeypatch):
     bs = load_script("simai_bootstrap")
     calls = []
-    monkeypatch.setattr(bs, "execvp", lambda argv: calls.append(argv))
+    monkeypatch.setattr(bs, "execvp", lambda argv: calls.append(("child_env", argv)))  # auto 는 이 길로 가면 안 된다(-707)
+    monkeypatch.setattr(bs, "exec_gpu_boot", lambda argv: calls.append(argv))
     for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_GPU_BOOT_CMD", "SIMAI_GPU_BOOT_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SIMAI_SECRETS_SOURCE", "aws-secretsmanager")
