@@ -8,7 +8,9 @@ import type { RunStageProps, WorkStageProps } from '@/features/work/stageProps';
 // - 실제 단계 화면처럼 우측 아래 단추 줄(마지막 단계는 '완료', 나머지는 '다음')을 등록한다.
 
 export function stubStage(name: string) {
-  return function StubStage(props: WorkStageProps & Partial<Pick<RunStageProps, 'onSubmitted'>>) {
+  return function StubStage(
+    props: WorkStageProps & Partial<Pick<RunStageProps, 'onSubmitted' | 'onRerun'>>,
+  ) {
     useWorkAction(
       props.onSubmitted
         ? { label: '완료', enabled: true, onClick: props.onSubmitted }
@@ -20,6 +22,7 @@ export function stubStage(name: string) {
         data-work={props.day.work_id}
         data-date={props.date}
         data-today={props.todayKey}
+        data-rerun={props.rerunNo}
       >
         <button type="button" onClick={props.onNext}>
           {name} 다음
@@ -27,6 +30,16 @@ export function stubStage(name: string) {
         {props.onSubmitted && (
           <button type="button" onClick={props.onSubmitted}>
             {name} 보내기
+          </button>
+        )}
+        {props.onRerun && (
+          <button type="button" onClick={props.onRerun}>
+            {name} 한 번 더
+          </button>
+        )}
+        {props.onCancelRerun && (
+          <button type="button" onClick={props.onCancelRerun}>
+            {name} 작업 종료로
           </button>
         )}
       </div>

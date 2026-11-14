@@ -18,6 +18,7 @@ import {
   type WorkStatus,
 } from '@/features/work/types';
 import { dayKind, isReportGenerating, parseDateKey, toDateKey } from '@/features/work/workDay';
+import type { WorkRun } from '@/lib/workRuns';
 import { historyWorks } from '@/mocks/history';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
@@ -133,6 +134,8 @@ interface MockWork {
   status: WorkStatus;
   actual_started_at: number | null;
   actual_ended_at: number | null;
+  /** 실행 목록(S15P31A101-696). 시작마다 하나 더하고 종료가 마지막 실행을 닫는다. */
+  runs: WorkRun[];
   event_counts: { CRITICAL: number; HIGH: number };
   /** 세팅이 끝난 시각. null 이면 아직. */
   setupDoneAt: number | null;
@@ -158,6 +161,7 @@ export interface WorkItemJson {
   active_setup_session_id: string | null;
   actual_started_at: number | null;
   actual_ended_at: number | null;
+  runs?: WorkRun[];
   event_counts: { CRITICAL: number; HIGH: number } | null;
   zone_id: string | null;
   place: string | null;
@@ -449,6 +453,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       active_setup_session_id: activeSessionId(work),
       actual_started_at: work.actual_started_at,
       actual_ended_at: work.actual_ended_at,
+      runs: work.runs.map((run) => ({ ...run })),
       event_counts: { ...work.event_counts },
       zone_id: null,
       place: report.form.info.place || null,
@@ -639,6 +644,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         status: 'PLANNED',
         actual_started_at: null,
         actual_ended_at: null,
+        runs: [],
         event_counts: { CRITICAL: 0, HIGH: 0 },
         setupDoneAt: null,
         draftFails: false,
@@ -712,15 +718,17 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       return HttpResponse.json(work ? viewWork(work) : past!.item);
     }),
 
-    // 작업 시작(서버 startSession 의 검사 순서): 예정(PLANNED) 상태 → 오늘 날짜 → 이 작업의 세팅 완료(-642) → 참석자 서명 1명 이상
-    // → 진행 중인 다른 작업 없음.
+    // 작업 시작(서버 startSession 의 검사 순서): 예정(PLANNED)·끝난(DONE, 한 번 더 실행 -696) 상태 → 끝났으면 보고서 미제출
+    // → 오늘 날짜 → 이 작업의 세팅 완료(-642) → 참석자 서명 1명 이상 → 진행 중인 다른 작업 없음. 시작은 새 실행이다.
     http.post('*/api/work-units/:id/start', ({ request, params }) => {
       const work = dailyOf(String(params.id ?? ''));
       if (!work) return undefined;
       const user = guard(request, true);
       if (user instanceof Response) return user;
-      if (work.status !== 'PLANNED')
-        return problem(409, WORK_ERROR.INVALID_STATE, '이미 시작했거나 끝난 작업입니다');
+      if (work.status !== 'PLANNED' && work.status !== 'DONE')
+        return problem(409, WORK_ERROR.INVALID_STATE, '이미 진행 중인 작업입니다');
+      if (work.status === 'DONE' && work.report.submitted_at !== null)
+        return problem(409, WORK_ERROR.REPORT_SUBMITTED, '보고서를 제출한 작업입니다');
       if (work.date !== todayKey())
         return problem(409, WORK_ERROR.NOT_TODAY, '작업 날짜에 시작할 수 있어요');
       syncSetup(work);
@@ -734,8 +742,11 @@ export function createWorkMock(options: WorkMockOptions = {}) {
         return problem(409, WORK_ERROR.NO_SIGNATURE, '서명이 한 명 이상 필요합니다');
       const active = works.find((w) => w.status === 'IN_PROGRESS');
       if (active) return problem(409, WORK_ERROR.ALREADY_IN_PROGRESS, active.name);
+      const at = now();
       work.status = 'IN_PROGRESS';
-      work.actual_started_at = now();
+      work.actual_started_at ??= at;
+      work.actual_ended_at = null;
+      work.runs.push({ run_no: work.runs.length + 1, started_at: at, ended_at: null });
       return HttpResponse.json(viewWork(work));
     }),
 
@@ -751,6 +762,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       sync(work);
       work.status = 'DONE';
       work.actual_ended_at = now();
+      const open = work.runs.find((run) => run.ended_at === null);
+      if (open) open.ended_at = work.actual_ended_at;
       work.report.wrap_up_status = 'GENERATING';
       return HttpResponse.json(
         {

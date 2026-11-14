@@ -230,3 +230,32 @@ describe('표시 문구', () => {
     expect(workElapsedLabel(-1)).toBe('0초');
   });
 });
+
+describe('실행(S15P31A101-696)', () => {
+  const T = 1_760_342_400_000;
+  const runs = [
+    { run_no: 1, started_at: T, ended_at: T + 1_000 },
+    { run_no: 2, started_at: T + 10_000, ended_at: null },
+  ];
+
+  it('진행 중 실행이 있으면 그 시작이 지금 관제 시작이고, 없으면 작업 시작이다', () => {
+    expect(workStartedAt({ actual_started_at: T, runs })).toBe(T + 10_000);
+    expect(workStartedAt({ actual_started_at: T, runs: [runs[0]!] })).toBe(T);
+    expect(workStartedAt({ actual_started_at: T })).toBe(T);
+  });
+
+  it('실행 사이(관제·경보 꺼짐)에 난 이벤트는 작업 외로 본다', () => {
+    const day = work({
+      status: 'IN_PROGRESS',
+      zone_id: null,
+      actual_started_at: NOW - 60 * MIN,
+      runs: [
+        { run_no: 1, started_at: NOW - 60 * MIN, ended_at: NOW - 40 * MIN },
+        { run_no: 2, started_at: NOW - 10 * MIN, ended_at: null },
+      ],
+    });
+    expect(isOutsideWork(event({ raised_at: NOW - 30 * MIN }), [day], NOW)).toBe(true);
+    expect(isOutsideWork(event({ raised_at: NOW - 50 * MIN }), [day], NOW)).toBe(false);
+    expect(isOutsideWork(event({ raised_at: NOW - 5 * MIN }), [day], NOW)).toBe(false);
+  });
+});

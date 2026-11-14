@@ -16,11 +16,19 @@ export interface WorkStageProps {
   onBackToSetup?: () => void;
   /** 보고서로 돌아가 달라는 요청(세팅 방식을 고르지 않고 창을 닫았을 때). 세션을 만들기 전이라 서버 progress 는 아직 보고서다. */
   onBackToReport?: () => void;
+  /**
+   * 한 번 더 실행하는 작업 전 확인이면 그 실행 번호(S15P31A101-696, 2 이상). 처음 실행이면 없다.
+   * 이때 작업 전 확인은 「작업 종료로」 단추(onCancelRerun)로 종료 화면에 돌아갈 수 있다.
+   */
+  rerunNo?: number;
+  onCancelRerun?: () => void;
 }
 
 /** 작업 종료 단계: 보고서를 보내면(제출·잠금) 달력으로 나가도록 날짜 화면에 알린다. */
 export interface RunStageProps extends WorkStageProps {
   onSubmitted: () => void;
+  /** 「한 번 더 실행」(S15P31A101-696): 종료 뒤 보고서를 내기 전에 작업 전 확인으로 가 달라는 요청. 없으면 단추를 두지 않는다. */
+  onRerun?: () => void;
 }
 
 /** 지난 날짜 화면. */

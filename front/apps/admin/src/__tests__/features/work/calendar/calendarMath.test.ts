@@ -100,6 +100,21 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     ).toEqual({ count: 1, critical: 1, high: 2 });
   });
 
+  it('작업 하나 안에서 실행을 여러 번 했으면(S15P31A101-696) 실행 수를 함께 싣고 접근성 이름에 넣는다', () => {
+    const run = (no: number) => ({ run_no: no, started_at: no * 1000, ended_at: no * 1000 + 500 });
+    const summary = summarizeWorks([
+      workDayOf({ progress: 'SUBMITTED', actual_started_at: 1000, runs: [run(1), run(2)] }),
+    ]);
+    expect(summary).toEqual({ count: 1, critical: 0, high: 0, runs: 2 });
+    expect(
+      cellAriaLabel({ dateKey: '2026-11-10', day: 10, kind: 'past', mark: null, summary }),
+    ).toBe('11월 10일, 작업 1건 완료, 실행 2회, 위험 0건, 경고 0건');
+    // 실행이 하나면 싣지 않는다
+    expect(
+      summarizeWorks([workDayOf({ progress: 'SUBMITTED', runs: [run(1)] })])?.runs,
+    ).toBeUndefined();
+  });
+
   it('끝난 작업이 없으면 요약이 없다(빈칸)', () => {
     expect(summarizeWorks([])).toBeNull();
     expect(

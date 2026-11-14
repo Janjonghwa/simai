@@ -17,6 +17,7 @@ import {
   type WorkStageId,
 } from '@/features/work/workDay';
 import { WorkStageNav } from '@/features/work/WorkStageNav';
+import { lastRun } from '@/lib/workRuns';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { ChevronLeft } from 'lucide-react';
@@ -25,6 +26,8 @@ import { useState, type ReactNode } from 'react';
 // 날짜 화면(오늘·예정인 날): 머리줄(달력 단추 · 날짜 · 오늘/예정 · 단계 줄) 아래에 단계 화면 하나를 보인다.
 // 단계는 서버 progress 가 정한다. 보고서 → 세팅(세션을 만들기 전이라 서버가 아직 REPORT)만 로컬 상태가 먼저 맡는다.
 // 보고서를 보내(제출·잠금) 달력으로 나간 뒤 그 날짜를 다시 열면(SUBMITTED) 단계 화면 대신 지난 날과 같은 다시 보기 화면(PastDayPage)을 보인다.
+// 「한 번 더 실행」(S15P31A101-696): 종료(ENDED) 화면에서 누르면 그 종료가 이어지는 동안 작업 전 확인을 다시 연다. 시작하면 서버가
+// IN_PROGRESS 로 바꿔 작업 종료 단계로 돌아가고, 그 실행이 끝나면(마지막 실행 번호가 바뀜) 다시 종료 화면이다.
 
 /**
  * 로컬에서 먼저 넘기는 이동은 보고서 → 세팅뿐이다. 작업 전 확인(작업 시작 단추)은 서버가 세팅 완료(work_unit.setup_completed_at,
@@ -81,6 +84,11 @@ function OpenFailure({ error, onRetry }: { error: unknown; onRetry: () => void }
 const furtherStage = (local: WorkStageId, server: WorkStageId): WorkStageId =>
   stageIndexOf(server) > stageIndexOf(local) ? server : local;
 
+/** 마지막 실행 번호(시작 전이면 0). 「한 번 더 실행」을 누른 종료가 아직 그대로인지 가른다. */
+const lastRunNo = (day: WorkDayItem): number =>
+  lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
+    ?.run_no ?? 0;
+
 function OpenedDay({
   day,
   date,
@@ -104,7 +112,10 @@ function OpenedDay({
   onSubmitted: () => void;
 }) {
   const progress = day.progress ?? 'REPORT';
-  const stage = furtherStage(localStage, stageOfProgress(progress));
+  // 한 번 더 실행을 누른 그 종료(마지막 실행 번호)에서만 작업 전 확인을 연다. 다른 종료면(새 실행이 끝남) 저절로 풀린다
+  const [rerunAfter, setRerunAfter] = useState<number | null>(null);
+  const rerunning = progress === 'ENDED' && rerunAfter !== null && rerunAfter === lastRunNo(day);
+  const stage = rerunning ? 'preflight' : furtherStage(localStage, stageOfProgress(progress));
   const stageProps = {
     day,
     date,
@@ -116,17 +127,27 @@ function OpenedDay({
       onLocalStage('setup');
       onRefresh();
     },
+    ...(rerunning && {
+      rerunNo: lastRunNo(day) + 1,
+      onCancelRerun: () => setRerunAfter(null),
+    }),
   };
 
   return (
     <>
       <DayHeader date={date} kind={kind} onBack={onBack}>
-        <WorkStageNav stage={stage} finished={isEndedWork(day)} />
+        <WorkStageNav stage={stage} finished={isEndedWork(day) && !rerunning} />
       </DayHeader>
       {stage === 'report' && <ReportStage {...stageProps} />}
       {stage === 'setup' && <SetupStage {...stageProps} />}
       {stage === 'preflight' && <PreflightStage {...stageProps} />}
-      {stage === 'run' && <RunStage {...stageProps} onSubmitted={onSubmitted} />}
+      {stage === 'run' && (
+        <RunStage
+          {...stageProps}
+          onSubmitted={onSubmitted}
+          onRerun={() => setRerunAfter(lastRunNo(day))}
+        />
+      )}
     </>
   );
 }

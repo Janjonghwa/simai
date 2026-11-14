@@ -14,6 +14,12 @@ import type { ViewerHealthPayload } from '@simai/contracts';
 /** 작업 시작·종료 뒤 이만큼(ms, EC2 시계) 지나도 적용 확인이 없으면 '지연'으로 알린다. 보통은 내려받기·검증·다음 tick 으로 수 초다. */
 export const MONITORING_APPLY_DELAY_MS = 10_000;
 
+/**
+ * 지금 실행의 묶음으로 볼 발행 시각 여유(ms). 시작 묶음은 실행 시작과 같은 트랜잭션에서 시작 뒤에 만들지만(EC2 시계), 시각 자름 차이를 넉넉히 둔다.
+ * 실행 사이는 화면 조작(종료 → 한 번 더 실행 → 작업 전 확인)이라 이보다 훨씬 길다.
+ */
+export const RUN_BUNDLE_SLACK_MS = 2_000;
+
 /** EC2 ↔ Tier 0 연결. down: 끊김 또는 관제 정지(CONTROL_HALTED). unknown: health 를 모른다(EC2 와 끊김 등). */
 export type Tier0Link = 'up' | 'down' | 'unknown';
 
@@ -71,6 +77,8 @@ function delayOf(
  * ppe_policy 가 없는 묶음(-518 이전)을 쓰면 Tier 0 는 작업과 상관없이 판정하므로(-679 1.1) on 으로 본다.
  * on 이 아니면: Tier 0 와 끊김 → link_lost, 이번 작업의 가장 새 묶음이 거부·불일치 → rejected, 그 묶음 발행 뒤 10 s 넘음 → delayed.
  * 지연 기준은 이 작업의 가장 새 묶음 발행 시각(시작 묶음이면 시작 시각, 「현장에 다시 보내기」면 그때)이고, 목록에 아직 없으면 작업 시작 시각이다.
+ * 「이 작업의 묶음」은 지금 실행이 시작된 뒤(startedAt − RUN_BUNDLE_SLACK_MS) 발행한 것만이다(S15P31A101-696): 한 번 더 실행하면
+ * 같은 작업의 실행 1 묶음이 목록에 남아 있어, 그것을 보면 실행 2 시작 직후부터 '지연'·'거부'로 잘못 본다.
  */
 export function startPhase(
   work: { work_id: string; startedAt: number | null },
@@ -92,7 +100,10 @@ export function startPhase(
   }
   if (link === 'down')
     return { stage: 'starting', problem: 'link_lost', workId: id, recheckAt: null };
-  const own = bundles.find((b) => sameWork(b.ppe_policy?.work_id, id));
+  const since = work.startedAt === null ? null : work.startedAt - RUN_BUNDLE_SLACK_MS;
+  const own = bundles.find(
+    (b) => sameWork(b.ppe_policy?.work_id, id) && (since === null || b.issued_at >= since),
+  );
   if (failed(own)) return { stage: 'starting', problem: 'rejected', workId: id, recheckAt: null };
   const { delayed, recheckAt } = delayOf(own?.issued_at ?? work.startedAt, now);
   return { stage: 'starting', problem: delayed ? 'delayed' : null, workId: id, recheckAt };

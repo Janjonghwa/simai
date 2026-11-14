@@ -161,13 +161,24 @@ function ActionBar() {
   const action = useWorkActionState();
   if (!action) return null;
   return (
-    <button type="button" disabled={!action.enabled} onClick={action.onClick}>
-      {action.label}
-    </button>
+    <>
+      {action.secondary?.map((item) => (
+        <button key={item.label} type="button" onClick={item.onClick}>
+          {item.label}
+        </button>
+      ))}
+      <button type="button" disabled={!action.enabled} onClick={action.onClick}>
+        {action.label}
+      </button>
+    </>
   );
 }
 
-function renderStage(day: WorkDayItem, onBackToSetup?: () => void) {
+function renderStage(
+  day: WorkDayItem,
+  onBackToSetup?: () => void,
+  rerun?: { rerunNo: number; onCancelRerun: () => void },
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -178,6 +189,7 @@ function renderStage(day: WorkDayItem, onBackToSetup?: () => void) {
           todayKey={TODAY}
           onNext={vi.fn()}
           onBackToSetup={onBackToSetup}
+          {...rerun}
         />
         <ActionBar />
       </WorkActionProvider>
@@ -334,6 +346,24 @@ describe('PreflightStage 화면', () => {
     renderStage(await openToday());
     expect(await screen.findByText('구역을 불러오지 못했어요')).toBeTruthy();
     expect(screen.queryByText('구역 없음')).toBeNull();
+  });
+});
+
+describe('PreflightStage 한 번 더 실행(S15P31A101-696)', () => {
+  it('실행 번호와 카메라 재점검 안내를 위에 두고, 작업 종료로 단추가 종료 화면으로 돌려보낸다', async () => {
+    const onCancelRerun = vi.fn();
+    renderStage(await openToday(), undefined, { rerunNo: 2, onCancelRerun });
+    const notice = screen.getByRole('region', { name: '한 번 더 실행' });
+    expect(within(notice).getByText('실행 2 시작 전 확인')).toBeTruthy();
+    expect(within(notice).getByText(/카메라를 옮기거나 다시 연결했다면/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '작업 종료로' }));
+    expect(onCancelRerun).toHaveBeenCalledTimes(1);
+  });
+
+  it('처음 실행이면 안내도 작업 종료로 단추도 없다', async () => {
+    renderStage(await openToday());
+    expect(screen.queryByRole('region', { name: '한 번 더 실행' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '작업 종료로' })).toBeNull();
   });
 });
 

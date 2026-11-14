@@ -1441,6 +1441,7 @@ class Window(BaseModel):
         extra='forbid',
     )
     work_id: Annotated[StrictInt, Field(ge=1)]
+    run_no: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
     start_ms: DefsTimestampMs
     end_ms: DefsTimestampMs
 
@@ -1449,7 +1450,7 @@ class RecordingWindows(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0.0']
+    schema_version: Literal['1.0.0', '1.1.0']
     from_ms: DefsTimestampMs
     to_ms: DefsTimestampMs
     windows: list[Window]

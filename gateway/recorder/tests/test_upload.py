@@ -183,6 +183,7 @@ class FakeServer:
         self.progress: list[dict] = []
         self.objects: dict[str, bytes] = {}
         self.auth: set[str] = set()
+        self.version = "1.0.0"
 
     def __call__(self, request, timeout=None):
         url, method = request.full_url, request.get_method()
@@ -196,7 +197,7 @@ class FakeServer:
             return _Response(b"")
         self.auth.add(request.get_header("Authorization"))
         if "/recordings/windows" in url:
-            body = {"schema_version": "1.0.0", "from_ms": 0, "to_ms": 0, "windows": self.windows,
+            body = {"schema_version": self.version, "from_ms": 0, "to_ms": 0, "windows": self.windows,
                     "open_work": self.open_work, "retention_days": 14}
             return _Response(json.dumps(body).encode())
         if url.endswith("/api/devices/recordings/progress"):
@@ -253,6 +254,42 @@ def test_작업_구간만_올리고_등록_본문이_계약에_맞으며_다시_
     calls = len(server.calls)
     assert _uploader(server, NOW).run(tmp_path).uploaded == 0
     assert len(server.calls) == calls  # 끝난 녹화는 다시 묻지도 않는다
+
+
+RUN_1 = {"work_id": 42, "run_no": 1, "start_ms": capture_ms(0), "end_ms": capture_ms(15)}
+RUN_2 = {"work_id": 42, "run_no": 2, "start_ms": capture_ms(32), "end_ms": capture_ms(47)}
+
+
+def test_작업_하나의_실행_둘은_구간마다_올리고_진행은_작업_단위로_합쳐_보고한다(tmp_path, contract_validator):
+    # S15P31A101-696: recording_windows 1.1.0 은 같은 work_id 를 실행마다 싣는다. 실행 사이(프레임 16~31)는 올리지 않는다
+    make_recording(tmp_path)
+    server = FakeServer([RUN_1, RUN_2])
+    server.version = "1.1.0"
+    contract_validator("recording_windows", {"schema_version": "1.1.0", "from_ms": 0, "to_ms": 0,
+                                             "windows": [RUN_1, RUN_2], "open_work": False, "retention_days": 14})
+    summary = _uploader(server, NOW).run(tmp_path)
+    assert summary.uploaded == 2 and summary.failed == 0
+    starts = sorted(r["segment_start_capture_ms"] for r in server.registered)
+    assert starts == [capture_ms(0), capture_ms(30)]
+    assert all(r["work_id"] == 42 for r in server.registered)
+    assert {p["work_id"] for p in server.progress} == {42}
+    assert all(p["expected_segments"] == 2 for p in server.progress)
+    assert server.progress[-1]["sealed"] is True and server.progress[-1]["failed_segments"] == 0
+
+
+def test_다음_실행이_진행_중이어도_끝난_실행은_올리고_나중에_다음_실행만_더_올린다(tmp_path):
+    rec = make_recording(tmp_path)
+    server = FakeServer([RUN_1], open_work=True)
+    server.version = "1.1.0"
+    uploader = _uploader(server, NOW)
+    first = uploader.run(tmp_path)
+    assert first.uploaded == 1 and rec.name in first.pending_recordings
+    assert server.progress[-1]["expected_segments"] == 1
+    server.windows, server.open_work = [RUN_1, RUN_2], False
+    second = uploader.run(tmp_path)
+    assert second.uploaded == 1 and len(server.registered) == 2  # 실행 1 은 다시 올리지 않는다
+    assert server.progress[-1]["expected_segments"] == 2 and server.progress[-1]["sealed"] is True
+    assert rec.name in second.done_recordings
 
 
 def test_끊겼다_이어_올리면_올린_조각은_건너뛰고_남은_것만_올린다(tmp_path):
