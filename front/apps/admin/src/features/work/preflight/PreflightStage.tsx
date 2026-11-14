@@ -1,3 +1,4 @@
+import { useGpuGate } from '@/features/gpu/useGpuGate';
 import type { StartPpe } from '@/features/work/api';
 import { LayoutPreview } from '@/features/work/preflight/LayoutPreview';
 import {
@@ -55,9 +56,11 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
 
   const navigate = useNavigate();
   const { reset: resetStart, mutate: startWork } = start;
+  // 작업 시작(= 관제 시작)에는 GPU 가 필요하다. 꺼져 있거나 준비 중이면 GPU 경고창을 띄우고 연결되면 이어서 시작한다(S15P31A101-702)
+  const gpuGate = useGpuGate();
   const closeDialog = () => setDialog(null);
   // 요청 중에는 확인창의 '작업 시작'이 pending 으로 잠겨 같은 시작을 두 번 보내지 않는다
-  const beginWork = () =>
+  const sendStart = () =>
     startWork(
       { workId, ppe },
       {
@@ -67,6 +70,7 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
         },
       },
     );
+  const beginWork = () => gpuGate.guard(sendStart);
 
   // 아래 오른쪽 단추 '다음': 지난 시작 실패 안내를 지우고 확인창을 연다. 값이 같으면 다시 등록하지 않게 한 번만 만든다.
   const openConfirm = useCallback(() => {
@@ -132,6 +136,7 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
         />
       )}
       {dialog === 'sign' && <SignDialog signers={signers} onClose={closeDialog} />}
+      {gpuGate.dialog}
       {editingZoneId !== null && (
         <ZoneEditDialog zoneId={editingZoneId} onClose={() => setEditingZoneId(null)} />
       )}

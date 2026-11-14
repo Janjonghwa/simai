@@ -83,6 +83,21 @@ simai:
     sweep-interval: 30s
     # 세션 Tier 0 에 줄 gateway_id. 저널 이어 받기가 이 값에 묶여 세션이 바뀌어도 같아야 한다(simai-bootstrap lobby 기본값과 같음)
     gateway-id: ${SIMAI_GPU_TIER0_GATEWAY_ID:tier0-lobby-s9}
+  gpu:
+    # GPU 켜기·끄기·자동 정지(S15P31A101-702, 설계 docs/design/S15P31A101-702-gpu-provider-runpod.md). 화면 「GPU 설정」(DB 버전)이
+    # 선호 GPU·지역·가격 상한·자동 정지 분·템플릿 ID 를 정하고, 아래는 운영 고정값이다
+    runpod:
+      # RunPod API 키(비밀). EC2 .env 에만 둔다. 비면 켜기·재고 조회가 503 이고 자동 정지는 아무것도 하지 않는다
+      api-key: ${SIMAI_RUNPOD_API_KEY:}
+      # 인스턴스 환경 변수 SIMAI_GPU_BOOT_ID(비밀 아님, admin gpu-boot register --id). 부팅 비밀값 원문은 RunPod Secret 참조로만 넣는다
+      boot-id: ${SIMAI_GPU_BOOT_ID:gpu-boot-runpod}
+    # 켠 뒤 G1 등록이 이만큼 없으면 오류로 보고 끈다(목표 5~7분 기동 + 첫 엔진 빌드·이미지 받기 여유)
+    boot-timeout: 25m
+    # FAILED 를 이만큼 이어 보고하고 Tier 0 I1 도 없으면 끈다(-700: 인스턴스는 FAILED 면 스스로 끝내지 않고 기다린다)
+    failed-grace: 20m
+    # 녹화 조각 업로드 서명이 이만큼 안에 있었으면 업로드 중(deploy.sh SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES 기본 10분과 같다)
+    upload-hold: 10m
+    sweep-interval: 60s
   watch:
     # 워치 I4(/ws/watch, 확장 부록 C.6, S15P31A101-336, 설계 docs/design/server-watch-link.md). 워치에 주는 하트비트 주기(interval_ms,
     # 1~60초). 이 값 × 3 동안 하트비트가 없으면 끊김(LOST). 실기기는 절전 중 하트비트가 최대 27초까지 늘어나 20초(× 3 = 60초)로 둔다

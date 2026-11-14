@@ -1,3 +1,4 @@
+import { useGpuGate } from '@/features/gpu/useGpuGate';
 import { PageTitle } from '@/features/layout/PageTitle';
 import {
   cancelSetupSession,
@@ -609,10 +610,14 @@ function SetupWorkPage({
   }, [capture, submitStep1]);
 
   // 옆 카메라 쌍의 겹침이 부족하면 보정이 실패할 수 있어 시작 전에 한 번 더 묻는다(높이를 고쳐 다시 시작할 때도 같다).
+  // 세팅 시작(세션 만들기)에는 GPU 가 필요하다. 꺼져 있거나 준비 중이면 GPU 경고창을 먼저 띄우고 연결되면 이어서 한다(S15P31A101-702)
+  const { guard: guardGpu, dialog: gpuGateDialog } = useGpuGate();
   const requestStep1Submit = useCallback(() => {
-    if (coverage.riskyPairs.length > 0) setRiskConfirmPairs(coverage.riskyPairs);
-    else beginStep1Submit();
-  }, [coverage.riskyPairs, beginStep1Submit]);
+    guardGpu(() => {
+      if (coverage.riskyPairs.length > 0) setRiskConfirmPairs(coverage.riskyPairs);
+      else beginStep1Submit();
+    });
+  }, [guardGpu, coverage.riskyPairs, beginStep1Submit]);
 
   const confirmRiskySubmit = useCallback(() => {
     setRiskConfirmPairs(null);
@@ -952,6 +957,7 @@ function SetupWorkPage({
           </SetupZoneStep>
         </ZoneSourceContext>
       )}
+      {gpuGateDialog}
       {capture.open && (
         <BackgroundCaptureModal
           view={capture.view}

@@ -5,6 +5,7 @@ import com.ssafy.simai.domain.coverage.CoverageGuideProperties;
 import com.ssafy.simai.domain.watch.WatchProperties;
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.properties.ConfigBundleProperties;
+import com.ssafy.simai.global.properties.GpuProperties;
 import com.ssafy.simai.global.properties.RiskEngineProperties;
 import com.ssafy.simai.global.properties.StorageProperties;
 import com.ssafy.simai.global.properties.Tier0Properties;
@@ -19,7 +20,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 @Configuration
 @EnableConfigurationProperties({AuthProperties.class, Tier0Properties.class, ConfigBundleProperties.class,
         StorageProperties.class, CctvRemoteProperties.class, CoverageGuideProperties.class,
-        RiskEngineProperties.class, WatchProperties.class})
+        RiskEngineProperties.class, WatchProperties.class, GpuProperties.class})
 public class AppConfig {
 
     @Bean
