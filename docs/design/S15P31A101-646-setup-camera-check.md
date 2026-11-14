@@ -62,7 +62,7 @@
 | 쌍 통과율 | ≥ 0.75(PASS+PASS_MARGINAL / 기하 근거, FEW_COMMON_JOINTS·NO_FOV_OVERLAP 제외) | 14차 재시작 뒤(정상으로 본) 30 s 창 57개에서 EPIPOLAR 를 뺀 쌍 통과율: 중앙값 0.85~0.99, p10 0.77~0.90. 문제였던 B–C 는 나쁜 창에서 0.55~0.65(`pod-logs.tgz` lobby-s14.log 추적 계측). 한 사람이면 EPIPOLAR 도 보정 문제라 분모에 넣는다 |
 | 쌍 잔차 중앙값 | ≤ 8 px | 관제 연결의 경계 잔차(`CrossViewConfig.residual_marginal_px`). 넘으면 관제가 새로 합치지 않고 IDENTITY_UNCERTAIN 으로 둔다(갈라짐의 직접 원인) |
 | 카메라 관측 | 사람이 보인 시각 ≥ 30 | "4대 관측". 못 보면 NOT_OBSERVED → 판정 때 실패 |
-| 카메라 한 카메라 제외 재투영 | 표본 ≥ 20 이면 중앙값 ≤ 8 px | 관제 감시의 판정 창 표본 하한·절대 상한(`MonitorConfig.min_window_samples`·`absolute_max_median_px`)과 같다. 이 값을 넘는 보정은 관제가 기준선과 무관하게 틀어짐으로 본다 |
+| 카메라 한 카메라 제외 재투영 | 표본 ≥ 20 이면 중앙값 ≤ 8 px (**-694 에서 12 px, 관제 절대 상한 15 px**) | 관제 감시의 판정 창 표본 하한·절대 상한(`MonitorConfig.min_window_samples`·`absolute_max_median_px`)과 같다. 이 값을 넘는 보정은 관제가 기준선과 무관하게 틀어짐으로 본다. 15차 실측에서 8 px 는 잡음 바닥이라 바꿨다(`docs/design/S15P31A101-694-camera-check-criteria.md`) |
 | 쌍 수 | 판정(PASS·FAIL)한 쌍 ≥ 3, 카메라마다 통과 쌍 ≥ 1 | 4대 고리면 옆 4쌍 중 3쌍 |
 
 필수 쌍: 새 보정 기하로 시야가 겹치는 쌍(관제 연결이 건너뛰지 않는 쌍, `geometry.overlap.disjoint_camera_pairs` 밖)과 품질 게이트 NEEDS_CHECK 쌍. 겹치는 쌍이 끝내 근거를 못 채우면 INSUFFICIENT 로 두고 막지 않는다(관제도 그 쌍으로 같은 사람을 묶을 일이 드물다). NEEDS_CHECK 쌍은 못 채우면 실패다(근거 없음 ≠ 통과).

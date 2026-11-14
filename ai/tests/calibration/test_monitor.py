@@ -57,7 +57,7 @@ def test_baseline_then_monitoring(calibration):
     last = reports[-1].camera("cam1")
     assert last.status is MonitorStatus.MONITORING and last.baseline_verified
     assert last.baseline_median_px == pytest.approx(1.0)
-    assert last.threshold_px == pytest.approx(4.0)  # min(max(1.0 × 2, 1.0 + 3), 8)
+    assert last.threshold_px == pytest.approx(4.0)  # min(max(1.0 × 2, 1.0 + 3), 15)
     assert reports[-1].evidence is MonitorEvidence.FULL
 
 
@@ -95,7 +95,7 @@ def test_given_baseline_is_verified_and_used(calibration):
 def test_already_drifted_at_start_is_caught_by_absolute_ceiling(calibration):
     """감시 시작 전부터 크게 틀어진 카메라: 학습 기준선이 절대 상한을 넘어 쓰이지 않고 SUSPECT → DRIFTED."""
     mon = ReprojectionMonitor(calibration, CFG)
-    reports = _feed(mon, 0, 30, {"cam2": 15.0})
+    reports = _feed(mon, 0, 30, {"cam2": 20.0})  # 절대 상한(15px)을 넘는 값
     marked = [r for r in reports if r.findings]
     assert [f.camera_id for f in marked[0].findings] == ["cam2"]
     assert any(r.camera("cam2").status is MonitorStatus.SUSPECT for r in reports)

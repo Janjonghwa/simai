@@ -33,8 +33,13 @@
     있기 때문이다(evidence UNVERIFIED 로 보고).
 - 절대 상한(보조 보호, 검증을 대신하지 않는다): absolute_max_median_px 를 넘는 창 중앙값은 기준선과 무관하게 초과다.
   기준선을 배우는 중에도 적용하고, 이 상한을 넘는 학습 기준선은 쓰지 않는다. 그래서 감시 시작 전부터 크게 틀어진
-  카메라는 SUSPECT → DRIFTED 가 된다. 값 8px 는 15.1 G5 의 "한 카메라 제외 재투영 p95 8px" 목표에서 빌렸다. G5 는
-  관절 단위 p95 이고 여기는 사람별 관절 중앙값의 창 중앙값이라 같은 통계가 아니며, 같은 값이면 여기가 더 너그럽다.
+  카메라는 SUSPECT → DRIFTED 가 된다. 값은 15px 다(S15P31A101-694, 근거 docs/design/S15P31A101-694-camera-check-criteria.md).
+  처음에는 15.1 G5 의 "한 카메라 제외 재투영 p95 8px" 목표를 빌려 8px 였지만(G5 는 관절 단위 p95 라 같은 통계가 아니다),
+  15차 로비(2304×1296 광각) 한 사람 걷기에 사람 관절로 직접 맞춘 보정(얻을 수 있는 가장 좋은 보정)도 이 통계가 카메라별
+  5.9~8.7px 였다(시점마다 다른 관절 위치·움직임×촬영 시각 흔들림). 8px 는 잡음 바닥이라 정상 카메라를 틀어짐으로 본다.
+  이 상한은 세팅 「카메라 확인」 LOO 상한(`CameraCheckConfig.max_loo_median_px`)에 상대 여유(`increase_margin_px`)를 더한
+  값 이상이어야 한다: 그래야 세팅을 통과한 검증 기준선 b 의 문턱 min(max(b×ratio, b+margin), 상한) 이 b+margin 아래로 눌리지
+  않는다(통과 직후 관제에서 DRIFTED 가 깜빡이는 것을 막는다).
   초점거리가 짧으면 같은 회전이 더 작은 픽셀이 되어 상한 아래에 머물 수 있다(그때는 미확정 기준선으로만 보고한다).
   현장 정상 영상의 오경보는 D-G1-03 측정으로 따로 확인한다.
 - 초과: 창 중앙값 > min(max(기준선 × increase_ratio, 기준선 + increase_margin_px), 절대 상한).
@@ -139,8 +144,9 @@ class MonitorConfig:
     increase_ratio: float = 2.0
     increase_margin_px: float = 3.0
     """잡음으로 기준선이 작을 때 작은 흔들림을 틀어짐으로 보지 않게 하는 절대 여유"""
-    absolute_max_median_px: float | None = 8.0
-    """기준선과 무관한 창 중앙값 상한 (15.1 G5 한 카메라 제외 재투영 p95 8px). None 이면 쓰지 않는다"""
+    absolute_max_median_px: float | None = 15.0
+    """기준선과 무관한 창 중앙값 상한(S15P31A101-694): 세팅 카메라 확인 LOO 상한 12px + increase_margin_px 3px.
+    None 이면 쓰지 않는다"""
     sustain_ms: int = 20_000
     evidence_gap_ms: int = 30_000
 
