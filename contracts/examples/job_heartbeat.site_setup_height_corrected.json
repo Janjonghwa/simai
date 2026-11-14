@@ -1,0 +1,46 @@
+{
+  "schema_version": "2.16.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000691",
+  "sent_at": 1760342521400,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": 0.4,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "INITIAL_POSE_AND_WORLD",
+      "progress_pct": 40,
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "height_review": {
+        "status": "CORRECTED",
+        "max_relative_diff": 0.03,
+        "camera_heights_m": {
+          "cam_A": 1.5,
+          "cam_B": 1.5,
+          "cam_C": 1.38,
+          "cam_D": 1.5
+        },
+        "cameras": {
+          "cam_A": {"restored_height_m": 1.504, "difference_cm": 0.4, "relative_diff": 0.00267, "verdict": "OK"},
+          "cam_B": {"restored_height_m": 1.496, "difference_cm": -0.4, "relative_diff": -0.00267, "verdict": "OK"},
+          "cam_C": {"restored_height_m": 1.381, "difference_cm": 0.1, "relative_diff": 0.00072, "verdict": "OK"},
+          "cam_D": {"restored_height_m": 1.509, "difference_cm": 0.9, "relative_diff": 0.006, "verdict": "OK"}
+        }
+      },
+      "height_checks": {
+        "cam_A": {"input_height_m": 1.5, "restored_height_m": 1.504, "difference_cm": 0.4, "within_tolerance": true},
+        "cam_B": {"input_height_m": 1.5, "restored_height_m": 1.496, "difference_cm": -0.4, "within_tolerance": true},
+        "cam_C": {"input_height_m": 1.38, "restored_height_m": 1.381, "difference_cm": 0.1, "within_tolerance": true},
+        "cam_D": {"input_height_m": 1.5, "restored_height_m": 1.509, "difference_cm": 0.9, "within_tolerance": true}
+      }
+    }
+  },
+  "_comment": "S15P31A101-690: 관리자가 cam_C 를 1.38 m 로 고쳤다. MapAnything 을 다시 돌리지 않고 같은 모델 높이로 다시 계산해 진행한다. height_checks 의 입력 높이는 height_review.camera_heights_m 과 같다"
+}

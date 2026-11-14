@@ -300,6 +300,7 @@ class Worker:
                 beat.interval = status.heartbeat_interval_ms / 1000
             beat.next_heartbeat = now + beat.interval
             self._note_live_work(lease, ctx, status)
+            self._note_height_decision(lease, ctx, status)
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
@@ -374,7 +375,15 @@ class Worker:
                 beat.interval = status.heartbeat_interval_ms / 1000
             beat.next_heartbeat = now + beat.interval
             self._note_live_work(lease, ctx, status)
+            self._note_height_decision(lease, ctx, status)
             return None
+
+    @staticmethod
+    def _note_height_decision(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:
+        """EC2 가 관리자의 카메라 높이 확인 결정을 알리면(job_lease_status 2.2.0, -690) 처리기에 넘긴다. 처음 것만 둔다."""
+        if status.height_decision is not None and ctx.note_height_decision(status.height_decision):
+            log.info("작업 %s(%s): 관리자의 카메라 높이 확인 결정을 받았다(%s)", lease.job_id, lease.job_type,
+                     status.height_decision["decision"])
 
     @staticmethod
     def _note_live_work(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:

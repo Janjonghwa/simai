@@ -78,6 +78,26 @@ class JobContext:
     # EC2 가 하트비트 응답(job_lease_status 2.1.0 live_work_active)으로 같은 현장 작업 시작을 알리면 켜진다(-597).
     # cancelled 와 달리 작업을 버리라는 뜻이 아니다: site_setup 은 정식 굽기만 회수하고 미리보기로 COMPLETED 를 낸다
     live_work: threading.Event = field(default_factory=threading.Event)
+    # EC2 가 하트비트 응답(job_lease_status 2.2.0 height_decision)으로 알린 관리자의 카메라 높이 확인 결정(-690).
+    # {"decision": "CONFIRMED"|"CORRECTED", "camera_heights_m": {...}}. 처음 받은 값만 둔다(한 번 정한 결정은 바뀌지 않는다)
+    _height_decision: dict[str, Any] | None = None
+    height_decided: threading.Event = field(default_factory=threading.Event)
+
+    def note_height_decision(self, decision: Mapping[str, Any]) -> bool:
+        """하트비트 스레드가 부른다. 처음 받은 결정이면 True."""
+        if self.height_decided.is_set():
+            return False
+        self._height_decision = {"decision": str(decision["decision"]),
+                                 "camera_heights_m": {str(k): float(v) for k, v in decision["camera_heights_m"].items()}}
+        self.height_decided.set()
+        return True
+
+    @property
+    def height_decision(self) -> dict[str, Any] | None:
+        if not self.height_decided.is_set() or self._height_decision is None:
+            return None
+        return {"decision": self._height_decision["decision"],
+                "camera_heights_m": dict(self._height_decision["camera_heights_m"])}
 
     def __post_init__(self) -> None:
         self.monotonic = safe_monotonic(self.monotonic)

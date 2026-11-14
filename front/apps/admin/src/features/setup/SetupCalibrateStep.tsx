@@ -24,8 +24,8 @@ import { cn } from '@simai/ui/lib/utils';
 import { TriangleAlert } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 
-// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 · 높이 불일치 안내 ·
-// 보정 검증 결과 표를 쌓는다. 왼쪽은 미리보기 맵이 준비되기 전(85%)에는 1단계의 카메라 시야·실시간 영상, 준비되면 3D 미리보기다.
+// 세팅 2단계 '보정·생성'. 1단계와 같은 두 칸 배치(SetupSplit)로, 오른쪽에 진행 카드(5단계 막대) · 실패·멈춤 안내 · 카메라 확인 ·
+// 「자세히」(높이 불일치 안내·보정 검증 결과 표, -690 부터 접어 둔다)를 쌓는다. 높이 확인을 기다리는 멈춤은 높이 확인 창이 맡는다. 왼쪽은 미리보기 맵이 준비되기 전(85%)에는 1단계의 카메라 시야·실시간 영상, 준비되면 3D 미리보기다.
 // 막대·단계별 %·'진행 N%' 는 서버 값만 쓴다. 경과 시간만 진행 카드 안에서 갱신한다.
 
 /** 새 진행 정보 없이 이만큼(초) 지나면 멈춘 것으로 알린다. */
@@ -619,7 +619,7 @@ export function SetupCalibrateStep({
           onReturnToStep1={onReturnToStep1}
         />
       )}
-      {waiting.pausedStageIndex !== null && (
+      {waiting.pausedStageIndex !== null && !waiting.heightCheckPending && (
         <PausedNotice
           stageIndex={waiting.pausedStageIndex}
           problems={
@@ -644,16 +644,26 @@ export function SetupCalibrateStep({
           )}
         </div>
       )}
-      {waiting.showHeightNotice && <HeightNotice warnings={waiting.heightWarnings} />}
       {cameraCheck && showCameraCheck && (
         <CameraCheckCard view={cameraCheck} onRecalibrate={onRecalibrate ?? onReturnToStep1} />
       )}
-      {waiting.heightChecks.length > 0 && (
-        <ResultCard
-          rows={waiting.heightChecks}
-          cameraIds={waiting.cameraIds}
-          toleranceCm={waiting.heightToleranceCm}
-        />
+      {(waiting.showHeightNotice || waiting.heightChecks.length > 0) && (
+        // 높이는 3D 공간을 만든 직후 높이 확인 창에서 이미 확인했다(-690). 거치대 문구·복원 높이 표는 접어 둔다
+        <details aria-label="카메라 높이 자세히" className="rounded-xl bg-card px-3.5 py-2.5">
+          <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+            자세히 · 카메라 높이
+          </summary>
+          <div className="mt-2.5 flex flex-col gap-2.5">
+            {waiting.showHeightNotice && <HeightNotice warnings={waiting.heightWarnings} />}
+            {waiting.heightChecks.length > 0 && (
+              <ResultCard
+                rows={waiting.heightChecks}
+                cameraIds={waiting.cameraIds}
+                toleranceCm={waiting.heightToleranceCm}
+              />
+            )}
+          </div>
+        </details>
       )}
       {cameraCheck && (showCameraCheck || cameraCheck.qualityVerdict !== null) && (
         <PairResultCard view={cameraCheck} />

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
-  "title": "I5 site_setup 1.16.0 입력·단계·결과",
+  "title": "I5 site_setup 1.17.0 입력·단계·결과",
   "$defs": {
     "input": {
       "type": "object",
@@ -166,6 +166,9 @@
         },
         "background_capture": {
           "$ref": "#/$defs/background_capture"
+        },
+        "height_review": {
+          "$ref": "#/$defs/height_review"
         },
         "calibration_version": {
           "type": "string",
@@ -705,6 +708,107 @@
         }
       ],
       "description": "site_setup 1.3.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 버전 참조는 이미 등록된 버전(다른 세팅 세션에 귀속된 버전은 제외)이거나, 같은 스냅샷의 artifacts 로 이 세션이 등록하는 버전만 허용한다(1.2.0). config_version 은 EC2 가 연결한다: 구역 발행 때, 그리고 세팅 결과(COMPLETED) 성공 시 이 세션이 등록한 새 보정을 실은 구성 묶음을 발행할 때(1.2.0). 선택 metrics(1.1.0, S15P31A101-465)는 단계별 소요 시간(stage_seconds)·총 시간·Stage A 회전 BA 지표를 기록한다. 선택 artifacts(1.2.0, S15P31A101-467)는 새 보정 문서·미리보기/정식 GLB 객체 참조다. artifacts.camera_frames(1.3.0, S15P31A101-479)는 AI 구역 초안(vlm_zone_draft)의 VLM 크롭 입력이 되는 카메라별 대표 프레임 객체 참조다. 1.10.0(S15P31A101-605) SUPPLEMENT_REBAKE 결과: calibration_version·preview_scene_version 은 rebake_base 값 그대로(새 보정·미리보기 등록 없음, artifacts 에 calibration_document·preview_scene·camera_frames·bake_images 를 싣지 않는다), height_checks 는 기준 보정 문서의 카메라 중심 높이로 다시 잰 값, supplement 필수. supplement.status 가 APPLIED 면 scene_version 은 새 버전이고 artifacts.scene 으로 GLB 를 올린다(EC2 는 세팅 결과의 정식 Scene 처럼 이 세션 귀속 CANDIDATE 로 등록하고, 이 세션의 맵으로 바꾸는 것은 세팅 세션의 기존 활성화 절차를 따른다). FALLBACK·SKIPPED 면 scene_version 은 rebake_base.scene_version 그대로이고 artifacts.scene 이 없다(새 Scene 을 등록·활성화하지 않고 원래 맵을 유지, 사유는 supplement.reason). 1.11.0(S15P31A101-614) REUSE_SCENE 결과: 현재 관제 맵을 그대로 쓰고 보정만 새로 한다. calibration_version·height_checks·world_anchor(accepted=true, ANCHORED) 필수, preview_scene_version·scene_version 은 null 이거나 없고, zone_drafts_ref·bake_skipped·supplement·reuse_fallback_reason 을 싣지 않으며, artifacts 는 calibration_document(서버가 새 보정을 등록·구성 묶음 발행에 쓴다)와 floor_coverage 만 실을 수 있다(preview_scene·scene·camera_frames·bake_images 불가). EC2 는 새 Scene 을 등록·활성화하지 않고 미리보기 승격·AI 구역 초안도 하지 않는다. World 다시 맞추기가 거부돼 같은 작업 안에서 전체 세팅으로 이어 갔으면 mode=FULL_SETUP + reuse_fallback_reason(+ world_anchor accepted=false)이고 나머지는 FULL_SETUP 결과와 같다."
+    },
+    "height_review": {
+      "type": "object",
+      "description": "1.17.0 선택(S15P31A101-690): 카메라 높이 빠른 확인. 워커가 MapAnything 초기 복원·바닥(World) 정의를 마친 INITIAL_POSE_AND_WORLD 스냅샷에 싣는다. 축척은 카메라별 (입력 높이 ÷ 모델 높이)의 중앙값이라 복원 높이(restored_height_m)는 독립 측정이 아니라 입력과 모델 기하의 상대 일관성이다(4대를 같은 배수로 틀리면 못 잡는다). relative_diff = (복원 − 입력) ÷ 입력, difference_cm = (복원 − 입력) × 100. verdict: OK = |relative_diff| ≤ max_relative_diff, LOW = 복원이 입력보다 낮다(다른 카메라보다 낮게 보인다), HIGH = 높다. status: PASSED = 모든 카메라 OK(기다리지 않음), AWAITING_CONFIRMATION = 기준을 넘는 카메라가 있어 관리자 확인을 wait_s 초까지 기다린다(이 스냅샷에는 height_checks 를 싣지 않는다), CONFIRMED = 관리자가 입력이 실측과 맞다고 확인(입력 그대로 진행), CORRECTED = 관리자가 고친 높이로 MapAnything 을 다시 돌리지 않고 같은 모델 높이로 다시 계산(cameras 는 고친 높이 기준), TIMED_OUT = 확인 없이 wait_s 가 지나 입력 그대로 진행. camera_heights_m 은 이 대여가 이 스냅샷부터 쓰는 높이다(EC2 는 세션 높이를 이 값으로 두고 height_checks 의 입력 높이와 맞춘다). PASSED·CONFIRMED·CORRECTED 면 보정 품질 게이트(quality_gate)는 같은 높이 비교로 카메라를 FAIL 시키지 않는다(TIMED_OUT 은 기존 높이 차 상한을 그대로 본다). 관리자 결정은 job_lease_status 2.2.0 height_decision 으로 온다. 판정·위치에 쓰지 않는 세팅 표시·대기용이다.",
+      "required": [
+        "status",
+        "max_relative_diff",
+        "camera_heights_m",
+        "cameras"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "PASSED",
+            "AWAITING_CONFIRMATION",
+            "CONFIRMED",
+            "CORRECTED",
+            "TIMED_OUT"
+          ]
+        },
+        "max_relative_diff": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "wait_s": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "camera_heights_m": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "cameras": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "restored_height_m",
+              "difference_cm",
+              "relative_diff",
+              "verdict"
+            ],
+            "properties": {
+              "restored_height_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "difference_cm": {
+                "type": "number"
+              },
+              "relative_diff": {
+                "type": "number"
+              },
+              "verdict": {
+                "enum": [
+                  "OK",
+                  "LOW",
+                  "HIGH"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "AWAITING_CONFIRMATION 은 기다리는 상한(wait_s)을 싣는다",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "AWAITING_CONFIRMATION"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "wait_s"
+            ]
+          }
+        }
+      ]
     },
     "background_capture": {
       "type": "object",

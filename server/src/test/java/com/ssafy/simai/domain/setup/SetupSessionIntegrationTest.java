@@ -478,7 +478,7 @@ class SetupSessionIntegrationTest {
         JsonNode before = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.85, readySnap))
                 .andExpect(status().isOk()).andReturn());
         assertThat(schemas.violations("messages/job_lease_status", before.toString())).isEmpty();
-        assertThat(before.at("/schema_version").asString()).isEqualTo("2.1.0");
+        assertThat(before.at("/schema_version").asString()).isEqualTo("2.2.0");
         assertThat(before.at("/payload/live_work_active").booleanValue()).isFalse();
         assertThat(before.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
 
@@ -658,6 +658,119 @@ class SetupSessionIntegrationTest {
         assertThat(queueTimeout.closeUnclaimed()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT failure_code FROM setup_session WHERE setup_session_id = ?::uuid", String.class,
                 sessionId)).isEqualTo("SETUP_QUEUE_TIMEOUT");
+    }
+
+    @Test
+    void 높이_빠른_확인을_기다리면_멈춤으로_보이고_고친_높이가_하트비트로_워커에_가며_워커가_쓴_높이로_세션이_바뀐다() throws Exception {
+        registerWorkers();
+        JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn());
+        String sessionId = created.get("setup_session_id").asString();
+        String jobId = created.get("job_id").asString();
+        String lease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
+                .at("/payload/lease_id").asString();
+
+        // 기다리지 않는 세션에는 답할 수 없다
+        mvc.perform(post("/api/setup-sessions/{id}/resume", sessionId).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(heightsBody(2.42, 2.55, 2.45, 2.51)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_RESUME_NOT_ALLOWED"));
+
+        // 초기 복원 뒤 cam_B 가 입력보다 높게 보여 확인을 기다린다(site_setup 1.17.0). 이 스냅샷에는 height_checks 가 없다
+        ObjectNode awaiting = progressSnapshot(sessionId, "INITIAL_POSE_AND_WORLD", 39.0);
+        awaiting.set("height_review", heightReview("AWAITING_CONFIRMATION", 2.48, 2.62, "HIGH"));
+        ((ObjectNode) awaiting.get("height_review")).put("wait_s", 180);
+        JsonNode waitingBeat = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.39, awaiting))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", waitingBeat.toString())).isEmpty();
+        assertThat(waitingBeat.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(2_000);  // 기다리는 동안 짧게
+        assertThat(waitingBeat.at("/payload/height_decision").isMissingNode()).isTrue();
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused_reason").value("HEIGHT_CHECK"))
+                .andExpect(jsonPath("$.height_review.status").value("AWAITING_CONFIRMATION"))
+                .andExpect(jsonPath("$.height_review.cameras.cam_B.verdict").value("HIGH"))
+                .andExpect(jsonPath("$.height_decision").isEmpty());
+
+        // 열람 계정은 답할 수 없고, 세션에 없는 카메라는 400
+        mvc.perform(post("/api/setup-sessions/{id}/resume", sessionId).with(viewerJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(heightsBody(2.42, 2.55, 2.45, 2.51)))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/setup-sessions/{id}/resume", sessionId).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"camera_heights_m\":{\"cam_X\":2.5}}"))
+                .andExpect(status().isBadRequest());
+
+        // cam_B 를 고쳐 진행: CORRECTED 로 한 번만 받고, 고친 값은 현장 기본값으로 남는다
+        mvc.perform(post("/api/setup-sessions/{id}/resume", sessionId).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(heightsBody(2.42, 2.55, 2.45, 2.51)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paused_reason").isEmpty())
+                .andExpect(jsonPath("$.height_decision.decision").value("CORRECTED"))
+                .andExpect(jsonPath("$.height_decision.camera_heights_m.cam_B").value(2.55))
+                .andExpect(jsonPath("$.height_decision.previous_camera_heights_m.cam_B").value(2.48))
+                .andExpect(jsonPath("$.camera_heights_m.cam_B").value(2.48));  // 워커가 그 높이를 실을 때 바뀐다
+        mvc.perform(post("/api/setup-sessions/{id}/resume", sessionId).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(heightsBody(2.42, 2.48, 2.45, 2.51)))
+                .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("SELECT (default_camera_heights_m ->> 'cam_B')::float8 FROM site WHERE site_id = ?",
+                Double.class, site)).isEqualTo(2.55);
+
+        // 다음 하트비트(아직 기다리는 스냅샷 그대로) 응답이 결정을 싣는다(job_lease_status 2.2.0)
+        JsonNode decidedBeat = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.39, awaiting))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(schemas.violations("messages/job_lease_status", decidedBeat.toString())).isEmpty();
+        assertThat(decidedBeat.at("/payload/height_decision/decision").asString()).isEqualTo("CORRECTED");
+        assertThat(decidedBeat.at("/payload/height_decision/camera_heights_m/cam_B").doubleValue()).isEqualTo(2.55);
+        assertThat(decidedBeat.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
+
+        // 워커가 고친 높이로 다시 맞춘 스냅샷: 세션 높이가 그 값이 되고 높이 검산도 그 값과 맞춘다
+        ObjectNode corrected = progressSnapshot(sessionId, "INITIAL_POSE_AND_WORLD", 40.0);
+        corrected.set("height_review", heightReview("CORRECTED", 2.55, 2.56, "OK"));
+        corrected.set("height_checks", heightChecks(2.42, 2.41, -1.0, true,
+                2.55, 2.56, 1.0, true,
+                2.45, 2.46, 1.0, true,
+                2.51, 2.50, -1.0, true));
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.40, corrected)).andExpect(status().isOk());
+        mvc.perform(get("/api/setup-sessions/{id}", sessionId).with(viewerJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.camera_heights_m.cam_B").value(2.55))
+                .andExpect(jsonPath("$.height_review.status").value("CORRECTED"))
+                .andExpect(jsonPath("$.height_checks.cam_B.input_height_m").value(2.55))
+                .andExpect(jsonPath("$.paused_reason").isEmpty());
+
+        // 세션 카메라와 다른 height_review 는 거절한다(세션 높이를 바꾸는 값이다)
+        ObjectNode wrongCams = progressSnapshot(sessionId, "INITIAL_POSE_AND_WORLD", 40.0);
+        ObjectNode review = heightReview("CORRECTED", 2.55, 2.56, "OK");
+        ((ObjectNode) review.get("camera_heights_m")).remove("cam_D");
+        ((ObjectNode) review.get("cameras")).remove("cam_D");
+        wrongCams.set("height_review", review);
+        mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.40, wrongCams))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+    }
+
+    /** cam_B 만 inputB·restoredB·verdictB, 나머지는 세션 입력(2.42·2.45·2.51)과 맞는 height_review */
+    private ObjectNode heightReview(String status, double inputB, double restoredB, String verdictB) {
+        ObjectNode review = mapper.createObjectNode().put("status", status).put("max_relative_diff", 0.03);
+        review.putObject("camera_heights_m").put("cam_A", 2.42).put("cam_B", inputB).put("cam_C", 2.45).put("cam_D", 2.51);
+        ObjectNode cams = review.putObject("cameras");
+        cams.putObject("cam_A").put("restored_height_m", 2.41).put("difference_cm", -1.0).put("relative_diff", -0.0041)
+                .put("verdict", "OK");
+        cams.putObject("cam_B").put("restored_height_m", restoredB).put("difference_cm", (restoredB - inputB) * 100)
+                .put("relative_diff", (restoredB - inputB) / inputB).put("verdict", verdictB);
+        cams.putObject("cam_C").put("restored_height_m", 2.46).put("difference_cm", 1.0).put("relative_diff", 0.0041)
+                .put("verdict", "OK");
+        cams.putObject("cam_D").put("restored_height_m", 2.50).put("difference_cm", -1.0).put("relative_diff", -0.004)
+                .put("verdict", "OK");
+        return review;
+    }
+
+    private String heightsBody(double cam_A, double cam_B, double cam_C, double cam_D) {
+        ObjectNode body = mapper.createObjectNode();
+        body.putObject("camera_heights_m").put("cam_A", cam_A).put("cam_B", cam_B).put("cam_C", cam_C).put("cam_D", cam_D);
+        return body.toString();
     }
 
     private void registerWorkers() {

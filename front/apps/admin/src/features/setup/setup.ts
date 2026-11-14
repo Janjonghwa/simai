@@ -12,6 +12,7 @@ import {
   neighborPairs,
   pairLabel,
 } from '@/features/setup/cameraLabels';
+import { heightCheckPending, heightSettled } from '@/features/setup/heightCheck';
 import type {
   CameraHeightDefaultsResponse,
   CameraReceptionStatus,
@@ -269,6 +270,12 @@ export interface HeightFieldView {
   missing: boolean;
   invalid: boolean;
   valueM: number | null;
+}
+
+/** 높이 입력 칸 오른쪽 위 글과 강조 여부(높이 확인 창, -690). */
+export interface HeightFieldNote {
+  text: string;
+  warn: boolean;
 }
 
 export interface HeightValidationResult {
@@ -606,8 +613,13 @@ export interface SetupWaitingView {
   failureCode: string | null;
   failureMessage: string | null;
   heightWarnings: HeightWarningItem[];
-  /** 높이 불일치 안내를 보일 시점인지: 실패가 아니고 불일치가 있고, 서버가 높이를 확인한 뒤(40% 부터)다. */
+  /**
+   * 높이 불일치 안내를 보일 시점인지: 실패가 아니고 불일치가 있고, 서버가 높이를 확인한 뒤(40% 부터)다. 높이 빠른 확인(-690)에서
+   * 이미 맞았거나 사람이 확인·수정한 높이면 다시 고치라고 하지 않는다(false).
+   */
   showHeightNotice: boolean;
+  /** 워커가 카메라 높이 확인을 기다린다(높이 확인 창을 띄운다, -690). */
+  heightCheckPending: boolean;
   /** 보정 검증 결과 표 행. 서버가 아직 주지 않았으면 빈 배열. */
   heightChecks: HeightCheckRowView[];
   /** 높이 차이 허용값(cm). 서버가 주지 않았으면 null. */
@@ -862,7 +874,9 @@ export function deriveWaitingView(
     showHeightNotice:
       !failed &&
       heightWarnings.length > 0 &&
+      !heightSettled(session) &&
       (progressPct >= HEIGHT_NOTICE_FROM_PCT || previewReady),
+    heightCheckPending: heightCheckPending(session),
     heightChecks: deriveHeightCheckRows(session),
     heightToleranceCm: session?.height_tolerance_cm ?? null,
     previewReady,

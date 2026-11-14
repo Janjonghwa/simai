@@ -457,6 +457,65 @@ public class SetupService {
         return getInSite(siteId, setupSessionId);
     }
 
+    /**
+     * 카메라 높이 빠른 확인에 답한다(S15P31A101-690, POST /api/setup-sessions/{id}/resume). 워커가 확인을 기다리는 동안
+     * ({@code height_review.status = AWAITING_CONFIRMATION}, 결정 없음)만 한 번 받는다. 보낸 높이가 워커가 쓰는 높이와 같으면
+     * CONFIRMED(실측이 맞음), 하나라도 다르면 CORRECTED(고친 높이로 MapAnything 없이 다시 계산). 빠진 카메라는 지금 높이 그대로다.
+     * 보낸 높이는 다음 세팅의 현장 기본값으로 남긴다(세션 생성과 같은 경로). 결정은 하트비트 응답으로 워커에 가고, 세션 높이는 워커가
+     * 그 높이를 실은 스냅샷을 보낼 때 바뀐다(워커가 이미 시간 초과로 진행했으면 결정만 남는다).
+     */
+    @Transactional
+    public ObjectNode resume(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId) {
+        String siteId = sites.siteId();
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT status, height_review ->> 'status' AS review_status, (height_review -> 'camera_heights_m')::text AS heights,
+                       height_decision::text AS decision
+                FROM setup_session WHERE site_id = :site AND setup_session_id = :id FOR UPDATE
+                """, new MapSqlParameterSource().addValue("site", siteId).addValue("id", setupSessionId));
+        if (rows.isEmpty()) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
+        }
+        Map<String, Object> row = rows.getFirst();
+        String status = (String) row.get("status");
+        if ("COMPLETED".equals(status) || "FAILED".equals(status)
+                || !SetupHeightReview.awaiting((String) row.get("review_status"), (String) row.get("decision"))) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_RESUME_NOT_ALLOWED);
+        }
+        Map<String, Double> current = parseHeightsMap((String) row.get("heights"));
+        if (cameraHeightsM == null || cameraHeightsM.isEmpty()) {
+            throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_REQUEST);
+        }
+        Map<String, Double> submitted = validateSubmittedHeights(List.copyOf(current.keySet()), cameraHeightsM);
+        Map<String, Double> decided = new LinkedHashMap<>(current);
+        decided.putAll(submitted);
+        boolean corrected = decided.entrySet().stream()
+                .anyMatch(e -> Math.abs(e.getValue() - current.get(e.getKey())) > SetupHeightReview.SAME_HEIGHT_M);
+        ObjectNode decision = mapper.createObjectNode();
+        decision.put("decision", corrected ? SetupHeightReview.CORRECTED : SetupHeightReview.CONFIRMED);
+        ObjectNode decidedNode = decision.putObject("camera_heights_m");
+        decided.forEach(decidedNode::put);
+        ObjectNode previousNode = decision.putObject("previous_camera_heights_m");
+        current.forEach(previousNode::put);
+        decision.put("decided_by", userId);
+        Instant now = clock.instant();
+        decision.put("decided_at_ms", now.toEpochMilli());
+        jdbc.update("""
+                UPDATE setup_session SET height_decision = CAST(:decision AS jsonb), updated_at = :now
+                WHERE setup_session_id = :id
+                """, new MapSqlParameterSource().addValue("id", setupSessionId)
+                .addValue("decision", mapper.writeValueAsString(decision)).addValue("now", utc(now)));
+        // 고친 값도, 실측이 맞다고 확인한 값도 다음 세팅의 기본값이다(세션 생성과 같은 현장 기본값 경로)
+        ObjectNode patch = mapper.createObjectNode();
+        decided.forEach(patch::put);
+        jdbc.update("""
+                UPDATE site
+                SET default_camera_heights_m = COALESCE(default_camera_heights_m, '{}'::jsonb) || CAST(:patch AS jsonb)
+                WHERE site_id = :site
+                """, new MapSqlParameterSource().addValue("site", siteId).addValue("patch", mapper.writeValueAsString(patch)));
+        log.info("세팅 세션 {}: 카메라 높이 확인 {}({})", setupSessionId, decision.get("decision").asString(), decided);
+        return getInSite(siteId, setupSessionId);
+    }
+
     /** 세팅을 마치기 전에 세션을 FAILED 로 닫고 세팅·구역 초안 대기 작업을 취소한다(관리자 취소, 대기 시간 초과) */
     private void closeAndCancelJobs(UUID setupSessionId, String code, String message) {
         OffsetDateTime now = utc(clock.instant());
@@ -790,6 +849,16 @@ public class SetupService {
             zoneDraftsRef = null;
         }
 
+        // 카메라 높이 빠른 확인(S15P31A101-690). 워커가 이 스냅샷부터 쓰는 높이가 height_checks 의 입력 높이다(관리자가 고쳤으면
+        // 고친 높이). 세션 높이를 그 값으로 두고 아래 높이 검산을 그 값과 맞춘다
+        SetupHeightReview.Parsed heightReview = SetupHeightReview.fromSnapshot(mapper, snapshot, expectedHeights.keySet(),
+                MAX_CAMERA_HEIGHT_M);
+        String reviewedHeightsJson = null;
+        if (heightReview != null) {
+            expectedHeights = heightReview.heights();
+            reviewedHeightsJson = mapper.writeValueAsString(heightReview.heights());
+        }
+
         JsonNode heightChecksNode = snapshot.get("height_checks");
         String heightChecksJson = session.heightChecksJson();
         if (heightChecksNode != null && !heightChecksNode.isNull()) {
@@ -871,6 +940,8 @@ public class SetupService {
                     world_anchor = COALESCE(CAST(:worldAnchor AS jsonb), CASE WHEN :keepAnchor THEN world_anchor END),
                     zone_height_changes = COALESCE(CAST(:zoneHeightChanges AS jsonb), CASE WHEN :keepAnchor THEN zone_height_changes END),
                     background_capture = COALESCE(CAST(:backgroundCapture AS jsonb), CASE WHEN :keepAnchor THEN background_capture END),
+                    height_review = COALESCE(CAST(:heightReview AS jsonb), CASE WHEN :keepAnchor THEN height_review END),
+                    camera_heights_m = COALESCE(CAST(:reviewedHeights AS jsonb), camera_heights_m),
                     updated_at = :now
                 WHERE setup_session_id = :id
                 """, new MapSqlParameterSource()
@@ -880,6 +951,8 @@ public class SetupService {
                 .addValue("worldAnchor", mode.worldAnchorJson())
                 .addValue("zoneHeightChanges", zoneHeightChangesJson)
                 .addValue("backgroundCapture", backgroundCaptureJson)
+                .addValue("heightReview", heightReview == null ? null : heightReview.json())
+                .addValue("reviewedHeights", reviewedHeightsJson)
                 // 재대여는 처음부터 다시 하므로 앞선 대여의 World 다시 맞추기 결과를 두지 않는다
                 .addValue("keepAnchor", sameLease)
                 .addValue("leaseId", nextLeaseId)
@@ -1720,6 +1793,7 @@ public class SetupService {
                        requested_mode, mode, reuse_fallback_reason, world_anchor::text AS world_anchor,
                        zone_height_changes::text AS zone_height_changes,
                        background_capture::text AS background_capture,
+                       height_review::text AS height_review, height_decision::text AS height_decision,
                        (SELECT w.setup_completed_at FROM work_unit w
                         WHERE w.work_id = setup_session.work_unit_id
                           AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
@@ -1869,6 +1943,18 @@ public class SetupService {
         // 세팅 배경 촬영 진행(S15P31A101-686). 마지막으로 값을 실은 스냅샷 것, 받은 적 없으면 null
         String backgroundCaptureRaw = rs.getString("background_capture");
         out.set("background_capture", backgroundCaptureRaw == null ? mapper.nullNode() : mapper.readTree(backgroundCaptureRaw));
+        // 카메라 높이 빠른 확인(S15P31A101-690). 워커가 확인을 기다리고 결정이 없으면 paused_reason = HEIGHT_CHECK(화면이 높이 확인 창을 띄운다)
+        String heightReviewRaw = rs.getString("height_review");
+        String heightDecisionRaw = rs.getString("height_decision");
+        JsonNode heightReview = heightReviewRaw == null ? mapper.nullNode() : mapper.readTree(heightReviewRaw);
+        out.set("height_review", heightReview);
+        out.set("height_decision", heightDecisionRaw == null ? mapper.nullNode() : mapper.readTree(heightDecisionRaw));
+        boolean open = !"COMPLETED".equals(status) && !"FAILED".equals(status);
+        if (open && SetupHeightReview.awaiting(heightReview.path("status").asString(null), heightDecisionRaw)) {
+            out.put("paused_reason", SetupHeightReview.PAUSED_REASON);
+        } else {
+            out.putNull("paused_reason");
+        }
 
         String heightChecksRaw = rs.getString("height_checks");
         ArrayNode warnings = mapper.createArrayNode();

@@ -12,6 +12,7 @@ import {
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
   type CoverageCameraView,
+  type HeightFieldNote,
   type HeightFieldView,
   type HeightWarningItem,
   type SetupTone,
@@ -282,7 +283,7 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
   );
 }
 
-/** 1단계 카메라별 실측 높이(바닥~렌즈 중심, m) 입력 패널. */
+/** 1단계 카메라별 실측 높이(바닥~렌즈 중심, m) 입력 패널. 높이 확인 창(-690)도 같은 모양으로 쓴다. */
 export function CameraHeightPanel({
   fields,
   onChange,
@@ -295,6 +296,7 @@ export function CameraHeightPanel({
   retryLabel = '다시 시도',
   retryPending = false,
   canSubmitHeights = true,
+  fieldNotes,
 }: {
   fields: readonly HeightFieldView[];
   onChange: (cameraId: string, value: string) => void;
@@ -309,8 +311,15 @@ export function CameraHeightPanel({
   retryLabel?: string;
   retryPending?: boolean;
   canSubmitHeights?: boolean;
+  /** 카메라별 오른쪽 위 글(높이 확인 창: 「맞음」·「다른 카메라보다 약 n cm 낮게 보임」, -690). 주면 기본 글 대신 쓴다. */
+  fieldNotes?: Readonly<Record<string, HeightFieldNote>>;
 }) {
-  const warnedCamIds = new Set(heightWarnings.map((w) => w.cameraId));
+  const warnedCamIds = new Set([
+    ...heightWarnings.map((w) => w.cameraId),
+    ...Object.entries(fieldNotes ?? {})
+      .filter(([, note]) => note.warn)
+      .map(([cameraId]) => cameraId),
+  ]);
   const cameraIds = fields.map((f) => f.cameraId);
   return (
     <Panel title="카메라 높이 입력 (바닥~렌즈 중심, m)" dense fill={1}>
@@ -337,6 +346,7 @@ export function CameraHeightPanel({
           const inputId = `camera-height-${field.cameraId}`;
           const needsInput = field.required || field.missing;
           const isWarned = warnedCamIds.has(field.cameraId);
+          const note = fieldNotes?.[field.cameraId];
           return (
             <div
               key={field.cameraId}
@@ -354,18 +364,22 @@ export function CameraHeightPanel({
                     'text-[11px]',
                     field.missing || field.invalid || isWarned
                       ? 'font-semibold text-delay'
-                      : 'text-muted-foreground',
+                      : note
+                        ? 'text-ok'
+                        : 'text-muted-foreground',
                   )}
                 >
-                  {field.missing
-                    ? '입력 필수'
-                    : field.invalid
-                      ? `0~${MAX_CAMERA_HEIGHT_M}m 입력`
-                      : isWarned
-                        ? '높이 재확인 필요'
-                        : field.required
-                          ? '신규 입력'
-                          : '지난 제출값'}
+                  {note && !field.missing && !field.invalid
+                    ? note.text
+                    : field.missing
+                      ? '입력 필수'
+                      : field.invalid
+                        ? `0~${MAX_CAMERA_HEIGHT_M}m 입력`
+                        : isWarned
+                          ? '높이 재확인 필요'
+                          : field.required
+                            ? '신규 입력'
+                            : '지난 제출값'}
                 </span>
               </div>
               <input

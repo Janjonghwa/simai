@@ -250,6 +250,25 @@ def test_live_work_signal_reaches_the_handler_without_cancelling(ec2, make_worke
     assert ec2.jobs[job_id].state == "SUCCEEDED"
 
 
+def test_height_decision_reaches_the_handler(ec2, make_worker):
+    """EC2 가 하트비트 응답에 높이 확인 결정(height_decision)을 실으면 처리기의 ctx 에 들어간다. 처음 받은 것만 둔다(-690)."""
+    job_id = ec2.add_job("site_setup", load_example("job_request.site_setup.json")["payload"]["input"], timeout_ms=10_000)
+    contexts = []
+    first = {"decision": "CORRECTED", "camera_heights_m": {"cam_A": 1.5, "cam_B": 1.5, "cam_C": 1.38, "cam_D": 1.5}}
+
+    def handler(ctx: JobContext):
+        contexts.append(ctx)
+        assert ctx.height_decision is None
+        ec2.height_decisions[ctx.job_id] = first
+        assert ctx.height_decided.wait(5.0), "높이 확인 결정이 와야 한다"
+        ec2.height_decisions[ctx.job_id] = {"decision": "CONFIRMED", "camera_heights_m": {"cam_A": 9.0}}
+        return copy.deepcopy(load_example("job_callback.site_setup.json")["payload"]["result"])
+
+    assert make_worker({"site_setup": handler}).run_once() is Outcome.ACCEPTED
+    assert contexts[0].height_decision == first and not contexts[0].cancelled.is_set()
+    assert ec2.jobs[job_id].state == "SUCCEEDED"
+
+
 def test_cancelled_job_heartbeat_rejected(ec2, make_worker):
     """EC2 가 작업을 취소하면 다음 하트비트가 REJECTED 이고, 워커는 처리기를 멈추고 결과를 내지 않는다."""
     job_id = ec2.add_job("static_reconstruct")

@@ -5,7 +5,11 @@
 (a) COLLECTING_BACKGROUND: Tier 0 사람 지운 배경 묶음 확인 (`BACKGROUND_INCOMPLETE`)
 (b) INITIAL_POSE_AND_WORLD: 무마커 내부 파라미터 확인(기존 값 재사용 또는 추정)
 (c) INITIAL_POSE_AND_WORLD: MapAnything 초기 복원 + World 자동 정의(바닥 Z=0, 경계 벽 +X, 모서리 원점, `FLOOR_FIT_FAILED`)
-(d) INITIAL_POSE_AND_WORLD: 카메라 높이(`camera_heights_m`)로 축척 및 높이 불일치(`height_checks`) 계산
+(d) INITIAL_POSE_AND_WORLD: 카메라 높이(`camera_heights_m`)로 축척 및 높이 불일치(`height_checks`) 계산.
+    카메라 높이 빠른 확인(-690, `height_review`): 입력 대비 상대 불일치가 3% 를 넘는 카메라가 있으면 AWAITING_CONFIRMATION 을
+    보내고 하트비트 응답의 관리자 결정(job_lease_status 2.2.0 height_decision)을 `height_review_wait_s` 까지 기다린다. 고친 높이면
+    같은 점구름·포즈로 World 를 다시 맞추고(MapAnything 다시 안 돌림) 그 높이로 이어 간다. 맞았거나 확인한 높이는 품질 게이트가 같은
+    높이 비교로 다시 거절하지 않는다. 답이 없으면 입력 높이로 진행(TIMED_OUT, 게이트 높이 상한 그대로)
     (-462 정물 교차 확인은 `object_cross_checker` 확장 지점만 둔다)
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
 (f) JOINT_BA_AND_VERIFY: (선택 `world_anchor`) 카메라가 움직이지 않았으면 새 보정을 이전 채택 보정의 World 로 옮긴 뒤
@@ -76,11 +80,19 @@ from simai_ai.calibration.criteria import (
 )
 from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
 from simai_ai.calibration.extrinsics.joint_ba_v2 import (
+    HEIGHT_REVIEW_AWAITING,
+    HEIGHT_REVIEW_CONFIRMED,
+    HEIGHT_REVIEW_CORRECTED,
+    HEIGHT_REVIEW_MAX_RELATIVE_DIFF,
+    HEIGHT_REVIEW_PASSED,
+    HEIGHT_REVIEW_SETTLED,
+    HEIGHT_REVIEW_TIMED_OUT,
     QUALITY_FAILED,
     ObjectScaleCrossChecker,
     StageAError,
     StageAResult,
     compute_height_checks,
+    compute_height_review,
     evaluate_quality_gate,
     extract_tracks_from_backgrounds,
     run_stage_a_rotation_ba,
@@ -174,6 +186,9 @@ class InitialWorldReconstruction:
     calibration_doc: dict[str, Any]
     restored_heights_m: dict[str, float]
     height_checks: dict[str, dict[str, Any]]
+    # 같은 점구름·카메라 포즈로 다른 높이에 맞춰 World 를 다시 만든다(MapAnything 을 다시 돌리지 않음, -690). 없으면 처리기가
+    # world_initializer 를 다시 부른다(시험·옛 주입점)
+    rebuild: Callable[[Mapping[str, float]], InitialWorldReconstruction] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,10 +544,19 @@ def build_world_from_pointcloud_and_poses(
         world_axes_source=wf.axes_source or "WALLS",
         floor_tilt_correction=wf.floor_tilt_correction,
     )
+    def rebuild(heights: Mapping[str, float]) -> InitialWorldReconstruction:
+        # 바닥·벽·모서리와 카메라 높이 축척(바닥 기울기 보정 포함)만 다시 맞춘다. CPU 로 수 초 안이다
+        return build_world_from_pointcloud_and_poses(
+            site_id=site_id, camera_ids=camera_ids, camera_heights_m=heights, height_tolerance_cm=height_tolerance_cm,
+            points_m=points_m, unscaled_poses=unscaled_poses, intrinsics_by_cam=intrinsics_by_cam,
+            created_at_ms=created_at_ms, calibration_version=calibration_version,
+        )
+
     return InitialWorldReconstruction(
         calibration_doc=doc,
         restored_heights_m=restored_heights,
         height_checks=height_checks,
+        rebuild=rebuild,
     )
 
 
@@ -567,6 +591,10 @@ class SiteSetupHandler:
         camera_check_report_s: float = 3.0,
         camera_check_margin_s: float = 20.0,
         quality_gate: Mapping[str, Any] | None = None,
+        height_review_wait_s: float = 180.0,
+        height_review_poll_s: float = 1.0,
+        height_review_reserve_s: float = 360.0,
+        height_review_max_relative_diff: float = HEIGHT_REVIEW_MAX_RELATIVE_DIFF,
     ) -> None:
         """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
         live_notice: True 면 Tier 0 가 떠 있다는 로그만 남기고 굽는다(Tier 0 지연이 잠깐 늘 수 있음).
@@ -575,9 +603,14 @@ class SiteSetupHandler:
         camera_check: 보정 등록 뒤 사람 걷기로 새 보정을 확인하는 실행기(-646). 없으면 확인하지 않는다(스냅샷에 싣지 않음).
         camera_check_report_s: 상태가 그대로면 카메라 확인 스냅샷을 이 간격(초)보다 자주 보내지 않는다(EC2 하트비트 부하).
         camera_check_margin_s: 결과를 내기 전 확인을 기다릴 때 실행 상한까지 남길 여유(초).
-        quality_gate: 보정 품질 게이트 기준 덮어쓰기(joint_ba_v2.DEFAULT_QUALITY_GATE 키)."""
+        quality_gate: 보정 품질 게이트 기준 덮어쓰기(joint_ba_v2.DEFAULT_QUALITY_GATE 키).
+        height_review_wait_s: 카메라 높이 빠른 확인(-690)에서 관리자 결정을 기다리는 최대 초. 실행 상한까지 height_review_reserve_s
+        (뒤 단계 몫)를 남기도록 줄인다. 넘으면 입력 높이 그대로 진행(TIMED_OUT, 품질 게이트 높이 차 상한은 그대로).
+        height_review_poll_s: 기다리는 동안 결정을 다시 보는 간격(초). 결정은 하트비트 응답으로 들어온다."""
         if background_wait_s < 0 or background_poll_s <= 0:
             raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
+        if height_review_wait_s < 0 or height_review_poll_s <= 0 or height_review_reserve_s < 0:
+            raise ValueError("height_review_wait_s·height_review_reserve_s 는 0 이상, height_review_poll_s 는 양수다")
         self._collect_bg = background_collector
         self._init_world = world_initializer
         self._publish_calibration = calibration_publisher or (
@@ -606,6 +639,10 @@ class SiteSetupHandler:
         self._cc_report_s = float(camera_check_report_s)
         self._cc_margin_s = float(camera_check_margin_s)
         self._quality_gate_config = dict(quality_gate) if quality_gate is not None else None
+        self._hr_wait_s = float(height_review_wait_s)
+        self._hr_poll_s = float(height_review_poll_s)
+        self._hr_reserve_s = float(height_review_reserve_s)
+        self._hr_max = float(height_review_max_relative_diff)
         self._emit_lock = threading.RLock()
         self._last_payload: dict[str, Any] | None = None
         self._last_snapshot: dict[str, Any] | None = None
@@ -852,6 +889,66 @@ class SiteSetupHandler:
                 )
             self._sleep(ctx.cancelled, min(self._bg_poll_s, remaining))
 
+    def _review_heights(
+        self,
+        ctx: JobContext,
+        base: Mapping[str, Any],
+        camera_ids: tuple[str, ...],
+        heights: dict[str, float],
+        init_world: InitialWorldReconstruction,
+        reinitialize: Callable[[Mapping[str, float]], InitialWorldReconstruction],
+    ) -> tuple[dict[str, float], InitialWorldReconstruction, dict[str, Any]]:
+        """카메라 높이 빠른 확인(-690, 계약 site_setup 1.17.0 height_review). (진행할 높이, World, height_review) 를 돌려준다.
+
+        모두 기준 안이면 PASSED(기다리지 않음). 넘는 카메라가 있으면 AWAITING_CONFIRMATION 스냅샷(height_checks 없음)을 보내고
+        하트비트 응답의 관리자 결정(ctx.height_decision)을 기다린다. 고친 높이면 같은 점구름·포즈로 World 를 다시 맞추고(CORRECTED),
+        같은 높이면 그대로(CONFIRMED), 시간이 다하면 입력 그대로(TIMED_OUT). 재대여처럼 결정이 이미 와 있으면 기다리지 않고 쓴다."""
+        def review(status: str, hs: Mapping[str, float], cams: Mapping[str, Any], **extra: Any) -> dict[str, Any]:
+            return {"status": status, "max_relative_diff": self._hr_max,
+                    "camera_heights_m": {c: round(float(hs[c]), 4) for c in camera_ids}, "cameras": dict(cams), **extra}
+
+        cams = compute_height_review(heights, init_world.restored_heights_m, max_relative_diff=self._hr_max)
+        off = sorted(c for c, v in cams.items() if v["verdict"] != "OK")
+        decision = ctx.height_decision
+        if decision is None and not off:
+            return heights, init_world, review(HEIGHT_REVIEW_PASSED, heights, cams)
+        if decision is None:
+            wait_s = self._hr_wait_s
+            remaining = ctx.remaining_s()
+            if remaining is not None:
+                wait_s = min(wait_s, max(0.0, remaining - self._hr_reserve_s))
+            if wait_s > 0:
+                self._emit_progress(ctx, {**base, "height_review": review(HEIGHT_REVIEW_AWAITING, heights, cams,
+                                                                           wait_s=round(wait_s, 1))})
+                decision = self._wait_height_decision(ctx, wait_s)
+            if decision is None:
+                log.warning("작업 %s: 카메라 높이 확인을 %.0fs 안에 받지 못해 입력 높이로 진행한다(어긋난 카메라 %s)",
+                            ctx.job_id, wait_s, off)
+                return heights, init_world, review(HEIGHT_REVIEW_TIMED_OUT, heights, cams)
+        decided = {c: float(decision["camera_heights_m"].get(c, heights[c])) for c in camera_ids}
+        if all(abs(decided[c] - heights[c]) <= 1e-6 for c in camera_ids):
+            log.info("작업 %s: 관리자가 카메라 높이 입력이 실측과 맞다고 확인했다(어긋난 카메라 %s)", ctx.job_id, off)
+            return heights, init_world, review(HEIGHT_REVIEW_CONFIRMED, heights, cams)
+        self._check_cancelled(ctx)
+        rebuilt = init_world.rebuild(decided) if init_world.rebuild is not None else reinitialize(decided)
+        cams = compute_height_review(decided, rebuilt.restored_heights_m, max_relative_diff=self._hr_max)
+        log.info("작업 %s: 고친 카메라 높이로 World 를 다시 맞췄다(%s)", ctx.job_id,
+                 {c: decided[c] for c in camera_ids if abs(decided[c] - heights[c]) > 1e-6})
+        return decided, rebuilt, review(HEIGHT_REVIEW_CORRECTED, decided, cams)
+
+    def _wait_height_decision(self, ctx: JobContext, wait_s: float) -> dict[str, Any] | None:
+        """관리자 결정을 최대 wait_s 초 기다린다. 결정은 하트비트 스레드가 ctx 에 넣는다. 취소·시간 초과는 그대로 낸다."""
+        deadline = self._monotonic() + wait_s
+        while True:
+            self._check_cancelled(ctx)
+            decision = ctx.height_decision
+            if decision is not None:
+                return decision
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                return None
+            self._sleep(ctx.cancelled, min(self._hr_poll_s, remaining))
+
     def _publish_camera_frames(
         self, ctx: JobContext, setup_session_id: str, camera_ids: tuple[str, ...], bundle: CleanBackgroundBundle,
     ) -> list[CameraFrameRef]:
@@ -1094,25 +1191,45 @@ class SiteSetupHandler:
         t0 = self._perf()
         initial_snapshot = {**(self._last_payload or {}), "status": "INITIAL_POSE_AND_WORLD"}
         self._emit_progress(ctx, initial_snapshot)
-        try:
-            init_world = self._init_world(
-                setup_session_id=setup_session_id,
-                site_id=site_id,
-                camera_ids=camera_ids,
-                camera_heights_m=camera_heights_m,
-                height_tolerance_cm=height_tolerance_cm,
-                backgrounds=bg_bundle,
-                created_at_ms=created_at_ms,
-                progress=self._subprogress(ctx, initial_snapshot, 15, 39),
-            )
-        except JobFailed:
-            raise
-        except ValueError as exc:
-            raise JobFailed(
-                "FLOOR_FIT_FAILED",
-                f"초기 World 복원 및 바닥 평면 맞춤 실패: {exc}",
-                retryable=False,
-            ) from exc
+        def init_world_with(heights: Mapping[str, float], progress: Callable[[float], None] | None) -> InitialWorldReconstruction:
+            try:
+                return self._init_world(
+                    setup_session_id=setup_session_id,
+                    site_id=site_id,
+                    camera_ids=camera_ids,
+                    camera_heights_m=heights,
+                    height_tolerance_cm=height_tolerance_cm,
+                    backgrounds=bg_bundle,
+                    created_at_ms=created_at_ms,
+                    progress=progress,
+                )
+            except JobFailed:
+                raise
+            except ValueError as exc:
+                raise JobFailed(
+                    "FLOOR_FIT_FAILED",
+                    f"초기 World 복원 및 바닥 평면 맞춤 실패: {exc}",
+                    retryable=False,
+                ) from exc
+
+        init_world = init_world_with(camera_heights_m, self._subprogress(ctx, initial_snapshot, 15, 39))
+
+        # 카메라 높이 빠른 확인(-690): 기준을 넘는 카메라가 있으면 관리자 확인을 기다리고, 고친 높이면 같은 모델 높이로 다시 계산한다
+        camera_heights_m, init_world, height_review = self._review_heights(
+            ctx,
+            {
+                "setup_session_id": setup_session_id,
+                "status": "INITIAL_POSE_AND_WORLD",
+                "progress_pct": 39,
+                "background_collection_pct": bg_pct,
+                **mode_fields,
+            },
+            camera_ids,
+            camera_heights_m,
+            init_world,
+            lambda heights: init_world_with(heights, None),
+        )
+        heights_settled = height_review["status"] in HEIGHT_REVIEW_SETTLED
 
         init_height_checks = compute_height_checks(
             camera_heights_m,
@@ -1129,6 +1246,7 @@ class SiteSetupHandler:
                 "status": "INITIAL_POSE_AND_WORLD",
                 "progress_pct": 40,
                 "background_collection_pct": bg_pct,
+                "height_review": height_review,
                 "height_checks": init_height_checks,
                 "metrics": {"stage_seconds": dict(stage_seconds)},
                 **mode_fields,
@@ -1169,7 +1287,9 @@ class SiteSetupHandler:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
 
         # 보정 절대 품질 게이트(-646): 상대 악화만이 아니라 절대 상한·최소 홀드아웃·카메라 높이 차를 본다
-        self._quality_gate = evaluate_quality_gate(stage_a.pair_metrics, stage_a.height_checks, self._quality_gate_config)
+        # 앞의 높이 빠른 확인에서 맞았거나 관리자가 확인한 높이는 같은 높이 비교로 다시 거절하지 않는다(-690)
+        self._quality_gate = evaluate_quality_gate(stage_a.pair_metrics, stage_a.height_checks, self._quality_gate_config,
+                                                   heights_settled=heights_settled)
         if self._quality_gate["verdict"] == QUALITY_FAILED:
             stage_seconds["JOINT_BA_AND_VERIFY"] = round(max(0.0, self._perf() - t0), 4)
             self._emit_progress(ctx, {

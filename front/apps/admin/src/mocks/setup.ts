@@ -426,12 +426,14 @@ const AUTO_STAGES: readonly { at: number; stage: SetupSessionResponse['status'];
 ];
 
 /**
- * autoProgress 멈춤(서버·워커에 요청한 paused_reason·resume 계약): 처음 높이 기본값을 현장의 실제 높이로 보고, 입력이 이만큼(m)
- * 넘게 다르면 카메라 정밀 보정에서 품질 게이트 실패로 멈춘다(-646 게이트의 높이 차 ±10 cm 와 같다).
+ * autoProgress 멈춤(카메라 높이 빠른 확인, site_setup 1.17.0 height_review, -690): 처음 높이 기본값을 현장의 실제 높이로 보고,
+ * 입력이 실제와 이 비율 넘게 다르면 3D 공간을 만든 직후(39%) 높이 확인을 기다린다(paused_reason HEIGHT_CHECK, 워커 기준 3% 와 같다).
  */
-const MOCK_PAUSE_HEIGHT_DIFF_M = 0.1;
-/** 멈추는 단계(카메라 정밀 보정)의 시작 진행률. */
-const MOCK_PAUSE_PCT = 40;
+const MOCK_HEIGHT_REVIEW_MAX_RELATIVE = 0.03;
+/** 높이 확인을 기다리는 진행률(3D 공간·좌표계 단계 끝 직전). */
+const MOCK_PAUSE_PCT = 39;
+/** 워커가 기다리는 상한(초). */
+const MOCK_HEIGHT_REVIEW_WAIT_S = 180;
 
 export interface RetrySetupRecord {
   sessionId: string;
@@ -692,54 +694,49 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     });
   }
 
-  /** 입력 높이가 실제 높이와 MOCK_PAUSE_HEIGHT_DIFF_M 넘게 다른 카메라와 그 차이(cm). */
-  function heightMismatches(session: SetupSessionResponse): { cameraId: string; diffCm: number }[] {
-    return Object.entries(session.camera_heights_m).flatMap(([cameraId, input]) => {
-      const actual = actualHeightsM[cameraId];
-      if (actual == null || Math.abs(input - actual) <= MOCK_PAUSE_HEIGHT_DIFF_M) return [];
-      return [{ cameraId, diffCm: Math.round((actual - input) * 1000) / 10 }];
-    });
+  /**
+   * 카메라별 높이 확인(height_review.cameras). 복원 높이는 실제 높이(목업이 아는 값)이고, 축척이 입력의 중앙값이라 실제로는
+   * 상대 불일치만 잡는다(목업은 실제 높이를 그대로 쓴다).
+   */
+  function heightReviewCameras(heights: Readonly<Record<string, number>>) {
+    return Object.fromEntries(
+      Object.entries(heights).map(([cameraId, input]) => {
+        const restored = actualHeightsM[cameraId] ?? input;
+        const rel = (restored - input) / input;
+        const verdict =
+          Math.abs(rel) <= MOCK_HEIGHT_REVIEW_MAX_RELATIVE ? 'OK' : rel < 0 ? 'LOW' : 'HIGH';
+        return [
+          cameraId,
+          {
+            restored_height_m: restored,
+            difference_cm: Math.round((restored - input) * 1000) / 10,
+            relative_diff: Math.round(rel * 100000) / 100000,
+            verdict,
+          } as const,
+        ];
+      }),
+    );
   }
 
-  /** 카메라 정밀 보정에 들어설 때 높이가 크게 틀리면 멈춘다(품질 게이트 실패 문제와 높이 검사를 싣는다). */
+  /** 3D 공간을 만든 직후 높이가 서로 맞지 않으면 높이 확인을 기다린다(한 세션에 한 번, 확인 뒤에는 다시 묻지 않는다). */
   function pauseIfHeightsOff(session: SetupSessionResponse, elapsed: number) {
     const verifyAt = AUTO_STAGES.find((s) => s.stage === 'JOINT_BA_AND_VERIFY')!.at;
-    if (elapsed < verifyAt || session.calibration_version) return null;
-    const mismatches = heightMismatches(session);
-    if (mismatches.length === 0) return null;
-    const cams = Object.keys(session.camera_heights_m);
-    const label = (cameraId: string) => `카메라 ${cams.indexOf(cameraId) + 1}`;
+    if (elapsed < verifyAt || session.calibration_version || session.height_review) return null;
+    const cameras = heightReviewCameras(session.camera_heights_m);
+    const off = Object.values(cameras).some((c) => c.verdict !== 'OK');
+    if (!off) return null;
     pausedAt.set(session.setup_session_id, now());
     return updateSession(session.setup_session_id, {
-      status: 'JOINT_BA_AND_VERIFY',
-      stage: 'JOINT_BA_AND_VERIFY',
+      status: 'INITIAL_POSE_AND_WORLD',
+      stage: 'INITIAL_POSE_AND_WORLD',
       progress_pct: MOCK_PAUSE_PCT,
-      paused_reason: 'QUALITY_GATE',
-      height_checks: Object.fromEntries(
-        Object.entries(session.camera_heights_m).map(([c, h]) => {
-          const miss = mismatches.find((m) => m.cameraId === c);
-          return [
-            c,
-            {
-              input_height_m: h,
-              restored_height_m: Math.round((h + (miss ? miss.diffCm / 100 : 0.01)) * 100) / 100,
-              difference_cm: miss ? miss.diffCm : 1,
-              within_tolerance: !miss,
-              guidance: null,
-            },
-          ];
-        }),
-      ),
-      quality_gate: {
-        verdict: 'FAILED',
-        pairs: {},
-        problems: mismatches.map((m) => ({
-          kind: 'CAMERA',
-          id: m.cameraId,
-          camera_ids: [m.cameraId],
-          reason: 'HEIGHT_MISMATCH',
-          message: `${label(m.cameraId)} 높이가 ${Math.abs(m.diffCm).toFixed(1)} cm 안 맞습니다. 거치대 높이를 확인하세요.`,
-        })),
+      paused_reason: 'HEIGHT_CHECK',
+      height_review: {
+        status: 'AWAITING_CONFIRMATION',
+        max_relative_diff: MOCK_HEIGHT_REVIEW_MAX_RELATIVE,
+        wait_s: MOCK_HEIGHT_REVIEW_WAIT_S,
+        camera_heights_m: { ...session.camera_heights_m },
+        cameras,
       },
     });
   }
@@ -1000,15 +997,25 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return HttpResponse.json(cancelled);
     }),
 
-    // 멈춘 세팅 이어 가기(서버·워커에 요청한 계약): 고친 높이를 싣고 멈춘 단계부터 다시 돈다. 멈춘 동안은 시간이 흐르지 않은 것으로 본다.
+    // 높이 확인에 답하기(-690): 워커가 확인을 기다리는 세션만 받고, 고친 높이면 CORRECTED·같으면 CONFIRMED 로 멈춘 단계부터 다시 돈다.
+    // 멈춘 동안은 시간이 흐르지 않은 것으로 본다. 실제 서버는 워커가 그 높이를 실을 때 세션 높이를 바꾸지만 목업은 바로 바꾼다.
     http.post('*/api/setup-sessions/:id/resume', async ({ request, params }) => {
       const t = now();
       if (!readLiveUser(request, t)) return unauthorized();
       const id = String(params.id ?? '');
       const found = sessions.get(id);
       if (!found) return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
-      if (!found.paused_reason || found.status === 'FAILED') {
-        return problem(409, 'SETUP_RESUME_NOT_ALLOWED', '멈춘 세팅 세션만 이어 갈 수 있습니다');
+      if (
+        found.paused_reason !== 'HEIGHT_CHECK' ||
+        found.height_review?.status !== 'AWAITING_CONFIRMATION' ||
+        found.height_decision ||
+        found.status === 'FAILED'
+      ) {
+        return problem(
+          409,
+          'SETUP_RESUME_NOT_ALLOWED',
+          '카메라 높이 확인을 기다리는 세팅 세션만 이어 갈 수 있습니다',
+        );
       }
       const raw: unknown = await request.json().catch(() => ({}));
       const rawHeights =
@@ -1024,11 +1031,23 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       }
       const pausedSince = pausedAt.get(id) ?? t;
       pausedAt.delete(id);
+      const corrected = Object.entries(heights).some(
+        ([camId, val]) => Math.abs(val - (found.camera_heights_m[camId] ?? val)) > 1e-4,
+      );
       const resumed = updateSession(id, {
         camera_heights_m: heights,
         paused_reason: null,
-        quality_gate: null,
-        height_checks: null,
+        height_decision: {
+          decision: corrected ? 'CORRECTED' : 'CONFIRMED',
+          camera_heights_m: heights,
+          decided_at_ms: t,
+        },
+        height_review: {
+          status: corrected ? 'CORRECTED' : 'CONFIRMED',
+          max_relative_diff: MOCK_HEIGHT_REVIEW_MAX_RELATIVE,
+          camera_heights_m: heights,
+          cameras: heightReviewCameras(heights),
+        },
         started_at_ms: (found.started_at_ms ?? t) + (t - pausedSince),
       });
       return HttpResponse.json(resumed);
