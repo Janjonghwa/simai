@@ -39,6 +39,13 @@ dependencies {
     implementation('software.amazon.awssdk:s3') {
         exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
     }
+    // AWS 서울 GPU 공급자(S15P31A101-703): EC2 RunInstances·TerminateInstances·DescribeInstances·가격(Price List). 동기 호출만 쓴다
+    implementation('software.amazon.awssdk:ec2') {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+    }
+    implementation('software.amazon.awssdk:pricing') {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+    }
     compileOnly 'org.projectlombok:lombok'
     runtimeOnly 'org.postgresql:postgresql'
     annotationProcessor 'org.projectlombok:lombok'

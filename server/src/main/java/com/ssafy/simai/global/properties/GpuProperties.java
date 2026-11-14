@@ -1,5 +1,6 @@
 package com.ssafy.simai.global.properties;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,8 +11,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * GPU 켜기·끄기·자동 정지 설정(S15P31A101-702, 설계 docs/design/S15P31A101-702-gpu-provider-runpod.md).
  * 화면에서 바꾸는 값(선호 GPU·지역·가격 상한·자동 정지 분·템플릿 ID)은 DB 의 GPU 설정 버전이고, 여기 값은 그것이 없을 때의 기본값과
  * 운영 고정값이다. 비밀 값은 RunPod API 키 하나뿐이고 환경 변수(SIMAI_RUNPOD_API_KEY)로만 받는다(로그·응답에 싣지 않는다).
+ * AWS(S15P31A101-703)는 자격 증명을 AWS 기본 자격 증명 체인(인스턴스 역할·AWS_* 환경 변수) 또는 전용 IAM 사용자 키(.env)로만 받는다.
  *
  * @param runpod RunPod 호출 설정
+ * @param aws AWS 서울 GPU 호출 설정(기본 꺼짐)
  * @param defaults DB 설정 버전이 없을 때 쓰는 기본값
  * @param bootTimeout 켠 뒤 G1 등록이 이만큼 없으면 오류로 보고 끈다
  * @param failedGrace 세션이 FAILED 를 이만큼 이어 보고하고 Tier 0 I1 도 없으면 끈다
@@ -19,11 +22,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param sweepInterval 자동 정지 점검 주기
  */
 @ConfigurationProperties("simai.gpu")
-public record GpuProperties(RunPod runpod, Defaults defaults, Duration bootTimeout, Duration failedGrace, Duration uploadHold,
+public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration bootTimeout, Duration failedGrace, Duration uploadHold,
         Duration sweepInterval) {
 
     public GpuProperties {
         runpod = runpod == null ? new RunPod(null, null, null, null, null, null, null, null) : runpod;
+        aws = aws == null ? new Aws(null, null, null, null, null, null, null, null, null, null, null) : aws;
         defaults = defaults == null ? new Defaults(null, null, null, null, null, null, null) : defaults;
         bootTimeout = positive(bootTimeout, Duration.ofMinutes(25));
         failedGrace = positive(failedGrace, Duration.ofMinutes(20));
@@ -71,6 +75,74 @@ public record GpuProperties(RunPod runpod, Defaults defaults, Duration bootTimeo
         public String toString() {
             // 실수로 로그에 찍어도 키가 나가지 않게
             return "RunPod[restBaseUrl=" + restBaseUrl + ", catalogBaseUrl=" + catalogBaseUrl + ", configured=" + configured() + "]";
+        }
+    }
+
+    /**
+     * AWS 서울 GPU(S15P31A101-703, 설계 docs/design/S15P31A101-703-aws-gpu-provider.md). 시작 템플릿·서브넷·보안 그룹·인스턴스 종류 후보·
+     * 스팟 여부는 화면 「GPU 설정」(DB 버전)이고 여기는 운영 고정값이다. 비밀 값은 전용 IAM 사용자 키뿐이고 비우면 기본 자격 증명 체인을 쓴다.
+     *
+     * @param enabled 켜야 AWS 를 부른다(기본 꺼짐: 재고 표·설정 화면에 "준비 안 됨")
+     * @param region EC2 리전(ap-northeast-2 서울)
+     * @param accessKey 전용 IAM 사용자 키 ID(EC2 .env SIMAI_GPU_AWS_ACCESS_KEY_ID). 비면 기본 자격 증명 체인
+     * @param secretKey 그 비밀 키(SIMAI_GPU_AWS_SECRET_ACCESS_KEY, 로그·응답에 싣지 않는다)
+     * @param image 인스턴스가 띄울 GPU 이미지(ECR 서울 사본 권장, 다이제스트 고정). 비면 켜지 않는다
+     * @param secretId 인스턴스가 역할로 읽을 Secrets Manager 비밀 이름(JSON {환경 변수 이름: 값}, 비밀 아님)
+     * @param launchTemplateVersion 시작 템플릿 판($Default·$Latest·숫자)
+     * @param timeout AWS 호출 하나의 시간 제한
+     * @param pricingRegion Price List API 엔드포인트 리전(us-east-1 등 몇 곳에만 있다)
+     * @param onDemandPrices Price List 를 못 읽을 때 쓰는 서울 온디맨드 시간당 가격(USD, 인스턴스 1대). 비면 코드 기본표
+     * @param extraEnv 인스턴스 컨테이너에 더 넣을 비밀 아닌 환경 변수(예 SIMAI_TIER0_PINNED_SPKI_SHA256). 비밀 이름은 거부한다
+     */
+    public record Aws(Boolean enabled, String region, String accessKey, String secretKey, String image, String secretId,
+            String launchTemplateVersion, Duration timeout, String pricingRegion, Map<String, BigDecimal> onDemandPrices,
+            Map<String, String> extraEnv) {
+
+        public Aws {
+            enabled = enabled != null && enabled;
+            region = blank(region) ? "ap-northeast-2" : region.strip();
+            accessKey = accessKey == null ? "" : accessKey.strip();
+            secretKey = secretKey == null ? "" : secretKey.strip();
+            image = image == null ? "" : image.strip();
+            secretId = blank(secretId) ? "simai/gpu-boot" : secretId.strip();
+            launchTemplateVersion = blank(launchTemplateVersion) ? "$Default" : launchTemplateVersion.strip();
+            timeout = positive(timeout, Duration.ofSeconds(20));
+            pricingRegion = blank(pricingRegion) ? "us-east-1" : pricingRegion.strip();
+            if (onDemandPrices == null || onDemandPrices.isEmpty()) {
+                // 서울 온디맨드 Linux 시간당 USD(인스턴스 1대). 2026-11-14 DoiT 가격 집계(compute.doit.com) 사본, 공식 Price List 를 못 읽을 때만.
+                // 근거·날짜는 설계 문서 표. p5.4xlarge 는 서울 가격이 없어(서울 미제공으로 보임) 넣지 않았다
+                Map<String, BigDecimal> table = new LinkedHashMap<>();
+                table.put("p5.48xlarge", new BigDecimal("75.9552"));
+                table.put("p5en.48xlarge", new BigDecimal("87.3485"));
+                table.put("p4d.24xlarge", new BigDecimal("30.4103"));
+                table.put("g7e.2xlarge", new BigDecimal("4.1348"));
+                table.put("g7e.4xlarge", new BigDecimal("4.9155"));
+                table.put("g6e.xlarge", new BigDecimal("2.2880"));
+                table.put("g6e.2xlarge", new BigDecimal("2.7565"));
+                table.put("g6e.4xlarge", new BigDecimal("3.6936"));
+                table.put("g5.xlarge", new BigDecimal("1.2370"));
+                table.put("g5.2xlarge", new BigDecimal("1.4903"));
+                onDemandPrices = table;
+            } else {
+                onDemandPrices = new LinkedHashMap<>(onDemandPrices);
+            }
+            if (extraEnv == null || extraEnv.isEmpty()) {
+                Map<String, String> fallback = new LinkedHashMap<>();
+                fallback.put("SIMAI_TIER0_GPU_RESERVE_MB", "8192"); // RunPod 템플릿과 같은 초기값(deploy/README)
+                extraEnv = fallback;
+            } else {
+                extraEnv = new LinkedHashMap<>(extraEnv);
+            }
+        }
+
+        public boolean staticKey() {
+            return !accessKey.isEmpty() && !secretKey.isEmpty();
+        }
+
+        @Override
+        public String toString() {
+            // 실수로 로그에 찍어도 키가 나가지 않게
+            return "Aws[enabled=" + enabled + ", region=" + region + ", image=" + image + ", staticKey=" + staticKey() + "]";
         }
     }
 

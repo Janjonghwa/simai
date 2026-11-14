@@ -117,6 +117,7 @@ export const STOCK_LABEL: Record<GpuStock, string> = {
   MEDIUM: '보통',
   LOW: '적음',
   NONE: '없음',
+  UNKNOWN: '모름',
 };
 
 /** "1시간 5분", "12분", "1분 미만" */

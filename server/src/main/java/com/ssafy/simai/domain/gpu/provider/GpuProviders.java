@@ -5,8 +5,8 @@ import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /**
- * 공급자 목록(S15P31A101-702). 빈으로 등록된 GpuProvider 를 id 로 찾는다. 지금은 RUNPOD 하나이고 AWS(-703)는 구현 빈을 더하면
- * 같은 화면·같은 경로(설정의 provider)로 쓰인다. 구현이 없는 공급자는 비어 있다(화면은 "설정되지 않음").
+ * 공급자 목록(S15P31A101-702). 빈으로 등록된 GpuProvider 를 id 로 찾는다. RUNPOD(RunPodProvider)와 AWS(AwsGpuProvider, -703, 기본 꺼짐)가
+ * 같은 화면·같은 경로(설정의 provider)로 쓰인다. 구현이 없거나 configured() 가 false 면 화면은 "설정되지 않음"·"준비 안 됨".
  */
 @Component
 public class GpuProviders {

@@ -31,18 +31,47 @@ public interface GpuProvider {
     InstanceState state(String instanceId) throws GpuProviderException;
 
     /** 재고 조회 조건 */
-    record OfferQuery(String cloudType, int gpuCount) {
+    /**
+     * 재고 조회 조건. gpuTypes·regions·interruptible·network 는 설정의 선호 목록이다. 목록 전체를 내주는 공급자(RunPod)는 보지 않고,
+     * 후보를 알아야 묻는 공급자(AWS: 인스턴스 종류·가용 영역·스팟 가격·서브넷)가 쓴다(S15P31A101-703).
+     */
+    record OfferQuery(String cloudType, int gpuCount, List<String> gpuTypes, List<String> regions, boolean interruptible,
+            Network network) {
+
+        public OfferQuery {
+            gpuTypes = gpuTypes == null ? List.of() : List.copyOf(gpuTypes);
+            regions = regions == null ? List.of() : List.copyOf(regions);
+            network = network == null ? Network.NONE : network;
+        }
+
+        public OfferQuery(String cloudType, int gpuCount) {
+            this(cloudType, gpuCount, List.of(), List.of(), false, Network.NONE);
+        }
+    }
+
+    /**
+     * 공급자 망 설정(비밀 아님, S15P31A101-703). AWS: 서브넷(가용 영역마다 하나, 비면 기본 VPC)·보안 그룹(비면 시작 템플릿의 것). RunPod 은 쓰지 않는다.
+     */
+    record Network(List<String> subnetIds, List<String> securityGroupIds) {
+
+        public static final Network NONE = new Network(List.of(), List.of());
+
+        public Network {
+            subnetIds = subnetIds == null ? List.of() : List.copyOf(subnetIds);
+            securityGroupIds = securityGroupIds == null ? List.of() : List.copyOf(securityGroupIds);
+        }
     }
 
     /**
      * 재고 한 칸.
-     * @param gpuType 공급자 GPU 종류 ID(만들기에 그대로 쓴다)
-     * @param stock HIGH·MEDIUM·LOW·NONE
-     * @param pricePerHourUsd 온디맨드 시간당 가격(GPU 1대 × gpuCount). 모르면 null
+     * @param gpuType 공급자 GPU 종류 ID(만들기에 그대로 쓴다. AWS 는 인스턴스 종류)
+     * @param stock HIGH·MEDIUM·LOW·NONE, 또는 UNKNOWN(제공은 되는데 실시간 재고를 알 수 없음: AWS 는 만들어 봐야 안다)
+     * @param pricePerHourUsd 시간당 가격(RunPod: 온디맨드 GPU 1대 × gpuCount, AWS: 인스턴스 1대의 온디맨드 또는 스팟). 모르면 null
      */
     record GpuOffer(String gpuType, String gpuName, Integer memoryGb, String region, String regionName, String stock,
             BigDecimal pricePerHourUsd) {
 
+        /** NONE 이 아니면 고를 수 있다(UNKNOWN 포함: 만들기가 재고 없음으로 거절하면 OUT_OF_STOCK) */
         public boolean inStock() {
             return !"NONE".equals(stock);
         }
@@ -51,10 +80,22 @@ public interface GpuProvider {
     /**
      * 만들기 요청.
      * @param plainEnv 비밀 아닌 환경 변수(부팅 비밀값 ID·EC2 주소·가격 등)
-     * @param secretEnv 환경 변수 이름 → 공급자 비밀 저장소 이름. 구현이 공급자 참조 문법으로 넣는다(원문은 서버에 없다)
+     * @param secretEnv 환경 변수 이름 → 공급자 비밀 저장소 이름. 구현이 공급자 참조 문법으로 넣는다(원문은 서버에 없다).
+     *     AWS 는 이름(키)만 쓴다: 인스턴스가 역할로 Secrets Manager JSON 비밀에서 같은 이름의 값을 받는다
+     * @param templateId 공급자 템플릿(RunPod 템플릿 ID, AWS 시작 템플릿 ID)
+     * @param network 공급자 망 설정(AWS 서브넷·보안 그룹)
      */
     record LaunchSpec(String name, String templateId, String gpuType, String region, String cloudType, boolean interruptible,
-            int gpuCount, Map<String, String> plainEnv, Map<String, String> secretEnv) {
+            int gpuCount, Map<String, String> plainEnv, Map<String, String> secretEnv, Network network) {
+
+        public LaunchSpec {
+            network = network == null ? Network.NONE : network;
+        }
+
+        public LaunchSpec(String name, String templateId, String gpuType, String region, String cloudType, boolean interruptible,
+                int gpuCount, Map<String, String> plainEnv, Map<String, String> secretEnv) {
+            this(name, templateId, gpuType, region, cloudType, interruptible, gpuCount, plainEnv, secretEnv, Network.NONE);
+        }
     }
 
     /** 만든 인스턴스. costPerHourUsd 는 공급자가 응답에 실은 값(모르면 null) */

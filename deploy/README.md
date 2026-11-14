@@ -662,6 +662,14 @@ EC2 가 세션을 끝내면(409 `GPU_SESSION_ENDED`) lobby 를 멈추고, 같은
 
 RunPod 이 자동으로 넣는 `RUNPOD_POD_ID`·`RUNPOD_DC_ID`·`RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_17000`·`_17001`·`_22` 는 등록 메시지(`instance_id`·`region`·`public_host`·`ports`)로 간다.
 AWS·VM 은 같은 자리에 `SIMAI_INSTANCE_ID`·`SIMAI_REGION`·`SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>`(매핑이 없으면 듣는 포트 그대로)를 넣는다(S15P31A101-703).
+
+**AWS 서울 GPU(S15P31A101-703, 설계 `docs/design/S15P31A101-703-aws-gpu-provider.md`).** 화면에서 켜면 EC2 서버가 RunInstances 의 user-data 로 위 이름들을 넣는다:
+호스트(Deep Learning AMI)가 IMDSv2 로 인스턴스 ID·가용 영역·공개 IP 를 읽어 `SIMAI_INSTANCE_ID`·`SIMAI_REGION`·`SIMAI_PUBLIC_HOST` 로, 포트는 `SIMAI_PUBLIC_PORT_17000=17000`·`_17001=17001`(직접 포트),
+그리고 `docker run --gpus all --ipc host -p 17000:17000 -p 17001:17001 --env-file /run/simai-gpu.env <이미지>`(기본 CMD `auto`). 비밀 값은 user-data·환경 파일에 없다:
+`SIMAI_SECRETS_SOURCE=aws-secretsmanager`·`SIMAI_AWS_SECRET_ID`(비밀 이름)·`SIMAI_AWS_REGION` 을 보면 `simai-bootstrap auto` 가 `simai-gpu-boot` 로 넘기고, `simai-gpu-boot` 가 인스턴스 역할(IMDSv2, 홉 2) 자격으로
+Secrets Manager 의 JSON 비밀 `{"SIMAI_GPU_BOOT_SECRET": …, "SIMAI_TIER0_TLS_PRIVATE_KEY": …, "HF_TOKEN": …, "SIMAI_TIER0_TLS_CERT_PEM": …(선택, 공개)}` 를 받아 쓴다(표준 라이브러리 SigV4, aws cli·boto 없음, 이미지 의존성 변화 없음).
+막 켠 인스턴스는 역할 자격이 늦게 뜰 수 있어 `SIMAI_AWS_SECRETS_WAIT_S`(기본 180 s) 동안 다시 하고, 거절(권한·이름)이면 등록하지 않고 기다린다(서버 자동 정지가 BOOT_TIMEOUT 으로 끈다).
+SSH 는 호스트(시작 템플릿 키 페어, `ubuntu`)로 들어가 `sudo docker exec -it simai-gpu bash`. user-data 로그는 `/var/log/simai-gpu-user-data.log`.
 선택 조정: `SIMAI_BOOT_CACHE_WAIT_S`(Tier 0 전 캐시 받기 상한, 600), `SIMAI_BOOT_VLLM_READY_TIMEOUT_S`(Tier 0 준비 뒤 vLLM 을 기다리는 상한, 1800 → 넘으면 READY + "vLLM 미준비"),
 `SIMAI_BOOT_VLLM_CACHE_SETTLE_S`(vLLM /health 뒤 컴파일 캐시를 올리기까지, 60).
 

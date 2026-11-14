@@ -54,6 +54,13 @@ services:
       # 화면 GPU 켜기·끄기·자동 정지(S15P31A101-702). 키가 비면 켜기만 503 이고 서버는 뜬다. 부팅 비밀값 ID 는 비밀이 아니다
       SIMAI_RUNPOD_API_KEY: ${SIMAI_RUNPOD_API_KEY:-}
       SIMAI_GPU_BOOT_ID: ${SIMAI_GPU_BOOT_ID:-gpu-boot-runpod}
+      # AWS 서울 GPU(S15P31A101-703). 기본 꺼짐. 키는 GPU 켜기 전용 IAM 사용자(EC2 RunInstances 등 최소 권한)만, 비우면 기본 자격 증명 체인
+      SIMAI_GPU_AWS_ENABLED: ${SIMAI_GPU_AWS_ENABLED:-false}
+      SIMAI_GPU_AWS_ACCESS_KEY_ID: ${SIMAI_GPU_AWS_ACCESS_KEY_ID:-}
+      SIMAI_GPU_AWS_SECRET_ACCESS_KEY: ${SIMAI_GPU_AWS_SECRET_ACCESS_KEY:-}
+      SIMAI_GPU_AWS_IMAGE: ${SIMAI_GPU_AWS_IMAGE:-}
+      SIMAI_GPU_AWS_SECRET_ID: ${SIMAI_GPU_AWS_SECRET_ID:-simai/gpu-boot}
+      SIMAI_TIER0_PINNED_SPKI_SHA256: ${SIMAI_TIER0_PINNED_SPKI_SHA256:-}
     networks: [edge, ec2-internal]
     depends_on:
       db:

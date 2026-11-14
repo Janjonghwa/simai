@@ -54,7 +54,8 @@ export const gpuStatusSchema = z.looseObject({
 });
 export type GpuStatus = z.infer<typeof gpuStatusSchema>;
 
-export const gpuStockSchema = z.enum(['HIGH', 'MEDIUM', 'LOW', 'NONE']);
+// UNKNOWN: 제공은 되는데 실시간 재고를 모름(AWS, S15P31A101-703). 고를 수 있고 켜 봐야 안다
+export const gpuStockSchema = z.enum(['HIGH', 'MEDIUM', 'LOW', 'NONE', 'UNKNOWN']);
 export type GpuStock = z.infer<typeof gpuStockSchema>;
 
 export const gpuOffersSchema = z.object({
@@ -91,6 +92,10 @@ export const gpuSettingsSchema = z.object({
   max_price_per_hour_usd: nullableNumber,
   auto_stop_idle_minutes: z.number(),
   runpod_template_id: nullableString,
+  // AWS 칸(S15P31A101-703, 비밀 아님): 시작 템플릿·서브넷·보안 그룹
+  aws_launch_template_id: nullableString.optional(),
+  aws_subnet_ids: z.array(z.string()).optional(),
+  aws_security_group_ids: z.array(z.string()).optional(),
   created_at_ms: nullableNumber,
 });
 export type GpuSettings = z.infer<typeof gpuSettingsSchema>;
