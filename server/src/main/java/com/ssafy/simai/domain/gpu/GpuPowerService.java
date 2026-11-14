@@ -8,6 +8,7 @@ import com.ssafy.simai.domain.gpu.provider.GpuProvider.CreatedInstance;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.GpuOffer;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.InstanceState;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.LaunchSpec;
+import com.ssafy.simai.domain.gpu.provider.GpuProvider.Network;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.OfferQuery;
 import com.ssafy.simai.domain.gpu.provider.GpuProviderException;
 import com.ssafy.simai.domain.gpu.provider.GpuProviders;
@@ -179,7 +180,8 @@ public class GpuPowerService {
                 cell.put("gpu_type", gpu);
                 cell.put("region", region);
                 cell.put("stock", offer == null ? "NONE" : offer.stock());
-                BigDecimal price = table.price(gpu);
+                // 칸 가격(AWS 스팟은 가용 영역마다 다르다), 칸이 없으면 그 GPU 의 아무 가격
+                BigDecimal price = offer != null && offer.pricePerHourUsd() != null ? offer.pricePerHourUsd() : table.price(gpu);
                 cell.put("price_per_hour_usd", price);
                 cell.put("within_cap", withinCap(price, s.maxPricePerHourUsd()));
             }
@@ -205,8 +207,8 @@ public class GpuPowerService {
     public ObjectNode launch(Long userId, String gpuType, String region) {
         GpuSettings s = settings.current();
         GpuProvider provider = configuredProvider(s.provider());
-        if ("RUNPOD".equals(provider.id()) && s.templateId() == null) {
-            throw new BusinessException(ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED);
+        if (templateFor(provider.id(), s) == null) {
+            throw new BusinessException(ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED); // RunPod 템플릿·AWS 시작 템플릿이 없다
         }
         if (ec2BaseUrl.isEmpty()) {
             throw new BusinessException(ErrorCode.Gpu.EC2_BASE_URL_MISSING);
@@ -247,7 +249,7 @@ public class GpuPowerService {
         log.info("GPU 켜기 요청 {}: 공급자 {}, {} / {}, 시간당 {} USD, 자동 선택 {}, 요청자 {}", launchId, provider.id(), chosen.gpuType(),
                 chosen.region(), chosen.pricePerHourUsd(), auto, userId);
         try {
-            CreatedInstance created = provider.create(spec(launchId, s, chosen));
+            CreatedInstance created = provider.create(spec(launchId, provider.id(), s, chosen));
             event(launchId, "CREATED", created.instanceId(), null, null, userId);
             log.info("GPU 켜기 요청 {}: 인스턴스 {} 만듦", launchId, created.instanceId());
         } catch (GpuProviderException e) {
@@ -571,19 +573,30 @@ public class GpuPowerService {
                 .addValue("user", userId).addValue("now", utc(now())));
     }
 
-    private LaunchSpec spec(UUID launchId, GpuSettings s, GpuOffer chosen) {
+    private LaunchSpec spec(UUID launchId, String provider, GpuSettings s, GpuOffer chosen) {
         Map<String, String> env = new LinkedHashMap<>();
         // simai-gpu-boot(S15P31A101-700)이 읽는 이름. 부팅 비밀값 원문은 secretEnv 의 RunPod Secret 참조로만 들어간다
         env.put("SIMAI_GPU_BOOT_ID", properties.runpod().bootId());
         env.put("SIMAI_EC2_BASE_URL", ec2BaseUrl);
-        env.put("SIMAI_GPU_PROVIDER", "RUNPOD");
+        env.put("SIMAI_GPU_PROVIDER", provider);
         if (chosen.pricePerHourUsd() != null) {
             env.put("SIMAI_PRICE_PER_HOUR_USD", chosen.pricePerHourUsd().toPlainString());
         }
         env.put("SIMAI_GPU_LAUNCH_ID", launchId.toString());
         String name = properties.runpod().podName() + "-" + launchId.toString().substring(0, 8);
-        return new LaunchSpec(name, s.templateId(), chosen.gpuType(), chosen.region(), s.cloudType(), s.interruptible(), 1, env,
-                properties.runpod().secretEnv());
+        // 비밀 환경 변수 이름 목록은 공급자 공통이다(RunPod: Secret 참조, AWS: 인스턴스가 Secrets Manager JSON 에서 같은 이름으로 받음)
+        return new LaunchSpec(name, templateFor(provider, s), chosen.gpuType(), chosen.region(), s.cloudType(), s.interruptible(), 1,
+                env, properties.runpod().secretEnv(), network(provider, s));
+    }
+
+    /** 공급자별 템플릿: RunPod 템플릿 ID, AWS 시작 템플릿 ID(S15P31A101-703). 없으면 null(켜기 503) */
+    private static String templateFor(String provider, GpuSettings s) {
+        return "AWS".equals(provider) ? s.awsLaunchTemplateId() : s.templateId();
+    }
+
+    /** 공급자별 망 설정: AWS 서브넷·보안 그룹, RunPod 은 없음 */
+    private static Network network(String provider, GpuSettings s) {
+        return "AWS".equals(provider) ? new Network(s.awsSubnetIds(), s.awsSecurityGroupIds()) : Network.NONE;
     }
 
     private GpuProvider configuredProvider(String id) {
@@ -596,7 +609,7 @@ public class GpuPowerService {
 
     private List<GpuOffer> fetchOffers(GpuProvider provider, GpuSettings s) {
         try {
-            return provider.offers(new OfferQuery(s.cloudType(), 1));
+            return provider.offers(new OfferQuery(s.cloudType(), 1, s.gpuTypes(), s.regions(), s.interruptible(), network(provider.id(), s)));
         } catch (GpuProviderException e) {
             log.warn("GPU 재고 조회 실패: {}", e.code());
             throw new BusinessException("NOT_CONFIGURED".equals(e.code()) ? ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED

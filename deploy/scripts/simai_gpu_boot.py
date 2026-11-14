@@ -7,6 +7,8 @@
 
 auto 순서 (공급자 무관: RunPod 은 RUNPOD_*, AWS·그 밖은 SIMAI_* 이름. 모르는 값은 null):
   1) 비밀 값(부팅 비밀값·TLS 비밀 키·HF 토큰)을 환경에서 꺼내 이 프로세스에만 든다(자식 환경·명령줄·로그에 없음, 로그는 가린다).
+     AWS(S15P31A101-703)는 SIMAI_SECRETS_SOURCE=aws-secretsmanager 면 인스턴스 역할(IMDSv2) 자격으로 Secrets Manager 의 JSON 비밀
+     SIMAI_AWS_SECRET_ID 를 받아 채운다(표준 라이브러리 SigV4, aws cli·boto 없음). user-data·환경 변수에 원문이 없다.
   2) GPU(nvidia-smi)·공급자 사실·TLS 키(공급자 비밀 저장소의 고정 키, 노트북 고정 지문 그대로) → POST /api/gpu/sessions(gpu_session_register).
   3) 응답 토큰을 권한 600 파일(<SIMAI_ROOT>/../.simai-private/gpu-session/)에 쓰고 보고기를 띄운다: 단계가 바뀔 때와 report.interval_ms 마다
      gpu_session_report(WEIGHTS → ENGINE → TIER0 → VLLM → READY, 실패는 FAILED + reason_code). 409 GPU_SESSION_ENDED 면 서비스를 멈춘다.
@@ -27,6 +29,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -44,6 +47,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -58,6 +62,13 @@ TLS_CERT_ENV = "SIMAI_TIER0_TLS_CERT_PEM"  # Tier 0 TLS 인증서(공개, PEM �
 TLS_KEY_ENV = "SIMAI_TIER0_TLS_PRIVATE_KEY"  # Tier 0 TLS 비밀 키(공급자 비밀, PEM 또는 PEM 의 base64 한 줄)
 PIN_ENV = "SIMAI_TIER0_PINNED_SPKI_SHA256"  # 선택: 노트북 고정 지문과 같은지 기동 전에 확인
 SECRET_ENVS = (BOOT_SECRET_ENV, TLS_KEY_ENV)
+SECRETS_SOURCE_ENV = "SIMAI_SECRETS_SOURCE"  # aws-secretsmanager(S15P31A101-703). 없으면 환경 변수(RunPod Secret 등)
+AWS_SECRETS_SOURCE = "aws-secretsmanager"
+AWS_SECRET_ID_ENV = "SIMAI_AWS_SECRET_ID"  # 비밀 아님(Secrets Manager 이름 또는 ARN). 값은 JSON {환경 변수 이름: 값}
+# Secrets Manager JSON 에서 받는 이름. 인증서는 공개 값이지만 키와 한 묶음으로 둘 수 있게 받는다(환경에 이미 있으면 환경이 먼저)
+AWS_SECRET_KEYS = (BOOT_SECRET_ENV, TLS_KEY_ENV, "HF_TOKEN")
+AWS_PUBLIC_KEYS = ("SIMAI_TIER0_TLS_CERT_PEM",)
+DEFAULT_IMDS = "http://169.254.169.254"
 HF_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 CONTROL_PORT, VIDEO_PORT = 17000, 17001  # RunPod 템플릿에 노출한 TCP(deploy/README "RunPod 템플릿")
 DEFAULT_ADVERTISE_HOST = "127.0.0.1"  # SSAFY 망 기본 경로: 노트북이 EC2 SSH 로컬 포워드로 붙는다(deploy/README, 14차 start-lobby 와 같음)
@@ -117,6 +128,108 @@ def take_secrets(env: dict[str, str]) -> dict[str, str | None]:
         if v and k != "HUGGING_FACE_HUB_TOKEN":
             _secrets.add(v)
     return taken
+
+
+# ---------------------------------------------------------------- AWS Secrets Manager (S15P31A101-703)
+
+
+def sigv4_headers(method: str, host: str, path: str, query: str, headers: dict[str, str], payload: bytes, *, access_key: str,
+                  secret_key: str, region: str, service: str, amz_date: str, session_token: str | None = None) -> dict[str, str]:
+    """AWS 서명 버전 4 머리글(Authorization·X-Amz-Date·X-Amz-Security-Token). query 는 이미 정렬·인코딩된 문자열."""
+    h = {k.lower(): " ".join(str(v).strip().split()) for k, v in headers.items()}
+    h["host"] = host
+    h["x-amz-date"] = amz_date
+    if session_token:
+        h["x-amz-security-token"] = session_token
+    signed = ";".join(sorted(h))
+    canonical = "\n".join([method, path, query, "".join(f"{k}:{h[k]}\n" for k in sorted(h)), signed,
+                           hashlib.sha256(payload).hexdigest()])
+    scope = f"{amz_date[:8]}/{region}/{service}/aws4_request"
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()])
+    key = ("AWS4" + secret_key).encode()
+    for part in (amz_date[:8], region, service, "aws4_request"):
+        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+    sig = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+    out = {"X-Amz-Date": amz_date,
+           "Authorization": f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed}, Signature={sig}"}
+    if session_token:
+        out["X-Amz-Security-Token"] = session_token
+    return out
+
+
+class AwsTemporary(Exception):
+    """아직 안 됨(막 켠 인스턴스에서 IMDS·역할 자격이 늦게 뜸, 망, 5xx): 다시 해 본다."""
+
+
+def _plain(method: str, url: str, headers: dict[str, str] | None = None, body: bytes | None = None,
+           timeout: float = 5.0) -> tuple[int, bytes]:
+    req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read() or b""
+    except OSError as e:
+        raise AwsTemporary(type(e).__name__) from e
+
+
+def imds_credentials(base: str) -> dict[str, str]:
+    """IMDSv2 로 인스턴스 역할 임시 자격과 리전을 받는다(키는 이 프로세스 메모리에만)."""
+    status, tok = _plain("PUT", f"{base}/latest/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "300"})
+    if status != 200:
+        raise AwsTemporary(f"IMDS 토큰 HTTP {status}")
+    hdr = {"X-aws-ec2-metadata-token": tok.decode().strip()}
+    status, role = _plain("GET", f"{base}/latest/meta-data/iam/security-credentials/", hdr)
+    if status != 200 or not role.strip():
+        raise AwsTemporary(f"인스턴스 역할 없음(HTTP {status}, 시작 템플릿의 IAM 인스턴스 프로파일 확인)")
+    name = role.decode().split()[0]
+    status, raw = _plain("GET", f"{base}/latest/meta-data/iam/security-credentials/{name}", hdr)
+    try:
+        doc = json.loads(raw) if status == 200 else {}
+    except ValueError:
+        doc = {}
+    if not isinstance(doc, dict) or not doc.get("AccessKeyId") or not doc.get("SecretAccessKey"):
+        raise AwsTemporary(f"역할 자격 HTTP {status}")
+    status, region = _plain("GET", f"{base}/latest/meta-data/placement/region", hdr)
+    return {"access_key": doc["AccessKeyId"], "secret_key": doc["SecretAccessKey"], "token": doc.get("Token") or "",
+            "region": region.decode().strip() if status == 200 else ""}
+
+
+def fetch_aws_secret(env: dict[str, str]) -> dict[str, str]:
+    """Secrets Manager GetSecretValue(JSON 객체 비밀). 거절(4xx)은 BootError, 일시 실패는 AwsTemporary."""
+    secret_id = (env.get(AWS_SECRET_ID_ENV) or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9/_+=.@:-]{1,2048}", secret_id):
+        raise BootError("BAD_CONFIG", f"{AWS_SECRET_ID_ENV} 가 없거나 형식이 틀리다")
+    creds = imds_credentials((env.get("SIMAI_AWS_IMDS_URL") or DEFAULT_IMDS).rstrip("/"))
+    _secrets.update({creds["secret_key"], creds["token"]} - {""})
+    region = (env.get("SIMAI_AWS_REGION") or creds["region"] or "").strip()
+    if not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d", region):
+        raise BootError("BAD_CONFIG", "AWS 리전을 모른다(SIMAI_AWS_REGION)")
+    endpoint = (env.get("SIMAI_AWS_SECRETS_ENDPOINT") or f"https://secretsmanager.{region}.amazonaws.com").rstrip("/")
+    host = urllib.parse.urlsplit(endpoint).netloc
+    body = json.dumps({"SecretId": secret_id}).encode()
+    base = {"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "secretsmanager.GetSecretValue"}
+    amz_date = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    signed = sigv4_headers("POST", host, "/", "", base, body, access_key=creds["access_key"], secret_key=creds["secret_key"],
+                           region=region, service="secretsmanager", amz_date=amz_date, session_token=creds["token"] or None)
+    status, raw = _plain("POST", endpoint + "/", {**base, **signed}, body, timeout=15.0)
+    try:
+        doc = json.loads(raw) if raw else {}
+    except ValueError:
+        doc = {}
+    doc = doc if isinstance(doc, dict) else {}
+    kind = str(doc.get("__type") or "").rsplit("#", 1)[-1]
+    if status >= 500 or status == 429 or "Throttling" in kind:
+        raise AwsTemporary(f"Secrets Manager HTTP {status}")
+    if status != 200:
+        raise BootError("SECRETS_REJECTED", f"Secrets Manager 거절 HTTP {status} {kind}".strip())
+    try:
+        values = json.loads(doc.get("SecretString") or "")
+    except ValueError:
+        values = None
+    if not isinstance(values, dict):
+        raise BootError("SECRETS_REJECTED", "비밀 값이 JSON 객체가 아니다({환경 변수 이름: 값})")
+    return {k: v for k, v in values.items() if k in (*AWS_SECRET_KEYS, *AWS_PUBLIC_KEYS) and isinstance(v, str) and v}
 
 
 def write_private(path: Path, text: str) -> Path:
@@ -730,6 +843,31 @@ class Boot:
             raise BootError("BAD_CONFIG", f"{BOOT_ID_ENV} 형식 오류")
         return boot_id, secret, ec2  # type: ignore[return-value]
 
+    def load_aws_secrets(self) -> None:
+        """AWS: Secrets Manager 에서 비밀 값을 받아 비어 있는 것만 채운다. 막 켠 인스턴스는 역할 자격이 늦게 뜰 수 있어
+        SIMAI_AWS_SECRETS_WAIT_S(기본 180 s) 동안 2 s 부터 두 배(30 s 상한)로 다시 한다. 거절(권한·이름)은 바로 멈춘다."""
+        wait_s = float(self.env.get("SIMAI_AWS_SECRETS_WAIT_S") or 180)
+        deadline, delay, attempt = time.monotonic() + wait_s, 2.0, 0
+        while True:
+            attempt += 1
+            try:
+                values = fetch_aws_secret(self.env)
+                break
+            except AwsTemporary as e:
+                log(f"Secrets Manager 받기 실패({attempt}번째): {e}")
+                if time.monotonic() + delay > deadline or self.stop.wait(delay):
+                    raise BootError("SECRETS_UNAVAILABLE", f"{wait_s:.0f} s 안에 비밀 값을 받지 못했다") from e
+                delay = min(delay * 2, 30.0)
+        for k in AWS_SECRET_KEYS:
+            if values.get(k) and not self.secrets.get(k):
+                self.secrets[k] = values[k]
+                _secrets.add(values[k])
+        for k in AWS_PUBLIC_KEYS:
+            if values.get(k) and not (self.env.get(k) or "").strip():
+                self.env[k] = values[k]
+        got = [k for k in AWS_SECRET_KEYS if values.get(k)]
+        log(f"Secrets Manager 에서 비밀 값 {len(got)}개를 받았다(이름만: {', '.join(got) or '없음'})")
+
     def ended_marker(self) -> Path:
         return self.state_dir / "ended.json"
 
@@ -815,6 +953,12 @@ class Boot:
         if self.ended_marker().is_file():
             log(f"이 인스턴스의 GPU 세션은 이미 끝났다({self.ended_marker()}). 다시 등록하지 않고 기다린다(다시 하려면 그 파일을 지운다)")
             return self.idle()
+        if (self.env.get(SECRETS_SOURCE_ENV) or "").strip().lower() == AWS_SECRETS_SOURCE:
+            try:
+                self.load_aws_secrets()
+            except BootError as e:
+                log(f"비밀 값 받기 실패 {e.reason}: {e.detail} → 등록하지 않고 기다린다(서버 자동 정지가 BOOT_TIMEOUT 으로 끈다)")
+                return self.idle()
         try:
             boot_id, secret, ec2 = self.config()
         except BootError as e:

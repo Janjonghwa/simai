@@ -5,7 +5,8 @@
                                                 SIMAI_SERVICES 에 vllm·worker·avatar·ppe 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타·PPE (아래)
     simai-bootstrap                             (인자 없음) 이 사용법만 보이고 64 로 끝난다(아무것도 띄우지 않음. 이미지 기본 CMD 는 tier0 를 명시한다)
     simai-bootstrap auto                        이미지 기본 CMD(S15P31A101-700): 부팅 비밀값 환경 변수(SIMAI_GPU_BOOT_SECRET·_ID·SIMAI_EC2_BASE_URL)가
-                                                있으면 simai-gpu-boot auto(GPU 세션 등록 → 캐시 → preflight → lobby 자동)로 exec, 없으면 tier0 와 같다
+                                                있으면 simai-gpu-boot auto(GPU 세션 등록 → 캐시 → preflight → lobby 자동)로 exec, 없으면 tier0 와 같다.
+                                                AWS(S15P31A101-703)는 비밀값 대신 SIMAI_SECRETS_SOURCE=aws-secretsmanager(+ID·EC2 주소)로 넘긴다
     simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
                                                 Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 --services(기본 넷 다)만 따르고
                                                 SIMAI_SERVICES 는 보지 않는다. 워커 ID 는 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)
@@ -2948,11 +2949,13 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["auto"]:
         # GPU 자동 부팅(S15P31A101-700): 비밀 값을 꺼내기 전에 넘긴다(simai-gpu-boot 가 맨 먼저 꺼내 자기 안에만 든다)
-        boot = [k for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_GPU_BOOT_ID", "SIMAI_EC2_BASE_URL") if os.environ.get(k)]
-        if os.environ.get("SIMAI_GPU_BOOT_SECRET"):
-            if len(boot) < 3:
+        boot = [k for k in ("SIMAI_GPU_BOOT_ID", "SIMAI_EC2_BASE_URL") if os.environ.get(k)]
+        # AWS(S15P31A101-703): 비밀 값은 환경이 아니라 simai-gpu-boot 가 인스턴스 역할로 Secrets Manager 에서 받는다
+        aws_secrets = (os.environ.get("SIMAI_SECRETS_SOURCE") or "").strip().lower() == "aws-secretsmanager"
+        if os.environ.get("SIMAI_GPU_BOOT_SECRET") or aws_secrets:
+            if len(boot) < 2:
                 take_token()
-                log("auto: SIMAI_GPU_BOOT_SECRET 은 있는데 SIMAI_GPU_BOOT_ID·SIMAI_EC2_BASE_URL 이 없다 → 시작하지 않는다 "
+                log("auto: SIMAI_GPU_BOOT_SECRET(또는 SIMAI_SECRETS_SOURCE)은 있는데 SIMAI_GPU_BOOT_ID·SIMAI_EC2_BASE_URL 이 없다 → 시작하지 않는다 "
                     f"(템플릿 환경 변수 확인, 종료 코드 {EXIT_USAGE})")
                 return EXIT_USAGE
             execvp([*shlex.split(os.environ.get("SIMAI_GPU_BOOT_CMD") or "simai-gpu-boot"), "auto"])

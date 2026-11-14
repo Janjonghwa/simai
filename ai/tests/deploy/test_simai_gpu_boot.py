@@ -538,3 +538,139 @@ def test_bootstrap_drops_boot_secrets_from_children(monkeypatch):
     bs.take_token()
     assert "SIMAI_GPU_BOOT_SECRET" not in os.environ and "SIMAI_TIER0_TLS_PRIVATE_KEY" not in os.environ
     assert SECRET not in bs._redact(f"x {SECRET} y")
+
+
+# ---------------------------------------------------------------- AWS(S15P31A101-703): Secrets Manager 로 비밀 값 받기
+
+
+class FakeAws:
+    """가짜 IMDSv2 + Secrets Manager. 받은 Secrets Manager 요청 머리글을 남긴다."""
+
+    def __init__(self, secret: dict | None, sm_status: int = 200, sm_type: str | None = None) -> None:
+        self.secret, self.sm_status, self.sm_type = secret, sm_status, sm_type
+        self.sm_requests: list[dict] = []
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code: int, data: bytes = b"") -> None:
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_PUT(self):
+                if self.path == "/latest/api/token" and self.headers.get("X-aws-ec2-metadata-token-ttl-seconds"):
+                    return self._send(200, b"imds-token")
+                return self._send(404)
+
+            def do_GET(self):
+                if self.headers.get("X-aws-ec2-metadata-token") != "imds-token":
+                    return self._send(401)
+                if self.path == "/latest/meta-data/iam/security-credentials/":
+                    return self._send(200, b"simai-gpu-instance")
+                if self.path == "/latest/meta-data/iam/security-credentials/simai-gpu-instance":
+                    return self._send(200, json.dumps({"AccessKeyId": "ASIAEXAMPLE", "SecretAccessKey": "role-secret-key",
+                                                       "Token": "role-session-token"}).encode())
+                if self.path == "/latest/meta-data/placement/region":
+                    return self._send(200, b"ap-northeast-2")
+                return self._send(404)
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                outer.sm_requests.append({"headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
+                if outer.sm_status != 200:
+                    return self._send(outer.sm_status, json.dumps({"__type": outer.sm_type or "Error"}).encode())
+                return self._send(200, json.dumps({"Name": body.get("SecretId"), "SecretString": json.dumps(outer.secret)}).encode())
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
+def _aws_env(world, aws: FakeAws) -> dict:
+    env = {k: v for k, v in world["env"].items() if not k.startswith("RUNPOD_")}
+    for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_TIER0_TLS_PRIVATE_KEY", "HF_TOKEN"):
+        env.pop(k)
+    env.update({"SIMAI_SECRETS_SOURCE": "aws-secretsmanager", "SIMAI_AWS_SECRET_ID": "simai/gpu-boot",
+                "SIMAI_AWS_IMDS_URL": aws.url, "SIMAI_AWS_SECRETS_ENDPOINT": aws.url, "SIMAI_GPU_PROVIDER": "AWS",
+                "SIMAI_INSTANCE_ID": "i-0123456789abcdef0", "SIMAI_REGION": "ap-northeast-2a", "SIMAI_PUBLIC_HOST": "198.51.100.7",
+                "SIMAI_PUBLIC_PORT_17000": "17000", "SIMAI_PUBLIC_PORT_17001": "17001", "SIMAI_AWS_SECRETS_WAIT_S": "0.2"})
+    return env
+
+
+def test_sigv4_matches_aws_documented_example(gb):
+    # AWS 문서 "Signature Version 4 signing process" 예시(IAM ListUsers, 2015-08-30)와 같은 서명이어야 한다
+    h = gb.sigv4_headers("GET", "iam.amazonaws.com", "/", "Action=ListUsers&Version=2010-05-08",
+                         {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}, b"",
+                         access_key="AKIDEXAMPLE", secret_key="wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", region="us-east-1",
+                         service="iam", amz_date="20150830T123600Z")
+    assert h["Authorization"] == ("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request, "
+                                  "SignedHeaders=content-type;host;x-amz-date, "
+                                  "Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7")
+
+
+def test_aws_secrets_manager_fills_boot_secrets_from_instance_role_and_registers(gb, world):
+    # 인증서는 공개 값이라 환경(world 의 base64 한 줄)에 있으면 환경이 먼저다. 비밀 셋은 환경에 없고 Secrets Manager 에서만 온다
+    aws = FakeAws({"SIMAI_GPU_BOOT_SECRET": SECRET, "SIMAI_TIER0_TLS_PRIVATE_KEY": world["key"],
+                   "HF_TOKEN": "hf_" + "y" * 30, "SIMAI_TIER0_TLS_CERT_PEM": "-----BEGIN CERTIFICATE-----\nignored\n", "UNRELATED": "x"})
+    try:
+        env = _aws_env(world, aws)
+        boot = _boot(gb, {**world, "env": env})
+        t, box = _run_bg(boot)
+        assert _wait(lambda: world["ec2"].registers), world["ec2"].errors
+        boot.stop.set()
+        t.join(timeout=30)
+    finally:
+        aws.close()
+    p = world["ec2"].registers[0]["payload"]  # 가짜 EC2 는 Bearer 부팅 비밀값이 맞을 때만 받는다
+    assert p["provider"] == "AWS" and p["instance_id"] == "i-0123456789abcdef0" and p["region"] == "ap-northeast-2a"
+    assert p["public_host"] == "198.51.100.7" and p["tls_public_key_sha256"] == "sha256:" + world["spki"]
+    assert {(x["role"], x["public_port"]) for x in p["ports"]} == {("CONTROL", 17000), ("VIDEO", 17001)}
+    req = aws.sm_requests[0]
+    assert req["body"] == {"SecretId": "simai/gpu-boot"}
+    assert req["headers"]["x-amz-target"] == "secretsmanager.GetSecretValue"
+    assert req["headers"]["x-amz-security-token"] == "role-session-token"
+    assert re.match(r"AWS4-HMAC-SHA256 Credential=ASIAEXAMPLE/\d{8}/ap-northeast-2/secretsmanager/aws4_request, "
+                    r"SignedHeaders=content-type;host;x-amz-date;x-amz-security-token;x-amz-target, Signature=[0-9a-f]{64}$",
+                    req["headers"]["authorization"])
+    assert boot.secrets["HF_TOKEN"] == "hf_" + "y" * 30 and "UNRELATED" not in boot.secrets
+    # 비밀 값·역할 자격은 로그 가림 대상이다
+    assert "role-secret-key" not in gb.redact("role-secret-key") and "role-session-token" not in gb.redact("role-session-token")
+    assert SECRET not in gb.redact(SECRET)
+
+
+def test_aws_secrets_rejected_or_unavailable_does_not_register(gb, world):
+    aws = FakeAws(None, sm_status=400, sm_type="com.amazonaws.secretsmanager#AccessDeniedException")
+    try:
+        boot = _boot(gb, {**world, "env": _aws_env(world, aws)})
+        with pytest.raises(gb.BootError) as e:
+            boot.load_aws_secrets()
+        assert e.value.reason == "SECRETS_REJECTED" and "AccessDeniedException" in e.value.detail
+        assert len(aws.sm_requests) == 1  # 거절은 다시 하지 않는다
+        aws.sm_status, aws.sm_type = 503, "ServiceUnavailable"
+        with pytest.raises(gb.BootError) as e:
+            boot.load_aws_secrets()
+        assert e.value.reason == "SECRETS_UNAVAILABLE"
+    finally:
+        aws.close()
+    assert not world["ec2"].registers
+
+
+def test_bootstrap_auto_hands_over_with_aws_secrets_source(monkeypatch):
+    bs = load_script("simai_bootstrap")
+    calls = []
+    monkeypatch.setattr(bs, "execvp", lambda argv: calls.append(argv))
+    for k in ("SIMAI_GPU_BOOT_SECRET", "SIMAI_GPU_BOOT_CMD", "SIMAI_GPU_BOOT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SIMAI_SECRETS_SOURCE", "aws-secretsmanager")
+    monkeypatch.setenv("SIMAI_EC2_BASE_URL", "https://simai.example")
+    assert bs.main(["auto"]) == bs.EXIT_USAGE and not calls  # ID 가 없으면 시작하지 않는다
+    monkeypatch.setenv("SIMAI_GPU_BOOT_ID", "gpu-boot-runpod")
+    assert bs.main(["auto"]) == 0 and calls == [["simai-gpu-boot", "auto"]]

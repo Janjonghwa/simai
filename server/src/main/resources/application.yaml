@@ -91,6 +91,22 @@ simai:
       api-key: ${SIMAI_RUNPOD_API_KEY:}
       # 인스턴스 환경 변수 SIMAI_GPU_BOOT_ID(비밀 아님, admin gpu-boot register --id). 부팅 비밀값 원문은 RunPod Secret 참조로만 넣는다
       boot-id: ${SIMAI_GPU_BOOT_ID:gpu-boot-runpod}
+    aws:
+      # AWS 서울 GPU(S15P31A101-703, 설계 docs/design/S15P31A101-703-aws-gpu-provider.md). 기본 꺼짐: 켜지 않으면 AWS 를 부르지 않고
+      # 설정 화면·재고 표에 "준비 안 됨"이다. 시작 템플릿·서브넷·보안 그룹·인스턴스 종류·스팟은 화면 「GPU 설정」, 여기는 운영 고정값
+      enabled: ${SIMAI_GPU_AWS_ENABLED:false}
+      region: ${SIMAI_GPU_AWS_REGION:ap-northeast-2}
+      # 전용 IAM 사용자 키(비밀, EC2 .env 에만). 비우면 AWS 기본 자격 증명 체인(인스턴스 역할 등)
+      access-key: ${SIMAI_GPU_AWS_ACCESS_KEY_ID:}
+      secret-key: ${SIMAI_GPU_AWS_SECRET_ACCESS_KEY:}
+      # 인스턴스가 띄울 GPU 이미지(ECR 서울 사본, 다이제스트 고정). 비면 켜지 않는다
+      image: ${SIMAI_GPU_AWS_IMAGE:}
+      # 인스턴스가 역할로 읽는 Secrets Manager 비밀 이름(비밀 아님). 값은 JSON {SIMAI_GPU_BOOT_SECRET, SIMAI_TIER0_TLS_PRIVATE_KEY, HF_TOKEN, …}
+      secret-id: ${SIMAI_GPU_AWS_SECRET_ID:simai/gpu-boot}
+      # 인스턴스 컨테이너에 더 넣는 비밀 아닌 환경 변수(빈 값은 넣지 않는다). 이름을 그대로 두려고 대괄호로 쓴다
+      extra-env:
+        "[SIMAI_TIER0_GPU_RESERVE_MB]": "8192"
+        "[SIMAI_TIER0_PINNED_SPKI_SHA256]": ${SIMAI_TIER0_PINNED_SPKI_SHA256:}
     # 켠 뒤 G1 등록이 이만큼 없으면 오류로 보고 끈다(목표 5~7분 기동 + 첫 엔진 빌드·이미지 받기 여유)
     boot-timeout: 25m
     # FAILED 를 이만큼 이어 보고하고 Tier 0 I1 도 없으면 끈다(-700: 인스턴스는 FAILED 면 스스로 끝내지 않고 기다린다)

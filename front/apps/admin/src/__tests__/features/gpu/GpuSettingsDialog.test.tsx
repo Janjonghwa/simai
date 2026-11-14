@@ -62,7 +62,8 @@ describe('GpuSettingsDialog', () => {
     const gpus = (await screen.findByLabelText('선호 GPU (위가 먼저)')) as HTMLTextAreaElement;
     expect(gpus.value).toBe('NVIDIA H100 80GB HBM3\nNVIDIA H100 PCIe');
     expect(screen.getByText('버전 3')).toBeTruthy();
-    expect(screen.getByRole('option', { name: 'AWS (설정되지 않음)' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'AWS (준비 안 됨)' })).toBeTruthy();
+    expect(screen.queryByLabelText('AWS 시작 템플릿 ID')).toBeNull(); // RunPod 이면 AWS 칸은 없다
     expect(screen.queryByLabelText(/API 키|비밀/)).toBeNull();
 
     act(() =>
@@ -88,8 +89,55 @@ describe('GpuSettingsDialog', () => {
         max_price_per_hour_usd: 3.5,
         auto_stop_idle_minutes: 45,
         runpod_template_id: 'tpl-simai',
+        aws_launch_template_id: null,
+        aws_subnet_ids: [],
+        aws_security_group_ids: [],
       },
     ]);
+  });
+
+  it('AWS 를 고르면 인스턴스 종류·가용 영역 이름과 시작 템플릿·서브넷·보안 그룹 칸을 보이고 그대로 보낸다(S15P31A101-703)', async () => {
+    const onClose = vi.fn();
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <GpuSettingsDialog onClose={onClose} />
+      </QueryClientProvider>,
+    );
+    await screen.findByLabelText('선호 GPU (위가 먼저)');
+    act(() => fireEvent.change(screen.getByLabelText('공급자'), { target: { value: 'AWS' } }));
+    expect(screen.queryByLabelText('RunPod 템플릿 ID')).toBeNull();
+    act(() =>
+      fireEvent.change(screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)'), {
+        target: { value: 'g6e.2xlarge\ng7e.2xlarge' },
+      }),
+    );
+    act(() =>
+      fireEvent.change(screen.getByLabelText('선호 가용 영역 (위가 먼저)'), {
+        target: { value: 'ap-northeast-2a' },
+      }),
+    );
+    act(() =>
+      fireEvent.change(screen.getByLabelText('AWS 시작 템플릿 ID'), {
+        target: { value: ' lt-0123456789abcdef0 ' },
+      }),
+    );
+    act(() =>
+      fireEvent.change(screen.getByLabelText('서브넷 (가용 영역마다 하나, 비우면 기본 VPC)'), {
+        target: { value: 'subnet-0aaa1111bbbb2222c\n' },
+      }),
+    );
+    act(() => fireEvent.click(screen.getByRole('button', { name: '저장' })));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(saved[0]).toMatchObject({
+      provider: 'AWS',
+      preferred_gpu_types: ['g6e.2xlarge', 'g7e.2xlarge'],
+      preferred_regions: ['ap-northeast-2a'],
+      aws_launch_template_id: 'lt-0123456789abcdef0',
+      aws_subnet_ids: ['subnet-0aaa1111bbbb2222c'],
+      aws_security_group_ids: [],
+    });
   });
 
   it('틀린 입력은 보내지 않고 까닭을 보인다', async () => {
