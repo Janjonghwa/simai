@@ -110,7 +110,7 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
   - 실제로 고친 항목만 `C:\simai-local\gateway-heal.log` 에 한 줄씩 남긴다(크기 1 MB 초과 시 `gateway-heal.log.old` 로 1회 순환).
   1. **sshd 서비스**: `Running` 이 아니면 시작하고 시작 유형을 `Automatic` 으로 맞춘다.
   2. **sshd 실패 시 자동 재시작 옵션**: `sc.exe failure sshd reset= 86400 actions= restart/5000/restart/5000/restart/60000` 이 없으면 설정한다.
-  3. **원격 역터널(`simai-gateway-remote`)**: 예약 작업이 `Running` 이 아니면 시작한다. 역터널 `ssh` 프로세스가 없거나 터널 로그의 마지막 성공 시각 이후 5분(300초) 넘게 지났으면 예약 작업을 멈추고 EC2 `~/simai-gateway/free-ports.sh` 로 옛 세션을 정리한 뒤 다시 시작한다.
+  3. **원격 역터널(`simai-gateway-remote`)**: 예약 작업이 `Running` 이 아니면 시작한다. 진짜 끊겼을 때만 재시작한다(S15P31A101-709): 역터널 `ssh` 프로세스가 없거나, `ssh` 는 살아 있지만 터널 로그의 마지막 성공 기록이 5분(300초) 안이 아니고(기록 없음 포함) EC2 에 `127.0.0.1:2222` 리슨이 없다고 확인될 때다. 이때 예약 작업을 멈추고 EC2 `~/simai-gateway/free-ports.sh` 로 옛 세션을 정리한 뒤 다시 시작한다. 기록이 없거나 오래됐다는 것만으로는, 또 EC2 에 못 붙어 모를 때는 재시작하지 않는다. 터널 로그는 줄마다 UTF-8 로 읽고 아니면 시스템 ANSI(CP949)로 읽는다(-394 판 스크립트가 ANSI 로 쓴 줄).
   4. **절전 설정(`powercfg`)**: AC 전원 기준 화면 끄기(`monitor-timeout-ac 0`), 절전(`standby-timeout-ac 0`), 덮개 닫기 동작(`LIDACTION 0`, 아무 것도 안 함)이 바뀌었으면 0으로 되돌린다.
   5. **중계 모드**: 마지막으로 사용자가 고른 모드(`C:\simai-local\gateway-mode.txt`)의 창이 죽어 있으면 그 모드로 다시 띄운다(미리보기, 그리고 상태 파일에 Pod 주소·포트가 있는 `run`(관제), S15P31A101-652). 창 PID 만이 아니라 창 안의 프로그램(uv·simai-relay·simai-site-alert 자식)까지 본다: 창은 `-NoExit` 라 중계가 죽어도 열린 채 남아 11-09 에 heal 이 "이상 없음"이었다(관제 터널 창은 재연결 대기 중 자식이 없어 창만 본다). 30분 안에 3번 되살렸는데 또 죽으면 더 되살리지 않고 heal 로그에 `되살리지 않음` 을 남긴다. Pod 주소 기록이 없는 `run` 은 예전처럼 `"관제가 꺼짐"` 으로만 알린다.
   6. **자동 전환 작업자(`simai-gateway-auto`, S15P31A101-701)**: 예약 작업이 없으면 등록하고(SYSTEM 이라 관리자 권한), 멈춰 있으면 시작한다(로그인 전에는 다음 heal 이 다시 본다).
