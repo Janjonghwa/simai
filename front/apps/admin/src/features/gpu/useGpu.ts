@@ -15,6 +15,7 @@ import type { GpuLaunchBody, GpuSettingsBody, GpuStatus } from '@/features/gpu/t
 import { useTier0Connected } from '@/hooks/useTier0Connected';
 import { api } from '@/lib/api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useSyncExternalStore } from 'react';
 
 // GPU 상태·켜기·끄기·설정 훅(S15P31A101-702). 상태는 관리자만 받는다(서버가 ADMIN 만 허용). 다른 역할은 Tier 0 연결로만 점을 그린다.
 
@@ -54,6 +55,23 @@ export function useGpuStatus(): GpuStatusView {
     dot: gpuDot(status, tier0Connected),
     clockOffsetMs: query.data?.offsetMs ?? 0,
   };
+}
+
+/**
+ * 이미 받아 둔 GPU 상태만 읽는다(새로 요청하지 않는다, S15P31A101-706). 관리자 화면은 상단바 GPU 점이 늘 받아 둔다.
+ * 사건 상세처럼 상태 요청을 늘리지 않을 곳이 쓴다. 관리자가 아니면 없음.
+ */
+export function useCachedGpuStatus(): GpuStatus | undefined {
+  const isAdmin = useCurrentRole() === 'ADMIN';
+  const client = useQueryClient();
+  const subscribe = useCallback(
+    (onChange: () => void) => client.getQueryCache().subscribe(onChange),
+    [client],
+  );
+  const data = useSyncExternalStore(subscribe, () =>
+    client.getQueryData<{ status: GpuStatus }>(GPU_STATUS_KEY),
+  );
+  return isAdmin ? data?.status : undefined;
 }
 
 /** 켜기 패널의 재고·가격 표. 패널을 열 때만 받는다(공급자 API 를 부른다) */

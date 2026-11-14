@@ -88,6 +88,7 @@ import {
   useStartCameraCheck,
 } from '@/features/setup/useSetupStep1';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
+import { VlmZoneNotice } from '@/features/setup/VlmZoneNotice';
 import { useWorkAction } from '@/features/work/WorkActionContext';
 import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { ZonesPage } from '@/features/zones/ZonesPage';
@@ -958,6 +959,10 @@ function SetupWorkPage({
         </ZoneSourceContext>
       )}
       {gpuGateDialog}
+      <VlmZoneNotice
+        active={stage === ZONE_STAGE && !completed && zoneSource !== null}
+        sessionId={sessionId}
+      />
       {capture.open && (
         <BackgroundCaptureModal
           view={capture.view}

@@ -26,6 +26,8 @@ import { canRequestSummary, latestSummary } from '@/features/events/summary';
 import type { EventEscalation } from '@/features/events/types';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { useSummaryState } from '@/features/events/useIncidentSummary';
+import { vlmReadiness } from '@/features/gpu/gpuStatus';
+import { useCachedGpuStatus } from '@/features/gpu/useGpu';
 import type { ConfigBundle } from '@/features/zones/types';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { useZoneName } from '@/features/zones/useZoneName';
@@ -45,6 +47,13 @@ function DetailPanel({ title, children }: { title: string; children: ReactNode }
 }
 
 const None = () => <p className="text-sm text-muted-foreground">—</p>;
+
+/**
+ * VLM 근거를 기다리는 이벤트인지(S15P31A101-706). 근거는 LIVE CRITICAL 에만 요청되고(서버 VlmRationaleIngestor),
+ * 아직 없는데 GPU 부팅 단계가 VLLM(VLM 가중치 받는 중)이면 빈 칸 대신 「AI 근거 준비 중」을 보인다.
+ */
+const awaitsRationale = (event: EventEntry['event'], vlmLoading: boolean) =>
+  vlmLoading && !event.rationale && event.source === 'LIVE' && event.severity === 'CRITICAL';
 
 /** 구역이 없는 이벤트의 구역 칸 문구. */
 const NO_ZONE_TEXT = '구역 없음';
@@ -174,6 +183,8 @@ export function AiPanel({
   const role = useCurrentRole();
   const historyByEvent = useEscalationHistory();
   const summaryByEvent = useSummaryState();
+  // 이미 받아 둔 GPU 상태만 본다(상단바 점이 받는다). 관리자가 아니거나 세션이 없으면 지금 그대로
+  const vlmLoading = vlmReadiness(useCachedGpuStatus()) === 'LOADING';
   const ai = entries.filter(({ event }) => {
     const history = mergedEscalations(event, historyByEvent[event.event_id]);
     const summary = latestSummary(event, summaryByEvent[event.event_id]);
@@ -182,7 +193,8 @@ export function AiPanel({
       event.proposed_severity ||
       history.length > 0 ||
       summary !== undefined ||
-      canRequestSummary(event, role),
+      canRequestSummary(event, role) ||
+      awaitsRationale(event, vlmLoading),
     );
   });
   return (
@@ -197,7 +209,18 @@ export function AiPanel({
               {ai.length > 1 && (
                 <span className="text-muted-foreground">{eventRuleName(event)}</span>
               )}
-              {event.rationale && <p>{event.rationale}</p>}
+              {event.rationale ? (
+                <p>{event.rationale}</p>
+              ) : (
+                awaitsRationale(event, vlmLoading) && (
+                  <p
+                    title="AI 모델(VLM) 가중치를 받는 중입니다. 준비 전에 난 경보에는 근거가 붙지 않을 수 있습니다."
+                    className="text-muted-foreground"
+                  >
+                    AI 근거 준비 중
+                  </p>
+                )
+              )}
               {event.proposed_severity && (
                 <div className="flex flex-col gap-1.5">
                   <span className="flex flex-wrap items-center gap-2">
