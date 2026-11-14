@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import math
 
@@ -29,7 +30,10 @@ from simai_ai.calibration.camera_check import (
 )
 from simai_ai.calibration.monitor import (
     BASELINE_SOURCE_SETUP_CAMERA_CHECK,
+    BaselineRecord,
     MonitorConfig,
+    MonitorStatus,
+    ReprojectionMonitor,
 )
 from simai_ai.geometry.interpolation import InterpolatedView
 from simai_ai.providers.contract import schema_errors
@@ -74,18 +78,18 @@ def _doc(version="cal-check-1", rotate=None):
             "scale_basis": "DATASET_GT", "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
 
 
-def _project(doc, cam_id, joints, rng):
+def _project(doc, cam_id, joints, rng, noise_px=0.5):
     cam = next(c for c in doc["cameras"] if c["camera_id"] == cam_id)
     R, t, K = np.asarray(cam["R"]), np.asarray(cam["t"]), np.asarray(cam["K"])
     kps = []
     for X in joints:
         xc = R @ X + t
-        uv = K[:2, :2] @ (xc[:2] / xc[2]) + K[:2, 2] + rng.normal(0.0, 0.5, 2)
+        uv = K[:2, :2] @ (xc[:2] / xc[2]) + K[:2, 2] + rng.normal(0.0, noise_px, 2)
         kps.append((float(uv[0]), float(uv[1]), 0.9))
     return tuple(kps)
 
 
-def _walk(truth, seconds=24.0, hz=5.0, people=1, cameras=tuple(CORNERS), seed=7):
+def _walk(truth, seconds=24.0, hz=5.0, people=1, cameras=tuple(CORNERS), seed=7, noise_px=0.5):
     """한(또는 여러) 사람이 방 가운데를 원으로 걷는 view 묶음 목록 [(t, views)]."""
     rng = np.random.default_rng(seed)
     out = []
@@ -97,7 +101,7 @@ def _walk(truth, seconds=24.0, hz=5.0, people=1, cameras=tuple(CORNERS), seed=7)
             x, y = 4.5 + 1.8 * math.cos(a), 3.75 + 1.4 * math.sin(a)
             joints = [np.array([x, y - dx, dz]) for dx, dz in OFFSETS]
             for c in cameras:
-                kps = _project(truth, c, joints, rng)
+                kps = _project(truth, c, joints, rng, noise_px)
                 views.append(LocalView(c, f"{c}-p{p}", InterpolatedView(c, t, kps, "SIM", 0.0, (t,))))
         out.append((t, views))
     return out
@@ -240,3 +244,55 @@ def test_config_rejects_bad_values():
     with pytest.raises(ValueError):
         CameraCheckConfig(min_pair_pass_rate=0.0)
     assert copy.deepcopy(CFG).thresholds()["min_pair_samples"] == 10
+
+
+# --------------------------------------------------------------------------- S15P31A101-694 세팅 기준·관제 감시 정합
+
+
+def test_setup_loo_cap_leaves_relative_margin_under_monitor_ceiling():
+    """세팅을 통과한 검증 기준선 b(≤ 세팅 LOO 상한)의 관제 문턱이 b + 상대 여유 아래로 눌리지 않는다.
+
+    15차 세팅 2 처럼 세팅 상한과 관제 절대 상한이 같으면(8px) 기준선 7.5px 카메라는 관제에서 문턱 8px 로 바로 깜빡인다.
+    """
+    setup, monitor = CameraCheckConfig(), MonitorConfig()
+    assert monitor.absolute_max_median_px is not None
+    assert setup.max_loo_median_px + monitor.increase_margin_px <= monitor.absolute_max_median_px
+    cfg = dataclasses.replace(monitor, window_ms=10_000, min_window_samples=5, sustain_ms=8_000, max_sample_age_ms=2_000)
+    doc = _doc()
+    ids = tuple(CORNERS)
+    for b in (1.0, 7.0, 9.5, setup.max_loo_median_px):
+        mon = ReprojectionMonitor(doc, cfg, baseline=BaselineRecord(doc["calibration_version"], {c: b for c in ids}, ids))
+        # 기준선 그대로와 기준선 + 여유 직전 값(정상 흔들림)은 감시 안이다
+        noisy = b + 0.9 * monitor.increase_margin_px
+        reports = [mon.ingest(T0 + k * 500, [(c, b if c != "cam2" else noisy, True) for c in ids]) for k in range(60)]
+        last = reports[-1]
+        assert not any(r.findings for r in reports), b
+        for c in ids:
+            cam = last.camera(c)
+            assert cam.baseline_verified and cam.status is MonitorStatus.MONITORING, (b, c, cam.status)
+            assert cam.threshold_px is not None and cam.threshold_px >= b + monitor.increase_margin_px - 1e-9, (b, cam)
+
+
+def test_noise_floor_above_old_cap_passes_and_one_degree_rotation_fails():
+    """15차 로비 실측처럼 정상 보정의 LOO 잡음 바닥이 옛 상한 8px 를 넘어도 통과하고(기준선이 된다), 1° 틀어진 후보는 실패한다.
+
+    관절 잡음 7.5px(합성)로 정상 보정의 LOO 중앙값은 약 8.3~9.2px, 쌍 잔차는 약 4.4px 다(실측 잡음 바닥: LOO 5.9~8.7px,
+    쌍 1.3~3.4px). 같은 걷기에서 cam2 를 1° 돌린 후보는 cam2 LOO 가 약 14px 로 새 상한 12px 를 넘는다.
+    """
+    truth = _doc()
+    walk = _walk(truth, noise_px=7.5)
+    _, summary = _run(truth, walk)
+    assert summary["status"] == PASSED, summary["problems"]
+    looks = {c: v["loo_median_px"] for c, v in summary["cameras"].items()}
+    assert max(looks.values()) > 8.0  # 옛 상한이면 정상 보정이 실패했다
+    assert set(summary["baseline"]["values_px"]) == set(CORNERS)
+    old = CameraCheckEvaluator(truth, dataclasses.replace(CFG, max_loo_median_px=8.0), monitor_config=MON)
+    for t, views in walk:
+        old.observe(t, views)
+        if old.final:
+            break
+    assert old.summary()["status"] == FAILED
+    _, rotated = _run(_doc(rotate={"cam2": 1.0}), walk)
+    assert rotated["status"] == FAILED
+    assert rotated["cameras"]["cam2"]["verdict"] == FAIL
+    assert any(p["reason"] == "REPROJECTION_HIGH" and p["camera_ids"] == ["cam2"] for p in rotated["problems"])

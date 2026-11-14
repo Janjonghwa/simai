@@ -17,7 +17,8 @@
 - 쌍: 근거가 `min_pair_samples` 이상이면 통과율 ≥ `min_pair_pass_rate` 이고 잔차 중앙값 ≤ `max_pair_residual_median_px` 일 때 PASS,
   아니면 FAIL. 근거가 모자라면 INSUFFICIENT. 새 보정 기하로 시야가 겹치지 않는 쌍(관제 연결도 건너뛰는 쌍)은 NOT_OVERLAPPING.
 - 카메라: 사람이 `min_camera_views` 시각 넘게 보이지 않으면 NOT_OBSERVED. 한 카메라 제외 표본이 `min_loo_samples` 이상이면
-  중앙값 ≤ `max_loo_median_px`(관제 감시 절대 상한과 같음) 일 때 PASS, 아니면 FAIL. 표본이 모자라면 INSUFFICIENT(기준선 없음).
+  중앙값 ≤ `max_loo_median_px` 일 때 PASS, 아니면 FAIL. 표본이 모자라면 INSUFFICIENT(기준선 없음). 이 상한 + 관제 감시
+  상대 여유 ≤ 관제 감시 절대 상한이다(S15P31A101-694, docs/design/S15P31A101-694-camera-check-criteria.md).
 - 끝: 사람이 보인 시간이 `min_duration_ms` 이상이고, 필수 쌍(겹치는 쌍과 세팅 BA 의 '확인 필요' 쌍)이 모두 근거를 채우고, 모든
   카메라가 관측되면 판정한다. 필수 쌍이 끝내 근거를 못 채우면 `max_duration_ms` 뒤에 판정하되 이때 '확인 필요' 쌍과 관측되지 않은
   카메라는 실패다(모르면 통과로 두지 않는다). 겹치는 쌍 중 근거를 못 채운 쌍은 INSUFFICIENT 로 남기고 막지 않는다(관제도 같은
@@ -72,7 +73,7 @@ _NON_GEOMETRIC = frozenset({RejectReason.FEW_COMMON_JOINTS, RejectReason.NO_FOV_
 
 @dataclass(frozen=True)
 class CameraCheckConfig:
-    """카메라 확인 기준(초기값). 근거는 docs/design/S15P31A101-646-setup-camera-check.md."""
+    """카메라 확인 기준. 근거는 docs/design/S15P31A101-646-setup-camera-check.md, LOO 상한은 S15P31A101-694 문서."""
 
     min_duration_ms: int = 30_000
     """사람이 보인 시간(첫 관측 ~ 마지막 관측) 하한. 안내는 30~60초 걷기"""
@@ -86,8 +87,10 @@ class CameraCheckConfig:
     min_camera_views: int = 30
     min_loo_samples: int = 20
     """관제 감시 판정 창 표본 하한(MonitorConfig.min_window_samples)과 같다"""
-    max_loo_median_px: float = 8.0
-    """관제 감시 절대 상한(MonitorConfig.absolute_max_median_px)과 같다. 넘으면 관제가 기준선과 무관하게 틀어짐으로 본다"""
+    max_loo_median_px: float = 12.0
+    """S15P31A101-694: 15차 로비 실측에서 사람 관절로 직접 맞춘 보정(잡음 바닥)도 LOO 중앙값이 카메라별 5.9~8.7px 였고, 그
+    보정에서 카메라 하나를 0.5° 돌리면 9.0~13.7px, 1° 면 15~22px 다. 관제 감시 절대 상한(MonitorConfig.absolute_max_median_px
+    15px)은 이 값 + increase_margin_px 이상이라, 통과한 기준선의 관제 문턱이 기준선 + 여유 아래로 눌리지 않는다"""
     min_evaluated_pairs: int = 3
     """판정까지 간(PASS·FAIL) 쌍 수 하한. 카메라 4대 고리면 인접 4쌍 중 3쌍"""
 
