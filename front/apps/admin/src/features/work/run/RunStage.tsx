@@ -5,6 +5,7 @@ import { AppliedStatusCard } from '@/features/work/run/AppliedStatusCard';
 import { EndAlertStatus } from '@/features/work/run/EndAlertStatus';
 import { EventListCard } from '@/features/work/run/EventListCard';
 import { sendErrorMessage } from '@/features/work/run/runErrors';
+import { RunHistory } from '@/features/work/run/RunHistory';
 import { RunStatusCard } from '@/features/work/run/RunStatusCard';
 import { useEndRun, useSendReport } from '@/features/work/run/useRunActions';
 import type { RunStageProps } from '@/features/work/stageProps';
@@ -13,11 +14,14 @@ import { useSignatures } from '@/features/work/useSignatures';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
 import { draftWarning, isReportGenerating } from '@/features/work/workDay';
+import { lastRun, openRun } from '@/lib/workRuns';
 import { useMemo } from 'react';
 
 // 단계 4 '작업 종료'. 서버 진행(progress)이 두 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED).
 // 보낸(SUBMITTED) 뒤에는 날짜 화면이 이 단계 대신 지난 날과 같은 다시 보기 화면을 보인다(WorkDayPage).
-// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`다음` → `완료`).
+// 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`다음` → `보고서 제출` / `한 번 더 실행`).
+// 한 번 더 실행(S15P31A101-696): 같은 날 리허설 뒤 본 시연. 보고서를 내기 전이면 작업 전 확인(서명 재확인·보호구)을 거쳐 실행 2 를 연다.
+// 진행 중 화면의 경과·사건·관제 적용은 지금 실행 기준이다.
 
 const SPLIT =
   'grid grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] items-start gap-4 max-[960px]:grid-cols-1';
@@ -33,6 +37,10 @@ function FailureNote({ text }: { text: string }) {
 /** 1. 진행 중: 왼쪽 보고서(보내기 전까지 고칠 수 있다), 오른쪽 작업 현황·사건·관제 적용 상태. `다음` 이 종료를 묻는다. */
 function RunningView({ day }: { day: WorkDayItem }) {
   const end = useEndRun(day.work_id);
+  // 지금 실행의 시작(실행 2 면 실행 2 시작). 옛 서버(runs 없음)는 작업 시작이다
+  const runStart =
+    openRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: null })?.started_at ??
+    day.actual_started_at;
   const { data: report } = useWorkReport(day.work_id);
   const signers = useSignatures(report?.report_id).data;
   const action = useMemo<WorkActionConfig>(
@@ -48,13 +56,14 @@ function RunningView({ day }: { day: WorkDayItem }) {
         </div>
         <div className="flex min-w-0 flex-col gap-3">
           <RunStatusCard day={day} signerCount={signers?.length} />
-          <EventListCard startedAt={day.actual_started_at} />
-          <AppliedStatusCard workId={day.work_id} startedAt={day.actual_started_at} />
+          <EventListCard startedAt={runStart} />
+          <AppliedStatusCard workId={day.work_id} startedAt={runStart} />
         </div>
       </div>
       {end.open && (
         <ConfirmDialog
           title="작업을 종료할까요?"
+          description="종료한 뒤 보고서를 내기 전이면 한 번 더 실행할 수 있습니다."
           confirmLabel="종료"
           pending={end.pending}
           onConfirm={end.confirm}
@@ -68,28 +77,44 @@ function RunningView({ day }: { day: WorkDayItem }) {
 }
 
 /**
- * 2. 종료: 위에 현장 경보 종료 확인(종료 묶음 적용, -692), 아래 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다). `완료` 가 보낼지 묻는다.
+ * 2. 종료: 위에 현장 경보 종료 확인(종료 묶음 적용, -692)과 실행 기록, 아래 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다).
+ * `보고서 제출` 이 보낼지 묻고, `한 번 더 실행` 은 작업 전 확인으로 간다(S15P31A101-696, 보고서는 하루 끝에 한 번 낸다).
  * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 서버는 종료 미팅이나 AI 초안(`status`)을
  * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `완료` 는 그동안 꺼 둔다.
  */
-function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => void }) {
+function EndedView({
+  day,
+  onSubmitted,
+  onRerun,
+}: {
+  day: WorkDayItem;
+  onSubmitted: () => void;
+  onRerun?: () => void;
+}) {
   const { data: report } = useWorkReport(day.work_id);
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
   const filling = isReportGenerating(report);
+  const endedAt =
+    lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
+      ?.ended_at ?? day.actual_ended_at;
   const action = useMemo<WorkActionConfig>(
     () => ({
-      label: '완료',
+      label: '보고서 제출',
       enabled: reportId !== undefined && !filling && !send.pending,
       pending: send.pending,
       onClick: send.request,
+      secondary: onRerun
+        ? [{ label: '한 번 더 실행', onClick: onRerun, disabled: send.pending }]
+        : undefined,
     }),
-    [reportId, filling, send.pending, send.request],
+    [reportId, filling, send.pending, send.request, onRerun],
   );
   useWorkAction(action);
   return (
     <>
-      <EndAlertStatus workId={day.work_id} endedAt={day.actual_ended_at} />
+      <EndAlertStatus workId={day.work_id} endedAt={endedAt} />
+      <RunHistory day={day} />
       <div className="min-w-0">
         <ReportPanel workId={day.work_id} editable withPrint />
       </div>
@@ -113,12 +138,12 @@ function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => 
   );
 }
 
-export function RunStage({ day, onSubmitted }: RunStageProps) {
+export function RunStage({ day, onSubmitted, onRerun }: RunStageProps) {
   switch (day.progress) {
     case 'IN_PROGRESS':
       return <RunningView day={day} />;
     case 'ENDED':
-      return <EndedView day={day} onSubmitted={onSubmitted} />;
+      return <EndedView day={day} onSubmitted={onSubmitted} onRerun={onRerun} />;
     default:
       return null;
   }

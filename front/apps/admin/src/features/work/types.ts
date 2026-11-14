@@ -1,3 +1,4 @@
+import { workRunsField } from '@/lib/workRuns';
 import { z } from 'zod';
 
 // 작업 관리 새 흐름(하루 = 작업 하나)의 요청·응답 스키마와 상수. 서버 -609(양식)·-610(날짜 작업)·-611(서명·제출) 계약이다.
@@ -90,8 +91,11 @@ export const workDayItemSchema = z.object({
   to_ms: z.number(),
   /** 진행 중인 세팅 세션 id. 없으면 null. */
   active_setup_session_id: orNull(z.string()),
+  /** 첫 실행 시작 · 마지막 실행 종료(실행 중이면 null). 실행별 시각은 runs 다(S15P31A101-696). */
   actual_started_at: orNull(z.number()),
   actual_ended_at: orNull(z.number()),
+  /** 실행 목록(번호순, 진행 중 실행은 ended_at null). 옛 서버는 칸이 없다(`runsOf` 가 actual_* 로 실행 1 을 만든다). */
+  runs: workRunsField,
   /** 구간에 발생한 이벤트 수(등급별). 모르면 null. */
   event_counts: orNull(z.object({ CRITICAL: z.number().int(), HIGH: z.number().int() }).partial()),
   zone_id: orNull(z.string()),

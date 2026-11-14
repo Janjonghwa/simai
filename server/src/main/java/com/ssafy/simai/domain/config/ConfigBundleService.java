@@ -466,15 +466,19 @@ public class ConfigBundleService {
      * (work_unit.helmet_required·vest_required, 기본 필수, S15P31A101-654), 없으면 둘 다 NOT_REQUIRED. vest 는 늘 싣는다(S15P31A101-549).
      * 작업 중 NOT_REQUIRED 는 1.2.0 에서 허용했다. 1.1.0 만 아는 Tier 0 는 그 문서(끈 작업)만 거부하므로 Tier 0 를 먼저 올린다(12.3).
      * 발행 잠금 뒤에 읽어 같은 트랜잭션의 작업 시작·종료와, 먼저 커밋된 다른 트랜잭션의 시작·종료를 본다. 어느 경로로 발행해도 싣는다.
-     * effective_from_ms 는 진행 중 작업의 실제 시작 시각, 없으면 가장 최근 실제 종료 시각, 끝난 작업도 없으면 발행 시각이다
+     * effective_from_ms 는 진행 중 작업의 지금 실행 시작 시각(S15P31A101-696, 실행 1이면 작업 시작), 없으면 가장 최근 실제 종료 시각, 끝난 작업도 없으면 발행 시각이다
      * (작업 시작·종료 묶음이면 그 시각과 같다, docs/design/server-ppe-policy-publish.md)
      */
     private ObjectNode ppePolicy(String siteId, String version, Instant issuedAt) {
         MapSqlParameterSource site = new MapSqlParameterSource("site", siteId);
         Map<String, Object> active = jdbc.queryForList("""
-                SELECT work_id, actual_started_at, helmet_required, vest_required FROM work_unit
-                WHERE site_id = :site AND status = 'IN_PROGRESS'
-                ORDER BY actual_started_at DESC LIMIT 1
+                SELECT w.work_id, w.helmet_required, w.vest_required,
+                    -- 지금 실행의 시작(S15P31A101-696). 실행 기록이 없으면 작업 시작
+                    COALESCE((SELECT max(r.started_at) FROM work_run_window r WHERE r.work_id = w.work_id AND r.ended_at IS NULL),
+                        w.actual_started_at) AS actual_started_at
+                FROM work_unit w
+                WHERE w.site_id = :site AND w.status = 'IN_PROGRESS'
+                ORDER BY w.actual_started_at DESC LIMIT 1
                 """, site).stream().findFirst().orElse(null);
         ObjectNode doc = mapper.createObjectNode();
         doc.put("format_version", "1.2.0");

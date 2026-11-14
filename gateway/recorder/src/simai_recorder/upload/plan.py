@@ -52,6 +52,8 @@ class Window:
     work_id: int
     start_ms: int
     end_ms: int
+    # 작업 안의 실행 번호(recording_windows 1.1.0, S15P31A101-696). 1.0.0 응답은 작업당 구간 하나라 1 로 본다
+    run_no: int = 1
 
 
 @dataclass(frozen=True)

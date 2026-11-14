@@ -8,6 +8,7 @@ import {
 import { PreflightConfirmDialog } from '@/features/work/preflight/PreflightConfirmDialog';
 import { isSetupRequiredError, startErrorMessage } from '@/features/work/preflight/preflightErrors';
 import { PreflightZoneList } from '@/features/work/preflight/PreflightZoneList';
+import { RerunNotice } from '@/features/work/preflight/RerunNotice';
 import { SignDialog } from '@/features/work/preflight/SignDialog';
 import { SignerCard } from '@/features/work/preflight/SignerCard';
 import { useSigners } from '@/features/work/preflight/useSigners';
@@ -28,10 +29,12 @@ import { useCallback, useMemo, useState } from 'react';
 // 시작에 성공하면 실시간 관제(/live)로 간다. 관제 화면은 이번 작업 설정이 현장에 적용될 때까지 「관제 준비 중」을 보이고 적용되면
 // 「관제 중」이 된다(S15P31A101-692). 작업 관리로 돌아오면 서버 진행 값(IN_PROGRESS)대로 작업 종료 단계가 열린다.
 // 오른쪽에는 워치(이름·기기·연결) 요약도 둔다(-692, 시작을 막지 않는다).
+// 한 번 더 실행(S15P31A101-696, rerunNo)이면 맨 위에 실행 번호와 카메라 재점검 안내를 두고, 확인창의 체크·서명·보호구를 다시 받는다.
+// 「작업 종료로」 보조 단추가 종료 화면으로 돌아간다(서버는 아무것도 바뀌지 않았다).
 
 type Dialog = 'confirm' | 'sign' | null;
 
-export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
+export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: WorkStageProps) {
   const workId = day.work_id;
   // 작업 시작은 세팅 완료 뒤다(서버 setup_completed_at → progress SETUP_DONE, -642). 날짜 화면은 그때만 이 단계를 연다
   const setupDone = isSetupFinished(day.progress);
@@ -71,8 +74,13 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
     setDialog('confirm');
   }, [resetStart]);
   const action = useMemo<WorkActionConfig>(
-    () => ({ label: '다음', enabled: true, onClick: openConfirm }),
-    [openConfirm],
+    () => ({
+      label: '다음',
+      enabled: true,
+      onClick: openConfirm,
+      secondary: onCancelRerun ? [{ label: '작업 종료로', onClick: onCancelRerun }] : undefined,
+    }),
+    [openConfirm, onCancelRerun],
   );
   useWorkAction(action);
 
@@ -80,6 +88,7 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
 
   return (
     <div className="grid items-start gap-4 min-[960px]:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)]">
+      {rerunNo !== undefined && <RerunNotice runNo={rerunNo} />}
       <div className="min-w-0">
         <ReportPanel workId={workId} editable withPrint draftable setupDone={setupDone} />
       </div>

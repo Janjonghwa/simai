@@ -104,7 +104,10 @@ HOLD_UPLOAD_MINUTES=$(env_int SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES 10 분)
 HOLD_LOOKBACK_HOURS=$((HOLD_MAX_HOURS * 2))
 
 # 진행 항목을 한 줄에 하나 낸다. 앞 두 칸이 키(안전장치가 넘긴 항목을 가리는 단위)이고 나머지는 표시용이다.
-# - 작업 "work <work_id>": 작업 시작을 눌렀고 아직 끝내지 않았다(V30 의 CHECK 로 status = 'IN_PROGRESS' 와 같다).
+# - 작업 "work <work_id>-<run_no>": 작업 실행(S15P31A101-696, V73 work_run)을 시작했고 아직 끝내지 않았다. 하루 작업 하나에
+#   실행이 여럿이라 키에 실행 번호를 넣는다(안전장치가 넘긴 실행 1 때문에 같은 작업의 실행 2 를 보류하지 않는 일이 없게).
+#   work_unit 이 IN_PROGRESS 인 것만 본다(실행 표 밖에서 끝낸 작업의 열린 실행은 진행 중이 아니다). 실행 기록이 없는 작업은
+#   work_run_window 뷰가 work_unit 시각을 실행 1로 준다.
 # - 세팅 "setup <uuid>": SetupService 가 새 세팅을 막는 조건과 같다. 종결 상태는 COMPLETED·FAILED 뿐이고(V33 CHECK, 관리자 취소도 FAILED),
 #   끝난 세션이라도 맵 보강 다시 굽기(setup_supplement_rebake)가 QUEUED·RUNNING 이면 진행 중이다.
 # - Tier 0 연결 "tier0 <이어진 구간 시작 epoch> <마지막 수신 epoch>" (S15P31A101-682): 서버가 system_health 를 받은 시각
@@ -112,7 +115,8 @@ HOLD_LOOKBACK_HOURS=$((HOLD_MAX_HOURS * 2))
 #   미래 시각 행(가짜 기록)은 보지 않는다. 구간 시작 = 수신 간격이 HOLD_TIER0_MINUTES 분을 넘은 마지막 지점이라 Pod 를 껐다 켜면 새 키다.
 # - 녹화 업로드 "upload <이어진 구간 시작 epoch> <최근 발급 건수>" (S15P31A101-682): upload_grant 의 RECORDING_SEGMENT 발급
 #   (issued_at, EC2 시계)이 최근 HOLD_UPLOAD_MINUTES 분 안이다. 구간 시작은 Tier 0 와 같은 방식이다.
-ACTIVE_SQL="SELECT 'work ' || work_id FROM work_unit WHERE actual_started_at IS NOT NULL AND actual_ended_at IS NULL
+ACTIVE_SQL="SELECT 'work ' || r.work_id || '-' || r.run_no FROM work_run_window r JOIN work_unit w ON w.work_id = r.work_id
+    WHERE r.ended_at IS NULL AND w.status = 'IN_PROGRESS'
 UNION ALL
 SELECT 'setup ' || setup_session_id FROM setup_session s WHERE s.status NOT IN ('COMPLETED', 'FAILED')
     OR EXISTS (SELECT 1 FROM setup_supplement_rebake r
@@ -148,18 +152,21 @@ active_items() {
     out=$(timeout 30 docker exec -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000' \
         "$DB_CONTAINER" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d simai -tA -c "$ACTIVE_SQL") || return 1
     out=$(printf '%s\n' "$out" | sed '/^$/d')
-    if printf '%s\n' "$out" | grep -Evx '(work [0-9]+|setup [0-9a-f-]{36}|tier0 [0-9]+ [0-9]+|upload [0-9]+ [0-9]+)?' > /dev/null; then
+    if printf '%s\n' "$out" | grep -Evx '(work [0-9]+(-[0-9]+)?|setup [0-9a-f-]{36}|tier0 [0-9]+ [0-9]+|upload [0-9]+ [0-9]+)?' > /dev/null; then
         echo "deploy: DB 응답을 알아볼 수 없다: $(printf '%s\n' "$out" | head -n 1)" >&2
         return 1
     fi
     printf '%s' "$out"
 }
 
-# 항목 줄 → 사유("작업 48", "세팅 <uuid>", "Tier 0 연결(마지막 보고 <UTC>)", "녹화 업로드 3건")를 ", " 로 잇는다
+# 항목 줄 → 사유("작업 48 실행 2", "세팅 <uuid>", "Tier 0 연결(마지막 보고 <UTC>)", "녹화 업로드 3건")를 ", " 로 잇는다
 reason_text() {
     printf '%s\n' "$1" | while read -r kind key detail; do
         case "$kind" in
-            work) echo "작업 $key" ;;
+            work) case "$key" in
+                      *-*) echo "작업 ${key%%-*} 실행 ${key#*-}" ;;
+                      *) echo "작업 $key" ;;
+                  esac ;;
             setup) echo "세팅 $key" ;;
             tier0) echo "Tier 0 연결(마지막 보고 $(date -u -d "@$detail" '+%Y-%m-%d %H:%M:%S UTC'))" ;;
             upload) echo "녹화 업로드 ${detail}건" ;;

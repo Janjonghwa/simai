@@ -89,9 +89,12 @@ class VideoService {
                     coalesce(sum((SELECT count(*) FROM video_segment v WHERE v.work_id = p.work_id
                         AND v.gateway_id = p.gateway_id AND v.recording_id = p.recording_id
                         AND v.origin = 'GATEWAY_RECORDING')), 0) AS uploaded
-                FROM work_unit w LEFT JOIN recording_upload_progress p ON p.work_id = w.work_id
-                WHERE w.actual_started_at < :to AND w.actual_ended_at > :from
-                    AND w.actual_ended_at > w.actual_started_at
+                -- 범위와 겹치는 끝난 실행이 있는 작업(S15P31A101-696). 다음 실행이 진행 중이어도 끝난 실행의 업로드를 보인다.
+                -- 보관 만료는 그 작업에서 범위와 겹치는 마지막 끝난 실행의 종료 기준이다
+                FROM (SELECT work_id, max(ended_at) AS actual_ended_at FROM work_run_window
+                      WHERE ended_at IS NOT NULL AND ended_at > started_at AND started_at < :to AND ended_at > :from
+                      GROUP BY work_id) w
+                LEFT JOIN recording_upload_progress p ON p.work_id = w.work_id
                 GROUP BY w.work_id, w.actual_ended_at ORDER BY w.work_id
                 """, params, (rs, i) -> {
                     int expected = rs.getInt("expected");

@@ -194,6 +194,31 @@ def test_setup_in_progress_reason(host):
     assert f"배포 보류(작업 48, 세팅 {SETUP_ID})" in result.stdout
 
 
+def test_work_run_in_progress_holds_with_run_number(host):
+    # S15P31A101-696: 진행 중 실행은 "work <작업>-<실행>" 이고 사유에 실행 번호가 붙는다. 실행 표에서 묻는다
+    host.db("work 48-2")
+    result = host.deploy(COMMIT_A)
+    assert result.returncode == 0, result.stderr
+    assert "배포 보류(작업 48 실행 2)" in result.stdout
+    assert host.hold()[3] == "작업 48 실행 2"
+    sql = host.docker_log()
+    assert "FROM work_run_window r JOIN work_unit w" in sql
+    assert "r.ended_at IS NULL AND w.status = 'IN_PROGRESS'" in sql
+
+
+def test_safety_cap_ignores_only_that_run(host):
+    # 안전장치가 넘긴 실행 1 의 키는 같은 작업의 실행 2 를 가리지 않는다
+    host.db("work 48-1")
+    assert host.deploy(COMMIT_A).returncode == 0
+    host.age_hold(12.1)
+    assert host.run("deploy-pending.sh").returncode == 0
+    assert host.revision() == COMMIT_A[:12]
+    assert host.ignored() == ["work 48-1"]
+    host.db("work 48-2")
+    held = host.deploy(COMMIT_B)
+    assert "배포 보류(작업 48 실행 2)" in held.stdout
+
+
 def test_nothing_in_progress_deploys(host):
     host.db()
     result = host.deploy(COMMIT_A)

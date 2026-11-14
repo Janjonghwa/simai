@@ -5,6 +5,7 @@ import { workPlaceLabel } from '@/features/tbm/workPlace';
 import { dayProgressSchema } from '@/features/work/types';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
 import { ruleName } from '@/lib/ruleNames';
+import { workRunsField } from '@/lib/workRuns';
 import { z } from 'zod';
 
 // TBM 작업(work_unit)·공종(work_type)·가상 레이아웃(layout_plan)·TBM 보고서(report) 스키마와 변환.
@@ -97,6 +98,8 @@ export const tbmWorkUnitSchema = z.object({
   progress: dayProgressSchema.nullish().catch(null),
   actual_started_at: z.union([z.string(), z.number()]).nullish(),
   actual_ended_at: z.union([z.string(), z.number()]).nullish(),
+  // 실행 목록(S15P31A101-696). 관제는 진행 중 실행의 시작을 관제 시작으로 본다
+  runs: workRunsField,
   active_setup_session_id: z.string().nullish(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   name: z.string(),

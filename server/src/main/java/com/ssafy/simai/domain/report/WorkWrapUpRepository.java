@@ -1,6 +1,8 @@
 package com.ssafy.simai.domain.report;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -31,6 +33,8 @@ public class WorkWrapUpRepository {
     /** 마무리 결과의 mode: 날짜 작업은 같은 행의 양식 종료 미팅, 예전 작업은 새 버전 마무리. */
     public static final String MODE_FORM_ENDING = "FORM_ENDING";
     public static final String MODE_NEW_VERSION = "NEW_VERSION";
+    /** 현장 시각(WorkUnitRepository.SITE_ZONE 과 같다. report 가 work 패키지를 보지 않게 따로 둔다) */
+    private static final ZoneId SITE_ZONE = ZoneId.of("Asia/Seoul");
 
     public ObjectNode prepare(long workId, ObjectNode work, Instant now) {
         ObjectNode result = mapper.createObjectNode();
@@ -93,9 +97,16 @@ public class WorkWrapUpRepository {
         return result.put("status", "GENERATING").put("report_id", id).putNull("reason");
     }
 
-    /** MVP는 SiteLookup이 단일 현장을 보장한다. risk_event에는 site_id가 없다. */
+    /**
+     * MVP는 SiteLookup이 단일 현장을 보장한다. risk_event에는 site_id가 없다.
+     * 구간은 첫 실행 시작 ~ 마지막 실행 종료(work_unit 시각)이고, 작업 id 가 있으면 끝난 실행 구간 안의 이벤트만 센다
+     * (S15P31A101-696: 실행 사이에는 경보가 꺼져 있다. 종료 묶음 적용 전 몇 초 사이 이벤트를 실행 사이 몫으로 세지 않는다).
+     */
     ObjectNode aggregate(ObjectNode work) {
+        String id = work.path("work_id").asString("");
+        Long workId = id.matches("\\d{1,18}") ? Long.valueOf(id) : null;
         MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("work", workId, java.sql.Types.BIGINT)
                 .addValue("start", at(work.path("actual_started_at").asLong()))
                 .addValue("end", at(work.path("actual_ended_at").asLong()))
                 .addValue("zone", work.path("zone_id").isNull() ? null : work.path("zone_id").asString(), java.sql.Types.VARCHAR);
@@ -124,6 +135,8 @@ public class WorkWrapUpRepository {
                     EXISTS (SELECT 1 FROM event_close c WHERE c.event_id = e.event_id AND c.result = 'ACCEPTED'
                         AND c.decided_at BETWEEN :start AND :end) AS closed
                 FROM risk_event e WHERE e.source = 'LIVE' AND e.raised_at BETWEEN :start AND :end
+                  AND (CAST(:work AS bigint) IS NULL OR EXISTS (SELECT 1 FROM work_run_window r
+                      WHERE r.work_id = :work AND r.ended_at IS NOT NULL AND e.raised_at BETWEEN r.started_at AND r.ended_at))
                 """, params, rs -> {
             if (rs.getBoolean("outside_entry")) increment(facts, "outside_work_entry_count");
             if (!rs.getBoolean("in_scope")) return;
@@ -210,18 +223,20 @@ public class WorkWrapUpRepository {
     }
 
     /**
-     * 날짜 작업 종료 미팅을 같은 행에 마감한다. 행을 잠그고 review.ending 이 비어 있을 때만 채우며 그때 form_revision 을 1 올린다.
+     * 날짜 작업 종료 미팅을 같은 행에 마감한다. 행을 잠그고 review.ending 이 비어 있거나 서버가 지난 실행 종료 때 채운 글 그대로일 때만
+     * 채우며(사람이 고친 글은 두고, S15P31A101-696) 그때 form_revision 을 1 올린다. 실행이 둘 이상이면 앞에 실행 요약 한 줄을 붙인다.
      * status(초안 상태)·wrap_up_summary(서명 해시가 덮는 칸)는 건드리지 않는다. 그 사이 잠겼으면 양식은 그대로 두고 FAILED.
      *
      * @return review.ending 을 채웠으면 true
      */
     public boolean completeEnding(long reportId, String ending, boolean fallback, String model) {
         MapSqlParameterSource p = new MapSqlParameterSource("id", reportId).addValue("fallback", fallback).addValue("model", model);
-        record Row(String form, String wrapStatus, boolean locked) { }
+        record Row(String form, String wrapStatus, boolean locked, String generated, long workId) { }
         List<Row> rows = jdbc.query("""
-                SELECT form::text AS form, wrap_up_status, locked_at IS NOT NULL AS locked
+                SELECT form::text AS form, wrap_up_status, locked_at IS NOT NULL AS locked, wrap_up_ending, work_id
                 FROM report WHERE report_id = :id FOR UPDATE
-                """, p, (rs, i) -> new Row(rs.getString("form"), rs.getString("wrap_up_status"), rs.getBoolean("locked")));
+                """, p, (rs, i) -> new Row(rs.getString("form"), rs.getString("wrap_up_status"), rs.getBoolean("locked"),
+                rs.getString("wrap_up_ending"), rs.getLong("work_id")));
         if (rows.isEmpty() || !"GENERATING".equals(rows.getFirst().wrapStatus()) || rows.getFirst().form() == null) {
             return false;
         }
@@ -233,16 +248,67 @@ public class WorkWrapUpRepository {
             return false;
         }
         ObjectNode form = (ObjectNode) mapper.readTree(rows.getFirst().form());
-        boolean fill = form.path("review").path("ending").asString("").isEmpty() && form.path("review").isObject();
+        String current = form.path("review").path("ending").asString("");
+        boolean fill = form.path("review").isObject() && (current.isEmpty() || current.equals(rows.getFirst().generated()));
+        String text = withRunSummary(rows.getFirst().workId(), ending);
         if (fill) {
-            ((ObjectNode) form.path("review")).put("ending", ending);
+            ((ObjectNode) form.path("review")).put("ending", text);
         }
         jdbc.update("""
                 UPDATE report SET form = CAST(:form AS jsonb), form_revision = form_revision + :bump,
-                    wrap_up_status = 'SUCCEEDED', wrap_up_fallback = :fallback, wrap_up_model = :model
+                    wrap_up_status = 'SUCCEEDED', wrap_up_fallback = :fallback, wrap_up_model = :model,
+                    wrap_up_ending = CASE WHEN :fill THEN CAST(:text AS text) ELSE wrap_up_ending END
                 WHERE report_id = :id
-                """, p.addValue("form", mapper.writeValueAsString(form)).addValue("bump", fill ? 1 : 0));
+                """, p.addValue("form", mapper.writeValueAsString(form)).addValue("bump", fill ? 1 : 0)
+                .addValue("fill", fill).addValue("text", text));
         return fill;
+    }
+
+    /** 종료 미팅 칸 상한(TbmForm.MAX_REVIEW 와 같다) */
+    static final int MAX_ENDING = 2000;
+
+    /**
+     * 실행이 둘 이상인 작업이면 종료 미팅 앞에 실행 요약 한 줄을 붙인다(S15P31A101-696, 보고서는 하루 끝 한 번 제출).
+     * 실행마다 시각(현장 시각)과 위험·경고 수(작업 구역 기준, 작업 목록의 event_counts 와 같은 범위)를 DB 에서 센다. AI 가 쓰지 않는다.
+     * 실행이 하나면 받은 글 그대로다. 합친 글이 상한을 넘으면 뒤를 자른다.
+     */
+    String withRunSummary(long workId, String ending) {
+        String summary = runSummary(workId);
+        if (summary.isEmpty()) {
+            return ending;
+        }
+        String text = summary + "\n" + ending;
+        return text.codePointCount(0, text.length()) <= MAX_ENDING ? text
+                : text.substring(0, text.offsetByCodePoints(0, MAX_ENDING));
+    }
+
+    /** "실행 2회: 1회 14:00–14:20(위험 0·경고 1), 2회 15:00–15:30(위험 1·경고 0)." 끝난 실행이 둘 미만이면 빈 글 */
+    String runSummary(long workId) {
+        record Run(int no, Instant start, Instant end, long critical, long high) { }
+        List<Run> runs = jdbc.query("""
+                SELECT r.run_no, r.started_at, r.ended_at,
+                    count(e.event_id) FILTER (WHERE e.severity = 'CRITICAL') AS critical,
+                    count(e.event_id) FILTER (WHERE e.severity = 'HIGH') AS high
+                FROM work_run_window r JOIN work_unit w ON w.work_id = r.work_id
+                LEFT JOIN risk_event e ON e.source = 'LIVE' AND e.raised_at BETWEEN r.started_at AND r.ended_at
+                    AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
+                WHERE r.work_id = :w AND r.ended_at IS NOT NULL
+                GROUP BY r.run_no, r.started_at, r.ended_at ORDER BY r.run_no
+                """, new MapSqlParameterSource("w", workId), (rs, i) -> new Run(rs.getInt("run_no"),
+                rs.getObject("started_at", OffsetDateTime.class).toInstant(),
+                rs.getObject("ended_at", OffsetDateTime.class).toInstant(), rs.getLong("critical"), rs.getLong("high")));
+        if (runs.size() < 2) {
+            return "";
+        }
+        DateTimeFormatter clock = DateTimeFormatter.ofPattern("HH:mm").withZone(SITE_ZONE);
+        StringBuilder out = new StringBuilder("실행 ").append(runs.size()).append("회: ");
+        for (int i = 0; i < runs.size(); i++) {
+            Run run = runs.get(i);
+            if (i > 0) out.append(", ");
+            out.append(run.no()).append("회 ").append(clock.format(run.start())).append('\u2013').append(clock.format(run.end()))
+                    .append("(위험 ").append(run.critical()).append("·경고 ").append(run.high()).append(')');
+        }
+        return out.append('.').toString();
     }
 
     public void complete(long reportId, String summary, boolean fallback, String model, Instant now) {

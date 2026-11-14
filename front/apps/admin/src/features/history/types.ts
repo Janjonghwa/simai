@@ -1,3 +1,4 @@
+import { workRunsField } from '@/lib/workRuns';
 import { z } from 'zod';
 
 // 히스토리(작업 다시 보기) 응답. 시각은 모두 epoch ms 다.
@@ -16,6 +17,8 @@ export const workUnitSchema = z.object({
   /** 실제 작업 시작·종료 시각(EC2 시계). 시작 전이면 둘 다 null, 진행 중이면 종료만 null 이다. */
   actual_started_at: z.number().nullish(),
   actual_ended_at: z.number().nullish(),
+  /** 실행 목록(S15P31A101-696). 다시 보기는 실행 하나의 구간을 본다. 옛 서버는 칸이 없다. */
+  runs: workRunsField,
   zone_id: z.string().nullable(),
   /** 구역 이름 또는 구역 밖 작업 장소. */
   place: z.string().nullish(),

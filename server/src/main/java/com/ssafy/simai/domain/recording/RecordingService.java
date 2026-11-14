@@ -26,10 +26,11 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 게이트웨이 녹화 작업 구간 업로드(S15P31A101-668, 기기 토큰). 설계 docs/design/S15P31A101-668-recording-s3-playback.md.
  * <ul>
- * <li>작업 구간 조회(recording_windows 1.0.0): 범위와 겹치는 끝난 작업의 구간 = 작업 시작 → 작업 종료(작업 시작 = 관제 시작,
- *     S15P31A101-679 에서 -668 의 세팅 완료부터 넓히기를 되돌렸다).
- *     진행 중 작업이 겹치면 open_work 로 알려 게이트웨이가 그 녹화를 미룬다(사용자 결정 2026-11-13).</li>
- * <li>조각 등록(recording_segment 1.0.0): 계약 검사 → 그 작업 구간 안 → 이 기기가 받은 RECORDING_SEGMENT 발급과 키·형식·크기·해시가 같음 →
+ * <li>작업 구간 조회(recording_windows 1.1.0): 범위와 겹치는 끝난 실행의 구간 = 실행 시작 → 실행 종료(작업 시작 = 관제 시작,
+ *     S15P31A101-679 에서 -668 의 세팅 완료부터 넓히기를 되돌렸다). 작업 하나에 실행이 여럿이면 실행마다 한 구간이다
+ *     (S15P31A101-696, 실행 사이는 관제·경보가 꺼져 있어 올리지 않는다). 진행 중 실행이 겹치면 open_work 로 알려 게이트웨이가 그 녹화를
+ *     미룬다(사용자 결정 2026-11-13). 끝난 실행은 다음 실행이 진행 중이어도 바로 싣는다(리허설 뒤 본 시연 전에 다시 볼 수 있게).</li>
+ * <li>조각 등록(recording_segment 1.0.0): 계약 검사 → 그 작업의 끝난 실행 구간 하나 안 → 이 기기가 받은 RECORDING_SEGMENT 발급과 키·형식·크기·해시가 같음 →
  *     video_segment 한 행(origin GATEWAY_RECORDING, delete_after = 첫 프레임 촬영 시각 + 14일). 삭제·재생 주소·조회 기록은 domain/video 그대로다.</li>
  * </ul>
  * 영상 바이트는 다루지 않는다(EC2 디스크에 두지 않는다).
@@ -53,8 +54,8 @@ class RecordingService {
     private static final long MAX_EPOCH_MS = 253_402_300_799_999L;
     private static final String PREFIX = "recording-segments/";
 
-    /** 작업 구간 시작 = 작업 시작(관제 시작, S15P31A101-679). 작업 전에는 경보가 없으므로 기록·업로드도 작업 구간만이다 */
-    private static final String WORK_START = "actual_started_at";
+    /** 응답 판. 1.1.0 은 구간마다 실행 번호(run_no)를 싣는다(S15P31A101-696) */
+    static final String WINDOWS_VERSION = "1.1.0";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ContractSchemas schemas;
@@ -71,7 +72,10 @@ class RecordingService {
         this.clock = clock;
     }
 
-    /** recording_windows 1.0.0. 구간은 작업 시작 → 작업 종료 */
+    /**
+     * recording_windows 1.1.0. 구간은 실행 시작 → 실행 종료(작업 시작 = 관제 시작, S15P31A101-679). 실행 기록은 work_run_window
+     * (실행 표, 실행 기록이 없는 시작한 작업은 work_unit 시각을 실행 1로 본다)에서 읽는다
+     */
     ObjectNode windows(String deviceId, Instant from, Instant to) {
         requireLaptop(deviceId);
         if (from.isAfter(to) || Duration.between(from, to).compareTo(MAX_RANGE) > 0) {
@@ -79,22 +83,24 @@ class RecordingService {
         }
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("from", utc(from)).addValue("to", utc(to));
         List<ObjectNode> rows = jdbc.query("""
-                SELECT work_id, %1$s AS start_at, actual_ended_at FROM work_unit
-                WHERE actual_started_at IS NOT NULL AND actual_ended_at IS NOT NULL
-                  AND actual_ended_at >= :from AND %1$s <= :to AND actual_ended_at > %1$s
-                ORDER BY start_at, work_id
-                """.formatted(WORK_START), params, (rs, i) -> {
+                SELECT work_id, run_no, started_at, ended_at FROM work_run_window
+                WHERE ended_at IS NOT NULL AND ended_at >= :from AND started_at <= :to AND ended_at > started_at
+                ORDER BY started_at, work_id, run_no
+                """, params, (rs, i) -> {
                     ObjectNode w = mapper.createObjectNode();
                     w.put("work_id", rs.getLong("work_id"));
-                    w.put("start_ms", rs.getTimestamp("start_at").getTime());
-                    w.put("end_ms", rs.getTimestamp("actual_ended_at").getTime());
+                    w.put("run_no", rs.getInt("run_no"));
+                    w.put("start_ms", rs.getTimestamp("started_at").getTime());
+                    w.put("end_ms", rs.getTimestamp("ended_at").getTime());
                     return w;
                 });
+        // 진행 중 실행(작업이 IN_PROGRESS 인 것만: 실행 표 밖에서 끝낸 작업의 열린 실행은 보지 않는다)
         Boolean open = jdbc.queryForObject("""
-                SELECT EXISTS (SELECT 1 FROM work_unit WHERE status = 'IN_PROGRESS' AND %s <= :to)
-                """.formatted(WORK_START), params, Boolean.class);
+                SELECT EXISTS (SELECT 1 FROM work_run_window r JOIN work_unit w ON w.work_id = r.work_id
+                    WHERE r.ended_at IS NULL AND w.status = 'IN_PROGRESS' AND r.started_at <= :to)
+                """, params, Boolean.class);
         ObjectNode body = mapper.createObjectNode();
-        body.put("schema_version", "1.0.0");
+        body.put("schema_version", WINDOWS_VERSION);
         body.put("from_ms", from.toEpochMilli());
         body.put("to_ms", to.toEpochMilli());
         ArrayNode windows = body.putArray("windows");
@@ -104,7 +110,10 @@ class RecordingService {
         return body;
     }
 
-    /** 끝난 작업에 대한 녹화별 계획. 영상 등록 수는 기기의 주장을 받지 않고 DB에서 센다. */
+    /**
+     * 끝난 실행이 있는 작업에 대한 녹화별 계획(작업 하나의 끝난 실행 전부를 합친 수). 영상 등록 수는 기기의 주장을 받지 않고 DB에서 센다.
+     * 다음 실행이 진행 중이어도 끝난 실행의 진행은 받는다(S15P31A101-696).
+     */
     ObjectNode progress(String deviceId, JsonNode body) {
         requireLaptop(deviceId);
         if (body == null || !schemas.violations("messages/recording_upload_progress", mapper.writeValueAsString(body)).isEmpty()
@@ -114,8 +123,7 @@ class RecordingService {
         }
         MapSqlParameterSource params = new MapSqlParameterSource("w", body.get("work_id").asLong());
         Boolean ended = jdbc.queryForObject("""
-                SELECT EXISTS (SELECT 1 FROM work_unit WHERE work_id = :w
-                    AND actual_started_at IS NOT NULL AND actual_ended_at > actual_started_at)
+                SELECT EXISTS (SELECT 1 FROM work_run_window WHERE work_id = :w AND ended_at > started_at)
                 """, params, Boolean.class);
         if (!Boolean.TRUE.equals(ended)) {
             throw new BusinessException(ErrorCode.Recording.OUTSIDE_WORK_WINDOW);
@@ -223,20 +231,18 @@ class RecordingService {
         return response;
     }
 
-    /** 조각이 그 작업의 끝난 구간 안이어야 한다. 앞은 키프레임 여유(LEAD_SLACK), 끝은 마지막 프레임 길이 여유(TAIL_SLACK) */
+    /**
+     * 조각이 그 작업의 끝난 실행 구간 하나 안이어야 한다(S15P31A101-696, 실행 사이 구간은 받지 않는다).
+     * 앞은 키프레임 여유(LEAD_SLACK), 끝은 마지막 프레임 길이 여유(TAIL_SLACK)
+     */
     private void requireInsideWindow(long workId, long start, long end) {
         List<long[]> found = jdbc.query("""
-                SELECT %s AS start_at, actual_ended_at FROM work_unit
-                WHERE work_id = :w AND actual_started_at IS NOT NULL AND actual_ended_at IS NOT NULL
-                """.formatted(WORK_START), new MapSqlParameterSource("w", workId),
-                (rs, i) -> new long[] {rs.getTimestamp("start_at").getTime(), rs.getTimestamp("actual_ended_at").getTime()});
-        if (found.isEmpty()) {
-            throw new BusinessException(ErrorCode.Recording.OUTSIDE_WORK_WINDOW);
-        }
-        long windowStart = found.getFirst()[0];
-        long windowEnd = found.getFirst()[1];
-        if (start < windowStart - LEAD_SLACK.toMillis() || end > windowEnd + TAIL_SLACK.toMillis()
-                || end <= windowStart || start >= windowEnd) {
+                SELECT started_at, ended_at FROM work_run_window WHERE work_id = :w AND ended_at IS NOT NULL
+                """, new MapSqlParameterSource("w", workId),
+                (rs, i) -> new long[] {rs.getTimestamp("started_at").getTime(), rs.getTimestamp("ended_at").getTime()});
+        boolean inside = found.stream().anyMatch(w -> start >= w[0] - LEAD_SLACK.toMillis() && end <= w[1] + TAIL_SLACK.toMillis()
+                && end > w[0] && start < w[1]);
+        if (!inside) {
             throw new BusinessException(ErrorCode.Recording.OUTSIDE_WORK_WINDOW);
         }
     }

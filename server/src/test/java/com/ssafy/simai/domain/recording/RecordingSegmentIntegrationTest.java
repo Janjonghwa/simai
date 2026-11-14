@@ -156,7 +156,9 @@ class RecordingSegmentIntegrationTest {
         assertThat(mine.get("start_ms").asLong()).isEqualTo(started.toEpochMilli());
         assertThat(mine.get("end_ms").asLong()).isEqualTo(ended.toEpochMilli());
         assertThat(windows.get("retention_days").asInt()).isEqualTo(14);
-        assertThat(windows.get("schema_version").asString()).isEqualTo("1.0.0");
+        assertThat(windows.get("schema_version").asString()).isEqualTo("1.1.0");
+        // 실행 기록이 없는 작업(이 시험처럼 work_unit 시각만 쓴 작업)은 실행 1 이다(S15P31A101-696, work_run_window)
+        assertThat(mine.get("run_no").asInt()).isEqualTo(1);
 
         // 구간 시작 10 s 전 키프레임부터 자른 5분 조각
         long start = started.toEpochMilli() - 10_000;
@@ -211,6 +213,73 @@ class RecordingSegmentIntegrationTest {
         get("/api/devices/recordings/windows?from=0&to=" + Duration.ofHours(25).toMillis(), laptopToken, 400);
         get("/api/devices/recordings/windows?from=2000&to=1000", laptopToken, 400);
         get("/api/devices/recordings/windows?from=x&to=1000", laptopToken, 400);
+    }
+
+    @Test
+    void 실행이_둘이면_실행마다_구간이고_실행_사이_조각은_거부하며_다음_실행_중에도_끝난_실행을_받는다() throws Exception {
+        // S15P31A101-696: 리허설(실행 1) 뒤 본 시연(실행 2). 실행 사이(관제·경보 꺼짐)는 구간이 아니다
+        Instant run1End = started.plus(Duration.ofHours(1));
+        Instant run2Start = started.plus(Duration.ofHours(3));
+        jdbc.update("""
+                INSERT INTO work_run (work_id, run_no, site_id, started_at, ended_at) VALUES (?, 1, ?, ?, ?), (?, 2, ?, ?, ?)
+                """, workId, site, Timestamp.from(started), Timestamp.from(run1End),
+                workId, site, Timestamp.from(run2Start), Timestamp.from(ended));
+        long from = started.minus(Duration.ofHours(1)).toEpochMilli();
+        JsonNode windows = get("/api/devices/recordings/windows?from=" + from + "&to=" + ended.plus(Duration.ofHours(1)).toEpochMilli(),
+                laptopToken, 200);
+        java.util.List<String> mine = new java.util.ArrayList<>();
+        for (JsonNode w : windows.get("windows")) {
+            if (w.get("work_id").asLong() == workId) {
+                mine.add(w.get("run_no").asInt() + ":" + w.get("start_ms").asLong() + "-" + w.get("end_ms").asLong());
+            }
+        }
+        assertThat(mine).containsExactly("1:" + started.toEpochMilli() + "-" + run1End.toEpochMilli(),
+                "2:" + run2Start.toEpochMilli() + "-" + ended.toEpochMilli());
+        // 실행 사이 조각은 거부, 실행 2 안 조각은 받는다
+        long gap = started.plus(Duration.ofHours(2)).toEpochMilli();
+        UUID between = uuid7(gap);
+        sign(between, 100);
+        assertThat(code(post("/api/devices/recordings/segments", laptopToken, segment(between, gap, gap + 1000, 100)), 409))
+                .isEqualTo("OUTSIDE_WORK_WINDOW");
+        long inRun2 = run2Start.toEpochMilli() + 60_000;
+        UUID second = uuid7(inRun2);
+        sign(second, 100);
+        postJson("/api/devices/recordings/segments", laptopToken, segment(second, inRun2, inRun2 + 1000, 100), 200);
+
+        // 다음 실행이 진행 중인 작업: 끝난 실행 1 은 구간으로 싣고 open_work, 진행 보고도 받는다
+        jdbc.update("INSERT INTO site (site_id, name, created_at) VALUES (?, '녹화 실행 시험', now())", "rec-" + tag);
+        Instant day = Instant.parse("2001-01-03T09:00:00Z");
+        long running = jdbc.queryForObject("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, actual_started_at,
+                    created_by, created_at, updated_at)
+                VALUES (?, DATE '2001-01-03', 'run2', ?, ?, 1, 'IN_PROGRESS', ?, ?, now(), now()) RETURNING work_id
+                """, Long.class, "rec-" + tag, Timestamp.from(day), Timestamp.from(day.plus(Duration.ofHours(8))),
+                Timestamp.from(day), adminId);
+        jdbc.update("""
+                INSERT INTO work_run (work_id, run_no, site_id, started_at, ended_at) VALUES (?, 1, ?, ?, ?), (?, 2, ?, ?, NULL)
+                """, running, "rec-" + tag, Timestamp.from(day), Timestamp.from(day.plus(Duration.ofMinutes(20))),
+                running, "rec-" + tag, Timestamp.from(day.plus(Duration.ofHours(1))));
+        long dayFrom = day.minus(Duration.ofHours(1)).toEpochMilli();
+        JsonNode open = get("/api/devices/recordings/windows?from=" + dayFrom + "&to=" + (dayFrom + 36_000_000L), laptopToken, 200);
+        assertThat(open.get("open_work").asBoolean()).isTrue();
+        assertThat(open.get("windows")).hasSize(1);
+        assertThat(open.get("windows").get(0).get("run_no").asInt()).isEqualTo(1);
+        ObjectNode progress = MAPPER.createObjectNode();
+        progress.put("schema_version", "1.0.0");
+        progress.put("work_id", running);
+        progress.put("recording_id", "live-run");
+        progress.put("expected_segments", 0);
+        progress.put("failed_segments", 0);
+        progress.put("sealed", true);
+        postJson("/api/devices/recordings/progress", laptopToken, progress, 200);
+        JsonNode videos = get("/api/videos?from=" + day.toEpochMilli() + "&to=" + day.plus(Duration.ofHours(2)).toEpochMilli(),
+                admin(), 200);
+        boolean listed = false;
+        for (JsonNode upload : videos.get("recording_uploads")) {
+            // 2001 년 실행이라 보관 기간(14일)이 지났다. 진행 중 실행이 있어도 끝난 실행 몫으로 목록에 나온다
+            listed |= upload.get("work_id").asLong() == running && "EXPIRED".equals(upload.get("status").asString());
+        }
+        assertThat(listed).as(videos.toString()).isTrue();
     }
 
     @Test

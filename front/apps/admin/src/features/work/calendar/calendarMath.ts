@@ -9,6 +9,7 @@ import {
   type DateKey,
   type DayKind,
 } from '@/features/work/workDay';
+import { runsOf } from '@/lib/workRuns';
 
 // 작업 관리 달력의 순수 계산: 그 달이 걸치는 주·칸, 달 이동, 칸 표시, 그날·그달 작업 요약, 접근성 이름. 시계에 기대지 않는다.
 
@@ -117,16 +118,26 @@ export interface DaySummary {
   count: number;
   critical: number;
   high: number;
+  /** 실행 수(S15P31A101-696). 작업 하나 안에서 실행을 여러 번 해 작업 수보다 많을 때만 싣는다. */
+  runs?: number;
 }
 
 /** 지난 날 요약. 끝난 작업(`isEndedWork`)만 세고, 끝난 작업이 없으면 null(빈칸)이다. */
 export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null {
   const ended = works.filter(isEndedWork);
   if (ended.length === 0) return null;
+  const runs = ended.reduce(
+    (sum, work) =>
+      sum +
+      runsOf({ runs: work.runs, startedAt: work.actual_started_at, endedAt: work.actual_ended_at })
+        .length,
+    0,
+  );
   return {
     count: ended.length,
     critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
     high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
+    ...(runs > ended.length && { runs }),
   };
 }
 
@@ -184,7 +195,8 @@ export function cellAriaLabel({
     return `${base}, 오늘, ${status}`;
   }
   if (summary) {
-    return `${base}, 작업 ${summary.count}건 완료, 위험 ${summary.critical}건, 경고 ${summary.high}건`;
+    const runs = summary.runs ? `, 실행 ${summary.runs}회` : '';
+    return `${base}, 작업 ${summary.count}건 완료${runs}, 위험 ${summary.critical}건, 경고 ${summary.high}건`;
   }
   return base;
 }

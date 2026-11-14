@@ -23,6 +23,9 @@ import tools.jackson.databind.node.ObjectNode;
  * (명세 8.10·12.4, S15P31A101-518). 묶음을 만들지 못하면(보정 없음·규칙 없음·공개 주소 미설정) 시작·종료도 하지 않는다.
  * 종료 묶음이 빠지면 작업이 없는데 Tier 0 가 안전모를 계속 요구하고, 시작 묶음이 빠지면 작업 중 요구가 없다.
  * Tier 0 로 보내기는 커밋 뒤에 하고 config_ack 는 기다리지 않는다(응답 전까지 '적용 대기', 명세 3.2).
+ * 시작·종료는 실행(work_run) 하나를 열고 닫는다(S15P31A101-696). 하루 작업 하나에 실행을 여러 번 할 수 있고(보고서 제출 전),
+ * 실행마다 시작 묶음(ppe_policy.work_id = 이 작업)과 종료 묶음(work_id null)이 나간다. Tier 0 는 실행 사이의 종료 묶음으로 감시를 내렸다가
+ * 다음 실행의 시작 묶음에서 규칙 기억을 비우고 다시 켠다(-679 의 꺼짐 → 켜짐 전환, 실행 구분 값 없이 같다).
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -60,7 +63,7 @@ public class WorkSessionService {
         var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
         return bundles.publishWith(() -> {
             layoutZones.lock();
-            ObjectNode work = works.startSession(site, workId, now, helmet, vest);
+            ObjectNode work = works.startSession(site, workId, now, helmet, vest, userId);
             // 같은 트랜잭션에서 미리보기 맵 뒤 대기 중인 세팅 굽기를 회수한다(S15P31A101-625). 묶음 발행 전이라 회수 결과와 어긋나지 않는다
             events.publishEvent(new WorkStarted(site, workId));
             Long layout = work.path("layout_id").isNumber() ? work.path("layout_id").asLong() : null;
@@ -74,7 +77,7 @@ public class WorkSessionService {
         ObjectNode response = bundles.publishWith(() -> {
             layoutZones.lock();
             var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
-            ObjectNode work = works.endSession(site, workId, now);
+            ObjectNode work = works.endSession(site, workId, now, userId);
             layoutZones.end(site, workId, java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
             ObjectNode out = mapper.createObjectNode();
             out.set("work_unit", work);

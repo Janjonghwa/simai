@@ -1,6 +1,15 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
 import type { ReplayIndex } from '@/features/history/replayIndex';
-import { dayWorksOf, firstMoment, untouched, workChoiceLabel } from '@/features/work/past/pastDay';
+import {
+  dayWorksOf,
+  firstMoment,
+  pickRun,
+  replayRunsOf,
+  runChoiceLabel,
+  runReplayWork,
+  untouched,
+  workChoiceLabel,
+} from '@/features/work/past/pastDay';
 import { DAY_PROGRESS } from '@/features/work/types';
 import { describe, expect, it } from 'vitest';
 
@@ -117,5 +126,42 @@ describe('untouched — 우리가 옮겨 둔 자리에 그대로 멈춰 있는�
 
   it('같은 시각이어도 재생 중이면 false 다(재생 중에 시각이 같을 수는 없지만 재생을 눌렀다는 뜻이다)', () => {
     expect(untouched(place(at(9, 10), true), at(9, 10))).toBe(false);
+  });
+});
+
+describe('실행 고르기(S15P31A101-696)', () => {
+  const runs = [
+    { run_no: 1, started_at: at(9, 0), ended_at: at(9, 20) },
+    { run_no: 2, started_at: at(10, 0), ended_at: at(10, 30) },
+  ];
+  const day = workDayOf({
+    progress: 'SUBMITTED',
+    actual_started_at: at(9, 0),
+    actual_ended_at: at(10, 30),
+    runs,
+  });
+
+  it('끝난 실행을 번호순으로 주고, 실행 기록이 없는 옛 응답은 작업 구간 하나다', () => {
+    expect(replayRunsOf(day).map((r) => r.run_no)).toEqual([1, 2]);
+    const old = workDayOf({
+      progress: 'SUBMITTED',
+      actual_started_at: at(9, 0),
+      actual_ended_at: at(11, 0),
+    });
+    expect(replayRunsOf(old)).toEqual([{ run_no: 1, started_at: at(9, 0), ended_at: at(11, 0) }]);
+  });
+
+  it('고른 번호가 없으면 마지막 실행(본 시연)이다', () => {
+    expect(pickRun(runs, 1)?.run_no).toBe(1);
+    expect(pickRun(runs, undefined)?.run_no).toBe(2);
+    expect(pickRun(runs, 9)?.run_no).toBe(2);
+    expect(pickRun([], undefined)).toBeUndefined();
+  });
+
+  it('다시 보기 구간은 고른 실행 구간이다(실행 사이는 받지 않는다)', () => {
+    const replay = runReplayWork(day, runs[0]);
+    expect([replay.actual_started_at, replay.actual_ended_at]).toEqual([at(9, 0), at(9, 20)]);
+    expect(runReplayWork(day, undefined)).toBe(day);
+    expect(runChoiceLabel(runs[1]!)).toBe('실행 2 · 10:00–10:30');
   });
 });

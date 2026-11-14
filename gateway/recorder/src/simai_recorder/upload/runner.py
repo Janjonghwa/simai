@@ -3,6 +3,8 @@
 - 대상: 녹화 루트의 `live-*` 폴더(session.json 이 있는 것) 중 상태가 done 이 아닌 것. 첫 프레임이 14일보다 오래됐으면 올리지 않고 done(expired).
 - 관제 중에도 종료 작업을 올린다. 진행 중 녹화는 닫힘 표시가 있는 파일만 읽고 다음 조회를 기다린다.
 - 작업이 아직 안 끝났으면(recording_windows.open_work) 그 녹화는 pending 으로 두고 다음 실행 때 다시 묻는다.
+- 작업 하나에 실행(run)이 여럿이면 구간도 실행마다 하나다(recording_windows 1.1.0, S15P31A101-696). 구간은 (work_id, run_no) 로
+  가리고, 끝난 실행은 다음 실행이 진행 중이어도 올린다. EC2 진행 보고(recording_upload_progress)는 작업 단위라 그 작업 구간을 합쳐 보낸다.
 - 조각마다: 임시 mp4(<녹화>/.upload/<segment_id>.mp4) → sha256 → 서명 → PUT(시도마다 새 서명) → 등록 → 상태 기록 → 임시 파일 삭제.
   같은 조각은 같은 segment_id 라 다시 올려도 EC2 가 DUPLICATE 로 받는다. 4xx 로 거절된 조각은 rejected 로 적고 다시 하지 않는다.
 - 원본 녹화는 지우지 않는다(-554 보관 규칙 그대로).
@@ -112,8 +114,8 @@ def find_recordings(root: Path) -> list[Path]:
 
 
 def fetch_windows(client: Ec2Client, span: tuple[int, int]) -> tuple[list[Window], bool]:
-    """녹화 범위를 24시간씩 나눠 묻고 합친다(작업 하나가 두 번 나오면 하나로)."""
-    windows: dict[int, Window] = {}
+    """녹화 범위를 24시간씩 나눠 묻고 합친다(같은 실행이 두 번 나오면 하나로). 실행 번호가 없는 1.0.0 응답은 실행 1 이다."""
+    windows: dict[tuple[int, int], Window] = {}
     open_work = False
     start, end = span
     while start <= end:
@@ -121,9 +123,10 @@ def fetch_windows(client: Ec2Client, span: tuple[int, int]) -> tuple[list[Window
         body = client.windows(start, stop)
         open_work = open_work or bool(body.get("open_work"))
         for w in body.get("windows") or []:
-            windows[int(w["work_id"])] = Window(int(w["work_id"]), int(w["start_ms"]), int(w["end_ms"]))
+            run_no = int(w.get("run_no") or 1)
+            windows[(int(w["work_id"]), run_no)] = Window(int(w["work_id"]), int(w["start_ms"]), int(w["end_ms"]), run_no)
         start = stop + 1
-    return sorted(windows.values(), key=lambda w: (w.start_ms, w.work_id)), open_work
+    return sorted(windows.values(), key=lambda w: (w.start_ms, w.work_id, w.run_no)), open_work
 
 
 def segment_record(chunk: Chunk, size: int, sha_hex: str, object_key: str, created_ms: int, uploaded_ms: int,
@@ -225,7 +228,9 @@ class Uploader:
         todo = [w for w in windows if window_key(w) not in cached]
         if todo and not tracks:
             tracks = read_tracks(recording, closed_only=active)
-        planned = plan_chunks(name, tracks, todo)
+        # 구간(실행)마다 따로 계획한다. 같은 작업의 실행이 여럿이어도 구간별 확정·캐시가 섞이지 않게
+        by_window = {window_key(w): plan_chunks(name, tracks, [w]) for w in todo}
+        planned = sorted((c for cs in by_window.values() for c in cs), key=lambda c: (c.start_ms, c.camera_id))
         chunks = [c for c in planned
                   if (state.segment(c.segment_id) or {}).get("status") not in ("uploaded", "rejected")]
         failed_before = summary.failed
@@ -236,20 +241,33 @@ class Uploader:
             latest[track.camera_id] = max(latest.get(track.camera_id, -1), track.frames[-1].capture_ms)
 
         def report() -> None:
+            # EC2 진행 보고는 (녹화, 작업) 단위다. 작업 하나의 실행 구간이 여럿이면 합쳐 한 번 보낸다(S15P31A101-696)
+            works: dict[int, list[Window]] = {}
             for window in windows:
-                saved = cached.get(window_key(window))
-                if saved:
-                    self.client.progress(window.work_id, name, saved["expected"], saved["failed"], True)
-                    continue
-                work_chunks = [c for c in planned if c.work_id == window.work_id]
-                failed = sum((state.segment(c.segment_id) or {}).get("status") in ("failed", "rejected")
-                             for c in work_chunks)
-                sealed = not active or bool(cameras and all(latest.get(c, -1) >= window.end_ms for c in cameras))
-                self.client.progress(window.work_id, name, len(work_chunks), failed, sealed and not plan_only)
-                terminal = all((state.segment(c.segment_id) or {}).get("status") in ("uploaded", "rejected")
-                               for c in work_chunks)
-                if sealed and terminal and not plan_only:
-                    cached[window_key(window)] = {"expected": len(work_chunks), "failed": failed}
+                works.setdefault(window.work_id, []).append(window)
+            for work_id, work_windows in works.items():
+                expected = failed = 0
+                all_cached = sealed_all = True
+                for window in work_windows:
+                    key = window_key(window)
+                    saved = cached.get(key)
+                    if saved:
+                        expected += saved["expected"]
+                        failed += saved["failed"]
+                        continue
+                    all_cached = False
+                    window_chunks = by_window.get(key, [])
+                    window_failed = sum((state.segment(c.segment_id) or {}).get("status") in ("failed", "rejected")
+                                        for c in window_chunks)
+                    sealed = not active or bool(cameras and all(latest.get(c, -1) >= window.end_ms for c in cameras))
+                    expected += len(window_chunks)
+                    failed += window_failed
+                    sealed_all = sealed_all and sealed
+                    terminal = all((state.segment(c.segment_id) or {}).get("status") in ("uploaded", "rejected")
+                                   for c in window_chunks)
+                    if sealed and terminal and not plan_only:
+                        cached[key] = {"expected": len(window_chunks), "failed": window_failed}
+                self.client.progress(work_id, name, expected, failed, all_cached or (sealed_all and not plan_only))
 
         try:
             report()

@@ -58,6 +58,40 @@ describe('tier0LinkOf', () => {
 describe('startPhase', () => {
   const w = { work_id: '12', startedAt: T };
 
+  it('한 번 더 실행하면(S15P31A101-696) 같은 작업의 실행 1 묶음은 이번 실행 묶음으로 보지 않는다(바로 지연·거부로 보지 않음)', () => {
+    const run2 = { work_id: '12', startedAt: T + 3_600_000 };
+    // 실행 1 묶음(거부·한참 전 발행)과 실행 사이 종료 묶음만 있는 목록: 실행 2 시작 직후는 대기
+    const stale = bundles(['APPLIED', null, T + 1_800_000], ['REJECTED', 12, T]);
+    expect(startPhase(run2, stale, 'up', T + 3_600_000 + 1_000)).toEqual({
+      stage: 'starting',
+      problem: null,
+      workId: '12',
+      recheckAt: T + 3_600_000 + DELAY,
+    });
+    // 실행 2 시작 묶음이 오면 그 발행 시각이 기준이고, 거부도 그 묶음으로 판단한다
+    const fresh = bundles(['REJECTED', 12, T + 3_600_000], ['APPLIED', null, T + 1_800_000]);
+    expect(startPhase(run2, fresh, 'up', T + 3_600_000 + 1_000).problem).toBe('rejected');
+    // 실행 2 묶음이 적용되면 관제 중(작업 id 는 실행 1 과 같다)
+    const applied = bundles(['APPLIED', 12, T + 3_600_000], ['APPLIED', null, T + 1_800_000]);
+    expect(startPhase(run2, applied, 'up', T + 3_600_000 + 1_000).stage).toBe('on');
+  });
+
+  it('진행 중 실행이 있으면 그 실행 시작을 지연 기준으로 본다(monitoringPhase 가 runs 를 읽는다)', () => {
+    const running = work({
+      actual_started_at: T,
+      runs: [
+        { run_no: 1, started_at: T, ended_at: T + 1_000 },
+        { run_no: 2, started_at: T + 100_000, ended_at: null },
+      ],
+    });
+    const list = bundles(['APPLIED', null, T + 1_000], ['APPLIED', 12, T]);
+    expect(monitoringPhase([running], list, 'up', T + 100_000 + 1)).toMatchObject({
+      stage: 'starting',
+      problem: null,
+      recheckAt: T + 100_000 + DELAY,
+    });
+  });
+
   it('현장이 쓰는(가장 새로 적용된) 묶음이 이번 작업 것이면 관제 중, 아니면 준비 중(API 성공만으로 관제 중이 아니다)', () => {
     expect(startPhase(w, bundles(['APPLIED', 12], ['APPLIED', null]), 'up', T + 1).stage).toBe(
       'on',

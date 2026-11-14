@@ -51,6 +51,8 @@ export const WORK_ERROR = {
   NO_SIGNATURE: 'WORK_NO_SIGNATURE',
   /** 이 작업의 세팅 완료(work_unit.setup_completed_at) 전이라 작업을 시작할 수 없다(409, -642. -624 의 WORK_SETUP_NOT_READY 를 합쳤다). */
   SETUP_NOT_COMPLETED: 'WORK_SETUP_NOT_COMPLETED',
+  /** 보고서를 낸 작업이라 한 번 더 실행할 수 없다(409, S15P31A101-696). */
+  REPORT_SUBMITTED: 'WORK_REPORT_SUBMITTED',
   /** 제출해 잠긴 보고서(409). 양식 수정·서명·삭제·제출이 막힌다. */
   REPORT_LOCKED: 'REPORT_LOCKED',
   /** 다른 곳에서 먼저 양식을 고쳤다(409). 다시 불러와야 한다. */

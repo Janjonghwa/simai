@@ -596,8 +596,8 @@ public sealed interface ErrorCode {
         WORK_DATE_PAST(HttpStatus.CONFLICT, "오늘 이전 날짜에는 작업을 새로 만들 수 없습니다"),
         WORK_NOT_TODAY(HttpStatus.CONFLICT, "작업 날짜가 오늘(Asia/Seoul)일 때만 할 수 있습니다"),
         WORK_NO_SIGNATURE(HttpStatus.CONFLICT, "작업을 시작하려면 참석자 서명이 1명 이상 있어야 합니다"),
-        // 완료 되돌리기(S15P31A101-649): 제출한 TBM 보고서는 그 실행의 기록이라 되돌리지 않는다
-        WORK_REPORT_SUBMITTED(HttpStatus.CONFLICT, "TBM 보고서를 제출한 작업은 완료를 되돌릴 수 없습니다"),
+        // 완료 되돌리기(S15P31A101-649)·한 번 더 실행(S15P31A101-696): 제출한 TBM 보고서는 그날 실행의 기록이라 그 뒤로 바꾸지 않는다
+        WORK_REPORT_SUBMITTED(HttpStatus.CONFLICT, "TBM 보고서를 제출한 작업은 다시 실행하거나 완료를 되돌릴 수 없습니다"),
         WORK_WRAP_UP_GENERATING(HttpStatus.CONFLICT, "작업 마무리(종료 미팅)를 만드는 중입니다. 끝난 뒤 다시 시도하세요"),
         // 이 작업의 세팅 완료(C17, work_unit.setup_completed_at) 전이면 시작하지 않는다(명세 16장 수정 54, S15P31A101-642).
         // -624 의 현장 세팅 READY 전 거절(WORK_SETUP_NOT_READY)을 이 기준으로 합쳤다

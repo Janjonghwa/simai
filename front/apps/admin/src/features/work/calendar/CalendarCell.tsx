@@ -148,7 +148,9 @@ export function CalendarCell({
       </span>
       {summary && (
         <>
-          <span className="text-xs text-muted-foreground">작업 {summary.count}건</span>
+          <span className="text-xs text-muted-foreground">
+            작업 {summary.count}건{summary.runs ? ` · 실행 ${summary.runs}회` : ''}
+          </span>
           <span className="mt-auto flex w-full items-center gap-2">
             <EventCounts critical={summary.critical} high={summary.high} />
             <span

@@ -16,9 +16,16 @@ function toMs(value: string | number | null | undefined): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-/** 작업이 실제로 시작된 시각(EC2 ms, work_unit.actual_started_at). 시작 기록이 없으면 null. */
-export const workStartedAt = (work: Pick<TbmWorkUnit, 'actual_started_at'>): number | null =>
-  toMs(work.actual_started_at);
+/**
+ * 지금 실행이 시작된 시각(EC2 ms). 진행 중 실행이 있으면 그 시작(S15P31A101-696: 한 번 더 실행하면 실행 2 시작부터가 이번 관제다),
+ * 없으면 작업 시작(work_unit.actual_started_at = 첫 실행 시작). 시작 기록이 없으면 null.
+ */
+export function workStartedAt(
+  work: Pick<TbmWorkUnit, 'actual_started_at' | 'runs'>,
+): number | null {
+  const open = work.runs?.find((run) => run.ended_at === null);
+  return open ? open.started_at : toMs(work.actual_started_at);
+}
 
 /** 작업이 실제로 끝난 시각(EC2 ms, work_unit.actual_ended_at). 끝나지 않았으면 null. */
 export const workEndedAt = (work: Pick<TbmWorkUnit, 'actual_ended_at'>): number | null =>
@@ -64,10 +71,18 @@ export function splitSince(entries: EventEntry[], since: number | null): SinceSp
 /** GET /api/work-units 가 주는 작업의 기간(기본 days=7). 이보다 오래된 이벤트의 작업은 목록에 없어 알 수 없다. */
 const WORKS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** 이벤트가 난 시각에 진행 중이던 작업(시작 ≤ 발생 ≤ 종료, 아직 안 끝났으면 끝 없음). 시작 기록이 있는 작업만 센다. */
+/**
+ * 이벤트가 난 시각에 진행 중이던 작업(시작 ≤ 발생 ≤ 종료, 아직 안 끝났으면 끝 없음). 시작 기록이 있는 작업만 센다.
+ * 실행 목록이 있으면 실행 구간 안만 본다(실행 사이는 작업 중이 아니다, S15P31A101-696).
+ */
 function worksAt(works: readonly TbmWorkUnit[], at: number): TbmWorkUnit[] {
   return works.filter((work) => {
     if (work.status !== 'IN_PROGRESS' && work.status !== 'DONE') return false;
+    if (work.runs && work.runs.length > 0) {
+      return work.runs.some(
+        (run) => run.started_at <= at && (run.ended_at === null || at <= run.ended_at),
+      );
+    }
     const start = workStartedAt(work) ?? (work.status === 'IN_PROGRESS' ? at : null);
     if (start === null || start > at) return false;
     const end = workEndedAt(work);

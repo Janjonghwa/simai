@@ -16,6 +16,8 @@ export function startErrorMessage(error: unknown): string {
   if (isSetupRequiredError(error)) return SETUP_REQUIRED_MESSAGE;
   if (isWorkError(error, WORK_ERROR.NO_SIGNATURE)) return '참석자 서명이 필요합니다';
   if (isWorkError(error, WORK_ERROR.ALREADY_IN_PROGRESS)) return '진행 중인 다른 작업이 있어요';
+  if (isWorkError(error, WORK_ERROR.REPORT_SUBMITTED))
+    return '보고서를 낸 작업은 다시 실행할 수 없어요';
   if (isWorkError(error, WORK_ERROR.INVALID_STATE)) {
     return '지금은 작업을 시작할 수 없어요. 세팅이 끝났는지 확인해 주세요.';
   }

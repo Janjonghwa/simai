@@ -5,12 +5,22 @@ import { useReplayStatus, useWorkReplay, type WorkReplay } from '@/features/hist
 import { EventLog } from '@/features/history/WorkLists';
 import { worksLoadingLine } from '@/features/history/works';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
-import { dayWorksOf, firstMoment, untouched, workChoiceLabel } from '@/features/work/past/pastDay';
+import {
+  dayWorksOf,
+  firstMoment,
+  pickRun,
+  replayRunsOf,
+  runChoiceLabel,
+  runReplayWork,
+  untouched,
+  workChoiceLabel,
+} from '@/features/work/past/pastDay';
 import { PastReportPanel } from '@/features/work/past/PastReportPanel';
 import type { PastDayProps } from '@/features/work/stageProps';
 import type { WorkDayItem } from '@/features/work/types';
 import { useWorkDays } from '@/features/work/useWorkDays';
 import { formatDayTitle } from '@/features/work/workDay';
+import type { WorkRun } from '@/lib/workRuns';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
@@ -19,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 지난 날짜 다시 보기: 옛 히스토리의 다시 보기(타임라인·CCTV 다시 보기·이벤트 로그)에서 작업자 목록을 빼고 그날 TBM 보고서를 넣었다.
 // 같은 부품(useWorkReplay·ReplayStage·ReplayTimeline·EventLog)을 그대로 쓴다. 오른쪽 열은 보고서와 이벤트 로그를 탭으로 나눈다.
+// 하루 작업 안에서 실행을 여러 번 했으면(S15P31A101-696) 실행을 골라 그 실행 구간만 다시 본다(기본은 마지막 실행). 보고서는 하루 하나다.
 
 type RightTab = 'report' | 'events';
 const RIGHT_TABS: readonly { id: RightTab; label: string }[] = [
@@ -46,17 +57,23 @@ function BackButton() {
   );
 }
 
-/** 머리: 달력 단추 · 날짜 · 칩 `지난 작업` · (그날 작업이 둘 이상이면) 작업 선택기. */
+/** 머리: 달력 단추 · 날짜 · 칩 `지난 작업` · (그날 작업이 둘 이상이면) 작업 선택기 · (실행이 둘 이상이면) 실행 선택기. */
 function DayHead({
   date,
   works,
   pickedId,
   onPick,
+  runs,
+  pickedRun,
+  onPickRun,
 }: {
   date: string;
   works: readonly WorkDayItem[] | undefined;
   pickedId: string | undefined;
   onPick: (workId: string) => void;
+  runs?: readonly WorkRun[];
+  pickedRun?: number;
+  onPickRun?: (runNo: number) => void;
 }) {
   return (
     <header className="flex flex-none flex-wrap items-center gap-x-3.5 gap-y-1">
@@ -74,6 +91,21 @@ function DayHead({
               className={CHOICE}
             >
               {workChoiceLabel(work)}
+            </button>
+          ))}
+        </span>
+      )}
+      {runs && runs.length > 1 && onPickRun && (
+        <span role="group" aria-label="실행 선택" className="flex flex-wrap gap-1.5">
+          {runs.map((run) => (
+            <button
+              key={run.run_no}
+              type="button"
+              aria-pressed={run.run_no === pickedRun}
+              onClick={() => onPickRun(run.run_no)}
+              className={CHOICE}
+            >
+              {runChoiceLabel(run)}
             </button>
           ))}
         </span>
@@ -154,8 +186,13 @@ export function PastDayPage({ date }: PastDayProps) {
   const { data: works, error } = useWorkDays({ from: date, to: date });
   const dayWorks = useMemo(() => works && dayWorksOf(works, date), [works, date]);
   const [pickedId, setPickedId] = useState<string>();
+  const [pickedRunNo, setPickedRunNo] = useState<number>();
   const work = dayWorks?.find((w) => w.work_id === pickedId) ?? dayWorks?.[0];
-  const session = useWorkReplay(work);
+  const runs = useMemo(() => (work ? replayRunsOf(work) : []), [work]);
+  const run = pickRun(runs, pickedRunNo);
+  // 고른 실행의 구간만 다시 본다. 같은 실행이면 같은 객체라 다시 보기를 다시 만들지 않는다
+  const replayWork = useMemo(() => work && runReplayWork(work, run), [work, run]);
+  const session = useWorkReplay(replayWork);
   const { replay, index, range } = session;
   const pickEvent = useCallback((event: EventRow) => seekTo(replay, event.raisedAt), [replay]);
 
@@ -172,7 +209,18 @@ export function PastDayPage({ date }: PastDayProps) {
   }, [replay, start]);
 
   const head = (
-    <DayHead date={date} works={dayWorks} pickedId={work?.work_id} onPick={setPickedId} />
+    <DayHead
+      date={date}
+      works={dayWorks}
+      pickedId={work?.work_id}
+      onPick={(workId) => {
+        setPickedId(workId);
+        setPickedRunNo(undefined);
+      }}
+      runs={runs}
+      pickedRun={run?.run_no}
+      onPickRun={setPickedRunNo}
+    />
   );
 
   if (dayWorks === undefined) {

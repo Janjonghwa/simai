@@ -241,6 +241,45 @@ describe('WorkDayPage 다음(onNext)', () => {
   });
 });
 
+describe('WorkDayPage 한 번 더 실행(S15P31A101-696)', () => {
+  const T = new Date(2026, 10, 11, 9, 0).getTime();
+  const ended = (runs: number) =>
+    workDayOf({
+      progress: 'ENDED',
+      status: 'DONE',
+      actual_started_at: T,
+      actual_ended_at: T + runs * 3_600_000 - 1_800_000,
+      runs: Array.from({ length: runs }, (_, i) => ({
+        run_no: i + 1,
+        started_at: T + i * 3_600_000,
+        ended_at: T + i * 3_600_000 + 1_800_000,
+      })),
+    });
+
+  it('종료 화면에서 한 번 더 실행을 누르면 다음 실행 번호로 작업 전 확인을 열고, 작업 종료로 돌아갈 수 있다', async () => {
+    serverDay = ended(1);
+    renderDay();
+    await waitFor(() => expect(stageName()).toBe('run-stage'));
+    fireEvent.click(screen.getByRole('button', { name: 'run-stage 한 번 더' }));
+    expect(stageName()).toBe('preflight-stage');
+    expect(document.querySelector('[data-work-stub]')?.getAttribute('data-rerun')).toBe('2');
+    expect(navState('작업 전 확인')).toBe('current');
+    fireEvent.click(screen.getByRole('button', { name: 'preflight-stage 작업 종료로' }));
+    expect(stageName()).toBe('run-stage');
+  });
+
+  it('그 실행이 시작되고 끝나면(마지막 실행 번호가 바뀌면) 다시 종료 화면이다', async () => {
+    serverDay = ended(1);
+    const { client } = renderDay();
+    await waitFor(() => expect(stageName()).toBe('run-stage'));
+    fireEvent.click(screen.getByRole('button', { name: 'run-stage 한 번 더' }));
+    expect(stageName()).toBe('preflight-stage');
+    serverDay = ended(2);
+    await act(() => client.invalidateQueries({ queryKey: WORK_KEY }));
+    await waitFor(() => expect(stageName()).toBe('run-stage'));
+  });
+});
+
 describe('WorkDayPage 서버 progress 가 앞서면 따라간다', () => {
   it('보고서에 있다가 서버가 세팅 완료가 되면 작업 전 확인으로 간다', async () => {
     const { client } = renderDay();

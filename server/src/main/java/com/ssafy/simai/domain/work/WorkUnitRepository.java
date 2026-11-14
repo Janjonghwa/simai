@@ -17,6 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -44,7 +45,12 @@ public class WorkUnitRepository {
                    EXISTS (SELECT 1 FROM setup_session s WHERE s.work_unit_id = w.work_id) AS has_setup,
                    t.report_id AS tbm_report_id, t.status AS tbm_status, t.submitted_at AS tbm_submitted_at,
                    (SELECT z.name FROM zone z WHERE z.zone_id = w.zone_id ORDER BY z.zone_version DESC LIMIT 1) AS zone_name,
-                   c.critical, c.high
+                   c.critical, c.high,
+                   -- 실행(S15P31A101-696): 작업 시작 ~ 작업 종료 한 번씩, 실행 번호순
+                   (SELECT json_agg(json_build_object('run_no', r.run_no,
+                        'started_at', floor(extract(epoch FROM r.started_at) * 1000)::bigint,
+                        'ended_at', floor(extract(epoch FROM r.ended_at) * 1000)::bigint) ORDER BY r.run_no)::text
+                    FROM work_run_window r WHERE r.work_id = w.work_id) AS runs
             FROM work_unit w
             LEFT JOIN LATERAL (
                 -- 최신 TBM 보고서 요약(달력이 작업마다 보고서를 따로 조회하지 않게)
@@ -178,14 +184,29 @@ public class WorkUnitRepository {
         return startSession(siteId, workId, now, null, null);
     }
 
-    /**
-     * 작업 시작. helmet·vest 가 있으면 시작과 함께 그 작업의 안전모·조끼 요구로 저장한다(null 이면 저장된 값, 기본 필수, S15P31A101-654).
-     * 시작 묶음의 ppe_policy 가 이 값을 싣는다.
-     */
     public ObjectNode startSession(String siteId, long workId, Instant now, Boolean helmet, Boolean vest) {
+        return startSession(siteId, workId, now, helmet, vest, null);
+    }
+
+    /**
+     * 작업 시작 = 새 실행 시작(S15P31A101-696). 처음(PLANNED)이면 실행 1, 실행을 끝낸 작업(DONE)이면 보고서를 제출하기 전까지
+     * 「한 번 더 실행」으로 다음 번호를 연다(제출했으면 409 WORK_REPORT_SUBMITTED). 진행 중 실행이 있으면(이 작업이든 다른 작업이든)
+     * 시작하지 않는다. 같은 현장의 동시 시작은 lockSession 의 현장 행 잠금이 한 줄로 세우고, 표의 부분 유일 색인
+     * (work_one_in_progress_per_site·work_run_one_open_per_site)이 마지막으로 막는다.
+     * 작업 전 확인(세팅 완료·서명 1명 이상·안전모·조끼 요구)은 실행마다 다시 본다. helmet·vest 가 있으면 시작과 함께 그 작업의 요구로
+     * 저장한다(null 이면 저장된 값, 기본 필수, S15P31A101-654). 시작 묶음의 ppe_policy 가 이 값을 싣는다.
+     * work_unit 은 하루 요약이다: actual_started_at 은 첫 실행 시작을 지키고(COALESCE), actual_ended_at 은 실행 중 NULL(V30 CHECK).
+     */
+    public ObjectNode startSession(String siteId, long workId, Instant now, Boolean helmet, Boolean vest, Long userId) {
         ObjectNode work = lockSession(siteId, workId);
-        if (!"PLANNED".equals(work.path("status").asString())) {
+        String status = work.path("status").asString();
+        boolean again = "DONE".equals(status);
+        if (!"PLANNED".equals(status) && !again) {
             throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        if (again && work.path("tbm_report").path("submitted_at").isNumber()) {
+            // 보고서는 하루 끝에 한 번 제출한다. 제출본(잠금·해시)은 그때까지의 실행 기록이라 그 뒤 실행을 받지 않는다
+            throw new BusinessException(ErrorCode.Work.WORK_REPORT_SUBMITTED);
         }
         boolean daily = work.path("daily").asBoolean();
         if (daily) {
@@ -198,9 +219,10 @@ public class WorkUnitRepository {
         if (!work.path("setup_completed_at").isNumber()) {
             throw new BusinessException(ErrorCode.Work.WORK_SETUP_NOT_COMPLETED);
         }
+        Integer signed = null;
         if (daily) {
-            // 날짜 작업은 작업 전 확인에서 참석자 서명을 1명 이상 받은 뒤에 시작한다(최신 보고서 버전의 서명만 센다)
-            Integer signed = jdbc.queryForObject("""
+            // 날짜 작업은 작업 전 확인에서 참석자 서명을 1명 이상 받은 뒤에 시작한다(최신 보고서 버전의 서명만 센다). 실행마다 다시 본다
+            signed = jdbc.queryForObject("""
                     SELECT count(*) FROM report_signature s JOIN report r ON r.report_id = s.report_id
                     WHERE s.report_id = :report AND s.report_version = r.report_version AND s.signer_role = 'PARTICIPANT'
                     """, new MapSqlParameterSource("report", work.path("tbm_report").path("report_id").asLong(-1)), Integer.class);
@@ -212,24 +234,69 @@ public class WorkUnitRepository {
                 "SELECT work_id FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'",
                 new MapSqlParameterSource("site", siteId), Long.class);
         if (!active.isEmpty()) throw new WorkAlreadyInProgressException(active.getFirst());
+        MapSqlParameterSource p = new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now))
+                .addValue("helmet", helmet).addValue("vest", vest).addValue("user", userId);
+        // 실행 표 밖에서 끝난 작업(work_unit 만 DONE·PLANNED 로 바꾼 경로)의 열린 실행은 그 작업 종료 시각으로 닫는다.
+        // 닫지 않으면 현장당 열린 실행 하나 색인에 걸려 새 실행을 열 수 없다
         jdbc.update("""
-                UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = :now, updated_at = :now,
+                UPDATE work_run r SET ended_at = GREATEST(COALESCE(w.actual_ended_at, :now), r.started_at)
+                FROM work_unit w
+                WHERE w.work_id = r.work_id AND r.site_id = :site AND r.ended_at IS NULL AND w.status <> 'IN_PROGRESS'
+                """, p);
+        // 실행 기록 없이 시각만 있는 작업(실행 표 밖 경로)은 그 시각을 실행 1로 먼저 남긴다(뷰가 실행 1을 잃지 않게)
+        jdbc.update("""
+                INSERT INTO work_run (work_id, run_no, site_id, started_at, ended_at)
+                SELECT w.work_id, 1, w.site_id, w.actual_started_at, w.actual_ended_at FROM work_unit w
+                WHERE w.work_id = :id AND w.actual_started_at IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM work_run r WHERE r.work_id = w.work_id)
+                """, p);
+        jdbc.update("""
+                UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = COALESCE(actual_started_at, :now),
+                    actual_ended_at = NULL, updated_at = :now,
                     helmet_required = COALESCE(:helmet, helmet_required), vest_required = COALESCE(:vest, vest_required)
                 WHERE site_id = :site AND work_id = :id
-                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now))
-                .addValue("helmet", helmet).addValue("vest", vest));
+                """, p);
+        ObjectNode started = findOne(siteId, workId).orElseThrow();
+        // 시작 전 확인 스냅샷(시작 때 값을 그대로 남긴다)
+        ObjectNode preflight = mapper.createObjectNode();
+        if (signed == null) preflight.putNull("signer_count"); else preflight.put("signer_count", signed);
+        JsonNode report = started.path("tbm_report");
+        long reportId = report.path("report_id").asLong(-1);
+        if (reportId > 0) preflight.put("report_id", reportId); else preflight.putNull("report_id");
+        List<Integer> version = jdbc.queryForList("SELECT report_version FROM report WHERE report_id = :r",
+                new MapSqlParameterSource("r", reportId), Integer.class);
+        if (version.isEmpty()) preflight.putNull("report_version"); else preflight.put("report_version", version.getFirst());
+        preflight.put("helmet", started.path("helmet").asString());
+        preflight.put("vest", started.path("vest").asString());
+        jdbc.update("""
+                INSERT INTO work_run (work_id, run_no, site_id, started_at, started_by, preflight)
+                VALUES (:id, (SELECT COALESCE(max(run_no), 0) + 1 FROM work_run WHERE work_id = :id), :site, :now, :user,
+                    CAST(:preflight AS jsonb))
+                """, p.addValue("preflight", mapper.writeValueAsString(preflight)));
         return findOne(siteId, workId).orElseThrow();
     }
 
     public ObjectNode endSession(String siteId, long workId, Instant now) {
+        return endSession(siteId, workId, now, null);
+    }
+
+    /** 작업 종료 = 진행 중 실행 종료(S15P31A101-696). work_unit.actual_ended_at 은 마지막 실행 종료다 */
+    public ObjectNode endSession(String siteId, long workId, Instant now, Long userId) {
         ObjectNode work = lockSession(siteId, workId);
         if (!"IN_PROGRESS".equals(work.path("status").asString())) {
             throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
         }
+        MapSqlParameterSource p = new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now))
+                .addValue("user", userId);
         jdbc.update("""
                 UPDATE work_unit SET status = 'DONE', actual_ended_at = GREATEST(:now, actual_started_at), updated_at = :now
                 WHERE site_id = :site AND work_id = :id
-                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now)));
+                """, p);
+        // 열린 실행 하나만 한 번 닫는다(추가 전용: 끝난 실행은 고치지 않는다)
+        jdbc.update("""
+                UPDATE work_run SET ended_at = GREATEST(:now, started_at), ended_by = :user
+                WHERE work_id = :id AND ended_at IS NULL
+                """, p);
         return findOne(siteId, workId).orElseThrow();
     }
 
@@ -459,6 +526,9 @@ public class WorkUnitRepository {
         ObjectNode counts = w.putObject("event_counts");
         counts.put("CRITICAL", rs.getLong("critical"));
         counts.put("HIGH", rs.getLong("high"));
+        // 실행 목록(S15P31A101-696). 시작 전이면 빈 배열, 진행 중 실행은 ended_at null 이다
+        String runs = rs.getString("runs");
+        w.set("runs", runs == null ? mapper.createArrayNode() : mapper.readTree(runs));
         return w;
     }
 

@@ -264,12 +264,94 @@ class WorkSessionIntegrationTest {
         clock.now.set(started.plusSeconds(120));
         end(work);
         ObjectNode second = awaitWrapUp(report);
-        assertThat(second.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        // 되돌려도 실행 기록(work_run)은 지우지 않아(추가 전용, S15P31A101-696) 다시 시작이 실행 2 가 되고 실행 요약이 붙는다
+        assertThat(second.path("form").path("review").path("ending").asString())
+                .startsWith("실행 2회: ").endsWith("엔진이 쓴 종료 미팅 문단");
         assertThat(second.path("form_revision").asInt()).isEqualTo(revision + 2);
         // 두 번째 종료 요청은 새 실행 구간의 사실이다
         ObjectNode request = (ObjectNode) MAPPER.readTree(endingBody.get());
         assertThat(request.path("window_ms").get(0).asLong()).isEqualTo(started.plusSeconds(60).toEpochMilli());
         assertThat(request.path("facts").path("event_count").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void 종료_뒤_한_번_더_실행하면_실행_2가_열리고_마무리는_모든_실행을_요약하며_제출하면_더_실행하지_않는다() throws Exception {
+        // S15P31A101-696 방식 B: 리허설(실행 1) → 본 시연(실행 2). 기록을 지우지 않고 실행을 더한다
+        long work = todayWork(zone);
+        long report = reports.createDailyBlank(work, adminUserId());
+        start(work);
+        clock.now.set(started.plusSeconds(30));
+        end(work);
+        assertThat(awaitWrapUp(report).path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+
+        clock.now.set(started.plusSeconds(300));
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                // 하루 요약: 첫 실행 시작은 그대로, 진행 중이라 종료는 비움
+                .andExpect(jsonPath("$.actual_started_at").value(started.toEpochMilli()))
+                .andExpect(jsonPath("$.actual_ended_at").isEmpty())
+                .andExpect(jsonPath("$.runs.length()").value(2))
+                .andExpect(jsonPath("$.runs[0].run_no").value(1))
+                .andExpect(jsonPath("$.runs[0].ended_at").value(started.plusSeconds(30).toEpochMilli()))
+                .andExpect(jsonPath("$.runs[1].run_no").value(2))
+                .andExpect(jsonPath("$.runs[1].started_at").value(started.plusSeconds(300).toEpochMilli()))
+                .andExpect(jsonPath("$.runs[1].ended_at").isEmpty());
+        // 진행 중 실행이 있으면 또 시작하지 않는다
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_INVALID_STATE"));
+        // 실행 2 묶음의 ppe_policy: 같은 작업, 효력은 실행 2 시작
+        byte[] raw = jdbc.queryForObject("""
+                SELECT f.content FROM config_bundle_file f JOIN config_bundle b ON b.config_version = f.config_version
+                WHERE f.name = 'ppe_policy' ORDER BY b.issued_at DESC, CAST(substring(b.config_version FROM 5) AS integer) DESC LIMIT 1
+                """, byte[].class);
+        String policy = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(MAPPER.readTree(policy).path("work_id").asLong()).isEqualTo(work);
+        assertThat(MAPPER.readTree(policy).path("effective_from_ms").asLong()).isEqualTo(started.plusSeconds(300).toEpochMilli());
+
+        event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(100)); // 실행 사이(경보 꺼짐): 세지 않는다
+        event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(310));
+        clock.now.set(started.plusSeconds(400));
+        ObjectNode ended = end(work);
+        assertThat(ended.path("work_unit").path("status").asString()).isEqualTo("DONE");
+        assertThat(ended.path("work_unit").path("actual_ended_at").asLong()).isEqualTo(started.plusSeconds(400).toEpochMilli());
+        ObjectNode done = awaitWrapUp(report);
+        // 사람이 고치지 않은 지난 종료 미팅은 모든 실행 요약을 앞에 붙여 다시 쓴다
+        String ending = done.path("form").path("review").path("ending").asString();
+        assertThat(ending).startsWith("실행 2회: 1회 ").contains("2회 ", "(위험 1·경고 0)").endsWith("엔진이 쓴 종료 미팅 문단");
+        assertThat(MAPPER.readTree(endingBody.get()).path("facts").path("event_count").asInt()).isEqualTo(1);
+        // 실행 기록: 시작·종료한 사람과 시작 전 확인 스냅샷
+        long adminId = adminUserId();
+        assertThat(jdbc.queryForList("SELECT started_by FROM work_run WHERE work_id = ? ORDER BY run_no", Long.class, work))
+                .containsExactly(adminId, adminId);
+        assertThat(jdbc.queryForObject("SELECT ended_by FROM work_run WHERE work_id = ? AND run_no = 2", Long.class, work))
+                .isEqualTo(adminId);
+        assertThat(MAPPER.readTree(jdbc.queryForObject("SELECT preflight::text FROM work_run WHERE work_id = ? AND run_no = 2",
+                String.class, work)).path("helmet").asString()).isEqualTo("REQUIRED");
+
+        mvc.perform(post("/api/reports/tbm/{id}/submit", report).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk());
+        clock.now.set(started.plusSeconds(500));
+        mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_REPORT_SUBMITTED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM work_run WHERE work_id = ?", Integer.class, work)).isEqualTo(2);
+    }
+
+    @Test
+    void 사람이_고친_종료_미팅은_다음_실행_종료에도_두고_요약만_붙이지_않는다() throws Exception {
+        long work = todayWork(zone);
+        long report = reports.createDailyBlank(work, adminUserId());
+        start(work);
+        clock.now.set(started.plusSeconds(30));
+        end(work);
+        ObjectNode first = awaitWrapUp(report);
+        ObjectNode form = (ObjectNode) first.path("form").deepCopy();
+        ((ObjectNode) form.path("review")).put("ending", "사람이 고친 종료 미팅");
+        reports.updateForm(report, form, first.path("form_revision").asInt());
+        clock.now.set(started.plusSeconds(60));
+        start(work);
+        clock.now.set(started.plusSeconds(90));
+        end(work);
+        assertThat(awaitWrapUp(report).path("form").path("review").path("ending").asString()).isEqualTo("사람이 고친 종료 미팅");
     }
 
     @Test

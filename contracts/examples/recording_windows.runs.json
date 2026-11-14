@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.1.0",
+  "from_ms": 1794612000000,
+  "to_ms": 1794646800000,
+  "windows": [
+    { "work_id": 42, "run_no": 1, "start_ms": 1794614000000, "end_ms": 1794615800000 },
+    { "work_id": 42, "run_no": 2, "start_ms": 1794619400000, "end_ms": 1794621200000 }
+  ],
+  "open_work": true,
+  "retention_days": 14
+}

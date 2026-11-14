@@ -154,19 +154,26 @@ async function prepare(upTo: Stage): Promise<string> {
   return day.work_id;
 }
 
-/** WorkActionLayer 대역: 단계 화면이 등록한 단추 줄의 주 단추. */
+/** WorkActionLayer 대역: 단계 화면이 등록한 단추 줄의 주 단추와 보조 단추. */
 function ActionButton() {
   const action = useWorkActionState();
   if (!action) return null;
   return (
-    <button type="button" disabled={!action.enabled} onClick={action.onClick}>
-      {action.label}
-    </button>
+    <>
+      {action.secondary?.map((item) => (
+        <button key={item.label} type="button" disabled={item.disabled} onClick={item.onClick}>
+          {item.label}
+        </button>
+      ))}
+      <button type="button" disabled={!action.enabled} onClick={action.onClick}>
+        {action.label}
+      </button>
+    </>
   );
 }
 
 /** 날짜 화면 대역: 하루 작업을 받아 서버 진행이 단계 화면을 정하게 한다(종료·제출 뒤 다시 받아 모양이 바뀐다). */
-function Harness({ onSubmitted }: { onSubmitted: () => void }) {
+function Harness({ onSubmitted, onRerun }: { onSubmitted: () => void; onRerun?: () => void }) {
   const { data: day } = useOpenDay(TODAY, TODAY);
   if (!day) return null;
   return (
@@ -177,25 +184,26 @@ function Harness({ onSubmitted }: { onSubmitted: () => void }) {
         todayKey={TODAY}
         onNext={() => undefined}
         onSubmitted={onSubmitted}
+        onRerun={onRerun}
       />
       <ActionButton />
     </WorkActionProvider>
   );
 }
 
-function renderStage(onSubmitted: () => void = () => undefined) {
+function renderStage(onSubmitted: () => void = () => undefined, onRerun?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
     <QueryClientProvider client={client}>
-      <Harness onSubmitted={onSubmitted} />
+      <Harness onSubmitted={onSubmitted} onRerun={onRerun} />
     </QueryClientProvider>,
   );
 }
 
 const putForms = () => requests.filter((r) => /^PUT \/api\/reports\/tbm\/\d+\/form$/.test(r));
 const reportPanel = () => screen.getByTestId('report-panel');
-const doneButton = () => screen.getByRole('button', { name: '완료' }) as HTMLButtonElement;
+const doneButton = () => screen.getByRole('button', { name: '보고서 제출' }) as HTMLButtonElement;
 
 describe('RunStage — 진행 중', () => {
   it('왼쪽에 고칠 수 있는 보고서, 오른쪽에 작업 현황·사건·관제 적용 상태를 보인다', async () => {
@@ -244,7 +252,7 @@ describe('RunStage — 진행 중', () => {
     expect(screen.getByText('0건')).toBeTruthy();
   });
 
-  it('`다음` 은 종료 확인창을 열고, 취소하면 종료하지 않으며, 종료하면 종료 모양(`완료`)으로 바뀐다', async () => {
+  it('`다음` 은 종료 확인창을 열고, 취소하면 종료하지 않으며, 종료하면 종료 모양(`보고서 제출`)으로 바뀐다', async () => {
     await prepare('running');
     renderStage();
     fireEvent.click(await screen.findByRole('button', { name: '다음' }));
@@ -262,7 +270,7 @@ describe('RunStage — 진행 중', () => {
       }),
     );
 
-    expect(await screen.findByRole('button', { name: '완료' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '보고서 제출' })).toBeTruthy();
     expect(requests.filter((r) => r.endsWith('/end'))).toHaveLength(1);
     expect(screen.queryByRole('heading', { name: '작업 현황' })).toBeNull();
     expect(reportPanel().dataset.editable).toBe('true');
@@ -292,12 +300,60 @@ describe('RunStage — 진행 중', () => {
   });
 });
 
+describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
+  it('종료 화면은 `보고서 제출` 옆에 `한 번 더 실행` 을 두고, 누르면 onRerun 만 부른다', async () => {
+    await prepare('ended');
+    requests = [];
+    const onRerun = vi.fn();
+    renderStage(undefined, onRerun);
+    fireEvent.click(await screen.findByRole('button', { name: '한 번 더 실행' }));
+    expect(onRerun).toHaveBeenCalledTimes(1);
+    expect(requests.some((r) => r.endsWith('/start'))).toBe(false);
+  });
+
+  it('실행 2 진행 중에는 경과·시작 시각·사건이 실행 2 기준이고, 끝나면 실행 기록에 두 실행이 보인다', async () => {
+    const workId = await prepare('ended');
+    clock = T0 + 120 * MIN;
+    await startWork(api, workId);
+    NOW.value = T0 + 120 * MIN + 30_000;
+    live.entries = [
+      eventAt('run1', T0 + 10_000, 'CRITICAL', 'z-04'),
+      eventAt('run2', T0 + 120 * MIN + 10_000, 'HIGH', 'z-02'),
+    ];
+    renderStage();
+    expect(await screen.findByText('실행 2 · 진행 중')).toBeTruthy();
+    expect(screen.getByRole('timer', { name: '경과 시간' }).textContent).toBe('00:00:30');
+    expect(screen.getByText('시작 시각 2026-11-11 11:00')).toBeTruthy();
+    expect(screen.getByText('1건')).toBeTruthy();
+
+    clock = T0 + 150 * MIN;
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '작업을 종료할까요?' })).getByRole('button', {
+        name: '종료',
+      }),
+    );
+    const history = await screen.findByRole('region', { name: '실행 기록' });
+    expect(within(history).getByText('실행 1')).toBeTruthy();
+    expect(within(history).getByText('실행 2')).toBeTruthy();
+    expect(within(history).getByText('01:05:00')).toBeTruthy();
+    expect(within(history).getByText('00:30:00')).toBeTruthy();
+  });
+
+  it('보고서를 낸 작업은 다시 시작하지 못한다(409 WORK_REPORT_SUBMITTED)', async () => {
+    const workId = await prepare('submitted');
+    await expect(startWork(api, workId)).rejects.toMatchObject({
+      code: WORK_ERROR.REPORT_SUBMITTED,
+    });
+  });
+});
+
 describe('RunStage — 종료', () => {
-  it('서버가 종료 미팅을 채우는 동안 `완료` 는 꺼 두고, 다 채우면 켜며, 화면은 양식을 저장하지 않는다', async () => {
+  it('서버가 종료 미팅을 채우는 동안 `보고서 제출` 는 꺼 두고, 다 채우면 켜며, 화면은 양식을 저장하지 않는다', async () => {
     const workId = await prepare('ended');
     mock.setEventCounts(workId, { CRITICAL: 1, HIGH: 2 });
     renderStage();
-    expect(await screen.findByRole('button', { name: '완료' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '보고서 제출' })).toBeTruthy();
     expect(reportPanel().dataset).toMatchObject({ work: workId, editable: 'true', print: 'true' });
     expect(screen.queryByRole('heading', { name: '작업 현황' })).toBeNull();
     // 보고서를 받았지만 서버가 아직 채우는 중이다.
@@ -315,7 +371,7 @@ describe('RunStage — 종료', () => {
   });
 
   it.each(['SKIPPED', 'FAILED'])(
-    '서버가 종료 미팅을 채우지 못했으면(%s) 비어 있어도 `완료` 가 켜지고 화면이 채워 저장하지 않는다',
+    '서버가 종료 미팅을 채우지 못했으면(%s) 비어 있어도 `보고서 제출` 가 켜지고 화면이 채워 저장하지 않는다',
     async (wrapUpStatus) => {
       const workId = await prepare('ended');
       const { latest } = await fetchReportsByWork(api, workId);
@@ -332,25 +388,25 @@ describe('RunStage — 종료', () => {
     },
   );
 
-  it('`완료` 는 보낼지 묻고, 취소하면 보내지 않으며, 보내면 제출하고 onSubmitted 를 부른다', async () => {
+  it('`보고서 제출` 는 보낼지 묻고, 취소하면 보내지 않으며, 보내면 제출하고 onSubmitted 를 부른다', async () => {
     await prepare('ended');
     clock += ENDING_DELAY_MS;
     const onSubmitted = vi.fn();
     renderStage(onSubmitted);
     await waitFor(() =>
-      expect((screen.getByRole('button', { name: '완료' }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
+      expect(
+        (screen.getByRole('button', { name: '보고서 제출' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+    fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
     const dialog = screen.getByRole('dialog', { name: '보고서를 보낼까요?' });
     expect(within(dialog).getByText('보낸 뒤에는 고칠 수 없습니다.')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(requests.some((r) => r.endsWith('/submit'))).toBe(false);
 
-    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+    fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
     fireEvent.click(
       within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
         name: '보내기',
@@ -359,8 +415,8 @@ describe('RunStage — 종료', () => {
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
     expect(requests.filter((r) => r.endsWith('/submit'))).toHaveLength(1);
-    // 서버 진행이 SUBMITTED 로 바뀌면 이 단계는 비고(날짜 화면이 다시 보기 화면을 보인다) `완료` 도 사라진다.
-    await waitFor(() => expect(screen.queryByRole('button', { name: '완료' })).toBeNull());
+    // 서버 진행이 SUBMITTED 로 바뀌면 이 단계는 비고(날짜 화면이 다시 보기 화면을 보인다) `보고서 제출` 도 사라진다.
+    await waitFor(() => expect(screen.queryByRole('button', { name: '보고서 제출' })).toBeNull());
   });
 
   it.each([
@@ -400,7 +456,7 @@ describe('RunStage — 종료', () => {
     },
   );
 
-  it('AI 초안을 쓰는 중(status GENERATING)이면 종료 미팅이 끝났어도 `완료` 는 꺼 두고, 다 쓰면 켠다', async () => {
+  it('AI 초안을 쓰는 중(status GENERATING)이면 종료 미팅이 끝났어도 `보고서 제출` 는 꺼 두고, 다 쓰면 켠다', async () => {
     const workId = await prepare('ended');
     clock += ENDING_DELAY_MS;
     const { latest } = await fetchReportsByWork(api, workId);
@@ -445,11 +501,11 @@ describe('RunStage — 종료', () => {
       const onSubmitted = vi.fn();
       renderStage(onSubmitted);
       await waitFor(() =>
-        expect((screen.getByRole('button', { name: '완료' }) as HTMLButtonElement).disabled).toBe(
-          false,
-        ),
+        expect(
+          (screen.getByRole('button', { name: '보고서 제출' }) as HTMLButtonElement).disabled,
+        ).toBe(false),
       );
-      fireEvent.click(screen.getByRole('button', { name: '완료' }));
+      fireEvent.click(screen.getByRole('button', { name: '보고서 제출' }));
       fireEvent.click(
         within(screen.getByRole('dialog', { name: '보고서를 보낼까요?' })).getByRole('button', {
           name: '보내기',

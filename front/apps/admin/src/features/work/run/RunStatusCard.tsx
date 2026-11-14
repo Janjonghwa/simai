@@ -1,9 +1,11 @@
 import { formatDateTime } from '@/features/work/reportForm';
 import { useElapsed } from '@/features/work/run/useElapsed';
 import type { WorkDayItem } from '@/features/work/types';
+import { openRun, runLabel } from '@/lib/workRuns';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 
 // 작업 종료 단계 오른쪽 위 카드: 진행 중 표시 · 경과 시간 · 시작 시각 · 서명 인원.
+// 경과·시작 시각은 지금 실행 기준이다(S15P31A101-696). 실행 2 부터는 머리에 실행 번호를 붙인다.
 
 const VALUE = 'text-lg font-semibold tabular-nums';
 
@@ -12,17 +14,20 @@ export function RunStatusCard({
   day,
   signerCount,
 }: {
-  day: Pick<WorkDayItem, 'actual_started_at'>;
+  day: Pick<WorkDayItem, 'actual_started_at' | 'runs'>;
   signerCount: number | undefined;
 }) {
-  const elapsed = useElapsed(day.actual_started_at);
-  const startedAt = day.actual_started_at;
+  const run = openRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: null });
+  const startedAt = run?.started_at ?? day.actual_started_at;
+  const elapsed = useElapsed(startedAt);
   return (
     <Card size="sm">
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-2">
           <h2>작업 현황</h2>
-          <span className="rounded bg-ok/15 px-2 py-0.5 text-xs font-medium text-ok">진행 중</span>
+          <span className="rounded bg-ok/15 px-2 py-0.5 text-xs font-medium text-ok">
+            {run && run.run_no > 1 ? `${runLabel(run)} · 진행 중` : '진행 중'}
+          </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
