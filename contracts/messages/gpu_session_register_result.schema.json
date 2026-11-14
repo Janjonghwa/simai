@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/gpu_session_register_result.schema.json",
+  "title": "GPU gpu_session_register_result",
+  "description": "EC2 → GPU 인스턴스, gpu_session_register 의 응답(POST /api/gpu/sessions 201, S15P31A101-699). 이번 세션의 워커 토큰·Tier 0 토큰과 기동에 필요한 설정(지금 simai-bootstrap lobby 인자와 시작 묶음에 해당)을 한 번에 준다. 【비밀 값】 이 계약에서 토큰 원문을 싣는 유일한 메시지다. 원문은 이 응답에서 한 번만 나오고 EC2 는 해시만 둔다(다시 받으려면 다시 등록 = 새 세션). 받는 쪽은 토큰을 권한 600 파일에만 쓰고 로그·명령줄·결과 묶음에 남기지 않는다. EC2 도 이 응답 본문을 로그에 남기지 않는다. TLS 비밀 키·HF 토큰·공급자 API 키는 싣지 않는다(payload 와 하위 객체를 닫음). 【토큰 수명】 두 토큰은 세션이 끝날 때(종료 보고, 새 등록에 밀림, 무응답 report.stale_after_ms 초과, 부팅 비밀값 폐기, 관리자 정지) 함께 폐기된다. 무응답으로 끝나지 않으려면 report.interval_ms 마다 gpu_session_report 를 보낸다(단, 이 세션 Tier 0 토큰으로 I1 이 연결돼 있는 동안은 무응답으로 끝내지 않는다). 【시작 설정】 start 는 EC2 가 지금 아는 값만 싣고 모르면 비운다(AGENTS 규칙 2): 구성 묶음이 아직 없으면 start.config 는 null, 확정 Scene 이 없으면 scene_version 은 null, 높이를 받은 적 없는 카메라는 measured_heights_m 에 키가 없다. 보정 문서·구성 묶음 매니페스트는 기존 구성 묶음 서명 주소(헤더 없이 GET, sha256 으로 확인)로 받는다. Tier 0 TLS 키는 EC2 가 갖지도 주지도 않는다(인스턴스가 공급자 비밀 저장소에서 받거나 새로 만든다).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "gpu_session_register_result" },
+    "source_id": { "const": "ec2" },
+    "payload": {
+      "type": "object",
+      "required": ["session_id", "registered_at", "superseded_session_ids", "worker", "tier0", "report", "start"],
+      "properties": {
+        "session_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "이번 GPU 세션 ID. 진행·종료 보고 경로에 쓴다" },
+        "registered_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "EC2 시계의 등록 시각" },
+        "superseded_session_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/uuid" },
+          "description": "이 등록으로 끝난(SUPERSEDED) 이전 세션. 없으면 빈 배열"
+        },
+        "worker": {
+          "type": "object",
+          "required": ["worker_id", "token"],
+          "properties": {
+            "worker_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "부팅 비밀값에 묶인 워커 ID. 워커 봉투 source_id 로 쓴다" },
+            "token": { "$ref": "#/$defs/secret_token", "description": "워커 토큰 원문(SIMAI_WORKER_TOKEN). 이전 토큰은 이 순간 무효다" }
+          },
+          "additionalProperties": false
+        },
+        "tier0": {
+          "type": "object",
+          "required": ["gateway_id", "token"],
+          "properties": {
+            "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "Tier 0 gateway_id(I1 봉투 source_id). 저널 이어 받기가 이 값에 묶여 세션이 바뀌어도 같은 값이다" },
+            "token": { "$ref": "#/$defs/secret_token", "description": "이번 세션 Tier 0 토큰 원문(SIMAI_TIER0_TOKEN). I1(/ws/tier0)·업로드 서명에 쓴다" }
+          },
+          "additionalProperties": false
+        },
+        "report": {
+          "type": "object",
+          "required": ["interval_ms", "stale_after_ms"],
+          "properties": {
+            "interval_ms": { "type": "integer", "minimum": 1000, "maximum": 600000, "description": "진행 보고(살아 있음 포함) 권장 간격" },
+            "stale_after_ms": { "type": "integer", "minimum": 1000, "description": "마지막 보고 뒤 이만큼 지나면(I1 연결도 없으면) EC2 가 세션을 끝내고 토큰을 폐기한다" }
+          },
+          "additionalProperties": false
+        },
+        "start": { "$ref": "#/$defs/start" }
+      },
+      "additionalProperties": false
+    }
+  },
+
+  "$defs": {
+    "secret_token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "무작위 256비트 Base64url(채움 없음) 토큰 원문"
+    },
+    "signed_file": {
+      "type": "object",
+      "required": ["uri", "sha256"],
+      "properties": {
+        "uri": { "type": "string", "pattern": "^https://\\S+$", "description": "헤더 없이 GET 하는 구성 묶음 서명 주소" },
+        "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "start": {
+      "type": "object",
+      "description": "기동 설정(지금 simai-bootstrap lobby 의 --ec2-base-url·--camera-ids·--measured-heights·--scene-version·--config-version·--gateway-id 와 시작 묶음 calibration.json·laptop_token.sha256 에 해당). 포트·공개 주소는 인스턴스가 알므로 싣지 않는다",
+      "required": ["ec2_base_url", "site_id", "camera_ids", "measured_heights_m", "laptop_token_sha256", "scene_version", "config"],
+      "properties": {
+        "ec2_base_url": { "type": "string", "pattern": "^https://[^/\\s]+$", "description": "EC2 공개 주소(SIMAI_EC2_BASE_URL)" },
+        "site_id": { "type": "string", "minLength": 1, "description": "현장 ID(MVP 는 하나)" },
+        "camera_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+          "description": "현장에 설치된(제거되지 않은) 카메라 ID, 이름 순"
+        },
+        "measured_heights_m": {
+          "type": "object",
+          "propertyNames": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+          "additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+          "description": "카메라별 마지막으로 제출된 줄자 높이(m). 모르는 카메라는 키 없음(0 으로 채우지 않는다)"
+        },
+        "laptop_token_sha256": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+          "description": "폐기되지 않은 현장 노트북(LAPTOP) 기기 토큰의 sha256 지문(Tier 0 SIMAI_LAPTOP_TOKEN_SHA256). 없으면 빈 배열(그러면 Tier 0 는 영상 포트를 열지 않는다)"
+        },
+        "scene_version": { "type": ["string", "null"], "minLength": 1, "description": "지금 확정(COMMITTED) Scene 버전. 없으면 null" },
+        "config": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["config_version", "manifest", "calibration"],
+              "properties": {
+                "config_version": { "type": "string", "minLength": 1, "description": "가장 최근 구성 묶음 버전" },
+                "manifest": { "$ref": "#/$defs/signed_file" },
+                "calibration": {
+                  "type": "object",
+                  "required": ["version", "uri", "sha256"],
+                  "properties": {
+                    "version": { "type": "string", "minLength": 1, "description": "묶음에 든 보정 버전" },
+                    "uri": { "type": "string", "pattern": "^https://\\S+$", "description": "보정 문서(providers/calibration) 서명 주소. 시작 묶음 calibration.json 으로 쓴다" },
+                    "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ],
+          "description": "가장 최근 구성 묶음. 아직 없으면 null(세팅부터 해야 한다)"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

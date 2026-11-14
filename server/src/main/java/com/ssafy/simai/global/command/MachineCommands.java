@@ -1,5 +1,7 @@
 package com.ssafy.simai.global.command;
 
+import com.ssafy.simai.domain.gpu.GpuSessionService;
+import com.ssafy.simai.domain.gpu.GpuSessionService.BootRevoked;
 import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.machine.MachineTokenService.IssuedToken;
@@ -19,6 +21,10 @@ import org.springframework.stereotype.Component;
  * admin worker rotate --id worker-01
  * admin worker revoke --id worker-01
  * admin worker reactivate --id worker-01
+ * admin gpu-boot register --id gpu-boot-runpod --worker-id worker-gpu-01   (GPU 부팅 비밀값, S15P31A101-699. 워커는 먼저 등록)
+ * admin gpu-boot rotate --id gpu-boot-runpod
+ * admin gpu-boot revoke --id gpu-boot-runpod       (그 비밀값으로 연 GPU 세션도 끝내고 세션 토큰을 폐기)
+ * admin gpu-boot reactivate --id gpu-boot-runpod
  * </pre>
  */
 final class MachineCommands {
@@ -95,6 +101,55 @@ final class MachineCommands {
                 case "rotate" -> printIssued(io, tokens.rotate(MachineKind.WORKER, id(rest)), "토큰을 바꿈");
                 case "revoke" -> printRevoked(io, tokens.revoke(MachineKind.WORKER, id(rest)));
                 case "reactivate" -> printIssued(io, tokens.reactivate(MachineKind.WORKER, id(rest)), "되살림");
+                default -> throw new CommandUsageException(usage());
+            };
+        }
+    }
+
+    /**
+     * GPU 부팅 비밀값(S15P31A101-699). 원문은 공급자 비밀 저장소(RunPod Secrets·AWS Secrets Manager)에만 넣는다.
+     * 이 비밀값으로는 GPU 세션 등록·진행·종료 보고만 할 수 있고, 등록하면 묶인 워커의 토큰과 Tier 0 토큰이 새로 발급된다.
+     */
+    @Component
+    static class GpuBootCommand implements AdminCommand {
+
+        private final MachineTokenService tokens;
+        private final GpuSessionService sessions;
+
+        GpuBootCommand(MachineTokenService tokens, GpuSessionService sessions) {
+            this.tokens = tokens;
+            this.sessions = sessions;
+        }
+
+        @Override
+        public String name() {
+            return "gpu-boot";
+        }
+
+        @Override
+        public String usage() {
+            return "admin gpu-boot register --id <비밀값 ID> --worker-id <워커 ID> | rotate --id <비밀값 ID> | revoke --id <비밀값 ID>"
+                    + " | reactivate --id <비밀값 ID>";
+        }
+
+        @Override
+        public int run(List<String> args, CommandIo io) {
+            String action = action(args);
+            List<String> rest = args.subList(1, args.size());
+            return switch (action) {
+                case "register" -> {
+                    CommandOptions options = CommandOptions.parse(rest, Set.of("id", "worker-id"));
+                    yield printIssued(io, tokens.registerGpuBoot(options.require("id"), options.require("worker-id")), "등록");
+                }
+                case "rotate" -> printIssued(io, tokens.rotate(MachineKind.GPU_BOOT, id(rest)), "비밀값을 바꿈");
+                case "revoke" -> {
+                    BootRevoked revoked = sessions.revokeBoot(id(rest));
+                    printRevoked(io, revoked.revoked());
+                    io.out().println(revoked.endedSessions().isEmpty() ? "끝낸 GPU 세션 없음"
+                            : "끝낸 GPU 세션(토큰 폐기): " + revoked.endedSessions());
+                    yield AdminCommand.OK;
+                }
+                case "reactivate" -> printIssued(io, tokens.reactivate(MachineKind.GPU_BOOT, id(rest)), "되살림");
                 default -> throw new CommandUsageException(usage());
             };
         }

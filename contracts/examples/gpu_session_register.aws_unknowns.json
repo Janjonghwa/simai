@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "gpu_session_register",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000006992",
+  "sent_at": 1794700800000,
+  "source_id": "gpu-boot-aws",
+  "payload": {
+    "provider": "AWS",
+    "instance_id": "i-0abc123def4567890",
+    "gpu_type": "NVIDIA L40S",
+    "region": "ap-northeast-2",
+    "public_host": "ec2-198-51-100-7.ap-northeast-2.compute.amazonaws.com",
+    "ports": [
+      {
+        "role": "CONTROL",
+        "public_port": 17000
+      },
+      {
+        "role": "VIDEO",
+        "public_port": 17001
+      }
+    ],
+    "image_digest": null,
+    "price_per_hour_usd": null
+  }
+}

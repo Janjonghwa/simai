@@ -82,6 +82,45 @@ public class MachineTokenService {
         return new IssuedToken(workerId, token);
     }
 
+    /**
+     * GPU 부팅 비밀값 등록(S15P31A101-699). 워커 ID 하나에 묶는다. 그 워커는 미리 등록돼 있어야 한다(작업 유형은 워커 등록이 정한다).
+     * 같은 워커를 여러 비밀값에 묶을 수 있다(공급자별 비밀값이 같은 워커를 쓰는 경우).
+     */
+    public IssuedToken registerGpuBoot(String bootId, String workerId) {
+        checkId(bootId);
+        checkId(workerId);
+        if (!exists(MachineKind.WORKER, workerId)) {
+            throw new BusinessException(ErrorCode.Machine.MACHINE_NOT_FOUND);
+        }
+        String token = TokenHashes.newToken();
+        int rows = jdbc.update("""
+                INSERT INTO gpu_boot_secret (boot_id, token_hash, worker_id, issued_at) VALUES (:id, :hash, :worker, :now)
+                ON CONFLICT (boot_id) DO NOTHING
+                """, new MapSqlParameterSource().addValue("id", bootId).addValue("hash", TokenHashes.sha256Hex(token))
+                .addValue("worker", workerId).addValue("now", now()));
+        if (rows == 0) {
+            throw new BusinessException(ErrorCode.Machine.MACHINE_EXISTS);
+        }
+        return new IssuedToken(bootId, token);
+    }
+
+    /**
+     * GPU 세션 등록용: 폐기 여부와 상관없이 새 토큰을 발급하고 되살린다(S15P31A101-699). 세션이 끝나면 그 워커 토큰을 폐기하므로
+     * 다음 등록은 폐기된 워커를 되살려야 한다. 관리자가 GPU 세션을 막으려면 워커가 아니라 부팅 비밀값을 폐기한다(설계 문서).
+     * 호출하는 쪽 트랜잭션에서 돈다.
+     */
+    public IssuedToken reissue(MachineKind kind, String id) {
+        String token = TokenHashes.newToken();
+        int rows = jdbc.update("UPDATE " + kind.table() + " SET token_hash = :hash, rotated_at = :now, revoked_at = NULL WHERE "
+                        + kind.idColumn() + " = :id",
+                new MapSqlParameterSource().addValue("id", id).addValue("hash", TokenHashes.sha256Hex(token))
+                        .addValue("now", now()));
+        if (rows == 0) {
+            throw new BusinessException(ErrorCode.Machine.MACHINE_NOT_FOUND);
+        }
+        return new IssuedToken(id, token);
+    }
+
     /** 새 토큰으로 바꾼다. 옛 토큰은 바로 쓸 수 없다. 폐기된 주체는 바꾸지 않는다(reactivate 를 쓴다) */
     public IssuedToken rotate(MachineKind kind, String id) {
         String token = TokenHashes.newToken();

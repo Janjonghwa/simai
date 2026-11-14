@@ -778,4 +778,36 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** GPU 세션 등록·진행 보고·상태(부팅 비밀값, S15P31A101-699) */
+    enum Gpu implements ErrorCode {
+        INVALID_GPU_MESSAGE(HttpStatus.BAD_REQUEST, "GPU 세션 메시지가 계약(messages/gpu_session_register·gpu_session_report 1.x)에 맞지 않습니다"),
+        // 봉투 source_id 가 부팅 비밀값 ID 와 다르다(워커 WORKER_SOURCE_MISMATCH 와 같이 401, 계약 gpu_session_register)
+        GPU_SOURCE_MISMATCH(HttpStatus.UNAUTHORIZED, "봉투 source_id 가 부팅 비밀값 ID 와 다릅니다"),
+        GPU_SESSION_NOT_FOUND(HttpStatus.NOT_FOUND, "이 부팅 비밀값으로 연 GPU 세션이 아닙니다"),
+        // 인스턴스는 이 코드를 보면 서비스를 멈춘다(밀림·무응답·폐기로 끝남, 토큰은 이미 무효)
+        GPU_SESSION_ENDED(HttpStatus.CONFLICT, "끝난 GPU 세션입니다. 서비스를 멈추고 필요하면 다시 등록하세요"),
+        // 부팅 비밀값이 등록 도중 폐기됐다(관리 명령과 겹침)
+        GPU_BOOT_REVOKED(HttpStatus.UNAUTHORIZED, "폐기된 부팅 비밀값입니다"),
+        // EC2 공개 주소(SIMAI_PUBLIC_BASE_URL)가 https 로 설정되지 않아 기동 설정을 줄 수 없다. 토큰은 발급하지 않는다
+        EC2_BASE_URL_MISSING(HttpStatus.SERVICE_UNAVAILABLE, "EC2 공개 주소가 설정되지 않아 GPU 세션을 등록할 수 없습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Gpu(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

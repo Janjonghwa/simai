@@ -2,6 +2,7 @@ package com.ssafy.simai.global.config;
 
 import com.ssafy.simai.domain.avatar.AvatarPaths;
 import com.ssafy.simai.domain.cctv.CctvPaths;
+import com.ssafy.simai.domain.gpu.GpuPaths;
 import com.ssafy.simai.domain.watch.WatchPaths;
 import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
@@ -13,6 +14,7 @@ import com.ssafy.simai.global.properties.Tier0Properties;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import com.ssafy.simai.global.security.MachineTokenAuthenticationFilter;
 import com.ssafy.simai.global.security.SecurityErrorResponder;
+import com.ssafy.simai.global.security.Tier0SessionTokens;
 import com.ssafy.simai.global.security.Tier0TokenAuthenticationFilter;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -52,13 +54,13 @@ public class SecurityConfig {
      */
     @Bean
     @Order(1)
-    SecurityFilterChain tier0FilterChain(HttpSecurity http, Tier0Properties tier0) throws Exception {
+    SecurityFilterChain tier0FilterChain(HttpSecurity http, Tier0Properties tier0, Tier0SessionTokens sessions) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http
                 .securityMatcher(Tier0Paths.I1)
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0), AnonymousAuthenticationFilter.class)
+                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0, sessions), AnonymousAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority(Tier0TokenAuthenticationFilter.ROLE))
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(errors)
@@ -93,6 +95,19 @@ public class SecurityConfig {
                 .requestMatchers(AvatarPaths.WORKER_WS));
     }
 
+    /**
+     * GPU 인스턴스 부팅 비밀값(GPU 세션 등록 POST /api/gpu/sessions, 진행·종료 보고 POST /api/gpu/sessions/{id}/reports, S15P31A101-699).
+     * 이 두 경로만 받는다(최소 권한). 부팅 비밀값은 다른 체인의 토큰 종류가 아니라서 다른 API 에서는 모두 401 이다.
+     * 상태 조회(GET /api/gpu/sessions/current)는 관리자 JWT 라 기본 체인으로 간다.
+     */
+    @Bean
+    @Order(4)
+    SecurityFilterChain gpuBootFilterChain(HttpSecurity http, MachineTokenService tokens) throws Exception {
+        return machineChain(http, MachineKind.GPU_BOOT, tokens, matchers -> matchers
+                .requestMatchers(HttpMethod.POST, GpuPaths.SESSIONS)
+                .requestMatchers(HttpMethod.POST, GpuPaths.REPORTS));
+    }
+
     private static SecurityFilterChain machineChain(HttpSecurity http, MachineKind kind, MachineTokenService tokens,
             Customizer<HttpSecurity.RequestMatcherConfigurer> paths) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
@@ -115,9 +130,9 @@ public class SecurityConfig {
      * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진, 워커는 아바타 자산, 관리자는 Scene glTF)는 UploadSignService 가 가른다.
      */
     @Bean
-    @Order(4)
-    SecurityFilterChain uploadFilterChain(HttpSecurity http, Tier0Properties tier0, MachineTokenService tokens,
-            JwtAuthenticationConverter roleConverter) throws Exception {
+    @Order(5)
+    SecurityFilterChain uploadFilterChain(HttpSecurity http, Tier0Properties tier0, Tier0SessionTokens sessions,
+            MachineTokenService tokens, JwtAuthenticationConverter roleConverter) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         DefaultBearerTokenResolver bearer = new DefaultBearerTokenResolver();
         http
@@ -125,7 +140,7 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0), BearerTokenAuthenticationFilter.class)
+                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0, sessions), BearerTokenAuthenticationFilter.class)
                 // Tier 0 필터 뒤에 둔다. Tier 0 토큰으로 인증되면 기기·워커 토큰 DB 조회를 건너뛴다
                 .addFilterAfter(
                         new MachineTokenAuthenticationFilter(List.of(MachineKind.DEVICE, MachineKind.WORKER), tokens),
@@ -149,7 +164,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Order(5)
+    @Order(6)
     SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter roleConverter) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http
