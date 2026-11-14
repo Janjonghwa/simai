@@ -1,6 +1,4 @@
 import {
-  PPE_NOT_APPLIED_TEXT,
-  PPE_NOT_RELEASED_TEXT,
   PPE_NOTICE_SUSTAIN_MS,
   PPE_RECEIPT_STALE_TEXT,
   PpeWorkNotice,
@@ -85,7 +83,7 @@ describe('PpeWorkNotice', () => {
   });
 
   it('작업 중이고 요구도 맞고 상태도 들어오면 아무것도 보이지 않는다', () => {
-    state.works = { state: 'ready', works: [], active: work(12) };
+    state.works = { state: 'ready', works: [work(12)], active: work(12) };
     state.bundles = [bundle('APPLIED', REQUIRED_12)];
     state.receipt = 'ok';
     render(<PpeWorkNotice />);
@@ -95,7 +93,7 @@ describe('PpeWorkNotice', () => {
   });
 
   it('작업 중인데 PPE 상태를 받지 못하면 15초 뒤에 안내한다', () => {
-    state.works = { state: 'ready', works: [], active: work(12) };
+    state.works = { state: 'ready', works: [work(12)], active: work(12) };
     state.bundles = [bundle('APPLIED', REQUIRED_12)];
     state.receipt = 'stale';
     render(<PpeWorkNotice />);
@@ -104,21 +102,20 @@ describe('PpeWorkNotice', () => {
     expect(screen.getByText(PPE_RECEIPT_STALE_TEXT)).toBeTruthy();
   });
 
-  it('작업 중인데 현장 묶음이 요구하지 않으면 미적용을 안내한다', () => {
-    state.works = { state: 'ready', works: [], active: work(12) };
+  it('이번 작업 묶음 적용 전(관제 준비 중)·작업 없음에는 PPE 상태를 보지 않는다(관제 단계·보호구 줄이 바로 알린다, -692)', () => {
+    state.works = { state: 'ready', works: [work(12)], active: work(12) };
     state.bundles = [bundle('APPLIED', NOT_REQUIRED)];
-    state.receipt = 'ok';
-    render(<PpeWorkNotice />);
+    state.receipt = 'stale';
+    const { unmount } = render(<PpeWorkNotice />);
     settle();
-    expect(screen.getByText(PPE_NOT_APPLIED_TEXT)).toBeTruthy();
-  });
+    expect(screen.queryByRole('status')).toBeNull();
+    unmount();
 
-  it('작업이 없는데 아직 요구하면 해제 대기를 안내하고, 상태 수신은 보지 않는다', () => {
     state.works = { state: 'ready', works: [], active: null };
     state.bundles = [bundle('APPLIED', REQUIRED_12)];
     render(<PpeWorkNotice />);
     settle();
-    expect(screen.getByText(PPE_NOT_RELEASED_TEXT)).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(state.receiptEnabled.every((e) => !e)).toBe(true);
   });
 

@@ -5,7 +5,10 @@ import { useNavigate } from '@tanstack/react-router';
 
 /** 대기 화면 종류마다의 제목과 아랫줄(없으면 null). */
 const STANDBY_TEXT: Record<StandbyKind, { title: string; detail: string | null }> = {
-  setup: { title: '오늘 세팅이 끝나지 않았습니다', detail: '세팅을 마치면 관제가 시작됩니다.' },
+  setup: {
+    title: '오늘 세팅이 끝나지 않았습니다',
+    detail: '세팅을 마친 뒤 작업을 시작하면 경보가 켜집니다.',
+  },
   ended: { title: '오늘 작업이 끝났습니다', detail: null },
 };
 

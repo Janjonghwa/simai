@@ -2,6 +2,7 @@ import { ALERT } from '@/features/tbm/styles';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import { AppliedStatusCard } from '@/features/work/run/AppliedStatusCard';
+import { EndAlertStatus } from '@/features/work/run/EndAlertStatus';
 import { EventListCard } from '@/features/work/run/EventListCard';
 import { sendErrorMessage } from '@/features/work/run/runErrors';
 import { RunStatusCard } from '@/features/work/run/RunStatusCard';
@@ -48,7 +49,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
         <div className="flex min-w-0 flex-col gap-3">
           <RunStatusCard day={day} signerCount={signers?.length} />
           <EventListCard startedAt={day.actual_started_at} />
-          <AppliedStatusCard />
+          <AppliedStatusCard workId={day.work_id} startedAt={day.actual_started_at} />
         </div>
       </div>
       {end.open && (
@@ -67,7 +68,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
 }
 
 /**
- * 2. 종료: 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다). `완료` 가 보낼지 묻는다.
+ * 2. 종료: 위에 현장 경보 종료 확인(종료 묶음 적용, -692), 아래 종료 미팅이 든 보고서(보내기 전까지 고칠 수 있다). `완료` 가 보낼지 묻는다.
  * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 서버는 종료 미팅이나 AI 초안(`status`)을
  * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `완료` 는 그동안 꺼 둔다.
  */
@@ -88,6 +89,7 @@ function EndedView({ day, onSubmitted }: { day: WorkDayItem; onSubmitted: () => 
   useWorkAction(action);
   return (
     <>
+      <EndAlertStatus workId={day.work_id} endedAt={day.actual_ended_at} />
       <div className="min-w-0">
         <ReportPanel workId={day.work_id} editable withPrint />
       </div>

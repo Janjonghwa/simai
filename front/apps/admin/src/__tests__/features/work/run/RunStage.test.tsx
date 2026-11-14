@@ -229,7 +229,8 @@ describe('RunStage — 진행 중', () => {
 
     expect(screen.getByRole('heading', { name: '관제 적용 상태' })).toBeTruthy();
     expect(screen.getByText('3D 모델 적용됨')).toBeTruthy();
-    expect(screen.getByText('구역 3개 적용됨')).toBeTruthy();
+    // 구역 수는 이번 작업 묶음이 현장에 적용됐을 때 그 묶음의 값이다. 묶음 목록이 없으면 줄을 만들지 않는다(-692)
+    expect(screen.queryByText(/구역 \d+개 적용됨/)).toBeNull();
     expect(screen.getByText('카메라 3/4 연결')).toBeTruthy();
     expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(
       false,

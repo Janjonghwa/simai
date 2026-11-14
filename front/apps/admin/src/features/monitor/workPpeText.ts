@@ -14,7 +14,7 @@ export interface PpeRequirement {
 /**
  * 진행 중 작업의 안전모·조끼 요구. 현장 Tier 0 가 쓰는(적용된) 묶음의 ppe_policy 가 이 작업의 것이면 그 값, 아니면(시작 묶음 적용 대기)
  * 서버가 이 작업에 저장한 값(work_unit.helmet·vest)이다. 이전 서버라 작업에 칸이 없으면 서버 기본값(필수)이다.
- * 적용이 늦거나 거부된 것은 PpeWorkNotice 가 따로 알린다.
+ * 적용이 늦거나 거부된 것은 관제 단계(WorkSessionBar)가 알린다.
  */
 export function activePpeRequirement(
   work: Pick<TbmWorkUnit, 'work_id' | 'helmet' | 'vest'>,
@@ -27,18 +27,27 @@ export function activePpeRequirement(
   return { helmet: work.helmet ?? 'REQUIRED', vest: work.vest ?? 'REQUIRED' };
 }
 
-/** 「안전모·조끼 필수」·「안전모 필수」·「조끼 필수」·「보호구 판정 꺼짐」. */
-export function ppeRequirementText({ helmet, vest }: PpeRequirement): string {
-  const helmetOn = helmet === 'REQUIRED';
-  const vestOn = vest === 'REQUIRED';
-  if (helmetOn && vestOn) return '안전모·조끼 필수';
-  if (helmetOn) return '안전모 필수';
-  if (vestOn) return '조끼 필수';
-  return '보호구 판정 꺼짐';
-}
+/** 이번 작업 묶음이 현장에 적용되기 전(S15P31A101-692). 작업 시작 직후 바로 보인다. */
+export const PPE_PREPARING_TEXT = '보호구 감시 준비 중';
 
-export const IDLE_TEXT = '작업 시작 전 · 보호구 판정 꺼짐';
-export const START_HINT_TEXT = '작업 시작을 눌러야 보호구 판정이 켜집니다';
+const GEAR_NAME = { helmet: '안전모', vest: '조끼' } as const;
+
+/**
+ * 관제 머리줄의 보호구 글(S15P31A101-692). 작업이 끈 장비는 「감시 대상 아님」이다.
+ * - 현장 적용 전(on 아님): 「보호구 감시 준비 중」(끈 장비가 있으면 「· 조끼 감시 대상 아님」을 붙인다)
+ * - 적용 뒤: 「안전모·조끼 감시 중」·「안전모 감시 중 · 조끼 감시 대상 아님」·「보호구 감시 대상 아님」
+ */
+export function ppeStatusText({ helmet, vest }: PpeRequirement, on: boolean): string {
+  const watched = (['helmet', 'vest'] as const).filter((gear) =>
+    gear === 'helmet' ? helmet === 'REQUIRED' : vest === 'REQUIRED',
+  );
+  const off = (['helmet', 'vest'] as const).filter((gear) => !watched.includes(gear));
+  if (watched.length === 0) return '보호구 감시 대상 아님';
+  const offText =
+    off.length > 0 ? ` · ${off.map((g) => GEAR_NAME[g]).join('·')} 감시 대상 아님` : '';
+  if (!on) return `${PPE_PREPARING_TEXT}${offText}`;
+  return `${watched.map((g) => GEAR_NAME[g]).join('·')} 감시 중${offText}`;
+}
 
 /** R2·R3 고소 기준 높이(명세 7.2: 운영 v1 2.0 m, 교실 시험 v1001 0.35 m). */
 const RULE_PROFILE_TEXT: Record<string, string> = {

@@ -40,6 +40,34 @@ export function watchRows(
   return [...rows.values()].sort((a, b) => a.deviceId.localeCompare(b.deviceId));
 }
 
+/** 작업 전 확인의 워치 한 줄(S15P31A101-692): 표시 이름·기기·연결·사람과 짝지음. */
+export interface WatchSummaryRow {
+  deviceId: string;
+  /** 현장 워치 표시 이름(health watch_names). 없으면 null. */
+  name: string | null;
+  connected: boolean;
+  /** 현장의 사람(World ID)과 짝지어졌는지(배정 있음). */
+  bound: boolean;
+}
+
+/**
+ * 작업 전 확인에 보일 워치 줄. 연결·배정은 watchRows 와 같고(health 정본, 없으면 배정 응답), 이름은 health 의 watch_names 다.
+ * 기기 ID 순.
+ */
+export function watchSummaryRows(
+  watches: HealthWatches | undefined,
+  watchNames: ViewerHealthPayload['watch_names'],
+  bindings: readonly WatchBinding[],
+): WatchSummaryRow[] {
+  const names = new Map((watchNames ?? []).map((w) => [w.device_id, w.display_name] as const));
+  return watchRows(watches, bindings).map((row) => ({
+    deviceId: row.deviceId,
+    name: names.get(row.deviceId) ?? null,
+    connected: row.connected,
+    bound: row.worldId !== null,
+  }));
+}
+
 /**
  * 아바타 이름표 뒤에 붙일 글(World ID → 글). 배정된 사람만 싣는다: 연결이면 '워치 기기ID', 끊김이면 '워치 끊김 기기ID'.
  * 배정 없는 사람(UNBOUND)은 싣지 않는다. 착용 여부는 알 수 없으므로 '미착용'으로 단정하지 않는다(FR-117).

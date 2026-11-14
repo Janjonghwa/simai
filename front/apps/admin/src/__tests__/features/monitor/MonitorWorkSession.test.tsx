@@ -43,8 +43,35 @@ const STARTED = Date.now() - 60 * MIN;
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
+/** 최근 구성 묶음(GET /api/config-bundles). 기본은 묶음 없음(현장이 작업 묶음을 쓰지 않는다). */
+const serveBundles = (bundles: unknown[]) =>
+  server.use(
+    http.get('https://monitor-session.invalid/api/config-bundles', () =>
+      HttpResponse.json(bundles),
+    ),
+  );
+
+/** 묶음 하나. ppe_policy.work_id 가 그 묶음의 작업(null 이면 작업 없음 묶음)이다. */
+function configBundle(version: string, status: string, workId: number | null, issuedAt = STARTED) {
+  return {
+    config_version: version,
+    issued_at: issuedAt,
+    status,
+    applied_at: status === 'APPLIED' ? issuedAt : null,
+    last_ack: null,
+    items: [],
+    ppe_policy: {
+      helmet: workId === null ? 'NOT_REQUIRED' : 'REQUIRED',
+      vest: workId === null ? 'NOT_REQUIRED' : 'REQUIRED',
+      work_id: workId,
+      effective_from_ms: issuedAt,
+    },
+  };
+}
+
 beforeEach(() => {
   navigate.mockReset();
+  serveBundles([]);
   useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
 });
@@ -221,7 +248,9 @@ describe('세션 바', () => {
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });
     expect(within(waiting).getByText('오늘 세팅이 끝나지 않았습니다')).toBeTruthy();
-    expect(within(waiting).getByText('세팅을 마치면 관제가 시작됩니다.')).toBeTruthy();
+    expect(
+      within(waiting).getByText('세팅을 마친 뒤 작업을 시작하면 경보가 켜집니다.'),
+    ).toBeTruthy();
     expect(sessionBar()).toBeNull();
 
     fireEvent.click(within(waiting).getByRole('button', { name: '작업 관리로' }));
@@ -320,6 +349,85 @@ describe('세션 바', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(standby()).toBeNull();
     expect(sessionBar()).toBeNull();
+  });
+});
+
+describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이라 하지 않는다', () => {
+  const badge = (region: HTMLElement) => within(region).getAllByRole('status')[0]!.textContent;
+
+  it('이번 작업 묶음이 현장에 적용되기 전에는 「관제 준비 중」, 적용(APPLIED)되면 「관제 중」', async () => {
+    serveWorks([inProgress()]);
+    serveBundles([
+      configBundle('cfg-2', 'PENDING', 12, Date.now()),
+      configBundle('cfg-1', 'APPLIED', null),
+    ]);
+    const queryClient = renderMonitor();
+    const bar = await screen.findByRole('region', { name: '작업 세션' });
+    await waitFor(() => expect(badge(bar)).toBe('관제 준비 중'));
+
+    act(() => {
+      queryClient.setQueryData(
+        ['config-bundles'],
+        [configBundle('cfg-2', 'APPLIED', 12, Date.now()), configBundle('cfg-1', 'APPLIED', null)],
+      );
+    });
+    await waitFor(() => expect(badge(sessionBar()!)).toBe('관제 중'));
+  });
+
+  it('시작 뒤 10초 넘게 적용이 없으면 지연을 무엇이 / 어떻게로 알린다', async () => {
+    serveWorks([inProgress()]);
+    serveBundles([configBundle('cfg-2', 'PENDING', 12), configBundle('cfg-1', 'APPLIED', null)]);
+    renderMonitor();
+    const bar = await screen.findByRole('region', { name: '작업 세션' });
+    await waitFor(() => expect(badge(bar)).toBe('관제 시작 지연'));
+    expect(bar.textContent).toContain('경보가 아직 꺼져 있습니다');
+    expect(bar.textContent).toContain('현장 노트북과 GPU 서버가 켜져 있고');
+  });
+
+  it('이번 작업 묶음이 거부되면 「현장에 다시 보내기」가 묶음만 다시 발행하고 작업 시작은 다시 보내지 않는다', async () => {
+    const posted: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST') posted.push(new URL(request.url).pathname);
+    });
+    serveWorks([inProgress()]);
+    const before = [configBundle('cfg-2', 'REJECTED', 12), configBundle('cfg-1', 'APPLIED', null)];
+    serveBundles(before);
+    server.use(
+      http.post('https://monitor-session.invalid/api/config-bundles', () => {
+        const fresh = configBundle('cfg-3', 'PENDING', 12, Date.now());
+        serveBundles([fresh, ...before]);
+        return HttpResponse.json(fresh);
+      }),
+    );
+    renderMonitor();
+    const bar = await screen.findByRole('region', { name: '작업 세션' });
+    await waitFor(() => expect(badge(bar)).toBe('관제 시작 실패'));
+    fireEvent.click(within(bar).getByRole('button', { name: '현장에 다시 보내기' }));
+    await waitFor(() => expect(badge(sessionBar()!)).toBe('관제 준비 중'));
+    expect(posted).toEqual(['/api/config-bundles']);
+    server.events.removeAllListeners();
+  });
+
+  it('작업을 끝냈는데 현장이 아직 그 작업 묶음을 쓰면 「종료 요청됨 · 현장 경보 끄는 중」, 종료 묶음이 적용되면 사라진다', async () => {
+    const ended = done({ work_id: '12', actual_started_at: STARTED, actual_ended_at: Date.now() });
+    serveWorks([ended, setupDone({ work_id: '13' })]);
+    serveBundles([
+      configBundle('cfg-3', 'PENDING', null, Date.now()),
+      configBundle('cfg-2', 'APPLIED', 12),
+    ]);
+    const queryClient = renderMonitor();
+    const notice = await screen.findByRole('region', { name: '작업 종료' });
+    expect(badge(notice)).toBe('종료 요청됨 · 현장 경보 끄는 중');
+    expect(idleNotice()).toBeNull();
+
+    act(() => {
+      queryClient.setQueryData(
+        ['config-bundles'],
+        [configBundle('cfg-3', 'APPLIED', null, Date.now()), configBundle('cfg-2', 'APPLIED', 12)],
+      );
+    });
+    await screen.findByRole('region', { name: '관제 상태' });
+    expect(screen.queryByRole('region', { name: '작업 종료' })).toBeNull();
   });
 });
 
