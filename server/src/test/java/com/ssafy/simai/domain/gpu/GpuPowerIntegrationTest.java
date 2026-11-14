@@ -109,6 +109,7 @@ class GpuPowerIntegrationTest {
         String base = "http://127.0.0.1:" + fake.getAddress().getPort();
         runpod.useEndpoints(base + "/v1", base, KEY);
         power.useClock(Clock.systemUTC());
+        power.useTier0Link(null);
         catalog = catalog(true);
         createBody = "{\"id\":\"pod-" + suffix + "\",\"costPerHr\":2.99,\"desiredStatus\":\"RUNNING\"}";
 
@@ -143,6 +144,7 @@ class GpuPowerIntegrationTest {
     void tearDown() {
         runpod.useEndpoints("https://rest.runpod.io/v1", "https://api.runpod.io", "");
         power.useClock(Clock.systemUTC());
+        power.useTier0Link(null);
         fake.stop(0);
     }
 
@@ -290,6 +292,60 @@ class GpuPowerIntegrationTest {
                 sessionId)).isEqualTo("ADMIN_STOPPED");
         assertThat(jdbc.queryForObject("SELECT reason_code FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
                 String.class, "pod-" + suffix)).isEqualTo("IDLE");
+    }
+
+    @Test
+    void 유휴는_준비_완료부터_센다_부팅이_30분_넘게_걸려도_READY_직후_끄지_않는다() throws Exception {
+        // S15P31A101-708(16차): 켠 뒤 29분 만에 READY → 66초 뒤 IDLE 로 꺼졌다. 켠 시각·등록 시각을 35분 전으로 옮겨 재현한다
+        launch(null, null).andExpect(status().isCreated());
+        UUID sessionId = register("pod-" + suffix);
+        jdbc.update("UPDATE gpu_launch SET requested_at = requested_at - interval '35 minutes' WHERE launch_id ="
+                + " (SELECT launch_id FROM gpu_launch_event WHERE instance_id = ? AND kind = 'CREATED')", "pod-" + suffix);
+        jdbc.update("UPDATE gpu_launch_event SET at = at - interval '35 minutes' WHERE instance_id = ? AND kind = 'CREATED'",
+                "pod-" + suffix);
+        jdbc.update("UPDATE gpu_session SET registered_at = registered_at - interval '30 minutes' WHERE session_id = ?", sessionId);
+        report(sessionId, "ENGINE");
+        // 준비 중(READY·I1 연결 전)에는 시간이 얼마나 지나도 유휴로 세지 않는다
+        assertThat(power.autoStop()).isEmpty();
+        shift(Duration.ofMinutes(40));
+        assertThat(power.autoStop()).isEmpty();
+
+        shift(Duration.ZERO);
+        report(sessionId, "READY");
+        assertThat(power.autoStop()).isEmpty();
+        shift(Duration.ofMinutes(29));
+        assertThat(power.autoStop()).isEmpty();
+        // Tier 0 가 붙어 있지 않으면 관리자 화면 조작은 사용으로 세지 않는다
+        presence(admin).andExpect(status().isNoContent());
+        shift(Duration.ofMinutes(31));
+        assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
+        assertThat(power.autoStop()).contains("IDLE");
+        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+    }
+
+    @Test
+    void Tier0_가_붙어_있고_최근_관리자_조작이_있으면_끄지_않고_조작이_N분_없으면_끈다() throws Exception {
+        // 조작 신호는 관리자만 보낸다
+        presence("Bearer " + jwt(adminId, "VIEWER")).andExpect(status().isForbidden());
+
+        launch(null, null).andExpect(status().isCreated());
+        UUID sessionId = register("pod-" + suffix);
+        report(sessionId, "VLLM");
+        // READY 전이라도 그 세션 Tier 0 가 I1 에 붙으면 그때부터 준비 완료로 센다
+        power.useTier0Link(sessionId::equals);
+        assertThat(power.autoStop()).isEmpty();
+
+        shift(Duration.ofMinutes(25));
+        presence(admin).andExpect(status().isNoContent());
+        shift(Duration.ofMinutes(50));
+        assertThat(power.autoStop()).isEmpty();
+        shift(Duration.ofMinutes(54));
+        assertThat(power.autoStop()).isEmpty();
+        assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
+        // 마지막 조작 뒤 30분(설정의 자동 정지 분)이 지났다
+        shift(Duration.ofMinutes(56));
+        assertThat(power.autoStop()).contains("IDLE");
+        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
     }
 
     @Test
@@ -479,6 +535,10 @@ class GpuPowerIntegrationTest {
         }
         return mvc.perform(post("/api/gpu/launches").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(body)));
+    }
+
+    private ResultActions presence(String authorization) throws Exception {
+        return mvc.perform(post("/api/gpu/presence").header(HttpHeaders.AUTHORIZATION, authorization));
     }
 
     private ResultActions stop() throws Exception {

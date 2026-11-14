@@ -208,6 +208,7 @@ export function createGpuMock() {
       launch = null;
       return new HttpResponse(null, { status: 204 });
     }),
+    http.post('*/api/gpu/presence', () => new HttpResponse(null, { status: 204 })),
     http.get('*/api/gpu/settings', () =>
       HttpResponse.json({
         settings: settingsView(),

@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,7 +57,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>켠 요청은 공급자를 부르기 전에 한 번 쓰고 결과·끄기는 gpu_launch_event 에 덧붙인다(AGENTS 6). G1 세션과는 provider + instance_id 로 잇는다.</li>
  * <li>끄기: 관제(LIVE)·세팅 중이면 거부. 공급자 인스턴스를 지운 뒤 그 인스턴스의 열린 세션을 ADMIN_STOPPED 로 끝내 토큰을 바로 폐기한다.</li>
  * <li>자동 정지({@link #autoStop()}): LIVE·세팅·녹화 업로드·분석 작업 중에는 어떤 경우에도 끄지 않는다. 그 밖에 켠 뒤 등록 없음(bootTimeout),
- * 세션이 끝났는데 인스턴스가 남음, FAILED 지속(failedGrace, I1 없음), 유휴(설정의 분)면 끈다.</li>
+ * 세션이 끝났는데 인스턴스가 남음, FAILED 지속(failedGrace, I1 없음), 유휴(설정의 분)면 끈다. 유휴는 준비가 끝난 뒤부터 센다
+ * (S15P31A101-708: 그 세션의 첫 READY 보고와 Tier 0 첫 I1 연결 중 이른 쪽, 부팅 시간은 세지 않는다). Tier 0 가 붙어 있으면 관리자 화면
+ * 조작 신호(POST /api/gpu/presence)도 사용으로 센다.</li>
  * </ul>
  */
 @Service
@@ -94,8 +97,13 @@ public class GpuPowerService {
         }
     }
 
-    /** 열린 G1 세션 요약 */
-    record OpenSession(UUID sessionId, String provider, String instanceId, String stage, Instant stageAt, Instant registeredAt) {
+    /** 열린 G1 세션 요약. readyAt 은 그 세션의 첫 READY 보고 수신 시각(없으면 null) */
+    record OpenSession(UUID sessionId, String provider, String instanceId, String stage, Instant stageAt, Instant registeredAt,
+            Instant readyAt) {
+    }
+
+    /** 이 세션의 Tier 0 가 I1 에 붙은 것을 처음 본 시각(메모리, 자동 정지 점검 때 본다) */
+    private record FirstLink(UUID sessionId, Instant at) {
     }
 
     private static final Logger log = LoggerFactory.getLogger(GpuPowerService.class);
@@ -122,6 +130,11 @@ public class GpuPowerService {
     private final GpuSessionSweeper sweeper;
     private final GpuProperties properties;
     private final String ec2BaseUrl;
+    /** 그 세션 Tier 0 의 I1 연결이 지금 열려 있는지. 시험만 바꾼다(useTier0Link) */
+    private volatile Predicate<UUID> tier0Link;
+    /** 마지막 관리자 화면 조작(메모리). 서버가 뜰 때는 뜬 시각으로 둔다(재시작 직후 바로 끄지 않게, 설계 -708) */
+    private volatile Instant lastPresence;
+    private volatile FirstLink firstLink;
 
     public GpuPowerService(NamedParameterJdbcTemplate jdbc, TransactionTemplate transaction, ObjectMapper mapper, Clock clock,
             GpuProviders providers, GpuSettingsService settings, GpuSessionService sessions, GpuActivity activity,
@@ -137,6 +150,18 @@ public class GpuPowerService {
         this.sweeper = sweeper;
         this.properties = properties;
         this.ec2BaseUrl = properties.runpod().ec2BaseUrl().isEmpty() ? bundle.publicBaseUrl() : properties.runpod().ec2BaseUrl();
+        this.tier0Link = sweeper::tier0Connected;
+        this.lastPresence = now();
+    }
+
+    // ---------------------------------------------------------------- 관리자 화면 조작
+
+    /**
+     * 관리자가 화면을 보며 조작했다(POST /api/gpu/presence, front 는 화면이 보이는 동안 입력 뒤 1분에 한 번까지 보낸다).
+     * 마지막 시각만 메모리에 둔다. Tier 0 가 붙어 있을 때만 자동 정지의 사용으로 센다.
+     */
+    public void presence() {
+        lastPresence = now();
     }
 
     // ---------------------------------------------------------------- 재고
@@ -361,30 +386,61 @@ public class GpuPowerService {
             if (launch != null && launch.createdAt() != null && !launch.createdAt().plus(properties.bootTimeout()).isAfter(now)) {
                 return Optional.of("BOOT_TIMEOUT");
             }
-            if (launch != null && launch.createdAt() != null) {
-                return idle(target, now);
-            }
-            return Optional.empty();
+            return Optional.empty(); // 등록 전(부팅 중)은 유휴로 세지 않는다. 등록이 없으면 BOOT_TIMEOUT 이 끈다
         }
-        boolean tier0Linked = sweeper.tier0Connected(session.sessionId());
+        boolean tier0Linked = tier0Link.test(session.sessionId());
+        Instant linkedAt = firstLinkAt(session.sessionId(), tier0Linked, now);
         if ("FAILED".equals(session.stage()) && !tier0Linked && session.stageAt() != null
                 && !session.stageAt().plus(properties.failedGrace()).isAfter(now)) {
             return Optional.of("FAILED");
         }
-        return idle(target, now);
+        Instant readySince = earliest(session.readyAt(), linkedAt);
+        if (readySince == null) {
+            // 아직 준비 중(READY·I1 연결 전): 부팅 시간은 세지 않는다. 부팅이 멈추면 FAILED 지속·무응답(SESSION_ENDED)이 끈다
+            return Optional.empty();
+        }
+        return idle(readySince, tier0Linked, now);
     }
 
-    private Optional<String> idle(Target target, Instant now) {
+    /**
+     * 유휴 판정. 시작점 = max(준비 완료, 마지막 실행 종료·세팅 갱신·작업 대여·업로드 서명, Tier 0 가 붙어 있으면 마지막 관리자 조작).
+     * 켠 시각은 넣지 않는다(S15P31A101-708: 부팅이 29분 걸린 세션이 READY 66초 뒤 꺼졌다).
+     */
+    private Optional<String> idle(Instant readySince, boolean tier0Linked, Instant now) {
         int minutes = settings.current().autoStopIdleMinutes();
         if (minutes <= 0) {
             return Optional.empty();
         }
-        Instant since = target.startedAt();
+        Instant since = readySince;
         Optional<Instant> lastUse = activity.lastUse();
         if (lastUse.isPresent() && lastUse.get().isAfter(since)) {
             since = lastUse.get();
         }
+        Instant presence = lastPresence;
+        if (tier0Linked && presence != null && presence.isAfter(since)) {
+            since = presence;
+        }
         return since.plus(Duration.ofMinutes(minutes)).isAfter(now) ? Optional.empty() : Optional.of("IDLE");
+    }
+
+    /** 이 세션 Tier 0 의 첫 I1 연결을 본 시각. 지금 붙어 있는데 처음 보면 지금으로 적는다. 본 적 없으면 null */
+    private Instant firstLinkAt(UUID sessionId, boolean linkedNow, Instant now) {
+        FirstLink seen = firstLink;
+        if (seen != null && seen.sessionId().equals(sessionId)) {
+            return seen.at();
+        }
+        if (!linkedNow) {
+            return null;
+        }
+        firstLink = new FirstLink(sessionId, now);
+        return now;
+    }
+
+    private static Instant earliest(Instant a, Instant b) {
+        if (a == null) {
+            return b;
+        }
+        return b == null || a.isBefore(b) ? a : b;
     }
 
     /** 공급자 인스턴스를 지우고 기록한다. 지운 뒤 그 인스턴스의 열린 세션을 ADMIN_STOPPED 로 끝낸다. 실패하면 false */
@@ -488,13 +544,6 @@ public class GpuPowerService {
 
     /** 지금 켜져 있는 것(끄기·자동 정지 대상): 끝나지 않은 켠 요청, 없으면 열린 세션 */
     private record Target(String provider, String instanceId, Launch launch, OpenSession session) {
-
-        Instant startedAt() {
-            if (launch != null) {
-                return launch.requestedAt();
-            }
-            return session.registeredAt();
-        }
     }
 
     private Optional<Target> target() {
@@ -557,13 +606,16 @@ public class GpuPowerService {
 
     private List<OpenSession> openSessions() {
         return jdbc.query("""
-                SELECT s.session_id::text AS id, s.provider, s.instance_id, s.registered_at, prog.stage, prog.received_at AS stage_at
+                SELECT s.session_id::text AS id, s.provider, s.instance_id, s.registered_at, prog.stage, prog.received_at AS stage_at,
+                    (SELECT min(r.received_at) FROM gpu_session_event r
+                     WHERE r.session_id = s.session_id AND r.kind = 'PROGRESS' AND r.stage = 'READY') AS ready_at
                 FROM gpu_session s
                 LEFT JOIN LATERAL (
                     SELECT p.stage, p.received_at FROM gpu_session_event p
                     WHERE p.session_id = s.session_id AND p.kind = 'PROGRESS' ORDER BY p.event_id DESC LIMIT 1) prog ON true
                 """ + " WHERE " + SESSION_OPEN + " ORDER BY s.registered_at DESC", Map.of(), (rs, i) -> new OpenSession(UUID.fromString(rs.getString("id")), rs.getString("provider"),
-                rs.getString("instance_id"), rs.getString("stage"), instant(rs, "stage_at"), instant(rs, "registered_at")));
+                rs.getString("instance_id"), rs.getString("stage"), instant(rs, "stage_at"), instant(rs, "registered_at"),
+                instant(rs, "ready_at")));
     }
 
     private List<UUID> openSessionsFor(String provider, String instanceId) {
@@ -800,5 +852,11 @@ public class GpuPowerService {
     /** 시험에서 시계를 옮길 때만 쓴다(유휴·등록 시간 초과 판정) */
     void useClock(Clock clock) {
         this.clock = clock;
+    }
+
+    /** 시험에서 Tier 0 I1 연결 여부를 바꿀 때만 쓴다. null 이면 실제 I1 연결을 본다 */
+    void useTier0Link(Predicate<UUID> link) {
+        this.tier0Link = link == null ? sweeper::tier0Connected : link;
+        this.firstLink = null;
     }
 }
