@@ -68,7 +68,9 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
 
 ## GPU 캐시: 키
 
-객체 키는 `gpu-cache/<kind>/<cache_key>.tar`(버킷 `simai-k15a101-media-apne2`, EC2 `simai.storage.bucket`). `<digest16>` 은 아래 값의 정렬 JSON SHA-256 앞 16자.
+객체 키는 `job-objects/gpu_cache/<kind>/<cache_key>.tar`(버킷 `simai-k15a101-media-apne2`, EC2 `simai.storage.bucket`). `<digest16>` 은 아래 값의 정렬 JSON SHA-256 앞 16자.
+키는 서버(`GpuCacheService.PREFIX`)만 정하고 인스턴스는 `kind`·`cache_key` 만 보내 받은 서명 주소를 쓴다. 처음에는 `gpu-cache/` 였으나 16차 GPU 세션에서 서버 키(IAM 사용자)가
+그 경로 HEAD 에 403 을 받아 서명이 전부 503 이 됐다 → 서버 키가 쓰기·읽기를 이미 하는 `job-objects/` 아래로 옮겼다(S15P31A101-710, 옛 객체 없음).
 
 | kind | cache_key | digest 에 넣는 값 | 내용 |
 |---|---|---|---|
@@ -87,6 +89,9 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
 
 - 요청 `{kind, cache_key, method: GET|PUT, size_bytes?, sha256?}`. 응답 `{object_key, hit, size_bytes?, sha256?, method?, url?, headers?, expires_at_ms?}`(`Cache-Control: no-store`).
 - GET: 없으면 `hit:false`, 있으면 서명 GET 주소 + 저장소가 기록한 sha256(HEAD, `ChecksumMode.ENABLED`).
+- 존재 확인 HEAD 의 403 은 「없음」으로 본다(`ObjectStorage.headOrAbsentIfForbidden`, S15P31A101-710): S3 는 ListBucket 권한이 없는 자격 증명으로 없는 객체를 HEAD 하면
+  404 대신 403 을 준다. GET 이면 `hit:false`, PUT 이면 조건부 서명을 그대로 준다(덮어쓰지 않음은 `If-None-Match: *` 가 지킨다). 정말 경로 권한이 없으면 인스턴스의 PUT 이
+  403 이고, 인스턴스는 로그와 보고 설명에 「캐시 경로 쓰기 거부(S3 403)」를 남기고 캐시 없이 진행한다(FAILED 아님). 다른 경로(녹화·장면·세팅 결과)의 HEAD 403 은 그대로 오류다.
 - PUT: 이미 있으면 `hit:true`(주소 없음, 올리지 않는다). 없으면 형식·크기(≤ 4 GiB, S3 단일 PUT 5 GiB 안)·sha256 을 묶고 **`If-None-Match: *` 조건부 쓰기**까지 서명에 묶은 주소.
   두 인스턴스가 동시에 올려도 먼저 올린 것만 남는다(S3 412). 키가 내용 조합이라 같은 키 = 같은 의미이고, 덮어쓰지 않는다(AGENTS 규칙 6).
 - 권한: 열린 GPU 세션에 묶인 워커만(`GpuSessionService.openSessionForWorker`, 아니면 403). 세션이 끝나면 워커 토큰이 폐기돼 401. 부팅 비밀값은 워커 체인 밖이라 401.
@@ -151,7 +156,7 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
 
 ## 버린 대안
 
-- **Pod 에 IAM 키(gpu-cache/ 접두만 허용)를 두기**: 오래 사는 키가 Pod·RunPod 계정에 남는다. 세션 워커 토큰은 세션이 끝나면 폐기된다.
+- **Pod 에 IAM 키(캐시 접두만 허용)를 두기**: 오래 사는 키가 Pod·RunPod 계정에 남는다. 세션 워커 토큰은 세션이 끝나면 폐기된다.
 - **기존 업로드 서명(`/api/uploads/sign`, upload_grant)에 목적 추가**: 받기(GET·존재 확인) 경로가 없고, upload_grant 목적 CHECK·발급 기록 때문에 마이그레이션이 필요하다. 캐시는 기록이 필요 없다.
 - **부팅 비밀값으로 서명받기**: 부팅 비밀값 체인은 두 경로만 보는 최소 권한이 원칙(-699). 새면 영향 범위가 넓어진다.
 - **TLS (b) 부팅 때 생성**: 위 "TLS 키".
@@ -163,7 +168,7 @@ MVP 현장은 이미 구성 묶음이 있어(cfg-41 등) 운영 경로에서는 
 
 - RunPod Secret 에 여러 줄 PEM 이 그대로 들어가는지 확인하지 못했다 → base64 한 줄도 받는다.
 - RunPod 이 컨테이너가 끝나면 다시 띄우는지·Stop 의 SIGTERM 유예는 문서로 확인하지 못했다(그래서 끝내지 않고 기다린다).
-- 버킷 수명 주기 규칙이 버킷 전체(예: 14일)면 캐시도 지워진다 → 다시 만들 뿐(느려질 뿐 틀리지 않는다). `gpu-cache/` 접두를 규칙에서 빼는 것은 EC2 운영(사람)이 정한다.
+- 버킷 수명 주기 규칙이 버킷 전체(예: 14일)면 캐시도 지워진다 → 다시 만들 뿐(느려질 뿐 틀리지 않는다). `job-objects/gpu_cache/` 접두를 규칙에서 빼는 것은 EC2 운영(사람)이 정한다.
 - 조건부 쓰기(`If-None-Match: *`)를 서명 주소에 묶는 것은 S3 가 지원하지만 이 버킷에서 실제로 412 가 나는지는 다음 세션에서 본다(안 되면 HEAD 확인만 남고 동시 업로드 때 나중 것이 덮는다).
 - vLLM 컴파일 캐시는 /health 60 s 뒤 묶는다. 그 뒤 요청에서 새로 쓰이는 커널 파일이 묶는 중에 바뀌면 그 항목이 깨질 수 있다(vLLM·Triton 은 깨진 캐시를 다시 컴파일한다).
 - vLLM 캐시는 뒤에서 받아 vLLM 이 폴더를 만들기 전에만 옮긴다. VLM 가중치가 이미 있는 저장 위치(볼륨)면 vLLM 이 먼저 떠 캐시를 못 쓸 수 있다.

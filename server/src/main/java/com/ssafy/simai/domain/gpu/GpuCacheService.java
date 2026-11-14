@@ -18,8 +18,11 @@ import org.springframework.stereotype.Service;
 
 /**
  * GPU 캐시 서명(S15P31A101-700, docs/design/S15P31A101-700-gpu-auto-boot.md). GPU 인스턴스가 부팅 때 만들거나 받는 산출물
- * (TensorRT 엔진, vLLM 컴파일 캐시, Re-ID 가중치 묶음)을 객체 저장소 {@code gpu-cache/<kind>/<cache_key>.tar} 에 두고 다음 인스턴스가 받는다.
+ * (TensorRT 엔진, vLLM 컴파일 캐시, Re-ID 가중치 묶음)을 객체 저장소 {@code job-objects/gpu_cache/<kind>/<cache_key>.tar} 에 두고 다음 인스턴스가 받는다.
  * <ul>
+ * <li>경로는 서버 키가 쓰기·읽기를 이미 하는 job-objects/ 아래다(S15P31A101-710: 16차 세션에서 gpu-cache/ 의 HEAD 가 403 이었다).
+ *     존재 확인 HEAD 의 403 은 「없음」으로 본다(ListBucket 없는 키는 없는 객체도 403, {@link ObjectStorage#headOrAbsentIfForbidden}).
+ *     GET 이면 miss, PUT 이면 조건부(If-None-Match: *) 서명을 그대로 준다. 정말 권한이 없으면 인스턴스의 PUT 이 403 이고, 인스턴스는 캐시 없이 진행한다.</li>
  * <li>Pod 에 AWS 키를 두지 않는다. 그 GPU 세션의 워커 토큰(등록 응답에서 받고 세션이 끝나면 폐기)으로 한 번에 한 객체의 짧은 서명 주소만 받는다.</li>
  * <li>열린 GPU 세션에 묶인 워커만 받는다(다른 분석 워커 토큰은 403).</li>
  * <li>키는 인스턴스가 내용 조합(GPU 종류·TensorRT·모델 해시 등)으로 정하고 서버는 형식만 본다. 같은 키는 덮어쓰지 않는다: 이미 있으면 PUT 대신
@@ -31,7 +34,7 @@ import org.springframework.stereotype.Service;
 public class GpuCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(GpuCacheService.class);
-    static final String PREFIX = "gpu-cache";
+    static final String PREFIX = "job-objects/gpu_cache";
     static final Set<String> KINDS = Set.of("trt-engine", "vllm-compile", "reid");
     /** 소문자·숫자·._- 조각 1~6개를 / 로 잇는다. 조각은 .·- 로 시작하지 않는다(.. 경로 금지) */
     private static final Pattern CACHE_KEY = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,63}(/[a-z0-9][a-z0-9._-]{0,63}){0,5}$");
@@ -63,7 +66,7 @@ public class GpuCacheService {
         if (!storage.configured()) {
             throw new BusinessException(ErrorCode.Storage.STORAGE_NOT_CONFIGURED);
         }
-        Optional<ObjectHead> head = storage.head(key);
+        Optional<ObjectHead> head = storage.headOrAbsentIfForbidden(key);
         if (method.equals("GET")) {
             if (head.isEmpty()) {
                 return CacheSign.miss(key);
