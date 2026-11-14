@@ -83,7 +83,7 @@ describe('TopBar', () => {
     expect(container.querySelector('.bg-stripes')).toBeNull();
   });
 
-  it('Tier 0 가 잰 처리 지연의 최근 평균을 시계 옆에 ms 로 보이고, 기준(600ms)을 넘으면 지연 색이다', () => {
+  it('Tier 0 가 잰 판정 지연의 최근 평균을 시계 옆에 「판정 지연」 ms 로 보이고, 기준(600ms) 이상이면 지연 색이다', () => {
     seed();
     useRealtimeStore.setState({
       lagSamples: [
@@ -92,13 +92,13 @@ describe('TopBar', () => {
       ],
     });
     renderTopBar();
-    const lag = screen.getByText('지연 180 ms');
+    const lag = screen.getByText('판정 지연 180 ms');
     expect(lag.className).not.toContain('text-delay');
 
     act(() =>
       useRealtimeStore.setState({ lagSamples: [{ at: T + 2000, lagMs: 700, cameras: {} }] }),
     );
-    expect(screen.getByText('지연 700 ms').className).toContain('text-delay');
+    expect(screen.getByText('판정 지연 700 ms').className).toContain('text-delay');
   });
 
   it('지연을 모르거나 EC2 와 끊겼으면 지연을 보이지 않는다(지어내지 않음)', () => {
@@ -113,6 +113,18 @@ describe('TopBar', () => {
       }),
     );
     expect(container.textContent).not.toContain('지연');
+  });
+
+  it('GPU(Tier 0)가 꺼져 있으면(EC2 는 이어짐) 판정 지연을 숨긴다(S15P31A101-704)', () => {
+    seed({ tier0_link: 'DISCONNECTED' });
+    // 끊기기 전 표본이 남아 있어도 보이지 않는다.
+    useRealtimeStore.setState({ lagSamples: [{ at: T, lagMs: 140, cameras: {} }] });
+    const { container } = renderTopBar();
+    expect(container.textContent).not.toContain('지연');
+    expect(container.textContent).not.toContain('끊김');
+
+    act(() => seed());
+    expect(screen.getByText('판정 지연 140 ms')).toBeTruthy();
   });
 
   it('관리자 메뉴는 화이트·다크 모드와 로그아웃뿐이다(설치 · 보정은 작업 관리 단계 줄의 세팅으로 들어간다)', async () => {

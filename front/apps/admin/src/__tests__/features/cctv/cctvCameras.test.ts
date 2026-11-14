@@ -1,4 +1,4 @@
-import { cameraState, framesArriving, showsState, stateText } from '@/features/cctv/cctv';
+import { cameraState, showsState, tileBadge } from '@/features/cctv/cctv';
 import { healthCameras } from '@/features/cctv/cctvCameras';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import type { HealthSnapshot } from '@/store/realtime.store';
@@ -72,12 +72,6 @@ describe('cameraState', () => {
     expect(cameraState(camera(undefined), true)).toBe('frozen');
   });
 
-  it('칸 글은 실시간일 때만 카메라 지연(ms)을 붙인다', () => {
-    expect(stateText('live', 180)).toBe('실시간 · 180 ms');
-    expect(stateText('live')).toBe('실시간');
-    expect(stateText('down', 180)).toBe('끊김');
-  });
-
   it('정지는 배지를 두지 않고 끊김·실시간은 둔다', () => {
     expect(showsState('frozen')).toBe(false);
     expect(showsState('down')).toBe(true);
@@ -85,13 +79,21 @@ describe('cameraState', () => {
   });
 });
 
-describe('framesArriving', () => {
-  it('중계가 열려 있고 그리는 중이며 마지막 프레임이 지연되지 않았을 때만 참이다', () => {
-    expect(framesArriving('playing', 'open', 0.2)).toBe(true);
-    expect(framesArriving('playing', 'open', 1.5)).toBe(false);
-    expect(framesArriving('waiting_keyframe', 'open', undefined)).toBe(false);
-    expect(framesArriving('decode_error', 'open', 0.1)).toBe(false);
-    expect(framesArriving('playing', 'unavailable', 0.1)).toBe(false);
-    expect(framesArriving(undefined, 'open', undefined)).toBe(false);
+describe('tileBadge (S15P31A101-704)', () => {
+  it('Tier 0 와 이어졌으면 실시간 칸은 지연과 색 단계를, 끊긴 칸은 끊김을 보인다', () => {
+    expect(tileBadge(true, 'live', 180)).toEqual({ kind: 'lag', ms: 180, level: 'ok' });
+    expect(tileBadge(true, 'live', 450)).toEqual({ kind: 'lag', ms: 450, level: 'warn' });
+    expect(tileBadge(true, 'live', 600)).toEqual({ kind: 'lag', ms: 600, level: 'high' });
+    expect(tileBadge(true, 'down', 180)).toEqual({ kind: 'down' });
+  });
+
+  it('지연을 모르는 실시간 칸과 정지 칸은 배지를 두지 않는다', () => {
+    expect(tileBadge(true, 'live', undefined)).toBeNull();
+    expect(tileBadge(true, 'frozen', 180)).toBeNull();
+  });
+
+  it('Tier 0(GPU)가 이어지지 않았으면 끊김도 지연도 보이지 않는다', () => {
+    expect(tileBadge(false, 'down', undefined)).toBeNull();
+    expect(tileBadge(false, 'live', 180)).toBeNull();
   });
 });

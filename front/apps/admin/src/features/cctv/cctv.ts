@@ -6,6 +6,7 @@ import type {
   ViewMode,
 } from '@/features/cctv/cctv.store';
 import type { HealthCamera } from '@/features/cctv/cctvCameras';
+import { lagLevel, type LagLevel } from '@/lib/tier0Lag';
 
 // CCTV 로컬 미리보기 화면 문구와 판단. 화면 컴포넌트 없이 시험한다.
 
@@ -78,23 +79,24 @@ export function cameraState(camera: HealthCamera | undefined, fresh: boolean): C
  */
 export const showsState = (state: CameraState) => state !== 'frozen';
 
-/** 칸에 보일 상태 글. 실시간이면 Tier 0 가 잰 카메라 지연(ms)을 알 때 함께 보인다. */
-export function stateText(state: CameraState, lagMs?: number): string {
-  if (state === 'live' && lagMs !== undefined) return `${STATE_LABEL[state]} · ${lagMs} ms`;
-  return STATE_LABEL[state];
-}
+/** 칸 오른쪽 위 배지. down: 그 카메라만 끊김, lag: 그 카메라의 촬영→판정 지연(ms)과 색 단계. */
+export type TileBadge = { kind: 'down' } | { kind: 'lag'; ms: number; level: LagLevel };
 
 /**
- * LIVE 점은 영상 프레임이 실제로 들어올 때만 켠다(디코딩해 그리는 중이고 새 프레임이 끊기지 않음).
- * sinceFrameSec 는 브라우저가 마지막 프레임을 받은 뒤 지난 초다. 촬영 시각 기준 나이는 원격 시청에서 전송 지연과
- * 두 기계의 시계 차이가 섞여 기준(STALE_SEC) 근처를 오가므로 쓰지 않는다.
+ * 칸 오른쪽 위 배지(S15P31A101-704). Tier 0(GPU)와 이어지지 않았으면(꺼 둔 정상 상태 포함) 아무것도 보이지 않는다(끊김 금지).
+ * 이어졌으면 Tier 0 가 그 카메라의 신호 없음·키프레임 대기를 알린 칸에만 끊김을, 실시간 칸은 지연을 알 때 ms 를 보인다.
+ * 정지(지금 값을 모름)와 지연을 모르는 실시간 칸은 배지를 두지 않는다(지어내지 않음).
  */
-export function framesArriving(
-  phase: CameraPhase | undefined,
-  link: PreviewLink,
-  sinceFrameSec: number | undefined,
-): boolean {
-  return link === 'open' && phase === 'playing' && !isStale(sinceFrameSec);
+export function tileBadge(
+  tier0Connected: boolean,
+  state: CameraState,
+  lagMs: number | undefined,
+): TileBadge | null {
+  if (!tier0Connected) return null;
+  if (state === 'down') return { kind: 'down' };
+  if (state === 'live' && lagMs !== undefined)
+    return { kind: 'lag', ms: lagMs, level: lagLevel(lagMs) };
+  return null;
 }
 
 /** 원격 시청 안내 한 줄과 "다시 보기"를 보일지. 로컬이거나 원격이 잘 보이는 중이면 null. */

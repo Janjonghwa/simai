@@ -1,27 +1,26 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import {
-  framesArriving,
   remoteNotice,
   showsState,
   STATE_LABEL,
-  stateText,
+  tileBadge,
   tileLabel,
   type CameraState,
+  type TileBadge,
 } from '@/features/cctv/cctv';
 import { useCctvStore, type PreviewLink } from '@/features/cctv/cctv.store';
 import { CctvDemo } from '@/features/cctv/CctvDemo';
 import { CctvWall, type WallTile } from '@/features/cctv/CctvWall';
 import { isZoomed, panZoomTransform, visibleRect, type PanZoomView } from '@/features/cctv/panZoom';
-import { frameAgeSec } from '@/features/cctv/protocol';
-import { DIMMED, LIVE_DOT, TILE_FRAME, tilePan, tileZoom } from '@/features/cctv/tileStyle';
+import { DIMMED, TILE_FRAME, tilePan, tileZoom } from '@/features/cctv/tileStyle';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { usePanZoom } from '@/features/cctv/usePanZoom';
 import { PageTitle } from '@/features/layout/PageTitle';
-import { useNow } from '@/features/layout/useNow';
 import { useCameraNames } from '@/hooks/useCameraNames';
+import { useTier0Connected } from '@/hooks/useTier0Connected';
 import { env } from '@/lib/env';
-import { isLagHigh } from '@/lib/tier0Lag';
+import { LAG_WINDOW_MS, type LagLevel } from '@/lib/tier0Lag';
 import { selectCameraLagMs, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -30,64 +29,56 @@ import { useCallback } from 'react';
 // CCTV 관제(명세 3.3·16장, FR-133): 현장 노트북 영상 중계가 이미 받은 카메라 4대 H.264 를 WebCodecs 로 원본 해상도 그대로
 // 4분할에 그린다. 한 칸을 누르면 그 칸을 크게, 나머지를 옆에 둔다. 같은 노트북이면 루프백(127.0.0.1)으로, 아니면 EC2 원격 시청
 // (S15P31A101-400, 저장 없이 나눠 줌, 보는 사람이 있을 때만 게이트웨이가 올림)으로 받는다. 영상은 알림·판정에 쓰지 않는다.
-// 영상은 관리자만 본다. 다른 역할은 카메라 상태(실시간·끊김)만 본다. 정지(지금 값을 모름)는 배지를 두지 않고(S15P31A101-665),
-// 실시간이면 Tier 0 가 잰 카메라 지연(ms)을 함께 보인다(lib/tier0Lag).
+// 영상은 관리자만 본다. 다른 역할은 카메라 상태(실시간·끊김)만 본다. 정지(지금 값을 모름)는 상태 글을 두지 않는다(S15P31A101-665).
+// 칸 오른쪽 위에는 그 카메라의 촬영→판정 지연(ms)을 세 단계 색 배지로, 그 카메라만 신호가 없으면 끊김을 보인다. Tier 0(GPU)가
+// 이어지지 않았으면(꺼 둔 정상 상태 포함) 배지를 두지 않는다(S15P31A101-704, lib/tier0Lag·tileBadge).
 // 관리자인데 이어지지 않은 동안(연결 중·붙지 못함·끊김·WebCodecs 없음·원격 멈춤)은 상태 한 줄과 그 아래 모의 화면을 보인다.
 // 영상 칸은 휠로 확대하고 확대 중에는 끌어서 옮긴다(usePanZoom). 캔버스에 CSS transform 만 주므로 그리기는 그대로다.
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
 
-/** 프레임 나이를 다시 그리는 간격(ms). 지연 기준(STALE_SEC 1초)보다 짧게 잡는다. */
-const FRAME_AGE_TICK_MS = 250;
-
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-sm backdrop-blur-[4px]';
 
-/** 실시간 칸의 카메라 지연(ms, 최근 몇 초 평균). 실시간이 아니거나 모르면 undefined. */
-function useCameraLag(cameraId: string, state: CameraState): number | undefined {
-  return useRealtimeStore((s) => (state === 'live' ? selectCameraLagMs(s, cameraId) : undefined));
-}
+/** 지연 단계별 점·글자 색. 초록 < 300 ms, 노랑 < 600 ms, 빨강 ≥ 600 ms(사용자 결정, S15P31A101-704). */
+const LAG_TONE: Record<LagLevel, { dot: string; text: string }> = {
+  ok: { dot: 'bg-ok', text: 'text-ok' },
+  warn: { dot: 'bg-sev-caution', text: 'text-sev-caution' },
+  high: { dot: 'bg-sev-critical', text: 'font-semibold text-sev-critical' },
+};
 
-/** 지연 글(「· 180 ms」). 기준을 넘으면 지연 색이다. */
-function LagSuffix({ lagMs }: { lagMs: number | undefined }) {
-  if (lagMs === undefined) return null;
-  return (
-    <span className={cn('font-mono', isLagHigh(lagMs) && 'font-semibold text-delay')}>
-      · {lagMs} ms
-    </span>
+/** 칸 오른쪽 위 배지 값. 실시간 칸만 카메라 지연(최근 몇 초 평균)을 읽는다. */
+function useTileBadge(cameraId: string, state: CameraState): TileBadge | null {
+  const tier0Connected = useTier0Connected();
+  const lagMs = useRealtimeStore((s) =>
+    state === 'live' ? selectCameraLagMs(s, cameraId) : undefined,
   );
+  return tileBadge(tier0Connected, state, lagMs);
 }
 
-/** 칸이 마지막 프레임을 그린 지 몇 초인지. 이 훅을 쓰는 칸만 다시 그린다. */
-function useSecondsSinceFrame(cameraId: string): number | undefined {
-  const now = useNow(FRAME_AGE_TICK_MS);
-  const at = useCctvStore((s) => s.views[cameraId]?.lastDecodedMs);
-  return frameAgeSec(at, now);
-}
-
-/** 칸 오른쪽 위 상태. LIVE 점은 프레임이 실제로 들어올 때만 켠다. 정지는 배지를 두지 않는다. */
-function StateBadge({ cameraId, state }: { cameraId: string; state: CameraState }) {
+/** 칸 오른쪽 위 배지: 지연(ms, 색 점) 또는 끊김. 없으면 그리지 않는다. */
+function CameraBadge({ cameraId, badge }: { cameraId: string; badge: TileBadge | null }) {
   const label = useCameraNames();
-  const sinceFrameSec = useSecondsSinceFrame(cameraId);
-  const phase = useCctvStore((s) => s.views[cameraId]?.phase);
-  const link = useCctvStore((s) => s.link);
-  const lagMs = useCameraLag(cameraId, state);
-  const live = state === 'live' && framesArriving(phase, link, sinceFrameSec);
-  if (!showsState(state)) return null;
+  if (!badge) return null;
+  if (badge.kind === 'down') {
+    return (
+      <span
+        className={cn(CAPTION, 'top-2 right-2 font-semibold')}
+        aria-label={`${label(cameraId)} 끊김`}
+      >
+        끊김
+      </span>
+    );
+  }
+  const tone = LAG_TONE[badge.level];
   return (
     <span
-      className={cn(CAPTION, 'top-2 right-2', state !== 'live' && 'font-semibold')}
-      aria-label={`${label(cameraId)} 상태 ${STATE_LABEL[state]}`}
+      className={cn(CAPTION, 'top-2 right-2 gap-1.5 font-mono', tone.text)}
+      aria-label={`${label(cameraId)} 판정 지연 ${badge.ms} ms`}
+      title={`이 카메라의 촬영→판정 지연(Tier 0 가 잼), 최근 ${LAG_WINDOW_MS / 1000}초 평균`}
     >
-      {live ? (
-        <>
-          <i aria-hidden className={LIVE_DOT} />
-          <span className="font-mono">LIVE</span>
-        </>
-      ) : (
-        STATE_LABEL[state]
-      )}
-      <LagSuffix lagMs={lagMs} />
+      <i aria-hidden className={cn('size-[7px] rounded-full', tone.dot)} />
+      {badge.ms} ms
     </span>
   );
 }
@@ -131,6 +122,7 @@ export function CameraTile({
   wall?: WallTile;
 }) {
   const label = useCameraNames();
+  const badge = useTileBadge(cameraId, state);
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
   const playing = link === 'open' && phase === 'playing';
@@ -144,7 +136,7 @@ export function CameraTile({
       <canvas
         ref={ref}
         aria-label={`${label(cameraId)} 영상`}
-        // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(끊김)는 오른쪽 위 배지로 알린다 —
+        // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(지연·끊김)는 오른쪽 위 배지로 알린다 —
         // Pod 가 없을 때 들어오는 영상까지 45% 로 흐려 물빠진 색으로 보였다(2026-11-02)
         className={cn(
           'size-full origin-top-left object-contain',
@@ -156,7 +148,7 @@ export function CameraTile({
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
-      <StateBadge cameraId={cameraId} state={state} />
+      <CameraBadge cameraId={cameraId} badge={badge} />
       <ZoomMap view={view} />
     </>
   );
@@ -182,10 +174,10 @@ export function CameraTile({
   );
 }
 
-/** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. 정지는 상태 글을 두지 않는다. */
+/** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. 정지는 상태 글을 두지 않는다. 지연은 오른쪽 위 배지다. */
 export function StateTile({ cameraId, state }: { cameraId: string; state: CameraState }) {
   const label = useCameraNames();
-  const lagMs = useCameraLag(cameraId, state);
+  const badge = useTileBadge(cameraId, state);
   return (
     <div
       role="group"
@@ -195,16 +187,13 @@ export function StateTile({ cameraId, state }: { cameraId: string; state: Camera
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
+      {/* 끊김은 가운데 글로 보이므로 배지는 지연만 둔다. */}
+      <CameraBadge cameraId={cameraId} badge={badge?.kind === 'lag' ? badge : null} />
       {showsState(state) && (
         <span
-          className={cn(
-            'text-xl',
-            state === 'live'
-              ? cn('font-medium', lagMs !== undefined && isLagHigh(lagMs) && 'text-delay')
-              : 'font-semibold text-delay',
-          )}
+          className={cn('text-xl', state === 'live' ? 'font-medium' : 'font-semibold text-delay')}
         >
-          {stateText(state, lagMs)}
+          {STATE_LABEL[state]}
         </span>
       )}
     </div>

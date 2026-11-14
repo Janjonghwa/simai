@@ -13,7 +13,7 @@ import { DRAG_THRESHOLD_PX } from '@/hooks/useFloatSpot';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 현장 노트북 중계(WebSocket·WebCodecs)는 붙이지 않는다. 연결·카메라 단계는 cctv.store 에 직접 넣는다.
@@ -63,10 +63,16 @@ function openRelay() {
   store.played('cam_A', Date.now(), Date.now());
 }
 
-const badge = (id: string) =>
-  ['실시간', '끊김', '정지']
-    .map((state) => screen.queryByLabelText(`${cameraName(id)} 상태 ${state}`))
-    .find(Boolean)!;
+/** 칸 오른쪽 위 판정 지연 배지(S15P31A101-704). 없으면 null. */
+const lagBadge = (id: string) =>
+  screen.queryByLabelText(new RegExp(`^${cameraName(id)} 판정 지연`));
+/** 칸 오른쪽 위 끊김 배지. 없으면 null. */
+const downBadge = (id: string) => screen.queryByLabelText(`${cameraName(id)} 끊김`);
+
+/** 카메라별 지연 표본(최근 몇 초 평균의 재료). */
+function seedLag(cameras: Record<string, number>) {
+  useRealtimeStore.setState({ lagSamples: [{ at: T, lagMs: 150, cameras }] });
+}
 
 beforeEach(() => {
   useCctvStore.getState().reset();
@@ -100,74 +106,55 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     expect(screen.queryByRole('button', { name: '4분할로 돌아가기' })).toBeNull();
   });
 
-  it('LIVE 점은 프레임이 들어오는 칸에만 있고 나머지는 상태 글만 보인다', () => {
+  it('칸 오른쪽 위에 그 카메라의 판정 지연을 초록(<300)·노랑(<600)·빨강(≥600) 배지로 보인다', () => {
+    seedLag({ cam_A: 180, cam_B: 450, cam_D: 720 });
     render(<CctvPage />);
-    expect(badge('cam_A').textContent).toBe('LIVE');
-    expect(badge('cam_A').querySelector('i')).not.toBeNull();
-    // cam_B 는 health 가 정상이지만 영상 프레임이 아직 오지 않는다.
-    expect(badge('cam_B').textContent).toBe('실시간');
-    expect(badge('cam_B').querySelector('i')).toBeNull();
+    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
+    expect(lagBadge('cam_A')!.className).toContain('text-ok');
+    expect(lagBadge('cam_B')!.textContent).toBe('450 ms');
+    expect(lagBadge('cam_B')!.className).toContain('text-sev-caution');
+    expect(lagBadge('cam_D')!.textContent).toBe('720 ms');
+    expect(lagBadge('cam_D')!.className).toContain('text-sev-critical');
+    // 지연을 모르는 칸은 배지를 두지 않는다(지어내지 않음). LIVE·실시간 글도 두지 않는다.
+    expect(lagBadge('cam_C')).toBeNull();
+    expect(screen.queryByText('LIVE')).toBeNull();
+    expect(screen.queryByText('실시간')).toBeNull();
+    expect(screen.queryByText('끊김')).toBeNull();
   });
 
-  it('키프레임을 기다리는 카메라는 끊김이다', () => {
+  it('그 카메라만 영상이 안 들어오면(키프레임 대기) 그 칸에만 끊김을 보이고 나머지는 지연이다', () => {
     seedRealtime({ at: T + 20_000 });
+    seedLag({ cam_A: 180, cam_B: 200, cam_C: 900, cam_D: 210 });
     render(<CctvPage />);
-    expect(badge('cam_C').textContent).toBe('끊김');
-    expect(badge('cam_A').textContent).toBe('LIVE');
+    expect(downBadge('cam_C')!.textContent).toBe('끊김');
+    expect(lagBadge('cam_C')).toBeNull();
+    expect(screen.getAllByText('끊김')).toHaveLength(1);
+    for (const id of ['cam_A', 'cam_B', 'cam_D']) {
+      expect(downBadge(id)).toBeNull();
+      expect(lagBadge(id)).not.toBeNull();
+    }
+  });
+
+  it('GPU(Tier 0)가 꺼져 있으면 영상은 그대로 두고 끊김·지연 배지를 하나도 보이지 않는다', () => {
+    seedRealtime({ at: T + 20_000, tier0: 'DISCONNECTED' });
+    // 끊기기 전 표본이 남아 있어도 보이지 않는다.
+    seedLag({ cam_A: 180, cam_C: 900 });
+    render(<CctvPage />);
+    for (const id of CAMS) {
+      expect(screen.getByLabelText(`${cameraName(id)} 영상`).tagName).toBe('CANVAS');
+      expect(lagBadge(id)).toBeNull();
+      expect(downBadge(id)).toBeNull();
+    }
+    expect(screen.queryByText('끊김')).toBeNull();
+    expect(screen.queryByText(/ms$/)).toBeNull();
   });
 
   it('World 가 멈추면(정지) 배지를 두지 않는다(S15P31A101-665)', () => {
     seedRealtime({ world: false });
+    seedLag({ cam_A: 180 });
     render(<CctvPage />);
-    expect(badge('cam_A')).toBeUndefined();
+    expect(lagBadge('cam_A')).toBeNull();
     expect(screen.queryByText(/정지/)).toBeNull();
-  });
-
-  it('Tier 0 가 잰 카메라 지연을 알면 실시간 배지에 ms 로 함께 보이고, 기준을 넘으면 지연 색이다', () => {
-    useRealtimeStore.setState({
-      lagSamples: [{ at: T, lagMs: 150, cameras: { cam_A: 180, cam_B: 720 } }],
-    });
-    render(<CctvPage />);
-    expect(badge('cam_A').textContent).toBe('LIVE· 180 ms');
-    expect(badge('cam_B').textContent).toBe('실시간· 720 ms');
-    expect(within(badge('cam_B')).getByText('· 720 ms').className).toContain('text-delay');
-    // 지연을 모르는 칸은 상태 글만 보인다.
-    expect(badge('cam_C').textContent).toBe('실시간');
-  });
-
-  it('프레임이 1초 넘게 끊기면 LIVE 점을 끈다', () => {
-    const now = Date.now();
-    useCctvStore.getState().played('cam_A', now, now - 2_000);
-    render(<CctvPage />);
-    expect(badge('cam_A').textContent).toBe('실시간');
-  });
-
-  it('촬영 시각이 2초 늦어도 방금 받은 프레임이면 LIVE 이고 칸에는 지연 초가 보이지 않는다', () => {
-    const now = Date.now();
-    useCctvStore.getState().played('cam_A', now - 2_000, now);
-    render(<CctvPage />);
-    expect(badge('cam_A').textContent).toBe('LIVE');
-    expect(screen.queryByText(/^\d+\.\d초$/)).toBeNull();
-  });
-
-  it('프레임을 받은 뒤 0.9초면 LIVE 이고 1.3초면 실시간이다', () => {
-    vi.useFakeTimers();
-    try {
-      const now = Date.now();
-      useCctvStore.getState().played('cam_A', now, now);
-      render(<CctvPage />);
-      act(() => {
-        vi.advanceTimersByTime(900);
-      });
-      expect(badge('cam_A').textContent).toBe('LIVE');
-      act(() => {
-        // 다시 재는 간격(0.25초)이 있어, 기준(1초)을 한 번 이상 지난 뒤 잰 값이 나오도록 넉넉히 넘긴다.
-        vi.advanceTimersByTime(400);
-      });
-      expect(badge('cam_A').textContent).toBe('실시간');
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it('칸을 누르면 그 칸을 크게 보고 같은 칸을 다시 누르면 4분할로 돌아간다', () => {
@@ -185,10 +172,11 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     expect(screen.getByLabelText('카메라 2 영상')).toBe(canvas);
   });
 
-  it('크게 본 화면에서도 상태와 4분할로 버튼이 있다', () => {
+  it('크게 본 화면에서도 지연 배지와 4분할로 버튼이 있다', () => {
+    seedLag({ cam_A: 180 });
     render(<CctvPage />);
     fireEvent.click(screen.getByRole('button', { name: '카메라 1 크게 보기' }));
-    expect(badge('cam_A').textContent).toBe('LIVE');
+    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
     fireEvent.click(screen.getByRole('button', { name: '4분할로 돌아가기' }));
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(4);
   });
@@ -405,17 +393,18 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
     expect(group.textContent).toBe('카메라 1');
   });
 
-  it('실시간 칸은 Tier 0 가 잰 카메라 지연(ms)을 함께 보인다', () => {
+  it('실시간 칸은 오른쪽 위에 Tier 0 가 잰 카메라 지연(ms) 배지를 보인다', () => {
     seedRealtime({ at: T + 20_000 });
-    useRealtimeStore.setState({
-      lagSamples: [{ at: T, lagMs: 150, cameras: { cam_A: 180, cam_C: 400 } }],
-    });
+    seedLag({ cam_A: 180, cam_C: 400 });
     render(<CctvPage />);
     const text = (id: string) =>
       screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
-    expect(text('cam_A')).toBe('실시간 · 180 ms');
-    // 끊김(cam_C 키프레임 대기)에는 붙이지 않는다.
+    expect(text('cam_A')).toBe('실시간');
+    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
+    // 끊김(cam_C 키프레임 대기)은 가운데 글로만 보이고 지연·끊김 배지는 두지 않는다.
     expect(text('cam_C')).toBe('끊김');
+    expect(lagBadge('cam_C')).toBeNull();
+    expect(downBadge('cam_C')).toBeNull();
   });
 
   it('Tier 0 상태를 받지 못하면 안내 한 줄만 보인다', () => {

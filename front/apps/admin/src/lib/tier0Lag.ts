@@ -9,8 +9,11 @@ import { z } from 'zod';
 // 싣지 않고, 실려도 노트북 촬영 시각을 시계 보정 없이 Tier 0 시각에서 뺀 값이라 쓰지 않는다.
 // 모르면(Tier 0 끊김·pipeline_lag_ms null·형식 틀림) 비운다(지어내지 않음, AGENTS 규칙 2).
 
-/** 지연 색을 쓰는 기준(ms). 명세 6.1 System Health lag DEGRADED 기준 600ms(6.6 capture_to_risk p95)를 넘으면 지연이다. */
+/** 지연 색을 쓰는 기준(ms). 명세 6.1 System Health lag DEGRADED 기준 600ms(6.6 capture_to_risk p95) 이상이면 지연이다. */
 export const LAG_WARN_MS = 600;
+
+/** 이보다 작으면(ms) 정상(초록)이다. 카메라 칸 배지의 세 단계 색 기준(S15P31A101-704 사용자 결정). */
+export const LAG_OK_MS = 300;
 
 /** 보이는 값은 최근 이 시간(ms, EC2 시계 as_of 기준) 동안 받은 값의 평균이다. 1 Hz 값이 덜 튀게 한다. */
 export const LAG_WINDOW_MS = 5000;
@@ -87,5 +90,14 @@ export function averageCameraLag(
   return mean(samples.flatMap((s) => s.cameras[cameraId] ?? []));
 }
 
-/** 지연 색(기준 초과)을 쓸지. */
-export const isLagHigh = (ms: number) => ms > LAG_WARN_MS;
+/** 지연 단계. ok: LAG_OK_MS 미만(초록), warn: LAG_WARN_MS 미만(노랑), high: 그 이상(빨강). */
+export type LagLevel = 'ok' | 'warn' | 'high';
+
+export function lagLevel(ms: number): LagLevel {
+  if (ms < LAG_OK_MS) return 'ok';
+  if (ms < LAG_WARN_MS) return 'warn';
+  return 'high';
+}
+
+/** 지연 색(기준 이상)을 쓸지. */
+export const isLagHigh = (ms: number) => lagLevel(ms) === 'high';
