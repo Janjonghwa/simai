@@ -34,6 +34,7 @@ from services.worker.site_setup import (
     PublishedCalibration,
     SiteSetupHandler,
     build_world_from_pointcloud_and_poses,
+    world_anchor_summary,
 )
 from services.worker.transport import Response
 from simai_ai.calibration.extrinsics.joint_ba_v2 import (
@@ -1100,8 +1101,9 @@ def test_floor_coverage_of_another_calibration_is_dropped(caplog: pytest.LogCapt
 _REF_CAL = "cal-lobby-init-079f00cd-jba2-55083185"
 
 
-def _anchor_hook(accepted: bool, reason: str = "ANCHORED") -> Any:
-    """World 다시 맞추기(-584) 주입점 대역: 문서에 world_anchor 만 붙인다(채택이면 실제로는 R·t 도 옮겨진다)."""
+def _anchor_hook(accepted: bool, reason: str = "ANCHORED", per_camera: bool = False) -> Any:
+    """World 다시 맞추기(-584) 주입점 대역: 문서에 world_anchor 만 붙인다(채택이면 실제로는 R·t 도 옮겨진다).
+    per_camera 면 한도와 카메라별 배치 잔차를 함께 싣는다(cam_B 만 한도 0.15 m 초과)."""
     def anchor(doc: Any) -> dict[str, Any]:
         out = copy.deepcopy(dict(doc))
         out["world_anchor"] = {
@@ -1109,6 +1111,10 @@ def _anchor_hook(accepted: bool, reason: str = "ANCHORED") -> Any:
             "method": "CAMERA_CENTER_YAW_XY", "max_center_residual_m": 0.0612 if accepted else 0.4127,
             "max_orientation_change_rad": 0.0703,
         }
+        if per_camera:
+            out["world_anchor"]["limits"] = {"max_center_residual_m": 0.15, "max_scale_deviation": 0.03,
+                                             "max_orientation_change_rad": 0.1745, "min_cameras": 3}
+            out["world_anchor"]["center_residuals_m"] = {"cam_A": 0.02, "cam_B": 0.4127, "cam_C": 0.03, "cam_D": 0.01}
         return out
     return anchor
 
@@ -1168,54 +1174,62 @@ def test_reuse_scene_accepted_skips_preview_and_bake_and_completes_with_calibrat
     assert schema_errors(result, _RESULT) == []
 
 
-def test_reuse_scene_rejected_anchor_continues_as_full_setup_in_the_same_job() -> None:
-    """World 다시 맞추기가 거부되면(카메라 이동) 같은 작업 안에서 FULL_SETUP 으로 이어 간다: 판정 전 스냅샷은 REUSE_SCENE,
-    그 뒤로는 mode=FULL_SETUP + reuse_fallback_reason + world_anchor(accepted=false). 미리보기·굽기를 그대로 한다."""
-    called: list[str] = []
-
-    def preview(**kw: Any) -> PreviewDraftResult:
-        called.append("preview")
-        return PreviewDraftResult("scene-preview-614")
-
-    def bake(**kw: Any) -> str:
-        called.append("bake")
-        return "scene-614"
-
-    handler, _, published = _room_handler(
+def test_reuse_scene_rejected_anchor_stops_with_changed_cameras_instead_of_new_map() -> None:
+    """World 다시 맞추기가 거부되면(카메라 이동) 새 맵으로 저절로 넘어가지 않는다(S15P31A101-689): REUSE_SCENE 그대로 거부 요약
+    (한도를 넘은 카메라 changed_cameras)을 실은 스냅샷을 보내고, 새 보정을 등록하지 않은 채 REUSE_WORLD_REJECTED 로 실패한다."""
+    published: list[dict[str, Any]] = []
+    handler, _, _ = _room_handler(
         lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
-        world_anchor=_anchor_hook(False, "CENTER_RESIDUAL_EXCEEDED"), preview_builder=preview, texture_baker=bake,
+        world_anchor=_anchor_hook(False, "CENTER_RESIDUAL_EXCEEDED", per_camera=True),
+        calibration_publisher=_doc_publisher(published),
+        preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+        frame_publisher=_must_not_run("카메라 프레임"), bake_image_publisher=_must_not_run("굽기 입력 사진"),
     )
-    ctx = JobContext("job-reuse-fb", "0192a6f0-7c1e-7b3a-9f2d-000000000615", "site_setup", 1, _reuse_input())
-    result = handler(ctx)
+    ctx = JobContext("job-reuse-rj", "0192a6f0-7c1e-7b3a-9f2d-000000000615", "site_setup", 1, _reuse_input())
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
 
-    assert called == ["preview", "bake"]
-    by_stage = {s["status"]: s for s in ctx.site_setup_history}
-    assert by_stage["COLLECTING_BACKGROUND"]["mode"] == by_stage["INITIAL_POSE_AND_WORLD"]["mode"] == "REUSE_SCENE"
-    for stage in ("JOINT_BA_AND_VERIFY", "PREVIEW_AND_VLM_DRAFT", "READY_FOR_ZONES", "BAKING_TEXTURE"):
-        assert by_stage[stage]["mode"] == "FULL_SETUP"
-        assert by_stage[stage]["reuse_fallback_reason"] == "CENTER_RESIDUAL_EXCEEDED"
-        assert by_stage[stage]["world_anchor"]["accepted"] is False
-    assert result["mode"] == "FULL_SETUP" and result["reuse_fallback_reason"] == "CENTER_RESIDUAL_EXCEEDED"
-    assert result["preview_scene_version"] == "scene-preview-614" and result["scene_version"] == "scene-614"
-    assert result["world_anchor"]["reason"] == "CENTER_RESIDUAL_EXCEEDED"
-    assert published[0]["world_anchor"]["accepted"] is False
+    assert exc.value.code == "REUSE_WORLD_REJECTED" and exc.value.retryable is False
+    assert "cam_B" in str(exc.value) and "새 맵" in str(exc.value)
+    assert published == []  # Tier 0 는 지금 보정을 그대로 쓴다
+    assert all(s["mode"] == "REUSE_SCENE" for s in ctx.site_setup_history)
+    assert all("reuse_fallback_reason" not in s for s in ctx.site_setup_history)
+    last = ctx.site_setup_history[-1]
+    assert last["status"] == "JOINT_BA_AND_VERIFY" and 61 < last["progress_pct"] < 65
+    assert last["world_anchor"]["accepted"] is False and last["world_anchor"]["changed_cameras"] == ["cam_B"]
+    assert "artifacts" not in last and "calibration_version" not in last
     for snap in ctx.site_setup_history:
         assert schema_errors(snap, _PROGRESS) == []
-    assert schema_errors(result, _RESULT) == []
 
 
-def test_reuse_scene_without_anchor_record_falls_back_with_no_reference() -> None:
-    """보정 문서에 world_anchor 가 없으면(비교할 기준 보정 없음·World 다시 맞추기 없음) 같은 World 라고 지어내지 않고
-    NO_REFERENCE 로 전체 세팅을 이어 간다."""
-    handler, _, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td))
+def test_reuse_scene_without_anchor_record_stops_with_no_reference() -> None:
+    """보정 문서에 world_anchor 가 없으면(비교할 기준 보정 없음) 같은 World 라고 지어내지 않고, 새 맵으로 넘어가지도 않는다:
+    NO_REFERENCE 거부 요약(달라진 카메라 없음)을 싣고 실패한다."""
+    handler, _, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                  texture_baker=_must_not_run("굽기"))
     ctx = JobContext("job-reuse-none", "0192a6f0-7c1e-7b3a-9f2d-000000000616", "site_setup", 1, _reuse_input())
-    result = handler(ctx)
-    assert result["mode"] == "FULL_SETUP" and result["reuse_fallback_reason"] == "NO_REFERENCE"
-    assert result["world_anchor"] == {"accepted": False, "reason": "NO_REFERENCE", "reference_calibration_version": None}
-    assert "BAKING_TEXTURE" in [s["status"] for s in ctx.site_setup_history]
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "REUSE_WORLD_REJECTED" and "비교할 수 없어" in str(exc.value)
+    assert ctx.site_setup_history[-1]["world_anchor"] == {
+        "accepted": False, "reason": "NO_REFERENCE", "reference_calibration_version": None, "changed_cameras": []}
+    assert "BAKING_TEXTURE" not in [s["status"] for s in ctx.site_setup_history]
     for snap in ctx.site_setup_history:
         assert schema_errors(snap, _PROGRESS) == []
-    assert schema_errors(result, _RESULT) == []
+
+
+def test_rejected_anchor_summary_lists_only_cameras_over_the_limits() -> None:
+    """changed_cameras 는 카메라별 배치 잔차·방향 변화가 문서 한도를 넘은 카메라만, ID 오름차순. 한도가 없으면 빈 목록(지어내지 않음)."""
+    rec = {"accepted": False, "reason": "ORIENTATION_CHANGE_EXCEEDED", "reference_calibration_version": _REF_CAL,
+           "limits": {"max_center_residual_m": 0.15, "max_scale_deviation": 0.03, "max_orientation_change_rad": 0.17,
+                      "min_cameras": 3},
+           "center_residuals_m": {"cam_D": 0.2, "cam_A": 0.01},
+           "orientation_changes_rad": {"cam_C": 0.5, "cam_A": 0.02, "cam_D": 0.3}}
+    assert world_anchor_summary({"world_anchor": rec})["changed_cameras"] == ["cam_C", "cam_D"]
+    no_limits = {k: v for k, v in rec.items() if k != "limits"}
+    assert world_anchor_summary({"world_anchor": no_limits})["changed_cameras"] == []
+    accepted = {**rec, "accepted": True, "reason": "ANCHORED"}
+    assert "changed_cameras" not in world_anchor_summary({"world_anchor": accepted})
 
 
 def test_full_setup_reports_world_anchor_summary_without_mode() -> None:

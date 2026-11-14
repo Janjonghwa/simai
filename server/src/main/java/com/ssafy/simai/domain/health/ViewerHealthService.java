@@ -156,6 +156,24 @@ public class ViewerHealthService {
     }
 
     /**
+     * 지금 Tier 0 가 재세팅을 요구하는 카메라 ID(viewer_health {@code re_setup} 과 같은 판단, 오름차순). Tier 0 가 끊겼거나 마지막 health 에
+     * re_setup 이 없으면 null(모름). 세팅의 「이전 맵 재사용」 가능 판정이 직전 보정 대비 카메라 변화 근거로 쓴다(S15P31A101-689).
+     */
+    public List<String> reSetupCameraIds() {
+        HealthState.Received tier0 = state.tier0Health();
+        if (tier0 == null || !fresh(tier0.receivedNanos(), state.nanoTime())) {
+            return null;
+        }
+        ArrayNode items = reSetup(tier0.payload());
+        if (items == null) {
+            return null;
+        }
+        List<String> ids = new ArrayList<>();
+        items.forEach(item -> ids.add(item.get("camera_id").stringValue()));
+        return ids;
+    }
+
+    /**
      * 재세팅이 필요한 카메라(viewer_health 1.3.0 re_setup, S15P31A101-480). Tier 0 가 연결돼 있고 마지막 health 가 re_setup 배열을 실었을 때만 그 값을
      * camera_id 오름차순으로 옮긴다(빈 배열 = 필요한 카메라 없음). health 가 없거나 필드가 없으면(이전 버전 Tier 0) null: 모름이라 싣지 않는다.
      * 항목은 계약의 세 필드만 옮기고, 형식이 맞지 않는 항목은 버린다(화면 계약을 깨지 않게). 경보·system_health 는 바꾸지 않는다.

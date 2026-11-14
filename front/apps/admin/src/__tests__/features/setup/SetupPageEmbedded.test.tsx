@@ -116,13 +116,17 @@ function ActionLine() {
   );
 }
 
+/** 「세팅 취소」로 세팅에서 나갈 때 부르는 날짜 화면 처리(렌더할 때마다 새로 만든다). */
+let onExit = vi.fn();
+
 function renderEmbedded(onDone = vi.fn(), workUnitId = 1) {
+  onExit = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
       <WorkActionProvider>
         <div data-testid="page">
-          <SetupPage embedded workUnitId={workUnitId} onDone={onDone} />
+          <SetupPage embedded workUnitId={workUnitId} onDone={onDone} onExit={onExit} />
         </div>
         <ActionLine />
       </WorkActionProvider>
@@ -149,22 +153,22 @@ const currentStepText = () =>
     .getAllByRole('listitem')
     .find((step) => step.getAttribute('aria-current') === 'step')?.textContent;
 
-/** 1단계에서 cam_D 높이를 채워 '다음' → 방식 고르기 '새로 3D 공간 만들기' 로 세션을 만들고 그 세션 id 를 돌려준다. */
 /** 1단계 '다음' 뒤 뜨는 배경 촬영 창(-686)에서 「시작」을 눌러 세션을 만든다. */
 async function pressCaptureStart() {
   const dialog = await screen.findByRole('dialog', { name: '배경 촬영' });
   fireEvent.click(within(dialog).getByRole('button', { name: '시작' }));
 }
 
+/** 1단계에서 cam_D 높이를 채우고 「맵」 '새 맵 만들기' → '다음' 으로 세션을 만들고 그 세션 id 를 돌려준다. */
 async function startSetupSession() {
   const view = renderEmbedded();
   const cam_D = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
   await waitFor(() => expect(mainButton().disabled).toBe(true));
   fireEvent.change(cam_D, { target: { value: '2.35' } });
   await waitFor(() => expect(mainButton().disabled).toBe(false));
+  const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+  fireEvent.click(within(group).getByRole('radio', { name: /^새 맵 만들기/ }));
   fireEvent.click(mainButton());
-  const dialog = screen.getByRole('dialog', { name: '3D 공간' });
-  fireEvent.click(within(dialog).getByRole('button', { name: /^새로 3D 공간 만들기/ }));
   await pressCaptureStart();
   await waitFor(() => expect(setupMock.sessions.size).toBe(1));
   const sessionId = [...setupMock.sessions.keys()][0]!;
@@ -226,13 +230,14 @@ describe('세팅 화면 임베드', () => {
       '3구역',
     ]);
 
-    expect(lineLabels()).toEqual(['다음']);
+    // 1단계 보조 단추 「세팅 취소」는 세팅에서 나간다(S15P31A101-689, 진행 중 시도가 없으면 묻지 않는다)
+    expect(lineLabels()).toEqual(['세팅 취소', '다음']);
     expect(mainButton().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('카메라 4 높이 (m)'), { target: { value: '2.35' } });
     await waitFor(() => expect(mainButton().disabled).toBe(false));
   });
 
-  it('보정·생성에서는 세팅 취소가 보조 단추이고, 다음은 정밀 3D 맵이 다 만들어져야 켜진다', async () => {
+  it('보정·생성에서는 현재 시도 중단이 보조 단추이고, 다음은 정밀 3D 맵이 다 만들어져야 켜진다', async () => {
     const { sessionId } = await startSetupSession();
 
     // 머리줄에는 세션 id 도 1단계 안내 글도 없다.
@@ -240,10 +245,10 @@ describe('세팅 화면 임베드', () => {
     expect(page.textContent).not.toContain(sessionId);
     expect(page.textContent).not.toContain('세션 019a');
     expect(within(page).queryByText('세팅 1단계 · 카메라 확인')).toBeNull();
-    expect(lineLabels()).toEqual(['세팅 취소', '다음']);
+    expect(lineLabels()).toEqual(['현재 시도 중단', '다음']);
     expect(mainButton().disabled).toBe(true);
     expect(
-      within(screen.getByTestId('page')).queryByRole('button', { name: '세팅 취소' }),
+      within(screen.getByTestId('page')).queryByRole('button', { name: '현재 시도 중단' }),
     ).toBeNull();
 
     // 미리보기 맵만 있는 동안은 꺼져 있고 이유를 title 로 알린다
@@ -255,28 +260,45 @@ describe('세팅 화면 임베드', () => {
     setupMock.updateSession(sessionId, FINAL_PATCH);
     await waitFor(() => expect(mainButton().disabled).toBe(false), POLL_WAIT);
     expect(mainButton().title).toBe('');
-    // 끝난 세션은 취소할 수 없어 세팅 취소가 사라진다
+    // 끝난 세션은 멈출 수 없어 현재 시도 중단이 사라진다
     expect(lineLabels()).toEqual(['다음']);
   }, 20_000);
 
-  it('보조 단추 세팅 취소는 확인한 뒤 세션을 취소한다', async () => {
+  it('보조 단추 현재 시도 중단은 확인한 뒤 세션을 취소하고 1단계로 돌아가 맵 방식을 다시 고르게 한다', async () => {
     const { sessionId } = await startSetupSession();
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     try {
-      fireEvent.click(line().getByRole('button', { name: '세팅 취소' }));
+      fireEvent.click(line().getByRole('button', { name: '현재 시도 중단' }));
       await waitFor(() => expect(setupMock.sessions.get(sessionId)?.status).toBe('FAILED'));
       expect(confirm).toHaveBeenCalledTimes(1);
+      expect(await screen.findByRole('radiogroup', { name: '맵 방식' }, POLL_WAIT)).toBeTruthy();
+      expect(currentStepText()).toBe('1카메라 연결 관리');
+      expect(onExit).not.toHaveBeenCalled();
     } finally {
       confirm.mockRestore();
     }
   }, 20_000);
 
-  it('세션 취소를 요청하는 동안 세팅 취소는 꺼진다(단독 화면과 같다)', async () => {
+  it('1단계 세팅 취소는 진행 중 시도가 없으면 묻지 않고 세팅에서 나간다(onExit)', async () => {
+    renderEmbedded();
+    await screen.findByLabelText('카메라 4 높이 (m)');
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.click(line().getByRole('button', { name: '세팅 취소' }));
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onExit).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('세션 취소를 요청하는 동안 현재 시도 중단은 꺼진다(단독 화면과 같다)', async () => {
     const { sessionId } = await startSetupSession();
     server.use(http.post('*/api/setup-sessions/:id/cancel', () => delay('infinite')));
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     try {
-      const cancel = () => line().getByRole('button', { name: '세팅 취소' }) as HTMLButtonElement;
+      const cancel = () =>
+        line().getByRole('button', { name: '현재 시도 중단' }) as HTMLButtonElement;
       expect(cancel().disabled).toBe(false);
       fireEvent.click(cancel());
       await waitFor(() => expect(cancel().disabled).toBe(true));
@@ -301,11 +323,11 @@ describe('세팅 화면 임베드', () => {
       },
     });
     await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-    expect(lineLabels()).toEqual(['세팅 취소', '카메라 다시 맞추기', '다음']);
+    expect(lineLabels()).toEqual(['현재 시도 중단', '카메라 다시 맞추기', '다음']);
 
     fireEvent.click(line().getByRole('button', { name: '카메라 다시 맞추기' }));
     expect(await screen.findByLabelText('카메라 2 높이 (m)')).toBeTruthy();
-    expect(lineLabels()).toEqual(['다음']);
+    expect(lineLabels()).toEqual(['세팅 취소', '다음']);
   }, 20_000);
 
   it('구역 단계: 다시 보정이 보조 단추이고 다음은 처음부터 켜져 있으며 구역 목록·완료 카드는 없다', async () => {
@@ -395,7 +417,7 @@ describe('세팅 화면 임베드', () => {
       fireEvent.click(line().getByRole('button', { name: '다시 보정' }));
       expect(confirm).toHaveBeenCalledTimes(1);
       expect(await screen.findByLabelText('카메라 4 높이 (m)')).toBeTruthy();
-      expect(lineLabels()).toEqual(['다음']);
+      expect(lineLabels()).toEqual(['세팅 취소', '다음']);
     } finally {
       confirm.mockRestore();
     }

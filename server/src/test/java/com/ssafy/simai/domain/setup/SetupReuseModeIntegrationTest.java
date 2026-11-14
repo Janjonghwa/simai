@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.setup;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -10,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.ssafy.simai.domain.health.ViewerHealthService;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.scene.SceneService;
@@ -41,6 +43,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.RequestBuilder;
@@ -83,6 +86,10 @@ class SetupReuseModeIntegrationTest {
 
     @MockitoBean
     ObjectStorage storage;
+
+    /** Tier 0 회전 감시(-540) 재세팅 카메라만 바꿔 본다(S15P31A101-689). 기본은 Tier 0 끊김(모름) */
+    @MockitoSpyBean
+    ViewerHealthService health;
 
     private final String suffix = UUID.randomUUID().toString().substring(0, 8);
     private final String worker = "worker-setup-reuse-" + suffix;
@@ -133,6 +140,7 @@ class SetupReuseModeIntegrationTest {
                 "{\"calibration_version\": \"" + baseCalibration + "\", \"calibration_state\": \"CALIBRATED\"}");
 
         token = machines.registerWorker(worker, List.of("site_setup")).token();
+        doReturn(null).when(health).reSetupCameraIds();
     }
 
     @AfterEach
@@ -275,7 +283,8 @@ class SetupReuseModeIntegrationTest {
     }
 
     @Test
-    void 재사용이_거부되면_같은_작업에서_새_모델로_이어_가고_세션은_NEW_와_사유를_보인다() throws Exception {
+    void 옛_워커가_재사용_거부_뒤_같은_작업에서_새_모델로_이어_가면_세션은_NEW_와_사유를_보인다() throws Exception {
+        // site_setup 1.17.0 까지의 워커 호환(-614). 1.18.0 워커는 이어 가지 않고 실패로 멈춘다(S15P31A101-689, 아래 시험)
         commitBaseScene();
         JsonNode created = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
         Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
@@ -351,7 +360,94 @@ class SetupReuseModeIntegrationTest {
         assertThat(jobInput(retried.get("job_id").asString()).get("mode").asString()).isEqualTo("REUSE_SCENE");
     }
 
+    @Test
+    void 재사용이_거부되면_새_모델로_넘어가지_않고_실패로_멈추고_다음_선택에서_재사용을_막으며_새_맵_재시도를_받는다() throws Exception {
+        // site_setup 1.18.0(S15P31A101-689): 워커는 REUSE_SCENE 그대로 거부 요약(달라진 카메라)을 보내고 REUSE_WORLD_REJECTED 로 실패한다
+        commitBaseScene();
+        JsonNode created = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
+        Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
+        mvc.perform(heartbeat(s, 0.40, snapshot(s.sessionId(), "INITIAL_POSE_AND_WORLD", 40.0).put("mode", "REUSE_SCENE")))
+                .andExpect(status().isOk());
+        ObjectNode rejected = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 62.0).put("mode", "REUSE_SCENE");
+        ObjectNode anchor = anchor(false);
+        anchor.putArray("changed_cameras").add("cam_B");
+        rejected.set("world_anchor", anchor);
+        mvc.perform(heartbeat(s, 0.62, rejected)).andExpect(status().isOk());
+        ObjectNode failure = failed(s);
+        ((ObjectNode) failure.get("error")).put("code", "REUSE_WORLD_REJECTED")
+                .put("message", "카메라 cam_B 이(가) 직전 세팅과 달라져 이전 맵을 쓸 수 없습니다. 새 맵으로 다시 하세요");
+        mvc.perform(callback(s, failure)).andExpect(status().isOk());
+
+        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
+        assertThat(view.get("status").asString()).isEqualTo("FAILED");
+        assertThat(view.get("failure_code").asString()).isEqualTo("REUSE_WORLD_REJECTED");
+        assertThat(view.get("mode").asString()).isEqualTo("REUSE");
+        assertThat(view.get("reuse_fallback_reason").isNull()).isTrue();
+        assertThat(view.at("/world_anchor/accepted").asBoolean()).isFalse();
+        assertThat(view.at("/world_anchor/changed_cameras/0").asString()).isEqualTo("cam_B");
+        assertThat(view.get("preview_scene_version").isNull()).isTrue();
+        assertThat(currentScene()).isEqualTo(baseScene);
+
+        // 다음 선택: 직전 시도가 카메라 변화로 거부됐으므로 재사용은 꺼지고 이유(카메라)를 보인다. 시작해도 409
+        JsonNode check = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(check.get("available").asBoolean()).isFalse();
+        assertThat(check.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
+        assertThat(check.get("camera_source").asString()).isEqualTo("LAST_SETUP_REJECTED");
+        assertThat(check.at("/changed_cameras/0").asString()).isEqualTo("cam_B");
+        mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"REUSE\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
+        mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"BOGUS\"}"))
+                .andExpect(status().isBadRequest());
+
+        // 관리자가 새 맵을 고른 재시도는 새 방식을 새 세션에 저장한다(작업 입력에 mode 없음 = FULL_SETUP)
+        JsonNode retried = body(mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"NEW\"}"))
+                .andExpect(status().isAccepted()).andReturn());
+        assertThat(retried.get("requested_mode").asString()).isEqualTo("NEW");
+        assertThat(retried.get("retry_of").asString()).isEqualTo(s.sessionId());
+        assertThat(jobInput(retried.get("job_id").asString()).has("mode")).isFalse();
+        // 가장 최근 시도가 거부가 아니므로 카메라 근거는 다시 모름(막지 않음)
+        JsonNode after = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(after.get("camera_status").asString()).isEqualTo("UNKNOWN");
+        assertThat(after.get("available").asBoolean()).isTrue();
+    }
+
+    @Test
+    void Tier0_회전_감시가_카메라_변화를_알리면_재사용을_막고_근거가_없으면_막지_않는다() throws Exception {
+        JsonNode none = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(none.get("blocked_reason").asString()).isEqualTo("NO_SCENE");
+        assertThat(none.get("scene_version").isNull()).isTrue();
+
+        commitBaseScene();
+        JsonNode unknown = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(unknown.get("available").asBoolean()).isTrue();
+        assertThat(unknown.get("camera_status").asString()).isEqualTo("UNKNOWN");
+        assertThat(unknown.get("scene_version").asString()).isEqualTo(baseScene);
+
+        doReturn(List.of("cam_C")).when(health).reSetupCameraIds();
+        JsonNode drift = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(drift.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
+        assertThat(drift.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
+        assertThat(drift.at("/changed_cameras/0").asString()).isEqualTo("cam_C");
+        mvc.perform(create("REUSE")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
+        // 새 맵은 막지 않는다
+        mvc.perform(create(null)).andExpect(status().isAccepted());
+
+        doReturn(List.of()).when(health).reSetupCameraIds();
+        JsonNode quiet = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(quiet.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
+        assertThat(quiet.get("available").asBoolean()).isTrue();
+        mvc.perform(get("/api/setup-sessions/reuse-check").with(viewerJwt())).andExpect(status().isForbidden());
+    }
+
     // ------------------------------------------------------------------ 도우미
+
+    private RequestBuilder reuseCheck() {
+        return get("/api/setup-sessions/reuse-check").with(adminJwt());
+    }
 
     /** 현재 관제 맵: 이전 활성 보정으로 만든 COMMITTED Scene 을 가장 최근 활성화로 둔다 */
     private void commitBaseScene() {

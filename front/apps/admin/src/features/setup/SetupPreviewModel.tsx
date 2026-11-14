@@ -37,7 +37,7 @@ export function SetupSplit({ left, children }: { left: ReactNode; children: Reac
  * 보정·생성의 왼쪽 3D 칸(미리보기 맵이 준비된 뒤). Scene 을 받기 전에도(404 로 다시 받는 중이어도) 빈 틀로 자리를 지켜, 받는 순간
  * 배치가 바뀌지 않는다. 받는 동안은 로딩 표시만 두고, 3D 를 띄우지 못하면 빈 틀만 남긴다.
  * 이 세션이 만든 Scene(정밀 3D 맵이 있으면 정밀, 아니면 미리보기)을 버전을 지정해 받는다(GET /api/scenes/{scene_version}/view).
- * 만든 맵이 없는 세션(이전 모델 쓰기)은 버전이 없어 지금 관제 Scene 으로 그린다. 구역 단계와 같다.
+ * 만든 맵이 없는 세션(이전 맵 재사용)은 버전이 없어 지금 관제 Scene 으로 그린다. 구역 단계와 같다.
  * 관제 틀(useViewportHost)은 쓰지 않는다: 전역 편집 상태를 건드리지 않고 Scene 만 그린다.
  */
 export function SetupPreviewCard({ sceneTier }: { sceneTier: SceneTierStatusView }) {

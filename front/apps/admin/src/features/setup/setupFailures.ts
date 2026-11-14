@@ -1,22 +1,28 @@
-import { pairLabel } from '@/features/setup/cameraLabels';
+import { cameraLabel, pairLabel } from '@/features/setup/cameraLabels';
 
 // 서버 세팅 세션이 실패한 이유(failure_code)마다 무엇이 문제이고 어디서 어떻게 풀지 보이는 안내.
 // retry 가 false 면 같은 상태로 다시 해도 같은 곳에서 멈추므로 '다시 시도' 없이 '카메라 연결 관리로' 만 둔다
 // (서버는 FAILED 세션이면 늘 다시 시도를 받는다). 표에 없는 코드는 FALLBACK 이다.
 
 export interface FailureEntry {
-  /** 원인 한 줄. 실패 메시지에서 뽑은 카메라 쌍('캠1–캠2, 캠3–캠4')이 있으면 받는다. */
-  title: (pairs: string) => string;
+  /**
+   * 원인 한 줄. 실패 메시지에서 뽑은 카메라 쌍('캠1–캠2, 캠3–캠4')이 있으면 받는다. cameras 는 직전 세팅과 달라진 카메라
+   * ('카메라 2·카메라 3', 세션 world_anchor.changed_cameras)이고 모르면 빈 글이다.
+   */
+  title: (pairs: string, cameras: string) => string;
   /** 해결 방법. */
   fix: string;
   /** 같은 상태로 다시 시도해 볼 만한지. */
   retry: boolean;
+  /** 「새 맵으로 다시 하기」를 보일지(이전 맵 재사용이 카메라 변화로 멈췄다, S15P31A101-689). */
+  newMap?: boolean;
 }
 
 export interface FailureGuide {
   title: string;
   fix: string;
   retry: boolean;
+  newMap: boolean;
 }
 
 export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
@@ -55,6 +61,16 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
     title: () => '세팅을 취소했어요',
     fix: '다시 시작하려면 다시 시도하세요.',
     retry: true,
+  },
+  // 이전 맵 재사용의 World 다시 맞추기가 거부됐다. 새 맵(약 13분)으로 저절로 넘어가지 않고 멈춘다(S15P31A101-689): 무엇이 / 어떻게
+  REUSE_WORLD_REJECTED: {
+    title: (_pairs, cameras) =>
+      cameras
+        ? `${cameras}의 위치나 방향이 직전 세팅과 달라졌어요`
+        : '카메라를 직전 세팅과 맞추지 못해 이전 맵을 쓸 수 없어요',
+    fix: '새 맵으로 다시 하세요.',
+    retry: false,
+    newMap: true,
   },
   LEASE_EXPIRED: {
     title: () => '분석 서버와 연결이 끊겼어요',
@@ -96,6 +112,7 @@ export function failureGuide(
   code: string | null,
   message: string | null,
   cameraIds: readonly string[],
+  changedCameras: readonly string[] = [],
 ): FailureGuide {
   const entry =
     (code !== null && Object.hasOwn(SETUP_FAILURES, code) ? SETUP_FAILURES[code] : undefined) ??
@@ -103,5 +120,13 @@ export function failureGuide(
   const pairs = pairsInMessage(message ?? '', cameraIds)
     .map(([a, b]) => pairLabel(cameraIds, a, b))
     .join(', ');
-  return { title: entry.title(pairs), fix: entry.fix, retry: entry.retry };
+  const cameras = changedCameras
+    .map((id) => (cameraIds.includes(id) ? cameraLabel(cameraIds, id) : id))
+    .join('·');
+  return {
+    title: entry.title(pairs, cameras),
+    fix: entry.fix,
+    retry: entry.retry,
+    newMap: entry.newMap === true,
+  };
 }

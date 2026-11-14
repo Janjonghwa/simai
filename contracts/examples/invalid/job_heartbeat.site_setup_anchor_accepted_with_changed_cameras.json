@@ -1,0 +1,82 @@
+{
+  "schema_version": "2.17.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000068b",
+  "sent_at": 1760342410500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261111-0614",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000006b1",
+    "progress": null,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000614",
+      "status": "READY_FOR_ZONES",
+      "progress_pct": 85,
+      "mode": "REUSE_SCENE",
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "calibration_version": "cal-lobby-init-61400000-jba2-5a3c9e01",
+      "height_checks": {
+        "cam_A": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam_B": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam_C": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        },
+        "cam_D": {
+          "input_height_m": 2.44,
+          "restored_height_m": 2.451,
+          "difference_cm": 1.1,
+          "within_tolerance": true
+        }
+      },
+      "world_anchor": {
+        "accepted": true,
+        "reason": "ANCHORED",
+        "reference_calibration_version": "cal-lobby-init-079f00cd-jba2-55083185",
+        "max_center_residual_m": 0.0612,
+        "max_orientation_change_rad": 0.0703,
+        "changed_cameras": [
+          "cam_B"
+        ]
+      },
+      "metrics": {
+        "stage_seconds": {
+          "COLLECTING_BACKGROUND": 41.2,
+          "INITIAL_POSE_AND_WORLD": 52.8,
+          "JOINT_BA_AND_VERIFY": 4.1,
+          "READY_FOR_ZONES": 0.0
+        },
+        "joint_ba": {
+          "anchor_camera_id": "cam_A",
+          "converged": true,
+          "stage_seconds": 3.42,
+          "valid_points": 412
+        }
+      },
+      "artifacts": {
+        "calibration_document": {
+          "uri": "s3://simai-objects/job-objects/site_setup/job-20261111-0614/0192a6f0-7c1e-7b3a-9f2d-0000000006b1/calibration-cal-lobby-init-61400000-jba2-5a3c9e01.json",
+          "sha256": "4c2a9e0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c",
+          "size_bytes": 7120
+        }
+      }
+    }
+  }
+}

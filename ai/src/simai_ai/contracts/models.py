@@ -2285,6 +2285,9 @@ class SiteSetupWorldAnchorSummary(BaseModel):
     max_orientation_change_rad: Annotated[StrictFloat | None | MISSING, Field(ge=0.0)] = (
         MISSING
     )
+    changed_cameras: Annotated[list[DefsCameraId] | MISSING, Field(max_length=16)] = (
+        MISSING
+    )
 
 
 class SiteSetupZoneHeightChangeItem(BaseModel):

@@ -15,6 +15,9 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>스냅샷 {@code mode} 는 그 대여가 실제로 따르는 모드다. REUSE_SCENE 이면 세션 mode=REUSE, FULL_SETUP(또는 생략)이면 NEW.
  *       REUSE 요청이 World 다시 맞추기 거부로 새 모델로 바뀌면 스냅샷이 {@code reuse_fallback_reason} 을 함께 싣는다.
  *   <li>같은 대여 안에서 NEW 로 바뀐 뒤 REUSE 로 돌아가지 않는다(워커는 판정 뒤 되돌리지 않는다). 재대여는 첫 스냅샷부터 다시 따른다.
+ *   <li>site_setup 1.18.0(S15P31A101-689): 새 워커는 거부되면 새 모델로 이어 가지 않고 REUSE_SCENE 그대로 거부된 world_anchor 를 실은
+ *       JOINT_BA_AND_VERIFY 스냅샷을 보낸 뒤 실패(REUSE_WORLD_REJECTED)로 끝낸다. 새 모델로 이어 가는 스냅샷({@code reuse_fallback_reason})은
+ *       옛 워커 호환으로만 받는다.
  * </ul>
  * 계약 검사(스키마)는 워커 API 가 먼저 한다. 여기서는 세션의 요청 모드와 맞는지, 저장할 값을 정리한다.
  */
@@ -24,6 +27,10 @@ final class SetupReuseMode {
     static final String REUSE = "REUSE";
     /** site_setup 1.11.0 입력·스냅샷 mode 값 */
     static final String REUSE_SCENE = "REUSE_SCENE";
+    /** 재사용 요청의 World 다시 맞추기가 거부돼 워커가 멈춘 실패 코드(job_callback error.code, S15P31A101-689) */
+    static final String WORLD_REJECTED_FAILURE = "REUSE_WORLD_REJECTED";
+    /** 카메라가 움직였을 가능성으로 거부한 world_anchor 사유(그 밖은 비교할 기준이 없거나 꺼짐) */
+    static final Set<String> MOVED_REASONS = Set.of("CENTER_RESIDUAL_EXCEEDED", "SCALE_OUT_OF_RANGE", "ORIENTATION_CHANGE_EXCEEDED");
     private static final String FULL_SETUP = "FULL_SETUP";
     private static final Set<String> ANCHOR_REASONS = Set.of("ANCHORED", "DISABLED", "PREVIOUS_NOT_USABLE", "SITE_MISMATCH",
             "INSUFFICIENT_CAMERAS", "DEGENERATE_LAYOUT", "CENTER_RESIDUAL_EXCEEDED", "SCALE_OUT_OF_RANGE",
@@ -58,10 +65,13 @@ final class SetupReuseMode {
     /**
      * 스냅샷의 mode·reuse_fallback_reason·world_anchor 를 세션 요청 모드와 맞춰 본다. 어긋나면 INVALID_SETUP_PROGRESS.
      *
-     * @param currentMode 세션에 저장된 지금 모드
-     * @param sameLease   이 스냅샷이 지금 진행 기준 대여와 같은 대여인지
+     * @param currentMode  세션에 저장된 지금 모드
+     * @param sameLease    이 스냅샷이 지금 진행 기준 대여와 같은 대여인지
+     * @param readyOrLater 이 스냅샷이 READY_FOR_ZONES 이후 단계인지. 그 전 REUSE_SCENE 스냅샷은 거부된 world_anchor 를 실을 수 있다
+     *                     (site_setup 1.18.0, S15P31A101-689: 워커가 새 맵으로 넘어가지 않고 거부 요약을 보낸 뒤 실패로 끝낸다)
      */
-    static Applied read(ObjectMapper mapper, String requestedMode, String currentMode, boolean sameLease, JsonNode snapshot) {
+    static Applied read(ObjectMapper mapper, String requestedMode, String currentMode, boolean sameLease, boolean readyOrLater,
+            JsonNode snapshot) {
         String snapshotMode = text(snapshot, "mode");
         String fallback = text(snapshot, "reuse_fallback_reason");
         JsonNode anchor = snapshot.get("world_anchor");
@@ -72,7 +82,7 @@ final class SetupReuseMode {
         String mode;
         if (REUSE_SCENE.equals(snapshotMode)) {
             if (!REUSE.equals(requestedMode) || fallback != null
-                    || (hasAnchor && !anchor.path("accepted").asBoolean(false))) {
+                    || (readyOrLater && hasAnchor && !anchor.path("accepted").asBoolean(false))) {
                 throw invalid();
             }
             mode = REUSE;

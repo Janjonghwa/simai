@@ -1,49 +1,93 @@
-import { requestCurrentScene } from '@/features/layout/api';
+import { requestReuseCheck, SETUP_REUSE_CHECK_KEY } from '@/features/setup/api';
+import type { ReuseCheck } from '@/features/setup/types';
 import { api } from '@/lib/api';
-import { ApiError } from '@/lib/http';
+import { cameraLabel } from '@/lib/cameraNames';
 import { useQuery } from '@tanstack/react-query';
-import { z } from 'zod';
 
-// 방식 고르기 창의 「이전 모델 쓰기」를 켜도 되는지 정하는 조회. 쓸 수 있는 이전 모델은 확정된 현재 관제 맵 하나다.
-// 카메라 위치가 달라졌어도 막지 않는다 — 이전 모델 쓰기의 보정은 카메라를 그 모델에 맞춘다.
+// 1단계 「이전 맵 재사용」을 고를 수 있는지(S15P31A101-689). 서버(GET /api/setup-sessions/reuse-check)가 세팅 시작과 같은 판단으로
+// 이전 맵(현재 관제 맵) 유무·World 정합·직전 보정 대비 카메라 변화를 본다. 카메라가 달라졌으면 재사용을 끄고 이유를 두 줄(무엇이/어떻게)로
+// 보인다. 카메라 변화를 알 근거가 없으면 막지 않고 「시작한 뒤 확인」 한 줄만 붙인다(워커가 마지막으로 확인하고, 거부되면 새 맵으로
+// 넘어가지 않고 멈춘다).
 
-const REUSE_SCENE_KEY = ['setup', 'reuse-scene'] as const;
+/** 1단계에 머무는 동안 다시 받는 주기. 카메라가 그 사이 움직이면(관제 회전 감시) 선택이 바뀐다. */
+const REUSE_CHECK_POLL_MS = 10_000;
 
-const CHECK_FAILED = '이전 모델을 확인하지 못했어요';
-const NO_SCENE = '이전 모델이 없어요';
+const NEW_MAP_HOW = '새 맵 만들기를 골라 주세요';
 
-/** 현재 Scene 응답에서 이 판단에 쓰는 칸만 읽는다(배경 본문 검사는 뷰어가 맡는다). */
-const currentSceneSchema = z.object({ state: z.string() });
-
-/** 현재 관제 맵 응답(GET /api/scenes/current)에서 이전 모델을 쓸 수 없는 이유. 쓸 수 있으면 null. */
-function reuseBlockedReason(raw: unknown): string | null {
-  const parsed = currentSceneSchema.safeParse(raw);
-  if (!parsed.success) return CHECK_FAILED;
-  return parsed.data.state === 'COMMITTED' ? null : NO_SCENE;
+/** 무엇이 / 어떻게 두 줄. */
+export interface ReuseBlocked {
+  what: string;
+  how: string;
 }
 
-export interface ReuseCheck {
-  /** 첫 응답을 기다리는 중이다. 창은 이것이 끝난 뒤에 열어 안의 글자가 바뀌지 않게 한다. */
+export interface ReuseChoiceState {
+  /** 첫 응답을 기다리는 중이다(그동안은 고를 수 없다). */
   checking: boolean;
-  /** 이전 모델을 쓸 수 없는 이유. 쓸 수 있으면 null. */
-  reason: string | null;
+  /** 재사용을 고를 수 없는 이유. 고를 수 있으면 null. */
+  blocked: ReuseBlocked | null;
+  /** 고를 수 있을 때 덧붙이는 한 줄(카메라 변화를 아직 모름). 없으면 null. */
+  note: string | null;
 }
 
-/** 켜져 있는 동안 현재 맵을 받아, 이전 모델을 쓸 수 있는지 돌려준다. 창이 뜨기 전부터 켜 두면 창이 뜰 때 결과가 이미 있다. */
-export function useReuseBlockedReason(enabled: boolean): ReuseCheck {
+const CHECK_FAILED: ReuseBlocked = {
+  what: '이전 맵을 확인하지 못했어요',
+  how: '잠시 뒤 다시 열거나 새 맵 만들기를 골라 주세요',
+};
+
+/** 달라진 카메라 이름(카메라 2·카메라 3). 현장 카메라 목록에 없는 ID 는 원문 그대로 둔다(번호를 지어내지 않는다). */
+export function changedCamerasLabel(
+  cameraIds: readonly string[],
+  changed: readonly string[],
+): string {
+  return changed.map((id) => (cameraIds.includes(id) ? cameraLabel(cameraIds, id) : id)).join('·');
+}
+
+/** 서버 판정을 화면 문구로 바꾼다. */
+export function reuseChoiceOf(
+  check: ReuseCheck,
+  cameraIds: readonly string[],
+): Omit<ReuseChoiceState, 'checking'> {
+  if (check.available) {
+    return {
+      blocked: null,
+      note: check.camera_status === 'UNKNOWN' ? '카메라가 그대로인지는 시작한 뒤 확인해요' : null,
+    };
+  }
+  switch (check.blocked_reason) {
+    case 'NO_SCENE':
+      return { blocked: { what: '이전 맵이 없어요', how: NEW_MAP_HOW }, note: null };
+    case 'SCENE_MISMATCH':
+      return {
+        blocked: { what: '이전 맵이 지금 카메라 보정과 맞지 않아요', how: NEW_MAP_HOW },
+        note: null,
+      };
+    case 'CAMERA_CHANGED': {
+      const names = changedCamerasLabel(cameraIds, check.changed_cameras);
+      return {
+        blocked: {
+          what: names
+            ? `${names}의 위치나 방향이 직전 세팅과 달라졌어요`
+            : '카메라 배치가 직전 세팅과 달라졌어요',
+          how: NEW_MAP_HOW,
+        },
+        note: null,
+      };
+    }
+    default:
+      return { blocked: CHECK_FAILED, note: null };
+  }
+}
+
+/** 켜져 있는 동안(1단계) 재사용 판정을 받아 둔다. */
+export function useReuseChoice(enabled: boolean, cameraIds: readonly string[]): ReuseChoiceState {
   const query = useQuery({
-    queryKey: REUSE_SCENE_KEY,
-    queryFn: async ({ signal }) => {
-      try {
-        return reuseBlockedReason(await requestCurrentScene(api, signal));
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return NO_SCENE;
-        throw error;
-      }
-    },
+    queryKey: SETUP_REUSE_CHECK_KEY,
+    queryFn: ({ signal }) => requestReuseCheck(api, signal),
     enabled,
+    staleTime: 0,
+    refetchInterval: enabled ? REUSE_CHECK_POLL_MS : false,
   });
-  if (query.isPending) return { checking: true, reason: null };
-  if (query.isError) return { checking: false, reason: CHECK_FAILED };
-  return { checking: false, reason: query.data ?? null };
+  if (query.data) return { checking: false, ...reuseChoiceOf(query.data, cameraIds) };
+  if (query.isError) return { checking: false, blocked: CHECK_FAILED, note: null };
+  return { checking: enabled, blocked: null, note: null };
 }

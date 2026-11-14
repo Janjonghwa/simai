@@ -9,6 +9,7 @@ import {
   completeSetupResponseSchema,
   coverageGuidesResponseSchema,
   issuedSupplementMediaSchema,
+  reuseCheckSchema,
   setupSessionResponseSchema,
   setupZoneDraftsResponseSchema,
   supplementMediaSchema,
@@ -20,6 +21,7 @@ import {
   type IssueSupplementMediaBody,
   type ResumeSetupSessionBody,
   type RetrySetupSessionBody,
+  type ReuseCheck,
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
   type SupplementMedia,
@@ -37,6 +39,7 @@ export const SETUP_SESSION_POLL_MS = 2_000;
 
 export const SETUP_COVERAGE_GUIDES_KEY = ['setup', 'coverage-guides'] as const;
 export const SETUP_HEIGHT_DEFAULTS_KEY = ['setup', 'camera-height-defaults'] as const;
+export const SETUP_REUSE_CHECK_KEY = ['setup', 'reuse-check'] as const;
 export const setupSessionKey = (id: string) => ['setup', 'session', id] as const;
 export const setupWorkUnitSessionKey = (workUnitId: number) =>
   ['setup', 'work-unit-session', workUnitId] as const;
@@ -134,6 +137,11 @@ export async function requestWorkUnitSetupSessionId(
     signal,
   });
   return work.active_setup_session_id ?? null;
+}
+
+/** 「이전 맵 재사용」을 지금 고를 수 있는지와 그 이유(ADMIN, S15P31A101-689). */
+export function requestReuseCheck(http: Http, signal?: AbortSignal): Promise<ReuseCheck> {
+  return http('/api/setup-sessions/reuse-check', { schema: reuseCheckSchema, signal });
 }
 
 /** 진행 중인 세팅 세션을 취소한다(ADMIN). 세션은 FAILED + CANCELLED_BY_ADMIN 이 된다. */

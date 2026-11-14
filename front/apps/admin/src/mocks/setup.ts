@@ -9,6 +9,7 @@ import {
   type CoverageRelayStatus,
   type CreateSetupSessionBody,
   type RetrySetupSessionBody,
+  type ReuseCheck,
   type SetupMode,
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
@@ -303,6 +304,11 @@ export interface SetupMockOptions {
    * (bindLiveZones)을 확인 필요로 채운다. 없으면 World 끊김처럼 빈 목록에서 시작한다.
    */
   worldAnchorAccepted?: boolean;
+  /**
+   * GET /api/setup-sessions/reuse-check 응답(S15P31A101-689). 없으면 이전 맵이 없는 현장(NO_SCENE)이다. 서버처럼 세션 시작(mode REUSE)도
+   * 이 값으로 막는다.
+   */
+  reuseCheck?: ReuseCheck;
 }
 
 /** 목록 채우기(seed)가 읽는 지금 관제 구역(zone_id, 레이아웃 항목이면 layout_item_id). */
@@ -439,7 +445,19 @@ export interface RetrySetupRecord {
   sessionId: string;
   retriedSessionId: string;
   body: RetrySetupSessionBody;
+  /** 다시 시도에 실어 보낸 방식(S15P31A101-689). 보내지 않았으면 없음. */
+  mode?: SetupMode;
 }
+
+/** 이전 맵이 없는 현장의 재사용 판정(목업 기본값). */
+export const NO_SCENE_REUSE_CHECK: ReuseCheck = {
+  available: false,
+  blocked_reason: 'NO_SCENE',
+  scene_version: null,
+  camera_status: 'UNKNOWN',
+  changed_cameras: [],
+  camera_source: null,
+};
 
 /** 세팅 대표 프레임처럼 보이는 가짜 사진(SVG 데이터 주소). after 면 단상 위 상자가 치워진 모습이다. */
 function mockSetupFrame(after: boolean): string {
@@ -507,6 +525,31 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   const pausedAt = new Map<string, number>();
 
   const submittedBodies: CreateSetupSessionBody[] = [];
+  // 서버처럼 작업의 지금 세팅 세션(work_unit.active_setup_session_id)은 세션을 만들거나 다시 시도하면 그 세션이 된다(작업마다).
+  // 한 번도 만들지 않은 작업은 workUnitSessionId(이어받기 시험)를 돌려준다
+  const workUnitSessions = new Map<number, string>();
+  const reuseCheck = (): ReuseCheck => options.reuseCheck ?? NO_SCENE_REUSE_CHECK;
+  const reuseBlockedProblem = () => {
+    const blocked = reuseCheck().blocked_reason;
+    if (reuseCheck().available) return null;
+    if (blocked === 'CAMERA_CHANGED')
+      return problem(
+        409,
+        'SETUP_REUSE_CAMERA_CHANGED',
+        '카메라가 직전 세팅과 달라져 이전 맵을 재사용할 수 없습니다',
+      );
+    if (blocked === 'SCENE_MISMATCH')
+      return problem(
+        409,
+        'SETUP_REUSE_SCENE_MISMATCH',
+        '현재 관제 맵이 지금 보정과 다른 World 입니다',
+      );
+    return problem(
+      409,
+      'SETUP_REUSE_SCENE_MISSING',
+      '현재 관제 맵(Scene)과 그 보정이 있어야 이전 모델을 재사용할 수 있습니다',
+    );
+  };
   const retryRequests: RetrySetupRecord[] = [];
   const sessions = new Map<string, SetupSessionResponse>();
   const zoneDraftsBySession = new Map<string, SetupZoneDraftsResponse>();
@@ -880,6 +923,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return problem(400, 'INVALID_SETUP_REQUEST', '세팅 모드가 올바르지 않습니다');
       }
       const requestedMode = parsedMode.data;
+      if (requestedMode === 'REUSE') {
+        const blocked = reuseBlockedProblem();
+        if (blocked) return blocked;
+      }
       // 서버처럼(SetupService.create) 끝나지 않은 세션이 있으면 새로 시작할 수 없다.
       const running = [...sessions.values()].some(
         (session) => session.status !== 'COMPLETED' && session.status !== 'FAILED',
@@ -958,6 +1005,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ...anchorPatch(),
       };
       sessions.set(sessionId, session);
+      workUnitSessions.set(workUnitId, sessionId);
       return HttpResponse.json(session, { status: 202 });
     }),
 
@@ -965,8 +1013,15 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (!readLiveUser(request, now())) return unauthorized();
       return HttpResponse.json({
         work_id: String(params.id ?? ''),
-        active_setup_session_id: options.workUnitSessionId ?? null,
+        active_setup_session_id:
+          workUnitSessions.get(Number(params.id)) ?? options.workUnitSessionId ?? null,
       });
+    }),
+
+    // 「이전 맵 재사용」을 지금 고를 수 있는지(S15P31A101-689). :id 경로보다 먼저 둔다
+    http.get('*/api/setup-sessions/reuse-check', ({ request }) => {
+      if (!readLiveUser(request, now())) return unauthorized();
+      return HttpResponse.json(reuseCheck());
     }),
 
     http.get('*/api/setup-sessions/:id', ({ request, params }) => {
@@ -1069,6 +1124,17 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       const raw: unknown = await request.json().catch(() => ({}));
       const rawHeights =
         typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'camera_heights_m') : undefined;
+      // 서버처럼(SetupService.retry) mode 를 주면 그 방식으로, 없으면 처음 요청한 방식 그대로 다시 시도한다(S15P31A101-689)
+      const sentMode =
+        typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'mode') : undefined;
+      const parsedMode = setupModeSchema.safeParse(sentMode ?? prevSession.requested_mode ?? 'NEW');
+      if (!parsedMode.success) {
+        return problem(400, 'INVALID_SETUP_REQUEST', '세팅 모드가 올바르지 않습니다');
+      }
+      if (parsedMode.data === 'REUSE') {
+        const blocked = reuseBlockedProblem();
+        if (blocked) return blocked;
+      }
 
       const submittedHeights: Record<string, number> = {};
       if (typeof rawHeights === 'object' && rawHeights !== null) {
@@ -1122,15 +1188,17 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         ready_at_ms: null,
         completed_at_ms: null,
         updated_at_ms: t,
-        ...modePatch(prevSession.requested_mode ?? 'NEW'),
+        ...modePatch(parsedMode.data),
         ...anchorPatch(),
       };
       sessions.set(retriedSessionId, retried);
+      workUnitSessions.set(prevSession.work_unit_id, retriedSessionId);
       retryRequests.push({
         sessionId: prevId,
         retriedSessionId,
         body:
           Object.keys(submittedHeights).length > 0 ? { camera_heights_m: submittedHeights } : {},
+        ...(sentMode === undefined ? {} : { mode: parsedMode.data }),
       });
 
       return HttpResponse.json(retried, { status: 202 });
