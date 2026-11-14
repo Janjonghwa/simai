@@ -124,6 +124,36 @@ Describe 'Test-ModeTreeAlive 창과 안의 프로그램 생존 (S15P31A101-652)'
   }
 }
 
+Describe 'ConvertFrom-PidJson·Get-ModePids PID 파일 읽기 (S15P31A101-713)' {
+  It 'JSON 배열은 Windows PowerShell 5.1 에서도 정수 PID 하나하나로 펼친다(16차: Object[] 를 Int32 로 못 바꿈)' {
+    $pids = @(ConvertFrom-PidJson -Text "[`r`n  10,`r`n  20,`r`n  30`r`n]")
+    $pids.Count | Should Be 3
+    ($pids -join ',') | Should Be '10,20,30'
+    ($pids[1] -is [int]) | Should Be $true
+  }
+
+  It '숫자 하나(미리보기, 5.1 의 ConvertTo-Json 은 원소 하나를 배열로 쓰지 않는다)와 원소 하나 배열도 목록 하나다' {
+    @(ConvertFrom-PidJson -Text '1234').Count | Should Be 1
+    @(ConvertFrom-PidJson -Text '1234')[0] | Should Be 1234
+    @(ConvertFrom-PidJson -Text '[1234]').Count | Should Be 1
+  }
+
+  It '빈 글은 빈 목록이다' {
+    @(ConvertFrom-PidJson -Text '').Count | Should Be 0
+    @(ConvertFrom-PidJson -Text "  `r`n").Count | Should Be 0
+  }
+
+  It 'Get-ModePids 는 관제 시작이 쓴 PID 파일을 그대로 읽고 파일이 없으면 빈 목록이다' {
+    $PidFile = Join-Path $TestDrive 'gateway-pids.json'
+    (@(111, 222, 333) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
+    (@(Get-ModePids) -join ', ') | Should Be '111, 222, 333'
+    (@(444) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
+    (@(Get-ModePids) -join ', ') | Should Be '444'
+    Remove-Item $PidFile
+    @(Get-ModePids).Count | Should Be 0
+  }
+}
+
 Describe 'Get-RecentModeRestartCount 최근 창 되살리기 횟수 (S15P31A101-652)' {
   It '30분 안의 미리보기·관제 되살리기만 센다' {
     $now = [datetime]::ParseExact('2026-11-09 10:00:00', 'yyyy-MM-dd HH:mm:ss', $null)

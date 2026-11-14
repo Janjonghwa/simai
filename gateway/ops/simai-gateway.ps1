@@ -297,7 +297,7 @@ function Do-Stop([switch]$Quiet, [switch]$NoUpload) {
     if ($upload) { Start-RecordingUpload }
     return
   }
-  foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
+  foreach ($p in @(Get-ModePids)) {
     if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
       taskkill /PID $p /T /F | Out-Null
       # taskkill 은 종료를 요청만 한다. 프로세스 트리가 실제로 끝날 때까지 잠시 기다린 뒤 판정한다(바로 보면 종료 중인 창을 실패로 본다)
@@ -661,7 +661,7 @@ function Start-InSession([string]$modeArgs, [string]$label) {
     Start-Sleep -Milliseconds 500
     if ((Test-Path $PidFile) -and (Get-Item $PidFile).LastWriteTime -ge $t0) { $fresh = $true; break }
   }
-  if ($fresh) { Say "게이트웨이 화면에서 $label 시작. PID $((Get-Content $PidFile -Raw | ConvertFrom-Json) -join ', ')" }
+  if ($fresh) { Say "게이트웨이 화면에서 $label 시작. PID $(@(Get-ModePids) -join ', ')" }
   else { Warn '20초 안에 시작 기록이 없다. 게이트웨이에 사용자가 로그인돼 있는지, 원격 데스크톱으로 화면을 본다.' }
 }
 
@@ -895,6 +895,23 @@ function Get-HealPlan {
   return ,$actions
 }
 
+function ConvertFrom-PidJson {
+  # 순수 함수(S15P31A101-713): PID 파일 글(JSON 배열 [1,2,3] 또는 숫자 하나 1234)을 정수 PID 목록으로 바꾼다.
+  # Windows PowerShell 5.1 의 ConvertFrom-Json 은 JSON 배열을 한 덩어리(Object[])로 파이프에 넘겨서 '... | ConvertFrom-Json |
+  # ForEach-Object { [int]$_ }' 와 '@(... | ConvertFrom-Json)' 이 깨진다(16차: "Object[] 를 Int32 로 바꿀 수 없음", 창 PID 가 한 줄로 뭉침).
+  # 변수에 담은 뒤 파이프하면 5.1·7 모두 원소로 펼쳐진다. 비었으면 빈 목록.
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return }
+  $parsed = $Text | ConvertFrom-Json
+  $parsed | ForEach-Object { [int]$_ }
+}
+
+function Get-ModePids {
+  # 모드 창 PID 목록(PID 파일이 없으면 빈 목록). 호출부는 @(Get-ModePids) 로 받는다
+  if (-not (Test-Path $PidFile)) { return }
+  ConvertFrom-PidJson -Text (Get-Content $PidFile -Raw)
+}
+
 function Test-ModeTreeAlive {
   # 순수 함수(S15P31A101-652): 모드 창 PID 목록·PID 파일 시각·프로세스 표(Id·Name·ParentId·Created)로 창이 제대로 살아 있는지 본다.
   # 창은 'powershell -NoExit' 라 안의 프로그램(uv → simai-relay·simai-site-alert)이 죽어도 창은 열린 채 남는다. 11-09 미리보기가
@@ -1033,7 +1050,7 @@ function Test-ModeProcessesAlive {
   # 창 PID 와 그 안의 프로그램(자식)을 함께 본다(Test-ModeTreeAlive, S15P31A101-652). 관제는 [터널, 경보 단말, 영상 중계] 순이고
   # 터널 창은 끊겨 3초 쉬는 동안 자식이 없을 수 있어 자식은 보지 않는다. 미리보기는 [영상 중계] 하나다.
   if (-not (Test-Path $PidFile)) { return $false }
-  $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json | ForEach-Object { [int]$_ })
+  $pids = @(Get-ModePids)
   if ($pids.Count -eq 0) { return $false }
   $need = if ($pids.Count -ge 3) { @($pids[1..($pids.Count - 1)]) } else { $pids }
   $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1320,7 +1337,7 @@ function Do-Status {
   $rawMode = '꺼짐'
   if (Test-Path $ModeFile) { $rawMode = (Get-Content $ModeFile -Raw).Trim() }
   $pids = @()
-  if (Test-Path $PidFile) { $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json) }
+  if (Test-Path $PidFile) { $pids = @(Get-ModePids) }
   $modeAlive = if ($rawMode -ne '꺼짐') { Test-ModeProcessesAlive } else { $true }
   if ($rawMode.StartsWith('관제') -and (-not $modeAlive)) {
     Warn "모드: 관제가 꺼짐 (마지막 설정: $rawMode)"

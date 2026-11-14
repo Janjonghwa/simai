@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -687,13 +688,31 @@ public class GpuPowerService {
         Set<String> candidates = new LinkedHashSet<>(s.gpuTypes());
         candidates.addAll(provider.catalogGpuTypes());
         try {
-            return provider.offers(new OfferQuery(s.cloudType(), 1, List.copyOf(candidates), s.regions(), s.interruptible(),
-                    network(provider.id(), s)));
+            return listed(s, provider.offers(new OfferQuery(s.cloudType(), 1, List.copyOf(candidates), s.regions(), s.interruptible(),
+                    network(provider.id(), s))));
         } catch (GpuProviderException e) {
             log.warn("GPU 재고 조회 실패: {}", e.code());
             throw new BusinessException("NOT_CONFIGURED".equals(e.code()) ? ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED
                     : ErrorCode.Gpu.GPU_PROVIDER_ERROR);
         }
+    }
+
+    /**
+     * 공급자 답에서 표에 올릴 항목만 남긴다(S15P31A101-713, AWS·RunPod 공통). VRAM 0 이하는 모름(null)으로 바꾸고, 선호 밖 항목은
+     * 이름·VRAM 을 아는 것만 둔다(RunPod 카탈로그의 「unknown · 0 GB」 같은 빈 항목, AWS 에서 GPU 정보를 못 받은 종류는 행을 만들지 않는다).
+     * 선호 GPU 는 사람이 적은 것이라 그대로 둔다(이름·VRAM 을 몰라도 행·칸·자동 선택 대상).
+     */
+    static List<GpuOffer> listed(GpuSettings s, List<GpuOffer> offers) {
+        List<GpuOffer> kept = new ArrayList<>();
+        for (GpuOffer o : offers) {
+            Integer memory = GpuTiers.memory(o.memoryGb());
+            if (!s.gpuTypes().contains(o.gpuType()) && !GpuTiers.listable(o.gpuType(), o.gpuName(), memory)) {
+                continue;
+            }
+            kept.add(Objects.equals(memory, o.memoryGb()) ? o
+                    : new GpuOffer(o.gpuType(), o.gpuName(), memory, o.region(), o.regionName(), o.stock(), o.pricePerHourUsd()));
+        }
+        return kept;
     }
 
     /**
