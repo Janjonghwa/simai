@@ -233,6 +233,11 @@ class FileSource(PacketSource):
     def __init__(self, path: Path | str, clock: Clock, realtime: bool = True, loop: bool = False,
                  fps: float | None = None) -> None:
         self._path = Path(path)
+        # epoch 전체 파일을 지정하던 기존 재생 설정은 회전한 나머지 파일까지 이어 읽는다.
+        self._parts = [self._path]
+        if self._path.suffix == ".h264" and self._path.stem.startswith("epoch_") and "_part_" not in self._path.stem:
+            self._parts.extend(sorted(self._path.parent.glob(f"{self._path.stem}_part_*.h264")))
+        self._part_index = 0
         self._clock = clock
         self._realtime = realtime
         self._loop = loop
@@ -249,7 +254,7 @@ class FileSource(PacketSource):
         import av
 
         try:
-            container = av.open(str(self._path), format="h264" if self._path.suffix in (".h264", ".264") else None)
+            container = av.open(str(self._parts[self._part_index]), format="h264" if self._path.suffix in (".h264", ".264") else None)
         except (av.FFmpegError, OSError) as e:
             raise SourceError(f"파일을 열 수 없다 {self._path}: {e}") from None
         self._demux = _PyAvDemuxer(container)
@@ -279,7 +284,9 @@ class FileSource(PacketSource):
         if self._demux is None:
             raise SourceError("열리지 않았다")
         packet = self._demux.next()
-        if packet is None and self._loop and self._index > 0:
+        has_next_part = self._part_index + 1 < len(self._parts)
+        if packet is None and (has_next_part or (self._loop and self._index > 0)):
+            self._part_index = self._part_index + 1 if has_next_part else 0
             step = self._frame_step() or 0
             if self._last_pts is not None:
                 self._pts_offset = self._last_pts + step

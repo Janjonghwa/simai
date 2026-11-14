@@ -35,6 +35,10 @@ class SegmentPaths:
     frames: Path
     codec_info: Path
 
+    @property
+    def closed(self) -> Path:
+        return self.h264.with_suffix(".closed")
+
     @classmethod
     def of(cls, camera_dir: Path, stream_epoch: int) -> SegmentPaths:
         stem = segment_stem(stream_epoch)
@@ -46,6 +50,10 @@ class SegmentWriter:
     """한 stream_epoch 의 세그먼트를 쓴다. 첫 프레임은 키프레임이어야 한다."""
 
     def __init__(self, camera_dir: Path, codec_info: dict[str, Any], prefix_parameter_sets: bool) -> None:
+        self._camera_dir = camera_dir
+        self._codec_info = codec_info
+        self.rotate_after_ms: int | None = None
+        self._part_started_ms: int | None = None
         self.paths = SegmentPaths.of(camera_dir, int(codec_info["stream_epoch"]))
         for p in (self.paths.h264, self.paths.frames, self.paths.codec_info):
             if p.exists():
@@ -61,6 +69,25 @@ class SegmentWriter:
         self.frame_count = 0
 
     def write(self, header: dict[str, Any], payload: bytes) -> None:
+        capture_ms = int(header["estimated_capture_time_ms"])
+        if (self.rotate_after_ms is not None and self._part_started_ms is not None and header["keyframe"]
+                and capture_ms - self._part_started_ms >= self.rotate_after_ms):
+            # 닫힘 표시는 두 파일 핸들을 닫은 뒤에만 공개한다. I0 epoch·sequence는 바꾸지 않는다.
+            self.close()
+            stem = f"{segment_stem(int(self._codec_info['stream_epoch']))}_part_{self.frame_count:012d}"
+            self.paths = SegmentPaths(self._camera_dir / f"{stem}{H264_SUFFIX}",
+                                      self._camera_dir / f"{stem}{FRAMES_SUFFIX}",
+                                      self._camera_dir / f"{stem}{CODEC_INFO_SUFFIX}")
+            with self.paths.codec_info.open("x", encoding="utf-8") as info:
+                info.write(json.dumps(self._codec_info, ensure_ascii=False) + "\n")
+            self._h264 = self.paths.h264.open("xb")
+            self._frames = self.paths.frames.open("x", encoding="utf-8", newline="\n")
+            for key in ("sps", "pps"):
+                if key in self._codec_info:
+                    self._h264.write(START_CODE + base64.b64decode(self._codec_info[key]))
+            self._part_started_ms = None
+        if self._part_started_ms is None:
+            self._part_started_ms = capture_ms
         if self.frame_count == 0 and not header["keyframe"]:
             raise ValueError("세그먼트는 키프레임부터 시작한다")
         offset = self._h264.tell()
@@ -74,6 +101,7 @@ class SegmentWriter:
     def close(self) -> None:
         self._h264.close()
         self._frames.close()
+        self.paths.closed.touch(exist_ok=True)
 
 
 def read_frames(frames_path: Path) -> Iterator[dict[str, Any]]:
@@ -101,8 +129,8 @@ def read_segment(paths: SegmentPaths) -> tuple[dict[str, Any], Iterator[tuple[di
 
 def camera_segments(camera_dir: Path) -> list[SegmentPaths]:
     """카메라 디렉터리의 세그먼트를 stream_epoch 순서로."""
-    epochs = [
-        int(codec.name[len("epoch_") : -len(CODEC_INFO_SUFFIX)])
-        for codec in camera_dir.glob(f"epoch_*{CODEC_INFO_SUFFIX}")
-    ]
-    return [SegmentPaths.of(camera_dir, epoch) for epoch in sorted(epochs)]
+    return [SegmentPaths(codec.with_name(codec.name.removesuffix(CODEC_INFO_SUFFIX) + H264_SUFFIX),
+                         codec.with_name(codec.name.removesuffix(CODEC_INFO_SUFFIX) + FRAMES_SUFFIX), codec)
+            for codec in sorted(camera_dir.glob(f"epoch_*{CODEC_INFO_SUFFIX}"),
+                                key=lambda p: tuple(int(n) for n in p.name.removesuffix(CODEC_INFO_SUFFIX)
+                                                    .removeprefix("epoch_").split("_part_")))]

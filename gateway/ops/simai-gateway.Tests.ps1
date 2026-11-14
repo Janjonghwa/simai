@@ -209,3 +209,15 @@ Describe '녹화 작업 구간 업로드 (S15P31A101-668)' {
     ($a[$a.IndexOf('--env-file') + 1]).EndsWith('.env') | Should Be $true
   }
 }
+
+
+Describe '종료 확인 없는 녹화 보호 (S15P31A101-693)' {
+  It 'PID 기록이 없으면 녹화 파일을 종료된 것으로 확정하지 않는다' {
+    $PidFile = Join-Path $TestDrive 'missing-pids.json'
+    $ModeFile = Join-Path $TestDrive 'missing-mode.txt'
+    Mock Stop-CameraHelper { }
+    Mock Finalize-RecordingManifest { }
+    Do-Stop -Quiet -NoUpload
+    Assert-MockCalled Finalize-RecordingManifest -Times 0 -Exactly
+  }
+}

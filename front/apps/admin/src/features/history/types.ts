@@ -93,7 +93,17 @@ const videoSegmentSchema = z.object({
 });
 export type VideoSegment = z.infer<typeof videoSegmentSchema>;
 
+export const recordingUploadSchema = z.object({
+  schema_version: z.literal('1.0.0'),
+  work_id: z.number().int().positive(),
+  status: z.enum(['WAITING', 'UPLOADING', 'COMPLETED', 'FAILED', 'NO_RECORDING', 'EXPIRED']),
+  expected_segments: z.number().int().nonnegative().nullable(),
+  uploaded_segments: z.number().int().nonnegative(),
+  failed_segments: z.number().int().nonnegative(),
+});
+
 export const videoSegmentsSchema = z.object({
+  recording_uploads: z.array(recordingUploadSchema).optional(),
   segments: z.array(z.unknown()).transform((items) =>
     items.flatMap((item) => {
       const segment = videoSegmentSchema.safeParse(item);

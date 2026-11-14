@@ -1392,6 +1392,34 @@ class RecordingSegment(BaseModel):
     upload_attempts: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
 
 
+class RecordingUploadProgress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    work_id: Annotated[StrictInt, Field(ge=1)]
+    recording_id: Annotated[StrictStr, Field(pattern='^[a-z0-9][a-z0-9-]{0,127}$')]
+    expected_segments: Annotated[StrictInt, Field(ge=0, le=2147483647)]
+    failed_segments: Annotated[StrictInt, Field(ge=0, le=2147483647)]
+    sealed: StrictBool
+
+
+class ExpectedSegments(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=2147483647)]
+
+
+class RecordingUploadStatus(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    work_id: Annotated[StrictInt, Field(ge=1)]
+    status: Literal['WAITING', 'UPLOADING', 'COMPLETED', 'FAILED', 'NO_RECORDING', 'EXPIRED']
+    expected_segments: ExpectedSegments | None
+    uploaded_segments: Annotated[StrictInt, Field(ge=0, le=2147483647)]
+    failed_segments: Annotated[StrictInt, Field(ge=0, le=2147483647)]
+
+
 class Window(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3796,6 +3824,7 @@ class RecordingManifestSegment(BaseModel):
         extra='forbid',
     )
     stream_epoch: Annotated[StrictInt, Field(ge=0)]
+    part_start_sequence: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
     video: RecordingManifestFileEntry
     frames: RecordingManifestFileEntry
     codec_info: RecordingManifestFileEntry
@@ -5329,6 +5358,8 @@ class Contracts(BaseModel):
     ppe_view: PpeView | MISSING = MISSING
     recording_manifest: RecordingManifest | MISSING = MISSING
     recording_segment: RecordingSegment | MISSING = MISSING
+    recording_upload_progress: RecordingUploadProgress | MISSING = MISSING
+    recording_upload_status: RecordingUploadStatus | MISSING = MISSING
     recording_windows: RecordingWindows | MISSING = MISSING
     risk_alert: RiskAlert | MISSING = MISSING
     risk_event: RiskEvent | MISSING = MISSING

@@ -13,7 +13,7 @@
     "manifest_version": {
       "$ref": "../common/defs.schema.json#/$defs/semver",
       "pattern": "^1\\.\\d+\\.\\d+$",
-      "description": "이 형식의 버전(메이저 1, 현재 1.2.0). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0: input_kinds 가 cameras[].source.kind 를 모두 담는지 스키마가 검사한다(설명된 뜻 그대로라 1.0.0 녹화 도구 출력은 그대로 통과). 1.2.0: consent.purpose(선택, dev_test·dataset) 추가. purpose 가 없으면 dataset 과 같이 취급해 1.1.0 manifest 는 그대로 통과"
+      "description": "이 형식의 버전(메이저 1, 현재 1.3.0). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0: input_kinds 가 cameras[].source.kind 를 모두 담는지 스키마가 검사한다(설명된 뜻 그대로라 1.0.0 녹화 도구 출력은 그대로 통과). 1.3.0: segments[].part_start_sequence(선택) 추가. 같은 I0 epoch를 키프레임 경계의 여러 파일로 나눈 경우 원래 프레임 시작 번호로 구분한다. epoch와 프레임 식별 의미는 그대로다. 1.2.0: consent.purpose(선택, dev_test·dataset) 추가. purpose 가 없으면 dataset 과 같이 취급해 1.1.0 manifest 는 그대로 통과"
     },
     "session_id": {
       "type": "string",
@@ -325,7 +325,7 @@
 
     "segment": {
       "type": "object",
-      "description": "stream_epoch 하나 = 세그먼트 하나 (명세 12.7). 재접속마다 새 epoch",
+      "description": "한 I0 stream_epoch의 녹화 파일. 재접속마다 새 epoch. part_start_sequence가 있으면 해당 epoch 안의 닫힌 파일 조각이다",
       "required": [
         "stream_epoch", "video", "frames", "codec_info", "frame_count", "keyframe_count",
         "frame_sequence_range", "capture_time_range_ms", "received_time_range_ms", "timestamp_sources",
@@ -333,6 +333,7 @@
       ],
       "properties": {
         "stream_epoch": { "type": "integer", "minimum": 0 },
+          "part_start_sequence": { "type": "integer", "minimum": 0, "description": "1.3.0 선택. 이 파일 첫 프레임의 원래 epoch 내 sequence. 미지정은 기존 epoch 전체 파일" },
         "video": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.h264 (H.264 Annex B)" },
         "frames": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.frames.jsonl. 한 줄 형식은 #/$defs/frame_line" },
         "codec_info": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.codec_info.json (contracts/messages/codec_info.schema.json)" },

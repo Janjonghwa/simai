@@ -40,6 +40,11 @@ class RecordingController {
         return recordings.windows(deviceId, epochMs(fromMs), epochMs(toMs));
     }
 
+    @PostMapping("/api/devices/recordings/progress")
+    ObjectNode progress(@RequestBody(required = false) JsonNode body, @AuthenticationPrincipal String deviceId) {
+        return recordings.progress(deviceId, body);
+    }
+
     @PostMapping("/api/devices/recordings/segments")
     ObjectNode register(@RequestBody(required = false) JsonNode body, @AuthenticationPrincipal String deviceId) {
         return recordings.register(deviceId, body);

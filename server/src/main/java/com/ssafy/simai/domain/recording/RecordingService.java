@@ -104,6 +104,39 @@ class RecordingService {
         return body;
     }
 
+    /** 끝난 작업에 대한 녹화별 계획. 영상 등록 수는 기기의 주장을 받지 않고 DB에서 센다. */
+    ObjectNode progress(String deviceId, JsonNode body) {
+        requireLaptop(deviceId);
+        if (body == null || !schemas.violations("messages/recording_upload_progress", mapper.writeValueAsString(body)).isEmpty()
+                || !body.path("work_id").canConvertToLong()
+                || body.path("failed_segments").asInt() > body.path("expected_segments").asInt()) {
+            throw new BusinessException(ErrorCode.Recording.INVALID_RECORDING_SEGMENT);
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource("w", body.get("work_id").asLong());
+        Boolean ended = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM work_unit WHERE work_id = :w
+                    AND actual_started_at IS NOT NULL AND actual_ended_at > actual_started_at)
+                """, params, Boolean.class);
+        if (!Boolean.TRUE.equals(ended)) {
+            throw new BusinessException(ErrorCode.Recording.OUTSIDE_WORK_WINDOW);
+        }
+        params.addValue("g", deviceId).addValue("r", body.get("recording_id").asString())
+                .addValue("expected", body.get("expected_segments").asInt())
+                .addValue("failed", body.get("failed_segments").asInt())
+                .addValue("sealed", body.get("sealed").asBoolean()).addValue("now", utc(clock.instant()));
+        jdbc.update("""
+                INSERT INTO recording_upload_progress
+                    (gateway_id, recording_id, work_id, expected_segments, failed_segments, sealed, received_at)
+                VALUES (:g, :r, :w, :expected, :failed, :sealed, :now)
+                ON CONFLICT (gateway_id, recording_id, work_id) DO UPDATE SET
+                    expected_segments = EXCLUDED.expected_segments, failed_segments = EXCLUDED.failed_segments,
+                    sealed = EXCLUDED.sealed, received_at = EXCLUDED.received_at
+                """, params);
+        ObjectNode result = mapper.createObjectNode();
+        result.put("status", "ACCEPTED");
+        return result;
+    }
+
     /** recording_segment 1.0.0 → video_segment. 같은 조각 재등록은 같은 내용일 때만 DUPLICATE */
     ObjectNode register(String deviceId, JsonNode body) {
         requireLaptop(deviceId);

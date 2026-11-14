@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/recording_upload_status.schema.json",
+  "title": "GET /api/videos 선택 recording_uploads 배열 항목. 미보고는 WAITING·예정 수 null. 미확정 또는 미등록은 UPLOADING, 확정 조각 전부 등록만 COMPLETED. 실패 또는 보고 5분 단절은 FAILED. 확정 0개만 NO_RECORDING, 보관 기간 경과는 EXPIRED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "work_id",
+    "status",
+    "expected_segments",
+    "uploaded_segments",
+    "failed_segments"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "work_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "WAITING",
+        "UPLOADING",
+        "COMPLETED",
+        "FAILED",
+        "NO_RECORDING",
+        "EXPIRED"
+      ]
+    },
+    "expected_segments": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "uploaded_segments": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "failed_segments": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    }
+  }
+}

@@ -72,7 +72,8 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `incident_summary` | 사고 구간 VLM 사후 요약 요청·결과(추가만): 이벤트·event_sequence·job_id, 상태(QUEUED·RUNNING·SUCCEEDED·FAILED·TIMED_OUT), 요청자·요청·완료 시각, 구간, 요약 문장, 근거 시각, 사용 프레임 수, 모델 버전, 지연, 오류 코드(5.4) |
 | 이벤트 프레임 | 별도 테이블을 두지 않는다. I1 `event_frame_ready` 의 프레임 주소와 촬영 시각은 `vlm_rationale` 작업 입력(`analysis_job.input.frames`)에 넣어 둔다(5.4) |
 | `clip_access_log` | 이벤트 클립 열람 기록(14장) |
-| `video_segment` | 관제 종료 뒤 현장 노트북 게이트웨이가 올린 작업 구간 녹화 조각(및 I1 상시 조각 호환)의 객체 키, 생산 출처(`origin`: 관제 후 업로드 `GATEWAY_RECORDING`·스키마 기본 호환 `TIER0`, `V68`), 노트북 기기(`gateway_id`) 또는 `tier0_id`(nullable)·귀속 작업(`work_id`)·녹화 묶음(`recording_id`), 카메라·촬영 시각 구간·`stream_epoch`·해시·크기·`has_gaps`, 삭제 예정일(첫 프레임 촬영 시각 + 14일), 삭제 시각(5.1·11.5·12.6, `docs/design/S15P31A101-668-recording-s3-playback.md`) |
+| `recording_upload_progress` | 종료 작업·기기·녹화별 예정 조각 수·실패 수·계획 확정 여부와 최신 수신 시각. 등록 수는 `video_segment`로 대조한다(V70, 12.6). |
+| `video_segment` | 작업 종료 뒤 현장 노트북 게이트웨이가 올린 작업 구간 녹화 조각(및 I1 상시 조각 호환)의 객체 키, 생산 출처(`origin`: 종료 작업 업로드 `GATEWAY_RECORDING`·스키마 기본 호환 `TIER0`, `V68`), 노트북 기기(`gateway_id`) 또는 `tier0_id`(nullable)·귀속 작업(`work_id`)·녹화 묶음(`recording_id`), 카메라·촬영 시각 구간·`stream_epoch`·해시·크기·`has_gaps`, 삭제 예정일(첫 프레임 촬영 시각 + 14일), 삭제 시각(5.1·11.5·12.6, `docs/design/S15P31A101-668-recording-s3-playback.md`) |
 | `video_access_log` | 작업 구간 녹화 조각(및 상시 조각) 열람 기록(14장) |
 | `cctv_remote_usage` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
 | `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 아바타 자산, 관제 후 작업 구간 녹화 조각 `RECORDING_SEGMENT` 및 상시 조각 호환 `VIDEO_SEGMENT`, Scene glTF, 정적 3D 입력 `STATIC_RECONSTRUCT_INPUT`. 조치 사진 `TICKET_PHOTO` 는 폐기, 10.1), 요청 주체(Tier 0·기기·관리자·분석 워커, 12.6), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
@@ -107,7 +108,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 
 | 데이터 | 보관 |
 |---|---|
-| 원본 영상 · 작업 구간 녹화 조각 | 관제 중 RunPod Tier 0 로 실시간 전송(TLS)하되 **관제 중 상시 조각 저장은 하지 않는다**. 관제가 끝난 뒤 현장 노트북 게이트웨이(`simai-recorder upload`)가 로컬 4대 녹화본에서 **실제 작업 구간(`actual_started_at ~ actual_ended_at`, 작업 시작 = 관제 시작(S15P31A101-679))만** 잘라 객체 저장소에 올리고(`video_segment`, `origin = GATEWAY_RECORDING`), 첫 프레임 촬영 시각 + 14일 후 EC2 삭제 작업이 자동 삭제한다(보존 표시 없음, 얼굴 흐림 없음, 관제 재시작 시 자동 일시정지, 열람은 관리자 전용·조회 기록, 2026-11-13 결정, 5.1·12.6·14장, `docs/design/S15P31A101-668-recording-s3-playback.md`) |
+| 원본 영상 · 작업 구간 녹화 조각 | 관제 중 RunPod Tier 0 로 실시간 전송(TLS)하되 **관제 중 상시 조각 저장은 하지 않는다**. 작업이 종료된 뒤 현장 노트북 게이트웨이(`simai-recorder upload`)가 로컬 4대 녹화본에서 **실제 작업 구간(`actual_started_at ~ actual_ended_at`, 작업 시작 = 관제 시작(S15P31A101-679))만** 잘라 객체 저장소에 올리고(`video_segment`, `origin = GATEWAY_RECORDING`), 첫 프레임 촬영 시각 + 14일 후 EC2 삭제 작업이 자동 삭제한다(보존 표시 없음, 얼굴 흐림 없음, 관제 중에도 종료 작업의 닫힌 파일만 업로드, 열람은 관리자 전용·조회 기록, 2026-11-13 결정, 5.1·12.6·14장, `docs/design/S15P31A101-668-recording-s3-playback.md`) |
 | 이벤트 영상 클립 | 14일 후 자동 삭제. CRITICAL 이벤트 연결분은 자동 보존 표시, 아차사고는 관리자가 보존 표시를 붙이거나 뗌. 보존분은 접근 기록을 남기고 프로젝트 종료 시 파기. 얼굴은 흐림 처리하지 않는다(사용자 결정, 16장). 열람은 권한자로 제한하고 조회 기록을 남긴다(14장). 흐림 단계는 선택 사항으로 남기며, 켜면 업로드 전에 반드시 거치고 실패하면 흐리지 않은 클립으로 대신하지 않는다. 생성형 얼굴 복원·표정 추정은 하지 않고, 재식별(Re-ID)은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰며 Tier 0 위치·ID 정본을 덮지 않는다(G2 측정 뒤 도입, 5.2·16장). EC2 단절 중 클립은 Tier 0 저장 위치에 먼저 저장 후 복구 시 업로드(5.1). Tier 0 에 남은 미업로드 클립은 보존 표시가 없고 삭제 예정일이 지난 것만 올리지 않고 지우며, 보존 표시가 있는 클립은 전체 파기 기한 전까지 복원·업로드한다 |
 | PPE 입력 원본·crop | 메모리에서만 쓰고 판정 직후 반환, 저장 없음(파일·로그·미리보기 포함) |
 | `ppe_state` | `world_track_state` 와 같은 압축·보관 정책(얼굴·영상 없음) |

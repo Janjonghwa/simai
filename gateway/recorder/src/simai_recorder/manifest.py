@@ -21,7 +21,7 @@ from simai_recorder.recorder import EVENTS_FILE, SESSION_FILE
 from simai_recorder.segment import SegmentPaths, camera_segments, read_frames
 
 MANIFEST_FILE = "manifest.json"
-MANIFEST_VERSION = "1.2.0"  # 계약 스키마 manifest_version (1.2.0: consent.purpose 추가)
+MANIFEST_VERSION = "1.3.0"  # 같은 I0 epoch 안의 파일 조각 시작 sequence 추가
 GAP_FACTOR = 1.5  # 도착 간격이 공칭 프레임 간격의 1.5배를 넘으면 camera_to_gateway_gap (-9 측정 도구와 같은 기준)
 
 
@@ -68,6 +68,7 @@ def segment_stats(paths: SegmentPaths, root: Path) -> dict[str, Any]:
 
     return {
         "stream_epoch": codec["stream_epoch"],
+        "part_start_sequence": seqs[0] if seqs else 0,
         "video": _file_entry(paths.h264, root),
         "frames": _file_entry(paths.frames, root),
         "codec_info": _file_entry(paths.codec_info, root),
@@ -86,7 +87,7 @@ def segment_stats(paths: SegmentPaths, root: Path) -> dict[str, Any]:
             "arrival_interval_ms_p95": _pct(arrivals, 95),
         },
         "integrity": {
-            "sequence_contiguous": seqs == list(range(len(seqs))),
+            "sequence_contiguous": not seqs or seqs == list(range(seqs[0], seqs[0] + len(seqs))),
             "first_is_keyframe": bool(headers) and headers[0]["keyframe"],
             "bytes_covered": (rows[-1]["offset"] + rows[-1]["size"] == h264_size) if rows else h264_size == 0,
         },
@@ -160,7 +161,7 @@ def build_manifest(session_dir: Path) -> dict[str, Any]:
         "common_capture_window_ms": common,
         "calibration_version": session.get("calibration_version"),
         "consent": session.get("consent"),
-        "storage": {"uri": storage, "layout": "<camera_id>/epoch_NNNN.{h264,frames.jsonl,codec_info.json}"},
+        "storage": {"uri": storage, "layout": "<camera_id>/epoch_NNNN[_part_SEQUENCE].{h264,frames.jsonl,codec_info.json}"},
         "recorded_by": session.get("recorded_by", {}),
         "notes": session.get("notes", ""),
         "cameras": cameras,
@@ -234,3 +235,17 @@ def verify(session_dir: Path) -> list[str]:
             elif p.stat().st_size != e["bytes"] or sha256_file(p) != e["sha256"]:
                 problems.append(f"해시·크기 불일치: {e['path']}")
     return problems
+
+
+def finalize_stopped_session(session_dir: Path) -> dict[str, Any]:
+    """운영 스크립트가 녹화 프로세스 종료를 확인한 뒤 호출한다. 강제 종료된 마지막 파일도 확정한다."""
+    import time
+
+    path = session_dir / SESSION_FILE
+    session = json.loads(path.read_text(encoding="utf-8"))
+    if session.get("ended_at_ms") is None:
+        session["ended_at_ms"] = max(int(time.time() * 1000), session["started_at_ms"])
+        pending = path.with_suffix(".tmp")
+        pending.write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        pending.replace(path)
+    return write_manifest(session_dir)

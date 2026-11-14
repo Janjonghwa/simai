@@ -155,3 +155,19 @@ def test_existing_session_is_not_overwritten(session_dir):
                        "volume://AP-JP-1/simai/recordings")
     with pytest.raises(FileExistsError):
         record_session(spec, session_dir.parent, clock, duration_s=0.1)
+
+
+def test_종료를_확인한_세션의_마지막_파일을_확정한다(session_dir, tmp_path):
+    import shutil
+    from simai_recorder.manifest import finalize_stopped_session
+
+    stopped = tmp_path / "stopped"
+    shutil.copytree(session_dir, stopped)
+    path = stopped / "session.json"
+    session = json.loads(path.read_text(encoding="utf-8"))
+    session["ended_at_ms"] = None
+    path.write_text(json.dumps(session), encoding="utf-8")
+    finalized = finalize_stopped_session(stopped)
+    assert finalized["ended_at_ms"] >= finalized["started_at_ms"]
+    assert verify(stopped) == []
+    assert finalize_stopped_session(stopped)["ended_at_ms"] == finalized["ended_at_ms"]

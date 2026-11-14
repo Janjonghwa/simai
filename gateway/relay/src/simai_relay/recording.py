@@ -377,6 +377,8 @@ class CameraRecorderWorker:
                     continue
                 prefix = not has_parameter_sets(record.data)
                 self._writer = self._writer_factory(self.camera_dir, codec, prefix)
+                # 관제를 유지해도 종료된 작업을 올릴 수 있게 키프레임에서 로컬 파일만 나눈다.
+                self._writer.rotate_after_ms = 30_000
                 self.segments_count += 1
                 self._event(
                     "segment_started",
