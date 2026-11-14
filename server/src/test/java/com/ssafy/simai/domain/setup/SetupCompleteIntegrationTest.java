@@ -37,6 +37,8 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -199,9 +201,13 @@ class SetupCompleteIntegrationTest {
         }).when(configs).publishInTransaction(eq(newCalibration), eq(userId));
         // TBM 초안 시작은 커밋 뒤(다른 스레드에서 커밋된 완료 기록이 보인다)
         List<Boolean> committedAtTbm = new CopyOnWriteArrayList<>();
+        // Mockito 는 답(answer)을 다 돌리기 전에 호출을 센다. verify(timeout) 만으로는 아래 목록이 아직 비어 있을 수 있어(CI 부하)
+        // 답이 기록을 마친 것을 따로 기다린다
+        CountDownLatch tbmRecorded = new CountDownLatch(1);
         when(tbmFormAi.tryStartDraftForWork(workUnitId)).thenAnswer(inv -> {
             committedAtTbm.add(jdbc.queryForObject("SELECT setup_completed_at IS NOT NULL FROM work_unit WHERE work_id = ?",
                     Boolean.class, workUnitId));
+            tbmRecorded.countDown();
             return Optional.empty();
         });
 
@@ -228,6 +234,7 @@ class SetupCompleteIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT actor FROM scene_activation WHERE scene_version = ? ORDER BY activated_at DESC LIMIT 1",
                 String.class, baked)).isEqualTo("setup:" + s.sessionId());
         verify(tbmFormAi, timeout(5_000)).tryStartDraftForWork(workUnitId);
+        assertThat(tbmRecorded.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(committedAtTbm).containsExactly(true);
 
         // 하루 1회: 다시 완료·새 세션·재시도·구역 목록 저장·보강 촬영을 거부한다
