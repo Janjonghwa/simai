@@ -11,6 +11,7 @@ import { PreflightZoneList } from '@/features/work/preflight/PreflightZoneList';
 import { SignDialog } from '@/features/work/preflight/SignDialog';
 import { SignerCard } from '@/features/work/preflight/SignerCard';
 import { useSigners } from '@/features/work/preflight/useSigners';
+import { WatchSummaryCard } from '@/features/work/preflight/WatchSummaryCard';
 import { ZoneEditDialog } from '@/features/work/preflight/ZoneEditDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import type { WorkStageProps } from '@/features/work/stageProps';
@@ -19,11 +20,14 @@ import { useStartWork } from '@/features/work/useWorkRun';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
 import { draftWarning } from '@/features/work/workDay';
 import { useZones } from '@/features/zones/useZones';
+import { useNavigate } from '@tanstack/react-router';
 import { useCallback, useMemo, useState } from 'react';
 
 // 단계 3 '작업 전 확인': 왼쪽에 TBM 보고서(고칠 수 있고 출력도 된다), 오른쪽에 가상 레이아웃(3D)·참석자 서명·구역 목록.
 // 아래 오른쪽 단추 '다음'을 누르면 확인창(보고서·레이아웃 확인 + 서명 1명 이상)이 뜨고, '작업 시작'이 서버 작업을 시작한다.
-// 시작하면 서버 진행 값이 IN_PROGRESS 가 되어 날짜 화면이 작업 종료 단계로 따라온다(이 화면은 그냥 둔다).
+// 시작에 성공하면 실시간 관제(/live)로 간다. 관제 화면은 이번 작업 설정이 현장에 적용될 때까지 「관제 준비 중」을 보이고 적용되면
+// 「관제 중」이 된다(S15P31A101-692). 작업 관리로 돌아오면 서버 진행 값(IN_PROGRESS)대로 작업 종료 단계가 열린다.
+// 오른쪽에는 워치(이름·기기·연결) 요약도 둔다(-692, 시작을 막지 않는다).
 
 type Dialog = 'confirm' | 'sign' | null;
 
@@ -46,9 +50,20 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
   // 편집 창을 연 구역(없으면 창이 닫혀 있다).
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
 
+  const navigate = useNavigate();
   const { reset: resetStart, mutate: startWork } = start;
   const closeDialog = () => setDialog(null);
-  const beginWork = () => startWork({ workId, ppe }, { onSuccess: closeDialog });
+  // 요청 중에는 확인창의 '작업 시작'이 pending 으로 잠겨 같은 시작을 두 번 보내지 않는다
+  const beginWork = () =>
+    startWork(
+      { workId, ppe },
+      {
+        onSuccess: () => {
+          closeDialog();
+          void navigate({ to: '/live' });
+        },
+      },
+    );
 
   // 아래 오른쪽 단추 '다음': 지난 시작 실패 안내를 지우고 확인창을 연다. 값이 같으면 다시 등록하지 않게 한 번만 만든다.
   const openConfirm = useCallback(() => {
@@ -75,6 +90,7 @@ export function PreflightStage({ day, onBackToSetup }: WorkStageProps) {
           onPickZone={setEditingZoneId}
         />
         <SignerCard signers={signers} onSign={() => setDialog('sign')} />
+        <WatchSummaryCard />
         <PreflightZoneList
           zones={zones}
           loaded={loaded}

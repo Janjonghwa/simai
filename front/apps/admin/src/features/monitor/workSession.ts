@@ -21,7 +21,7 @@ export const workStartedAt = (work: Pick<TbmWorkUnit, 'actual_started_at'>): num
   toMs(work.actual_started_at);
 
 /** 작업이 실제로 끝난 시각(EC2 ms, work_unit.actual_ended_at). 끝나지 않았으면 null. */
-const workEndedAt = (work: Pick<TbmWorkUnit, 'actual_ended_at'>): number | null =>
+export const workEndedAt = (work: Pick<TbmWorkUnit, 'actual_ended_at'>): number | null =>
   toMs(work.actual_ended_at);
 
 /**

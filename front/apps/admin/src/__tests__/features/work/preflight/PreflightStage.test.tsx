@@ -15,6 +15,7 @@ import { sceneHandlers } from '@/mocks/scenes';
 import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock, type WorkMock } from '@/mocks/work';
 import { createZonesMock } from '@/mocks/zones';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
@@ -25,6 +26,13 @@ vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
   return { api: createHttp({ baseUrl: 'http://api.test', getToken: () => 'mock-token.admin' }) };
 });
+
+// 작업 시작에 성공하면 실시간 관제로 간다(-692). 라우터 없이 그리므로 이동만 기록한다.
+const navigate = vi.hoisted(() => vi.fn());
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => navigate,
+}));
 
 // 보고서 종이(다른 일꾼 몫)·구역 편집 도구·3D 편집 틀은 대역을 쓴다. 이 시험은 작업 전 확인 화면의 짜임과 서명·시작을 본다.
 vi.mock('@/features/work/report/ReportPanel', () => ({
@@ -102,18 +110,22 @@ let workMock: WorkMock;
 const server = setupServer();
 /** 이 시험에서 서버로 간 요청('POST /api/work-units/9001/start' 꼴). */
 let requests: string[] = [];
+/** 워치 배정 응답(GET /api/watch-bindings). */
+let watchBindings: unknown[] = [];
 
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
   clock = T0;
   requests = [];
+  navigate.mockReset();
   fakeViewer.props = null;
   fakeViewer.phase = 'ready';
   fakeViewer.clearSelection.mockClear();
   editor.selectTarget.mockClear();
   workMock = createWorkMock({ now: () => clock });
   server.resetHandlers(
+    http.get('*/api/watch-bindings', () => HttpResponse.json(watchBindings)),
     ...workMock.handlers,
     ...createTbmMock().handlers,
     ...createZonesMock().handlers,
@@ -138,6 +150,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  watchBindings = [];
+  useRealtimeStore.setState({ health: null, phase: 'IDLE', openedAt: null });
   vi.restoreAllMocks();
   server.events.removeAllListeners();
 });
@@ -248,6 +262,71 @@ describe('PreflightStage 화면', () => {
     expect(await screen.findByText('구역 없음')).toBeTruthy();
     expect(screen.getByText('구역 0개')).toBeTruthy();
     expect(screen.queryByRole('list', { name: '구역 목록' })).toBeNull();
+  });
+
+  it('워치 카드에 등록된 워치마다 표시 이름·기기·연결을 보이고, 사람과 짝지어졌으면 그 표시를 붙인다(-692)', async () => {
+    watchBindings = [
+      {
+        binding_id: 1,
+        device_id: 'watch-a',
+        world_id: 'w-0001',
+        method: 'MOTION_MATCH',
+        bound_at: T0,
+        channel_state: 'BOUND',
+      },
+    ];
+    useRealtimeStore.setState({
+      phase: 'OPEN',
+      openedAt: Date.now(),
+      health: {
+        receivedAt: Date.now(),
+        clockOffsetMs: 0,
+        payload: {
+          watches: {
+            registered: 2,
+            connected: 1,
+            items: [
+              {
+                device_id: 'watch-a',
+                link: 'CONNECTED',
+                last_heartbeat_at: T0,
+                battery_pct: 80,
+                transport: 'WIFI',
+              },
+              {
+                device_id: 'watch-b',
+                link: 'LOST',
+                last_heartbeat_at: null,
+                battery_pct: null,
+                transport: null,
+              },
+            ],
+          },
+          watch_names: [
+            { device_id: 'watch-a', display_name: '작업자 A' },
+            { device_id: 'watch-b', display_name: '작업자 B' },
+          ],
+        },
+      } as never,
+    });
+    renderStage(await openToday());
+    expect(screen.getByRole('heading', { name: '워치' })).toBeTruthy();
+    expect(screen.getByText('연결 1/2')).toBeTruthy();
+    const list = screen.getByRole('list', { name: '워치 목록' });
+    const rows = within(list)
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(rows[0]).toContain('작업자 A');
+    expect(rows[0]).toContain('watch-a');
+    expect(rows[0]).toContain('연결됨');
+    expect(rows[1]).toContain('작업자 B');
+    expect(rows[1]).toContain('끊김');
+    await waitFor(() => expect(within(list).getByText('사람 연결됨')).toBeTruthy());
+  });
+
+  it('워치 상태를 모르면(health 없음) 없다고 하지 않는다', async () => {
+    renderStage(await openToday());
+    expect(screen.getByText('워치 상태를 아직 모릅니다.')).toBeTruthy();
   });
 
   it('구역을 받지 못했으면 없다고 하지 않고 안내만 보인다', async () => {
@@ -373,6 +452,10 @@ describe('PreflightStage 서명·시작', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull());
     const started = await fetchWorkUnit(api, day.work_id);
     expect(started.progress).toBe('IN_PROGRESS');
+    // 시작에 성공하면 실시간 관제로 가고(관제 화면이 현장 적용을 확인한다, -692), 시작 요청은 한 번뿐이다
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith({ to: '/live' });
+    expect(requests.filter((r) => r.endsWith('/start'))).toHaveLength(1);
   }, 30_000);
 
   it('작업 중 보호구는 기본 둘 다 필수이고, 끈 장비는 NOT_REQUIRED 로 시작 요청에 싣는다(-654)', async () => {

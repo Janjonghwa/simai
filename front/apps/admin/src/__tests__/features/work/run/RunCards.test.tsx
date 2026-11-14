@@ -20,6 +20,7 @@ const data = vi.hoisted(() => ({
   zoneCount: 0,
   cameras: [] as { id: string }[],
   down: [] as string[],
+  bundles: undefined as unknown[] | undefined,
 }));
 
 vi.mock('@/features/layout/useNow', () => ({ useNow: () => NOW }));
@@ -41,6 +42,13 @@ vi.mock('@/features/zones/useZones', () => ({
     failed: false,
   }),
 }));
+vi.mock('@/features/zones/useRecentBundles', async (orig) => {
+  const actual = await orig<typeof import('@/features/zones/useRecentBundles')>();
+  return {
+    ...actual,
+    useRecentBundles: () => ({ data: data.bundles && actual.readBundles(data.bundles) }),
+  };
+});
 vi.mock('@/features/cctv/useCameraStates', () => ({
   useCameraStates: () => ({
     cameras: data.cameras,
@@ -57,6 +65,7 @@ afterEach(() => {
   data.zoneCount = 0;
   data.cameras = [];
   data.down = [];
+  data.bundles = undefined;
 });
 
 function withClient(node: ReactNode) {
@@ -131,33 +140,71 @@ describe('EventListCard', () => {
   });
 });
 
+/** 서버 묶음 하나(GET /api/config-bundles). ppe_policy.work_id 가 그 묶음의 작업이다. */
+function bundle(
+  version: string,
+  status: string,
+  workId: number | null,
+  zones = 0,
+  issuedAt = START,
+) {
+  return {
+    config_version: version,
+    issued_at: issuedAt,
+    status,
+    applied_at: status === 'APPLIED' ? issuedAt : null,
+    last_ack: null,
+    items: Array.from({ length: zones }, (_, i) => ({
+      item_type: 'ZONE',
+      item_id: `z-${i}`,
+      item_version: 1,
+    })),
+    ppe_policy: { helmet: 'REQUIRED', vest: 'REQUIRED', work_id: workId, effective_from_ms: START },
+  };
+}
+
 describe('AppliedStatusCard', () => {
-  it('3D 모델 · 구역 수 · 카메라 연결 수를 줄로 보인다(끊긴 카메라는 연결 수에서 뺀다)', () => {
+  const tones = () =>
+    screen
+      .getAllByRole('listitem')
+      .map((li) => `${li.getAttribute('data-tone')}:${li.textContent}`);
+
+  it('이번 작업 묶음이 적용되면 경보 켜짐 · 3D · 그 묶음의 구역 수 · 카메라(끊긴 카메라가 있으면 경고)', () => {
     data.scene = { ok: true, raw: {} };
-    data.zonesRaw = [];
-    data.zoneCount = 5;
+    data.bundles = [bundle('cfg-2', 'APPLIED', 9001, 5), bundle('cfg-1', 'APPLIED', null, 2)];
     data.cameras = [{ id: 'cam_A' }, { id: 'cam_B' }, { id: 'cam_C' }, { id: 'cam_D' }];
     data.down = ['cam_B', 'cam_D'];
-    render(<AppliedStatusCard />);
+    withClient(<AppliedStatusCard workId="9001" startedAt={START} />);
     expect(screen.getByRole('heading', { name: '관제 적용 상태' })).toBeTruthy();
-    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
-      '3D 모델 적용됨',
-      '구역 5개 적용됨',
-      '카메라 2/4 연결',
+    expect(tones()).toEqual([
+      'ok:이번 작업 설정 현장 적용됨 · 경보 켜짐',
+      'ok:3D 모델 적용됨',
+      'ok:구역 5개 적용됨',
+      'bad:카메라 2/4 연결',
     ]);
   });
 
-  it('모르는 값은 줄을 감추고, 아무것도 모르면 카드를 그리지 않는다', () => {
-    data.zonesRaw = [];
-    data.zoneCount = 0;
-    const { unmount } = render(<AppliedStatusCard />);
-    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
-      '구역 0개 적용됨',
-    ]);
-    unmount();
+  it('이번 작업 묶음이 아직 적용되지 않았으면 체크하지 않고 대기를 보인다(카메라 0/4 도 체크 아님)', () => {
+    data.bundles = [
+      bundle('cfg-2', 'PENDING', 9001, 5, Date.now()),
+      bundle('cfg-1', 'APPLIED', null, 2),
+    ];
+    data.cameras = [{ id: 'cam_A' }, { id: 'cam_B' }];
+    data.down = ['cam_A', 'cam_B'];
+    withClient(<AppliedStatusCard workId="9001" startedAt={Date.now()} />);
+    expect(tones()).toEqual(['wait:현장 적용 대기 · 경보 꺼짐', 'bad:카메라 0/2 연결']);
+  });
 
-    data.zonesRaw = undefined;
-    const { container } = render(<AppliedStatusCard />);
+  it('이번 작업 묶음이 거부되면 무엇이 / 어떻게와 「현장에 다시 보내기」를 보인다', () => {
+    data.bundles = [bundle('cfg-2', 'REJECTED', 9001), bundle('cfg-1', 'APPLIED', null)];
+    withClient(<AppliedStatusCard workId="9001" startedAt={START} />);
+    expect(tones()).toEqual(['bad:현장 적용 거부 · 경보 꺼짐']);
+    expect(screen.getByText(/이번 작업 설정을 받지 않아/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '현장에 다시 보내기' })).toBeTruthy();
+  });
+
+  it('묶음 목록을 모르면 그 줄을 감추고, 아무것도 모르면 카드를 그리지 않는다', () => {
+    const { container } = withClient(<AppliedStatusCard workId="9001" startedAt={START} />);
     expect(container.textContent).toBe('');
   });
 });

@@ -60,15 +60,57 @@ describe('workEventsOf', () => {
 });
 
 describe('appliedStatusLines', () => {
-  it('아는 값만 줄로 만든다', () => {
+  const on = { stage: 'on', problem: null } as const;
+  const lines = (input: Parameters<typeof appliedStatusLines>[0]) =>
+    appliedStatusLines(input).map((line) => `${line.tone}:${line.text}`);
+
+  it('이번 작업 묶음이 적용되면 경보 켜짐·구역 수에 체크하고, 카메라는 모두 이어졌을 때만 체크한다', () => {
     expect(
-      appliedStatusLines({ sceneReady: true, zoneCount: 3, cameras: { total: 4, live: 3 } }),
-    ).toEqual(['3D 모델 적용됨', '구역 3개 적용됨', '카메라 3/4 연결']);
+      lines({ phase: on, sceneReady: true, appliedZoneCount: 3, cameras: { total: 4, live: 4 } }),
+    ).toEqual([
+      'ok:이번 작업 설정 현장 적용됨 · 경보 켜짐',
+      'ok:3D 모델 적용됨',
+      'ok:구역 3개 적용됨',
+      'ok:카메라 4/4 연결',
+    ]);
+    // 카메라 0/4 는 체크가 아니라 경고다(-692)
     expect(
-      appliedStatusLines({ sceneReady: false, zoneCount: null, cameras: { total: 0, live: 0 } }),
+      lines({ phase: on, sceneReady: false, appliedZoneCount: 0, cameras: { total: 4, live: 0 } }),
+    ).toEqual([
+      'ok:이번 작업 설정 현장 적용됨 · 경보 켜짐',
+      'ok:구역 0개 적용됨',
+      'bad:카메라 0/4 연결',
+    ]);
+  });
+
+  it('적용 전에는 대기·지연·거부·끊김을 가르고 구역 수 줄(이전 묶음 값)을 만들지 않는다', () => {
+    const base = { sceneReady: false, appliedZoneCount: 5, cameras: { total: 0, live: 0 } };
+    expect(lines({ ...base, phase: { stage: 'starting', problem: null } })).toEqual([
+      'wait:현장 적용 대기 · 경보 꺼짐',
+    ]);
+    expect(lines({ ...base, phase: { stage: 'starting', problem: 'delayed' } })).toEqual([
+      'bad:현장 적용 지연 · 경보 꺼짐',
+    ]);
+    expect(lines({ ...base, phase: { stage: 'starting', problem: 'rejected' } })).toEqual([
+      'bad:현장 적용 거부 · 경보 꺼짐',
+    ]);
+    expect(lines({ ...base, phase: { stage: 'starting', problem: 'link_lost' } })).toEqual([
+      'bad:현장 연결 끊김 · 경보 확인 불가',
+    ]);
+    expect(lines({ ...base, phase: { stage: 'on', problem: 'link_lost' } })).toEqual([
+      'bad:현장 연결 끊김 · 경보 확인 불가',
+      'ok:구역 5개 적용됨',
+    ]);
+  });
+
+  it('모르는 값은 줄을 만들지 않는다', () => {
+    expect(
+      lines({
+        phase: { stage: 'unknown', problem: null },
+        sceneReady: false,
+        appliedZoneCount: null,
+        cameras: { total: 0, live: 0 },
+      }),
     ).toEqual([]);
-    expect(
-      appliedStatusLines({ sceneReady: true, zoneCount: 0, cameras: { total: 0, live: 0 } }),
-    ).toEqual(['3D 모델 적용됨', '구역 0개 적용됨']);
   });
 });
