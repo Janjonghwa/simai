@@ -18,7 +18,19 @@ vi.mock('@/lib/api', async () => {
 });
 
 const site = { site_id: 'demo-site', name: '부산 안전 실습장' };
-const server = setupServer(http.get('*/api/sites/current', () => HttpResponse.json(site)));
+const server = setupServer(
+  http.get('*/api/sites/current', () => HttpResponse.json(site)),
+  // GPU 점(S15P31A101-702)은 관리자만 상태를 묻는다
+  http.get('*/api/gpu/sessions/current', () =>
+    HttpResponse.json({
+      session: null,
+      server_time_ms: Date.now(),
+      launch: null,
+      power: 'OFF',
+      stop_block: null,
+    }),
+  ),
+);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 
@@ -83,7 +95,7 @@ describe('TopBar', () => {
     expect(container.querySelector('.bg-stripes')).toBeNull();
   });
 
-  it('Tier 0 가 잰 판정 지연의 최근 평균을 시계 옆에 「판정 지연」 ms 로 보이고, 기준(600ms) 이상이면 지연 색이다', () => {
+  it('판정 지연은 상단바 글에서 빠지고 GPU 점의 마우스 올림 정보창 한 줄이다. 기준(600ms) 이상이면 지연 색이다(S15P31A101-702)', () => {
     seed();
     useRealtimeStore.setState({
       lagSamples: [
@@ -91,8 +103,13 @@ describe('TopBar', () => {
         { at: T + 1000, lagMs: 220, cameras: {} },
       ],
     });
-    renderTopBar();
+    const { container } = renderTopBar();
+    expect(container.querySelector('header')!.textContent).not.toContain('판정 지연');
+    expect(screen.getByTestId('gpu-indicator').textContent).toBe('GPU 연결');
+
+    act(() => fireEvent.mouseEnter(screen.getByTestId('gpu-indicator')));
     const lag = screen.getByText('판정 지연 180 ms');
+    expect(screen.getByRole('tooltip').contains(lag)).toBe(true);
     expect(lag.className).not.toContain('text-delay');
 
     act(() =>
@@ -115,15 +132,18 @@ describe('TopBar', () => {
     expect(container.textContent).not.toContain('지연');
   });
 
-  it('GPU(Tier 0)가 꺼져 있으면(EC2 는 이어짐) 판정 지연을 숨긴다(S15P31A101-704)', () => {
+  it('GPU(Tier 0)가 꺼져 있으면(EC2 는 이어짐) 점은 「GPU 꺼짐」이고 판정 지연을 숨긴다(S15P31A101-704)', () => {
     seed({ tier0_link: 'DISCONNECTED' });
     // 끊기기 전 표본이 남아 있어도 보이지 않는다.
     useRealtimeStore.setState({ lagSamples: [{ at: T, lagMs: 140, cameras: {} }] });
     const { container } = renderTopBar();
+    act(() => fireEvent.mouseEnter(screen.getByTestId('gpu-indicator')));
+    expect(screen.getByTestId('gpu-indicator').textContent).toBe('GPU 꺼짐');
     expect(container.textContent).not.toContain('지연');
     expect(container.textContent).not.toContain('끊김');
 
     act(() => seed());
+    act(() => fireEvent.mouseEnter(screen.getByTestId('gpu-indicator')));
     expect(screen.getByText('판정 지연 140 ms')).toBeTruthy();
   });
 
@@ -136,9 +156,12 @@ describe('TopBar', () => {
     expect(items).toEqual(['화이트 모드', '로그아웃']);
   });
 
-  it.each(['ADMIN', 'FOREMAN'] as const)(
-    '%s 메뉴에 규칙 기준 선택이 없다(교실 시험 고정, -669)',
-    async (role) => {
+  it.each([
+    ['ADMIN', ['화이트 모드', 'GPU 설정', '로그아웃']],
+    ['FOREMAN', ['화이트 모드', '로그아웃']],
+  ] as const)(
+    '%s 메뉴에 규칙 기준 선택이 없고 GPU 설정은 관리자에게만 있다(-669, -702)',
+    async (role, expected) => {
       seed();
       signInAs(role);
       renderTopBar();
@@ -146,7 +169,7 @@ describe('TopBar', () => {
         fireEvent.click(screen.getByRole('button', { name: new RegExp(ROLE_LABEL[role]) })),
       );
       const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
-      expect(items).toEqual(['화이트 모드', '로그아웃']);
+      expect(items).toEqual(expected);
       expect(screen.queryByRole('menuitemradio')).toBeNull();
       expect(screen.queryByText('규칙 기준')).toBeNull();
     },

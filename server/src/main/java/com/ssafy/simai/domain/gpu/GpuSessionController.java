@@ -33,7 +33,8 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>POST /api/gpu/sessions (부팅 비밀값): gpu_session_register → 201 gpu_session_register_result(토큰 원문 한 번만, Cache-Control no-store).</li>
  * <li>POST /api/gpu/sessions/{id}/reports (부팅 비밀값): gpu_session_report → 204. 끝난 세션의 진행 보고는 409 GPU_SESSION_ENDED.</li>
  * <li>GET /api/gpu/sessions/current (관리자): 가장 최근 세션의 단계·연결·경과·GPU·지역(계약 밖 조회 응답, 없으면 session null)과
- * 게이트웨이 자동 전환의 마지막 상태(gateway, S15P31A101-701).</li>
+ * 게이트웨이 자동 전환의 마지막 상태(gateway, S15P31A101-701). S15P31A101-702 가 켠 요청 launch·점 상태 power
+ * (OFF·STARTING·PREPARING·CONNECTED·ERROR)·끄기 막힘 stop_block 을 더한다.</li>
  * </ul>
  * 본문은 계약 봉투 그대로이고 스키마로 검사한다(틀리면 400). 봉투 source_id 는 부팅 비밀값 ID 와 같아야 한다.
  * 요청·응답 본문은 로그에 남기지 않는다(응답에 토큰 원문이 있다).
@@ -50,16 +51,18 @@ class GpuSessionController {
     private final GpuStartConfig startConfig;
     private final GpuSessionSweeper sweeper;
     private final GatewaySwitchStates gatewayStates;
+    private final GpuPowerService power;
     private final ContractSchemas schemas;
     private final ObjectMapper mapper;
     private final Clock clock;
 
     GpuSessionController(GpuSessionService sessions, GpuStartConfig startConfig, GpuSessionSweeper sweeper,
-            GatewaySwitchStates gatewayStates, ContractSchemas schemas, ObjectMapper mapper, Clock clock) {
+            GatewaySwitchStates gatewayStates, GpuPowerService power, ContractSchemas schemas, ObjectMapper mapper, Clock clock) {
         this.sessions = sessions;
         this.startConfig = startConfig;
         this.sweeper = sweeper;
         this.gatewayStates = gatewayStates;
+        this.power = power;
         this.schemas = schemas;
         this.mapper = mapper;
         this.clock = clock;
@@ -112,6 +115,8 @@ class GpuSessionController {
         // 게이트웨이 자동 전환의 마지막 상태(S15P31A101-701, 메모리, 받은 적 없으면 null): {device_id, received_at_ms, state: gateway_switch_state}
         body.set("gateway", gatewayStates.latestView().orElse(null));
         body.put("server_time_ms", clock.millis());
+        // S15P31A101-702: 켠 요청(launch)·점 상태(power)·끄기 막힘(stop_block) 필드 추가
+        power.describe(body);
         return body;
     }
 

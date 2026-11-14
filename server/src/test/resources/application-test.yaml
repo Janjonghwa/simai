@@ -39,6 +39,9 @@ simai:
   gpu-session:
     # 시험은 무응답 정리를 직접 부른다(GpuSessionIntegrationTest). 주기 작업이 다른 시험의 세션을 끝내지 않게 길게 둔다
     sweep-interval: 1h
+  gpu:
+    # 시험은 자동 정지를 직접 부른다(GpuPowerIntegrationTest). 주기 작업이 다른 시험 도중 돌지 않게 길게 둔다
+    sweep-interval: 1h
   clip:
     # 시험은 클립 삭제 작업을 직접 부른다(ClipPurgeIntegrationTest). 주기 작업이 다른 시험의 행을 건드리지 않게 미룬다
     purge-initial-delay: PT24H

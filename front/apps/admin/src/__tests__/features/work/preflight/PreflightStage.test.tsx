@@ -16,6 +16,7 @@ import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock, type WorkMock } from '@/mocks/work';
 import { createZonesMock } from '@/mocks/zones';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
@@ -486,6 +487,34 @@ describe('PreflightStage 서명·시작', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith({ to: '/live' });
     expect(requests.filter((r) => r.endsWith('/start'))).toHaveLength(1);
+  }, 30_000);
+
+  it('GPU 가 꺼져 있으면 작업 시작이 GPU 경고창을 띄우고 시작 요청을 보내지 않는다(S15P31A101-702)', async () => {
+    server.use(
+      http.get('*/api/gpu/sessions/current', () =>
+        HttpResponse.json({
+          session: null,
+          server_time_ms: clock,
+          launch: null,
+          power: 'OFF',
+          stop_block: null,
+        }),
+      ),
+    );
+    useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u-1', role: 'ADMIN' } });
+    try {
+      const day = await openToday();
+      renderStage(day);
+      await signAs('박반장');
+      await waitFor(() => expect(requests).toContain('GET /api/gpu/sessions/current'));
+      const dialog = await openConfirmAndCheck();
+      fireEvent.click(within(dialog).getByRole('button', { name: '작업 시작' }));
+      const gate = await screen.findByTestId('gpu-gate-off');
+      expect(gate.textContent).toContain('세팅과 관제에는 GPU가 필요합니다(약 5~7분)');
+      expect(requests.filter((r) => r.endsWith('/start'))).toHaveLength(0);
+    } finally {
+      useSessionStore.getState().signOut();
+    }
   }, 30_000);
 
   it('작업 중 보호구는 기본 둘 다 필수이고, 끈 장비는 NOT_REQUIRED 로 시작 요청에 싣는다(-654)', async () => {

@@ -1,5 +1,6 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { createFloorPlanMock } from '@/mocks/floorPlan';
+import { createGpuMock } from '@/mocks/gpu';
 import { createHistoryMock } from '@/mocks/history';
 import { createRecordingVideoMock } from '@/mocks/recordings';
 import { sceneHandlers } from '@/mocks/scenes';
@@ -151,4 +152,6 @@ export const handlers = [
   ...createHistoryMock({ liveWorks: () => tbmMock.works }).handlers,
   // 관제 녹화 작업 구간 영상(끝난 작업의 카메라별 mp4 조각, S15P31A101-668).
   ...createRecordingVideoMock({ liveWorks: () => tbmMock.works }).handlers,
+  // GPU 켜기·끄기·설정(S15P31A101-702).
+  ...createGpuMock().handlers,
 ];

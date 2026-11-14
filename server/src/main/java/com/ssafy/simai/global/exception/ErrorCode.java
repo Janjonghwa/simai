@@ -799,7 +799,21 @@ public sealed interface ErrorCode {
         EC2_BASE_URL_MISSING(HttpStatus.SERVICE_UNAVAILABLE, "EC2 공개 주소가 설정되지 않아 GPU 세션을 등록할 수 없습니다"),
         // 게이트웨이 자동 전환(S15P31A101-701): 세션 주소는 현장 노트북만 본다(워치 토큰은 403)
         GPU_NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "현장 노트북(LAPTOP)으로 등록된 기기만 GPU 세션 상태를 보고 전환 상태를 알릴 수 있습니다"),
-        INVALID_GATEWAY_STATE(HttpStatus.BAD_REQUEST, "게이트웨이 전환 상태가 계약(messages/gateway_switch_state 1.x)에 맞지 않습니다");
+        INVALID_GATEWAY_STATE(HttpStatus.BAD_REQUEST, "게이트웨이 전환 상태가 계약(messages/gateway_switch_state 1.x)에 맞지 않습니다"),
+        // ---- S15P31A101-702 화면 켜기·끄기·GPU 설정
+        // 한 번에 GPU 하나(명세 3.12): 열린 세션이나 끝나지 않은 켠 요청이 있다
+        GPU_ALREADY_ON(HttpStatus.CONFLICT, "GPU 가 이미 켜져 있거나 켜는 중입니다"),
+        GPU_NOT_ON(HttpStatus.CONFLICT, "켜져 있는 GPU 가 없습니다"),
+        GPU_OUT_OF_STOCK(HttpStatus.CONFLICT, "고른 GPU·지역에 재고가 없습니다. 다른 GPU 나 지역을 고르세요"),
+        GPU_PRICE_OVER_CAP(HttpStatus.CONFLICT, "시간당 가격이 GPU 설정의 상한보다 높습니다"),
+        // 끄기 막힘: 관제(LIVE)·세팅 중에는 GPU 를 끄지 않는다(관제·세팅이 끊긴다)
+        GPU_STOP_BLOCKED_LIVE(HttpStatus.CONFLICT, "관제(작업) 중에는 GPU 를 끌 수 없습니다. 작업을 먼저 종료하세요"),
+        GPU_STOP_BLOCKED_SETUP(HttpStatus.CONFLICT, "세팅 중에는 GPU 를 끌 수 없습니다. 세팅을 끝내거나 취소하세요"),
+        // 사람이 손으로 켠 GPU(MANUAL)나 구현이 없는 공급자는 화면에서 끄지 못한다
+        GPU_STOP_UNSUPPORTED(HttpStatus.CONFLICT, "이 GPU 는 화면에서 끌 수 없습니다(손으로 켠 GPU)"),
+        GPU_PROVIDER_NOT_CONFIGURED(HttpStatus.SERVICE_UNAVAILABLE, "GPU 공급자 설정(API 키 또는 템플릿 ID)이 없습니다"),
+        GPU_PROVIDER_ERROR(HttpStatus.BAD_GATEWAY, "GPU 공급자 요청이 실패했습니다. 잠시 뒤 다시 시도하세요"),
+        INVALID_GPU_SETTINGS(HttpStatus.BAD_REQUEST, "GPU 설정 값이 올바르지 않습니다");
 
         private final HttpStatus status;
         private final String message;
