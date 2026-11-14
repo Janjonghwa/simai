@@ -176,13 +176,27 @@ def evaluate_quality_gate(
 
 
 class StageAError(RuntimeError):
-    """Structured failure raised during Stage A rotation BA or verification."""
+    """Structured failure raised during Stage A rotation BA or verification.
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    ``nonfinite_pairs``: 비유한(NaN·Inf) 삼각측량이 나온 카메라 쌍(`cam_B-cam_C` 꼴). 처리기가 실패 메시지에 원인 후보를 덧붙일 때 쓴다(-711).
+    """
+
+    def __init__(
+        self, code: str, message: str, *, retryable: bool = False, nonfinite_pairs: Sequence[str] = (),
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.nonfinite_pairs = tuple(nonfinite_pairs)
+
+
+class NonfiniteTriangulationError(ValueError):
+    """학습 트랙 삼각측량에 비유한 값이 나왔다(-711). ``pairs`` 는 그 카메라 쌍(`cam_B-cam_C` 꼴)."""
+
+    def __init__(self, pairs: Sequence[str]) -> None:
+        self.pairs = tuple(pairs)
+        super().__init__(f"Nonfinite training triangulation; candidate rejected (pairs={list(self.pairs)})")
 
 
 class ObjectScaleCrossChecker(Protocol):
@@ -688,13 +702,16 @@ class Problem:
 
     def points_at_poses(self, R: np.ndarray, C: np.ndarray) -> np.ndarray:
         xyz = np.empty((len(self.tracks), 3))
+        bad: list[str] = []
         for pair, ids in self.pair_ids.items():
             if len(ids):
                 xyz[ids] = triangulate(
                     self.uv[ids], pair, self.K, R, C, cameras=self.cameras
                 )
-        if not np.isfinite(xyz).all():
-            raise ValueError("Nonfinite training triangulation; candidate rejected")
+                if not np.isfinite(xyz[ids]).all():
+                    bad.append(f"{self.cameras[pair[0]]}-{self.cameras[pair[1]]}")
+        if bad:
+            raise NonfiniteTriangulationError(bad)
         return xyz
 
     def pack(self, R: np.ndarray, C: np.ndarray) -> np.ndarray:
@@ -821,11 +838,21 @@ class Problem:
             if self.dof == 6:
                 scale[k * self.dof + 3 : k * self.dof + 6] = self.cfg.get("x_scale_center_m", 0.01)
         calls = 0
+        residual_size = len(self.residual(x0))
+        nonfinite_candidates = 0
+        nonfinite_pairs: set[str] = set()
 
         def counted_residual(x: np.ndarray) -> np.ndarray:
-            nonlocal calls
+            nonlocal calls, nonfinite_candidates
             calls += 1
-            return self.residual(x)
+            try:
+                return self.residual(x)
+            except NonfiniteTriangulationError as exc:
+                # 이 후보 자세에서 학습 점을 삼각측량할 수 없다(광선이 평행 등). 예외로 처리기를 죽이지 않고 비유한 잔차를 돌려주면
+                # scipy TRF 가 그 걸음을 버리고 신뢰 영역을 줄여 다시 찾는다(-711). 받아들인 x 는 늘 유한하다
+                nonfinite_candidates += 1
+                nonfinite_pairs.update(exc.pairs)
+                return np.full(residual_size, np.nan)
 
         result = least_squares(
             counted_residual,
@@ -867,6 +894,8 @@ class Problem:
             ),
             "height_prior": self.height_prior_summary(result.x),
             "optimality": float(result.optimality),
+            "nonfinite_candidates": nonfinite_candidates,
+            "nonfinite_pairs": sorted(nonfinite_pairs),
         }
         if projection is not None:
             info["point_projection"] = dict(projection)
@@ -1799,7 +1828,19 @@ def run_stage_a_rotation_ba(
         cameras=cam_ids,
         pairs=pairs,
     )
-    R_a, C_a, _, info = problem.solve(R0, C0)
+    try:
+        R_a, C_a, _, info = problem.solve(R0, C0)
+    except NonfiniteTriangulationError as exc:
+        # 시작 자세(초기 복원)부터 학습 점을 삼각측량할 수 없다. 처리기 오류가 아니라 검증 실패로 돌려준다(-711)
+        raise StageAError(
+            "VALIDATION_REJECTED",
+            (
+                "Stage A rotation BA rejected: nonfinite training triangulation at initial poses, "
+                f"nonfinite_pairs={list(exc.pairs)}"
+            ),
+            retryable=False,
+            nonfinite_pairs=exc.pairs,
+        ) from exc
     if progress is not None:
         progress(3 / 6)
     held = evaluate(tracks, K, R_a, C_a, cameras=cam_ids, pairs=pairs)
@@ -1854,8 +1895,15 @@ def run_stage_a_rotation_ba(
                 f"stage_seconds={stage_seconds:.3f}s (limit {cfg['stage_target_seconds']}s), "
                 f"worsened_pairs={worsened_Evaluated_pairs}, "
                 f"max_center_shift_cm={max_center_shift_cm:.2e}"
+                + (
+                    f", nonfinite_candidates={info['nonfinite_candidates']} "
+                    f"(pairs {' '.join(info['nonfinite_pairs'])})"
+                    if info["nonfinite_candidates"]
+                    else ""
+                )
             ),
             retryable=False,
+            nonfinite_pairs=info["nonfinite_pairs"],
         )
 
     # Construct immutable new CalibrationProvider document (never overwriting input).

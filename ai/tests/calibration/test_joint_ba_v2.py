@@ -413,6 +413,56 @@ def test_evaluate_object_cross_checks_extension_hook() -> None:
     assert out == [{"kind": "TRAFFIC_CONE", "passed": True, "message": "70cm cone within 1.1cm"}]
 
 
+def _poison_pair(monkeypatch: pytest.MonkeyPatch, pair: tuple[int, int], when: Any) -> list[int]:
+    """`pair` 삼각측량을 `when(R)` 이 참일 때 NaN 으로 바꾼다(광선이 평행해진 후보 자세 흉내, -711). 독이 든 호출 수를 돌려준다."""
+    import simai_ai.calibration.extrinsics.joint_ba_v2 as jba
+
+    original = jba.triangulate
+    poisoned: list[int] = []
+
+    def fake(uv: np.ndarray, p: Any, K: np.ndarray, R: np.ndarray, C: np.ndarray, **kw: Any) -> np.ndarray:
+        xyz = original(uv, p, K, R, C, **kw)
+        if tuple(p) == pair and when(R):
+            poisoned.append(1)
+            return np.full_like(xyz, np.nan)
+        return xyz
+
+    monkeypatch.setattr(jba, "triangulate", fake)
+    return poisoned
+
+
+def test_nonfinite_candidate_step_is_rejected_by_the_solver_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    """16차: 후보 자세의 비유한 삼각측량이 ValueError 로 처리기를 죽였다. 이제 그 걸음만 버리고 계속 찾는다(-711)."""
+    config, tracks, K, truth, initial, centers = synthetic_scene()
+    train = [t for t in tracks if t["split"] == "train"]
+    seen: list[bool] = []
+
+    def first_moved_candidate(R: np.ndarray) -> bool:
+        moved = not np.array_equal(R[1], initial[1])
+        if moved and not seen:
+            seen.append(True)
+            return True
+        return False
+
+    poisoned = _poison_pair(monkeypatch, (1, 2), first_moved_candidate)
+    problem = ProjectedProblem(train, K, initial, centers, 3, config, None)
+    R, _C, result, info = problem.solve(initial, centers)
+    assert poisoned == [1]
+    assert info["nonfinite_candidates"] == 1 and info["nonfinite_pairs"] == ["cam_B-cam_C"]
+    assert result.success, result.message
+    assert np.degrees(Rotation.from_matrix(R[1] @ truth[1].T).magnitude()) < 0.1
+
+
+def test_nonfinite_triangulation_at_initial_poses_is_a_validation_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+    calib_doc, tracks_doc = synthetic_calibration_and_tracks()
+    _poison_pair(monkeypatch, (1, 2), lambda R: True)
+    with pytest.raises(StageAError) as exc_info:
+        run_stage_a_rotation_ba(calib_doc, tracks_doc, camera_heights_m=dict.fromkeys(CAMS, 2.2), anchor_camera_id="cam_D")
+    assert exc_info.value.code == "VALIDATION_REJECTED" and exc_info.value.retryable is False
+    assert exc_info.value.nonfinite_pairs == ("cam_B-cam_C",)
+    assert "nonfinite_pairs=['cam_B-cam_C']" in exc_info.value.message
+
+
 def test_run_stage_a_raises_insufficient_features_on_empty_tracks() -> None:
     calib_doc, _ = synthetic_calibration_and_tracks()
     with pytest.raises(StageAError) as exc_info:
