@@ -15,6 +15,8 @@ import {
   deriveCameraCheckView,
 } from '@/features/setup/cameraCheck';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
+import { heightsChanged } from '@/features/setup/heightCheck';
+import { HeightCheckModal } from '@/features/setup/HeightCheckModal';
 import { ModelPickerDialog } from '@/features/setup/ModelPickerDialog';
 import {
   deriveHeightFields,
@@ -103,6 +105,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 단추(다음·다시 보정·세션 취소·카메라 다시 맞추기·작업 관리로)는 setupActions 가 한 곳에서 정한다. 단독 화면(/setup)은 머리줄에 그리고,
 // 날짜 화면 안(embedded)은 같은 단추를 아래 오른쪽 단추 줄(useWorkAction)에 등록하며 구역 단계의 마지막 단추는 '다음'(onDone)이다.
 // 「맵 보강 촬영(선택)」은 보정·생성의 '다음'에서 뜨는 창이다(SupplementModal, S15P31A101-607): 휴대폰 QR·PC 파일로 사각지대를 찍어 올리고 맵을 다시 굽는다.
+// 「카메라 높이 확인」 창(HeightCheckModal, S15P31A101-690): 3D 공간을 만든 직후 워커가 카메라 높이가 서로 맞지 않는다고 보면(paused_reason
+// HEIGHT_CHECK) 1단계와 같은 높이 입력 칸을 크게 띄운다. 고친 값으로 진행하거나 「실측이 맞음」으로 진행하면(POST .../resume) 저절로 닫힌다.
 // 「배경 촬영」 창(BackgroundCaptureModal, S15P31A101-686): 1단계 '다음' 이 먼저 이 창을 띄우고 「시작」을 눌러야 세션을 만든다. 세팅 시작 뒤 새로
 // 찍은 화면만 쓰므로 카메라 앞을 비우게 하고, 카메라별 촬영 상태(사람 보임·영상 없음)를 보이다가 다 찍으면 저절로 닫힌다.
 // 구역 단계의 마지막 단추가 세팅 완료(C17, S15P31A101-615)를 먼저 부르고(useCompleteSetup) 성공하면 넘어간다: 구역 목록 적용·이 세션 맵 켜기·
@@ -194,6 +198,8 @@ function SetupWorkPage({
     useSetupFlowStore.getState().activeSessionId === null ? 0 : 1,
   );
   const [heightEdits, setHeightEdits] = useState<Record<string, string>>({});
+  // 높이 확인 창(-690)에서 고친 칸. 창은 워커가 쓰는 높이에서 시작한다
+  const [checkEdits, setCheckEdits] = useState<Record<string, string>>({});
   const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
   // 위험 확인창이 열린 동안 보이는 쌍 이름(열 때 붙잡아 둔다: 열린 사이 안내가 바뀌어도 문장이 비지 않는다). 닫혀 있으면 null.
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
@@ -243,6 +249,7 @@ function SetupWorkPage({
   // 멈춘 세팅을 고친 높이로 이어 가면 같은 세션이 멈춘 곳부터 돈다(보정·생성으로 돌아간다).
   const resumeSession = useResumeSetupSession(() => {
     setHeightEdits({});
+    setCheckEdits({});
     setReturnForHeightRetry(false);
     go(1);
   });
@@ -375,6 +382,32 @@ function SetupWorkPage({
   );
 
   const heightValidation = useMemo(() => validateHeightFields(heightFields), [heightFields]);
+
+  // 카메라 높이 확인 창(-690): 워커가 쓰는 높이(height_review) + 이 창에서 고친 값
+  const heightReview = waiting.heightCheckPending ? (currentSession?.height_review ?? null) : null;
+  const checkFields = useMemo(
+    () =>
+      heightReview
+        ? deriveHeightFields(waiting.cameraIds, heightReview.camera_heights_m, checkEdits)
+        : [],
+    [heightReview, waiting.cameraIds, checkEdits],
+  );
+  const checkValidation = useMemo(() => validateHeightFields(checkFields), [checkFields]);
+  const checkChanged =
+    heightReview !== null &&
+    checkValidation.valid &&
+    heightsChanged(heightReview.camera_heights_m, checkValidation.cameraHeightsM);
+  const onChangeCheckHeight = useCallback((cameraId: string, value: string) => {
+    setCheckEdits((prev) => ({ ...prev, [cameraId]: value }));
+  }, []);
+  const resumeHeights = resumeSession.resume;
+  const submitHeightCheck = useCallback(() => {
+    if (!sessionId || !checkValidation.valid || resumeSession.pending) return;
+    resumeHeights({
+      setupSessionId: sessionId,
+      body: { camera_heights_m: checkValidation.cameraHeightsM },
+    });
+  }, [sessionId, checkValidation, resumeSession.pending, resumeHeights]);
 
   const coverage = useMemo(
     () => deriveStep1Coverage(coverageQuery.data, coverageQuery.error, cameraIds),
@@ -787,6 +820,19 @@ function SetupWorkPage({
           cancelPending={cancelMutation.isPending}
           retryPending={retrySession.pending}
           error={capture.view.phase === 'failed' ? retrySession.error : null}
+        />
+      )}
+      {heightReview && !capture.open && (
+        <HeightCheckModal
+          review={heightReview}
+          cameraIds={waiting.cameraIds}
+          fields={checkFields}
+          changed={checkChanged}
+          canSubmit={checkValidation.valid}
+          pending={resumeSession.pending}
+          error={resumeSession.error}
+          onChange={onChangeCheckHeight}
+          onSubmit={submitHeightCheck}
         />
       )}
       {supplementOpen && currentSession && (

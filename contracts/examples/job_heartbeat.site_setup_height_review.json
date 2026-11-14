@@ -1,0 +1,41 @@
+{
+  "schema_version": "2.16.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000690",
+  "sent_at": 1760342475400,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": 0.39,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "INITIAL_POSE_AND_WORLD",
+      "progress_pct": 39,
+      "background_collection_pct": {
+        "cam_A": 100,
+        "cam_B": 100,
+        "cam_C": 100,
+        "cam_D": 100
+      },
+      "height_review": {
+        "status": "AWAITING_CONFIRMATION",
+        "max_relative_diff": 0.03,
+        "wait_s": 180,
+        "camera_heights_m": {
+          "cam_A": 1.5,
+          "cam_B": 1.5,
+          "cam_C": 1.5,
+          "cam_D": 1.5
+        },
+        "cameras": {
+          "cam_A": {"restored_height_m": 1.505, "difference_cm": 0.5, "relative_diff": 0.00333, "verdict": "OK"},
+          "cam_B": {"restored_height_m": 1.495, "difference_cm": -0.5, "relative_diff": -0.00333, "verdict": "OK"},
+          "cam_C": {"restored_height_m": 1.38, "difference_cm": -12.0, "relative_diff": -0.08, "verdict": "LOW"},
+          "cam_D": {"restored_height_m": 1.51, "difference_cm": 1.0, "relative_diff": 0.00667, "verdict": "OK"}
+        }
+      }
+    }
+  },
+  "_comment": "S15P31A101-690: 초기 복원 뒤 cam_C 가 입력보다 8% 낮게 보여(기준 3%) 관리자 확인을 기다린다. 이 스냅샷에는 height_checks 를 싣지 않는다"
+}

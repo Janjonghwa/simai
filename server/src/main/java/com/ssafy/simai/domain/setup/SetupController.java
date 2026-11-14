@@ -45,6 +45,7 @@ class SetupController {
                   @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
                   @JsonProperty("mode") String mode) { }
     record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
+    record Resume(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
 
     @GetMapping("/camera-height-defaults")
     @PreAuthorize("hasRole('ADMIN')")
@@ -74,6 +75,16 @@ class SetupController {
     ObjectNode retry(@PathVariable UUID id, @RequestBody(required = false) Retry request,
             @AuthenticationPrincipal Jwt jwt) {
         return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 카메라 높이 빠른 확인에 답한다(S15P31A101-690). 워커가 확인을 기다리는 세션(paused_reason HEIGHT_CHECK)만 받는다.
+     * 보낸 높이가 지금과 같으면 「실측이 맞음」, 다르면 고친 높이로 다시 계산해 이어 간다
+     */
+    @PostMapping("/{id}/resume")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode resume(@PathVariable UUID id, @RequestBody Resume request, @AuthenticationPrincipal Jwt jwt) {
+        return setups.resume(id, request.cameraHeightsM(), Long.parseLong(jwt.getSubject()));
     }
 
     /**

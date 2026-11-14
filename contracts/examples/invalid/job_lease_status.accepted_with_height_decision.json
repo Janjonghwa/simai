@@ -1,0 +1,14 @@
+{
+  "schema_version": "2.2.0",
+  "msg_type": "job_lease_status",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000694",
+  "sent_at": 1760342520510,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "status": "ACCEPTED",
+    "height_decision": {"decision": "CONFIRMED", "camera_heights_m": {"cam_A": 1.5}}
+  },
+  "_comment": "반례: 높이 확인 결정은 ACTIVE 응답에만 싣는다"
+}

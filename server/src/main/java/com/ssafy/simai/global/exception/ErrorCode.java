@@ -702,6 +702,7 @@ public sealed interface ErrorCode {
         SETUP_WORKER_UNAVAILABLE(HttpStatus.CONFLICT, "현장 세팅(site_setup)을 처리할 활성 워커가 없습니다"),
         SETUP_CANCEL_NOT_ALLOWED(HttpStatus.CONFLICT, "이미 끝난 세팅 세션은 취소할 수 없습니다"),
         SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
+        SETUP_RESUME_NOT_ALLOWED(HttpStatus.CONFLICT, "카메라 높이 확인을 기다리는 세팅 세션만 이어 갈 수 있습니다"),
         SETUP_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다"),
         INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다"),
         // 맵 보강 촬영·다시 굽기(S15P31A101-607)

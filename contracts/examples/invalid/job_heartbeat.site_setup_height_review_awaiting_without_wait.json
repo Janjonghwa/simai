@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.16.0",
+  "msg_type": "job_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000693",
+  "sent_at": 1760342475400,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "progress": 0.39,
+    "site_setup": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "status": "INITIAL_POSE_AND_WORLD",
+      "progress_pct": 39,
+      "height_review": {
+        "status": "AWAITING_CONFIRMATION",
+        "max_relative_diff": 0.03,
+        "camera_heights_m": {"cam_A": 1.5, "cam_C": 1.5},
+        "cameras": {
+          "cam_A": {"restored_height_m": 1.62, "difference_cm": 12.0, "relative_diff": 0.08, "verdict": "HIGH"},
+          "cam_C": {"restored_height_m": 1.38, "difference_cm": -12.0, "relative_diff": -0.08, "verdict": "LOW"}
+        }
+      }
+    }
+  },
+  "_comment": "반례: 확인을 기다리는 스냅샷인데 대기 상한(wait_s)이 없다"
+}

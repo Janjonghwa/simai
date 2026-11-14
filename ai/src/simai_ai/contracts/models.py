@@ -898,6 +898,21 @@ class Error(BaseModel):
     consume_attempt: StrictBool | MISSING = MISSING
 
 
+CameraHeightsMAdditionalProperty = TypeAliasType(
+    "CameraHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0)]
+)
+
+
+class HeightDecision(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    decision: Literal['CONFIRMED', 'CORRECTED']
+    camera_heights_m: Annotated[
+        dict[str, CameraHeightsMAdditionalProperty], Field(max_length=16, min_length=1)
+    ]
+
+
 class Payload21(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -911,6 +926,7 @@ class Payload21(BaseModel):
         MISSING
     )
     live_work_active: StrictBool | MISSING = MISSING
+    height_decision: HeightDecision | MISSING = MISSING
 
 
 class JobLeaseStatus(Envelope):
@@ -2008,6 +2024,29 @@ class SiteSetupHeightChecks(RootModel[dict[str, SiteSetupHeightChecks1]]):
     root: Annotated[dict[str, SiteSetupHeightChecks1], Field(min_length=1)]
 
 
+class Cameras2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    restored_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    difference_cm: StrictFloat
+    relative_diff: StrictFloat
+    verdict: Literal['OK', 'LOW', 'HIGH']
+
+
+class SiteSetupHeightReview(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    status: Literal['PASSED', 'AWAITING_CONFIRMATION', 'CONFIRMED', 'CORRECTED', 'TIMED_OUT']
+    max_relative_diff: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    wait_s: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=3600.0)] = MISSING
+    camera_heights_m: Annotated[
+        dict[str, CameraHeightsMAdditionalProperty], Field(max_length=16, min_length=1)
+    ]
+    cameras: Annotated[dict[str, Cameras2], Field(max_length=16, min_length=1)]
+
+
 class SiteSetupHoldoutStats(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2017,11 +2056,6 @@ class SiteSetupHoldoutStats(BaseModel):
     median: Annotated[StrictFloat | None, Field(ge=0.0)]
     p90: Annotated[StrictFloat | None, Field(ge=0.0)]
     p95: Annotated[StrictFloat | None, Field(ge=0.0)]
-
-
-CameraHeightsMAdditionalProperty = TypeAliasType(
-    "CameraHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0)]
-)
 
 
 class CameraId(RootModel[StrictStr]):
@@ -2130,7 +2164,7 @@ class Pairs1(BaseModel):
     reason: Literal['FEW_HOLDOUT', 'HOLDOUT_INVALID', 'HOLDOUT_ERROR_HIGH'] | None
 
 
-class Cameras2(BaseModel):
+class Cameras3(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2146,7 +2180,7 @@ class SiteSetupQualityGate(BaseModel):
     verdict: Literal['PASSED', 'NEEDS_CHECK', 'FAILED']
     thresholds: Thresholds1
     pairs: Annotated[dict[str, Pairs1], Field(max_length=256)]
-    cameras: Annotated[dict[str, Cameras2], Field(max_length=64)]
+    cameras: Annotated[dict[str, Cameras3], Field(max_length=64)]
     problems: Annotated[list[SiteSetupCheckProblem], Field(max_length=64)]
 
 
@@ -5107,6 +5141,7 @@ class SiteSetupProgress(SiteSetupReuseRules):
         MISSING
     )
     background_capture: SiteSetupBackgroundCapture | MISSING = MISSING
+    height_review: SiteSetupHeightReview | MISSING = MISSING
     calibration_version: Annotated[
         StrictStr | MISSING, Field(max_length=160, min_length=1)
     ] = MISSING

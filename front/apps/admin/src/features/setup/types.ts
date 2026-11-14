@@ -384,6 +384,37 @@ export const zoneHeightChangesSummarySchema = z
   .loose();
 export type ZoneHeightChangesSummary = z.infer<typeof zoneHeightChangesSummarySchema>;
 
+/**
+ * 카메라 높이 빠른 확인(site_setup 1.17.0 height_review, S15P31A101-690). 초기 복원 뒤 카메라별 입력 높이 대비 상대 불일치.
+ * 축척이 입력 높이의 중앙값이라 복원 높이는 독립 측정이 아니다(4대를 같은 배수로 틀리면 못 잡는다). LOW = 다른 카메라보다 낮게 보인다.
+ */
+export const heightReviewSchema = z.object({
+  status: z.enum(['PASSED', 'AWAITING_CONFIRMATION', 'CONFIRMED', 'CORRECTED', 'TIMED_OUT']),
+  max_relative_diff: z.number().positive(),
+  wait_s: z.number().nonnegative().optional(),
+  camera_heights_m: z.record(z.string(), z.number().positive()),
+  cameras: z.record(
+    z.string(),
+    z.object({
+      restored_height_m: z.number().positive(),
+      difference_cm: z.number(),
+      relative_diff: z.number(),
+      verdict: z.enum(['OK', 'LOW', 'HIGH']),
+    }),
+  ),
+});
+export type HeightReview = z.infer<typeof heightReviewSchema>;
+
+/** 관리자의 카메라 높이 확인 결정(POST /api/setup-sessions/{id}/resume, -690). CONFIRMED = 실측이 맞음, CORRECTED = 고친 높이. */
+export const heightDecisionSchema = z
+  .object({
+    decision: z.enum(['CONFIRMED', 'CORRECTED']),
+    camera_heights_m: z.record(z.string(), z.number().positive()),
+    decided_at_ms: z.number().optional(),
+  })
+  .loose();
+export type HeightDecision = z.infer<typeof heightDecisionSchema>;
+
 /** 세팅 배경 촬영 진행(site_setup 1.16.0 background_capture, S15P31A101-686). 세팅 시작 뒤 새로 찍은 표본 수와 카메라별 상태. */
 export const backgroundCaptureSchema = z
   .object({
@@ -418,6 +449,10 @@ export const setupSessionResponseSchema = z.object({
   background_collection_pct: z.record(z.string(), z.number()).optional(),
   /** 세팅 배경 촬영 진행(-686). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
   background_capture: backgroundCaptureSchema.nullish().catch(null),
+  /** 카메라 높이 빠른 확인(-690). 그 전 서버·워커는 싣지 않는다. 모양이 어긋나면 null */
+  height_review: heightReviewSchema.nullish().catch(null),
+  /** 관리자의 높이 확인 결정(-690). 없으면 null */
+  height_decision: heightDecisionSchema.nullish().catch(null),
   height_checks: heightChecksSchema.nullable().optional().default(null),
   height_warnings: z.array(z.string()).optional().default([]),
   object_cross_checks: z.unknown().nullable().optional(),
@@ -457,9 +492,8 @@ export const setupSessionResponseSchema = z.object({
   /** 구역별 상면 높이 차이 판정 요약(-630). 그 전 서버·워커는 싣지 않는다(null) */
   zone_height_changes: zoneHeightChangesSummarySchema.nullish().catch(null),
   /**
-   * 보정에 문제가 있어(품질 게이트 실패 등) 모델 생성을 멈추고 사람이 고치기를 기다리는 까닭 코드. 멈추지 않았으면 null.
-   * 멈춘 세션은 단계(status)를 그대로 두고, 고친 높이를 실어 POST /api/setup-sessions/{id}/resume 으로 멈춘 곳부터 이어 간다.
-   * 서버·워커에 요청한 계약이라 그 전 서버는 싣지 않는다(멈추지 않고 지금처럼 실패로 끝낸다).
+   * 모델 생성을 멈추고 사람을 기다리는 까닭 코드. 멈추지 않았으면 null. 서버는 HEIGHT_CHECK(-690: 워커가 카메라 높이 확인을
+   * 기다린다)만 낸다. 멈춘 세션은 단계(status)를 그대로 두고, 높이를 실어 POST /api/setup-sessions/{id}/resume 으로 멈춘 곳부터 이어 간다.
    */
   paused_reason: z.string().nullish().catch(null),
 });
@@ -491,7 +525,7 @@ export interface RetrySetupSessionBody {
   camera_heights_m?: Record<string, number>;
 }
 
-/** 멈춘 세팅을 이어 가기(POST /api/setup-sessions/{id}/resume): 카메라 연결 관리에서 고친 높이. */
+/** 멈춘 세팅을 이어 가기(POST /api/setup-sessions/{id}/resume): 높이 확인 창에서 확인하거나 고친 높이(-690). */
 export interface ResumeSetupSessionBody {
   camera_heights_m: Record<string, number>;
 }

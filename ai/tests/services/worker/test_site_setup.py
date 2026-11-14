@@ -357,6 +357,7 @@ def test_site_setup_height_mismatch_marks_camera_out_of_tolerance() -> None:
         clock_ms=lambda: 1760342410000,
         # 높이 표시(±5 cm) 시험이다. 품질 게이트의 높이 상한(기본 10 cm, -646)은 아래 따로 시험한다
         quality_gate={"height_max_diff_cm": 20.0},
+        height_review_wait_s=0,  # 높이 빠른 확인(-690)을 기다리지 않는다(아래 따로 시험)
     )
 
     ctx = JobContext(
@@ -568,6 +569,7 @@ def test_site_setup_worker_with_real_val01_cached_tracks() -> None:
             height_checks={},
         ),
         clock_ms=lambda: 1793687375000,
+        height_review_wait_s=0,
     )
 
     transport = _ScriptedTransport(req_msg)
@@ -1253,6 +1255,7 @@ def test_quality_gate_height_mismatch_fails_with_problem_camera_snapshot() -> No
             intrinsics_by_cam=intrinsics_by_cam, created_at_ms=kw["created_at_ms"]),
         calibration_publisher=lambda doc: published.append(doc) or str(doc["calibration_version"]),
         clock_ms=lambda: 1760342410000,
+        height_review_wait_s=0,  # 확인 없이 진행한 높이(TIMED_OUT)는 품질 게이트 높이 상한을 그대로 본다(-690)
     )
     ctx = JobContext("job-qg", "0192a6f0-7c1e-7b3a-9f2d-000000000646", "site_setup", 1, req_msg["payload"]["input"])
     with pytest.raises(JobFailed) as exc:
@@ -1425,3 +1428,168 @@ def test_zone_height_changes_propagate_from_preview_to_baked_and_fallback_to_unk
     assert res2["zone_height_changes"]["zones"][0]["reason"] == "WORLD_NOT_ANCHORED"
     assert schema_errors(res2, _RESULT) == []
 
+
+# ---------------------------------------------------------------------------- S15P31A101-690
+_HEIGHT_REVIEW = {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/height_review"}
+_ONE_LOW = {"cam_A": 1.5, "cam_B": 1.5, "cam_C": 1.38, "cam_D": 1.5}
+
+
+def _height_handler(
+    restored: dict[str, float], **kw: Any,
+) -> tuple[SiteSetupHandler, dict[str, Any], list[dict[str, Any]], _FakeTime]:
+    """합성 방(카메라 실제 높이 restored)과 입력 높이 1.5 m(계약 예시)로 끝까지 도는 처리기. world_initializer 부른 높이를 모은다."""
+    inp = copy.deepcopy(load_example("job_request.site_setup.json")["payload"]["input"])
+    camera_ids = tuple(inp["calibration_target"]["camera_ids"])
+    points_m, unscaled_poses, intrinsics_by_cam, tracks_doc = _make_synthetic_room_and_tracks(
+        camera_ids=camera_ids, restored_heights_m=restored)
+    init_calls: list[dict[str, Any]] = []
+
+    def init(**w: Any) -> InitialWorldReconstruction:
+        init_calls.append(dict(w["camera_heights_m"]))
+        return build_world_from_pointcloud_and_poses(
+            site_id=w["site_id"], camera_ids=w["camera_ids"], camera_heights_m=w["camera_heights_m"],
+            height_tolerance_cm=w["height_tolerance_cm"], points_m=points_m, unscaled_poses=unscaled_poses,
+            intrinsics_by_cam=intrinsics_by_cam, created_at_ms=w["created_at_ms"])
+
+    t = _FakeTime()
+    handler = SiteSetupHandler(
+        background_collector=lambda **c: CleanBackgroundBundle("bundle-height-review", dict.fromkeys(camera_ids, 100.0),
+                                                               tracks_doc=tracks_doc),
+        world_initializer=init, clock_ms=lambda: 1760342410000, monotonic=t.monotonic, sleep=t.sleep, **kw)
+    return handler, inp, init_calls, t
+
+
+def _decide_when_asked(t: _FakeTime, ctx: JobContext, decision: dict[str, Any]) -> Any:
+    """확인을 기다리는 동안 두 번째 sleep 뒤 하트비트 응답처럼 결정을 넣는 sleep."""
+    def sleep(event: Any, seconds: float) -> None:
+        t.sleep(event, seconds)
+        waiting = (ctx.site_setup or {}).get("height_review", {}).get("status") == "AWAITING_CONFIRMATION"
+        if waiting and len(t.sleeps) >= 2:
+            ctx.note_height_decision(decision)
+
+    return sleep
+
+
+def _reviews(ctx: JobContext) -> list[dict[str, Any]]:
+    """스냅샷마다 실린 height_review(다음 단계 스냅샷이 이어 실은 같은 값은 한 번만)."""
+    out: list[dict[str, Any]] = []
+    for h in ctx.site_setup_history:
+        if "height_review" in h and (not out or out[-1] != h["height_review"]):
+            out.append(h["height_review"])
+    return out
+
+
+def _ctx(name: str, inp: dict[str, Any], t: _FakeTime, timeout_ms: int = 900_000) -> JobContext:
+    return JobContext(name, "0192a6f0-7c1e-7b3a-9f2d-000000000690", "site_setup", 1, inp, timeout_ms=timeout_ms,
+                      monotonic=t.monotonic)
+
+
+def test_height_review_one_wrong_camera_waits_then_corrected_value_reuses_the_model() -> None:
+    """한 대만 잘못 넣으면 그 카메라만 LOW 로 확인을 기다린다(height_checks 없이). 고친 값이 오면 MapAnything(초기화)을 다시 부르지
+    않고 같은 점구름으로 다시 맞춰 CORRECTED 로 이어 가고, 그 뒤 높이 검산·결과는 고친 높이 기준이다."""
+    handler, inp, init_calls, t = _height_handler(_ONE_LOW)
+    ctx = _ctx("job-hr", inp, t)
+    corrected = {**inp["camera_heights_m"], "cam_C": 1.38}
+    handler._sleep = _decide_when_asked(t, ctx, {"decision": "CORRECTED", "camera_heights_m": corrected})
+    result = handler(ctx)
+
+    awaiting, final = _reviews(ctx)[0], _reviews(ctx)[-1]
+    assert schema_errors(awaiting, _HEIGHT_REVIEW) == [] and schema_errors(final, _HEIGHT_REVIEW) == []
+    assert awaiting["status"] == "AWAITING_CONFIRMATION" and awaiting["wait_s"] == 180
+    assert {c: v["verdict"] for c, v in awaiting["cameras"].items()} == {
+        "cam_A": "OK", "cam_B": "OK", "cam_C": "LOW", "cam_D": "OK"}
+    assert awaiting["cameras"]["cam_C"]["difference_cm"] == pytest.approx(-12.0, abs=0.5)
+    waiting_snap = next(h for h in ctx.site_setup_history
+                        if h.get("height_review", {}).get("status") == "AWAITING_CONFIRMATION")
+    assert schema_errors(waiting_snap, _PROGRESS) == []
+    assert "height_checks" not in waiting_snap  # 서버 세션 높이가 바뀌기 전 입력 높이로 검산을 싣지 않는다
+    assert final["status"] == "CORRECTED" and final["camera_heights_m"] == corrected
+    assert all(v["verdict"] == "OK" for v in final["cameras"].values())
+    assert init_calls == [inp["camera_heights_m"]]  # 초기 복원은 한 번(다시 맞추기는 같은 점구름·포즈)
+    assert {c: v["input_height_m"] for c, v in result["height_checks"].items()} == corrected
+    assert result["quality_gate"]["verdict"] in ("PASSED", "NEEDS_CHECK")
+
+
+def test_height_review_confirmed_measurement_is_not_rejected_again_by_the_quality_gate() -> None:
+    """「실측이 맞음」(같은 높이)이면 그 높이로 진행하고, 품질 게이트는 높이 차(12 cm > 10 cm)로 다시 거절하지 않는다(기록만)."""
+    handler, inp, init_calls, t = _height_handler(_ONE_LOW)
+    ctx = _ctx("job-hr2", inp, t)
+    handler._sleep = _decide_when_asked(t, ctx, {"decision": "CONFIRMED", "camera_heights_m": dict(inp["camera_heights_m"])})
+    result = handler(ctx)
+    assert _reviews(ctx)[-1]["status"] == "CONFIRMED"
+    assert result["height_checks"]["cam_C"]["difference_cm"] < -10.0
+    gate = result["quality_gate"]
+    assert gate["cameras"]["cam_C"]["verdict"] == "PASS" and gate["cameras"]["cam_C"]["height_diff_cm"] < -10.0
+    assert not any(p["kind"] == "CAMERA" for p in gate["problems"])
+    assert len(init_calls) == 1
+
+
+def test_height_review_timeout_continues_with_input_and_keeps_the_gate() -> None:
+    """대기 상한까지 답이 없으면 입력 높이 그대로 진행하고(TIMED_OUT 기록), 품질 게이트 높이 상한은 그대로 본다."""
+    handler, inp, _, t = _height_handler(_ONE_LOW, height_review_wait_s=5.0)
+    ctx = _ctx("job-hr3", inp, t)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "VALIDATION_REJECTED" and "cam_C" in exc.value.message
+    statuses = [r["status"] for r in _reviews(ctx)]
+    assert statuses[0] == "AWAITING_CONFIRMATION" and statuses[-1] == "TIMED_OUT"
+    assert sum(t.sleeps) == pytest.approx(5.0)
+
+
+def test_height_review_wait_is_capped_by_the_remaining_budget_and_cancel_still_stops() -> None:
+    """실행 상한까지 뒤 단계 몫(reserve)을 남기도록 대기를 줄인다. 남는 시간이 없으면 기다리지 않는다. 취소는 기다리는 중에도 멈춘다."""
+    loose_gate = {"height_max_diff_cm": 50.0}
+    handler, inp, _, t = _height_handler(_ONE_LOW, quality_gate=loose_gate)
+    ctx = _ctx("job-hr4", inp, t, timeout_ms=400_000)
+    handler(ctx)
+    review = _reviews(ctx)[0]
+    assert review["status"] == "AWAITING_CONFIRMATION" and review["wait_s"] == pytest.approx(40.0, abs=0.5)
+
+    handler, inp, _, t = _height_handler(_ONE_LOW, quality_gate=loose_gate)
+    ctx = _ctx("job-hr5", inp, t, timeout_ms=300_000)
+    handler(ctx)
+    assert [r["status"] for r in _reviews(ctx)] == ["TIMED_OUT"] and t.sleeps == []
+
+    handler, inp, _, t = _height_handler(_ONE_LOW)
+    ctx = _ctx("job-hr6", inp, t)
+
+    def cancel(event: Any, seconds: float) -> None:
+        ctx.cancelled.set()
+
+    handler._sleep = cancel
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "CANCELLED"
+
+
+def test_height_review_same_multiplier_error_passes_and_known_decision_skips_the_wait() -> None:
+    """4대를 같은 배수로 틀리면 축척이 함께 바뀌어 잡지 못한다(PASSED, 기다리지 않음). 재대여처럼 결정이 이미 와 있으면 기다리지 않고 쓴다."""
+    handler, inp, _, t = _height_handler(dict.fromkeys(("cam_A", "cam_B", "cam_C", "cam_D"), 1.65))
+    ctx = _ctx("job-hr7", inp, t)
+    handler(ctx)
+    assert [r["status"] for r in _reviews(ctx)] == ["PASSED"] and t.sleeps == []
+
+    handler, inp, init_calls, t = _height_handler(_ONE_LOW)
+    ctx = _ctx("job-hr8", inp, t)
+    ctx.note_height_decision({"decision": "CORRECTED", "camera_heights_m": {**inp["camera_heights_m"], "cam_C": 1.38}})
+    result = handler(ctx)
+    assert [r["status"] for r in _reviews(ctx)] == ["CORRECTED"] and t.sleeps == []
+    assert result["height_checks"]["cam_C"]["input_height_m"] == 1.38 and len(init_calls) == 1
+
+
+def test_height_review_unit_rules() -> None:
+    from simai_ai.calibration.extrinsics.joint_ba_v2 import compute_height_review, evaluate_quality_gate
+
+    cams = compute_height_review({"a": 2.45, "b": 2.44, "c": 2.48, "d": 2.48},
+                                 {"a": 2.39, "b": 2.45, "c": 2.66, "d": 2.47})
+    # 15차 cam_B 5.5 cm(2.4%)는 실측이 맞았던 잡음이라 기준(3%) 안, 18 cm(7%)는 HIGH
+    assert {k: v["verdict"] for k, v in cams.items()} == {"a": "OK", "b": "OK", "c": "HIGH", "d": "OK"}
+    assert cams["a"]["difference_cm"] == -6.0 and cams["a"]["relative_diff"] == pytest.approx(-0.02449, abs=1e-5)
+    assert compute_height_review({"a": 2.5}, {"a": 2.4})["a"]["verdict"] == "LOW"
+    with pytest.raises(ValueError):
+        compute_height_review({"a": 2.5}, {"a": 2.4}, max_relative_diff=0)
+    pair = {"a-b": {"holdout": 20, "camera_ids": ["a", "b"], "after_holdout": {"median": 0.5, "p90": 0.9}}}
+    heights = {"a": {"difference_cm": -12.0}, "b": {"difference_cm": None}}
+    gate = evaluate_quality_gate(pair, heights, heights_settled=True)
+    assert gate["cameras"]["a"] == {"height_diff_cm": -12.0, "verdict": "PASS", "reason": None}
+    assert gate["cameras"]["b"]["reason"] == "HEIGHT_UNKNOWN" and gate["verdict"] == "FAILED"  # 기하 실패는 그대로

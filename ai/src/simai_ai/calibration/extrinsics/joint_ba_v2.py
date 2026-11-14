@@ -90,6 +90,8 @@ def evaluate_quality_gate(
     pair_metrics: Mapping[str, Mapping[str, Any]],
     height_checks: Mapping[str, Mapping[str, Any]],
     config: Mapping[str, Any] | None = None,
+    *,
+    heights_settled: bool = False,
 ) -> dict[str, Any]:
     """Stage A 결과의 절대 품질 판정(계약 site_setup#/$defs/quality_gate).
 
@@ -97,6 +99,8 @@ def evaluate_quality_gate(
     그 쌍을 확인해야 한다). 근거가 있으면 홀드아웃 중앙값·p90 이 상한 안이어야 PASS, 넘거나 투영이 깨졌으면(값 없음) FAIL.
     카메라: 줄자 높이와 복원 높이 차가 height_max_diff_cm 을 넘으면 FAIL. 하나라도 FAIL 이면 FAILED, 아니면 NEEDS_CHECK 가
     하나라도 있으면 NEEDS_CHECK, 모두 PASS 면 PASSED.
+    heights_settled: 높이 빠른 확인(-690)에서 이미 맞았거나 사람이 확인한 높이면 True. 높이 차로는 FAIL 시키지 않는다(차는 기록).
+    복원 높이를 모르면(HEIGHT_UNKNOWN, 기하 실패) 그대로 FAIL 이다.
     """
     cfg = {**DEFAULT_QUALITY_GATE, **(dict(config) if config is not None else {})}
     med_max = float(cfg["pair_holdout_median_max_px"])
@@ -141,7 +145,7 @@ def evaluate_quality_gate(
         if diff_f is None or not math.isfinite(diff_f):
             verdict, reason = "FAIL", "HEIGHT_UNKNOWN"
             message = f"{cid}: 복원 높이를 알 수 없습니다"
-        elif abs(diff_f) > height_max:
+        elif abs(diff_f) > height_max and not heights_settled:
             verdict, reason = "FAIL", "HEIGHT_MISMATCH"
             message = (f"{cid}: 줄자 높이와 복원 높이 차가 {diff_f:+.1f}cm 입니다(허용 ±{height_max:g}cm). "
                        "높이 입력과 카메라 각도를 확인하세요")
@@ -1390,6 +1394,51 @@ def compute_height_checks(
             ),
         }
     return checks
+
+
+# 카메라 높이 빠른 확인(S15P31A101-690, 계약 site_setup 1.17.0 height_review). 축척이 카메라별 (입력 ÷ 모델 높이)의 중앙값이라
+# 복원 높이는 독립 측정이 아니라 입력과 모델 기하의 상대 일관성이다. 기준 3% 는 축척 근거 기각 기준(camera_height_max_spread
+# 0.03, 2.4 m 에서 약 7 cm)과 같다. 근거: docs/design/S15P31A101-690-height-check-in-input.md(14차 2.5~4.3 cm, 15차 cam_B 5.5 cm
+# 는 실측이 맞았던 잡음, 거치대를 올리고 값을 안 바꾸면 10 cm 넘게 벗어난다)
+HEIGHT_REVIEW_MAX_RELATIVE_DIFF = 0.03
+HEIGHT_REVIEW_PASSED = "PASSED"
+HEIGHT_REVIEW_AWAITING = "AWAITING_CONFIRMATION"
+HEIGHT_REVIEW_CONFIRMED = "CONFIRMED"
+HEIGHT_REVIEW_CORRECTED = "CORRECTED"
+HEIGHT_REVIEW_TIMED_OUT = "TIMED_OUT"
+# 사람이 확인했거나(CONFIRMED·CORRECTED) 앞에서 이미 맞았으면(PASSED) 뒤 단계에서 같은 높이 비교로 거절하지 않는다
+HEIGHT_REVIEW_SETTLED = frozenset({HEIGHT_REVIEW_PASSED, HEIGHT_REVIEW_CONFIRMED, HEIGHT_REVIEW_CORRECTED})
+
+
+def compute_height_review(
+    camera_heights_m: Mapping[str, float],
+    restored_heights_m: Mapping[str, float],
+    *,
+    max_relative_diff: float = HEIGHT_REVIEW_MAX_RELATIVE_DIFF,
+) -> dict[str, dict[str, Any]]:
+    """카메라별 입력 높이 대비 복원 높이의 상대 불일치(계약 height_review.cameras).
+
+    relative_diff = (복원 − 입력) ÷ 입력. |relative_diff| 가 기준 안이면 OK, 복원이 낮으면 LOW(다른 카메라보다 낮게 보인다),
+    높으면 HIGH. 4대를 같은 배수로 틀리면 축척이 함께 바뀌어 모두 OK 다(잡지 못한다).
+    """
+    if not (math.isfinite(max_relative_diff) and 0 < max_relative_diff <= 1):
+        raise ValueError(f"max_relative_diff 는 (0, 1] 이어야 한다: {max_relative_diff}")
+    out: dict[str, dict[str, Any]] = {}
+    for cam_id, input_h in camera_heights_m.items():
+        if cam_id not in restored_heights_m:
+            raise KeyError(f"Missing restored height for camera {cam_id!r}")
+        in_m, rest_m = float(input_h), float(restored_heights_m[cam_id])
+        if not (math.isfinite(in_m) and math.isfinite(rest_m)) or in_m <= 0 or rest_m <= 0:
+            raise ValueError(f"Camera heights must be > 0 m for {cam_id!r}: input={in_m}, restored={rest_m}")
+        rel = (rest_m - in_m) / in_m
+        verdict = "OK" if abs(rel) <= max_relative_diff + 1e-12 else ("LOW" if rel < 0 else "HIGH")
+        out[cam_id] = {
+            "restored_height_m": round(rest_m, 4),
+            "difference_cm": round((rest_m - in_m) * 100.0, 2),
+            "relative_diff": round(rel, 5),
+            "verdict": verdict,
+        }
+    return out
 
 
 def evaluate_object_cross_checks(

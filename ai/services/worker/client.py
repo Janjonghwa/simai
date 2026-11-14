@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -149,6 +150,8 @@ class LeaseStatus:
     heartbeat_interval_ms: int | None = None
     # job_lease_status 2.1.0(-597): site_setup 대여에서 같은 현장 작업이 시작됐다(정식 굽기 회수 신호). ACTIVE 에만 있다
     live_work_active: bool = False
+    # job_lease_status 2.2.0(-690): site_setup 대여에서 관리자의 카메라 높이 확인 결정. ACTIVE 에만 있다. 모양이 틀리면 None
+    height_decision: Mapping[str, Any] | None = None
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> LeaseStatus:
@@ -162,9 +165,27 @@ class LeaseStatus:
             ttl = int(p["lease_expires_at"]) - int(msg["sent_at"]) if status == "ACTIVE" else None
             interval = p.get("heartbeat_interval_ms")
             live_work = status == "ACTIVE" and p.get("live_work_active") is True
-            return cls(status, p.get("reason"), ttl, int(interval) if interval is not None else None, live_work)
+            decision = _height_decision(p.get("height_decision")) if status == "ACTIVE" else None
+            return cls(status, p.get("reason"), ttl, int(interval) if interval is not None else None, live_work,
+                       decision)
         except (KeyError, TypeError, ValueError) as e:
             raise RetryableError(f"대여 상태 응답을 해석하지 못했다: {e}") from e
+
+
+def _height_decision(raw: Any) -> dict[str, Any] | None:
+    """job_lease_status 2.2.0 height_decision. 선택 값이라 모양이 틀리면 대여를 버리지 않고 무시한다(경고만)."""
+    if raw is None:
+        return None
+    try:
+        decision = raw["decision"]
+        heights = {str(k): float(v) for k, v in raw["camera_heights_m"].items()}
+        if decision not in ("CONFIRMED", "CORRECTED") or not heights or not all(
+                math.isfinite(v) and v > 0 for v in heights.values()):
+            raise ValueError(f"decision={decision!r}, heights={heights}")
+        return {"decision": decision, "camera_heights_m": heights}
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        log.warning("하트비트 응답의 height_decision 을 무시한다: %s", e)
+        return None
 
 
 def _raise_for_status(resp: Response, what: str) -> None:

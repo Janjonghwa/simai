@@ -791,6 +791,26 @@ const HEIGHT_MISMATCH = {
   },
 } as const;
 
+/** 3D 공간을 만든 직후 워커가 카메라 2 가 12 cm 높게 보인다며 높이 확인을 기다리는 세션(-690). */
+const HEIGHT_CHECK_WAITING: Partial<SetupSessionResponse> = {
+  status: 'INITIAL_POSE_AND_WORLD',
+  stage: 'INITIAL_POSE_AND_WORLD',
+  progress_pct: 39,
+  paused_reason: 'HEIGHT_CHECK',
+  height_review: {
+    status: 'AWAITING_CONFIRMATION',
+    max_relative_diff: 0.03,
+    wait_s: 180,
+    camera_heights_m: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+    cameras: {
+      cam_A: { restored_height_m: 2.26, difference_cm: 1, relative_diff: 0.0044, verdict: 'OK' },
+      cam_B: { restored_height_m: 2.42, difference_cm: 12, relative_diff: 0.0522, verdict: 'HIGH' },
+      cam_C: { restored_height_m: 2.19, difference_cm: -1, relative_diff: -0.0045, verdict: 'OK' },
+      cam_D: { restored_height_m: 2.35, difference_cm: 0, relative_diff: 0, verdict: 'OK' },
+    },
+  },
+};
+
 /** 카메라 연결 관리(1단계)로 돌아온 화면에서 cam_B 높이를 2.7 로 고친다('다시 시도' 직전까지). */
 async function editCam2Height() {
   const cam2Input = (await screen.findByLabelText('카메라 2 높이 (m)')) as HTMLInputElement;
@@ -976,46 +996,57 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(setupMock.submittedBodies).toHaveLength(1);
   }, 20_000);
 
-  it('보정 문제로 멈춘 세션(paused_reason)은 멈춤 안내를 보이고, 카메라 연결 관리에서 고친 높이로 같은 세션을 멈춘 곳부터 이어 간다', async () => {
+  it('높이 확인을 기다리면(paused_reason HEIGHT_CHECK) 높이 입력 창을 띄우고, 고친 값으로 같은 세션을 이어 간다', async () => {
     const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, {
-      stage: 'JOINT_BA_AND_VERIFY',
-      status: 'JOINT_BA_AND_VERIFY',
-      progress_pct: 40,
-      paused_reason: 'QUALITY_GATE',
-      quality_gate: {
-        verdict: 'FAILED',
-        pairs: {},
-        problems: [
-          {
-            kind: 'CAMERA',
-            id: 'cam_B',
-            camera_ids: ['cam_B'],
-            reason: 'HEIGHT_MISMATCH',
-            message: '카메라 2 높이가 40.0 cm 안 맞습니다.',
-          },
-        ],
-      },
-    });
+    setupMock.updateSession(sessionId, HEIGHT_CHECK_WAITING);
 
-    const paused = await screen.findByRole('alert', { name: '세팅 멈춤 안내' }, POLL_WAIT);
-    expect(paused.textContent).toContain('카메라 정밀 보정에서 멈췄어요');
-    expect(paused.textContent).toContain('카메라 2 높이가 40.0 cm 안 맞습니다.');
-    expect(screen.getByText('멈춤')).toBeTruthy();
-    expect((screen.getByRole('button', { name: '다음' }) as HTMLButtonElement).disabled).toBe(true);
+    const dialog = await screen.findByRole('dialog', { name: '카메라 높이 확인' }, POLL_WAIT);
+    expect(within(dialog).getByRole('status').textContent).toContain(
+      '카메라 2 높이가 다른 카메라와 맞지 않습니다',
+    );
+    expect(dialog.textContent).toContain('다른 카메라보다 약 12 cm 높게 보임');
+    expect(dialog.textContent).toContain('맞음');
+    expect(dialog.textContent).toContain('약 3분 안에 답하지 않으면 입력한 높이로 진행합니다.');
+    // 멈춤 안내(카메라 연결 관리로)는 창이 맡으므로 따로 보이지 않는다
+    expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: '실측이 맞음 · 이대로 진행' })).toBeTruthy();
 
-    fireEvent.click(within(paused).getByRole('button', { name: '카메라 연결 관리로' }));
-    await editCam2Height();
-    fireEvent.click(screen.getByRole('button', { name: '이어서 만들기' }));
+    const cam2 = within(dialog).getByLabelText('카메라 2 높이 (m)') as HTMLInputElement;
+    expect(cam2.value).toBe('2.3');
+    fireEvent.change(cam2, { target: { value: '2.42' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '고친 값으로 진행' }));
 
-    // 재시도·취소 없이 같은 세션이 고친 높이로 이어 간다.
+    // 재시도·취소 없이 같은 세션이 고친 높이로 이어 가고 창이 닫힌다
     await waitFor(() => expect(setupMock.sessions.get(sessionId)?.paused_reason).toBeNull());
-    expect(setupMock.sessions.get(sessionId)?.camera_heights_m.cam_B).toBe(2.7);
-    expect(setupMock.sessions.get(sessionId)?.failure_code).toBeNull();
+    const resumed = setupMock.sessions.get(sessionId)!;
+    expect(resumed.height_decision?.decision).toBe('CORRECTED');
+    expect(resumed.camera_heights_m.cam_B).toBe(2.42);
     expect(setupMock.retryRequests).toHaveLength(0);
     expect(setupMock.sessions.size).toBe(1);
-    await waitForCalibrationStep();
-    expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '카메라 높이 확인' })).toBeNull(),
+    );
+  }, 20_000);
+
+  it('「실측이 맞음」으로 진행하면 같은 높이로 이어 가고, 뒤 결과 화면은 높이를 다시 고치라고 하지 않는다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, HEIGHT_CHECK_WAITING);
+    const dialog = await screen.findByRole('dialog', { name: '카메라 높이 확인' }, POLL_WAIT);
+    fireEvent.click(within(dialog).getByRole('button', { name: '실측이 맞음 · 이대로 진행' }));
+    await waitFor(() =>
+      expect(setupMock.sessions.get(sessionId)?.height_decision?.decision).toBe('CONFIRMED'),
+    );
+    expect(setupMock.sessions.get(sessionId)?.camera_heights_m.cam_B).toBe(2.3);
+
+    // 확인한 높이로 나온 검산이 5 cm 넘게 달라도 「카메라 다시 맞추기」를 띄우지 않고 거치대 문구는 「자세히」 안에만 둔다
+    setupMock.updateSession(sessionId, {
+      ...HEIGHT_MISMATCH,
+      height_review: { ...HEIGHT_CHECK_WAITING.height_review!, status: 'CONFIRMED' },
+    });
+    const details = await screen.findByRole('group', { name: '카메라 높이 자세히' }, POLL_WAIT);
+    expect(details.hasAttribute('open')).toBe(false);
+    expect(screen.queryByRole('button', { name: '카메라 다시 맞추기' })).toBeNull();
+    expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 경고' })).toBeNull();
   }, 20_000);
 
   it('끝난 세션을 고친 높이로 새로 시작할 때도 방식 고르기 창을 띄우지 않는다', async () => {
