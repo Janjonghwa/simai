@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.watch;
 
 import com.ssafy.simai.domain.health.HealthState;
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import com.ssafy.simai.domain.realtime.RealtimePublisher;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
 import com.ssafy.simai.domain.rule.RuleCatalog;
@@ -70,6 +71,9 @@ import tools.jackson.databind.node.ObjectNode;
  * 워치로 보내지 않는다(Tier 0 는 재생 영상을 LIVE 로 판정한다). 그 이벤트 ID 를 메모리에 기억해 실제 카메라로 돌아온 뒤 갱신·재동기화로 다시 와도
  * 보내지 않는다(EC2 재시작 뒤에는 잊는다: 재동기화는 최근 10분 갱신분만 보내므로 남는 틈은 재시작 직후 10분이다). 기록·화면 표시는 그대로다.
  * 수동 알림은 사람이 직접 보내는 것이라 막지 않는다.
+ * <p>
+ * 재생 시험 알림 스위치(S15P31A101-736, SIMAI_REPLAY_TEST_ALERTS, 기본 꺼짐): 켜면 위 차단을 하지 않고 기억도 하지 않는다(시험 입력 이벤트도 라이브처럼
+ * 보낸다). 녹화 재생 리허설에서 실제 알림 흐름을 보려는 시험용 예외이며, 관제 화면은 viewer_health laptop.replay_test_alerts 로 그 상태를 보인다.
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -141,6 +145,7 @@ public class WatchAlertService implements AutoCloseable {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final HealthState health;
+    private final ReplayTestSwitch replayTest;
     /** 시험 입력 중에 받은 이벤트(S15P31A101-724). 실제 카메라로 돌아온 뒤에도 보내지 않는다 */
     private final Set<UUID> testInputEvents = Collections.synchronizedSet(Collections.newSetFromMap(new LinkedHashMap<>() {
         @Override
@@ -154,7 +159,8 @@ public class WatchAlertService implements AutoCloseable {
             Thread.ofPlatform().name("watch-escalation").daemon().factory());
 
     WatchAlertService(NamedParameterJdbcTemplate jdbc, WatchBindings bindings, WatchHub hub, WatchProperties properties,
-            RealtimePublisher publisher, ObjectMapper mapper, Clock clock, HealthState health) {
+            RealtimePublisher publisher, ObjectMapper mapper, Clock clock, HealthState health,
+            ReplayTestSwitch replayTest) {
         this.jdbc = jdbc;
         this.bindings = bindings;
         this.hub = hub;
@@ -163,6 +169,7 @@ public class WatchAlertService implements AutoCloseable {
         this.mapper = mapper;
         this.clock = clock;
         this.health = health;
+        this.replayTest = replayTest;
         long period = properties.escalationInterval().toMillis();
         escalator.scheduleWithFixedDelay(this::escalateOverdue, period, period, TimeUnit.MILLISECONDS);
     }
@@ -311,8 +318,12 @@ public class WatchAlertService implements AutoCloseable {
 
     /**
      * 시험 입력 이벤트면 true(보내지 않는다). 지금 시험 입력 중이면 이 이벤트를 기억해 시험 입력이 끝난 뒤에도 보내지 않는다(S15P31A101-724).
+     * 재생 시험 알림 스위치가 켜져 있으면 막지도 기억하지도 않는다(S15P31A101-736).
      */
-    private boolean suppressedForTestInput(UUID eventId) {
+    boolean suppressedForTestInput(UUID eventId) {
+        if (replayTest.alerts()) {
+            return false;
+        }
         if (health.testInputActive()) {
             if (testInputEvents.add(eventId)) {
                 log.info("시험 입력(녹화 파일·합성 영상) 중이라 워치로 보내지 않음: event={}", eventId);

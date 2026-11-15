@@ -167,6 +167,24 @@ public class HealthState {
                 .anyMatch(h -> now - h.receivedNanos() <= TEST_INPUT_HOLD_MS * 1_000_000L && testInput(h.payload()));
     }
 
+    /**
+     * 노트북 카메라 입력이 모두 녹화 파일인가(S15P31A101-736 재생 시험 걷기 확인 생략). 마지막 하트비트가 TEST_INPUT_HOLD_MS 안인 노트북이 하나
+     * 이상이고, 그 모두가 cameras[] 를 싣고 그 카메라가 모두 FILE 이면 true. 실제 카메라(RTSP)·합성 영상·입력 종류 모름이 하나라도 있으면 false
+     */
+    public boolean replayFileOnly() {
+        long now = nanoTime();
+        List<Heartbeat> fresh = laptops.values().stream()
+                .filter(h -> now - h.receivedNanos() <= TEST_INPUT_HOLD_MS * 1_000_000L).toList();
+        return !fresh.isEmpty() && fresh.stream().allMatch(h -> fileOnly(h.payload()));
+    }
+
+    /** 하트비트 cameras[] 가 비지 않았고 모두 FILE 이다 */
+    static boolean fileOnly(JsonNode heartbeat) {
+        JsonNode cameras = heartbeat.path("cameras");
+        return cameras.isArray() && !cameras.isEmpty()
+                && cameras.valueStream().allMatch(c -> "FILE".equals(c.path("source_kind").asString("")));
+    }
+
     /** 하트비트 cameras[] 에 FILE·SYNTHETIC 입력이 하나라도 있다 */
     static boolean testInput(JsonNode heartbeat) {
         JsonNode cameras = heartbeat.path("cameras");

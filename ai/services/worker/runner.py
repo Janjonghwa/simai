@@ -302,6 +302,7 @@ class Worker:
             self._note_live_work(lease, ctx, status)
             self._note_height_decision(lease, ctx, status)
             self._note_camera_check_start(lease, ctx, status)
+            self._note_camera_check_skip(lease, ctx, status)
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
@@ -378,6 +379,7 @@ class Worker:
             self._note_live_work(lease, ctx, status)
             self._note_height_decision(lease, ctx, status)
             self._note_camera_check_start(lease, ctx, status)
+            self._note_camera_check_skip(lease, ctx, status)
             return None
 
     @staticmethod
@@ -393,6 +395,13 @@ class Worker:
         if status.camera_check_start is not None and ctx.note_camera_check_start(status.camera_check_start):
             log.info("작업 %s(%s): 관리자가 카메라 확인 시도 %d 를 요청했다", lease.job_id, lease.job_type,
                      status.camera_check_start)
+
+    @staticmethod
+    def _note_camera_check_skip(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:
+        """EC2 가 재생 시험 걷기 확인 건너뛰기를 알리거나 거두면(job_lease_status 2.4.0, -736) 처리기에 넘긴다. 응답마다 덮어쓴다."""
+        if ctx.note_camera_check_skip(status.camera_check_skip):
+            log.warning("작업 %s(%s): 재생 시험 카메라 확인 건너뛰기 %s", lease.job_id, lease.job_type,
+                        "허용(노트북 입력이 녹화 파일)" if status.camera_check_skip else "거둠")
 
     @staticmethod
     def _note_live_work(lease: Lease, ctx: JobContext, status: LeaseStatus) -> None:

@@ -17,6 +17,8 @@
   받은 경보를 표시·확인·재동기화는 그대로 하되 소리를 내지 않고, 하트비트 alarm.sounding_event_ids 도 비운다. Tier 0 는 재생 영상을
   LIVE 로 판정하므로 이 단말이 실제 알림을 끄는 마지막 자리다. 시작 시 시험 경보(소리 확인)는 그대로 울린다. 시험 입력 중에 표시된
   경보는 실제 카메라(RTSP)로 돌아온 뒤에도 해소될 때까지 울리지 않는다(재생 영상의 경보가 실제 관제 중에 울리지 않게).
+- 재생 시험 알림 스위치(S15P31A101-736, replay_test_alerts, .env SIMAI_REPLAY_TEST_ALERTS, 기본 꺼짐): 켜면 위 시험 입력 차단을 하지 않는다
+  (녹화 재생 리허설에서 소리를 라이브처럼 낸다). 켜진 채 시험 입력이면 화면에 「재생 시험 · 실제 알림 켜짐」 띠를 띄운다.
 
 상태 모델은 '활성 경보 집합'(event_id → ActiveAlert)이다.
 
@@ -128,6 +130,7 @@ class ScreenState:
     site: SiteStatus | None = None  # 장애별 현장 표시(link_status). 감시를 켜지 않았으면(--offline) None
     test_input: bool = False  # 시험 입력(녹화 파일·합성 영상) 중: 실제 경보 소리를 끈다(S15P31A101-724)
     test_muted: frozenset[str] = frozenset()  # 시험 입력 중에 표시돼 해소까지 소리를 내지 않는 경보 event_id
+    replay_test_alerts: bool = False  # 재생 시험 알림 스위치가 켜져 있다(시험 입력이어도 소리를 낸다, S15P31A101-736)
 
 
 @dataclass(frozen=True)
@@ -159,7 +162,8 @@ _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1}
 
 
 class SiteAlertCore:
-    def __init__(self, sound: SoundBackend, *, laptop_id: str, clock: Clock | None = None) -> None:
+    def __init__(self, sound: SoundBackend, *, laptop_id: str, clock: Clock | None = None,
+                 replay_test_alerts: bool = False) -> None:
         self._sound = sound
         self._once_played: dict[tuple[str, int], int] = {}
         self._clock = clock or SystemClock()
@@ -178,6 +182,10 @@ class SiteAlertCore:
         self._site: SiteStatus | None = None
         self._test_input = False  # 영상 중계 입력이 녹화 파일·합성 영상이다(set_test_input)
         self._test_muted: set[str] = set()  # 시험 입력 중에 활성이었던 경보. 해소될 때까지 울리지 않는다
+        # 재생 시험 알림 스위치(S15P31A101-736): 켜면 시험 입력이어도 소리를 끄지 않는다. 기동 때 정하고 바꾸지 않는다
+        self._replay_test_alerts = bool(replay_test_alerts)
+        if self._replay_test_alerts:
+            log.warning("재생 시험 알림 스위치가 켜져 있다(SIMAI_REPLAY_TEST_ALERTS): 녹화 재생 중에도 경보 소리를 낸다. 본 시연 전에 끈다")
         self._listeners: list[Callable[[ScreenState], None]] = []
         self.last_health: Health | None = None  # 마지막으로 받은 health(재동기화 부분)
         self.rejected: Counter[str] = Counter()
@@ -543,7 +551,10 @@ class SiteAlertCore:
         with self._lock:
             if self._test_input != active:
                 self._test_input = active
-                log.warning("시험 입력 %s: 실제 경보 소리를 %s", "시작" if active else "끝", "끈다" if active else "다시 켠다")
+                if self._replay_test_alerts:
+                    log.warning("시험 입력 %s: 재생 시험 알림 스위치가 켜져 있어 경보 소리를 그대로 낸다", "시작" if active else "끝")
+                else:
+                    log.warning("시험 입력 %s: 실제 경보 소리를 %s", "시작" if active else "끝", "끈다" if active else "다시 켠다")
                 self._reconcile(None)
                 self._notify()
 
@@ -579,8 +590,9 @@ class SiteAlertCore:
         return None
 
     def _update_test_muted(self) -> None:
-        """시험 입력 중이면 지금 활성 경보를 모두 소리 끔 목록에 넣고, 해소된(활성에서 빠진) 경보는 목록에서 뺀다."""
-        if self._test_input:
+        """시험 입력 중이면 지금 활성 경보를 모두 소리 끔 목록에 넣고, 해소된(활성에서 빠진) 경보는 목록에서 뺀다.
+        재생 시험 알림 스위치가 켜져 있으면 넣지 않는다(S15P31A101-736)."""
+        if self._test_input and not self._replay_test_alerts:
             self._test_muted.update(self._active)
         self._test_muted.intersection_update(self._active)
 
@@ -671,4 +683,5 @@ class SiteAlertCore:
             site=self._site,
             test_input=self._test_input,
             test_muted=frozenset(self._test_muted),
+            replay_test_alerts=self._replay_test_alerts,
         )

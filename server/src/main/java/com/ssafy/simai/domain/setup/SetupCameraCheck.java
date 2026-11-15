@@ -16,6 +16,9 @@ import tools.jackson.databind.node.ObjectNode;
  * 관리자의 「걷기 시작」을 기다리고, 시도마다 {@code attempt}(번호·ID·시작/만료·보정)를 싣는다. 시도가 FAILED·INCOMPLETE 면
  * {@code user_wait} 를 다시 실어 「확인만 다시」를 기다린다. 서버는 그 요청을 {@code camera_check_request} 에 두고 하트비트 응답으로
  * 보낸다. 세션 조회의 {@code camera_check_phase} 는 화면 걷기 창이 쓰는 한 값이다.
+ * <p>재생 시험 건너뜀(S15P31A101-736, site_setup 1.20.0 SKIPPED_REPLAY): EC2 재생 시험 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일일 때
+ * 워커가 걷지 않고 남기는 상태다. {@link #passed} 는 그대로 PASSED 만 통과로 보고(재사용 후보는 걷기로 확인한 세션만), 관문은
+ * {@link #satisfied} 로 지금도 건너뛰기가 허용될 때만 SKIPPED_REPLAY 를 통과로 본다.
  */
 public final class SetupCameraCheck {
 
@@ -25,11 +28,13 @@ public final class SetupCameraCheck {
     static final int MAX_ATTEMPT_RECORDS = 64;
     private static final Set<String> GATE_VERDICTS = Set.of("PASSED", "NEEDS_CHECK", "FAILED");
     private static final Set<String> CHECK_STATUSES = Set.of("AWAITING_START", "WAITING", "MEASURING", "PASSED", "FAILED",
-            "INCOMPLETE");
+            "INCOMPLETE", "SKIPPED_REPLAY");
     private static final Set<String> FINAL_STATUSES = Set.of("PASSED", "FAILED", "INCOMPLETE");
     /** 관리자 입력을 받을 수 있는 상태(user_wait 가 함께 있어야 한다) */
     private static final Set<String> USER_WAIT_STATUSES = Set.of("AWAITING_START", "FAILED", "INCOMPLETE");
     public static final String PASSED = "PASSED";
+    /** 녹화 재생 시험이라 걷기 확인을 건너뛰었다(site_setup 1.20.0, S15P31A101-736). 통과가 아니다 */
+    public static final String SKIPPED_REPLAY = "SKIPPED_REPLAY";
     /** 세션 조회 paused_reason: 워커가 관리자의 걷기 시작·확인만 다시를 기다린다 */
     public static final String PAUSED_REASON = "CAMERA_CHECK";
 
@@ -44,6 +49,8 @@ public final class SetupCameraCheck {
         /** 시도가 실패·표본 부족으로 끝났고 「확인만 다시」를 받는다 */
         RETRY_WAIT,
         PASSED,
+        /** 녹화 재생 시험이라 걷기를 건너뛰었다(S15P31A101-736). 화면은 「재생 시험: 걷기 확인 생략」을 보인다 */
+        SKIPPED_REPLAY,
         /** 실패로 끝났고 더는 다시 확인을 받지 않는다(세팅 실패·마감 또는 옛 워커의 실패) */
         FAILED
     }
@@ -120,6 +127,9 @@ public final class SetupCameraCheck {
         if (PASSED.equals(status)) {
             return Phase.PASSED;
         }
+        if (SKIPPED_REPLAY.equals(status)) {
+            return Phase.SKIPPED_REPLAY;
+        }
         if (!open) {
             return Phase.FAILED;
         }
@@ -162,6 +172,20 @@ public final class SetupCameraCheck {
      */
     public static boolean passed(String status, String checkedCalibrationVersion, String sessionCalibrationVersion) {
         return PASSED.equals(status) && sessionCalibrationVersion != null
+                && sessionCalibrationVersion.equals(checkedCalibrationVersion);
+    }
+
+    /**
+     * 구역 단계·세팅 완료 관문의 카메라 확인 조건: {@link #passed} 이거나, 녹화 재생 시험 건너뜀(SKIPPED_REPLAY)이고 지금도 건너뛰기가 허용되며
+     * (재생 시험 스위치 켜짐 + 노트북 입력이 모두 녹화 파일, {@code ReplayTestSwitch.cameraCheckSkipAllowed}) 그 보정이 세션 보정과 같다
+     * (S15P31A101-736). 실제 카메라로 돌아왔거나 스위치를 끄면 건너뛴 세션은 다시 막힌다.
+     */
+    public static boolean satisfied(String status, String checkedCalibrationVersion, String sessionCalibrationVersion,
+            boolean replaySkipAllowed) {
+        if (passed(status, checkedCalibrationVersion, sessionCalibrationVersion)) {
+            return true;
+        }
+        return replaySkipAllowed && SKIPPED_REPLAY.equals(status) && sessionCalibrationVersion != null
                 && sessionCalibrationVersion.equals(checkedCalibrationVersion);
     }
 }

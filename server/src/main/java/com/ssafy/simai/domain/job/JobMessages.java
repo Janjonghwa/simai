@@ -17,9 +17,9 @@ final class JobMessages {
     static final String JOB_REQUEST_VERSION = "3.8.0";
     /**
      * job_lease_status 2.3.0(site_setup 작업 시작 신호 live_work_active -597, 카메라 높이 확인 결정 height_decision -690,
-     * 카메라 확인 시도 요청 camera_check_start -687). 워커는 모르는 필드를 무시한다
+     * 카메라 확인 시도 요청 camera_check_start -687). 2.4.0: 재생 시험 걷기 확인 건너뛰기 camera_check_skip(-736). 워커는 모르는 필드를 무시한다
      */
-    static final String LEASE_STATUS_VERSION = "2.3.0";
+    static final String LEASE_STATUS_VERSION = "2.4.0";
     /**
      * site_setup 대여의 하트비트 주기(응답 heartbeat_interval_ms 로 바꿈). 작업 시작 뒤 정식 굽기 회수가 이 주기만큼 늦으므로
      * 기본 10 s 보다 짧게 둔다(명세 3.2 5항 "즉시 회수", -597). 세팅 중에만 쓰여 요청 수 증가는 작다
@@ -92,6 +92,9 @@ final class JobMessages {
         }
         if (status.cameraCheckStart() != null) {
             p.putObject("camera_check_start").put("attempt", status.cameraCheckStart());
+        }
+        if (Boolean.TRUE.equals(status.cameraCheckSkip())) {
+            p.putObject("camera_check_skip").put("reason", "REPLAY_TEST");
         }
         return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_lease_status", LEASE_STATUS_VERSION, p);
     }

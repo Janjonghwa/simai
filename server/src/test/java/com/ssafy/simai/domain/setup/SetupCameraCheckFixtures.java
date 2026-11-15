@@ -29,7 +29,8 @@ public final class SetupCameraCheckFixtures {
         check.putObject("cameras").putObject("cam_A").put("observed_views", 120).put("loo_samples", 80)
                 .put("loo_median_px", 2.1).put("loo_p95_px", 5.0).put("verdict", "PASS");
         var problems = check.putArray("problems");
-        if (!"PASSED".equals(status) && !"WAITING".equals(status) && !"MEASURING".equals(status)) {
+        if (!"PASSED".equals(status) && !"WAITING".equals(status) && !"MEASURING".equals(status)
+                && !"SKIPPED_REPLAY".equals(status)) {
             problems.addObject().put("kind", "PAIR").put("id", "cam_A-cam_B").put("reason", "PASS_RATE_LOW")
                     .put("message", "cam_A–cam_B: 두 카메라가 같은 사람을 같은 위치로 보지 못했습니다");
         }

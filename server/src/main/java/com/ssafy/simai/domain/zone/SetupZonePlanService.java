@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import com.ssafy.simai.domain.setup.SetupCameraCheck;
 import com.ssafy.simai.domain.setup.SetupZoneHeightChanges;
 import com.ssafy.simai.domain.setup.SetupZoneOpinions;
@@ -76,11 +77,13 @@ public class SetupZonePlanService {
     private final StaticObjectRepository surfaces;
     private final SetupZoneOpinions opinions;
     private final SetupZoneReuseSeed reuseSeed;
+    private final ReplayTestSwitch replayTest;
 
     public SetupZonePlanService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, SiteLookup sites, Clock clock,
             TransactionTemplate transaction, ZoneRepository zones, StaticObjectRepository surfaces,
-            SetupZoneOpinions opinions, SetupZoneReuseSeed reuseSeed) {
+            SetupZoneOpinions opinions, SetupZoneReuseSeed reuseSeed, ReplayTestSwitch replayTest) {
         this.reuseSeed = reuseSeed;
+        this.replayTest = replayTest;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.sites = sites;
@@ -283,7 +286,9 @@ public class SetupZonePlanService {
         }
         // 구역 단계는 카메라 확인을 통과한 보정에서만 연다(S15P31A101-646). 읽기는 막지 않는다.
         // 고른 맵의 묶음을 그대로 쓰는 재사용(-714)은 시작 때 1단계 시점 확인을 통과했고 걷기 확인을 하지 않는다
-        if (forWrite && !s.reuseAsIs() && !SetupCameraCheck.passed(s.checkStatus(), s.checkCalibration(), s.calibration())) {
+        // 녹화 재생 시험 건너뜀(SKIPPED_REPLAY, -736)은 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일인 동안만 통과로 본다
+        if (forWrite && !s.reuseAsIs() && !SetupCameraCheck.satisfied(s.checkStatus(), s.checkCalibration(), s.calibration(),
+                replayTest.cameraCheckSkipAllowed())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
         }
     }

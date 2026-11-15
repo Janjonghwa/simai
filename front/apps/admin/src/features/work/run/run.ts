@@ -7,7 +7,7 @@ import {
 } from '@/features/events/entries';
 import type { EventItem, Severity } from '@/features/events/types';
 import type { MonitoringPhase } from '@/features/monitor/monitoringPhase';
-import { TEST_INPUT_LABEL } from '@/features/monitor/useTestInput';
+import { REPLAY_TEST_ALERTS_LABEL, TEST_INPUT_LABEL } from '@/features/monitor/useTestInput';
 import type { WorkReport } from '@/features/work/types';
 import { isEndingGenerating } from '@/features/work/workDay';
 
@@ -180,6 +180,11 @@ export interface AppliedStatus {
    * 워치 진동)이 꺼져 있으므로 「경보 켜짐」이라 하지 않는다. 모르면(이전 EC2) false.
    */
   testInput?: boolean;
+  /**
+   * EC2 재생 시험 알림 스위치(viewer_health 1.7.0 laptop.replay_test_alerts, S15P31A101-736). 재생 중에 켜져 있으면 실제 알림이 나가므로
+   * 재생 줄을 「재생 시험 · 실제 알림 켜짐」(경고)으로 바꾼다. 모르면 false.
+   */
+  replayTestAlerts?: boolean;
 }
 
 /** 관제 단계 줄. 모르면 null. */
@@ -203,11 +208,17 @@ export function appliedStatusLines({
   appliedZoneCount,
   cameras,
   testInput = false,
+  replayTestAlerts = false,
 }: AppliedStatus): AppliedLine[] {
   const lines: AppliedLine[] = [];
   const monitoring = phaseLine(phase);
   // 재생 중이면 「현장 적용됨 · 경보 켜짐」 대신 재생 중임을 알린다(적용 대기·거부·끊김 줄은 그대로 두고 재생 줄을 앞에 더한다)
-  if (testInput) lines.push({ text: TEST_INPUT_LABEL, tone: 'wait' });
+  if (testInput)
+    lines.push(
+      replayTestAlerts
+        ? { text: REPLAY_TEST_ALERTS_LABEL, tone: 'bad' }
+        : { text: TEST_INPUT_LABEL, tone: 'wait' },
+    );
   if (monitoring && !(testInput && phase.stage === 'on')) lines.push(monitoring);
   if (sceneReady) lines.push({ text: '3D 모델 적용됨', tone: 'ok' });
   if (phase.stage === 'on' && appliedZoneCount !== null) {

@@ -338,8 +338,19 @@ export type QualityGate = z.infer<typeof qualityGateSchema>;
 
 export const cameraCheckSchema = z
   .object({
-    /** AWAITING_START(site_setup 1.19.0, -687): 보정이 끝나 「걷기 시작」을 기다린다(시도 없음). */
-    status: z.enum(['AWAITING_START', 'WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']),
+    /**
+     * AWAITING_START(site_setup 1.19.0, -687): 보정이 끝나 「걷기 시작」을 기다린다(시도 없음). SKIPPED_REPLAY(1.20.0, -736): 녹화 재생
+     * 시험이라 걷기 확인을 건너뛰었다(EC2 재생 시험 스위치 + 노트북 입력이 모두 녹화 파일일 때만).
+     */
+    status: z.enum([
+      'AWAITING_START',
+      'WAITING',
+      'MEASURING',
+      'PASSED',
+      'FAILED',
+      'INCOMPLETE',
+      'SKIPPED_REPLAY',
+    ]),
     calibration_version: z.string(),
     /** 지금(마지막) 확인 시도(-687). 「확인만 다시」마다 번호가 오른다. 1.18.0 이전 워커는 싣지 않는다. */
     attempt: z
@@ -389,7 +400,8 @@ export type CameraCheck = z.infer<typeof cameraCheckSchema>;
 
 /**
  * 걷기 창이 쓰는 카메라 확인 단계(서버 camera_check_phase, -687). AWAITING_START 걷기 시작 대기 · STARTING 요청을 보냈고 워커가 아직
- * 시도를 열지 않음 · WALKING 시도 중 · RETRY_WAIT 실패해 확인만 다시 대기 · PASSED · FAILED(더는 다시 확인을 받지 않음).
+ * 시도를 열지 않음 · WALKING 시도 중 · RETRY_WAIT 실패해 확인만 다시 대기 · PASSED · SKIPPED_REPLAY 녹화 재생 시험이라 걷기 확인
+ * 생략(-736) · FAILED(더는 다시 확인을 받지 않음).
  */
 export const cameraCheckPhaseSchema = z.enum([
   'AWAITING_START',
@@ -397,6 +409,7 @@ export const cameraCheckPhaseSchema = z.enum([
   'WALKING',
   'RETRY_WAIT',
   'PASSED',
+  'SKIPPED_REPLAY',
   'FAILED',
 ]);
 export type CameraCheckPhase = z.infer<typeof cameraCheckPhaseSchema>;

@@ -2,6 +2,7 @@ package com.ssafy.simai.domain.setup;
 
 import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import com.ssafy.simai.domain.layout.LayoutZoneService;
 import com.ssafy.simai.domain.report.TbmFormAiService;
 import com.ssafy.simai.domain.scene.SceneActivationService;
@@ -62,12 +63,14 @@ public class SetupCompletionService {
     private final SetupArtifactRegistrar artifacts;
     private final TbmFormAiService tbmFormAi;
     private final SetupReuseCalibration reuseCalibration;
+    private final ReplayTestSwitch replayTest;
 
     public SetupCompletionService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager, SiteLookup sites,
             Clock clock, WorkUnitRepository workUnits, LayoutZoneService layoutZones, SetupZoneApplier zoneApplier,
             SceneActivationService scenes, ConfigBundleService configs, SetupArtifactRegistrar artifacts,
-            TbmFormAiService tbmFormAi, SetupReuseCalibration reuseCalibration) {
+            TbmFormAiService tbmFormAi, SetupReuseCalibration reuseCalibration, ReplayTestSwitch replayTest) {
         this.reuseCalibration = reuseCalibration;
+        this.replayTest = replayTest;
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.sites = sites;
@@ -116,7 +119,9 @@ public class SetupCompletionService {
             // 세션 조회의 complete_blocked_reason 도 같은 판정이다
             ErrorCode.Setup blocked = SetupCompletionGate.blockedReason(session.status(), session.mode(), session.anchorAccepted(),
                     session.sceneVersion(), session.bakeSkipped(),
-                    SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion()),
+                    // 재생 시험 건너뜀(SKIPPED_REPLAY, -736)은 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일인 동안만 통과
+                    SetupCameraCheck.satisfied(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion(),
+                            replayTest.cameraCheckSkipAllowed()),
                     session.reuseAsIs());
             if (blocked != null) {
                 throw new BusinessException(blocked);

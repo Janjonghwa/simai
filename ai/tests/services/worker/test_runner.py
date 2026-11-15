@@ -290,6 +290,30 @@ def test_camera_check_start_reaches_the_handler_and_late_smaller_number_is_ignor
     assert ec2.jobs[job_id].state == "SUCCEEDED"
 
 
+def test_camera_check_skip_follows_the_latest_heartbeat_response(ec2, make_worker):
+    """EC2 가 하트비트 응답에 재생 시험 건너뛰기(camera_check_skip)를 실으면 ctx 에 들어가고, 빼고 보내면 거둔다(-736)."""
+    job_id = ec2.add_job("site_setup", load_example("job_request.site_setup.json")["payload"]["input"], timeout_ms=10_000)
+    seen = []
+
+    def wait_for(ctx: JobContext, value: str | None) -> None:
+        deadline = time.monotonic() + 5.0
+        while ctx.camera_check_skip != value and time.monotonic() < deadline:
+            time.sleep(0.01)
+        seen.append(ctx.camera_check_skip)
+
+    def handler(ctx: JobContext):
+        assert ctx.camera_check_skip is None
+        ec2.camera_check_skips.add(ctx.job_id)
+        wait_for(ctx, "REPLAY_TEST")
+        ec2.camera_check_skips.discard(ctx.job_id)  # 실제 카메라로 돌아오면 EC2 가 빼고 보낸다
+        wait_for(ctx, None)
+        return copy.deepcopy(load_example("job_callback.site_setup.json")["payload"]["result"])
+
+    assert make_worker({"site_setup": handler}).run_once() is Outcome.ACCEPTED
+    assert seen == ["REPLAY_TEST", None]
+    assert ec2.jobs[job_id].state == "SUCCEEDED"
+
+
 def test_cancelled_job_heartbeat_rejected(ec2, make_worker):
     """EC2 가 작업을 취소하면 다음 하트비트가 REJECTED 이고, 워커는 처리기를 멈추고 결과를 내지 않는다."""
     job_id = ec2.add_job("static_reconstruct")

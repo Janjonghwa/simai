@@ -18,6 +18,8 @@ SEVERITY_LABEL = {"CRITICAL": "위험", "HIGH": "경고", "CAUTION": "주의", "
 CHANNEL_LABEL = {"CONTROL_ROOM": "관제 화면", "FOREMAN_PWA": "반장 PWA", "SITE_BUTTON": "현장 확인 버튼"}
 TEST_BANNER = "[시험] 시험 경보입니다. 실제 위험이 아닙니다. 소리가 들리고 화면이 보이는지 확인하세요."
 # 영상 중계가 녹화 파일·합성 영상을 보내는 동안 (S15P31A101-724, AGENTS 규칙 5)
+# 재생 시험 알림 스위치가 켜진 채 시험 입력(S15P31A101-736): 소리를 라이브처럼 낸다
+REPLAY_TEST_BANNER = "재생 시험 · 실제 알림 켜짐 (녹화 파일 재생 중이지만 경보 소리를 실제처럼 냅니다. 본 시연 전에 SIMAI_REPLAY_TEST_ALERTS 를 끄세요)"
 TEST_INPUT_BANNER = "시험 입력 — 실제 경보 꺼짐 (녹화 파일·합성 영상 재생 중: 경보는 화면에만 표시하고 소리를 내지 않습니다)"
 
 
@@ -120,6 +122,11 @@ def group_by_person(alerts: tuple[ActiveAlert, ...]) -> list[tuple[ActiveAlert, 
     return [(leader, tuple(members)) for leader, members, _ in groups]
 
 
+def input_banner(state: ScreenState) -> str:
+    """시험 입력 띠 문구: 재생 시험 알림 스위치가 켜져 있으면 「재생 시험 · 실제 알림 켜짐」, 아니면 「시험 입력 — 실제 경보 꺼짐」."""
+    return REPLAY_TEST_BANNER if state.replay_test_alerts else TEST_INPUT_BANNER
+
+
 def render_lines(state: ScreenState) -> list[str]:
     lines: list[str] = []
     if state.sound_fault:
@@ -130,7 +137,7 @@ def render_lines(state: ScreenState) -> list[str]:
         else:
             lines.append("[시험] 시험 경보 끝 (소리 재생: " + ("시작됨" if state.test.sound_started else "실패") + ")")
     if state.test_input:
-        lines.append("[" + TEST_INPUT_BANNER + "]")
+        lines.append("[" + input_banner(state) + "]")
     if state.site is not None:
         lines.append(site_banner(state.site))
         lines.append(site_detail(state.site))
@@ -267,7 +274,9 @@ class TkDisplay:
         else:
             self._test.pack_forget()
         if state.test_input:
-            self._test_input.configure(text=TEST_INPUT_BANNER)
+            # 재생 시험 알림 스위치가 켜져 있으면 「실제 알림 켜짐」을 빨간 띠로 크게(S15P31A101-736)
+            self._test_input.configure(text=input_banner(state), bg="#b00020" if state.replay_test_alerts else "#3a2f8f",
+                                       font=("Malgun Gothic", 26 if state.replay_test_alerts else 20, "bold"))
             self._test_input.pack(fill="x", before=self._status, ipady=8)
         else:
             self._test_input.pack_forget()

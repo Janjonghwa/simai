@@ -499,6 +499,8 @@ class CameraChecker(Protocol):
 
 CAMERA_CHECK_FINAL = frozenset({"PASSED", "FAILED", "INCOMPLETE"})
 CAMERA_CHECK_AWAITING_START = "AWAITING_START"  # site_setup 1.19.0 camera_check.status(-687)
+# site_setup 1.20.0 camera_check.status(-736): 녹화 재생 시험이라 걷기 확인을 건너뛰었다(EC2 job_lease_status 2.4.0 camera_check_skip)
+CAMERA_CHECK_SKIPPED_REPLAY = "SKIPPED_REPLAY"
 CAMERA_CHECK_NOT_PASSED = "CAMERA_CHECK_NOT_PASSED"  # 대기 마감까지 통과하지 못함(맵 굽지 않음)
 CAMERA_CHECK_UNAVAILABLE = "CAMERA_CHECK_UNAVAILABLE"  # 확인 채널(같은 Pod 의 Tier 0 view)을 열지 못함(맵 굽지 않음)
 
@@ -902,7 +904,10 @@ class SiteSetupHandler:
         2) 시도를 열어(attempt_id 별 view 폴더) poll 한다. PASSED 면 끝. FAILED·INCOMPLETE(시도 상한)면 user_wait 를 다시 싣고
            「확인만 다시」(지금 번호보다 큰 번호)를 기다린다. 늦게 온 같거나 작은 번호는 무시한다.
         3) 단계 마감(min(대기 상한, 실행 상한 − reserve_s))까지 통과하지 못하면 CAMERA_CHECK_NOT_PASSED. 시도를 열지 못하거나 Tier 0 view
-           가 channel_s 동안 한 줄도 오지 않으면 CAMERA_CHECK_UNAVAILABLE."""
+           가 channel_s 동안 한 줄도 오지 않으면 CAMERA_CHECK_UNAVAILABLE.
+        녹화 재생 시험(-736): EC2 가 마지막 하트비트 응답으로 건너뛰기(ctx.camera_check_skip, job_lease_status 2.4.0)를 알리고 있으면 단계에
+        들어설 때나 관리자 입력을 기다리는 동안(걷는 중에는 보지 않는다) 걷지 않고 SKIPPED_REPLAY 를 남긴 뒤 돌아온다. EC2 는 재생 시험
+        스위치가 켜져 있고 노트북 카메라 입력이 모두 녹화 파일일 때만 보내므로 실제 카메라(RTSP)면 확인은 그대로다."""
         checker = self._camera_check
         if checker is None:
             return
@@ -910,6 +915,9 @@ class SiteSetupHandler:
         doc["calibration_version"] = calibration_version
         required = [tuple(p["camera_ids"]) for p in (self._quality_gate or {}).get("pairs", {}).values()
                     if p.get("verdict") == "NEEDS_CHECK" and len(p.get("camera_ids", ())) == 2]
+        if self._replay_skip(ctx):
+            self._skip_camera_check_for_replay(ctx, base, checker, doc, required, attempt=None)
+            return
         remaining = ctx.remaining_s()
         budget = self._cc_wait_s if remaining is None else min(self._cc_wait_s, remaining - reserve_s)
         if budget < self._cc_min_s:
@@ -935,6 +943,9 @@ class SiteSetupHandler:
             self._check_cancelled(ctx)
             now = self._monotonic()
             if waiting_user:
+                if self._replay_skip(ctx):
+                    self._skip_camera_check_for_replay(ctx, base, checker, doc, required, attempt=attempt, idle=idle)
+                    return
                 requested = ctx.camera_check_start
                 if requested > attempt_no and stage_deadline - now > 0:
                     attempt_no = requested
@@ -999,6 +1010,30 @@ class SiteSetupHandler:
             self._set_camera_check(ctx, base, last, force=False)
             self._sleep(ctx.cancelled, max(0.01, min(self._cc_poll_s, attempt_deadline - now)))
         self._close_camera_check(ctx, base, last, attempt, budget)
+
+    @staticmethod
+    def _replay_skip(ctx: JobContext) -> bool:
+        """EC2 가 녹화 재생 시험 걷기 확인 건너뛰기를 알리고 있는가(-736). 모르는 JobContext(시험용 가짜)는 건너뛰지 않는다."""
+        return getattr(ctx, "camera_check_skip", None) == "REPLAY_TEST"
+
+    def _skip_camera_check_for_replay(self, ctx: JobContext, base: Mapping[str, Any], checker: CameraChecker,
+                                      doc: Mapping[str, Any], required: list[tuple[str, ...]], *,
+                                      attempt: Mapping[str, Any] | None, idle: Mapping[str, Any] | None = None) -> None:
+        """걷지 않고 SKIPPED_REPLAY(빈 표본·판정, 관리자 대기 없음)를 남긴다. 그 전 시도가 있으면 기록으로 남긴다. 검증 기준선은 만들지 않는다."""
+        if idle is None:
+            try:
+                idle = dict(checker.idle(doc, required_pairs=required))  # type: ignore[arg-type]
+            except Exception as exc:  # 요약 모양을 만들 수 없으면 건너뛰지 않은 것과 같다(맵을 굽지 않는다)
+                raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
+                                f"카메라 확인을 준비하지 못했습니다({type(exc).__name__}: {exc})"[:480], retryable=False) from exc
+        checker.stop()
+        summary: dict[str, Any] = {k: v for k, v in idle.items() if k not in ("user_wait", "attempt", "baseline")}
+        summary.update(status=CAMERA_CHECK_SKIPPED_REPLAY, progress_pct=0.0, elapsed_s=0.0, problems=[])
+        if attempt is not None:
+            summary["attempt"] = dict(attempt)
+        self._set_camera_check(ctx, base, summary, force=True)
+        log.warning("작업 %s: 녹화 재생 시험이라 카메라 확인 걷기를 건너뛴다(EC2 camera_check_skip, 보정 %s). 맵 단계로 간다",
+                    ctx.job_id, doc.get("calibration_version"))
 
     def _close_camera_check(self, ctx: JobContext, base: Mapping[str, Any], last: Mapping[str, Any],
                             attempt: Mapping[str, Any] | None, budget: float) -> NoReturn:

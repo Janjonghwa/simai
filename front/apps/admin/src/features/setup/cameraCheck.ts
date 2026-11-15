@@ -13,6 +13,12 @@ import type {
 // 실패하면 보정은 그대로 두고 「확인만 다시(30초)」 한다. 창의 단계는 서버 camera_check_phase 를 그대로 쓴다.
 
 export type CameraCheckStatus = CameraCheck['status'] | 'NONE';
+
+/** 녹화 재생 시험이라 걷기 확인을 건너뛴 세션의 표시 문구(S15P31A101-736). */
+export const REPLAY_SKIP_LABEL = '재생 시험: 걷기 확인 생략';
+/** 그 설명. */
+export const REPLAY_SKIP_DETAIL =
+  '녹화 파일을 재생하는 시험이라 사람 걷기 확인 없이 다음 단계로 갑니다(EC2 재생 시험 스위치 SIMAI_REPLAY_TEST_SKIP_CAMERA_CHECK). 실제 카메라 세팅에서는 걷기 확인을 그대로 합니다.';
 /** 표 한 행의 종합 판정: 통과 · 실패 · 아직 모름(재는 중·근거 부족) · 해당 없음(시야가 겹치지 않는 쌍). */
 export type PairOutcome = 'pass' | 'fail' | 'pending' | 'na';
 
@@ -50,6 +56,8 @@ export interface CameraCheckView {
   gated: boolean;
   /** 서버 관문 판정(구역 단계·세팅 완료를 받는지). 관문을 모르는 서버면 true(막지 않는다). */
   passed: boolean;
+  /** 녹화 재생 시험이라 걷기 확인을 건너뛰었다(camera_check SKIPPED_REPLAY, S15P31A101-736). */
+  skippedForReplay: boolean;
   qualityVerdict: QualityGate['verdict'] | null;
   pairs: CameraCheckPairRow[];
   cameras: CameraCheckCameraRow[];
@@ -117,6 +125,7 @@ export function deriveCameraCheckView(
     // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 걷기 확인 대신 1단계 시점 확인을 통과해 시작했다(관문 없음)
     gated: !session?.reuse_source && typeof session?.camera_check_passed === 'boolean',
     passed: Boolean(session?.reuse_source) || session?.camera_check_passed !== false,
+    skippedForReplay: check?.status === 'SKIPPED_REPLAY',
     qualityVerdict: gate?.verdict ?? null,
     pairs,
     cameras,

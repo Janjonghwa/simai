@@ -442,6 +442,28 @@ describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이
     expect(screen.queryByRole('button', { name: '다시 보정' })).toBeNull();
   });
 
+  it('녹화 재생 시험으로 걷기 확인을 건너뛰면 「재생 시험: 걷기 확인 생략」을 보이고, 아니면 보이지 않는다(S15P31A101-736)', () => {
+    renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'SKIPPED_REPLAY'),
+        camera_check_passed: true,
+        camera_check_phase: 'SKIPPED_REPLAY',
+      }),
+    );
+    const notice = screen.getByTestId('setup-replay-skip');
+    expect(notice.textContent).toContain('재생 시험: 걷기 확인 생략');
+    expect(notice.getAttribute('role')).toBe('status');
+    cleanup();
+    renderCheck(
+      readySession({
+        camera_check: buildCameraCheck(CAMS, 'cal-9', 'PASSED'),
+        camera_check_passed: true,
+        camera_check_phase: 'PASSED',
+      }),
+    );
+    expect(screen.queryByTestId('setup-replay-skip')).toBeNull();
+  });
+
   it('옛 품질 게이트 멈춤(paused_reason QUALITY_GATE)도 멈춤 안내를 그리지 않는다(PausedNotice 삭제, S15P31A101-691)', () => {
     renderCheck(readySession({ paused_reason: 'QUALITY_GATE' }));
     expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();

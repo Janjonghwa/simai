@@ -1528,6 +1528,65 @@ def test_camera_check_attempt_cap_closes_as_incomplete_with_sample_shortage_then
     assert events[-2:] == ["preview", "bake"]
 
 
+def test_camera_check_replay_skip_records_skipped_replay_and_goes_to_the_map() -> None:
+    """녹화 재생 시험(-736): EC2 가 하트비트 응답으로 건너뛰기를 알리고 있으면 걷기를 열지 않고 SKIPPED_REPLAY(관리자 대기 없음)를 남긴 뒤
+    미리보기·굽기로 간다."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t)
+    ctx = JobContext("job-cc-replay", "0192a6f0-7c1e-7b3a-9f2d-000000000736", "site_setup", 1, inp, timeout_ms=1_800_000)
+    ctx.note_camera_check_skip("REPLAY_TEST")
+    result = handler(ctx)
+
+    assert events == ["preview", "bake"] and checker.started == []
+    checks = _checks(ctx)
+    assert checks and all(c["status"] == "SKIPPED_REPLAY" for c in checks)
+    assert "user_wait" not in checks[0] and "attempt" not in checks[0] and checks[0]["problems"] == []
+    assert checks[0]["calibration_version"] == result["calibration_version"]
+    assert result["camera_check"]["status"] == "SKIPPED_REPLAY"
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_camera_check_replay_skip_arriving_while_waiting_for_walk_start_skips() -> None:
+    """걷기 시작을 기다리는 동안 건너뛰기가 오면(스위치를 켜고 녹화 파일로 바꾼 뒤) 그때 SKIPPED_REPLAY 로 맵 단계로 간다(-736)."""
+    events: list[str] = []
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]], events=events)
+    handler, inp = _cc_room(checker, events, t)
+    box: dict[str, JobContext] = {}
+
+    def sleep(event: Any, seconds: float) -> None:
+        t.sleeps.append(seconds)
+        t.now += seconds
+        if t.now >= 5.0:
+            box["ctx"].note_camera_check_skip("REPLAY_TEST")
+    handler._sleep = sleep
+    ctx = box["ctx"] = JobContext("job-cc-replay2", "0192a6f0-7c1e-7b3a-9f2d-000000000737", "site_setup", 1, inp,
+                                  timeout_ms=1_800_000)
+    result = handler(ctx)
+
+    checks = _checks(ctx)
+    assert checks[0]["status"] == "AWAITING_START"
+    assert checks[-1]["status"] == "SKIPPED_REPLAY" and "user_wait" not in checks[-1]
+    assert events == ["preview", "bake"] and result["camera_check"]["status"] == "SKIPPED_REPLAY"
+
+
+def test_camera_check_without_replay_skip_still_waits_for_the_walk() -> None:
+    """건너뛰기가 없으면(스위치 끔·실제 카메라) 지금처럼 걷기 시작을 기다린다(-736 의 기본 동작)."""
+    t = _FakeTime()
+    checker = _FakeChecker([["PASSED"]])
+    handler, inp = _cc_room(checker, [], t)
+    ctx = JobContext("job-cc-noskip", "0192a6f0-7c1e-7b3a-9f2d-000000000738", "site_setup", 1, inp, timeout_ms=1_800_000)
+    ctx.note_camera_check_skip(None)
+    with pytest.raises(JobFailed) as e:
+        handler(ctx)
+    assert e.value.code == "CAMERA_CHECK_NOT_PASSED"
+    assert all(c["status"] != "SKIPPED_REPLAY" for c in _checks(ctx))
+
+
 def test_camera_check_without_walk_start_fails_with_zero_bakes() -> None:
     """대기 마감까지 「걷기 시작」이 없으면 CAMERA_CHECK_NOT_PASSED 로 끝나고 미리보기·굽기를 한 번도 부르지 않는다."""
     t = _FakeTime()
