@@ -680,9 +680,7 @@ describe('세팅 대기 이유 안내(S15P31A101-583)', () => {
         tier0_lag_ms: 1450.4,
       }),
     )!;
-    expect(released.title).toBe(
-      'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다',
-    );
+    expect(released.title).toBe('GPU 서버가 관제를 먼저 처리하느라 세팅 시작을 기다리고 있습니다');
     expect(released.notes).toEqual([
       'GPU 서버가 알려 옴: Tier 0 우선으로 시작하지 않았다: 표시 파일이 120s 전 것이다',
       '참고: 최근 관제 지연 1450 ms',
@@ -703,7 +701,7 @@ describe('세팅 대기 이유 안내(S15P31A101-583)', () => {
         cameras: [{ camera_id: 'cam_C', collection_pct: 15.4 }],
       }),
     )!;
-    expect(bg.title).toBe('사람 없는 배경을 아직 다 모으지 못했습니다 (cam_C 15%)');
+    expect(bg.title).toBe('사람 없는 배경을 아직 다 모으지 못했습니다 (카메라 15%)');
     expect(bg.hint).toBe('사람이 카메라 앞에서 잠시 비켜 주세요.');
 
     const retry = deriveWaitReasonView(reason({ previous_error_code: 'BACKGROUND_INCOMPLETE' }))!;

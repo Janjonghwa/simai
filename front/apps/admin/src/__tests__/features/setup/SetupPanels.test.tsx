@@ -301,7 +301,7 @@ describe('세팅 대기 이유 표시(S15P31A101-583)', () => {
       basis: 'TIER0_HEALTH',
     })!;
     expect(box.textContent).toContain(
-      'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다',
+      'GPU 서버가 관제를 먼저 처리하느라 세팅 시작을 기다리고 있습니다',
     );
     expect(box.textContent).toContain('대기 10분 05초');
     expect(box.textContent).toContain('관제 지연을 알 수 없다는 기록으로 추정');
@@ -317,7 +317,7 @@ describe('세팅 대기 이유 표시(S15P31A101-583)', () => {
       cameras: [{ camera_id: 'cam_C', collection_pct: 15 }],
     })!;
     expect(
-      within(box).getByText('사람 없는 배경을 아직 다 모으지 못했습니다 (cam_C 15%)'),
+      within(box).getByText('사람 없는 배경을 아직 다 모으지 못했습니다 (카메라 2 15%)'),
     ).toBeTruthy();
     expect(within(box).getByText('사람이 카메라 앞에서 잠시 비켜 주세요.')).toBeTruthy();
     expect(box.textContent).toContain('대기 1분 30초');

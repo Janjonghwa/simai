@@ -24,6 +24,7 @@ export interface BackgroundCaptureState {
   view: CaptureView;
   secondsLeft: number;
   waitingForWorker: boolean;
+  waitingSeconds: number;
   /** 1단계 '다음': 「시작」 전 창을 연다. */
   begin: () => void;
   /** 「시작」: 촬영 중 창으로 바꾼다(세션 만들기는 부모가 한다). */
@@ -72,19 +73,22 @@ export function useBackgroundCapture({
     }
   }
 
-  const reported = captureSession?.background_capture != null;
+  const reported =
+    captureSession?.background_capture != null ||
+    Object.values(captureSession?.background_collection_pct ?? {}).some((pct) => pct > 0);
   const captureId = captureSession?.setup_session_id ?? null;
-  const ticking = mode === 'live' && reported;
+  const ticking = mode === 'live';
   useEffect(() => {
     if (!ticking || !captureId) return;
     const timer = window.setInterval(() => {
       const t = Date.now();
       setNow(t);
       // 첫 박자에 이 세션의 촬영 시작 시각을 잡는다(그 전에는 CAPTURE_SECONDS 를 보인다)
-      setStartedAt((prev) => (prev && prev.id === captureId ? prev : { id: captureId, at: t }));
+      if (reported)
+        setStartedAt((prev) => (prev && prev.id === captureId ? prev : { id: captureId, at: t }));
     }, TICK_MS);
     return () => window.clearInterval(timer);
-  }, [ticking, captureId]);
+  }, [ticking, captureId, reported]);
 
   const view = deriveCaptureView(captureSession, cameraIds, mode === 'live' && !captureSession);
   const begin = useCallback(() => {
@@ -105,6 +109,7 @@ export function useBackgroundCapture({
       now,
     ),
     waitingForWorker: view.phase === 'capturing' && !reported,
+    waitingSeconds: Math.max(0, Math.floor((now - (captureSession?.started_at_ms ?? now)) / 1000)),
     begin,
     start,
     close,

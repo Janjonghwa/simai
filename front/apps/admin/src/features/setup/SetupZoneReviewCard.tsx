@@ -1,6 +1,8 @@
 import { ALARM_BORDER } from '@/features/events/alarmTone';
 import { SEVERITY_LABEL } from '@/features/events/constants';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
+import { cameraText } from '@/features/setup/cameraLabels';
+import { hasChangeOpinion } from '@/features/setup/setupUx';
 import { useSetupZoneReview } from '@/features/setup/useSetupZoneReview';
 import { ZoneOpinionBlock } from '@/features/setup/ZoneOpinionView';
 import type { Zone, ZoneHeightChangeStatus } from '@/features/zones/types';
@@ -49,6 +51,7 @@ const HEIGHT_BADGE_CLASS: Record<ZoneHeightChangeStatus, string> = {
 };
 
 function heightRank(zone: Zone): number {
+  if (hasChangeOpinion(zone.aiOpinion)) return 0;
   const status = zone.heightChange?.status;
   return status ? HEIGHT_STATUS_RANK[status] : 1;
 }
@@ -64,7 +67,13 @@ export function reviewOrder(zones: readonly Zone[]): Zone[] {
 }
 
 /** 세팅 구역 단계 오른쪽 칸의 확인 카드. 세션 구역 목록(ZoneSourceContext)으로 그린 장면(SpatialViewportContext) 안에서만 그린다. */
-export function SetupZoneReviewCard({ sessionId }: { sessionId: string }) {
+export function SetupZoneReviewCard({
+  sessionId,
+  cameraIds = [],
+}: {
+  sessionId: string;
+  cameraIds?: readonly string[];
+}) {
   const viewport = useSpatialViewport();
   const review = useSetupZoneReview(sessionId);
   const { armedKey, arm, disarm } = useArmedDelete();
@@ -130,10 +139,11 @@ export function SetupZoneReviewCard({ sessionId }: { sessionId: string }) {
         )}
         <ul aria-label="이어 쓴 구역" className="flex flex-col gap-1">
           {rows.map((zone) => {
-            const name = zoneDisplayName(zone.name);
+            const name = cameraText(cameraIds, zoneDisplayName(zone.name));
             const armed = armedKey === zone.zoneId;
             const heightStatus = zone.heightChange?.status;
-            const suspected = heightStatus === 'CHANGE_SUSPECTED';
+            const aiChange = hasChangeOpinion(zone.aiOpinion);
+            const suspected = heightStatus === 'CHANGE_SUSPECTED' || aiChange;
             return (
               <li
                 key={zone.zoneId}
@@ -161,10 +171,14 @@ export function SetupZoneReviewCard({ sessionId }: { sessionId: string }) {
                     <span
                       className={cn(
                         'shrink-0 rounded border px-1.5 py-0.5 text-[11px] leading-none',
-                        HEIGHT_BADGE_CLASS[heightStatus],
+                        aiChange
+                          ? 'border-delay bg-delay/10 text-delay'
+                          : HEIGHT_BADGE_CLASS[heightStatus],
                       )}
                     >
-                      {HEIGHT_STATUS_LABEL[heightStatus]}
+                      {heightStatus === 'UNCHANGED' && aiChange
+                        ? '변화 감지'
+                        : HEIGHT_STATUS_LABEL[heightStatus]}
                     </span>
                   )}
                   {zone.needsReview ? (
@@ -200,7 +214,13 @@ export function SetupZoneReviewCard({ sessionId }: { sessionId: string }) {
                     {armed ? '삭제 확인' : '삭제'}
                   </Button>
                 </div>
-                {zone.aiOpinion && <ZoneOpinionBlock zoneName={name} opinion={zone.aiOpinion} />}
+                {zone.aiOpinion && (
+                  <ZoneOpinionBlock
+                    zoneName={name}
+                    opinion={zone.aiOpinion}
+                    cameraIds={cameraIds}
+                  />
+                )}
               </li>
             );
           })}

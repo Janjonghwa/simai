@@ -74,6 +74,26 @@ const withoutPublish = (body: unknown) => {
 };
 
 describe('useAcceptZoneDraft', () => {
+  it('보정이 없어 전송에 실패해도 초안은 한 번 저장하고 원인·재전송 시점·계속 실패할 결과를 알린다', async () => {
+    const objects = createStaticObjectsMock();
+    const zones = createZonesMock({ staticObjects: objects.store });
+    zones.failNextPublish('CURRENT_CALIBRATION_MISSING');
+    server.resetHandlers(...zones.handlers, ...objects.handlers);
+    const view = run();
+    await waitFor(() => expect(view.result.current.zones.zones.length).toBeGreaterThan(0));
+    const before = view.result.current.zones.zones.length;
+    await act(() => view.result.current.accept.accept(OPENING));
+    await waitFor(() => expect(commits).toHaveLength(2));
+    expect(commits).toMatchObject([{ publish: true }, { publish: false }]);
+    expect(view.result.current.zones.zones).toHaveLength(before + 1);
+    expect(view.result.current.accept.acceptedIds).toContain(OPENING.candidate_id);
+    expect(view.result.current.accept.failure?.text).toContain('유효한 카메라 보정이 없어요');
+    expect(view.result.current.accept.failure?.text).toContain('세팅 완료와 작업 시작 때 다시');
+    expect(view.result.current.accept.failure?.text).toContain('완료·시작도 멈추므로');
+    await act(() => view.result.current.accept.accept(OPENING));
+    expect(commits).toHaveLength(2);
+  });
+
   it('세팅 AI 초안 저장에 세션을 전달하고 발행 후 구역을 반영한다', async () => {
     const sync = vi.fn().mockResolvedValue(undefined);
     const view = run(DRAFTS, { sessionId: 'session-1', sync, retry: vi.fn() });

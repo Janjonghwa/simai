@@ -58,7 +58,9 @@ function WalkTile({
           />
           <span className={cn(CAPTION, 'top-2 left-2')}>
             <span className="font-semibold">{camera.label}</span>
-            <span>{tileLabel(phase, link)}</span>
+            <span>
+              {link === 'stopped' ? '미리보기 멈춤(걷기 확인 계속)' : tileLabel(phase, link)}
+            </span>
           </span>
           {camera.visible !== null && (
             <span
@@ -206,6 +208,36 @@ export function CameraCheckModal({
             />
           ))}
         </ul>
+        {(walking || retry) &&
+          (view.pairs.length > 0 ? (
+            <ul
+              aria-label="카메라 쌍별 함께 보임"
+              className="mx-5 mb-3 grid flex-none grid-cols-2 gap-2 text-sm"
+            >
+              {view.pairs.map((pair) => (
+                <li
+                  key={pair.key}
+                  data-shortage={pair.shortage}
+                  className={cn(
+                    'rounded-md border border-border px-3 py-2',
+                    pair.shortage && 'border-delay bg-delay/10 font-semibold text-delay',
+                  )}
+                >
+                  <p>{pair.label}</p>
+                  <p>
+                    {pair.required
+                      ? `함께 보임 ${pair.samples}/${pair.need}`
+                      : '함께 보임 확인 대상 아님'}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p role="status" className="mx-5 mb-3 text-sm text-muted-foreground">
+              서버가 쌍별 진행을 아직 보내지 않았어요. 한 사람이 두 카메라가 함께 보는 곳을 지나가
+              주세요.
+            </p>
+          ))}
         {error && <p className={cn(ALERT, 'mx-5 mb-3')}>{error}</p>}
         <div className="flex flex-none items-center justify-between gap-2 border-t border-border px-5 py-3">
           <p className={NOTE}>

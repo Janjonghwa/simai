@@ -70,7 +70,9 @@ function CaptureTile({
           />
           <span className={cn(CAPTION, 'top-2 left-2')}>
             <span className="font-semibold">{camera.label}</span>
-            <span>{tileLabel(phase, link)}</span>
+            <span>
+              {tileLabel(phase, link).replace('원격 시청 멈춤', '미리보기 멈춤(촬영 계속)')}
+            </span>
           </span>
           {blocked && (
             <div className="absolute inset-x-3 bottom-3 rounded-md bg-card/90 px-3 py-2 text-sm backdrop-blur-[4px]">
@@ -108,6 +110,7 @@ export function BackgroundCaptureModal({
   view,
   secondsLeft,
   waitingForWorker,
+  waitingSeconds = 0,
   onStart,
   onCancel,
   onRetry,
@@ -121,6 +124,7 @@ export function BackgroundCaptureModal({
   secondsLeft: number;
   /** 세션은 만들었지만 워커가 아직 촬영을 시작하지 않았다. */
   waitingForWorker: boolean;
+  waitingSeconds?: number;
   /** 「시작」: 세팅 세션을 만들어 촬영을 시작한다. */
   onStart: () => void;
   /** 시작 전 「취소」 또는 촬영 중 「촬영 취소」(세팅 세션을 취소한다). */
@@ -138,7 +142,7 @@ export function BackgroundCaptureModal({
   const { attach } = useCctvPreview(localUrl, stompUrl);
   const { phase } = view;
   const capturing = phase === 'capturing';
-  const status = captureStatusText(view, secondsLeft, waitingForWorker);
+  const status = captureStatusText(view, secondsLeft, waitingForWorker, waitingSeconds);
 
   return (
     <ModalDialog
@@ -177,7 +181,7 @@ export function BackgroundCaptureModal({
               key={camera.id}
               camera={camera}
               attach={attach}
-              showState={capturing || phase === 'failed'}
+              showState={(capturing && !waitingForWorker) || phase === 'failed'}
             />
           ))}
         </ul>

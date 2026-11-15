@@ -66,8 +66,8 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
       pairs
         ? `보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (${pairs})`
         : '보정 결과가 검증을 통과하지 못했어요',
-    fix: '카메라와 거치대를 단단히 고정하고 위치를 다시 맞춘 뒤 처음부터 다시 하세요.',
-    retry: false,
+    fix: '「다시 시도」를 누르면 같은 카메라와 높이 설정으로 세팅을 다시 시작합니다.',
+    retry: true,
   },
   // 카메라 확인 걷기 마감까지 통과하지 못했다(맵을 굽지 않음). 문장은 cameraCheckGuide 가 확인 결과로 고르고, 이 줄은 결과가 없을 때다
   CAMERA_CHECK_NOT_PASSED: {
@@ -77,7 +77,7 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
   },
   CAMERA_CHECK_UNAVAILABLE: {
     title: () => '카메라 확인에 쓸 관제 영상을 받지 못했어요',
-    fix: 'GPU 서버의 관제(Tier 0)가 켜져 있고 카메라 영상이 들어오는지 확인한 뒤 다시 시도하세요.',
+    fix: 'GPU 서버에서 카메라 영상이 들어오는지 확인한 뒤 다시 시도하세요.',
     retry: true,
   },
   TIMEOUT: {
@@ -155,7 +155,7 @@ function indexOfId(text: string, id: string): number {
  * 실패 메시지 안의 `cam_B-cam_C`·`cam1-cam2` 꼴에서 카메라 id 목록에 있는 쌍만 메시지에 나온 순서로 뽑는다.
  * id 에 '-' 가 있을 수 있어 글자를 쪼개지 않고 알려진 id 조합을 찾는다. `worsened_pairs=[...]` 가 있으면 그 안만 본다.
  */
-function pairsInMessage(message: string, cameraIds: readonly string[]): [string, string][] {
+export function pairsInMessage(message: string, cameraIds: readonly string[]): [string, string][] {
   const text = WORSENED_PAIRS.exec(message)?.[1] ?? message;
   const found: { index: number; pair: [string, string] }[] = [];
   for (const a of cameraIds) {
@@ -176,6 +176,8 @@ export function camerasInMessage(message: string, cameraIds: readonly string[]):
 
 /** 실패 안내에 더 쓰는 세션 근거. */
 export interface FailureEvidence {
+  /** 같은 쌍이 바로 앞 시도에서도 거부됐다(같은 세션의 반복 조회는 세지 않음). */
+  repeatedValidationPairs?: string;
   /** 세션의 마지막 카메라 확인 결과(CAMERA_CHECK_NOT_PASSED 의 원인). */
   cameraCheck?: CameraCheck | null;
   /** 카메라별 배경 수집 진행(%). 배경 미완료 카메라를 메시지에서 찾지 못하면 100 이 안 된 카메라를 쓴다. */
@@ -240,7 +242,7 @@ export function failureGuide(
   const entry =
     (code !== null && Object.hasOwn(SETUP_FAILURES, code) ? SETUP_FAILURES[code] : undefined) ??
     FALLBACK;
-  const label = (id: string) => (cameraIds.includes(id) ? cameraLabel(cameraIds, id) : id);
+  const label = (id: string) => cameraLabel(cameraIds, id);
   const pairs = pairsInMessage(message ?? '', cameraIds)
     .map(([a, b]) => pairLabel(cameraIds, a, b))
     .join(', ');
@@ -256,7 +258,10 @@ export function failureGuide(
     .join(', ');
   return {
     title: entry.title({ pairs, changed: changedCameras.map(label).join('·'), cameras }),
-    fix: entry.fix,
+    fix:
+      code === 'VALIDATION_REJECTED' && evidence.repeatedValidationPairs
+        ? `${evidence.repeatedValidationPairs} 쌍이 두 번 연속 검증을 통과하지 못했어요. 카메라와 거치대가 흔들리지 않게 고정하고 위치를 점검한 뒤 다시 시도하세요.`
+        : entry.fix,
     retry: entry.retry,
     newMap: entry.newMap === true,
   };

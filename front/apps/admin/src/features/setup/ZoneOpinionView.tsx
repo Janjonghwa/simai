@@ -1,3 +1,4 @@
+import { cameraLabel, cameraText } from '@/features/setup/cameraLabels';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
 import type { ZoneAiAction, ZoneAiOpinion, ZoneOpinionPhoto } from '@/features/zones/types';
 import { Button } from '@simai/ui/components/button';
@@ -124,8 +125,16 @@ export function CroppedPhoto({
   );
 }
 
-function PhotoPair({ opinion, large = false }: { opinion: ZoneAiOpinion; large?: boolean }) {
-  const camera = opinion.camera_id ? ` · ${opinion.camera_id}` : '';
+function PhotoPair({
+  opinion,
+  large = false,
+  cameraIds,
+}: {
+  opinion: ZoneAiOpinion;
+  large?: boolean;
+  cameraIds: readonly string[];
+}) {
+  const camera = opinion.camera_id ? ` · ${cameraLabel(cameraIds, opinion.camera_id)}` : '';
   return (
     <div className={cn('grid grid-cols-2', large ? 'gap-3' : 'gap-1.5')}>
       <figure className="flex min-w-0 flex-col gap-0.5">
@@ -144,13 +153,16 @@ function PhotoPair({ opinion, large = false }: { opinion: ZoneAiOpinion; large?:
 export function ZoneOpinionBlock({
   zoneName,
   opinion,
+  cameraIds = [],
 }: {
   zoneName: string;
   opinion: ZoneAiOpinion;
+  cameraIds?: readonly string[];
 }) {
   const [open, setOpen] = useState(false);
   const action = opinion.status === 'OPINION' ? opinion.recommended_action : null;
-  const line = opinionLine(opinion);
+  const rawLine = opinionLine(opinion);
+  const line = rawLine ? cameraText(cameraIds, rawLine) : null;
   const hasPhotos = Boolean(opinion.before?.image_url || opinion.after?.image_url);
   return (
     <div
@@ -176,7 +188,7 @@ export function ZoneOpinionBlock({
           onClick={() => setOpen(true)}
           className="rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <PhotoPair opinion={opinion} />
+          <PhotoPair opinion={opinion} cameraIds={cameraIds} />
         </button>
       )}
       {open && (
@@ -198,7 +210,7 @@ export function ZoneOpinionBlock({
               </Button>
             </div>
             {line && <p className="text-[13px]">{line}</p>}
-            <PhotoPair opinion={opinion} large />
+            <PhotoPair opinion={opinion} cameraIds={cameraIds} large />
           </div>
         </ModalDialog>
       )}

@@ -9,6 +9,7 @@ import {
 } from '@/features/setup/cameraGuides';
 import {
   cameraLabel,
+  cameraText,
   isNeighborPair,
   neighborPairs,
   pairLabel,
@@ -536,6 +537,7 @@ const STEP_ASIDE_HINT = '사람이 카메라 앞에서 잠시 비켜 주세요.'
 /** 서버 wait_reason 을 짧은 한국어 안내로 바꾼다. 없으면 null. */
 export function deriveWaitReasonView(
   reason: SetupWaitReason | null | undefined,
+  cameraIds: readonly string[] = [],
 ): SetupWaitReasonView | null {
   if (!reason) return null;
   const notes: string[] = [];
@@ -561,7 +563,7 @@ export function deriveWaitReasonView(
       tone = 'idle';
       break;
     case 'WORKER_PAUSED_TIER0':
-      title = 'GPU 서버가 관제(Tier 0) 우선 규칙으로 세팅을 아직 받지 않았습니다';
+      title = 'GPU 서버가 관제를 먼저 처리하느라 세팅 시작을 기다리고 있습니다';
       hint = '관제가 안정되면 저절로 시작합니다. 잠시 기다리거나 GPU 서버 상태를 확인하세요.';
       if (reason.basis === 'WORKER_RELEASE') {
         notes.push(reason.detail ? `GPU 서버가 알려 옴: ${reason.detail}` : 'GPU 서버가 알려 옴');
@@ -579,7 +581,9 @@ export function deriveWaitReasonView(
       tone = 'idle';
       break;
     case 'BACKGROUND_INCOMPLETE': {
-      const cams = reason.cameras.map((c) => `${c.camera_id} ${Math.round(c.collection_pct)}%`);
+      const cams = reason.cameras.map(
+        (c) => `${cameraLabel(cameraIds, c.camera_id)} ${Math.round(c.collection_pct)}%`,
+      );
       title = `사람 없는 배경을 아직 다 모으지 못했습니다${cams.length ? ` (${cams.join(', ')})` : ''}`;
       hint = STEP_ASIDE_HINT;
       break;
@@ -601,9 +605,9 @@ export function deriveWaitReasonView(
   }
   return {
     code: reason.code,
-    title,
-    hint,
-    notes,
+    title: cameraText(cameraIds, title),
+    hint: cameraText(cameraIds, hint),
+    notes: notes.map((note) => cameraText(cameraIds, note)),
     tone,
     sinceMs: reason.since_ms,
     lastSeenMs: reason.worker_last_seen_ms,
@@ -733,7 +737,7 @@ export function deriveHeightWarnings(
           inputHeightM: check.input_height_m,
           restoredHeightM: check.restored_height_m,
           differenceCm: check.difference_cm,
-          message: msg,
+          message: cameraText(Object.keys(session.camera_heights_m), msg),
         });
       }
     }
@@ -749,7 +753,7 @@ export function deriveHeightWarnings(
         inputHeightM: session.camera_heights_m[camId] ?? null,
         restoredHeightM: null,
         differenceCm: null,
-        message: warn,
+        message: cameraText(Object.keys(session.camera_heights_m), warn),
       });
     }
   }
@@ -967,7 +971,9 @@ export function deriveWaitingView(
     previewReady,
     mapComplete: isSceneMapComplete(session),
     sceneTier: deriveSceneTierStatus(session),
-    waitReason: failed ? null : deriveWaitReasonView(session?.wait_reason),
+    waitReason: failed
+      ? null
+      : deriveWaitReasonView(session?.wait_reason, Object.keys(session?.camera_heights_m ?? {})),
   };
 }
 

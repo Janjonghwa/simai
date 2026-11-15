@@ -987,7 +987,7 @@ async function editCam2Height() {
 async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionResponse>) {
   setupMock.updateSession(sessionId, { ...HEIGHT_MISMATCH, ...patch });
   const warning = await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-  expect(warning.textContent).toContain('cam_B 높이를 다시 재서 입력해 주세요');
+  expect(warning.textContent).toContain('카메라 2 높이를 다시 재서 입력해 주세요');
   fireEvent.click(screen.getByRole('button', { name: '카메라 다시 맞추기' }));
   await editCam2Height();
 }
@@ -1139,7 +1139,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     });
     expect(
       screen.getByRole('alert', { name: '카메라 높이 불일치 수정 안내' }).textContent,
-    ).toContain('cam_B');
+    ).toContain('카메라 2');
 
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     await pressCaptureStart();
@@ -1165,6 +1165,24 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(setupMock.retryRequests).toHaveLength(0);
     expect(setupMock.sessions.size).toBe(2);
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 수정 안내' })).toBeNull();
+  }, 20_000);
+
+  it('첫 보정 거부는 같은 높이와 새 맵으로 바로 재시도하고 같은 쌍의 두 번째 거부에만 점검을 안내한다', async () => {
+    const { sessionId } = await startSetupSession();
+    const heights = setupMock.sessions.get(sessionId)!.camera_heights_m;
+    setupMock.failSession(sessionId, 'VALIDATION_REJECTED');
+    const first = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(first.textContent).not.toContain('거치대');
+    fireEvent.click(within(first).getByRole('button', { name: '다시 시도' }));
+    await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.retryRequests[0]!.body).toEqual({ camera_heights_m: heights });
+    expect(setupMock.retryRequests[0]!.mode).toBe('NEW');
+    const nextId = setupMock.retryRequests[0]!.retriedSessionId;
+    await waitForTrackedSession(nextId);
+    setupMock.failSession(nextId, 'VALIDATION_REJECTED');
+    const second = await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    await waitFor(() => expect(second.textContent).toContain('두 번 연속'));
+    expect(second.textContent).toContain('거치대');
   }, 20_000);
 
   it('실패한 세션은 카메라 연결 관리로 돌아가 취소 없이 고친 높이로 곧바로 재시도한다', async () => {
