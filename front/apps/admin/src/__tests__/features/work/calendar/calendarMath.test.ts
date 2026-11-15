@@ -100,6 +100,36 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     ).toBe('11월 10일, 작업 2건 완료, 위험 0건, 경고 0건, 보고서 미제출 1건');
   });
 
+  it('끝난 작업 모두가 관제 카드 기준 사건 수를 알면 사건 수를 함께 싣고, 접근성 이름에 경보 수와 같이 적는다(S15P31A101-751)', () => {
+    const summary = summarizeWorks([
+      workDayOf({
+        progress: 'SUBMITTED',
+        event_counts: { CRITICAL: 190, HIGH: 250 },
+        incident_counts: { CRITICAL: 12, HIGH: 20 },
+      }),
+    ]);
+    expect(summary).toEqual({
+      count: 1,
+      critical: 190,
+      high: 250,
+      incidents: { critical: 12, high: 20 },
+    });
+    expect(
+      cellAriaLabel({ dateKey: '2026-11-15', day: 15, kind: 'past', mark: null, summary }),
+    ).toBe('11월 15일, 작업 1건 완료, 위험 사건 12건(경보 190건), 경고 사건 20건(경보 250건)');
+    // 하나라도 모르면(이전 서버) 사건 수를 싣지 않는다
+    expect(
+      summarizeWorks([
+        workDayOf({
+          progress: 'SUBMITTED',
+          event_counts: { CRITICAL: 1 },
+          incident_counts: { CRITICAL: 1 },
+        }),
+        workDayOf({ progress: 'SUBMITTED', event_counts: { CRITICAL: 1 } }),
+      ])?.incidents,
+    ).toBeUndefined();
+  });
+
   it('끝나지 않은 작업은 건수에도 위험·경고에도 들어가지 않는다', () => {
     expect(
       summarizeWorks([

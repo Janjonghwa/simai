@@ -108,6 +108,9 @@ class WorkUnitIntegrationTest {
                 .andExpect(jsonPath("$.detail").doesNotExist())
                 .andExpect(jsonPath("$.event_counts.CRITICAL").value(1))
                 .andExpect(jsonPath("$.event_counts.HIGH").value(2))
+                // 같은 사람·같은 위험의 경보는 관제 카드 기준으로 한 사건이다(등급은 든 경보 중 가장 높은 위험, S15P31A101-751)
+                .andExpect(jsonPath("$.incident_counts.CRITICAL").value(1))
+                .andExpect(jsonPath("$.incident_counts.HIGH").value(0))
                 .andReturn().getResponse().getContentAsString();
         String workId = JsonPath.read(created, "$.work_id");
 
@@ -120,7 +123,9 @@ class WorkUnitIntegrationTest {
                 .andExpect(jsonPath("$.place").value("야적장"))
                 .andExpect(jsonPath("$.lead").value((Object) null))
                 .andExpect(jsonPath("$.event_counts.CRITICAL").value(1))
-                .andExpect(jsonPath("$.event_counts.HIGH").value(3));
+                .andExpect(jsonPath("$.event_counts.HIGH").value(3))
+                .andExpect(jsonPath("$.incident_counts.CRITICAL").value(1))
+                .andExpect(jsonPath("$.incident_counts.HIGH").value(1));
 
         // 열람 계정도 목록을 본다
         String list = mvc.perform(get("/api/work-units").param("days", "90").header(HttpHeaders.AUTHORIZATION, viewer))

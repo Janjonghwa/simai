@@ -22,6 +22,7 @@ export function workDayOf(overrides: Partial<WorkDayItem> = {}): WorkDayItem {
     actual_started_at: null,
     actual_ended_at: null,
     event_counts: null,
+    incident_counts: null,
     zone_id: null,
     place: null,
     lead: null,

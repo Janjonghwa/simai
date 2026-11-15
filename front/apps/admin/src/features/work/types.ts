@@ -98,6 +98,10 @@ export const workDayItemSchema = z.object({
   runs: workRunsField,
   /** 구간에 발생한 이벤트 수(등급별). 모르면 null. */
   event_counts: orNull(z.object({ CRITICAL: z.number().int(), HIGH: z.number().int() }).partial()),
+  /** 관제 카드 기준 사건 수(등급별, S15P31A101-751). 이전 서버는 칸이 없다. */
+  incident_counts: orNull(
+    z.object({ CRITICAL: z.number().int(), HIGH: z.number().int() }).partial(),
+  ),
   zone_id: orNull(z.string()),
   place: orNull(z.string()),
   lead: orNull(z.string()),

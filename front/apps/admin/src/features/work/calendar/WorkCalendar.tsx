@@ -54,11 +54,11 @@ function CalendarLegend() {
             </li>
             <li className="flex items-center gap-2">
               <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-critical" />
-              <span>빨간 점 + 숫자: 위험 경보 건수</span>
+              <span>빨간 점 + 숫자: 위험 사건 수(관제 카드 기준)</span>
             </li>
             <li className="flex items-center gap-2">
               <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-high" />
-              <span>주황 점 + 숫자: 경고 경보 건수</span>
+              <span>주황 점 + 숫자: 경고 사건 수(관제 카드 기준)</span>
             </li>
           </ul>
         </div>
@@ -130,7 +130,11 @@ export function WorkCalendar({
             {monthSummary && (
               <p
                 aria-label="월간 요약"
-                title="이번 달 완료 작업 일수와 위험(빨간 점)·경고(주황 점) 경보 합계"
+                title={
+                  monthSummary.incidents
+                    ? `이번 달 완료 작업 일수와 위험·경고 사건 합계(관제 카드 기준). 경보 기록 한 건 한 건은 위험 ${monthSummary.critical}건·경고 ${monthSummary.high}건입니다.`
+                    : '이번 달 완료 작업 일수와 위험(빨간 점)·경고(주황 점) 경보 합계'
+                }
                 className="rounded-lg border border-border/70 bg-card/80 px-3 py-1 text-[13px] text-muted-foreground tabular-nums"
               >
                 <span>작업 {monthSummary.days}일</span>
@@ -140,11 +144,19 @@ export function WorkCalendar({
                     monthSummary.critical > 0 ? 'font-semibold text-sev-critical' : undefined
                   }
                 >
-                  위험 {monthSummary.critical}건
+                  위험{' '}
+                  {monthSummary.incidents
+                    ? `사건 ${monthSummary.incidents.critical}`
+                    : monthSummary.critical}
+                  건
                 </span>
                 {' · '}
                 <span className={monthSummary.high > 0 ? 'font-semibold text-sev-high' : undefined}>
-                  경고 {monthSummary.high}건
+                  경고{' '}
+                  {monthSummary.incidents
+                    ? `사건 ${monthSummary.incidents.high}`
+                    : monthSummary.high}
+                  건
                 </span>
               </p>
             )}
