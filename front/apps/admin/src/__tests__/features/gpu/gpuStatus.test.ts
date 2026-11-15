@@ -2,7 +2,7 @@ import {
   autoStopText,
   availabilityLabel,
   cellUsable,
-  disabledFeatureWarnings,
+  disabledFeatureNotices,
   formatElapsed,
   formatRegion,
   gpuDot,
@@ -343,27 +343,60 @@ describe('hostCpuWarning(S15P31A101-740)', () => {
   });
 });
 
-describe('disabledFeatureWarnings(꺼진 기능 경고, -747)', () => {
-  const ready = (list: string[] | null | undefined, change: Partial<GpuSession> = {}) =>
-    ({
-      session: session({ stage: 'READY', disabled_features: list, ...change }),
-    }) as unknown as GpuStatus;
+describe('disabledFeatureNotices(꺼진 기능 항목, -747·-756)', () => {
+  const ready = (change: Partial<GpuSession> = {}) =>
+    ({ session: session({ stage: 'READY', ...change }) }) as unknown as GpuStatus;
+  const reid = {
+    key: 'reid',
+    level: 'warning' as const,
+    text: 'Re-ID 꺼짐 — 관리자: seed-reid 필요',
+    detail: 'FileNotFoundError: cope',
+  };
+  const cfg = {
+    key: 'cfg_live_calibration',
+    level: 'info' as const,
+    text: '사람 관절 보정은 기본 꺼짐',
+  };
 
-  it('준비 완료 세션의 꺼진 기능 문구를 그대로 돌려준다', () => {
-    expect(
-      disabledFeatureWarnings(ready(['Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)', 'PPE 꺼짐'])),
-    ).toEqual(['Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)', 'PPE 꺼짐']);
+  it('경고와 정보를 나누고 원문은 detail 로 둔다', () => {
+    const got = disabledFeatureNotices(ready({ disabled_notices: [reid, cfg] }));
+    expect(got.warnings).toEqual([
+      { key: 'reid', text: reid.text, detail: 'FileNotFoundError: cope' },
+    ]);
+    expect(got.infos).toEqual([{ key: cfg.key, text: cfg.text, detail: null }]);
+  });
+
+  it('해소돼 항목이 빠진 최신 값이면 경고가 없다', () => {
+    expect(disabledFeatureNotices(ready({ disabled_notices: [cfg] })).warnings).toEqual([]);
+    expect(disabledFeatureNotices(ready({ disabled_notices: [] }))).toEqual({
+      warnings: [],
+      infos: [],
+    });
+  });
+
+  it('옛 보고기(disabled_notices 없음)는 disabled_features 문구를 경고로 보인다', () => {
+    expect(disabledFeatureNotices(ready({ disabled_features: ['PPE 꺼짐'] })).warnings).toEqual([
+      { key: 'PPE 꺼짐', text: 'PPE 꺼짐', detail: null },
+    ]);
   });
 
   it('모르거나(없음·null) 비어 있으면 경고가 없다', () => {
-    expect(disabledFeatureWarnings(ready(undefined))).toEqual([]);
-    expect(disabledFeatureWarnings(ready(null))).toEqual([]);
-    expect(disabledFeatureWarnings(ready([]))).toEqual([]);
-    expect(disabledFeatureWarnings(undefined)).toEqual([]);
+    const none = { warnings: [], infos: [] };
+    expect(disabledFeatureNotices(ready({ disabled_features: undefined }))).toEqual(none);
+    expect(
+      disabledFeatureNotices(ready({ disabled_features: null, disabled_notices: null })),
+    ).toEqual(none);
+    expect(disabledFeatureNotices(ready({ disabled_features: [] }))).toEqual(none);
+    expect(disabledFeatureNotices(undefined)).toEqual(none);
   });
 
   it('준비 전이거나 끝난 세션은 보이지 않는다', () => {
-    expect(disabledFeatureWarnings(ready(['x'], { stage: 'ENGINE' }))).toEqual([]);
-    expect(disabledFeatureWarnings(ready(['x'], { state: 'ENDED' }))).toEqual([]);
+    const none = { warnings: [], infos: [] };
+    expect(disabledFeatureNotices(ready({ stage: 'ENGINE', disabled_notices: [reid] }))).toEqual(
+      none,
+    );
+    expect(disabledFeatureNotices(ready({ state: 'ENDED', disabled_notices: [reid] }))).toEqual(
+      none,
+    );
   });
 });

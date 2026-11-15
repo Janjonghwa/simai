@@ -584,51 +584,115 @@ def test_lobby_stage_follows_marker_and_vllm(gb):
     assert gb.lobby_stage(running, t0, True, False, True)[0] == "READY"
 
 
+RAW_REID = "Re-ID 꺼짐: FileNotFoundError: COPE 외부 저장소 경로를 찾을 수 없습니다: /srv/simai/reid/cope"
+RAW_CALIB = "live_calibration.enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 자동 보정이 돌지 않음"
+
+
+def _no_raw(items: dict) -> None:
+    """쉬운 말(text)에는 예외 이름·경로·환경 변수 원문이 없다. 원문은 detail 에만 있다."""
+    for item in items.values():
+        for raw in ("FileNotFoundError", "/srv/simai", "live_calibration.enabled=true"):
+            assert raw not in item["text"], item
+
+
 def test_cache_findings_names_reid_miss_and_cache_trouble(gb):
-    """Re-ID 묶음 캐시 miss 가 보고에 올라간다(18차: 로그에만 남아 3세션 동안 몰랐다). 엔진·vLLM 캐시 miss 도 함께."""
+    """Re-ID 묶음 캐시 miss 가 보고에 올라간다(18차: 로그에만 남아 3세션 동안 몰랐다). 엔진·vLLM 캐시 miss 는 정보, 받기 오류는 경고."""
     got = gb.cache_findings({"reid": "miss", "trt-engine": "miss", "vllm-compile": "error"}, reid_is_ready=False)
-    assert got["reid"] == "Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)"
-    assert "엔진을 새로 빌드" in got["cache_trt"] and "받기 오류" in got["cache_vllm"]
+    assert got["reid"]["level"] == "warning" and "seed-reid" in got["reid"]["text"] and "새 번호" in got["reid"]["text"]
+    assert got["cache_trt"]["level"] == "info" and "엔진을 새로 만들었어요" in got["cache_trt"]["text"]
+    assert got["cache_vllm"]["level"] == "warning" and "받지 못해" in got["cache_vllm"]["text"]
     assert "reid" not in gb.cache_findings({"reid": "miss"}, reid_is_ready=True)  # 손으로 둔 묶음이 있으면 꺼짐 아님
-    assert "받기 error" in gb.cache_findings({"reid": "error"}, False)["reid"]
+    assert "error" in gb.cache_findings({"reid": "error"}, False)["reid"]["detail"]
     assert gb.cache_findings({"trt-engine": "hit", "vllm-compile": "hit"}, True) == {}
 
 
 def test_service_findings_lists_services_not_started(gb):
     assert gb.service_findings(["tier0", "vllm", "worker", "avatar", "ppe"], True) == {}
     got = gb.service_findings(["tier0", "vllm", "worker", "avatar"], True)
-    assert list(got) == ["svc_ppe"] and "PPE" in got["svc_ppe"]
+    assert list(got) == ["svc_ppe"] and "보호구(PPE)" in got["svc_ppe"]["text"] and "관리자" in got["svc_ppe"]["text"]
     got = gb.service_findings(["tier0"], False)
     assert set(got) == {"svc_ppe", "svc_avatar", "svc_worker", "svc_vllm"}
+    assert all(v["level"] == "warning" and len(v["text"]) <= 200 for v in got.values())
     assert "svc_vllm" in gb.service_findings(["tier0", "vllm", "worker"], False)  # VRAM 부족이면 서비스 목록에 있어도 꺼짐
 
 
 def test_tier0_findings_reads_only_what_the_status_says(gb):
     assert gb.tier0_findings(None) == {} and gb.tier0_findings({"gpu_priority": {}}) == {}  # 상태 칸이 없으면 지어내지 않는다
-    doc = {"status": {"disabled_features": ["Re-ID 꺼짐: FileNotFoundError: cope", "live_calibration.enabled=true(설정 파일)인데 x"],
-                      "process_split": {"disabled": ["reid", "clean_background"]}}}
+    doc = {"status": {"disabled_features": [RAW_REID], "info_notes": [RAW_CALIB],
+                      "reid": {"state": "disabled"}, "process_split": {"disabled": ["reid", "clean_background"]}}}
     got = gb.tier0_findings(doc)
-    assert got["reid"].startswith("Tier 0: Re-ID 꺼짐") and got["process_split"] == "프로세스 분리로 꺼짐: reid, clean_background"
-    assert any("live_calibration" in v for v in got.values())
+    _no_raw(got)
+    assert got["reid"]["level"] == "warning" and got["reid"]["detail"] == RAW_REID
+    assert "seed-reid" in got["reid"]["text"]  # 묶음이 이 서버에 없다: 할 일은 seed-reid
+    assert got["cfg_live_calibration"]["level"] == "info" and got["cfg_live_calibration"]["detail"] == RAW_CALIB  # 의도된 설정: 정보
+    assert got["process_split"]["level"] == "warning" and "reid, clean_background" in got["process_split"]["detail"]
     assert gb.tier0_findings({"status": {"disabled_features": [], "process_split": None}}) == {}
 
 
-def test_reporter_sends_disabled_features_only_once_known_and_matches_contract(gb):
+def test_tier0_findings_reid_text_follows_where_the_bundle_is(gb):
+    doc = {"status": {"disabled_features": [RAW_REID], "reid": {"state": "disabled"}}}
+    registered = gb.tier0_findings(doc, reid_on_disk=True)["reid"]["text"]  # 부팅 뒤 seed-reid 로 묶음이 올라온 경우
+    assert "다음 부팅부터 자동으로 켜집니다(Re-ID 묶음 등록됨)" in registered and "restart-tier0" in registered
+    other = gb.tier0_findings({"status": {"disabled_features": ["Re-ID 꺼짐: CUDA 없음"], "reid": {"state": "disabled"}}}, True)
+    assert "묶음은 있는데 켜지지 않았어요" in other["reid"]["text"]
+    # Tier 0 가 지금 켜져 있다고 하면(낡은 표시 방지) 항목이 없다
+    assert "reid" not in gb.tier0_findings({"status": {"disabled_features": [RAW_REID], "reid": {"state": "active"}}}, True)
+    raw = "process_split=false(설정 파일)를 SIMAI_TIER0_PROCESS_SPLIT=1 가 덮어씀"
+    over = gb.tier0_findings({"status": {"disabled_features": [raw]}})
+    assert over["tier0_0"]["level"] == "warning" and "덮여" in over["tier0_0"]["text"] and "PROCESS_SPLIT" not in over["tier0_0"]["text"]
+
+
+def test_compose_disabled_recomputes_so_resolved_reid_drops_out(gb):
+    """READY 뒤 주기 재계산(-756): 부팅 때 Re-ID 묶음 없음이었어도 Tier 0 reid.state=active 로 바뀌면 항목이 빠지고, 설정 정보는 남는다."""
+    base = dict(services={}, cache_results={"reid": "miss", "trt-engine": "hit"}, reid_on_disk=False,
+                vlm_warmup_failure=None, vlm_timed_out=False, include_vllm_cache=True)
+    off = {"status": {"disabled_features": [RAW_REID], "info_notes": [RAW_CALIB], "reid": {"state": "disabled"}}}
+    first = gb.compose_disabled(marker_doc=off, **base)
+    assert set(first) == {"reid", "cfg_live_calibration"}
+    on = {"status": {"disabled_features": [], "info_notes": [RAW_CALIB], "reid": {"state": "active"}}}
+    again = gb.compose_disabled(**{**base, "reid_on_disk": True, "marker_doc": on})
+    assert set(again) == {"cfg_live_calibration"}  # 해소: Re-ID 가 빠진다(캐시 miss 보고도 낡은 값이라 지운다)
+    # 표시 파일에 status 가 아직 없으면 부팅 때 사실(묶음 없음)만 남긴다
+    assert set(gb.compose_disabled(marker_doc=None, **base)) == {"reid"}
+    more = {**base, "vlm_warmup_failure": "VLM 웜업 실패(TimeoutError)", "vlm_timed_out": True,
+            "services": gb.service_findings(["tier0"], True)}
+    with_vlm = gb.compose_disabled(marker_doc=on, **more)
+    assert {"vlm_warmup", "vlm_timeout", "svc_ppe", "svc_worker"} <= set(with_vlm)
+    _no_raw(with_vlm)
+
+
+def test_reporter_sends_disabled_notices_only_once_known_and_matches_contract(gb):
     rep = gb.Reporter(gb.Http(allow_http=True), "http://127.0.0.1:1", "gpu-boot-runpod", SECRET, SESSION, 3600)
     rep.set("WEIGHTS", detail="x")
-    assert "disabled_features" not in rep.payload()  # 아직 모름: 칸을 싣지 않는다
+    assert "disabled_features" not in rep.payload() and "disabled_notices" not in rep.payload()  # 아직 모름: 칸을 싣지 않는다
     rep.set_disabled("start")
-    assert rep.payload()["disabled_features"] == []  # 확인했고 꺼진 것 없음
+    assert rep.payload()["disabled_features"] == [] and rep.payload()["disabled_notices"] == []  # 확인했고 꺼진 것 없음
     rep.set_disabled("reid", "Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)")
-    rep.set_disabled("reid", "Re-ID 꺼짐 — Tier 0 가 이유를 알림")  # 같은 기능은 덮어쓴다
-    rep.set_disabled("svc_ppe", "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음")
+    rep.set_disabled("reid", "Re-ID 꺼짐 — Tier 0 가 이유를 알림", detail=RAW_REID)  # 같은 기능은 덮어쓴다
+    rep.set_disabled("cfg_live_calibration", "사람 관절 보정은 기본 꺼짐", level="info", detail=RAW_CALIB)
     payload = rep.payload()
-    assert payload["disabled_features"] == ["Re-ID 꺼짐 — Tier 0 가 이유를 알림", "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음"]
+    assert payload["disabled_features"] == ["Re-ID 꺼짐 — Tier 0 가 이유를 알림"]  # 1.2.0 칸은 경고 문구만
+    assert payload["disabled_notices"] == [
+        {"key": "reid", "level": "warning", "text": "Re-ID 꺼짐 — Tier 0 가 이유를 알림", "detail": RAW_REID},
+        {"key": "cfg_live_calibration", "level": "info", "text": "사람 관절 보정은 기본 꺼짐", "detail": RAW_CALIB}]
     doc = gb.envelope("gpu_session_report", "gpu-boot-runpod", payload)
-    assert doc["schema_version"] == "1.2.0"
+    assert doc["schema_version"] == "1.3.0"
     errors = list(_validator("gpu_session_report").iter_errors(doc))
     assert not errors, errors
     assert gb.envelope("gpu_session_register", "x", {})["schema_version"] == "1.0.0"  # 다른 메시지 판은 그대로
+
+
+def test_reporter_replace_disabled_drops_resolved_items_and_wakes(gb):
+    rep = gb.Reporter(gb.Http(allow_http=True), "http://127.0.0.1:1", "gpu-boot-runpod", SECRET, SESSION, 3600)
+    rep.replace_disabled({"reid": gb.notice("Re-ID 꺼짐"), "svc_ppe": gb.notice("PPE 꺼짐")})
+    rep._wake.clear()
+    rep.replace_disabled({"reid": gb.notice("Re-ID 꺼짐"), "svc_ppe": gb.notice("PPE 꺼짐")})
+    assert not rep._wake.is_set()  # 같은 목록이면 다시 보내지 않는다
+    rep.replace_disabled({"svc_ppe": gb.notice("PPE 꺼짐")})  # Re-ID 가 해소됨
+    assert rep._wake.is_set()
+    assert [n["key"] for n in rep.payload()["disabled_notices"]] == ["svc_ppe"]
+    rep.replace_disabled({})
+    assert rep.payload()["disabled_notices"] == [] and rep.payload()["disabled_features"] == []  # 꺼진 것 없음 확인(칸은 계속 싣는다)
 
 
 def test_dummy_png_is_a_valid_small_png(gb):

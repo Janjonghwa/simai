@@ -1933,6 +1933,7 @@ class Tier0Service:
                 "offload": avatar_writer.status() if hasattr(avatar_writer, "status") else None},
             "reid": None if self.reid_collector is None else self.reid_collector.status(),
             "disabled_features": self._disabled_features(),
+            "info_notes": list(self.settings.config_info),
             "reid_submission": (self.perception.feed.reid_submission_status()
                                 if isinstance(getattr(self.perception, "feed", None), (DetectorFeed, SplitDetectorFeed))
                                 else None),
@@ -1967,8 +1968,9 @@ class Tier0Service:
 
     def _disabled_features(self) -> list[str]:
         """꺼져 있어서 사람이 알아야 하는 기능(S15P31A101-747, 부팅 보고기가 표시 파일 status 에서 읽어 GPU 세션 보고에 싣는다).
-        설정 파일 값이 환경 변수에 덮인 것과, Re-ID 가 가중치·CUDA 부재로 꺼진 것. 근거 있는 것만 싣는다."""
-        out = list(self.settings.config_overrides)
+        설정 파일 값이 환경 변수에 덮인 것과, Re-ID 가 가중치·CUDA 부재로 꺼진 것. 근거 있는 것만 싣는다.
+        의도된 기본 설정(사람 관절 보정 꺼짐)으로 무효가 된 설정은 경고가 아니라 info_notes 로 싣는다(S15P31A101-756)."""
+        out = [t for t in self.settings.config_overrides if t not in self.settings.config_info]
         rc = self.reid_collector
         if rc is not None and getattr(rc, "state", None) == "disabled":
             out.append(f"Re-ID 꺼짐: {getattr(rc, 'reason', None) or '이유 모름'}")
