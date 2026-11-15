@@ -149,6 +149,9 @@ class HealthIntegrationTest {
             // 1.6.0(S15P31A101-731): 실제 카메라(RTSP) 입력이면 시험 입력이 아니다
             assertThat(p.at("/laptop/test_input").isBoolean()).isTrue();
             assertThat(p.at("/laptop/test_input").booleanValue()).isFalse();
+            // 1.7.0(S15P31A101-736): 재생 시험 알림 스위치는 기본 꺼짐
+            assertThat(p.at("/laptop/replay_test_alerts").isBoolean()).isTrue();
+            assertThat(p.at("/laptop/replay_test_alerts").booleanValue()).isFalse();
             assertThat(p.get("system_health").asString()).isEqualTo(health.at("/payload/system_health").asString());
             assertThat(p.get("tier0_health")).isEqualTo(health.get("payload"));
             assertThat(p.at("/scene/committed_version").asString()).isEqualTo("scene-test-" + tag);
@@ -246,7 +249,7 @@ class HealthIntegrationTest {
             Thread.sleep(200);
             JsonNode unknown = getHealth();
             assertValid(unknown);
-            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.6.0");
+            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.7.0");
             assertThat(unknown.at("/payload").has("re_setup")).isFalse();
             // 1.4.0: Tier 0 가 들고 있는 이벤트 집합의 판(S15P31A101-595)은 늘 싣는다
             assertThat(unknown.at("/payload/held_events_revision").asString()).isNotBlank();

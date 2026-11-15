@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import java.sql.ResultSet;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -24,7 +25,7 @@ class VlmDeadlineTest {
     private final NamedParameterJdbcTemplate jdbc = mock(NamedParameterJdbcTemplate.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final JsonMapper mapper = JsonMapper.builder().build();
-    private final JobLeaseService leases = new JobLeaseService(jdbc, mapper, new JobSignal(), events);
+    private final JobLeaseService leases = new JobLeaseService(jdbc, mapper, new JobSignal(), events, mock(ReplayTestSwitch.class));
     private final Instant observed = Instant.parse("2026-10-30T00:00:00Z");
     private final UUID leaseId = UUID.randomUUID();
     private final ResultSet lease = mock(ResultSet.class);

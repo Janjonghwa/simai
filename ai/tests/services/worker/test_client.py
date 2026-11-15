@@ -93,6 +93,13 @@ def test_lease_status_from_contract_examples():
     bad = copy.deepcopy(load_example("job_lease_status.active_camera_check_start.json"))
     bad["payload"]["camera_check_start"]["attempt"] = True
     assert LeaseStatus.from_message(bad).camera_check_start is None  # 선택 값이 틀리면 대여는 두고 요청만 버린다
+    # 2.4.0(-736): 녹화 재생 시험 걷기 확인 건너뛰기. 모르는 사유는 버린다(건너뛰지 않는 쪽)
+    skip = LeaseStatus.from_message(load_example("job_lease_status.active_camera_check_skip.json"))
+    assert skip.camera_check_skip == "REPLAY_TEST" and skip.status == "ACTIVE"
+    assert LeaseStatus.from_message(load_example("job_lease_status.active.json")).camera_check_skip is None
+    bad = copy.deepcopy(load_example("job_lease_status.active_camera_check_skip.json"))
+    bad["payload"]["camera_check_skip"]["reason"] = "MANUAL"
+    assert LeaseStatus.from_message(bad).camera_check_skip is None
     assert LeaseStatus.from_message(load_example("job_lease_status.duplicate.json")).status == "DUPLICATE"
     rejected = LeaseStatus.from_message(load_example("job_lease_status.rejected_expired.json"))
     assert (rejected.status, rejected.reason) == ("REJECTED", "LEASE_EXPIRED")

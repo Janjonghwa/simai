@@ -478,7 +478,7 @@ class SetupSessionIntegrationTest {
         JsonNode before = body(mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.85, readySnap))
                 .andExpect(status().isOk()).andReturn());
         assertThat(schemas.violations("messages/job_lease_status", before.toString())).isEmpty();
-        assertThat(before.at("/schema_version").asString()).isEqualTo("2.3.0");
+        assertThat(before.at("/schema_version").asString()).isEqualTo("2.4.0");
         assertThat(before.at("/payload/live_work_active").booleanValue()).isFalse();
         assertThat(before.at("/payload/heartbeat_interval_ms").intValue()).isEqualTo(5_000);
 

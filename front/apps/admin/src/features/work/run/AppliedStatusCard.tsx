@@ -4,7 +4,7 @@ import { useCurrentScene } from '@/features/layout/useCurrentScene';
 import { monitoringText } from '@/features/monitor/monitoringPhase';
 import { MonitoringProblemNote } from '@/features/monitor/MonitoringStatus';
 import { useWorkStartPhase } from '@/features/monitor/useMonitoringPhase';
-import { useTestInput } from '@/features/monitor/useTestInput';
+import { useReplayTestAlerts, useTestInput } from '@/features/monitor/useTestInput';
 import { appliedStatusLines, type AppliedLine } from '@/features/work/run/run';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
@@ -41,6 +41,7 @@ export function AppliedStatusCard({
   const { cameras, stateOf } = useCameraStates();
   const phase = useWorkStartPhase({ work_id: workId, startedAt });
   const testInput = useTestInput();
+  const replayTestAlerts = useReplayTestAlerts();
   const applied = bundles ? appliedBundle(bundles) : null;
   const lines = appliedStatusLines({
     phase,
@@ -53,6 +54,7 @@ export function AppliedStatusCard({
       live: cameras.filter((camera) => stateOf(camera.id) === 'live').length,
     },
     testInput,
+    replayTestAlerts,
   });
   if (lines.length === 0) return null;
   return (

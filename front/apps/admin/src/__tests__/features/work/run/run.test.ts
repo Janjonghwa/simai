@@ -127,6 +127,35 @@ describe('appliedStatusLines', () => {
     ).toEqual(['wait:녹화 재생 중 · 실제 알림 꺼짐', 'wait:현장 적용 대기 · 경보 꺼짐']);
   });
 
+  it('재생 시험 알림 스위치가 켜져 있으면 재생 줄이 「재생 시험 · 실제 알림 켜짐」(경고)이다(S15P31A101-736)', () => {
+    const cameras = { total: 4, live: 4 };
+    expect(
+      lines({
+        phase: on,
+        sceneReady: false,
+        appliedZoneCount: 2,
+        cameras,
+        testInput: true,
+        replayTestAlerts: true,
+      }),
+    ).toEqual(['bad:재생 시험 · 실제 알림 켜짐', 'ok:구역 2개 적용됨', 'ok:카메라 4/4 연결']);
+    // 실제 카메라(재생 아님)면 스위치와 무관하게 지금 그대로다
+    expect(
+      lines({
+        phase: on,
+        sceneReady: false,
+        appliedZoneCount: 2,
+        cameras,
+        testInput: false,
+        replayTestAlerts: true,
+      }),
+    ).toEqual([
+      'ok:이번 작업 설정 현장 적용됨 · 경보 켜짐',
+      'ok:구역 2개 적용됨',
+      'ok:카메라 4/4 연결',
+    ]);
+  });
+
   it('모르는 값은 줄을 만들지 않는다', () => {
     expect(
       lines({

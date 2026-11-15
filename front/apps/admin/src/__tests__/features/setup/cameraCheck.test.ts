@@ -121,6 +121,33 @@ describe('deriveCameraCheckView', () => {
     expect(view.phase).toBeNull();
   });
 
+  it('녹화 재생 시험 건너뜀(SKIPPED_REPLAY)은 서버 관문대로 통과하고 걷기 창을 열지 않는다(S15P31A101-736)', () => {
+    const skipped = session({
+      camera_check: buildCameraCheck(CAMS, 'cal-646', 'SKIPPED_REPLAY'),
+      camera_check_passed: true,
+      camera_check_phase: 'SKIPPED_REPLAY',
+    });
+    const view = deriveCameraCheckView(skipped, CAMS);
+    expect(view.status).toBe('SKIPPED_REPLAY');
+    expect(view.phase).toBe('SKIPPED_REPLAY');
+    expect(view.skippedForReplay).toBe(true);
+    expect(view.passed).toBe(true);
+    expect(cameraCheckBlockReason(view)).toBeNull();
+    expect(cameraCheckFailed(view)).toBe(false);
+    expect(deriveCameraWalkView(skipped, CAMS).open).toBe(false);
+    // 스위치를 끄거나 실제 카메라로 돌아오면 서버가 통과로 보지 않는다(화면은 그 판정을 따른다)
+    const blocked = deriveCameraCheckView(
+      session({
+        camera_check: buildCameraCheck(CAMS, 'cal-646', 'SKIPPED_REPLAY'),
+        camera_check_passed: false,
+        camera_check_phase: 'SKIPPED_REPLAY',
+      }),
+      CAMS,
+    );
+    expect(blocked.passed).toBe(false);
+    expect(deriveCameraCheckView(session(), CAMS).skippedForReplay).toBe(false);
+  });
+
   it('걷기 창 단계를 아는 서버면 확인만 다시 대기(RETRY_WAIT)는 다시 보정 실패가 아니다', () => {
     const retry = deriveCameraCheckView(
       session({

@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.job;
 
 import com.ssafy.simai.domain.job.JobMessages.LeasedJob;
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import com.ssafy.simai.domain.job.LeaseStatus.Reason;
 import com.ssafy.simai.domain.tier0.i1.I1Json;
 import com.ssafy.simai.global.exception.BusinessException;
@@ -44,12 +45,15 @@ class JobLeaseService {
     private final ObjectMapper mapper;
     private final JobSignal signal;
     private final ApplicationEventPublisher events;
+    private final ReplayTestSwitch replayTest;
 
-    JobLeaseService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, JobSignal signal, ApplicationEventPublisher events) {
+    JobLeaseService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, JobSignal signal, ApplicationEventPublisher events,
+            ReplayTestSwitch replayTest) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.signal = signal;
         this.events = events;
+        this.replayTest = replayTest;
     }
 
     /** 대여 요청을 보낸 워커의 마지막 접속 시각과 처리 가능 유형(db-tables worker.job_types: 마지막 대여 요청의 값) */
@@ -153,12 +157,14 @@ class JobLeaseService {
             // 같은 현장에 진행 중 작업이 있으면 정식 굽기를 회수하라고 알린다(명세 3.2 5항, job_lease_status 2.1.0, -597).
             // 세팅은 진행 중 작업이 없을 때만 시작하므로(-467 409) true 는 세팅 도중 작업이 시작됐다는 뜻이다
             // 관리자의 카메라 높이 확인 결정이 있으면 싣고(job_lease_status 2.2.0, -690), 확인을 기다리는 동안은 주기를 줄인다.
-            // 카메라 확인 시도 요청은 이 대여에 한 것만 싣는다(2.3.0, -687: 재대여한 워커는 처음부터 걷기 시작을 기다린다)
+            // 카메라 확인 시도 요청은 이 대여에 한 것만 싣는다(2.3.0, -687: 재대여한 워커는 처음부터 걷기 시작을 기다린다).
+            // 재생 시험 걷기 확인 건너뛰기(2.4.0, -736): 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일인 동안만 싣는다(실제 카메라면 싣지 않음)
             HeightSignal height = heightSignal(jobId, leaseId);
             int interval = height.awaiting() ? JobMessages.SITE_SETUP_HEIGHT_WAIT_HEARTBEAT_INTERVAL_MS
                     : height.cameraCheckActive() ? JobMessages.SITE_SETUP_CAMERA_CHECK_HEARTBEAT_INTERVAL_MS
                     : JobMessages.SITE_SETUP_HEARTBEAT_INTERVAL_MS;
-            return active.withSiteSetupSignal(interval, liveWorkAtJobSite(jobId), height.decision(), height.cameraCheckStart());
+            return active.withSiteSetupSignal(interval, liveWorkAtJobSite(jobId), height.decision(), height.cameraCheckStart(),
+                    replayTest.cameraCheckSkipAllowed());
         }
         return active;
     }

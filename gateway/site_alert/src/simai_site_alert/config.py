@@ -8,6 +8,8 @@
     SIMAI_TIER0_CONTROL_PATH         Tier 0 I0 제어 WebSocket 경로 (기본 /control)
     SIMAI_TIER0_CA_FILE              팀 사설 CA 인증서 파일(선택. 쓰면 체인 검증도 함께 한다)
     SIMAI_RELAY_STATUS_PORT          영상 중계 상태 보고를 받는 127.0.0.1 UDP 포트 (기본 47031, 중계와 같은 값)
+    SIMAI_REPLAY_TEST_ALERTS         녹화 재생 시험 알림 스위치(기본 false, S15P31A101-736). true 면 영상 중계가 녹화 파일·합성 영상을
+                                     보내는 동안에도 경보 소리를 라이브처럼 내고 「재생 시험 · 실제 알림 켜짐」 띠를 띄운다. 본 시연 전에 끈다
 
 EC2 하트비트(POST /api/devices/heartbeat)는 SIMAI_EC2_BASE_URL(https 만)·SIMAI_DEVICE_TOKEN 을 쓴다.
 
@@ -37,12 +39,14 @@ class Settings:
     control_path: str
     ca_file: str | None
     relay_status_port: int = DEFAULT_RELAY_STATUS_PORT
+    replay_test_alerts: bool = False  # 녹화 재생 시험 알림 스위치(S15P31A101-736, 기본 꺼짐)
 
     def __repr__(self) -> str:  # 토큰을 찍지 않는다
         return (
             f"Settings(laptop_id={self.laptop_id!r}, ec2_base_url={self.ec2_base_url!r}, "
             f"device_token={'***' if self.device_token else None}, pinned_spki={self.pinned_spki!r}, "
-            f"control_path={self.control_path!r}, ca_file={self.ca_file!r}, relay_status_port={self.relay_status_port})"
+            f"control_path={self.control_path!r}, ca_file={self.ca_file!r}, relay_status_port={self.relay_status_port}, "
+            f"replay_test_alerts={self.replay_test_alerts})"
         )
 
 
@@ -66,6 +70,18 @@ def _port(raw: str | None, default: int) -> int:
     return int(raw)
 
 
+def _flag(raw: str | None, name: str) -> bool:
+    """켜고 끄는 값. 비었으면 꺼짐. 모르는 값은 기동을 멈춘다(오타로 켠 줄 알고 시험하지 않게)."""
+    if not raw:
+        return False
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} 는 true 또는 false 다")
+
+
 def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
     env = load_env(env_file)
     return Settings(
@@ -76,4 +92,5 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
         control_path=env.get("SIMAI_TIER0_CONTROL_PATH") or DEFAULT_CONTROL_PATH,
         ca_file=env.get("SIMAI_TIER0_CA_FILE") or None,
         relay_status_port=_port(env.get("SIMAI_RELAY_STATUS_PORT"), DEFAULT_RELAY_STATUS_PORT),
+        replay_test_alerts=_flag(env.get("SIMAI_REPLAY_TEST_ALERTS"), "SIMAI_REPLAY_TEST_ALERTS"),
     )

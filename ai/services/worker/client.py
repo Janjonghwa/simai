@@ -154,6 +154,9 @@ class LeaseStatus:
     height_decision: Mapping[str, Any] | None = None
     # job_lease_status 2.3.0(-687): site_setup 대여에서 관리자가 요청한 가장 최근 카메라 확인 시도 번호. ACTIVE 에만 있다
     camera_check_start: int | None = None
+    # job_lease_status 2.4.0(-736): site_setup 대여에서 녹화 재생 시험이라 카메라 확인 걷기를 건너뛰어도 된다(사유 REPLAY_TEST).
+    # ACTIVE 에만 있고, EC2 는 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일인 동안만 싣는다. 없으면 None(건너뛰지 않음)
+    camera_check_skip: str | None = None
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> LeaseStatus:
@@ -169,8 +172,9 @@ class LeaseStatus:
             live_work = status == "ACTIVE" and p.get("live_work_active") is True
             decision = _height_decision(p.get("height_decision")) if status == "ACTIVE" else None
             start = _camera_check_start(p.get("camera_check_start")) if status == "ACTIVE" else None
+            skip = _camera_check_skip(p.get("camera_check_skip")) if status == "ACTIVE" else None
             return cls(status, p.get("reason"), ttl, int(interval) if interval is not None else None, live_work,
-                       decision, start)
+                       decision, start, skip)
         except (KeyError, TypeError, ValueError) as e:
             raise RetryableError(f"대여 상태 응답을 해석하지 못했다: {e}") from e
 
@@ -200,6 +204,17 @@ def _camera_check_start(raw: Any) -> int | None:
         log.warning("하트비트 응답의 camera_check_start 를 무시한다: %r", raw)
         return None
     return attempt
+
+
+def _camera_check_skip(raw: Any) -> str | None:
+    """job_lease_status 2.4.0 camera_check_skip.reason. 아는 사유(REPLAY_TEST)만 받고, 모양이 틀리면 무시한다(건너뛰지 않는 쪽, 경고만)."""
+    if raw is None:
+        return None
+    reason = raw.get("reason") if isinstance(raw, Mapping) else None
+    if reason != "REPLAY_TEST":
+        log.warning("하트비트 응답의 camera_check_skip 을 무시한다: %r", raw)
+        return None
+    return reason
 
 
 def _raise_for_status(resp: Response, what: str) -> None:

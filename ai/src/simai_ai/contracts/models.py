@@ -1066,6 +1066,13 @@ class CameraCheckStart(BaseModel):
     attempt: Annotated[StrictInt, Field(ge=1)]
 
 
+class CameraCheckSkip(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    reason: Literal['REPLAY_TEST']
+
+
 class Payload24(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -1081,6 +1088,7 @@ class Payload24(BaseModel):
     live_work_active: StrictBool | MISSING = MISSING
     height_decision: HeightDecision | MISSING = MISSING
     camera_check_start: CameraCheckStart | MISSING = MISSING
+    camera_check_skip: CameraCheckSkip | MISSING = MISSING
 
 
 class JobLeaseStatus(Envelope):
@@ -2865,6 +2873,7 @@ class Laptop(BaseModel):
     link: DefsLinkState
     last_heartbeat_at: DefsTimestampMs | None
     test_input: StrictBool | MISSING = MISSING
+    replay_test_alerts: StrictBool | MISSING = MISSING
 
 
 class DataAgeMs(RootModel[StrictInt]):
@@ -4627,7 +4636,7 @@ class SiteSetupCameraCheck(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    status: Literal['AWAITING_START', 'WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE']
+    status: Literal['AWAITING_START', 'WAITING', 'MEASURING', 'PASSED', 'FAILED', 'INCOMPLETE', 'SKIPPED_REPLAY']
     attempt: Attempt | MISSING = MISSING
     user_wait: UserWait | MISSING = MISSING
     calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]

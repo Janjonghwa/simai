@@ -69,4 +69,24 @@ class SetupCameraCheckTest {
         assertThat(record.path("lease_id").asString()).isEqualTo(lease.toString());
         assertThat(record.path("reasons").get(0).asString()).isEqualTo("REPROJECTION_HIGH");
     }
+
+    @Test
+    void 재생_시험_건너뜀은_허용될_때만_관문을_통과하고_통과로는_세지_않는다() {
+        // S15P31A101-736: SKIPPED_REPLAY 는 스위치가 켜져 있고 입력이 모두 녹화 파일인 동안(허용)만 관문 통과, 재사용 후보(passed)는 아니다
+        assertThat(SetupCameraCheck.satisfied("SKIPPED_REPLAY", "cal-1", "cal-1", true)).isTrue();
+        assertThat(SetupCameraCheck.satisfied("SKIPPED_REPLAY", "cal-1", "cal-1", false)).as("스위치 끔 또는 실제 카메라").isFalse();
+        assertThat(SetupCameraCheck.satisfied("SKIPPED_REPLAY", "cal-0", "cal-1", true)).as("다른 보정").isFalse();
+        assertThat(SetupCameraCheck.satisfied("SKIPPED_REPLAY", "cal-1", null, true)).isFalse();
+        assertThat(SetupCameraCheck.satisfied("PASSED", "cal-1", "cal-1", false)).as("걷기 통과는 그대로").isTrue();
+        assertThat(SetupCameraCheck.satisfied("FAILED", "cal-1", "cal-1", true)).isFalse();
+        assertThat(SetupCameraCheck.passed("SKIPPED_REPLAY", "cal-1", "cal-1")).isFalse();
+        assertThat(SetupCameraCheck.phase(true, check("SKIPPED_REPLAY", 0, false), null, lease))
+                .isEqualTo(SetupCameraCheck.Phase.SKIPPED_REPLAY);
+        assertThat(SetupCameraCheck.phase(false, check("SKIPPED_REPLAY", 0, false), null, lease))
+                .isEqualTo(SetupCameraCheck.Phase.SKIPPED_REPLAY);
+        assertThat(SetupCameraCheck.awaitingUser(check("SKIPPED_REPLAY", 0, false))).isFalse();
+        ObjectNode snapshot = mapper.createObjectNode();
+        snapshot.set("camera_check", SetupCameraCheckFixtures.check(mapper, "cal-1", "SKIPPED_REPLAY"));
+        assertThat(SetupCameraCheck.cameraCheck(mapper, snapshot)).as("세션에 저장한다").isNotNull();
+    }
 }

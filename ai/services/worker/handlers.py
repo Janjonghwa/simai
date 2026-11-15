@@ -86,6 +86,9 @@ class JobContext:
     # 가장 최근 시도 번호(-687). 늦게 온 작은 번호는 무시한다(지금까지 받은 가장 큰 번호만 둔다). 0 = 아직 요청 없음
     _camera_check_start: int = 0
     _camera_check_lock: threading.Lock = field(default_factory=threading.Lock)
+    # EC2 가 마지막 ACTIVE 하트비트 응답(job_lease_status 2.4.0 camera_check_skip)으로 알린 재생 시험 걷기 확인 건너뛰기 사유(-736).
+    # 응답마다 덮어쓴다(실제 카메라로 돌아오면 EC2 가 빼고 보내 None 이 된다). None = 건너뛰지 않음
+    _camera_check_skip: str | None = None
 
     def note_height_decision(self, decision: Mapping[str, Any]) -> bool:
         """하트비트 스레드가 부른다. 처음 받은 결정이면 True."""
@@ -110,6 +113,19 @@ class JobContext:
                 return False
             self._camera_check_start = int(attempt)
             return True
+
+    def note_camera_check_skip(self, reason: str | None) -> bool:
+        """하트비트 스레드가 ACTIVE 응답마다 부른다. 값이 바뀌었으면 True."""
+        with self._camera_check_lock:
+            changed = self._camera_check_skip != reason
+            self._camera_check_skip = reason
+            return changed
+
+    @property
+    def camera_check_skip(self) -> str | None:
+        """EC2 가 마지막으로 알린 카메라 확인 건너뛰기 사유(REPLAY_TEST). 없으면 None."""
+        with self._camera_check_lock:
+            return self._camera_check_skip
 
     @property
     def camera_check_start(self) -> int:

@@ -1,4 +1,9 @@
-import { type CameraCheckView, type PairOutcome } from '@/features/setup/cameraCheck';
+import {
+  REPLAY_SKIP_DETAIL,
+  REPLAY_SKIP_LABEL,
+  type CameraCheckView,
+  type PairOutcome,
+} from '@/features/setup/cameraCheck';
 import { cameraLabel } from '@/features/setup/cameraLabels';
 import type { NextStep } from '@/features/setup/nextStep';
 import {
@@ -608,6 +613,17 @@ export function SetupCalibrateStep({
             </Button>
           )}
         </NextStepCard>
+      )}
+      {cameraCheck?.skippedForReplay && (
+        // 녹화 재생 시험이라 걷기 확인을 건너뛰었다(S15P31A101-736). 조작 없음, 스위치는 EC2 .env 로만 켜고 끈다
+        <div
+          role="status"
+          data-testid="setup-replay-skip"
+          className="rounded-md bg-destructive/15 px-3 py-2 text-destructive"
+        >
+          <p className="text-base font-bold">{REPLAY_SKIP_LABEL}</p>
+          <p className="text-xs">{REPLAY_SKIP_DETAIL}</p>
+        </div>
       )}
       {waiting.failed && (
         <FailureNotice

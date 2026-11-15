@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.setup;
 import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.config.Versioned;
+import com.ssafy.simai.domain.health.ReplayTestSwitch;
 import com.ssafy.simai.domain.job.AnalysisJobService;
 import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
 import com.ssafy.simai.domain.job.JobFinished;
@@ -135,13 +136,15 @@ public class SetupService {
     private final WorkUnitRepository workUnits;
     private final SetupZoneOpinions opinions;
     private final SetupReuseCheck reuseCheck;
+    private final ReplayTestSwitch replayTest;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
             SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits,
-            SetupZoneOpinions opinions, SetupReuseCheck reuseCheck) {
+            SetupZoneOpinions opinions, SetupReuseCheck reuseCheck, ReplayTestSwitch replayTest) {
         this.jdbc = jdbc;
+        this.replayTest = replayTest;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -2173,10 +2176,12 @@ public class SetupService {
         String qualityGateRaw = rs.getString("quality_gate");
         out.set("quality_gate", qualityGateRaw == null ? mapper.nullNode() : mapper.readTree(qualityGateRaw));
         out.set("camera_check", cameraCheck);
-        boolean cameraCheckPassed = SetupCameraCheck.passed(cameraCheck.path("status").asString(null),
-                cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version"));
+        // 재생 시험 건너뜀(SKIPPED_REPLAY, -736)은 스위치가 켜져 있고 노트북 입력이 모두 녹화 파일인 동안만 관문 통과다
+        boolean cameraCheckPassed = SetupCameraCheck.satisfied(cameraCheck.path("status").asString(null),
+                cameraCheck.path("calibration_version").asString(null), rs.getString("calibration_version"),
+                replayTest.cameraCheckSkipAllowed());
         out.put("camera_check_passed", cameraCheckPassed);
-        // 걷기 창 단계(AWAITING_START|STARTING|WALKING|RETRY_WAIT|PASSED|FAILED, 받은 적 없으면 null)·마지막 요청·끝난 시도 기록(-687)
+        // 걷기 창 단계(AWAITING_START|STARTING|WALKING|RETRY_WAIT|PASSED|SKIPPED_REPLAY|FAILED, 받은 적 없으면 null)·마지막 요청·끝난 시도 기록(-687)
         if (cameraCheckPhase == null) {
             out.putNull("camera_check_phase");
         } else {

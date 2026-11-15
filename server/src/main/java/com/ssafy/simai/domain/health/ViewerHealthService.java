@@ -45,6 +45,8 @@ import tools.jackson.databind.node.ObjectNode;
  *       remote_state 에 넣지 않는다
  *   <li>laptop.test_input(1.6.0, S15P31A101-731): 녹화 파일·합성 영상 재생(시험 입력) 중인가(HealthState.testInputActive, 워치 진동 차단과 같은
  *       판정). 관제 화면의 「녹화 재생 중 · 실제 알림 꺼짐」 표시용이며 system_health 를 바꾸지 않는다
+ *   <li>laptop.replay_test_alerts(1.7.0, S15P31A101-736): EC2 재생 시험 알림 스위치(ReplayTestSwitch.alerts). test_input 과 함께 true 면
+ *       관제 화면은 「재생 시험 · 실제 알림 켜짐」을 보인다(워치 진동이 나간다)
  *   <li>held_events_revision(1.4.0, S15P31A101-595): Tier 0 가 들고 있는 이벤트 집합(Tier0HeldEvents)이 스냅샷·유예 만료로 한꺼번에
  *       바뀔 때마다 바뀌는 판. 관제 앱은 바뀌면 이벤트 목록을 다시 받아 「진행 중」과 「지난 관제」를 다시 가른다
  * </ul>
@@ -53,7 +55,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.6.0";
+    public static final String SCHEMA_VERSION = "1.7.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
@@ -67,11 +69,13 @@ public class ViewerHealthService {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final long linkTimeoutMs;
+    private final ReplayTestSwitch replayTest;
 
     public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, SceneCompatibility compatibility,
-            WatchHub watches, PersonDisplayNames personDisplayNames, Tier0HeldEvents held,
+            WatchHub watches, PersonDisplayNames personDisplayNames, Tier0HeldEvents held, ReplayTestSwitch replayTest,
             @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
         this.state = state;
+        this.replayTest = replayTest;
         this.compatibility = compatibility;
         this.watches = watches;
         this.personDisplayNames = personDisplayNames;
@@ -120,6 +124,8 @@ public class ViewerHealthService {
         laptopNode.put("last_heartbeat_at", lastHeartbeat);
         // 1.6.0(S15P31A101-731): 녹화 파일·합성 영상 재생 중이면 true. 워치 진동 차단(-724)과 같은 판정이라 화면의 「실제 알림 꺼짐」이 실제와 같다
         laptopNode.put("test_input", state.testInputActive());
+        // 1.7.0(S15P31A101-736): EC2 재생 시험 알림 스위치. 켜져 있으면 시험 입력 중에도 워치 진동이 나간다(화면은 「재생 시험 · 실제 알림 켜짐」)
+        laptopNode.put("replay_test_alerts", replayTest.alerts());
         p.put("data_age_ms", world == null ? null : Math.max(0, now.toEpochMilli() - world.tLatestGlobalMs()));
         String calibration = tier0Up && health != null ? health.path("calibration_state").asString(null) : null;
         p.put("calibration_state", calibration == null ? "UNCALIBRATED" : calibration);

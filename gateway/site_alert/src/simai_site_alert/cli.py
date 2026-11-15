@@ -66,7 +66,8 @@ def _run(args: argparse.Namespace) -> int:
             print(f"설정 오류: {e} (또는 --offline 으로 실행한다)", file=sys.stderr)
             return 2
     clock = SystemClock()
-    core = SiteAlertCore(_sound(args.sound), laptop_id=settings.laptop_id, clock=clock)
+    core = SiteAlertCore(_sound(args.sound), laptop_id=settings.laptop_id, clock=clock,
+                         replay_test_alerts=settings.replay_test_alerts)
     # 장애 감시(관제 중단·원격 관제 장애 표시, 노트북 → Tier 0·EC2 하트비트)는 제어 채널이 있을 때만 켠다
     monitor = SiteLinkMonitor() if channel is not None else None
     app = SiteAlertApp(core, channel, monitor=monitor, ec2=ec2, clock=clock)
