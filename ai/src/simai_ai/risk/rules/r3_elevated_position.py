@@ -22,6 +22,9 @@ lifecycle 이 해소하지 않은 채 UNVERIFIABLE 로 둔다(6.4).
   상판보다 낮은 작업면은 그 위에 있을 수 없어 뺀다(height_common, 책상에 앉아 다리가 가려진 사람).
   그래서 활성 R3 은 접지점이 사라져도(단상 위에서 가려져 유지가 끝남) 범위가 footprint 에 걸치는 한 해소되지 않는다. 접지점을 모른
   채 범위가 모든 높은 작업면 밖으로 나가면 수평 위치로 '그 위에 없음'을 추론해 판정을 내지 않는다(Z 를 확인한 해소가 아님).
+**낮은 신뢰 새 발생 보류(7.1·7.2, S15P31A101-725).** UNKNOWN(Z_UNKNOWN)이면서 위치가 예측(observation_state PREDICTED)이면 위
+조건을 채워도 holding=True 로 낸다(height_common.low_confidence_onset). 새 이벤트를 만들지 않고 이미 열린 R3 만 유지한다(유지·해소·
+등급은 그대로). 접지점이 생기거나 관측 위치가 되면 그 프레임부터 정상 발생 판정을 낸다.
 발생·해소 띠(히스테리시스)는 명세에 수치가 없어 두지 않는다. 해소는 판정 없이 유효 관측이 3초(lifecycle 기본) 이어질 때다.
 발생 지속 조건(3프레임 중 2)·재개는 lifecycle 이 한다.
 
@@ -45,6 +48,7 @@ from simai_ai.risk.rules.height_common import (
     HeightProfile,
     StandingBasis,
     hazard_edges,
+    low_confidence_onset,
     standing,
 )
 from simai_ai.risk.rules.r1_zone_entry import horizontal_ranges, track_confidence_reasons
@@ -163,6 +167,7 @@ class ElevatedPositionRule:
                 confidence_reasons=tuple(confidence),
                 reasons=(reason,),
                 metrics={"height_diff_m": height},
+                holding=low_confidence_onset(track, st.basis),
             )
 
     def _elevated(self, height_diff: float) -> bool:

@@ -44,6 +44,10 @@
 유지 중(HELD) 접지점의 σz 증가로 서 있는 층을 넓히지 않는다. 유지가 맞는지(골반 높이·footprint·유지 상한)는 ContactEstimator 가
 보고 모순이면 유지를 끊어 UNKNOWN 으로 넘긴다. σz 로 넓히면 다리가 단상에 가려진 채 옆에 선 바닥 사람이 1~2초 만에 고소
 위치·가장자리 경보를 받는다.
+
+**낮은 신뢰 새 발생 보류(7.1·7.2, S15P31A101-725).** 서 있는 면이 UNKNOWN(Z_UNKNOWN)이면서 위치가 관측이 아닌 예측
+(observation_state PREDICTED)이면 R2·R3 는 새 이벤트를 만들지 않고 이미 열린 이벤트만 유지한다(`low_confidence_onset`, 판정은
+holding 으로 낸다). 둘 중 하나만 모르면(접지는 모르는데 관측 위치, 또는 접지는 있는데 예측 위치) 지금처럼 발생한다.
 """
 
 import math
@@ -54,7 +58,7 @@ from itertools import pairwise
 
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.work_surface import FLOOR_ID, FLOOR_Z_M, WorkSurface
-from simai_ai.risk.world import JointLayout, Validity, WorldTrack
+from simai_ai.risk.world import JointLayout, ObservationState, Validity, WorldTrack
 from simai_ai.risk.zone_geometry import BOUNDARY_TOLERANCE_M, HorizontalRange, region_distance
 
 TEST_PROFILE_VERSION_OFFSET = 1000
@@ -260,6 +264,15 @@ def standing(
         if abs(s.top_height_m - z) <= level_tolerance_m and (s.surface_id == track.support_surface_id or overlaps(s))
     ]
     return Standing(basis, z, connected_level(seeds, surfaces, level_tolerance_m=level_tolerance_m))
+
+
+def low_confidence_onset(track: WorldTrack, basis: StandingBasis) -> bool:
+    """R2·R3 새 발생을 보류할 낮은 신뢰 상태: 서 있는 면을 모르고(UNKNOWN, Z_UNKNOWN) 위치가 예측(PREDICTED)이다.
+
+    참이면 규칙은 발생 조건을 채워도 holding 판정만 낸다(새 이벤트 없음, 활성 이벤트 유지·해소·등급은 그대로, 7.1·7.2).
+    HELD(유지 접지점)는 서 있는 면을 마지막 관측값으로 아는 상태라 해당하지 않는다.
+    """
+    return basis is StandingBasis.UNKNOWN and track.observation_state is ObservationState.PREDICTED
 
 
 def connected_level(

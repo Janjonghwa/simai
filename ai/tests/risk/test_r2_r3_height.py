@@ -699,3 +699,106 @@ def test_pelvis_exclusion_needs_valid_observed_hips(hip_z, validity, source, jud
     assert bool(findings) is judged
     if judged:
         assert findings[0].confidence_reasons == (ConfidenceReason.Z_UNKNOWN,)
+
+
+# --- 낮은 신뢰 새 발생 보류: 접지 모름(Z_UNKNOWN) + 예측 위치(PREDICTED) (7.1·7.2, S15P31A101-725) -------------------
+
+
+@pytest.mark.parametrize("make_rule", [r2, r3], ids=["R2", "R3"])
+@pytest.mark.parametrize(
+    ("anchor", "state", "holding"),
+    [
+        (None, "PREDICTED", True),  # 접지 모름 + 예측 위치 → 새 발생 보류(holding)
+        (None, "OBSERVED", False),  # 접지 모름 + 관측 위치 → 발생
+        ("podium", "PREDICTED", False),  # 접지 있음 + 예측 위치 → 발생
+    ],
+)
+def test_low_confidence_onset_withheld_only_when_z_unknown_and_predicted(make_rule, anchor, state, holding):
+    (f,) = make_rule().evaluate(ctx(track(anchor=anchor, state=state), surfaces=[surface()]))
+    assert f.holding is holding
+    expected = set()
+    if anchor is None:
+        expected.add(ConfidenceReason.Z_UNKNOWN)
+    if state == "PREDICTED":
+        expected.add(ConfidenceReason.PREDICTED)
+    assert set(f.confidence_reasons) == expected
+
+
+def test_low_confidence_onset_held_anchor_predicted_still_raises():
+    """유지 접지점(HELD)은 서 있는 면을 마지막 관측값으로 아는 상태라 예측 위치여도 보류하지 않는다."""
+    t = track(state="PREDICTED", z_validity="UNCERTAIN", contact_validity="UNCERTAIN")
+    for rule in (r2(), r3()):
+        (f,) = rule.evaluate(ctx(t, surfaces=[surface()]))
+        assert not f.holding
+
+
+def test_r2_low_confidence_in_clear_band_stays_holding():
+    """R2 유지 띠(1.0~1.3 m)는 원래 holding 이다. 보류 조건이 띠 판정을 바꾸지 않는다."""
+    t = track(xy=(1.6, 3.0), anchor=None, state="PREDICTED")
+    (f,) = r2().evaluate(ctx(t, surfaces=[WorkSurface.from_json(STAGE)]))
+    assert f.holding and f.reasons == (REASON_EDGE_CLEAR, REASON_Z_UNKNOWN_ON_SURFACE)
+
+
+def test_z_unknown_predicted_person_near_podium_raises_nothing():
+    """17차 형태: 접지 모르는 예측 위치 사람이 단상 위·옆을 1분 지나도 R2·R3 이벤트 0건. 관측 위치가 되면 지속 조건대로 발생."""
+    run = _Run()
+    for i in range(600):
+        run.step(track(xy=(3.0 + 0.005 * i, 6.75), anchor=None, state="PREDICTED"))
+    assert run.transitions == [] and run.signals == []
+    run.step(track(anchor=None))  # 접지 모름 + 관측 위치: 1프레임(3프레임 중 2 미충족)
+    assert run.active() == {}
+    run.step(track(anchor=None))
+    assert set(run.active()) == {"R2", "R3"}
+    assert all(ConfidenceReason.Z_UNKNOWN in s.confidence_reasons for s in run.active().values())
+
+
+def test_z_unknown_predicted_then_anchor_appears_raises():
+    """접지 모름 + 예측 위치 다음에 접지점이 생기면(예측 위치 그대로) 지속 조건대로 정상 발생."""
+    run = _Run()
+    for _ in range(10):
+        run.step(track(anchor=None, state="PREDICTED"))
+    assert run.transitions == []
+    for _ in range(2):
+        run.step(track(state="PREDICTED"))
+    assert set(run.active()) == {"R2", "R3"}
+
+
+def test_low_confidence_onset_negative_control(monkeypatch):
+    """음성 대조: 보류 조건을 끄면 같은 17차 형태 입력이 R2·R3 를 연다. 즉 위 시험은 보류 조건에 실제로 걸린다."""
+    monkeypatch.setattr("simai_ai.risk.rules.r2_edge_proximity.low_confidence_onset", lambda track, basis: False)
+    monkeypatch.setattr("simai_ai.risk.rules.r3_elevated_position.low_confidence_onset", lambda track, basis: False)
+    run = _Run()
+    for _ in range(3):
+        run.step(track(anchor=None, state="PREDICTED"))
+    assert set(run.active()) == {"R2", "R3"}
+
+
+def test_open_events_kept_when_later_z_unknown_and_predicted():
+    """이미 열린 R2·R3 는 이후 접지 모름 + 예측 위치가 이어져도 유지(해소 0건, 등급 그대로)되고, 바닥으로 내려오면 3초 뒤 해소."""
+    run = _Run()
+    for _ in range(3):
+        run.step(track())
+    opened = {r: s.event_id for r, s in run.active().items()}
+    assert set(opened) == {"R2", "R3"}
+    for _ in range(300):
+        run.step(track(anchor=None, state="PREDICTED"))
+    active = run.active()
+    assert {r: s.event_id for r, s in active.items()} == opened
+    assert active["R2"].severity is Severity.CRITICAL and active["R3"].severity is Severity.HIGH
+    assert set(active["R3"].confidence_reasons) == {ConfidenceReason.Z_UNKNOWN, ConfidenceReason.PREDICTED}
+    assert Lifecycle.RESOLVED not in run.kinds("R2") + run.kinds("R3")
+    for _ in range(31):
+        run.step(track(xy=(4.5, 5.5), anchor="floor"))
+    assert run.active() == {}
+    assert run.kinds("R2")[-1] is Lifecycle.RESOLVED and run.kinds("R3")[-1] is Lifecycle.RESOLVED
+
+
+def test_pending_then_z_unknown_predicted_uses_pending_loss_path():
+    """지속 대기 중(관측 위치 발생 판정 1프레임) 예측 위치로 바뀌면 기존 지속 대기 관측 상실 처리대로 바로 발생한다(6.4).
+    보류 조건은 새 대기를 시작하지 않을 뿐, 이미 관측으로 시작한 대기의 안전 처리는 바꾸지 않는다."""
+    run = _Run()
+    run.step(track(anchor=None))
+    assert run.active() == {}
+    run.step(track(anchor=None, state="PREDICTED"))
+    assert set(run.active()) == {"R2", "R3"}
+    assert all(s.verification.value == "UNVERIFIABLE" for s in run.active().values())
