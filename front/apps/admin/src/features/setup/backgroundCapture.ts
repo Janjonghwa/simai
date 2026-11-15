@@ -138,6 +138,7 @@ export function captureStatusText(
   view: CaptureView,
   secondsLeft: number,
   waitingForWorker: boolean,
+  waitingSeconds = 0,
 ): string {
   const { phase } = view;
   const blocked = view.blockedLabels;
@@ -148,7 +149,8 @@ export function captureStatusText(
     const named = blocked.length ? blocked : view.pendingLabels;
     return `배경을 다 찍지 못했습니다${named.length ? `: ${named.join(', ')}` : ''}. 화면을 비운 뒤 다시 찍어 주세요.`;
   }
-  if (waitingForWorker) return '촬영을 준비하는 중입니다. 화면 밖에서 기다려 주세요.';
+  if (waitingForWorker)
+    return `서버 준비 기다리는 중 · 아직 비키지 않아도 됩니다 · ${Math.max(0, Math.floor(waitingSeconds))}초 경과`;
   if (blocked.length)
     return `${blocked.join(', ')}만 이어서 찍습니다. 다른 카메라는 그대로 찍고 있습니다.`;
   if (secondsLeft > 0) return '촬영 중입니다. 화면 밖에서 기다려 주세요.';

@@ -12,7 +12,7 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
       BACKGROUND_INCOMPLETE: true,
       FLOOR_FIT_FAILED: false,
       INSUFFICIENT_FEATURES: false,
-      VALIDATION_REJECTED: false,
+      VALIDATION_REJECTED: true,
       CAMERA_CHECK_NOT_PASSED: true,
       CAMERA_CHECK_UNAVAILABLE: true,
       TIMEOUT: true,
@@ -213,9 +213,9 @@ describe('실패 메시지에서 카메라 쌍 뽑기', () => {
       '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 3–카메라 4, 카메라 1–카메라 2)',
     );
     expect(guide.fix).toBe(
-      '카메라와 거치대를 단단히 고정하고 위치를 다시 맞춘 뒤 처음부터 다시 하세요.',
+      '「다시 시도」를 누르면 같은 카메라와 높이 설정으로 세팅을 다시 시작합니다.',
     );
-    expect(guide.retry).toBe(false);
+    expect(guide.retry).toBe(true);
   });
 
   it('레거시 숫자형 카메라 id(cam1-cam2 꼴)도 같은 방식으로 읽는다', () => {

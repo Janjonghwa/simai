@@ -1,6 +1,19 @@
 import { cameraShortLabel } from '@/lib/cameraNames';
 export { cameraLabel, cameraNumber, cameraShortLabel } from '@/lib/cameraNames';
 
+/** 서버가 쓴 문장 속 ID도 화면에서 쓰는 번호로 바꾼다. 모르는 cam ID는 번호를 지어내지 않는다. */
+export function cameraText(cameraIds: readonly string[], text: string): string {
+  const ids = [...new Set(cameraIds)].sort((a, b) => b.length - a.length);
+  const escaped = ids.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return text.replace(
+    new RegExp(
+      `(?<![A-Za-z0-9_])(?:${escaped.length ? escaped.join('|') + '|' : ''}cam_[A-D])(?![A-Za-z0-9_])`,
+      'g',
+    ),
+    (id) => cameraShortLabel(cameraIds, id),
+  );
+}
+
 /** '카메라 1–카메라 2'. */
 export function pairLabel(cameraIds: readonly string[], a: string, b: string): string {
   return `${cameraShortLabel(cameraIds, a)}–${cameraShortLabel(cameraIds, b)}`;

@@ -158,8 +158,9 @@ export function calibrateNextStep(input: CalibrateNextInput): NextStep | null {
   if (waiting.mapComplete) {
     if (input.cameraCheckBlocked)
       return {
-        title: '카메라 확인을 통과해야 넘어갈 수 있어요',
-        detail: input.cameraCheckBlocked,
+        title: '맵은 완성됐지만 카메라 확인이 남아 있어요',
+        detail:
+          '맵 생성 작업이 끝나 걷기만 다시 할 수 없어요. 「카메라 연결 관리로」 돌아가 세팅을 다시 시작해 주세요.',
         tone: 'delay',
       };
     return {

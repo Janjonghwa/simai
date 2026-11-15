@@ -89,6 +89,7 @@ import {
   useStartCameraCheck,
 } from '@/features/setup/useSetupStep1';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
+import { useValidationRejections } from '@/features/setup/useValidationRejections';
 import { VlmZoneNotice } from '@/features/setup/VlmZoneNotice';
 import { useWorkAction } from '@/features/work/WorkActionContext';
 import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
@@ -323,6 +324,7 @@ function SetupWorkPage({
   }
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
+  const repeatedPairs = useValidationRejections(currentSession, waiting.cameraIds);
 
   // 각도 헬퍼는 1단계에서 주기로 받고, 보정·생성의 왼쪽 카메라 영상 칸에서는 받아 둔 값을 쓴다(카메라 목록·순서만 쓰고 배지는 달지 않는다).
   const cameraViewShown = stage === 0 || stage === 1;
@@ -664,9 +666,12 @@ function SetupWorkPage({
     if (!sessionId || retrySession.pending) return;
     retrySession.retry({
       setupSessionId: sessionId,
-      body: currentSession?.camera_heights_m
-        ? { camera_heights_m: currentSession.camera_heights_m }
-        : {},
+      body: {
+        ...(currentSession?.camera_heights_m
+          ? { camera_heights_m: currentSession.camera_heights_m }
+          : {}),
+        ...(currentSession?.failure_code === 'VALIDATION_REJECTED' ? { mode: 'NEW' as const } : {}),
+      },
     });
   }, [sessionId, retrySession, currentSession]);
 
@@ -941,6 +946,7 @@ function SetupWorkPage({
             onRetry={handleRetryFailedSession}
             onRetryNewMap={handleRetryNewMap}
             changedCameras={currentSession.world_anchor?.changed_cameras ?? undefined}
+            repeatedValidationPairs={repeatedPairs}
             retryPending={retrySession.pending}
             retryError={retrySession.error ?? cancelError}
             onNavigateLiveWork={
@@ -976,10 +982,11 @@ function SetupWorkPage({
               </div>
             )}
             {zoneSource && (reviewsCarriedZones(currentSession) || unconfirmedZones > 0) && (
-              <SetupZoneReviewCard sessionId={zoneSource.sessionId} />
+              <SetupZoneReviewCard sessionId={zoneSource.sessionId} cameraIds={waiting.cameraIds} />
             )}
             {!completed && (
               <AiZoneDraftsPanel
+                cameraIds={waiting.cameraIds}
                 draftsResponse={zoneDraftsQuery.data}
                 acceptedDraftIds={acceptedDraftIds}
                 discardedDraftIds={discardedDraftIds}
@@ -1013,6 +1020,7 @@ function SetupWorkPage({
           view={capture.view}
           secondsLeft={capture.secondsLeft}
           waitingForWorker={capture.waitingForWorker}
+          waitingSeconds={capture.waitingSeconds}
           onStart={startCapture}
           onCancel={capture.view.phase === 'ready' ? capture.close : handleCancelSession}
           onRetry={handleRetryFailedSession}

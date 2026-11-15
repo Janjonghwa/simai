@@ -226,6 +226,7 @@ function FailureNotice({
   onRetry,
   onRetryNewMap,
   changedCameras,
+  repeatedValidationPairs,
   onReturnToStep1,
 }: {
   waiting: SetupWaitingView;
@@ -233,6 +234,7 @@ function FailureNotice({
   onRetry: () => void;
   onRetryNewMap?: () => void;
   changedCameras?: readonly string[];
+  repeatedValidationPairs?: string;
   onReturnToStep1: () => void;
 }) {
   const guide = failureGuide(
@@ -240,7 +242,11 @@ function FailureNotice({
     waiting.failureMessage,
     waiting.cameraIds,
     changedCameras,
-    { cameraCheck: waiting.cameraCheck, backgroundCollection: waiting.backgroundCollection },
+    {
+      cameraCheck: waiting.cameraCheck,
+      backgroundCollection: waiting.backgroundCollection,
+      repeatedValidationPairs,
+    },
   );
   const newMap = guide.newMap && onRetryNewMap !== undefined;
   const stage =
@@ -537,6 +543,7 @@ export function SetupCalibrateStep({
   onRetry,
   onRetryNewMap,
   changedCameras,
+  repeatedValidationPairs,
   onNavigateLiveWork,
   onReturnToStep1,
   onOpenSupplement,
@@ -558,6 +565,7 @@ export function SetupCalibrateStep({
   onRetryNewMap?: () => void;
   /** 직전 세팅과 달라진 카메라(세션 world_anchor.changed_cameras). */
   changedCameras?: readonly string[];
+  repeatedValidationPairs?: string;
   onNavigateLiveWork?: () => void;
   onReturnToStep1: () => void;
   /** 맵 보강 촬영 창을 연다(미리보기 맵이 있을 때만 준다). 없으면 「자세히 · 맵 보강」을 두지 않는다. */
@@ -568,6 +576,11 @@ export function SetupCalibrateStep({
       {nextStep && (
         <NextStepCard step={nextStep}>
           <OverallBar percent={waiting.progressPct} />
+          {waiting.mapComplete && cameraCheck && !cameraCheck.passed && (
+            <Button size="sm" variant="secondary" onClick={onReturnToStep1}>
+              카메라 연결 관리로
+            </Button>
+          )}
         </NextStepCard>
       )}
       {waiting.failed && (
@@ -577,6 +590,7 @@ export function SetupCalibrateStep({
           onRetry={onRetry}
           onRetryNewMap={onRetryNewMap}
           changedCameras={changedCameras}
+          repeatedValidationPairs={repeatedValidationPairs}
           onReturnToStep1={onReturnToStep1}
         />
       )}

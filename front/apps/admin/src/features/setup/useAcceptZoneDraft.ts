@@ -1,9 +1,9 @@
 import { acceptedByZones, draftCreateRequest } from '@/features/setup/draftZone';
 import { markSetupZoneDraftAccepted, useSetupFlowStore } from '@/features/setup/setup.store';
+import { draftPublishFailure } from '@/features/setup/setupUx';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { commitErrorText, CommitInFlightError } from '@/features/zones/commitErrors';
-import { publishErrorText } from '@/features/zones/useConfigApply';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
 import type { SetupZoneSource } from '@/features/zones/zoneSource';
@@ -61,7 +61,7 @@ export function useAcceptZoneDraft(
       if (result.publishError) {
         setFailure({
           candidateId: id,
-          text: `구역은 저장됐지만 발행되지 않았습니다. ${publishErrorText(result.publishError)}`,
+          text: draftPublishFailure(result.publishError),
         });
       }
     } catch (error) {

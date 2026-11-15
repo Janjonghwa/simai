@@ -180,7 +180,7 @@ describe('보정·생성 실패 안내', () => {
       '보정한 뒤 오히려 어긋난 카메라 쌍이 있어요 (카메라 1–카메라 2)',
     );
     expect(box.textContent).toContain(
-      '카메라와 거치대를 단단히 고정하고 위치를 다시 맞춘 뒤 처음부터 다시 하세요.',
+      '「다시 시도」를 누르면 같은 카메라와 높이 설정으로 세팅을 다시 시작합니다.',
     );
     expect(stages().map((row) => row.getAttribute('data-status'))).toEqual([
       'done',
@@ -355,7 +355,7 @@ describe('보정 검증 결과 표', () => {
   it('높이 불일치 안내는 서버 문구를 그대로 보이고, 서버가 높이를 확인하기 전(40% 미만)에는 숨긴다', () => {
     renderStep(withChecks());
     expect(screen.getByRole('alert', { name: '카메라 높이 불일치 경고' }).textContent).toContain(
-      'cam_B 높이를 다시 재서 입력해 주세요',
+      '카메라 2 높이를 다시 재서 입력해 주세요',
     );
     cleanup();
     renderStep(withChecks({ progress_pct: 39 }));

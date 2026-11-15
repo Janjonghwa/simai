@@ -137,7 +137,7 @@ export function cameraCheckFailed(view: CameraCheckView): boolean {
 export function cameraCheckBlockReason(view: CameraCheckView): string | null {
   if (view.passed) return null;
   return cameraCheckFailed(view)
-    ? '카메라 확인을 통과하지 못했어요. 다시 보정해 주세요'
+    ? '걷기 확인을 다시 받을 시간이 끝났어요. 「다시 보정」으로 새 세팅을 시작해 주세요'
     : '카메라 확인을 마치면 넘어갈 수 있어요';
 }
 
@@ -190,10 +190,20 @@ export interface CameraWalkView {
   nextAttempt: number;
   progressPct: number;
   cameras: WalkCameraView[];
+  pairs: WalkPairView[];
   /** 실패 안내(RETRY_WAIT). 아니면 null. */
   failure: WalkFailure | null;
   /** 워커가 걷기를 기다리는 남은 초(스냅샷 값, 대략). 모르면 null. */
   waitSeconds: number | null;
+}
+
+export interface WalkPairView {
+  key: string;
+  label: string;
+  samples: number;
+  need: number;
+  required: boolean;
+  shortage: boolean;
 }
 
 /** 실패 사유를 표본 부족·기하 실패로 나눠 「카메라 4에서 사람이 충분히 보이지 않았습니다」처럼 카메라 번호로 안내한다. */
@@ -273,6 +283,11 @@ export function deriveCameraWalkView(
   const flagged = new Set(retrying ? check.problems.flatMap((p) => p.camera_ids) : []);
   const showCounts = phase === 'WALKING' || phase === 'RETRY_WAIT';
   const ids = cameraIds.length > 0 ? cameraIds : Object.keys(check?.cameras ?? {});
+  const rawNeed: unknown = check ? Reflect.get(check, 'thresholds') : null;
+  const pairNeed: unknown =
+    rawNeed && typeof rawNeed === 'object' ? Reflect.get(rawNeed, 'min_pair_samples') : null;
+  const requiredSamples =
+    typeof pairNeed === 'number' && Number.isFinite(pairNeed) && pairNeed > 0 ? pairNeed : 30;
   return {
     open: phase !== null && OPEN_PHASES.has(phase),
     phase,
@@ -290,6 +305,20 @@ export function deriveCameraWalkView(
         visible: phase === 'WALKING' ? (cam?.person_visible ?? null) : null,
         flagged: flagged.has(id),
       };
+    }),
+    // 걷기는 서버가 검사하는 모든 쌍을 표시한다(보정 오차 표의 옆 쌍 제한과 다름).
+    pairs: Object.entries(check?.pairs ?? {}).flatMap(([key, pair]) => {
+      if (pair.camera_ids.length !== 2) return [];
+      return [
+        {
+          key,
+          label: pairLabel(ids, pair.camera_ids[0]!, pair.camera_ids[1]!),
+          samples: showCounts ? pair.samples : 0,
+          need: requiredSamples,
+          required: pair.required,
+          shortage: showCounts && pair.required && pair.samples < requiredSamples,
+        },
+      ];
     }),
     failure: retrying ? walkFailure(check, cameraIds) : null,
     waitSeconds: check?.user_wait ? Math.max(0, Math.round(check.user_wait.wait_s)) : null,
@@ -328,17 +357,20 @@ export function walkStatus(view: CameraWalkView, secondsLeft: number): WalkStatu
       ? {
           title: `${elapsed}초 동안 어느 카메라에도 사람이 보이지 않았어요`,
           action:
-            '한 사람만 카메라 앞을 천천히 지나가 주세요(다른 사람은 화면 밖). 계속 0 이면 현재 시도를 중단하고 GPU 서버의 관제(Tier 0) 상태를 확인하세요.',
+            '한 사람만 카메라 앞을 천천히 지나가 주세요(다른 사람은 화면 밖). 계속 0이면 현재 시도를 중단하고 GPU 서버에서 영상을 받는지 확인하세요.',
         }
       : null;
   if (secondsLeft > 0)
     return { status: '걷는 중입니다. 카메라 사이 겹치는 곳을 고루 지나가 주세요.', hint };
   const short = view.cameras.filter((c) => c.observed < c.need).map((c) => c.label);
+  const shortPairs = view.pairs.filter((p) => p.shortage).map((p) => p.label);
   return {
     status:
-      short.length > 0 && !nobody
-        ? `조금만 더 걸어 주세요. 덜 보인 카메라: ${short.join(', ')}. 그 카메라 앞을 지나가면 끝납니다.`
-        : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.',
+      shortPairs.length > 0 && !nobody
+        ? `함께 보인 횟수가 모자라요: ${shortPairs.join(', ')}. 두 카메라가 함께 보는 곳을 지나가 주세요.`
+        : short.length > 0 && !nobody
+          ? `조금만 더 걸어 주세요. 덜 보인 카메라: ${short.join(', ')}. 그 카메라 앞을 지나가면 끝납니다.`
+          : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.',
     hint,
   };
 }

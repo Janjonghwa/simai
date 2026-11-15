@@ -65,13 +65,15 @@ describe('ZoneOpinionView', () => {
   });
 
   it('의견 칸: 배지·한 줄·전후 썸네일, 누르면 크게 보기 창이 열리고 닫힌다', () => {
-    render(<ZoneOpinionBlock zoneName="중앙 단상" opinion={opinion()} />);
+    render(
+      <ZoneOpinionBlock zoneName="중앙 단상" opinion={opinion()} cameraIds={['cam_A', 'cam_B']} />,
+    );
     expect(screen.getByText('삭제 권고')).toBeTruthy();
     expect(screen.getByText('단상 위 상자가 치워져 바닥만 남았습니다.')).toBeTruthy();
-    const before = screen.getByAltText('이전 세팅 · cam_A') as HTMLImageElement;
+    const before = screen.getByAltText('이전 세팅 · 카메라 1') as HTMLImageElement;
     expect(before.src).toBe('https://storage.test/before.jpg');
     expect(before.style.left).toBe('-50%');
-    expect((screen.getByAltText('이번 세팅 · cam_A') as HTMLImageElement).src).toBe(
+    expect((screen.getByAltText('이번 세팅 · 카메라 1') as HTMLImageElement).src).toBe(
       'https://storage.test/after.jpg',
     );
 

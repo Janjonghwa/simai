@@ -1,3 +1,4 @@
+import { hasChangeOpinion } from '@/features/setup/setupUx';
 import { zoneHeightChangesSummarySchema } from '@/features/setup/types';
 import { staticObjectItemSchema, type StaticObjectBody } from '@/features/surfaces/types';
 import {
@@ -316,8 +317,12 @@ export function planRefetchIntervalMs(
 /** 확인이 필요한 항목 중 높이 차이 판정이 '변화 없음(UNCHANGED)'인 구역 수(S15P31A101-630). */
 export function unchangedPendingReviewCount(plan: SetupZonePlanView | undefined): number {
   return plan
-    ? plan.items.filter((item) => item.needs_review && item.height_change?.status === 'UNCHANGED')
-        .length
+    ? plan.items.filter(
+        (item) =>
+          item.needs_review &&
+          item.height_change?.status === 'UNCHANGED' &&
+          !hasChangeOpinion(item.ai_opinion),
+      ).length
     : 0;
 }
 
@@ -342,7 +347,12 @@ export function confirmUnchangedPlanItems(
 ): SetupZonePlanItem[] | null {
   let changed = false;
   const next = items.map((item) => {
-    if (!item.needs_review || item.height_change?.status !== 'UNCHANGED') return item;
+    if (
+      !item.needs_review ||
+      item.height_change?.status !== 'UNCHANGED' ||
+      hasChangeOpinion(item.ai_opinion)
+    )
+      return item;
     changed = true;
     return { ...item, needs_review: false };
   });

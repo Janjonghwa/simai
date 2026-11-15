@@ -6,7 +6,7 @@ import { ROOM } from '@/features/plan/plan';
 import type { CameraBadge } from '@/features/setup/cameraBadge';
 import { CameraCue } from '@/features/setup/CameraCue';
 import { CALIBRATION_RISK_TITLE } from '@/features/setup/cameraGuides';
-import { cameraLabel } from '@/features/setup/cameraLabels';
+import { cameraLabel, cameraText } from '@/features/setup/cameraLabels';
 import type { NextStep } from '@/features/setup/nextStep';
 import {
   CAMERA_HEIGHT_HELP,
@@ -21,6 +21,7 @@ import {
   type Step1CoverageView,
 } from '@/features/setup/setup';
 import { SetupMap } from '@/features/setup/SetupMap';
+import { draftReason } from '@/features/setup/setupUx';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
@@ -165,7 +166,11 @@ function CameraTile({
       <span className={cn(CAPTION, 'top-2 left-2')}>
         <span className="font-semibold">{camera.label}</span>
         {showBadge && <CameraBadgeChip badge={camera.badge} />}
-        {!playing && <span className="text-muted-foreground">{tileLabel(phase, link)}</span>}
+        {!playing && (
+          <span className="text-muted-foreground">
+            {link === 'stopped' ? '미리보기 멈춤' : tileLabel(phase, link)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -465,6 +470,7 @@ export function AiZoneDraftsPanel({
   acceptFailure,
   onAcceptDraft,
   onDiscardDraft,
+  cameraIds = [],
 }: {
   draftsResponse: SetupZoneDraftsResponse | null;
   /** 구역으로 만든 초안. */
@@ -475,6 +481,7 @@ export function AiZoneDraftsPanel({
   acceptFailure: DraftAcceptFailure | null;
   onAcceptDraft: (item: ZoneDraftItem) => void;
   onDiscardDraft: (candidateId: string) => void;
+  cameraIds?: readonly string[];
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
   const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
@@ -494,6 +501,7 @@ export function AiZoneDraftsPanel({
           className="relative flex flex-col gap-2.5 overflow-y-auto pr-1"
         >
           {visibleDrafts.map((item) => {
+            const name = cameraText(cameraIds, item.recommended_name);
             const isAccepted = acceptedDraftIds.includes(item.candidate_id);
             const isNoOpinion = item.no_opinion;
             return (
@@ -510,15 +518,13 @@ export function AiZoneDraftsPanel({
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <strong className="text-sm font-semibold text-foreground">
-                      {item.recommended_name}
-                    </strong>
+                    <strong className="text-sm font-semibold text-foreground">{name}</strong>
                     <Badge className="h-auto rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                       {CANDIDATE_KIND_LABEL[item.candidate_kind]}
                     </Badge>
                     {isNoOpinion ? (
                       <Badge
-                        aria-label={`${item.recommended_name} AI 의견 없음`}
+                        aria-label={`${name} AI 의견 없음`}
                         className="h-auto rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-muted-foreground"
                       >
                         AI 의견 없음
@@ -541,15 +547,19 @@ export function AiZoneDraftsPanel({
                       </Badge>
                     )}
                   </div>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    점선 초안 · Z {item.z_min_m.toFixed(1)}~{item.z_max_m.toFixed(1)}m
-                    {item.confidence !== null && item.confidence !== undefined
-                      ? ` · 신뢰도 ${Math.round(item.confidence * 100)}%`
-                      : ''}
-                  </span>
                 </div>
 
-                <p className="text-xs text-muted-foreground">{item.rationale}</p>
+                <p className="text-xs text-muted-foreground">{draftReason(item)}</p>
+                <details aria-label={`${name} 근거 자세히`}>
+                  <summary className="cursor-pointer text-muted-foreground">자세히</summary>
+                  <p className="mt-2">{cameraText(cameraIds, item.rationale)}</p>
+                  <p className="mt-1 font-mono text-muted-foreground">
+                    높이 범위 {item.z_min_m.toFixed(1)}~{item.z_max_m.toFixed(1)}m
+                    {item.confidence != null
+                      ? ` · 신뢰도 ${Math.round(item.confidence * 100)}%`
+                      : ''}
+                  </p>
+                </details>
 
                 {acceptFailure?.candidateId === item.candidate_id && (
                   <p role="alert" className="text-xs font-medium text-delay">
@@ -562,7 +572,7 @@ export function AiZoneDraftsPanel({
                     <Button
                       size="sm"
                       variant="secondary"
-                      aria-label={`${item.recommended_name} 버리기`}
+                      aria-label={`${name} 버리기`}
                       disabled={pendingDraftId === item.candidate_id}
                       onClick={() => onDiscardDraft(item.candidate_id)}
                     >
@@ -570,7 +580,7 @@ export function AiZoneDraftsPanel({
                     </Button>
                     <Button
                       size="sm"
-                      aria-label={`${item.recommended_name} 수락`}
+                      aria-label={`${name} 수락`}
                       disabled={pendingDraftId !== null}
                       onClick={() => onAcceptDraft(item)}
                     >
