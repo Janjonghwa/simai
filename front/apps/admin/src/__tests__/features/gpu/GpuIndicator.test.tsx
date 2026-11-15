@@ -16,6 +16,7 @@ vi.mock('@/lib/api', async () => {
 const T = 1_760_342_400_000;
 const H100 = 'NVIDIA H100 80GB HBM3';
 const PCIE = 'NVIDIA H100 PCIe';
+const H200 = 'NVIDIA H200';
 const RTX4090 = 'NVIDIA GeForce RTX 4090';
 const A4000 = 'NVIDIA RTX A4000';
 
@@ -48,6 +49,15 @@ const offers = {
       recommended: true,
       tier: 'RECOMMENDED',
       available: true,
+    },
+    {
+      gpu_type: H200,
+      name: 'H200',
+      memory_gb: 141,
+      preferred: false,
+      recommended: true,
+      tier: 'RECOMMENDED',
+      available: false,
     },
     {
       gpu_type: RTX4090,
@@ -94,6 +104,22 @@ const offers = {
       stock: 'NONE',
       price_per_hour_usd: 2.39,
       within_cap: true,
+    },
+    {
+      gpu_type: H200,
+      region: 'AP-JP-1',
+      stock: 'NONE',
+      available: false,
+      price_per_hour_usd: 3.99,
+      within_cap: false,
+    },
+    {
+      gpu_type: H200,
+      region: 'EU-RO-1',
+      stock: 'NONE',
+      available: false,
+      price_per_hour_usd: 3.99,
+      within_cap: false,
     },
     {
       gpu_type: RTX4090,
@@ -255,7 +281,7 @@ describe('GpuIndicator', () => {
     },
   );
 
-  it('마우스를 올리면 종류·지역, 경과·예상 비용, 판정 지연, 준비 단계를 보인다', async () => {
+  it('마우스를 올리면 통일된 짧은 GPU 이름·나라 이름 지역·단가($/h), 경과·예상 비용·자동 정지·준비 단계와 남은 시간·판정 지연 설명을 보인다(-733)', async () => {
     current = statusOf('PREPARING', { launch: launchView(), session: sessionView('ENGINE') });
     signInAs('ADMIN');
     const now = Date.now();
@@ -269,17 +295,36 @@ describe('GpuIndicator', () => {
     await waitFor(() => expect(indicator().dataset.dot).toBe('PREPARING'));
     act(() => fireEvent.mouseEnter(indicator()));
     const tip = screen.getByRole('tooltip');
-    expect(tip.textContent).toContain(`${H100} · EU-RO-1`);
-    expect(tip.textContent).toContain('경과 30분 · 약 $1.50');
+    expect(tip.textContent).toContain('H100 SXM · 루마니아 EU-RO-1');
+    expect(tip.textContent).toContain('경과 30분 · 약 $1.50 ($3.00/h)');
     expect(tip.textContent).toContain('판정 지연 180 ms');
+    expect(screen.getByText('판정 지연 180 ms').getAttribute('title')).toContain(
+      '판정 지연: 이 카메라가 찍은 뒤 위험 판정(Tier 0)까지 걸린 시간, 최근 5초 평균',
+    );
     const steps = screen.getByRole('list', { name: '준비 단계' });
     expect(steps.textContent).toBe('켜는 중 → 가중치 → 엔진 → 준비 완료');
     expect(screen.getByText('엔진').closest('li')?.getAttribute('aria-current')).toBe('step');
+    expect(tip.textContent).toContain('예상 남은 시간: 캐시 있으면 약 2~3분');
     act(() => fireEvent.mouseLeave(indicator()));
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
-  it('누르면 켜기 패널: 모든 GPU 행에 켤 수 있음·없음·모름, 기본은 서버가 고른 칸이고 다른 GPU 는 엔진 캐시 안내 뒤 확인을 거쳐 켠다', async () => {
+  it('연결된 상태의 정보창에는 자동 정지까지 남은 시간을 함께 보인다(-733)', async () => {
+    current = statusOf('CONNECTED', {
+      launch: launchView(),
+      session: sessionView('READY', 'CONNECTED'),
+    });
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('CONNECTED'));
+    act(() => fireEvent.mouseEnter(indicator()));
+    const tip = screen.getByRole('tooltip');
+    expect(tip.textContent).toContain('H100 SXM · 루마니아 EU-RO-1');
+    expect(tip.textContent).toContain('($3.00/h)');
+    expect(tip.textContent).toContain('자동 정지까지 약');
+  });
+
+  it('누르면 켜기 패널: 기본은 켤 수 있는 칸이 있는 행만 보이고 전체 보기로 펼치며, 켤 수 없는 행에는 추천 배지를 달지 않는다(-733)', async () => {
     current = statusOf('OFF');
     signInAs('ADMIN');
     renderIndicator();
@@ -287,11 +332,33 @@ describe('GpuIndicator', () => {
     act(() => fireEvent.click(indicator()));
     const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     expect(def.getAttribute('aria-pressed')).toBe('true');
-    // 행 순서는 서버가 준 대로(추천이 위), 추천·등급 표시, 등급 글(많음·적음)은 없다
+    // 지역 머리글은 나라 이름 + 코드, 예상 준비 시간 안내
+    expect(screen.getByRole('columnheader', { name: '일본 AP-JP-1' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '루마니아 EU-RO-1' })).toBeTruthy();
+    expect(screen.getByText('예상 준비 시간: 캐시 있으면 약 4분, 첫 부팅 20분 이상')).toBeTruthy();
+    // 기본은 켤 수 있는 칸이 있는 4행만 보이고 H200(모두 없음)은 숨긴다
     const rows = screen.getAllByRole('rowheader').map((h) => h.textContent);
     expect(rows).toEqual([
       'H100 SXM80GB추천',
       'H100 PCIe80GB추천',
+      'RTX 409024GB제한',
+      'RTX A400016GB위험',
+    ]);
+    // 배지 hover 설명(title)
+    expect(screen.getByText('제한').getAttribute('title')).toContain(
+      '세팅(맵 굽기)·VLM 근거·아바타가 안 됩니다',
+    );
+    expect(screen.getByText('위험').getAttribute('title')).toContain('Tier 0 최소 사양');
+    expect(screen.getAllByText('추천')[0]?.getAttribute('title')).toContain(
+      '권장 사양(80GB급 H100·H200 계열)',
+    );
+    // 전체 보기를 누르면 켤 수 없는 H200 행이 나타나지만 추천 배지는 붙지 않는다
+    act(() => fireEvent.click(screen.getByRole('button', { name: '전체 보기 (5종)' })));
+    const allRows = screen.getAllByRole('rowheader').map((h) => h.textContent);
+    expect(allRows).toEqual([
+      'H100 SXM80GB추천',
+      'H100 PCIe80GB추천',
+      'H200 SXM141GB',
       'RTX 409024GB제한',
       'RTX A400016GB위험',
     ]);
@@ -317,7 +384,8 @@ describe('GpuIndicator', () => {
     ).toBeTruthy();
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     const confirm = screen.getByTestId('gpu-launch-confirm');
-    expect(confirm.textContent).toContain('H100 PCIe (80GB) · AP-JP-1 · 시간당 $2.39');
+    expect(confirm.textContent).toContain('H100 PCIe (80GB) · 일본 AP-JP-1 · 시간당 $2.39');
+    expect(confirm.textContent).toContain('예상 준비 시간: 캐시 있으면 약 4분, 첫 부팅 20분 이상');
     expect(posts).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     await waitFor(() => expect(posts).toEqual(['launch']));
@@ -371,7 +439,7 @@ describe('GpuIndicator', () => {
     await waitFor(() => expect(launchBodies).toEqual([{}]));
   });
 
-  it('관제 중이면 끄기를 막고 까닭을 보이며, 아니면 확인 뒤 끈다', async () => {
+  it('관제 중이면 끄기를 막고 까닭을 보이며, 아니면 다시 켤 때 걸리는 시간·이번 세션 비용을 보여 주고 확인 뒤 끈다(-733)', async () => {
     current = statusOf('CONNECTED', {
       launch: launchView(),
       session: sessionView('READY', 'CONNECTED'),
@@ -395,7 +463,11 @@ describe('GpuIndicator', () => {
     await waitFor(() => expect(indicator().dataset.dot).toBe('CONNECTED'));
     act(() => fireEvent.click(indicator()));
     act(() => fireEvent.click(screen.getByRole('button', { name: 'GPU 끄기' })));
-    expect(screen.getByTestId('gpu-stop-confirm')).toBeTruthy();
+    const stopConfirm = screen.getByTestId('gpu-stop-confirm');
+    expect(stopConfirm.textContent).toContain(
+      '다시 켜면 준비에 약 4분(첫 부팅은 20분 이상) 걸립니다.',
+    );
+    expect(stopConfirm.textContent).toContain('이번 세션 비용: 약 $1.50 (경과 30분 · $3.00/h)');
     expect(posts).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '끄기' })));
     await waitFor(() => expect(posts).toEqual(['stop']));

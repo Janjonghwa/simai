@@ -1,27 +1,38 @@
 import {
+  autoStopText,
   formatElapsed,
+  formatRegion,
   formatUsd,
   gpuErrorReason,
   gpuSummary,
   PREP_STEPS,
+  prepRemainingText,
   prepStep,
 } from '@/features/gpu/gpuStatus';
-import { useGpuStatus } from '@/features/gpu/useGpu';
+import { useCachedGpuIdleMinutes, useGpuStatus } from '@/features/gpu/useGpu';
 import { useNow } from '@/features/layout/useNow';
 import { useTier0Connected } from '@/hooks/useTier0Connected';
-import { isLagHigh, LAG_WINDOW_MS } from '@/lib/tier0Lag';
+import { isLagHigh, LAG_OK_MS, LAG_WARN_MS, LAG_WINDOW_MS } from '@/lib/tier0Lag';
 import { selectTier0LagMs, useRealtimeStore } from '@/store/realtime.store';
 import { cn } from '@simai/ui/lib/utils';
 
-// GPU 정보 줄(S15P31A101-702): GPU 종류·지역, 경과·예상 비용, 판정 지연(-704 의 상단바 「판정 지연」을 여기로 옮김),
-// 준비 중이면 단계(켜는 중 → 가중치 → 엔진 → 준비 완료), 오류면 까닭. 모르는 줄은 뺀다(지어내지 않음).
+// GPU 정보 줄(S15P31A101-702, -733): 짧은 GPU 이름·지역(나라+코드), 경과·예상 비용·시간당 단가($/h), 자동 정지까지 남은 시간,
+// 판정 지연(-704 의 상단바 「판정 지연」을 여기로 옮김, hover 설명은 CCTV 배지와 같음),
+// 준비 중이면 단계(켜는 중 → 가중치 → 엔진 → 준비 완료)와 예상 남은 시간, 오류면 까닭. 모르는 줄은 뺀다(지어내지 않음).
 // 상단바 점의 마우스 올림 정보창과 켜기·끄기 패널이 함께 쓴다.
+
+/** CCTV 배지 설명(features/cctv/CctvPage.tsx CameraBadge)과 같은 형식의 판정 지연 hover 설명(S15P31A101-733) */
+export const TIER0_LAG_TOOLTIP = `판정 지연: 이 카메라가 찍은 뒤 위험 판정(Tier 0)까지 걸린 시간, 최근 ${LAG_WINDOW_MS / 1000}초 평균. ${LAG_OK_MS} ms 미만 초록, ${LAG_WARN_MS} ms 이상 빨강`;
 
 export function GpuInfoLines() {
   const { status, clockOffsetMs } = useGpuStatus();
+  const idleMinutes = useCachedGpuIdleMinutes();
   const now = useNow();
-  const summary = gpuSummary(status, now + clockOffsetMs);
+  const serverNow = now + clockOffsetMs;
+  const summary = gpuSummary(status, serverNow);
   const step = prepStep(status);
+  const remaining = prepRemainingText(status);
+  const autoStop = autoStopText(status, serverNow, idleMinutes);
   const reason = gpuErrorReason(status);
   return (
     <div className="flex flex-col gap-1 text-sm">
@@ -29,28 +40,33 @@ export function GpuInfoLines() {
         <>
           <span>
             {summary.gpuType}
-            {summary.region ? ` · ${summary.region}` : ''}
+            {summary.region ? ` · ${formatRegion(summary.region)}` : ''}
           </span>
           <span className="text-muted-foreground">
             경과 {formatElapsed(summary.elapsedMs)}
             {summary.costUsd !== null && ` · 약 ${formatUsd(summary.costUsd)}`}
+            {summary.pricePerHourUsd !== null && ` (${formatUsd(summary.pricePerHourUsd)}/h)`}
           </span>
         </>
       )}
+      {autoStop && <span className="text-xs text-muted-foreground">{autoStop}</span>}
       <Tier0LagLine />
       {step !== null && (
-        <ol aria-label="준비 단계" className="flex flex-wrap items-center gap-1 text-xs">
-          {PREP_STEPS.map((name, i) => (
-            <li
-              key={name}
-              aria-current={i === step ? 'step' : undefined}
-              className={cn(i === step ? 'font-semibold' : 'text-muted-foreground')}
-            >
-              {i > 0 && <span aria-hidden> → </span>}
-              {name}
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol aria-label="준비 단계" className="flex flex-wrap items-center gap-1 text-xs">
+            {PREP_STEPS.map((name, i) => (
+              <li
+                key={name}
+                aria-current={i === step ? 'step' : undefined}
+                className={cn(i === step ? 'font-semibold' : 'text-muted-foreground')}
+              >
+                {i > 0 && <span aria-hidden> → </span>}
+                {name}
+              </li>
+            ))}
+          </ol>
+          {remaining && <span className="text-xs text-muted-foreground">{remaining}</span>}
+        </>
       )}
       {reason && <span>{reason}</span>}
     </div>
@@ -67,7 +83,7 @@ export function Tier0LagLine() {
   if (!connected || lag === undefined) return null;
   return (
     <span
-      title={`Tier 0 가 잰 촬영→판정 처리 지연, 최근 ${LAG_WINDOW_MS / 1000}초 평균`}
+      title={TIER0_LAG_TOOLTIP}
       className={cn(
         'font-mono',
         isLagHigh(lag) ? 'font-semibold text-delay' : 'text-muted-foreground',

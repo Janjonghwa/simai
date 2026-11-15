@@ -10,8 +10,14 @@ import {
   requestGpuStop,
   requestSaveGpuSettings,
 } from '@/features/gpu/api';
-import { gpuDot, type GpuDot } from '@/features/gpu/gpuStatus';
-import type { GpuLaunchBody, GpuSettingsBody, GpuStatus } from '@/features/gpu/types';
+import { DEFAULT_AUTO_STOP_IDLE_MINUTES, gpuDot, type GpuDot } from '@/features/gpu/gpuStatus';
+import type {
+  GpuLaunchBody,
+  GpuOffers,
+  GpuSettingsBody,
+  GpuSettingsResponse,
+  GpuStatus,
+} from '@/features/gpu/types';
 import { useTier0Connected } from '@/hooks/useTier0Connected';
 import { api } from '@/lib/api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -72,6 +78,29 @@ export function useCachedGpuStatus(): GpuStatus | undefined {
     client.getQueryData<{ status: GpuStatus }>(GPU_STATUS_KEY),
   );
   return isAdmin ? data?.status : undefined;
+}
+
+/** 이미 받아 둔 GPU 설정의 유휴 자동 정지 분만 읽는다(없으면 서버 기본 30분) */
+export function useCachedGpuIdleMinutes(): number {
+  const client = useQueryClient();
+  const subscribe = useCallback(
+    (onChange: () => void) => client.getQueryCache().subscribe(onChange),
+    [client],
+  );
+  const data = useSyncExternalStore(subscribe, () =>
+    client.getQueryData<GpuSettingsResponse>(GPU_SETTINGS_KEY),
+  );
+  return data?.settings.auto_stop_idle_minutes ?? DEFAULT_AUTO_STOP_IDLE_MINUTES;
+}
+
+/** 이미 받아 둔 GPU 재고 표만 읽는다(새로 요청하지 않음) */
+export function useCachedGpuOffers(): GpuOffers | undefined {
+  const client = useQueryClient();
+  const subscribe = useCallback(
+    (onChange: () => void) => client.getQueryCache().subscribe(onChange),
+    [client],
+  );
+  return useSyncExternalStore(subscribe, () => client.getQueryData<GpuOffers>(GPU_OFFERS_KEY));
 }
 
 /** 켜기 패널의 재고·가격 표. 패널을 열 때만 받는다(공급자 API 를 부른다) */
