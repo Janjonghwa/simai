@@ -60,7 +60,7 @@ POSIX 공유 메모리 세그먼트(`multiprocessing.shared_memory`) 대신 tmpf
 
 `AvatarLoop`는 입력·모델·보정 Provider·업로드·송신·시계를 주입받는다. 보정 K로 왜곡을 펴고 Tier 0 bbox만 HMR에 넣는다.
 `aggregate_frame`으로 카메라 후보를 모으며 대표 포즈를 선택한다. 첫 30개 안정 프레임의 체형 중앙값으로 GLB를 굽고 고정한다.
-ID 불확실·교정 시 누적을 비우고, 30개 안정 프레임 후 새 버전을 만든다. 기존 같은 ID의 확정 자산은 그동안 유지하고 새 ID는 물려받지 않는다.
+ID 불확실·교정 시 누적을 비우고, 30개 안정 프레임 후 새 버전을 만든다. 기존 같은 ID의 확정 자산은 그동안 유지한다. 새 ID는 `S15P31A101-743-avatar-appearance-continuity.md` 의 기하·시간 조건을 모두 맞을 때만 사라진 ID 의 외형·체형으로 시작한다(표시 전용).
 GLB 업로드 재시도는 같은 버전·같은 바이트를 유지한다. texture/mask는 null, 관측 비율은 0, 미관측은 1이다.
 
 I6는 `wss://<ec2>/ws/worker/avatar`, `Authorization: Bearer <SIMAI_WORKER_TOKEN>`이다. 워커 환경 파일 주입은 I5와 같은 도우미를 쓴다.

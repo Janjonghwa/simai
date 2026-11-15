@@ -75,6 +75,10 @@ class AppearanceWorker:
                     if state.baked is not None and self._registered.get(wid) != key:
                         self.pipeline.register(wid, state, doc["t"])
                         self._registered[wid] = key
+                    # 병합·재연결·이어받기로 받은 텍셀을 합친다(S15P31A101-743). 누적이 아직 없으면 다음 회차까지 기다린다
+                    apply_carry = getattr(self.pipeline, "apply_carry", None)
+                    if apply_carry is not None:
+                        apply_carry(wid)
                     # 유계 큐에서 생략한 회차도 포즈 루프가 센 연속 안정 30프레임에 포함한다.
                     acc = getattr(self.pipeline, "people", {}).get(wid)
                     if acc is not None:

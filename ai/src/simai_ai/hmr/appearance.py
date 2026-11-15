@@ -110,6 +110,15 @@ def png_asset(array):
 
 
 @dataclass(frozen=True)
+class TexelSnapshot:
+    """한 World ID 의 누적 텍셀(외형 이어받기·병합용, S15P31A101-743). 배열은 공유하므로 받는 쪽은 복사해 쓴다."""
+    colors: np.ndarray
+    weights: np.ndarray
+    inherited: np.ndarray
+    last_confirmed: object = None
+
+
+@dataclass(frozen=True)
 class AppearanceResult:
     albedo: PngAsset
     surface: PngAsset
@@ -170,7 +179,11 @@ def _ideal_view(view):
 
 
 class AppearanceAccumulator:
-    """한 World ID의 UV 상태. revision 변경은 새 누적, 마지막 확정 결과는 유지."""
+    """한 World ID의 UV 상태. revision 변경은 새 누적, 마지막 확정 결과는 유지.
+
+    `inherited`: 다른 World ID 에서 이어받은 텍셀(S15P31A101-743). 표시용 시작값이라 이 ID 의 첫 관측이 오면 평균하지 않고
+    덮어쓰며(이상치 거절도 하지 않음) 표시를 지운다. 표면 출처 지도에는 관측(2)으로 적는다(다른 ID 에서 관측한 픽셀).
+    """
 
     def __init__(self, faces, texcoords, texcoord_faces, face_faces, *, config=None, camera_colors=None):
         self.config = config or AppearanceConfig()
@@ -194,6 +207,8 @@ class AppearanceAccumulator:
         self.face = self.valid & face_faces[np.maximum(self.owner, 0)]
         self.colors = np.zeros((len(self.owner), 3), np.float32)
         self.weights = np.zeros(len(self.owner), np.float32)
+        self.inherited = np.zeros(len(self.owner), bool)
+        self.carry_publish = False
         self.revision = None
         self.stable = 0
         self.last_identity_t = -1
@@ -210,8 +225,11 @@ class AppearanceAccumulator:
         self.last_identity_t = t
         if revision != self.revision:
             self.revision, self.stable = revision, 0
-            self.colors.fill(0)
-            self.weights.fill(0)
+            # 제자리에서 비우지 않는다: 소실 ID 사본(TexelSnapshot)이 같은 배열을 볼 수 있다
+            self.colors = np.zeros_like(self.colors)
+            self.weights = np.zeros_like(self.weights)
+            self.inherited = np.zeros_like(self.inherited)
+            self.carry_publish = False
             self.published_coverage = 0.
             self.last_sample = self.last_publish = -1
             self.dirty = False
@@ -268,6 +286,7 @@ class AppearanceAccumulator:
         if not np.isfinite(all_vertices).all():
             raise ValueError("같은 시각 가림막 정점이 유한하지 않다")
         colors, weights = tensor(self.colors).clone(), tensor(self.weights).clone()
+        inherited = torch.as_tensor(self.inherited, device=cfg.device).clone()
         camera_colors = self.camera_colors.copy()
         sharpness = {k: list(v) for k, v in self.sharpness.items()}
         samples, color_samples = [], {}
@@ -358,13 +377,16 @@ class AppearanceAccumulator:
                 begin.record(torch.cuda.current_stream(cfg.device))
             if cfg.color_enabled:
                 observed = (observed * tensor(camera_colors.gain(camera))).clamp(0, 255)
-            outlier = (weights[ids] > 0) & ((colors[ids] - observed).abs().amax(dim=1) > cfg.outlier_rgb)
+            fresh = inherited[ids]   # 이어받은 텍셀: 이 ID 의 첫 관측이 덮는다(평균·이상치 거절 없음)
+            outlier = (weights[ids] > 0) & ~fresh & ((colors[ids] - observed).abs().amax(dim=1) > cfg.outlier_rgb)
             rejected += int((good & outlier).sum())
             good &= ~outlier & torch.isfinite(w) & (w > 0)
-            selected, w, observed = ids[good], w[good, None], observed[good]
-            total = weights[selected, None] + w
-            colors[selected] = (weights[selected, None] * colors[selected] + w * observed) / total
+            selected, w, observed, fresh = ids[good], w[good, None], observed[good], fresh[good, None]
+            total = torch.where(fresh, w, weights[selected, None] + w)
+            colors[selected] = torch.where(fresh, observed,
+                                           (weights[selected, None] * colors[selected] + w * observed) / total)
             weights[selected] = total[:, 0]
+            inherited[selected] = False
             accepted += len(selected)
             if cfg.device.startswith("cuda"):
                 end.record(torch.cuda.current_stream(cfg.device))
@@ -373,6 +395,7 @@ class AppearanceAccumulator:
         if not admit():
             return False
         self.colors, self.weights = colors.cpu().numpy(), weights.cpu().numpy()
+        self.inherited = inherited.cpu().numpy()
         self.camera_colors.commit(camera_colors)
         self.sharpness = sharpness
         if cfg.color_enabled:
@@ -389,7 +412,65 @@ class AppearanceAccumulator:
                  f"{gpu_ms:.3f}" if cfg.device.startswith("cuda") else "NA", accepted, rejected)
         return accepted > 0
 
+    def snapshot(self):
+        return TexelSnapshot(self.colors, self.weights, self.inherited, self.last_confirmed)
+
+    def absorb(self, other, *, inherit):
+        """다른 누적(TexelSnapshot)을 합친다(S15P31A101-743). 표시용이며 신원 판단에 쓰지 않는다.
+
+        inherit=False(병합·같은 ID 재연결, Tier 0 가 같은 사람이라고 한 경우): 두 쪽 본 관측 텍셀은 품질 가중 평균, 한쪽만
+        관측한 텍셀은 그 값(본 관측이 이어받은 값보다 먼저). inherit=True(다른 새 World ID 로 이어받기): 이 ID 의 본 관측이
+        없는 텍셀만 채우고 이어받음 표시. 바뀌면 다음 발행 때 안정 프레임을 기다리지 않고 한 번 낸다(carry_publish).
+        """
+        colors = np.asarray(other.colors, np.float32)
+        weights = np.asarray(other.weights, np.float32)
+        theirs_inherited = np.asarray(other.inherited, bool)
+        if colors.shape != self.colors.shape or weights.shape != self.weights.shape:
+            return False
+        colors, weights = colors.copy(), weights.copy()
+        self.colors, self.weights, self.inherited = self.colors.copy(), self.weights.copy(), self.inherited.copy()
+        mine = (self.weights > 0) & ~self.inherited
+        theirs = weights > 0
+        if inherit:
+            both = np.zeros_like(mine)
+            take = theirs & ~mine
+            mark = take
+        else:
+            theirs_own = theirs & ~theirs_inherited
+            both = mine & theirs_own
+            # 본 관측은 늘, 이어받은 값은 이쪽이 빈 텍셀일 때만 가져온다
+            take = theirs & ~mine & (theirs_own | (self.weights <= 0))
+            mark = take & theirs_inherited
+            total = self.weights[both] + weights[both]
+            self.colors[both] = ((self.weights[both, None] * self.colors[both]
+                                  + weights[both, None] * colors[both]) / total[:, None])
+            self.weights[both] = total
+        self.colors[take], self.weights[take] = colors[take], weights[take]
+        self.inherited[take] = mark[take]
+        changed = bool(both.any() or take.any())
+        if changed:
+            self.dirty = self.carry_publish = True
+        if self.last_confirmed is None:
+            self.last_confirmed = other.last_confirmed
+        return changed
+
+    def adopt(self, old):
+        """같은 사람·같은 UV 의 이전 누적을 잇는다(체형만 다시 구워 등록이 바뀐 경우). 이어 쓰면 True."""
+        if (old is None or old.revision != self.revision or old.colors.shape != self.colors.shape
+                or not np.array_equal(old.valid, self.valid)):
+            return False
+        self.colors, self.weights, self.inherited = old.colors, old.weights, old.inherited
+        self.dirty, self.carry_publish = old.dirty, old.carry_publish
+        self.last_sample, self.last_publish = old.last_sample, old.last_publish
+        self.published_coverage, self.sharpness = old.published_coverage, old.sharpness
+        return True
+
+    def inherited_ratio(self):
+        return float(np.count_nonzero(self.inherited & (self.weights > 0))) / int(self.valid.sum())
+
     def due(self, t):
+        if self.carry_publish and self.dirty:
+            return True
         coverage = float(np.count_nonzero(self.weights)) / int(self.valid.sum())
         return self.ready and self.dirty and (self.last_publish < 0
             or coverage - self.published_coverage >= self.config.coverage_gain
@@ -399,7 +480,7 @@ class AppearanceAccumulator:
         self.last_confirmed = result
         self.last_publish = t
         self.published_coverage = float(np.count_nonzero(self.weights)) / int(self.valid.sum())
-        self.dirty = False
+        self.dirty = self.carry_publish = False
 
     def result(self):
         import cv2

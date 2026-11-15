@@ -40,7 +40,8 @@ export const AVATAR_MESH_FALLBACKS = [
   'ASSET_ERROR',
 ] as const;
 /**
- * OFF 메시 끔 · NO_POSE 포즈 없음 · IDENTITY ID 불확실(같은 차수로 1.5 s 넘게)이거나 교정 차수가 다름 · CALIBRATION 보정 버전 다름 ·
+ * OFF 메시 끔 · NO_POSE 포즈 없음 · IDENTITY ID 불확실(같은 차수로 1.5 s 넘게)이거나 교정 차수가 다름(순수 병합 전 차수는 제외, -743) ·
+ * CALIBRATION 보정 버전 다름 ·
  * STALLED 1.0 s 넘게 새 포즈 없음 · HMR_LATE 촬영 시각이 World 보다 1000 ms 넘게 늦음 · NO_ASSET 자산 없음 ·
  * JOINT_MISMATCH 자산 관절 수와 포즈 길이가 다름 · NO_PELVIS Tier 0 pelvis 없음(정렬 불가) ·
  * ASSET_LOADING 자산 읽는 중 · ASSET_ERROR 자산 내려받기·sha256·리그 확인 실패.
@@ -101,9 +102,18 @@ export function avatarMeshStatus({
   });
   if (!enabled) return fallback('OFF');
   if (!avatar) return fallback('NO_POSE');
-  if (avatar.identityRevision !== track.identityRevision) return fallback('IDENTITY');
+  // 순수 병합 직후에는 병합 전 차수의 포즈가 잠깐 남는다(워커는 불확실이 풀린 뒤 새 차수로 보낸다). 같은 사람의 포즈이므로
+  // 끊김·늦음을 AVATAR_IDENTITY_HOLD_MS 만큼 늘려 마지막 자세로 둔다(-743). 분할·그 밖의 차수 상승은 지금처럼 캡슐.
+  const mergeBase = world.pureMergeBase?.get(track.worldId);
+  const mergeCarried =
+    avatar.identityRevision < track.identityRevision &&
+    mergeBase !== undefined &&
+    avatar.identityRevision >= mergeBase;
+  if (avatar.identityRevision !== track.identityRevision && !mergeCarried) {
+    return fallback('IDENTITY');
+  }
   // 같은 차수의 짧은 ID 불확실은 메시를 유지한다. 이어진 시간을 모르거나 길어지면 캡슐(-661).
-  let hold = 0;
+  let hold = mergeCarried ? AVATAR_IDENTITY_HOLD_MS : 0;
   if (track.identityConfidence === 'IDENTITY_UNCERTAIN') {
     const since = world.identityUncertainSince?.get(track.worldId);
     if (since === undefined || world.tLatestGlobal - since > AVATAR_IDENTITY_HOLD_MS) {

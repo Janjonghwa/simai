@@ -76,6 +76,11 @@ export interface WorldFrame {
    * 앞 프레임과 비교해 붙인다(identityCarry.identityUncertainSince). 없으면 이어진 시간을 모른다.
    */
   identityUncertainSince?: ReadonlyMap<string, number>;
+  /**
+   * 순수 병합으로만 차수가 올라온 사람의 사슬 시작 차수(키 world_id, -743). 데이터 Store 가 앞 프레임과 비교해 붙인다
+   * (identityCarry.pureMergeBase). 병합 전 차수의 아바타 포즈를 같은 사람의 것으로 잠깐 인정하는 데만 쓴다.
+   */
+  pureMergeBase?: ReadonlyMap<string, number>;
 }
 
 export interface RiskEventView {

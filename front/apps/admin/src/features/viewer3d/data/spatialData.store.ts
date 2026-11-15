@@ -4,7 +4,7 @@ import {
   NO_ZONES,
   type RejectReason,
 } from '@/features/viewer3d/data/contractAdapter';
-import { identityUncertainSince } from '@/features/viewer3d/data/identityCarry';
+import { identityUncertainSince, pureMergeBase } from '@/features/viewer3d/data/identityCarry';
 import type {
   EventSource,
   HealthView,
@@ -188,9 +188,17 @@ export function createSpatialDataStore(): SpatialDataStore {
             }
             // 짧은 ID 불확실 동안 아바타 메시를 유지하려면 불확실이 이어진 시간을 알아야 한다(-661)
             const since = identityUncertainSince(prev, result.frame);
+            // 순수 병합 직후 병합 전 차수의 포즈를 같은 사람의 것으로 잠깐 인정하려면 사슬 시작 차수가 필요하다(-743)
+            const mergeBase = pureMergeBase(prev, result.frame);
             bump('world', {
               world:
-                since.size > 0 ? { ...result.frame, identityUncertainSince: since } : result.frame,
+                since.size > 0 || mergeBase.size > 0
+                  ? {
+                      ...result.frame,
+                      ...(since.size > 0 ? { identityUncertainSince: since } : {}),
+                      ...(mergeBase.size > 0 ? { pureMergeBase: mergeBase } : {}),
+                    }
+                  : result.frame,
             });
             return 'world';
           }

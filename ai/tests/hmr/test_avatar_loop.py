@@ -499,7 +499,9 @@ def test_upload_409_conflict_advances_pending_version_without_rebake_and_validat
     assert violations(batch=batch, assets=[asset]) == []
 
 
-def test_track_lost_and_reentry_preserves_monotonic_version_in_same_epoch(rig):
+def test_track_lost_and_same_id_reentry_restores_asset_then_reset_keeps_monotonic_version(rig):
+    """S15P31A101-743: LOST 뒤 같은 ID 로 다시 이어지면 상태를 되살려 같은 버전을 다시 알린다(다시 굽지 않음).
+    그 뒤 차수 초기화가 오면 같은 stream_epoch 안에서 버전이 이어진다."""
     clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
     versions = []
 
@@ -520,9 +522,19 @@ def test_track_lost_and_reentry_preserves_monotonic_version_in_same_epoch(rig):
     loop.step()
     assert "w-1" not in loop.people
 
-    # 같은 stream_epoch 안에서 같은 world_id 가 다시 ACTIVE 로 들어오면 v1 로 이어진다.
+    # 같은 world_id 가 다시 ACTIVE 로 들어오면 되살린다: 다시 굽지 않고 v0 을 같은 내용으로 다시 알린다.
     clock[0] += 200
     source.item = snapshot(clock[0])
+    loop.step()
+    sender.tick()
+    assert versions == [0] and loop.people["w-1"].version == 0
+    assert loop.identity_events["lost_restored"] == 1
+    assets = [m["payload"] for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    assert len(assets) >= 2 and all(a == assets[0] for a in assets)
+
+    # 차수 초기화(분할·맞바꿈 등)는 지금처럼 다시 굽고 같은 stream_epoch 안에서 v1 로 이어진다.
+    clock[0] += 200
+    source.item = snapshot(clock[0], revision=1)
     loop.step()
     sender.tick()
     assert versions == [0, 1]
@@ -790,3 +802,110 @@ def test_self_throttling_widens_interval_when_tier0_pressure_rises(rig):
     source.item = snapshot(clock[0])
     loop.step()
     assert model.calls == 2 and loop.throttled == 2
+
+
+# ---- S15P31A101-743 외형 승계(표시 전용: Tier 0 ID·위치·판정은 읽기만) ----
+
+def scene(t, people, *, revision=0, aliases=()):
+    """people = [(world_id, (x, y), 키 m 또는 None)]. 첫 사람이 차수·별칭을 가진다."""
+    meta, imgs = snapshot(t)
+    base = meta["world"]["tracks"][0]
+    tracks = []
+    for i, (wid, xy, height) in enumerate(people):
+        tr = copy.deepcopy(base)
+        tr.update(world_id=wid, position_xy=list(xy), identity_revision=revision if i == 0 else 0)
+        if i == 0 and aliases:
+            tr["aliases"] = list(aliases)
+        if height is not None:
+            tr["head_z"], tr["head_z_validity"] = tr["ground_anchor_xyz"][2] + height, "VALID"
+        tracks.append(tr)
+    meta["world"]["tracks"] = tracks
+    return meta, imgs
+
+
+def counting_bake(model):
+    calls = []
+    original = model.bake
+    model.bake = lambda samples: calls.append(len(samples)) or original(samples)
+    return calls
+
+
+def test_pure_merge_takes_frozen_shape_from_absorbed_id_without_reestimating(rig):
+    """병합: 체형은 표본이 많은 쪽. 흡수 ID 가 고정 체형이고 남는 ID 가 아직이면 받은 체형으로 바로 고정 메시를 낸다."""
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=3)
+    for _ in range(3):
+        source.item = scene(clock[0], [("w-2", (3., 2.5), None)])
+        loop.step()
+        clock[0] += 200
+    assert loop.people["w-2"].shape_frozen and loop.people["w-2"].asset["shape"]["frames_used"] == 3
+    source.item = scene(clock[0], [("w-3", (6., 2.5), None)])   # 멀리서 새 ID(이어받기 거리 밖), w-2 는 빠짐
+    loop.step()
+    assert "w-2" in loop.carry.departed and not loop.people["w-3"].shape_frozen
+    bakes = counting_bake(model)
+    clock[0] += 200
+    source.item = scene(clock[0], [("w-3", (6., 2.5), None)], revision=1, aliases=("w-2",))
+    loop.step()
+    sender.tick()
+    survivor = loop.people["w-3"]
+    assert loop.identity_events["merge_appearance"] == 1 and "w-2" not in loop.carry.departed
+    assert bakes == [] and survivor.shape_frozen and survivor.asset["world_id"] == "w-3"
+    assert survivor.asset["shape"] == {"representation": "MHR", "frozen": True, "frames_used": 3}
+    asset_msgs = [m for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    assert _schema_errors("avatar_asset", asset_msgs[-1]) == []
+
+
+def test_pure_merge_takes_more_samples_from_absorbed_id(rig):
+    clock, source, *_, loop, _ = harness(rig, freeze=5)
+    for _ in range(3):
+        source.item = scene(clock[0], [("w-1", (3., 2.5), None), ("w-2", (6., 2.5), None)])
+        loop.step()
+        clock[0] += 200
+    donor_samples = list(loop.people["w-2"].samples)
+    loop.people["w-1"].samples = loop.people["w-1"].samples[:1]
+    source.item = scene(clock[0], [("w-1", (3., 2.5), None)], revision=1, aliases=("w-2",))
+    loop.step()
+    assert loop.people["w-1"].samples[:3] == donor_samples and loop.identity_events["merge_appearance"] == 1
+
+
+def new_id_after_loss(rig, *, xy=(3., 2.5), gap_ms=400, heights=(None, None), stay=(), also_lost=(), new_extra=()):
+    """w-1(3.0, 2.5) 이 자산을 낸 뒤 빠지고 gap_ms 뒤 xy 에 새 ID w-7 이 나타난다.
+    stay: 처음부터 끝까지 있는 사람, also_lost: w-1 과 함께 빠지는 사람, new_extra: w-7 과 함께 새로 나타나는 사람."""
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=2)
+    before = [("w-1", (3., 2.5), heights[0]), *[(w, p, None) for w, p in (*stay, *also_lost)]]
+    for _ in range(2):
+        source.item = scene(clock[0], before)
+        loop.step()
+        clock[0] += 200
+    assert loop.people["w-1"].asset is not None
+    uploaded = len(uploads)
+    clock[0] = clock[0] - 200 + gap_ms
+    source.item = scene(clock[0], [("w-7", xy, heights[1]), *[(w, p, None) for w, p in (*stay, *new_extra)]])
+    loop.step()
+    sender.tick()
+    return loop, sock, uploads[uploaded:]
+
+
+def test_new_id_near_lost_id_inherits_frozen_shape_and_publishes_first_mesh_at_once(rig):
+    loop, sock, new_uploads = new_id_after_loss(rig)
+    assert loop.carry.stats["carried"] == 1 and loop.identity_events["carry_inherited"] == 1
+    # 원래는 이 ID 의 안정 2 프레임(initial_freeze_frames) 뒤에 첫 메시가 나온다. 받은 고정 체형이라 첫 프레임에 낸다.
+    state = loop.people["w-7"]
+    assert len(new_uploads) == 1 and state.shape_frozen and state.asset["world_id"] == "w-7"
+    asset_msgs = [m for m in sock.messages if m["msg_type"] == "avatar_asset"]
+    assert asset_msgs[-1]["payload"]["world_id"] == "w-7" and _schema_errors("avatar_asset", asset_msgs[-1]) == []
+
+
+@pytest.mark.parametrize("case, reason", [
+    ({"stay": [("w-8", (4.4, 2.5))]}, "rejected_crowd"),                         # 살아 있는 다른 사람이 1.5 m 안
+    ({"new_extra": [("w-8", (3.6, 2.5))]}, "rejected_ambiguous_receiver"),       # 같은 소실 ID 에 닿는 새 ID 둘
+    ({"also_lost": [("w-2", (3.8, 2.5))], "xy": (3.4, 2.5)}, "rejected_ambiguous_donor"),   # 닿는 소실 ID 둘
+    ({"heights": (1.75, 1.45)}, "rejected_height"),                               # 키 차이 0.30 m > 0.15 m
+    ({"gap_ms": 3400}, None),                                                     # 3 s 넘음: 후보 아님
+    ({"xy": (5.5, 2.5)}, None),                                                   # 갈 수 있는 거리 밖
+])
+def test_new_id_inheritance_rejections(rig, case, reason):
+    loop, sock, new_uploads = new_id_after_loss(rig, **case)
+    assert loop.carry.stats["carried"] == 0 and loop.identity_events["carry_inherited"] == 0
+    if reason is not None:
+        assert loop.carry.stats[reason] >= 1
+    assert new_uploads == []   # 새 ID 는 처음부터 쌓는다(안정 프레임 전 메시 없음)

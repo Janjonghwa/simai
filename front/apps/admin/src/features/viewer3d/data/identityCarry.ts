@@ -46,3 +46,50 @@ export function identityUncertainSince(
   }
   return since;
 }
+
+/**
+ * 순수 병합(aliases 만 뒤에 붙고 분할 아님)으로만 identity_revision 이 올라온 사람의, 그 사슬이 시작된 차수(-743). 키 world_id.
+ * 병합 직후에는 워커가 불확실이 풀릴 때까지 새 포즈를 보내지 않아 병합 전 차수의 포즈가 잠깐 남는다. 같은 사람의 포즈이므로
+ * 뷰어는 그 포즈 차수가 이 값 이상이면 메시를 잠깐 유지한다(avatarMeshPolicy). 판정은 워커 쪽
+ * `simai_ai.tracking.identity_carry.pure_merge_absorbed` 와 같다: 차수 상승, 앞 aliases 를 그대로 앞에 두고 새 별칭이 붙음,
+ * split_from 그대로, 같은 프레임에 이 ID 에서 같은 차수로 갈라져 나간 트랙 없음. 하나라도 어긋나면 값이 없다(지금 차수만 인정).
+ */
+export function pureMergeBase(
+  prev: WorldFrame | null,
+  next: Pick<WorldFrame, 'tracks'>,
+): ReadonlyMap<string, number> {
+  const base = new Map<string, number>();
+  if (!prev) return base;
+  const before = new Map(prev.tracks.map((t) => [t.worldId, t]));
+  const splits = new Set(
+    next.tracks.flatMap((t) => (t.splitFrom ? [`${t.splitFrom}#${t.identityRevision}`] : [])),
+  );
+  for (const track of next.tracks) {
+    const old = before.get(track.worldId);
+    if (!old) continue;
+    const carried = prev.pureMergeBase?.get(track.worldId);
+    if (old.identityRevision === track.identityRevision) {
+      if (carried !== undefined) base.set(track.worldId, carried);
+      continue;
+    }
+    if (
+      track.identityRevision > old.identityRevision &&
+      isPureMerge(old, track) &&
+      !splits.has(`${track.worldId}#${track.identityRevision}`)
+    ) {
+      base.set(track.worldId, carried ?? old.identityRevision);
+    }
+  }
+  return base;
+}
+
+function isPureMerge(
+  old: Pick<TrackView, 'worldId' | 'aliases' | 'splitFrom'>,
+  next: Pick<TrackView, 'worldId' | 'aliases' | 'splitFrom'>,
+): boolean {
+  if (old.splitFrom !== next.splitFrom) return false;
+  if (old.aliases.some((alias, i) => next.aliases[i] !== alias)) return false;
+  return next.aliases
+    .slice(old.aliases.length)
+    .some((alias) => alias !== next.worldId && !old.aliases.includes(alias));
+}

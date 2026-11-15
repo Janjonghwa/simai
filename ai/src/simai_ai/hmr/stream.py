@@ -5,6 +5,10 @@ World ID 교정(S15P31A101-661): identity_revision 이 바뀌면 표본·안정 
 않는다. 안정 수는 0 으로 둬 다시 안정될 때까지 외형 누적을 멈춘다(명세 20.4 '교정 직후 누적 멈춤', 포즈는 계속 보낸다). 이미 보낸 자산은 바꾸지 않는다(같은 버전을 다른 내용으로 보내지 않음): 자산 차수 < 포즈 차수는 설계
 'ID 교정 뒤 외형'에서 허용한다. `revision_base` 는 마지막으로 처음부터 다시 쌓기 시작한 차수이고, 자산 차수가 그 이상이면
 지금 사람의 자산이다(asset_current). 흡수된 ID 의 상태는 지운다(그 ID 의 자산은 다른 world_id 라 쓰지 않는다).
+
+외형 승계(S15P31A101-743, 표시 전용, Tier 0 ID·위치·판정 불변): 순수 병합이면 흡수 ID 의 외형 누적을 남는 ID 에 합치고
+(관측 텍셀 합집합·품질 가중 평균) 체형은 표본이 많은 쪽을 쓴다. LOST 뒤 같은 ID 로 다시 이어지면 그 ID 의 상태를 되살린다.
+근거가 모자라 새 ID 가 생긴 경우는 `appearance_carry` 의 기하·시간 조건을 모두 맞을 때만 사라진 ID 의 외형·체형으로 시작한다.
 """
 
 from collections import Counter
@@ -16,6 +20,7 @@ from time import perf_counter
 from typing import Protocol
 
 from simai_ai.geometry.rig import CameraRig
+from simai_ai.hmr.appearance_carry import AppearanceCarry
 from simai_ai.hmr.appearance_worker import AppearanceWorker
 from simai_ai.hmr.diagnostics import is_upload_conflict
 from simai_ai.hmr.gltf_export import build_skinned_glb
@@ -156,10 +161,21 @@ class PersonState:
     revision_base: int | None = None
     aliases: tuple = ()
     split_from: str | None = None
+    # 외형 승계(S15P31A101-743): 받은 고정 체형(다음 굽기에 그대로 씀)·그 프레임 수, 받은 체형 표본이면 첫 메시 안정 1 프레임
+    inherited_baked: object = None
+    inherited_frames: int = 0
+    inherited_shape: bool = False
 
     def __post_init__(self):
         if self.revision_base is None:
             self.revision_base = self.revision
+
+
+@dataclass
+class CarryDonor:
+    """소실·흡수된 ID 의 포즈 루프 상태와 외형 누적 사본(없으면 None)."""
+    state: PersonState
+    appearance: object = None
 
 
 def asset_current(state) -> bool:
@@ -188,7 +204,8 @@ class _CountedUpload:
 
 class AvatarLoop:
     def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=DEFAULT_FREEZE_FRAMES,
-                 initial_freeze_frames=None, max_age_ms=DEFAULT_MAX_AGE_MS, appearance=None, segmentation=None):
+                 initial_freeze_frames=None, max_age_ms=DEFAULT_MAX_AGE_MS, appearance=None, segmentation=None,
+                 carry_config=None):
         self.source, self.gate, self.model = source, gate, model
         self.upload, self.sender, self.clock_ms = upload, sender, clock_ms
         self.freeze_frames, self.max_age_ms = freeze_frames, max_age_ms
@@ -209,7 +226,10 @@ class AvatarLoop:
         # 계측(판정 불변, S15P31A101-412): 게이트 차단 사유 코드별 회차 수, 송신 대기열에 넣은 포즈 배치 수, 업로드·자산 확정 수.
         # 실제로 소켓에 쓴 배치 수는 송신기(sent_batches_total)가 센다.
         self.skip_reasons = Counter()
-        self.identity_events = Counter()  # 계측: 차수 변화 때 초기화(revision_reset)·순수 병합 승계(merge_carried, 자산 유지 merge_asset_kept)
+        # 계측: 차수 변화 때 초기화(revision_reset)·순수 병합 승계(merge_carried, 자산 유지 merge_asset_kept),
+        # 외형 승계(S15P31A101-743): 병합 외형 합침(merge_appearance)·같은 ID 재연결(lost_restored)·새 ID 이어받기(carry_inherited)
+        self.identity_events = Counter()
+        self.carry = AppearanceCarry(carry_config)
         self.pose_enqueued = 0
         self.uploads = 0
         self.assets = 0
@@ -270,6 +290,40 @@ class AvatarLoop:
                 state.history[state.version] = asset
                 self.assets += 1
 
+    def _donor(self, wid, state):
+        snapshot = getattr(self.appearance, "snapshot", None)
+        return CarryDonor(state, snapshot(wid) if snapshot is not None else None)
+
+    def _carry_in(self, wid, donor, *, inherit):
+        carry_in = getattr(self.appearance, "carry_in", None)
+        if carry_in is not None and donor.appearance is not None:
+            carry_in(wid, donor.appearance, inherit=inherit)
+
+    @staticmethod
+    def _shape_from(state, donor):
+        if donor.shape_frozen and donor.baked is not None:
+            state.inherited_baked = donor.baked
+            shape = (donor.asset or {}).get("shape") or {}
+            state.inherited_frames = int(shape.get("frames_used") or 0)
+            return True
+        return False
+
+    def _merge_shape(self, state, donor):
+        """순수 병합: 체형은 표본이 많은 쪽(고정 체형 = 가장 많음). 남는 쪽이 이미 고정이면 그대로 둔다."""
+        if state.shape_frozen or state.pending_glb is not None or self._shape_from(state, donor):
+            return
+        if len(donor.samples) > len(state.samples):
+            state.samples = list(donor.samples)[-self.freeze_frames:]
+            state.inherited_shape = True
+
+    def _inherit_shape(self, state, donor):
+        """새 ID 이어받기: 아직 자기 메시가 없을 때만 받은 체형으로 시작한다(자기 표본은 뒤에 붙인다)."""
+        if asset_current(state) or state.pending_glb is not None or self._shape_from(state, donor):
+            return
+        if donor.samples:
+            state.samples = (list(donor.samples) + state.samples)[-self.freeze_frames:]
+            state.inherited_shape = True
+
     def _timed(self, stage, fn, *args, **kwargs):
         started = perf_counter()
         try:
@@ -316,6 +370,8 @@ class AvatarLoop:
                  gate.get("queue_wait_tolerated_windows"), gate.get("queue_wait_tolerated_frames"))
         with self._timing_lock:
             log.info("아바타 단계 시간 ms 누계=%s 횟수=%s", dict(self.timings), dict(self.timing_counts))
+        log.info("아바타 신원·외형 승계 identity_events=%s carry=%s appearance_carry=%s", dict(self.identity_events),
+                 dict(self.carry.stats), getattr(self.appearance, "carry_events", None))
         self._report_at = now + 60_000
 
     def _classify_input(self, snapshot, now_ms: int) -> str | None:
@@ -370,7 +426,13 @@ class AvatarLoop:
                     self._high_versions[wid] = max(self._high_versions.get(wid, -1), st.version, st.high_version)
                 if st.version >= 0:
                     self._last_versions[wid] = max(self._last_versions.get(wid, -1), st.version)
+            gone = {wid: st for wid, st in self.people.items() if wid not in active}
             self.people = {wid: st for wid, st in self.people.items() if wid in active}
+        # 빠진 ID(LOST·사라짐·흡수)는 병합·같은 ID 재연결·새 ID 이어받기에 쓰도록 잠시 들고 있는다(S15P31A101-743)
+        for wid, st in gone.items():
+            self.carry.depart(wid, self._donor(wid, st), t, donor=st.asset is not None)
+        self.carry.expire(t)
+        self.carry.observe(doc["tracks"], t)
         self.sender.retain(active)
         rig = CameraRig.from_provider(SnapshotCalibration(snapshot["calibration"]))
         candidates, bodies, jobs = [], {}, []
@@ -384,14 +446,25 @@ class AvatarLoop:
             split_from = tr.get("split_from")
             with self._state_lock:
                 state = self.people.get(wid)
+                restored = None
                 if state is None:
-                    state = PersonState(
-                        rev,
-                        high_version=self._high_versions.get(wid, -1),
-                        aliases=aliases,
-                        split_from=split_from,
-                    )
+                    # LOST 뒤 같은 ID 로 다시 이어졌으면(Tier 0 가 같은 사람이라고 함) 그 상태를 되살린다
+                    restored = self.carry.take(wid)
+                    if restored is not None:
+                        state = restored.state
+                        state.stable = 0
+                        state.generation += 1   # 빠지기 전 굽던 외형 결과는 버린다(재입장 무효화 규칙), 누적 텍셀은 아래에서 합친다
+                        self.identity_events["lost_restored"] += 1
+                    else:
+                        state = PersonState(
+                            rev,
+                            high_version=self._high_versions.get(wid, -1),
+                            aliases=aliases,
+                            split_from=split_from,
+                        )
+                        self.carry.receiver(wid)
                     self.people[wid] = state
+                reset = False
                 if state.revision != rev:
                     absorbed = pure_merge_absorbed(wid, state.revision, state.aliases, state.split_from,
                                                    rev, aliases, split_from, marks)
@@ -400,7 +473,15 @@ class AvatarLoop:
                         # 안정 수만 0 으로 둬 다시 안정될 때까지(30 프레임) 외형 누적·체형 확정을 멈춘다(명세 20.4)
                         state.revision, state.stable = rev, 0
                         for gone in absorbed:
-                            self.people.pop(gone, None)
+                            donor = self.carry.take(gone)
+                            old = self.people.pop(gone, None)
+                            if donor is None and old is not None:
+                                donor = self._donor(gone, old)
+                            if donor is not None:
+                                # 같은 사람이다: 외형 누적을 합치고 체형은 표본이 많은 쪽(S15P31A101-743)
+                                self._merge_shape(state, donor.state)
+                                self._carry_in(wid, donor, inherit=False)
+                                self.identity_events["merge_appearance"] += 1
                         self.identity_events["merge_carried"] += 1
                         if state.asset is not None:
                             self.identity_events["merge_asset_kept"] += 1
@@ -413,8 +494,14 @@ class AvatarLoop:
                         state.pending_target_frozen = False
                         state.pending_frames_used = 0
                         state.generation += 1
+                        state.inherited_baked, state.inherited_shape = None, False
+                        reset = True
                         self.identity_events["revision_reset"] += 1
                     state.aliases, state.split_from = aliases, split_from
+                if restored is not None and not reset:
+                    self._carry_in(wid, restored, inherit=False)
+                    if asset_current(state):
+                        self.sender.asset(state.asset)   # 같은 버전 재알림(빠질 때 송신기가 놓았다), 내용은 처음 그대로
             if (
                 tr["identity_confidence"] == "IDENTITY_UNCERTAIN"
                 or tr.get("avatar_update_hold", False)
@@ -426,6 +513,15 @@ class AvatarLoop:
             obs = select_representative_observation(tr, doc["tracks"], snapshot["frames"], images, rig, t)
             if obs is not None:
                 jobs.append((tr, obs))
+        # 근거 부족으로 생긴 새 ID: 기하·시간 조건을 모두 맞으면 사라진 ID 의 외형·체형으로 시작한다(표시 전용)
+        for receiver, donor in self.carry.decide(doc["tracks"], t):
+            with self._state_lock:
+                state = self.people.get(receiver)
+                if state is None:
+                    continue
+                self._inherit_shape(state, donor.state)
+                self._carry_in(receiver, donor, inherit=True)
+                self.identity_events["carry_inherited"] += 1
         self._commit_appearance()
         for tr, obs in jobs:
             wid, cid = tr["world_id"], obs["camera_id"]
@@ -454,21 +550,30 @@ class AvatarLoop:
                     and len(state.samples) >= self.freeze_frames
                     and state.stable >= self.freeze_frames
                 )
+                # 받은 체형 표본(병합·이어받기)은 이미 안정된 사람의 것이라 첫 메시는 이 ID 의 안정 1 프레임으로 굽는다
                 ready_initial = (
                     need_initial
                     and len(state.samples) >= self.initial_freeze_frames
-                    and state.stable >= self.initial_freeze_frames
+                    and state.stable >= (1 if state.inherited_shape else self.initial_freeze_frames)
                 )
-                if state.pending_glb is not None or ready_final or ready_initial:
+                inherited = state.inherited_baked is not None
+                if state.pending_glb is not None or ready_final or ready_initial or inherited:
                     if state.pending_glb is None:
-                        target_frozen = bool(ready_final or self.initial_freeze_frames >= self.freeze_frames)
-                        baked = self._timed("bake", self.model.bake, state.samples)
-                        if self.appearance is not None:
-                            state.baked = baked
+                        if inherited:
+                            # 받은 고정 체형을 그대로 쓴다(다시 추정하지 않음). 파일은 이 world_id 경로로 새로 올린다
+                            baked, target_frozen = state.inherited_baked, True
+                            frames_used = state.inherited_frames or len(state.samples)
+                        else:
+                            target_frozen = bool(ready_final or self.initial_freeze_frames >= self.freeze_frames)
+                            baked = self._timed("bake", self.model.bake, state.samples)
+                            frames_used = len(state.samples)
+                        state.inherited_baked, state.inherited_shape = None, False
+                        # 외형 누적과 체형 승계(병합·이어받기)가 쓴다. 외형을 꺼도 들고 있는다(작은 리그 배열)
+                        state.baked = baked
                         state.pending_glb = self._timed("glb", build_skinned_glb, baked)
                         state.rig_source = baked.rig.rig_source
                         state.pending_target_frozen = target_frozen
-                        state.pending_frames_used = len(state.samples)
+                        state.pending_frames_used = frames_used
                     glb = state.pending_glb
                     if state.pending_version is None:
                         state.pending_version = self._reserve_version(state, person.world_id)

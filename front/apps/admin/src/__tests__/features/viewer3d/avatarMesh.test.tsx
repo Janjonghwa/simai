@@ -234,6 +234,38 @@ describe('되돌아가기 판정', () => {
     expect(status({ now: pose.receivedAt + AVATAR_STALL_MS + 400 }).fallback).toBe('STALLED');
   });
 
+  it('순수 병합 직후 병합 전 차수의 포즈는 유예 안에서 메시를 유지하고, 분할 등은 캡슐(-743)', () => {
+    const merged = {
+      track: { identityRevision: pose.identityRevision + 1 },
+      world: { pureMergeBase: new Map([[track.worldId, pose.identityRevision]]) },
+    };
+    expect(status(merged)).toMatchObject({ use: true, fallback: null });
+    // 새 포즈가 오지 않아도 끊김 기준이 유예만큼 늘어나고, 넘으면 캡슐이다.
+    expect(status({ ...merged, now: pose.receivedAt + AVATAR_STALL_MS + 400 }).use).toBe(true);
+    expect(
+      status({ ...merged, now: pose.receivedAt + AVATAR_STALL_MS + AVATAR_IDENTITY_HOLD_MS + 1 })
+        .fallback,
+    ).toBe('STALLED');
+    // 병합 직후 불확실(차수가 바뀌어 시작 시각이 병합 시각)도 유예 안이면 유지한다.
+    expect(
+      status({
+        track: { ...merged.track, identityConfidence: 'IDENTITY_UNCERTAIN' },
+        world: {
+          ...merged.world,
+          identityUncertainSince: new Map([[track.worldId, world.tLatestGlobal - 300]]),
+        },
+      }).use,
+    ).toBe(true);
+    // 사슬 시작 차수가 없거나(분할·그 밖의 상승) 포즈가 사슬 시작보다 오래되면 캡슐이다.
+    expect(status({ track: merged.track })).toMatchObject({ use: false, fallback: 'IDENTITY' });
+    expect(
+      status({
+        track: merged.track,
+        world: { pureMergeBase: new Map([[track.worldId, pose.identityRevision + 1]]) },
+      }),
+    ).toMatchObject({ use: false, fallback: 'IDENTITY' });
+  });
+
   it('경계값(끊김 1000 ms·늦음 1000 ms)은 아직 메시다', () => {
     expect(status({ now: pose.receivedAt + AVATAR_STALL_MS }).use).toBe(true);
     expect(status({ avatar: { captureTimeMs: world.tLatestGlobal - AVATAR_LATE_MS } }).use).toBe(
