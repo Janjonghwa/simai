@@ -269,6 +269,39 @@ class GpuSessionIntegrationTest {
     }
 
     @Test
+    void 호스트_CPU_측정은_보고에서_저장되고_가장_최근_값을_관리자_조회에_준다() throws Exception {
+        JsonNode session = register();
+        UUID id = UUID.fromString(session.get("session_id").stringValue());
+        String admin = "Bearer " + jwt("ADMIN");
+        report(id, "WEIGHTS", null).andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.host_cpu").isEmpty());
+
+        reportWithHostCpu(id, "WEIGHTS", "{\"model\":\"Intel(R) Xeon(R) Platinum 8460Y+\",\"logical_cpus\":160,\"cpu_quota\":null,"
+                + "\"single_thread_score\":1480.25,\"measured_at\":1794700919000}").andExpect(status().isNoContent());
+        // host_cpu 가 없는 다음 보고가 와도 마지막 측정이 남는다
+        report(id, "ENGINE", null).andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.stage").value("ENGINE"))
+                .andExpect(jsonPath("$.session.host_cpu.model").value("Intel(R) Xeon(R) Platinum 8460Y+"))
+                .andExpect(jsonPath("$.session.host_cpu.logical_cpus").value(160))
+                .andExpect(jsonPath("$.session.host_cpu.cpu_quota").isEmpty())
+                .andExpect(jsonPath("$.session.host_cpu.single_thread_score").value(1480.25));
+
+        // 계약에 맞지 않는 host_cpu(점수가 문자열)는 400
+        reportWithHostCpu(id, "WEIGHTS", "{\"model\":null,\"logical_cpus\":8,\"cpu_quota\":null,\"single_thread_score\":\"fast\","
+                + "\"measured_at\":1794700919000}").andExpect(status().isBadRequest());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions reportWithHostCpu(UUID id, String stage, String hostCpuJson) throws Exception {
+        ObjectNode root = (ObjectNode) mapper.readTree(reportBody(bootId, id, stage, null));
+        root.put("schema_version", "1.1.0");
+        ((ObjectNode) root.get("payload")).set("host_cpu", mapper.readTree(hostCpuJson));
+        return mvc.perform(post("/api/gpu/sessions/" + id + "/reports").header(HttpHeaders.AUTHORIZATION, "Bearer " + bootSecret)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(root)));
+    }
+
+    @Test
     void 무응답이_stale_after_를_넘으면_끝내고_토큰을_폐기하지만_I1_이_붙어_있으면_두다() throws Exception {
         JsonNode session = register();
         UUID id = UUID.fromString(session.get("session_id").stringValue());
