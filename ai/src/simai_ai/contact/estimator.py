@@ -36,6 +36,11 @@ HMR·정적 3D·VLM 결과는 쓰지 않는다(AGENTS 규칙 1). 접지점 Z 는
 - 발목이 유지 중인 표면과 맞지 않음: 가장 낮은 VALID 발목이 표면 띠보다 낮거나, footprint 밖이거나, VALID 발목이 둘
   이상인데 모두 띠보다 높거나, 하나뿐인 VALID 발목이 다른 후보 표면 높이에 있음(HOLD_CONTRADICTED,
   LEFT_SURFACE_FOOTPRINT). 하나뿐인 발목이 어느 후보 높이에도 없이 높으면 든 발로 보고 유지한다(RAISED_SINGLE_ANKLE).
+  단, **바닥 유지에서 디딤발이 바닥 띠보다 낮은 것은 반증이 아니다**(ANKLE_BELOW_FLOOR_BAND, S15P31A101-739). 바닥보다 낮은 면은
+  없어 '표면을 떠났다'는 뜻이 될 수 없고 삼각측량 오차다. 접촉 근거로도 쓰지 않는다(유지 시각을 갱신하지 않아 hold_max_ms 는
+  그대로다). 18차(2026-11-15) 바닥 보행자의 VALID 디딤발 높이는 중앙 9 cm 지만 약 12 %가 바닥 띠 아래(2 cm 미만)여서, 한 시각
+  오차로 바닥 유지가 끊기고 다시 잡는 데 확인 2번이 필요해 단상 옆 바닥 사람이 접지 모름(Z_UNKNOWN) R2·R3 를 반복했다.
+  올라섬(띠보다 높음)·작업면에서 내려옴(작업면 띠보다 낮음)은 지금처럼 그 시각에 끊는다.
 - 골반 XY 가 작업면 footprint(+`hold_pelvis_margin_m`) 밖(LEFT_SURFACE_FOOTPRINT): 발이 가려진 채 단상에서 내려왔을 수 있다.
 - VALID 골반 높이 − 표면 높이가 접촉 확인 때 잰 값에서 `pelvis_height_tolerance_m` 넘게 바뀜(PELVIS_HEIGHT_CHANGED).
 - 활성 구성에서 그 작업면이 빠졌거나 높이가 바뀜(SURFACE_UNREGISTERED), ID 교정으로 identity_revision 이 바뀜
@@ -98,6 +103,8 @@ class ContactReason(StrEnum):
     """높이는 맞지만 정지·두 발 근거가 없다"""
     PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
     """새 지지 표면의 접촉 확인이 confirm_frames 번 이어지지 않았다"""
+    ANKLE_BELOW_FLOOR_BAND = "ANKLE_BELOW_FLOOR_BAND"
+    """바닥 유지 중 디딤발이 바닥 띠보다 낮다. 바닥 아래 면은 없으므로 반증으로 보지 않는다 (S15P31A101-739)"""
     HOLD = "HOLD"
     """마지막 유효 지지 표면을 유지한다"""
     HOLD_EXPIRED = "HOLD_EXPIRED"
@@ -342,6 +349,8 @@ class ContactEstimator:
             if not s.contains_xy(stance.xyz[:2], cfg.footprint_margin_m):
                 held = state.held = None
                 reasons.append(ContactReason.LEFT_SURFACE_FOOTPRINT)
+            elif stance.xyz[2] < low and s.is_floor:
+                reasons.append(ContactReason.ANKLE_BELOW_FLOOR_BAND)  # 바닥 아래 면은 없다: 반증도 근거도 아니다
             elif stance.xyz[2] < low or (len(ankles) >= 2 and stance.xyz[2] > high):
                 held = state.held = None
                 reasons.append(ContactReason.HOLD_CONTRADICTED)

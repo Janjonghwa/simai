@@ -33,6 +33,8 @@ ID 를 다시 쓰지 않는다.
 6. 배정되지 않은 확실한 클러스터의 로컬 키 중 하나 이상이 최근(초기값 1 s) 이번 시각 갱신된 Track 에 속했고,
    그 Track 의 골반 0.6 m 안이고 카메라가 겹치지 않으면
    새 ID 를 억제하고 그 Track 에 CROSS_VIEW_UNCERTAIN 을 붙인다. 위치·관절·로컬 소유권은 합치지 않는다.
+   억제한 나머지(그림자 포함)의 로컬 키는 그 Track 의 억제 이력(`suppressed_keys`)으로 남아 다음 시각에도 같은 창 안이면
+   최근 이력으로 센다(S15P31A101-739: 2+2 가 1 s 넘게 이어지면 창 만료 직후 새 ID 가 나던 경로).
    기존 병합 금지 반증이나 이번 시각 같은 카메라의 별도 검출(1대 클러스터 포함)이 있으면 억제하지 않는다.
    그 밖의 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
    만들지 않는다(2대 미만은 지어내지 않음). 다른 Track 의 예측 위치 가까이(`duplicate_radius_m`)에 생기면 같은 사람의
@@ -406,6 +408,10 @@ class WorldTrackConfig:
     """재생 비교용: True 면 최근 소유 이력이 없는 후보도 억제한다(1차 S3 동작). 반증 예외는 유지한다"""
     split_suppression_owner_ttl_ms: int = 1000
     """분할 나머지의 로컬 키 하나 이상이 억제 근거 Track 에 속했던 최근 시간 창(경계 포함)"""
+    split_suppression_chain: bool = True
+    """S15P31A101-739: 분할 나머지·시점 분할 그림자로 억제한 클러스터의 로컬 키를 억제 근거 Track 의 '억제 이력'으로 남기고,
+    다음 시각 분할 나머지 판단의 최근 소유 이력에 같은 창(split_suppression_owner_ttl_ms)으로 넣는다. 소유권·위치·관절은 합치지
+    않는다. 2+2 로 1초 넘게 이어 갈라진 한 사람이 소유 이력 창이 지나자마자 새 ID 를 받던 경로를 막는다. False 는 이전 동작"""
     split_suppression_require_owner: bool = False
     """-413 S1·S2 비교용 추가 제약: 모든 로컬 트랙의 옛 주인이 같을 때만 억제한다"""
     shadow_suppression_enabled: bool = True
@@ -551,6 +557,7 @@ class WorldTrackConfig:
             "split_suppression_enabled",
             "split_suppress_ownerless",
             "split_suppression_require_owner",
+            "split_suppression_chain",
             "shadow_suppression_enabled",
             "active_merge_enabled",
             "stature_enabled",
@@ -947,6 +954,9 @@ class _Track:
     keys: dict[TrackKey, int] = field(default_factory=dict)
     """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. 재연결·분할 억제·일반 키 창 중 최댓값까지 남긴다.
     비용 보너스·일반 주인 판단은 `key_ttl_ms`, 분할 나머지 판단은 `split_suppression_owner_ttl_ms` 창을 쓴다"""
+    suppressed_keys: dict[TrackKey, int] = field(default_factory=dict)
+    """S15P31A101-739: 이 Track 의 분할 나머지·그림자로 억제한 클러스터의 로컬 트랙 → 마지막 억제 시각. 소유권(keys)이 아니다.
+    분할 나머지 판단의 최근 소유 이력에만 같은 창으로 쓴다(늦은 재연결·병합 근거·비용 보너스에는 쓰지 않는다)"""
     flags: dict[IdentityFlag, int] = field(default_factory=dict)
     """IDENTITY_UNCERTAIN 사유 → 마지막으로 붙은 시각"""
     long_hold_flags: dict[IdentityFlag, int] = field(default_factory=dict)
@@ -1350,6 +1360,9 @@ class WorldTrackManager:
         keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms, cfg.split_suppression_owner_ttl_ms)
         for tr in self._all():
             tr.keys = {k: kt for k, kt in tr.keys.items() if t - kt <= keep_ms}
+            tr.suppressed_keys = {
+                k: kt for k, kt in tr.suppressed_keys.items() if t - kt <= cfg.split_suppression_owner_ttl_ms
+            }
             tr.path = [(pt, xy) for pt, xy in tr.path if t - pt <= cfg.reconnect_window_ms]
         for wid in [w for w, tr in self._dormant.items() if t - tr.t_last_valid > cfg.reconnect_window_ms]:
             expired = self._dormant.pop(wid)
@@ -1380,6 +1393,11 @@ class WorldTrackManager:
             k: tr.world_id for tr in self._all() for k, kt in tr.keys.items()
             if t - kt <= cfg.split_suppression_owner_ttl_ms
         }
+        if cfg.split_suppression_chain:
+            # -739: 직전까지 이 Track 의 나머지로 억제돼 온 로컬 트랙도 그 Track 의 최근 이력으로 본다(진짜 주인이 있으면 그쪽)
+            for tr in self._all():
+                for k in tr.suppressed_keys:
+                    recent_owner.setdefault(k, tr.world_id)
         held: dict[str, set[TrackKey]] = {}
         for k, wid in holder.items():
             held.setdefault(wid, set()).add(k)
@@ -1596,6 +1614,7 @@ class WorldTrackManager:
                 if rivals is not None:
                     rivals.discard(id(c))
                 self.diag["new_track.suppressed_disjoint_shadow"] += 1
+                self._chain_suppressed(shadow_of, c, t)
                 continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
             target, ambiguous, _unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
             reid_reconnected = False
@@ -1643,6 +1662,7 @@ class WorldTrackManager:
             if suppressed_by is not None:
                 flags.setdefault(suppressed_by, set()).add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
                 self.diag["new_track.split_remainder_suppressed"] += 1
+                self._chain_suppressed(suppressed_by, c, t)
                 continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
             self.diag["new_track.created"] += 1
             self._order += 1
@@ -1873,6 +1893,17 @@ class WorldTrackManager:
         )
 
     # ------------------------------------------------------------------ 늦은 재연결·ID 교정
+
+    def _chain_suppressed(self, world_id: str, c: _Cluster, t: int) -> None:
+        """-739: 억제한 나머지 클러스터의 로컬 키를 근거 Track 의 억제 이력에 남긴다(소유권·위치·관절은 그대로)."""
+        if not self.config.split_suppression_chain:
+            return
+        tr = self._tracks.get(world_id)
+        if tr is None:
+            return
+        for k in c.cluster.keys:
+            tr.suppressed_keys[k] = t
+        self.diag["new_track.suppression_chained"] += 1
 
     def _split_remainder_target(
         self,
