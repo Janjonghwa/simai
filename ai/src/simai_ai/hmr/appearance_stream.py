@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import threading
 
 import numpy as np
 
@@ -109,10 +110,45 @@ class AppearancePipeline:
         self.output_dir = output_dir
         self.camera_colors = CameraColors()
         self.calibration_version = None
+        # 외형 승계(S15P31A101-743): 포즈 루프가 넣고 외형 작업자가 그 사람 누적에 합친다. world_id → [(사본, 이어받기)]
+        self._carry_lock = threading.Lock()
+        self._carry = {}
+        self.carry_events = {"merged": 0, "inherited": 0}
 
     def retain(self, active):
         self.people = {k: v for k, v in self.people.items() if k in active}
         self.pending = {k: v for k, v in self.pending.items() if k in active}
+        with self._carry_lock:
+            self._carry = {k: v for k, v in self._carry.items() if k in active}
+
+    def snapshot(self, wid):
+        """그 사람의 지금 누적 텍셀 사본(소실·흡수 때 포즈 루프가 들고 있는다). 누적이 없으면 합치기 대기분, 그것도 없으면 None."""
+        acc = self.people.get(wid)
+        if acc is not None:
+            return acc.snapshot()
+        with self._carry_lock:
+            queued = self._carry.get(wid)
+            return queued[0][0] if queued else None
+
+    def carry_in(self, wid, snapshot, *, inherit):
+        """wid 누적에 합칠 사본을 넣는다. inherit=True 는 다른 World ID 에서 이어받기, False 는 병합·같은 ID 재연결."""
+        if snapshot is None:
+            return
+        with self._carry_lock:
+            self._carry.setdefault(wid, []).append((snapshot, inherit))
+
+    def apply_carry(self, wid):
+        """누적이 있으면 대기 사본을 합친다(외형 작업자 스레드). 누적이 아직 없으면(체형 굽기 전) 기다린다."""
+        acc = self.people.get(wid)
+        if acc is None or acc.revision is None:
+            return
+        with self._carry_lock:
+            queued = self._carry.pop(wid, [])
+        for snapshot, inherit in queued:
+            if acc.absorb(snapshot, inherit=inherit):
+                self.carry_events["inherited" if inherit else "merged"] += 1
+                log.info("외형 승계 world_id=%s kind=%s inherited=%.4f", wid,
+                         "inherit" if inherit else "merge", acc.inherited_ratio())
 
     def track(self, track, t, *, identity_key=None):
         """identity_key: 같은 사람으로 누적을 잇는 기준 차수(포즈 루프의 revision_base, 순수 병합이면 그대로). 없으면 트랙 차수."""
@@ -140,10 +176,28 @@ class AppearancePipeline:
         old = self.people.get(wid)
         acc.last_confirmed = old.last_confirmed if old else None
         acc.track(getattr(state, "revision_base", state.revision), "CONFIRMED", t)
+        # 체형만 다시 구워 등록이 바뀐 같은 사람은 누적 텍셀을 잇는다(MHR UV 는 체형과 무관, S15P31A101-743)
+        acc.adopt(old)
         acc.stable = state.stable
         acc.ready = acc.stable >= self.config.freeze_frames
         self.people[wid] = acc
         self.pending.pop(wid, None)
+
+    def _prepare(self, wid, acc, state, frame, doc, clock_ms, reserve_version, t):
+        result = acc.result()
+        version = (reserve_version(wid) if reserve_version is not None
+                   else max(state.version, state.high_version) + 1)
+        state.high_version = version
+        asset = copy.deepcopy(state.asset)
+        prev_version = max(state.history) if state.history else (version - 1 if version > 0 else None)
+        # 새 버전은 지금 트랙 차수로 적는다(순수 병합 뒤면 남는 ID 의 새 차수, S15P31A101-661)
+        asset.update(identity_revision=state.revision,
+                     appearance_version=version, previous_appearance_version=prev_version,
+                     created_at_ms=clock_ms(), calibration_version=frame.calibration_version,
+                     input_provenance=copy.deepcopy(doc["input_provenance"]), face_policy=result.face_policy)
+        pending = (asset, result, t)
+        self.pending[wid] = pending
+        return pending
 
     def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit, masks=None,
                *, reserve_version=None):
@@ -167,9 +221,14 @@ class AppearancePipeline:
         for person in frame.people:
             wid, t = person.world_id, doc["t"]
             state, acc = states[wid], self.people.get(wid)
-            if acc is None or not acc.ready or wid not in meshes or not admit():
+            if acc is None or not (acc.ready or acc.carry_publish) or wid not in meshes or not admit():
                 continue
             pending = self.pending.get(wid)
+            if pending is None and not acc.ready:
+                # 승계로 받은 텍셀만 있다: 새 관측 누적은 안정 프레임 뒤에, 받은 외형은 지금 한 번 낸다(S15P31A101-743)
+                if not acc.due(t) or not admit():
+                    continue
+                pending = self._prepare(wid, acc, state, frame, doc, clock_ms, reserve_version, t)
             if pending is None:
                 views = []
                 for obs in tracks[wid].get("per_camera", []):
@@ -207,19 +266,7 @@ class AppearancePipeline:
                     acc.last_sample = max(t, clock_ms())
                 if not acc.due(t) or not admit():
                     continue
-                result = acc.result()
-                version = (reserve_version(wid) if reserve_version is not None
-                           else max(state.version, state.high_version) + 1)
-                state.high_version = version
-                asset = copy.deepcopy(state.asset)
-                prev_version = max(state.history) if state.history else (version - 1 if version > 0 else None)
-                # 새 버전은 지금 트랙 차수로 적는다(순수 병합 뒤면 남는 ID 의 새 차수, S15P31A101-661)
-                asset.update(identity_revision=state.revision,
-                             appearance_version=version, previous_appearance_version=prev_version,
-                             created_at_ms=clock_ms(), calibration_version=frame.calibration_version,
-                             input_provenance=copy.deepcopy(doc["input_provenance"]), face_policy=result.face_policy)
-                pending = (asset, result, t)
-                self.pending[wid] = pending
+                pending = self._prepare(wid, acc, state, frame, doc, clock_ms, reserve_version, t)
             asset, result, sampled_t = pending
             if not admit():
                 continue
@@ -249,7 +296,8 @@ class AppearancePipeline:
             state.history[version] = copy.deepcopy(asset)
             acc.confirm(result, max(sampled_t, clock_ms()))
             del self.pending[wid]
-            log.info("외형 버전 확정 world_id=%s version=%s observed=%.4f", wid, version, result.ratios["OBSERVED"])
+            log.info("외형 버전 확정 world_id=%s version=%s observed=%.4f inherited=%.4f", wid, version,
+                     result.ratios["OBSERVED"], acc.inherited_ratio())
             if self.output_dir is not None:
                 try:
                     directory = save_result(self.output_dir, asset, result)

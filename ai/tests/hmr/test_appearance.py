@@ -414,3 +414,87 @@ def test_pipeline_pure_merge_keeps_texture_accumulation_and_labels_new_version_w
     assert messages and messages[-1]["identity_revision"] == 1 and messages[-1]["appearance_version"] == 1
     pipeline.track({**tr, "identity_revision": 2}, 1002)   # 분할·그 밖의 차수 상승: 트랙 차수로 누적을 비운다
     assert acc.revision == 2 and acc.stable == 1
+
+
+# ---- S15P31A101-743 외형 승계(표시 전용) ----
+
+def test_merge_absorb_unions_observed_texels_with_quality_weighted_average():
+    acc, vertices, planes = accumulator()
+    other, _, _ = accumulator()
+    assert acc.accumulate("w-1", vertices, [render(camera((3, 2, 1)), planes)], 1000)
+    assert other.accumulate("w-2", vertices, [render(camera((-3, 2, 1), "cam2"), planes)], 1000)
+    mine, theirs = acc.weights > 0, other.weights > 0
+    both, only_theirs = mine & theirs, theirs & ~mine
+    assert both.any() and only_theirs.any()
+    expected = (acc.weights[both, None] * acc.colors[both] + other.weights[both, None] * other.colors[both]) / (
+        acc.weights[both] + other.weights[both])[:, None]
+    expected_weights = acc.weights[both] + other.weights[both]
+    before = other.colors.copy()
+    assert acc.absorb(other.snapshot(), inherit=False)
+    np.testing.assert_allclose(acc.colors[both], expected, rtol=1e-5)
+    np.testing.assert_allclose(acc.weights[both], expected_weights, rtol=1e-6)
+    np.testing.assert_array_equal(acc.colors[only_theirs], other.colors[only_theirs])
+    assert not acc.inherited.any() and acc.carry_publish and acc.dirty and acc.due(1000)
+    np.testing.assert_array_equal(other.colors, before)   # 주는 쪽 배열은 바꾸지 않는다
+
+
+def test_inherited_texels_fill_only_unobserved_and_first_own_observation_overwrites():
+    acc, vertices, planes = accumulator()
+    donor, _, _ = accumulator()
+    view = render(camera((3, 2, 1)), planes)
+    assert acc.accumulate("w-7", vertices, [view], 1000)
+    own = acc.weights > 0
+    own_colors = acc.colors.copy()
+    wrong = replace(render(camera((-3, 2, 1), "cam2"), planes), capture_time_ms=1000)
+    wrong = replace(wrong, image_bgr=np.full_like(wrong.image_bgr, 250))   # 다른 사람 옷 색(거의 흰색)
+    assert donor.accumulate("w-1", vertices, [wrong], 1000)
+    donor_seen = donor.weights > 0
+    assert acc.absorb(donor.snapshot(), inherit=True)
+    np.testing.assert_array_equal(acc.colors[own], own_colors[own])                 # 자기 관측 유지
+    assert np.array_equal(acc.inherited, donor_seen & ~own) and acc.inherited.any()
+    assert acc.inherited_ratio() > 0
+    # 새 관측은 이어받은 텍셀과 색이 크게 달라도(이상치 기준 80 넘음) 평균하지 않고 덮는다.
+    true_view = replace(render(camera((-3, 2, 1), "cam2"), planes), capture_time_ms=1010)
+    assert acc.accumulate("w-7", vertices, [true_view], 1010)
+    fresh = acc.weights > 0
+    reference, _, _ = accumulator()
+    reference.accumulate("w-x", vertices, [true_view], 1010)
+    overwritten = (reference.weights > 0) & donor_seen & ~own
+    assert overwritten.any() and not acc.inherited[overwritten].any()
+    np.testing.assert_allclose(acc.colors[overwritten], reference.colors[overwritten], atol=1e-3)
+    assert fresh.sum() >= own.sum()
+
+
+def test_reregister_after_shape_rebake_keeps_texels_and_revision_reset_clears_them(rig):
+    pipeline, state, messages, uploaded, args, _ = pipeline_scene(rig)
+    pipeline.update(*args)
+    acc = pipeline.people["w-1"]
+    seen = acc.weights.copy()
+    assert seen.any()
+    state.baked = replace(state.baked)          # 최종 체형으로 다시 구움 → 다시 등록
+    pipeline.register("w-1", state, 1001)
+    np.testing.assert_array_equal(pipeline.people["w-1"].weights, seen)
+    state.revision_base = 1                     # 처음부터 다시 쌓기(분할 등)
+    pipeline.register("w-1", state, 1002)
+    assert not pipeline.people["w-1"].weights.any()
+
+
+def test_pipeline_publishes_carried_texels_once_before_stable_frames(rig):
+    pipeline, state, messages, uploaded, args, _ = pipeline_scene(rig)
+    donor_pipeline, _, _, _, donor_args, _ = pipeline_scene(rig)
+    donor_pipeline.update(*donor_args)
+    snapshot = donor_pipeline.snapshot("w-1")
+    assert snapshot.weights.any()
+    acc = pipeline.people["w-1"]
+    acc.stable, acc.ready = 0, False              # 이어받은 직후: 이 ID 는 아직 안정 프레임 전
+    pipeline.carry_in("w-1", snapshot, inherit=True)
+    pipeline.apply_carry("w-1")
+    assert pipeline.carry_events == {"merged": 0, "inherited": 1} and acc.carry_publish
+    args[1]["t"] += 5
+    pipeline.update(*args)
+    assert len(messages) == 1 and messages[0]["texture"] is not None and not acc.carry_publish
+    accumulated = acc.weights.copy()
+    args[1]["t"] += 5
+    pipeline.update(*args)
+    assert len(messages) == 1                      # 다시 내지 않고, 안정 전이라 새 관측도 쌓지 않는다
+    np.testing.assert_array_equal(acc.weights, accumulated)
