@@ -6,6 +6,7 @@ import {
   toDateKey,
   TODAY_ACTION,
   WEEKDAY_NAMES,
+  workProgressOf,
   type DateKey,
   type DayKind,
 } from '@/features/work/workDay';
@@ -78,9 +79,12 @@ export function groupByDate(works: readonly WorkDayItem[]): Map<DateKey, WorkDay
  * 칸에 보이는 표시. 완료(ended)는 끝난 날의 상태라 글자 반복 없이 작은 완료 아이콘으로만 보이고(작업을 끝내면 보고서 제출까지 하므로
  * 종료와 제출을 나누지 않는다), 단추(action)는 오늘 칸에서 지금 할 일을 주 단추로 알린다.
  */
-export type DayMark = { kind: 'ended' } | { kind: 'action'; label: string };
+export type DayMark =
+  { kind: 'ended' } | { kind: 'unsubmitted' } | { kind: 'action'; label: string };
 
 const ENDED_MARK: DayMark = { kind: 'ended' };
+/** 끝났는데 보고서를 안 낸 지난 날(S15P31A101-750): 완료와 다른 색·아이콘으로 알린다. */
+const UNSUBMITTED_MARK: DayMark = { kind: 'unsubmitted' };
 
 /** 오늘 작업이 없거나 진행 값을 모르면 보고서 단계로 본다(오늘 칸은 '오늘 작업 준비' 단추가 된다). */
 const IDLE_PROGRESS: DayProgress = 'REPORT';
@@ -89,9 +93,14 @@ const IDLE_PROGRESS: DayProgress = 'REPORT';
 const primaryWorkOf = (works: readonly WorkDayItem[]): WorkDayItem | undefined =>
   works.find((work) => work.daily) ?? works[0];
 
-/** 지난 날 표시: 끝난 작업(`isEndedWork`)이 하나라도 있으면 완료 표시, 없으면 null(빈칸)이다. */
-const pastMarkOf = (works: readonly WorkDayItem[]): DayMark | null =>
-  works.some(isEndedWork) ? ENDED_MARK : null;
+/** 끝났지만 보고서를 아직 안 낸 작업(진행 값 ENDED). */
+const isUnsubmittedWork = (work: WorkDayItem): boolean => workProgressOf(work) === 'ENDED';
+
+/** 지난 날 표시: 보고서를 안 낸 끝난 작업이 있으면 미제출 표시(우선), 끝난 작업만 있으면 완료 표시, 없으면 null(빈칸)이다. */
+const pastMarkOf = (works: readonly WorkDayItem[]): DayMark | null => {
+  if (works.some(isUnsubmittedWork)) return UNSUBMITTED_MARK;
+  return works.some(isEndedWork) ? ENDED_MARK : null;
+};
 
 /** 오늘 표시: 그 날 작업(`primaryWorkOf`)의 진행 값이 정한 지금 할 일 단추. 제출했으면 할 일이 없어 완료 표시다. */
 function todayMarkOf(works: readonly WorkDayItem[]): DayMark {
@@ -118,6 +127,8 @@ export interface DaySummary {
   count: number;
   critical: number;
   high: number;
+  /** 보고서를 안 낸 작업 수(S15P31A101-750). 있을 때만 싣는다. */
+  unsubmitted?: number;
   /** 실행 수(S15P31A101-696). 작업 하나 안에서 실행을 여러 번 해 작업 수보다 많을 때만 싣는다. */
   runs?: number;
 }
@@ -126,6 +137,7 @@ export interface DaySummary {
 export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null {
   const ended = works.filter(isEndedWork);
   if (ended.length === 0) return null;
+  const unsubmitted = ended.filter(isUnsubmittedWork).length;
   const runs = ended.reduce(
     (sum, work) =>
       sum +
@@ -137,6 +149,7 @@ export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null
     count: ended.length,
     critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
     high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
+    ...(unsubmitted > 0 && { unsubmitted }),
     ...(runs > ended.length && { runs }),
   };
 }
@@ -196,7 +209,8 @@ export function cellAriaLabel({
   }
   if (summary) {
     const runs = summary.runs ? `, 실행 ${summary.runs}회` : '';
-    return `${base}, 작업 ${summary.count}건 완료${runs}, 위험 ${summary.critical}건, 경고 ${summary.high}건`;
+    const late = summary.unsubmitted ? `, 보고서 미제출 ${summary.unsubmitted}건` : '';
+    return `${base}, 작업 ${summary.count}건 완료${runs}, 위험 ${summary.critical}건, 경고 ${summary.high}건${late}`;
   }
   return base;
 }
