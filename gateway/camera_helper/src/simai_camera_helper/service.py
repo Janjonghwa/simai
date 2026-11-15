@@ -19,7 +19,7 @@ from .judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics, Params
 from .message import DEFAULT_STALE_MS, CameraFrame, build_message
 from .offline import DEFAULT_WEIGHTS
 from .progress import DEFAULT_STALL_SECONDS, Progress, bounded_setting, log_round, watchdog_loop
-from .view_check import ViewChecker, describe
+from .view_check import MultiViewChecker, ViewChecker, describe
 
 LOG = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[4]
@@ -102,6 +102,9 @@ def idle_message(source_id: str, now_ms: int) -> dict:
     return build_message(source_id, now_ms, cameras, pairs, judge)
 
 
+MAX_RESPONSE_BYTES = 256 * 1024
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -144,19 +147,30 @@ class Client:
         self.source_id = source_id or "laptop-01"
         self.opener = urllib.request.build_opener(NoRedirect())
         # 재사용 시점 확인 기준(S15P31A101-712): 수요 응답의 reuse_reference(활성 수요일 때만 EC2 가 싣는다)
+        # S15P31A101-714: 새 EC2 는 후보 맵 목록 reuse_references 도 싣는다(있으면 목록을 맵마다 비교해 1.2.0 으로 보낸다)
         self._reference_lock = threading.Lock()
         self._reference: dict | None = None
+        self._references: list[dict] | None = None
 
     def note_response(self, res) -> None:
         """수요가 실린 응답(GET 수요·POST 결과)이면 재사용 기준을 그 값으로 바꾼다(없으면 비운다)."""
         if isinstance(res, dict) and isinstance(res.get("active_demand"), bool):
+            active = res["active_demand"]
             reference = res.get("reuse_reference")
+            references = res.get("reuse_references")
             with self._reference_lock:
-                self._reference = reference if res["active_demand"] and isinstance(reference, dict) else None
+                self._reference = reference if active and isinstance(reference, dict) else None
+                self._references = ([r for r in references if isinstance(r, dict)]
+                                    if active and isinstance(references, list) else None)
 
     def reuse_reference(self) -> dict | None:
         with self._reference_lock:
             return self._reference
+
+    def reuse_references(self) -> list[dict] | None:
+        """후보 맵 목록(새 EC2). 옛 EC2(목록 키 없음)·수요 없음이면 None 이고, 그때는 reuse_reference 하나만 비교한다."""
+        with self._reference_lock:
+            return None if self._references is None else list(self._references)
 
     def __repr__(self) -> str:
         return f"Client(base={self.base!r}, demand_path={self.demand_path!r})"
@@ -170,8 +184,9 @@ class Client:
         }
         req = urllib.request.Request(self.base + path, data=data, headers=headers)
         with self.opener.open(req, timeout=3) as response:
-            raw = response.read(65537)
-            if len(raw) > 65536:
+            # 후보 맵 5개 × 카메라 4대의 서명 주소(S15P31A101-714)를 담도록 256 KiB 까지 받는다
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("response too large")
             return json.loads(raw) if raw else {}
 
@@ -335,6 +350,19 @@ def reuse_view_check(viewer: ViewChecker, reference, snapshot: dict, frames: lis
         return None
 
 
+def reuse_view_checks(viewers: MultiViewChecker, references, snapshot: dict, frames: list[CameraFrame],
+                      round_ts_ms: int, stale_ms: int) -> list[dict] | None:
+    """후보 맵 목록이 있을 때만 맵마다 시점을 비교한다(S15P31A101-714). 실패해도 각도 안내는 그대로 보낸다."""
+    if references is None:
+        return None
+    statuses = {f.camera_id: f.status(round_ts_ms, stale_ms) for f in frames}
+    try:
+        return viewers.check_all(references, snapshot, statuses) or None
+    except Exception:  # noqa: BLE001 - 서명 주소·응답 본문은 기록하지 않는다
+        LOG.warning("reuse view checks failed")
+        return None
+
+
 def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     token = env.get("SIMAI_DEVICE_TOKEN", "").strip()
     if token:
@@ -367,6 +395,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     matcher = None
     judge = None
     viewer = ViewChecker()
+    viewers = MultiViewChecker()
     last_timestamps: dict[str, int] | None = None
     try:
         while not stop_event.wait(0.5):
@@ -416,8 +445,11 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     continue
                 last_timestamps = timestamps
                 frames_now = [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS]
-                view = reuse_view_check(viewer, getattr(client, "reuse_reference", lambda: None)(),
-                                        snapshot, frames_now, round_ts_ms, stale_ms)
+                references = getattr(client, "reuse_references", lambda: None)()
+                views = reuse_view_checks(viewers, references, snapshot, frames_now, round_ts_ms, stale_ms)
+                view = None if references is not None else reuse_view_check(
+                    viewer, getattr(client, "reuse_reference", lambda: None)(), snapshot, frames_now, round_ts_ms,
+                    stale_ms)
                 message = build_message(
                     source_id,
                     round_ts_ms,
@@ -426,9 +458,12 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     judge,
                     stale_ms=stale_ms,
                     reuse_view_check=view,
+                    reuse_view_checks=views,
                 )
                 if view is not None:
                     LOG.info("reuse view %s", describe(view))
+                for one in views or []:
+                    LOG.info("reuse view %s %s", one["scene_version"], describe(one))
                 grades = [p["grade"] for p in message["pairs"]]
                 progress.phase("posting")
                 sent = retry_post(client, message, active.is_set, sleep=stop_event.wait,

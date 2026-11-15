@@ -11,6 +11,7 @@ import java.util.Set;
  *       않는다(미리보기로 완료·작업 시작하면 남은 굽기가 LIVE 회수돼 시연 맵이 미리보기 품질로 남는다).
  *   <li>이전 모델 재사용(REUSE): 미리보기 단계 이후(READY_FOR_ZONES 부터)이고 World 다시 맞추기가 채택됐다(검증된 기존 맵).
  *   <li>둘 다 카메라 확인 PASSED 이고 그 확인의 보정이 세션 보정과 같다(-646·-687).
+ *   <li>고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714)은 시작 때 1단계 시점 확인을 통과했으므로 위 두 조건(World 채택·카메라 확인)을 보지 않는다.
  * </ul>
  * 작업 쪽 조건(오늘·PLANNED·관제 중·걸린 세션)과 구역 적용 조건은 {@link SetupCompletionService} 가 따로 본다.
  */
@@ -33,8 +34,20 @@ final class SetupCompletionGate {
      */
     static ErrorCode.Setup blockedReason(String status, String mode, boolean anchorAccepted, String sceneVersion,
             String bakeSkipped, boolean cameraCheckPassed) {
+        return blockedReason(status, mode, anchorAccepted, sceneVersion, bakeSkipped, cameraCheckPassed, false);
+    }
+
+    /**
+     * @param reuseAsIs 고른 맵의 묶음을 그대로 쓰는 재사용 세션(S15P31A101-714, reuse_source_session_id 있음). 세팅 시작 때 1단계 시점 확인이
+     *                  카메라 4대가 그 맵 때와 같은 자리임을 보였고 보정을 새로 만들지 않았으므로, World 다시 맞추기·카메라 확인 걷기를 보지 않는다
+     */
+    static ErrorCode.Setup blockedReason(String status, String mode, boolean anchorAccepted, String sceneVersion,
+            String bakeSkipped, boolean cameraCheckPassed, boolean reuseAsIs) {
         if (status == null || !READY_OR_LATER.contains(status)) {
             return ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE;
+        }
+        if (reuseAsIs) {
+            return SetupReuseMode.REUSE.equals(mode) ? null : ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE;
         }
         boolean reuse = SetupReuseMode.REUSE.equals(mode);
         if (reuse && !anchorAccepted) {

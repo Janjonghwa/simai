@@ -5,6 +5,7 @@ import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.layout.LayoutZoneService;
 import com.ssafy.simai.domain.report.TbmFormAiService;
 import com.ssafy.simai.domain.scene.SceneActivationService;
+import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.work.WorkUnitRepository;
 import com.ssafy.simai.domain.zone.SetupZoneApplier;
 import com.ssafy.simai.global.exception.BusinessException;
@@ -36,6 +37,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       (S15P31A101-688, {@link SetupCompletionGate}). 이전 모델 재사용(REUSE)은 지금 맵을 둔다.
  *   <li>구성 묶음을 이 세션 보정과 함께 한 번 발행한다(Tier 0 전송은 커밋 뒤).
  * </ol>
+ * 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714)은 3에서 그 맵을 켜고(지금 관제 맵이 아니면), 4에서 그 맵의 보정을 싣는다({@link SetupReuseCalibration}).
  * 커밋 뒤에는 그 작업의 TBM AI 양식 초안을 시작한다(결과를 기다리지 않고, 실패해도 완료는 성공).
  * 잠금 순서는 작업 시작과 같다: 레이아웃 구역 잠금 → 현장 행 → 세션 행 → 작업 행.
  */
@@ -59,11 +61,13 @@ public class SetupCompletionService {
     private final ConfigBundleService configs;
     private final SetupArtifactRegistrar artifacts;
     private final TbmFormAiService tbmFormAi;
+    private final SetupReuseCalibration reuseCalibration;
 
     public SetupCompletionService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager, SiteLookup sites,
             Clock clock, WorkUnitRepository workUnits, LayoutZoneService layoutZones, SetupZoneApplier zoneApplier,
             SceneActivationService scenes, ConfigBundleService configs, SetupArtifactRegistrar artifacts,
-            TbmFormAiService tbmFormAi) {
+            TbmFormAiService tbmFormAi, SetupReuseCalibration reuseCalibration) {
+        this.reuseCalibration = reuseCalibration;
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.sites = sites;
@@ -78,7 +82,12 @@ public class SetupCompletionService {
     }
 
     private record SessionRow(long workUnitId, String status, String mode, boolean anchorAccepted, String calibrationVersion,
-            String sceneVersion, String bakeSkipped, String cameraCheckStatus, String cameraCheckCalibration) {
+            String sceneVersion, String bakeSkipped, String cameraCheckStatus, String cameraCheckCalibration,
+            UUID reuseSourceSessionId, String reuseSceneVersion) {
+        /** 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714) */
+        boolean reuseAsIs() {
+            return reuseSourceSessionId != null;
+        }
     }
 
     private record WorkRow(String status, UUID activeSetupSessionId, boolean completed) {
@@ -107,7 +116,8 @@ public class SetupCompletionService {
             // 세션 조회의 complete_blocked_reason 도 같은 판정이다
             ErrorCode.Setup blocked = SetupCompletionGate.blockedReason(session.status(), session.mode(), session.anchorAccepted(),
                     session.sceneVersion(), session.bakeSkipped(),
-                    SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion()));
+                    SetupCameraCheck.passed(session.cameraCheckStatus(), session.cameraCheckCalibration(), session.calibrationVersion()),
+                    session.reuseAsIs());
             if (blocked != null) {
                 throw new BusinessException(blocked);
             }
@@ -137,17 +147,33 @@ public class SetupCompletionService {
                     WHERE site_id = :site AND work_id = :work
                     """, new MapSqlParameterSource("now", utcNow).addValue("site", siteId).addValue("work", session.workUnitId()));
 
-            // 3) Scene: 새 모델은 이 세션의 정밀 맵을 켠다. 재사용은 지금 관제 맵을 그대로 둔다
-            String sceneVersion = reuse ? null : finalScene(setupSessionId, session);
+            // 3) Scene: 새 모델은 이 세션의 정밀 맵을 켠다. 옛 재사용(World 다시 맞추기)은 지금 관제 맵을 그대로 둔다.
+            //    고른 맵을 그대로 쓰는 재사용(-714)은 그 맵이 지금 관제 맵이 아니면 켠다(활성화 이력 추가, 덮어쓰지 않음)
+            String sceneVersion;
+            if (session.reuseAsIs()) {
+                sceneVersion = session.reuseSceneVersion().equals(currentScene(siteId)) ? null : session.reuseSceneVersion();
+            } else {
+                sceneVersion = reuse ? null : finalScene(setupSessionId, session);
+            }
             if (sceneVersion != null) {
-                scenes.activate(siteId, sceneVersion, "setup:" + setupSessionId,
-                        "현장 세팅 완료(C17): 이 세션의 최종 맵 적용(위험 판정 미사용)");
+                scenes.activate(siteId, sceneVersion, "setup:" + setupSessionId, session.reuseAsIs()
+                        ? "현장 세팅 완료(C17): 이전 맵 재사용 — 고른 맵 적용(위험 판정 미사용)"
+                        : "현장 세팅 완료(C17): 이 세션의 최종 맵 적용(위험 판정 미사용)");
             }
 
-            // 4) 구성 묶음 한 번: 이 세션이 등록한 새 보정을 싣는다(등록한 보정이 없으면 지금 보정)
-            String calibration = session.calibrationVersion() != null
-                    && artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.CALIBRATION, session.calibrationVersion())
-                    ? session.calibrationVersion() : null;
+            // 4) 구성 묶음 한 번: 이 세션이 등록한 새 보정을 싣는다(등록한 보정이 없으면 지금 보정).
+            //    고른 맵을 그대로 쓰는 재사용(-714)은 그 맵의 보정(Tier 0 가 다른 보정을 쓰면 같은 내용의 새 버전)을 싣는다
+            String calibration;
+            if (session.reuseAsIs()) {
+                calibration = reuseCalibration.forCompletion(siteId, setupSessionId, session.calibrationVersion());
+                jdbc.update("""
+                        UPDATE setup_session SET calibration_version = :cal, updated_at = :now WHERE setup_session_id = :id
+                        """, new MapSqlParameterSource("cal", calibration).addValue("now", utcNow).addValue("id", setupSessionId));
+            } else {
+                calibration = session.calibrationVersion() != null
+                        && artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.CALIBRATION, session.calibrationVersion())
+                        ? session.calibrationVersion() : null;
+            }
             String configVersion = configs.publishInTransaction(calibration, actorUserId);
 
             long workId = session.workUnitId();
@@ -176,6 +202,12 @@ public class SetupCompletionService {
         throw new BusinessException(ErrorCode.Setup.SETUP_FINAL_MAP_NOT_READY);
     }
 
+    /** 지금 관제 맵(현장당 하나, COMMITTED). 없으면 null */
+    private String currentScene(String siteId) {
+        return jdbc.queryForList("SELECT s.scene_version FROM (" + SceneService.CURRENT_COMMITTED + ") s WHERE s.site_id = :site LIMIT 1",
+                new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(null);
+    }
+
     /** TBM 양식 초안은 부가 작업이다. 커밋된 구역을 읽도록 다른 스레드에서 새 트랜잭션으로 시작하고 기다리지 않는다 */
     private void startTbmDraft(long workId) {
         try {
@@ -197,6 +229,7 @@ public class SetupCompletionService {
                        calibration_version, scene_version, bake_skipped,
                        camera_check ->> 'status' AS camera_check_status,
                        camera_check ->> 'calibration_version' AS camera_check_calibration
+                       , reuse_source_session_id, reuse_scene_version
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 FOR UPDATE
@@ -204,7 +237,8 @@ public class SetupCompletionService {
                 (rs, i) -> new SessionRow(rs.getLong("work_unit_id"), rs.getString("status"), rs.getString("mode"),
                         rs.getBoolean("anchor_accepted"), rs.getString("calibration_version"),
                         rs.getString("scene_version"), rs.getString("bake_skipped"),
-                        rs.getString("camera_check_status"), rs.getString("camera_check_calibration")));
+                        rs.getString("camera_check_status"), rs.getString("camera_check_calibration"),
+                        rs.getObject("reuse_source_session_id", UUID.class), rs.getString("reuse_scene_version")));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
         }

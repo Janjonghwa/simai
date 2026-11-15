@@ -40,13 +40,18 @@ class SetupController {
         this.completions = completions;
     }
 
-    /** mode: NEW(기본, 새 모델) | REUSE(이전 모델 재사용: 현재 관제 맵을 그대로 쓰고 보정만 다시 한다, S15P31A101-614) */
+    /**
+     * mode: NEW(기본, 새 맵) | REUSE(이전 맵 재사용: 고른 맵을 만든 세팅의 보정·카메라 높이·구역·맵을 그대로 쓴다, S15P31A101-714).
+     * reuse_setup_session_id: 재사용할 맵(그 맵을 만든 세팅 세션, reuse-check 의 candidates). 없으면 추천 맵. REUSE 는 camera_heights_m 을 쓰지 않는다
+     */
     record Create(@JsonProperty("work_unit_id") Long workUnitId,
                   @JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
-                  @JsonProperty("mode") String mode) { }
-    /** mode: 없으면 처음 요청한 방식 그대로, NEW | REUSE 면 그 방식으로 다시 시도한다(S15P31A101-689) */
+                  @JsonProperty("mode") String mode,
+                  @JsonProperty("reuse_setup_session_id") UUID reuseSetupSessionId) { }
+    /** mode: 없으면 처음 요청한 방식 그대로, NEW | REUSE 면 그 방식으로 다시 시도한다(S15P31A101-689). reuse_setup_session_id 는 Create 와 같다 */
     record Retry(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM,
-                 @JsonProperty("mode") String mode) { }
+                 @JsonProperty("mode") String mode,
+                 @JsonProperty("reuse_setup_session_id") UUID reuseSetupSessionId) { }
     record Resume(@JsonProperty("camera_heights_m") Map<String, Double> cameraHeightsM) { }
     /** attempt: 화면이 본 다음 시도 번호(선택). 다르면 409(늦게 온 이전 화면의 누름, S15P31A101-687) */
     record CameraCheckStart(@JsonProperty("attempt") Integer attempt) { }
@@ -60,12 +65,15 @@ class SetupController {
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode create(@RequestBody Create request, @AuthenticationPrincipal Jwt jwt) {
         return setups.create(request.workUnitId(), request.cameraHeightsM(), Long.parseLong(jwt.getSubject()), null,
-                request.mode());
+                request.mode(), request.reuseSetupSessionId());
     }
 
     /**
-     * 「이전 맵 재사용」을 지금 고를 수 있는지(S15P31A101-689). {available, blocked_reason(NO_SCENE|SCENE_MISMATCH|CAMERA_CHANGED|null),
-     * scene_version, calibration_version, camera_status(CHANGED|NOT_DETECTED|UNKNOWN), changed_cameras, camera_source}
+     * 「이전 맵 재사용」 후보 맵(S15P31A101-689·-714). {available, blocked_reason(NO_SCENE|CAMERA_CHANGED|VIEW_UNCONFIRMED|null),
+     * scene_version, calibration_version, camera_status(CHANGED|NOT_DETECTED|UNKNOWN), changed_cameras, camera_source,
+     * recommended_setup_session_id, as_is_max_rotation_rad, candidates[{setup_session_id, scene_version, calibration_version, completed_at_ms,
+     * camera_heights_m, status(MATCH|UNCONFIRMED|SHIFTED|CHANGED|EXCLUDED), reason, selectable, recommended, changed_cameras, shifted_cameras,
+     * unconfirmed_cameras, camera_source, cameras}]}
      */
     @GetMapping("/reuse-check")
     @PreAuthorize("hasRole('ADMIN')")
@@ -87,7 +95,7 @@ class SetupController {
     ObjectNode retry(@PathVariable UUID id, @RequestBody(required = false) Retry request,
             @AuthenticationPrincipal Jwt jwt) {
         return setups.retry(id, request == null ? null : request.cameraHeightsM(), Long.parseLong(jwt.getSubject()),
-                request == null ? null : request.mode());
+                request == null ? null : request.mode(), request == null ? null : request.reuseSetupSessionId());
     }
 
     /**

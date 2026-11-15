@@ -37,6 +37,16 @@ class SceneCompatibilityTest {
         assertThat(service.compare("scene", "source", "missing").path("reason").asString()).isEqualTo("UNKNOWN");
     }
 
+    @Test void 내용이_같은_보정은_버전이_달라도_같은_보정이다() {
+        // S15P31A101-714: 이전 맵 재사용이 그 맵의 보정을 계보 키만 바꾼 새 버전으로 다시 낸 경우
+        when(jdbc.queryForList(contains("SELECT site_id"), anyMap(), eq(String.class))).thenReturn(List.of("site", "site"));
+        when(jdbc.queryForList(contains("SELECT v.calibration_hash"), anyMap(), eq(String.class)))
+                .thenReturn(List.of("sha256:same", "sha256:same"));
+        var out = service.compare("scene", "source", "source-reuse-1");
+        assertThat(out.path("verification").asString()).isEqualTo("VERIFIED");
+        assertThat(out.path("reason").asString()).isEqualTo("SAME_CALIBRATION");
+    }
+
     @Test void 중심과_회전_경계를_포함하고_누적변화가_넘으면_재생성을_요청한다() {
         versions(metadata("root", 0, 0), metadata("root", .10, 2));
         var small = service.compare("scene", "source", "target");

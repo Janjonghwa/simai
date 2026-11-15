@@ -222,6 +222,65 @@ public class CalibrationService {
         });
     }
 
+    /**
+     * 이전 맵 재사용(S15P31A101-714): 고른 맵의 보정 {@code sourceVersion} 을 내용 그대로 새 버전 {@code newVersion} 으로 낸다. Tier 0 는 구성 묶음으로
+     * 받은 저장소에 없는 보정을 세팅 보정으로 채택할 때 "이전 버전 = 지금 활성 보정"(계보)을 보므로, 다른 보정을 쓰고 있는 Tier 0 가 그 맵의 보정으로
+     * 돌아가려면 계보 키만 바꾼 새 버전이 필요하다(보정은 덮어쓰지 않고 새 버전을 더한다, 규칙 6).
+     * <p>바꾸는 키는 content_hash 에 넣지 않는 계보·출처 키뿐이다: {@code calibration_version}·{@code previous_calibration_version}(모르면 뺀다)·
+     * {@code setup_session_id}·{@code created_at}. 다시 잰 content_hash 가 원래 보정과 다르면(내용이 바뀌었으면) 내지 않는다.
+     *
+     * @return 등록한 새 버전
+     */
+    public String reissueForReuse(String siteId, String sourceVersion, String newVersion, String previousVersion,
+            String setupSessionId, long createdAtMs) {
+        List<byte[]> docs = jdbc.queryForList("""
+                SELECT d.content FROM calibration_document d JOIN calibration_version v ON v.calibration_version = d.calibration_version
+                WHERE d.calibration_version = :v AND v.site_id = :site
+                """, new MapSqlParameterSource("v", sourceVersion).addValue("site", siteId), byte[].class);
+        if (docs.isEmpty()) {
+            throw new BusinessException(ErrorCode.Config.CALIBRATION_MISSING);
+        }
+        JsonNode source;
+        try {
+            source = mapper.readTree(docs.getFirst());
+        } catch (JacksonException e) {
+            throw new BusinessException(ErrorCode.Config.INVALID_CALIBRATION);
+        }
+        if (!(source instanceof ObjectNode sourceDoc)) {
+            throw new BusinessException(ErrorCode.Config.INVALID_CALIBRATION);
+        }
+        ObjectNode doc = sourceDoc.deepCopy();
+        doc.put("calibration_version", newVersion);
+        if (previousVersion == null) {
+            doc.remove("previous_calibration_version");
+        } else {
+            doc.put("previous_calibration_version", previousVersion);
+        }
+        doc.put("setup_session_id", setupSessionId);
+        doc.put("created_at", createdAtMs);
+        if (!CalibrationContentHash.of(sourceDoc).equals(CalibrationContentHash.of(doc))) {
+            throw new IllegalStateException("재사용 보정 " + sourceVersion + " 의 내용이 새 버전에서 달라졌다");
+        }
+        return registerFromSetup(siteId, mapper.writeValueAsBytes(doc), "ec2:calibration_document/" + newVersion, null,
+                "이전 맵 재사용 " + setupSessionId + ": " + sourceVersion + " 을 내용 그대로 다시 냄", previousVersion);
+    }
+
+    /** 두 보정이 같은 내용(content_hash)인지. EC2 가 두 원문(calibration_document)에서 다시 잰 해시로만 본다. 모르면 false */
+    public boolean sameContent(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        if (a.equals(b)) {
+            return true;
+        }
+        List<String> hashes = jdbc.queryForList("""
+                SELECT v.calibration_hash FROM calibration_version v
+                WHERE v.calibration_version IN (:a, :b) AND v.calibration_hash IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM calibration_document d WHERE d.calibration_version = v.calibration_version)
+                """, new MapSqlParameterSource("a", a).addValue("b", b), String.class);
+        return hashes.size() == 2 && hashes.get(0).equals(hashes.get(1));
+    }
+
     /** 문서에는 이전 버전이 없어 비워 둔다(추측하지 않는다). 이 버전의 calibration_update 가 오면 Tier 0 값으로 채운다 */
     private void insertVersion(String siteId, JsonNode doc, String version, String contentHash, String reason, OffsetDateTime now) {
         List<String> crossCheck = new ArrayList<>();

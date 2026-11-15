@@ -369,6 +369,38 @@ class CoverageGuideIntegrationTest {
         assertThat(allSame.allSame()).isTrue();
     }
 
+    @Test
+    void 후보_맵별_시점_확인_1_2_0_은_맵마다_따로_보관하고_같은_맵을_두_번_실으면_거부한다() throws Exception {
+        // S15P31A101-714: 헬퍼가 후보 맵마다 비교한 결과(reuse_view_checks)
+        Instant t0 = Instant.parse("2026-11-15T02:00:00Z");
+        clock.set(t0);
+        ObjectNode withViews = (ObjectNode) mapper.readTree(
+                Files.readString(CONTRACTS.resolve("examples/coverage_guide.reuse_view_checks.json")));
+        withViews.put("source_id", laptopId);
+        withViews.put("computed_at_ms", t0.toEpochMilli());
+        withViews.put("valid_until_ms", t0.toEpochMilli() + 10_000L);
+        String first = withViews.at("/reuse_view_checks/0/scene_version").asString();
+        String second = withViews.at("/reuse_view_checks/1/scene_version").asString();
+        JsonNode res = postCoverageGuide(withViews);
+        assertThat(res.get("reuse_references").isArray()).isTrue();
+
+        CoverageGuideService.ViewCheck a = coverageGuideService.reuseViewCheck(first).orElseThrow();
+        assertThat(a.changedCameras()).containsExactly("cam_B", "cam_C");
+        CoverageGuideService.ViewCheck b = coverageGuideService.reuseViewCheck(second).orElseThrow();
+        assertThat(b.allSame()).isTrue();
+        assertThat(b.cameras().size()).isEqualTo(4);
+        assertThat(b.cameras().get(2).get("rotation_rad").asDouble()).isEqualTo(0.0052);
+        assertThat(b.receivedAt()).isEqualTo(t0);
+
+        ObjectNode duplicate = withViews.deepCopy();
+        ((ObjectNode) duplicate.at("/reuse_view_checks/1")).put("scene_version", first);
+        mockMvc.perform(post("/api/devices/coverage-guides")
+                        .header("Authorization", "Bearer " + laptopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(duplicate)))
+                .andExpect(status().isBadRequest());
+    }
+
     private ObjectNode validGuidePayload(String sourceId, long computedAtMs) throws Exception {
         String raw = Files.readString(CONTRACTS.resolve("examples/coverage_guide.json"));
         ObjectNode node = (ObjectNode) mapper.readTree(raw);

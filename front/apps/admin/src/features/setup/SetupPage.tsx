@@ -73,7 +73,7 @@ import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import { useBackgroundCapture } from '@/features/setup/useBackgroundCapture';
 import { useWalkCountdown } from '@/features/setup/useCameraWalk';
 import { useCompleteSetup } from '@/features/setup/useCompleteSetup';
-import { useReuseChoice } from '@/features/setup/useReuseScene';
+import { chosenReuseMap, useReuseChoice } from '@/features/setup/useReuseScene';
 import { reviewsCarriedZones, useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupLayoutSync } from '@/features/setup/useSetupLayoutSync';
 import {
@@ -229,6 +229,8 @@ function SetupWorkPage({
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
   // 1단계에서 사용자가 고른 맵 방식(S15P31A101-689). 고르지 않았으면 null 이고 지금 세션의 요청 방식, 없으면 이전 맵 재사용이 기본이다.
   const [pickedMode, setPickedMode] = useState<SetupMode | null>(null);
+  // 「이전 맵 재사용」 안에서 사용자가 고른 맵(S15P31A101-714). 고르지 않았거나 그 맵이 어긋나면 서버 추천 맵이다.
+  const [pickedMapId, setPickedMapId] = useState<string | null>(null);
   // 보정·생성의 「자세히 · 맵 보강」에서 여는 맵 보강 촬영 창.
   const [supplementOpen, setSupplementOpen] = useState(false);
   const navigate = useNavigate();
@@ -264,7 +266,9 @@ function SetupWorkPage({
       setHeightEdits({});
       setReturnForHeightRetry(false);
       setPickedMode(null);
-      go(1);
+      setPickedMapId(null);
+      // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 워커 작업 없이 끝난 세션이라 바로 구역 단계로 간다
+      go(next.reuse_source ? ZONE_STAGE : 1);
     },
     [queryClient, workUnitId, go],
   );
@@ -401,7 +405,8 @@ function SetupWorkPage({
   const planRevision = zonePlanQuery.data?.revision;
   const planFailed = zonePlanQuery.isError;
   if (restoring && currentSession) {
-    if (setupCompleted(currentSession)) {
+    if (setupCompleted(currentSession) || currentSession.reuse_source) {
+      // 완료했거나, 고른 맵을 그대로 쓰는 재사용(워커 단계가 없다, S15P31A101-714)이면 구역 단계로 연다
       setStage(ZONE_STAGE);
       setRestoringId(null);
     } else if (!restoreChecksPlan) {
@@ -492,6 +497,17 @@ function SetupWorkPage({
   // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
   const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
   const modePending = mode === 'REUSE' && reuse.checking;
+  // 재사용으로 시작할 맵(S15P31A101-714): 고른 맵이 아직 맞으면 그 맵, 아니면 추천 맵(옛 서버는 목록이 없어 null = 서버가 고른다)
+  const reuseMapId = chosenReuseMap(reuse.maps, pickedMapId, reuse.recommendedId);
+  // 재사용은 그 맵을 만들 때의 높이를 쓴다. 높이 입력 칸의 값은 새 맵에서만 시작 조건이다
+  const heightsReady = mode === 'REUSE' || heightValidation.valid;
+  const reuseBody = useMemo(
+    () => ({
+      mode: 'REUSE' as const,
+      ...(reuseMapId ? { reuse_setup_session_id: reuseMapId } : {}),
+    }),
+    [reuseMapId],
+  );
 
   // 카메라 칸 배지 근거(S15P31A101-691): 각도 안내(연결·겹침·각도, 오래되면 확인 중) + 재사용 판정의 달라진 카메라
   const changedCameras = reuse.changedCameras;
@@ -509,31 +525,32 @@ function SetupWorkPage({
    * 끝난 세션은 새로 시작하며, 진행 중인 세션이 있으면 새로 시작할 수 없어 먼저 취소한 뒤 재시도한다.
    */
   const restartWithHeights = useCallback(() => {
-    if (!sessionId || !currentSession || !heightValidation.valid || restartPending) return;
+    if (!sessionId || !currentSession || !heightsReady || restartPending) return;
     const cameraHeights = heightValidation.cameraHeightsM;
-    // 다시 시도도 1단계에서 고른 방식으로 한다(서버가 새 세션의 requested_mode 로 저장한다)
+    // 다시 시도도 1단계에서 고른 방식으로 한다(서버가 새 세션의 requested_mode 로 저장한다). 재사용은 고른 맵을 싣고 높이는 싣지 않는다
     const retry = () =>
       retrySession.retry({
         setupSessionId: sessionId,
-        body: { camera_heights_m: cameraHeights, mode },
+        body: mode === 'REUSE' ? reuseBody : { camera_heights_m: cameraHeights, mode },
       });
     // 보정 문제로 멈춘 세션은 처음부터가 아니라 멈춘 곳부터 이어 간다.
-    if (pausedForHeights(currentSession) && currentSession.status !== 'FAILED')
+    if (mode === 'NEW' && pausedForHeights(currentSession) && currentSession.status !== 'FAILED')
       resumeSession.resume({
         setupSessionId: sessionId,
         body: { camera_heights_m: cameraHeights },
       });
     else if (currentSession.status === 'FAILED') retry();
     else if (currentSession.status === 'COMPLETED')
-      createSession.submit({
-        work_unit_id: workUnitId,
-        camera_heights_m: cameraHeights,
-        mode: mode === 'REUSE' ? 'REUSE' : undefined,
-      });
+      createSession.submit(
+        mode === 'REUSE'
+          ? { work_unit_id: workUnitId, ...reuseBody }
+          : { work_unit_id: workUnitId, camera_heights_m: cameraHeights },
+      );
     else cancelMutation.mutate(sessionId, { onSuccess: retry });
   }, [
     sessionId,
     currentSession,
+    heightsReady,
     heightValidation,
     restartPending,
     retrySession,
@@ -542,32 +559,30 @@ function SetupWorkPage({
     cancelMutation,
     workUnitId,
     mode,
+    reuseBody,
   ]);
 
-  // mode 를 생략하면 새 모델이다(서버가 NEW 로 본다).
-  const createSessionNow = useCallback(
-    (requestedMode?: SetupMode) => {
-      if (!heightValidation.valid || createSession.pending) return;
-      createSession.submit({
-        work_unit_id: workUnitId,
-        camera_heights_m: heightValidation.cameraHeightsM,
-        mode: requestedMode,
-      });
-    },
-    [heightValidation, createSession, workUnitId],
-  );
+  // 새 맵은 mode 를 생략한다(서버가 NEW 로 본다). 재사용은 고른 맵을 싣고 높이는 싣지 않는다(그 맵의 높이를 쓴다, S15P31A101-714).
+  const createSessionNow = useCallback(() => {
+    if (!heightsReady || createSession.pending) return;
+    createSession.submit(
+      mode === 'REUSE'
+        ? { work_unit_id: workUnitId, ...reuseBody }
+        : { work_unit_id: workUnitId, camera_heights_m: heightValidation.cameraHeightsM },
+    );
+  }, [heightsReady, heightValidation, createSession, workUnitId, mode, reuseBody]);
 
   // 1단계에서 고른 방식으로 시작한다(새 맵은 mode 를 생략한다). 실패·취소한 시도가 있으면 그 시도의 다시 시도로 이어 고른 방식을 보낸다.
   const submitStep1 = useCallback(() => {
-    if (!heightValidation.valid || modePending) return;
+    if (!heightsReady || modePending) return;
     if ((returnForHeightRetry && sessionId) || (sessionId && currentSession?.status === 'FAILED')) {
       restartWithHeights();
       return;
     }
     if (createSession.pending) return;
-    createSessionNow(mode === 'REUSE' ? 'REUSE' : undefined);
+    createSessionNow();
   }, [
-    heightValidation,
+    heightsReady,
     modePending,
     returnForHeightRetry,
     sessionId,
@@ -575,7 +590,6 @@ function SetupWorkPage({
     restartWithHeights,
     createSession,
     createSessionNow,
-    mode,
   ]);
 
   // 「세팅 취소」: 진행 중인 시도가 있으면 멈추고 세팅에서 나간다(날짜 화면은 보고서로, 단독 화면은 그 작업의 작업 관리로).
@@ -613,12 +627,18 @@ function SetupWorkPage({
   // 옆 카메라 쌍의 겹침이 부족하면 보정이 실패할 수 있어 시작 전에 한 번 더 묻는다(높이를 고쳐 다시 시작할 때도 같다).
   // 세팅 시작(세션 만들기)에는 GPU 가 필요하다. 꺼져 있거나 준비 중이면 GPU 경고창을 먼저 띄우고 연결되면 이어서 한다(S15P31A101-702)
   const { guard: guardGpu, dialog: gpuGateDialog } = useGpuGate();
+  // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 배경 촬영·보정·맵 굽기가 없어 GPU·겹침 확인·배경 촬영 창 없이 바로 시작한다
+  // (Tier 0 는 켜져 있으면 구성 묶음으로, 꺼져 있으면 다음 기동 때 그 맵의 보정을 받는다)
   const requestStep1Submit = useCallback(() => {
+    if (mode === 'REUSE') {
+      submitStep1();
+      return;
+    }
     guardGpu(() => {
       if (coverage.riskyPairs.length > 0) setRiskConfirmPairs(coverage.riskyPairs);
       else beginStep1Submit();
     });
-  }, [guardGpu, coverage.riskyPairs, beginStep1Submit]);
+  }, [mode, submitStep1, guardGpu, coverage.riskyPairs, beginStep1Submit]);
 
   const confirmRiskySubmit = useCallback(() => {
     setRiskConfirmPairs(null);
@@ -702,7 +722,7 @@ function SetupWorkPage({
     {
       stage,
       embedded,
-      startDisabled: !heightValidation.valid || restartPending || modePending,
+      startDisabled: !heightsReady || restartPending || modePending,
       mapComplete: waiting.mapComplete,
       sessionRunning,
       cancelPending: cancelMutation.isPending,
@@ -786,7 +806,11 @@ function SetupWorkPage({
 
   const step1Step = step1NextStep({
     coverage,
-    heights: heightValidation,
+    // 재사용은 입력 높이를 쓰지 않아 빈 칸을 시작 조건으로 안내하지 않는다(S15P31A101-714)
+    heights:
+      mode === 'REUSE'
+        ? { ...heightValidation, valid: true, missingIds: [], invalidIds: [] }
+        : heightValidation,
     heightCameraIds: cameraIds,
     modePending,
     submitting: restartPending,
@@ -854,7 +878,13 @@ function SetupWorkPage({
       {stage === 0 ? (
         <SetupSplit left={cameraMap}>
           <NextStepCard step={step1Step} />
-          <SetupModeChoice mode={mode} onChange={setPickedMode} reuse={reuse} />
+          <SetupModeChoice
+            mode={mode}
+            onChange={setPickedMode}
+            reuse={reuse}
+            mapId={reuseMapId}
+            onMapChange={setPickedMapId}
+          />
           <CameraHeightPanel
             fields={heightFields}
             onChange={onChangeHeight}

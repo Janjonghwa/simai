@@ -529,6 +529,18 @@ export const setupSessionResponseSchema = z.object({
   /** 서버 관문 판정(-646): PASSED 이고 그 확인의 보정이 세션 보정과 같다. 그 전 서버는 싣지 않는다(null) */
   camera_check_passed: z.boolean().nullish().catch(null),
   /**
+   * 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714): 그 맵을 만든 세팅·그 맵·시작 때 통과한 시점 확인. 그 밖(새 맵·옛 재사용)은 null.
+   * 있으면 워커 작업이 없고(배경·보정·카메라 확인 걷기 없음) 바로 구역 단계로 간다.
+   */
+  reuse_source: z
+    .object({
+      setup_session_id: z.string(),
+      scene_version: z.string().nullish().catch(null),
+    })
+    .loose()
+    .nullish()
+    .catch(null),
+  /**
    * 세팅 완료를 막는 세션 쪽 이유(S15P31A101-688, 서버 SetupCompletionGate 와 같은 판정). 완료할 수 있으면 null.
    * SETUP_NOT_READY_TO_COMPLETE · SETUP_CAMERA_CHECK_NOT_PASSED · SETUP_FINAL_MAP_NOT_READY · SETUP_FINAL_MAP_SKIPPED.
    * 그 전 서버는 싣지 않는다(undefined, 화면이 같은 규칙으로 계산한다)
@@ -565,15 +577,20 @@ export type CompleteSetupResponse = z.infer<typeof completeSetupResponseSchema>;
 
 export interface CreateSetupSessionBody {
   work_unit_id: number;
-  camera_heights_m: Record<string, number>;
+  /** 새 맵에서만 쓴다. 이전 맵 재사용은 그 맵을 만들 때의 높이를 쓴다(S15P31A101-714). */
+  camera_heights_m?: Record<string, number>;
   /** 생략하면 새 모델(NEW). */
   mode?: SetupMode;
+  /** 이전 맵 재사용에서 고른 맵(그 맵을 만든 세팅 세션, S15P31A101-714). 생략하면 서버 추천 맵. */
+  reuse_setup_session_id?: string;
 }
 
 export interface RetrySetupSessionBody {
   camera_heights_m?: Record<string, number>;
   /** 다시 시도할 방식(S15P31A101-689). 생략하면 처음 요청한 방식 그대로다. */
   mode?: SetupMode;
+  /** 재사용으로 다시 시도할 때 고른 맵(S15P31A101-714). */
+  reuse_setup_session_id?: string;
 }
 
 /**
@@ -582,13 +599,41 @@ export interface RetrySetupSessionBody {
  * camera_status: CHANGED·NOT_DETECTED(관제 감시가 달라진 카메라를 보지 못함, 또는 시점 확인이 4대 모두 같음)·UNKNOWN(근거 없음, 막지 않는다).
  * camera_source: TIER0_DRIFT(관제 회전 감시)·VIEW_MATCH(1단계 헬퍼가 이전 맵 사진과 지금 화면을 비교, S15P31A101-712)·LAST_SETUP_REJECTED.
  */
+/**
+ * 재사용 후보 맵 하나(S15P31A101-714). status: MATCH(4대 그때와 같은 자리, 고를 수 있음)·UNCONFIRMED(아직 모름: reason NO_RESULT·NO_PHOTOS·
+ * CHECKING)·SHIFTED(조금 돌아간 카메라 shifted_cameras)·CHANGED(달라진 카메라 changed_cameras, camera_source VIEW_MATCH·TIER0_DRIFT)·
+ * EXCLUDED(DB 사실로 가린 맵: reason CAMERA_CHECK_NOT_PASSED·NOT_COMPLETED·MAP_RETIRED·NO_CALIBRATION·CAMERAS_CHANGED).
+ */
+export const reuseCandidateSchema = z
+  .object({
+    setup_session_id: z.string(),
+    scene_version: z.string().nullish().catch(null),
+    completed_at_ms: z.number(),
+    camera_heights_m: z.record(z.string(), z.number()).catch({}),
+    status: z.enum(['MATCH', 'UNCONFIRMED', 'SHIFTED', 'CHANGED', 'EXCLUDED']).catch('UNCONFIRMED'),
+    reason: z.string().nullish().catch(null),
+    selectable: z.boolean().catch(false),
+    recommended: z.boolean().catch(false),
+    changed_cameras: z.array(z.string()).catch([]),
+    shifted_cameras: z.array(z.string()).catch([]),
+    unconfirmed_cameras: z.array(z.string()).catch([]),
+    camera_source: z.string().nullish().catch(null),
+  })
+  .loose();
+export type ReuseCandidate = z.infer<typeof reuseCandidateSchema>;
+
 export const reuseCheckSchema = z.object({
   available: z.boolean(),
+  /** NO_SCENE·CAMERA_CHANGED·VIEW_UNCONFIRMED(-714, 맞는지 아직 모름)·(옛 서버) SCENE_MISMATCH */
   blocked_reason: z.string().nullish().catch(null),
   scene_version: z.string().nullish().catch(null),
   camera_status: z.enum(['CHANGED', 'NOT_DETECTED', 'UNKNOWN']).catch('UNKNOWN'),
   changed_cameras: z.array(z.string()).catch([]),
   camera_source: z.string().nullish().catch(null),
+  /** 지금 카메라와 가장 잘 맞는 맵(기본 선택, -714). 맞는 맵이 없거나 옛 서버면 null */
+  recommended_setup_session_id: z.string().nullish().catch(null),
+  /** 최근 완료 맵(순위 순, -714). 옛 서버는 싣지 않는다(빈 목록) */
+  candidates: z.array(reuseCandidateSchema).optional().catch(undefined),
 });
 export type ReuseCheck = z.infer<typeof reuseCheckSchema>;
 

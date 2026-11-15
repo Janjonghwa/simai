@@ -10,6 +10,9 @@
 - 가림·조명으로 보이는 경우(맞는 점은 그대로인데 수가 적음)는 UNKNOWN(OCCLUDED)이라 막지 않는다.
 - 한 번의 CHANGED 는 확인 중(UNKNOWN·CONFIRMING)이고, 그 카메라의 다른 키프레임에서 한 번 더 CHANGED 여야 CHANGED 로 싣는다.
 
+S15P31A101-714: 재사용 후보 맵 여러 개(EC2 수요 응답 `reuse_references`, 최대 5개)를 맵마다 따로 비교한다(`MultiViewChecker`).
+맵마다 기준 사진·렌즈가 달라 ViewChecker 를 맵(scene·보정)별로 하나씩 두고, 목록에서 빠진 맵의 것은 버린다.
+
 이 모듈은 위치·자세·보정을 만들지 않는다(재사용 선택을 막을지의 근거만). 영상·특징점은 메시지에 싣지 않는다.
 """
 
@@ -29,6 +32,8 @@ LOG = logging.getLogger(__name__)
 
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 REFERENCE_RETRY_S = 30.0
+MAX_REFERENCES = 5
+"""한 라운드에 비교하는 후보 맵 수 상한(coverage_guide 1.2.0 reuse_view_checks maxItems 와 같다)"""
 CHANGED_REASONS = ("ROTATED", "MOVED", "VIEW_DIFFERENT")
 DISTORTION_MODELS = ("NONE", "OPENCV", "OPENCV_PINHOLE", "OPENCV_FISHEYE")
 
@@ -345,6 +350,36 @@ class ViewChecker:
         self.refs.clear()
         self.failed.clear()
         self.confirm.reset()
+
+
+class MultiViewChecker:
+    """후보 맵마다 ViewChecker 하나(S15P31A101-714). 목록 순서대로 결과를 내고, 목록에서 빠진 맵의 기준·확인 상태는 버린다."""
+
+    def __init__(self, factory=ViewChecker):
+        self.factory = factory
+        self.checkers: dict[tuple[str, str], ViewChecker] = {}
+
+    def check_all(self, references, frames: dict, statuses: dict[str, str]) -> list[dict]:
+        keep: dict[tuple[str, str], ViewChecker] = {}
+        results = []
+        for reference in list(references or [])[:MAX_REFERENCES]:
+            parsed = parse_reference(reference)
+            if parsed is None:
+                continue
+            key = (parsed[0], parsed[1])
+            if key in keep:
+                continue  # 같은 맵은 한 번만(EC2 가 같은 scene_version 을 두 번 싣지 않게 막는다)
+            checker = self.checkers.get(key) or self.factory()
+            keep[key] = checker
+            try:
+                view = checker.check(reference, frames, statuses)
+            except Exception:  # noqa: BLE001 - 한 맵이 실패해도 다른 맵·각도 안내는 그대로
+                LOG.warning("reuse view check failed scene")
+                continue
+            if view is not None:
+                results.append(view)
+        self.checkers = keep
+        return results
 
 
 def describe(view: dict | None) -> str:

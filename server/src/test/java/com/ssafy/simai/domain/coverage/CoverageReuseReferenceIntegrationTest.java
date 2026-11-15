@@ -22,6 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 재사용 시점 확인 기준(S15P31A101-712): 현재 관제 맵의 카메라별 사진 서명 주소 + 그 보정의 렌즈 내부값을 기기 수요 응답에 싣는다.
  * 렌즈가 없는 카메라는 빼고, 사진이 없으면 싣지 않으며(null), 수요가 없으면 싣지 않는다.
+ * S15P31A101-714: 수요 응답은 고를 수 있는 최근 완료 맵마다의 기준(reuse_references)을 싣고, 옛 헬퍼용 reuse_reference 는 그 첫 항목이다.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -46,6 +47,9 @@ class CoverageReuseReferenceIntegrationTest {
     private final String calibration = "cal-view-ref-" + suffix;
     private final String scene = "scene-view-ref-" + suffix;
     private final String laptop = "gw-view-ref-" + suffix;
+    private final UUID session = UUID.randomUUID();
+    private final String job = "job-view-ref-" + suffix;
+    private final String workName = "시점기준작업-" + suffix;
     private String site;
 
     @BeforeEach
@@ -78,9 +82,43 @@ class CoverageReuseReferenceIntegrationTest {
                 laptop, TokenHashes.sha256Hex("test-only-view-ref-" + suffix));
     }
 
+    /** 이 맵을 만든 새 맵 세팅을 세팅 완료(C17)까지 마친 것으로 둔다(재사용 후보, S15P31A101-714) */
+    private void completedMap() {
+        jdbc.update("""
+                INSERT INTO calibration_document (calibration_version, content, sha256, uploaded_by, uploaded_at)
+                VALUES (?, ?, ?, NULL, now())
+                """, calibration, "{}".getBytes(), "sha256:" + "d".repeat(64));
+        long user = jdbc.queryForObject("""
+                INSERT INTO app_user (login_id, password_hash, display_label, role, created_at)
+                VALUES (?, 'hash', '시점기준관리자', 'ADMIN', now()) RETURNING user_id
+                """, Long.class, "view-ref-admin-" + suffix);
+        jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
+                + " VALUES (?, 'site_setup','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb,now())", job);
+        jdbc.update("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, created_by, created_at, updated_at)
+                VALUES (?, current_date - 2, ?, now(), now() + interval '1 hour', 4, 'PLANNED', ?, now(), now())
+                """, site, workName, user);
+        long work = jdbc.queryForObject("SELECT work_id FROM work_unit WHERE name = ?", Long.class, workName);
+        ObjectNode heights = mapper.createObjectNode();
+        jdbc.queryForList("SELECT camera_id FROM camera WHERE site_id = ? AND removed_at IS NULL", String.class, site)
+                .forEach(c -> heights.put(c, 2.44));
+        jdbc.update("""
+                INSERT INTO setup_session (setup_session_id, site_id, work_unit_id, job_id, status, progress_pct, camera_heights_m,
+                    height_tolerance_cm, requested_by, started_at, completed_at, updated_at, calibration_version, scene_version)
+                VALUES (?, ?, ?, ?, 'COMPLETED', 100, ?::jsonb, 5, ?, now(), now(), now(), ?, ?)
+                """, session, site, work, job, heights.toString(), user, calibration, scene);
+        jdbc.update("UPDATE work_unit SET active_setup_session_id = ?, setup_completed_at = now() WHERE work_id = ?", session, work);
+    }
+
     @AfterEach
     void tearDown() {
         coverageGuides.clearForTest();
+        jdbc.update("UPDATE work_unit SET active_setup_session_id = NULL WHERE name = ?", workName);
+        jdbc.update("DELETE FROM setup_session WHERE setup_session_id = ?", session);
+        jdbc.update("DELETE FROM work_unit WHERE name = ?", workName);
+        jdbc.update("DELETE FROM app_user WHERE login_id = ?", "view-ref-admin-" + suffix);
+        jdbc.update("DELETE FROM analysis_job WHERE job_id = ?", job);
+        jdbc.update("DELETE FROM calibration_document WHERE calibration_version = ?", calibration);
         jdbc.update("DELETE FROM device WHERE device_id = ?", laptop);
         jdbc.update("DELETE FROM scene_activation WHERE scene_version = ?", scene);
         jdbc.update("DELETE FROM scene_version WHERE scene_version = ?", scene);
@@ -114,11 +152,23 @@ class CoverageReuseReferenceIntegrationTest {
         assertThat(reference.current(site)).isNull();
 
         when(images.images(anyString())).thenReturn(signed(true));
+        completedMap();
         assertThat(coverageGuides.demandFor(laptop).get("reuse_reference").isNull()).isTrue();
+        assertThat(coverageGuides.demandFor(laptop).get("reuse_references").size()).isZero();
         coverageGuides.queryForAdmin(); // 관리자 1단계 화면 조회 → 수요
         JsonNode demand = coverageGuides.demandFor(laptop);
         assertThat(demand.get("active_demand").asBoolean()).isTrue();
         assertThat(demand.at("/reuse_reference/scene_version").asString()).isEqualTo(scene);
+        assertThat(demand.at("/reuse_references/0/scene_version").asString()).isEqualTo(scene);
+        assertThat(demand.at("/reuse_references/0/cameras").size()).isEqualTo(3);
+        assertThat(coverageGuides.referenceMissing(scene)).isFalse();
+
+        // 고를 수 있는 맵인데 사진이 없으면 싣지 않고, 재사용 판정이 「사진 없음」으로 보이게 기억해 둔다
+        when(images.images(anyString())).thenReturn(signed(false));
+        JsonNode noPhotos = coverageGuides.demandFor(laptop);
+        assertThat(noPhotos.get("reuse_references").size()).isZero();
+        assertThat(noPhotos.get("reuse_reference").isNull()).isTrue();
+        assertThat(coverageGuides.referenceMissing(scene)).isTrue();
     }
 
     private ObjectNode signed(boolean withImages) {
