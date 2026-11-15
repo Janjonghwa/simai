@@ -102,6 +102,16 @@ export function GpuLaunchForm({
   const usableRows = offers.gpu_types.filter((g) => rowUsable(offers, g.gpu_type));
   const hasHiddenRows = usableRows.length > 0 && usableRows.length < offers.gpu_types.length;
   const visibleRows = showAll || usableRows.length === 0 ? offers.gpu_types : usableRows;
+  // 보이는 줄 어디에도 켤 수 있는 칸이 없는 지역 열은 접는다(칸이 모두 「없음」이라 눌러도 못 고른다, S15P31A101-752). 고른 칸의 지역은 남긴다.
+  const visibleRegions = offers.regions.filter(
+    (r) =>
+      pick?.region === r.region ||
+      visibleRows.some((g) =>
+        cellUsable(cellOf(offers, { gpuType: g.gpu_type, region: r.region })),
+      ),
+  );
+  const foldedRegions = offers.regions.filter((r) => !visibleRegions.includes(r));
+  const preferred = offers.default;
 
   const submit = () => {
     if (!pick) return;
@@ -165,12 +175,12 @@ export function GpuLaunchForm({
           </Button>
         )}
       </div>
-      <div className="max-h-[min(56vh,520px)] overflow-auto">
+      <div className="max-h-[min(56vh,520px)] overflow-x-hidden overflow-y-auto">
         <table className="w-full border-separate border-spacing-1 text-sm" aria-label="GPU 재고">
           <thead className="sticky top-0 z-[1] bg-card">
             <tr>
               <th className="text-left font-normal text-muted-foreground" />
-              {offers.regions.map((r) => (
+              {visibleRegions.map((r) => (
                 <th
                   key={r.region}
                   scope="col"
@@ -198,11 +208,13 @@ export function GpuLaunchForm({
                       <RowBadge row={g} usable={usable} />
                     </span>
                   </th>
-                  {offers.regions.map((r) => {
+                  {visibleRegions.map((r) => {
                     const c = cellOf(offers, { gpuType: g.gpu_type, region: r.region });
                     const selected = pick?.gpuType === g.gpu_type && pick.region === r.region;
                     const ok = cellUsable(c);
                     const label = availabilityLabel(c);
+                    const isPreferred =
+                      preferred?.gpu_type === g.gpu_type && preferred.region === r.region;
                     return (
                       <td key={r.region}>
                         <button
@@ -212,12 +224,15 @@ export function GpuLaunchForm({
                           aria-label={`${gpuName} ${r.region} ${label}`}
                           onClick={() => setPicked({ gpuType: g.gpu_type, region: r.region })}
                           className={cn(
-                            'flex w-full min-w-[84px] flex-col items-start rounded-md px-2 py-1.5 text-left ring-1 ring-border',
+                            'flex w-full min-w-[72px] flex-col items-start rounded-md px-2 py-1.5 text-left ring-1 ring-border',
                             selected && 'bg-point-soft ring-2 ring-primary',
                             !ok && 'cursor-not-allowed opacity-40',
                           )}
                         >
                           <span className="whitespace-nowrap">{label}</span>
+                          {isPreferred && (
+                            <span className="text-xs font-semibold text-primary">선호 1순위</span>
+                          )}
                           <span className="font-mono text-xs text-muted-foreground">
                             {c?.price_per_hour_usd != null
                               ? `${formatUsd(c.price_per_hour_usd)}/h`
@@ -233,6 +248,11 @@ export function GpuLaunchForm({
           </tbody>
         </table>
       </div>
+      {foldedRegions.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          재고 없음: {foldedRegions.map((r) => formatRegion(r.region)).join(', ')}
+        </p>
+      )}
       {!pick && (
         <p className="text-sm">
           기본으로 켤 칸이 없습니다. 표에서 고르거나 설정의 GPU 구역에서 선호 지역을 바꾸세요.

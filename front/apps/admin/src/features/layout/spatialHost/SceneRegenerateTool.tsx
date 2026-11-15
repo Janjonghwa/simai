@@ -36,10 +36,13 @@ const pct = (r: number) => `${Math.round(r * 100)}%`;
  */
 export function SceneRegenerateTool({
   hidden,
+  disabled = false,
   currentSceneVersion,
   currentScene,
 }: {
   hidden: boolean;
+  /** GPU 가 꺼져 있어 재생성을 요청할 수 없다(S15P31A101-752). 버튼을 비활성으로 두고 까닭을 보인다. */
+  disabled?: boolean;
   /** 현재 활성화된 Scene 버전(이미 후보가 활성화된 경우 버튼 상태 구분용). */
   currentSceneVersion: string | null;
   /** 현재 Scene 조회 응답 본문. `quality` 의 재생성 품질을 읽는다(-469). */
@@ -78,7 +81,7 @@ export function SceneRegenerateTool({
   return (
     <Popover>
       <ToolTooltip
-        label="맵 재생성"
+        label={disabled ? 'GPU 꺼짐 · GPU 를 켠 뒤 맵을 재생성할 수 있습니다' : '맵 재생성'}
         trigger={
           <PopoverTrigger
             render={
@@ -88,6 +91,7 @@ export function SceneRegenerateTool({
                 aria-label="맵 재생성"
                 aria-busy={busy}
                 hidden={hidden}
+                disabled={disabled}
               />
             }
           />

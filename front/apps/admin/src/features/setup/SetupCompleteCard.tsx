@@ -89,8 +89,21 @@ export function canCompleteSetup(session: SetupSessionResponse | null | undefine
   return session != null && !setupCompleted(session) && completeBlockedReason(session) === null;
 }
 
-function timeOf(ms: number): string {
-  return new Date(ms).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+/**
+ * 완료 시각 글. 오늘이면 시각만, 오늘이 아니면 날짜를 앞에 붙인다(S15P31A101-752: 다음 날 열면 오늘 세팅처럼 보이지 않게).
+ * 올해가 아니면 연도도 붙인다. now 는 시험용.
+ */
+export function completedAtLabel(ms: number, now: number = Date.now()): string {
+  const at = new Date(ms);
+  const today = new Date(now);
+  const time = at.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  if (at.toDateString() === today.toDateString()) return time;
+  const date = at.toLocaleDateString('ko-KR', {
+    ...(at.getFullYear() !== today.getFullYear() && { year: 'numeric' as const }),
+    month: 'long',
+    day: 'numeric',
+  });
+  return `${date} ${time}`;
 }
 
 /** 완료한 세션의 상태 카드. 완료 전 세션이면 아무것도 그리지 않는다. applied 는 방금 완료한 이 화면에서만 받는다. */
@@ -111,7 +124,7 @@ export function SetupCompleteCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-2 text-sm">
         <p role="status" className="font-semibold text-ok">
-          {timeOf(session.setup_completed_at_ms)}에 세팅을 완료했습니다
+          {completedAtLabel(session.setup_completed_at_ms)}에 세팅을 완료했습니다
         </p>
         <dl aria-label="세팅 요약" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
           {setupSummaryRows(session, applied).map((row) => (

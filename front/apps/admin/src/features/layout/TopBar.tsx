@@ -31,7 +31,13 @@ function Ec2Clock() {
   const now = useNow();
   const offset = useRealtimeStore((s) => s.health?.clockOffsetMs);
   return (
-    <span className="font-mono text-sm whitespace-nowrap">{clockLabel(offset, now) ?? NONE}</span>
+    <span
+      title="현재 시각 (서버 기준)"
+      aria-label={`현재 시각 ${clockLabel(offset, now) ?? '알 수 없음'}`}
+      className="font-mono text-sm whitespace-nowrap text-muted-foreground"
+    >
+      {clockLabel(offset, now) ?? NONE}
+    </span>
   );
 }
 
@@ -78,8 +84,8 @@ export function TopBar({ floating }: { floating: boolean }) {
       <div className="ml-auto flex items-center gap-x-3">
         <SiteLinkBadge />
         <GpuIndicator />
-        <Ec2Clock />
       </div>
+      <Ec2Clock />
       <SoundButton />
       <AccountMenu />
     </header>

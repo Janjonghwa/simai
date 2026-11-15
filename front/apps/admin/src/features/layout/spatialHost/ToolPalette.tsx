@@ -1,4 +1,5 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
+import { useGpuKnownOff } from '@/features/gpu/useGpu';
 import { SceneRegenerateTool } from '@/features/layout/spatialHost/SceneRegenerateTool';
 import {
   TOOL_BUTTON_SIZE,
@@ -90,6 +91,8 @@ export function ToolPalette({
   const editing = useZoneEditActive();
   // 대기 화면이 위를 덮는 동안은 눌러도 Tab 으로도 닿지 않게 한다.
   const standby = useMonitorStandby();
+  // GPU 가 꺼져 있으면 맵 재생성은 요청해도 돌 곳이 없으므로 비활성이다(S15P31A101-752).
+  const gpuOff = useGpuKnownOff();
 
   return (
     <TooltipProvider>
@@ -104,6 +107,7 @@ export function ToolPalette({
         {isAdmin && (
           <SceneRegenerateTool
             hidden={editing}
+            disabled={gpuOff}
             currentSceneVersion={currentSceneVersion}
             currentScene={currentScene}
           />

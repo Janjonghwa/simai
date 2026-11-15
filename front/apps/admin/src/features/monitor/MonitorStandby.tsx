@@ -1,7 +1,10 @@
+import { GpuPanel } from '@/features/gpu/GpuPanel';
+import { useGpuKnownOff } from '@/features/gpu/useGpu';
 import type { StandbyKind } from '@/features/monitor/todayWorks';
 import { useTodayWorks } from '@/features/monitor/useTodayWorks';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
+import { useState } from 'react';
 
 /** 대기 화면 종류마다의 제목과 아랫줄(없으면 null). */
 const STANDBY_TEXT: Record<StandbyKind, { title: string; detail: string | null }> = {
@@ -15,6 +18,9 @@ const STANDBY_TEXT: Record<StandbyKind, { title: string; detail: string | null }
 function Standby({ kind }: { kind: StandbyKind }) {
   const navigate = useNavigate();
   const { title, detail } = STANDBY_TEXT[kind];
+  // GPU 가 꺼져 있다고 확실히 알면 그것이 첫 줄이고 주 행동은 「GPU 켜기」다(S15P31A101-752). 켜진 뒤에도 남은 일(세팅·작업)은 아랫줄에 둔다.
+  const gpuOff = useGpuKnownOff();
+  const [panel, setPanel] = useState(false);
   return (
     <section
       aria-label="관제 대기"
@@ -23,10 +29,29 @@ function Standby({ kind }: { kind: StandbyKind }) {
       className="pointer-events-auto absolute inset-0 z-[6] flex items-center justify-center bg-background/95 pr-[370px]"
     >
       <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
-        <h2 className="text-xl font-bold">{title}</h2>
-        {detail && <p className="text-muted-foreground">{detail}</p>}
-        <Button onClick={() => void navigate({ to: '/work' })}>작업 관리로</Button>
+        {gpuOff ? (
+          <>
+            <h2 className="text-xl font-bold">GPU 꺼짐</h2>
+            <p className="text-muted-foreground">
+              GPU 를 켜야 카메라 추적과 위험 판정이 시작됩니다. {title}
+              {detail ? ` ${detail}` : ''}
+            </p>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button onClick={() => setPanel(true)}>GPU 켜기</Button>
+              <Button variant="secondary" onClick={() => void navigate({ to: '/work' })}>
+                작업 관리로
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-xl font-bold">{title}</h2>
+            {detail && <p className="text-muted-foreground">{detail}</p>}
+            <Button onClick={() => void navigate({ to: '/work' })}>작업 관리로</Button>
+          </>
+        )}
       </div>
+      {panel && <GpuPanel onClose={() => setPanel(false)} />}
     </section>
   );
 }
