@@ -1,4 +1,4 @@
-"""Tier 0 검출·판정 프로세스 분리 (S15P31A101-728). 설정 `process_split`(기본 끔)일 때만 쓴다.
+"""Tier 0 검출·판정 프로세스 분리 (S15P31A101-728). 설정 `process_split`(기본 켬, -738)일 때 쓴다.
 
 설계: docs/design/S15P31A101-728-tier0-process-split.md. 꺼져 있으면 이 모듈은 쓰이지 않고 지금 단일 프로세스 경로 그대로다.
 
@@ -109,6 +109,8 @@ class DetectorProcessSpec:
     """시험: LIVE 입력 대역(next_batch·connected·start·stop·snapshot). None 이면 I0 영상 포트(LiveInput)"""
     clock_factory: Callable[[], Any] | None = None
     """LIVE 시계(시험 주입). None 이면 진입점이 OS 시계로 만든다"""
+    side_work: Any = None
+    """services.tier0.split_side_work.SideWorkSpec: 이벤트 프레임·클립·배경 누적(-738). None 이면 곁가지 없음"""
 
 
 def detect_cpu_set(value: str | None, current: Sequence[int]) -> set[int] | None:
@@ -370,7 +372,7 @@ class _ChildRunner:
     """검출 프로세스 본체. 주 스레드는 명령을 받고, LIVE 면 검출 루프·상태 스레드를 따로 돌린다."""
 
     def __init__(self, spec: DetectorProcessSpec, generation: int, cmd_q: Any, out_q: Any, *, feed: Any, child_input: Any,
-                 clock: Any, reserve: Any, avatar: _ChildAvatar | None) -> None:
+                 clock: Any, reserve: Any, avatar: _ChildAvatar | None, side: Any = None) -> None:
         from services.tier0.thread_cpu import ThreadCpuSampler
         from simai_ai.tracking.stage_timing import StageTiming
 
@@ -383,6 +385,7 @@ class _ChildRunner:
         self.clock = clock
         self.reserve = reserve
         self.avatar = avatar
+        self.side = side
         self.stop = threading.Event()
         self.loop_timing = StageTiming()
         self.cpu_sampler = ThreadCpuSampler()
@@ -417,6 +420,11 @@ class _ChildRunner:
             ipc_dropped=self.ipc_dropped,
             loops=self.loop_timing.summary(), thread_cpu=self.thread_cpu,
         )
+        if self.side is not None:
+            try:
+                snap.update(self.side.status())
+            except Exception:  # noqa: BLE001 - 상태 실패가 검출을 멈추지 않는다
+                log.debug("곁가지 상태 실패", exc_info=True)
         if timing:
             snap["detector_timing"] = feed.timing.summary()
         return snap
@@ -568,6 +576,11 @@ class _ChildRunner:
         elif kind == "avatar":
             if self.avatar is not None:
                 self.avatar.offer(cmd[1], cmd[2])
+        elif kind == "side":
+            if self.side is not None:
+                self.side.handle(cmd[1], cmd[2], *cmd[3:])
+            elif cmd[2] == "bg_dump_rotation":
+                self._put_blocking(("side_reply", cmd[3], False, "곁가지 없음"))
         else:
             log.warning("모르는 명령: %r", kind)
 
@@ -587,6 +600,8 @@ class _ChildRunner:
             self.input.stop(STOP_JOIN_S)
         except Exception:  # noqa: BLE001
             log.debug("입력 정지 실패", exc_info=True)
+        if self.side is not None:
+            self.side.close()
         if self.avatar is not None:
             self.avatar.close()
         try:
@@ -633,6 +648,25 @@ def _detector_child_main(spec: DetectorProcessSpec, generation: int, cmd_q: Any,
         if spec.avatar_channel is not None:
             feed.avatar_enabled = True
             avatar = _ChildAvatar(spec.avatar_channel, feed, spec.offload_side_work)
+        side = None
+        if spec.side_work is not None:
+            from services.tier0.split_side_work import ChildSideWork
+
+            def put(item: Any) -> bool:
+                try:
+                    out_q.put_nowait(item)
+                    return True
+                except queue.Full:
+                    return False
+
+            def put_blocking(item: Any) -> None:
+                try:
+                    out_q.put(item, timeout=RPC_TIMEOUT_S)
+                except queue.Full:
+                    log.error("판정 프로세스가 응답을 받지 않는다(%s)", item[0])
+
+            side = ChildSideWork(spec.side_work, spec.camera_ids, clock=clock, put=put, put_blocking=put_blocking)
+            side.attach(feed, child_input)
     except DetectorProcessError as e:
         out_q.put(("failed", e.exit_code, str(e)))
         return
@@ -642,7 +676,7 @@ def _detector_child_main(spec: DetectorProcessSpec, generation: int, cmd_q: Any,
         return
     out_q.put(("built", os.getpid(), reserve.status(), "torch" in sys.modules))
     _ChildRunner(spec, generation, cmd_q, out_q, feed=feed, child_input=child_input, clock=clock, reserve=reserve,
-                 avatar=avatar).run()
+                 avatar=avatar, side=side).run()
 
 
 # ---------------------------------------------------------------------------- 판정 프로세스(부모)
@@ -710,6 +744,12 @@ class DetectorProcess:
         self._queues: dict[str, deque[Observation2DFrame]] = {c: deque() for c in self.camera_ids}
         self._last_capture: dict[str, int] = {}
         self._seq = 0
+        self._seq_lock = threading.Lock()
+        self._reply_cv = threading.Condition(threading.Lock())
+        self._waiting: set[int] = set()
+        self._replies: dict[int, tuple] = {}
+        self._side_handlers: dict[str, Callable[[Any], None]] = {}
+        self._generation_hooks: list[Callable[[], None]] = []
         self._stopping = threading.Event()
         self._reader: threading.Thread | None = None
         self._restart_times: deque[float] = deque()
@@ -736,6 +776,21 @@ class DetectorProcess:
     def start(self) -> None:
         """검출 프로세스를 띄우고 기동 결과를 기다린다(GPU 선확보·검출기·디코더·영상 포트 설정). 실패면 DetectorProcessError."""
         self._gen = self._launch(0)
+        if self.spec.mode == "file":
+            # file: 응답(step 등)과 곁가지 결과(event_frame_ready·회전 표본 응답)를 받는 스레드. 응답은 기다리는 쪽으로 넘긴다
+            self._start_reader()
+
+    def _start_reader(self) -> None:
+        self._reader = threading.Thread(target=self._read_loop, name="tier0-detect-ipc", daemon=True)
+        self._reader.start()
+
+    def on_side(self, kind: str, handler: Callable[[Any], None]) -> None:
+        """검출 프로세스 곁가지가 보낸 ("side", kind, payload) 를 받을 함수(받기 스레드에서 불린다, 기다리지 않아야 한다)."""
+        self._side_handlers[kind] = handler
+
+    def on_new_generation(self, hook: Callable[[], None]) -> None:
+        """LIVE 에서 검출 프로세스를 다시 띄운 뒤 부를 함수(상태 명령을 새 세대에 다시 보낸다)."""
+        self._generation_hooks.append(hook)
 
     def _launch(self, generation: int) -> _Gen:
         cmd_q = self._ctx.Queue(IPC_QUEUE_MAX)
@@ -764,8 +819,7 @@ class DetectorProcess:
         """LIVE: 영상 포트를 열게 하고(실패면 DetectorProcessError), 관측 받기 스레드를 시작한다."""
         gen = self._require_gen()
         self._open_video(gen, timeout_s)
-        self._reader = threading.Thread(target=self._read_loop, name="tier0-detect-ipc", daemon=True)
-        self._reader.start()
+        self._start_reader()
 
     def _open_video(self, gen: _Gen, timeout_s: float) -> None:
         gen.cmd_q.put(("start_video",), timeout=timeout_s)
@@ -797,7 +851,7 @@ class DetectorProcess:
                 if not gen.process.is_alive():
                     return None
                 continue
-            except (EOFError, OSError):
+            except (EOFError, OSError, ValueError):
                 return None
             if msg[0] in kinds and (seq is None or msg[1] == seq):
                 return msg
@@ -810,6 +864,19 @@ class DetectorProcess:
             self._accept(msg[1])
         elif kind == "status":
             self._update(msg[1])
+        elif kind in ("step", "close_ingest", "side_reply"):
+            with self._reply_cv:
+                if msg[1] in self._waiting:  # 기다리다 포기한 응답은 버린다
+                    self._replies[msg[1]] = msg
+                    self._reply_cv.notify_all()
+        elif kind == "side":
+            handler = self._side_handlers.get(msg[1])
+            if handler is None:
+                return
+            try:
+                handler(msg[2])
+            except Exception:  # noqa: BLE001 - 곁가지 결과 처리 실패가 관측 받기를 멈추지 않는다
+                log.warning("곁가지 결과 %s 처리 실패", msg[1], exc_info=True)
         elif kind == "failed":
             log.error("검출 프로세스 실패 알림: %s", msg[2])
 
@@ -852,20 +919,23 @@ class DetectorProcess:
             gen = self._gen
             if gen is None:
                 return
+            if self.failed_reason is not None:
+                return  # file: 재생 실패로 끝났다(다시 띄우지 않음)
             try:
                 msg = gen.out_q.get(timeout=0.2)
             except queue.Empty:
                 msg = None
-            except (EOFError, OSError):
+            except (EOFError, OSError, ValueError):
                 msg = None
             if msg is not None:
                 self._handle(msg)
                 continue
-            if self._stopping.is_set():
+            if self._stopping.is_set() or self.failed_reason is not None:
                 return
             if not gen.process.is_alive():
                 self._on_death(gen, f"종료 코드 {gen.process.exitcode}")
-            elif self._stale_s() is not None and self._stale_s() > STUCK_S:  # type: ignore[operator]
+            elif (self.spec.mode == "live"  # file 은 step 사이 간격이 판정 루프에 달렸다(멈춤으로 보지 않음)
+                  and self._stale_s() is not None and self._stale_s() > STUCK_S):  # type: ignore[operator]
                 log.error("검출 프로세스가 %.0f초 넘게 상태를 보내지 않는다: 내리고 다시 띄운다", STUCK_S)
                 self._kill(gen)
                 self._on_death(gen, "응답 없음")
@@ -885,6 +955,8 @@ class DetectorProcess:
         log.error("검출 프로세스가 끝났다(세대 %d, %s): 카메라를 연결 아님으로 본다", gen.generation, why)
         if self.spec.mode == "file":
             self.failed_reason = f"검출 프로세스가 끝났다({why})"
+            with self._reply_cv:
+                self._reply_cv.notify_all()
             return
         next_generation = gen.generation + 1
         while not self._stopping.is_set():
@@ -915,6 +987,11 @@ class DetectorProcess:
             self._gen = new
             self.restarts += 1
             log.warning("검출 프로세스를 다시 띄웠다(세대 %d, 재시작 %d번째)", new.generation, self.restarts)
+            for hook in list(self._generation_hooks):
+                try:
+                    hook()
+                except Exception:  # noqa: BLE001 - 곁가지 상태 재전송 실패가 검출 재시작을 막지 않는다
+                    log.warning("새 세대 곁가지 상태 재전송 실패", exc_info=True)
             return
 
     # --- file 입력(lockstep) -------------------------------------------------------
@@ -949,19 +1026,105 @@ class DetectorProcess:
         self._update(reply[3])
         return reply[2]
 
+    def _next_seq(self) -> int:
+        with self._seq_lock:
+            self._seq += 1
+            seq = self._seq
+        with self._reply_cv:
+            self._waiting.add(seq)
+        return seq
+
+    def _forget(self, seq: int) -> None:
+        with self._reply_cv:
+            self._waiting.discard(seq)
+            self._replies.pop(seq, None)
+
+    def _wait_reply(self, gen: _Gen, seq: int, timeout_s: float) -> tuple | None:
+        """seq 응답을 기다린다. 받기 스레드가 돌면 그쪽이 넘겨 주고, 없으면 직접 받는다(다른 메시지는 처리). 시간 초과·종료면 None."""
+        deadline = time.monotonic() + timeout_s
+        try:
+            while not self._stopping.is_set():
+                with self._reply_cv:
+                    msg = self._replies.pop(seq, None)
+                if msg is not None:
+                    return msg
+                left = deadline - time.monotonic()
+                if left <= 0 or self.failed_reason is not None:
+                    return None
+                reader = self._reader
+                if reader is not None and reader.is_alive() and reader is not threading.current_thread():
+                    with self._reply_cv:
+                        if seq not in self._replies:
+                            self._reply_cv.wait(min(left, 0.2))
+                else:
+                    try:
+                        got = gen.out_q.get(timeout=min(left, 0.2))
+                    except queue.Empty:
+                        got = None
+                    except (EOFError, OSError, ValueError):
+                        return None
+                    if got is not None:
+                        self._handle(got)
+                        continue
+                if self._gen is not gen or gen.process is None or not gen.process.is_alive():
+                    with self._reply_cv:
+                        return self._replies.pop(seq, None)
+            return None
+        finally:
+            self._forget(seq)
+
+    def side_request(self, cmd: tuple, timeout_s: float) -> tuple | None:
+        """곁가지 요청 하나를 보내고 답(("side_reply", seq, ...) 의 나머지)을 기다린다. 판정 결과에 들어가지 않는 읽기 요청만 쓴다
+        (file 재생 순서에 끼어도 결과가 같다). 자식이 없거나 시간 초과면 None."""
+        gen = self._gen
+        if gen is None or gen.cmd_q is None or self._stopping.is_set() or self.failed_reason is not None:
+            return None
+        seq = self._next_seq()
+        try:
+            gen.cmd_q.put(("side", self._now_ms(), cmd[0], seq, *cmd[1:]), timeout=min(timeout_s, 1.0))
+        except (queue.Full, ValueError, OSError):
+            self._forget(seq)
+            self.cmd_dropped += 1
+            return None
+        reply = self._wait_reply(gen, seq, timeout_s)
+        return None if reply is None else tuple(reply[2:])
+
+    def send_side(self, cmd: tuple, *, required: bool = False) -> bool:
+        """곁가지 명령(이벤트 프레임 요청·클립 전이·poll·배경 상태). file 은 녹화 메시지와 같은 순서 큐에 기다려 넣는다(결정론).
+        LIVE 는 기다리지 않고, 상태를 바꾸는 명령(required)만 1초까지 기다린다. 넣지 못하면 버리고 센다."""
+        gen = self._gen
+        if gen is None or gen.cmd_q is None or self._stopping.is_set():
+            self.cmd_dropped += 1
+            return False
+        if self.spec.mode == "file":
+            if self.failed_reason is not None:
+                return False
+            self.send_ordered(("side", *cmd))
+            return self.failed_reason is None
+        item = ("side", self._now_ms(), *cmd)
+        try:
+            if required:
+                gen.cmd_q.put(item, timeout=1.0)
+            else:
+                gen.cmd_q.put_nowait(item)
+            return True
+        except (queue.Full, ValueError, OSError):
+            self.cmd_dropped += 1
+            return False
+
     def _rpc(self, kind: str, now_ms: int) -> tuple | None:
         if self.failed_reason is not None:
             return None
         gen = self._require_gen()
-        self._seq += 1
-        seq = self._seq
+        seq = self._next_seq()
         try:
             gen.cmd_q.put((kind, int(now_ms), seq), timeout=self.rpc_timeout_s)
         except queue.Full:
+            self._forget(seq)
             self._fail_file(gen, "검출 프로세스가 명령을 받지 않는다")
             return None
-        reply = self._await(gen, (kind,), self.rpc_timeout_s, seq=seq)
-        if reply is None and not self._stopping.is_set():
+        reply = self._wait_reply(gen, seq, self.rpc_timeout_s)
+        if reply is None and not self._stopping.is_set() and self.failed_reason is None:
             alive = gen.process.is_alive()
             self._fail_file(gen, f"검출 프로세스가 {self.rpc_timeout_s:.0f}초 안에 답하지 않았다" if alive
                             else f"검출 프로세스가 끝났다(종료 코드 {gen.process.exitcode})")
@@ -1205,12 +1368,10 @@ class _RemoteLog:
 class _RemoteBridge:
     def __init__(self, process: DetectorProcess) -> None:
         self.timing = SimpleNamespace(summary=lambda: process.snapshot().get("input_timing") or {})
-        self._warned = False
 
     def attach_clips(self, _receive: Callable[[Any], None]) -> None:
-        if not self._warned:
-            self._warned = True
-            log.warning("프로세스 분리 1단계: 이벤트 클립 링 버퍼는 검출 프로세스로 옮기지 않아 클립이 없다(설계 9절)")
+        """클립 링 버퍼는 검출 프로세스의 영상 수신이 채운다(-738, split_side_work.ChildSideWork.attach). 판정 쪽은 넣지 않는다."""
+        return None
 
 
 class RemoteLiveInput:

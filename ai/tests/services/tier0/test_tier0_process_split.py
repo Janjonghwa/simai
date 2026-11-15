@@ -1,4 +1,4 @@
-"""검출·판정 프로세스 분리(S15P31A101-728, 설정 process_split 기본 끔).
+"""검출·판정 프로세스 분리(S15P31A101-728, 설정 process_split 기본 켬 -738).
 
 (a) 같은 결과: 같은 녹화를 최대 속도로 단일 경로와 분리 경로에 넣으면 world_state 봉투(클러스터·관절·World ID·msg_id)와 risk_event
     전이가 한 줄도 다르지 않다. 아바타 입력 공유도 분리 경로에서 검출 프로세스가 같은 형식으로 쓴다.
@@ -65,9 +65,17 @@ def _wait(cond, timeout: float = 30.0, every: float = 0.01) -> bool:
 # --------------------------------------------------------------------------- 설정
 
 
-def test_switch_defaults_off_and_env_overrides(tmp_path, scene) -> None:  # noqa: F811
+def test_switch_defaults_on_and_env_overrides(tmp_path, scene, monkeypatch) -> None:  # noqa: F811
+    from services.tier0 import settings as settings_module
+
     run, _, session = scene
     cfg = _config(tmp_path, run, session)
+    # 운영 기본은 켬(-738, 자동 부팅 tier0-live.json 은 process_split 을 적지 않아 이 기본을 쓴다). 시험 묶음은 conftest 가 끈다
+    monkeypatch.setattr(settings_module, "DEFAULT_PROCESS_SPLIT", True)
+    assert load_settings(cfg, env={}).process_split is True
+    assert load_settings(cfg, env={"SIMAI_TIER0_PROCESS_SPLIT": "0"}).process_split is False  # 끄는 스위치
+    assert settings_module.Tier0Settings.__dataclass_fields__["process_split"].default is True
+    monkeypatch.setattr(settings_module, "DEFAULT_PROCESS_SPLIT", False)
     s = load_settings(cfg, env={})
     assert s.process_split is False and s.detect_cpus == "none"
     assert load_settings(cfg, env={"SIMAI_TIER0_PROCESS_SPLIT": "1"}).process_split is True

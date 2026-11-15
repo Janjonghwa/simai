@@ -89,3 +89,20 @@ def scripted_spec(camera_ids=("cam_A", "cam_B")):
 
     return DetectorProcessSpec(mode="live", camera_ids=tuple(camera_ids), detector_factory=ScriptedDetector,
                                tracker_backend_factory=OneTrackBackend, input_factory=ScriptedLiveInput)
+
+
+class FrameSigner:
+    """이벤트 프레임 서명 대역(-738, 검출 프로세스에서 이름으로 불러온다). 객체 주소는 내용 해시로 정해 두 경로가 같게 낸다."""
+
+    def sign(self, request):
+        from services.tier0.clips.upload import SignedUpload
+
+        key = f"event-frames/{request.event_id}/{request.camera_id}-{request.sha256[:12]}.jpg"
+        return SignedUpload("https://objects.invalid/put", key, 0, object_uri=f"s3://frames/{key}")
+
+
+class NullTransport:
+    """S3 PUT 대역: 받기만 한다."""
+
+    def put(self, signed, content, content_type):
+        return None

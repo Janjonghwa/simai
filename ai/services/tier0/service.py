@@ -48,12 +48,11 @@ import uuid
 
 from services.tier0.clips.ring_buffer import PacketRingBuffer
 from services.tier0.clips.service import EventClipService
-from services.tier0.clips.upload import HttpPutTransport
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.detect_process import SplitDetectorFeed
 from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointConfigError, EndpointRegistrar, read_cert_pem
-from services.tier0.event_frames import EventFrameService, EventFrameSigner
+from services.tier0.event_frames import EventFrameIo, EventFrameService
 from services.tier0.event_frame_buffer import EventFrameBuffer
 from services.tier0.event_snapshot import EventStateSnapshot
 from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
@@ -321,9 +320,10 @@ class Tier0Service:
         # 표시 파일 진단: judge 는 판정 주기 초과(100ms) 틱 수, 아바타 차단 예산은 아바타 로그 사유에 남긴다(-717)
         self.judge_processing = ProcessingWindow(JUDGE_TICK_OVERRUN_MS, monotonic=processing_clock)
         self.detect_processing = ProcessingWindow(AVATAR_DETECT_BUDGET_MS, monotonic=processing_clock)
-        # 검출·판정 프로세스 분리(-728, 기본 끔): GPU 선확보·검출 처리 시간은 검출 프로세스가 재서 보낸다(판정 쪽은 CUDA 를 쓰지 않음)
+        # 검출·판정 프로세스 분리(-728, 기본 켬 -738): GPU 선확보·검출 처리 시간은 검출 프로세스가 재서 보낸다(판정 쪽은 CUDA 를 쓰지 않음)
         self.detect_process: Any | None = None
-        self._split = settings.process_split and settings.input_mode in ("live", "file")
+        # 입력을 바꿔 끼운 조립(feed, 시험)은 검출 프로세스를 띄우지 않으므로 분리로 보지 않는다
+        self._split = settings.process_split and settings.input_mode in ("live", "file") and feed is None
         if self._split:
             from services.tier0.detect_process import RemoteGpuReservation, RemoteProcessingWindow
 
@@ -520,9 +520,15 @@ class Tier0Service:
         self.restore_link = RestoreLink(self.perception.manager, r)
         self.writer = JournalWriter(self.journal)
         self.watchdog = ProgressWatchdog()
-        self.clips = EventClipService(PacketRingBuffer(feed.camera_ids), self.clock)
-        if self.live_input is not None:
-            self.live_input.bridge.attach_clips(self.clips.receive)  # 영상 수신을 열기 전에(-57 링 버퍼)
+        if self.detect_process is not None and s.input_mode == "live":
+            # 프로세스 분리(-738): 압축 패킷은 검출 프로세스의 영상 수신에 있다. 링 버퍼·자르기는 그쪽, 전이·poll 은 명령
+            from services.tier0.split_side_work import RemoteClips
+
+            self.clips: Any = RemoteClips(self.detect_process)
+        else:
+            self.clips = EventClipService(PacketRingBuffer(feed.camera_ids), self.clock)
+            if self.live_input is not None:
+                self.live_input.bridge.attach_clips(self.clips.receive)  # 영상 수신을 열기 전에(-57 링 버퍼)
         self.snapshot = EventStateSnapshot(
             self.journal, gateway_id=s.gateway_id, clock=self.clock, config_version=self._config_version,
             start_offset=self.journal.next_offset, seed=self.tracker.active(),
@@ -553,18 +559,19 @@ class Tier0Service:
         # R9 입력: PPE outbox 를 중계(SIMAI_PPE_RELAY=1)할 때 같은 메시지로 채운다. 없으면 비어 있어 R9 는 새로 나지 않는다
         self.ppe_states = PpeStateStore()
         self.link = self._build_link() if s.i1 is not None else None
-        if s.event_frames_enabled and s.input_mode == "live" and self.link is not None and self.detect_process is not None:
-            log.warning("프로세스 분리 1단계: 이벤트 프레임(CRITICAL JPEG)은 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
-        elif s.event_frames_enabled and s.input_mode == "live" and self.link is not None:
+        frame_io, send_frame = self._event_frame_io(), self._event_frame_send()
+        if frame_io is not None and send_frame is not None and self.detect_process is not None:
+            # 프로세스 분리(-738): 그림·JPEG·서명·S3 는 검출 프로세스, 대상 고르기와 event_frame_ready I1 송신은 여기
+            from services.tier0.split_side_work import RemoteEventFrames
+
+            self.event_frames = RemoteEventFrames(  # type: ignore[assignment]
+                self.detect_process, feed.camera_ids, send_event=send_frame)
+            self.event_frames.start()
+        elif frame_io is not None and send_frame is not None:
             try:
-                parts = urlsplit(s.i1.url)
-                base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
                 self.event_frames = EventFrameService(
-                    EventFrameBuffer(feed.camera_ids), self.clock,
-                    signer=EventFrameSigner(base, s.i1.token, ca_file=s.i1.ca_file),
-                    # S3 PUT 은 판단용 로컬 사본을 알린 뒤 뒤에서 한다(-408). 경보·VLM 경로가 기다리지 않으니 2 s 에서 5 s 로 늘린다
-                    transport=HttpPutTransport(timeout_s=5.0), send_event=self.link.publisher.send_event,
-                    local_root=s.state_dir,
+                    EventFrameBuffer(feed.camera_ids), self.clock, signer=frame_io.signer(),
+                    transport=frame_io.transport(), send_event=send_frame, local_root=s.state_dir,
                 )
                 self.event_frames.start()
             except Exception as error:  # noqa: BLE001 - 부가 근거 경로 실패가 관제 기동을 막지 않는다
@@ -649,8 +656,15 @@ class Tier0Service:
             except Exception as exc:
                 self._live_calibration_error = str(exc)
                 log.exception("후보 보정 기동 실패(판정은 계속한다)")
-        if s.clean_background.enabled and isinstance(feed, SplitDetectorFeed):
-            log.warning("프로세스 분리 1단계: 배경 누적·회전 복구는 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
+        if s.clean_background.enabled and isinstance(feed, SplitDetectorFeed) and self.detect_process is not None:
+            # 프로세스 분리(-738): 배경 누적(그림)은 검출 프로세스, 회전 복구는 여기서 그쪽이 쓴 표본 파일을 읽는다
+            try:
+                from services.tier0.split_side_work import RemoteCleanBackground
+
+                self.clean_background = RemoteCleanBackground(self.detect_process, s.clean_background, s.state_dir,
+                                                              self.calibration.current(), provenance)
+            except Exception:
+                log.exception("배경 수집 기동 실패(판정은 계속한다)")
         if s.clean_background.enabled and isinstance(feed, DetectorFeed):
             try:
                 from services.tier0.clean_background import BackgroundCleanBackground
@@ -876,8 +890,8 @@ class Tier0Service:
                           max_queue_wait_ms: int) -> FrameFeed:
         """검출·판정 프로세스 분리(-728): 수신·디코딩·검출·로컬 추적은 spawn 자식, 이 프로세스는 관측만 받는다.
 
-        자식이 기동 실패를 알리면 단일 경로와 같은 종료 코드로 시작하지 않는다(검출기·디코더 4, 영상 포트 설정 2). Re-ID·배경 누적·
-        이벤트 프레임·클립은 1단계에서 옮기지 않아 끈다(설계 5·9절). 영상 포트는 step 6(RemoteLiveInput.start)에서 연다."""
+        자식이 기동 실패를 알리면 단일 경로와 같은 종료 코드로 시작하지 않는다(검출기·디코더 4, 영상 포트 설정 2). 이벤트 프레임·
+        클립·배경 누적은 검출 프로세스가 하고(-738, split_side_work), Re-ID 만 끈다. 영상 포트는 step 6(RemoteLiveInput.start)에서 연다."""
         from services.tier0.detect_process import (
             DetectorProcess,
             DetectorProcessError,
@@ -885,11 +899,18 @@ class Tier0Service:
             RemoteIngest,
             RemoteLiveInput,
         )
+        from services.tier0.split_side_work import SideWorkSpec
         from simai_ai.io.avatar_channel import avatar_channel_path
 
         s = self.settings
         if s.reid.enabled:
-            log.warning("프로세스 분리 1단계: Re-ID 는 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
+            log.warning("프로세스 분리: Re-ID 는 검출 프로세스로 옮기지 않아 끈다(-728 설계 9절)")
+        frame_io = self._event_frame_io()
+        side_work = SideWorkSpec(
+            event_frames=frame_io, event_frames_local_root=None if frame_io is None else str(s.state_dir),
+            clips=mode == "live",
+            clean_background=s.clean_background if s.clean_background.enabled else None, state_dir=str(s.state_dir),
+        )
         avatar = None
         if s.env.get("SIMAI_AVATAR_SHARE") == "1":
             avatar = str(avatar_channel_path(s.env, Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")))
@@ -901,6 +922,7 @@ class Tier0Service:
             offload_side_work=s.offload_side_work, detect_cpus=s.detect_cpus,
             log_level=logging.getLogger().getEffectiveLevel(),
             detector_factory=self._detector_factory, tracker_backend_factory=self._tracker_backend_factory,
+            side_work=side_work,
         )
         process = DetectorProcess(spec, now_ms=self.clock.now_ms, mono_s=lambda: self._mono_ns() / 1e9,
                                   on_gpu_status=self.gpu.update, on_processing=self.detect_processing.add_samples)
@@ -918,6 +940,20 @@ class Tier0Service:
         self.file_input = FileInput(self._replay, RemoteIngest(process), self.replay_clock)  # type: ignore[arg-type]
         return SplitDetectorFeed(process, connected=self.file_input.connected, source="FILE", async_mode=False,
                                  provenance=self._replay.provenance())
+
+    def _event_frame_io(self) -> EventFrameIo | None:
+        """이벤트 프레임(CRITICAL 근거 사진) 서명·업로드 설정. LIVE 이고 I1 이 있을 때만(REPLAY·SIM 은 근거 사진을 만들지 않는다)."""
+        s = self.settings
+        if not (s.event_frames_enabled and s.input_mode == "live" and s.i1 is not None):
+            return None
+        parts = urlsplit(s.i1.url)
+        base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
+        # S3 PUT 은 판단용 로컬 사본을 알린 뒤 뒤에서 한다(-408). 경보·VLM 경로가 기다리지 않으니 2 s 에서 5 s 로 늘린다
+        return EventFrameIo(base, s.i1.token, ca_file=s.i1.ca_file, transport_timeout_s=5.0)
+
+    def _event_frame_send(self) -> Callable[..., Any] | None:
+        """event_frame_ready 를 넣을 I1 신뢰 큐(판정 프로세스의 I1, msg_id·순서는 여기서 정한다)."""
+        return None if self.link is None else self.link.publisher.send_event
 
     def _build_reid_collector(self) -> Any:
         from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
@@ -1821,10 +1857,14 @@ class Tier0Service:
                                 if isinstance(self.perception.feed, (DetectorFeed, SplitDetectorFeed)) else None),
             "process_split": None if self.detect_process is None else {
                 **self.detect_process.status(),
-                "disabled": [name for name, on in (("reid", self.settings.reid.enabled),
-                                                   ("clean_background", self.settings.clean_background.enabled),
-                                                   ("event_frames", self.settings.event_frames_enabled),
-                                                   ("event_clips", True)) if on]},
+                # 분리 경로에서 꺼지는 곁가지(-738 뒤로 Re-ID 만). 다음 A/B 는 두 칸 모두 같은 곁가지를 끈다
+                "disabled": ["reid"] if self.settings.reid.enabled else [],
+                "side_work": {
+                    "event_frames": (self.event_frames.status() if hasattr(self.event_frames, "status") else None),
+                    "clean_background": (self.clean_background.status()
+                                         if hasattr(self.clean_background, "status") else None),
+                    "child": self.detect_process.snapshot().get("side"),
+                }},
             "skipped_camera_pairs": sorted("/".join(pair) for pair in self.perception.associator.skipped_camera_pairs),
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),
