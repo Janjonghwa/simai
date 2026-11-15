@@ -97,12 +97,24 @@ interface ReplayStageProps {
   range: Span;
 }
 
-/** 화면 가운데 안내 한 줄. 보일 기록이 있으면 null. 기록이 하나도 없을 때 전부 기록 없는 구간이면 데이터 없음이고, 아니면 잡힌 사람이 없던 것이다. */
+/** 화면 가운데 안내 한 줄. 보일 기록이 있으면 null. 기록이 하나도 없을 때 구간 길이·데이터 없음 여부를 구분해 사유를 알린다. */
 function stageNotice(session: WorkReplay, range: Span): string | null {
   if (session.failed) return replayErrorLine(session.error);
   if (session.loading || !session.replay) return LOADING_LINE;
   if (!session.index || !isEmptyReplay(session.index)) return null;
-  return allGap(session.index.gaps, range) ? '데이터 없음' : '잡힌 작업자가 없습니다.';
+  if (range.to - range.from < 1_000) {
+    return '작업이 시작 직후 바로 종료되어(1초 미만) 저장된 기록이 없습니다.';
+  }
+  return allGap(session.index.gaps, range)
+    ? '작업 구간 동안 관제 데이터를 받지 못해 저장된 3D 기록이 없습니다.'
+    : '작업 시간 동안 감지된 작업자와 위험 이벤트가 없습니다.';
+}
+
+/** 3D 기록이 하나도 없을 때는 상단 영상 상태 문구에서 '3D 기록 먼저 보기' 안내를 뺀다(본문에 볼 3D 기록이 없으므로 모순을 막는다). */
+function stageSegmentMessage(message: string | null, index: ReplayIndex | null): string | null {
+  if (!message) return null;
+  if (index === null || !isEmptyReplay(index)) return message;
+  return message.replace(' · 3D 기록 먼저 보기', '').replace(' 3D 기록을 먼저 볼 수 있습니다.', '');
 }
 
 /**
@@ -113,14 +125,15 @@ export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
   const { segments, message, refresh, canRefresh } = useReplaySegments(range);
   const notice = stageNotice(session, range);
+  const segmentMessage = stageSegmentMessage(message, index);
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {message && (
+      {segmentMessage && (
         <div
           role="status"
           className="flex items-center justify-between gap-3 p-2 text-sm text-muted-foreground"
         >
-          <span>{message}</span>
+          <span>{segmentMessage}</span>
           {canRefresh && (
             <button type="button" onClick={() => void refresh()}>
               다시 확인

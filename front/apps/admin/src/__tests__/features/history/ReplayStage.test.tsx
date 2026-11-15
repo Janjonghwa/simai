@@ -224,4 +224,43 @@ describe('ReplayStage 영상 실패', () => {
     fireEvent.click(screen.getByRole('button', { name: '영상 실패' }));
     await waitFor(() => expect(screen.queryByTestId('video-wall')).toBeNull());
   });
+
+  it('3D 기록이 비어 있으면 상단 영상 문구에서 `3D 기록 먼저 보기`를 빼고 본문에 빈 기록 사유를 보인다', async () => {
+    server.use(
+      http.get('http://api.test/api/videos', () =>
+        HttpResponse.json({
+          segments: [],
+          recording_uploads: [
+            {
+              schema_version: '1.0.0',
+              work_id: 1,
+              status: 'UPLOADING',
+              expected_segments: 1,
+              uploaded_segments: 0,
+              failed_segments: 0,
+            },
+          ],
+        }),
+      ),
+    );
+    renderStage({
+      ...LOADING,
+      loading: false,
+      replay: replayAt(T),
+      index: {
+        frames: [],
+        workers: [],
+        events: [],
+        gaps: [RANGE],
+        pending: null,
+      } as never,
+    });
+
+    expect(
+      await screen.findByText('작업 구간 동안 관제 데이터를 받지 못해 저장된 3D 기록이 없습니다.'),
+    ).toBeTruthy();
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('영상 업로드 중');
+    expect(status.textContent).not.toContain('3D 기록 먼저 보기');
+  });
 });

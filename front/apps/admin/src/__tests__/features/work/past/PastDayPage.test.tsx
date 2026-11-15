@@ -34,6 +34,7 @@ vi.mock('@/features/history/useWorkReplay', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/history/useWorkReplay')>();
   return {
     ...actual,
+    // 작업이 정해지기 전(목록을 받는 중)에는 실제 훅처럼 재생 Source 가 없다.
     useWorkReplay: (work?: {
       work_id: string;
       actual_started_at?: number | null;
@@ -41,9 +42,9 @@ vi.mock('@/features/history/useWorkReplay', async (importOriginal) => {
     }) => {
       if (work) engine.works.push(work.work_id);
       const from = work?.actual_started_at ?? null;
-      // 작업이 정해지기 전(목록을 받는 중)에는 실제 훅처럼 재생 Source 가 없다.
+      const to = work?.actual_ended_at ?? (from === null ? null : from + 60_000);
       return {
-        range: from === null ? null : { from, to: work?.actual_ended_at ?? from + 60_000 },
+        range: from !== null && to !== null && to > from ? { from, to } : null,
         stepMs: 1000,
         holdMs: 1000,
         loading: false,
@@ -406,6 +407,60 @@ describe('PastDayPage — 본문', () => {
     expect(screen.queryByTestId('replay-stage')).toBeNull();
     expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
     expect(screen.getByTestId('report-panel').dataset.work).toBe('8002');
+  });
+
+  it('시작과 종료가 같은 0초 작업이나 빈 기록이면 0초 타임라인 대신 사유를 보인다', async () => {
+    const startMs = new Date(2026, 10, 10, 15, 26, 14).getTime();
+    server.use(
+      http.get('*/api/work-units', () =>
+        HttpResponse.json({
+          works: [
+            workDayOf({
+              work_id: '8003',
+              date: YESTERDAY,
+              progress: 'ENDED',
+              actual_started_at: startMs,
+              actual_ended_at: startMs,
+            }),
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    expect(
+      await screen.findAllByText('작업이 시작 직후 바로 종료되어(0초) 저장된 기록이 없습니다.'),
+    ).toHaveLength(2);
+    expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
+    cleanup();
+
+    fakeReplay();
+    engine.index = {
+      frames: [],
+      workers: [],
+      events: [],
+      gaps: [{ from: startMs, to: startMs + 500 }],
+      pending: null,
+    } satisfies ReplayIndex;
+    server.use(
+      http.get('*/api/work-units', () =>
+        HttpResponse.json({
+          works: [
+            workDayOf({
+              work_id: '8004',
+              date: YESTERDAY,
+              progress: 'ENDED',
+              actual_started_at: startMs,
+              actual_ended_at: startMs + 500,
+            }),
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    expect(
+      await screen.findByText('작업이 시작 직후 바로 종료되어(1초 미만) 저장된 기록이 없습니다.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
   });
 });
 

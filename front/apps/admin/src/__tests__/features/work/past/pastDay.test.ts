@@ -2,12 +2,16 @@ import { workDayOf } from '@/__tests__/features/work/workFixture';
 import type { ReplayIndex } from '@/features/history/replayIndex';
 import {
   dayWorksOf,
+  emptyReplayReason,
   firstMoment,
+  isZeroSpanWork,
+  localizeEndingReview,
   pickRun,
   replayRunsOf,
   runChoiceLabel,
   runReplayWork,
   untouched,
+  withLocalizedEnding,
   workChoiceLabel,
 } from '@/features/work/past/pastDay';
 import { DAY_PROGRESS } from '@/features/work/types';
@@ -163,5 +167,49 @@ describe('실행 고르기(S15P31A101-696)', () => {
     expect([replay.actual_started_at, replay.actual_ended_at]).toEqual([at(9, 0), at(9, 20)]);
     expect(runReplayWork(day, undefined)).toBe(day);
     expect(runChoiceLabel(runs[1]!)).toBe('실행 2 · 10:00–10:30');
+  });
+});
+
+describe('0초 작업·빈 기록 사유 및 옛 종료 미팅 enum 한국어화(S15P31A101-735)', () => {
+  const emptyIndex = (gaps: ReplayIndex['gaps'] = []): ReplayIndex => ({
+    frames: [],
+    workers: [],
+    events: [],
+    gaps,
+    pending: null,
+  });
+
+  it('시작과 종료가 같거나 역전된 작업은 0초 작업으로 판별한다', () => {
+    expect(isZeroSpanWork(workDayOf({ actual_started_at: 1000, actual_ended_at: 1000 }))).toBe(
+      true,
+    );
+    expect(isZeroSpanWork(workDayOf({ actual_started_at: 1000, actual_ended_at: 1001 }))).toBe(
+      false,
+    );
+    expect(isZeroSpanWork(workDayOf({ actual_started_at: 1000, actual_ended_at: null }))).toBe(
+      false,
+    );
+  });
+
+  it('빈 기록은 1초 미만 종료·전체 데이터 없음·감지 없음 사유를 구분한다', () => {
+    expect(emptyReplayReason({ from: 1000, to: 1500 }, emptyIndex())).toContain('1초 미만');
+    expect(
+      emptyReplayReason({ from: 1000, to: 10_000 }, emptyIndex([{ from: 1000, to: 10_000 }])),
+    ).toContain('관제 데이터를 받지 못해');
+    expect(emptyReplayReason({ from: 1000, to: 10_000 }, emptyIndex())).toContain(
+      '감지된 작업자와 위험 이벤트가 없습니다',
+    );
+  });
+
+  it('옛 종료 미팅의 CRITICAL/HIGH/CAUTION/INFO enum 을 한국어로 바꾼다', () => {
+    const raw =
+      '전체 이벤트 0건. 등급 CRITICAL 0건. 등급 HIGH 0건. 등급 CAUTION 0건. 등급 INFO 0건. 운영자 미확인 CRITICAL 0건, HIGH 0건.';
+    expect(localizeEndingReview(raw)).toBe(
+      '전체 이벤트 0건. 등급 위험 0건. 등급 경고 0건. 등급 주의 0건. 등급 안내 0건. 운영자 미확인 위험 0건, 경고 0건.',
+    );
+    const report = { form: { review: { daily: '일일', ending: raw } } };
+    expect(withLocalizedEnding(report).form?.review.ending).toContain('등급 위험 0건');
+    const clean = { form: { review: { daily: '일일', ending: '작업 종료 · 사건 0건' } } };
+    expect(withLocalizedEnding(clean)).toBe(clean);
   });
 });

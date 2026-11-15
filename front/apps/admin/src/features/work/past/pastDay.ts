@@ -1,7 +1,9 @@
-import type { ReplayIndex } from '@/features/history/replayIndex';
+import { allGap, type ReplayIndex } from '@/features/history/replayIndex';
+import type { Span } from '@/features/history/types';
 import { formatClock, workTimeRange } from '@/features/history/works';
 import type { WorkDayItem } from '@/features/work/types';
 import { isEndedWork, workNameOf } from '@/features/work/workDay';
+import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import { endedRuns, runLabel, type WorkRun } from '@/lib/workRuns';
 
 // 지난 날짜 화면의 순수 계산: 그날 작업 고르기, 선택기 글, 실행 고르기(S15P31A101-696), 다시 보기를 시작할 시각.
@@ -68,4 +70,55 @@ interface PlaybackPlace {
 export function untouched(replay: PlaybackPlace, at: number): boolean {
   const status = replay.getStatus();
   return status.playhead === at && !status.playing;
+}
+
+/** 시작과 종료 시각이 같거나 역전돼 다시 볼 길이가 0초인 작업·실행인가. */
+export function isZeroSpanWork(
+  work: Pick<WorkDayItem, 'actual_started_at' | 'actual_ended_at'> | undefined,
+): boolean {
+  return (
+    work?.actual_started_at != null &&
+    work.actual_ended_at != null &&
+    work.actual_ended_at <= work.actual_started_at
+  );
+}
+
+export const ZERO_SPAN_REASON = '작업이 시작 직후 바로 종료되어(0초) 저장된 기록이 없습니다.';
+
+/** 기록이 비어 있을 때(`isEmptyReplay`) 0초 타임라인·빈 화면 대신 보여 줄 사유. */
+export function emptyReplayReason(range: Span, index: ReplayIndex): string {
+  if (range.to - range.from < 1_000) {
+    return '작업이 시작 직후 바로 종료되어(1초 미만) 저장된 기록이 없습니다.';
+  }
+  if (allGap(index.gaps, range)) {
+    return '작업 구간 동안 관제 데이터를 받지 못해 저장된 3D 기록이 없습니다.';
+  }
+  return '작업 시간 동안 감지된 작업자와 위험 이벤트가 없습니다.';
+}
+
+const SEVERITY_ENUM_RE = /\b(CRITICAL|HIGH|CAUTION|INFO)\b/g;
+
+/** 옛 종료 미팅 문장에 남은 영문 등급 enum(`CRITICAL`·`HIGH`·`CAUTION`·`INFO`)을 한국어(`위험`·`경고`·`주의`·`안내`)로 바꾼다. */
+export function localizeEndingReview(ending: string): string {
+  return ending.replace(
+    SEVERITY_ENUM_RE,
+    (match) => SEVERITY_LABEL[match as keyof typeof SEVERITY_LABEL] ?? match,
+  );
+}
+
+/** 보고서 양식의 종료 미팅(`form.review.ending`)에 영문 등급 enum 이 있으면 한국어로 바꾼 사본을 돌려준다. 바꿀 것이 없으면 원본 그대로다. */
+export function withLocalizedEnding<
+  T extends { form?: { review: { daily: string; ending: string } } | null },
+>(report: T): T {
+  const ending = report.form?.review.ending;
+  if (!ending || !report.form) return report;
+  const localized = localizeEndingReview(ending);
+  if (localized === ending) return report;
+  return {
+    ...report,
+    form: {
+      ...report.form,
+      review: { ...report.form.review, ending: localized },
+    },
+  };
 }
