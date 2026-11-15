@@ -38,7 +38,6 @@ vi.mock('@/features/monitor/WorkSessionBar', () => ({
   WorkSessionBar: () => <div data-testid="session" />,
 }));
 vi.mock('@/features/monitor/PpePolicyNotice', () => ({ PpePolicyNotice: () => null }));
-vi.mock('@/features/monitor/PpeWorkNotice', () => ({ PpeWorkNotice: () => null }));
 vi.mock('@/features/monitor/WorkPpeStatus', () => ({ WorkPpeStatus: () => null }));
 vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
 vi.mock('@/features/ppe/usePpe', () => ({ usePpeSnapshot: vi.fn() }));

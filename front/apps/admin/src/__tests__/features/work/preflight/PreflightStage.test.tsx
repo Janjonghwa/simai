@@ -340,6 +340,28 @@ describe('PreflightStage 화면', () => {
   it('워치 상태를 모르면(health 없음) 없다고 하지 않는다', async () => {
     renderStage(await openToday());
     expect(screen.getByText('워치 상태를 아직 모릅니다.')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    await screen.findByRole('dialog', { name: '작업 전 확인' });
+    expect(screen.queryByRole('list', { name: '시작 전 경고' })).toBeNull();
+  });
+
+  it('연결된 워치가 0대면 확인창에 경고 한 줄을 보이고 시작은 막지 않는다(-730)', async () => {
+    useRealtimeStore.setState({
+      phase: 'OPEN',
+      openedAt: Date.now(),
+      health: {
+        receivedAt: Date.now(),
+        clockOffsetMs: 0,
+        payload: {
+          laptop: { link: 'CONNECTED', last_heartbeat_at: T0 },
+          watches: { registered: 1, connected: 0, items: [] },
+        },
+      } as never,
+    });
+    renderStage(await openToday());
+    const dialog = await openConfirmAndCheck();
+    const warnings = within(dialog).getByRole('list', { name: '시작 전 경고' });
+    expect(warnings.textContent).toContain('연결된 워치가 없어 현장 경보는 현장 노트북에서만');
   });
 
   it('구역을 받지 못했으면 없다고 하지 않고 안내만 보인다', async () => {

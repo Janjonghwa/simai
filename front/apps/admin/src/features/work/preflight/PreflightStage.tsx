@@ -13,6 +13,7 @@ import { RerunNotice } from '@/features/work/preflight/RerunNotice';
 import { SignDialog } from '@/features/work/preflight/SignDialog';
 import { SignerCard } from '@/features/work/preflight/SignerCard';
 import { useSigners } from '@/features/work/preflight/useSigners';
+import { useStartWarnings } from '@/features/work/preflight/useStartWarnings';
 import { WatchSummaryCard } from '@/features/work/preflight/WatchSummaryCard';
 import { ZoneEditDialog } from '@/features/work/preflight/ZoneEditDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
@@ -51,6 +52,8 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
     vest: day.vest ?? 'REQUIRED',
   }));
   const [dialog, setDialog] = useState<Dialog>(null);
+  // 확인창의 경고 줄(보호구 상태 미수신·워치 0대, -730). 창이 열려 있을 때만 PPE 수신을 묻는다
+  const startWarnings = useStartWarnings(ppe, dialog === 'confirm');
   // 편집 창을 연 구역(없으면 창이 닫혀 있다).
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
 
@@ -121,6 +124,7 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}
           draftWarning={draftWarning(report)}
+          warnings={startWarnings}
           setupCompleted={setupDone}
           setupBlocked={isSetupRequiredError(start.error)}
           onGoSetup={

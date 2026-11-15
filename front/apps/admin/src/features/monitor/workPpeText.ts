@@ -49,10 +49,25 @@ export function ppeStatusText({ helmet, vest }: PpeRequirement, on: boolean): st
   return `${watched.map((g) => GEAR_NAME[g]).join('·')} 감시 중${offText}`;
 }
 
-/** R2·R3 고소 기준 높이(명세 7.2: 운영 v1 2.0 m, 교실 시험 v1001 0.35 m). */
+/** 보호구 상태가 계속 들어오지 않을 때의 한 줄(S15P31A101-730). 원인·할 일은 「자세히」에 둔다. */
+export const PPE_OFF_TEXT = '보호구 감시 꺼짐';
+
+/**
+ * 「보호구 감시 꺼짐」의 자세히: 원인(무엇이 안 되는가)과 화면 앞의 사람이 할 수 있는 일(S15P31A101-730).
+ * 감시 대상 장비만 이름에 넣는다.
+ */
+export function ppeOffDetail({ helmet, vest }: PpeRequirement): readonly string[] {
+  const gears = [helmet === 'REQUIRED' && '안전모', vest === 'REQUIRED' && '조끼'].filter(Boolean);
+  return [
+    `보호구 상태가 들어오지 않아 ${gears.join('·')} 미착용 경보가 나지 않습니다.`,
+    '그동안 현장에서 직접 확인하세요. 계속 꺼져 있으면 GPU 관리자에게 알리세요.',
+  ];
+}
+
+/** R2·R3 고소 기준 높이(명세 7.2: 운영 v1 2.0 m, 교실 시험 v1001 0.35 m). 머리줄이 아니라 「자세히」에 보인다(-730). */
 const RULE_PROFILE_TEXT: Record<string, string> = {
-  OPERATION: '운영 기준 · 2.0m',
-  CLASSROOM_TEST: '교실 시험 기준 · 0.35m',
+  OPERATION: '운영 기준 · 높이차 2.0m 이상을 고소로 판정',
+  CLASSROOM_TEST: '교실 시험 기준 · 높이차 0.35m 이상을 고소로 판정',
 };
 
 /**

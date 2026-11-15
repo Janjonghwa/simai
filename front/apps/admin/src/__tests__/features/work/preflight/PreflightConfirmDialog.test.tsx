@@ -12,6 +12,7 @@ function Harness({
   pending = false,
   error = null,
   draftWarning = null,
+  warnings,
   setupCompleted = true,
   onGoSetup,
   initial = NO_CHECKS,
@@ -23,6 +24,7 @@ function Harness({
   pending?: boolean;
   error?: string | null;
   draftWarning?: string | null;
+  warnings?: readonly string[];
   setupCompleted?: boolean;
   onGoSetup?: () => void;
   initial?: PreflightChecks;
@@ -39,6 +41,7 @@ function Harness({
       pending={pending}
       error={error}
       draftWarning={draftWarning}
+      warnings={warnings}
       setupCompleted={setupCompleted}
       onGoSetup={onGoSetup}
       onSign={onSign}
@@ -167,5 +170,38 @@ describe('PreflightConfirmDialog', () => {
   it('시작이 거절됐으면 창 안에 이유를 보인다', () => {
     render(<Harness signerCount={1} error="오늘 작업만 시작할 수 있어요" />);
     expect(screen.getByRole('alert').textContent).toBe('오늘 작업만 시작할 수 있어요');
+  });
+
+  it('서명은 체크 칸이 아니라 ✓/✗ 상태로 보인다(사람이 누르는 칸은 확인 둘뿐, -730)', () => {
+    const { rerender } = render(<Harness signerCount={0} />);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(screen.getByTestId('signer-state').className).toContain('text-destructive');
+    rerender(<Harness signerCount={2} />);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(screen.getByTestId('signer-state').className).toContain('text-ok');
+    expect(screen.getByText('참석자 서명 2명')).toBeTruthy();
+  });
+
+  it('시작 전 경고(보호구 미수신·워치 0대)는 한 줄씩 보이되 작업 시작은 막지 않는다(-730)', () => {
+    const onStart = vi.fn();
+    const warnings = ['보호구 상태가 들어오지 않아', '연결된 워치가 없습니다'];
+    render(
+      <Harness
+        signerCount={1}
+        warnings={warnings}
+        initial={{ reportChecked: true, layoutChecked: true }}
+        onStart={onStart}
+      />,
+    );
+    const list = screen.getByRole('list', { name: '시작 전 경고' });
+    expect(list.querySelectorAll('li')).toHaveLength(2);
+    expect(start().disabled).toBe(false);
+    fireEvent.click(start());
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('경고가 없으면 경고 목록도 없다', () => {
+    render(<Harness signerCount={1} />);
+    expect(screen.queryByRole('list', { name: '시작 전 경고' })).toBeNull();
   });
 });

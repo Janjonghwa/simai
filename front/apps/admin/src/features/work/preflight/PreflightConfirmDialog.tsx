@@ -9,12 +9,14 @@ import {
 import { SETUP_REQUIRED_MESSAGE } from '@/features/work/preflight/preflightErrors';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { Check } from 'lucide-react';
+import { Check, TriangleAlert, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 // '작업 전 확인' 창: 보고서·가상 레이아웃을 확인했는지 체크하고, 참석자 서명이 1명 이상이면 '작업 시작'이 켜진다.
 // 서명이 없으면 이 창을 닫고 서명 창을 여는 '서명하기'가 있다. 시작이 거절되면 이유를 창 안에 보인다.
 // 세팅 완료(서버 setup_completed_at) 전이면 '작업 시작'을 끄고 「세팅을 완료해야 시작할 수 있습니다」와 '세팅으로' 단추를 보인다(-642).
+// 서명 수처럼 자동으로 정해지는 줄은 체크 칸 모양이 아니라 ✓/✗ 상태로 보인다(사람이 누르는 칸과 헷갈리지 않게, -730).
+// 보호구 상태 미수신·워치 0대 같은 경고(warnings)는 한 줄씩 보이고 시작을 막지 않는다(-730).
 
 const CHECK_ROWS: readonly { key: PreflightCheckKey; label: string }[] = [
   { key: 'reportChecked', label: 'TBM 보고서를 확인했습니다' },
@@ -37,6 +39,7 @@ export function PreflightConfirmDialog({
   error,
   errorAction = null,
   draftWarning = null,
+  warnings = [],
   setupCompleted = true,
   setupBlocked = false,
   onGoSetup,
@@ -58,6 +61,8 @@ export function PreflightConfirmDialog({
   errorAction?: ReactNode;
   /** AI 초안이 끝나지 않았을 때의 경고(-625). 시작을 막지 않는다. */
   draftWarning?: string | null;
+  /** 보호구 상태 미수신·워치 0대 등 시작 전 경고 줄(-730). 시작을 막지 않는다. */
+  warnings?: readonly string[];
   /** 서버가 세팅 완료를 알렸는지(progress SETUP_DONE 이후). 꺼지면 '작업 시작'을 끄고 안내한다(-642). */
   setupCompleted?: boolean;
   /** 시작이 409 WORK_SETUP_NOT_COMPLETED 로 거절됐다. 안내는 error 가 맡고 '세팅으로' 단추만 더한다. */
@@ -101,14 +106,17 @@ export function PreflightConfirmDialog({
         <div className="flex items-center gap-2.5 text-sm">
           <span
             aria-hidden
+            data-testid="signer-state"
             className={cn(
-              'grid size-[18px] flex-none place-items-center rounded-[3px] border-2',
-              signed
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-muted-foreground',
+              'grid size-[18px] flex-none place-items-center',
+              signed ? 'text-ok' : 'text-destructive',
             )}
           >
-            {signed && <Check className="size-3" strokeWidth={3} />}
+            {signed ? (
+              <Check className="size-4" strokeWidth={3} />
+            ) : (
+              <X className="size-4" strokeWidth={3} />
+            )}
           </span>
           {signed ? (
             <span>{`참석자 서명 ${signerCount}명`}</span>
@@ -149,6 +157,19 @@ export function PreflightConfirmDialog({
           </p>
         )}
         {draftWarning && <p className="text-[13px] text-sev-caution">{draftWarning}</p>}
+        {warnings.length > 0 && (
+          <ul
+            aria-label="시작 전 경고"
+            className="flex flex-col gap-1 text-[13px] text-sev-caution"
+          >
+            {warnings.map((line) => (
+              <li key={line} className="flex items-start gap-1.5">
+                <TriangleAlert aria-hidden className="mt-[3px] size-3.5 flex-none" />
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {setupNotice && (
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-destructive">
             <p role="alert">{setupNotice}</p>
