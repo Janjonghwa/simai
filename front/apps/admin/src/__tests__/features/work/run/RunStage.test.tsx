@@ -206,7 +206,7 @@ const reportPanel = () => screen.getByTestId('report-panel');
 const doneButton = () => screen.getByRole('button', { name: '보고서 제출' }) as HTMLButtonElement;
 
 describe('RunStage — 진행 중', () => {
-  it('왼쪽에 고칠 수 있는 보고서, 오른쪽에 작업 현황·사건·관제 적용 상태를 보인다', async () => {
+  it('왼쪽에 고칠 수 있는 보고서, 오른쪽에 작업 현황·경보 기록·관제 적용 상태를 보인다', async () => {
     const workId = await prepare('running');
     live.entries = [
       eventAt('before', T0 - MIN, 'CRITICAL', 'z-04'),
@@ -227,8 +227,8 @@ describe('RunStage — 진행 중', () => {
     expect(screen.getByText('시작 시각 2026-11-11 09:00')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('서명 1명')).toBeTruthy());
 
-    const events = screen.getByRole('list', { name: '사건 목록' });
-    expect(screen.getByText('2건')).toBeTruthy();
+    const events = screen.getByRole('list', { name: '경보 기록 목록' });
+    expect(screen.getByText('2건 · 위험 1 · 경고 1')).toBeTruthy();
     expect(
       within(events)
         .getAllByRole('listitem')
@@ -245,10 +245,10 @@ describe('RunStage — 진행 중', () => {
     );
   });
 
-  it('사건이 없으면 `사건 없음` 과 `0건` 을 보인다', async () => {
+  it('경보가 없으면 `경보 없음` 과 `0건` 을 보인다', async () => {
     await prepare('running');
     renderStage();
-    expect(await screen.findByText('사건 없음')).toBeTruthy();
+    expect(await screen.findByText('경보 없음')).toBeTruthy();
     expect(screen.getByText('0건')).toBeTruthy();
   });
 
@@ -311,7 +311,7 @@ describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
     expect(requests.some((r) => r.endsWith('/start'))).toBe(false);
   });
 
-  it('실행 2 진행 중에는 경과·시작 시각·사건이 실행 2 기준이고, 끝나면 실행 기록에 두 실행이 보인다', async () => {
+  it('실행 2 진행 중에는 경과·시작 시각·경보 기록이 실행 2 기준이고, 끝나면 실행 기록에 두 실행이 보인다', async () => {
     const workId = await prepare('ended');
     clock = T0 + 120 * MIN;
     await startWork(api, workId);
@@ -324,7 +324,7 @@ describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
     expect(await screen.findByText('실행 2 · 진행 중')).toBeTruthy();
     expect(screen.getByRole('timer', { name: '경과 시간' }).textContent).toBe('00:00:30');
     expect(screen.getByText('시작 시각 2026-11-11 11:00')).toBeTruthy();
-    expect(screen.getByText('1건')).toBeTruthy();
+    expect(screen.getByText('1건 · 위험 0 · 경고 1')).toBeTruthy();
 
     clock = T0 + 150 * MIN;
     fireEvent.click(screen.getByRole('button', { name: '작업 종료' }));

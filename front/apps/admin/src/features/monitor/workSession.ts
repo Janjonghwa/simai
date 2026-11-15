@@ -1,3 +1,4 @@
+import type { OutsideWorkKind } from '@/features/events/EventBadges';
 import { eventTime, isAlarming, type EventEntry } from '@/features/events/entries';
 import type { EventItem } from '@/features/events/types';
 import type { TbmWorkUnit } from '@/features/tbm/types';
@@ -102,13 +103,25 @@ export function isOutsideWork(
   works: readonly TbmWorkUnit[],
   now: number = Date.now(),
 ): boolean {
+  return outsideWorkKind(event, works, now) !== null;
+}
+
+/**
+ * isOutsideWork 의 이유(S15P31A101-731, 꼬리표 문구를 뜻 있게): 발생 시각에 진행 중인 작업이 없으면 NO_WORK(「작업 시간 외」),
+ * 작업 중이었는데 작업 구역 밖이면 OUTSIDE_ZONE(「작업 구역 밖」). 작업 외 진입이 아니거나 판정할 수 없으면 null.
+ */
+export function outsideWorkKind(
+  event: EventItem,
+  works: readonly TbmWorkUnit[],
+  now: number = Date.now(),
+): OutsideWorkKind | null {
   const at = event.raised_at;
-  if (at === undefined || at < now - WORKS_WINDOW_MS) return false;
+  if (at === undefined || at < now - WORKS_WINDOW_MS) return null;
   const during = worksAt(works, at);
-  if (during.length === 0) return true;
-  if (event.zone_id === null) return false;
-  if (during.some((work) => work.zone_id === null)) return false;
-  return !during.some((work) => work.zone_id === event.zone_id);
+  if (during.length === 0) return 'NO_WORK';
+  if (event.zone_id === null) return null;
+  if (during.some((work) => work.zone_id === null)) return null;
+  return during.some((work) => work.zone_id === event.zone_id) ? null : 'OUTSIDE_ZONE';
 }
 
 /** 세션 바의 작업 구역: 구역 작업은 구역 이름(서버 place), 구역 없는 작업은 장소 또는 "현장 전체". */

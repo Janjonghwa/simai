@@ -146,6 +146,9 @@ class HealthIntegrationTest {
             assertThat(p.get("remote_state").asString()).isEqualTo("NORMAL");
             assertThat(p.get("tier0_link").asString()).isEqualTo("CONNECTED");
             assertThat(p.at("/laptop/link").asString()).isEqualTo("CONNECTED");
+            // 1.6.0(S15P31A101-731): 실제 카메라(RTSP) 입력이면 시험 입력이 아니다
+            assertThat(p.at("/laptop/test_input").isBoolean()).isTrue();
+            assertThat(p.at("/laptop/test_input").booleanValue()).isFalse();
             assertThat(p.get("system_health").asString()).isEqualTo(health.at("/payload/system_health").asString());
             assertThat(p.get("tier0_health")).isEqualTo(health.get("payload"));
             assertThat(p.at("/scene/committed_version").asString()).isEqualTo("scene-test-" + tag);
@@ -174,6 +177,25 @@ class HealthIntegrationTest {
             assertThat(topic.at("/payload/remote_state").asString()).isEqualTo("CONTROL_HALTED");
             assertThat(topic.at("/payload/system_health").asString()).isEqualTo("UNSAFE_UNKNOWN");
         }
+    }
+
+    @Test
+    void 녹화_파일_재생_하트비트면_시험_입력으로_알리고_실제_카메라로_돌아오면_끈다() throws Exception {
+        // S15P31A101-731: 관제 화면의 「녹화 재생 중 · 실제 알림 꺼짐」 근거. 워치 진동 차단(-724)과 같은 판정이다
+        ObjectNode replay = heartbeat("CONNECTED", "NORMAL");
+        for (JsonNode camera : replay.at("/payload/cameras")) {
+            ((ObjectNode) camera).put("source_kind", "FILE");
+        }
+        assertThat(postHeartbeat(laptopToken, replay)).isEqualTo(204);
+        JsonNode testing = getHealth();
+        assertValid(testing);
+        assertThat(testing.at("/payload/laptop/test_input").booleanValue()).isTrue();
+
+        // 같은 노트북이 실제 카메라로 돌아오면 다음 하트비트가 바로 끈다(다른 시험에 남지 않게도 한다)
+        assertThat(postHeartbeat(laptopToken, heartbeat("CONNECTED", "NORMAL"))).isEqualTo(204);
+        JsonNode live = getHealth();
+        assertValid(live);
+        assertThat(live.at("/payload/laptop/test_input").booleanValue()).isFalse();
     }
 
     @Test
@@ -224,7 +246,7 @@ class HealthIntegrationTest {
             Thread.sleep(200);
             JsonNode unknown = getHealth();
             assertValid(unknown);
-            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.5.0");
+            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.6.0");
             assertThat(unknown.at("/payload").has("re_setup")).isFalse();
             // 1.4.0: Tier 0 가 들고 있는 이벤트 집합의 판(S15P31A101-595)은 늘 싣는다
             assertThat(unknown.at("/payload/held_events_revision").asString()).isNotBlank();

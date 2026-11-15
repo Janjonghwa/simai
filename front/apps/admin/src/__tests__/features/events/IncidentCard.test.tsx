@@ -96,7 +96,7 @@ describe('IncidentCard', () => {
     expect(chip?.textContent).toBe('미확인');
     expect(chip?.className).toContain('border-sev-critical');
     // 사람은 끝번호만 보인다(전체 ID 는 올려 보면 나오고 카드 이름에 있다). 등급색 알약·굵은 글씨·고정폭이 아니다.
-    const person = within(card).getByText('0015');
+    const person = within(card).getByText('작업자 #0015');
     expect(card.textContent).not.toContain('w-0015');
     expect(person.getAttribute('title')).toBe('w-0015');
     expect(card.getAttribute('aria-label')).toBe('w-0015 이벤트');
@@ -112,7 +112,7 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry({ held_by_tier0: false, severity: 'HIGH' })]);
 
     expect(card.querySelector('[data-chip]')?.textContent).toBe('지난 관제');
-    expect(within(card).getByText('0015').className).toBe('text-sm');
+    expect(within(card).getByText('작업자 #0015').className).toBe('text-sm');
     expect(within(card).getByText('12초 전')).toBeTruthy();
     expect(card.className).toContain('opacity-75');
     expect(card.className).not.toContain('ring-sev-high');
@@ -122,7 +122,7 @@ describe('IncidentCard', () => {
   it('긴 사람 ID 는 끝번호만 보인다', () => {
     const { card } = renderCard([entry({ world_ids: ['w-mw8y3hai-0722'] })]);
 
-    expect(within(card).getByText('0722').getAttribute('title')).toBe('w-mw8y3hai-0722');
+    expect(within(card).getByText('작업자 #0722').getAttribute('title')).toBe('w-mw8y3hai-0722');
     expect(card.textContent).not.toContain('mw8y3hai');
   });
 
@@ -215,27 +215,39 @@ describe('IncidentCard', () => {
 
     expect(card.querySelector('[data-chip]')?.textContent).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
     expect(card.textContent).not.toContain('초 전');
-    expect(within(card).getByText('0015')).toBeTruthy();
+    expect(within(card).getByText('작업자 #0015')).toBeTruthy();
     expect(card.className).toContain('opacity-55');
     expect(card.className).not.toContain('ring-sev-critical');
   });
 
-  it('해소 카드는 두 번 이상 발생했을 때만 N회 발생을 보인다', () => {
+  it('해소 카드는 두 번 이상 발생했을 때만 N회를 보인다', () => {
     const resolved = entry({
       lifecycle: 'RESOLVED',
       resolved_at: T + 5_000,
       updated_at: T + 5_000,
     });
     const twice = renderCard([resolved], { occurrences: 2 });
-    expect(within(twice.card).getByText('2회 발생')).toBeTruthy();
-    // 경과가 없는 해소 카드는 그 자리(둘째 줄 오른쪽 끝)에 발생 횟수가 선다.
-    expect(within(twice.card).getByText('2회 발생').previousElementSibling).toBe(
-      within(twice.card).getByText('0015').parentElement,
+    expect(within(twice.card).getByText('2회')).toBeTruthy();
+    expect(within(twice.card).getByText('2회').getAttribute('title')).toBe(
+      '같은 위험·같은 구역에서 2번 발생했습니다.',
+    );
+    // 경과가 없는 해소 카드는 둘째 줄 오른쪽 끝에 발생 횟수가 선다.
+    expect(within(twice.card).getByText('2회').parentElement?.previousElementSibling).toBe(
+      within(twice.card).getByText('작업자 #0015').parentElement,
     );
     cleanup();
 
     const once = renderCard([resolved], { occurrences: 1 });
-    expect(within(once.card).queryByText(/회 발생/)).toBeNull();
+    expect(within(once.card).queryByText(/\d회$/)).toBeNull();
+  });
+
+  it('트랙 번호가 바뀌며 이어진 경보를 묶은 진행 중 카드는 경과 앞에 N회와 묶은 까닭을 보인다(S15P31A101-731)', () => {
+    const { card } = renderCard([entry()], { occurrences: 3, people: 3 });
+    const count = within(card).getByText('3회');
+    expect(count.getAttribute('title')).toContain(
+      '트랙 번호(작업자 번호)가 바뀌며 이어진 경보 3건(번호 3개)',
+    );
+    expect(count.nextElementSibling?.textContent).toBe('12초 전');
   });
 
   it('복원 이벤트는 확인 필요와 첫 이유를 꼬리표로 보인다', () => {
@@ -281,13 +293,15 @@ describe('IncidentCard', () => {
   it('둘째 줄 꼬리표는 사람 번호 옆에 있고, 경과는 맨 오른쪽 끝이다', () => {
     const { card } = renderCard(
       [entry({ delivery: 'DELAYED_ACTIVE', verification: 'UNVERIFIABLE', needs_check: true })],
-      { outsideWork: true },
+      { outsideWork: 'OUTSIDE_ZONE' },
     );
 
-    const row = within(card).getByText('0015').parentElement!.parentElement!;
+    const row = within(card).getByText('작업자 #0015').parentElement!.parentElement!;
     expect(within(row).getByText('확인 필요')).toBeTruthy();
     expect(within(row).getByText('지연 알림')).toBeTruthy();
-    expect(within(row).getByText('작업 외 진입')).toBeTruthy();
+    expect(within(row).getByText('작업 구역 밖').getAttribute('title')).toBe(
+      '작업 중이었지만 그 작업의 구역 밖에서 난 이벤트입니다.',
+    );
     expect(row.lastElementChild?.textContent).toBe('12초 전');
   });
 

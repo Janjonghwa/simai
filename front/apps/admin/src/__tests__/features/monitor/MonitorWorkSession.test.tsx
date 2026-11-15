@@ -197,7 +197,9 @@ const idleNotice = () => screen.queryByRole('region', { name: '관제 상태' })
 const cardNames = () =>
   screen.queryAllByRole('article').map((card) => card.getAttribute('aria-label'));
 const card = (name: string) => screen.getByRole('article', { name });
-const BADGE = '작업 외 진입';
+/** 작업 외 진입 꼬리표(S15P31A101-731 에서 이유별 문구로 나눴다). */
+const BADGE = '작업 구역 밖';
+const NO_WORK_BADGE = '작업 시간 외';
 
 describe('세션 바', () => {
   it('진행 중인 작업의 이름·시작 시각·경과·작업 구역과 작업 관리 링크를 보이고 대기 화면은 없다', async () => {
@@ -432,7 +434,7 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
 });
 
 describe('이벤트 목록 필터', () => {
-  it('진행 중 작업이 시작된 뒤 이벤트만 보이고, 시작 전 이벤트는 건수와 지난 이벤트 링크(작업 관리)로 남는다', async () => {
+  it('진행 중 작업이 시작된 뒤 이벤트만 보이고, 시작 전 이벤트는 건수 한 줄로 남는다(작업 관리로는 세션 바 한 곳)', async () => {
     serveWorks([inProgress()]);
     renderMonitor([
       item({ event_id: 'old', world_ids: ['w-0011'], raised_at: STARTED - 30 * MIN }),
@@ -441,12 +443,9 @@ describe('이벤트 목록 필터', () => {
 
     await screen.findByRole('region', { name: '작업 세션' });
     await waitFor(() => expect(cardNames()).toEqual(['w-0012 이벤트']));
-    expect(screen.getByText('작업 시작 전 이벤트 1건')).toBeTruthy();
-
-    // 세션 바에도 같은 이름의 단추가 있어서 건수 줄 안에서 찾는다.
-    const pastLine = screen.getByText('작업 시작 전 이벤트 1건').parentElement!;
-    fireEvent.click(within(pastLine).getByRole('button', { name: '작업 관리로' }));
-    expect(navigate).toHaveBeenCalledWith({ to: '/work' });
+    expect(screen.getByText('이번 실행 전 이벤트 1건은 목록에서 뺐습니다')).toBeTruthy();
+    // 「작업 관리로」 는 세션 바 한 곳에만 있다(S15P31A101-731)
+    expect(screen.getAllByRole('button', { name: '작업 관리로' })).toHaveLength(1);
   });
 
   it('시작 전에 났어도 확인 대기 경보는 패널과 배너에서 숨지 않는다', async () => {
@@ -475,7 +474,7 @@ describe('이벤트 목록 필터', () => {
 
     await screen.findByRole('region', { name: '관제 대기' });
     expect(cardNames().sort()).toEqual(['w-0011 이벤트', 'w-0012 이벤트']);
-    expect(screen.queryByText(/^(작업 시작 전 이벤트 \d+건|지난 이벤트)$/)).toBeNull();
+    expect(screen.queryByText(/이번 실행 전 이벤트/)).toBeNull();
   });
 });
 
@@ -512,7 +511,9 @@ describe('작업 외 진입 배지', () => {
     renderMonitor([item({ event_id: 'idle', world_ids: ['w-0012'], zone_id: 'z-04' })]);
 
     await screen.findByRole('region', { name: '관제 대기' });
-    await waitFor(() => expect(within(card('w-0012 이벤트')).queryByText(BADGE)).toBeTruthy());
+    await waitFor(() =>
+      expect(within(card('w-0012 이벤트')).queryByText(NO_WORK_BADGE)).toBeTruthy(),
+    );
   });
 });
 
@@ -563,7 +564,7 @@ describe('대기 화면에서도 경보', () => {
     const banner = screen.getByRole('group', { name: '확인 대기 경보' });
     expect(banner).toBeTruthy();
     expect(card('w-0015 이벤트')).toBeTruthy();
-    expect(within(card('w-0015 이벤트')).queryByText(BADGE)).toBeTruthy();
+    expect(within(card('w-0015 이벤트')).queryByText(NO_WORK_BADGE)).toBeTruthy();
     // 경보는 대기 화면 안에 있지 않고(가려지지 않고), 대기 화면보다 뒤에 그려져 위에 뜬다.
     expect(waiting.contains(banner)).toBe(false);
     const panel = screen.getByRole('complementary', { name: '이벤트' });

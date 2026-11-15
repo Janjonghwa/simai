@@ -169,7 +169,7 @@ describe('PersonDetailPanel(-658)', () => {
     );
 
     renderPanel('person:w-0021', bindings);
-    expect(screen.getByText('미확인 1')).toBeTruthy();
+    expect(screen.getByText('작업자 #1')).toBeTruthy();
     expect(screen.getByText('연결된 워치 없음')).toBeTruthy();
 
     const input = screen.getByLabelText('표시 이름');
@@ -177,8 +177,8 @@ describe('PersonDetailPanel(-658)', () => {
     fireEvent.click(screen.getByRole('button', { name: '저장' }));
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('서버 검증 거부'));
-    // 롤백되어 다시 '미확인 1' 이 보인다
-    expect(screen.getByText('미확인 1')).toBeTruthy();
+    // 롤백되어 다시 '작업자 #1' 이 보인다
+    expect(screen.getByText('작업자 #1')).toBeTruthy();
     expect(apiMock).toHaveBeenCalledWith(
       '/api/people/w-0021/display-name',
       expect.objectContaining({ method: 'PUT', body: { display_name: '임시작업자' } }),

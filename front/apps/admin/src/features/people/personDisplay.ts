@@ -11,6 +11,21 @@ export type ViewerHealthWatchName = NonNullable<ViewerHealthPayload['watch_names
 /** 사람 World ID 의 끝번호: `w-mw8y3hai-0722` → `0722`. 구분(`-`)이 없거나 끝이 비면 ID 그대로. */
 export const shortPersonId = (id: string) => id.slice(id.lastIndexOf('-') + 1) || id;
 
+/** 이름 없는 사람의 화면 표시 머리(S15P31A101-731). 확인 상태 배지 「미확인」과 헷갈리지 않게 「작업자 #N」으로 적는다. */
+const WORKER_PREFIX = '작업자 #';
+
+/**
+ * 서버가 배정한 현장·날짜별 자동 번호 이름(`미확인 205`)을 화면 표시 `작업자 #205` 로 바꾼다(S15P31A101-731: 카드의 확인 상태 배지
+ * 「미확인」과 같은 말이라 헷갈렸다). 그 꼴이 아니면 그대로다. 서버 값과 저장은 바꾸지 않는다(화면 표시만).
+ */
+export const workerLabel = (serverName: string): string => {
+  const match = /^미확인\s*(\d+)$/u.exec(serverName);
+  return match ? `${WORKER_PREFIX}${match[1]}` : serverName;
+};
+
+/** 이름 목록이 없을 때(수신 전·이전 EC2)의 짧은 표시: World ID 끝번호를 `작업자 #0722` 로(4자리 번호만 보이면 뜻을 몰랐다). */
+const fallbackShortLabel = (worldId: string): string => `${WORKER_PREFIX}${shortPersonId(worldId)}`;
+
 export const DISPLAY_NAME_MAX_LENGTH = 20;
 
 export type PersonWatchStatus = 'connected' | 'disconnected' | 'none';
@@ -176,7 +191,7 @@ function resolveNameAndSource(
 
   // 3순위: 서버가 배정한 현장·날짜별 '미확인 N'(또는 상위 이름이 지워진 직후 기본 표시)
   if (serverPerson?.name_source === 'UNIDENTIFIED') {
-    return { displayName: serverPerson.display_name, nameSource: 'UNIDENTIFIED' };
+    return { displayName: workerLabel(serverPerson.display_name), nameSource: 'UNIDENTIFIED' };
   }
 
   return { displayName: '미확인', nameSource: 'FALLBACK' };
@@ -276,7 +291,7 @@ export function personNameSourceText(source: PersonNameSource): string {
     case 'WORLD_MANUAL':
       return '관리자 지정 · 오늘 한정';
     case 'UNIDENTIFIED':
-      return '미확인 자동 번호 · 오늘 한정';
+      return '이름 없는 사람 자동 번호 · 오늘 한정';
     case 'FALLBACK':
       return '이름 확인 중';
   }
@@ -301,11 +316,11 @@ export function formatWatchBindNotice(
 
 /**
  * 이벤트 카드·경보 배너·2D 말풍선용 짧은 사람 표시.
- * 해석된 이름이 있으면 이름을 쓰고(동명이인이면 끝번호를 함께 붙여 구분), 이전 EC2·단위 시험처럼 이름 목록이 없으면 끝번호로 폴백한다.
+ * 해석된 이름이 있으면 이름을 쓰고(동명이인이면 끝번호를 함께 붙여 구분), 이전 EC2·단위 시험처럼 이름 목록이 없으면 `작업자 #끝번호` 로 폴백한다(S15P31A101-731).
  */
 export function formatPersonShort(worldId: string, map?: PersonDisplayMap): string {
   const info = map?.[worldId];
-  if (!info || info.nameSource === 'FALLBACK') return shortPersonId(worldId);
+  if (!info || info.nameSource === 'FALLBACK') return fallbackShortLabel(worldId);
   return info.isDuplicateName
     ? `${info.displayName} (${shortPersonId(worldId)})`
     : info.displayName;

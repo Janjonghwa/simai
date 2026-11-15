@@ -39,6 +39,7 @@ import { zoneNameOf } from '@/features/zones/zoneName';
 import { describe, expect, it } from 'vitest';
 
 const T = 1_760_342_400_000;
+const MIN = 60_000;
 
 const zoneName = zoneNameOf([
   { zoneId: 'z-04', name: '개구부 구역' },
@@ -278,7 +279,7 @@ describe('eventSections', () => {
       entry({ event_id: 'live', world_ids: ['w-1'] }),
       done({ event_id: 'old', world_ids: ['w-2'] }),
     ]);
-    expect(active.map((i) => i.key)).toEqual(['person:w-1']);
+    expect(active.map((c) => c.incident.key)).toEqual(['person:w-1']);
     expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-2']);
   });
 
@@ -287,7 +288,7 @@ describe('eventSections', () => {
       entry({ event_id: 'live', world_ids: ['w-1'] }),
       done({ event_id: 'old', rule_id: 'R1', severity: 'HIGH', world_ids: ['w-1'] }),
     ]);
-    expect(active.map((i) => i.key)).toEqual(['person:w-1']);
+    expect(active.map((c) => c.incident.key)).toEqual(['person:w-1']);
     expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-1']);
     expect(resolved[0]?.incident.active).toBe(false);
   });
@@ -315,12 +316,14 @@ describe('eventSections', () => {
   });
 
   it('해소 칸은 최근에 해소된 묶음부터 네 건만 보인다', () => {
+    // 같은 위험·구역이라도 짧은 시간(1분) 밖이면 다른 카드다
     const entries = [1, 2, 3, 4, 5, 6].map((n) =>
       done({
         event_id: `r${n}`,
         world_ids: [`w-${n}`],
-        updated_at: T + n * 100,
-        resolved_at: T + n * 100,
+        raised_at: T + n * 10 * MIN,
+        updated_at: T + n * 10 * MIN,
+        resolved_at: T + n * 10 * MIN,
       }),
     );
     const { resolved } = eventSections(entries);
@@ -333,6 +336,97 @@ describe('eventSections', () => {
   });
 });
 
+describe('화면 묶음(S15P31A101-731)', () => {
+  const SEC = 1_000;
+  const live = (id: string, person: string, at: number, change: Partial<EventItem> = {}) =>
+    entry({ event_id: id, world_ids: [person], raised_at: at, updated_at: at, ...change });
+  const done = (id: string, person: string, at: number, change: Partial<EventItem> = {}) =>
+    entry({
+      event_id: id,
+      world_ids: [person],
+      lifecycle: 'RESOLVED',
+      raised_at: at,
+      updated_at: at + 2 * SEC,
+      resolved_at: at + 2 * SEC,
+      ...change,
+    });
+
+  it('트랙 번호만 바뀌며 이어진 같은 위험·구역 진행 중 경보는 살아 있는 사람 카드 하나에 N회로 묶인다', () => {
+    // 17차: 화면에는 한 사람(w-235)인데 사라진 번호(w-205·w-224)의 같은 경보가 진행 중으로 남았다
+    const { active } = eventSections(
+      [live('a', 'w-205', T), live('b', 'w-224', T + 40 * SEC), live('c', 'w-235', T + 80 * SEC)],
+      { alive: new Set(['w-235']) },
+    );
+    expect(active).toHaveLength(1);
+    expect(active[0]!.incident.target).toEqual({ type: 'person', id: 'w-235' });
+    expect(active[0]!.occurrences).toBe(3);
+    expect(active[0]!.people).toBe(3);
+    // 확인 대기 경보가 카드에서 사라지지 않게 묶인 경보 전부가 카드 칩·점멸에 든다
+    expect(active[0]!.incident.alarming).toBe(true);
+    expect(firstActiveRaisedAt(active[0]!.incident)).toBe(T);
+    expect(active[0]!.incident.entries[0]!.event.event_id).toBe('c');
+  });
+
+  it('지금 살아 있는 서로 다른 두 사람은 같은 위험·구역·시각이어도 묶지 않는다', () => {
+    const { active } = eventSections(
+      [live('a', 'w-1', T), live('b', 'w-2', T + SEC), live('c', 'w-gone', T + 2 * SEC)],
+      { alive: new Set(['w-1', 'w-2']) },
+    );
+    expect(active.map((c) => c.incident.key).sort()).toEqual(['person:w-1', 'person:w-2']);
+    // 사라진 번호는 둘 중 한 사람에게만 붙는다(사람 카드는 그대로 둘이다)
+    expect(active.reduce((n, c) => n + c.people, 0)).toBe(3);
+  });
+
+  it('살아 있는 사람을 모르면(World 수신 전) 서로 다른 사람을 묶지 않는다', () => {
+    const { active } = eventSections([live('a', 'w-1', T), live('b', 'w-2', T + SEC)]);
+    expect(active).toHaveLength(2);
+    expect(active.every((c) => c.people === 1 && c.occurrences === 1)).toBe(true);
+  });
+
+  it('위험(규칙)이나 구역이 다르거나 짧은 시간(1분) 밖이면 묶지 않는다', () => {
+    const alive = new Set(['w-3']);
+    expect(
+      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { rule_id: 'R1' })], {
+        alive,
+      }).active,
+    ).toHaveLength(2);
+    expect(
+      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { zone_id: 'z-02' })], {
+        alive,
+      }).active,
+    ).toHaveLength(2);
+    expect(
+      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 2 * MIN)], { alive }).active,
+    ).toHaveLength(2);
+  });
+
+  it('최근 해소도 같은 위험·구역의 짧은 시간 안 발생을 번호가 달라도 한 카드로 센다', () => {
+    const { resolved } = eventSections(
+      [done('a', 'w-1', T), done('b', 'w-2', T + 30 * SEC), done('c', 'w-3', T + 5 * MIN)],
+      { alive: new Set() },
+    );
+    expect(resolved.map((g) => g.occurrences)).toEqual([1, 2]);
+    expect(resolved[1]!.people).toBe(2);
+  });
+
+  it('지금 실행 시각을 주면 최근 해소는 그 뒤 발생만, 실행이 없으면(null) 비운다. 진행 중은 그대로다', () => {
+    const entries = [
+      live('now', 'w-9', T + 10 * MIN),
+      done('old', 'w-1', T),
+      done('new', 'w-2', T + 20 * MIN),
+    ];
+    expect(
+      eventSections(entries, { runStartedAt: T + 5 * MIN }).resolved.map(
+        (g) => g.incident.entries[0]!.event.event_id,
+      ),
+    ).toEqual(['new']);
+    const standby = eventSections(entries, { runStartedAt: null });
+    expect(standby.resolved).toEqual([]);
+    expect(standby.active).toHaveLength(1);
+    expect(eventSections(entries).resolved).toHaveLength(2);
+  });
+});
+
 describe('사람 ID 줄이기', () => {
   it('끝번호만 남기고, 구분이 없거나 끝이 비면 그대로 둔다', () => {
     expect(shortPersonId('w-mw8y3hai-0722')).toBe('0722');
@@ -342,7 +436,10 @@ describe('사람 ID 줄이기', () => {
   });
 
   it('이벤트 대상은 사람이면 끝번호, 사람이 없으면 구역 이름 그대로다', () => {
-    expect(eventShortSubject(item({ world_ids: ['w-mw8y3hai-0722'] }), zoneName)).toBe('0722');
+    // 이름 목록이 없으면 끝번호를 「작업자 #」로 적는다(S15P31A101-731, 4자리 번호만으로는 뜻을 몰랐다)
+    expect(eventShortSubject(item({ world_ids: ['w-mw8y3hai-0722'] }), zoneName)).toBe(
+      '작업자 #0722',
+    );
     expect(eventShortSubject(item({ world_ids: [], zone_id: 'z-04' }), zoneName)).toBe(
       '개구부 구역',
     );
@@ -354,7 +451,7 @@ describe('사람 ID 줄이기', () => {
 
   it('묶음 대상은 사람이면 끝번호이고 targetLabel 은 전체 ID 그대로다', () => {
     const person = groupIncidents([entry({ world_ids: ['w-mw8y3hai-0722'] })])[0]!.target;
-    expect(targetShortLabel(person, zoneName)).toBe('0722');
+    expect(targetShortLabel(person, zoneName)).toBe('작업자 #0722');
     expect(targetLabel(person, zoneName)).toBe('w-mw8y3hai-0722');
     const zone = groupIncidents([entry({ world_ids: [], zone_id: 'z-04' })])[0]!.target;
     expect(targetShortLabel(zone, zoneName)).toBe('개구부 구역');
@@ -804,8 +901,8 @@ describe('지금 Tier 0 가 들고 있는지(held_by_tier0)', () => {
       entry({ event_id: 'old-1', world_ids: ['w-1'], rule_id: 'R1', held_by_tier0: false }),
       entry({ event_id: 'old-2', world_ids: ['w-9'], held_by_tier0: false }),
     ]);
-    expect(sections.active.map((i) => i.key)).toEqual(['person:w-1']);
-    expect(sections.active[0]?.entries.map((e) => e.event.event_id)).toEqual(['now']);
+    expect(sections.active.map((c) => c.incident.key)).toEqual(['person:w-1']);
+    expect(sections.active[0]?.incident.entries.map((e) => e.event.event_id)).toEqual(['now']);
     expect(sections.stale.map((i) => i.key).sort()).toEqual(['person:w-1', 'person:w-9']);
     expect(sections.stale.every((i) => i.stale && !i.alarming)).toBe(true);
     expect(sections.staleEvents).toBe(2);

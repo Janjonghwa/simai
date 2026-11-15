@@ -133,10 +133,10 @@ describe('AlarmBanner', () => {
 
     expect(within(banner).getByText('위험')).toBeTruthy();
     expect(within(banner).getByRole('alert').textContent).toBe(
-      '추락 위험(가장자리) · 0015 · 개구부 구역',
+      '추락 위험(가장자리) · 작업자 #0015 · 개구부 구역',
     );
     // 사람은 끝번호만 보이고 전체 ID 는 올려 보면 나온다. 고정폭 글꼴도 쓰지 않는다.
-    const person = within(banner).getByText('0015');
+    const person = within(banner).getByText('작업자 #0015');
     expect(person.getAttribute('title')).toBe('w-0015');
     expect(person.className).not.toContain('font-mono');
     // 경과는 낭독 영역(role=alert) 밖에 둔다.
@@ -160,11 +160,13 @@ describe('AlarmBanner', () => {
 
     live.entries = [{ ...alarm, event: { ...alarm.event, zone_id: 'z-99' } }];
     const person = renderBanner(true);
-    expect(within(person).getByRole('alert').textContent).toBe('추락 위험(가장자리) · 0015');
+    expect(within(person).getByRole('alert').textContent).toBe(
+      '추락 위험(가장자리) · 작업자 #0015',
+    );
     expect(person.textContent).not.toMatch(/z-\d/);
   });
 
-  it('확인 대기 경보가 더 있으면 +N 을 보이고 가장 높은 등급이 먼저다', () => {
+  it('확인 대기 경보가 더 있으면 「확인 대기 외 N건」을 보이고 가장 높은 등급이 먼저다', () => {
     const second: EventEntry = {
       stageStartedAt: T,
       event: {
@@ -178,8 +180,9 @@ describe('AlarmBanner', () => {
     live.entries = [second, alarm];
     const banner = renderBanner(true);
 
-    expect(within(banner).getByText('+1')).toBeTruthy();
-    expect(within(banner).getByText('외 1건').className).toContain('sr-only');
+    // 「+N」은 뜻을 몰랐다(S15P31A101-731). 무엇이 더 있는지 글자로 적는다
+    expect(within(banner).queryByText('+1')).toBeNull();
+    expect(within(banner).getByText('확인 대기 외 1건').getAttribute('title')).toContain('1건 더');
     expect(within(banner).getByRole('alert').textContent).toContain('0015');
   });
 

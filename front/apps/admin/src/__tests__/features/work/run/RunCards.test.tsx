@@ -118,24 +118,53 @@ describe('RunStatusCard', () => {
 });
 
 describe('EventListCard', () => {
-  it('시작 뒤 사건을 최근 것부터 시각·구역·등급으로 보이고, 구역이 없으면 `현장` 이다', () => {
+  it('시작 뒤 경보를 최근 것부터 시각·종류·구역·등급으로 보이고, 구역이 없으면 `현장` 이다', () => {
     data.entries = [
       entry('a', START + 5_000, 'CRITICAL', 'z-04'),
       entry('b', START + 65_000, 'HIGH', null),
     ];
     withClient(<EventListCard startedAt={START} />);
-    expect(screen.getByText('2건')).toBeTruthy();
-    const rows = within(screen.getByRole('list', { name: '사건 목록' })).getAllByRole('listitem');
+    const count = screen.getByText('2건 · 위험 1 · 경고 1');
+    expect(count.getAttribute('title')).toContain('관제 화면의 「진행 중」');
+    const rows = within(screen.getByRole('list', { name: '경보 기록 목록' })).getAllByRole(
+      'listitem',
+    );
+    expect(rows[0]?.textContent).toContain('추락 위험(가장자리)');
     expect(rows[0]?.textContent).toContain('현장');
     expect(rows[0]?.textContent).toContain('경고');
     expect(rows[1]?.textContent).toContain('개구부 구역');
     expect(rows[1]?.textContent).toContain('위험');
   });
 
-  it('사건이 없으면 `사건 없음`', () => {
+  it('같은 초·같은 사람의 위험·경고 쌍은 한 줄이고 수는 두 건이다(S15P31A101-731)', () => {
+    const r3 = entry('b', START + 5_400, 'HIGH', 'z-04');
+    data.entries = [
+      entry('a', START + 5_000, 'CRITICAL', 'z-04'),
+      { ...r3, event: { ...r3.event, rule_id: 'R3' } },
+    ];
+    withClient(<EventListCard startedAt={START} />);
+    expect(screen.getByText('2건 · 위험 1 · 경고 1')).toBeTruthy();
+    const rows = within(screen.getByRole('list', { name: '경보 기록 목록' })).getAllByRole(
+      'listitem',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain('추락 위험(가장자리) · 고소 작업면 위');
+    expect(rows[0]?.textContent).toContain('위험');
+  });
+
+  it('구역 작업이면 그 구역 경보만 센다(종료 미팅과 같은 범위)', () => {
+    data.entries = [
+      entry('a', START + 5_000, 'CRITICAL', 'z-04'),
+      entry('b', START + 9_000, 'HIGH', 'z-02'),
+    ];
+    withClient(<EventListCard startedAt={START} zoneId="z-04" />);
+    expect(screen.getByText('1건 · 위험 1 · 경고 0')).toBeTruthy();
+  });
+
+  it('경보가 없으면 `경보 없음`', () => {
     withClient(<EventListCard startedAt={START} />);
     expect(screen.getByText('0건')).toBeTruthy();
-    expect(screen.getByText('사건 없음')).toBeTruthy();
+    expect(screen.getByText('경보 없음')).toBeTruthy();
     expect(screen.queryByRole('list')).toBeNull();
   });
 });

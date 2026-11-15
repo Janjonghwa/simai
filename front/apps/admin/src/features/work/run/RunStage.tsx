@@ -22,7 +22,7 @@ import { useMemo } from 'react';
 // 서명은 작업 전 확인에서 이미 받았다. 단추 줄은 useWorkAction 으로 등록한다(`작업 종료` → `보고서 제출` / `한 번 더 실행`,
 // S15P31A101-691: 진행 중의 `다음` 이 실제로는 종료라 이름을 `작업 종료` 로 바꿨다).
 // 한 번 더 실행(S15P31A101-696): 같은 날 리허설 뒤 본 시연. 보고서를 내기 전이면 작업 전 확인(서명 재확인·보호구)을 거쳐 실행 2 를 연다.
-// 진행 중 화면의 경과·사건·관제 적용은 지금 실행 기준이다.
+// 진행 중 화면의 경과·경보 기록·관제 적용은 지금 실행 기준이다.
 
 const SPLIT =
   'grid grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] items-start gap-4 max-[960px]:grid-cols-1';
@@ -35,7 +35,7 @@ function FailureNote({ text }: { text: string }) {
   );
 }
 
-/** 1. 진행 중: 왼쪽 보고서(제출 전까지 고칠 수 있다), 오른쪽 작업 현황·사건·관제 적용 상태. `작업 종료` 가 종료를 묻는다. */
+/** 1. 진행 중: 왼쪽 보고서(제출 전까지 고칠 수 있다), 오른쪽 작업 현황·경보 기록·관제 적용 상태. `작업 종료` 가 종료를 묻는다. */
 function RunningView({ day }: { day: WorkDayItem }) {
   const end = useEndRun(day.work_id);
   // 지금 실행의 시작(실행 2 면 실행 2 시작). 옛 서버(runs 없음)는 작업 시작이다
@@ -62,7 +62,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
         </div>
         <div className="flex min-w-0 flex-col gap-3">
           <RunStatusCard day={day} signerCount={signers?.length} />
-          <EventListCard startedAt={runStart} />
+          <EventListCard startedAt={runStart} zoneId={day.zone_id} />
           <AppliedStatusCard workId={day.work_id} startedAt={runStart} />
         </div>
       </div>

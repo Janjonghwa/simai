@@ -5,6 +5,7 @@ import {
   formatWatchBindNotice,
   normalizeDisplayName,
   resolvePersonDisplayMap,
+  workerLabel,
 } from '@/features/people/personDisplay';
 import { buildPersonLabelCells } from '@/features/people/personLabelCells';
 import {
@@ -63,7 +64,8 @@ describe('단일 사람 표시 어댑터 resolvePersonDisplayMap(-658)', () => {
       watch: { status: 'disconnected', deviceId: 'watch-02' },
     });
     expect(map['w-3']).toMatchObject({
-      displayName: '미확인 1',
+      // 서버의 자동 번호 이름은 화면에서 「작업자 #N」(S15P31A101-731: 확인 상태 배지 「미확인」과 헷갈렸다)
+      displayName: '작업자 #1',
       nameSource: 'UNIDENTIFIED',
       watch: { status: 'none', deviceId: null },
     });
@@ -113,6 +115,20 @@ describe('단일 사람 표시 어댑터 resolvePersonDisplayMap(-658)', () => {
   });
 });
 
+describe('이름 없는 사람 표시(S15P31A101-731)', () => {
+  it('서버 자동 번호 이름 「미확인 N」은 「작업자 #N」, 그 밖의 이름은 그대로다', () => {
+    expect(workerLabel('미확인 205')).toBe('작업자 #205');
+    expect(workerLabel('미확인205')).toBe('작업자 #205');
+    expect(workerLabel('김철수')).toBe('김철수');
+    expect(workerLabel('미확인')).toBe('미확인');
+  });
+
+  it('이름 목록이 없으면 짧은 표시는 「작업자 #끝번호」이고 전체 표시는 World ID 그대로다', () => {
+    expect(formatPersonShort('w-mw8y3hai-0722')).toBe('작업자 #0722');
+    expect(formatPersonFull('w-mw8y3hai-0722')).toBe('w-mw8y3hai-0722');
+  });
+});
+
 describe('3D 이름표 칸 목록 조립 buildPersonLabelCells(-658 A안)', () => {
   it('연결·끊김·미배정 3상태와 PPE 칸을 배열로 조립하며 World ID·기기 ID·워치 단어를 넣지 않는다', () => {
     const map = resolvePersonDisplayMap({
@@ -141,7 +157,7 @@ describe('3D 이름표 칸 목록 조립 buildPersonLabelCells(-658 A안)', () =
       { kind: 'text', text: '안전모 미착용' },
       { kind: 'text', text: '조끼 모름(30초 전)' },
     ]);
-    expect(cells['w-0021']).toEqual([{ kind: 'text', text: '미확인 1' }]);
+    expect(cells['w-0021']).toEqual([{ kind: 'text', text: '작업자 #1' }]);
 
     const serialized = JSON.stringify(Object.values(cells));
     expect(serialized).not.toContain('w-00');

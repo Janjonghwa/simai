@@ -7,6 +7,7 @@ import {
   type MonitoringPhase,
 } from '@/features/monitor/monitoringPhase';
 import { MonitoringBadge, MonitoringProblemNote } from '@/features/monitor/MonitoringStatus';
+import { TestInputBadge } from '@/features/monitor/TestInputBadge';
 import { useMonitoringPhase } from '@/features/monitor/useMonitoringPhase';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { useTodayWorks } from '@/features/monitor/useTodayWorks';
@@ -30,6 +31,7 @@ const PANEL =
 /**
  * 진행 중 작업의 세션 바. 맨 앞 배지가 관제 단계다: 이번 작업 묶음이 현장에 적용되기 전에는 「관제 준비 중」, 적용되면 「관제 중」,
  * 늦음·거부·현장 끊김은 그 이름과 무엇이 / 어떻게 두 줄(거부는 「현장에 다시 보내기」). 작업 시작 성공만으로 「관제 중」이라 하지 않는다.
+ * 녹화 파일 재생(시험 입력) 중이면 배지 옆에 「녹화 재생 중 · 실제 알림 꺼짐」을 붙인다(S15P31A101-731).
  */
 function ActiveSession({ work, phase }: { work: TbmWorkUnit; phase: MonitoringPhase }) {
   const navigate = useNavigate();
@@ -38,6 +40,7 @@ function ActiveSession({ work, phase }: { work: TbmWorkUnit; phase: MonitoringPh
   return (
     <section aria-label="작업 세션" className={PANEL}>
       <MonitoringBadge text={text} />
+      <TestInputBadge />
       <b className="min-w-0 truncate">{workNameOf(work.name)}</b>
       {startedAt !== null && (
         <span className="text-sm whitespace-nowrap text-muted-foreground">

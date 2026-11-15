@@ -74,8 +74,8 @@ function AlarmSubline({ event }: { event: EventItem }) {
 /**
  * 확인 대기 경보 배너(명세 FR-8). 경보음이 어느 화면에서나 울리므로 배너도 모든 화면 상단 바 아래에 뜬다.
  * 가장 높은 등급·최근 경보 하나를 이벤트 카드와 같은 규칙으로 보인다: 등급 · 규칙 · 대상 · 구역, 발생 뒤 경과,
- * 버튼(상세 · 카메라 · 확인). 다른 확인 대기 경보가 더 있으면 +N. 테두리가 깜빡이고, 확인하거나 이벤트 패널에서
- * 모두 지우면 사라진다.
+ * 버튼(상세 · 카메라 · 확인). 다른 확인 대기 경보가 더 있으면 「확인 대기 외 N건」(S15P31A101-731, 「+N」은 뜻을 몰랐다). 테두리가 깜빡이고, 확인하거나 이벤트 패널에서
+ * 목록에서 숨기면 사라진다.
  * 자리는 레이아웃(AppLayout)이 상단 바 아래로 잡는다.
  * withPanel: 이 화면 오른쪽에 이벤트 패널이 있다(실시간 관제). 「상세」를 그 패널에서 열고 카메라 버튼도 둔다.
  * 소리를 켜고 끄는 버튼은 상단 바에 있다(SoundButton).
@@ -116,9 +116,11 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
         <span className="flex min-w-0 items-center gap-2">
           <AlarmHeadline event={event} zoneName={zoneName} personNames={personNames} />
           {more > 0 && (
-            <span className="text-sm whitespace-nowrap text-muted-foreground">
-              <span aria-hidden>+{more}</span>
-              <span className="sr-only">외 {more}건</span>
+            <span
+              title={`이 경보 말고도 확인을 기다리는 경보가 ${more}건 더 있습니다`}
+              className="text-sm whitespace-nowrap text-muted-foreground"
+            >
+              확인 대기 외 {more}건
             </span>
           )}
         </span>

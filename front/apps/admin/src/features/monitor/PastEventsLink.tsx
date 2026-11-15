@@ -1,17 +1,15 @@
-import { Button } from '@simai/ui/components/button';
-import { useNavigate } from '@tanstack/react-router';
-
-/** 이벤트 패널 아래의 「지난 이벤트」 링크: 작업 시작 전에 난 이벤트는 기본 목록에서 빠지고 작업 관리의 지난 날짜에서 본다. */
+/**
+ * 이벤트 패널 아래 한 줄: 지금 실행이 시작되기 전에 난 이벤트는 기본 목록에서 빠졌다는 안내(S15P31A101-731).
+ * 작업 관리로 가는 단추는 화면 위 작업 세션 바 한 곳에만 둔다(같은 단추가 두 곳에 있었다). 숨긴 것이 없으면 그리지 않는다.
+ */
 export function PastEventsLink({ hidden }: { hidden: number }) {
-  const navigate = useNavigate();
+  if (hidden <= 0) return null;
   return (
-    <div className="flex items-center justify-between gap-2 px-1 pt-1">
-      <span className="text-sm text-muted-foreground">
-        {hidden > 0 ? `작업 시작 전 이벤트 ${hidden}건` : '지난 이벤트'}
-      </span>
-      <Button variant="secondary" size="sm" onClick={() => void navigate({ to: '/work' })}>
-        작업 관리로
-      </Button>
-    </div>
+    <p
+      title="지금 실행 전 이벤트는 작업 관리의 날짜 화면(다시 보기)에서 봅니다."
+      className="px-1 pt-1 text-sm text-muted-foreground"
+    >
+      이번 실행 전 이벤트 {hidden}건은 목록에서 뺐습니다
+    </p>
   );
 }

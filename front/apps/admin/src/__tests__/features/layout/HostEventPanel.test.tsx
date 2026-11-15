@@ -4,7 +4,7 @@ import type { EventItem } from '@/features/events/types';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -58,7 +58,13 @@ function renderHost() {
   return queryClient;
 }
 
-const clearButton = () => screen.getByRole('button', { name: '모두 지우기' });
+const clearButton = () => screen.getByRole('button', { name: '목록에서 숨기기' });
+/** 「목록에서 숨기기」를 누르고, 미확인 경보가 있어 확인 창이 뜨면 「숨기기」로 넘긴다(S15P31A101-731). */
+const hideAll = () => {
+  fireEvent.click(clearButton());
+  const dialog = screen.queryByRole('dialog', { name: '목록에서 숨길까요?' });
+  if (dialog) fireEvent.click(within(dialog).getByRole('button', { name: '숨기기' }));
+};
 const cards = () => screen.queryAllByRole('article');
 const cardNames = () => cards().map((card) => card.getAttribute('aria-label'));
 
@@ -75,16 +81,16 @@ afterEach(() => {
   useSessionStore.setState(useSessionStore.getInitialState(), true);
 });
 
-describe('HostEventPanel 모두 지우기', () => {
+describe('HostEventPanel 목록에서 숨기기(옛 모두 지우기)', () => {
   it('누르면 목록이 비고 서버는 부르지 않으며 이벤트 캐시는 그대로다', () => {
     const queryClient = renderHost();
     const before = queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)!;
     expect(cards()).toHaveLength(2);
 
-    fireEvent.click(clearButton());
+    hideAll();
 
     expect(cards()).toHaveLength(0);
-    expect(screen.queryByRole('button', { name: '모두 지우기' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '목록에서 숨기기' })).toBeNull();
     expect(screen.getByRole('button', { name: '이벤트 펼치기' })).toBeTruthy();
     expect(apiCall).not.toHaveBeenCalled();
     expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)).toBe(before);
@@ -104,7 +110,7 @@ describe('HostEventPanel 모두 지우기', () => {
       ]),
     );
     await waitFor(() => expect(cards()).toHaveLength(3));
-    fireEvent.click(clearButton());
+    hideAll();
     expect(useEventClearStore.getState()).toMatchObject({ clearedAt: T + 7_000, clearedBy: 'u' });
   });
 
@@ -112,7 +118,7 @@ describe('HostEventPanel 모두 지우기', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(T + 86_400_000);
     const queryClient = renderHost();
-    fireEvent.click(clearButton());
+    hideAll();
     expect(useEventClearStore.getState().clearedAt).toBe(T);
 
     act(() =>
@@ -138,7 +144,7 @@ describe('HostEventPanel 모두 지우기', () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(clearButton());
+    hideAll();
 
     expect(useEventClearStore.getState()).toMatchObject({ clearedAt: null, clearedBy: null });
     expect(cards()).toHaveLength(1);
@@ -146,7 +152,7 @@ describe('HostEventPanel 모두 지우기', () => {
 
   it('지운 뒤에 생긴 이벤트만 다시 보인다', async () => {
     const queryClient = renderHost();
-    fireEvent.click(clearButton());
+    hideAll();
 
     act(() =>
       applyEvents(queryClient, [
@@ -165,7 +171,7 @@ describe('HostEventPanel 모두 지우기', () => {
 
   it('지운 뒤에 등급이 오른 이벤트는 새 단계로 다시 보인다', async () => {
     const queryClient = renderHost();
-    fireEvent.click(clearButton());
+    hideAll();
 
     act(() =>
       applyEvents(queryClient, [
@@ -224,7 +230,7 @@ describe('HostEventPanel 확인한 지 오래된 이벤트', () => {
     renderEvents(events());
 
     expect(cardNames()).toEqual(['w-0002 이벤트', 'w-0003 이벤트']);
-    expect(screen.getByTestId('event-panel-head').textContent).toContain('사건 2건');
+    expect(screen.getByTestId('event-panel-head').textContent).toContain('진행 중 2건');
   });
 
   it('시간이 흘러 24시간을 넘기는 순간(분 단위) 목록에서 빠진다', () => {

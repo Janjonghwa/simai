@@ -139,6 +139,24 @@ export const selectTrackedCount = (state: Pick<RealtimeState, 'world'>): number 
   state.world?.payload.tracks.filter((track) => COUNTED_LIFECYCLES.has(track.track_lifecycle))
     .length ?? 0;
 
+/** selectAliveIdsKey 의 구분 글자. World ID 에 들어가지 않는 줄바꿈이다. */
+export const ALIVE_ID_SEPARATOR = '\n';
+
+/**
+ * 지금 살아 있는(놓치지 않은, LOST 가 아닌) 사람의 World ID 와 병합으로 흡수된 이전 ID 를 정렬해 줄바꿈으로 이은 글자(S15P31A101-731).
+ * 이벤트 패널의 화면 묶음이 살아 있는 서로 다른 두 사람을 한 카드로 섞지 않게 쓴다. 확정 전(TENTATIVE)도 실제 사람일 수 있어 넣는다.
+ * World 를 아직 못 받았으면 null(모름). 글자를 돌려주므로 사람이 바뀔 때만 구독한 화면을 다시 그린다.
+ */
+export const selectAliveIdsKey = (state: Pick<RealtimeState, 'world'>): string | null => {
+  const tracks = state.world?.payload.tracks;
+  if (!tracks) return null;
+  return tracks
+    .filter((track) => track.track_lifecycle !== 'LOST')
+    .flatMap((track) => [track.world_id, ...(track.aliases ?? [])])
+    .sort()
+    .join(ALIVE_ID_SEPARATOR);
+};
+
 /** 최근 몇 초 평균 Tier 0 처리 지연(ms). 모르면 undefined. 숫자라 값이 바뀔 때만 다시 그린다. */
 export const selectTier0LagMs = (state: Pick<RealtimeState, 'lagSamples'>): number | undefined =>
   averageLag(state.lagSamples);
