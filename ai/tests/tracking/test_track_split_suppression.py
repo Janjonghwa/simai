@@ -278,3 +278,75 @@ def test_single_view_does_not_register_a_world_track(rig):
     m = wt._manager()
     frame = m.update(wt._frame(rig, T, [wt._cluster(rig, "one", T, 3.0, 3.0, cams=("cam1",))]), rig)
     assert frame.tracks == () and m.issuer.issued == ()
+
+
+@pytest.mark.parametrize("chain", [True, False])
+@pytest.mark.parametrize("reid_on", [False, True])
+def test_long_two_plus_two_split_keeps_one_id_through_owner_window(rig, chain, reid_on):
+    """-739 재현: 한 사람의 4대 묶음이 2+2 로 3 s 이어 갈라진다(18차 단상 위 사람, 소유 이력 창 1 s 뒤 새 ID 46/84건).
+
+    억제 이력(split_suppression_chain)이 있으면 3 s 내내 한 ID 다. 끄면(이전 동작) 소유 이력 창(1 s)이 지난 첫 시각에 새 ID 가 나온다.
+    Re-ID 가 꺼진 기하 경로(18차 실제 상태)와 Re-ID 특징 조회가 붙은 경우(특징 없음) 모두 같다.
+    """
+    m = wt._manager(split_suppression_chain=chain)
+    if reid_on:
+        m.feature_lookup = lambda cam, local, t: None
+    original = wt._walk(m, rig, 3, x0=3.0, speed=0.0)[-1].tracks[0].world_id
+    created_at = None
+    for k in range(3, 33):
+        t = T + k * DT
+        m.update(wt._frame(rig, t, [
+            wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2")),
+            wt._cluster(rig, "b", t, 3.0, 3.3, cams=("cam3", "cam4")),
+        ]), rig)
+        if created_at is None and len(m.issuer.issued) > 1:
+            created_at = t
+    if chain:
+        assert tuple(m.issuer.issued) == (original,)
+        assert m.diag["new_track.split_remainder_suppressed"] == 30
+        assert m.diag["new_track.suppression_chained"] == 30
+    else:
+        assert created_at == T + 2 * DT + m.config.split_suppression_owner_ttl_ms + DT
+
+
+def test_chain_breaks_when_remainder_absent_longer_than_window(rig):
+    """억제 이력도 같은 창으로 만료한다: 나머지가 1 s 넘게 안 보였다 다시 나오면 지금처럼 새 ID 다(무기한 억제 아님)."""
+    m = wt._manager()
+    wt._walk(m, rig, 3, x0=3.0, speed=0.0)
+    t = T + 3 * DT
+    for k in range(3, 8):  # 0.5 s 억제
+        t = T + k * DT
+        m.update(wt._frame(rig, t, [
+            wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2")),
+            wt._cluster(rig, "b", t, 3.0, 3.3, cams=("cam3", "cam4")),
+        ]), rig)
+    last = t
+    t = last
+    while t < last + m.config.split_suppression_owner_ttl_ms + DT:  # 나머지 없이 주인만 1.1 s
+        t += DT
+        m.update(wt._frame(rig, t, [wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2"))]), rig)
+    t += DT
+    m.update(wt._frame(rig, t, [
+        wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2")),
+        wt._cluster(rig, "b", t, 3.0, 3.3, cams=("cam3", "cam4")),
+    ]), rig)
+    assert len(m.issuer.issued) == 2
+
+
+def test_chain_does_not_override_same_camera_separate_detection(rig):
+    """억제 이력이 있어도 같은 카메라가 주인과 후보를 따로 보면(두 사람) 그 시각 바로 새 ID 다(-458 반증 그대로)."""
+    m = wt._manager()
+    wt._walk(m, rig, 3, x0=3.0, speed=0.0)
+    for k in range(3, 20):
+        t = T + k * DT
+        m.update(wt._frame(rig, t, [
+            wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2")),
+            wt._cluster(rig, "b", t, 3.0, 3.3, cams=("cam3", "cam4")),
+        ]), rig)
+    assert len(m.issuer.issued) == 1
+    t = T + 20 * DT
+    views = (wt._view(rig, "cam1", "cam1-other", t, 3.0, 3.3),
+             wt._view(rig, "cam3", "cam3-p", t, 3.0, 3.3), wt._view(rig, "cam4", "cam4-p", t, 3.0, 3.3))
+    second = wt.ViewCluster("b", views, wt.triangulate_skeleton([v.view for v in views], rig))
+    m.update(wt._frame(rig, t, [wt._cluster(rig, "a", t, 3.0, 3.0, cams=("cam1", "cam2")), second]), rig)
+    assert len(m.issuer.issued) == 2

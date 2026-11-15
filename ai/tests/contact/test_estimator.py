@@ -214,6 +214,70 @@ def test_ankles_below_held_podium_contradict():
     assert e.contact.support_surface_validity == "UNCERTAIN" and e.contact.ground_anchor_xyz is None
 
 
+def test_ankle_below_floor_band_does_not_break_floor_hold():
+    """-739: 바닥보다 낮은 면은 없다. 바닥 띠 아래 디딤발(삼각측량 오차)은 반증이 아니고, 다음 시각 다시 확인 없이 VALID 다."""
+    est = ContactEstimator()
+    _stand(est, T, ON_FLOOR, 0.0, 2)
+    t = T + 2 * DT
+    e = _step(est, t, _skeleton(t, ON_FLOOR, 0.0, ankle_dz=(-0.09, -0.07)))  # 발목 Z = -0.01, 0.01
+    assert ContactReason.ANKLE_BELOW_FLOOR_BAND in e.reasons and ContactReason.HOLD_CONTRADICTED not in e.reasons
+    c = e.contact
+    assert (c.support_surface_id, c.z_validity, e.surface_source) == ("floor", "UNCERTAIN", SurfaceSource.INFERRED)
+    assert c.ground_anchor_xyz[2] == 0.0
+    e = _step(est, t + DT, _skeleton(t + DT, ON_FLOOR, 0.0))
+    assert (e.contact.support_surface_validity, e.contact.z_validity) == ("VALID", "VALID")  # 다시 확인 2번이 필요 없다
+
+
+def test_ankle_below_floor_band_is_not_contact_evidence():
+    """띠 아래 발목은 유지 시각을 갱신하지 않는다: 그것만 이어지면 hold_max_ms 뒤 UNKNOWN(바닥으로 채우지 않음)."""
+    est = ContactEstimator(ContactConfig(hold_max_ms=300))
+    _stand(est, T, ON_FLOOR, 0.0, 2)
+    last = T + DT
+    seen = set()
+    for k in range(2, 7):
+        t = T + k * DT
+        e = _step(est, t, _skeleton(t, ON_FLOOR, 0.0, ankle_dz=(-0.1, -0.1)))
+        assert (e.contact.ground_anchor_xyz is None) == (t - last > 300)
+        seen.update(e.reasons)
+    assert ContactReason.HOLD_EXPIRED in seen
+
+
+def test_below_band_on_podium_still_contradicts_and_step_up_from_floor_is_immediate():
+    """띠 아래 예외는 바닥만이다. 작업면에서 내려옴·바닥에서 올라섬은 그 시각에 유지를 끊는다(지연 없음)."""
+    est = ContactEstimator()
+    _stand(est, T, ON_PODIUM, 0.4, 2)
+    t = T + 2 * DT
+    e = _step(est, t, _skeleton(t, ON_PODIUM, 0.4, ankle_dz=(-0.09, -0.09)))
+    assert ContactReason.HOLD_CONTRADICTED in e.reasons and e.contact.ground_anchor_xyz is None
+    est = ContactEstimator()
+    _stand(est, T, ON_FLOOR, 0.0, 2)
+    e = _step(est, t, _skeleton(t, ON_PODIUM, 0.4))
+    assert ContactReason.HOLD_CONTRADICTED in e.reasons and e.contact.ground_anchor_xyz is None
+
+
+def test_session18_floor_walker_next_to_podium_keeps_floor():
+    """18차 형태(2026-11-15 재생, 단상 옆 바닥 보행자): VALID 디딤발 높이가 중앙 9 cm 근처이고 약 12 %가 바닥 띠 아래(2 cm 미만).
+
+    -739 전에는 띠 아래 한 시각마다 바닥 유지가 끊기고 다시 잡는 데 확인 2번이 필요해 접지 모름(R2·R3 Z_UNKNOWN 근거)이 반복됐다.
+    지금은 처음 확인 뒤 60 시각(6 s) 동안 접지점을 잃지 않는다. 음성 대조: 같은 높이 열을 단상 유지에 넣으면(띠 아래 = 내려옴) 끊긴다.
+    """
+    dz = [0.01, 0.03, -0.07, 0.0, 0.05, -0.02, 0.02, -0.075]  # 디딤발 Z = 0.09, 0.11, 0.01, 0.08, 0.13, 0.06, 0.10, 0.005
+    est = ContactEstimator()
+    _stand(est, T, (4.0, 5.9), 0.0, 2)  # 단상(y 6.2~7.3) 가장자리에서 0.3 m 바깥 바닥
+    unknown = 0
+    for k in range(2, 62):
+        t = T + k * DT
+        e = _step(est, t, _skeleton(t, (4.0, 5.9), 0.0, ankle_dz=(dz[k % 8], dz[k % 8] + 0.06)))
+        unknown += e.contact.ground_anchor_xyz is None
+        assert e.contact.support_surface_id == "floor"
+    assert unknown == 0
+    est = ContactEstimator()
+    _stand(est, T, ON_PODIUM, 0.4, 2)
+    t = T + 2 * DT
+    e = _step(est, t, _skeleton(t, ON_PODIUM, 0.4, ankle_dz=(dz[2], dz[2] + 0.06)))
+    assert e.contact.ground_anchor_xyz is None
+
+
 def test_raised_single_ankle_keeps_hold_but_other_surface_height_breaks_it():
     est = ContactEstimator()
     _stand(est, T, ON_FLOOR, 0.0, 2)
