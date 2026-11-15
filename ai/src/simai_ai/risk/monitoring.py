@@ -47,7 +47,8 @@ class CameraMonitor:
     """카메라 한 대의 상태. last_capture 는 마지막으로 처리한 프레임의 촬영 시각(UTC ms), 받은 적 없으면 None.
 
     fusion_excluded: 수신 중이지만 그 판정 시각의 융합(다시점 관측)에 쓰지 못한 카메라(Tier 0 가 늦어서 융합 시각 계산에서
-        뺀 카메라, S15P31A101-219). health 에는 없는 Tier 0 내부 값이라 from_json(health 형식)은 False 로 둔다.
+        뺀 카메라, S15P31A101-219. Tier 0 판정 루프는 camera_stall_ms 이상 이어 빠진 카메라와 DRIFTED 등으로 제외한 카메라만
+        표시한다, S15P31A101-716). health 에는 없는 Tier 0 내부 값이라 from_json(health 형식)은 False 로 둔다.
     """
 
     camera_id: str

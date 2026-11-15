@@ -20,9 +20,10 @@
 (docs/design/tier0-triangulation.md: 외삽하지 않으므로 넣을 카메라 모두에 그 시각 이후 프레임이 있어야 한다). 멈춘 카메라
 (camera_stall_ms 초과)와, 수신 중이어도 t_latest_global 보다 fusion_max_lag_ms 넘게 늦은 카메라는 빼서 한 카메라의 정지·
 지연이 전체를 멈추거나 늦추지 않게 한다(docs/design/tier0-fusion-time.md). 뺀 늦은 카메라는 그 tick 관측에 들어가지 않고
-(트랙 cameras 에 없다) Perceived.lagging·Perception.lagging·lagging_ticks 에 남고, 판정의 감시 입력(R7)은 이 카메라를
-정상 관측 카메라로 세지 않는다. World Track 시각은 늘기만 하므로 직전보다
-늘지 않으면 그 tick 은 인지 결과를 내지 않는다(같은 관측을 두 번 내지 않는다).
+(트랙 cameras 에 없다) Perceived.lagging·Perception.lagging·lagging_ticks 에 남고, 판정의 감시 입력(R7)은 그중
+camera_stall_ms 이상 끊김 없이 이어 빠진 카메라(Perception.lagging_sustained)를 정상 관측 카메라로 세지 않는다
+(S15P31A101-716). World Track 시각은 늘기만 하므로 직전보다 늘지 않으면 그 tick 은 인지 결과를 내지 않는다(같은 관측을
+두 번 내지 않는다).
 
 카메라 시각 상태(CameraClock)의 sync_valid 는 동기화 측정 모듈이 아직 없어 True 로 둔다(SIM 은 시각 오차가 없다.
 LIVE 동기화 무효 판정은 남은 일). 현재 시각은 주입받는다(now_ms).
@@ -549,9 +550,13 @@ class Perception:
         self._frames_since: dict[str, int] = {c: 0 for c in feed.camera_ids}
         self.dropped_frames = 0
         self.lagging_ticks: dict[str, int] = {c: 0 for c in feed.camera_ids}  # 늦어서 뺀 인지 tick 수(누계)
-        # 마지막으로 인지 결과를 낸 tick 에서 늦어서 뺀 카메라. 새 tick 이 날 때까지 유지한다(판정의 감시 입력이 읽는다: 수신
-        # 중이어도 융합에 쓰지 못한 카메라는 R7 의 정상 관측 카메라로 세지 않는다)
+        # 마지막으로 인지 결과를 낸 tick 에서 늦어서 뺀 카메라. 새 tick 이 날 때까지 유지한다
         self.lagging: tuple[str, ...] = ()
+        # 늦어서 빠지기 시작한 t_latest_global(끊김 없이 이어 빠진 동안만 유지)과, 그중 camera_stall_ms 이상 이어 빠진 카메라.
+        # 판정의 감시 입력(R7)은 이어 빠진 카메라만 정상 관측 카메라로 세지 않는다: 한두 tick 빠짐은 카메라 장애가 아니다
+        # (명세 6.4 R7 즉시 발생의 전제 'camera_stall_ms 로 이미 거른 값', S15P31A101-716 17차 R7 4분 17건)
+        self.lagging_since: dict[str, int] = {}
+        self.lagging_sustained: tuple[str, ...] = ()
         self._excluded_cameras: frozenset[str] = frozenset()
         # 추적 계측(S15P31A101-413): 판정에 쓰지 않는 관찰자. 상태 파일 status.tracking_diagnostics 와 주기 요약 로그(촬영 시각 30 s)
         self.diagnostics = TrackingDiagnostics()
@@ -678,6 +683,10 @@ class Perception:
             log.info("늦은 카메라를 융합에서 뺀다(t_latest_global 보다 %d ms 넘게 늦음): %s",
                      self.time_config.fusion_max_lag_ms, ", ".join(fusion.lagging))
         self.lagging = fusion.lagging
+        self.lagging_since = {c: self.lagging_since.get(c, t_latest) for c in fusion.lagging}
+        self.lagging_sustained = tuple(
+            c for c in fusion.lagging if t_latest - self.lagging_since[c] >= self.time_config.camera_stall_ms
+        )
         for c in fusion.lagging:
             self.lagging_ticks[c] += 1
         views, drops = self.buffer.views_at(t)

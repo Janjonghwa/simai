@@ -77,6 +77,7 @@ class _Perception:
     manager: _Manager = field(default_factory=_Manager)
     _t: int | None = None
     lagging: tuple[str, ...] = ()
+    lagging_sustained: tuple[str, ...] = ()
     excluded_cameras: tuple[str, ...] = ()
 
     def camera_clocks(self):
@@ -223,5 +224,35 @@ def test_operator_close_is_rejected_while_r7_still_judges_the_zone_degraded(tmp_
         site.run(5)
         assert len(site.resolved()) == 1
         assert site.loop.close(_close(state.event_id, "8b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d9e"))["reject_reason"] == "NOT_ACTIVE"
+    finally:
+        site.close()
+
+
+# ---------------------------------------------------------------- 늦은 카메라 순간 빠짐 (S15P31A101-716)
+
+
+def test_brief_fusion_lag_does_not_raise_r7_but_sustained_lag_does(tmp_path, calibration):
+    """17차: 늦은 카메라가 한두 tick 융합에서 빠질 때마다 R7(지속 조건 없음)이 구역마다 새로 열려 4분 17건이었다. 판정 루프는
+    camera_stall_ms 이상 이어 빠진 카메라(Perception.lagging_sustained)만 R7 정상 카메라에서 뺀다. 순간 빠짐(lagging 에만
+    있음)은 R7 을 내지 않고, 이어 빠지면 같은 구역에 R7 이 난다."""
+    clock = FixedClock(T0)
+    site = Site(tmp_path / "j", calibration, clock)
+    try:
+        covering = site.loop._monitoring(site.loop.config_sync.begin_tick()).zone_cameras[ts.ZONE["zone_id"]]
+        assert len(covering) >= 2, covering
+        late = tuple(covering[1:])  # 빠지면 한 대만 남는 구역
+        site.perception.lagging = late
+        site.perception.lagging_sustained = ()
+        site.run(20)
+        assert [t for t in site.transitions if t.state.rule_id == "R7"] == []
+        mon = site.loop._monitoring(site.loop.config_sync.begin_tick())
+        assert not any(c.fusion_excluded for c in mon.cameras)
+
+        site.perception.lagging_sustained = late
+        site.run(3)
+        raised = [t for t in site.transitions if t.transition is Lifecycle.RAISED]
+        assert [t.state.rule_id for t in raised] == ["R7"] and raised[0].state.key.zone_id == ts.ZONE["zone_id"]
+        mon = site.loop._monitoring(site.loop.config_sync.begin_tick())
+        assert {c.camera_id for c in mon.cameras if c.fusion_excluded} == set(late)
     finally:
         site.close()
