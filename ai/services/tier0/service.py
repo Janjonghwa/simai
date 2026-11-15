@@ -76,7 +76,7 @@ from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, Confi
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, clean_stop_path, clean_stop_record, marker_section
-from simai_ai.gpu.admission import AVATAR_DETECT_BUDGET_MS, AVATAR_JUDGE_BUDGET_MS
+from simai_ai.gpu.admission import AVATAR_DETECT_BUDGET_MS, JUDGE_TICK_OVERRUN_MS
 from simai_ai.gpu.processing import ProcessingWindow
 from simai_ai.gpu.reserve import GpuReservation
 from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
@@ -317,7 +317,8 @@ class Tier0Service:
         self.gpu = GpuReservation(settings.gpu_reserve_mb, device=settings.gpu_device, torch_module=gpu_torch)
         self.load = LoadWindow(settings.lag_budget_ms)
         processing_clock = lambda: mono_ns() / 1_000_000_000
-        self.judge_processing = ProcessingWindow(AVATAR_JUDGE_BUDGET_MS, monotonic=processing_clock)
+        # 표시 파일 진단: judge 는 판정 주기 초과(100ms) 틱 수, 아바타 차단 예산은 아바타 로그 사유에 남긴다(-717)
+        self.judge_processing = ProcessingWindow(JUDGE_TICK_OVERRUN_MS, monotonic=processing_clock)
         self.detect_processing = ProcessingWindow(AVATAR_DETECT_BUDGET_MS, monotonic=processing_clock)
         self._qwe_total = 0  # LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(직전 지연 표본 때)
         self.marker_error: str | None = None  # 표시 파일 쓰기 실패(분석 워커·GPU 큐는 표시 파일이 없으면 모름으로 본다)

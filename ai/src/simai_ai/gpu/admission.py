@@ -39,6 +39,7 @@ S15P31A101-498: 상시 아바타는 AvatarAdmissionGate로 처리 부하(process
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import threading
@@ -49,6 +50,8 @@ from pathlib import Path
 from typing import Any
 
 from simai_ai.gpu.reserve import ADMIT_STATES
+
+log = logging.getLogger(__name__)
 
 MARKER_KEY = "gpu_priority"
 SECTION_VERSION = 1
@@ -403,8 +406,18 @@ class AdmissionGate:
         return "ok", OK, f"Tier 0 지연 {lag_max:.0f}ms ≤ 예산 {self.policy.lag_budget_ms}ms", marker_id, qwe
 
 
-AVATAR_JUDGE_BUDGET_MS = 100
+# 판정 처리 p95 예산(S15P31A101-717, Lead 확인 필요): 명세 3.2 는 Tier 0 지연이 6.6 목표(capture_to_risk 600ms)를
+# 넘을 때 멈추라고 한다. 판정 처리 몫 = 600 − 융합 허용 지연 150(tier0-fusion-time) − 검출 처리 예산 150 − 판정 주기
+# 대기 100 = 200ms(판정 주기 2개). 100ms(판정 주기 1개)는 17차 2~3명에서 아바타를 5분 멈춰도 판정 p95 가 104~198ms 로
+# 그대로였고(아바타는 원인이 아님) 분석 워커의 끝단 600ms 문은 내내 열려 있었다. 4명 이상 지속 과부하(11-08 p95 233ms~)는
+# 여전히 막는다. 검출 150ms 는 아바타가 실제로 GPU 를 나눠 쓰는 경로라 그대로 둔다.
+AVATAR_JUDGE_BUDGET_MS = 200
 AVATAR_DETECT_BUDGET_MS = 150
+# 판정 주기 초과 시작점(tick_ms 100ms). 아바타 자체 감속의 판정 기준선이자 Tier 0 표시 파일 processing.judge 의 budget_ms·
+# over_budget 기준이다(진단 지표는 예산과 상관없이 "판정 주기를 넘긴 틱"을 센다). 차단 예산(200ms)보다 먼저 물러나게 한다.
+JUDGE_TICK_OVERRUN_MS = 100
+AVATAR_JUDGE_BUDGET_ENV = "SIMAI_AVATAR_JUDGE_BUDGET_MS"
+AVATAR_DETECT_BUDGET_ENV = "SIMAI_AVATAR_DETECT_BUDGET_MS"
 AVATAR_OVER_BUDGET_HOLD_S = 10.0
 AVATAR_EXTREME_LAG_MS = 1000
 AVATAR_BASE_INTERVAL_MS = 200
@@ -426,14 +439,40 @@ def avatar_recommended_interval_ms(pressure: float) -> int:
     return AVATAR_THROTTLE_OVER_INTERVAL_MS
 
 
-class AvatarAdmissionGate(AdmissionGate):
-    """아바타 전용 처리 부하 기준(S15P31A101-498·547).
+def avatar_budgets_from_env(env: Mapping[str, str]) -> tuple[float, float]:
+    """(판정, 검출) 처리 p95 차단 예산(ms). GPU 세션에서 이미지 재빌드 없이 조정하려는 것이다.
 
-    - 창 p95(`lag_ms_p95`, 구버전 표시 파일에 없으면 `lag_ms_max` 폴백)가 예산(judge 100ms, detect 150ms)을
+    비우면 기본값이다. 양수 유한값이 아니면 경고를 남기고 기본값으로 진행한다(예외로 끝내면 감시 프로세스가 아바타를
+    계속 다시 띄운다. 아바타는 시연 필수).
+    """
+    out = []
+    for name, default in ((AVATAR_JUDGE_BUDGET_ENV, AVATAR_JUDGE_BUDGET_MS),
+                          (AVATAR_DETECT_BUDGET_ENV, AVATAR_DETECT_BUDGET_MS)):
+        raw = (env.get(name) or "").strip()
+        value = float(default)
+        if raw:
+            try:
+                parsed = float(raw)
+            except ValueError:
+                parsed = math.nan
+            if math.isfinite(parsed) and parsed > 0:
+                value = parsed
+            else:
+                log.warning("%s=%r 는 양수 ms 가 아니다 → 기본값 %gms 로 진행한다", name, raw, value)
+        out.append(value)
+    return out[0], out[1]
+
+
+class AvatarAdmissionGate(AdmissionGate):
+    """아바타 전용 처리 부하 기준(S15P31A101-498·547·717).
+
+    - 창 p95(`lag_ms_p95`, 구버전 표시 파일에 없으면 `lag_ms_max` 폴백)가 예산(judge 200ms, detect 150ms)을
       연속 `over_budget_hold_s`(기본 10초) 넘을 때만 차단하고, 차단 뒤에는 예산 이하가 연속 `resume_after_s`
       (기본 10초) 이어져야 재개한다(히스테리시스).
     - 처리 시간 모름·표시 파일 만료/없음·GPU 예약 실패·기동 중과 극단적 멈춤(`lag_ms_max >= extreme_lag_ms`,
       기본 1000ms)은 즉시 차단한다.
+    - 자체 감속(`recommended_interval_ms`)은 차단 예산이 아니라 감속 기준선(판정 min(100ms, 판정 예산), 검출 = 검출 예산)
+      대비 비율로 정한다. 판정이 주기(100ms)를 넘기 시작하면 차단 전에 먼저 물러난다(-717).
     """
 
     def __init__(
@@ -445,12 +484,21 @@ class AvatarAdmissionGate(AdmissionGate):
         monotonic: Callable[[], float],
         over_budget_hold_s: float = AVATAR_OVER_BUDGET_HOLD_S,
         extreme_lag_ms: float = AVATAR_EXTREME_LAG_MS,
+        judge_budget_ms: float = AVATAR_JUDGE_BUDGET_MS,
+        detect_budget_ms: float = AVATAR_DETECT_BUDGET_MS,
     ) -> None:
         if over_budget_hold_s < 0 or extreme_lag_ms <= 0:
             raise ValueError("over_budget_hold_s 는 0 이상, extreme_lag_ms 는 양수다")
+        if not (_number(judge_budget_ms) and judge_budget_ms > 0 and _number(detect_budget_ms) and detect_budget_ms > 0):
+            raise ValueError("judge_budget_ms·detect_budget_ms 는 양수다")
         super().__init__(marker, policy, wall_s=wall_s, monotonic=monotonic)
         self.over_budget_hold_s = float(over_budget_hold_s)
         self.extreme_lag_ms = float(extreme_lag_ms)
+        self.judge_budget_ms = float(judge_budget_ms)
+        self.detect_budget_ms = float(detect_budget_ms)
+        # 감속 기준선: 차단 예산을 낮게 주입하면(예: 80ms) 그 아래에서 물러나야 하므로 둘 중 작은 값
+        self.judge_throttle_ms = min(float(JUDGE_TICK_OVERRUN_MS), self.judge_budget_ms)
+        self.detect_throttle_ms = self.detect_budget_ms
         self._over_since: float | None = None
         self._blocked = False
         self._last_pressure: float = 0.0
@@ -529,10 +577,10 @@ class AvatarAdmissionGate(AdmissionGate):
         processing = gp.get("processing")
         if not isinstance(processing, dict) or not isinstance(processing.get("detect_required"), bool):
             return "refuse", LAG_UNKNOWN, "Tier 0 처리 부하 신호 없음 → 모름", marker_id, 0
-        stages = [("judge", AVATAR_JUDGE_BUDGET_MS)]
+        stages = [("judge", self.judge_budget_ms)]
         if processing["detect_required"]:
-            stages.append(("detect", AVATAR_DETECT_BUDGET_MS))
-        parsed: list[tuple[str, int, float, float, bool]] = []
+            stages.append(("detect", self.detect_budget_ms))
+        parsed: list[tuple[str, float, float, float, bool]] = []
         for stage, budget in stages:
             load = processing.get(stage)
             if (not isinstance(load, dict) or not _count(load.get("samples")) or load["samples"] == 0
@@ -550,7 +598,9 @@ class AvatarAdmissionGate(AdmissionGate):
                 # 옛 표시 파일 호환: lag_ms_p95 필드가 없으면 창 최댓값(p95 의 보수적 상한)을 쓴다.
                 lag_p95 = lag_max
             parsed.append((stage, budget, lag_p95, lag_max, has_p95))
-        pressure = max((lag_p95 / float(budget) for _stage, budget, lag_p95, _lag_max, _has_p95 in parsed), default=0.0)
+        throttle_ref = {"judge": self.judge_throttle_ms, "detect": self.detect_throttle_ms}
+        pressure = max((lag_p95 / throttle_ref[stage] for stage, _budget, lag_p95, _lag_max, _has_p95 in parsed),
+                       default=0.0)
         self._last_pressure = pressure
         self._recommended_interval_ms = avatar_recommended_interval_ms(pressure)
         for stage, _budget, _lag_p95, lag_max, _has_p95 in parsed:
@@ -558,11 +608,14 @@ class AvatarAdmissionGate(AdmissionGate):
                 return ("refuse", OVER_BUDGET,
                         f"Tier 0 {stage} 처리 최댓값 {lag_max:.1f}ms ≥ 극단값 {self.extreme_lag_ms:.0f}ms",
                         marker_id, 0)
+        # 모든 단계의 p95/예산을 함께 남긴다(17차: 판정 사유만 보여 검출 쪽 여유를 알 수 없었다)
+        summary = "·".join(f"{stage} {'p95' if has_p95 else 'max'} {lag_p95:.1f}/{budget:g}ms"
+                           for stage, budget, lag_p95, _lag_max, has_p95 in parsed)
         for stage, budget, lag_p95, _lag_max, has_p95 in parsed:
             if lag_p95 > budget:
                 metric = "p95" if has_p95 else "max(p95 없음)"
                 return ("over_p95", OVER_BUDGET,
-                        f"Tier 0 {stage} 처리 {metric} {lag_p95:.1f}ms > {budget}ms",
+                        f"Tier 0 {stage} 처리 {metric} {lag_p95:.1f}ms > {budget:g}ms ({summary})",
                         marker_id, 0)
-        return "ok", OK, "Tier 0 판정·검출 처리 부하 정상", marker_id, 0
+        return "ok", OK, f"Tier 0 판정·검출 처리 부하 정상 ({summary})", marker_id, 0
 
