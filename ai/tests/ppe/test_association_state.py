@@ -677,6 +677,46 @@ def test_contrary_reason_still_stays_until_confirmed():
     assert (v.state, v.reason) == ("UNKNOWN", ps.R_CONTRARY)
 
 
-def test_policy_version_marks_reason_change():
+def test_policy_version_marks_current_rules():
     from simai_ai.ppe.config import POLICY_VERSION
-    assert POLICY_VERSION == "ppe-policy-0.5.0"
+    assert POLICY_VERSION == "ppe-policy-0.6.0"
+
+
+# ---- 머리 폭 하한 = 어깨 폭 × 0.6 (S15P31A101-737, ppe-policy-0.6.0) ----------------------------------------------
+def _narrow_face(cx=500, hy=300, eye_half=3, shoulder_conf=0.9):
+    """옆·뒷모습처럼 귀가 안 보이고 눈 간격이 좁은 사람(눈·귀 기준 머리 폭 = 눈 간격 × 2.5)."""
+    kps = keypoints(cx, hy, torso_conf=shoulder_conf)
+    kps[pa.L_EYE] = [cx + eye_half, hy, 0.9]
+    kps[pa.R_EYE] = [cx - eye_half, hy, 0.9]
+    kps[pa.L_EAR][2] = kps[pa.R_EAR][2] = 0.1
+    return PersonObservation(world_id="w1", identity_revision=0, local_track_id="l-w1", keypoints_2d=kps)
+
+
+def _helmet_reason(p, cands, cfg=pa.DEFAULT_CONFIG):
+    frame = FrameObservations("cam1", 0, 1, 1000, IMAGE, (p,))
+    a = associate_frame(frame, FrameDetections("cam1", 0, 1, 1000, IMAGE, tuple(cands)), cfg)
+    [s] = [s for s in a.samples if s.item == "helmet"]
+    return s.kind, s.reason
+
+
+def test_narrow_face_head_detection_connects_with_shoulder_floor():
+    p = _narrow_face()   # 눈·귀 기준 폭 15px, 어깨 72px → 하한 43.2px
+    old = dataclasses.replace(pa.DEFAULT_CONFIG, head_min_scale_shoulder_ratio=0.0)
+    assert _helmet_reason(p, [HELMET()], old) == (pa.S_NONE, pa.R_NO_DETECTION)   # 머리 상자가 영역에 덜 들어 연결 안 됨
+    assert _helmet_reason(p, [HELMET()]) == (pa.S_WORN, pa.R_WORN_MATCHED)
+    assert _helmet_reason(p, [NO_HELMET()])[0] == pa.S_NOT_WORN
+    assert pa.head_region(p.keypoints_2d, IMAGE).scale == pytest.approx(0.6 * 72)
+
+
+def test_shoulder_floor_does_not_make_small_face_clear():
+    p = _narrow_face(eye_half=2)   # 눈·귀 기준 폭 10px < 선명 기준 12px
+    region = pa.head_region(p.keypoints_2d, IMAGE)
+    assert region.scale == pytest.approx(43.2) and not region.clear
+    assert _helmet_reason(p, [NO_HELMET()]) == (pa.S_UNKNOWN, pa.R_REGION_NOT_CLEAR)   # 미착용 근거로 쓰지 않는다
+    assert _helmet_reason(p, [HELMET()]) == (pa.S_WORN, pa.R_WORN_MATCHED)
+
+
+def test_without_both_shoulders_head_scale_stays_face_based():
+    p = _narrow_face(shoulder_conf=0.1)
+    assert pa.head_region(p.keypoints_2d, IMAGE).scale == pytest.approx(15.0)
+    assert _helmet_reason(p, [HELMET()]) == (pa.S_NONE, pa.R_NO_DETECTION)

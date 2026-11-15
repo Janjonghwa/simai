@@ -1,7 +1,9 @@
 """한 카메라·한 프레임에서 PPE 검출을 사람 머리·몸통에 일대일로 맞춘다 (명세 5.5 사람과의 연결).
 
 같은 카메라·같은 프레임(frame_key)·같은 촬영 시각의 Tier 0 관측 2D keypoint 만 쓴다(HMR 추정점·가려진 점 제외).
-안전모는 머리(눈·귀) 영역, 조끼는 어깨~골반 영역과 겹쳐야 그 사람의 근거다. 한 검출이 두 사람 이상에 걸리거나,
+안전모는 머리(눈·귀) 영역, 조끼는 어깨~골반 영역과 겹쳐야 그 사람의 근거다. 머리 폭은 눈·귀 간격으로 정하되, 두 어깨가
+보이면 어깨 폭 × head_min_scale_shoulder_ratio 를 하한으로 둔다(옆·뒷모습에서 눈·귀 간격이 좁게 잡혀 머리에 걸친 검출이
+연결되지 않던 것, S15P31A101-737). '선명한 머리'(미착용 근거) 판단은 하한 전의 눈·귀 기준 폭으로 한다. 한 검출이 두 사람 이상에 걸리거나,
 같은 사람·같은 장비에 착용·미착용이 함께 나오거나, ID 대응이 불확실하면 그 표본은 UNKNOWN 이다.
 어느 사람에게도 맞지 않는 검출(손에 든 안전모, 의자에 걸린 조끼)은 버린다(orphans, 착용으로 세지 않는다).
 검출이 없는 것은 미착용 근거가 아니다(NONE).
@@ -149,12 +151,17 @@ def head_region(kps, image_size, cfg: PpeConfig = DEFAULT_CONFIG) -> Region | No
         face = [p for p in pts.values() if p is not None]
         scale = max(_dist(a, b) for a in face for b in face) * cfg.side_span_to_head_width
     scale = max(scale, cfg.head_min_scale_px)
+    face_scale = scale   # '선명한 머리' 판단은 눈·귀로 잰 폭으로 한다(어깨 하한으로 작은 얼굴이 선명해지지 않게)
+    if cfg.head_min_scale_shoulder_ratio > 0:
+        ls, rs = _point(kps[L_SHOULDER], cfg, image_size), _point(kps[R_SHOULDER], cfg, image_size)
+        if ls and rs:
+            scale = max(scale, cfg.head_min_scale_shoulder_ratio * _dist(ls, rs))
     cx = sum(p[0] for p in anchors) / len(anchors)
     cy = sum(p[1] for p in anchors) / len(anchors)
     box = (cx - cfg.head_expand_side * scale, cy - cfg.head_expand_up * scale,
            cx + cfg.head_expand_side * scale, cy + cfg.head_expand_down * scale)
     face = [p for p in pts.values() if p is not None]
-    clear = len(face) >= cfg.head_clear_min_points and scale >= cfg.head_clear_min_scale_px
+    clear = len(face) >= cfg.head_clear_min_points and face_scale >= cfg.head_clear_min_scale_px
     return Region(_clip(box, image_size), scale, clear, round(sum(p[2] for p in face) / len(face), 3))
 
 
