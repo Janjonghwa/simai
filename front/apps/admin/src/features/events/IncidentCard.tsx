@@ -1,3 +1,4 @@
+import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
 import { CameraButton } from '@/features/events/CameraButton';
 import { isActive, isConfirmationPending } from '@/features/events/entries';
 import {
@@ -143,6 +144,7 @@ export function IncidentCard({
           </span>
         </button>
         {eta && <p className="text-sm">{eta}</p>}
+        {selected && <EventPhotos event={top.event} compact />}
         <CameraButton target={current ? incident.target : null} variant="card" />
       </article>
     </li>

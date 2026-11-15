@@ -43,14 +43,16 @@ public class EventController {
     private final EventEscalationService escalations;
     private final IncidentSummaryService summaries;
     private final EventCloseService closes;
+    private final EventFrameService frames;
 
     EventController(EventQueryRepository events, EventAckService acks, EventEscalationService escalations,
-            IncidentSummaryService summaries, EventCloseService closes) {
+            IncidentSummaryService summaries, EventCloseService closes, EventFrameService frames) {
         this.events = events;
         this.acks = acks;
         this.escalations = escalations;
         this.summaries = summaries;
         this.closes = closes;
+        this.frames = frames;
     }
 
     /** Spring Page 와 같은 모양. 관제 앱은 content 만 읽는다 */
@@ -87,6 +89,16 @@ public class EventController {
     @PreAuthorize("hasAnyRole('FOREMAN', 'ADMIN')")
     ObjectNode detail(@PathVariable UUID eventId) {
         return events.detail(eventId).orElseThrow(() -> new BusinessException(ErrorCode.Event.EVENT_NOT_FOUND));
+    }
+
+    /**
+     * 이벤트 프레임(사진) 목록(S15P31A101-753). 요청마다 짧게 사는 GET 서명 주소를 낸다(만료되면 다시 부른다). 관리자 전용 —
+     * 얼굴이 보일 수 있는 원본이라 클립(GET /api/events/{id}/clips)과 같은 권한이다
+     */
+    @GetMapping("/{eventId}/frames")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode frames(@PathVariable UUID eventId) {
+        return frames.frames(eventId);
     }
 
     @PostMapping("/{eventId}/ack")

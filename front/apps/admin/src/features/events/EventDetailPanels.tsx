@@ -1,6 +1,8 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { hasClips } from '@/features/clips/clips';
 import { EventClips } from '@/features/clips/EventClips';
+import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
+import { hasPhotos } from '@/features/eventPhotos/useEventPhotos';
 import { AckButton } from '@/features/events/AckButton';
 import { ALARM_TEXT } from '@/features/events/alarmTone';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
@@ -236,6 +238,27 @@ export function AiPanel({
         })
       )}
     </DetailPanel>
+  );
+}
+
+/**
+ * 이벤트 사진(CRITICAL 이벤트 프레임, S15P31A101-753)은 관리자에게만 보인다. 사진이 하나도 없으면(아직 올라오기 전·근거 작업이 없는 이벤트)
+ * 칸 전체를 숨긴다: 사진이 있는 EventPhotos 만 data-photos 를 그리고 패널은 그것이 있을 때만 보인다.
+ */
+export function PhotosPanel({ entries }: EntriesProps) {
+  const role = useCurrentRole();
+  const photoEntries = role === 'ADMIN' ? entries.filter((e) => hasPhotos(e.event)) : [];
+  if (photoEntries.length === 0) return null;
+  return (
+    <section
+      aria-label="이벤트 사진"
+      className="hidden flex-col gap-2 rounded-[12px] bg-card px-4 py-3 has-[[data-photos]]:flex"
+    >
+      <h3 className="text-[15px] leading-[22px] font-bold text-muted-foreground">이벤트 사진</h3>
+      {photoEntries.map(({ event }) => (
+        <EventPhotos key={event.event_id} event={event} title={eventRuleName(event)} />
+      ))}
+    </section>
   );
 }
 
