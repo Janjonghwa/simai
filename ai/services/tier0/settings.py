@@ -259,7 +259,10 @@ class Tier0Settings:
     process_split: bool = True
     """검출·판정 프로세스 분리(기본 켬, S15P31A101-728·-738). LIVE·file 입력에서만 쓴다. 끄는 스위치 SIMAI_TIER0_PROCESS_SPLIT=0"""
     config_overrides: tuple[str, ...] = ()
-    """설정 파일이 명시한 값을 환경 변수가 무효로 만든 경우의 사람이 읽는 설명(S15P31A101-747). 기동 WARNING·status 에 싣는다"""
+    """설정 파일이 명시한 값을 환경 변수가 무효로 만든 경우의 사람이 읽는 설명(S15P31A101-747). 기동 WARNING 에 모두 싣는다"""
+    config_info: tuple[str, ...] = ()
+    """config_overrides 중 의도된 기본 설정(사람 관절 보정 기본 꺼짐 → live_calibration·보정 감시 설정 무효)의 부분집합(S15P31A101-756).
+    기동 WARNING 은 그대로 내지만 status 에서는 경고(disabled_features)가 아니라 정보(info_notes)로 싣는다"""
     detect_cpus: str = "none"
     """분리 때 검출 프로세스 CPU: none·auto·목록(SIMAI_TIER0_DETECT_CPUS, -728)"""
 
@@ -669,6 +672,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     if not isinstance(offload_side_work, bool):
         raise Tier0ConfigError("offload_side_work 는 bool이다")
     overrides: list[str] = []
+    info_overrides: list[str] = []
     offload_env = (env.get("SIMAI_TIER0_OFFLOAD_SIDE_WORK") or "").strip()
     if offload_env:
         if "offload_side_work" in doc and offload_env in ("0", "1") and (offload_env == "1") != offload_side_work:
@@ -690,9 +694,11 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         # 보정 감시·자동 보정은 사람 관절 보정이 켜져 있어야 돈다. 설정 파일이 명시적으로 켰는데 환경 변수가 꺼 두면 효과 없음(18차 감사)
         live_doc = doc.get("live_calibration")
         if isinstance(live_doc, dict) and live_doc.get("enabled") is True:
-            overrides.append("live_calibration.enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 자동 보정이 돌지 않음")
+            info_overrides.append("live_calibration.enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 자동 보정이 돌지 않음")
         if doc.get("drift_watch_enabled") is True:
-            overrides.append("drift_watch_enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 보정 감시가 돌지 않음")
+            info_overrides.append("drift_watch_enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 보정 감시가 돌지 않음")
+        # 사람 관절 보정은 기본 꺼짐이 의도된 설정이다(S15P31A101-756): 경고 목록이 아니라 정보로 낮추되 기동 WARNING 은 그대로 낸다
+        overrides.extend(info_overrides)
     detect_cpus = (env.get("SIMAI_TIER0_DETECT_CPUS") or "").strip().lower() or doc.get("detect_cpus", "none")
     if not isinstance(detect_cpus, str) or not re.fullmatch(r"none|auto|\d+(-\d+)?(,\d+(-\d+)?)*", detect_cpus.strip().lower()):
         raise Tier0ConfigError("detect_cpus(SIMAI_TIER0_DETECT_CPUS) 는 none·auto·CPU 목록(예: 0-5)이다")
@@ -717,6 +723,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         offload_side_work=offload_side_work,
         process_split=process_split,
         config_overrides=tuple(overrides),
+        config_info=tuple(info_overrides),
         detect_cpus=detect_cpus.strip().lower(),
         cuda_stream_priority=cuda_stream_priority,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),

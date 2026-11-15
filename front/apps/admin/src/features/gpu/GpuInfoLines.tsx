@@ -1,6 +1,6 @@
 import {
   autoStopText,
-  disabledFeatureWarnings,
+  disabledFeatureNotices,
   formatElapsed,
   formatRegion,
   formatUsd,
@@ -37,7 +37,7 @@ export function GpuInfoLines() {
   const autoStop = autoStopText(status, serverNow, idleMinutes);
   const reason = gpuErrorReason(status);
   const cpuWarning = hostCpuWarning(status);
-  const disabled = disabledFeatureWarnings(status);
+  const disabled = disabledFeatureNotices(status);
   return (
     <div className="flex flex-col gap-1 text-sm">
       {summary && (
@@ -78,12 +78,38 @@ export function GpuInfoLines() {
           {cpuWarning}
         </span>
       )}
-      {disabled.map((text) => (
-        <span key={text} role="status" className="text-xs font-semibold text-delay">
-          {text}
-        </span>
+      {disabled.warnings.map((n) => (
+        <div key={n.key} role="status" className="flex flex-col gap-0.5">
+          <span className="text-xs font-semibold text-delay">{n.text}</span>
+          {n.detail && <NoticeDetail detail={n.detail} />}
+        </div>
       ))}
+      {disabled.infos.length > 0 && (
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">
+            참고 {disabled.infos.length}건(의도된 설정·지나간 일)
+          </summary>
+          <ul className="mt-1 flex flex-col gap-1">
+            {disabled.infos.map((n) => (
+              <li key={n.key}>
+                {n.text}
+                {n.detail && <NoticeDetail detail={n.detail} />}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
+  );
+}
+
+/** 쉬운 말 항목의 원문(예외 문구·설정 키)을 「자세히」로 접어 둔다(S15P31A101-756) */
+function NoticeDetail({ detail }: { detail: string }) {
+  return (
+    <details className="text-xs font-normal text-muted-foreground">
+      <summary className="cursor-pointer">자세히</summary>
+      <span className="font-mono break-all">{detail}</span>
+    </details>
   );
 }
 

@@ -328,6 +328,43 @@ class GpuSessionIntegrationTest {
         reportWithDisabled(id, "READY", "\"Re-ID 꺼짐\"").andExpect(status().isBadRequest());
     }
 
+    @Test
+    void 꺼진_기능_쉬운_말_항목은_가장_최근_값만_관리자_조회에_주고_해소되면_빠진다() throws Exception {
+        JsonNode session = register();
+        UUID id = UUID.fromString(session.get("session_id").stringValue());
+        String admin = "Bearer " + jwt("ADMIN");
+        report(id, "WEIGHTS", null).andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.disabled_notices").isEmpty());
+
+        String reid = "{\"key\":\"reid\",\"level\":\"warning\",\"text\":\"사람 다시 알아보기(Re-ID) 꺼짐 — 관리자: seed-reid 필요\",\"detail\":\"FileNotFoundError: cope\"}";
+        String info = "{\"key\":\"cfg_live_calibration\",\"level\":\"info\",\"text\":\"사람 관절 자동 보정은 기본 꺼짐이에요\"}";
+        reportWithNotices(id, "READY", "[" + reid + "," + info + "]").andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.disabled_notices.length()").value(2))
+                .andExpect(jsonPath("$.session.disabled_notices[0].key").value("reid"))
+                .andExpect(jsonPath("$.session.disabled_notices[0].detail").value("FileNotFoundError: cope"))
+                .andExpect(jsonPath("$.session.disabled_notices[1].level").value("info"));
+
+        // 칸이 없는 보고는 앞 값을 지우지 않고, 해소된 뒤의 보고(항목 하나만 남김)가 최신 값이 된다
+        report(id, "READY", null).andExpect(status().isNoContent());
+        reportWithNotices(id, "READY", "[" + info + "]").andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.disabled_notices.length()").value(1))
+                .andExpect(jsonPath("$.session.disabled_notices[0].key").value("cfg_live_calibration"));
+
+        // 계약에 맞지 않는 값(알 수 없는 level)은 400
+        reportWithNotices(id, "READY", "[{\"key\":\"reid\",\"level\":\"error\",\"text\":\"x\"}]").andExpect(status().isBadRequest());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions reportWithNotices(UUID id, String stage, String arrayJson) throws Exception {
+        ObjectNode root = (ObjectNode) mapper.readTree(reportBody(bootId, id, stage, null));
+        root.put("schema_version", "1.3.0");
+        ((ObjectNode) root.get("payload")).set("disabled_notices", mapper.readTree(arrayJson));
+        return mvc.perform(post("/api/gpu/sessions/" + id + "/reports").header(HttpHeaders.AUTHORIZATION, "Bearer " + bootSecret)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(root)));
+    }
+
     private org.springframework.test.web.servlet.ResultActions reportWithDisabled(UUID id, String stage, String arrayJson) throws Exception {
         ObjectNode root = (ObjectNode) mapper.readTree(reportBody(bootId, id, stage, null));
         root.put("schema_version", "1.2.0");

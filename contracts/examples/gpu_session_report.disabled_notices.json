@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.3.0",
+  "msg_type": "gpu_session_report",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000007560",
+  "sent_at": 1794700860000,
+  "source_id": "gpu-boot-runpod",
+  "payload": {
+    "session_id": "6f9b2c1e-3d4a-4b5c-8d7e-0f1a2b3c4d5e",
+    "stage": "READY",
+    "reason_code": null,
+    "detail": "VLM 웜업 21.3초",
+    "disabled_features": [
+      "사람 다시 알아보기(Re-ID) 꺼짐 — 가렸다 나타난 사람이 새 번호를 받을 수 있어요. 관리자: seed-reid 로 Re-ID 묶음을 등록해야 해요"
+    ],
+    "reported_at": 1794701400000,
+    "disabled_notices": [
+      {
+        "key": "reid",
+        "level": "warning",
+        "text": "사람 다시 알아보기(Re-ID) 꺼짐 — 가렸다 나타난 사람이 새 번호를 받을 수 있어요. 관리자: seed-reid 로 Re-ID 묶음을 등록해야 해요",
+        "detail": "Re-ID 꺼짐: FileNotFoundError: COPE 외부 저장소 경로를 찾을 수 없습니다: /srv/simai/reid/cope"
+      },
+      {
+        "key": "cfg_live_calibration",
+        "level": "info",
+        "text": "사람 관절 자동 보정은 기본 꺼짐이에요(의도된 설정) — 설정 파일의 live_calibration 값은 쓰이지 않아요. 켜려면 SIMAI_TIER0_HUMAN_CALIBRATION=1",
+        "detail": "live_calibration.enabled=true(설정 파일)인데 SIMAI_TIER0_HUMAN_CALIBRATION=0 이라 자동 보정이 돌지 않음"
+      }
+    ]
+  }
+}

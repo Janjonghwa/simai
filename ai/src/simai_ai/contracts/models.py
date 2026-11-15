@@ -743,6 +743,18 @@ class DisabledFeature(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
 
 
+class DisabledNotice(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    key: Annotated[StrictStr, Field(pattern='^[a-z][a-z0-9_]{0,39}$')]
+    level: Literal['warning', 'info']
+    text: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+    detail: Annotated[StrictStr | MISSING, Field(max_length=300, min_length=1)] = (
+        MISSING
+    )
+
+
 class Model(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
 
@@ -780,6 +792,9 @@ class Payload19(BaseModel):
     detail: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
     progress: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
     disabled_features: Annotated[list[DisabledFeature] | MISSING, Field(max_length=20)] = (
+        MISSING
+    )
+    disabled_notices: Annotated[list[DisabledNotice] | MISSING, Field(max_length=20)] = (
         MISSING
     )
     reported_at: DefsTimestampMs

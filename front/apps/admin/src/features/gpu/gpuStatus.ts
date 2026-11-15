@@ -399,11 +399,46 @@ export function hostCpuWarning(status: GpuStatus | undefined): string | null {
   return HOST_CPU_SLOW_TEXT;
 }
 
-/** 열린 세션의 꺼진 기능 경고 문구(S15P31A101-747). 준비 완료(READY)에서만, 모르거나 없으면 빈 배열. 조작은 없다 */
-export function disabledFeatureWarnings(status: GpuStatus | undefined): string[] {
+export interface DisabledNotice {
+  key: string;
+  text: string;
+  detail: string | null;
+}
+
+export interface DisabledNotices {
+  /** 조치·주의가 필요한 꺼짐(경고 줄) */
+  warnings: DisabledNotice[];
+  /** 의도된 설정·이미 지나간 사실(「자세히」 안에 접어 둔다, S15P31A101-756) */
+  infos: DisabledNotice[];
+}
+
+const NO_NOTICES: DisabledNotices = { warnings: [], infos: [] };
+
+/**
+ * 열린 세션의 꺼진 기능 항목(S15P31A101-747, -756). 준비 완료(READY)에서만, 모르거나 없으면 빈 목록. 조작은 없다.
+ * 부팅 보고기는 READY 뒤에도 주기로 다시 계산해 보고하므로 해소된 항목은 EC2 최신 값에서 빠진다. 옛 보고기(disabled_notices 없음)는
+ * disabled_features 문구를 그대로 경고로 보인다(자세히 없음).
+ */
+export function disabledFeatureNotices(status: GpuStatus | undefined): DisabledNotices {
   const session = status?.session;
-  if (session?.state !== 'ACTIVE' || session.stage !== 'READY') return [];
-  return (session.disabled_features ?? []).filter((t) => t.trim() !== '');
+  if (session?.state !== 'ACTIVE' || session.stage !== 'READY') return NO_NOTICES;
+  const notices = session.disabled_notices;
+  if (notices) {
+    const toNotice = (n: (typeof notices)[number]): DisabledNotice => ({
+      key: n.key,
+      text: n.text,
+      detail: n.detail?.trim() ? n.detail : null,
+    });
+    const shown = notices.filter((n) => n.text.trim() !== '');
+    return {
+      warnings: shown.filter((n) => n.level === 'warning').map(toNotice),
+      infos: shown.filter((n) => n.level === 'info').map(toNotice),
+    };
+  }
+  const legacy = (session.disabled_features ?? [])
+    .filter((t) => t.trim() !== '')
+    .map((text) => ({ key: text, text, detail: null }));
+  return { warnings: legacy, infos: [] };
 }
 
 export const STOP_BLOCK_TEXT: Record<'LIVE' | 'SETUP', string> = {

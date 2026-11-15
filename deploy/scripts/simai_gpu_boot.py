@@ -75,7 +75,7 @@ HF_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 CONTROL_PORT, VIDEO_PORT = 17000, 17001  # RunPod 템플릿에 노출한 TCP(deploy/README "RunPod 템플릿")
 DEFAULT_ADVERTISE_HOST = "127.0.0.1"  # SSAFY 망 기본 경로: 노트북이 EC2 SSH 로컬 포워드로 붙는다(deploy/README, 14차 start-lobby 와 같음)
 SCHEMA_VERSION = "1.0.0"
-REPORT_SCHEMA_VERSION = "1.2.0"  # gpu_session_report: 선택 host_cpu(S15P31A101-740, 1.1.0)·disabled_features(S15P31A101-747, 1.2.0) 추가
+REPORT_SCHEMA_VERSION = "1.3.0"  # gpu_session_report: 선택 host_cpu(S15P31A101-740, 1.1.0)·disabled_features(S15P31A101-747, 1.2.0)·disabled_notices(S15P31A101-756, 1.3.0) 추가
 BENCH_BUDGET_S = 1.5  # 단일 스레드 기준 측정 시간 상한(합쳐 2 초 이내, 설계 docs/design/S15P31A101-740-gpu-host-cpu-check.md)
 MAX_DISABLED = 20  # 계약 disabled_features 항목 수 상한
 WARMUP_TIMEOUT_S = 120.0  # vLLM 더미 멀티모달 요청 1회의 응답 대기 상한(S15P31A101-747)
@@ -544,8 +544,9 @@ class Reporter:
         self.state: dict = {"stage": "WEIGHTS", "reason_code": None, "detail": None, "progress": None}
         # 모든 단계 설명 뒤에 붙일 한 줄(VRAM 으로 서비스를 줄였다는 사실, S15P31A101-705). 보고 계약은 그대로(stage_detail 칸)
         self.note: str | None = None
-        # 꺼진 기능(S15P31A101-747): None = 아직 모름(보고에 싣지 않는다), {} = 꺼진 것 없음. 키는 같은 기능의 문구를 덮어쓴다
-        self.disabled: dict[str, str] | None = None
+        # 꺼진 기능(S15P31A101-747·-756): None = 아직 모름(보고에 싣지 않는다), {} = 꺼진 것 없음. 키는 같은 기능의 항목을 덮어쓴다.
+        # 항목은 {level: warning|info, text: 쉬운 말+영향+할 일, detail: 원문(선택)}
+        self.disabled: dict[str, dict] | None = None
         self._base_detail: str | None = None  # note 를 붙이기 전 단계 설명(add_note 가 다시 붙인다)
         self.ended = threading.Event()
         self._wake = threading.Event()
@@ -582,21 +583,35 @@ class Reporter:
         if s["stage"] != "ENDED":
             self.set(s["stage"], s["reason_code"], base, s["progress"])
 
-    def set_disabled(self, key: str, text: str | None = None) -> None:
-        """꺼진 기능 목록에 더한다(text 가 None 이면 목록만 연다 = 지금까지 꺼진 것 없음). 같은 key 는 문구를 덮어쓴다."""
+    def set_disabled(self, key: str, text: str | None = None, level: str = "warning", detail: str | None = None) -> None:
+        """꺼진 기능 목록에 더한다(text 가 None 이면 목록만 연다 = 지금까지 꺼진 것 없음). 같은 key 는 항목을 덮어쓴다."""
         with self._lock:
             if self.disabled is None:
                 self.disabled = {}
-            if text is None or self.disabled.get(key) == text:
+            item = {"level": level, "text": text, **({"detail": detail} if detail else {})}
+            if text is None or self.disabled.get(key) == item:
                 return
-            self.disabled[key] = text
+            self.disabled[key] = item
         log(f"꺼진 기능: {text}")
+        self._wake.set()
+
+    def replace_disabled(self, items: dict[str, dict]) -> None:
+        """READY 뒤 주기 재계산(S15P31A101-756): 목록 전체를 지금 값으로 바꾼다(해소된 항목은 빠진다). 바뀐 때만 로그·즉시 보고."""
+        with self._lock:
+            if self.disabled == items:
+                return
+            before = set((self.disabled or {}).keys())
+            self.disabled = {k: dict(v) for k, v in items.items()}
+        for key in sorted(set(items) - before):
+            log(f"꺼진 기능: {items[key]['text']}")
+        for key in sorted(before - set(items)):
+            log(f"꺼진 기능 해소: {key}")
         self._wake.set()
 
     def payload(self) -> dict:
         with self._lock:
             s = dict(self.state)
-            disabled = None if self.disabled is None else list(self.disabled.values())
+            disabled = None if self.disabled is None else list(self.disabled.items())
         p = {"session_id": self.session_id, "stage": s["stage"],
              "reason_code": s["reason_code"] if s["stage"] in ("FAILED", "ENDED") else None, "reported_at": now_ms()}
         if s["stage"] == "FAILED" and not p["reason_code"]:
@@ -606,7 +621,11 @@ class Reporter:
         if s["progress"] is not None:
             p["progress"] = min(1.0, max(0.0, float(s["progress"])))
         if disabled is not None:
-            p["disabled_features"] = [redact(t)[:200] for t in disabled[:MAX_DISABLED]]
+            # 1.2.0 칸(경고 문구만, 옛 EC2·화면 호환)과 1.3.0 칸(경고·정보와 자세히 원문). 같은 목록에서 만든다
+            p["disabled_features"] = [redact(v["text"])[:200] for _, v in disabled if v["level"] == "warning"][:MAX_DISABLED]
+            p["disabled_notices"] = [{"key": k, "level": v["level"], "text": redact(v["text"])[:200],
+                                      **({"detail": redact(v["detail"])[:300]} if v.get("detail") else {})}
+                                     for k, v in disabled[:MAX_DISABLED]]
         if self.host_cpu is not None:
             p["host_cpu"] = self.host_cpu
         return p
@@ -937,50 +956,125 @@ def lobby_stage(marker_doc: dict | None, started_ms: int, want_vllm: bool, vllm_
     return "READY", None
 
 
-def cache_findings(results: dict[str, str], reid_is_ready: bool) -> dict[str, str]:
-    """GPU 캐시 받기 결과(GpuCache.results)와 Re-ID 묶음 유무 → 꺼진 기능·캐시 miss 문구(S15P31A101-747, 근거 있는 것만).
-    Re-ID 는 묶음이 없으면 Tier 0 가 꺼진 채 돈다. 엔진·vLLM 캐시 miss 는 기능이 꺼진 것은 아니지만 부팅이 느려진 사실이라 함께 싣는다."""
-    out: dict[str, str] = {}
+def notice(text: str, *, level: str = "warning", detail: str | None = None) -> dict:
+    """꺼진 기능 항목(S15P31A101-756): text 는 관리자가 읽는 쉬운 말 + 영향 + 할 일(200자 이내), detail 은 「자세히」에 펼칠 원문."""
+    assert level in ("warning", "info") and 1 <= len(text) <= 200, text
+    return {"level": level, "text": text, **({"detail": detail} if detail else {})}
+
+
+# 항목 종류별 문구표(S15P31A101-756). 형식: 무엇이 꺼졌나 — 사람에게 어떤 영향 — 할 일. 원문(로그·예외 문구)은 detail 로만 보낸다.
+REID_EFFECT = "사람 다시 알아보기(Re-ID) 꺼짐 — 가렸다 나타난 사람이 새 번호를 받을 수 있어요."
+REID_NO_BUNDLE = notice(REID_EFFECT + " 관리자: seed-reid 로 Re-ID 묶음을 등록해야 해요")
+REID_REGISTERED = notice(REID_EFFECT + " 다음 부팅부터 자동으로 켜집니다(Re-ID 묶음 등록됨). 지금 켜려면 Tier 0 재시작(restart-tier0)")
+REID_OTHER = notice(REID_EFFECT + " 묶음은 있는데 켜지지 않았어요. 관리자: 자세히를 보고 Tier 0 로그를 확인하세요")
+CACHE_TEXT = {
+    ("trt-engine", "miss"): ("info", "TensorRT 엔진 캐시가 없어 이번 부팅은 엔진을 새로 만들었어요(준비가 오래 걸림). 할 일 없음 — 다음 부팅부터 캐시를 써요"),
+    ("trt-engine", "error"): ("warning", "TensorRT 엔진 캐시를 받지 못해 엔진을 새로 만들었어요(준비가 오래 걸림). 관리자: GPU 캐시(S3) 연결·권한 확인"),
+    ("vllm-compile", "miss"): ("info", "VLM 컴파일 캐시가 없어 AI 설명(VLM) 첫 요청이 느릴 수 있어요. 할 일 없음 — 부팅 뒤 캐시에 올라가요"),
+    ("vllm-compile", "error"): ("warning", "VLM 컴파일 캐시를 받지 못해 AI 설명(VLM) 첫 요청이 느릴 수 있어요. 관리자: GPU 캐시(S3) 연결·권한 확인"),
+}
+SERVICE_TEXT = {
+    "svc_ppe": "보호구(PPE) 감시 꺼짐 — 안전모·조끼 미착용 경고가 나가지 않아요. 관리자: 기동 서비스에 ppe 를 넣고 다시 켜세요",
+    "svc_avatar": "아바타 꺼짐 — 3D 화면의 사람이 캡슐로만 보여요. 관리자: 기동 서비스에 avatar 를 넣고 다시 켜세요",
+    "svc_worker": "분석 워커 꺼짐 — 현장 세팅·맵 만들기·AI 근거·아바타가 동작하지 않아요. 관리자: 기동 서비스에 worker 를 넣고 다시 켜세요",
+    "svc_vllm": "AI 설명(VLM) 꺼짐 — 이벤트에 AI 근거·보고서가 붙지 않아요(경보는 그대로). GPU 메모리가 모자라거나 서비스 목록에 vllm 이 없어요",
+}
+INFO_CONFIG_TEXT = {
+    "live_calibration": ("cfg_live_calibration", "사람 관절 자동 보정은 기본 꺼짐이에요(의도된 설정) — 설정 파일의 live_calibration 값은 쓰이지 않아요. 켜려면 SIMAI_TIER0_HUMAN_CALIBRATION=1"),
+    "drift_watch": ("cfg_drift_watch", "보정 감시는 사람 관절 보정이 꺼져 있어 돌지 않아요(기본 설정, 의도된 설정). 켜려면 SIMAI_TIER0_HUMAN_CALIBRATION=1"),
+}
+VLM_WARMUP_FAILED_TEXT = "AI 설명(VLM) 예열 실패 — 첫 AI 근거가 늦거나 시간 초과일 수 있어요(경보는 그대로). 계속되면 관리자: 자세히를 보고 vLLM 로그 확인"
+VLM_TIMEOUT_TEXT = "AI 설명(VLM) 아직 준비 안 됨 — AI 근거·보고서 없이 관제 중이에요(경보는 그대로). 잠시 뒤에도 같으면 관리자: vLLM 로그 확인"
+TIER0_OVERRIDE_TEXT = "설정 파일 값이 환경 변수에 덮여 적용되지 않았어요. 관리자: 의도한 설정인지 확인하세요(자세히)"
+TIER0_UNKNOWN_TEXT = "Tier 0 가 알린 꺼진 기능이 있어요. 관리자: 자세히를 확인하세요"
+
+
+def cache_findings(results: dict[str, str], reid_is_ready: bool) -> dict[str, dict]:
+    """GPU 캐시 받기 결과(GpuCache.results)와 Re-ID 묶음 유무 → 꺼진 기능·캐시 miss 항목(S15P31A101-747, 근거 있는 것만).
+    Re-ID 는 묶음이 없으면 Tier 0 가 꺼진 채 돈다. 엔진·vLLM 캐시 miss 는 기능이 꺼진 것은 아니라 정보(miss)·경고(오류)로 싣는다."""
+    out: dict[str, dict] = {}
     if not reid_is_ready:
         r = results.get("reid")
-        out["reid"] = ("Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)" if r in ("miss", None)
-                       else f"Re-ID 꺼짐 — 묶음 없음(캐시 받기 {r}, seed-reid 필요)")
-    for kind, key, text in (("trt-engine", "cache_trt", "TensorRT 엔진 캐시"), ("vllm-compile", "cache_vllm", "vLLM 컴파일 캐시")):
+        out["reid"] = dict(REID_NO_BUNDLE, **({"detail": f"캐시 받기 결과: {r}"} if r not in ("miss", None) else {"detail": "캐시 받기 결과: miss"}))
+    for kind, key in (("trt-engine", "cache_trt"), ("vllm-compile", "cache_vllm")):
         r = results.get(kind)
-        if r in ("miss", "error"):
-            out[key] = f"{text} {'miss' if r == 'miss' else '받기 오류'} — " + (
-                "이번 부팅에 엔진을 새로 빌드" if kind == "trt-engine" else "첫 VLM 요청이 느리다(JIT)")
+        if (kind, r) in CACHE_TEXT:
+            level, text = CACHE_TEXT[(kind, r)]
+            out[key] = notice(text, level=level, detail=f"캐시 받기 결과: {r}")
     return out
 
 
-def service_findings(want: list[str], vllm_vram_ok: bool) -> dict[str, str]:
-    """기동하지 않는 서비스(--services 에 없거나 VRAM 부족) → 꺼진 기능 문구."""
-    out: dict[str, str] = {}
-    if "ppe" not in want:
-        out["svc_ppe"] = "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음"
-    if "avatar" not in want:
-        out["svc_avatar"] = "아바타 꺼짐 — 기동 서비스에 없음"
-    if "worker" not in want:
-        out["svc_worker"] = "분석 워커 꺼짐 — 세팅·맵 굽기·VLM·아바타 불가"
+def service_findings(want: list[str], vllm_vram_ok: bool) -> dict[str, dict]:
+    """기동하지 않는 서비스(--services 에 없거나 VRAM 부족) → 꺼진 기능 항목."""
+    out: dict[str, dict] = {}
+    for svc, key in (("ppe", "svc_ppe"), ("avatar", "svc_avatar"), ("worker", "svc_worker")):
+        if svc not in want:
+            out[key] = notice(SERVICE_TEXT[key], detail=f"기동 서비스: {','.join(want) or '(없음)'}")
     if "vllm" not in want or not vllm_vram_ok:
-        out["svc_vllm"] = "VLM 꺼짐 — vLLM 을 기동하지 않음(VRAM 또는 서비스 목록)"
+        out["svc_vllm"] = notice(SERVICE_TEXT["svc_vllm"], detail=f"기동 서비스: {','.join(want) or '(없음)'}, VRAM 충분: {vllm_vram_ok}")
     return out
 
 
-def tier0_findings(marker_doc: dict | None) -> dict[str, str]:
-    """Tier 0 표시 파일 status 의 disabled_features(설정 무효·Re-ID 꺼짐)와 process_split.disabled → 꺼진 기능 문구.
-    status 에 칸이 없으면(옛 Tier 0·아직 기동 전) 아무것도 지어내지 않는다."""
+def tier0_findings(marker_doc: dict | None, reid_on_disk: bool = False) -> dict[str, dict]:
+    """Tier 0 표시 파일 status → 꺼진 기능 항목(S15P31A101-747·-756). status 에 칸이 없으면(옛 Tier 0·아직 기동 전) 아무것도 지어내지 않는다.
+    disabled_features(설정 무효·Re-ID 꺼짐)는 경고, info_notes(의도된 기본 설정으로 무효가 된 설정)는 정보, process_split.disabled 는 경고.
+    Re-ID 는 status.reid.state 가 active 면 항목이 없다(꺼짐이 해소됨). 묶음이 이 서버에 있는지(reid_on_disk)로 할 일 문구를 고른다."""
     status = (marker_doc or {}).get("status") if isinstance(marker_doc, dict) else None
     if not isinstance(status, dict):
         return {}
-    out: dict[str, str] = {}
-    for i, t in enumerate(status.get("disabled_features") or []):
-        if isinstance(t, str) and t:
-            out["reid" if t.startswith("Re-ID") else f"tier0_{i}"] = f"Tier 0: {t}"
+    out: dict[str, dict] = {}
+    n = 0
+    for t in status.get("disabled_features") or []:
+        if not isinstance(t, str) or not t:
+            continue
+        if t.startswith("Re-ID"):
+            reid = status.get("reid")
+            if isinstance(reid, dict) and reid.get("state") == "active":
+                continue
+            if not reid_on_disk:
+                base = REID_NO_BUNDLE
+            elif "FileNotFoundError" in t or "찾을 수 없" in t:
+                base = REID_REGISTERED  # 부팅 뒤 묶음이 올라왔다(seed-reid): 다음 부팅부터 자동, 지금은 Tier 0 재시작
+            else:
+                base = REID_OTHER
+            out["reid"] = dict(base, detail=t[:300])
+        elif "덮어씀" in t:
+            out[f"tier0_{n}"] = notice(TIER0_OVERRIDE_TEXT, detail=t[:300])
+            n += 1
+        else:
+            out[f"tier0_{n}"] = notice(TIER0_UNKNOWN_TEXT, detail=t[:300])
+            n += 1
+    for t in status.get("info_notes") or []:
+        if not isinstance(t, str) or not t:
+            continue
+        which = "live_calibration" if t.startswith("live_calibration") else "drift_watch" if t.startswith("drift_watch") else None
+        if which:
+            key, text = INFO_CONFIG_TEXT[which]
+            out[key] = notice(text, level="info", detail=t[:300])
     split = status.get("process_split")
-    names = [n for n in (split or {}).get("disabled", []) if isinstance(n, str)] if isinstance(split, dict) else []
+    names = [n_ for n_ in (split or {}).get("disabled", []) if isinstance(n_, str)] if isinstance(split, dict) else []
     if names:
-        out["process_split"] = f"프로세스 분리로 꺼짐: {', '.join(names)}"
+        out["process_split"] = notice("프로세스 분리 때문에 일부 곁가지 기능이 꺼졌어요. 관리자: 자세히를 보고 필요한 기능이면 분리를 끄세요",
+                                      detail=f"꺼진 기능: {', '.join(names)}")
+    return out
+
+
+def compose_disabled(*, services: dict[str, dict], cache_results: dict[str, str], reid_on_disk: bool, marker_doc: dict | None,
+                     vlm_warmup_failure: str | None, vlm_timed_out: bool, include_vllm_cache: bool) -> dict[str, dict]:
+    """지금 꺼진 기능 목록 전체를 근거에서 다시 계산한다(S15P31A101-756: READY 뒤에도 주기로 불러 해소된 항목이 빠지게 한다).
+    순서: 서비스 미기동 → 캐시(Re-ID 묶음·엔진·vLLM) → Tier 0 표시 파일(Re-ID 가 켜졌으면 Re-ID 항목을 지운다) → VLM 웜업·시한."""
+    out = dict(services)
+    cache = cache_findings({k: v for k, v in cache_results.items() if include_vllm_cache or k != "vllm-compile"}, reid_on_disk)
+    status = (marker_doc or {}).get("status") if isinstance(marker_doc, dict) else None
+    reid = status.get("reid") if isinstance(status, dict) else None
+    if isinstance(reid, dict) and reid.get("state") == "active":
+        cache.pop("reid", None)  # Tier 0 가 지금 켜져 있다고 말한다: 부팅 때의 묶음 없음 보고는 낡았다
+    out.update(cache)
+    out.update(tier0_findings(marker_doc, reid_on_disk))
+    if vlm_warmup_failure:
+        out["vlm_warmup"] = notice(VLM_WARMUP_FAILED_TEXT, detail=vlm_warmup_failure[:300])
+    if vlm_timed_out:
+        out["vlm_timeout"] = notice(VLM_TIMEOUT_TEXT)
     return out
 
 
@@ -1327,9 +1421,8 @@ class Boot:
         for t in threads:
             if t.name != "cache-vllm":
                 t.join(timeout=float(env.get("SIMAI_BOOT_CACHE_WAIT_S") or 600))
-        rep.set_disabled("start")  # 여기부터 보고에 「꺼진 기능」 목록(비어 있으면 꺼진 것 없음)을 싣는다
-        for feature, text in cache_findings({k: v for k, v in cache.results.items() if k != "vllm-compile"}, reid_ready(reid_dir)).items():
-            rep.set_disabled(feature, text)
+        # 여기부터 보고에 「꺼진 기능」 목록(비어 있으면 꺼진 것 없음)을 싣는다
+        rep.replace_disabled(cache_findings({k: v for k, v in cache.results.items() if k != "vllm-compile"}, reid_ready(reid_dir)))
         if not reid_ready(reid_dir):
             log("Re-ID 묶음 없음(캐시 miss·실패) → 이번 관제는 Re-ID 꺼짐. 손으로 올린 뒤 'simai-gpu-boot seed-reid' 로 캐시에 올린다")
 
@@ -1381,8 +1474,9 @@ class Boot:
             return self.idle()
         want = [s.strip() for s in (services or self.bs.LOBBY_SERVICES).split(",") if s.strip()]
         want_vllm = "vllm" in want and (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB
-        for key, text in service_findings(want, (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB).items():
-            rep.set_disabled(key, text)
+        services_off = service_findings(want, (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB)
+        for key, item in services_off.items():
+            rep.set_disabled(key, item["text"], item["level"], item.get("detail"))
         vllm_port = int(self.env.get("SIMAI_VLLM_PORT") or 8000)
         vllm_timeout = float(self.env.get("SIMAI_BOOT_VLLM_READY_TIMEOUT_S") or 1800)
         started = now_ms()
@@ -1390,8 +1484,10 @@ class Boot:
         self.child = subprocess.Popen(argv, env=self.child_env(extra), start_new_session=os.name != "nt")
         rep.set("ENGINE", detail="TensorRT 엔진 준비·적재")
         stage, ready_at, uploaded = "ENGINE", None, set()
-        warmed = tier0_checked = False
+        warmed = False
         tier0_ready_at = None
+        warmup_failure: str | None = None
+        last_refresh = float("-inf")
         while not self.stop.is_set():
             if rep.ended.is_set():
                 self.stop_child("세션 끝남")
@@ -1406,13 +1502,16 @@ class Boot:
             new, detail = lobby_stage(read_marker(work / "state" / "tier0.live"), started, want_vllm, healthy, timed_out)
             if new in ("VLLM", "READY") and tier0_ready_at is None:
                 tier0_ready_at = time.monotonic()
-            if new in ("VLLM", "READY") and not tier0_checked:  # Tier 0 가 돌기 시작한 뒤 표시 파일 status 로 꺼진 기능 확인(근거 있는 것만)
-                doc = read_marker(work / "state" / "tier0.live")
-                found = tier0_findings(doc)
-                if isinstance(doc, dict) and isinstance(doc.get("status"), dict):
-                    tier0_checked = True
-                for key, text in found.items():
-                    rep.set_disabled(key, text)
+            doc = read_marker(work / "state" / "tier0.live")
+            has_status = isinstance(doc, dict) and isinstance(doc.get("status"), dict)
+            # Tier 0 가 돌기 시작한 뒤 표시 파일 status 로 꺼진 기능을 확인하고, READY 뒤에도 보고 주기(report.interval_ms)마다 다시 읽어
+            # 다시 계산한다(S15P31A101-756: seed-reid·restart-tier0 로 Re-ID 가 켜지면 항목이 빠진다). 표시 파일에 status 가 없으면(재시작 중 등) 앞 값을 둔다
+            if new in ("VLLM", "READY") and has_status and time.monotonic() - last_refresh >= rep.interval_s:
+                last_refresh = time.monotonic()
+                rep.replace_disabled(compose_disabled(
+                    services=services_off, cache_results=dict(cache.results), reid_on_disk=reid_ready(reid_dir), marker_doc=doc,
+                    vlm_warmup_failure=warmup_failure, vlm_timed_out=new == "READY" and want_vllm and not healthy,
+                    include_vllm_cache=warmed))
             if new == "READY" and healthy and not warmed:
                 # READY 보고 전 vLLM 더미 멀티모달 요청 1회(JIT·첫 요청 지연을 근거 요청 전에 흡수). 실패해도 부팅은 계속한다
                 warmed = True
@@ -1421,13 +1520,9 @@ class Boot:
                 log(f"VLM 웜업 {'성공' if ok else '실패'}: {took_s:.1f}초 ({why})")
                 rep.add_note(f"VLM 웜업 {took_s:.1f}초" + ("" if ok else f" 실패({why})"))
                 if not ok:
-                    rep.set_disabled("vlm_warmup", f"VLM 웜업 실패({why}) — 첫 근거 요청이 느리거나 시간 초과일 수 있음")
-                if cache.results.get("vllm-compile") in ("miss", "error"):
-                    for key, text in cache_findings({"vllm-compile": cache.results["vllm-compile"]}, True).items():
-                        rep.set_disabled(key, text)
+                    warmup_failure = f"VLM 웜업 실패({why})"
+                last_refresh = float("-inf")  # 웜업 결과(실패·vLLM 캐시 miss)를 바로 목록에 반영한다
                 continue  # 다음 주기에 READY 로 보고한다
-            if new == "READY" and want_vllm and not healthy:
-                rep.set_disabled("vlm_timeout", "VLM 미준비(시한 초과) — 근거·보고서 없이 관제")
             if new != stage or (new == "READY" and detail != rep.state.get("detail")):
                 rep.set(new, detail=detail)
                 stage = new
