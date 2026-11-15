@@ -98,6 +98,16 @@ describe('TopBar', () => {
     expect(container.querySelector('.bg-stripes')).toBeNull();
   });
 
+  it('시계는 GPU 묶음 밖에 따로 있고 「현재 시각」 설명이 붙는다(GPU 가동 시간처럼 읽히지 않게, -752)', () => {
+    seed({});
+    const { container } = renderTopBar();
+    const clock = container.querySelector('header span.font-mono')!;
+    expect(clock.getAttribute('title')).toBe('현재 시각 (서버 기준)');
+    expect(clock.getAttribute('aria-label')).toMatch(/^현재 시각 /);
+    const gpu = screen.getByTestId('gpu-indicator');
+    expect(gpu.parentElement?.parentElement?.contains(clock)).toBe(false);
+  });
+
   it('판정 지연은 상단바 글에서 빠지고 GPU 점의 마우스 올림 정보창 한 줄이다. 기준(600ms) 이상이면 지연 색이다(S15P31A101-702)', () => {
     seed();
     useRealtimeStore.setState({

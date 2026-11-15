@@ -215,6 +215,8 @@ interface EventPanelProps {
    * 주지 않으면(작업 목록을 모름) 거르지 않고 「작업자」로 적는다(S15P31A101-731).
    */
   runStartedAt?: number | null;
+  /** GPU 가 꺼져 있다고 확실히 알면 true(S15P31A101-752): 사람 수를 지어내지 않고 머리줄에 「GPU 꺼짐」을 적는다. */
+  gpuOff?: boolean;
   /** 목록 아래에 붙는 것(이번 실행 전 이벤트 안내). 접으면 함께 접힌다. */
   footer?: ReactNode;
 }
@@ -223,6 +225,9 @@ interface EventPanelProps {
 const PEOPLE_TITLE =
   '지금 카메라로 추적 중인 사람 수입니다(확정·가려짐 트랙). 같은 사람이 잠깐 두 번호로 잡히면 많게, 가려지면 적게 보일 수 있습니다.';
 /** 작업 전(실행 없음)의 사람 수 설명. */
+/** GPU 꺼짐의 사람 수 설명. */
+const GPU_OFF_TITLE =
+  'GPU 가 꺼져 있어 카메라 추적과 위험 판정이 멈춰 있습니다. 상단의 GPU 에서 켤 수 있습니다.';
 const PREVIEW_TITLE = `작업을 시작하기 전 미리보기입니다. 경보는 꺼져 있습니다. ${PEOPLE_TITLE}`;
 /** 머리줄 진행 중 수를 올려 보면 나오는 설명: 사건(카드)과 경보(기록 한 건 한 건)를 가른다. */
 const ACTIVE_TITLE =
@@ -271,6 +276,7 @@ export function EventPanel({
   onClearAll,
   outsideWorkOf,
   runStartedAt,
+  gpuOff = false,
   footer,
 }: EventPanelProps) {
   // 화면 묶음(S15P31A101-731)이 지금 살아 있는 서로 다른 두 사람을 섞지 않게 살아 있는 World ID 를 본다. 사람이 바뀔 때만 다시 묶는다.
@@ -338,8 +344,12 @@ export function EventPanel({
           )}
         >
           <b className="text-[15px]">
-            <span title={preview ? PREVIEW_TITLE : PEOPLE_TITLE}>
-              {preview ? `미리보기 · 사람 ${trackedCount}명` : `작업자 ${trackedCount}명`}
+            <span title={gpuOff ? GPU_OFF_TITLE : preview ? PREVIEW_TITLE : PEOPLE_TITLE}>
+              {gpuOff
+                ? 'GPU 꺼짐 · 사람 수 알 수 없음'
+                : preview
+                  ? `미리보기 · 사람 ${trackedCount}명`
+                  : `작업자 ${trackedCount}명`}
             </span>
             {' · '}
             <span title={ACTIVE_TITLE}>진행 중 {sections.active.length}건</span>

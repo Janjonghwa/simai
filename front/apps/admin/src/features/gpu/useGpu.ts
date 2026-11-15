@@ -10,7 +10,12 @@ import {
   requestGpuStop,
   requestSaveGpuSettings,
 } from '@/features/gpu/api';
-import { DEFAULT_AUTO_STOP_IDLE_MINUTES, gpuDot, type GpuDot } from '@/features/gpu/gpuStatus';
+import {
+  DEFAULT_AUTO_STOP_IDLE_MINUTES,
+  gpuDot,
+  isGpuOn,
+  type GpuDot,
+} from '@/features/gpu/gpuStatus';
 import type {
   GpuLaunchBody,
   GpuOffers,
@@ -78,6 +83,15 @@ export function useCachedGpuStatus(): GpuStatus | undefined {
     client.getQueryData<{ status: GpuStatus }>(GPU_STATUS_KEY),
   );
   return isAdmin ? data?.status : undefined;
+}
+
+/**
+ * GPU 가 꺼져 있다고 확실히 아는지(받아 둔 상태가 있고 켜져 있지도 켜는 중도 아님, S15P31A101-752). 상태를 모르면(관리자가 아니거나 아직 못 받음)
+ * false 라 「꺼짐」을 지어내지 않는다. 새로 요청하지 않는다.
+ */
+export function useGpuKnownOff(): boolean {
+  const status = useCachedGpuStatus();
+  return status !== undefined && !isGpuOn(status);
 }
 
 /** 이미 받아 둔 GPU 설정의 유휴 자동 정지 분만 읽는다(없으면 서버 기본 30분) */

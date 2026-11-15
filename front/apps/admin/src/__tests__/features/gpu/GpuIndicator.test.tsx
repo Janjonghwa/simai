@@ -392,6 +392,39 @@ describe('GpuIndicator', () => {
     expect(launchBodies).toEqual([{ gpu_type: PCIE, region: 'AP-JP-1' }]);
   });
 
+  it('켜기 패널: 칸이 모두 「없음」인 지역 열은 접고, 가로 스크롤 막대 없이, 미리 고른 칸에 「선호 1순위」를 단다(-752)', async () => {
+    const withDeadRegion = {
+      ...offers,
+      regions: [
+        ...offers.regions,
+        { region: 'US-CA-2', name: 'US California 2', preferred: false },
+      ],
+      cells: [
+        ...offers.cells,
+        ...offers.gpu_types.map((g) => ({
+          gpu_type: g.gpu_type,
+          region: 'US-CA-2',
+          stock: 'NONE',
+          available: false,
+          price_per_hour_usd: 1,
+          within_cap: true,
+        })),
+      ],
+    };
+    server.use(http.get('*/api/gpu/offers', () => HttpResponse.json(withDeadRegion)));
+    current = statusOf('OFF');
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
+    act(() => fireEvent.click(indicator()));
+    const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
+    expect(screen.queryByRole('columnheader', { name: /US-CA-2/ })).toBeNull();
+    expect(screen.getByText(/재고 없음: .*US-CA-2/)).toBeTruthy();
+    expect(def.textContent).toContain('선호 1순위');
+    expect(screen.getAllByText('선호 1순위')).toHaveLength(1);
+    expect(def.closest('.overflow-x-hidden')).not.toBeNull();
+  });
+
   it.each([
     ['RTX 4090 AP-JP-1 켤 수 있음', RTX4090, /세팅\(맵 굽기\)·VLM 근거·아바타가 안 됩니다/],
     ['RTX A4000 AP-JP-1 모름', A4000, /관제 준비가 실패할 수 있습니다/],

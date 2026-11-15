@@ -12,9 +12,10 @@ import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
 import { usePpeSnapshot } from '@/features/ppe/usePpe';
 import { WatchBindNotice } from '@/features/watch/WatchBindNotice';
 import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
+import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
-import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
 /**
  * 장면 위에 뜬 알림(경보 배너·작업 세션 바 등)이 차지하는 높이를 `--notices-h` 로 알린다(없으면 0).
@@ -81,7 +82,49 @@ function Notices({
   );
 }
 
+/**
+ * 좁은 화면(휴대폰, 768px 미만)에서는 1280px 배치를 줄여 보이지 않고 안내만 보인다(S15P31A101-752). 급히 상태를 봐야 하면 「그래도 데스크톱 화면 보기」로 가로 스크롤 배치를 열 수 있고, 선택은 이 탭(sessionStorage)에 기억한다. 관제·작업 관리는 PC 화면용이다.
+ * 반장 휴대폰 화면(PWA)은 폐기되어(명세 수정 63) 보낼 곳이 없으므로 링크는 두지 않는다. 나머지 화면은 CSS 로만 숨겨 상태는 그대로 둔다.
+ */
+function DesktopOnlyNotice({ onForce }: { onForce: () => void }) {
+  return (
+    <div
+      role="region"
+      aria-label="데스크톱 화면 안내"
+      className="flex min-h-svh flex-col items-center justify-center gap-3 bg-background px-4 text-center md:hidden"
+    >
+      <p className="text-lg font-bold">데스크톱 화면입니다</p>
+      <p className="max-w-[320px] text-sm text-muted-foreground">
+        관제와 작업 관리는 PC 에서 가로 1280px 이상의 화면으로 열어 주세요. 휴대폰에서는 이 화면을
+        쓸 수 없습니다.
+      </p>
+      <Button variant="secondary" onClick={onForce}>
+        그래도 데스크톱 화면 보기
+      </Button>
+    </div>
+  );
+}
+
+const FORCE_DESKTOP_KEY = 'simai.forceDesktop';
+
+function readForceDesktop(): boolean {
+  try {
+    return sessionStorage.getItem(FORCE_DESKTOP_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function AppLayout() {
+  const [forceDesktop, setForceDesktop] = useState(readForceDesktop);
+  const showDesktop = () => {
+    setForceDesktop(true);
+    try {
+      sessionStorage.setItem(FORCE_DESKTOP_KEY, '1');
+    } catch {
+      // 저장하지 못해도 이번 화면에서는 보인다.
+    }
+  };
   const fullBleed = useMatches({
     select: (matches) => matches.some((m) => m.staticData.fullBleed),
   });
@@ -104,32 +147,38 @@ export function AppLayout() {
   useEffect(() => () => openEvent(null), [openEvent]);
 
   return (
-    <div
-      ref={root}
-      className="relative flex h-svh min-h-[600px] min-w-[1280px] flex-col overflow-hidden bg-background text-[15px] leading-[22px]"
-    >
-      <div className={cn('relative z-[7] flex-none', fullBleed && 'absolute inset-x-0 top-0')}>
-        <TopBar floating={fullBleed} />
-      </div>
-      <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
-        {fullBleed ? (
-          <SpatialViewportHost eventPanel={eventPanel}>
-            <Outlet />
-          </SpatialViewportHost>
-        ) : (
-          <main
-            className={cn(
-              'relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto bg-blueprint px-5 pt-3.5',
-              dockOverlay ? 'pb-3.5' : 'pb-[90px]',
-            )}
-          >
-            <Outlet />
-          </main>
+    <>
+      {!forceDesktop && <DesktopOnlyNotice onForce={showDesktop} />}
+      <div
+        ref={root}
+        className={cn(
+          'relative flex h-svh min-h-[600px] min-w-[1280px] flex-col overflow-hidden bg-background text-[15px] leading-[22px]',
+          !forceDesktop && 'max-md:hidden',
         )}
-        <Dock />
+      >
+        <div className={cn('relative z-[7] flex-none', fullBleed && 'absolute inset-x-0 top-0')}>
+          <TopBar floating={fullBleed} />
+        </div>
+        <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
+          {fullBleed ? (
+            <SpatialViewportHost eventPanel={eventPanel}>
+              <Outlet />
+            </SpatialViewportHost>
+          ) : (
+            <main
+              className={cn(
+                'relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto bg-blueprint px-5 pt-3.5',
+                dockOverlay ? 'pb-3.5' : 'pb-[90px]',
+              )}
+            >
+              <Outlet />
+            </main>
+          )}
+          <Dock />
+        </div>
+        <Notices ref={noticesRef} eventPanel={eventPanel} />
+        <AlarmSoundLoop />
       </div>
-      <Notices ref={noticesRef} eventPanel={eventPanel} />
-      <AlarmSoundLoop />
-    </div>
+    </>
   );
 }

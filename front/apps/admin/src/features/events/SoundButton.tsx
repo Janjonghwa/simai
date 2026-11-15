@@ -12,6 +12,9 @@ export function soundLabel(muted: boolean, blocked: boolean) {
   return blocked ? '경보 소리 차단됨' : '경보 소리 켜짐';
 }
 
+/** 모서리 「!」에 올리면 뜨는 설명: 브라우저가 소리를 막고 있고, 화면을 한 번 누르면 풀린다. */
+export const BLOCKED_HINT = '소리 꺼짐 · 화면을 한 번 누르세요';
+
 /**
  * 상단 바 경보 소리 버튼(관제 데모 c-sound). 끄고 켠다(시간 제한 없음, 브라우저에 저장).
  * 확인 권한이 없는 열람 계정은 소리를 내지 않으므로 버튼도 없다.
@@ -56,6 +59,7 @@ export function SoundButton() {
       {blocked && (
         <span
           aria-hidden
+          title={BLOCKED_HINT}
           // 막힌 채 경보가 있으면 느리게(2초 주기) 깜박여 눌러 달라고 알린다.
           className={cn(
             'absolute -top-[5px] -right-[5px] grid size-4 place-items-center rounded-full bg-foreground font-mono text-[11px] leading-none font-bold text-background ring-2 ring-card',

@@ -82,6 +82,8 @@ describe('SoundButton', () => {
     expect(button().getAttribute('title')).toBe('경보 소리 차단됨');
     expect(button().getAttribute('aria-pressed')).toBe('true');
     expect(badge()?.textContent).toBe('!');
+    // 「!」에 올리면 실제 뜻이 뜬다(-752)
+    expect(badge()?.getAttribute('title')).toBe('소리 꺼짐 · 화면을 한 번 누르세요');
   });
 
   it('꺼져 있으면 「경보 소리 꺼짐」이고 눌리지 않은 상태, 막혀 있으면 ·차단됨을 덧붙인다', () => {

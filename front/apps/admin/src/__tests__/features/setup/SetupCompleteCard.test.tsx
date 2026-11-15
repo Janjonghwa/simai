@@ -1,6 +1,7 @@
 import { completeBlockedReason } from '@/features/setup/setup';
 import {
   canCompleteSetup,
+  completedAtLabel,
   emptyZonePlanConfirm,
   SetupCompleteCard,
   setupCompleted,
@@ -201,5 +202,18 @@ describe('세팅 완료 거부 안내', () => {
   it('완료 뒤 보강 거부 사유(SETUP_COMPLETED)와 코드도 안내한다', () => {
     expect(REBAKE_BLOCKED_LABEL.SETUP_COMPLETED).toBeTruthy();
     expect(SUPPLEMENT_ERROR_TEXT.SUPPLEMENT_SETUP_COMPLETED).toBeTruthy();
+  });
+});
+
+describe('완료 시각 글(-752)', () => {
+  const now = new Date(2026, 10, 16, 10, 0).getTime();
+  it('오늘이면 시각만, 오늘이 아니면 날짜를 앞에 붙이고 올해가 아니면 연도도 붙인다', () => {
+    expect(completedAtLabel(new Date(2026, 10, 16, 16, 16).getTime(), now)).toBe('오후 04:16');
+    expect(completedAtLabel(new Date(2026, 10, 15, 16, 16).getTime(), now)).toBe(
+      '11월 15일 오후 04:16',
+    );
+    expect(completedAtLabel(new Date(2025, 11, 31, 9, 5).getTime(), now)).toBe(
+      '2025년 12월 31일 오전 09:05',
+    );
   });
 });

@@ -133,6 +133,27 @@ describe('AppLayout 본문 아래 여백', () => {
   });
 });
 
+describe('AppLayout 좁은 화면(-752)', () => {
+  afterEach(() => sessionStorage.clear());
+
+  it('안내 아래 「그래도 데스크톱 화면 보기」를 누르면 안내가 사라지고 배치를 그대로 보이며 선택을 sessionStorage 에 기억한다', () => {
+    const { container, unmount } = renderLayout();
+    const layout = () => container.querySelector('div[class~="min-w-[1280px]"]')!;
+    expect(layout().className).toContain('max-md:hidden');
+    act(() => screen.getByRole('button', { name: '그래도 데스크톱 화면 보기' }).click());
+    expect(screen.queryByRole('button', { name: '그래도 데스크톱 화면 보기' })).toBeNull();
+    expect(layout().className).not.toContain('max-md:hidden');
+    expect(sessionStorage.getItem('simai.forceDesktop')).toBe('1');
+    unmount();
+    // 다시 열어도 기억한다
+    const again = renderLayout();
+    expect(screen.queryByRole('button', { name: '그래도 데스크톱 화면 보기' })).toBeNull();
+    expect(again.container.querySelector('div[class~="min-w-[1280px]"]')!.className).not.toContain(
+      'max-md:hidden',
+    );
+  });
+});
+
 describe('AppLayout 연결 상태', () => {
   it('연결이 열릴 때 지금 상태를 먼저 받는 훅(GET /api/health)을 부른다', () => {
     renderLayout();
