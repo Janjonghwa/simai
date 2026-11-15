@@ -77,4 +77,64 @@ describe('PastReportPanel', () => {
     await screen.findByText('2026-11-11 09:00');
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('옛 종료 미팅에 CRITICAL/HIGH/CAUTION/INFO 영문 enum 이 남아 있으면 한국어 등급으로 바꿔 보인다', async () => {
+    const day = await openDay();
+    server.server.use(
+      http.get('*/api/reports/tbm', () =>
+        HttpResponse.json({
+          latest: {
+            report_id: 999,
+            work_id: day.work_id,
+            report_version: 1,
+            status: 'SUCCEEDED',
+            draft_status: 'SUCCEEDED',
+            failure_reason: null,
+            form: {
+              info: {
+                date_time_ms: new Date(2026, 10, 10, 9, 0).getTime(),
+                same_day: true,
+                task_name: '작업',
+                tasks: [],
+                place: '현장',
+                risk_assessed: true,
+              },
+              risks: [
+                { risk: '', measure: '' },
+                { risk: '', measure: '' },
+                { risk: '', measure: '' },
+              ],
+              focus: { risk: '', measure: '' },
+              checks: [],
+              review: {
+                daily: '',
+                ending:
+                  '전체 이벤트 0건. 등급 CRITICAL 0건. 등급 HIGH 0건. 등급 CAUTION 0건. 등급 INFO 0건.',
+              },
+            },
+            form_revision: 1,
+            leader: null,
+            header: null,
+            locked_at: null,
+            submitted_at: null,
+            submitted_by_name: null,
+            signature_count: 0,
+            content_sha256: null,
+            wrap_up_summary: null,
+            wrap_up_status: 'SUCCEEDED',
+            created_at_ms: 1000,
+            completed_at_ms: 2000,
+          },
+          versions: [],
+        }),
+      ),
+    );
+    renderWithClient(<PastReportPanel workId={day.work_id} />);
+
+    expect(
+      await screen.findByText(
+        '전체 이벤트 0건. 등급 위험 0건. 등급 경고 0건. 등급 주의 0건. 등급 안내 0건.',
+      ),
+    ).toBeTruthy();
+  });
 });

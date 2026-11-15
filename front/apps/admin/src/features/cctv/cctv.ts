@@ -48,6 +48,17 @@ export function noticeText(link: PreviewLink): string {
     : '실시간 영상은 현장 노트북에서만 표시된다. 노트북 영상 중계를 미리보기와 함께 켰는지 확인한다.';
 }
 
+/** 중계와 이어지지 않았을 때 상태 문구 옆에 보일 행동 유도 한 줄. 연결 중·원격 멈춤·열림이면 null. */
+export function disconnectAction(link: PreviewLink): string | null {
+  if (link === 'unsupported') {
+    return '영상 디코딩(WebCodecs)을 지원하는 Chrome·Edge 브라우저에서 여세요.';
+  }
+  if (link === 'unavailable') {
+    return '현장 노트북에서 중계 프로그램을 켜세요. 연결되면 바로 보입니다.';
+  }
+  return null;
+}
+
 export const isStale = (ageSec: number | undefined) => ageSec !== undefined && ageSec > STALE_SEC;
 
 /**
@@ -131,7 +142,7 @@ export function remoteNotice(
       };
     case 'waiting_source':
       return {
-        text: '현장 노트북 영상 중계가 서버에 연결되지 않았습니다. 연결되면 바로 보입니다',
+        text: '현장 노트북 영상 중계가 서버에 연결되지 않았습니다. 현장 노트북에서 중계 프로그램을 켜세요(연결되면 바로 보입니다)',
         resumable: false,
       };
     default:

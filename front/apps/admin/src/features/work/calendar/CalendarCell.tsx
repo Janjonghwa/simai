@@ -11,14 +11,16 @@ import { CheckCircle2 } from 'lucide-react';
 // 달력 칸 하나: 오늘 칸만 밝은 주색 테두리·면과 큰 주 단추로 두드러지게 하고, 지난 날은 완료 아이콘과 색 점·숫자로 간소화하며,
 // 작업 없는 지난 날은 차분하게 가라앉히고 예정인 날은 바탕에 맞춰 명도를 낮춘다.
 
-/** 끝난 날의 표시: '작업 종료' 글자 반복 대신 작은 완료 아이콘(차분한 색). */
+/** 끝난 날의 표시: '작업 종료' 글자 반복 대신 작은 완료 아이콘(차분한 색). 마우스를 올리면 의미를 설명한다. */
 function EndedMark({ className }: { className?: string }) {
   return (
-    <CheckCircle2
-      aria-hidden
-      data-slot="ended-mark"
-      className={cn('size-3.5 shrink-0 text-muted-foreground', className)}
-    />
+    <span title="작업 완료(종료·제출)" className={cn('inline-flex shrink-0', className)}>
+      <CheckCircle2
+        aria-hidden
+        data-slot="ended-mark"
+        className="size-3.5 shrink-0 text-muted-foreground"
+      />
+    </span>
   );
 }
 
@@ -50,6 +52,7 @@ function EventCounts({ critical, high }: { critical: number; high: number }) {
       {critical > 0 && (
         <span
           data-slot="sev-critical"
+          title={`위험 경보 ${critical}건`}
           className="inline-flex items-center gap-1 font-bold text-sev-critical"
         >
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-critical" />
@@ -59,6 +62,7 @@ function EventCounts({ critical, high }: { critical: number; high: number }) {
       {high > 0 && (
         <span
           data-slot="sev-high"
+          title={`경고 경보 ${high}건`}
           className="inline-flex items-center gap-1 font-semibold text-sev-high"
         >
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-high" />

@@ -7,13 +7,16 @@ import { worksLoadingLine } from '@/features/history/works';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import {
   dayWorksOf,
+  emptyReplayReason,
   firstMoment,
+  isZeroSpanWork,
   pickRun,
   replayRunsOf,
   runChoiceLabel,
   runReplayWork,
   untouched,
   workChoiceLabel,
+  ZERO_SPAN_REASON,
 } from '@/features/work/past/pastDay';
 import { PastReportPanel } from '@/features/work/past/PastReportPanel';
 import type { PastDayProps } from '@/features/work/stageProps';
@@ -240,26 +243,54 @@ export function PastDayPage({ date }: PastDayProps) {
     );
   }
 
+  const emptyReason =
+    range && index !== null && isEmptyReplay(index) ? emptyReplayReason(range, index) : null;
+  const zeroSpan = !range && isZeroSpanWork(replayWork);
+
   return (
     <div className="flex shrink-0 flex-col gap-3 pb-24">
       {head}
       {range ? (
-        <ReplayTimeline
-          replay={replay}
-          index={index}
-          holdMs={session.holdMs}
-          from={range.from}
-          to={range.to}
-          stepMs={session.stepMs}
-          disabled={replay === null || (index !== null && isEmptyReplay(index))}
-          onJump={pickEvent}
-        />
+        emptyReason ? (
+          <p
+            role="status"
+            className="rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm text-muted-foreground"
+          >
+            {emptyReason}
+          </p>
+        ) : (
+          <ReplayTimeline
+            replay={replay}
+            index={index}
+            holdMs={session.holdMs}
+            from={range.from}
+            to={range.to}
+            stepMs={session.stepMs}
+            disabled={replay === null}
+            onJump={pickEvent}
+          />
+        )
+      ) : zeroSpan ? (
+        <p
+          role="status"
+          className="rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm text-muted-foreground"
+        >
+          {ZERO_SPAN_REASON}
+        </p>
       ) : (
         <p className="text-muted-foreground">아직 다시 볼 구간이 없습니다.</p>
       )}
       <div className={BODY}>
         <section aria-label="CCTV 다시 보기" className="flex min-h-[420px] min-w-0 flex-col">
-          {range && <ReplayStage session={session} range={range} />}
+          {range ? (
+            <ReplayStage session={session} range={range} />
+          ) : (
+            zeroSpan && (
+              <div className="flex h-full items-center justify-center rounded-lg border border-border bg-card p-6 text-muted-foreground">
+                {ZERO_SPAN_REASON}
+              </div>
+            )
+          )}
         </section>
         <RightColumn workId={work.work_id} session={session} onPickEvent={pickEvent} />
       </div>

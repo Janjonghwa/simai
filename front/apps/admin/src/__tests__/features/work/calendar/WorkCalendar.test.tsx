@@ -153,7 +153,24 @@ describe('WorkCalendar', () => {
     expect(summary.textContent).toBe('작업 3일 · 위험 3건 · 경고 1건');
     expect(within(summary).getByText('위험 3건').className).toContain('text-sev-critical');
     expect(within(summary).getByText('경고 1건').className).toContain('text-sev-high');
+    // 상단 바 오른쪽 GPU 호버 툴팁과 겹치지 않도록 월간 요약 줄은 오른쪽 끝(ml-auto)으로 밀지 않는다.
+    expect(summary.parentElement?.className).not.toContain('ml-auto');
     expect(ranges).toEqual(['2026-11-01..2026-12-05']);
+  });
+
+  it('표시 범례 단추에 마우스를 올리거나 초점을 주면 완료 아이콘과 점 색깔 설명 툴팁을 보인다', async () => {
+    renderCalendar();
+    const trigger = await screen.findByRole('button', { name: '달력 표시 범례' });
+    expect(screen.queryByRole('tooltip', { name: '달력 기호 안내' })).toBeNull();
+
+    fireEvent.mouseEnter(trigger.parentElement!);
+    const tooltip = screen.getByRole('tooltip', { name: '달력 기호 안내' });
+    expect(tooltip.textContent).toContain('작업 완료');
+    expect(tooltip.textContent).toContain('빨간 점 + 숫자: 위험 경보 건수');
+    expect(tooltip.textContent).toContain('주황 점 + 숫자: 경고 경보 건수');
+
+    fireEvent.mouseLeave(trigger.parentElement!);
+    expect(screen.queryByRole('tooltip', { name: '달력 기호 안내' })).toBeNull();
   });
 
   it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 오늘 작업 준비 주 단추 모양이 크게 들어간다', async () => {

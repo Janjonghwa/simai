@@ -13,12 +13,59 @@ import {
 import { useWorkDays } from '@/features/work/useWorkDays';
 import { dayKind, WEEKDAY_NAMES, type DateKey } from '@/features/work/workDay';
 import { Button } from '@simai/ui/components/button';
-import { Check, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, CircleHelp } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 // 작업 관리 첫 화면: 작업 히스토리 달력 + 오늘 작업 진입점. 날짜를 누르면 그 날로 간다(지난 날 = 다시 보기, 오늘·예정 = 작업 흐름).
 // 지난 날 칸은 끝난 작업(종료·제출)만 간결하게 보이고 작업하지 않은 지난 날은 누를 수 없다(-670). 오늘 칸은 지금 할 일 주 단추를 크게 보이고, 예정인 날 칸은 차분히 비운다.
 // 한 화면에 맞춘다: 폭 1080 가운데, 아래 80px 비움(5주는 높이 720 에 맞고 6주는 스크롤).
+
+/** 날짜 칸의 완료 아이콘(✓)과 점 색깔(빨강=위험, 주황=경고)의 의미를 마우스 올림·초점 시 설명하는 범례. */
+function CalendarLegend() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="relative inline-flex"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        aria-label="달력 표시 범례"
+        aria-expanded={open}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      >
+        <CircleHelp aria-hidden className="size-3.5" />
+        표시 범례
+      </button>
+      {open && (
+        <div
+          role="tooltip"
+          aria-label="달력 기호 안내"
+          className="pointer-events-none absolute top-full left-0 z-30 mt-1.5 w-max rounded-lg border border-border bg-card p-3 text-xs text-foreground shadow-float"
+        >
+          <p className="mb-2 font-semibold">날짜 칸 표시 안내</p>
+          <ul className="flex flex-col gap-1.5 text-muted-foreground">
+            <li className="flex items-center gap-2">
+              <CheckCircle2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+              <span>작업 완료 (종료·제출된 작업이 있는 날)</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-critical" />
+              <span>빨간 점 + 숫자: 위험 경보 건수</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-high" />
+              <span>주황 점 + 숫자: 경고 경보 건수</span>
+            </li>
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function WorkCalendar({
   todayKey,
@@ -79,19 +126,11 @@ export function WorkCalendar({
           </span>
         )}
         {(notice || monthSummary) && (
-          <div className="ml-auto flex flex-wrap items-center gap-3.5">
-            {notice && (
-              <span
-                role="status"
-                className="flex items-center gap-1.5 text-sm font-semibold text-ok"
-              >
-                <Check aria-hidden className="size-4" />
-                {notice}
-              </span>
-            )}
+          <div data-slot="calendar-summary-bar" className="flex flex-wrap items-center gap-2.5">
             {monthSummary && (
               <p
                 aria-label="월간 요약"
+                title="이번 달 완료 작업 일수와 위험(빨간 점)·경고(주황 점) 경보 합계"
                 className="rounded-lg border border-border/70 bg-card/80 px-3 py-1 text-[13px] text-muted-foreground tabular-nums"
               >
                 <span>작업 {monthSummary.days}일</span>
@@ -108,6 +147,16 @@ export function WorkCalendar({
                   경고 {monthSummary.high}건
                 </span>
               </p>
+            )}
+            <CalendarLegend />
+            {notice && (
+              <span
+                role="status"
+                className="flex items-center gap-1.5 text-sm font-semibold text-ok"
+              >
+                <Check aria-hidden className="size-4" />
+                {notice}
+              </span>
             )}
           </div>
         )}

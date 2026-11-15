@@ -1,5 +1,6 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import {
+  disconnectAction,
   remoteNotice,
   showsState,
   STATE_LABEL,
@@ -219,13 +220,17 @@ function StatesOnly() {
   );
 }
 
-/** 중계와 이어지지 않았을 때: 연결 상태 한 줄과 그 아래 모의 화면(한 번 붙은 뒤 끊겨도 같다). */
+/** 중계와 이어지지 않았을 때: 연결 상태 한 줄·행동 유도 문구와 그 아래 모의 화면(한 번 붙은 뒤 끊겨도 같다). */
 function MockWithStatus({ link }: { link: PreviewLink }) {
+  const action = disconnectAction(link);
   return (
     <>
-      <p role="status" className="text-sm font-semibold">
-        {tileLabel(undefined, link)}
-      </p>
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <p role="status" className="text-sm font-semibold">
+          {tileLabel(undefined, link)}
+        </p>
+        {action && <p className="text-sm text-muted-foreground">{action}</p>}
+      </div>
       <CctvDemo />
     </>
   );
@@ -281,9 +286,12 @@ function AdminWall({ attach }: { attach: Attach }) {
 export function CctvPage() {
   const isAdmin = useCurrentRole() === 'ADMIN';
   return (
-    <>
+    <div
+      data-slot="cctv-page"
+      className="flex min-h-0 flex-1 flex-col gap-3 pt-(--notices-h,0px) transition-[padding] duration-150"
+    >
       <PageTitle>CCTV 관제</PageTitle>
       {isAdmin ? <AdminCctv /> : <StatesOnly />}
-    </>
+    </div>
   );
 }

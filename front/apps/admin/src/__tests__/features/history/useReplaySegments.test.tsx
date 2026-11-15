@@ -128,4 +128,17 @@ describe('종료 작업 영상 자동 갱신', () => {
     await tick(10_001);
     expect(hook.result.current.message).toContain('영상 업로드 중');
   });
+  it('오래된 작업(종료 후 10분 경과)에 보고 없는 WAITING 만 있으면 업로드 중으로 두지 않고 녹화 없음 사유를 보인다', async () => {
+    request.mockResolvedValue({
+      segments: [],
+      recording_uploads: [{ ...pending, status: 'WAITING', expected_segments: null }],
+    });
+    const hook = mount();
+    await tick();
+    expect(hook.result.current.message).toBe(
+      '이 작업 구간에 업로드된 녹화 영상이 없습니다(현장 노트북 미연결 또는 녹화 없음).',
+    );
+    await tick(30_000);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });

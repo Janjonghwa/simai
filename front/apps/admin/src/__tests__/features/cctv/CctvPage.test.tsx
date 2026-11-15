@@ -312,12 +312,18 @@ describe('CctvPage 관리자 · 확대·이동', () => {
 });
 
 describe('CctvPage 관리자 · 중계가 이어지지 않았을 때', () => {
-  it('연결 상태 한 줄과 모의 화면을 보인다(모의 화면도 크게 볼 수 있다)', () => {
+  it('연결 상태 한 줄·행동 유도 문구와 모의 화면을 보인다(모의 화면도 크게 볼 수 있다)', () => {
     seedRealtime();
     useCctvStore.getState().setLink('unavailable');
-    render(<CctvPage />);
+    const { container } = render(<CctvPage />);
 
     expect(screen.getByRole('status').textContent).toBe('중계 끊김');
+    expect(
+      screen.getByText('현장 노트북에서 중계 프로그램을 켜세요. 연결되면 바로 보입니다.'),
+    ).toBeTruthy();
+    expect(container.querySelector('[data-slot="cctv-page"]')?.className).toContain(
+      'pt-(--notices-h,0px)',
+    );
     expect(screen.getByRole('img', { name: '카메라 1 영상' })).toBeTruthy();
     expect(document.querySelector('canvas')).toBeNull();
 
@@ -362,6 +368,9 @@ describe('CctvPage 관리자 · 원격 시청(S15P31A101-400)', () => {
     render(<CctvPage />);
     expect(screen.getByLabelText('원격 시청 안내').textContent).toContain(
       '서버에 연결되지 않았습니다',
+    );
+    expect(screen.getByLabelText('원격 시청 안내').textContent).toContain(
+      '현장 노트북에서 중계 프로그램을 켜세요',
     );
     expect(screen.queryByRole('button', { name: '다시 보기' })).toBeNull();
   });
