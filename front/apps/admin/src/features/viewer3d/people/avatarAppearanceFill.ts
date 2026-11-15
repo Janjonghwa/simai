@@ -7,6 +7,9 @@ import type { BufferAttribute, BufferGeometry, Material, Mesh, Object3D } from '
 //   그래도 없으면 알파 0 으로 두어 셰이더가 기본 재질 색을 쓴다.
 // - 얼굴 미관측(128): 관측 얼굴(130, face_policy 가 EXCLUDED 가 아닐 때)이나 목 피부 텍셀의 단색 평균. 이목구비를 만들지 않는다(AGENTS 규칙 8).
 // - 관측·보간·얼굴 관측 텍셀은 원래 색 그대로 둔다(130 의 face_policy 처리는 셰이더 몫).
+// - 빈 픽셀(S15P31A101-755): 관측·보간·얼굴 관측인데 세 채널이 모두 거의 0 인 텍셀은 워커가 공유 통로의 지운 영상 칸(RGB 0)을
+//   관측으로 적은 것이다(19차 세션 실자산에서 관측 텍셀의 최대 43%). 몸은 미관측처럼 같은 부위 색으로, 얼굴은 이웃 관측 얼굴 평균으로 채운다.
+// - 표시 텍스처는 밉맵을 쓰므로 섬 밖 빈칸으로 넉넉히 번져 먼 거리 표본에 검정 빈칸이 섞이지 않게 한다.
 
 /** surface_source 부호(avatarAppearance.ts 와 같은 값. 순환 import 를 피하려고 여기 따로 둔다). */
 const CODE_INTERPOLATED = 1;
@@ -14,12 +17,45 @@ const CODE_OBSERVED = 2;
 const CODE_FACE_BIT = 0x80;
 const CODE_FACE_OBSERVED = 130;
 
+/** 텍셀별 표시 처리: 원래 색 유지, 몸 채우기(미관측·빈 픽셀), 얼굴 미관측 단색, 빈 얼굴 관측(이웃 관측 얼굴 평균). */
+const KIND_KEEP = 0;
+const KIND_BODY = 1;
+const KIND_FACE_UNOBSERVED = 2;
+const KIND_FACE_VOID = 3;
+
+/** 세 채널이 모두 AVATAR_FILL_VOID_MAX_RGB 이하인가(빈 영상 칸, -755). */
+function isVoidTexel(albedo: Uint8Array, o: number): boolean {
+  return (
+    albedo[o]! <= AVATAR_FILL_VOID_MAX_RGB &&
+    albedo[o + 1]! <= AVATAR_FILL_VOID_MAX_RGB &&
+    albedo[o + 2]! <= AVATAR_FILL_VOID_MAX_RGB
+  );
+}
+
+/** 원래 색을 그대로 보일 텍셀인가: 관측·보간·얼굴 관측이면서 빈 픽셀이 아니다. */
+function keepsObservedColor(code: number, albedo: Uint8Array, o: number): boolean {
+  return (
+    (code === CODE_OBSERVED || code === CODE_INTERPOLATED || code === CODE_FACE_OBSERVED) &&
+    !isVoidTexel(albedo, o)
+  );
+}
+
 /** 채우기 계산 격자의 목표 한 변(텍셀). 1024 텍스처는 4×4 묶음으로 256 격자에서 번진다. */
 export const AVATAR_FILL_GRID_TARGET = 256;
 /** 번진 색의 계단을 없애는 완화 반복 횟수(관측 씨앗은 고정). */
 export const AVATAR_FILL_SMOOTH_PASSES = 2;
-/** UV 섬 밖(아틀라스 빈칸)으로 더 번지는 격자 칸 수. 이음매 쌍선형 표본에 검정이 섞이지 않게 한다. */
-export const AVATAR_FILL_GUTTER_CELLS = 2;
+/**
+ * UV 섬 밖(아틀라스 빈칸)으로 더 번지는 격자 칸 수. 이음매 쌍선형·밉맵 표본에 검정이 섞이지 않게 한다.
+ * 1024 기준 8칸 = 32 텍셀로 밉맵 5단계(32×32 묶음)까지 섬 가장자리 색이 빈칸 검정과 섞이지 않는다(-755).
+ */
+export const AVATAR_FILL_GUTTER_CELLS = 8;
+/**
+ * 빈 픽셀 판정 상한(0~255). 관측·보간·얼굴 관측 텍셀의 RGB 가 모두 이 값 이하면 실제 관측이 아니라 빈 영상 칸으로 본다(-755).
+ * 실자산에서 빈 픽셀은 정확히 0 이 대부분이고, 1~3 은 0 과 어두운 관측이 평균된 값이다. 검정 옷도 압축·센서 잡음으로 세 채널이 모두 3 이하인 일은 드물다.
+ */
+export const AVATAR_FILL_VOID_MAX_RGB = 3;
+/** 빈 얼굴 관측 텍셀을 채울 때 평균을 낼 이웃 격자 칸 반경(1024 기준 ±4 텍셀 칸 = 12×12 텍셀). */
+export const AVATAR_FILL_FACE_RADIUS_CELLS = 1;
 /** 목 피부를 찾는 얼굴 경계 반경(격자 칸). */
 export const AVATAR_FILL_NECK_RADIUS_CELLS = 2;
 
@@ -323,8 +359,14 @@ export interface AvatarFillResult {
   data: Uint8Array;
   /** 얼굴 미관측(128)에 넣은 단색(0~255). 없으면 null. */
   skinRgb: Rgb | null;
-  /** 관측으로 번져 채운 부위, 인접·상하 대체로 채운 부위, 못 채운 부위 수. */
-  stats: { seededParts: number; borrowedParts: number; emptyParts: number; ms: number };
+  /** 관측으로 번져 채운 부위, 인접·상하 대체로 채운 부위, 못 채운 부위 수, 빈 픽셀로 보고 채운 관측·보간·얼굴 관측 텍셀 수(-755). */
+  stats: {
+    seededParts: number;
+    borrowedParts: number;
+    emptyParts: number;
+    voidTexels: number;
+    ms: number;
+  };
 }
 
 /** 0~255 값의 중앙값을 256 칸 히스토그램으로 구한다(정렬 없이 O(n)). */
@@ -360,7 +402,8 @@ function medianRgb(
 
 /**
  * 표시용 albedo 를 만든다. 관측(2)·보간(1)·얼굴 관측(130) 텍셀은 원래 색, 미관측(0)·모르는 값은 같은 부위 관측 색으로 채우고,
- * 얼굴 미관측(128 등 얼굴 비트)은 피부 단색으로 채운다.
+ * 얼굴 미관측(128 등 얼굴 비트)은 피부 단색으로 채운다. 빈 픽셀(관측인데 RGB 가 거의 0, -755)은 몸이면 미관측처럼,
+ * 얼굴이면 이웃 관측 얼굴 평균(없으면 피부 단색)으로 채운다.
  */
 export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   const started = performance.now();
@@ -382,8 +425,12 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
       : null;
   const sameSize = sw === w && sh === h;
 
-  // 1) 부호 읽기와 격자 씨앗(관측·보간 몸 텍셀 평균), 얼굴 관측 평균.
-  const codes = new Uint8Array(w * h);
+  // 1) 부호 읽기와 격자 씨앗(관측·보간 몸 텍셀 평균), 얼굴 관측 평균. 빈 픽셀은 씨앗에서 빼고 채울 텍셀로 둔다(-755).
+  const kinds = new Uint8Array(w * h);
+  const faceSumR = new Float32Array(n);
+  const faceSumG = new Float32Array(n);
+  const faceSumB = new Float32Array(n);
+  const faceCnt = new Uint32Array(n);
   const sumR = new Float32Array(n);
   const sumG = new Float32Array(n);
   const sumB = new Float32Array(n);
@@ -395,6 +442,7 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   let faceB = 0;
   let faceN = 0;
   const useFaceObserved = facePolicy !== 'EXCLUDED';
+  let voidTexels = 0;
   const lxs = new Int32Array(w);
   const sxs = new Int32Array(w);
   for (let x = 0; x < w; x++) {
@@ -408,24 +456,41 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
     for (let x = 0; x < w; x++) {
       const code = source[(rowS + sxs[x]!) * 4]!;
       const t = y * w + x;
-      codes[t] = code;
+      const o = t * 4;
       const li = rowL + lxs[x]!;
+      const keep = keepsObservedColor(code, albedo, o);
+      if (
+        !keep &&
+        (code === CODE_OBSERVED || code === CODE_INTERPOLATED || code === CODE_FACE_OBSERVED)
+      ) {
+        voidTexels++;
+      }
       if (code & CODE_FACE_BIT) {
         faceCell[li] = 1;
-        if (code === CODE_FACE_OBSERVED && useFaceObserved) {
-          faceR += albedo[t * 4]!;
-          faceG += albedo[t * 4 + 1]!;
-          faceB += albedo[t * 4 + 2]!;
+        if (code !== CODE_FACE_OBSERVED) {
+          kinds[t] = KIND_FACE_UNOBSERVED;
+        } else if (!keep) {
+          kinds[t] = KIND_FACE_VOID;
+        } else if (useFaceObserved) {
+          faceR += albedo[o]!;
+          faceG += albedo[o + 1]!;
+          faceB += albedo[o + 2]!;
           faceN++;
+          faceSumR[li] += albedo[o]!;
+          faceSumG[li] += albedo[o + 1]!;
+          faceSumB[li] += albedo[o + 2]!;
+          faceCnt[li]!++;
         }
         continue;
       }
       bodyCell[li] = 1;
-      if (code === CODE_OBSERVED || code === CODE_INTERPOLATED) {
-        sumR[li] += albedo[t * 4]!;
-        sumG[li] += albedo[t * 4 + 1]!;
-        sumB[li] += albedo[t * 4 + 2]!;
+      if (keep) {
+        sumR[li] += albedo[o]!;
+        sumG[li] += albedo[o + 1]!;
+        sumB[li] += albedo[o + 2]!;
         cnt[li]!++;
+      } else {
+        kinds[t] = KIND_BODY;
       }
     }
   }
@@ -684,6 +749,31 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   const skinG = skinRgb ? skinRgb[1] : 0;
   const skinB = skinRgb ? skinRgb[2] : 0;
   const skinA = skinRgb ? 255 : 0;
+  // 빈 얼굴 관측 텍셀: 반경 안 격자 칸의 관측 얼굴 평균(본 얼굴 픽셀의 국소 평균, 새 이목구비 없음). 없으면 false.
+  const faceRad = AVATAR_FILL_FACE_RADIUS_CELLS;
+  function faceNear(li: number, dst: Uint8Array, o: number): boolean {
+    const cx = li % lw;
+    const cy = (li / lw) | 0;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let k = 0;
+    for (let yy = Math.max(0, cy - faceRad); yy <= Math.min(lh - 1, cy + faceRad); yy++) {
+      for (let xx = Math.max(0, cx - faceRad); xx <= Math.min(lw - 1, cx + faceRad); xx++) {
+        const q = yy * lw + xx;
+        r += faceSumR[q]!;
+        g += faceSumG[q]!;
+        b += faceSumB[q]!;
+        k += faceCnt[q]!;
+      }
+    }
+    if (k === 0) return false;
+    dst[o] = r / k + 0.5;
+    dst[o + 1] = g / k + 0.5;
+    dst[o + 2] = b / k + 0.5;
+    dst[o + 3] = 255;
+    return true;
+  }
   for (let y = 0; y < h; y++) {
     const rowL = ((y / f) | 0) * lw;
     const gy = Math.min(lh - 1, Math.max(0, (y + 0.5) / f - 0.5));
@@ -694,19 +784,20 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
     for (let x = 0; x < w; x++) {
       const t = y * w + x;
       const o = t * 4;
-      const code = codes[t]!;
-      if (code === CODE_OBSERVED || code === CODE_INTERPOLATED || code === CODE_FACE_OBSERVED) {
+      const kind = kinds[t]!;
+      if (kind === KIND_KEEP) {
         out[o + 3] = 255;
         continue;
       }
-      if (code & CODE_FACE_BIT) {
+      const li = rowL + lxs[x]!;
+      if (kind === KIND_FACE_VOID && faceNear(li, out, o)) continue;
+      if (kind === KIND_FACE_UNOBSERVED || kind === KIND_FACE_VOID) {
         out[o] = skinR;
         out[o + 1] = skinG;
         out[o + 2] = skinB;
         out[o + 3] = skinA;
         continue;
       }
-      const li = rowL + lxs[x]!;
       const own = tapKey[li]!;
       const want = part[li]! >= 0 ? part[li]! + 3 : -1;
       const fx = fxs[x]!;
@@ -746,11 +837,11 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   return {
     data: out,
     skinRgb,
-    stats: { seededParts, borrowedParts, emptyParts, ms: performance.now() - started },
+    stats: { seededParts, borrowedParts, emptyParts, voidTexels, ms: performance.now() - started },
   };
 }
 
-/** 채우기에 실패했을 때의 안전한 표시 albedo: 관측·보간·얼굴 관측만 알파 255, 나머지는 알파 0(기본 재질 색). */
+/** 채우기에 실패했을 때의 안전한 표시 albedo: 빈 픽셀이 아닌 관측·보간·얼굴 관측만 알파 255, 나머지는 알파 0(기본 재질 색). */
 export function maskUnfilledAvatarAlbedo(input: AvatarFillInput): Uint8Array {
   const { width: w, height: h, albedo, source, sourceWidth: sw, sourceHeight: sh } = input;
   const out = new Uint8Array(albedo);
@@ -759,9 +850,8 @@ export function maskUnfilledAvatarAlbedo(input: AvatarFillInput): Uint8Array {
     for (let x = 0; x < w; x++) {
       const sx = Math.min(sw - 1, Math.floor(((x + 0.5) * sw) / w));
       const code = source[(sy * sw + sx) * 4]!;
-      const keep =
-        code === CODE_OBSERVED || code === CODE_INTERPOLATED || code === CODE_FACE_OBSERVED;
-      out[(y * w + x) * 4 + 3] = keep ? 255 : 0;
+      const o = (y * w + x) * 4;
+      out[o + 3] = keepsObservedColor(code, albedo, o) ? 255 : 0;
     }
   }
   return out;

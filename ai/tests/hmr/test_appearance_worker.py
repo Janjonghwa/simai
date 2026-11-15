@@ -271,3 +271,43 @@ def test_real_pipeline_upload_retry_and_atomic_commit_on_worker(rig):
         assert state.history[0] == initial
     finally:
         loop.close()
+
+
+def test_owned_images_copy_only_crops_and_survive_ring_buffer_reuse():
+    """공유 통로 읽기의 고리 버퍼 칸이 다시 쓰여도 외형 작업자 사본은 그대로다(-755)."""
+    import numpy as np
+    from simai_ai.hmr.appearance_worker import owned_images
+
+    ring = np.zeros((8, 10, 3), np.uint8)
+    ring[1:4, 2:6] = 200
+    plain = np.full((2, 2, 3), 7, np.uint8)
+    snap = {"frames": {"cam1": {"crops_xyxy": [[2, 1, 6, 4], [-5, -5, 0, 0]]}, "cam2": {}}}
+    owned = owned_images(snap, {"cam1": ring, "cam2": plain})
+    ring[:] = 0  # 다음 읽기가 같은 칸의 크롭을 지운다
+    plain[:] = 0
+    assert owned["cam1"][1:4, 2:6].min() == 200 and owned["cam1"].sum() == 200 * 3 * 4 * 3
+    assert owned["cam2"].min() == 7
+
+
+def test_async_appearance_keeps_images_after_source_buffers_are_rewritten(rig):
+    clock, source, _, _, _, loop, _ = harness(rig, freeze=1)
+    entered, release, seen = threading.Event(), threading.Event(), []
+    def update(frame, doc, snapshot, images, *args, **kwargs):
+        entered.set()
+        release.wait(2)
+        seen.append({cid: int(img.min()) for cid, img in images.items()})
+    loop.appearance = fake_pipeline(update)
+    doc, images = source.item
+    for image in images.values():
+        image[:] = 90
+    try:
+        loop.step()
+        assert entered.wait(1)
+        for image in images.values():
+            image[:] = 0  # 고리 버퍼 칸 재사용 흉내
+        release.set()
+        wait_until(lambda: bool(seen))
+        assert seen[0] and all(v == 90 for v in seen[0].values())
+    finally:
+        release.set()
+        loop.close()

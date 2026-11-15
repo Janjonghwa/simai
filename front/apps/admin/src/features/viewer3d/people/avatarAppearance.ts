@@ -1,4 +1,5 @@
 import {
+  AVATAR_FILL_VOID_MAX_RGB,
   avatarFillGridSize,
   avatarUvPartMapForScene,
   fillAvatarAlbedo,
@@ -20,6 +21,7 @@ import {
   DirectionalLight,
   HemisphereLight,
   LinearFilter,
+  LinearMipmapLinearFilter,
   Mesh,
   MeshBasicMaterial,
   NearestFilter,
@@ -42,6 +44,8 @@ import {
 // 설계: docs/design/hmr-appearance-texture.md, docs/design/avatar-pose-stream.md.
 // 표시(S15P31A101-742): 보간(1)은 원색, 미관측(0)·얼굴 미관측(128)은 CPU 에서 채운 표시용 albedo 로 그린다
 // (docs/design/S15P31A101-742-avatar-fill-display.md). surface_source 데이터는 바꾸지 않는다.
+// 빈 픽셀·밉맵(S15P31A101-755): 관측인데 RGB 가 거의 0 인 텍셀(워커가 지운 영상 칸을 관측으로 적은 것)도 채우고,
+// 표시 albedo 는 밉맵으로 축소 표본의 점묘 깜빡임을 없앤다(docs/design/S15P31A101-755-avatar-sparse-fill.md).
 
 export type AvatarFacePolicy = AvatarAssetView['facePolicy'];
 
@@ -143,9 +147,15 @@ export interface AvatarCpuSampleInput {
   neighborhood?: readonly { code: number; texRgb: RgbTuple; weight?: number }[];
 }
 
+/** 관측 텍스처 색(0~1)이 빈 픽셀(세 채널 모두 AVATAR_FILL_VOID_MAX_RGB/255 이하, -755)인가. */
+function isVoidRgb(rgb: RgbTuple): boolean {
+  const limit = (AVATAR_FILL_VOID_MAX_RGB + 0.5) / 255;
+  return rgb[0] < limit && rgb[1] < limit && rgb[2] < limit;
+}
+
 /**
  * 셰이더와 같은 규칙으로 표면 출처 부호와 face_policy 에 따른 최종 색(0~1)을 계산한다.
- * - 2(OBSERVED)·1(INTERPOLATED): 텍스처 색 그대로(-742, 보간 감쇠 없음)
+ * - 2(OBSERVED)·1(INTERPOLATED): 텍스처 색 그대로(-742, 보간 감쇠 없음). 빈 픽셀(-755)이면 채운 색, 없으면 기본 재질 색
  * - 0(UNOBSERVED)·128(얼굴 미관측)·모르는 값(129 포함): 채운 색(fillRgb), 없으면 기본 재질 색(baseRgb)
  * - 130(얼굴 관측): OBSERVED → 관측 텍스처 색, BLURRED → 주변 130 텍셀 가중 평균 + 채도·명도 완화, EXCLUDED → 기본 재질 색
  */
@@ -154,9 +164,11 @@ export function evaluateAvatarSurfaceColor(input: AvatarCpuSampleInput): RgbTupl
   switch (kind) {
     case 'OBSERVED':
     case 'INTERPOLATED':
-      return input.texRgb;
+      return isVoidRgb(input.texRgb) ? (input.fillRgb ?? input.baseRgb) : input.texRgb;
     case 'FACE_OBSERVED': {
-      if (input.facePolicy === 'OBSERVED') return input.texRgb;
+      if (input.facePolicy === 'OBSERVED') {
+        return isVoidRgb(input.texRgb) ? (input.fillRgb ?? input.baseRgb) : input.texRgb;
+      }
       if (input.facePolicy === 'EXCLUDED') return input.baseRgb;
       // BLURRED: 주변 표본 중 얼굴 관측(130)인 텍셀만 가중 평균해 배경(0)·미관측(128) 색 번짐을 막는다.
       let sumR = 0;
@@ -541,6 +553,18 @@ export function createAvatarAlbedoTexture(image: AvatarPngImage): DataTexture {
   return texture;
 }
 
+/**
+ * 셰이더에 묶는 표시용 albedo(-742 채움 결과): sRGB, 삼선형 밉맵(-755). 1024 텍스처가 화면에서 수십~수백 픽셀로 줄어들 때
+ * 밉맵 없는 LinearFilter 는 텍셀 하나씩 건너 표본해 점묘처럼 반짝인다. 섬 밖 빈칸은 채우기가 넉넉히 번져 두므로 밉맵에 검정이 섞이지 않는다.
+ */
+export function createAvatarDisplayAlbedoTexture(image: AvatarPngImage): DataTexture {
+  const texture = createAvatarAlbedoTexture(image);
+  texture.name = 'avatar-albedo-display';
+  texture.minFilter = LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  return texture;
+}
+
 /** 표면 출처 지도(surface_source.png): NoColorSpace, NearestFilter, mipmap 없음(부호 섞임 금지). */
 export function createAvatarSurfaceSourceTexture(image: AvatarPngImage): DataTexture {
   const texture = new DataTexture(
@@ -717,14 +741,15 @@ vec3 simaiSampleBlurredFace(vec2 uvCoord, vec3 centerRgb) {
 vec3 simaiBaseColor = (vAvatarRestY >= uAvatarWaistY) ? diffuseColor.rgb : uAvatarLowerColor;
 if (uAvatarHasAppearance == 1) {
   int simaiCode = simaiReadSurfaceCode(vAvatarUv);
-  // 표시용 채운 albedo(-742): 알파 1 은 관측·보간 원색 또는 채운 색, 알파 0 은 기본 재질 색.
+  // 표시용 채운 albedo(-742·-755): 알파 1 은 관측·보간 원색 또는 채운 색(빈 픽셀 포함), 알파 0 은 기본 재질 색.
   vec4 simaiTex = texture2D(uAvatarAlbedoMap, vAvatarUv);
   vec3 simaiTexRgb = simaiTex.rgb;
+  vec3 simaiFilled = mix(simaiBaseColor, simaiTexRgb, simaiTex.a);
   if (simaiCode == 2 || simaiCode == 1) {
-    diffuseColor.rgb = simaiTexRgb;
+    diffuseColor.rgb = simaiFilled;
   } else if (simaiCode == 130) {
     if (uAvatarFacePolicy == 2) {
-      diffuseColor.rgb = simaiTexRgb;
+      diffuseColor.rgb = simaiFilled;
     } else if (uAvatarFacePolicy == 1) {
       diffuseColor.rgb = simaiSampleBlurredFace(vAvatarUv, simaiTexRgb);
     } else {
@@ -732,7 +757,7 @@ if (uAvatarHasAppearance == 1) {
     }
   } else {
     // 0(UNOBSERVED)·128(얼굴 미관측)·129·모르는 값: 같은 부위 관측 색·피부 단색으로 채운 색, 못 채웠으면 기본 재질 색
-    diffuseColor.rgb = mix(simaiBaseColor, simaiTexRgb, simaiTex.a);
+    diffuseColor.rgb = simaiFilled;
   }
 } else {
   diffuseColor.rgb = simaiBaseColor;
@@ -1009,13 +1034,12 @@ export async function loadAvatarAppearanceTextures(
       if (display && display.facePolicy === facePolicy && display.partMap === partMap) {
         return display.texture;
       }
-      const texture = createAvatarAlbedoTexture({
+      const texture = createAvatarDisplayAlbedoTexture({
         width: albedoImg.width,
         height: albedoImg.height,
         channels: 4,
         data: buildAvatarDisplayAlbedo(albedoImg, sourceImg, facePolicy, partMap, req),
       });
-      texture.name = 'avatar-albedo-display';
       display?.texture.dispose();
       display = { facePolicy, partMap, texture };
       return texture;
@@ -1042,7 +1066,8 @@ export interface UseAvatarAppearanceResult {
  * 사람(worldId)별 외형 텍스처를 읽고 관리한다.
  * - 같은 사람의 같은 appearance_version 은 한 번만 받는다.
  * - 다른 world_id 와 텍스처를 절대 공유하지 않는다(사람별 외형 자산).
- * - appearance_version 이 바뀌면 새 텍스처를 다 읽을 때까지 이전 텍스처를 유지해 깜빡임을 막고, 교체가 끝나면 이전 텍스처를 .dispose() 한다.
+ * - appearance_version 이 바뀌면 새 텍스처를 다 읽을 때까지 이전 텍스처를 유지해 깜빡임을 막고, 새 텍스처가 재질에 들어간 커밋 뒤에
+ *   이전 텍스처를 .dispose() 한다(-755: 그 전에 해제하면 사이 프레임이 해제된 텍스처를 GPU 에 다시 올려 남긴다).
  * - 둘 중 하나라도 실패하면 기본 재질(appearance = null)로 그리고 AVATAR_ASSET_RETRY_MS 뒤 다시 시도한다.
  */
 export function useAvatarAppearance(
@@ -1063,6 +1088,8 @@ export function useAvatarAppearance(
   });
   const readAvatar = useEffectEvent(getAvatar);
   const activeRef = useRef<AvatarAppearanceTextures | null>(null);
+  // 교체·실패로 물러났지만 아직 재질에 묶여 있을 수 있는 자산. 다음 커밋(자식 MeshBody 가 새 텍스처를 묶은 뒤)에 해제한다.
+  const retiredRef = useRef<AvatarAppearanceTextures[]>([]);
 
   // worldId 가 바뀌거나 언마운트되면 이전 사람의 외형 자산을 즉시 해제한다(ID 분리 시 유산 금지).
   useEffect(() => {
@@ -1071,8 +1098,21 @@ export function useAvatarAppearance(
         activeRef.current.dispose();
         activeRef.current = null;
       }
+      for (const old of retiredRef.current) old.dispose();
+      retiredRef.current = [];
     };
   }, [worldId]);
+
+  // 부모 효과는 자식 효과 뒤에 돈다: 이 커밋에서 MeshBody 가 새 외형(또는 기본 재질)을 묶은 다음 물러난 자산을 해제한다.
+  useEffect(() => {
+    if (retiredRef.current.length === 0) return;
+    const retired = retiredRef.current;
+    retiredRef.current = [];
+    for (const old of retired) {
+      if (old !== viewState.appearance) old.dispose();
+      else retiredRef.current.push(old);
+    }
+  }, [viewState]);
 
   useEffect(() => {
     const avatar = readAvatar();
@@ -1090,9 +1130,9 @@ export function useAvatarAppearance(
       return;
     }
 
-    // streamEpoch 가 바뀌었으면 이전 세대 텍스처는 유지하지 않는다.
+    // streamEpoch 가 바뀌었으면 이전 세대 텍스처는 유지하지 않는다(새 텍스처가 묶인 뒤 해제).
     if (activeRef.current && activeRef.current.streamEpoch !== req.streamEpoch) {
-      activeRef.current.dispose();
+      retiredRef.current.push(activeRef.current);
       activeRef.current = null;
     }
 
@@ -1108,7 +1148,7 @@ export function useAvatarAppearance(
         const prev = activeRef.current;
         activeRef.current = loaded;
         if (prev && prev !== loaded) {
-          prev.dispose();
+          retiredRef.current.push(prev);
         }
         setViewState({
           worldId,
@@ -1125,7 +1165,7 @@ export function useAvatarAppearance(
         );
         // 읽기 실패 시 기본 재질(상·하의 대표색)로 그리고 일정 간격 뒤 다시 시도한다.
         if (activeRef.current) {
-          activeRef.current.dispose();
+          retiredRef.current.push(activeRef.current);
           activeRef.current = null;
         }
         setViewState({

@@ -284,6 +284,94 @@ describe('표시용 albedo 채우기(-742)', () => {
   });
 });
 
+describe('빈 픽셀·희소 관측(-755)', () => {
+  it('관측·보간인데 RGB 가 모두 3 이하인 텍셀은 빈 픽셀로 보고 같은 부위 관측 색으로 채운다(검정 점 없음)', () => {
+    const img = blankImage();
+    // A 전체가 관측(2)이지만 격자 선(4칸마다 한 줄)만 빨강이고 나머지는 워커가 적은 RGB 0(실자산의 철망 무늬).
+    rect(img, SIZE, [0, 0, 32, 32], AVATAR_SOURCE_OBSERVED, (x, y) =>
+      x % 4 === 0 || y % 4 === 0 ? RED : [0, 0, 0],
+    );
+    rect(img, SIZE, [0, 32, 32, 64], AVATAR_SOURCE_INTERPOLATED, (x, y) =>
+      (x + y) % 3 === 0 ? BLUE : [2, 1, 3],
+    );
+    const { data, stats } = fill(img, partMapOf());
+    for (let y = 1; y < 31; y++) {
+      for (let x = 1; x < 31; x++) {
+        expectNear(rgbaAt(data, SIZE, x, y), RED);
+        expect(rgbaAt(data, SIZE, x, y)[3]).toBe(255);
+      }
+    }
+    expectNear(rgbaAt(data, SIZE, 10, 41), BLUE);
+    let expectedVoid = 0;
+    for (let y = 0; y < 32; y++) {
+      for (let x = 0; x < 32; x++) {
+        if (!(x % 4 === 0 || y % 4 === 0)) expectedVoid++;
+        if ((x + y + 32) % 3 !== 0) expectedVoid++;
+      }
+    }
+    expect(stats.voidTexels).toBe(expectedVoid);
+  });
+
+  it('빈 얼굴 관측(130) 텍셀은 이웃 관측 얼굴 평균으로, 이웃이 없으면 피부 단색으로 채우고 이목구비를 만들지 않는다', () => {
+    const img = blankImage();
+    const SKIN: Rgb = [200, 160, 130];
+    rect(img, SIZE, [2, 2, 10, 10], AVATAR_SOURCE_FACE_OBSERVED, (x, y) =>
+      (x + y) % 2 ? SKIN : [0, 0, 0],
+    );
+    rect(img, SIZE, [20, 2, 28, 10], AVATAR_SOURCE_FACE_OBSERVED, [0, 0, 0]);
+    rect(img, SIZE, [0, 16, 32, 32], AVATAR_SOURCE_OBSERVED, RED);
+    const { data, skinRgb } = fill(img, partMapOf(), 'OBSERVED');
+    expect(skinRgb).toEqual(SKIN);
+    // 빈 130 은 이웃 관측 얼굴 평균(SKIN), 관측 130 은 원래 색 그대로.
+    expect(rgbaAt(data, SIZE, 4, 4)).toEqual([...SKIN, 255]);
+    expect(rgbaAt(data, SIZE, 3, 4)).toEqual([...SKIN, 255]);
+    // 이웃에 관측 얼굴이 없는 빈 130 은 피부 단색.
+    expect(rgbaAt(data, SIZE, 24, 5)).toEqual([...SKIN, 255]);
+  });
+
+  it('밉맵 표본에 검정이 섞이지 않게 섬 밖 빈칸으로 넉넉히 번진다', () => {
+    const N = 1024;
+    const grid = avatarFillGridSize(N, N);
+    const g = new THREE.BufferGeometry();
+    // 가운데 작은 섬 하나(나머지 아틀라스는 빈칸).
+    g.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([0, 1.6, 0, 1, 1.6, 0, 1, 1.0, 0, 0, 1.0, 0], 3),
+    );
+    g.setAttribute(
+      'uv',
+      new THREE.Float32BufferAttribute([0.4, 0.4, 0.6, 0.4, 0.6, 0.6, 0.4, 0.6], 2),
+    );
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    const map = buildAvatarUvPartMap([g], grid.width, grid.height, AVATAR_WAIST_REST_Y);
+    const img = blankImage(N);
+    rect(img, N, [412, 412, 612, 612], AVATAR_SOURCE_OBSERVED, GREEN);
+    const { data } = fill(img, map, 'OBSERVED', N);
+    // 섬 가장자리(0.4·1024 ≈ 410)에서 밖으로 24 텍셀 떨어진 빈칸도 섬 색이다(밉맵 3~4단계 표본 반경).
+    expectNear(rgbaAt(data, N, 386, 512), GREEN);
+    expect(rgbaAt(data, N, 386, 512)[3]).toBe(255);
+  });
+
+  it('채우기 실패 대비 마스크도 빈 픽셀은 알파 0 으로 둔다', () => {
+    const img = blankImage(4);
+    put(img, 4, 0, 0, AVATAR_SOURCE_OBSERVED, [0, 0, 0]);
+    put(img, 4, 1, 0, AVATAR_SOURCE_OBSERVED, [3, 3, 3]);
+    put(img, 4, 2, 0, AVATAR_SOURCE_OBSERVED, [4, 0, 0]);
+    put(img, 4, 3, 0, AVATAR_SOURCE_FACE_OBSERVED, [1, 2, 0]);
+    const data = maskUnfilledAvatarAlbedo({
+      width: 4,
+      height: 4,
+      albedo: img.albedo,
+      source: img.source,
+      sourceWidth: 4,
+      sourceHeight: 4,
+      facePolicy: 'OBSERVED',
+      partMap: null,
+    });
+    expect([0, 1, 2, 3].map((i) => data[i * 4 + 3])).toEqual([0, 0, 255, 0]);
+  });
+});
+
 describe('성능(1024², 실제 MHR 크기 합성 dense 리그)', () => {
   it('부위 지도와 채우기가 메인 스레드를 오래 막지 않는다', async () => {
     const dense = fs.readFileSync(

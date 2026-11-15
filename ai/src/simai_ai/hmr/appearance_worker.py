@@ -9,6 +9,40 @@ from types import SimpleNamespace
 log = logging.getLogger(__name__)
 
 
+def owned_images(snapshot, images):
+    """외형 작업자가 따로 쥘 영상 사본(S15P31A101-755).
+
+    공유 통로 읽기(`LatestChannelReader`)는 카메라마다 3칸 고리 버퍼를 다시 쓴다(-650). 다음 읽기들이 같은 칸의
+    이전 크롭을 0으로 지우고 새 크롭을 덮으므로, 비동기 외형 회차가 참조만 쥐고 있으면 누적 도중 검정(0)·다른 시각
+    픽셀을 관측으로 적는다(19차 세션: 관측 텍셀의 최대 43%가 RGB 0). 크롭 표(`crops_xyxy`)가 있으면 크롭만 새 배열로
+    옮기고(크롭 밖은 원래도 0), 없으면 통째로 복사한다.
+    """
+    import numpy as np
+
+    frames = snapshot.get("frames") if isinstance(snapshot, dict) else None
+    owned = {}
+    for cid, image in images.items():
+        array = np.asarray(image)
+        ref = frames.get(cid) if isinstance(frames, dict) else None
+        crops = ref.get("crops_xyxy") if isinstance(ref, dict) else None
+        if array.ndim != 3 or not isinstance(crops, (list, tuple)):
+            owned[cid] = array.copy()
+            continue
+        height, width = array.shape[:2]
+        copy = np.zeros(array.shape, array.dtype)
+        for box in crops:
+            if not isinstance(box, (list, tuple)) or len(box) != 4:
+                copy = array.copy()
+                break
+            x0, y0, x1, y1 = (int(v) for v in box)
+            x0, x1 = max(0, x0), min(width, x1)
+            y0, y1 = max(0, y0), min(height, y1)
+            if x1 > x0 and y1 > y0:
+                copy[y0:y1, x0:x1] = array[y0:y1, x0:x1]
+        owned[cid] = copy
+    return owned
+
+
 class AppearanceWorker:
     def __init__(self, loop):
         self.loop = loop
@@ -23,7 +57,8 @@ class AppearanceWorker:
         self._thread.start()
 
     def offer(self, frame, doc, snapshot, images, rig, masks):
-        # 영상·rig·baked는 생산 뒤 불변. 큰 배열 복사 없이 참조를 넘기고 가변 자산만 분리한다.
+        # rig·baked는 생산 뒤 불변이라 참조를 넘기고 가변 자산만 분리한다. 영상은 읽기 고리 버퍼가 다시 쓰므로 사본을 쥔다(-755).
+        images = owned_images(snapshot, images)
         with self.loop._state_lock:
             tokens = {wid: (st, st.revision, st.generation) for wid, st in self.loop.people.items()}
             states = {wid: replace(st, asset=deepcopy(st.asset), history=dict(st.history), samples=[])

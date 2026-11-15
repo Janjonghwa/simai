@@ -30,6 +30,7 @@ import {
   avatarBaseColorAtHeight,
   classifyAvatarSurfaceCode,
   createAvatarAlbedoTexture,
+  createAvatarDisplayAlbedoTexture,
   createAvatarPmremEnvMap,
   createAvatarSurfaceSourceTexture,
   decodeAvatarPng,
@@ -100,6 +101,45 @@ describe('표면 출처 부호 분류와 색 선택(-359)', () => {
       facePolicy: 'OBSERVED',
     });
     expect(interpolated).toEqual(texRgb);
+  });
+
+  it('관측·보간·얼굴 관측인데 RGB 가 거의 0 인 빈 픽셀(-755)은 채운 색, 없으면 기본 재질 색이다', () => {
+    const voidRgb: RgbTuple = [0, 2 / 255, 3 / 255];
+    const fillRgb: RgbTuple = [0.3, 0.1, 0.5];
+    for (const code of [AVATAR_SOURCE_OBSERVED, AVATAR_SOURCE_INTERPOLATED]) {
+      expect(
+        evaluateAvatarSurfaceColor({
+          code,
+          texRgb: voidRgb,
+          baseRgb,
+          facePolicy: 'OBSERVED',
+          fillRgb,
+        }),
+      ).toEqual(fillRgb);
+      expect(
+        evaluateAvatarSurfaceColor({ code, texRgb: voidRgb, baseRgb, facePolicy: 'OBSERVED' }),
+      ).toEqual(baseRgb);
+    }
+    expect(
+      evaluateAvatarSurfaceColor({
+        code: AVATAR_SOURCE_FACE_OBSERVED,
+        texRgb: voidRgb,
+        baseRgb,
+        facePolicy: 'OBSERVED',
+        fillRgb,
+      }),
+    ).toEqual(fillRgb);
+    // 4/255 이상인 어두운 관측은 그대로다(검정 옷).
+    const dark: RgbTuple = [4 / 255, 0, 0];
+    expect(
+      evaluateAvatarSurfaceColor({
+        code: AVATAR_SOURCE_OBSERVED,
+        texRgb: dark,
+        baseRgb,
+        facePolicy: 'OBSERVED',
+        fillRgb,
+      }),
+    ).toEqual(dark);
   });
 
   it.each([
@@ -215,8 +255,17 @@ describe('합성 PNG 인코딩·디코딩과 DataTexture 설정', () => {
     expect(sourceTex.generateMipmaps).toBe(false);
     expect(sourceTex.flipY).toBe(false);
 
+    // 셰이더에 묶는 표시용 albedo 는 삼선형 밉맵으로 축소 표본의 점묘 깜빡임을 막는다(-755).
+    const displayTex = createAvatarDisplayAlbedoTexture(decodedAlbedo);
+    expect(displayTex.colorSpace).toBe(THREE.SRGBColorSpace);
+    expect(displayTex.minFilter).toBe(THREE.LinearMipmapLinearFilter);
+    expect(displayTex.magFilter).toBe(THREE.LinearFilter);
+    expect(displayTex.generateMipmaps).toBe(true);
+    expect(displayTex.flipY).toBe(false);
+
     albedoTex.dispose();
     sourceTex.dispose();
+    displayTex.dispose();
   });
 
   it('onBeforeCompile 셰이더가 PBR 상수와 부호별·face_policy 분기 GLSL 을 주입한다', () => {
@@ -242,6 +291,8 @@ describe('합성 PNG 인코딩·디코딩과 DataTexture 설정', () => {
     // -742: 보간(1)은 관측과 같은 원색, 미관측은 채운 albedo 알파로 기본 재질 색과 섞는다.
     expect(shader.fragmentShader).toContain('simaiCode == 2 || simaiCode == 1');
     expect(shader.fragmentShader).toContain('mix(simaiBaseColor, simaiTexRgb, simaiTex.a)');
+    // -755: 관측·보간도 채운 albedo 알파를 따른다(빈 픽셀을 못 채웠으면 검정 대신 기본 재질 색).
+    expect(shader.fragmentShader).toContain('diffuseColor.rgb = simaiFilled;');
     expect(shader.fragmentShader).not.toContain('simaiAdjustSatBright(simaiTexRgb, 0.45');
     expect(shader.uniforms.uAvatarHasAppearance).toBeDefined();
     expect(shader.uniforms.uAvatarFacePolicy).toBeDefined();
@@ -528,7 +579,11 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     const uniforms = getAvatarMaterialUniforms(mat)!;
     const v0Albedo = uniforms.uAvatarAlbedoMap.value;
     const v0Source = uniforms.uAvatarSurfaceSourceMap.value;
-    const disposeAlbedoSpy = vi.fn();
+    // -755: v0 을 해제하는 순간 재질에는 이미 새 텍스처가 묶여 있어야 한다(해제된 텍스처를 다시 올려 GPU 에 남기지 않음).
+    let boundAtDispose: unknown = null;
+    const disposeAlbedoSpy = vi.fn(() => {
+      boundAtDispose = uniforms.uAvatarAlbedoMap.value;
+    });
     const disposeSourceSpy = vi.fn();
     v0Albedo.addEventListener('dispose', disposeAlbedoSpy);
     v0Source.addEventListener('dispose', disposeSourceSpy);
@@ -548,6 +603,8 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     expect(uniforms.uAvatarHasAppearance.value).toBe(1);
     expect(uniforms.uAvatarAlbedoMap.value).not.toBe(v0Albedo);
     expect(disposeAlbedoSpy).toHaveBeenCalledTimes(1);
+    expect(boundAtDispose).not.toBeNull();
+    expect(boundAtDispose).not.toBe(v0Albedo);
     expect(disposeSourceSpy).toHaveBeenCalledTimes(1);
   });
 
