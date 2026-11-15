@@ -357,7 +357,9 @@ class AppearanceAccumulator:
             quality *= blur * fit
             w = quality * resolution_weight
             observed = tensor(image[..., ::-1].copy())[y, x]
-            good &= torch.isfinite(w) & (w > 0)
+            # 공유 통로 크롭 밖·왜곡 제거 영상 밖은 RGB 0 으로 온다. 세 채널이 모두 0 인 픽셀은 관측으로 적지 않는다(-755):
+            # 한번 0 이 들어가면 뒤의 바른 관측이 이상치(>80)로 거절되어 검정 점이 굳는다.
+            good &= torch.isfinite(w) & (w > 0) & (observed.amax(dim=1) > 0)
             if cfg.color_enabled:
                 high = good & (quality >= cfg.color_min_quality)
                 color_samples[camera] = (ids_np[high.cpu().numpy()], observed[high].cpu().numpy())

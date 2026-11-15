@@ -171,6 +171,23 @@ def test_outliers_weighted_average_and_gate_abort_are_transactional(caplog):
     assert "cpu_ms=" in caplog.text and "wall_ms=" in caplog.text and "rejected=" in caplog.text
 
 
+def test_black_void_pixels_are_not_observed_and_do_not_lock_out_real_color():
+    """크롭 밖·지워진 고리 버퍼 칸(RGB 0)은 관측이 아니다. 먼저 들어온 0 이 뒤의 바른 색을 이상치로 막지 않는다(-755)."""
+    acc, vertices, planes = accumulator()
+    view = render(camera((3, 2, 1)), planes)
+    void = replace(view, image_bgr=np.zeros_like(view.image_bgr))
+    assert not acc.accumulate("w-1", vertices, [void], 1000)
+    assert not acc.weights.any()
+    half = view.image_bgr.copy()
+    half[:, :64] = 0
+    assert acc.accumulate("w-1", vertices, [replace(view, image_bgr=half, capture_time_ms=1001)], 1001)
+    seen = acc.weights > 0
+    assert seen.any() and acc.colors[seen].max(axis=1).min() > 0
+    before = np.count_nonzero(seen)
+    assert acc.accumulate("w-1", vertices, [replace(view, capture_time_ms=1002)], 1002)
+    assert np.count_nonzero(acc.weights) > before
+
+
 def test_identity_freeze_30_frames_revision_and_new_id():
     acc, vertices, planes = accumulator(freeze=30)
     view = render(camera((3, 2, 1)), planes)
