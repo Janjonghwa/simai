@@ -1061,7 +1061,8 @@ class BackgroundCleanBackground:
             return False
         self._last_seen[cid] = at
         # 세팅 배경 촬영 중에는 짧은 간격으로 받는다(-686)
-        interval = self.settings.setup_sample_interval_ms if self._fresh is not None else self.settings.sample_interval_ms
+        fresh = self._fresh
+        interval = self.settings.setup_sample_interval_ms if fresh is not None else self.settings.sample_interval_ms
         previous = self._last_offer.get(cid)
         if previous is not None and previous[0] == generation and at - previous[1] < interval:
             return False
@@ -1076,12 +1077,43 @@ class BackgroundCleanBackground:
             ):
                 self.dropped += 1
                 return False
+            if fresh is not None and self._yield_to_waiting(fresh, ctx, cid, at, interval):
+                self.dropped += 1
+                return False
             self._queue.append((frame, detections, generation, size))
             self._pending_bytes += size
             self._last_offer[cid] = generation, at
             return True
         finally:
             self._queue_lock.release()
+
+    def _yield_to_waiting(self, fresh: Mapping[str, Any], ctx: _Context, cid: str, at: int, interval: int) -> bool:
+        """세팅 촬영 중 이 카메라가 더 급한 카메라에 큐 자리를 양보해야 하면 True(-715). `_queue_lock` 안에서 부른다.
+
+        네 대 프레임이 늘 같은 순서로 오면 빈 자리를 앞 카메라가 먼저 가져가 마지막 카메라가 굶는다(17차 cam_D 0장).
+        급한 순서는 (세팅 표본을 다 채웠는가, 마지막으로 받은 시각) 오름차순이고, 겨루는 상대는 최근 한 간격 안에 프레임이 왔고
+        간격이 지나 받을 차례인 카메라뿐이다(영상이 끊긴 카메라는 자리를 막지 않는다).
+        - 다 채운 카메라는 받을 차례인 못 채운 카메라가 있으면 양보한다.
+        - 큐 마지막 칸은 가장 급한 카메라만 쓴다.
+        """
+        filled = fresh.get("filled", frozenset())
+
+        def rank(c: str) -> tuple[bool, float]:
+            prev = self._last_offer.get(c)
+            last = prev[1] if prev is not None and prev[0] == ctx.generations.get(c) else -math.inf
+            return c in filled, last
+
+        waiting = [
+            r for c in ctx.generations
+            if c != cid and self._last_seen.get(c, -math.inf) >= at - interval
+            and at - (r := rank(c))[1] >= interval
+        ]
+        if not waiting:
+            return False
+        mine = rank(cid)
+        if mine[0] and any(not f for f, _ in waiting):
+            return True
+        return len(self._queue) >= max(1, self.settings.queue_depth - 1) and min(waiting) < mine
 
     def reset_camera(self, cid: str) -> None:
         ctx = self._context
@@ -1249,6 +1281,8 @@ class BackgroundCleanBackground:
         required = self.settings.setup_min_samples_per_camera
         observed_now = max([since, *(self._last_seen.get(cid, since) for cid in ctx.generations)])
         statuses = self._statuses_since(ctx, since, required)
+        # offer 가 큐 자리를 나눌 때 쓴다(-715)
+        self._fresh["filled"] = frozenset(cid for cid, st in statuses.items() if st.sample_count >= required)
         cameras = {
             cid: {
                 "state": capture_state(
