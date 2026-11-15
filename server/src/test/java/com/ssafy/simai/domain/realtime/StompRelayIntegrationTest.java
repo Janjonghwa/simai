@@ -181,7 +181,7 @@ class StompRelayIntegrationTest {
     }
 
     @Test
-    void 저널이_빈_새_Tier0_가_붙으면_이전_이벤트는_해소하지_않고_들고_있지_않음으로_내리고_판을_바꾼다() throws Exception {
+    void 저널이_빈_새_Tier0_가_붙으면_이전_이벤트는_들고_있지_않음으로_내리고_EC2_마감으로_닫아_알린다() throws Exception {
         UUID eventId = uuidV7();
 
         try (Viewer viewer = stomp(token("VIEWER"))) {
@@ -204,12 +204,16 @@ class StompRelayIntegrationTest {
                 awaitHeld(eventId, false);
             }
             JsonNode detail = eventDetail(eventId);
-            // 이벤트는 그대로다(EC2 는 전이를 만들지 않는다, 명세 3.2 자동 해소 금지)
-            assertThat(detail.get("lifecycle").asString()).isEqualTo("RAISED");
+            // 새 Tier 0 는 이 이벤트를 들고 있지 않아 해소 전이가 다시 오지 않는다. Tier 0 전이 없이 EC2 마감으로 닫는다(S15P31A101-722)
+            assertThat(detail.get("lifecycle").asString()).isEqualTo("RESOLVED");
+            assertThat(detail.at("/resolution/kind").asString()).isEqualTo("NOT_IN_SNAPSHOT");
             assertThat(detail.get("held_by_tier0").booleanValue()).isFalse();
             assertThat(healthRevision()).isNotEqualTo(before);
-            // 한꺼번에 바뀐 것은 이벤트마다 보내지 않는다(관제 앱이 판을 보고 목록을 다시 받는다)
-            assertThat(viewer.remaining(RealtimeTopics.EVENTS)).isEmpty();
+            // 닫힌 모습을 /topic/events 로 보낸다(risk_event 2.5.0)
+            JsonNode closed = viewer.await(RealtimeTopics.EVENTS);
+            assertValid("risk_event", closed);
+            assertThat(closed.get("schema_version").asString()).isEqualTo("2.5.0");
+            assertThat(closed.at("/payload/resolution/kind").asString()).isEqualTo("NOT_IN_SNAPSHOT");
         }
     }
 

@@ -91,7 +91,7 @@ class EventAckIntegrationTest {
         try (Tier0 tier0 = connect()) {
             tier0.send(transition(event, 1, 0, "RAISED", null));
             tier0.send(transition(event, 2, 1, "UPDATED", null));
-            tier0.send(snapshot(1L));
+            tier0.send(snapshot(1L, event));
             tier0.await("journal_ack", p -> !p.get("sync_mode").booleanValue());
 
             String body = mvc.perform(post("/api/events/{id}/ack", event).header(HttpHeaders.AUTHORIZATION, admin)
@@ -135,7 +135,7 @@ class EventAckIntegrationTest {
         String ackId = JsonPath.read(body, "$.acks[0].ack_id");
 
         try (Tier0 tier0 = connect()) {
-            tier0.send(snapshot(0L));
+            tier0.send(snapshot(0L, event));
             JsonNode resent = tier0.await("event_ack", p -> ackId.equals(p.path("ack").path("ack_id").asString()));
             assertThat(resent.get("event_sequence").intValue()).isEqualTo(1);
         }
@@ -178,7 +178,7 @@ class EventAckIntegrationTest {
             ObjectNode resent = transition(event, 2, 1, "ACKNOWLEDGED", ack(siteAck, "SITE_BUTTON", "SITE", "laptop-01"));
             ((ObjectNode) resent.get("payload")).put("resent", true);
             tier0.send(resent);
-            tier0.send(snapshot(1L));
+            tier0.send(snapshot(1L, event));
             tier0.await("journal_ack", p -> p.get("acked_offset").longValue() == 1 && !p.get("sync_mode").booleanValue());
         }
 
@@ -307,14 +307,24 @@ class EventAckIntegrationTest {
         return root;
     }
 
-    private ObjectNode snapshot(Long offset) throws Exception {
+    /** Tier 0 가 지금 들고 있는 활성 이벤트(active)를 싣는다. 빠진 활성 이벤트는 EC2 가 마감한다(S15P31A101-722) */
+    private ObjectNode snapshot(Long offset, UUID... active) throws Exception {
         ObjectNode root = (ObjectNode) MAPPER.readTree(Files.readString(EXAMPLES.resolve("event_state_snapshot.json")));
         root.put("msg_id", UUID.randomUUID().toString());
         root.put("source_id", gatewayId);
         ObjectNode p = (ObjectNode) root.get("payload");
         p.put("gateway_id", gatewayId);
         p.put("journal_offset", offset);
-        p.putArray("active_events");
+        ObjectNode template = (ObjectNode) p.path("active_events").get(0);
+        tools.jackson.databind.node.ArrayNode events = p.putArray("active_events");
+        for (UUID eventId : active) {
+            ObjectNode event = template.deepCopy();
+            event.put("event_id", eventId.toString());
+            event.put("event_sequence", 1);
+            event.put("lifecycle", "RAISED");
+            event.putNull("last_valid_observation_at"); // 근거 없음: 지연 알림 없이 AUDIT_ONLY(전과 같은 분류)
+            events.add(event);
+        }
         return root;
     }
 

@@ -9,6 +9,7 @@ import {
   isActive,
   isAlarming,
   isStale,
+  serverCloseKind,
   type EventEntry,
 } from '@/features/events/entries';
 import type { EventItem, Severity } from '@/features/events/types';
@@ -116,10 +117,13 @@ export interface ResolvedGroup {
   occurrences: number;
 }
 
-/** 해소된 이벤트를 (대상, 규칙, 구역)별로 묶는다. 최근에 해소된 묶음이 앞선다. */
+/**
+ * 해소된 이벤트를 (대상, 규칙, 구역)별로 묶는다. 최근에 해소된 묶음이 앞선다. EC2 마감(S15P31A101-722: Tier 0 가 사라져 닫은 것)은
+ * 관측 해소가 아니라 넣지 않는다(지난 작업·이벤트 목록에서는 그대로 보인다).
+ */
 export function resolvedGroups(entries: readonly EventEntry[]): ResolvedGroup[] {
   const groups = groupBy(
-    entries.filter((e) => !isActive(e.event)),
+    entries.filter((e) => !isActive(e.event) && serverCloseKind(e.event) === null),
     resolvedKey,
   );
   return [...groups]

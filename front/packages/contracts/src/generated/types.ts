@@ -120,7 +120,7 @@ export type WorldXyz = [number, number, number]
  */
 export type Vec3 = [number, number, number]
 /**
- * EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2). 2.3.0 필드 추가(마이너, S15P31A101-595): held_by_tier0(선택, LIVE 만) — 지금 Tier 0 가 이 이벤트를 활성으로 들고 있는지(EC2 파생값, 저장하지 않음). 관제 화면은 해소 전이면서 held_by_tier0 가 true 인 이벤트만 '진행 중'(경보 배너·소리·2D 평면 대상)으로 보이고, false 인 해소 전 이벤트는 '지난 관제 · 확인 필요'로 내린다. 이벤트 자체(lifecycle)는 바꾸지 않는다(3.2 복원 이벤트 자동 해소 금지). 없으면(이전 EC2) 해소 전 이벤트를 진행 중으로 읽는다.
+ * EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10). 2.2.0 값 추가(마이너, S15P31A101-519): confidence_reasons 에 PPE_UNKNOWN(R9 안전모 상태 모름, 명세 7.2). 2.3.0 필드 추가(마이너, S15P31A101-595): held_by_tier0(선택, LIVE 만) — 지금 Tier 0 가 이 이벤트를 활성으로 들고 있는지(EC2 파생값, 저장하지 않음). 관제 화면은 해소 전이면서 held_by_tier0 가 true 인 이벤트만 '진행 중'(경보 배너·소리·2D 평면 대상)으로 보이고, false 인 해소 전 이벤트는 '지난 관제 · 확인 필요'로 내린다. 이벤트 자체(lifecycle)는 바꾸지 않는다(3.2 복원 이벤트 자동 해소 금지). 없으면(이전 EC2) 해소 전 이벤트를 진행 중으로 읽는다. 2.4.0 값 추가(마이너, S15P31A101-664): resolution 에 병합 흡수 마감 IDENTITY_MERGED. 2.5.0 값 추가(마이너, S15P31A101-722): resolution 에 EC2 마감(server_close_resolution, kind WORK_ENDED·SESSION_ENDED·NOT_IN_SNAPSHOT). 그 이벤트를 들고 있던 Tier 0 가 사라졌거나(작업 종료·GPU 세션 종료) 살아 있는 Tier 0 의 스냅샷에 없어 해소 전이가 다시 오지 않을 이벤트를 EC2 가 닫은 기록이다(관측 해소·운영자 종료 아님, 검증 상태 그대로). 이 판이 LIVE 를 Tier 0 전이 밖에서 바꾸는 유일한 경우이고, 그 Tier 0 가 그 이벤트의 전이를 다시 보내면 Tier 0 쪽을 따른다. 관제 화면은 이런 이벤트를 관측 해소와 구분하고 「최근 해소」에 넣지 않는다.
  */
 export type RiskEventMessage = (Envelope & {
 [k: string]: unknown
@@ -222,9 +222,9 @@ delivery?: ("REALTIME" | "DELAYED_ACTIVE" | "AUDIT_ONLY")
  */
 related_event_id?: string
 /**
- * 관측이 아닌 해소(6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다. 운영자 종료(2.0.0, kind OPERATOR_CLOSED)와 병합 흡수 마감(2.4.0, kind IDENTITY_MERGED, S15P31A101-657 이 I1 risk_event_transition 2.3.0 에 더한 것을 EC2 가 그대로 싣는다)
+ * 관측이 아닌 해소(6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다. 운영자 종료(2.0.0, kind OPERATOR_CLOSED)와 병합 흡수 마감(2.4.0, kind IDENTITY_MERGED, S15P31A101-657 이 I1 risk_event_transition 2.3.0 에 더한 것을 EC2 가 그대로 싣는다), EC2 마감(2.5.0, kind WORK_ENDED·SESSION_ENDED·NOT_IN_SNAPSHOT, S15P31A101-722: Tier 0 가 들고 있지 않아 해소 전이가 다시 오지 않을 이벤트를 EC2 가 닫음)
  */
-resolution?: (OperatorResolution | IdentityMergeResolution)
+resolution?: (OperatorResolution | IdentityMergeResolution | ServerCloseResolution)
 /**
  * 지금 Tier 0 가 이 LIVE 이벤트를 활성으로 들고 있는가(2.3.0, S15P31A101-595). EC2 가 Tier 0 의 마지막 재동기화 스냅샷(event_state_snapshot.active_events)과 그 뒤 실시간 전이로 접은 집합에 있고, 그 Tier 0 에서 I1 메시지를 마지막으로 받은 지 유예 시간(초기값 60초) 안이면 true. EC2 가 다시 뜬 뒤 스냅샷을 받기 전, Tier 0 가 꺼진 지 유예 시간이 지난 뒤, 다른(새) Tier 0 의 스냅샷에 없으면 false. 만든 때의 값이라 바뀌면 /topic/events 나 목록 다시 받기(viewer_health.held_events_revision)로 고친다. 해소 여부·등급을 바꾸지 않는 표시용 파생값이다
  */
@@ -705,6 +705,35 @@ survivor_world_id: string
  * 세션 단위 익명 World ID (예: w-0012)
  */
 merged_world_id: string
+}
+/**
+ * EC2 마감(S15P31A101-722, I2 risk_event 2.5.0. I1 risk_event_transition 에는 없다). 관측 해소도 운영자 종료도 아니다: 그 이벤트를 들고 있던 Tier 0 가 사라져(작업 종료·GPU 세션 종료) 또는 살아 있는 Tier 0 의 재동기화 스냅샷에 그 이벤트가 없어 해소 전이가 다시는 오지 않을 이벤트를 EC2 가 닫았다는 기록이다. 위험이 사라졌다는 뜻이 아니며 검증 상태를 바꾸지 않는다(VERIFIED·판정 근거 불요). EC2 는 Tier 0 가 그 이벤트의 전이를 다시 보내면(같은 Tier 0 가 돌아옴) Tier 0 쪽을 따른다. 화면은 관측 해소와 구분하고 「최근 해소」에 넣지 않는다
+ */
+export interface ServerCloseResolution {
+/**
+ * WORK_ENDED: 작업 종료 때 그 Tier 0 가 연결도 열린 GPU 세션도 없음. SESSION_ENDED: 그 Tier 0 의 GPU 세션이 끝남(종료 보고·밀림·무응답·관리자 정지 등). NOT_IN_SNAPSHOT: 살아 있는 Tier 0 의 event_state_snapshot 활성 목록에 없음(이전 Pod·이전 저널의 이벤트)
+ */
+kind: ("WORK_ENDED" | "SESSION_ENDED" | "NOT_IN_SNAPSHOT")
+/**
+ * EC2 마감 기록(risk_event_server_close) ID
+ */
+close_id: string
+/**
+ * UTC epoch 밀리초
+ */
+closed_at: number
+/**
+ * 사람이 읽는 마감 사유(한국어 한 줄)
+ */
+reason: string
+/**
+ * 마감을 일으킨 것: WORK_ENDED 는 work_unit ID, SESSION_ENDED 는 GPU 세션 ID, NOT_IN_SNAPSHOT 은 스냅샷을 보낸 gateway_id. 모르면 null
+ */
+trigger_ref: (string | null)
+/**
+ * 닫을 때 EC2 가 반영해 둔 마지막 Tier 0 event_sequence. 모르면 null
+ */
+last_event_sequence: (number | null)
 }
 /**
  * 운영자 상향(명세 5.4, 6.4, FR-116, S15P31A101-206). VLM 상향 의견(proposed_severity)을 관제 화면 관리자가 승인해 LIVE 이벤트 등급을 올린 기록이다. 판정이 아니므로 전이의 evidence_ref 는 직전 판정 근거(모르면 null)다. 상향만 가능하고 하향·해소·끄기는 표현할 수 없다. 거절은 EC2 에만 기록하고 Tier 0 로 보내지 않는다. 값은 I1 event_escalate.escalation 그대로다

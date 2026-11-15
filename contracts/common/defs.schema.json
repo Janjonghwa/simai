@@ -303,6 +303,31 @@
       },
       "additionalProperties": false
     },
+    "server_close_resolution": {
+      "type": "object",
+      "description": "EC2 마감(S15P31A101-722, I2 risk_event 2.5.0. I1 risk_event_transition 에는 없다). 관측 해소도 운영자 종료도 아니다: 그 이벤트를 들고 있던 Tier 0 가 사라져(작업 종료·GPU 세션 종료) 또는 살아 있는 Tier 0 의 재동기화 스냅샷에 그 이벤트가 없어 해소 전이가 다시는 오지 않을 이벤트를 EC2 가 닫았다는 기록이다. 위험이 사라졌다는 뜻이 아니며 검증 상태를 바꾸지 않는다(VERIFIED·판정 근거 불요). EC2 는 Tier 0 가 그 이벤트의 전이를 다시 보내면(같은 Tier 0 가 돌아옴) Tier 0 쪽을 따른다. 화면은 관측 해소와 구분하고 「최근 해소」에 넣지 않는다",
+      "required": ["kind", "close_id", "closed_at", "reason", "trigger_ref", "last_event_sequence"],
+      "properties": {
+        "kind": {
+          "enum": ["WORK_ENDED", "SESSION_ENDED", "NOT_IN_SNAPSHOT"],
+          "description": "WORK_ENDED: 작업 종료 때 그 Tier 0 가 연결도 열린 GPU 세션도 없음. SESSION_ENDED: 그 Tier 0 의 GPU 세션이 끝남(종료 보고·밀림·무응답·관리자 정지 등). NOT_IN_SNAPSHOT: 살아 있는 Tier 0 의 event_state_snapshot 활성 목록에 없음(이전 Pod·이전 저널의 이벤트)"
+        },
+        "close_id": { "$ref": "#/$defs/uuid", "description": "EC2 마감 기록(risk_event_server_close) ID" },
+        "closed_at": { "$ref": "#/$defs/timestamp_ms", "description": "EC2 가 닫은 시각(EC2 시계)" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500, "description": "사람이 읽는 마감 사유(한국어 한 줄)" },
+        "trigger_ref": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "마감을 일으킨 것: WORK_ENDED 는 work_unit ID, SESSION_ENDED 는 GPU 세션 ID, NOT_IN_SNAPSHOT 은 스냅샷을 보낸 gateway_id. 모르면 null"
+        },
+        "last_event_sequence": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "닫을 때 EC2 가 반영해 둔 마지막 Tier 0 event_sequence. 모르면 null"
+        }
+      },
+      "additionalProperties": false
+    },
     "operator_resolution": {
       "type": "object",
       "description": "운영자 종료 해소(명세 6.4, S15P31A101-200). 관측으로 해소를 확인한 것이 아니라 관제 화면 관리자가 누가·왜를 남기고 닫았다. 이 값이 있는 해소는 검증 상태 VERIFIED·판정 근거(evidence_ref)를 요구하지 않는다. 값은 I1 event_close.close 그대로다",

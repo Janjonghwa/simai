@@ -1,10 +1,12 @@
 import { ACK_HIDE_AFTER_MS, MAX_RESOLVED, SEVERITY_RANK } from '@/features/events/constants';
-import type {
-  EventEscalation,
-  EventItem,
-  EventSummary,
-  EventSummaryStatus,
-  Severity,
+import {
+  SERVER_CLOSE_KINDS,
+  type EventEscalation,
+  type EventItem,
+  type EventSummary,
+  type EventSummaryStatus,
+  type ServerCloseKind,
+  type Severity,
 } from '@/features/events/types';
 
 // 이벤트 하나하나의 상태 계산(명세 3.10, 12.4, FR-8). 화면 없이 시험한다.
@@ -24,11 +26,22 @@ export type EntryStatus =
   | { kind: 'alarm' }
   | { kind: 'acked'; at: number }
   | { kind: 'notice' }
-  | { kind: 'resolved'; at: number | null; closed: boolean };
+  | { kind: 'resolved'; at: number | null; closed: boolean; serverClosed?: ServerCloseKind };
 
 export const eventTime = (event: EventItem) => event.updated_at ?? event.raised_at ?? null;
 
 export const isActive = (event: EventItem) => event.lifecycle !== 'RESOLVED';
+
+/**
+ * EC2 마감 종류(S15P31A101-722): Tier 0 가 사라져 해소 전이가 오지 않을 이벤트를 EC2 가 닫았으면 그 종류, 아니면 null.
+ * 관측 해소가 아니므로 「최근 해소」에 넣지 않고 상태 문구도 해소와 다르게 적는다.
+ */
+export function serverCloseKind(event: EventItem): ServerCloseKind | null {
+  const kind = event.resolution?.kind;
+  return (SERVER_CLOSE_KINDS as readonly string[]).includes(kind ?? '')
+    ? (kind as ServerCloseKind)
+    : null;
+}
 
 /**
  * 지금 연결된 Tier 0 가 이 이벤트를 활성으로 들고 있는지(계약 risk_event 2.3.0 held_by_tier0, S15P31A101-595).
@@ -378,10 +391,12 @@ export function isAlarming(entry: EventEntry): boolean {
 export function entryStatus(entry: EventEntry): EntryStatus {
   const { event } = entry;
   if (!isActive(event)) {
+    const serverClosed = serverCloseKind(event);
     return {
       kind: 'resolved',
       at: event.resolved_at ?? eventTime(event),
       closed: event.resolution?.kind === 'OPERATOR_CLOSED',
+      ...(serverClosed === null ? {} : { serverClosed }),
     };
   }
   if (!isAlarmSeverity(event.severity)) return { kind: 'notice' };

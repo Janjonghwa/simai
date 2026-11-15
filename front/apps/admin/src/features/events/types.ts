@@ -35,7 +35,25 @@ const identityMergeResolution = z.object({
   merged_world_id: z.string().optional(),
 });
 
-const eventResolution = z.discriminatedUnion('kind', [operatorResolution, identityMergeResolution]);
+// EC2 마감(risk_event 2.5.0, S15P31A101-722). 이벤트를 들고 있던 Tier 0 가 사라졌거나(작업 종료·GPU 세션 종료) 살아 있는 Tier 0 의
+// 스냅샷에 없어 해소 전이가 다시 오지 않을 이벤트를 EC2 가 닫은 기록이다. 관측 해소도 운영자 종료도 아니라 「최근 해소」에 넣지 않는다.
+export const SERVER_CLOSE_KINDS = ['WORK_ENDED', 'SESSION_ENDED', 'NOT_IN_SNAPSHOT'] as const;
+export type ServerCloseKind = (typeof SERVER_CLOSE_KINDS)[number];
+
+const serverCloseResolution = z.object({
+  kind: z.enum(SERVER_CLOSE_KINDS),
+  close_id: z.string().optional(),
+  closed_at: z.number().optional(),
+  reason: z.string().optional(),
+  trigger_ref: z.string().nullable().optional(),
+  last_event_sequence: z.number().int().nullable().optional(),
+});
+
+const eventResolution = z.union([
+  operatorResolution,
+  identityMergeResolution,
+  serverCloseResolution,
+]);
 
 const operatorEscalation = z.object({
   escalation_id: z.string().optional(),
