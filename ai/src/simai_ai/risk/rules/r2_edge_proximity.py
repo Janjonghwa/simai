@@ -25,6 +25,11 @@
 - 그 밖: 판정 없음. 판정 없이 유효 관측이 3초(lifecycle 기본 clear_hold_ms) 이어지면 해소된다(명세 '1.3m 이상에서 3초').
 발생 지속 조건(3프레임 중 2)·재개는 lifecycle 이 한다. 경계는 BOUNDARY_TOLERANCE_M 이하를 닿은 것으로 본다(안전 쪽).
 
+**낮은 신뢰 새 발생 보류(7.1·7.2, S15P31A101-725).** 접지점을 모르고(StandingBasis.UNKNOWN, 확인 필요 Z_UNKNOWN) 위치도 관측이
+아닌 예측(observation_state PREDICTED)이면 발생 거리 안이어도 holding=True 로 낸다(low_confidence_onset). 새 이벤트를 만들지 않고
+이미 열린 R2 만 유지한다(유지·해소·등급은 그대로). 접지점이 생기거나(KNOWN·HELD) 관측 위치(OBSERVED)가 되면 그 프레임부터 정상 발생
+판정을 낸다. R1 의 '확실한 위치만 새로 발생'(수정 53)과 같은 방향이되 둘 다 모를 때만 막는다(17차: R2 27건 모두 Z_UNKNOWN, 21건 PREDICTED).
+
 **확인 필요 이유(7.1).** 위의 Z_UNKNOWN·PREDICTED 와 R1 과 같은 트랙 이유(PREDICTED 위치, SINGLE_VIEW, IDENTITY_UNCERTAIN).
 보정 상태가 PROVISIONAL 등 CALIBRATED 가 아니면 PROVISIONAL_CALIB(명세 4.4, D-G3-03, RuleContext.calibration_confidence).
 
@@ -45,6 +50,7 @@ from simai_ai.risk.rules.height_common import (
     HeightProfile,
     StandingBasis,
     hazard_edges,
+    low_confidence_onset,
     standing,
 )
 from simai_ai.risk.rules.r1_zone_entry import horizontal_ranges, track_confidence_reasons
@@ -154,6 +160,7 @@ class EdgeProximityRule:
             touching = best_gap <= self._raise + self._tol
             if not touching and best_gap >= self._clear:
                 continue
+            raising = touching and not low_confidence_onset(track, st.basis)
             confidence: set[ConfidenceReason] = set()
             if st.basis is StandingBasis.UNKNOWN:
                 basis_reason = REASON_Z_UNKNOWN_ON_SURFACE
@@ -174,5 +181,5 @@ class EdgeProximityRule:
                 confidence_reasons=tuple(confidence),
                 reasons=(REASON_EDGE_RAISE if touching else REASON_EDGE_CLEAR, basis_reason),
                 metrics={"edge_distance_m": distance, "height_diff_m": best_edge.height_diff_m},
-                holding=not touching,
+                holding=not raising,
             )
