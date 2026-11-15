@@ -463,7 +463,9 @@ class ClipUploader:
         job.content = None
         return True
 
-    def poll(self) -> None:
+    def poll(self, between_jobs: Callable[[], None] | None = None) -> None:
+        """대기열을 한 바퀴 돈다. between_jobs 는 시도(서명·PUT, 길면 수십 초) 앞마다 부른다: 업로드 스레드가 그 사이 들어온 편지함을
+        이 대기열로 옮겨(메모리 상한을 넘으면 임시 저장소로) 한 바퀴가 길어져도 편지함이 넘치지 않게 한다(S15P31A101-754)."""
         now = self._clock.now_ms()
         if self._spool is not None and (self._next_sweep_ms is None or now >= self._next_sweep_ms):
             self._sweep(now, verify_content=False)
@@ -473,6 +475,11 @@ class ClipUploader:
                 continue
             if job.next_attempt_ms > now:
                 continue
+            if between_jobs is not None:
+                try:
+                    between_jobs()
+                except Exception as e:  # noqa: BLE001 - 편지함 옮기기 실패가 이 클립 시도를 실패로 만들지 않는다
+                    log.warning("클립 편지함 옮기기 실패: %s", type(e).__name__)
             try:
                 self._attempt(job, now)
             except Exception as e:  # noqa: BLE001 - 한 클립의 실패가 Tier 0 루프로 새지 않는다

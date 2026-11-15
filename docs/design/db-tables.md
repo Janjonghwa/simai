@@ -966,7 +966,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `severity` | text | NN, CK(CRITICAL·HIGH) | `media_clip.severity` |  |
 | `source` | text | NN, CK(LIVE) | `media_clip.source` |  |
 | `camera_id` | text | NN, UQ(clip_span) | `media_clip.camera_id` |  |
-| `stream_epochs` | int[] | NN | `media_clip.stream_epochs` |  |
+| `stream_epochs` | bigint[] | NN | `media_clip.stream_epochs` | 중계 epoch 는 세션 시작 UTC ms 부터(V82, S15P31A101-754) |
 | `anchor_capture_at` | ts | NN | `media_clip.anchor_capture_ms` |  |
 | `requested_start_at` | ts | NN | `media_clip.requested_start_ms` |  |
 | `requested_end_at` | ts | NN | `media_clip.requested_end_ms` |  |

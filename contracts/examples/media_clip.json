@@ -15,7 +15,7 @@
     "source": "LIVE",
     "camera_id": "cam_A",
     "stream_epochs": [
-      12
+      1760340000000
     ],
     "anchor_capture_ms": 1760342400100,
     "requested_start_ms": 1760342380100,

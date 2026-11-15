@@ -52,7 +52,10 @@ PUT_TIMEOUT_S = 60.0
 POLL_S = 0.5
 """업로드 스레드가 편지함·대기열을 보는 간격(백오프 최소 1 s 보다 짧게)"""
 MAX_INBOX_BYTES = 256 * 1024 * 1024
-"""스레드가 아직 받지 않은 클립 내용 상한(RetryPolicy.max_queue_bytes 와 같다). 넘으면 버리고 센다"""
+"""스레드가 아직 받지 않은 클립 내용 상한. 넘으면 버리고 센다. 스레드는 시도(서명 5 s + PUT 60 s 상한)마다 편지함을 대기열로 옮기므로
+(-754) 편지함에는 시도 하나 동안 새로 잘린 클립만 쌓인다. 클립 하나는 40 s × 대당 약 1 Mbps(명세 3.3 실측) ≈ 5 MB, 4 Mbps 로 잡아도
+20 MB 라 256 MiB 는 시도 한 번(≤ 65 s) 사이 이벤트 3건 이상(카메라 4대 × 20 MB × 3 = 240 MB)을 받는다. 대기열은 메모리 256 MiB 를 넘으면
+임시 저장소(디스크)로 내린다(ClipUploader.enqueue)"""
 SPOOL_DIRNAME = "clip-spool"
 _UNAVAILABLE_STATUS = frozenset({502, 503, 504})
 
@@ -210,6 +213,7 @@ class BackgroundClipUploader:
         return inbox + self.uploader.pending
 
     def _drain(self) -> None:
+        """편지함을 대기열로 옮긴다. 한 바퀴 시작과 대기열의 시도 앞마다(ClipUploader.poll between_jobs) 부른다."""
         while True:
             with self._lock:
                 if not self._inbox:
@@ -226,7 +230,7 @@ class BackgroundClipUploader:
         """편지함을 비우고 대기열을 한 번 돈다(스레드 한 바퀴, 시험은 직접 부른다). 예외를 내지 않는다."""
         try:
             self._drain()
-            self.uploader.poll()
+            self.uploader.poll(between_jobs=self._drain)
         except Exception as error:  # noqa: BLE001 - 업로드 실패가 스레드를 멈추지 않는다(poll 자체는 예외를 내지 않는다)
             self.errors += 1
             log.warning("클립 업로드 스레드 오류: %s", type(error).__name__)

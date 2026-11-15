@@ -436,3 +436,182 @@ def test_service_attaches_uploader_on_single_path_and_relay_on_split_path(tmp_pa
                               clip_uploader=None, _clip_io=lambda: io_)
     Tier0Service._attach_clip_upload(offline)
     assert not offline.clips.export_enabled
+
+
+# --------------------------------------------------------------------------- 실제 media_clip 메시지와 계약 (S15P31A101-754)
+
+RELAY_EPOCH = T0 - 3_600_000
+"""노트북 중계의 실제 stream_epoch: 첫 epoch 를 세션 시작 UTC ms 로 잡는다(gateway/relay epoch_store.reserve floor). int32 를 넘는다"""
+
+
+class _Wire:
+    """I1Publisher.send_event 대역: Tier 0 봉투(Envelope.make)를 씌우고 JSON 으로 한 번 오간 메시지(EC2 가 받는 그대로)를 모은다."""
+
+    def __init__(self, clock) -> None:
+        from services.tier0.i1_client import Envelope
+
+        self._envelope = Envelope("tier0-01", clock)
+        self.messages: list[dict] = []
+        self.lock = threading.Lock()
+
+    def __call__(self, msg_type: str, payload) -> dict:
+        message = json.loads(json.dumps(self._envelope.make(msg_type, payload), allow_nan=False))
+        with self.lock:
+            self.messages.append(message)
+        return message
+
+
+@pytest.fixture(scope="module")
+def contract_validator():
+    import jsonschema
+    import referencing
+
+    contracts = AI_DIR.parent / "contracts"
+    registry = referencing.Registry()
+    by_name = {}
+    for path in sorted(contracts.rglob("*.schema.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        registry = registry.with_resource(schema["$id"], referencing.Resource.from_contents(schema))
+        by_name[path.name.removesuffix(".schema.json")] = schema
+    example = json.loads((contracts / "examples" / "media_clip.json").read_text(encoding="utf-8"))["payload"]
+
+    def json_types(payload: dict) -> dict:
+        return {k: type(v).__name__ for k, v in payload.items() if v is not None}
+
+    def check(message: dict) -> None:
+        validator = jsonschema.Draft202012Validator(by_name[message["msg_type"]], registry=registry)
+        assert [f"{list(e.path)}: {e.message}" for e in validator.iter_errors(message)] == []
+        if message["msg_type"] == "media_clip":
+            # EC2 통합 시험(MediaClipIntegrationTest)은 이 계약 예시를 고쳐 보낸다. 실제 메시지와 칸·JSON 타입이 같아야 그 시험이 이 경로를 대신한다
+            assert set(message["payload"]) == set(example)
+            assert json_types(message["payload"]) == {k: t for k, t in json_types(example).items()
+                                                      if message["payload"][k] is not None}
+            assert all(e > 2**31 for e in example["stream_epochs"])  # 예시도 중계 epoch 크기(EC2 가 int 로 읽으면 실패하던 값)
+
+    return check
+
+
+def test_single_path_media_clip_message_matches_contract_with_relay_epoch(contract_validator) -> None:
+    """단일 경로: 업로드 스레드 → I1ClipRecordSink → 봉투. 중계 epoch(세션 시작 ms)가 그대로 실리고 계약을 지킨다."""
+    clock = FixedClock(T0)
+    wire = _Wire(clock)
+    background = BackgroundClipUploader(ClipUploader(_Signer(), _Transport(), I1ClipRecordSink(wire), clock))
+    service = EventClipService(PacketRingBuffer(("cam_A", "cam_B")), clock, uploader=background)
+    stream = Stream(("cam_A", "cam_B"), epoch=RELAY_EPOCH)
+    service.ring.receive_many(stream.start())
+    _run(service, clock, stream, 25_000)
+    service.on_transitions([transition(observation_time=stream.t_ms)])
+    _run(service, clock, stream, 25_000)
+    background.run_once()
+    service.on_transitions([transition(severity=Severity.CRITICAL, lifecycle=Lifecycle.UPDATED, changes=(Change.SEVERITY,),
+                                       observation_time=stream.t_ms, event_sequence=2)])
+    background.run_once()
+    assert [m["msg_type"] for m in wire.messages] == ["media_clip", "media_clip", "media_clip_retention", "media_clip_retention"]
+    for message in wire.messages:
+        contract_validator(message)
+    assert all(m["payload"]["stream_epochs"] == [RELAY_EPOCH] for m in wire.messages if m["msg_type"] == "media_clip")
+
+
+def test_split_path_media_clip_message_matches_contract_with_relay_epoch(tmp_path, contract_validator) -> None:
+    """분리 경로: 검출 프로세스 업로드 → out 큐 → 판정 쪽 RemoteClips 중계 → 봉투. 같은 계약을 지킨다."""
+    cams = ("cam_A", "cam_B", "cam_C", "cam_D")
+    clock = FixedClock(T0)
+    process = _InProcess(clock)
+    io_ = ClipIo("https://ec2.example", "tok", spool_dir=str(tmp_path / "clip-spool"),
+                 signer_factory=_signer_factory, transport_factory=_transport_factory)
+    side = ChildSideWork(SideWorkSpec(clips=True, clip_io=io_), cams, clock=clock, put=process.put,
+                         put_blocking=lambda _m: None)
+    process.side = side
+    remote = RemoteClips(process)
+    wire = _Wire(clock)
+    remote.start_relay(wire)
+    try:
+        stream = Stream(cams, epoch=RELAY_EPOCH)
+        side.clips.ring.receive_many(stream.start())
+        for i in range(50):
+            for f in stream.advance(1_000):
+                side.clips.receive(f)
+            clock.set(stream.t_ms)
+            if i == 25:
+                remote.on_transitions([transition(severity=Severity.CRITICAL, observation_time=stream.t_ms)])
+            remote.poll()
+        assert _wait(lambda: len(wire.messages) == 4)
+    finally:
+        assert remote.stop(2.0)
+        side.close(1.0)
+    assert sorted(m["payload"]["camera_id"] for m in wire.messages) == list(cams)
+    for message in wire.messages:
+        contract_validator(message)
+        assert message["payload"]["stream_epochs"] == [RELAY_EPOCH]
+
+
+class _ClipCapture:
+    """EventClipService 업로더 자리: 잘린 (ExportClip, ClipDraft) 를 모은다(편지함 시험 재료)."""
+
+    def __init__(self) -> None:
+        self.items: list = []
+
+    def enqueue(self, clip, draft) -> None:
+        self.items.append((clip, draft))
+
+    def poll(self) -> None:
+        return None
+
+    def raise_retention_for_event(self, *_args) -> None:
+        return None
+
+
+def _cut_event_clips(event_id: str) -> list:
+    """카메라 4대 이벤트 하나의 실제 클립(ExportClip, ClipDraft)."""
+    cams = ("cam_A", "cam_B", "cam_C", "cam_D")
+    clock = FixedClock(T0)
+    capture = _ClipCapture()
+    service = EventClipService(PacketRingBuffer(cams), clock, uploader=capture)
+    stream = Stream(cams, epoch=RELAY_EPOCH)
+    service.ring.receive_many(stream.start())
+    _run(service, clock, stream, 25_000)
+    service.on_transitions([transition(observation_time=stream.t_ms, event_id=event_id)])
+    _run(service, clock, stream, 25_000)
+    assert len(capture.items) == 4
+    return capture.items
+
+
+class _ArrivingTransport:
+    """PUT 하는 동안 새 클립이 잘려 편지함에 들어오는 상황: put 마다 arrivals 에서 하나를 꺼내 enqueue 한다."""
+
+    def __init__(self) -> None:
+        self.background: BackgroundClipUploader | None = None
+        self.arrivals: list = []
+        self.puts = 0
+        self.inbox_seen: list[int] = []
+
+    def put(self, signed, content, content_type) -> None:
+        assert self.background is not None
+        self.inbox_seen.append(self.background.status()["inbox"])
+        self.puts += 1
+        if self.arrivals:
+            self.background.enqueue(*self.arrivals.pop(0))
+
+
+def test_inbox_is_drained_before_every_attempt_so_clips_arriving_during_puts_are_not_dropped() -> None:
+    """19차 GPU 세션: 한 바퀴(대기열 전체 PUT)가 길어지는 동안 새 이벤트 클립이 편지함에만 쌓여 카메라 하나(cam_D)를 버렸다.
+    시도 앞마다 편지함을 대기열로 옮기므로 편지함에는 PUT 하나 동안 들어온 클립만 있다."""
+    first = _cut_event_clips("0192a0a0-0000-7000-8000-000000000101")
+    later = _cut_event_clips("0192a0a0-0000-7000-8000-000000000102")
+    biggest = max(c.size_bytes for c, _ in first + later)
+    clock = FixedClock(T0)
+    transport = _ArrivingTransport()
+    events = _Events()
+    # 편지함 상한: 클립 하나 반. 옛 처리(바퀴 시작에만 옮김)라면 이벤트 1의 PUT 4번 동안 들어온 이벤트 2 클립 4개가 쌓여 둘째부터 버려진다
+    background = BackgroundClipUploader(ClipUploader(_Signer(), transport, I1ClipRecordSink(events), clock),
+                                        max_inbox_bytes=biggest * 3 // 2)
+    transport.background = background
+    for clip, draft in first:
+        background.uploader.enqueue(clip, draft)  # 이미 대기열에 있는 이벤트 1의 카메라 4대
+    transport.arrivals = list(later)
+    background.run_once()
+    background.run_once()
+    assert background.inbox_dropped == 0
+    assert max(transport.inbox_seen) <= 1  # PUT 중 편지함에는 많아야 하나
+    assert transport.puts == 8 and len(events.sent) == 8 and background.pending == 0
+    assert sorted(p["camera_id"] for _, p in events.sent) == sorted(["cam_A", "cam_B", "cam_C", "cam_D"] * 2)
