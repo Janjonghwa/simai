@@ -861,3 +861,56 @@ def test_setup_capture_settings_defaults_and_validation(tmp_path, recording):
     path.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(Tier0ConfigError):
         load_settings(path, env={})
+
+
+# ---------------------------------------------------------------------------- S15P31A101-715 세팅 촬영 큐 공정성
+def _slow_fresh_worker(tmp_path, **kwargs):
+    # 실제 기본값(간격 1 s)에 맞춘 작은 설정. 큐 4칸을 네 대가 나눠 쓴다
+    base = {"sample_interval_ms": 5_000, "min_samples_per_camera": 3, "max_samples_per_camera": 40,
+            "max_bytes": 10_000_000, "queue_depth": 4, "offload": False, "setup_sample_interval_ms": 1_000,
+            "setup_min_samples_per_camera": 12}
+    settings = replace(CleanBackgroundSettings(), **{**base, **kwargs})
+    return BackgroundCleanBackground(document(), PROV, settings=settings, state_dir=tmp_path, stop=threading.Event())
+
+
+def _counts(w, since):
+    return {cid: w.accumulator.camera_status(cid, since_ms=since, min_samples=1).sample_count for cid in IDS}
+
+
+def test_fresh_capture_last_camera_in_fixed_order_is_not_starved(tmp_path):
+    """17차 재현: 프레임이 늘 A→B→C→D 순서로 10 fps 오고 처리가 초당 2.5장(4대 몫보다 적음)이면,
+    수정 전에는 처음 몇 장 뒤 cam_D 가 더 받지 못해 10 s 에 (8, 7, 7, 3) 이었다(수정 뒤 (7, 6, 6, 6))."""
+    w = _slow_fresh_worker(tmp_path)
+    _request_fresh(w, 21, 0)
+    w.process_one()
+    for at in range(0, 10_000, 100):
+        for cid in IDS:
+            w.offer(*_rotated(cid, at))
+        if at % 400 == 0:
+            w.process_one()
+    counts = _counts(w, 0)
+    assert w._fresh is not None and counts["cam_D"] >= 6, counts
+    assert max(counts.values()) - min(counts.values()) <= 1, counts
+
+
+def test_fresh_capture_filled_camera_yields_to_waiting_camera(tmp_path):
+    """다 채운 카메라는 큐가 비어 있어도 받을 차례인 못 채운 카메라에 양보한다. 평소(촬영 아님)에는 순서대로 받는다."""
+    w = _slow_fresh_worker(tmp_path, setup_min_samples_per_camera=4)
+    _request_fresh(w, 22, 0)
+    for at in (0, 1_000, 2_000, 3_000):
+        for cid in ("cam_A", "cam_B", "cam_C"):
+            assert w.offer(*_rotated(cid, at))
+            w.process_one()
+    assert w._fresh["filled"] == {"cam_A", "cam_B", "cam_C"} and not w._queue
+    assert w.offer(*_rotated("cam_A", 4_000))  # cam_D 영상이 없으면 자리를 막지 않는다
+    w.process_one()
+    w._last_seen["cam_D"] = 4_900  # cam_D 영상이 들어오기 시작했다(직전 프레임은 lock 이 바빠 버려짐)
+    assert not w.offer(*_rotated("cam_A", 5_000))
+    assert not w.offer(*_rotated("cam_B", 5_000))
+    assert w.offer(*_rotated("cam_D", 5_000))
+    assert w.offer(*_rotated("cam_A", 5_100))  # cam_D 가 받은 뒤에는 다시 받는다
+
+    plain = worker(tmp_path / "plain", queue_depth=4)
+    for cid in IDS:
+        assert plain.offer(*pair(cid, 0))
+    assert len(plain._queue) == 4
