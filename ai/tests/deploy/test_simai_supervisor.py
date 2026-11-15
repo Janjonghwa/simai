@@ -548,6 +548,53 @@ def test_vllm_extra_args_max_model_len_is_not_duplicated(bs, tmp_path, monkeypat
     assert "16384" not in a and "32768" not in a and a[-len(extra.split()):] == extra.split()
 
 
+@pytest.mark.parametrize("arch, want", [("sm_90", 9), ("sm_120", 12), ("sm_121", 12), ("sm_100", 10), ("sm_86", 8),
+                                        ("sm_90a", 9), ("", None), (None, None), ("90", None)])
+def test_gpu_major_from_detected_arch(bs, arch, want):
+    assert bs.gpu_major(arch) == want
+
+
+def _vllm_flags(argv: list[str]) -> list[str]:
+    return [a for a in argv if a in ("--attention-backend", "--mm-encoder-attn-backend")]
+
+
+@pytest.mark.parametrize("arch", ["sm_120", "sm_121"])
+def test_sm12x_vllm_uses_triton_attention_sdpa_encoder_and_no_flashinfer(bs, tmp_path, monkeypatch, arch):
+    # S15P31A101-720: RTX PRO 6000 Blackwell(cc 12.0). 이미지의 FA2 는 sm_80 SASS+PTX, FlashInfer 는 sm_100 cubin 뿐(nvcc 없음)
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_GPU_ARCH": arch})
+    a, e = sup.svc["vllm"].argv, sup.svc["vllm"].env
+    assert a[a.index("--attention-backend") + 1] == "TRITON_ATTN"
+    assert a[a.index("--mm-encoder-attn-backend") + 1] == "TORCH_SDPA"
+    assert _vllm_flags(a) == ["--attention-backend", "--mm-encoder-attn-backend"]
+    assert e["VLLM_DISABLED_KERNELS"] == "FlashInferFP8ScaledMMLinearKernel" and e["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+    assert "VLLM_DISABLED_KERNELS" not in sup.svc["worker"].env and "VLLM_DISABLED_KERNELS" not in sup.svc["tier0"].env
+    assert sup.vllm_note and arch in sup.vllm_note
+
+
+@pytest.mark.parametrize("env", [{"SIMAI_GPU_ARCH": "sm_90"}, {"SIMAI_GPU_ARCH": "sm_100"}, {}])
+def test_h100_and_unknown_arch_keep_vllm_auto_backends(bs, tmp_path, monkeypatch, env):
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env=env)
+    assert _vllm_flags(sup.svc["vllm"].argv) == []
+    assert "VLLM_DISABLED_KERNELS" not in sup.svc["vllm"].env and sup.vllm_note is None
+
+
+@pytest.mark.parametrize("extra, enc", [
+    ("--attention-backend FLASH_ATTN", "TORCH_SDPA"),
+    ("--attention_backend=auto --mm-encoder-attn-backend TRITON_ATTN", "TRITON_ATTN"),
+    ("-ac.backend=FLASHINFER", "TORCH_SDPA"),  # --attention-config 의 backend 와 겹치면 vLLM 이 거부한다
+    ("--attention-config.backend=FLASH_ATTN", "TORCH_SDPA"),
+])
+def test_sm12x_user_extra_args_win_without_duplicates(bs, tmp_path, monkeypatch, extra, enc):
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_GPU_ARCH": "sm_120", "SIMAI_VLLM_EXTRA_ARGS": extra,
+                                                        "VLLM_DISABLED_KERNELS": "MarlinFP8ScaledMMLinearKernel"})
+    a = sup.svc["vllm"].argv
+    added = a[:len(a) - len(extra.split())]
+    assert a[len(added):] == extra.split()
+    assert "--attention-backend" not in added and "TRITON_ATTN" not in added  # 사용자가 attention 을 정했으면 더하지 않는다
+    assert sum(x.split("=", 1)[0] == "--mm-encoder-attn-backend" for x in a) == 1 and a[a.index("--mm-encoder-attn-backend") + 1] == enc
+    assert sup.svc["vllm"].env["VLLM_DISABLED_KERNELS"] == "MarlinFP8ScaledMMLinearKernel"  # 사용자가 준 값이 우선
+
+
 @pytest.mark.parametrize("spec, avail, quota, want", [
     (None, list(range(16)), None, set(range(8, 16))),  # auto, 할당량 없음: 뒤쪽 절반(기존)
     ("auto", list(range(4)), None, None),  # 8개 미만은 나누지 않는다

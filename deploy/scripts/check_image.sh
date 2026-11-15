@@ -326,6 +326,94 @@ else
 fi
 fi
 
+# 5c) Blackwell sm_120(RTX PRO 6000·AWS g7e, S15P31A101-720) 커널 정적 점검: 이미지 안에 cuobjdump(PATH 또는 Triton 동봉)가 있을 때만.
+#     venv·/opt/simai(구운 가중치 제외)·/usr/local/lib·/usr/lib/x86_64-linux-gnu 의 모든 .so(크기 상관없이, ELF 에 nv_fatbin 절이 있는 것)를
+#     파일마다 따로 본다: sm_12x SASS 가 있으면 통과, 없고 sm_120 이하의 일반(a·f 아닌) PTX 가 있으면 드라이버 PTX JIT 로 돈다(참고로 적음),
+#     둘 다 없으면 실패. 단 아래 예외는 이유가 있어 참고로만 적는다(docs/design/S15P31A101-720-blackwell-sm120.md 점검 표).
+#     cuobjdump 가 없으면 이 항목을 건너뛴다. 약 45초.
+if [ "$T0LIKE" = 1 ]; then
+OUT=$(docker run --rm -i --entrypoint python "$IMG" - 2>&1 <<'PY'
+import os, re, shutil, struct, subprocess, sys, sysconfig
+V = sysconfig.get_paths()["purelib"]
+CUO = next((c for c in (shutil.which("cuobjdump"), V + "/tokenspeed_triton/backends/nvidia/bin/cuobjdump",
+                        V + "/triton/backends/nvidia/bin/cuobjdump") if c and os.access(c, os.X_OK)), None)
+if CUO is None:
+    print("SKIP"); sys.exit(0)
+# sm_12x SASS·호환 PTX 가 없어도 되는 것(이유). 이름은 venv 기준 상대 경로
+EXEMPT = {
+    "vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so": "FA3 는 cc 9.x 에서만 고른다(vllm fa_utils.get_flash_attn_version)",
+    "vllm/_flashmla_C.abi3.so": "MLA 모델 전용(Cosmos3-Nano 는 Qwen3-VL GQA)",
+    "vllm/_flashmla_extension_C.abi3.so": "MLA 모델 전용(Cosmos3-Nano 는 Qwen3-VL GQA)",
+    "nvidia/cu13/lib/libcufft.so.12": "커널을 자체 LTO 묶음으로 싣고 nvJitLink 로 그 GPU 용을 만든다(cuobjdump 목록 밖). LaMa FFC 가 쓴다",
+    "nvidia/cu13/lib/libcufftw.so.12": "cuFFT 의 FFTW 호환 층(위와 같음)",
+}
+def fatbin(path):
+    try:
+        with open(path, "rb") as f:
+            h = f.read(64)
+            if h[:4] != b"\x7fELF" or h[4] != 2:
+                return False
+            shoff, = struct.unpack_from("<Q", h, 0x28)
+            shentsize, shnum, shstrndx = struct.unpack_from("<HHH", h, 0x3A)
+            if not shoff or not shnum:
+                return False
+            f.seek(shoff)
+            sh = f.read(shentsize * shnum)
+            off, size = struct.unpack_from("<QQ", sh, shstrndx * shentsize + 0x18)
+            f.seek(off)
+            names = f.read(size)
+            return b"nv_fatbin" in names or b"nvFatBinSegment" in names
+    except (OSError, struct.error):
+        return False
+seen, n_so = set(), 0
+for root in (V, "/opt/simai", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"):
+    for d, dirs, names in os.walk(root):
+        if d.startswith("/opt/simai/baked"):
+            dirs[:] = []
+            continue
+        for n in names:
+            p = os.path.join(d, n)
+            if ".so" not in n or os.path.islink(p) or not os.path.isfile(p) or os.path.realpath(p) in seen:
+                continue
+            seen.add(os.path.realpath(p))
+            n_so += 1
+            if not fatbin(p):
+                continue
+            arch = lambda flag: set(re.findall(r"sm_(\d+[af]?)", subprocess.run([CUO, flag, p], capture_output=True, text=True).stdout))
+            sass, ptx = arch("--list-elf"), arch("--list-ptx")
+            if not sass and not ptx:
+                continue
+            rel = p[len(V) + 1:] if p.startswith(V + "/") else p
+            what = "SASS[" + " ".join(sorted(sass)) + "] PTX[" + " ".join(sorted(ptx)) + "]"
+            if any(int(re.match(r"\d+", a).group()) // 10 == 12 for a in sass):
+                print("OK", rel)
+            elif any(a.isdigit() and int(a) <= 120 for a in ptx):
+                print("PTX", rel, what)
+            elif rel in EXEMPT:
+                print("EXEMPT", rel, what, "-", EXEMPT[rel])
+            else:
+                print("MISS", rel, what)
+print("SCANNED", n_so)
+PY
+)
+if grep -q '^SKIP' <<<"$OUT"; then
+  echo "SKIP  sm_120 커널 점검: 이미지 안에 cuobjdump 가 없다"
+elif ! grep -q '^SCANNED ' <<<"$OUT"; then
+  fail "sm_120 커널 점검이 끝나지 않았다: $(tail -3 <<<"$OUT" | tr '\n' ' ')"
+else
+  NOK=$(grep -c '^OK ' <<<"$OUT")
+  if grep -q '^MISS ' <<<"$OUT" || [ "$NOK" -eq 0 ]; then
+    fail "sm_12x SASS·호환 PTX 가 없는 CUDA 라이브러리: $(grep '^MISS ' <<<"$OUT" | cut -d' ' -f2- | tr '\n' ';')"
+  else
+    pass "sm_12x SASS 있음 ${NOK}개(.so $(sed -n 's/^SCANNED //p' <<<"$OUT")개 중 CUDA 커널 있는 것)"
+  fi
+  grep -E '^(PTX|EXEMPT) ' <<<"$OUT" | sed -e 's/^PTX /INFO  sm_120 PTX JIT: /' -e 's/^EXEMPT /INFO  sm_120 예외: /'
+  # FlashInfer 미리 빌드 커널(.cubin)은 .so 가 아니다: 세대만 적는다(sm_100 뿐이면 cc 12.x 에서 못 쓴다 → 부트스트랩이 FlashInfer 를 피한다)
+  FI=$(docker run --rm --entrypoint sh "$IMG" -c 'd=$(python -c "import flashinfer_cubin,os;print(os.path.dirname(flashinfer_cubin.__file__))" 2>/dev/null) && find "$d" -name "*.cubin" | grep -oE "sm_?[0-9]{2,3}[af]?" | sed "s/^sm_*/sm_/" | sort | uniq -c | tr -s " " | tr "\n" ","; command -v nvcc >/dev/null || echo " nvcc 없음"' 2>/dev/null)
+  [ -n "$FI" ] && echo "INFO  sm_120 참고: flashinfer-cubin [$FI]"
+fi
+fi
+
 # 5b) 통합 이미지(S15P31A101-246): EGL 렌더와 감시 프로세스 기동·종료 순서(가짜 Tier 0·vLLM·워커, GPU 없음)
 if [ "$KIND" = unified ]; then
   hostpath(){ if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }  # Git Bash: docker.exe 는 윈도 경로를 받는다

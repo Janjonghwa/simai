@@ -74,6 +74,9 @@
     --quantization SIMAI_VLLM_QUANTIZATION(fp8, none·빈 값이면 비활성, SIMAI_VLLM_EXTRA_ARGS 에 --quantization/-q 가 있으면 그 값, S15P31A101-525),
     --gpu-memory-utilization SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.30, H100 80GB(81,559 MiB) 기준 24,468 MiB = FP8 가중치 10.05 GiB + 실행 시 추가 약 2.9 GiB + KV 캐시 약 10.9 GiB, 명세 3.2),
     환경 VLLM_USE_DEEP_GEMM=0·VLLM_USE_FLASHINFER_SAMPLER=0(환경에 주면 그 값)·HF_HUB_OFFLINE=1.
+    GPU 가 compute capability 12.x(SIMAI_GPU_ARCH sm_120·sm_121, RTX PRO 6000 Blackwell 등, S15P31A101-720)면 --attention-backend TRITON_ATTN·
+    --mm-encoder-attn-backend TORCH_SDPA(SIMAI_VLLM_EXTRA_ARGS 에 같은 플래그가 있으면 그 값)와 VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel
+    (환경에 주면 그 값)을 더한다: 이 이미지의 FlashAttention 은 sm_80·sm_90a 커널뿐이고 FlashInfer 는 sm_100 cubin 뿐이며 nvcc 가 없다. 9.0(H100)은 그대로.
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
@@ -206,6 +209,14 @@ VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration
 VLLM_MAX_MODEL_LEN = "32768"  # H100·0.30(FP8 가중치 10.05 GiB)과 같은 절대 크기 시험(H200 0.1702)에서 KV 10.92 GiB = 79,536 토큰(32k 기준 동시 2.43x, 동시 4 × 실사용 ~3k 토큰/요청 충분), H200·0.30 에서는 KV 29.07 GiB = 211,664 토큰(32k 기준 동시 6.46x, 11-06 GPU PoC)
 VLLM_GPU_MEMORY_UTILIZATION = "0.30"  # 11-06 GPU PoC FP8(S15P31A101-525): H100 80GB(81,559 MiB)의 0.30 = 24,468 MiB = 가중치 10.05 GiB + CUDA graph(0.03 GiB)·활성화·torch 밖 약 2.9 GiB + KV 캐시 약 10.9 GiB(S15P31A101-580, 명세 3.2)
 VLLM_QUANTIZATION = "fp8"  # 11-06 GPU PoC(S15P31A101-525): FP8 온라인 양자화(가중치 16.79 → 10.05 GiB, 첫 응답 1.73 → 1.57 s). SIMAI_VLLM_QUANTIZATION=none·빈 값이면 비활성
+# compute capability 12.x(sm_120·121, S15P31A101-720): vLLM 0.21 은 이 세대에서 FLASH_ATTN(FA2)을 먼저 고르는데(platforms/cuda.py
+# _get_backend_priorities·get_vit_attn_backend) 이미지의 _vllm_fa2_C 는 sm_80 SASS+PTX 뿐(드라이버 PTX JIT 에 기댐), FlashInfer 는 sm_100 cubin 뿐이고
+# nvcc 가 없어 JIT 도 못 한다. 디코더는 Triton(동봉 ptxas 가 sm_120 지원), 영상 인코더는 torch SDPA(libtorch sm_120 SASS), FP8 선형층은 CUTLASS sm120
+# (_C_stable_libtorch 의 cutlass_scaled_mm_sm120)로 간다. FlashInfer FP8 GEMM(cc 100 이상 후보)은 막아 둔다(docs/design/S15P31A101-720-blackwell-sm120.md)
+# (플래그, 값, 이미 주었다고 볼 이름들). --attention-config(-ac)의 backend 와 --attention-backend 를 함께 주면 vLLM 이 거부하므로 그것도 본다
+VLLM_SM12X_ARGS = (("--attention-backend", "TRITON_ATTN", ("--attention-backend", "--attention-config", "-ac")),
+                   ("--mm-encoder-attn-backend", "TORCH_SDPA", ("--mm-encoder-attn-backend",)))
+VLLM_SM12X_ENV = {"VLLM_DISABLED_KERNELS": "FlashInferFP8ScaledMMLinearKernel"}
 MIN_WORKER_TORCH_FRACTION = 0.10  # H100 80GB 기준 ~8GB: 12차 GPU 세션에서 워커 몫 0.05(~4GB)로 MapAnything(피크 6.4GB)이 OOM 난 문제 재발 방지(S15P31A101-525)
 KILL = getattr(signal, "SIGKILL", 9)  # Windows(노트북 시험)에는 SIGKILL 이 없다(Proc.signal 이 kill() 로 바꾼다)
 _out_lock = threading.Lock()
@@ -872,6 +883,18 @@ def http_ok(url: str) -> bool:  # 시험에서 바꿔 끼운다
         return False
 
 
+def gpu_major(arch: str | None) -> int | None:
+    """detect_gpu 의 arch(SIMAI_GPU_ARCH, sm_<주><부>) → 주 번호(sm_90 → 9, sm_120 → 12). 모르면 None."""
+    m = re.fullmatch(r"sm_(\d+)(\d)[a-z]?", (arch or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _flag_given(args: list[str], *names: str) -> bool:
+    """args 에 names 중 하나가 있다(--a-b·--a_b·--a-b=값·--a-b.키=값 꼴 모두)."""
+    keys = {a.split("=", 1)[0].replace("_", "-") for a in args if a.startswith("-")}
+    return any(k == n or k.startswith(n + ".") for k in keys for n in names)
+
+
 def _die_with_parent() -> None:
     """Linux prctl(PR_SET_PDEATHSIG, SIGKILL): 감시 부모가 죽으면 이 자식도 끝난다(자식 쪽 fork 뒤 exec 전에 돈다)."""
     import ctypes
@@ -1254,6 +1277,9 @@ class Supervisor:
                          f"({env.get('SIMAI_TIER0_CPUS') or 'auto'}) "
                          f"{f'{_cpu_ranges(self.tier0_cpus)} ({len(self.tier0_cpus)}개)' if self.tier0_cpus else '묶지 않음'}")
         self.cpu_note += f", Tier 0 수치 연산 스레드 {tier0_threads}개 (OMP/MKL/OpenBLAS/NumExpr)"
+        self.sm12x = gpu_major(env.get("SIMAI_GPU_ARCH")) == 12  # S15P31A101-720: Blackwell 워크스테이션·서버(RTX PRO 6000 등)
+        self.vllm_note = (f"GPU {env.get('SIMAI_GPU_ARCH')}: vLLM 을 sm_12x 경로로 띄운다(Triton attention·영상 인코더 SDPA·FlashInfer 끔, "
+                          "SIMAI_VLLM_EXTRA_ARGS·환경 값이 우선)") if self.sm12x and "vllm" in services else None
         # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
         cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
         worker_env = dict(env)
@@ -1333,6 +1359,9 @@ class Supervisor:
                 e.setdefault("VLLM_USE_DEEP_GEMM", "0")
                 # runtime 이미지에 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 메모리 측정 중 실패한다(3차 GPU 세션). PyTorch 샘플러로
                 e.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+                if self.sm12x:
+                    for k, v in VLLM_SM12X_ENV.items():
+                        e.setdefault(k, v)
                 e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
             argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(worker_env), "worker": self._worker_argv(worker_env),
                     "avatar": self._worker_argv(worker_env, avatar=True),
@@ -1373,6 +1402,9 @@ class Supervisor:
         raw_quant = (env["SIMAI_VLLM_QUANTIZATION"] if "SIMAI_VLLM_QUANTIZATION" in env else VLLM_QUANTIZATION).strip()
         given_quant = any(a.split("=", 1)[0].replace("_", "-") in ("--quantization", "-q") for a in extra)
         quant = [] if (given_quant or not raw_quant or raw_quant.lower() == "none") else ["--quantization", raw_quant]
+        # cc 12.x 는 FA2(PTX JIT)·FlashInfer 대신 Triton·SDPA(S15P31A101-720). EXTRA_ARGS 에 같은 플래그가 있으면 그 값(예: --attention-backend auto)
+        sm12x = ([x for flag, value, names in VLLM_SM12X_ARGS if not _flag_given(extra, *names) for x in (flag, value)]
+                 if gpu_major(env.get("SIMAI_GPU_ARCH")) == 12 else [])
         return [*shlex.split(env.get("SIMAI_VLLM_CMD") or "vllm"), "serve", model,
                 "--served-model-name", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano",
                 "--hf-overrides", VLLM_HF_OVERRIDES,
@@ -1382,6 +1414,7 @@ class Supervisor:
                 *quant,
                 "--host", "127.0.0.1", "--port", str(self.port),
                 "--mm-encoder-tp-mode", "data", "--async-scheduling",
+                *sm12x,
                 *extra]
 
     def _worker_argv(self, env: dict, avatar: bool = False) -> list[str]:
@@ -1644,6 +1677,8 @@ class Supervisor:
             return EXIT_NOT_FOUND
         log(f"tier0 시작 pid {t0.proc.pid}: {shlex.join(t0.argv)} (이어서 {', '.join(self.services[1:])})")
         log(self.cpu_note)
+        if self.vllm_note:
+            log(self.vllm_note)
         if self.worker_id_note:
             log(self.worker_id_note)
         while True:
