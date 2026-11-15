@@ -12,7 +12,8 @@ from dataclasses import dataclass
 # 0.3.0: 미착용 창에 빈 칸 1칸 허용(not_worn_max_empty_bins, S15P31A101-654)
 # 0.4.0: 순수 병합(aliases 추가·분할 아님)이면 차수가 올라도 누적을 잇고 흡수 ID 칸을 넘겨받는다(S15P31A101-661)
 # 0.5.0: ID 초기화 사유는 초기화 칸까지만 남기고 다음 칸부터 칸 사유로 바꾼다. 상태·수치는 0.4.0 과 같다(S15P31A101-729)
-POLICY_VERSION = "ppe-policy-0.5.0"
+# 0.6.0: 두 어깨가 보이면 머리 폭 하한 = 어깨 폭 × 0.6(head_min_scale_shoulder_ratio, S15P31A101-737)
+POLICY_VERSION = "ppe-policy-0.6.0"
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,10 @@ class PpeConfig:
     head_clear_min_points: int = 3              # 미착용 근거로 쓸 '선명한 머리': 코·눈·귀 5점 중 최소 개수
     head_clear_min_scale_px: float = 12.0       # 선명한 머리의 원본 픽셀 머리 폭 하한
     head_min_scale_px: float = 8.0
+    # 두 어깨가 보이면 머리 폭 하한 = 어깨 폭 × 이 값(0 이면 끔). 14차 로비 실측: 검출 없음 200명 중 180명은 머리에 걸친 상자가
+    # 있었으나 눈·귀 폭이 작아(머리 폭/키 0.07, 정상 0.11) 연결되지 않았다. 0.6 에서 80명 회복·대조 99/100 유지·직접 확인 24/24
+    # (S15P31A101-737, docs/design/S15P31A101-737-ppe-head-scale-shoulder.md)
+    head_min_scale_shoulder_ratio: float = 0.6
     eye_span_to_head_width: float = 2.5         # 귀가 안 보일 때 눈 간격 → 머리 폭
     side_span_to_head_width: float = 2.0        # 귀 1개 + 눈/코 → 머리 폭
     head_expand_side: float = 0.8               # 머리 폭 배수(중심에서 좌우)
