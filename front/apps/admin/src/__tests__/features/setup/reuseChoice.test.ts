@@ -1,8 +1,11 @@
-import type { ReuseCheck } from '@/features/setup/types';
+import type { ReuseCandidate, ReuseCheck } from '@/features/setup/types';
 import {
   changedCamerasLabel,
   changedCamerasOf,
+  chosenReuseMap,
+  mapDateLabel,
   reuseChoiceOf,
+  reuseMapsOf,
 } from '@/features/setup/useReuseScene';
 import { describe, expect, it } from 'vitest';
 
@@ -79,5 +82,89 @@ describe('reuseChoiceOf', () => {
     expect(reuseChoiceOf({ ...changed, changed_cameras: [] }, CAMS).blocked?.what).toBe(
       '카메라가 바뀐 것 같아요',
     );
+  });
+});
+
+// 재사용 맵 고르기(S15P31A101-714)
+describe('reuse maps', () => {
+  const candidate = (id: string, overrides: Partial<ReuseCandidate> = {}): ReuseCandidate => ({
+    setup_session_id: id,
+    scene_version: `scene-${id}`,
+    completed_at_ms: Date.UTC(2026, 10, 12, 6, 20),
+    camera_heights_m: { cam_A: 2.41, cam_B: 2.42, cam_C: 2.47, cam_D: 2.48 },
+    status: 'MATCH',
+    reason: null,
+    selectable: true,
+    recommended: false,
+    changed_cameras: [],
+    shifted_cameras: [],
+    unconfirmed_cameras: [],
+    camera_source: null,
+    ...overrides,
+  });
+
+  it('한국 시간 날짜·요일·시각으로 보인다', () => {
+    expect(mapDateLabel(Date.UTC(2026, 10, 12, 6, 20))).toBe('11-12(목) 15:20');
+    expect(mapDateLabel(Date.UTC(2026, 10, 14, 16, 5))).toBe('11-15(일) 01:05');
+  });
+
+  it('상태마다 한 줄 이유를 보이고 MATCH 만 고를 수 있다', () => {
+    const maps = reuseMapsOf(
+      check({
+        candidates: [
+          candidate('a', { recommended: true }),
+          candidate('b', { status: 'SHIFTED', selectable: false, shifted_cameras: ['cam_D'] }),
+          candidate('c', { status: 'UNCONFIRMED', selectable: false, reason: 'NO_PHOTOS' }),
+          candidate('d', {
+            status: 'UNCONFIRMED',
+            selectable: false,
+            reason: 'CHECKING',
+            unconfirmed_cameras: ['cam_A'],
+          }),
+          candidate('e', { status: 'EXCLUDED', selectable: false, reason: 'NOT_COMPLETED' }),
+          candidate('f', { status: 'CHANGED', selectable: false, changed_cameras: [] }),
+        ],
+      }),
+      CAMS,
+    );
+    expect(maps.map((m) => m.selectable)).toEqual([true, false, false, false, false, false]);
+    expect(maps[0]).toMatchObject({
+      recommended: true,
+      note: '카메라가 그때와 같은 자리예요',
+      heightsLabel: '2.41·2.42·2.47·2.48 m',
+    });
+    expect(maps[1]!.note).toBe('그때보다 조금 돌아간 카메라: 카메라 4');
+    expect(maps[2]!.note).toBe('그 맵의 카메라 사진이 없어 확인할 수 없어요');
+    expect(maps[3]!.note).toBe('확인하고 있는 카메라: 카메라 1');
+    expect(maps[4]!.note).toBe('세팅 완료까지 하지 않은 맵이에요');
+    expect(maps[5]!.note).toBe('카메라 배치가 그때와 달라요');
+    // 옛 서버(목록 없음)는 빈 목록
+    expect(reuseMapsOf(check({}), CAMS)).toEqual([]);
+  });
+
+  it('고른 맵이 아직 맞으면 그 맵, 어긋나면 추천 맵, 맞는 맵이 없으면 null', () => {
+    const maps = reuseMapsOf(
+      check({
+        candidates: [
+          candidate('a', { recommended: true }),
+          candidate('b'),
+          candidate('c', { status: 'CHANGED', selectable: false }),
+        ],
+      }),
+      CAMS,
+    );
+    expect(chosenReuseMap(maps, null, 'a')).toBe('a');
+    expect(chosenReuseMap(maps, 'b', 'a')).toBe('b');
+    expect(chosenReuseMap(maps, 'c', 'a')).toBe('a');
+    expect(chosenReuseMap(maps, 'c', null)).toBeNull();
+  });
+
+  it('맞는지 아직 모르면(VIEW_UNCONFIRMED) 확인 중이라고 막는다', () => {
+    expect(
+      reuseChoiceOf(check({ available: false, blocked_reason: 'VIEW_UNCONFIRMED' }), CAMS).blocked,
+    ).toEqual({
+      what: '카메라가 이전 맵 때와 같은 자리인지 확인하고 있어요',
+      how: '카메라 앞을 비우고 잠시 기다리거나 새 맵 만들기를 골라 주세요',
+    });
   });
 });

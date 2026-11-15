@@ -5588,7 +5588,7 @@ class CoverageGuide(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0.0', '1.1.0']
+    schema_version: Literal['1.0.0', '1.1.0', '1.2.0']
     source_id: DefsInstanceId
     computed_at_ms: DefsTimestampMs
     valid_until_ms: DefsTimestampMs
@@ -5604,6 +5604,9 @@ class CoverageGuide(BaseModel):
     components: Annotated[list[Component], Field(max_length=4, min_length=1)]
     guides: Annotated[list[CoverageGuideCameraGuideItem], Field(max_length=12)]
     reuse_view_check: CoverageGuideReuseViewCheck | MISSING = MISSING
+    reuse_view_checks: Annotated[
+        list[CoverageGuideReuseViewCheck] | MISSING, Field(max_length=5, min_length=1)
+    ] = MISSING
 
 
 class HumanMeshOutput1(HumanMeshOutputAvatarAsset):

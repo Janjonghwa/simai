@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.ssafy.simai.domain.calibration.CalibrationService;
 import com.ssafy.simai.domain.coverage.CoverageGuideService;
 import com.ssafy.simai.domain.health.ViewerHealthService;
 import com.ssafy.simai.domain.machine.MachineTokenService;
@@ -22,9 +23,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -55,9 +58,9 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * 세팅 모드 새 모델 / 이전 모델 재사용(S15P31A101-614). POST /api/setup-sessions 의 mode 검사, 날짜 작업 오늘만 검사, REUSE 채택
- * (현재 관제 맵 그대로·새 보정만 등록·구성 묶음 발행·Scene 정합 VERIFIED), REUSE 거부 → 새 모델로 이어 가기, 재사용 세션의 맵 보강 차단을 본다.
- * 객체 저장소는 가짜(키 → 바이트)다.
+ * 세팅 모드 새 맵 / 이전 맵 재사용(S15P31A101-614·-689·-712·-714). POST /api/setup-sessions 의 mode 검사, 날짜 작업 오늘만 검사,
+ * 재사용 후보 맵 목록(최근 순·DB 사실로 가린 맵·시점 확인 순위·추천), 고른 맵의 묶음(보정·높이·구역·맵)을 그대로 쓰는 재사용(워커 작업 없음,
+ * 완료 때 그 맵 켜기·같은 내용의 보정 다시 내기·그 맵의 구역 채우기)을 본다. 객체 저장소는 가짜(키 → 바이트)다.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -84,6 +87,9 @@ class SetupReuseModeIntegrationTest {
 
     @Autowired
     SceneCompatibility compatibility;
+
+    @Autowired
+    CalibrationService calibrations;
 
     @MockitoBean
     ObjectStorage storage;
@@ -156,11 +162,28 @@ class SetupReuseModeIntegrationTest {
     }
 
     private void cleanUpTables() {
-        List<String> cals = List.of(baseCalibration, newCalibration);
+        List<String> cals = new ArrayList<>(jdbc.queryForList(
+                "SELECT calibration_version FROM calibration_version WHERE calibration_version LIKE ?",
+                String.class, "cal-reuse-map-%" + suffix + "%"));
+        cals.addAll(List.of(baseCalibration, newCalibration));
         jdbc.update("UPDATE work_unit SET active_setup_session_id = NULL WHERE active_setup_session_id IS NOT NULL");
         jdbc.update("DELETE FROM setup_zone_draft");
         jdbc.update("DELETE FROM setup_zone_draft_run");
+        // 완료가 만든 구역(세션에 이은 새 구역)과 그 작업면, 이 시험이 넣은 구역·작업면
+        List<String> createdZones = jdbc.queryForList("SELECT zone_id FROM setup_session_zone", String.class);
+        for (String z : createdZones) {
+            jdbc.update("DELETE FROM static_object WHERE zone_id = ?", z);
+        }
+        jdbc.update("DELETE FROM setup_session_zone");
+        jdbc.update("DELETE FROM setup_session_zone_plan");
+        for (String z : createdZones) {
+            jdbc.update("DELETE FROM zone WHERE zone_id = ?", z);
+        }
+        jdbc.update("DELETE FROM static_object WHERE object_id LIKE ?", "%" + suffix);
+        jdbc.update("DELETE FROM zone WHERE zone_id LIKE ?", "%" + suffix);
+        jdbc.update("DELETE FROM setup_session WHERE reuse_source_session_id IS NOT NULL");
         jdbc.update("DELETE FROM setup_session");
+        jdbc.update("DELETE FROM scene_activation WHERE scene_version LIKE ?", "%" + suffix);
         for (String cal : cals) {
             for (String v : jdbc.queryForList("SELECT config_version FROM config_bundle WHERE calibration_version = ?",
                     String.class, cal)) {
@@ -175,11 +198,18 @@ class SetupReuseModeIntegrationTest {
             jdbc.update("DELETE FROM calibration_update_message WHERE calibration_version = ?", cal);
             jdbc.update("DELETE FROM calibration_document WHERE calibration_version = ?", cal);
         }
+        // 다시 낸 보정이 원래 보정을 이전 버전으로 가리키므로 나중 것부터 지운다
+        for (String cal : cals) {
+            if (cal.contains("-reuse-") && cal.startsWith("cal-reuse-map-")) {
+                jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", cal);
+            }
+        }
+        jdbc.update("DELETE FROM calibration_version WHERE calibration_version LIKE ?", "cal-reuse-map-%" + suffix);
         jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", newCalibration);
         jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", baseCalibration);
         jdbc.update("DELETE FROM job_lease");
         jdbc.update("DELETE FROM analysis_job");
-        jdbc.update("DELETE FROM work_unit WHERE name = ?", "재사용세팅작업-" + suffix);
+        jdbc.update("DELETE FROM work_unit WHERE name = ? OR name LIKE ?", "재사용세팅작업-" + suffix, "재사용지난작업-%-" + suffix);
         jdbc.update("DELETE FROM app_user WHERE login_id = ?", "setup-reuse-admin-" + suffix);
         jdbc.update("DELETE FROM worker WHERE worker_id = ?", worker);
     }
@@ -221,278 +251,318 @@ class SetupReuseModeIntegrationTest {
     }
 
     @Test
-    void 재사용이_채택되면_현재_관제_맵을_그대로_두고_새_보정만_등록해_묶음을_발행하고_맵은_같은_World_로_판정된다() throws Exception {
-        commitBaseScene();
-        JsonNode created = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
-        assertThat(created.get("mode").asString()).isEqualTo("REUSE");
-        assertThat(created.get("requested_mode").asString()).isEqualTo("REUSE");
-        assertThat(jobInput(created.get("job_id").asString()).get("mode").asString()).isEqualTo("REUSE_SCENE");
-        Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
-        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+    void 후보_맵은_최근_순으로_보이고_카메라_확인_실패와_세팅_미완료_맵은_이유와_함께_가린다() throws Exception {
+        // 오래된 완료 맵(고를 수 있음), 최근이지만 카메라 확인 INCOMPLETE 인 맵(15차 같은 경우), 완료 기록 없는 맵
+        MapFixture old = mapSession("old", Instant.now().minusSeconds(3 * 86400), true, "PASSED");
+        MapFixture incomplete = mapSession("inc", Instant.now().minusSeconds(86400), true, "INCOMPLETE");
+        MapFixture notDone = mapSession("nd", Instant.now().minusSeconds(3600), false, "PASSED");
 
-        ObjectNode before = snapshot(s.sessionId(), "INITIAL_POSE_AND_WORLD", 40.0).put("mode", "REUSE_SCENE");
-        mvc.perform(heartbeat(s, 0.40, before)).andExpect(status().isOk());
-
-        byte[] calDoc = calibrationDocument(newCalibration, s.sessionId(), true);
-        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calDoc);
-        ObjectNode joint = withChecks(snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0))
-                .put("mode", "REUSE_SCENE").put("calibration_version", newCalibration);
-        joint.set("world_anchor", anchor(true));
-        joint.putObject("artifacts").set("calibration_document", calRef);
-        mvc.perform(heartbeat(s, 0.65, joint)).andExpect(status().isOk());
-
-        ObjectNode ready = joint.deepCopy().put("status", "READY_FOR_ZONES").put("progress_pct", 85.0);
-        mvc.perform(heartbeat(s, 0.85, ready)).andExpect(status().isOk());
-        // READY_FOR_ZONES: 묶음은 아직(완료가 발행, -615), 현재 Scene 은 그대로, AI 구역 초안도 없다
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
-                newCalibration)).isZero();
-        assertThat(currentScene()).isEqualTo(baseScene);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_type = 'vlm_zone_draft'", Integer.class)).isZero();
-
-        // 세팅 완료(C17): 재사용은 지금 관제 맵을 그대로 두고 새 보정을 실은 구성 묶음만 한 번 발행한다
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class,
-                newCalibration)).isEqualTo(1);
-        assertThat(currentScene()).isEqualTo(baseScene);
-
-        ObjectNode result = joint.deepCopy().put("status", "COMPLETED").put("progress_pct", 100.0);
-        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.payload.status").value("ACCEPTED"));
-
-        assertThat(currentScene()).isEqualTo(baseScene);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_version WHERE calibration_version = ?", Integer.class,
-                newCalibration)).isZero();
-        assertThat(jdbc.queryForList("SELECT kind FROM setup_session_artifact WHERE setup_session_id = ?::uuid", String.class,
-                s.sessionId())).containsExactly("CALIBRATION");
-        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt()))
-                .andExpect(status().isOk()).andReturn());
-        assertThat(view.get("status").asString()).isEqualTo("COMPLETED");
-        assertThat(view.get("mode").asString()).isEqualTo("REUSE");
-        assertThat(view.get("calibration_version").asString()).isEqualTo(newCalibration);
-        assertThat(view.get("preview_scene_version").isNull()).isTrue();
-        assertThat(view.get("scene_version").isNull()).isTrue();
-        assertThat(view.get("ready_at_ms").isNull()).isFalse();
-        assertThat(view.at("/world_anchor/accepted").asBoolean()).isTrue();
-        assertThat(view.at("/world_anchor/reference_calibration_version").asString()).isEqualTo(baseCalibration);
-        // 이 세션이 만든 맵이 없어 맵 보강은 막는다(-607)
-        assertThat(view.at("/supplement/can_rebake").asBoolean()).isFalse();
-        assertThat(view.at("/supplement/rebake_blocked_reason").asString()).isEqualTo("REUSED_SCENE");
-        assertThat(view.at("/supplement/can_upload").asBoolean()).isFalse();
-
-        // Tier 0 가 새 보정을 새 World 계보(world_frame_id = 새 버전)로 채택해도, 보정 문서의 world_anchor 가 맵 보정의 World 로
-        // 옮겼으므로 현재 맵은 흐리지 않는다(자세 변화는 채택 한도로 판정)
-        tier0Adopted(baseCalibration, baseCalibration);
-        tier0Adopted(newCalibration, newCalibration);
-        JsonNode compat = compatibility.compare(baseScene, baseCalibration, newCalibration);
-        assertThat(compat.get("verification").asString()).isEqualTo("VERIFIED");
-        assertThat(compat.get("reason").asString()).isEqualTo("SMALL_CHANGE");
-    }
-
-    @Test
-    void 옛_워커가_재사용_거부_뒤_같은_작업에서_새_모델로_이어_가면_세션은_NEW_와_사유를_보인다() throws Exception {
-        // site_setup 1.17.0 까지의 워커 호환(-614). 1.18.0 워커는 이어 가지 않고 실패로 멈춘다(S15P31A101-689, 아래 시험)
-        commitBaseScene();
-        JsonNode created = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
-        Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
-        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
-
-        // REUSE 요청 작업이 판정 전에 FULL_SETUP 을 이유 없이 보내면 거부한다
-        ObjectNode wrong = snapshot(s.sessionId(), "INITIAL_POSE_AND_WORLD", 40.0).put("mode", "FULL_SETUP");
-        mvc.perform(heartbeat(s, 0.40, wrong)).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
-
-        byte[] calDoc = calibrationDocument(newCalibration, s.sessionId(), false);
-        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calDoc);
-        ObjectNode joint = withChecks(snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0))
-                .put("mode", "FULL_SETUP").put("reuse_fallback_reason", "CENTER_RESIDUAL_EXCEEDED")
-                .put("calibration_version", newCalibration);
-        joint.set("world_anchor", anchor(false));
-        joint.putObject("artifacts").set("calibration_document", calRef);
-        mvc.perform(heartbeat(s, 0.65, joint)).andExpect(status().isOk());
-        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
-        assertThat(view.get("mode").asString()).isEqualTo("NEW");
-        assertThat(view.get("requested_mode").asString()).isEqualTo("REUSE");
-        assertThat(view.get("reuse_fallback_reason").asString()).isEqualTo("CENTER_RESIDUAL_EXCEEDED");
-        assertThat(view.at("/world_anchor/reason").asString()).isEqualTo("CENTER_RESIDUAL_EXCEEDED");
-
-        // 같은 대여에서 다시 REUSE_SCENE 으로 돌아가지 않는다
-        ObjectNode back = joint.deepCopy().put("mode", "REUSE_SCENE");
-        back.remove("reuse_fallback_reason");
-        back.set("world_anchor", anchor(true));
-        mvc.perform(heartbeat(s, 0.66, back)).andExpect(status().isBadRequest());
-
-        // 이후는 새 모델과 같다: 미리보기 등록·현재화 → 정식 Scene 교체
-        String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
-        ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
-        ObjectNode ready = joint.deepCopy().put("status", "READY_FOR_ZONES").put("progress_pct", 85.0)
-                .put("preview_scene_version", preview);
-        ((ObjectNode) ready.get("artifacts")).set("preview_scene", previewRef);
-        mvc.perform(heartbeat(s, 0.85, ready)).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(baseScene);
-        // 새 모델로 이어 간 세션(World 다시 맞추기 거부)은 새 모델과 같이 정밀 맵까지 기다린다(S15P31A101-688)
-        mvc.perform(complete(s.sessionId())).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("SETUP_FINAL_MAP_NOT_READY"));
-
-        String baked = "scene-" + s.jobId() + "-" + s.leaseId();
-        ObjectNode result = ready.deepCopy().put("status", "COMPLETED").put("progress_pct", 100.0).put("scene_version", baked);
-        ((ObjectNode) result.get("artifacts")).set("scene", put(prefix + "scene.glb", "glb-baked".getBytes(StandardCharsets.UTF_8)));
-        mvc.perform(callback(s, succeeded(s, result))).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(baseScene);
-        // 완료가 이 세션 정밀 맵을 켠다(미리보기는 관제 맵이 되지 않는다)
-        mvc.perform(complete(s.sessionId())).andExpect(status().isOk());
-        assertThat(currentScene()).isEqualTo(baked);
-        assertThat(currentScene()).isNotEqualTo(preview);
-        JsonNode done = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
-        assertThat(done.get("status").asString()).isEqualTo("COMPLETED");
-        assertThat(done.get("mode").asString()).isEqualTo("NEW");
-        assertThat(done.get("scene_version").asString()).isEqualTo(baked);
-        assertThat(done.at("/supplement/rebake_blocked_reason").asString()).isNotEqualTo("REUSED_SCENE");
-    }
-
-    @Test
-    void 새_모델_세션은_재사용_스냅샷을_거부하고_실패한_재사용_세션의_재시도는_재사용을_유지한다() throws Exception {
-        commitBaseScene();
-        JsonNode created = body(mvc.perform(create(null)).andExpect(status().isAccepted()).andReturn());
-        Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
-        mvc.perform(heartbeat(s, 0.40, snapshot(s.sessionId(), "INITIAL_POSE_AND_WORLD", 40.0).put("mode", "REUSE_SCENE")))
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
-        mvc.perform(callback(s, failed(s))).andExpect(status().isOk());
-        jdbc.update("UPDATE work_unit SET active_setup_session_id = NULL WHERE work_id = ?", workUnitId);
-        jdbc.update("DELETE FROM setup_session");
-
-        JsonNode reuse = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
-        Session r = lease(reuse.get("setup_session_id").asString(), reuse.get("job_id").asString());
-        mvc.perform(callback(r, failed(r))).andExpect(status().isOk());
-        JsonNode retried = body(mvc.perform(post("/api/setup-sessions/{id}/retry", r.sessionId()).with(adminJwt())
-                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isAccepted()).andReturn());
-        assertThat(retried.get("requested_mode").asString()).isEqualTo("REUSE");
-        assertThat(jobInput(retried.get("job_id").asString()).get("mode").asString()).isEqualTo("REUSE_SCENE");
-    }
-
-    @Test
-    void 재사용이_거부되면_새_모델로_넘어가지_않고_실패로_멈추고_다음_선택에서_재사용을_막으며_새_맵_재시도를_받는다() throws Exception {
-        // site_setup 1.18.0(S15P31A101-689): 워커는 REUSE_SCENE 그대로 거부 요약(달라진 카메라)을 보내고 REUSE_WORLD_REJECTED 로 실패한다
-        commitBaseScene();
-        JsonNode created = body(mvc.perform(create("REUSE")).andExpect(status().isAccepted()).andReturn());
-        Session s = lease(created.get("setup_session_id").asString(), created.get("job_id").asString());
-        mvc.perform(heartbeat(s, 0.40, snapshot(s.sessionId(), "INITIAL_POSE_AND_WORLD", 40.0).put("mode", "REUSE_SCENE")))
-                .andExpect(status().isOk());
-        ObjectNode rejected = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 62.0).put("mode", "REUSE_SCENE");
-        ObjectNode anchor = anchor(false);
-        anchor.putArray("changed_cameras").add("cam_B");
-        rejected.set("world_anchor", anchor);
-        mvc.perform(heartbeat(s, 0.62, rejected)).andExpect(status().isOk());
-        ObjectNode failure = failed(s);
-        ((ObjectNode) failure.get("error")).put("code", "REUSE_WORLD_REJECTED")
-                .put("message", "카메라 cam_B 이(가) 직전 세팅과 달라져 이전 맵을 쓸 수 없습니다. 새 맵으로 다시 하세요");
-        mvc.perform(callback(s, failure)).andExpect(status().isOk());
-
-        JsonNode view = body(mvc.perform(get("/api/setup-sessions/{id}", s.sessionId()).with(viewerJwt())).andReturn());
-        assertThat(view.get("status").asString()).isEqualTo("FAILED");
-        assertThat(view.get("failure_code").asString()).isEqualTo("REUSE_WORLD_REJECTED");
-        assertThat(view.get("mode").asString()).isEqualTo("REUSE");
-        assertThat(view.get("reuse_fallback_reason").isNull()).isTrue();
-        assertThat(view.at("/world_anchor/accepted").asBoolean()).isFalse();
-        assertThat(view.at("/world_anchor/changed_cameras/0").asString()).isEqualTo("cam_B");
-        assertThat(view.get("preview_scene_version").isNull()).isTrue();
-        assertThat(currentScene()).isEqualTo(baseScene);
-
-        // 다음 선택: 직전 시도가 카메라 변화로 거부됐으므로 재사용은 꺼지고 이유(카메라)를 보인다. 시작해도 409
         JsonNode check = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
         assertThat(check.get("available").asBoolean()).isFalse();
-        assertThat(check.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
-        assertThat(check.get("camera_source").asString()).isEqualTo("LAST_SETUP_REJECTED");
-        assertThat(check.at("/changed_cameras/0").asString()).isEqualTo("cam_B");
-        mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"REUSE\"}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
-        mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"BOGUS\"}"))
-                .andExpect(status().isBadRequest());
+        // 고를 수 있는 맵은 아직 시점 확인 결과가 없어(헬퍼 결과 없음) 모른다. 모르면 그대로 쓰지 않는다
+        assertThat(check.get("blocked_reason").asString()).isEqualTo("VIEW_UNCONFIRMED");
+        JsonNode list = check.get("candidates");
+        assertThat(list).hasSize(3);
+        assertThat(list.at("/0/setup_session_id").asString()).isEqualTo(old.session().toString());
+        assertThat(list.at("/0/status").asString()).isEqualTo("UNCONFIRMED");
+        assertThat(list.at("/0/reason").asString()).isEqualTo("NO_RESULT");
+        assertThat(list.at("/0/camera_heights_m/cam_A").asDouble()).isEqualTo(2.41);
+        // 가린 맵은 최근 순으로 뒤에, 이유와 함께
+        assertThat(list.at("/1/setup_session_id").asString()).isEqualTo(notDone.session().toString());
+        assertThat(list.at("/1/status").asString()).isEqualTo("EXCLUDED");
+        assertThat(list.at("/1/reason").asString()).isEqualTo("NOT_COMPLETED");
+        assertThat(list.at("/2/setup_session_id").asString()).isEqualTo(incomplete.session().toString());
+        assertThat(list.at("/2/reason").asString()).isEqualTo("CAMERA_CHECK_NOT_PASSED");
+        assertThat(list.at("/2/selectable").asBoolean()).isFalse();
 
-        // 관리자가 새 맵을 고른 재시도는 새 방식을 새 세션에 저장한다(작업 입력에 mode 없음 = FULL_SETUP)
-        JsonNode retried = body(mvc.perform(post("/api/setup-sessions/{id}/retry", s.sessionId()).with(adminJwt())
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"mode\": \"NEW\"}"))
-                .andExpect(status().isAccepted()).andReturn());
-        assertThat(retried.get("requested_mode").asString()).isEqualTo("NEW");
-        assertThat(retried.get("retry_of").asString()).isEqualTo(s.sessionId());
-        assertThat(jobInput(retried.get("job_id").asString()).has("mode")).isFalse();
-        // 가장 최근 시도가 거부가 아니므로 카메라 근거는 다시 모름(막지 않음)
-        JsonNode after = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(after.get("camera_status").asString()).isEqualTo("UNKNOWN");
-        assertThat(after.get("available").asBoolean()).isTrue();
-    }
-
-    @Test
-    void Tier0_회전_감시가_카메라_변화를_알리면_재사용을_막고_근거가_없으면_막지_않는다() throws Exception {
-        JsonNode none = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(none.get("blocked_reason").asString()).isEqualTo("NO_SCENE");
-        assertThat(none.get("scene_version").isNull()).isTrue();
-
-        commitBaseScene();
-        JsonNode unknown = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(unknown.get("available").asBoolean()).isTrue();
-        assertThat(unknown.get("camera_status").asString()).isEqualTo("UNKNOWN");
-        assertThat(unknown.get("scene_version").asString()).isEqualTo(baseScene);
-
-        doReturn(List.of("cam_C")).when(health).reSetupCameraIds();
-        JsonNode drift = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(drift.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
-        assertThat(drift.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
-        assertThat(drift.at("/changed_cameras/0").asString()).isEqualTo("cam_C");
-        mvc.perform(create("REUSE")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
-        // 새 맵은 막지 않는다
-        mvc.perform(create(null)).andExpect(status().isAccepted());
-
-        doReturn(List.of()).when(health).reSetupCameraIds();
-        JsonNode quiet = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(quiet.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
-        assertThat(quiet.get("available").asBoolean()).isTrue();
+        mvc.perform(createReuse(null)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_VIEW_UNCONFIRMED"));
+        mvc.perform(createReuse(incomplete.session())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_MAP_UNAVAILABLE"));
+        mvc.perform(createReuse(UUID.randomUUID())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_MAP_UNAVAILABLE"));
         mvc.perform(get("/api/setup-sessions/reuse-check").with(viewerJwt())).andExpect(status().isForbidden());
     }
 
     @Test
-    void 헬퍼_시점_확인이_카메라가_바뀐_것으로_보면_재사용을_막고_4대가_같으면_막지_않는다() throws Exception {
-        commitBaseScene();
-        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of("cam_B", "cam_C"), false)))
-                .when(coverageGuides).reuseViewCheck(baseScene);
+    void 지금_카메라와_가장_잘_맞는_맵을_추천하고_어긋나거나_조금_돌아간_맵은_고를_수_없다() throws Exception {
+        MapFixture older = mapSession("a", Instant.now().minusSeconds(2 * 86400), true, "PASSED");
+        MapFixture newer = mapSession("b", Instant.now().minusSeconds(86400), true, null);  // 카메라 확인 도입 전 세팅(기록 없음)
+        MapFixture third = mapSession("c", Instant.now().minusSeconds(3 * 86400), true, "PASSED");
+        // 두 맵 모두 4대 같은 시점이지만 오래된 맵이 지금 화면과 더 많이 맞는다 → 기본은 오래된 맵(가장 최근이 아니다)
+        view(older.scene(), 400, "SAME", 0.0);
+        view(newer.scene(), 150, "SAME", 0.0);
+        // 세 번째 맵은 카메라 하나가 1.7° 돌아가 있다(-712 기준으로는 같은 시점이지만 보정을 그대로 쓸 수는 없다)
+        view(third.scene(), 500, "SAME", 0.03);
+
+        JsonNode check = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(check.get("available").asBoolean()).isTrue();
+        assertThat(check.get("recommended_setup_session_id").asString()).isEqualTo(older.session().toString());
+        assertThat(check.get("scene_version").asString()).isEqualTo(older.scene());
+        assertThat(check.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
+        JsonNode list = check.get("candidates");
+        assertThat(list.at("/0/setup_session_id").asString()).isEqualTo(older.session().toString());
+        assertThat(list.at("/0/recommended").asBoolean()).isTrue();
+        assertThat(list.at("/1/setup_session_id").asString()).isEqualTo(newer.session().toString());
+        assertThat(list.at("/1/status").asString()).isEqualTo("MATCH");
+        assertThat(list.at("/1/recommended").asBoolean()).isFalse();
+        assertThat(list.at("/2/status").asString()).isEqualTo("SHIFTED");
+        assertThat(list.at("/2/shifted_cameras/0").asString()).isEqualTo("cam_D");
+        assertThat(list.at("/2/cameras").size()).isEqualTo(4);
+        mvc.perform(createReuse(third.session())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
+
+        // 카메라가 그때와 달라진 맵(2회 연속 확인)은 이유(카메라)와 함께 막는다. 맞는 맵이 하나도 없으면 재사용은 꺼진다
+        view(older.scene(), 400, "CHANGED", null);
+        view(newer.scene(), 150, "CHANGED", null);
         JsonNode changed = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
         assertThat(changed.get("available").asBoolean()).isFalse();
         assertThat(changed.get("blocked_reason").asString()).isEqualTo("CAMERA_CHANGED");
-        assertThat(changed.get("camera_status").asString()).isEqualTo("CHANGED");
         assertThat(changed.get("camera_source").asString()).isEqualTo("VIEW_MATCH");
-        assertThat(changed.at("/changed_cameras/0").asString()).isEqualTo("cam_B");
-        assertThat(changed.at("/changed_cameras/1").asString()).isEqualTo("cam_C");
-        // 화면을 건너뛴 시작도 같은 판정으로 막고, 새 맵은 막지 않는다
-        mvc.perform(create("REUSE")).andExpect(status().isConflict())
+        assertThat(changed.at("/candidates/2/status").asString()).isEqualTo("CHANGED");
+        assertThat(changed.at("/candidates/2/changed_cameras/0").asString()).isEqualTo("cam_D");
+        mvc.perform(createReuse(null)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SETUP_REUSE_CAMERA_CHANGED"));
 
-        // Tier 0 회전 감시가 먼저다
-        doReturn(List.of("cam_A")).when(health).reSetupCameraIds();
+        // Tier 0 가 지금 그 맵의 보정을 쓰고 배경 회전 감시가 재세팅을 요구하면 그 맵은 바뀐 것이다
+        view(older.scene(), 400, "SAME", 0.0);
+        tier0Uses(older.calibration());
+        doReturn(List.of("cam_C")).when(health).reSetupCameraIds();
         JsonNode drift = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(drift.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
-        doReturn(null).when(health).reSetupCameraIds();
+        assertThat(drift.get("available").asBoolean()).isFalse();
+        JsonNode olderItem = find(drift.get("candidates"), older.session());
+        assertThat(olderItem.get("status").asString()).isEqualTo("CHANGED");
+        assertThat(olderItem.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
+    }
 
-        // 4대 모두 같은 시점이면 Tier 0 가 없어도 「달라진 카메라 없음」
-        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of(), true)))
-                .when(coverageGuides).reuseViewCheck(baseScene);
-        JsonNode same = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(same.get("available").asBoolean()).isTrue();
-        assertThat(same.get("camera_status").asString()).isEqualTo("NOT_DETECTED");
-        assertThat(same.get("camera_source").isNull()).isTrue();
+    @Test
+    void 재사용은_고른_맵의_보정_높이_구역_맵을_그대로_쓰고_워커_작업_없이_바로_구역_단계로_간다() throws Exception {
+        // 고른 맵(이틀 전): 그 보정으로 발행한 묶음에 구역 Z1(v1)·이은 작업면
+        MapFixture chosen = mapSession("pick", Instant.now().minusSeconds(2 * 86400), true, "PASSED");
+        String z1 = "zone-reuse-1-" + suffix;
+        zone(z1, 1, "POLYGON((0 0, 2 0, 2 2, 0 2, 0 0))", true);
+        surface("surface-reuse-1-" + suffix, 1, z1, true);
+        bundle(chosen.calibration(), List.of(z1 + ":1"), List.of("surface-reuse-1-" + suffix + ":1"));
+        // 그 뒤 다른 날 새 맵(다른 World)이 지금 관제 맵이 되었고 Z1 은 보관, Z2 가 관제 중
+        jdbc.update("UPDATE zone SET valid_to = now() WHERE zone_id = ?", z1);
+        jdbc.update("UPDATE static_object SET valid_to = now() WHERE object_id = ?", "surface-reuse-1-" + suffix);
+        String z2 = "zone-reuse-2-" + suffix;
+        zone(z2, 1, "POLYGON((5 5, 6 5, 6 6, 5 6, 5 5))", true);
+        commitBaseScene();
+        view(chosen.scene(), 300, "SAME", 0.0);
 
-        // 일부가 아직 확인 중(UNKNOWN)이면 모름 그대로, 막지 않는다
-        doReturn(Optional.of(new CoverageGuideService.ViewCheck(List.of(), false)))
-                .when(coverageGuides).reuseViewCheck(baseScene);
-        JsonNode partial = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
-        assertThat(partial.get("available").asBoolean()).isTrue();
-        assertThat(partial.get("camera_status").asString()).isEqualTo("UNKNOWN");
-        mvc.perform(create("REUSE")).andExpect(status().isAccepted());
+        JsonNode created = body(mvc.perform(createReuse(chosen.session())).andExpect(status().isAccepted()).andReturn());
+        String id = created.get("setup_session_id").asString();
+        assertThat(created.get("status").asString()).isEqualTo("COMPLETED");
+        assertThat(created.get("progress_pct").asDouble()).isEqualTo(100.0);
+        assertThat(created.get("job_id").isNull()).isTrue();
+        assertThat(created.get("mode").asString()).isEqualTo("REUSE");
+        assertThat(created.get("calibration_version").asString()).isEqualTo(chosen.calibration());
+        assertThat(created.at("/camera_heights_m/cam_A").asDouble()).isEqualTo(2.41);
+        assertThat(created.at("/reuse_source/setup_session_id").asString()).isEqualTo(chosen.session().toString());
+        assertThat(created.at("/reuse_source/scene_version").asString()).isEqualTo(chosen.scene());
+        assertThat(created.at("/reuse_source/view_check/cameras").size()).isEqualTo(4);
+        assertThat(created.get("complete_blocked_reason").isNull()).isTrue();
+        assertThat(created.get("paused_reason").isNull()).isTrue();
+        assertThat(created.at("/supplement/rebake_blocked_reason").asString()).isEqualTo("REUSED_SCENE");
+        // 워커 작업을 만들지 않는다(배경·Stage A 재계산 없음), 그 맵을 만들 때의 높이가 현장 기본값이 된다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_type = 'site_setup' AND job_id NOT LIKE 'job-reuse-map-%'",
+                Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT default_camera_heights_m ->> 'cam_A' FROM site WHERE site_id = ?", String.class, site))
+                .isEqualTo("2.41");
+
+        // 구역 단계: 지금 관제 구역(다른 맵의 Z2)이 아니라 그 맵의 구역(Z1 본문·작업면)으로 채운다
+        JsonNode plan = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(plan.get("items")).hasSize(1);
+        assertThat(plan.at("/items/0/zone_id").isNull() || !plan.at("/items/0").has("zone_id")).isTrue();
+        assertThat(plan.at("/items/0/zone/name").asString()).isEqualTo("재사용 구역 " + z1);
+        assertThat(plan.at("/items/0/zone/polygon_xy").size()).isGreaterThanOrEqualTo(4);
+        assertThat(plan.at("/items/0/surface/top_height_m").asDouble()).isCloseTo(0.9, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(plan.at("/items/0/needs_review").asBoolean()).isFalse();
+
+        // 완료: 그 맵을 켜고, Tier 0 가 다른 보정을 쓰므로 그 맵의 보정을 계보 키만 바꾼 새 버전으로 내 묶음에 싣는다
+        JsonNode done = body(mvc.perform(complete(id)).andExpect(status().isOk()).andReturn());
+        assertThat(currentScene()).isEqualTo(chosen.scene());
+        String reissued = done.get("calibration_version").asString();
+        assertThat(reissued).startsWith(chosen.calibration() + "-reuse-");
+        assertThat(jdbc.queryForObject("SELECT previous_calibration_version FROM calibration_version WHERE calibration_version = ?",
+                String.class, reissued)).isEqualTo(baseCalibration);
+        assertThat(jdbc.queryForObject("SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?",
+                String.class, reissued)).isEqualTo(jdbc.queryForObject(
+                "SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?", String.class, chosen.calibration()));
+        JsonNode reissuedDoc = mapper.readTree(jdbc.queryForObject(
+                "SELECT content FROM calibration_document WHERE calibration_version = ?", byte[].class, reissued));
+        assertThat(reissuedDoc.get("setup_session_id").asString()).isEqualTo(id);
+        assertThat(reissuedDoc.get("previous_calibration_version").asString()).isEqualTo(baseCalibration);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle WHERE calibration_version = ?", Integer.class, reissued))
+                .isEqualTo(1);
+        // 구역: 다른 맵의 Z2 는 보관, 그 맵의 Z1 본문으로 새 구역
+        assertThat(done.at("/applied_zones/archived").toString()).contains(z2);
+        assertThat(done.at("/applied_zones/created").size()).isEqualTo(1);
+        // 같은 내용의 보정이라 맵은 흐리지 않는다
+        JsonNode compat = compatibility.compare(chosen.scene(), chosen.calibration(), reissued);
+        assertThat(compat.get("verification").asString()).isEqualTo("VERIFIED");
+        assertThat(compat.get("reason").asString()).isEqualTo("SAME_CALIBRATION");
+        // 다음 날 재사용 목록에서 그 맵의 보정 버전 묶음에 새로 낸 버전도 들어간다(구역은 그 묶음에서 다시 채운다)
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_session WHERE reuse_source_session_id = ?", Integer.class,
+                chosen.session())).isEqualTo(1);
+    }
+
+    @Test
+    void Tier0_가_이미_그_맵의_보정을_쓰면_새_버전을_내지_않고_그대로_싣는다() throws Exception {
+        MapFixture chosen = mapSession("same", Instant.now().minusSeconds(86400), true, "PASSED");
+        bundle(chosen.calibration(), List.of(), List.of());
+        tier0Uses(chosen.calibration());
+        view(chosen.scene(), 300, "SAME", 0.004);
+        JsonNode created = body(mvc.perform(createReuse(null)).andExpect(status().isAccepted()).andReturn());
+        String id = created.get("setup_session_id").asString();
+        mvc.perform(post("/api/setup-sessions/{id}/zones/seed", id).with(adminJwt())).andExpect(status().isOk());
+        JsonNode done = body(mvc.perform(complete(id)).andExpect(status().isOk()).andReturn());
+        assertThat(done.get("calibration_version").asString()).isEqualTo(chosen.calibration());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM calibration_version WHERE calibration_version LIKE ?", Integer.class,
+                chosen.calibration() + "-reuse-%")).isZero();
+        assertThat(currentScene()).isEqualTo(chosen.scene());
+        // 같은 작업에 두 번째 세팅은 만들지 않는다(하루 1회)
+        mvc.perform(createReuse(null)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_ALREADY_COMPLETED"));
     }
 
     // ------------------------------------------------------------------ 도우미
+
+    /** 지난 새 맵 세팅 하나: 그 세션·맵·보정 */
+    private record MapFixture(UUID session, String scene, String calibration) {
+    }
+
+    /**
+     * 지난 날 새 맵(NEW) 세팅을 만든다: 보정(원문 등록), COMMITTED 맵, 끝난 세팅 세션(높이·카메라 확인), 그 세팅을 건 작업(c17 이면 세팅 완료 기록).
+     * checkStatus 가 null 이면 카메라 확인 기록이 없는 옛 세팅이다.
+     */
+    private MapFixture mapSession(String tag, Instant completedAt, boolean c17, String checkStatus) throws Exception {
+        UUID session = UUID.randomUUID();
+        String calibration = "cal-reuse-map-" + tag + "-" + suffix;
+        String scene = "scene-reuse-map-" + tag + "-" + suffix;
+        calibrations.registerFromSetup(site, calibrationDocument(calibration, session.toString(), true), "s3://test/" + calibration,
+                null, "재사용 시험 지난 맵", baseCalibration);
+        Timestamp at = Timestamp.from(completedAt);
+        jdbc.update("""
+                INSERT INTO scene_version (scene_version, site_id, calibration_version, state, gltf_key, is_upper_bound,
+                    committed_at, valid_from)
+                VALUES (?, ?, ?, 'COMMITTED', ?, false, ?, ?)
+                """, scene, site, calibration, "scenes/" + scene + ".glb", at, at);
+        String job = "job-reuse-map-" + tag + "-" + suffix;
+        jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
+                + " VALUES (?, 'site_setup','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb,?)", job, at);
+        String workName = "재사용지난작업-" + tag + "-" + suffix;
+        jdbc.update("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, now(), now() + interval '4 hours', 4, 'PLANNED', ?, now(), now())
+                """, site, LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(2), workName, userId);
+        long work = jdbc.queryForObject("SELECT work_id FROM work_unit WHERE name = ?", Long.class, workName);
+        String check = checkStatus == null ? null : SetupCameraCheckFixtures.check(mapper, calibration, checkStatus).toString();
+        jdbc.update("""
+                INSERT INTO setup_session (setup_session_id, site_id, work_unit_id, job_id, status, progress_pct, camera_heights_m,
+                    height_tolerance_cm, requested_by, started_at, ready_at, completed_at, updated_at, calibration_version, scene_version,
+                    camera_check)
+                VALUES (?, ?, ?, ?, 'COMPLETED', 100, '{"cam_A": 2.41, "cam_B": 2.42, "cam_C": 2.47, "cam_D": 2.48}'::jsonb, 5, ?,
+                    ?, ?, ?, ?, ?, ?, ?::jsonb)
+                """, session, site, work, job, userId, Timestamp.from(completedAt.minusSeconds(900)),
+                Timestamp.from(completedAt.minusSeconds(300)), at, at, calibration, scene, check);
+        jdbc.update("UPDATE work_unit SET active_setup_session_id = ?, setup_completed_at = ? WHERE work_id = ?", session,
+                c17 ? at : null, work);
+        // 그 세팅이 등록한 정밀 맵 GLB(맵 켜기가 저장소에 있는지 본다)
+        byte[] glb = ("glb-" + scene).getBytes(StandardCharsets.UTF_8);
+        objects.put("scenes/" + scene + ".glb", glb);
+        jdbc.update("""
+                INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256, size_bytes,
+                    registered_at)
+                VALUES (?, 'SCENE', ?, ?, ?, ?, ?, ?, ?)
+                """, session, scene, job, UUID.randomUUID(), BUCKET + "scenes/" + scene + ".glb", sha256Hex(glb), glb.length, at);
+        return new MapFixture(session, scene, calibration);
+    }
+
+    /** 헬퍼가 이 맵 기준으로 비교한 결과: cam_A~C 는 같은 시점(회전 0), cam_D 는 주어진 상태·회전. 대응 수는 카메라마다 matches/4 */
+    private void view(String scene, int matches, String statusD, Double rotationD) {
+        ArrayNode cameras = mapper.createArrayNode();
+        for (String cam : List.of("cam_A", "cam_B", "cam_C", "cam_D")) {
+            boolean d = cam.equals("cam_D");
+            String status = d ? statusD : "SAME";
+            ObjectNode item = cameras.addObject().put("camera_id", cam).put("status", status)
+                    .put("reason", "CHANGED".equals(status) ? "MOVED" : null).put("matches", matches / 4);
+            item.putNull("inlier_ratio");
+            if (d && rotationD == null) {
+                item.putNull("rotation_rad");
+            } else {
+                item.put("rotation_rad", d ? rotationD : 0.0);
+            }
+        }
+        List<String> changed = "CHANGED".equals(statusD) ? List.of("cam_D") : List.of();
+        doReturn(Optional.of(new CoverageGuideService.ViewCheck(changed, "SAME".equals(statusD), cameras, Instant.now())))
+                .when(coverageGuides).reuseViewCheck(scene);
+    }
+
+    /** Tier 0 가 지금 이 보정을 쓴다고 알렸다(가장 최근 calibration_update) */
+    private void tier0Uses(String version) {
+        ObjectNode payload = mapper.createObjectNode().put("calibration_version", version).put("calibration_state", "CALIBRATED");
+        jdbc.update("""
+                INSERT INTO calibration_update_message (msg_id, gateway_id, calibration_version, calibration_state, reason,
+                    sent_at, received_at, payload)
+                VALUES (?, ?, ?, 'CALIBRATED', 'RECALIBRATED', now() + interval '3 hours', now() + interval '3 hours', ?::jsonb)
+                """, UUID.randomUUID(), "tier0-reuse-" + suffix, version, payload.toString());
+    }
+
+    private void zone(String id, int version, String wkt, boolean active) {
+        jdbc.update("""
+                INSERT INTO zone (zone_id, zone_version, site_id, name, zone_kind, eval_type, polygon, severity, valid_from, valid_to)
+                VALUES (?, ?, ?, ?, 'HAZARD', 'GROUND_FOOTPRINT', ST_GeomFromText(?, 0), 'HIGH', now() - interval '3 days',
+                    CASE WHEN ? THEN NULL ELSE now() END)
+                """, id, version, site, "재사용 구역 " + id, wkt, active);
+    }
+
+    private void surface(String id, int version, String zoneId, boolean active) {
+        jdbc.update("""
+                INSERT INTO static_object (object_id, object_version, site_id, kind, obb, top_height_m, name, zone_id, valid_from, valid_to)
+                VALUES (?, ?, ?, 'WORK_SURFACE', '{"center": [1, 1, 0.45], "size": [1, 1, 0.9], "yaw_rad": 0}'::jsonb, 0.9, '작업대',
+                    ?, now() - interval '3 days', CASE WHEN ? THEN NULL ELSE now() END)
+                """, id, version, site, zoneId, active);
+    }
+
+    /** 이 보정으로 발행한 묶음(구역·작업면 버전 "id:버전") */
+    private void bundle(String calibration, List<String> zones, List<String> objects) {
+        String version = "cfg-reuse-" + calibration;
+        jdbc.update("""
+                INSERT INTO config_bundle (config_version, site_id, issued_at, bundle_uri, bundle_hash, components, calibration_version,
+                    rule_profile)
+                VALUES (?, ?, now() - interval '2 days', 'https://test/bundle', 'sha256:test', '{}'::jsonb, ?, 'OPERATION')
+                """, version, site, calibration);
+        for (String z : zones) {
+            String[] parts = z.split(":");
+            jdbc.update("INSERT INTO config_bundle_item (config_version, item_type, item_id, item_version) VALUES (?, 'ZONE', ?, ?)",
+                    version, parts[0], Integer.parseInt(parts[1]));
+        }
+        for (String o : objects) {
+            String[] parts = o.split(":");
+            jdbc.update("INSERT INTO config_bundle_item (config_version, item_type, item_id, item_version) VALUES (?, 'STATIC_OBJECT', ?, ?)",
+                    version, parts[0], Integer.parseInt(parts[1]));
+        }
+    }
+
+    private static JsonNode find(JsonNode candidates, UUID session) {
+        for (JsonNode c : candidates) {
+            if (session.toString().equals(c.get("setup_session_id").asString())) {
+                return c;
+            }
+        }
+        throw new AssertionError("후보 없음: " + session);
+    }
+
+    private RequestBuilder createReuse(UUID chosen) {
+        ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId).put("mode", "REUSE");
+        if (chosen != null) {
+            req.put("reuse_setup_session_id", chosen.toString());
+        }
+        return post("/api/setup-sessions").with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content(req.toString());
+    }
 
     private RequestBuilder reuseCheck() {
         return get("/api/setup-sessions/reuse-check").with(adminJwt());
@@ -512,34 +582,6 @@ class SetupReuseModeIntegrationTest {
         assertThat(currentScene()).isEqualTo(baseScene);
     }
 
-    /**
-     * Tier 0 가 이 보정을 world_frame_id 계보로 채택했다고 알린 calibration_update. 자세는 카메라 4대가 같은 방향·x 로 늘어선
-     * 정규 직교 회전이다(예시 문서 R 은 소수 넷째 자리 반올림이라 직교 검사를 넘지 못한다). 두 보정이 같은 자세 = 방이 그대로
-     */
-    private void tier0Adopted(String version, String worldFrameId) {
-        ObjectNode payload = mapper.createObjectNode().put("calibration_version", version).put("calibration_state", "CALIBRATED")
-                .put("world_frame_id", worldFrameId);
-        ArrayNode poses = payload.putArray("camera_poses");
-        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
-        for (int i = 1; i <= 4; i++) {
-            ObjectNode pose = poses.addObject().put("camera_id", cams[i - 1]);
-            pose.set("R", mapper.valueToTree(new double[][] {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
-            pose.set("t", mapper.valueToTree(new double[] {-i, 0, -2.44}));
-        }
-        jdbc.update("""
-                INSERT INTO calibration_update_message (msg_id, gateway_id, calibration_version, calibration_state, reason,
-                    sent_at, received_at, payload)
-                VALUES (?, ?, ?, 'CALIBRATED', 'RECALIBRATED', now() + interval '2 hours', now() + interval '2 hours', ?::jsonb)
-                """, UUID.randomUUID(), "tier0-reuse-" + suffix, version, payload.toString());
-    }
-
-    private ObjectNode anchor(boolean accepted) {
-        return mapper.createObjectNode().put("accepted", accepted)
-                .put("reason", accepted ? "ANCHORED" : "CENTER_RESIDUAL_EXCEEDED")
-                .put("reference_calibration_version", baseCalibration)
-                .put("max_center_residual_m", accepted ? 0.0437 : 0.41).put("max_orientation_change_rad", 0.0095);
-    }
-
     private RequestBuilder complete(String sessionId) {
         return post("/api/setup-sessions/{id}/complete", sessionId).with(adminJwt());
     }
@@ -553,9 +595,6 @@ class SetupReuseModeIntegrationTest {
         return mapper.readTree(jdbc.queryForObject("SELECT input::text FROM analysis_job WHERE job_id = ?", String.class, jobId));
     }
 
-    private record Session(String sessionId, String jobId, String leaseId) {
-    }
-
     private RequestBuilder create(String mode) {
         ObjectNode req = mapper.createObjectNode().put("work_unit_id", workUnitId);
         req.putObject("camera_heights_m").put("cam_A", 2.44).put("cam_B", 2.44).put("cam_C", 2.48).put("cam_D", 2.48);
@@ -563,25 +602,6 @@ class SetupReuseModeIntegrationTest {
             req.put("mode", mode);
         }
         return post("/api/setup-sessions").with(adminJwt()).contentType(MediaType.APPLICATION_JSON).content(req.toString());
-    }
-
-    private Session lease(String sessionId, String jobId) throws Exception {
-        ObjectNode p = mapper.createObjectNode();
-        p.putArray("job_types").add("site_setup");
-        p.put("wait_ms", 0);
-        JsonNode leased = body(mvc.perform(post("/api/worker/jobs/lease")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(envelope("job_lease_request", "2.0.0", p).toString()))
-                .andExpect(status().isOk()).andReturn());
-        assertThat(leased.at("/payload/job_id").asString()).isEqualTo(jobId);
-        return new Session(sessionId, jobId, leased.at("/payload/lease_id").asString());
-    }
-
-    private ObjectNode put(String key, byte[] content) {
-        objects.put(key, content);
-        return mapper.createObjectNode().put("uri", BUCKET + key).put("sha256", sha256Hex(content))
-                .put("size_bytes", content.length);
     }
 
     /** 계약 예시 calibration.world_anchor 를 이 현장·세션·버전으로 바꾼 원문. accepted 면 이전 활성 보정의 World 로 옮긴 문서다 */
@@ -602,69 +622,6 @@ class SetupReuseModeIntegrationTest {
         return content;
     }
 
-    private ObjectNode snapshot(String sessionId, String stage, double pct) {
-        return mapper.createObjectNode().put("setup_session_id", sessionId).put("status", stage).put("progress_pct", pct);
-    }
-
-    private ObjectNode withChecks(ObjectNode node) {
-        ObjectNode checks = node.putObject("height_checks");
-        String[] cams = {"cam_A", "cam_B", "cam_C", "cam_D"};
-        double[] heights = {2.44, 2.44, 2.48, 2.48};
-        for (int i = 0; i < 4; i++) {
-            checks.putObject(cams[i]).put("input_height_m", heights[i]).put("restored_height_m", heights[i])
-                    .put("difference_cm", 0.0).put("within_tolerance", true);
-        }
-        // 카메라 확인 통과(S15P31A101-646): 구역 단계·세팅 완료 관문을 지나야 하는 흐름 시험이다
-        node.set("camera_check", SetupCameraCheckFixtures.passed(mapper, newCalibration));
-        return node;
-    }
-
-    private RequestBuilder heartbeat(Session s, double progress, ObjectNode siteSetup) {
-        ObjectNode p = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId()).put("progress", progress);
-        p.set("site_setup", siteSetup);
-        ObjectNode env = envelope("job_heartbeat", "2.10.0", p);
-        assertThat(schemas.violations("messages/job_heartbeat", env.toString())).isEmpty();
-        return post("/api/worker/jobs/" + s.jobId() + "/heartbeat")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(env.toString());
-    }
-
-    private ObjectNode succeeded(Session s, ObjectNode result) {
-        long now = Instant.now().toEpochMilli();
-        ObjectNode p = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId())
-                .put("job_type", "site_setup").put("status", "SUCCEEDED").put("started_at", now - 60_000).put("finished_at", now);
-        p.set("result", result);
-        return p;
-    }
-
-    private ObjectNode failed(Session s) {
-        long now = Instant.now().toEpochMilli();
-        ObjectNode p = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId())
-                .put("job_type", "site_setup").put("status", "FAILED").put("started_at", now - 60_000).put("finished_at", now);
-        p.putObject("error").put("code", "FLOOR_FIT_FAILED").put("message", "바닥 맞춤 실패").put("retryable", false);
-        return p;
-    }
-
-    private RequestBuilder callback(Session s, ObjectNode payload) {
-        ObjectNode env = envelope("job_callback", "2.18.0", payload);
-        assertThat(schemas.violations("messages/job_callback", env.toString())).isEmpty();
-        return post("/api/worker/jobs/" + s.jobId() + "/result")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(env.toString());
-    }
-
-    private ObjectNode envelope(String msgType, String version, JsonNode payload) {
-        ObjectNode env = mapper.createObjectNode()
-                .put("schema_version", version)
-                .put("msg_type", msgType)
-                .put("msg_id", UUID.randomUUID().toString())
-                .put("sent_at", Instant.now().toEpochMilli())
-                .put("source_id", worker);
-        env.set("payload", payload);
-        return env;
-    }
 
     private RequestPostProcessor adminJwt() {
         return jwt().jwt(j -> j.subject(String.valueOf(userId))).authorities(new SimpleGrantedAuthority("ROLE_ADMIN"));

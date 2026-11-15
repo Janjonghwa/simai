@@ -50,4 +50,14 @@ class SetupCompletionGateTest {
         assertThat(SetupCompletionGate.blockedReason("BAKING_TEXTURE", "NEW", false, null, null, false))
                 .isEqualTo(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
     }
+
+    @Test
+    void 고른_맵을_그대로_쓰는_재사용은_World_채택_카메라_확인_없이_완료할_수_있다() {
+        // S15P31A101-714: 시작 때 1단계 시점 확인을 통과했고 보정을 새로 만들지 않는다
+        assertThat(SetupCompletionGate.blockedReason("COMPLETED", "REUSE", false, null, null, false, true)).isNull();
+        assertThat(SetupCompletionGate.blockedReason("FAILED", "REUSE", false, null, null, false, true))
+                .isEqualTo(ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE);
+        assertThat(SetupCompletionGate.blockedReason("COMPLETED", "NEW", false, null, null, false, true))
+                .isEqualTo(ErrorCode.Setup.SETUP_NOT_READY_TO_COMPLETE);
+    }
 }

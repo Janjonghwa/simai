@@ -75,10 +75,12 @@ public class SetupZonePlanService {
     private final ZoneRepository zones;
     private final StaticObjectRepository surfaces;
     private final SetupZoneOpinions opinions;
+    private final SetupZoneReuseSeed reuseSeed;
 
     public SetupZonePlanService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, SiteLookup sites, Clock clock,
             TransactionTemplate transaction, ZoneRepository zones, StaticObjectRepository surfaces,
-            SetupZoneOpinions opinions) {
+            SetupZoneOpinions opinions, SetupZoneReuseSeed reuseSeed) {
+        this.reuseSeed = reuseSeed;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.sites = sites;
@@ -140,6 +142,8 @@ public class SetupZonePlanService {
      * 채운다. 이전 모델 재사용(REUSE)은 확인 표시 없이, 새 모델 + World 이어짐(world_anchor.accepted)은 needs_review=true 로 채운다.
      * 레이아웃이 만든 구역은 레이아웃이 관리해(세팅 목록으로 고치지 못한다) 확인 표시를 달지 않는다.
      * World 가 끊긴 새 모델은 기존 구역 좌표가 맞지 않아 채우지 않는다(빈 목록). 이미 저장한 목록이면 그대로 돌려준다.
+     * 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714)은 지금 관제 구역이 아니라 그 맵으로 마지막에 발행한 구역으로 채운다
+     * ({@link SetupZoneReuseSeed}).
      */
     public ObjectNode seed(String setupSessionId, long userId) {
         UUID id = parseId(setupSessionId);
@@ -147,11 +151,13 @@ public class SetupZonePlanService {
             requireSession(id, true);
             MapSqlParameterSource p = new MapSqlParameterSource("id", id).addValue("site", sites.siteId()).addValue("user", userId)
                     .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
-            record Mode(boolean reuse, boolean anchorAccepted) { }
+            record Mode(boolean reuse, boolean anchorAccepted, UUID reuseSource, String sourceCalibration) { }
             Mode mode = jdbc.queryForObject("""
-                    SELECT mode = 'REUSE', COALESCE((world_anchor ->> 'accepted')::boolean, false)
-                    FROM setup_session WHERE setup_session_id = :id
-                    """, p, (rs, i) -> new Mode(rs.getBoolean(1), rs.getBoolean(2)));
+                    SELECT s.mode = 'REUSE', COALESCE((s.world_anchor ->> 'accepted')::boolean, false), s.reuse_source_session_id,
+                           src.calibration_version
+                    FROM setup_session s LEFT JOIN setup_session src ON src.setup_session_id = s.reuse_source_session_id
+                    WHERE s.setup_session_id = :id
+                    """, p, (rs, i) -> new Mode(rs.getBoolean(1), rs.getBoolean(2), rs.getObject(3, UUID.class), rs.getString(4)));
             if (mode == null || (!mode.reuse() && !mode.anchorAccepted())) {
                 return;
             }
@@ -159,7 +165,9 @@ public class SetupZonePlanService {
                     p, Integer.class).isEmpty()) {
                 return;
             }
-            List<Item> items = jdbc.query("""
+            List<Item> items = mode.reuseSource() != null
+                    ? reuseSeed.items(sites.siteId(), mode.reuseSource(), mode.sourceCalibration())
+                    : jdbc.query("""
                     SELECT DISTINCT zone_id, layout_item_id IS NOT NULL AS layout FROM zone
                     WHERE site_id = :site AND valid_to IS NULL ORDER BY zone_id
                     """, p, (rs, i) -> new Item(rs.getString("zone_id"), "MANUAL", null, null, null,
@@ -252,18 +260,19 @@ public class SetupZonePlanService {
      */
     private void requireSession(UUID id, boolean forWrite) {
         record S(String status, String workStatus, boolean completed, boolean active, String calibration,
-                 String checkStatus, String checkCalibration) { }
+                 String checkStatus, String checkCalibration, boolean reuseAsIs) { }
         // 세션·작업 행을 잠근다. 세팅 완료(같은 행을 잠그고 setup_completed_at 을 쓴다)와 줄을 세워 완료 뒤 저장을 막는다
         List<S> rows = jdbc.query("""
                 SELECT s.status, w.status, w.setup_completed_at IS NOT NULL,
                        w.active_setup_session_id IS NOT DISTINCT FROM s.setup_session_id,
-                       s.calibration_version, s.camera_check ->> 'status', s.camera_check ->> 'calibration_version'
+                       s.calibration_version, s.camera_check ->> 'status', s.camera_check ->> 'calibration_version',
+                       s.reuse_source_session_id IS NOT NULL
                 FROM setup_session s JOIN work_unit w ON w.work_id = s.work_unit_id
                 WHERE s.setup_session_id = :id AND s.site_id = :site
                 """ + (forWrite ? " FOR UPDATE OF s, w" : ""),
                 new MapSqlParameterSource("id", id).addValue("site", sites.siteId()),
                 (rs, i) -> new S(rs.getString(1), rs.getString(2), rs.getBoolean(3), rs.getBoolean(4), rs.getString(5),
-                        rs.getString(6), rs.getString(7)));
+                        rs.getString(6), rs.getString(7), rs.getBoolean(8)));
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.Setup.SETUP_SESSION_NOT_FOUND);
         }
@@ -272,8 +281,9 @@ public class SetupZonePlanService {
         if (forWrite && ("FAILED".equals(s.status()) || !"PLANNED".equals(s.workStatus()) || s.completed() || !s.active())) {
             throw new BusinessException(ErrorCode.Config.SETUP_ZONES_CLOSED);
         }
-        // 구역 단계는 카메라 확인을 통과한 보정에서만 연다(S15P31A101-646). 읽기는 막지 않는다
-        if (forWrite && !SetupCameraCheck.passed(s.checkStatus(), s.checkCalibration(), s.calibration())) {
+        // 구역 단계는 카메라 확인을 통과한 보정에서만 연다(S15P31A101-646). 읽기는 막지 않는다.
+        // 고른 맵의 묶음을 그대로 쓰는 재사용(-714)은 시작 때 1단계 시점 확인을 통과했고 걷기 확인을 하지 않는다
+        if (forWrite && !s.reuseAsIs() && !SetupCameraCheck.passed(s.checkStatus(), s.checkCalibration(), s.calibration())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_CAMERA_CHECK_NOT_PASSED);
         }
     }

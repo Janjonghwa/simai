@@ -78,6 +78,17 @@ public class SceneCompatibility {
                 Map.of("a", source, "b", target), String.class);
         if (sites.size() != 2) return out;
         if (!sites.get(0).equals(sites.get(1))) return result(out, "MISMATCH", "DIFFERENT_WORLD", null, null);
+        // 이전 맵 재사용(S15P31A101-714)은 그 맵의 보정을 계보 키만 바꾼 새 버전으로 Tier 0 에 다시 낸다. 보정 내용(content_hash)이 같으면
+        // 같은 보정이다(카메라 자세·World 가 같다). EC2 가 두 원문에서 다시 잰 해시(calibration_document 있음)이고 한쪽이 재사용 세션이 낸
+        // 보정일 때만 본다(Tier 0 알림의 해시만으로는 판단하지 않는다)
+        List<String> hashes = jdbc.queryForList("""
+                SELECT v.calibration_hash FROM calibration_version v
+                WHERE v.calibration_version IN (:a, :b) AND v.calibration_hash IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM calibration_document d WHERE d.calibration_version = v.calibration_version)
+                  AND EXISTS (SELECT 1 FROM setup_session r
+                              WHERE r.reuse_source_session_id IS NOT NULL AND r.calibration_version IN (:a, :b))
+                """, Map.of("a", source, "b", target), String.class);
+        if (hashes.size() == 2 && hashes.get(0).equals(hashes.get(1))) return result(out, "VERIFIED", "SAME_CALIBRATION", 0., 0.);
         JsonNode a = metadata(source), b = metadata(target);
         if (a == null || b == null) return out;
         String oldWorld = a.path("world_frame_id").asString(null), newWorld = b.path("world_frame_id").asString(null);

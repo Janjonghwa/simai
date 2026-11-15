@@ -194,10 +194,21 @@ public class SetupService {
      * @param mode REST mode: NEW(기본, 새 모델) | REUSE(이전 모델 재사용, S15P31A101-614). REUSE 는 현재 관제 맵과 그 보정이 있어야 한다
      */
     public ObjectNode create(Long workUnitId, Map<String, Double> requestedHeights, long userId, UUID retryOf, String mode) {
+        return create(workUnitId, requestedHeights, userId, retryOf, mode, null);
+    }
+
+    /**
+     * @param reuseSourceSessionId 이전 맵 재사용(REUSE)에서 고른 맵(그 맵을 만든 세팅 세션, S15P31A101-714). 없으면 추천 맵. NEW 면 무시한다
+     */
+    public ObjectNode create(Long workUnitId, Map<String, Double> requestedHeights, long userId, UUID retryOf, String mode,
+            UUID reuseSourceSessionId) {
         if (workUnitId == null || workUnitId < 1) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_REQUEST);
         }
         String requestedMode = SetupReuseMode.parseRequested(mode);
+        if (SetupReuseMode.REUSE.equals(requestedMode)) {
+            return createReuse(workUnitId, userId, retryOf, reuseSourceSessionId);
+        }
         String siteId = sites.siteId();
         checkWorkUnitCanSetup(siteId, workUnitId);
         // 날짜 작업은 작업 날짜가 오늘(Asia/Seoul)일 때만 세팅을 시작한다(-610 정본, 409 WORK_NOT_TODAY, -614 팀 작업 관리 흐름)
@@ -257,9 +268,6 @@ public class SetupService {
             if (!hasActiveSetupWorker()) {
                 throw new BusinessException(ErrorCode.Setup.SETUP_WORKER_UNAVAILABLE);
             }
-            if (SetupReuseMode.REUSE.equals(requestedMode)) {
-                requireReusableScene(siteId);
-            }
 
             UUID sessionId = UUID.randomUUID();
             Instant now = clock.instant();
@@ -281,9 +289,7 @@ public class SetupService {
             target.put("method", "BACKGROUND_JOINT_BA_V2");
             target.put("world_frame", "AUTO_FLOOR_Z_UP_METERS");
             input.put("height_tolerance_cm", DEFAULT_HEIGHT_TOLERANCE_CM);
-            if (SetupReuseMode.REUSE.equals(requestedMode)) {
-                input.put("mode", SetupReuseMode.REUSE_SCENE);  // site_setup 1.11.0. 새 모델은 지금처럼 싣지 않는다(FULL_SETUP)
-            }
+            // 새 모델은 입력 mode 를 싣지 않는다(FULL_SETUP). 재사용은 워커 작업을 만들지 않는다(S15P31A101-714, REUSE_SCENE 을 더는 보내지 않는다)
             populatePreviousSceneAndZones(siteId, input);
 
             String jobId = jobs.enqueue(new JobSpec("site_setup", input, SETUP_MAX_ATTEMPTS, SETUP_TIMEOUT_MS, null, null));
@@ -321,6 +327,82 @@ public class SetupService {
                     .addValue("workId", workUnitId)
                     .addValue("now", utcNow));
 
+            return getInSite(siteId, sessionId);
+        });
+    }
+
+    /**
+     * 이전 맵 재사용(S15P31A101-714, docs/design/S15P31A101-714-reuse-chosen-map.md): 고른 맵을 만든 세팅의 묶음(보정·카메라 높이·Scene, 구역은
+     * 구역 단계 채우기)을 그대로 쓰는 세션을 만든다. 워커 작업(배경 촬영·초기 복원·Stage A·카메라 확인 걷기)은 만들지 않는다 — 1단계 시점 확인이
+     * 그 맵의 사진과 지금 카메라가 같은 자리임(4대 MATCH)을 보였을 때만 시작한다({@link SetupReuseCheck#require}). 세션은 바로 구역 단계로 갈 수 있는
+     * COMPLETED(진행 100)로 만들고, 세팅 완료(C17)가 그 맵을 켜고 그 보정으로 구성 묶음을 발행한다({@link SetupCompletionService}).
+     * 입력 높이는 쓰지 않는다(그 맵을 만들 때의 높이를 쓰고, 그 높이를 현장 기본값으로 남긴다). GPU 세팅 워커가 없어도 된다.
+     */
+    private ObjectNode createReuse(long workUnitId, long userId, UUID retryOf, UUID chosen) {
+        String siteId = sites.siteId();
+        checkWorkUnitCanSetup(siteId, workUnitId);
+        workUnits.requireToday(siteId, workUnitId, clock.instant());
+        if (activeCameras(siteId).size() < 2) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_CAMERAS_INSUFFICIENT);
+        }
+        return transaction.execute(status -> {
+            jdbc.queryForList("SELECT site_id FROM site WHERE site_id = :site FOR UPDATE",
+                    new MapSqlParameterSource("site", siteId), String.class);
+            checkWorkUnitCanSetupForUpdate(siteId, workUnitId);
+            if (liveWorkInProgress(siteId)) {
+                throw new BusinessException(ErrorCode.Setup.SETUP_BLOCKED_BY_LIVE_WORK);
+            }
+            List<Map<String, Object>> running = jdbc.queryForList("""
+                    SELECT setup_session_id, work_unit_id FROM setup_session s
+                    WHERE site_id = :site AND (status NOT IN ('COMPLETED', 'FAILED')
+                        OR EXISTS (SELECT 1 FROM setup_supplement_rebake r
+                                   WHERE r.setup_session_id = s.setup_session_id AND r.status IN ('QUEUED', 'RUNNING')))
+                    ORDER BY (status NOT IN ('COMPLETED', 'FAILED')) DESC, started_at DESC LIMIT 1
+                    """, new MapSqlParameterSource("site", siteId));
+            if (!running.isEmpty()) {
+                throw new SetupSessionBlockingException(ErrorCode.Setup.SETUP_ALREADY_IN_PROGRESS,
+                        (UUID) running.getFirst().get("setup_session_id"),
+                        ((Number) running.getFirst().get("work_unit_id")).longValue());
+            }
+            SetupReuseCheck.Evaluated picked = reuseCheck.require(siteId, chosen);
+            SetupReuseCandidates.Candidate source = picked.candidate();
+
+            UUID sessionId = UUID.randomUUID();
+            OffsetDateTime utcNow = utc(clock.instant());
+            ObjectNode heightsNode = mapper.createObjectNode();
+            source.cameraHeights().forEach(heightsNode::put);
+            String heightsJson = mapper.writeValueAsString(heightsNode);
+            jdbc.update("""
+                    INSERT INTO setup_session (
+                        setup_session_id, site_id, work_unit_id, retry_of, job_id, status, progress_pct,
+                        camera_heights_m, height_tolerance_cm, background_collection_pct, calibration_version,
+                        requested_by, started_at, ready_at, completed_at, updated_at, requested_mode, mode,
+                        reuse_source_session_id, reuse_scene_version, reuse_view_check
+                    ) VALUES (
+                        :id, :site, :workId, :retryOf, NULL, 'COMPLETED', 100,
+                        CAST(:heights AS jsonb), :tolerance, '{}'::jsonb, :calibration,
+                        :userId, :now, :now, :now, :now, 'REUSE', 'REUSE',
+                        :source, :scene, CAST(:view AS jsonb)
+                    )
+                    """, new MapSqlParameterSource()
+                    .addValue("id", sessionId).addValue("site", siteId).addValue("workId", workUnitId)
+                    .addValue("retryOf", retryOf).addValue("heights", heightsJson)
+                    .addValue("tolerance", DEFAULT_HEIGHT_TOLERANCE_CM).addValue("calibration", source.calibrationVersion())
+                    .addValue("userId", userId).addValue("now", utcNow).addValue("source", source.setupSessionId())
+                    .addValue("scene", source.sceneVersion())
+                    .addValue("view", mapper.writeValueAsString(picked.viewSnapshot())));
+            jdbc.update("""
+                    UPDATE work_unit SET active_setup_session_id = :id, updated_at = :now
+                    WHERE site_id = :site AND work_id = :workId
+                    """, new MapSqlParameterSource().addValue("id", sessionId).addValue("site", siteId)
+                    .addValue("workId", workUnitId).addValue("now", utcNow));
+            // 그 맵을 만들 때의 높이가 이 현장의 지금 높이다(다음 세팅 기본값·GPU 기동 높이)
+            jdbc.update("""
+                    UPDATE site SET default_camera_heights_m = COALESCE(default_camera_heights_m, '{}'::jsonb) || CAST(:patch AS jsonb)
+                    WHERE site_id = :site
+                    """, new MapSqlParameterSource("site", siteId).addValue("patch", heightsJson));
+            log.info("이전 맵 재사용 세션 {}: 맵 {} (세팅 {}, 보정 {}) 을 그대로 쓴다", sessionId, source.sceneVersion(),
+                    source.setupSessionId(), source.calibrationVersion());
             return getInSite(siteId, sessionId);
         });
     }
@@ -449,16 +531,22 @@ public class SetupService {
      * 방식 그대로다(-614). 새 시도의 방식은 새 세션의 requested_mode 로 저장된다(S15P31A101-689: 실패·취소 뒤에도 방식을 다시 고른다).
      */
     public ObjectNode retry(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId, String mode) {
+        return retry(setupSessionId, cameraHeightsM, userId, mode, null);
+    }
+
+    /** @param reuseSourceSessionId 재사용으로 다시 시도할 때 고른 맵(S15P31A101-714). 없으면 추천 맵 */
+    public ObjectNode retry(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId, String mode,
+            UUID reuseSourceSessionId) {
         String siteId = sites.siteId();
         SessionRow existing = findForUpdateOrView(siteId, setupSessionId, false);
         if (!"FAILED".equals(existing.status())) {
             throw new BusinessException(ErrorCode.Setup.SETUP_RETRY_NOT_ALLOWED);
         }
         String requested = mode == null ? existing.requestedMode() : SetupReuseMode.parseRequested(mode);
-        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId, requested);
+        return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId, requested, reuseSourceSessionId);
     }
 
-    /** 「이전 맵 재사용」을 지금 고를 수 있는지와 그 이유(S15P31A101-689, GET /api/setup-sessions/reuse-check) */
+    /** 「이전 맵 재사용」 후보 맵 목록·추천·고를 수 없는 이유(S15P31A101-689·-714, GET /api/setup-sessions/reuse-check) */
     public ObjectNode reuseCheck() {
         return reuseCheck.toJson(reuseCheck.check(sites.siteId()));
     }
@@ -1693,23 +1781,6 @@ public class SetupService {
     }
 
     /**
-     * 이전 모델 재사용(-614)은 현재 관제 맵(현장당 하나)과 그 보정이 있어야 한다. 현재 맵이 Tier 0 의 지금 보정과 다른 World 로 판정되면
-     * 새 보정을 그 World 에 맞춰도 맵과 어긋나므로 막는다(판정을 모르면 막지 않는다. 워커의 World 다시 맞추기가 다시 확인한다).
-     * 직전 보정과 달라진 카메라가 확인되면(Tier 0 회전 감시·직전 재사용 거부) 막는다(S15P31A101-689, 화면 선택과 같은 판단).
-     */
-    private void requireReusableScene(String siteId) {
-        SetupReuseCheck.Result check = reuseCheck.check(siteId);
-        if (check.blockedReason() == null) {
-            return;
-        }
-        throw new BusinessException(switch (check.blockedReason()) {
-            case SetupReuseCheck.NO_SCENE -> ErrorCode.Setup.SETUP_REUSE_SCENE_MISSING;
-            case SetupReuseCheck.SCENE_MISMATCH -> ErrorCode.Setup.SETUP_REUSE_SCENE_MISMATCH;
-            default -> ErrorCode.Setup.SETUP_REUSE_CAMERA_CHANGED;
-        });
-    }
-
-    /**
      * 지금 관제 Scene(World 일치)과 지금 유효한 구역 다각형 목록을 site_setup 입력에 싣는다(S15P31A101-630).
      * 워커가 미리보기·정식·다시 굽기 단계에서 이전 관제 Scene GLB 와 상면 높이를 비교해 구역별 판정을 내고,
      * JobObjectSignService 는 입력에 실린 previous_scene.uri 에만 GET 서명을 내준다.
@@ -1895,6 +1966,7 @@ public class SetupService {
                        height_review::text AS height_review, height_decision::text AS height_decision,
                        camera_check_request::text AS camera_check_request,
                        camera_check_attempts::text AS camera_check_attempts,
+                       reuse_source_session_id, reuse_scene_version, reuse_view_check::text AS reuse_view_check,
                        (SELECT w.setup_completed_at FROM work_unit w
                         WHERE w.work_id = setup_session.work_unit_id
                           AND w.active_setup_session_id = setup_session.setup_session_id) AS setup_completed_at,
@@ -2129,11 +2201,22 @@ public class SetupService {
         out.put("requested_mode", rs.getString("requested_mode"));
         putText(out, "reuse_fallback_reason", rs.getString("reuse_fallback_reason"));
         SetupReuseMode.putWorldAnchor(mapper, out, rs.getString("world_anchor"));
+        // 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714): 고른 맵을 만든 세팅·그 맵·시작 때 통과한 시점 확인. 그 밖 null
+        UUID reuseSource = rs.getObject("reuse_source_session_id", UUID.class);
+        if (reuseSource == null) {
+            out.putNull("reuse_source");
+        } else {
+            ObjectNode source = out.putObject("reuse_source");
+            source.put("setup_session_id", reuseSource.toString());
+            source.put("scene_version", rs.getString("reuse_scene_version"));
+            String viewRaw = rs.getString("reuse_view_check");
+            source.set("view_check", viewRaw == null ? mapper.nullNode() : mapper.readTree(viewRaw));
+        }
         // 세팅 완료를 막는 세션 쪽 이유(S15P31A101-688, 완료 POST 와 같은 판정 SetupCompletionGate). 완료할 수 있으면 null.
         // 화면은 이 값으로 완료 단추를 켜고 끈다(작업 쪽 조건 — 오늘·관제 중·확인 필요 구역 — 은 완료 요청이 따로 거부한다)
         ErrorCode.Setup completeBlocked = SetupCompletionGate.blockedReason(status, rs.getString("mode"),
                 out.path("world_anchor").path("accepted").asBoolean(false), rs.getString("scene_version"),
-                rs.getString("bake_skipped"), cameraCheckPassed);
+                rs.getString("bake_skipped"), cameraCheckPassed, reuseSource != null);
         if (completeBlocked == null) {
             out.putNull("complete_blocked_reason");
         } else {

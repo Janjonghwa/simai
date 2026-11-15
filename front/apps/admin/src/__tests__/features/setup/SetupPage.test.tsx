@@ -462,9 +462,84 @@ describe('설치 · 보정 1단계 화면', () => {
     const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam4.value).toBe('2.35'));
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
-    await pressCaptureStart();
+    // 재사용은 배경 촬영 창(「시작」)을 거치지 않고 바로 보낸다(S15P31A101-714). 이 옛 서버 응답은 워커 세션이라 그 뒤 화면은 예전과 같다
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
     expect(setupMock.submittedBodies[0]).toMatchObject({ mode: 'REUSE' });
+  });
+
+  it('재사용 안에서 최근 완료 맵을 날짜와 고르고, 추천 맵이 기본이며 어긋난 맵은 이유와 함께 꺼지고, 시작하면 바로 구역 단계로 간다', async () => {
+    const candidate = (id: string, overrides: Record<string, unknown>) => ({
+      setup_session_id: id,
+      scene_version: `scene-${id}`,
+      calibration_version: `cal-${id}`,
+      // 2026-11-12 15:20(목, 한국 시간)
+      completed_at_ms: Date.UTC(2026, 10, 12, 6, 20),
+      camera_heights_m: { cam_A: 2.41, cam_B: 2.42, cam_C: 2.47, cam_D: 2.48 },
+      status: 'MATCH' as const,
+      reason: null,
+      selectable: true,
+      recommended: false,
+      changed_cameras: [],
+      shifted_cameras: [],
+      unconfirmed_cameras: [],
+      camera_source: null,
+      ...overrides,
+    });
+    setupMock = createSetupMock({
+      cameraHeightsM: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
+      reuseCheck: {
+        available: true,
+        blocked_reason: null,
+        scene_version: 'scene-old',
+        camera_status: 'NOT_DETECTED',
+        changed_cameras: [],
+        camera_source: null,
+        recommended_setup_session_id: 'old',
+        candidates: [
+          candidate('old', { recommended: true }),
+          candidate('other', { completed_at_ms: Date.UTC(2026, 10, 13, 7, 31) }),
+          candidate('moved', {
+            status: 'CHANGED',
+            selectable: false,
+            changed_cameras: ['cam_B', 'cam_C'],
+            camera_source: 'VIEW_MATCH',
+          }),
+          candidate('bad', {
+            status: 'EXCLUDED',
+            selectable: false,
+            reason: 'CAMERA_CHECK_NOT_PASSED',
+          }),
+        ],
+      },
+    });
+    server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
+    renderSetupPage();
+    const maps = await screen.findByRole('radiogroup', { name: '재사용할 맵' });
+    const options = within(maps).getAllByRole('radio') as HTMLButtonElement[];
+    expect(options).toHaveLength(4);
+    await waitFor(() => expect(options[0]!.getAttribute('aria-checked')).toBe('true'));
+    expect(options[0]!.textContent).toContain('11-12(목) 15:20');
+    expect(options[0]!.textContent).toContain('추천');
+    expect(options[0]!.textContent).toContain('카메라 높이 2.41·2.42·2.47·2.48 m');
+    expect(options[2]!.disabled).toBe(true);
+    expect(options[2]!.textContent).toContain(
+      '위치나 방향이 그때와 다른 카메라: 카메라 2·카메라 3',
+    );
+    expect(options[3]!.disabled).toBe(true);
+    expect(options[3]!.textContent).toContain('그날 카메라 확인을 통과하지 못한 맵이에요');
+
+    // 다른 날 맵을 고르고 시작하면 그 맵을 실어 보내고, 끝난 재사용 세션이라 바로 구역 단계로 간다
+    fireEvent.click(options[1]!);
+    await waitFor(() => expect(options[1]!.getAttribute('aria-checked')).toBe('true'));
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    expect(setupMock.submittedBodies[0]).toEqual({
+      work_unit_id: expect.any(Number),
+      mode: 'REUSE',
+      reuse_setup_session_id: 'other',
+    });
+    expect(screen.queryByRole('dialog', { name: '배경 촬영' })).toBeNull();
+    await waitFor(() => expect(currentStepText()).toContain('구역'));
   });
 
   it('카메라가 직전 세팅과 달라졌으면 재사용을 끄고 그 카메라를 보이며 새 맵이 골라진다(시작은 사용자가 누른다)', async () => {
@@ -1086,7 +1161,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     await pressCaptureStart();
 
     await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
-    expect(setupMock.submittedBodies[1]!.camera_heights_m.cam_B).toBe(2.7);
+    expect(setupMock.submittedBodies[1]!.camera_heights_m?.cam_B).toBe(2.7);
     expect(setupMock.retryRequests).toHaveLength(0);
     expect(setupMock.sessions.size).toBe(2);
     expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 수정 안내' })).toBeNull();

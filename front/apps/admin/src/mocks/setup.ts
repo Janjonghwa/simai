@@ -1012,6 +1012,61 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         const blocked = reuseBlockedProblem();
         if (blocked) return blocked;
       }
+      // 서버처럼(SetupService.createReuse, S15P31A101-714) 후보 맵 목록이 있으면 고른 맵(없으면 추천)의 묶음을 그대로 쓰는 끝난 세션을 만든다
+      const candidates = reuseCheck().candidates ?? [];
+      if (requestedMode === 'REUSE' && candidates.length > 0) {
+        const sentMap = Reflect.get(raw, 'reuse_setup_session_id');
+        const wanted =
+          typeof sentMap === 'string' ? sentMap : reuseCheck().recommended_setup_session_id;
+        const picked = candidates.find((c) => c.setup_session_id === wanted);
+        if (!picked || !picked.selectable) {
+          return problem(409, 'SETUP_REUSE_MAP_UNAVAILABLE', '고른 이전 맵을 재사용할 수 없습니다');
+        }
+        submittedBodies.push({
+          work_unit_id: workUnitId,
+          mode: 'REUSE',
+          ...(typeof sentMap === 'string' ? { reuse_setup_session_id: sentMap } : {}),
+        });
+        const reuseId = `019a0000-0000-7000-8000-${String(++seq).padStart(12, '0')}`;
+        const reused: SetupSessionResponse = {
+          setup_session_id: reuseId,
+          site_id: state.siteId,
+          work_unit_id: workUnitId,
+          retry_of: null,
+          job_id: null,
+          status: 'COMPLETED',
+          stage: 'COMPLETED',
+          progress_pct: 100,
+          camera_heights_m: { ...picked.camera_heights_m },
+          height_tolerance_cm: state.heightToleranceCm,
+          background_collection_pct: {},
+          height_checks: null,
+          height_warnings: [],
+          object_cross_checks: null,
+          calibration_version: `cal-of-${picked.setup_session_id}`,
+          preview_scene_version: null,
+          scene_version: null,
+          config_version: null,
+          zones_committed_at: null,
+          zone_drafts_ref: null,
+          failure_code: null,
+          failure_message: null,
+          requested_by: 1,
+          started_at_ms: t,
+          ready_at_ms: t,
+          completed_at_ms: t,
+          updated_at_ms: t,
+          ...modePatch('REUSE'),
+          complete_blocked_reason: null,
+          reuse_source: {
+            setup_session_id: picked.setup_session_id,
+            scene_version: picked.scene_version ?? null,
+          },
+        };
+        sessions.set(reuseId, reused);
+        workUnitSessions.set(workUnitId, reuseId);
+        return HttpResponse.json(reused, { status: 202 });
+      }
       // 서버처럼(SetupService.create) 끝나지 않은 세션이 있으면 새로 시작할 수 없다.
       const running = [...sessions.values()].some(
         (session) => session.status !== 'COMPLETED' && session.status !== 'FAILED',

@@ -10,6 +10,7 @@ import numpy as np
 from simai_camera_helper.judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics, Params
 from simai_camera_helper.message import CameraFrame, build_message
 from simai_camera_helper.view_check import (
+    MultiViewChecker,
     Verdict,
     ViewChecker,
     ViewConfirm,
@@ -242,7 +243,89 @@ class ViewCheckTest(unittest.TestCase):
         self.assertNotIn("reuse_view_check", plain)
 
 
+class MultiViewCheckTest(unittest.TestCase):
+    """S15P31A101-714: 후보 맵마다 따로 비교하고, 목록에서 빠진 맵의 확인 상태는 버린다."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.refs = {cid: scene(seed=i + 1) for i, cid in enumerate(CAMERAS)}
+        cls.other = {cid: scene(seed=i + 40) for i, cid in enumerate(CAMERAS)}
+
+    def multi(self):
+        images = {**{f"a-{cid}": img for cid, img in self.refs.items()},
+                  **{f"b-{cid}": img for cid, img in self.other.items()}}
+
+        def fetch(url):
+            return images[url.rsplit("/", 1)[1].removesuffix(".jpg")]
+
+        return MultiViewChecker(factory=lambda: ViewChecker(fetch=fetch))
+
+    @staticmethod
+    def ref(prefix, scene_version):
+        r = reference(CAMERAS)
+        r["scene_version"] = scene_version
+        r["calibration_version"] = "cal-" + scene_version
+        for cam in r["cameras"]:
+            cam["url"] = f"https://bucket.example/{prefix}-{cam['camera_id']}.jpg"
+        return r
+
+    def test_each_candidate_map_is_compared_separately(self):
+        multi = self.multi()
+        refs = [self.ref("a", "scene-a"), self.ref("b", "scene-b"), self.ref("a", "scene-a")]
+        frames = {cid: (10, noisy(self.refs[cid])) for cid in CAMERAS}
+        views = multi.check_all(refs, frames, OK)
+        self.assertEqual([v["scene_version"] for v in views], ["scene-a", "scene-b"])  # 같은 맵은 한 번만
+        self.assertEqual({c["status"] for c in views[0]["cameras"]}, {"SAME"})
+        # 다른 맵은 첫 회 CHANGED 가 확인 중(UNKNOWN·CONFIRMING)이다
+        self.assertEqual({c["reason"] for c in views[1]["cameras"]}, {"CONFIRMING"})
+        frames = {cid: (20, noisy(self.refs[cid], seed=2)) for cid in CAMERAS}
+        views = multi.check_all(refs, frames, OK)
+        self.assertEqual({c["reason"] for c in views[1]["cameras"]}, {"VIEW_DIFFERENT"})
+        # 목록에서 빠진 맵은 버리고, 다시 들어오면 확인을 처음부터 센다
+        multi.check_all([self.ref("a", "scene-a")], {cid: (30, self.refs[cid]) for cid in CAMERAS}, OK)
+        self.assertEqual(set(multi.checkers), {("scene-a", "cal-scene-a")})
+        views = multi.check_all(refs, {cid: (40, self.refs[cid]) for cid in CAMERAS}, OK)
+        self.assertEqual({c["reason"] for c in views[1]["cameras"]}, {"CONFIRMING"})
+
+    def test_message_with_view_checks_matches_contract(self):
+        multi = self.multi()
+        views = multi.check_all([self.ref("a", "scene-a"), self.ref("b", "scene-b")],
+                                {cid: (10, self.refs[cid]) for cid in CAMERAS}, OK)
+        msg = build_message(
+            "gw-lobby", 1_793_690_000_000, [CameraFrame(cid, 1_793_689_999_000) for cid in CAMERAS],
+            [PairMetrics(a, b, 120, 45, (0.5, 0.5), (0.5, 0.5)) for a, b in PAIRS],
+            CoverageJudge(Params()), reuse_view_checks=views,
+        )
+        self.assertEqual(msg["schema_version"], "1.2.0")
+        self.assertNotIn("reuse_view_check", msg)
+        validate_coverage_guide_schema(msg)
+
+
 class ServiceWiringTest(unittest.TestCase):
+    def test_client_keeps_candidate_list_only_from_new_ec2(self):
+        from simai_camera_helper.service import Client
+
+        client = Client("https://example.com", "tok-secret", "/api/devices/coverage-guides")
+        ref = {"scene_version": "s", "calibration_version": "c", "cameras": []}
+        client.note_response({"active_demand": True, "reuse_reference": ref})
+        self.assertIsNone(client.reuse_references())  # 옛 EC2: 목록 키가 없으면 하나만 비교한다
+        client.note_response({"active_demand": True, "reuse_reference": ref, "reuse_references": [ref, "x"]})
+        self.assertEqual(client.reuse_references(), [ref])
+        client.note_response({"active_demand": False, "reuse_references": [ref]})
+        self.assertIsNone(client.reuse_references())
+
+    def test_view_checks_failure_never_blocks_the_guide(self):
+        from simai_camera_helper.service import reuse_view_checks
+
+        frames = [CameraFrame(cid, 1_000) for cid in CAMERAS]
+
+        class Broken:
+            def check_all(self, *args):
+                raise RuntimeError("boom")
+
+        self.assertIsNone(reuse_view_checks(Broken(), [{"scene_version": "s"}], {}, frames, 1_000, 5_000))
+        self.assertIsNone(reuse_view_checks(Broken(), None, {}, frames, 1_000, 5_000))
+
     def test_client_keeps_reference_only_while_demand_is_active(self):
         from simai_camera_helper.service import Client
 

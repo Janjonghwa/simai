@@ -395,8 +395,11 @@ public class ConfigBundleService {
                 JOIN calibration_version v ON v.calibration_version = b.calibration_version
                 JOIN calibration_document d ON d.calibration_version = b.calibration_version
                 WHERE b.site_id = :site
-                  AND EXISTS (SELECT 1 FROM setup_session_artifact a
-                              WHERE a.kind = 'CALIBRATION' AND a.version = b.calibration_version)
+                  AND (EXISTS (SELECT 1 FROM setup_session_artifact a
+                               WHERE a.kind = 'CALIBRATION' AND a.version = b.calibration_version)
+                       -- 이전 맵 재사용(S15P31A101-714)이 그 맵의 보정을 Tier 0 지금 보정 뒤 새 버전으로 다시 낸 것
+                       OR EXISTS (SELECT 1 FROM setup_session r
+                                  WHERE r.calibration_version = b.calibration_version AND r.reuse_source_session_id IS NOT NULL))
                 ORDER BY b.issued_at DESC LIMIT 1
                 """, new MapSqlParameterSource("site", siteId), (rs, i) -> new Object[] {
                         rs.getString("calibration_version"), rs.getString("previous_calibration_version"), rs.getBytes("content")})

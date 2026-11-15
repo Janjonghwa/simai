@@ -114,8 +114,9 @@ export function deriveCameraCheckView(
     phase: session?.camera_check_phase ?? null,
     progressPct: check ? Math.max(0, Math.min(100, check.progress_pct)) : 0,
     elapsedS: check?.elapsed_s ?? 0,
-    gated: typeof session?.camera_check_passed === 'boolean',
-    passed: session?.camera_check_passed !== false,
+    // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 걷기 확인 대신 1단계 시점 확인을 통과해 시작했다(관문 없음)
+    gated: !session?.reuse_source && typeof session?.camera_check_passed === 'boolean',
+    passed: Boolean(session?.reuse_source) || session?.camera_check_passed !== false,
     qualityVerdict: gate?.verdict ?? null,
     pairs,
     cameras,

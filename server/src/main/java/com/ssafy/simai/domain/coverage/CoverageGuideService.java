@@ -14,12 +14,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -38,6 +40,9 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>S15P31A101-712: 수요가 켜져 있으면 응답에 「이전 맵 재사용」 대상 맵의 기준 사진·렌즈({@code reuse_reference},
  *       {@link CoverageReuseReference})를 싣고, 헬퍼가 돌려준 coverage_guide 1.1.0 {@code reuse_view_check} 는 각도 안내와 따로
  *       최신 1건을 둔다({@code viewCheckTtl} 동안 재사용 판정 근거, {@link #reuseViewCheck}).</li>
+ *   <li>S15P31A101-714: 재사용은 고른 맵의 묶음을 그대로 쓴다. 수요 응답에 고를 수 있는 최근 완료 맵마다의 기준({@code reuse_references},
+ *       최대 5개, 옛 헬퍼용 {@code reuse_reference} 는 그 첫 항목)을 싣고, coverage_guide 1.2.0 {@code reuse_view_checks}(맵마다 하나)와
+ *       1.1.0 {@code reuse_view_check} 를 맵(scene_version)별 최신 1건으로 둔다. 재사용 판정이 이 결과로 후보 맵을 순위 매긴다.</li>
  * </ul>
  */
 @Service
@@ -56,7 +61,10 @@ public class CoverageGuideService {
     private final CoverageReuseReference reuseReference;
 
     private final AtomicReference<StoredGuide> latest = new AtomicReference<>();
-    private final AtomicReference<StoredView> latestView = new AtomicReference<>();
+    /** 맵(scene_version)별 최신 시점 확인. 오래된 것은 받을 때 지운다 */
+    private final Map<String, StoredView> latestViews = new ConcurrentHashMap<>();
+    /** 마지막 수요 응답에서 고를 수 있는 후보인데 기준 사진·렌즈가 없어 싣지 못한 맵 */
+    private final AtomicReference<Set<String>> missingReferences = new AtomicReference<>(Set.of());
     private final AtomicReference<Instant> lastAdminQueryAt = new AtomicReference<>();
 
     public CoverageGuideService(
@@ -98,9 +106,9 @@ public class CoverageGuideService {
         if (!(previous != null && !hasRealPairResult(body) && hasRealPairResult(previous.payload()))) {
             latest.set(new StoredGuide(((ObjectNode) body).deepCopy(), deviceId, siteId, now));
         }
-        JsonNode view = body.get("reuse_view_check");
-        if (view != null && view.isObject()) {
-            latestView.set(new StoredView(((ObjectNode) view).deepCopy(), now));
+        latestViews.values().removeIf(v -> Duration.between(v.receivedAt(), now).compareTo(properties.viewCheckTtl()) > 0);
+        for (JsonNode view : views(body)) {
+            latestViews.put(view.path("scene_version").asString(), new StoredView(((ObjectNode) view).deepCopy(), now));
         }
         return buildPostResponse(siteId, deviceId, now);
     }
@@ -165,9 +173,8 @@ public class CoverageGuideService {
      * 그 결과. 다른 맵 기준이거나 오래됐거나 없으면 비어 있다(근거 없음, 막지 않는다).
      */
     public Optional<ViewCheck> reuseViewCheck(String sceneVersion) {
-        StoredView stored = latestView.get();
-        if (stored == null || sceneVersion == null
-                || !sceneVersion.equals(stored.payload().path("scene_version").asString(null))
+        StoredView stored = sceneVersion == null ? null : latestViews.get(sceneVersion);
+        if (stored == null
                 || Duration.between(stored.receivedAt(), clock.instant()).compareTo(properties.viewCheckTtl()) > 0) {
             return Optional.empty();
         }
@@ -181,20 +188,43 @@ public class CoverageGuideService {
                 same++;
             }
         }
-        return Optional.of(new ViewCheck(changed.stream().sorted().toList(), changed.isEmpty() && same == 4));
+        return Optional.of(new ViewCheck(changed.stream().sorted().toList(), changed.isEmpty() && same == 4,
+                (ArrayNode) stored.payload().path("cameras").deepCopy(), stored.receivedAt()));
+    }
+
+    /** 마지막 수요 응답에서 이 맵의 기준 사진·렌즈가 없어 시점 확인 기준을 싣지 못했는지(S15P31A101-714) */
+    public boolean referenceMissing(String sceneVersion) {
+        return sceneVersion != null && missingReferences.get().contains(sceneVersion);
     }
 
     /**
      * @param changedCameras 서로 다른 키프레임 2회 연속 달라짐이 확인된 카메라(오름차순)
      * @param allSame        카메라 4대 모두 이전 맵 때와 같은 시점
+     * @param cameras        카메라별 결과(coverage_guide view_check_item 그대로, S15P31A101-714)
+     * @param receivedAt     EC2 가 받은 시각
      */
-    public record ViewCheck(List<String> changedCameras, boolean allSame) {
+    public record ViewCheck(List<String> changedCameras, boolean allSame, ArrayNode cameras, Instant receivedAt) {
+    }
+
+    /** 메시지의 시점 확인들: 1.1.0 단일과 1.2.0 목록 */
+    private static List<JsonNode> views(JsonNode body) {
+        List<JsonNode> out = new ArrayList<>();
+        JsonNode single = body.get("reuse_view_check");
+        if (single != null && single.isObject()) {
+            out.add(single);
+        }
+        JsonNode list = body.get("reuse_view_checks");
+        if (list != null && list.isArray()) {
+            list.forEach(out::add);
+        }
+        return out;
     }
 
     /** 시험에서 메모리 상태를 초기화할 때 쓴다. */
     public void clearForTest() {
         latest.set(null);
-        latestView.set(null);
+        latestViews.clear();
+        missingReferences.set(Set.of());
         lastAdminQueryAt.set(null);
     }
 
@@ -215,9 +245,15 @@ public class CoverageGuideService {
             res.put("last_admin_query_at_ms", lastQuery.toEpochMilli());
             res.put("demand_until_ms", lastQuery.plus(properties.demandTtl()).toEpochMilli());
         }
-        // 수요가 있을 때만 재사용 기준을 싣는다(헬퍼는 그때만 비교한다). 기준이 없으면 null
-        ObjectNode reference = activeDemand && reuseReference != null ? reuseReference.current(siteId) : null;
-        res.set("reuse_reference", reference);
+        // 수요가 있을 때만 재사용 기준을 싣는다(헬퍼는 그때만 비교한다). 후보 맵마다 하나(-714), 옛 헬퍼용 단일 기준은 그 첫 항목.
+        // 없으면 빈 목록·null
+        ArrayNode references = res.putArray("reuse_references");
+        if (activeDemand && reuseReference != null) {
+            CoverageReuseReference.References built = reuseReference.references(siteId);
+            built.references().forEach(references::add);
+            missingReferences.set(Set.copyOf(built.missingScenes()));
+        }
+        res.set("reuse_reference", references.isEmpty() ? null : references.get(0).deepCopy());
         return res;
     }
 
@@ -294,15 +330,16 @@ public class CoverageGuideService {
             }
         }
 
-        JsonNode view = body.get("reuse_view_check");
-        if (view != null) {
+        // 시점 확인(1.1.0 단일·1.2.0 목록): 카메라가 각도 안내 4대와 같고, 같은 맵(scene_version)은 한 번만
+        Set<String> viewScenes = new HashSet<>();
+        for (JsonNode view : views(body)) {
             Set<String> viewCameras = new HashSet<>();
             for (JsonNode cam : view.path("cameras")) {
                 if (!viewCameras.add(cam.path("camera_id").asString(""))) {
                     throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
                 }
             }
-            if (!viewCameras.equals(cameraIds)) {
+            if (!viewCameras.equals(cameraIds) || !viewScenes.add(view.path("scene_version").asString(""))) {
                 throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
             }
         }
