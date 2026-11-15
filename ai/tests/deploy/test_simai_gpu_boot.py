@@ -332,6 +332,8 @@ def test_auto_registers_writes_private_files_and_reaches_ready_then_reports_ende
     assert opt["--public-host"] == "127.0.0.1" and opt["--ec2-base-url"] == "https://simai.example"
     assert opt["--config-version"] == "cfg-41" and opt["--scene-version"] == "scene-0" and opt["--gateway-id"] == "tier0-lobby-s9"
     assert opt["--worker-id"] == "worker-gpu-01" and opt["--tier0-token-file"].endswith("tier0.token")
+    # 80GB: PPE 를 더한 자동 부팅 기본(S15P31A101-718). preflight 도 같은 목록으로 GPU 예산을 본다
+    assert opt["--services"] == gb.BOOT_SERVICES and pre["argv"][-2:] == ["--services", gb.BOOT_SERVICES]
     assert not lobby["leaked"] and lobby["hf"]
     assert lobby["cope"] == str(world["tmp"] / "srv" / "simai" / "reid" / "cope")
     assert lobby["vllm_cache"] == str(world["tmp"] / "cache" / "vllm" / "vllm")
@@ -429,8 +431,11 @@ def test_lobby_exit_maps_to_failed(gb, world):
 
 
 @pytest.mark.parametrize("mb, services, note", [
-    (81559.0, None, None),            # H100 80GB: lobby 기본
-    (46068.0, None, None),            # L40S·A40 48GB급: lobby 기본(VLM 몫은 19.1 미결)
+    (81559.0, "BOOT", None),          # H100 80GB: 자동 부팅 기본(lobby 기본 + ppe, -718)
+    (97871.0, "BOOT", None),          # 96GB급(RTX PRO 6000 등)도 같은 기본
+    (70000.0, "BOOT", None),          # PPE 하한(PPE_MIN_VRAM_MB) 그대로
+    (69999.0, None, "ppe 꺼짐: VRAM 부족"),  # 하한 바로 아래: lobby 기본(ppe 없음)
+    (46068.0, None, "ppe 꺼짐: VRAM 부족"),  # L40S·A40 48GB급: lobby 기본(여유 2 GiB 남짓이라 ppe 끔, VLM 몫은 19.1 미결)
     (44999.0, "tier0", "24GB급"),      # 48GB급 미만: Tier 0 관제만
     (23028.0, "tier0", "24GB급"),      # A10 24GB
     (20470.0, "tier0", "최소 사양"),    # 24GB급 미만: tier0 + 경고
@@ -439,13 +444,24 @@ def test_lobby_exit_maps_to_failed(gb, world):
 def test_boot_services_by_vram(gb, mb, services, note):
     """S15P31A101-705: SIMAI_BOOT_SERVICES 가 비면 VRAM 으로 lobby 서비스 기본값을 정한다"""
     got, why = gb.boot_services({}, {"memory_total_mb": mb}, 45_000, 22_500)
-    assert got == services
+    assert got == (gb.BOOT_SERVICES if services == "BOOT" else services)
     assert (why is None) if note is None else (note in why)
 
 
 def test_boot_services_explicit_value_wins(gb):
     assert gb.boot_services({"SIMAI_BOOT_SERVICES": " tier0,vllm "}, {"memory_total_mb": 23028.0}, 45_000, 22_500) == ("tier0,vllm", None)
     assert gb.boot_services({"SIMAI_BOOT_SERVICES": "tier0"}, {"memory_total_mb": 81559.0}, 45_000, 22_500) == ("tier0", None)
+
+
+def test_boot_default_is_lobby_default_plus_ppe_within_gpu_budget(gb):
+    """S15P31A101-718: 자동 부팅은 안전모·조끼 감시(ppe)를 기본으로 띄운다. 손 lobby 기본(-507 명시 선택)은 그대로 두고,
+    PPE 몫(기본 0.05)을 더해도 Tier 0 0.20 + 분석 0.70 + PPE ≤ 0.95 라 preflight 예산 점검을 통과한다(비율이라 80·96GB 같음)"""
+    bs = load_script("simai_bootstrap")
+    assert gb.BOOT_SERVICES.split(",") == [*bs.LOBBY_SERVICES.split(","), "ppe"]
+    assert "ppe" not in bs.LOBBY_SERVICES.split(",")
+    fr = bs.compute_gpu_fractions(bs.parse_services(gb.BOOT_SERVICES), {})
+    assert fr["ppe_fraction"] == bs.PPE_FRACTION_DEFAULT == 0.05 and fr["avatar_fraction"] == 0.10
+    assert fr["worker_fraction"] >= bs.MIN_WORKER_TORCH_FRACTION  # 분석 워커 몫은 PPE 때문에 줄지 않는다(별도 몫)
 
 
 def test_small_gpu_runs_tier0_only_and_reports_the_reduction(gb, world):

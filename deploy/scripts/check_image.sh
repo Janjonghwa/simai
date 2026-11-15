@@ -230,6 +230,18 @@ expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
 # 기본 CMD auto(S15P31A101-700): 부팅 비밀값만 있고 ID·EC2 주소가 없으면 등록하지 않고 64, simai-gpu-boot 가 설치돼 있다
 expect "auto 부팅 환경 변수 누락" 64 "SIMAI_GPU_BOOT_ID" -e SIMAI_GPU_BOOT_SECRET=not-a-real-secret "$IMG"
 expect "simai-gpu-boot --help" 0 "simai-gpu-boot" --entrypoint /usr/local/bin/simai-gpu-boot "$IMG" --help
+# 자동 부팅 기본 서비스에 ppe(안전모·조끼 감시)가 있다(S15P31A101-718): 80GB·96GB 에서 SIMAI_BOOT_SERVICES 없이 고르는 목록
+if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
+import importlib.machinery as m, importlib.util as u
+loader = m.SourceFileLoader("gb", "/usr/local/bin/simai-gpu-boot")
+gb = u.module_from_spec(u.spec_from_loader("gb", loader)); loader.exec_module(gb)
+got = [gb.boot_services({}, {"memory_total_mb": mb}, 45_000, 22_500)[0] for mb in (81559.0, 97871.0)]
+assert all("ppe" in s.split(",") for s in got), got
+print(got[0])' 2>&1); then
+  pass "자동 부팅 기본 서비스에 ppe ($(tail -1 <<<"$OUT"))"
+else
+  fail "자동 부팅 기본 서비스에 ppe 없음: $(tail -3 <<<"$OUT")"
+fi
 # 아래는 simai-tier0(엔진 준비 진입점)를 직접 부른다: 부트스트랩 뒤 단계의 볼륨·가중치·해시·GPU 처리
 T0=(--entrypoint /usr/local/bin/simai-tier0)
 expect "볼륨 없음" 2 "Network Volume" "${T0[@]}" "$IMG"

@@ -77,7 +77,7 @@
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
-  - ppe(명시 선택, lobby 기본에 없음, 명세 5.5, S15P31A101-507): Tier 0 준비 뒤 ppe 가중치 묶음(SIMAI_PPE_WEIGHTS_SET, 기본 ppe)을 워커 가중치와
+  - ppe(명시 선택, lobby 기본에 없음·GPU 자동 부팅 기본에는 있음(S15P31A101-718), 명세 5.5, S15P31A101-507): Tier 0 준비 뒤 ppe 가중치 묶음(SIMAI_PPE_WEIGHTS_SET, 기본 ppe)을 워커 가중치와
     함께 받고 python -m services.ppe 를 띄운다. Tier 0 환경에 SIMAI_AVATAR_SHARE=1(입력 공유 파일)·SIMAI_PPE_RELAY=1(PPE outbox 를 Tier 0 I1 로 대신
     송신)을, PPE 환경에 SIMAI_PPE_WEIGHTS·SIMAI_PPE_WEIGHTS_SHA256·SIMAI_PPE_GPU_MEMORY_FRACTION(기본 0.05, 분석 워커 예산 밖)을 넣는다.
     GPU 예산은 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 보고, 넘으면 64 로 시작하지 않는다(명세 3.2). PPE 는 I1 연결·워커 토큰을 쓰지 않는다.
@@ -164,7 +164,8 @@ TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
-# avatar는 명시 선택, 기본은 꺼짐(lobby 는 기본으로 켠다). ppe 도 명시 선택이고 lobby 기본에도 없다(G9 전, S15P31A101-507)
+# avatar는 명시 선택, 기본은 꺼짐(lobby 는 기본으로 켠다). ppe 도 명시 선택이고 lobby 기본에도 없다(G9 전, S15P31A101-507).
+# GPU 자동 부팅(simai-gpu-boot, 48GB급 이상)은 ppe 를 더해 띄운다(simai_gpu_boot.BOOT_SERVICES, S15P31A101-718)
 SERVICES = ("tier0", "vllm", "worker", "avatar", "ppe")
 PPE_FRACTION_DEFAULT = 0.05  # 명세 3.2: PPE 는 분석 워커 밖의 별도 몫. Tier 0 + 분석 워커 + PPE ≤ 0.95
 LOBBY_SERVICES = "tier0,vllm,worker,avatar"  # lobby·preflight 기본. 아바타는 시연 필수(S15P31A101-414)
@@ -1342,7 +1343,7 @@ class Supervisor:
         self.stop_signal: int | None = None
         self._weights: threading.Thread | None = None  # 아바타·PPE 묶음 → VLM 묶음을 차례로 준비하는 한 스레드
         self.sidecar_done = False  # 아바타·PPE 가중치 단계가 끝남(구운 사본이면 수 초). VLM 받기를 기다리지 않는다
-        self.sidecar_error: str | None = None  # 그 실패 이유: 아바타·PPE 만 띄우지 않는다
+        self.sidecar_errors: dict[str, str] = {}  # 서비스(avatar·ppe)별 가중치 실패 이유: 그 서비스만 띄우지 않는다(S15P31A101-718)
         self.vlm_done = False  # VLM 가중치 단계가 끝남
         self.weights_error: str | None = None  # VLM 받기 실패 이유: vLLM 만 띄우지 않는다(워커·아바타·PPE·Tier 0 는 계속)
         self._noted: set[str] = set()
@@ -1410,12 +1411,14 @@ class Supervisor:
         return ok
 
     def _prepare_worker_weights(self) -> None:
-        """아바타·PPE 묶음(통합 이미지는 구운 사본이라 수 초) → 끝나면 그 둘을 띄울 수 있다 → VLM 묶음(31.5GB) → 끝나면 vLLM (S15P31A101-577).
-        예전에는 셋을 한 번에 받고 나서 띄워 아바타·PPE 가 VLM 받기를 기다렸다. 어느 쪽이 실패해도 Tier 0·다른 쪽은 계속."""
+        """아바타 묶음 → PPE 묶음(통합 이미지는 구운 사본이라 수 초) → 끝나면 그 둘을 띄울 수 있다 → VLM 묶음(31.5GB) → 끝나면 vLLM (S15P31A101-577).
+        예전에는 셋을 한 번에 받고 나서 띄워 아바타·PPE 가 VLM 받기를 기다렸다. 어느 쪽이 실패해도 Tier 0·다른 쪽은 계속.
+        아바타와 PPE 는 따로 준비한다: PPE 가중치가 실패해도 아바타는 뜨고 그 반대도 같다(PPE 가 자동 부팅 기본이 됨, S15P31A101-718)."""
         try:
-            if "avatar" in self.svc or "ppe" in self.svc:
-                sets = [s for s, n in ((self.avatar_set, "avatar"), (self.ppe_set, "ppe")) if n in self.svc]
-                self.sidecar_error = self._weights_stage("sidecar-weights", sets, "아바타·PPE")
+            for name, set_name, what in (("avatar", self.avatar_set, "아바타"), ("ppe", self.ppe_set, "PPE")):
+                # 기록 단계도 서비스별(avatar-weights·ppe-weights): 단계 이름으로 묶어 읽을 때 한쪽 성공이 다른 쪽 실패를 가리지 않게
+                if name in self.svc and (err := self._weights_stage(f"{name}-weights", [set_name], f"{what} 가중치 {set_name}")):
+                    self.sidecar_errors[name] = err
         finally:
             self.sidecar_done = True
         try:
@@ -1504,9 +1507,12 @@ class Supervisor:
 
     def _note_weights(self) -> None:
         """가중치 실패를 한 번씩 알린다. VLM 이 실패하면 vLLM 을 포기로 두고(다시 띄우지 않음) 나머지는 그대로 둔다."""
-        if self.sidecar_done and self.sidecar_error and "sidecar" not in self._noted:
-            self._noted.add("sidecar")
-            log(f"아바타·PPE 가중치 실패 → 아바타·PPE 를 띄우지 않는다(Tier 0·워커·vLLM 은 계속): {self.sidecar_error}")
+        if self.sidecar_done:
+            for name, why in self.sidecar_errors.items():
+                if name not in self._noted:
+                    self._noted.add(name)
+                    what = {"avatar": "아바타", "ppe": "PPE"}[name]
+                    log(f"{what} 가중치 실패 → {what} 를 띄우지 않는다(Tier 0·워커·vLLM·나머지 사이드카는 계속): {why}")
         if self.vlm_done and self.weights_error and "vlm" not in self._noted:
             self._noted.add("vlm")
             self.svc["vllm"].given_up = True
@@ -1515,7 +1521,7 @@ class Supervisor:
 
     def _gate_open(self, s: Service) -> bool:
         if s.name in ("avatar", "ppe"):
-            return self.sidecar_done and not self.sidecar_error
+            return self.sidecar_done and s.name not in self.sidecar_errors
         if s.name == "vllm":
             return self.vlm_done and not self.weights_error
         # 워커: VLM 을 기다리지 않는다(현장 세팅·정적 맵·TBM 등). VLM 작업 유형은 워커가 vLLM /health 를 보고 스스로 미룬다
