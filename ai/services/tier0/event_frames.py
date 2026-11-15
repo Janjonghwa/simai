@@ -100,6 +100,63 @@ def encode_jpeg(image: Any) -> bytes:
     return encoded.tobytes()
 
 
+FRAME_RULES = frozenset({"R1", "R2", "R3", "R4"})
+
+
+def wants_frames(transition: EventTransition) -> bool:
+    """근거 사진 대상: LIVE·CRITICAL·R1~R4 의 최초 발생(RAISED) 전이."""
+    state = transition.state
+    return (Origin(state.origin) is Origin.LIVE and Severity(state.severity) is Severity.CRITICAL
+            and state.rule_id in FRAME_RULES
+            and transition.transition is Lifecycle.RAISED and Change.RAISED in transition.changes)
+
+
+def frame_requests(transitions: Iterable[EventTransition], tracks: Iterable[Any], camera_ids: Iterable[str],
+                   seen: set[str]) -> list[tuple[str, int, int, tuple[str, ...]]]:
+    """사진을 만들 전이마다 (event_id, 기준 촬영 시각, 발생 시각, 카메라 우선순위). 같은 event_id 는 한 번만(seen 에 더한다).
+
+    판정 lock 안에서 불린다(짧은 Python 작업). 대상 World Track 을 관측한 카메라 우선, 여러 대상이 보이면 더 많은 대상을 본 쪽부터.
+    """
+    tracks = tuple(tracks)
+    cams = tuple(camera_ids)
+    out = []
+    for transition in transitions:
+        state = transition.state
+        if not wants_frames(transition) or state.event_id in seen:
+            continue
+        seen.add(state.event_id)
+        visibility = Counter(camera for track in tracks if track.world_id in state.world_ids for camera in track.cameras)
+        out.append((state.event_id, state.observation_time, transition.occurred_at,
+                    tuple(sorted(cams, key=lambda c: (-visibility[c], c)))))
+    return out
+
+
+@dataclass(frozen=True)
+class EventFrameIo:
+    """서명 API·업로드 연결 설정. 분리 경로(-738)는 이것을 검출 프로세스로 넘겨 거기서 서명·업로드한다(토큰은 repr 에 없음).
+
+    signer_factory·transport_factory 는 시험 주입이다(spawn 자식이 이름으로 다시 불러오는 모듈 최상위 이름)."""
+
+    base_url: str
+    token: str = field(repr=False)
+    ca_file: str | None = None
+    transport_timeout_s: float = 5.0
+    signer_factory: Callable[[], Any] | None = None
+    transport_factory: Callable[[], Any] | None = None
+
+    def signer(self) -> Any:
+        if self.signer_factory is not None:
+            return self.signer_factory()
+        return EventFrameSigner(self.base_url, self.token, ca_file=self.ca_file)
+
+    def transport(self) -> Any:
+        if self.transport_factory is not None:
+            return self.transport_factory()
+        from services.tier0.clips.upload import HttpPutTransport
+
+        return HttpPutTransport(timeout_s=self.transport_timeout_s)
+
+
 @dataclass(frozen=True)
 class _Request:
     event_id: str
@@ -187,23 +244,21 @@ class EventFrameService:
     def on_transitions(self, transitions: Iterable[EventTransition], tracks: Iterable[Any] = ()) -> None:
         if not self._enabled or self._closing.is_set():
             return
-        tracks = tuple(tracks)
-        for transition in transitions:
-            state = transition.state
-            if (Origin(state.origin) is not Origin.LIVE or Severity(state.severity) is not Severity.CRITICAL
-                    or state.rule_id not in {"R1", "R2", "R3", "R4"}
-                    or transition.transition is not Lifecycle.RAISED or Change.RAISED not in transition.changes
-                    or state.event_id in self._seen):
-                continue
-            self._seen.add(state.event_id)
-            # 대상 World Track 을 관측한 카메라 우선. 여러 대상이 보이면 더 많은 대상을 본 쪽부터.
-            visibility = Counter(camera for track in tracks if track.world_id in state.world_ids for camera in track.cameras)
-            cameras = tuple(sorted(self._ring.camera_ids, key=lambda c: (-visibility[c], c)))
-            try:
-                pictures = self._ring.snapshot(cameras, state.observation_time, MAX_CAMERAS)
-                self._queue.put_nowait(_Request(state.event_id, state.observation_time, transition.occurred_at, pictures))
-            except queue.Full:
-                log.warning("event_frames_failed event_id=%s reason=queue_full", state.event_id)
+        for event_id, anchor_ms, occurred_at, cameras in frame_requests(transitions, tracks, self._ring.camera_ids,
+                                                                         self._seen):
+            self.request(event_id, anchor_ms, occurred_at, cameras)
+
+    def request(self, event_id: str, anchor_ms: int, occurred_at: int, cameras: tuple[str, ...]) -> bool:
+        """고른 카메라 순서로 링에서 사진 참조를 고정해 작업 큐에 넣는다(기다리지 않음). 분리 경로(-738)는 검출 프로세스에서 부른다."""
+        if not self._enabled or self._closing.is_set():
+            return False
+        try:
+            pictures = self._ring.snapshot(tuple(cameras), anchor_ms, MAX_CAMERAS)
+            self._queue.put_nowait(_Request(event_id, anchor_ms, occurred_at, pictures))
+            return True
+        except queue.Full:
+            log.warning("event_frames_failed event_id=%s reason=queue_full", event_id)
+            return False
 
     def _run(self) -> None:
         while not self._closing.is_set():

@@ -33,8 +33,9 @@
       "camera_check_enabled": true,            세팅 「카메라 확인」 입력 내보내기(기본 켜짐, LIVE 입력, 워커 요청 파일이 있을 때만 씀)
       "offload_side_work": false,              판정에 안 끼는 곁가지 일(아바타 입력 공유 파일 쓰기)을 spawn 자식 프로세스로 뺀다
                                                (기본 끔. 끄면 지금 경로 그대로, docs/design/S15P31A101-662-tier0-stage-latency.md)
-      "process_split": false,                  검출(수신·디코딩·검출·로컬 추적)을 별도 프로세스로 나눈다(LIVE·file 입력, 기본 끔.
-                                               끄면 지금 단일 프로세스 그대로, docs/design/S15P31A101-728-tier0-process-split.md)
+      "process_split": true,                   검출(수신·디코딩·검출·로컬 추적·이벤트 프레임·클립·배경 누적)을 별도 프로세스로
+                                               나눈다(LIVE·file 입력, 기본 켬 -738. false 면 단일 프로세스,
+                                               docs/design/S15P31A101-728-tier0-process-split.md·S15P31A101-738-split-side-work.md)
       "detect_cpus": "none",                   분리 때 검출 프로세스 CPU: none(물려받음) | auto(앞쪽 절반) | 목록 "0-5"
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
@@ -135,6 +136,11 @@ class ControlSettings:
     cert_file: str
     key_file: str
     token_hashes: str = field(repr=False)
+
+
+DEFAULT_PROCESS_SPLIT = True
+"""설정 파일에 process_split 이 없을 때(자동 부팅 tier0-live.json 포함). 18차 실측(-738 설계 1절)으로 켬. 시험 묶음은 단일 경로를 기본으로
+돌리려고 tests/conftest.py 가 이 값을 끈다(분리 경로 시험은 SIMAI_TIER0_PROCESS_SPLIT=1 로 명시)"""
 
 
 @dataclass(frozen=True)
@@ -246,8 +252,8 @@ class Tier0Settings:
     rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
     reid: ReidSettings = field(default_factory=ReidSettings)
     roi_filter: RoiFilterSettings = field(default_factory=RoiFilterSettings)
-    process_split: bool = False
-    """검출·판정 프로세스 분리(기본 끔, S15P31A101-728). LIVE·file 입력에서만 쓴다"""
+    process_split: bool = True
+    """검출·판정 프로세스 분리(기본 켬, S15P31A101-728·-738). LIVE·file 입력에서만 쓴다. 끄는 스위치 SIMAI_TIER0_PROCESS_SPLIT=0"""
     detect_cpus: str = "none"
     """분리 때 검출 프로세스 CPU: none·auto·목록(SIMAI_TIER0_DETECT_CPUS, -728)"""
 
@@ -658,7 +664,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if offload_env not in ("0", "1"):
             raise Tier0ConfigError("SIMAI_TIER0_OFFLOAD_SIDE_WORK 는 0 또는 1이다")
         offload_side_work = offload_env == "1"
-    process_split = doc.get("process_split", False)
+    process_split = doc.get("process_split", DEFAULT_PROCESS_SPLIT)
     if not isinstance(process_split, bool):
         raise Tier0ConfigError("process_split 는 bool이다")
     split_env = (env.get("SIMAI_TIER0_PROCESS_SPLIT") or "").strip()

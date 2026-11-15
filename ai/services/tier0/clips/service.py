@@ -81,6 +81,14 @@ class ClipServiceStats:
     by_camera: dict[str, int] = field(default_factory=dict)
 
 
+def critical_hold_key(transition: EventTransition) -> tuple[str, int] | None:
+    """보존 표시 대상(LIVE·CRITICAL)이면 위험 구간 열쇠 (event_id, resume_count)."""
+    s = transition.state
+    if not Origin(s.origin).alertable or Severity(s.severity) is not Severity.CRITICAL:
+        return None
+    return (s.event_id, s.resume_count)
+
+
 class EventClipService:
     def __init__(
         self,
@@ -131,22 +139,33 @@ class EventClipService:
             if trigger is None:
                 self.stats.ignored_transitions += 1
                 continue
-            if trigger.key in self._seen:
-                self.stats.duplicate_triggers += 1
-                if trigger.severity is Severity.CRITICAL:
-                    self._escalate(trigger)
-                continue
-            if len(self._pending) >= self.config.max_pending:
-                self.stats.dropped_pending_full += 1
-                log.error("클립 대기 목록이 가득 차 이벤트 %s 의 클립을 만들지 못했다", trigger.event_id)
-                continue
-            self._seen[trigger.key] = _KeyState(trigger.severity)
-            while len(self._seen) > self.config.max_seen_keys:
-                self._seen.popitem(last=False)
-            self._pending.append(_Pending(trigger, self._clock.now_ms()))
-            self.stats.triggers += 1
-            added.append(trigger)
+            if self._add(trigger):
+                added.append(trigger)
         return added
+
+    def on_triggers(self, triggers: Iterable[ClipTrigger], holds: Iterable[tuple[str, int]] = ()) -> list[ClipTrigger]:
+        """on_transitions 와 같되 전이에서 이미 뽑은 값으로 받는다(프로세스 분리 -738: 판정 프로세스가 전이에서 뽑아 검출 프로세스로
+        보낸다. 전이 객체는 읽기 전용 매핑을 품어 pickle 되지 않는다). holds 는 보존 표시 대상 (event_id, resume_count)."""
+        for event_id, resume_count in holds:
+            self._hold(event_id, resume_count)
+        return [t for t in triggers if self._add(t)]
+
+    def _add(self, trigger: ClipTrigger) -> bool:
+        if trigger.key in self._seen:
+            self.stats.duplicate_triggers += 1
+            if trigger.severity is Severity.CRITICAL:
+                self._escalate(trigger)
+            return False
+        if len(self._pending) >= self.config.max_pending:
+            self.stats.dropped_pending_full += 1
+            log.error("클립 대기 목록이 가득 차 이벤트 %s 의 클립을 만들지 못했다", trigger.event_id)
+            return False
+        self._seen[trigger.key] = _KeyState(trigger.severity)
+        while len(self._seen) > self.config.max_seen_keys:
+            self._seen.popitem(last=False)
+        self._pending.append(_Pending(trigger, self._clock.now_ms()))
+        self.stats.triggers += 1
+        return True
 
     def _escalate(self, trigger: ClipTrigger) -> None:
         """HIGH 로 시작한 위험 구간이 CRITICAL 로 올랐다(11.5 CRITICAL 자동 보존). 새 클립은 만들지 않는다.
@@ -169,18 +188,20 @@ class EventClipService:
         업로더 대기열·임시 저장소(재기동 뒤 복원분 포함)·보낸 기록을 event_id 로 찾으므로, Tier 0 재기동으로 중복 제거
         기억이 비어도 이전에 만든 HIGH 클립이 보존 표시 없이 지워지지 않는다. 판정은 하지 않고 전이 값만 읽는다.
         """
-        s = t.state
+        key = critical_hold_key(t)
+        if key is not None:
+            self._hold(*key)
+
+    def _hold(self, event_id: str, resume_count: int) -> None:
         if not self.config.critical_auto_hold or self._uploader is None:
             return
-        if not Origin(s.origin).alertable or Severity(s.severity) is not Severity.CRITICAL:
-            return
-        key = (s.event_id, s.resume_count)
+        key = (event_id, resume_count)
         if key in self._held:
             return
         self._held[key] = None
         while len(self._held) > self.config.max_seen_keys:
             self._held.popitem(last=False)
-        self._uploader.raise_retention_for_event(s.event_id, s.resume_count, str(Severity.CRITICAL))
+        self._uploader.raise_retention_for_event(event_id, resume_count, str(Severity.CRITICAL))
 
     def poll(self) -> None:
         now = self._clock.now_ms()
