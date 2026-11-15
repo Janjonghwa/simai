@@ -7,6 +7,9 @@ import {
   gpuDot,
   gpuErrorReason,
   gpuSummary,
+  HOST_CPU_SLOW_SCORE,
+  HOST_CPU_SLOW_TEXT,
+  hostCpuWarning,
   isGpuOn,
   needsTierConfirm,
   prepRemainingText,
@@ -306,5 +309,35 @@ describe('S15P31A101-733: 짧은 GPU 이름·나라 이름 지역·예상 시간
     };
     expect(rowUsable(offers, 'G1')).toBe(true);
     expect(rowUsable(offers, 'G2')).toBe(false);
+  });
+});
+
+describe('hostCpuWarning(S15P31A101-740)', () => {
+  const cpu = (score: number | null) => ({
+    model: 'Intel(R) Xeon(R) Platinum 8460Y+',
+    logical_cpus: 160,
+    cpu_quota: null,
+    single_thread_score: score,
+    measured_at: T,
+  });
+
+  it('기준 미만이면 경고 글을 낸다', () => {
+    const s = status({ session: session({ host_cpu: cpu(HOST_CPU_SLOW_SCORE - 1) }) });
+    expect(hostCpuWarning(s)).toBe(HOST_CPU_SLOW_TEXT);
+    expect(HOST_CPU_SLOW_TEXT).toContain('끄고 다시 켜면 다른 서버에 배정될 수 있어요');
+  });
+
+  it('기준 이상·점수 모름·측정 없음·세션 없음·끝난 세션은 경고하지 않는다', () => {
+    expect(
+      hostCpuWarning(status({ session: session({ host_cpu: cpu(HOST_CPU_SLOW_SCORE) }) })),
+    ).toBeNull();
+    expect(hostCpuWarning(status({ session: session({ host_cpu: cpu(null) }) }))).toBeNull();
+    expect(hostCpuWarning(status({ session: session({ host_cpu: null }) }))).toBeNull();
+    expect(hostCpuWarning(status({ session: session() }))).toBeNull();
+    expect(hostCpuWarning(status({ session: null }))).toBeNull();
+    expect(hostCpuWarning(undefined)).toBeNull();
+    expect(
+      hostCpuWarning(status({ session: session({ state: 'ENDED', host_cpu: cpu(10) }) })),
+    ).toBeNull();
   });
 });

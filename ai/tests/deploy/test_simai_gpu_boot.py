@@ -757,3 +757,59 @@ def test_bootstrap_auto_hands_over_with_aws_secrets_source(monkeypatch):
     assert bs.main(["auto"]) == bs.EXIT_USAGE and not calls  # ID 가 없으면 시작하지 않는다
     monkeypatch.setenv("SIMAI_GPU_BOOT_ID", "gpu-boot-runpod")
     assert bs.main(["auto"]) == 0 and calls == [["simai-gpu-boot", "auto"]]
+
+
+# ---- 호스트 CPU 측정(S15P31A101-740)
+
+
+def test_cpu_model_and_quota_read_proc_and_cgroup_files(gb, tmp_path):
+    info = tmp_path / "cpuinfo"
+    info.write_text("processor\t: 0\nmodel name\t: Intel(R) Xeon(R)  Platinum 8460Y+\nmodel name\t: other\n", encoding="utf-8")
+    assert gb.cpu_model(str(info)) == "Intel(R) Xeon(R) Platinum 8460Y+"
+    assert gb.cpu_model(str(tmp_path / "none")) is None
+    v2 = tmp_path / "cpu.max"
+    v2.write_text("400000 100000\n", encoding="utf-8")
+    assert gb.cpu_quota(str(v2)) == 4.0
+    v2.write_text("max 100000\n", encoding="utf-8")  # 제한 없음 → v1 파일도 없으니 null
+    assert gb.cpu_quota(str(v2), str(tmp_path / "q"), str(tmp_path / "p")) is None
+    (tmp_path / "q").write_text("-1", encoding="utf-8")
+    (tmp_path / "p").write_text("100000", encoding="utf-8")
+    assert gb.cpu_quota(str(tmp_path / "missing"), str(tmp_path / "q"), str(tmp_path / "p")) is None
+    (tmp_path / "q").write_text("250000", encoding="utf-8")
+    assert gb.cpu_quota(str(tmp_path / "missing"), str(tmp_path / "q"), str(tmp_path / "p")) == 2.5
+
+
+def test_single_thread_score_is_short_and_positive_and_fails_to_none(gb, monkeypatch):
+    t0 = time.perf_counter()
+    score = gb.single_thread_score(0.3)
+    assert score is not None and score > 0 and time.perf_counter() - t0 < 2.0
+    monkeypatch.setitem(sys.modules, "numpy", None)  # numpy 가 없으면 척도가 달라 점수를 내지 않는다
+    assert gb.single_thread_score(0.3) is None
+
+
+def test_host_cpu_is_reported_after_background_measure_and_never_blocks_boot(gb, world):
+    ec2 = world["ec2"]
+    gb.Boot.cpu_measure = staticmethod(lambda: {"model": "Test CPU", "logical_cpus": 8, "cpu_quota": None,
+                                                 "single_thread_score": 1234.5, "measured_at": gb.now_ms()})
+    boot = _boot(gb, world)
+    t, box = _run_bg(boot)
+    assert _wait(lambda: any("host_cpu" in r for r in ec2.reports)), ec2.reports
+    assert _wait(lambda: any(r["stage"] == "READY" for r in ec2.reports))
+    boot.stop.set()
+    t.join(timeout=30)
+    assert not ec2.errors, ec2.errors  # 계약(gpu_session_report 1.1.0) 검사 통과
+    hc = next(r["host_cpu"] for r in ec2.reports if "host_cpu" in r)
+    assert hc["model"] == "Test CPU" and hc["single_thread_score"] == 1234.5
+
+
+def test_host_cpu_measure_failure_is_swallowed(gb, world):
+    def boom():
+        raise RuntimeError("no cpu")
+
+    gb.Boot.cpu_measure = staticmethod(boom)
+    boot = _boot(gb, world)
+    t, box = _run_bg(boot)
+    assert _wait(lambda: any(r["stage"] == "READY" for r in world["ec2"].reports))
+    boot.stop.set()
+    t.join(timeout=30)
+    assert box["rc"] == 0 and not any("host_cpu" in r for r in world["ec2"].reports)

@@ -5,6 +5,7 @@ import {
   formatUsd,
   gpuErrorReason,
   gpuSummary,
+  hostCpuWarning,
   PREP_STEPS,
   prepRemainingText,
   prepStep,
@@ -34,6 +35,7 @@ export function GpuInfoLines() {
   const remaining = prepRemainingText(status);
   const autoStop = autoStopText(status, serverNow, idleMinutes);
   const reason = gpuErrorReason(status);
+  const cpuWarning = hostCpuWarning(status);
   return (
     <div className="flex flex-col gap-1 text-sm">
       {summary && (
@@ -69,6 +71,11 @@ export function GpuInfoLines() {
         </>
       )}
       {reason && <span>{reason}</span>}
+      {cpuWarning && (
+        <span role="status" className="text-xs font-semibold text-delay">
+          {cpuWarning}
+        </span>
+      )}
     </div>
   );
 }

@@ -27,6 +27,17 @@ export const gpuSessionSchema = z.looseObject({
   registered_at_ms: z.number(),
   elapsed_ms: z.number(),
   tier0_link: z.enum(['CONNECTED', 'DISCONNECTED']),
+  // 호스트 CPU 측정(S15P31A101-740, 부팅 보고의 host_cpu 마지막 값). 보고가 없으면 null·없음, 못 잰 칸은 null
+  host_cpu: z
+    .looseObject({
+      model: nullableString.optional(),
+      logical_cpus: nullableNumber.optional(),
+      cpu_quota: nullableNumber.optional(),
+      single_thread_score: nullableNumber.optional(),
+      measured_at: z.number().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 export type GpuSession = z.infer<typeof gpuSessionSchema>;
 

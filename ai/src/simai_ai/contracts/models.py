@@ -739,6 +739,33 @@ class ReasonCode(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(pattern='^[A-Z][A-Z0-9_]{0,63}$')]
 
 
+class Model(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+
+
+class LogicalCpus(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=1, le=4096)]
+
+
+class CpuQuota(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(gt=0.0, le=4096.0)]
+
+
+class SingleThreadScore(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+class HostCpu(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    model: Model | None
+    logical_cpus: LogicalCpus | None
+    cpu_quota: CpuQuota | None
+    single_thread_score: SingleThreadScore | None
+    measured_at: DefsTimestampMs
+
+
 class Payload19(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -749,6 +776,7 @@ class Payload19(BaseModel):
     detail: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
     progress: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
     reported_at: DefsTimestampMs
+    host_cpu: HostCpu | MISSING = MISSING
 
 
 class GpuSessionReport(Envelope):

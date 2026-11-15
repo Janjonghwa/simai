@@ -74,6 +74,8 @@ HF_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 CONTROL_PORT, VIDEO_PORT = 17000, 17001  # RunPod 템플릿에 노출한 TCP(deploy/README "RunPod 템플릿")
 DEFAULT_ADVERTISE_HOST = "127.0.0.1"  # SSAFY 망 기본 경로: 노트북이 EC2 SSH 로컬 포워드로 붙는다(deploy/README, 14차 start-lobby 와 같음)
 SCHEMA_VERSION = "1.0.0"
+REPORT_SCHEMA_VERSION = "1.1.0"  # gpu_session_report: 선택 host_cpu 추가(S15P31A101-740)
+BENCH_BUDGET_S = 1.5  # 단일 스레드 기준 측정 시간 상한(합쳐 2 초 이내, 설계 docs/design/S15P31A101-740-gpu-host-cpu-check.md)
 STAGES = ("WEIGHTS", "ENGINE", "TIER0", "VLLM", "READY", "FAILED", "ENDED")
 # 자동 부팅 기본 서비스(80GB급 이상) = lobby 기본(simai_bootstrap.LOBBY_SERVICES) + ppe(S15P31A101-718). 작업 설정의 안전모·조끼 필수를
 # 셀프서비스 Pod 에서도 감시한다. 손 lobby·preflight 기본은 그대로 둔다(ppe 명시 선택, -507). ppe 는 몫 0.05(Tier 0 0.20 + 분석 0.70 + 0.05 = 0.95)
@@ -376,8 +378,92 @@ def register_facts(env: dict[str, str], gpu: dict, control_port: int, video_port
 
 
 def envelope(msg_type: str, source_id: str, payload: dict) -> dict:
-    return {"schema_version": SCHEMA_VERSION, "msg_type": msg_type, "msg_id": str(uuid.uuid4()), "sent_at": now_ms(),
+    version = REPORT_SCHEMA_VERSION if msg_type == "gpu_session_report" else SCHEMA_VERSION
+    return {"schema_version": version, "msg_type": msg_type, "msg_id": str(uuid.uuid4()), "sent_at": now_ms(),
             "source_id": source_id, "payload": payload}
+
+
+# ---------------------------------------------------------------- 호스트 CPU (S15P31A101-740)
+
+
+def cpu_model(cpuinfo: str = "/proc/cpuinfo") -> str | None:
+    """/proc/cpuinfo 의 첫 `model name`(리눅스). 없으면(비리눅스·읽기 실패) None"""
+    try:
+        for line in Path(cpuinfo).read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("model name"):
+                name = " ".join(line.partition(":")[2].split())
+                return name[:200] or None
+    except OSError:
+        pass
+    return None
+
+
+def cpu_quota(cpu_max: str = "/sys/fs/cgroup/cpu.max", cfs_quota: str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+              cfs_period: str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us") -> float | None:
+    """cgroup CPU 몫(코어 수 단위, 예 4.0). 제한이 없거나(max, -1) 모르면 None. cgroup v2 cpu.max 를 먼저, 없으면 v1"""
+    try:
+        quota, _, period = Path(cpu_max).read_text(encoding="utf-8").strip().partition(" ")
+        if quota != "max" and float(period) > 0 and float(quota) > 0:
+            return round(float(quota) / float(period), 3)
+        return None
+    except (OSError, ValueError):
+        pass
+    try:
+        q, p = float(Path(cfs_quota).read_text(encoding="utf-8")), float(Path(cfs_period).read_text(encoding="utf-8"))
+        return round(q / p, 3) if q > 0 and p > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def single_thread_score(budget_s: float = BENCH_BUDGET_S, clock=time.perf_counter) -> float | None:
+    """짧은 단일 스레드 기준 측정: 점수 = 초당 반복. 한 반복은 Tier 0 교차 시점과 비슷한 일(numpy 6x4 소행렬 SVD·DLT 삼각측량 풀이 4번)
+    + 순수 Python 루프(딕셔너리·부동소수 2,000 걸음)다. numpy 가 없으면 Python 루프만(점수 척도가 달라 기준과 비교할 수 없으니 None).
+    budget_s 안에서 반복하고 최소 3번은 돈다. 실패하면 None(부팅은 계속)."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    try:
+        rng = np.random.default_rng(7)
+        rows = rng.standard_normal((4, 6, 4))  # 4 점 × (카메라 3대 × 2행) × 동차 4
+
+        def one() -> None:
+            for a in rows:
+                _, _, vt = np.linalg.svd(a)
+                x = vt[-1]
+                x = x[:3] / x[3] if abs(x[3]) > 1e-12 else x[:3]
+                np.linalg.lstsq(a[:, :3], -a[:, 3], rcond=None)
+                float(x @ x)
+            acc, table = 0.0, {}
+            for i in range(2000):
+                acc += (i * 0.5) % 7.0
+                table[i & 63] = acc
+            if acc < 0:  # 최적화 방지용 사용(항상 거짓)
+                raise ValueError
+
+        one()  # 예열(import·캐시), 점수에 넣지 않음
+        n, t0 = 0, clock()
+        while True:
+            one()
+            n += 1
+            elapsed = clock() - t0
+            if elapsed >= budget_s and n >= 3:
+                break
+            if elapsed >= budget_s * 3:  # 너무 느린 기계: 3 번을 못 채워도 멈춘다
+                break
+        return round(n / elapsed, 2) if elapsed > 0 else None
+    except Exception:  # 측정은 부팅을 막지 않는다
+        return None
+
+
+def measure_host_cpu() -> dict:
+    """gpu_session_report.host_cpu. 못 잰 칸은 null(지어내지 않음)"""
+    try:
+        logical = os.cpu_count()
+    except Exception:
+        logical = None
+    return {"model": cpu_model(), "logical_cpus": logical, "cpu_quota": cpu_quota(), "single_thread_score": single_thread_score(),
+            "measured_at": now_ms()}
 
 
 # ---------------------------------------------------------------- HTTP
@@ -461,6 +547,7 @@ class Reporter:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._warned401 = False
+        self.host_cpu: dict | None = None  # 호스트 CPU 측정 결과(S15P31A101-740). 재면 보고에 한 번 더 실린다
         self.sent: list[dict] = []  # 시험·로그용(비밀 값 없음)
         self._thread = threading.Thread(target=self._loop, name="gpu-report", daemon=True)
 
@@ -501,7 +588,14 @@ class Reporter:
             p["detail"] = redact(str(s["detail"]))[:500]
         if s["progress"] is not None:
             p["progress"] = min(1.0, max(0.0, float(s["progress"])))
+        if self.host_cpu is not None:
+            p["host_cpu"] = self.host_cpu
         return p
+
+    def set_host_cpu(self, doc: dict) -> None:
+        """배경 측정이 끝나면 다음 보고(단계 변화·주기)부터 싣고 바로 한 번 보낸다"""
+        self.host_cpu = doc
+        self._wake.set()
 
     def send_once(self) -> int | None:
         p = self.payload()
@@ -1050,6 +1144,7 @@ class Boot:
             f"토큰 파일 {self.private}")
         rep = self.reporter = Reporter(self.http, ec2, boot_id, secret, session_id, result["report"]["interval_ms"] / 1000)
         rep.start()
+        threading.Thread(target=self.measure_cpu, args=(rep,), name="host-cpu", daemon=True).start()
         self.cache = GpuCache(self.http, ec2, result["worker"]["token"], self.root / "tmp" / "gpu-cache", notice=rep.add_note)
         try:
             if tls_error is not None:
@@ -1059,6 +1154,17 @@ class Boot:
             rep.set("FAILED", e.reason, e.detail)
             log(f"기동 실패 {e.reason}: {e.detail} → FAILED 를 보고하며 기다린다(손 경로: 토큰 파일 {self.private})")
             return self.idle()
+
+    def measure_cpu(self, rep: Reporter) -> None:
+        """WEIGHTS 단계 동안 백그라운드로 호스트 CPU 를 재서 보고에 싣는다(부팅을 늦추지 않음, 실패해도 계속)"""
+        try:
+            doc = self.cpu_measure()
+            rep.set_host_cpu(doc)
+            log(f"호스트 CPU: {doc['model']} · 논리 {doc['logical_cpus']} · 몫 {doc['cpu_quota']} · 단일 스레드 점수 {doc['single_thread_score']}")
+        except Exception as e:
+            log(f"호스트 CPU 측정 실패(무시하고 계속): {type(e).__name__}")
+
+    cpu_measure = staticmethod(measure_host_cpu)
 
     def prepare_and_launch(self, result: dict, gpu: dict, cert: str, key: str) -> int:
         rep, cache = self.reporter, self.cache

@@ -379,6 +379,26 @@ export function gpuErrorReason(status: GpuStatus | undefined): string | null {
   return '끄기 실패 · 다시 시도하세요';
 }
 
+/**
+ * 느린 CPU 서버 기준(S15P31A101-740). 부팅 보고기가 잰 단일 스레드 점수(초당 반복, 클수록 빠름)가 이 값 미만이면 경고한다.
+ * 초기값이다: 18차(2026-11-15)에 같은 H100 SXM AP-JP-1 의 두 번째 Pod(Xeon Platinum 8460Y+ 160코어 호스트)이 같은 계산에서
+ * 스레드 CPU 시간이 2배였지만 첫 Pod 의 점수는 기록이 없다. 그래서 노트북 측정(약 2,300~3,200)의 0.4배쯤인 1,000 으로 시작하고,
+ * 첫 라이브 실측(빠른 서버·느린 서버 점수)이 쌓이면 둘 사이로 조정한다. 근거와 절차는 docs/design/S15P31A101-740-gpu-host-cpu-check.md.
+ */
+export const HOST_CPU_SLOW_SCORE = 1000;
+
+export const HOST_CPU_SLOW_TEXT =
+  'CPU 가 느린 서버 — 사람이 많을 때 판정 지연이 늘 수 있음. 끄고 다시 켜면 다른 서버에 배정될 수 있어요';
+
+/** 열린 세션의 호스트 CPU 점수가 기준 미만이면 경고 글, 아니면(점수 모름 포함) null. 조작은 없다 */
+export function hostCpuWarning(status: GpuStatus | undefined): string | null {
+  const session = status?.session;
+  if (session?.state !== 'ACTIVE') return null;
+  const score = session.host_cpu?.single_thread_score;
+  if (typeof score !== 'number' || score >= HOST_CPU_SLOW_SCORE) return null;
+  return HOST_CPU_SLOW_TEXT;
+}
+
 export const STOP_BLOCK_TEXT: Record<'LIVE' | 'SETUP', string> = {
   LIVE: '관제(작업) 중에는 끌 수 없습니다',
   SETUP: '세팅 중에는 끌 수 없습니다',

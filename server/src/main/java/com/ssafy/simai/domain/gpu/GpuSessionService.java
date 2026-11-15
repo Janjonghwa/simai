@@ -196,12 +196,13 @@ public class GpuSessionService implements Tier0SessionTokens {
                 throw new BusinessException(ErrorCode.Gpu.GPU_SESSION_ENDED);
             }
             jdbc.update("""
-                    INSERT INTO gpu_session_event (session_id, kind, stage, reason_code, detail, progress, reported_at, received_at)
-                    VALUES (:id, 'PROGRESS', :stage, :reason, :detail, :progress, :reportedAt, :now)
+                    INSERT INTO gpu_session_event (session_id, kind, stage, reason_code, detail, progress, reported_at, received_at, host_cpu)
+                    VALUES (:id, 'PROGRESS', :stage, :reason, :detail, :progress, :reportedAt, :now, CAST(:hostCpu AS jsonb))
                     """, new MapSqlParameterSource("id", sessionId).addValue("stage", stage)
                     .addValue("reason", text(p, "reason_code")).addValue("detail", text(p, "detail"))
                     .addValue("progress", present(p, "progress") ? p.get("progress").doubleValue() : null)
-                    .addValue("reportedAt", utc(reportedAt)).addValue("now", utc(now)));
+                    .addValue("reportedAt", utc(reportedAt)).addValue("now", utc(now))
+                    .addValue("hostCpu", present(p, "host_cpu") ? mapper.writeValueAsString(p.get("host_cpu")) : null));
         });
     }
 
@@ -289,7 +290,7 @@ public class GpuSessionService implements Tier0SessionTokens {
                 SELECT s.session_id::text AS id, s.provider, s.instance_id, s.gpu_type, s.gpu_count, s.region, s.public_host,
                     s.ports::text AS ports, s.image_digest, s.price_per_hour_usd, s.tls_public_key_sha256, s.worker_id, s.gateway_id,
                     s.registered_at, ended.received_at AS ended_at, ended.end_reason, ended.reason_code AS end_reason_code,
-                    prog.stage, prog.reason_code, prog.detail, prog.progress, prog.received_at AS stage_at,
+                    prog.stage, prog.reason_code, prog.detail, prog.progress, prog.received_at AS stage_at, hc.host_cpu::text AS host_cpu,
                     """ + LAST_RECEIVED + """
                      AS last_report_at
                 FROM gpu_session s
@@ -297,6 +298,9 @@ public class GpuSessionService implements Tier0SessionTokens {
                 LEFT JOIN LATERAL (
                     SELECT p.stage, p.reason_code, p.detail, p.progress, p.received_at FROM gpu_session_event p
                     WHERE p.session_id = s.session_id AND p.kind = 'PROGRESS' ORDER BY p.event_id DESC LIMIT 1) prog ON true
+                LEFT JOIN LATERAL (
+                    SELECT h.host_cpu FROM gpu_session_event h
+                    WHERE h.session_id = s.session_id AND h.kind = 'PROGRESS' AND h.host_cpu IS NOT NULL ORDER BY h.event_id DESC LIMIT 1) hc ON true
                 ORDER BY s.registered_at DESC, s.session_id
                 LIMIT 1
                 """, Map.of(), (rs, i) -> view(rs, now, tier0Connected)).stream().findFirst();
@@ -360,6 +364,9 @@ public class GpuSessionService implements Tier0SessionTokens {
             node.put("stage_progress", ((Number) progress).doubleValue());
         }
         putMillis(node, "stage_at_ms", instant(rs, "stage_at"));
+        String hostCpu = rs.getString("host_cpu");
+        // 호스트 CPU 측정(S15P31A101-740, 계약 밖 관리자 응답). 보고가 없으면 null
+        node.set("host_cpu", hostCpu == null ? null : mapper.readTree(hostCpu));
         node.put("provider", rs.getString("provider"));
         node.put("instance_id", rs.getString("instance_id"));
         node.put("gpu_type", rs.getString("gpu_type"));
