@@ -121,6 +121,8 @@ class ConfigBundle:
     - setup_calibration: 보정 버전이 Tier 0 저장소에 없지만 세팅 보정 채택 조건(verify.SetupCalibrationGate)을 통과했다(-467).
       Tier 0 는 이 묶음을 적용하는 판정 경계에서 그 보정 문서(blobs)를 새 World 기준으로 채택한다. 채택에 실패하면 묶음을 거부한다.
     - ppe_policy: 안전모 요구(선택 구성 요소, 명세 7.2 R9·12.3). None 은 묶음에 ppe_policy 가 없다는 뜻이고 요구 없음으로 판정한다.
+    - calibration_verification(속성): 알림이 실은 세팅 「카메라 확인」 통과 근거(config_bundle 1.4.0, -745). Tier 0 는 적용 경계에서
+      활성 PROVISIONAL 세팅 보정의 운영 상태를 CALIBRATED 로 올린다(RuntimeCalibrationStore.mark_verified).
     """
 
     notice: BundleNotice
@@ -148,3 +150,19 @@ class ConfigBundle:
     @property
     def rule_versions(self) -> tuple[tuple[str, int], ...]:
         return tuple(r.spec.key for r in self.rules)
+
+    @property
+    def calibration_verification(self) -> dict[str, Any] | None:
+        """알림 components.calibration.verification(config_bundle 1.4.0, -745): 세팅 「카메라 확인」 통과 근거(사본).
+
+        스키마 검사를 통과한 알림에서 읽는다. 없거나, 근거가 잰 보정이 이 묶음의 보정과 다르면 None 이다(모르는 근거로 올리지 않는다).
+        """
+        payload = self.notice.message.get("payload") if isinstance(self.notice.message, Mapping) else None
+        components = payload.get("components") if isinstance(payload, Mapping) else None
+        calibration = components.get("calibration") if isinstance(components, Mapping) else None
+        verification = calibration.get("verification") if isinstance(calibration, Mapping) else None
+        if not isinstance(verification, Mapping) or verification.get("camera_check") != "PASSED":
+            return None
+        if verification.get("calibration_version") != self.calibration_version:
+            return None
+        return thaw_json(verification)

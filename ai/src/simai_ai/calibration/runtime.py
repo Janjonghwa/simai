@@ -7,6 +7,9 @@ head와 전환 이력은 한 파일을 fsync 후 원자적으로 교체한다. �
 문서(`setup_session_id`)가 지금 활성 보정에서 출발했고(`previous_calibration_version`) 계약·content_hash·현장·카메라 집합이
 맞으면(`setup_candidate_problem`) `prepare_setup` 으로 보관하고 `activate(..., new_world=True)` 로 새 World 계보의 시작
 (bootstrap)이 되게 전환한다. 2회 연속 확인·교체 뒤 감시 대상이 아니라 바로 기준이 된다(safety_reference 는 계보 시작부터 본다).
+
+세팅 보정 문서는 품질 게이트 뒤 걷기 확인 전에 PROVISIONAL 로 발행되고 동결이다. 구성 묶음이 세팅 「카메라 확인」 통과 근거(config_bundle
+1.4.0 verification)를 실으면 `mark_verified` 가 같은 버전의 STATE_CHANGED(CALIBRATED) 전환만 추가해 운영 상태를 올린다(-745).
 """
 
 from __future__ import annotations
@@ -24,7 +27,11 @@ from simai_ai.calibration.document import content_hash
 from simai_ai.calibration.monitor import STREAM_REASONS, MonitorReport
 from simai_ai.calibration.structure import check_calibration_structure
 from simai_ai.providers.base import CalibrationProvider
-from simai_ai.providers.contract import NEVER_CALIBRATED_SOURCES, check_calibration
+from simai_ai.providers.contract import (
+    CALIBRATED_SOURCES,
+    NEVER_CALIBRATED_SOURCES,
+    check_calibration,
+)
 
 
 def _copy(value):
@@ -297,13 +304,9 @@ class RuntimeCalibrationStore(CalibrationProvider):
             return False
         if self.state not in ("CALIBRATED", "PROVISIONAL") and not (self.state == "DRIFTED" and stream_changed):
             return False
-        previous = None
-        for record in self._head["transitions"]:
-            payload = record["payload"]
-            if payload["calibration_version"] == report.calibration_version and payload["reason"] == "RECALIBRATED":
-                previous = payload["previous_calibration_version"]
         payload = {
-            "calibration_version": report.calibration_version, "previous_calibration_version": previous,
+            "calibration_version": report.calibration_version,
+            "previous_calibration_version": self._previous_of(report.calibration_version),
             "calibration_state": "DRIFTED", "provider_source": doc["provider_source"],
             "reason": "STREAM_CHANGED" if stream_changed else "DRIFT_DETECTED",
             "effective_at": effective_at, "calibration_ref": self.path(report.calibration_version).resolve().as_uri(),
@@ -319,6 +322,63 @@ class RuntimeCalibrationStore(CalibrationProvider):
         self._save(head)
         self._head = head
         self._state = "DRIFTED"
+        return True
+
+    def _previous_of(self, version: str) -> str | None:
+        """그 버전으로 전환한 마지막 RECALIBRATED 의 이전 버전(없으면 None)."""
+        previous = None
+        for record in self._head["transitions"]:
+            payload = record["payload"]
+            if payload["calibration_version"] == version and payload["reason"] == "RECALIBRATED":
+                previous = payload["previous_calibration_version"]
+        return previous
+
+    def verification_problem(self, verification: Mapping[str, Any] | None) -> str | None:
+        """세팅 「카메라 확인」 통과 근거(config_bundle 1.4.0 verification)로 활성 보정을 CALIBRATED 로 올릴 수 있는지(-745).
+
+        None 이면 올린다. (a) 근거가 PASSED 이고 잰 보정이 지금 활성 보정이다 (b) 활성 운영 상태가 PROVISIONAL 이다(CALIBRATED 는
+        이미 올렸고, DRIFTED 는 틀어짐이 확인된 보정이라 재세팅 전까지 올리지 않는다, 명세 4.4) (c) 세팅 출처(setup_session_id)이고
+        CALIBRATED 가능 출처(G1_AUTO)다(DATASET_GT·SIM·MODEL_ESTIMATE 는 현장 보정이 아니다, 20.4 규칙 4).
+        """
+        if not isinstance(verification, Mapping) or verification.get("camera_check") != "PASSED":
+            return "카메라 확인 통과 근거 없음"
+        active = self._head["active"]
+        if verification.get("calibration_version") != active:
+            return f"근거의 보정 {verification.get('calibration_version')} != 활성 {active}"
+        if self.state != "PROVISIONAL":
+            return f"운영 상태 {self.state} 는 올리지 않는다"
+        doc = self.current()
+        if doc["provider_source"] not in CALIBRATED_SOURCES:
+            return f"{doc['provider_source']} 는 CALIBRATED 출처가 아니다"
+        if not doc.get("setup_session_id"):
+            return "세팅 출처(setup_session_id) 보정이 아니다"
+        return None
+
+    def mark_verified(self, verification: Mapping[str, Any], *, effective_at: int, msg_id: str) -> bool:
+        """판정 lock 안. 세팅 「카메라 확인」 통과 근거로 활성 PROVISIONAL 세팅 보정의 운영 상태를 CALIBRATED 로 올린다(-745).
+
+        문서는 그대로 두고(동결, content_hash 불변) 같은 버전의 STATE_CHANGED 전환만 추가한다(AGENTS 규칙 6). 재시작해도 이력에서
+        CALIBRATED 를 읽는다. 조건(verification_problem)이 안 맞으면 아무것도 쓰지 않고 False.
+        """
+        if self.verification_problem(verification) is not None:
+            return False
+        version = self._head["active"]
+        doc = self.current()
+        payload = {
+            "calibration_version": version, "previous_calibration_version": self._previous_of(version),
+            "calibration_state": "CALIBRATED", "provider_source": doc["provider_source"],
+            "reason": "STATE_CHANGED", "effective_at": effective_at,
+            "calibration_ref": self.path(version).resolve().as_uri(), "calibration_hash": doc["content_hash"],
+            **self.scene_metadata(version),
+        }
+        head = _copy(self._head)
+        head["transitions"].append({"msg_id": msg_id, "payload": payload,
+                                    "verification": {k: verification[k] for k in
+                                                     ("camera_check", "calibration_version", "setup_session_id")
+                                                     if k in verification}})
+        self._save(head)
+        self._head = head
+        self._state = "CALIBRATED"
         return True
 
     @property

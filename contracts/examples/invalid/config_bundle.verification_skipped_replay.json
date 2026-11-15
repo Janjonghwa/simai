@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.4.0",
+  "msg_type": "config_bundle",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000745a",
+  "sent_at": 1760342500001,
+  "source_id": "ec2",
+  "payload": {
+    "config_version": "cfg-80",
+    "previous_config_version": "cfg-79",
+    "issued_at": 1760342500000,
+    "bundle_uri": "s3://simai-site/config/cfg-14/manifest.json",
+    "bundle_hash": "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "components": {
+      "zones": {
+        "version": "zones-5",
+        "sha256": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "uri": "s3://simai-site/config/cfg-13/zones.json"
+      },
+      "rules": {
+        "version": "rules-4",
+        "sha256": "sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "uri": "s3://simai-site/config/cfg-13/rules.json",
+        "rule_versions": [
+          {
+            "rule_id": "R1",
+            "rule_version": 2
+          },
+          {
+            "rule_id": "R2",
+            "rule_version": 3
+          }
+        ]
+      },
+      "calibration": {
+        "version": "cal-lobby-init-e5d5cecf-jba2-c37f2596",
+        "sha256": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "uri": "s3://simai-site/calibration/cal-7.json",
+        "verification": {
+          "camera_check": "SKIPPED_REPLAY",
+          "calibration_version": "cal-lobby-init-e5d5cecf-jba2-c37f2596",
+          "setup_session_id": "18cf35a9-d654-4afb-8343-07fdeebc18f9"
+        }
+      },
+      "operational_geometry": {
+        "version": "geom-2",
+        "sha256": "sha256:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+        "uri": "s3://simai-site/config/cfg-13/geometry.json"
+      },
+      "ppe_policy": {
+        "version": "ppe-3",
+        "sha256": "sha256:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7",
+        "uri": "s3://simai-site/config/cfg-14/ppe_policy.json"
+      }
+    }
+  }
+}
