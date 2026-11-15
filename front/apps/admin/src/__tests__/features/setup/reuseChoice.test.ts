@@ -168,3 +168,46 @@ describe('reuse maps', () => {
     });
   });
 });
+
+describe('게이트웨이 헬퍼 끊김(S15P31A101-719)', () => {
+  it('시점 확인을 기다리는 판정은 「확인하고 있어요」 대신 끊겨서 확인할 수 없다고 말한다', () => {
+    const waiting = check({ available: false, blocked_reason: 'VIEW_UNCONFIRMED' });
+    expect(reuseChoiceOf(waiting, CAMS, true).blocked).toEqual({
+      what: '현장 게이트웨이와 연결이 끊겨 카메라 위치를 확인할 수 없어요',
+      how: '게이트웨이 노트북이 켜져 있는지 확인하거나 새 맵 만들기를 골라 주세요',
+    });
+    expect(reuseChoiceOf(waiting, CAMS).blocked?.what).toBe(
+      '카메라가 이전 맵 때와 같은 자리인지 확인하고 있어요',
+    );
+  });
+
+  it('확인 중인 맵 한 줄도 끊김 이유로 바꾸고, 사진 없음·판정이 끝난 맵은 그대로 둔다', () => {
+    const base = {
+      scene_version: 's',
+      completed_at_ms: 0,
+      camera_heights_m: {},
+      selectable: false,
+      recommended: false,
+      changed_cameras: [],
+      shifted_cameras: [],
+      unconfirmed_cameras: [],
+      camera_source: null,
+    };
+    const maps = reuseMapsOf(
+      check({
+        candidates: [
+          { ...base, setup_session_id: 'a', status: 'UNCONFIRMED', reason: null },
+          { ...base, setup_session_id: 'b', status: 'UNCONFIRMED', reason: 'NO_PHOTOS' },
+          { ...base, setup_session_id: 'c', status: 'EXCLUDED', reason: 'NOT_COMPLETED' },
+        ],
+      }),
+      CAMS,
+      true,
+    );
+    expect(maps.map((m) => m.note)).toEqual([
+      '게이트웨이 연결이 끊겨 카메라 위치를 확인할 수 없어요',
+      '그 맵의 카메라 사진이 없어 확인할 수 없어요',
+      '세팅 완료까지 하지 않은 맵이에요',
+    ]);
+  });
+});

@@ -191,3 +191,23 @@ describe('보정·생성 지금 할 일', () => {
     ).toBe('GPU 서버(분석 워커)가 연결돼 있지 않습니다');
   });
 });
+
+describe('1단계: 게이트웨이 헬퍼 끊김(S15P31A101-719)', () => {
+  it('「확인 중」 대신 끊김 이유와 다음 행동을 말한다', () => {
+    const stale: CoverageGuidesResponse = {
+      ...fresh(),
+      status: 'STALE',
+      stale: true,
+      age_ms: 90_000,
+    };
+    const step = step1NextStep(
+      input({ coverage: deriveStep1Coverage(stale, false, CAMS, { helperLost: true }) }),
+    );
+    expect(step.title).toBe('현장 게이트웨이와 연결이 끊겨 카메라를 확인할 수 없어요');
+    expect(step.detail).toContain('「다음」으로 시작할 수 있어요');
+    expect(step.tone).toBe('delay');
+    expect(step1NextStep(input({ coverage: deriveStep1Coverage(stale, false, CAMS) })).title).toBe(
+      '카메라 상태를 확인하고 있어요',
+    );
+  });
+});

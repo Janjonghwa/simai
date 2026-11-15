@@ -14,7 +14,7 @@ import {
   setupZoneDraftsKey,
   startCameraCheck,
 } from '@/features/setup/api';
-import { coverageFreshUntil } from '@/features/setup/cameraBadge';
+import { coverageFreshUntil, coverageHelperLost } from '@/features/setup/cameraBadge';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
 import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
 import { rebakeRunning } from '@/features/setup/supplement';
@@ -73,6 +73,23 @@ export function useCoverageExpired(
     return () => window.clearTimeout(timer);
   }, [until]);
   return until !== null && expiredAt === until;
+}
+
+/**
+ * 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않는지(S15P31A101-719). 1단계는 각도 안내를 2.5 초마다 받으므로 응답마다 다시 판단한다.
+ * 서버가 헬퍼 결과를 한 번도 받지 못한 동안(age_ms 없음)은 처음 빈 응답을 받은 시각부터 잰다.
+ */
+export function useCoverageHelperLost(
+  data: { age_ms: number | null } | undefined,
+  receivedAt: number,
+  fetchError: boolean,
+): boolean {
+  const empty = data !== undefined && data.age_ms === null && receivedAt > 0;
+  const [emptySince, setEmptySince] = useState<number | null>(null);
+  // 받은 응답에서 이어 가는 값이라 렌더 중에 맞춘다(효과로 미루면 한 박자 늦게 그린다)
+  if (empty && emptySince === null) setEmptySince(receivedAt);
+  if (!empty && emptySince !== null) setEmptySince(null);
+  return !fetchError && coverageHelperLost(data, receivedAt, empty ? emptySince : null);
 }
 
 export function useCameraHeightDefaults(enabled = true) {

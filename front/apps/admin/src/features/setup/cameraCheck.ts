@@ -182,6 +182,11 @@ export interface CameraWalkView {
   phase: CameraCheckPhase | null;
   /** 지금 시도 번호(없으면 0)와 「걷기 시작」·「확인만 다시」가 보낼 다음 번호. */
   attemptNo: number;
+  /**
+   * 카운트다운을 다시 세는 기준(세션 + 워커 시도 ID). 다시 시도로 새 세션이 같은 번호(1)로 걸어도 앞 세션의 시작 시각을 쓰지 않는다
+   * (S15P31A101-719: 걷기 시작 직후 0초로 보이던 것).
+   */
+  attemptKey: string;
   nextAttempt: number;
   progressPct: number;
   cameras: WalkCameraView[];
@@ -272,6 +277,7 @@ export function deriveCameraWalkView(
     open: phase !== null && OPEN_PHASES.has(phase),
     phase,
     attemptNo,
+    attemptKey: `${session?.setup_session_id ?? ''}:${check?.attempt?.id ?? attemptNo}`,
     nextAttempt: attemptNo + 1,
     progressPct: check && showCounts ? Math.max(0, Math.min(100, check.progress_pct)) : 0,
     cameras: ids.map((id) => {
@@ -287,5 +293,52 @@ export function deriveCameraWalkView(
     }),
     failure: retrying ? walkFailure(check, cameraIds) : null,
     waitSeconds: check?.user_wait ? Math.max(0, Math.round(check.user_wait.wait_s)) : null,
+  };
+}
+
+/** 걷기 시작 뒤 이만큼(초) 지나도 어느 카메라에도 사람이 한 번도 안 보였으면 창 안에서 원인을 알린다. */
+export const NO_PERSON_HINT_AFTER_S = 10;
+
+export interface WalkStatus {
+  /** 창 맨 위 상태 한 줄. */
+  status: string;
+  /** 걷는 중 끼어드는 안내(사람이 계속 안 보임). 없으면 null. */
+  hint: { title: string; action: string } | null;
+}
+
+/**
+ * 걷기 창 맨 위 문구(S15P31A101-719). 걷는 중 일정 시간 동안 모든 카메라가 0 회면 「사람이 안 보임」 원인과 할 일을 창 안에 보이고
+ * (예전에는 0/30 이 이어지다 마감 뒤 조용히 실패했다), 카운트다운이 끝났는데 덜 보인 카메라가 있으면 그 카메라 이름을 쓴다.
+ */
+export function walkStatus(view: CameraWalkView, secondsLeft: number): WalkStatus {
+  const { phase } = view;
+  if (phase === 'AWAITING_START')
+    return {
+      status: `보정이 끝났습니다. 한 사람이 카메라 ${view.cameras.length}대에 모두 보이도록 방 안을 ${WALK_TARGET_SECONDS}초 걸으면 확인이 끝납니다. 다른 사람은 카메라 밖에 있어 주세요.`,
+      hint: null,
+    };
+  if (phase === 'STARTING')
+    return { status: '확인을 준비하는 중입니다. 곧 걷기를 시작합니다.', hint: null };
+  if (phase !== 'WALKING')
+    return { status: view.failure?.action ?? '확인을 다시 해 주세요.', hint: null };
+  const elapsed = WALK_TARGET_SECONDS - secondsLeft;
+  const nobody = view.cameras.length > 0 && view.cameras.every((c) => c.observed === 0);
+  const hint =
+    nobody && elapsed >= NO_PERSON_HINT_AFTER_S
+      ? {
+          title: `${elapsed}초 동안 어느 카메라에도 사람이 보이지 않았어요`,
+          action:
+            '한 사람만 카메라 앞을 천천히 지나가 주세요(다른 사람은 화면 밖). 계속 0 이면 현재 시도를 중단하고 GPU 서버의 관제(Tier 0) 상태를 확인하세요.',
+        }
+      : null;
+  if (secondsLeft > 0)
+    return { status: '걷는 중입니다. 카메라 사이 겹치는 곳을 고루 지나가 주세요.', hint };
+  const short = view.cameras.filter((c) => c.observed < c.need).map((c) => c.label);
+  return {
+    status:
+      short.length > 0 && !nobody
+        ? `조금만 더 걸어 주세요. 덜 보인 카메라: ${short.join(', ')}. 그 카메라 앞을 지나가면 끝납니다.`
+        : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.',
+    hint,
   };
 }

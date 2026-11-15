@@ -3,6 +3,8 @@ import {
   cameraCheckFailed,
   deriveCameraCheckView,
   deriveCameraWalkView,
+  WALK_TARGET_SECONDS,
+  walkStatus,
 } from '@/features/setup/cameraCheck';
 import {
   deriveSetupActions,
@@ -335,5 +337,50 @@ describe('걷기 창(S15P31A101-687)', () => {
       CAMS,
     );
     expect(walk.open).toBe(false);
+  });
+});
+
+describe('걷기 창 상태 문구(S15P31A101-719)', () => {
+  const walking = (observed: Record<string, number>, attemptId = 'lease-01') => {
+    const check = buildCameraCheck(CAMS, 'cal-646', 'MEASURING', 0);
+    for (const [id, n] of Object.entries(observed)) check.cameras[id]!.observed_views = n;
+    return deriveCameraWalkView(
+      session({
+        status: 'JOINT_BA_AND_VERIFY',
+        progress_pct: 65,
+        camera_check: {
+          ...check,
+          attempt: { no: 1, id: attemptId, started_at_ms: 1, expires_at_ms: 2 },
+        },
+        camera_check_phase: 'WALKING',
+      }),
+      CAMS,
+    );
+  };
+  const none = { cam_A: 0, cam_B: 0, cam_C: 0, cam_D: 0 };
+
+  it('10초 넘게 어느 카메라도 0 회면 창 안에서 원인과 할 일을 알린다', () => {
+    const view = walking(none);
+    expect(walkStatus(view, WALK_TARGET_SECONDS - 9).hint).toBeNull();
+    const hint = walkStatus(view, WALK_TARGET_SECONDS - 10).hint;
+    expect(hint?.title).toBe('10초 동안 어느 카메라에도 사람이 보이지 않았어요');
+    expect(hint?.action).toContain('한 사람만 카메라 앞을 천천히 지나가 주세요');
+    // 한 카메라라도 보였으면 알리지 않는다
+    expect(walkStatus(walking({ ...none, cam_B: 3 }), 0).hint).toBeNull();
+  });
+
+  it('카운트다운이 끝나면 덜 보인 카메라 이름을 쓴다', () => {
+    const view = walking({ cam_A: 40, cam_B: 12, cam_C: 30, cam_D: 0 });
+    expect(walkStatus(view, 0).status).toBe(
+      '조금만 더 걸어 주세요. 덜 보인 카메라: 카메라 2, 카메라 4. 그 카메라 앞을 지나가면 끝납니다.',
+    );
+    expect(walkStatus(view, 12).status).toBe(
+      '걷는 중입니다. 카메라 사이 겹치는 곳을 고루 지나가 주세요.',
+    );
+  });
+
+  it('카운트다운 기준은 세션과 워커 시도 ID 라 다시 시도한 세션의 1번 시도는 새로 센다', () => {
+    expect(walking(none, 'lease-01').attemptKey).toBe('s-646:lease-01');
+    expect(walking(none, 'lease-02').attemptKey).not.toBe(walking(none, 'lease-01').attemptKey);
   });
 });

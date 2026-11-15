@@ -20,7 +20,7 @@ import { PageTitle } from '@/features/layout/PageTitle';
 import { useCameraNames } from '@/hooks/useCameraNames';
 import { useTier0Connected } from '@/hooks/useTier0Connected';
 import { env } from '@/lib/env';
-import { LAG_WINDOW_MS, type LagLevel } from '@/lib/tier0Lag';
+import { LAG_OK_MS, LAG_WARN_MS, LAG_WINDOW_MS, type LagLevel } from '@/lib/tier0Lag';
 import { selectCameraLagMs, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -75,10 +75,10 @@ function CameraBadge({ cameraId, badge }: { cameraId: string; badge: TileBadge |
     <span
       className={cn(CAPTION, 'top-2 right-2 gap-1.5 font-mono', tone.text)}
       aria-label={`${label(cameraId)} 판정 지연 ${badge.ms} ms`}
-      title={`이 카메라의 촬영→판정 지연(Tier 0 가 잼), 최근 ${LAG_WINDOW_MS / 1000}초 평균`}
+      title={`판정 지연: 이 카메라가 찍은 뒤 위험 판정(Tier 0)까지 걸린 시간, 최근 ${LAG_WINDOW_MS / 1000}초 평균. ${LAG_OK_MS} ms 미만 초록, ${LAG_WARN_MS} ms 이상 빨강`}
     >
       <i aria-hidden className={cn('size-[7px] rounded-full', tone.dot)} />
-      {badge.ms} ms
+      판정 {badge.ms} ms
     </span>
   );
 }

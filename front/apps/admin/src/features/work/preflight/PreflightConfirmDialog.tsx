@@ -142,6 +142,12 @@ export function PreflightConfirmDialog({
             ))}
           </fieldset>
         )}
+        {(!checks.reportChecked || !checks.layoutChecked) && (
+          // 주 단추가 꺼진 이유를 본문에 쓴다(S15P31A101-719: 17차에 서명 뒤 「작업 시작」이 22초 꺼져 있던 까닭이 화면에 없었다)
+          <p className="text-[13px] text-muted-foreground">
+            위 확인 칸 두 개를 체크하면 「작업 시작」이 켜집니다
+          </p>
+        )}
         {draftWarning && <p className="text-[13px] text-sev-caution">{draftWarning}</p>}
         {setupNotice && (
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-destructive">

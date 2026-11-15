@@ -35,6 +35,8 @@ export interface CaptureView {
   cameras: CaptureCameraView[];
   /** 다시 찍어야 하는 카메라 이름(사람 가림·영상 없음). */
   blockedLabels: string[];
+  /** 아직 다 찍지 못한 카메라 이름(완료가 아닌 카메라, 사람 가림·영상 없음 포함). */
+  pendingLabels: string[];
 }
 
 /** 배경 촬영 중인 세션인지(진행 중이고 단계가 배경 수집). */
@@ -122,7 +124,37 @@ export function deriveCaptureView(
   const blockedLabels = cameras
     .filter((c) => c.state === 'PERSON_OCCLUDED' || c.state === 'NO_VIDEO')
     .map((c) => c.label);
-  return { phase, cameras, blockedLabels };
+  const pendingLabels = capture
+    ? cameras.filter((c) => c.state !== 'READY').map((c) => c.label)
+    : [];
+  return { phase, cameras, blockedLabels, pendingLabels };
+}
+
+/**
+ * 창 맨 위 상태 한 줄. 카운트다운이 0 이 된 뒤에도 끝나지 않으면 늦는 카메라 이름을 보인다(S15P31A101-719: 0초인데 「거의 다 찍었습니다」로
+ * 1분 넘게 머물던 것). 못 찍고 끝나면 사람 가림·영상 없음 카메라를, 없으면 다 찍지 못한 카메라를 보인다.
+ */
+export function captureStatusText(
+  view: CaptureView,
+  secondsLeft: number,
+  waitingForWorker: boolean,
+): string {
+  const { phase } = view;
+  const blocked = view.blockedLabels;
+  if (phase === 'ready')
+    return `카메라 ${view.cameras.length}대가 사람 없는 배경을 약 ${CAPTURE_SECONDS}초 동안 찍습니다. 모두 카메라 화면 밖으로 이동한 뒤 「시작」을 눌러 주세요.`;
+  if (phase === 'starting') return '촬영을 준비하는 중입니다.';
+  if (phase === 'failed') {
+    const named = blocked.length ? blocked : view.pendingLabels;
+    return `배경을 다 찍지 못했습니다${named.length ? `: ${named.join(', ')}` : ''}. 화면을 비운 뒤 다시 찍어 주세요.`;
+  }
+  if (waitingForWorker) return '촬영을 준비하는 중입니다. 화면 밖에서 기다려 주세요.';
+  if (blocked.length)
+    return `${blocked.join(', ')}만 이어서 찍습니다. 다른 카메라는 그대로 찍고 있습니다.`;
+  if (secondsLeft > 0) return '촬영 중입니다. 화면 밖에서 기다려 주세요.';
+  if (view.pendingLabels.length)
+    return `아직 찍는 중: ${view.pendingLabels.join(', ')}. 그 카메라 앞을 비우고 조금만 더 기다려 주세요.`;
+  return '거의 다 찍었습니다. 조금만 더 기다려 주세요.';
 }
 
 /** 카운트다운 남은 초(0 아래로 내려가지 않는다). */

@@ -52,6 +52,12 @@ export interface ReuseChoiceState {
 const NONE: readonly string[] = [];
 const NO_MAPS: readonly ReuseMapOption[] = [];
 
+/** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않아 시점 확인을 못 한다(S15P31A101-719). */
+const HELPER_LOST: ReuseBlocked = {
+  what: '현장 게이트웨이와 연결이 끊겨 카메라 위치를 확인할 수 없어요',
+  how: `게이트웨이 노트북이 켜져 있는지 확인하거나 ${NEW_MAP_HOW}`,
+};
+
 const CHECK_FAILED: ReuseBlocked = {
   what: '이전 맵을 확인하지 못했어요',
   how: '잠시 뒤 다시 열거나 새 맵 만들기를 골라 주세요',
@@ -65,10 +71,11 @@ export function changedCamerasLabel(
   return changed.map((id) => (cameraIds.includes(id) ? cameraLabel(cameraIds, id) : id)).join('·');
 }
 
-/** 서버 판정을 화면 문구로 바꾼다. */
+/** 서버 판정을 화면 문구로 바꾼다. helperLost 면 「확인하고 있어요」 대신 게이트웨이가 끊겨 확인할 수 없다고 말한다. */
 export function reuseChoiceOf(
   check: ReuseCheck,
   cameraIds: readonly string[],
+  helperLost = false,
 ): Pick<ReuseChoiceState, 'blocked' | 'note'> {
   if (check.available) {
     return {
@@ -86,6 +93,7 @@ export function reuseChoiceOf(
       };
     case 'VIEW_UNCONFIRMED':
       // 후보 맵이 있지만 카메라가 그때와 같은 자리인지 아직 모른다(헬퍼 결과 대기·가림·사진 없음, S15P31A101-714)
+      if (helperLost) return { blocked: HELPER_LOST, note: null };
       return {
         blocked: {
           what: '카메라가 이전 맵 때와 같은 자리인지 확인하고 있어요',
@@ -147,7 +155,11 @@ const EXCLUDED_NOTE: Record<string, string> = {
 };
 
 /** 후보 맵 하나의 상태 한 줄. */
-export function mapNoteOf(candidate: ReuseCandidate, cameraIds: readonly string[]): string {
+export function mapNoteOf(
+  candidate: ReuseCandidate,
+  cameraIds: readonly string[],
+  helperLost = false,
+): string {
   const names = (ids: readonly string[]) => changedCamerasLabel(cameraIds, ids);
   switch (candidate.status) {
     case 'MATCH':
@@ -162,6 +174,7 @@ export function mapNoteOf(candidate: ReuseCandidate, cameraIds: readonly string[
       return EXCLUDED_NOTE[candidate.reason ?? ''] ?? '쓸 수 없는 맵이에요';
     default:
       if (candidate.reason === 'NO_PHOTOS') return '그 맵의 카메라 사진이 없어 확인할 수 없어요';
+      if (helperLost) return '게이트웨이 연결이 끊겨 카메라 위치를 확인할 수 없어요';
       if (candidate.reason === 'CHECKING' && candidate.unconfirmed_cameras.length > 0)
         return `확인하고 있는 카메라: ${names(candidate.unconfirmed_cameras)}`;
       return '카메라 위치를 확인하고 있어요';
@@ -169,7 +182,11 @@ export function mapNoteOf(candidate: ReuseCandidate, cameraIds: readonly string[
 }
 
 /** 서버 후보 목록 → 화면 목록(순서는 서버 순위 그대로). */
-export function reuseMapsOf(check: ReuseCheck, cameraIds: readonly string[]): ReuseMapOption[] {
+export function reuseMapsOf(
+  check: ReuseCheck,
+  cameraIds: readonly string[],
+  helperLost = false,
+): ReuseMapOption[] {
   return (check.candidates ?? []).map((c) => {
     const ordered = cameraIds.length > 0 ? cameraIds : Object.keys(c.camera_heights_m).sort();
     const heights = ordered
@@ -181,7 +198,7 @@ export function reuseMapsOf(check: ReuseCheck, cameraIds: readonly string[]): Re
       selectable: c.selectable && c.status === 'MATCH',
       recommended: c.recommended,
       status: c.status,
-      note: mapNoteOf(c, cameraIds),
+      note: mapNoteOf(c, cameraIds, helperLost),
       heightsLabel: heights.length > 0 ? `${heights.map((h) => h.toFixed(2)).join('·')} m` : '',
     };
   });
@@ -202,8 +219,12 @@ export function chosenReuseMap(
     : null;
 }
 
-/** 켜져 있는 동안(1단계) 재사용 판정을 받아 둔다. */
-export function useReuseChoice(enabled: boolean, cameraIds: readonly string[]): ReuseChoiceState {
+/** 켜져 있는 동안(1단계) 재사용 판정을 받아 둔다. helperLost: 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않는다(S15P31A101-719). */
+export function useReuseChoice(
+  enabled: boolean,
+  cameraIds: readonly string[],
+  helperLost = false,
+): ReuseChoiceState {
   const query = useQuery({
     queryKey: SETUP_REUSE_CHECK_KEY,
     queryFn: ({ signal }) => requestReuseCheck(api, signal),
@@ -214,9 +235,9 @@ export function useReuseChoice(enabled: boolean, cameraIds: readonly string[]): 
   if (query.data)
     return {
       checking: false,
-      ...reuseChoiceOf(query.data, cameraIds),
+      ...reuseChoiceOf(query.data, cameraIds, helperLost),
       changedCameras: changedCamerasOf(query.data),
-      maps: reuseMapsOf(query.data, cameraIds),
+      maps: reuseMapsOf(query.data, cameraIds, helperLost),
       recommendedId: query.data.recommended_setup_session_id ?? null,
     };
   if (query.isError)

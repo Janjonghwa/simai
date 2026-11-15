@@ -80,6 +80,7 @@ import {
   useCameraHeightDefaults,
   useCoverageExpired,
   useCoverageGuides,
+  useCoverageHelperLost,
   useCreateSetupSession,
   useResumeSetupSession,
   useRetrySetupSession,
@@ -327,6 +328,12 @@ function SetupWorkPage({
   const cameraViewShown = stage === 0 || stage === 1;
   const coverageQuery = useCoverageGuides(cameraViewShown, stage === 0);
   const coverageExpired = useCoverageExpired(coverageQuery.data, coverageQuery.receivedAt);
+  // 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않음(S15P31A101-719): 배지·재사용 판정이 「확인 중」으로 남지 않고 이유를 말한다
+  const helperLost = useCoverageHelperLost(
+    coverageQuery.data,
+    coverageQuery.receivedAt,
+    coverageQuery.error,
+  );
   // 보정 검증 쌍별 표·카메라 확인(S15P31A101-646). 통과 전에는 2단계 '다음' 이 꺼진다
   const cameraCheck = useMemo(
     () => deriveCameraCheckView(currentSession, waiting.cameraIds),
@@ -337,7 +344,7 @@ function SetupWorkPage({
     () => deriveCameraWalkView(currentSession, waiting.cameraIds),
     [currentSession, waiting.cameraIds],
   );
-  const walkSeconds = useWalkCountdown(walk.phase, walk.attemptNo);
+  const walkSeconds = useWalkCountdown(walk.phase, walk.attemptKey);
   const startWalk = useStartCameraCheck();
 
   // 이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 이 작업의 세션을 서버에서 다시 찾는다(위 이어받기). 찾기 전에는
@@ -492,7 +499,7 @@ function SetupWorkPage({
     cancelMutation.isPending;
 
   // 「맵」 방식(S15P31A101-689). 1단계에서는 이전 맵 재사용을 고를 수 있는지 늘 받아 둔다(세션 유무·실패·취소와 무관)
-  const reuse = useReuseChoice(stage === 0, cameraIds);
+  const reuse = useReuseChoice(stage === 0, cameraIds, helperLost);
   const wantedMode: SetupMode = pickedMode ?? currentSession?.requested_mode ?? 'REUSE';
   // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
   const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
@@ -516,8 +523,16 @@ function SetupWorkPage({
       deriveStep1Coverage(coverageQuery.data, coverageQuery.error, cameraIds, {
         expired: coverageExpired,
         changedCameras,
+        helperLost,
       }),
-    [coverageQuery.data, coverageQuery.error, cameraIds, coverageExpired, changedCameras],
+    [
+      coverageQuery.data,
+      coverageQuery.error,
+      cameraIds,
+      coverageExpired,
+      changedCameras,
+      helperLost,
+    ],
   );
 
   /**

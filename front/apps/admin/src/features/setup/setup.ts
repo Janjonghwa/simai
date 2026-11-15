@@ -15,6 +15,7 @@ import {
 } from '@/features/setup/cameraLabels';
 import { heightCheckPending, heightSettled } from '@/features/setup/heightCheck';
 import type {
+  CameraCheck,
   CameraHeightDefaultsResponse,
   CameraReceptionStatus,
   Connectivity,
@@ -147,6 +148,8 @@ export interface Step1CoverageView {
   riskyPairs: string[];
   /** 배지 근거가 지금 것인지(수신 상태를 지금 안다). 아니면 카메라 배지는 「확인 중」이다. */
   fresh: boolean;
+  /** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않아 지금 결과가 없다(배지 「확인 못 함」, S15P31A101-719). */
+  helperLost: boolean;
 }
 
 /** 각도 안내 밖의 배지 근거(S15P31A101-691). */
@@ -155,6 +158,8 @@ export interface Step1BadgeEvidence {
   expired?: boolean;
   /** 직전 보정과 달라진 카메라(재사용 판정 changed_cameras). */
   changedCameras?: readonly string[];
+  /** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않는다(useCoverageHelperLost). */
+  helperLost?: boolean;
 }
 
 /**
@@ -197,6 +202,7 @@ export function deriveStep1Coverage(
   const guides = visibleGuides(cameraIds, latest?.guides ?? [], latestPairs);
   const lacking = riskyPairs(cameraIds, latestPairs);
   const changed = new Set(evidence.changedCameras ?? []);
+  const helperLost = !receptionFresh && evidence.helperLost === true;
 
   const cameras: CoverageCameraView[] = cameraIds.map((id, idx) => {
     const item = latest?.cameras.find((c) => c.camera_id === id);
@@ -214,6 +220,7 @@ export function deriveStep1Coverage(
       changed: changed.has(id),
       lowOverlap: lacking.some((p) => p.a === id || p.b === id),
       hasGuide: cameraGuides.length > 0,
+      helperLost,
     });
     return {
       id,
@@ -283,6 +290,7 @@ export function deriveStep1Coverage(
     pairs,
     riskyPairs: lacking.map((p) => pairLabel(cameraIds, p.a, p.b)),
     fresh: receptionFresh,
+    helperLost,
   };
 }
 
@@ -637,6 +645,8 @@ export interface SetupWaitingView {
   failed: boolean;
   failureCode: string | null;
   failureMessage: string | null;
+  /** 세션의 마지막 카메라 확인 결과(실패 안내가 원인을 고른다, S15P31A101-719). 없으면 null. */
+  cameraCheck: CameraCheck | null;
   heightWarnings: HeightWarningItem[];
   /**
    * 높이 불일치 안내를 보일 시점인지: 실패가 아니고 불일치가 있고, 서버가 높이를 확인한 뒤(40% 부터)다. 높이 빠른 확인(-690)에서
@@ -944,6 +954,7 @@ export function deriveWaitingView(
     failed,
     failureCode: session?.failure_code ?? null,
     failureMessage: session?.failure_message ?? null,
+    cameraCheck: session?.camera_check ?? null,
     heightWarnings,
     showHeightNotice:
       !failed &&

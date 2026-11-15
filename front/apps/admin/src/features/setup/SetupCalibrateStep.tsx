@@ -240,6 +240,7 @@ function FailureNotice({
     waiting.failureMessage,
     waiting.cameraIds,
     changedCameras,
+    { cameraCheck: waiting.cameraCheck, backgroundCollection: waiting.backgroundCollection },
   );
   const newMap = guide.newMap && onRetryNewMap !== undefined;
   const stage =

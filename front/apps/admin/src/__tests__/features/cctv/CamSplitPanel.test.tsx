@@ -245,7 +245,7 @@ describe('CamSplitPanel 관리자 · 중계가 이어지지 않았을 때', () =
     renderPanel();
 
     expect(tabs()).toEqual(['카메라 1', '카메라 2', '카메라 3', '카메라 4']);
-    expect(screen.getByLabelText('카메라 3 판정 지연 180 ms').textContent).toBe('180 ms');
+    expect(screen.getByLabelText('카메라 3 판정 지연 180 ms').textContent).toBe('판정 180 ms');
     expect(screen.queryByRole('img')).toBeNull();
   });
 
