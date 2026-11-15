@@ -5,6 +5,7 @@ import { useReplayStatus, useWorkReplay, type WorkReplay } from '@/features/hist
 import { EventLog } from '@/features/history/WorkLists';
 import { worksLoadingLine } from '@/features/history/works';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
+import { LateSubmitBand } from '@/features/work/past/LateSubmitBand';
 import {
   dayWorksOf,
   emptyReplayReason,
@@ -22,7 +23,7 @@ import { PastReportPanel } from '@/features/work/past/PastReportPanel';
 import type { PastDayProps } from '@/features/work/stageProps';
 import type { WorkDayItem } from '@/features/work/types';
 import { useWorkDays } from '@/features/work/useWorkDays';
-import { formatDayTitle } from '@/features/work/workDay';
+import { formatDayTitle, workProgressOf } from '@/features/work/workDay';
 import type { WorkRun } from '@/lib/workRuns';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -185,7 +186,7 @@ function RightColumn({
 }
 
 /** 지난 날짜 화면. 그날 작업(둘 이상이면 고른 하나)의 구간을 다시 보고, 그 작업의 보고서·이벤트 로그를 옆에 둔다. */
-export function PastDayPage({ date }: PastDayProps) {
+export function PastDayPage({ date, onSubmitted }: PastDayProps) {
   const { data: works, error } = useWorkDays({ from: date, to: date });
   const dayWorks = useMemo(() => works && dayWorksOf(works, date), [works, date]);
   const [pickedId, setPickedId] = useState<string>();
@@ -250,6 +251,9 @@ export function PastDayPage({ date }: PastDayProps) {
   return (
     <div className="flex shrink-0 flex-col gap-3 pb-24">
       {head}
+      {workProgressOf(work) === 'ENDED' && (
+        <LateSubmitBand key={work.work_id} workId={work.work_id} onSubmitted={onSubmitted} />
+      )}
       {range ? (
         emptyReason ? (
           <p
