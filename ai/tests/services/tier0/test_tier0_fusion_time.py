@@ -35,7 +35,7 @@ from simai_ai.io import SimObservationFrameSource  # noqa: E402
 from simai_ai.providers.files import FileCalibrationProvider  # noqa: E402
 from simai_ai.tracking.cross_view import LocalView  # noqa: E402
 from simai_ai.tracking.local_tracker import Observation2DFrame, TrackedDetection  # noqa: E402
-from simai_ai.tracking.time_model import FusionTime  # noqa: E402
+from simai_ai.tracking.time_model import FusionTime, TimeModelConfig  # noqa: E402
 
 START = 1_760_342_400_000
 DURATION = 6000
@@ -244,3 +244,47 @@ def test_fusion_is_deterministic(run_dir) -> None:
     a = [(r.t, r.lagging, r.payload["tracks"]) for r in perceive(run_dir, lag_of(400))[1]]
     b = [(r.t, r.lagging, r.payload["tracks"]) for r in perceive(run_dir, lag_of(400))[1]]
     assert a == b
+
+
+# --------------------------------------------------------------------------- 이어 빠진 늦은 카메라 (S15P31A101-716)
+
+
+def _lag_trace(run: Path, lag: Lag) -> list[tuple[int, tuple[str, ...], tuple[str, ...], dict[str, int]]]:
+    """인지 결과가 난 tick 마다 (t_latest_global 상대 시각, lagging, lagging_sustained, lagging_since)."""
+    rig = CameraRig.from_provider(FileCalibrationProvider(run / "calibration.json"))
+    feed = LagFeed(run, lag)
+    p = Perception(rig, feed, session="fusiontest", scene_version="scene-sim", input_provenance=feed.provenance())
+    out = []
+    for now in range(START, START + DURATION + 600, TICK):
+        r = p.step(now, SurfaceSet())
+        if r is not None:
+            out.append((r.t_latest_global - START, p.lagging, p.lagging_sustained, dict(p.lagging_since)))
+    return out
+
+
+def test_sustained_lag_is_reported_only_after_camera_stall_ms(run_dir) -> None:
+    """끝까지 400 ms 늦은 cam3: 빠지기 시작한 뒤 camera_stall_ms(500) 가 지나야 lagging_sustained 에 오르고, 그 뒤로는 계속 남는다."""
+    stall = TimeModelConfig().camera_stall_ms  # 500 ms(명세 6.4)
+    trace = _lag_trace(run_dir, lag_of(400))
+    lagging = [(rel, sustained, since) for rel, lag, sustained, since in trace if SLOW in lag]
+    assert lagging, "cam3 가 한 번도 늦어 빠지지 않았다"
+    start = lagging[0][2][SLOW]
+    assert all(since[SLOW] == start for _, _, since in lagging)  # 끊김 없이 이어 빠졌다
+    early = [rel for rel, sustained, _ in lagging if SLOW not in sustained]
+    late = [rel for rel, sustained, _ in lagging if SLOW in sustained]
+    assert early and late and max(early) < min(late)
+    assert all(rel - (start - START) < stall for rel in early)
+    assert all(rel - (start - START) >= stall for rel in late)
+
+
+def test_brief_lag_flicker_never_becomes_sustained(run_dir) -> None:
+    """17차 재생처럼 cam3 가 1초마다 200 ms 동안만 400 ms 늦게 온다: 그때마다 한두 tick lagging 에 오르지만(융합에서는 뺀다)
+    이어 빠진 시간이 camera_stall_ms 에 못 미쳐 lagging_sustained 는 늘 비어 있다(R7 감시 저하로 세지 않는다)."""
+
+    def flicker(cam: str, rel: int) -> int:
+        return BASE_LAG + (400 if cam == SLOW and rel % 1000 < 200 else 0)
+
+    trace = _lag_trace(run_dir, flicker)
+    assert sum(1 for _, lag, _, _ in trace if SLOW in lag) >= 3  # 순간 빠짐이 실제로 여러 번 났다
+    assert all(sustained == () for _, _, sustained, _ in trace)
+    assert all(lag or not since for _, lag, _, since in trace)  # 다시 합류하면 시작 시각을 버린다

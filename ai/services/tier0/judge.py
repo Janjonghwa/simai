@@ -498,8 +498,10 @@ class JudgmentLoop:
         if key != self._coverage_key:
             self._coverage = zone_cameras(self.perception.rig, active.zones)
             self._coverage_key = key
-        # 수신 중이어도 늦어서 융합에서 뺀 카메라나 DRIFTED/STREAM_CHANGED 로 제외된 카메라는 그 구역을 관측하지 못한다(R7 정상 카메라·감시 복구 근거 아님, -219, -540)
-        excluded = set(self.perception.lagging) | set(self.perception.excluded_cameras)
+        # 수신 중이어도 늦어서 융합에서 camera_stall_ms 이상 이어 빠진 카메라나 DRIFTED/STREAM_CHANGED 로 제외된 카메라는 그 구역을
+        # 관측하지 못한다(R7 정상 카메라·감시 복구 근거 아님, -219, -540). 한두 tick 늦어 빠진 카메라는 세지 않는다: R7 은 지속 조건
+        # 없이 즉시 나므로 순간 빠짐마다 구역 이벤트가 새로 열렸다(17차 4분 17건, -716)
+        excluded = set(self.perception.lagging_sustained) | set(self.perception.excluded_cameras)
         cameras = tuple(
             CameraMonitor(
                 c.camera_id,
