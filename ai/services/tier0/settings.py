@@ -33,6 +33,9 @@
       "camera_check_enabled": true,            세팅 「카메라 확인」 입력 내보내기(기본 켜짐, LIVE 입력, 워커 요청 파일이 있을 때만 씀)
       "offload_side_work": false,              판정에 안 끼는 곁가지 일(아바타 입력 공유 파일 쓰기)을 spawn 자식 프로세스로 뺀다
                                                (기본 끔. 끄면 지금 경로 그대로, docs/design/S15P31A101-662-tier0-stage-latency.md)
+      "process_split": false,                  검출(수신·디코딩·검출·로컬 추적)을 별도 프로세스로 나눈다(LIVE·file 입력, 기본 끔.
+                                               끄면 지금 단일 프로세스 그대로, docs/design/S15P31A101-728-tier0-process-split.md)
+      "detect_cpus": "none",                   분리 때 검출 프로세스 CPU: none(물려받음) | auto(앞쪽 절반) | 목록 "0-5"
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
       "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
@@ -45,6 +48,8 @@
     SIMAI_ROOT                       Network Volume 루트 (기본 /workspace/simai). state_dir 기본값의 부모
     SIMAI_TIER0_HUMAN_CALIBRATION    사람 관절 보정 감시·후보 경로 (기본 0, 1이면 켬)
     SIMAI_TIER0_OFFLOAD_SIDE_WORK    곁가지 일 프로세스 분리 (0 또는 1, 있으면 설정 파일 offload_side_work 보다 우선, -662)
+    SIMAI_TIER0_PROCESS_SPLIT        검출·판정 프로세스 분리 (0 또는 1, 있으면 설정 파일 process_split 보다 우선, -728)
+    SIMAI_TIER0_DETECT_CPUS          분리 때 검출 프로세스 CPU (none·auto·목록, 있으면 설정 파일 detect_cpus 보다 우선, -728)
     SIMAI_TIER0_CUDA_STREAM_PRIORITY 검출 CUDA 스트림 우선순위 normal(기본)·high (자원 격리, yolo_detector, -662)
     SIMAI_TIER0_ID                   Tier 0 인스턴스 ID (기본 tier0-01)
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
@@ -71,6 +76,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import time
 import urllib.parse
 import uuid
@@ -240,6 +246,10 @@ class Tier0Settings:
     rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
     reid: ReidSettings = field(default_factory=ReidSettings)
     roi_filter: RoiFilterSettings = field(default_factory=RoiFilterSettings)
+    process_split: bool = False
+    """검출·판정 프로세스 분리(기본 끔, S15P31A101-728). LIVE·file 입력에서만 쓴다"""
+    detect_cpus: str = "none"
+    """분리 때 검출 프로세스 CPU: none·auto·목록(SIMAI_TIER0_DETECT_CPUS, -728)"""
 
     @property
     def journal_dir(self) -> Path:
@@ -648,6 +658,17 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if offload_env not in ("0", "1"):
             raise Tier0ConfigError("SIMAI_TIER0_OFFLOAD_SIDE_WORK 는 0 또는 1이다")
         offload_side_work = offload_env == "1"
+    process_split = doc.get("process_split", False)
+    if not isinstance(process_split, bool):
+        raise Tier0ConfigError("process_split 는 bool이다")
+    split_env = (env.get("SIMAI_TIER0_PROCESS_SPLIT") or "").strip()
+    if split_env:
+        if split_env not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_PROCESS_SPLIT 는 0 또는 1이다")
+        process_split = split_env == "1"
+    detect_cpus = (env.get("SIMAI_TIER0_DETECT_CPUS") or "").strip().lower() or doc.get("detect_cpus", "none")
+    if not isinstance(detect_cpus, str) or not re.fullmatch(r"none|auto|\d+(-\d+)?(,\d+(-\d+)?)*", detect_cpus.strip().lower()):
+        raise Tier0ConfigError("detect_cpus(SIMAI_TIER0_DETECT_CPUS) 는 none·auto·CPU 목록(예: 0-5)이다")
     cuda_stream_priority = (env.get("SIMAI_TIER0_CUDA_STREAM_PRIORITY") or "normal").strip().lower()
     if cuda_stream_priority not in ("normal", "high"):
         raise Tier0ConfigError("SIMAI_TIER0_CUDA_STREAM_PRIORITY 는 normal 또는 high 다")
@@ -666,6 +687,8 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         event_frames_enabled=event_frames_enabled,
         camera_check_enabled=camera_check_enabled,
         offload_side_work=offload_side_work,
+        process_split=process_split,
+        detect_cpus=detect_cpus.strip().lower(),
         cuda_stream_priority=cuda_stream_priority,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),

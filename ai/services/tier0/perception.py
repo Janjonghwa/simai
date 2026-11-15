@@ -773,8 +773,12 @@ class Perception:
         def build() -> dict[str, Any]:
             return avatar_metadata(frame, payload, t_latest, images, observations, rig, calibration)
 
+        offer_tick = getattr(self.avatar_writer, "offer_tick", None)
         offer_deferred = getattr(self.avatar_writer, "offer_deferred", None)
-        if offer_deferred is not None:
+        if offer_tick is not None:
+            # 검출·판정 프로세스 분리(-728): 그림은 검출 프로세스에 있다. 이 tick 의 재료만 넘기고 조립·쓰기는 그쪽이 한다
+            offered = offer_tick(frame, payload, t_latest, rig, calibration)
+        elif offer_deferred is not None:
             offered = offer_deferred(build, images)
         else:
             offered = self.avatar_writer.offer(build(), images)
