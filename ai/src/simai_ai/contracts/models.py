@@ -739,6 +739,10 @@ class ReasonCode(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(pattern='^[A-Z][A-Z0-9_]{0,63}$')]
 
 
+class DisabledFeature(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+
+
 class Model(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=200, min_length=1)]
 
@@ -775,6 +779,9 @@ class Payload19(BaseModel):
     reason_code: ReasonCode | None
     detail: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
     progress: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    disabled_features: Annotated[list[DisabledFeature] | MISSING, Field(max_length=20)] = (
+        MISSING
+    )
     reported_at: DefsTimestampMs
     host_cpu: HostCpu | MISSING = MISSING
 

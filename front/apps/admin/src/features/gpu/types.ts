@@ -38,6 +38,8 @@ export const gpuSessionSchema = z.looseObject({
     })
     .nullable()
     .optional(),
+  // 꺼진 기능 문구 목록(S15P31A101-747, 부팅 보고의 disabled_features 마지막 값). 없음·null 은 아직 모름, 빈 배열은 꺼진 것 없음
+  disabled_features: z.array(z.string()).nullable().optional(),
 });
 export type GpuSession = z.infer<typeof gpuSessionSchema>;
 

@@ -302,6 +302,41 @@ class GpuSessionIntegrationTest {
     }
 
     @Test
+    void 꺼진_기능_목록은_보고에서_저장되고_가장_최근_값을_관리자_조회에_준다() throws Exception {
+        JsonNode session = register();
+        UUID id = UUID.fromString(session.get("session_id").stringValue());
+        String admin = "Bearer " + jwt("ADMIN");
+        report(id, "WEIGHTS", null).andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.disabled_features").isEmpty());
+
+        reportWithDisabled(id, "ENGINE", "[\"Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)\",\"PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음\"]")
+                .andExpect(status().isNoContent());
+        // 칸이 없는 다음 보고가 와도 마지막 목록이 남는다
+        report(id, "TIER0", null).andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.stage").value("TIER0"))
+                .andExpect(jsonPath("$.session.disabled_features.length()").value(2))
+                .andExpect(jsonPath("$.session.disabled_features[0]").value("Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)"));
+
+        // 빈 배열은 꺼진 것 없음(마지막 값이 된다)
+        reportWithDisabled(id, "READY", "[]").andExpect(status().isNoContent());
+        mvc.perform(get(GpuPaths.CURRENT).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.session.disabled_features.length()").value(0));
+
+        // 계약에 맞지 않는 값(문자열 하나)은 400
+        reportWithDisabled(id, "READY", "\"Re-ID 꺼짐\"").andExpect(status().isBadRequest());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions reportWithDisabled(UUID id, String stage, String arrayJson) throws Exception {
+        ObjectNode root = (ObjectNode) mapper.readTree(reportBody(bootId, id, stage, null));
+        root.put("schema_version", "1.2.0");
+        ((ObjectNode) root.get("payload")).set("disabled_features", mapper.readTree(arrayJson));
+        return mvc.perform(post("/api/gpu/sessions/" + id + "/reports").header(HttpHeaders.AUTHORIZATION, "Bearer " + bootSecret)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(root)));
+    }
+
+    @Test
     void 무응답이_stale_after_를_넘으면_끝내고_토큰을_폐기하지만_I1_이_붙어_있으면_두다() throws Exception {
         JsonNode session = register();
         UUID id = UUID.fromString(session.get("session_id").stringValue());

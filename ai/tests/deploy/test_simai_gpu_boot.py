@@ -584,6 +584,100 @@ def test_lobby_stage_follows_marker_and_vllm(gb):
     assert gb.lobby_stage(running, t0, True, False, True)[0] == "READY"
 
 
+def test_cache_findings_names_reid_miss_and_cache_trouble(gb):
+    """Re-ID 묶음 캐시 miss 가 보고에 올라간다(18차: 로그에만 남아 3세션 동안 몰랐다). 엔진·vLLM 캐시 miss 도 함께."""
+    got = gb.cache_findings({"reid": "miss", "trt-engine": "miss", "vllm-compile": "error"}, reid_is_ready=False)
+    assert got["reid"] == "Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)"
+    assert "엔진을 새로 빌드" in got["cache_trt"] and "받기 오류" in got["cache_vllm"]
+    assert "reid" not in gb.cache_findings({"reid": "miss"}, reid_is_ready=True)  # 손으로 둔 묶음이 있으면 꺼짐 아님
+    assert "받기 error" in gb.cache_findings({"reid": "error"}, False)["reid"]
+    assert gb.cache_findings({"trt-engine": "hit", "vllm-compile": "hit"}, True) == {}
+
+
+def test_service_findings_lists_services_not_started(gb):
+    assert gb.service_findings(["tier0", "vllm", "worker", "avatar", "ppe"], True) == {}
+    got = gb.service_findings(["tier0", "vllm", "worker", "avatar"], True)
+    assert list(got) == ["svc_ppe"] and "PPE" in got["svc_ppe"]
+    got = gb.service_findings(["tier0"], False)
+    assert set(got) == {"svc_ppe", "svc_avatar", "svc_worker", "svc_vllm"}
+    assert "svc_vllm" in gb.service_findings(["tier0", "vllm", "worker"], False)  # VRAM 부족이면 서비스 목록에 있어도 꺼짐
+
+
+def test_tier0_findings_reads_only_what_the_status_says(gb):
+    assert gb.tier0_findings(None) == {} and gb.tier0_findings({"gpu_priority": {}}) == {}  # 상태 칸이 없으면 지어내지 않는다
+    doc = {"status": {"disabled_features": ["Re-ID 꺼짐: FileNotFoundError: cope", "live_calibration.enabled=true(설정 파일)인데 x"],
+                      "process_split": {"disabled": ["reid", "clean_background"]}}}
+    got = gb.tier0_findings(doc)
+    assert got["reid"].startswith("Tier 0: Re-ID 꺼짐") and got["process_split"] == "프로세스 분리로 꺼짐: reid, clean_background"
+    assert any("live_calibration" in v for v in got.values())
+    assert gb.tier0_findings({"status": {"disabled_features": [], "process_split": None}}) == {}
+
+
+def test_reporter_sends_disabled_features_only_once_known_and_matches_contract(gb):
+    rep = gb.Reporter(gb.Http(allow_http=True), "http://127.0.0.1:1", "gpu-boot-runpod", SECRET, SESSION, 3600)
+    rep.set("WEIGHTS", detail="x")
+    assert "disabled_features" not in rep.payload()  # 아직 모름: 칸을 싣지 않는다
+    rep.set_disabled("start")
+    assert rep.payload()["disabled_features"] == []  # 확인했고 꺼진 것 없음
+    rep.set_disabled("reid", "Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)")
+    rep.set_disabled("reid", "Re-ID 꺼짐 — Tier 0 가 이유를 알림")  # 같은 기능은 덮어쓴다
+    rep.set_disabled("svc_ppe", "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음")
+    payload = rep.payload()
+    assert payload["disabled_features"] == ["Re-ID 꺼짐 — Tier 0 가 이유를 알림", "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음"]
+    doc = gb.envelope("gpu_session_report", "gpu-boot-runpod", payload)
+    assert doc["schema_version"] == "1.2.0"
+    errors = list(_validator("gpu_session_report").iter_errors(doc))
+    assert not errors, errors
+    assert gb.envelope("gpu_session_register", "x", {})["schema_version"] == "1.0.0"  # 다른 메시지 판은 그대로
+
+
+def test_dummy_png_is_a_valid_small_png(gb):
+    import struct
+    import zlib
+
+    png = gb.dummy_png(8, 4)
+    assert png[1:4] == b"PNG" and png[:1] == bytes([0x89])
+    assert struct.unpack(">II", png[16:24]) == (8, 4)
+    idat = png.index(b"IDAT")
+    size = struct.unpack(">I", png[idat - 4:idat])[0]
+    assert len(zlib.decompress(png[idat + 4:idat + 4 + size])) == 4 * (1 + 8 * 3)
+    assert len(gb.dummy_png()) < 20_000  # 작다
+
+
+def test_warmup_vlm_sends_the_real_request_shape_and_never_raises(gb):
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "그라데이션"}}]}).encode()
+
+    def opener(req, timeout):
+        seen["url"], seen["body"], seen["timeout"] = req.full_url, json.loads(req.data), timeout
+        return Resp()
+
+    ticks = iter([10.0, 31.5])
+    ok, took, why = gb.warmup_vlm({"SIMAI_VLLM_PORT": "8001"}, opener=opener, clock=lambda: next(ticks))
+    assert ok and took == pytest.approx(21.5) and why == "응답 받음"
+    assert seen["url"] == "http://127.0.0.1:8001/v1/chat/completions" and seen["timeout"] == gb.WARMUP_TIMEOUT_S
+    body = seen["body"]
+    assert body["model"] == "cosmos3-nano" and body["repetition_penalty"] == 1.05  # vlm/client.py 의 요청과 같은 모양
+    parts = body["messages"][0]["content"]
+    assert [p["type"] for p in parts] == ["text", "image_url"] and parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def boom(req, timeout):
+        raise OSError("refused")
+
+    ticks = iter([1.0, 1.2])
+    ok, took, why = gb.warmup_vlm({}, opener=boom, clock=lambda: next(ticks))
+    assert not ok and why == "OSError" and took == pytest.approx(0.2)
+
+
 def test_redact_hides_secrets_and_signed_query(gb):
     gb._secrets.add("very-secret-value")
     text = gb.redact("token=very-secret-value url=https://b.s3.amazonaws.com/k.tar?X-Amz-Signature=abc hf_" + "a" * 25)

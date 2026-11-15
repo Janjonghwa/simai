@@ -400,6 +400,8 @@ class Tier0Service:
             self.previous_unclean = True
             log.warning("이전 Tier 0 실행이 정상 종료하지 않았다(%s 가 남아 있다). 저널·체크포인트로 복구한다", s.live_marker)
         self._clear_clean_stop()
+        for text in s.config_overrides:  # 설정 파일 값이 환경 변수 때문에 효과 없음(S15P31A101-747): 조용히 넘어가지 않는다
+            log.warning("설정 무효: %s", text)
         self._write_phase_marker(STARTING)
         try:
             self.gpu.acquire()  # 실패해도 예외를 내지 않는다(상태로 남김). 판정이 먼저다
@@ -1858,6 +1860,7 @@ class Tier0Service:
                 # 곁가지 분리(-662) 상태·재시작 수. 꺼져 있으면 None
                 "offload": avatar_writer.status() if hasattr(avatar_writer, "status") else None},
             "reid": None if self.reid_collector is None else self.reid_collector.status(),
+            "disabled_features": self._disabled_features(),
             "reid_submission": (self.perception.feed.reid_submission_status()
                                 if isinstance(getattr(self.perception, "feed", None), (DetectorFeed, SplitDetectorFeed))
                                 else None),
@@ -1888,6 +1891,15 @@ class Tier0Service:
             "pair_thresholds": (None if getattr(self, "perception", None) is None
                                 else self.perception.associator.pair_threshold_snapshot()),
         }
+
+    def _disabled_features(self) -> list[str]:
+        """꺼져 있어서 사람이 알아야 하는 기능(S15P31A101-747, 부팅 보고기가 표시 파일 status 에서 읽어 GPU 세션 보고에 싣는다).
+        설정 파일 값이 환경 변수에 덮인 것과, Re-ID 가 가중치·CUDA 부재로 꺼진 것. 근거 있는 것만 싣는다."""
+        out = list(self.settings.config_overrides)
+        rc = self.reid_collector
+        if rc is not None and getattr(rc, "state", None) == "disabled":
+            out.append(f"Re-ID 꺼짐: {getattr(rc, 'reason', None) or '이유 모름'}")
+        return out
 
     def _sample_load(self) -> None:
         """분석 워커 접수 문의 지연 표본(simai_ai.gpu.admission): 보정 T_lag. 모르면(시계 차이 모름·프레임 없음) None.

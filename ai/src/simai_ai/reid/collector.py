@@ -545,11 +545,12 @@ class AsyncReidCollector:
                 if not torch.cuda.is_available():
                     self.state = "disabled"
                     self.reason = "cuda_unavailable"
-                    log.info("Re-ID 비활성화: CUDA 장치를 사용할 수 없다")
+                    log.warning("Re-ID 비활성화: CUDA 장치를 사용할 수 없다")
                     return
             except ImportError:
                 self.state = "disabled"
                 self.reason = "torch_unavailable"
+                log.warning("Re-ID 비활성화: torch 를 불러올 수 없다")
                 return
 
         try:
@@ -564,7 +565,7 @@ class AsyncReidCollector:
             self._embedder = None
             self.state = "disabled"
             self.reason = f"{type(exc).__name__}: {exc}"
-            log.info("Re-ID 비활성화(기존 기하 추적으로 동작): %s", self.reason)
+            log.warning("Re-ID 비활성화(기존 기하 추적으로 동작): %s", self.reason)
 
     @property
     def active(self) -> bool:

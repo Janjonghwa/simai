@@ -1,5 +1,6 @@
 import {
   autoStopText,
+  disabledFeatureWarnings,
   formatElapsed,
   formatRegion,
   formatUsd,
@@ -36,6 +37,7 @@ export function GpuInfoLines() {
   const autoStop = autoStopText(status, serverNow, idleMinutes);
   const reason = gpuErrorReason(status);
   const cpuWarning = hostCpuWarning(status);
+  const disabled = disabledFeatureWarnings(status);
   return (
     <div className="flex flex-col gap-1 text-sm">
       {summary && (
@@ -76,6 +78,11 @@ export function GpuInfoLines() {
           {cpuWarning}
         </span>
       )}
+      {disabled.map((text) => (
+        <span key={text} role="status" className="text-xs font-semibold text-delay">
+          {text}
+        </span>
+      ))}
     </div>
   );
 }

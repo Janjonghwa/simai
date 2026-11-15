@@ -692,6 +692,24 @@ SSH 는 호스트(시작 템플릿 키 페어, `ubuntu`)로 들어가 `sudo dock
 자동 부팅이 FAILED 로 기다리는 Pod 에서는 이미 받은 토큰 파일(`gpu-session/session.json` 에 경로)과 `gpu-session/lobby-bundle/` 을 `start-lobby` 의 `--worker-token-file`·`--tier0-token-file`·`--bundle-dir` 로 그대로 쓴다.
 Re-ID 캐시가 아직 없으면 손으로 `$SIMAI_ROOT/reid` 에 올린 뒤 `simai-gpu-boot seed-reid` 로 한 번 올린다(자동 부팅은 READY 뒤 그 폴더가 있고 캐시에 없으면 스스로 올린다).
 
+**꺼진 기능 보고와 VLM 웜업(S15P31A101-747, 18차 감사).** Re-ID 묶음 캐시 miss·설정 무효가 로그에만 남아 3세션 동안 아무도 몰랐던 일을 막는다.
+- 부팅 보고(`gpu_session_report` 1.2.0)의 선택 `disabled_features` 에 문구를 싣는다. 캐시 결과(Re-ID 묶음 없음 → 「Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)」, 엔진·vLLM 컴파일 캐시 miss·받기 오류), 기동하지 않는 서비스(PPE·아바타·워커·VLM), Tier 0 표시 파일 `state/tier0.live` 의 `status.disabled_features`(설정 파일 값을 환경 변수가 무효로 만든 것, Re-ID 가 가중치·CUDA 부재로 꺼진 이유)와 `status.process_split.disabled`, VLM 웜업 실패·vLLM 미준비. 근거가 있는 것만 싣고 모르는 것은 싣지 않는다. 캐시 결과까지 확인한 뒤부터 칸을 싣고(빈 배열 = 꺼진 것 없음), EC2 가 마지막 값을 저장해 관리자 `GET /api/gpu/sessions/current` 의 `session.disabled_features` 로 주며 GPU 패널(준비 완료 뒤)이 경고 줄로 보인다(조작 없음).
+- Tier 0 는 기동 때 `설정 무효: …` WARNING 을 낸다(예: `live_calibration.enabled=true`(설정 파일)인데 `SIMAI_TIER0_HUMAN_CALIBRATION=0`, 설정 파일의 `offload_side_work`·`process_split` 를 환경 변수가 뒤집은 경우). Re-ID 가 꺼지면 WARNING(전에는 INFO).
+- READY 보고 전에 vLLM `/health` 200 직후 더미 멀티모달 요청 1회(`POST 127.0.0.1:$SIMAI_VLLM_PORT/v1/chat/completions`, 작은 합성 PNG 336x192 data URL, `repetition_penalty` 1.05, `max_tokens` 16 = 워커 VLM 클라이언트와 같은 경로·형식)를 보낸다. 18차에서 첫 `vlm_rationale` 이 추론 중 Triton JIT 3건으로 TIMED_OUT, 둘째 2.2 s, 이후 1.1 s 였다. 걸린 시간은 로그 `VLM 웜업 성공: N초`와 보고 설명(「VLM 웜업 N초」)에 남고, 실패·시간 초과(`SIMAI_BOOT_VLM_WARMUP_TIMEOUT_S`, 120)여도 부팅은 계속하며 꺼진 기능에 「VLM 웜업 실패」가 오른다. 웜업 동안 보고 단계는 VLLM 에 머문다.
+
+**부팅 직후 확인 체크리스트(S15P31A101-747).** READY 가 뜬 뒤 첫 5분 안에 본다(Pod `$SIMAI_ROOT` 기준, `W=$(ls -dt $SIMAI_ROOT/runs/lobby-gpu-* | head -1)`).
+
+| 확인 | 어떻게 | 정상 |
+|---|---|---|
+| Re-ID 상태 | 관리자 GPU 패널 경고 줄(없으면 정상) 또는 `jq '.status.reid.state, .status.disabled_features' $W/state/tier0.live` | `active`, 경고 없음. `disabled` 면 이유가 나온다(묶음 없음이면 `simai-gpu-boot seed-reid` 후 Tier 0 재시작) |
+| 프로세스 분리 | `jq '.status.process_split' $W/state/tier0.live` | 설정대로(`null` = 단일 프로세스). 분리면 `disabled` 목록에 reid·clean_background 가 보인다 |
+| 회전 복구 이월 없음 | `jq '.status.calibration.rotation_recovery, .status.calibration.live_candidate, .status.calibration.state' $W/state/tier0.live` 와 `logs/tier0.log` 의 회전 복구 줄 | 이전 세션 값이 이월돼 보이지 않는다(새 세션은 처음 상태) |
+| vLLM AOT·JIT 없음 | `logs/vllm.log` 에서 `grep -ciE "triton|compil|jit" ` 증가가 웜업 이후 멈춤, 웜업 로그 `VLM 웜업 성공: N초` | 웜업 뒤 새 JIT·컴파일 줄이 없다. 첫 근거 요청이 웜업 시간보다 훨씬 빠르다 |
+| 워커 VLM 준비·접수 | `logs/worker.log` 의 `VLM 작업 유형은 …/health 가 200 일 때만 받는다`, 이후 작업 접수 줄 | vLLM `/health` 200 뒤 `vlm_rationale` 을 받는다(TIMED_OUT 없음) |
+| PPE published 증가 | `logs/ppe.log` 의 계측 `published` 누계(`ai/services/ppe/loop.py` counts, 줄이 없으면 EC2 에서 `ppe_state` 최신 수신 시각) | 사람이 보이는 동안 늘어난다. 서비스 목록에 없으면 패널에 「PPE(보호구) 감시 꺼짐」 |
+| 아바타 assets_confirmed 증가 | `logs/worker.log` 의 `아바타 입력 상태: … assets_confirmed=N`(60초마다) | 사람이 보이면 N 이 늘어난다. 목록에 없으면 패널에 「아바타 꺼짐」 |
+| system_health calibration_state | 관제 화면 상태 또는 EC2 `system_health` 의 `calibration_state` | 현장 보정 버전이 적용된 상태(`CALIBRATED`). 아니면 세팅·보정을 먼저 한다 |
+
 ### GPU 세션 시작·끝 절차 (S15P31A101-652, 14차 세션 기준)
 
 14차 세션에서 동결을 처음 써 보니 설치·해제 순서가 문서에 흩어져 있었다. 아래 순서를 그대로 따른다(EC2 호스트). `/opt/simai/repo` 는 마지막 배포가 푼 dev 판이다(`REVISION` 파일). 그 뒤 머지된 스크립트 변경을 넣으려면 먼저 배포가 끝났는지 본다.
