@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from simai_recorder.capture_time import ReceiveTimeEstimator
+from simai_recorder.capture_time import CaptureTime, ReceiveTimeEstimator
 from simai_recorder.clock import Clock
 from simai_recorder.i0 import build_codec_info, build_frame_header, pts_timebase_string
 from simai_recorder.recorder import CameraSpec
@@ -31,6 +31,7 @@ from simai_recorder.sources import PacketSource, SourceError, StreamInfo, releas
 
 from simai_relay.epoch_store import EpochStore
 from simai_relay.link_stats import CameraLinkStats
+from simai_relay.replay_sidecar import ReplayPacket
 from simai_relay.sink import CameraSink, I0CodecInfo, I0Frame, SinkFactory
 
 log = logging.getLogger("simai_relay")
@@ -177,13 +178,17 @@ class CameraRelay:
                 self.stats.on_stream_started(codec[0], dropped)
                 self._event(logging.INFO, "stream_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 sequence = 0
-            raised = estimator.raised
-            t = estimator.estimate(received_at_ms, packet.pts)
-            if estimator.raised != raised and sequence >= RAISE_BURST_FRAMES:
-                self._raised_after_burst = True
-            if estimator.broken_since == sequence:
-                self._event(logging.WARNING, "pts_timeline_broken", stream_epoch=epoch, frame_sequence=sequence,
-                            clock=estimator.mode)
+            if isinstance(packet, ReplayPacket):
+                # 사이드카 재생(-721): 녹화 원본 촬영 시각을 공통 재생 시각축에 옮긴 값(앞으로만 간다, replay_sidecar 모듈 설명)
+                t = CaptureTime(packet.capture_time_ms, packet.uncertainty_ms)
+            else:
+                raised = estimator.raised
+                t = estimator.estimate(received_at_ms, packet.pts)
+                if estimator.raised != raised and sequence >= RAISE_BURST_FRAMES:
+                    self._raised_after_burst = True
+                if estimator.broken_since == sequence:
+                    self._event(logging.WARNING, "pts_timeline_broken", stream_epoch=epoch, frame_sequence=sequence,
+                                clock=estimator.mode)
             header = build_frame_header(cid, epoch, sequence, packet, timebase, model, t, received_at_ms)
             self.stats.on_frame(header)
             self.sink.send_frame(I0Frame(header, packet.data))

@@ -40,13 +40,14 @@ src/simai_relay/
   remote.py       CCTV 원격 시청 업로드(EC2 wss /ws/devices/cctv, 보는 사람이 있을 때만, 허브는 로컬 미리보기와 따로)
   recording.py    관제 중계 동시 녹화(--record-dir, 카메라별 비차단 큐·세그먼트 쓰기·디스크 하한·manifest 생성)
   bench.py        G0 전송 비교 측정: 카메라별 연결 vs 단일 연결 다중화 (bench-transport)
-  config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets)
-  cli.py          simai-relay run
+  config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets), 재생 불확실성 기동 점검
+  replay_sidecar.py 녹화 사이드카 촬영 시각 재생(timing = "sidecar")과 사이드카 자르기(sidecar-cut)
+  cli.py          simai-relay run · bench-transport · sidecar-cut
 configs/          example.toml(실제 카메라), lobby.toml(로비 카메라 4대, 게이트웨이 도우미 gateway/ops 기본), dry-run.toml(카메라 없이), file-playback.toml(녹화 파일 재생)
 tests/            시험 (카메라 없이 돈다)
 ```
 
-카메라마다 스레드 하나와 CameraSink 하나가 있고 카메라 사이에 공유하는 잠금·큐가 없다. 한 카메라의 수신이 멈추거나
+카메라마다 스레드 하나와 CameraSink 하나가 있고 카메라 사이에 공유하는 잠금·큐가 없다(사이드카 재생의 공통 원점은 처음 정할 때 한 번만 잠근다). 한 카메라의 수신이 멈추거나
 전송이 막혀도 다른 카메라는 계속 돈다(시험 `test_one_camera_stall_does_not_block_others`).
 
 Tier 0 영상 연결의 connect 가 Windows WinError 10014(일시 오류, 보안 프로그램 후보)로 실패하면 새 소켓으로 0.3 s 안에서 다시
@@ -120,8 +121,35 @@ p95 14 ms·최대 15 ms 를 덮었다. Tier 0 `cross_view.py` 가 가져오는 `
 공통 `[capture_time]` 이 파일 기본값보다 우선하고, `[[cameras]].capture_time` 이 공통값보다 우선한다.
 원본 촬영 때의 불확실성을 복원하는 기능이 아니며, 실제 RTSP 촬영 성능이나 G0 측정을 대신하지 않는다.
 
+### 사이드카 촬영 시각 재생 (`timing = "sidecar"`, S15P31A101-721)
+
+fps 재생은 카메라마다 정확히 설정 fps 로 내보내므로, 실제 카메라(24.94~24.98 fps)로 찍은 녹화를 재생하면 카메라 사이 촬영
+시각이 10분에 0.6~0.8 s 어긋난다(17차 작업 구간 188~342 ms). `[replay] timing = "sidecar"`(카메라별 `timing` 으로 덮을 수 있음)면
+녹화 사이드카(`<영상 이름>.frames.jsonl`, 녹화 도구·`--record-dir` 가 남김. 다른 곳이면 카메라별 `sidecar = "..."`)의 촬영 시각으로
+내보낸다.
+
+- 네 카메라가 한 재생 시각축을 같이 쓴다: 재생 시각 = 공통 원점 + 회차 × 공통 순환 길이 + (촬영 시각 − 네 카메라 첫 촬영 시각 중
+  최소). 원점은 처음 연 카메라가 지금 + 0.5 s 로 정한다. 기동 로그 `replay_anchor anchor_wall_ms=… recording_ref_ms=…` 가 원본
+  절대 시각과의 대응이다.
+- `estimated_capture_time_ms` 는 그 예정 시각(송신 지터는 들지 않음), `timestamp_uncertainty_ms` 는 녹화 원본 값 그대로다(25 ms 를
+  넘는 프레임 비율을 기동 로그 `sidecar_uncertainty_over_tier0` 로 알린다. 14차 녹화 cam_A 는 132700 장 중 145 장).
+- 사이드카보다 영상이 길면 남는 프레임은 촬영 시각을 모르므로 보내지 않고, 개수가 어긋나면 `sidecar_frame_count_mismatch` WARNING.
+  사이드카가 없으면 `sidecar_missing` WARNING 후 fps 재생이다.
+
+잘라 붙인 영상은 같은 촬영 시각 구간으로 사이드카도 자른다. 구간은 UTC ms `START:END`(끝 미포함)이고 네 카메라에 같은 구간을 준다.
+결과 줄에는 원본 header 그대로에 `replay_offset_ms`(앞 구간 길이 합 + 구간 안 시각, 구간 사이 빈 시간은 건너뜀)가 붙고, 재생은 그 값을
+쓴다. 출력의 `first_index`·`end_index` 는 원본 프레임 번호 [시작, 끝)이라 영상도 같은 프레임으로 잘라야 한다(14차 `cut_hq.py` 의
+`첫 t ≥ 시작 … 첫 t ≥ 끝` 과 같은 규칙).
+
+```sh
+uv run simai-relay sidecar-cut rec14/cam_A.frames.jsonl rec14/cam_B.frames.jsonl rec14/cam_C.frames.jsonl rec14/cam_D.frames.jsonl \
+  --range 1794459760429:1794460000429 --range 1794462520429:1794463120429 --range 1794463660429:1794464200429 --out-dir rec14/hq
+```
+
 **녹화 재생에서 Tier 0 트랙이 0개면** 먼저 I0 헤더의 `timestamp_uncertainty_ms` 가 25 ms 를 넘는지 확인한다.
-45 ms 가 계속 나오면 `kind = "file"`·`realtime = true` 와 공통/카메라별 `uncertainty_no_pts_ms` 명시값을 확인한다.
+실시간 파일(fps 재생)의 불확실성 설정이 25 ms 를 넘으면 relay 가 기동에서 거부한다(-721, 일부러 넘기려면
+`[replay] allow_uncertainty_over_tier0 = true`, 그때는 큰 WARNING). 그래도 45 ms 가 나오면 `kind = "file"`·`realtime = true` 와
+공통/카메라별 `uncertainty_no_pts_ms` 명시값을 확인한다.
 RTSP 예시의 공통 45 ms 를 복사했다면 파일 설정에서 제거하거나 카메라별 20 ms 로 덮는다. 불확실성이 작아도 트랙이 없으면
 카메라 간 재생 시작 오프셋·원본 동기화·보정·검출을 확인한다. 단순히 불확실성만 낮춰 실제 오차를 숨기지 않는다.
 값의 근거와 시험 위치는 [설계](../../docs/design/relay-file-capture-time.md)에 적었다.

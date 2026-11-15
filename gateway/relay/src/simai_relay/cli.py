@@ -5,6 +5,7 @@
     uv run simai-relay run --config configs/my-cameras.toml --preview-port 47032  # 관제 앱 CCTV 로컬 미리보기(127.0.0.1)
     uv run simai-relay run --config configs/my-cameras.toml --remote-cctv         # 노트북 밖 관리자 원격 시청(EC2 경유)
     uv run simai-relay bench-transport --seconds 20                               # 카메라별 연결 vs 단일 연결 다중화
+    uv run simai-relay sidecar-cut cam_*.frames.jsonl --range S:E --out-dir cut   # 잘라 붙인 재생 파일의 사이드카(-721)
 
 --send 는 .env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN·SIMAI_TIER0_PINNED_SPKI_SHA256 로 Tier 0 엔드포인트를 조회하고
 카메라마다 TLS 연결을 연다(tls_sink). 없으면 CountingSink 로 개수만 센다. 카메라별 상태·측정을 주기적으로 로그에 쓴다.
@@ -248,12 +249,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--record-queue-frames", type=int, default=DEFAULT_RECORD_QUEUE_FRAMES,
                      help=f"카메라별 녹화 큐 프레임 상한 (기본 {DEFAULT_RECORD_QUEUE_FRAMES}). 넘치면 녹화 프레임만 버림")
     run.add_argument("--verbose", action="store_true")
-    from simai_relay import bench
+    from simai_relay import bench, replay_sidecar
 
     bench.add_parser(sub)
+    replay_sidecar.add_parser(sub)
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "bench-transport":
         return bench.cmd_bench(args)
+    if args.command == "sidecar-cut":
+        return replay_sidecar.cmd_cut(args)
     return 2
