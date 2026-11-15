@@ -307,6 +307,35 @@ class WatchAlertIntegrationTest {
         assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", event)).isEqualTo(2);
     }
 
+    @Test
+    void 같은_사람의_동시_이벤트는_최상위_하나만_진동하고_해소되면_남은_최상위를_보낸다() throws Exception {
+        // S15P31A101-723: 17차처럼 R2(CRITICAL)·R3(HIGH)·R5(CAUTION)가 한 사람에게 함께 열리면 진동은 R2 하나
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID r2 = liveEvent("R2", "CRITICAL", "RAISED", "LIVE", worldId);
+        UUID r3 = liveEvent("R3", "HIGH", "RAISED", "LIVE", worldId);
+        UUID r5 = liveEvent("R5", "CAUTION", "RAISED", "LIVE", worldId);
+
+        alerts.alert(r2);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r2.toString());
+        alerts.alert(r3);
+        alerts.alert(r5);
+        assertThat(watch.poll(400)).as("같은 사람의 열린 상위 진동에 묶인다").isNull();
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id IN (?, ?)", r3, r5)).isZero();
+
+        jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED', resolved_at = now() WHERE event_id = ?", r2);
+        alerts.alert(r2);
+        assertThat(watch.next("watch_alert_clear").path("payload").path("event_id").asString()).isEqualTo(r2.toString());
+        JsonNode next = watch.next("watch_alert");
+        assertThat(next.path("payload").path("event_id").asString()).as("남은 것 중 최상위(R3 HIGH)").isEqualTo(r3.toString());
+        assertThat(next.path("payload").path("severity").asString()).isEqualTo("HIGH");
+        assertThat(watch.poll(400)).as("R5 CAUTION 은 R3 에 묶인다").isNull();
+
+        jdbc.update("UPDATE risk_event SET severity = 'CRITICAL', lifecycle = 'UPDATED' WHERE event_id = ?", r5);
+        alerts.alert(r5);
+        assertThat(watch.next("watch_alert").path("payload").path("severity").asString()).as("상향되면 울린다").isEqualTo("CRITICAL");
+    }
+
     // ------------------------------------------------------------------ 해소 통지·재발송·AUDIT_ONLY (S15P31A101-634)
 
     @Test
@@ -424,7 +453,8 @@ class WatchAlertIntegrationTest {
         waitUntil(() -> count("SELECT count(*) FROM watch_alert WHERE event_id = ? AND confirm_received_at IS NOT NULL",
                 confirmed) == 1, 3_000);
 
-        UUID resolved = liveEvent("R2", "HIGH", "RAISED", "LIVE", worldId);
+        // 같은 사람의 열린 HIGH 가 있으면 같은 등급은 묶여 진동하지 않으므로(-723) 높은 등급으로 연다
+        UUID resolved = liveEvent("R2", "CRITICAL", "RAISED", "LIVE", worldId);
         alerts.alert(resolved);
         watch.next("watch_alert");
         jdbc.update("UPDATE risk_event SET lifecycle = 'RESOLVED' WHERE event_id = ?", resolved);

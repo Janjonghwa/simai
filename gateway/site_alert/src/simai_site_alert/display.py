@@ -69,6 +69,11 @@ def control_line(connected: bool | None) -> str:
 
 def ack_text(alert: ActiveAlert) -> str:
     if not alert.acknowledged:
+        # 소리 결정은 Tier 0 의 sound_mode 다(S15P31A101-497). 같은 사람 상위 경보가 이미 울리면 SILENT 로 온다(-723).
+        if alert.sound_mode == "SILENT":
+            return "확인 전 · 소리 없음(같은 사람 상위 경보·최근 확인)"
+        if alert.sound_mode == "ONCE":
+            return "확인 전 · 한 번 울림"
         return "확인 전 · 소리 반복 중"
     if alert.ack is None:
         return "확인됨"
@@ -90,6 +95,27 @@ def alert_line(alert: ActiveAlert) -> str:
     return " | ".join(parts)
 
 
+MEMBER_PREFIX = "  └ 같은 사람 "
+
+
+def group_by_person(alerts: tuple[ActiveAlert, ...]) -> list[tuple[ActiveAlert, tuple[ActiveAlert, ...]]]:
+    """같은 사람(world_id 가 겹침)의 경보를 표시 순서상 첫 경보(가장 높은 등급) 아래로 묶는다(명세 7.4, S15P31A101-723).
+
+    묶음은 표시만 바꾼다. 경보마다 줄·현장 확인 버튼·확인 상태는 그대로 둔다(확인은 이벤트마다, 명세 3.10).
+    world_id 를 모르는 경보(재동기화 목록으로만 안 경보)는 묶지 않는다.
+    """
+    groups: list[tuple[ActiveAlert, list[ActiveAlert], set[str]]] = []
+    for alert in alerts:
+        worlds = set(alert.world_ids)
+        group = next((g for g in groups if worlds and worlds & g[2]), None)
+        if group is None:
+            groups.append((alert, [], worlds))
+        else:
+            group[1].append(alert)
+            group[2].update(worlds)
+    return [(leader, tuple(members)) for leader, members, _ in groups]
+
+
 def render_lines(state: ScreenState) -> list[str]:
     lines: list[str] = []
     if state.sound_fault:
@@ -108,7 +134,9 @@ def render_lines(state: ScreenState) -> list[str]:
         lines.append(f"현장 확인 {state.pending_site_acks}건 Tier 0 기록 대기")
     if not state.alerts:
         lines.append("활성 현장 경보 없음")
-    lines.extend(alert_line(a) for a in state.alerts)
+    for leader, members in group_by_person(state.alerts):
+        lines.append(alert_line(leader))
+        lines.extend(MEMBER_PREFIX + alert_line(m) for m in members)
     return lines
 
 
@@ -247,19 +275,21 @@ class TkDisplay:
             tk.Label(self._alerts, text="활성 현장 경보 없음", font=("Malgun Gothic", 18), fg="#aaaaaa", bg="#202020").pack(
                 anchor="w", pady=4
             )
-        for alert in state.alerts:
+        rows = [(a, a is not leader) for leader, members in group_by_person(state.alerts) for a in (leader, *members)]
+        for alert, member in rows:
             row = tk.Frame(self._alerts, bg="#111111")
-            row.pack(fill="x", pady=6)
+            # 같은 사람 하위 경보는 들여 쓰고 작게 그린다(묶음 표시, -723). 확인 버튼은 경보마다 둔다.
+            row.pack(fill="x", pady=(0, 4) if member else 6, padx=(48, 0) if member else 0)
             tk.Label(
                 row,
-                text=alert_line(alert),
-                font=("Malgun Gothic", 22 if alert.severity == "CRITICAL" else 18, "bold"),
-                fg="white",
+                text=(MEMBER_PREFIX.strip() + " " + alert_line(alert)) if member else alert_line(alert),
+                font=("Malgun Gothic", 14 if member else 22 if alert.severity == "CRITICAL" else 18, "bold"),
+                fg="#dddddd" if member else "white",
                 bg="#111111",
                 anchor="w",
                 justify="left",
-                wraplength=820,
-            ).pack(side="left", fill="x", expand=True, padx=8, pady=8)
+                wraplength=780 if member else 820,
+            ).pack(side="left", fill="x", expand=True, padx=8, pady=4 if member else 8)
             tk.Button(
                 row,
                 text="현장 확인",

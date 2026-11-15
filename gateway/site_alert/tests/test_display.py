@@ -7,7 +7,7 @@ import io
 import pytest
 
 from simai_site_alert.bench import local_alert, uuid7
-from simai_site_alert.core import SiteAlertCore
+from simai_site_alert.core import ActiveAlert, SiteAlertCore
 from simai_site_alert.display import TextDisplay, render_lines
 
 
@@ -26,6 +26,37 @@ def test_alert_line_contents(core: SiteAlertCore) -> None:
     lines = render_lines(core.screen_state())
     assert "현장 확인 1건 Tier 0 기록 대기" in lines
     assert lines[-1].endswith("확인됨(현장 확인 버튼, Tier 0 기록 대기)")
+
+
+def test_same_person_alerts_group_under_top_severity(core: SiteAlertCore) -> None:
+    """S15P31A101-723: 같은 사람(world_id 겹침)의 하위 경보는 최상위 경보 아래에 묶어 보이고, 소리 없음(SILENT)을 그대로 쓴다."""
+    r2, r3, other = uuid7(), uuid7(), uuid7()
+    core.handle(local_alert(r2, 1, "RAISED", rule_id="R2", zone_id=None, world_ids=["w-1"], summary="R2"))
+    core.handle(local_alert(r3, 1, "RAISED", severity="HIGH", rule_id="R3", zone_id=None, world_ids=["w-1"], summary="R3",
+                            sound_mode="SILENT"))
+    core.handle(local_alert(other, 1, "RAISED", severity="HIGH", rule_id="R1", zone_id="z-1", world_ids=["w-2"], summary="R1"))
+    lines = render_lines(core.screen_state())
+    assert lines[-3:] == [
+        "[위험] | R2 | R2 | 확인 전 · 소리 반복 중",
+        "  └ 같은 사람 [경고] | R3 | R3 | 확인 전 · 소리 없음(같은 사람 상위 경보·최근 확인)",
+        "[경고] | R1 · z-1 | R1 | 확인 전 · 소리 반복 중",
+    ]
+    assert len(core.screen_state().alerts) == 3  # 묶음은 표시만: 경보·확인 대상은 그대로 셋
+
+
+def test_group_by_person_skips_unknown_worlds() -> None:
+    from dataclasses import replace
+
+    from simai_site_alert.display import group_by_person
+
+    base = ActiveAlert(event_id="a", event_sequence=1, severity="CRITICAL", summary="", rule_id="R2", zone_id=None,
+                       confidence=None, needs_check=False, world_ids=(), acknowledged=False, ack=None,
+                       observation_time=None, first_received_ms=0, last_received_ms=0)
+    b = replace(base, event_id="b", severity="HIGH")
+    assert group_by_person((base, b)) == [(base, ()), (b, ())]  # world_id 를 모르면 묶지 않는다
+    c = replace(base, event_id="c", world_ids=("w-1", "w-9"))
+    d = replace(base, event_id="d", severity="HIGH", world_ids=("w-9",))
+    assert group_by_person((c, d)) == [(c, (d,))]
 
 
 def test_text_display_prints_on_change(core: SiteAlertCore) -> None:

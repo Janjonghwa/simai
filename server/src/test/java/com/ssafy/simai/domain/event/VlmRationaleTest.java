@@ -132,6 +132,21 @@ class VlmRationaleTest {
         verifyNoInteractions(jobs);
     }
 
+    /** S15P31A101-723: 같은 구역·같은 사람 또는 같은 규칙의 근거 작업이 30 s 창 안에 있으면 새로 요청하지 않는다(등급·경보는 그대로) */
+    @Test
+    void 같은_사건의_앞선_근거_작업이_창_안에_있으면_요청하지_않는다() {
+        when(jdbc.queryForList(contains("j.job_type = 'vlm_rationale'"), any(SqlParameterSource.class), eq(String.class)))
+                .thenReturn(List.of("0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e80"));
+        assertThat(ingest()).isEqualTo(Outcome.DUPLICATE);
+        verifyNoInteractions(jobs);
+        var params = ArgumentCaptor.forClass(SqlParameterSource.class);
+        verify(jdbc).queryForList(contains("pg_advisory_xact_lock"), params.capture());
+        assertThat(params.getValue().getValue("gateway")).isEqualTo("tier0-01");
+        verify(jdbc).queryForList(contains("j.job_type = 'vlm_rationale'"), params.capture(), eq(String.class));
+        assertThat(params.getValue().getValue("since")).isEqualTo(observed.toEpochMilli() - 30_000);
+        assertThat(params.getValue().getValue("until")).isEqualTo(observed.toEpochMilli() + 30_000);
+    }
+
     @Test
     void 기존_작업이_있으면_다른_msg_id도_생성하지_않는다() {
         when(jdbc.queryForList(contains("SELECT 1 FROM analysis_job"), any(SqlParameterSource.class))).thenReturn(List.of(java.util.Map.of("1", 1)));
