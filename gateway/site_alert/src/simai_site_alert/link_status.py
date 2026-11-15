@@ -42,6 +42,8 @@ from simai_site_alert.messages import Health
 DEFAULT_TIMEOUT_S = 3.0  # 1초 주기 3회 연속 누락 (명세 3.2, 6.5)
 DEFAULT_RECOVER_S = 2.0  # 정상으로 되돌리기 전에 정상 조건이 이어져야 하는 시간
 
+TEST_SOURCE_KINDS = ("FILE", "SYNTHETIC")  # 실제 카메라가 아닌 입력 (laptop_heartbeat 1.3.0 cameras[].source_kind)
+
 NORMAL = "NORMAL"
 CONTROL_HALTED = "CONTROL_HALTED"
 REMOTE_FAULT = "REMOTE_FAULT"
@@ -66,6 +68,14 @@ class RelayReport:
     video_cameras: tuple[str, ...]  # Tier 0 영상 TLS 연결이 살아 있는 카메라
     camera_count: int  # 중계가 맡은 카메라 수
     cameras: tuple[dict[str, Any], ...] = ()  # laptop_heartbeat.cameras[] 항목(형식 확인됨)
+
+    @property
+    def test_input(self) -> bool:
+        """중계 입력에 녹화 파일(FILE)·합성 영상(SYNTHETIC)이 하나라도 있다(S15P31A101-724, AGENTS 규칙 5).
+
+        source_kind 가 없는 카메라(이전 중계)는 RTSP 로 본다. 실제 경보를 끄는 쪽이므로 확실한 값만 시험 입력으로 센다.
+        """
+        return any(c.get("source_kind") in TEST_SOURCE_KINDS for c in self.cameras)
 
 
 @dataclass(frozen=True)

@@ -119,7 +119,12 @@ class SiteAlertApp:
     # ---- 장애 감시 ------------------------------------------------------------------------------------------------
 
     def on_relay_report(self, report: RelayReport, received_mono: float) -> None:
-        """영상 중계 상태 보고(relay_status.RelayStatusReceiver 가 부른다)."""
+        """영상 중계 상태 보고(relay_status.RelayStatusReceiver 가 부른다).
+
+        입력 종류(시험 입력 여부)는 보고를 받을 때마다 코어에 넘긴다(S15P31A101-724). 보고가 끊겨도 마지막 값을 유지한다:
+        중계가 멈췄으면 새 영상이 없고, 실제 카메라로 다시 띄우면 첫 보고(1초 안)가 바로 바꾼다.
+        """
+        self.core.set_test_input(report.test_input)
         if self.monitor is not None:
             self.monitor.on_relay_report(report, received_mono)
 

@@ -31,11 +31,17 @@ def _pct(values: list[float], q: float) -> float | None:
     return s[min(len(s) - 1, int(q / 100 * len(s)))]
 
 
+SOURCE_KINDS = ("RTSP", "FILE", "SYNTHETIC")  # laptop_heartbeat 1.3.0 cameras[].source_kind
+
+
 class CameraLinkStats:
     """카메라 한 대의 수신 상태·측정. 수신 스레드가 쓰고 다른 스레드(하트비트·로그)가 읽으므로 잠근다."""
 
-    def __init__(self, camera_id: str, delay_window: int = 250) -> None:
+    def __init__(self, camera_id: str, delay_window: int = 250, *, source_kind: str | None = None) -> None:
         self.camera_id = camera_id
+        # 중계가 연 입력 종류(RTSP / FILE / SYNTHETIC). 하트비트 cameras[].source_kind 로 싣는다(S15P31A101-724).
+        # 모르는 값은 싣지 않는다(받는 쪽은 없으면 RTSP 로 본다).
+        self.source_kind = source_kind if source_kind in SOURCE_KINDS else None
         self._lock = threading.Lock()
         self._connected = False
         self._streaming = False  # 이번 epoch 에 codec_info 와 키프레임을 보냈다
@@ -129,6 +135,8 @@ class CameraLinkStats:
                 entry["last_frame_sequence"] = self._last_seq
             if self._window_arrival_max is not None:
                 entry["camera_to_gateway_gap_max_ms"] = self._window_arrival_max
+            if self.source_kind is not None:
+                entry["source_kind"] = self.source_kind
             if reset_window:
                 self._window_arrival_max = None
             return entry

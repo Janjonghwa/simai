@@ -72,7 +72,7 @@
         },
         "cameras": {
           "type": "array",
-          "description": "카메라 → 노트북 RTSP 수신 상태",
+          "description": "카메라 → 노트북 수신 상태(입력 종류는 1.3.0 source_kind)",
           "items": {
             "type": "object",
             "required": ["camera_id", "rtsp"],
@@ -84,6 +84,10 @@
               "camera_to_gateway_gap_max_ms": {
                 "$ref": "../common/defs.schema.json#/$defs/duration_ms",
                 "description": "직전 하트비트 이후 프레임 도착 간격의 최대값. RTSP over TCP 손실은 번호 빈칸이 아니라 이 끊김으로 나타난다 (12.7)"
+              },
+              "source_kind": {
+                "enum": ["RTSP", "FILE", "SYNTHETIC"],
+                "description": "1.3.0(S15P31A101-724, 선택): 영상 중계가 이 카메라로 실제 연 입력 종류(녹화 manifest cameras[].source.kind 와 같은 값). RTSP=실제 카메라, FILE=녹화 파일 재생, SYNTHETIC=합성 시험 영상. 사람이 켜는 토글이 아니라 중계가 연 입력이 정본이다. 하나라도 FILE·SYNTHETIC 이면 시험 입력이다: 위험 이벤트는 기록·화면 표시는 하되 실제 알림(현장 경보 소리, 워치 진동)으로 내보내지 않는다(AGENTS 규칙 5). 없으면(이전 송신 측) RTSP 로 본다"
               }
             },
             "additionalProperties": false

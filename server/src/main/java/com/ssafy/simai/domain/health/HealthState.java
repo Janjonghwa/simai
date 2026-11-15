@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,14 @@ public class HealthState {
 
     /** 더 새 world_state 없이 이만큼 지나면 t_latest_global 이 뒤로 가도 받는다(Tier 0 시계 보정·재시작) */
     static final long WORLD_RESYNC_MS = 2_000;
+
+    /**
+     * 시험 입력 판단에 쓰는 마지막 하트비트의 유효 시간(S15P31A101-724). 하트비트가 끊긴 뒤에도 잠시(재생이 끝나거나 단말을 끈 직후 Tier 0 가 남은
+     * 재생 프레임으로 내는 이벤트) 실제 알림을 막는다. 실제 카메라로 다시 띄우면 다음 하트비트(1초)가 바로 바꾸므로 길어도 LIVE 알림을 늦추지 않는다
+     */
+    static final long TEST_INPUT_HOLD_MS = 60_000;
+    /** 실제 카메라가 아닌 입력(laptop_heartbeat 1.3.0 cameras[].source_kind). 없으면(이전 노트북) RTSP 로 본다 */
+    private static final Set<String> TEST_SOURCE_KINDS = Set.of("FILE", "SYNTHETIC");
 
     /** receivedNanos 는 단조 시계(끊김 판단용), receivedAt 은 벽시계(화면 표시·기록용) */
     public record Received(JsonNode payload, Instant receivedAt, long receivedNanos) {
@@ -145,6 +154,24 @@ public class HealthState {
     static boolean siteOk(JsonNode heartbeat) {
         return "CONNECTED".equals(heartbeat.path("tier0").path("control").asString(null))
                 && !"CONTROL_HALTED".equals(heartbeat.path("site_display").asString(null));
+    }
+
+    /**
+     * 시험 입력 중인가(S15P31A101-724, AGENTS 규칙 5). 마지막 하트비트가 TEST_INPUT_HOLD_MS 안인 노트북 중 하나라도 cameras[] 에 녹화 파일(FILE)·합성
+     * 영상(SYNTHETIC) 입력을 알리면 true. Tier 0 는 재생 영상을 LIVE 로 판정하므로 EC2 실제 알림(워치 진동)은 이 값으로 막는다. 이벤트 기록·화면 표시는
+     * 막지 않는다
+     */
+    public boolean testInputActive() {
+        long now = nanoTime();
+        return laptops.values().stream()
+                .anyMatch(h -> now - h.receivedNanos() <= TEST_INPUT_HOLD_MS * 1_000_000L && testInput(h.payload()));
+    }
+
+    /** 하트비트 cameras[] 에 FILE·SYNTHETIC 입력이 하나라도 있다 */
+    static boolean testInput(JsonNode heartbeat) {
+        JsonNode cameras = heartbeat.path("cameras");
+        return cameras.isArray()
+                && cameras.valueStream().anyMatch(c -> TEST_SOURCE_KINDS.contains(c.path("source_kind").asString(""))); // Set.of 는 null 을 받지 않는다
     }
 
     /** 받은 값이 바뀌면 부른다(바뀌면 즉시 보내기, 명세 12.4). 받은 스레드에서 불리므로 빨리 끝나야 한다 */

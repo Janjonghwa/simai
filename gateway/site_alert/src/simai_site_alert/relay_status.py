@@ -35,6 +35,7 @@ MAX_DATAGRAM = 65_507
 MAX_CAMERAS = 64
 _CAMERA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _LINK = ("CONNECTED", "DISCONNECTED")
+_SOURCE_KINDS = ("RTSP", "FILE", "SYNTHETIC")  # laptop_heartbeat 1.3.0 cameras[].source_kind (S15P31A101-724)
 
 
 def _is_uint(v: Any) -> bool:
@@ -78,6 +79,10 @@ def _camera_entry(raw: Any) -> dict[str, Any] | None:
         if isinstance(gap, bool) or not isinstance(gap, (int, float)) or not math.isfinite(gap) or gap < 0:
             return None
         entry["camera_to_gateway_gap_max_ms"] = gap
+    if "source_kind" in raw:
+        if raw["source_kind"] not in _SOURCE_KINDS:
+            return None
+        entry["source_kind"] = raw["source_kind"]
     return entry
 
 

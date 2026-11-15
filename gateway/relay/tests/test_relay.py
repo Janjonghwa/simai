@@ -9,6 +9,7 @@ import threading
 from collections.abc import Sequence
 
 import av
+import pytest
 from simai_recorder.capture_time import CaptureTimeModel
 from simai_recorder.clock import FakeClock
 from simai_recorder.recorder import CameraSpec
@@ -22,6 +23,7 @@ from simai_recorder.sources import (
     SyntheticSource,
 )
 
+from simai_relay.link_stats import CameraLinkStats
 from simai_relay.relay import CameraRelay
 from simai_relay.sink import I0CodecInfo, I0Frame, MemorySink
 
@@ -135,11 +137,23 @@ def test_camera_to_gateway_gap_and_receive_delay(contract_validator, contract_ex
     # laptop_heartbeat payload.cameras 항목: 직전 하트비트 이후 도착 간격 최대
     entry = relay.stats.heartbeat_entry()
     assert entry == {"camera_id": "cam_A", "rtsp": "DISCONNECTED", "stream_epoch": 0,
-                     "last_frame_sequence": 49, "camera_to_gateway_gap_max_ms": 240.0}
+                     "last_frame_sequence": 49, "camera_to_gateway_gap_max_ms": 240.0,
+                     "source_kind": "SYNTHETIC"}  # FaultySource 는 안쪽 입력 종류를 그대로 알린다(S15P31A101-724)
     heartbeat = contract_example("laptop_heartbeat")
     heartbeat["payload"]["cameras"] = [entry, relay.stats.heartbeat_entry()]
     contract_validator("laptop_heartbeat", heartbeat)
     assert "camera_to_gateway_gap_max_ms" not in heartbeat["payload"]["cameras"][1]  # 창을 비웠고 새 프레임이 없다
+
+
+@pytest.mark.parametrize(("kind", "expected"), [("RTSP", "RTSP"), ("FILE", "FILE"), ("SYNTHETIC", "SYNTHETIC"),
+                                                ("other", None), (None, None)])
+def test_heartbeat_entry_source_kind(kind, expected, contract_validator, contract_example) -> None:
+    """S15P31A101-724: 중계가 연 입력 종류를 laptop_heartbeat cameras[].source_kind 로 싣는다. 모르는 값은 싣지 않는다."""
+    entry = CameraLinkStats("cam_A", source_kind=kind).heartbeat_entry()
+    assert entry.get("source_kind") == expected
+    heartbeat = contract_example("laptop_heartbeat")
+    heartbeat["payload"]["cameras"] = [entry]
+    contract_validator("laptop_heartbeat", heartbeat)
 
 
 class ListSource(PacketSource):

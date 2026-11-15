@@ -45,7 +45,8 @@ def test_publisher_reaches_site_alert_receiver(contract_validator) -> None:
         wait_until(lambda: got and got[-1].cameras and all("last_frame_sequence" in c for c in got[-1].cameras))
         report = got[-1]
         assert report.camera_count == 2 and report.video_cameras == ("cam_A",)
-        hb = {"schema_version": "1.2.0", "msg_type": "laptop_heartbeat", "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000112",
+        assert {c.get("source_kind") for c in report.cameras} == {"SYNTHETIC"} and report.test_input  # S15P31A101-724
+        hb = {"schema_version": "1.3.0", "msg_type": "laptop_heartbeat", "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000112",
               "sent_at": 1, "source_id": "laptop-01",
               "payload": {"heartbeat_seq": 0, "site_display": "NORMAL", "cameras": list(report.cameras),
                           "tier0": {"control": "CONNECTED", "last_message_at": 1, "video_cameras": ["cam_A"]}}}

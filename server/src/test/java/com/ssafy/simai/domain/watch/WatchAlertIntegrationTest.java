@@ -287,6 +287,59 @@ class WatchAlertIntegrationTest {
     }
 
     @Test
+    void 시험_입력_중에_받은_이벤트는_워치로_보내지_않고_실제_카메라로_돌아와도_보내지_않는다() throws Exception {
+        // S15P31A101-724: 노트북 하트비트가 녹화 파일(FILE) 입력을 알리는 동안 받은 이벤트는 기록만 하고 진동을 보내지 않는다(AGENTS 규칙 5)
+        String laptopId = "laptop-watch-" + tag;
+        String laptopToken = machineTokens.registerDevice(laptopId, "LAPTOP").token();
+        try {
+            bindings.bindManually(watchId, worldId, adminId);
+            Watch watch = watch(watchId, watchToken);
+            assertThat(postLaptopHeartbeat(laptopId, laptopToken, "FILE")).isEqualTo(204);
+            UUID replayed = liveEvent("R2", "CRITICAL", "RAISED", "LIVE", worldId);
+            alerts.alert(replayed);
+            assertThat(watch.poll(500)).as("시험 입력 중").isNull();
+
+            assertThat(postLaptopHeartbeat(laptopId, laptopToken, "RTSP")).isEqualTo(204);
+            jdbc.update("UPDATE risk_event SET lifecycle = 'UPDATED', event_sequence = 2 WHERE event_id = ?", replayed);
+            alerts.alert(replayed);
+            alerts.resync(watchId);
+            assertThat(watch.poll(500)).as("시험 입력 중에 받은 이벤트는 실제 카메라로 돌아와도 보내지 않는다").isNull();
+            assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", replayed)).isZero();
+
+            UUID live = liveEvent("R2", "HIGH", "RAISED", "LIVE", worldId);
+            alerts.alert(live);
+            assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).as("RTSP 입력은 그대로")
+                    .isEqualTo(live.toString());
+        } finally {
+            // 같은 시험 컨텍스트의 다음 시험이 시험 입력·살아 있는 노트북을 이어받지 않게 RTSP 로 되돌리고 끊김 기준(1.5초)을 기다린다
+            postLaptopHeartbeat(laptopId, laptopToken, "RTSP");
+            Thread.sleep(1_700);
+            jdbc.update("DELETE FROM device_heartbeat WHERE device_id = ?", laptopId);
+            jdbc.update("DELETE FROM device WHERE device_id = ?", laptopId);
+        }
+    }
+
+    private int postLaptopHeartbeat(String laptopId, String token, String sourceKind) throws Exception {
+        ObjectNode root = envelope("laptop_heartbeat", laptopId);
+        root.put("schema_version", "1.3.0");
+        ObjectNode p = root.putObject("payload");
+        p.put("heartbeat_seq", 0);
+        ObjectNode tier0 = p.putObject("tier0");
+        tier0.put("control", "CONNECTED");
+        tier0.putNull("last_message_at");
+        tier0.putArray("video_cameras").add("cam_A");
+        p.put("site_display", "NORMAL");
+        ObjectNode camera = p.putArray("cameras").addObject();
+        camera.put("camera_id", "cam_A");
+        camera.put("rtsp", "CONNECTED");
+        camera.put("source_kind", sourceKind);
+        assertThat(schemas.violations("messages/laptop_heartbeat", root.toString())).isEmpty();
+        return send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/devices/heartbeat"))
+                .header("Content-Type", "application/json").header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .POST(HttpRequest.BodyPublishers.ofString(root.toString()))).statusCode();
+    }
+
+    @Test
     void 같은_이벤트는_한_번_보내고_등급이_오를_때만_다시_보낸다() throws Exception {
         bindings.bindManually(watchId, worldId, adminId);
         Watch watch = watch(watchId, watchToken);

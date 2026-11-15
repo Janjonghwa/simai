@@ -56,7 +56,7 @@ class CameraRelay:
             raise ValueError("initial_epoch 는 0 이상이다")
         self.spec = spec
         self.sink = sink
-        self.stats = CameraLinkStats(spec.camera_id)
+        self.stats = CameraLinkStats(spec.camera_id, source_kind=getattr(spec.source, "kind", None))
         self._clock = clock
         self._stop = stop
         self._deadline = deadline

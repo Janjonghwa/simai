@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.watch;
 
+import com.ssafy.simai.domain.health.HealthState;
 import com.ssafy.simai.domain.realtime.RealtimePublisher;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
 import com.ssafy.simai.domain.rule.RuleCatalog;
@@ -15,6 +16,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,6 +65,11 @@ import tools.jackson.databind.node.ObjectNode;
  * 수동 알림(S15P31A101-475, 명세 밖 운영 입구): 관리자·반장이 POST /api/watch-alerts 로 워치 하나에 등급·한 단어(·방향)를 직접 보낸다(비상 호출,
  * 시연·시험). 위험 이벤트가 없으므로 origin MANUAL 로 같은 표에 남기고(event_id 는 그 알림만의 UUIDv7, world_id 는 배정이 있으면 그 값),
  * ACK 기록·기한 초과 NO_ACK 격상은 이벤트 알림과 같은 경로를 탄다. 연결되지 않은 워치에는 보내지 않는다(409).
+ * <p>
+ * 시험 입력(S15P31A101-724, AGENTS 규칙 5): 노트북 하트비트가 녹화 파일·합성 영상 입력을 알리는 동안(HealthState.testInputActive) 받은 이벤트는
+ * 워치로 보내지 않는다(Tier 0 는 재생 영상을 LIVE 로 판정한다). 그 이벤트 ID 를 메모리에 기억해 실제 카메라로 돌아온 뒤 갱신·재동기화로 다시 와도
+ * 보내지 않는다(EC2 재시작 뒤에는 잊는다: 재동기화는 최근 10분 갱신분만 보내므로 남는 틈은 재시작 직후 10분이다). 기록·화면 표시는 그대로다.
+ * 수동 알림은 사람이 직접 보내는 것이라 막지 않는다.
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -122,6 +130,9 @@ public class WatchAlertService implements AutoCloseable {
      */
     private static final String ESCALATION_MAX_AGE = "10 minutes";
 
+    /** 시험 입력 중에 받아 워치로 보내지 않은 이벤트를 기억하는 개수(오래된 것부터 잊는다) */
+    static final int TEST_INPUT_MEMORY = 10_000;
+
     private final NamedParameterJdbcTemplate jdbc;
     private final WatchBindings bindings;
     private final WatchHub hub;
@@ -129,13 +140,21 @@ public class WatchAlertService implements AutoCloseable {
     private final RealtimePublisher publisher;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final HealthState health;
+    /** 시험 입력 중에 받은 이벤트(S15P31A101-724). 실제 카메라로 돌아온 뒤에도 보내지 않는다 */
+    private final Set<UUID> testInputEvents = Collections.synchronizedSet(Collections.newSetFromMap(new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<UUID, Boolean> eldest) {
+            return size() > TEST_INPUT_MEMORY;
+        }
+    }));
     /** 보내기는 이 스레드 하나에서 한다. I1 수신·커밋 스레드를 붙잡지 않고, 같은 이벤트의 전이가 받은 순서대로 나간다 */
     private final ExecutorService sender = Executors.newSingleThreadExecutor(Thread.ofPlatform().name("watch-alert").daemon().factory());
     private final ScheduledExecutorService escalator = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("watch-escalation").daemon().factory());
 
     WatchAlertService(NamedParameterJdbcTemplate jdbc, WatchBindings bindings, WatchHub hub, WatchProperties properties,
-            RealtimePublisher publisher, ObjectMapper mapper, Clock clock) {
+            RealtimePublisher publisher, ObjectMapper mapper, Clock clock, HealthState health) {
         this.jdbc = jdbc;
         this.bindings = bindings;
         this.hub = hub;
@@ -143,6 +162,7 @@ public class WatchAlertService implements AutoCloseable {
         this.publisher = publisher;
         this.mapper = mapper;
         this.clock = clock;
+        this.health = health;
         long period = properties.escalationInterval().toMillis();
         escalator.scheduleWithFixedDelay(this::escalateOverdue, period, period, TimeUnit.MILLISECONDS);
     }
@@ -179,7 +199,7 @@ public class WatchAlertService implements AutoCloseable {
             clearIfResolved(eventId);
             return;
         }
-        if (found.get().worldIds().isEmpty()) {
+        if (found.get().worldIds().isEmpty() || suppressedForTestInput(eventId)) {
             return;
         }
         LiveEvent event = found.get();
@@ -286,7 +306,20 @@ public class WatchAlertService implements AutoCloseable {
                 ORDER BY %s DESC, COALESCE(updated_at, raised_at)
                 """.formatted(RESEND_MAX_AGE, RANK_SQL.formatted("severity")), new MapSqlParameterSource().addValue("world", worldId)
                         .addValue("now", utc(clock.instant())), liveEvent());
-        open.forEach(event -> send(event, worldId, deviceId));
+        open.stream().filter(event -> !suppressedForTestInput(event.eventId())).forEach(event -> send(event, worldId, deviceId));
+    }
+
+    /**
+     * 시험 입력 이벤트면 true(보내지 않는다). 지금 시험 입력 중이면 이 이벤트를 기억해 시험 입력이 끝난 뒤에도 보내지 않는다(S15P31A101-724).
+     */
+    private boolean suppressedForTestInput(UUID eventId) {
+        if (health.testInputActive()) {
+            if (testInputEvents.add(eventId)) {
+                log.info("시험 입력(녹화 파일·합성 영상) 중이라 워치로 보내지 않음: event={}", eventId);
+            }
+            return true;
+        }
+        return testInputEvents.contains(eventId);
     }
 
     private void send(LiveEvent event, String worldId, String deviceId) {

@@ -101,7 +101,7 @@ tests/          시험 (소리를 내지 않는다)
 - 벽시계는 `last_message_at`·`last_response_at` 기록에만 쓴다. 노트북 시계를 되돌려 `t_latest_global` 이 줄면 기준만 옮기고
   다음 증가를 진행으로 본다.
 
-하트비트 (계약 `laptop_heartbeat` 1.2.0):
+하트비트 (계약 `laptop_heartbeat` 1.3.0):
 
 - `tier0.control` 은 계약 정의대로 제어 채널이 연결돼 있고 3초 안에 health 를 받았는지다. 처리 정체·판정 불가는
   `site_display=CONTROL_HALTED` 로 알린다. `video_cameras` 는 중계 보고가 살아 있을 때만 채우고(모르면 빈 배열),
@@ -115,6 +115,11 @@ tests/          시험 (소리를 내지 않는다)
 영상 상태는 중계(`gateway/relay`, 별도 프로세스)가 1초마다 127.0.0.1 UDP(`SIMAI_RELAY_STATUS_PORT`, 기본 47031)로 알린다
 (`relay_status.py`, 노트북 안 내부 형식이라 계약이 아니다). 형식이 틀린 보고는 통째로 버리고 같은 중계의 늦은 보고도 버린다.
 포트를 열지 못하면 영상 상태를 모름으로 두고(관제 중단) 경보는 계속 돈다.
+
+시험 입력(S15P31A101-724, AGENTS 규칙 5): 중계 보고의 카메라 항목에 입력 종류 `source_kind`(RTSP·FILE·SYNTHETIC, 하트비트
+`cameras[]` 에도 그대로 싣는다)가 있고, 하나라도 FILE·SYNTHETIC 이면 단말은 「시험 입력 — 실제 경보 꺼짐」 띠를 띄우고 받은
+경보를 화면에만 표시한다(소리 없음, 하트비트 `alarm.sounding_event_ids` 비움). 시험 입력 중에 표시된 경보는 RTSP 로 돌아와도
+해소될 때까지 울리지 않는다. `source_kind` 가 없으면(이전 중계) RTSP 로 본다. 시작 시 시험 경보는 그대로 울린다.
 
 ## 설치와 시험
 

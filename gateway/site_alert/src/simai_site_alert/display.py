@@ -17,6 +17,8 @@ SEVERITY_LABEL = {"CRITICAL": "위험", "HIGH": "경고", "CAUTION": "주의", "
 
 CHANNEL_LABEL = {"CONTROL_ROOM": "관제 화면", "FOREMAN_PWA": "반장 PWA", "SITE_BUTTON": "현장 확인 버튼"}
 TEST_BANNER = "[시험] 시험 경보입니다. 실제 위험이 아닙니다. 소리가 들리고 화면이 보이는지 확인하세요."
+# 영상 중계가 녹화 파일·합성 영상을 보내는 동안 (S15P31A101-724, AGENTS 규칙 5)
+TEST_INPUT_BANNER = "시험 입력 — 실제 경보 꺼짐 (녹화 파일·합성 영상 재생 중: 경보는 화면에만 표시하고 소리를 내지 않습니다)"
 
 
 def sound_fault_banner(reason: str) -> str:
@@ -67,8 +69,10 @@ def control_line(connected: bool | None) -> str:
     return "Tier 0 제어 채널: 연결됨" if connected else "Tier 0 제어 채널: 끊김 - 새 현장 경보를 받을 수 없음"
 
 
-def ack_text(alert: ActiveAlert) -> str:
+def ack_text(alert: ActiveAlert, *, muted: bool = False) -> str:
     if not alert.acknowledged:
+        if muted:  # 시험 입력(녹화 파일·합성 영상) 중에 표시된 경보는 해소까지 울리지 않는다(S15P31A101-724)
+            return "확인 전 · 시험 입력이라 소리 없음"
         # 소리 결정은 Tier 0 의 sound_mode 다(S15P31A101-497). 같은 사람 상위 경보가 이미 울리면 SILENT 로 온다(-723).
         if alert.sound_mode == "SILENT":
             return "확인 전 · 소리 없음(같은 사람 상위 경보·최근 확인)"
@@ -83,7 +87,7 @@ def ack_text(alert: ActiveAlert) -> str:
     return f"확인됨({who}{' ' + alert.ack.actor_id if alert.ack.actor_id else ''})"
 
 
-def alert_line(alert: ActiveAlert) -> str:
+def alert_line(alert: ActiveAlert, *, muted: bool = False) -> str:
     parts = [f"[{SEVERITY_LABEL.get(alert.severity, alert.severity)}]"]
     where = " · ".join(x for x in (alert.rule_id, alert.zone_id) if x)
     if where:
@@ -91,7 +95,7 @@ def alert_line(alert: ActiveAlert) -> str:
     parts.append(alert.summary)
     if alert.needs_check:
         parts.append("확인 필요")
-    parts.append(ack_text(alert))
+    parts.append(ack_text(alert, muted=muted))
     return " | ".join(parts)
 
 
@@ -125,6 +129,8 @@ def render_lines(state: ScreenState) -> list[str]:
             lines.append(TEST_BANNER)
         else:
             lines.append("[시험] 시험 경보 끝 (소리 재생: " + ("시작됨" if state.test.sound_started else "실패") + ")")
+    if state.test_input:
+        lines.append("[" + TEST_INPUT_BANNER + "]")
     if state.site is not None:
         lines.append(site_banner(state.site))
         lines.append(site_detail(state.site))
@@ -135,8 +141,8 @@ def render_lines(state: ScreenState) -> list[str]:
     if not state.alerts:
         lines.append("활성 현장 경보 없음")
     for leader, members in group_by_person(state.alerts):
-        lines.append(alert_line(leader))
-        lines.extend(MEMBER_PREFIX + alert_line(m) for m in members)
+        lines.append(alert_line(leader, muted=leader.event_id in state.test_muted))
+        lines.extend(MEMBER_PREFIX + alert_line(m, muted=m.event_id in state.test_muted) for m in members)
     return lines
 
 
@@ -195,6 +201,8 @@ class TkDisplay:
         self.root.configure(bg="#202020")
         self._fault = tk.Label(self.root, font=("Malgun Gothic", 26, "bold"), fg="white", bg="#d00000", wraplength=1050)
         self._test = tk.Label(self.root, font=("Malgun Gothic", 20, "bold"), fg="black", bg="#ffe066", wraplength=1050)
+        self._test_input = tk.Label(self.root, font=("Malgun Gothic", 20, "bold"), fg="white", bg="#3a2f8f",
+                                    wraplength=1050)
         self._site = tk.Label(self.root, font=("Malgun Gothic", 14, "bold"), fg="white", bg="#202020", wraplength=1050)
         self._status = tk.Label(self.root, font=("Malgun Gothic", 14), fg="#dddddd", bg="#202020", anchor="w")
         self._alerts = tk.Frame(self.root, bg="#202020")
@@ -258,6 +266,11 @@ class TkDisplay:
             self._test.pack(fill="x", before=self._status, ipady=8)
         else:
             self._test.pack_forget()
+        if state.test_input:
+            self._test_input.configure(text=TEST_INPUT_BANNER)
+            self._test_input.pack(fill="x", before=self._status, ipady=8)
+        else:
+            self._test_input.pack_forget()
         if state.site is not None:
             bg, fg, size = self.SITE_STYLE.get(state.site.site_display, self.SITE_STYLE[CONTROL_HALTED])
             self._site.configure(text=site_banner(state.site), bg=bg, fg=fg, font=("Malgun Gothic", size, "bold"))
@@ -282,7 +295,7 @@ class TkDisplay:
             row.pack(fill="x", pady=(0, 4) if member else 6, padx=(48, 0) if member else 0)
             tk.Label(
                 row,
-                text=(MEMBER_PREFIX.strip() + " " + alert_line(alert)) if member else alert_line(alert),
+                text=(MEMBER_PREFIX.strip() + " " + alert_line(alert, muted=alert.event_id in state.test_muted)) if member else alert_line(alert, muted=alert.event_id in state.test_muted),
                 font=("Malgun Gothic", 14 if member else 22 if alert.severity == "CRITICAL" else 18, "bold"),
                 fg="#dddddd" if member else "white",
                 bg="#111111",
