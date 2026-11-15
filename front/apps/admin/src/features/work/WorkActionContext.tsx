@@ -33,6 +33,8 @@ export interface WorkActionConfig {
   pending?: boolean;
   /** 단추에 마우스를 올렸을 때 보이는 글(꺼진 이유 등: '작업 날짜에 시작할 수 있어요'). */
   title?: string;
+  /** 꺼진 이유를 단추 옆에 늘 보이는 글로 둔다(마우스를 올려야 보이는 title 과 별개, -734: 「종료 미팅 작성 중」 등). 켜져 있으면 주지 않는다. */
+  reason?: string;
   /** 주 단추 옆의 보조 단추들. */
   secondary?: readonly WorkActionSecondary[];
 }
@@ -66,6 +68,7 @@ const shapeOf = (config: WorkActionConfig | null): string | null =>
     config.enabled,
     config.pending ?? false,
     config.title ?? '',
+    config.reason ?? '',
     (config.secondary ?? []).map((item) => [
       item.label,
       item.kind ?? 'default',

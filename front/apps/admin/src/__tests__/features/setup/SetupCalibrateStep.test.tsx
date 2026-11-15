@@ -45,7 +45,12 @@ const failedSession = (over: Record<string, unknown> = {}) =>
 
 function renderStep(
   session: ReturnType<typeof sessionOf>,
-  handlers: { onRetry?: () => void; onReturnToStep1?: () => void; retryPending?: boolean } = {},
+  handlers: {
+    onRetry?: () => void;
+    onReturnToStep1?: () => void;
+    onTurnOnGpu?: () => void;
+    retryPending?: boolean;
+  } = {},
 ) {
   const onRetry = handlers.onRetry ?? vi.fn();
   const onReturnToStep1 = handlers.onReturnToStep1 ?? vi.fn();
@@ -56,6 +61,7 @@ function renderStep(
       onRetry={onRetry}
       retryPending={handlers.retryPending}
       onReturnToStep1={onReturnToStep1}
+      onTurnOnGpu={handlers.onTurnOnGpu}
     />,
   );
   return { onRetry, onReturnToStep1 };
@@ -258,6 +264,35 @@ describe('보정·생성 실패 안내', () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
     fireEvent.click(box.getByRole('button', { name: '카메라 연결 관리로' }));
     expect(onReturnToStep1).toHaveBeenCalledTimes(1);
+  });
+
+  it('GPU 가 꺼져 있으면 주 단추는 「GPU 켜기」이고 다시 시도·카메라 연결 관리로는 보조로 내려간다(-734)', () => {
+    const onTurnOnGpu = vi.fn();
+    const { onRetry } = renderStep(failedSession({ progress_pct: 40, failure_code: 'TIMEOUT' }), {
+      onTurnOnGpu,
+    });
+    const box = within(screen.getByRole('alert', { name: '세팅 실패 안내' }));
+    expect(box.getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'GPU 켜기',
+      '다시 시도',
+      '카메라 연결 관리로',
+    ]);
+    expect(box.getByText('GPU 가 꺼져 있어요. 켠 뒤 다시 시도하세요.')).toBeTruthy();
+    // 주 단추(기본 모양)는 GPU 켜기 하나, 나머지는 보조 모양이다
+    const isPrimary = (name: string) =>
+      box.getByRole('button', { name }).classList.contains('bg-primary');
+    expect(isPrimary('GPU 켜기')).toBe(true);
+    expect(isPrimary('다시 시도')).toBe(false);
+    expect(isPrimary('카메라 연결 관리로')).toBe(false);
+    fireEvent.click(box.getByRole('button', { name: 'GPU 켜기' }));
+    expect(onTurnOnGpu).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('GPU 가 꺼져 있지 않으면(onTurnOnGpu 없음) 「GPU 켜기」를 두지 않는다', () => {
+    renderStep(failedSession({ progress_pct: 40, failure_code: 'TIMEOUT' }));
+    expect(screen.queryByRole('button', { name: 'GPU 켜기' })).toBeNull();
+    expect(screen.queryByText(/GPU 가 꺼져 있어요/)).toBeNull();
   });
 
   it('다시 시도 요청 중에는 다시 시도 단추가 잠긴다', () => {

@@ -55,8 +55,19 @@ const ENDING_DELAY_MS = 2_500;
 const TODAY = '2026-11-11';
 const NOW = vi.hoisted(() => ({ value: 0 }));
 const live = vi.hoisted(() => ({ entries: [] as EventEntry[] }));
+// GPU 상태: 기본은 관리자가 아니라 GPU 카드가 없다(-734). 시험이 켜진 모양으로 바꾼다.
+const gpu = vi.hoisted(() => ({
+  view: { isAdmin: false, status: undefined, dot: 'OFF', clockOffsetMs: 0 } as Record<
+    string,
+    unknown
+  >,
+}));
 
 vi.mock('@/features/layout/useNow', () => ({ useNow: () => NOW.value }));
+vi.mock('@/features/gpu/useGpu', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/gpu/useGpu')>()),
+  useGpuStatus: () => gpu.view,
+}));
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: live.entries, loaded: true, failed: false }),
 }));
@@ -116,6 +127,7 @@ beforeEach(() => {
   NOW.value = T0 + 65_000;
   requests = [];
   live.entries = [];
+  gpu.view = { isAdmin: false, status: undefined, dot: 'OFF', clockOffsetMs: 0 };
   mock = createWorkMock({ now: () => clock });
   server.resetHandlers(...mock.handlers, ...createTbmMock().handlers);
   server.events.on('request:start', ({ request }) => {
@@ -165,6 +177,7 @@ function ActionButton() {
           {item.label}
         </button>
       ))}
+      {action.reason && <span data-testid="action-reason">{action.reason}</span>}
       <button type="button" disabled={!action.enabled} onClick={action.onClick}>
         {action.label}
       </button>
@@ -516,4 +529,159 @@ describe('RunStage — 종료', () => {
       expect(onSubmitted).not.toHaveBeenCalled();
     },
   );
+});
+
+/** 확인한 위험 경보·해소된 경보를 만든다(종료 확인창·종료 뒤 요약 시험). */
+const withAck = (entry: EventEntry): EventEntry => ({
+  ...entry,
+  event: {
+    ...entry.event,
+    acks: [
+      {
+        ack_id: 'a1',
+        channel: 'CONTROL_ROOM',
+        actor_role: 'ADMIN',
+        actor_id: 'u1',
+        acked_at: T0 + MIN,
+      },
+    ],
+  },
+});
+const resolved = (entry: EventEntry): EventEntry => ({
+  ...entry,
+  event: { ...entry.event, lifecycle: 'RESOLVED' },
+});
+
+describe('RunStage — 종료 확인창의 미확인 위험 경보(-734)', () => {
+  const openEnd = async () => {
+    renderStage();
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
+    return screen.getByRole('dialog', { name: '작업을 종료할까요?' });
+  };
+
+  it('이번 실행에서 열려 있는데 확인하지 않은 위험 경보 수를 알리고, 종료는 막지 않는다', async () => {
+    await prepare('running');
+    live.entries = [
+      eventAt('before', T0 - MIN, 'CRITICAL', 'z-04'), // 작업 전
+      eventAt('open-1', T0 + 10_000, 'CRITICAL', 'z-04'),
+      eventAt('open-2', T0 + 20_000, 'HIGH', 'z-02'),
+      withAck(eventAt('acked', T0 + 30_000, 'HIGH', 'z-02')),
+      eventAt('caution', T0 + 40_000, 'CAUTION', 'z-02'), // 경고 등급은 세지 않는다
+    ];
+    const dialog = await openEnd();
+    const note = within(dialog).getByRole('alert');
+    expect(note.textContent).toContain('미확인 위험 경보 2건');
+    expect(note.textContent).toContain('관제 화면에서 먼저 확인');
+    expect(
+      (within(dialog).getByRole('button', { name: '종료' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('열린 미확인 경보가 없으면 0건이라고 알린다(해소된 경보는 확인을 받지 않는다)', async () => {
+    await prepare('running');
+    live.entries = [
+      resolved(eventAt('done', T0 + 10_000, 'CRITICAL', 'z-04')),
+      withAck(eventAt('acked', T0 + 20_000, 'HIGH', 'z-02')),
+    ];
+    const dialog = await openEnd();
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(within(dialog).getByRole('status').textContent).toContain('미확인 위험 경보 0건');
+  });
+});
+
+describe('RunStage — 종료 뒤 요약·꺼진 이유·GPU 안내(-734)', () => {
+  it('`보고서 제출` 이 꺼진 동안 이유를 단추 옆에 보이고, 켜지면 지운다', async () => {
+    await prepare('ended');
+    renderStage();
+    // 보고서를 받는 동안은 「불러오는 중」이고, 받으면 서버가 쓰는 중인 종료 미팅이 이유다
+    await waitFor(() =>
+      expect(screen.getByTestId('action-reason').textContent).toBe('종료 미팅 작성 중이에요'),
+    );
+    expect(doneButton().disabled).toBe(true);
+
+    clock += ENDING_DELAY_MS;
+    await waitFor(() => expect(doneButton().disabled).toBe(false), { timeout: 5_000 });
+    expect(screen.queryByTestId('action-reason')).toBeNull();
+  });
+
+  it('AI 초안을 쓰는 중이면 그 이유를 보인다', async () => {
+    const workId = await prepare('ended');
+    clock += ENDING_DELAY_MS;
+    const { latest } = await fetchReportsByWork(api, workId);
+    server.use(
+      http.get('*/api/reports/tbm', () =>
+        HttpResponse.json({
+          latest: { ...latest, status: 'GENERATING', draft_status: 'GENERATING' },
+          versions: [],
+        }),
+      ),
+    );
+    renderStage();
+    await waitFor(() =>
+      expect(screen.getByTestId('action-reason').textContent).toBe('AI 초안 작성 중이에요'),
+    );
+  });
+
+  it('경과·시각과 위험 경보 수·확인하지 않은 경보 수를 요약 카드에 보인다', async () => {
+    await prepare('ended');
+    live.entries = [
+      eventAt('before', T0 - MIN, 'CRITICAL', 'z-04'),
+      resolved(eventAt('done-1', T0 + 10_000, 'CRITICAL', 'z-04')),
+      resolved(eventAt('done-2', T0 + 20_000, 'HIGH', 'z-02')),
+      resolved(withAck(eventAt('done-acked', T0 + 30_000, 'HIGH', 'z-02'))),
+    ];
+    renderStage();
+    const card = await screen.findByLabelText('작업 요약');
+    expect(within(card).getByRole('heading', { name: '작업 요약' })).toBeTruthy();
+    expect(within(card).getByText(/01:05:00/)).toBeTruthy();
+    expect(within(card).getByText('09:00–10:05')).toBeTruthy();
+    expect(card.textContent).toContain('3건');
+    expect(card.textContent).toContain('확인하지 않은 경보 2건');
+  });
+
+  it('GPU 가 켜져 있으면(관리자) 끄기 안내 카드를 보이고, 「GPU 끄기」가 끄기 패널을 연다', async () => {
+    await prepare('ended');
+    gpu.view = {
+      isAdmin: true,
+      dot: 'CONNECTED',
+      clockOffsetMs: 0,
+      status: {
+        session: null,
+        server_time_ms: NOW.value,
+        launch: {
+          state: 'RUNNING',
+          gpu_type: 'H100',
+          region: 'US-KS-2',
+          price_per_hour_usd: 4.39,
+          requested_at_ms: NOW.value - 166 * MIN,
+        },
+        power: 'CONNECTED',
+      },
+    };
+    renderStage(undefined, vi.fn());
+    const card = await screen.findByLabelText('GPU 끄기 안내');
+    expect(within(card).getByRole('heading', { name: 'GPU 가 아직 켜져 있어요' })).toBeTruthy();
+    expect(card.textContent).toContain('요금이 멈춰요');
+    expect(card.textContent).toContain('한 번 더 실행할 거라면 켜 둔 채 두세요');
+    expect(card.textContent).toContain('H100');
+    fireEvent.click(within(card).getByRole('button', { name: 'GPU 끄기' }));
+    expect(screen.getByRole('dialog', { name: 'GPU' })).toBeTruthy();
+  });
+
+  it('GPU 가 꺼져 있거나 관리자가 아니면 끄기 안내 카드를 그리지 않는다', async () => {
+    await prepare('ended');
+    renderStage();
+    expect(await screen.findByLabelText('작업 요약')).toBeTruthy();
+    expect(screen.queryByLabelText('GPU 끄기 안내')).toBeNull();
+    cleanup();
+    gpu.view = {
+      isAdmin: true,
+      status: { session: null, server_time_ms: 1 },
+      dot: 'OFF',
+      clockOffsetMs: 0,
+    };
+    renderStage();
+    expect(await screen.findByLabelText('작업 요약')).toBeTruthy();
+    expect(screen.queryByLabelText('GPU 끄기 안내')).toBeNull();
+  });
 });

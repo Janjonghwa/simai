@@ -2,12 +2,17 @@ import { ALERT } from '@/features/tbm/styles';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import { AppliedStatusCard } from '@/features/work/run/AppliedStatusCard';
+import { EndAlarmNote } from '@/features/work/run/EndAlarmNote';
 import { EndAlertStatus } from '@/features/work/run/EndAlertStatus';
+import { EndGpuCard } from '@/features/work/run/EndGpuCard';
+import { EndSummaryCard } from '@/features/work/run/EndSummaryCard';
 import { EventListCard } from '@/features/work/run/EventListCard';
+import { submitBlockReason } from '@/features/work/run/run';
 import { sendErrorMessage } from '@/features/work/run/runErrors';
 import { RunHistory } from '@/features/work/run/RunHistory';
 import { RunStatusCard } from '@/features/work/run/RunStatusCard';
 import { useEndRun, useSendReport } from '@/features/work/run/useRunActions';
+import { useRunAlarms } from '@/features/work/run/useRunAlarms';
 import type { RunStageProps } from '@/features/work/stageProps';
 import type { WorkDayItem } from '@/features/work/types';
 import { useSignatures } from '@/features/work/useSignatures';
@@ -44,6 +49,8 @@ function RunningView({ day }: { day: WorkDayItem }) {
     day.actual_started_at;
   const { data: report } = useWorkReport(day.work_id);
   const signers = useSignatures(report?.report_id).data;
+  // 종료 확인창의 「미확인 위험 경보 n건」: 서버가 준 이벤트 목록·확인 기록으로 센다(막지 않고 알린다, -734)
+  const alarms = useRunAlarms(runStart);
   const action = useMemo<WorkActionConfig>(
     () => ({
       label: '작업 종료',
@@ -75,6 +82,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
           onConfirm={end.confirm}
           onCancel={end.cancel}
         >
+          <EndAlarmNote alarms={alarms} />
           {end.failed && <FailureNote text="작업을 종료하지 못했습니다. 다시 시도해 주세요." />}
         </ConfirmDialog>
       )}
@@ -97,10 +105,12 @@ function EndedView({
   onSubmitted: () => void;
   onRerun?: () => void;
 }) {
-  const { data: report } = useWorkReport(day.work_id);
+  const { data: report, error: reportError } = useWorkReport(day.work_id);
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
   const filling = isReportGenerating(report);
+  // 꺼진 이유는 단추 옆에 늘 보인다(문서 속 흐린 글이나 hover 에 기대지 않는다, -734)
+  const blockedBy = submitBlockReason(report, reportError !== null);
   const endedAt =
     lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
       ?.ended_at ?? day.actual_ended_at;
@@ -110,17 +120,22 @@ function EndedView({
       enabled: reportId !== undefined && !filling && !send.pending,
       pending: send.pending,
       onClick: send.request,
+      reason: blockedBy ?? undefined,
       secondary: onRerun
         ? [{ label: '한 번 더 실행', onClick: onRerun, disabled: send.pending }]
         : undefined,
     }),
-    [reportId, filling, send.pending, send.request, onRerun],
+    [reportId, filling, blockedBy, send.pending, send.request, onRerun],
   );
   useWorkAction(action);
   return (
     <>
       <EndAlertStatus workId={day.work_id} endedAt={endedAt} />
       <RunHistory day={day} />
+      <div className="grid items-start gap-3 min-[960px]:grid-cols-2">
+        <EndSummaryCard day={day} />
+        <EndGpuCard canRerun={onRerun !== undefined} />
+      </div>
       <div className="min-w-0">
         <ReportPanel workId={day.work_id} editable withPrint />
       </div>

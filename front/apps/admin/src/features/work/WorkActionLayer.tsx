@@ -43,6 +43,16 @@ export function WorkActionLayer() {
         '*:pointer-events-auto',
       )}
     >
+      {config.reason && (
+        // 꺼진 단추의 이유를 단추 왼쪽에 늘 보인다(문서 속 흐린 글이나 hover 에 기대지 않는다, -734). 너무 길면 줄여 보인다.
+        <span
+          role="status"
+          title={config.reason}
+          className="max-w-[320px] truncate text-sm text-muted-foreground"
+        >
+          {config.reason}
+        </span>
+      )}
       {config.secondary?.map((secondary) => (
         <SecondaryButton key={secondary.label} {...secondary} />
       ))}

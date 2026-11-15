@@ -8,6 +8,7 @@ import {
   formatDateTime,
   isDrafted,
   isReportLocked,
+  isTbmWritten,
   missingKeys,
   parseDateTimeInput,
   reportFormOf,
@@ -148,7 +149,9 @@ describe('applyEdits', () => {
       WORK_TASKS,
     );
     expect(next.info.tasks).toEqual([{ code: 'REBAR' }, { text: '조적' }]);
-    expect({ ...next, info: { ...next.info, tasks: [] } }).toEqual(base);
+    // 작업내용을 처음 고르는 저장이라 일시만 TBM 을 쓴 시각으로 바뀐다(-734, 아래 describe)
+    expect(next.info.date_time_ms).not.toBe(T0);
+    expect({ ...next, info: { ...next.info, tasks: [], date_time_ms: T0 } }).toEqual(base);
     // 받은 양식은 건드리지 않는다.
     expect(base.info.tasks).toEqual([]);
   });
@@ -263,5 +266,74 @@ describe('보고서 상태 도우미', () => {
   it('잠재위험 번호는 동그라미 숫자다', () => {
     expect([0, 1, 2].map(circledNumber)).toEqual(['①', '②', '③']);
     expect(circledNumber(10)).toBe('11');
+  });
+});
+
+describe('TBM 일시는 작업이 생긴 시각이 아니라 TBM 을 쓴 시각이다(-734)', () => {
+  const CREATED = new Date(2026, 10, 11, 0, 9).getTime();
+  const WRITTEN = new Date(2026, 10, 11, 16, 17).getTime();
+
+  it('작업내용이 비어 있는 동안은 아직 쓰지 않은 양식이다', () => {
+    expect(isTbmWritten(blankReportForm(CREATED))).toBe(false);
+    expect(isTbmWritten(formWith([{ code: 'REBAR' }]))).toBe(true);
+  });
+
+  it('작업내용을 처음 고르는 저장(초안 전)이 일시를 지금 시각으로 바꾼다', () => {
+    const base = blankReportForm(CREATED);
+    const next = applyEdits(
+      base,
+      { tasks: selectionOfTasks([{ code: 'REBAR' }]) },
+      WORK_TASKS,
+      WRITTEN,
+    );
+    expect(next.info.date_time_ms).toBe(WRITTEN);
+    expect(base.info.date_time_ms).toBe(CREATED);
+  });
+
+  it('작업내용을 고르지 않은 저장은 일시를 건드리지 않는다', () => {
+    const base = blankReportForm(CREATED);
+    const next = applyEdits(base, { tasks: selectionOfTasks([]) }, WORK_TASKS, WRITTEN);
+    expect(next.info.date_time_ms).toBe(CREATED);
+  });
+
+  it('이미 쓴 TBM 을 다시 저장해도 쓴 시각을 지킨다(초안 전·후 모두)', () => {
+    const written = {
+      ...formWith([{ code: 'REBAR' }]),
+      info: { ...formWith([{ code: 'REBAR' }]).info, date_time_ms: WRITTEN },
+    };
+    const later = WRITTEN + 3_600_000;
+    expect(
+      applyEdits(written, { tasks: selectionOfTasks([{ code: 'REBAR' }]) }, WORK_TASKS, later).info
+        .date_time_ms,
+    ).toBe(WRITTEN);
+    expect(
+      applyEdits(
+        written,
+        { tasks: selectionOfTasks([{ code: 'REBAR' }]), fields: fieldEditsOf(written) },
+        WORK_TASKS,
+        later,
+      ).info.date_time_ms,
+    ).toBe(WRITTEN);
+  });
+
+  it('초안 뒤 편집 창에서 처음 작업내용을 골라도 일시 칸을 고치지 않았으면 지금 시각이고, 고쳤으면 그 값이 먼저다', () => {
+    const base = blankReportForm(CREATED);
+    const untouched = applyEdits(
+      base,
+      { tasks: selectionOfTasks([{ code: 'REBAR' }]), fields: fieldEditsOf(base) },
+      WORK_TASKS,
+      WRITTEN,
+    );
+    expect(untouched.info.date_time_ms).toBe(WRITTEN);
+
+    const fields = fieldEditsOf(base);
+    fields.dateTime = '2026-11-11T10:30';
+    const edited = applyEdits(
+      base,
+      { tasks: selectionOfTasks([{ code: 'REBAR' }]), fields },
+      WORK_TASKS,
+      WRITTEN,
+    );
+    expect(edited.info.date_time_ms).toBe(new Date(2026, 10, 11, 10, 30).getTime());
   });
 });

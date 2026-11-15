@@ -37,6 +37,9 @@ const NEXT_STAGE: Partial<Record<WorkStageId, WorkStageId>> = {
   report: 'setup',
 };
 
+/** 날짜 화면 맨 아래 여백(하단 메뉴 위쪽 끝 84px + 여유). 스크롤 끝에서도 메뉴·단추가 문서를 덮지 않는다. */
+const DOCK_CLEARANCE = 'pb-[128px]';
+
 const KIND_CHIP: Partial<Record<DayKind, string>> = { today: '오늘', future: '예정' };
 
 /** 머리줄. 단계 줄은 날짜 작업을 열고 난 뒤에 children 으로 들어온다. */
@@ -173,8 +176,9 @@ export function WorkDayPage({
   if (data?.progress === 'SUBMITTED') return <PastDayPage date={date} />;
 
   return (
-    // 아래 70px 은 우측 아래 단추 줄(WorkActionLayer)이 본문을 가리지 않게 비운다.
-    <div className="flex min-h-[calc(100vh-140px)] flex-none flex-col gap-3.5 pb-24">
+    // 아래 여백은 떠 있는 하단 메뉴(높이 70 + 바닥에서 14 = 위쪽 끝 84px)와 우측 아래 단추 줄(WorkActionLayer)이 문서·구역 목록 끝을 가리지 않게 비운다(-734).
+    // 본문(<main>)이 자기 아래 여백 14px 를 더 두므로 끝까지 내려가면 메뉴 위로 50px 넘게 여유가 남는다.
+    <div className={`flex min-h-[calc(100vh-140px)] flex-none flex-col gap-3.5 ${DOCK_CLEARANCE}`}>
       <WorkActionProvider>
         {data ? (
           <OpenedDay

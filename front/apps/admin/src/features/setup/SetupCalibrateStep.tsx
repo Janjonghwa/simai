@@ -228,6 +228,7 @@ function FailureNotice({
   changedCameras,
   repeatedValidationPairs,
   onReturnToStep1,
+  onTurnOnGpu,
 }: {
   waiting: SetupWaitingView;
   retryPending: boolean;
@@ -236,6 +237,7 @@ function FailureNotice({
   changedCameras?: readonly string[];
   repeatedValidationPairs?: string;
   onReturnToStep1: () => void;
+  onTurnOnGpu?: () => void;
 }) {
   const guide = failureGuide(
     waiting.failureCode,
@@ -261,21 +263,42 @@ function FailureNotice({
         <span className="text-xs text-muted-foreground">{stage.label} 단계에서 멈췄어요</span>
       )}
       <span className="font-semibold text-delay">{guide.title}</span>
+      {onTurnOnGpu && (
+        <span className="font-semibold text-foreground">
+          GPU 가 꺼져 있어요. 켠 뒤 다시 시도하세요.
+        </span>
+      )}
       <span className="text-foreground">{guide.fix}</span>
       <div className="mt-1 flex flex-wrap gap-2">
+        {onTurnOnGpu && (
+          // GPU 가 꺼져 있으면 다시 시도해도 같은 곳에서 멈추므로 주 단추는 「GPU 켜기」다(S15P31A101-734). 나머지는 보조로 내린다
+          <Button size="sm" onClick={onTurnOnGpu}>
+            GPU 켜기
+          </Button>
+        )}
         {guide.retry && (
-          <Button size="sm" disabled={retryPending} onClick={onRetry}>
+          <Button
+            size="sm"
+            variant={onTurnOnGpu ? 'secondary' : 'default'}
+            disabled={retryPending}
+            onClick={onRetry}
+          >
             다시 시도
           </Button>
         )}
         {newMap && (
-          <Button size="sm" disabled={retryPending} onClick={onRetryNewMap}>
+          <Button
+            size="sm"
+            variant={onTurnOnGpu ? 'secondary' : 'default'}
+            disabled={retryPending}
+            onClick={onRetryNewMap}
+          >
             새 맵으로 다시 하기
           </Button>
         )}
         <Button
           size="sm"
-          variant={guide.retry || newMap ? 'secondary' : 'default'}
+          variant={onTurnOnGpu || guide.retry || newMap ? 'secondary' : 'default'}
           onClick={onReturnToStep1}
         >
           카메라 연결 관리로
@@ -547,6 +570,7 @@ export function SetupCalibrateStep({
   onNavigateLiveWork,
   onReturnToStep1,
   onOpenSupplement,
+  onTurnOnGpu,
 }: {
   waiting: SetupWaitingView;
   /** 왼쪽 「카메라 영상」 탭(카메라 영상 4칸). */
@@ -570,6 +594,8 @@ export function SetupCalibrateStep({
   onReturnToStep1: () => void;
   /** 맵 보강 촬영 창을 연다(미리보기 맵이 있을 때만 준다). 없으면 「자세히 · 맵 보강」을 두지 않는다. */
   onOpenSupplement?: () => void;
+  /** GPU 가 꺼져 있을 때만 준다. 실패 안내의 주 단추 「GPU 켜기」가 GPU 패널을 연다(S15P31A101-734). */
+  onTurnOnGpu?: () => void;
 }) {
   const column = (
     <>
@@ -592,6 +618,7 @@ export function SetupCalibrateStep({
           changedCameras={changedCameras}
           repeatedValidationPairs={repeatedValidationPairs}
           onReturnToStep1={onReturnToStep1}
+          onTurnOnGpu={onTurnOnGpu}
         />
       )}
       {retryError && (

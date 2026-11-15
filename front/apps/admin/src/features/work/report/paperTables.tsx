@@ -1,4 +1,9 @@
-import { circledNumber, formatDateTime, taskLabelOf } from '@/features/work/reportForm';
+import {
+  circledNumber,
+  formatDateTime,
+  isTbmWritten,
+  taskLabelOf,
+} from '@/features/work/reportForm';
 import {
   type ReportForm,
   type ReportLeader,
@@ -90,7 +95,10 @@ export function InfoTable({
       <tbody>
         <tr>
           <th className={TH}>일시</th>
-          <td className={CELL}>{formatDateTime(info.date_time_ms)}</td>
+          {/* 일시는 TBM 을 쓴 시각이다. 서버가 빈 양식에 넣은 값은 작업이 생긴 시각이라, 고칠 수 있는 종이에서 아직 쓰지 않았으면 비워 둔다(읽기 전용 종이는 받은 값 그대로, -734) */}
+          <td className={CELL}>
+            {editable && !isTbmWritten(form) ? '' : formatDateTime(info.date_time_ms)}
+          </td>
           <th className={TH}>작업일 동일 여부</th>
           <td className={CELL}>
             <YesNo value={info.same_day} />
