@@ -50,6 +50,7 @@ from services.tier0.clips.ring_buffer import PacketRingBuffer
 from services.tier0.clips.service import EventClipService
 from services.tier0.clips.upload import HttpPutTransport
 from services.tier0.config_fetch import HttpsFetcher
+from services.tier0.detect_process import SplitDetectorFeed
 from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointConfigError, EndpointRegistrar, read_cert_pem
 from services.tier0.event_frames import EventFrameService, EventFrameSigner
@@ -320,6 +321,16 @@ class Tier0Service:
         # 표시 파일 진단: judge 는 판정 주기 초과(100ms) 틱 수, 아바타 차단 예산은 아바타 로그 사유에 남긴다(-717)
         self.judge_processing = ProcessingWindow(JUDGE_TICK_OVERRUN_MS, monotonic=processing_clock)
         self.detect_processing = ProcessingWindow(AVATAR_DETECT_BUDGET_MS, monotonic=processing_clock)
+        # 검출·판정 프로세스 분리(-728, 기본 끔): GPU 선확보·검출 처리 시간은 검출 프로세스가 재서 보낸다(판정 쪽은 CUDA 를 쓰지 않음)
+        self.detect_process: Any | None = None
+        self._split = settings.process_split and settings.input_mode in ("live", "file")
+        if self._split:
+            from services.tier0.detect_process import RemoteGpuReservation, RemoteProcessingWindow
+
+            self.gpu = RemoteGpuReservation(settings.gpu_reserve_mb, device=settings.gpu_device)  # type: ignore[assignment]
+            self.detect_processing = RemoteProcessingWindow(AVATAR_DETECT_BUDGET_MS)  # type: ignore[assignment]
+        self.fatal = threading.Event()  # 검출 프로세스가 너무 자주 죽었다: 진입점이 fatal_exit_code 로 끝낸다(-728)
+        self.fatal_exit_code: int | None = None
         self._qwe_total = 0  # LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(직전 지연 표본 때)
         self.marker_error: str | None = None  # 표시 파일 쓰기 실패(분석 워커·GPU 큐는 표시 파일이 없으면 모름으로 본다)
         self._journal_fsync = journal_fsync
@@ -488,7 +499,12 @@ class Tier0Service:
         if s.env.get("SIMAI_AVATAR_SHARE") == "1":
             from simai_ai.io.avatar_channel import LatestChannelWriter, avatar_channel_path
             root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
-            if s.offload_side_work:
+            if self.detect_process is not None:
+                # 프로세스 분리(-728): 그림이 있는 검출 프로세스가 쓴다. 판정 tick 은 재료만 보낸다
+                from services.tier0.detect_process import RemoteAvatarWriter
+
+                avatar_writer = RemoteAvatarWriter(self.detect_process, wall_ms=self._wall_ms)
+            elif s.offload_side_work:
                 # 곁가지 분리(-662, 기본 끔): 문서 조립은 판정 lock 밖 조정 스레드, NPZ 쓰기는 spawn 자식. 결과 파일 형식은 같다
                 from services.tier0.side_work import OffloadedChannelWriter
 
@@ -537,7 +553,9 @@ class Tier0Service:
         # R9 입력: PPE outbox 를 중계(SIMAI_PPE_RELAY=1)할 때 같은 메시지로 채운다. 없으면 비어 있어 R9 는 새로 나지 않는다
         self.ppe_states = PpeStateStore()
         self.link = self._build_link() if s.i1 is not None else None
-        if s.event_frames_enabled and s.input_mode == "live" and self.link is not None:
+        if s.event_frames_enabled and s.input_mode == "live" and self.link is not None and self.detect_process is not None:
+            log.warning("프로세스 분리 1단계: 이벤트 프레임(CRITICAL JPEG)은 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
+        elif s.event_frames_enabled and s.input_mode == "live" and self.link is not None:
             try:
                 parts = urlsplit(s.i1.url)
                 base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
@@ -631,6 +649,8 @@ class Tier0Service:
             except Exception as exc:
                 self._live_calibration_error = str(exc)
                 log.exception("후보 보정 기동 실패(판정은 계속한다)")
+        if s.clean_background.enabled and isinstance(feed, SplitDetectorFeed):
+            log.warning("프로세스 분리 1단계: 배경 누적·회전 복구는 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
         if s.clean_background.enabled and isinstance(feed, DetectorFeed):
             try:
                 from services.tier0.clean_background import BackgroundCleanBackground
@@ -675,7 +695,7 @@ class Tier0Service:
             self.event_frames.attach(feed)
         if isinstance(self.drift_watch, BackgroundDriftWatch):
             self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
-        if s.camera_check_enabled and isinstance(feed, DetectorFeed):
+        if s.camera_check_enabled and isinstance(feed, (DetectorFeed, SplitDetectorFeed)):
             # 세팅 「카메라 확인」 입력(-646): 워커가 요청 파일을 쓴 동안만 공통 시각 view 를 파일로 넘긴다(계산은 워커)
             from services.tier0.camera_check_tap import CameraCheckTap
 
@@ -799,6 +819,8 @@ class Tier0Service:
         """LIVE: I0 영상 수신 → 디코딩 → 최신성 대기열 → YOLO → Local Tracker (live_input.py). 영상 수신은 step 6 에서 연다."""
         s = self.settings
         assert s.live is not None
+        if self._split:
+            return self._build_split_feed("live", s.camera_ids, s.live.decoder, s.live.queue_depth, s.live.max_queue_wait_ms)
         detector = self._build_detector()
         decoder_factory = self._decoder_factory(s.live.decoder)
         config = FreshnessConfig(queue_depth=s.live.queue_depth, max_queue_wait_ms=s.live.max_queue_wait_ms,
@@ -830,6 +852,8 @@ class Tier0Service:
         missing = [c for c in replay.camera_ids if c not in self.rig.cameras]
         if missing:
             raise Tier0StartError(f"보정 {self.rig.calibration_version} 에 없는 녹화 카메라: {missing}", 2)
+        if self._split:
+            return self._build_split_feed("file", replay.camera_ids, f.decoder, f.queue_depth, f.max_queue_wait_ms)
         detector = self._build_detector()
         config = FreshnessConfig(queue_depth=f.queue_depth, max_queue_wait_ms=f.max_queue_wait_ms,
                                  reorder_window_ms=0)  # 녹화 프레임은 frame_sequence 가 이어진다(RecordingReplay 가 확인)
@@ -847,6 +871,53 @@ class Tier0Service:
                             source="FILE", on_close=self.file_input.close, provenance=replay.provenance(),
                             max_queued_per_camera=s.detect_queue_depth,
                             reid_collector=self.reid_collector)
+
+    def _build_split_feed(self, mode: str, camera_ids: Any, decoder: str, queue_depth: int,
+                          max_queue_wait_ms: int) -> FrameFeed:
+        """검출·판정 프로세스 분리(-728): 수신·디코딩·검출·로컬 추적은 spawn 자식, 이 프로세스는 관측만 받는다.
+
+        자식이 기동 실패를 알리면 단일 경로와 같은 종료 코드로 시작하지 않는다(검출기·디코더 4, 영상 포트 설정 2). Re-ID·배경 누적·
+        이벤트 프레임·클립은 1단계에서 옮기지 않아 끈다(설계 5·9절). 영상 포트는 step 6(RemoteLiveInput.start)에서 연다."""
+        from services.tier0.detect_process import (
+            DetectorProcess,
+            DetectorProcessError,
+            DetectorProcessSpec,
+            RemoteIngest,
+            RemoteLiveInput,
+        )
+        from simai_ai.io.avatar_channel import avatar_channel_path
+
+        s = self.settings
+        if s.reid.enabled:
+            log.warning("프로세스 분리 1단계: Re-ID 는 검출 프로세스로 옮기지 않아 끈다(설계 9절)")
+        avatar = None
+        if s.env.get("SIMAI_AVATAR_SHARE") == "1":
+            avatar = str(avatar_channel_path(s.env, Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")))
+        spec = DetectorProcessSpec(
+            mode=mode, camera_ids=tuple(camera_ids), decoder=decoder, queue_depth=queue_depth,
+            max_queue_wait_ms=max_queue_wait_ms, detect_tick_ms=s.detect_tick_ms, detect_queue_depth=s.detect_queue_depth,
+            engine_path=s.engine_path, weights_path=s.weights_path, imgsz=s.imgsz, cuda_stream_priority=s.cuda_stream_priority,
+            gpu_reserve_mb=s.gpu_reserve_mb, gpu_device=s.gpu_device, env=dict(s.env), avatar_channel=avatar,
+            offload_side_work=s.offload_side_work, detect_cpus=s.detect_cpus,
+            log_level=logging.getLogger().getEffectiveLevel(),
+            detector_factory=self._detector_factory, tracker_backend_factory=self._tracker_backend_factory,
+        )
+        process = DetectorProcess(spec, now_ms=self.clock.now_ms, mono_s=lambda: self._mono_ns() / 1e9,
+                                  on_gpu_status=self.gpu.update, on_processing=self.detect_processing.add_samples)
+        self.detect_processing.process = process
+        try:
+            process.start()
+        except DetectorProcessError as e:
+            raise Tier0StartError(f"{mode.upper()} 입력(검출 프로세스): {e}", e.exit_code) from e
+        self.detect_process = process
+        self._event(f"detect_process:{process.status()['pid']}")
+        if mode == "live":
+            self.live_input = RemoteLiveInput(process)  # type: ignore[assignment]
+            return SplitDetectorFeed(process, connected=self.live_input.connected, source="LIVE", async_mode=True)
+        assert self._replay is not None
+        self.file_input = FileInput(self._replay, RemoteIngest(process), self.replay_clock)  # type: ignore[arg-type]
+        return SplitDetectorFeed(process, connected=self.file_input.connected, source="FILE", async_mode=False,
+                                 provenance=self._replay.provenance())
 
     def _build_reid_collector(self) -> Any:
         from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
@@ -1532,6 +1603,8 @@ class Tier0Service:
             except Exception:  # noqa: BLE001 - 한 tick 실패로 판정 루프를 멈추지 않는다(로그·통계)
                 self.judge.stats.errors += 1
                 log.exception("판정 tick 실패")
+            if replay is not None and self.detect_process is not None and self.detect_process.failed_reason is not None:
+                replay.fail(f"검출 프로세스 실패: {self.detect_process.failed_reason}")  # 다시 띄우지 않는다(-728)
             try:
                 self.resync.tick()  # local_alert 송신 뒤 같은 판정 스레드에서 1Hz health 를 보낸다(-375)
             except Exception:  # noqa: BLE001 - health 실패로 판정 루프를 멈추지 않는다
@@ -1546,7 +1619,7 @@ class Tier0Service:
                     self.finished.set()
                     return
                 feed = self.perception.feed
-                if replay.drained() and (not isinstance(feed, DetectorFeed) or feed.drained()):
+                if replay.drained() and (not isinstance(feed, (DetectorFeed, SplitDetectorFeed)) or feed.drained()):
                     self._event("replay_finished")
                     self.finished.set()
                     return
@@ -1602,6 +1675,7 @@ class Tier0Service:
                 if now - last_status >= STATUS_EVERY_S:
                     last_status = now
                     self._sample_load()
+                    self._check_detect_process()
                     self.health.update_fps()
                     with self.judge_lock:
                         self.clips.poll()
@@ -1619,7 +1693,7 @@ class Tier0Service:
                         "judge": self.perception.timing.summary(),
                         "roi_filtered": dict(self.perception.roi_filtered),
                         "detector": (self.perception.feed.timing.summary()
-                                     if isinstance(self.perception.feed, DetectorFeed) else None),
+                                     if isinstance(self.perception.feed, (DetectorFeed, SplitDetectorFeed)) else None),
                         "input": None if self.live_input is None else self.live_input.bridge.timing.summary(),
                         "reid": None if self.reid_collector is None else self.reid_collector.status(),
                         # -662 추가: 촬영→추론 시작 프레임 나이·대기, I1 직렬화·송신, 루프 깨어남 지연, 스레드 CPU, 곁가지
@@ -1628,12 +1702,23 @@ class Tier0Service:
                         "loops": self.loop_timing.summary(),
                         "thread_cpu": self.thread_cpu,
                         "side_work": self._side_work_status(),
+                        # -728: 검출 프로세스(pid·세대·재시작·경계 큐 계수·자식 스레드 CPU·detect_wake_lag). 꺼짐이면 None
+                        "process_split": None if self.detect_process is None else self.detect_process.status(),
                     }))
                 if now - last_marker >= MARKER_EVERY_S:
                     last_marker = now
                     self._write_marker()
             except Exception:  # noqa: BLE001
                 log.exception("정리 주기 실패")
+
+    def _check_detect_process(self) -> None:
+        """검출 프로세스가 짧은 시간에 너무 자주 죽었으면(-728) 진입점이 종료 코드 4 로 끝내게 한다(bootstrap 이 다시 띄움)."""
+        process = self.detect_process
+        if process is None or process.fatal_reason is None or self.fatal.is_set():
+            return
+        log.error("검출 프로세스 복구 실패: %s → Tier 0 를 종료 코드 4 로 끝낸다", process.fatal_reason)
+        self.fatal_exit_code = 4
+        self.fatal.set()
 
     def _warn_change(self, key: str, value: Any, message: str) -> None:
         if self._warned.get(key) != value:
@@ -1731,7 +1816,13 @@ class Tier0Service:
             "thread_cpu": self.thread_cpu,
             "roi_filtered": dict(self.perception.roi_filtered),
             "detector_timing": (self.perception.feed.timing.summary()
-                                if isinstance(self.perception.feed, DetectorFeed) else None),
+                                if isinstance(self.perception.feed, (DetectorFeed, SplitDetectorFeed)) else None),
+            "process_split": None if self.detect_process is None else {
+                **self.detect_process.status(),
+                "disabled": [name for name, on in (("reid", self.settings.reid.enabled),
+                                                   ("clean_background", self.settings.clean_background.enabled),
+                                                   ("event_frames", self.settings.event_frames_enabled),
+                                                   ("event_clips", True)) if on]},
             "skipped_camera_pairs": sorted("/".join(pair) for pair in self.perception.associator.skipped_camera_pairs),
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),
@@ -1770,7 +1861,7 @@ class Tier0Service:
                                  pid=os.getpid())
         section["processing"] = {"judge": self.judge_processing.take(), "detect": self.detect_processing.take(),
                                  "detect_required": isinstance(getattr(getattr(self, "perception", None), "feed", None),
-                                                               DetectorFeed)}
+                                                               (DetectorFeed, SplitDetectorFeed))}
         return section
 
     def _write_phase_marker(self, phase: str) -> None:
@@ -1933,6 +2024,8 @@ class Tier0Service:
             avatar_writer.close()
         if feed is not None:
             feed.close()
+        if self.detect_process is not None:
+            self.detect_process.stop()  # 인지를 만들기 전에 기동이 실패한 경우에도 검출 프로세스를 남기지 않는다(여러 번 불러도 됨)
         if self.jsonl is not None:
             self.jsonl.close()
         journal = getattr(self, "journal", None)
