@@ -35,6 +35,8 @@ interface IncidentCardProps {
   /** 카드에 묶인 대상(사람 트랙 번호) 수. 2 이상이면 「N회」에 묶은 까닭을 올려 보면 알린다. */
   people?: number;
   selected: boolean;
+  /** 대상 사람이 지금 카메라에서 사라졌다(S15P31A101-757). 카드를 흐리게 하고 「지금 안 보임」을 단다. */
+  gone?: boolean;
   /** 작업 외 진입 꼬리표의 이유(작업 시간 외·작업 구역 밖). 없으면 꼬리표가 없다. 등급·소리·표시는 그대로다. */
   outsideWork?: OutsideWorkKind | null;
   onSelect: (incident: Incident) => void;
@@ -64,6 +66,7 @@ export function IncidentCard({
   occurrences = 1,
   people = 1,
   selected,
+  gone = false,
   outsideWork = null,
   onSelect,
   onOpen,
@@ -78,7 +81,7 @@ export function IncidentCard({
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
   const raisedAt = incident.active ? firstActiveRaisedAt(incident) : null;
   // 지금 관제 중인 사건만 등급 테두리·카메라 버튼을 쓴다. 지난 관제의 사람은 지금 카메라에 없다.
-  const current = incident.active && !incident.stale;
+  const current = incident.active && !incident.stale && !gone;
   const eta = entryEtaLine(top.event);
   const target = targetShortLabel(incident.target, zoneName, personNames);
   const fullTarget = targetLabel(incident.target, zoneName, personNames);
@@ -100,6 +103,7 @@ export function IncidentCard({
           current && look.ring,
           !incident.active && 'opacity-55',
           incident.stale && 'opacity-75',
+          gone && 'opacity-60',
           selected && 'outline-2 outline-offset-1 outline-primary',
         )}
       >
@@ -129,6 +133,14 @@ export function IncidentCard({
               <span title={target === fullTarget ? undefined : fullTarget} className="text-sm">
                 {target}
               </span>
+              {gone && (
+                <span
+                  title="이 사람은 지금 카메라에 보이지 않습니다. 위험이 끝난 것이 아니라 확인·해소를 기다리는 중입니다."
+                  className="text-xs text-muted-foreground"
+                >
+                  지금 안 보임
+                </span>
+              )}
               {check && <ConfirmBadge event={check.event} compact />}
               {delayed && <DelayedBadge compact />}
               {outsideWork && <OutsideWorkBadge kind={outsideWork} />}

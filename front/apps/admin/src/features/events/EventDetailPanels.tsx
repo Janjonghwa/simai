@@ -48,7 +48,9 @@ function DetailPanel({ title, children }: { title: string; children: ReactNode }
   );
 }
 
-const None = () => <p className="text-sm text-muted-foreground">—</p>;
+const None = ({ text = '—' }: { text?: string }) => (
+  <p className="text-sm text-muted-foreground">{text}</p>
+);
 
 /**
  * VLM 근거를 기다리는 이벤트인지(S15P31A101-706). 근거는 LIVE CRITICAL 에만 요청되고(서버 VlmRationaleIngestor),
@@ -99,22 +101,27 @@ function RuleRow({
     >
       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <SeverityBadge severity={event.severity} />
-        <b>
-          {event.rule_id} {eventRuleName(event)}
-        </b>
+        <b>{eventRuleName(event)}</b>
         <span className="text-[13px] text-muted-foreground">
           {zone && `${zone} · `}
           <span className="font-mono">{formatTime(event.raised_at)}</span> 발생 ·{' '}
           {statusText(entryStatus(entry), ppeReleaseOf(event, bundles))}
         </span>
       </span>
-      {metrics.length > 0 && (
-        <span className="flex flex-wrap gap-x-2 font-mono text-sm">
-          {metrics.map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </span>
-      )}
+      {/* 규칙 번호·판정 수치는 운영자가 따질 때만 필요해 접어 둔다(S15P31A101-757). */}
+      <details className="text-sm">
+        <summary className="w-fit cursor-pointer text-muted-foreground">자세히</summary>
+        <div className="mt-1 flex flex-col gap-1">
+          <span className="text-muted-foreground">규칙 {event.rule_id}</span>
+          {metrics.length > 0 && (
+            <span className="flex flex-wrap gap-x-2 font-mono">
+              {metrics.map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </span>
+          )}
+        </div>
+      </details>
       {needsConfirmation(event) && (
         <span className="text-sm">
           확인 필요
@@ -269,7 +276,7 @@ export function ClipsPanel({ entries }: EntriesProps) {
   return (
     <DetailPanel title="이벤트 클립">
       {clipEntries.length === 0 ? (
-        <None />
+        <None text="영상을 남기는 경보(위험·경고 등급)가 아닙니다" />
       ) : (
         clipEntries.map(({ event }) => (
           <EventClips key={event.event_id} event={event} title={eventRuleName(event)} />
@@ -304,7 +311,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                   {statusText(status, ppeReleaseOf(entry.event, bundles))}
                 </span>
               </span>
-              <AckButton entry={entry} label="경보 확인(ACK)" zoneName={zoneName} />
+              <AckButton entry={entry} label="경보 확인" zoneName={zoneName} />
             </li>
           );
         })}

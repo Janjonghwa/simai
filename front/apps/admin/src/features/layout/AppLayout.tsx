@@ -57,9 +57,12 @@ const noticeInset = (eventPanel: boolean, camSplitOpen: boolean) => {
 function Notices({
   ref,
   eventPanel,
+  banner,
 }: {
   ref: RefObject<HTMLDivElement | null>;
   eventPanel: boolean;
+  /** 경보 배너를 이 알림 영역에 띄운다(띠로 따로 두는 화면이면 false). */
+  banner: boolean;
 }) {
   const camSplitOpen = useCamSplitStore((s) => s.split !== null);
   return (
@@ -72,7 +75,7 @@ function Notices({
         noticeInset(eventPanel, camSplitOpen),
       )}
     >
-      <AlarmBanner withPanel={eventPanel} />
+      {banner && <AlarmBanner withPanel={eventPanel} />}
       {eventPanel && <WorkSessionBar />}
       {eventPanel && <WorkPpeStatus />}
       {eventPanel && <PpePolicyNotice />}
@@ -159,6 +162,15 @@ export function AppLayout() {
         <div className={cn('relative z-[7] flex-none', fullBleed && 'absolute inset-x-0 top-0')}>
           <TopBar floating={fullBleed} />
         </div>
+        {/* 작업 관리 같은 일반 화면은 배너가 달력 「오늘」·「출력」 단추를 가리지 않게 상단 바 아래 띠로 둔다(S15P31A101-757). */}
+        {!eventPanel && !fullBleed && (
+          <div
+            data-testid="alarm-strip"
+            className="pointer-events-none relative z-[6] flex flex-none justify-center px-5 pt-2 empty:hidden"
+          >
+            <AlarmBanner withPanel={false} />
+          </div>
+        )}
         <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
           {fullBleed ? (
             <SpatialViewportHost eventPanel={eventPanel}>
@@ -176,7 +188,7 @@ export function AppLayout() {
           )}
           <Dock />
         </div>
-        <Notices ref={noticesRef} eventPanel={eventPanel} />
+        <Notices ref={noticesRef} eventPanel={eventPanel} banner={eventPanel || fullBleed} />
         <AlarmSoundLoop />
       </div>
     </>

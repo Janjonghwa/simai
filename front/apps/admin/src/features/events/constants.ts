@@ -110,6 +110,15 @@ export { RULE_NAME } from '@/lib/ruleNames';
 export const METRIC_LABEL: Record<string, string> = {
   edge_distance_m: '가장자리',
   height_diff_m: '높이 차',
+  // 규칙 수치의 한국어 이름(S15P31A101-757). 사건 상세의 「자세히」에 보인다.
+  zone_distance_m: '구역까지 거리',
+  occupancy_z_min_m: '구역 바닥 높이',
+  occupancy_z_max_m: '구역 최대 높이',
+  surface_height_m: '작업면 높이',
+  calibration_margin_m: '보정 여유',
+  speed_mps: '속도',
+  time_to_entry_s: '진입까지',
+  head_drop_m: '머리 낙하',
 };
 
 /** 확인 필요 이유(confidence_reasons)의 화면 문구. */

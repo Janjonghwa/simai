@@ -127,6 +127,18 @@ describe('이름 없는 사람 표시(S15P31A101-731)', () => {
     expect(formatPersonShort('w-mw8y3hai-0722')).toBe('작업자 #0722');
     expect(formatPersonFull('w-mw8y3hai-0722')).toBe('w-mw8y3hai-0722');
   });
+
+  it('같은 자동 번호가 둘이어도 짧은 표시에는 괄호 번호를 붙이지 않는다(S15P31A101-757)', () => {
+    const map = resolvePersonDisplayMap({
+      activeWorldIds: ['w-a-0060', 'w-b-0061'],
+      personNames: [
+        { world_id: 'w-a-0060', name_source: 'UNIDENTIFIED', display_name: '미확인 60' },
+        { world_id: 'w-b-0061', name_source: 'UNIDENTIFIED', display_name: '미확인 60' },
+      ],
+    });
+    expect(formatPersonShort('w-a-0060', map)).toBe('작업자 #60');
+    expect(formatPersonFull('w-a-0060', map)).toBe('작업자 #60 (w-a-0060)');
+  });
 });
 
 describe('3D 이름표 칸 목록 조립 buildPersonLabelCells(-658 A안)', () => {

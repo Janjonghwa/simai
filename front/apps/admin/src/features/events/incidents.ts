@@ -114,6 +114,16 @@ export type AliveIds = ReadonlySet<string> | null;
 const isAlive = (alive: AliveIds, person: string) => alive === null || alive.has(person);
 
 /**
+ * 지금 관제 중인데 대상 사람이 카메라에서 사라진(트랙이 끝난) 묶음(S15P31A101-757). 위험이 끝났다는 뜻이 아니라 해소를 기다리는 중이다.
+ * 사람 수를 모르거나(null) 구역 대상·지난 관제·이미 해소된 묶음은 아니다.
+ */
+export const isGone = (incident: Incident, alive: AliveIds): boolean =>
+  incident.active &&
+  !incident.stale &&
+  incident.target?.type === 'person' &&
+  !isAlive(alive, incident.target.id);
+
+/**
  * 화면 카드 하나. 진행 중 카드는 한 사람의 묶음(명세 7.4)에, 같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(World ID)만 바뀌어
  * 다시 난 묶음을 더한 것이고(S15P31A101-731), 최근 해소 카드는 같은 위험·같은 구역의 해소된 발생을 묶은 것이다.
  * 기록·이벤트는 그대로이고 화면만 묶는다.

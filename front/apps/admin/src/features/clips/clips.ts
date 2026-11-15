@@ -12,14 +12,19 @@ const hasTime = (ms: number | null | undefined): ms is number => ms !== null && 
 
 /**
  * 지금 위험 구간(재개 횟수)의 클립이 아직 목록에 없고, 그 구간이 시작되거나 바뀐 지 CLIP_PREPARE_MS 가 안 됐으면 준비 중이다.
- * 클립은 발생·재개·등급 변경 때 만들므로 마지막으로 바뀐 시각(updated_at, 없으면 raised_at)부터 잰다.
+ * 클립은 발생·재개 때 만들므로 처음 구간은 발생 시각(raised_at)부터, 재개 구간은 마지막으로 바뀐 시각(updated_at, 없으면 raised_at)부터 잰다.
  */
 export function clipPreparing(event: EventItem, clips: readonly Clip[], now: number): boolean {
   const resumeCount = event.resume_count ?? 0;
   if (clips.some((clip) => clip.resume_count === resumeCount)) return false;
-  const since = event.updated_at ?? event.raised_at;
+  // 처음 발생 구간은 발생 시각부터 잰다. 진행 중 이벤트는 갱신이 잦아 updated_at 부터 재면 기다림이 끝나지 않는다(S15P31A101-757).
+  const since = resumeCount === 0 ? (event.raised_at ?? event.updated_at) : event.updated_at;
   return hasTime(since) && now - since < CLIP_PREPARE_MS;
 }
+
+/** 지금 위험 구간의 클립이 하나도 없다(준비 중 판단과 함께 쓴다). */
+export const currentClipMissing = (event: EventItem, clips: readonly Clip[]): boolean =>
+  !clips.some((clip) => clip.resume_count === (event.resume_count ?? 0));
 
 export const isDeleted = (clip: Clip) => hasTime(clip.deleted_at_ms);
 
