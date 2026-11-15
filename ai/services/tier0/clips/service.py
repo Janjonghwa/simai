@@ -123,6 +123,15 @@ class EventClipService:
     def export_enabled(self) -> bool:
         return self._uploader is not None
 
+    def attach_uploader(self, uploader: ClipUploader) -> None:
+        """조립 순서상 I1 연결이 링 버퍼보다 늦게 생겨 나중에 붙인다(-748). 판정 스레드가 돌기 전에만 부른다."""
+        self._uploader = uploader
+
+    def status(self) -> dict[str, object]:
+        uploader = self._uploader
+        upload = uploader.status() if hasattr(uploader, "status") else None
+        return {**vars(self.stats), "pending": self.pending, "upload": upload}
+
     @property
     def pending(self) -> int:
         return len(self._pending)
@@ -170,7 +179,9 @@ class EventClipService:
     def _escalate(self, trigger: ClipTrigger) -> None:
         """HIGH 로 시작한 위험 구간이 CRITICAL 로 올랐다(11.5 CRITICAL 자동 보존). 새 클립은 만들지 않는다.
 
-        자르기 전이면 대기 중인 대상의 등급을 올려 기록이 처음부터 CRITICAL·보존 표시로 나가게 한다. 이미 잘랐으면
+        자르기 전이면 대기 중인 대상의 등급을 올려 기록이 처음부터 CRITICAL·보존 표시로 나가게 한다. 이때 클립을 만든 전이도
+        상향 전이(event_sequence)로 바꾼다(계약 media_clip.event_sequence "자르기 전 상향이면 그 전이". EC2 는 클립 등급이 그
+        전이의 등급과 같은지 본다, -748). 이미 잘랐으면
         업로더가 보내기 전 기록은 값을 올리고, 보낸 기록에는 보존 표시 추가 기록(ClipRetentionUpdate)을 낸다.
         """
         state = self._seen[trigger.key]
@@ -180,7 +191,7 @@ class EventClipService:
         self.stats.retention_escalations += 1
         for p in self._pending:
             if p.trigger.key == trigger.key:
-                p.trigger = replace(p.trigger, severity=Severity.CRITICAL)
+                p.trigger = replace(p.trigger, severity=Severity.CRITICAL, event_sequence=trigger.event_sequence)
 
     def _hold_if_critical(self, t: EventTransition) -> None:
         """LIVE 이벤트가 CRITICAL 이면 그 위험 구간의 클립 모두에 보존 표시를 붙인다(11.5). 열쇠마다 한 번.

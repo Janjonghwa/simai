@@ -7,7 +7,7 @@
 | risk_event_transition | outbox.pump 를 송신 스레드에서 부른다. 배치는 시작할 때의 연결에만 보낸다 | outbox 가 정본 |
 | event_state_snapshot | 연결마다 한 번, 그 연결에서 outbox 재전송을 마친 직후(같은 송신 스레드, 같은 연결) | 연결 고정 직접 송신 |
 | config_ack | ConfigSync.take_acks 를 tick 마다 꺼내. 대기열이 차면 붙들고 다음 tick 에 다시 | 신뢰 대기열(버리지 않음) |
-| calibration_update·event_frame_ready | 만드는 쪽이 send_event 로 넣을 때. 차면 QueueFull 을 돌려준다 | 신뢰 대기열 |
+| calibration_update·event_frame_ready·media_clip·media_clip_retention | 만드는 쪽이 send_event 로 넣을 때. 차면 QueueFull 을 돌려준다 | 신뢰 대기열 |
 | observation_summary | send_event | 텔레메트리 대기열(차면 오래된 것 버림) |
 | ppe_state | PPE outbox(add_source)를 tick 마다 꺼내 (또는 send_event) | 텔레메트리 대기열(차면 오래된 것 버림) |
 | tier0_endpoint | (재)연결마다 EndpointRegistrar.build 로 새로 만들어 | 신뢰 대기열(이전 것 교체) |
@@ -42,7 +42,8 @@ log = logging.getLogger("services.tier0.i1.publisher")
 
 WORLD_STATE_INTERVAL_S = 0.1  # 10 Hz (명세 12.2)
 HEALTH_INTERVAL_S = 1.0  # 1 Hz (명세 12.2)
-EVENT_TYPES = frozenset({"observation_summary", "calibration_update", "event_frame_ready", "ppe_state"})
+EVENT_TYPES = frozenset({"observation_summary", "calibration_update", "event_frame_ready", "ppe_state", "media_clip",
+                         "media_clip_retention"})
 
 WORLD_STATE_DROPS_FIELD = "ec2_world_state_drops"
 """health 1.5.0 선택 필드 이름 (contracts/messages/health.schema.json)"""

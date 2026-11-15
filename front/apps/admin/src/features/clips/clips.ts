@@ -1,3 +1,4 @@
+import { CLIP_PREPARE_MS } from '@/features/clips/constants';
 import type { Clip } from '@/features/clips/types';
 import type { EventItem } from '@/features/events/types';
 
@@ -8,6 +9,17 @@ export const hasClips = (event: EventItem) =>
   event.source === 'LIVE' && (event.severity === 'CRITICAL' || event.severity === 'HIGH');
 
 const hasTime = (ms: number | null | undefined): ms is number => ms !== null && ms !== undefined;
+
+/**
+ * 지금 위험 구간(재개 횟수)의 클립이 아직 목록에 없고, 그 구간이 시작되거나 바뀐 지 CLIP_PREPARE_MS 가 안 됐으면 준비 중이다.
+ * 클립은 발생·재개·등급 변경 때 만들므로 마지막으로 바뀐 시각(updated_at, 없으면 raised_at)부터 잰다.
+ */
+export function clipPreparing(event: EventItem, clips: readonly Clip[], now: number): boolean {
+  const resumeCount = event.resume_count ?? 0;
+  if (clips.some((clip) => clip.resume_count === resumeCount)) return false;
+  const since = event.updated_at ?? event.raised_at;
+  return hasTime(since) && now - since < CLIP_PREPARE_MS;
+}
 
 export const isDeleted = (clip: Clip) => hasTime(clip.deleted_at_ms);
 

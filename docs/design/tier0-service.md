@@ -183,7 +183,7 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
 | -81 스냅샷 | bind·attach·compact·risk_observed_at·status·reseed | 배선 / E2E(재전송 → 스냅샷), `test_reseed_waits_for_empty_journal_queue_then_restarts_snapshot`, lock 순서 시험 |
 | -91 노트북 하트비트 | 3회 누락 → gateway_link 끊김 | 배선(`tracking.gateway_link`) / `test_gateway_link.py` |
 | -93 Risk | ActiveConfig.evaluate(작업면), 등록부 전체 | 배선 / E2E 묶음(R1·R2·R3·R5·R7 교실 프로파일) |
-| -57 클립 | on_transitions·poll | 배선(업로더 없음: 서명 API 미정) / 시험 없음(SIM 은 영상이 없다) |
+| -57 클립 | on_transitions·poll | 배선. 업로더는 S15P31A101-748(EVENT_CLIP 서명·업로드 스레드·I1 media_clip, `S15P31A101-748-event-clip-upload.md`) / 시험 `test_tier0_clip_upload.py` |
 | -159 엔드포인트 | (재)연결마다 tier0_endpoint | 배선 / E2E(계약 검증) |
 | -161 현장 경보 재동기화 | 접속 직후·1 Hz, 같은 lock·한 줄 대기열 | 배선 / E2E |
 | -32 이미지 | SIMAI_TIER0_ENGINE, state/tier0.live | 배선 / `test_live_without_engine_exits_4_without_judging`, `test_live_start_errors_have_clear_exit_codes` |

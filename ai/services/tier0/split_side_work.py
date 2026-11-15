@@ -6,7 +6,7 @@
 | 곁가지 | 검출 프로세스(`ChildSideWork`) | 판정 프로세스(대리 객체) |
 |---|---|---|
 | 이벤트 프레임(CRITICAL R1~R4) | 프레임 링·JPEG·로컬 사본·서명·S3 PUT | `RemoteEventFrames`: 대상 전이 고르기(seen)·카메라 순서, 결과 `event_frame_ready` 를 I1 로(msg_id·순서는 판정 쪽) |
-| 이벤트 클립 | 패킷 링 버퍼(영상 수신에서 바로)·자르기·재다중화 | `RemoteClips`: 클립 대상 전이·poll 을 명령으로 |
+| 이벤트 클립 | 패킷 링 버퍼(영상 수신에서 바로)·자르기·재다중화·서명·S3 PUT(업로드 스레드, -748) | `RemoteClips`: 클립 대상 전이·poll 을 명령으로, 결과 `media_clip`·`media_clip_retention` 을 I1 로 |
 | Re-ID(-744) | 크롭·COPE 임베딩(`AsyncReidCollector`), 특징을 캐시에 넣을 때 판정 프로세스로도 보냄 | `RemoteReidCollector`: 특징 사본 → World Track feature_lookup, 수집 주기(update_sampling)는 명령. 보조 비용·DORMANT 재입장·swap 복원·분할 판정은 World Track 그대로 |
 | 관제 중 배경 누적(-540) | `BackgroundCleanBackground`(결과 파일·상태 파일·세팅 촬영 요청 그대로) | `RemoteCleanBackground`: 보정 활성화·카메라 리셋·회전 표본 크기 명령, 회전 복구 입력은 검출 프로세스가 쓴 파일을 읽음 |
 
@@ -37,6 +37,9 @@ ROTATION_DUMP_TIMEOUT_S = 20.0
 """회전 복구 입력 파일 요청 응답 대기 상한(회전 복구 주기 15초보다 길다)"""
 RELAY_QUEUE_MAX = 64
 """판정 쪽 event_frame_ready 중계 대기 상한(이벤트 큐 8건의 여러 배)"""
+CLIP_RELAY_QUEUE_MAX = 256
+"""판정 쪽 media_clip·media_clip_retention 중계 대기 상한(이벤트 하나에 카메라 4대, 기록은 1 KB 남짓)"""
+CLIP_RECORD_KINDS = ("media_clip", "media_clip_retention")
 ROTATION_VIEWS_DIRNAME = "rotation-views"
 
 
@@ -49,6 +52,8 @@ class SideWorkSpec:
     event_frames_local_root: str | None = None
     clips: bool = False
     """LIVE 영상 수신의 압축 패킷을 클립 링 버퍼에 넣는다"""
+    clip_io: Any = None
+    """services.tier0.clips.async_upload.ClipIo(-748). None 이면 잘라낸 클립을 올리지 않는다(개수만 센다)"""
     clean_background: Any = None
     """services.tier0.settings.CleanBackgroundSettings. None 이면 배경 누적을 하지 않는다"""
     state_dir: str | None = None
@@ -98,6 +103,7 @@ class ChildSideWork:
         self.stop = threading.Event()
         self.event_frames: Any = None
         self.clips: Any = None
+        self.clip_uploader: Any = None
         self.clean_background: Any = None
         self._clean_thread: threading.Thread | None = None
         self._clip_clock = _SetClock()
@@ -123,7 +129,15 @@ class ChildSideWork:
             from services.tier0.clips.ring_buffer import PacketRingBuffer
             from services.tier0.clips.service import EventClipService
 
-            self.clips = EventClipService(PacketRingBuffer(self.camera_ids), self._clip_clock)
+            if spec.clip_io is not None:
+                try:
+                    # 서명·PUT 은 자기 스레드에서(명령 스레드를 막지 않게). 백오프·업로드 시각은 이 프로세스의 실제 시계
+                    self.clip_uploader = spec.clip_io.build(clock, _SideClipSink(self._put))
+                    self.clip_uploader.start()
+                except Exception as error:  # noqa: BLE001 - 클립은 부가 근거다(검출 프로세스 기동을 막지 않는다)
+                    self.clip_uploader = None
+                    log.warning("이벤트 클립 업로더 기동 실패(검출 프로세스): %s", type(error).__name__)
+            self.clips = EventClipService(PacketRingBuffer(self.camera_ids), self._clip_clock, uploader=self.clip_uploader)
         self.reid: Any = None
         self.feed: Any = None
         self.reid_features_sent = 0
@@ -282,6 +296,8 @@ class ChildSideWork:
                                         "frames_ready_sent": self.frames_ready_sent}}
         if self.clips is not None:
             out["side"]["clips"] = {**vars(self.clips.stats), "pending": self.clips.pending}
+            if self.clip_uploader is not None:
+                out["side"]["clip_upload"] = self.clip_uploader.status()
         if self.reid is not None:
             out["reid"] = {**self.reid.status(), "features_sent": self.reid_features_sent,
                            "features_dropped": self.reid_features_dropped}
@@ -317,6 +333,8 @@ class ChildSideWork:
                 self.event_frames.stop(timeout_s)
             except Exception:  # noqa: BLE001
                 log.debug("이벤트 프레임 정지 실패", exc_info=True)
+        if self.clip_uploader is not None:
+            self.clip_uploader.stop(min(timeout_s, 1.0))  # 진행 중인 PUT 은 기다리지 않는다(임시 저장분은 다음 기동이 올린다)
         if self._clean_thread is not None:
             self._clean_thread.join(timeout_s)
         if self.clean_background is not None:
@@ -324,6 +342,26 @@ class ChildSideWork:
                 self.clean_background.close()
             except Exception:  # noqa: BLE001
                 log.debug("배경 누적 닫기 실패", exc_info=True)
+
+
+class _SideClipSink:
+    """검출 프로세스 업로더의 기록 출구: 판정 프로세스로 넘기고 그쪽이 I1 신뢰 큐에 넣는다(msg_id·순서는 판정 쪽).
+    out 큐가 차면 QueueFull 을 내 업로더가 다음 poll 에 기록만 다시 낸다."""
+
+    def __init__(self, put: Callable[[tuple], bool]) -> None:
+        self._put = put
+
+    def _send(self, kind: str, payload: Mapping[str, Any]) -> None:
+        from services.tier0.i1_client import QueueFull
+
+        if not self._put(("side", kind, dict(payload))):
+            raise QueueFull(kind)
+
+    def emit(self, record: Any) -> None:
+        self._send("media_clip", record.to_payload())
+
+    def emit_retention(self, update: Any) -> None:
+        self._send("media_clip_retention", update.to_payload())
 
 
 # ---------------------------------------------------------------------------- 판정 프로세스 쪽 대리 객체
@@ -412,15 +450,79 @@ class RemoteEventFrames:
 
 
 class RemoteClips:
-    """EventClipService 대역(판정 프로세스). 링 버퍼·자르기는 검출 프로세스가 하고, 클립 대상 전이·poll 만 명령으로 보낸다."""
+    """EventClipService 대역(판정 프로세스). 링 버퍼·자르기·업로드는 검출 프로세스가 하고, 클립 대상 전이·poll 만 명령으로 보낸다.
 
-    export_enabled = False  # 업로더는 단일 경로와 같이 없다(service._assemble_and_run)
+    검출 프로세스가 올린 뒤 보낸 media_clip·media_clip_retention 은 중계 스레드가 I1 신뢰 큐에 넣는다(start_relay, -748)."""
 
     def __init__(self, process: Any) -> None:
         self._process = process
         self.sent = 0
         self.dropped = 0
         self.ignored_transitions = 0
+        self._send_event: Callable[..., Any] | None = None
+        self._relay: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=CLIP_RELAY_QUEUE_MAX)
+        self._closing = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.relayed = 0
+        self.relay_dropped = 0
+        for kind in CLIP_RECORD_KINDS:
+            process.on_side(kind, lambda payload, kind=kind: self.deliver(kind, payload))
+
+    @property
+    def export_enabled(self) -> bool:
+        return self._send_event is not None
+
+    def start_relay(self, send_event: Callable[..., Any]) -> None:
+        self._send_event = send_event
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="tier0-clip-relay", daemon=True)
+            self._thread.start()
+
+    def deliver(self, kind: str, payload: Mapping[str, Any]) -> None:
+        """검출 프로세스 받기 스레드에서 불린다. 기다리지 않는다(차면 버리고 남긴다. 올린 객체는 EC2 고아 정리가 지운다)."""
+        try:
+            self._relay.put_nowait((kind, dict(payload)))
+        except queue.Full:
+            self.relay_dropped += 1
+            log.warning("clip_record_dropped kind=%s clip_id=%s reason=relay_full", kind, payload.get("clip_id"))
+
+    def _run(self) -> None:
+        from services.tier0.i1_client import QueueFull
+
+        send = self._send_event
+        assert send is not None
+        while not self._closing.is_set():
+            try:
+                kind, payload = self._relay.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            while not self._closing.is_set():
+                try:
+                    send(kind, payload)
+                    self.relayed += 1
+                    if kind == "media_clip":
+                        log.info("media_clip_queued clip_id=%s event_id=%s camera=%s", payload.get("clip_id"),
+                                 payload.get("event_id"), payload.get("camera_id"))
+                    break
+                except QueueFull:
+                    self._closing.wait(0.05)  # 같은 기록을 붙든 채 신뢰 큐 자리만 기다린다
+                except Exception as error:  # noqa: BLE001 - 클립 기록 실패가 판정·경보로 새지 않는다
+                    self.relay_dropped += 1
+                    log.warning("clip_record_dropped kind=%s clip_id=%s reason=%s", kind, payload.get("clip_id"),
+                                type(error).__name__)
+                    break
+
+    def stop(self, timeout_s: float) -> bool:
+        self._closing.set()
+        if self._thread is not None:
+            self._thread.join(timeout_s)
+        return self._thread is None or not self._thread.is_alive()
+
+    def status(self) -> dict[str, Any]:
+        side = self._process.snapshot().get("side") or {}
+        return {"mode": "detect_process", **dict(side.get("clips") or {}), "upload": side.get("clip_upload"),
+                "cmd_sent": self.sent, "cmd_dropped": self.dropped, "relayed": self.relayed,
+                "relay_dropped": self.relay_dropped}
 
     def receive(self, _message: Any) -> None:
         return None  # 패킷은 검출 프로세스의 영상 수신이 바로 넣는다

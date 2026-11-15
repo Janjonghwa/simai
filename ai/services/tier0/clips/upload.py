@@ -1,6 +1,7 @@
 """클립 업로드: 임시 서명 주소 → 객체 저장소 PUT → media_clip 기록 (명세 5.1, 12.6 POST /api/uploads/sign, 14, D-G3-19).
 
-- 서명 주소 발급(UploadSigner)과 전송(ClipTransport)은 주입한다. 서버 API(요청 본문)가 확정되면 서명 클라이언트를 붙인다.
+- 서명 주소 발급(UploadSigner)과 전송(ClipTransport)은 주입한다. 운영 조립(EVENT_CLIP 서명 클라이언트·업로드 스레드·I1 기록 출구)은
+  async_upload.py(S15P31A101-748).
   객체 저장소는 비공개이고 임시 서명 주소로만 올린다(14). 서명 주소는 짧게 살아 있으므로 시도할 때마다 새로 받는다.
 - 다시 시도: 서명·전송이 실패하면 지수 백오프로 다시 시도한다. 시간은 주입 시계로만 재고 잠들지 않는다(poll 로 돈다).
 - EC2 단절(SignerUnavailable): 클립을 Network Volume 임시 저장소(ClipSpool)에 먼저 저장하고, 복구 뒤 올린다(5.1, 11.5).

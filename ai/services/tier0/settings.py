@@ -30,6 +30,7 @@
       "detect_queue_depth": 8,                 검출 루프 → 판정 루프 사이 카메라별 최대 관측 대기 수 (초과 시 오래된 관측 버림, -383)
       "drift_watch_enabled": true,             사람 관절 보정 활성 시 틀어짐 감시(기본 true)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
+      "event_clips_enabled": true,             CRITICAL·HIGH 이벤트 앞뒤 클립 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요, -748)
       "camera_check_enabled": true,            세팅 「카메라 확인」 입력 내보내기(기본 켜짐, LIVE 입력, 워커 요청 파일이 있을 때만 씀)
       "offload_side_work": false,              판정에 안 끼는 곁가지 일(아바타 입력 공유 파일 쓰기)을 spawn 자식 프로세스로 뺀다
                                                (기본 끔. 끄면 지금 경로 그대로, docs/design/S15P31A101-662-tier0-stage-latency.md)
@@ -244,6 +245,7 @@ class Tier0Settings:
     human_calibration_enabled: bool = False
     drift_watch_enabled: bool = True
     event_frames_enabled: bool = True
+    event_clips_enabled: bool = True
     camera_check_enabled: bool = True
     offload_side_work: bool = False
     cuda_stream_priority: str = "normal"
@@ -657,6 +659,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     event_frames_enabled = doc.get("event_frames_enabled", True)
     if not isinstance(event_frames_enabled, bool):
         raise Tier0ConfigError("event_frames_enabled 는 bool이다")
+    event_clips_enabled = doc.get("event_clips_enabled", True)
+    if not isinstance(event_clips_enabled, bool):
+        raise Tier0ConfigError("event_clips_enabled 는 bool이다")
     camera_check_enabled = doc.get("camera_check_enabled", True)
     if not isinstance(camera_check_enabled, bool):
         raise Tier0ConfigError("camera_check_enabled 는 bool이다")
@@ -707,6 +712,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         human_calibration_enabled=human_calibration == "1",
         drift_watch_enabled=drift_watch_enabled,
         event_frames_enabled=event_frames_enabled,
+        event_clips_enabled=event_clips_enabled,
         camera_check_enabled=camera_check_enabled,
         offload_side_work=offload_side_work,
         process_split=process_split,

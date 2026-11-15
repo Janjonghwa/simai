@@ -633,6 +633,7 @@ def test_high_to_critical_before_cut_records_critical_with_hold():
     assert len(sink.records) == 2 and sink.retention == []
     for r in sink.records:
         assert r.draft.retention_hold is True and r.draft.severity == "CRITICAL" and r.draft.anchor_capture_ms == anchor
+        assert r.draft.event_sequence == 2  # 클립 등급(CRITICAL)과 같은 등급의 전이를 가리킨다(EC2 검사, -748)
     assert service.stats.retention_escalations == 1
 
 

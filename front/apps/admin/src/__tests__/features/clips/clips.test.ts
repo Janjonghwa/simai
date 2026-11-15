@@ -1,4 +1,5 @@
 import {
+  clipPreparing,
   clipTags,
   deletedLabel,
   groupClips,
@@ -6,6 +7,7 @@ import {
   isDeleted,
   retentionState,
 } from '@/features/clips/clips';
+import { CLIP_PREPARE_MS } from '@/features/clips/constants';
 import { clipUrlSchema, eventClipsSchema, type Clip } from '@/features/clips/types';
 import type { EventItem } from '@/features/events/types';
 import { describe, expect, it } from 'vitest';
@@ -167,5 +169,21 @@ describe('클립 표시 계산', () => {
   it('지운 클립의 표시는 지운 시각을 알면 함께 보인다', () => {
     expect(deletedLabel(clip({ deleted_at_ms: undefined }))).toBe('삭제됨');
     expect(deletedLabel(clip({ deleted_at_ms: T }))).toMatch(/^삭제됨 · \d+월 \d+일 \d{2}:\d{2}$/);
+  });
+
+  it('지금 위험 구간의 클립이 없고 바뀐 지 얼마 안 됐을 때만 영상 준비 중이다', () => {
+    const fresh = event({ raised_at: T, updated_at: T });
+    expect(clipPreparing(fresh, [], T + 30_000)).toBe(true);
+    expect(clipPreparing(fresh, [], T + CLIP_PREPARE_MS)).toBe(false);
+    expect(clipPreparing(fresh, [clip()], T + 30_000)).toBe(false);
+    // 재개하면 새 구간의 클립을 기다린다(앞 구간 클립은 세지 않는다).
+    const resumed = event({ raised_at: T - 600_000, updated_at: T, resume_count: 1 });
+    expect(clipPreparing(resumed, [clip()], T + 30_000)).toBe(true);
+    expect(
+      clipPreparing(resumed, [clip(), clip({ clip_id: 'c-2', resume_count: 1 })], T + 30_000),
+    ).toBe(false);
+    // 바뀐 시각이 없으면 처음 발생 시각으로, 둘 다 없으면 모른다(준비 중으로 보이지 않는다).
+    expect(clipPreparing(event({ raised_at: T }), [], T + 30_000)).toBe(true);
+    expect(clipPreparing(event(), [], T)).toBe(false);
   });
 });

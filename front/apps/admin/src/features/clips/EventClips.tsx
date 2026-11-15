@@ -1,4 +1,5 @@
 import {
+  clipPreparing,
   clipTags,
   deletedLabel,
   groupClips,
@@ -11,6 +12,7 @@ import { useClipRetention } from '@/features/clips/useClipRetention';
 import { useEventClips } from '@/features/clips/useEventClips';
 import { formatTime } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { useSharedNow } from '@/features/events/useSharedNow';
 import { useCameraNames } from '@/hooks/useCameraNames';
 import { Button } from '@simai/ui/components/button';
 import { Play, X } from 'lucide-react';
@@ -144,8 +146,11 @@ function ClipRow({ eventId, clip, label }: { eventId: string; clip: Clip; label:
 export function EventClips({ event, title = '클립' }: { event: EventItem; title?: string }) {
   const { enabled, clips, failed } = useEventClips(event);
   const label = useCameraNames(clips?.map((clip) => clip.camera_id));
+  const now = useSharedNow();
   if (!enabled) return null;
   const groups = groupClips(clips ?? []);
+  // 목록을 받은 뒤에만 판단한다(받기 전·실패는 준비 중으로 보이지 않는다).
+  const preparing = !failed && clips !== undefined && clipPreparing(event, clips, now);
 
   return (
     <section aria-label={title} className="flex flex-col gap-2">
@@ -155,7 +160,7 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
           클립 목록을 받지 못했습니다
         </p>
       )}
-      {!failed && groups.length === 0 && <p className="text-sm">—</p>}
+      {!failed && !preparing && groups.length === 0 && <p className="text-sm">—</p>}
       {groups.map((group) => (
         <div key={group.resumeCount} className="flex flex-col gap-1.5">
           {groups.length > 1 && (
@@ -175,6 +180,7 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
           </ul>
         </div>
       ))}
+      {preparing && <p className="text-sm text-muted-foreground">영상 준비 중</p>}
     </section>
   );
 }
