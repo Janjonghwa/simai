@@ -4,7 +4,11 @@
 그 안의 카메라별 영상과 관측은 Tier 0 가 (camera_id, stream_epoch, frame_sequence, 촬영 시각)이 같은 것끼리 짝지은 것이고,
 트랙의 local ID → World ID 대응은 그 틱의 다시점 연관 결과다(관측 프레임과 최대 100 ms 차이, 설계 메모의 알려진 한계).
 
-- 카메라마다 추론 시작 사이에 per_camera_period_ms(500 ms = 최대 2 Hz)를 두고, 같은 촬영 칸은 한 번만 처리한다.
+- 카메라마다 추론 시작 사이에 per_camera_period_ms(기본 500 ms)를 두고, 같은 촬영 칸은 한 번만 처리한다. 칸당 1회라 장기 평균은
+  카메라당 2 Hz 를 넘지 않는다. 간격 하한은 SIMAI_PPE_MIN_INFER_GAP_MS 로 400~500 ms 안에서 낮출 수 있다(S15P31A101-729): 500 ms 에
+  다른 카메라 추론·주기 흔들림이 더해지면 촬영 칸이 주기적으로 빈다.
+- 계측(판정에 쓰지 않음, S15P31A101-729): 사람이 보이는 카메라에서 연속 추론 사이에 건너뛴 촬영 칸(`bins_missed`, 2초 넘는 끊김은
+  세지 않음)과, 간격 하한 때문에 새 촬영 칸을 거른 횟수(`rate_gap_new_bin`)를 카메라별로 센다.
 - 최신 한 건만 읽으므로 카메라당 대기는 1 이다. NPZ 게시 완료 관측 뒤 max_wait_ms(150 ms)를 넘기면 추론하지 않는다(legacy는 offer 시각).
 - 추론은 이 스레드 하나에서 한 장씩(동시 추론 1).
 - 접수 문(Tier 0 지연, 3.2)이 막으면 새 추론을 멈춘다. 누적된 상태는 계속 내보내 근거 만료로 UNKNOWN 이 되게 한다.
@@ -31,6 +35,8 @@ log = logging.getLogger(__name__)
 
 INPUT_FORMAT = "simai.avatar-input@1"
 DEFAULT_PER_CAMERA_PERIOD_MS = 500
+MIN_PER_CAMERA_PERIOD_MS = 400  # 간격 하한을 이보다 낮추지 않는다(칸당 1회와 함께 순간 처리율 상한)
+MISS_SPAN_BINS = 4  # 이보다 긴 추론 끊김(2초 초과)은 사람이 없거나 접수 문이 막힌 구간으로 보고 빈 칸으로 세지 않는다
 DEFAULT_PUBLISH_PERIOD_MS = 500
 DEFAULT_MAX_WAIT_MS = 150
 UNCERTAIN = "IDENTITY_UNCERTAIN"
@@ -131,13 +137,21 @@ class PpeLoop:
         self._provenance: dict[str, Any] | None = None
         self.counts: Counter[str] = Counter()  # 계측(판정에 쓰지 않음)
         self.timing = timing or ChannelTiming()
+        if per_camera_period_ms < MIN_PER_CAMERA_PERIOD_MS:
+            raise ValueError(f"per_camera_period_ms 는 {MIN_PER_CAMERA_PERIOD_MS} 이상이다: {per_camera_period_ms}")
+        self._miss_ref: dict[str, tuple[int, int]] = {}  # camera → 빈 칸 세기 기준(stream_epoch, 마지막 추론 칸)
+        self.bin_stats: dict[str, Counter[str]] = {}  # camera → 추론 칸·건너뛴 칸·간격 하한에 걸린 새 칸(계측)
+        self._gap_blocked: dict[str, tuple[int, int]] = {}  # camera → 간격 하한으로 마지막으로 거른 촬영 칸(중복 세기 방지)
 
     def diagnostics(self):
         source_timing = getattr(self.source, "timing", None)
         return {"loop": self.timing.summary(),
                 "source": None if source_timing is None else source_timing.summary(),
                 # 차수 상승 때 초기화(revision_reset)·순수 병합 승계(merge_carried) 수(S15P31A101-661 재생 확인용)
-                "identity": dict(self.judge.identity_events)}
+                "identity": dict(self.judge.identity_events),
+                # 촬영 칸 채움(S15P31A101-729): 카메라별 inferred_bins·bins_missed·rate_gap_new_bin
+                "bins": {"per_camera_period_ms": self.per_camera_period_ms,
+                         "cameras": {cid: dict(c) for cid, c in sorted(self.bin_stats.items())}}}
 
     def _skip_reason(self, camera_id, ref, produced, *, published=False):
         if published and (not isinstance(produced, int) or isinstance(produced, bool)
@@ -151,9 +165,14 @@ class PpeLoop:
         infer_at = self.monotonic_ms()
         last = self._last_infer_at.get(camera_id)
         bin_key = (key[0], capture // self.judge.cfg.bin_ms) if isinstance(capture, int) else None
-        if (last is not None and infer_at - last < self.per_camera_period_ms) or (
-            bin_key is not None and self._last_bin.get(camera_id) == bin_key
-        ):
+        same_bin = bin_key is not None and self._last_bin.get(camera_id) == bin_key
+        if last is not None and infer_at - last < self.per_camera_period_ms and not same_bin:
+            # 새 촬영 칸인데 간격 하한에 걸렸다(칸마다 한 번 센다). 이 칸을 끝내 못 채우면 bins_missed 로도 잡힌다
+            if bin_key is not None and self._gap_blocked.get(camera_id) != bin_key:
+                self._gap_blocked[camera_id] = bin_key
+                self._bin_count(camera_id, "rate_gap_new_bin")
+            return "rate_skip"
+        if same_bin:
             return "rate_skip"
         if isinstance(produced, int) and self.clock_ms() - produced > self.max_wait_ms:
             return "wait_exceeded"
@@ -242,6 +261,7 @@ class PpeLoop:
                 continue
             if not obs.persons:
                 self._last_frame[camera_id] = key
+                self._miss_ref.pop(camera_id, None)  # 사람이 없던 칸은 빈 칸으로 세지 않는다
                 self.counts["empty_persons"] += 1
                 self.timing.record("camera_skip_empty_persons", camera=camera_id)
                 dets = FrameDetections(camera_id, obs.stream_epoch, obs.frame_sequence, obs.capture_time_ms,
@@ -272,6 +292,7 @@ class PpeLoop:
             self._last_frame[camera_id] = key
             self._last_infer_at[camera_id] = self.monotonic_ms()  # 관측 구성 비용 뒤의 실제 추론 시작을 기록한다.
             self._last_bin[camera_id] = (obs.stream_epoch, obs.capture_time_ms // self.judge.cfg.bin_ms)
+            self._count_bins(camera_id, *self._last_bin[camera_id])
             self._last_camera = camera_id
             with self.timing.measure("camera_inference", camera=camera_id):
                 candidates = self.detector.infer(image)
@@ -282,6 +303,18 @@ class PpeLoop:
             self.counts["inferred"] += 1
             self.timing.record("camera_inferred", camera=camera_id)
         return True
+
+    def _bin_count(self, camera_id: str, key: str, n: int = 1) -> None:
+        self.bin_stats.setdefault(camera_id, Counter())[key] += n
+        self.counts[key] += n
+
+    def _count_bins(self, camera_id: str, epoch: int, b: int) -> None:
+        """추론한 촬영 칸을 세고, 같은 epoch 의 직전 추론 칸과의 사이에서 건너뛴 칸을 센다(계측)."""
+        self._bin_count(camera_id, "inferred_bins")
+        ref = self._miss_ref.get(camera_id)
+        if ref is not None and ref[0] == epoch and 1 < b - ref[1] <= MISS_SPAN_BINS:
+            self._bin_count(camera_id, "bins_missed", b - ref[1] - 1)
+        self._miss_ref[camera_id] = (epoch, b)
 
     def _publish_due(self) -> None:
         now = self.clock_ms()

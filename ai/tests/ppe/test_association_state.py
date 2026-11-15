@@ -626,3 +626,57 @@ def test_never_jumps_directly_between_worn_and_not_worn():
 @pytest.fixture(autouse=True)
 def _fresh_sequences():
     _seq.clear()
+
+
+# ---- ID 초기화 사유는 초기화 칸까지만(S15P31A101-729, ppe-policy-0.5.0) ---------------------------------------------
+def _mapping_reset():
+    """w1·w2 가 WORN 인 상태에서 cam1 local 7 이 w1 → w2 로 넘어가 둘 다 칸 6 에서 초기화된다."""
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7"), person("w2", 900, local="8")], [HELMET(), HELMET(900)])
+    feed(j, "cam1", t_of(6), [person("w2", 500, local="7")], [HELMET()])
+    views = j.evaluate(closed_after(6))
+    assert (views["w2"]["helmet"].state, views["w2"]["helmet"].reason) == ("UNKNOWN", ps.R_MAPPING_CHANGED)
+    return j
+
+
+def test_mapping_reset_reason_gives_way_to_empty_bin_reason_and_is_counted():
+    j = _mapping_reset()
+    assert j.identity_events.get("mapping_reset") == 2   # 두 Track 모두 초기화
+    v = state(j, closed_after(7), "w2")   # 칸 7: w2 표본 없음
+    assert (v.state, v.reason) == ("UNKNOWN", ps.R_NO_OBSERVATION)
+
+
+def test_mapping_reset_reason_gives_way_to_accumulating_then_confirms():
+    j = _mapping_reset()
+    feed(j, "cam1", t_of(7), [person("w2", 500, local="7")], [HELMET()])
+    v = state(j, closed_after(7), "w2")
+    assert (v.state, v.reason) == ("UNKNOWN", ps.R_ACCUMULATING)
+    for b in range(8, 12):
+        feed(j, "cam1", t_of(b), [person("w2", 500, local="7")], [HELMET()])
+    assert state(j, closed_after(11), "w2").state == "WORN"   # 확정 시점은 이전과 같다(칸 6~11)
+
+
+def test_revision_reset_reason_gives_way_to_identity_uncertain_bin():
+    j = PpeJudge()
+    _worn(j)
+    feed(j, "cam1", t_of(6), [person("w1", rev=1)], [HELMET()])
+    assert state(j, closed_after(6)).reason == ps.R_REVISION_CHANGED
+    feed(j, "cam1", t_of(7), [person("w1", rev=1, ident="IDENTITY_UNCERTAIN")], [HELMET()])
+    v = state(j, closed_after(7))
+    assert (v.state, v.reason) == ("UNKNOWN", ps.R_IDENTITY_UNCERTAIN)
+
+
+def test_contrary_reason_still_stays_until_confirmed():
+    j = PpeJudge()
+    _worn(j)
+    feed(j, "cam1", t_of(6), [person("w1")], [NO_HELMET()])
+    for b in range(7, 9):
+        feed(j, "cam1", t_of(b), [person("w1")], [])
+    v = state(j, closed_after(8))
+    assert (v.state, v.reason) == ("UNKNOWN", ps.R_CONTRARY)
+
+
+def test_policy_version_marks_reason_change():
+    from simai_ai.ppe.config import POLICY_VERSION
+    assert POLICY_VERSION == "ppe-policy-0.5.0"

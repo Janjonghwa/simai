@@ -9,6 +9,8 @@ simai-bootstrap 이 띄울 때 넣는 환경:
   SIMAI_PPE_OUTBOX                  Tier 0 가 대신 보낼 메시지 폴더(없으면 /dev/shm/simai-ppe-outbox)
   SIMAI_TIER0_ID                    봉투 source_id(없으면 tier0-01, Tier 0 와 같다)
   SIMAI_PPE_MODEL_VERSION           ppe_state.model_version(없으면 아래 기본값)
+  SIMAI_PPE_MIN_INFER_GAP_MS        카메라별 추론 시작 간격 하한 ms(기본 500, 400~500). 칸당 1회는 그대로라 평균 2 Hz 이하다.
+                                    PPE 상태 로그의 bins_missed 가 많을 때 낮춘다(S15P31A101-729)
   SIMAI_PPE_ALIVE                   생존 파일(없으면 $SIMAI_ROOT/state/ppe.alive). 주기를 정상으로 끝낼 때 1초마다 시각을 적고
                                     감시 프로세스가 오래되면 다시 띄운다(S15P31A101-634, alive.py)
 PPE 가 죽거나 멈춰도 Tier 0 는 계속 돈다(5.5). 종료 코드: 0 정상(SIGTERM), 2 설정·가중치 오류.
@@ -32,13 +34,24 @@ from simai_ai.io.ppe_outbox import PpeOutboxWriter, ppe_outbox_path
 from simai_ai.ppe.detector import PpeDetector
 
 from .alive import AliveWriter, alive_path
-from .loop import PpeLoop
+from .loop import DEFAULT_PER_CAMERA_PERIOD_MS, MIN_PER_CAMERA_PERIOD_MS, PpeLoop
 
 DEFAULT_MODEL_VERSION = "T1-v4-ALL-seed20261021-e08-e373a1048057"
 DEFAULT_TIER0_ID = "tier0-01"
 DEFAULT_GPU_FRACTION = 0.05
 STEP_S = 0.05
 REPORT_S = 60.0
+
+
+def min_infer_gap_ms(env) -> int:
+    """SIMAI_PPE_MIN_INFER_GAP_MS(정수 ms, 400~500). 비었으면 500. 범위 밖이면 ValueError(시작 실패)."""
+    raw = (env.get("SIMAI_PPE_MIN_INFER_GAP_MS") or "").strip()
+    if not raw:
+        return DEFAULT_PER_CAMERA_PERIOD_MS
+    value = int(raw)
+    if not MIN_PER_CAMERA_PERIOD_MS <= value <= DEFAULT_PER_CAMERA_PERIOD_MS:
+        raise ValueError(f"SIMAI_PPE_MIN_INFER_GAP_MS 는 {MIN_PER_CAMERA_PERIOD_MS}~{DEFAULT_PER_CAMERA_PERIOD_MS} 이다: {raw}")
+    return value
 
 
 def main() -> int:
@@ -55,6 +68,7 @@ def main() -> int:
         if not weights or not sha256:
             raise ValueError("SIMAI_PPE_WEIGHTS·SIMAI_PPE_WEIGHTS_SHA256 필요(simai-bootstrap 이 ppe 묶음을 확인한 뒤 넣는다)")
         fraction = float(env.get("SIMAI_PPE_GPU_MEMORY_FRACTION") or DEFAULT_GPU_FRACTION)
+        infer_gap_ms = min_infer_gap_ms(env)
         if not 0 < fraction <= 1:
             raise ValueError("SIMAI_PPE_GPU_MEMORY_FRACTION 은 0 초과 1 이하다")
         settings = WorkerGpuSettings.from_env(env)
@@ -78,8 +92,10 @@ def main() -> int:
         checkpoint_sha256=detector.checkpoint_sha256,
         clock_ms=lambda: time.time_ns() // 1_000_000,
         monotonic_ms=lambda: time.monotonic_ns() // 1_000_000,
+        per_camera_period_ms=infer_gap_ms,
     )
-    logging.info("PPE 시작: stream_epoch=%d model=%s gpu_fraction=%.2f", stream_epoch, loop.model_version, fraction)
+    logging.info("PPE 시작: stream_epoch=%d model=%s gpu_fraction=%.2f infer_gap_ms=%d", stream_epoch,
+                 loop.model_version, fraction, infer_gap_ms)
     report_at = time.monotonic() + REPORT_S
     alive = AliveWriter(alive_path(env, root))
     while not stop.is_set():

@@ -16,6 +16,11 @@ local ID 의 주인이 바뀔 때, ID 불확실이 uncertain_reset_ms(3초)를 �
 비어 있으면(UNKNOWN, 유효 칸·대기 칸 없음) 흡수된 쪽을 통째로 옮기고, 둘 다 있으면 칸별로 합치되 엇갈리면 UNKNOWN 칸으로,
 확정 상태가 서로 반대면 UNKNOWN(CROSS_CAMERA_CONFLICT)으로 다시 쌓는다. 흡수된 ID 가 쓰던 local ID 를 남는 ID 가 이어받는
 것은 주인 변경이 아니다. 병합 직후의 IDENTITY_UNCERTAIN(LATE_REASSOCIATION)은 위 불확실 규칙(건너뛰기, 3초 초과 초기화)이 맡는다.
+
+UNKNOWN 사유(S15P31A101-729, ppe-policy-0.5.0): ID 초기화 사유(IDENTITY_REVISION_CHANGED·IDENTITY_MAPPING_CHANGED)는 초기화한 칸까지만
+보이고, 그 뒤 칸부터는 그 칸의 사유(표본 없음·쌓는 중·ID 불확실 등)로 바꾼다. 확정 전까지 남겨 두면 뒤의 실제 원인을 가린다(2026-11-13
+로비 실측: 진입 53회가 UNKNOWN 2,297행을 차지). 초기화 횟수는 identity_events(revision_reset·mapping_reset)에 남는다. 반대 근거·카메라
+충돌(CONTRARY_EVIDENCE·CROSS_CAMERA_CONFLICT)은 지금처럼 다시 확정될 때까지 남긴다. 사유만 바뀌고 상태·창·만료 판정은 같다.
 """
 
 from __future__ import annotations
@@ -60,6 +65,8 @@ R_NO_OBSERVATION = "NO_OBSERVATION"
 RESET_REASONS = (R_REVISION_CHANGED, R_MAPPING_CHANGED, R_IDENTITY_UNCERTAIN)
 # UNKNOWN 으로 다시 쌓는 동안 칸 사유로 덮지 않는 사유. ID 불확실은 유효 칸이 다시 들어오면 그 칸의 사유로 바꾼다
 _STICKY_REASONS = (R_CONTRARY, R_CROSS_CAMERA_CONFLICT, R_REVISION_CHANGED, R_MAPPING_CHANGED)
+# 이 중 ID 초기화 사유는 초기화한 칸(ItemState.reset_bin)까지만 남긴다(S15P31A101-729)
+_ID_RESET_REASONS = (R_REVISION_CHANGED, R_MAPPING_CHANGED)
 _REASON_PRIORITY = (R_SHARED_DETECTION, R_CONFLICTING_CLASSES, R_PARTIAL_OVERLAP, R_IDENTITY_UNCERTAIN,
                     R_KEYPOINTS_NOT_OBSERVED, R_REGION_NOT_CLEAR, R_REGION_NOT_OBSERVABLE, R_NO_DETECTION)
 
@@ -74,6 +81,16 @@ class ItemState:
     results: dict[int, str] = field(default_factory=dict)
     last_evidence_at: int | None = None
     evidence: list[Sample] = field(default_factory=list)
+    reset_bin: int | None = None              # 마지막 초기화 칸. ID 초기화 사유는 이 칸까지만 남는다(S15P31A101-729)
+
+
+def _reason_open(item: ItemState, b: int) -> bool:
+    """UNKNOWN 인 장비의 사유를 칸 b 의 사유로 바꿔도 되는가. 반대 근거·충돌은 남기고, ID 초기화 사유는 초기화 칸 뒤부터 바꾼다."""
+    if item.state != UNKNOWN:
+        return False
+    if item.reason in _ID_RESET_REASONS:
+        return item.reset_bin is None or b > item.reset_bin
+    return item.reason not in _STICKY_REASONS
 
 
 @dataclass
@@ -110,7 +127,7 @@ class PpeJudge:
         self.local_owner: dict[tuple[str, int, str], tuple[str, int]] = {}
         self.dropped: dict[str, int] = {}
         self.retired: dict[str, tuple[str, int]] = {}   # 병합으로 흡수된 ID → (남는 ID, 본 촬영 시각). 다시 오면 버린다
-        self.identity_events: dict[str, int] = {}   # 계측(판정에 쓰지 않음): 차수 상승 때 초기화·승계 수
+        self.identity_events: dict[str, int] = {}   # 계측(판정에 쓰지 않음): 차수 상승 초기화·승계, local ID 주인 변경 초기화 수
         self.last_closed_bin: int | None = None
         self.latest_capture_time_ms = 0  # 접수한 프레임의 촬영 진행 시각. 입력이 멈추면 함께 멈춘다.
 
@@ -174,7 +191,7 @@ class PpeJudge:
                     self._reset(track, R_IDENTITY_UNCERTAIN, b)
                     track.uncertain_reset = True
                 for item in track.items.values():   # 확정 전이면 사유를 보인다(확정 상태는 건드리지 않는다)
-                    if item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
+                    if _reason_open(item, b):
                         item.reason = R_IDENTITY_UNCERTAIN
             elif track.uncertain_since is not None and t > track.uncertain_since:
                 track.uncertain_since, track.uncertain_reset = None, False
@@ -184,8 +201,10 @@ class PpeJudge:
             if owner is not None and owner[0] != p.world_id and owner[0] not in track.aliases \
                     and t - owner[1] <= self.cfg.mapping_ttl_ms:
                 self._reset(track, R_MAPPING_CHANGED, b)
+                self._count("mapping_reset")
                 if owner[0] in self.tracks:
                     self._reset(self.tracks[owner[0]], R_MAPPING_CHANGED, b)
+                    self._count("mapping_reset")
             self.local_owner[key] = (p.world_id, t)
             track.last_seen_ms = max(track.last_seen_ms, t)
             if not uncertain:   # 불확실한 프레임의 표본은 창에도 근거에도 넣지 않는다
@@ -233,6 +252,7 @@ class PpeJudge:
             item.window_start_bin = start_bin
             item.bins, item.results = {}, {}
             item.last_evidence_at, item.evidence = None, []
+            item.reset_bin = start_bin
 
     # ---- 칸 결합 ------------------------------------------------------------------------------
     def combine_bin(self, samples: Sequence[Sample]) -> tuple[str, list[Sample]]:
@@ -324,7 +344,7 @@ class PpeJudge:
         samples = item.bins.pop(b, [])
         if b in skipped:
             # ID 대응이 불확실한 칸: 결과도 근거도 남기지 않고 확정 상태는 그대로 둔다
-            if item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
+            if _reason_open(item, b):
                 item.reason = R_IDENTITY_UNCERTAIN
             return
         result, support = self.combine_bin(samples)
@@ -346,7 +366,7 @@ class PpeJudge:
             item.state, item.reason = WORN, R_WINDOW_WORN
         elif item.state != NOT_WORN and full and result == B_NOT_WORN and _not_worn_window(window, cfg):
             item.state, item.reason = NOT_WORN, R_WINDOW_NOT_WORN
-        elif item.state == UNKNOWN and item.reason not in _STICKY_REASONS:
+        elif _reason_open(item, b):
             item.reason = _bin_reason(result, samples)
         if (item.state == WORN and result == B_WORN) or (item.state == NOT_WORN and result == B_NOT_WORN):
             item.last_evidence_at = max(s.capture_time_ms for s in support)
