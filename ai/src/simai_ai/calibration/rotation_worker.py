@@ -1,4 +1,4 @@
-"""회전 복구 전용 프로세스: 캐시·합성·특징·기하 계산과 작업자 CPU 예산."""
+"""회전 복구 전용 프로세스: 캐시·합성·특징·기하 계산과 작업자 CPU 예산(카메라 단위 이월, -746)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dataclasses import replace
 import cv2
 import numpy as np
 
-from simai_ai.calibration.rotation_recovery import extract_features, make_candidate
+from simai_ai.calibration.rotation_recovery import extract_features, make_candidate, sample_key
 
 
 def resize_samples(samples, side):
@@ -123,22 +123,48 @@ def synthesize_samples(samples):
     return bg, valid
 
 
+STAGES = ("reference_read", "reference_extract", "recent_prepare", "recent_extract", "matching", "estimation")
+
+
 class RotationComputation:
-    """1개 작업자에서만 소유한다. 이월해도 완료한 기준·최근 특징은 보관한다."""
+    """1개 작업자에서만 소유한다.
+
+    -746: 한 주기의 CPU 예산은 카메라 단위 특징 추출(기준·최근)만 끊는다. 예산을 넘겨도 이번 주기에 끝낸 카메라의 최근 특징은
+    새 표본이 와도 버리지 않고(같은 세대·카메라 파라미터·추출 설정, 표본 끝 시각 차이 max_feature_age_ms 이내) 다음 주기 판정에
+    그대로 쓴다. 다음 주기에는 특징이 없거나 가장 오래된 카메라부터 다시 뽑는다. 주기마다 최소 1개 카메라는 진행하므로 새 표본이
+    계속 들어와도 이월이 끝나지 않는 일이 없다. 모든 카메라의 특징이 준비되면 판정(매칭·추정)은 예산과 무관하게 끝까지 한다
+    (카메라당 매칭 1회와 회전 후보일 때 인접 쌍 검사뿐이라 비용이 묶여 있다).
+    """
 
     def __init__(self, cpu_clock=time.process_time):
         self.clock = cpu_clock
         self.references = {}
-        self.recent = {}
-        self.synthesized = {}
+        self.recent = {}  # cid -> (key, features, 표본 끝 시각 ms)
+        self.raw = {}  # cid -> {sample_key: (frame, mask)} (지금 창만, -746 새 표본만 받기)
         self.scaled = {}
 
-    def _samples(self, cid, recent, side):
+    def _receive(self, cid, recent):
+        """부모가 None 으로 비워 보낸 자리는 이미 받은 표본으로 채운다. 없으면 SAMPLE_CACHE_MISS 로 다시 받는다."""
+        cached = self.raw.get(cid, {})
+        retained, samples = {}, []
+        times = recent.get("sample_times", range(len(recent["samples"])))
+        for at, sample in zip(times, recent["samples"]):
+            key = sample_key(recent["signature"][0], at, recent["size"])
+            if sample is None:
+                sample = cached.get(key)
+                if sample is None:
+                    raise ValueError(f"SAMPLE_CACHE_MISS:{cid}")
+            retained[key] = sample
+            samples.append(sample)
+        self.raw[cid] = retained
+        return samples
+
+    def _samples(self, cid, recent, samples, side):
         cached = self.scaled.get(cid, {})
         retained = {}
         result = []
-        times = recent.get("sample_times", range(len(recent["samples"])))
-        for at, sample in zip(times, recent["samples"]):
+        times = recent.get("sample_times", range(len(samples)))
+        for at, sample in zip(times, samples):
             key = (recent["signature"][0], at, recent["size"], side)
             small = cached.get(key)
             if small is None:
@@ -150,43 +176,52 @@ class RotationComputation:
 
     def compute(self, request, *, started=None):
         started = self.clock() if started is None else started
-        timings = dict.fromkeys(("reference_read", "reference_extract", "recent_prepare",
-                                 "recent_extract", "matching", "estimation"), 0.0)
+        timings = dict.fromkeys(STAGES, 0.0)
+        by_camera = {}
+        worked = False
+        refreshed, carried, pending = [], [], []
 
         @contextmanager
-        def measure(stage):
+        def measure(stage, camera=None):
             start = self.clock()
             try:
                 yield
             finally:
-                timings[stage] += (self.clock() - start) * 1000
+                spent = (self.clock() - start) * 1000
+                timings[stage] += spent
+                if camera is not None:
+                    row = by_camera.setdefault(camera, dict.fromkeys(STAGES, 0.0))
+                    row[stage] += spent
 
-        def check_budget():
-            if (self.clock() - started) * 1000 > request["budget_ms"]:
-                raise TimeoutError(f"CPU 시간 예산 초과 ({request['budget_ms']}ms)")
+        def may_start():
+            """카메라 단위 작업을 시작해도 되는가. 이번 주기에 이미 일했고 예산을 넘었으면 멈춘다(최소 1단위 진행 보장)."""
+            return not (worked and (self.clock() - started) * 1000 > request["budget_ms"])
 
         result = {}
         try:
             config = request["config"]
             ignored = set(request.get("ignored_cameras") or ())
-            refs, features = {}, {}
-            # 문서·렌즈·해상도·설정도 최근 특징의 캐시 키에 넣는다.
-            for camera in request["document"]["cameras"]:
+            max_age = int(request.get("max_feature_age_ms") or 0)
+            cameras = [c for c in request["document"]["cameras"] if c["camera_id"] not in ignored]
+            raw = {c["camera_id"]: self._receive(c["camera_id"], request["recent"][c["camera_id"]]) for c in cameras}
+            refs = {}
+            # 기준 배경 특징은 키(폴더·세대·보정 버전·카메라·설정)가 같으면 한 번만 뽑는다.
+            for camera in cameras:
                 cid = camera["camera_id"]
-                if cid in ignored:
-                    continue
                 entry = request["references"][cid]
                 key = (entry["key"], config)
                 cached = self.references.get(cid)
                 if cached is None or cached[0] != key:
-                    check_budget()
-                    with measure("reference_read"):
+                    if not may_start():
+                        continue
+                    worked = True
+                    with measure("reference_read", cid):
                         image = cv2.imread(entry["image"])
                         mask = cv2.imread(entry["mask"], cv2.IMREAD_GRAYSCALE)
                     if image is None or mask is None:
                         result = {"status": "NOT_READY"}
                         return result
-                    with measure("reference_extract"):
+                    with measure("reference_extract", cid):
                         try:
                             feat, feature_config = reference_features(image, mask, entry["camera"], config)
                         except ValueError as exc:
@@ -195,49 +230,68 @@ class RotationComputation:
                             raise
                     self.references[cid] = key, feat, feature_config
                 refs[cid] = entry["camera"], self.references[cid][1]
-            for camera in request["document"]["cameras"]:
+            # 최근 특징: 지금 서명과 다르면 다시 뽑을 대상. 못 쓰는 카메라 → 오래된 카메라 순으로 예산 안에서 뽑는다.
+            keys = {}
+            for camera in cameras:
                 cid = camera["camera_id"]
-                if cid in ignored:
+                if cid not in refs:
                     continue
+                signature = request["recent"][cid]["signature"]
+                keys[cid] = (signature, json.dumps(camera, sort_keys=True), self.references[cid][2])
+
+            def carry_ok(cid):
+                entry = self.recent.get(cid)
+                if entry is None:
+                    return False
+                (old_sig, *old_rest), (sig, *rest) = entry[0], keys[cid]
+                return (old_rest == rest and old_sig[0] == sig[0]
+                        and (old_sig == sig or 0 <= sig[2] - entry[2] <= max_age))
+
+            todo = [cid for cid in keys if self.recent.get(cid, (None,))[0] != keys[cid]]
+            todo.sort(key=lambda cid: (carry_ok(cid), self.recent[cid][2] if carry_ok(cid) else 0))
+            for cid in todo:
+                if not may_start():
+                    break
+                worked = True
                 recent = request["recent"][cid]
                 feature_config = self.references[cid][2]
-                key = (recent["signature"], json.dumps(camera, sort_keys=True), feature_config)
-                cached = self.recent.get(cid)
-                if cached is None or cached[0] != key:
-                    check_budget()
-                    synthesized = self.synthesized.get(cid)
-                    if synthesized is None or synthesized[0] != key:
-                        with measure("recent_prepare"):
-                            samples = self._samples(cid, recent, feature_config.max_image_side)
-                            bg, mask = synthesize_samples(samples)
-                        self.synthesized[cid] = key, bg, mask
-                    _, bg, mask = self.synthesized[cid]
-                    check_budget()
-                    with measure("recent_extract"):
-                        try:
-                            feat = extract_features(
-                                bg,
-                                mask,
-                                camera,
-                                feature_config,
-                                original_size=recent["size"],
-                                person_cover_ratio=float(recent.get("mean_person_cover_ratio") or 0.0),
-                                never_revealed_ratio=float(recent.get("never_revealed_ratio") or 0.0),
-                            )
-                        except ValueError as exc:
-                            if str(exc).startswith("STREAM_CHANGED"):
-                                raise ValueError(f"STREAM_CHANGED:{cid}:{exc}") from exc
-                            raise
-                    self.recent[cid] = key, feat
-                    self.synthesized.pop(cid, None)
+                with measure("recent_prepare", cid):
+                    samples = self._samples(cid, recent, raw[cid], feature_config.max_image_side)
+                    bg, mask = synthesize_samples(samples)
+                with measure("recent_extract", cid):
+                    try:
+                        feat = extract_features(
+                            bg,
+                            mask,
+                            camera_by_id(request["document"], cid),
+                            feature_config,
+                            original_size=recent["size"],
+                            person_cover_ratio=float(recent.get("mean_person_cover_ratio") or 0.0),
+                            never_revealed_ratio=float(recent.get("never_revealed_ratio") or 0.0),
+                        )
+                    except ValueError as exc:
+                        if str(exc).startswith("STREAM_CHANGED"):
+                            raise ValueError(f"STREAM_CHANGED:{cid}:{exc}") from exc
+                        raise
+                self.recent[cid] = keys[cid], feat, int(recent["signature"][2])
+                refreshed.append(cid)
+            features, recent_ms = {}, {}
+            for camera in cameras:
+                cid = camera["camera_id"]
+                if cid not in keys or not carry_ok(cid):
+                    pending.append(cid)
+                    continue
+                if self.recent[cid][0] != keys[cid]:
+                    carried.append(cid)
                 features[cid] = self.recent[cid][1]
-            check_budget()
+                recent_ms[cid] = self.recent[cid][2]
+            if pending:
+                raise TimeoutError(f"CPU 시간 예산 초과 ({request['budget_ms']}ms), 다음 주기 카메라: {', '.join(pending)}")
             candidate, report = make_candidate(
-                request["document"], refs, features, request["recent_ms"],
+                request["document"], refs, features, recent_ms,
                 at_ms=request["now_ms"], version=request["version"], config=config,
-                check_budget=check_budget, measure=measure, ignored_cameras=ignored,
+                measure=measure, ignored_cameras=ignored,
             )
-            check_budget()
             result = {"status": "COMPLETED", "candidate": candidate, "report": report}
         except TimeoutError as exc:
             result = {"status": "BUDGET_DEFERRED", "reason": str(exc)}
@@ -246,8 +300,19 @@ class RotationComputation:
         finally:
             timings["total"] = (self.clock() - started) * 1000
             result["timings"] = timings
+            result["timings_by_camera"] = by_camera
+            result["refreshed_cameras"] = refreshed
+            result["carried_cameras"] = carried
+            result["pending_cameras"] = pending
             result["feature_sides"] = {cid: entry[2].max_image_side for cid, entry in self.references.items()}
+            result["feature_points"] = {cid: len(entry[1].points) for cid, entry in self.recent.items()
+                                        if hasattr(entry[1], "points")}
+            result["cached_samples"] = {cid: sorted(samples) for cid, samples in self.raw.items()}
         return result
+
+
+def camera_by_id(document, cid):
+    return next(c for c in document["cameras"] if c["camera_id"] == cid)
 
 
 def worker_main():

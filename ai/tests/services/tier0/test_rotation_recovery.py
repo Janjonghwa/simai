@@ -134,7 +134,8 @@ def test_reference_cache_changes_with_version_and_camera(monkeypatch, tmp_path):
     computation.compute(req)
     assert len(calls) == 6
 
-    # 추출 직후 예산을 넘겨도 같은 서명은 다음 주기에 완료한 특징을 재사용한다.
+    # 한 카메라 추출이 예산을 넘겨도 그 주기의 첫 작업이면 끝내고, 특징이 모두 준비됐으니 판정까지 한다(-746 진행 보장).
+    # 같은 서명의 다음 주기는 완료한 특징을 다시 뽑지 않는다.
     computation.recent.clear()
     fake_cpu = [0.]
     computation.clock = lambda: fake_cpu[0]
@@ -143,7 +144,8 @@ def test_reference_cache_changes_with_version_and_camera(monkeypatch, tmp_path):
         fake_cpu[0] += .6
         return object()
     monkeypatch.setattr("simai_ai.calibration.rotation_worker.extract_features", costly_extract)
-    assert computation.compute(req)["status"] == "BUDGET_DEFERRED"
+    first = computation.compute(req)
+    assert first["status"] == "COMPLETED" and first["refreshed_cameras"] == ["a"]
     assert len(calls) == 7
     assert computation.compute(req)["status"] == "COMPLETED"
     assert len(calls) == 7

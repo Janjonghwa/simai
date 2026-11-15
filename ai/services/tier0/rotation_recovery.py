@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import os
 import pickle
 import queue
@@ -29,6 +30,9 @@ from simai_ai.calibration.rotation_recovery import consistent_rotation
 
 log = logging.getLogger("services.tier0.rotation_recovery")
 
+DEFERRAL_WARN_EVERY = 4
+"""예산 이월이 이만큼 연속이면 경고한다(15 s 주기로 1분). 이월 중에는 배경 기반 틀어짐·쓰러짐 감지가 멈춰 있다(-746)"""
+
 
 class BudgetExceededError(RuntimeError):
     """단일 실행 주기의 CPU 시간 예산을 초과했을 때 다음 주기로 이월한다."""
@@ -40,6 +44,29 @@ def _lower_thread_priority() -> None:
             os.nice(10)
         except OSError:
             pass
+
+
+def _rotation_summary(report: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """보고서의 카메라별 적합을 로그·상태용으로 줄인다(회전량은 도, 잔차는 원본 px)."""
+    out: dict[str, dict[str, Any]] = {}
+    for cid, fit in (report.get("rotations") or {}).items():
+        if not isinstance(fit, Mapping):
+            continue
+        angle_rad = fit.get("angle_rad")
+        residual = fit.get("rotation_residual_p95_px")
+        out[str(cid)] = {
+            "status": str(fit.get("status")),
+            "angle_deg": None if angle_rad is None else round(math.degrees(float(angle_rad)), 3),
+            "residual_p95_px": None if residual is None else round(float(residual), 3),
+            "matches": int(fit.get("matches") or 0),
+            "reason": fit.get("reason"),
+        }
+    return out
+
+
+def _camera_cpu_text(by_camera: Mapping[str, Mapping[str, float]]) -> str:
+    return ", ".join(f"{cid}={sum(float(v) for v in row.values()):.0f}ms"
+                     for cid, row in sorted(by_camera.items())) or "-"
 
 
 class BackgroundRotationRecovery:
@@ -96,6 +123,19 @@ class BackgroundRotationRecovery:
         self.last_cpu_ms: dict[str, float] = {}
         self.feature_sides: dict[str, int] = {}
         self.drifted_cameras: set[str] = set()
+        # -746: 카메라별 CPU·이어쓴 특징·연속 이월·작업자가 이미 받은 표본(다시 보내지 않음)
+        self.consecutive_deferrals = 0
+        self.last_completed_ms: int | None = None
+        self.last_cpu_ms_by_camera: dict[str, dict[str, float]] = {}
+        self.last_refreshed: tuple[str, ...] = ()
+        self.last_carried: tuple[str, ...] = ()
+        self.last_pending: tuple[str, ...] = ()
+        self.feature_points: dict[str, int] = {}
+        self.last_rotations: dict[str, dict[str, Any]] = {}
+        self.samples_sent = 0
+        self.samples_omitted = 0
+        self.sample_resyncs = 0
+        self._worker_samples: dict[str, set[tuple]] = {}
 
     def activate(self, document: Mapping[str, Any], provenance: Mapping[str, Any]) -> None:
         self.document = copy.deepcopy(document)
@@ -150,6 +190,7 @@ class BackgroundRotationRecovery:
             env = dict(os.environ)
             env.update(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
                        VECLIB_MAXIMUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+            self._worker_samples = {}  # 새 작업자는 받은 표본이 없다
             self._process = subprocess.Popen(
                 [sys.executable, "-m", "simai_ai.calibration.rotation_worker"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
@@ -311,32 +352,64 @@ class BackgroundRotationRecovery:
         self._cycle_generation = self.generation
         self.running = True
         now = self._now_ms()
+        completed: dict[str, Any] | None = None
         try:
             if self._stop.is_set():
                 return None
             references = self._load_references()
-            recent = self.clean_background.rotation_snapshot(exclude_cameras=self.drifted_cameras)
-            if references is None or recent is None:
+            if references is None:
                 self.last_status = "NOT_READY"
                 return {"status": "NOT_READY"}
-            signatures = {cid: data["signature"] for cid, data in recent.items()}
-            if self._last_signatures == signatures:
-                return {"status": "WAITING_NEW_SAMPLES"}
-            recent_ms = {cid: sig[2] for cid, sig in signatures.items()}
-            result = self._compute({
-                "document": copy.deepcopy(self.document), "references": references, "recent": recent,
-                "recent_ms": recent_ms, "config": self.settings.config,
-                "budget_ms": self.settings.cpu_budget_ms, "now_ms": now,
-                "version": f"cal-rot-{now}-{self.cycles + 1}-{uuid.uuid4().hex[:8]}",
-                "ignored_cameras": sorted(self.drifted_cameras),
-            })
+            if self._process is not None and self._process.poll() is not None:
+                self._worker_samples = {}  # 죽은 작업자가 받았던 표본은 새 작업자에 없다
+            for attempt in range(2):
+                # -746: 작업자가 이미 받은 표본은 비워 보낸다(분리 켬이면 검출 프로세스가 쓰는 파일도 준다).
+                recent = self.clean_background.rotation_snapshot(
+                    exclude_cameras=self.drifted_cameras, omit_samples=self._worker_samples or None)
+                if recent is None:
+                    self.last_status = "NOT_READY"
+                    return {"status": "NOT_READY"}
+                signatures = {cid: data["signature"] for cid, data in recent.items()}
+                if self._last_signatures == signatures:
+                    return {"status": "WAITING_NEW_SAMPLES"}
+                recent_ms = {cid: sig[2] for cid, sig in signatures.items()}
+                sent = sum(sample is not None for view in recent.values() for sample in view["samples"])
+                omitted = sum(sample is None for view in recent.values() for sample in view["samples"])
+                result = self._compute({
+                    "document": copy.deepcopy(self.document), "references": references, "recent": recent,
+                    "recent_ms": recent_ms, "config": self.settings.config,
+                    "budget_ms": self.settings.cpu_budget_ms, "now_ms": now,
+                    "max_feature_age_ms": 2 * self.settings.interval_ms,
+                    "version": f"cal-rot-{now}-{self.cycles + 1}-{uuid.uuid4().hex[:8]}",
+                    "ignored_cameras": sorted(self.drifted_cameras),
+                })
+                self._worker_samples = {
+                    str(cid): {(int(k[0]), int(k[1]), tuple(k[2])) for k in keys}
+                    for cid, keys in (result.get("cached_samples") or {}).items()}
+                self.samples_sent += sent
+                self.samples_omitted += omitted
+                if result["status"] == "ERROR" and str(result.get("reason", "")).startswith("SAMPLE_CACHE_MISS"):
+                    # 작업자 캐시와 어긋났다(예: 작업자 교체). 비운 자리 없이 한 번 더 보낸다.
+                    self.sample_resyncs += 1
+                    self._worker_samples = {}
+                    if attempt == 0:
+                        continue
+                break
             self.last_cpu_ms = result["timings"]
+            self.last_cpu_ms_by_camera = dict(result.get("timings_by_camera") or {})
+            self.last_refreshed = tuple(result.get("refreshed_cameras") or ())
+            self.last_carried = tuple(result.get("carried_cameras") or ())
+            self.last_pending = tuple(result.get("pending_cameras") or ())
+            self.feature_points = dict(result.get("feature_points") or {})
             self.worker_pid = result.get("worker_pid")
             self.feature_sides = result.get("feature_sides", {})
             if self._cycle_generation != self.generation:
                 return None
-            if any(self.clean_background.recent_signature(cid) != sig for cid, sig in signatures.items()):
-                return {"status": "WAITING_NEW_SAMPLES"}
+            # 계산 중 새 표본이 온 것은 결과를 버릴 이유가 아니다(그 창의 판정으로 유효). 카메라 리셋(세대 변경)만 버린다(-746).
+            for cid, sig in signatures.items():
+                current = self.clean_background.recent_signature(cid)
+                if current is None or current[0] != sig[0]:
+                    return {"status": "WAITING_NEW_SAMPLES"}
             if result["status"] == "BUDGET_DEFERRED":
                 raise BudgetExceededError(result["reason"])
             if result["status"] == "ERROR":
@@ -348,9 +421,14 @@ class BackgroundRotationRecovery:
             config = self.settings.config
             if self._cycle_generation != self.generation:
                 return None
-            self._last_signatures = signatures
+            recent_ms = dict(report.get("recent_samples_ms") or recent_ms)
+            if not self.last_carried:
+                self._last_signatures = signatures  # 이어쓴 카메라가 있으면 새 표본이 없어도 다음 주기에 마저 뽑는다
             self.cycles += 1
             self.last_report = report
+            self.last_completed_ms = now
+            self.last_rotations = _rotation_summary(report)
+            completed = report
             if self._on_report is not None:
                 try:
                     self._on_report(report)
@@ -507,9 +585,15 @@ class BackgroundRotationRecovery:
             return report
         except BudgetExceededError as exc:
             self.budget_deferrals += 1
+            self.consecutive_deferrals += 1
             self.last_status = "BUDGET_DEFERRED"
             self.last_error = str(exc)
-            log.info("회전 복구 다음 주기로 이월: %s", exc)
+            log.info("회전 복구 다음 주기로 이월: %s (cpu %.0fms, 새로 뽑음 %s)", exc,
+                     float(self.last_cpu_ms.get("total", 0.0)), ",".join(self.last_refreshed) or "-")
+            if self.consecutive_deferrals % DEFERRAL_WARN_EVERY == 0:
+                log.warning(
+                    "회전 복구 이월 %d회 연속: 배경 기반 카메라 틀어짐·쓰러짐 감지가 멈춰 있다 (예산 %dms, 카메라별 cpu %s)",
+                    self.consecutive_deferrals, self.settings.cpu_budget_ms, _camera_cpu_text(self.last_cpu_ms_by_camera))
             return {"status": "BUDGET_DEFERRED", "reason": str(exc)}
         except ValueError as exc:
             msg = str(exc)
@@ -531,8 +615,47 @@ class BackgroundRotationRecovery:
             log.exception("회전 복구 실행 실패(판정은 계속한다)")
             return None
         finally:
+            if completed is not None:
+                self._log_completed(completed)
             self.running = False
             self._run_lock.release()
+
+    def _log_completed(self, report: Mapping[str, Any]) -> None:
+        """완료 주기마다 한 줄: 결과·카메라별 회전량·판정·CPU(-746). 이월 뒤 첫 완료면 이월 횟수도 싣는다."""
+        after = self.consecutive_deferrals
+        self.consecutive_deferrals = 0
+        cams = ", ".join(
+            f"{cid}={row['status']} {row['angle_deg']:.2f}° p95 {row['residual_p95_px']:.2f}px m{row['matches']}"
+            if row.get("angle_deg") is not None and row.get("residual_p95_px") is not None
+            else f"{cid}={row['status']} m{row['matches']}"
+            for cid, row in sorted(self.last_rotations.items()))
+        log.info(
+            "회전 복구 완료: 결과=%s 상태=%s cpu %.0fms(새로 뽑음 %s, 이어씀 %s)%s | %s",
+            report.get("status"), self.last_status, float(self.last_cpu_ms.get("total", 0.0)),
+            ",".join(self.last_refreshed) or "-", ",".join(self.last_carried) or "-",
+            f" 이월 {after}회 뒤" if after else "", cams or "-")
+
+    def timing_summary(self) -> dict[str, Any]:
+        """30초 stage_timing 줄에 싣는 요약(-746). 판정에 쓰지 않는다."""
+        return {
+            "last_status": self.last_status,
+            "cycles": self.cycles,
+            "budget_deferrals": self.budget_deferrals,
+            "consecutive_deferrals": self.consecutive_deferrals,
+            "budget_ms": self.settings.cpu_budget_ms,
+            "last_completed_ms": self.last_completed_ms,
+            "cpu_ms": {k: round(float(v), 1) for k, v in self.last_cpu_ms.items()},
+            "cpu_ms_by_camera": {cid: round(sum(float(v) for v in row.values()), 1)
+                                 for cid, row in sorted(self.last_cpu_ms_by_camera.items())},
+            "refreshed": list(self.last_refreshed),
+            "carried": list(self.last_carried),
+            "pending": list(self.last_pending),
+            "feature_sides": dict(self.feature_sides),
+            "rotations": {cid: {"status": row["status"], "angle_deg": row.get("angle_deg")}
+                          for cid, row in sorted(self.last_rotations.items())},
+            "samples_sent": self.samples_sent,
+            "samples_omitted": self.samples_omitted,
+        }
 
     def run(self) -> None:
         _lower_thread_priority()
@@ -553,6 +676,17 @@ class BackgroundRotationRecovery:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "last_cpu_ms": dict(self.last_cpu_ms),
+            "last_cpu_ms_by_camera": {cid: dict(row) for cid, row in self.last_cpu_ms_by_camera.items()},
+            "consecutive_deferrals": self.consecutive_deferrals,
+            "last_completed_ms": self.last_completed_ms,
+            "refreshed_cameras": list(self.last_refreshed),
+            "carried_cameras": list(self.last_carried),
+            "pending_cameras": list(self.last_pending),
+            "feature_points": dict(self.feature_points),
+            "last_rotations": {cid: dict(row) for cid, row in self.last_rotations.items()},
+            "samples_sent": self.samples_sent,
+            "samples_omitted": self.samples_omitted,
+            "sample_resyncs": self.sample_resyncs,
             "cpu_scope": "ROTATION_WORKER_PROCESS",
             "worker_pid": self.worker_pid,
             "feature_sides": dict(self.feature_sides),

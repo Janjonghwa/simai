@@ -91,7 +91,7 @@ Tier 0 설정 파일(`tier0.json`)의 `rotation_recovery` 객체로 노출되며
 | `enabled` | `true` | 배경 기반 회전 자동 복구 워커 활성화 여부 |
 | `safety_enabled` | `true` | 2회 연속 확인(`CandidateConfirmation`) 및 교체 후 60초 감시(`SwapProbation`) 적용 |
 | `interval_ms` | `15000` (15초) | 회전 감시·복구 스레드 실행 주기 |
-| `cpu_budget_ms` | `500` (500ms) | 회전 전용 작업자 프로세스 CPU 시간 예산. 단계 경계에서 검사하고 초과 시 이월 |
+| `cpu_budget_ms` | `1000` (1000ms, -746 에서 500 → 1000) | 회전 전용 작업자 프로세스 CPU 시간 예산. 카메라 단위 추출 시작 전에 검사하고, 못 뽑은 카메라는 다음 주기에 먼저 뽑는다(끝낸 카메라 특징은 30 s 까지 이어씀, `S15P31A101-746-rotation-recovery-budget.md`) |
 | `min_angle_rad` | `0.0087266` (`0.5°`) | 노이즈와 구분해 회전 복구를 발동하는 최소 회전각 |
 | `max_angle_rad` | `0.2617994` (`15.0°`) | 자동 복구를 허용하는 최대 회전각 (초과 시 `REQUIRES_SETUP`) |
 | `max_residual_px` | `3.0` | 홀드아웃 1/5 대응점의 $H$ 및 $K \Delta R K^{-1}$ 95분위 투영 잔차 상한 (px) |

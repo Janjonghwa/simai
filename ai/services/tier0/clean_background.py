@@ -182,6 +182,28 @@ def _build_rotation_view_payload(
     }
 
 
+def omit_rotation_samples(
+    views: Mapping[str, Any] | None, omit: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """회전 작업자가 이미 받은 표본(키: 세대·촬영 시각·원본 크기) 자리를 None 으로 바꾼 사본(-746). 원본 스냅샷은 바꾸지 않는다."""
+    if views is None or not omit:
+        return None if views is None else dict(views)
+    from simai_ai.calibration.rotation_recovery import sample_key
+
+    out: dict[str, Any] = {}
+    for cid, view in views.items():
+        known = omit.get(cid)
+        if not known:
+            out[cid] = view
+            continue
+        known = {tuple(k[:2]) + (tuple(k[2]),) for k in known}
+        gen = view["signature"][0]
+        samples = [None if sample_key(gen, at, view["size"]) in known else sample
+                   for at, sample in zip(view["sample_times"], view["samples"])]
+        out[cid] = {**view, "samples": samples}
+    return out
+
+
 def _mask_unknown_with_samples(
     samples: list[Any],
     rows_per_chunk: int,
@@ -1436,7 +1458,8 @@ class BackgroundCleanBackground:
         }
         self._rotation_views = {**self._rotation_views, cid: view}
 
-    def rotation_snapshot(self, exclude_cameras=()) -> dict | None:
+    def rotation_snapshot(self, exclude_cameras=(), omit_samples=None) -> dict | None:
+        """omit_samples: 회전 작업자가 이미 받은 표본 키(카메라별). 그 자리는 None 으로 비운다(-746)."""
         ctx = self._active
         views = self._rotation_views
         if ctx is None or self._context is not ctx:
@@ -1444,7 +1467,7 @@ class BackgroundCleanBackground:
         required = set(ctx.generations) - set(exclude_cameras or ())
         if not required or not required <= set(views):
             return None
-        return {cid: views[cid] for cid in required}
+        return omit_rotation_samples({cid: views[cid] for cid in required}, omit_samples)
 
     def recent_signature(self, cid: str) -> tuple[int, int, int] | None:
         ctx = self._active
