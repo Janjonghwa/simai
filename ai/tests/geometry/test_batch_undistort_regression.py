@@ -251,7 +251,7 @@ def test_point_api_matches_legacy(lens):
 # ---------------------------------------------------------------- 관절 게이트
 
 
-def _legacy_competitor(j, cams, pixels, others, cfg, undistorted, others_undistorted=None):
+def _legacy_competitor(j, cams, pixels, others, cfg, undistorted, others_undistorted=None, lines=None):
     return legacy._has_epipolar_competitor(j, cams, pixels, others, cfg)
 
 
@@ -421,7 +421,8 @@ def _legacy_triangulate_many(people, rig, joint_layout="COCO17", config=None, *,
 
 
 def _patch_legacy_cross_view(m):
-    m.setattr(cross_view_module, "triangulate_skeleton", _legacy_triangulate)
+    # S15P31A101-726 부터 cross_view 는 triangulate_skeleton 을 쓰지 않는다(다시 검증도 triangulate_skeletons). 이전 이름이 없어도 된다
+    m.setattr(cross_view_module, "triangulate_skeleton", _legacy_triangulate, raising=False)
     m.setattr(cross_view_module, "triangulate_skeletons", _legacy_triangulate_many)
     m.setattr(CrossViewAssociator, "_pairs", _legacy_pairs)
     m.setattr(CrossViewAssociator, "_assign", legacy.cross_view_assign)

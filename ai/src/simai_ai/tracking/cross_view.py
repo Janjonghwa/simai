@@ -80,7 +80,6 @@ from simai_ai.geometry.triangulation import (
     SkeletonEstimate,
     TriangulationConfig,
     joint_consistency_px,
-    triangulate_skeleton,
     triangulate_skeletons,
 )
 from simai_ai.tracking.assignment import linear_sum_assignment
@@ -91,6 +90,21 @@ TrackKey = tuple[str, str]
 """(camera_id, local_track_id). 카메라 내 트랙 ID 는 카메라마다 따로 붙으므로 카메라와 함께 키로 쓴다"""
 
 JOINT_COUNTS = {"COCO17": 17, "HALPE26": 26}
+# 계측용 계산량 이름(`AssociationFrame.work`). conflict_max_size 는 tick 안 최댓값, 나머지는 tick 안 합이다
+WORK_KEYS = (
+    "views",
+    "raw_pairs",
+    "epipolar_pass",
+    "pair_svd_joints",
+    "clusters",
+    "conflict_components",
+    "conflict_max_size",
+    "partition_search_visits",
+    "tri_first_rows",
+    "tri_fallback_joints",
+    "tri_resolves",
+    "view_split",
+)
 # 임시 바닥 가설에 쓰는 발목 관절 (COCO17 과 HALPE26 의 앞 17개는 같은 순서)
 ANKLES = {"COCO17": (15, 16), "HALPE26": (15, 16)}
 
@@ -341,6 +355,10 @@ class AssociationFrame:
     pairs: tuple[PairEvidence, ...]
     excluded: tuple[TrackKey, ...] = ()
     """exclude_cameras 로 이 시각 연결에서 뺀 view"""
+    work: Mapping[str, int] = field(default_factory=dict, compare=False, repr=False)
+    """계측용 계산량(판정에 쓰지 않음, S15P31A101-726): view 수, 원시 쌍 수, 에피폴라 통과 쌍 수, 2-view SVD 관절 수,
+    클러스터 수, 충돌 성분 수·최대 크기, 분할 탐색 방문 수, 클러스터 삼각측량의 1차 풀이 관절 수·순차 경로 관절 수·
+    순차 경로 점 풀이 수, VIEW_SPLIT 수. 이름은 `WORK_KEYS`"""
 
     def cluster_of(self, key: TrackKey) -> ViewCluster | None:
         for c in self.clusters:
@@ -388,6 +406,8 @@ class _AssignMemo:
         default_factory=dict
     )
     hips: dict[tuple[TrackKey, ...], bool] = field(default_factory=dict)
+    partition: dict[tuple[Any, ...], list[frozenset[int]]] = field(default_factory=dict)
+    """충돌 성분 → 최적 분할(S15P31A101-726). 키는 그 성분 계산이 읽는 입력 전체(성분 번호·키·간선·비용)라 같은 키면 같은 결과다"""
 
 
 class CrossViewAssociator:
@@ -415,6 +435,8 @@ class CrossViewAssociator:
         self._threshold_memo: dict[tuple[str, str], tuple[float, float]] | None = None
         """`_pairs` 한 번 동안만 있는 카메라 쌍 잔차 문턱 재사용(S15P31A101-663). 잔차 표본은 `_pairs` 뒤에만 바뀐다"""
         self._previous: dict[str, frozenset[TrackKey]] = {}
+        self._work: dict[str, int] = {}
+        """이번 `associate` 의 계측용 계산량(판정에 쓰지 않음, `AssociationFrame.work`)"""
         self._issued = 0
         self._last_t: int | None = None
         from simai_ai.geometry.overlap import disjoint_camera_pairs
@@ -542,6 +564,8 @@ class CrossViewAssociator:
         dropped = tuple(sorted(v.key for v in views if v.camera_id in excluded))
 
         used = sorted((v for v in views if v.camera_id not in excluded), key=lambda v: v.key)
+        self._work = dict.fromkeys(WORK_KEYS, 0)
+        self._work["views"] = len(used)
         # 왜곡 제거는 카메라마다 그 카메라의 view 전체를 한 번에 한다
         by_camera: dict[str, list[LocalView]] = {}
         for v in used:
@@ -570,12 +594,14 @@ class CrossViewAssociator:
         self._update_pair_residuals(clusters, pairs)
         self._update_history(t, clusters, pairs, set(prepared))
         self._last_t = t
+        self._work["clusters"] = len(clusters)
         return AssociationFrame(
             t=t,
             calibration_version=self.rig.calibration_version,
             clusters=clusters,
             pairs=tuple(pairs[k] for k in sorted(pairs)),
             excluded=dropped,
+            work=self._work,
         )
 
     # ------------------------------------------------------------------ 2단계: 후보 근거
@@ -624,6 +650,7 @@ class CrossViewAssociator:
         for key in sorted(prepared):
             by_camera.setdefault(key[0], []).append(key)
         cams = sorted(by_camera)
+        self._count("raw_pairs", sum(len(by_camera[a]) * len(by_camera[b]) for a, b in itertools.combinations(cams, 2)))
         stacks = {cid: _ViewStack.of([prepared[k] for k in by_camera[cid]]) for cid in cams}
         found: dict[tuple[str, str], tuple[list[list[int]], list[list[float]], dict[tuple[int, int], PairEvidence]]] = {}
         for cam_a, cam_b in itertools.combinations(cams, 2):
@@ -634,6 +661,7 @@ class CrossViewAssociator:
             epi, common = self._epipolar_matrix(pas, pbs)
             counts = common.sum(axis=2)
             queued = np.argwhere((counts >= cfg.min_common_joints) & ~(epi > cfg.epipolar_gate_px))
+            self._count("epipolar_pass", len(queued))
             found[(cam_a, cam_b)] = (
                 counts.tolist(),
                 epi.tolist(),
@@ -671,6 +699,7 @@ class CrossViewAssociator:
         qi, qk = queued[:, 0], queued[:, 1]
         sel = common[qi, qk]  # (Q, J) 쌍마다 공통 관절
         q, j = np.nonzero(sel)  # 쌍 순서, 쌍 안에서는 관절 순서 (= 쌍마다 공통 관절을 이어 붙인 순서)
+        self._count("pair_svd_joints", len(q))
         a_rows, b_rows = (qi[q], j), (qk[q], j)
         xyz, err = _two_view_arrays(
             sa.camera,
@@ -683,20 +712,21 @@ class CrossViewAssociator:
         solved = np.zeros((Q, J), dtype=bool)
         solved[q, j] = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
         n_ok = solved.sum(axis=1)
-        # 일관된 관절의 재투영 오차 중앙값 (np.median 과 같은 값: 홀수면 가운데, 짝수면 가운데 둘의 평균)
+        # 일관된 관절의 재투영 오차 (가중) 중앙값. 비가중 정렬은 비가중 설정에서만 한다(S15P31A101-726: 기본 가중 경로에서
+        # 쓰지 않는 정렬을 하지 않는다. 쓰는 식은 그대로다)
         ranked = np.full((Q, J), np.inf)
         ranked[q, j] = err
         masked = np.where(solved, ranked, np.inf)
-        ranked = np.sort(masked, axis=1)
-        rows = np.arange(Q)
-        upper = ranked[rows, np.maximum(n_ok // 2, 0)]
-        lower = ranked[rows, np.maximum(n_ok // 2 - 1, 0)]
         with np.errstate(invalid="ignore"):
-            residual = (
-                _weighted_median_rows(masked, solved, self._joint_weights)
-                if self.config.joint_noise_weighted
-                else np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
-            )
+            if self.config.joint_noise_weighted:
+                residual = _weighted_median_rows(masked, solved, self._joint_weights)
+            else:
+                # np.median 과 같은 값: 홀수면 가운데, 짝수면 가운데 둘의 평균
+                ranked = np.sort(masked, axis=1)
+                rows = np.arange(Q)
+                upper = ranked[rows, np.maximum(n_ok // 2, 0)]
+                lower = ranked[rows, np.maximum(n_ok // 2 - 1, 0)]
+                residual = np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
         pts = np.full((Q, J, 3), np.nan)
         pts[q, j] = xyz
         pts[~solved] = np.nan
@@ -1244,6 +1274,25 @@ class CrossViewAssociator:
                         preferred.add((u, v))
                 continue
             has_conflict = True
+            self._count("conflict_components", 1)
+            self._work["conflict_max_size"] = max(self._work.get("conflict_max_size", 0), len(comp))
+            # 이 성분의 분할은 성분 번호·클러스터 키(순서 그대로)·성분 안 허용 간선·성분 안 비용만 읽고, `_graph_linkage` 는
+            # 이 `_assign_graph` 호출 동안 순수하다. 그래서 병합 루프의 다음 단계에서 이 입력이 모두 같으면 지난 결과를 그대로
+            # 쓴다(S15P31A101-726: 다른 성분이 합쳐져도 이 성분을 다시 열거·탐색하지 않는다)
+            memo = self._memo
+            part_key = (
+                tuple(comp),
+                tuple(tuple(works[u].keys) for u in comp),
+                tuple(tuple(sorted(adj[u])) for u in comp),
+                cost[np.ix_(comp, comp)].tobytes(),
+            )
+            cached = memo.partition.get(part_key) if memo is not None else None
+            if cached is not None:
+                for part in cached:
+                    if len(part) >= 2:
+                        for u, v in itertools.combinations(sorted(part), 2):
+                            preferred.add((u, v))
+                continue
             comp_set = set(comp)
             # 성분 안에서 연결된 유효 부분집합(크기 1..4)과 그 상관 클러스터링 점수를 구한다
             valid_subsets: dict[frozenset[int], tuple[float, float, TrackKey]] = {}
@@ -1291,8 +1340,11 @@ class CrossViewAssociator:
             best_key: tuple[float, float] | None = None
             best_part: list[frozenset[int]] = []
 
+            visits = 0
+
             def search(remaining: frozenset[int], acc_score: float, acc_neg_cost: float, chosen: list[frozenset[int]]) -> None:
-                nonlocal best_key, best_part
+                nonlocal best_key, best_part, visits
+                visits += 1
                 if not remaining:
                     cand_key = (round(acc_score, 9), round(acc_neg_cost, 9))
                     if best_key is None or cand_key > best_key:
@@ -1312,6 +1364,9 @@ class CrossViewAssociator:
                         chosen.pop()
 
             search(frozenset(comp_set), 0.0, 0.0, [])
+            self._count("partition_search_visits", visits)
+            if memo is not None:
+                memo.partition[part_key] = list(best_part)
             for part in best_part:
                 if len(part) >= 2:
                     for u, v in itertools.combinations(sorted(part), 2):
@@ -1472,45 +1527,65 @@ class CrossViewAssociator:
             cams = [k[0] for k in w.keys]
             return len(cams) >= 2 and len(set(cams)) == len(cams)
 
-        def inputs(members: list[TrackKey]) -> tuple[list[InterpolatedView], dict[str, UndistortedKeypoints]]:
+        def triangulate(indices: list[int]) -> dict[int, SkeletonEstimate]:
             # view 는 키 순서(= ViewCluster.views 순서)로 넘긴다. 관절 게이트가 같은 순서의 view 로 이 결과를 다시 쓴다
-            return [prepared[k].view.view for k in members], {k[0]: prepared[k].undistorted for k in members}
+            members = [sorted(works[i].keys) for i in indices]
+            batch = triangulate_skeletons(
+                [[prepared[k].view.view for k in m] for m in members],
+                self.rig,
+                self.joint_layout,
+                self.config.triangulation,
+                undistorted=[{k[0]: prepared[k].undistorted for k in m} for m in members],
+                stats=self._work,
+            )
+            return dict(zip(indices, batch))
 
-        # 처음 클러스터 전체를 한 번에 삼각측량해 두고, view 를 떼어 낸 클러스터만 다시 푼다(결과는 클러스터마다 같다)
-        first = [sorted(w.keys) for w in works if triangulable(w)]
-        batch = triangulate_skeletons(
-            [inputs(m)[0] for m in first],
-            self.rig,
-            self.joint_layout,
-            self.config.triangulation,
-            undistorted=[inputs(m)[1] for m in first],
-        )
-        done = {tuple(m): sk for m, sk in zip(first, batch)}
-        i = 0
-        while i < len(works):
-            w = works[i]
-            cams = [k[0] for k in w.keys]
-            if not triangulable(w):
-                i += 1
-                continue
-            members = sorted(w.keys)
-            sk = done.get(tuple(members))
-            if sk is None:
-                views, und = inputs(members)
-                tri = self.config.triangulation
-                sk = triangulate_skeleton(views, self.rig, self.joint_layout, tri, undistorted=und)
-            used = {c: sum(1 for j in sk.joints if c in j.camera_ids) for c in cams}
-            rejected = {c: sum(1 for j in sk.joints if c in j.rejected_camera_ids) for c in cams}
-            worst = max(cams, key=lambda c: (rejected[c] - used[c], c))
-            if rejected[worst] > used[worst]:
-                key = next(k for k in w.keys if k[0] == worst)
-                flags.append(_Flag(UncertainReason.VIEW_SPLIT, frozenset(w.keys), frozenset(w.keys)))
-                w.keys.remove(key)
+        # 클러스터 전체를 한 번에 삼각측량하고, 대부분의 관절에서 이상치로 빠진 view 를 떼어 낸 클러스터만 다시 검증한다.
+        # 다시 검증할 클러스터는 라운드마다 카메라 구성이 같은 것끼리 한 번에 푼다(S15P31A101-726). 사람 묶음 1차 풀이는 묶음
+        # 전체 카메라를 열로 쓰므로 카메라 구성이 같아야 클러스터 하나씩 푼 것과 비트 단위로 같다. 떼어 낸 view(1대 클러스터)와
+        # VIEW_SPLIT 표시는 클러스터 하나씩 끝까지 검증하던 순서(클러스터 순서, 그 안에서 뗀 순서)대로 붙인다
+        pending = [i for i, w in enumerate(works) if triangulable(w)]
+        splits: dict[int, list[tuple[_Flag, TrackKey]]] = {}
+        first_round = True
+        while pending:
+            if first_round:
+                estimates = triangulate(pending)
+                first_round = False
+            else:
+                same_cameras: dict[tuple[str, ...], list[int]] = {}
+                for i in pending:
+                    same_cameras.setdefault(tuple(sorted(k[0] for k in works[i].keys)), []).append(i)
+                estimates = {}
+                for indices in same_cameras.values():
+                    estimates.update(triangulate(indices))
+            again = []
+            for i in pending:
+                w, sk = works[i], estimates[i]
+                cams = [k[0] for k in w.keys]
+                used = {c: sum(1 for j in sk.joints if c in j.camera_ids) for c in cams}
+                rejected = {c: sum(1 for j in sk.joints if c in j.rejected_camera_ids) for c in cams}
+                worst = max(cams, key=lambda c: (rejected[c] - used[c], c))
+                if rejected[worst] > used[worst]:
+                    key = next(k for k in w.keys if k[0] == worst)
+                    splits.setdefault(i, []).append(
+                        (_Flag(UncertainReason.VIEW_SPLIT, frozenset(w.keys), frozenset(w.keys)), key)
+                    )
+                    w.keys.remove(key)
+                    if triangulable(w):
+                        again.append(i)  # 같은 클러스터를 다시 검증한다
+                    continue
+                skeletons[i] = sk
+            pending = again
+        for i in sorted(splits):
+            for flag, key in splits[i]:
+                flags.append(flag)
                 works.append(_Work([key]))
-                continue  # 같은 클러스터를 다시 검증한다
-            skeletons[i] = sk
-            i += 1
+                self._count("view_split", 1)
         return skeletons
+
+    def _count(self, name: str, n: int) -> None:
+        """계측용 계산량을 더한다(판정에 쓰지 않음)."""
+        self._work[name] = self._work.get(name, 0) + int(n)
 
     def _two_view_competitors(
         self, works: list[_Work], pairs: dict[tuple[TrackKey, TrackKey], PairEvidence], flags: list[_Flag]

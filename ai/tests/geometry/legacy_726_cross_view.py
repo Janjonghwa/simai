@@ -1,0 +1,1922 @@
+# S15P31A101-726 이전(dev bd706a9f) `ai/src/simai_ai/tracking/cross_view.py` 의 고정 사본. 동등성 비교(test_tier0_hotpath_equivalence.py)·벤치 전용이며 고치지 않는다.
+# 원본과 다른 곳은 import 경로뿐이다(삼각측량은 같은 묶음의 legacy_726_triangulation 사본을 쓴다).
+# ruff: noqa
+"""Cross-view Association: 카메라별 로컬 트랙을 같은 사람끼리 묶는다 (명세 5.2 추적 3계층 2층, 계산 순서 2·3단계).
+
+입력은 카메라별 Local Tracker 의 `observation_2d`(카메라 내 트랙 ID 포함)를 공통 시각 t 로 보간한 view
+(`LocalTrackletBuffer`, `geometry.interpolation`)와 보정(`geometry.rig.CameraRig`)이다. 출력은 시각 t 의 view 클러스터
+(같은 사람으로 본 카메라별 트랙 묶음)와 그 클러스터의 삼각측량 결과(`geometry.triangulation`)다.
+MV3DT 원칙(공유 World 좌표, tracklet 연결, 전체 1:1 배정)을 Python 으로 구현한다. 참조: Chen et al. CVPR 2020 의
+다시점 기하 친화도(에피폴라)와 연결 이력, RapidPoseTriangulation 의 학습 없는 삼각측량 거르기.
+
+계산 순서 (명세 5.2):
+
+1. 공통 시각 보간: 같은 t 로 보간된 view 끼리만 비교한다(시간 근거). 보간에 실패한 카메라·트랙은 그 t 에서 빠진다.
+2. 연결 후보 생성 (카메라가 다른 view 쌍마다):
+   - 에피폴라 거리: 두 view 모두 신뢰도 기준 이상인 관절의 대칭 에피폴라 거리(근사 픽셀)를 관절 잡음 배율 역수(`1/KEYPOINT_NOISE_SCALE`)로 정규화한 가중 평균(`joint_noise_weighted=False` 이면 비가중 평균).
+   - 임시 바닥 가설: 발목(양쪽 중점) 시선이 수평면 Z=h 와 만나는 XY 끼리의 거리. h 는 바닥(0)이 기본이고, 단상·
+     작업면 위 사람을 놓치지 않도록 0 ~ `floor_hypothesis_max_height_m` 중 두 시선이 가장 가까운 높이로 본다.
+     **이 값은 후보 비용에만 쓰는 근사다. World 위치·`ground_anchor_xyz`·Z 로 쓰지 않고, 결과 객체에도 내보내지
+     않는다(명세 5.2 "임시 바닥 가설은 후보 생성에만 쓰고 안전용 접지나 Z로 쓰지 않는다", AGENTS.md 모르면 비운다).**
+     비용은 min(거리 / `floor_scale_m`, `floor_missing_cost`) 로 거리에 단조 비감소이고, 가설이 없을 때와 같은 값에서
+     멈춘다. 먼 거리는 "가설로 판단할 수 없음"(가설 높이보다 높은 면 위 사람일 수 있다, 예: 책상 위 의자 1.2 m,
+     R3 의 2 m 고소)이라 더 벌하지 않는다. **바닥 가설만으로 쌍을 탈락시키지 않는다.** 탈락은 에피폴라·삼각측량(재투영 잔차, 관절 높이 범위) 근거로만 한다.
+   - 궤적 일관성: 로컬 트랙 쌍이 이전 시각들에 같은 클러스터였던 횟수(연결 이력, `link_age`). 비용을 깎을 뿐
+     기하 문턱을 넘은 쌍을 살리지 않는다.
+3. 후보별 삼각측량 검증: 두 view 의 공통 관절을 2-view 선형 DLT(`geometry.triangulation` 과 같은 식, 관절 묶음으로
+   벡터화한 `_two_view_triangulation`)로 풀어 재투영 잔차(관절별 `1/KEYPOINT_NOISE_SCALE` 가중 중앙값, `joint_noise_weighted=False` 이면 비가중 중앙값), 일관된 관절 비율, 관절 높이의 물리적 범위를 본다.
+   클러스터 최종 관절(6단계·출력)은 `triangulate_skeleton` 그대로다. 관절 유효성 게이트(VALID/UNCERTAIN/UNAVAILABLE 상세)는 S15P31A101-29 몫이다.
+4. 배정(제약 있는 최선 우선 병합): view 하나씩인 클러스터에서 시작해 합칠 수 있는 클러스터 쌍 중 비용이 가장 낮은
+   쌍부터 합친다. 병합 비용은 두 클러스터 사이 view 쌍 비용의 평균에서 연결 이력 보너스를 뺀 값이다. 기하가 반대하는
+   쌍이 하나라도 있으면 합치지 않고(완전 연결), 공통 관절이 적어 근거가 없는 쌍은 고정 비용으로 세며, 근거 있는 쌍이
+   하나는 있어야 한다. **같은 카메라의 두 검출은 한 클러스터에 넣지 않는다**: 카메라가 겹치는 두 클러스터는 합치지
+   않으므로 클러스터마다 카메라당 view 가 하나, view 마다 클러스터가 하나다(카메라별 1:1, 명세 5.2, 부록 D-G2-04).
+   카메라를 차례로 배정하는 방식(Chen et al.)은 앞 카메라의 약한 연결이 먼저 굳어 뒤 카메라의 더 강한 반대 근거를
+   가리는 경우가 SIM 교차 시나리오에서 나와 쓰지 않는다. 헝가리안 1:1 배정은 시각 사이 클러스터를 잇는 데 쓴다.
+5. 애매하면 합치지 않는다: 고른 병합과 서로 배타적인 경쟁 병합(같은 카메라 자리를 두고 다투는 다른 클러스터)의 비용
+   차가 `ambiguity_margin` 보다 작거나, 잔차가 경계(`residual_marginal_px` 초과)면 그 병합을 막고 관련 클러스터에
+   `IDENTITY_UNCERTAIN` 사유를 붙인다. 2대뿐인 클러스터에 다른 사람 view 가 기하로 맞으면(제3의 카메라로 가릴 수
+   없음) 역시 표시한다. 잘못 합친 ID 보다 갈라진 ID 가 덜 위험하다.
+6. 클러스터 전체 삼각측량에서 대부분의 관절이 이상치로 빠지는 view 는 떼어 낸다.
+
+계산 묶음(S15P31A101-168, docs/design/tier0-geometry-budget.md): 왜곡 제거는 카메라마다 view 전체를 한 번에 하고
+(`RigCamera.undistort_many`), 후보 근거는 카메라 쌍마다 에피폴라 거리 행렬·2-view DLT 를 한 번에, 클러스터 삼각측량은
+클러스터 전체를 `triangulate_skeletons` 한 번으로 푼다. 배정은 비용 행렬에서 합친 클러스터의 행·열만 다시 계산한다.
+결과는 쌍·클러스터마다 따로 계산한 것과 같다. 클러스터의 왜곡 제거 결과(`ViewCluster.undistorted`)와 삼각측량
+(`ViewCluster.skeleton`)은 관절 게이트가 다시 쓴다.
+
+입력 계약: 동기화가 무효인 카메라(System Health 의 `HealthReport.sync_invalid_cameras`)는 융합에서 빼야 한다.
+호출자(Tier 0 조립부)가 `associate(..., exclude_cameras=...)` 로 넘기면 그 카메라의 view 는 이 시각 연결에 쓰지
+않는다. 프레임별 촬영 시각 불확실성은 보간 단계(`LocalTrackletBuffer`)가 거른다.
+
+`association_id` 는 이 계층 안에서 시각 사이 클러스터를 잇는 내부 번호다. World ID 가 아니다. 최종 World ID·칼만
+필터·늦은 재연결·ID 교정은 World Track Manager(S15P31A101-37) 몫이다. 이 모듈은 위험 판정이나 접지를 하지 않는다.
+시각은 UTC int64 ms, 길이는 미터다. 현재 시각을 읽지 않는다.
+"""
+
+from __future__ import annotations
+
+from contextlib import nullcontext
+
+import itertools
+import math
+import statistics
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+import numpy as np
+
+from simai_ai.calibration.bundle.skeleton import KEYPOINT_NOISE_SCALE
+from simai_ai.geometry.interpolation import (
+    FrameDrop,
+    InterpolatedView,
+    InterpolationConfig,
+    KeypointBuffer,
+    KeypointSample,
+)
+from simai_ai.geometry.rig import CameraRig, RigCamera, UndistortedKeypoints
+from legacy_726_triangulation import (
+    COCO17_L_HIP,
+    COCO17_R_HIP,
+    SkeletonEstimate,
+    TriangulationConfig,
+    joint_consistency_px,
+    triangulate_skeleton,
+    triangulate_skeletons,
+)
+from simai_ai.tracking.assignment import linear_sum_assignment
+from simai_ai.tracking.local_tracker import Observation2DFrame
+from simai_ai.tracking.time_model import require_ms
+
+TrackKey = tuple[str, str]
+"""(camera_id, local_track_id). 카메라 내 트랙 ID 는 카메라마다 따로 붙으므로 카메라와 함께 키로 쓴다"""
+
+JOINT_COUNTS = {"COCO17": 17, "HALPE26": 26}
+# 임시 바닥 가설에 쓰는 발목 관절 (COCO17 과 HALPE26 의 앞 17개는 같은 순서)
+ANKLES = {"COCO17": (15, 16), "HALPE26": (15, 16)}
+
+
+class RejectReason(StrEnum):
+    """연결 후보 쌍을 탈락시킨 사유."""
+
+    FEW_COMMON_JOINTS = "FEW_COMMON_JOINTS"
+    """두 view 모두 신뢰도 기준 이상인 관절이 너무 적다"""
+    NO_FOV_OVERLAP = "NO_FOV_OVERLAP"
+    EPIPOLAR = "EPIPOLAR"
+    TRIANGULATION = "TRIANGULATION"
+    """두 view 로 서로 맞게 삼각측량된 관절 비율이 낮다 (해 없음·카메라 뒤·이상치)"""
+    RESIDUAL = "RESIDUAL"
+    IMPLAUSIBLE_HEIGHT = "IMPLAUSIBLE_HEIGHT"
+    """삼각측량한 관절 높이가 바닥 아래·천장 위로 많이 나간다 (엇갈린 시선의 허상 교점)"""
+
+
+class UncertainReason(StrEnum):
+    """`IDENTITY_UNCERTAIN` 표시 사유 (명세 5.2, 7.1)."""
+
+    AMBIGUOUS_ASSIGNMENT = "AMBIGUOUS_ASSIGNMENT"
+    """고른 짝과 경쟁 짝의 비용 차가 작아 합치지 않았다"""
+    MARGINAL_RESIDUAL = "MARGINAL_RESIDUAL"
+    """재투영 잔차가 경계라 합치지 않았다"""
+    TWO_VIEW_COMPETITOR = "TWO_VIEW_COMPETITOR"
+    """2대뿐인 클러스터에 다른 view 도 기하로 맞는다 (제3의 카메라로 가릴 수 없다)"""
+    VIEW_SPLIT = "VIEW_SPLIT"
+    """클러스터 전체 삼각측량에서 이상치가 된 view 를 떼어 냈다"""
+
+
+@dataclass(frozen=True)
+class CrossViewConfig:
+    """초기값. 근거와 SIM 측정은 docs/design/tier0-cross-view.md. G2·A0 실측으로 조정한다."""
+
+    min_keypoint_confidence: float = 0.3
+    min_common_joints: int = 4
+    epipolar_gate_px: float = 30.0
+    """대칭 에피폴라 거리 평균의 상한 (근사 픽셀)"""
+    epipolar_scale_px: float = 10.0
+    floor_hypothesis_max_height_m: float = 1.0
+    """임시 바닥 가설의 수평면 높이 상한. 0 이면 바닥 Z=0 만 본다. 단상(0.4 m)·책상(0.75 m) 위 사람을 놓치지 않게 둔다"""
+    floor_scale_m: float = 1.0
+    floor_missing_cost: float = 0.5
+    """바닥 가설 비용의 상한. 가설이 없거나(발목이 안 보임) 거리가 멀어 판단할 수 없을 때 이 값이다 (유리해지지 않게)"""
+    residual_gate_px: float = 12.0
+    """두 view 삼각측량 재투영 잔차(관절 중앙값)의 상한"""
+    residual_marginal_px: float = 8.0
+    """이 값을 넘으면 잔차가 경계다: 새로 합치지 않고 IDENTITY_UNCERTAIN 으로 둔다"""
+    residual_scale_px: float = 8.0
+    min_consistent_joint_ratio: float = 0.6
+    joint_z_range_m: tuple[float, float] = (-0.3, 4.5)
+    """삼각측량 관절 높이의 물리적 범위. 상한은 R3 고소(지지 표면 2 m) 위 키 큰 사람의 손 든 높이(약 4.3 m)를 담는다.
+    엇갈린 시선의 허상 교점(바닥 아래 깊이, 카메라 너머)을 거르는 용도라 천장 높이보다 넉넉히 둔다"""
+    max_out_of_range_joint_ratio: float = 0.25
+    no_evidence_cost: float = 1.0
+    """공통 관절이 적어 근거가 없는 쌍(FEW_COMMON_JOINTS)의 클러스터 비용. 근거 있는 쌍이 하나는 있어야 넣는다"""
+    new_cluster_cost: float = 3.0
+    """배정 비용이 이 값 이상이면 기존 클러스터에 넣지 않고 새 클러스터를 만든다"""
+    ambiguity_margin: float = 0.5
+    """경쟁 병합과의 비용 차가 이보다 작으면 애매하다. 쌍 비용 척도에서 에피폴라 5 px 또는 잔차 4 px 차이에 해당"""
+    history_bonus: float = 0.3
+    """연결 이력이 꽉 찼을 때 깎는 비용. ambiguity_margin 보다 작게 둔다: 이력만으로는 기하가 같은 경쟁 후보를 이길 수
+    없어(로컬 트랙 ID 가 옆 사람으로 넘어간 경우 등) 애매함 표시가 남고, 기하가 조금이라도 앞설 때만 흔들림을 막는다"""
+    history_full_ticks: int = 10
+    history_ttl_ms: int = 2000
+    """한쪽 트랙이 안 보이는 동안 연결 이력을 들고 있는 시간"""
+    same_camera_exclusive: bool = True
+    """같은 카메라 금지 제약. **음성 대조 시험 전용으로만 끈다(운영에서 끄지 않는다).** 끄면 카메라가 겹치는 클러스터도
+    합칠 수 있고, 같은 카메라 자리를 다투는 경쟁 병합이 없어지므로 그 애매함 검사도 함께 빠진다"""
+    joint_noise_weighted: bool = True
+    """쌍 에피폴라 거리 평균과 2-view 삼각측량 잔차 중앙값을 관절별 `1/KEYPOINT_NOISE_SCALE` 로 정규화 가중한다 (V1a, 명세 5.2)"""
+    graph_clustering_enabled: bool = True
+    """제약 그래프 분할(Constrained Graph Clustering) 사용 여부. False 면 기존 탐욕 완전 연결 병합을 쓴다 (S15P31A101-464)"""
+    temporal_prior_enabled: bool = True
+    """직전 시각(최근 창 안) 같은 World Track·클러스터였던 로컬 트랙 쌍에 시간 연결 간선을 주는 여부 (S15P31A101-464)"""
+    temporal_prior_bonus: float = 0.3
+    """시간 연결 간선 보너스. `ambiguity_margin` 보다 작게 두어 기하가 같은 동일 카메라 경쟁 후보를 이기지 못하게 하고,
+    경계 잔차(MARGINAL_RESIDUAL) 구간은 시간 간선이 이기게 한다"""
+    temporal_prior_ttl_ms: int = 1000
+    """시간 연결 간선을 유지하는 최근 시간 창(ms)"""
+    cluster_3d_consistency_m: float = 0.25
+    """4대 클러스터에서 6쌍 중 5쌍이 통과하고 1쌍만 잔차 상한을 넘을 때, 2-view 3D 관절이 서로 맞아야 하는 허용 거리(m)"""
+    four_view_soft_pair_enabled: bool = True
+    """-657: 4대 클러스터에서 6쌍 중 5쌍이 통과하고 남은 1쌍이 EPIPOLAR·TRIANGULATION 으로 기각됐어도, 5쌍의 2-view 3D 관절이
+    `cluster_3d_consistency_m` 안에 모이고 4대 view 를 엉덩이마다 한 점으로 푼 재투영 오차가 `four_view_pelvis_reprojection_px`
+    안이면 4대 묶음을 허용한다(같은 카메라 금지는 그대로). 한 카메라 쌍의 에피폴라가 경계에서 늘 튀어 한 사람이 2+2 로
+    갈라지던 14차 장면(cam_B/cam_D 상시 EPIPOLAR)을 막는다"""
+    four_view_pelvis_reprojection_px: float = 20.0
+    """위 4대 묶음 허용의 엉덩이 재투영 오차 상한(px). triangulation.outlier_reprojection_error_px 와 같다"""
+    max_pair_3d_disagreement_m: float = 0.8
+    """같은 클러스터 안의 2-view 삼각측량 3D 관절들이 서로 어긋날 수 있는 최대 거리(m). 이를 넘으면 시간 간선이 있어도 끊는다"""
+    pairwise_threshold_enabled: bool = True
+    """카메라 쌍별 재투영 잔차 문턱 `(marginal_px, gate_px)` 적응 계산 여부 (S15P31A101-464)"""
+    pair_reprojection_error_px: Mapping[str, float] = field(default_factory=dict)
+    """보정 검증에서 구한 카메라 쌍별 기준 재투영 오차(px). 키는 `'cam_A/cam_B'` 또는 `'cam_A-cam_B'`. 비어 있으면 실행 중 관측 분포 분위수를 쓴다"""
+    pairwise_marginal_scale: float = 1.0
+    """`pair_reprojection_error_px` 기준값에 곱해 `marginal_px` 를 정하는 배율"""
+    pairwise_gate_scale: float = 1.35
+    """`pair_reprojection_error_px` 기준값에 곱해 `gate_px` 를 정하는 배율"""
+    pairwise_marginal_quantile: float = 0.85
+    """보정 쌍별 오차가 없을 때 실행 중 쌍별 잔차 분포에서 `marginal_px` 로 잡을 분위수 (0 < q < 1)"""
+    pairwise_gate_quantile: float = 0.97
+    """보정 쌍별 오차가 없을 때 실행 중 쌍별 잔차 분포에서 `gate_px` 로 잡을 분위수 (`pairwise_marginal_quantile` ≤ q < 1)"""
+    pairwise_marginal_max_px: float = 12.0
+    """카메라 쌍별 `marginal_px` 상한 (px)"""
+    pairwise_gate_max_px: float = 16.0
+    """카메라 쌍별 `gate_px` 상한 (px)"""
+    pairwise_min_samples: int = 15
+    """실행 중 쌍별 잔차 분포로 문턱을 조정하기 시작하는 최소 표본 수"""
+    pairwise_window_size: int = 200
+    """실행 중 쌍별 잔차 분포를 모으는 최근 표본 창 크기"""
+    triangulation: TriangulationConfig = field(default_factory=TriangulationConfig)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "same_camera_exclusive",
+            "joint_noise_weighted",
+            "graph_clustering_enabled",
+            "temporal_prior_enabled",
+            "pairwise_threshold_enabled",
+            "four_view_soft_pair_enabled",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} 는 bool 이어야 한다")
+        if self.min_common_joints < 2:
+            raise ValueError(f"min_common_joints 는 2 이상이어야 한다: {self.min_common_joints}")
+        if not 0 < self.residual_marginal_px <= self.residual_gate_px:
+            raise ValueError("0 < residual_marginal_px ≤ residual_gate_px 여야 한다")
+        if self.floor_hypothesis_max_height_m < 0:
+            raise ValueError("floor_hypothesis_max_height_m 는 0 이상이어야 한다")
+        for name in (
+            "epipolar_gate_px",
+            "epipolar_scale_px",
+            "floor_scale_m",
+            "residual_scale_px",
+            "cluster_3d_consistency_m",
+            "max_pair_3d_disagreement_m",
+            "pairwise_marginal_scale",
+            "pairwise_gate_scale",
+            "four_view_pelvis_reprojection_px",
+        ):
+            if not getattr(self, name) > 0:
+                raise ValueError(f"{name} 는 양수여야 한다")
+        if self.max_pair_3d_disagreement_m < self.cluster_3d_consistency_m:
+            raise ValueError("max_pair_3d_disagreement_m 는 cluster_3d_consistency_m 이상이어야 한다")
+        if not self.new_cluster_cost > 0 or not self.ambiguity_margin >= 0:
+            raise ValueError("new_cluster_cost 는 양수, ambiguity_margin 은 0 이상이어야 한다")
+        if self.history_full_ticks < 1 or self.history_ttl_ms < 0 or self.temporal_prior_ttl_ms < 0:
+            raise ValueError("history_full_ticks 는 1 이상, history_ttl_ms·temporal_prior_ttl_ms 는 0 이상이어야 한다")
+        if self.ambiguity_margin > 0 and not 0 <= self.temporal_prior_bonus < self.ambiguity_margin:
+            raise ValueError("0 ≤ temporal_prior_bonus < ambiguity_margin 이어야 한다")
+        if self.ambiguity_margin == 0 and self.temporal_prior_bonus != 0:
+            raise ValueError("ambiguity_margin 이 0 이면 temporal_prior_bonus 도 0 이어야 한다")
+        if self.pairwise_gate_scale < self.pairwise_marginal_scale:
+            raise ValueError("pairwise_gate_scale 은 pairwise_marginal_scale 이상이어야 한다")
+        if not 0 < self.pairwise_marginal_quantile <= self.pairwise_gate_quantile < 1:
+            raise ValueError("0 < pairwise_marginal_quantile ≤ pairwise_gate_quantile < 1 이어야 한다")
+        if not self.residual_marginal_px <= self.pairwise_marginal_max_px <= self.pairwise_gate_max_px:
+            raise ValueError("residual_marginal_px ≤ pairwise_marginal_max_px ≤ pairwise_gate_max_px 여야 한다")
+        if self.residual_gate_px > self.pairwise_gate_max_px:
+            raise ValueError("residual_gate_px ≤ pairwise_gate_max_px 여야 한다")
+        if self.pairwise_min_samples < 1 or self.pairwise_window_size < self.pairwise_min_samples:
+            raise ValueError("1 ≤ pairwise_min_samples ≤ pairwise_window_size 여야 한다")
+
+
+@dataclass(frozen=True)
+class LocalView:
+    """카메라 한 대·로컬 트랙 하나를 공통 시각 t 로 보간한 2D keypoint."""
+
+    camera_id: str
+    local_track_id: str
+    view: InterpolatedView
+
+    def __post_init__(self) -> None:
+        if self.view.camera_id != self.camera_id:
+            raise ValueError(f"view 카메라 {self.view.camera_id} 와 camera_id {self.camera_id} 가 다르다")
+
+    @property
+    def key(self) -> TrackKey:
+        return (self.camera_id, self.local_track_id)
+
+    @property
+    def t(self) -> int:
+        return self.view.t
+
+
+@dataclass(frozen=True)
+class PairEvidence:
+    """카메라가 다른 view 쌍 하나의 연결 근거 (계산 순서 2·3단계). cost 가 inf 면 탈락(reject)이다.
+
+    floor_gap_m 은 임시 바닥 가설 XY 사이 거리로, 후보 거르기에만 쓴다(위치가 아니다).
+    """
+
+    a: TrackKey
+    b: TrackKey
+    common_joints: int
+    epipolar_px: float | None = None
+    floor_gap_m: float | None = None
+    residual_px: float | None = None
+    consistent_joints: int = 0
+    reject: RejectReason | None = None
+    marginal: bool = False
+    cost: float = math.inf
+
+    @property
+    def feasible(self) -> bool:
+        return self.reject is None
+
+
+@dataclass(frozen=True)
+class ViewCluster:
+    """시각 t 에 같은 사람으로 본 view 묶음. 같은 카메라는 한 번만 들어 있다.
+
+    skeleton: 2대 이상이면 클러스터 view 전부로 삼각측량한 결과(관절은 모두 observed), 1대면 None.
+    competitors: 경쟁 후보였던 다른 클러스터의 트랙 키.
+    """
+
+    association_id: str
+    views: tuple[LocalView, ...]
+    skeleton: SkeletonEstimate | None
+    uncertain_reasons: tuple[UncertainReason, ...] = ()
+    competitors: tuple[TrackKey, ...] = ()
+    undistorted: Mapping[str, UndistortedKeypoints] = field(default_factory=dict, compare=False, repr=False)
+    """카메라 ID → 그 view 를 왜곡 제거한 결과. 관절 게이트(`JointGate.update(undistorted=...)`)가 다시 풀지 않고 쓴다"""
+
+    @property
+    def identity_uncertain(self) -> bool:
+        """`identity_confidence = IDENTITY_UNCERTAIN` 으로 낼 클러스터인지."""
+        return bool(self.uncertain_reasons)
+
+    @property
+    def keys(self) -> tuple[TrackKey, ...]:
+        return tuple(v.key for v in self.views)
+
+    @property
+    def camera_ids(self) -> tuple[str, ...]:
+        return tuple(v.camera_id for v in self.views)
+
+
+@dataclass(frozen=True)
+class AssociationFrame:
+    """공통 시각 t 의 Cross-view Association 결과."""
+
+    t: int
+    calibration_version: str
+    clusters: tuple[ViewCluster, ...]
+    pairs: tuple[PairEvidence, ...]
+    excluded: tuple[TrackKey, ...] = ()
+    """exclude_cameras 로 이 시각 연결에서 뺀 view"""
+
+    def cluster_of(self, key: TrackKey) -> ViewCluster | None:
+        for c in self.clusters:
+            if key in c.keys:
+                return c
+        return None
+
+
+@dataclass
+class _Prepared:
+    view: LocalView
+    camera: RigCamera
+    mask: np.ndarray
+    """신뢰도 기준 이상인 관절"""
+    undistorted: UndistortedKeypoints
+    """view keypoint 를 한 번에 왜곡 제거한 결과. 후보 근거·클러스터 삼각측량·관절 게이트가 같이 쓴다"""
+    normalized: np.ndarray
+    """왜곡을 제거한 정규화 좌표 (관절 수, 2). mask 가 False 인 행은 의미 없음"""
+    floor_ray: tuple[np.ndarray, np.ndarray] | None
+    """임시 바닥 가설: 높이 h 수평면 위 XY = A + h·B 의 (A, B). 후보 거르기 전용, 밖으로 내보내지 않는다"""
+
+
+@dataclass
+class _Work:
+    keys: list[TrackKey]
+
+
+@dataclass
+class _Flag:
+    reason: UncertainReason
+    flagged: frozenset[TrackKey]
+    """이 키가 든 클러스터에 사유를 붙인다"""
+    involved: frozenset[TrackKey]
+    """경쟁 후보로 적을 키"""
+    blocked: frozenset[TrackKey] | None = None
+    """막은 병합의 두 클러스터 키 합. 뒤에 더 많은 근거로 한 클러스터가 되었으면 애매함이 풀린 것으로 보고 붙이지 않는다"""
+
+
+@dataclass
+class _AssignMemo:
+    """`_assign_graph` 한 번 동안의 순수 계산 결과(S15P31A101-663). 키는 입력 그대로라 같은 키면 같은 결과다."""
+
+    linkage: dict[tuple[tuple[TrackKey, ...], tuple[TrackKey, ...]], tuple[float, bool]] = field(default_factory=dict)
+    distance: dict[tuple[tuple[TrackKey, TrackKey], tuple[TrackKey, TrackKey]], float | None] = field(
+        default_factory=dict
+    )
+    hips: dict[tuple[TrackKey, ...], bool] = field(default_factory=dict)
+
+
+class CrossViewAssociator:
+    """시각마다 view 를 클러스터로 묶는다. 시각은 늘어나는 순서로만 넣는다(연결 이력이 시각 순서에 기댄다)."""
+
+    def __init__(self, rig: CameraRig, config: CrossViewConfig | None = None, joint_layout: str = "COCO17") -> None:
+        if joint_layout not in JOINT_COUNTS:
+            raise ValueError(f"지원하지 않는 관절 배치: {joint_layout}")
+        self.rig = rig
+        self.config = config if config is not None else CrossViewConfig()
+        self.joint_layout = joint_layout
+        self._n_joints = JOINT_COUNTS[joint_layout]
+        self._joint_weights = _joint_noise_weights(self._n_joints)
+        self._essential: dict[tuple[str, str], np.ndarray] = {}
+        self._history: dict[tuple[TrackKey, TrackKey], tuple[int, int]] = {}
+        """정렬한 트랙 키 쌍 → (같은 클러스터였던 시각 수, 마지막으로 같은 클러스터였던 시각)"""
+        self._pair_residuals: dict[tuple[str, str], list[float]] = {}
+        """정렬한 카메라 ID 쌍 → 최근 유효 쌍 재투영 잔차(px) 표본 창 (S15P31A101-464)"""
+        self._last_pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray] = {}
+        """직전 `_pairs`/`_pair` 호출에서 구한 쌍별 2-view 삼각측량 관절 XYZ (관절 수, 3)"""
+        self._prepared_now: dict[TrackKey, _Prepared] = {}
+        """이번 시각 view 준비 결과 (4대 묶음 허용의 엉덩이 한 점 재투영 검사용, -657)"""
+        self._memo: _AssignMemo | None = None
+        """`_assign_graph` 한 번 동안만 있는 순수 함수 결과 재사용(S15P31A101-663). 그 밖에서는 None 이라 매번 계산한다"""
+        self._threshold_memo: dict[tuple[str, str], tuple[float, float]] | None = None
+        """`_pairs` 한 번 동안만 있는 카메라 쌍 잔차 문턱 재사용(S15P31A101-663). 잔차 표본은 `_pairs` 뒤에만 바뀐다"""
+        self._previous: dict[str, frozenset[TrackKey]] = {}
+        self._issued = 0
+        self._last_t: int | None = None
+        from simai_ai.geometry.overlap import disjoint_camera_pairs
+
+        self.skipped_camera_pairs = disjoint_camera_pairs(rig)
+
+    # ------------------------------------------------------------------ 공개
+
+    def replace_rig(self, rig: CameraRig) -> None:
+        """tick 경계에서 호출한다. 트랙 연속성은 유지하고 보정 의존 기하 캐시만 비운다."""
+        self.rig = rig
+        self._essential.clear()
+        from simai_ai.geometry.overlap import disjoint_camera_pairs
+
+        self.skipped_camera_pairs = disjoint_camera_pairs(rig)
+        self._pair_residuals.clear()
+
+    def pair_residual_thresholds(self, cam_a: str, cam_b: str) -> tuple[float, float]:
+        """카메라 쌍 `(cam_a, cam_b)` 의 재투영 잔차 `(marginal_px, gate_px)` 문턱 (S15P31A101-464).
+
+        - `pairwise_threshold_enabled=False` 면 전역 기본값 `(residual_marginal_px, residual_gate_px)`.
+        - `pair_reprojection_error_px` 에 해당 카메라 쌍 기준 오차가 있으면 배율(`pairwise_marginal_scale`,
+          `pairwise_gate_scale`)을 곱해 `[기본 문턱, 상한]` 구간으로 클램프한다.
+        - 보정 기준 오차가 없으면 실행 중 누적된 쌍별 잔차 분포(`_pair_residuals`)가 `pairwise_min_samples` 개 이상일 때
+          분위수(`pairwise_marginal_quantile`, `pairwise_gate_quantile`)를 `[기본 문턱, 상한]` 구간으로 클램프한다.
+        """
+        cfg = self.config
+        if not cfg.pairwise_threshold_enabled:
+            return cfg.residual_marginal_px, cfg.residual_gate_px
+        ca, cb = (cam_a, cam_b) if cam_a <= cam_b else (cam_b, cam_a)
+        base_px = _lookup_pair_error(cfg.pair_reprojection_error_px, ca, cb)
+        if base_px is not None:
+            m_px = min(max(base_px * cfg.pairwise_marginal_scale, cfg.residual_marginal_px), cfg.pairwise_marginal_max_px)
+            g_px = min(max(base_px * cfg.pairwise_gate_scale, cfg.residual_gate_px, m_px), cfg.pairwise_gate_max_px)
+            return float(m_px), float(g_px)
+        samples = self._pair_residuals.get((ca, cb))
+        if samples and len(samples) >= cfg.pairwise_min_samples:
+            arr = np.asarray(samples, dtype=float)
+            q_m = float(np.quantile(arr, cfg.pairwise_marginal_quantile))
+            q_g = float(np.quantile(arr, cfg.pairwise_gate_quantile))
+            m_px = min(max(q_m, cfg.residual_marginal_px), cfg.pairwise_marginal_max_px)
+            g_px = min(max(q_g, cfg.residual_gate_px, m_px), cfg.pairwise_gate_max_px)
+            return float(m_px), float(g_px)
+        return cfg.residual_marginal_px, cfg.residual_gate_px
+
+    def pair_threshold_snapshot(self) -> dict[str, dict[str, Any]]:
+        """계측용(판정에 쓰지 않음): 카메라 쌍별 지금 문턱·표본 수·출처 (S15P31A101-476).
+
+        출처: `calibration`(보정 기준 오차), `runtime`(실행 중 잔차 분위수), `default`(전역 기본값 — 표본 부족·쌍별 꺼짐)."""
+        cfg = self.config
+        cams = sorted({c for pair in self._pair_residuals for c in pair} | set(getattr(self.rig, "cameras", {}) or {}))
+        out: dict[str, dict[str, Any]] = {}
+        for i, ca in enumerate(cams):
+            for cb in cams[i + 1:]:
+                samples = len(self._pair_residuals.get((ca, cb), ()))
+                if not cfg.pairwise_threshold_enabled:
+                    source = "default"
+                elif _lookup_pair_error(cfg.pair_reprojection_error_px, ca, cb) is not None:
+                    source = "calibration"
+                elif samples >= cfg.pairwise_min_samples:
+                    source = "runtime"
+                else:
+                    source = "default"
+                m_px, g_px = self.pair_residual_thresholds(ca, cb)
+                out[f"{ca}-{cb}"] = {"marginal_px": round(m_px, 2), "gate_px": round(g_px, 2),
+                                     "samples": samples, "source": source}
+        return out
+
+    def record_pair_residual(self, cam_a: str, cam_b: str, residual_px: float) -> None:
+        """카메라 쌍 `(cam_a, cam_b)` 의 유효 재투영 잔차 표본 하나를 실행 중 분포 창에 기록한다."""
+        if cam_a == cam_b or not math.isfinite(residual_px) or residual_px < 0:
+            return
+        if residual_px > self.config.pairwise_gate_max_px:
+            return
+        key = (cam_a, cam_b) if cam_a <= cam_b else (cam_b, cam_a)
+        buf = self._pair_residuals.setdefault(key, [])
+        buf.append(float(residual_px))
+        if len(buf) > self.config.pairwise_window_size:
+            del buf[: len(buf) - self.config.pairwise_window_size]
+
+    def link_age(self, a: TrackKey, b: TrackKey) -> int:
+        """두 로컬 트랙이 같은 클러스터였던 시각 수 (궤적 일관성 근거).
+
+        둘 다 보이는데 갈라지면(기하가 반대하거나, 애매함 없이 다른 클러스터로 가면) 0 으로 지운다. 한쪽이 안 보이는
+        동안은 마지막으로 함께였던 시각부터 `history_ttl_ms` 까지 들고 있다.
+        """
+        return self._history.get(_pair_key(a, b), (0, 0))[0]
+
+    def associate(
+        self,
+        t: int,
+        views: Sequence[LocalView],
+        exclude_cameras: Collection[str] = (),
+        *,
+        prior_groups: Iterable[Collection[TrackKey]] | None = None,
+        timing=None,
+        timing_people: int | None = None,
+    ) -> AssociationFrame:
+        """공통 시각 t 의 view 를 클러스터로 묶는다.
+
+        exclude_cameras: 이 시각 융합에서 뺄 카메라(동기화 무효 등, 호출자가 System Health 에서 넘긴다). 그 카메라의
+        view 는 클러스터에 넣지 않고 `AssociationFrame.excluded` 에 키만 남긴다.
+        prior_groups: 직전 시각(최근 창 안) 같은 World Track 에 속했던 로컬 트랙 묶음 (S15P31A101-464).
+        """
+        require_ms("t", t)
+        if self._last_t is not None and t <= self._last_t:
+            raise ValueError(f"시각은 늘어나는 순서로 넣는다: 직전 {self._last_t}, 받은 값 {t}")
+        keys = [v.key for v in views]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"같은 (카메라, 로컬 트랙) view 가 두 번 있다: {keys}")
+        for v in views:
+            if v.t != t:
+                raise ValueError(f"{v.key}: 공통 시각 {t} 가 아닌 view ({v.t}) 다")
+            if len(v.view.keypoints) != self._n_joints:
+                raise ValueError(
+                    f"{v.key}: {self.joint_layout} 는 keypoint {self._n_joints}개인데 {len(v.view.keypoints)}개"
+                )
+        self.rig.subset(sorted({v.camera_id for v in views}))  # 보정에 없는 카메라면 KeyError
+        if isinstance(exclude_cameras, str):
+            raise TypeError(f"exclude_cameras 는 카메라 ID 모음이어야 한다 (문자열 하나를 받음: {exclude_cameras!r})")
+        excluded = frozenset(exclude_cameras)
+        unknown = sorted(excluded - set(self.rig.cameras))
+        if unknown:
+            raise ValueError(f"exclude_cameras 에 보정 {self.rig.calibration_version} 에 없는 카메라가 있다: {unknown}")
+        dropped = tuple(sorted(v.key for v in views if v.camera_id in excluded))
+
+        used = sorted((v for v in views if v.camera_id not in excluded), key=lambda v: v.key)
+        # 왜곡 제거는 카메라마다 그 카메라의 view 전체를 한 번에 한다
+        by_camera: dict[str, list[LocalView]] = {}
+        for v in used:
+            by_camera.setdefault(v.camera_id, []).append(v)
+        undistorted: dict[TrackKey, UndistortedKeypoints] = {}
+        for cid, cam_views in by_camera.items():
+            results = self.rig.cameras[cid].undistort_many([v.view.keypoints for v in cam_views])
+            undistorted.update((v.key, u) for v, u in zip(cam_views, results))
+        prepared = {v.key: self._prepare(v, undistorted[v.key]) for v in used}
+        measure = (lambda stage: timing.measure(stage, timing_people)) if timing is not None else (lambda stage: nullcontext())
+        with measure("cross_view_pairs"):
+            pairs = self._pairs(prepared)
+        pair_joints = dict(self._last_pair_joints)
+        prior_pairs = self._prior_pair_set(t, prior_groups)
+
+        flags: list[_Flag] = []
+        with measure("cross_view_clustering"):
+            if self.config.graph_clustering_enabled and self.config.same_camera_exclusive:
+                works = self._assign_graph(prepared, pairs, pair_joints, prior_pairs, flags)
+            else:
+                works = self._assign(prepared, pairs, flags)
+        with measure("cross_view_validate_triangulate"):
+            skeletons = self._validate(works, prepared, flags)
+        self._two_view_competitors(works, pairs, flags)
+        clusters = self._finish(works, skeletons, prepared, flags)
+        self._update_pair_residuals(clusters, pairs)
+        self._update_history(t, clusters, pairs, set(prepared))
+        self._last_t = t
+        return AssociationFrame(
+            t=t,
+            calibration_version=self.rig.calibration_version,
+            clusters=clusters,
+            pairs=tuple(pairs[k] for k in sorted(pairs)),
+            excluded=dropped,
+        )
+
+    # ------------------------------------------------------------------ 2단계: 후보 근거
+
+    def _prepare(self, lv: LocalView, undistorted: UndistortedKeypoints | None = None) -> _Prepared:
+        camera = self.rig.cameras[lv.camera_id]
+        if undistorted is None:
+            undistorted = camera.undistort_keypoints(lv.view.keypoints)
+        # 값이 유한하지 않거나 왜곡을 제거할 수 없는 keypoint 는 관측으로 세지 않는다(모르면 비움)
+        mask = undistorted.usable(self.config.min_keypoint_confidence)
+        normalized = undistorted.normalized
+        floor_ray = None
+        ankles = [j for j in ANKLES[self.joint_layout] if mask[j]]
+        if ankles:
+            floor_ray = _floor_ray(camera, normalized[ankles].mean(axis=0))
+        return _Prepared(lv, camera, mask, undistorted, normalized, floor_ray)
+
+    def _essential_matrix(self, a: RigCamera, b: RigCamera) -> np.ndarray:
+        """x_b·E·x_a = 0 인 E (정규화 좌표). x_b = R_ab x_a + t_ab."""
+        key = (a.camera_id, b.camera_id)
+        E = self._essential.get(key)
+        if E is None:
+            R_ab = b.R @ a.R.T
+            t_ab = b.t - R_ab @ a.t
+            tx = np.array([[0.0, -t_ab[2], t_ab[1]], [t_ab[2], 0.0, -t_ab[0]], [-t_ab[1], t_ab[0], 0.0]])
+            E = tx @ R_ab
+            self._essential[key] = E
+        return E
+
+    def _pairs(self, prepared: dict[TrackKey, _Prepared]) -> dict[tuple[TrackKey, TrackKey], PairEvidence]:
+        """카메라가 다른 view 쌍 전체의 근거. 카메라 쌍마다 에피폴라 거리와 2-view 삼각측량을 한 번에 계산한다.
+
+        쌍 하나씩 `_pair` 로 계산한 것과 결과가 같다(부동소수 연산 순서만 다르다). 문턱을 넘은 쌍의 판정 근거(일관된
+        관절 수, 잔차 중앙값, 높이 범위 밖 관절 수, 바닥 가설 거리)도 카메라 쌍마다 행렬로 한 번에 구한다(S15P31A101-237).
+        """
+        self._threshold_memo = {}
+        try:
+            return self._pairs_compute(prepared)
+        finally:
+            self._threshold_memo = None
+
+    def _pairs_compute(self, prepared: dict[TrackKey, _Prepared]) -> dict[tuple[TrackKey, TrackKey], PairEvidence]:
+        cfg = self.config
+        self._last_pair_joints = {}
+        by_camera: dict[str, list[TrackKey]] = {}
+        for key in sorted(prepared):
+            by_camera.setdefault(key[0], []).append(key)
+        cams = sorted(by_camera)
+        stacks = {cid: _ViewStack.of([prepared[k] for k in by_camera[cid]]) for cid in cams}
+        found: dict[tuple[str, str], tuple[list[list[int]], list[list[float]], dict[tuple[int, int], PairEvidence]]] = {}
+        for cam_a, cam_b in itertools.combinations(cams, 2):
+            if (cam_a, cam_b) in self.skipped_camera_pairs:
+                continue
+            pas = [prepared[k] for k in by_camera[cam_a]]
+            pbs = [prepared[k] for k in by_camera[cam_b]]
+            epi, common = self._epipolar_matrix(pas, pbs)
+            counts = common.sum(axis=2)
+            queued = np.argwhere((counts >= cfg.min_common_joints) & ~(epi > cfg.epipolar_gate_px))
+            found[(cam_a, cam_b)] = (
+                counts.tolist(),
+                epi.tolist(),
+                self._evidence_many(stacks[cam_a], stacks[cam_b], common, epi, queued),
+            )
+        # 키 순서((카메라 a, 트랙) → (카메라 b, 트랙))로 바로 낸다. 정렬한 것과 같은 순서다
+        out: dict[tuple[TrackKey, TrackKey], PairEvidence] = {}
+        for c, cam_a in enumerate(cams):
+            for i, ka in enumerate(by_camera[cam_a]):
+                for cam_b in cams[c + 1 :]:
+                    if (cam_a, cam_b) in self.skipped_camera_pairs:
+                        for kb in by_camera[cam_b]:
+                            out[(ka, kb)] = PairEvidence(ka, kb, 0, reject=RejectReason.NO_FOV_OVERLAP)
+                        continue
+                    counts_ab, epi_ab, evidence = found[(cam_a, cam_b)]
+                    for k, kb in enumerate(by_camera[cam_b]):
+                        n = counts_ab[i][k]
+                        # 대부분의 쌍(다른 사람)은 앞의 두 탈락 조건에서 끝난다. `_evidence` 의 처음 두 분기와 같다
+                        if n < cfg.min_common_joints:
+                            out[(ka, kb)] = PairEvidence(ka, kb, n, reject=RejectReason.FEW_COMMON_JOINTS)
+                        elif epi_ab[i][k] > cfg.epipolar_gate_px:
+                            out[(ka, kb)] = PairEvidence(
+                                ka, kb, n, epipolar_px=epi_ab[i][k], reject=RejectReason.EPIPOLAR
+                            )
+                        else:
+                            out[(ka, kb)] = evidence[(i, k)]
+        return out
+
+    def _evidence_many(
+        self, sa: _ViewStack, sb: _ViewStack, common: np.ndarray, epi: np.ndarray, queued: np.ndarray
+    ) -> dict[tuple[int, int], PairEvidence]:
+        """카메라 쌍 (a, b) 에서 에피폴라 문턱을 넘은 view 쌍 (i, k) 전체의 `_evidence` 를 한 번에 구한다."""
+        if not len(queued):
+            return {}
+        qi, qk = queued[:, 0], queued[:, 1]
+        sel = common[qi, qk]  # (Q, J) 쌍마다 공통 관절
+        q, j = np.nonzero(sel)  # 쌍 순서, 쌍 안에서는 관절 순서 (= 쌍마다 공통 관절을 이어 붙인 순서)
+        a_rows, b_rows = (qi[q], j), (qk[q], j)
+        xyz, err = _two_view_arrays(
+            sa.camera,
+            sb.camera,
+            (sa.normalized[a_rows], sa.confidence[a_rows], sa.ideal[a_rows]),
+            (sb.normalized[b_rows], sb.confidence[b_rows], sb.ideal[b_rows]),
+        )
+        Q, J = sel.shape
+        tri_cfg = self.config.triangulation
+        solved = np.zeros((Q, J), dtype=bool)
+        solved[q, j] = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
+        n_ok = solved.sum(axis=1)
+        # 일관된 관절의 재투영 오차 중앙값 (np.median 과 같은 값: 홀수면 가운데, 짝수면 가운데 둘의 평균)
+        ranked = np.full((Q, J), np.inf)
+        ranked[q, j] = err
+        masked = np.where(solved, ranked, np.inf)
+        ranked = np.sort(masked, axis=1)
+        rows = np.arange(Q)
+        upper = ranked[rows, np.maximum(n_ok // 2, 0)]
+        lower = ranked[rows, np.maximum(n_ok // 2 - 1, 0)]
+        with np.errstate(invalid="ignore"):
+            residual = (
+                _weighted_median_rows(masked, solved, self._joint_weights)
+                if self.config.joint_noise_weighted
+                else np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
+            )
+        pts = np.full((Q, J, 3), np.nan)
+        pts[q, j] = xyz
+        pts[~solved] = np.nan
+        z = pts[:, :, 2]
+        z_lo, z_hi = self.config.joint_z_range_m
+        with np.errstate(invalid="ignore"):
+            outside = (solved & ((z < z_lo) | (z > z_hi))).sum(axis=1)
+        gap = _floor_gaps(sa, sb, qi, qk, self.config.floor_hypothesis_max_height_m)
+        n_common = sel.sum(axis=1)
+        out = {}
+        for r, (i, k) in enumerate(zip(qi.tolist(), qk.tolist())):
+            ka, kb = sa.keys[i], sb.keys[k]
+            ev = self._verdict(
+                ka,
+                kb,
+                int(n_common[r]),
+                float(epi[i, k]),
+                None if math.isnan(gap[r]) else float(gap[r]),
+                int(n_ok[r]),
+                float(residual[r]),
+                int(outside[r]),
+            )
+            out[(i, k)] = ev
+            if ev.feasible or ev.reject is RejectReason.RESIDUAL:
+                self._last_pair_joints[_pair_key(ka, kb)] = pts[r]
+        return out
+
+    def _pair(self, pa: _Prepared, pb: _Prepared) -> PairEvidence:
+        """view 쌍 하나의 근거 (`_pairs` 의 쌍 하나)."""
+        common = pa.mask & pb.mask
+        if int(common.sum()) < self.config.min_common_joints:
+            return self._evidence(pa, pb, common, math.nan, None)
+        epi = self._epipolar_px(pa, pb, common)
+        tri = _two_view_triangulation(pa, pb, common) if not epi > self.config.epipolar_gate_px else None
+        return self._evidence(pa, pb, common, epi, tri)
+
+    def _evidence(
+        self,
+        pa: _Prepared,
+        pb: _Prepared,
+        common: np.ndarray,
+        epi: float,
+        tri: tuple[np.ndarray, np.ndarray] | None,
+    ) -> PairEvidence:
+        """공통 관절·에피폴라 거리·2-view 삼각측량(공통 관절 순서의 XYZ, 재투영 오차)으로 쌍 근거를 정한다."""
+        cfg = self.config
+        a, b = pa.view.key, pb.view.key
+        n_common = int(common.sum())
+        if n_common < cfg.min_common_joints:
+            return PairEvidence(a, b, n_common, reject=RejectReason.FEW_COMMON_JOINTS)
+
+        if epi > cfg.epipolar_gate_px:
+            return PairEvidence(a, b, n_common, epipolar_px=epi, reject=RejectReason.EPIPOLAR)
+        assert tri is not None
+
+        gap = None
+        if pa.floor_ray is not None and pb.floor_ray is not None:
+            gap = _floor_gap(pa.floor_ray, pb.floor_ray, cfg.floor_hypothesis_max_height_m)
+
+        xyz, err = tri
+        solved = np.isfinite(err) & (err <= cfg.triangulation.outlier_reprojection_error_px)
+        n_ok = int(solved.sum())
+        residual = (
+            _weighted_median(err[solved], self._joint_weights[common][solved])
+            if (n_ok and cfg.joint_noise_weighted)
+            else (float(np.median(err[solved])) if n_ok else math.nan)
+        )
+        z_lo, z_hi = cfg.joint_z_range_m
+        z = xyz[solved, 2]
+        outside = int(np.sum((z < z_lo) | (z > z_hi)))
+        ev = self._verdict(a, b, n_common, epi, gap, n_ok, residual, outside)
+        if ev.feasible or ev.reject is RejectReason.RESIDUAL:
+            pts = np.full((self._n_joints, 3), np.nan)
+            common_idx = np.flatnonzero(common)
+            pts[common_idx[solved]] = xyz[solved]
+            self._last_pair_joints[_pair_key(a, b)] = pts
+        return ev
+
+    def _verdict(
+        self,
+        a: TrackKey,
+        b: TrackKey,
+        n_common: int,
+        epi: float,
+        gap: float | None,
+        n_ok: int,
+        residual: float,
+        outside: int,
+    ) -> PairEvidence:
+        """에피폴라 문턱을 넘은 쌍의 판정. n_ok 는 서로 맞게 삼각측량된 관절 수, residual 은 그 재투영 오차 중앙값,
+        outside 는 그중 높이 범위 밖 관절 수다. gap(바닥 가설 거리)은 기록·비용에만 쓴다. 가설 높이보다 높은 면 위
+        사람일 수 있으므로 이 값으로는 탈락시키지 않는다."""
+        cfg = self.config
+        memo = self._threshold_memo
+        if memo is None:
+            marginal_px, gate_px = self.pair_residual_thresholds(a[0], b[0])
+        else:
+            # `_pairs` 안에서는 잔차 표본이 바뀌지 않으므로 같은 카메라 쌍(순서 그대로)의 문턱은 같다
+            thresholds = memo.get((a[0], b[0]))
+            if thresholds is None:
+                thresholds = memo[(a[0], b[0])] = self.pair_residual_thresholds(a[0], b[0])
+            marginal_px, gate_px = thresholds
+        base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
+        if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
+            return PairEvidence(a, b, **base, reject=RejectReason.TRIANGULATION)
+        if outside > cfg.max_out_of_range_joint_ratio * n_ok:
+            return PairEvidence(a, b, **base, residual_px=residual, reject=RejectReason.IMPLAUSIBLE_HEIGHT)
+        if residual > gate_px:
+            return PairEvidence(a, b, **base, residual_px=residual, reject=RejectReason.RESIDUAL)
+        floor_cost = cfg.floor_missing_cost if gap is None else min(gap / cfg.floor_scale_m, cfg.floor_missing_cost)
+        cost = epi / cfg.epipolar_scale_px + residual / cfg.residual_scale_px + floor_cost
+        return PairEvidence(
+            a, b, **base, residual_px=residual, marginal=residual > marginal_px, cost=float(cost)
+        )
+
+    def _epipolar_px(self, pa: _Prepared, pb: _Prepared, common: np.ndarray) -> float:
+        """공통 관절의 대칭 에피폴라 거리 평균. 정규화 좌표 거리에 초점 거리를 곱한 근사 픽셀이다.
+
+        쌍 하나용이다. 시각마다 전체 쌍은 `_epipolar_matrix` 가 같은 식을 카메라 쌍마다 한 번에 계산한다.
+        """
+        E = self._essential_matrix(pa.camera, pb.camera)
+        xa = np.column_stack([pa.normalized[common], np.ones(int(common.sum()))])
+        xb = np.column_stack([pb.normalized[common], np.ones(int(common.sum()))])
+        lb = xa @ E.T  # b 영상의 에피폴라선
+        la = xb @ E  # a 영상의 에피폴라선
+        alg = np.abs(np.sum(xb * lb, axis=1))
+        db = alg / np.maximum(np.hypot(lb[:, 0], lb[:, 1]), 1e-12) * _focal(pb.camera)
+        da = alg / np.maximum(np.hypot(la[:, 0], la[:, 1]), 1e-12) * _focal(pa.camera)
+        e = (da + db) / 2.0
+        if not self.config.joint_noise_weighted:
+            return float(np.mean(e))
+        w = self._joint_weights[common]
+        return float(np.sum(w * e) / np.sum(w))
+
+    def _epipolar_matrix(self, pas: Sequence[_Prepared], pbs: Sequence[_Prepared]) -> tuple[np.ndarray, np.ndarray]:
+        """카메라 a 의 view 들 × 카메라 b 의 view 들의 대칭 에피폴라 거리 평균 (len(pas), len(pbs))과 공통 관절
+        (len(pas), len(pbs), 관절 수). 공통 관절이 없으면 NaN. 거리는 정규화 좌표 거리 × 초점 거리(근사 픽셀)다."""
+        E = self._essential_matrix(pas[0].camera, pbs[0].camera)
+        mask_a = np.stack([p.mask for p in pas])
+        mask_b = np.stack([p.mask for p in pbs])
+        common = mask_a[:, None, :] & mask_b[None, :, :]
+        xa = np.concatenate([np.stack([p.normalized for p in pas]), np.ones((len(pas), self._n_joints, 1))], axis=2)
+        xb = np.concatenate([np.stack([p.normalized for p in pbs]), np.ones((len(pbs), self._n_joints, 1))], axis=2)
+        xa = np.where(mask_a[:, :, None], xa, 0.0)  # 관측이 아닌 관절(NaN 일 수 있다)은 계산만 막는다
+        xb = np.where(mask_b[:, :, None], xb, 0.0)
+        lb = xa @ E.T  # b 영상의 에피폴라선 (len(pas), J, 3)
+        la = xb @ E  # a 영상의 에피폴라선 (len(pbs), J, 3)
+        alg = np.abs(np.einsum("kjc,ijc->ikj", xb, lb))
+        db = alg / np.maximum(np.hypot(lb[..., 0], lb[..., 1]), 1e-12)[:, None, :] * _focal(pbs[0].camera)
+        da = alg / np.maximum(np.hypot(la[..., 0], la[..., 1]), 1e-12)[None, :, :] * _focal(pas[0].camera)
+        n = common.sum(axis=2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            if self.config.joint_noise_weighted:
+                w = np.where(common, self._joint_weights, 0.0)
+                epi = (w * ((da + db) / 2.0)).sum(axis=2) / w.sum(axis=2)
+            else:
+                epi = np.where(common, (da + db) / 2.0, 0.0).sum(axis=2) / n
+        return np.where(n > 0, epi, np.nan), common
+
+    # ------------------------------------------------------------------ 4·5단계: 배정
+
+    def _linkage(
+        self,
+        a: Sequence[TrackKey],
+        b: Sequence[TrackKey],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+    ) -> tuple[float, bool]:
+        """두 클러스터를 합치는 비용과 잔차 경계 여부. 합칠 수 없으면 (inf, False).
+
+        카메라가 다른 view 쌍 비용의 평균에서 연결 이력 보너스 평균을 뺀다. 기하가 반대하는 쌍이 하나라도 있으면
+        합치지 않는다(완전 연결). 공통 관절이 적어 근거가 없는 쌍은 고정 비용으로 세고, 근거 있는 쌍이 하나는 있어야 한다.
+        """
+        cfg = self.config
+        if cfg.same_camera_exclusive and {k[0] for k in a} & {k[0] for k in b}:
+            return math.inf, False  # 같은 카메라 금지 제약
+        costs, bonuses, marginal, evidence = [], [], False, 0
+        for ka in a:
+            for kb in b:
+                if ka[0] == kb[0]:
+                    continue  # (음성 대조에서만 온다) 같은 카메라 쌍은 근거가 없다
+                ev = pairs[_pair_key(ka, kb)]
+                if ev.reject is RejectReason.FEW_COMMON_JOINTS:
+                    costs.append(cfg.no_evidence_cost)
+                elif not ev.feasible:
+                    return math.inf, False
+                else:
+                    costs.append(ev.cost)
+                    marginal = marginal or ev.marginal
+                    evidence += 1
+                age = min(self.link_age(ka, kb), cfg.history_full_ticks)
+                bonuses.append(cfg.history_bonus * age / cfg.history_full_ticks)
+        if not evidence:
+            return math.inf, False
+        return statistics.fmean(costs) - statistics.fmean(bonuses), marginal
+
+    def _assign(
+        self,
+        prepared: dict[TrackKey, _Prepared],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        flags: list[_Flag],
+    ) -> list[_Work]:
+        """제약 있는 최선 우선 병합. view 하나씩인 클러스터에서 시작해, 합칠 수 있는 클러스터 쌍 중 비용이 가장 낮은
+        쌍부터 합친다. 카메라 순서에 기대지 않으므로 약한 연결이 먼저 굳어 더 강한 반대 근거를 가리지 않는다.
+
+        - 같은 카메라 금지: 카메라가 겹치는 두 클러스터는 합치지 않는다. 그래서 클러스터마다 카메라당 view 가 하나이고
+          view 마다 클러스터가 하나다(카메라별 1:1).
+        - 애매하면 합치지 않는다: (A, B) 를 합치는 비용과, 서로 배타적인 경쟁 병합 — A 와 B 의 카메라가 겹치는 C,
+          또는 B 와 A 의 카메라가 겹치는 C — 의 비용 차가 ambiguity_margin 보다 작으면 (A, B) 를 이번 시각에 막고
+          관련 클러스터에 표시한다. 잔차가 경계인 쌍이 든 병합도 막고 표시한다.
+        """
+        cfg = self.config
+        works = [_Work([k]) for k in sorted(prepared)]
+        n = len(works)
+        row = {w.keys[0]: r for r, w in enumerate(works)}
+        cams = sorted({k[0] for k in prepared})
+        # 행·열 번호는 처음 view 순서로 고정하고 합쳐 없어진 클러스터는 alive 로 뺀다(남은 클러스터의 순서는 그대로다).
+        # member[클러스터, 카메라]: 클러스터에 그 카메라 view 가 있는지
+        alive = np.ones(n, dtype=bool)
+        member = np.zeros((n, len(cams)), dtype=bool)
+        member[np.arange(n), [cams.index(w.keys[0][0]) for w in works]] = True
+        # 클러스터 쌍 병합 비용 (cost, marginal). 병합하면 합친 클러스터의 행·열만 다시 계산한다(나머지 쌍은 그대로다).
+        # veto: `_linkage` 가 근거와 상관없이 inf 를 내는 쌍(같은 카메라 금지, 기하가 반대하는 view 쌍이 있음). 합친
+        # 클러스터의 veto 는 두 행의 OR 이라 다시 계산하지 않는다. blocked: 이번 시각에 막은 병합 (S15P31A101-237)
+        cost = np.full((n, n), math.inf)
+        marginal = np.zeros((n, n), dtype=bool)
+        blocked = np.zeros((n, n), dtype=bool)
+        veto = (member[:, None, :] & member[None, :, :]).any(axis=2) if cfg.same_camera_exclusive else np.eye(n) > 0
+        for (ka, kb), ev in pairs.items():
+            i, j = row[ka], row[kb]
+            if ev.feasible:  # view 하나씩인 클러스터는 근거 있는(통과한) 쌍만 비용이 유한하다
+                cost[i, j], marginal[i, j] = self._linkage([ka], [kb], pairs)
+                cost[j, i], marginal[j, i] = cost[i, j], marginal[i, j]
+            elif ev.reject is not RejectReason.FEW_COMMON_JOINTS:
+                veto[i, j] = veto[j, i] = True
+        while True:
+            open_ = np.triu(cost < cfg.new_cluster_cost, k=1) & ~blocked
+            if not open_.any():
+                return [w for w, keep in zip(works, alive) if keep]
+            # 비용이 가장 낮은 쌍. 같은 비용이면 (두 클러스터 키 중 가장 작은 키, i, j) 순서다
+            ii, jj = np.nonzero(open_)
+            values = cost[ii, jj]
+            ties = np.flatnonzero(values == values.min())
+            _, i, j = min((min(works[ii[t]].keys + works[jj[t]].keys), int(ii[t]), int(jj[t])) for t in ties)
+            c = float(cost[i, j])
+            a, b = works[i], works[j]
+            if marginal[i, j]:
+                keys = frozenset(a.keys + b.keys)
+                flags.append(_Flag(UncertainReason.MARGINAL_RESIDUAL, keys, keys, keys))
+                blocked[i, j] = True
+                continue
+            rivals: list[TrackKey] = []
+            if cfg.same_camera_exclusive:
+                shares_a = (member & member[i]).any(axis=1)
+                shares_b = (member & member[j]).any(axis=1)
+                near = (shares_b & (cost[i] - c < cfg.ambiguity_margin)) | (
+                    shares_a & (cost[j] - c < cfg.ambiguity_margin)
+                )
+                near[[i, j]] = False
+                for k in np.flatnonzero(near):
+                    rivals.extend(works[k].keys)
+            if rivals:
+                keys = frozenset(a.keys + b.keys + rivals)
+                flags.append(_Flag(UncertainReason.AMBIGUOUS_ASSIGNMENT, keys, keys, frozenset(a.keys + b.keys)))
+                blocked[i, j] = True
+                continue
+            a.keys.extend(b.keys)
+            alive[j] = False
+            member[i] |= member[j]
+            member[j] = False
+            veto[i] |= veto[j]
+            veto[:, i] = veto[i]
+            cost[j, :] = cost[:, j] = math.inf
+            # 합친 클러스터의 키 집합은 처음 생긴 것이라 그 클러스터가 든 막은 병합은 없다
+            blocked[i, :] = blocked[:, i] = False
+            for k in np.flatnonzero(alive).tolist():
+                if k != i:
+                    if veto[i, k]:
+                        cost[i, k], marginal[i, k] = math.inf, False
+                    else:
+                        cost[i, k], marginal[i, k] = self._linkage(works[i].keys, works[k].keys, pairs)
+                    cost[k, i], marginal[k, i] = cost[i, k], marginal[i, k]
+
+    def _prior_pair_set(
+        self, t: int, prior_groups: Iterable[Collection[TrackKey]] | None
+    ) -> set[tuple[TrackKey, TrackKey]]:
+        """이번 시각에 시간 연결 간선(temporal prior edge) 후보가 되는 정렬된 로컬 트랙 키 쌍 집합 (S15P31A101-464)."""
+        cfg = self.config
+        if not cfg.temporal_prior_enabled:
+            return set()
+        priors: set[tuple[TrackKey, TrackKey]] = set()
+        for pair, (age, last_t) in self._history.items():
+            if age >= 1 and t - last_t <= cfg.temporal_prior_ttl_ms:
+                priors.add(pair)
+        if prior_groups is not None:
+            for group in prior_groups:
+                for ka, kb in itertools.combinations(sorted(group), 2):
+                    if ka[0] != kb[0]:
+                        priors.add(_pair_key(ka, kb))
+        return priors
+
+    def _pair_bonus_and_marginal(
+        self,
+        ka: TrackKey,
+        kb: TrackKey,
+        ev: PairEvidence,
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+    ) -> tuple[float, bool]:
+        """쌍 `(ka, kb)` 의 시간 연결 보너스와 실효 경계 잔차(`effective_marginal`) 여부."""
+        cfg = self.config
+        pk = _pair_key(ka, kb)
+        age = min(self.link_age(ka, kb), cfg.history_full_ticks)
+        hist_bonus = cfg.history_bonus * age / cfg.history_full_ticks
+        has_prior = cfg.temporal_prior_enabled and (pk in prior_pairs) and ev.feasible
+        if has_prior:
+            return max(cfg.temporal_prior_bonus, hist_bonus), False
+        return hist_bonus, ev.marginal
+
+    def _graph_linkage(
+        self,
+        a: Sequence[TrackKey],
+        b: Sequence[TrackKey],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+    ) -> tuple[float, bool]:
+        """제약 그래프 분할용 클러스터 병합 비용과 경계 잔차 여부 (S15P31A101-464).
+
+        - 같은 카메라 금지 제약 및 클리크·삼각 일관성 검사: 합친 클러스터 `a + b` 안의 모든 쌍은 기하 통과(`feasible`)
+          또는 공통 관절 부족(`FEW_COMMON_JOINTS`)이어야 한다(`A–B`·`B–C` 강함인데 `A–C` 기하 불가면 합치지 않음).
+          단 4대 클러스터(`|a| + |b| == 4`)에서 6쌍 중 5쌍이 통과하고 1쌍만 `RESIDUAL`(`<= pairwise_gate_max_px`)로
+          기각됐을 때는 5쌍의 2-view 3D 관절이 `cluster_3d_consistency_m` 안에 모이면 허용한다.
+        - 3D 위치 모순 검사: 합친 클러스터 안의 2-view 3D 관절들이 `max_pair_3d_disagreement_m` 를 넘게 어긋나면
+          시간 연결 간선이 있어도 끊는다.
+        - 경계 잔차 해소: `a` 와 `b` 사이에 강한 간선(비경계 통과 쌍 또는 시간 간선이 이긴 통과 쌍)이 하나 이상 있으면
+          (`strong_evidence >= 1`) 경계 잔차 병합으로 막지 않는다.
+
+        `_assign_graph` 안에서는 같은 `(a, b)`(순서 그대로) 결과를 다시 쓴다(S15P31A101-663). 입력(pairs·pair_joints·
+        prior_pairs·연결 이력·이번 시각 view)이 그 호출 동안 바뀌지 않는 순수 계산이라 결과가 같다.
+        """
+        memo = self._memo
+        if memo is None:
+            return self._graph_linkage_compute(a, b, pairs, pair_joints, prior_pairs)
+        key = (tuple(a), tuple(b))
+        hit = memo.linkage.get(key)
+        if hit is None:
+            hit = memo.linkage[key] = self._graph_linkage_compute(a, b, pairs, pair_joints, prior_pairs)
+        return hit
+
+    def _graph_linkage_compute(
+        self,
+        a: Sequence[TrackKey],
+        b: Sequence[TrackKey],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+    ) -> tuple[float, bool]:
+        cfg = self.config
+        if cfg.same_camera_exclusive and {k[0] for k in a} & {k[0] for k in b}:
+            return math.inf, False
+        union_keys = [*a, *b]
+        n_total = len(union_keys)
+        feasible_pks: list[tuple[TrackKey, TrackKey]] = []
+        residual_soft_pks: list[tuple[TrackKey, TrackKey]] = []
+        four_view_soft = False
+        for u, v in itertools.combinations(union_keys, 2):
+            if u[0] == v[0]:
+                continue
+            pk = _pair_key(u, v)
+            ev = pairs[pk]
+            if ev.feasible:
+                feasible_pks.append(pk)
+            elif ev.reject is RejectReason.FEW_COMMON_JOINTS:
+                continue
+            elif (
+                n_total == 4
+                and ev.reject is RejectReason.RESIDUAL
+                and ev.residual_px is not None
+                and ev.residual_px <= cfg.pairwise_gate_max_px
+            ):
+                residual_soft_pks.append(pk)
+            elif n_total == 4 and self._four_view_soft(ev):
+                residual_soft_pks.append(pk)
+                four_view_soft = True
+            else:
+                return math.inf, False
+        if residual_soft_pks:
+            if len(residual_soft_pks) > 1 or len(feasible_pks) < 5:
+                return math.inf, False
+            if four_view_soft and not self._four_view_hips_consistent(union_keys):
+                return math.inf, False
+        tol_3d = cfg.cluster_3d_consistency_m if residual_soft_pks else cfg.max_pair_3d_disagreement_m
+        joint_pks = [pk for pk in feasible_pks if pk in pair_joints]
+        memo = self._memo
+        for pk_a, pk_b in itertools.combinations(joint_pks, 2):
+            if memo is None:
+                d3 = _pair_3d_distance(pair_joints[pk_a], pair_joints[pk_b])
+            else:
+                # 두 쌍의 3D 어긋남은 대칭(뺄셈 부호만 바뀌고 노름·중앙값은 같다)이라 정렬한 키로 다시 쓴다
+                dkey = (pk_a, pk_b) if pk_a <= pk_b else (pk_b, pk_a)
+                if dkey in memo.distance:
+                    d3 = memo.distance[dkey]
+                else:
+                    d3 = memo.distance[dkey] = _pair_3d_distance(pair_joints[pk_a], pair_joints[pk_b])
+            if d3 is not None and d3 > tol_3d:
+                return math.inf, False
+
+        costs: list[float] = []
+        bonuses: list[float] = []
+        evidence = 0
+        strong_evidence = 0
+        for ka in a:
+            for kb in b:
+                if ka[0] == kb[0]:
+                    continue
+                ev = pairs[_pair_key(ka, kb)]
+                b_val, eff_marg = self._pair_bonus_and_marginal(ka, kb, ev, prior_pairs)
+                if ev.reject is RejectReason.FEW_COMMON_JOINTS:
+                    costs.append(cfg.no_evidence_cost)
+                elif ev.feasible:
+                    costs.append(ev.cost)
+                    evidence += 1
+                    if not eff_marg:
+                        strong_evidence += 1
+                elif ev.reject is RejectReason.RESIDUAL and ev.residual_px is not None:
+                    floor_c = (
+                        cfg.floor_missing_cost
+                        if ev.floor_gap_m is None
+                        else min(ev.floor_gap_m / cfg.floor_scale_m, cfg.floor_missing_cost)
+                    )
+                    c_val = (ev.epipolar_px or 0.0) / cfg.epipolar_scale_px + ev.residual_px / cfg.residual_scale_px + floor_c
+                    costs.append(float(c_val))
+                elif four_view_soft and self._four_view_soft(ev):
+                    # -657: 4대 한 점 검사로 허용한 기각 쌍은 근거로 세지 않고 근거 없는 쌍 비용만 준다
+                    costs.append(cfg.no_evidence_cost)
+                else:
+                    return math.inf, False
+                bonuses.append(b_val)
+        if not evidence:
+            return math.inf, False
+        return statistics.fmean(costs) - statistics.fmean(bonuses), (strong_evidence == 0)
+
+    def _four_view_soft(self, ev: PairEvidence) -> bool:
+        """4대 클러스터에서 한 쌍만 풀어 줄 수 있는 기각인지 (-657: EPIPOLAR·TRIANGULATION)."""
+        return self.config.four_view_soft_pair_enabled and ev.reject in (RejectReason.EPIPOLAR, RejectReason.TRIANGULATION)
+
+    def _four_view_hips_consistent(self, keys: Sequence[TrackKey]) -> bool:
+        """4대 view 를 엉덩이마다 한 점으로 풀었을 때 재투영 오차 최댓값이 four_view_pelvis_reprojection_px 안인지 (-657).
+        엉덩이를 본 view 가 3대 미만이면 모름이라 허용하지 않는다."""
+        memo = self._memo
+        if memo is None:
+            return self._four_view_hips_compute(keys)
+        key = tuple(keys)
+        hit = memo.hips.get(key)
+        if hit is None:
+            hit = memo.hips[key] = self._four_view_hips_compute(keys)
+        return hit
+
+    def _four_view_hips_compute(self, keys: Sequence[TrackKey]) -> bool:
+        prepared = self._prepared_now
+        if any(k not in prepared for k in keys):
+            return False
+        err = joint_consistency_px(
+            [[prepared[k].undistorted for k in keys]],
+            (COCO17_L_HIP, COCO17_R_HIP),
+            self.config.min_keypoint_confidence,
+        )
+        return err is not None and err <= self.config.four_view_pelvis_reprojection_px
+
+    def _preferred_partition_pairs(
+        self,
+        works: list[_Work],
+        alive: np.ndarray,
+        cost: np.ndarray,
+        marginal: np.ndarray,
+        blocked: np.ndarray,
+        member: np.ndarray,
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+    ) -> set[tuple[int, int]] | None:
+        """연결 성분 안에 기하 비호환(삼각 불일치·카메라 중복) 충돌이 있을 때 분기 한정(branch-and-bound)으로
+        최적 제약 그래프 분할을 구해 같은 클러스터에 속하는 `(i, j)` 쌍 집합을 돌려준다. 충돌이 없으면 None."""
+        cfg = self.config
+        active = np.flatnonzero(alive).tolist()
+        if len(active) < 3:
+            return None
+        adj: dict[int, list[int]] = {u: [] for u in active}
+        valid_edges: list[tuple[int, int]] = []
+        # 허용 간선: 비용 문턱 안·막지 않음·비경계이고, 두 끝 중 하나와 카메라를 나누는 다른 클러스터가 애매함 범위 안에
+        # 없는 쌍. 쌍마다 행 하나씩 계산하던 것을 (후보 쌍, 클러스터) 행렬로 한 번에 계산한다(S15P31A101-663). 원소별
+        # 뺄셈·비교라 쌍 하나씩 계산한 값과 같고, 죽은 클러스터는 카메라 소속이 비어 있어 결과에 영향이 없다.
+        act = np.asarray(active)
+        open_ = (cost[np.ix_(act, act)] < cfg.new_cluster_cost) & ~blocked[np.ix_(act, act)]
+        open_ &= ~marginal[np.ix_(act, act)]
+        rows, cols = np.nonzero(np.triu(open_, k=1))  # 행 우선 = (i, j) 이중 반복 순서
+        if len(rows):
+            ei, ej = act[rows], act[cols]
+            shares = (member[:, None, :] & member[None, :, :]).any(axis=2)  # shares[i, k]: i 와 k 가 카메라를 나눔
+            c = cost[ei, ej][:, None]
+            near = (shares[ej] & (cost[ei] - c < cfg.ambiguity_margin)) | (
+                shares[ei] & (cost[ej] - c < cfg.ambiguity_margin)
+            )
+            span = np.arange(len(ei))
+            near[span, ei] = False
+            near[span, ej] = False
+            keep = ~near.any(axis=1)
+            for i, j in zip(ei[keep].tolist(), ej[keep].tolist()):
+                adj[i].append(j)
+                adj[j].append(i)
+                valid_edges.append((i, j))
+        if len(valid_edges) < 2:
+            return None
+
+        visited: set[int] = set()
+        preferred: set[tuple[int, int]] = set()
+        has_conflict = False
+        for start in active:
+            if start in visited or not adj[start]:
+                continue
+            comp: list[int] = []
+            queue = [start]
+            visited.add(start)
+            while queue:
+                cur = queue.pop()
+                comp.append(cur)
+                for nxt in adj[cur]:
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        queue.append(nxt)
+            comp.sort()
+            if len(comp) <= 2:
+                preferred.add((comp[0], comp[1]))
+                continue
+            # 성분 전체가 하나의 유효 클러스터로 합쳐질 수 있는지 먼저 확인한다
+            all_keys = [k for u in comp for k in works[u].keys]
+            if len({k[0] for k in all_keys}) == len(all_keys):
+                c_all, m_all = self._graph_linkage(all_keys[:1], all_keys[1:], pairs, pair_joints, prior_pairs)
+                if c_all < cfg.new_cluster_cost and not m_all:
+                    for u, v in itertools.combinations(comp, 2):
+                        preferred.add((u, v))
+                    continue
+            if len(comp) > 12:
+                for u, v in itertools.combinations(comp, 2):
+                    if v in adj[u]:
+                        preferred.add((u, v))
+                continue
+            has_conflict = True
+            comp_set = set(comp)
+            # 성분 안에서 연결된 유효 부분집합(크기 1..4)과 그 상관 클러스터링 점수를 구한다
+            valid_subsets: dict[frozenset[int], tuple[float, float, TrackKey]] = {}
+            for u in comp:
+                valid_subsets[frozenset((u,))] = (0.0, 0.0, min(works[u].keys))
+            max_k = min(4, len(comp))
+            for sz in range(2, max_k + 1):
+                for sub in itertools.combinations(comp, sz):
+                    sub_fs = frozenset(sub)
+                    sub_keys = [k for u in sub for k in works[u].keys]
+                    if len({k[0] for k in sub_keys}) != len(sub_keys) or len(sub_keys) > 4:
+                        continue
+                    # 허용 간선 부분그래프가 연결되어 있는지 확인
+                    seen_sub = {sub[0]}
+                    q_sub = [sub[0]]
+                    while q_sub:
+                        cur = q_sub.pop()
+                        for nxt in adj[cur]:
+                            if nxt in sub_fs and nxt not in seen_sub:
+                                seen_sub.add(nxt)
+                                q_sub.append(nxt)
+                    if len(seen_sub) != sz:
+                        continue
+                    # 부분집합 전체가 기하·삼각·3D 일관성을 만족하는지 확인
+                    c_sub, m_sub = self._graph_linkage(sub_keys[:1], sub_keys[1:], pairs, pair_joints, prior_pairs)
+                    if not (c_sub < cfg.new_cluster_cost) or m_sub:
+                        continue
+                    score = 0.0
+                    pair_costs: list[float] = []
+                    for u, v in itertools.combinations(sub, 2):
+                        c_uv = float(cost[u, v])
+                        if math.isfinite(c_uv):
+                            score += cfg.new_cluster_cost - c_uv
+                            pair_costs.append(c_uv)
+                    mean_c = statistics.fmean(pair_costs) if pair_costs else c_sub
+                    valid_subsets[sub_fs] = (score, -mean_c, min(sub_keys))
+
+            by_first: dict[int, list[tuple[frozenset[int], float, float, TrackKey]]] = {u: [] for u in comp}
+            for sub_fs, (sc, neg_mc, min_k) in valid_subsets.items():
+                first_u = min(sub_fs)
+                by_first[first_u].append((sub_fs, sc, neg_mc, min_k))
+            for u in comp:
+                by_first[u].sort(key=lambda item: (item[1], item[2]), reverse=True)
+
+            best_key: tuple[float, float] | None = None
+            best_part: list[frozenset[int]] = []
+
+            def search(remaining: frozenset[int], acc_score: float, acc_neg_cost: float, chosen: list[frozenset[int]]) -> None:
+                nonlocal best_key, best_part
+                if not remaining:
+                    cand_key = (round(acc_score, 9), round(acc_neg_cost, 9))
+                    if best_key is None or cand_key > best_key:
+                        best_key = cand_key
+                        best_part = list(chosen)
+                    return
+                # 낙관적 상한 가지치기: 남은 정점이 이룰 수 있는 최대 쌍 수 × new_cluster_cost
+                rem_n = len(remaining)
+                max_possible_pairs = rem_n * min(3, rem_n - 1) / 2.0
+                if best_key is not None and acc_score + max_possible_pairs * cfg.new_cluster_cost < best_key[0] - 1e-9:
+                    return
+                pivot = min(remaining)
+                for sub_fs, sc, neg_mc, _ in by_first[pivot]:
+                    if sub_fs <= remaining:
+                        chosen.append(sub_fs)
+                        search(remaining - sub_fs, acc_score + sc, acc_neg_cost + neg_mc, chosen)
+                        chosen.pop()
+
+            search(frozenset(comp_set), 0.0, 0.0, [])
+            for part in best_part:
+                if len(part) >= 2:
+                    for u, v in itertools.combinations(sorted(part), 2):
+                        preferred.add((u, v))
+        return preferred if has_conflict else None
+
+    def _assign_graph(
+        self,
+        prepared: dict[TrackKey, _Prepared],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+        flags: list[_Flag],
+    ) -> list[_Work]:
+        """시간 간선(temporal prior)과 제약 그래프 분할(Constrained Graph Clustering)로 클러스터를 묶는다 (S15P31A101-464)."""
+        self._prepared_now = prepared
+        self._memo = _AssignMemo()
+        try:
+            return self._assign_graph_compute(prepared, pairs, pair_joints, prior_pairs, flags)
+        finally:
+            self._memo = None
+
+    def _assign_graph_compute(
+        self,
+        prepared: dict[TrackKey, _Prepared],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        pair_joints: dict[tuple[TrackKey, TrackKey], np.ndarray],
+        prior_pairs: set[tuple[TrackKey, TrackKey]],
+        flags: list[_Flag],
+    ) -> list[_Work]:
+        cfg = self.config
+        works = [_Work([k]) for k in sorted(prepared)]
+        n = len(works)
+        row = {w.keys[0]: r for r, w in enumerate(works)}
+        cams = sorted({k[0] for k in prepared})
+        alive = np.ones(n, dtype=bool)
+        member = np.zeros((n, len(cams)), dtype=bool)
+        member[np.arange(n), [cams.index(w.keys[0][0]) for w in works]] = True
+        cost = np.full((n, n), math.inf)
+        marginal = np.zeros((n, n), dtype=bool)
+        blocked = np.zeros((n, n), dtype=bool)
+        veto = (member[:, None, :] & member[None, :, :]).any(axis=2) if cfg.same_camera_exclusive else np.eye(n) > 0
+        for (ka, kb), ev in pairs.items():
+            i, j = row[ka], row[kb]
+            if ev.feasible:
+                cost[i, j], marginal[i, j] = self._graph_linkage([ka], [kb], pairs, pair_joints, prior_pairs)
+                cost[j, i], marginal[j, i] = cost[i, j], marginal[i, j]
+            elif ev.reject is not RejectReason.FEW_COMMON_JOINTS and not (
+                ev.reject is RejectReason.RESIDUAL
+                and ev.residual_px is not None
+                and ev.residual_px <= cfg.pairwise_gate_max_px
+            ) and not self._four_view_soft(ev):
+                # 4대 묶음에서만 풀 수 있는 기각(-657)은 금지 행렬에 넣지 않는다. 2·3대 병합은 _graph_linkage 가 그대로 막는다
+                veto[i, j] = veto[j, i] = True
+        while True:
+            open_ = np.triu(cost < cfg.new_cluster_cost, k=1) & ~blocked
+            if not open_.any():
+                return [w for w, keep in zip(works, alive) if keep]
+            # 비경계(strong/temporal-prior) 병합이 열려 있으면 경계 잔차 쌍보다 먼저 본다
+            open_strong = open_ & ~marginal
+            active_open = open_strong if open_strong.any() else open_
+            preferred = (
+                self._preferred_partition_pairs(
+                    works, alive, cost, marginal, blocked, member, pairs, pair_joints, prior_pairs
+                )
+                if open_strong.any()
+                else None
+            )
+            ii, jj = np.nonzero(active_open)
+            if preferred is not None:
+                pref_mask = np.array([(int(r), int(c)) in preferred for r, c in zip(ii, jj)], dtype=bool)
+                if pref_mask.any():
+                    ii, jj = ii[pref_mask], jj[pref_mask]
+            values = cost[ii, jj]
+            ties = np.flatnonzero(values == values.min())
+            _, i, j = min((min(works[ii[t]].keys + works[jj[t]].keys), int(ii[t]), int(jj[t])) for t in ties)
+            c = float(cost[i, j])
+            a, b = works[i], works[j]
+            if marginal[i, j]:
+                keys = frozenset(a.keys + b.keys)
+                flags.append(_Flag(UncertainReason.MARGINAL_RESIDUAL, keys, keys, keys))
+                blocked[i, j] = True
+                continue
+            rivals: list[TrackKey] = []
+            if cfg.same_camera_exclusive:
+                shares_a = (member & member[i]).any(axis=1)
+                shares_b = (member & member[j]).any(axis=1)
+                near = (shares_b & (cost[i] - c < cfg.ambiguity_margin)) | (
+                    shares_a & (cost[j] - c < cfg.ambiguity_margin)
+                )
+                near[[i, j]] = False
+                for k in np.flatnonzero(near):
+                    rivals.extend(works[k].keys)
+            if rivals:
+                keys = frozenset(a.keys + b.keys + rivals)
+                flags.append(_Flag(UncertainReason.AMBIGUOUS_ASSIGNMENT, keys, keys, frozenset(a.keys + b.keys)))
+                blocked[i, j] = True
+                continue
+            a.keys.extend(b.keys)
+            alive[j] = False
+            member[i] |= member[j]
+            member[j] = False
+            veto[i] |= veto[j]
+            veto[:, i] = veto[i]
+            cost[j, :] = cost[:, j] = math.inf
+            blocked[i, :] = blocked[:, i] = False
+            for k in np.flatnonzero(alive).tolist():
+                if k != i:
+                    if veto[i, k]:
+                        cost[i, k], marginal[i, k] = math.inf, False
+                    else:
+                        cost[i, k], marginal[i, k] = self._graph_linkage(
+                            works[i].keys, works[k].keys, pairs, pair_joints, prior_pairs
+                        )
+                    cost[k, i], marginal[k, i] = cost[i, k], marginal[i, k]
+
+    def _update_pair_residuals(
+        self, clusters: Sequence[ViewCluster], pairs: dict[tuple[TrackKey, TrackKey], PairEvidence]
+    ) -> None:
+        """검증을 통과한 클러스터 내부 쌍과 카메라 쌍별 유일 상호 최선 쌍의 재투영 잔차를 누적한다 (S15P31A101-464)."""
+        cfg = self.config
+        if not cfg.pairwise_threshold_enabled:
+            return
+        recorded: set[tuple[TrackKey, TrackKey]] = set()
+        for c in clusters:
+            if len(c.keys) < 2 or c.identity_uncertain:
+                continue
+            for ka, kb in itertools.combinations(sorted(c.keys), 2):
+                pk = _pair_key(ka, kb)
+                ev = pairs.get(pk)
+                if ev is not None and ev.residual_px is not None and (ev.feasible or ev.reject is RejectReason.RESIDUAL):
+                    self.record_pair_residual(ka[0], kb[0], ev.residual_px)
+                    recorded.add(pk)
+        # 아직 클러스터로 묶이지 않은 카메라 쌍도 해당 시각 그 카메라 쌍에서 유일한 유효 후보면 표본에 포함한다
+        by_cam_pair: dict[tuple[str, str], list[tuple[tuple[TrackKey, TrackKey], float]]] = {}
+        for pk, ev in pairs.items():
+            if ev.residual_px is None or not (ev.feasible or ev.reject is RejectReason.RESIDUAL):
+                continue
+            if ev.residual_px > cfg.pairwise_gate_max_px:
+                continue
+            ca, cb = pk[0][0], pk[1][0]
+            ck = (ca, cb) if ca <= cb else (cb, ca)
+            by_cam_pair.setdefault(ck, []).append((pk, ev.residual_px))
+        for (ca, cb), items in by_cam_pair.items():
+            if len(items) == 1 and items[0][0] not in recorded:
+                self.record_pair_residual(ca, cb, items[0][1])
+
+    # ------------------------------------------------------------------ 3·6단계: 클러스터 검증
+
+    def _validate(
+        self, works: list[_Work], prepared: dict[TrackKey, _Prepared], flags: list[_Flag]
+    ) -> dict[int, SkeletonEstimate]:
+        """클러스터 전체를 삼각측량하고, 대부분의 관절에서 이상치로 빠진 view 를 떼어 낸다."""
+        skeletons: dict[int, SkeletonEstimate] = {}
+
+        def triangulable(w: _Work) -> bool:
+            # 1대, 또는 (음성 대조에서) 같은 카메라가 겹친 클러스터는 삼각측량하지 않는다
+            cams = [k[0] for k in w.keys]
+            return len(cams) >= 2 and len(set(cams)) == len(cams)
+
+        def inputs(members: list[TrackKey]) -> tuple[list[InterpolatedView], dict[str, UndistortedKeypoints]]:
+            # view 는 키 순서(= ViewCluster.views 순서)로 넘긴다. 관절 게이트가 같은 순서의 view 로 이 결과를 다시 쓴다
+            return [prepared[k].view.view for k in members], {k[0]: prepared[k].undistorted for k in members}
+
+        # 처음 클러스터 전체를 한 번에 삼각측량해 두고, view 를 떼어 낸 클러스터만 다시 푼다(결과는 클러스터마다 같다)
+        first = [sorted(w.keys) for w in works if triangulable(w)]
+        batch = triangulate_skeletons(
+            [inputs(m)[0] for m in first],
+            self.rig,
+            self.joint_layout,
+            self.config.triangulation,
+            undistorted=[inputs(m)[1] for m in first],
+        )
+        done = {tuple(m): sk for m, sk in zip(first, batch)}
+        i = 0
+        while i < len(works):
+            w = works[i]
+            cams = [k[0] for k in w.keys]
+            if not triangulable(w):
+                i += 1
+                continue
+            members = sorted(w.keys)
+            sk = done.get(tuple(members))
+            if sk is None:
+                views, und = inputs(members)
+                tri = self.config.triangulation
+                sk = triangulate_skeleton(views, self.rig, self.joint_layout, tri, undistorted=und)
+            used = {c: sum(1 for j in sk.joints if c in j.camera_ids) for c in cams}
+            rejected = {c: sum(1 for j in sk.joints if c in j.rejected_camera_ids) for c in cams}
+            worst = max(cams, key=lambda c: (rejected[c] - used[c], c))
+            if rejected[worst] > used[worst]:
+                key = next(k for k in w.keys if k[0] == worst)
+                flags.append(_Flag(UncertainReason.VIEW_SPLIT, frozenset(w.keys), frozenset(w.keys)))
+                w.keys.remove(key)
+                works.append(_Work([key]))
+                continue  # 같은 클러스터를 다시 검증한다
+            skeletons[i] = sk
+            i += 1
+        return skeletons
+
+    def _two_view_competitors(
+        self, works: list[_Work], pairs: dict[tuple[TrackKey, TrackKey], PairEvidence], flags: list[_Flag]
+    ) -> None:
+        """2대뿐인 클러스터에 다른 트랙도 기하로 맞으면 제3의 카메라로 가릴 수 없으므로 표시한다 (명세 5.2)."""
+        all_keys = [k for w in works for k in w.keys]
+        for w in works:
+            if len(w.keys) != 2 or w.keys[0][0] == w.keys[1][0]:
+                continue
+            ka, kb = w.keys
+            rivals = []
+            for other in all_keys:
+                if other in w.keys or other[0] not in (ka[0], kb[0]):
+                    continue
+                partner = kb if other[0] == ka[0] else ka
+                if pairs[_pair_key(other, partner)].feasible:
+                    rivals.append(other)
+            if rivals:
+                flags.append(
+                    _Flag(UncertainReason.TWO_VIEW_COMPETITOR, frozenset(w.keys), frozenset([*w.keys, *rivals]))
+                )
+
+    # ------------------------------------------------------------------ 결과와 이력
+
+    def _finish(
+        self,
+        works: list[_Work],
+        skeletons: dict[int, SkeletonEstimate],
+        prepared: dict[TrackKey, _Prepared],
+        flags: list[_Flag],
+    ) -> tuple[ViewCluster, ...]:
+        order = sorted(range(len(works)), key=lambda i: min(works[i].keys))
+        member_sets = [frozenset(works[i].keys) for i in order]
+        ids = self._carry_ids(member_sets)
+        flags = [f for f in flags if f.blocked is None or not any(f.blocked <= ms for ms in member_sets)]
+        clusters = []
+        for pos, i in enumerate(order):
+            keys = sorted(works[i].keys)
+            reasons: list[UncertainReason] = []
+            competitors: set[TrackKey] = set()
+            for f in flags:
+                if f.flagged & member_sets[pos]:
+                    if f.reason not in reasons:
+                        reasons.append(f.reason)
+                    competitors |= f.involved - member_sets[pos]
+            clusters.append(
+                ViewCluster(
+                    association_id=ids[pos],
+                    views=tuple(prepared[k].view for k in keys),
+                    skeleton=skeletons.get(i),
+                    uncertain_reasons=tuple(sorted(reasons)),
+                    competitors=tuple(sorted(competitors)),
+                    undistorted={k[0]: prepared[k].undistorted for k in keys},
+                )
+            )
+        self._previous = {c.association_id: frozenset(c.keys) for c in clusters}
+        return tuple(clusters)
+
+    def _carry_ids(self, member_sets: list[frozenset[TrackKey]]) -> list[str]:
+        """직전 시각 클러스터와 겹치는 트랙 수가 최대가 되도록 1:1 로 이어 association_id 를 물려준다."""
+        prev_ids = sorted(self._previous)
+        ids: list[str | None] = [None] * len(member_sets)
+        if prev_ids and member_sets:
+            overlap = [[len(ms & self._previous[p]) for p in prev_ids] for ms in member_sets]
+            for r, c in linear_sum_assignment([[-float(v) for v in row] for row in overlap]):
+                if overlap[r][c] > 0:
+                    ids[r] = prev_ids[c]
+        out = []
+        for i in ids:
+            if i is None:
+                self._issued += 1
+                i = f"xv-{self._issued}"
+            out.append(i)
+        return out
+
+    def _update_history(
+        self,
+        t: int,
+        clusters: Iterable[ViewCluster],
+        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence],
+        present: set[TrackKey],
+    ) -> None:
+        """같은 클러스터인 쌍은 이력을 늘린다. 둘 다 보이는데 갈라진 쌍은 기하가 탈락시켰거나 애매하지 않으면 지운다."""
+        together: set[tuple[TrackKey, TrackKey]] = set()
+        uncertain: set[TrackKey] = set()
+        for c in clusters:
+            together.update(itertools.combinations(sorted(c.keys), 2))
+            if c.identity_uncertain:
+                uncertain.update(c.keys)
+        for pair in together:
+            age, _ = self._history.get(pair, (0, t))
+            self._history[pair] = (age + 1, t)
+        for pair in list(self._history):
+            if pair in together:
+                continue
+            a, b = pair
+            if a in present and b in present:
+                ev = pairs.get(pair)
+                if ev is None or not ev.feasible or not (a in uncertain or b in uncertain):
+                    del self._history[pair]
+            elif t - self._history[pair][1] > self.config.history_ttl_ms:
+                del self._history[pair]
+
+
+class LocalTrackletBuffer:
+    """카메라별 `observation_2d` 를 (카메라, 로컬 트랙)마다 모아 공통 시각 t 의 view 로 보간한다 (계산 순서 1단계).
+
+    보간 규칙(촬영 시각 불확실성, 보간 창, 외삽 금지, 지연 도착)은 `geometry.interpolation` 그대로다.
+    """
+
+    def __init__(self, config: InterpolationConfig | None = None) -> None:
+        self.config = config if config is not None else InterpolationConfig()
+        self._buffers: dict[TrackKey, KeypointBuffer] = {}
+
+    @property
+    def keys(self) -> tuple[TrackKey, ...]:
+        return tuple(sorted(self._buffers))
+
+    def add(self, frame: Observation2DFrame) -> list[FrameDrop]:
+        """프레임 하나의 트랙별 keypoint 를 넣는다. 창을 넘겨 늦게 온 것은 넣지 않고 기록을 돌려준다."""
+        drops = []
+        for det in frame.detections:
+            key = (frame.camera_id, det.local_track_id)
+            buf = self._buffers.get(key)
+            if buf is None:
+                buf = self._buffers[key] = KeypointBuffer(frame.camera_id, self.config)
+            drop = buf.add(
+                KeypointSample(
+                    camera_id=frame.camera_id,
+                    estimated_capture_time=frame.estimated_capture_time_ms,
+                    timestamp_source=frame.timestamp_source,
+                    timestamp_uncertainty_ms=frame.timestamp_uncertainty_ms,
+                    keypoints=det.detection.keypoints_2d,
+                    bbox=det.detection.bbox,
+                    frame_ref={"stream_epoch": frame.stream_epoch, "frame_sequence": frame.frame_sequence},
+                )
+            )
+            if drop is not None:
+                drops.append(drop)
+        return drops
+
+    def views_at(self, t: int) -> tuple[list[LocalView], list[FrameDrop]]:
+        """공통 시각 t 로 보간한 view 와, 보간하지 못한 트랙의 사유."""
+        views, drops = [], []
+        for key in sorted(self._buffers):
+            view, d = self._buffers[key].interpolate(t)
+            drops += d
+            if view is not None:
+                views.append(LocalView(key[0], key[1], view))
+        return views, drops
+
+    def prune(self, t: int) -> None:
+        """t 보간에 필요 없는 프레임을 지우고, 마지막 프레임이 보간 창보다 오래된 트랙은 버퍼째 지운다."""
+        require_ms("t", t)
+        for key in list(self._buffers):
+            buf = self._buffers[key]
+            if not buf.samples or t - buf.samples[-1].estimated_capture_time > self.config.window_ms:
+                del self._buffers[key]
+            else:
+                buf.prune(t)
+
+
+def _block_key(a: _Work, b: _Work) -> frozenset[frozenset[TrackKey]]:
+    return frozenset([frozenset(a.keys), frozenset(b.keys)])
+
+
+def _pair_key(a: TrackKey, b: TrackKey) -> tuple[TrackKey, TrackKey]:
+    return (a, b) if a <= b else (b, a)
+
+
+def _lookup_pair_error(mapping: Mapping[str, float], cam_a: str, cam_b: str) -> float | None:
+    """보정 카메라 쌍별 재투영 오차 설정에서 `(cam_a, cam_b)` 의 기준값(px)을 찾는다."""
+    if not mapping:
+        return None
+    for sep in ("/", "-", ",", ":"):
+        for k in (f"{cam_a}{sep}{cam_b}", f"{cam_b}{sep}{cam_a}"):
+            if k in mapping:
+                val = float(mapping[k])
+                return val if math.isfinite(val) and val > 0 else None
+    return None
+
+
+def _pair_3d_distance(ja: np.ndarray, jb: np.ndarray) -> float | None:
+    """두 2-view 삼각측량 관절 배열 `(J, 3)` 사이의 3D 위치 어긋남(m).
+
+    공통으로 풀린 같은 번호의 관절이 있으면 그 관절들의 3D 거리 중앙값(골반이 둘 다 풀렸으면 골반 거리와 중 큰 값)을 쓰고,
+    겹치는 관절이 없으면 풀린 관절들의 수평(XY) 중심 거리를 돌려준다.
+    """
+    valid_a = np.isfinite(ja[:, 0])
+    valid_b = np.isfinite(jb[:, 0])
+    if not valid_a.any() or not valid_b.any():
+        return None
+    pelvis_d: float | None = None
+    if len(ja) > 12 and valid_a[11] and valid_a[12] and valid_b[11] and valid_b[12]:
+        pa = 0.5 * (ja[11] + ja[12])
+        pb = 0.5 * (jb[11] + jb[12])
+        pelvis_d = float(np.linalg.norm(pa - pb))
+    both = valid_a & valid_b
+    if both.any():
+        dists = np.linalg.norm(ja[both] - jb[both], axis=1)
+        joint_d = _median_1d(dists)
+        return max(pelvis_d, joint_d) if pelvis_d is not None else joint_d
+    if pelvis_d is not None:
+        return pelvis_d
+    ca = np.nanmedian(ja[valid_a, :2], axis=0)
+    cb = np.nanmedian(jb[valid_b, :2], axis=0)
+    return float(np.linalg.norm(ca - cb))
+
+
+def _median_1d(values: np.ndarray) -> float:
+    """1차원 배열의 `float(np.median(values))` 와 비트 단위로 같은 값(S15P31A101-663: np.median 의 호출 고정 비용이 배정에서 컸다).
+
+    np.median 은 가운데 하나(홀수) 또는 가운데 둘의 평균(짝수, 두 값의 합 / 2)이고 NaN 이 하나라도 있으면 NaN 이다.
+    정렬해도 가운데 값은 같다(정렬하면 NaN 은 맨 뒤)."""
+    ordered = np.sort(values)
+    n = len(ordered)
+    if math.isnan(ordered[-1]):
+        return math.nan
+    mid = n // 2
+    if n % 2:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def _joint_noise_weights(n_joints: int) -> np.ndarray:
+    """관절별 역잡음 가중치 `1 / KEYPOINT_NOISE_SCALE` (V1a, 명세 5.2)."""
+    scales = [
+        KEYPOINT_NOISE_SCALE[j] if j < len(KEYPOINT_NOISE_SCALE) else KEYPOINT_NOISE_SCALE[-1]
+        for j in range(n_joints)
+    ]
+    return 1.0 / np.asarray(scales, dtype=float)
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """양수 가중치 `weights` 에 대한 1차원 가중 중앙값 (`_weighted_median_rows` 와 같은 정의)."""
+    order = np.argsort(values, kind="stable")
+    v = values[order]
+    cum = np.cumsum(weights[order])
+    half = 0.5 * cum[-1]
+    lo = int(np.argmax(cum >= half - 1e-12 * cum[-1]))
+    hi = int(np.argmax(cum > half + 1e-12 * cum[-1]))
+    return float((v[lo] + v[hi]) / 2.0)
+
+
+def _weighted_median_rows(masked_err: np.ndarray, solved: np.ndarray, joint_weights: np.ndarray) -> np.ndarray:
+    """행별(쌍별) 일관 관절 재투영 오차의 가중 중앙값 (Q,). 일관 관절이 없으면 NaN."""
+    Q, _ = masked_err.shape
+    order = np.argsort(masked_err, axis=1, kind="stable")
+    ranked = np.take_along_axis(masked_err, order, axis=1)
+    w_sorted = np.take_along_axis(np.where(solved, joint_weights, 0.0), order, axis=1)
+    cum = np.cumsum(w_sorted, axis=1)
+    total = cum[:, -1:]
+    half = 0.5 * total
+    rows = np.arange(Q)
+    lo = np.argmax(cum >= half - 1e-12 * total, axis=1)
+    hi = np.argmax(cum > half + 1e-12 * total, axis=1)
+    with np.errstate(invalid="ignore"):
+        out = (ranked[rows, lo] + ranked[rows, hi]) / 2.0
+    return np.where(total[:, 0] > 0.0, out, np.nan)
+
+
+def _two_view_triangulation(pa: _Prepared, pb: _Prepared, common: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """후보 쌍 검증용 2-view 삼각측량. 공통 관절 (n,) 마다 World XYZ (n, 3) 와 재투영 오차 (n,) 를 돌려준다.
+
+    `geometry.triangulation` 과 같은 정규화 좌표 선형 DLT(x·P₃ − P₁, y·P₃ − P₂, P = [R | t], 신뢰도 가중)를 관절 묶음으로
+    한 번에 푼다. 후보 쌍은 시각마다 view 수의 제곱만큼 생겨 관절별 가우스-뉴턴까지 하면 10 Hz 를 지키기 어려워
+    정밀화는 하지 않는다. 오차는 두 카메라 중 큰 쪽의 왜곡 제거 픽셀 거리이고, 해가 없거나 어느 카메라 뒤면 inf 다.
+    이 결과는 연결 판단에만 쓰고 내보내지 않는다(클러스터 관절은 `triangulate_skeleton` 결과).
+    """
+    return _two_view_triangulation_many([(pa, pb, common)])[0]
+
+
+def _two_view_triangulation_many(
+    jobs: Sequence[tuple[_Prepared, _Prepared, np.ndarray]],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """같은 카메라 쌍(a, b)의 여러 view 쌍을 `_two_view_triangulation` 한 번으로 푼다. 관절마다 독립인 식이라
+    쌍들의 공통 관절을 이어 붙여 계산하고 쌍마다 나눠 돌려준다."""
+    if not jobs:
+        return []
+    idx = [np.flatnonzero(common) for _, _, common in jobs]
+    sizes = [len(i) for i in idx]
+    sides = []
+    for side in (0, 1):
+        normalized = np.concatenate([job[side].normalized[i] for job, i in zip(jobs, idx)])
+        weight = np.concatenate([job[side].undistorted.confidence[i] for job, i in zip(jobs, idx)])
+        target = np.concatenate([job[side].undistorted.ideal_pixels[i] for job, i in zip(jobs, idx)])
+        sides.append((normalized, weight, target))
+    xyz, err = _two_view_arrays(jobs[0][0].camera, jobs[0][1].camera, sides[0], sides[1])
+    out = []
+    start = 0
+    for size in sizes:
+        out.append((xyz[start : start + size], err[start : start + size]))
+        start += size
+    return out
+
+
+def _two_view_arrays(
+    cam_a: RigCamera,
+    cam_b: RigCamera,
+    obs_a: tuple[np.ndarray, np.ndarray, np.ndarray],
+    obs_b: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """`_two_view_triangulation` 의 계산. 관측 n 개마다 (정규화 좌표 (n, 2), 신뢰도 (n,), 이상적 핀홀 픽셀 (n, 2))를
+    두 카메라에서 받아 World XYZ (n, 3) 와 재투영 오차 (n,) 를 돌려준다."""
+    preps = [(cam_a, *obs_a), (cam_b, *obs_b)]
+    rows = []
+    for camera, normalized, w, _ in preps:
+        P = np.hstack([camera.R, camera.t[:, None]])
+        x, y = normalized[:, 0], normalized[:, 1]
+        rows.append(w[:, None] * (x[:, None] * P[2] - P[0]))
+        rows.append(w[:, None] * (y[:, None] * P[2] - P[1]))
+    A = np.stack(rows, axis=1)  # (n, 4, 4)
+    # 유한하지 않은 계수는 SVD 에 넣지 않는다(Linux OpenBLAS 가 ±inf 에서 멈춘다, S15P31A101-245). 그 관절은 해가 없다
+    finite = np.isfinite(A).all(axis=(1, 2))
+    _, s, vt = np.linalg.svd(np.where(finite[:, None, None], A, 0.0))
+    h = vt[:, -1, :]
+    ok = finite & (s[:, 0] > 0) & (s[:, -2] > 1e-9 * s[:, 0]) & (np.abs(h[:, 3]) > 1e-12)
+    total = len(A)
+    xyz = np.full((total, 3), np.nan)
+    xyz[ok] = h[ok, :3] / h[ok, 3:4]
+    err = np.full(total, np.inf)
+    worst = np.zeros(total)
+    for camera, _, _, target in preps:
+        xc = camera.to_camera(np.nan_to_num(xyz))
+        front = xc[:, 2] > 0
+        ok &= front
+        proj = camera.ideal_pixels(xc[:, :2] / np.where(front, xc[:, 2], 1.0)[:, None])
+        worst = np.maximum(worst, np.linalg.norm(proj - target, axis=1))
+    err[ok] = worst[ok]
+    return xyz, err
+
+
+def _focal(camera: RigCamera) -> float:
+    return float((camera.K[0, 0] + camera.K[1, 1]) / 2.0)
+
+
+def _floor_ray(camera: RigCamera, normalized: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """임시 바닥 가설: 정규화 좌표의 시선이 높이 h 수평면과 만나는 XY 를 A + h·B 로 나타낸 (A, B).
+
+    시선이 아래를 향하지 않으면(지평선 위) None. 후보 생성용 근사다. World 위치·ground_anchor_xyz·Z 로 쓰지 않는다
+    (명세 5.2).
+    """
+    d = camera.R.T @ np.array([normalized[0], normalized[1], 1.0])
+    if d[2] >= -1e-9:
+        return None
+    c = camera.center
+    return c[:2] - c[2] / d[2] * d[:2], d[:2] / d[2]
+
+
+@dataclass(frozen=True)
+class _ViewStack:
+    """한 카메라의 view 들(키 순서)을 쌓은 배열. 그 카메라가 든 카메라 쌍의 근거 계산이 같이 쓴다."""
+
+    camera: RigCamera
+    keys: list[TrackKey]
+    normalized: np.ndarray
+    """(N, J, 2)"""
+    confidence: np.ndarray
+    """(N, J)"""
+    ideal: np.ndarray
+    """(N, J, 2) 이상적 핀홀 픽셀"""
+    floor_a: np.ndarray
+    """(N, 2) 임시 바닥 가설 A (없으면 NaN). 후보 거르기 전용"""
+    floor_b: np.ndarray
+    """(N, 2) 임시 바닥 가설 B (없으면 NaN)"""
+    has_floor: np.ndarray
+    """(N,)"""
+
+    @classmethod
+    def of(cls, views: Sequence[_Prepared]) -> _ViewStack:
+        none = np.full(2, np.nan)
+        rays = [p.floor_ray for p in views]
+        return cls(
+            camera=views[0].camera,
+            keys=[p.view.key for p in views],
+            normalized=np.stack([p.normalized for p in views]),
+            confidence=np.stack([p.undistorted.confidence for p in views]),
+            ideal=np.stack([p.undistorted.ideal_pixels for p in views]),
+            floor_a=np.stack([none if r is None else r[0] for r in rays]),
+            floor_b=np.stack([none if r is None else r[1] for r in rays]),
+            has_floor=np.array([r is not None for r in rays]),
+        )
+
+
+def _floor_gaps(sa: _ViewStack, sb: _ViewStack, qi: np.ndarray, qk: np.ndarray, max_height: float) -> np.ndarray:
+    """view 쌍 (sa 의 qi, sb 의 qk) 마다 `_floor_gap`. 어느 한쪽 가설이 없으면 NaN."""
+    dA = sa.floor_a[qi] - sb.floor_a[qk]
+    dB = sa.floor_b[qi] - sb.floor_b[qk]
+    bb = dB[:, 0] * dB[:, 0] + dB[:, 1] * dB[:, 1]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        h = -(dA[:, 0] * dB[:, 0] + dA[:, 1] * dB[:, 1]) / bb
+        h = np.where(bb < 1e-12, 0.0, np.minimum(np.maximum(h, 0.0), max_height))
+        d = dA + h[:, None] * dB
+        gap = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+    return np.where(sa.has_floor[qi] & sb.has_floor[qk], gap, np.nan)
+
+
+def _floor_gap(ray_a: tuple[np.ndarray, np.ndarray], ray_b: tuple[np.ndarray, np.ndarray], max_height: float) -> float:
+    """두 임시 바닥 가설의 XY 거리 중 높이 h ∈ [0, max_height] 에서의 최솟값 (거리 제곱이 h 의 2차식)."""
+    # `_floor_gaps` 와 같은 요소별 곱·합으로 계산한다. `@`·`np.linalg.norm` 은 BLAS 를 거쳐 CPU 에 따라 FMA 가 골라져
+    # 묶음 계산과 최하위 비트가 달라진다(S15P31A101-259)
+    dA, dB = ray_a[0] - ray_b[0], ray_a[1] - ray_b[1]
+    bb = float(dB[0] * dB[0] + dB[1] * dB[1])
+    h = 0.0 if bb < 1e-12 else min(max(-float(dA[0] * dB[0] + dA[1] * dB[1]) / bb, 0.0), max_height)
+    d0, d1 = dA[0] + h * dB[0], dA[1] + h * dB[1]
+    return float(np.sqrt(d0 * d0 + d1 * d1))
