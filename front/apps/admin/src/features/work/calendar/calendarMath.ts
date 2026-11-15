@@ -127,10 +127,22 @@ export interface DaySummary {
   count: number;
   critical: number;
   high: number;
+  /**
+   * 관제 카드 기준 사건 수(S15P31A101-751). critical·high 는 경보 기록 한 건 한 건이라 트랙 번호가 바뀌며 되풀이된 경보까지 세어 카드의 「n회」
+   * 기준보다 많다. 끝난 작업 모두가 사건 수를 알 때만 싣는다(이전 서버는 없다).
+   */
+  incidents?: { critical: number; high: number };
   /** 보고서를 안 낸 작업 수(S15P31A101-750). 있을 때만 싣는다. */
   unsubmitted?: number;
   /** 실행 수(S15P31A101-696). 작업 하나 안에서 실행을 여러 번 해 작업 수보다 많을 때만 싣는다. */
   runs?: number;
+}
+
+/** 위험·경고 수 문구. 사건 수를 알면 「위험 사건 m건(경보 기록 n건)」, 모르면 경보 기록 수만(S15P31A101-751). */
+export function alertText(summary: Pick<DaySummary, 'critical' | 'high' | 'incidents'>): string {
+  const { critical, high, incidents } = summary;
+  if (!incidents) return `위험 ${critical}건, 경고 ${high}건`;
+  return `위험 사건 ${incidents.critical}건(경보 ${critical}건), 경고 사건 ${incidents.high}건(경보 ${high}건)`;
 }
 
 /** 지난 날 요약. 끝난 작업(`isEndedWork`)만 세고, 끝난 작업이 없으면 null(빈칸)이다. */
@@ -145,10 +157,17 @@ export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null
         .length,
     0,
   );
+  const incidentsKnown = ended.every((work) => work.incident_counts != null);
   return {
     count: ended.length,
     critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
     high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
+    ...(incidentsKnown && {
+      incidents: {
+        critical: ended.reduce((sum, work) => sum + (work.incident_counts?.CRITICAL ?? 0), 0),
+        high: ended.reduce((sum, work) => sum + (work.incident_counts?.HIGH ?? 0), 0),
+      },
+    }),
     ...(unsubmitted > 0 && { unsubmitted }),
     ...(runs > ended.length && { runs }),
   };
@@ -159,6 +178,8 @@ export interface MonthSummary {
   days: number;
   critical: number;
   high: number;
+  /** 관제 카드 기준 사건 수 합계. 달 안 끝난 날 모두가 알 때만(S15P31A101-751). */
+  incidents?: { critical: number; high: number };
 }
 
 /**
@@ -173,6 +194,9 @@ export function summarizeMonth(
   let days = 0;
   let critical = 0;
   let high = 0;
+  let incidentCritical = 0;
+  let incidentHigh = 0;
+  let incidentsKnown = true;
   for (const cell of cells) {
     if (!cell.inMonth || dayKind(cell.key, todayKey) === 'future') continue;
     const summary = summarizeWorks(byDate.get(cell.key) ?? []);
@@ -180,8 +204,18 @@ export function summarizeMonth(
     days += 1;
     critical += summary.critical;
     high += summary.high;
+    if (summary.incidents) {
+      incidentCritical += summary.incidents.critical;
+      incidentHigh += summary.incidents.high;
+    } else incidentsKnown = false;
   }
-  return { days, critical, high };
+  return {
+    days,
+    critical,
+    high,
+    ...(incidentsKnown &&
+      days > 0 && { incidents: { critical: incidentCritical, high: incidentHigh } }),
+  };
 }
 
 /**
@@ -210,7 +244,7 @@ export function cellAriaLabel({
   if (summary) {
     const runs = summary.runs ? `, 실행 ${summary.runs}회` : '';
     const late = summary.unsubmitted ? `, 보고서 미제출 ${summary.unsubmitted}건` : '';
-    return `${base}, 작업 ${summary.count}건 완료${runs}, 위험 ${summary.critical}건, 경고 ${summary.high}건${late}`;
+    return `${base}, 작업 ${summary.count}건 완료${runs}, ${alertText(summary)}${late}`;
   }
   return base;
 }

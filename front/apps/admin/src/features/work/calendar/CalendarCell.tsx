@@ -55,31 +55,44 @@ function ActionLabel({ label }: { label: string }) {
 }
 
 /** 위험·경고 수: 작은 색 점 + 숫자만 보이고, 둘 다 0 이면 아무 문구도 그리지 않는다. */
-function EventCounts({ critical, high }: { critical: number; high: number }) {
+function EventCounts({
+  critical,
+  high,
+  incidents,
+}: {
+  critical: number;
+  high: number;
+  incidents?: { critical: number; high: number };
+}) {
   if (critical === 0 && high === 0) return null;
+  // 보이는 숫자는 관제 카드 기준 사건 수(S15P31A101-751). 경보 기록 한 건 한 건의 수는 hover 로 곁들인다
+  const shownCritical = incidents ? incidents.critical : critical;
+  const shownHigh = incidents ? incidents.high : high;
+  const noun = incidents ? '사건' : '경보';
+  const extra = (alarms: number) => (incidents ? `(경보 기록 ${alarms}건)` : '');
   return (
     <span
       data-slot="event-counts"
       className="flex items-center gap-2 font-mono text-xs tabular-nums"
     >
-      {critical > 0 && (
+      {shownCritical > 0 && (
         <span
           data-slot="sev-critical"
-          title={`위험 경보 ${critical}건`}
+          title={`위험 ${noun} ${shownCritical}건${extra(critical)}`}
           className="inline-flex items-center gap-1 font-bold text-sev-critical"
         >
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-critical" />
-          {critical}
+          {shownCritical}
         </span>
       )}
-      {high > 0 && (
+      {shownHigh > 0 && (
         <span
           data-slot="sev-high"
-          title={`경고 경보 ${high}건`}
+          title={`경고 ${noun} ${shownHigh}건${extra(high)}`}
           className="inline-flex items-center gap-1 font-semibold text-sev-high"
         >
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-high" />
-          {high}
+          {shownHigh}
         </span>
       )}
     </span>
@@ -176,7 +189,11 @@ export function CalendarCell({
             </span>
           )}
           <span className="mt-auto flex w-full items-center gap-2">
-            <EventCounts critical={summary.critical} high={summary.high} />
+            <EventCounts
+              critical={summary.critical}
+              high={summary.high}
+              incidents={summary.incidents}
+            />
             <span
               data-slot="history-hint"
               className="ml-auto text-[11px] font-medium whitespace-nowrap text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/cell:opacity-100 group-focus-visible/cell:opacity-100"

@@ -22,6 +22,8 @@ export interface EventRow {
   raisedAt: number;
   /** 해소 시각. 구간 안에서 해소되지 않았으면 null. */
   resolvedAt: number | null;
+  /** 해소 뒤 곧바로 다시 열린 횟수(경보 「n회」). 옛 기록은 없다. */
+  resumeCount?: number;
 }
 
 export interface Frame {
@@ -111,6 +113,7 @@ function readEventRow(
     zoneId: str(payload.zone_id),
     raisedAt: num(payload.raised_at) ?? before?.raisedAt ?? entry.t,
     resolvedAt: payload.lifecycle === 'RESOLVED' ? (num(payload.resolved_at) ?? entry.t) : null,
+    ...(num(payload.resume_count) ? { resumeCount: num(payload.resume_count)! } : {}),
   };
 }
 

@@ -244,7 +244,7 @@ class WorkSessionIntegrationTest {
         clock.now.set(started.plusSeconds(13));
         end(work);
         ObjectNode first = awaitWrapUp(report);
-        assertThat(first.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        assertThat(first.path("form").path("review").path("ending").asString()).startsWith("엔진이 쓴 종료 미팅 문단");
         int revision = first.path("form_revision").asInt();
 
         // 마무리를 만드는 중이면 그 결과가 되돌린 뒤 옛 사실로 양식을 채우므로 받지 않는다
@@ -266,7 +266,7 @@ class WorkSessionIntegrationTest {
         ObjectNode second = awaitWrapUp(report);
         // 되돌려도 실행 기록(work_run)은 지우지 않아(추가 전용, S15P31A101-696) 다시 시작이 실행 2 가 되고 실행 요약이 붙는다
         assertThat(second.path("form").path("review").path("ending").asString())
-                .startsWith("실행 2회: ").endsWith("엔진이 쓴 종료 미팅 문단");
+                .startsWith("실행 2회: ").contains("엔진이 쓴 종료 미팅 문단", "관제 카드 기준 사건: 위험 1건");
         assertThat(second.path("form_revision").asInt()).isEqualTo(revision + 2);
         // 두 번째 종료 요청은 새 실행 구간의 사실이다
         ObjectNode request = (ObjectNode) MAPPER.readTree(endingBody.get());
@@ -282,7 +282,7 @@ class WorkSessionIntegrationTest {
         start(work);
         clock.now.set(started.plusSeconds(30));
         end(work);
-        assertThat(awaitWrapUp(report).path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        assertThat(awaitWrapUp(report).path("form").path("review").path("ending").asString()).startsWith("엔진이 쓴 종료 미팅 문단");
 
         clock.now.set(started.plusSeconds(300));
         mvc.perform(post("/api/work-units/{id}/start", work).header(HttpHeaders.AUTHORIZATION, admin))
@@ -317,7 +317,7 @@ class WorkSessionIntegrationTest {
         ObjectNode done = awaitWrapUp(report);
         // 사람이 고치지 않은 지난 종료 미팅은 모든 실행 요약을 앞에 붙여 다시 쓴다
         String ending = done.path("form").path("review").path("ending").asString();
-        assertThat(ending).startsWith("실행 2회: 1회 ").contains("2회 ", "(위험 1·경고 0)").endsWith("엔진이 쓴 종료 미팅 문단");
+        assertThat(ending).startsWith("실행 2회: 1회 ").contains("2회 ", "(위험 1·경고 0)", "엔진이 쓴 종료 미팅 문단", "관제 카드 기준 사건: 위험 1건");
         assertThat(MAPPER.readTree(endingBody.get()).path("facts").path("event_count").asInt()).isEqualTo(1);
         // 실행 기록: 시작·종료한 사람과 시작 전 확인 스냅샷
         long adminId = adminUserId();
@@ -497,7 +497,7 @@ class WorkSessionIntegrationTest {
         assertThat(ended.path("wrap_up").path("report_id").asLong()).isEqualTo(report);
         ObjectNode done = awaitWrapUp(report);
         assertThat(done.path("wrap_up_status").asString()).isEqualTo("SUCCEEDED");
-        assertThat(done.path("form").path("review").path("ending").asString()).isEqualTo("엔진이 쓴 종료 미팅 문단");
+        assertThat(done.path("form").path("review").path("ending").asString()).startsWith("엔진이 쓴 종료 미팅 문단");
         assertThat(done.path("form_revision").asInt()).isEqualTo(1);
         assertThat(done.path("report_version").asInt()).isEqualTo(1);
         assertThat(done.path("status").asString()).isEqualTo("PENDING");

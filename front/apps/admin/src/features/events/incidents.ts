@@ -102,7 +102,8 @@ export function groupIncidents(entries: readonly EventEntry[]): Incident[] {
 }
 
 /** 이 이벤트가 발생한 횟수: 처음 한 번에, 해소 뒤 곧바로 다시 열린(resume) 횟수를 더한다. */
-const occurrencesOf = (event: EventItem): number => 1 + (event.resume_count ?? 0);
+export const occurrencesOf = (event: Pick<EventItem, 'resume_count'>): number =>
+  1 + (event.resume_count ?? 0);
 
 /**
  * 지금 살아 있는(추적 중인) 사람의 World ID 집합(병합으로 흡수된 이전 ID 포함). 화면 묶음(S15P31A101-731)이 「실제 두 번째 사람」을
@@ -132,7 +133,7 @@ export interface CardGroup {
 export type ResolvedGroup = CardGroup;
 
 /** 시각 순으로 이을 것 하나: 시작(발생)·끝(마지막 갱신)과 사람. 사람이 없으면(구역 대상) person 이 null 이다. */
-interface ChainItem<T> {
+export interface ChainItem<T> {
   value: T;
   start: number;
   end: number;
@@ -153,7 +154,7 @@ interface Chain<T> {
  * - 앞 묶음의 마지막 갱신에서 CARD_MERGE_GAP_MS 안에 시작했다(트랙 번호가 바뀌며 다시 난 경보).
  * 단, 지금 살아 있는 사람이 든 묶음에 지금 살아 있는 다른 사람은 넣지 않는다(실제 두 번째 사람을 숨기지 않는다).
  */
-function chainItems<T>(items: readonly ChainItem<T>[], alive: AliveIds): T[][] {
+export function chainItems<T>(items: readonly ChainItem<T>[], alive: AliveIds): T[][] {
   const chains: Chain<T>[] = [];
   for (const item of [...items].sort((a, b) => a.start - b.start)) {
     const person = item.person;
@@ -181,7 +182,9 @@ function chainItems<T>(items: readonly ChainItem<T>[], alive: AliveIds): T[][] {
 }
 
 /** 같은 위험·같은 구역 키. */
-const riskKey = (event: EventItem): string => `${event.rule_id}|${event.zone_id ?? ''}`;
+export const riskKeyOf = (ruleId: string, zoneId: string | null): string =>
+  `${ruleId}|${zoneId ?? ''}`;
+const riskKey = (event: EventItem): string => riskKeyOf(event.rule_id, event.zone_id);
 
 const personOf = (incident: Incident): string | null =>
   incident.target?.type === 'person' ? incident.target.id : null;

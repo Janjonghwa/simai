@@ -26,6 +26,9 @@ export const workerLabel = (serverName: string): string => {
 /** 이름 목록이 없을 때(수신 전·이전 EC2)의 짧은 표시: World ID 끝번호를 `작업자 #0722` 로(4자리 번호만 보이면 뜻을 몰랐다). */
 const fallbackShortLabel = (worldId: string): string => `${WORKER_PREFIX}${shortPersonId(worldId)}`;
 
+/** 지난 날 이벤트 로그처럼 이름 목록이 없는 자리의 표시(S15P31A101-751): `작업자 #0722`. 원래 World ID 는 hover 로 따로 보인다. */
+export const workerShortLabel = fallbackShortLabel;
+
 export const DISPLAY_NAME_MAX_LENGTH = 20;
 
 export type PersonWatchStatus = 'connected' | 'disconnected' | 'none';

@@ -166,8 +166,8 @@ describe('WorkCalendar', () => {
     fireEvent.mouseEnter(trigger.parentElement!);
     const tooltip = screen.getByRole('tooltip', { name: '달력 기호 안내' });
     expect(tooltip.textContent).toContain('작업 완료');
-    expect(tooltip.textContent).toContain('빨간 점 + 숫자: 위험 경보 건수');
-    expect(tooltip.textContent).toContain('주황 점 + 숫자: 경고 경보 건수');
+    expect(tooltip.textContent).toContain('빨간 점 + 숫자: 위험 사건 수');
+    expect(tooltip.textContent).toContain('주황 점 + 숫자: 경고 사건 수');
 
     fireEvent.mouseLeave(trigger.parentElement!);
     expect(screen.queryByRole('tooltip', { name: '달력 기호 안내' })).toBeNull();

@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.report;
 
+import com.ssafy.simai.domain.work.IncidentCounter;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -274,12 +275,43 @@ public class WorkWrapUpRepository {
      */
     String withRunSummary(long workId, String ending) {
         String summary = runSummary(workId);
-        if (summary.isEmpty()) {
-            return ending;
+        String text = ending;
+        if (!summary.isEmpty()) {
+            text = summary + "\n" + ending;
+            if (text.codePointCount(0, text.length()) > MAX_ENDING) {
+                text = text.substring(0, text.offsetByCodePoints(0, MAX_ENDING));
+            }
         }
-        String text = summary + "\n" + ending;
-        return text.codePointCount(0, text.length()) <= MAX_ENDING ? text
-                : text.substring(0, text.offsetByCodePoints(0, MAX_ENDING));
+        // 경보 수는 기록 한 건 한 건이라 관제 카드의 「n회」 기준과 달라 보인다(S15P31A101-751): 카드 기준 사건 수를 한 줄 덧붙인다
+        String note = incidentNote(workId);
+        String withNote = text + "\n" + note;
+        return !note.isEmpty() && withNote.codePointCount(0, withNote.length()) <= MAX_ENDING ? withNote : text;
+    }
+
+    /**
+     * "관제 카드 기준 사건: 위험 3건·경고 2건(위 경보 수는 기록 한 건 한 건)." 작업의 끝난 실행 구간·작업 구역의 LIVE 위험·경고 이벤트를
+     * 카드와 같은 규칙으로 묶어 센다(IncidentCounter). 위험·경고가 없으면 빈 글. AI 가 쓰지 않는다.
+     */
+    String incidentNote(long workId) {
+        List<IncidentCounter.Alert> alerts = jdbc.query("""
+                SELECT e.rule_id, e.zone_id, e.world_ids[1] AS person, e.severity, e.raised_at,
+                       COALESCE(e.updated_at, e.raised_at) AS last_at
+                FROM work_unit w
+                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN ('CRITICAL', 'HIGH')
+                    AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
+                    AND e.raised_at BETWEEN w.actual_started_at AND w.actual_ended_at
+                    AND EXISTS (SELECT 1 FROM work_run_window r WHERE r.work_id = w.work_id AND r.ended_at IS NOT NULL
+                        AND e.raised_at BETWEEN r.started_at AND r.ended_at)
+                WHERE w.work_id = :w
+                """, new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
+                rs.getString("rule_id"), rs.getString("zone_id"), rs.getString("person"), rs.getString("severity"),
+                rs.getObject("raised_at", OffsetDateTime.class).toInstant(),
+                rs.getObject("last_at", OffsetDateTime.class).toInstant()));
+        IncidentCounter.Counts counts = IncidentCounter.count(alerts);
+        if (counts.critical() + counts.high() == 0) {
+            return "";
+        }
+        return "관제 카드 기준 사건: 위험 " + counts.critical() + "건·경고 " + counts.high() + "건(위 경보 수는 기록 한 건 한 건의 수).";
     }
 
     /** "실행 2회: 1회 14:00–14:20(위험 0·경고 1), 2회 15:00–15:30(위험 1·경고 0)." 끝난 실행이 둘 미만이면 빈 글 */

@@ -527,10 +527,35 @@ public class WorkUnitRepository {
         ObjectNode counts = w.putObject("event_counts");
         counts.put("CRITICAL", rs.getLong("critical"));
         counts.put("HIGH", rs.getLong("high"));
+        // 관제 카드 기준 사건 수(S15P31A101-751): 경보 기록 건수(event_counts)와 나란히 보인다
+        IncidentCounter.Counts incidents = incidentCounts(rs.getLong("work_id"));
+        ObjectNode incidentCounts = w.putObject("incident_counts");
+        incidentCounts.put("CRITICAL", incidents.critical());
+        incidentCounts.put("HIGH", incidents.high());
         // 실행 목록(S15P31A101-696). 시작 전이면 빈 배열, 진행 중 실행은 ended_at null 이다
         String runs = rs.getString("runs");
         w.set("runs", runs == null ? mapper.createArrayNode() : mapper.readTree(runs));
         return w;
+    }
+
+    /**
+     * 작업 구간의 위험·경고를 관제 카드 기준 사건으로 센 수(event_counts 와 같은 구간·구역 범위). 이벤트는 바꾸지 않는다.
+     */
+    private IncidentCounter.Counts incidentCounts(long workId) {
+        List<IncidentCounter.Alert> alerts = jdbc.query("""
+                SELECT e.rule_id, e.zone_id, e.world_ids[1] AS person, e.severity, e.raised_at,
+                       COALESCE(e.updated_at, e.raised_at) AS last_at
+                FROM work_unit w
+                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN ('CRITICAL', 'HIGH')
+                    AND e.raised_at BETWEEN COALESCE(w.actual_started_at, w.starts_at)
+                        AND COALESCE(w.actual_ended_at, CASE WHEN w.status = 'IN_PROGRESS' THEN CURRENT_TIMESTAMP ELSE w.ends_at END)
+                    AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
+                WHERE w.work_id = :w AND (NOT w.daily OR w.actual_started_at IS NOT NULL)
+                """, new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
+                rs.getString("rule_id"), rs.getString("zone_id"), rs.getString("person"), rs.getString("severity"),
+                rs.getObject("raised_at", OffsetDateTime.class).toInstant(),
+                rs.getObject("last_at", OffsetDateTime.class).toInstant()));
+        return IncidentCounter.count(alerts);
     }
 
     /** 달력 진행 칩. 뒤 단계부터 본다: 제출 → 종료 → 진행 중 → 세팅 완료 → 세팅 중 → 보고서 */
