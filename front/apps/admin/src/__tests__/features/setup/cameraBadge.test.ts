@@ -1,6 +1,8 @@
 import {
   cameraBadgeOf,
   coverageFreshUntil,
+  coverageHelperLost,
+  HELPER_LOST_AFTER_MS,
   type CameraBadgeEvidence,
 } from '@/features/setup/cameraBadge';
 import { deriveStep1Coverage } from '@/features/setup/setup';
@@ -194,5 +196,41 @@ describe('deriveStep1Coverage 의 카메라 배지(상태 조합)', () => {
         badges(deriveStep1Coverage(response(buildCoverageGuidePayload({ guides: [] })))),
       ),
     ).toEqual(['READY', 'READY', 'READY', 'READY']);
+  });
+});
+
+describe('게이트웨이 헬퍼 끊김(S15P31A101-719)', () => {
+  it('지금 결과가 없고 헬퍼가 끊겼으면 「확인 중」 대신 「확인 못 함」이고, 직전 보정과 달라짐이 먼저다', () => {
+    const stale = { ...ALL_GOOD, fresh: false, judged: false };
+    expect(cameraBadgeOf({ ...stale, helperLost: true }).label).toBe('확인 못 함');
+    expect(cameraBadgeOf({ ...stale, helperLost: false }).label).toBe('확인 중');
+    expect(cameraBadgeOf({ ...stale, helperLost: true, changed: true }).kind).toBe('CHANGED');
+    // 지금 결과가 있으면 헬퍼 끊김 표시는 쓰지 않는다
+    expect(cameraBadgeOf({ ...ALL_GOOD, helperLost: true }).kind).toBe('READY');
+  });
+
+  it('마지막 헬퍼 결과 나이가 60초를 넘으면 끊김, 결과를 한 번도 못 받았으면 첫 빈 응답부터 잰다', () => {
+    expect(coverageHelperLost({ age_ms: HELPER_LOST_AFTER_MS - 1 }, 1_000, null)).toBe(false);
+    expect(coverageHelperLost({ age_ms: HELPER_LOST_AFTER_MS }, 1_000, null)).toBe(true);
+    expect(coverageHelperLost({ age_ms: null }, 50_000, 1)).toBe(false);
+    expect(coverageHelperLost({ age_ms: null }, 70_000, 5_000)).toBe(true);
+    expect(coverageHelperLost({ age_ms: null }, 70_000, null)).toBe(false);
+    expect(coverageHelperLost(undefined, 70_000, 1)).toBe(false);
+  });
+
+  it('deriveStep1Coverage: 오래된 결과 + 헬퍼 끊김이면 카메라마다 「확인 못 함」과 helperLost', () => {
+    const response: CoverageGuidesResponse = {
+      calibration_version: null,
+      guides: [],
+      status: 'STALE',
+      stale: true,
+      received_at_ms: 1,
+      age_ms: 90_000,
+      latest: buildCoverageGuidePayload({ guides: [] }),
+    };
+    const view = deriveStep1Coverage(response, false, undefined, { helperLost: true });
+    expect(view.helperLost).toBe(true);
+    expect(view.cameras.every((c) => c.badge.kind === 'NO_HELPER')).toBe(true);
+    expect(deriveStep1Coverage(response).helperLost).toBe(false);
   });
 });

@@ -68,8 +68,10 @@ describe('PreflightConfirmDialog', () => {
     expect(start().disabled).toBe(true);
     fireEvent.click(checkReport());
     expect(start().disabled).toBe(true);
+    expect(screen.getByText('위 확인 칸 두 개를 체크하면 「작업 시작」이 켜집니다')).toBeTruthy();
     fireEvent.click(checkLayout());
     expect(start().disabled).toBe(false);
+    expect(screen.queryByText('위 확인 칸 두 개를 체크하면 「작업 시작」이 켜집니다')).toBeNull();
 
     // 체크를 하나 풀면 다시 꺼진다.
     fireEvent.click(checkReport());

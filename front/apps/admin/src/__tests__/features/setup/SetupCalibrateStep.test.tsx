@@ -206,6 +206,26 @@ describe('보정·생성 실패 안내', () => {
     expect(box.textContent).not.toContain('raw server message');
   });
 
+  it('카메라 확인 실패는 「자세히」를 열지 않아도 첫 화면에 원인과 다시 시도를 보인다(S15P31A101-719)', () => {
+    const camCheck = buildCameraCheck(['cam_A', 'cam_B'], 'cal-1', 'INCOMPLETE', 30);
+    camCheck.problems = [
+      { kind: 'CHECK', id: 'camera_check', camera_ids: [], reason: 'NO_PERSON', message: 'x' },
+    ];
+    const { onRetry } = renderStep(
+      failedSession({
+        progress_pct: 80,
+        failure_code: 'CAMERA_CHECK_NOT_PASSED',
+        failure_message: '카메라 확인을 1번 걸었지만 통과하지 못해 맵을 만들지 않았습니다: x',
+        camera_check: camCheck,
+      }),
+    );
+    const box = screen.getByRole('alert', { name: '세팅 실패 안내' });
+    expect(box.textContent).toContain('어느 카메라에서도 사람이 보이지 않았습니다');
+    expect(box.textContent).not.toContain('서버에서 세팅을 끝내지 못했어요');
+    fireEvent.click(within(box).getByRole('button', { name: '다시 시도' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
   it('같은 상태로 다시 해도 소용없는 실패는 카메라 연결 관리로 단추 하나뿐이다', () => {
     const { onRetry, onReturnToStep1 } = renderStep(
       failedSession({

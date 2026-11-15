@@ -33,7 +33,8 @@ export interface Step1NextInput {
 
 /**
  * 1단계(카메라 연결 관리) 「지금 할 일」. '다음' 을 막는 것(요청 중·높이 칸·재사용 확인 중)이 먼저고, 그다음은 카메라 배지와 같은
- * 우선순위(연결 끊김 → 직전 보정과 달라짐 → 겹침 부족 → 각도 확인 필요)로 가장 급한 하나를 고른다. 카메라 문제는 진행을 막지 않는다.
+ * 우선순위(연결 끊김 → 직전 보정과 달라짐 → 게이트웨이 헬퍼 끊김 → 겹침 부족 → 각도 확인 필요)로 가장 급한 하나를 고른다. 카메라 문제는
+ * 진행을 막지 않는다.
  */
 export function step1NextStep(input: Step1NextInput): NextStep {
   const { coverage, heights, heightCameraIds } = input;
@@ -77,6 +78,13 @@ export function step1NextStep(input: Step1NextInput): NextStep {
         changed.map((c) => c.id),
       )} 위치나 방향이 직전 세팅과 달라졌어요`,
       detail: '새 맵 만들기로 시작해 주세요',
+      tone: 'delay',
+    };
+  if (coverage.helperLost)
+    return {
+      title: '현장 게이트웨이와 연결이 끊겨 카메라를 확인할 수 없어요',
+      detail:
+        '게이트웨이 노트북과 카메라 헬퍼가 켜져 있는지 확인하세요. 확인 없이도 「다음」으로 시작할 수 있어요',
       tone: 'delay',
     };
   if (coverage.fresh && coverage.riskyPairs.length > 0)

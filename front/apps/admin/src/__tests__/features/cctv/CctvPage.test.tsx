@@ -109,11 +109,11 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
   it('칸 오른쪽 위에 그 카메라의 판정 지연을 초록(<300)·노랑(<600)·빨강(≥600) 배지로 보인다', () => {
     seedLag({ cam_A: 180, cam_B: 450, cam_D: 720 });
     render(<CctvPage />);
-    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
+    expect(lagBadge('cam_A')!.textContent).toBe('판정 180 ms');
     expect(lagBadge('cam_A')!.className).toContain('text-ok');
-    expect(lagBadge('cam_B')!.textContent).toBe('450 ms');
+    expect(lagBadge('cam_B')!.textContent).toBe('판정 450 ms');
     expect(lagBadge('cam_B')!.className).toContain('text-sev-caution');
-    expect(lagBadge('cam_D')!.textContent).toBe('720 ms');
+    expect(lagBadge('cam_D')!.textContent).toBe('판정 720 ms');
     expect(lagBadge('cam_D')!.className).toContain('text-sev-critical');
     // 지연을 모르는 칸은 배지를 두지 않는다(지어내지 않음). LIVE·실시간 글도 두지 않는다.
     expect(lagBadge('cam_C')).toBeNull();
@@ -176,7 +176,7 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     seedLag({ cam_A: 180 });
     render(<CctvPage />);
     fireEvent.click(screen.getByRole('button', { name: '카메라 1 크게 보기' }));
-    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
+    expect(lagBadge('cam_A')!.textContent).toBe('판정 180 ms');
     fireEvent.click(screen.getByRole('button', { name: '4분할로 돌아가기' }));
     expect(screen.getAllByRole('button', { name: /크게 보기$/ })).toHaveLength(4);
   });
@@ -400,7 +400,7 @@ describe.each(['FOREMAN', 'VIEWER'] as const)('CctvPage %s', (role) => {
     const text = (id: string) =>
       screen.getByRole('group', { name: `${cameraName(id)} 상태` }).lastElementChild?.textContent;
     expect(text('cam_A')).toBe('실시간');
-    expect(lagBadge('cam_A')!.textContent).toBe('180 ms');
+    expect(lagBadge('cam_A')!.textContent).toBe('판정 180 ms');
     // 끊김(cam_C 키프레임 대기)은 가운데 글로만 보이고 지연·끊김 배지는 두지 않는다.
     expect(text('cam_C')).toBe('끊김');
     expect(lagBadge('cam_C')).toBeNull();

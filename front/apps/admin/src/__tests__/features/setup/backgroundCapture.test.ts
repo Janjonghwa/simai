@@ -2,6 +2,7 @@ import {
   CAPTURE_SECONDS,
   captureCollecting,
   captureFailed,
+  captureStatusText,
   deriveCaptureView,
   remainingSeconds,
 } from '@/features/setup/backgroundCapture';
@@ -77,5 +78,62 @@ describe('배경 촬영 창 모양(S15P31A101-686)', () => {
     expect(remainingSeconds(1_000, 1_999)).toBe(CAPTURE_SECONDS);
     expect(remainingSeconds(1_000, 6_000)).toBe(CAPTURE_SECONDS - 5);
     expect(remainingSeconds(1_000, 60_000)).toBe(0);
+  });
+});
+
+describe('배경 촬영 상태 한 줄(S15P31A101-719)', () => {
+  const capturing = (cameras: Record<string, { state: string; sample_count: number }>) =>
+    deriveCaptureView(
+      session({ background_capture: { since_ms: 1_000, required_samples: 12, cameras } }),
+      IDS,
+      false,
+    );
+
+  it('카운트다운이 끝나도 덜 찍은 카메라가 있으면 그 이름을 보인다', () => {
+    const view = capturing({
+      cam_A: { state: 'READY', sample_count: 13 },
+      cam_B: { state: 'INSUFFICIENT_SAMPLES', sample_count: 8 },
+      cam_C: { state: 'READY', sample_count: 12 },
+      cam_D: { state: 'INSUFFICIENT_SAMPLES', sample_count: 3 },
+    });
+    expect(view.pendingLabels).toEqual(['카메라 2', '카메라 4']);
+    expect(captureStatusText(view, 0, false)).toBe(
+      '아직 찍는 중: 카메라 2, 카메라 4. 그 카메라 앞을 비우고 조금만 더 기다려 주세요.',
+    );
+    expect(captureStatusText(view, 5, false)).toBe('촬영 중입니다. 화면 밖에서 기다려 주세요.');
+  });
+
+  it('사람 가림·영상 없음이 먼저고, 못 찍고 끝나면 가린 카메라가 없을 때 덜 찍은 카메라를 보인다', () => {
+    const blocked = deriveCaptureView(session({ background_capture: CAPTURE }), IDS, false);
+    expect(captureStatusText(blocked, 0, false)).toBe(
+      '카메라 3, 카메라 4만 이어서 찍습니다. 다른 카메라는 그대로 찍고 있습니다.',
+    );
+    const failed = deriveCaptureView(
+      session({
+        status: 'FAILED',
+        failure_code: 'BACKGROUND_INCOMPLETE',
+        background_capture: {
+          since_ms: 1_000,
+          required_samples: 12,
+          cameras: {
+            cam_A: { state: 'READY', sample_count: 13 },
+            cam_B: { state: 'INSUFFICIENT_SAMPLES', sample_count: 4 },
+            cam_C: { state: 'READY', sample_count: 13 },
+            cam_D: { state: 'READY', sample_count: 13 },
+          },
+        },
+      }),
+      IDS,
+      false,
+    );
+    expect(captureStatusText(failed, 0, false)).toBe(
+      '배경을 다 찍지 못했습니다: 카메라 2. 화면을 비운 뒤 다시 찍어 주세요.',
+    );
+  });
+
+  it('응답에 촬영 정보가 없으면 덜 찍은 카메라를 지어내지 않는다', () => {
+    const view = deriveCaptureView(session(), IDS, false);
+    expect(view.pendingLabels).toEqual([]);
+    expect(captureStatusText(view, 0, false)).toBe('거의 다 찍었습니다. 조금만 더 기다려 주세요.');
   });
 });

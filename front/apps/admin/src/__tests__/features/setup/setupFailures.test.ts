@@ -1,4 +1,5 @@
-import { failureGuide, SETUP_FAILURES } from '@/features/setup/setupFailures';
+import { camerasInMessage, failureGuide, SETUP_FAILURES } from '@/features/setup/setupFailures';
+import type { CameraCheck } from '@/features/setup/types';
 import { describe, expect, it } from 'vitest';
 
 const LETTERS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
@@ -12,8 +13,15 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
       FLOOR_FIT_FAILED: false,
       INSUFFICIENT_FEATURES: false,
       VALIDATION_REJECTED: false,
+      CAMERA_CHECK_NOT_PASSED: true,
+      CAMERA_CHECK_UNAVAILABLE: true,
       TIMEOUT: true,
+      SETUP_QUEUE_TIMEOUT: true,
       CANCELLED_BY_ADMIN: true,
+      CANCELLED: true,
+      LIVE_EXP_BLOCKED: true,
+      INVALID_INPUT: false,
+      INTERNAL_CONTRACT_ERROR: true,
       REUSE_WORLD_REJECTED: false,
       LEASE_EXPIRED: true,
     });
@@ -39,7 +47,7 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
     [
       'BACKGROUND_INCOMPLETE',
       '사람 없는 배경을 다 모으지 못했어요',
-      '카메라 앞에서 사람과 장비가 비킨 상태로 다시 시도하세요.',
+      '그 카메라 앞에서 사람과 장비가 비키고 영상이 들어오는지 확인한 뒤 다시 시도하세요.',
     ],
     [
       'FLOOR_FIT_FAILED',
@@ -73,6 +81,111 @@ describe('세팅 실패 안내표(SETUP_FAILURES)', () => {
         newMap: false,
       });
     }
+  });
+});
+
+const check = (problems: CameraCheck['problems'], status: CameraCheck['status'] = 'FAILED') =>
+  ({
+    status,
+    calibration_version: 'cal-1',
+    progress_pct: 40,
+    elapsed_s: 30,
+    pairs: {},
+    cameras: {},
+    problems,
+  }) as CameraCheck;
+
+const problem = (reason: string, kind = 'CHECK', camera_ids: string[] = []) => ({
+  kind,
+  id: `${kind}-${reason}`,
+  camera_ids,
+  reason,
+  message: reason,
+});
+
+describe('CAMERA_CHECK_NOT_PASSED: 걷기 창과 같은 원인을 첫 줄에(S15P31A101-719)', () => {
+  it('사람이 안 보였으면 그 원인과 다시 걸을 방법을 보인다', () => {
+    const guide = failureGuide(
+      'CAMERA_CHECK_NOT_PASSED',
+      '카메라 확인을 1번 걸었지만…',
+      LETTERS,
+      [],
+      {
+        cameraCheck: check([problem('NO_PERSON')]),
+      },
+    );
+    expect(guide.title).toBe('어느 카메라에서도 사람이 보이지 않았습니다');
+    expect(guide.fix).toContain('한 사람만 카메라 앞을 고루 지나가며 30초 걸어 주세요');
+    expect(guide).toMatchObject({ retry: true, newMap: false });
+  });
+
+  it('덜 보인 카메라를 이름으로 짚는다', () => {
+    const guide = failureGuide('CAMERA_CHECK_NOT_PASSED', null, LETTERS, [], {
+      cameraCheck: check([problem('FEW_SAMPLES', 'CAMERA', ['cam_D'])], 'INCOMPLETE'),
+    });
+    expect(guide.title).toBe('카메라 4에서 사람이 충분히 보이지 않았습니다');
+  });
+
+  it('기하 실패는 카메라 위치 문제와 고정 뒤 다시 시도를 말한다', () => {
+    const guide = failureGuide('CAMERA_CHECK_NOT_PASSED', null, LETTERS, [], {
+      cameraCheck: check([problem('LOO_REPROJECTION', 'CAMERA', ['cam_B'])]),
+    });
+    expect(guide.title).toBe('카메라 2 위치가 보정과 맞지 않습니다');
+    expect(guide.fix).toBe(
+      '카메라와 거치대가 흔들리지 않게 고정한 뒤 다시 시도하세요(보정부터 다시 해요).',
+    );
+  });
+
+  it('「걷기 시작」을 누르지 않아 끝났으면 그렇게 말한다(문제 사유·서버 문구 어느 쪽이든)', () => {
+    const byProblem = failureGuide('CAMERA_CHECK_NOT_PASSED', null, LETTERS, [], {
+      cameraCheck: check([problem('NOT_STARTED')], 'INCOMPLETE'),
+    });
+    const byMessage = failureGuide(
+      'CAMERA_CHECK_NOT_PASSED',
+      '카메라 확인을 「걷기 시작」을 받지 못해 맵을 만들지 않았습니다: …',
+      LETTERS,
+    );
+    for (const guide of [byProblem, byMessage]) {
+      expect(guide.title).toBe('「걷기 시작」을 누르지 않아 카메라 확인 시간이 지났어요');
+      expect(guide.fix).toContain('「걷기 시작」을 누르고');
+    }
+  });
+
+  it('확인 결과가 없으면 서버 문구로 시간 부족을 가리고, 그 밖에는 기본 문구를 쓴다', () => {
+    expect(
+      failureGuide('CAMERA_CHECK_NOT_PASSED', '카메라 확인에 쓸 시간이 남지 않아 맵을…', LETTERS)
+        .title,
+    ).toBe('보정이 오래 걸려 카메라 확인에 쓸 시간이 남지 않았어요');
+    expect(failureGuide('CAMERA_CHECK_NOT_PASSED', null, LETTERS).title).toBe(
+      '카메라 확인 걷기를 통과하지 못해 맵을 만들지 않았어요',
+    );
+  });
+});
+
+describe('BACKGROUND_INCOMPLETE: 못 찍은 카메라 이름(S15P31A101-719)', () => {
+  it('워커 메시지의 미완료 카메라 목록만 읽는다(뒤의 카메라별 % 는 보지 않는다)', () => {
+    const guide = failureGuide(
+      'BACKGROUND_INCOMPLETE',
+      "사람 지운 배경 수집 미완료 카메라: ['cam_D', 'cam_B'] ({'cam_A': 100, 'cam_B': 40, 'cam_C': 100, 'cam_D': 0}), 300s 대기",
+      LETTERS,
+    );
+    expect(guide.title).toBe('카메라 2, 카메라 4에서 사람 없는 배경을 다 찍지 못했어요');
+  });
+
+  it('메시지에 카메라가 없으면 수집 진행이 100% 가 안 된 카메라를 쓴다', () => {
+    const guide = failureGuide('BACKGROUND_INCOMPLETE', 'timeout', LETTERS, [], {
+      backgroundCollection: [
+        { cameraId: 'cam_A', pct: 100 },
+        { cameraId: 'cam_C', pct: 60 },
+      ],
+    });
+    expect(guide.title).toBe('카메라 3에서 사람 없는 배경을 다 찍지 못했어요');
+  });
+
+  it('Stage A 의 영어 메시지에서도 카메라를 찾는다', () => {
+    expect(
+      camerasInMessage("No clean background images found for camera 'cam_C'.", LETTERS),
+    ).toEqual(['cam_C']);
   });
 });
 

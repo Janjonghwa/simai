@@ -6,6 +6,7 @@ import {
   type CameraWalkView,
   WALK_TARGET_SECONDS,
   type WalkCameraView,
+  walkStatus,
 } from '@/features/setup/cameraCheck';
 import { readPreviewUrls } from '@/features/setup/SetupPanels';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
@@ -134,16 +135,7 @@ export function CameraCheckModal({
   const walking = phase === 'WALKING';
   const retry = phase === 'RETRY_WAIT';
 
-  let status: string;
-  if (phase === 'AWAITING_START')
-    status = `보정이 끝났습니다. 한 사람이 카메라 ${view.cameras.length}대에 모두 보이도록 방 안을 ${WALK_TARGET_SECONDS}초 걸으면 확인이 끝납니다. 다른 사람은 카메라 밖에 있어 주세요.`;
-  else if (phase === 'STARTING') status = '확인을 준비하는 중입니다. 곧 걷기를 시작합니다.';
-  else if (walking)
-    status =
-      secondsLeft > 0
-        ? '걷는 중입니다. 카메라 사이 겹치는 곳을 고루 지나가 주세요.'
-        : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.';
-  else status = failure?.action ?? '확인을 다시 해 주세요.';
+  const { status, hint } = walkStatus(view, secondsLeft);
 
   return (
     <ModalDialog
@@ -167,8 +159,13 @@ export function CameraCheckModal({
                 {failure.title}
               </p>
             )}
+            {hint && (
+              <p role="alert" className="text-base font-semibold text-delay">
+                {hint.title}
+              </p>
+            )}
             <p role="status" className="text-sm text-foreground">
-              {status}
+              {hint ? hint.action : status}
             </p>
           </div>
           {walking && (

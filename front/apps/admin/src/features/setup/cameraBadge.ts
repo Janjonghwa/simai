@@ -7,7 +7,7 @@ import type { CameraReceptionStatus } from '@/features/setup/types';
 // 직전 재사용 거부). 15차에 「정상」 배지와 "왼쪽으로 더 돌려 주세요" 가 같이 뜨던 모순(수신 상태와 안내를 따로 보임)을 없앤다.
 
 export type CameraBadgeKind =
-  'DISCONNECTED' | 'CHANGED' | 'LOW_OVERLAP' | 'ANGLE' | 'READY' | 'CHECKING';
+  'DISCONNECTED' | 'CHANGED' | 'LOW_OVERLAP' | 'ANGLE' | 'READY' | 'CHECKING' | 'NO_HELPER';
 
 /** 배지 색: 위험 등급색(sev-*)과 겹치지 않는 세팅 화면 톤(SetupTone 과 같은 값). */
 export type CameraBadgeTone = 'ok' | 'active' | 'delay' | 'idle';
@@ -25,6 +25,7 @@ export const CAMERA_BADGE_LABEL: Record<CameraBadgeKind, string> = {
   ANGLE: '각도 확인 필요',
   READY: '준비됨',
   CHECKING: '확인 중',
+  NO_HELPER: '확인 못 함',
 };
 
 const CAMERA_BADGE_TONE: Record<CameraBadgeKind, CameraBadgeTone> = {
@@ -34,6 +35,7 @@ const CAMERA_BADGE_TONE: Record<CameraBadgeKind, CameraBadgeTone> = {
   ANGLE: 'active',
   READY: 'ok',
   CHECKING: 'idle',
+  NO_HELPER: 'idle',
 };
 
 /** 한 카메라의 배지 근거. */
@@ -50,6 +52,8 @@ export interface CameraBadgeEvidence {
   lowOverlap: boolean;
   /** 이 카메라에 보이는 각도 안내가 있다. */
   hasGuide: boolean;
+  /** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않는다(coverageHelperLost). 없으면 false. */
+  helperLost?: boolean;
 }
 
 const badgeOf = (kind: CameraBadgeKind): CameraBadge => ({
@@ -66,6 +70,7 @@ export function cameraBadgeOf(evidence: CameraBadgeEvidence): CameraBadge {
   const live = evidence.fresh && evidence.status !== null;
   if (live && evidence.status !== 'OK') return badgeOf('DISCONNECTED');
   if (evidence.changed) return badgeOf('CHANGED');
+  if (!live && evidence.helperLost) return badgeOf('NO_HELPER');
   if (!live || !evidence.judged) return badgeOf('CHECKING');
   if (evidence.lowOverlap) return badgeOf('LOW_OVERLAP');
   if (evidence.hasGuide) return badgeOf('ANGLE');
@@ -81,4 +86,25 @@ export function coverageFreshUntil(
   staleAfterMs: number | undefined,
 ): number {
   return receivedAtMs + (staleAfterMs ?? COVERAGE_STALE_AFTER_MS) - Math.max(0, ageMs ?? 0);
+}
+
+/**
+ * 헬퍼가 끊겼다고 말하는 기준(ms). 헬퍼는 관리자가 보는 동안만 계산하고 CPU 한 라운드가 16~24 초라 서버 STALE(10 초)만으로는
+ * 끊김이라 하지 않는다(S15P31A101-719).
+ */
+export const HELPER_LOST_AFTER_MS = 60_000;
+
+/**
+ * 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않는지(S15P31A101-719). 서버가 이미 주는 마지막 헬퍼 결과의 나이(age_ms)를 쓰고,
+ * 서버가 헬퍼 결과를 한 번도 받지 못했으면(EMPTY, age_ms 없음) 이 브라우저가 처음 빈 응답을 받은 때(emptySinceMs)부터 잰다.
+ * receivedAtMs 는 마지막 응답을 받은 시각(이 브라우저 시계)이다. 조회 자체가 실패하면(서버 연결 문제) 헬퍼 탓이라 하지 않는다.
+ */
+export function coverageHelperLost(
+  data: { age_ms: number | null } | undefined,
+  receivedAtMs: number,
+  emptySinceMs: number | null,
+): boolean {
+  if (!data || receivedAtMs <= 0) return false;
+  if (data.age_ms !== null) return data.age_ms >= HELPER_LOST_AFTER_MS;
+  return emptySinceMs !== null && receivedAtMs - emptySinceMs >= HELPER_LOST_AFTER_MS;
 }

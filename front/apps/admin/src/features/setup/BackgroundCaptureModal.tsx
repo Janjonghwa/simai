@@ -3,7 +3,7 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import {
-  CAPTURE_SECONDS,
+  captureStatusText,
   type CaptureCameraView,
   type CaptureView,
 } from '@/features/setup/backgroundCapture';
@@ -138,19 +138,7 @@ export function BackgroundCaptureModal({
   const { attach } = useCctvPreview(localUrl, stompUrl);
   const { phase } = view;
   const capturing = phase === 'capturing';
-  const blocked = view.blockedLabels;
-
-  let status: string;
-  if (phase === 'ready')
-    status = `카메라 ${view.cameras.length}대가 사람 없는 배경을 약 ${CAPTURE_SECONDS}초 동안 찍습니다. 모두 카메라 화면 밖으로 이동한 뒤 「시작」을 눌러 주세요.`;
-  else if (phase === 'starting') status = '촬영을 준비하는 중입니다.';
-  else if (phase === 'failed')
-    status = `배경을 다 찍지 못했습니다${blocked.length ? `: ${blocked.join(', ')}` : ''}. 화면을 비운 뒤 다시 찍어 주세요.`;
-  else if (waitingForWorker) status = '촬영을 준비하는 중입니다. 화면 밖에서 기다려 주세요.';
-  else if (blocked.length)
-    status = `${blocked.join(', ')}만 이어서 찍습니다. 다른 카메라는 그대로 찍고 있습니다.`;
-  else if (secondsLeft > 0) status = '촬영 중입니다. 화면 밖에서 기다려 주세요.';
-  else status = '거의 다 찍었습니다. 조금만 더 기다려 주세요.';
+  const status = captureStatusText(view, secondsLeft, waitingForWorker);
 
   return (
     <ModalDialog
