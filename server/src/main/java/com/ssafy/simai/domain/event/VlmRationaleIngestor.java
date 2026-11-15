@@ -12,6 +12,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -21,10 +23,22 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
-/** I1 이벤트 프레임 → LIVE CRITICAL 병합 이벤트당 I5 작업 하나(명세 5.4·12.5). */
+/**
+ * I1 이벤트 프레임 → LIVE CRITICAL 병합 이벤트당 I5 작업 하나(명세 5.4·12.5).
+ * <p>
+ * 같은 사건 묶음 상한(S15P31A101-723): 같은 Tier 0·같은 구역(R2·R3 처럼 구역이 없으면 '구역 없음'끼리)에서 같은 사람(world_id 겹침)이거나
+ * 같은 규칙인 이벤트의 근거 작업이 관측 시각 {@link #SAME_INCIDENT_WINDOW_MS} 안에 이미 있으면(대기·대여·성공) 새로 요청하지 않는다.
+ * 17차에서 ID 가 갈라져 한 사람의 R2 가 4분에 27번 새 이벤트로 열리며 근거 작업도 27건 나갔다. 근거는 설명뿐이라(AI 는 제안만, AGENTS 4)
+ * 요청하지 않아도 등급·경보·이벤트 기록은 그대로다. 앞 작업이 실패·시간 초과면 다음 이벤트가 다시 요청한다.
+ */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class VlmRationaleIngestor implements I1MessageIngestor {
+
+    private static final Logger log = LoggerFactory.getLogger(VlmRationaleIngestor.class);
+
+    /** 같은 사건으로 보고 근거를 한 번만 요청하는 관측 시각 창(ms). 명세에 없는 값이라 설계 문서(-723)에 근거를 둔다 */
+    static final long SAME_INCIDENT_WINDOW_MS = 30_000;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -96,6 +110,9 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
                 || !jdbc.queryForList("SELECT 1 FROM analysis_job WHERE event_id = :id AND job_type = 'vlm_rationale'", params).isEmpty()) {
             return Outcome.DUPLICATE;
         }
+        if (sameIncidentJob(id, envelope.sourceId(), input.path("observation_time").longValue()) != null) {
+            return Outcome.DUPLICATE;
+        }
         input.remove(List.of("source", "gateway_id", "delivery"));
         if (input.path("world_state_ref").isNull()) {
             input.remove("world_state_ref");
@@ -110,6 +127,33 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
         input.remove("calibration_version");
         jobs.enqueue(new JobSpec("vlm_rationale", input, 2, 5000, id, null));
         return Outcome.STORED;
+    }
+
+    /**
+     * 같은 사건으로 이미 요청한 근거 작업의 이벤트 ID(없으면 null). 같은 Tier 0 의 판단을 한 줄로 세우려고 트랜잭션 범위 권고 잠금을 먼저 잡는다
+     * (서로 다른 이벤트의 통지가 동시에 와도 하나만 요청한다).
+     */
+    private String sameIncidentJob(UUID id, String gateway, long observationTime) {
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("id", id)
+                .addValue("gateway", gateway).addValue("since", observationTime - SAME_INCIDENT_WINDOW_MS)
+                .addValue("until", observationTime + SAME_INCIDENT_WINDOW_MS);
+        jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.vlm_rationale:' || :gateway))", params);
+        List<String> prior = jdbc.queryForList("""
+                SELECT p.event_id::text FROM analysis_job j
+                JOIN risk_event p ON p.event_id = j.event_id
+                JOIN risk_event cur ON cur.event_id = :id
+                WHERE j.job_type = 'vlm_rationale' AND j.status IN ('QUEUED', 'LEASED', 'SUCCEEDED')
+                  AND p.event_id <> cur.event_id AND p.source = 'LIVE' AND p.gateway_id = cur.gateway_id
+                  AND p.zone_id IS NOT DISTINCT FROM cur.zone_id
+                  AND (p.rule_id = cur.rule_id OR p.world_ids && cur.world_ids)
+                  AND (j.input ->> 'observation_time')::bigint BETWEEN :since AND :until
+                ORDER BY j.created_at DESC LIMIT 1
+                """, params, String.class);
+        if (prior.isEmpty()) {
+            return null;
+        }
+        log.info("VLM 근거 요청 생략(같은 사건 {} ms 창): event={} 앞선 근거 event={}", SAME_INCIDENT_WINDOW_MS, id, prior.getFirst());
+        return prior.getFirst();
     }
 
     private ObjectNode structuredState(ObjectNode input, String gateway) {

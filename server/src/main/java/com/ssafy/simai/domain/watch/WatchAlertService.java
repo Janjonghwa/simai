@@ -199,6 +199,8 @@ public class WatchAlertService implements AutoCloseable {
         for (String device : devices) {
             if (hub.isConnected(device)) { // 끊긴 워치는 다시 이어질 때(resync) 보낸다
                 sendClear(eventId, device);
+                // -723: 이 이벤트에 묶여 진동하지 않은 같은 사람의 열린 하위 이벤트가 있으면 이제 보낸다(이미 보낸 것은 send 가 거른다)
+                resync(device);
             }
         }
     }
@@ -281,8 +283,8 @@ public class WatchAlertService implements AutoCloseable {
                 WHERE source = 'LIVE' AND lifecycle <> 'RESOLVED' AND severity IN ('CRITICAL', 'HIGH', 'CAUTION')
                   AND event_sequence >= 1 AND delivery IS DISTINCT FROM 'AUDIT_ONLY' AND :world = ANY(world_ids)
                   AND COALESCE(updated_at, raised_at) > CAST(:now AS timestamptz) - interval '%s'
-                ORDER BY COALESCE(updated_at, raised_at)
-                """.formatted(RESEND_MAX_AGE), new MapSqlParameterSource().addValue("world", worldId)
+                ORDER BY %s DESC, COALESCE(updated_at, raised_at)
+                """.formatted(RESEND_MAX_AGE, RANK_SQL.formatted("severity")), new MapSqlParameterSource().addValue("world", worldId)
                         .addValue("now", utc(clock.instant())), liveEvent());
         open.forEach(event -> send(event, worldId, deviceId));
     }
@@ -292,7 +294,9 @@ public class WatchAlertService implements AutoCloseable {
         Instant now = clock.instant();
         int ackWithinMs = (int) properties.ackWithin().toMillis();
         String word = RuleCatalog.watchWord(event.ruleId());
-        // 같은 이벤트·워치에 같거나 높은 등급을 이미 보냈으면 넣지 않는다(재발행·요약 갱신·ACK 로 다시 와도 진동은 한 번, 등급이 오르면 다시)
+        // 같은 이벤트·워치에 같거나 높은 등급을 이미 보냈으면 넣지 않는다(재발행·요약 갱신·ACK 로 다시 와도 진동은 한 번, 등급이 오르면 다시).
+        // S15P31A101-723: 같은 사람(이 워치)에게 아직 열린 다른 이벤트로 같거나 높은 등급 진동을 이미 보냈고 지우지 않았으면 넣지 않는다
+        // (R2 CRITICAL 과 함께 열린 R3 HIGH·R5 CAUTION 은 진동 하나로). 위 이벤트가 해소되면 clearIfResolved 가 resync 로 남은 것을 다시 본다
         List<Long> inserted = jdbc.queryForList("""
                 INSERT INTO watch_alert (origin, alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,
                     vibration_pattern, word, needs_check, ack_within_ms, sent_at)
@@ -300,10 +304,16 @@ public class WatchAlertService implements AutoCloseable {
                     :ackWithin, :now
                 WHERE NOT EXISTS (SELECT 1 FROM watch_alert WHERE event_id = :eventId AND resume_count = :resumeCount
                                   AND device_id = :device AND escalation_reason IS DISTINCT FROM 'SEND_FAILED'
-                                  AND %s >= %s)
+                                  AND %1$s >= %2$s)
+                  AND NOT EXISTS (SELECT 1 FROM watch_alert w JOIN risk_event r ON r.event_id = w.event_id AND r.source = w.source
+                                  WHERE w.device_id = :device AND w.origin = 'EVENT' AND w.event_id <> :eventId
+                                    AND w.cleared_at IS NULL AND w.escalation_reason IS DISTINCT FROM 'SEND_FAILED'
+                                    AND r.lifecycle <> 'RESOLVED' AND r.resume_count = w.resume_count
+                                    AND r.delivery IS DISTINCT FROM 'AUDIT_ONLY' AND %3$s >= %2$s)
                 ON CONFLICT DO NOTHING
                 RETURNING alert_id
-                """.formatted(RANK_SQL.formatted("severity"), RANK_SQL.formatted("CAST(:severity AS text)")),
+                """.formatted(RANK_SQL.formatted("severity"), RANK_SQL.formatted("CAST(:severity AS text)"),
+                        RANK_SQL.formatted("w.severity")),
                 new MapSqlParameterSource().addValue("msgId", msgId).addValue("eventId", event.eventId())
                         .addValue("sequence", event.sequence()).addValue("resumeCount", event.resumeCount()).addValue("device", deviceId).addValue("world", worldId)
                         .addValue("severity", event.severity()).addValue("pattern", PATTERNS.get(event.severity()))

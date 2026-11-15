@@ -10,6 +10,7 @@ import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.realtime.RealtimePublisher;
 import com.ssafy.simai.domain.tier0.event.RiskEventRepository;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
+import com.ssafy.simai.domain.tier0.i1.I1MessageIngestor;
 import com.ssafy.simai.domain.tier0.i1.I1MessageRouter;
 import com.ssafy.simai.domain.tier0.i1.Tier0TelemetryRepository;
 import com.ssafy.simai.global.contract.ContractSchemas;
@@ -91,6 +92,11 @@ class VlmRationaleIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        for (UUID extra : extraEvents) {
+            jdbc.update("DELETE FROM analysis_job WHERE event_id = ?", extra);
+            jdbc.update("DELETE FROM risk_event_update WHERE event_id = ?", extra);
+            jdbc.update("DELETE FROM risk_event WHERE event_id = ?", extra);
+        }
         jdbc.update("DELETE FROM vlm_assessment WHERE event_id = ?", eventId);
         jdbc.update("DELETE FROM job_lease WHERE job_id IN (SELECT job_id FROM analysis_job WHERE event_id = ?)", eventId);
         jdbc.update("DELETE FROM analysis_job WHERE event_id = ?", eventId);
@@ -200,6 +206,57 @@ class VlmRationaleIntegrationTest {
         assertThat(leases.tryLease(worker, List.of("vlm_rationale"), observed.plusMillis(5000))).isEmpty();
         leases.expireDue(observed.plusMillis(5000));
         assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE event_id = ?", String.class, eventId)).isEqualTo("TIMED_OUT");
+    }
+
+    /**
+     * S15P31A101-723: 17차처럼 ID 가 갈라져 같은 R2 가 새 이벤트로 다시 열려도, 같은 구역·같은 규칙(또는 같은 사람)의 근거 작업이 관측 30 s 안에 있으면
+     * 다시 요청하지 않는다. 창 밖·다른 구역·앞 작업 실패면 요청한다.
+     */
+    @Test
+    void 같은_사건_30초_창_안의_두번째_이벤트는_근거를_요청하지_않는다() throws Exception {
+        ingest();
+        assertThat(jobCount()).isEqualTo(1);
+        UUID sameRule = otherEvent("w-" + UUID.randomUUID(), "R2", "z-04", 12_000);
+        assertThat(ingestFor(sameRule, 12_000)).as("같은 구역·같은 규칙, 다른 ID").isEqualTo(I1MessageIngestor.Outcome.DUPLICATE);
+        UUID samePerson = otherEvent(world, "R1", "z-04", 20_000);
+        assertThat(ingestFor(samePerson, 20_000)).as("같은 사람·같은 구역, 다른 규칙").isEqualTo(I1MessageIngestor.Outcome.DUPLICATE);
+        UUID otherZone = otherEvent("w-" + UUID.randomUUID(), "R2", "z-99", 13_000);
+        assertThat(ingestFor(otherZone, 13_000)).as("다른 구역").isEqualTo(I1MessageIngestor.Outcome.STORED);
+        UUID later = otherEvent("w-" + UUID.randomUUID(), "R2", "z-04", 31_000);
+        assertThat(ingestFor(later, 31_000)).as("창 밖").isEqualTo(I1MessageIngestor.Outcome.STORED);
+        jdbc.update("UPDATE analysis_job SET status = 'FAILED' WHERE event_id IN (?, ?)", eventId, later);
+        UUID retry = otherEvent("w-" + UUID.randomUUID(), "R2", "z-04", 32_000);
+        assertThat(ingestFor(retry, 32_000)).as("앞 작업이 실패했으면 다시 요청").isEqualTo(I1MessageIngestor.Outcome.STORED);
+        assertThat(jdbc.queryForObject("SELECT severity FROM risk_event WHERE event_id = ?", String.class, sameRule))
+                .as("등급은 그대로").isEqualTo("CRITICAL");
+    }
+
+    private final List<UUID> extraEvents = new java.util.ArrayList<>();
+
+    private UUID otherEvent(String worldId, String ruleId, String zoneId, long offsetMs) throws Exception {
+        UUID id = v7();
+        extraEvents.add(id);
+        long at = observed.toEpochMilli() + offsetMs;
+        ObjectNode transition = example("risk_event_transition.json");
+        transition.put("source_id", gateway).put("msg_id", UUID.randomUUID().toString());
+        ObjectNode p = (ObjectNode) transition.get("payload");
+        // 저널 위치는 (gateway, epoch, offset) 이 유일하다. 예시 값(setUp 과 같은 offset)을 그대로 쓰면 전이 행이 중복으로 버려져
+        // 관측 시각이 없는 이벤트가 되고, 그러면 묶음 판단 전에 DUPLICATE 로 끝난다
+        p.put("journal_offset", 100_000 + extraEvents.size());
+        p.put("event_id", id.toString()).put("gateway_id", gateway).put("event_sequence", 1).put("transition", "RAISED")
+                .put("rule_id", ruleId).put("zone_id", zoneId).put("occurred_at", at).put("observation_time", at).put("evaluated_at", at);
+        p.putArray("world_ids").add(worldId);
+        p.remove("evidence_ref");
+        RiskEventRepository.Recorded recorded = transaction.execute(
+                s -> events.recordTransition(I1Envelope.parse(transition), "REALTIME", Instant.ofEpochMilli(at), 0));
+        assertThat(recorded).isEqualTo(RiskEventRepository.Recorded.APPLIED);
+        return id;
+    }
+
+    private I1MessageIngestor.Outcome ingestFor(UUID id, long offsetMs) {
+        ObjectNode copy = frame.deepCopy().put("msg_id", UUID.randomUUID().toString());
+        ((ObjectNode) copy.get("payload")).put("event_id", id.toString());
+        return transaction.execute(s -> ingestor.ingest(I1Envelope.parse(copy), observed.plusMillis(offsetMs + 100), null));
     }
 
     private JobMessages.LeasedJob lease() {
