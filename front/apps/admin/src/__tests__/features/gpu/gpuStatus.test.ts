@@ -1,17 +1,28 @@
 import {
+  autoStopText,
   availabilityLabel,
   cellUsable,
   formatElapsed,
+  formatRegion,
   gpuDot,
   gpuErrorReason,
   gpuSummary,
   isGpuOn,
   needsTierConfirm,
+  prepRemainingText,
   prepStep,
+  rowUsable,
+  shortGpuName,
   tierWarning,
   vlmReadiness,
 } from '@/features/gpu/gpuStatus';
-import type { GpuLaunch, GpuOfferCell, GpuSession, GpuStatus } from '@/features/gpu/types';
+import type {
+  GpuLaunch,
+  GpuOfferCell,
+  GpuOffers,
+  GpuSession,
+  GpuStatus,
+} from '@/features/gpu/types';
 import { describe, expect, it } from 'vitest';
 
 const T = 1_793_000_000_000;
@@ -106,10 +117,10 @@ describe('prepStep', () => {
 });
 
 describe('gpuSummary', () => {
-  it('켠 요청부터 경과를 재고 시간당 가격으로 예상 비용을 낸다', () => {
+  it('켠 요청부터 경과를 재고 시간당 가격으로 예상 비용을 내며 GPU 이름은 짧은 이름으로 통일한다', () => {
     const s = status({ power: 'PREPARING', launch: launch(), session: session() });
     const summary = gpuSummary(s, T + 30 * 60_000)!;
-    expect(summary.gpuType).toBe('NVIDIA H100 80GB HBM3');
+    expect(summary.gpuType).toBe('H100 SXM');
     expect(summary.region).toBe('AP-JP-1');
     expect(summary.elapsedMs).toBe(30 * 60_000);
     expect(summary.costUsd).toBeCloseTo(1.5);
@@ -222,5 +233,78 @@ describe('재고 글·VRAM 등급(S15P31A101-705)', () => {
     expect(tierWarning('RISKY')).toContain('Tier 0 최소 사양');
     expect(tierWarning('RECOMMENDED')).toBeNull();
     expect(tierWarning(undefined)).toBeNull();
+  });
+});
+
+describe('S15P31A101-733: 짧은 GPU 이름·나라 이름 지역·예상 시간·켤 수 있는 행', () => {
+  it('GPU 원문 이름을 짧은 이름으로 통일하고 지역에 나라 이름을 붙인다', () => {
+    expect(shortGpuName('NVIDIA H100 80GB HBM3')).toBe('H100 SXM');
+    expect(shortGpuName('NVIDIA GeForce RTX 4090')).toBe('RTX 4090');
+    expect(shortGpuName('NVIDIA Custom GPU')).toBe('Custom GPU');
+    expect(formatRegion('AP-JP-1')).toBe('일본 AP-JP-1');
+    expect(formatRegion('EU-RO-1')).toBe('루마니아 EU-RO-1');
+    expect(formatRegion('ap-northeast-2a')).toBe('한국 ap-northeast-2a');
+    expect(formatRegion('UNKNOWN-1')).toBe('UNKNOWN-1');
+  });
+
+  it('준비 단계마다 예상 남은 시간을 안내하고 자동 정지까지 남은 시간을 계산한다', () => {
+    expect(prepRemainingText(status({ power: 'STARTING', launch: launch() }))).toContain(
+      '캐시 있으면 약 4분 (첫 부팅 20분 이상)',
+    );
+    expect(
+      prepRemainingText(status({ power: 'PREPARING', session: session({ stage: 'WEIGHTS' }) })),
+    ).toContain('약 3~4분');
+    expect(
+      prepRemainingText(status({ power: 'PREPARING', session: session({ stage: 'ENGINE' }) })),
+    ).toContain('약 2~3분');
+    expect(
+      prepRemainingText(status({ power: 'CONNECTED', session: session({ stage: 'READY' }) })),
+    ).toBeNull();
+
+    const connected = status({
+      power: 'CONNECTED',
+      session: session({ stage: 'READY', registered_at_ms: T }),
+    });
+    expect(autoStopText(connected, T + 10 * 60_000, 30, null)).toBe('자동 정지까지 약 20분');
+    expect(autoStopText(connected, T + 10 * 60_000, 30, T + 8 * 60_000)).toBe(
+      '자동 정지까지 약 28분',
+    );
+    expect(autoStopText(connected, T + 10 * 60_000, 0, null)).toBe('자동 정지 꺼짐');
+    expect(autoStopText({ ...connected, stop_block: 'LIVE' }, T + 10 * 60_000, 30, null)).toBe(
+      '자동 정지 보류 (작업 중)',
+    );
+  });
+
+  it('rowUsable: 켤 수 있는 칸이 하나라도 있는 행만 true', () => {
+    const offers: GpuOffers = {
+      provider: 'RUNPOD',
+      cloud_type: 'SECURE',
+      interruptible: false,
+      max_price_per_hour_usd: 3,
+      gpu_types: [],
+      regions: [{ region: 'AP-JP-1', name: 'JP', preferred: true }],
+      cells: [
+        {
+          gpu_type: 'G1',
+          region: 'AP-JP-1',
+          stock: 'HIGH',
+          available: true,
+          price_per_hour_usd: 2,
+          within_cap: true,
+        },
+        {
+          gpu_type: 'G2',
+          region: 'AP-JP-1',
+          stock: 'NONE',
+          available: false,
+          price_per_hour_usd: 2,
+          within_cap: true,
+        },
+      ],
+      default: null,
+      fetched_at_ms: T,
+    };
+    expect(rowUsable(offers, 'G1')).toBe(true);
+    expect(rowUsable(offers, 'G2')).toBe(false);
   });
 });

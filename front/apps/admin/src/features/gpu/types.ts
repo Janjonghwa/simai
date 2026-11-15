@@ -18,6 +18,7 @@ export const gpuSessionSchema = z.looseObject({
   stage_reason_code: nullableString.optional(),
   // 단계 설명(-700 부팅 보고. 예: VLLM 「VLM 가중치·vLLM 기동 대기」, READY 「vLLM 미준비(시한 초과): …」, S15P31A101-706 이 읽는다)
   stage_detail: nullableString.optional(),
+  stage_at_ms: nullableNumber.optional(),
   provider: z.string(),
   instance_id: z.string(),
   gpu_type: z.string(),

@@ -60,14 +60,43 @@ function renderSection() {
 }
 
 describe('GpuSettingsSection', () => {
-  it('설정 페이지 GPU 구역: 지금 설정을 채워 보이고, 고쳐 저장하면 새 버전 본문을 보내고 저장했다고 알린다(비밀 값 칸은 없다)', async () => {
+  it('설정 페이지 GPU 구역: 목록에서 GPU·지역을 고르고 순서·유휴 기준·다음 켜기 적용 안내를 보이며, 버전·템플릿 ID 는 자세히 아래에 두고 준비 안 된 공급자는 비활성화한다(-733)', async () => {
     renderSection();
-    const gpus = (await screen.findByLabelText('선호 GPU (위가 먼저)')) as HTMLTextAreaElement;
-    expect(gpus.value).toBe('NVIDIA H100 80GB HBM3\nNVIDIA H100 PCIe');
-    expect(screen.getByText('버전 3')).toBeTruthy();
-    expect(screen.getByRole('option', { name: 'AWS (준비 안 됨)' })).toBeTruthy();
-    expect(screen.queryByLabelText('AWS 시작 템플릿 ID')).toBeNull(); // RunPod 이면 AWS 칸은 없다
+    await screen.findByLabelText('선호 GPU (위가 먼저)');
+    expect(
+      screen.getByText('다음 켜기부터 적용됩니다(자동 정지 시간은 켜져 있는 GPU 에도 바로 적용).'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/유휴 기준: 관제\(작업\)·세팅·녹화 업로드·분석 작업과 관리자 화면 조작/),
+    ).toBeTruthy();
+
+    // 선택 목록은 짧은 GPU 이름·나라 이름 지역으로 표시
+    const gpuList = screen.getByRole('list', { name: '선호 GPU (위가 먼저) 선택 목록' });
+    expect(gpuList.textContent).toContain('1. H100 SXM');
+    expect(gpuList.textContent).toContain('2. H100 PCIe');
+    const regionList = screen.getByRole('list', { name: '선호 지역 (위가 먼저) 선택 목록' });
+    expect(regionList.textContent).toContain('1. 일본 AP-JP-1');
+    expect(regionList.textContent).toContain('2. 호주 OC-AU-1');
+
+    // 버전과 템플릿 ID 는 자세히(details) 안에 있다
+    const details = screen.getByText('자세히').closest('details')!;
+    expect(details).toBeTruthy();
+    expect(details.textContent).toContain('버전 3');
+    expect(details.textContent).toContain('RunPod 템플릿 ID');
+
+    // 준비 안 된 공급자(AWS (준비 안 됨))는 선택 불가(disabled)
+    const awsOption = screen.getByRole('option', { name: 'AWS (준비 안 됨)' }) as HTMLOptionElement;
+    expect(awsOption.disabled).toBe(true);
+    expect(screen.queryByLabelText('AWS 시작 템플릿 ID')).toBeNull();
     expect(screen.queryByLabelText(/API 키|비밀/)).toBeNull();
+
+    // 목록에서 새 GPU 추가 및 순서 변경
+    act(() =>
+      fireEvent.change(screen.getByLabelText('선호 GPU (위가 먼저)'), {
+        target: { value: 'NVIDIA L40S' },
+      }),
+    );
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'H100 PCIe 위로' })));
 
     act(() =>
       fireEvent.change(screen.getByLabelText('시간당 가격 상한 (USD)'), {
@@ -85,7 +114,7 @@ describe('GpuSettingsSection', () => {
     expect(saved).toEqual([
       {
         provider: 'RUNPOD',
-        preferred_gpu_types: ['NVIDIA H100 80GB HBM3', 'NVIDIA H100 PCIe'],
+        preferred_gpu_types: ['NVIDIA H100 PCIe', 'NVIDIA H100 80GB HBM3', 'NVIDIA L40S'],
         preferred_regions: ['AP-JP-1', 'OC-AU-1'],
         cloud_type: 'SECURE',
         interruptible: true,
@@ -99,14 +128,30 @@ describe('GpuSettingsSection', () => {
     ]);
   });
 
-  it('AWS 를 고르면 인스턴스 종류·가용 영역 이름과 시작 템플릿·서브넷·보안 그룹 칸을 보이고 그대로 보낸다(S15P31A101-703)', async () => {
+  it('AWS 가 준비된 경우 고르면 인스턴스 종류·가용 영역 목록과 자세히 아래 시작 템플릿·서브넷·보안 그룹 칸을 보이고 그대로 보낸다(S15P31A101-703, -733)', async () => {
+    server.use(
+      http.get('*/api/gpu/settings', () =>
+        HttpResponse.json({
+          settings,
+          providers: [
+            { id: 'RUNPOD', configured: true },
+            { id: 'AWS', configured: true },
+          ],
+        }),
+      ),
+    );
     renderSection();
     await screen.findByLabelText('선호 GPU (위가 먼저)');
     act(() => fireEvent.change(screen.getByLabelText('공급자'), { target: { value: 'AWS' } }));
     expect(screen.queryByLabelText('RunPod 템플릿 ID')).toBeNull();
     act(() =>
       fireEvent.change(screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)'), {
-        target: { value: 'g6e.2xlarge\ng7e.2xlarge' },
+        target: { value: 'g6e.2xlarge' },
+      }),
+    );
+    act(() =>
+      fireEvent.change(screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)'), {
+        target: { value: 'g7e.2xlarge' },
       }),
     );
     act(() =>
@@ -136,19 +181,18 @@ describe('GpuSettingsSection', () => {
     });
   });
 
-  it('틀린 입력은 보내지 않고 까닭을 보이며, 되돌리기는 불러온 값으로 돌린다', async () => {
+  it('선호 GPU 를 모두 빼면 보내지 않고 까닭을 보이며, 되돌리기는 불러온 값으로 돌린다', async () => {
     renderSection();
     await screen.findByLabelText('선호 GPU (위가 먼저)');
-    act(() =>
-      fireEvent.change(screen.getByLabelText('선호 GPU (위가 먼저)'), { target: { value: '  ' } }),
-    );
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'H100 SXM 제거' })));
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'H100 PCIe 제거' })));
     act(() => fireEvent.click(screen.getByRole('button', { name: '저장' })));
-    expect(screen.getByRole('alert').textContent).toBe('선호 GPU 를 하나 이상 적으세요.');
+    expect(screen.getByRole('alert').textContent).toBe('선호 GPU 를 하나 이상 고르세요.');
     expect(saved).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '되돌리기' })));
-    expect((screen.getByLabelText('선호 GPU (위가 먼저)') as HTMLTextAreaElement).value).toBe(
-      'NVIDIA H100 80GB HBM3\nNVIDIA H100 PCIe',
-    );
+    const gpuList = screen.getByRole('list', { name: '선호 GPU (위가 먼저) 선택 목록' });
+    expect(gpuList.textContent).toContain('1. H100 SXM');
+    expect(gpuList.textContent).toContain('2. H100 PCIe');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 

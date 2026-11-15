@@ -1,9 +1,14 @@
 import {
   availabilityLabel,
   cellUsable,
+  formatRegion,
   formatUsd,
   gpuErrorMessage,
+  LAUNCH_PREP_TIME_NOTE,
   needsTierConfirm,
+  RECOMMENDED_TOOLTIP,
+  rowUsable,
+  shortGpuName,
   TIER_LABEL,
   TIER_TEXT,
   TIER_TONE,
@@ -15,10 +20,9 @@ import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useState } from 'react';
 
-// GPU 켜기(S15P31A101-702, -705): 공급자 카탈로그의 모든 GPU 를 행으로, 지역을 열로 보인다. 행 순서는 서버가 정한다
-// (추천 H100·H200 계열 → VRAM 등급 → 선호 순서). 칸은 「켤 수 있음」·「없음」·「모름」(AWS, 고를 수 있음)과 시간당 가격이다.
-// 기본은 서버가 고른 칸(추천 중 켤 수 있는 첫 칸 → 선호 순서)이고 칸을 눌러 바꾼다(없음·가격 상한 밖은 못 고름).
-// VRAM 등급이 제한·위험이면 막지 않고 확인창에서 「이 GPU 로는 ○○ 가 안 됩니다」를 보인 뒤 켠다. 기본과 다른 GPU 종류면 엔진 캐시 안내.
+// GPU 켜기(S15P31A101-702, -705, -733): 기본은 「켤 수 있음」(또는 「모름」) 칸이 있는 줄만 보이고 「전체 보기」로 나머지 줄을 펼친다.
+// 「추천」 표시는 켤 수 있는 줄에만 붙이고, 등급 꼬리표(권장 미만·제한·위험)는 마우스를 올리면 뜻을 보인다.
+// 지역 머리줄은 나라 이름+코드(예: 일본 AP-JP-1)로, GPU 이름은 짧은 이름(H100 SXM 등)으로 통일하며 예상 준비 시간을 함께 안내한다.
 
 interface Pick {
   gpuType: string;
@@ -35,18 +39,24 @@ function rowOf(offers: GpuOffers, gpuType: string): GpuOfferRow | undefined {
   return offers.gpu_types.find((g) => g.gpu_type === gpuType);
 }
 
-/** 행 이름 옆 표시: 「추천」(H100·H200 계열) 또는 VRAM 등급(권장 미만·제한·위험). 80GB급 다른 GPU 는 표시 없음 */
-function RowBadge({ row }: { row: GpuOfferRow }) {
-  if (row.recommended) {
+/** 행 이름 옆 표시: 「추천」(H100·H200 계열 중 켤 수 있는 줄만) 또는 VRAM 등급(권장 미만·제한·위험, hover 설명 포함) */
+function RowBadge({ row, usable }: { row: GpuOfferRow; usable: boolean }) {
+  if (row.recommended && usable) {
     return (
-      <span className="rounded px-1.5 text-xs font-semibold text-primary ring-1 ring-primary/50">
+      <span
+        title={RECOMMENDED_TOOLTIP}
+        className="rounded px-1.5 text-xs font-semibold text-primary ring-1 ring-primary/50"
+      >
         추천
       </span>
     );
   }
   if (!row.tier || row.tier === 'RECOMMENDED') return null;
   return (
-    <span className={cn('rounded px-1.5 text-xs font-semibold ring-1', TIER_TONE[row.tier])}>
+    <span
+      title={tierWarning(row.tier) ?? undefined}
+      className={cn('rounded px-1.5 text-xs font-semibold ring-1', TIER_TONE[row.tier])}
+    >
       {TIER_LABEL[row.tier]}
     </span>
   );
@@ -63,6 +73,7 @@ export function GpuLaunchForm({
   const { launch, pending: launching, error: launchError } = useGpuLaunch();
   const [picked, setPicked] = useState<Pick | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   if (pending) return <p className="p-5 text-sm text-muted-foreground">재고를 확인하는 중…</p>;
   if (offersError || !offers) {
@@ -88,6 +99,9 @@ export function GpuLaunchForm({
   const row = pick ? rowOf(offers, pick.gpuType) : undefined;
   const baseGpu = offers.default?.gpu_type ?? offers.gpu_types[0]?.gpu_type;
   const otherGpu = pick !== null && baseGpu !== undefined && pick.gpuType !== baseGpu;
+  const usableRows = offers.gpu_types.filter((g) => rowUsable(offers, g.gpu_type));
+  const hasHiddenRows = usableRows.length > 0 && usableRows.length < offers.gpu_types.length;
+  const visibleRows = showAll || usableRows.length === 0 ? offers.gpu_types : usableRows;
 
   const submit = () => {
     if (!pick) return;
@@ -100,14 +114,16 @@ export function GpuLaunchForm({
     const tier = row?.tier ?? null;
     const warning = tierWarning(tier);
     const strong = needsTierConfirm(tier);
+    const displayGpu = shortGpuName(pick.gpuType, row?.name);
     return (
       <div className="flex flex-col gap-4 p-5" data-testid="gpu-launch-confirm">
         <p className="text-sm font-semibold">GPU 를 켤까요?</p>
         <p className="text-sm">
-          {row?.name ?? pick.gpuType}
-          {row?.memory_gb != null && ` (${row.memory_gb}GB)`} · {pick.region}
+          {displayGpu}
+          {row?.memory_gb != null && ` (${row.memory_gb}GB)`} · {formatRegion(pick.region)}
           {cell?.price_per_hour_usd != null && ` · 시간당 ${formatUsd(cell.price_per_hour_usd)}`}
         </p>
+        <p className="text-xs text-muted-foreground">{LAUNCH_PREP_TIME_NOTE}</p>
         {warning && tier && tier !== 'RECOMMENDED' && (
           <p
             role={strong ? 'alert' : undefined}
@@ -141,6 +157,14 @@ export function GpuLaunchForm({
 
   return (
     <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{LAUNCH_PREP_TIME_NOTE}</span>
+        {hasHiddenRows && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? '켤 수 있는 줄만 보기' : `전체 보기 (${offers.gpu_types.length}종)`}
+          </Button>
+        )}
+      </div>
       <div className="max-h-[min(56vh,520px)] overflow-auto">
         <table className="w-full border-separate border-spacing-1 text-sm" aria-label="GPU 재고">
           <thead className="sticky top-0 z-[1] bg-card">
@@ -150,58 +174,62 @@ export function GpuLaunchForm({
                 <th
                   key={r.region}
                   scope="col"
-                  className="px-2 text-left font-normal text-muted-foreground"
+                  className="px-2 text-left font-normal whitespace-nowrap text-muted-foreground"
                 >
-                  {r.region}
+                  {formatRegion(r.region)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {offers.gpu_types.map((g) => (
-              <tr key={g.gpu_type}>
-                <th scope="row" className="pr-2 text-left font-medium whitespace-nowrap">
-                  <span className="flex items-center gap-1.5">
-                    {g.name}
-                    {g.memory_gb != null && (
-                      <span className="font-mono text-xs font-normal text-muted-foreground">
-                        {g.memory_gb}GB
-                      </span>
-                    )}
-                    <RowBadge row={g} />
-                  </span>
-                </th>
-                {offers.regions.map((r) => {
-                  const c = cellOf(offers, { gpuType: g.gpu_type, region: r.region });
-                  const selected = pick?.gpuType === g.gpu_type && pick.region === r.region;
-                  const ok = cellUsable(c);
-                  const label = availabilityLabel(c);
-                  return (
-                    <td key={r.region}>
-                      <button
-                        type="button"
-                        disabled={!ok}
-                        aria-pressed={selected}
-                        aria-label={`${g.name} ${r.region} ${label}`}
-                        onClick={() => setPicked({ gpuType: g.gpu_type, region: r.region })}
-                        className={cn(
-                          'flex w-full min-w-[84px] flex-col items-start rounded-md px-2 py-1.5 text-left ring-1 ring-border',
-                          selected && 'bg-point-soft ring-2 ring-primary',
-                          !ok && 'cursor-not-allowed opacity-40',
-                        )}
-                      >
-                        <span className="whitespace-nowrap">{label}</span>
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {c?.price_per_hour_usd != null
-                            ? `${formatUsd(c.price_per_hour_usd)}/h`
-                            : '—'}
+            {visibleRows.map((g) => {
+              const gpuName = shortGpuName(g.gpu_type, g.name);
+              const usable = rowUsable(offers, g.gpu_type);
+              return (
+                <tr key={g.gpu_type}>
+                  <th scope="row" className="pr-2 text-left font-medium whitespace-nowrap">
+                    <span className="flex items-center gap-1.5">
+                      {gpuName}
+                      {g.memory_gb != null && (
+                        <span className="font-mono text-xs font-normal text-muted-foreground">
+                          {g.memory_gb}GB
                         </span>
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+                      )}
+                      <RowBadge row={g} usable={usable} />
+                    </span>
+                  </th>
+                  {offers.regions.map((r) => {
+                    const c = cellOf(offers, { gpuType: g.gpu_type, region: r.region });
+                    const selected = pick?.gpuType === g.gpu_type && pick.region === r.region;
+                    const ok = cellUsable(c);
+                    const label = availabilityLabel(c);
+                    return (
+                      <td key={r.region}>
+                        <button
+                          type="button"
+                          disabled={!ok}
+                          aria-pressed={selected}
+                          aria-label={`${gpuName} ${r.region} ${label}`}
+                          onClick={() => setPicked({ gpuType: g.gpu_type, region: r.region })}
+                          className={cn(
+                            'flex w-full min-w-[84px] flex-col items-start rounded-md px-2 py-1.5 text-left ring-1 ring-border',
+                            selected && 'bg-point-soft ring-2 ring-primary',
+                            !ok && 'cursor-not-allowed opacity-40',
+                          )}
+                        >
+                          <span className="whitespace-nowrap">{label}</span>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {c?.price_per_hour_usd != null
+                              ? `${formatUsd(c.price_per_hour_usd)}/h`
+                              : '—'}
+                          </span>
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
