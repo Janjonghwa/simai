@@ -7,7 +7,6 @@ import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
 import { PpePolicyNotice } from '@/features/monitor/PpePolicyNotice';
-import { PpeWorkNotice } from '@/features/monitor/PpeWorkNotice';
 import { WorkPpeStatus } from '@/features/monitor/WorkPpeStatus';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
 import { usePpeSnapshot } from '@/features/ppe/usePpe';
@@ -76,7 +75,6 @@ function Notices({
       {eventPanel && <WorkSessionBar />}
       {eventPanel && <WorkPpeStatus />}
       {eventPanel && <PpePolicyNotice />}
-      {eventPanel && <PpeWorkNotice />}
       {eventPanel && <WatchBindNotice />}
       <WatchEscalationNotice />
     </div>

@@ -5,7 +5,9 @@ import {
   isSetupFinished,
   isSignerLimitReached,
   NO_CHECKS,
+  startWarnings,
   withCheck,
+  type StartReadiness,
 } from '@/features/work/preflight/preflight';
 import {
   addSignatureErrorMessage,
@@ -168,5 +170,55 @@ describe('deleteSignatureErrorMessage', () => {
       '이미 지워진 서명이에요',
     );
     expect(deleteSignatureErrorMessage(new ApiError(0))).toBe('서명을 지우지 못했어요');
+  });
+});
+
+describe('startWarnings(-730)', () => {
+  const ok: StartReadiness = {
+    ppe: { helmet: 'REQUIRED', vest: 'REQUIRED' },
+    ppeReceipt: 'ok',
+    tier0: 'up',
+    watchesConnected: 2,
+    laptopConnected: true,
+  };
+
+  it('모두 정상이면 경고가 없다', () => {
+    expect(startWarnings(ok)).toEqual([]);
+  });
+
+  it('필수 보호구가 있는데 Tier 0 는 이어졌고 보호구 상태가 안 들어오면 한 줄(감시 장비만 이름에)', () => {
+    expect(startWarnings({ ...ok, ppeReceipt: 'stale' })).toEqual([
+      '보호구 상태가 들어오지 않아 안전모·조끼 미착용 경보가 나지 않습니다. 현장에서 직접 확인하세요',
+    ]);
+    expect(
+      startWarnings({
+        ...ok,
+        ppe: { helmet: 'NOT_REQUIRED', vest: 'REQUIRED' },
+        ppeReceipt: 'stale',
+      })[0],
+    ).toContain('조끼 미착용');
+  });
+
+  it('보호구를 모두 끄거나, 수신을 모르거나, Tier 0 가 끊겼으면(GPU 확인 창 몫) 보호구 경고를 내지 않는다', () => {
+    const stale = { ...ok, ppeReceipt: 'stale' as const };
+    expect(
+      startWarnings({ ...stale, ppe: { helmet: 'NOT_REQUIRED', vest: 'NOT_REQUIRED' } }),
+    ).toEqual([]);
+    expect(startWarnings({ ...ok, ppeReceipt: 'unknown' })).toEqual([]);
+    expect(startWarnings({ ...stale, tier0: 'down' })).toEqual([]);
+    expect(startWarnings({ ...stale, tier0: 'unknown' })).toEqual([]);
+  });
+
+  it('연결된 워치가 0대면 한 줄: 현장 노트북 연결에 따라 글이 다르고, 워치 수를 모르면 내지 않는다', () => {
+    expect(startWarnings({ ...ok, watchesConnected: 0 })).toEqual([
+      '연결된 워치가 없어 현장 경보는 현장 노트북에서만 울립니다. 워치 전원과 와이파이를 확인하세요',
+    ]);
+    expect(startWarnings({ ...ok, watchesConnected: 0, laptopConnected: false })[0]).toContain(
+      '현장에서 경보가 울리지 않습니다',
+    );
+    expect(startWarnings({ ...ok, watchesConnected: 0, laptopConnected: null })).toEqual([
+      '연결된 워치가 없습니다. 워치 전원과 와이파이를 확인하세요',
+    ]);
+    expect(startWarnings({ ...ok, watchesConnected: null, laptopConnected: false })).toEqual([]);
   });
 });
