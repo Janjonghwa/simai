@@ -409,7 +409,7 @@ describe('PastDayPage — 본문', () => {
     expect(screen.getByTestId('report-panel').dataset.work).toBe('8002');
   });
 
-  it('시작과 종료가 같은 0초 작업이나 빈 기록이면 0초 타임라인 대신 사유를 보인다', async () => {
+  it('시작과 종료가 같은 0초 작업이나 빈 기록이면 0초 타임라인 없이 사유를 가운데 한 번만 보인다(S15P31A101-749)', async () => {
     const startMs = new Date(2026, 10, 10, 15, 26, 14).getTime();
     server.use(
       http.get('*/api/work-units', () =>
@@ -429,7 +429,10 @@ describe('PastDayPage — 본문', () => {
     renderPage();
     expect(
       await screen.findAllByText('작업이 시작 직후 바로 종료되어(0초) 저장된 기록이 없습니다.'),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(
+      within(screen.getByRole('region', { name: 'CCTV 다시 보기' })).getByRole('status'),
+    ).toBeTruthy();
     expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
     cleanup();
 
@@ -457,10 +460,10 @@ describe('PastDayPage — 본문', () => {
       ),
     );
     renderPage();
-    expect(
-      await screen.findByText('작업이 시작 직후 바로 종료되어(1초 미만) 저장된 기록이 없습니다.'),
-    ).toBeTruthy();
+    // 빈 기록 사유는 가운데 ReplayStage 가 보인다(위 띠에는 두지 않는다).
+    expect(await screen.findByTestId('replay-stage')).toBeTruthy();
     expect(screen.queryByRole('region', { name: '타임라인' })).toBeNull();
+    expect(screen.queryByText(/저장된 기록이 없습니다/)).toBeNull();
   });
 });
 

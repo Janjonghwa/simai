@@ -1,5 +1,5 @@
 import { ReplayStage } from '@/features/history/ReplayStage';
-import type { VideoSegment } from '@/features/history/types';
+import type { Span, VideoSegment } from '@/features/history/types';
 import type { WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplayStatus } from '@/features/viewer3d';
 import { useSessionStore } from '@/store/session.store';
@@ -262,5 +262,46 @@ describe('ReplayStage 영상 실패', () => {
     const status = await screen.findByRole('status');
     expect(status.textContent).toContain('영상 업로드 중');
     expect(status.textContent).not.toContain('3D 기록 먼저 보기');
+  });
+});
+
+describe('ReplayStage 3D 다시 보기(목 화면)·빈 기록 사유(S15P31A101-749)', () => {
+  const index = (gaps: Span[], frames: unknown[] = []) =>
+    ({ frames, workers: [], events: [], gaps, pending: null }) as never;
+
+  it('영상이 없고 기록이 있으면 카메라 칸을 flex 열 안에 두어 남은 높이를 받게 한다', async () => {
+    server.use(http.get('http://api.test/api/videos', () => HttpResponse.json({ segments: [] })));
+    renderStage({
+      ...LOADING,
+      loading: false,
+      replay: replayAt(T + 5_000),
+      index: index([], [{ t: T, ids: [], tracks: [] }]),
+    });
+
+    const tile = await screen.findByRole('button', { name: /카메라 1 크게 보기/ });
+    // 칸 배치(CctvWall)의 바깥 칸 → 그 부모가 flex 열이어야 컨테이너 높이(cqh)가 0 으로 접히지 않는다.
+    const wallRoot = tile.closest('.grid')!.parentElement!.parentElement!;
+    expect(wallRoot.parentElement!.className).toMatch(/\bflex\b.*\bflex-col\b/);
+  });
+
+  it.each([
+    ['1초 미만 작업', { from: T, to: T + 500 }, [], '1초 미만'],
+    [
+      '일부만 데이터 없음',
+      RANGE,
+      [{ from: T, to: T + 1_000 }],
+      '감지된 작업자와 위험 이벤트가 없습니다',
+    ],
+  ])('빈 기록 사유: %s', async (_, range, gaps, text) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ReplayStage
+          session={{ ...LOADING, range, loading: false, replay: replayAt(T), index: index(gaps) }}
+          range={range}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(new RegExp(text))).toBeTruthy();
   });
 });

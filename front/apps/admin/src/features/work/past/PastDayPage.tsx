@@ -8,7 +8,6 @@ import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { LateSubmitBand } from '@/features/work/past/LateSubmitBand';
 import {
   dayWorksOf,
-  emptyReplayReason,
   firstMoment,
   isZeroSpanWork,
   pickRun,
@@ -244,9 +243,12 @@ export function PastDayPage({ date, onSubmitted }: PastDayProps) {
     );
   }
 
-  const emptyReason =
-    range && index !== null && isEmptyReplay(index) ? emptyReplayReason(range, index) : null;
-  const zeroSpan = !range && isZeroSpanWork(replayWork);
+  // 기록이 비었거나 다시 볼 구간이 없으면 타임라인을 두지 않고, 사유는 가운데 칸에만 한 번 보인다(S15P31A101-749).
+  // 빈 기록(1초 미만·데이터 없음·잡힌 사람 없음)의 사유는 ReplayStage 가 가운데에 보인다.
+  const emptyReplay = range !== null && index !== null && isEmptyReplay(index);
+  const noRangeLine = isZeroSpanWork(replayWork)
+    ? ZERO_SPAN_REASON
+    : '아직 다시 볼 구간이 없습니다.';
 
   return (
     <div className="flex shrink-0 flex-col gap-3 pb-24">
@@ -254,46 +256,29 @@ export function PastDayPage({ date, onSubmitted }: PastDayProps) {
       {workProgressOf(work) === 'ENDED' && (
         <LateSubmitBand key={work.work_id} workId={work.work_id} onSubmitted={onSubmitted} />
       )}
-      {range ? (
-        emptyReason ? (
-          <p
-            role="status"
-            className="rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm text-muted-foreground"
-          >
-            {emptyReason}
-          </p>
-        ) : (
-          <ReplayTimeline
-            replay={replay}
-            index={index}
-            holdMs={session.holdMs}
-            from={range.from}
-            to={range.to}
-            stepMs={session.stepMs}
-            disabled={replay === null}
-            onJump={pickEvent}
-          />
-        )
-      ) : zeroSpan ? (
-        <p
-          role="status"
-          className="rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm text-muted-foreground"
-        >
-          {ZERO_SPAN_REASON}
-        </p>
-      ) : (
-        <p className="text-muted-foreground">아직 다시 볼 구간이 없습니다.</p>
+      {range && !emptyReplay && (
+        <ReplayTimeline
+          replay={replay}
+          index={index}
+          holdMs={session.holdMs}
+          from={range.from}
+          to={range.to}
+          stepMs={session.stepMs}
+          disabled={replay === null}
+          onJump={pickEvent}
+        />
       )}
       <div className={BODY}>
         <section aria-label="CCTV 다시 보기" className="flex min-h-[420px] min-w-0 flex-col">
           {range ? (
             <ReplayStage session={session} range={range} />
           ) : (
-            zeroSpan && (
-              <div className="flex h-full items-center justify-center rounded-lg border border-border bg-card p-6 text-muted-foreground">
-                {ZERO_SPAN_REASON}
-              </div>
-            )
+            <div
+              role="status"
+              className="flex h-full items-center justify-center rounded-lg border border-border bg-card p-6 text-muted-foreground"
+            >
+              {noRangeLine}
+            </div>
           )}
         </section>
         <RightColumn workId={work.work_id} session={session} onPickEvent={pickEvent} />
