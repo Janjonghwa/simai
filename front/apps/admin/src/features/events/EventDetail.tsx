@@ -2,6 +2,7 @@ import { EventDetailHeader } from '@/features/events/EventDetailHeader';
 import {
   AiPanel,
   ClipsPanel,
+  PhotosPanel,
   ProcessPanel,
   RulesPanel,
   TimelinePanel,
@@ -56,6 +57,7 @@ export function EventDetail({ incident, openEventId, onClose, onSeekTimestamp }:
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">
             <RulesPanel entries={entries} openEventId={openEventId} />
             <AiPanel entries={entries} onSeekTimestamp={onSeekTimestamp} />
+            <PhotosPanel entries={entries} />
             <ClipsPanel entries={entries} />
           </div>
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">
