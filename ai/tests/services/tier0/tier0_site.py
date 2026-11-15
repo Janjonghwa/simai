@@ -93,10 +93,11 @@ class _DictFetcher:
 
 def bundle_message(
     calibration: dict[str, Any], version: str, issued_at: int, *, zones=None, rules=RULES, fetcher: _DictFetcher | None = None,
-    work_surfaces=(), ppe_policy: dict[str, Any] | None = None,
+    work_surfaces=(), ppe_policy: dict[str, Any] | None = None, calibration_verification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], _DictFetcher]:
     """EC2 처럼 구성 요소 → 매니페스트 → config_bundle 알림을 만든다(바이트는 fetcher 에). work_surfaces: 작업면(R2·R3).
-    ppe_policy: 선택 구성 요소 ppe_policy 내용(config_bundle 1.3.0, R9). None 이면 싣지 않는다."""
+    ppe_policy: 선택 구성 요소 ppe_policy 내용(config_bundle 1.3.0, R9). None 이면 싣지 않는다.
+    calibration_verification: components.calibration.verification(config_bundle 1.4.0, 세팅 카메라 확인 통과 근거, -745)."""
     from simai_ai.config import sha256_of
 
     fetcher = fetcher or _DictFetcher()
@@ -118,6 +119,8 @@ def bundle_message(
         comp = {"version": doc.get("version") or doc.get("calibration_version"), "sha256": sha256_of(data), "uri": uri}
         if name == "rules":
             comp["rule_versions"] = [{"rule_id": r, "rule_version": v} for r, v in rules]
+        if name == "calibration" and calibration_verification is not None:
+            comp["verification"] = calibration_verification
         components[name] = comp
     manifest = _dumps({"config_version": version, "issued_at": issued_at, "components": components})
     fetcher.blobs[f"{base}/manifest.json"] = manifest

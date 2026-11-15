@@ -310,6 +310,9 @@ public class ConfigBundleService {
             if (name.equals("rules")) {
                 ref.set("rule_versions", rulesDoc.get("rule_versions").deepCopy());
             }
+            if (name.equals("calibration")) {
+                cameraCheckVerification(siteId, calibration.version()).ifPresent(v -> ref.set("verification", v));
+            }
         }
         ObjectNode manifest = mapper.createObjectNode();
         manifest.put("config_version", configVersion);
@@ -406,6 +409,40 @@ public class ConfigBundleService {
                 .stream().findFirst()
                 .filter(row -> current.get().equals(row[1]))
                 .map(row -> new Calibration((String) row[0], (byte[]) row[2]));
+    }
+
+    /**
+     * 이 보정이 현장 세팅 「카메라 확인」(1인 걷기, 명세 4.3 5단계)을 실제로 통과했다는 근거(config_bundle 1.4.0
+     * components.calibration.verification, S15P31A101-745). Tier 0 는 이 근거로 활성 PROVISIONAL 세팅 보정의 운영 상태를 CALIBRATED 로
+     * 올린다(명세 4.4 「현장 세팅 검증 충족」). 세팅 보정 문서는 품질 게이트 뒤 걷기 전에 PROVISIONAL 로 발행되고 동결이라 묶음이 근거를 싣는다.
+     * <p>그 보정을 등록한 세팅 세션, 또는 그 세션의 보정을 그대로 다시 낸 이전 맵 재사용 세션(-714)의 원 세션의 camera_check 가 PASSED 이고
+     * 확인이 잰 보정과 검증 기준선(baseline, 워커가 PASSED 에만 남긴다)이 같은 보정 버전일 때만 싣는다. SKIPPED(개발 플래그)·
+     * SKIPPED_REPLAY(재생 시험 걷기 생략, -736)·기준선 없는 PASSED(손으로 고친 기록)는 싣지 않는다(확인 필요 유지). 묶음을 다시 낼 때마다
+     * 다시 본다(구역 저장·작업 시작 묶음도 같은 근거를 실어 GPU 를 새로 켜도 같은 상태가 된다).
+     * <p>불변식: 재사용은 한 단계만 본다. reuse_source_session_id 는 늘 걷기 확인을 한 NEW 세팅 세션을 가리킨다(-714 재사용 후보는
+     * SetupReuseCandidates 가 NEW 세션만 고르고, V78 제약상 재사용 세션은 워커 작업·camera_check 가 없다). 재사용의 재사용을 허용하게 바꾸면
+     * 이 조회가 원 세션까지 따라가지 못해 근거를 싣지 않는다(PROVISIONAL, 안전 쪽). 그때는 원 세션을 따라가도록 함께 고친다.
+     */
+    private Optional<ObjectNode> cameraCheckVerification(String siteId, String calibrationVersion) {
+        return jdbc.query("""
+                SELECT s.setup_session_id::text AS setup_session_id FROM setup_session s
+                WHERE s.site_id = :site
+                  AND s.camera_check ->> 'status' = 'PASSED'
+                  AND s.camera_check ->> 'calibration_version' = s.calibration_version
+                  AND s.camera_check -> 'baseline' ->> 'calibration_version' = s.calibration_version
+                  AND (s.calibration_version = :cal
+                       OR EXISTS (SELECT 1 FROM setup_session r
+                                  WHERE r.site_id = :site AND r.reuse_source_session_id = s.setup_session_id
+                                    AND r.calibration_version = :cal))
+                ORDER BY s.completed_at DESC NULLS LAST, s.started_at DESC LIMIT 1
+                """, new MapSqlParameterSource("site", siteId).addValue("cal", calibrationVersion),
+                (rs, i) -> {
+                    ObjectNode v = mapper.createObjectNode();
+                    v.put("camera_check", "PASSED");
+                    v.put("calibration_version", calibrationVersion);
+                    v.put("setup_session_id", rs.getString("setup_session_id"));
+                    return v;
+                }).stream().findFirst();
     }
 
     /** 지정한 보정 버전의 문서(같은 현장). 문서가 없으면 묶음을 만들지 않는다 */

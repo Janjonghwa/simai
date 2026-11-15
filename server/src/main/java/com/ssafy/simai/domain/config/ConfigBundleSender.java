@@ -29,7 +29,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ConfigBundleSender {
 
-    static final String CONFIG_BUNDLE_SCHEMA_VERSION = "1.3.0";
+    static final String CONFIG_BUNDLE_SCHEMA_VERSION = "1.4.0"; // 1.4.0: components.calibration.verification(-745)
     static final long RESEND_AFTER_MS = 30_000;
     private static final String SENT_KEY = "config_bundle.sent";
     private static final String RETRYABLE = "DOWNLOAD_FAILED";

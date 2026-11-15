@@ -306,7 +306,7 @@ class ConfigBundleIntegrationTest {
             assertThat(startVersion).isNotEqualTo(before.get("config_version").asString());
             JsonNode startNotice = tier0.await("config_bundle", startVersion);
             assertThat(schemaViolations("config_bundle", startNotice)).isEmpty();
-            assertThat(startNotice.get("schema_version").asString()).isEqualTo("1.3.0");
+            assertThat(startNotice.get("schema_version").asString()).isEqualTo("1.4.0");
             assertThat(startNotice.at("/payload/previous_config_version").asString()).isEqualTo(before.get("config_version").asString());
             JsonNode startPolicy = ppeDocument(startNotice);
             assertThat(startPolicy.get("helmet").asString()).isEqualTo("REQUIRED");
@@ -512,6 +512,109 @@ class ConfigBundleIntegrationTest {
         tiny.put("top_height_m", 1e-46);
         assertThat(call("POST", "/api/static-objects", admin(), tiny, 400).get("code").asString())
                 .isEqualTo("INVALID_STATIC_OBJECT");
+    }
+
+    /**
+     * S15P31A101-745: 세팅 「카메라 확인」을 실제로 통과한(PASSED + 같은 보정의 기준선) 보정과 그 보정을 그대로 다시 낸 재사용 보정만 묶음에
+     * 통과 근거(config_bundle 1.4.0 components.calibration.verification)를 싣는다. 재생 시험 건너뜀·기준선 없는 PASSED·확인 없음은 싣지 않는다.
+     */
+    @Test
+    void 카메라_확인을_통과한_세팅_보정만_묶음에_통과_근거를_싣는다() throws Exception {
+        String passedCal = "cal-test-" + tag + "-cc-pass";
+        String replayCal = "cal-test-" + tag + "-cc-replay";
+        String handCal = "cal-test-" + tag + "-cc-hand";
+        String reuseCal = "cal-test-" + tag + "-cc-reuse";
+        String plainCal = "cal-test-" + tag + "-cc-none";
+        for (String cal : List.of(passedCal, replayCal, handCal, reuseCal, plainCal)) {
+            call("POST", "/api/calibrations", admin(), upload(calibration(cal)), 201);
+        }
+        String site = jdbc.queryForObject("SELECT site_id FROM calibration_version WHERE calibration_version = ?", String.class, passedCal);
+        jdbc.update("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, created_by, created_at, updated_at)
+                VALUES (?, current_date, ?, now(), now() + interval '1 hour', 2, 'PLANNED', ?, now(), now())
+                """, site, workName(), adminId);
+        long work = jdbc.queryForObject("SELECT work_id FROM work_unit WHERE name = ?", Long.class, workName());
+        UUID passed = UUID.randomUUID();
+        List<UUID> sessions = new ArrayList<>();
+        String scene = "scene-test-" + tag + "-cc";
+        jdbc.update("""
+                INSERT INTO scene_version (scene_version, site_id, calibration_version, state, gltf_key, is_upper_bound, committed_at, valid_from)
+                VALUES (?, ?, ?, 'COMMITTED', ?, false, now(), now())
+                """, scene, site, passedCal, "scenes/" + scene + ".glb");
+        try {
+            sessions.add(setupSession(passed, site, work, passedCal, "PASSED", true, null, null));
+            sessions.add(setupSession(UUID.randomUUID(), site, work, replayCal, "SKIPPED_REPLAY", false, null, null));
+            sessions.add(setupSession(UUID.randomUUID(), site, work, handCal, "PASSED", false, null, null)); // 손으로 고친 PASSED(17차)
+            sessions.add(setupSession(UUID.randomUUID(), site, work, reuseCal, null, false, passed, scene)); // 이전 맵 재사용(-714)
+
+            JsonNode verification = MAPPER.createObjectNode().put("camera_check", "PASSED").put("calibration_version", passedCal)
+                    .put("setup_session_id", passed.toString());
+            assertThat(calibrationRef(passedCal).get("verification")).isEqualTo(verification);
+            assertThat(calibrationRef(reuseCal).get("verification"))
+                    .isEqualTo(((ObjectNode) verification.deepCopy()).put("calibration_version", reuseCal));
+            for (String cal : List.of(replayCal, handCal, plainCal)) {
+                assertThat(calibrationRef(cal).has("verification")).as(cal).isFalse();
+            }
+
+            // Tier 0 가 받는 알림(1.4.0)이 계약에 맞고 매니페스트의 components 와 같다
+            doReturn(Optional.of(passedCal)).when(calibrations).currentVersion();
+            try (Tier0 tier0 = tier0()) {
+                tier0.send(health());
+                Thread.sleep(300);
+                String version = publish(null).get("config_version").asString();
+                JsonNode notice = tier0.await("config_bundle", version);
+                assertThat(notice.get("schema_version").asString()).isEqualTo("1.4.0");
+                assertThat(schemaViolations("config_bundle", notice)).isEmpty();
+                assertThat(notice.at("/payload/components/calibration/verification")).isEqualTo(verification);
+                JsonNode manifest = MAPPER.readTree(download(notice.at("/payload/bundle_uri").asString()));
+                assertThat(manifest.get("components")).isEqualTo(notice.at("/payload/components"));
+            }
+        } finally {
+            for (UUID session : sessions.reversed()) {
+                jdbc.update("DELETE FROM setup_session WHERE setup_session_id = ?", session);
+                jdbc.update("DELETE FROM analysis_job WHERE job_id = ?", "job-cc-" + session);
+            }
+            jdbc.update("DELETE FROM scene_version WHERE scene_version = ?", scene);
+        }
+    }
+
+    /** 이 보정 버전을 지금 보정으로 둔 발행 묶음의 components.calibration */
+    private JsonNode calibrationRef(String calibrationVersion) throws Exception {
+        doReturn(Optional.of(calibrationVersion)).when(calibrations).currentVersion();
+        String version = publish(null).get("config_version").asString();
+        assertThat(jdbc.queryForObject("SELECT calibration_version FROM config_bundle WHERE config_version = ?", String.class, version))
+                .isEqualTo(calibrationVersion);
+        return MAPPER.readTree(jdbc.queryForObject("SELECT components::text FROM config_bundle WHERE config_version = ?", String.class,
+                version)).get("calibration");
+    }
+
+    /** 세팅 세션 한 건. checkStatus 가 null 이면 카메라 확인 기록이 없다. baseline 은 워커가 PASSED 에만 남기는 검증 기준선 */
+    private UUID setupSession(UUID id, String site, long work, String calibrationVersion, String checkStatus, boolean baseline,
+            UUID reuseSource, String reuseScene) {
+        // 재사용 세션은 워커 작업이 없고 고른 맵·시점 확인을 남긴다(V78 setup_session_reuse_source_check)
+        String job = reuseSource == null ? "job-cc-" + id : null;
+        if (job != null) {
+            jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
+                    + " VALUES (?, 'site_setup','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb,now())", job);
+        }
+        String mode = reuseSource == null ? "NEW" : "REUSE";
+        ObjectNode check = null;
+        if (checkStatus != null) {
+            check = MAPPER.createObjectNode().put("status", checkStatus).put("calibration_version", calibrationVersion);
+            if (baseline) {
+                check.putObject("baseline").put("calibration_version", calibrationVersion).put("source", "SETUP_CAMERA_CHECK")
+                        .putObject("values_px");
+            }
+        }
+        jdbc.update("""
+                INSERT INTO setup_session (setup_session_id, site_id, work_unit_id, job_id, status, progress_pct, camera_heights_m,
+                    height_tolerance_cm, requested_by, started_at, completed_at, updated_at, calibration_version, camera_check,
+                    reuse_source_session_id, reuse_scene_version, reuse_view_check, mode, requested_mode)
+                VALUES (?, ?, ?, ?, 'COMPLETED', 100, '{}'::jsonb, 5, ?, now(), now(), now(), ?, CAST(? AS jsonb), ?, ?,
+                    CAST(? AS jsonb), ?, ?)
+                """, id, site, work, job, adminId, calibrationVersion, check == null ? null : check.toString(), reuseSource, reuseScene,
+                reuseSource == null ? null : "{}", mode, mode);
+        return id;
     }
 
     @Test

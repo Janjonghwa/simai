@@ -496,6 +496,10 @@ class Tier0Service:
         self.config_sync = ConfigSync(verifier, self.clock, source_id=s.gateway_id, store=self.archive,
                                       restored=restored, restored_applied_at=None if restored is None else now,
                                       before_apply=self._adopt_setup_calibration)
+        if restored is not None:
+            # 복원 묶음은 적용 경계(before_apply)를 거치지 않고, EC2 가 같은 config_version 을 다시 보내도 단락된다. 그 묶음의
+            # 카메라 확인 근거로 기동 때 한 번 올린다(새 상태 폴더·이전 기록 실패 뒤 재기동, -745). 스레드 시작 전이라 판정 lock 이 필요 없다
+            self._promote_verified_calibration(restored)
 
         # 5) 인지·판정
         feed = self._feed_override or self._build_feed(now)
@@ -1178,8 +1182,11 @@ class Tier0Service:
         세팅 보정은 운영 중 후보와 달리 2회 연속 확인·교체 뒤 감시(SwapProbation)를 거치지 않고 새 World 계보의 시작으로 바로
         기준이 된다. 채택 조건(계보·content_hash·계약·현장·카메라)을 다시 보고, 하나라도 어긋나면 저장·전환하지 않고 묶음을
         거부해 이전 보정·묶음으로 판정을 계속한다. 전환은 calibration_status.setup_adoption·로그·calibration_update 로 남긴다.
+        어느 묶음이든 세팅 「카메라 확인」 통과 근거가 있으면 적용 직전에 운영 상태를 CALIBRATED 로 올린다(-745,
+        _promote_verified_calibration).
         """
         if not getattr(bundle, "setup_calibration", False):
+            self._promote_verified_calibration(bundle)
             return None
         ref = bundle.notice.components["calibration"]
         at_ms = self.clock.now_ms()
@@ -1187,6 +1194,7 @@ class Tier0Service:
             doc = json.loads(bundle.blobs[ref.sha256])
             version = doc["calibration_version"]
             if self.calibration.known(version) and self.rig.calibration_version == version:
+                self._promote_verified_calibration(bundle)
                 return None  # 이미 채택했다(같은 묶음을 다시 적용하는 경우)
             self.calibration.prepare_setup(doc, received_at=at_ms, config_version=bundle.config_version)
             rig = CameraRig.from_provider(FileCalibrationProvider(self.calibration.path(version)))
@@ -1224,7 +1232,35 @@ class Tier0Service:
         log.info("세팅 보정 채택: %s → %s (세션 %s, 묶음 %s, 새 World 기준)", previous_version, version,
                  doc.get("setup_session_id"), bundle.config_version)
         self._event(f"calibration_switched:{version}:{at_ms}")
+        self._promote_verified_calibration(bundle)
         return None
+
+    def _promote_verified_calibration(self, bundle) -> None:
+        """구성 묶음 적용 직전(판정 lock 안). 묶음이 세팅 「카메라 확인」 통과 근거(config_bundle 1.4.0 verification)를 실었고
+        그 보정이 지금 활성 PROVISIONAL 세팅 보정이면 운영 상태를 CALIBRATED 로 올린다(-745, 명세 4.4 「현장 세팅 검증 충족」).
+
+        세팅 보정 문서는 품질 게이트 뒤 걷기 확인 전에 PROVISIONAL 로 발행되고 문서는 동결이라, 걷기 확인 결과는 EC2 가 묶음에 싣는다.
+        GPU 를 새로 켜도 시작 묶음(문서 PROVISIONAL) 뒤 EC2 가 다시 보내는 최근 묶음으로 같은 근거를 받는다. 근거가 없거나(SKIPPED_REPLAY
+        등) 조건이 안 맞으면 지금처럼 PROVISIONAL(확인 필요)이다. 저장 실패도 묶음 적용은 막지 않는다(PROVISIONAL 유지).
+        """
+        verification = getattr(bundle, "calibration_verification", None)
+        if verification is None:
+            return
+        problem = self.calibration.verification_problem(verification)
+        if problem is not None:
+            if self.calibration.state != "CALIBRATED":
+                log.info("카메라 확인 통과 근거가 있지만 보정 상태를 올리지 않는다(묶음 %s): %s", bundle.config_version, problem)
+            return
+        at_ms = self.clock.now_ms()
+        try:
+            promoted = self.calibration.mark_verified(verification, effective_at=at_ms, msg_id=self._new_msg_id())
+        except OSError as exc:
+            log.error("보정 CALIBRATED 기록 실패(묶음 %s, PROVISIONAL 유지): %s", bundle.config_version, exc)
+            return
+        if promoted:
+            log.info("세팅 카메라 확인 통과(세션 %s, 묶음 %s): 보정 %s 를 CALIBRATED 로 올림",
+                     verification.get("setup_session_id"), bundle.config_version, self.rig.calibration_version)
+            self._event(f"calibration_verified:{self.rig.calibration_version}:{at_ms}")
 
     def _begin_calibration_tick(self) -> None:
         if self._swap_probation is not None and self.clock.now_ms() > self._swap_probation.started_ms + self._swap_probation.window_ms:

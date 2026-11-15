@@ -704,7 +704,7 @@ MeasuredHeightsMAdditionalProperty = TypeAliasType(
 )
 
 
-class Calibration2(BaseModel):
+class Calibration3(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -719,7 +719,7 @@ class Config(BaseModel):
     )
     config_version: Annotated[StrictStr, Field(min_length=1)]
     manifest: GpuSessionRegisterResultSignedFile
-    calibration: Calibration2
+    calibration: Calibration3
 
 
 class GpuSessionRegisterResultStart(BaseModel):
@@ -3596,6 +3596,15 @@ class ConfigAck(Envelope):
     payload: Payload7
 
 
+class ConfigBundleCalibrationVerification(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_check: Literal['PASSED']
+    calibration_version: DefsVersionId
+    setup_session_id: DefsUuid
+
+
 class ConfigBundleComponent(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3684,7 +3693,7 @@ class Frames(BaseModel):
     camera_ids: list[DefsCameraId] | MISSING = MISSING
 
 
-class Calibration1(BaseModel):
+class Calibration2(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -3705,7 +3714,7 @@ class DefsInputProvenance(BaseModel):
         extra='forbid',
     )
     frames: Frames
-    calibration: Calibration1 | MISSING = MISSING
+    calibration: Calibration2 | MISSING = MISSING
     tracks: Tracks | MISSING = MISSING
     is_upper_bound: StrictBool
 
@@ -5320,13 +5329,20 @@ class Rules(ConfigBundleComponent):
     rule_versions: Annotated[list[RuleVersion], Field(min_length=1)]
 
 
+class Calibration1(ConfigBundleComponent):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    verification: ConfigBundleCalibrationVerification | MISSING = MISSING
+
+
 class Components(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
     zones: ConfigBundleComponent
     rules: Rules
-    calibration: ConfigBundleComponent
+    calibration: Calibration1
     operational_geometry: ConfigBundleComponent
     ppe_policy: ConfigBundleComponent | MISSING = MISSING
 
