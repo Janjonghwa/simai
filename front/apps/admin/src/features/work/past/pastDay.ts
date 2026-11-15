@@ -1,5 +1,4 @@
-import { allGap, type ReplayIndex } from '@/features/history/replayIndex';
-import type { Span } from '@/features/history/types';
+import type { ReplayIndex } from '@/features/history/replayIndex';
 import { formatClock, workTimeRange } from '@/features/history/works';
 import type { WorkDayItem } from '@/features/work/types';
 import { isEndedWork, workNameOf } from '@/features/work/workDay';
@@ -84,17 +83,6 @@ export function isZeroSpanWork(
 }
 
 export const ZERO_SPAN_REASON = '작업이 시작 직후 바로 종료되어(0초) 저장된 기록이 없습니다.';
-
-/** 기록이 비어 있을 때(`isEmptyReplay`) 0초 타임라인·빈 화면 대신 보여 줄 사유. */
-export function emptyReplayReason(range: Span, index: ReplayIndex): string {
-  if (range.to - range.from < 1_000) {
-    return '작업이 시작 직후 바로 종료되어(1초 미만) 저장된 기록이 없습니다.';
-  }
-  if (allGap(index.gaps, range)) {
-    return '작업 구간 동안 관제 데이터를 받지 못해 저장된 3D 기록이 없습니다.';
-  }
-  return '작업 시간 동안 감지된 작업자와 위험 이벤트가 없습니다.';
-}
 
 const SEVERITY_ENUM_RE = /\b(CRITICAL|HIGH|CAUTION|INFO)\b/g;
 

@@ -86,7 +86,8 @@ function ReplayCctv({
           </button>
         </p>
       )}
-      <div className="min-h-0 flex-1">{wall}</div>
+      {/* 칸 배치(CctvWall)는 남은 높이를 flex-1 로 받아 컨테이너 크기(cqh)로 칸을 잰다. 감싸는 칸이 flex 열이 아니면 높이 0 으로 접혀 빈 화면이 된다(S15P31A101-749). */}
+      <div className="flex min-h-0 flex-1 flex-col">{wall}</div>
     </div>
   );
 }
