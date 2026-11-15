@@ -433,6 +433,24 @@ def _bbox_iou(box_a: Sequence[float], box_b: Sequence[float]) -> float:
     return inter / denom if denom > 0.0 else 0.0
 
 
+def sampling_snapshot(frame: Any) -> tuple[int, int, frozenset[tuple[str, str]]]:
+    """World 정본 스냅샷에서 수집 주기 정책 입력을 만든다: (사람 수, 시각, 느린 주기로 둘 로컬 키). 읽기만 한다.
+
+    새 키·가림·근접(1 m)·경쟁·오래된 상태는 빠른 주기 유지(stable 에 넣지 않는다)."""
+    tracks = [tr for tr in frame.tracks if str(tr.lifecycle) != "LOST"]
+    stable: set[tuple[str, str]] = set()
+    for tr in tracks:
+        if (str(tr.lifecycle) != "CONFIRMED" or tr.identity_flags
+                or str(tr.identity_confidence) not in {"HIGH", "MEDIUM"}
+                or tr.t_last_valid != frame.t):
+            continue
+        if any(other.world_id != tr.world_id and
+               np.linalg.norm(np.subtract(other.position_xy, tr.position_xy)) <= 1.0 for other in tracks):
+            continue
+        stable.update(tuple(k) for k in tr.local_keys)
+    return len(tracks), int(frame.t), frozenset(stable)
+
+
 class AsyncReidCollector:
     """비동기 로컬 트랙 crop 수집 및 COPE 배치 추론기."""
 
@@ -454,7 +472,8 @@ class AsyncReidCollector:
         self.people = 0
         self.dropped_rate_limit = 0
         self.dropped_stable_cooldown = 0
-        self.cache = cache or LocalTrackFeatureCache(feature_ttl_ms=self.config.feature_ttl_ms)
+        # 빈 캐시도 len 0 이라 거짓이다: `or` 로 고르면 넘긴 캐시를 버린다(-744)
+        self.cache = cache if cache is not None else LocalTrackFeatureCache(feature_ttl_ms=self.config.feature_ttl_ms)
         self._embedder: Embedder | None = None
         self._face_embedder: FaceEmbedder | None = face_embedder
         self.state: str = "disabled"
@@ -568,19 +587,13 @@ class AsyncReidCollector:
         DORMANT 재입장으로 새 로컬 키가 생기면 stable 집합에 없으므로 첫 임베딩을 생략하지 않는다.
         갤러리/위치/ID를 변경하지 않는다. 다음 제출부터 적용한다.
         """
-        tracks = [tr for tr in frame.tracks if str(tr.lifecycle) != "LOST"]
-        self.people = len(tracks)
-        stable = set()
-        for tr in tracks:
-            if (str(tr.lifecycle) != "CONFIRMED" or tr.identity_flags
-                    or str(tr.identity_confidence) not in {"HIGH", "MEDIUM"}
-                    or tr.t_last_valid != frame.t):
-                continue
-            if any(other.world_id != tr.world_id and
-                   np.linalg.norm(np.subtract(other.position_xy, tr.position_xy)) <= 1.0 for other in tracks):
-                continue
-            stable.update(tr.local_keys)
-        self._sampling = (frame.t, frozenset(stable))
+        people, t, stable = sampling_snapshot(frame)
+        self.set_sampling(t, stable, people)
+
+    def set_sampling(self, t: int, stable: frozenset[tuple[str, str]], people: int) -> None:
+        """update_sampling 의 결과를 그대로 넣는다(프로세스 분리 -744: 판정 프로세스가 계산해 검출 프로세스로 보낸다)."""
+        self.people = int(people)
+        self._sampling = (int(t), frozenset(stable))
 
     def submit_observation(self, frame: Any, obs: Any) -> int:
         """디코딩된 `Frame` 과 `Observation2DFrame` 에서 유효한 crop 을 비동기 큐에 넣는다 (비차단)."""

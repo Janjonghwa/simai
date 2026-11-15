@@ -641,15 +641,9 @@ def _detector_child_main(spec: DetectorProcessSpec, generation: int, cmd_q: Any,
         if spec.tracker_backend_factory is not None:
             kwargs["backend_factory"] = spec.tracker_backend_factory
         tracker = _OffsetTracker(MultiCameraLocalTracker(**kwargs), generation)
-        feed = DetectorFeed(camera_ids=spec.camera_ids, tickets=child_input.next_batch, detector=detector,
-                            tracker=tracker, connected=child_input.connected, source=spec.mode.upper(),
-                            max_queued_per_camera=spec.detect_queue_depth, async_mode=spec.mode == "live")
-        avatar = None
-        if spec.avatar_channel is not None:
-            feed.avatar_enabled = True
-            avatar = _ChildAvatar(spec.avatar_channel, feed, spec.offload_side_work)
         side = None
         if spec.side_work is not None:
+            # 곁가지를 검출 입력보다 먼저 만든다: Re-ID 수집기(-744)는 DetectorFeed 가 크롭을 넘길 곳이다
             from services.tier0.split_side_work import ChildSideWork
 
             def put(item: Any) -> bool:
@@ -666,6 +660,15 @@ def _detector_child_main(spec: DetectorProcessSpec, generation: int, cmd_q: Any,
                     log.error("판정 프로세스가 응답을 받지 않는다(%s)", item[0])
 
             side = ChildSideWork(spec.side_work, spec.camera_ids, clock=clock, put=put, put_blocking=put_blocking)
+        feed = DetectorFeed(camera_ids=spec.camera_ids, tickets=child_input.next_batch, detector=detector,
+                            tracker=tracker, connected=child_input.connected, source=spec.mode.upper(),
+                            max_queued_per_camera=spec.detect_queue_depth, async_mode=spec.mode == "live",
+                            reid_collector=None if side is None else side.reid)
+        avatar = None
+        if spec.avatar_channel is not None:
+            feed.avatar_enabled = True
+            avatar = _ChildAvatar(spec.avatar_channel, feed, spec.offload_side_work)
+        if side is not None:
             side.attach(feed, child_input)
     except DetectorProcessError as e:
         out_q.put(("failed", e.exit_code, str(e)))
@@ -674,7 +677,13 @@ def _detector_child_main(spec: DetectorProcessSpec, generation: int, cmd_q: Any,
         log.exception("검출 프로세스 기동 실패")
         out_q.put(("failed", 4, f"검출 프로세스 기동 실패 ({type(e).__name__}: {e})"))
         return
-    out_q.put(("built", os.getpid(), reserve.status(), "torch" in sys.modules))
+    built_side: dict[str, Any] = {}
+    if side is not None:
+        try:
+            built_side = side.status()  # Re-ID 수집기 상태(active 여부)를 판정 쪽 조립 전에 알린다(-744)
+        except Exception:  # noqa: BLE001
+            log.debug("곁가지 기동 상태 실패", exc_info=True)
+    out_q.put(("built", os.getpid(), reserve.status(), "torch" in sys.modules, built_side))
     _ChildRunner(spec, generation, cmd_q, out_q, feed=feed, child_input=child_input, clock=clock, reserve=reserve,
                  avatar=avatar, side=side).run()
 
@@ -769,6 +778,8 @@ class DetectorProcess:
         self.failed_reason: str | None = None
         """file: 검출 프로세스가 죽었거나 응답하지 않았다. 재생 실패로 끝낸다"""
         self.torch_in_child: bool | None = None
+        self.built_side: dict[str, Any] = {}
+        """마지막 세대가 기동 때 알린 곁가지 상태(Re-ID 수집기 state 등). 하트비트 전·건강하지 않을 때의 기준"""
         _LIVE_PROCESSES.add(self)
 
     # --- 기동 ---------------------------------------------------------------------
@@ -810,6 +821,7 @@ class DetectorProcess:
             raise DetectorProcessError(msg[2], int(msg[1]))
         gen.pid = int(msg[1])
         self.torch_in_child = bool(msg[3])
+        self.built_side = dict(msg[4]) if len(msg) > 4 and msg[4] else {}
         if self._on_gpu_status is not None:
             self._on_gpu_status(dict(msg[2]))
         log.info("검출 프로세스 준비(세대 %d, pid %d, GPU 선확보 %s)", generation, gen.pid, msg[2].get("state"))
@@ -1288,7 +1300,8 @@ def _pending_reserve(spec: DetectorProcessSpec, reason: str) -> dict[str, Any]:
 class SplitDetectorFeed:
     """판정 루프의 입력(FrameFeed). 관측은 검출 프로세스에서 온다. LIVE 는 받기 스레드가 쌓은 경계 큐를 꺼내고, file 은 lockstep."""
 
-    reid_collector = None  # 1차 MR: Re-ID 는 분리 경로에서 끈다(설계 5절)
+    reid_collector: Any = None
+    """-744: services.tier0.split_side_work.RemoteReidCollector(특징 사본·update_sampling 명령). Re-ID 설정이 꺼지면 None"""
 
     def __init__(self, process: DetectorProcess, *, connected: Callable[[str], bool], source: str, async_mode: bool,
                  provenance: Mapping[str, Any] | None = None) -> None:
@@ -1335,6 +1348,10 @@ class SplitDetectorFeed:
 
     def pending_observations(self) -> int:
         return self.process.pending()
+
+    def reid_submission_status(self) -> dict[str, Any] | None:
+        """DetectorFeed.reid_submission_status 와 같은 값(검출 프로세스 보고값). 모르면 None."""
+        return self.process.snapshot().get("reid_submission")
 
     def drained(self) -> bool:
         return self.process.pending() == 0

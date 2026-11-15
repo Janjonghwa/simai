@@ -106,3 +106,27 @@ class NullTransport:
 
     def put(self, signed, content, content_type):
         return None
+
+
+class ColorEmbedder:
+    """Re-ID 임베더 대역(-744, 검출 프로세스에서 이름으로 불러온다): 크롭 평균 색으로 정한 결정론 벡터(64차원)."""
+
+    def embed(self, crops):
+        out = []
+        for crop in crops:
+            v = np.zeros(64, np.float32)
+            v[int(np.asarray(crop).mean()) % 64] = 1.0
+            v[(int(np.asarray(crop).shape[0]) + 7) % 64] += 0.5
+            out.append(v)
+        return np.stack(out)
+
+
+class ScriptedLargeLiveInput(ScriptedLiveInput):
+    """ScriptedLiveInput 과 같고 그림이 크다(Re-ID 크롭 최소 크기를 넘게, 사람 bbox 90..160 × 190..290)."""
+
+    def next_batch(self) -> list[Frame]:
+        out = super().next_batch()
+        return [Frame(camera_id=f.camera_id, estimated_capture_time=f.estimated_capture_time,
+                      timestamp_source=f.timestamp_source, frame_ref=f.frame_ref,
+                      timestamp_uncertainty_ms=f.timestamp_uncertainty_ms,
+                      image=np.full((360, 480, 3), 40 + 20 * (f.camera_id == "cam_B"), np.uint8)) for f in out]

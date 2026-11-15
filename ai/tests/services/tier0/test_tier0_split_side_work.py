@@ -166,7 +166,7 @@ def test_split_side_work_matches_single_process_on_file_replay(tmp_path, scene, 
         assert tuple(other["signature"]) == tuple(view["signature"]) and other["sample_times"] == view["sample_times"]
         for (img_a, mask_a), (img_b, mask_b) in zip(view["samples"], other["samples"], strict=True):
             assert np.array_equal(img_a, img_b) and np.array_equal(mask_a, mask_b)
-    assert two_status["process_split"]["disabled"] == ["reid"]
+    assert two_status["process_split"]["disabled"] == []
 
 
 # --------------------------------------------------------------------------- (b) 클립

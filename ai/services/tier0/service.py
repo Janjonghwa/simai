@@ -298,6 +298,7 @@ class Tier0Service:
         journal_fsync: Callable[[int], None] = os.fsync,
         detector_factory: Callable[[], PoseDetector] | None = None,
         tracker_backend_factory: BackendFactory | None = None,
+        reid_embedder_factory: Callable[[], Any] | None = None,
         gpu_torch: Any | None = None,
         on_camera_drifted: Callable[[str], None] | None = None,
     ) -> None:
@@ -306,6 +307,8 @@ class Tier0Service:
         self.settings = settings
         self._detector_factory = detector_factory
         self._tracker_backend_factory = tracker_backend_factory
+        # 시험 주입: COPE 대신 쓸 Re-ID 임베더(분리 경로는 검출 프로세스가 이름으로 불러오므로 모듈 최상위 이름, -744)
+        self._reid_embedder_factory = reid_embedder_factory
         self.live_input: LiveInput | None = None
         self.file_input: FileInput | None = None  # file 입력(녹화 재생)
         self.jsonl: JsonlOutput | None = None
@@ -891,7 +894,7 @@ class Tier0Service:
         """검출·판정 프로세스 분리(-728): 수신·디코딩·검출·로컬 추적은 spawn 자식, 이 프로세스는 관측만 받는다.
 
         자식이 기동 실패를 알리면 단일 경로와 같은 종료 코드로 시작하지 않는다(검출기·디코더 4, 영상 포트 설정 2). 이벤트 프레임·
-        클립·배경 누적은 검출 프로세스가 하고(-738, split_side_work), Re-ID 만 끈다. 영상 포트는 step 6(RemoteLiveInput.start)에서 연다."""
+        클립·배경 누적·Re-ID 크롭/임베딩은 검출 프로세스가 한다(-738·-744, split_side_work). 영상 포트는 step 6(RemoteLiveInput.start)에서 연다."""
         from services.tier0.detect_process import (
             DetectorProcess,
             DetectorProcessError,
@@ -903,10 +906,9 @@ class Tier0Service:
         from simai_ai.io.avatar_channel import avatar_channel_path
 
         s = self.settings
-        if s.reid.enabled:
-            log.warning("프로세스 분리: Re-ID 는 검출 프로세스로 옮기지 않아 끈다(-728 설계 9절)")
         frame_io = self._event_frame_io()
         side_work = SideWorkSpec(
+            reid=self._reid_config() if s.reid.enabled else None, reid_embedder_factory=self._reid_embedder_factory,
             event_frames=frame_io, event_frames_local_root=None if frame_io is None else str(s.state_dir),
             clips=mode == "live",
             clean_background=s.clean_background if s.clean_background.enabled else None, state_dir=str(s.state_dir),
@@ -933,13 +935,21 @@ class Tier0Service:
             raise Tier0StartError(f"{mode.upper()} 입력(검출 프로세스): {e}", e.exit_code) from e
         self.detect_process = process
         self._event(f"detect_process:{process.status()['pid']}")
+        if s.reid.enabled:
+            # Re-ID(-744): 크롭·임베딩은 검출 프로세스, 특징 사본·수집 주기 명령은 여기. 보조 비용·재입장·swap·분할은 World Track
+            from services.tier0.split_side_work import RemoteReidCollector
+
+            self.reid_collector = RemoteReidCollector(process, side_work.reid)
         if mode == "live":
             self.live_input = RemoteLiveInput(process)  # type: ignore[assignment]
-            return SplitDetectorFeed(process, connected=self.live_input.connected, source="LIVE", async_mode=True)
-        assert self._replay is not None
-        self.file_input = FileInput(self._replay, RemoteIngest(process), self.replay_clock)  # type: ignore[arg-type]
-        return SplitDetectorFeed(process, connected=self.file_input.connected, source="FILE", async_mode=False,
-                                 provenance=self._replay.provenance())
+            feed = SplitDetectorFeed(process, connected=self.live_input.connected, source="LIVE", async_mode=True)
+        else:
+            assert self._replay is not None
+            self.file_input = FileInput(self._replay, RemoteIngest(process), self.replay_clock)  # type: ignore[arg-type]
+            feed = SplitDetectorFeed(process, connected=self.file_input.connected, source="FILE", async_mode=False,
+                                     provenance=self._replay.provenance())
+        feed.reid_collector = self.reid_collector
+        return feed
 
     def _event_frame_io(self) -> EventFrameIo | None:
         """이벤트 프레임(CRITICAL 근거 사진) 서명·업로드 설정. LIVE 이고 I1 이 있을 때만(REPLAY·SIM 은 근거 사진을 만들지 않는다)."""
@@ -956,10 +966,16 @@ class Tier0Service:
         return None if self.link is None else self.link.publisher.send_event
 
     def _build_reid_collector(self) -> Any:
-        from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
+        from simai_ai.reid.collector import AsyncReidCollector
+
+        embedder = None if self._reid_embedder_factory is None else self._reid_embedder_factory()
+        return AsyncReidCollector(self._reid_config(), embedder=embedder, start_worker=True)
+
+    def _reid_config(self) -> Any:
+        from simai_ai.reid.collector import ReidCollectorConfig
 
         r = self.settings.reid
-        cfg = ReidCollectorConfig(
+        return ReidCollectorConfig(
             enabled=r.enabled,
             batch_size=r.batch_size,
             update_interval_ms=r.update_interval_ms,
@@ -971,7 +987,6 @@ class Tier0Service:
             clip_model_path=r.clip_model_path,
             use_face_aux=r.use_face_aux,
         )
-        return AsyncReidCollector(cfg, start_worker=True)
 
     def _build_detector(self) -> PoseDetector:
         """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
@@ -1844,7 +1859,8 @@ class Tier0Service:
                 "offload": avatar_writer.status() if hasattr(avatar_writer, "status") else None},
             "reid": None if self.reid_collector is None else self.reid_collector.status(),
             "reid_submission": (self.perception.feed.reid_submission_status()
-                                if isinstance(getattr(self.perception, "feed", None), DetectorFeed) else None),
+                                if isinstance(getattr(self.perception, "feed", None), (DetectorFeed, SplitDetectorFeed))
+                                else None),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "input_timing": None if self.live_input is None else self.live_input.bridge.timing.summary(),
             "stage_timing": self.perception.timing.summary(),
@@ -1857,8 +1873,8 @@ class Tier0Service:
                                 if isinstance(self.perception.feed, (DetectorFeed, SplitDetectorFeed)) else None),
             "process_split": None if self.detect_process is None else {
                 **self.detect_process.status(),
-                # 분리 경로에서 꺼지는 곁가지(-738 뒤로 Re-ID 만). 다음 A/B 는 두 칸 모두 같은 곁가지를 끈다
-                "disabled": ["reid"] if self.settings.reid.enabled else [],
+                # 분리 경로에서 꺼지는 곁가지(-744 뒤로 없음). 다음 A/B 는 두 칸 모두 같은 곁가지를 끈다
+                "disabled": [],
                 "side_work": {
                     "event_frames": (self.event_frames.status() if hasattr(self.event_frames, "status") else None),
                     "clean_background": (self.clean_background.status()

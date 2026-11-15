@@ -1,4 +1,4 @@
-"""프로세스 분리(-728) 곁가지를 검출 프로세스로 옮긴다 (S15P31A101-738). 설계: docs/design/S15P31A101-738-split-side-work.md.
+"""프로세스 분리(-728) 곁가지를 검출 프로세스로 옮긴다 (S15P31A101-738, Re-ID 는 -744). 설계: docs/design/S15P31A101-738-split-side-work.md.
 
 그림·압축 패킷은 검출 프로세스에 있으므로 그것이 필요한 일은 검출 프로세스가 하고, 무엇을 언제 할지(판정 결과)와 I1 송신은 판정
 프로세스가 정한다(단일 소유, AGENTS 규칙 1).
@@ -7,6 +7,7 @@
 |---|---|---|
 | 이벤트 프레임(CRITICAL R1~R4) | 프레임 링·JPEG·로컬 사본·서명·S3 PUT | `RemoteEventFrames`: 대상 전이 고르기(seen)·카메라 순서, 결과 `event_frame_ready` 를 I1 로(msg_id·순서는 판정 쪽) |
 | 이벤트 클립 | 패킷 링 버퍼(영상 수신에서 바로)·자르기·재다중화 | `RemoteClips`: 클립 대상 전이·poll 을 명령으로 |
+| Re-ID(-744) | 크롭·COPE 임베딩(`AsyncReidCollector`), 특징을 캐시에 넣을 때 판정 프로세스로도 보냄 | `RemoteReidCollector`: 특징 사본 → World Track feature_lookup, 수집 주기(update_sampling)는 명령. 보조 비용·DORMANT 재입장·swap 복원·분할 판정은 World Track 그대로 |
 | 관제 중 배경 누적(-540) | `BackgroundCleanBackground`(결과 파일·상태 파일·세팅 촬영 요청 그대로) | `RemoteCleanBackground`: 보정 활성화·카메라 리셋·회전 표본 크기 명령, 회전 복구 입력은 검출 프로세스가 쓴 파일을 읽음 |
 
 명령은 판정 → 검출 경계 큐로 간다(`DetectorProcess.send_side`). file 입력은 순서가 결과에 들어가므로 녹화 메시지와 같은 순서 큐에
@@ -51,6 +52,10 @@ class SideWorkSpec:
     clean_background: Any = None
     """services.tier0.settings.CleanBackgroundSettings. None 이면 배경 누적을 하지 않는다"""
     state_dir: str | None = None
+    reid: Any = None
+    """simai_ai.reid.collector.ReidCollectorConfig(-744). None 이면 검출 프로세스에 Re-ID 수집기를 만들지 않는다"""
+    reid_embedder_factory: Callable[[], Any] | None = None
+    """시험 주입: COPE 대신 쓸 임베더(모듈 최상위 이름). None 이면 설정의 COPE 가중치"""
 
 
 def _plain(value: Any) -> Any:
@@ -119,6 +124,43 @@ class ChildSideWork:
             from services.tier0.clips.service import EventClipService
 
             self.clips = EventClipService(PacketRingBuffer(self.camera_ids), self._clip_clock)
+        self.reid: Any = None
+        self.feed: Any = None
+        self.reid_features_sent = 0
+        self.reid_features_dropped = 0
+        if spec.reid is not None:
+            self.reid = self._build_reid(spec)
+
+    def _build_reid(self, spec: SideWorkSpec) -> Any:
+        """크롭·COPE 임베딩은 그림·GPU 가 있는 여기서 한다(-744). 특징은 캐시에 넣을 때 판정 프로세스로도 보낸다."""
+        try:
+            from simai_ai.reid.collector import AsyncReidCollector, LocalTrackFeatureCache
+
+            forward = self._send_feature
+
+            class ForwardingCache(LocalTrackFeatureCache):
+                """같은 캐시(검출 쪽 수집 주기 판단에 쓴다)이고, 넣을 때 판정 프로세스로도 보낸다."""
+
+                def put(self, feature: Any, *, keep_timeline: bool = False) -> None:
+                    super().put(feature, keep_timeline=keep_timeline)
+                    try:
+                        forward(feature)
+                    except Exception:  # noqa: BLE001 - 보내기 실패가 임베딩 작업을 멈추지 않는다
+                        log.debug("Re-ID 특징 보내기 실패", exc_info=True)
+
+            embedder = None if spec.reid_embedder_factory is None else spec.reid_embedder_factory()
+            return AsyncReidCollector(spec.reid, embedder=embedder,
+                                      cache=ForwardingCache(feature_ttl_ms=spec.reid.feature_ttl_ms), start_worker=True)
+        except Exception as error:  # noqa: BLE001 - Re-ID 는 보조다. 실패해도 검출 프로세스는 뜬다(기하 추적 그대로)
+            log.warning("Re-ID 수집기 기동 실패(검출 프로세스): %s", type(error).__name__)
+            return None
+
+    def _send_feature(self, feature: Any) -> None:
+        """특징 하나(로컬 키·촬영 시각·임베딩)를 판정 프로세스 사본으로 보낸다. 차면 버리고 센다(Re-ID 는 보조)."""
+        if self._put(("side", "reid_feature", feature)):
+            self.reid_features_sent += 1
+        else:
+            self.reid_features_dropped += 1
 
     # --- 그림·패킷 -------------------------------------------------------------------
 
@@ -128,6 +170,7 @@ class ChildSideWork:
 
     def attach(self, feed: Any, child_input: Any) -> None:
         """검출 결과가 원본 헤더와 일치한 그림을 곁가지에 넘기고(DetectorFeed.observe_decoded), LIVE 패킷을 클립 링에 넣는다."""
+        self.feed = feed
         if self.wants_pictures:
             feed.observe_decoded = self.observe
         bridge = getattr(getattr(child_input, "live", None), "bridge", None)
@@ -186,6 +229,10 @@ class ChildSideWork:
         elif kind == "bg_rotation_side":
             if self.clean_background is not None:
                 self.clean_background.configure_rotation_samples(int(args[0]))
+        elif kind == "reid_sampling":
+            if self.reid is not None:
+                t, stable, people = args
+                self.reid.set_sampling(t, frozenset(tuple(k) for k in stable), people)
         elif kind == "bg_dump_rotation":
             seq, path, exclude = args
             self._put_blocking(("side_reply", seq, *self._dump_rotation(Path(path), exclude)))
@@ -233,6 +280,14 @@ class ChildSideWork:
                                         "frames_ready_sent": self.frames_ready_sent}}
         if self.clips is not None:
             out["side"]["clips"] = {**vars(self.clips.stats), "pending": self.clips.pending}
+        if self.reid is not None:
+            out["reid"] = {**self.reid.status(), "features_sent": self.reid_features_sent,
+                           "features_dropped": self.reid_features_dropped}
+            feed = self.feed
+            if feed is not None and hasattr(feed, "reid_submission_status"):
+                out["reid_submission"] = feed.reid_submission_status()
+        elif self.spec.reid is not None:
+            out["reid"] = {"enabled": bool(self.spec.reid.enabled), "state": "disabled", "reason": "start_failed"}
         background = self.clean_background
         if background is not None:
             out["side"]["clean_background"] = {"dropped": background.dropped, "disabled": background.disabled,
@@ -250,6 +305,11 @@ class ChildSideWork:
 
     def close(self, timeout_s: float = 2.0) -> None:
         self.stop.set()
+        if self.reid is not None:
+            try:
+                self.reid.close()
+            except Exception:  # noqa: BLE001
+                log.debug("Re-ID 수집기 닫기 실패", exc_info=True)
         if self.event_frames is not None:
             try:
                 self.event_frames.stop(timeout_s)
@@ -364,7 +424,10 @@ class RemoteClips:
         return None  # 패킷은 검출 프로세스의 영상 수신이 바로 넣는다
 
     def on_transitions(self, transitions: Iterable[Any]) -> list[Any]:
-        """전이에서 클립 대상(ClipTrigger)·보존 표시 열쇠만 뽑아 보낸다(전이 객체는 읽기 전용 매핑을 품어 pickle 되지 않는다)."""
+        """전이에서 클립 대상(ClipTrigger)·보존 표시 열쇠만 뽑아 보낸다(전이 객체는 읽기 전용 매핑을 품어 pickle 되지 않는다).
+
+        반환값은 단일 경로(EventClipService.on_transitions: 중복·대기 목록 가득 참을 뺀 새로 넣은 대상)와 다르다: 여기는 전이에서 뽑은
+        클립 대상 전부다(중복 제거는 검출 프로세스 쪽이 한다). 지금 호출자(JudgmentLoop)는 반환값을 쓰지 않는다."""
         from services.tier0.clips.service import critical_hold_key
         from services.tier0.clips.trigger import clip_trigger_for
 
@@ -419,8 +482,12 @@ class RemoteCleanBackground:
         self._rotation_side: int | None = None
         self.dump_failures = 0
         self.last_error: str | None = None
+        # 상태 갱신과 명령 넣기를 묶는다: 재시작 재전송(관측 받기 스레드)과 보정 활성화(판정 스레드)가 겹쳐도 새 세대 큐에
+        # 옛 문서의 bg_init 이 새 문서의 bg_activate 뒤에 들어가지 않게(넣은 순서 = lock 잡은 순서)
+        self._state_lock = threading.Lock()
         process.on_new_generation(self._replay_state)
-        self._send(("bg_init", self._document, self._provenance))
+        with self._state_lock:
+            self._send(("bg_init", self._document, self._provenance))
 
     def _send(self, cmd: tuple) -> bool:
         ok = self._process.send_side(cmd, required=True)
@@ -430,21 +497,25 @@ class RemoteCleanBackground:
 
     def _replay_state(self) -> None:
         """검출 프로세스가 다시 떴다: 새 세대에 지금 보정 문서·회전 표본 크기를 다시 보낸다(표본은 새로 모은다)."""
-        self._send(("bg_init", self._document, self._provenance))
-        if self._rotation_side is not None:
-            self._send(("bg_rotation_side", self._rotation_side))
+        with self._state_lock:
+            self._send(("bg_init", self._document, self._provenance))
+            if self._rotation_side is not None:
+                self._send(("bg_rotation_side", self._rotation_side))
 
     def activate(self, document: Mapping[str, Any], provenance: Mapping[str, Any]) -> None:
-        self._document = _plain(document)
-        self._provenance = _plain(provenance)
-        self._send(("bg_activate", self._document, self._provenance))
+        document, provenance = _plain(document), _plain(provenance)
+        with self._state_lock:
+            self._document, self._provenance = document, provenance
+            self._send(("bg_activate", document, provenance))
 
     def reset_camera(self, cid: str) -> None:
-        self._send(("bg_reset", cid))
+        with self._state_lock:
+            self._send(("bg_reset", cid))
 
     def configure_rotation_samples(self, max_side: int) -> None:
-        self._rotation_side = int(max_side)
-        self._send(("bg_rotation_side", self._rotation_side))
+        with self._state_lock:
+            self._rotation_side = int(max_side)
+            self._send(("bg_rotation_side", self._rotation_side))
 
     @property
     def _reference(self) -> dict[str, tuple[Path, dict[str, Any]]]:
@@ -483,3 +554,95 @@ class RemoteCleanBackground:
 
     def close(self) -> None:
         return None  # 검출 프로세스가 닫는다
+
+
+class RemoteReidCollector:
+    """AsyncReidCollector 대역(판정 프로세스, -744). 크롭·COPE 임베딩은 검출 프로세스가 하고, 여기는 받은 특징의 사본
+    ((camera, local_id[-g세대]) → 특징)을 두고 World Track 의 feature_lookup 에 돌려준다. Re-ID 보조 비용·DORMANT 재입장·swap 복원·
+    분할 판정은 World Track(판정 프로세스)이 그대로 한다(기하 게이트 뒤 보조 비용만, AGENTS 규칙 1·8).
+
+    수집 주기 정책(update_sampling)은 World 정본 스냅샷으로 여기서 계산해 바뀐 때만 명령으로 보낸다. 검출 프로세스가 다시 뜨면 사본을
+    비운다(새 세대 로컬 ID 는 -g<세대> 라 옛 특징과 겹치지 않지만, 옛 세대 특징을 남기지 않는다)."""
+
+    def __init__(self, process: Any, config: Any) -> None:
+        from simai_ai.reid.collector import LocalTrackFeatureCache
+        from simai_ai.tracking.stage_timing import StageTiming
+
+        self._process = process
+        self.config = config
+        self.cache = LocalTrackFeatureCache(feature_ttl_ms=config.feature_ttl_ms)
+        self.timing = StageTiming()
+        self.people = 0
+        self._last_sampling: tuple[int, frozenset] | None = None
+        self.features_received = 0
+        self.sampling_sent = 0
+        self.sampling_dropped = 0
+        self.resets = 0
+        process.on_side("reid_feature", self._receive)
+        process.on_new_generation(self._reset)
+
+    def _child(self) -> dict[str, Any]:
+        snap = self._process.snapshot()
+        child = snap.get("reid") if snap else None
+        if child is None:
+            child = (getattr(self._process, "built_side", None) or {}).get("reid")
+        return dict(child or {})
+
+    @property
+    def state(self) -> str:
+        return str(self._child().get("state") or "disabled")
+
+    @property
+    def reason(self) -> str | None:
+        return self._child().get("reason")
+
+    @property
+    def active(self) -> bool:
+        return self.config.enabled and self.state == "active"
+
+    def _receive(self, feature: Any) -> None:
+        """받기 스레드에서 불린다. 같은 키는 촬영 시각이 늘 때만 바꾼다(LocalTrackFeatureCache.put)."""
+        self.cache.put(feature)
+        self.features_received += 1
+
+    def _reset(self) -> None:
+        self.cache.clear()
+        self._last_sampling = None
+        self.resets += 1
+
+    def lookup(self, camera_id: str, local_track_id: str, now_ms: int | None = None) -> Any:
+        if not self.config.enabled:
+            return None
+        with self.timing.measure("reid_lookup", self.people):
+            return self.cache.lookup(camera_id, local_track_id, now_ms)
+
+    def update_sampling(self, frame: Any) -> None:
+        from simai_ai.reid.collector import sampling_snapshot
+
+        people, t, stable = sampling_snapshot(frame)
+        self.people = people
+        key = (people, stable)
+        if self._last_sampling is not None and self._last_sampling == key and self._process.spec.mode == "live":
+            # LIVE: 같은 정책이면 보내지 않는다(검출 쪽은 시각 차 500 ms 안에서만 정책을 쓰므로 0.4초마다는 다시 보낸다)
+            if t - self._sent_t < 400:
+                return
+        if self._process.send_side(("reid_sampling", t, sorted(stable), people)):
+            self.sampling_sent += 1
+            self._last_sampling = key
+            self._sent_t = t
+        else:
+            self.sampling_dropped += 1
+
+    _sent_t = 0
+
+    def status(self) -> dict[str, Any]:
+        """단일 경로 AsyncReidCollector.status 와 같은 키(검출 프로세스 보고값) + 판정 쪽 사본 계수."""
+        child = self._child()
+        base = {"enabled": bool(self.config.enabled), "state": self.state, "reason": self.reason}
+        return {**child, **base, "mode": "detect_process", "parent_cached_tracks": len(self.cache),
+                "features_received": self.features_received, "sampling_sent": self.sampling_sent,
+                "sampling_dropped": self.sampling_dropped, "resets": self.resets,
+                "parent_timing": self.timing.summary()}
+
+    def close(self, timeout_s: float = 1.0) -> None:
+        return None  # 수집기는 검출 프로세스가 닫는다
