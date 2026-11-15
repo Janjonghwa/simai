@@ -1,4 +1,4 @@
-import { CONFIDENCE_REASON, METRIC_LABEL } from '@/features/events/constants';
+import { CONFIDENCE_REASON, METRIC_LABEL, SERVER_CLOSE_LABEL } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
 import { PPE_RELEASE_LABEL, type PpeRelease } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
@@ -64,7 +64,13 @@ export function statusText(status: EntryStatus, release: PpeRelease | null = nul
     case 'notice':
       return '안내';
     case 'resolved': {
-      const word = status.closed ? '운영자 종료' : release ? PPE_RELEASE_LABEL[release] : '해소';
+      const word = status.closed
+        ? '운영자 종료'
+        : status.serverClosed
+          ? SERVER_CLOSE_LABEL[status.serverClosed]
+          : release
+            ? PPE_RELEASE_LABEL[release]
+            : '해소';
       return `${word} ${formatTime(status.at)}`;
     }
   }

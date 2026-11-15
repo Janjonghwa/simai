@@ -7,6 +7,7 @@ import com.ssafy.simai.domain.tier0.i1.I1MessageIngestor;
 import com.ssafy.simai.domain.tier0.i1.InvalidI1Message;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -37,6 +38,10 @@ import tools.jackson.databind.JsonNode;
  *       다시 붙으면 Tier 0 가 ack 뒤 저널과 새 스냅샷을 보내 분류를 다시 한다(S15P31A101-621).
  *   <li>분류하기 전에 이 Tier 0 가 들고 있는 이벤트(Tier0HeldEvents)를 active_events 로 바꾼다(S15P31A101-595). 커밋 뒤 보내는
  *       DELAYED_ACTIVE 알림이 바뀐 값을 싣는다. 분류가 실패해도 스냅샷은 Tier 0 의 지금 상태라 되돌리지 않는다.
+ *   <li>EC2 는 활성으로 아는데 스냅샷에 없는 이벤트(이전 Pod·이전 저널의 이벤트)는 이 Tier 0 가 들고 있지 않아 해소 전이가 다시 오지 않으므로
+ *       같은 트랜잭션에서 EC2 마감(NOT_IN_SNAPSHOT, ServerEventCloser)으로 닫고 커밋 뒤 알린다(S15P31A101-722). 마지막 Tier 0 시각이
+ *       snapshot_at 보다 늦은 이벤트는 닫지 않는다. 반대로 EC2 가 마감해 둔 이벤트가 스냅샷에 활성으로 있으면 Tier 0 쪽을 따라 되돌리고
+ *       동기화 중에 바뀐 이벤트처럼 분류한다.
  * </ul>
  */
 @Component
@@ -55,10 +60,13 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final Clock clock;
     private final ApplicationEventPublisher publisher;
     private final Tier0HeldEvents held;
+    private final ServerEventCloser serverCloser;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
             TransactionTemplate transaction, EventAckForwarder acks, EventEscalationForwarder escalations,
-            EventCloseForwarder closes, Clock clock, ApplicationEventPublisher publisher, Tier0HeldEvents held) {
+            EventCloseForwarder closes, Clock clock, ApplicationEventPublisher publisher, Tier0HeldEvents held,
+            ServerEventCloser serverCloser) {
+        this.serverCloser = serverCloser;
         this.acks = acks;
         this.escalations = escalations;
         this.closes = closes;
@@ -103,7 +111,8 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             }
         }
         Long missingFrom = tracker.missingBefore(snapshotOffset);
-        cursors.saveSnapshot(gatewayId, I1Json.requiredTime(p, "snapshot_at"), snapshotOffset, missingFrom);
+        OffsetDateTime snapshotAt = I1Json.requiredTime(p, "snapshot_at");
+        cursors.saveSnapshot(gatewayId, snapshotAt, snapshotOffset, missingFrom);
         if (missingFrom != null) {
             log.info("I1 스냅샷 전 빈 구간: gateway={} snapshot_offset={} resend_from={}", gatewayId, snapshotOffset, missingFrom);
             journal.send(connection, tracker, missingFrom);
@@ -129,7 +138,7 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         held.replace(gatewayId, activeIds);
         Set<UUID> touched = tracker.touchedDuringSync();
         try {
-            transaction.executeWithoutResult(status -> classify(gatewayId, valid, activeIds, touched));
+            transaction.executeWithoutResult(status -> classify(gatewayId, valid, activeIds, touched, snapshotAt));
         } catch (RuntimeException e) {
             log.warn("I1 스냅샷 분류 실패라 연결을 닫아 스냅샷을 다시 받는다: gateway={} error={}", gatewayId,
                     e.getClass().getSimpleName());
@@ -160,16 +169,23 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         return Outcome.STORED;
     }
 
-    private void classify(String gatewayId, List<JsonNode> active, Set<UUID> activeIds, Set<UUID> touched) {
+    private void classify(String gatewayId, List<JsonNode> active, Set<UUID> activeIds, Set<UUID> touched, OffsetDateTime snapshotAt) {
+        Set<UUID> reopened = new HashSet<>();
         for (JsonNode event : active) {
             events.ensureFromSnapshot(gatewayId, event);
+            if (events.reopenServerClosed(gatewayId, event)) {
+                reopened.add(I1Json.requiredUuid(event, "event_id"));
+            }
+        }
+        if (!reopened.isEmpty()) {
+            log.warn("I1 스냅샷에 활성인데 EC2 가 마감해 둔 이벤트를 Tier 0 쪽으로 되돌림: gateway={} count={}", gatewayId, reopened.size());
         }
         Set<UUID> undecided = events.withoutDelivery(activeIds);
         Set<UUID> delayed = new LinkedHashSet<>(); // 스냅샷 순서대로 알린다
         Set<UUID> auditOnly = new HashSet<>();
         for (JsonNode event : active) {
             UUID eventId = I1Json.requiredUuid(event, "event_id");
-            if (undecided.contains(eventId) || touched.contains(eventId)) {
+            if (undecided.contains(eventId) || touched.contains(eventId) || reopened.contains(eventId)) {
                 boolean hasEvidence = I1Json.time(event, "last_valid_observation_at") != null;
                 (hasEvidence ? delayed : auditOnly).add(eventId);
             }
@@ -185,10 +201,13 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             publisher.publishEvent(new RiskEventsDelivered(List.copyOf(delayed)));
         }
         events.setDelivery(auditOnly, "AUDIT_ONLY");
-        int stale = events.countActiveNotIn(gatewayId, activeIds);
-        if (stale > 0) {
-            // 해소 전이를 받지 못한 채 활성으로 남은 이벤트. 지우거나 바꾸지 않고 드러내기만 한다(EC2 는 전이를 만들지 않는다)
-            log.warn("I1 스냅샷에 없는데 EC2 에서 활성인 이벤트: gateway={} count={}", gatewayId, stale);
+        // 이 Tier 0 가 들고 있지 않은 활성 이벤트: 해소 전이가 다시 오지 않는다. Tier 0 전이는 만들지 않고 EC2 마감으로 닫는다(S15P31A101-722)
+        List<UUID> closed = serverCloser.close(gatewayId, ServerEventCloser.Kind.NOT_IN_SNAPSHOT, gatewayId,
+                "살아 있는 Tier 0 의 재동기화 스냅샷에 이 이벤트가 없다(이전 Pod·이전 저널의 이벤트). 관측 해소 아님",
+                activeIds, snapshotAt.toInstant());
+        if (!closed.isEmpty()) {
+            publisher.publishEvent(new RiskEventsDelivered(closed));
+            log.warn("I1 스냅샷에 없는데 EC2 에서 활성이던 이벤트를 마감: gateway={} count={}", gatewayId, closed.size());
         }
     }
 }

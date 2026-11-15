@@ -265,6 +265,75 @@ class RiskEventJournalIntegrationTest {
         }
     }
 
+    @Test
+    void 스냅샷에_없는_EC2_활성_이벤트는_EC2_마감으로_닫고_전이는_만들지_않는다() throws Exception {
+        // S15P31A101-722: 이전 Pod 의 이벤트는 해소 전이가 다시 오지 않는다. 관측 해소가 아님을 남기고 닫는다
+        UUID orphan = UUID.randomUUID();
+        UUID kept = UUID.randomUUID();
+        UUID alreadyResolved = UUID.randomUUID();
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(orphan, 1, 0, "RAISED", true));
+            tier0.send(transition(kept, 1, 1, "RAISED", true));
+            tier0.send(transition(alreadyResolved, 1, 2, "RAISED", true));
+            tier0.send(transition(alreadyResolved, 2, 3, "RESOLVED", true));
+            tier0.send(snapshot(3L, active(kept, 1, "RAISED", true)));
+            tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+        }
+
+        assertThat(event(orphan, "lifecycle")).isEqualTo("RESOLVED");
+        assertThat(event(orphan, "verification")).isEqualTo("VERIFIED"); // 검증 상태는 그대로(예시 전이 값)
+        assertThat(event(orphan, "event_sequence")).isEqualTo("1");
+        assertThat(event(orphan, "resolved_at")).isNotNull();
+        JsonNode resolution = MAPPER.readTree(event(orphan, "resolution"));
+        assertThat(resolution.path("kind").asString()).isEqualTo("NOT_IN_SNAPSHOT");
+        assertThat(resolution.path("trigger_ref").asString()).isEqualTo(gatewayId);
+        assertThat(resolution.path("last_event_sequence").asInt()).isEqualTo(1);
+        assertThat(resolution.path("reason").asString()).contains("관측 해소 아님");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM risk_event_server_close WHERE event_id = ? AND kind = 'NOT_IN_SNAPSHOT'"
+                + " AND close_id = CAST(? AS uuid) AND lifecycle_before = 'RAISED'",
+                Integer.class, orphan, resolution.path("close_id").asString())).isEqualTo(1);
+        // Tier 0 전이 기록에는 아무것도 더하지 않는다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM risk_event_update WHERE event_id = ?", Integer.class, orphan))
+                .isEqualTo(1);
+        // 스냅샷에 있는 이벤트와 이미 해소된 이벤트는 그대로
+        assertThat(event(kept, "lifecycle")).isEqualTo("RAISED");
+        assertThat(event(alreadyResolved, "resolution")).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM risk_event_server_close WHERE event_id IN (?, ?)",
+                Integer.class, kept, alreadyResolved)).isZero();
+    }
+
+    @Test
+    void EC2_가_마감한_이벤트도_Tier0_가_다시_들고_오면_Tier0_쪽을_따른다() throws Exception {
+        UUID byTransition = UUID.randomUUID();
+        UUID bySnapshot = UUID.randomUUID();
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(byTransition, 1, 0, "RAISED", true));
+            tier0.send(transition(bySnapshot, 1, 1, "RAISED", true));
+            tier0.send(snapshot(1L));
+            tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+        }
+        assertThat(event(byTransition, "lifecycle")).isEqualTo("RESOLVED");
+        assertThat(event(bySnapshot, "lifecycle")).isEqualTo("RESOLVED");
+
+        // 같은 Tier 0 가 돌아와 하나는 스냅샷에 활성으로, 다른 하나는 그 뒤 실시간 UPDATED 로 보낸다
+        try (Tier0 tier0 = connect()) {
+            tier0.send(snapshot(1L, active(bySnapshot, 1, "RAISED", true)));
+            tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+            tier0.send(transition(byTransition, 2, 2, "UPDATED", false));
+            await(() -> event(byTransition, "lifecycle"), "UPDATED");
+        }
+        assertThat(event(byTransition, "resolution")).isNull();
+        assertThat(event(byTransition, "resolved_at")).isNull();
+        assertThat(event(bySnapshot, "lifecycle")).isEqualTo("RAISED");
+        assertThat(event(bySnapshot, "resolution")).isNull();
+        assertThat(event(bySnapshot, "delivery")).isEqualTo("DELAYED_ACTIVE");
+        // 마감 기록은 지우지 않는다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM risk_event_server_close WHERE event_id IN (?, ?)",
+                Integer.class, byTransition, bySnapshot)).isEqualTo(2);
+    }
+
     // ---- 도우미
 
     private ObjectNode transition(UUID eventId, int sequence, long offset, String kind, boolean resent) throws Exception {

@@ -18,6 +18,13 @@ export const MAX_RESOLVED = 50;
 /** 한 묶음(사람)에 보이는 해소된 규칙 수. 같은 규칙에 되풀이해 걸려도 카드가 길어지지 않게. */
 export const RESOLVED_PER_INCIDENT = 2;
 
+/** EC2 마감(S15P31A101-722) 문구. 관측 해소가 아니라 Tier 0 가 사라져 닫은 것이라 '해소'라 적지 않는다. */
+export const SERVER_CLOSE_LABEL = {
+  WORK_ENDED: '작업 종료로 마감',
+  SESSION_ENDED: 'GPU 세션 종료로 마감',
+  NOT_IN_SNAPSHOT: 'Tier 0 기록 없음으로 마감',
+} as const;
+
 /** 이벤트 패널의 「최근 해소」 칸에 남기는 해소된 묶음(사람·규칙·구역별) 수. */
 export const RECENT_RESOLVED_INCIDENTS = 4;
 

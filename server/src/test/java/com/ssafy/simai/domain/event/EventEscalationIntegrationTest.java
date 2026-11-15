@@ -97,7 +97,7 @@ class EventEscalationIntegrationTest {
 
         try (Tier0 tier0 = connect()) {
             tier0.send(transition(event, 1, 0, "RAISED", "HIGH", null));
-            tier0.send(snapshot(0L));
+            tier0.send(snapshot(0L, event));
             tier0.await("journal_ack", p -> !p.get("sync_mode").booleanValue());
 
             String jobId = "job-esc-approve-" + suffix;
@@ -171,7 +171,7 @@ class EventEscalationIntegrationTest {
 
         try (Tier0 tier0 = connect()) {
             tier0.send(transition(event, 1, 0, "RAISED", "HIGH", null));
-            tier0.send(snapshot(0L));
+            tier0.send(snapshot(0L, event));
             tier0.await("journal_ack", p -> !p.get("sync_mode").booleanValue());
 
             String jobId = "job-esc-reject-" + suffix;
@@ -251,7 +251,7 @@ class EventEscalationIntegrationTest {
 
         // 재연결 후 스냅샷 동기화가 끝나면 같은 escalation_id 로 둘 다 보낸다
         try (Tier0 tier0 = connect()) {
-            tier0.send(snapshot(1L));
+            tier0.send(snapshot(1L, event1, event2));
             JsonNode resent1 = tier0.await("event_escalate",
                     p -> escId1.equals(p.path("escalation").path("escalation_id").asString()));
             JsonNode resent2 = tier0.await("event_escalate",
@@ -270,7 +270,7 @@ class EventEscalationIntegrationTest {
 
         // 다시 연결되면 JOURNAL_UNAVAILABLE 인 escId1 만 같은 escalation_id 로 재전송되고, NOT_UPWARD 인 escId2 는 재전송되지 않는다
         try (Tier0 tier0 = connect()) {
-            tier0.send(snapshot(1L));
+            tier0.send(snapshot(1L, event1, event2));
             JsonNode retried1 = tier0.await("event_escalate",
                     p -> escId1.equals(p.path("escalation").path("escalation_id").asString()));
             assertThat(retried1.get("event_id").asString()).isEqualTo(event1.toString());
@@ -431,14 +431,24 @@ class EventEscalationIntegrationTest {
         return root;
     }
 
-    private ObjectNode snapshot(Long offset) throws Exception {
+    /** Tier 0 가 지금 들고 있는 활성 이벤트(active)를 싣는다. 빠진 활성 이벤트는 EC2 가 마감한다(S15P31A101-722) */
+    private ObjectNode snapshot(Long offset, UUID... active) throws Exception {
         ObjectNode root = (ObjectNode) MAPPER.readTree(Files.readString(EXAMPLES.resolve("event_state_snapshot.json")));
         root.put("msg_id", UUID.randomUUID().toString());
         root.put("source_id", gatewayId);
         ObjectNode p = (ObjectNode) root.get("payload");
         p.put("gateway_id", gatewayId);
         p.put("journal_offset", offset);
-        p.putArray("active_events");
+        ObjectNode template = (ObjectNode) p.path("active_events").get(0);
+        tools.jackson.databind.node.ArrayNode events = p.putArray("active_events");
+        for (UUID eventId : active) {
+            ObjectNode event = template.deepCopy();
+            event.put("event_id", eventId.toString());
+            event.put("event_sequence", 1);
+            event.put("lifecycle", "RAISED");
+            event.putNull("last_valid_observation_at"); // 근거 없음: 지연 알림 없이 AUDIT_ONLY(전과 같은 분류)
+            events.add(event);
+        }
         return root;
     }
 

@@ -56,7 +56,10 @@ public class RiskEventRepository {
             ON CONFLICT DO NOTHING
             """;
 
-    /** 가장 높은 sequence 일 때만 바뀐다. ACKNOWLEDGED 는 lifecycle 을 바꾸지 않는다. resumed 는 다시 활성(3.10) */
+    /**
+     * 가장 높은 sequence 일 때만 바뀐다. ACKNOWLEDGED 는 lifecycle 을 바꾸지 않는다. resumed 는 다시 활성(3.10).
+     * EC2 마감(S15P31A101-722)한 이벤트에 Tier 0 가 RAISED·UPDATED 를 보내면 Tier 0 가 아직 들고 있는 것이라 마감 투영(resolved_at·resolution)을 비운다.
+     */
     private static final String APPLY = """
             UPDATE risk_event SET
                 lifecycle = CASE WHEN :transition = 'ACKNOWLEDGED' THEN lifecycle ELSE :transition END,
@@ -68,10 +71,16 @@ public class RiskEventRepository {
                 raised_at = CASE WHEN :transition = 'RAISED' THEN :occurredAt ELSE raised_at END,
                 updated_at = :occurredAt,
                 resolved_at = CASE WHEN :transition = 'RESOLVED' THEN :occurredAt
-                                   WHEN CAST(:resumed AS boolean) THEN NULL ELSE resolved_at END,
+                                   WHEN CAST(:resumed AS boolean) THEN NULL
+                                   WHEN :transition IN ('RAISED', 'UPDATED')
+                                    AND resolution->>'kind' IN {SERVER_CLOSE_KINDS} THEN NULL
+                                   ELSE resolved_at END,
                 resume_count = resume_count + CASE WHEN CAST(:resumed AS boolean) THEN 1 ELSE 0 END,
                 resolution = CASE WHEN :transition = 'RESOLVED' THEN CAST(:resolution AS jsonb)
-                                  WHEN CAST(:resumed AS boolean) THEN NULL ELSE resolution END,
+                                  WHEN CAST(:resumed AS boolean) THEN NULL
+                                  WHEN :transition IN ('RAISED', 'UPDATED')
+                                   AND resolution->>'kind' IN {SERVER_CLOSE_KINDS} THEN NULL
+                                  ELSE resolution END,
                 proposed_severity = CASE
                     WHEN proposed_severity IS NOT NULL
                      AND (CASE proposed_severity WHEN 'INFO' THEN 0 WHEN 'CAUTION' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'CRITICAL' THEN 3 ELSE -1 END)
@@ -83,7 +92,7 @@ public class RiskEventRepository {
                     (SELECT e.event_id FROM risk_event e WHERE e.event_id = CAST(:relatedEventId AS uuid)), related_event_id),
                 delivery = COALESCE(:delivery, delivery)
             WHERE event_id = :eventId AND (event_sequence IS NULL OR event_sequence < :seq)
-            """;
+            """.replace("{SERVER_CLOSE_KINDS}", ServerEventCloser.KINDS_SQL);
 
     private static final String ENSURE_ACK = """
             INSERT INTO event_ack (ack_id, event_id, channel, actor_role, actor_user_id, actor_device_id, acked_at)
@@ -422,12 +431,21 @@ public class RiskEventRepository {
                 new MapSqlParameterSource().addValue("d", delivery).addValue("ids", eventIds));
     }
 
-    /** EC2 는 활성으로 아는데 스냅샷에는 없는 이벤트 수(정합 점검 로그용) */
-    public int countActiveNotIn(String gatewayId, Collection<UUID> activeIds) {
-        String notIn = activeIds.isEmpty() ? "" : " AND event_id NOT IN (:ids)";
-        Integer count = jdbc.queryForObject("SELECT count(*) FROM risk_event WHERE source = 'LIVE' AND gateway_id = :g"
-                + " AND lifecycle <> 'RESOLVED'" + notIn,
-                new MapSqlParameterSource().addValue("g", gatewayId).addValue("ids", activeIds), Integer.class);
-        return count == null ? 0 : count;
+    /**
+     * 스냅샷이 활성으로 실은 이벤트를 EC2 가 마감해 뒀으면(S15P31A101-722) Tier 0 쪽을 따라 되돌린다. 마감 기록(risk_event_server_close)은 그대로 둔다.
+     * @return 되돌렸으면 true
+     */
+    public boolean reopenServerClosed(String gatewayId, JsonNode active) {
+        String lifecycle = text(active, "lifecycle");
+        if (!"RAISED".equals(lifecycle) && !"UPDATED".equals(lifecycle)) {
+            return false;
+        }
+        return jdbc.update("UPDATE risk_event SET lifecycle = :lifecycle, resolved_at = NULL, resolution = NULL"
+                + " WHERE event_id = :eventId AND source = 'LIVE' AND gateway_id = :g AND lifecycle = 'RESOLVED'"
+                + " AND resolution->>'kind' IN " + ServerEventCloser.KINDS_SQL,
+                new MapSqlParameterSource()
+                        .addValue("lifecycle", lifecycle)
+                        .addValue("eventId", requiredUuid(active, "event_id"))
+                        .addValue("g", gatewayId)) > 0;
     }
 }

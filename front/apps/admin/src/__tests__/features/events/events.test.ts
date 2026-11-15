@@ -1,4 +1,5 @@
 import { ACK_HIDE_AFTER_MS } from '@/features/events/constants';
+import { entryStatus } from '@/features/events/entries';
 import {
   acknowledgedAt,
   bestCamera,
@@ -32,6 +33,7 @@ import {
   withoutStaleAcked,
   type EventEntry,
 } from '@/features/events/events';
+import { statusText } from '@/features/events/format';
 import { eventsPageSchema, type EventItem } from '@/features/events/types';
 import { zoneNameOf } from '@/features/zones/zoneName';
 import { describe, expect, it } from 'vitest';
@@ -547,6 +549,72 @@ describe('병합 흡수 마감(IDENTITY_MERGED, S15P31A101-657)', () => {
       who: '시스템',
       text: '추락 위험(가장자리) 같은 사람 ID 병합으로 이어짐',
     });
+  });
+});
+
+describe('EC2 마감(WORK_ENDED·SESSION_ENDED·NOT_IN_SNAPSHOT, S15P31A101-722)', () => {
+  const sessionEnded = {
+    kind: 'SESSION_ENDED' as const,
+    close_id: '5f0c2a8e-3b1d-4c7a-9e2f-7a1b2c3d4e5f',
+    closed_at: T + 2_000,
+    reason:
+      'GPU 세션이 끝나(END_REPORTED) 이 이벤트를 들고 있던 Tier 0 가 사라졌다. 관측 해소 아님',
+    trigger_ref: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
+    last_event_sequence: 4,
+  };
+  const closedBySession = (change: Partial<EventItem> = {}) =>
+    entry({ lifecycle: 'RESOLVED', resolved_at: T + 2_000, resolution: sessionEnded, ...change });
+
+  it('이벤트 목록 응답에 EC2 마감 resolution 이 있어도 목록 전체를 받는다(trigger_ref 모름 null 포함)', () => {
+    const closed = item({
+      event_id: 'e-2',
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 2_000,
+      resolution: sessionEnded,
+    });
+    const unknownTrigger = item({
+      event_id: 'e-3',
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 2_000,
+      resolution: {
+        ...sessionEnded,
+        kind: 'NOT_IN_SNAPSHOT',
+        trigger_ref: null,
+        last_event_sequence: null,
+      },
+    });
+    expect(eventsPageSchema.safeParse({ content: [closed, unknownTrigger, item()] }).success).toBe(
+      true,
+    );
+  });
+
+  it('최근 해소 칸에 넣지 않고, 관측 해소 묶음은 그대로 남긴다', () => {
+    const { active, resolved } = eventSections([
+      closedBySession({ event_id: 'gone', world_ids: ['w-9'] }),
+      entry({
+        event_id: 'seen',
+        world_ids: ['w-2'],
+        lifecycle: 'RESOLVED',
+        resolved_at: T + 1_000,
+      }),
+    ]);
+    expect(active).toEqual([]);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-2']);
+  });
+
+  it('상태 문구와 타임라인에 해소·운영자 종료가 아니라 마감 까닭을 적는다', () => {
+    const closed = closedBySession();
+    expect(statusText(entryStatus(closed))).toMatch(/^GPU 세션 종료로 마감 \d{2}:\d{2}:\d{2}$/);
+    const [incident] = groupIncidents([closed]);
+    expect(incidentTimeline(incident!).at(-1)).toEqual({
+      at: T + 2_000,
+      who: '시스템',
+      text: '추락 위험(가장자리) GPU 세션 종료로 마감',
+    });
+    const work = closedBySession({
+      resolution: { ...sessionEnded, kind: 'WORK_ENDED', trigger_ref: '42' },
+    });
+    expect(statusText(entryStatus(work))).toMatch(/^작업 종료로 마감 /);
   });
 });
 

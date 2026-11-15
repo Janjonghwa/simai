@@ -1,4 +1,4 @@
-import { ACK_CHANNEL_LABEL } from '@/features/events/constants';
+import { ACK_CHANNEL_LABEL, SERVER_CLOSE_LABEL } from '@/features/events/constants';
 import {
   acknowledgedAt,
   entryStatus,
@@ -6,6 +6,7 @@ import {
   isActive,
   isAlarmSeverity,
   isAlarming,
+  serverCloseKind,
 } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
@@ -125,12 +126,19 @@ function ruleTimeline(
     const closed = event.resolution?.kind === 'OPERATOR_CLOSED';
     // 병합 흡수 마감(S15P31A101-657)은 위험이 사라진 게 아니라 같은 사람의 남는 이벤트로 이어진 것이다. '해소'라 적지 않는다.
     const merged = event.resolution?.kind === 'IDENTITY_MERGED';
-    const release = closed || merged ? null : ppeReleaseOf(event, bundles);
-    items.push({
-      at: resolvedAt,
-      who: closed ? '운영자' : '시스템',
-      text: `${rule} ${closed ? '종료' : merged ? '같은 사람 ID 병합으로 이어짐' : release ? PPE_RELEASE_LABEL[release] : '해소'}`,
-    });
+    // EC2 마감(S15P31A101-722)은 Tier 0 가 사라져 닫은 것이다. 위험이 사라졌다는 뜻이 아니라 '해소'라 적지 않는다.
+    const serverClosed = serverCloseKind(event);
+    const release = closed || merged || serverClosed ? null : ppeReleaseOf(event, bundles);
+    const word = closed
+      ? '종료'
+      : merged
+        ? '같은 사람 ID 병합으로 이어짐'
+        : serverClosed
+          ? SERVER_CLOSE_LABEL[serverClosed]
+          : release
+            ? PPE_RELEASE_LABEL[release]
+            : '해소';
+    items.push({ at: resolvedAt, who: closed ? '운영자' : '시스템', text: `${rule} ${word}` });
   }
   return items;
 }

@@ -119,12 +119,15 @@ class ReplayRepository {
 
     /**
      * 시각 t 에 활성인 이벤트(Q2): t 이전 마지막 생명주기 전이가 RESOLVED 가 아닌 것.
-     * 후보는 t 뒤에 전이가 있거나(그 뒤에 끝났을 수 있다) 지금도 끝나지 않은 이벤트다. t 에 활성이었던 이벤트는 둘 중 하나다
+     * 후보는 t 뒤에 전이가 있거나(그 뒤에 끝났을 수 있다) 지금도 끝나지 않았거나 t 뒤에 EC2 마감된(S15P31A101-722, Tier 0 전이 없이 닫힘)
+     * 이벤트다. t 에 활성이었던 이벤트는 셋 중 하나다
      */
     private static final String ACTIVE_AT = EVENT_STATES.formatted("""
                 SELECT event_id FROM risk_event_update WHERE observation_at > :at
                 UNION
                 SELECT event_id FROM risk_event WHERE source = 'LIVE' AND lifecycle <> 'RESOLVED'
+                UNION
+                SELECT event_id FROM risk_event_server_close WHERE closed_at > :at
             """) + """
             SELECT * FROM (
                 SELECT DISTINCT ON (event_id) * FROM states

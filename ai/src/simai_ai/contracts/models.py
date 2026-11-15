@@ -3732,6 +3732,18 @@ class DefsReproducibility(BaseModel):
     input_hash: DefsSha256
 
 
+class DefsServerCloseResolution(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['WORK_ENDED', 'SESSION_ENDED', 'NOT_IN_SNAPSHOT']
+    close_id: DefsUuid
+    closed_at: DefsTimestampMs
+    reason: Annotated[StrictStr, Field(max_length=500, min_length=1)]
+    trigger_ref: Annotated[StrictStr | None, Field(min_length=1)]
+    last_event_sequence: Annotated[StrictInt | None, Field(ge=1)]
+
+
 class Ack(DefsOperatorAck):
     model_config = ConfigDict(
         extra='allow',
@@ -4211,7 +4223,12 @@ class Payload36(DefsSeverityUpwardOnly, DefsNeedsCheckMatchesReasons):
     acks: list[DefsOperatorAck] | MISSING = MISSING
     delivery: Literal['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY'] | MISSING = MISSING
     related_event_id: DefsUuidV7 | MISSING = MISSING
-    resolution: DefsOperatorResolution | DefsIdentityMergeResolution | MISSING = MISSING
+    resolution: (
+        DefsOperatorResolution
+        | DefsIdentityMergeResolution
+        | DefsServerCloseResolution
+        | MISSING
+    ) = MISSING
     held_by_tier0: StrictBool | MISSING = MISSING
     escalations: list[DefsOperatorEscalation] | MISSING = MISSING
 

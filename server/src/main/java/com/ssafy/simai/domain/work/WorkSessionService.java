@@ -79,6 +79,8 @@ public class WorkSessionService {
             var now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
             ObjectNode work = works.endSession(site, workId, now, userId);
             layoutZones.end(site, workId, java.time.OffsetDateTime.ofInstant(now, java.time.ZoneOffset.UTC));
+            // 커밋 뒤 Tier 0 가 없는 열린 이벤트를 마감한다(S15P31A101-722, OrphanEventSweeper)
+            events.publishEvent(new WorkEnded(site, workId));
             ObjectNode out = mapper.createObjectNode();
             out.set("work_unit", work);
             out.set("wrap_up", wrapUps.prepare(workId, work, now));
