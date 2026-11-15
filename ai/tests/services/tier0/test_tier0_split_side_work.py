@@ -185,6 +185,9 @@ class _InProcess:
     def snapshot(self):
         return self.side.status()
 
+    def on_side(self, kind, handler) -> None:
+        self.side_handlers = {**getattr(self, "side_handlers", {}), kind: handler}
+
 
 def test_remote_clips_cut_the_same_clips_as_single_process() -> None:
     cams = ("cam_A", "cam_B")

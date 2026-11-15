@@ -486,6 +486,26 @@ describe('EventClips', () => {
     expect(await screen.findByText('클립 목록을 받지 못했습니다')).toBeTruthy();
   });
 
+  it('방금 난 이벤트에 클립이 아직 없으면 영상 준비 중이고, 올라오면 클립으로 바뀐다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      clips = [];
+      const now = Date.now();
+      renderClips(event({ raised_at: now, updated_at: now }));
+      const section = await screen.findByRole('region', { name: '클립' });
+      await waitFor(() => expect(listCalls).toBe(1));
+      expect(within(section).getByText('영상 준비 중')).toBeTruthy();
+      expect(within(section).queryByText('—')).toBeNull();
+
+      clips = [clip()];
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(await within(section).findByText('카메라 1')).toBeTruthy();
+      expect(within(section).queryByText('영상 준비 중')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('목록을 다시 받지 못해도 받아 둔 클립과 보던 영상은 그대로 두고 실패를 알린다', async () => {
     const queryClient = renderClips();
     fireEvent.click(await screen.findByRole('button', { name: '카메라 1 재생' }));

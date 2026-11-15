@@ -348,6 +348,7 @@ class Tier0Service:
         self._rotation_recovery_error: str | None = None
         self.reid_collector: Any | None = None
         self.event_frames: EventFrameService | None = None
+        self.clip_uploader: Any | None = None
         self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
         self._drift_report: MonitorReport | None = None
@@ -582,6 +583,7 @@ class Tier0Service:
             except Exception as error:  # noqa: BLE001 - 부가 근거 경로 실패가 관제 기동을 막지 않는다
                 self.event_frames = None
                 log.warning("이벤트 프레임 기동 실패: %s", type(error).__name__)
+        self._attach_clip_upload()
         if s.file is not None and s.file.jsonl_dir is not None:
             try:
                 self.jsonl = JsonlOutput(s.file.jsonl_dir, Envelope(s.gateway_id, self.clock, new_msg_id=self._new_msg_id),
@@ -912,7 +914,7 @@ class Tier0Service:
         side_work = SideWorkSpec(
             reid=self._reid_config() if s.reid.enabled else None, reid_embedder_factory=self._reid_embedder_factory,
             event_frames=frame_io, event_frames_local_root=None if frame_io is None else str(s.state_dir),
-            clips=mode == "live",
+            clips=mode == "live", clip_io=self._clip_io() if mode == "live" else None,
             clean_background=s.clean_background if s.clean_background.enabled else None, state_dir=str(s.state_dir),
         )
         avatar = None
@@ -962,6 +964,37 @@ class Tier0Service:
         base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
         # S3 PUT 은 판단용 로컬 사본을 알린 뒤 뒤에서 한다(-408). 경보·VLM 경로가 기다리지 않으니 2 s 에서 5 s 로 늘린다
         return EventFrameIo(base, s.i1.token, ca_file=s.i1.ca_file, transport_timeout_s=5.0)
+
+    def _clip_io(self) -> Any | None:
+        """이벤트 클립 서명·업로드 설정(-748). LIVE 이고 I1 이 있을 때만(REPLAY 입력은 클립 대상 전이가 없다, trigger.py)."""
+        s = self.settings
+        if not (s.event_clips_enabled and s.input_mode == "live" and s.i1 is not None):
+            return None
+        from services.tier0.clips.async_upload import SPOOL_DIRNAME, ClipIo
+
+        parts = urlsplit(s.i1.url)
+        base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
+        return ClipIo(base, s.i1.token, ca_file=s.i1.ca_file, spool_dir=str(s.state_dir / SPOOL_DIRNAME))
+
+    def _attach_clip_upload(self) -> None:
+        """클립 업로더를 붙인다(-748). 단일 경로는 여기서 업로드 스레드를 띄우고, 분리 경로는 검출 프로세스가 올린 결과
+        (media_clip·media_clip_retention)를 I1 로 넘기는 중계만 켠다. 실패해도 관제 기동을 막지 않는다(부가 경로)."""
+        send = None if self.link is None else self.link.publisher.send_event
+        clip_io = self._clip_io()
+        if send is None or clip_io is None:
+            return
+        try:
+            if isinstance(self.clips, EventClipService):
+                from services.tier0.clips.async_upload import I1ClipRecordSink
+
+                self.clip_uploader = clip_io.build(self.clock, I1ClipRecordSink(send))
+                self.clips.attach_uploader(self.clip_uploader)
+                self.clip_uploader.start()
+            elif hasattr(self.clips, "start_relay"):
+                self.clips.start_relay(send)
+        except Exception as error:  # noqa: BLE001 - 클립은 부가 근거다
+            self.clip_uploader = None
+            log.warning("이벤트 클립 업로더 기동 실패: %s", type(error).__name__)
 
     def _event_frame_send(self) -> Callable[..., Any] | None:
         """event_frame_ready 를 넣을 I1 신뢰 큐(판정 프로세스의 I1, msg_id·순서는 여기서 정한다)."""
@@ -1872,6 +1905,7 @@ class Tier0Service:
             "loop_timing": self.loop_timing.summary(),
             "thread_cpu": self.thread_cpu,
             "roi_filtered": dict(self.perception.roi_filtered),
+            "event_clips": self.clips.status() if hasattr(getattr(self, "clips", None), "status") else None,
             "detector_timing": (self.perception.feed.timing.summary()
                                 if isinstance(self.perception.feed, (DetectorFeed, SplitDetectorFeed)) else None),
             "process_split": None if self.detect_process is None else {
@@ -2058,6 +2092,10 @@ class Tier0Service:
         if self.event_frames is not None:
             if not self.event_frames.stop(left()):
                 failures.append("thread:tier0-event-frames")
+        clips_stop = self.clip_uploader if self.clip_uploader is not None else getattr(self, "clips", None)
+        # 진행 중인 PUT(최대 60 s)은 기다리지 않는다(데몬 스레드). 임시 저장한 클립은 다음 기동이 올린다
+        if hasattr(clips_stop, "stop") and not clips_stop.stop(min(left(), 1.0)):
+            log.warning("클립 업로드가 진행 중인 채로 멈춘다(올리던 클립은 잃는다)")
         if self.drift_watch is not None:
             self._bounded(deadline, "calibration_baselines",
                           lambda: save_baselines(self.settings.baselines_file, self.drift_watch.baselines()), failures)
