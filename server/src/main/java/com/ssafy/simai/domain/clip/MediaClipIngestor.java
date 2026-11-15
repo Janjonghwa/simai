@@ -50,7 +50,7 @@ class MediaClipIngestor implements Deferrable {
                 sha256, face_redaction, redactor_version, clip_created_at, delete_after, retention_hold, object_key, uploaded_at,
                 spooled, upload_attempts, received_at)
             VALUES (:clipId, :eventId, :gatewayId, :eventSequence, :resumeCount, :ruleId, :severity, 'LIVE', :cameraId,
-                CAST(:streamEpochs AS integer[]), :anchor, :requestedStart, :requestedEnd, :clipStart, :clipEnd,
+                CAST(:streamEpochs AS bigint[]), :anchor, :requestedStart, :requestedEnd, :clipStart, :clipEnd,
                 :frameCount, :keyframe, :truncatedStart, :truncatedEnd, :hasGaps, :contentType, :container, :sizeBytes,
                 :sha256, :faceRedaction, :redactorVersion, :createdAt, :deleteAfter, :retentionHold, :objectKey, :uploadedAt,
                 :spooled, :uploadAttempts, :receivedAt)
@@ -227,14 +227,21 @@ class MediaClipIngestor implements Deferrable {
     }
 
     private static MapSqlParameterSource row(JsonNode p, Instant receivedAt) {
-        List<Integer> epochs = new ArrayList<>();
-        p.get("stream_epochs").values().forEach(v -> epochs.add(v.asInt()));
+        // stream_epoch 는 상한 없는 정수다. 중계는 세션 시작 UTC ms(약 1.76e12)부터 세므로 int 로 읽으면 JsonNodeException 으로 버려졌다
+        // (S15P31A101-754). 스키마가 정수·0 이상을 이미 봤고, long 을 넘는 값만 계약 위반으로 거부한다
+        List<Long> epochs = new ArrayList<>();
+        for (JsonNode v : p.get("stream_epochs").values()) {
+            if (!v.isIntegralNumber() || !v.canConvertToLong()) {
+                throw new InvalidI1Message("stream_epochs 가 int64 정수가 아니다");
+            }
+            epochs.add(v.longValue());
+        }
         return new MapSqlParameterSource()
                 .addValue("clipId", I1Json.requiredUuid(p, "clip_id"))
                 .addValue("eventId", I1Json.requiredUuid(p, "event_id"))
                 .addValue("gatewayId", p.get("gateway_id").asString())
-                .addValue("eventSequence", p.get("event_sequence").asInt())
-                .addValue("resumeCount", p.get("resume_count").asInt())
+                .addValue("eventSequence", I1Json.integer(p, "event_sequence"))
+                .addValue("resumeCount", I1Json.integer(p, "resume_count"))
                 .addValue("ruleId", p.get("rule_id").asString())
                 .addValue("severity", p.get("severity").asString())
                 .addValue("cameraId", p.get("camera_id").asString())
@@ -244,7 +251,7 @@ class MediaClipIngestor implements Deferrable {
                 .addValue("requestedEnd", I1Json.requiredTime(p, "requested_end_ms"))
                 .addValue("clipStart", I1Json.requiredTime(p, "clip_start_capture_ms"))
                 .addValue("clipEnd", I1Json.requiredTime(p, "clip_end_capture_ms"))
-                .addValue("frameCount", p.get("frame_count").asInt())
+                .addValue("frameCount", I1Json.integer(p, "frame_count"))
                 .addValue("keyframe", p.get("starts_with_keyframe").asBoolean())
                 .addValue("truncatedStart", p.get("truncated_start").asBoolean())
                 .addValue("truncatedEnd", p.get("truncated_end").asBoolean())

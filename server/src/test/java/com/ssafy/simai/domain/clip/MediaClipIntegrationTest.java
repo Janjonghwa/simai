@@ -127,6 +127,29 @@ class MediaClipIntegrationTest {
                 p.get("clip_id").asString())).isEqualTo("CRITICAL_AUTO");
     }
 
+    /**
+     * 19차 GPU 세션(S15P31A101-754): 노트북 중계는 stream_epoch 를 세션 시작 UTC ms(약 1.76e12)부터 센다. int 로 읽어 JsonNodeException 으로
+     * 모든 media_clip 을 버렸다. 계약 예시(Tier 0 실제 메시지와 칸·타입이 같음을 ai 시험이 맞춘다)의 큰 epoch 와 구간 중 재연결(두 epoch)이 그대로 저장된다.
+     */
+    @Test
+    void 중계가_세션_시작_ms_로_센_stream_epoch_와_구간_중_재연결_클립도_값_그대로_저장한다() throws Exception {
+        UUID event = event("HIGH");
+        ObjectNode clip = clip(event, "cam_D", 0, "HIGH", false);
+        long epoch = clip.at("/payload/stream_epochs/0").asLong();
+        assertThat(epoch).isGreaterThan(Integer.MAX_VALUE);
+        ((ObjectNode) clip.get("payload")).putArray("stream_epochs").add(epoch).add(epoch + 1);
+        double invalidBefore = counter("media_clip", "invalid");
+
+        send(clip);
+
+        awaitCount(() -> clips(event), 1);
+        assertThat(jdbc.queryForObject("SELECT stream_epochs::text FROM media_clip WHERE event_id = ?", String.class, event))
+                .isEqualTo("{" + epoch + "," + (epoch + 1) + "}");
+        assertThat(counter("media_clip", "invalid")).isEqualTo(invalidBefore);
+        JsonNode item = call("GET", "/api/events/" + event + "/clips", admin(), null, 200).get("clips").get(0);
+        assertThat(item.get("camera_id").asString()).isEqualTo("cam_D");
+    }
+
     @Test
     void 재생_주소는_관리자에게만_서명_주소로_주고_요청마다_조회_기록을_남긴다() throws Exception {
         UUID event = event("HIGH");
