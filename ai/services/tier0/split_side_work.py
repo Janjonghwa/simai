@@ -234,8 +234,8 @@ class ChildSideWork:
                 t, stable, people = args
                 self.reid.set_sampling(t, frozenset(tuple(k) for k in stable), people)
         elif kind == "bg_dump_rotation":
-            seq, path, exclude = args
-            self._put_blocking(("side_reply", seq, *self._dump_rotation(Path(path), exclude)))
+            seq, path, exclude, *rest = args  # rest: 회전 작업자가 이미 받은 표본 키(-746, 없으면 전부)
+            self._put_blocking(("side_reply", seq, *self._dump_rotation(Path(path), exclude, rest[0] if rest else None)))
         else:
             log.warning("모르는 곁가지 명령: %r", kind)
 
@@ -254,10 +254,12 @@ class ChildSideWork:
                                               daemon=True)
         self._clean_thread.start()
 
-    def _dump_rotation(self, path: Path, exclude: Iterable[str]) -> tuple[bool, str | None]:
-        """회전 복구 입력(축소 표본 스냅샷)을 파일로 쓴다(임시 파일 → os.replace). 없으면 None 을 쓴다."""
+    def _dump_rotation(self, path: Path, exclude: Iterable[str], omit: Any = None) -> tuple[bool, str | None]:
+        """회전 복구 입력(축소 표본 스냅샷)을 파일로 쓴다(임시 파일 → os.replace). 없으면 None 을 쓴다.
+        omit 의 표본(회전 작업자가 이미 받은 것)은 None 으로 비워 파일을 줄인다(-746)."""
         background = self.clean_background
-        views = None if background is None else background.rotation_snapshot(exclude_cameras=tuple(exclude))
+        views = None if background is None else background.rotation_snapshot(exclude_cameras=tuple(exclude),
+                                                                            omit_samples=omit)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -526,11 +528,13 @@ class RemoteCleanBackground:
         sig = (self._process.snapshot().get("bg_rotation_signatures") or {}).get(cid)
         return None if sig is None else tuple(sig)  # type: ignore[return-value]
 
-    def rotation_snapshot(self, exclude_cameras: Iterable[str] = ()) -> dict | None:
-        """검출 프로세스에 축소 표본 스냅샷을 파일로 쓰게 하고 읽는다(회전 복구 스레드, 판정 lock 밖). 모르면 None."""
+    def rotation_snapshot(self, exclude_cameras: Iterable[str] = (), omit_samples: Any = None) -> dict | None:
+        """검출 프로세스에 축소 표본 스냅샷을 파일로 쓰게 하고 읽는다(회전 복구 스레드, 판정 lock 밖). 모르면 None.
+        omit_samples(카메라별 표본 키)는 회전 작업자가 이미 받은 표본이라 파일에서 비운다(-746)."""
         path = self._views_dir / f"views-{os.getpid()}-{threading.get_ident()}.pkl"
-        reply = self._process.side_request(("bg_dump_rotation", str(path), tuple(exclude_cameras or ())),
-                                           timeout_s=ROTATION_DUMP_TIMEOUT_S)
+        omit = {cid: sorted(keys) for cid, keys in (omit_samples or {}).items() if keys}
+        cmd = ("bg_dump_rotation", str(path), tuple(exclude_cameras or ())) + ((omit,) if omit else ())
+        reply = self._process.side_request(cmd, timeout_s=ROTATION_DUMP_TIMEOUT_S)
         if reply is None or not reply[0]:
             self.dump_failures += 1
             self.last_error = None if reply is None else reply[1]

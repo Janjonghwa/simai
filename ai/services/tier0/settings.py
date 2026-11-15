@@ -177,7 +177,9 @@ class RotationRecoverySettings:
     enabled: bool = True
     safety_enabled: bool = True
     interval_ms: int = 15_000
-    cpu_budget_ms: int = 500
+    cpu_budget_ms: int = 1_000
+    """회전 작업자(별도 프로세스·nice 10·스레드 1) 한 주기 CPU 예산. 카메라 단위 특징 추출만 끊고, 못 뽑은 카메라는 다음 주기에
+    먼저 뽑는다(-746). 500 ms 는 18차 서버 코어에서 4대 새 표본을 한 주기에 못 끝냈다(설계 S15P31A101-746)"""
     thresholds: Mapping[str, float | int] = field(default_factory=dict)
 
     @property
@@ -394,7 +396,7 @@ def _rotation_recovery(doc: Any) -> RotationRecoverySettings:
         enabled=enabled,
         safety_enabled=safety_enabled,
         interval_ms=_int(doc, "interval_ms", 15_000, minimum=1),
-        cpu_budget_ms=_int(doc, "cpu_budget_ms", 500, minimum=1),
+        cpu_budget_ms=_int(doc, "cpu_budget_ms", RotationRecoverySettings.cpu_budget_ms, minimum=1),
         thresholds=thresholds,
     )
 

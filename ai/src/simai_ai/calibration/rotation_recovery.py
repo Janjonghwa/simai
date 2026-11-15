@@ -146,6 +146,11 @@ def match_features(a: Features, b: Features):
     return (a.points[[m.queryIdx for m in good]], b.points[[m.trainIdx for m in good]])
 
 
+def sample_key(generation, at, size) -> tuple[int, int, tuple[int, ...]]:
+    """회전 작업자가 받은 최근 배경 표본의 식별자(세대·촬영 시각 ms·원본 크기). 부모는 같은 키를 다시 보내지 않는다(-746)."""
+    return int(generation), int(at), tuple(int(v) for v in size)
+
+
 def angle(rotation) -> float:
     return float(np.arccos(np.clip((np.trace(rotation) - 1.) / 2., -1., 1.)))
 
@@ -295,7 +300,7 @@ def pair_reprojection(a, b, p, q):
 
 
 def evaluate_pairs(previous, candidate, features, changed, config: RotationConfig, check_budget=lambda: None,
-                   measure=lambda _stage: nullcontext()):
+                   measure=lambda *_: nullcontext()):
     old = {c["camera_id"]: c for c in previous["cameras"]}
     new = {c["camera_id"]: c for c in candidate["cameras"]}
     metrics = {}
@@ -349,7 +354,8 @@ def consistent_rotation(previous: Mapping[str, Any] | None, current: Mapping[str
 
 
 def make_candidate(previous, references, features, recent, *, at_ms, version, config, check_budget=lambda: None,
-                   measure=lambda _stage: nullcontext(), ignored_cameras=()):
+                   measure=lambda *_: nullcontext(), ignored_cameras=()):
+    """measure(stage, camera_id) 는 카메라별 CPU 계측용(-746). 인접 쌍 검사는 카메라 없이 measure(stage) 로 부른다."""
     document = copy.deepcopy(previous)
     ignored = set(ignored_cameras or ())
     rotations, changed = {}, []
@@ -362,7 +368,7 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
         reference, ref_features = references[cid]
         feat = features[cid]
         check_budget()
-        with measure("matching"):
+        with measure("matching", cid):
             p, q = match_features(ref_features, feat)
         eff_valid_ratio = float(getattr(feat, "valid_ratio", 1.0))
         feat_mask = getattr(feat, "mask", None)
@@ -373,7 +379,7 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
             v_idx = np.clip((ref_features.points[:, 1] * (mh / sh)).astype(int), 0, mh - 1)
             ref_vis = float((feat_mask[v_idx, u_idx] > 0).mean())
             eff_valid_ratio = min(eff_valid_ratio, ref_vis)
-        with measure("estimation"):
+        with measure("estimation", cid):
             fit = fit_rotation(
                 p,
                 q,

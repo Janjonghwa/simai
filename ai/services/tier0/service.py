@@ -1795,6 +1795,9 @@ class Tier0Service:
                         "side_work": self._side_work_status(),
                         # -728: 검출 프로세스(pid·세대·재시작·경계 큐 계수·자식 스레드 CPU·detect_wake_lag). 꺼짐이면 None
                         "process_split": None if self.detect_process is None else self.detect_process.status(),
+                        # -746: 회전 복구 주기 결과·카메라별 작업자 CPU·이월(분리 켬/끔 모두 판정 프로세스가 돌린다)
+                        "rotation_recovery": (None if self.rotation_recovery is None
+                                              else self.rotation_recovery.timing_summary()),
                     }))
                 if now - last_marker >= MARKER_EVERY_S:
                     last_marker = now
