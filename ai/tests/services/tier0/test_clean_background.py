@@ -914,3 +914,74 @@ def test_fresh_capture_filled_camera_yields_to_waiting_camera(tmp_path):
     for cid in IDS:
         assert plain.offer(*pair(cid, 0))
     assert len(plain._queue) == 4
+
+
+def _feed(w, until, frames_of, process_every=400, start=0):
+    """100 ms 마다 IDS 순서로 프레임을 내고 process_every 마다 한 장 처리한다. 처리할 것이 없던 횟수를 돌려준다."""
+    idle = 0
+    for at in range(start, until, 100):
+        for cid in IDS:
+            if frames_of(cid, at):
+                w.offer(*_rotated(cid, at))
+        if at % process_every == 0:
+            idle += not w.process_one()
+    return idle
+
+
+def test_fresh_capture_jittery_camera_keeps_its_share(tmp_path):
+    """cam_D 만 프레임이 0.85~1.15 s 간격으로 흔들려 와도 다른 카메라보다 덜 받지 않는다.
+    겨룸 창이 한 간격(1 s)이면 (8, 7, 6, 4) 로 밀렸다."""
+    jitter = (900, 1_100, 1_000, 1_150, 850, 1_100, 950, 1_050)
+    d_times, x, i = set(), 0, 0
+    while x < 10_000:
+        d_times.add(x // 100 * 100)
+        x, i = x + jitter[i % len(jitter)], i + 1
+    reachable, last = 0, None  # cam_D 자기 간격(1 s)만으로 받을 수 있는 최대 장수
+    for at in sorted(d_times):
+        if last is None or at - last >= 1_000:
+            reachable, last = reachable + 1, at
+    w = _slow_fresh_worker(tmp_path)
+    _request_fresh(w, 23, 0)
+    w.process_one()
+    _feed(w, 10_000, lambda cid, at: cid != "cam_D" or at in d_times)
+    counts = _counts(w, 0)
+    others = min(counts[c] for c in ("cam_A", "cam_B", "cam_C"))
+    assert counts["cam_D"] >= max(others, reachable - 1), (counts, reachable)
+    assert others >= 5, counts
+
+
+def test_fresh_capture_camera_gone_5s_neither_blocks_others_nor_takes_over(tmp_path):
+    """cam_D 가 2~7 s 동안 완전히 끊겨도 나머지 3대가 처리량을 다 쓰고(처리 쉼 없음), 돌아온 cam_D 가 자리를 독점하지 않는다."""
+    w = _slow_fresh_worker(tmp_path)
+    _request_fresh(w, 24, 0)
+    w.process_one()
+    _feed(w, 2_000, lambda cid, at: True)
+    before = _counts(w, 0)
+    idle = _feed(w, 7_000, lambda cid, at: cid != "cam_D", start=2_000)
+    during = _counts(w, 0)
+    assert idle == 0 and during["cam_D"] - before["cam_D"] <= 1, (before, during)  # 끊기기 전 큐에 있던 한 장까지
+    assert sum(during.values()) - sum(before.values()) >= 12, (before, during)  # 5 s × 2.5장 중 대기 칸 몫 빼고 거의 다
+    _feed(w, 10_000, lambda cid, at: True, start=7_000)
+    after = _counts(w, 0)
+    assert after["cam_D"] - during["cam_D"] <= 3, (during, after)  # 자기 간격(1 s) 이상은 못 가져간다
+    assert all(after[c] > during[c] for c in ("cam_A", "cam_B", "cam_C")), (during, after)
+
+
+def test_fresh_capture_filled_camera_is_out_of_last_slot_race(tmp_path):
+    """큐 마지막 칸: 다 채운 카메라는 더 오래 못 받았어도 못 채운 카메라를 막지 않는다. 처음(아무도 못 받음) 동률은 먼저 온 카메라가 갖는다."""
+    w = _slow_fresh_worker(tmp_path)
+    _request_fresh(w, 25, 0)
+    w.process_one()
+    gen = w._context.generations
+    w._queue.extend((*pair("cam_C", 0), -1, 0) for _ in range(3))  # 버려질 옛 세대 항목으로 큐를 마지막 칸만 남긴다
+    for cid in ("cam_A", "cam_B", "cam_C"):
+        w._last_seen[cid] = 1_500
+    w._last_offer.update({"cam_A": (gen["cam_A"], 0), "cam_B": (gen["cam_B"], 400), "cam_C": (gen["cam_C"], 1_400)})
+    w._fresh["filled"] = frozenset({"cam_A"})
+    assert w._yield_to_waiting(w._fresh, w._context, "cam_B", 1_500, 1_000) is False  # cam_A 는 다 채워 겨룸에서 빠진다
+    w._fresh["filled"] = frozenset()
+    assert w._yield_to_waiting(w._fresh, w._context, "cam_B", 1_500, 1_000) is True  # 못 채웠으면 더 오래된 cam_A 차례
+    w._last_offer.clear()  # 아무도 못 받은 처음: 동률이면 ID 순이 아니라 지금 온 카메라가 갖는다
+    for cid in IDS:
+        w._last_seen[cid] = 1_500
+    assert w._yield_to_waiting(w._fresh, w._context, "cam_D", 1_500, 1_000) is False

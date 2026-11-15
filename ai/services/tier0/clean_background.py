@@ -612,6 +612,11 @@ def _shm_free_bytes() -> int | None:
         return None
 
 
+# 세팅 촬영 중 큐 자리를 겨루는 '영상이 오는 카메라'의 창(세팅 간격의 배수, -715). 1 간격이면 프레임 간격이 1.0~1.2 s 로 흔들리는
+# 카메라가 겨룸에서 빠져 굶는다. 넓히면 끊긴 카메라에 마지막 칸을 그만큼 더 비워 두지만 나머지 칸은 그대로 쓴다.
+_SETUP_LIVE_INTERVALS = 3
+
+
 class BackgroundCleanBackground:
     def __init__(
         self,
@@ -1105,7 +1110,7 @@ class BackgroundCleanBackground:
 
         waiting = [
             r for c in ctx.generations
-            if c != cid and self._last_seen.get(c, -math.inf) >= at - interval
+            if c != cid and self._last_seen.get(c, -math.inf) >= at - _SETUP_LIVE_INTERVALS * interval
             and at - (r := rank(c))[1] >= interval
         ]
         if not waiting:
