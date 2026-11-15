@@ -1,6 +1,7 @@
 import {
   clipPreparing,
   clipTags,
+  currentClipMissing,
   deletedLabel,
   groupClips,
   isDeleted,
@@ -160,7 +161,7 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
           클립 목록을 받지 못했습니다
         </p>
       )}
-      {!failed && !preparing && groups.length === 0 && <p className="text-sm">—</p>}
+
       {groups.map((group) => (
         <div key={group.resumeCount} className="flex flex-col gap-1.5">
           {groups.length > 1 && (
@@ -181,6 +182,13 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
         </div>
       ))}
       {preparing && <p className="text-sm text-muted-foreground">영상 준비 중</p>}
+      {/* 기다림(2분)이 지나도 영상이 없으면 끝없이 기다리게 두지 않고 다음 행동을 알린다(S15P31A101-757). */}
+      {!failed && !preparing && clips !== undefined && currentClipMissing(event, clips) && (
+        <p className="text-sm text-muted-foreground">
+          영상을 받지 못했습니다(녹화 업로드가 끝나지 않았습니다). CCTV 화면에서 그 시각을 확인해
+          주세요.
+        </p>
+      )}
     </section>
   );
 }

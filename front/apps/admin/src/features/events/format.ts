@@ -79,7 +79,13 @@ export function statusText(status: EntryStatus, release: PpeRelease | null = nul
 /** 지표 문구. _m 은 미터, _s 는 초로 보인다. */
 export function metricLabels(metrics: EventItem['metrics']): string[] {
   return Object.entries(metrics).map(([key, value]) => {
-    const unit = key.endsWith('_m') ? 'm' : key.endsWith('_s') ? '초' : '';
+    const unit = key.endsWith('_m')
+      ? 'm'
+      : key.endsWith('_s')
+        ? '초'
+        : key.endsWith('_mps')
+          ? 'm/초'
+          : '';
     const label = METRIC_LABEL[key] ?? key.replace(/_(m|s)$/, '');
     return `${label} ${value.toFixed(unit === 'm' ? 2 : 1)}${unit}`;
   });

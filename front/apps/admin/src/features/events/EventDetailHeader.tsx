@@ -3,7 +3,12 @@ import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge } from '@/features/events/EventBadges';
 import { formatTime } from '@/features/events/format';
 import { firstRaisedAt, type Incident } from '@/features/events/incidents';
-import { resolvedLabel, targetFont, targetLabel } from '@/features/events/incidentView';
+import {
+  resolvedLabel,
+  targetFont,
+  targetLabel,
+  targetShortLabel,
+} from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
@@ -53,8 +58,11 @@ export function EventDetailHeader({
   return (
     <header className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
       <h2 className="text-[22px] leading-[30px] font-bold">
-        <span className={targetFont(incident.target, personNames)}>
-          {targetLabel(incident.target, zoneName, personNames)}
+        <span
+          title={targetLabel(incident.target, zoneName, personNames)}
+          className={targetFont(incident.target, personNames)}
+        >
+          {targetShortLabel(incident.target, zoneName, personNames)}
         </span>{' '}
         사건
       </h2>

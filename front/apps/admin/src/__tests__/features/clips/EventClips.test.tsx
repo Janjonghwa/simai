@@ -474,7 +474,7 @@ describe('EventClips', () => {
     renderClips();
     const section = await screen.findByRole('region', { name: '클립' });
     await waitFor(() => expect(listCalls).toBe(1));
-    expect(within(section).getByText('—')).toBeTruthy();
+    expect(within(section).getByText(/영상을 받지 못했습니다/)).toBeTruthy();
     cleanup();
 
     server.use(

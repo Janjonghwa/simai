@@ -94,20 +94,19 @@ describe('AppLayout 알림 자리', () => {
     expect(notices().className).toContain('inset-x-5');
   });
 
-  it('다른 화면에서도 본문 위에 띄워 본문 높이를 차지하지 않는다(이벤트 패널이 없어 양옆을 비키지 않는다)', () => {
+  it('다른 화면에서는 경보 배너를 상단 바 아래 띠로 두어 본문 단추를 가리지 않는다(S15P31A101-757)', () => {
     route.staticData = {};
     renderLayout();
 
-    const box = notices();
-    expect(ids(box)).toEqual(['alarm']);
-    expect(box.className).toContain('absolute');
-    expect(box.className).toContain('pointer-events-none');
-    expect(box.className).toContain('inset-x-5');
-    expect(box.className).not.toContain('inset-x-(--event-panel-inset)');
-    // 본문(main) 흐름 밖, 본문 뒤에 둔다.
+    expect(ids(notices())).toEqual([]);
+    const strip = screen.getByTestId('alarm-strip');
+    expect(ids(strip)).toEqual(['alarm']);
+    expect(strip.className).not.toContain('absolute');
+    expect(strip.className).toContain('empty:hidden');
+    // 본문(main) 앞, 상단 바 쪽에 둔다.
     const page = screen.getByRole('main');
-    expect(page.contains(box)).toBe(false);
-    expect(page.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(page.contains(strip)).toBe(false);
+    expect(page.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
   it('알릴 것이 없으면 자리가 비어 숨는다(empty:hidden)', () => {

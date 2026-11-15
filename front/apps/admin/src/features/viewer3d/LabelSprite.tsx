@@ -1,8 +1,17 @@
 import { PALETTE, type ViewerTheme } from '@/features/viewer3d/palette';
 import { useScenePalette, useSceneTheme } from '@/features/viewer3d/sceneTheme';
 import type { ViewerLabelCell, ViewerLabelWatchStatus } from '@/features/viewer3d/types';
-import { useEffect, useMemo } from 'react';
-import { CanvasTexture, SRGBColorSpace } from 'three';
+import { useFrame } from '@react-three/fiber';
+import { useEffect, useMemo, useRef } from 'react';
+import {
+  CanvasTexture,
+  SRGBColorSpace,
+  Vector3,
+  type Camera,
+  type OrthographicCamera,
+  type PerspectiveCamera,
+  type Sprite,
+} from 'three';
 
 // 장면 안 이름표(스프라이트). DOM 이름표(drei Html)는 StrictMode 이중 마운트에서 첫 이름표가 비는 문제가 있었다.
 const LABEL_PX = 48;
@@ -320,6 +329,72 @@ function cellsTexture(
 
 const noRaycast = () => null;
 
+// 화면 크기 상한·겹침 밀어내기(S15P31A101-757). 이름표는 장면 안 스프라이트라 확대하면 같이 커져 화면을 덮었다.
+// 화면에서 높이가 상한(글자 높이 m × 배율 px)을 넘지 않게 줄이고, 먼저 만들어진 이름표와 겹치면 위로 밀어 올린다.
+const CAP_PX_PER_M = 150;
+const CAP_MIN_PX = 22;
+const CAP_MAX_PX = 60;
+const OVERLAP_GAP_PX = 3;
+const MAX_LIFT_PX = 180;
+const LIFT_EASE = 0.35;
+const REGISTRY_TTL_MS = 400;
+
+/** 이름표 상한(px). */
+export const labelCapPx = (heightM: number) =>
+  Math.min(Math.max(heightM * CAP_PX_PER_M, CAP_MIN_PX), CAP_MAX_PX);
+
+/** 화면 안 이름표 자리(중심 x·y, 크기, 마지막 갱신). */
+interface ScreenRect {
+  seq: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  at: number;
+}
+
+const registry = new Map<number, ScreenRect>();
+let nextSeq = 1;
+
+/**
+ * 이름표를 위로 얼마나(px) 올려야 먼저 온(seq 가 작은) 이름표와 안 겹치는지. 겹침이 없으면 0.
+ * 중심 (x, y)·크기 (w, h)는 이미 올린 만큼을 뺀 기준 자리다. y 는 아래로 커진다.
+ */
+export function liftToClear(
+  me: { seq: number; x: number; y: number; w: number; h: number },
+  others: readonly ScreenRect[],
+): number {
+  const earlier = others
+    .filter((o) => o.seq < me.seq && Math.abs(o.x - me.x) * 2 < o.w + me.w)
+    .sort((a, b) => b.y - a.y);
+  let top = me.y - me.h / 2;
+  let lift = 0;
+  for (const o of earlier) {
+    const oTop = o.y - o.h / 2;
+    const oBottom = o.y + o.h / 2;
+    const bottom = top + me.h;
+    if (bottom > oTop - OVERLAP_GAP_PX && top < oBottom + OVERLAP_GAP_PX) {
+      const next = oTop - OVERLAP_GAP_PX - me.h;
+      lift += top - next;
+      top = next;
+    }
+  }
+  return Math.min(lift, MAX_LIFT_PX);
+}
+
+const worldAt = new Vector3();
+const screenAt = new Vector3();
+
+/** 이 거리(m)에 있는 1 m 가 화면에서 몇 px 인지. 원근은 거리와 시야각, 직교는 확대 배율로 잰다. */
+function pixelsPerMeter(camera: Camera, viewportHeight: number, distance: number): number {
+  if ((camera as PerspectiveCamera).isPerspectiveCamera) {
+    const fov = (camera as PerspectiveCamera).fov;
+    return viewportHeight / (2 * Math.max(distance, 0.05) * Math.tan((fov * Math.PI) / 360));
+  }
+  const ortho = camera as OrthographicCamera;
+  return (viewportHeight / Math.max(ortho.top - ortho.bottom, 1e-6)) * ortho.zoom;
+}
+
 interface LabelSpriteProps {
   text?: string;
   /** 칸 목록 이름표(S15P31A101-658 A안). 주면 text 대신 칸 배열을 그린다. */
@@ -350,6 +425,9 @@ export function LabelSprite({
   const ink = color ?? (accent === undefined ? label.observed : TAG_INK);
   const background = accent === undefined ? label.background : TAG_BACKGROUND;
   const cellsKey = cellsKeyOf(cells);
+  const sprite = useRef<Sprite>(null);
+  const seq = useRef(0);
+  const lift = useRef(0);
   const { texture, aspect } = useMemo(
     () =>
       cells && cells.length > 0
@@ -360,8 +438,41 @@ export function LabelSprite({
     [cellsKey, text, ink, background, accent, theme],
   );
   useEffect(() => () => texture.dispose(), [texture]);
+  useEffect(() => {
+    seq.current = nextSeq++;
+    const id = seq.current;
+    return () => {
+      registry.delete(id);
+    };
+  }, []);
+  useFrame(({ camera, size }) => {
+    const el = sprite.current;
+    if (!el) return;
+    el.position.y = y;
+    el.getWorldPosition(worldAt);
+    const pxPerM = pixelsPerMeter(camera, size.height, camera.position.distanceTo(worldAt));
+    if (!Number.isFinite(pxPerM) || pxPerM <= 0) return;
+    const natural = height * pxPerM;
+    const k = Math.min(1, labelCapPx(height) / natural);
+    el.scale.set(height * aspect * k, height * k, 1);
+    const w = height * aspect * k * pxPerM;
+    const h = height * k * pxPerM;
+    const ndc = screenAt.copy(worldAt).project(camera);
+    const x = ((ndc.x + 1) / 2) * size.width;
+    const baseY = ((1 - ndc.y) / 2) * size.height;
+    const now = performance.now();
+    const others = [...registry.values()].filter(
+      (o) => o.seq !== seq.current && now - o.at < REGISTRY_TTL_MS,
+    );
+    const want = liftToClear({ seq: seq.current, x, y: baseY, w, h }, others);
+    lift.current += (want - lift.current) * LIFT_EASE;
+    if (Math.abs(want - lift.current) < 0.5) lift.current = want;
+    el.position.y = y + lift.current / pxPerM;
+    registry.set(seq.current, { seq: seq.current, x, y: baseY - lift.current, w, h, at: now });
+  });
   return (
     <sprite
+      ref={sprite}
       position-y={y}
       scale={[height * aspect, height, 1]}
       renderOrder={10}

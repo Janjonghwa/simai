@@ -184,6 +184,21 @@ describe('EventPanel 머리줄과 두 칸', () => {
     );
   });
 
+  it('사람이 다 나가면 진행 중 사건은 해소 대기로 나누고 그 카드를 흐리게 한다(S15P31A101-757)', () => {
+    setTracks(['CONFIRMED']);
+    renderPanel([
+      entry({ event_id: 'a', world_ids: ['w-0'] }),
+      entry({ event_id: 'b', world_ids: ['w-9'], rule_id: 'R3', zone_id: 'z-05' }),
+    ]);
+    expect(head()).toContain('작업자 1명 · 진행 중 1건 · 해소 대기 1건');
+    const cards = within(section('진행 중')).getAllByRole('article');
+    expect(cards.filter((card) => card.textContent!.includes('지금 안 보임'))).toHaveLength(1);
+    cleanup();
+    setTracks([]);
+    renderPanel([entry({ event_id: 'a', world_ids: ['w-0'] })]);
+    expect(head()).toContain('작업자 0명 · 진행 중 0건 · 해소 대기 1건');
+  });
+
   it('world 를 아직 받지 못했으면 작업자 0명이다', () => {
     renderPanel([entry()]);
     expect(head()).toContain('작업자 0명 · 진행 중 1건');
@@ -191,9 +206,13 @@ describe('EventPanel 머리줄과 두 칸', () => {
 
   it('지금 실행이 없으면(작업 전) 사람 수는 미리보기이고 최근 해소는 비운다(S15P31A101-731)', () => {
     setTracks(['CONFIRMED', 'CONFIRMED']);
-    renderPanel([entry({ event_id: 'a' }), resolved({ event_id: 'r', world_ids: ['w-0021'] })], {
-      runStartedAt: null,
-    });
+    renderPanel(
+      [
+        entry({ event_id: 'a', world_ids: ['w-0'] }),
+        resolved({ event_id: 'r', world_ids: ['w-0021'] }),
+      ],
+      { runStartedAt: null },
+    );
     expect(head()).toContain('미리보기 · 사람 2명 · 진행 중 1건');
     expect(screen.getByText('미리보기 · 사람 2명').getAttribute('title')).toContain('경보는 꺼져');
     expect(screen.queryByRole('region', { name: '최근 해소' })).toBeNull();
@@ -518,10 +537,12 @@ describe('EventDetail 확인 필요', () => {
     expect(row({ zone_id: undefined })).toContain('구역 없음 · ');
     // 사람 단위 규칙(R9)은 구역을 보지 않아 구역 칸이 없다(-519).
     const r9 = row({ rule_id: 'R9', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r9).toContain('R9 안전모 미착용');
+    expect(r9).toContain('안전모 미착용');
+    expect(r9).toContain('규칙 R9');
     expect(r9).not.toMatch(/구역/);
     const r11 = row({ rule_id: 'R11', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r11).toContain('R11 조끼 미착용');
+    expect(r11).toContain('조끼 미착용');
+    expect(r11).toContain('규칙 R11');
     expect(r11).not.toMatch(/구역/);
   });
 

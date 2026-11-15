@@ -55,9 +55,9 @@ export function EventDetail({ incident, openEventId, onClose, onSeekTimestamp }:
         <EventDetailHeader incident={incident} closeRef={close} onClose={onClose} />
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-3.5">
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">
+            <PhotosPanel entries={entries} />
             <RulesPanel entries={entries} openEventId={openEventId} />
             <AiPanel entries={entries} onSeekTimestamp={onSeekTimestamp} />
-            <PhotosPanel entries={entries} />
             <ClipsPanel entries={entries} />
           </div>
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">

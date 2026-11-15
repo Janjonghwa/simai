@@ -5,6 +5,8 @@ import { IncidentCard } from '@/features/events/IncidentCard';
 import {
   eventSections,
   incidentOf,
+  isGone,
+  type AliveIds,
   type EventSections,
   type Incident,
 } from '@/features/events/incidents';
@@ -114,6 +116,8 @@ interface EventListProps {
   failed: boolean;
   outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
   selectedKey: string | null;
+  /** 지금 살아 있는 사람(null 은 모른다). 사라진 사람의 카드를 흐리게 한다(S15P31A101-757). */
+  alive: AliveIds;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
@@ -128,6 +132,7 @@ function EventList({
   failed,
   outsideWorkOf,
   selectedKey,
+  alive,
   ...card
 }: EventListProps) {
   const { active, resolved, stale, staleEvents } = sections;
@@ -158,6 +163,7 @@ function EventList({
               occurrences={occurrences}
               people={people}
               selected={incident.key === selectedKey}
+              gone={isGone(incident, alive)}
               outsideWork={outside(incident)}
               {...card}
             />
@@ -233,6 +239,10 @@ const PREVIEW_TITLE = `작업을 시작하기 전 미리보기입니다. 경보�
 const ACTIVE_TITLE =
   '지금 진행 중인 사건(카드) 수입니다. 한 사람의 여러 규칙과, 트랙 번호만 바뀌며 이어진 같은 위험은 한 사건으로 셉니다. 경보 기록 한 건 한 건의 수는 작업 관리의 작업 현황·종료 미팅에 있습니다.';
 
+/** 머리줄 해소 대기 수 설명(S15P31A101-757). */
+const WAITING_TITLE =
+  '대상 사람이 카메라에서 사라졌지만 아직 확인·해소되지 않은 사건 수입니다. 사람이 다시 보이거나 확인·해소하면 줄어듭니다.';
+
 /** 「목록에서 숨기기」 단추 설명: 확인 처리가 아니다(S15P31A101-731). */
 const CLEAR_TITLE =
   '지금 보이는 이벤트를 이 브라우저의 목록·배너·경보음에서만 숨깁니다. 확인(ACK) 처리가 아니며 서버 기록과 확인 상태는 그대로입니다. 새로 나거나 등급이 오른 경보는 다시 보입니다.';
@@ -288,6 +298,10 @@ export function EventPanel({
   const sections = useMemo(
     () => eventSections(entries, { alive, runStartedAt }),
     [entries, alive, runStartedAt],
+  );
+  const goneCount = useMemo(
+    () => sections.active.filter((card) => isGone(card.incident, alive)).length,
+    [sections.active, alive],
   );
   const trackedCount = useRealtimeStore(selectTrackedCount);
   const unacked = useMemo(() => entries.filter(isAlarming).length, [entries]);
@@ -352,7 +366,13 @@ export function EventPanel({
                   : `작업자 ${trackedCount}명`}
             </span>
             {' · '}
-            <span title={ACTIVE_TITLE}>진행 중 {sections.active.length}건</span>
+            <span title={ACTIVE_TITLE}>진행 중 {sections.active.length - goneCount}건</span>
+            {goneCount > 0 && (
+              <>
+                {' · '}
+                <span title={WAITING_TITLE}>해소 대기 {goneCount}건</span>
+              </>
+            )}
           </b>
           <div className="ml-auto flex items-center gap-1">
             {hasCards(sections) && (
@@ -377,6 +397,7 @@ export function EventPanel({
                 failed={failed}
                 outsideWorkOf={outsideWorkOf}
                 selectedKey={selectedKey}
+                alive={alive}
                 onSelect={onSelect}
                 onOpen={onOpen}
               />

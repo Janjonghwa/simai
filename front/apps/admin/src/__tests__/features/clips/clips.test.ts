@@ -182,6 +182,9 @@ describe('클립 표시 계산', () => {
     expect(
       clipPreparing(resumed, [clip(), clip({ clip_id: 'c-2', resume_count: 1 })], T + 30_000),
     ).toBe(false);
+    // 진행 중이라 updated_at 이 계속 바뀌어도 처음 구간의 기다림은 발생 시각부터 재어 끝난다(S15P31A101-757).
+    const updating = event({ raised_at: T - 300_000, updated_at: T });
+    expect(clipPreparing(updating, [], T + 1_000)).toBe(false);
     // 바뀐 시각이 없으면 처음 발생 시각으로, 둘 다 없으면 모른다(준비 중으로 보이지 않는다).
     expect(clipPreparing(event({ raised_at: T }), [], T + 30_000)).toBe(true);
     expect(clipPreparing(event(), [], T)).toBe(false);

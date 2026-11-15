@@ -324,7 +324,8 @@ export function formatWatchBindNotice(
 export function formatPersonShort(worldId: string, map?: PersonDisplayMap): string {
   const info = map?.[worldId];
   if (!info || info.nameSource === 'FALLBACK') return fallbackShortLabel(worldId);
-  return info.isDuplicateName
+  // 이름 없는 사람(자동 번호 「작업자 #N」)은 괄호 번호를 붙이지 않는다(S15P31A101-757). 내부 ID 는 올려 보면 나온다(formatPersonFull).
+  return info.isDuplicateName && info.nameSource !== 'UNIDENTIFIED'
     ? `${info.displayName} (${shortPersonId(worldId)})`
     : info.displayName;
 }
