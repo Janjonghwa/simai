@@ -36,8 +36,8 @@ from simai_ai.tracking.cross_view import CrossViewAssociator
 
 HERE = Path(__file__).resolve().parent
 ATOL = 1e-9
-# 비교하지 않는 필드: 카메라 모델 객체(구현마다 다른 클래스), 다시 쓰기 확인용 입력 묶음
-SKIP_FIELDS = {"camera", "inputs"}
+# 비교하지 않는 필드: 카메라 모델 객체(구현마다 다른 클래스), 다시 쓰기 확인용 입력 묶음, 계측용 계산량(S15P31A101-726)
+SKIP_FIELDS = {"camera", "inputs", "work"}
 
 
 def _load(name: str):

@@ -267,3 +267,7 @@ Tier 0 판정 루프에서 부르지 않는 보정·장면 도구(설치 때 노
 - **고른 방식과 근거**:
   - 이 회귀 시험들의 목적은 "묶음·벡터화 구현이 기준(쌍별·순차) 구현과 같은 식을 계산해 같은 결과를 내는지" 확인하는 것이다. 따라서 허용 오차(`ATOL`)는 늘리지 않고, 이전 커밋 고정 사본(`legacy_geometry.py`, `legacy_batch_cross_view.py`)도 원본 그대로 보존한다.
   - 대신 시험 파일의 기준 경로 어댑터(`test_batch_undistort_regression.py` 의 `_legacy_cross_view_pair`·`_legacy_epipolar_px`, `test_geometry_speedup_regression.py` 의 `_make_previous_associator`)에서 쌍별 단일 계산 구조(`legacy.cross_view_two_view_triangulation`, 쌍별 `_evidence`·`_floor_gap`)는 그대로 둔 채 에피폴라 거리 평균과 잔차 중앙값 집계에만 `-354` 와 같은 `1 / KEYPOINT_NOISE_SCALE` 가중을 적용해 두 구현을 동일한 정의로 비교한다.
+
+## S15P31A101-726: 판정 틱 교차 시점·World Track 출력 동일 최적화
+
+순차 삼각측량 경로를 라운드마다 같은 카메라끼리 묶고(첫 반복은 1차 풀이 재사용), VIEW_SPLIT 재검증·충돌 성분 분할·경쟁 후보 수집을 다시 계산하지 않게 했다. 결과는 이전 구현과 비트 단위로 같다(첫 반복 재사용의 경계 예외 포함). 측정·시험·계산량 계측은 `S15P31A101-726-tier0-hotpath.md`.

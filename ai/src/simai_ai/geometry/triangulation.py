@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -209,11 +209,15 @@ def triangulate_skeletons(
     config: TriangulationConfig = TriangulationConfig(),
     *,
     undistorted: Sequence[Mapping[str, UndistortedKeypoints] | None] | None = None,
+    stats: MutableMapping[str, int] | None = None,
 ) -> list[SkeletonEstimate]:
     """여러 사람의 `triangulate_skeleton` 을 한 번에 한다. 결과는 사람 순서이고 사람마다 따로 부른 것과 같다.
 
     관절 1차 풀이를 사람 전체에 대해 행렬 연산 한 번으로 해 호출 고정 비용을 한 번만 낸다(같은 시각 클러스터 전체 등).
+    1차에서 확정하지 못한 관절의 순차 경로도 사람 전체에 걸쳐 라운드마다 한 번에 돈다(`_triangulate_joints`, S15P31A101-726).
     undistorted: 사람마다 `triangulate_skeleton` 의 undistorted (없으면 None).
+    stats: 계측용(판정에 쓰지 않음). 주면 1차 풀이 관절 수(`tri_first_rows`), 순차 경로 관절 수(`tri_fallback_joints`),
+    순차 경로의 점 풀이 수(`tri_resolves`, 한 카메라씩 뺀 풀이 포함)를 더한다.
     """
     if undistorted is None:
         undistorted = [None] * len(people)
@@ -233,8 +237,22 @@ def triangulate_skeletons(
         for (n, v), und in zip(items, rig.cameras[cid].undistort_many([v.keypoints for _, v in items])):
             merged[n][cid] = und
     inputs = [_PersonInput.prepare(views, rig, joint_layout, config, und) for views, und in zip(view_lists, merged)]
-    first = _first_pass(inputs, rig, config)
-    return [inp.assemble(first.get(n, {}), rig, joint_layout, config) for n, inp in enumerate(inputs)]
+    first, unsettled = _first_pass(inputs, rig, config, stats)
+    # 1차에서 확정하지 못한 관절은 사람 전체를 모아 순차 경로를 라운드마다 한 번에 돈다(관절마다의 판단은 관절 하나씩일 때와 같다).
+    # 첫 반복은 1차 풀이 결과(해, 쓴 카메라별 재투영 오차)를 그대로 쓴다(같은 식을 다시 풀지 않는다)
+    pending = [(n, j) for n, inp in enumerate(inputs) for j in inp.pending_joints(first.get(n, {}))]
+    trusted = rig.state not in UNTRUSTED_CALIBRATION_STATES
+    solved = _triangulate_joints(
+        [inputs[n].observations(j) for n, j in pending],
+        trusted,
+        config,
+        stats,
+        initial=[unsettled.get((n, j)) for n, j in pending],
+    )
+    rest: dict[int, dict[int, JointEstimate]] = {}
+    for (n, j), est in zip(pending, solved):
+        rest.setdefault(n, {})[j] = est
+    return [inp.assemble(first.get(n, {}), rig, joint_layout, config, rest.get(n, {})) for n, inp in enumerate(inputs)]
 
 
 @dataclass(frozen=True)
@@ -285,25 +303,35 @@ class _PersonInput:
             confidence=np.stack([u.confidence for u in und]),
         )
 
+    def pending_joints(self, first: Mapping[int, tuple[np.ndarray, float, float]]) -> list[int]:
+        """1차 풀이로 확정하지 못해 순차 경로로 풀 관절 (관절 순서)."""
+        return [j for j in range(self.usable.shape[1]) if j not in first]
+
+    def observations(self, j: int) -> _Observations:
+        """관절 j 의 유효 관측 (view 순서)."""
+        idx = np.flatnonzero(self.usable[:, j])
+        cams = [self.cameras[k] for k in idx]
+        return _Observations(cams, self.normalized[idx, j], self.targets[idx, j], self.confidence[idx, j])
+
     def assemble(
         self,
         first: Mapping[int, tuple[np.ndarray, float, float]],
         rig: CameraRig,
         joint_layout: str,
         config: TriangulationConfig,
+        rest: Mapping[int, JointEstimate],
     ) -> SkeletonEstimate:
-        """1차 풀이로 확정한 관절은 그대로, 나머지는 관절별 순차 경로로 푼다."""
+        """1차 풀이로 확정한 관절은 그대로, 나머지는 순차 경로 결과(rest, `_triangulate_joints`)를 쓴다."""
         trusted = rig.state not in UNTRUSTED_CALIBRATION_STATES
         joints = []
         for j in range(self.usable.shape[1]):
-            idx = np.flatnonzero(self.usable[:, j])
-            cams = [self.cameras[k] for k in idx]
             if j in first:
+                idx = np.flatnonzero(self.usable[:, j])
+                cams = [self.cameras[k] for k in idx]
                 X_j, reproj, angle = first[j]
                 joints.append(_estimate(cams, X_j, reproj, angle, (), trusted, config))
             else:
-                obs = _Observations(cams, self.normalized[idx, j], self.targets[idx, j], self.confidence[idx, j])
-                joints.append(_triangulate_joint(obs, trusted, config))
+                joints.append(rest[j])
         used = sorted({cid for j in joints for cid in j.camera_ids})
         return SkeletonEstimate(
             t=self.views[0].t,
@@ -316,12 +344,19 @@ class _PersonInput:
 
 
 def _first_pass(
-    inputs: Sequence[_PersonInput], rig: CameraRig, config: TriangulationConfig
-) -> dict[int, dict[int, tuple[np.ndarray, float, float]]]:
+    inputs: Sequence[_PersonInput],
+    rig: CameraRig,
+    config: TriangulationConfig,
+    stats: MutableMapping[str, int] | None = None,
+) -> tuple[
+    dict[int, dict[int, tuple[np.ndarray, float, float]]],
+    dict[tuple[int, int], tuple[np.ndarray | None, np.ndarray | None]],
+]:
     """1차: 유효 관측이 충분한 관절을 사람 전체에 걸쳐 한 번에 푼다(관절마다 쓴 카메라는 마스크).
 
-    이상치·퇴화가 없는 관절만 (사람 → 관절 → (XYZ, 쓴 카메라 중 최대 재투영 오차, 시선각))으로 돌려준다. 나머지 관절은
-    관절별 순차 경로(`_triangulate_joint`, 이상치 카메라를 하나씩 빼고 다시 푼다)로 넘긴다. 1차 풀이는 순차 경로의
+    이상치·퇴화가 없는 관절은 (사람 → 관절 → (XYZ, 쓴 카메라 중 최대 재투영 오차, 시선각))으로 돌려준다. 나머지 관절은
+    관절별 순차 경로(`_triangulate_joints`, 이상치 카메라를 하나씩 빼고 다시 푼다)로 넘기고, 그 첫 반복에 쓰도록
+    ((사람, 관절) → (XYZ, 유효 관측 순서의 재투영 오차), 해가 없으면 (None, None))도 돌려준다. 1차 풀이는 순차 경로의
     첫 반복과 같은 식이라 확정한 관절의 결과는 순차 경로와 같다.
     """
     cam_ids = sorted({cam.camera_id for inp in inputs for cam in inp.cameras})
@@ -329,11 +364,13 @@ def _first_pass(
     C = len(cam_ids)
     # 사람마다 풀 관절의 행을 (관절, 카메라 열) 배열로 한 번에 만든다. 쓰지 않는 칸은 0 이고 mask 로 뺀다(S15P31A101-237)
     owners, joints, parts = [], [], []
+    person_cols: dict[int, np.ndarray] = {}
     for n, inp in enumerate(inputs):
         js = np.flatnonzero(inp.usable.sum(axis=0) >= config.min_views)
         if not len(js):
             continue
         cols = [column[cam.camera_id] for cam in inp.cameras]
+        person_cols[n] = np.asarray(cols)
         ok = inp.usable[:, js].T  # (행, 그 사람 view)
         part = [np.zeros((len(js), C), dtype=bool), np.zeros((len(js), C, 2)), np.zeros((len(js), C, 2)), np.zeros((len(js), C))]
         part[0][:, cols] = ok
@@ -344,21 +381,35 @@ def _first_pass(
         joints += js.tolist()
         parts.append(part)
     if not parts:
-        return {}
+        return {}, {}
     mask, xn, tg, w = (np.concatenate([p[k] for p in parts]) for k in range(4))
     M = len(mask)
+    if stats is not None:
+        stats["tri_first_rows"] = stats.get("tri_first_rows", 0) + M
     stack = _CameraStack.of(rig.subset(cam_ids))
     X = _solve_batch(stack, xn, tg, w, mask, config.refine_iterations)
     solved = np.isfinite(X).all(axis=1)
     worst = np.full(M, np.inf)
     angles = np.full(M, np.nan)
+    errors = np.full((M, C), np.nan)
     if solved.any():
-        worst[solved] = np.where(mask[solved], _errors_batch(stack, tg[solved], mask[solved], X[solved]), -np.inf).max(axis=1)
+        errors[solved] = _errors_batch(stack, tg[solved], mask[solved], X[solved])
+        worst[solved] = np.where(mask[solved], errors[solved], -np.inf).max(axis=1)
         angles[solved] = _max_ray_angles_batch(stack, mask[solved], X[solved])
+    settled = solved & (worst <= config.outlier_reprojection_error_px)
     out: dict[int, dict[int, tuple[np.ndarray, float, float]]] = {}
-    for r in np.flatnonzero(solved & (worst <= config.outlier_reprojection_error_px)).tolist():
+    for r in np.flatnonzero(settled).tolist():
         out.setdefault(owners[r], {})[joints[r]] = (X[r], float(worst[r]), float(angles[r]))
-    return out
+    unsettled: dict[tuple[int, int], tuple[np.ndarray | None, np.ndarray | None]] = {}
+    for r in np.flatnonzero(~settled).tolist():
+        n, j = owners[r], joints[r]
+        if not solved[r]:
+            unsettled[(n, j)] = (None, None)
+            continue
+        # 유효 관측 순서(= `_PersonInput.observations(j)` 의 카메라 순서)의 재투영 오차
+        cols = person_cols[n][np.flatnonzero(inputs[n].usable[:, j])]
+        unsettled[(n, j)] = (X[r], errors[r, cols])
+    return out, unsettled
 
 
 def undistort_view(
@@ -479,7 +530,11 @@ def joint_consistency_px(
             if u.camera_id in seen:
                 raise ValueError(f"같은 카메라가 두 묶음에 있다: {u.camera_id}")
             seen.add(u.camera_id)
-    worst = 0.0
+    # 관절 순서대로 입력을 모으다가 입력이 모자란 관절에서 멈추고(stop), 그 앞 관절만 푼다. 판단은 관절 순서대로 하므로
+    # (해가 없는 관절이 먼저면 inf, 입력이 모자란 관절이 먼저면 None) 관절 하나씩 풀던 것과 결과가 같다. 같은 카메라
+    # 순서의 관절은 한 번에 푼다(점마다 따로인 식이라 하나씩 풀 때와 비트 단위로 같다, S15P31A101-726)
+    problems: list[_Observations] = []
+    stop = False
     for j in joints:
         cams: list[RigCamera] = []
         normalized: list[np.ndarray] = []
@@ -488,20 +543,23 @@ def joint_consistency_px(
         for group in groups:
             used = [u for u in group if j < len(u.confidence) and bool(u.usable(min_confidence)[j])]
             if not used:
-                return None
+                stop = True
+                break
             for u in used:
                 cams.append(u.camera)
                 normalized.append(u.normalized[j])
                 weights.append(float(u.confidence[j]))
                 targets.append(u.ideal_pixels[j])
-        if len(cams) < MIN_VIEWS + 1:
-            return None
-        tgt = np.array(targets)
-        X = triangulate_normalized(cams, np.array(normalized), np.array(weights), targets=tgt)
-        if X is None:
+        if stop or len(cams) < MIN_VIEWS + 1:
+            stop = True
+            break
+        problems.append(_Observations(cams, np.array(normalized), np.array(targets), np.array(weights)))
+    worst = 0.0
+    for X, errors in _solve_many(problems, 10):
+        if X is None or errors is None:
             return math.inf
-        worst = max(worst, float(np.max(reprojection_errors_ideal(cams, tgt, X))))
-    return worst
+        worst = max(worst, float(np.max(errors)))
+    return None if stop else worst
 
 
 def max_ray_angle(cameras: Sequence[RigCamera], X: np.ndarray) -> float:
@@ -536,48 +594,6 @@ class _Observations:
             self.cameras[:i] + self.cameras[i + 1 :], self.normalized[keep], self.targets[keep], self.weights[keep]
         )
 
-    def solve(self, refine_iterations: int) -> np.ndarray | None:
-        return triangulate_normalized(self.cameras, self.normalized, self.weights, refine_iterations, self.targets)
-
-    def errors(self, X: np.ndarray) -> np.ndarray:
-        return reprojection_errors_ideal(self.cameras, self.targets, X)
-
-
-def _triangulate_joint(obs: _Observations, trusted_calibration: bool, config: TriangulationConfig) -> JointEstimate:
-    """관절 하나의 순차 경로: 재투영 오차가 이상치 기준을 넘는 카메라를 하나씩 빼며 다시 푼다."""
-    if len(obs) < config.min_views:
-        return JointEstimate(None, JointValidity.UNAVAILABLE, issues=(JointIssue.TOO_FEW_VIEWS,))
-    rejected: list[str] = []
-    while True:
-        cameras = obs.cameras
-        X = obs.solve(config.refine_iterations)
-        errors = obs.errors(X) if X is not None else None
-        if errors is not None and float(errors.max()) > config.outlier_reprojection_error_px:
-            if len(obs) == config.min_views:
-                # 더 빼면 최소 관측 수 미만이다. 이상치 관측을 세어 좌표를 남기지 않는다
-                return JointEstimate(
-                    None,
-                    JointValidity.UNAVAILABLE,
-                    rejected_camera_ids=(*rejected, *(cam.camera_id for cam in cameras)),
-                    issues=(JointIssue.INCONSISTENT_VIEWS,),
-                )
-            worst = int(np.argmax(errors))
-        elif X is None and len(obs) > config.min_views:
-            worst = _worst_view(obs, config)  # 해가 없거나 어느 카메라 뒤에 있다
-        else:
-            break
-        rejected.append(cameras[worst].camera_id)
-        obs = obs.without(worst)
-    if X is None or errors is None:
-        return JointEstimate(
-            None,
-            JointValidity.UNAVAILABLE,
-            rejected_camera_ids=tuple(rejected),
-            issues=(JointIssue.DEGENERATE,),
-        )
-    reproj = float(errors.max())
-    return _estimate(cameras, X, reproj, max_ray_angle(cameras, X), tuple(rejected), trusted_calibration, config)
-
 
 def _estimate(
     cameras: Sequence[RigCamera],
@@ -607,18 +623,143 @@ def _estimate(
     )
 
 
-def _worst_view(obs: _Observations, config: TriangulationConfig) -> int:
-    """해가 없을 때 뺄 카메라: 하나씩 빼고 풀어 남은 카메라 재투영 오차가 가장 작은 경우의 빠진 카메라."""
-    best_i, best_err = 0, math.inf
-    for i in range(len(obs)):
-        rest = obs.without(i)
-        X = rest.solve(config.refine_iterations)
-        if X is None:
+def _solve_many(
+    problems: Sequence[_Observations], refine_iterations: int
+) -> list[tuple[np.ndarray | None, np.ndarray | None]]:
+    """관측 묶음마다 (`_Observations.solve` 결과, 그 해의 `_Observations.errors`). 해가 없으면 (None, None).
+
+    같은 카메라(같은 순서)로 본 묶음끼리 한 번에 푼다(`triangulate_normalized_many` 와 같은 `_solve_batch`, 마스크 없음).
+    묶음 SVD·가우스-뉴턴·재투영 오차는 점마다 따로인 식이라 하나씩 푼 결과와 비트 단위로 같다(S15P31A101-726, 시험으로 확인).
+    """
+    out: list[tuple[np.ndarray | None, np.ndarray | None]] = [(None, None)] * len(problems)
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for k, obs in enumerate(problems):
+        groups.setdefault(tuple(cam.camera_id for cam in obs.cameras), []).append(k)
+    for members in groups.values():
+        cameras = problems[members[0]].cameras
+        n_cams = len(cameras)
+        normalized = np.stack([np.asarray(problems[k].normalized, dtype=float).reshape(n_cams, 2) for k in members])
+        weights = np.stack([np.asarray(problems[k].weights, dtype=float).reshape(n_cams) for k in members])
+        targets = np.stack([np.asarray(problems[k].targets, dtype=float).reshape(n_cams, 2) for k in members])
+        stack = _CameraStack.of(cameras)
+        mask = np.ones((len(members), n_cams), dtype=bool)
+        X = _solve_batch(stack, normalized, targets, weights, mask, refine_iterations)
+        ok = np.isfinite(X).all(axis=1)
+        if not ok.any():
             continue
-        err = float(rest.errors(X).max())
-        if err < best_err:
-            best_i, best_err = i, err
-    return best_i
+        errors = _errors_batch(stack, targets[ok], mask[ok], X[ok])
+        for row, k in enumerate(np.asarray(members)[ok].tolist()):
+            out[k] = (X[ok][row], errors[row])
+    return out
+
+
+def _triangulate_joints(
+    jobs: Sequence[_Observations],
+    trusted_calibration: bool,
+    config: TriangulationConfig,
+    stats: MutableMapping[str, int] | None = None,
+    initial: Sequence[tuple[np.ndarray | None, np.ndarray | None] | None] | None = None,
+) -> list[JointEstimate]:
+    """관절마다의 순차 경로: 재투영 오차가 이상치 기준을 넘는 카메라를 하나씩 빼며 다시 푼다. 관절 여러 개를 라운드마다 한 번에 돈다.
+
+    관절 하나의 반복: 풀고(해가 있으면 쓴 카메라별 재투영 오차),
+    - 최대 오차가 이상치 기준을 넘으면 그 카메라를 뺀다. 이미 최소 관측 수면 좌표를 남기지 않는다(INCONSISTENT_VIEWS,
+      이상치 관측을 세어 2대를 채우지 않는다).
+    - 해가 없고(해 없음·어느 카메라 뒤) 최소 관측 수보다 많으면, 하나씩 빼고 풀어 남은 카메라 최대 오차가 가장 작은(같으면 앞)
+      경우의 빠진 카메라를 뺀다(모두 해가 없으면 첫 카메라).
+    - 아니면 멈춘다(해가 없으면 DEGENERATE, 있으면 최소 기준 판정).
+    라운드마다 남은 관절 전체와 그 라운드의 한 카메라씩 뺀 풀이를 같은 카메라끼리 한 번에 푼다(`_solve_many`). S15P31A101-726
+    이전에는 관절마다 점 하나씩 풀었다(dev bd706a9f `_triangulate_joint`·`_worst_view`). 관절마다 순서·조건이 같고 풀이가 비트
+    단위로 같아 판단과 값이 같고, 점 하나씩 부르던 호출 고정 비용(17차 클러스터 검증 26 ms 의 대부분)이 라운드 수만큼으로 준다.
+
+    initial: 관절마다 첫 반복의 풀이(`_first_pass` 의 미확정 관절 (해, 재투영 오차), 해가 없으면 (None, None)). 있으면 첫
+    반복에서 다시 풀지 않는다. 1차 풀이는 같은 식을 마스크 묶음으로 푼 것이라 값이 마지막 자리(해 1e-9 m 이하)만 다를 수 있고,
+    판단(이상치 기준 20 px 초과 여부, 가장 큰 오차의 카메라, 해 유무)이 그 차이 안의 경계에 걸릴 때만 달라진다. 1차에서 이미
+    같은 값으로 확정 여부를 정하므로(확정 관절은 1차 값을 그대로 낸다) 미확정 관절의 첫 판단도 같은 값으로 한다.
+    """
+    out: list[JointEstimate | None] = [None] * len(jobs)
+    obs = list(jobs)
+    rejected: list[list[str]] = [[] for _ in jobs]
+    active: list[int] = []
+    for k, o in enumerate(obs):
+        if len(o) < config.min_views:
+            out[k] = JointEstimate(None, JointValidity.UNAVAILABLE, issues=(JointIssue.TOO_FEW_VIEWS,))
+        else:
+            active.append(k)
+    if stats is not None:
+        stats["tri_fallback_joints"] = stats.get("tri_fallback_joints", 0) + len(active)
+    finished: list[tuple[int, np.ndarray, np.ndarray]] = []
+    resolves = 0
+    first_round = initial is not None
+    while active:
+        if first_round:
+            assert initial is not None
+            given = [initial[k] for k in active]
+            unknown = [k for k, g in zip(active, given) if g is None]
+            solved_now = dict(zip(unknown, _solve_many([obs[k] for k in unknown], config.refine_iterations)))
+            solutions = [g if g is not None else solved_now[k] for k, g in zip(active, given)]
+            resolves += len(unknown)
+            first_round = False
+        else:
+            solutions = _solve_many([obs[k] for k in active], config.refine_iterations)
+            resolves += len(active)
+        drop: dict[int, int] = {}
+        need_worst: list[int] = []
+        for k, (X, errors) in zip(active, solutions):
+            o = obs[k]
+            if errors is not None and float(errors.max()) > config.outlier_reprojection_error_px:
+                if len(o) == config.min_views:
+                    # 더 빼면 최소 관측 수 미만이다. 이상치 관측을 세어 좌표를 남기지 않는다
+                    out[k] = JointEstimate(
+                        None,
+                        JointValidity.UNAVAILABLE,
+                        rejected_camera_ids=(*rejected[k], *(cam.camera_id for cam in o.cameras)),
+                        issues=(JointIssue.INCONSISTENT_VIEWS,),
+                    )
+                    continue
+                drop[k] = int(np.argmax(errors))
+            elif X is None and len(o) > config.min_views:
+                need_worst.append(k)  # 해가 없거나 어느 카메라 뒤에 있다
+            elif X is None or errors is None:
+                out[k] = JointEstimate(
+                    None, JointValidity.UNAVAILABLE, rejected_camera_ids=tuple(rejected[k]), issues=(JointIssue.DEGENERATE,)
+                )
+            else:
+                finished.append((k, X, errors))
+        if need_worst:
+            # `_worst_view`: 하나씩 빼고 풀어 남은 카메라 재투영 오차가 가장 작은(같으면 앞) 경우의 빠진 카메라. 다 해가 없으면 0
+            subs = [(k, i) for k in need_worst for i in range(len(obs[k]))]
+            best = {k: (0, math.inf) for k in need_worst}
+            sub_solutions = _solve_many([obs[k].without(i) for k, i in subs], config.refine_iterations)
+            for (k, i), (X, errors) in zip(subs, sub_solutions):
+                if X is None or errors is None:
+                    continue
+                err = float(errors.max())
+                if err < best[k][1]:
+                    best[k] = (i, err)
+            resolves += len(subs)
+            for k in need_worst:
+                drop[k] = best[k][0]
+        active = []
+        for k, worst in drop.items():
+            rejected[k].append(obs[k].cameras[worst].camera_id)
+            obs[k] = obs[k].without(worst)
+            active.append(k)
+    if stats is not None:
+        stats["tri_resolves"] = stats.get("tri_resolves", 0) + resolves
+    # 좌표를 얻은 관절의 시선각은 같은 카메라(같은 순서)끼리 한 번에 계산한다(점마다 따로인 식)
+    angle_groups: dict[tuple[str, ...], list[tuple[int, np.ndarray, np.ndarray]]] = {}
+    for k, X, errors in finished:
+        angle_groups.setdefault(tuple(cam.camera_id for cam in obs[k].cameras), []).append((k, X, errors))
+    for items in angle_groups.values():
+        cameras = obs[items[0][0]].cameras
+        X = np.stack([x for _, x, _ in items])
+        angles = _max_ray_angles_batch(_CameraStack.of(cameras), np.ones((len(items), len(cameras)), dtype=bool), X)
+        for (k, x, errors), angle in zip(items, angles.tolist()):
+            out[k] = _estimate(
+                cameras, x, float(errors.max()), float(angle), tuple(rejected[k]), trusted_calibration, config
+            )
+    return out  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------- 묶음 계산

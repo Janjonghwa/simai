@@ -329,6 +329,7 @@ class JointGate:
         n = len(skeleton.joints)
         reasons: list[list[GateReason]] = [list(j.issues) for j in skeleton.joints]
         speeds: list[float | None] = [None] * n
+        lines: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}  # 이 호출의 카메라 쌍 에피폴라 행렬(S15P31A101-726)
         # 삼각측량 불확실성: 좌표가 있는 관절을 한 번에 계산한다
         sigma_xyz, sigma_max = _position_sigmas(skeleton, rig, cfg.keypoint_sigma_px)
 
@@ -351,7 +352,7 @@ class JointGate:
                     None
                     if others is None
                     else _has_epipolar_competitor(
-                        j, rig.subset(est.camera_ids), pixels, others, cfg, undistorted, others_undistorted
+                        j, rig.subset(est.camera_ids), pixels, others, cfg, undistorted, others_undistorted, lines
                     )
                 )
                 if competitor is None:
@@ -523,16 +524,27 @@ def epipolar_distances_normalized(
 
     `epipolar_distance_px` 의 왜곡 제거 뒤 단계를 여러 점에 한 번에 한다. xa 나 그 행의 xb 가 유한하지 않으면 NaN.
     """
+    return _epipolar_distances(cam_b, xa, xb, *_epipolar_matrices(cam_a, cam_b))
+
+
+def _epipolar_matrices(cam_a: RigCamera, cam_b: RigCamera) -> tuple[np.ndarray, np.ndarray]:
+    """(E, K_b⁻ᵀ): cam_a 정규화 좌표 → cam_b 정규화 좌표 직선(E), 정규화 좌표 직선 → 이상적 핀홀 픽셀 직선(K_b⁻ᵀ)."""
+    R = cam_b.R @ cam_a.R.T
+    t = cam_b.t - R @ cam_a.t
+    tx = np.array([[0.0, -t[2], t[1]], [t[2], 0.0, -t[0]], [-t[1], t[0], 0.0]])
+    return tx @ R, np.linalg.inv(cam_b.K).T
+
+
+def _epipolar_distances(
+    cam_b: RigCamera, xa: np.ndarray, xb: np.ndarray, E: np.ndarray, inv_kt: np.ndarray
+) -> np.ndarray:
+    """`epipolar_distances_normalized` 의 계산. 카메라 쌍 행렬(`_epipolar_matrices`)을 받아 같은 쌍에서 다시 만들지 않는다."""
     xb = np.asarray(xb, dtype=float).reshape(-1, 2)
     xa_h = np.append(np.asarray(xa, dtype=float).reshape(2), 1.0)
     if not np.all(np.isfinite(xa_h)):
         return np.full(len(xb), math.nan)
-    R = cam_b.R @ cam_a.R.T
-    t = cam_b.t - R @ cam_a.t
-    tx = np.array([[0.0, -t[2], t[1]], [t[2], 0.0, -t[0]], [-t[1], t[0], 0.0]])
-    E = tx @ R
     line_n = E @ xa_h  # cam_b 정규화 좌표의 직선
-    line_px = np.linalg.inv(cam_b.K).T @ line_n  # 이상적 핀홀 픽셀 좌표의 직선
+    line_px = inv_kt @ line_n  # 이상적 핀홀 픽셀 좌표의 직선
     norm = math.hypot(line_px[0], line_px[1])
     out = np.full(len(xb), math.nan)
     finite = np.isfinite(xb).all(axis=1)
@@ -553,8 +565,11 @@ def _has_epipolar_competitor(
     cfg: JointGateConfig,
     undistorted: Mapping[str, UndistortedKeypoints],
     others_undistorted: Mapping[str, Sequence[UndistortedKeypoints]] | None = None,
+    lines: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> bool | None:
     """두 카메라 중 한쪽의 이 사람 관측과 다른 쪽의 다른 사람 같은 관절이 에피폴라 조건을 만족하는지.
+
+    lines: 카메라 쌍 (own, other) → `_epipolar_matrices` 결과를 같은 게이트 호출 안에서 다시 쓰는 저장소(같은 rig).
 
     에피폴라선은 카메라 앞뒤를 가리지 않으므로, 그렇게 짝지은 두 시선이 두 카메라 앞에서 만날 때만 후보로 센다.
     다른 사람의 그 관절 값(u, v, 신뢰도)에 유한하지 않은 값이 있거나 그 픽셀의 왜곡을 제거할 수 없으면 후보인지
@@ -588,7 +603,13 @@ def _has_epipolar_competitor(
         solved = iter(other.normalize(np.array(pending)) if pending else ())
         xb = np.array([next(solved) if row is None else row for row in rows])
         xa = undistorted[own.camera_id].normalized[j]
-        distance = epipolar_distances_normalized(own, xa, other, xb)
+        key = (own.camera_id, other.camera_id)
+        matrices = lines.get(key) if lines is not None else None
+        if matrices is None:
+            matrices = _epipolar_matrices(own, other)
+            if lines is not None:
+                lines[key] = matrices
+        distance = _epipolar_distances(other, xa, xb, *matrices)
         unknown = unknown or bool(np.isnan(distance).any())
         near = np.flatnonzero(distance <= cfg.competitor_epipolar_px)
         if len(near):

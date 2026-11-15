@@ -3130,7 +3130,11 @@ class WorldTrackManager:
         self, gate: JointGate, cluster: ViewCluster, frame: AssociationFrame, rig: CameraRig, excluded: frozenset[str]
     ) -> GatedSkeleton:
         """관절 유효성 게이트. Cross-view 클러스터의 왜곡 제거·삼각측량 결과를 넘긴다(입력이 같을 때만 게이트가 다시 쓴다)."""
-        others, others_undistorted = _others(frame, cluster)
+        index = getattr(self, "_others_index", None)
+        if index is None or index.frame is not frame:
+            # 같은 시각(같은 연결 결과)의 경쟁 후보 색인은 한 번만 만든다(S15P31A101-726)
+            index = self._others_index = _OthersIndex(frame)
+        others, others_undistorted = index.others(cluster)
         return gate.update(
             [v.view for v in cluster.views],
             rig,
@@ -3328,28 +3332,37 @@ def _competitor_flag(gated: GatedSkeleton, cluster: ViewCluster, cfg: WorldTrack
     )
 
 
-def _others(
-    frame: AssociationFrame, cluster: ViewCluster
-) -> tuple[dict[str, list[Sequence[Any]]], dict[str, list[UndistortedKeypoints]]]:
-    """같은 시각 다른 클러스터의 카메라별 keypoint 와 그 왜곡 제거 결과 (관절 유효성 게이트의 2대 관측 경쟁 후보 검사용).
+class _OthersIndex:
+    """한 연결 결과(AssociationFrame)의 카메라별 view 색인 (관절 유효성 게이트의 2대 관측 경쟁 후보 검사용).
 
-    왜곡 제거 결과는 keypoint 와 같은 카메라·같은 순서다. 한 카메라에서 하나라도 없으면 그 카메라는 넣지 않는다(게이트가
-    순서가 어긋난 결과를 쓰지 않도록. 넣지 않은 카메라는 게이트가 다시 푼다).
+    `others(cluster)` 는 같은 시각 다른 클러스터의 카메라별 keypoint 와 그 왜곡 제거 결과다. 왜곡 제거 결과는 keypoint 와
+    같은 카메라·같은 순서이고, 한 카메라에서 하나라도 없으면 그 카메라는 넣지 않는다(게이트가 순서가 어긋난 결과를 쓰지
+    않도록. 넣지 않은 카메라는 게이트가 다시 푼다). 클러스터마다 frame 전체 view 를 다시 모으지 않도록 카메라별 (클러스터
+    위치, keypoint, 왜곡 제거 결과) 목록을 frame 마다 한 번 만들고 자기 위치만 거른다. 카메라마다 클러스터 순서·view 순서가
+    같아 목록 내용·순서가 클러스터마다 모으던 이전 계산과 같다(S15P31A101-726, 시험으로 확인).
     """
-    others: dict[str, list[Sequence[Any]]] = {}
-    undistorted: dict[str, list[UndistortedKeypoints]] = {}
-    missing: set[str] = set()
-    for c in frame.clusters:
-        if c is cluster:
-            continue
-        for v in c.views:
-            others.setdefault(v.camera_id, []).append(v.view.keypoints)
-            u = c.undistorted.get(v.camera_id)
-            if u is None:
-                missing.add(v.camera_id)
-            else:
-                undistorted.setdefault(v.camera_id, []).append(u)
-    return others, {cid: us for cid, us in undistorted.items() if cid not in missing}
+
+    def __init__(self, frame: AssociationFrame) -> None:
+        self.frame = frame
+        self._by_camera: dict[str, list[tuple[int, Sequence[Any], UndistortedKeypoints | None]]] = {}
+        for p, c in enumerate(frame.clusters):
+            for v in c.views:
+                self._by_camera.setdefault(v.camera_id, []).append((p, v.view.keypoints, c.undistorted.get(v.camera_id)))
+
+    def others(
+        self, cluster: ViewCluster
+    ) -> tuple[dict[str, list[Sequence[Any]]], dict[str, list[UndistortedKeypoints]]]:
+        own = {p for p, c in enumerate(self.frame.clusters) if c is cluster}
+        others: dict[str, list[Sequence[Any]]] = {}
+        undistorted: dict[str, list[UndistortedKeypoints]] = {}
+        for cid, entries in self._by_camera.items():
+            rows = [(kps, u) for p, kps, u in entries if p not in own]
+            if not rows:
+                continue
+            others[cid] = [kps for kps, _ in rows]
+            if all(u is not None for _, u in rows):
+                undistorted[cid] = [u for _, u in rows]  # type: ignore[misc]
+        return others, undistorted
 
 
 def _cameras(keys: Iterable[TrackKey]) -> int:

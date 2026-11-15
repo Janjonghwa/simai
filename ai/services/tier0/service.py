@@ -1617,6 +1617,8 @@ class Tier0Service:
                     link = self.link
                     log.info("[tier0] stage_timing %s", json.dumps({
                         "judge": self.perception.timing.summary(),
+                        # -726: 교차 시점 계산량(최근 256 tick 평균·p95·최대, 판정에 쓰지 않음)
+                        "judge_work": self.perception.diagnostics.work_summary(),
                         "roi_filtered": dict(self.perception.roi_filtered),
                         "detector": (self.perception.feed.timing.summary()
                                      if isinstance(self.perception.feed, DetectorFeed) else None),

@@ -28,6 +28,9 @@
     서로의 로컬 트랙을 맞바꾼 쌍 수. 정답 없이 보는 swap 대리 지표다(로컬 추적기 자체의 swap 은 잡지 못한다). 병합으로
     사라진 ID 의 로컬 트랙을 넘겨받은 것은 세지 않는다.
   시간은 state_ms 와 같이 직전 tick 의 상태에 그 사이 시간을 붙인다.
+- 교차 시점 계산량(S15P31A101-726): `AssociationFrame.work`(view 수, 원시 쌍 수, 에피폴라 통과 수, 2-view SVD 관절 수,
+  클러스터 수, 충돌 성분 평가 수·최대 크기, 분할 탐색 방문 수, 클러스터 삼각측량 1차 관절 수·순차 경로 관절 수·재풀이 수,
+  VIEW_SPLIT 수)의 tick 평균·최대. 판정 시간(stage_timing)과 같이 보려고 최근 256 tick 의 평균·p95·최대도 낸다(`work_summary`).
 
 현재 시각을 읽지 않는다. 모든 시각은 공통 시각 t(UTC ms)다. 다른 스레드(상태 파일)가 읽으므로 lock 으로 감싼다.
 """
@@ -37,7 +40,7 @@ from __future__ import annotations
 import bisect
 import math
 import threading
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,6 +50,7 @@ from simai_ai.tracking.cross_view import AssociationFrame, LocalView
 from simai_ai.tracking.world_track import IdentityConfidence, TrackLifecycle, WorldTrackFrame
 
 DEFAULT_WINDOW_MS = 30_000
+WORK_RECENT_TICKS = 256  # stage_timing 표본 창과 같은 크기
 UNCERTAIN_EPISODE_EDGES_MS = (100, 300, 1000, 2000, 5000, 10_000, 30_000, 60_000)
 _CONFIRMED_GROUP = (TrackLifecycle.CONFIRMED, TrackLifecycle.OCCLUDED)
 RESIDUAL_EDGES_PX = (2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 30.0)
@@ -97,6 +101,9 @@ class _Stats:
     uncertain_episodes: Counter = field(default_factory=Counter)  # (end cause, bin)
     local_key_moves: int = 0
     local_key_swaps: int = 0
+    work_ticks: int = 0  # 계산량을 받은 연결 tick 수 (-726)
+    work_sum: Counter = field(default_factory=Counter)
+    work_max: Counter = field(default_factory=Counter)
 
     def as_dict(self) -> dict[str, Any]:
         def nest(c: Counter) -> dict[str, dict[str, int]]:
@@ -144,6 +151,11 @@ class _Stats:
                 "uncertain_episodes_ms": nest(self.uncertain_episodes),
                 "local_key_moves": self.local_key_moves,
                 "local_key_swaps": self.local_key_swaps,
+            },
+            "work": {
+                "ticks": self.work_ticks,
+                "mean": {k: round(v / self.work_ticks, 2) for k, v in self.work_sum.items()} if self.work_ticks else {},
+                "max": {k: int(v) for k, v in self.work_max.items()},
             },
         }
 
@@ -257,6 +269,7 @@ class TrackingDiagnostics:
         self._manager_seen: Counter = Counter()
         self._key_owner: dict[Any, str] = {}
         """(카메라, 로컬 트랙) → 마지막으로 붙은 World ID (살아 있는 ID 만, -684 swap 대리 지표)"""
+        self._work_recent: deque[dict[str, int]] = deque(maxlen=WORK_RECENT_TICKS)
 
     def _both(self) -> tuple[_Stats, _Stats]:
         return self._total, self._window
@@ -307,8 +320,16 @@ class TrackingDiagnostics:
                     key = (me[0], me[1], other[0])
                     if key not in best or p.epipolar_px < best[key]:
                         best[key] = p.epipolar_px
+        work = {str(k): int(v) for k, v in (getattr(frame, "work", None) or {}).items()}
         with self._lock:
+            if work:
+                self._work_recent.append(work)
             for s in self._both():
+                if work:
+                    s.work_ticks += 1
+                    s.work_sum.update(work)
+                    for k, v in work.items():
+                        s.work_max[k] = max(s.work_max[k], v)
                 for pair, outcome, residual in rows:
                     s.pair_outcomes[(pair, outcome)] += 1
                     if residual is not None and math.isfinite(residual):
@@ -413,6 +434,20 @@ class TrackingDiagnostics:
             self._window_start = t if t is not None else self._last_t
             return out
 
+    def work_summary(self) -> dict[str, dict[str, float]]:
+        """최근 연결 tick(최대 256)의 계산량별 평균·p95·최대 (stage_timing 줄용, 판정에 쓰지 않음)."""
+        with self._lock:
+            recent = list(self._work_recent)
+        out: dict[str, dict[str, float]] = {}
+        for key in sorted({k for w in recent for k in w}):
+            ordered = sorted(w.get(key, 0) for w in recent)
+            out[key] = {
+                "mean": round(sum(ordered) / len(ordered), 2),
+                "p95": ordered[math.ceil(len(ordered) * 0.95) - 1],
+                "max": ordered[-1],
+            }
+        return out
+
     def summary(self) -> dict[str, Any]:
         """누계(상태 파일용)."""
         with self._lock:
@@ -455,10 +490,13 @@ def window_log_line(window: Mapping[str, Any]) -> str:
         f"단독 사유 {ident.get('uncertain_sole_ms', {})}, 로컬 트랙 이동/맞바꿈 "
         f"{ident.get('local_key_moves', 0)}/{ident.get('local_key_swaps', 0)}"
     )
+    work = window.get("work", {})
+    work_line = {k: f"{v:g}/{work.get('max', {}).get(k, 0)}" for k, v in work.get("mean", {}).items()}
     return (
         f"추적 계측 {window.get('span_ms', 0) / 1000:.0f}s: tick {window.get('ticks', 0)}, {identity_line}, "
         f"늦은 카메라 비율 {lag}, 보간 view {window.get('views', {})}, 보간 탈락 {drops}, 쌍 {passes}, "
         f"클러스터 카메라 수 {window.get('cluster_cameras', {})}, 갱신 Track 카메라 수 {w.get('updated_cameras', {})}, "
         f"새 ID {w.get('manager', {}).get('new_track.created', 0)}, LOST {w.get('lost', {})}, 병합 {w.get('merged_away', 0)}, "
-        f"재연결 {w.get('reassociated', 0)}, {split_line}, 수명 {w.get('lifespan_ms', {})}, 분기 {w.get('manager', {})}"
+        f"재연결 {w.get('reassociated', 0)}, {split_line}, 수명 {w.get('lifespan_ms', {})}, 분기 {w.get('manager', {})}, "
+        f"교차 시점 계산량(tick 평균/최대) {work_line}"
     )
