@@ -176,13 +176,42 @@ describe('EventPanel 머리줄과 두 칸', () => {
       entry({ event_id: 'b', world_ids: ['w-1'] }),
       resolved({ event_id: 'c', world_ids: ['w-2'] }),
     ]);
-    // 사건은 진행 중인 사람 묶음만 센다(해소는 세지 않는다).
-    expect(head()).toContain('작업자 2명 · 사건 2건');
+    // 진행 중 수는 진행 중 카드만 센다(해소는 세지 않는다). 경보 기록 수와 이름을 가른다(S15P31A101-731).
+    expect(head()).toContain('작업자 2명 · 진행 중 2건');
+    expect(screen.getByText('작업자 2명').getAttribute('title')).toContain('추적 중인 사람 수');
+    expect(screen.getByText('진행 중 2건').getAttribute('title')).toContain(
+      '경보 기록 한 건 한 건의 수',
+    );
   });
 
   it('world 를 아직 받지 못했으면 작업자 0명이다', () => {
     renderPanel([entry()]);
-    expect(head()).toContain('작업자 0명 · 사건 1건');
+    expect(head()).toContain('작업자 0명 · 진행 중 1건');
+  });
+
+  it('지금 실행이 없으면(작업 전) 사람 수는 미리보기이고 최근 해소는 비운다(S15P31A101-731)', () => {
+    setTracks(['CONFIRMED', 'CONFIRMED']);
+    renderPanel([entry({ event_id: 'a' }), resolved({ event_id: 'r', world_ids: ['w-0021'] })], {
+      runStartedAt: null,
+    });
+    expect(head()).toContain('미리보기 · 사람 2명 · 진행 중 1건');
+    expect(screen.getByText('미리보기 · 사람 2명').getAttribute('title')).toContain('경보는 꺼져');
+    expect(screen.queryByRole('region', { name: '최근 해소' })).toBeNull();
+  });
+
+  it('지금 실행이 있으면 그 뒤에 난 해소만 최근 해소에 남는다', () => {
+    renderPanel(
+      [
+        resolved({ event_id: 'before', world_ids: ['w-0021'], raised_at: T - 60_000 }),
+        resolved({ event_id: 'after', world_ids: ['w-0022'], raised_at: T + 1_000 }),
+      ],
+      { runStartedAt: T },
+    );
+    expect(
+      within(section('최근 해소'))
+        .getAllByRole('article')
+        .map((a) => a.getAttribute('aria-label')),
+    ).toEqual(['w-0022 이벤트']);
   });
 
   it('진행 중 칸과 최근 해소 칸으로 나뉘고, 카드는 각자 자기 칸에만 있다', () => {
@@ -208,14 +237,14 @@ describe('EventPanel 머리줄과 두 칸', () => {
     expect(section('최근 해소')).toBeTruthy();
   });
 
-  it('같은 사람·규칙·구역이 되풀이된 해소는 한 카드에 N회 발생으로 보인다', () => {
+  it('같은 사람·규칙·구역이 되풀이된 해소는 한 카드에 N회로 보인다', () => {
     renderPanel([
       resolved({ event_id: 'a', updated_at: T + 100, resolved_at: T + 100 }),
       resolved({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
     ]);
     const cards = within(section('최근 해소')).getAllByRole('article');
     expect(cards).toHaveLength(1);
-    expect(within(cards[0]!).getByText('2회 발생')).toBeTruthy();
+    expect(within(cards[0]!).getByText('2회')).toBeTruthy();
   });
 
   it('선택한 사람의 카드는 두 칸 모두 눌린 상태이고, 해소 카드를 누르면 그 이벤트의 상세를 연다', () => {
@@ -238,16 +267,38 @@ describe('EventPanel 머리줄과 두 칸', () => {
   });
 });
 
-describe('EventPanel 모두 지우기', () => {
-  const clearButton = () => screen.queryByRole('button', { name: '모두 지우기' });
+describe('EventPanel 목록에서 숨기기(옛 모두 지우기)', () => {
+  const clearButton = () => screen.queryByRole('button', { name: '목록에서 숨기기' });
 
-  it('보이는 묶음이 있으면 머리줄에 버튼이 있고, 누르면 onClearAll 을 한 번 부른다', () => {
+  it('미확인 경보가 있으면 확인 처리가 아니라는 확인 창을 먼저 띄우고, 숨기기를 눌러야 onClearAll 을 부른다', () => {
     const onClearAll = vi.fn();
     renderPanel([entry()], { onClearAll });
     const head = screen.getByTestId('event-panel-head');
-    expect(within(head).getByRole('button', { name: '모두 지우기' })).toBeTruthy();
+    const button = within(head).getByRole('button', { name: '목록에서 숨기기' });
+    expect(button.getAttribute('title')).toContain('확인(ACK) 처리가 아니며');
+
+    fireEvent.click(button);
+    expect(onClearAll).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '목록에서 숨길까요?' });
+    expect(dialog.textContent).toContain('확인(ACK) 처리가 아닙니다. 미확인 경보 1건');
+    fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
+    expect(onClearAll).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: '목록에서 숨길까요?' })).toBeNull();
 
     fireEvent.click(clearButton()!);
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '목록에서 숨길까요?' })).getByRole('button', {
+        name: '숨기기',
+      }),
+    );
+    expect(onClearAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('미확인 경보가 없으면 확인 창 없이 바로 숨긴다', () => {
+    const onClearAll = vi.fn();
+    renderPanel([entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000 })], { onClearAll });
+    fireEvent.click(clearButton()!);
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(onClearAll).toHaveBeenCalledTimes(1);
   });
 
@@ -296,7 +347,7 @@ describe('EventPanel 지난 관제 칸', () => {
       old({ event_id: 'o2', world_ids: ['w-0003'], rule_id: 'R1', severity: 'HIGH' }),
       old({ event_id: 'o3', world_ids: ['w-0007'] }),
     ]);
-    expect(head()).toContain('사건 1건');
+    expect(head()).toContain('진행 중 1건');
     expect(staleToggle().textContent).toContain('지난 관제 · 확인 필요 3건');
     expect(staleToggle().getAttribute('aria-expanded')).toBe('false');
     const region = screen.getByRole('region', { name: '지난 관제 · 확인 필요' });
@@ -314,11 +365,11 @@ describe('EventPanel 지난 관제 칸', () => {
     expect(region.querySelector('[data-chip="stale"]')).toBeTruthy();
   });
 
-  it('지난 관제만 남으면 진행 중이 없다고 알리고 패널을 접되, 모두 지우기는 남는다', () => {
+  it('지난 관제만 남으면 진행 중이 없다고 알리고 패널을 접되, 목록에서 숨기기는 남는다', () => {
     renderPanel([old()]);
-    expect(head()).toContain('사건 0건');
+    expect(head()).toContain('진행 중 0건');
     expect(fold().getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getByRole('button', { name: '모두 지우기' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '목록에서 숨기기' })).toBeTruthy();
     fireEvent.click(fold());
     expect(screen.getByText('진행 중 이벤트 없음')).toBeTruthy();
     expect(staleToggle().textContent).toContain('1건');

@@ -43,6 +43,8 @@ import tools.jackson.databind.node.ObjectNode;
  *       그 밖은 싣지 않는다(모름). 관리자 상단 배너용 안내이며 system_health 를 바꾸지 않는다
  *   <li>watches(1.2.0, 확장 C.6, S15P31A101-336): 등록된 워치마다 I4 연결 상태(WatchHub). 워치는 개인 보조 채널이라 system_health·
  *       remote_state 에 넣지 않는다
+ *   <li>laptop.test_input(1.6.0, S15P31A101-731): 녹화 파일·합성 영상 재생(시험 입력) 중인가(HealthState.testInputActive, 워치 진동 차단과 같은
+ *       판정). 관제 화면의 「녹화 재생 중 · 실제 알림 꺼짐」 표시용이며 system_health 를 바꾸지 않는다
  *   <li>held_events_revision(1.4.0, S15P31A101-595): Tier 0 가 들고 있는 이벤트 집합(Tier0HeldEvents)이 스냅샷·유예 만료로 한꺼번에
  *       바뀔 때마다 바뀌는 판. 관제 앱은 바뀌면 이벤트 목록을 다시 받아 「진행 중」과 「지난 관제」를 다시 가른다
  * </ul>
@@ -51,7 +53,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.5.0";
+    public static final String SCHEMA_VERSION = "1.6.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
@@ -116,6 +118,8 @@ public class ViewerHealthService {
         ObjectNode laptopNode = p.putObject("laptop");
         laptopNode.put("link", laptopUp ? CONNECTED : DISCONNECTED);
         laptopNode.put("last_heartbeat_at", lastHeartbeat);
+        // 1.6.0(S15P31A101-731): 녹화 파일·합성 영상 재생 중이면 true. 워치 진동 차단(-724)과 같은 판정이라 화면의 「실제 알림 꺼짐」이 실제와 같다
+        laptopNode.put("test_input", state.testInputActive());
         p.put("data_age_ms", world == null ? null : Math.max(0, now.toEpochMilli() - world.tLatestGlobalMs()));
         String calibration = tier0Up && health != null ? health.path("calibration_state").asString(null) : null;
         p.put("calibration_state", calibration == null ? "UNCALIBRATED" : calibration);

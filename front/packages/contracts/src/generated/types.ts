@@ -268,7 +268,7 @@ actor_id: string
 acked_at: number
 })
 /**
- * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.5.0: person_names·watch_names 선택 추가(현장·날짜별 사람 표시 이름 해석 결과: 관리자 World ID 지정 > 배정 워치 기기 표시 이름 > '미확인 N', 워치 기기별 현장 표시 이름, S15P31A101-658). 1.4.0: held_events_revision 선택 추가(Tier 0 가 들고 있는 이벤트 집합의 판, 바뀌면 관제 앱이 이벤트 목록을 다시 받아 '진행 중'·'지난 관제'를 다시 가른다, S15P31A101-595). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.6.0: laptop.test_input 선택 추가(시험 입력 = 녹화 파일·합성 영상 재생 중, 관제 화면의 「녹화 재생 중 · 실제 알림 꺼짐」 표시용, S15P31A101-731). 1.5.0: person_names·watch_names 선택 추가(현장·날짜별 사람 표시 이름 해석 결과: 관리자 World ID 지정 > 배정 워치 기기 표시 이름 > '미확인 N', 워치 기기별 현장 표시 이름, S15P31A101-658). 1.4.0: held_events_revision 선택 추가(Tier 0 가 들고 있는 이벤트 집합의 판, 바뀌면 관제 앱이 이벤트 목록을 다시 받아 '진행 중'·'지난 관제'를 다시 가른다, S15P31A101-595). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
  */
 export type ViewerHealthMessage = (Envelope & {
 msg_type?: "viewer_health"
@@ -299,6 +299,10 @@ laptop: {
  */
 link: ("CONNECTED" | "DISCONNECTED")
 last_heartbeat_at: (number | null)
+/**
+ * 1.6.0(S15P31A101-731, 선택): 시험 입력(녹화 파일·합성 영상 재생) 중인가. EC2 가 노트북 하트비트 cameras[].source_kind(laptop_heartbeat 1.3.0)로 판정한다: 마지막 하트비트가 60초 안인 노트북 중 하나라도 FILE·SYNTHETIC 이면 true(S15P31A101-724 의 워치 진동 차단과 같은 판정). true 면 위험 이벤트는 기록·화면 표시만 하고 실제 알림(현장 경보 소리, 워치 진동)은 꺼져 있다(AGENTS 규칙 5). 관제 화면은 「녹화 재생 중 · 실제 알림 꺼짐」을 보인다. 없으면(이전 EC2) 모른다(관제 화면은 재생 표시를 하지 않는다)
+ */
+test_input?: boolean
 }
 /**
  * as_of − 마지막 world_state 의 t_latest_global(EC2 가 아는 시계 차이 보정 후). 받은 적 없거나 모르면 null

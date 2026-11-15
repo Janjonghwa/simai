@@ -1,4 +1,5 @@
-import type { EventEntry } from '@/features/events/entries';
+import { isAlarming, type EventEntry } from '@/features/events/entries';
+import type { OutsideWorkKind } from '@/features/events/EventBadges';
 import { EventDetail } from '@/features/events/EventDetail';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import {
@@ -14,8 +15,14 @@ import { useAutoFold } from '@/features/events/useAutoFold';
 import { useAvoidCctv } from '@/features/events/useAvoidCctv';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
+import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
-import { selectTrackedCount, useRealtimeStore } from '@/store/realtime.store';
+import {
+  ALIVE_ID_SEPARATOR,
+  selectAliveIdsKey,
+  selectTrackedCount,
+  useRealtimeStore,
+} from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -105,7 +112,7 @@ interface EventListProps {
   sections: EventSections;
   loaded: boolean;
   failed: boolean;
-  isOutsideWork?: (event: EventItem) => boolean;
+  outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
   selectedKey: string | null;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
@@ -119,13 +126,19 @@ function EventList({
   sections,
   loaded,
   failed,
-  isOutsideWork,
+  outsideWorkOf,
   selectedKey,
   ...card
 }: EventListProps) {
   const { active, resolved, stale, staleEvents } = sections;
-  const outside = (incident: Incident) =>
-    isOutsideWork !== undefined && incident.entries.some((e) => isOutsideWork(e.event));
+  const outside = (incident: Incident): OutsideWorkKind | null => {
+    if (outsideWorkOf === undefined) return null;
+    for (const e of incident.entries) {
+      const kind = outsideWorkOf(e.event);
+      if (kind !== null) return kind;
+    }
+    return null;
+  };
   if (!hasCards(sections)) {
     if (loaded) return <p className={NOTE_CLASS}>활성 이벤트 없음</p>;
     return failed ? null : <p className={NOTE_CLASS}>불러오는 중…</p>;
@@ -138,10 +151,12 @@ function EventList({
       )}
       {active.length > 0 && (
         <Section title="진행 중">
-          {active.map((incident) => (
+          {active.map(({ id, incident, occurrences, people }) => (
             <IncidentCard
-              key={incident.key}
+              key={id}
               incident={incident}
+              occurrences={occurrences}
+              people={people}
               selected={incident.key === selectedKey}
               outsideWork={outside(incident)}
               {...card}
@@ -151,11 +166,12 @@ function EventList({
       )}
       {resolved.length > 0 && (
         <Section title="최근 해소">
-          {resolved.map(({ id, incident, occurrences }) => (
+          {resolved.map(({ id, incident, occurrences, people }) => (
             <IncidentCard
               key={id}
               incident={incident}
               occurrences={occurrences}
+              people={people}
               selected={incident.key === selectedKey}
               outsideWork={outside(incident)}
               {...card}
@@ -190,19 +206,59 @@ interface EventPanelProps {
   onSelect: (incident: Incident) => void;
   openEventId: string | null;
   onOpen: (eventId: string | null) => void;
-  /** 「모두 지우기」. 화면에서만 지우고 서버는 건드리지 않는다. */
+  /** 「목록에서 숨기기」(옛 「모두 지우기」). 화면에서만 숨기고 서버·확인 상태는 건드리지 않는다. */
   onClearAll: () => void;
-  /** 이 이벤트가 작업 외 진입인지(카드에 꼬리표). 없으면 꼬리표를 달지 않는다. */
-  isOutsideWork?: (event: EventItem) => boolean;
-  /** 목록 아래에 붙는 것(작업 시작 전 이벤트의 히스토리 링크). 접으면 함께 접힌다. */
+  /** 이 이벤트가 작업 외 진입이면 그 이유(카드에 꼬리표). 없으면 꼬리표를 달지 않는다. */
+  outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
+  /**
+   * 지금 실행이 시작된 시각(EC2 ms). null 은 진행 중인 실행이 없음(작업 전·대기): 「최근 해소」를 비우고 머리줄 사람 수를 미리보기로 적는다.
+   * 주지 않으면(작업 목록을 모름) 거르지 않고 「작업자」로 적는다(S15P31A101-731).
+   */
+  runStartedAt?: number | null;
+  /** 목록 아래에 붙는 것(이번 실행 전 이벤트 안내). 접으면 함께 접힌다. */
   footer?: ReactNode;
 }
 
+/** 머리줄 사람 수를 올려 보면 나오는 설명(S15P31A101-731). */
+const PEOPLE_TITLE =
+  '지금 카메라로 추적 중인 사람 수입니다(확정·가려짐 트랙). 같은 사람이 잠깐 두 번호로 잡히면 많게, 가려지면 적게 보일 수 있습니다.';
+/** 작업 전(실행 없음)의 사람 수 설명. */
+const PREVIEW_TITLE = `작업을 시작하기 전 미리보기입니다. 경보는 꺼져 있습니다. ${PEOPLE_TITLE}`;
+/** 머리줄 진행 중 수를 올려 보면 나오는 설명: 사건(카드)과 경보(기록 한 건 한 건)를 가른다. */
+const ACTIVE_TITLE =
+  '지금 진행 중인 사건(카드) 수입니다. 한 사람의 여러 규칙과, 트랙 번호만 바뀌며 이어진 같은 위험은 한 사건으로 셉니다. 경보 기록 한 건 한 건의 수는 작업 관리의 작업 현황·종료 미팅에 있습니다.';
+
+/** 「목록에서 숨기기」 단추 설명: 확인 처리가 아니다(S15P31A101-731). */
+const CLEAR_TITLE =
+  '지금 보이는 이벤트를 이 브라우저의 목록·배너·경보음에서만 숨깁니다. 확인(ACK) 처리가 아니며 서버 기록과 확인 상태는 그대로입니다. 새로 나거나 등급이 오른 경보는 다시 보입니다.';
+
+/** 숨기기 전 확인 창: 미확인 경보가 있을 때만 띄운다(확인한 것처럼 보이지 않게). */
+function ClearConfirm({
+  unacked,
+  onConfirm,
+  onCancel,
+}: {
+  unacked: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ConfirmDialog
+      title="목록에서 숨길까요?"
+      description={`확인(ACK) 처리가 아닙니다. 미확인 경보 ${unacked}건이 이 화면의 목록·배너·경보음에서 사라지지만 확인 기록은 남지 않습니다. 서버 기록은 그대로이고, 새로 나거나 등급이 오른 경보는 다시 보입니다.`}
+      confirmLabel="숨기기"
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
+  );
+}
+
 /**
- * 실시간 관제 오른쪽 이벤트 패널: 머리줄의 작업자·사건 수, 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창.
- * 머리줄의 사건 수는 진행 중(지금 Tier 0 가 들고 있는 것)만 센다. 지난 관제는 목록 끝의 접힌 칸에 있다(S15P31A101-595).
+ * 실시간 관제 오른쪽 이벤트 패널: 머리줄의 사람 수·진행 중 사건 수, 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창.
+ * 머리줄의 진행 중 수는 진행 중 카드(지금 Tier 0 가 들고 있는 사건, 화면 묶음 뒤)만 센다. 지난 관제는 목록 끝의 접힌 칸에 있다(S15P31A101-595).
+ * 경보 기록 한 건 한 건의 수(작업 현황·종료 미팅)와 이름을 가른다(S15P31A101-731). 작업 전(실행 없음)이면 사람 수는 「미리보기」다.
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
- * 보이는 카드가 있으면 머리줄에 「모두 지우기」가 있다.
+ * 보이는 카드가 있으면 머리줄에 「목록에서 숨기기」가 있다(확인 처리가 아니다. 미확인 경보가 있으면 확인 창을 먼저 띄운다).
  */
 export function EventPanel({
   entries,
@@ -213,11 +269,25 @@ export function EventPanel({
   openEventId,
   onOpen,
   onClearAll,
-  isOutsideWork,
+  outsideWorkOf,
+  runStartedAt,
   footer,
 }: EventPanelProps) {
-  const sections = useMemo(() => eventSections(entries), [entries]);
+  // 화면 묶음(S15P31A101-731)이 지금 살아 있는 서로 다른 두 사람을 섞지 않게 살아 있는 World ID 를 본다. 사람이 바뀔 때만 다시 묶는다.
+  const aliveKey = useRealtimeStore(selectAliveIdsKey);
+  const alive = useMemo(
+    () => (aliveKey === null ? null : new Set(aliveKey ? aliveKey.split(ALIVE_ID_SEPARATOR) : [])),
+    [aliveKey],
+  );
+  const sections = useMemo(
+    () => eventSections(entries, { alive, runStartedAt }),
+    [entries, alive, runStartedAt],
+  );
   const trackedCount = useRealtimeStore(selectTrackedCount);
+  const unacked = useMemo(() => entries.filter(isAlarming).length, [entries]);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const clear = () => (unacked > 0 ? setConfirmClear(true) : onClearAll());
+  const preview = runStartedAt === null;
   const opened = useMemo(
     () => (openEventId ? incidentOf(entries, openEventId) : undefined),
     [entries, openEventId],
@@ -268,12 +338,16 @@ export function EventPanel({
           )}
         >
           <b className="text-[15px]">
-            작업자 {trackedCount}명 · 사건 {sections.active.length}건
+            <span title={preview ? PREVIEW_TITLE : PEOPLE_TITLE}>
+              {preview ? `미리보기 · 사람 ${trackedCount}명` : `작업자 ${trackedCount}명`}
+            </span>
+            {' · '}
+            <span title={ACTIVE_TITLE}>진행 중 {sections.active.length}건</span>
           </b>
           <div className="ml-auto flex items-center gap-1">
             {hasCards(sections) && (
-              <Button variant="secondary" size="sm" onClick={onClearAll}>
-                모두 지우기
+              <Button variant="secondary" size="sm" title={CLEAR_TITLE} onClick={clear}>
+                목록에서 숨기기
               </Button>
             )}
             <FoldButton folded={folded} onToggle={() => setFolded(!folded)} />
@@ -291,7 +365,7 @@ export function EventPanel({
                 sections={sections}
                 loaded={loaded}
                 failed={failed}
-                isOutsideWork={isOutsideWork}
+                outsideWorkOf={outsideWorkOf}
                 selectedKey={selectedKey}
                 onSelect={onSelect}
                 onOpen={onOpen}
@@ -306,6 +380,16 @@ export function EventPanel({
       </aside>
       {opened && openEventId && (
         <EventDetail incident={opened} openEventId={openEventId} onClose={() => onOpen(null)} />
+      )}
+      {confirmClear && (
+        <ClearConfirm
+          unacked={unacked}
+          onConfirm={() => {
+            setConfirmClear(false);
+            onClearAll();
+          }}
+          onCancel={() => setConfirmClear(false)}
+        />
       )}
     </>
   );

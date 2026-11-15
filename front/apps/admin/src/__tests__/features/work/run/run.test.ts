@@ -103,6 +103,23 @@ describe('appliedStatusLines', () => {
     ]);
   });
 
+  it('녹화 재생(시험 입력) 중이면 「경보 켜짐」 대신 「녹화 재생 중 · 실제 알림 꺼짐」이다(S15P31A101-731)', () => {
+    const cameras = { total: 4, live: 4 };
+    expect(
+      lines({ phase: on, sceneReady: false, appliedZoneCount: 2, cameras, testInput: true }),
+    ).toEqual(['wait:녹화 재생 중 · 실제 알림 꺼짐', 'ok:구역 2개 적용됨', 'ok:카메라 4/4 연결']);
+    // 적용 전 상태 줄은 그대로 두고 재생 줄을 앞에 더한다
+    expect(
+      lines({
+        phase: { stage: 'starting', problem: null },
+        sceneReady: false,
+        appliedZoneCount: null,
+        cameras: { total: 0, live: 0 },
+        testInput: true,
+      }),
+    ).toEqual(['wait:녹화 재생 중 · 실제 알림 꺼짐', 'wait:현장 적용 대기 · 경보 꺼짐']);
+  });
+
   it('모르는 값은 줄을 만들지 않는다', () => {
     expect(
       lines({

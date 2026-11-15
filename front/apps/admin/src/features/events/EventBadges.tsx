@@ -49,9 +49,29 @@ export function ConfirmBadge({ event, compact }: { event: EventItem; compact?: b
   );
 }
 
+/** 작업 외 진입의 이유: 발생 시각에 진행 중인 작업이 없음(NO_WORK), 작업 중이었지만 작업 구역 밖(OUTSIDE_ZONE). */
+export type OutsideWorkKind = 'NO_WORK' | 'OUTSIDE_ZONE';
+
+/** 작업 외 진입 꼬리표 문구와 올려 보면 나오는 설명(S15P31A101-731: 「작업 외 진입」 한 가지로는 뜻을 알 수 없었다). */
+export const OUTSIDE_WORK_TEXT: Record<OutsideWorkKind, { label: string; title: string }> = {
+  NO_WORK: {
+    label: '작업 시간 외',
+    title: '진행 중인 작업이 없을 때 난 이벤트입니다(작업 시작 전·종료 뒤·실행 사이).',
+  },
+  OUTSIDE_ZONE: {
+    label: '작업 구역 밖',
+    title: '작업 중이었지만 그 작업의 구역 밖에서 난 이벤트입니다.',
+  },
+};
+
 /** 작업 외 진입 꼬리표(S15P31A101-457): 작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트. 등급·소리·표시는 그대로이고 꼬리표만 붙는다. */
-export function OutsideWorkBadge() {
-  return <span className={TAG_OUTSIDE}>작업 외 진입</span>;
+export function OutsideWorkBadge({ kind }: { kind: OutsideWorkKind }) {
+  const text = OUTSIDE_WORK_TEXT[kind];
+  return (
+    <span title={text.title} className={TAG_OUTSIDE}>
+      {text.label}
+    </span>
+  );
 }
 
 /** 지연 알림 꼬리표(심각도와 함께 보여야 하는 것, 명세 7.3). 색은 지연(채도를 낮춘 주황) 몫이다. */

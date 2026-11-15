@@ -2864,6 +2864,7 @@ class Laptop(BaseModel):
     )
     link: DefsLinkState
     last_heartbeat_at: DefsTimestampMs | None
+    test_input: StrictBool | MISSING = MISSING
 
 
 class DataAgeMs(RootModel[StrictInt]):

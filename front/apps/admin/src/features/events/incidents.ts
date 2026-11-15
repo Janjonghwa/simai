@@ -1,4 +1,5 @@
 import {
+  CARD_MERGE_GAP_MS,
   RECENT_RESOLVED_INCIDENTS,
   RESOLVED_PER_INCIDENT,
   SEVERITY_RANK,
@@ -100,39 +101,204 @@ export function groupIncidents(entries: readonly EventEntry[]): Incident[] {
   );
 }
 
-/** 해소된 이벤트를 묶는 키: 같은 대상·규칙·구역에서 되풀이된 발생이 한 카드가 된다. */
-const resolvedKey = (event: EventItem): string =>
-  `${targetKey(event)}|${event.rule_id}|${event.zone_id ?? ''}`;
-
 /** 이 이벤트가 발생한 횟수: 처음 한 번에, 해소 뒤 곧바로 다시 열린(resume) 횟수를 더한다. */
 const occurrencesOf = (event: EventItem): number => 1 + (event.resume_count ?? 0);
 
-/** 최근 해소 칸의 카드 하나(명세 7.4 의 사람별 묶음과 달리, 해소된 발생만 규칙·구역별로 묶는다). */
-export interface ResolvedGroup {
-  /** 목록 key. 같은 사람의 다른 규칙·구역과 갈린다(incident.key 는 대상만 가리킨다). */
+/**
+ * 지금 살아 있는(추적 중인) 사람의 World ID 집합(병합으로 흡수된 이전 ID 포함). 화면 묶음(S15P31A101-731)이 「실제 두 번째 사람」을
+ * 가리지 않게 쓴다. null 은 모른다(World 를 아직 못 받음)이고, 그때는 모두 살아 있는 것으로 보아 서로 다른 사람을 묶지 않는다.
+ */
+export type AliveIds = ReadonlySet<string> | null;
+
+const isAlive = (alive: AliveIds, person: string) => alive === null || alive.has(person);
+
+/**
+ * 화면 카드 하나. 진행 중 카드는 한 사람의 묶음(명세 7.4)에, 같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(World ID)만 바뀌어
+ * 다시 난 묶음을 더한 것이고(S15P31A101-731), 최근 해소 카드는 같은 위험·같은 구역의 해소된 발생을 묶은 것이다.
+ * 기록·이벤트는 그대로이고 화면만 묶는다.
+ */
+export interface CardGroup {
+  /** 목록 key. 대표 묶음 키(incident.key)와 다를 수 있다(같은 사람의 다른 규칙·구역 해소 카드). */
   id: string;
-  /** 해소된 이벤트만 담은 묶음. 선택·상세는 진행 중 묶음과 같이 대상으로 다룬다. */
+  /** 카드가 보이는 묶음. 선택·상세·3D 초점은 이 묶음의 대상(살아 있는 사람이 있으면 그 사람)이다. */
   incident: Incident;
-  /** 같은 대상·규칙·구역에서 발생한 횟수. 새 event_id 로 다시 생긴 것도 센다. */
+  /** 카드 대표 위험(규칙·구역)의 발생 횟수(새 event_id 로 다시 난 것과 해소 뒤 재개를 모두 센다). 2 이상이면 「n회」를 보인다. */
   occurrences: number;
+  /** 카드에 묶인 대상(사람 트랙 번호) 수. 1 이면 다른 트랙 번호를 묶지 않은 것이다. */
+  people: number;
+}
+
+/** 최근 해소 칸의 카드 하나(이전 이름). */
+export type ResolvedGroup = CardGroup;
+
+/** 시각 순으로 이을 것 하나: 시작(발생)·끝(마지막 갱신)과 사람. 사람이 없으면(구역 대상) person 이 null 이다. */
+interface ChainItem<T> {
+  value: T;
+  start: number;
+  end: number;
+  person: string | null;
+}
+
+interface Chain<T> {
+  values: T[];
+  end: number;
+  people: Set<string>;
+  /** 이 묶음에 든 사람 중 지금 살아 있는 사람. 살아 있는 서로 다른 두 사람은 한 묶음에 들지 않는다. */
+  living: Set<string>;
 }
 
 /**
- * 해소된 이벤트를 (대상, 규칙, 구역)별로 묶는다. 최근에 해소된 묶음이 앞선다. EC2 마감(S15P31A101-722: Tier 0 가 사라져 닫은 것)은
- * 관측 해소가 아니라 넣지 않는다(지난 작업·이벤트 목록에서는 그대로 보인다).
+ * 같은 위험·같은 구역 항목을 시각(시작) 순으로 잇는다(S15P31A101-731). 다음일 때 앞 묶음에 넣는다:
+ * - 같은 사람이 이미 그 묶음에 있다(시각 무관, 이전의 사람·규칙·구역별 해소 묶음과 같다), 또는
+ * - 앞 묶음의 마지막 갱신에서 CARD_MERGE_GAP_MS 안에 시작했다(트랙 번호가 바뀌며 다시 난 경보).
+ * 단, 지금 살아 있는 사람이 든 묶음에 지금 살아 있는 다른 사람은 넣지 않는다(실제 두 번째 사람을 숨기지 않는다).
  */
-export function resolvedGroups(entries: readonly EventEntry[]): ResolvedGroup[] {
-  const groups = groupBy(
-    entries.filter((e) => !isActive(e.event) && serverCloseKind(e.event) === null),
-    resolvedKey,
+function chainItems<T>(items: readonly ChainItem<T>[], alive: AliveIds): T[][] {
+  const chains: Chain<T>[] = [];
+  for (const item of [...items].sort((a, b) => a.start - b.start)) {
+    const person = item.person;
+    const living = person !== null && isAlive(alive, person);
+    const allowed = (chain: Chain<T>) => !(living && [...chain.living].some((p) => p !== person));
+    const near = (chain: Chain<T>) => item.start - chain.end <= CARD_MERGE_GAP_MS;
+    const chain =
+      chains.find((c) => person !== null && c.people.has(person) && allowed(c)) ??
+      [...chains].reverse().find((c) => near(c) && allowed(c));
+    if (chain) {
+      chain.values.push(item.value);
+      chain.end = Math.max(chain.end, item.end);
+      if (person !== null) chain.people.add(person);
+      if (living) chain.living.add(person);
+    } else {
+      chains.push({
+        values: [item.value],
+        end: item.end,
+        people: new Set(person === null ? [] : [person]),
+        living: new Set(living ? [person] : []),
+      });
+    }
+  }
+  return chains.map((c) => c.values);
+}
+
+/** 같은 위험·같은 구역 키. */
+const riskKey = (event: EventItem): string => `${event.rule_id}|${event.zone_id ?? ''}`;
+
+const personOf = (incident: Incident): string | null =>
+  incident.target?.type === 'person' ? incident.target.id : null;
+
+/**
+ * 진행 중 묶음들을 한 카드로. 대표는 살아 있는 사람의 묶음이고(없으면 가장 최근에 난 묶음), 나머지 묶음의 진행 중 규칙을 뒤에 더한다:
+ * 카드의 처리 칩·점멸·경과가 묶인 경보 전부를 반영해야 확인 대기 경보가 카드에서 사라지지 않는다. 대표 규칙(topEntry)은 대표 묶음 것이다.
+ */
+function combineActive(members: readonly Incident[], alive: AliveIds): CardGroup {
+  const startOf = (i: Incident) => firstActiveRaisedAt(i) ?? i.latestAt;
+  const living = members.find((i) => {
+    const person = personOf(i);
+    return person !== null && isAlive(alive, person);
+  });
+  const lead = living ?? members.reduce((a, b) => (startOf(b) > startOf(a) ? b : a));
+  const leadRisk = riskKey(topEntry(lead).event);
+  const occurrences = members.reduce(
+    (sum, i) =>
+      sum +
+      i.entries
+        .filter((e) => isActive(e.event) && riskKey(e.event) === leadRisk)
+        .reduce((n, e) => n + occurrencesOf(e.event), 0),
+    0,
   );
-  return [...groups]
-    .map(([id, group]) => ({
-      id,
-      incident: buildIncident(targetKey(group[0]!.event), group),
-      occurrences: group.reduce((sum, e) => sum + occurrencesOf(e.event), 0),
-    }))
-    .sort((a, b) => b.incident.latestAt - a.incident.latestAt);
+  const others = members.filter((i) => i !== lead);
+  if (others.length === 0) return { id: lead.key, incident: lead, occurrences, people: 1 };
+  const severity = members.reduce(
+    (top, i) => (SEVERITY_RANK[i.severity] > SEVERITY_RANK[top] ? i.severity : top),
+    lead.severity,
+  );
+  return {
+    id: lead.key,
+    incident: {
+      ...lead,
+      entries: [
+        ...lead.entries,
+        ...others.flatMap((i) => i.entries.filter((e) => isActive(e.event))),
+      ],
+      severity,
+      alarming: members.some((i) => i.alarming),
+      latestAt: Math.max(...members.map((i) => i.latestAt)),
+    },
+    occurrences,
+    people: members.length,
+  };
+}
+
+/**
+ * 진행 중 카드(S15P31A101-731). 사람 묶음(명세 7.4)을 대표 규칙의 위험·구역별로 시각 순으로 잇는다(chainItems).
+ * 구역 대상 묶음은 묶지 않는다. 지금 살아 있는 서로 다른 두 사람은 같은 카드에 들지 않는다.
+ */
+export function activeCards(incidents: readonly Incident[], alive: AliveIds): CardGroup[] {
+  const byRisk = new Map<string, ChainItem<Incident>[]>();
+  const cards: CardGroup[] = [];
+  for (const incident of incidents) {
+    const person = personOf(incident);
+    if (person === null) {
+      cards.push(combineActive([incident], alive));
+      continue;
+    }
+    const key = riskKey(topEntry(incident).event);
+    const item = {
+      value: incident,
+      start: firstActiveRaisedAt(incident) ?? incident.latestAt,
+      end: incident.latestAt,
+      person,
+    };
+    const group = byRisk.get(key);
+    if (group) group.push(item);
+    else byRisk.set(key, [item]);
+  }
+  for (const group of byRisk.values()) {
+    for (const members of chainItems(group, alive)) cards.push(combineActive(members, alive));
+  }
+  return cards.sort(
+    (a, b) =>
+      SEVERITY_RANK[b.incident.severity] - SEVERITY_RANK[a.incident.severity] ||
+      b.incident.latestAt - a.incident.latestAt,
+  );
+}
+
+/**
+ * 해소된 이벤트를 같은 위험·같은 구역별로, 같은 사람이거나 짧은 시간 안에 이어진 것끼리 묶는다(S15P31A101-731, chainItems).
+ * 최근에 해소된 묶음이 앞선다. EC2 마감(S15P31A101-722: Tier 0 가 사라져 닫은 것)은 관측 해소가 아니라 넣지 않는다
+ * (지난 작업·이벤트 목록에서는 그대로 보인다).
+ */
+export function resolvedGroups(
+  entries: readonly EventEntry[],
+  alive: AliveIds = null,
+): CardGroup[] {
+  const byRisk = groupBy(
+    entries.filter((e) => !isActive(e.event) && serverCloseKind(e.event) === null),
+    riskKey,
+  );
+  const cards: CardGroup[] = [];
+  for (const [key, group] of byRisk) {
+    const items = group.map((entry) => {
+      const end = eventTime(entry.event) ?? entry.event.raised_at ?? 0;
+      const target = incidentTarget(entry.event);
+      return {
+        value: entry,
+        start: entry.event.raised_at ?? end,
+        end,
+        person: target?.type === 'person' ? target.id : null,
+      };
+    });
+    for (const members of chainItems(items, alive)) {
+      const first = members[0]!;
+      cards.push({
+        id: `${key}|${first.event.event_id}`,
+        incident: buildIncident(targetKey(first.event), members),
+        occurrences: members.reduce((sum, e) => sum + occurrencesOf(e.event), 0),
+        people: new Set(members.map((e) => targetKey(e.event))).size,
+      });
+    }
+  }
+  return cards.sort((a, b) => b.incident.latestAt - a.incident.latestAt);
 }
 
 /**
@@ -147,21 +313,50 @@ function splitStale(entries: readonly EventEntry[]) {
 }
 
 /**
- * 이벤트 패널의 세 칸: 진행 중인 사건 전부, 최근에 해소된 묶음 몇 건, 「지난 관제 · 확인 필요」 사건 전부(S15P31A101-595).
+ * 이벤트 패널의 세 칸: 진행 중 카드 전부, 최근에 해소된 카드 몇 건, 「지난 관제 · 확인 필요」 사건 전부(S15P31A101-595).
  * staleEvents 는 지난 관제 칸의 이벤트 수(사건이 아니라 규칙 하나하나)다.
  */
 export interface EventSections {
-  active: Incident[];
-  resolved: ResolvedGroup[];
+  active: CardGroup[];
+  resolved: CardGroup[];
   stale: Incident[];
   staleEvents: number;
 }
 
-export function eventSections(entries: readonly EventEntry[]): EventSections {
+export interface SectionOptions {
+  /** 지금 살아 있는 사람(화면 묶음이 서로 다른 두 사람을 섞지 않게). 주지 않으면 모른다(서로 다른 사람은 묶지 않는다). */
+  alive?: AliveIds;
+  /**
+   * 지금 실행이 시작된 시각(EC2 ms, S15P31A101-731). 주면 「최근 해소」에 그 뒤에 난 이벤트만 남긴다. null 은 지금 실행이 없다는 뜻이라
+   * 「최근 해소」를 비운다(작업 종료 때 Tier 0 가 한꺼번에 닫은 이벤트가 대기 화면에 남지 않게). 주지 않으면(undefined) 거르지 않는다.
+   */
+  runStartedAt?: number | null;
+}
+
+/** 지금 실행의 이벤트만(발생 시각 기준, 모르면 마지막 갱신 시각). */
+function inRun(
+  entries: readonly EventEntry[],
+  runStartedAt: number | null | undefined,
+): readonly EventEntry[] {
+  if (runStartedAt === undefined) return entries;
+  if (runStartedAt === null) return [];
+  return entries.filter((e) => (e.event.raised_at ?? eventTime(e.event) ?? 0) >= runStartedAt);
+}
+
+export function eventSections(
+  entries: readonly EventEntry[],
+  { alive = null, runStartedAt }: SectionOptions = {},
+): EventSections {
   const { now, stale } = splitStale(entries);
   return {
-    active: groupIncidents(now).filter((i) => i.active),
-    resolved: resolvedGroups(entries).slice(0, RECENT_RESOLVED_INCIDENTS),
+    active: activeCards(
+      groupIncidents(now).filter((i) => i.active),
+      alive,
+    ),
+    resolved: resolvedGroups(inRun(entries, runStartedAt), alive).slice(
+      0,
+      RECENT_RESOLVED_INCIDENTS,
+    ),
     stale: groupIncidents(stale),
     staleEvents: stale.length,
   };

@@ -3,6 +3,7 @@ import type { EventItem } from '@/features/events/types';
 import {
   activeWork,
   isOutsideWork,
+  outsideWorkKind,
   splitSince,
   workElapsedLabel,
   workStartedAt,
@@ -156,6 +157,14 @@ describe('splitSince 시작 이전 이벤트 거르기', () => {
 
 describe('isOutsideWork 작업 외 진입 판정', () => {
   const inZone = event({ zone_id: 'z-04', raised_at: NOW - 5 * MIN });
+
+  it('이유를 가른다: 진행 중인 작업이 없으면 NO_WORK, 작업 구역 밖이면 OUTSIDE_ZONE, 아니면 null(S15P31A101-731)', () => {
+    expect(outsideWorkKind(inZone, [], NOW)).toBe('NO_WORK');
+    expect(
+      outsideWorkKind(event({ zone_id: 'z-09', raised_at: NOW - 5 * MIN }), [running(30)], NOW),
+    ).toBe('OUTSIDE_ZONE');
+    expect(outsideWorkKind(inZone, [running(30)], NOW)).toBeNull();
+  });
 
   it('진행 중이던 작업의 구역 안에서 난 이벤트는 작업 안이다', () => {
     expect(isOutsideWork(inZone, [running(30)], NOW)).toBe(false);

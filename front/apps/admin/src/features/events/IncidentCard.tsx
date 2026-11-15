@@ -5,6 +5,7 @@ import {
   DelayedBadge,
   OutsideWorkBadge,
   StateChip,
+  type OutsideWorkKind,
 } from '@/features/events/EventBadges';
 import { entryEtaLine } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
@@ -20,13 +21,21 @@ import { useEffect, useRef } from 'react';
 /** 둘째 줄 오른쪽 끝(경과·발생 횟수) 글자. */
 const TRAILING = 'shrink-0 text-xs whitespace-nowrap text-muted-foreground';
 
+/** 「N회」를 올려 보면 나오는 설명. 트랙 번호가 바뀌며 이어진 경보를 묶었으면(S15P31A101-731) 그 까닭을 알린다. */
+const occurrencesTitle = (occurrences: number, people: number) =>
+  people > 1
+    ? `같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(작업자 번호)가 바뀌며 이어진 경보 ${occurrences}건(번호 ${people}개)을 한 카드로 묶었습니다. 지금 보이는 서로 다른 두 사람은 묶지 않으며, 기록은 그대로입니다.`
+    : `같은 위험·같은 구역에서 ${occurrences}번 발생했습니다.`;
+
 interface IncidentCardProps {
   incident: Incident;
-  /** 최근 해소 칸 카드에서만: 같은 대상·규칙·구역에서 발생한 횟수. 2 이상이면 「N회 발생」을 보인다. */
+  /** 카드 대표 위험(규칙·구역)의 발생 횟수(S15P31A101-731 화면 묶음 포함). 2 이상이면 「N회」를 보인다. */
   occurrences?: number;
+  /** 카드에 묶인 대상(사람 트랙 번호) 수. 2 이상이면 「N회」에 묶은 까닭을 올려 보면 알린다. */
+  people?: number;
   selected: boolean;
-  /** 작업 외 진입 꼬리표를 붙일지(작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트). 등급·소리·표시는 그대로다. */
-  outsideWork?: boolean;
+  /** 작업 외 진입 꼬리표의 이유(작업 시간 외·작업 구역 밖). 없으면 꼬리표가 없다. 등급·소리·표시는 그대로다. */
+  outsideWork?: OutsideWorkKind | null;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
@@ -42,8 +51,8 @@ const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
 /**
  * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard). 세 줄이다.
  * - 첫 줄: 등급 배지 · 대표 규칙(가장 높은 등급) 이름 · 구역, 오른쪽에 처리 상태 칩 하나.
- * - 둘째 줄: 대상(사람은 끝번호, 구역은 이름) · 꼬리표(확인 필요 · 지연 알림 · 작업 외 진입), 오른쪽 끝에 경과(N초 전).
- *   해소 카드는 경과 대신 「N회 발생」(두 번 이상일 때). 확인 필요는 운영자가 확인하기 전에만 보인다.
+ * - 둘째 줄: 대상(사람은 「작업자 #N」, 구역은 이름) · 꼬리표(확인 필요 · 지연 알림 · 작업 시간 외/작업 구역 밖), 오른쪽 끝에
+ *   발생 횟수 「N회」(두 번 이상일 때, S15P31A101-731 화면 묶음 포함)와 경과(진행 중일 때 N초 전). 확인 필요는 운영자가 확인하기 전에만 보인다.
  * - 진입 예측일 때만 한 줄을 더하고, 진행 중이면 카메라 버튼이 맨 아래에 온다.
  * - 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)는 등급 테두리·점멸·카메라 버튼 없이 흐리게 보인다(경과는 보인다).
  * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점),
@@ -52,8 +61,9 @@ const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
 export function IncidentCard({
   incident,
   occurrences = 1,
+  people = 1,
   selected,
-  outsideWork = false,
+  outsideWork = null,
   onSelect,
   onOpen,
 }: IncidentCardProps) {
@@ -120,13 +130,16 @@ export function IncidentCard({
               </span>
               {check && <ConfirmBadge event={check.event} compact />}
               {delayed && <DelayedBadge compact />}
-              {outsideWork && <OutsideWorkBadge />}
+              {outsideWork && <OutsideWorkBadge kind={outsideWork} />}
             </span>
-            {raisedAt !== null ? (
-              <Since raisedAt={raisedAt} className={TRAILING} />
-            ) : (
-              occurrences > 1 && <span className={TRAILING}>{occurrences}회 발생</span>
-            )}
+            <span className="flex shrink-0 items-center gap-1.5">
+              {occurrences > 1 && (
+                <span title={occurrencesTitle(occurrences, people)} className={TRAILING}>
+                  {occurrences}회
+                </span>
+              )}
+              {raisedAt !== null && <Since raisedAt={raisedAt} className={TRAILING} />}
+            </span>
           </span>
         </button>
         {eta && <p className="text-sm">{eta}</p>}
