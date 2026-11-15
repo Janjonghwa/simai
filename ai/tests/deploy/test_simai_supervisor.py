@@ -1003,6 +1003,82 @@ def test_tier0_fast_crash_loop_backs_off_1_2_4_5_then_gives_up_like_before(bs, t
     assert [n for n, s in w.signals if s == signal.SIGTERM] == ["worker", "vllm"]
 
 
+def test_restart_request_restarts_only_tier0_at_once_without_counting_failure(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-741: 요청 파일이 있으면 Tier 0 만 SIGTERM(정상 종료 0)으로 내리고 백오프·실패 횟수 없이 바로 다시 띄운다. 사이드카는 그대로."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+    spawn_at = _record_tier0_spawns(sup, w)
+    req = tmp_path / "simai" / "state" / bs.TIER0_RESTART_REQUEST
+    req.parent.mkdir(parents=True, exist_ok=True)
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now == 20:
+            req.write_text("1\n", encoding="utf-8")
+        if w.now == 40:
+            sup.request_stop(signal.SIGTERM)
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert w.spawned.count("tier0") == 2 and w.spawned.count("worker") == 1 and w.spawned.count("vllm") == 1
+    assert spawn_at[1] - 20 <= 2 and sup.t0_fails == 0 and not req.exists()
+    # 요청 뒤 첫 SIGTERM 은 Tier 0 뿐(사이드카는 마지막 정지 신호 때만)
+    sigs = [n for n, s in w.signals if s == signal.SIGTERM]
+    assert sigs[0] == "tier0" and sigs[1:] == ["worker", "vllm", "tier0"]
+    err = capsys.readouterr().err
+    assert "재시작 요청에 따른 종료" in err and "Tier 0 정상 종료(코드 0, 재시작 요청 없음)" not in err
+
+
+def test_tier0_clean_exit_without_request_still_ends_everything(bs, tmp_path, monkeypatch, capsys):
+    """요청이 없으면 코드 0(정상 종료)은 지금처럼 사이드카까지 내리고 0 으로 끝난다."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now == 20:
+            sup.svc["tier0"].proc.rc = 0
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert w.spawned.count("tier0") == 1
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["worker", "vllm"]
+    assert "재시작 요청 없음" in capsys.readouterr().err
+
+
+def test_restart_request_escalates_to_kill_when_tier0_ignores_term(bs, tmp_path, monkeypatch):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+    req = tmp_path / "simai" / "state" / bs.TIER0_RESTART_REQUEST
+    req.parent.mkdir(parents=True, exist_ok=True)
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now == 20:
+            w.last("tier0").ignore_term = True
+            req.write_text("1\n", encoding="utf-8")
+        if w.now == 40:
+            sup.request_stop(signal.SIGTERM)
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert w.spawned.count("tier0") == 2 and ("tier0", bs.KILL) in w.signals
+
+
+def test_restart_tier0_command_writes_request_file(bs, tmp_path, capsys):
+    work = tmp_path / "work"
+    assert bs.restart_tier0(["--work", str(work)]) == bs.EXIT_NOT_FOUND  # state/ 가 없으면 요청하지 않는다
+    (work / "state").mkdir(parents=True)
+    assert bs.restart_tier0(["--work", str(work)]) == 0
+    assert (work / "state" / bs.TIER0_RESTART_REQUEST).is_file()
+
+
 def test_tier0_long_run_resets_crash_count_and_hides_stale_marker(bs, tmp_path, monkeypatch):
     """오래 돈 뒤 죽으면 연속 실패를 1부터 다시 센다. 죽은 동안에는 기동 시각을 비워 죽은 Tier 0 의 표시 파일을 준비로 보지 않는다."""
     w = World()

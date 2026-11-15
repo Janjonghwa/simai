@@ -122,6 +122,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         if not 0 <= args.status_port <= 65535:
             raise ValueError("--status-port 는 0~65535 다")
+        if args.send and not args.status_port:
+            log.warning("--send 인데 --status-port 0 이다: 현장 경보 단말이 영상 상태를 몰라 '영상 상태 모름 · 관제 중단'으로 보이고, "
+                        "입력 종류 하트비트(source_kind)도 EC2 에 가지 않아 입력 종류 판단이 안 된다. 상태 보고를 끄지 말고 기본 포트(%d)를 쓴다", DEFAULT_STATUS_PORT)
         if args.preview_port is not None and not 1 <= args.preview_port <= 65535:
             raise ValueError("--preview-port 는 1~65535 다")
         if args.record_min_free_gb < 0:

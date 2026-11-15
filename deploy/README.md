@@ -456,6 +456,18 @@ simai-bootstrap lobby \
 - **프로세스.** `lobby` 는 `--services`(기본 `tier0,vllm,worker,avatar`)만 따르고 `SIMAI_SERVICES` 는 보지 않는다. 통합 이미지 ENV 기본값과 10차 템플릿 값이 아바타 없는 `tier0,vllm,worker` 라 그 값이 lobby 기본값을 덮어 시연 필수인 아바타가 빠졌다(이미지 기본값과 일부러 뺀 값을 구분할 수 없어 "따르되 경고"가 아니라 "무시하고 경고"를 골랐다). 환경 값이 다르면 시작 로그에 `주의: SIMAI_SERVICES=… 는 lobby 에서 쓰지 않는다`, `--services` 로 아바타를 빼면 `주의: 아바타를 띄우지 않는다` 를 남긴다. `preflight` 의 GPU 예산도 같은 기본(아바타 포함)으로 본다.
 - **워커 ID.** `--worker-id` → `SIMAI_WORKER_ID` → 토큰·env 파일 안의 `SIMAI_WORKER_ID=` → 토큰 파일 이름(`worker-s10.token` → `worker-s10`, EC2 규칙 `^[a-z0-9][a-z0-9-]{0,62}$` 에 맞고 `worker.token` 같은 흔한 이름이 아닐 때) 순서로 정해 `worker`·`avatar` 환경 `SIMAI_WORKER_ID` 로 넣고, 시작 로그에 `워커 ID <값> (<출처>)` 를 남긴다. 못 정하면 워커가 기본 `worker-01` 로 뜬다는 경고를 남긴다. 10차: 토큰 파일만 주고 ID 를 안 넘겨 워커가 `worker-01` 로 떠 EC2 대여가 401 → 빠른 실패가 반복됐다. 워커는 401·403 이면 `워커 ID 와 토큰이 맞지 않음(현재 ID=…)` 을 남긴다(토큰 값은 찍지 않는다). 그래서 EC2 에서 `admin worker register --id <ID>` 로 받은 토큰은 `<ID>.token` 이름으로 올린다.
 
+### Tier 0 설정을 바꿔 다시 띄우기 (`simai-bootstrap restart-tier0`, S15P31A101-741)
+
+`tier0-live.json`(`process_split` 등)을 바꾼 뒤 Tier 0 만 다시 띄울 때는 lobby 작업 폴더를 알려 준다. 사이드카(vLLM·워커·아바타·PPE)는 그대로 돈다.
+
+```bash
+simai-bootstrap restart-tier0 --work /workspace/simai/runs/lobby-live   # --work 를 빼면 $SIMAI_ROOT/runs/lobby-live
+```
+
+작업 폴더 `state/tier0.restart-request` 를 남기면 lobby 감시 프로세스가 0.5초 안팎에 집어 가 Tier 0 를 SIGTERM 으로 내린다(`SIMAI_STOP_GRACE_S` 안에 안 끝나면 그룹 SIGKILL). 이 종료는 전체 종료도 빠른 실패도 아니라서 백오프·재시작 횟수 없이 곧바로 같은 인자(바뀐 설정 파일)로 다시 띄운다. 로그에 `Tier 0 재시작 요청` 과 `재시작 요청에 따른 종료` 가 남고, 요청 없이 코드 0 으로 끝나면 `Tier 0 정상 종료(코드 0, 재시작 요청 없음)` 다. 엔진 준비·표시 파일은 `simai-wait-tier0` 로 확인한다.
+
+하면 안 되는 것: Pod 에서 `pkill -f "python -m services.tier0"`(SIGTERM). Tier 0 는 SIGTERM 을 정상 종료(코드 0)로 처리하고 요청 없는 코드 0 은 감시 프로세스가 전체 종료로 보므로, 18차 세션에서 GPU 세션이 `FAILED LOBBY_STOPPED` 가 되고 Pod 를 다시 부팅했다(11분). 비정상 종료(`pkill -9`)는 사이드카를 두고 Tier 0 만 백오프 뒤 다시 뜨지만(S15P31A101-652) 의도한 재시작에는 `restart-tier0` 를 쓴다.
+
 ### 장면 준비 모드 (`simai-bootstrap scene`, MapAnything, S15P31A101-250)
 
 정적 장면 준비(MapAnything 초기 추정, 명세 4.3·5.x)는 설치 때 한 번 도는 작업이다. LIVE 서비스(Tier 0·vLLM·워커)와 같은 GPU 에서 동시에 돌리지 않고, 명령이 끝나면 프로세스가 끝나 VRAM 을 돌려준다.
