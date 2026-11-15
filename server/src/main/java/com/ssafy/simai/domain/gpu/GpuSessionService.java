@@ -196,13 +196,14 @@ public class GpuSessionService implements Tier0SessionTokens {
                 throw new BusinessException(ErrorCode.Gpu.GPU_SESSION_ENDED);
             }
             jdbc.update("""
-                    INSERT INTO gpu_session_event (session_id, kind, stage, reason_code, detail, progress, reported_at, received_at, host_cpu)
-                    VALUES (:id, 'PROGRESS', :stage, :reason, :detail, :progress, :reportedAt, :now, CAST(:hostCpu AS jsonb))
+                    INSERT INTO gpu_session_event (session_id, kind, stage, reason_code, detail, progress, reported_at, received_at, host_cpu, disabled_features)
+                    VALUES (:id, 'PROGRESS', :stage, :reason, :detail, :progress, :reportedAt, :now, CAST(:hostCpu AS jsonb), CAST(:disabled AS jsonb))
                     """, new MapSqlParameterSource("id", sessionId).addValue("stage", stage)
                     .addValue("reason", text(p, "reason_code")).addValue("detail", text(p, "detail"))
                     .addValue("progress", present(p, "progress") ? p.get("progress").doubleValue() : null)
                     .addValue("reportedAt", utc(reportedAt)).addValue("now", utc(now))
-                    .addValue("hostCpu", present(p, "host_cpu") ? mapper.writeValueAsString(p.get("host_cpu")) : null));
+                    .addValue("hostCpu", present(p, "host_cpu") ? mapper.writeValueAsString(p.get("host_cpu")) : null)
+                    .addValue("disabled", present(p, "disabled_features") ? mapper.writeValueAsString(p.get("disabled_features")) : null));
         });
     }
 
@@ -291,6 +292,7 @@ public class GpuSessionService implements Tier0SessionTokens {
                     s.ports::text AS ports, s.image_digest, s.price_per_hour_usd, s.tls_public_key_sha256, s.worker_id, s.gateway_id,
                     s.registered_at, ended.received_at AS ended_at, ended.end_reason, ended.reason_code AS end_reason_code,
                     prog.stage, prog.reason_code, prog.detail, prog.progress, prog.received_at AS stage_at, hc.host_cpu::text AS host_cpu,
+                    df.disabled_features::text AS disabled_features,
                     """ + LAST_RECEIVED + """
                      AS last_report_at
                 FROM gpu_session s
@@ -301,6 +303,9 @@ public class GpuSessionService implements Tier0SessionTokens {
                 LEFT JOIN LATERAL (
                     SELECT h.host_cpu FROM gpu_session_event h
                     WHERE h.session_id = s.session_id AND h.kind = 'PROGRESS' AND h.host_cpu IS NOT NULL ORDER BY h.event_id DESC LIMIT 1) hc ON true
+                LEFT JOIN LATERAL (
+                    SELECT d.disabled_features FROM gpu_session_event d
+                    WHERE d.session_id = s.session_id AND d.kind = 'PROGRESS' AND d.disabled_features IS NOT NULL ORDER BY d.event_id DESC LIMIT 1) df ON true
                 ORDER BY s.registered_at DESC, s.session_id
                 LIMIT 1
                 """, Map.of(), (rs, i) -> view(rs, now, tier0Connected)).stream().findFirst();
@@ -367,6 +372,9 @@ public class GpuSessionService implements Tier0SessionTokens {
         String hostCpu = rs.getString("host_cpu");
         // 호스트 CPU 측정(S15P31A101-740, 계약 밖 관리자 응답). 보고가 없으면 null
         node.set("host_cpu", hostCpu == null ? null : mapper.readTree(hostCpu));
+        String disabled = rs.getString("disabled_features");
+        // 꺼진 기능 문구 목록(S15P31A101-747, 계약 밖 관리자 응답). 보고가 없으면 null, 빈 배열은 꺼진 것 없음
+        node.set("disabled_features", disabled == null ? null : mapper.readTree(disabled));
         node.put("provider", rs.getString("provider"));
         node.put("instance_id", rs.getString("instance_id"));
         node.put("gpu_type", rs.getString("gpu_type"));

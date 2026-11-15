@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "gpu_session_report",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000007470",
+  "sent_at": 1794700860000,
+  "source_id": "gpu-boot-runpod",
+  "payload": {
+    "session_id": "6f9b2c1e-3d4a-4b5c-8d7e-0f1a2b3c4d5e",
+    "stage": "READY",
+    "reason_code": null,
+    "detail": "VLM 웜업 21.3초",
+    "disabled_features": [
+      "Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)",
+      "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음"
+    ],
+    "reported_at": 1794701400000
+  }
+}

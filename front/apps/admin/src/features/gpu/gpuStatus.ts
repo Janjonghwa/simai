@@ -399,6 +399,13 @@ export function hostCpuWarning(status: GpuStatus | undefined): string | null {
   return HOST_CPU_SLOW_TEXT;
 }
 
+/** 열린 세션의 꺼진 기능 경고 문구(S15P31A101-747). 준비 완료(READY)에서만, 모르거나 없으면 빈 배열. 조작은 없다 */
+export function disabledFeatureWarnings(status: GpuStatus | undefined): string[] {
+  const session = status?.session;
+  if (session?.state !== 'ACTIVE' || session.stage !== 'READY') return [];
+  return (session.disabled_features ?? []).filter((t) => t.trim() !== '');
+}
+
 export const STOP_BLOCK_TEXT: Record<'LIVE' | 'SETUP', string> = {
   LIVE: '관제(작업) 중에는 끌 수 없습니다',
   SETUP: '세팅 중에는 끌 수 없습니다',

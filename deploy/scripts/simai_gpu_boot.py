@@ -40,6 +40,7 @@ import shlex
 import shutil
 import signal
 import ssl
+import struct
 import subprocess
 import sys
 import tarfile
@@ -74,8 +75,10 @@ HF_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 CONTROL_PORT, VIDEO_PORT = 17000, 17001  # RunPod 템플릿에 노출한 TCP(deploy/README "RunPod 템플릿")
 DEFAULT_ADVERTISE_HOST = "127.0.0.1"  # SSAFY 망 기본 경로: 노트북이 EC2 SSH 로컬 포워드로 붙는다(deploy/README, 14차 start-lobby 와 같음)
 SCHEMA_VERSION = "1.0.0"
-REPORT_SCHEMA_VERSION = "1.1.0"  # gpu_session_report: 선택 host_cpu 추가(S15P31A101-740)
+REPORT_SCHEMA_VERSION = "1.2.0"  # gpu_session_report: 선택 host_cpu(S15P31A101-740, 1.1.0)·disabled_features(S15P31A101-747, 1.2.0) 추가
 BENCH_BUDGET_S = 1.5  # 단일 스레드 기준 측정 시간 상한(합쳐 2 초 이내, 설계 docs/design/S15P31A101-740-gpu-host-cpu-check.md)
+MAX_DISABLED = 20  # 계약 disabled_features 항목 수 상한
+WARMUP_TIMEOUT_S = 120.0  # vLLM 더미 멀티모달 요청 1회의 응답 대기 상한(S15P31A101-747)
 STAGES = ("WEIGHTS", "ENGINE", "TIER0", "VLLM", "READY", "FAILED", "ENDED")
 # 자동 부팅 기본 서비스(80GB급 이상) = lobby 기본(simai_bootstrap.LOBBY_SERVICES) + ppe(S15P31A101-718). 작업 설정의 안전모·조끼 필수를
 # 셀프서비스 Pod 에서도 감시한다. 손 lobby·preflight 기본은 그대로 둔다(ppe 명시 선택, -507). ppe 는 몫 0.05(Tier 0 0.20 + 분석 0.70 + 0.05 = 0.95)
@@ -541,6 +544,8 @@ class Reporter:
         self.state: dict = {"stage": "WEIGHTS", "reason_code": None, "detail": None, "progress": None}
         # 모든 단계 설명 뒤에 붙일 한 줄(VRAM 으로 서비스를 줄였다는 사실, S15P31A101-705). 보고 계약은 그대로(stage_detail 칸)
         self.note: str | None = None
+        # 꺼진 기능(S15P31A101-747): None = 아직 모름(보고에 싣지 않는다), {} = 꺼진 것 없음. 키는 같은 기능의 문구를 덮어쓴다
+        self.disabled: dict[str, str] | None = None
         self._base_detail: str | None = None  # note 를 붙이기 전 단계 설명(add_note 가 다시 붙인다)
         self.ended = threading.Event()
         self._wake = threading.Event()
@@ -577,9 +582,21 @@ class Reporter:
         if s["stage"] != "ENDED":
             self.set(s["stage"], s["reason_code"], base, s["progress"])
 
+    def set_disabled(self, key: str, text: str | None = None) -> None:
+        """꺼진 기능 목록에 더한다(text 가 None 이면 목록만 연다 = 지금까지 꺼진 것 없음). 같은 key 는 문구를 덮어쓴다."""
+        with self._lock:
+            if self.disabled is None:
+                self.disabled = {}
+            if text is None or self.disabled.get(key) == text:
+                return
+            self.disabled[key] = text
+        log(f"꺼진 기능: {text}")
+        self._wake.set()
+
     def payload(self) -> dict:
         with self._lock:
             s = dict(self.state)
+            disabled = None if self.disabled is None else list(self.disabled.values())
         p = {"session_id": self.session_id, "stage": s["stage"],
              "reason_code": s["reason_code"] if s["stage"] in ("FAILED", "ENDED") else None, "reported_at": now_ms()}
         if s["stage"] == "FAILED" and not p["reason_code"]:
@@ -588,6 +605,8 @@ class Reporter:
             p["detail"] = redact(str(s["detail"]))[:500]
         if s["progress"] is not None:
             p["progress"] = min(1.0, max(0.0, float(s["progress"])))
+        if disabled is not None:
+            p["disabled_features"] = [redact(t)[:200] for t in disabled[:MAX_DISABLED]]
         if self.host_cpu is not None:
             p["host_cpu"] = self.host_cpu
         return p
@@ -918,6 +937,89 @@ def lobby_stage(marker_doc: dict | None, started_ms: int, want_vllm: bool, vllm_
     return "READY", None
 
 
+def cache_findings(results: dict[str, str], reid_is_ready: bool) -> dict[str, str]:
+    """GPU 캐시 받기 결과(GpuCache.results)와 Re-ID 묶음 유무 → 꺼진 기능·캐시 miss 문구(S15P31A101-747, 근거 있는 것만).
+    Re-ID 는 묶음이 없으면 Tier 0 가 꺼진 채 돈다. 엔진·vLLM 캐시 miss 는 기능이 꺼진 것은 아니지만 부팅이 느려진 사실이라 함께 싣는다."""
+    out: dict[str, str] = {}
+    if not reid_is_ready:
+        r = results.get("reid")
+        out["reid"] = ("Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)" if r in ("miss", None)
+                       else f"Re-ID 꺼짐 — 묶음 없음(캐시 받기 {r}, seed-reid 필요)")
+    for kind, key, text in (("trt-engine", "cache_trt", "TensorRT 엔진 캐시"), ("vllm-compile", "cache_vllm", "vLLM 컴파일 캐시")):
+        r = results.get(kind)
+        if r in ("miss", "error"):
+            out[key] = f"{text} {'miss' if r == 'miss' else '받기 오류'} — " + (
+                "이번 부팅에 엔진을 새로 빌드" if kind == "trt-engine" else "첫 VLM 요청이 느리다(JIT)")
+    return out
+
+
+def service_findings(want: list[str], vllm_vram_ok: bool) -> dict[str, str]:
+    """기동하지 않는 서비스(--services 에 없거나 VRAM 부족) → 꺼진 기능 문구."""
+    out: dict[str, str] = {}
+    if "ppe" not in want:
+        out["svc_ppe"] = "PPE(보호구) 감시 꺼짐 — 기동 서비스에 없음"
+    if "avatar" not in want:
+        out["svc_avatar"] = "아바타 꺼짐 — 기동 서비스에 없음"
+    if "worker" not in want:
+        out["svc_worker"] = "분석 워커 꺼짐 — 세팅·맵 굽기·VLM·아바타 불가"
+    if "vllm" not in want or not vllm_vram_ok:
+        out["svc_vllm"] = "VLM 꺼짐 — vLLM 을 기동하지 않음(VRAM 또는 서비스 목록)"
+    return out
+
+
+def tier0_findings(marker_doc: dict | None) -> dict[str, str]:
+    """Tier 0 표시 파일 status 의 disabled_features(설정 무효·Re-ID 꺼짐)와 process_split.disabled → 꺼진 기능 문구.
+    status 에 칸이 없으면(옛 Tier 0·아직 기동 전) 아무것도 지어내지 않는다."""
+    status = (marker_doc or {}).get("status") if isinstance(marker_doc, dict) else None
+    if not isinstance(status, dict):
+        return {}
+    out: dict[str, str] = {}
+    for i, t in enumerate(status.get("disabled_features") or []):
+        if isinstance(t, str) and t:
+            out["reid" if t.startswith("Re-ID") else f"tier0_{i}"] = f"Tier 0: {t}"
+    split = status.get("process_split")
+    names = [n for n in (split or {}).get("disabled", []) if isinstance(n, str)] if isinstance(split, dict) else []
+    if names:
+        out["process_split"] = f"프로세스 분리로 꺼짐: {', '.join(names)}"
+    return out
+
+
+def dummy_png(width: int = 336, height: int = 192) -> bytes:
+    """VLM 웜업용 작은 합성 이미지(색 띠 PNG, 표준 라이브러리만). 사람·얼굴 없는 합성 그림이다."""
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    rows = b"".join(bytes([0]) + bytes(v for x in range(width) for v in ((x * 6 // width) * 40, (y * 6 // height) * 40, 128))
+                      for y in range(height))
+    return (bytes([0x89]) + b"PNG" + bytes([13, 10, 26, 10]) + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def warmup_vlm(env: dict[str, str], opener=urllib.request.urlopen, clock=time.monotonic) -> tuple[bool, float, str]:
+    """vLLM 에 더미 멀티모달 요청 1회(실제 근거 요청과 같은 경로·형식: POST /v1/chat/completions, user 메시지 text 파트 → image_url
+    data URL 파트, repetition_penalty 포함). 첫 요청이 Triton JIT 로 TIMED_OUT 이던 일(18차 감사)을 READY 전에 흡수한다.
+    돌려주는 값: (성공, 걸린 초, 설명). 실패해도 예외를 내지 않는다(부팅은 계속)."""
+    port = int(env.get("SIMAI_VLLM_PORT") or 8000)
+    model = env.get("SIMAI_VLM_MODEL") or env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano"
+    url = f"data:image/png;base64,{base64.b64encode(dummy_png()).decode('ascii')}"
+    body = {"model": model, "max_tokens": 16, "repetition_penalty": 1.05,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "이 그림에 무엇이 보이는지 한 문장으로 답하라."},
+                                                      {"type": "image_url", "image_url": {"url": url}}]}]}
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
+                                 method="POST", headers={"Content-Type": "application/json"})
+    t0 = clock()
+    try:
+        with opener(req, timeout=float(env.get("SIMAI_BOOT_VLM_WARMUP_TIMEOUT_S") or WARMUP_TIMEOUT_S)) as r:
+            doc = json.loads(r.read())
+        ok = bool(doc["choices"][0]["message"]["content"] is not None)
+        return ok, clock() - t0, "응답 받음" if ok else "응답 내용 없음"
+    except Exception as e:  # noqa: BLE001 - 웜업은 부팅을 막지 않는다
+        return False, clock() - t0, f"{type(e).__name__}"
+
+
 def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
     """lobby 서비스를 VRAM(nvidia-smi memory.total, MiB)으로 정한다(S15P31A101-705, 명세 3.12 최소 사양).
     SIMAI_BOOT_SERVICES 가 있으면 그 값을 그대로 쓴다(명시값 우선). 돌려주는 것은 (services, 보고에 붙일 한 줄 또는 None).
@@ -1225,6 +1327,9 @@ class Boot:
         for t in threads:
             if t.name != "cache-vllm":
                 t.join(timeout=float(env.get("SIMAI_BOOT_CACHE_WAIT_S") or 600))
+        rep.set_disabled("start")  # 여기부터 보고에 「꺼진 기능」 목록(비어 있으면 꺼진 것 없음)을 싣는다
+        for feature, text in cache_findings({k: v for k, v in cache.results.items() if k != "vllm-compile"}, reid_ready(reid_dir)).items():
+            rep.set_disabled(feature, text)
         if not reid_ready(reid_dir):
             log("Re-ID 묶음 없음(캐시 miss·실패) → 이번 관제는 Re-ID 꺼짐. 손으로 올린 뒤 'simai-gpu-boot seed-reid' 로 캐시에 올린다")
 
@@ -1276,6 +1381,8 @@ class Boot:
             return self.idle()
         want = [s.strip() for s in (services or self.bs.LOBBY_SERVICES).split(",") if s.strip()]
         want_vllm = "vllm" in want and (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB
+        for key, text in service_findings(want, (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB).items():
+            rep.set_disabled(key, text)
         vllm_port = int(self.env.get("SIMAI_VLLM_PORT") or 8000)
         vllm_timeout = float(self.env.get("SIMAI_BOOT_VLLM_READY_TIMEOUT_S") or 1800)
         started = now_ms()
@@ -1283,6 +1390,7 @@ class Boot:
         self.child = subprocess.Popen(argv, env=self.child_env(extra), start_new_session=os.name != "nt")
         rep.set("ENGINE", detail="TensorRT 엔진 준비·적재")
         stage, ready_at, uploaded = "ENGINE", None, set()
+        warmed = tier0_checked = False
         tier0_ready_at = None
         while not self.stop.is_set():
             if rep.ended.is_set():
@@ -1298,6 +1406,28 @@ class Boot:
             new, detail = lobby_stage(read_marker(work / "state" / "tier0.live"), started, want_vllm, healthy, timed_out)
             if new in ("VLLM", "READY") and tier0_ready_at is None:
                 tier0_ready_at = time.monotonic()
+            if new in ("VLLM", "READY") and not tier0_checked:  # Tier 0 가 돌기 시작한 뒤 표시 파일 status 로 꺼진 기능 확인(근거 있는 것만)
+                doc = read_marker(work / "state" / "tier0.live")
+                found = tier0_findings(doc)
+                if isinstance(doc, dict) and isinstance(doc.get("status"), dict):
+                    tier0_checked = True
+                for key, text in found.items():
+                    rep.set_disabled(key, text)
+            if new == "READY" and healthy and not warmed:
+                # READY 보고 전 vLLM 더미 멀티모달 요청 1회(JIT·첫 요청 지연을 근거 요청 전에 흡수). 실패해도 부팅은 계속한다
+                warmed = True
+                rep.set("VLLM", detail="VLM 웜업(더미 이미지 요청 1회)")
+                ok, took_s, why = warmup_vlm(self.child_env(extra))
+                log(f"VLM 웜업 {'성공' if ok else '실패'}: {took_s:.1f}초 ({why})")
+                rep.add_note(f"VLM 웜업 {took_s:.1f}초" + ("" if ok else f" 실패({why})"))
+                if not ok:
+                    rep.set_disabled("vlm_warmup", f"VLM 웜업 실패({why}) — 첫 근거 요청이 느리거나 시간 초과일 수 있음")
+                if cache.results.get("vllm-compile") in ("miss", "error"):
+                    for key, text in cache_findings({"vllm-compile": cache.results["vllm-compile"]}, True).items():
+                        rep.set_disabled(key, text)
+                continue  # 다음 주기에 READY 로 보고한다
+            if new == "READY" and want_vllm and not healthy:
+                rep.set_disabled("vlm_timeout", "VLM 미준비(시한 초과) — 근거·보고서 없이 관제")
             if new != stage or (new == "READY" and detail != rep.state.get("detail")):
                 rep.set(new, detail=detail)
                 stage = new

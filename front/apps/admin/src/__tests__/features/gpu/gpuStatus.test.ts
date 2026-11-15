@@ -2,6 +2,7 @@ import {
   autoStopText,
   availabilityLabel,
   cellUsable,
+  disabledFeatureWarnings,
   formatElapsed,
   formatRegion,
   gpuDot,
@@ -339,5 +340,30 @@ describe('hostCpuWarning(S15P31A101-740)', () => {
     expect(
       hostCpuWarning(status({ session: session({ state: 'ENDED', host_cpu: cpu(10) }) })),
     ).toBeNull();
+  });
+});
+
+describe('disabledFeatureWarnings(꺼진 기능 경고, -747)', () => {
+  const ready = (list: string[] | null | undefined, change: Partial<GpuSession> = {}) =>
+    ({
+      session: session({ stage: 'READY', disabled_features: list, ...change }),
+    }) as unknown as GpuStatus;
+
+  it('준비 완료 세션의 꺼진 기능 문구를 그대로 돌려준다', () => {
+    expect(
+      disabledFeatureWarnings(ready(['Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)', 'PPE 꺼짐'])),
+    ).toEqual(['Re-ID 꺼짐 — 묶음 없음(seed-reid 필요)', 'PPE 꺼짐']);
+  });
+
+  it('모르거나(없음·null) 비어 있으면 경고가 없다', () => {
+    expect(disabledFeatureWarnings(ready(undefined))).toEqual([]);
+    expect(disabledFeatureWarnings(ready(null))).toEqual([]);
+    expect(disabledFeatureWarnings(ready([]))).toEqual([]);
+    expect(disabledFeatureWarnings(undefined)).toEqual([]);
+  });
+
+  it('준비 전이거나 끝난 세션은 보이지 않는다', () => {
+    expect(disabledFeatureWarnings(ready(['x'], { stage: 'ENGINE' }))).toEqual([]);
+    expect(disabledFeatureWarnings(ready(['x'], { state: 'ENDED' }))).toEqual([]);
   });
 });
