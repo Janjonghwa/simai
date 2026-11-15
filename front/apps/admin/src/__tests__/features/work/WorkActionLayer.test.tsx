@@ -100,6 +100,22 @@ describe('WorkActionLayer', () => {
     expect(screen.getByTitle('작업 날짜에 시작할 수 있어요').contains(button)).toBe(true);
   });
 
+  it('꺼진 이유(reason)는 마우스를 올리지 않아도 단추 왼쪽에 늘 보이고, 없으면 그리지 않는다(-734)', () => {
+    const view = renderLayer(next({ enabled: false, reason: '종료 미팅 작성 중이에요' }));
+    const group = screen.getByRole('group', { name: '작업 단추' });
+    const reason = within(group).getByRole('status');
+    expect(reason.textContent).toBe('종료 미팅 작성 중이에요');
+    const button = within(group).getByRole('button', { name: '다음' });
+    expect(reason.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    view.rerender(
+      <WorkActionProvider>
+        <Stage config={next()} />
+        <WorkActionLayer />
+      </WorkActionProvider>,
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('요청 중(pending)이면 눌리지 않고 진행 중으로 표시한다', () => {
     const onClick = vi.fn();
     renderLayer(next({ pending: true, onClick }));

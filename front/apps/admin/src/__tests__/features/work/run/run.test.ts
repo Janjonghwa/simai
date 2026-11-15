@@ -1,6 +1,13 @@
 import type { EventEntry } from '@/features/events/entries';
 import type { EventItem } from '@/features/events/types';
-import { appliedStatusLines, workDurationMs, workEventsOf } from '@/features/work/run/run';
+import {
+  alarmCountsOf,
+  appliedStatusLines,
+  submitBlockReason,
+  workDurationMs,
+  workEventsOf,
+} from '@/features/work/run/run';
+import type { WorkReport } from '@/features/work/types';
 import { describe, expect, it } from 'vitest';
 
 const START = new Date(2026, 10, 11, 9, 0).getTime();
@@ -129,5 +136,91 @@ describe('appliedStatusLines', () => {
         cameras: { total: 0, live: 0 },
       }),
     ).toEqual([]);
+  });
+});
+
+const ack = (at: number) => ({
+  ack_id: `a-${at}`,
+  channel: 'CONTROL_ROOM',
+  actor_role: 'ADMIN',
+  actor_id: 'u1',
+  acked_at: at,
+});
+
+describe('alarmCountsOf(-734)', () => {
+  const entries = [
+    // 진행 중 + 확인 없음 → 미확인(열림)
+    entry({ event_id: 'open-1', raised_at: START + MIN }),
+    entry({ event_id: 'open-2', raised_at: START + 2 * MIN, severity: 'HIGH' }),
+    // 진행 중 + 확인함
+    entry({ event_id: 'open-acked', raised_at: START + 3 * MIN, acks: [ack(START + 4 * MIN)] }),
+    // 해소 + 확인 없음 → 미확인(닫힘). 해소된 경보는 확인을 받지 않으므로 열린 수에는 넣지 않는다
+    entry({ event_id: 'done-1', raised_at: START + 5 * MIN, lifecycle: 'RESOLVED' }),
+    // 해소 + 확인함
+    entry({
+      event_id: 'done-acked',
+      raised_at: START + 6 * MIN,
+      lifecycle: 'RESOLVED',
+      acks: [ack(START + 7 * MIN)],
+    }),
+    // 세지 않는 것: 작업 전, 경고 등급, 실제 알림이 아님, 감사 전용, 시각 없음
+    entry({ event_id: 'before', raised_at: START - MIN }),
+    entry({ event_id: 'caution', raised_at: START + MIN, severity: 'CAUTION' }),
+    entry({ event_id: 'planned', raised_at: START + MIN, source: 'PLANNED' }),
+    entry({ event_id: 'audit', raised_at: START + MIN, delivery: 'AUDIT_ONLY' }),
+    entry({ event_id: 'no-time', raised_at: undefined }),
+  ];
+
+  it('이번 실행의 위험 경보 전체·미확인·열려 있는 미확인을 센다', () => {
+    expect(alarmCountsOf(entries, START)).toEqual({ total: 5, unconfirmed: 3, open: 2 });
+  });
+
+  it('끝난 시각이 있으면 그때까지만 센다', () => {
+    expect(alarmCountsOf(entries, START, START + 2 * MIN)).toEqual({
+      total: 2,
+      unconfirmed: 2,
+      open: 2,
+    });
+  });
+
+  it('등급이 오르거나 재개돼 새 경보 단계가 열리면 앞선 확인은 지금 단계의 확인이 아니다', () => {
+    const reopened: EventEntry = {
+      ...entry({ event_id: 'reopened', raised_at: START + MIN, acks: [ack(START + 2 * MIN)] }),
+      stageStartedAt: START + 3 * MIN,
+    };
+    expect(alarmCountsOf([reopened], START)).toEqual({ total: 1, unconfirmed: 1, open: 1 });
+  });
+
+  it('시작 기록이 없으면 0건이다', () => {
+    expect(alarmCountsOf(entries, null)).toEqual({ total: 0, unconfirmed: 0, open: 0 });
+  });
+});
+
+describe('submitBlockReason(-734)', () => {
+  const report = (over: Partial<WorkReport>) => ({ status: 'SUCCEEDED', ...over }) as WorkReport;
+
+  it('받는 중·받기 실패·보고서 없음은 각각 다른 이유다', () => {
+    expect(submitBlockReason(undefined, false)).toBe('보고서를 불러오는 중이에요');
+    expect(submitBlockReason(undefined, true)).toBe(
+      '보고서를 불러오지 못했어요. 새로고침해 주세요',
+    );
+    expect(submitBlockReason(null, false)).toBe('보고서가 없어요');
+  });
+
+  it('서버가 종료 미팅이나 AI 초안을 쓰는 중이면 그 이유를 말한다(종료 미팅이 먼저)', () => {
+    expect(submitBlockReason(report({ wrap_up_status: 'GENERATING' }), false)).toBe(
+      '종료 미팅 작성 중이에요',
+    );
+    expect(submitBlockReason(report({ status: 'GENERATING' }), false)).toBe(
+      'AI 초안 작성 중이에요',
+    );
+    expect(
+      submitBlockReason(report({ status: 'GENERATING', wrap_up_status: 'GENERATING' }), false),
+    ).toBe('종료 미팅 작성 중이에요');
+  });
+
+  it('쓰는 중이 아니면 이유가 없다(켜져도 된다)', () => {
+    expect(submitBlockReason(report({ wrap_up_status: 'SKIPPED' }), false)).toBeNull();
+    expect(submitBlockReason(report({ wrap_up_status: 'SUCCEEDED' }), false)).toBeNull();
   });
 });

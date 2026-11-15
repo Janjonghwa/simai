@@ -1,3 +1,5 @@
+import { GpuPanel } from '@/features/gpu/GpuPanel';
+import { useGpuStatus } from '@/features/gpu/useGpu';
 import { useGpuGate } from '@/features/gpu/useGpuGate';
 import { PageTitle } from '@/features/layout/PageTitle';
 import {
@@ -644,6 +646,10 @@ function SetupWorkPage({
   // 옆 카메라 쌍의 겹침이 부족하면 보정이 실패할 수 있어 시작 전에 한 번 더 묻는다(높이를 고쳐 다시 시작할 때도 같다).
   // 세팅 시작(세션 만들기)에는 GPU 가 필요하다. 꺼져 있거나 준비 중이면 GPU 경고창을 먼저 띄우고 연결되면 이어서 한다(S15P31A101-702)
   const { guard: guardGpu, dialog: gpuGateDialog } = useGpuGate();
+  // GPU 가 꺼져 있으면 세팅 실패 카드의 주 단추가 「GPU 켜기」(GPU 패널)다. 다시 시도해도 같은 곳에서 멈추기 때문이다(S15P31A101-734)
+  const gpu = useGpuStatus();
+  const [gpuPanelOpen, setGpuPanelOpen] = useState(false);
+  const gpuOff = gpu.isAdmin && gpu.status !== undefined && gpu.dot === 'OFF';
   // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 배경 촬영·보정·맵 굽기가 없어 GPU·겹침 확인·배경 촬영 창 없이 바로 시작한다
   // (Tier 0 는 켜져 있으면 구성 묶음으로, 꺼져 있으면 다음 기동 때 그 맵의 보정을 받는다)
   const requestStep1Submit = useCallback(() => {
@@ -955,6 +961,7 @@ function SetupWorkPage({
                 : undefined
             }
             onReturnToStep1={returnToStep1}
+            onTurnOnGpu={gpuOff ? () => setGpuPanelOpen(true) : undefined}
           />
         )
       ) : (
@@ -1011,6 +1018,7 @@ function SetupWorkPage({
         </ZoneSourceContext>
       )}
       {gpuGateDialog}
+      {gpuPanelOpen && <GpuPanel onClose={() => setGpuPanelOpen(false)} />}
       <VlmZoneNotice
         active={stage === ZONE_STAGE && !completed && zoneSource !== null}
         sessionId={sessionId}

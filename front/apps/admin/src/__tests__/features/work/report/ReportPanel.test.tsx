@@ -53,7 +53,8 @@ describe('보고서 읽기', () => {
 
     await screen.findByRole('button', EDIT);
     expect(screen.getByText('+ 작업내용 선택')).toBeTruthy();
-    expect(valueOf('일시').textContent).toBe('2026-11-11 09:00');
+    // 아직 쓰지 않은 TBM 의 일시는 서버가 넣은 작업 생성 시각이라 보이지 않는다(-734)
+    expect(valueOf('일시').textContent).toBe('');
   });
 
   it('초안 전(PENDING)에는 시스템이 채울 칸이 줄무늬이고 리더가 안 보인다', async () => {

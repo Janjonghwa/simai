@@ -205,24 +205,34 @@ const trimmed = ({ risk, measure }: ReportRiskRow): ReportRiskRow => ({
   measure: measure.trim(),
 });
 
-/** 일시: 입력 칸이 처음 값 그대로면 원래 ms 를 지키고(분 아래 값이 깎이지 않게), 고쳤으면 입력 값을 ms 로 바꾼다. */
-const dateTimeMsOf = (input: string, original: number | null): number | null =>
-  input === dateTimeInputValue(original) ? original : parseDateTimeInput(input);
+/**
+ * TBM 작성 시각(S15P31A101-734): 서버는 빈 양식을 작업(보고서)을 만들 때 만들고 일시에 그 시각을 넣는다. 그 값은 TBM 을 쓴 시각이 아니라
+ * 작업이 생긴 시각이라(예: 자정 0시 9분), 사람이 처음 작업내용을 골라 TBM 을 쓰는 저장에서 지금 시각으로 바꿔 저장한다.
+ * 작업내용이 비어 있는 동안은 아직 쓰지 않은 양식이다.
+ */
+export const isTbmWritten = (form: Pick<ReportForm, 'info'>): boolean => form.info.tasks.length > 0;
 
 /**
  * 받아 둔 양식에 편집 창에서 고친 것을 입혀 저장할 양식을 만든다. 초안 전(`fields` 없음)에는 작업내용만 바뀐다.
+ * 작업내용을 처음 고르는 저장이면 일시는 지금(now)으로 바뀐다(`isTbmWritten`). 사람이 일시 칸을 직접 고쳤으면 그 값이 먼저다.
  * 점검의 조치 내용은 '아니오' 일 때만 남긴다. 작업명은 작업내용이 바뀌면 서버가 다시 채운다.
  */
 export function applyEdits(
   form: ReportForm,
   { tasks, fields }: ReportEdits,
   catalog: readonly WorkTask[],
+  now: number = Date.now(),
 ): ReportForm {
   const nextTasks = tasksOfSelection(tasks, catalog);
-  if (!fields) return { ...form, info: { ...form.info, tasks: nextTasks } };
+  const firstWrite = !isTbmWritten(form) && nextTasks.length > 0;
+  const writtenAt = firstWrite ? now : form.info.date_time_ms;
+  if (!fields) {
+    return { ...form, info: { ...form.info, tasks: nextTasks, date_time_ms: writtenAt } };
+  }
+  const untouched = fields.dateTime === dateTimeInputValue(form.info.date_time_ms);
   return {
     info: {
-      date_time_ms: dateTimeMsOf(fields.dateTime, form.info.date_time_ms),
+      date_time_ms: untouched ? writtenAt : parseDateTimeInput(fields.dateTime),
       same_day: fields.sameDay,
       task_name: fields.taskName.trim(),
       tasks: nextTasks,

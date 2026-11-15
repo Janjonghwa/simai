@@ -99,6 +99,15 @@ describe('종이 모양', () => {
     }
   });
 
+  it('고칠 수 있는 종이에서 TBM 을 쓰기 전(작업내용 없음)에는 일시를 비워 둔다 — 서버가 넣은 값은 작업이 생긴 시각이다(-734)', () => {
+    paper({ editable: true });
+    expect(valueOf('일시').textContent).toBe('');
+    cleanup();
+    // 읽기 전용 종이(지난 날)는 받은 값 그대로
+    paper();
+    expect(valueOf('일시').textContent).toBe('2026-11-11 09:05');
+  });
+
   it('일시는 YYYY-MM-DD HH:mm 으로, 작업내용은 • 줄로 보인다(코드는 서버 문구로)', () => {
     paper({ drafted: true, form: draftedForm() });
     expect(valueOf('일시').textContent).toBe('2026-11-11 09:05');

@@ -265,8 +265,10 @@ describe('초안 후: 모든 칸', () => {
     expect(saved.risks[2]).toEqual({ risk: '낙하물', measure: '방호망' });
     expect(saved.review.ending).toBe('이상 없음');
     expect(saved.checks[2]).toMatchObject({ yes: true, action: '' });
-    // 고치지 않은 일시는 그대로다.
-    expect(saved.info.date_time_ms).toBe(report.form!.info.date_time_ms);
+    // 작업내용을 처음 고른 저장이라 일시(서버가 넣은 작업 생성 시각)가 TBM 을 쓴 시각(지금)으로 바뀐다(-734).
+    expect(report.form!.info.tasks).toEqual([]);
+    expect(saved.info.date_time_ms).not.toBe(report.form!.info.date_time_ms);
+    expect(Math.abs((saved.info.date_time_ms ?? 0) - Date.now())).toBeLessThan(60_000);
   });
 
   it('입력 한도는 서버 한도와 같다', async () => {

@@ -1,8 +1,15 @@
 import { SEVERITY_RANK } from '@/features/events/constants';
-import { isAlarmSeverity, type EventEntry } from '@/features/events/entries';
+import {
+  acknowledgedAt,
+  isActive,
+  isAlarmSeverity,
+  type EventEntry,
+} from '@/features/events/entries';
 import type { EventItem, Severity } from '@/features/events/types';
 import type { MonitoringPhase } from '@/features/monitor/monitoringPhase';
 import { TEST_INPUT_LABEL } from '@/features/monitor/useTestInput';
+import type { WorkReport } from '@/features/work/types';
+import { isEndingGenerating } from '@/features/work/workDay';
 
 // 작업 종료 단계의 순수 계산: 걸린 시간, 경보 기록 목록, 관제 적용 상태 줄. 시계는 인자로 받는다.
 
@@ -35,6 +42,64 @@ export function workEventsOf(
         (zoneId === null || event.zone_id === zoneId),
     )
     .sort((a, b) => (b.raised_at ?? 0) - (a.raised_at ?? 0));
+}
+
+/** 위험 경보 수: 전체, 확인하지 않은 것, 그중 아직 열려 있는 것. */
+export interface AlarmCounts {
+  total: number;
+  /** 아무도 확인하지 않은 것(해소돼 끝난 것도 포함). 종료 뒤 요약이 쓴다. */
+  unconfirmed: number;
+  /** 아직 열려 있고 지금 경보 단계에서 확인하지 않은 것. 종료하면 확인하지 못한 채 닫히므로 종료 확인창이 쓴다. */
+  open: number;
+}
+
+/**
+ * 한 실행 동안 난 위험 경보(실제 LIVE 의 HIGH 이상, 감사 전용 제외)와 그중 확인하지 않은 수(종료 확인창·종료 뒤 요약, -734).
+ * 서버가 준 이벤트 목록과 확인 기록(acks)으로만 센다. 확인 여부는 진행 중이면 지금 경보 단계 기준(등급이 오르거나 재개되면 다시 미확인),
+ * 이미 해소됐으면 확인한 적이 있는지다(해소된 이벤트는 확인을 받지 않는다). 시작 기록이 없으면 0건, endedAt 이 있으면 그때까지만 본다.
+ */
+export function alarmCountsOf(
+  entries: readonly EventEntry[],
+  startedAt: number | null,
+  endedAt: number | null = null,
+): AlarmCounts {
+  if (startedAt === null) return { total: 0, unconfirmed: 0, open: 0 };
+  const alarms = entries.filter(({ event }) => {
+    const at = event.raised_at;
+    return (
+      event.source === 'LIVE' &&
+      event.delivery !== 'AUDIT_ONLY' &&
+      isAlarmSeverity(event.severity) &&
+      at !== undefined &&
+      at >= startedAt &&
+      (endedAt === null || at <= endedAt)
+    );
+  });
+  const unconfirmed = alarms.filter((entry) =>
+    isActive(entry.event) ? acknowledgedAt(entry) === null : (entry.event.acks?.length ?? 0) === 0,
+  );
+  return {
+    total: alarms.length,
+    unconfirmed: unconfirmed.length,
+    open: unconfirmed.filter((entry) => isActive(entry.event)).length,
+  };
+}
+/**
+ * 종료 뒤 `보고서 제출` 이 꺼진 이유(단추 옆에 늘 보인다, -734). 켜져도 되면 null.
+ * 서버는 종료 미팅이나 AI 초안을 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) 그 이유를 가른다.
+ * report 는 `useWorkReport` 의 값(undefined 받는 중·실패, null 보고서 없음)이고 failed 는 받기가 실패했는지다.
+ */
+export function submitBlockReason(
+  report: WorkReport | null | undefined,
+  failed: boolean,
+): string | null {
+  if (report === undefined) {
+    return failed ? '보고서를 불러오지 못했어요. 새로고침해 주세요' : '보고서를 불러오는 중이에요';
+  }
+  if (report === null) return '보고서가 없어요';
+  if (isEndingGenerating(report)) return '종료 미팅 작성 중이에요';
+  if (report.status === 'GENERATING') return 'AI 초안 작성 중이에요';
+  return null;
 }
 
 /** 경보 기록 목록의 한 줄: 같은 초에 같은 대상에게 난 경보(예: 추락 위험 위험 + 고소 작업면 위 경고)는 한 줄이다. */
