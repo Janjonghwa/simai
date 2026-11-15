@@ -17,8 +17,6 @@ import {
   AVATAR_ENV_MAP_INTENSITY,
   AVATAR_FACE_BLUR_BRIGHTNESS,
   AVATAR_FACE_BLUR_SATURATION,
-  AVATAR_INTERPOLATED_BRIGHTNESS,
-  AVATAR_INTERPOLATED_SATURATION,
   AVATAR_LOWER_COLOR_FACTOR,
   AVATAR_PBR_METALNESS,
   AVATAR_PBR_ROUGHNESS,
@@ -86,7 +84,7 @@ describe('표면 출처 부호 분류와 색 선택(-359)', () => {
     expect(classifyAvatarSurfaceCode(-1)).toBe('UNKNOWN');
   });
 
-  it('2(OBSERVED)는 관측 텍스처 색 그대로이고, 1(INTERPOLATED)은 채도·명도를 낮춰 관측·미관측과 구분된다', () => {
+  it('2(OBSERVED)와 1(INTERPOLATED)은 모두 텍스처 색 그대로다(-742, 보간 감쇠 없음)', () => {
     const observed = evaluateAvatarSurfaceColor({
       code: AVATAR_SOURCE_OBSERVED,
       texRgb,
@@ -101,17 +99,7 @@ describe('표면 출처 부호 분류와 색 선택(-359)', () => {
       baseRgb,
       facePolicy: 'OBSERVED',
     });
-    const luma = 0.2126 * texRgb[0] + 0.7152 * texRgb[1] + 0.0722 * texRgb[2];
-    const expected: RgbTuple = [
-      (luma + (texRgb[0] - luma) * AVATAR_INTERPOLATED_SATURATION) * AVATAR_INTERPOLATED_BRIGHTNESS,
-      (luma + (texRgb[1] - luma) * AVATAR_INTERPOLATED_SATURATION) * AVATAR_INTERPOLATED_BRIGHTNESS,
-      (luma + (texRgb[2] - luma) * AVATAR_INTERPOLATED_SATURATION) * AVATAR_INTERPOLATED_BRIGHTNESS,
-    ];
-    expect(interpolated[0]).toBeCloseTo(expected[0], 6);
-    expect(interpolated[1]).toBeCloseTo(expected[1], 6);
-    expect(interpolated[2]).toBeCloseTo(expected[2], 6);
-    expect(interpolated).not.toEqual(observed);
-    expect(interpolated).not.toEqual(baseRgb);
+    expect(interpolated).toEqual(texRgb);
   });
 
   it.each([
@@ -120,15 +108,14 @@ describe('표면 출처 부호 분류와 색 선택(-359)', () => {
     ['129(얼굴 보간 금지·모르는 값)', AVATAR_SOURCE_FACE_INVALID_INTERPOLATED],
     ['3(모르는 값)', 3],
     ['200(모르는 값)', 200],
-  ])('%s 은 face_policy 와 무관하게 기본 재질 색(상·하의 대표색)을 쓴다', (_, code) => {
+  ])('%s 은 face_policy 와 무관하게 채운 색을, 못 채웠으면 기본 재질 색을 쓴다', (_, code) => {
+    const fillRgb: RgbTuple = [0.3, 0.1, 0.5];
     for (const facePolicy of ['OBSERVED', 'BLURRED', 'EXCLUDED'] as const) {
+      expect(evaluateAvatarSurfaceColor({ code, texRgb, baseRgb, facePolicy, fillRgb })).toEqual(
+        fillRgb,
+      );
       expect(
-        evaluateAvatarSurfaceColor({
-          code,
-          texRgb,
-          baseRgb,
-          facePolicy,
-        }),
+        evaluateAvatarSurfaceColor({ code, texRgb, baseRgb, facePolicy, fillRgb: null }),
       ).toEqual(baseRgb);
     }
   });
@@ -252,6 +239,10 @@ describe('합성 PNG 인코딩·디코딩과 DataTexture 설정', () => {
     expect(shader.fragmentShader).toContain('simaiCode == 2');
     expect(shader.fragmentShader).toContain('simaiCode == 1');
     expect(shader.fragmentShader).toContain('simaiCode == 130');
+    // -742: 보간(1)은 관측과 같은 원색, 미관측은 채운 albedo 알파로 기본 재질 색과 섞는다.
+    expect(shader.fragmentShader).toContain('simaiCode == 2 || simaiCode == 1');
+    expect(shader.fragmentShader).toContain('mix(simaiBaseColor, simaiTexRgb, simaiTex.a)');
+    expect(shader.fragmentShader).not.toContain('simaiAdjustSatBright(simaiTexRgb, 0.45');
     expect(shader.uniforms.uAvatarHasAppearance).toBeDefined();
     expect(shader.uniforms.uAvatarFacePolicy).toBeDefined();
   });
@@ -479,6 +470,19 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     // 다른 world_id 의 텍스처 인스턴스를 공유하지 않는다.
     expect(u1.uAvatarAlbedoMap.value).not.toBe(u2.uAvatarAlbedoMap.value);
     expect(u1.uAvatarSurfaceSourceMap.value).not.toBe(u2.uAvatarSurfaceSourceMap.value);
+
+    // -742: 셰이더에는 미관측을 채운 표시용 albedo 가 들어간다(미관측 0 텍셀도 알파 255 색).
+    const display = u1.uAvatarAlbedoMap.value;
+    expect(display.name).toBe('avatar-albedo-display');
+    const displayData = display.image.data as Uint8Array;
+    const sourceData = u1.uAvatarSurfaceSourceMap.value.image.data as Uint8Array;
+    let filledUnobserved = 0;
+    for (let i = 0; i < sourceData.length / 4; i++) {
+      if (sourceData[i * 4] === AVATAR_SOURCE_UNOBSERVED && displayData[i * 4 + 3] === 255) {
+        filledUnobserved++;
+      }
+    }
+    expect(filledUnobserved).toBeGreaterThan(0);
 
     // 같은 appearance_version(0)은 여러 tick 동안 사람마다 1번만 요청한다.
     expect(

@@ -628,7 +628,13 @@ function MeshBody({
   useEffect(() => {
     if (!instance.current) return;
     paint(instance.current.materials, tone, selected, color, envMap);
-    applyAvatarAppearanceToMaterials(instance.current.materials, appearance, facePolicy, envMap);
+    applyAvatarAppearanceToMaterials(
+      instance.current.materials,
+      appearance,
+      facePolicy,
+      envMap,
+      mesh.scene,
+    );
   }, [tone, selected, color, appearance, facePolicy, envMap, mesh]);
 
   useFrame(() => {

@@ -1,3 +1,11 @@
+import {
+  avatarFillGridSize,
+  avatarUvPartMapForScene,
+  fillAvatarAlbedo,
+  maskUnfilledAvatarAlbedo,
+  type AvatarFillInput,
+  type AvatarUvPartMap,
+} from '@/features/viewer3d/people/avatarAppearanceFill';
 import type { AvatarAssetView, AvatarPoseView } from '@/features/viewer3d/people/avatarFrame';
 import { AVATAR_ASSET_RETRY_MS, type AvatarMeshFetch } from '@/features/viewer3d/people/avatarMesh';
 import type { PersonTone } from '@/features/viewer3d/people/personMotion';
@@ -25,12 +33,15 @@ import {
   Vector2,
   type Material,
   type MeshStandardMaterial,
+  type Object3D,
   type Texture,
   type WebGLRenderer,
 } from 'three';
 
 // HMR 외형 텍스처(albedo.png)와 표면 출처 지도(surface_source.png)를 읽고 아바타 재질 셰이더에 입힌다(S15P31A101-359).
 // 설계: docs/design/hmr-appearance-texture.md, docs/design/avatar-pose-stream.md.
+// 표시(S15P31A101-742): 보간(1)은 원색, 미관측(0)·얼굴 미관측(128)은 CPU 에서 채운 표시용 albedo 로 그린다
+// (docs/design/S15P31A101-742-avatar-fill-display.md). surface_source 데이터는 바꾸지 않는다.
 
 export type AvatarFacePolicy = AvatarAssetView['facePolicy'];
 
@@ -42,13 +53,6 @@ export const AVATAR_SOURCE_FACE_BIT = 0x80;
 export const AVATAR_SOURCE_FACE_UNOBSERVED = 128;
 export const AVATAR_SOURCE_FACE_INVALID_INTERPOLATED = 129;
 export const AVATAR_SOURCE_FACE_OBSERVED = 130;
-
-/**
- * INTERPOLATED(1) 감쇠 상수.
- * 직접 관측(2)과 구분하면서도 옷 색상의 연속성을 유지하기 위해 Rec.709 루마 기준으로 채도를 45%로 낮추고 명도를 85%로 줄인다.
- */
-export const AVATAR_INTERPOLATED_SATURATION = 0.45;
-export const AVATAR_INTERPOLATED_BRIGHTNESS = 0.85;
 
 /**
  * 얼굴 BLURRED(130 + face_policy='BLURRED') 상수.
@@ -128,6 +132,8 @@ export interface AvatarCpuSampleInput {
   texRgb: RgbTuple;
   /** 기본 재질 색(상·하의 대표색, 0~1). */
   baseRgb: RgbTuple;
+  /** 표시용 채운 albedo 의 이 텍셀 색(알파 0 이면 null). 미관측·얼굴 미관측·모르는 값에 쓴다. */
+  fillRgb?: RgbTuple | null;
   /** 얼굴 표시 정책. */
   facePolicy: AvatarFacePolicy;
   /**
@@ -139,23 +145,16 @@ export interface AvatarCpuSampleInput {
 
 /**
  * 셰이더와 같은 규칙으로 표면 출처 부호와 face_policy 에 따른 최종 색(0~1)을 계산한다.
- * - 2(OBSERVED): 관측 텍스처 색
- * - 1(INTERPOLATED): 채도 45%·명도 85% 감쇠한 텍스처 색
- * - 0(UNOBSERVED) 및 모르는 값(129 포함): 기본 재질 색(baseRgb)
- * - 128(얼굴 미관측): 늘 기본 재질 색(baseRgb)
+ * - 2(OBSERVED)·1(INTERPOLATED): 텍스처 색 그대로(-742, 보간 감쇠 없음)
+ * - 0(UNOBSERVED)·128(얼굴 미관측)·모르는 값(129 포함): 채운 색(fillRgb), 없으면 기본 재질 색(baseRgb)
  * - 130(얼굴 관측): OBSERVED → 관측 텍스처 색, BLURRED → 주변 130 텍셀 가중 평균 + 채도·명도 완화, EXCLUDED → 기본 재질 색
  */
 export function evaluateAvatarSurfaceColor(input: AvatarCpuSampleInput): RgbTuple {
   const kind = classifyAvatarSurfaceCode(input.code);
   switch (kind) {
     case 'OBSERVED':
-      return input.texRgb;
     case 'INTERPOLATED':
-      return adjustSaturationAndBrightness(
-        input.texRgb,
-        AVATAR_INTERPOLATED_SATURATION,
-        AVATAR_INTERPOLATED_BRIGHTNESS,
-      );
+      return input.texRgb;
     case 'FACE_OBSERVED': {
       if (input.facePolicy === 'OBSERVED') return input.texRgb;
       if (input.facePolicy === 'EXCLUDED') return input.baseRgb;
@@ -187,7 +186,7 @@ export function evaluateAvatarSurfaceColor(input: AvatarCpuSampleInput): RgbTupl
     case 'UNOBSERVED':
     case 'UNKNOWN':
     default:
-      return input.baseRgb;
+      return input.fillRgb ?? input.baseRgb;
   }
 }
 
@@ -603,6 +602,11 @@ export interface AvatarAppearanceTextures {
   surfaceSourceTexture: DataTexture;
   width: number;
   height: number;
+  /**
+   * 셰이더에 넘길 표시용 albedo(미관측·얼굴 미관측을 채운 것, -742). 같은 부위 지도·얼굴 정책이면 다시 계산하지 않고,
+   * 바뀌면 이전 것을 해제하고 새로 만든다. dispose() 때 함께 해제한다.
+   */
+  displayAlbedo(facePolicy: AvatarFacePolicy, partMap: AvatarUvPartMap | null): DataTexture;
   dispose(): void;
 }
 
@@ -713,11 +717,11 @@ vec3 simaiSampleBlurredFace(vec2 uvCoord, vec3 centerRgb) {
 vec3 simaiBaseColor = (vAvatarRestY >= uAvatarWaistY) ? diffuseColor.rgb : uAvatarLowerColor;
 if (uAvatarHasAppearance == 1) {
   int simaiCode = simaiReadSurfaceCode(vAvatarUv);
-  vec3 simaiTexRgb = texture2D(uAvatarAlbedoMap, vAvatarUv).rgb;
-  if (simaiCode == 2) {
+  // 표시용 채운 albedo(-742): 알파 1 은 관측·보간 원색 또는 채운 색, 알파 0 은 기본 재질 색.
+  vec4 simaiTex = texture2D(uAvatarAlbedoMap, vAvatarUv);
+  vec3 simaiTexRgb = simaiTex.rgb;
+  if (simaiCode == 2 || simaiCode == 1) {
     diffuseColor.rgb = simaiTexRgb;
-  } else if (simaiCode == 1) {
-    diffuseColor.rgb = simaiAdjustSatBright(simaiTexRgb, ${AVATAR_INTERPOLATED_SATURATION.toFixed(2)}, ${AVATAR_INTERPOLATED_BRIGHTNESS.toFixed(2)});
   } else if (simaiCode == 130) {
     if (uAvatarFacePolicy == 2) {
       diffuseColor.rgb = simaiTexRgb;
@@ -727,8 +731,8 @@ if (uAvatarHasAppearance == 1) {
       diffuseColor.rgb = simaiBaseColor;
     }
   } else {
-    // 0(UNOBSERVED), 128(얼굴 미관측), 129(얼굴 보간 금지), 그 밖의 모르는 값
-    diffuseColor.rgb = simaiBaseColor;
+    // 0(UNOBSERVED)·128(얼굴 미관측)·129·모르는 값: 같은 부위 관측 색·피부 단색으로 채운 색, 못 채웠으면 기본 재질 색
+    diffuseColor.rgb = mix(simaiBaseColor, simaiTexRgb, simaiTex.a);
   }
 } else {
   diffuseColor.rgb = simaiBaseColor;
@@ -737,14 +741,31 @@ if (uAvatarHasAppearance == 1) {
   };
 }
 
-/** 아바타 재질 목록에 현재 외형 텍스처·표면 출처 지도·얼굴 정책·환경맵을 반영한다. */
+/** 외형 텍스처 크기에 맞는 메시 UV 부위 지도(메시가 없으면 null). */
+export function avatarPartMapFor(
+  appearance: AvatarAppearanceTextures,
+  meshScene: Object3D | null | undefined,
+): AvatarUvPartMap | null {
+  if (!meshScene) return null;
+  const grid = avatarFillGridSize(appearance.width, appearance.height);
+  return avatarUvPartMapForScene(meshScene, grid.width, grid.height, AVATAR_WAIST_REST_Y);
+}
+
+/**
+ * 아바타 재질 목록에 현재 외형 텍스처·표면 출처 지도·얼굴 정책·환경맵을 반영한다.
+ * meshScene(아바타 자산 장면)을 주면 그 UV 섬·상하 부위 안에서 미관측을 채운다(-742).
+ */
 export function applyAvatarAppearanceToMaterials(
   materials: readonly Material[],
   appearance: AvatarAppearanceTextures | null,
   facePolicy: AvatarFacePolicy,
   envMap: Texture | null = null,
+  meshScene: Object3D | null = null,
 ): void {
   const policyNum = facePolicyCode(facePolicy);
+  const albedo = appearance
+    ? appearance.displayAlbedo(facePolicy, avatarPartMapFor(appearance, meshScene))
+    : null;
   for (const material of materials) {
     const m = material as MeshStandardMaterial;
     if ('envMap' in m && m.envMap !== envMap) {
@@ -754,10 +775,10 @@ export function applyAvatarAppearanceToMaterials(
     }
     const uniforms = getAvatarMaterialUniforms(m);
     if (!uniforms) continue;
-    if (appearance) {
+    if (appearance && albedo) {
       uniforms.uAvatarHasAppearance.value = 1;
       uniforms.uAvatarFacePolicy.value = policyNum;
-      uniforms.uAvatarAlbedoMap.value = appearance.albedoTexture;
+      uniforms.uAvatarAlbedoMap.value = albedo;
       uniforms.uAvatarSurfaceSourceMap.value = appearance.surfaceSourceTexture;
       uniforms.uAvatarTexSize.value.set(appearance.width, appearance.height);
     } else {
@@ -915,6 +936,36 @@ export function avatarAppearanceKey(
   return `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
 }
 
+/** 표시용 albedo 바이트를 만든다. 채우기가 실패하면 관측·보간·얼굴 관측만 남기고 나머지는 기본 재질 색으로 그린다. */
+function buildAvatarDisplayAlbedo(
+  albedoImg: AvatarPngImage,
+  sourceImg: AvatarPngImage,
+  facePolicy: AvatarFacePolicy,
+  partMap: AvatarUvPartMap | null,
+  req: AvatarAppearanceRequest,
+): Uint8Array {
+  const input: AvatarFillInput = {
+    width: albedoImg.width,
+    height: albedoImg.height,
+    albedo: albedoImg.data,
+    source: sourceImg.data,
+    sourceWidth: sourceImg.width,
+    sourceHeight: sourceImg.height,
+    facePolicy,
+    partMap,
+  };
+  try {
+    return fillAvatarAlbedo(input).data;
+  } catch (err) {
+    console.warn(
+      `[viewer3d] 아바타 외형 채우기 실패 (${req.worldId} v${req.appearanceVersion}): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return maskUnfilledAvatarAlbedo(input);
+  }
+}
+
 /** texture_url 과 surface_source_url 두 파일을 받아 DataTexture 쌍으로 만든다. 하나라도 실패하면 부분 자원을 정리하고 예외를 던진다. */
 export async function loadAvatarAppearanceTextures(
   req: AvatarAppearanceRequest,
@@ -938,6 +989,11 @@ export async function loadAvatarAppearanceTextures(
   }
   const key = `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
   let disposed = false;
+  let display: {
+    facePolicy: AvatarFacePolicy;
+    partMap: AvatarUvPartMap | null;
+    texture: DataTexture;
+  } | null = null;
   return {
     key,
     worldId: req.worldId,
@@ -949,11 +1005,28 @@ export async function loadAvatarAppearanceTextures(
     surfaceSourceTexture,
     width: albedoImg.width,
     height: albedoImg.height,
+    displayAlbedo(facePolicy, partMap) {
+      if (display && display.facePolicy === facePolicy && display.partMap === partMap) {
+        return display.texture;
+      }
+      const texture = createAvatarAlbedoTexture({
+        width: albedoImg.width,
+        height: albedoImg.height,
+        channels: 4,
+        data: buildAvatarDisplayAlbedo(albedoImg, sourceImg, facePolicy, partMap, req),
+      });
+      texture.name = 'avatar-albedo-display';
+      display?.texture.dispose();
+      display = { facePolicy, partMap, texture };
+      return texture;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       albedoTexture.dispose();
       surfaceSourceTexture?.dispose();
+      display?.texture.dispose();
+      display = null;
     },
   };
 }
