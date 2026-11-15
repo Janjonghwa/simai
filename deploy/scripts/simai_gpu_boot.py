@@ -75,6 +75,12 @@ CONTROL_PORT, VIDEO_PORT = 17000, 17001  # RunPod 템플릿에 노출한 TCP(dep
 DEFAULT_ADVERTISE_HOST = "127.0.0.1"  # SSAFY 망 기본 경로: 노트북이 EC2 SSH 로컬 포워드로 붙는다(deploy/README, 14차 start-lobby 와 같음)
 SCHEMA_VERSION = "1.0.0"
 STAGES = ("WEIGHTS", "ENGINE", "TIER0", "VLLM", "READY", "FAILED", "ENDED")
+# 자동 부팅 기본 서비스(80GB급 이상) = lobby 기본(simai_bootstrap.LOBBY_SERVICES) + ppe(S15P31A101-718). 작업 설정의 안전모·조끼 필수를
+# 셀프서비스 Pod 에서도 감시한다. 손 lobby·preflight 기본은 그대로 둔다(ppe 명시 선택, -507). ppe 는 몫 0.05(Tier 0 0.20 + 분석 0.70 + 0.05 = 0.95)
+BOOT_SERVICES = "tier0,vllm,worker,avatar,ppe"
+# ppe 를 자동으로 더하는 VRAM 하한(MiB). 48GB급(약 46,000 MiB)은 0.95 를 다 쓰면 남는 여유가 2 GiB 남짓이라 lobby 기본(ppe 없음)을 쓴다.
+# H100 80GB(81,559)·96GB급(RTX PRO 6000 등 약 97,000)은 켠다
+PPE_MIN_VRAM_MB = 70_000
 CACHE_PATH = "/api/worker/gpu-cache/sign"
 REGISTER_PATH = "/api/gpu/sessions"
 MAX_CALIBRATION_BYTES = 16 << 20
@@ -819,9 +825,10 @@ def lobby_stage(marker_doc: dict | None, started_ms: int, want_vllm: bool, vllm_
 
 
 def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
-    """lobby 서비스 기본값을 VRAM(nvidia-smi memory.total, MiB)으로 정한다(S15P31A101-705, 명세 3.12 최소 사양).
-    SIMAI_BOOT_SERVICES 가 있으면 그 값을 그대로 쓴다(명시값 우선). 돌려주는 것은 (services 또는 None = lobby 기본, 보고에 붙일 한 줄).
-    - 48GB급 이상(min_worker_mb, 45,000 MiB): lobby 기본(tier0,vllm,worker,avatar). 48~79GB 의 VLM 몫은 19.1 미결이라 그대로 둔다
+    """lobby 서비스를 VRAM(nvidia-smi memory.total, MiB)으로 정한다(S15P31A101-705, 명세 3.12 최소 사양).
+    SIMAI_BOOT_SERVICES 가 있으면 그 값을 그대로 쓴다(명시값 우선). 돌려주는 것은 (services, 보고에 붙일 한 줄 또는 None).
+    - PPE_MIN_VRAM_MB(70,000 MiB) 이상: BOOT_SERVICES(tier0,vllm,worker,avatar,ppe, -718)
+    - 48GB급(min_worker_mb 45,000 ~ 70,000 MiB): lobby 기본(tier0,vllm,worker,avatar) + 'ppe 꺼짐: VRAM 부족'. VLM 몫은 19.1 미결이라 그대로 둔다
     - 24GB급(min_tier0_mb 22,500 ~ 45,000 MiB): tier0. 분석 워커가 없으니 세팅(site_setup)·맵 굽기·VLM·아바타가 안 된다
     - 그보다 작음: tier0 + 경고. preflight 가 Tier 0 최소 사양 미만으로 멈춰 GPU_TOO_SMALL 이 될 수 있다(개발·시험용)
     - VRAM 을 모름: lobby 기본(preflight 가 사양을 모르면 멈춘다)"""
@@ -829,9 +836,13 @@ def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier
     if explicit:
         return explicit, None
     mb = gpu.get("memory_total_mb")
-    if not isinstance(mb, (int, float)) or isinstance(mb, bool) or mb >= min_worker_mb:
+    if not isinstance(mb, (int, float)) or isinstance(mb, bool):
         return None, None
     gib = mb / 1024
+    if mb >= PPE_MIN_VRAM_MB:
+        return BOOT_SERVICES, None
+    if mb >= min_worker_mb:
+        return None, f"VRAM {gib:.1f} GiB(48GB급): ppe 꺼짐: VRAM 부족(보호구 감시는 80GB급 이상에서 자동으로 켠다)"
     if mb >= min_tier0_mb:
         return "tier0", f"VRAM {gib:.1f} GiB(24GB급): Tier 0 관제만, 세팅·맵 굽기·VLM·아바타 꺼짐"
     return "tier0", f"VRAM {gib:.1f} GiB: Tier 0 최소 사양(24GB급) 미만, 개발·시험용(준비 실패 가능)"
@@ -1065,7 +1076,7 @@ class Boot:
         services, note = boot_services(env, gpu, self.bs.MIN_WORKER_VRAM_MB, self.bs.MIN_VRAM_MB)
         if note:
             rep.note = note
-            log(f"서비스 축소: {note} (--services {services}, 바꾸려면 SIMAI_BOOT_SERVICES)")
+            log(f"서비스 축소: {note} (--services {services or self.bs.LOBBY_SERVICES}, 바꾸려면 SIMAI_BOOT_SERVICES)")
         rep.set("WEIGHTS", detail="캐시·Tier 0 가중치·시작 묶음")
 
         # 뒤에서: vLLM 컴파일 캐시(vLLM 은 VLM 가중치 뒤에 뜨므로 Tier 0 를 막지 않는다). 다른 이름으로 풀고 아직 없을 때만 옮긴다

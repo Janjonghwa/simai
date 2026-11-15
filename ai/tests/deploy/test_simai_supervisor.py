@@ -244,7 +244,7 @@ def test_ppe_stops_before_other_sidecars_and_avatar_share_is_not_duplicated(bs, 
     w.ready = w.healthy = True
     _settle(sup, w, 12)
     assert {"avatar", "ppe", "worker"} <= set(w.spawned)
-    assert sup.weight_calls == [["m", "ppe-ckpt"], ["m"]]  # 아바타·PPE 묶음 → VLM 묶음
+    assert sup.weight_calls == [["m"], ["ppe-ckpt"], ["m"]]  # 아바타 묶음 → PPE 묶음 → VLM 묶음(-718: 아바타·PPE 따로)
     # PPE 몫은 분석 워커 예산(0.70) 밖이다: worker 는 vLLM(0.30)·avatar(0.10) 를 뺀 0.30 그대로
     assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.30)
     w.signals.clear()
@@ -354,13 +354,13 @@ def test_slow_vlm_download_does_not_hold_back_avatar_ppe_or_worker(bs, tmp_path,
         w.now += 1
     assert sup.sidecar_done and not sup.vlm_done  # VLM 은 아직 받는 중
     assert {"avatar", "ppe", "worker"} <= set(w.spawned) and "vllm" not in w.spawned
-    assert sup.weight_calls == [["av", "ppe-ckpt"], ["m"]]
+    assert sup.weight_calls == [["av"], ["ppe-ckpt"], ["m"]]
     release.set()
     sup._weights.join(5)
     w.healthy = True
     _settle(sup, w, 3)
     assert sorted(w.spawned) == ["avatar", "ppe", "tier0", "vllm", "worker"]  # VLM 준비 뒤 vLLM, 다른 것은 다시 띄우지 않았다
-    assert {k: v["exit"] for k, v in _stage_records(tmp_path).items()} == {"sidecar-weights": 0, "worker-weights": 0}
+    assert {k: v["exit"] for k, v in _stage_records(tmp_path).items()} == {"avatar-weights": 0, "ppe-weights": 0, "worker-weights": 0}
 
 
 def test_vlm_download_failure_keeps_avatar_ppe_worker_and_logs_why(bs, tmp_path, monkeypatch, capsys):
@@ -379,21 +379,48 @@ def test_vlm_download_failure_keeps_avatar_ppe_worker_and_logs_why(bs, tmp_path,
     assert "HTTP 503" in err and err.count("VLM 미준비") == 1  # 이유는 한 번만
     recs = _stage_records(tmp_path)
     assert recs["worker-weights"]["exit"] == 2 and "HTTP 503" in recs["worker-weights"]["error"]
-    assert recs["sidecar-weights"]["exit"] == 0
+    assert recs["avatar-weights"]["exit"] == 0 and recs["ppe-weights"]["exit"] == 0
 
 
-def test_sidecar_weights_failure_skips_only_avatar_and_ppe(bs, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("bad, skipped, label", [("av", "avatar", "아바타"), ("ppe-ckpt", "ppe", "PPE")])
+def test_sidecar_weights_failure_skips_only_that_sidecar(bs, tmp_path, monkeypatch, capsys, bad, skipped, label):
+    """S15P31A101-718: PPE 가 자동 부팅 기본이 됐다. PPE 가중치가 실패해도 아바타(시연 필수)는 뜨고, 아바타가 실패해도 PPE 는 뜬다"""
     def fail_sidecar(names):
-        if "av" in names:
-            raise bs.BootstrapError(bs.EXIT_STORAGE, "av 해시 불일치")
+        if bad in names:
+            raise bs.BootstrapError(bs.EXIT_STORAGE, f"{bad} 해시 불일치")
 
     w = World()
     sup = _split_sup(bs, tmp_path, monkeypatch, w, fail_sidecar)
     _start(sup, w)
     w.ready = w.healthy = True
     _settle(sup, w, 10)
-    assert sorted(w.spawned) == ["tier0", "vllm", "worker"]
-    assert "아바타·PPE 를 띄우지 않는다" in capsys.readouterr().err
+    assert sorted(w.spawned) == sorted({"tier0", "vllm", "worker", "avatar", "ppe"} - {skipped})
+    assert not w.signals  # 아무것도 내리지 않았다
+    err = capsys.readouterr().err
+    assert err.count(f"{label} 가중치 실패 → {label} 를 띄우지 않는다") == 1
+    # 기록은 서비스별 단계: 실패한 쪽 기록이 성공한 쪽에 가려지지 않는다(아바타 실패 + PPE 성공 포함)
+    recs = _stage_records(tmp_path)
+    other = "ppe" if skipped == "avatar" else "avatar"
+    assert recs[f"{skipped}-weights"]["exit"] == 2 and bad in recs[f"{skipped}-weights"]["error"]
+    assert recs[f"{other}-weights"]["exit"] == 0 and "sidecar-weights" not in recs
+
+
+def test_both_sidecar_weights_fail_warn_twice_and_keep_tier0_vllm_worker(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-718: 아바타·PPE 가중치가 둘 다 실패하면 경고가 둘(한 번씩), Tier 0·vLLM·워커는 정상이다"""
+    def fail_both(names):
+        if names != ["m"]:
+            raise bs.BootstrapError(bs.EXIT_STORAGE, f"{names[0]} 해시 불일치")
+
+    w = World()
+    sup = _split_sup(bs, tmp_path, monkeypatch, w, fail_both)
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 10)
+    assert sorted(w.spawned) == ["tier0", "vllm", "worker"] and not w.signals
+    err = capsys.readouterr().err
+    assert err.count("아바타 가중치 실패 → 아바타 를 띄우지 않는다") == 1 and err.count("PPE 가중치 실패 → PPE 를 띄우지 않는다") == 1
+    recs = _stage_records(tmp_path)
+    assert recs["avatar-weights"]["exit"] == 2 and recs["ppe-weights"]["exit"] == 2 and recs["worker-weights"]["exit"] == 0
 
 
 @pytest.mark.parametrize("env", [
@@ -417,6 +444,20 @@ def test_ppe_requires_manifest_entry_with_weights_env(bs, tmp_path, monkeypatch)
     with pytest.raises(bs.BootstrapError) as e:
         _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"), env={"SIMAI_WEIGHTS_MANIFEST": str(manifest)})
     assert e.value.code == bs.EXIT_STORAGE
+
+
+def test_ppe_crash_restarts_only_ppe_and_keeps_tier0_worker_avatar(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-718: PPE 가 자동 부팅 기본이다. PPE 가 죽어도 Tier 0·워커·아바타·vLLM 은 그대로이고 PPE 만 백오프 뒤 다시 띄운다"""
+    w = World()
+    sup = _split_sup(bs, tmp_path, monkeypatch, w, lambda names: None)
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 10)
+    assert sorted(w.spawned) == ["avatar", "ppe", "tier0", "vllm", "worker"]
+    w.last("ppe").rc = 1
+    _settle(sup, w, 120)
+    assert w.spawned.count("ppe") >= 2 and all(w.spawned.count(n) == 1 for n in ("tier0", "worker", "avatar", "vllm"))
+    assert "ppe 종료 코드 1" in capsys.readouterr().err
 
 
 def test_ppe_is_opt_in_and_repository_manifest_has_its_checkpoint(bs):
