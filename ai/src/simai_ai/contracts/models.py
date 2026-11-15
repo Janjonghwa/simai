@@ -1149,6 +1149,7 @@ class Camera1(BaseModel):
     stream_epoch: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
     last_frame_sequence: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
     camera_to_gateway_gap_max_ms: DefsDurationMs | MISSING = MISSING
+    source_kind: Literal['RTSP', 'FILE', 'SYNTHETIC'] | MISSING = MISSING
 
 
 class Payload27(BaseModel):

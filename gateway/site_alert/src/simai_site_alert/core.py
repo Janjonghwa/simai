@@ -13,6 +13,10 @@
 - LIVE·CRITICAL·HIGH 가 아닌 local_alert 는 거부한다(messages.py).
 - 소리 장치가 실패하면 sound_fault 로 화면에 크게 알리고, 다음 판단 때(tick 포함) 다시 시도한다.
 - 시험 경보는 RiskEvent·site_ack 를 만들지 않는 별도 경로다. 실제 경보가 있으면 실제 경보 소리가 먼저다.
+- 시험 입력(S15P31A101-724, AGENTS 규칙 5): 영상 중계가 녹화 파일(FILE)·합성 영상(SYNTHETIC)을 보내는 동안(set_test_input)은
+  받은 경보를 표시·확인·재동기화는 그대로 하되 소리를 내지 않고, 하트비트 alarm.sounding_event_ids 도 비운다. Tier 0 는 재생 영상을
+  LIVE 로 판정하므로 이 단말이 실제 알림을 끄는 마지막 자리다. 시작 시 시험 경보(소리 확인)는 그대로 울린다. 시험 입력 중에 표시된
+  경보는 실제 카메라(RTSP)로 돌아온 뒤에도 해소될 때까지 울리지 않는다(재생 영상의 경보가 실제 관제 중에 울리지 않게).
 
 상태 모델은 '활성 경보 집합'(event_id → ActiveAlert)이다.
 
@@ -122,6 +126,8 @@ class ScreenState:
     control_connected: bool | None  # I0 제어 채널 연결 상태(None 은 아직 모름)
     pending_site_acks: int  # 보냈지만 Tier 0 기록을 아직 받지 못한 현장 확인 수
     site: SiteStatus | None = None  # 장애별 현장 표시(link_status). 감시를 켜지 않았으면(--offline) None
+    test_input: bool = False  # 시험 입력(녹화 파일·합성 영상) 중: 실제 경보 소리를 끈다(S15P31A101-724)
+    test_muted: frozenset[str] = frozenset()  # 시험 입력 중에 표시돼 해소까지 소리를 내지 않는 경보 event_id
 
 
 @dataclass(frozen=True)
@@ -170,6 +176,8 @@ class SiteAlertCore:
         self._test: TestAlertState | None = None
         self._control_connected: bool | None = None
         self._site: SiteStatus | None = None
+        self._test_input = False  # 영상 중계 입력이 녹화 파일·합성 영상이다(set_test_input)
+        self._test_muted: set[str] = set()  # 시험 입력 중에 활성이었던 경보. 해소될 때까지 울리지 않는다
         self._listeners: list[Callable[[ScreenState], None]] = []
         self.last_health: Health | None = None  # 마지막으로 받은 health(재동기화 부분)
         self.rejected: Counter[str] = Counter()
@@ -530,6 +538,20 @@ class SiteAlertCore:
                 self._site = status
                 self._notify()
 
+    def set_test_input(self, active: bool) -> None:
+        """영상 중계가 알린 입력 종류(relay_status → RelayReport.test_input). 시험 입력이면 실제 경보 소리를 끈다(S15P31A101-724)."""
+        with self._lock:
+            if self._test_input != active:
+                self._test_input = active
+                log.warning("시험 입력 %s: 실제 경보 소리를 %s", "시작" if active else "끝", "끈다" if active else "다시 켠다")
+                self._reconcile(None)
+                self._notify()
+
+    @property
+    def test_input(self) -> bool:
+        with self._lock:
+            return self._test_input
+
     def tick(self) -> None:
         """주기 호출(약 1초). 소리 장치가 실패해 있으면 다시 시도한다."""
         with self._lock:
@@ -543,7 +565,8 @@ class SiteAlertCore:
         now = self._clock.now_ms()
         active_ids = set(self._active)
         self._once_played = {k: t for k, t in self._once_played.items() if k[0] in active_ids}
-        sounding = [a for a in self._active.values() if a.sounding and (
+        self._update_test_muted()
+        sounding = [a for a in self._active.values() if a.sounding and a.event_id not in self._test_muted and (
             a.sound_mode != "ONCE" or (a.event_id, a.alarm_sequence) not in self._once_played
             or now - self._once_played[(a.event_id, a.alarm_sequence)] < pattern_for(a.severity).period_ms
         )]
@@ -555,6 +578,12 @@ class SiteAlertCore:
             return TEST
         return None
 
+    def _update_test_muted(self) -> None:
+        """시험 입력 중이면 지금 활성 경보를 모두 소리 끔 목록에 넣고, 해소된(활성에서 빠진) 경보는 목록에서 뺀다."""
+        if self._test_input:
+            self._test_muted.update(self._active)
+        self._test_muted.intersection_update(self._active)
+
     def _set_fault(self, e: BaseException) -> None:
         reason = str(e) or type(e).__name__
         if self._sound_fault != reason:
@@ -565,8 +594,8 @@ class SiteAlertCore:
         """목표 소리와 지금 소리를 맞춘다. 이 호출로 소리 시작을 걸었고 received_mono 가 있으면 지연(초)을 돌려준다."""
         target = self._target()
         new_once = target is not None and not target.repeat and any(
-            a.sounding and a.sound_mode == "ONCE" and (a.event_id, a.alarm_sequence) not in self._once_played
-            and pattern_for(a.severity, once=True) is target for a in self._active.values()
+            a.sounding and a.event_id not in self._test_muted and a.sound_mode == "ONCE"
+            and (a.event_id, a.alarm_sequence) not in self._once_played and pattern_for(a.severity, once=True) is target for a in self._active.values()
         )
         if target is self._playing and not new_once and (target is None or self._sound_fault is None):
             return None
@@ -611,10 +640,11 @@ class SiteAlertCore:
             return dict(self._active)
 
     def alarm_status(self) -> dict[str, list[str]]:
-        """laptop_heartbeat.alarm 형식 (반복 소리 중 / 표시 중 event_id)."""
+        """laptop_heartbeat.alarm 형식 (반복 소리 중 / 표시 중 event_id). 시험 입력으로 소리를 끈 경보는 반복 소리 중이 아니다."""
         with self._lock:
+            self._update_test_muted()
             return {
-                "sounding_event_ids": [a.event_id for a in self._active.values() if a.sounding and (
+                "sounding_event_ids": [a.event_id for a in self._active.values() if a.sounding and a.event_id not in self._test_muted and (
                     a.sound_mode != "ONCE" or (a.event_id, a.alarm_sequence) not in self._once_played
                     or self._clock.now_ms() - self._once_played[(a.event_id, a.alarm_sequence)] < pattern_for(a.severity).period_ms
                 )],
@@ -626,6 +656,7 @@ class SiteAlertCore:
             return self._screen_state()
 
     def _screen_state(self) -> ScreenState:
+        self._update_test_muted()
         alerts = sorted(
             self._active.values(),
             key=lambda a: (_SEVERITY_RANK[a.severity], a.acknowledged, a.first_received_ms, a.event_id),
@@ -638,4 +669,6 @@ class SiteAlertCore:
             control_connected=self._control_connected,
             pending_site_acks=len(self._pending_site_acks),
             site=self._site,
+            test_input=self._test_input,
+            test_muted=frozenset(self._test_muted),
         )

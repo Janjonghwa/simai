@@ -27,7 +27,7 @@ from typing import Any, Literal
 # site_ack 를 정의한 계약 버전(contracts/examples/site_ack.json 과 같다). 2.1.0: 확인 대상 event_sequence.
 SITE_ACK_SCHEMA_VERSION = "2.1.0"
 # laptop_heartbeat 계약 버전(contracts/examples/laptop_heartbeat.json 과 같다)
-LAPTOP_HEARTBEAT_SCHEMA_VERSION = "1.2.0"
+LAPTOP_HEARTBEAT_SCHEMA_VERSION = "1.3.0"
 # clock_sync_response 계약 버전(contracts/examples/clock_sync_response.json 과 같다)
 CLOCK_SYNC_SCHEMA_VERSION = "1.3.0"
 

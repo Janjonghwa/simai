@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "1.3.0",
   "msg_type": "laptop_heartbeat",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000112",
   "sent_at": 1760342401000,
@@ -31,7 +31,8 @@
         "rtsp": "CONNECTED",
         "stream_epoch": 12,
         "last_frame_sequence": 10349,
-        "camera_to_gateway_gap_max_ms": 80
+        "camera_to_gateway_gap_max_ms": 80,
+        "source_kind": "RTSP"
       }
     ]
   }
