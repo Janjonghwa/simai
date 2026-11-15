@@ -12,6 +12,10 @@
                                                 SIMAI_SERVICES 는 보지 않는다. 워커 ID 는 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)
                                                 모든 프로세스 환경에 SIMAI_TIER0_MARKER=<work>/state/tier0.live·SIMAI_STATE_DIR=<work>/state 를 넣는다
                                                 (워커의 site_setup 배경 묶음·활성 보정·scene_regenerate 가 Tier 0 와 같은 상태 폴더를 본다, S15P31A101-473)
+    simai-bootstrap restart-tier0 [--work 로비 작업 폴더]   Tier 0 만 다시 띄우기(S15P31A101-741): 작업 폴더 state/tier0.restart-request 를 남긴다.
+                                                감시 프로세스가 Tier 0 를 SIGTERM 으로 내린 뒤 이것을 종료로 보지 않고 즉시(백오프·실패 횟수 없이) 같은 인자로
+                                                다시 띄운다. 사이드카(vLLM·워커·아바타·PPE)는 그대로다. 설정(tier0-live.json)을 바꾼 뒤에 쓴다.
+                                                Pod 에서 `pkill -f "python -m services.tier0"`(SIGTERM)은 정상 종료(0)라 세션 전체가 내려간다: 쓰지 않는다
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check [--preflight|--sets ...]     준비만 하고 결과 JSON 을 출력한다 (--preflight / preflight 는 가중치 묶음·GPU 예산·런타임 일괄 점검)
     simai-bootstrap preflight [check 인자...]   tier0,avatar,static,vlm 가중치·GPU 예산(lobby 기본 넷)·texrecon·open3d·ultralytics 일괄 점검(하나라도 실패하면 비-0 종료).
@@ -196,6 +200,7 @@ SCENE_LOCK = ("locks", "scene.lock")  # 장면 작업 실행 중(배타)
 SCENE_PGID = ("locks", "scene.pgid")  # 실행 중인 장면 그룹(pgid·시작 표지). 감시 부모가 멈추거나 죽어도 Tier 0 가 이것으로 회수한다
 CLEAN_STOP_SUFFIX = ".stopped"  # Tier 0 정상 종료 기록 = <표시 파일>.stopped (simai_ai.gpu.admission.clean_stop_path 와 같은 규칙, S15P31A101-403)
 # Tier 0 를 다시 띄우지 않는 종료 코드(services/tier0/__main__.py): 다시 띄워도 같은 결과이거나 운영자가 정한 종료다(S15P31A101-652)
+TIER0_RESTART_REQUEST = "tier0.restart-request"  # <작업 폴더>/state/ 아래. `simai-bootstrap restart-tier0` 가 남기고 감시 프로세스가 지운다(S15P31A101-741)
 TIER0_NO_RESTART = {0: "정상 종료", 2: "설정 오류", 3: "재시작 복구 거부(운영 절차 필요)", 5: "file 입력 결과 기록 실패"}
 CLEAN_STOP_PHASE = "stopped_clean"
 SCENE_MAX_GPU_USED_MB = 1024  # 넘으면 다른 프로세스가 GPU 를 쓴다. 빈 GPU 는 0~수 MiB, 다른 프로세스의 빈 CUDA 문맥은 약 0.5 GiB, Tier 0·vLLM 은 수 GiB 이상
@@ -1219,6 +1224,10 @@ class Supervisor:
         self.t0_max_restarts = int(_env_float(env, "SIMAI_TIER0_MAX_RESTARTS", 5))
         self.t0_fails = 0  # Tier 0 가 SIMAI_SUPERVISE_MIN_UPTIME_S 안에 연달아 죽은 수
         self.t0_next_at: float | None = None  # Tier 0 를 다시 띄울 시각(죽어 있는 동안만)
+        # 운영자 요청 재시작(S15P31A101-741): 요청 파일이 보이면 Tier 0 에 SIGTERM, 그 종료는 전체 종료도 실패도 아니다
+        self.t0_request_path = self.marker.parent / TIER0_RESTART_REQUEST
+        self.t0_requested_at: float | None = None  # SIGTERM 을 보낸 시각(끝나기 전까지만)
+        self.t0_killed = False
         # PPE 생존 파일(S15P31A101-634): 띄운 뒤 이만큼은 보지 않고(가중치·CUDA 준비), 그 뒤 마지막 정상 주기가 이만큼 오래면 다시 띄운다.
         # PPE 는 1초마다 적고 상태 근거 만료가 10초라, 30초면 일시 지연이 아니라 멈춤·연속 실패로 본다
         self.ppe_alive_grace_s = _env_float(env, "SIMAI_PPE_ALIVE_GRACE_S", 120)
@@ -1689,6 +1698,9 @@ class Supervisor:
                 self._record_pod_marker()
                 return exit_code(rc) if rc is not None else 128 + int(self.stop_signal)
             if t0.proc is None:  # 죽은 Tier 0 를 다시 띄울 때를 기다린다(사이드카는 그대로, 표시 파일이 새로 생기기 전에는 새로 띄우지 않는다)
+                if self.t0_request_path.exists():
+                    self._consume_restart_request()
+                    log("Tier 0 재시작 요청: 이미 죽어 있어 곧 다시 띄운다(요청 파일을 지운다)")
                 if self.t0_next_at is not None and self.clock() >= self.t0_next_at:
                     try:
                         self.start_tier0()
@@ -1700,6 +1712,8 @@ class Supervisor:
                     log(f"tier0 다시 시작 pid {t0.proc.pid} (연속 빠른 실패 {self.t0_fails}번)")
             else:
                 rc = t0.proc.poll()
+                if rc is None:
+                    self._tier0_requested_restart(t0)
                 if rc is not None:
                     self._record_pod_marker()
                     t0.proc.signal(KILL)  # 그룹에 남은 손자 정리(GPU 메모리를 쥔 채 남지 않게)
@@ -1712,10 +1726,37 @@ class Supervisor:
             self.step()
             self.sleep(self.tick_s)
 
+    def _consume_restart_request(self) -> None:
+        try:
+            self.t0_request_path.unlink()
+        except OSError:
+            pass
+
+    def _tier0_requested_restart(self, t0: Service) -> None:
+        """요청 파일(simai-bootstrap restart-tier0)이 있으면 Tier 0 만 SIGTERM 으로 내린다. SIGTERM 을 무시하면 유예 뒤 그룹 SIGKILL."""
+        if self.t0_requested_at is None:
+            if not self.t0_request_path.exists():
+                return
+            self._consume_restart_request()
+            self.t0_requested_at, self.t0_killed = self.clock(), False
+            log("Tier 0 재시작 요청 → Tier 0 만 SIGTERM 으로 내리고 곧바로 같은 인자로 다시 띄운다(사이드카는 그대로)")
+            t0.proc.signal(signal.SIGTERM)
+        elif not self.t0_killed and self.clock() - self.t0_requested_at >= self.grace_s:
+            self.t0_killed = True
+            log(f"Tier 0 가 {self.grace_s:.0f}s 안에 끝나지 않아 그룹 SIGKILL")
+            t0.proc.signal(KILL)
+
     def _tier0_restart(self, rc: int) -> bool:
         """Tier 0 가 rc 로 끝났다: 다시 띄울지 정하고 기록한다(True 면 t0_next_at 에 띄운다). 재시도해도 같은 결과인 종료는 다시 띄우지 않는다."""
         code = exit_code(rc)
         t0 = self.svc["tier0"]
+        if self.t0_requested_at is not None:  # 운영자가 요청한 재시작: 종료 코드와 상관없이 전체 종료도, 빠른 실패 횟수도 아니다
+            self.t0_requested_at = None
+            self.t0_next_at = self.clock()
+            log(f"Tier 0 재시작 요청에 따른 종료(코드 {code}) → 정상 종료로 보지 않고 사이드카는 그대로 두고 Tier 0 만 바로 다시 띄운다")
+            return True
+        if code == 0:
+            log("Tier 0 정상 종료(코드 0, 재시작 요청 없음)")
         if code in TIER0_NO_RESTART:
             log(f"Tier 0 종료(코드 {code}, {TIER0_NO_RESTART[code]}) → 다시 띄우지 않고 워커·vLLM 을 내리고 같은 코드로 끝낸다")
             return False
@@ -2923,6 +2964,28 @@ def lobby(rest: list[str]) -> int:
     return sup.run()
 
 
+def restart_tier0(rest: list[str]) -> int:
+    """Tier 0 만 다시 띄우도록 감시 프로세스(lobby)에 요청 파일을 남긴다(S15P31A101-741)."""
+    ap = argparse.ArgumentParser(prog="simai-bootstrap restart-tier0",
+                                 description="lobby 감시 프로세스가 Tier 0 만 SIGTERM 으로 내리고 곧바로 같은 인자로 다시 띄우게 한다(사이드카 유지)")
+    ap.add_argument("--work", type=Path, default=None, help="lobby 작업 폴더(기본 $SIMAI_ROOT/runs/lobby-live). 아래 state/ 에 요청 파일을 둔다")
+    try:
+        args = ap.parse_args(rest)
+    except SystemExit as e:
+        return EXIT_USAGE if e.code else EXIT_OK
+    work = args.work or (choose_root()[0] / "runs" / "lobby-live")
+    state = work / "state"
+    if not state.is_dir():
+        log(f"{state} 가 없다: lobby 작업 폴더가 맞는지 확인한다(--work). 요청하지 않는다")
+        return EXIT_NOT_FOUND
+    req = state / TIER0_RESTART_REQUEST
+    tmp = req.with_suffix(".tmp")
+    tmp.write_text(f"{time.time_ns() // 1_000_000}\n", encoding="utf-8")
+    os.replace(tmp, req)
+    log(f"Tier 0 재시작을 요청했다: {req} (감시 프로세스가 0.5초 안팎에 집어 간다. 엔진 준비·표시 파일은 simai-wait-tier0 로 확인)")
+    return EXIT_OK
+
+
 def after_live(rest: list[str]) -> int:
     """관제 뒤 배경 복원(S15P31A101-403): 로비 작업 폴더의 Tier 0 정상 종료 기록을 확인하고 장면 준비 모드로 분석 워커만 띄운다."""
     ap = argparse.ArgumentParser(prog="simai-bootstrap after-live",
@@ -3033,6 +3096,8 @@ def main(argv: list[str] | None = None) -> int:
         return lobby(rest)
     if mode == "after-live":
         return after_live(rest)
+    if mode == "restart-tier0":
+        return restart_tier0(rest)
     if mode == "check":
         return run_check(rest, preflight=False)
     if mode == "preflight":

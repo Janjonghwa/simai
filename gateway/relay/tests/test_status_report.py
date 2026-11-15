@@ -97,3 +97,17 @@ def test_cli_rejects_bad_status_port(tmp_path, capsys) -> None:
     assert main(["run", "--config", str(cfg), "--seconds", "0.1", "--status-port", "70000",
                  "--env-file", str(tmp_path / "none.env")]) == 2
     assert "--status-port" in capsys.readouterr().err
+
+
+def test_send_with_status_port_zero_warns_at_startup(tmp_path, capsys) -> None:
+    """S15P31A101-741: --send 인데 --status-port 0 이면 기동 경고(현장 경보 단말이 영상 상태를 모르고 source_kind 하트비트가 안 간다)."""
+    from simai_relay.cli import main
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[[cameras]]\ncamera_id = "cam_A"\nkind = "synthetic"\n', encoding="utf-8")
+    args = ["run", "--config", str(cfg), "--seconds", "0.1", "--send", "--env-file", str(tmp_path / "none.env")]
+    main([*args, "--status-port", "0"])  # Tier 0 설정(.env)이 없어 설정 오류로 끝나지만 경고는 그 앞에서 나간다
+    err = capsys.readouterr().err
+    assert "--status-port 0" in err and "source_kind" in err
+    main([*args, "--status-port", "47031"])
+    assert "--status-port 0" not in capsys.readouterr().err
