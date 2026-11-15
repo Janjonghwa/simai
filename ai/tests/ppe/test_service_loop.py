@@ -4,6 +4,7 @@
 """
 
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -399,3 +400,111 @@ def test_empty_person_camera_skips_gpu_inference_and_advances_watermark():
     assert loop.counts["inferred"] == 1 and loop.counts["empty_persons"] == 1
     assert loop._last_frame["cam2"] == (3, 1)
     assert "cam2" not in loop._last_infer_at
+
+
+# ---- 촬영 칸 채움 계측·추론 간격 하한(S15P31A101-729) ------------------------------------------------------------------
+def jitter_stream(gap_ms, *, input_ms=200, infer_ms=25, jitter_ms=10, cameras=4, duration_ms=20_000, seed=1):
+    """실제 서비스처럼 step 뒤 50 ms(+흔들림) 쉬고, 추론마다 infer_ms(+흔들림)가 걸리는 합성 흐름.
+
+    카메라별로 실제 추론한 촬영 칸을 기록한다. 모델·시계는 합성이다.
+    """
+    rng = random.Random(seed)
+    mono = Clock(0)
+    loop, source, _gate, det, _out, clock = make_loop(candidates=(NO_HELMET(), NO_VEST()), monotonic_ms=mono,
+                                                      per_camera_period_ms=gap_ms)
+    cams = tuple(f"cam{i + 1}" for i in range(cameras))
+    start = 1_760_342_400_000
+    inferred = {cid: [] for cid in cams}
+    starts = {cid: [] for cid in cams}
+    infer = det.infer
+
+    def timed(image):
+        cid = next(c for c, value in source.value[1].items() if value is image)
+        inferred[cid].append(source.value[0]["frames"][cid]["capture_time_ms"] // loop.judge.cfg.bin_ms)
+        starts[cid].append(mono.t)
+        spent = infer_ms + rng.randint(0, jitter_ms)
+        clock.t += spent
+        mono.t += spent
+        return infer(image)
+
+    det.infer = timed
+    now = 0
+    while now < duration_ms:
+        capture = now // input_ms * input_ms
+        if now - capture < 20:  # 공유 파일은 촬영 20 ms 뒤에 나온다
+            capture -= input_ms
+        source.value = shared(start + capture, {c: capture // input_ms + 1 for c in cams}, cams=cams,
+                              produced=start + capture + 20)
+        clock.t, mono.t = start + now, now
+        loop.step()
+        now = mono.t + 50 + rng.randint(0, jitter_ms)
+    return loop, inferred, starts
+
+
+def _missed(bins):
+    return bins[-1] - bins[0] + 1 - len(set(bins))
+
+
+def test_500ms_gap_with_inference_time_leaves_capture_bins_empty_and_metric_counts_them():
+    loop, inferred, starts = jitter_stream(500)
+    missed = {cid: _missed(bins) for cid, bins in inferred.items()}
+    assert sum(missed.values()) > 0, "간격 500 ms 에 추론 시간·흔들림이 더해지면 칸이 빈다(-729 가설)"
+    cams = loop.diagnostics()["bins"]["cameras"]
+    for cid, bins in inferred.items():
+        assert cams[cid]["inferred_bins"] == len(bins)
+        assert cams[cid].get("bins_missed", 0) == missed[cid]
+        assert all(b - a >= 500 for a, b in zip(starts[cid], starts[cid][1:]))
+    assert loop.counts["bins_missed"] == sum(missed.values())
+    assert loop.counts["rate_gap_new_bin"] > 0
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_400ms_gap_fills_capture_bins_and_keeps_one_inference_per_bin(seed):
+    base, base_bins, _ = jitter_stream(500, seed=seed)
+    loop, inferred, starts = jitter_stream(400, seed=seed)
+    assert sum(map(_missed, inferred.values())) < sum(map(_missed, base_bins.values()))
+    assert sum(map(_missed, inferred.values())) == 0
+    for cid, bins in inferred.items():
+        assert len(bins) == len(set(bins)), "같은 카메라·촬영 칸을 두 번 추론했다"
+        assert all(b - a >= 400 for a, b in zip(starts[cid], starts[cid][1:]))
+        # 칸당 1회라 촬영 시각 기준 평균은 카메라당 2 Hz 이하다
+        assert len(bins) <= (bins[-1] - bins[0] + 1)
+    assert loop.diagnostics()["bins"]["per_camera_period_ms"] == 400
+
+
+def test_bins_missed_skips_person_absence_and_long_breaks():
+    mono = Clock(0)
+    loop, source, _gate, _det, _out, clock = make_loop(monotonic_ms=mono)
+
+    def tick(t, seq, *, people=True):
+        doc, images = shared(t, {"cam1": seq})
+        if not people:
+            doc["world"]["tracks"][0]["per_camera"] = []
+        source.value = (doc, images)
+        clock.t, mono.t = t + 30, t
+        loop.step()
+
+    tick(1000, 1)               # 칸 2
+    tick(2000, 2)               # 칸 4: 칸 3 을 건너뛰었다
+    tick(2500, 3, people=False)  # 사람 없음: 기준을 지운다
+    tick(4000, 4)               # 칸 8: 사람이 없던 사이는 세지 않는다
+    tick(7000, 5)               # 칸 14: 2초 넘는 끊김은 세지 않는다
+    assert loop.bin_stats["cam1"] == {"inferred_bins": 4, "bins_missed": 1}
+
+
+def test_inference_gap_below_floor_is_rejected():
+    with pytest.raises(ValueError):
+        make_loop(per_camera_period_ms=399)
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 500), ("", 500), ("450", 450), (" 400 ", 400)])
+def test_min_infer_gap_env(raw, expected):
+    from services.ppe.__main__ import min_infer_gap_ms
+    assert min_infer_gap_ms({} if raw is None else {"SIMAI_PPE_MIN_INFER_GAP_MS": raw}) == expected
+
+
+@pytest.mark.parametrize("raw", ["399", "501", "abc"])
+def test_min_infer_gap_env_out_of_range_fails_start(raw):
+    from services.ppe.__main__ import min_infer_gap_ms
+    with pytest.raises(ValueError):
+        min_infer_gap_ms({"SIMAI_PPE_MIN_INFER_GAP_MS": raw})
