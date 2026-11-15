@@ -49,7 +49,7 @@ def test_paced_file_without_pts_stays_below_tier0_uncertainty_limit(tmp_path, co
     ("[capture_time]\nuncertainty_no_pts_ms = 18\n", "", 18.0),
     ("[capture_time]\nuncertainty_no_pts_ms = 18\n",
      "capture_time = { uncertainty_no_pts_ms = 12 }\n", 12.0),
-    ("[capture_time]\nuncertainty_no_pts_ms = 45\n", "", 45.0),
+    # 실시간 파일에 Tier 0 허용(25 ms)을 넘는 값은 기동에서 거부한다(-721, test_replay_sidecar)
     ("", "realtime = false\n", 45.0),
 ])
 def test_file_uncertainty_defaults_and_explicit_overrides(tmp_path, common, camera, expected):

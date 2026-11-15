@@ -1,8 +1,17 @@
-# 녹화 파일 재생 예시(-353, -554). 파일 경로와 fps 를 실제 녹화에 맞춘다. 파일은 커밋하지 않는다.
+# 녹화 파일 재생 예시(-353, -554, -721). 파일 경로를 실제 녹화에 맞춘다. 파일은 커밋하지 않는다.
 # file 에는 세그먼트 파일(.../cam_A/epoch_NNNN.h264) 또는 녹화 세션 폴더(C:/simai-local/recordings/live-...)를 줄 수 있다.
-# 실시간 파일은 기본 timestamp_source = FILE, uncertainty_no_pts_ms = 20 이므로 capture_time 설정이 필요 없다.
-# 덮어쓰기: 공통 [capture_time] < 카메라별 capture_time. 명시한 값은 파일 기본값보다 우선한다.
-# RTSP example.toml 의 공통 uncertainty_no_pts_ms = 45 를 그대로 복사하지 않는다.
+#
+# 촬영 시각(-721): 카메라 4대를 같은 촬영 시각축으로 재생하려면 timing = "sidecar" 를 쓴다(기본 fps 는 설정 fps 로 고르게 내보내
+# 실제 카메라 24.94~24.98 fps 와 달라 10분에 0.6~0.8 s 어긋난다). 사이드카는 영상 옆 같은 이름 <이름>.frames.jsonl
+# (녹화 도구·--record-dir 가 남김) 또는 카메라별 sidecar = "..." 이다. 잘라 붙인 영상은 simai-relay sidecar-cut 으로 같은 구간의
+# 사이드카를 만든다(README 녹화 파일 재생 절). 사이드카가 없으면 WARNING 후 fps 재생이다.
+#
+# 불확실성: Tier 0 보간 허용은 25 ms 다. 실시간 파일(fps 재생)의 PTS 없음 기본은 20 ms 이고, 25 ms 를 넘게 설정하면 relay 가
+# 기동을 거부한다(모든 view 가 버려져 사람 0명이 조용히 나오기 때문). RTSP example.toml 의 uncertainty_no_pts_ms = 45 를 복사하지 않는다.
+# 일부러 넘기려면 [replay] allow_uncertainty_over_tier0 = true. 덮어쓰기 순서: 공통 [capture_time] < 카메라별 capture_time.
+
+[replay]
+timing = "sidecar"
 
 [[cameras]]
 camera_id = "cam_A"
@@ -11,7 +20,7 @@ file = "C:/path/to/cam_A.h264"
 realtime = true
 loop = true
 fps = 25
-# capture_time = { uncertainty_no_pts_ms = 20 }
+# sidecar = "C:/path/to/cam_A.frames.jsonl"   # 영상 옆 같은 이름이 아니면
 
 [[cameras]]
 camera_id = "cam_B"
