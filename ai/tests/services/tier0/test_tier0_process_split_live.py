@@ -83,7 +83,7 @@ def test_split_live_path_runs_from_h264_bytes_to_r1_judgment(tmp_path, scene) ->
         assert status["live_input"]["detector"]["mismatched"] == 0
         split = status["process_split"]
         assert split["healthy"] and split["restarts"] == 0 and split["out_of_order"] == 0 and split["ipc_dropped"] == 0
-        assert split["disabled"] == ["reid"]  # -738: 클립·배경 누적·이벤트 프레임은 검출 프로세스가 한다
+        assert split["disabled"] == []  # -738·-744: 클립·배경 누적·이벤트 프레임·Re-ID 는 검출 프로세스가 한다
         # 클립(-738): R1(HIGH, LIVE) 발생 전이가 클립 대상으로 검출 프로세스에 가고, 링 버퍼는 그쪽 영상 수신이 채운다
         assert ts.wait_until(lambda: getattr(service.clips.stats, "triggers", 0) >= 1, timeout=10), service.clips.stats
         assert service.clips.stats.cmd_dropped == 0

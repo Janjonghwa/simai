@@ -70,6 +70,8 @@ log = logging.getLogger("services.tier0.perception")
 DEFAULT_ARRIVAL_LAG_MS = 60
 DEFAULT_MAX_BACKLOG_MS = 500
 DEFAULT_MAX_QUEUED_OBSERVATIONS_PER_CAMERA = 8
+REID_FLUSH_TIMEOUT_S = 2.0
+"""file 입력에서 한 묶음의 Re-ID 임베딩을 기다리는 상한(-744). 넘으면 그 특징은 늦게 들어간다(결정론이 깨질 수 있어 계수)"""
 DEFAULT_AVATAR_SHARE_PERIOD_S = 0.2
 
 
@@ -378,8 +380,13 @@ class DetectorFeed:
                             self.stats.dropped_observations += 1
                         q.append(obs)
                     self._stepped = True
+                # file 입력(lockstep)은 크롭 제출·임베딩을 이 묶음 안에서 끝낸다(-744): 특징 도착이 스레드 시각에 달리지 않아 같은
+                # 녹화는 같은 Re-ID 결정을 낸다(분리 경로도 같은 지점에서 끝낸다). LIVE 는 판정을 기다리게 하지 않는다(아래 비동기)
+                if (not self.async_mode and self.reid_collector is not None and observations
+                        and getattr(self.reid_collector, "active", False)):
+                    self._submit_reid_now(observations, images)
                 # 관측을 먼저 공개해 보조 크롭 준비가 현재 판정을 지연시키지 않게 한다.
-                if self.reid_collector is not None and observations:
+                elif self.reid_collector is not None and observations:
                     for obs in observations:
                         key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
                         frame_obj = images.get(key)
@@ -400,6 +407,20 @@ class DetectorFeed:
             finally:
                 with self._lock:
                     self._in_flight -= 1
+
+    def _submit_reid_now(self, observations: Sequence[Observation2DFrame], images: Mapping[Any, Frame]) -> None:
+        collector = self.reid_collector
+        try:
+            with self.timing.measure("reid_submit", sum(len(o.detections) for o in observations)):
+                for obs in observations:
+                    key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
+                    frame_obj = images.get(key)
+                    if frame_obj is not None:
+                        collector.submit_observation(frame_obj, obs)
+                if not collector.flush(REID_FLUSH_TIMEOUT_S):
+                    self.reid_submission_dropped += 1  # 상한 안에 못 끝냄: 그 특징은 다음 묶음 뒤에 들어간다
+        except Exception:
+            log.debug("Re-ID 특징 수집 요청 실패(판정은 계속한다)", exc_info=True)
 
     def _submit_reid(self) -> None:
         while not self._reid_stop.is_set():

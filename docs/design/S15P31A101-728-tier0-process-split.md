@@ -158,7 +158,7 @@ out_of_order·dropped_observations).
 
 ## 9. 남은 일(기본값을 켜기 전)
 
-1~3 은 S15P31A101-738 에서 끝내고 기본을 켰다(`S15P31A101-738-split-side-work.md`). 4~6 은 남았다.
+1~3 은 S15P31A101-738 에서 끝내고 기본을 켰다(`S15P31A101-738-split-side-work.md`). 4 는 S15P31A101-744(`S15P31A101-744-split-reid.md`). 5·6 은 남았다.
 
 1. 이벤트 클립 링 버퍼를 검출 프로세스로: 판정 쪽 `EventClipService` 의 트리거·poll 을 명령으로 보내고, 링 버퍼·업로드는 검출 프로세스가 한다.
 2. 이벤트 프레임(CRITICAL R1~R4): 프레임 버퍼·JPEG·S3 PUT 은 검출 프로세스, 결과 `event_frame` 메시지는 판정 프로세스의 I1 로(msg_id·순서는 판정 쪽).
