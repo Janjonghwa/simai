@@ -22,6 +22,12 @@ UNKNOWN 사유(S15P31A101-729, ppe-policy-0.5.0): ID 초기화 사유(IDENTITY_R
 보이고, 그 뒤 칸부터는 그 칸의 사유(표본 없음·쌓는 중·ID 불확실 등)로 바꾼다. 확정 전까지 남겨 두면 뒤의 실제 원인을 가린다(2026-11-13
 로비 실측: 진입 53회가 UNKNOWN 2,297행을 차지). 초기화 횟수는 identity_events(revision_reset·mapping_reset)에 남는다. 반대 근거·카메라
 충돌(CONTRARY_EVIDENCE·CROSS_CAMERA_CONFLICT)은 지금처럼 다시 확정될 때까지 남긴다. 사유만 바뀌고 상태·창·만료 판정은 같다.
+
+local ID 다툼(S15P31A101-769, ppe-policy-0.8.0): ID 가 불확실한 사람(대개 막 생긴 임시 ID)이 다른 ID 의 local ID 를 가져가면
+주인 변경으로 보지 않는다. 주인 기록은 그대로 두고 다툼(contested)으로 적으며 아무도 초기화하지 않는다(불확실한 사람의 표본은
+원래 쓰지 않는다). 결론은 이렇게 낸다. 원래 주인이 그 local ID 를 다시 가져가거나, 가져간 ID 가 원래 주인에게 순수 병합되면
+다툼만 지운다. 가져간 ID 가 그 local ID 를 쥔 채로 확실해지거나 다른 ID 에 병합되면 지금처럼 두 ID 를 초기화한다(진짜 주인 변경).
+2026-11-16 로비 실측: 주인 변경 초기화 14회 중 13회가 불확실한 임시 ID 탄생 ±1초였고, 임시 ID 51개 중 38개는 끝까지 불확실했다.
 """
 
 from __future__ import annotations
@@ -49,6 +55,8 @@ from .association import (
 )
 from .config import DEFAULT_CONFIG, PpeConfig
 from simai_ai.tracking.identity_carry import pure_merge_absorbed
+
+LocalKey = tuple[str, int, str]   # (카메라, stream_epoch, local_track_id)
 
 # 칸(500 ms) 결과
 B_WORN, B_NOT_WORN, B_CONFLICT, B_UNKNOWN, B_EMPTY = "WORN", "NOT_WORN", "CONFLICT", "UNKNOWN", "EMPTY"
@@ -125,7 +133,9 @@ class PpeJudge:
         self.cfg = cfg
         self.tracks: dict[str, TrackState] = {}
         self.camera_epoch: dict[str, int] = {}
-        self.local_owner: dict[tuple[str, int, str], tuple[str, int]] = {}
+        self.local_owner: dict[LocalKey, tuple[str, int]] = {}
+        # 불확실한 ID 가 다른 ID 의 local ID 를 가져간 다툼: local ID → (가져간 ID, 원래 주인). 주인 기록은 바꾸지 않는다(S15P31A101-769)
+        self.contested: dict[LocalKey, tuple[str, str]] = {}
         self.dropped: dict[str, int] = {}
         self.retired: dict[str, tuple[str, int]] = {}   # 병합으로 흡수된 ID → (남는 ID, 본 촬영 시각). 다시 오면 버린다
         self.identity_events: dict[str, int] = {}   # 계측(판정에 쓰지 않음): 차수 상승 초기화·승계, local ID 주인 변경 초기화 수
@@ -145,6 +155,7 @@ class PpeJudge:
         if known is not None and epoch > known:
             # 새 stream_epoch: 그 카메라의 local ID 주인 기록은 무효(Local Tracker 가 새로 시작)
             self.local_owner = {k: v for k, v in self.local_owner.items() if k[0] != cid}
+            self.contested = {k: v for k, v in self.contested.items() if k[0] != cid}
         self.camera_epoch[cid] = epoch
         b = t // self.cfg.bin_ms
         if self.last_closed_bin is not None and b <= self.last_closed_bin:
@@ -196,17 +207,7 @@ class PpeJudge:
                         item.reason = R_IDENTITY_UNCERTAIN
             elif track.uncertain_since is not None and t > track.uncertain_since:
                 track.uncertain_since, track.uncertain_reset = None, False
-            key = (cid, epoch, p.local_track_id)
-            owner = self.local_owner.get(key)
-            # 흡수된 ID → 남는 ID 로의 이어받기는 주인 변경이 아니다(S15P31A101-661)
-            if owner is not None and owner[0] != p.world_id and owner[0] not in track.aliases \
-                    and t - owner[1] <= self.cfg.mapping_ttl_ms:
-                self._reset(track, R_MAPPING_CHANGED, b)
-                self._count("mapping_reset")
-                if owner[0] in self.tracks:
-                    self._reset(self.tracks[owner[0]], R_MAPPING_CHANGED, b)
-                    self._count("mapping_reset")
-            self.local_owner[key] = (p.world_id, t)
+            self._claim(track, (cid, epoch, p.local_track_id), t, b, uncertain)
             track.last_seen_ms = max(track.last_seen_ms, t)
             if not uncertain:   # 불확실한 프레임의 표본은 창에도 근거에도 넣지 않는다
                 accepted.add(p.world_id)
@@ -223,6 +224,46 @@ class PpeJudge:
                 self._drop("SECOND_SAMPLE_SAME_CAMERA_BIN")   # 칸당 카메라 1표본(카메라당 2 Hz 상한과 같은 뜻)
                 continue
             per_bin.append(s)
+
+    # ---- local ID 주인(S15P31A101-769) --------------------------------------------------------------
+    def _claim(self, track: TrackState, key: LocalKey, t: int, b: int, uncertain: bool) -> None:
+        """이 프레임에서 track 이 local ID(key)를 쓴다. 주인 변경이면 두 ID 를 초기화하고, 불확실한 사람이면 다툼으로만 적는다."""
+        wid = track.world_id
+        contest = self.contested.get(key)
+        if contest is not None and contest[0] != wid:
+            if contest[1] == wid:
+                del self.contested[key]   # 원래 주인이 되찾았다: 다툼만 지운다
+                self._count("mapping_contest_cleared")
+                contest = None
+            elif not uncertain:
+                del self.contested[key]   # 제3의 확실한 ID: 아래 주인 변경 규칙으로 본다
+                contest = None
+        if contest is not None and contest[0] == wid:   # 이 ID 가 다투는 중
+            if uncertain:
+                return
+            # 쥔 채로 확실해졌다: 진짜 주인 변경
+            del self.contested[key]
+            self._reset_pair(track, contest[1], b)
+            self.local_owner[key] = (wid, t)
+            return
+        owner = self.local_owner.get(key)
+        # 흡수된 ID → 남는 ID 로의 이어받기는 주인 변경이 아니다(S15P31A101-661)
+        foreign = owner is not None and owner[0] != wid and owner[0] not in track.aliases \
+            and t - owner[1] <= self.cfg.mapping_ttl_ms
+        if foreign and uncertain and self.cfg.uncertain_claim_contests:
+            self.contested[key] = (wid, owner[0])   # 주인 기록은 그대로 둔다
+            self._count("mapping_contested")
+            return
+        if foreign:
+            self._reset_pair(track, owner[0], b)
+        self.local_owner[key] = (wid, t)
+
+    def _reset_pair(self, track: TrackState, other: str, b: int) -> None:
+        self._reset(track, R_MAPPING_CHANGED, b)
+        self._count("mapping_reset")
+        if other in self.tracks and other != track.world_id:
+            self._reset(self.tracks[other], R_MAPPING_CHANGED, b)
+            self._count("mapping_reset")
 
     def _drop(self, reason: str) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + 1
@@ -246,6 +287,17 @@ class PpeJudge:
                 survivor.items[name] = _carry_item(dst, src.items[name], b)
             survivor.skipped_bins |= src.skipped_bins
             survivor.last_seen_ms = max(survivor.last_seen_ms, src.last_seen_ms)
+        # 흡수된 ID 가 다투던 local ID: 원래 주인에게 병합되면 다툼만 지우고, 다른 ID 에 병합되면 진짜 주인 변경이다(S15P31A101-769)
+        same = {survivor.world_id, *survivor.aliases, *absorbed}
+        for k, (claimant, orig) in list(self.contested.items()):
+            if claimant not in absorbed:
+                continue
+            del self.contested[k]
+            if orig in same:
+                self._count("mapping_contest_cleared")
+            else:
+                self._reset_pair(survivor, orig, b)
+                self.local_owner[k] = (survivor.world_id, t)
 
     def _reset(self, track: TrackState, reason: str, start_bin: int) -> None:
         for item in track.items.values():
@@ -307,6 +359,8 @@ class PpeJudge:
                         for name, item in track.items.items()}
             # 창 범위보다 오래된 건너뜀 칸은 더 볼 일이 없다
             track.skipped_bins = {k for k in track.skipped_bins if k > last_closed - cfg.window_span_bins}
+        # 가져간 ID 가 병합 없이 사라졌으면(보존 시간 경과) 다툼을 지운다. 원래 주인 기록은 그대로다
+        self.contested = {k: v for k, v in self.contested.items() if v[0] in self.tracks}
         return out
 
     def _evaluate_item(self, item: ItemState, skipped: set[int], last_closed: int, now_ms: int) -> ItemView:

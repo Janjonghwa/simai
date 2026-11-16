@@ -733,7 +733,7 @@ def test_contrary_reason_still_stays_until_confirmed():
 
 def test_policy_version_marks_current_rules():
     from simai_ai.ppe.config import POLICY_VERSION
-    assert POLICY_VERSION == "ppe-policy-0.7.0"
+    assert POLICY_VERSION == "ppe-policy-0.8.0"
 
 
 # ---- 머리 폭 하한 = 어깨 폭 × 0.6 (S15P31A101-737, ppe-policy-0.6.0) ----------------------------------------------
@@ -774,3 +774,85 @@ def test_without_both_shoulders_head_scale_stays_face_based():
     p = _narrow_face(shoulder_conf=0.1)
     assert pa.head_region(p.keypoints_2d, IMAGE).scale == pytest.approx(15.0)
     assert _helmet_reason(p, [HELMET()]) == (pa.S_NONE, pa.R_NO_DETECTION)
+
+
+# ---- 불확실한 ID 의 local ID 차지는 다툼(S15P31A101-769, ppe-policy-0.8.0) ----------------------------------------------
+def _w1_worn_on_two_cams():
+    """w1 이 cam1 local 7·cam2 local 9 로 WORN 확정."""
+    j = PpeJudge()
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7")], [HELMET()])
+        feed(j, "cam2", t_of(b, 40), [person("w1", local="9")], [HELMET()])
+    assert state(j, closed_after(5)).state == "WORN"
+    return j
+
+
+def _temp_takes_cam1(j, bins, wid="t1"):
+    """불확실한 임시 ID 가 cam1 local 7 을 가져가고, w1 은 cam2 로 계속 보인다."""
+    for b in bins:
+        feed(j, "cam1", t_of(b), [person(wid, local="7", ident="IDENTITY_UNCERTAIN")], [HELMET()])
+        feed(j, "cam2", t_of(b, 40), [person("w1", local="9")], [HELMET()])
+
+
+def test_uncertain_temp_id_taking_local_id_does_not_reset_owner():
+    j = _w1_worn_on_two_cams()
+    _temp_takes_cam1(j, range(6, 9))
+    v = state(j, closed_after(8))
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+    assert j.identity_events.get("mapping_reset") is None and j.identity_events.get("mapping_contested") == 1
+    assert j.local_owner[("cam1", 0, "7")][0] == "w1"   # 주인 기록은 그대로
+
+
+def test_owner_reclaiming_contested_local_id_clears_contest_without_reset():
+    j = _w1_worn_on_two_cams()
+    _temp_takes_cam1(j, range(6, 8))
+    feed(j, "cam1", t_of(8), [person("w1", local="7")], [HELMET()])
+    v = state(j, closed_after(8))
+    assert (v.state, j.contested) == ("WORN", {})
+    assert j.identity_events.get("mapping_contest_cleared") == 1 and j.identity_events.get("mapping_reset") is None
+
+
+def test_temp_id_merged_back_into_owner_clears_contest():
+    j = _w1_worn_on_two_cams()
+    _temp_takes_cam1(j, range(6, 8))
+    feed(j, "cam1", t_of(8), [merged("w1", aliases=("t1",), local="7")], [HELMET()])
+    v = state(j, closed_after(8))
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+    assert j.contested == {} and j.identity_events.get("mapping_reset") is None
+
+
+def test_temp_id_becoming_certain_while_holding_local_id_resets_both():
+    j = _w1_worn_on_two_cams()
+    _temp_takes_cam1(j, range(6, 8))
+    feed(j, "cam1", t_of(8), [person("t1", local="7")], [HELMET()])   # 쥔 채로 확실해졌다
+    views = j.evaluate(closed_after(8))
+    assert views["w1"]["helmet"].state == "UNKNOWN" and views["w1"]["helmet"].reason == ps.R_MAPPING_CHANGED
+    assert j.identity_events.get("mapping_reset") == 2 and j.local_owner[("cam1", 0, "7")][0] == "t1"
+
+
+def test_contested_temp_id_merged_into_other_person_resets_both():
+    """임시 ID 가 w1 의 local ID 를 가져갔다가 다른 사람 w2 에 병합되면 진짜 주인 변경이다."""
+    j = _w1_worn_on_two_cams()
+    for b in range(6, 8):
+        feed(j, "cam1", t_of(b), [person("t1", local="7", ident="IDENTITY_UNCERTAIN"),
+                                  person("w2", 900, local="8")], [HELMET(), HELMET(900)])
+    feed(j, "cam1", t_of(8), [merged("w2", cx=500, rev=1, aliases=("t1",), local="7")], [HELMET()])
+    views = j.evaluate(closed_after(8))
+    for wid in ("w1", "w2"):
+        assert (views[wid]["helmet"].state, views[wid]["helmet"].reason) == ("UNKNOWN", ps.R_MAPPING_CHANGED)
+    assert j.contested == {}
+
+
+def test_contest_disappears_with_vanished_temp_id():
+    j = _w1_worn_on_two_cams()
+    _temp_takes_cam1(j, range(6, 7))
+    j.evaluate(t_of(7) + j.cfg.track_retention_ms + 1)
+    assert j.contested == {}
+
+
+def test_contest_flag_off_restores_immediate_reset():
+    j = PpeJudge(dataclasses.replace(pa.DEFAULT_CONFIG, uncertain_claim_contests=False))
+    for b in range(6):
+        feed(j, "cam1", t_of(b), [person("w1", local="7")], [HELMET()])
+    feed(j, "cam1", t_of(6), [person("t1", local="7", ident="IDENTITY_UNCERTAIN")], [HELMET()])
+    assert state(j, closed_after(6)).reason == ps.R_MAPPING_CHANGED
