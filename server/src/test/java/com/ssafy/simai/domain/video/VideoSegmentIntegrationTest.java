@@ -56,6 +56,8 @@ class VideoSegmentIntegrationTest {
     private static final Path EXAMPLES = Path.of(System.getProperty("simai.contracts.dir", "../contracts"), "examples");
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     private static final String SHA = "a".repeat(64);
+    /** 실제 중계 epoch(세션 시작 UTC ms, int32 초과). 작은 값만 쓰면 int 가정이 시험을 통과한다 */
+    private static final long RELAY_EPOCH = 1_794_801_615_041L;
 
     @LocalServerPort
     int port;
@@ -105,6 +107,8 @@ class VideoSegmentIntegrationTest {
         // 발급은 쓰인 것으로 표시된다(삭제 작업이 고아 객체로 지우지 않게)
         assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE used_at IS NOT NULL AND object_key IN (?, ?)",
                 Integer.class, key(a), key(b))).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT stream_epochs[1] FROM video_segment WHERE segment_id = ?", Long.class, first))
+                .isEqualTo(RELAY_EPOCH);
 
         // 구간이 걸치는 조각: 시작이 from 보다 이른 첫 조각도 끝이 from 뒤라 나온다
         JsonNode list = call("/api/videos?from=" + (baseMs + 30_000) + "&to=" + (baseMs + 70_000) + "&camera_id=" + camera,
@@ -242,6 +246,7 @@ class VideoSegmentIntegrationTest {
         p.put("segment_id", segmentId.toString());
         p.put("gateway_id", gatewayId);
         p.put("camera_id", camera);
+        p.putArray("stream_epochs").add(RELAY_EPOCH);
         p.put("segment_start_capture_ms", startMs);
         p.put("segment_end_capture_ms", endMs);
         p.put("size_bytes", grantedSize(objectKey));
