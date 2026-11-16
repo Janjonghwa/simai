@@ -1,7 +1,8 @@
-"""JSON-compatible coverage_guide 1.0.0/1.1.0/1.2.0 messages; no images or keypoint arrays.
+"""JSON-compatible coverage_guide 1.0.0~1.3.0 messages; no images or keypoint arrays.
 
 1.1.0 (S15P31A101-712) adds the optional reuse_view_check summary (status/reason/counts only).
-1.2.0 (S15P31A101-714) adds reuse_view_checks: one summary per candidate map (EC2 reuse_references)."""
+1.2.0 (S15P31A101-714) adds reuse_view_checks: one summary per candidate map (EC2 reuse_references).
+1.3.0 (S15P31A101-761) adds stage_a_readiness: side-pair (A–B, B–C, C–D, D–A) readiness for setup Stage A."""
 
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ class CameraFrame:
 def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame],
                   pairs: list[PairMetrics], judge: CoverageJudge, *, ttl_ms: int = 10_000,
                   stale_ms: int = DEFAULT_STALE_MS, reuse_view_check: dict | None = None,
-                  reuse_view_checks: list[dict] | None = None) -> dict:
+                  reuse_view_checks: list[dict] | None = None, stage_a: bool = True) -> dict:
     if not source_id or computed_at_ms < 0 or ttl_ms <= 0:
         raise ValueError("source_id, nonnegative UTC milliseconds, and positive TTL are required")
     if len(cameras) != 4 or {c.camera_id for c in cameras} != set(CAMERAS):
@@ -44,6 +45,9 @@ def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame
     pair_records = []
     for pair in accepted:
         record = asdict(pair)
+        # 칸 수는 stage_a_readiness 에만 싣는다(pair_match_item 은 닫힌 객체)
+        record.pop("cells_a", None)
+        record.pop("cells_b", None)
         record.update(grade=grades[(pair.a, pair.b)], inlier_ratio=pair.inlier_ratio)
         for key in ("centroid_a", "centroid_b"):
             record[key] = list(record[key]) if record[key] is not None else None
@@ -58,4 +62,7 @@ def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame
     if reuse_view_checks:
         message["schema_version"] = "1.2.0"
         message["reuse_view_checks"] = list(reuse_view_checks)
+    if stage_a:
+        message["schema_version"] = "1.3.0"
+        message["stage_a_readiness"] = judge.readiness.summary(judge.stage_a)
     return message

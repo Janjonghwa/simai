@@ -99,7 +99,7 @@ def idle_message(source_id: str, now_ms: int) -> dict:
     judge = CoverageJudge(params)
     cameras = [CameraFrame(cid, None, has_video=False) for cid in CAMERAS]
     pairs = [PairMetrics(a, b) for a, b in PAIRS]
-    return build_message(source_id, now_ms, cameras, pairs, judge)
+    return build_message(source_id, now_ms, cameras, pairs, judge, stage_a=False)
 
 
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -151,6 +151,8 @@ class Client:
         self._reference_lock = threading.Lock()
         self._reference: dict | None = None
         self._references: list[dict] | None = None
+        self.last_error_status: int | None = None
+        """마지막 결과 전송이 받은 HTTP 오류 코드(성공하면 None). 옛 EC2 의 1.3.0 거부(400)를 알아본다(S15P31A101-761)"""
 
     def note_response(self, res) -> None:
         """수요가 실린 응답(GET 수요·POST 결과)이면 재사용 기준을 그 값으로 바꾼다(없으면 비운다)."""
@@ -202,7 +204,12 @@ class Client:
         return res.get("active_demand") is True
 
     def post(self, message: dict) -> dict:
-        res = self.request(GUIDES_PATH, message)
+        try:
+            res = self.request(GUIDES_PATH, message)
+        except urllib.error.HTTPError as err:
+            self.last_error_status = err.code
+            raise
+        self.last_error_status = None
         self.note_response(res)
         return res
 
@@ -397,11 +404,14 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     viewer = ViewChecker()
     viewers = MultiViewChecker()
     last_timestamps: dict[str, int] | None = None
+    # 옛 EC2 는 coverage_guide 1.3.0(stage_a_readiness)을 계약 검사로 거부한다(400). 그러면 이번 수요 동안은 싣지 않고 보낸다(-761)
+    send_stage_a = True
     try:
         while not stop_event.wait(0.5):
             if not active.is_set():
                 judge = None
                 last_timestamps = None
+                send_stage_a = True
                 continue
             snapshot = frames.snapshot()
             if set(snapshot) != set(CAMERAS):
@@ -435,6 +445,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
             round_ts_ms = max(time.time_ns() // 1_000_000, max(timestamps.values()))
             outcome = "failed"
             grades = ["UNKNOWN"] * len(PAIRS)
+            stage_a = None
             progress.phase("matching")
             match_started = time.monotonic()
             match_ms = None
@@ -459,12 +470,14 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     stale_ms=stale_ms,
                     reuse_view_check=view,
                     reuse_view_checks=views,
+                    stage_a=send_stage_a,
                 )
                 if view is not None:
                     LOG.info("reuse view %s", describe(view))
                 for one in views or []:
                     LOG.info("reuse view %s %s", one["scene_version"], describe(one))
                 grades = [p["grade"] for p in message["pairs"]]
+                stage_a = judge.stage_a
                 progress.phase("posting")
                 sent = retry_post(client, message, active.is_set, sleep=stop_event.wait,
                                   on_demand=apply_demand)
@@ -472,11 +485,14 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     outcome = "ok"
                 elif time.time_ns() // 1_000_000 >= message["valid_until_ms"]:
                     outcome = "expired"
+                if not sent and send_stage_a and getattr(client, "last_error_status", None) == 400:
+                    send_stage_a = False
+                    LOG.warning("EC2 rejected coverage_guide 1.3.0; sending without stage_a_readiness until demand ends")
             finally:
                 if match_ms is None:
                     match_ms = int((time.monotonic() - match_started) * 1000)
                 progress.finished(outcome)
-                log_round(round_ts_ms, match_ms, timestamps, grades, outcome)
+                log_round(round_ts_ms, match_ms, timestamps, grades, outcome, stage_a)
     finally:
         stop_event.set()
 

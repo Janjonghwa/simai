@@ -234,6 +234,18 @@ class InlierRatio(RootModel[StrictFloat]):
     root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
 
 
+class CellsA(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=256)]
+
+
+class CellsB(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=256)]
+
+
+class GridItem(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=1, le=16)]
+
+
 class Matches(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0)]
 
@@ -3667,6 +3679,36 @@ class CoverageGuidePairMatchItem(BaseModel):
     centroid_b: CoverageGuideNormalizedPoint | None
 
 
+class CoverageGuideStageAPair(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    a: DefsCameraId
+    b: DefsCameraId
+    status: Literal['READY', 'CONFIRMING', 'UNSTABLE', 'SHORT', 'UNKNOWN']
+    inliers: Inliers | None
+    cells_a: CellsA | None
+    cells_b: CellsB | None
+    shortfall: Annotated[
+        list[Literal['FEW_INLIERS', 'LOW_RATIO', 'CLUSTERED']], Field(max_length=3)
+    ]
+    sufficient_rounds: Annotated[StrictInt, Field(ge=0)]
+    observed_rounds: Annotated[StrictInt, Field(ge=0)]
+
+
+class CoverageGuideStageAReadiness(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    min_inliers: Annotated[StrictInt, Field(ge=1)]
+    min_inlier_ratio: Annotated[StrictFloat, Field(gt=0.0, le=1.0)]
+    grid: Annotated[list[GridItem], Field(max_length=2, min_length=2)]
+    min_cell_inliers: Annotated[StrictInt, Field(ge=1)]
+    min_cells: Annotated[StrictInt, Field(ge=1)]
+    window_rounds: Annotated[StrictInt, Field(ge=2, le=30)]
+    pairs: Annotated[list[CoverageGuideStageAPair], Field(max_length=4, min_length=4)]
+
+
 class CoverageGuideViewCheckItem(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -5682,7 +5724,7 @@ class CoverageGuide(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0.0', '1.1.0', '1.2.0']
+    schema_version: Literal['1.0.0', '1.1.0', '1.2.0', '1.3.0']
     source_id: DefsInstanceId
     computed_at_ms: DefsTimestampMs
     valid_until_ms: DefsTimestampMs
@@ -5701,6 +5743,7 @@ class CoverageGuide(BaseModel):
     reuse_view_checks: Annotated[
         list[CoverageGuideReuseViewCheck] | MISSING, Field(max_length=5, min_length=1)
     ] = MISSING
+    stage_a_readiness: CoverageGuideStageAReadiness | MISSING = MISSING
 
 
 class HumanMeshOutput1(HumanMeshOutputAvatarAsset):

@@ -230,14 +230,14 @@ class ViewCheckTest(unittest.TestCase):
         msg = build_message(
             "gw-lobby", 1_793_690_000_000, [CameraFrame(cid, 1_793_689_999_000) for cid in CAMERAS],
             [PairMetrics(a, b, 120, 45, (0.5, 0.5), (0.5, 0.5)) for a, b in PAIRS],
-            CoverageJudge(Params()), reuse_view_check=view,
+            CoverageJudge(Params()), reuse_view_check=view, stage_a=False,
         )
         self.assertEqual(msg["schema_version"], "1.1.0")
         validate_coverage_guide_schema(msg)
         self.assertIn("C\":\"C:ROTATED", describe(view))
         plain = build_message(
             "gw-lobby", 1_793_690_000_000, [CameraFrame(cid, 1_793_689_999_000) for cid in CAMERAS],
-            [PairMetrics(a, b) for a, b in PAIRS], CoverageJudge(Params()),
+            [PairMetrics(a, b) for a, b in PAIRS], CoverageJudge(Params()), stage_a=False,
         )
         self.assertEqual(plain["schema_version"], "1.0.0")
         self.assertNotIn("reuse_view_check", plain)
@@ -294,11 +294,20 @@ class MultiViewCheckTest(unittest.TestCase):
         msg = build_message(
             "gw-lobby", 1_793_690_000_000, [CameraFrame(cid, 1_793_689_999_000) for cid in CAMERAS],
             [PairMetrics(a, b, 120, 45, (0.5, 0.5), (0.5, 0.5)) for a, b in PAIRS],
-            CoverageJudge(Params()), reuse_view_checks=views,
+            CoverageJudge(Params()), reuse_view_checks=views, stage_a=False,
         )
         self.assertEqual(msg["schema_version"], "1.2.0")
         self.assertNotIn("reuse_view_check", msg)
         validate_coverage_guide_schema(msg)
+        # 1.3.0(S15P31A101-761): Stage A 기준을 함께 실어도 후보 맵 목록은 그대로 계약에 맞는다
+        both = build_message(
+            "gw-lobby", 1_793_690_000_000, [CameraFrame(cid, 1_793_689_999_000) for cid in CAMERAS],
+            [PairMetrics(a, b, 120, 45, (0.5, 0.5), (0.5, 0.5)) for a, b in PAIRS],
+            CoverageJudge(Params()), reuse_view_checks=views,
+        )
+        self.assertEqual(both["schema_version"], "1.3.0")
+        self.assertIn("stage_a_readiness", both)
+        validate_coverage_guide_schema(both)
 
 
 class ServiceWiringTest(unittest.TestCase):

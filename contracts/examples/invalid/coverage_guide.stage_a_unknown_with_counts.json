@@ -1,0 +1,255 @@
+{
+  "_comment": "S15P31A101-761 반례: 측정이 없는(UNKNOWN) 쌍은 inliers·칸 수가 null 이어야 한다",
+  "schema_version": "1.3.0",
+  "source_id": "gw-lobby",
+  "computed_at_ms": 1793690009000,
+  "valid_until_ms": 1793690019000,
+  "capture_skew_ms": 840,
+  "params": {
+    "image_width_px": 1024,
+    "max_keypoints": 2048,
+    "ransac_threshold_px": 2.0,
+    "enough_min_inliers": 30,
+    "weak_min_inliers": 15,
+    "min_inlier_ratio": 0.1,
+    "intrinsics_source": "STORED"
+  },
+  "cameras": [
+    {
+      "camera_id": "cam_A",
+      "status": "OK",
+      "frame_ts_ms": 1793690009000
+    },
+    {
+      "camera_id": "cam_B",
+      "status": "OK",
+      "frame_ts_ms": 1793690008720
+    },
+    {
+      "camera_id": "cam_C",
+      "status": "OK",
+      "frame_ts_ms": 1793690008440
+    },
+    {
+      "camera_id": "cam_D",
+      "status": "OK",
+      "frame_ts_ms": 1793690008160
+    }
+  ],
+  "pairs": [
+    {
+      "a": "cam_A",
+      "b": "cam_B",
+      "raw_matches": 249,
+      "inliers": 135,
+      "centroid_a": [
+        0.62,
+        0.55
+      ],
+      "centroid_b": [
+        0.31,
+        0.58
+      ],
+      "grade": "ENOUGH",
+      "inlier_ratio": 0.5421686746987951
+    },
+    {
+      "a": "cam_A",
+      "b": "cam_C",
+      "raw_matches": 52,
+      "inliers": 4,
+      "centroid_a": null,
+      "centroid_b": null,
+      "grade": "LACK",
+      "inlier_ratio": 0.07692307692307693
+    },
+    {
+      "a": "cam_A",
+      "b": "cam_D",
+      "raw_matches": 148,
+      "inliers": 72,
+      "centroid_a": [
+        0.28,
+        0.51
+      ],
+      "centroid_b": [
+        0.69,
+        0.49
+      ],
+      "grade": "ENOUGH",
+      "inlier_ratio": 0.4864864864864865
+    },
+    {
+      "a": "cam_B",
+      "b": "cam_C",
+      "raw_matches": 160,
+      "inliers": 52,
+      "centroid_a": [
+        0.7,
+        0.52
+      ],
+      "centroid_b": [
+        0.3,
+        0.55
+      ],
+      "grade": "ENOUGH",
+      "inlier_ratio": 0.325
+    },
+    {
+      "a": "cam_B",
+      "b": "cam_D",
+      "raw_matches": 40,
+      "inliers": 3,
+      "centroid_a": null,
+      "centroid_b": null,
+      "grade": "LACK",
+      "inlier_ratio": 0.075
+    },
+    {
+      "a": "cam_C",
+      "b": "cam_D",
+      "raw_matches": 120,
+      "inliers": 41,
+      "centroid_a": [
+        0.86,
+        0.8
+      ],
+      "centroid_b": [
+        0.12,
+        0.77
+      ],
+      "grade": "ENOUGH",
+      "inlier_ratio": 0.3416666666666667
+    }
+  ],
+  "connectivity": "CONNECTED",
+  "components": [
+    [
+      "cam_A",
+      "cam_B",
+      "cam_C",
+      "cam_D"
+    ]
+  ],
+  "guides": [
+    {
+      "camera_id": "cam_A",
+      "pair": [
+        "cam_A",
+        "cam_C"
+      ],
+      "direction": "NONE",
+      "magnitude": "MORE",
+      "reason_code": "NO_OVERLAP_VISIBLE"
+    },
+    {
+      "camera_id": "cam_B",
+      "pair": [
+        "cam_B",
+        "cam_C"
+      ],
+      "direction": "RIGHT",
+      "magnitude": "SMALL",
+      "reason_code": "OPTIONAL_IMPROVE"
+    },
+    {
+      "camera_id": "cam_C",
+      "pair": [
+        "cam_B",
+        "cam_C"
+      ],
+      "direction": "LEFT",
+      "magnitude": "SMALL",
+      "reason_code": "OPTIONAL_IMPROVE"
+    },
+    {
+      "camera_id": "cam_B",
+      "pair": [
+        "cam_B",
+        "cam_D"
+      ],
+      "direction": "NONE",
+      "magnitude": "MORE",
+      "reason_code": "NO_OVERLAP_VISIBLE"
+    },
+    {
+      "camera_id": "cam_C",
+      "pair": [
+        "cam_C",
+        "cam_D"
+      ],
+      "direction": "RIGHT",
+      "magnitude": "SMALL",
+      "reason_code": "OPTIONAL_IMPROVE"
+    },
+    {
+      "camera_id": "cam_D",
+      "pair": [
+        "cam_C",
+        "cam_D"
+      ],
+      "direction": "LEFT",
+      "magnitude": "SMALL",
+      "reason_code": "OPTIONAL_IMPROVE"
+    }
+  ],
+  "stage_a_readiness": {
+    "min_inliers": 60,
+    "min_inlier_ratio": 0.1,
+    "grid": [
+      4,
+      4
+    ],
+    "min_cell_inliers": 2,
+    "min_cells": 4,
+    "window_rounds": 4,
+    "pairs": [
+      {
+        "a": "cam_A",
+        "b": "cam_B",
+        "status": "READY",
+        "inliers": 135,
+        "cells_a": 7,
+        "cells_b": 6,
+        "shortfall": [],
+        "sufficient_rounds": 4,
+        "observed_rounds": 4
+      },
+      {
+        "a": "cam_B",
+        "b": "cam_C",
+        "status": "UNSTABLE",
+        "inliers": 52,
+        "cells_a": 5,
+        "cells_b": 4,
+        "shortfall": [
+          "FEW_INLIERS"
+        ],
+        "sufficient_rounds": 3,
+        "observed_rounds": 4
+      },
+      {
+        "a": "cam_C",
+        "b": "cam_D",
+        "status": "UNKNOWN",
+        "inliers": 41,
+        "cells_a": 2,
+        "cells_b": 3,
+        "shortfall": [],
+        "sufficient_rounds": 0,
+        "observed_rounds": 0
+      },
+      {
+        "a": "cam_A",
+        "b": "cam_D",
+        "status": "READY",
+        "inliers": 72,
+        "cells_a": 5,
+        "cells_b": 5,
+        "shortfall": [],
+        "sufficient_rounds": 4,
+        "observed_rounds": 4
+      }
+    ]
+  }
+}

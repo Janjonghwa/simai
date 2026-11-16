@@ -67,7 +67,7 @@ def test_service_round_logs_actual_outcome_and_configured_freshness(monkeypatch,
     rounds = [r.getMessage() for r in caplog.records if r.getMessage().startswith("guide round ")]
     assert len(rounds) == 1
     expected = "failed" if outcome in ("match_error", "demand_off") else outcome
-    assert rounds[0].endswith(f"send={expected}")
+    assert f" send={expected}" in rounds[0]
     assert "frame_age_ms=[cam_A:5500 cam_B:5500 cam_C:5500 cam_D:5500]" in rounds[0]
     assert "match_ms=" in rounds[0]
     assert "grades=[U U U U U U]" in rounds[0]  # First round retains existing grade hysteresis.
