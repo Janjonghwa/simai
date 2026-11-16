@@ -23,6 +23,12 @@
   카메라가 관측되면 판정한다. 필수 쌍이 끝내 근거를 못 채우면 `max_duration_ms` 뒤에 판정하되 이때 '확인 필요' 쌍과 관측되지 않은
   카메라는 실패다(모르면 통과로 두지 않는다). 겹치는 쌍 중 근거를 못 채운 쌍은 INSUFFICIENT 로 남기고 막지 않는다(관제도 같은
   사람을 그 쌍으로 묶을 일이 드물다). 단 판정한 쌍이 `min_evaluated_pairs` 개 미만이거나 통과 쌍이 하나도 없는 카메라가 있으면 실패다.
+- 참고 쌍: 세팅 보정이 맞춘 쌍(`blocking_pairs`, 품질 게이트의 쌍 = 4대 고리의 옆 쌍)을 주면 그 밖의 쌍(대각)은 같은 기준으로 재서
+  싣기만 하고 필수에서 빼며 실패해도 막지 않는다. 배경 BA 가 대각을 묶지 않아 보정을 다시 해도 대각만 번갈아 틀어졌다(16일 로비 세팅
+  두 번: A–C 39%→0%, B–D 0%→72%, 옆 쌍은 두 번째에 모두 통과). 대신 대각이 잡던 카메라 틀어짐(한 대 3° 면 옆 쌍 잔차는 5~6px 로
+  통과하고 대각만 0%)은 한 카메라 제외 재투영이 잡으므로, 모든 카메라의 그 표본이 `min_loo_samples` 를 채울 때까지 끝내지 않는다.
+  `max_duration_ms` 까지 못 채운 카메라는 통과로 두지 않고 표본 부족(FEW_SAMPLES)으로 다시 걷게 한다. 그 표본은 한 사람이 4대에
+  동시에 보일 때만 귀속돼 쌓인다(방 가운데). 막는 쌍이 이미 실패했으면 표본을 기다리지 않고 판정한다.
 
 시각은 UTC int64 ms 이고 view 시각(t)만 쓴다(현재 시각을 읽지 않는다). Tier 0 위치·판정을 바꾸지 않는 관찰자다.
 """
@@ -169,6 +175,7 @@ class CameraCheckEvaluator:
         config: CameraCheckConfig = DEFAULT_CONFIG,
         *,
         required_pairs: Iterable[tuple[str, str]] = (),
+        blocking_pairs: Iterable[tuple[str, str]] = (),
         monitor_config: MonitorConfig = _DEFAULT_MONITOR,
         joint_layout: str = "COCO17",
     ) -> None:
@@ -185,6 +192,9 @@ class CameraCheckEvaluator:
             for b in ids[i + 1:]:
                 self._pairs[pair_key(a, b)] = _PairStats((a, b), (a, b) not in skipped)
         self._required_extra = {pair_key(a, b) for a, b in required_pairs if a in self._cameras and b in self._cameras}
+        blocking = {pair_key(a, b) for a, b in blocking_pairs if a in self._cameras and b in self._cameras}
+        # 보정이 맞춘 쌍을 모르면(빈 값) 모든 쌍이 예전처럼 판정에 들고, 카메라 재투영 표본도 기다리지 않는다
+        self._advisory = frozenset(k for k in self._pairs if blocking and k not in blocking | self._required_extra)
         self._views: dict[str, int] = {cid: 0 for cid in ids}
         self._seen_t: dict[str, int] = {}
         self._loo: dict[str, list[float]] = {cid: [] for cid in ids}
@@ -268,7 +278,18 @@ class CameraCheckEvaluator:
         return self._last_seen_t - self._first_t
 
     def _required(self, key: str) -> bool:
+        if key in self._advisory:
+            return False
         return self._pairs[key].overlapping or key in self._required_extra
+
+    def _loo_short(self, cid: str) -> bool:
+        """참고 쌍이 있는데(대각을 막지 않는다) 이 카메라의 한 카메라 제외 표본이 아직 모자란가."""
+        return bool(self._advisory) and len(self._loo[cid]) < self.config.min_loo_samples
+
+    def _blocking_pair_failed(self) -> bool:
+        """막는 쌍(보정이 맞춘 쌍)에 이미 실패가 났는가. 그러면 재투영 표본을 더 기다리지 않는다(어긋난 보정은 4대 묶음이 잘
+        안 생겨 표본이 쌓이지 않는다. 16일 첫 시도는 옆 쌍 셋이 실패하고 표본 0개)."""
+        return any(self._pair_view(k, closing=False)["verdict"] == FAIL for k in self._pairs if k not in self._advisory)
 
     def _pair_view(self, key: str, *, closing: bool) -> dict[str, Any]:
         cfg = self.config
@@ -308,7 +329,7 @@ class CameraCheckEvaluator:
             verdict = PASS if median is not None and median <= cfg.max_loo_median_px else FAIL
         else:
             verdict = INSUFFICIENT
-        if closing and verdict == NOT_OBSERVED:
+        if closing and (verdict == NOT_OBSERVED or (verdict == INSUFFICIENT and self._loo_short(cid))):
             verdict = FAIL
         seen = self._seen_t.get(cid)
         return {
@@ -330,6 +351,8 @@ class CameraCheckEvaluator:
             return False
         if any(self._views[c] < cfg.min_camera_views for c in self._views):
             return False
+        if any(self._loo_short(c) for c in self._views) and not self._blocking_pair_failed():
+            return False
         return all(self._pairs[k].samples >= cfg.min_pair_samples for k in self._pairs if self._required(k))
 
     def _progress_pct(self) -> float:
@@ -337,6 +360,8 @@ class CameraCheckEvaluator:
         fractions = [min(1.0, self._span_ms() / cfg.min_duration_ms)]
         fractions += [min(1.0, n / cfg.min_camera_views) for n in self._views.values()]
         fractions += [min(1.0, s.samples / cfg.min_pair_samples) for k, s in self._pairs.items() if self._required(k)]
+        if self._advisory:
+            fractions += [min(1.0, len(v) / cfg.min_loo_samples) for v in self._loo.values()]
         return round(100.0 * sum(fractions) / len(fractions), 1)
 
     def summary(self) -> dict[str, Any]:
@@ -359,10 +384,11 @@ class CameraCheckEvaluator:
         if not closing:
             out.update(status=MEASURING, progress_pct=min(99.0, self._progress_pct()), problems=[])
             return out
-        problems = _problems(pairs, cameras, self.config)
+        problems = _problems(pairs, cameras, self.config, advisory=self._advisory)
         out.update(status=FAILED if problems else PASSED, progress_pct=100.0, problems=problems)
-        if not problems:
-            out["baseline"] = _baseline_json(self.baseline_record())
+        record = self.baseline_record()
+        if not problems and record.values_px:
+            out["baseline"] = _baseline_json(record)
         self._final = json.loads(json.dumps(out))
         return out
 
@@ -403,6 +429,13 @@ class CameraCheckEvaluator:
                                                 f"({pair['samples']}/{cfg.min_pair_samples}). 두 카메라가 함께 보는 곳을 지나며 "
                                                 "30초만 다시 걸어 주세요"})
         if not problems:
+            for cid in out["cameras"]:
+                if self._loo_short(cid):
+                    problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "FEW_SAMPLES",
+                                     "message": f"{cid}: 카메라 4대에 함께 보인 시간이 모자랍니다"
+                                                f"({len(self._loo[cid])}/{cfg.min_loo_samples}). 카메라 4대에 모두 보이는 "
+                                                "방 가운데를 지나며 30초만 다시 걸어 주세요"})
+        if not problems:
             problems.append({"kind": "CHECK", "id": "camera_check", "camera_ids": [], "reason": "NOT_FINISHED",
                              "message": f"사람이 보인 시간이 {self._span_ms() / 1000:.0f}초로 모자랍니다"
                                         f"(최소 {cfg.min_duration_ms / 1000:.0f}초). 30초 동안 계속 걸어 주세요"})
@@ -429,9 +462,11 @@ _PAIR_REASON_TEXT = {
 
 
 def _problems(pairs: Mapping[str, Mapping[str, Any]], cameras: Mapping[str, Mapping[str, Any]],
-              cfg: CameraCheckConfig) -> list[dict[str, Any]]:
+              cfg: CameraCheckConfig, *, advisory: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """막는 문제 목록. 참고 쌍(advisory)은 실패해도, 판정 쌍 수·카메라별 통과 쌍을 셀 때도 넣지 않는다."""
     problems: list[dict[str, Any]] = []
-    for key, p in pairs.items():
+    blocking = {key: p for key, p in pairs.items() if key not in advisory}
+    for key, p in blocking.items():
         if p["verdict"] != FAIL:
             continue
         a, b = p["camera_ids"]
@@ -452,11 +487,16 @@ def _problems(pairs: Mapping[str, Mapping[str, Any]], cameras: Mapping[str, Mapp
         if c["observed_views"] < cfg.min_camera_views:
             problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "NOT_OBSERVED",
                              "message": f"{cid}: 사람이 충분히 보이지 않았습니다(카메라 방향·연결을 확인하세요)"})
+        elif c["loo_samples"] < cfg.min_loo_samples:
+            problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "FEW_SAMPLES",
+                             "message": f"{cid}: 카메라 4대에 함께 보인 시간이 모자랍니다"
+                                        f"({c['loo_samples']}/{cfg.min_loo_samples}). 카메라 4대에 모두 보이는 방 가운데를 "
+                                        "지나며 30초만 다시 걸어 주세요"})
         else:
             problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "REPROJECTION_HIGH",
                              "message": f"{cid}: 다른 카메라로 잰 사람 관절이 이 카메라 영상과 어긋납니다"
                                         f"(중앙값 {c['loo_median_px']:.1f}px > {cfg.max_loo_median_px:.1f}px)"})
-    evaluated = [p for p in pairs.values() if p["verdict"] in (PASS, FAIL)]
+    evaluated = [p for p in blocking.values() if p["verdict"] in (PASS, FAIL)]
     if len(evaluated) < cfg.min_evaluated_pairs:
         problems.append({"kind": "CHECK", "id": "pairs", "camera_ids": [], "reason": "FEW_PAIRS",
                          "message": f"판정한 카메라 쌍이 {len(evaluated)}개뿐입니다(최소 {cfg.min_evaluated_pairs}개). "
@@ -464,7 +504,7 @@ def _problems(pairs: Mapping[str, Mapping[str, Any]], cameras: Mapping[str, Mapp
     for cid in cameras:
         if cameras[cid]["verdict"] == FAIL:
             continue
-        if not any(p["verdict"] == PASS and cid in p["camera_ids"] for p in pairs.values()):
+        if not any(p["verdict"] == PASS and cid in p["camera_ids"] for p in blocking.values()):
             problems.append({"kind": "CAMERA", "id": cid, "camera_ids": [cid], "reason": "NO_PASSING_PAIR",
                              "message": f"{cid}: 이 카메라가 낀 쌍 중 통과한 쌍이 없습니다"})
     return problems

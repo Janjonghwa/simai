@@ -22,6 +22,7 @@ from simai_ai.calibration.camera_check import (
     WAITING,
     CameraCheckConfig,
     CameraCheckEvaluator,
+    _problems,
     baseline_from_json,
     load_baseline,
     save_baseline,
@@ -48,6 +49,8 @@ OFFSETS = [(0.0, 1.60), (-0.03, 1.63), (0.03, 1.63), (-0.08, 1.60), (0.08, 1.60)
 CFG = CameraCheckConfig(min_duration_ms=10_000, max_duration_ms=20_000, min_pair_samples=10, min_camera_views=10,
                         min_loo_samples=5, min_evaluated_pairs=3)
 MON = MonitorConfig(min_window_samples=5)
+# 세팅 보정(배경 BA)이 맞추는 4대 고리의 옆 쌍. cam1–cam3·cam2–cam4 가 대각이다
+RING_PAIRS = [("cam1", "cam2"), ("cam2", "cam3"), ("cam3", "cam4"), ("cam4", "cam1")]
 CAMERA_CHECK_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/camera_check"}
 
 
@@ -331,3 +334,80 @@ def test_noise_floor_above_old_cap_passes_and_one_degree_rotation_fails():
     assert rotated["status"] == FAILED
     assert rotated["cameras"]["cam2"]["verdict"] == FAIL
     assert any(p["reason"] == "REPROJECTION_HIGH" and p["camera_ids"] == ["cam2"] for p in rotated["problems"])
+
+
+def test_true_calibration_passes_with_diagonals_as_advisory():
+    """보정이 맞춘 쌍(옆 쌍)을 주면 대각은 필수가 아니지만 같은 기준으로 재서 싣고, 맞는 보정은 기준선과 함께 통과한다."""
+    truth = _doc()
+    _, summary = _run(truth, _walk(truth), blocking_pairs=RING_PAIRS)
+    assert schema_errors(summary, CAMERA_CHECK_SCHEMA) == []
+    assert summary["status"] == PASSED and summary["problems"] == []
+    assert summary["pairs"]["cam1-cam3"]["required"] is False and summary["pairs"]["cam1-cam3"]["verdict"] == PASS
+    assert all(c["verdict"] == PASS for c in summary["cameras"].values())
+    assert set(summary["baseline"]["values_px"]) == set(CORNERS)
+
+
+def test_rotation_seen_only_on_a_diagonal_is_caught_by_waiting_for_reprojection_samples():
+    """한 대가 3° 돌면 옆 쌍 잔차는 5~6px 로 통과하고 대각만 0% 다. 대각을 막지 않는 대신 그 카메라의 한 카메라 제외 표본을
+    채울 때까지 끝내지 않아 재투영 실패로 막는다. 대각 실패 자체는 문제로 올리지 않는다."""
+    truth = _doc()
+    candidate = _doc(rotate={"cam2": 3.0})
+    _, summary = _run(candidate, _walk(truth), blocking_pairs=RING_PAIRS)
+    assert schema_errors(summary, CAMERA_CHECK_SCHEMA) == []
+    assert summary["status"] == FAILED and "baseline" not in summary
+    assert summary["pairs"]["cam2-cam4"]["required"] is False and summary["pairs"]["cam2-cam4"]["verdict"] == FAIL
+    assert all(p["id"] != "cam2-cam4" for p in summary["problems"])
+    assert ("cam2", "REPROJECTION_HIGH") in {(p["id"], p["reason"]) for p in summary["problems"]}
+
+
+def test_camera_short_of_reprojection_samples_at_max_duration_asks_for_more_walking():
+    """대각을 막지 않을 때 끝까지 한 카메라 제외 표본을 못 채운 카메라는 통과로 두지 않고 표본 부족(FEW_SAMPLES)으로 다시 걷게 한다."""
+    truth = _doc()
+    cfg = dataclasses.replace(CFG, min_loo_samples=10_000)
+    ev = CameraCheckEvaluator(truth, cfg, monitor_config=MON, blocking_pairs=RING_PAIRS)
+    summary = ev.summary()
+    for t, views in _walk(truth, seconds=30):
+        ev.observe(t, views)
+        summary = ev.summary()
+        if summary["status"] in (PASSED, FAILED):
+            break
+    assert schema_errors(summary, CAMERA_CHECK_SCHEMA) == []
+    assert summary["status"] == FAILED and summary["elapsed_s"] >= cfg.max_duration_ms / 1000
+    assert {p["reason"] for p in summary["problems"]} == {"FEW_SAMPLES"}
+    assert {p["id"] for p in summary["problems"]} == set(CORNERS)
+
+
+def test_advisory_pairs_count_neither_as_evaluated_nor_as_a_passing_pair():
+    """참고 쌍의 실패는 막지 않고, 판정 쌍 수와 카메라별 통과 쌍을 셀 때도 넣지 않는다(옆 쌍으로만 통과를 따진다)."""
+    def pair(a, b, verdict):
+        return {"camera_ids": [a, b], "verdict": verdict, "samples": 40, "residual_median_px": 3.0,
+                "pass_rate": 1.0 if verdict == PASS else 0.2}
+
+    cameras = {c: {"verdict": PASS, "observed_views": 40, "loo_samples": 40, "loo_median_px": 5.0} for c in CORNERS}
+    diagonals = frozenset({"cam1-cam3", "cam2-cam4"})
+    pairs = {"cam1-cam2": pair("cam1", "cam2", PASS), "cam2-cam3": pair("cam2", "cam3", PASS),
+             "cam3-cam4": pair("cam3", "cam4", PASS), "cam1-cam4": pair("cam1", "cam4", PASS),
+             "cam1-cam3": pair("cam1", "cam3", FAIL), "cam2-cam4": pair("cam2", "cam4", FAIL)}
+    assert {p["id"] for p in _problems(pairs, cameras, CFG)} == diagonals
+    assert _problems(pairs, cameras, CFG, advisory=diagonals) == []
+    # 옆 쌍이 판정되지 않고 대각만 통과했으면 통과로 치지 않는다
+    thin = {**pairs, "cam3-cam4": pair("cam3", "cam4", "INSUFFICIENT"), "cam1-cam4": pair("cam1", "cam4", "INSUFFICIENT"),
+            "cam2-cam4": pair("cam2", "cam4", PASS)}
+    reasons = {(p["id"], p["reason"]) for p in _problems(thin, cameras, CFG, advisory=diagonals)}
+    assert ("cam4", "NO_PASSING_PAIR") in reasons and ("pairs", "FEW_PAIRS") in reasons
+
+
+def test_failed_calibrated_pair_closes_without_waiting_for_reprojection_samples():
+    """막는 쌍(옆 쌍)이 이미 실패했으면 재투영 표본을 기다리지 않고 판정한다(어긋난 보정은 표본이 쌓이지 않아 끝까지 걸게 된다)."""
+    truth = _doc()
+    candidate = _doc(rotate={"cam2": 10.0})
+    cfg = dataclasses.replace(CFG, min_loo_samples=10_000)
+    ev = CameraCheckEvaluator(candidate, cfg, monitor_config=MON, blocking_pairs=RING_PAIRS)
+    summary = ev.summary()
+    for t, views in _walk(truth, seconds=30):
+        ev.observe(t, views)
+        summary = ev.summary()
+        if summary["status"] in (PASSED, FAILED):
+            break
+    assert summary["status"] == FAILED and summary["elapsed_s"] < cfg.max_duration_ms / 1000
+    assert any(p["kind"] == "PAIR" and p["reason"] != "FEW_SAMPLES" for p in summary["problems"])

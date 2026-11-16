@@ -59,22 +59,26 @@ class CameraCheckRunner:
     def active(self) -> bool:
         return self._evaluator is not None
 
-    def idle(self, calibration_doc: Mapping[str, Any], *, required_pairs: Iterable[tuple[str, str]] = ()) -> dict[str, Any]:
+    def idle(self, calibration_doc: Mapping[str, Any], *, required_pairs: Iterable[tuple[str, str]] = (),
+             blocking_pairs: Iterable[tuple[str, str]] = ()) -> dict[str, Any]:
         """시도를 열기 전(관리자 「걷기 시작」 대기) 화면에 보일 빈 요약. 요청 파일은 쓰지 않는다(Tier 0 는 아직 view 를 넘기지 않음)."""
-        return CameraCheckEvaluator(calibration_doc, self.config, required_pairs=required_pairs).summary()
+        return CameraCheckEvaluator(calibration_doc, self.config, required_pairs=required_pairs,
+                                    blocking_pairs=blocking_pairs).summary()
 
     def _views_path(self, session: str) -> Path:
         base = self.root / "sessions" / session
         return (base / self._attempt_id if self._attempt_id else base) / "views.jsonl"
 
     def start(self, setup_session_id: str, calibration_doc: Mapping[str, Any], *, expires_at_ms: int,
-              required_pairs: Iterable[tuple[str, str]] = (), attempt_id: str | None = None) -> dict[str, Any]:
+              required_pairs: Iterable[tuple[str, str]] = (), blocking_pairs: Iterable[tuple[str, str]] = (),
+              attempt_id: str | None = None) -> dict[str, Any]:
         """새 보정 후보로 확인(시도 하나)을 연다. 지난 같은 세션 view 는 지운다(재대여는 새 보정이고, 다시 확인은 새 시도라 섞지 않는다).
 
         attempt_id 가 있으면 Tier 0 가 그 시도 폴더에 view 를 적는다(S15P31A101-687). 형식이 틀리면 ValueError."""
         if attempt_id is not None and not ATTEMPT_ID_RE.match(attempt_id):
             raise ValueError(f"카메라 확인 시도 ID 형식 오류: {attempt_id!r}")
-        self._evaluator = CameraCheckEvaluator(calibration_doc, self.config, required_pairs=required_pairs)
+        self._evaluator = CameraCheckEvaluator(calibration_doc, self.config, required_pairs=required_pairs,
+                                               blocking_pairs=blocking_pairs)
         self._session = setup_session_id
         self._attempt_id = attempt_id
         self._offset = 0
@@ -168,9 +172,10 @@ class CameraCheckRunner:
 
 
 def evaluate_file(views_path: Path, calibration_doc: Mapping[str, Any], *, config: CameraCheckConfig = DEFAULT_CONFIG,
-                  required_pairs: Iterable[tuple[str, str]] = ()) -> dict[str, Any]:
+                  required_pairs: Iterable[tuple[str, str]] = (),
+                  blocking_pairs: Iterable[tuple[str, str]] = ()) -> dict[str, Any]:
     """녹화 재생으로 모은 views.jsonl 을 GPU 없이 다시 평가한다(설계 문서 '녹화 재생 검증'). 끝까지 판정이 안 나면 INCOMPLETE."""
-    evaluator = CameraCheckEvaluator(calibration_doc, config, required_pairs=required_pairs)
+    evaluator = CameraCheckEvaluator(calibration_doc, config, required_pairs=required_pairs, blocking_pairs=blocking_pairs)
     with Path(views_path).open(encoding="utf-8") as fh:
         for raw in fh:
             if not raw.strip():
@@ -194,10 +199,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibration", type=Path, required=True, help="평가할 보정 문서(JSON)")
     parser.add_argument("--required-pair", action="append", default=[], metavar="A,B",
                         help="세팅 품질 게이트 NEEDS_CHECK 쌍(카메라 ID 둘을 쉼표로)")
+    parser.add_argument("--blocking-pair", action="append", default=[], metavar="A,B",
+                        help="세팅 보정이 맞춘 쌍(품질 게이트의 쌍). 주면 그 밖의 쌍은 참고로만 잰다")
     args = parser.parse_args(argv)
     doc = json.loads(args.calibration.read_text(encoding="utf-8"))
     pairs = [tuple(p.split(",", 1)) for p in args.required_pair]
-    summary = evaluate_file(args.views, doc, required_pairs=pairs)  # type: ignore[arg-type]
+    blocking = [tuple(p.split(",", 1)) for p in args.blocking_pair]
+    summary = evaluate_file(args.views, doc, required_pairs=pairs, blocking_pairs=blocking)  # type: ignore[arg-type]
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary["status"] == PASSED else 1
 
