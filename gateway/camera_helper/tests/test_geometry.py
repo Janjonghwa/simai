@@ -37,6 +37,8 @@ class GeometryTests(unittest.TestCase):
         self.assertGreaterEqual(result.inliers, 75)
         self.assertLess(result.inliers, 90)
         self.assertIsNotNone(result.centroid_a)
+        # S15P31A101-761: 인라이어가 화면에 퍼져 있으면 4x4 칸 여러 개에 걸친다
+        self.assertGreaterEqual(min(result.cells_a, result.cells_b), 4)
 
     def test_below_eight_matches_cannot_make_an_essential_edge(self):
         import numpy as np

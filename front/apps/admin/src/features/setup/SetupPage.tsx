@@ -1066,6 +1066,7 @@ function SetupWorkPage({
           cancelPending={cancelMutation.isPending}
           retryPending={retrySession.pending}
           error={capture.view.phase === 'failed' ? retrySession.error : null}
+          stageAAlerts={coverage.stageAAlerts}
         />
       )}
       {walkOpen && (

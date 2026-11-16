@@ -5,10 +5,13 @@ import type {
   CoveragePairItem,
   GuideDirection,
   GuideMagnitude,
+  StageAPair,
+  StageAReadiness,
 } from '@/features/setup/types';
 
 // 세팅 1단계 카메라 안내: 서버가 준 안내·쌍 등급·연결 판정은 다시 계산하지 않고, 화면에 보일 것만 가려서 글로 만든다.
-// 프런트가 새로 정하는 판정은 '옆 쌍의 등급이 LACK 이면 보정이 실패할 수 있다' 하나뿐이다.
+// 프런트가 새로 정하는 판정은 '옆 쌍의 등급이 LACK 이면 보정이 실패할 수 있다' 하나뿐이다. 세팅 보정 기준(충분·불안정·미달)은
+// 헬퍼가 정해 보낸 값(stage_a_readiness)을 그대로 쓴다.
 
 /** 안내 문장용 방향(조사 포함). 받침 유무로 '으로/로'가 갈려서 방향마다 적는다. */
 const DIRECTION_TOWARD: Record<Exclude<GuideDirection, 'NONE'>, string> = {
@@ -44,24 +47,61 @@ export interface CameraGuideView {
 }
 
 /** 같은 쌍(a–b 순서 무관)의 서버 판정. */
-function findPair(pairs: readonly CoveragePairItem[], a: string, b: string) {
+function findPair<T extends { a: string; b: string }>(
+  pairs: readonly T[],
+  a: string,
+  b: string,
+): T | undefined {
   return pairs.find((p) => (p.a === a && p.b === b) || (p.a === b && p.b === a));
 }
 
 /**
  * 화면에 보일 안내만 거른다. 보정은 옆 카메라 쌍(1–2, 2–3, 3–4, 4–1)으로 하므로 그 쌍의 안내만 보이고,
- * 선택 보강(OPTIONAL_IMPROVE)은 그 쌍 등급이 LACK 일 때만 보인다. 겹치는 곳 없음(NO_OVERLAP_VISIBLE)은 늘 보인다.
+ * 선택 보강(OPTIONAL_IMPROVE)은 그 쌍 등급이 LACK 이거나 세팅 보정 기준 미달·불안정(stageAAlerts)일 때만 보인다.
+ * 겹치는 곳 없음(NO_OVERLAP_VISIBLE)은 늘 보인다.
  */
 export function visibleGuides(
   cameraIds: readonly string[],
   guides: readonly CoverageGuideItem[],
   pairs: readonly CoveragePairItem[],
+  alerts: readonly StageAPair[] = [],
 ): CoverageGuideItem[] {
   return guides.filter((guide) => {
     const [a, b] = guide.pair;
     if (!isNeighborPair(cameraIds, a, b)) return false;
-    return guide.reason_code !== 'OPTIONAL_IMPROVE' || findPair(pairs, a, b)?.grade === 'LACK';
+    return (
+      guide.reason_code !== 'OPTIONAL_IMPROVE' ||
+      findPair(pairs, a, b)?.grade === 'LACK' ||
+      findPair(alerts, a, b) !== undefined
+    );
   });
+}
+
+/** 세팅 보정(Stage A) 기준 경고 제목. 시작은 막지 않는다(사용자 결정, S15P31A101-761). */
+export const STAGE_A_WARNING_TITLE = '보정 기준에 못 미치는 카메라 쌍이 있어요';
+
+/**
+ * 헬퍼가 본 옆 카메라 쌍의 세팅 보정 기준 상태 가운데 경고할 것(미달 SHORT·불안정 UNSTABLE). 대각 쌍은 서버가 싣지 않지만
+ * 혹시 와도 옆 쌍이 아니면 뺀다. 옛 헬퍼(1.2.0 이하, 값 없음)면 빈 배열이다.
+ */
+export function stageAAlerts(
+  cameraIds: readonly string[],
+  readiness: StageAReadiness | null | undefined,
+): StageAPair[] {
+  return (readiness?.pairs ?? []).filter(
+    (p) => (p.status === 'SHORT' || p.status === 'UNSTABLE') && isNeighborPair(cameraIds, p.a, p.b),
+  );
+}
+
+/** 경고 한 쌍의 사유 한 줄. 불안정은 흔들림, 미달은 이번 판정의 모자란 점을 쓴다. */
+export function stageAReasonText(pair: StageAPair, minInliers: number | null): string {
+  if (pair.status === 'UNSTABLE')
+    return '최근 10초 동안 충분과 부족을 오가요. 사람이 가리지 않게 하고 카메라가 흔들리지 않는지 보세요';
+  if (pair.shortfall.includes('CLUSTERED') && !pair.shortfall.includes('FEW_INLIERS'))
+    return '같이 보는 곳이 화면 한쪽 구석에 몰려 있어요';
+  const counted =
+    pair.inliers !== null && minInliers !== null ? ` (${pair.inliers}/${minInliers})` : '';
+  return `두 카메라가 같이 보는 점이 부족해요${counted}`;
 }
 
 /** 옆 카메라 쌍 가운데 겹침이 부족(LACK)해 보정이 실패할 수 있는 쌍. */

@@ -87,8 +87,22 @@ def watchdog_loop(progress: Progress, frames, active: threading.Event, stop: thr
         stop.wait(0.5)
 
 
+def stage_a_text(rows: list[dict]) -> str:
+    """옆 4쌍 Stage A 기준 상태 한 줄(S15P31A101-761): AB:READY(인라이어,칸a,칸b). 측정이 없으면 상태만."""
+    parts = []
+    for row in rows:
+        key = row["a"][-1] + row["b"][-1]
+        if row["inliers"] is None:
+            parts.append(f"{key}:{row['status']}")
+        else:
+            parts.append(f"{key}:{row['status']}({row['inliers']},{row['cells_a']},{row['cells_b']})")
+    return " ".join(parts)
+
+
 def log_round(round_ts_ms: int, match_ms: int, timestamps: dict[str, int], grades: list[str],
-              outcome: str) -> None:
+              outcome: str, stage_a: list[dict] | None = None) -> None:
     ages = " ".join(f"{cid}:{round_ts_ms - timestamps[cid]}" for cid in CAMERAS)
-    LOG.info("guide round round_ts_ms=%s match_ms=%s frame_age_ms=[%s] grades=[%s] send=%s",
-             round_ts_ms, match_ms, ages, " ".join(g[0] for g in grades), outcome)
+    # 세팅 Stage A 결과와 맞대 보려고 옆 쌍 인라이어·칸 수를 남긴다(없으면 예전 줄 그대로)
+    tail = f" stage_a=[{stage_a_text(stage_a)}]" if stage_a else ""
+    LOG.info("guide round round_ts_ms=%s match_ms=%s frame_age_ms=[%s] grades=[%s] send=%s%s",
+             round_ts_ms, match_ms, ages, " ".join(g[0] for g in grades), outcome, tail)

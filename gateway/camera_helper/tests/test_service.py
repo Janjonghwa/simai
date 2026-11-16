@@ -250,6 +250,81 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(posted[0]["params"]["image_width_px"], 1024)
         self.assertEqual(posted[0]["params"]["max_keypoints"], 2048)
 
+    def test_old_ec2_rejecting_1_3_0_falls_back_to_message_without_stage_a(self):
+        """S15P31A101-761: 옛 EC2 가 1.3.0 을 400 으로 거부하면 이번 수요 동안 stage_a_readiness 없이 보낸다."""
+        stop = threading.Event()
+        posted = []
+        tried = threading.Event()
+
+        class FakeMatcher:
+            def __init__(self, aliked, lightglue, params, intrinsics, *, device="auto"):
+                self.params = params
+
+            def match(self, images):
+                return [PairMetrics(a, b, 120, 45, (0.55, 0.5), (0.45, 0.5), 4, 4) for a, b in PAIRS]
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.last_error_status = None
+
+            def demand(self):
+                return True
+
+            def post(self, message):
+                posted.append(message)
+                if "stage_a_readiness" in message:
+                    self.last_error_status = 400
+                    tried.set()
+                    raise urllib.error.HTTPError("https://example.com", 400, "Bad Request", None, io.BytesIO(b""))
+                self.last_error_status = None
+                stop.set()
+                return {"active_demand": True}
+
+        def one_try(client, message, active, sleep=None, attempts=4, on_demand=None):
+            try:
+                client.post(message)
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+
+        now_ms = time.time_ns() // 1_000_000
+
+        def fake_preview_loop(frames, event, stop_event, ws_url):
+            event.wait(1.0)
+            for k in range(2):
+                for cid in CAMERAS:
+                    frames.codec({"camera_id": cid, "stream_epoch": 1,
+                                  "sps": base64.b64encode(b"sps").decode("ascii"),
+                                  "pps": base64.b64encode(b"pps").decode("ascii")})
+                    frames.frame(make_frame(cid, key=True, ts_ms=now_ms + k * 1000), event.is_set,
+                                 lambda _: "decoded_bgr")
+                tried.wait(5.0)
+
+        with (
+            patch("simai_camera_helper.service.Client", FakeClient),
+            patch("simai_camera_helper.service.preview_loop", fake_preview_loop),
+            patch("simai_camera_helper.service.retry_post", one_try),
+            patch("simai_camera_helper.service.resolve_weights", return_value=(Path("a"), Path("b"))),
+            patch("simai_camera_helper.matcher.CameraMatcher", FakeMatcher),
+        ):
+            run({"SIMAI_EC2_BASE_URL": "https://example.com", "SIMAI_DEVICE_TOKEN": "tok-secret-123",
+                 "SIMAI_LAPTOP_ID": "gw-lobby"}, stop=stop)
+
+        self.assertEqual([m["schema_version"] for m in posted], ["1.3.0", "1.0.0"])
+        self.assertNotIn("stage_a_readiness", posted[1])
+        validate_coverage_guide_schema(posted[0])
+        validate_coverage_guide_schema(posted[1])
+
+    def test_client_post_records_http_error_status(self):
+        client = Client("https://example.com", "secret-token-xyz", "/api/devices/coverage-guides")
+        error = urllib.error.HTTPError("https://example.com", 400, "Bad Request", None, io.BytesIO(b""))
+        with patch.object(client, "request", side_effect=error), self.assertRaises(urllib.error.HTTPError):
+            client.post({"valid_until_ms": 0})
+        self.assertEqual(client.last_error_status, 400)
+        with patch.object(client, "request", return_value={"active_demand": True}):
+            client.post({"valid_until_ms": 0})
+        self.assertIsNone(client.last_error_status)
+
     def test_idle_message_validates_against_schema_and_client_falls_back_on_405(self):
         msg = idle_message("laptop-01", 1_793_690_000_000)
         validate_coverage_guide_schema(msg)

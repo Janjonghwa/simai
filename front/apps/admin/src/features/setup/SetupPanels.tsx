@@ -22,6 +22,7 @@ import {
 } from '@/features/setup/setup';
 import { SetupMap } from '@/features/setup/SetupMap';
 import { draftReason } from '@/features/setup/setupUx';
+import { StageAWarning } from '@/features/setup/StageAWarning';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
@@ -304,6 +305,7 @@ export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView 
           </AlertDescription>
         </Alert>
       )}
+      <StageAWarning alerts={coverage.stageAAlerts} />
       <div className="aspect-square w-full">
         <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
       </div>

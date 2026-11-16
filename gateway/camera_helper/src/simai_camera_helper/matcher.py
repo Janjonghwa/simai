@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from .judge import CAMERAS, DEFAULT_PARAMS, PAIRS, PairMetrics, Params
+from .judge import CAMERAS, DEFAULT_PARAMS, PAIRS, PairMetrics, Params, occupied_cells
 
 LIGHTGLUE_COMMIT = "5a650c444718caffc2669dc0094cde908f42dd73"
 _LOAD_LOCK = threading.Lock()
@@ -97,10 +97,13 @@ def geometric_metrics(a: str, b: str, pa, pb, Ka, Kb, size_a: tuple[int, int],
     keep = positive.ravel() > 0
     count = int(keep.sum())
     ca = cb = None
+    na_img = np.clip(np.asarray(pa, np.float64)[keep] / size_a, 0, 1)
+    nb_img = np.clip(np.asarray(pb, np.float64)[keep] / size_b, 0, 1)
     if count >= 5:
-        ca = tuple(float(v) for v in np.clip(np.mean(pa[keep], axis=0) / size_a, 0, 1))
-        cb = tuple(float(v) for v in np.clip(np.mean(pb[keep], axis=0) / size_b, 0, 1))
-    return PairMetrics(a, b, raw, count, ca, cb)
+        ca = tuple(float(v) for v in np.mean(na_img, axis=0))
+        cb = tuple(float(v) for v in np.mean(nb_img, axis=0))
+    # 한 구석 몰림(S15P31A101-761): 인라이어가 있는 4x4 칸 수(Stage A 공간 홀드아웃 격자와 같다)
+    return PairMetrics(a, b, raw, count, ca, cb, occupied_cells(na_img.tolist()), occupied_cells(nb_img.tolist()))
 
 
 class CameraMatcher:

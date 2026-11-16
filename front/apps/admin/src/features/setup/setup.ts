@@ -4,11 +4,14 @@ import {
   cameraGuideView,
   connectivitySummary,
   riskyPairs,
+  stageAAlerts,
+  stageAReasonText,
   visibleGuides,
   type CameraGuideView,
 } from '@/features/setup/cameraGuides';
 import {
   cameraLabel,
+  cameraShortLabel,
   cameraText,
   isNeighborPair,
   neighborPairs,
@@ -26,6 +29,7 @@ import type {
   SetupSessionResponse,
   SetupSessionStage,
   SetupWaitReason,
+  StageAStatus,
   ZoneDraftCandidateKind,
   ZoneDraftItem,
 } from '@/features/setup/types';
@@ -133,6 +137,24 @@ export interface CoveragePairView {
   tone: SetupTone;
 }
 
+/** 세팅 보정(Stage A) 기준에 못 미치거나 흔들리는 옆 카메라 쌍 하나(S15P31A101-761). */
+export interface StageAAlertView {
+  key: string;
+  /** 예: '캠2–캠3' */
+  label: string;
+  status: Extract<StageAStatus, 'SHORT' | 'UNSTABLE'>;
+  /** '기준 미달' · '불안정' */
+  statusLabel: string;
+  /** 사유 한 줄. */
+  reason: string;
+  /** 그 쌍 카메라의 기존 방향 안내(카메라 이름 포함). 없으면 일반 안내 한 줄. */
+  guides: string[];
+}
+
+/** 방향 안내가 없을 때(점은 가운데 있으나 수가 적음 등) 보이는 일반 안내. */
+export const STAGE_A_FALLBACK_GUIDE =
+  '두 카메라가 같이 보는 곳이 화면 가운데 쪽으로 오게 돌리거나, 겹치는 곳에 무늬 있는 물건을 두세요';
+
 export interface Step1CoverageView {
   connectivity: Connectivity;
   /** 연결 요약 한 줄. 예: '4대 모두 연결 · 3초 전 확인', '캠1·캠2 / 캠3·캠4 갈림' */
@@ -147,6 +169,8 @@ export interface Step1CoverageView {
   pairs: CoveragePairView[];
   /** 겹침이 부족해 보정이 실패할 수 있는 옆 카메라 쌍 이름. 예: ['캠2–캠3'] */
   riskyPairs: string[];
+  /** 세팅 보정 기준 미달·불안정 옆 쌍(헬퍼 1.3.0, 지금 결과일 때만). 경고만 하고 시작은 막지 않는다. */
+  stageAAlerts: StageAAlertView[];
   /** 배지 근거가 지금 것인지(수신 상태를 지금 안다). 아니면 카메라 배지는 「확인 중」이다. */
   fresh: boolean;
   /** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않아 지금 결과가 없다(배지 「확인 못 함」, S15P31A101-719). */
@@ -200,7 +224,9 @@ export function deriveStep1Coverage(
   const resultFresh = receptionFresh && latest.connectivity !== 'UNKNOWN';
 
   const latestPairs = latest?.pairs ?? [];
-  const guides = visibleGuides(cameraIds, latest?.guides ?? [], latestPairs);
+  // 세팅 보정 기준 경고는 수신 상태가 지금 것일 때만(오래된 결과로 경고하지 않는다)
+  const alertPairs = receptionFresh ? stageAAlerts(cameraIds, latest?.stage_a_readiness) : [];
+  const guides = visibleGuides(cameraIds, latest?.guides ?? [], latestPairs, alertPairs);
   const lacking = riskyPairs(cameraIds, latestPairs);
   const changed = new Set(evidence.changedCameras ?? []);
   const helperLost = !receptionFresh && evidence.helperLost === true;
@@ -290,6 +316,22 @@ export function deriveStep1Coverage(
     cameras,
     pairs,
     riskyPairs: lacking.map((p) => pairLabel(cameraIds, p.a, p.b)),
+    stageAAlerts: alertPairs.map((p) => {
+      const pairGuides = guides
+        .filter((g) => g.pair.includes(p.a) && g.pair.includes(p.b))
+        .map(
+          (g) =>
+            `${cameraShortLabel(cameraIds, g.camera_id)} ${cameraGuideView(cameraIds, g, latestPairs).text}`,
+        );
+      return {
+        key: `${p.a}–${p.b}`,
+        label: pairLabel(cameraIds, p.a, p.b),
+        status: p.status as StageAAlertView['status'],
+        statusLabel: p.status === 'UNSTABLE' ? '불안정' : '기준 미달',
+        reason: stageAReasonText(p, latest?.stage_a_readiness?.min_inliers ?? null),
+        guides: pairGuides.length > 0 ? pairGuides : [STAGE_A_FALLBACK_GUIDE],
+      };
+    }),
     fresh: receptionFresh,
     helperLost,
   };

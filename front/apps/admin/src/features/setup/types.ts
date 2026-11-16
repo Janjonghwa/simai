@@ -80,6 +80,37 @@ export const coverageParamsSchema = z.object({
   intrinsics_source: z.enum(['STORED', 'DEFAULT']),
 });
 
+// 옆 4쌍 세팅 Stage A 충분 여부(coverage_guide 1.3.0 stage_a_readiness, S15P31A101-761). 대각 쌍은 오지 않는다.
+export const stageAStatusSchema = z.enum(['READY', 'CONFIRMING', 'UNSTABLE', 'SHORT', 'UNKNOWN']);
+export type StageAStatus = z.infer<typeof stageAStatusSchema>;
+
+export const stageAShortfallSchema = z.enum(['FEW_INLIERS', 'LOW_RATIO', 'CLUSTERED']);
+export type StageAShortfall = z.infer<typeof stageAShortfallSchema>;
+
+export const stageAPairSchema = z.object({
+  a: z.string().min(1),
+  b: z.string().min(1),
+  status: stageAStatusSchema,
+  inliers: z.number().int().nonnegative().nullable(),
+  cells_a: z.number().int().nonnegative().nullable(),
+  cells_b: z.number().int().nonnegative().nullable(),
+  shortfall: z.array(stageAShortfallSchema),
+  sufficient_rounds: z.number().int().nonnegative(),
+  observed_rounds: z.number().int().nonnegative(),
+});
+export type StageAPair = z.infer<typeof stageAPairSchema>;
+
+export const stageAReadinessSchema = z.object({
+  min_inliers: z.number().int().positive(),
+  min_inlier_ratio: z.number(),
+  grid: z.tuple([z.number().int(), z.number().int()]),
+  min_cell_inliers: z.number().int(),
+  min_cells: z.number().int(),
+  window_rounds: z.number().int(),
+  pairs: z.array(stageAPairSchema),
+});
+export type StageAReadiness = z.infer<typeof stageAReadinessSchema>;
+
 export const coverageGuidePayloadSchema = z.object({
   schema_version: z.string(),
   source_id: z.string().min(1),
@@ -92,6 +123,8 @@ export const coverageGuidePayloadSchema = z.object({
   connectivity: connectivitySchema,
   components: z.array(z.array(z.string().min(1))),
   guides: z.array(coverageGuideItemSchema),
+  /** 1.3.0 부터. 옛 헬퍼(1.0.0~1.2.0)는 싣지 않는다(그때는 경고하지 않는다). */
+  stage_a_readiness: stageAReadinessSchema.nullable().optional(),
 });
 export type CoverageGuidePayload = z.infer<typeof coverageGuidePayloadSchema>;
 

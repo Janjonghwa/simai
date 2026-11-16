@@ -93,6 +93,18 @@ export function step1NextStep(input: Step1NextInput): NextStep {
       detail: '카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요',
       tone: 'delay',
     };
+  // 세팅 보정(Stage A) 기준 미달·불안정 옆 쌍(S15P31A101-761). 경고만 하고 「다음」은 막지 않는다
+  if (coverage.stageAAlerts.length > 0) {
+    const first = coverage.stageAAlerts[0]!;
+    const unstableOnly = coverage.stageAAlerts.every((a) => a.status === 'UNSTABLE');
+    return {
+      title: `${coverage.stageAAlerts.map((a) => a.label).join(', ')} ${
+        unstableOnly ? '판정이 흔들려요' : '보정 기준에 못 미쳐요'
+      }`,
+      detail: `${first.guides[0]}. 그대로 「다음」으로 시작할 수도 있어요`,
+      tone: 'delay',
+    };
+  }
   const angled = byBadge('ANGLE')[0];
   if (angled)
     return {

@@ -50,6 +50,10 @@ SIMAI_CAMERA_HELPER_STALL_SECONDS=30
 
 수요 응답에 `reuse_reference`(「이전 맵 재사용」 대상 맵의 카메라별 사람 지운 배경 사진 서명 주소·그 보정의 K·왜곡·image_size)가 있으면, 각 라운드에서 같은 카메라의 기준 사진과 지금 키프레임을 SIFT 상호 매칭 + 호모그래피 RANSAC 으로 비교해 `coverage_guide` 1.1.0 `reuse_view_check`(카메라별 SAME·CHANGED·UNKNOWN, 사유·대응 수·인라이어 비율·회전각만)를 싣는다(`view_check.py`). 기준 사진은 맵이 바뀔 때만 https 로 받아(인증 머리 없음, 16 MiB 상한) 특징을 한 번 뽑아 두고, 받지 못한 카메라는 30초 뒤 다시 받는다. CHANGED 는 그 카메라의 다른 키프레임 2회 연속일 때만 싣는다(첫 회는 UNKNOWN·CONFIRMING). 기준이 없으면 1.0.0 그대로이고, 비교가 실패해도 각도 안내는 보낸다. 로그는 INFO `reuse view {"A":"S","B":"C:MOVED",…}` 한 줄이며 서명 주소는 남기지 않는다. 기준·임계값 근거는 `docs/design/S15P31A101-712-reuse-camera-mismatch.md`.
 
+## 세팅 보정(Stage A) 기준 (-761)
+
+옆 4쌍(A–B, B–C, C–D, D–A, 세팅 Stage A 가 맞추는 고리)마다 그 라운드가 「Stage A 를 통과할 만큼 충분」한지 본다(`judge.StageAReadiness`). 충분 = 인라이어 ≥ 60, 인라이어 비율 ≥ 0.10, 두 영상 모두 4×4 격자 가운데 인라이어 2개 이상인 칸이 4칸 이상. 최근 4라운드(키프레임 약 3 s 간격이라 약 10 s) 모두 충분하면 READY, 아직 창이 덜 찼으면 CONFIRMING, 섞이면 UNSTABLE, 모두 미달이면 SHORT, 그 라운드 영상이 없으면 UNKNOWN(창을 비운다). 대각 쌍(A–C, B–D)은 판정하지 않는다. 결과는 `coverage_guide` 1.3.0 `stage_a_readiness` 로 보내고, 미달·불안정 옆 쌍은 인라이어가 30 이상이어도 가장자리 방향 안내를 낸다. 화면은 경고만 하고 세팅 시작을 막지 않는다. 옛 EC2 가 1.3.0 을 400 으로 거부하면 그 수요 동안 `stage_a_readiness` 없이 보낸다. `guide round` 로그 끝에 `stage_a=[AB:READY(인라이어,칸a,칸b) …]` 를 붙여 세팅 Stage A 의 쌍별 트랙 수와 맞대 볼 수 있다. 기준 근거·버린 대안은 `docs/design/S15P31A101-761-helper-stage-a-criteria.md`.
+
 ## relay 영향 비교
 
 동일 카메라·네트워크·관제 조건에서 헬퍼 수요가 꺼진 상태와 화면을 열어 실제 연산하는 상태 각각 충분한 시간(예: 5분) 수집한다. 상태 로그를 각각 별도 파일로 복사한 뒤 실행한다:

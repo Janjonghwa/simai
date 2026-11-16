@@ -7,8 +7,9 @@ import {
   type CaptureCameraView,
   type CaptureView,
 } from '@/features/setup/backgroundCapture';
-import type { SetupTone } from '@/features/setup/setup';
+import type { SetupTone, StageAAlertView } from '@/features/setup/setup';
 import { readPreviewUrls } from '@/features/setup/SetupPanels';
+import { StageAWarning } from '@/features/setup/StageAWarning';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
 import { ACTION, ALERT, H2, NOTE, SECONDARY } from '@/features/tbm/styles';
 import { Button } from '@simai/ui/components/button';
@@ -118,6 +119,7 @@ export function BackgroundCaptureModal({
   cancelPending = false,
   retryPending = false,
   error = null,
+  stageAAlerts = [],
 }: {
   view: CaptureView;
   /** 카운트다운 남은 초. 촬영이 아직 시작되지 않았으면 CAPTURE_SECONDS. */
@@ -137,6 +139,8 @@ export function BackgroundCaptureModal({
   retryPending?: boolean;
   /** 다시 촬영 요청이 실패한 까닭. */
   error?: string | null;
+  /** 세팅 보정 기준 미달·불안정 옆 쌍(S15P31A101-761). 「시작」 전에 경고만 보이고 막지 않는다. */
+  stageAAlerts?: readonly StageAAlertView[];
 }) {
   const { localUrl, stompUrl } = readPreviewUrls();
   const { attach } = useCctvPreview(localUrl, stompUrl);
@@ -185,6 +189,7 @@ export function BackgroundCaptureModal({
             />
           ))}
         </ul>
+        {phase === 'ready' && <StageAWarning alerts={stageAAlerts} className="mx-5 mb-3 w-auto" />}
         {phase === 'failed' && (
           <p className={cn(ALERT, 'mx-5 mb-3')}>
             {error ??

@@ -28,7 +28,8 @@ class MessageTests(unittest.TestCase):
         message = self.message()
         self.assertEqual(set(message), {"schema_version", "source_id", "computed_at_ms", "valid_until_ms",
                                         "capture_skew_ms", "params", "cameras", "pairs", "connectivity",
-                                        "components", "guides"})
+                                        "components", "guides", "stage_a_readiness"})
+        self.assertEqual(message["schema_version"], "1.3.0")
         self.assertEqual(message["capture_skew_ms"], 840)
         self.assertEqual(message["valid_until_ms"] - message["computed_at_ms"], 10000)
         self.assertEqual(message["connectivity"], "CONNECTED")
