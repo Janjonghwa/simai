@@ -1,3 +1,5 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { DEMO_MAP_GLB_URL, withDemoMap } from '@/features/demo/demoMap';
 import { requestCurrentScene, requestSceneView } from '@/features/layout/api';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
@@ -49,14 +51,21 @@ export function sceneViewQuery(sceneVersion: string): SceneQuery {
 /**
  * 뷰어에 넘길 Scene 입력 하나를 받는다. 조회 실패에는 마지막 본문을 유지하고, 처음 받기 전에는 기본 바닥을 쓴다.
  * 서명 주소 만료·권한 거부(뷰어의 needsRefetch)에는 즉시 다시 받고, 반복되면 10초 간격으로 제한한다. 쿼리가 null 이면 받지 않는다.
+ * 시연 계정이고 코드에 시연 GLB 가 있으면 받은 Scene 의 3D 맵을 그 GLB 로 바꾼다(features/demo/demoMap).
  */
 export function useSceneQuery(query: SceneQuery | null) {
   const [sceneStatus, setSceneStatus] = useState<ViewerSceneStatus | null>(null);
   const [needsRefetch, setNeedsRefetch] = useState(false);
   const nextRefetchAt = useRef(0);
+  const demoGlb = useIsDemoAccount() ? DEMO_MAP_GLB_URL : null;
   const { data, refetch } = useQuery({
-    queryKey: query?.queryKey ?? NO_SCENE_KEY,
-    queryFn: query ? ({ signal }) => query.load(signal) : skipToken,
+    queryKey: [...(query?.queryKey ?? NO_SCENE_KEY), ...(demoGlb ? ['demo-map'] : [])],
+    queryFn: query
+      ? async ({ signal }): Promise<ViewerSceneInput> => {
+          const input = await query.load(signal);
+          return demoGlb && input.ok ? { ok: true, raw: withDemoMap(input.raw, demoGlb) } : input;
+        }
+      : skipToken,
     staleTime: Infinity,
     // 호스트를 다시 열 때는 만료됐을 수 있는 서명 주소를 재사용하지 않는다.
     gcTime: 0,
