@@ -12,4 +12,6 @@ export const MOCK_ACCOUNTS: readonly MockAccount[] = [
   { username: 'admin', password: 'admin', id: 'admin', role: 'ADMIN' },
   { username: 'foreman', password: 'foreman', id: 'foreman', role: 'FOREMAN' },
   { username: 'viewer', password: 'viewer', id: 'viewer', role: 'VIEWER' },
+  // 시연 계정(features/demo/demoAccount)
+  { username: 'demo', password: 'demo', id: 'demo', role: 'ADMIN' },
 ];

@@ -1,3 +1,4 @@
+import { isDemoNewMap } from '@/features/demo/demoNewMap';
 import { completeBlockedReason, deriveSceneTierStatus } from '@/features/setup/setup';
 import type { AppliedZones, SetupSessionResponse } from '@/features/setup/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
@@ -26,9 +27,9 @@ export interface SetupSummaryRow {
   value: string;
 }
 
-/** 사용 맵 이름. 이전 맵 재사용은 맵을 새로 만들지 않았다. */
+/** 사용 맵 이름. 이전 맵 재사용은 맵을 새로 만들지 않았다(시연 계정의 새 맵은 새 맵으로 보인다, features/demo/demoNewMap). */
 function mapLabel(session: SetupSessionResponse): string {
-  if (session.mode === 'REUSE') return '이전 맵 재사용';
+  if (session.mode === 'REUSE' && !isDemoNewMap(session.setup_session_id)) return '이전 맵 재사용';
   return deriveSceneTierStatus(session).tier === 'FINAL'
     ? '새 맵 · 정밀 3D 맵'
     : '새 맵 · 미리보기 맵';
