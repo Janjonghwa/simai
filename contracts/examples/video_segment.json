@@ -8,7 +8,7 @@
     "segment_id": "0192a6f2-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
     "gateway_id": "tier0-01",
     "camera_id": "cam_A",
-    "stream_epochs": [12],
+    "stream_epochs": [1760340000000],
     "segment_start_capture_ms": 1760342400000,
     "segment_end_capture_ms": 1760342459960,
     "frame_count": 1500,
