@@ -1454,7 +1454,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return HttpResponse.json(planView(id));
     }),
 
-    // 처음 목록 채우기(-629): 저장한 적 없는 목록만. 재사용은 그대로, 새 모델 + World 이어짐은 확인 필요로, World 끊김은 채우지 않는다
+    // 처음 목록 채우기(-629, -758): 저장한 적 없는 재사용 목록만 확인 표시 없이 채운다. 새 모델은 채우지 않는다(이전 구역은 불러오기로만)
     http.post('*/api/setup-sessions/:id/zones/seed', ({ request, params }) => {
       const t = now();
       const user = readLiveUser(request, t);
@@ -1469,19 +1469,69 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
       }
       if (cameraCheckBlocks(session)) return cameraCheckProblem();
-      const reuse = session.mode === 'REUSE';
-      if ((reuse || session.world_anchor?.accepted === true) && !zonePlans.has(id)) {
+      if (session.mode === 'REUSE' && !zonePlans.has(id)) {
         const items = liveZones().map((zone) => ({
           zone_id: zone.zone_id,
           source: 'MANUAL',
           candidate_id: null,
           zone: null,
           surface: null,
-          needs_review: !reuse && zone.layout_item_id == null,
+          needs_review: false,
         }));
         zonePlans.set(id, { items, revision: 1, updatedAt: t });
       }
       return HttpResponse.json(planView(id));
+    }),
+
+    // 「이전 구역 불러오기」(-758): 새 모델 + World 이어짐만. 지금 관제 구역을 확인 필요로 덧붙인다(이미 있는 구역은 빼고).
+    // 개발 목업은 같은 자리 판정을 하지 않는다(서버 SetupZoneOverlap)
+    http.post('*/api/setup-sessions/:id/zones/import-previous', ({ request, params }) => {
+      const t = now();
+      const user = readLiveUser(request, t);
+      if (!user) return unauthorized();
+      if (user.role !== 'ADMIN') return problem(403, 'FORBIDDEN', '관리자만 저장할 수 있습니다');
+      const id = String(params.id ?? '');
+      const session = sessions.get(id);
+      if (!session) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      if (session.setup_completed_at_ms != null || session.status === 'FAILED') {
+        return problem(409, 'SETUP_ZONES_CLOSED', '세팅이 끝나 구역 목록을 고칠 수 없습니다');
+      }
+      if (cameraCheckBlocks(session)) return cameraCheckProblem();
+      if (session.mode !== 'REUSE' && session.world_anchor?.accepted !== true) {
+        return problem(
+          409,
+          'SETUP_ZONE_WORLD_MISMATCH',
+          'World 좌표가 바뀐 세팅이라 기존 구역(zone_id)을 그대로 쓸 수 없습니다',
+        );
+      }
+      const stored = zonePlans.get(id);
+      const current = stored?.items ?? [];
+      const listed = new Set(
+        current.flatMap((item) => {
+          const zoneId = typeof item === 'object' && item ? Reflect.get(item, 'zone_id') : null;
+          return typeof zoneId === 'string' ? [zoneId] : [];
+        }),
+      );
+      const added = liveZones()
+        .filter((zone) => !listed.has(zone.zone_id))
+        .map((zone) => ({
+          zone_id: zone.zone_id,
+          source: 'MANUAL',
+          candidate_id: null,
+          zone: null,
+          surface: null,
+          needs_review: zone.layout_item_id == null,
+        }));
+      if (added.length > 0) {
+        zonePlans.set(id, {
+          items: [...current, ...added],
+          revision: (stored?.revision ?? 0) + 1,
+          updatedAt: t,
+        });
+      }
+      return HttpResponse.json({ ...planView(id), import_skipped: [] });
     }),
 
     // 세팅 완료(C17, -615): 새 모델은 정밀 맵 뒤, 재사용은 기존 맵 맞추기 뒤·완료 전만 받는다(-688, 화면 completeMapBlockedReason 과

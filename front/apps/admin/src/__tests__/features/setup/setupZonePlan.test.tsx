@@ -1,4 +1,6 @@
 import { createSetupSession, requestSetupZonePlan } from '@/features/setup/api';
+import { draftZoneFootprint } from '@/features/setup/draftZone';
+import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import {
   applyCommitToPlan,
   confirmPlanItems,
@@ -17,10 +19,25 @@ import {
   type SetupZonePlanView,
 } from '@/features/setup/setupZonePlan';
 import { reviewOrder } from '@/features/setup/SetupZoneReviewCard';
-import type { SetupSessionResponse } from '@/features/setup/types';
-import { useSeedSetupZonePlan } from '@/features/setup/useSeedSetupZonePlan';
+import {
+  zoneDraftItemSchema,
+  type SetupSessionResponse,
+  type ZoneDraftItem,
+} from '@/features/setup/types';
+import {
+  useImportPreviousZones,
+  useSeedSetupZonePlan,
+} from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupSession } from '@/features/setup/useSetupStep1';
+import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
+import { useSetupZoneReview } from '@/features/setup/useSetupZoneReview';
+import {
+  pairDraftsWithCarried,
+  sameZoneSpot,
+  type ZoneFootprint,
+} from '@/features/setup/zoneOverlap';
 import { commitErrorText } from '@/features/zones/commitErrors';
+import type { Zone } from '@/features/zones/types';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
@@ -28,7 +45,7 @@ import { readZones, toViewerZones } from '@/features/zones/zones';
 import { ZoneSourceContext } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
 import { problem } from '@/mocks/problem';
-import { createSetupMock } from '@/mocks/setup';
+import { buildDefaultZoneDraftItems, createSetupMock } from '@/mocks/setup';
 import { createZonesMock, MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -38,8 +55,9 @@ import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 세팅 구역 단계의 구역 저장(S15P31A101-615): 관제 구역(zones/commit) 대신 세션 구역 목록(-612 PUT)에 저장하고, 화면 목록도
-// 그 목록 기준이다. 같은 World 세팅은 서버 seed 로 지금 관제 구역을 채우고(재사용은 그대로, 새 모델 + World 이어짐은 확인 필요로,
-// S15P31A101-629), World 가 끊긴 새 모델은 빈 목록에서 시작한다. 충돌(revision)은 다시 받는다.
+// 그 목록 기준이다. 재사용은 서버 seed 로 지금 관제 구역을 그대로 채운다. 새 모델은 이전 구역을 기본으로 이어 오지 않고, World
+// 이어짐이면 「이전 구역 불러오기」로만 확인 필요로 더한다(S15P31A101-629, -758). World 가 끊긴 새 모델은 빈 목록에서 시작한다.
+// 아직 고르지 않은 AI 초안과 같은 자리인 이어 온 구역은 한 항목으로 묶어 둘 중 하나만 남긴다(-758). 충돌(revision)은 다시 받는다.
 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
@@ -53,6 +71,7 @@ let requests: string[] = [];
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
+  resetSetupFlowStore();
   setupMock = createSetupMock({ now: () => 1_800_000_000_000 });
   const zonesMock = createZonesMock();
   setupMock.bindLiveZones(() => zonesMock.currentZones());
@@ -427,18 +446,17 @@ describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
     expect(planRequests(sessionId, 'PUT')).toEqual([]);
   });
 
-  it('새 모델 + World 이어짐은 지금 관제 구역을 확인 필요로 채운다', async () => {
+  it('새 모델은 World 가 이어져도 이전 구역을 기본으로 채우지 않는다(S15P31A101-758)', async () => {
     const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
     seed(sessionId);
-    await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1));
-    const plan = await requestSetupZonePlan(api, sessionId);
-    expect(plan.items.map((i) => i.zone_id)).toEqual(liveIds());
-    expect(plan.items.every((i) => i.needs_review)).toBe(true);
-    expect(pendingReviewCount(plan)).toBe(liveIds().length);
+    await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
+    await act(async () => {});
+    expect(seedRequests(sessionId)).toEqual([]);
+    expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
   });
 
   it('이미 목록이 채워져 있으면 채우지 않는다', async () => {
-    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+    const sessionId = await readySession({ mode: 'REUSE' });
     setupMock.zonePlans.set(sessionId, { items: [kept('z-04')], revision: 3, updatedAt: 0 });
     seed(sessionId);
     await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(1));
@@ -475,5 +493,187 @@ describe('세팅 구역 목록 시드(useSeedSetupZonePlan)', () => {
     await waitFor(() => expect(planRequests(sessionId, 'GET')).toHaveLength(2));
     await act(async () => {});
     expect(seedRequests(sessionId)).toHaveLength(1);
+  });
+});
+
+describe('이전 구역 불러오기(useImportPreviousZones, S15P31A101-758)', () => {
+  const plainWrapper = () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+  };
+  const importRequests = (sessionId: string) =>
+    requests.filter((r) => r === `POST /api/setup-sessions/${sessionId}/zones/import-previous`);
+  function importer(sessionId: string) {
+    return renderHook(
+      () => ({
+        importer: useImportPreviousZones(sessionId),
+        plan: useSetupZonePlanQuery(sessionId),
+      }),
+      { wrapper: plainWrapper() },
+    ).result;
+  }
+
+  it('새 모델 + World 이어짐은 누를 때만 지금 관제 구역을 확인 필요로 더하고, 다시 누르면 더할 것이 없다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+    const result = importer(sessionId);
+    await waitFor(() => expect(result.current.plan.data?.items).toEqual([]));
+    expect(result.current.importer.result).toBeNull();
+    expect(importRequests(sessionId)).toEqual([]);
+
+    act(() => result.current.importer.run());
+    await waitFor(() => expect(result.current.importer.result).not.toBeNull());
+    const liveIds = readZones(MOCK_ZONES).map((z) => z.zoneId);
+    expect(result.current.importer.result).toEqual({ added: liveIds.length, skipped: [] });
+    // 응답 목록으로 세션 목록을 바로 바꾼다
+    expect(result.current.plan.data?.items.map((i) => i.zone_id)).toEqual(liveIds);
+    expect(pendingReviewCount(result.current.plan.data)).toBe(liveIds.length);
+
+    act(() => result.current.importer.run());
+    await waitFor(() => expect(importRequests(sessionId)).toHaveLength(2));
+    await waitFor(() => expect(result.current.importer.busy).toBe(false));
+    expect(result.current.importer.result).toEqual({ added: 0, skipped: [] });
+    expect(result.current.importer.error).toBeNull();
+  });
+
+  it('World 가 끊긴 새 모델은 불러오지 못하고(409) 실패 문구를 보인다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: false } });
+    const result = importer(sessionId);
+    act(() => result.current.importer.run());
+    await waitFor(() => expect(result.current.importer.error).not.toBeNull());
+    expect(result.current.importer.result).toBeNull();
+    expect(setupMock.zonePlans.get(sessionId)).toBeUndefined();
+  });
+
+  it('서버가 AI 초안 구역과 같은 자리라 뺀 이름을 결과에 싣는다', async () => {
+    const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+    server.use(
+      http.post('*/api/setup-sessions/:id/zones/import-previous', () =>
+        Response.json({
+          setup_session_id: sessionId,
+          items: [],
+          revision: 0,
+          import_skipped: ['동쪽 개구부'],
+        }),
+      ),
+    );
+    const result = importer(sessionId);
+    act(() => result.current.importer.run());
+    await waitFor(() =>
+      expect(result.current.importer.result).toEqual({ added: 0, skipped: ['동쪽 개구부'] }),
+    );
+  });
+});
+
+describe('같은 자리 판정과 AI 초안 묶음(zoneOverlap, S15P31A101-758)', () => {
+  const square = (x: number, y: number, size: number): [number, number][] => [
+    [x, y],
+    [x + size, y],
+    [x + size, y + size],
+    [x, y + size],
+  ];
+  const spot = (
+    polygon: [number, number][],
+    zMin: number | null = 0,
+    zMax: number | null = 2,
+  ): ZoneFootprint => ({ polygon, zMin, zMax });
+
+  it('작은 쪽 면적의 절반 이상이 겹치고 크기·높이가 비슷해야 같은 자리다', () => {
+    expect(sameZoneSpot(spot(square(0, 0, 2)), spot(square(0, 0, 2)))).toBe(true);
+    // 절반 겹침(경계값)은 같은 자리, 그보다 덜 겹치면 다른 자리
+    expect(sameZoneSpot(spot(square(0, 0, 2)), spot(square(1, 0, 2)))).toBe(true);
+    expect(sameZoneSpot(spot(square(0, 0, 2)), spot(square(1.2, 0, 2)))).toBe(false);
+    expect(sameZoneSpot(spot(square(0, 0, 2)), spot(square(5, 5, 2)))).toBe(false);
+    // 넓은 구역 안에 든 작은 구역은 다른 구역이다
+    expect(sameZoneSpot(spot(square(0, 0, 4)), spot(square(1, 1, 1)))).toBe(false);
+    // 높이 범위가 겹치지 않으면 다른 자리, 높이가 없으면 겹친다고 본다
+    expect(sameZoneSpot(spot(square(0, 0, 2), 0, 0.4), spot(square(0, 0, 2), 1, 2))).toBe(false);
+    expect(sameZoneSpot(spot(square(0, 0, 2), null, null), spot(square(0, 0, 2), 1, 2))).toBe(true);
+  });
+
+  const [opening, surface] = buildDefaultZoneDraftItems().map((d) =>
+    zoneDraftItemSchema.parse(d),
+  ) as [ZoneDraftItem, ZoneDraftItem];
+  const base = readZones(MOCK_ZONES)[0]!;
+  const zoneAt = (zoneId: string, polygon: readonly (readonly [number, number])[]): Zone => ({
+    ...base,
+    zoneId,
+    polygon,
+    zBounds: [0, 2],
+  });
+  const openingSpot = draftZoneFootprint(opening).polygon;
+  const shifted = openingSpot.map(([x, y]) => [x + 0.3, y] as const);
+
+  it('초안 하나는 가장 많이 겹친 이어 온 구역 하나와만 묶고, 새로 그린 구역·먼 구역은 묶지 않는다', () => {
+    const pairs = pairDraftsWithCarried(
+      [opening, surface],
+      [
+        zoneAt('z-shifted', shifted),
+        zoneAt('z-same', openingSpot),
+        zoneAt(`${SETUP_NEW_ZONE_PREFIX}0`, openingSpot),
+        zoneAt('z-far', square(20, 20, 1)),
+      ],
+    );
+    expect([...pairs.keys()]).toEqual(['z-same']);
+    expect(pairs.get('z-same')?.candidate_id).toBe(opening.candidate_id);
+    expect(pairDraftsWithCarried([], [zoneAt('z-same', openingSpot)]).size).toBe(0);
+  });
+
+  describe('묶인 항목에서 하나만 남기기(useSetupZoneReview)', () => {
+    const carriedItem = (zoneId: string): SetupZonePlanItem => ({
+      zone_id: zoneId,
+      source: 'MANUAL',
+      candidate_id: null,
+      zone: null,
+      surface: null,
+      needs_review: true,
+    });
+    async function pairedSession() {
+      const sessionId = await readySession({ mode: 'NEW', world_anchor: { accepted: true } });
+      setupMock.zonePlans.set(sessionId, {
+        items: [carriedItem('z-04'), carriedItem('z-02')],
+        revision: 1,
+        updatedAt: 0,
+      });
+      const result = renderHook(
+        () => ({ review: useSetupZoneReview(sessionId), plan: useSetupZonePlanQuery(sessionId) }),
+        { wrapper: wrapperFor(sessionId) },
+      ).result;
+      await waitFor(() => expect(result.current.plan.data?.items).toHaveLength(2));
+      return { sessionId, result };
+    }
+    const storedItems = (sessionId: string) =>
+      (setupMock.zonePlans.get(sessionId)?.items ?? []) as SetupZonePlanItem[];
+
+    it('「이전 것 유지」는 그 구역을 확인하고 초안을 버린다', async () => {
+      const { sessionId, result } = await pairedSession();
+      act(() => result.current.review.keepCarried('z-04', opening.candidate_id));
+      await waitFor(() =>
+        expect(useSetupFlowStore.getState().discardedDraftIds).toEqual([opening.candidate_id]),
+      );
+      const items = storedItems(sessionId);
+      expect(items.find((i) => i.zone_id === 'z-04')?.needs_review).toBe(false);
+      expect(items.find((i) => i.zone_id === 'z-02')?.needs_review).toBe(true);
+      expect(useSetupFlowStore.getState().acceptedDraftIds).toEqual([]);
+    });
+
+    it('「AI 초안으로」는 저장 한 번으로 이어 온 구역을 빼고 초안 구역을 더하며 초안을 수락한 것으로 남긴다', async () => {
+      const { sessionId, result } = await pairedSession();
+      act(() =>
+        result.current.review.replaceWithDraft('z-04', opening, readZones(MOCK_ZONES).slice(1)),
+      );
+      await waitFor(() =>
+        expect(useSetupFlowStore.getState().acceptedDraftIds).toEqual([opening.candidate_id]),
+      );
+      expect(
+        requests.filter((r) => r === `PUT /api/setup-sessions/${sessionId}/zones`),
+      ).toHaveLength(1);
+      const items = storedItems(sessionId);
+      expect(items.map((i) => i.zone_id ?? null)).toEqual(['z-02', null]);
+      expect(items[1]).toMatchObject({ source: 'AI', candidate_id: opening.candidate_id });
+      expect(items[1]?.needs_review ?? false).toBe(false);
+      expect(items[1]?.zone?.name).toBe(opening.recommended_name);
+    });
   });
 });

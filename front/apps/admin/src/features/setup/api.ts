@@ -204,13 +204,36 @@ export function saveSetupZonePlan(
 }
 
 /**
- * 구역 단계 처음 목록 채우기(S15P31A101-629). 서버가 저장한 적 없는 목록만 지금 관제 구역으로 채운다: 이전 모델 재사용은 그대로,
- * 새 모델 + World 이어짐은 확인 필요(needs_review)로. 이미 저장했거나 World 가 끊긴 세팅이면 지금 목록을 그대로 돌려준다.
+ * 구역 단계 처음 목록 채우기(S15P31A101-629). 서버가 저장한 적 없는 재사용 목록만 채운다. 새 모델은 채우지 않는다(S15P31A101-758,
+ * 이전 구역은 importPreviousSetupZones 로만). 이미 저장한 목록이면 지금 목록을 그대로 돌려준다.
  */
 export function seedSetupZonePlan(http: Http, setupSessionId: string): Promise<SetupZonePlanView> {
   return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zones/seed`, {
     method: 'POST',
     schema: setupZonePlanViewSchema,
+  });
+}
+
+/** 「이전 구역 불러오기」 응답: 목록 + AI 초안 구역과 같은 자리라 빼고 불러온 이전 구역 이름(S15P31A101-758). */
+export const importPreviousZonesSchema = setupZonePlanViewSchema.extend({
+  import_skipped: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type ImportPreviousZonesView = z.infer<typeof importPreviousZonesSchema>;
+
+/**
+ * 「이전 구역 불러오기」(S15P31A101-758): 새 모델 + World 이어짐 세팅의 목록에 지금 관제 구역을 확인 필요로 더한다. 목록의 AI 초안
+ * 구역과 같은 자리인 구역은 빼고 import_skipped 에 이름을 싣는다. World 가 끊긴 세팅은 409 SETUP_ZONE_WORLD_MISMATCH.
+ */
+export function importPreviousSetupZones(
+  http: Http,
+  setupSessionId: string,
+): Promise<ImportPreviousZonesView> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zones/import-previous`, {
+    method: 'POST',
+    schema: importPreviousZonesSchema,
   });
 }
 

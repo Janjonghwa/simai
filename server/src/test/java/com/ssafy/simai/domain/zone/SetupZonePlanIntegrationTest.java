@@ -126,6 +126,8 @@ class SetupZonePlanIntegrationTest {
         putPlan(admin, items, 0).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
         seed(admin).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
+        importPrevious(admin).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CAMERA_CHECK_NOT_PASSED"));
         mvc.perform(get("/api/setup-sessions/{id}/zones", session).header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk());
         // 다른 보정(재대여 전 보정)의 통과는 지금 보정의 통과가 아니다
@@ -238,35 +240,78 @@ class SetupZonePlanIntegrationTest {
     }
 
     @Test
-    void 새_모델_World_이어짐이면_지금_관제_구역을_확인_필요로_한_번_채운다() throws Exception {
+    void 새_모델은_처음_채우기를_하지_않고_이전_구역_불러오기로만_확인_필요로_더한다() throws Exception {
         String a = zone("가");
         String b = zone("나");
         String layoutZone = layoutZone();
         anchor(true);
 
+        // S15P31A101-758: 새 모델은 World 이어짐이어도 이전 구역을 기본으로 이어 오지 않는다(AI 초안만으로 시작)
         JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
-        assertThat(seeded.path("revision").asInt()).isEqualTo(1);
-        assertThat(reviewOf(seeded, a)).isTrue();
-        assertThat(reviewOf(seeded, b)).isTrue();
-        // 레이아웃이 만든 구역은 세팅 목록으로 고치지 못해 확인 표시를 달지 않는다
-        assertThat(reviewOf(seeded, layoutZone)).isFalse();
-        assertThat(seeded.path("items").get(0).path("zone").isNull()).isTrue();
+        assertThat(seeded.path("revision").asInt()).isZero();
+        assertThat(seeded.path("items").size()).isZero();
 
-        // 이미 채운(저장한) 목록은 다시 채우지 않는다
+        JsonNode imported = body(importPrevious(admin).andExpect(status().isOk()));
+        assertThat(imported.path("revision").asInt()).isEqualTo(1);
+        assertThat(reviewOf(imported, a)).isTrue();
+        assertThat(reviewOf(imported, b)).isTrue();
+        // 레이아웃이 만든 구역은 세팅 목록으로 고치지 못해 확인 표시를 달지 않는다
+        assertThat(reviewOf(imported, layoutZone)).isFalse();
+        assertThat(imported.path("items").get(0).path("zone").isNull()).isTrue();
+        assertThat(imported.path("import_skipped").size()).isZero();
+
+        // 다시 눌러도 이미 목록에 있는 구역은 더하지 않는다(저장도 하지 않는다)
+        JsonNode again = body(importPrevious(admin).andExpect(status().isOk()));
+        assertThat(again.path("revision").asInt()).isEqualTo(1);
+        assertThat(again.path("items").size()).isEqualTo(3);
+        // 저장한 목록(관리자가 지운 뒤)에도 덧붙인다
         putPlan(admin, mapper.createArrayNode(), 1).andExpect(status().isOk());
-        JsonNode again = body(seed(admin).andExpect(status().isOk()));
-        assertThat(again.path("revision").asInt()).isEqualTo(2);
-        assertThat(again.path("items").size()).isZero();
-        seed(viewer).andExpect(status().isForbidden());
+        JsonNode reimported = body(importPrevious(admin).andExpect(status().isOk()));
+        assertThat(reimported.path("revision").asInt()).isEqualTo(3);
+        assertThat(reimported.path("items").size()).isEqualTo(3);
+        importPrevious(viewer).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 이전_구역_불러오기는_AI_초안_구역과_같은_자리인_구역을_빼고_이름을_알린다() throws Exception {
+        String opening = zoneAt("단상 개구부", "POLYGON((0 0,1.2 0,1.2 1,0 1,0 0))");
+        String apart = zoneAt("작업대 상판", "POLYGON((5 5,6 5,6 6,5 6,5 5))");
+        String wide = zoneAt("구역 1", "POLYGON((-2 -2,4 -2,4 4,-2 4,-2 -2))");
+        anchor(true);
+        // AI 초안(개구부)을 먼저 수락해 저장한 목록: 초안 구역은 초안 다각형을 0.3 m 민 볼록 다각형이다
+        ArrayNode items = mapper.createArrayNode();
+        ObjectNode ai = items.addObject().put("source", "AI").put("candidate_id", "cand-opening");
+        ObjectNode body = zoneBody("단상 개구부 1");
+        ArrayNode poly = body.putArray("polygon_xy");
+        poly.addArray().add(-0.2).add(-0.3);
+        poly.addArray().add(1.5).add(-0.3);
+        poly.addArray().add(1.5).add(1.3);
+        poly.addArray().add(-0.2).add(1.3);
+        ai.set("zone", body);
+        putPlan(admin, items, 0).andExpect(status().isOk());
+
+        JsonNode imported = body(importPrevious(admin).andExpect(status().isOk()));
+        assertThat(imported.path("revision").asInt()).isEqualTo(2);
+        assertThat(imported.path("import_skipped").size()).isEqualTo(1);
+        assertThat(imported.path("import_skipped").get(0).asString()).isEqualTo("단상 개구부");
+        // 떨어진 구역, 개구부를 품은 넓은 구역(크기가 4배 넘게 다르다)은 다른 자리라 불러온다
+        assertThat(reviewOf(imported, apart)).isTrue();
+        assertThat(reviewOf(imported, wide)).isTrue();
+        assertThat(imported.path("items").size()).isEqualTo(3);
+        for (JsonNode item : imported.path("items")) {
+            assertThat(item.path("zone_id").asString("")).isNotEqualTo(opening);
+        }
     }
 
     @Test
     void 재사용은_확인_표시_없이_채우고_World_끊김은_채우지_않는다() throws Exception {
         String a = zone("가");
-        // World 끊김(새 모델, 채택 아님): 빈 목록 그대로
+        // World 끊김(새 모델, 채택 아님): 빈 목록 그대로, 이전 구역은 좌표가 맞지 않아 불러올 수 없다
         JsonNode cut = body(seed(admin).andExpect(status().isOk()));
         assertThat(cut.path("revision").asInt()).isZero();
         assertThat(cut.path("items").size()).isZero();
+        importPrevious(admin).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_ZONE_WORLD_MISMATCH"));
 
         jdbc.update("UPDATE setup_session SET requested_mode = 'REUSE', mode = 'REUSE' WHERE setup_session_id = ?", session);
         JsonNode reuse = body(seed(admin).andExpect(status().isOk()));
@@ -281,7 +326,7 @@ class SetupZonePlanIntegrationTest {
         String b = zone("나");
         String c = zone("다");
         anchor(true);
-        JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
+        JsonNode seeded = body(importPrevious(admin).andExpect(status().isOk()));
         assertThatThrownBy(() -> applier.apply(session, true, user)).isInstanceOf(SetupZonesUnconfirmedException.class)
                 .hasMessage("SETUP_ZONES_UNCONFIRMED").extracting("remaining").isEqualTo(3);
 
@@ -356,8 +401,8 @@ class SetupZonePlanIntegrationTest {
                 .andExpect(status().isOk()));
         assertThat(sessionView.at("/zone_height_changes/compared_scene_version").asString()).isEqualTo("scene-preview-1");
 
-        // seed 응답과 GET 응답 모두 구역별 height_change 를 싣고, 워커 결과에 없는 구역은 사유와 함께 UNKNOWN 으로 채운다
-        JsonNode seeded = body(seed(admin).andExpect(status().isOk()));
+        // 불러오기 응답과 GET 응답 모두 구역별 height_change 를 싣고, 워커 결과에 없는 구역은 사유와 함께 UNKNOWN 으로 채운다
+        JsonNode seeded = body(importPrevious(admin).andExpect(status().isOk()));
         assertThat(seeded.at("/zone_height_changes/previous_scene_version").asString()).isEqualTo("scene-lobby-prev");
         assertThat(heightChangeOf(seeded, changed).path("status").asString()).isEqualTo("CHANGE_SUSPECTED");
         assertThat(heightChangeOf(seeded, changed).path("changed_area_ratio").asDouble()).isEqualTo(0.36);
@@ -414,6 +459,19 @@ class SetupZonePlanIntegrationTest {
 
     private ResultActions seed(String token) throws Exception {
         return mvc.perform(post("/api/setup-sessions/{id}/zones/seed", session).header(HttpHeaders.AUTHORIZATION, token));
+    }
+
+    private ResultActions importPrevious(String token) throws Exception {
+        return mvc.perform(post("/api/setup-sessions/{id}/zones/import-previous", session).header(HttpHeaders.AUTHORIZATION, token));
+    }
+
+    private String zoneAt(String name, String wkt) {
+        String id = "z-plan-at-" + Math.abs(name.hashCode()) + "-" + suffix;
+        jdbc.update("""
+                INSERT INTO zone(zone_id,zone_version,site_id,name,zone_kind,eval_type,polygon,severity,valid_from)
+                VALUES (?,1,?,?,'OPENING','GROUND_FOOTPRINT',ST_GeomFromText(?,0),'HIGH',now())
+                """, id, site, name, wkt);
+        return id;
     }
 
     private int currentVersion(String zoneId) {

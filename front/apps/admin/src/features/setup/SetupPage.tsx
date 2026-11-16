@@ -93,7 +93,9 @@ import {
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { useValidationRejections } from '@/features/setup/useValidationRejections';
 import { VlmZoneNotice } from '@/features/setup/VlmZoneNotice';
+import { pairDraftsWithCarried } from '@/features/setup/zoneOverlap';
 import { useWorkAction } from '@/features/work/WorkActionContext';
+import { useZones } from '@/features/zones/useZones';
 import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { api } from '@/lib/api';
@@ -139,8 +141,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 완료 전에는 관제 Scene 이 바뀌지 않으므로 구역 단계 3D 는 이 세션 맵을 버전으로 받아 그린다(-618 /view, 이전 모델 재사용은 맵이 없어 지금 관제 맵).
 // 완료 뒤에는 구역 편집·AI 초안 수락을 감춘다(완료 뒤 구역 수정은 관제 화면 구역 편집).
 // 완료 전 구역 단계의 구역 편집·AI 초안 수락·3D 구역 표시는 관제 구역이 아니라 세션 구역 목록(-612) 기준이다(ZoneSourceContext).
-// 같은 World 세팅은 구역 단계에 들어오면 빈 목록을 지금 관제 구역으로 한 번 채운다(useSeedSetupZonePlan, 서버 seed): 이전 모델 재사용은
-// 그대로, 새 모델 + World 이어짐은 구역마다 '확인 필요'로 채워 오른쪽 칸 「이어 쓴 구역 확인」 카드에서 확인·수정·삭제한다(S15P31A101-629).
+// 이전 모델 재사용은 구역 단계에 들어오면 빈 목록을 그 맵의 구역으로 한 번 채운다(useSeedSetupZonePlan, 서버 seed). 새 모델은 이전 구역을
+// 기본으로 이어 오지 않고 AI 초안(시연은 개구부 하나)만으로 시작한다(S15P31A101-758). World 이어짐이면 오른쪽 칸 카드의 「이전 구역
+// 불러오기」로 이전 구역을 '확인 필요'로 더해 「이어 쓴 구역 확인」에서 확인·수정·삭제한다(S15P31A101-629). 아직 수락하지 않은 AI 초안과
+// 같은 자리인 이어 온 구역은 그 카드에서 한 항목으로 묶어 둘 중 하나만 남기고(초안 목록에서는 감춘다), 같은 개구부를 둘 만들지 않는다.
 // 확인 필요가 남아 있으면 마지막 단추(세팅 완료)가 '확인 필요 n개'를 붙이고 꺼진다. World 가 끊긴 새 모델은 빈 목록에서 시작한다.
 
 /**
@@ -437,6 +441,25 @@ function SetupWorkPage({
     () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
     [draftsList, acceptedDraftIds, discardedDraftIds],
   );
+  // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758)
+  const { zones: planZones } = useZones(zoneSource);
+  const draftPairs = useMemo(
+    () =>
+      pairDraftsWithCarried(
+        draftsList.filter(
+          (d) =>
+            !acceptedDraftIds.includes(d.candidate_id) &&
+            !discardedDraftIds.includes(d.candidate_id),
+        ),
+        zoneSource ? planZones : [],
+      ),
+    [draftsList, acceptedDraftIds, discardedDraftIds, planZones, zoneSource],
+  );
+  const mergedDraftIds = useMemo(
+    () => [...draftPairs.values()].map((d) => d.candidate_id),
+    [draftPairs],
+  );
+  const canImportPrevious = reviewsCarriedZones(currentSession);
 
   const cameraIds = useMemo(
     () => resolveHeightCameraIds(heightDefaultsQuery.data, coverageQuery.data),
@@ -988,8 +1011,13 @@ function SetupWorkPage({
                 </Button>
               </div>
             )}
-            {zoneSource && (reviewsCarriedZones(currentSession) || unconfirmedZones > 0) && (
-              <SetupZoneReviewCard sessionId={zoneSource.sessionId} cameraIds={waiting.cameraIds} />
+            {zoneSource && (canImportPrevious || unconfirmedZones > 0) && (
+              <SetupZoneReviewCard
+                sessionId={zoneSource.sessionId}
+                cameraIds={waiting.cameraIds}
+                canImport={canImportPrevious}
+                pairedDrafts={draftPairs}
+              />
             )}
             {!completed && (
               <AiZoneDraftsPanel
@@ -1001,6 +1029,8 @@ function SetupWorkPage({
                 acceptFailure={draftAccept.failure}
                 onAcceptDraft={(item) => void draftAccept.accept(item)}
                 onDiscardDraft={discardSetupZoneDraft}
+                mergedDraftIds={mergedDraftIds}
+                canImportPrevious={canImportPrevious}
               />
             )}
             {currentSession && !completed && (

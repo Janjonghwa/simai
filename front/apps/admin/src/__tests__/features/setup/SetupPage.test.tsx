@@ -1827,7 +1827,14 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
       expect(screen.queryByTestId('setup-zone-review-card')).toBeNull();
     }, 20_000);
 
-    it('새 모델 + World 이어짐 세션은 지금 관제 구역을 확인 필요로 채우고 모두 확인해야 세팅을 완료할 수 있다', async () => {
+    /** 오른쪽 칸 「이전 구역」 카드에서 불러오기를 누르고 이어 쓴 구역 확인 카드가 뜰 때까지 기다린다(S15P31A101-758). */
+    async function importPreviousZones() {
+      const importCard = await screen.findByTestId('setup-zone-import-card', undefined, POLL_WAIT);
+      fireEvent.click(within(importCard).getByRole('button', { name: '이전 구역 불러오기' }));
+      await screen.findByTestId('setup-zone-review-card', undefined, POLL_WAIT);
+    }
+
+    it('새 모델 + World 이어짐 세션은 이전 구역을 기본으로 채우지 않고, 불러오면 확인 필요로 더해 모두 확인해야 세팅을 완료할 수 있다', async () => {
       const { sessionId } = await startSetupSession();
       setupMock.updateSession(sessionId, {
         ...FINAL_PATCH,
@@ -1835,7 +1842,9 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
         world_anchor: { accepted: true },
       });
       await goToZoneStep();
-      await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1), POLL_WAIT);
+      // 새 모델은 이전 구역을 이어 오지 않는다(S15P31A101-758): 「이전 구역 불러오기」를 눌러야 더한다
+      await importPreviousZones();
+      expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1);
       const total = setupMock.zonePlans.get(sessionId)!.items.length;
       expect(total).toBeGreaterThan(1);
 
@@ -1908,6 +1917,7 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
         },
       });
       await goToZoneStep();
+      await importPreviousZones();
       await waitFor(() => expect(setupMock.zonePlans.get(sessionId)?.revision).toBe(1), POLL_WAIT);
 
       const card = await screen.findByTestId('setup-zone-review-card', undefined, POLL_WAIT);

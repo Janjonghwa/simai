@@ -471,6 +471,8 @@ export function AiZoneDraftsPanel({
   onAcceptDraft,
   onDiscardDraft,
   cameraIds = [],
+  mergedDraftIds = [],
+  canImportPrevious = false,
 }: {
   draftsResponse: SetupZoneDraftsResponse | null;
   /** 구역으로 만든 초안. */
@@ -482,9 +484,24 @@ export function AiZoneDraftsPanel({
   onAcceptDraft: (item: ZoneDraftItem) => void;
   onDiscardDraft: (candidateId: string) => void;
   cameraIds?: readonly string[];
+  /** 같은 자리의 이어 온 구역과 한 항목으로 묶어 「이어 쓴 구역 확인」에서 고르는 초안(S15P31A101-758). 여기서는 감춘다. */
+  mergedDraftIds?: readonly string[];
+  /** 초안이 없을 때 「이전 구역 불러오기」를 권할지(새 모델 + World 이어짐). */
+  canImportPrevious?: boolean;
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
-  const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
+  const visibleDrafts = allDrafts.filter(
+    (d) => !discardedDraftIds.includes(d.candidate_id) && !mergedDraftIds.includes(d.candidate_id),
+  );
+  const merged = allDrafts.filter(
+    (d) => mergedDraftIds.includes(d.candidate_id) && !discardedDraftIds.includes(d.candidate_id),
+  );
+  // 분석이 끝났는데(실패 포함) 초안이 하나도 없다: 시연은 개구부 하나를 기대한다(S15P31A101-671, -758)
+  const noneFound =
+    draftsResponse != null &&
+    (draftsResponse.status === 'FAILED' || allDrafts.length === 0) &&
+    draftsResponse.status !== 'QUEUED' &&
+    draftsResponse.status !== 'NOT_REQUESTED';
   // 초안이 많아도 카드 두 장 높이까지만 보이고 나머지는 목록 안에서 스크롤한다.
   const listRef = useTwoCardsMaxHeight();
 
@@ -492,8 +509,18 @@ export function AiZoneDraftsPanel({
     <Panel title="AI 위험 구역 초안" fill={1}>
       {draftsResponse?.status === 'QUEUED' || draftsResponse?.status === 'NOT_REQUESTED' ? (
         <p className="text-xs text-muted-foreground">AI 구역 초안 분석 중</p>
+      ) : noneFound ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {canImportPrevious
+            ? 'AI 가 개구부를 찾지 못했어요 — 직접 그리거나 이전 구역을 불러오세요'
+            : 'AI 가 개구부를 찾지 못했어요 — 직접 그려 주세요'}
+        </p>
       ) : visibleDrafts.length === 0 ? (
-        <p className="text-xs text-muted-foreground">AI 구역 초안 없음</p>
+        <p className="text-xs text-muted-foreground">
+          {merged.length > 0
+            ? `${merged.map((d) => `「${cameraText(cameraIds, d.recommended_name)}」`).join(', ')}은(는) 같은 자리의 이전 구역과 묶어 위 「이어 쓴 구역 확인」에서 골라요.`
+            : 'AI 구역 초안 없음'}
+        </p>
       ) : (
         <ul
           ref={listRef}

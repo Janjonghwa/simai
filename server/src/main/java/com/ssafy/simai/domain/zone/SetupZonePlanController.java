@@ -44,11 +44,20 @@ class SetupZonePlanController {
     }
 
     /**
-     * 구역 단계에 처음 들어올 때 목록 채우기(S15P31A101-629): 저장한 적 없는 목록만 지금 관제 구역으로 채운다(재사용은 그대로,
-     * 새 모델 + World 이어짐은 needs_review=true). 이미 저장한 목록·World 끊김은 그대로 돌려준다. 응답은 GET 과 같다
+     * 구역 단계에 처음 들어올 때 목록 채우기(S15P31A101-629): 저장한 적 없는 재사용 목록만 채운다. 새 모델은 World 이어짐이어도
+     * 채우지 않는다(S15P31A101-758, 이전 구역은 import-previous 로만). 응답은 GET 과 같다
      */
     @PostMapping("/api/setup-sessions/{id}/zones/seed")
     ObjectNode seed(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
         return plans.seed(id, Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 「이전 구역 불러오기」(S15P31A101-758): 새 모델 + World 이어짐 세팅의 목록에 지금 관제 구역을 확인 필요로 더한다. 목록의 AI 초안
+     * 구역과 같은 자리인 구역은 빼고 import_skipped 에 이름을 싣는다. World 끊김은 409 SETUP_ZONE_WORLD_MISMATCH
+     */
+    @PostMapping("/api/setup-sessions/{id}/zones/import-previous")
+    ObjectNode importPrevious(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
+        return plans.importPrevious(id, Long.parseLong(jwt.getSubject()));
     }
 }

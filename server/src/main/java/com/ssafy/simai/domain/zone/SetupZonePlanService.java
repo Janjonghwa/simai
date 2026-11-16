@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.zone;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.config.Versioned;
 import com.ssafy.simai.domain.geometry.StaticObjectRepository;
 import com.ssafy.simai.domain.geometry.StaticObjectRequest;
 import com.ssafy.simai.domain.health.ReplayTestSwitch;
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -140,28 +142,38 @@ public class SetupZonePlanService {
         return view(id);
     }
 
+    /** 세팅 방식: 재사용인지, World 다시 맞추기를 채택했는지, 고른 맵(재사용 원본 세션)과 그 보정 */
+    private record Mode(boolean reuse, boolean anchorAccepted, UUID reuseSource, String sourceCalibration) {
+    }
+
+    private Mode mode(MapSqlParameterSource p) {
+        return jdbc.queryForObject("""
+                SELECT s.mode = 'REUSE', COALESCE((s.world_anchor ->> 'accepted')::boolean, false), s.reuse_source_session_id,
+                       src.calibration_version
+                FROM setup_session s LEFT JOIN setup_session src ON src.setup_session_id = s.reuse_source_session_id
+                WHERE s.setup_session_id = :id
+                """, p, (rs, i) -> new Mode(rs.getBoolean(1), rs.getBoolean(2), rs.getObject(3, UUID.class), rs.getString(4)));
+    }
+
+    private MapSqlParameterSource writeParams(UUID id, long userId) {
+        return new MapSqlParameterSource("id", id).addValue("site", sites.siteId()).addValue("user", userId)
+                .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+    }
+
     /**
-     * 처음 목록 채우기(S15P31A101-629). 한 번도 저장하지 않은 목록(revision 0)만 지금 관제 구역(zone_id 를 잇고 본문은 비운다)으로
-     * 채운다. 이전 모델 재사용(REUSE)은 확인 표시 없이, 새 모델 + World 이어짐(world_anchor.accepted)은 needs_review=true 로 채운다.
-     * 레이아웃이 만든 구역은 레이아웃이 관리해(세팅 목록으로 고치지 못한다) 확인 표시를 달지 않는다.
-     * World 가 끊긴 새 모델은 기존 구역 좌표가 맞지 않아 채우지 않는다(빈 목록). 이미 저장한 목록이면 그대로 돌려준다.
-     * 고른 맵의 묶음을 그대로 쓰는 재사용(S15P31A101-714)은 지금 관제 구역이 아니라 그 맵으로 마지막에 발행한 구역으로 채운다
-     * ({@link SetupZoneReuseSeed}).
+     * 처음 목록 채우기(S15P31A101-629). 한 번도 저장하지 않은 목록(revision 0)만 채우고, 이미 저장한 목록이면 그대로 돌려준다.
+     * 이전 모델 재사용(REUSE)만 채운다: 지금 관제 구역(zone_id 를 잇고 본문은 비운다)으로 확인 표시 없이, 고른 맵의 묶음을 그대로 쓰는
+     * 재사용(S15P31A101-714)은 그 맵으로 마지막에 발행한 구역으로({@link SetupZoneReuseSeed}).
+     * 새 모델(NEW)은 World 이어짐이어도 채우지 않는다(S15P31A101-758): 구역 단계는 AI 초안만으로 시작하고, 이전 구역은 관리자가
+     * 「이전 구역 불러오기」({@link #importPrevious})를 눌렀을 때만 확인 필요로 이어 온다.
      */
     public ObjectNode seed(String setupSessionId, long userId) {
         UUID id = parseId(setupSessionId);
         transaction.executeWithoutResult(s -> {
             requireSession(id, true);
-            MapSqlParameterSource p = new MapSqlParameterSource("id", id).addValue("site", sites.siteId()).addValue("user", userId)
-                    .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
-            record Mode(boolean reuse, boolean anchorAccepted, UUID reuseSource, String sourceCalibration) { }
-            Mode mode = jdbc.queryForObject("""
-                    SELECT s.mode = 'REUSE', COALESCE((s.world_anchor ->> 'accepted')::boolean, false), s.reuse_source_session_id,
-                           src.calibration_version
-                    FROM setup_session s LEFT JOIN setup_session src ON src.setup_session_id = s.reuse_source_session_id
-                    WHERE s.setup_session_id = :id
-                    """, p, (rs, i) -> new Mode(rs.getBoolean(1), rs.getBoolean(2), rs.getObject(3, UUID.class), rs.getString(4)));
-            if (mode == null || (!mode.reuse() && !mode.anchorAccepted())) {
+            MapSqlParameterSource p = writeParams(id, userId);
+            Mode mode = mode(p);
+            if (mode == null || !mode.reuse()) {
                 return;
             }
             if (!jdbc.queryForList("SELECT revision FROM setup_session_zone_plan WHERE setup_session_id = :id FOR UPDATE",
@@ -171,10 +183,8 @@ public class SetupZonePlanService {
             List<Item> items = mode.reuseSource() != null
                     ? reuseSeed.items(sites.siteId(), mode.reuseSource(), mode.sourceCalibration())
                     : jdbc.query("""
-                    SELECT DISTINCT zone_id, layout_item_id IS NOT NULL AS layout FROM zone
-                    WHERE site_id = :site AND valid_to IS NULL ORDER BY zone_id
-                    """, p, (rs, i) -> new Item(rs.getString("zone_id"), "MANUAL", null, null, null,
-                    !mode.reuse() && !rs.getBoolean("layout")));
+                    SELECT DISTINCT zone_id FROM zone WHERE site_id = :site AND valid_to IS NULL ORDER BY zone_id
+                    """, p, (rs, i) -> new Item(rs.getString("zone_id"), "MANUAL", null, null, null, false));
             if (items.size() > MAX_ITEMS) {
                 // 상한을 넘는 현장은 없지만, 넘으면 반쯤 채우지 않고 사람이 그리게 둔다
                 log.warn("Setup zone plan seed skipped: {} current zones exceed {}", items.size(), MAX_ITEMS);
@@ -188,6 +198,89 @@ public class SetupZonePlanService {
                     """, p);
         });
         return view(id);
+    }
+
+    /**
+     * 「이전 구역 불러오기」(S15P31A101-758). 새 모델 + World 이어짐(world_anchor.accepted) 세팅에서 지금 관제 구역을 목록에 더한다.
+     * 저장 여부(revision)와 상관없이 지금 목록에 덧붙이고(목록 행을 잠근다, revision + 1), 확인 필요(needs_review=true)로 둔다.
+     * 레이아웃이 만든 구역은 확인 표시 없이 둔다(-629 와 같다). 이미 목록에 있는 구역은 다시 넣지 않는다.
+     * 목록의 AI 초안 구역(source AI, 본문 있음)과 같은 자리({@link SetupZoneOverlap#sameSpot})인 구역은 넣지 않고 응답
+     * import_skipped 에 이름을 싣는다(같은 개구부를 둘 만들지 않는다). World 가 끊긴 새 모델은 409 SETUP_ZONE_WORLD_MISMATCH,
+     * 재사용은 처음 채우기({@link #seed})와 같다. 응답은 GET 과 같고 import_skipped(문자열 배열)를 더한다.
+     */
+    public ObjectNode importPrevious(String setupSessionId, long userId) {
+        UUID id = parseId(setupSessionId);
+        List<String> skipped = new ArrayList<>();
+        Boolean reuse = transaction.execute(s -> {
+            requireSession(id, true);
+            MapSqlParameterSource p = writeParams(id, userId);
+            Mode mode = mode(p);
+            if (mode != null && mode.reuse()) {
+                return true;
+            }
+            if (mode == null || !mode.anchorAccepted()) {
+                throw new BusinessException(ErrorCode.Config.SETUP_ZONE_WORLD_MISMATCH);
+            }
+            List<Integer> revision = jdbc.queryForList(
+                    "SELECT revision FROM setup_session_zone_plan WHERE setup_session_id = :id FOR UPDATE", p, Integer.class);
+            List<Item> current = new ArrayList<>(lockItems(id));
+            Set<String> listed = new HashSet<>();
+            List<SetupZoneOverlap.Footprint> drafts = new ArrayList<>();
+            for (Item item : current) {
+                if (item.zoneId() != null) listed.add(item.zoneId());
+                if ("AI".equals(item.source()) && item.zone() != null) drafts.add(SetupZoneOverlap.Footprint.of(item.zone()));
+            }
+            List<Item> added = new ArrayList<>();
+            jdbc.query("""
+                    SELECT zone_id, name, layout_item_id IS NOT NULL AS layout, ST_AsGeoJSON(polygon) AS polygon, z_min_m, z_max_m
+                    FROM zone WHERE site_id = :site AND valid_to IS NULL ORDER BY zone_id
+                    """, p, rs -> {
+                String zoneId = rs.getString("zone_id");
+                if (!listed.add(zoneId)) {
+                    return;
+                }
+                List<double[]> polygon = new ArrayList<>();
+                Versioned.polygonXy(mapper.readTree(rs.getString("polygon")), mapper.createArrayNode())
+                        .forEach(point -> polygon.add(new double[] {point.get(0).doubleValue(), point.get(1).doubleValue()}));
+                SetupZoneOverlap.Footprint carried = new SetupZoneOverlap.Footprint(polygon, Versioned.real(rs, "z_min_m"),
+                        Versioned.real(rs, "z_max_m"));
+                if (drafts.stream().anyMatch(draft -> SetupZoneOverlap.sameSpot(carried, draft))) {
+                    skipped.add(rs.getString("name"));
+                    return;
+                }
+                added.add(new Item(zoneId, "MANUAL", null, null, null, !rs.getBoolean("layout")));
+            });
+            if (added.isEmpty()) {
+                return false;
+            }
+            current.addAll(added);
+            if (current.size() > MAX_ITEMS) {
+                // 반쯤 더하지 않는다. 사람이 목록을 줄이고 다시 불러오게 한다
+                log.warn("Setup zone plan import rejected: {} items exceed {}", current.size(), MAX_ITEMS);
+                throw invalid();
+            }
+            p.addValue("items", mapper.writeValueAsString(current));
+            if (revision.isEmpty()) {
+                jdbc.update("""
+                        INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
+                        VALUES (:id, CAST(:items AS jsonb), 1, :user, :now)
+                        """, p);
+            } else {
+                jdbc.update("""
+                        UPDATE setup_session_zone_plan SET items = CAST(:items AS jsonb), revision = revision + 1,
+                            updated_by = :user, updated_at = :now
+                        WHERE setup_session_id = :id
+                        """, p);
+            }
+            return false;
+        });
+        if (Boolean.TRUE.equals(reuse)) {
+            return seed(setupSessionId, userId);
+        }
+        ObjectNode out = view(id);
+        ArrayNode names = out.putArray("import_skipped");
+        skipped.forEach(names::add);
+        return out;
     }
 
     /** 적용 서비스용. 부르는 쪽 트랜잭션에서 목록을 잠그고 읽는다. 저장한 적이 없으면 빈 목록 */

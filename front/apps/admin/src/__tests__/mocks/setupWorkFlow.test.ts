@@ -2,6 +2,7 @@
 import {
   completeSetupSession,
   createSetupSession,
+  importPreviousSetupZones,
   requestSetupSession,
   saveSetupZonePlan,
   seedSetupZonePlan,
@@ -244,7 +245,7 @@ describe('개발 서버 세팅 mock: 세팅 완료(POST .../complete, -615)', ()
   });
 });
 
-describe('새 모델 + World 이어짐의 확인 필요 구역(S15P31A101-629)', () => {
+describe('새 모델 + World 이어짐의 확인 필요 구역(S15P31A101-629, -758)', () => {
   beforeAll(() => {
     anchored = true;
   });
@@ -252,19 +253,24 @@ describe('새 모델 + World 이어짐의 확인 필요 구역(S15P31A101-629)',
     anchored = false;
   });
 
-  it('구역 목록을 지금 관제 구역으로 확인 필요로 채우고, 남아 있으면 완료를 409 로 거부하며 모두 확인하면 완료한다', async () => {
+  it('처음 채우기는 이전 구역을 이어 오지 않고, 불러오기로 확인 필요로 더하며, 남아 있으면 완료를 409 로 거부하고 모두 확인하면 완료한다', async () => {
     const { sessionId } = await startSetupFor();
     setupMock.updateSession(sessionId, {
       status: 'COMPLETED',
       stage: 'COMPLETED',
       scene_version: 'scene-final-1',
     });
-    const seeded = await seedSetupZonePlan(http, sessionId);
+    // 새 모델은 처음 채우기가 이전 구역을 이어 오지 않는다(S15P31A101-758)
+    const empty = await seedSetupZonePlan(http, sessionId);
+    expect(empty).toMatchObject({ revision: 0, items: [] });
+
+    const seeded = await importPreviousSetupZones(http, sessionId);
     expect(seeded.revision).toBe(1);
     expect(seeded.items.length).toBe(readZones(MOCK_ZONES).length);
     expect(seeded.items.every((item) => item.needs_review)).toBe(true);
-    // 다시 불러도 채우지 않는다
-    expect((await seedSetupZonePlan(http, sessionId)).revision).toBe(1);
+    expect(seeded.import_skipped).toEqual([]);
+    // 다시 불러도 이미 있는 구역은 더하지 않는다
+    expect((await importPreviousSetupZones(http, sessionId)).revision).toBe(1);
 
     const rejected = await completeSetupSession(http, sessionId).catch((e: unknown) => e);
     expect(rejected).toBeInstanceOf(ApiError);

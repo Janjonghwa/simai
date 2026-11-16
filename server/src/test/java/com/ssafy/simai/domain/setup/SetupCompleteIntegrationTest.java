@@ -451,8 +451,8 @@ class SetupCompleteIntegrationTest {
                 UPDATE setup_session SET world_anchor = '{"accepted": true, "reason": "ANCHORED"}'::jsonb
                 WHERE setup_session_id = ?::uuid
                 """, s.sessionId());
-        // 새 모델 + World 이어짐: 지금 관제 구역을 확인 필요로 채운다(S15P31A101-629)
-        JsonNode seeded = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", s.sessionId()).with(adminJwt()))
+        // 새 모델 + World 이어짐: 「이전 구역 불러오기」로 지금 관제 구역을 확인 필요로 더한다(S15P31A101-629, -758)
+        JsonNode seeded = body(mvc.perform(post("/api/setup-sessions/{id}/zones/import-previous", s.sessionId()).with(adminJwt()))
                 .andExpect(status().isOk()).andReturn());
         int pending = 0;
         for (JsonNode item : seeded.path("items")) {

@@ -7,13 +7,22 @@ import { calibrateNextStep } from '@/features/setup/nextStep';
 import { deriveWaitingView } from '@/features/setup/setup';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
 import { AiZoneDraftsPanel } from '@/features/setup/SetupPanels';
+import { SETUP_NEW_ZONE_PREFIX } from '@/features/setup/setupZonePlan';
 import { SetupZoneReviewCard } from '@/features/setup/SetupZoneReviewCard';
-import { setupSessionResponseSchema, setupZoneDraftsResponseSchema } from '@/features/setup/types';
+import {
+  setupSessionResponseSchema,
+  setupZoneDraftsResponseSchema,
+  zoneDraftItemSchema,
+} from '@/features/setup/types';
 import { useBackgroundCapture } from '@/features/setup/useBackgroundCapture';
 import type { Zone } from '@/features/zones/types';
 import { zoneAiOpinionSchema, zoneHeightChangeSchema } from '@/features/zones/types';
 import { readZones } from '@/features/zones/zones';
-import { buildCameraCheck, buildSetupZoneDraftsResponse } from '@/mocks/setup';
+import {
+  buildCameraCheck,
+  buildDefaultZoneDraftItems,
+  buildSetupZoneDraftsResponse,
+} from '@/mocks/setup';
 import { MOCK_ZONES } from '@/mocks/zones';
 import {
   act,
@@ -24,7 +33,7 @@ import {
   screen,
   within,
 } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/api', () => ({ api: vi.fn() }));
 vi.mock('@/features/cctv/useCctvPreview', () => ({ useCctvPreview: () => ({ attach: vi.fn() }) }));
@@ -34,16 +43,27 @@ const viewport = vi.hoisted(() => ({
   clearSelection: vi.fn(),
 }));
 vi.mock('@/features/layout/SpatialViewportHost', () => ({ useSpatialViewport: () => viewport }));
-vi.mock('@/features/setup/useSetupZoneReview', () => ({
-  useSetupZoneReview: () => ({
-    pending: 1,
-    unchangedPending: 0,
-    busy: false,
-    confirm: vi.fn(),
-    confirmAll: vi.fn(),
-    confirmUnchanged: vi.fn(),
-    remove: vi.fn(),
-  }),
+const review = vi.hoisted(() => ({
+  pending: 1,
+  unchangedPending: 0,
+  busy: false,
+  error: null,
+  confirm: vi.fn(),
+  confirmAll: vi.fn(),
+  confirmUnchanged: vi.fn(),
+  remove: vi.fn(),
+  keepCarried: vi.fn(),
+  replaceWithDraft: vi.fn(),
+}));
+vi.mock('@/features/setup/useSetupZoneReview', () => ({ useSetupZoneReview: () => review }));
+const importer = vi.hoisted(() => ({
+  run: vi.fn(),
+  busy: false,
+  result: null as { added: number; skipped: string[] } | null,
+  error: null as string | null,
+}));
+vi.mock('@/features/setup/useSeedSetupZonePlan', () => ({
+  useImportPreviousZones: () => importer,
 }));
 
 const IDS = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
@@ -218,5 +238,70 @@ describe('세팅 상태와 다음 행동(-732)', () => {
     expect(screen.queryByText('변화 없음')).toBeNull();
     expect(screen.getByAltText('이전 세팅 · 카메라 3')).toBeTruthy();
     expect(screen.getByText('카메라 3 높이가 달라졌습니다.')).toBeTruthy();
+  });
+});
+
+describe('이어 쓴 구역 확인 카드의 불러오기·같은 자리 묶음(S15P31A101-758)', () => {
+  beforeEach(() => {
+    viewport.zones = [];
+  });
+  afterEach(() => {
+    viewport.zones = [];
+    importer.result = null;
+    vi.clearAllMocks();
+  });
+  const opening = zoneDraftItemSchema.parse(buildDefaultZoneDraftItems()[0]);
+
+  it('이어 온 구역이 없으면 World 이어짐일 때만 「이전 구역 불러오기」를 보이고 결과를 알린다', () => {
+    const { rerender } = render(<SetupZoneReviewCard sessionId="s" canImport={false} />);
+    expect(screen.queryByTestId('setup-zone-import-card')).toBeNull();
+    rerender(<SetupZoneReviewCard sessionId="s" canImport />);
+    fireEvent.click(screen.getByRole('button', { name: '이전 구역 불러오기' }));
+    expect(importer.run).toHaveBeenCalledTimes(1);
+
+    importer.result = { added: 0, skipped: [] };
+    rerender(<SetupZoneReviewCard sessionId="s" canImport />);
+    expect(screen.getByRole('status').textContent).toBe('불러올 이전 구역이 없어요.');
+    importer.result = { added: 1, skipped: ['동쪽 개구부'] };
+    rerender(<SetupZoneReviewCard sessionId="s" canImport />);
+    expect(screen.getByRole('status').textContent).toBe(
+      'AI 초안 구역과 같은 자리인 「동쪽 개구부」은(는) 빼고 불러왔어요.',
+    );
+  });
+
+  it('새로 그린 구역은 확인 목록에 넣지 않는다', () => {
+    const zone = readZones(MOCK_ZONES)[0]!;
+    viewport.zones = [{ ...zone, zoneId: `${SETUP_NEW_ZONE_PREFIX}0` }];
+    render(<SetupZoneReviewCard sessionId="s" canImport />);
+    expect(screen.getByTestId('setup-zone-import-card')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: `${zone.name} 삭제` })).toBeNull();
+  });
+
+  it('같은 자리 AI 초안과 묶인 구역은 확인 대신 「이전 것 유지」·「AI 초안으로」 중 하나를 고른다', () => {
+    const [carried, other] = readZones(MOCK_ZONES) as [Zone, Zone];
+    viewport.zones = [
+      { ...carried, needsReview: true },
+      { ...other, needsReview: true },
+    ];
+    render(
+      <SetupZoneReviewCard
+        sessionId="s"
+        cameraIds={IDS}
+        pairedDrafts={new Map([[carried.zoneId, opening]])}
+      />,
+    );
+    const pair = screen.getByTestId('setup-zone-pair');
+    expect(pair.textContent).toContain(`AI 초안 「${opening.recommended_name}」과 같은 자리예요.`);
+    expect(screen.queryByRole('button', { name: `${carried.name} 확인` })).toBeNull();
+    expect(screen.getByRole('button', { name: `${other.name} 확인` })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: `${carried.name} 이전 것 유지` }));
+    expect(review.keepCarried).toHaveBeenCalledWith(carried.zoneId, opening.candidate_id);
+    fireEvent.click(screen.getByRole('button', { name: `${carried.name} AI 초안으로 바꾸기` }));
+    expect(review.replaceWithDraft).toHaveBeenCalledWith(
+      carried.zoneId,
+      opening,
+      viewport.zones.filter((z) => z.zoneId !== carried.zoneId),
+    );
   });
 });
