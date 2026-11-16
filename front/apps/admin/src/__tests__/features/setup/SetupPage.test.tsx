@@ -437,7 +437,7 @@ describe('설치 · 보정 1단계 화면', () => {
     await waitForCalibrationStep();
   });
 
-  it('이전 맵을 쓸 수 있으면 재사용이 기본이라 다음이 mode REUSE 로 만들고, 카메라 변화를 모르면 시작 뒤 확인한다고 한 줄 붙인다', async () => {
+  it('이전 맵을 쓸 수 있어도 새 맵이 기본이고, 재사용을 고르면 다음이 mode REUSE 로 만들며 카메라 변화를 모르면 시작 뒤 확인한다고 한 줄 붙인다', async () => {
     setupMock = createSetupMock({
       cameraHeightsM: { cam_A: 2.25, cam_B: 2.3, cam_C: 2.2, cam_D: 2.35 },
       reuseCheck: {
@@ -455,10 +455,19 @@ describe('설치 · 보정 1단계 화면', () => {
     const reuse = within(group).getByRole('radio', {
       name: /^이전 맵 재사용/,
     }) as HTMLButtonElement;
-    await waitFor(() => expect(reuse.getAttribute('aria-checked')).toBe('true'));
+    const fresh = within(group).getByRole('radio', { name: /^새 맵 만들기/ });
     await waitFor(() => expect(reuse.disabled).toBe(false));
-    expect(reuse.textContent).toContain('기본 · 약 1~2분');
+    // 카메라 각도가 바뀌어 있을 위험이 높아 재사용은 고를 때만 쓴다(S15P31A101-762): 새 맵이 먼저, 기본으로 골라져 있다
+    const options = within(group).getAllByRole('radio');
+    expect(options[0]).toBe(fresh);
+    expect(fresh.getAttribute('aria-checked')).toBe('true');
+    expect(fresh.textContent).toContain('기본 · 약 13분');
+    expect(reuse.getAttribute('aria-checked')).toBe('false');
+    expect(reuse.textContent).toContain('약 1~2분');
+    expect(reuse.textContent).not.toContain('기본');
     expect(reuse.textContent).toContain('카메라가 그대로인지는 시작한 뒤 확인해요');
+    fireEvent.click(reuse);
+    await waitFor(() => expect(reuse.getAttribute('aria-checked')).toBe('true'));
     const cam4 = (await screen.findByLabelText('카메라 4 높이 (m)')) as HTMLInputElement;
     await waitFor(() => expect(cam4.value).toBe('2.35'));
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
@@ -467,7 +476,7 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(setupMock.submittedBodies[0]).toMatchObject({ mode: 'REUSE' });
   });
 
-  it('재사용 안에서 최근 완료 맵을 날짜와 고르고, 추천 맵이 기본이며 어긋난 맵은 이유와 함께 꺼지고, 시작하면 바로 구역 단계로 간다', async () => {
+  it('재사용을 고르면 최근 완료 맵을 날짜와 고르고, 추천 맵이 먼저 골라지며 어긋난 맵은 이유와 함께 꺼지고, 시작하면 바로 구역 단계로 간다', async () => {
     const candidate = (id: string, overrides: Record<string, unknown>) => ({
       setup_session_id: id,
       scene_version: `scene-${id}`,
@@ -517,6 +526,15 @@ describe('설치 · 보정 1단계 화면', () => {
     const maps = await screen.findByRole('radiogroup', { name: '재사용할 맵' });
     const options = within(maps).getAllByRole('radio') as HTMLButtonElement[];
     expect(options).toHaveLength(4);
+    // 기본은 새 맵이라 맵 목록은 꺼져 있다. 재사용을 고르면 추천 맵이 골라진다(S15P31A101-762)
+    expect(options[0]!.disabled).toBe(true);
+    expect(options[0]!.getAttribute('aria-checked')).toBe('false');
+    const group = screen.getByRole('radiogroup', { name: '맵 방식' });
+    const reuse = within(group).getByRole('radio', {
+      name: /^이전 맵 재사용/,
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(reuse.disabled).toBe(false));
+    fireEvent.click(reuse);
     await waitFor(() => expect(options[0]!.getAttribute('aria-checked')).toBe('true'));
     expect(options[0]!.textContent).toContain('11-12(목) 15:20');
     expect(options[0]!.textContent).toContain('추천');
