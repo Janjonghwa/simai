@@ -802,8 +802,10 @@ def test_baked_layers_sit_below_code_and_token_is_only_a_buildkit_secret():
     unified = text[text.index("FROM unified-deps AS unified\n"):]
     code_at = unified.index("COPY ai/src ./src")
     for name in _baked_in_dockerfile():
-        line = f"COPY --link --from={name} /out/ /opt/simai/baked/"
+        line = f"COPY --link --from={name} /out/ /\n"
         assert line in unified and unified.index(line) < code_at, name  # 코드·apt 층보다 앞, 앞 층과 무관한 --link
+        # 대상이 / 라야 부모 폴더(opt/·opt/simai/)를 복사 시각으로 만들지 않는다: 단계 출력이 이미지 안 경로 그대로(S15P31A101-768)
+        assert "python /tmp/bake_weight.py /out/opt/simai/baked " in _baked_in_dockerfile()[name]["run"], name
     assert "SIMAI_BAKED_WEIGHTS=/opt/simai/baked" in unified
     tier0 = text[text.index("AS tier0\n"):text.index("AS unified-deps")]
     assert "baked" not in tier0  # tier0 타깃은 그대로(가중치 없음)
@@ -837,6 +839,17 @@ def test_bake_weight_writes_file_tag_and_epoch_mtime(bw, tmp_path, monkeypatch):
     assert f.read_bytes() == data and f.with_name("big-lama.pt.sha256").read_text(encoding="utf-8").strip() == sha
     assert {p.stat().st_mtime for p in (tmp_path / "out").rglob("*")} == {0}  # 다시 받아도 같은 층
     assert not list(f.parent.glob("*.part"))
+
+
+def test_bake_weight_zeroes_mtime_of_ancestors_it_created(bw, tmp_path, monkeypatch):
+    """출력 폴더가 이미지 안 경로 그대로(/out/opt/simai/baked)라 opt/·opt/simai/ 도 층에 들어간다: 새로 만든 조상까지 0 (S15P31A101-768)"""
+    data = b"yolo" * 10
+    monkeypatch.setattr(bw.urllib.request, "urlopen", lambda req, timeout: _Resp(data))
+    out = tmp_path / "out" / "opt" / "simai" / "baked"
+    assert bw.main([str(out), "weights/yolo/y.pt", hashlib.sha256(data).hexdigest(), "https://example.invalid/y.pt"]) == 0
+    assert {p.stat().st_mtime for p in (tmp_path / "out").rglob("*")} == {0}
+    assert (tmp_path / "out").stat().st_mtime == 0
+    assert tmp_path.stat().st_mtime != 0  # 원래 있던 폴더는 건드리지 않는다
 
 
 def test_bake_weight_sends_secret_token_only_unredirected_and_never_prints_it(bw, tmp_path, monkeypatch, capsys):
