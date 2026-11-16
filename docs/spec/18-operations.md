@@ -13,6 +13,7 @@
 7. 무보행 보정·품질 게이트 및 1인 보행 「카메라 확인」 통과 확인: 진행 화면에서 자동 파이프라인(깨끗한 배경 20~30초 누적 → 무마커 내부 파라미터 → 상주 MapAnything 초기 자세·점구름 및 World 자동 정의 → 인접 쌍 배경 특징점 V2 공동 번들 조정·절대 품질 게이트 `quality_gate` 검산 → `CALIBRATED` 발행 + 빠른 3D 미리보기 맵 `preview_scene`·VLM 위험구역 초안 `vlm_zone_draft` 병렬 생성)을 확인하고, 보정 발행 직후 **현장 1명이 작업 영역을 30~60초 걸어 다니며 「카메라 확인」(`camera_check = PASSED`, 6쌍 통과율·LOO 재투영 기준선 확보, 4.3)**과 정밀 맵 완료를 통과하는지 확인한다. 기준 미달(`FAILED`)이면 안내된 원인에 따라 카메라 각도·겹침 물체·보행 범위를 조정한 뒤 **“다시 시도”**(`POST /api/setup-sessions/{id}/retry`)를 누른다.
 8. 세팅 구역 검토·VLM 초안 조정 및 구성 묶음 발행: 세팅 구역 확인·실시간 관제 관리자 편집 모드에서 신규 VLM 위험구역·고소 작업면 초안(`vlm_zone_draft`, “AI 초안”)과 이전 세팅 이관 구역(높이 변화 판정 `CHANGE_SUSPECTED` → `UNKNOWN` → `UNCHANGED` 정렬, `UNCHANGED` 만 일괄 확인 가능, `CHANGE_SUSPECTED` 는 VLM 전후 크롭 의견 `KEEP`·`MODIFY`·`REMOVE` 참고, 8.2)을 검토·조정하고, 추가 위험구역(`CRITICAL` 빨강·`HIGH` 주황 2종) 및 고소 작업면(그리면 작업면 OBB + 둘레 `HIGH` 구역 동시 생성, 7.5·8.2) 등록 → `POST /api/zones/commit` 저장·구성 묶음 발행(초안 확정, 카메라 확인 통과 후 허용) → “현장 적용됨” 확인.
 9. 시험 알림 확인: 노트북 로컬 시험음. “시험” 표시가 나오는지 본다(RiskEvent 는 만들지 않음, 3.10).
+10. 재생 시험 스위치 확인: 본 시연(라이브 카메라) 전에 EC2 `/opt/simai/.env` 의 `SIMAI_REPLAY_TEST_ALERTS`·`SIMAI_REPLAY_TEST_SKIP_CAMERA_CHECK` 와 노트북 `.env` 의 `SIMAI_REPLAY_TEST_ALERTS` 를 끄고 서버·현장 경보 단말을 다시 띄운다(기동 로그에 `ReplayTestSwitch` 경고가 없어야 함). 재생 시험으로 걷기를 건너뛴 세팅은 끈 뒤 완료할 수 없으므로 라이브 카메라로 새 세팅을 한다(3.10, 4.3).
 
 **네트워크 보충.**
 
