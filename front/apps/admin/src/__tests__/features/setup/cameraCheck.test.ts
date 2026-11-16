@@ -3,7 +3,12 @@ import {
   cameraCheckFailed,
   deriveCameraCheckView,
   deriveCameraWalkView,
+  LIVE_HOLD_MS,
+  liveCameras,
+  NO_PERSON_WARN_MS,
+  trackLiveCameras,
   WALK_TARGET_SECONDS,
+  walkGuide,
   walkStatus,
 } from '@/features/setup/cameraCheck';
 import {
@@ -323,6 +328,8 @@ describe('걷기 창(S15P31A101-687)', () => {
     shortage.problems = [
       { kind: 'CAMERA', id: 'cam_D', camera_ids: ['cam_D'], reason: 'FEW_SAMPLES', message: 'x' },
     ];
+    // 워커는 관측 수가 모자란 카메라에 FEW_SAMPLES 를 단다(관측은 찼는데 FEW_SAMPLES 면 재투영 표본 부족, S15P31A101-763)
+    shortage.cameras.cam_D!.observed_views = 10;
     const retry = deriveCameraWalkView(
       withPhase({
         camera_check: {
@@ -409,5 +416,188 @@ describe('걷기 창 상태 문구(S15P31A101-719)', () => {
   it('카운트다운 기준은 세션과 워커 시도 ID 라 다시 시도한 세션의 1번 시도는 새로 센다', () => {
     expect(walking(none, 'lease-01').attemptKey).toBe('s-646:lease-01');
     expect(walking(none, 'lease-02').attemptKey).not.toBe(walking(none, 'lease-01').attemptKey);
+  });
+});
+
+describe('걷기 안내·지금 보는 카메라(S15P31A101-763)', () => {
+  const walkingView = (
+    cameras: Record<
+      string,
+      Partial<{ observed_views: number; loo_samples: number; person_visible: boolean }>
+    >,
+    patch: Record<string, unknown> = {},
+    attemptId = 'lease-01',
+  ) => {
+    const check = buildCameraCheck(CAMS, 'cal-763', 'MEASURING', 0);
+    for (const [id, c] of Object.entries(cameras)) Object.assign(check.cameras[id]!, c);
+    return deriveCameraWalkView(
+      session({
+        status: 'JOINT_BA_AND_VERIFY',
+        progress_pct: 65,
+        camera_check: {
+          ...check,
+          attempt: { no: 1, id: attemptId, started_at_ms: 1, expires_at_ms: 2 },
+          ...patch,
+        },
+        camera_check_phase: 'WALKING',
+      }),
+      CAMS,
+    );
+  };
+  const counts = (a: number, b: number, c: number, d: number) => ({
+    cam_A: { observed_views: a },
+    cam_B: { observed_views: b },
+    cam_C: { observed_views: c },
+    cam_D: { observed_views: d },
+  });
+
+  it('걷기 전 안내는 한 사람·방 가운데·옆 카메라 쌍 고리·60~90초를 쉬운 문장으로 준다', () => {
+    const lines = walkGuide(CAMS);
+    expect(lines).toEqual([
+      '한 사람만 걸어요. 다른 사람은 카메라 밖에 있어 주세요.',
+      '방 가운데(카메라 4대가 모두 보는 곳)를 천천히 크게 돌아요.',
+      '옆 카메라 둘이 함께 보는 곳을 한 번씩 지나가요: 카메라 1–카메라 2, 카메라 2–카메라 3, 카메라 3–카메라 4, 카메라 4–카메라 1.',
+      '60~90초 걸어요. 확인이 끝나면 창이 저절로 닫혀요.',
+    ]);
+    const view = deriveCameraWalkView(
+      session({
+        status: 'JOINT_BA_AND_VERIFY',
+        camera_check: buildCameraCheck(CAMS, 'cal-763', 'AWAITING_START', 0),
+        camera_check_phase: 'AWAITING_START',
+      }),
+      CAMS,
+    );
+    expect(walkStatus(view, WALK_TARGET_SECONDS).status).toBe(
+      '보정이 끝났습니다. 아래처럼 걸으면 확인이 끝납니다.',
+    );
+  });
+
+  it('요약 사이 관측 수가 늘어난 카메라만 켜고, 한동안 늘지 않으면 끈다(처음 받은 값은 기준)', () => {
+    const t0 = 1_000_000;
+    let tracker = trackLiveCameras(null, walkingView(counts(10, 10, 0, 0)), t0);
+    // 창을 늦게 열어 이미 쌓인 수는 지금 보는 것으로 치지 않는다
+    expect(liveCameras(tracker, walkingView(counts(10, 10, 0, 0))).liveCount).toBe(0);
+
+    const second = walkingView(counts(14, 10, 3, 0));
+    tracker = trackLiveCameras(tracker, second, t0 + 2_000);
+    const live = liveCameras(tracker, second);
+    expect(live.liveCount).toBe(2);
+    expect(live.total).toBe(4);
+    expect(live.cameras.filter((c) => c.live).map((c) => c.label)).toEqual([
+      '카메라 1',
+      '카메라 3',
+    ]);
+    expect(live.noPerson).toBe(false);
+
+    // 같은 요약을 다시 받아도(워커 2초 주기와 어긋남) 잠깐은 켜 둔다
+    tracker = trackLiveCameras(tracker, second, t0 + 2_000 + LIVE_HOLD_MS);
+    expect(liveCameras(tracker, second).liveCount).toBe(2);
+    tracker = trackLiveCameras(tracker, second, t0 + 2_000 + LIVE_HOLD_MS + 1);
+    expect(liveCameras(tracker, second).liveCount).toBe(0);
+  });
+
+  it('워커가 최근 보였다고 한 카메라(person_visible)도 켠다', () => {
+    const view = walkingView({ cam_B: { observed_views: 5, person_visible: true } });
+    const tracker = trackLiveCameras(null, view, 500);
+    const live = liveCameras(tracker, view);
+    expect(live.cameras.map((c) => c.live)).toEqual([false, true, false, false]);
+  });
+
+  it('걷는 중 약 5초 동안 어느 카메라도 늘지 않으면 사람이 안 보인다고 알리고, 늘면 풀린다', () => {
+    const t0 = 50_000;
+    const still = walkingView(counts(0, 0, 0, 0));
+    let tracker = trackLiveCameras(null, still, t0);
+    tracker = trackLiveCameras(tracker, still, t0 + NO_PERSON_WARN_MS - 1);
+    expect(liveCameras(tracker, still).noPerson).toBe(false);
+    tracker = trackLiveCameras(tracker, still, t0 + NO_PERSON_WARN_MS);
+    expect(liveCameras(tracker, still).noPerson).toBe(true);
+
+    const moved = walkingView(counts(0, 0, 0, 2));
+    tracker = trackLiveCameras(tracker, moved, t0 + NO_PERSON_WARN_MS + 500);
+    expect(liveCameras(tracker, moved).noPerson).toBe(false);
+    expect(liveCameras(tracker, moved).liveCount).toBe(1);
+    // 마지막으로 늘어난 뒤 다시 5초가 지나면 또 알린다
+    tracker = trackLiveCameras(tracker, moved, t0 + 2 * NO_PERSON_WARN_MS + 500);
+    expect(liveCameras(tracker, moved).noPerson).toBe(true);
+  });
+
+  it('시도가 바뀌면(확인만 다시) 처음부터 센다', () => {
+    let tracker = trackLiveCameras(null, walkingView(counts(10, 0, 0, 0)), 0);
+    tracker = trackLiveCameras(tracker, walkingView(counts(20, 0, 0, 0)), 1_000);
+    expect(liveCameras(tracker, walkingView(counts(20, 0, 0, 0))).liveCount).toBe(1);
+    const next = walkingView(counts(3, 0, 0, 0), {}, 'lease-02');
+    tracker = trackLiveCameras(tracker, next, 2_000);
+    expect(tracker.startedMs).toBe(2_000);
+    expect(liveCameras(tracker, next).liveCount).toBe(0);
+  });
+
+  it('아직 0 인 필수 쌍을 짚고, 사람은 충분히 보였는데 재투영 표본이 모자란 카메라에 방 가운데를 안내한다(응답 기준값 우선)', () => {
+    const full = {
+      cam_A: { observed_views: 100, loo_samples: 5 },
+      cam_B: { observed_views: 100, loo_samples: 25 },
+      cam_C: { observed_views: 100, loo_samples: 25 },
+      cam_D: { observed_views: 10, loo_samples: 0 },
+    };
+    const view = walkingView(full, { thresholds: { min_loo_samples: 20 } });
+    expect(view.cameras.map((c) => c.looShort)).toEqual([true, false, false, false]);
+    expect(view.cameras[0]!.looNeed).toBe(20);
+    // buildCameraCheck(0%) 는 쌍 표본이 모두 0 이라 필수(옆) 쌍만 0 으로 짚는다
+    expect(view.pairs.filter((p) => p.zero).map((p) => p.label)).toEqual([
+      '카메라 1–카메라 2',
+      '카메라 1–카메라 4',
+      '카메라 2–카메라 3',
+      '카메라 3–카메라 4',
+    ]);
+    // criteria 로 온 기준값도 읽는다
+    const relaxed = walkingView(full, { criteria: { min_loo_samples: 4 } });
+    expect(relaxed.cameras[0]!.looShort).toBe(false);
+    expect(relaxed.cameras[0]!.looNeed).toBe(4);
+    // 기준값이 없으면 워커 기본 20
+    expect(walkingView(full).cameras[0]!.looNeed).toBe(20);
+
+    // 카운트다운이 끝났는데 쌍·카메라 관측은 찼고 재투영 표본만 모자라면 방 가운데로 안내한다
+    const pairsFull = buildCameraCheck(CAMS, 'cal-763', 'MEASURING', 100);
+    const onlyLoo = deriveCameraWalkView(
+      session({
+        status: 'JOINT_BA_AND_VERIFY',
+        camera_check: {
+          ...pairsFull,
+          cameras: {
+            ...pairsFull.cameras,
+            cam_C: { ...pairsFull.cameras.cam_C!, loo_samples: 3 },
+          },
+          attempt: { no: 1, id: 'lease-01', started_at_ms: 1, expires_at_ms: 2 },
+        },
+        camera_check_phase: 'WALKING',
+      }),
+      CAMS,
+    );
+    expect(walkStatus(onlyLoo, 0).status).toBe(
+      '방 가운데(카메라 4대가 모두 보는 곳)를 지나가 주세요. 아직 모자란 카메라: 카메라 3.',
+    );
+  });
+
+  it('사람은 충분히 보였는데 FEW_SAMPLES 로 끝난 카메라는 방 가운데로 다시 걷게 안내한다(-759)', () => {
+    const check = buildCameraCheck(CAMS, 'cal-763', 'INCOMPLETE', 100);
+    check.problems = [
+      { kind: 'CAMERA', id: 'cam_B', camera_ids: ['cam_B'], reason: 'FEW_SAMPLES', message: 'x' },
+    ];
+    const retry = deriveCameraWalkView(
+      session({
+        status: 'JOINT_BA_AND_VERIFY',
+        camera_check: {
+          ...check,
+          attempt: { no: 1, id: 'l-1', started_at_ms: 1, expires_at_ms: 2 },
+          user_wait: { until_ms: 1, wait_s: 200 },
+        },
+        camera_check_phase: 'RETRY_WAIT',
+      }),
+      CAMS,
+    );
+    expect(retry.failure).toEqual({
+      kind: 'shortage',
+      title: '카메라 2에 다른 카메라와 함께 보인 시간이 모자랐습니다',
+      action: '방 가운데(카메라 4대가 모두 보는 곳)를 천천히 돌며 다시 걸어 주세요',
+    });
   });
 });

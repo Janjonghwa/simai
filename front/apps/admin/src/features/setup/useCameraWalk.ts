@@ -1,6 +1,13 @@
-import { WALK_TARGET_SECONDS } from '@/features/setup/cameraCheck';
+import {
+  type CameraWalkView,
+  type LiveCameraTracker,
+  type LiveCamerasView,
+  WALK_TARGET_SECONDS,
+  liveCameras,
+  trackLiveCameras,
+} from '@/features/setup/cameraCheck';
 import type { CameraCheckPhase } from '@/features/setup/types';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const TICK_MS = 1_000;
 
@@ -27,4 +34,31 @@ export function useWalkCountdown(phase: CameraCheckPhase | null, attemptKey: str
   }, [walking, attemptKey]);
   if (!walking || started === null || started.attempt !== attemptKey) return WALK_TARGET_SECONDS;
   return Math.max(0, WALK_TARGET_SECONDS - Math.floor((now - started.at) / 1000));
+}
+
+const LIVE_TICK_MS = 500;
+
+/**
+ * 걷는 중 「지금 보는 카메라」(S15P31A101-763). 0.5초마다 지금 요약의 카메라별 관측 수를 앞 값과 견줘 늘어난 카메라를 켜고, 한동안
+ * 아무 카메라도 늘지 않으면 사람이 안 보인다고 알린다(계산은 trackLiveCameras·liveCameras). 걷는 중이 아니면 null.
+ */
+export function useLiveCameras(view: CameraWalkView): LiveCamerasView | null {
+  const walking = view.phase === 'WALKING';
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  const [tracker, setTracker] = useState<LiveCameraTracker | null>(null);
+  useEffect(() => {
+    if (!walking) return;
+    const tick = () => setTracker((prev) => trackLiveCameras(prev, viewRef.current, Date.now()));
+    const first = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, LIVE_TICK_MS);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [walking]);
+  if (!walking || tracker === null || tracker.attemptKey !== view.attemptKey) return null;
+  return liveCameras(tracker, view);
 }

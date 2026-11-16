@@ -1298,7 +1298,11 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     });
 
     const dialog = await screen.findByRole('dialog', { name: '카메라 확인' }, POLL_WAIT);
-    expect(within(dialog).getByRole('status').textContent).toContain('30초');
+    // 걷기 전 안내는 걷는 방법 목록으로 보인다(S15P31A101-763: 한 사람·방 가운데·옆 쌍·60~90초)
+    expect(within(dialog).getByRole('status').textContent).toContain('아래처럼 걸으면');
+    expect(within(dialog).getByRole('list', { name: '걷는 방법' }).textContent).toContain(
+      '60~90초',
+    );
     expect(dialog.textContent).toContain('약 7분 안에 시작하지 않으면');
     // 보정 멈춤 안내(카메라 연결 관리로)는 띄우지 않는다. 걷는 동안 실수로 닫히지 않는다
     expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
@@ -1311,6 +1315,8 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
 
     // 시도 1 이 카메라 4 표본 부족으로 끝나면 같은 창에 안내하고 「확인만 다시(30초)」 가 주 단추다
     const shortage = buildCameraCheck(cams, 'cal-687', 'INCOMPLETE', 70);
+    // 워커는 관측 수가 모자란 카메라에 FEW_SAMPLES 를 단다(관측이 찼으면 재투영 표본 부족 안내, S15P31A101-763)
+    shortage.cameras.cam_D!.observed_views = 10;
     setupMock.updateSession(sessionId, {
       camera_check: {
         ...shortage,

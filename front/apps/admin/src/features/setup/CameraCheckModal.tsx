@@ -4,11 +4,14 @@ import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import {
   type CameraWalkView,
+  type LiveCamerasView,
   WALK_TARGET_SECONDS,
   type WalkCameraView,
+  walkGuide,
   walkStatus,
 } from '@/features/setup/cameraCheck';
 import { readPreviewUrls } from '@/features/setup/SetupPanels';
+import { useLiveCameras } from '@/features/setup/useCameraWalk';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
 import { ACTION, ALERT, H2, NOTE, SECONDARY } from '@/features/tbm/styles';
 import { Button } from '@simai/ui/components/button';
@@ -19,6 +22,8 @@ import { useCallback } from 'react';
 // 사용자가 「걷기 시작」을 눌러야 확인이 시작되고(30초 목표), Esc·바깥 클릭으로 닫히지 않는다. 통과하면 부모가 창을 닫는다.
 // 실패하면 표본 부족(사람이 덜 보임)과 기하 실패(카메라 위치가 보정과 맞지 않음)를 나눠 안내하고, 주 단추는 「확인만 다시(30초)」
 // (보정은 그대로, 걷기만 다시)이고 「현재 시도 중단」은 보조다.
+// S15P31A101-763: 걷기 전에는 걷는 방법(한 사람·방 가운데·옆 카메라 쌍·60~90초)을, 걷는 중에는 「지금 보는 카메라 n/4」와 카메라별
+// 점등을 크게 보이고, 한동안 아무 카메라도 사람을 못 보면 경고한다. 아직 0 인 필수 쌍과 재투영 표본이 모자란 카메라를 짚는다.
 
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-xs backdrop-blur-[4px]';
@@ -27,10 +32,13 @@ function WalkTile({
   camera,
   attach,
   showCount,
+  live,
 }: {
   camera: WalkCameraView;
   attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
   showCount: boolean;
+  /** 지금 보는 카메라인지(걷는 중, S15P31A101-763). 모르면 null 이고 워커의 최근 보임(visible)을 쓴다. */
+  live: boolean | null;
 }) {
   const phase = useCctvStore((s) => s.views[camera.id]?.phase);
   const link = useCctvStore((s) => s.link);
@@ -40,6 +48,7 @@ function WalkTile({
     [attach, camera.id],
   );
   const done = camera.observed >= camera.need;
+  const visible = live ?? camera.visible;
   const ratio = Math.min(1, camera.need > 0 ? camera.observed / camera.need : 0);
   return (
     <li
@@ -62,15 +71,15 @@ function WalkTile({
               {link === 'stopped' ? '미리보기 멈춤(걷기 확인 계속)' : tileLabel(phase, link)}
             </span>
           </span>
-          {camera.visible !== null && (
+          {visible !== null && (
             <span
               className={cn(
                 CAPTION,
                 'top-2 right-2 font-semibold',
-                camera.visible ? 'text-ok' : 'text-muted-foreground',
+                visible ? 'text-ok' : 'text-muted-foreground',
               )}
             >
-              {camera.visible ? '사람 보임' : '사람 안 보임'}
+              {visible ? '사람 보임' : '사람 안 보임'}
             </span>
           )}
         </div>
@@ -80,10 +89,20 @@ function WalkTile({
           <span
             className={cn(
               'min-w-0 flex-1 truncate font-semibold',
-              done ? 'text-ok' : camera.flagged ? 'text-delay' : 'text-muted-foreground',
+              camera.looShort
+                ? 'text-delay'
+                : done
+                  ? 'text-ok'
+                  : camera.flagged
+                    ? 'text-delay'
+                    : 'text-muted-foreground',
             )}
           >
-            {done ? '충분히 보임' : `사람 보인 횟수 ${camera.observed}/${camera.need}`}
+            {camera.looShort
+              ? `방 가운데를 지나세요 · 함께 보임 ${camera.looSamples}/${camera.looNeed}`
+              : done
+                ? '충분히 보임'
+                : `사람 보인 횟수 ${camera.observed}/${camera.need}`}
           </span>
           <span
             role="progressbar"
@@ -101,6 +120,66 @@ function WalkTile({
         </div>
       )}
     </li>
+  );
+}
+
+/** 걷기 시작 전 걷는 방법(S15P31A101-763). */
+function WalkGuide({ cameraIds }: { cameraIds: readonly string[] }) {
+  return (
+    <ol
+      aria-label="걷는 방법"
+      className="mx-5 mb-3 flex flex-none list-decimal flex-col gap-1 rounded-lg border border-border bg-surface-2 py-3 pr-4 pl-9 text-base font-medium"
+    >
+      {walkGuide(cameraIds).map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+    </ol>
+  );
+}
+
+/** 걷는 중 「지금 보는 카메라 n/4」와 카메라별 점등(S15P31A101-763). */
+function LiveCameras({
+  live,
+  suppressWarning,
+}: {
+  live: LiveCamerasView;
+  suppressWarning: boolean;
+}) {
+  return (
+    <section
+      aria-label="지금 보는 카메라"
+      className="mx-5 mb-3 flex flex-none flex-col gap-2 rounded-lg border border-border px-4 py-3"
+    >
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <p className="text-2xl font-bold tabular-nums">
+          지금 보는 카메라 {live.liveCount}/{live.total}
+        </p>
+        <ul aria-label="카메라별 지금 보임" className="flex flex-wrap gap-2">
+          {live.cameras.map((c) => (
+            <li
+              key={c.id}
+              data-live={c.live}
+              aria-label={`${c.label} ${c.live ? '보는 중' : '안 보임'}`}
+              className={cn(
+                'flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold',
+                c.live ? 'border-ok text-ok' : 'border-border text-muted-foreground',
+              )}
+            >
+              <span
+                aria-hidden
+                className={cn('size-3 rounded-full', c.live ? 'bg-ok' : 'bg-surface-3')}
+              />
+              {c.label}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {live.noPerson && !suppressWarning && (
+        <p role="alert" className="text-lg font-semibold text-delay">
+          사람이 안 보입니다 — 카메라 앞으로 걸어 들어오세요
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -136,6 +215,7 @@ export function CameraCheckModal({
   const { phase, failure } = view;
   const walking = phase === 'WALKING';
   const retry = phase === 'RETRY_WAIT';
+  const live = useLiveCameras(view);
 
   const { status, hint } = walkStatus(view, secondsLeft);
 
@@ -180,6 +260,9 @@ export function CameraCheckModal({
             </div>
           )}
         </div>
+        {(phase === 'AWAITING_START' || phase === 'STARTING') && (
+          <WalkGuide cameraIds={view.cameras.map((c) => c.id)} />
+        )}
         {walking && (
           <div
             role="progressbar"
@@ -195,6 +278,7 @@ export function CameraCheckModal({
             />
           </div>
         )}
+        {live && <LiveCameras live={live} suppressWarning={hint !== null} />}
         <ul
           aria-label="카메라 영상"
           className="grid min-h-0 grid-cols-1 gap-4 overflow-y-auto px-5 pb-4 sm:grid-cols-2"
@@ -205,6 +289,7 @@ export function CameraCheckModal({
               camera={camera}
               attach={attach}
               showCount={walking || retry}
+              live={live?.cameras.find((c) => c.id === camera.id)?.live ?? null}
             />
           ))}
         </ul>
@@ -218,9 +303,11 @@ export function CameraCheckModal({
                 <li
                   key={pair.key}
                   data-shortage={pair.shortage}
+                  data-zero={pair.zero}
                   className={cn(
                     'rounded-md border border-border px-3 py-2',
                     pair.shortage && 'border-delay bg-delay/10 font-semibold text-delay',
+                    pair.zero && 'border-2',
                   )}
                 >
                   <p>{pair.label}</p>
@@ -229,6 +316,7 @@ export function CameraCheckModal({
                       ? `함께 보임 ${pair.samples}/${pair.need}`
                       : '함께 보임 확인 대상 아님'}
                   </p>
+                  {pair.zero && <p>아직 0 · 두 카메라 사이를 지나가세요</p>}
                 </li>
               ))}
             </ul>
