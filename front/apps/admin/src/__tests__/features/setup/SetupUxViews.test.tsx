@@ -191,6 +191,72 @@ describe('세팅 상태와 다음 행동(-732)', () => {
     expect(screen.getAllByText('충분히 보임')).toHaveLength(4);
   });
 
+  it('걷기 전에는 걷는 방법을, 걷는 중에는 지금 보는 카메라 수와 점등을 크게 보이고 한동안 아무도 안 보이면 경고한다(S15P31A101-763)', () => {
+    const walkSession = (phase: string, observed: readonly number[]) => {
+      const check = buildCameraCheck(IDS, 'cal', 'MEASURING', 0);
+      IDS.forEach((id, i) => (check.cameras[id]!.observed_views = observed[i]!));
+      return deriveCameraWalkView(
+        session({
+          camera_check_phase: phase,
+          camera_check: {
+            ...check,
+            attempt: { no: 1, id: 'lease-1', started_at_ms: 1, expires_at_ms: 2 },
+          },
+        }),
+        IDS,
+      );
+    };
+    const { rerender } = render(
+      <CameraCheckModal
+        view={walkSession('AWAITING_START', [0, 0, 0, 0])}
+        secondsLeft={30}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const guide = screen.getByRole('list', { name: '걷는 방법' });
+    expect(guide.textContent).toContain('한 사람만 걸어요');
+    expect(guide.textContent).toContain(
+      '방 가운데(카메라 4대가 모두 보는 곳)를 천천히 크게 돌아요',
+    );
+    expect(guide.textContent).toContain('60~90초');
+    expect(screen.queryByRole('region', { name: '지금 보는 카메라' })).toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      const modal = (observed: readonly number[]) => (
+        <CameraCheckModal
+          view={walkSession('WALKING', observed)}
+          secondsLeft={25}
+          onStart={vi.fn()}
+          onStop={vi.fn()}
+        />
+      );
+      rerender(modal([10, 0, 0, 0]));
+      act(() => vi.advanceTimersByTime(600));
+      expect(screen.queryByRole('list', { name: '걷는 방법' })).toBeNull();
+      const panel = screen.getByRole('region', { name: '지금 보는 카메라' });
+      expect(panel.textContent).toContain('지금 보는 카메라 0/4');
+      rerender(modal([20, 0, 5, 0]));
+      act(() => vi.advanceTimersByTime(600));
+      expect(panel.textContent).toContain('지금 보는 카메라 2/4');
+      expect(within(panel).getByLabelText('카메라 1 보는 중').getAttribute('data-live')).toBe(
+        'true',
+      );
+      expect(within(panel).getByLabelText('카메라 2 안 보임').getAttribute('data-live')).toBe(
+        'false',
+      );
+      expect(within(panel).queryByRole('alert')).toBeNull();
+      act(() => vi.advanceTimersByTime(5_000));
+      expect(panel.textContent).toContain('지금 보는 카메라 0/4');
+      expect(within(panel).getByRole('alert').textContent).toBe(
+        '사람이 안 보입니다 — 카메라 앞으로 걸어 들어오세요',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('AI 초안 기본 설명에 수치가 없고 원문·높이·신뢰도는 닫힌 자세히 안에 있다', () => {
     const response = setupZoneDraftsResponseSchema.parse(buildSetupZoneDraftsResponse('s1'));
     render(

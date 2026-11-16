@@ -176,6 +176,11 @@ export interface WalkCameraView {
   visible: boolean | null;
   /** 실패 안내가 짚은 카메라(창에서 테두리로 표시). */
   flagged: boolean;
+  /** 한 카메라 제외 재투영 표본 수와 목표(min_loo_samples, S15P31A101-759). 다른 카메라 여럿에 함께 보여야 쌓인다. */
+  looSamples: number;
+  looNeed: number;
+  /** 사람은 충분히 보였는데 재투영 표본이 모자라다(방 가운데를 지나야 찬다, S15P31A101-763). */
+  looShort: boolean;
 }
 
 export interface WalkFailure {
@@ -213,7 +218,28 @@ export interface WalkPairView {
   need: number;
   required: boolean;
   shortage: boolean;
+  /** 필수 쌍인데 아직 한 번도 함께 보이지 않았다(걷는 중 강조, S15P31A101-763). */
+  zero: boolean;
 }
+
+/**
+ * 워커 판정 기준 값(camera_check.thresholds, 계약 site_setup). 응답에 criteria 로 오면 그 값을 쓰고, 없거나 틀리면 기본값이다
+ * (기본값은 워커 기본 설정과 같다).
+ */
+function checkThreshold(check: CameraCheck | null, key: string, fallback: number): number {
+  if (!check) return fallback;
+  for (const group of ['thresholds', 'criteria']) {
+    const box: unknown = Reflect.get(check, group);
+    const value: unknown = typeof box === 'object' && box !== null ? Reflect.get(box, key) : null;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  }
+  return fallback;
+}
+
+const minCameraViews = (check: CameraCheck | null) => checkThreshold(check, 'min_camera_views', 30);
+const minPairSamples = (check: CameraCheck | null) => checkThreshold(check, 'min_pair_samples', 30);
+/** 카메라별 한 카메라 제외 재투영 표본 목표(-759 FEW_SAMPLES 기준). 워커 기본 20. */
+const minLooSamples = (check: CameraCheck | null) => checkThreshold(check, 'min_loo_samples', 20);
 
 /** 실패 사유를 표본 부족·기하 실패로 나눠 「카메라 4에서 사람이 충분히 보이지 않았습니다」처럼 카메라 번호로 안내한다. */
 export function walkFailure(check: CameraCheck, cameraIds: readonly string[]): WalkFailure {
@@ -230,6 +256,16 @@ export function walkFailure(check: CameraCheck, cameraIds: readonly string[]): W
     const cams = [
       ...new Set(problems.filter((p) => p.kind === 'CAMERA').flatMap((p) => p.camera_ids)),
     ];
+    // 사람은 충분히 보였는데 FEW_SAMPLES 인 카메라는 4대에 함께 보인 표본(재투영)이 모자란 것이다(-759): 방 가운데로 안내한다
+    const seen = minCameraViews(check);
+    const looOnly =
+      cams.length > 0 && cams.every((id) => (check.cameras[id]?.observed_views ?? 0) >= seen);
+    if (looOnly)
+      return {
+        kind: 'shortage',
+        title: cams.map(label).join(', ') + '에 다른 카메라와 함께 보인 시간이 모자랐습니다',
+        action: '방 가운데(카메라 4대가 모두 보는 곳)를 천천히 돌며 다시 걸어 주세요',
+      };
     if (cams.length > 0)
       return {
         kind: 'shortage',
@@ -270,15 +306,6 @@ const OPEN_PHASES = new Set<CameraCheckPhase>([
   'RETRY_WAIT',
 ]);
 
-function minCameraViews(check: CameraCheck | null): number {
-  const thresholds: unknown = check ? Reflect.get(check, 'thresholds') : null;
-  const value: unknown =
-    typeof thresholds === 'object' && thresholds !== null
-      ? Reflect.get(thresholds, 'min_camera_views')
-      : null;
-  return typeof value === 'number' && value > 0 ? value : 30;
-}
-
 /** 세션 조회의 camera_check·camera_check_phase 를 걷기 창 모양으로 바꾼다. 걷기 창 단계를 모르는 이전 서버면 열지 않는다. */
 export function deriveCameraWalkView(
   session: SetupSessionResponse | null | undefined,
@@ -292,11 +319,8 @@ export function deriveCameraWalkView(
   const flagged = new Set(retrying ? check.problems.flatMap((p) => p.camera_ids) : []);
   const showCounts = phase === 'WALKING' || phase === 'RETRY_WAIT';
   const ids = cameraIds.length > 0 ? cameraIds : Object.keys(check?.cameras ?? {});
-  const rawNeed: unknown = check ? Reflect.get(check, 'thresholds') : null;
-  const pairNeed: unknown =
-    rawNeed && typeof rawNeed === 'object' ? Reflect.get(rawNeed, 'min_pair_samples') : null;
-  const requiredSamples =
-    typeof pairNeed === 'number' && Number.isFinite(pairNeed) && pairNeed > 0 ? pairNeed : 30;
+  const requiredSamples = minPairSamples(check);
+  const looNeed = minLooSamples(check);
   return {
     open: phase !== null && OPEN_PHASES.has(phase),
     phase,
@@ -306,13 +330,18 @@ export function deriveCameraWalkView(
     progressPct: check && showCounts ? Math.max(0, Math.min(100, check.progress_pct)) : 0,
     cameras: ids.map((id) => {
       const cam = check?.cameras[id];
+      const observed = showCounts ? (cam?.observed_views ?? 0) : 0;
+      const looSamples = showCounts ? (cam?.loo_samples ?? 0) : 0;
       return {
         id,
         label: cameraShortLabel(cameraIds, id),
-        observed: showCounts ? (cam?.observed_views ?? 0) : 0,
+        observed,
         need,
         visible: phase === 'WALKING' ? (cam?.person_visible ?? null) : null,
         flagged: flagged.has(id),
+        looSamples,
+        looNeed,
+        looShort: showCounts && cam !== undefined && observed >= need && looSamples < looNeed,
       };
     }),
     // 걷기는 서버가 검사하는 모든 쌍을 표시한다(보정 오차 표의 옆 쌍 제한과 다름).
@@ -326,6 +355,7 @@ export function deriveCameraWalkView(
           need: requiredSamples,
           required: pair.required,
           shortage: showCounts && pair.required && pair.samples < requiredSamples,
+          zero: showCounts && pair.required && pair.samples === 0,
         },
       ];
     }),
@@ -351,10 +381,7 @@ export interface WalkStatus {
 export function walkStatus(view: CameraWalkView, secondsLeft: number): WalkStatus {
   const { phase } = view;
   if (phase === 'AWAITING_START')
-    return {
-      status: `보정이 끝났습니다. 한 사람이 카메라 ${view.cameras.length}대에 모두 보이도록 방 안을 ${WALK_TARGET_SECONDS}초 걸으면 확인이 끝납니다. 다른 사람은 카메라 밖에 있어 주세요.`,
-      hint: null,
-    };
+    return { status: '보정이 끝났습니다. 아래처럼 걸으면 확인이 끝납니다.', hint: null };
   if (phase === 'STARTING')
     return { status: '확인을 준비하는 중입니다. 곧 걷기를 시작합니다.', hint: null };
   if (phase !== 'WALKING')
@@ -373,13 +400,102 @@ export function walkStatus(view: CameraWalkView, secondsLeft: number): WalkStatu
     return { status: '걷는 중입니다. 카메라 사이 겹치는 곳을 고루 지나가 주세요.', hint };
   const short = view.cameras.filter((c) => c.observed < c.need).map((c) => c.label);
   const shortPairs = view.pairs.filter((p) => p.shortage).map((p) => p.label);
+  const looShort = view.cameras.filter((c) => c.looShort).map((c) => c.label);
   return {
     status:
       shortPairs.length > 0 && !nobody
         ? `함께 보인 횟수가 모자라요: ${shortPairs.join(', ')}. 두 카메라가 함께 보는 곳을 지나가 주세요.`
         : short.length > 0 && !nobody
           ? `조금만 더 걸어 주세요. 덜 보인 카메라: ${short.join(', ')}. 그 카메라 앞을 지나가면 끝납니다.`
-          : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.',
+          : looShort.length > 0 && !nobody
+            ? `방 가운데(카메라 ${view.cameras.length}대가 모두 보는 곳)를 지나가 주세요. 아직 모자란 카메라: ${looShort.join(', ')}.`
+            : '조금만 더 걸어 주세요. 사람이 덜 보인 카메라 앞을 지나가면 끝납니다.',
     hint,
+  };
+}
+
+// ---- 걷기 전 안내·지금 보는 카메라(S15P31A101-763) ----
+// 11-15~16 걷기 확인 실패 중 「어느 카메라에서도 사람이 보이지 않았습니다」 3회, 「함께 보인 시간 0/30」 1회. 누적 수치만으로는 걷는 사람이
+// 지금 몇 대에 잡히는지, 어디를 걸어야 하는지 몰랐다. 계약·서버를 바꾸지 않고 기존 요약(observed_views·person_visible)으로만 계산한다.
+
+/** 걷기 시작 전 안내(걷는 방법). 옆 카메라 쌍은 카메라 순서대로 고리를 돈다(1–2, 2–3, 3–4, 4–1). */
+export function walkGuide(cameraIds: readonly string[]): string[] {
+  const n = cameraIds.length;
+  const starts = n < 2 ? [] : n === 2 ? [0] : cameraIds.map((_, i) => i);
+  const ring = starts.map((i) => pairLabel(cameraIds, cameraIds[i]!, cameraIds[(i + 1) % n]!));
+  return [
+    '한 사람만 걸어요. 다른 사람은 카메라 밖에 있어 주세요.',
+    `방 가운데(카메라 ${n}대가 모두 보는 곳)를 천천히 크게 돌아요.`,
+    ...(ring.length > 0
+      ? [`옆 카메라 둘이 함께 보는 곳을 한 번씩 지나가요: ${ring.join(', ')}.`]
+      : []),
+    '60~90초 걸어요. 확인이 끝나면 창이 저절로 닫혀요.',
+  ];
+}
+
+/** 이만큼(ms) 안에 관측 수가 늘었으면 「지금 보는」 카메라로 켠다. 워커 요약은 2초마다 오고 화면도 2초마다 받아 한 번 건너뛸 수 있다. */
+export const LIVE_HOLD_MS = 4_500;
+/** 걷는 중 이만큼(ms) 동안 어느 카메라도 관측 수가 늘지 않으면 「사람이 안 보입니다」 경고. */
+export const NO_PERSON_WARN_MS = 5_000;
+
+/** 지금 보는 카메라 추적 상태(브라우저 시계). 시도(attemptKey)가 바뀌면 새로 시작한다. */
+export interface LiveCameraTracker {
+  attemptKey: string;
+  /** 이 시도의 걷기를 처음 본 시각. */
+  startedMs: number;
+  /** 마지막으로 계산한 시각. */
+  nowMs: number;
+  /** 카메라별 마지막으로 받은 관측 수. */
+  counts: Readonly<Record<string, number>>;
+  /** 카메라별 관측 수가 마지막으로 늘었거나 워커가 최근 보였다고 한(person_visible) 시각. */
+  seenMs: Readonly<Record<string, number>>;
+}
+
+/** 시계가 갈 때마다 지금 요약의 카메라별 관측 수를 앞 값과 견줘 늘어난 카메라를 기록한다. 순수 함수다. */
+export function trackLiveCameras(
+  prev: LiveCameraTracker | null,
+  view: CameraWalkView,
+  nowMs: number,
+): LiveCameraTracker {
+  const base = prev !== null && prev.attemptKey === view.attemptKey ? prev : null;
+  const counts: Record<string, number> = {};
+  const seenMs: Record<string, number> = base ? { ...base.seenMs } : {};
+  for (const camera of view.cameras) {
+    counts[camera.id] = camera.observed;
+    // 처음 본 값은 기준이다(창을 늦게 열면 이미 쌓인 수가 있다). 그 뒤 늘었으면 지금 보는 것이다
+    const before = base?.counts[camera.id];
+    const grew = before !== undefined && camera.observed > before;
+    if (grew || camera.visible === true) seenMs[camera.id] = nowMs;
+  }
+  return {
+    attemptKey: view.attemptKey,
+    startedMs: base ? base.startedMs : nowMs,
+    nowMs,
+    counts,
+    seenMs,
+  };
+}
+
+export interface LiveCamerasView {
+  cameras: { id: string; label: string; live: boolean }[];
+  liveCount: number;
+  total: number;
+  /** 걷는 중 NO_PERSON_WARN_MS 동안 어느 카메라도 늘지 않았다. */
+  noPerson: boolean;
+}
+
+/** 추적 상태를 「지금 보는 카메라 n/4」 표시로 바꾼다. */
+export function liveCameras(tracker: LiveCameraTracker, view: CameraWalkView): LiveCamerasView {
+  const now = tracker.nowMs;
+  const cameras = view.cameras.map((c) => {
+    const seen = tracker.seenMs[c.id];
+    return { id: c.id, label: c.label, live: seen !== undefined && now - seen <= LIVE_HOLD_MS };
+  });
+  const lastSeen = Math.max(tracker.startedMs, ...Object.values(tracker.seenMs));
+  return {
+    cameras,
+    liveCount: cameras.filter((c) => c.live).length,
+    total: cameras.length,
+    noPerson: cameras.length > 0 && now - lastSeen >= NO_PERSON_WARN_MS,
   };
 }
