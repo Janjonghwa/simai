@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .reconstruct import ReconstructionError, read_json, sha256, write_json
+from .reconstruct import ALIGNMENT_REFERENCE_FILE, ReconstructionError, read_json, sha256, write_json
 
 
 def prepare(root: Path) -> None:
@@ -285,9 +285,12 @@ def solve_fixed_alignment(
     """MapAnything Run(ma_dir, 기본 root/mapanything) → 보정 World similarity M 과 기록. 쓰지 않는다.
 
     고정 카메라(job.json 의 images = 보정 카메라)만으로 푼다. Run 에 다른 view(세팅 보조 촬영 프레임)가 있어도 정렬·바닥 점에
-    넣지 않는다(World 는 고정 카메라 4대만, S15P31A101-605). 고정 카메라가 하나라도 빠지면 실패다."""
+    넣지 않는다(World 는 고정 카메라 4대만, S15P31A101-605). 고정 카메라가 하나라도 빠지면 실패다.
+    정렬 기준 문서(`ALIGNMENT_REFERENCE_FILE`)가 있으면 calibration.json 대신 그 문서로 맞춘다(S15P31A101-760: 걷기 다듬기 보정은 같은 World
+    에서 카메라를 옮긴 것이라 MapAnything 중심 그대로인 처음 보정으로 정렬한다)."""
     ma_dir = ma_dir or root / "mapanything"
-    cal = read_json(root / "calibration.json")
+    reference = root / ALIGNMENT_REFERENCE_FILE
+    cal = read_json(reference if reference.is_file() else root / "calibration.json")
     cams = {c["camera_id"]: c for c in cal["cameras"]}
     all_views = read_json(ma_dir / "cameras.json")["views"]
     job_doc = read_json(root / "job.json")
@@ -334,7 +337,8 @@ def solve_fixed_alignment(
     return M, {"format": "simai.world_alignment", "status": "OK",
                "cameras_json_sha256": sha256((ma_dir / "cameras.json").read_bytes()),
                "mapanything_to_world": M.tolist(), "calibration": cal,
-               "max_center_residual_m": float(residual.max()), "scale": scale, **floor_meta}
+               "max_center_residual_m": float(residual.max()), "scale": scale,
+               "alignment_reference": reference.is_file(), **floor_meta}
 
 
 def align_to_calibration(

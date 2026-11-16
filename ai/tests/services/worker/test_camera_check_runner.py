@@ -59,6 +59,50 @@ def test_runner_reads_tier0_views_passes_and_writes_baseline(tmp_path):
     assert runner.poll() == summary  # 끝난 뒤에는 같은 판정
 
 
+def test_runner_refines_a_failed_attempt_from_its_views_and_writes_the_new_baseline(tmp_path):
+    """S15P31A101-760: 기하 실패한 시도의 views.jsonl 전체로 걷기 다듬기를 돌리고 기록을 시도 폴더에 남긴다. 채택하면 새 버전 기준선을 쓴다."""
+    truth, candidate = cc._doc(), cc._doc(rotate={"cam2": 3.0})
+    runner = _runner(tmp_path)
+    assert runner.refine_walk(candidate, camera_heights_m={}) is None  # 연 시도가 없다
+    runner.start(SESSION, candidate, expires_at_ms=cc.T0 + 600_000, attempt_id="lease760-1")
+    path = session_views_path(tmp_path, SESSION, "lease760-1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for t, views in cc._walk(truth):
+            fh.write(json.dumps(views_to_json(t, views)) + "\n")
+        fh.write('{"t": 1, "views": [')  # 쓰는 중인 마지막 줄은 건너뛴다
+    assert runner.poll()["status"] == "FAILED"
+    heights = {cid: pos[2] for cid, pos in cc.CORNERS.items()}
+    result = runner.refine_walk(candidate, camera_heights_m=heights)
+    assert result is not None and result.adopted, result.reasons
+    version = result.calibration_doc["calibration_version"]
+    written = json.loads((path.parent / "walk_refinement.json").read_text(encoding="utf-8"))
+    assert written["adopted"] is True and written["new_calibration_version"] == version
+    assert load_baseline(tmp_path, version) is None
+    runner.adopt_walk(result)
+    record = load_baseline(tmp_path, version)
+    assert record is not None and set(record.verified_camera_ids) == set(cc.CORNERS)
+
+
+def test_runner_rechecks_the_attempt_with_ring_pairs_and_records_the_fallback(tmp_path):
+    """-760 후속: 다듬기를 채택하지 않은 시도를 -759 규칙(옆 쌍만 막음)으로 다시 판정한다. 통과하면 그 보정 기준선을 쓰고 기록을 남긴다."""
+    truth = cc._doc()
+    runner = _runner(tmp_path)
+    assert runner.recheck_walk(truth) is None  # 연 시도가 없다
+    runner.start(SESSION, truth, expires_at_ms=cc.T0 + 600_000, attempt_id="lease760-2")
+    path = session_views_path(tmp_path, SESSION, "lease760-2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for t, views in cc._walk(truth):
+            fh.write(json.dumps(views_to_json(t, views)) + "\n")
+    summary = runner.recheck_walk(truth, blocking_pairs=cc.RING_PAIRS)
+    assert summary["status"] == "PASSED" and summary["pairs"]["cam1-cam3"]["required"] is False
+    written = json.loads((path.parent / "walk_refinement.json").read_text(encoding="utf-8"))
+    assert written["fallback_759"]["status"] == "PASSED"
+    assert written["fallback_759"]["note"] == "대각 미해결로 -759 기준 통과"
+    assert load_baseline(tmp_path, "cal-check-1") is not None
+
+
 def test_runner_incomplete_when_no_views(tmp_path):
     runner = _runner(tmp_path)
     runner.start(SESSION, cc._doc(), expires_at_ms=cc.T0 + 1)

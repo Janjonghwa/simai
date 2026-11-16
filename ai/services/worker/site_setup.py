@@ -57,6 +57,14 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 수집기가 세팅 배경 촬�
 상한과 실행 상한 − 맵 몫 중 짧은 쪽)까지 통과하지 못하면 `CAMERA_CHECK_NOT_PASSED`, 시도를 열지 못하거나 Tier 0 view 가 한 줄도 오지
 않으면 `CAMERA_CHECK_UNAVAILABLE` 로 끝낸다. 둘 다 미리보기·굽기를 한 번도 부르지 않는다. 서버는 PASSED 전에는 구역 단계·세팅 완료를
 거부한다(이제 맵 전에 정해지므로 뒤에서 처음 막히지 않는다).
+새 맵(FULL_SETUP) 세팅은 대각을 포함한 모든 쌍을 막는 쌍으로 잰다(S15P31A101-760, -759 의 참고 쌍은 REUSE_SCENE 만). 시도가 기하
+실패(`CAMERA_CHECK_GEOMETRIC_REASONS`)로 끝나면 실행기 `refine_walk` 로 그 시도의 걷기 view 로 외부 파라미터를 한 번 다듬는다
+(`simai_ai.calibration.walk_refinement`, Fit/Holdout 시간 분할). 채택되면 새 `calibration_version` 문서를 같은 발행 주입점으로 올리고
+(덮어쓰지 않음, 계보 previous_calibration_version 은 발행 주입점이 세팅 시작 때 활성 보정으로 넣는다), 카메라 확인은 그 버전의 Holdout
+판정(PASSED, 기준선 포함)으로 끝난다. 높이 확인·보정 문서 artifacts 와 이후 미리보기·굽기·바닥 감시 범위·결과가 모두 새 버전을 쓴다.
+채택하지 않으면(다듬기 거절·표본 부족·오류) 새 문서를 내지 않고, 실행기 `recheck_walk` 로 같은 시도 view 를 -759 규칙(품질 게이트
+옆 쌍만 막고 대각은 참고, 카메라별 재투영 표본 대기)으로 다시 판정한다. 그 판정이 PASSED 면 지금(Stage A) 보정 그대로 통과로 끝내고
+「대각 미해결로 -759 기준 통과」를 로그·walk_refinement.json 에 남긴다(시연 회귀 방지). 그것도 실패면 지금 실패 흐름(「확인만 다시」 대기)이다.
 
 시간 예산(S15P31A101-688): 실행 상한 1,800 s 는 배경 촬영·초기 복원·높이 확인·Stage A·카메라 확인·맵 몫(`SETUP_BUDGET_*`)의 합이다.
 사람 대기(높이 확인·카메라 확인)는 각자 상한과 "남은 시간 − 뒤 단계 몫" 중 짧은 쪽까지만 기다려 뒤의 맵 몫(600 s)을 깎지 않는다.
@@ -536,6 +544,19 @@ CAMERA_CHECK_AWAITING_START = "AWAITING_START"  # site_setup 1.19.0 camera_check
 CAMERA_CHECK_SKIPPED_REPLAY = "SKIPPED_REPLAY"
 CAMERA_CHECK_NOT_PASSED = "CAMERA_CHECK_NOT_PASSED"  # 대기 마감까지 통과하지 못함(맵 굽지 않음)
 CAMERA_CHECK_UNAVAILABLE = "CAMERA_CHECK_UNAVAILABLE"  # 확인 채널(같은 Pod 의 Tier 0 view)을 열지 못함(맵 굽지 않음)
+# 걷기 다듬기(-760)를 돌리는 기하 실패 사유. 표본 부족(FEW_SAMPLES·NOT_OBSERVED 등)만으로 끝난 시도는 다시 걷기가 답이라 돌리지 않는다
+CAMERA_CHECK_GEOMETRIC_REASONS = frozenset({"PASS_RATE_LOW", "RESIDUAL_HIGH", "REPROJECTION_HIGH", "NO_PASSING_PAIR"})
+
+
+@dataclass(frozen=True, slots=True)
+class WalkAdoption:
+    """카메라 확인 걷기 다듬기(-760)로 채택·발행한 새 보정. 이후 미리보기·굽기·바닥 감시 범위·결과가 이 버전을 쓴다."""
+
+    calibration_doc: dict[str, Any]
+    calibration_version: str
+    height_checks: dict[str, dict[str, Any]]
+    snapshot: dict[str, Any]
+    """새 보정 버전·높이 확인·보정 문서 artifacts 로 바꾼 JOINT_BA_AND_VERIFY(65%) 스냅샷"""
 
 # ---- 세팅 작업 시간 예산(S15P31A101-688, docs/design/S15P31A101-688-new-complete-time-budget.md) ----
 # 실행 상한(EC2 SetupService.SETUP_TIMEOUT_MS 1,800 s) = 아래 몫의 합. 사람이 기다리는 몫(배경 촬영·높이 확인·카메라 확인)은 각자 상한까지만
@@ -564,6 +585,15 @@ class TextureSceneBaker(Protocol):
         preview_scene_version: str,
         progress: Callable[[float], None] | None = None,
     ) -> str | BakedScene: ...
+
+
+def _pair_brief(view: Any) -> str:
+    """걷기 다듬기 기록의 쌍별 통과율/잔차를 한 줄로(로그용)."""
+    if not isinstance(view, Mapping):
+        return "-"
+    pairs = view.get("pairs") or {}
+    return f"{view.get('status')} " + " ".join(
+        f"{k}={p.get('pass_rate')}/{p.get('residual_median_px')}" for k, p in sorted(pairs.items()))
 
 
 def _opt_float(value: Any) -> float | None:
@@ -930,8 +960,13 @@ class SiteSetupHandler:
         return f"{prefix}-{no}"
 
     def _run_camera_check(self, ctx: JobContext, base: Mapping[str, Any], setup_session_id: str,
-                          calibration_doc: Mapping[str, Any], calibration_version: str, *, reserve_s: float) -> None:
+                          calibration_doc: Mapping[str, Any], calibration_version: str, *, reserve_s: float,
+                          new_model: bool = False, camera_heights_m: Mapping[str, float] | None = None,
+                          height_tolerance_cm: float = 5.0) -> WalkAdoption | None:
         """보정 등록 뒤·맵 전 카메라 확인(-687). 통과하면 돌아오고, 아니면 JobFailed(맵을 굽지 않는다).
+
+        new_model(새 맵 세팅)이면 모든 쌍을 막는 쌍으로 재고, 기하 실패한 시도는 걷기 다듬기(-760)를 한 번 돌린다. 채택되면 새 보정을
+        발행하고 WalkAdoption 을 돌려준다(그 밖의 통과는 None). REUSE_SCENE 은 품질 게이트의 쌍(옆 쌍)만 막고 다듬지 않는다(-759 그대로).
 
         1) AWAITING_START + user_wait 를 보내고 관리자의 「걷기 시작」(ctx.camera_check_start ≥ 1)을 기다린다.
         2) 시도를 열어(attempt_id 별 view 폴더) poll 한다. PASSED 면 끝. FAILED·INCOMPLETE(시도 상한)면 user_wait 를 다시 싣고
@@ -947,9 +982,11 @@ class SiteSetupHandler:
         doc = copy.deepcopy(dict(calibration_doc))
         doc["calibration_version"] = calibration_version
         gate_pairs = [p for p in (self._quality_gate or {}).get("pairs", {}).values() if len(p.get("camera_ids", ())) == 2]
-        # 품질 게이트의 쌍 = 세팅 보정이 맞춘 쌍(4대 고리의 옆 쌍). 그 밖의 쌍(대각)은 확인에서 참고로만 잰다
-        pairs = {"required_pairs": [tuple(p["camera_ids"]) for p in gate_pairs if p.get("verdict") == "NEEDS_CHECK"],
-                 "blocking_pairs": [tuple(p["camera_ids"]) for p in gate_pairs]}
+        # REUSE_SCENE: 품질 게이트의 쌍 = 세팅 보정이 맞춘 쌍(4대 고리의 옆 쌍). 그 밖의 쌍(대각)은 확인에서 참고로만 잰다(-759).
+        # 새 맵: 막는 쌍을 넘기지 않아 대각을 포함한 모든 쌍이 판정에 든다(-760, 대각이 틀어지면 걷기 다듬기로 고친다)
+        ring_pairs = {"required_pairs": [tuple(p["camera_ids"]) for p in gate_pairs if p.get("verdict") == "NEEDS_CHECK"],
+                      "blocking_pairs": [tuple(p["camera_ids"]) for p in gate_pairs]}
+        pairs = {**ring_pairs, "blocking_pairs": []} if new_model else ring_pairs
         if self._replay_skip(ctx):
             self._skip_camera_check_for_replay(ctx, base, checker, doc, pairs, attempt=None)
             return
@@ -1036,6 +1073,15 @@ class SiteSetupHandler:
             if status in CAMERA_CHECK_FINAL:
                 log.warning("작업 %s: 카메라 확인 시도 %d %s: %s", ctx.job_id, attempt_no, status,
                             [p.get("reason") for p in last.get("problems", [])])
+                if new_model and status == "FAILED" and attempt is not None and any(
+                        p.get("reason") in CAMERA_CHECK_GEOMETRIC_REASONS for p in last.get("problems", [])):
+                    adoption = self._try_walk_refinement(ctx, base, checker, doc, pairs, attempt,
+                                                         camera_heights_m or {}, height_tolerance_cm)
+                    if adoption is not None:
+                        return adoption
+                    if ring_pairs["blocking_pairs"] and self._recheck_with_ring_pairs(ctx, base, checker, doc, ring_pairs,
+                                                                                       attempt):
+                        return None
                 waiting_user = True
                 if stage_deadline - self._monotonic() < self._cc_min_s:
                     break  # 다시 걸을 시간이 없다. 마감 처리
@@ -1045,6 +1091,80 @@ class SiteSetupHandler:
             self._set_camera_check(ctx, base, last, force=False)
             self._sleep(ctx.cancelled, max(0.01, min(self._cc_poll_s, attempt_deadline - now)))
         self._close_camera_check(ctx, base, last, attempt, budget)
+
+    def _try_walk_refinement(self, ctx: JobContext, base: Mapping[str, Any], checker: CameraChecker,
+                             doc: Mapping[str, Any], pairs: Mapping[str, list[tuple[str, ...]]],
+                             attempt: Mapping[str, Any], camera_heights_m: Mapping[str, float],
+                             height_tolerance_cm: float) -> WalkAdoption | None:
+        """기하 실패한 시도의 걷기로 외부 파라미터를 한 번 다듬는다(-760). 채택이면 새 보정을 발행하고 PASSED 요약을 보낸다.
+
+        실행기에 refine_walk 가 없거나(시험용 대역·옛 실행기), 다듬기가 실패·거절되거나, 발행 버전이 다듬은 문서 버전과 다르면 None
+        (지금 실패 흐름 그대로, 새 문서를 쓰지 않는다)."""
+        refine = getattr(checker, "refine_walk", None)
+        if not callable(refine):
+            return None
+        try:
+            result = refine(doc, camera_heights_m=camera_heights_m, **pairs)
+        except Exception:
+            log.exception("작업 %s: 걷기 다듬기 실패(지금 보정으로 실패 흐름을 잇는다)", ctx.job_id)
+            return None
+        if result is None:
+            return None
+        rec = result.record
+        log.info("작업 %s: 걷기 다듬기 %s(%s): 시도 %s, 보정 %s -> %s, Holdout 전 %s, 후 %s, 카메라 %s, 부트스트랩 %s, %.1fs",
+                 ctx.job_id, "채택" if result.adopted else "채택 안 함", ",".join(result.reasons) or "-", attempt.get("no"),
+                 doc.get("calibration_version"), rec.get("new_calibration_version"),
+                 _pair_brief(rec.get("before")), _pair_brief(rec.get("after")), rec.get("cameras"),
+                 rec.get("bootstrap"), float(rec.get("seconds") or 0.0))
+        if not result.adopted or result.calibration_doc is None or result.summary is None:
+            return None
+        self._check_cancelled(ctx)
+        refined = copy.deepcopy(result.calibration_doc)
+        published = self._publish_calibration(copy.deepcopy(refined))
+        version = published.calibration_version if isinstance(published, PublishedCalibration) else str(published)
+        if version != refined["calibration_version"]:
+            log.error("작업 %s: 걷기 다듬기 발행 버전 %s 가 문서 버전 %s 와 달라 채택하지 않는다", ctx.job_id, version,
+                      refined["calibration_version"])
+            return None
+        adopt = getattr(checker, "adopt_walk", None)
+        if callable(adopt):
+            adopt(result)
+        restored = {str(c["camera_id"]): float(c["camera_height_m"]) for c in refined["cameras"]}
+        height_checks = compute_height_checks(camera_heights_m, restored, tolerance_cm=height_tolerance_cm)
+        snapshot = {**base, "calibration_version": version, "height_checks": height_checks}
+        if isinstance(published, PublishedCalibration) and published.document is not None:
+            snapshot["artifacts"] = {**dict(base.get("artifacts") or {}),
+                                     "calibration_document": published.document.to_json()}
+        summary = {k: v for k, v in result.summary.items() if k not in ("user_wait", "attempt")}
+        summary["attempt"] = {**dict(attempt), "calibration_version": version}
+        self._set_camera_check(ctx, snapshot, summary, force=True)
+        log.info("작업 %s: 걷기 다듬기 보정 %s 발행, 카메라 확인 통과(Holdout). 맵 단계로 간다", ctx.job_id, version)
+        return WalkAdoption(refined, version, height_checks, snapshot)
+
+    def _recheck_with_ring_pairs(self, ctx: JobContext, base: Mapping[str, Any], checker: CameraChecker,
+                                 doc: Mapping[str, Any], ring_pairs: Mapping[str, list[tuple[str, ...]]],
+                                 attempt: Mapping[str, Any]) -> bool:
+        """다듬기를 채택하지 않은 시도를 -759 규칙(품질 게이트 옆 쌍만 막음)으로 다시 판정한다. PASSED 면 그 요약을 보내고 True.
+
+        실행기에 recheck_walk 가 없거나 판정이 PASSED 가 아니면 False(지금 실패 흐름)."""
+        recheck = getattr(checker, "recheck_walk", None)
+        if not callable(recheck):
+            return False
+        try:
+            summary = recheck(doc, **ring_pairs)
+        except Exception:
+            log.exception("작업 %s: -759 기준 다시 판정 실패(실패 흐름을 잇는다)", ctx.job_id)
+            return False
+        if not summary or summary.get("status") != "PASSED":
+            log.warning("작업 %s: 다듬기 거절 뒤 -759 기준으로도 통과하지 못함(시도 %s): %s", ctx.job_id, attempt.get("no"),
+                        [p.get("reason") for p in (summary or {}).get("problems", [])])
+            return False
+        out = {k: v for k, v in summary.items() if k not in ("user_wait", "attempt")}
+        out["attempt"] = dict(attempt)
+        self._set_camera_check(ctx, base, out, force=True)
+        log.warning("작업 %s: 대각 미해결로 -759 기준 통과(시도 %s, 보정 %s 그대로). 맵 단계로 간다", ctx.job_id,
+                    attempt.get("no"), doc.get("calibration_version"))
+        return True
 
     @staticmethod
     def _replay_skip(ctx: JobContext) -> bool:
@@ -1668,8 +1788,18 @@ class SiteSetupHandler:
         self._emit_progress(ctx, joint_ba_snapshot)
         # 사람 걷기 카메라 확인(-646 → -687): 맵(미리보기·굽기) 전에 끝낸다. 통과하지 못하면 여기서 실패하고 맵을 한 번도 굽지 않는다.
         # 관리자의 「걷기 시작」·「확인만 다시」를 기다리는 동안 NEW 는 미리보기·굽기 몫, REUSE 는 결과 제출 몫을 실행 상한에 남긴다
-        self._run_camera_check(ctx, joint_ba_snapshot, setup_session_id, calibration_doc, calibration_version,
-                               reserve_s=self._cc_reuse_reserve_s if reuse_scene else self._cc_reserve_s)
+        height_checks = stage_a.height_checks
+        adoption = self._run_camera_check(ctx, joint_ba_snapshot, setup_session_id, calibration_doc, calibration_version,
+                                          reserve_s=self._cc_reuse_reserve_s if reuse_scene else self._cc_reserve_s,
+                                          new_model=not reuse_scene, camera_heights_m=camera_heights_m,
+                                          height_tolerance_cm=height_tolerance_cm)
+        if adoption is not None:
+            # 걷기 다듬기 보정(-760)으로 바꾼다: 미리보기·굽기·바닥 감시 범위·결과가 같은 새 버전을 가리킨다
+            calibration_doc, calibration_version = adoption.calibration_doc, adoption.calibration_version
+            height_checks = adoption.height_checks
+            joint_ba_snapshot = adoption.snapshot
+            if "calibration_document" in joint_ba_snapshot.get("artifacts", {}):
+                artifacts["calibration_document"] = joint_ba_snapshot["artifacts"]["calibration_document"]
 
         if reuse_scene:
             # 같은 World 로 옮겨졌다: 미리보기·AI 구역 초안·굽기를 건너뛰고 새 보정만으로 끝낸다(현재 관제 맵 유지, -614)
@@ -1706,7 +1836,7 @@ class SiteSetupHandler:
             "background_collection_pct": bg_pct,
             "calibration_version": calibration_version,
             "preview_scene_version": preview.preview_scene_version,
-            "height_checks": stage_a.height_checks,
+            "height_checks": height_checks,
             "metrics": {
                 "stage_seconds": dict(stage_seconds),
                 "joint_ba": stage_a.summary_metrics,
@@ -1816,7 +1946,7 @@ class SiteSetupHandler:
             "calibration_version": calibration_version,
             "preview_scene_version": preview.preview_scene_version,
             "scene_version": scene_version,
-            "height_checks": stage_a.height_checks,
+            "height_checks": height_checks,
             "metrics": {
                 "stage_seconds": dict(stage_seconds),
                 "total_seconds": total_seconds,

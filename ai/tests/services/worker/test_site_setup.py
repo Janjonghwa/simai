@@ -1490,9 +1490,8 @@ def test_camera_check_waits_for_walk_start_and_passes_before_any_map_step() -> N
         assert schema_errors(snap, _PROGRESS) == []
     assert schema_errors(result, _RESULT) == []
     assert checker.stopped >= 1
-    # 보정이 맞춘 쌍(품질 게이트의 쌍)만 막는 쌍으로 넘긴다. 그 밖의 쌍(대각)은 확인에서 참고로만 잰다
-    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
-    assert gate_pairs and checker.blocking == [gate_pairs]
+    # 새 맵 세팅은 막는 쌍을 넘기지 않아 대각을 포함한 모든 쌍이 판정에 든다(-760. -759 의 참고 쌍은 REUSE_SCENE 만)
+    assert checker.blocking == [[]]
 
 
 def test_camera_check_retry_keeps_the_calibration_and_ignores_a_late_old_request() -> None:
@@ -1680,6 +1679,9 @@ def test_reuse_scene_checks_cameras_before_ready_for_zones() -> None:
     passed = next(i for i, s in enumerate(ctx.site_setup_history) if s.get("camera_check", {}).get("status") == "PASSED")
     assert passed < ready and result["camera_check"]["status"] == "PASSED"
     assert schema_errors(result, _RESULT) == []
+    # REUSE_SCENE 은 보정이 맞춘 쌍(품질 게이트의 쌍)만 막는 쌍으로 넘긴다. 그 밖의 쌍(대각)은 참고로만 잰다(-759 그대로)
+    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
+    assert gate_pairs and checker.blocking == [gate_pairs]
 
 
 # ---------------------------------------------------------------------------- S15P31A101-630
@@ -1943,6 +1945,218 @@ def test_height_review_unit_rules() -> None:
     gate = evaluate_quality_gate(pair, heights, heights_settled=True)
     assert gate["cameras"]["a"] == {"height_diff_cm": -12.0, "verdict": "PASS", "reason": None}
     assert gate["cameras"]["b"]["reason"] == "HEIGHT_UNKNOWN" and gate["verdict"] == "FAILED"  # 기하 실패는 그대로
+
+
+# ---------------------------------------------------------------------------- S15P31A101-760 걷기 다듬기
+class _RefiningChecker(_FakeChecker):
+    """기하 실패한 시도의 걷기 다듬기(refine_walk)를 대신하는 실행기 대역. adopt 면 새 버전 문서·Holdout PASSED 요약을 낸다."""
+
+    def __init__(self, attempts: list[list[str]], *, adopt: bool, events: list[str] | None = None,
+                 recheck: str = "FAILED") -> None:
+        super().__init__(attempts, events=events)
+        self.adopt = adopt
+        self.recheck = recheck
+        self.refined: list[dict[str, Any]] = []
+        self.adopted: list[Any] = []
+        self.rechecked: list[dict[str, Any]] = []
+
+    def refine_walk(self, calibration_doc: Any, *, camera_heights_m: Any, required_pairs: Any = (),
+                    blocking_pairs: Any = ()) -> Any:
+        from simai_ai.calibration.document import content_hash
+        from simai_ai.calibration.monitor import BASELINE_SOURCE_SETUP_CAMERA_CHECK, BaselineRecord
+        from simai_ai.calibration.walk_refinement import WalkRefinementResult
+
+        self.events.append("refine")
+        self.refined.append({"version": calibration_doc["calibration_version"], "blocking": sorted(blocking_pairs),
+                             "heights": dict(camera_heights_m)})
+        record = {"base_calibration_version": calibration_doc["calibration_version"], "adopted": self.adopt}
+        if not self.adopt:
+            return WalkRefinementResult(False, ("HOLDOUT_PAIR_FAILED",), None, None, None, {**record, "reasons": ["X"]})
+        doc = copy.deepcopy(dict(calibration_doc))
+        for cam in doc["cameras"]:
+            cam["camera_height_m"] = round(float(cam["camera_height_m"]) + 0.012, 4)
+        doc["content_hash"] = content_hash(doc)
+        version = f"{calibration_doc['calibration_version']}-walk-0123abcd"
+        doc["calibration_version"] = version
+        summary = self._summary("PASSED")
+        summary["calibration_version"] = version
+        summary["baseline"] = {"calibration_version": version, "values_px": {"cam_D": 3.0},
+                               "source": BASELINE_SOURCE_SETUP_CAMERA_CHECK}
+        baseline = BaselineRecord(version, {"cam_D": 3.0}, ("cam_D",), {"cam_D": BASELINE_SOURCE_SETUP_CAMERA_CHECK})
+        return WalkRefinementResult(True, (), doc, summary, baseline, {**record, "new_calibration_version": version})
+
+    def adopt_walk(self, result: Any) -> None:
+        self.adopted.append(result.calibration_doc["calibration_version"])
+
+    def recheck_walk(self, calibration_doc: Any, *, required_pairs: Any = (), blocking_pairs: Any = ()) -> Any:
+        """다듬기 거절 뒤 -759 규칙 다시 판정 대역: 정한 상태(PASSED·FAILED)의 요약을 낸다."""
+        self.events.append(f"recheck:{self.recheck}")
+        self.rechecked.append({"version": calibration_doc["calibration_version"], "blocking": sorted(blocking_pairs)})
+        self.version = str(calibration_doc["calibration_version"])
+        return self._summary(self.recheck)
+
+
+def _walk_room(checker: _FakeChecker, events: list[str], t: _FakeTime, published: list[dict[str, Any]],
+               seen: dict[str, list[str]], **kw: Any) -> tuple[SiteSetupHandler, dict[str, Any]]:
+    """보정 문서를 모으는 발행기와, 미리보기·굽기가 받은 보정 버전을 남기는 처리기."""
+    def preview(**w: Any) -> PreviewDraftResult:
+        events.append("preview")
+        seen["preview"].append(w["calibration_doc"]["calibration_version"])
+        return PreviewDraftResult("scene-p", floor_coverage=_floor_coverage(w["calibration_doc"]["calibration_version"]))
+
+    def bake(**w: Any) -> str:
+        events.append("bake")
+        seen["bake"].append(w["calibration_doc"]["calibration_version"])
+        return "scene-b"
+
+    return _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        camera_check=checker, camera_check_poll_s=1.0, monotonic=t.monotonic, sleep=t.sleep,
+        calibration_publisher=_doc_publisher(published), preview_builder=preview, texture_baker=bake, **kw,
+    )[:2]
+
+
+def test_geometric_failure_adopts_walk_refinement_and_every_later_step_uses_the_new_version() -> None:
+    """새 맵 세팅의 시도 1 이 기하 실패(REPROJECTION_HIGH)면 그 걷기로 한 번 다듬는다. 채택되면 새 보정 문서를 같은 발행 주입점으로
+    한 번 더 올리고(덮어쓰지 않음), 카메라 확인은 그 버전의 Holdout 판정(PASSED·기준선)으로 끝나며, 높이 확인·보정 문서 artifacts·
+    미리보기·굽기·바닥 감시 범위·결과가 모두 새 버전을 가리킨다. 「확인만 다시」를 기다리지 않는다."""
+    events: list[str] = []
+    t = _FakeTime()
+    published: list[dict[str, Any]] = []
+    seen: dict[str, list[str]] = {"preview": [], "bake": []}
+    checker = _RefiningChecker([["MEASURING", "FAILED"]], adopt=True, events=events)
+    handler, inp = _walk_room(checker, events, t, published, seen)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1})
+    ctx = box["ctx"] = JobContext("job-walk", "0192a6f0-7c1e-7b3a-9f2d-000000000760", "site_setup", 1, inp,
+                                  timeout_ms=1_800_000)
+    result = handler(ctx)
+
+    assert events == ["start:0192a6f0-1", "refine", "preview", "bake"]
+    assert len(published) == 2 and len(checker.started) == 1
+    stage_a, refined = published
+    assert checker.refined[0]["version"] == stage_a["calibration_version"] and checker.refined[0]["blocking"] == []
+    assert checker.refined[0]["heights"] == inp["camera_heights_m"]
+    new = refined["calibration_version"]
+    assert new == f"{stage_a['calibration_version']}-walk-0123abcd" and checker.adopted == [new]
+    # 계보·세팅 출처는 발행 주입점이 세팅 시작 때 활성 보정으로 넣는다(Stage A 버전을 계보로 싣지 않는다)
+    assert "previous_calibration_version" not in refined
+    assert result["calibration_version"] == new and seen == {"preview": [new], "bake": [new]}
+    assert new in result["artifacts"]["calibration_document"]["uri"]
+    assert result["artifacts"]["floor_coverage"]["calibration_version"] == new
+    cc = result["camera_check"]
+    assert cc["status"] == "PASSED" and cc["calibration_version"] == new and cc["baseline"]["calibration_version"] == new
+    assert cc["attempt"]["no"] == 1 and cc["attempt"]["calibration_version"] == new and "user_wait" not in cc
+    restored = {c["camera_id"]: c["camera_height_m"] for c in refined["cameras"]}
+    assert {cid: v["restored_height_m"] for cid, v in result["height_checks"].items()} == pytest.approx(restored)
+    passed = [s for s in ctx.site_setup_history if s.get("camera_check", {}).get("status") == "PASSED"]
+    assert passed and all(s["calibration_version"] == new for s in passed)
+    assert all(s["calibration_version"] == new for s in ctx.site_setup_history
+               if s["status"] in ("PREVIEW_AND_VLM_DRAFT", "READY_FOR_ZONES", "BAKING_TEXTURE"))
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_rejected_walk_refinement_publishes_nothing_and_keeps_the_retry_flow() -> None:
+    """다듬기를 채택하지 않으면 새 문서를 내지 않고 지금처럼 「확인만 다시」를 기다린다. 시도 2 가 지금 보정으로 통과하면 그 보정 그대로다."""
+    events: list[str] = []
+    t = _FakeTime()
+    published: list[dict[str, Any]] = []
+    seen: dict[str, list[str]] = {"preview": [], "bake": []}
+    checker = _RefiningChecker([["MEASURING", "FAILED"], ["PASSED"]], adopt=False, events=events)
+    handler, inp = _walk_room(checker, events, t, published, seen)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1, 60.0: 2})
+    ctx = box["ctx"] = JobContext("job-walk-no", "0192a6f0-7c1e-7b3a-9f2d-000000000761", "site_setup", 1, inp,
+                                  timeout_ms=1_800_000)
+    result = handler(ctx)
+
+    assert events == ["start:0192a6f0-1", "refine", "recheck:FAILED", "start:0192a6f0-2", "passed", "preview", "bake"]
+    assert len(published) == 1 and checker.adopted == []
+    # 다듬기 거절 뒤 같은 시도를 -759 규칙(품질 게이트 옆 쌍만 막음)으로 다시 쟀고, 그것도 실패라 「확인만 다시」를 기다렸다
+    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
+    assert checker.rechecked == [{"version": published[0]["calibration_version"], "blocking": gate_pairs}]
+    version = published[0]["calibration_version"]
+    assert result["calibration_version"] == version and seen == {"preview": [version], "bake": [version]}
+    failed = next(c for c in _checks(ctx) if c["status"] == "FAILED")
+    assert failed["user_wait"]["wait_s"] > 0 and failed["calibration_version"] == version
+
+
+def test_rejected_walk_refinement_falls_back_to_the_ring_pair_check_and_passes_with_stage_a() -> None:
+    """다듬기가 거절돼도 같은 시도를 -759 규칙(옆 쌍만 막고 대각은 참고)으로 다시 재서 통과하면 Stage A 보정 그대로 통과로 끝낸다
+    (시연 회귀 방지). 새 보정은 발행하지 않고 「확인만 다시」도 기다리지 않는다."""
+    events: list[str] = []
+    t = _FakeTime()
+    published: list[dict[str, Any]] = []
+    seen: dict[str, list[str]] = {"preview": [], "bake": []}
+    checker = _RefiningChecker([["MEASURING", "FAILED"]], adopt=False, recheck="PASSED", events=events)
+    handler, inp = _walk_room(checker, events, t, published, seen)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1})
+    ctx = box["ctx"] = JobContext("job-walk-759", "0192a6f0-7c1e-7b3a-9f2d-000000000765", "site_setup", 1, inp,
+                                  timeout_ms=1_800_000)
+    result = handler(ctx)
+
+    assert events == ["start:0192a6f0-1", "refine", "recheck:PASSED", "preview", "bake"]
+    assert len(published) == 1 and checker.adopted == [] and len(checker.started) == 1
+    version = published[0]["calibration_version"]
+    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
+    assert checker.rechecked == [{"version": version, "blocking": gate_pairs}]
+    assert result["calibration_version"] == version and seen == {"preview": [version], "bake": [version]}
+    cc = result["camera_check"]
+    assert cc["status"] == "PASSED" and cc["calibration_version"] == version
+    assert cc["attempt"]["no"] == 1 and cc["attempt"]["calibration_version"] == version and "user_wait" not in cc
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, _PROGRESS) == []
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_walk_refinement_runs_only_for_new_model_geometric_failures() -> None:
+    """Stage A 가 바로 통과하면 다듬지 않는다. 표본 부족(INCOMPLETE)도 다듬지 않는다(다시 걷기가 답이다)."""
+    events: list[str] = []
+    t = _FakeTime()
+    published: list[dict[str, Any]] = []
+    seen: dict[str, list[str]] = {"preview": [], "bake": []}
+    checker = _RefiningChecker([["MEASURING", "PASSED"]], adopt=True, events=events)
+    handler, inp = _walk_room(checker, events, t, published, seen)
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1})
+    ctx = box["ctx"] = JobContext("job-walk-pass", "0192a6f0-7c1e-7b3a-9f2d-000000000762", "site_setup", 1, inp)
+    handler(ctx)
+    assert "refine" not in events and len(published) == 1
+
+    events.clear()
+    t = _FakeTime()
+    checker = _RefiningChecker([["MEASURING"], ["PASSED"]], adopt=True, events=events)
+    handler, inp = _walk_room(checker, events, t, [], {"preview": [], "bake": []}, camera_check_attempt_s=20.0)
+    box = {}
+    handler._sleep = _press(box, t, {1.0: 1, 40.0: 2})
+    ctx = box["ctx"] = JobContext("job-walk-short", "0192a6f0-7c1e-7b3a-9f2d-000000000763", "site_setup", 1, inp)
+    handler(ctx)
+    assert checker.incompletes == 1 and "refine" not in events
+
+
+def test_reuse_scene_keeps_the_old_camera_check_without_walk_refinement() -> None:
+    """REUSE_SCENE 은 지금 동작 그대로다: 품질 게이트의 쌍만 막고, 기하 실패해도 다듬지 않고 「확인만 다시」를 기다린다."""
+    events: list[str] = []
+    t = _FakeTime()
+    published: list[dict[str, Any]] = []
+    checker = _RefiningChecker([["FAILED"], ["PASSED"]], adopt=True, events=events)
+    handler, _, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle(_BAKE_BUNDLE, dict.fromkeys(cams, 100.0), tracks_doc=td),
+        world_anchor=_anchor_hook(True), calibration_publisher=_doc_publisher(published), camera_check=checker,
+        monotonic=t.monotonic, preview_builder=_must_not_run("미리보기"), texture_baker=_must_not_run("굽기"),
+    )
+    box: dict[str, JobContext] = {}
+    handler._sleep = _press(box, t, {1.0: 1, 60.0: 2})
+    ctx = box["ctx"] = JobContext("job-walk-reuse", "0192a6f0-7c1e-7b3a-9f2d-000000000764", "site_setup", 1,
+                                  _reuse_input(), timeout_ms=1_800_000)
+    result = handler(ctx)
+    assert "refine" not in events and len(published) == 1 and checker.adopted == []
+    assert result["calibration_version"] == published[0]["calibration_version"]
+    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
+    assert checker.blocking == [gate_pairs, gate_pairs]
 
 
 # --------------------------------------------------------------------------- S15P31A101-764 Stage A 자동 재시도

@@ -726,3 +726,22 @@ def test_bake_default_num_threads_caps_on_many_core_host_and_restores_omp_env(tm
     tasks.bake(tmp_path)
     assert os.environ.get("OMP_NUM_THREADS") == "1"
 
+
+def test_alignment_uses_the_first_setup_calibration_as_reference(tmp_path):
+    """S15P31A101-760: 걷기 다듬기 보정이 같은 World 에서 카메라를 옮겨 calibration.json 이 되어도, 맵 정렬은 처음 보정(MapAnything
+    중심 그대로, alignment_reference.json)으로 해서 고정 정렬 문턱(중심 0.10 m)에 걸리지 않는다."""
+    from simai_ai.scene.reconstruct import ALIGNMENT_REFERENCE_FILE
+
+    synthetic(tmp_path)
+    first = read_json(tmp_path / "calibration.json")
+    refined = json.loads(json.dumps(first))
+    refined["cameras"][1]["t"] = [-1.0, -0.18, 0.0]  # cam_B 중심 18 cm 이동(다듬기 상한 20 cm 안)
+    write_json(tmp_path / "calibration.json", refined)
+    with pytest.raises(ReconstructionError) as err:
+        tasks.align_to_calibration(tmp_path)
+    assert err.value.code == "STATIC_WORLD_ALIGNMENT_FAILED"
+    write_json(tmp_path / ALIGNMENT_REFERENCE_FILE, first)
+    tasks.align_to_calibration(tmp_path)
+    doc = read_json(tmp_path / "world_alignment.json")
+    assert doc["alignment_reference"] is True and doc["max_center_residual_m"] < 1e-6
+    assert read_json(tmp_path / "calibration.json") == refined  # 보정 문서는 읽기만 한다

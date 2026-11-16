@@ -107,8 +107,16 @@ class CameraCheckConfig:
     15px)은 이 값 + increase_margin_px 이상이라, 통과한 기준선의 관제 문턱이 기준선 + 여유 아래로 눌리지 않는다"""
     min_evaluated_pairs: int = 3
     """판정까지 간(PASS·FAIL) 쌍 수 하한. 카메라 4대 고리면 인접 4쌍 중 3쌍"""
+    min_four_view_ticks: int = 80
+    """막는 쌍을 따로 주지 않은(새 맵, 모든 쌍 판정) 시도는 모든 카메라에 한 사람씩 함께 보인 시각이 이만큼 모일 때까지(또는 max_duration
+    까지) 끝내지 않는다(S15P31A101-760). 기하 실패 때 걷기 다듬기의 Holdout(시각의 28%)에서 카메라별 한 카메라 제외 표본이 관제 감시 창
+    하한(20)을 채우려면 20 / 0.28 ≈ 72 시각이 필요하고 귀속 실패 여유 10% 를 더했다(5 Hz 로 4대 동시 관측 16 s). 보정과 무관한 관측
+    개수라 어긋난 보정에서도 쌓인다. 0 이면 쓰지 않는다. 계약 thresholds 에는 싣지 않는다(진행률에만 들어간다)"""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.min_four_view_ticks, int) or isinstance(self.min_four_view_ticks, bool) or \
+                self.min_four_view_ticks < 0:
+            raise ValueError(f"CameraCheckConfig.min_four_view_ticks 는 0 이상의 정수여야 한다: {self.min_four_view_ticks!r}")
         for name in ("min_duration_ms", "max_duration_ms", "min_pair_samples", "min_camera_views", "min_loo_samples",
                      "min_evaluated_pairs"):
             value = getattr(self, name)
@@ -199,6 +207,7 @@ class CameraCheckEvaluator:
         self._seen_t: dict[str, int] = {}
         self._loo: dict[str, list[float]] = {cid: [] for cid in ids}
         self._loo_ambiguous: dict[str, int] = {cid: 0 for cid in ids}
+        self._four_view_ticks = 0
         self._first_t: int | None = None
         self._last_t: int | None = None
         self._last_seen_t: int | None = None
@@ -239,6 +248,8 @@ class CameraCheckEvaluator:
         for cid in per_camera:
             self._views[cid] += 1
             self._seen_t[cid] = t
+        if all(len(per_camera.get(cid, ())) == 1 for cid in self._cameras):
+            self._four_view_ticks += 1
         evidence = {}
         for p in assoc.pairs:
             evidence[(p.a, p.b)] = p
@@ -282,9 +293,16 @@ class CameraCheckEvaluator:
             return False
         return self._pairs[key].overlapping or key in self._required_extra
 
+    def _waits_for_walk(self) -> bool:
+        """새 맵 시도(막는 쌍을 따로 주지 않음)인가. 이 시도는 걷기 다듬기에 쓸 4대 동시 관측과 카메라별 재투영 표본을 기다린다(-760)."""
+        return not self._advisory and self.config.min_four_view_ticks > 0
+
     def _loo_short(self, cid: str) -> bool:
-        """참고 쌍이 있는데(대각을 막지 않는다) 이 카메라의 한 카메라 제외 표본이 아직 모자란가."""
-        return bool(self._advisory) and len(self._loo[cid]) < self.config.min_loo_samples
+        """재투영 표본을 기다리는 시도(참고 쌍이 있거나 새 맵 시도)인데 이 카메라의 한 카메라 제외 표본이 아직 모자란가."""
+        return (bool(self._advisory) or self._waits_for_walk()) and len(self._loo[cid]) < self.config.min_loo_samples
+
+    def _four_view_short(self) -> bool:
+        return self._waits_for_walk() and self._four_view_ticks < self.config.min_four_view_ticks
 
     def _blocking_pair_failed(self) -> bool:
         """막는 쌍(보정이 맞춘 쌍)에 이미 실패가 났는가. 그러면 재투영 표본을 더 기다리지 않는다(어긋난 보정은 4대 묶음이 잘
@@ -351,6 +369,8 @@ class CameraCheckEvaluator:
             return False
         if any(self._views[c] < cfg.min_camera_views for c in self._views):
             return False
+        if self._four_view_short():
+            return False  # 보정이 어긋나 막는 쌍이 이미 실패했어도 기다린다(걷기 다듬기 입력)
         if any(self._loo_short(c) for c in self._views) and not self._blocking_pair_failed():
             return False
         return all(self._pairs[k].samples >= cfg.min_pair_samples for k in self._pairs if self._required(k))
@@ -360,8 +380,10 @@ class CameraCheckEvaluator:
         fractions = [min(1.0, self._span_ms() / cfg.min_duration_ms)]
         fractions += [min(1.0, n / cfg.min_camera_views) for n in self._views.values()]
         fractions += [min(1.0, s.samples / cfg.min_pair_samples) for k, s in self._pairs.items() if self._required(k)]
-        if self._advisory:
+        if self._advisory or self._waits_for_walk():
             fractions += [min(1.0, len(v) / cfg.min_loo_samples) for v in self._loo.values()]
+        if self._waits_for_walk():
+            fractions.append(min(1.0, self._four_view_ticks / cfg.min_four_view_ticks))
         return round(100.0 * sum(fractions) / len(fractions), 1)
 
     def summary(self) -> dict[str, Any]:
@@ -452,6 +474,39 @@ class CameraCheckEvaluator:
         ids = tuple(sorted(values))
         return BaselineRecord(self.calibration_version, values, ids,
                               {cid: BASELINE_SOURCE_SETUP_CAMERA_CHECK for cid in ids})
+
+
+@dataclass(frozen=True)
+class ViewsEvaluation:
+    """`evaluate_views` 결과. summary 는 계약 camera_check 모양(PASSED·FAILED·INCOMPLETE), baseline 은 통과한 카메라의 기준선이다."""
+
+    summary: dict[str, Any]
+    baseline: BaselineRecord
+
+
+def evaluate_views(
+    records: Iterable[tuple[int, Sequence[LocalView]]],
+    calibration: Mapping[str, Any],
+    config: CameraCheckConfig = DEFAULT_CONFIG,
+    *,
+    required_pairs: Iterable[tuple[str, str]] = (),
+    blocking_pairs: Iterable[tuple[str, str]] = (),
+    monitor_config: MonitorConfig = _DEFAULT_MONITOR,
+) -> ViewsEvaluation:
+    """메모리에 있는 view 묶음 [(t, views)] 만으로 평가기와 같은 판정·기준선을 낸다(S15P31A101-760).
+
+    파일 평가(`services.worker.camera_check.evaluate_file`)와 걷기 다듬기의 Holdout 평가가 쓴다. 묶음을 시각 순서로 모두 넣은 뒤
+    판정하고, 끝까지 판정이 나지 않으면(표본 부족) INCOMPLETE 다. 시각 순서가 아닌 묶음은 평가기 규칙대로 버린다."""
+    evaluator = CameraCheckEvaluator(calibration, config, required_pairs=required_pairs, blocking_pairs=blocking_pairs,
+                                     monitor_config=monitor_config)
+    for t, views in records:
+        evaluator.observe(t, views)
+        if evaluator.final:
+            break
+    summary = evaluator.summary()
+    if summary["status"] not in FINAL_STATUSES:
+        summary = evaluator.incomplete()
+    return ViewsEvaluation(summary, evaluator.baseline_record())
 
 
 _PAIR_REASON_TEXT = {
