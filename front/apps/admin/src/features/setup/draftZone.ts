@@ -230,6 +230,18 @@ export const draftCreateRequest = (
   zones: readonly Pick<Zone, 'name'>[] = [],
 ): ZoneCommitRequest => createRequestOf(planOf(item, zones));
 
+/**
+ * 초안을 수락하면 만들 구역의 바닥 다각형과 높이(S15P31A101-758). 이어 온 구역과 같은 자리인지 볼 때 쓴다(zoneOverlap).
+ */
+export function draftZoneFootprint(item: ZoneDraftItem): {
+  polygon: readonly Point[];
+  zMin: number | null;
+  zMax: number | null;
+} {
+  const { shape } = planOf(item);
+  return { polygon: shape.polygon_xy, zMin: shape.z_min_m ?? null, zMax: shape.z_max_m ?? null };
+}
+
 /** 두 다각형이 같은 꼭짓점들인지(시작점·순서와 상관없이, 오차 SAME_POINT_EPS_M 안). */
 function samePolygon(a: readonly Point[], b: readonly Point[]): boolean {
   const near = (p: Point, q: Point) =>

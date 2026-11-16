@@ -3,8 +3,11 @@ import { SEVERITY_LABEL } from '@/features/events/constants';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { cameraText } from '@/features/setup/cameraLabels';
 import { hasChangeOpinion } from '@/features/setup/setupUx';
+import type { ZoneDraftItem } from '@/features/setup/types';
+import { useImportPreviousZones } from '@/features/setup/useSeedSetupZonePlan';
 import { useSetupZoneReview } from '@/features/setup/useSetupZoneReview';
 import { ZoneOpinionBlock } from '@/features/setup/ZoneOpinionView';
+import { isCarriedZone } from '@/features/setup/zoneOverlap';
 import type { Zone, ZoneHeightChangeStatus } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
 import { zonesForList } from '@/features/zones/zoneListOrder';
@@ -21,8 +24,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/c
 import { cn } from '@simai/ui/lib/utils';
 import { useMemo } from 'react';
 
-// 이어 쓴 구역 확인 카드(S15P31A101-629, S15P31A101-630). 새 모델 + World 이어짐 세팅은 구역 단계에 들어오면 지금 관제 구역을 세션 구역 목록에
-// 채우고 모두 '확인 필요'로 둔다(서버 POST .../zones/seed). 이전 관제 맵과 이번 세팅 맵의 상면 높이를 비교해 구역마다
+// 이어 쓴 구역 확인 카드(S15P31A101-629, S15P31A101-630, S15P31A101-758). 새 모델 + World 이어짐 세팅은 이전 구역을 기본으로 이어 오지 않고,
+// 이 카드의 「이전 구역 불러오기」를 눌렀을 때만 지금 관제 구역을 세션 구역 목록에 '확인 필요'로 더한다(서버 POST .../zones/import-previous,
+// AI 초안 구역과 같은 자리인 구역은 빼고 이름을 알린다). 목록은 이어 온 구역만 보인다(새로 그리거나 수락한 구역은 구역 편집에서 본다).
+// 아직 수락하지 않은 AI 초안과 같은 자리인 이어 온 구역은 한 항목으로 묶어 「이전 것 유지」·「AI 초안으로」 중 하나만 남긴다.
+// 이전 관제 맵과 이번 세팅 맵의 상면 높이를 비교해 구역마다
 // 변경 의심(CHANGE_SUSPECTED)·변화 없음(UNCHANGED)·모름(UNKNOWN)을 표시한다.
 // 변경 의심 구역을 먼저 정렬·강조하고, 변화 없음은 '변화 없음 N개 모두 확인' 단추로 한 번에 확인을 권유하며, 모름·변경 의심은 개별 확인한다.
 // 확인 필요가 남아 있으면 세팅을 완료할 수 없다(서버 409 SETUP_ZONES_UNCONFIRMED).
@@ -66,20 +72,78 @@ export function reviewOrder(zones: readonly Zone[]): Zone[] {
   ];
 }
 
+const NO_PAIRS: ReadonlyMap<string, ZoneDraftItem> = new Map();
+
+/** 불러오기 결과 안내(같은 자리라 뺀 이름, 불러올 것이 없음). */
+function importNote(result: { added: number; skipped: readonly string[] } | null): string | null {
+  if (!result) return null;
+  if (result.skipped.length > 0) {
+    return `AI 초안 구역과 같은 자리인 ${result.skipped.map((n) => `「${n}」`).join(', ')}은(는) 빼고 불러왔어요.`;
+  }
+  return result.added === 0 ? '불러올 이전 구역이 없어요.' : null;
+}
+
 /** 세팅 구역 단계 오른쪽 칸의 확인 카드. 세션 구역 목록(ZoneSourceContext)으로 그린 장면(SpatialViewportContext) 안에서만 그린다. */
 export function SetupZoneReviewCard({
   sessionId,
   cameraIds = [],
+  canImport = false,
+  pairedDrafts = NO_PAIRS,
 }: {
   sessionId: string;
   cameraIds?: readonly string[];
+  /** 「이전 구역 불러오기」를 보일지(새 모델 + World 이어짐). */
+  canImport?: boolean;
+  /** 이어 온 구역 ID → 같은 자리인, 아직 수락·버리기 전인 AI 초안(S15P31A101-758). */
+  pairedDrafts?: ReadonlyMap<string, ZoneDraftItem>;
 }) {
   const viewport = useSpatialViewport();
   const review = useSetupZoneReview(sessionId);
+  const importer = useImportPreviousZones(sessionId);
   const { armedKey, arm, disarm } = useArmedDelete();
   const zones = viewport?.zones;
-  const rows = useMemo(() => reviewOrder(zones ?? []), [zones]);
-  if (!viewport || rows.length === 0) return null;
+  const rows = useMemo(
+    () => reviewOrder((zones ?? []).filter((z) => isCarriedZone(z.zoneId))),
+    [zones],
+  );
+  if (!viewport) return null;
+  const note = importNote(importer.result);
+  if (rows.length === 0) {
+    if (!canImport) return null;
+    return (
+      <Card size="sm" data-testid="setup-zone-import-card">
+        <CardHeader>
+          <CardTitle>
+            <h3>이전 구역</h3>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 text-[13px]">
+          <p className="text-xs text-muted-foreground">
+            새 맵은 이전 세팅의 구역을 이어 오지 않아요. 필요하면 불러와 지금 현장과 맞는지 하나씩
+            확인하세요.
+          </p>
+          <Button
+            variant="secondary"
+            disabled={importer.busy}
+            onClick={importer.run}
+            className={`${BUTTON_CLASS} w-full`}
+          >
+            이전 구역 불러오기
+          </Button>
+          {note && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {note}
+            </p>
+          )}
+          {importer.error && (
+            <p role="alert" className={WARNING_CLASS}>
+              {importer.error}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
   const { selectedZoneId, selectTarget, clearSelection } = viewport;
   const hasHeightVerdicts = rows.some((z) => z.heightChange != null);
   const suspectedPending = rows.filter(
@@ -132,6 +196,7 @@ export function SetupZoneReviewCard({
             </Button>
           )
         )}
+        {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {review.error && (
           <p role="alert" className={WARNING_CLASS}>
             {review.error}
@@ -144,6 +209,8 @@ export function SetupZoneReviewCard({
             const heightStatus = zone.heightChange?.status;
             const aiChange = hasChangeOpinion(zone.aiOpinion);
             const suspected = heightStatus === 'CHANGE_SUSPECTED' || aiChange;
+            const draft = pairedDrafts.get(zone.zoneId);
+            const draftName = draft ? cameraText(cameraIds, draft.recommended_name) : '';
             return (
               <li
                 key={zone.zoneId}
@@ -181,7 +248,7 @@ export function SetupZoneReviewCard({
                         : HEIGHT_STATUS_LABEL[heightStatus]}
                     </span>
                   )}
-                  {zone.needsReview ? (
+                  {draft ? null : zone.needsReview ? (
                     <Button
                       disabled={review.busy}
                       aria-label={`${name} 확인`}
@@ -214,6 +281,41 @@ export function SetupZoneReviewCard({
                     {armed ? '삭제 확인' : '삭제'}
                   </Button>
                 </div>
+                {draft && (
+                  <div
+                    data-testid="setup-zone-pair"
+                    className="flex flex-col gap-1 rounded-md border border-dashed border-primary/40 bg-surface-2 px-2 py-1.5"
+                  >
+                    <p className="text-[12px]">
+                      {`AI 초안 「${draftName}」과 같은 자리예요. 둘 중 하나만 남겨요.`}
+                    </p>
+                    <div className="flex justify-end gap-1.5">
+                      <Button
+                        variant="secondary"
+                        disabled={review.busy}
+                        aria-label={`${name} 이전 것 유지`}
+                        onClick={() => review.keepCarried(zone.zoneId, draft.candidate_id)}
+                        className={cn(BUTTON_CLASS, ROW_BUTTON_CLASS)}
+                      >
+                        이전 것 유지
+                      </Button>
+                      <Button
+                        disabled={review.busy}
+                        aria-label={`${name} AI 초안으로 바꾸기`}
+                        onClick={() =>
+                          review.replaceWithDraft(
+                            zone.zoneId,
+                            draft,
+                            (zones ?? []).filter((z) => z.zoneId !== zone.zoneId),
+                          )
+                        }
+                        className={cn(PRIMARY_BUTTON_CLASS, ROW_BUTTON_CLASS)}
+                      >
+                        AI 초안으로
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {zone.aiOpinion && (
                   <ZoneOpinionBlock
                     zoneName={name}

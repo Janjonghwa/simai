@@ -251,13 +251,44 @@ describe('AI 위험 구역 초안 패널', () => {
     expect(onDiscardDraft).toHaveBeenCalledWith('cand-surface-2');
   });
 
-  it('분석 중이거나 초안이 없으면 그 상태를 글로 보인다', () => {
+  it('분석 중이거나 남은 초안이 없으면 그 상태를 글로 보인다', () => {
     renderDrafts({ draftsResponse: buildSetupZoneDraftsResponse('s1', { status: 'QUEUED' }) });
     expect(screen.getByText('AI 구역 초안 분석 중')).toBeTruthy();
     cleanup();
-    renderDrafts({ draftsResponse: buildSetupZoneDraftsResponse('s1', { drafts: [] }) });
+    renderDrafts({ discardedDraftIds: ['cand-opening-1', 'cand-surface-2'] });
     expect(screen.getByText('AI 구역 초안 없음')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('분석이 끝났는데 초안이 0건이면(실패 포함) 직접 그리기를, World 이어짐이면 이전 구역 불러오기도 권한다(S15P31A101-758)', () => {
+    renderDrafts({ draftsResponse: buildSetupZoneDraftsResponse('s1', { drafts: [] }) });
+    expect(screen.getByRole('status').textContent).toBe(
+      'AI 가 개구부를 찾지 못했어요 — 직접 그려 주세요',
+    );
+    expect(screen.queryByText('AI 구역 초안 없음')).toBeNull();
+    cleanup();
+    renderDrafts({
+      draftsResponse: buildSetupZoneDraftsResponse('s1', { status: 'FAILED' }),
+      canImportPrevious: true,
+    });
+    expect(screen.getByRole('status').textContent).toBe(
+      'AI 가 개구부를 찾지 못했어요 — 직접 그리거나 이전 구역을 불러오세요',
+    );
+    expect(screen.queryByRole('list', { name: 'AI 구역 초안 목록' })).toBeNull();
+  });
+
+  it('같은 자리의 이전 구역과 묶인 초안은 목록에서 감추고 「이어 쓴 구역 확인」에서 고른다고 알린다', () => {
+    renderDrafts({ mergedDraftIds: ['cand-opening-1'] });
+    const list = screen.getByRole('list', { name: 'AI 구역 초안 목록' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(list).queryByText('창가 개구부 추락 주의')).toBeNull();
+    cleanup();
+    renderDrafts({ mergedDraftIds: ['cand-opening-1'], discardedDraftIds: ['cand-surface-2'] });
+    expect(
+      screen.getByText(
+        '「창가 개구부 추락 주의」은(는) 같은 자리의 이전 구역과 묶어 위 「이어 쓴 구역 확인」에서 골라요.',
+      ),
+    ).toBeTruthy();
   });
 });
 
