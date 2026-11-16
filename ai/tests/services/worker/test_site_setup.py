@@ -1377,6 +1377,7 @@ class _FakeChecker:
         self.attempts = [list(a) for a in attempts]
         self.statuses: list[str] = []
         self.started: list[tuple[str, str, list[Any], str | None]] = []
+        self.blocking: list[list[Any]] = []
         self.stopped = 0
         self.incompletes = 0
         self.version = ""
@@ -1398,16 +1399,17 @@ class _FakeChecker:
                                                    "loo_p95_px": None, "verdict": "NOT_OBSERVED", "person_visible": True}},
                 "problems": problems}
 
-    def idle(self, calibration_doc: Any, *, required_pairs: Any = ()) -> Any:
+    def idle(self, calibration_doc: Any, *, required_pairs: Any = (), blocking_pairs: Any = ()) -> Any:
         self.version = str(calibration_doc["calibration_version"])
         return self._summary("WAITING")
 
     def start(self, setup_session_id: str, calibration_doc: Any, *, expires_at_ms: int, required_pairs: Any = (),
-              attempt_id: str | None = None) -> Any:
+              blocking_pairs: Any = (), attempt_id: str | None = None) -> Any:
         if self.start_error is not None:
             raise self.start_error
         self.version = str(calibration_doc["calibration_version"])
         self.started.append((setup_session_id, self.version, list(required_pairs), attempt_id))
+        self.blocking.append(sorted(blocking_pairs))
         self.statuses = self.attempts.pop(0) if self.attempts else ["MEASURING"]
         self.events.append(f"start:{attempt_id}")
         return self._summary("WAITING")
@@ -1488,6 +1490,9 @@ def test_camera_check_waits_for_walk_start_and_passes_before_any_map_step() -> N
         assert schema_errors(snap, _PROGRESS) == []
     assert schema_errors(result, _RESULT) == []
     assert checker.stopped >= 1
+    # 보정이 맞춘 쌍(품질 게이트의 쌍)만 막는 쌍으로 넘긴다. 그 밖의 쌍(대각)은 확인에서 참고로만 잰다
+    gate_pairs = sorted(tuple(p["camera_ids"]) for p in result["quality_gate"]["pairs"].values())
+    assert gate_pairs and checker.blocking == [gate_pairs]
 
 
 def test_camera_check_retry_keeps_the_calibration_and_ignores_a_late_old_request() -> None:

@@ -485,10 +485,12 @@ class SupplementRebaker(Protocol):
 class CameraChecker(Protocol):
     """세팅 「카메라 확인」 실행기(`services.worker.camera_check.CameraCheckRunner`)."""
 
-    def idle(self, calibration_doc: Mapping[str, Any], *, required_pairs: Sequence[tuple[str, str]] = ()) -> dict[str, Any]: ...
+    def idle(self, calibration_doc: Mapping[str, Any], *, required_pairs: Sequence[tuple[str, str]] = (),
+             blocking_pairs: Sequence[tuple[str, str]] = ()) -> dict[str, Any]: ...
 
     def start(self, setup_session_id: str, calibration_doc: Mapping[str, Any], *, expires_at_ms: int,
-              required_pairs: Sequence[tuple[str, str]] = (), attempt_id: str | None = None) -> dict[str, Any]: ...
+              required_pairs: Sequence[tuple[str, str]] = (), blocking_pairs: Sequence[tuple[str, str]] = (),
+              attempt_id: str | None = None) -> dict[str, Any]: ...
 
     def poll(self) -> dict[str, Any] | None: ...
 
@@ -913,10 +915,12 @@ class SiteSetupHandler:
             return
         doc = copy.deepcopy(dict(calibration_doc))
         doc["calibration_version"] = calibration_version
-        required = [tuple(p["camera_ids"]) for p in (self._quality_gate or {}).get("pairs", {}).values()
-                    if p.get("verdict") == "NEEDS_CHECK" and len(p.get("camera_ids", ())) == 2]
+        gate_pairs = [p for p in (self._quality_gate or {}).get("pairs", {}).values() if len(p.get("camera_ids", ())) == 2]
+        # 품질 게이트의 쌍 = 세팅 보정이 맞춘 쌍(4대 고리의 옆 쌍). 그 밖의 쌍(대각)은 확인에서 참고로만 잰다
+        pairs = {"required_pairs": [tuple(p["camera_ids"]) for p in gate_pairs if p.get("verdict") == "NEEDS_CHECK"],
+                 "blocking_pairs": [tuple(p["camera_ids"]) for p in gate_pairs]}
         if self._replay_skip(ctx):
-            self._skip_camera_check_for_replay(ctx, base, checker, doc, required, attempt=None)
+            self._skip_camera_check_for_replay(ctx, base, checker, doc, pairs, attempt=None)
             return
         remaining = ctx.remaining_s()
         budget = self._cc_wait_s if remaining is None else min(self._cc_wait_s, remaining - reserve_s)
@@ -925,7 +929,7 @@ class SiteSetupHandler:
                             f"카메라 확인에 쓸 시간이 남지 않아 맵을 만들지 않았습니다(남은 {remaining or 0:.0f}초, "
                             f"맵 몫 {reserve_s:.0f}초). 세팅을 다시 시작하세요", retryable=False)
         try:
-            idle = dict(checker.idle(doc, required_pairs=required))  # type: ignore[arg-type]
+            idle = dict(checker.idle(doc, **pairs))  # type: ignore[arg-type]
         except Exception as exc:  # 확인을 열 수 없으면 맵을 굽지 않는다
             raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
                             f"카메라 확인을 준비하지 못했습니다({type(exc).__name__}: {exc})"[:480], retryable=False) from exc
@@ -944,7 +948,7 @@ class SiteSetupHandler:
             now = self._monotonic()
             if waiting_user:
                 if self._replay_skip(ctx):
-                    self._skip_camera_check_for_replay(ctx, base, checker, doc, required, attempt=attempt, idle=idle)
+                    self._skip_camera_check_for_replay(ctx, base, checker, doc, pairs, attempt=attempt, idle=idle)
                     return
                 requested = ctx.camera_check_start
                 if requested > attempt_no and stage_deadline - now > 0:
@@ -956,7 +960,7 @@ class SiteSetupHandler:
                                "calibration_version": calibration_version}
                     try:
                         first = checker.start(setup_session_id, doc, expires_at_ms=attempt["expires_at_ms"],
-                                              required_pairs=required, attempt_id=attempt["id"])  # type: ignore[arg-type]
+                                              **pairs, attempt_id=attempt["id"])  # type: ignore[arg-type]
                     except Exception as exc:  # 확인 채널을 열지 못하면 맵을 굽지 않는다
                         raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
                                         f"카메라 확인을 열지 못했습니다({type(exc).__name__}: {exc})"[:480],
@@ -1017,12 +1021,12 @@ class SiteSetupHandler:
         return getattr(ctx, "camera_check_skip", None) == "REPLAY_TEST"
 
     def _skip_camera_check_for_replay(self, ctx: JobContext, base: Mapping[str, Any], checker: CameraChecker,
-                                      doc: Mapping[str, Any], required: list[tuple[str, ...]], *,
+                                      doc: Mapping[str, Any], pairs: Mapping[str, list[tuple[str, ...]]], *,
                                       attempt: Mapping[str, Any] | None, idle: Mapping[str, Any] | None = None) -> None:
         """걷지 않고 SKIPPED_REPLAY(빈 표본·판정, 관리자 대기 없음)를 남긴다. 그 전 시도가 있으면 기록으로 남긴다. 검증 기준선은 만들지 않는다."""
         if idle is None:
             try:
-                idle = dict(checker.idle(doc, required_pairs=required))  # type: ignore[arg-type]
+                idle = dict(checker.idle(doc, **pairs))  # type: ignore[arg-type]
             except Exception as exc:  # 요약 모양을 만들 수 없으면 건너뛰지 않은 것과 같다(맵을 굽지 않는다)
                 raise JobFailed(CAMERA_CHECK_UNAVAILABLE,
                                 f"카메라 확인을 준비하지 못했습니다({type(exc).__name__}: {exc})"[:480], retryable=False) from exc
