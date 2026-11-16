@@ -4,7 +4,7 @@
   "recording_id": "live-20261113-091500",
   "work_id": 42,
   "camera_id": "cam_A",
-  "stream_epochs": [0],
+  "stream_epochs": [1794528900000],
   "segment_start_capture_ms": 1794614400000,
   "segment_end_capture_ms": 1794614700040,
   "frame_count": 7501,

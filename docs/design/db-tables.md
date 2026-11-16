@@ -75,7 +75,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | E. 이벤트·조치 | `media_clip` | MVP | 일반 | 이벤트 클립 기록(카메라 하나 × 위험 구간 하나) | 있음 | `/api/clips/{}`, `/api/clips/{}/retention`, `/api/events/{}/clips` | 이연주 |
 | E. 이벤트·조치 | `media_clip_retention` | MVP | 일반 | 보존 표시 이력(CRITICAL 자동, 관리자 붙이기·떼기) | 있음 | `/api/clips/{}/retention` |  |
 | E. 이벤트·조치 | `clip_access_log` | MVP | 일반 | 클립 열람 기록 | 수정 16 추가 | `/api/clips/{}` |  |
-| E. 이벤트·조치 | `video_segment` | MVP | 일반 | 상시 영상 조각 기록(14일 뒤 객체 삭제, 행은 남김) | 수정 36 추가 | `/api/videos`, I1 `video_segment` |  |
+| E. 이벤트·조치 | `video_segment` | MVP | 일반 | 상시 영상 조각 기록(14일 뒤 객체 삭제, 행은 남김) | 수정 36 추가 | `/api/videos`, I1 `video_segment` | `stream_epochs` 는 bigint[](V84, S15P31A101-767). 중계 epoch 는 세션 시작 UTC ms(13자리)부터 |
 | E. 이벤트·조치 | `video_access_log` | MVP | 일반 | 상시 영상 열람 기록 | 수정 36 추가 | `/api/videos/{}` |  |
 | E. 이벤트·조치 | `upload_grant` | MVP | 일반 | 임시 업로드 주소 발급 기록(올라온 키 검증) | 수정 16 추가 | `/api/uploads/sign` |  |
 | F. 알림 | `notification` | M1 | 일반 | 실제 알림 발송 기록. LIVE 이벤트만(넣기·꺼내기는 `NotificationQueue`, 같은 전이·채널·대상 유일 V13, S15P31A101-123) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
