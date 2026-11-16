@@ -559,12 +559,66 @@ def test_cameras_alternating_still_make_one_sample_per_bin():
 
 
 def test_cross_camera_contradiction_is_unknown():
+    """미착용 카메라가 2대 이상이면 착용 카메라가 있어도 충돌 칸이다(S15P31A101-766)."""
     j = PpeJudge()
     for b in range(8):
         feed(j, "cam1", t_of(b), [person("w1", local="a")], [HELMET()])
         feed(j, "cam2", t_of(b, 40), [person("w1", 1200, local="b")], [NO_HELMET(1200)])
+        feed(j, "cam3", t_of(b, 60), [person("w1", 300, local="c")], [NO_HELMET(300)])
     v = state(j, closed_after(7))
     assert (v.state, v.reason) == ("UNKNOWN", ps.R_CROSS_CAMERA_CONFLICT)
+
+
+# ---- 칸 결합: 미착용 카메라 1대는 충돌이 아니다(S15P31A101-766, ppe-policy-0.7.0) ---------------------------------
+def _s(cam, kind, t=1000):
+    return pa.Sample(world_id="w1", identity_revision=0, item="vest", kind=kind, reason="R", camera_id=cam,
+                     stream_epoch=0, frame_sequence=1, capture_time_ms=t, local_track_id=f"l-{cam}",
+                     confidence=0.8, region_quality=0.9)
+
+
+def test_one_not_worn_camera_among_worn_is_worn_bin():
+    j = PpeJudge()
+    result, support = j.combine_bin([_s("cam1", pa.S_WORN), _s("cam2", pa.S_NOT_WORN, 1020)])
+    assert result == ps.B_WORN and {s.camera_id for s in support} == {"cam1"}   # 근거에는 착용 표본만
+    result, _ = j.combine_bin([_s("cam1", pa.S_WORN), _s("cam2", pa.S_WORN), _s("cam3", pa.S_NOT_WORN)])
+    assert result == ps.B_WORN
+
+
+def test_two_not_worn_cameras_with_worn_is_conflict():
+    j = PpeJudge()
+    result, support = j.combine_bin([_s("cam1", pa.S_WORN), _s("cam2", pa.S_NOT_WORN), _s("cam3", pa.S_NOT_WORN)])
+    assert result == ps.B_CONFLICT and len(support) == 3
+    result, _ = j.combine_bin([_s("cam1", pa.S_WORN), _s("cam2", pa.S_WORN),
+                               _s("cam3", pa.S_NOT_WORN), _s("cam4", pa.S_NOT_WORN)])
+    assert result == ps.B_CONFLICT
+
+
+def test_same_camera_both_states_stays_conflict():
+    """병합으로 합친 칸에서 같은 카메라가 두 상태를 함께 냈으면 그대로 충돌이다."""
+    j = PpeJudge()
+    assert j.combine_bin([_s("cam1", pa.S_WORN), _s("cam1", pa.S_NOT_WORN)])[0] == ps.B_CONFLICT
+
+
+def test_threshold_one_restores_previous_rule():
+    j = PpeJudge(dataclasses.replace(pa.DEFAULT_CONFIG, conflict_min_not_worn_cameras=1))
+    assert j.combine_bin([_s("cam1", pa.S_WORN), _s("cam2", pa.S_NOT_WORN)])[0] == ps.B_CONFLICT
+
+
+def test_occasional_single_camera_not_worn_keeps_worn():
+    """2026-11-16 로비 검은 조끼: 한 카메라가 가끔 미착용을 내도 착용 확정이 끊기지 않는다."""
+    def run(cfg):
+        j = PpeJudge(cfg)
+        for b in range(12):
+            feed(j, "cam1", t_of(b), [person("w1", local="a")], [VEST()])
+            feed(j, "cam2", t_of(b, 30), [person("w1", 1200, local="b")], [VEST(1200)])
+            odd = [NO_VEST(300)] if b % 3 == 2 else [VEST(300)]   # cam3 가 세 칸에 한 번 미착용
+            feed(j, "cam3", t_of(b, 60), [person("w1", 300, local="c")], odd)
+        return j.evaluate(closed_after(11))["w1"]["vest"]
+
+    v = run(pa.DEFAULT_CONFIG)
+    assert (v.state, v.reason) == ("WORN", ps.R_WINDOW_WORN)
+    old = run(dataclasses.replace(pa.DEFAULT_CONFIG, conflict_min_not_worn_cameras=1))
+    assert (old.state, old.reason) == ("UNKNOWN", ps.R_CROSS_CAMERA_CONFLICT)   # 0.6.0 규칙이면 끊긴다
 
 
 def test_second_frame_same_camera_same_bin_is_not_double_counted():
@@ -679,7 +733,7 @@ def test_contrary_reason_still_stays_until_confirmed():
 
 def test_policy_version_marks_current_rules():
     from simai_ai.ppe.config import POLICY_VERSION
-    assert POLICY_VERSION == "ppe-policy-0.6.0"
+    assert POLICY_VERSION == "ppe-policy-0.7.0"
 
 
 # ---- 머리 폭 하한 = 어깨 폭 × 0.6 (S15P31A101-737, ppe-policy-0.6.0) ----------------------------------------------

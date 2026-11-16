@@ -142,6 +142,7 @@ def test_near_boundary_camera_conflict_is_combined_before_closing():
     judge.evaluate(2100, capture_time_ms=1510)
     feed(judge, "cam2", 1450, [person("w1")], [NO_HELMET()])
     feed(judge, "cam2", 1520, [person("w1")], [NO_HELMET()])
+    feed(judge, "cam3", 1530, [person("w1")], [NO_HELMET()])   # 미착용 2대 이상이어야 충돌(S15P31A101-766)
     views = judge.evaluate(2500, capture_time_ms=2100)
     assert judge.dropped == {} and views["w1"]["helmet"].state == "UNKNOWN"
     assert views["w1"]["helmet"].reason == "CROSS_CAMERA_CONFLICT"
