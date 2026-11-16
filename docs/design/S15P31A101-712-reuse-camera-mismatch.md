@@ -27,7 +27,8 @@ REUSE 세팅이 가장 최근 완료 보정(15차, `cal-lobby-init-bc13ef6f-…e
 | LightGlue(헬퍼에 이미 있는 ALIKED) 로 비교 | 1단계 | 노트북 CPU 로 한 번 16~24 s(-446 실측), 라운드가 두 배 가까이 길어짐 | 같은 카메라·거의 같은 시점은 쉬운 매칭이라 SIFT 로 충분하다 | 버림 |
 
 기준 사진은 뷰어 VDT(-590·-593)가 이미 쓰는 그 Scene 의 굽기 입력 사진(`SceneCameraImageService`, Tier 0 사람 지운 배경 원본 JPEG, 카메라 해상도·렌즈 왜곡
-그대로)이다. 새 저장·새 측정 경로가 없다. 렌즈는 그 Scene 보정의 `calibration_camera`(K·왜곡·image_size)다(외부 자세는 주지 않는다).
+그대로)이다. 새 저장·새 측정 경로가 없다. 렌즈는 그 Scene 보정의 원문 `calibration_document` 의 `cameras[]`(K·왜곡·image_size)다(외부 자세는 주지 않는다). 처음에는
+`calibration_camera` 표에서 읽었으나 이 표를 채우는 경로가 없어 운영에서 기준이 늘 비었다(S15P31A101-771, `S15P31A101-771-reuse-lens-from-calibration-doc.md`).
 
 ### 흐름
 

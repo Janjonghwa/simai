@@ -17,6 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -25,7 +26,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 재사용 시점 확인 기준(S15P31A101-712, docs/design/S15P31A101-712-reuse-camera-mismatch.md).
  * 「이전 맵 재사용」 대상(현재 관제 맵 COMMITTED 와 그 보정, {@code SetupReuseCheck} 와 같은 질의)을 구운 카메라별 사람 지운 배경 사진의
- * GET 서명 주소({@link SceneCameraImageService}, 뷰어 VDT 와 같은 사진)와 그 보정의 렌즈 내부값(calibration_camera 의 K·왜곡·image_size)을
+ * GET 서명 주소({@link SceneCameraImageService}, 뷰어 VDT 와 같은 사진)와 그 보정의 렌즈 내부값(보정 원문 calibration_document 의 cameras[] K·왜곡·image_size, -771. 원문에 없는 카메라만
+ * calibration_camera 표)을
  * 기기 수요 응답 {@code reuse_reference} 로 준다. 게이트웨이 헬퍼가 같은 카메라의 지금 키프레임과 비교해 coverage_guide 1.1.0
  * {@code reuse_view_check} 로 돌려준다. 외부 자세(R·t)는 주지 않는다(헬퍼는 위치·보정을 만들지 않는다).
  * 맵·사진·렌즈 중 하나라도 없으면 null(지어내지 않는다, 규칙 2). 서명 주소는 로그에 남기지 않는다.
@@ -156,6 +158,33 @@ public class CoverageReuseReference {
         if (urls.isEmpty() || signed.path("expires_at_ms").isNull()) {
             return null;
         }
+        // 원문이 정본이다. 표는 원문에 없는 카메라만 채우고, 표를 읽다 실패해도 원문 렌즈는 그대로 쓴다(S15P31A101-771)
+        Map<String, ObjectNode> lenses = documentLenses(calibration);
+        try {
+            tableLenses(calibration).forEach(lenses::putIfAbsent);
+        } catch (RuntimeException e) {
+            log.warn("보정 {} 의 calibration_camera 렌즈를 읽지 못해 원문 렌즈만 쓴다: {}", calibration, e.getClass().getSimpleName());
+        }
+        ObjectNode out = mapper.createObjectNode();
+        out.put("scene_version", scene);
+        out.put("calibration_version", calibration);
+        out.put("expires_at_ms", signed.path("expires_at_ms").asLong());
+        ArrayNode cameras = out.putArray("cameras");
+        urls.forEach((camera, url) -> {
+            ObjectNode lens = lenses.get(camera);
+            if (lens == null || url.isEmpty()) {
+                return;
+            }
+            ObjectNode item = cameras.addObject();
+            item.put("camera_id", camera);
+            item.put("url", url);
+            item.setAll(lens);
+        });
+        return cameras.isEmpty() ? null : out;
+    }
+
+    /** calibration_document 이전부터 있던 렌즈 표(calibration_camera). 데이터셋·시험처럼 표만 채운 보정에 쓴다 */
+    private Map<String, ObjectNode> tableLenses(String calibration) {
         Map<String, ObjectNode> lenses = new LinkedHashMap<>();
         jdbc.query("""
                 SELECT camera_id, image_size, k_matrix::text AS k_matrix, distortion_model, distortion_coeffs
@@ -175,22 +204,87 @@ public class CoverageReuseReference {
             }
             lenses.put(rs.getString("camera_id"), lens);
         });
-        ObjectNode out = mapper.createObjectNode();
-        out.put("scene_version", scene);
-        out.put("calibration_version", calibration);
-        out.put("expires_at_ms", signed.path("expires_at_ms").asLong());
-        ArrayNode cameras = out.putArray("cameras");
-        urls.forEach((camera, url) -> {
-            ObjectNode lens = lenses.get(camera);
-            if (lens == null || url.isEmpty()) {
-                return;
+        return lenses;
+    }
+
+    /**
+     * 보정 원문(calibration_document, 세팅·보정 등록이 저장한 정본)의 카메라별 렌즈(S15P31A101-771). calibration_camera 표는 아무 경로도
+     * 채우지 않아 운영에서 비어 있으므로, 원문의 cameras[].image_size·K·distortion(보정 계약 필수 칸)을 표 대신 쓴다. 원문 값이 표보다
+     * 앞선다. 형식이 틀린 카메라는 빼고(지어내지 않는다, 규칙 2), 원문이 없거나 읽지 못하면 빈 값이다.
+     */
+    private Map<String, ObjectNode> documentLenses(String calibration) {
+        List<byte[]> docs = jdbc.queryForList("SELECT content FROM calibration_document WHERE calibration_version = :c",
+                new MapSqlParameterSource("c", calibration), byte[].class);
+        Map<String, ObjectNode> lenses = new LinkedHashMap<>();
+        if (docs.isEmpty() || docs.getFirst() == null) {
+            return lenses;
+        }
+        JsonNode doc;
+        try {
+            doc = mapper.readTree(docs.getFirst());
+        } catch (JacksonException e) {
+            log.warn("보정 {} 의 원문을 읽지 못해 렌즈를 원문에서 싣지 않는다", calibration);
+            return lenses;
+        }
+        if (!doc.path("cameras").isArray()) {
+            return lenses;
+        }
+        for (JsonNode camera : doc.path("cameras")) {
+            String id = camera.path("camera_id").asString("");
+            JsonNode size = camera.path("image_size");
+            JsonNode k = camera.path("K");
+            JsonNode distortion = camera.path("distortion");
+            if (id.isEmpty() || lenses.containsKey(id) || !positiveIntPair(size) || !matrix3(k)
+                    || k.get(0).get(0).doubleValue() <= 0 || k.get(1).get(1).doubleValue() <= 0
+                    // 헬퍼(view_check.parse_lens)는 K 마지막 행이 [0, 0, 1] 이 아니면 그 카메라를 버린다. 미리 빼서 서명 주소를 아낀다
+                    || k.get(2).get(0).doubleValue() != 0 || k.get(2).get(1).doubleValue() != 0
+                    || k.get(2).get(2).doubleValue() != 1
+                    || !DISTORTION_MODELS.contains(distortion.path("model").asString(""))
+                    || !finiteNumbers(distortion.path("coeffs"))) {
+                log.warn("보정 {} 원문의 카메라 렌즈 형식이 맞지 않아 그 카메라를 뺀다", calibration);
+                continue;
             }
-            ObjectNode item = cameras.addObject();
-            item.put("camera_id", camera);
-            item.put("url", url);
-            item.setAll(lens);
-        });
-        return cameras.isEmpty() ? null : out;
+            ObjectNode lens = mapper.createObjectNode();
+            lens.set("image_size", size.deepCopy());
+            lens.set("K", k.deepCopy());
+            ObjectNode d = lens.putObject("distortion");
+            d.put("model", distortion.path("model").asString());
+            d.set("coeffs", distortion.path("coeffs").deepCopy());
+            lenses.put(id, lens);
+        }
+        return lenses;
+    }
+
+    private static final Set<String> DISTORTION_MODELS = Set.of("OPENCV_PINHOLE", "OPENCV_FISHEYE", "NONE");
+
+    private static boolean positiveIntPair(JsonNode node) {
+        return node.isArray() && node.size() == 2 && node.get(0).isIntegralNumber() && node.get(0).canConvertToInt()
+                && node.get(0).intValue() > 0 && node.get(1).isIntegralNumber() && node.get(1).canConvertToInt()
+                && node.get(1).intValue() > 0;
+    }
+
+    private static boolean matrix3(JsonNode node) {
+        if (!node.isArray() || node.size() != 3) {
+            return false;
+        }
+        for (JsonNode row : node) {
+            if (!row.isArray() || row.size() != 3 || !finiteNumbers(row)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean finiteNumbers(JsonNode node) {
+        if (!node.isArray()) {
+            return false;
+        }
+        for (JsonNode v : node) {
+            if (!v.isNumber() || !Double.isFinite(v.doubleValue())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Object[] values(Array array) throws SQLException {
