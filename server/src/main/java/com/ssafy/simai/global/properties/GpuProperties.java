@@ -20,10 +20,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param failedGrace 세션이 FAILED 를 이만큼 이어 보고하고 Tier 0 I1 도 없으면 끈다
  * @param uploadHold 녹화 조각 업로드 서명이 이만큼 안에 있었으면 업로드 중으로 보고 자동 정지하지 않는다(deploy.sh 보류와 같은 10분)
  * @param sweepInterval 자동 정지 점검 주기
+ * @param presenceMaxExtension 관리자 화면 조작 신호(presence)만으로 유휴 자동 정지를 미룰 수 있는 최대 시간. 마지막 실제 사용(GpuActivity.lastUse)과
+ *        준비 완료 중 늦은 시각부터 센다(S15P31A101-774, 설계 docs/design/S15P31A101-774-gpu-presence-visible-cap.md). 기본 90분 = 유휴 기본 30분의
+ *        3배: 관제·세팅 전 화면 점검·준비에 충분하고, 조작만 이어진 세션의 과금을 한 세션 최대 약 1.5시간(H100 시간당 약 4.4 USD 기준 약 6.6 USD)으로 묶는다.
+ *        LIVE·세팅·업로드·분석 작업 중에는 이 상한과 무관하게 끄지 않는다
  */
 @ConfigurationProperties("simai.gpu")
 public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration bootTimeout, Duration failedGrace, Duration uploadHold,
-        Duration sweepInterval) {
+        Duration sweepInterval, Duration presenceMaxExtension) {
 
     public GpuProperties {
         runpod = runpod == null ? new RunPod(null, null, null, null, null, null, null, null) : runpod;
@@ -33,6 +37,7 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
         failedGrace = positive(failedGrace, Duration.ofMinutes(20));
         uploadHold = positive(uploadHold, Duration.ofMinutes(10));
         sweepInterval = positive(sweepInterval, Duration.ofSeconds(60));
+        presenceMaxExtension = positive(presenceMaxExtension, Duration.ofMinutes(90));
     }
 
     /**

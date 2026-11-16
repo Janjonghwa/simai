@@ -346,6 +346,48 @@ class GpuPowerIntegrationTest {
         shift(Duration.ofMinutes(56));
         assertThat(power.autoStop()).contains("IDLE");
         assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        // 상한이 아니라 조작이 끊겨 끈 것으로 남는다(S15P31A101-774)
+        assertThat(jdbc.queryForObject("SELECT detail FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
+                String.class, "pod-" + suffix)).startsWith("basis=PRESENCE ");
+    }
+
+    @Test
+    void 조작_신호만_이어지면_준비_완료_뒤_상한_90분에서_끄고_관제_중이면_상한이어도_끄지_않는다() throws Exception {
+        // S15P31A101-774(11-16): Tier 0 가 붙은 채 관리자 화면 조작 신호만 이어져 관제·세팅·작업 없이 2시간 켜져 있었다
+        launch(null, null).andExpect(status().isCreated());
+        UUID sessionId = register("pod-" + suffix);
+        report(sessionId, "READY");
+        power.useTier0Link(sessionId::equals);
+        assertThat(power.autoStop()).isEmpty();
+
+        // 상한 전: 조작이 이어지면 유휴 30분이 지나도 끄지 않는다
+        shift(Duration.ofMinutes(20));
+        presence(admin).andExpect(status().isNoContent());
+        shift(Duration.ofMinutes(31));
+        assertThat(power.autoStop()).isEmpty();
+        shift(Duration.ofMinutes(50));
+        presence(admin).andExpect(status().isNoContent());
+        shift(Duration.ofMinutes(70));
+        presence(admin).andExpect(status().isNoContent());
+        shift(Duration.ofMinutes(88));
+        presence(admin).andExpect(status().isNoContent());
+        assertThat(power.autoStop()).isEmpty();
+        assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
+
+        // 상한(준비 완료 뒤 90분)을 넘었지만 관제(LIVE) 중이면 끄지 않는다
+        shift(Duration.ofMinutes(91));
+        long work = liveWork();
+        assertThat(power.autoStop()).isEmpty();
+        assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
+        // 실행 기록 없이 작업만 닫는다(실제 사용 시각은 그대로 준비 완료): 조작만 이어진 시간이 상한을 넘었다
+        jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", work);
+        assertThat(power.autoStop()).contains("IDLE");
+        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        String detail = jdbc.queryForObject("SELECT detail FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
+                String.class, "pod-" + suffix);
+        assertThat(detail).startsWith("PRESENCE_CAP ").contains("cap_minutes=90");
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
+                String.class, "pod-" + suffix)).isEqualTo("IDLE");
     }
 
     @Test

@@ -114,6 +114,10 @@ simai:
     # 녹화 조각 업로드 서명이 이만큼 안에 있었으면 업로드 중(deploy.sh SIMAI_DEPLOY_HOLD_UPLOAD_MINUTES 기본 10분과 같다)
     upload-hold: 10m
     sweep-interval: 60s
+    # Tier 0 가 붙어 있을 때 관리자 화면 조작 신호(POST /api/gpu/presence)만으로 유휴 자동 정지를 미룰 수 있는 최대 시간(S15P31A101-774).
+    # 마지막 실제 사용(실행 종료·세팅·작업 대여·업로드)과 준비 완료 중 늦은 시각부터 센다. 화면만 열어 둔 채 2시간 켜진 11-16 사례 대응,
+    # 근거는 docs/design/S15P31A101-774-gpu-presence-visible-cap.md. LIVE·세팅·업로드·분석 작업 중에는 상관없이 끄지 않는다
+    presence-max-extension: 90m
   replay-test:
     # 녹화 재생 시험 스위치(S15P31A101-736, docs/design/S15P31A101-736-replay-test-switch.md). AGENTS 규칙 5 의 시험용 예외라 기본 꺼짐, 화면 버튼 없음.
     # alerts: 켜면 노트북이 녹화 파일·합성 영상 입력을 알리는 동안에도 워치 진동을 보낸다(관제 화면 「재생 시험 · 실제 알림 켜짐」)
