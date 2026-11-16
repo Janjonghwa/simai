@@ -156,7 +156,7 @@ class RecordingService {
                 throw new BusinessException(ErrorCode.Recording.INVALID_RECORDING_SEGMENT);
             }
         }
-        if (!body.get("frame_count").canConvertToInt() || !body.get("stream_epochs").get(0).canConvertToInt()
+        if (!body.get("frame_count").canConvertToInt() || !body.get("stream_epochs").get(0).canConvertToLong()
                 || (body.has("upload_attempts") && !body.get("upload_attempts").canConvertToInt())) {
             throw new BusinessException(ErrorCode.Recording.INVALID_RECORDING_SEGMENT);
         }
@@ -183,7 +183,7 @@ class RecordingService {
                 .addValue("segmentId", segmentId)
                 .addValue("gatewayId", deviceId)
                 .addValue("cameraId", camera)
-                .addValue("streamEpochs", "{" + body.get("stream_epochs").get(0).asInt() + "}")
+                .addValue("streamEpochs", "{" + body.get("stream_epochs").get(0).asLong() + "}")
                 .addValue("start", utc(Instant.ofEpochMilli(start)))
                 .addValue("end", utc(Instant.ofEpochMilli(end)))
                 .addValue("frameCount", body.get("frame_count").asInt())
@@ -219,7 +219,7 @@ class RecordingService {
                         segment_end_capture_at, frame_count, starts_with_keyframe, has_gaps, content_type, container, size_bytes, sha256,
                         face_redaction, segment_created_at, delete_after, object_key, uploaded_at, upload_attempts, received_at,
                         origin, work_id, recording_id)
-                    VALUES (:segmentId, :gatewayId, :cameraId, CAST(:streamEpochs AS integer[]), :start, :end, :frameCount, true,
+                    VALUES (:segmentId, :gatewayId, :cameraId, CAST(:streamEpochs AS bigint[]), :start, :end, :frameCount, true,
                         :hasGaps, :contentType, :container, :sizeBytes, :sha256, 'NONE', :createdAt, :deleteAfter, :objectKey,
                         :uploadedAt, :uploadAttempts, :receivedAt, 'GATEWAY_RECORDING', :workId, :recordingId)
                     """, row);

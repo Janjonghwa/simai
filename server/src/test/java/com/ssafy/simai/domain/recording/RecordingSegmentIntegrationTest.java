@@ -47,6 +47,7 @@ class RecordingSegmentIntegrationTest {
     private static final Path EXAMPLES = Path.of(System.getProperty("simai.contracts.dir", "../contracts"), "examples");
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     private static final String SHA = "c".repeat(64);
+    private static final long RELAY_EPOCH = 1_794_801_615_041L;
 
     @LocalServerPort
     int port;
@@ -176,6 +177,8 @@ class RecordingSegmentIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT origin FROM video_segment WHERE segment_id = ?", String.class, id))
                 .isEqualTo("GATEWAY_RECORDING");
         assertThat(jdbc.queryForObject("SELECT work_id FROM video_segment WHERE segment_id = ?", Long.class, id)).isEqualTo(workId);
+        assertThat(jdbc.queryForObject("SELECT stream_epochs[1] FROM video_segment WHERE segment_id = ?", Long.class, id))
+                .isEqualTo(RELAY_EPOCH);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE object_key = ? AND used_at IS NOT NULL",
                 Integer.class, key)).isOne();
 
@@ -384,6 +387,8 @@ class RecordingSegmentIntegrationTest {
         body.put("segment_id", id.toString());
         body.put("work_id", workId);
         body.put("camera_id", camera);
+        // 실제 중계 epoch(세션 시작 UTC ms, int32 초과). 작은 값만 쓰면 int 가정이 시험을 통과한다
+        body.putArray("stream_epochs").add(RELAY_EPOCH);
         body.put("segment_start_capture_ms", startMs);
         body.put("segment_end_capture_ms", endMs);
         body.put("size_bytes", size);

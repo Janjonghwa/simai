@@ -47,7 +47,7 @@ class VideoSegmentIngestor implements I1MessageIngestor {
             INSERT INTO video_segment (segment_id, gateway_id, camera_id, stream_epochs, segment_start_capture_at,
                 segment_end_capture_at, frame_count, starts_with_keyframe, has_gaps, content_type, container, size_bytes, sha256,
                 face_redaction, segment_created_at, delete_after, object_key, uploaded_at, upload_attempts, received_at)
-            VALUES (:segmentId, :gatewayId, :cameraId, CAST(:streamEpochs AS integer[]), :start, :end, :frameCount, :keyframe,
+            VALUES (:segmentId, :gatewayId, :cameraId, CAST(:streamEpochs AS bigint[]), :start, :end, :frameCount, :keyframe,
                 :hasGaps, :contentType, :container, :sizeBytes, :sha256, :faceRedaction, :createdAt, :deleteAfter, :objectKey,
                 :uploadedAt, :uploadAttempts, :receivedAt)
             ON CONFLICT (segment_id) DO NOTHING
@@ -92,7 +92,7 @@ class VideoSegmentIngestor implements I1MessageIngestor {
                 throw new InvalidI1Message(field + " 이 받을 수 있는 시각을 넘는다");
             }
         }
-        if (!p.get("frame_count").canConvertToInt() || p.get("stream_epochs").valueStream().anyMatch(v -> !v.canConvertToInt())) {
+        if (!p.get("frame_count").canConvertToInt() || p.get("stream_epochs").valueStream().anyMatch(v -> !v.canConvertToLong())) {
             throw new InvalidI1Message("frame_count·stream_epochs 가 정수 범위를 넘는다");
         }
         long start = p.get("segment_start_capture_ms").asLong();
@@ -161,8 +161,9 @@ class VideoSegmentIngestor implements I1MessageIngestor {
     }
 
     private static MapSqlParameterSource row(JsonNode p, Instant receivedAt) {
-        List<Integer> epochs = new ArrayList<>();
-        p.get("stream_epochs").values().forEach(v -> epochs.add(v.asInt()));
+        // stream_epoch 는 상한 없는 정수다. 노트북 중계는 세션 시작 UTC ms(약 1.79e12)부터 세므로 int 로는 담지 못한다(media_clip -754 와 같음)
+        List<Long> epochs = new ArrayList<>();
+        p.get("stream_epochs").values().forEach(v -> epochs.add(v.asLong()));
         return new MapSqlParameterSource()
                 .addValue("segmentId", I1Json.requiredUuid(p, "segment_id"))
                 .addValue("gatewayId", p.get("gateway_id").asString())
