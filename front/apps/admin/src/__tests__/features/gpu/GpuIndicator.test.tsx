@@ -1,4 +1,9 @@
 import { GpuIndicator } from '@/features/gpu/GpuIndicator';
+import {
+  GPU_PRESENCE_ACTIVE_WINDOW_MS,
+  GPU_PRESENCE_MIN_INTERVAL_MS,
+  shouldSendGpuPresence,
+} from '@/features/gpu/useGpuPresence';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
@@ -527,6 +532,81 @@ describe('GpuIndicator', () => {
     visibility.mockReturnValue('visible');
     fireEvent.pointerDown(document.body);
     await waitFor(() => expect(presences).toBe(2));
+  });
+
+  it('화면이 안 보이거나 최근 5분 안에 조작이 없으면 1분 점검에서도 보내지 않고 다시 조작하면 보낸다(-774)', async () => {
+    // 1분 점검 타이머만 잡아 손으로 돌린다(다른 타이머는 그대로)
+    const ticks: Array<() => void> = [];
+    const realSetInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation(((
+      handler: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms === GPU_PRESENCE_MIN_INTERVAL_MS && typeof handler === 'function') {
+        ticks.push(handler as () => void);
+        return 0;
+      }
+      return realSetInterval(handler, ms, ...args);
+    }) as typeof window.setInterval);
+    const tick = () => act(() => ticks.forEach((fn) => fn()));
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+    current = statusOf('CONNECTED', {
+      launch: launchView(),
+      session: sessionView('READY', 'CONNECTED'),
+    });
+    signInAs('ADMIN');
+    renderIndicator();
+    await waitFor(() => expect(indicator().dataset.dot).toBe('CONNECTED'));
+    await waitFor(() => expect(ticks.length).toBeGreaterThan(0));
+    const t0 = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0);
+
+    // 화면을 열어 두기만 하고 조작이 없으면 보내지 않는다
+    tick();
+    await settle();
+    expect(presences).toBe(0);
+
+    // 휠 조작 → 바로 보낸다
+    fireEvent.wheel(document.body);
+    await waitFor(() => expect(presences).toBe(1));
+    // 조작 뒤 5분 안의 점검은 1분 간격으로 보낸다
+    now.mockReturnValue(t0 + 2 * 60_000);
+    tick();
+    await waitFor(() => expect(presences).toBe(2));
+    // 화면이 안 보이면(탭 숨김) 점검에서 보내지 않는다
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    now.mockReturnValue(t0 + 4 * 60_000);
+    tick();
+    await settle();
+    expect(presences).toBe(2);
+    // 다시 보여도 마지막 조작이 5분을 넘었으면 보내지 않는다
+    visibility.mockReturnValue('visible');
+    now.mockReturnValue(t0 + GPU_PRESENCE_ACTIVE_WINDOW_MS + 1);
+    tick();
+    await settle();
+    expect(presences).toBe(2);
+    // 다시 조작(터치)하면 보낸다
+    fireEvent.touchStart(document.body);
+    await waitFor(() => expect(presences).toBe(3));
+  });
+
+  it('조작 신호 판단: 보임 + 최근 5분 조작 + 마지막 신호 뒤 1분(-774)', () => {
+    const base = { visible: true, nowMs: 10 * 60_000, lastInputMs: 10 * 60_000, lastSentMs: null };
+    expect(shouldSendGpuPresence(base)).toBe(true);
+    expect(shouldSendGpuPresence({ ...base, visible: false })).toBe(false);
+    expect(shouldSendGpuPresence({ ...base, lastInputMs: null })).toBe(false);
+    expect(
+      shouldSendGpuPresence({ ...base, lastInputMs: base.nowMs - GPU_PRESENCE_ACTIVE_WINDOW_MS }),
+    ).toBe(true);
+    expect(
+      shouldSendGpuPresence({
+        ...base,
+        lastInputMs: base.nowMs - GPU_PRESENCE_ACTIVE_WINDOW_MS - 1,
+      }),
+    ).toBe(false);
+    expect(shouldSendGpuPresence({ ...base, lastSentMs: base.nowMs - 59_000 })).toBe(false);
+    expect(shouldSendGpuPresence({ ...base, lastSentMs: base.nowMs - 60_000 })).toBe(true);
   });
 
   it('GPU 가 꺼져 있으면 조작 신호를 보내지 않는다(-708)', async () => {

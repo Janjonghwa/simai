@@ -60,7 +60,8 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>자동 정지({@link #autoStop()}): LIVE·세팅·녹화 업로드·분석 작업 중에는 어떤 경우에도 끄지 않는다. 그 밖에 켠 뒤 등록 없음(bootTimeout),
  * 세션이 끝났는데 인스턴스가 남음, FAILED 지속(failedGrace, I1 없음), 유휴(설정의 분)면 끈다. 유휴는 준비가 끝난 뒤부터 센다
  * (S15P31A101-708: 그 세션의 첫 READY 보고와 Tier 0 첫 I1 연결 중 이른 쪽, 부팅 시간은 세지 않는다). Tier 0 가 붙어 있으면 관리자 화면
- * 조작 신호(POST /api/gpu/presence)도 사용으로 센다.</li>
+ * 조작 신호(POST /api/gpu/presence)도 사용으로 세되, 조작만으로 미루는 시간은 마지막 실제 사용·준비 완료 뒤 presenceMaxExtension(기본 90분)까지다
+ * (S15P31A101-774: 화면만 열어 둔 채 2시간 켜져 있었다).</li>
  * </ul>
  */
 @Service
@@ -102,6 +103,13 @@ public class GpuPowerService {
     record OpenSession(UUID sessionId, String provider, String instanceId, String stage, Instant stageAt, Instant registeredAt,
             Instant readyAt) {
     }
+
+    /** 자동 정지 까닭. reason 은 gpu_launch_event.reason_code, detail 은 같은 사건의 detail(유휴의 기준·조작 상한 구분, S15P31A101-774) */
+    private record AutoStopCause(String reason, String detail) {
+    }
+
+    /** 유휴 정지 detail 앞머리: 조작 신호만 이어지다 상한(presenceMaxExtension)에 걸렸다 */
+    static final String PRESENCE_CAP = "PRESENCE_CAP";
 
     /** 이 세션의 Tier 0 가 I1 에 붙은 것을 처음 본 시각(메모리, 자동 정지 점검 때 본다) */
     private record FirstLink(UUID sessionId, Instant at) {
@@ -158,8 +166,8 @@ public class GpuPowerService {
     // ---------------------------------------------------------------- 관리자 화면 조작
 
     /**
-     * 관리자가 화면을 보며 조작했다(POST /api/gpu/presence, front 는 화면이 보이는 동안 입력 뒤 1분에 한 번까지 보낸다).
-     * 마지막 시각만 메모리에 둔다. Tier 0 가 붙어 있을 때만 자동 정지의 사용으로 센다.
+     * 관리자가 화면을 보며 조작했다(POST /api/gpu/presence, front 는 화면이 보이고 최근 5분 안에 입력이 있을 때 1분에 한 번까지 보낸다).
+     * 마지막 시각만 메모리에 둔다. Tier 0 가 붙어 있을 때만 자동 정지의 사용으로 세고, 조작만으로 미루는 시간에는 상한이 있다(idle).
      */
     public void presence() {
         lastPresence = now();
@@ -325,7 +333,7 @@ public class GpuPowerService {
         }
         GpuProvider provider = providers.find(target.provider())
                 .orElseThrow(() -> new BusinessException(ErrorCode.Gpu.GPU_STOP_UNSUPPORTED));
-        if (!terminate(target, provider, userId, "ADMIN")) {
+        if (!terminate(target, provider, userId, "ADMIN", null)) {
             throw new BusinessException(ErrorCode.Gpu.GPU_PROVIDER_ERROR);
         }
     }
@@ -367,25 +375,27 @@ public class GpuPowerService {
         if (block.isPresent()) {
             return Optional.empty();
         }
-        Optional<String> reason = autoStopReason(target, now);
-        if (reason.isEmpty()) {
+        Optional<AutoStopCause> cause = autoStopReason(target, now);
+        if (cause.isEmpty()) {
             return Optional.empty();
         }
-        log.warn("GPU 자동 정지({}): 인스턴스 {}", reason.get(), target.instanceId());
-        return terminate(target, provider.get(), null, reason.get()) ? reason : Optional.empty();
+        String reason = cause.get().reason();
+        String detail = cause.get().detail();
+        log.warn("GPU 자동 정지({}{}): 인스턴스 {}", reason, detail == null ? "" : ", " + detail, target.instanceId());
+        return terminate(target, provider.get(), null, reason, detail) ? Optional.of(reason) : Optional.empty();
     }
 
-    private Optional<String> autoStopReason(Target target, Instant now) {
+    private Optional<AutoStopCause> autoStopReason(Target target, Instant now) {
         Launch launch = target.launch();
         OpenSession session = target.session();
         Optional<ObjectNode> latest = latestSessionFor(target);
         if (session == null) {
             // 켰는데 세션이 아직(또는 이미) 없다
             if (latest.isPresent() && "ENDED".equals(latest.get().path("state").stringValue())) {
-                return Optional.of("SESSION_ENDED");
+                return Optional.of(new AutoStopCause("SESSION_ENDED", null));
             }
             if (launch != null && launch.createdAt() != null && !launch.createdAt().plus(properties.bootTimeout()).isAfter(now)) {
-                return Optional.of("BOOT_TIMEOUT");
+                return Optional.of(new AutoStopCause("BOOT_TIMEOUT", null));
             }
             return Optional.empty(); // 등록 전(부팅 중)은 유휴로 세지 않는다. 등록이 없으면 BOOT_TIMEOUT 이 끈다
         }
@@ -393,7 +403,7 @@ public class GpuPowerService {
         Instant linkedAt = firstLinkAt(session.sessionId(), tier0Linked, now);
         if ("FAILED".equals(session.stage()) && !tier0Linked && session.stageAt() != null
                 && !session.stageAt().plus(properties.failedGrace()).isAfter(now)) {
-            return Optional.of("FAILED");
+            return Optional.of(new AutoStopCause("FAILED", null));
         }
         Instant readySince = earliest(session.readyAt(), linkedAt);
         if (readySince == null) {
@@ -406,22 +416,39 @@ public class GpuPowerService {
     /**
      * 유휴 판정. 시작점 = max(준비 완료, 마지막 실행 종료·세팅 갱신·작업 대여·업로드 서명, Tier 0 가 붙어 있으면 마지막 관리자 조작).
      * 켠 시각은 넣지 않는다(S15P31A101-708: 부팅이 29분 걸린 세션이 READY 66초 뒤 꺼졌다).
+     * 관리자 조작만으로 이어지는 연장은 max(준비 완료, 마지막 실제 사용) 뒤 presenceMaxExtension 까지다(S15P31A101-774). 넘으면 조작이 있어도
+     * IDLE 로 끄고 detail 을 PRESENCE_CAP 으로 남긴다. LIVE·세팅·업로드·분석 작업 중이면 여기 오기 전에 autoStopBlock 이 막는다.
      */
-    private Optional<String> idle(Instant readySince, boolean tier0Linked, Instant now) {
+    private Optional<AutoStopCause> idle(Instant readySince, boolean tier0Linked, Instant now) {
         int minutes = settings.current().autoStopIdleMinutes();
         if (minutes <= 0) {
             return Optional.empty();
         }
-        Instant since = readySince;
+        Duration window = Duration.ofMinutes(minutes);
+        Instant use = readySince;
+        String basis = "READY";
         Optional<Instant> lastUse = activity.lastUse();
-        if (lastUse.isPresent() && lastUse.get().isAfter(since)) {
-            since = lastUse.get();
+        if (lastUse.isPresent() && lastUse.get().isAfter(use)) {
+            use = lastUse.get();
+            basis = "LAST_USE";
+        }
+        if (use.plus(window).isAfter(now)) {
+            return Optional.empty(); // 실제 사용(또는 준비 완료) 뒤 N분 안
         }
         Instant presence = lastPresence;
-        if (tier0Linked && presence != null && presence.isAfter(since)) {
-            since = presence;
+        boolean presenceCounts = tier0Linked && presence != null && presence.isAfter(use);
+        if (!presenceCounts || !presence.plus(window).isAfter(now)) {
+            Instant since = presenceCounts ? presence : use;
+            return Optional.of(new AutoStopCause("IDLE", "basis=" + (presenceCounts ? "PRESENCE" : basis) + " since=" + since
+                    + " idle_minutes=" + minutes));
         }
-        return since.plus(Duration.ofMinutes(minutes)).isAfter(now) ? Optional.empty() : Optional.of("IDLE");
+        // 조작 신호만 이어지고 있다: 실제 사용 뒤 상한까지만 미룬다
+        Duration cap = properties.presenceMaxExtension();
+        if (use.plus(cap).isAfter(now)) {
+            return Optional.empty();
+        }
+        return Optional.of(new AutoStopCause("IDLE", PRESENCE_CAP + " basis=" + basis + " since=" + use + " presence_only_minutes="
+                + Duration.between(use, now).toMinutes() + " cap_minutes=" + cap.toMinutes() + " last_presence=" + presence));
     }
 
     /** 이 세션 Tier 0 의 첫 I1 연결을 본 시각. 지금 붙어 있는데 처음 보면 지금으로 적는다. 본 적 없으면 null */
@@ -445,10 +472,10 @@ public class GpuPowerService {
     }
 
     /** 공급자 인스턴스를 지우고 기록한다. 지운 뒤 그 인스턴스의 열린 세션을 ADMIN_STOPPED 로 끝낸다. 실패하면 false */
-    private boolean terminate(Target target, GpuProvider provider, Long userId, String reason) {
+    private boolean terminate(Target target, GpuProvider provider, Long userId, String reason, String detail) {
         Launch launch = target.launch();
         if (launch != null) {
-            event(launch.launchId(), "STOP_REQUESTED", target.instanceId(), reason, null, userId);
+            event(launch.launchId(), "STOP_REQUESTED", target.instanceId(), reason, detail, userId);
         }
         try {
             provider.terminate(target.instanceId());
@@ -460,7 +487,7 @@ public class GpuPowerService {
             return false;
         }
         if (launch != null) {
-            event(launch.launchId(), "STOPPED", target.instanceId(), reason, null, userId);
+            event(launch.launchId(), "STOPPED", target.instanceId(), reason, detail, userId);
         }
         for (UUID sessionId : openSessionsFor(target.provider(), target.instanceId())) {
             sessions.end(sessionId, EndReason.ADMIN_STOPPED);

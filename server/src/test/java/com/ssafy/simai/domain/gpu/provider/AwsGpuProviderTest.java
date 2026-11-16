@@ -42,7 +42,7 @@ class AwsGpuProviderTest {
     @BeforeEach
     void setUp() {
         GpuProperties.Aws config = aws(true, IMAGE);
-        provider = new AwsGpuProvider(new GpuProperties(null, config, null, null, null, null, null));
+        provider = new AwsGpuProvider(new GpuProperties(null, config, null, null, null, null, null, null));
         provider.useApi(api, config);
         api.zones.put(G6E, Set.of("ap-northeast-2a", "ap-northeast-2b", "ap-northeast-2c"));
         api.zones.put(P5, Set.of("ap-northeast-2a"));
