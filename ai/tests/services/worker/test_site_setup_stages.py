@@ -728,3 +728,15 @@ def test_preview_and_bake_compute_zone_height_changes_against_previous_scene(tmp
     assert baked.zone_height_changes is not None
     assert baked.zone_height_changes["compared_scene_version"] == "scene-job-1-lease-1"
 
+
+def test_first_published_calibration_stays_the_map_alignment_reference(tmp_path: Path) -> None:
+    """S15P31A101-760: 처음 발행한 보정(Stage A)을 맵 정렬 기준으로 남기고, 걷기 다듬기로 두 번째 발행해도 기준은 그대로다."""
+    from simai_ai.scene.reconstruct import ALIGNMENT_REFERENCE_FILE
+
+    s = _stages(tmp_path, _Stages(), _Store())
+    s.publish({"calibration_version": "cal-stage-a", "cameras": []})
+    s.publish({"calibration_version": "cal-stage-a-walk-0123abcd", "cameras": []})
+    assert json.loads((s.root / "calibration.json").read_text(encoding="utf-8"))["calibration_version"] == \
+        "cal-stage-a-walk-0123abcd"
+    assert json.loads((s.root / ALIGNMENT_REFERENCE_FILE).read_text(encoding="utf-8"))["calibration_version"] == \
+        "cal-stage-a"

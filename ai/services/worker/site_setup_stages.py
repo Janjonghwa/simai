@@ -57,6 +57,7 @@ import numpy as np
 from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from simai_ai.scene import supplement_capture as sc
 from simai_ai.scene.reconstruct import (
+    ALIGNMENT_REFERENCE_FILE,
     ReconstructionError,
     Stages,
     read_json,
@@ -500,6 +501,9 @@ class ProductionSiteSetupStages:
         if (self.root / "calibration.json").is_file():
             (self.root / "calibration.prior.json").write_bytes((self.root / "calibration.json").read_bytes())
         write_json(self.root / "calibration.json", doc)
+        if not (self.root / ALIGNMENT_REFERENCE_FILE).is_file():
+            # 이 대여에서 처음 발행한 보정(Stage A)을 맵 정렬 기준으로 남긴다. 걷기 다듬기 보정(-760)은 같은 World 라 정렬은 이 기준으로 한다
+            write_json(self.root / ALIGNMENT_REFERENCE_FILE, doc)
         raw = json.dumps(doc, ensure_ascii=False, sort_keys=True).encode("utf-8")
         try:
             uri = self.store.put(self.ctx, f"calibration-{version}.json", raw, "application/json")

@@ -14,6 +14,10 @@ from typing import Any, Protocol
 from simai_ai.providers.contract import schema_errors
 
 SCENE_SCHEMA = "scene_output"
+ALIGNMENT_REFERENCE_FILE = "alignment_reference.json"
+"""MapAnything Run 을 World 로 맞출 때 쓰는 보정 문서(있으면 calibration.json 대신). 세팅이 같은 대여에서 처음 발행한 보정(Stage A,
+MapAnything 카메라 중심 그대로)이다. 걷기 다듬기(S15P31A101-760)가 같은 World 에서 카메라를 최대 20 cm·8°(부트스트랩 15°) 옮긴 새 보정을
+calibration.json 으로 쓰면, 그 문서로 정렬하면 고정 정렬 문턱(중심 0.10 m·회전 5°)을 넘을 수 있어 정렬은 이 기준으로 한다"""
 SURFACE_VALUES = {"0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED"}
 SURFACE_VALUES_WITH_SEE_THROUGH = {**SURFACE_VALUES, "5": "SEE_THROUGH"}
 TIMEOUTS = {"download": 120, "prepare": 180, "mapanything": 1200, "preview": 60, "bake": 1800,

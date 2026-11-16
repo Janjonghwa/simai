@@ -24,6 +24,7 @@ from simai_ai.calibration.camera_check import (
     CameraCheckEvaluator,
     _problems,
     baseline_from_json,
+    evaluate_views,
     load_baseline,
     save_baseline,
     views_from_json,
@@ -411,3 +412,53 @@ def test_failed_calibrated_pair_closes_without_waiting_for_reprojection_samples(
             break
     assert summary["status"] == FAILED and summary["elapsed_s"] < cfg.max_duration_ms / 1000
     assert any(p["kind"] == "PAIR" and p["reason"] != "FEW_SAMPLES" for p in summary["problems"])
+
+
+# --------------------------------------------------------------------------- S15P31A101-760 메모리 view 평가
+
+
+def test_evaluate_views_gives_the_same_verdict_and_baseline_as_the_evaluator():
+    """메모리 view 목록 평가(걷기 다듬기의 Holdout 평가가 쓴다)는 평가기에 끝까지 넣고 판정한 것과 같다. 모자라면 INCOMPLETE."""
+    truth = _doc()
+    walk = _walk(truth)
+    ev = CameraCheckEvaluator(truth, CFG, monitor_config=MON)
+    for t, views in walk:
+        ev.observe(t, views)
+    expected = ev.summary()
+    out = evaluate_views(walk, truth, CFG, monitor_config=MON)
+    assert out.summary == expected and out.summary["status"] == PASSED
+    assert out.baseline == ev.baseline_record()
+    failed = evaluate_views(walk, _doc(rotate={"cam2": 3.0}), CFG, monitor_config=MON, blocking_pairs=RING_PAIRS)
+    assert failed.summary["status"] == FAILED and "baseline" not in failed.summary
+    short = evaluate_views(walk[:5], truth, CFG, monitor_config=MON)
+    assert short.summary["status"] == INCOMPLETE and short.summary["problems"]
+    assert schema_errors(short.summary, CAMERA_CHECK_SCHEMA) == []
+
+
+def test_new_map_attempt_waits_for_four_view_ticks_and_reprojection_samples_even_after_a_pair_failed():
+    """S15P31A101-760: 막는 쌍을 따로 주지 않은(새 맵) 시도는 4대 동시 관측 시각이 min_four_view_ticks 만큼 모일 때까지 끝내지 않는다
+    (보정이 어긋나 쌍이 이미 실패해도 걷기 다듬기 입력을 모은다). 진행률에도 들어간다. 참고 쌍이 있는(-759) 시도는 이 대기를 하지 않는다."""
+    truth = _doc()
+    walk = _walk(truth, seconds=30)
+    cfg = dataclasses.replace(CFG, min_four_view_ticks=100, max_duration_ms=40_000)
+    ev = CameraCheckEvaluator(_doc(rotate={"cam2": 10.0}), cfg, monitor_config=MON)
+    closed_at = None
+    for i, (t, views) in enumerate(walk):
+        ev.observe(t, views)
+        if ev.summary()["status"] in (PASSED, FAILED):
+            closed_at = i + 1
+            break
+    assert closed_at == 100  # 쌍은 일찍 실패했지만 100번째 4대 동시 관측 시각에 닫는다
+    assert ev.summary()["status"] == FAILED
+    waiting = CameraCheckEvaluator(truth, cfg, monitor_config=MON)
+    for t, views in walk[:60]:
+        waiting.observe(t, views)
+    assert waiting.summary()["status"] == MEASURING and waiting.summary()["progress_pct"] < 99.0
+    advisory = CameraCheckEvaluator(_doc(rotate={"cam2": 10.0}), cfg, monitor_config=MON, blocking_pairs=RING_PAIRS)
+    for i, (t, views) in enumerate(walk):
+        advisory.observe(t, views)
+        if advisory.summary()["status"] in (PASSED, FAILED):
+            break
+    assert i + 1 < 100
+    with pytest.raises(ValueError):
+        CameraCheckConfig(min_four_view_ticks=-1)
