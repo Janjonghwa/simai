@@ -171,6 +171,75 @@ class CoverageReuseReferenceIntegrationTest {
         assertThat(coverageGuides.referenceMissing(scene)).isTrue();
     }
 
+    /** 이 맵을 만든 세팅의 걷기 카메라 확인 기록(S15P31A101-745 와 같은 모양) */
+    private void cameraCheck(String status, boolean baseline) {
+        ObjectNode check = mapper.createObjectNode().put("status", status).put("calibration_version", calibration);
+        if (baseline) {
+            check.putObject("baseline").put("calibration_version", calibration).put("source", "SETUP_CAMERA_CHECK")
+                    .putObject("values_px");
+        }
+        jdbc.update("UPDATE setup_session SET camera_check = CAST(? AS jsonb) WHERE setup_session_id = ?", check.toString(),
+                session);
+    }
+
+    @Test
+    void 기준_시점은_카메라_확인을_실제로_통과한_CALIBRATED_세팅만_고른다() {
+        // S15P31A101-765: 걷기 확인 PASSED + 같은 보정의 검증 기준선이 있는 세팅(-745 config_bundle verification 과 같은 조건)
+        when(images.images(anyString())).thenReturn(signed(true));
+        assertThat(reference.aim(site)).isNull(); // 세팅 없음
+        completedMap();
+        assertThat(reference.aim(site)).isNull(); // 카메라 확인 기록 없음(옛 세팅)
+
+        cameraCheck("SKIPPED_REPLAY", false);
+        assertThat(reference.aim(site)).isNull(); // 녹화 재생 시험 걷기 생략
+        cameraCheck("PASSED", false);
+        assertThat(reference.aim(site)).isNull(); // 기준선 없는 PASSED(손으로 고친 기록)
+        cameraCheck("FAILED", true);
+        assertThat(reference.aim(site)).isNull();
+
+        cameraCheck("PASSED", true);
+        ObjectNode aim = reference.aim(site);
+        assertThat(aim).isNotNull();
+        assertThat(aim.get("scene_version").asString()).isEqualTo(scene);
+        assertThat(aim.get("calibration_version").asString()).isEqualTo(calibration);
+        assertThat(aim.get("setup_session_id").asString()).isEqualTo(session.toString());
+        assertThat(aim.get("cameras").size()).isEqualTo(3); // 렌즈 없는 cam_D 는 뺀다
+        assertThat(aim.at("/cameras/0/K/0/0").asDouble()).isEqualTo(1200.0);
+        assertThat(aim.at("/cameras/0/R").isMissingNode()).isTrue(); // 외부 자세는 주지 않는다
+
+        // 그 세팅의 사진이 없으면 싣지 않는다(지어내지 않는다)
+        when(images.images(anyString())).thenReturn(signed(false));
+        assertThat(reference.aim(site)).isNull();
+    }
+
+    @Test
+    void 완료되지_않은_세팅은_카메라_확인을_통과했어도_기준_시점이_아니다() {
+        // 카메라 확인 PASSED 직후 구역 확인·굽기 중이거나 실패·취소(FAILED)로 끝난 세션은 기준으로 잡지 않는다
+        when(images.images(anyString())).thenReturn(signed(true));
+        completedMap();
+        cameraCheck("PASSED", true);
+        for (String status : new String[] {"READY_FOR_ZONES", "BAKING_TEXTURE", "FAILED"}) {
+            jdbc.update("UPDATE setup_session SET status = ? WHERE setup_session_id = ?", status, session);
+            assertThat(reference.aim(site)).as(status).isNull();
+        }
+        jdbc.update("UPDATE setup_session SET status = 'COMPLETED' WHERE setup_session_id = ?", session);
+        assertThat(reference.aim(site)).isNotNull();
+    }
+
+    @Test
+    void 기준_시점은_수요가_있을_때만_기기_응답에_재사용_기준과_따로_싣는다() {
+        when(images.images(anyString())).thenReturn(signed(true));
+        completedMap();
+        cameraCheck("PASSED", true);
+        assertThat(coverageGuides.demandFor(laptop).get("aim_reference").isNull()).isTrue();
+        coverageGuides.queryForAdmin();
+        JsonNode demand = coverageGuides.demandFor(laptop);
+        assertThat(demand.at("/aim_reference/scene_version").asString()).isEqualTo(scene);
+        assertThat(demand.at("/aim_reference/setup_session_id").asString()).isEqualTo(session.toString());
+        assertThat(demand.at("/reuse_reference/scene_version").asString()).isEqualTo(scene); // 재사용 기준은 그대로
+        assertThat(demand.at("/reuse_reference/setup_session_id").isMissingNode()).isTrue();
+    }
+
     private ObjectNode signed(boolean withImages) {
         ObjectNode node = mapper.createObjectNode().put("scene_version", scene);
         if (!withImages) {

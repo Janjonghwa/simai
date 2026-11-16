@@ -315,6 +315,87 @@ class ServiceTests(unittest.TestCase):
         validate_coverage_guide_schema(posted[0])
         validate_coverage_guide_schema(posted[1])
 
+    def test_old_ec2_rejecting_1_4_0_drops_aim_check_first(self):
+        """S15P31A101-765: aim_check(1.4.0)를 400 으로 거부하면 이번 수요 동안 aim_check 만 빼고 1.3.0 으로 보낸다."""
+        stop = threading.Event()
+        posted = []
+        tried = threading.Event()
+        aim = {"scene_version": "s", "calibration_version": "c", "max_aim_rad": 0.004363, "max_roll_rad": 0.017453,
+               "max_setup_aim_rad": 0.02618, "max_setup_roll_rad": 0.05236, "hysteresis_rounds": 2,
+               "cameras": [{"camera_id": cid, "status": "UNKNOWN", "reason": "NO_TEXTURE", "matches": None,
+                            "inlier_ratio": None, "pan_rad": None, "tilt_rad": None, "roll_rad": None,
+                            "target_point": None, "target_px": None, "arrow_rad": None} for cid in CAMERAS]}
+        aim_calls = []
+
+        class FakeMatcher:
+            def __init__(self, aliked, lightglue, params, intrinsics, *, device="auto"):
+                self.params = params
+
+            def match(self, images):
+                return [PairMetrics(a, b, 120, 45, (0.55, 0.5), (0.45, 0.5), 4, 4) for a, b in PAIRS]
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.last_error_status = None
+
+            def demand(self):
+                return True
+
+            def aim_reference(self):
+                return {"scene_version": "s", "calibration_version": "c", "cameras": []}
+
+            def post(self, message):
+                posted.append(message)
+                if "aim_check" in message:
+                    self.last_error_status = 400
+                    tried.set()
+                    raise urllib.error.HTTPError("https://example.com", 400, "Bad Request", None, io.BytesIO(b""))
+                self.last_error_status = None
+                stop.set()
+                return {"active_demand": True}
+
+        def one_try(client, message, active, sleep=None, attempts=4, on_demand=None):
+            try:
+                client.post(message)
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+
+        def fake_aim(aimer, reference, *args, **kwargs):
+            aim_calls.append(reference)
+            return aim if reference is not None else None
+
+        now_ms = time.time_ns() // 1_000_000
+
+        def fake_preview_loop(frames, event, stop_event, ws_url):
+            event.wait(1.0)
+            for k in range(2):
+                for cid in CAMERAS:
+                    frames.codec({"camera_id": cid, "stream_epoch": 1,
+                                  "sps": base64.b64encode(b"sps").decode("ascii"),
+                                  "pps": base64.b64encode(b"pps").decode("ascii")})
+                    frames.frame(make_frame(cid, key=True, ts_ms=now_ms + k * 1000), event.is_set,
+                                 lambda _: "decoded_bgr")
+                tried.wait(5.0)
+
+        with (
+            patch("simai_camera_helper.service.Client", FakeClient),
+            patch("simai_camera_helper.service.preview_loop", fake_preview_loop),
+            patch("simai_camera_helper.service.retry_post", one_try),
+            patch("simai_camera_helper.service.aim_check", fake_aim),
+            patch("simai_camera_helper.service.resolve_weights", return_value=(Path("a"), Path("b"))),
+            patch("simai_camera_helper.matcher.CameraMatcher", FakeMatcher),
+        ):
+            run({"SIMAI_EC2_BASE_URL": "https://example.com", "SIMAI_DEVICE_TOKEN": "tok-secret-123",
+                 "SIMAI_LAPTOP_ID": "gw-lobby"}, stop=stop)
+
+        self.assertEqual([m["schema_version"] for m in posted], ["1.4.0", "1.3.0"])
+        self.assertIn("stage_a_readiness", posted[1])
+        self.assertNotIn("aim_check", posted[1])
+        self.assertIsNone(aim_calls[1])  # 두 번째 라운드는 계산도 하지 않는다
+        validate_coverage_guide_schema(posted[0])
+        validate_coverage_guide_schema(posted[1])
+
     def test_client_post_records_http_error_status(self):
         client = Client("https://example.com", "secret-token-xyz", "/api/devices/coverage-guides")
         error = urllib.error.HTTPError("https://example.com", 400, "Bad Request", None, io.BytesIO(b""))

@@ -15,11 +15,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .aim_check import AimChecker, describe_aim
 from .judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics, Params
 from .message import DEFAULT_STALE_MS, CameraFrame, build_message
 from .offline import DEFAULT_WEIGHTS
 from .progress import DEFAULT_STALL_SECONDS, Progress, bounded_setting, log_round, watchdog_loop
-from .view_check import MultiViewChecker, ViewChecker, describe
+from .view_check import MultiViewChecker, RoundFeatures, ViewChecker, describe
 
 LOG = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[4]
@@ -151,6 +152,8 @@ class Client:
         self._reference_lock = threading.Lock()
         self._reference: dict | None = None
         self._references: list[dict] | None = None
+        # 기준 시점 맞추기(S15P31A101-765): 수요 응답의 aim_reference(가장 최근 CALIBRATED 세팅의 카메라별 사진·렌즈)
+        self._aim_reference: dict | None = None
         self.last_error_status: int | None = None
         """마지막 결과 전송이 받은 HTTP 오류 코드(성공하면 None). 옛 EC2 의 1.3.0 거부(400)를 알아본다(S15P31A101-761)"""
 
@@ -160,7 +163,9 @@ class Client:
             active = res["active_demand"]
             reference = res.get("reuse_reference")
             references = res.get("reuse_references")
+            aim = res.get("aim_reference")
             with self._reference_lock:
+                self._aim_reference = aim if active and isinstance(aim, dict) else None
                 self._reference = reference if active and isinstance(reference, dict) else None
                 self._references = ([r for r in references if isinstance(r, dict)]
                                     if active and isinstance(references, list) else None)
@@ -168,6 +173,11 @@ class Client:
     def reuse_reference(self) -> dict | None:
         with self._reference_lock:
             return self._reference
+
+    def aim_reference(self) -> dict | None:
+        """기준 시점 맞추기 기준(새 EC2, 수요 중). 없으면 None 이고 aim_check 를 싣지 않는다."""
+        with self._reference_lock:
+            return self._aim_reference
 
     def reuse_references(self) -> list[dict] | None:
         """후보 맵 목록(새 EC2). 옛 EC2(목록 키 없음)·수요 없음이면 None 이고, 그때는 reuse_reference 하나만 비교한다."""
@@ -345,28 +355,43 @@ def preview_loop(
 
 
 def reuse_view_check(viewer: ViewChecker, reference, snapshot: dict, frames: list[CameraFrame],
-                     round_ts_ms: int, stale_ms: int) -> dict | None:
+                     round_ts_ms: int, stale_ms: int, features: RoundFeatures | None = None) -> dict | None:
     """재사용 기준이 있을 때만 같은 카메라끼리 시점을 비교한다(S15P31A101-712). 실패해도 각도 안내는 그대로 보낸다."""
     if reference is None:
         return None
     statuses = {f.camera_id: f.status(round_ts_ms, stale_ms) for f in frames}
     try:
-        return viewer.check(reference, snapshot, statuses)
+        return viewer.check(reference, snapshot, statuses, features)
     except Exception:  # noqa: BLE001 - 서명 주소·응답 본문은 기록하지 않는다
         LOG.warning("reuse view check failed")
         return None
 
 
 def reuse_view_checks(viewers: MultiViewChecker, references, snapshot: dict, frames: list[CameraFrame],
-                      round_ts_ms: int, stale_ms: int) -> list[dict] | None:
+                      round_ts_ms: int, stale_ms: int, features: RoundFeatures | None = None) -> list[dict] | None:
     """후보 맵 목록이 있을 때만 맵마다 시점을 비교한다(S15P31A101-714). 실패해도 각도 안내는 그대로 보낸다."""
     if references is None:
         return None
     statuses = {f.camera_id: f.status(round_ts_ms, stale_ms) for f in frames}
     try:
-        return viewers.check_all(references, snapshot, statuses) or None
+        return viewers.check_all(references, snapshot, statuses, features) or None
     except Exception:  # noqa: BLE001 - 서명 주소·응답 본문은 기록하지 않는다
         LOG.warning("reuse view checks failed")
+        return None
+
+
+def aim_check(aimer: AimChecker, reference, snapshot: dict, frames: list[CameraFrame], round_ts_ms: int,
+              stale_ms: int, features: RoundFeatures | None = None, donors=()) -> dict | None:
+    """기준 시점 맞추기 기준이 있을 때만 카메라마다 교정 각도를 낸다(S15P31A101-765). 실패해도 각도 안내는 그대로 보낸다.
+
+    donors: 같은 맵의 기준 특징을 이미 받은 재사용 시점 확인(ViewChecker)들. features: 지금 키프레임 SIFT 공유."""
+    if reference is None:
+        return None
+    statuses = {f.camera_id: f.status(round_ts_ms, stale_ms) for f in frames}
+    try:
+        return aimer.check(reference, snapshot, statuses, features, donors)
+    except Exception:  # noqa: BLE001 - 서명 주소·응답 본문은 기록하지 않는다
+        LOG.warning("aim check failed")
         return None
 
 
@@ -403,15 +428,19 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     judge = None
     viewer = ViewChecker()
     viewers = MultiViewChecker()
+    aimer = AimChecker()
     last_timestamps: dict[str, int] | None = None
     # 옛 EC2 는 coverage_guide 1.3.0(stage_a_readiness)을 계약 검사로 거부한다(400). 그러면 이번 수요 동안은 싣지 않고 보낸다(-761)
     send_stage_a = True
+    # 옛 EC2 는 1.4.0(aim_check)을 거부한다. 400 이면 이번 수요 동안 aim_check 를 먼저 빼고, 그래도 400 이면 stage_a_readiness 를 뺀다(-765)
+    send_aim = True
     try:
         while not stop_event.wait(0.5):
             if not active.is_set():
                 judge = None
                 last_timestamps = None
                 send_stage_a = True
+                send_aim = True
                 continue
             snapshot = frames.snapshot()
             if set(snapshot) != set(CAMERAS):
@@ -456,11 +485,17 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     continue
                 last_timestamps = timestamps
                 frames_now = [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS]
+                features = RoundFeatures()
                 references = getattr(client, "reuse_references", lambda: None)()
-                views = reuse_view_checks(viewers, references, snapshot, frames_now, round_ts_ms, stale_ms)
+                views = reuse_view_checks(viewers, references, snapshot, frames_now, round_ts_ms, stale_ms, features)
                 view = None if references is not None else reuse_view_check(
                     viewer, getattr(client, "reuse_reference", lambda: None)(), snapshot, frames_now, round_ts_ms,
-                    stale_ms)
+                    stale_ms, features)
+                aim_started = time.monotonic()
+                aim = aim_check(aimer, getattr(client, "aim_reference", lambda: None)() if send_aim else None,
+                                snapshot, frames_now, round_ts_ms, stale_ms, features,
+                                donors=(viewer, *viewers.checkers.values()))
+                aim_ms = int((time.monotonic() - aim_started) * 1000)
                 message = build_message(
                     source_id,
                     round_ts_ms,
@@ -471,11 +506,15 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     reuse_view_check=view,
                     reuse_view_checks=views,
                     stage_a=send_stage_a,
+                    aim_check=aim,
                 )
                 if view is not None:
                     LOG.info("reuse view %s", describe(view))
                 for one in views or []:
                     LOG.info("reuse view %s %s", one["scene_version"], describe(one))
+                if aim is not None:
+                    LOG.info("aim %s %s %dms shared_sift=%d", aim["scene_version"], describe_aim(aim), aim_ms,
+                             features.hits)
                 grades = [p["grade"] for p in message["pairs"]]
                 stage_a = judge.stage_a
                 progress.phase("posting")
@@ -485,7 +524,11 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                     outcome = "ok"
                 elif time.time_ns() // 1_000_000 >= message["valid_until_ms"]:
                     outcome = "expired"
-                if not sent and send_stage_a and getattr(client, "last_error_status", None) == 400:
+                rejected = not sent and getattr(client, "last_error_status", None) == 400
+                if rejected and "aim_check" in message:
+                    send_aim = False
+                    LOG.warning("EC2 rejected coverage_guide 1.4.0; sending without aim_check until demand ends")
+                elif rejected and send_stage_a:
                     send_stage_a = False
                     LOG.warning("EC2 rejected coverage_guide 1.3.0; sending without stage_a_readiness until demand ends")
             finally:

@@ -43,6 +43,9 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>S15P31A101-714: 재사용은 고른 맵의 묶음을 그대로 쓴다. 수요 응답에 고를 수 있는 최근 완료 맵마다의 기준({@code reuse_references},
  *       최대 5개, 옛 헬퍼용 {@code reuse_reference} 는 그 첫 항목)을 싣고, coverage_guide 1.2.0 {@code reuse_view_checks}(맵마다 하나)와
  *       1.1.0 {@code reuse_view_check} 를 맵(scene_version)별 최신 1건으로 둔다. 재사용 판정이 이 결과로 후보 맵을 순위 매긴다.</li>
+ *   <li>S15P31A101-765: 수요 응답에 가장 최근 CALIBRATED 세팅의 카메라별 기준 사진·렌즈({@code aim_reference},
+ *       {@link CoverageReuseReference#aim})를 싣는다. 헬퍼가 돌려준 coverage_guide 1.4.0 {@code aim_check}(카메라마다 기준 시점에
+ *       맞출 교정 각도)는 따로 보관하지 않고 최신 메시지({@code latest}) 그대로 화면에 전달한다(안내 전용, 판정에 쓰지 않는다).</li>
  * </ul>
  */
 @Service
@@ -254,6 +257,8 @@ public class CoverageGuideService {
             missingReferences.set(Set.copyOf(built.missingScenes()));
         }
         res.set("reuse_reference", references.isEmpty() ? null : references.get(0).deepCopy());
+        // 기준 시점 맞추기(-765): 가장 최근 CALIBRATED 세팅의 카메라별 사진·렌즈. 수요가 있고 기준이 있을 때만, 없으면 null
+        res.set("aim_reference", activeDemand && reuseReference != null ? reuseReference.aim(siteId) : null);
         return res;
     }
 
@@ -340,6 +345,19 @@ public class CoverageGuideService {
                 }
             }
             if (!viewCameras.equals(cameraIds) || !viewScenes.add(view.path("scene_version").asString(""))) {
+                throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
+            }
+        }
+        // 기준 시점 맞추기(1.4.0, -765): 카메라가 각도 안내 4대와 같다
+        JsonNode aim = body.get("aim_check");
+        if (aim != null && aim.isObject()) {
+            Set<String> aimCameras = new HashSet<>();
+            for (JsonNode cam : aim.path("cameras")) {
+                if (!aimCameras.add(cam.path("camera_id").asString(""))) {
+                    throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
+                }
+            }
+            if (!aimCameras.equals(cameraIds)) {
                 throw new BusinessException(ErrorCode.CoverageGuide.INVALID_COVERAGE_GUIDE);
             }
         }

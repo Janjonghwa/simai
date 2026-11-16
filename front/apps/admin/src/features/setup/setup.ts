@@ -1,4 +1,10 @@
 import { ROOM } from '@/features/plan/plan';
+import {
+  aimViews,
+  allAimAligned,
+  allAimSetupReady,
+  type AimCameraView,
+} from '@/features/setup/aimCheck';
 import { cameraBadgeOf, type CameraBadge } from '@/features/setup/cameraBadge';
 import {
   cameraGuideView,
@@ -122,6 +128,8 @@ export interface CoverageCameraView {
   guideLabel: string;
   /** 배지 톤(2D 지도의 카메라 점 색). */
   tone: SetupTone;
+  /** 기준 시점 맞추기(헬퍼 1.4.0, 지금 결과일 때만, S15P31A101-765). 기준이 없거나 결과가 오래됐으면 null(지금 화면 그대로). */
+  aim: AimCameraView | null;
 }
 
 export interface CoveragePairView {
@@ -175,6 +183,15 @@ export interface Step1CoverageView {
   fresh: boolean;
   /** 현장 게이트웨이의 카메라 헬퍼가 오래 답하지 않아 지금 결과가 없다(배지 「확인 못 함」, S15P31A101-719). */
   helperLost: boolean;
+  /**
+   * 기준 시점 맞추기의 기준 맵(scene_version, S15P31A101-765). 기준 사진 겹쳐 보기는 이 맵의 사진을 쓴다. 받은 결과에 기준 시점 맞추기가
+   * 없으면(기준 없음·옛 헬퍼) null. 결과가 오래돼도 겹쳐 보기는 두고, 각도·초록 표시만 지운다.
+   */
+  aimSceneVersion: string | null;
+  /** 4칸 모두 기준 시점과 같다(초록, 지금 결과일 때만). */
+  aimAllAligned: boolean;
+  /** 4칸 모두 노랑 이상(새 맵 세팅엔 충분, 지금 결과일 때만). */
+  aimAllSetupReady: boolean;
 }
 
 /** 각도 안내 밖의 배지 근거(S15P31A101-691). */
@@ -230,6 +247,8 @@ export function deriveStep1Coverage(
   const lacking = riskyPairs(cameraIds, latestPairs);
   const changed = new Set(evidence.changedCameras ?? []);
   const helperLost = !receptionFresh && evidence.helperLost === true;
+  // 기준 시점 맞추기(-765): 각도·초록 표시는 지금 결과일 때만
+  const aims = receptionFresh ? aimViews(latest?.aim_check) : new Map<string, AimCameraView>();
 
   const cameras: CoverageCameraView[] = cameraIds.map((id, idx) => {
     const item = latest?.cameras.find((c) => c.camera_id === id);
@@ -264,6 +283,7 @@ export function deriveStep1Coverage(
             ? '각도 양호'
             : '—',
       tone: badge.tone,
+      aim: aims.get(id) ?? null,
     };
   });
 
@@ -334,6 +354,9 @@ export function deriveStep1Coverage(
     }),
     fresh: receptionFresh,
     helperLost,
+    aimSceneVersion: latest?.aim_check?.scene_version ?? null,
+    aimAllAligned: allAimAligned(cameraIds, aims),
+    aimAllSetupReady: allAimSetupReady(cameraIds, aims),
   };
 }
 

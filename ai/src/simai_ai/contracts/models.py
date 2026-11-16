@@ -199,6 +199,34 @@ class CaptureSkewMs(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0)]
 
 
+class Matches(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class InlierRatio(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class PanRad(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=-3.141592653589793, le=3.141592653589793)]
+
+
+class TiltRad(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=-1.5707963267948966, le=1.5707963267948966)]
+
+
+class RollRad(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=-3.141592653589793, le=3.141592653589793)]
+
+
+class TargetPx(RootModel[list[StrictFloat]]):
+    root: Annotated[list[StrictFloat], Field(max_length=2, min_length=2)]
+
+
+class ArrowRad(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=-3.141592653589793, le=3.141592653589793)]
+
+
 class CoverageGuideCoverageParams(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -230,10 +258,6 @@ class Inliers(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0)]
 
 
-class InlierRatio(RootModel[StrictFloat]):
-    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
-
-
 class CellsA(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0, le=256)]
 
@@ -244,10 +268,6 @@ class CellsB(RootModel[StrictInt]):
 
 class GridItem(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=1, le=16)]
-
-
-class Matches(RootModel[StrictInt]):
-    root: Annotated[StrictInt, Field(ge=0)]
 
 
 class RotationRad(RootModel[StrictFloat]):
@@ -3645,6 +3665,23 @@ class Component(RootModel[list[DefsCameraId]]):
     root: Annotated[list[DefsCameraId], Field(max_length=4, min_length=1)]
 
 
+class CoverageGuideAimCheckItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    status: Literal['ALIGNED', 'NEAR', 'MISALIGNED', 'UNKNOWN']
+    reason: Literal['NO_REFERENCE', 'NO_VIDEO', 'STALE', 'NO_TEXTURE', 'FEW_MATCHES', 'NOT_ROTATION', 'STREAM_MISMATCH', 'ERROR'] | None
+    matches: Matches | None
+    inlier_ratio: InlierRatio | None
+    pan_rad: PanRad | None
+    tilt_rad: TiltRad | None
+    roll_rad: RollRad | None
+    target_point: CoverageGuideNormalizedPoint | None
+    target_px: TargetPx | None
+    arrow_rad: ArrowRad | None
+
+
 class CoverageGuideCameraGuideItem(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -5424,6 +5461,22 @@ class ConfigBundle(Envelope):
     payload: Payload8
 
 
+class CoverageGuideAimCheck(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scene_version: DefsVersionId
+    calibration_version: DefsVersionId
+    max_aim_rad: Annotated[StrictFloat, Field(gt=0.0, le=0.1)]
+    max_roll_rad: Annotated[StrictFloat, Field(gt=0.0, le=0.1)]
+    max_setup_aim_rad: Annotated[StrictFloat, Field(gt=0.0, le=0.2)]
+    max_setup_roll_rad: Annotated[StrictFloat, Field(gt=0.0, le=0.2)]
+    hysteresis_rounds: Annotated[StrictInt, Field(ge=1, le=10)]
+    cameras: Annotated[
+        list[CoverageGuideAimCheckItem], Field(max_length=4, min_length=4)
+    ]
+
+
 class CoverageGuideReuseViewCheck(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -5724,7 +5777,7 @@ class CoverageGuide(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0.0', '1.1.0', '1.2.0', '1.3.0']
+    schema_version: Literal['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0']
     source_id: DefsInstanceId
     computed_at_ms: DefsTimestampMs
     valid_until_ms: DefsTimestampMs
@@ -5744,6 +5797,7 @@ class CoverageGuide(BaseModel):
         list[CoverageGuideReuseViewCheck] | MISSING, Field(max_length=5, min_length=1)
     ] = MISSING
     stage_a_readiness: CoverageGuideStageAReadiness | MISSING = MISSING
+    aim_check: CoverageGuideAimCheck | MISSING = MISSING
 
 
 class HumanMeshOutput1(HumanMeshOutputAvatarAsset):

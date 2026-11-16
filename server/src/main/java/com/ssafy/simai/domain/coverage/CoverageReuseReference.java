@@ -83,6 +83,45 @@ public class CoverageReuseReference {
         }
     }
 
+    /**
+     * 기준 시점 맞추기 기준(S15P31A101-765, docs/design/S15P31A101-765-aim-reference-overlay.md): 그 현장의 가장 최근 CALIBRATED 세팅,
+     * 즉 걷기 카메라 확인이 PASSED 이고 확인이 잰 보정과 검증 기준선(baseline)이 그 세션 보정과 같은 세팅({@code ConfigBundleService}
+     * 의 config_bundle verification 과 같은 조건, -745)이 만든 맵의 카메라별 사진과 그 보정의 렌즈. 수요 응답 {@code aim_reference} 로
+     * 주고 헬퍼가 카메라마다 자기 기준 시점에 맞추는 교정 각도를 coverage_guide 1.4.0 {@code aim_check} 로 돌려준다.
+     * 세팅 세션이 COMPLETED 여야 한다(카메라 확인 PASSED 직후 굽기 중이거나 취소된 세션은 아니다). SKIPPED·SKIPPED_REPLAY·기준선 없는 PASSED 는 기준이 아니다. 가장 최근 세팅의 사진·렌즈가 없으면 더 오래된 세팅으로 내려가지 않고
+     * null 이다(그 사이 카메라를 옮겼을 수 있다, 지어내지 않는다). 실패해도 null.
+     */
+    public ObjectNode aim(String siteId) {
+        try {
+            List<String[]> latest = jdbc.query("""
+                    SELECT s.setup_session_id::text AS setup_session_id, s.scene_version, s.calibration_version
+                    FROM setup_session s
+                    JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
+                    WHERE s.site_id = :site
+                      AND s.status = 'COMPLETED'
+                      AND s.scene_version IS NOT NULL
+                      AND s.camera_check ->> 'status' = 'PASSED'
+                      AND s.camera_check ->> 'calibration_version' = s.calibration_version
+                      AND s.camera_check -> 'baseline' ->> 'calibration_version' = s.calibration_version
+                    ORDER BY s.completed_at DESC NULLS LAST, s.started_at DESC
+                    LIMIT 1
+                    """, new MapSqlParameterSource("site", siteId),
+                    (rs, i) -> new String[] {rs.getString("setup_session_id"), rs.getString("scene_version"),
+                            rs.getString("calibration_version")});
+            if (latest.isEmpty()) {
+                return null;
+            }
+            ObjectNode ref = forMap(latest.getFirst()[1], latest.getFirst()[2]);
+            if (ref != null) {
+                ref.put("setup_session_id", latest.getFirst()[0]);
+            }
+            return ref;
+        } catch (RuntimeException e) {
+            log.warn("기준 시점 맞추기 기준을 만들지 못해 싣지 않는다: {}", e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
     /** 현재 관제 맵의 기준 사진·렌즈. 없으면 null */
     public ObjectNode current(String siteId) {
         try {

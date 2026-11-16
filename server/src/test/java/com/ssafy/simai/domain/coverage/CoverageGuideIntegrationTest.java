@@ -401,6 +401,43 @@ class CoverageGuideIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    @Test
+    void 기준_시점_맞추기_1_4_0_은_최신_결과로_화면에_그대로_전하고_카메라가_다르면_거부한다() throws Exception {
+        // S15P31A101-765: 헬퍼가 카메라마다 가장 최근 CALIBRATED 세팅 사진과 비교한 교정 각도(aim_check)
+        Instant t0 = Instant.parse("2026-11-16T03:00:00Z");
+        clock.set(t0);
+        ObjectNode withAim = (ObjectNode) mapper.readTree(
+                Files.readString(CONTRACTS.resolve("examples/coverage_guide.aim_check.json")));
+        withAim.remove("_comment");
+        withAim.put("source_id", laptopId);
+        withAim.put("computed_at_ms", t0.toEpochMilli());
+        withAim.put("valid_until_ms", t0.toEpochMilli() + 10_000L);
+        JsonNode res = postCoverageGuide(withAim);
+        assertThat(res.has("aim_reference")).isTrue();
+        assertThat(res.get("aim_reference").isNull()).isTrue(); // 수요가 없으면 싣지 않는다
+
+        JsonNode view = getCoverageGuides();
+        assertThat(view.at("/latest/schema_version").asString()).isEqualTo("1.4.0");
+        assertThat(view.at("/latest/aim_check/cameras/1/status").asString()).isEqualTo("NEAR");
+        assertThat(view.at("/latest/aim_check/cameras/3/status").asString()).isEqualTo("MISALIGNED");
+        assertThat(view.at("/latest/aim_check/cameras/0/status").asString()).isEqualTo("ALIGNED");
+
+        ObjectNode wrong = withAim.deepCopy();
+        ((ObjectNode) wrong.at("/aim_check/cameras/3")).put("camera_id", "cam_X");
+        mockMvc.perform(post("/api/devices/coverage-guides")
+                        .header("Authorization", "Bearer " + laptopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(wrong)))
+                .andExpect(status().isBadRequest());
+        ObjectNode oldVersion = withAim.deepCopy();
+        oldVersion.put("schema_version", "1.3.0");
+        mockMvc.perform(post("/api/devices/coverage-guides")
+                        .header("Authorization", "Bearer " + laptopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(oldVersion)))
+                .andExpect(status().isBadRequest());
+    }
+
     private ObjectNode validGuidePayload(String sourceId, long computedAtMs) throws Exception {
         String raw = Files.readString(CONTRACTS.resolve("examples/coverage_guide.json"));
         ObjectNode node = (ObjectNode) mapper.readTree(raw);
