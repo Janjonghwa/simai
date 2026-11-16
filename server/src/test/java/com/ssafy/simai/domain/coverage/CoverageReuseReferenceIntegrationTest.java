@@ -240,6 +240,69 @@ class CoverageReuseReferenceIntegrationTest {
         assertThat(demand.at("/reuse_reference/setup_session_id").isMissingNode()).isTrue();
     }
 
+    @Test
+    void 렌즈_표가_비어도_보정_원문의_렌즈로_기준을_만들고_형식이_틀린_카메라는_뺀다() {
+        // S15P31A101-771: 운영에서는 calibration_camera 를 채우는 경로가 없다. 렌즈는 보정 원문 cameras[] 에서 읽는다
+        jdbc.update("DELETE FROM calibration_camera WHERE calibration_version = ?", calibration);
+        when(images.images(anyString())).thenReturn(signed(true));
+        assertThat(reference.current(site)).isNull(); // 원문도 없으면 지어내지 않는다
+
+        ObjectNode doc = mapper.createObjectNode().put("calibration_version", calibration);
+        var cams = doc.putArray("cameras");
+        for (String cam : new String[] {"cam_A", "cam_B"}) {
+            ObjectNode c = cams.addObject().put("camera_id", cam);
+            c.putArray("image_size").add(1920).add(1080);
+            c.set("K", mapper.readTree("[[1000.0,0,959.5],[0,1000.0,539.5],[0,0,1]]"));
+            c.putObject("distortion").put("model", "OPENCV_PINHOLE").putArray("coeffs").add(-0.1).add(0.02).add(0).add(0).add(0);
+            c.set("R", mapper.readTree("[[1,0,0],[0,1,0],[0,0,1]]"));
+            c.set("t", mapper.readTree("[0,0,-2.44]"));
+        }
+        ObjectNode broken = cams.addObject().put("camera_id", "cam_C"); // fx 가 0 이다
+        broken.putArray("image_size").add(1920).add(1080);
+        broken.set("K", mapper.readTree("[[0,0,959.5],[0,1000.0,539.5],[0,0,1]]"));
+        broken.putObject("distortion").put("model", "OPENCV_PINHOLE").putArray("coeffs");
+        jdbc.update("""
+                INSERT INTO calibration_document (calibration_version, content, sha256, uploaded_by, uploaded_at)
+                VALUES (?, ?, ?, NULL, now())
+                """, calibration, mapper.writeValueAsBytes(doc), "sha256:" + "e".repeat(64));
+
+        ObjectNode ref = reference.current(site);
+        assertThat(ref).isNotNull();
+        JsonNode cameras = ref.get("cameras");
+        assertThat(cameras.size()).isEqualTo(2); // cam_C 는 형식이 틀리고 cam_D 는 원문에 없다
+        assertThat(cameras.get(0).get("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(cameras.get(0).at("/image_size/0").asInt()).isEqualTo(1920);
+        assertThat(cameras.get(0).at("/K/0/0").asDouble()).isEqualTo(1000.0);
+        assertThat(cameras.get(0).at("/distortion/model").asString()).isEqualTo("OPENCV_PINHOLE");
+        assertThat(cameras.get(0).at("/distortion/coeffs/0").asDouble()).isEqualTo(-0.1);
+        assertThat(cameras.get(0).has("R")).isFalse(); // 외부 자세는 주지 않는다
+        assertThat(cameras.get(0).has("t")).isFalse();
+    }
+
+    @Test
+    void 원문_렌즈가_표보다_앞서고_원문에_없는_카메라는_표_렌즈를_쓴다() {
+        // 표에는 cam_A·cam_B·cam_C(fx 1200)가 있다. 원문은 cam_A 만(fx 1000) 준다
+        when(images.images(anyString())).thenReturn(signed(true));
+        ObjectNode doc = mapper.createObjectNode().put("calibration_version", calibration);
+        ObjectNode c = doc.putArray("cameras").addObject().put("camera_id", "cam_A");
+        c.putArray("image_size").add(1920).add(1080);
+        c.set("K", mapper.readTree("[[1000.0,0,959.5],[0,1000.0,539.5],[0,0,1]]"));
+        c.putObject("distortion").put("model", "NONE").putArray("coeffs");
+        jdbc.update("""
+                INSERT INTO calibration_document (calibration_version, content, sha256, uploaded_by, uploaded_at)
+                VALUES (?, ?, ?, NULL, now())
+                """, calibration, mapper.writeValueAsBytes(doc), "sha256:" + "f".repeat(64));
+
+        JsonNode cameras = reference.current(site).get("cameras");
+        assertThat(cameras.size()).isEqualTo(3);
+        assertThat(cameras.get(0).get("camera_id").asString()).isEqualTo("cam_A");
+        assertThat(cameras.get(0).at("/K/0/0").asDouble()).isEqualTo(1000.0); // 원문
+        assertThat(cameras.get(0).at("/distortion/model").asString()).isEqualTo("NONE");
+        assertThat(cameras.get(1).get("camera_id").asString()).isEqualTo("cam_B");
+        assertThat(cameras.get(1).at("/K/0/0").asDouble()).isEqualTo(1200.0); // 표
+        assertThat(cameras.get(1).at("/image_size/0").asInt()).isEqualTo(2304);
+    }
+
     private ObjectNode signed(boolean withImages) {
         ObjectNode node = mapper.createObjectNode().put("scene_version", scene);
         if (!withImages) {
