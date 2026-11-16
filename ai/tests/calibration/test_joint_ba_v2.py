@@ -26,10 +26,14 @@ from simai_ai.calibration.extrinsics.joint_ba_v2 import (
     extract_tracks_from_backgrounds,
     huber_terms,
     project,
+    quality_gate_retryable,
+    quality_gate_score,
     quarantine_shared_keypoints,
     run_stage_a_rotation_ba,
+    run_stage_a_with_retry,
     select_anchor,
     spatial_split,
+    stage_a_anchor_order,
     statistics,
     worsened,
 )
@@ -529,3 +533,150 @@ def test_stage_a_on_real_val01_cached_tracks_converges_under_10s() -> None:
     for cid in CAMS:
         assert res.pose_changes[cid]["center_cm"] == 0.0
         assert res.height_checks[cid]["within_tolerance"] is True
+
+
+# ---------------------------------------------------------------------------
+# S15P31A101-764 Stage A 자동 재시도(같은 트랙·초기값, 기준 카메라만 바꿈)
+# ---------------------------------------------------------------------------
+
+_HEIGHTS = dict.fromkeys(CAMS, 2.2)
+# cam_A(0.5°)·cam_C(3°)만 틀린 초기 회전. 자동 기준 카메라는 cam_A(재투영 중앙값 최소)라 그 오차가 잠겨 p90 이 약 1.95 px 로 남고,
+# 맞는 cam_B·cam_D 를 기준으로 하면 0 px 대로 돌아온다. p90 상한 1.5 px 게이트로 첫 시도만 떨어뜨린다
+_RETRY_SCENE = {0: ("z", 0.5), 2: ("x", 3.0)}
+_STRICT_GATE = {"pair_holdout_p90_max_px": 1.5}
+
+
+def _calibration_with_rotations(perturb: dict[int, tuple[str, float]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """참 자세에서 perturb(카메라 번호 → 축, 도)만 돌린 초기 보정과 같은 트랙."""
+    doc, tracks_doc = synthetic_calibration_and_tracks()
+    _, _, _, truth, _, centers = synthetic_scene()
+    for idx in range(len(CAMS)):
+        R = truth[idx]
+        if idx in perturb:
+            axis, deg = perturb[idx]
+            R = Rotation.from_euler(axis, deg, degrees=True).as_matrix() @ R
+        doc["cameras"][idx]["R"] = R.tolist()
+        doc["cameras"][idx]["t"] = (-R @ centers[idx]).tolist()
+    doc["content_hash"] = content_hash(doc)
+    return doc, tracks_doc
+
+
+def test_stage_a_retry_adopts_the_next_anchor_after_a_holdout_gate_failure() -> None:
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    assert stage_a_anchor_order(doc, tracks_doc) == ["cam_A", "cam_B", "cam_D", "cam_C"]
+    out = run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=_HEIGHTS, quality_gate_config=_STRICT_GATE)
+    first, second, third = out.attempts
+    assert first.anchor_camera_id == "cam_A" and not first.passed and first.retryable
+    assert first.quality_gate["verdict"] == "FAILED"
+    assert {p["reason"] for p in first.quality_gate["problems"]} == {"HOLDOUT_ERROR_HIGH"}
+    assert (second.anchor_camera_id, third.anchor_camera_id) == ("cam_B", "cam_D")
+    assert second.passed and third.passed and out.stop_reason == "MAX_ATTEMPTS"
+    # 둘 다 통과면 게이트 점수(최악 쌍 비율, 평균 쌍 비율)가 작은 시도를 채택한다
+    assert out.adopted is second and out.reported is second
+    assert second.rank_key() < third.rank_key()
+    summary = second.summary()
+    assert summary["anchor_camera_id"] == "cam_B" and summary["passed"] is True and summary["worsened_pairs"] == []
+    assert set(summary["pairs"]) == {f"{CAMS[a]}-{CAMS[b]}" for a, b in PAIRS}
+    # 채택 결과는 그 기준 카메라로 한 번 푼 것과 같은 문서다(보정 문서 sha256 재현성)
+    direct = run_stage_a_rotation_ba(doc, tracks_doc, camera_heights_m=_HEIGHTS, anchor_camera_id="cam_B")
+    assert second.result is not None
+    assert second.result.calibration_doc == direct.calibration_doc
+    assert schema_errors(second.result.calibration_doc, "calibration") == []
+
+
+def test_stage_a_retry_is_deterministic_for_the_same_input() -> None:
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    runs = [run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=_HEIGHTS, quality_gate_config=_STRICT_GATE)
+            for _ in range(2)]
+    assert [[a.anchor_camera_id for a in r.attempts] for r in runs] == [["cam_A", "cam_B", "cam_D"]] * 2
+    adopted = [r.adopted.result for r in runs if r.adopted is not None and r.adopted.result is not None]
+    assert len(adopted) == 2
+    assert adopted[0].calibration_doc["content_hash"] == adopted[1].calibration_doc["content_hash"]
+    assert adopted[0].calibration_version == adopted[1].calibration_version
+
+
+def test_stage_a_retry_first_pass_is_the_unchanged_single_call() -> None:
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    out = run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=_HEIGHTS)
+    assert len(out.attempts) == 1 and out.stop_reason == "PASSED_FIRST" and out.adopted is out.attempts[0]
+    plain = run_stage_a_rotation_ba(doc, tracks_doc, camera_heights_m=_HEIGHTS)
+    assert out.adopted.result is not None and out.adopted.result.calibration_doc == plain.calibration_doc
+
+
+def test_stage_a_retry_all_failing_reports_the_best_attempt() -> None:
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    out = run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=_HEIGHTS,
+                                 quality_gate_config={"pair_holdout_p90_max_px": 1e-6})
+    assert len(out.attempts) == 3 and out.adopted is None and out.stop_reason == "MAX_ATTEMPTS"
+    assert out.reported is min(out.attempts, key=lambda a: a.rank_key())
+    assert out.reported.anchor_camera_id in {"cam_B", "cam_D"}  # 오차가 잠긴 cam_A 기준보다 낫다
+    assert out.reported.quality_gate is not None and out.reported.quality_gate["verdict"] == "FAILED"
+
+
+def test_stage_a_retry_stops_when_the_time_budget_refuses() -> None:
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    asked: list[float] = []
+
+    def refuse(estimate_s: float) -> bool:
+        asked.append(estimate_s)
+        return False
+
+    out = run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=_HEIGHTS, quality_gate_config=_STRICT_GATE,
+                                 may_retry=refuse)
+    assert len(out.attempts) == 1 and out.adopted is None and out.stop_reason == "TIME_BUDGET"
+    assert len(asked) == 1 and asked[0] == out.attempts[0].seconds > 0
+
+
+def test_stage_a_retry_does_not_retry_insufficient_features_or_height_mismatch() -> None:
+    calib_doc, _ = synthetic_calibration_and_tracks()
+    out = run_stage_a_with_retry(calib_doc, {"tracks": [], "pairs": {}})
+    assert len(out.attempts) == 1 and out.stop_reason == "NOT_RETRYABLE"
+    assert out.reported.error is not None and out.reported.error.code == "INSUFFICIENT_FEATURES"
+
+    doc, tracks_doc = _calibration_with_rotations(_RETRY_SCENE)
+    tall = {**_HEIGHTS, "cam_B": 2.5}  # 줄자 높이 30 cm 차: 중심이 고정이라 기준 카메라를 바꿔도 같다
+    out = run_stage_a_with_retry(doc, tracks_doc, camera_heights_m=tall, quality_gate_config=_STRICT_GATE)
+    assert len(out.attempts) == 1 and out.stop_reason == "NOT_RETRYABLE" and out.adopted is None
+    gate = out.reported.quality_gate
+    assert gate is not None and any(p["reason"] == "HEIGHT_MISMATCH" for p in gate["problems"])
+    assert quality_gate_retryable(gate) is False
+
+
+def test_validation_gate_rejection_marks_anchor_retryable_only_for_geometry_within_time() -> None:
+    calib_doc, tracks_doc = synthetic_calibration_and_tracks()
+    with pytest.raises(StageAError) as worse:  # 1.2°·2.5° 틀린 카메라를 기준으로 잠그면 다른 쌍이 나빠진다
+        run_stage_a_rotation_ba(calib_doc, tracks_doc, camera_heights_m=_HEIGHTS, anchor_camera_id="cam_B")
+    assert worse.value.code == "VALIDATION_REJECTED" and worse.value.anchor_retryable is True
+    details = worse.value.details
+    assert details["anchor_camera_id"] == "cam_B" and details["worsened_pairs"]
+    assert f"worsened_pairs={details['worsened_pairs']}" in worse.value.message
+    assert set(details["pairs"]) == {f"{CAMS[a]}-{CAMS[b]}" for a, b in PAIRS}
+    with pytest.raises(StageAError) as slow:  # 시간 초과만이면 다음 시도도 넘는다
+        run_stage_a_rotation_ba(calib_doc, tracks_doc, camera_heights_m=_HEIGHTS, anchor_camera_id="cam_D",
+                                stage_target_seconds=1e-9)
+    assert slow.value.code == "VALIDATION_REJECTED" and slow.value.anchor_retryable is False
+
+
+def test_quality_gate_retryable_and_score_rules() -> None:
+    def gate(pairs: dict[str, tuple[float | None, float | None, str]], cams: dict[str, str | None]) -> dict[str, Any]:
+        problems = [{"kind": "PAIR", "id": k, "reason": r, "message": k} for k, (_, _, r) in pairs.items() if r]
+        problems += [{"kind": "CAMERA", "id": c, "reason": r, "message": c} for c, r in cams.items() if r]
+        failed = any(r and r != "FEW_HOLDOUT" for *_, r in pairs.values()) or any(cams.values())
+        return {
+            "verdict": "FAILED" if failed else ("NEEDS_CHECK" if any(r == "FEW_HOLDOUT" for *_, r in pairs.values())
+                                                 else "PASSED"),
+            "thresholds": {"pair_holdout_median_max_px": 3.0, "pair_holdout_p90_max_px": 6.0},
+            "pairs": {k: {"median_px": m, "p90_px": p, "verdict": "NEEDS_CHECK" if r == "FEW_HOLDOUT" else
+                          ("FAIL" if r else "PASS")} for k, (m, p, r) in pairs.items()},
+            "problems": problems,
+        }
+
+    high = gate({"a-b": (0.87, 8.74, "HOLDOUT_ERROR_HIGH"), "b-c": (0.3, 1.2, "")}, {"cam_A": None})
+    assert quality_gate_retryable(high) is True
+    assert quality_gate_score(high) == (2, round(8.74 / 6.0, 6), round((8.74 / 6.0 + 0.2) / 2, 6))
+    assert quality_gate_retryable(gate({"a-b": (None, None, "HOLDOUT_INVALID")}, {})) is True
+    assert quality_gate_retryable(gate({"a-b": (0.87, 8.74, "HOLDOUT_ERROR_HIGH")}, {"cam_B": "HEIGHT_MISMATCH"})) is False
+    assert quality_gate_retryable(gate({"a-b": (0.3, 1.2, "")}, {"cam_B": "HEIGHT_UNKNOWN"})) is False
+    ok = gate({"a-b": (0.3, 1.2, ""), "c-d": (9.0, 9.0, "FEW_HOLDOUT")}, {})
+    assert quality_gate_retryable(ok) is False
+    assert quality_gate_score(ok) == (1, 0.2, 0.2)  # 홀드아웃 부족 쌍은 근거가 없어 점수에서 뺀다

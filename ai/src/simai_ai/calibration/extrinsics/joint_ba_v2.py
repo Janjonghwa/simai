@@ -179,16 +179,23 @@ class StageAError(RuntimeError):
     """Structured failure raised during Stage A rotation BA or verification.
 
     ``nonfinite_pairs``: 비유한(NaN·Inf) 삼각측량이 나온 카메라 쌍(`cam_B-cam_C` 꼴). 처리기가 실패 메시지에 원인 후보를 덧붙일 때 쓴다(-711).
+    ``anchor_retryable``: 기준 카메라를 바꿔 같은 입력으로 다시 풀면 결과가 달라질 수 있는 기하 거절(검증 게이트의 미수렴·깊이 무효·
+    쌍 악화, 시간 안). 입력·시간 문제(특징 부족, 시작 자세 비유한, 시간 초과, 문서 스키마)는 False 다(-764).
+    ``details``: 시도 요약용 구조화 값(기준 카메라, converged, blockers, worsened_pairs, 쌍별 홀드아웃 중앙값·p90). 판정에 쓰지 않는다.
+    ``retryable`` 은 작업(대여) 재시도 여부라 이것과 다르다.
     """
 
     def __init__(
         self, code: str, message: str, *, retryable: bool = False, nonfinite_pairs: Sequence[str] = (),
+        anchor_retryable: bool = False, details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
         self.nonfinite_pairs = tuple(nonfinite_pairs)
+        self.anchor_retryable = bool(anchor_retryable)
+        self.details: dict[str, Any] = dict(details) if details is not None else {}
 
 
 class NonfiniteTriangulationError(ValueError):
@@ -355,6 +362,10 @@ def statistics(values: Sequence[float]) -> dict[str, Any]:
         "p90": percentile(finite, 0.9) if valid else None,
         "p95": percentile(finite, 0.95) if valid else None,
     }
+
+
+def _round_or_none(value: Any) -> float | None:
+    return None if value is None else round(float(value), 4)
 
 
 def worsened(before: Mapping[str, Any], after: Mapping[str, Any], tolerance_px: float = 0.0) -> bool:
@@ -1709,10 +1720,25 @@ def _select_anchor_camera(
         )
         name = select_anchor(v0_doc, cameras=cameras)
         return list(cameras).index(name), name
+    best_idx = _anchor_ranking(tracks, K, R0, C0, cameras, pairs)[0]
+    return best_idx, cameras[best_idx]
+
+
+def _anchor_ranking(
+    tracks: Sequence[Mapping[str, Any]],
+    K: np.ndarray,
+    R0: np.ndarray,
+    C0: np.ndarray,
+    cameras: Sequence[str],
+    pairs: Sequence[tuple[int, int]],
+) -> list[int]:
+    """기준 카메라 후보 순서: 초기 자세에서 전체 트랙 재투영 중앙값이 작은 순(모르면 맨 뒤), 같으면 카메라 순서.
+
+    첫째가 지금까지의 자동 기준 카메라다. 자동 재시도(-764)는 이 순서의 다음 후보를 쓴다(같은 입력이면 같은 순서)."""
     all_eval = evaluate(
         tracks, K, R0, C0, cameras=cameras, pairs=pairs, split="all"
     )
-    best_idx = min(
+    return sorted(
         range(len(cameras)),
         key=lambda i: (
             all_eval["cameras"][cameras[i]]["median"]
@@ -1721,7 +1747,24 @@ def _select_anchor_camera(
             i,
         ),
     )
-    return best_idx, cameras[best_idx]
+
+
+def stage_a_anchor_order(
+    initial_calibration: Mapping[str, Any] | Path | str,
+    tracks_source: Mapping[str, Any] | Path | str,
+    *,
+    config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """`run_stage_a_rotation_ba` 가 자동으로 고르는 기준 카메라부터 시작하는 후보 카메라 ID 순서(-764)."""
+    cfg = {**DEFAULT_STAGE_A_CONFIG, **(dict(config) if config is not None else {})}
+    _, _, K, R0, C0, cam_ids = read_calibration(initial_calibration)
+    pairs = (
+        PAIRS
+        if len(cam_ids) == 4
+        else tuple((k, (k + 1) % len(cam_ids)) for k in range(len(cam_ids)))
+    )
+    tracks, _ = load_tracks(tracks_source, cfg, cameras=cam_ids, pairs=pairs)
+    return [cam_ids[i] for i in _anchor_ranking(tracks, K, R0, C0, cam_ids, pairs)]
 
 
 def run_stage_a_rotation_ba(
@@ -1840,6 +1883,7 @@ def run_stage_a_rotation_ba(
             ),
             retryable=False,
             nonfinite_pairs=exc.pairs,
+            details={"anchor_camera_id": anchor_name},
         ) from exc
     if progress is not None:
         progress(3 / 6)
@@ -1879,13 +1923,8 @@ def run_stage_a_rotation_ba(
         float(poses_diff[cid]["center_cm"]) for cid in cam_ids
     )
     converged = bool(info["success"]) and not bool(info["adoption_forbidden"])
-    if (
-        not converged
-        or training_invalid_depths > 0
-        or not within_time
-        or len(worsened_Evaluated_pairs) > 0
-        or max_center_shift_cm > 1e-7
-    ):
+    geometric_block = not converged or training_invalid_depths > 0 or len(worsened_Evaluated_pairs) > 0
+    if geometric_block or not within_time or max_center_shift_cm > 1e-7:
         raise StageAError(
             "VALIDATION_REJECTED",
             (
@@ -1904,6 +1943,22 @@ def run_stage_a_rotation_ba(
             ),
             retryable=False,
             nonfinite_pairs=info["nonfinite_pairs"],
+            # 시간 안에 끝난 기하 거절만 기준 카메라를 바꿔 다시 풀 가치가 있다(시간 초과는 다음 시도도 넘는다, -764)
+            anchor_retryable=geometric_block and within_time and max_center_shift_cm <= 1e-7,
+            details={
+                "anchor_camera_id": anchor_name,
+                "converged": converged,
+                "blockers": list(info["adoption_blockers"]),
+                "worsened_pairs": list(worsened_Evaluated_pairs),
+                "within_time": within_time,
+                "pairs": {
+                    key: {
+                        "median_px": _round_or_none(held["pairs"][key]["median"]),
+                        "p90_px": _round_or_none(held["pairs"][key]["p90"]),
+                    }
+                    for key in pair_metrics
+                },
+            },
         )
 
     # Construct immutable new CalibrationProvider document (never overwriting input).
@@ -2032,3 +2087,187 @@ def run_stage_a_rotation_ba(
         scale_estimation=scale_est,
         cone_observation=cone,
     )
+
+
+# ---------------------------------------------------------------------------
+# 자동 재시도(S15P31A101-764): 같은 배경 트랙·같은 MapAnything 초기값으로 기준 카메라만 바꿔 다시 푼다
+# 근거·수치: docs/design/S15P31A101-764-stage-a-auto-retry.md
+# ---------------------------------------------------------------------------
+
+STAGE_A_MAX_ATTEMPTS = 3  # 첫 시도 + 자동 재시도 2회
+# 기준 카메라를 바꿔도 달라질 수 있는 품질 게이트 사유(쌍 홀드아웃). 높이(HEIGHT_*)는 중심 고정이라 회전 BA 로 바뀌지 않는다
+QUALITY_RETRYABLE_REASONS = frozenset({"HOLDOUT_ERROR_HIGH", "HOLDOUT_INVALID"})
+_VERDICT_RANK = {QUALITY_PASSED: 0, QUALITY_NEEDS_CHECK: 1, QUALITY_FAILED: 2}
+
+
+def quality_gate_retryable(gate: Mapping[str, Any]) -> bool:
+    """FAILED 이고 FAIL 사유가 모두 쌍 홀드아웃(기하)이면 True. 높이 사유가 하나라도 있으면 False(입력·각도 문제)."""
+    if gate.get("verdict") != QUALITY_FAILED:
+        return False
+    fails = [p for p in gate.get("problems", ()) if p.get("reason") != "FEW_HOLDOUT"]
+    return bool(fails) and all(p.get("kind") == "PAIR" and p.get("reason") in QUALITY_RETRYABLE_REASONS for p in fails)
+
+
+def quality_gate_score(gate: Mapping[str, Any]) -> tuple[int, float, float]:
+    """작을수록 좋은 품질 게이트 순위 키 = (판정 순위, 최악 쌍 비율, 평균 쌍 비율).
+
+    쌍 비율 = max(홀드아웃 중앙값 ÷ 중앙값 상한, p90 ÷ p90 상한). 1 이하가 게이트 안이다. 홀드아웃 부족(NEEDS_CHECK) 쌍은 근거가
+    없어 빼고, 투영이 깨진 쌍(값 없음)은 무한대다. 비율은 소수 6자리로 반올림한다(같은 입력이면 같은 순위)."""
+    th = gate.get("thresholds", {})
+    med_max = float(th.get("pair_holdout_median_max_px", DEFAULT_QUALITY_GATE["pair_holdout_median_max_px"]))
+    p90_max = float(th.get("pair_holdout_p90_max_px", DEFAULT_QUALITY_GATE["pair_holdout_p90_max_px"]))
+    ratios: list[float] = []
+    for entry in gate.get("pairs", {}).values():
+        if entry.get("verdict") == "NEEDS_CHECK":
+            continue
+        med, p90 = entry.get("median_px"), entry.get("p90_px")
+        ratios.append(math.inf if med is None or p90 is None
+                      else round(max(float(med) / med_max, float(p90) / p90_max), 6))
+    worst = max(ratios) if ratios else math.inf
+    mean = round(sum(ratios) / len(ratios), 6) if ratios and math.isfinite(worst) else math.inf
+    return _VERDICT_RANK.get(str(gate.get("verdict")), 3), worst, mean
+
+
+@dataclass(frozen=True, slots=True)
+class StageAAttempt:
+    """Stage A 한 번의 시도. result·error 중 하나만 있다. quality_gate 는 result 가 있을 때만."""
+
+    index: int
+    anchor_camera_id: str | None
+    seconds: float
+    result: StageAResult | None = None
+    error: StageAError | None = None
+    quality_gate: dict[str, Any] | None = None
+
+    @property
+    def passed(self) -> bool:
+        return self.result is not None and self.quality_gate is not None and self.quality_gate["verdict"] != QUALITY_FAILED
+
+    @property
+    def retryable(self) -> bool:
+        """이 시도의 실패가 기준 카메라를 바꿔 다시 풀 만한 기하 사유인가(통과면 False)."""
+        if self.error is not None:
+            return self.error.anchor_retryable
+        return self.quality_gate is not None and quality_gate_retryable(self.quality_gate)
+
+    def rank_key(self) -> tuple[Any, ...]:
+        """작을수록 좋다. 통과 > 게이트 미달(지표 있음) > 거절(지표 없음), 같은 묶음은 게이트 점수, 같으면 앞선 시도."""
+        if self.result is None or self.quality_gate is None:
+            return (2, math.inf, math.inf, math.inf, self.index)
+        return (0 if self.passed else 1, *quality_gate_score(self.quality_gate), self.index)
+
+    def summary(self) -> dict[str, Any]:
+        """로그용 시도 요약(기준 카메라, 결과, worsened_pairs, 쌍별 홀드아웃 중앙값·p90, 통과 여부)."""
+        out: dict[str, Any] = {"attempt": self.index, "anchor_camera_id": self.anchor_camera_id,
+                               "seconds": round(float(self.seconds), 3), "passed": self.passed}
+        if self.error is not None:
+            details = self.error.details
+            out.update(outcome=self.error.code, converged=details.get("converged"),
+                       blockers=details.get("blockers", []), worsened_pairs=details.get("worsened_pairs", []),
+                       pairs=details.get("pairs", {}), message=self.error.message[:240])
+            return out
+        assert self.result is not None and self.quality_gate is not None
+        gate = self.quality_gate
+        out.update(
+            outcome=gate["verdict"] if self.passed else "QUALITY_FAILED",
+            converged=self.result.converged,
+            worsened_pairs=[k for k, m in self.result.pair_metrics.items() if m.get("worsened")],
+            pairs={k: {"median_px": v["median_px"], "p90_px": v["p90_px"], "verdict": v["verdict"]}
+                   for k, v in gate["pairs"].items()},
+            problems=[p["reason"] for p in gate["problems"] if p["reason"] != "FEW_HOLDOUT"],
+        )
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class StageARetryOutcome:
+    """자동 재시도 결과. adopted 가 없으면 reported(가장 나은 실패 시도)의 사유로 실패시킨다."""
+
+    attempts: tuple[StageAAttempt, ...]
+    adopted: StageAAttempt | None
+    stop_reason: str
+
+    @property
+    def reported(self) -> StageAAttempt:
+        return self.adopted if self.adopted is not None else min(self.attempts, key=StageAAttempt.rank_key)
+
+
+def run_stage_a_with_retry(
+    initial_calibration: Mapping[str, Any] | Path | str,
+    tracks_source: Mapping[str, Any] | Path | str,
+    *,
+    quality_gate_config: Mapping[str, Any] | None = None,
+    heights_settled: bool = False,
+    max_attempts: int = STAGE_A_MAX_ATTEMPTS,
+    may_retry: Callable[[float], bool] | None = None,
+    attempt_progress: Callable[[int], Callable[[float], None] | None] | None = None,
+    perf_counter: Callable[[], float] = time.perf_counter,
+    **stage_a_kwargs: Any,
+) -> StageARetryOutcome:
+    """Stage A + 품질 게이트를 기하 사유로 실패하면 같은 입력으로 기준 카메라만 바꿔 최대 max_attempts 번 푼다(-764).
+
+    - 첫 시도는 지금과 같은 호출(자동 기준 카메라)이다. 통과하면 바로 끝난다(재시도 없음, 결과·문서가 예전과 같다).
+    - 첫 시도가 기하 사유(`StageAError.anchor_retryable`, 또는 품질 게이트 FAIL 이 쌍 홀드아웃뿐)로 실패하면 `stage_a_anchor_order`
+      의 다음 후보를 기준 카메라로 다시 푼다. 입력·높이·시간 사유 실패는 다시 풀지 않는다. 뒤 시도도 기하 사유로 실패해야 계속 간다.
+    - 재시도에 들어가면 시간이 허락하는 한 남은 후보를 모두 풀고, 통과한 시도 중 `StageAAttempt.rank_key` 가 가장 작은 것을 채택한다.
+    - 다음 시도 전 `may_retry(지금까지 가장 오래 걸린 시도 초)` 가 False 면 멈춘다(세팅 시간 상한·뒤 단계 몫은 호출자가 본다).
+    - 같은 입력이면 같은 후보 순서·같은 결과다(시간 상한으로 멈추는 지점만 실행 시간에 따라 다르다).
+    anchor_camera_id·v0_results 로 기준 카메라를 고정하면 한 번만 푼다. 시도 밖으로 나가는 예외(JobFailed 등)는 그대로 올린다.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts 는 1 이상이다")
+    fixed = stage_a_kwargs.get("anchor_camera_id") is not None or stage_a_kwargs.get("v0_results") is not None
+    kwargs = {k: v for k, v in stage_a_kwargs.items() if k not in ("progress", "anchor_camera_id")}
+    attempts: list[StageAAttempt] = []
+    order: list[str] | None = None
+    anchor: str | None = stage_a_kwargs.get("anchor_camera_id")
+    stop_reason = "PASSED_FIRST"
+    while True:
+        index = len(attempts) + 1
+        progress = attempt_progress(index) if attempt_progress is not None else None
+        started = perf_counter()
+        try:
+            result = run_stage_a_rotation_ba(initial_calibration, tracks_source, anchor_camera_id=anchor,
+                                             progress=progress, **kwargs)
+        except StageAError as exc:
+            attempt = StageAAttempt(index, exc.details.get("anchor_camera_id", anchor),
+                                    max(0.0, perf_counter() - started), error=exc)
+        except NonfiniteTriangulationError as exc:
+            message = f"Stage A rejected: nonfinite triangulation, nonfinite_pairs={list(exc.pairs)}"
+            attempt = StageAAttempt(index, anchor, max(0.0, perf_counter() - started),
+                                    error=StageAError("VALIDATION_REJECTED", message, nonfinite_pairs=exc.pairs))
+        else:
+            gate = evaluate_quality_gate(result.pair_metrics, result.height_checks, quality_gate_config,
+                                         heights_settled=heights_settled)
+            attempt = StageAAttempt(index, result.anchor_camera_id, max(0.0, perf_counter() - started),
+                                    result=result, quality_gate=gate)
+        attempts.append(attempt)
+        if index == 1 and attempt.passed:
+            break
+        if not attempt.passed and not attempt.retryable:
+            stop_reason = "NOT_RETRYABLE"
+            break
+        if fixed:
+            stop_reason = "ANCHOR_FIXED"
+            break
+        if index >= max_attempts:
+            stop_reason = "MAX_ATTEMPTS"
+            break
+        if order is None:
+            try:
+                order = stage_a_anchor_order(initial_calibration, tracks_source, config=kwargs.get("config"))
+            except Exception:  # noqa: BLE001 - 첫 시도가 같은 입력을 이미 읽었다. 순서를 못 정하면 재시도만 접는다
+                stop_reason = "NO_ANCHOR_ORDER"
+                break
+        tried = {a.anchor_camera_id for a in attempts}
+        candidates = [c for c in order if c not in tried]
+        if not candidates:
+            stop_reason = "NO_MORE_ANCHORS"
+            break
+        if may_retry is not None and not may_retry(max(a.seconds for a in attempts)):
+            stop_reason = "TIME_BUDGET"
+            break
+        anchor = candidates[0]
+    passed = [a for a in attempts if a.passed]
+    adopted = min(passed, key=StageAAttempt.rank_key) if passed else None
+    return StageARetryOutcome(tuple(attempts), adopted, stop_reason)
