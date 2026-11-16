@@ -122,9 +122,7 @@ def analysis_K(lens: Lens, cfg: ViewCheckConfig):
     return np.diag([w / lens.image_size[0], h / lens.image_size[1], 1.0]) @ lens.K
 
 
-def extract(image, lens: Lens, cfg: ViewCheckConfig) -> ViewFeatures:
-    """같은 분석 크기로 줄여 SIFT, 점은 분석 해상도 K 로 왜곡을 지운다(두 사진이 같은 좌표계)."""
-    import cv2
+def check_aspect(image, lens: Lens) -> None:
     import numpy as np
 
     if getattr(image, "ndim", 0) not in (2, 3) or image.dtype != np.uint8:
@@ -133,19 +131,67 @@ def extract(image, lens: Lens, cfg: ViewCheckConfig) -> ViewFeatures:
     lw, lh = lens.image_size
     if abs(w / h - lw / lh) > 0.01 * (lw / lh):
         raise StreamMismatch("aspect ratio differs from reference lens")
-    size = analysis_size(lens, cfg)
+
+
+def sift_features(image, size: tuple[int, int], cfg: ViewCheckConfig) -> ViewFeatures:
+    """분석 크기로 줄여 SIFT(점은 왜곡 그대로의 분석 해상도 픽셀). 렌즈와 무관해 같은 키프레임이면 맵이 달라도 공유한다."""
+    import cv2
+    import numpy as np
+
     small = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
     sift = cv2.SIFT_create(nfeatures=cfg.max_features)
     keypoints, descriptors = sift.detectAndCompute(gray, None)
     points = np.array([k.pt for k in keypoints], dtype=np.float64).reshape(-1, 2)
+    return ViewFeatures(points, descriptors, len(points))
+
+
+def undistorted(raw: ViewFeatures, lens: Lens, cfg: ViewCheckConfig) -> ViewFeatures:
+    """분석 해상도 K 로 점의 왜곡을 지운다(두 사진이 같은 좌표계)."""
+    import cv2
+
+    points = raw.points
     if len(points) and lens.model != "NONE" and lens.coeffs.size:
         K = analysis_K(lens, cfg)
         if lens.model == "OPENCV_FISHEYE":
             points = cv2.fisheye.undistortPoints(points[:, None], K, lens.coeffs, P=K)[:, 0]
         else:
             points = cv2.undistortPoints(points[:, None], K, lens.coeffs, P=K)[:, 0]
-    return ViewFeatures(points, descriptors, len(points))
+    return ViewFeatures(points, raw.descriptors, raw.count)
+
+
+def extract(image, lens: Lens, cfg: ViewCheckConfig, sift=None) -> ViewFeatures:
+    """같은 분석 크기로 줄여 SIFT, 점은 분석 해상도 K 로 왜곡을 지운다(두 사진이 같은 좌표계).
+
+    sift: 분석 크기 → 이미 뽑은 SIFT(RoundFeatures 공유). 없으면 여기서 뽑는다."""
+    check_aspect(image, lens)
+    size = analysis_size(lens, cfg)
+    raw = sift(size) if sift is not None else sift_features(image, size, cfg)
+    return undistorted(raw, lens, cfg)
+
+
+class RoundFeatures:
+    """한 라운드 안에서 같은 카메라·같은 키프레임·같은 분석 크기의 SIFT 는 한 번만 뽑는다(S15P31A101-765).
+
+    재사용 후보 맵 여러 개(-714)와 기준 시점 맞추기(-765)가 같은 지금 키프레임을 보므로, 렌즈마다 다른 것은 왜곡 제거뿐이다."""
+
+    def __init__(self):
+        self.items: dict[tuple, ViewFeatures] = {}
+        self.hits = 0
+
+    def extract(self, camera_id: str, frame_ts_ms, image, lens: Lens, cfg: ViewCheckConfig) -> ViewFeatures:
+        if frame_ts_ms is None:
+            return extract(image, lens, cfg)
+
+        def sift(size):
+            key = (camera_id, frame_ts_ms, size, cfg.max_features)
+            if key in self.items:
+                self.hits += 1
+            else:
+                self.items[key] = sift_features(image, size, cfg)
+            return self.items[key]
+
+        return extract(image, lens, cfg, sift)
 
 
 def mutual_matches(a: ViewFeatures, b: ViewFeatures):
@@ -165,6 +211,51 @@ def mutual_matches(a: ViewFeatures, b: ViewFeatures):
     return a.points[[m.queryIdx for m in good]], b.points[[m.trainIdx for m in good]]
 
 
+@dataclass(frozen=True)
+class RotationFit:
+    """호모그래피 RANSAC 과 그 가까운 순수 회전(K⁻¹HK 직교화)."""
+
+    inliers: object
+    ratio: float
+    R: object | None = None
+    singular_ratio: float | None = None
+    residual_p95: float | None = None
+    """인라이어의 회전 재투영 잔차 p95(분석 해상도 px). 투영이 퇴화하면 None"""
+
+
+def rotation_residuals(p, q, K, R):
+    """p 를 K R K⁻¹ 로 옮긴 점과 q 의 거리. 투영이 퇴화하면(z ≈ 0) None."""
+    import numpy as np
+
+    projected = np.c_[p, np.ones(len(p))] @ (K @ R @ np.linalg.inv(K)).T
+    if np.any(np.abs(projected[:, 2]) < 1e-9):
+        return None
+    return np.linalg.norm(projected[:, :2] / projected[:, 2, None] - q, axis=1)
+
+
+def fit_homography_rotation(p, q, K, thr: float, min_inlier_ratio: float) -> RotationFit | None:
+    """기준 점 p → 지금 점 q(분석 해상도, 왜곡 제거) 호모그래피 RANSAC. 적합 실패면 None, 인라이어 비율이 모자라면 회전 없이(R None)."""
+    import cv2
+    import numpy as np
+
+    H, mask = cv2.findHomography(p, q, cv2.RANSAC, thr)
+    if H is None or mask is None or not np.isfinite(H).all():
+        return None
+    inliers = mask.ravel() != 0
+    ratio = float(inliers.mean())
+    if ratio < min_inlier_ratio:
+        return RotationFit(inliers, ratio)
+    K = np.asarray(K, dtype=np.float64)
+    M = np.linalg.solve(K, H @ K)
+    if np.linalg.det(M) < 0:
+        M = -M
+    U, singular, Vt = np.linalg.svd(M)
+    R = U @ np.diag([1.0, 1.0, np.linalg.det(U @ Vt)]) @ Vt
+    residual = rotation_residuals(p[inliers], q[inliers], K, R)
+    return RotationFit(inliers, ratio, R, float(singular[-1] / singular[0]),
+                       None if residual is None else float(np.percentile(residual, 95)))
+
+
 def classify(p, q, K, cfg: ViewCheckConfig) -> Verdict:
     """기준 점 p → 지금 점 q(분석 해상도, 왜곡 제거). CHANGED 는 한 번의 후보이고 확인은 ViewConfirm 이 한다."""
     import numpy as np
@@ -178,30 +269,19 @@ def classify(p, q, K, cfg: ViewCheckConfig) -> Verdict:
         return Verdict("CHANGED", "VIEW_DIFFERENT", n)
     if float((disp <= thr).mean()) >= cfg.stationary_ratio:
         return Verdict("SAME", None, n, None, 0.0)
-    import cv2
-
-    H, mask = cv2.findHomography(p, q, cv2.RANSAC, thr)
-    if H is None or mask is None or not np.isfinite(H).all():
+    fit = fit_homography_rotation(p, q, K, thr, cfg.min_inlier_ratio)
+    if fit is None:
         return Verdict("CHANGED", "VIEW_DIFFERENT", n)
-    inliers = mask.ravel() != 0
-    ratio = float(inliers.mean())
-    if ratio < cfg.min_inlier_ratio:
+    ratio = fit.ratio
+    if fit.R is None:
         anchors = int((disp <= thr).sum())
         if anchors >= 12 and anchors / n >= 0.35:
             return Verdict("UNKNOWN", "OCCLUDED", n, ratio)
         return Verdict("CHANGED", "MOVED", n, ratio)
-    K = np.asarray(K, dtype=np.float64)
-    M = np.linalg.solve(K, H @ K)
-    if np.linalg.det(M) < 0:
-        M = -M
-    U, singular, Vt = np.linalg.svd(M)
-    R = U @ np.diag([1.0, 1.0, np.linalg.det(U @ Vt)]) @ Vt
-    angle = float(np.arccos(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)))
-    projected = np.c_[p[inliers], np.ones(int(inliers.sum()))] @ (K @ R @ np.linalg.inv(K)).T
-    if np.any(np.abs(projected[:, 2]) < 1e-9):
+    if fit.residual_p95 is None:
         return Verdict("CHANGED", "MOVED", n, ratio)
-    rot_residual = np.linalg.norm(projected[:, :2] / projected[:, 2, None] - q[inliers], axis=1)
-    if float(singular[-1] / singular[0]) < cfg.min_singular_ratio or float(np.percentile(rot_residual, 95)) > thr:
+    angle = float(np.arccos(np.clip((np.trace(fit.R) - 1.0) / 2.0, -1.0, 1.0)))
+    if fit.singular_ratio < cfg.min_singular_ratio or fit.residual_p95 > thr:
         # 호모그래피는 맞지만 회전으로 설명되지 않는다: 평면(바닥·벽) 위주 장면에서 카메라가 옮겨졌다
         return Verdict("CHANGED", "MOVED", n, ratio)
     if angle > cfg.max_rotation_rad:
@@ -302,7 +382,13 @@ class ViewChecker:
         self.failed.pop(cid, None)
         return self.refs[cid]
 
-    def _one(self, cid: str, camera: dict | None, frame, status: str) -> Verdict:
+    def _current(self, cid: str, ts, frame, lens: Lens, features: RoundFeatures | None) -> ViewFeatures:
+        if features is None:
+            return extract(frame, lens, self.cfg)
+        return features.extract(cid, ts, frame, lens, self.cfg)
+
+    def _one(self, cid: str, camera: dict | None, frame, status: str, ts=None,
+             features: RoundFeatures | None = None) -> Verdict:
         if status != "OK" or frame is None:
             return Verdict("UNKNOWN", "NO_VIDEO" if status == "NO_VIDEO" or frame is None else "STALE")
         ref = self._reference(cid, camera)
@@ -312,14 +398,17 @@ class ViewChecker:
         if ref_features.count < self.cfg.min_reference_features:
             return Verdict("UNKNOWN", "NO_TEXTURE", 0)
         try:
-            current = extract(frame, lens, self.cfg)
+            current = self._current(cid, ts, frame, lens, features)
         except StreamMismatch:
             return Verdict("UNKNOWN", "STREAM_MISMATCH")
         p, q = mutual_matches(ref_features, current)
         return classify(p, q, analysis_K(lens, self.cfg), self.cfg)
 
-    def check(self, reference, frames: dict, statuses: dict[str, str]) -> dict | None:
-        """frames: 카메라 → (frame_ts_ms, BGR) | None, statuses: 카메라 → OK|NO_VIDEO|STALE. 기준이 없으면 None."""
+    def check(self, reference, frames: dict, statuses: dict[str, str],
+              features: RoundFeatures | None = None) -> dict | None:
+        """frames: 카메라 → (frame_ts_ms, BGR) | None, statuses: 카메라 → OK|NO_VIDEO|STALE. 기준이 없으면 None.
+
+        features: 이 라운드의 SIFT 공유(RoundFeatures, S15P31A101-765). 없으면 매번 뽑는다."""
         parsed = parse_reference(reference)
         if parsed is None:
             if self.key is not None:
@@ -334,7 +423,7 @@ class ViewChecker:
             entry = frames.get(cid)
             ts, image = (entry if entry is not None else (None, None))
             try:
-                verdict = self._one(cid, cameras.get(cid), image, statuses.get(cid, "NO_VIDEO"))
+                verdict = self._one(cid, cameras.get(cid), image, statuses.get(cid, "NO_VIDEO"), ts, features)
             except Exception:  # noqa: BLE001
                 LOG.warning("reuse view check failed camera=%s", cid)
                 verdict = Verdict("UNKNOWN", "ERROR")
@@ -359,7 +448,8 @@ class MultiViewChecker:
         self.factory = factory
         self.checkers: dict[tuple[str, str], ViewChecker] = {}
 
-    def check_all(self, references, frames: dict, statuses: dict[str, str]) -> list[dict]:
+    def check_all(self, references, frames: dict, statuses: dict[str, str],
+                  features: RoundFeatures | None = None) -> list[dict]:
         keep: dict[tuple[str, str], ViewChecker] = {}
         results = []
         for reference in list(references or [])[:MAX_REFERENCES]:
@@ -372,7 +462,7 @@ class MultiViewChecker:
             checker = self.checkers.get(key) or self.factory()
             keep[key] = checker
             try:
-                view = checker.check(reference, frames, statuses)
+                view = checker.check(reference, frames, statuses, features)
             except Exception:  # noqa: BLE001 - 한 맵이 실패해도 다른 맵·각도 안내는 그대로
                 LOG.warning("reuse view check failed scene")
                 continue

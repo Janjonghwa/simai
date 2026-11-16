@@ -3,6 +3,12 @@ import { useCctvStore } from '@/features/cctv/cctv.store';
 import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { ROOM } from '@/features/plan/plan';
+import {
+  AIM_ALL_ALIGNED_TEXT,
+  AIM_ALL_SETUP_READY_TEXT,
+  AIM_OVERLAY_LABEL,
+} from '@/features/setup/aimCheck';
+import { AimOverlay } from '@/features/setup/AimOverlay';
 import type { CameraBadge } from '@/features/setup/cameraBadge';
 import { CameraCue } from '@/features/setup/CameraCue';
 import { CALIBRATION_RISK_TITLE } from '@/features/setup/cameraGuides';
@@ -25,16 +31,17 @@ import { draftReason } from '@/features/setup/setupUx';
 import { StageAWarning } from '@/features/setup/StageAWarning';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
+import { useAimReferenceImages } from '@/features/setup/useAimReferenceImages';
 import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
 import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
-import { TriangleAlert } from 'lucide-react';
-import { useCallback, type ReactNode } from 'react';
+import { CircleCheck, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 // 세팅 화면 패널: 카메라 영상 4칸(칸마다 배지 하나, 기존 디코딩 재사용)·「지금 할 일」 카드·「자세히」(카메라 상태·겹침 2D 지도)·
 // 카메라 높이 입력, 이후 단계 요약(S15P31A101-691 정리).
@@ -134,15 +141,20 @@ function CameraBadgeChip({ badge }: { badge: CameraBadge }) {
 /**
  * 카메라 영상 한 칸. 이름표에는 카메라 이름과 배지 하나만 둔다(S15P31A101-691). 영상이 오지 않을 때만 칸을 흐리게 하고 영상 상태를
  * 덧붙인다(카메라 상태가 아니라 이 화면의 영상 중계 상태다). 각도 안내가 있으면 영상 위에 꺾쇠·같이 보는 곳을 얹는다.
+ * 기준 시점 맞추기(S15P31A101-765)가 이 카메라를 판단했으면 옆 카메라 쌍 꺾쇠 대신 기준 시점 표시(십자선·목표 점·화살표·각도)를 얹고,
+ * 재사용 허용 오차 안이면 칸 테두리 초록, 새 맵 세팅 허용 오차 안이면 노랑으로 한다. 기준 사진 겹쳐 보기를 켜면 기준 사진을 반투명으로 겹친다.
  */
 function CameraTile({
   camera,
   attach,
   showBadge,
+  referenceUrl,
 }: {
   camera: CoverageCameraView;
   attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
   showBadge: boolean;
+  /** 겹쳐 볼 기준 사진(겹쳐 보기를 켰을 때만). */
+  referenceUrl?: string;
 }) {
   const phase = useCctvStore((s) => s.views[camera.id]?.phase);
   const videoWidth = useCctvStore((s) => s.views[camera.id]?.width);
@@ -155,15 +167,42 @@ function CameraTile({
   );
   const aspect = videoWidth && videoHeight ? videoWidth / videoHeight : TILE_ASPECT;
   const cues = showBadge && camera.status === 'OK' && camera.badge.kind !== 'DISCONNECTED';
+  const aim = showBadge ? camera.aim : null;
+  const aimKnown = aim !== null && aim.status !== 'UNKNOWN';
   return (
-    <div className={cn(TILE_FRAME, 'min-h-0 bg-surface-2')}>
+    <div
+      data-testid="setup-camera-tile"
+      data-aim={aim?.status}
+      className={cn(
+        TILE_FRAME,
+        'min-h-0 bg-surface-2',
+        aim?.aligned && 'after:ring-2 after:ring-ok',
+        aim?.status === 'NEAR' && 'after:ring-2 after:ring-delay',
+      )}
+    >
       <canvas
         ref={ref}
         aria-label={`${camera.label} 영상`}
         className={cn('size-full object-contain', !playing && DIMMED)}
       />
       {cues &&
+        !aimKnown &&
         camera.guides.map((guide) => <CameraCue key={guide.text} guide={guide} aspect={aspect} />)}
+      <AimOverlay aim={aim} aspect={aspect} imageUrl={showBadge ? referenceUrl : undefined} />
+      {aim && (
+        <span
+          data-testid="aim-text"
+          className={cn(
+            CAPTION,
+            'bottom-2 left-2 max-w-[calc(100%-1rem)]',
+            aim.aligned && 'text-ok',
+            aim.status === 'NEAR' && 'text-delay',
+          )}
+        >
+          {aim.setupReady && <CircleCheck aria-hidden className="size-3.5 flex-none" />}
+          <span>{aim.text}</span>
+        </span>
+      )}
       <span className={cn(CAPTION, 'top-2 left-2')}>
         <span className="font-semibold">{camera.label}</span>
         {showBadge && <CameraBadgeChip badge={camera.badge} />}
@@ -175,6 +214,24 @@ function CameraTile({
       </span>
     </div>
   );
+}
+
+type ReferenceUrls = Readonly<Record<string, string>> | undefined;
+
+/**
+ * 기준 시점 맞추기 기준 사진 주소를 받아 올려 준다(S15P31A101-765). 기준이 있을 때만 그린다: 영상 칸(미리보기 연결)을 다시 만들지 않으려고
+ * 주소 받기를 따로 둔 칸으로 뺐다.
+ */
+function AimReferenceProbe({
+  scene,
+  onUrls,
+}: {
+  scene: string;
+  onUrls: (loaded: { scene: string; urls: ReferenceUrls }) => void;
+}) {
+  const urls = useAimReferenceImages(scene);
+  useEffect(() => onUrls({ scene, urls }), [scene, urls, onUrls]);
+  return null;
 }
 
 /** 교실 모서리 위치대로 2×2 칸 순서(위 왼쪽 → 위 오른쪽 → 아래 왼쪽 → 아래 오른쪽). */
@@ -200,6 +257,13 @@ export function CameraVideoPanel({
 }) {
   const { localUrl, stompUrl } = readPreviewUrls();
   const { attach } = useCctvPreview(localUrl, stompUrl);
+  // 기준 시점 맞추기(-765): 1단계에서 기준이 있을 때만. 겹쳐 보기는 기본 끔(지금 영상이 흐려지고 옛 물건 배치가 섞여 보인다)
+  const aimScene = showBadges ? coverage.aimSceneVersion : null;
+  const [loadedUrls, setLoadedUrls] = useState<{ scene: string; urls: ReferenceUrls }>();
+  const referenceUrls =
+    aimScene !== null && loadedUrls?.scene === aimScene ? loadedUrls.urls : undefined;
+  const [overlay, setOverlay] = useState(false);
+  const probe = aimScene !== null && <AimReferenceProbe scene={aimScene} onUrls={setLoadedUrls} />;
   const body = (
     <div
       role="group"
@@ -207,17 +271,65 @@ export function CameraVideoPanel({
       className="grid size-full min-h-0 grid-cols-2 grid-rows-2 gap-3"
     >
       {camerasByCorner(coverage.cameras).map((camera) => (
-        <CameraTile key={camera.id} camera={camera} attach={attach} showBadge={showBadges} />
+        <CameraTile
+          key={camera.id}
+          camera={camera}
+          attach={attach}
+          showBadge={showBadges}
+          referenceUrl={overlay ? referenceUrls?.[camera.id] : undefined}
+        />
       ))}
     </div>
   );
-  if (title === null) return body;
+  if (title === null)
+    return (
+      <>
+        {probe}
+        {body}
+      </>
+    );
+  const allAligned = showBadges && coverage.aimAllAligned;
+  // 4칸 모두 노랑 이상이면(모두 초록은 아님) 「새 맵 세팅 시작해도 됨」
+  const allSetupReady = showBadges && !allAligned && coverage.aimAllSetupReady;
   return (
     <Card size="sm">
       <CardHeader>
         <CardTitle>
           <h2>{title}</h2>
         </CardTitle>
+        {(allAligned || allSetupReady || (aimScene !== null && referenceUrls !== undefined)) && (
+          <CardAction className="flex items-center gap-3">
+            {allAligned && (
+              <span
+                data-testid="aim-all-aligned"
+                className="flex items-center gap-1.5 text-sm font-medium text-ok"
+              >
+                <CircleCheck aria-hidden className="size-4" />
+                {AIM_ALL_ALIGNED_TEXT}
+              </span>
+            )}
+            {allSetupReady && (
+              <span
+                data-testid="aim-all-setup-ready"
+                className="flex items-center gap-1.5 text-sm font-medium text-delay"
+              >
+                <CircleCheck aria-hidden className="size-4" />
+                {AIM_ALL_SETUP_READY_TEXT}
+              </span>
+            )}
+            {aimScene !== null && referenceUrls !== undefined && (
+              <Button
+                size="sm"
+                variant={overlay ? 'secondary' : 'outline'}
+                aria-pressed={overlay}
+                onClick={() => setOverlay((on) => !on)}
+              >
+                {AIM_OVERLAY_LABEL}
+              </Button>
+            )}
+          </CardAction>
+        )}
+        {probe}
       </CardHeader>
       <CardContent className="min-h-0 flex-1">{body}</CardContent>
     </Card>

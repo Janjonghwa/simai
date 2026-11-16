@@ -111,6 +111,39 @@ export const stageAReadinessSchema = z.object({
 });
 export type StageAReadiness = z.infer<typeof stageAReadinessSchema>;
 
+// 카메라마다 자기 기준 시점에 맞추는 안내(coverage_guide 1.4.0 aim_check, S15P31A101-765). 기준 = 그 현장의 가장 최근 CALIBRATED 세팅의
+// 사람 지운 배경 사진. 각도는 「기준에 맞추려면 돌릴 양」(라디안, pan + 오른쪽·tilt + 위·roll + 카메라 뒤에서 볼 때 시계 방향).
+// 단계(헬퍼가 2라운드 히스테리시스를 적용해 보낸다): ALIGNED 재사용 가능 > NEAR 새 맵 세팅엔 충분 > MISALIGNED.
+export const aimStatusSchema = z.enum(['ALIGNED', 'NEAR', 'MISALIGNED', 'UNKNOWN']);
+export type AimStatus = z.infer<typeof aimStatusSchema>;
+
+export const aimCheckItemSchema = z.object({
+  camera_id: z.string().min(1),
+  status: aimStatusSchema,
+  reason: z.string().nullable(),
+  matches: z.number().int().nonnegative().nullable(),
+  inlier_ratio: z.number().min(0).max(1).nullable(),
+  pan_rad: z.number().nullable(),
+  tilt_rad: z.number().nullable(),
+  roll_rad: z.number().nullable(),
+  target_point: normalizedPointSchema.nullable(),
+  target_px: z.tuple([z.number(), z.number()]).nullable(),
+  arrow_rad: z.number().nullable(),
+});
+export type AimCheckItem = z.infer<typeof aimCheckItemSchema>;
+
+export const aimCheckSchema = z.object({
+  scene_version: z.string().min(1),
+  calibration_version: z.string().min(1),
+  max_aim_rad: z.number().positive(),
+  max_roll_rad: z.number().positive(),
+  max_setup_aim_rad: z.number().positive(),
+  max_setup_roll_rad: z.number().positive(),
+  hysteresis_rounds: z.number().int().positive(),
+  cameras: z.array(aimCheckItemSchema),
+});
+export type AimCheck = z.infer<typeof aimCheckSchema>;
+
 export const coverageGuidePayloadSchema = z.object({
   schema_version: z.string(),
   source_id: z.string().min(1),
@@ -125,6 +158,8 @@ export const coverageGuidePayloadSchema = z.object({
   guides: z.array(coverageGuideItemSchema),
   /** 1.3.0 부터. 옛 헬퍼(1.0.0~1.2.0)는 싣지 않는다(그때는 경고하지 않는다). */
   stage_a_readiness: stageAReadinessSchema.nullable().optional(),
+  /** 1.4.0 부터. 기준(가장 최근 CALIBRATED 세팅)이 없거나 옛 헬퍼면 없다(그때는 지금 화면 그대로). */
+  aim_check: aimCheckSchema.nullable().optional(),
 });
 export type CoverageGuidePayload = z.infer<typeof coverageGuidePayloadSchema>;
 

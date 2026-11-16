@@ -20,7 +20,7 @@ const ARROW: Record<Exclude<GuideDirection, 'NONE'>, { Icon: LucideIcon; edge: s
 const ARROW_SIZE = 34;
 
 /** 영상의 가로세로 비율로 칸 안에 영상이 그려지는 사각형을 잡는 바탕(칸 크기는 컨테이너 단위로 읽는다). */
-function videoBox(aspect: number) {
+export function videoBox(aspect: number) {
   return { width: `min(100cqw, ${aspect} * 100cqh)`, aspectRatio: aspect };
 }
 

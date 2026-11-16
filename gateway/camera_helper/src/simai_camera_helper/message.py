@@ -1,8 +1,9 @@
-"""JSON-compatible coverage_guide 1.0.0~1.3.0 messages; no images or keypoint arrays.
+"""JSON-compatible coverage_guide 1.0.0~1.4.0 messages; no images or keypoint arrays.
 
 1.1.0 (S15P31A101-712) adds the optional reuse_view_check summary (status/reason/counts only).
 1.2.0 (S15P31A101-714) adds reuse_view_checks: one summary per candidate map (EC2 reuse_references).
-1.3.0 (S15P31A101-761) adds stage_a_readiness: side-pair (A–B, B–C, C–D, D–A) readiness for setup Stage A."""
+1.3.0 (S15P31A101-761) adds stage_a_readiness: side-pair (A–B, B–C, C–D, D–A) readiness for setup Stage A.
+1.4.0 (S15P31A101-765) adds aim_check: per-camera correction angles toward its own reference view (EC2 aim_reference)."""
 
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ class CameraFrame:
 def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame],
                   pairs: list[PairMetrics], judge: CoverageJudge, *, ttl_ms: int = 10_000,
                   stale_ms: int = DEFAULT_STALE_MS, reuse_view_check: dict | None = None,
-                  reuse_view_checks: list[dict] | None = None, stage_a: bool = True) -> dict:
+                  reuse_view_checks: list[dict] | None = None, stage_a: bool = True,
+                  aim_check: dict | None = None) -> dict:
     if not source_id or computed_at_ms < 0 or ttl_ms <= 0:
         raise ValueError("source_id, nonnegative UTC milliseconds, and positive TTL are required")
     if len(cameras) != 4 or {c.camera_id for c in cameras} != set(CAMERAS):
@@ -65,4 +67,7 @@ def build_message(source_id: str, computed_at_ms: int, cameras: list[CameraFrame
     if stage_a:
         message["schema_version"] = "1.3.0"
         message["stage_a_readiness"] = judge.readiness.summary(judge.stage_a)
+    if aim_check is not None:
+        message["schema_version"] = "1.4.0"
+        message["aim_check"] = aim_check
     return message
