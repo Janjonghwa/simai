@@ -13,7 +13,11 @@
     (-462 정물 교차 확인은 `object_cross_checker` 확장 지점만 둔다)
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`). 비유한(NaN·Inf) 삼각측량은
     처리기 오류가 아니라 `VALIDATION_REJECTED` 로 끝내고, 메시지에 그 카메라 쌍(`nonfinite_pairs`)과 배경 표본이 적은 카메라를
-    원인 후보로 싣는다(S15P31A101-711). 배경 촬영 상태에 READY 아닌 카메라가 남으면 (a) 에서 기다리고 Stage A 로 넘기지 않는다
+    원인 후보로 싣는다(S15P31A101-711). 배경 촬영 상태에 READY 아닌 카메라가 남으면 (a) 에서 기다리고 Stage A 로 넘기지 않는다.
+    자동 재시도(S15P31A101-764): Stage A 검증 게이트의 기하 거절(미수렴·깊이 무효·쌍 악화) 또는 품질 게이트의 쌍 홀드아웃 미달이면
+    같은 배경 트랙·같은 MapAnything 초기값으로 기준 카메라만 다음 후보로 바꿔 최대 2번 더 푼다(뒤 단계 몫을 남길 때만). 통과한 시도 중
+    게이트 지표가 가장 좋은 것을 채택하고, 모두 실패하면 가장 나은 시도의 사유로 지금과 같이 끝낸다. 특징 부족·배경·바닥·높이·시간
+    사유는 다시 풀지 않는다(joint_ba_v2.run_stage_a_with_retry)
 (f) JOINT_BA_AND_VERIFY: (선택 `world_anchor`) 카메라가 움직이지 않았으면 새 보정을 이전 채택 보정의 World 로 옮긴 뒤
     새 `calibration_version` 보정 문서 등록(덮어쓰지 않음). 미리보기·굽기·map_cameras 는 이 문서를 기준으로 정렬한다(S15P31A101-584)
 (f') JOINT_BA_AND_VERIFY(65%): 「카메라 확인」(S15P31A101-646, 맵 앞으로 옮김 S15P31A101-687). 관리자의 「걷기 시작」을 기다렸다가
@@ -77,6 +81,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -101,16 +106,15 @@ from simai_ai.calibration.extrinsics.joint_ba_v2 import (
     HEIGHT_REVIEW_PASSED,
     HEIGHT_REVIEW_SETTLED,
     HEIGHT_REVIEW_TIMED_OUT,
-    QUALITY_FAILED,
     NonfiniteTriangulationError,
     ObjectScaleCrossChecker,
     StageAError,
     StageAResult,
+    StageARetryOutcome,
     compute_height_checks,
     compute_height_review,
-    evaluate_quality_gate,
     extract_tracks_from_backgrounds,
-    run_stage_a_rotation_ba,
+    run_stage_a_with_retry,
 )
 from simai_ai.calibration.world_frame.frame import (
     STATUS_OK,
@@ -328,6 +332,33 @@ def _background_hint(bundle: CleanBackgroundBundle, camera_ids: Sequence[str]) -
         if entry.get("state") != "READY" or (count is not None and count < BACKGROUND_THIN_FACTOR * required):
             thin.append(f"{cid} {entry.get('state')} {count}/{required}")
     return f"; 배경 표본이 적은 카메라: {', '.join(thin)}" if thin else ""
+
+
+# Stage A 자동 재시도(-764) 시도별 진행률 구간. 첫 시도가 대부분(48→57), 재시도는 남은 1%씩. 통과 뒤 59→61 은 그대로다
+_STAGE_A_ATTEMPT_PCT: tuple[tuple[float, float], ...] = ((48.0, 57.0), (57.0, 58.0), (58.0, 59.0))
+
+
+def _log_stage_a_attempts(job_id: str, run: StageARetryOutcome) -> str:
+    """시도별 요약을 로그에 남기고, 재시도했으면 실패 메시지 끝에 붙일 짧은 안내(카메라 ID 없음)를 돌려준다(-764).
+
+    계약 스냅샷(metrics.joint_ba·quality_gate)에는 시도별 자유 필드가 없어 채택(또는 실패 보고) 시도의 값만 싣는다."""
+    for attempt in run.attempts:
+        log.info("작업 %s Stage A 시도 %d/%d: %s", job_id, attempt.index, len(run.attempts),
+                 json.dumps(attempt.summary(), ensure_ascii=False, sort_keys=True, default=str))
+    chosen = run.reported
+    if run.adopted is not None:
+        if len(run.attempts) > 1:
+            log.info("작업 %s Stage A 자동 재시도: 시도 %d(기준 %s) 채택, 멈춤 %s", job_id, chosen.index,
+                     chosen.anchor_camera_id, run.stop_reason)
+        return ""
+    log.warning("작업 %s Stage A 시도 %d번 모두 실패(멈춤 %s): 시도 %d(기준 %s)의 사유로 끝낸다", job_id,
+                len(run.attempts), run.stop_reason, chosen.index, chosen.anchor_camera_id)
+    return f" (같은 배경으로 자동 재시도 {len(run.attempts) - 1}회도 실패)" if len(run.attempts) > 1 else ""
+
+
+def _with_note(message: str, note: str, limit: int = 480) -> str:
+    """실패 메시지를 limit 자로 자르되 재시도 안내(note)는 끝에 남긴다."""
+    return message[: limit - len(note)] + note if note else message[:limit]
 
 
 def _number(value: Any) -> float | None:
@@ -1164,6 +1195,22 @@ class SiteSetupHandler:
                 return None
             self._sleep(ctx.cancelled, min(self._hr_poll_s, remaining))
 
+    def _stage_a_retry_fits(self, ctx: JobContext, estimate_s: float, *, reuse: bool) -> bool:
+        """Stage A 자동 재시도(-764)를 하나 더 해도 뒤 단계 몫(카메라 확인 전체 + 맵 또는 REUSE 결과 몫)을 남기는가. 취소면 멈춘다.
+
+        estimate_s 는 지금까지 가장 오래 걸린 시도(초). 실행 상한이 없으면(시험·수동) 늘 허락한다."""
+        self._check_cancelled(ctx)
+        remaining = ctx.remaining_s()
+        if remaining is None:
+            return True
+        after = (self._cc_wait_s if self._camera_check is not None else 0.0) + (
+            self._cc_reuse_reserve_s if reuse else self._cc_reserve_s)
+        if remaining - after >= estimate_s:
+            return True
+        log.info("작업 %s: Stage A 재시도를 접는다(남은 %.0fs − 뒤 단계 몫 %.0fs < 시도 예상 %.1fs)",
+                 ctx.job_id, remaining, after, estimate_s)
+        return False
+
     def _publish_camera_frames(
         self, ctx: JobContext, setup_session_id: str, camera_ids: tuple[str, ...], bundle: CleanBackgroundBundle,
     ) -> list[CameraFrameRef]:
@@ -1501,6 +1548,7 @@ class SiteSetupHandler:
         t0 = self._perf()
         refining_snapshot = {**(self._last_payload or {}), "status": "JOINT_BA_AND_VERIFY"}
         self._emit_progress(ctx, refining_snapshot)
+        retry_note = ""
         try:
             tracks_source = (
                 bg_bundle.tracks_doc
@@ -1513,33 +1561,43 @@ class SiteSetupHandler:
                 )
             )
             self._subprogress(ctx, refining_snapshot, 40, 48)(1)
-            stage_a: StageAResult = run_stage_a_rotation_ba(
+            # 보정 절대 품질 게이트(-646)까지 한 시도로 보고, 기하 사유로 실패하면 같은 트랙·같은 초기값으로 기준 카메라만 바꿔
+            # 최대 2번 더 푼다(-764). 앞의 높이 빠른 확인에서 맞았거나 확인한 높이는 같은 높이 비교로 다시 거절하지 않는다(-690)
+            stage_a_run = run_stage_a_with_retry(
                 init_world.calibration_doc,
                 tracks_source,
+                quality_gate_config=self._quality_gate_config,
+                heights_settled=heights_settled,
+                may_retry=lambda estimate_s: self._stage_a_retry_fits(ctx, estimate_s, reuse=requested_reuse),
+                attempt_progress=lambda no: self._subprogress(ctx, refining_snapshot, *_STAGE_A_ATTEMPT_PCT[min(no, 3) - 1]),
+                perf_counter=self._perf,
                 camera_heights_m=camera_heights_m,
                 height_tolerance_cm=height_tolerance_cm,
                 created_at_ms=created_at_ms,
                 stage_target_seconds=self._stage_a_target_s,
                 object_cross_checker=self._object_cross_checker,
                 backgrounds_by_cam=bg_bundle.frames_by_cam if bg_bundle.frames_by_cam else None,
-                progress=self._subprogress(ctx, refining_snapshot, 48, 59),
             )
+            retry_note = _log_stage_a_attempts(ctx.job_id, stage_a_run)
+            chosen = stage_a_run.reported
+            if chosen.error is not None:
+                raise chosen.error
         except StageAError as exc:
             message = exc.message
             if exc.nonfinite_pairs:
                 message += _background_hint(bg_bundle, camera_ids)
-            raise JobFailed(exc.code, message[:480], retryable=exc.retryable) from exc
+            raise JobFailed(exc.code, _with_note(message, retry_note), retryable=exc.retryable) from exc
         except NonfiniteTriangulationError as exc:
             # Stage A 밖(특징 트랙 등)에서 올라온 비유한 삼각측량도 처리기 오류(HANDLER_ERROR)가 아니라 검증 실패로 끝낸다(-711)
             message = f"Stage A rejected: nonfinite triangulation, nonfinite_pairs={list(exc.pairs)}"
             raise JobFailed("VALIDATION_REJECTED", (message + _background_hint(bg_bundle, camera_ids))[:480],
                             retryable=False) from exc
 
-        # 보정 절대 품질 게이트(-646): 상대 악화만이 아니라 절대 상한·최소 홀드아웃·카메라 높이 차를 본다
-        # 앞의 높이 빠른 확인에서 맞았거나 관리자가 확인한 높이는 같은 높이 비교로 다시 거절하지 않는다(-690)
-        self._quality_gate = evaluate_quality_gate(stage_a.pair_metrics, stage_a.height_checks, self._quality_gate_config,
-                                                   heights_settled=heights_settled)
-        if self._quality_gate["verdict"] == QUALITY_FAILED:
+        assert chosen.result is not None and chosen.quality_gate is not None
+        stage_a: StageAResult = chosen.result
+        self._quality_gate = chosen.quality_gate
+        if stage_a_run.adopted is None:
+            # 모든 시도가 품질 게이트 미달: 가장 나은 시도의 지표·문제 쌍을 실은 스냅샷을 보내고 지금과 같은 사유로 끝낸다
             stage_seconds["JOINT_BA_AND_VERIFY"] = round(max(0.0, self._perf() - t0), 4)
             self._emit_progress(ctx, {
                 "setup_session_id": setup_session_id,
@@ -1551,7 +1609,8 @@ class SiteSetupHandler:
                 **mode_fields,
             })
             problems = "; ".join(p["message"] for p in self._quality_gate["problems"] if p["reason"] != "FEW_HOLDOUT")
-            raise JobFailed("VALIDATION_REJECTED", f"보정 품질 기준 미달: {problems}"[:480], retryable=False)
+            raise JobFailed("VALIDATION_REJECTED", _with_note(f"보정 품질 기준 미달: {problems}", retry_note),
+                            retryable=False)
 
         self._subprogress(ctx, refining_snapshot, 59, 61)(1)
 

@@ -1943,3 +1943,112 @@ def test_height_review_unit_rules() -> None:
     gate = evaluate_quality_gate(pair, heights, heights_settled=True)
     assert gate["cameras"]["a"] == {"height_diff_cm": -12.0, "verdict": "PASS", "reason": None}
     assert gate["cameras"]["b"]["reason"] == "HEIGHT_UNKNOWN" and gate["verdict"] == "FAILED"  # 기하 실패는 그대로
+
+
+# --------------------------------------------------------------------------- S15P31A101-764 Stage A 자동 재시도
+
+
+def _bundle(td: Any, cams: tuple[str, ...]) -> CleanBackgroundBundle:
+    return CleanBackgroundBundle("bundle-764", dict.fromkeys(cams, 100.0), tracks_doc=td)
+
+
+def _scripted_stage_a(monkeypatch: pytest.MonkeyPatch, failures: dict[int, Any]) -> list[str | None]:
+    """run_stage_a_rotation_ba 의 n 번째 호출(1부터)을 failures[n](StageAError 를 만드는 함수)로 바꾸고 나머지는 진짜로 푼다.
+
+    돌려주는 목록에 호출마다 받은 기준 카메라(자동이면 None)를 적는다."""
+    import simai_ai.calibration.extrinsics.joint_ba_v2 as jba
+
+    original = jba.run_stage_a_rotation_ba
+    anchors: list[str | None] = []
+
+    def fake(initial: Any, tracks: Any, **kw: Any) -> Any:
+        anchors.append(kw.get("anchor_camera_id"))
+        make = failures.get(len(anchors))
+        if make is None:
+            return original(initial, tracks, **kw)
+        anchor = kw.get("anchor_camera_id") or jba.stage_a_anchor_order(initial, tracks)[0]
+        raise make(anchor)
+
+    monkeypatch.setattr(jba, "run_stage_a_rotation_ba", fake)
+    return anchors
+
+
+def _worsened(pair: str) -> Any:
+    from simai_ai.calibration.extrinsics.joint_ba_v2 import StageAError
+
+    def make(anchor: str) -> StageAError:
+        return StageAError(
+            "VALIDATION_REJECTED",
+            f"Stage A rotation BA rejected by validation gate: converged=True, blockers=[], worsened_pairs=['{pair}']",
+            anchor_retryable=True, details={"anchor_camera_id": anchor, "converged": True, "worsened_pairs": [pair]})
+    return make
+
+
+def test_stage_a_auto_retry_adopts_the_second_attempt_after_a_rejection(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """11-16 로비: 거절마다 관리자가 처음부터 다시 눌렀다. 이제 같은 트랙으로 기준 카메라만 바꿔 다시 풀고 통과한 시도를 채택한다."""
+    anchors = _scripted_stage_a(monkeypatch, {1: _worsened("cam_D-cam_A"), 3: _worsened("cam_B-cam_C")})
+    handler, inp, published = _room_handler(_bundle)
+    ctx = JobContext("job-764-ok", "0192a6f0-7c1e-7b3a-9f2d-000000000764", "site_setup", 1, inp)
+    with caplog.at_level("INFO", logger="services.worker"):
+        result = handler(ctx)
+    assert len(anchors) == 3 and anchors[0] is None and None not in anchors[1:] and len(set(anchors[1:])) == 2
+    assert result["scene_version"] and len(published) == 1
+    joint = next(s for s in ctx.site_setup_history if s.get("calibration_version"))["metrics"]["joint_ba"]
+    assert joint["anchor_camera_id"] == anchors[1]  # 두 번째 시도(통과)의 기준 카메라
+    assert result["quality_gate"]["verdict"] in ("PASSED", "NEEDS_CHECK")
+    assert "Stage A 시도 1/3" in caplog.text and "Stage A 시도 3/3" in caplog.text and "시도 2(기준" in caplog.text
+    assert all(schema_errors(s, _PROGRESS) == [] for s in ctx.site_setup_history)
+    assert schema_errors(result, _RESULT) == []
+
+
+def test_stage_a_auto_retry_all_rejected_keeps_the_failure_code_and_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    anchors = _scripted_stage_a(monkeypatch, {n: _worsened("cam_D-cam_A") for n in (1, 2, 3)})
+    handler, inp, published = _room_handler(_bundle)
+    ctx = JobContext("job-764-fail", "0192a6f0-7c1e-7b3a-9f2d-000000000765", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert len(anchors) == 3 and published == []
+    assert exc.value.code == "VALIDATION_REJECTED" and exc.value.retryable is False
+    assert "worsened_pairs=['cam_D-cam_A']" in exc.value.message  # 화면이 이 쌍을 뽑아 보인다(setupFailures.ts)
+    assert exc.value.message.endswith("(같은 배경으로 자동 재시도 2회도 실패)") and len(exc.value.message) <= 480
+
+
+def test_stage_a_auto_retry_all_gate_failures_report_the_best_attempt_snapshot() -> None:
+    handler, inp, published = _room_handler(_bundle, quality_gate={"pair_holdout_p90_max_px": 1e-9})
+    ctx = JobContext("job-764-gate", "0192a6f0-7c1e-7b3a-9f2d-000000000766", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "VALIDATION_REJECTED" and exc.value.message.startswith("보정 품질 기준 미달:")
+    assert exc.value.message.endswith("(같은 배경으로 자동 재시도 2회도 실패)") and published == []
+    last = ctx.site_setup_history[-1]
+    assert last["quality_gate"]["verdict"] == "FAILED" and "calibration_version" not in last
+    assert schema_errors(last, _PROGRESS) == []
+
+
+def test_stage_a_auto_retry_stops_when_the_later_stages_need_the_remaining_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """실행 상한까지 남은 시간이 맵 몫(600 s)보다 적으면 재시도하지 않는다(뒤 단계 몫을 깎지 않는다)."""
+    import time as _time
+
+    anchors = _scripted_stage_a(monkeypatch, {n: _worsened("cam_D-cam_A") for n in (1, 2, 3)})
+    handler, inp, _ = _room_handler(_bundle)
+    ctx = JobContext("job-764-time", "0192a6f0-7c1e-7b3a-9f2d-000000000767", "site_setup", 1, inp,
+                     deadline=_time.monotonic() + 599.0)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert anchors == [None]
+    assert exc.value.code == "VALIDATION_REJECTED" and "자동 재시도" not in exc.value.message
+
+
+def test_stage_a_auto_retry_does_not_retry_insufficient_features(monkeypatch: pytest.MonkeyPatch) -> None:
+    from simai_ai.calibration.extrinsics.joint_ba_v2 import StageAError
+
+    anchors = _scripted_stage_a(monkeypatch, {
+        1: lambda anchor: StageAError("INSUFFICIENT_FEATURES", "Insufficient total training tracks: 3")})
+    handler, inp, _ = _room_handler(_bundle)
+    ctx = JobContext("job-764-feat", "0192a6f0-7c1e-7b3a-9f2d-000000000768", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert anchors == [None]
+    assert exc.value.code == "INSUFFICIENT_FEATURES" and exc.value.message == "Insufficient total training tracks: 3"
