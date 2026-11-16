@@ -201,9 +201,11 @@ RUN set -eu; \
 # - 단계는 simai-base·잠금·코드와 무관하다(따로 고정한 WEIGHTS_IMAGE + 받기 도구 bind). 이 RUN 줄(원본·해시)이 바뀔 때만 다시 받는다.
 # - HF 토큰은 BuildKit 비밀 hf_token(/run/secrets/hf_token, bake 의 secret)으로만 받는다. ARG·ENV·층·이력에 남지 않는다.
 # - unified 에는 COPY --link 로 넣는다: 앞 층(잠금·apt)이 바뀌어도 이 층은 다시 만들지 않고 같은 다이제스트라 레지스트리에 다시 올리지 않는다.
+# - 단계 출력은 이미지 안 경로 그대로(/out/opt/simai/baked/…)이고 opt/·opt/simai/ 까지 mtime 0 이다. COPY 대상을 / 로 둬야 BuildKit 이 부모 폴더를
+#   복사한 시각으로 만들지 않는다(대상이 /opt/simai/baked/ 이면 캐시를 잃고 다시 복사할 때마다 opt/·opt/simai/ 시각만 달라 층 다이제스트가 바뀌었다, S15P31A101-768).
 FROM ${WEIGHTS_IMAGE} AS weights-yolo
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/yolo/yolo26x-pose.pt 08ed9e01d22a6f248b04f2f9992016aca9a32250b9ab57057d886a09d026700d \
         https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-pose.pt \
       weights/yolo/yolo26x-seg.pt 92b3de0065766a17180d6219858717dc9d03cdce8a3ca9576c97fd75aabb64f3 \
@@ -212,7 +214,7 @@ RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weig
 # 아바타 SAM-3D-Body(HF 승인제: 승인 계정 토큰 필요) 체크포인트 2.1GB + MHR 자산 0.7GB
 FROM ${WEIGHTS_IMAGE} AS weights-sam3d
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py --mount=type=secret,id=hf_token \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/sam-3d-body-dinov3/model.ckpt b5a2f9d305dd02626b967aa2e86021fba07065df66ce7a7e00ffb9664f150abf \
         hf:facebook/sam-3d-body-dinov3@11aaa346c7204874a1cbafe3d39a979080b2c55a:model.ckpt \
       weights/sam-3d-body-dinov3/assets/mhr_model.pt 352e271a6c42729c68554ceaea0c955e866970160c31e35506d782dc0f7377bc \
@@ -221,7 +223,7 @@ RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weig
 # 현장 세팅 MapAnything(워커 기본 폴더 weights/map-anything 판만. apache 판은 시연 경로가 읽지 않아 굽지 않는다) 4.9GB
 FROM ${WEIGHTS_IMAGE} AS weights-mapanything
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py --mount=type=secret,id=hf_token \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/map-anything/model.safetensors 981f060c64664dff3272b5f5a823d350abe71a2f144444db4cfc325f3ed5a3a0 \
         hf:facebook/map-anything@a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa:model.safetensors \
       weights/map-anything/config.json 65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5 \
@@ -230,7 +232,7 @@ RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weig
 # 최종 맵(-539) WorldMirror 2.0 깊이 5.1GB
 FROM ${WEIGHTS_IMAGE} AS weights-wm2
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py --mount=type=secret,id=hf_token \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/hy-world-2.0/HY-WorldMirror-2.0/model.safetensors 9fff06539d3d9e85338d7de1ffb5afffb7739fa5bf4d62b4b7c319b5ecdde54f \
         hf:tencent/HY-World-2.0@d78a16c91c7a56488894a1c8de4f5c7cc28aa8b0:HY-WorldMirror-2.0/model.safetensors \
       weights/hy-world-2.0/HY-WorldMirror-2.0/config.json 5e40150577ef7d38e24d8d079a7126568a0ec9816dbfc61ebc99c67faf430ed9 \
@@ -239,27 +241,27 @@ RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weig
 # 최종 맵(-539) 빈칸 채움 LaMa 0.2GB
 FROM ${WEIGHTS_IMAGE} AS weights-lama
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/lama/big-lama.pt 7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c \
         https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt
 
 # PPE 안전모·조끼 검출(HF 비공개 저장소: 읽기 권한 계정 토큰 필요) 약 0.1GB
 FROM ${WEIGHTS_IMAGE} AS weights-ppe
 RUN --mount=type=bind,source=deploy/scripts/bake_weight.py,target=/tmp/bake_weight.py --mount=type=secret,id=hf_token \
-    python /tmp/bake_weight.py /out \
+    python /tmp/bake_weight.py /out/opt/simai/baked \
       weights/ppe/T1-v4-ALL-seed20261021-epoch08.pt e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c \
         hf:simai-s15p31a101/simai-ppe-helmet-vest@36e3ebb10d44c38b46ab430d769b8d4334bdb5f4:T1-v4-ALL-seed20261021-epoch08.pt
 
 # ---------------------------------------------------------------- unified 타깃
 FROM unified-deps AS unified
 # 시연 가중치(위 weights-* 단계, S15P31A101-577). simai-bootstrap 이 $SIMAI_ROOT/<path> 가 없으면 이 사본을 sha256 확인 뒤 심볼릭 링크로 쓴다.
-# 코드·apt 층보다 앞에 두고 --link 로 넣어, 가중치 해시가 바뀔 때만 새 층이 된다
-COPY --link --from=weights-yolo /out/ /opt/simai/baked/
-COPY --link --from=weights-sam3d /out/ /opt/simai/baked/
-COPY --link --from=weights-mapanything /out/ /opt/simai/baked/
-COPY --link --from=weights-wm2 /out/ /opt/simai/baked/
-COPY --link --from=weights-lama /out/ /opt/simai/baked/
-COPY --link --from=weights-ppe /out/ /opt/simai/baked/
+# 코드·apt 층보다 앞에 두고 --link 로 넣어, 가중치 해시가 바뀔 때만 새 층이 된다. 대상은 / 다(부모 폴더 시각도 단계 출력의 0 그대로, S15P31A101-768)
+COPY --link --from=weights-yolo /out/ /
+COPY --link --from=weights-sam3d /out/ /
+COPY --link --from=weights-mapanything /out/ /
+COPY --link --from=weights-wm2 /out/ /
+COPY --link --from=weights-lama /out/ /
+COPY --link --from=weights-ppe /out/ /
 # CPU 텍스처 굽기 실행 파일만 복사한다. 빌드 도구는 최종 이미지에 남기지 않는다. libusb 는 open3d import 에 필요하다(-366).
 RUN apt-get -o Acquire::Retries=8 update \
  && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 libusb-1.0-0 procps \

@@ -8,7 +8,9 @@
   토큰은 출력·파일·층에 남기지 않는다. 비밀이 없으면 익명으로 받는다(승인제·비공개 저장소는 401·403 으로 빌드가 멈춘다).
 - 받은 파일은 <출력 폴더>/<경로> 에 두고, 옆에 <경로>.sha256(해시 한 줄)을 쓴다. simai-bootstrap 이 그 값을 목록 해시와 먼저 대조한다.
   해시가 다르면 받은 것을 지우고 빌드를 멈춘다.
-- 출력 폴더 안 파일·폴더의 mtime 은 0 으로 둔다: 캐시를 잃어 다시 받아도 내용이 같으면 같은 층이 되게(같은 다이제스트 = 다시 올리지 않음).
+- 출력 폴더 안 파일·폴더와 출력 폴더, 이 도구가 새로 만든 그 조상 폴더의 mtime 은 0 으로 둔다: 캐시를 잃어 다시 받거나 다시 복사해도
+  내용이 같으면 같은 층이 되게(같은 다이제스트 = 다시 올리지 않음). Dockerfile 은 출력 폴더를 이미지 안 경로 그대로(/out/opt/simai/baked) 두고
+  `COPY --link … /out/ /` 로 넣는다. 그래야 BuildKit 이 부모 폴더(opt/·opt/simai/)를 복사 시각으로 만들지 않는다(S15P31A101-768).
 표준 라이브러리만 쓴다(빌드 단계 이미지는 python slim).
 """
 
@@ -76,6 +78,7 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 64
     out = Path(argv[0])
+    made = [p for p in out.parents if not p.exists()]  # 이 도구가 만들 조상 폴더(안쪽부터)
     for i in range(1, len(argv), 3):
         rel, want, src = argv[i], argv[i + 1].lower(), argv[i + 2]
         if Path(rel).is_absolute() or ".." in Path(rel).parts or len(want) != 64:
@@ -83,7 +86,8 @@ def main(argv: list[str]) -> int:
         fetch(src, out / rel, want)
     for p in sorted(out.rglob("*"), reverse=True):  # 파일 먼저, 폴더는 안쪽부터(폴더 mtime 을 나중에 맞춘다)
         os.utime(p, (0, 0))
-    os.utime(out, (0, 0))
+    for p in (out, *made):  # 출력 폴더, 그다음 새로 만든 조상(안쪽부터)
+        os.utime(p, (0, 0))
     return 0
 
 
