@@ -9,6 +9,7 @@ import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SpecVersion;
 import com.ssafy.simai.domain.calibration.CalibrationViews;
 import com.ssafy.simai.domain.tier0.Tier0Paths;
+import com.ssafy.simai.domain.tier0.i1.I1ConnectionRegistry;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import java.net.URI;
@@ -26,6 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,6 +83,9 @@ class ConfigBundleIntegrationTest {
     /** 기본은 실제 동작. 묶음 만들기 실패 시험만 지금 보정 버전을 바꾼다(시험마다 초기화) */
     @MockitoSpyBean
     CalibrationViews calibrations;
+
+    @Autowired
+    I1ConnectionRegistry i1Connections;
 
     private final HttpClient http = HttpClient.newHttpClient();
     private final String tag = UUID.randomUUID().toString().substring(0, 8);
@@ -878,11 +883,18 @@ class ConfigBundleIntegrationTest {
                 received.add(MAPPER.readTree(message.getPayload()));
             }
         }, headers, URI.create("ws://localhost:" + port + Tier0Paths.I1)).get(5, TimeUnit.SECONDS);
-        return new Tier0(session, received);
+        return new Tier0(session, received,
+                () -> i1Connections.all().stream().noneMatch(c -> gatewayId.equals(c.gatewayId())));
     }
 
-    /** Tier 0 흉내. EC2 가 보낸 메시지를 모은다 */
-    private record Tier0(WebSocketSession session, BlockingQueue<JsonNode> received) implements AutoCloseable {
+    /**
+     * Tier 0 흉내. EC2 가 보낸 메시지를 모은다. 닫을 때는 EC2 가 이 연결을 닫았다고 볼 때(afterConnectionClosed)까지 기다린다.
+     * EC2 는 한 연결의 프레임을 차례로 동기 처리하므로, 그때는 앞서 보낸 메시지(예: 같은 msg_id 로 다시 보낸 config_ack)의
+     * 처리가 끝났다. 기다리지 않으면 늦게 처리된 중복 ack 가 정리 단계가 config_ack 를 지운 뒤 다시 들어가
+     * config_bundle 삭제가 FK 위반으로 깨진다(S15P31A101-775, Jenkins #1106).
+     */
+    private record Tier0(WebSocketSession session, BlockingQueue<JsonNode> received, BooleanSupplier serverClosed)
+            implements AutoCloseable {
 
         void send(JsonNode message) throws Exception {
             session.sendMessage(new TextMessage(MAPPER.writeValueAsString(message)));
@@ -907,6 +919,13 @@ class ConfigBundleIntegrationTest {
         @Override
         public void close() throws Exception {
             session.close();
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (!serverClosed.getAsBoolean()) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("EC2 가 I1 연결 닫기를 처리하지 않았다");
+                }
+                Thread.sleep(20);
+            }
         }
     }
 }
