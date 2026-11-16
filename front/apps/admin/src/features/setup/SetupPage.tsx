@@ -235,7 +235,8 @@ function SetupWorkPage({
   const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
   // 위험 확인창이 열린 동안 보이는 쌍 이름(열 때 붙잡아 둔다: 열린 사이 안내가 바뀌어도 문장이 비지 않는다). 닫혀 있으면 null.
   const [riskConfirmPairs, setRiskConfirmPairs] = useState<readonly string[] | null>(null);
-  // 1단계에서 사용자가 고른 맵 방식(S15P31A101-689). 고르지 않았으면 null 이고 지금 세션의 요청 방식, 없으면 이전 맵 재사용이 기본이다.
+  // 1단계에서 사용자가 고른 맵 방식(S15P31A101-689). 고르지 않았으면 null 이고 지금 세션의 요청 방식, 없으면 새 맵 만들기가 기본이다
+  // (S15P31A101-762: 카메라 각도가 바뀌어 있을 위험이 높아 이전 맵 재사용은 관리자가 고를 때만 쓴다).
   const [pickedMode, setPickedMode] = useState<SetupMode | null>(null);
   // 「이전 맵 재사용」 안에서 사용자가 고른 맵(S15P31A101-714). 고르지 않았거나 그 맵이 어긋나면 서버 추천 맵이다.
   const [pickedMapId, setPickedMapId] = useState<string | null>(null);
@@ -527,7 +528,7 @@ function SetupWorkPage({
 
   // 「맵」 방식(S15P31A101-689). 1단계에서는 이전 맵 재사용을 고를 수 있는지 늘 받아 둔다(세션 유무·실패·취소와 무관)
   const reuse = useReuseChoice(stage === 0, cameraIds, helperLost);
-  const wantedMode: SetupMode = pickedMode ?? currentSession?.requested_mode ?? 'REUSE';
+  const wantedMode: SetupMode = pickedMode ?? currentSession?.requested_mode ?? 'NEW';
   // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
   const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
   const modePending = mode === 'REUSE' && reuse.checking;

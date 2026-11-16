@@ -5,13 +5,14 @@ import { cn } from '@simai/ui/lib/utils';
 import type { ReactNode } from 'react';
 
 // 1단계 「맵」 방식 고르기(S15P31A101-689). 예전 「3D 공간」 창(세션이 없을 때만 뜸) 대신 1단계 안에 늘 둔다: 실패·취소한 시도가 있어도,
-// 새로고침 뒤에도 같은 자리에서 고른다. 이전 맵 재사용이 기본이고, 쓸 수 없으면 꺼서 이유를 두 줄(무엇이/어떻게)로 보인다.
-// S15P31A101-714: 재사용 안에서 최근 완료 맵을 날짜와 함께 고른다. 기본은 지금 카메라와 가장 잘 맞는 맵(추천)이고, 맞지 않는 맵은 이유와 함께 꺼진다.
+// 새로고침 뒤에도 같은 자리에서 고른다. 새 맵 만들기가 기본이고(S15P31A101-762: 카메라 각도가 바뀌어 있을 위험이 높아 재사용은 고를 때만 쓴다),
+// 이전 맵 재사용을 쓸 수 없으면 꺼서 이유를 두 줄(무엇이/어떻게)로 보인다.
+// S15P31A101-714: 재사용 안에서 최근 완료 맵을 날짜와 함께 고른다. 재사용을 고르면 지금 카메라와 가장 잘 맞는 맵(추천)이 먼저 골라지고, 맞지 않는 맵은 이유와 함께 꺼진다.
 // 재사용은 그 맵을 만들 때의 보정·카메라 높이·구역을 그대로 쓴다(입력한 높이는 쓰지 않는다).
 
-/** 재사용은 카메라 자리만 확인하고 그 맵을 그대로 쓴다(사용자 기준 약 1~2분), 새 맵은 굽기까지 약 13분(15차 실측). */
-const REUSE_ETA = '기본 · 약 1~2분';
-const NEW_ETA = '약 13분';
+/** 새 맵은 굽기까지 약 13분(15차 실측), 재사용은 카메라 자리만 확인하고 그 맵을 그대로 쓴다(사용자 기준 약 1~2분). */
+const NEW_ETA = '기본 · 약 13분';
+const REUSE_ETA = '약 1~2분';
 
 const OPTION =
   'flex min-h-16 flex-1 flex-col items-start justify-center gap-1 rounded-lg border px-3.5 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed';
@@ -133,6 +134,13 @@ export function SetupModeChoice({
       <CardContent className="flex flex-col gap-2">
         <div role="radiogroup" aria-label="맵 방식" className="flex gap-2">
           <Option
+            label="새 맵 만들기"
+            eta={NEW_ETA}
+            selected={mode === 'NEW'}
+            disabled={false}
+            onSelect={() => onChange('NEW')}
+          />
+          <Option
             label="이전 맵 재사용"
             eta={reuse.checking ? '확인 중' : REUSE_ETA}
             selected={mode === 'REUSE'}
@@ -149,13 +157,6 @@ export function SetupModeChoice({
               <span className="text-xs text-muted-foreground">{reuse.note}</span>
             )}
           </Option>
-          <Option
-            label="새 맵 만들기"
-            eta={NEW_ETA}
-            selected={mode === 'NEW'}
-            disabled={false}
-            onSelect={() => onChange('NEW')}
-          />
         </div>
         {reuse.maps.length > 0 && (
           <>
