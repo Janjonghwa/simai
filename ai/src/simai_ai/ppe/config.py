@@ -14,7 +14,8 @@ from dataclasses import dataclass
 # 0.5.0: ID 초기화 사유는 초기화 칸까지만 남기고 다음 칸부터 칸 사유로 바꾼다. 상태·수치는 0.4.0 과 같다(S15P31A101-729)
 # 0.6.0: 두 어깨가 보이면 머리 폭 하한 = 어깨 폭 × 0.6(head_min_scale_shoulder_ratio, S15P31A101-737)
 # 0.7.0: 착용·미착용 카메라가 섞인 칸은 미착용 카메라가 2대 이상일 때만 충돌, 1대면 착용 칸(conflict_min_not_worn_cameras, S15P31A101-766)
-POLICY_VERSION = "ppe-policy-0.7.0"
+# 0.8.0: ID 불확실한 사람의 로컬 ID 차지는 다툼으로 두고 확실해지거나 다른 ID 에 병합될 때만 초기화(uncertain_claim_contests, S15P31A101-769)
+POLICY_VERSION = "ppe-policy-0.8.0"
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,10 @@ class PpeConfig:
     bin_close_grace_ms: int = 100
     expiry_ms: int = 10_000
     mapping_ttl_ms: int = 2_000                 # 로컬 ID 주인 기억(World Track key_ttl 2 s 와 같게)
+    # ID 가 불확실한 사람이 다른 ID 의 로컬 ID 를 가져가면 바로 주인 변경으로 초기화하지 않고 다툼으로 두었다가, 그 사람이
+    # 쥔 채로 확실해지거나 다른 ID 에 병합될 때만 초기화한다. False 면 0.7.0 까지처럼 바로 초기화한다(S15P31A101-769,
+    # 2026-11-16 로비: 주인 변경 초기화 14회 중 13회가 불확실 임시 ID 탄생 ±1초)
+    uncertain_claim_contests: bool = True
     track_retention_ms: int = 30_000
     evidence_max_items: int = 4
     # 모호한 근거가 있는 칸은 미착용으로 세지 않는다(착용 쪽으로 기우는 초기값. 엉뚱한 미착용 경보 vs 놓친 미착용 결정 전)
