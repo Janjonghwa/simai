@@ -3,6 +3,7 @@ import { cctvPeople, type CctvProjector } from '@/features/cctv/cctvMockView';
 import { formatTime } from '@/features/events/events';
 import { replayErrorLine } from '@/features/history/replay';
 import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/replayIndex';
+import { preloadAt } from '@/features/history/replaySegments';
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
 import type { Span, VideoSegment } from '@/features/history/types';
 import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
@@ -58,6 +59,7 @@ function ReplayCctv({
     [],
   );
   const active = useActiveSegments(replay, playable);
+  const upcoming = useActiveSegments(replay, playable, preloadAt);
   const pending = useReplayPending(replay, index);
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
@@ -66,7 +68,7 @@ function ReplayCctv({
   );
   const wall =
     active.length > 0 ? (
-      <ReplayVideoWall segments={active} replay={replay} onFailed={onFailed} />
+      <ReplayVideoWall segments={active} upcoming={upcoming} replay={replay} onFailed={onFailed} />
     ) : pending ? (
       <Notice>{LOADING_LINE}</Notice>
     ) : (

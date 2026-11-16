@@ -2,8 +2,13 @@ import {
   activeSegments,
   DRIFT_S,
   PAUSED_DRIFT_S,
+  PRELOAD_LEAD_MS,
+  preloadAt,
+  SEGMENT_GAP_MS,
   segmentOffsetS,
+  syncTileVideo,
   syncVideo,
+  tileVideos,
   type VideoLike,
 } from '@/features/history/replaySegments';
 import { videoSegmentsSchema, type VideoSegment } from '@/features/history/types';
@@ -34,7 +39,7 @@ describe('videoSegmentsSchema', () => {
 });
 
 describe('activeSegments', () => {
-  it('재생 시각을 덮는 조각만 카메라 이름순으로 준다(끝 시각은 덮지 않는다)', () => {
+  it('재생 시각을 덮는 조각만 카메라 이름순으로 준다(끝 시각 뒤 짧은 틈까지 덮는다)', () => {
     const segments = [
       segment({ segment_id: 'b', camera_id: 'cam_B' }),
       segment({ segment_id: 'a', camera_id: 'cam_A' }),
@@ -47,8 +52,34 @@ describe('activeSegments', () => {
     ];
     expect(activeSegments(segments, T + 10_000).map((s) => s.segment_id)).toEqual(['a', 'b']);
     expect(activeSegments(segments, T).map((s) => s.segment_id)).toEqual(['a', 'b']);
-    expect(activeSegments(segments, T + 60_000).map((s) => s.segment_id)).toEqual(['later']);
+    expect(activeSegments(segments, T + 60_000).map((s) => s.segment_id)).toEqual([
+      'a',
+      'b',
+      'later',
+    ]);
+    expect(activeSegments(segments, T + 60_000 + SEGMENT_GAP_MS).map((s) => s.segment_id)).toEqual([
+      'later',
+    ]);
     expect(activeSegments(segments, T - 1)).toEqual([]);
+  });
+
+  it('조각 사이 짧은 틈(녹화 경계 1~17 ms)에서는 앞 조각을 그대로 두어 칸이 빠지지 않는다', () => {
+    const segments = [
+      segment({ segment_id: 'p1', segment_end_capture_ms: T + 30_000 }),
+      segment({
+        segment_id: 'p2',
+        segment_start_capture_ms: T + 30_017,
+        segment_end_capture_ms: T + 60_000,
+      }),
+    ];
+    expect(activeSegments(segments, T + 30_005).map((s) => s.segment_id)).toEqual(['p1']);
+    expect(activeSegments(segments, T + 30_017).map((s) => s.segment_id)).toEqual(['p2']);
+  });
+
+  it('틈이 SEGMENT_GAP_MS 이상이면 그 동안은 덮지 않는다', () => {
+    const segments = [segment({ segment_end_capture_ms: T + 30_000 })];
+    expect(activeSegments(segments, T + 30_000 + SEGMENT_GAP_MS - 1)).toHaveLength(1);
+    expect(activeSegments(segments, T + 30_000 + SEGMENT_GAP_MS)).toEqual([]);
   });
 
   it('1분 조각이 이어지면 경계에서 다음 조각으로 넘어간다', () => {
@@ -82,16 +113,18 @@ describe('activeSegments', () => {
   });
 });
 
-describe('syncVideo', () => {
-  const video = (change: Partial<VideoLike> = {}): VideoLike => ({
-    currentTime: 0,
-    playbackRate: 1,
-    paused: true,
-    play: vi.fn(() => Promise.resolve()),
-    pause: vi.fn(),
-    ...change,
-  });
+const video = (change: Partial<VideoLike> = {}): VideoLike => ({
+  currentTime: 0,
+  duration: 60,
+  ended: false,
+  playbackRate: 1,
+  paused: true,
+  play: vi.fn(() => Promise.resolve()),
+  pause: vi.fn(),
+  ...change,
+});
 
+describe('syncVideo', () => {
   it('조각 안의 위치는 재생 시각에서 조각 시작을 뺀 값이다', () => {
     expect(segmentOffsetS(segment(), T + 12_500)).toBe(12.5);
   });
@@ -163,5 +196,89 @@ describe('syncVideo', () => {
     syncVideo(v, segment(), { playhead: null, playing: true, speed: 2 });
     expect(v.currentTime).toBe(3);
     expect(v.play).not.toHaveBeenCalled();
+  });
+
+  it('재생 시각이 영상 끝을 넘으면 마지막 프레임에 두고, 끝난 영상은 다시 틀지 않는다(처음 장면이 번쩍이지 않게)', () => {
+    const v = video({ currentTime: 29.96, duration: 29.96, ended: true });
+    syncVideo(v, segment(), { playhead: T + 30_010, playing: true, speed: 1 });
+    expect(v.currentTime).toBe(29.96);
+    expect(v.play).not.toHaveBeenCalled();
+  });
+
+  it('메타데이터 전(길이 NaN)이면 재생 시각 그대로 맞춘다', () => {
+    const v = video({ duration: Number.NaN });
+    syncVideo(v, segment(), { playhead: T + 12_000, playing: false, speed: 1 });
+    expect(v.currentTime).toBe(12);
+  });
+});
+
+describe('preloadAt', () => {
+  it('재생 시각에서 PRELOAD_LEAD_MS 앞, 배속이면 그만큼 더 앞이다(느린 배속은 줄이지 않는다)', () => {
+    expect(preloadAt({ playhead: T, speed: 1 })).toBe(T + PRELOAD_LEAD_MS);
+    expect(preloadAt({ playhead: T, speed: 4 })).toBe(T + PRELOAD_LEAD_MS * 4);
+    expect(preloadAt({ playhead: T, speed: 0.5 })).toBe(T + PRELOAD_LEAD_MS);
+    expect(preloadAt({ playhead: null, speed: 1 })).toBeNull();
+  });
+});
+
+describe('syncTileVideo', () => {
+  const status = { playhead: T + 10_000, playing: true, speed: 2 };
+
+  it('live 는 재생 시각을 따른다', () => {
+    const v = video();
+    syncTileVideo(v, segment(), 'live', status);
+    expect(v.currentTime).toBe(10);
+    expect(v.play).toHaveBeenCalledTimes(1);
+  });
+
+  it('standby 는 조각 시작에 멈춰 두고 배속만 맞춘다', () => {
+    const v = video({ currentTime: 3 });
+    syncTileVideo(v, segment({ segment_start_capture_ms: T + 20_000 }), 'standby', status);
+    expect(v.currentTime).toBe(0);
+    expect(v.playbackRate).toBe(2);
+    expect(v.play).not.toHaveBeenCalled();
+  });
+
+  it('held 는 멈춘 채 둔다', () => {
+    const v = video({ currentTime: 29.9, paused: false });
+    syncTileVideo(v, segment(), 'held', status);
+    expect(v.pause).toHaveBeenCalledTimes(1);
+    expect(v.currentTime).toBe(29.9);
+  });
+});
+
+describe('tileVideos', () => {
+  const s1 = segment({ segment_id: 's1', segment_end_capture_ms: T + 30_000 });
+  const s2 = segment({
+    segment_id: 's2',
+    segment_start_capture_ms: T + 30_000,
+    segment_end_capture_ms: T + 60_000,
+  });
+  const s3 = segment({
+    segment_id: 's3',
+    segment_start_capture_ms: T + 60_000,
+    segment_end_capture_ms: T + 90_000,
+  });
+  const roles = (result: ReturnType<typeof tileVideos>) =>
+    result.videos.map((v) => `${v.segment.segment_id}:${v.role}`);
+
+  it('지금 조각이 첫 화면을 내기 전에는 마지막으로 보이던 조각을 보인다', () => {
+    const result = tileVideos(s2, s1, undefined, new Set(['s1']));
+    expect(result.shownId).toBe('s1');
+    expect(roles(result)).toEqual(['s1:held', 's2:live']);
+  });
+
+  it('지금 조각이 첫 화면을 내면 그 조각을 보이고, 곧 덮을 조각은 시작 시각 순으로 미리 올린다', () => {
+    const result = tileVideos(s2, s1, s3, new Set(['s1', 's2']));
+    expect(result.shownId).toBe('s2');
+    expect(roles(result)).toEqual(['s1:held', 's2:live', 's3:standby']);
+  });
+
+  it('같은 조각은 하나만 둔다', () => {
+    expect(roles(tileVideos(s1, s1, s1, new Set(['s1'])))).toEqual(['s1:live']);
+  });
+
+  it('보인 적 없고 첫 화면도 아직이면 보일 조각이 없다', () => {
+    expect(tileVideos(s1, null, s2, new Set()).shownId).toBeNull();
   });
 });

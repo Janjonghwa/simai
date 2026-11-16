@@ -2,7 +2,7 @@ import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { requestVideoSegments } from '@/features/history/api';
 import { activeSegments } from '@/features/history/replaySegments';
 import type { Span, VideoSegment } from '@/features/history/types';
-import type { ReplaySpatialSource } from '@/features/viewer3d';
+import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { useQuery } from '@tanstack/react-query';
@@ -103,20 +103,23 @@ export function useReplaySegments(range: Span) {
   return { segments, message, refresh: query.refetch, canRefresh: admin };
 }
 
+const playheadOf = (status: ReplayStatus) => status.playhead;
+
 /**
  * 지금 재생 시각을 덮는 조각(카메라별). 재생 시각은 0.1초마다 바뀌지만 덮는 조각이 바뀔 때만 다시 그린다.
- * 같은 조각 집합이면 같은 배열이다.
+ * 같은 조각 집합이면 같은 배열이다. at 을 주면 재생 상태에서 고른 다른 기록 시각을 덮는 조각이다(예: 미리 올릴 조각, preloadAt).
  */
 export function useActiveSegments(
   replay: ReplaySpatialSource | null,
   segments: readonly VideoSegment[],
+  at: (status: ReplayStatus) => number | null = playheadOf,
 ): VideoSegment[] {
   const subscribe = useCallback(
     (listener: () => void) => (replay ? replay.subscribeStatus(listener) : () => {}),
     [replay],
   );
   const key = useSyncExternalStore(subscribe, () =>
-    activeSegments(segments, replay?.getStatus().playhead ?? null)
+    activeSegments(segments, replay ? at(replay.getStatus()) : null)
       .map((segment) => segment.segment_id)
       .join(','),
   );
