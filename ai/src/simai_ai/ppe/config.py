@@ -13,7 +13,8 @@ from dataclasses import dataclass
 # 0.4.0: 순수 병합(aliases 추가·분할 아님)이면 차수가 올라도 누적을 잇고 흡수 ID 칸을 넘겨받는다(S15P31A101-661)
 # 0.5.0: ID 초기화 사유는 초기화 칸까지만 남기고 다음 칸부터 칸 사유로 바꾼다. 상태·수치는 0.4.0 과 같다(S15P31A101-729)
 # 0.6.0: 두 어깨가 보이면 머리 폭 하한 = 어깨 폭 × 0.6(head_min_scale_shoulder_ratio, S15P31A101-737)
-POLICY_VERSION = "ppe-policy-0.6.0"
+# 0.7.0: 착용·미착용 카메라가 섞인 칸은 미착용 카메라가 2대 이상일 때만 충돌, 1대면 착용 칸(conflict_min_not_worn_cameras, S15P31A101-766)
+POLICY_VERSION = "ppe-policy-0.7.0"
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,11 @@ class PpeConfig:
     # 미착용 창(6칸)에 허용하는 빈 칸(표본 없음: 프레임 드롭·추론 건너뜀) 수. 마지막 칸은 미착용이어야 한다(S15P31A101-654,
     # 14차 로비: 빈 칸 하나에 창 전체가 리셋돼 미착용이 확정되지 않았다). 착용·충돌·모호 칸은 그대로 막는다
     not_worn_max_empty_bins: int = 1
+    # 한 칸에 착용 카메라와 미착용 카메라가 함께면, 미착용 카메라가 이 수 이상일 때만 충돌 칸이고 그보다 적으면 착용 칸이다.
+    # 2026-11-16 로비 실측: 검은 조끼 착용자는 카메라 4대 모두에서 프레임의 15~28% 가 미착용으로 나와(한 카메라 문제 아님)
+    # 칸의 30% 가 충돌이었다. 2대 이상이면 충돌 30%→9%, 조끼 없는 구간 미착용 칸 85% 유지(S15P31A101-766,
+    # docs/design/S15P31A101-766-ppe-bin-two-camera-conflict.md). 1 이면 0.6.0 까지의 규칙(섞이면 충돌)과 같다
+    conflict_min_not_worn_cameras: int = 2
     max_camera_skew_ms: int = 100
     bin_close_grace_ms: int = 100
     expiry_ms: int = 10_000

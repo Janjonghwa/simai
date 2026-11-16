@@ -1,7 +1,8 @@
 """World ID·identity_revision 별 안전모·조끼 상태 누적 (명세 5.5, 6장 PPE 상태).
 
 근거·칸의 시간은 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
-유효 칸 6개 창으로 상태를 바꾼다. 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 마지막 칸이 미착용이고 나머지가
+유효 칸 6개 창으로 상태를 바꾼다. 착용·미착용 카메라가 섞인 칸은 미착용 카메라가 2대 이상일 때만 충돌이고 1대면 착용 칸이다
+(S15P31A101-766). 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 마지막 칸이 미착용이고 나머지가
 미착용이거나 빈 칸(표본 없음, 추론 건너뜀) 1칸까지일 때다(S15P31A101-654). 착용·충돌·모호 칸이 하나라도 있으면 미착용이 아니다.
 반대 근거가 나오면 곧바로 반대 상태로 가지 않고 먼저 UNKNOWN 으로 두고 창을 다시 쌓는다(깜빡임 방지).
 
@@ -256,11 +257,17 @@ class PpeJudge:
 
     # ---- 칸 결합 ------------------------------------------------------------------------------
     def combine_bin(self, samples: Sequence[Sample]) -> tuple[str, list[Sample]]:
-        """다시점 규칙: 착용·미착용이 함께면 충돌, 모호한 근거가 있는 칸은 미착용으로 세지 않는다."""
+        """다시점 비대칭 규칙. 착용·미착용 카메라가 섞이면 미착용 카메라가 cfg.conflict_min_not_worn_cameras 대 이상일 때만
+        충돌이고 그보다 적으면 착용 칸이다(S15P31A101-766). 같은 카메라가 두 상태를 함께 낸 칸(병합으로 합친 칸)은 그대로 충돌이다.
+        모호한 근거가 있는 칸은 미착용으로 세지 않는다."""
         worn = [s for s in samples if s.kind == S_WORN]
         not_worn = [s for s in samples if s.kind == S_NOT_WORN]
         if worn and not_worn:
-            return B_CONFLICT, worn + not_worn
+            worn_cams = {s.camera_id for s in worn}
+            not_worn_cams = {s.camera_id for s in not_worn}
+            if worn_cams & not_worn_cams or len(not_worn_cams) >= self.cfg.conflict_min_not_worn_cameras:
+                return B_CONFLICT, worn + not_worn
+            not_worn = []
         decisive = worn or not_worn
         if decisive:
             anchor = max(s.capture_time_ms for s in decisive)
