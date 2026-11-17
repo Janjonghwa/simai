@@ -104,9 +104,10 @@ def test_blur_reduces_contribution_relative_to_camera_history():
     assert blur_weight(image, np.zeros((128, 128), bool), history, acc.config)[0] == .1
 
 
-def test_fit_rejects_bad_view_and_sparse_is_only_downweighted(caplog):
+@pytest.mark.parametrize("fusion", ["best", "mean"])
+def test_fit_rejects_bad_view_and_sparse_is_only_downweighted(caplog, fusion):
     caplog.set_level("INFO")
-    acc, vertices, planes = scene(blur_enabled=False, color_enabled=False)
+    acc, vertices, planes = scene(blur_enabled=False, color_enabled=False, fusion=fusion)
     cam = camera((3, 2, 1))
     view = render(cam, planes)
     joints = np.linspace([-.3, -.2, -.3], [.3, .2, .3], 17)
@@ -124,9 +125,11 @@ def test_fit_rejects_bad_view_and_sparse_is_only_downweighted(caplog):
     assert fit_weight(sparse, joints, acc.config)[0] == .5
     assert acc.accumulate("w", vertices, [sparse], 1001, joints_world=joints)
     assert fit_weight(view, None, acc.config)[0] == .5
-    disabled, _, _ = scene(blur_enabled=False, color_enabled=False, fit_enabled=False)
+    disabled, _, _ = scene(blur_enabled=False, color_enabled=False, fit_enabled=False, fusion=fusion)
     assert disabled.accumulate("w", vertices, [shifted], 1000, joints_world=joints)
-    assert disabled.weights.sum() == pytest.approx(2 * acc.weights.sum())
+    # best 는 가중을 fusion_power 제곱한 세기로 쌓는다(S15P31A101-789): 0.5 가중이면 1/16
+    ratio = 2 if fusion == "mean" else 2 ** acc.config.fusion_power
+    assert disabled.weights.sum() == pytest.approx(ratio * acc.weights.sum(), rel=1e-5)
 
 
 def test_quality_state_shared_between_people_and_abort_is_transactional(rig):

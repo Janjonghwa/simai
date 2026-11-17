@@ -85,6 +85,10 @@ def appearance_from_env(env, *, cuda_available=None):
         if value not in {"0", "1"}:
             raise ValueError(f"SIMAI_AVATAR_TEXTURE_{name}는 0 또는 1")
         return value == "1"
+    # 텍셀 합치기(S15P31A101-789): best 품질 높은 관측 우선(기본), mean 기존 전체 가중 평균으로 즉시 되돌림
+    fusion = env.get("SIMAI_AVATAR_TEXTURE_FUSION", "best")
+    if fusion not in {"best", "mean"}:
+        raise ValueError("SIMAI_AVATAR_TEXTURE_FUSION는 best 또는 mean")
     cfg = AppearanceConfig(
         resolution=int(env.get("SIMAI_AVATAR_TEXTURE_SIZE", "1024")),
         device=env.get("SIMAI_AVATAR_TEXTURE_DEVICE", "cuda" if cuda else "cpu"),
@@ -95,7 +99,8 @@ def appearance_from_env(env, *, cuda_available=None):
         silhouette_enabled=quality_enabled("SILHOUETTE"),
         color_enabled=quality_enabled("COLOR"),
         blur_enabled=quality_enabled("BLUR"),
-        fit_enabled=quality_enabled("FIT"))
+        fit_enabled=quality_enabled("FIT"),
+        fusion=fusion)
     region_path = env.get("SIMAI_AVATAR_FACE_REGION")
     region = json.loads(Path(region_path).read_text(encoding="utf-8")) if region_path else None
     return AppearancePipeline(cfg, face_region=region, output_dir=env.get("SIMAI_AVATAR_TEXTURE_OUTPUT_DIR"))
