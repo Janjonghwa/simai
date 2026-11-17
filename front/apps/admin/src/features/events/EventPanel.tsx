@@ -1,3 +1,5 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { alarmingCardsFirst } from '@/features/demo/demoEvents';
 import { GHOST_MAX_LIFE_MS } from '@/features/events/constants';
 import { isAlarming, type EventEntry } from '@/features/events/entries';
 import type { OutsideWorkKind } from '@/features/events/EventBadges';
@@ -331,10 +333,17 @@ export function EventPanel({
   );
   // 유령 트랙(S15P31A101-785)을 가르는 World ID 기록. 보인 구간은 world 마다 바뀌어 구독하지 않고, 사람이 바뀔 때(alive) 그 순간 값을 읽는다.
   const watched = useRealtimeStore((s) => s.trackLife.watched);
+  const demo = useIsDemoAccount();
   const sections = useMemo(() => {
     const { lives, survivorOf } = useRealtimeStore.getState().trackLife;
-    return eventSections(entries, { alive, runStartedAt, life: { lives, survivorOf, watched } });
-  }, [entries, alive, runStartedAt, watched]);
+    const all = eventSections(entries, {
+      alive,
+      runStartedAt,
+      life: { lives, survivorOf, watched },
+    });
+    // 시연 계정은 경보 배너가 없어 확인 대기 경보 카드를 맨 위에 둔다(features/demo/demoEvents)
+    return demo ? { ...all, active: alarmingCardsFirst(all.active) } : all;
+  }, [entries, alive, runStartedAt, watched, demo]);
   const goneCount = useMemo(
     () => sections.active.filter((card) => isGone(card.incident, alive)).length,
     [sections.active, alive],

@@ -1,3 +1,5 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { DEMO_PPE_LABEL } from '@/features/demo/demoPpe';
 import { useNow } from '@/features/layout/useNow';
 import { requestPpeCurrent } from '@/features/ppe/api';
 import {
@@ -76,29 +78,34 @@ function usePpeInputs() {
   return { now, snapshots, linkAlive, trackKey };
 }
 
+const NO_STATES: Record<string, PpeState> = {};
+
 /**
  * 3D 에 넘길 사람별 안전모·조끼 상태(뷰어 `personHelmets`·`personVests`). 각각 상태가 바뀔 때만 새 객체다.
- * 입력(1초 시계·스냅샷·트랙)은 한 번만 읽는다.
+ * 입력(1초 시계·스냅샷·트랙)은 한 번만 읽는다. 시연 계정은 조끼 상태를 넘기지 않는다(features/demo/demoPpe).
  */
 export function usePpeGearStates(): {
   helmets: Readonly<Record<string, PpeState>>;
   vests: Readonly<Record<string, PpeState>>;
 } {
   const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
+  const demo = useIsDemoAccount();
   const tracks = tracksOf(trackKey);
   return {
     helmets: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'helmet')),
-    vests: useSameRecord(itemStates(snapshots, tracks, now, linkAlive, 'vest')),
+    vests: useSameRecord(demo ? NO_STATES : itemStates(snapshots, tracks, now, linkAlive, 'vest')),
   };
 }
 
 /**
  * 3D 이름표 뒤에 붙일 사람별 PPE 글(뷰어 `personBadges` 에 워치 글과 함께 넘긴다, S15P31A101-656).
  * 착용이 아닌 사람만 담는다. 글이 바뀔 때만 새 객체다(근거 경과 시각은 10초 단위라 1초마다 바뀌지 않는다).
+ * 시연 계정은 안전모 미착용만 쓴다(조끼·모름 없음, features/demo/demoPpe).
  */
 export function usePpeLabels(): Readonly<Record<string, string>> {
   const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
-  return useSameRecord(ppeLabels(snapshots, tracksOf(trackKey), now, linkAlive));
+  const scope = useIsDemoAccount() ? DEMO_PPE_LABEL : undefined;
+  return useSameRecord(ppeLabels(snapshots, tracksOf(trackKey), now, linkAlive, scope));
 }
 
 /**

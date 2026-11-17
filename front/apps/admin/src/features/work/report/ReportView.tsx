@@ -8,10 +8,11 @@ import {
 } from '@/features/work/report/paperTables';
 import type { ReportForm, ReportLeader, WorkSignature, WorkTask } from '@/features/work/types';
 import { cn } from '@simai/ui/lib/utils';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 
 // TBM(작업 전 안전대화) 보고서 종이 한 장. 다크 모드에서도 흰 종이(.paper)이고, 고칠 수 있는 종이는 누르면(Enter 도) 편집 창을 연다.
 // 'print' 는 인쇄용 사본의 모양(A4 폭·검은 선): 화면 종이와 표·글은 같다.
+// onFormChange 를 주면 종이 위에서 칸을 바로 고친다(편집 창의 종이).
 
 /** 종이 모양: 화면은 폭에 맞춰 A4 비율, 인쇄 사본은 A4 한 장 폭, 'sheet' 는 A4 틀(ReportSheet) 안에 들어가는 내용만. */
 const SHAPE = {
@@ -31,6 +32,8 @@ export function ReportView({
   drafted,
   editable = false,
   onEdit,
+  onFormChange,
+  tasksField,
   variant = 'screen',
 }: {
   form: ReportForm;
@@ -44,6 +47,10 @@ export function ReportView({
   /** 고칠 수 있는 종이인가(누르면 `onEdit`, 비어 있으면 '+ 작업내용 선택'). */
   editable?: boolean;
   onEdit?: () => void;
+  /** 종이 위에서 고친 양식. 있으면 고칠 수 있는 칸이 입력 칸이 된다. */
+  onFormChange?: (form: ReportForm) => void;
+  /** 종이 위에서 고칠 때 작업내용 칸에 넣을 고르기. */
+  tasksField?: ReactNode;
   variant?: keyof typeof SHAPE;
 }) {
   const edit = editable ? onEdit : undefined;
@@ -71,11 +78,18 @@ export function ReportView({
       <h3 className="mb-[18px] text-center text-xl font-bold tracking-[0.02em]">
         TBM(작업 전 안전대화) 보고서
       </h3>
-      <InfoTable form={form} catalog={catalog} drafted={drafted} editable={editable} />
-      <RisksTable form={form} drafted={drafted} />
-      <FocusTable form={form} leader={leader} drafted={drafted} />
-      <ChecksTable form={form} drafted={drafted} />
-      <ReviewTable form={form} drafted={drafted} />
+      <InfoTable
+        form={form}
+        catalog={catalog}
+        drafted={drafted}
+        editable={editable}
+        onChange={onFormChange}
+        tasksField={tasksField}
+      />
+      <RisksTable form={form} drafted={drafted} onChange={onFormChange} />
+      <FocusTable form={form} leader={leader} drafted={drafted} onChange={onFormChange} />
+      <ChecksTable form={form} drafted={drafted} onChange={onFormChange} />
+      <ReviewTable form={form} drafted={drafted} onChange={onFormChange} />
       <AttendeesTable signatures={signatures} />
     </div>
   );

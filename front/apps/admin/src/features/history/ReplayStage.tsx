@@ -1,5 +1,6 @@
 import { CctvFigures, CctvMockWall } from '@/features/cctv/CctvDemo';
 import { cctvPeople, type CctvProjector } from '@/features/cctv/cctvMockView';
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { formatTime } from '@/features/events/events';
 import { replayErrorLine } from '@/features/history/replay';
 import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/replayIndex';
@@ -33,6 +34,7 @@ function Notice({ children }: { children: ReactNode }) {
  * 데이터 없음이면 사람을 그리지 않고 흐리게 둔다(마지막 기록을 이어 그리지 않는다, FR-28). 기록이 없어도 기록 없는 구간
  * 밖이면 그 시각에 아무도 없던 것이라 빈 화면을 그대로 보인다.
  * 아직 받지 못한 뒷구간의 시각이면 목 화면 대신 불러오는 중 안내를 보인다(영상은 기록과 상관없이 튼다).
+ * 시연 계정은 한 칸을 크게 볼 때 나머지 칸을 큰 칸 아래 한 줄에 두고, 영상 실패 안내 줄을 보이지 않는다.
  */
 function ReplayCctv({
   replay,
@@ -61,6 +63,8 @@ function ReplayCctv({
   const active = useActiveSegments(replay, playable);
   const upcoming = useActiveSegments(replay, playable, preloadAt);
   const pending = useReplayPending(replay, index);
+  const demo = useIsDemoAccount();
+  const rest = demo ? 'below' : 'side';
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
@@ -68,7 +72,13 @@ function ReplayCctv({
   );
   const wall =
     active.length > 0 ? (
-      <ReplayVideoWall segments={active} upcoming={upcoming} replay={replay} onFailed={onFailed} />
+      <ReplayVideoWall
+        segments={active}
+        upcoming={upcoming}
+        replay={replay}
+        onFailed={onFailed}
+        rest={rest}
+      />
     ) : pending ? (
       <Notice>{LOADING_LINE}</Notice>
     ) : (
@@ -76,11 +86,12 @@ function ReplayCctv({
         figures={figures}
         frozen={noData}
         badge={noData ? '데이터 없음' : frame ? formatTime(frame.t) : '작업자 없음'}
+        rest={rest}
       />
     );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {failed.size > 0 && (
+      {!demo && failed.size > 0 && (
         <p role="status" className="p-2 text-sm text-muted-foreground">
           {Array.from(new Set(failed.values())).join(' ')}
           <button type="button" className="ml-3" onClick={() => setFailed(new Map())}>
@@ -123,12 +134,14 @@ function stageSegmentMessage(message: string | null, index: ReplayIndex | null):
 /**
  * 가운데 칸: CCTV 목 화면. 기록을 받는 중·실패·없음이면 안내만 보인다.
  * 영상 조각 목록은 기록을 받는 동안 같이 받아 둔다(기록이 준비된 뒤에 요청하면 영상이 그만큼 늦게 켜진다).
+ * 시연 계정은 위쪽 영상 상태 줄(업로드 실패·다시 확인)을 보이지 않는다.
  */
 export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
   const { segments, message, refresh, canRefresh } = useReplaySegments(range);
   const notice = stageNotice(session, range);
-  const segmentMessage = stageSegmentMessage(message, index);
+  const demo = useIsDemoAccount();
+  const segmentMessage = demo ? null : stageSegmentMessage(message, index);
   return (
     <div className="flex h-full min-h-0 flex-col">
       {segmentMessage && (

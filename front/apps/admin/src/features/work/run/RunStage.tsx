@@ -1,3 +1,4 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { ALERT } from '@/features/tbm/styles';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
@@ -28,6 +29,7 @@ import { useMemo } from 'react';
 // S15P31A101-691: 진행 중의 `다음` 이 실제로는 종료라 이름을 `작업 종료` 로 바꿨다).
 // 한 번 더 실행(S15P31A101-696): 같은 날 리허설 뒤 본 시연. 보고서를 내기 전이면 작업 전 확인(서명 재확인·보호구)을 거쳐 실행 2 를 연다.
 // 진행 중 화면의 경과·경보 기록·관제 적용은 지금 실행 기준이다.
+// 시연 계정(features/demo/demoAccount)은 종료 확인창에 제목만 두고, 종료 뒤에는 보고서만 보인다.
 
 const SPLIT =
   'grid grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] items-start gap-4 max-[960px]:grid-cols-1';
@@ -51,6 +53,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
   const signers = useSignatures(report?.report_id).data;
   // 종료 확인창의 「미확인 위험 경보 n건」: 서버가 준 이벤트 목록·확인 기록으로 센다(막지 않고 알린다, -734)
   const alarms = useRunAlarms(runStart);
+  const demo = useIsDemoAccount();
   const action = useMemo<WorkActionConfig>(
     () => ({
       label: '작업 종료',
@@ -76,13 +79,15 @@ function RunningView({ day }: { day: WorkDayItem }) {
       {end.open && (
         <ConfirmDialog
           title="작업을 종료할까요?"
-          description="종료한 뒤 보고서를 내기 전이면 한 번 더 실행할 수 있습니다."
+          description={
+            demo ? undefined : '종료한 뒤 보고서를 내기 전이면 한 번 더 실행할 수 있습니다.'
+          }
           confirmLabel="종료"
           pending={end.pending}
           onConfirm={end.confirm}
           onCancel={end.cancel}
         >
-          <EndAlarmNote alarms={alarms} />
+          {!demo && <EndAlarmNote alarms={alarms} />}
           {end.failed && <FailureNote text="작업을 종료하지 못했습니다. 다시 시도해 주세요." />}
         </ConfirmDialog>
       )}
@@ -106,6 +111,7 @@ function EndedView({
   onRerun?: () => void;
 }) {
   const { data: report, error: reportError } = useWorkReport(day.work_id);
+  const demo = useIsDemoAccount();
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
   const filling = isReportGenerating(report);
@@ -130,12 +136,16 @@ function EndedView({
   useWorkAction(action);
   return (
     <>
-      <EndAlertStatus workId={day.work_id} endedAt={endedAt} />
-      <RunHistory day={day} />
-      <div className="grid items-start gap-3 min-[960px]:grid-cols-2">
-        <EndSummaryCard day={day} />
-        <EndGpuCard canRerun={onRerun !== undefined} />
-      </div>
+      {!demo && (
+        <>
+          <EndAlertStatus workId={day.work_id} endedAt={endedAt} />
+          <RunHistory day={day} />
+          <div className="grid items-start gap-3 min-[960px]:grid-cols-2">
+            <EndSummaryCard day={day} />
+            <EndGpuCard canRerun={onRerun !== undefined} />
+          </div>
+        </>
+      )}
       <div className="min-w-0">
         <ReportPanel workId={day.work_id} editable withPrint />
       </div>
