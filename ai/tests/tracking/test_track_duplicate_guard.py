@@ -211,8 +211,9 @@ def test_two_people_always_seen_by_disjoint_pairs_keep_two_ids(rig, dy):
 
 
 def test_low_confidence_candidate_near_confirmed_track_confirms_later(acute):
-    """카메라가 겹치지 않는 확정 Track 근처의 저신뢰(클러스터 IDENTITY_UNCERTAIN) 새 후보는 6번 관측해야 확정된다."""
-    m = _mgr(shadow_suppression_enabled=False, active_merge_enabled=False)
+    """카메라가 겹치지 않는 확정 Track 근처의 저신뢰(클러스터 IDENTITY_UNCERTAIN) 새 후보는 6번 관측해야 확정된다.
+    확정 지연 단계만 본다(-784 출생 보류를 켜면 이 후보는 내보내지 않고 보류한다: test_birth_hold.py)."""
+    m = _mgr(shadow_suppression_enabled=False, active_merge_enabled=False, birth_hold_enabled=False)
     for k in range(5):
         _step(m, acute, k, [_cl(acute, "s", T + k * DT, X0, Y0, _ids(SOUTH))])
     lifecycles = []
