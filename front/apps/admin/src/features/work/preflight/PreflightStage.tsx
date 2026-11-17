@@ -79,24 +79,22 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
 
   const navigate = useNavigate();
-  const { reset: resetStart, mutate: startWork } = start;
+  const { reset: resetStart, mutateAsync: startWork } = start;
   // 작업 시작(= 관제 시작)에는 GPU 가 필요하다. 꺼져 있거나 준비 중이면 GPU 경고창을 띄우고 연결되면 이어서 시작한다(S15P31A101-702)
   const gpuGate = useGpuGate();
   const closeDialog = useCallback(() => setDialog(null), []);
-  // 요청 중에는 확인창의 '작업 시작'이 pending 으로 잠겨 같은 시작을 두 번 보내지 않는다
+  // 요청 중에는 확인창의 '작업 시작'이 pending 으로 잠겨 같은 시작을 두 번 보내지 않는다.
+  // 결과는 약속으로 받는다: 시작에 성공하면 진행 값이 바뀌어 이 단계가 먼저 내려가고, 그러면 mutate 에 건 onSuccess 는 불리지 않아 관제로 가지 못했다
   const sendStart = useCallback(
     () =>
-      startWork(
-        { workId, ppe },
-        {
-          onSuccess: () => {
-            closeDialog();
-            void navigate({ to: '/live' });
-          },
-          // 시연 계정은 확인창 없이 시작하므로 실패하면 확인창을 열어 오류를 보인다
-          onError: () => {
-            if (demo) setDialog('confirm');
-          },
+      void startWork({ workId, ppe }).then(
+        () => {
+          closeDialog();
+          void navigate({ to: '/live' });
+        },
+        // 시연 계정은 확인창 없이 시작하므로 실패하면 확인창을 열어 오류를 보인다
+        () => {
+          if (demo) setDialog('confirm');
         },
       ),
     [startWork, workId, ppe, closeDialog, navigate, demo],

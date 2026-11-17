@@ -10,7 +10,7 @@ import {
   type CctvPerson,
   type CctvProjector,
 } from '@/features/cctv/cctvMockView';
-import { CctvWall } from '@/features/cctv/CctvWall';
+import { CctvWall, type WallRest } from '@/features/cctv/CctvWall';
 import { DIMMED, LIVE_DOT, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { clockLabel } from '@/features/layout/status';
@@ -213,6 +213,8 @@ interface CctvMockWallProps {
   frozen?: boolean;
   /** 각 칸 오른쪽 위 글(신호 없는 칸은 "끊김"). null 이면 신호 없는 칸 말고는 두지 않는다. */
   badge: ReactNode;
+  /** 크게 볼 때 나머지 칸을 놓는 곳(CctvWall). */
+  rest?: WallRest;
 }
 
 /** 2×2 모의 화면. 칸 배치(크게 보기 포함)는 CctvWall 이 하고, 이 컴포넌트는 칸 안의 그림을 채운다. */
@@ -221,10 +223,12 @@ export function CctvMockWall({
   down = NO_CAMS,
   frozen = false,
   badge,
+  rest,
 }: CctvMockWallProps) {
   return (
     <CctvWall
       ids={VIEW_IDS}
+      rest={rest}
       tile={(id, wall) => {
         const view = VIEW_BY_ID.get(id);
         return (

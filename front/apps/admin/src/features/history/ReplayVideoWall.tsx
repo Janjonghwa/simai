@@ -1,4 +1,4 @@
-import { CctvWall } from '@/features/cctv/CctvWall';
+import { CctvWall, type WallRest } from '@/features/cctv/CctvWall';
 import { TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
 import { loadPlayableClip } from '@/features/clips/clipMedia';
 import { formatTime } from '@/features/events/events';
@@ -207,11 +207,14 @@ export function ReplayVideoWall({
   upcoming,
   replay,
   onFailed,
+  rest,
 }: {
   segments: readonly VideoSegment[];
   upcoming: readonly VideoSegment[];
   replay: ReplaySpatialSource | null;
   onFailed?: OnFailed;
+  /** 크게 볼 때 나머지 칸을 놓는 곳(CctvWall). */
+  rest?: WallRest;
 }) {
   const label = useCameraNames(segments.map((segment) => segment.camera_id));
   const byCamera = new Map(segments.map((segment) => [segment.camera_id, segment]));
@@ -219,6 +222,7 @@ export function ReplayVideoWall({
   return (
     <CctvWall
       ids={[...byCamera.keys()]}
+      rest={rest}
       tile={(id, wall) => {
         const segment = byCamera.get(id);
         return (

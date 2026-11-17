@@ -1,3 +1,5 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { demoLiveEntries } from '@/features/demo/demoPpe';
 import { requestEvents } from '@/features/events/api';
 import { upsertEvents, type EventEntry } from '@/features/events/entries';
 import { LIVE_EVENTS_KEY, type LiveEvents } from '@/features/events/eventsCache';
@@ -5,6 +7,7 @@ import type { EventItem } from '@/features/events/types';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 
 const NONE: EventEntry[] = [];
 
@@ -53,8 +56,12 @@ export function useLiveEvents() {
     refetchIntervalInBackground: true,
   });
   const loaded = isLoaded(query.data);
+  const all = query.data?.entries ?? NONE;
+  // 시연 계정은 조끼 이벤트와 보호구 「모름」 이유를 화면에 보이지 않는다(캐시는 그대로, features/demo/demoPpe)
+  const demo = useIsDemoAccount();
+  const entries = useMemo(() => (demo ? demoLiveEntries(all) : all), [demo, all]);
   return {
-    entries: query.data?.entries ?? NONE,
+    entries,
     loaded,
     // STOMP 가 캐시를 고쳐도 실패 횟수는 남는다. 다음 시도가 시작되면 0 이 된다.
     failed: !loaded && !query.isFetching && query.failureCount > 0,

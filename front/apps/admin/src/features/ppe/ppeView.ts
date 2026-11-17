@@ -94,17 +94,31 @@ export function evidenceAgeText(ageMs: number): string {
   return `${Math.floor(seconds / 3600)}시간 전`;
 }
 
+/** 이름표 PPE 글에 넣을 것: 장비 종류와 모름 상태를 쓸지(기본은 둘 다·모름도). */
+export interface PpeLabelScope {
+  items: readonly PpeItemKind[];
+  unknown: boolean;
+}
+
+const ALL_LABELS: PpeLabelScope = { items: ITEM_ORDER, unknown: true };
+
 /**
  * 이름표 뒤에 붙일 PPE 글(명세 13.3, S15P31A101-656). 착용이 아닐 때만 만든다(둘 다 착용이면 null, 장비 실물이 보인다).
  * 미착용 장비를 먼저, 모름 장비를 뒤에 쓰고, 모름에는 마지막 근거 시각(또는 EC2 연결 끊김)을 괄호로 붙인다.
  * 예: '안전모 미착용', '안전모·조끼 모름(30초 전)', '안전모 미착용 · 조끼 모름(연결 끊김)'.
+ * scope 로 장비 종류를 줄이거나 모름 글을 뺄 수 있다(시연 계정은 안전모 미착용만).
  */
-export function ppeLabel(ppe: PersonPpe, serverNow: number): string | null {
-  const notWorn = ITEM_ORDER.filter((item) => ppe[item].state === 'NOT_WORN');
+export function ppeLabel(
+  ppe: PersonPpe,
+  serverNow: number,
+  scope: PpeLabelScope = ALL_LABELS,
+): string | null {
+  const shownItems = ITEM_ORDER.filter((item) => scope.items.includes(item));
+  const notWorn = shownItems.filter((item) => ppe[item].state === 'NOT_WORN');
   const unknownBySuffix = new Map<string, PpeItemKind[]>();
-  for (const item of ITEM_ORDER) {
+  for (const item of shownItems) {
     const display = ppe[item];
-    if (display.state !== 'UNKNOWN') continue;
+    if (!scope.unknown || display.state !== 'UNKNOWN') continue;
     const suffix =
       display.reason === LINK_LOST_REASON
         ? '(연결 끊김)'
@@ -126,11 +140,12 @@ export function ppeLabels(
   tracks: readonly { worldId: string; identityRevision: number }[],
   now: number,
   linkAlive: boolean,
+  scope?: PpeLabelScope,
 ): Record<string, string> {
   const labels: Record<string, string> = {};
   for (const track of tracks) {
     const found = personPpeAt(snapshots, track.worldId, track.identityRevision, now, linkAlive);
-    const label = found && ppeLabel(found.ppe, found.serverNow);
+    const label = found && ppeLabel(found.ppe, found.serverNow, scope);
     if (label) labels[track.worldId] = label;
   }
   return labels;

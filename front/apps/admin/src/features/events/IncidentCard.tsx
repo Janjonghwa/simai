@@ -1,3 +1,5 @@
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { latestAlarmStartAt } from '@/features/demo/demoEvents';
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
 import { CameraButton } from '@/features/events/CameraButton';
 import { isActive, isConfirmationPending } from '@/features/events/entries';
@@ -79,7 +81,11 @@ export function IncidentCard({
   const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find(isConfirmationPending);
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
-  const raisedAt = incident.active ? firstActiveRaisedAt(incident) : null;
+  const demo = useIsDemoAccount();
+  // 시연 계정은 경보 배너가 없어 카드가 새 경보를 알린다: 확인 대기 경보가 있으면 그 경보가 울린 때부터 센다(features/demo/demoEvents)
+  const raisedAt = incident.active
+    ? ((demo ? latestAlarmStartAt(incident) : null) ?? firstActiveRaisedAt(incident))
+    : null;
   // 지금 관제 중인 사건만 등급 테두리·카메라 버튼을 쓴다. 지난 관제의 사람은 지금 카메라에 없다.
   const current = incident.active && !incident.stale && !gone;
   const eta = entryEtaLine(top.event);

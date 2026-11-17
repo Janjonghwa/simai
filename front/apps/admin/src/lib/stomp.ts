@@ -102,6 +102,8 @@ export interface RealtimeOptions {
   reconnectDelayMs?: number;
   /** health 가 끊겼는지 다시 보는 간격(ms). */
   watchIntervalMs?: number;
+  /** 3D 뷰어에 넘기지 않을 본문(로그인한 계정별). 앱 화면 처리(이벤트 목록 등)는 그대로 받는다. */
+  hideFromViewer?: (topic: string, raw: unknown, userId: string) => boolean;
 }
 
 interface ViewerLink {
@@ -138,6 +140,8 @@ interface Connection {
    * 3D 뷰어가 구독하는 순간(코드를 늦게 받았거나 3D 를 다시 띄움) 그 뷰어에 넘겨 진행 중 경보를 놓치지 않게 한다.
    */
   replay: Replay;
+  /** 3D 뷰어에 넘기지 않을 본문인가. */
+  hidden: (topic: string, raw: unknown) => boolean;
   /** 뷰어에 연결 상태를 알리는 구독·타이머를 푼다. */
   dispose: () => void;
 }
@@ -187,7 +191,8 @@ function withReplay(connection: Connection, source: ExternalSpatialSource): Exte
   const subscribe = (sink: SpatialSourceSink) => {
     const unsubscribe = source.subscribe(sink);
     const { world, health, events } = connection.replay;
-    for (const item of [world, health, ...events.values()]) {
+    const shown = [...events.values()].filter((item) => !connection.hidden(EVENTS_TOPIC, item.raw));
+    for (const item of [world, health, ...shown]) {
       if (item) safely(() => sink.onMessage(item.raw, item.receivedAt));
     }
     return unsubscribe;
@@ -404,6 +409,7 @@ export function createRealtime({
   healthTimeoutMs = HEALTH_TIMEOUT_MS,
   reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
   watchIntervalMs = DEFAULT_WATCH_INTERVAL_MS,
+  hideFromViewer = () => false,
 }: RealtimeOptions): Realtime {
   let current: Connection | null = null;
   // start·stop 마다 올린다. Source 이름에 붙여 세션마다 다른 스트림으로 보이게 한다.
@@ -476,7 +482,7 @@ export function createRealtime({
     store.getState().setSource(withReplay(connection, source));
   }
 
-  function connect({ getToken, refreshToken }: RealtimeSession): Connection {
+  function connect({ userId, getToken, refreshToken }: RealtimeSession): Connection {
     // 끊은 뒤 늦게 도착한 콜백은 버린다.
     const isCurrent = () => current === connection;
     const tokens = createTokenFeed(getToken, refreshToken);
@@ -500,7 +506,9 @@ export function createRealtime({
         // 3D 뷰어는 받은 본문을 직접 계약으로 검사하고 순서를 정리한다(viewer3d 의 Source 입력).
         // 앱 처리 뒤에 넘기고 실패를 가둔다. 3D 가 고장 나도 2D 평면·경보는 계속 받는다.
         const { source } = connection;
-        if (source && !APP_ONLY_TOPICS.has(topic)) safely(() => source.push(raw, receivedAt));
+        if (source && !APP_ONLY_TOPICS.has(topic) && !connection.hidden(topic, raw)) {
+          safely(() => source.push(raw, receivedAt));
+        }
       }
     };
 
@@ -546,7 +554,13 @@ export function createRealtime({
       },
     });
 
-    const connection: Connection = { client, source: null, replay, dispose: () => undefined };
+    const connection: Connection = {
+      client,
+      source: null,
+      replay,
+      hidden: (topic, raw) => hideFromViewer(topic, raw, userId),
+      dispose: () => undefined,
+    };
     current = connection;
     client.activate();
     return connection;
