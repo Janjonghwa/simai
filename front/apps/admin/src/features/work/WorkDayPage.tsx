@@ -1,3 +1,4 @@
+import { useIsAbandonedSetupSession } from '@/features/setup/abandonedSetup.store';
 import { isWorkError, WORK_ERROR } from '@/features/work/api';
 import { PastDayPage } from '@/features/work/past/PastDayPage';
 import { PreflightStage } from '@/features/work/preflight/PreflightStage';
@@ -118,7 +119,10 @@ function OpenedDay({
   // 한 번 더 실행을 누른 그 종료(마지막 실행 번호)에서만 작업 전 확인을 연다. 다른 종료면(새 실행이 끝남) 저절로 풀린다
   const [rerunAfter, setRerunAfter] = useState<number | null>(null);
   const rerunning = progress === 'ENDED' && rerunAfter !== null && rerunAfter === lastRunNo(day);
-  const stage = rerunning ? 'preflight' : furtherStage(localStage, stageOfProgress(progress));
+  // 「세팅 취소」로 버린 세팅만 남은 날은 서버가 세팅 단계(SETUP)여도 TBM 보고서부터 보인다(features/setup/abandonedSetup.store)
+  const setupAbandoned = useIsAbandonedSetupSession(day.work_id, day.active_setup_session_id);
+  const serverStage = progress === 'SETUP' && setupAbandoned ? 'report' : stageOfProgress(progress);
+  const stage = rerunning ? 'preflight' : furtherStage(localStage, serverStage);
   const stageProps = {
     day,
     date,

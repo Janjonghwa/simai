@@ -1,4 +1,5 @@
 import { workDayOf } from '@/__tests__/features/work/workFixture';
+import { useAbandonedSetupStore } from '@/features/setup/abandonedSetup.store';
 import { WORK_ERROR } from '@/features/work/api';
 import type { DayProgress, WorkDayItem } from '@/features/work/types';
 import { WorkDayPage } from '@/features/work/WorkDayPage';
@@ -54,6 +55,7 @@ const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
+  useAbandonedSetupStore.setState({ entries: [] });
   serverDay = workDayOf({ work_id: '9001', progress: 'REPORT' });
   opened = [];
   failOpen = false;
@@ -345,6 +347,33 @@ describe('WorkDayPage 서버가 못 따라온 동안 다시 받는다', () => {
     await waitFor(() => expect(stageName()).toBe('preflight-stage'));
     await sleep(POLL_MS * 5);
     expect(opened).toEqual([TODAY]);
+  });
+});
+
+describe('WorkDayPage 「세팅 취소」로 버린 세팅', () => {
+  const abandon = (sessionId: string) =>
+    act(() => useAbandonedSetupStore.getState().abandon(serverDay.work_id, sessionId));
+
+  it('서버가 세팅 중(SETUP)이어도 작업의 세팅 세션을 버리면 TBM 보고서로 돌아가고, 다음을 누르면 세팅으로 간다', async () => {
+    serverDay = { ...serverDay, progress: 'SETUP', active_setup_session_id: 'sess-1' };
+    renderDay();
+    await waitFor(() => expect(stageName()).toBe('setup-stage'));
+
+    abandon('sess-1');
+    expect(stageName()).toBe('report-stage');
+
+    fireEvent.click(screen.getByRole('button', { name: 'report-stage 다음' }));
+    expect(stageName()).toBe('setup-stage');
+  });
+
+  it('다시 열어도 보고서이고, 새 세팅을 시작해 작업의 세션이 바뀌면 서버 단계를 따른다', async () => {
+    serverDay = { ...serverDay, progress: 'SETUP', active_setup_session_id: 'sess-1' };
+    abandon('sess-1');
+    renderDay();
+    await waitFor(() => expect(stageName()).toBe('report-stage'));
+
+    serverDay = { ...serverDay, active_setup_session_id: 'sess-2' };
+    await waitFor(() => expect(stageName()).toBe('setup-stage'));
   });
 });
 

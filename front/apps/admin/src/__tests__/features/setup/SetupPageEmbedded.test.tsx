@@ -1,5 +1,6 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
+import { useAbandonedSetupStore } from '@/features/setup/abandonedSetup.store';
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import { SetupPage } from '@/features/setup/SetupPage';
@@ -79,6 +80,7 @@ beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 beforeEach(() => {
   useCctvStore.getState().reset();
   resetSetupFlowStore();
+  useAbandonedSetupStore.setState({ entries: [] });
   useZoneEditStore.getState().clear();
   navigateMock.mockReset();
   setupMock = createSetupMock({
@@ -301,6 +303,48 @@ describe('세팅 화면 임베드', () => {
       confirm.mockRestore();
     }
   });
+
+  it('1단계 세팅 취소는 한 번 묻고 진행 중 시도를 멈춘 뒤 그 세션을 버리고 나가며, 다시 열면 이어받지 않고 1단계 기본값에서 시작한다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      ...PREVIEW_PATCH,
+      height_checks: {
+        cam_B: {
+          input_height_m: 2.3,
+          restored_height_m: 2.71,
+          difference_cm: 41,
+          within_tolerance: false,
+          guidance: 'cam_B 높이를 다시 재서 입력해 주세요',
+        },
+      },
+    });
+    await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
+    fireEvent.click(line().getByRole('button', { name: '카메라 다시 맞추기' }));
+    await screen.findByLabelText('카메라 2 높이 (m)');
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.click(line().getByRole('button', { name: '세팅 취소' }));
+      expect(confirm).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
+      expect(setupMock.sessions.get(sessionId)?.status).toBe('FAILED');
+      expect(useAbandonedSetupStore.getState().entries).toEqual([['1', sessionId]]);
+      expect(useSetupFlowStore.getState().activeSessionId).toBeNull();
+    } finally {
+      confirm.mockRestore();
+    }
+
+    cleanup();
+    renderEmbedded();
+    const group = await screen.findByRole('radiogroup', { name: '맵 방식' });
+    expect(
+      within(group)
+        .getByRole('radio', { name: /^새 맵 만들기/ })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(currentStepText()).toBe('1카메라 연결 관리');
+    expect(useSetupFlowStore.getState().activeSessionId).toBeNull();
+  }, 20_000);
 
   it('세션 취소를 요청하는 동안 현재 시도 중단은 꺼진다(단독 화면과 같다)', async () => {
     const { sessionId } = await startSetupSession();
