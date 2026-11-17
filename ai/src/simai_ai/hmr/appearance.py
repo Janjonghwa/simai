@@ -51,6 +51,11 @@ class AppearanceConfig:
     fit_min_joints: int = 6
     fit_min_confidence: float = .3
     fit_sparse_weight: float = .5
+    # 텍셀 합치기(S15P31A101-789). best: 품질 높은 관측 우선, mean: 기존 전체 가중 평균(되돌림용, 결과 비트 동일)
+    fusion: str = "best"
+    fusion_power: float = 4.
+    fusion_keep: float = 4.
+    fusion_reject_decay: float = .5
 
     def __post_init__(self):
         if (self.resolution < 4 or self.freeze_frames < 1 or self.sample_interval_ms < 1
@@ -61,6 +66,9 @@ class AppearanceConfig:
             raise ValueError("외형 누적 설정 범위 오류")
         if self.face_policy not in {"OBSERVED", "BLURRED", "EXCLUDED"}:
             raise ValueError("지원하지 않는 face_policy")
+        if (self.fusion not in {"best", "mean"} or not self.fusion_power >= 1 or not self.fusion_keep >= 1
+                or not 0 <= self.fusion_reject_decay < 1):
+            raise ValueError("외형 텍셀 합치기 설정 범위 오류")
         numeric = [v for v in vars(self).values() if isinstance(v, (float, int))]
         if (not np.isfinite(numeric).all() or self.silhouette_erode_px < 0
                 or self.silhouette_fade_px <= 0 or not 0 < self.color_ema <= 1
@@ -111,11 +119,15 @@ def png_asset(array):
 
 @dataclass(frozen=True)
 class TexelSnapshot:
-    """한 World ID 의 누적 텍셀(외형 이어받기·병합용, S15P31A101-743). 배열은 공유하므로 받는 쪽은 복사해 쓴다."""
+    """한 World ID 의 누적 텍셀(외형 이어받기·병합용, S15P31A101-743). 배열은 공유하므로 받는 쪽은 복사해 쓴다.
+
+    peaks: best 합치기의 텍셀별 최고 관측 세기(S15P31A101-789). mean 이면 쓰지 않는다. 거절 압력은 넘기지 않는다(일시 상태).
+    """
     colors: np.ndarray
     weights: np.ndarray
     inherited: np.ndarray
     last_confirmed: object = None
+    peaks: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +190,42 @@ def _ideal_view(view):
     return image, distance
 
 
+def fuse_best(colors, weights, peaks, rejects, inherited, selected, w, observed, cfg):
+    """품질 높은 관측 우선 합치기(S15P31A101-789). torch 텐서를 제자리에서 고친다(CPU·CUDA 같은 식).
+
+    한 카메라의 관측(텍셀 `selected`, 가중 w∈(0,1], 이득 보정 RGB)을 받는다. 세기 s = w^p 로 날카롭게 한 뒤
+    - 새 텍셀·이어받은 텍셀: 관측으로 시작(C=c, W=s, P=s, R=0).
+    - 기존 색과 채널 차 ≤ outlier_rgb(인라이어): 최고 세기 P=max(P,s), 쌓인 질량을 k·P 로 묶은 Wc=min(W,k·P) 로
+      C=(Wc·C+s·c)/(Wc+s), W=Wc+s, 거절 압력 R←R·ρ. 질량 상한 때문에 최고 품질 관측 약 k 개 분량만 남고,
+      흐린 관측 수백 개(작은 s)는 좋은 관측 몇 개를 이기지 못한다. 같은 품질이면 지수 평균처럼 새 관측이 옛 것을 밀어낸다.
+    - 이상치: 버리되 R←R+s 로 거절 압력을 쌓고, R > min(W,k·P) 이면 지금 관측으로 갈아 끼운다(C=c, W=s, P=s, R=0).
+      처음 들어온 틀린 관측(-755 의 0 고착 같은)이 뒤의 일관된 바른 관측을 영영 막지 못한다.
+    반환: (받아들인 수, 거절 수, 갈아 끼운 수).
+    """
+    import torch
+
+    s = w.pow(cfg.fusion_power)
+    keep = s > 0   # 아주 작은 가중의 거듭제곱이 0 으로 내려가면 관측으로 적지 않는다
+    selected, s, observed = selected[keep], s[keep], observed[keep]
+    C, W, P, R = colors[selected], weights[selected], peaks[selected], rejects[selected]
+    fresh = inherited[selected] | (W <= 0)
+    inlier = ~fresh & ((C - observed).abs().amax(dim=1) <= cfg.outlier_rgb)
+    peak = torch.maximum(P, s)
+    held = torch.minimum(W, cfg.fusion_keep * peak)
+    blended = (held[:, None] * C + s[:, None] * observed) / (held + s)[:, None]
+    pressure = R + s
+    takeover = ~fresh & ~inlier & (pressure > torch.minimum(W, cfg.fusion_keep * P))
+    replace = fresh | takeover
+    zero = torch.zeros_like(R)
+    colors[selected] = torch.where(replace[:, None], observed, torch.where(inlier[:, None], blended, C))
+    weights[selected] = torch.where(replace, s, torch.where(inlier, held + s, W))
+    peaks[selected] = torch.where(replace, s, torch.where(inlier, peak, P))
+    rejects[selected] = torch.where(replace, zero, torch.where(inlier, R * cfg.fusion_reject_decay, pressure))
+    inherited[selected] = False
+    accepted = int((replace | inlier).sum())
+    return accepted, len(selected) - accepted, int(takeover.sum())
+
+
 class AppearanceAccumulator:
     """한 World ID의 UV 상태. revision 변경은 새 누적, 마지막 확정 결과는 유지.
 
@@ -207,6 +255,9 @@ class AppearanceAccumulator:
         self.face = self.valid & face_faces[np.maximum(self.owner, 0)]
         self.colors = np.zeros((len(self.owner), 3), np.float32)
         self.weights = np.zeros(len(self.owner), np.float32)
+        # best 합치기 상태(S15P31A101-789): 텍셀별 최고 관측 세기, 이상치 거절 압력. mean 이면 0 그대로
+        self.peaks = np.zeros(len(self.owner), np.float32)
+        self.rejects = np.zeros(len(self.owner), np.float32)
         self.inherited = np.zeros(len(self.owner), bool)
         self.carry_publish = False
         self.revision = None
@@ -228,6 +279,8 @@ class AppearanceAccumulator:
             # 제자리에서 비우지 않는다: 소실 ID 사본(TexelSnapshot)이 같은 배열을 볼 수 있다
             self.colors = np.zeros_like(self.colors)
             self.weights = np.zeros_like(self.weights)
+            self.peaks = np.zeros_like(self.peaks)
+            self.rejects = np.zeros_like(self.rejects)
             self.inherited = np.zeros_like(self.inherited)
             self.carry_publish = False
             self.published_coverage = 0.
@@ -287,10 +340,13 @@ class AppearanceAccumulator:
             raise ValueError("같은 시각 가림막 정점이 유한하지 않다")
         colors, weights = tensor(self.colors).clone(), tensor(self.weights).clone()
         inherited = torch.as_tensor(self.inherited, device=cfg.device).clone()
+        best = cfg.fusion == "best"
+        if best:
+            peaks, rejects = tensor(self.peaks).clone(), tensor(self.rejects).clone()
         camera_colors = self.camera_colors.copy()
         sharpness = {k: list(v) for k, v in self.sharpness.items()}
         samples, color_samples = [], {}
-        accepted = rejected = 0
+        accepted = rejected = takeovers = 0
         if cfg.device.startswith("cuda"):
             prep_end.record(torch.cuda.current_stream(cfg.device))
             prep_end.synchronize()
@@ -379,6 +435,16 @@ class AppearanceAccumulator:
                 begin.record(torch.cuda.current_stream(cfg.device))
             if cfg.color_enabled:
                 observed = (observed * tensor(camera_colors.gain(camera))).clamp(0, 255)
+            if best:
+                good &= torch.isfinite(w) & (w > 0)
+                ok, bad, swapped = fuse_best(colors, weights, peaks, rejects, inherited,
+                                             ids[good], w[good], observed[good], cfg)
+                accepted, rejected, takeovers = accepted + ok, rejected + bad, takeovers + swapped
+                if cfg.device.startswith("cuda"):
+                    end.record(torch.cuda.current_stream(cfg.device))
+                    end.synchronize()
+                    gpu_ms += begin.elapsed_time(end)
+                continue
             fresh = inherited[ids]   # 이어받은 텍셀: 이 ID 의 첫 관측이 덮는다(평균·이상치 거절 없음)
             outlier = (weights[ids] > 0) & ~fresh & ((colors[ids] - observed).abs().amax(dim=1) > cfg.outlier_rgb)
             rejected += int((good & outlier).sum())
@@ -398,6 +464,8 @@ class AppearanceAccumulator:
             return False
         self.colors, self.weights = colors.cpu().numpy(), weights.cpu().numpy()
         self.inherited = inherited.cpu().numpy()
+        if best:
+            self.peaks, self.rejects = peaks.cpu().numpy(), rejects.cpu().numpy()
         self.camera_colors.commit(camera_colors)
         self.sharpness = sharpness
         if cfg.color_enabled:
@@ -408,14 +476,14 @@ class AppearanceAccumulator:
         self.dirty |= accepted > 0
         if cfg.device.startswith("cuda"):
             torch.cuda.synchronize(cfg.device)
-        log.info("외형 누적 world_id=%s device=%s wall_ms=%.3f cpu_ms=%.3f gpu_ms=%s accepted=%s rejected=%s",
-                 world_id, cfg.device, (time.perf_counter() - start) * 1000,
+        log.info("외형 누적 world_id=%s device=%s wall_ms=%.3f cpu_ms=%.3f gpu_ms=%s accepted=%s rejected=%s "
+                 "fusion=%s takeover=%s", world_id, cfg.device, (time.perf_counter() - start) * 1000,
                  (time.process_time() - cpu_start) * 1000,
-                 f"{gpu_ms:.3f}" if cfg.device.startswith("cuda") else "NA", accepted, rejected)
+                 f"{gpu_ms:.3f}" if cfg.device.startswith("cuda") else "NA", accepted, rejected, cfg.fusion, takeovers)
         return accepted > 0
 
     def snapshot(self):
-        return TexelSnapshot(self.colors, self.weights, self.inherited, self.last_confirmed)
+        return TexelSnapshot(self.colors, self.weights, self.inherited, self.last_confirmed, self.peaks)
 
     def absorb(self, other, *, inherit):
         """다른 누적(TexelSnapshot)을 합친다(S15P31A101-743). 표시용이며 신원 판단에 쓰지 않는다.
@@ -423,6 +491,10 @@ class AppearanceAccumulator:
         inherit=False(병합·같은 ID 재연결, Tier 0 가 같은 사람이라고 한 경우): 두 쪽 본 관측 텍셀은 품질 가중 평균, 한쪽만
         관측한 텍셀은 그 값(본 관측이 이어받은 값보다 먼저). inherit=True(다른 새 World ID 로 이어받기): 이 ID 의 본 관측이
         없는 텍셀만 채우고 이어받음 표시. 바뀌면 다음 발행 때 안정 프레임을 기다리지 않고 한 번 낸다(carry_publish).
+
+        best 합치기(S15P31A101-789)의 두 쪽 본 관측 텍셀: 각자 질량을 k·최고 세기로 묶은 뒤(누적 때와 같은 상한) 색이
+        outlier_rgb 안이면 그 질량으로 가중 평균하고 최고 세기는 큰 쪽, 색이 어긋나면 질량이 큰 쪽(같으면 이쪽)을 통째로 쓴다.
+        평균하면 어긋난 두 색이 섞여 번지고, 최고 세기로 고르면 한 번의 선명한 오관측이 이긴다. 가져온 텍셀의 거절 압력은 0.
         """
         colors = np.asarray(other.colors, np.float32)
         weights = np.asarray(other.weights, np.float32)
@@ -433,6 +505,8 @@ class AppearanceAccumulator:
         self.colors, self.weights, self.inherited = self.colors.copy(), self.weights.copy(), self.inherited.copy()
         mine = (self.weights > 0) & ~self.inherited
         theirs = weights > 0
+        if self.config.fusion == "best":
+            return self._absorb_best(other, colors, weights, theirs_inherited, mine, theirs, inherit=inherit)
         if inherit:
             both = np.zeros_like(mine)
             take = theirs & ~mine
@@ -456,12 +530,52 @@ class AppearanceAccumulator:
             self.last_confirmed = other.last_confirmed
         return changed
 
+    def _absorb_best(self, other, colors, weights, theirs_inherited, mine, theirs, *, inherit):
+        peaks = None if other.peaks is None else np.asarray(other.peaks, np.float32)
+        if peaks is None or peaks.shape != weights.shape:
+            peaks = weights   # 최고 세기를 모르면 질량 전체를 한 관측으로 본다(상한이 질량을 깎지 않는다)
+        peaks = peaks.copy()
+        self.peaks, self.rejects = self.peaks.copy(), self.rejects.copy()
+        if inherit:
+            both = np.zeros_like(mine)
+            take = theirs & ~mine
+            mark = take
+        else:
+            theirs_own = theirs & ~theirs_inherited
+            both = mine & theirs_own
+            take = theirs & ~mine & (theirs_own | (self.weights <= 0))
+            mark = take & theirs_inherited
+            keep = self.config.fusion_keep
+            # 최고 세기 0(알 수 없음)이면 질량을 깎지 않는다
+            held_mine = np.minimum(self.weights[both], keep * np.where(self.peaks[both] > 0, self.peaks[both], np.inf))
+            held_theirs = np.minimum(weights[both], keep * np.where(peaks[both] > 0, peaks[both], np.inf))
+            agree = np.abs(self.colors[both] - colors[both]).max(axis=1) <= self.config.outlier_rgb
+            total = held_mine + held_theirs
+            mixed = (held_mine[:, None] * self.colors[both] + held_theirs[:, None] * colors[both]) / total[:, None]
+            theirs_win = ~agree & (held_theirs > held_mine)
+            self.colors[both] = np.where(agree[:, None], mixed,
+                                         np.where(theirs_win[:, None], colors[both], self.colors[both]))
+            self.weights[both] = np.where(agree, total, np.where(theirs_win, held_theirs, held_mine))
+            self.peaks[both] = np.where(agree, np.maximum(self.peaks[both], peaks[both]),
+                                        np.where(theirs_win, peaks[both], self.peaks[both]))
+            self.rejects[both] = np.where(theirs_win, 0, self.rejects[both])
+        self.colors[take], self.weights[take], self.peaks[take] = colors[take], weights[take], peaks[take]
+        self.rejects[take] = 0
+        self.inherited[take] = mark[take]
+        changed = bool(both.any() or take.any())
+        if changed:
+            self.dirty = self.carry_publish = True
+        if self.last_confirmed is None:
+            self.last_confirmed = other.last_confirmed
+        return changed
+
     def adopt(self, old):
         """같은 사람·같은 UV 의 이전 누적을 잇는다(체형만 다시 구워 등록이 바뀐 경우). 이어 쓰면 True."""
         if (old is None or old.revision != self.revision or old.colors.shape != self.colors.shape
                 or not np.array_equal(old.valid, self.valid)):
             return False
         self.colors, self.weights, self.inherited = old.colors, old.weights, old.inherited
+        self.peaks, self.rejects = old.peaks, old.rejects
         self.dirty, self.carry_publish = old.dirty, old.carry_publish
         self.last_sample, self.last_publish = old.last_sample, old.last_publish
         self.published_coverage, self.sharpness = old.published_coverage, old.sharpness

@@ -71,10 +71,10 @@ def render(cam, planes):
     return AppearanceView(cam, image, 1000, mask=np.isfinite(nearest).reshape(128, 128))
 
 
-def accumulator(*, policy="OBSERVED", resolution=48, freeze=1, seam=0):
+def accumulator(*, policy="OBSERVED", resolution=48, freeze=1, seam=0, fusion="best"):
     vertices, faces, uv, planes = cube()
     cfg = AppearanceConfig(resolution=resolution, freeze_frames=freeze, seam_width=seam,
-                           face_policy=policy, sample_interval_ms=1, publish_interval_ms=100)
+                           face_policy=policy, sample_interval_ms=1, publish_interval_ms=100, fusion=fusion)
     face = np.zeros(len(faces), bool)
     face[2:4] = True  # +Y를 합성 얼굴 영역으로 삼는다.
     acc = AppearanceAccumulator(faces, uv, faces, face, config=cfg)
@@ -146,9 +146,10 @@ def test_other_person_z_buffer_masks_and_screen_bounds():
     assert not blank.weights.any()
 
 
-def test_outliers_weighted_average_and_gate_abort_are_transactional(caplog):
+@pytest.mark.parametrize("fusion", ["best", "mean"])
+def test_outliers_weighted_average_and_gate_abort_are_transactional(caplog, fusion):
     caplog.set_level("INFO")
-    acc, vertices, planes = accumulator()
+    acc, vertices, planes = accumulator(fusion=fusion)
     view = render(camera((3, 2, 1)), planes)
     acc.accumulate("w-1", vertices, [view], 1000)
     colors, weights = acc.colors.copy(), acc.weights.copy()
@@ -436,8 +437,9 @@ def test_pipeline_pure_merge_keeps_texture_accumulation_and_labels_new_version_w
 # ---- S15P31A101-743 외형 승계(표시 전용) ----
 
 def test_merge_absorb_unions_observed_texels_with_quality_weighted_average():
-    acc, vertices, planes = accumulator()
-    other, _, _ = accumulator()
+    """기존 mean 합치기 식(되돌림 스위치). best 합치기는 test_appearance_fusion.py"""
+    acc, vertices, planes = accumulator(fusion="mean")
+    other, _, _ = accumulator(fusion="mean")
     assert acc.accumulate("w-1", vertices, [render(camera((3, 2, 1)), planes)], 1000)
     assert other.accumulate("w-2", vertices, [render(camera((-3, 2, 1), "cam2"), planes)], 1000)
     mine, theirs = acc.weights > 0, other.weights > 0
