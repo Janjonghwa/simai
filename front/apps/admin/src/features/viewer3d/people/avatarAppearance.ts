@@ -7,6 +7,11 @@ import {
   type AvatarFillInput,
   type AvatarUvPartMap,
 } from '@/features/viewer3d/people/avatarAppearanceFill';
+import {
+  AVATAR_FILL_MIRROR_ENABLED,
+  avatarUvMirrorMapForScene,
+  type AvatarUvMirrorMap,
+} from '@/features/viewer3d/people/avatarAppearanceMirror';
 import type { AvatarAssetView, AvatarPoseView } from '@/features/viewer3d/people/avatarFrame';
 import { AVATAR_ASSET_RETRY_MS, type AvatarMeshFetch } from '@/features/viewer3d/people/avatarMesh';
 import type { PersonTone } from '@/features/viewer3d/people/personMotion';
@@ -627,10 +632,14 @@ export interface AvatarAppearanceTextures {
   width: number;
   height: number;
   /**
-   * 셰이더에 넘길 표시용 albedo(미관측·얼굴 미관측을 채운 것, -742). 같은 부위 지도·얼굴 정책이면 다시 계산하지 않고,
+   * 셰이더에 넘길 표시용 albedo(미관측·얼굴 미관측을 채운 것, -742). 같은 부위 지도·대칭 대응표(-790)·얼굴 정책이면 다시 계산하지 않고,
    * 바뀌면 이전 것을 해제하고 새로 만든다. dispose() 때 함께 해제한다.
    */
-  displayAlbedo(facePolicy: AvatarFacePolicy, partMap: AvatarUvPartMap | null): DataTexture;
+  displayAlbedo(
+    facePolicy: AvatarFacePolicy,
+    partMap: AvatarUvPartMap | null,
+    mirror?: AvatarUvMirrorMap | null,
+  ): DataTexture;
   dispose(): void;
 }
 
@@ -776,9 +785,20 @@ export function avatarPartMapFor(
   return avatarUvPartMapForScene(meshScene, grid.width, grid.height, AVATAR_WAIST_REST_Y);
 }
 
+/** 외형 텍스처 크기에 맞는 메시 좌우 대칭 대응표(-790). 메시가 없거나 대칭 채움을 끄면 null. */
+export function avatarMirrorMapFor(
+  appearance: AvatarAppearanceTextures,
+  meshScene: Object3D | null | undefined,
+  enabled: boolean = AVATAR_FILL_MIRROR_ENABLED,
+): AvatarUvMirrorMap | null {
+  if (!meshScene || !enabled) return null;
+  return avatarUvMirrorMapForScene(meshScene, appearance.width, appearance.height);
+}
+
 /**
  * 아바타 재질 목록에 현재 외형 텍스처·표면 출처 지도·얼굴 정책·환경맵을 반영한다.
- * meshScene(아바타 자산 장면)을 주면 그 UV 섬·상하 부위 안에서 미관측을 채운다(-742).
+ * meshScene(아바타 자산 장면)을 주면 미관측 몸 텍셀을 좌우 대칭 관측 색으로 먼저 채우고(-790),
+ * 남은 곳은 그 UV 섬·상하 부위 안에서 채운다(-742).
  */
 export function applyAvatarAppearanceToMaterials(
   materials: readonly Material[],
@@ -789,7 +809,11 @@ export function applyAvatarAppearanceToMaterials(
 ): void {
   const policyNum = facePolicyCode(facePolicy);
   const albedo = appearance
-    ? appearance.displayAlbedo(facePolicy, avatarPartMapFor(appearance, meshScene))
+    ? appearance.displayAlbedo(
+        facePolicy,
+        avatarPartMapFor(appearance, meshScene),
+        avatarMirrorMapFor(appearance, meshScene),
+      )
     : null;
   for (const material of materials) {
     const m = material as MeshStandardMaterial;
@@ -961,13 +985,18 @@ export function avatarAppearanceKey(
   return `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
 }
 
-/** 표시용 albedo 바이트를 만든다. 채우기가 실패하면 관측·보간·얼굴 관측만 남기고 나머지는 기본 재질 색으로 그린다. */
-function buildAvatarDisplayAlbedo(
+/**
+ * 표시용 albedo 바이트를 만든다. 좌우 대칭 채움(-790)이 실패하면 경고를 남기고 대칭 없이 다시 채운다.
+ * 그것도 실패하면 관측·보간·얼굴 관측만 남기고 나머지는 기본 재질 색으로 그린다.
+ */
+export function buildAvatarDisplayAlbedo(
   albedoImg: AvatarPngImage,
   sourceImg: AvatarPngImage,
   facePolicy: AvatarFacePolicy,
   partMap: AvatarUvPartMap | null,
-  req: AvatarAppearanceRequest,
+  req: Pick<AvatarAppearanceRequest, 'worldId' | 'appearanceVersion'>,
+  mirror: AvatarUvMirrorMap | null = null,
+  fill: (input: AvatarFillInput) => { data: Uint8Array } = fillAvatarAlbedo,
 ): Uint8Array {
   const input: AvatarFillInput = {
     width: albedoImg.width,
@@ -978,15 +1007,25 @@ function buildAvatarDisplayAlbedo(
     sourceHeight: sourceImg.height,
     facePolicy,
     partMap,
+    mirror,
   };
-  try {
-    return fillAvatarAlbedo(input).data;
-  } catch (err) {
+  const warn = (what: string, err: unknown) =>
     console.warn(
-      `[viewer3d] 아바타 외형 채우기 실패 (${req.worldId} v${req.appearanceVersion}): ${
+      `[viewer3d] 아바타 외형 ${what} (${req.worldId} v${req.appearanceVersion}): ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
+  if (mirror) {
+    try {
+      return fill(input).data;
+    } catch (err) {
+      warn('좌우 대칭 채우기 실패, 대칭 없이 채움', err);
+    }
+  }
+  try {
+    return fill({ ...input, mirror: null }).data;
+  } catch (err) {
+    warn('채우기 실패', err);
     return maskUnfilledAvatarAlbedo(input);
   }
 }
@@ -1017,6 +1056,7 @@ export async function loadAvatarAppearanceTextures(
   let display: {
     facePolicy: AvatarFacePolicy;
     partMap: AvatarUvPartMap | null;
+    mirror: AvatarUvMirrorMap | null;
     texture: DataTexture;
   } | null = null;
   return {
@@ -1030,18 +1070,23 @@ export async function loadAvatarAppearanceTextures(
     surfaceSourceTexture,
     width: albedoImg.width,
     height: albedoImg.height,
-    displayAlbedo(facePolicy, partMap) {
-      if (display && display.facePolicy === facePolicy && display.partMap === partMap) {
+    displayAlbedo(facePolicy, partMap, mirror = null) {
+      if (
+        display &&
+        display.facePolicy === facePolicy &&
+        display.partMap === partMap &&
+        display.mirror === mirror
+      ) {
         return display.texture;
       }
       const texture = createAvatarDisplayAlbedoTexture({
         width: albedoImg.width,
         height: albedoImg.height,
         channels: 4,
-        data: buildAvatarDisplayAlbedo(albedoImg, sourceImg, facePolicy, partMap, req),
+        data: buildAvatarDisplayAlbedo(albedoImg, sourceImg, facePolicy, partMap, req, mirror),
       });
       display?.texture.dispose();
-      display = { facePolicy, partMap, texture };
+      display = { facePolicy, partMap, mirror, texture };
       return texture;
     },
     dispose() {
