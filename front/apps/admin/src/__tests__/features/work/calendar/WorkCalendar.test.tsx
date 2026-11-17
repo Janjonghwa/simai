@@ -251,18 +251,14 @@ describe('WorkCalendar', () => {
     expect(highBadgeOf(highOnly)?.textContent).toBe('2');
   });
 
-  it('지난 날 완료 아이콘은 제출한 날·진행 값 없는 옛 응답에, 종료만 된 날은 미제출 표시(S15P31A101-750)다', async () => {
+  it('지난 날 완료 아이콘은 제출 여부와 상관없이 표시된다(종료·제출·진행 값 없는 옛 응답 모두)', async () => {
     works = [
       past('p1', '2026-11-09', { progress: 'ENDED' }),
       past('p2', '2026-11-08', { progress: 'SUBMITTED' }),
       past('p3', '2026-11-07', { progress: null, actual_ended_at: 1_000 }),
     ];
     renderCalendar();
-    await waitFor(() =>
-      expect(cellOf('11월 9일').querySelector('[data-slot="unsubmitted-mark"]')).not.toBeNull(),
-    );
-    expect(endedIconOf(cellOf('11월 9일'))).toBeNull();
-    expect(within(cellOf('11월 9일')).getByText('보고서 미제출')).toBeTruthy();
+    await waitFor(() => expect(endedIconOf(cellOf('11월 9일'))).not.toBeNull());
     expect(within(cellOf('11월 9일')).getByText('작업 1건')).toBeTruthy();
     expect(endedIconOf(cellOf('11월 8일'))).not.toBeNull();
     expect(endedIconOf(cellOf('11월 7일'))).not.toBeNull();
@@ -291,14 +287,11 @@ describe('WorkCalendar', () => {
     }
   });
 
-  it('작업 목의 지난 이력은 제출한 날은 완료 아이콘, 제출하지 않은 날은 미제출 아이콘으로 보인다(S15P31A101-750)', async () => {
+  it('작업 목의 지난 이력은 제출한 날도 제출하지 않은 날도 완료 아이콘으로 보인다', async () => {
     server.use(...createWorkMock({ now: () => NOW }).handlers);
     renderCalendar();
-    // 모의 목: 어제(11월 10일)만 종료 상태로 보고서를 안 냈고, 그 앞날은 제출했다
-    await waitFor(() => expect(endedIconOf(cellOf('11월 9일'))).not.toBeNull());
-    expect(cellOf('11월 10일').querySelector('[data-slot="unsubmitted-mark"]')).not.toBeNull();
-    expect(endedIconOf(cellOf('11월 10일'))).toBeNull();
-    expect(cellOf('11월 10일').getAttribute('aria-label')).toContain('보고서 미제출');
+    await waitFor(() => expect(endedIconOf(cellOf('11월 10일'))).not.toBeNull());
+    expect(endedIconOf(cellOf('11월 9일'))).not.toBeNull();
   });
 
   it('작업이 없는 지난 날은 표시도 요약도 없고 누를 수 없다', async () => {

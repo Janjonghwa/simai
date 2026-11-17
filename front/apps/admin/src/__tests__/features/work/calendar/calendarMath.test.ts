@@ -86,18 +86,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
         workDayOf({ progress: 'ENDED', event_counts: { CRITICAL: 1 } }),
         workDayOf({ progress: 'SUBMITTED', event_counts: null }),
       ]),
-    ).toEqual({ count: 3, critical: 3, high: 1, unsubmitted: 1 });
-  });
-
-  it('보고서를 안 낸 작업 수를 싣고 접근성 이름에 「보고서 미제출」을 넣는다(S15P31A101-750)', () => {
-    const summary = summarizeWorks([
-      workDayOf({ progress: 'ENDED' }),
-      workDayOf({ progress: 'SUBMITTED' }),
-    ]);
-    expect(summary).toEqual({ count: 2, critical: 0, high: 0, unsubmitted: 1 });
-    expect(
-      cellAriaLabel({ dateKey: '2026-11-10', day: 10, kind: 'past', mark: null, summary }),
-    ).toBe('11월 10일, 작업 2건 완료, 위험 0건, 경고 0건, 보고서 미제출 1건');
+    ).toEqual({ count: 3, critical: 3, high: 1 });
   });
 
   it('끝난 작업 모두가 관제 카드 기준 사건 수를 알면 사건 수를 함께 싣고, 접근성 이름에 경보 수와 같이 적는다(S15P31A101-751)', () => {
@@ -236,11 +225,10 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
 
 describe('dayMarkOf — 지난 날', () => {
   const ENDED = { kind: 'ended' } as const;
-  const UNSUBMITTED = { kind: 'unsubmitted' } as const;
   const mark = (progress: DayProgress) => dayMarkOf([workDayOf({ progress })], 'past');
 
-  it('제출(SUBMITTED)은 완료 표시, 종료만 된(ENDED) 작업은 보고서 미제출 표시다(S15P31A101-750)', () => {
-    expect(mark('ENDED')).toEqual(UNSUBMITTED);
+  it('종료(ENDED)와 제출(SUBMITTED)은 둘 다 완료 표시다(종료와 제출을 나누지 않는다)', () => {
+    expect(mark('ENDED')).toEqual(ENDED);
     expect(mark('SUBMITTED')).toEqual(ENDED);
   });
 
@@ -265,11 +253,11 @@ describe('dayMarkOf — 지난 날', () => {
     expect(dayMarkOf([ended, notEnded], 'past')).toEqual(ENDED);
   });
 
-  it('미제출 작업이 하나라도 있으면 순서와 상관없이 미제출 표시이고, 모두 제출했으면 완료 표시다', () => {
+  it('끝난 작업이 하나라도 있으면 제출 여부·순서와 상관없이 완료 표시다', () => {
     const submitted = workDayOf({ work_id: '1', daily: false, progress: 'SUBMITTED' });
     const ended = workDayOf({ work_id: '2', daily: false, progress: 'ENDED' });
-    expect(dayMarkOf([submitted, ended], 'past')).toEqual(UNSUBMITTED);
-    expect(dayMarkOf([ended, submitted], 'past')).toEqual(UNSUBMITTED);
+    expect(dayMarkOf([submitted, ended], 'past')).toEqual(ENDED);
+    expect(dayMarkOf([ended, submitted], 'past')).toEqual(ENDED);
     expect(dayMarkOf([submitted, submitted], 'past')).toEqual(ENDED);
   });
 
