@@ -114,6 +114,7 @@ export function SetupModeChoice({
   reuse,
   mapId = null,
   onMapChange,
+  openMaps = false,
 }: {
   /** 지금 고른(또는 기본) 방식. 재사용을 쓸 수 없으면 NEW 다. */
   mode: SetupMode;
@@ -122,6 +123,8 @@ export function SetupModeChoice({
   /** 재사용으로 시작할 맵(고른 맵, 없으면 추천). 맞는 맵이 없으면 null(S15P31A101-714). */
   mapId?: string | null;
   onMapChange?: (id: string) => void;
+  /** 시연 계정: 시점 확인 없이 완료된 맵을 모두 고를 수 있다(features/demo/demoSetup demoReuseOpen). 안내 글에서 「같은 자리인 맵만」을 뺀다. */
+  openMaps?: boolean;
 }) {
   const reuseDisabled = reuse.checking || reuse.blocked !== null;
   return (
@@ -161,8 +164,8 @@ export function SetupModeChoice({
         {reuse.maps.length > 0 && (
           <>
             <p className="text-xs text-muted-foreground">
-              고른 맵을 만들 때의 보정·카메라 높이·구역을 그대로 써요. 카메라가 그때와 같은 자리인
-              맵만 고를 수 있어요.
+              고른 맵을 만들 때의 보정·카메라 높이·구역을 그대로 써요.
+              {!openMaps && ' 카메라가 그때와 같은 자리인 맵만 고를 수 있어요.'}
             </p>
             <MapList
               maps={reuse.maps}

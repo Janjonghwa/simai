@@ -137,13 +137,16 @@ public class SetupService {
     private final SetupZoneOpinions opinions;
     private final SetupReuseCheck reuseCheck;
     private final ReplayTestSwitch replayTest;
+    private final SetupDemoAccounts demoAccounts;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
             SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits,
-            SetupZoneOpinions opinions, SetupReuseCheck reuseCheck, ReplayTestSwitch replayTest) {
+            SetupZoneOpinions opinions, SetupReuseCheck reuseCheck, ReplayTestSwitch replayTest,
+            SetupDemoAccounts demoAccounts) {
         this.jdbc = jdbc;
+        this.demoAccounts = demoAccounts;
         this.replayTest = replayTest;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -367,7 +370,8 @@ public class SetupService {
                         (UUID) running.getFirst().get("setup_session_id"),
                         ((Number) running.getFirst().get("work_unit_id")).longValue());
             }
-            SetupReuseCheck.Evaluated picked = reuseCheck.require(siteId, chosen);
+            // 시연 계정은 카메라 시점 확인·추천 없이 완료된 맵을 모두 고른다(SetupDemoAccounts)
+            SetupReuseCheck.Evaluated picked = reuseCheck.require(siteId, chosen, demoAccounts.isDemo(userId));
             SetupReuseCandidates.Candidate source = picked.candidate();
 
             UUID sessionId = UUID.randomUUID();
@@ -552,6 +556,11 @@ public class SetupService {
     /** 「이전 맵 재사용」 후보 맵 목록·추천·고를 수 없는 이유(S15P31A101-689·-714, GET /api/setup-sessions/reuse-check) */
     public ObjectNode reuseCheck() {
         return reuseCheck.toJson(reuseCheck.check(sites.siteId()));
+    }
+
+    /** 위와 같되 시연 계정이면 완료된 맵을 모두 고를 수 있고 추천이 없다(SetupDemoAccounts) */
+    public ObjectNode reuseCheck(long userId) {
+        return reuseCheck.toJson(reuseCheck.check(sites.siteId()), demoAccounts.isDemo(userId));
     }
 
     /**

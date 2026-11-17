@@ -102,6 +102,10 @@ class SetupReuseModeIntegrationTest {
     @MockitoSpyBean
     CoverageGuideService coverageGuides;
 
+    /** 시연 계정 판정만 바꿔 본다. 기본은 시연 계정 아님(시험 설정 demo-user-ids 비움) */
+    @MockitoSpyBean
+    SetupDemoAccounts demoAccounts;
+
     private final String suffix = UUID.randomUUID().toString().substring(0, 8);
     private final String worker = "worker-setup-reuse-" + suffix;
     private final String baseCalibration = "cal-reuse-base-" + suffix;
@@ -333,6 +337,46 @@ class SetupReuseModeIntegrationTest {
         JsonNode olderItem = find(drift.get("candidates"), older.session());
         assertThat(olderItem.get("status").asString()).isEqualTo("CHANGED");
         assertThat(olderItem.get("camera_source").asString()).isEqualTo("TIER0_DRIFT");
+    }
+
+    @Test
+    void 시연_계정은_시점_확인과_추천_없이_완료된_맵을_모두_고른다() throws Exception {
+        doReturn(true).when(demoAccounts).isDemo(userId);
+        MapFixture older = mapSession("da", Instant.now().minusSeconds(2 * 86400), true, "PASSED");
+        MapFixture newer = mapSession("db", Instant.now().minusSeconds(86400), true, "PASSED");
+        MapFixture notDone = mapSession("dn", Instant.now().minusSeconds(3600), false, "PASSED");
+        // 일반 계정이면 older 가 추천(MATCH)이고 newer 는 카메라가 달라져 막힌다
+        view(older.scene(), 400, "SAME", 0.0);
+        view(newer.scene(), 150, "CHANGED", null);
+
+        JsonNode check = body(mvc.perform(reuseCheck()).andExpect(status().isOk()).andReturn());
+        assertThat(check.get("available").asBoolean()).isTrue();
+        assertThat(check.get("blocked_reason").isNull()).isTrue();
+        assertThat(check.get("recommended_setup_session_id").isNull()).isTrue();
+        JsonNode list = check.get("candidates");
+        assertThat(find(list, older.session()).get("selectable").asBoolean()).isTrue();
+        assertThat(find(list, older.session()).get("recommended").asBoolean()).isFalse();
+        assertThat(find(list, newer.session()).get("status").asString()).isEqualTo("CHANGED");
+        assertThat(find(list, newer.session()).get("selectable").asBoolean()).isTrue();
+        // 완료 전 맵(EXCLUDED)은 기술적으로 쓸 수 없어 시연 계정도 고를 수 없다
+        assertThat(find(list, notDone.session()).get("selectable").asBoolean()).isFalse();
+        mvc.perform(createReuse(notDone.session())).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_REUSE_MAP_UNAVAILABLE"));
+
+        // 카메라가 달라진 맵도 시작한다
+        JsonNode created = body(mvc.perform(createReuse(newer.session())).andExpect(status().isAccepted()).andReturn());
+        assertThat(created.get("mode").asString()).isEqualTo("REUSE");
+        assertThat(created.at("/reuse_source/setup_session_id").asString()).isEqualTo(newer.session().toString());
+    }
+
+    @Test
+    void 시연_계정이_맵을_고르지_않으면_가장_최근에_완료된_맵을_쓴다() throws Exception {
+        doReturn(true).when(demoAccounts).isDemo(userId);
+        mapSession("do", Instant.now().minusSeconds(2 * 86400), true, "PASSED");
+        MapFixture newest = mapSession("dw", Instant.now().minusSeconds(86400), true, "PASSED");
+        // 둘 다 시점 확인 결과가 없다(일반 계정이면 VIEW_UNCONFIRMED 로 막힌다)
+        JsonNode created = body(mvc.perform(createReuse(null)).andExpect(status().isAccepted()).andReturn());
+        assertThat(created.at("/reuse_source/setup_session_id").asString()).isEqualTo(newest.session().toString());
     }
 
     @Test

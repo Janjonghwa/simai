@@ -319,7 +319,8 @@ describe('세팅 화면 임베드', () => {
       },
     });
     await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-    fireEvent.click(line().getByRole('button', { name: '카메라 다시 맞추기' }));
+    // 단추 줄은 경고보다 한 번 늦게 그려진다(느린 CI 에서 바로 집으면 없다)
+    fireEvent.click(await line().findByRole('button', { name: '카메라 다시 맞추기' }, POLL_WAIT));
     await screen.findByLabelText('카메라 2 높이 (m)');
 
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -377,7 +378,10 @@ describe('세팅 화면 임베드', () => {
       },
     });
     await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
-    expect(lineLabels()).toEqual(['현재 시도 중단', '카메라 다시 맞추기', '다음']);
+    await waitFor(
+      () => expect(lineLabels()).toEqual(['현재 시도 중단', '카메라 다시 맞추기', '다음']),
+      POLL_WAIT,
+    );
 
     fireEvent.click(line().getByRole('button', { name: '카메라 다시 맞추기' }));
     expect(await screen.findByLabelText('카메라 2 높이 (m)')).toBeTruthy();

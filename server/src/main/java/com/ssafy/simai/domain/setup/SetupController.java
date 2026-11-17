@@ -74,10 +74,11 @@ class SetupController {
      * recommended_setup_session_id, as_is_max_rotation_rad, candidates[{setup_session_id, scene_version, calibration_version, completed_at_ms,
      * camera_heights_m, status(MATCH|UNCONFIRMED|SHIFTED|CHANGED|EXCLUDED), reason, selectable, recommended, changed_cameras, shifted_cameras,
      * unconfirmed_cameras, camera_source, cameras}]}
+     * 시연 계정(simai.setup.demo-user-ids)은 제외가 아닌 맵이 모두 selectable 이고 추천이 없다.
      */
     @GetMapping("/reuse-check")
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode reuseCheck() { return setups.reuseCheck(); }
+    ObjectNode reuseCheck(@AuthenticationPrincipal Jwt jwt) { return setups.reuseCheck(Long.parseLong(jwt.getSubject())); }
 
     @GetMapping("/{id}")
     ObjectNode get(@PathVariable UUID id) { return setups.get(id); }
