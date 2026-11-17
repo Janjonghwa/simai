@@ -2,6 +2,13 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-783 사람에 안전모·조끼 형상을 그리지 않음
+
+공개 입구·타입 변경 없음. 동작만 바뀐다.
+
+- 변경: `personHelmets`·`personVests` 가 `WORN` 이어도 안전모·조끼 GLB 형상을 그리지 않는다. 캡슐 고정 자리에 붙어 아바타 메시 몸과 어긋나 목업처럼 보였다(사용자 결정). `NOT_WORN` 머리 위 빨간 경고 표식과 이름표 PPE 칸은 그대로다. prop·Store 는 표식 판단에 계속 쓴다.
+- 없앰: 내부 `PpeGear`·`ppeAssets`·`ppeFit` 와 GLB 자산 2개(`people/ppe/assets`, CC BY 4.0 출처 표기 `CREDITS.txt` 포함). 공개 입구가 아니라 호환에 영향 없다.
+
 ## S15P31A101-658 사람 이름표 칸 목록(`personLabels`, A안)
 
 모두 더하기이며 하위 호환이다. 설계 문서는 `docs/design/S15P31A101-658-person-name-label.md` 에 있다.

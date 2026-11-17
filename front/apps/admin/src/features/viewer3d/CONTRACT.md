@@ -124,11 +124,13 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - 내용으로 비교한다: 전체와 사람별 칸 배열 모두 값이 같으면 참조를 유지해 다른 아바타를 다시 그리지 않는다.
 - `personBadges`: `personLabels` 를 넘기지 않는 단독 시험·하네스용 레거시 경로(World ID 끝에 ` · 글`).
 
-## 사람 안전모·조끼 형상(`personHelmets`·`personVests` prop, -531·-552)
+## 사람 안전모·조끼 상태(`personHelmets`·`personVests` prop, -531·-552·-783)
 
-- World ID → `PersonHelmetState`(WORN·NOT_WORN·UNKNOWN), 안전모는 `personHelmets`, 조끼는 `personVests`. 명세 13.3 표현: WORN 은 GLB 실물(채도를 낮춰 경보 색과 헷갈리지 않게), UNKNOWN·NOT_WORN 은 그 장비를 그리지 않는다(-656: 반투명 형상은 착용과 구분되지 않았다). 둘 중 하나라도 NOT_WORN 이면 머리 위 빨간 경고 표식 하나.
-- 뷰어는 PPE 를 다시 판정하지 않는다. 같은 World ID·`identity_revision`·만료·EC2 연결은 호스트가 따져 붙일 사람만 넘긴다. 키가 없는 사람은 그리지 않는다.
-- 위치: Tier 0 골격 막대는 양쪽 귀 가운데에 안전모, 어깨·골반 관절로 조끼 크기를 맞춘다. 캡슐과 아바타 메시 사람은 캡슐 몸의 고정 자리에 장비와 표식을 둔다(메시 머리에 정밀하게 맞추지 않는다, 19.1 미결). 높이 모름 기둥은 표식만 있고 장비는 없다. 클릭을 받지 않는다.
+- World ID → `PersonHelmetState`(WORN·NOT_WORN·UNKNOWN), 안전모는 `personHelmets`, 조끼는 `personVests`.
+- 안전모·조끼 형상(GLB)은 그리지 않는다(-783). 캡슐 고정 자리에 붙인 형상이 아바타 몸과 어긋나 목업처럼 보여 뺐다. WORN·UNKNOWN 은 3D 에 아무것도 더하지 않는다.
+- 둘 중 하나라도 NOT_WORN 이면 머리 위 빨간 경고 표식 하나. 상태 글은 호스트가 이름표 PPE 칸(`personLabels`) 또는 `personBadges` 로 넘긴다.
+- 뷰어는 PPE 를 다시 판정하지 않는다. 같은 World ID·`identity_revision`·만료·EC2 연결은 호스트가 따져 붙일 사람만 넘긴다. 키가 없는 사람은 표식이 없다.
+- 표식 위치: Tier 0 골격 막대는 골격 머리 위를 따른다. 캡슐과 아바타 메시 사람은 캡슐 머리 구 위(1.64 m), 높이 모름 기둥은 기둥 위(2.0 m)에 둔다. 클릭을 받지 않는다.
 - 경보가 아니다(경보는 R9 이벤트). 내용이 같으면 Store 를 바꾸지 않는다.
 
 ## 사람 강조(`personHighlights` prop, -509)

@@ -256,8 +256,7 @@ export interface Viewer3DProps {
   personHighlights?: Readonly<Record<string, string>>;
   /**
    * 사람별 안전모 상태(World ID → 상태, -531, 선택 사항). 호스트가 같은 World ID·identity_revision·만료·연결을 이미 따진 값만 넘긴다.
-   * 골격 막대는 양쪽 귀 가운데에, 캡슐·아바타 메시는 캡슐 머리 자리에 안전모 모델을 그린다(-552). 안전모나 조끼가 미착용이면 머리 위에
-   * 경고 표식이 보인다. 아바타 메시 머리에 정밀하게 맞추지 않는다.
+   * 안전모·조끼 형상은 그리지 않는다(-783). 안전모나 조끼가 미착용이면 머리 위에 빨간 경고 표식 하나가 보인다.
    * 경보가 아니다(경보는 R9 이벤트). 키가 없는 사람은 그리지 않는다. 내용이 같으면 다시 그리지 않는다.
    */
   personHelmets?: Readonly<Record<string, PersonHelmetState>>;

@@ -151,7 +151,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const replaying = sourceKey === 'replay';
   const [avatar] = useState(() => readAvatar(window.location.search));
   const [avatarMesh] = useState(() => readAvatarMesh(window.location.search));
-  // ?ppe=fixed|cycle: 사람별 안전모·조끼 상태(-552). 없으면 장비를 그리지 않는다.
+  // ?ppe=fixed|cycle: 사람별 안전모·조끼 상태(-552). 미착용이면 경고 표식이 보인다(장비 형상은 그리지 않는다, -783).
   const [ppeMode] = useState(() => readPpeMode(window.location.search));
   const ppe = useHarnessPpe(dataStore, ppeMode);
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));

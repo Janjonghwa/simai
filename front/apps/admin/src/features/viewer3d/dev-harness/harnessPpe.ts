@@ -3,8 +3,8 @@ import type { PersonHelmetState } from '@/features/viewer3d/types';
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 
-// 개발 화면의 사람별 안전모·조끼 상태(-552). 서버 없이 골격 막대·캡슐에 착용·미착용·모름을 보려고 쓴다.
-// ?ppe=fixed 는 사람 순서대로 정해진 상태(스크린샷용), ?ppe=cycle 은 그 상태가 돌아가며 바뀐다. 없으면 상태 없음(장비를 그리지 않는다).
+// 개발 화면의 사람별 안전모·조끼 상태(-552). 서버 없이 골격 막대·캡슐에 미착용 경고 표식을 보려고 쓴다(장비 형상은 그리지 않는다, -783).
+// ?ppe=fixed 는 사람 순서대로 정해진 상태(스크린샷용), ?ppe=cycle 은 그 상태가 돌아가며 바뀐다. 없으면 상태 없음(표식도 없다).
 
 export type HarnessPpeMode = 'off' | 'fixed' | 'cycle';
 

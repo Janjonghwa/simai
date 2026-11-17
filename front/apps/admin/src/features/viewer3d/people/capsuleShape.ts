@@ -1,4 +1,4 @@
-// 캡슐 아바타의 치수(m, Three Y-up, 루트=발 위치). 캡슐을 그리는 PersonLayer 와 캡슐에 붙이는 안전모·조끼(ppe/ppeFit)가 같은 값을 쓴다.
+// 캡슐 아바타의 치수(m, Three Y-up, 루트=발 위치). 캡슐을 그리는 PersonLayer 가 쓴다.
 export const CAPSULE = {
   /** 몸통 캡슐 반지름. */
   bodyRadius: 0.2,

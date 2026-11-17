@@ -135,7 +135,7 @@ export function SpatialViewportHost({
     () => buildPersonLabelCells(personDisplayMap, ppeLabels),
     [personDisplayMap, ppeLabels],
   );
-  // 사람에게 붙는 착용 안전모·조끼와 미착용 경고 표식(-531·-552·-656, 명세 13.3)
+  // 사람 머리 위 미착용 경고 표식에 쓰는 안전모·조끼 상태(-531·-552·-656·-783, 명세 13.3). 장비 형상은 그리지 않는다
   const { helmets: personHelmets, vests: personVests } = usePpeGearStates();
   // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
   useWatchBindDetector();

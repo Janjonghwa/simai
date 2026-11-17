@@ -103,7 +103,7 @@ export function usePpeLabels(): Readonly<Record<string, string>> {
 
 /**
  * 사람 하나의 PPE 상태(안전모·조끼·사유·마지막 근거 시각). 지금 트랙이 없거나 붙일 상태가 없으면 null.
- * 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인이 이 훅으로 그린다(3D 에는 -531·-552 가 안전모·조끼 형상과 미착용 표식만 그린다).
+ * 이름표 글·보호구 카드 같은 화면 표시는 프론트 디자인이 이 훅으로 그린다(3D 에는 미착용 경고 표식만 그린다, -531·-552·-783).
  */
 export function usePersonPpe(worldId: string | null): PersonPpe | null {
   const { now, snapshots, linkAlive, trackKey } = usePpeInputs();
