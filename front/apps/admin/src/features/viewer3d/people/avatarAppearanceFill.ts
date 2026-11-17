@@ -1,3 +1,4 @@
+import type { AvatarUvMirrorMap } from '@/features/viewer3d/people/avatarAppearanceMirror';
 import type { BufferAttribute, BufferGeometry, Material, Mesh, Object3D } from 'three';
 
 // 아바타 외형 표시용 채운 albedo(S15P31A101-742). 설계: docs/design/S15P31A101-742-avatar-fill-display.md.
@@ -10,6 +11,9 @@ import type { BufferAttribute, BufferGeometry, Material, Mesh, Object3D } from '
 // - 빈 픽셀(S15P31A101-755): 관측·보간·얼굴 관측인데 세 채널이 모두 거의 0 인 텍셀은 워커가 공유 통로의 지운 영상 칸(RGB 0)을
 //   관측으로 적은 것이다(19차 세션 실자산에서 관측 텍셀의 최대 43%). 몸은 미관측처럼 같은 부위 색으로, 얼굴은 이웃 관측 얼굴 평균으로 채운다.
 // - 표시 텍스처는 밉맵을 쓰므로 섬 밖 빈칸으로 넉넉히 번져 먼 거리 표본에 검정 빈칸이 섞이지 않게 한다.
+// - 좌우 대칭(S15P31A101-790): 미관측·빈 픽셀 몸 텍셀은 몸 좌우 반대편 같은 자리(avatarAppearanceMirror.ts 대응표)가
+//   관측·보간 몸 텍셀이면 그 색을 먼저 쓴다. 대칭 색은 번지기 씨앗에도 넣어, 남은 칸이 반대편 색과 이어지게 한다.
+//   얼굴 텍셀은 대칭 복사하지 않는다(받지도 주지도 않음).
 
 /** surface_source 부호(avatarAppearance.ts 와 같은 값. 순환 import 를 피하려고 여기 따로 둔다). */
 const CODE_INTERPOLATED = 1;
@@ -17,11 +21,16 @@ const CODE_OBSERVED = 2;
 const CODE_FACE_BIT = 0x80;
 const CODE_FACE_OBSERVED = 130;
 
-/** 텍셀별 표시 처리: 원래 색 유지, 몸 채우기(미관측·빈 픽셀), 얼굴 미관측 단색, 빈 얼굴 관측(이웃 관측 얼굴 평균). */
+/**
+ * 텍셀별 표시 처리: 원래 색 유지(몸·얼굴 관측), 몸 채우기(미관측·빈 픽셀), 얼굴 미관측 단색, 빈 얼굴 관측(이웃 관측 얼굴 평균),
+ * 좌우 대칭 색으로 채운 몸 텍셀(-790).
+ */
 const KIND_KEEP = 0;
 const KIND_BODY = 1;
 const KIND_FACE_UNOBSERVED = 2;
 const KIND_FACE_VOID = 3;
+const KIND_FACE_KEEP = 4;
+const KIND_MIRROR = 5;
 
 /** 세 채널이 모두 AVATAR_FILL_VOID_MAX_RGB 이하인가(빈 영상 칸, -755). */
 function isVoidTexel(albedo: Uint8Array, o: number): boolean {
@@ -58,6 +67,11 @@ export const AVATAR_FILL_VOID_MAX_RGB = 3;
 export const AVATAR_FILL_FACE_RADIUS_CELLS = 1;
 /** 목 피부를 찾는 얼굴 경계 반경(격자 칸). */
 export const AVATAR_FILL_NECK_RADIUS_CELLS = 2;
+/**
+ * 좌우 대칭으로 채운 색을 같은 부위 번지기의 씨앗으로도 쓸지(-790). 켜면 대응표가 닿지 않은 텍셀(섬 가장자리, 반대편도 미관측)이
+ * 반대편 색과 이어지고, 관측 없는 부위가 인접 부위 색을 빌리지 않는다.
+ */
+export const AVATAR_FILL_MIRROR_SEEDS = true;
 
 export type AvatarFillFacePolicy = 'OBSERVED' | 'BLURRED' | 'EXCLUDED';
 type Rgb = [number, number, number];
@@ -309,6 +323,20 @@ function rasterTriangle(
 
 const partMapCache = new WeakMap<Object3D, Map<string, AvatarUvPartMap | null>>();
 
+/** 아바타 자산 장면에서 외형 텍스처를 칠하는 표면 형상(UV 있음, 관절(Joints) 재질 메시 제외)을 모은다. */
+export function avatarSurfaceGeometries(scene: Object3D): BufferGeometry[] {
+  const geometries: BufferGeometry[] = [];
+  scene.traverse((node) => {
+    const mesh = node as Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const materials = [mesh.material].flat() as Material[];
+    if (materials.some((m) => m && /joints/i.test(m.name))) return;
+    if (!mesh.geometry.getAttribute('uv')) return;
+    geometries.push(mesh.geometry);
+  });
+  return geometries;
+}
+
 /** 아바타 자산 장면(공유 형상)의 부위 지도를 격자 크기별로 한 번만 만든다. 관절(Joints) 재질 메시는 뺀다. */
 export function avatarUvPartMapForScene(
   scene: Object3D,
@@ -323,15 +351,7 @@ export function avatarUvPartMapForScene(
     partMapCache.set(scene, byKey);
   }
   if (byKey.has(key)) return byKey.get(key)!;
-  const geometries: BufferGeometry[] = [];
-  scene.traverse((node) => {
-    const mesh = node as Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const materials = [mesh.material].flat() as Material[];
-    if (materials.some((m) => m && /joints/i.test(m.name))) return;
-    if (!mesh.geometry.getAttribute('uv')) return;
-    geometries.push(mesh.geometry);
-  });
+  const geometries = avatarSurfaceGeometries(scene);
   const map =
     geometries.length > 0 ? buildAvatarUvPartMap(geometries, width, height, waistY) : null;
   byKey.set(key, map);
@@ -352,6 +372,8 @@ export interface AvatarFillInput {
   facePolicy: AvatarFillFacePolicy;
   /** 채우기 격자(avatarFillGridSize)와 같은 크기의 부위 지도. 없으면 텍스처 전체를 한 부위로 본다. */
   partMap: AvatarUvPartMap | null;
+  /** albedo 와 같은 크기의 좌우 대칭 대응표(-790). 없거나 크기가 다르면 대칭 채움 없이 -742/-755 채움만 한다. */
+  mirror?: AvatarUvMirrorMap | null;
 }
 
 export interface AvatarFillResult {
@@ -359,12 +381,16 @@ export interface AvatarFillResult {
   data: Uint8Array;
   /** 얼굴 미관측(128)에 넣은 단색(0~255). 없으면 null. */
   skinRgb: Rgb | null;
-  /** 관측으로 번져 채운 부위, 인접·상하 대체로 채운 부위, 못 채운 부위 수, 빈 픽셀로 보고 채운 관측·보간·얼굴 관측 텍셀 수(-755). */
+  /**
+   * 관측으로 번져 채운 부위, 인접·상하 대체로 채운 부위, 못 채운 부위 수, 빈 픽셀로 보고 채운 관측·보간·얼굴 관측 텍셀 수(-755),
+   * 좌우 대칭 색으로 채운 몸 텍셀 수(-790).
+   */
   stats: {
     seededParts: number;
     borrowedParts: number;
     emptyParts: number;
     voidTexels: number;
+    mirroredTexels: number;
     ms: number;
   };
 }
@@ -424,6 +450,8 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
       ? input.partMap
       : null;
   const sameSize = sw === w && sh === h;
+  const mirror =
+    input.mirror && input.mirror.width === w && input.mirror.height === h ? input.mirror : null;
 
   // 1) 부호 읽기와 격자 씨앗(관측·보간 몸 텍셀 평균), 얼굴 관측 평균. 빈 픽셀은 씨앗에서 빼고 채울 텍셀로 둔다(-755).
   const kinds = new Uint8Array(w * h);
@@ -471,7 +499,10 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
           kinds[t] = KIND_FACE_UNOBSERVED;
         } else if (!keep) {
           kinds[t] = KIND_FACE_VOID;
-        } else if (useFaceObserved) {
+        } else {
+          kinds[t] = KIND_FACE_KEEP;
+        }
+        if (keep && useFaceObserved) {
           faceR += albedo[o]!;
           faceG += albedo[o + 1]!;
           faceB += albedo[o + 2]!;
@@ -495,6 +526,52 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
     }
   }
 
+  // 1b) 좌우 대칭(-790): 미관측·빈 픽셀 몸 텍셀은 대칭 텍셀이 (빈 픽셀이 아닌) 관측·보간 몸 텍셀이면 그 색을 그대로 쓴다.
+  //     대칭 텍셀이 얼굴·미관측·빈 픽셀·이미 대칭으로 채운 텍셀이면 쓰지 않는다(연쇄 없음). 씨앗은 관측 씨앗과 따로 모았다가 2) 에서 더한다.
+  const out = new Uint8Array(albedo);
+  let mirroredTexels = 0;
+  let mirSumR: Float32Array | null = null;
+  let mirSumG: Float32Array | null = null;
+  let mirSumB: Float32Array | null = null;
+  let mirCnt: Uint32Array | null = null;
+  if (mirror) {
+    const target = mirror.target;
+    if (AVATAR_FILL_MIRROR_SEEDS) {
+      mirSumR = new Float32Array(n);
+      mirSumG = new Float32Array(n);
+      mirSumB = new Float32Array(n);
+      mirCnt = new Uint32Array(n);
+    }
+    for (let y = 0; y < h; y++) {
+      const rowL = ((y / f) | 0) * lw;
+      const rowT = y * w;
+      for (let x = 0; x < w; x++) {
+        const t = rowT + x;
+        if (kinds[t] !== KIND_BODY) continue;
+        const s = target[t]!;
+        if (s < 0 || kinds[s] !== KIND_KEEP) continue;
+        const o = t * 4;
+        const so = s * 4;
+        const r = albedo[so]!;
+        const g = albedo[so + 1]!;
+        const b = albedo[so + 2]!;
+        out[o] = r;
+        out[o + 1] = g;
+        out[o + 2] = b;
+        out[o + 3] = 255;
+        kinds[t] = KIND_MIRROR;
+        mirroredTexels++;
+        if (mirCnt) {
+          const li = rowL + lxs[x]!;
+          mirSumR![li] += r;
+          mirSumG![li] += g;
+          mirSumB![li] += b;
+          mirCnt[li]!++;
+        }
+      }
+    }
+  }
+
   // 2) 격자 칸 부위. 얼굴만 있는 칸은 몸 채우기에서 뺀다(-2).
   const rawPart = new Int32Array(n);
   const part = new Int32Array(n);
@@ -509,10 +586,13 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   const state = new Uint8Array(n);
   let frontier: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (cnt[i]! > 0) {
-      colR[i] = sumR[i]! / cnt[i]!;
-      colG[i] = sumG[i]! / cnt[i]!;
-      colB[i] = sumB[i]! / cnt[i]!;
+    // 관측·보간 씨앗에 대칭 색 씨앗(-790)을 더한다. 목 피부(7)는 관측 씨앗(sum·cnt)만 쓴다.
+    const mc = mirCnt ? mirCnt[i]! : 0;
+    const k = cnt[i]! + mc;
+    if (k > 0) {
+      colR[i] = (sumR[i]! + (mc ? mirSumR![i]! : 0)) / k;
+      colG[i] = (sumG[i]! + (mc ? mirSumG![i]! : 0)) / k;
+      colB[i] = (sumB[i]! + (mc ? mirSumB![i]! : 0)) / k;
       state[i] = 1;
       if (part[i]! >= 0) frontier.push(i);
     }
@@ -731,8 +811,7 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
     ? [Math.round(skin[0]), Math.round(skin[1]), Math.round(skin[2])]
     : null;
 
-  // 8) 원래 해상도로 옮긴다. 미관측 몸 텍셀은 같은 부위 격자 칸끼리만 쌍선형 보간한다.
-  const out = new Uint8Array(albedo);
+  // 8) 원래 해상도로 옮긴다. 미관측 몸 텍셀은 같은 부위 격자 칸끼리만 쌍선형 보간한다. 대칭으로 채운 텍셀은 1b) 에서 이미 썼다.
   const x0s = new Int32Array(w);
   const x1s = new Int32Array(w);
   const fxs = new Float32Array(w);
@@ -785,10 +864,11 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
       const t = y * w + x;
       const o = t * 4;
       const kind = kinds[t]!;
-      if (kind === KIND_KEEP) {
+      if (kind === KIND_KEEP || kind === KIND_FACE_KEEP) {
         out[o + 3] = 255;
         continue;
       }
+      if (kind === KIND_MIRROR) continue;
       const li = rowL + lxs[x]!;
       if (kind === KIND_FACE_VOID && faceNear(li, out, o)) continue;
       if (kind === KIND_FACE_UNOBSERVED || kind === KIND_FACE_VOID) {
@@ -837,7 +917,14 @@ export function fillAvatarAlbedo(input: AvatarFillInput): AvatarFillResult {
   return {
     data: out,
     skinRgb,
-    stats: { seededParts, borrowedParts, emptyParts, voidTexels, ms: performance.now() - started },
+    stats: {
+      seededParts,
+      borrowedParts,
+      emptyParts,
+      voidTexels,
+      mirroredTexels,
+      ms: performance.now() - started,
+    },
   };
 }
 
