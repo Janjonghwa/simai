@@ -4,6 +4,7 @@ import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/e
 import { PANEL_DEFAULT_STYLE } from '@/features/events/panelBox';
 import type { EventItem } from '@/features/events/types';
 import { BUNDLES_KEY, ZONES_KEY } from '@/features/zones/api';
+import { EMPTY_TRACK_LIFE, noteWorldFrame } from '@/lib/trackLife';
 import { MOCK_ZONES } from '@/mocks/zones';
 import { useCctvFloatBoxStore } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -197,6 +198,38 @@ describe('EventPanel 머리줄과 두 칸', () => {
     setTracks([]);
     renderPanel([entry({ event_id: 'a', world_ids: ['w-0'] })]);
     expect(head()).toContain('작업자 0명 · 진행 중 0건 · 해소 대기 1건');
+  });
+
+  it('몇 초 살다 사라진 번호(유령 트랙)의 카드는 해소 대기에서 빼 접힌 칸에 두고, 펼치면 보인다(S15P31A101-785)', () => {
+    // w-0 은 처음부터 있던 실제 사람, w-212 는 2초 살다 사라진 중복 트랙
+    let trackLife = EMPTY_TRACK_LIFE;
+    for (let i = 0; i <= 50; i += 1) {
+      const tracks = [{ world_id: 'w-0', track_lifecycle: 'CONFIRMED' }];
+      if (i >= 10 && i <= 30) tracks.push({ world_id: 'w-212', track_lifecycle: 'CONFIRMED' });
+      trackLife = noteWorldFrame(trackLife, tracks as never, T + i * 100);
+    }
+    setTracks(['CONFIRMED']);
+    useRealtimeStore.setState({ trackLife });
+    renderPanel([
+      entry({ event_id: 'a', world_ids: ['w-0'] }),
+      entry({
+        event_id: 'b',
+        world_ids: ['w-212'],
+        rule_id: 'R3',
+        zone_id: 'z-05',
+        severity: 'CAUTION',
+        needs_check: true,
+      }),
+    ]);
+    expect(head()).toContain('작업자 1명 · 진행 중 1건');
+    expect(head()).not.toContain('해소 대기');
+    expect(within(section('진행 중')).getAllByRole('article')).toHaveLength(1);
+    const folded = section('잠깐 잡힌 번호 · 안 보임');
+    expect(within(folded).queryAllByRole('article')).toHaveLength(0);
+    fireEvent.click(within(folded).getByRole('button', { name: /잠깐 잡힌 번호 · 안 보임 1건/ }));
+    const ghost = within(folded).getByRole('article');
+    expect(ghost.textContent).toContain('지금 안 보임');
+    expect(ghost.textContent).toContain('확인 필요');
   });
 
   it('world 를 아직 받지 못했으면 작업자 0명이다', () => {

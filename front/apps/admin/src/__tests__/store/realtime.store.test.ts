@@ -117,6 +117,24 @@ describe('realtime.store', () => {
     store.receiveWorld({ payload: worldStateAt(T + 100).payload, receivedAt: T + 20 });
     expect(useRealtimeStore.getState().world?.receivedAt).toBe(T + 20);
   });
+
+  it('받은 world 만 World ID 기록(trackLife)에 더하고, 워치 배정은 새 ID 가 있을 때만 바꾼다(S15P31A101-785)', () => {
+    const store = useRealtimeStore.getState();
+    const frame = worldStateAt(T).payload;
+    store.receiveWorld({ payload: frame, receivedAt: T });
+    const life = useRealtimeStore.getState().trackLife;
+    expect(life.lastFrameAt).toBe(frame.t_latest_global);
+    expect(Object.keys(life.lives).length).toBeGreaterThan(0);
+    // 늦게 온 이전 프레임은 버리므로 기록도 그대로다
+    store.receiveWorld({ payload: worldStateAt(T - 100).payload, receivedAt: T + 10 });
+    expect(useRealtimeStore.getState().trackLife).toBe(life);
+
+    store.noteWatchedIds(['w-1']);
+    const watched = useRealtimeStore.getState().trackLife.watched;
+    expect(watched).toEqual({ 'w-1': true });
+    store.noteWatchedIds(['w-1']);
+    expect(useRealtimeStore.getState().trackLife.watched).toBe(watched);
+  });
 });
 
 describe('isLinkAlive', () => {

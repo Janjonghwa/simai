@@ -1,3 +1,4 @@
+import { GHOST_MAX_LIFE_MS } from '@/features/events/constants';
 import { isAlarming, type EventEntry } from '@/features/events/entries';
 import type { OutsideWorkKind } from '@/features/events/EventBadges';
 import { EventDetail } from '@/features/events/EventDetail';
@@ -41,8 +42,9 @@ const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 /** 「진행 중」·「최근 해소」 카드가 있는지. 없으면 패널을 저절로 접는다(지난 관제만 있어도 접는다). */
 const hasRecentCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
 
-/** 보이는 카드가 하나라도 있는지(지난 관제 포함). 「모두 지우기」 버튼과 빈 목록 문구가 쓴다. */
-const hasCards = (sections: EventSections) => hasRecentCards(sections) || sections.stale.length > 0;
+/** 보이는 카드가 하나라도 있는지(지난 관제·잠깐 잡힌 번호 포함). 「모두 지우기」 버튼과 빈 목록 문구가 쓴다. */
+const hasCards = (sections: EventSections) =>
+  hasRecentCards(sections) || sections.stale.length > 0 || sections.ghost.length > 0;
 
 /** 옮긴 자리의 인라인 스타일. 접으면 높이는 머리줄만큼이다. */
 const boxStyle = (box: FloatBox, folded: boolean): CSSProperties => ({
@@ -74,16 +76,29 @@ function FoldButton({ folded, onToggle }: { folded: boolean; onToggle: () => voi
 }
 
 /**
- * 「지난 관제 · 확인 필요 N건」 칸(S15P31A101-595). 해소 전이지만 지금 Tier 0 가 들고 있지 않은 이벤트(GPU 를 끈 관제에서 열린 채
- * 남은 것)를 처음에는 접어 둔다. 펼치면 카드로 보이고 상세·운영자 종료는 진행 중과 같다. 경보·소리·2D 평면에는 들어가지 않는다.
+ * 처음에는 접어 두는 칸. 펼치면 카드로 보이고 상세·운영자 종료는 진행 중과 같다.
+ * - 「지난 관제 · 확인 필요 N건」(S15P31A101-595): 해소 전이지만 지금 Tier 0 가 들고 있지 않은 이벤트(GPU 를 끈 관제에서 열린 채 남은 것).
+ *   경보·소리·2D 평면에는 들어가지 않는다.
+ * - 「잠깐 잡힌 번호 · 안 보임 N건」(S15P31A101-785): 잠깐 생겼다 사라졌거나 병합으로 흡수된 사람(유령 트랙)의 사라짐 카드. 경보·소리는 그대로다.
  */
-function StaleSection({ count, children }: { count: number; children: ReactNode }) {
+function FoldedSection({
+  label,
+  count,
+  hint,
+  children,
+}: {
+  label: string;
+  count: number;
+  hint?: string;
+  children: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
-  const title = `지난 관제 · 확인 필요 ${count}건`;
+  const title = `${label} ${count}건`;
   return (
-    <section aria-label="지난 관제 · 확인 필요" className="flex flex-col gap-2">
+    <section aria-label={label} className="flex flex-col gap-2">
       <button
         type="button"
+        title={hint}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 rounded-md px-1 text-left text-[15px] font-bold text-muted-foreground hover:bg-surface-2 hover:text-foreground"
@@ -100,6 +115,9 @@ function StaleSection({ count, children }: { count: number; children: ReactNode 
     </section>
   );
 }
+
+/** 잠깐 잡힌 번호 칸의 설명(S15P31A101-785). */
+const GHOST_HINT = `${GHOST_MAX_LIFE_MS / 1000}초 안에 잡혔다 사라졌거나 다른 번호에 합쳐진 작업자 번호의 사건입니다. 같은 사람이 잠깐 두 번호로 잡힌 경우가 많습니다. 위험이 끝난 것은 아니며, 펼쳐서 확인·종료할 수 있습니다.`;
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -135,7 +153,7 @@ function EventList({
   alive,
   ...card
 }: EventListProps) {
-  const { active, resolved, stale, staleEvents } = sections;
+  const { active, ghost, resolved, stale, staleEvents } = sections;
   const outside = (incident: Incident): OutsideWorkKind | null => {
     if (outsideWorkOf === undefined) return null;
     for (const e of incident.entries) {
@@ -151,7 +169,7 @@ function EventList({
   return (
     <div className="flex flex-col gap-3 p-0.5">
       {/* 지난 관제만 남았으면 지금 진행 중인 것이 없다는 것을 먼저 알린다 */}
-      {active.length === 0 && stale.length > 0 && (
+      {active.length === 0 && stale.length + ghost.length > 0 && (
         <p className="mx-2 text-sm text-faint">진행 중 이벤트 없음</p>
       )}
       {active.length > 0 && (
@@ -185,8 +203,24 @@ function EventList({
           ))}
         </Section>
       )}
+      {ghost.length > 0 && (
+        <FoldedSection label="잠깐 잡힌 번호 · 안 보임" count={ghost.length} hint={GHOST_HINT}>
+          {ghost.map(({ id, incident, occurrences, people }) => (
+            <IncidentCard
+              key={id}
+              incident={incident}
+              occurrences={occurrences}
+              people={people}
+              selected={incident.key === selectedKey}
+              gone
+              outsideWork={outside(incident)}
+              {...card}
+            />
+          ))}
+        </FoldedSection>
+      )}
       {stale.length > 0 && (
-        <StaleSection count={staleEvents}>
+        <FoldedSection label="지난 관제 · 확인 필요" count={staleEvents}>
           {stale.map((incident) => (
             <IncidentCard
               key={incident.key}
@@ -196,7 +230,7 @@ function EventList({
               {...card}
             />
           ))}
-        </StaleSection>
+        </FoldedSection>
       )}
     </div>
   );
@@ -295,10 +329,12 @@ export function EventPanel({
     () => (aliveKey === null ? null : new Set(aliveKey ? aliveKey.split(ALIVE_ID_SEPARATOR) : [])),
     [aliveKey],
   );
-  const sections = useMemo(
-    () => eventSections(entries, { alive, runStartedAt }),
-    [entries, alive, runStartedAt],
-  );
+  // 유령 트랙(S15P31A101-785)을 가르는 World ID 기록. 보인 구간은 world 마다 바뀌어 구독하지 않고, 사람이 바뀔 때(alive) 그 순간 값을 읽는다.
+  const watched = useRealtimeStore((s) => s.trackLife.watched);
+  const sections = useMemo(() => {
+    const { lives, survivorOf } = useRealtimeStore.getState().trackLife;
+    return eventSections(entries, { alive, runStartedAt, life: { lives, survivorOf, watched } });
+  }, [entries, alive, runStartedAt, watched]);
   const goneCount = useMemo(
     () => sections.active.filter((card) => isGone(card.incident, alive)).length,
     [sections.active, alive],
