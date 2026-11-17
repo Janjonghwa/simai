@@ -478,7 +478,12 @@ def window_log_line(window: Mapping[str, Any]) -> str:
         f"동시확정최대 {w.get('max_confirmed', 0)}, 중복쌍최대 {w.get('max_duplicate_pairs', 0)}, "
         f"활성병합 {m.get('revision.active_merge', 0)}, 그림자억제 {m.get('new_track.suppressed_disjoint_shadow', 0)}, "
         f"소실/되찾음 {lost.get('CONFIRMED', 0)}/기하 {geo_back}+ReID {reid_back}, "
-        f"키거부 {m.get('reid.stature_rejected', 0)}, 키동률깨기 {m.get('reid.stature_tiebreak', 0)}"
+        f"키거부 {m.get('reid.stature_rejected', 0)}, 키동률깨기 {m.get('reid.stature_tiebreak', 0)}, "
+        # -784: 출생 보류(시작/흡수/조용한 병합/보류 중 소멸/풀림: 다른사람·멀어짐·시간초과)
+        f"출생보류 {m.get('birth_hold.started', 0)}/흡수 {m.get('birth_hold.absorbed', 0)}"
+        f"+병합 {m.get('birth_hold.merged_silent', 0)}/소멸 {m.get('birth_hold.expired', 0)}/"
+        f"풀림 다른사람 {m.get('birth_hold.released_distinct', 0) + m.get('birth_hold.released_split', 0)}"
+        f"·멀어짐 {m.get('birth_hold.released_apart', 0)}·시간초과 {m.get('birth_hold.released_timeout', 0)}"
     )
     ident = window.get("identity", {})
     confirmed_ms = ident.get("identity_ms", {}).get("CONFIRMED", {})

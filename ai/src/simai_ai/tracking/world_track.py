@@ -438,6 +438,25 @@ class WorldTrackConfig:
     IDENTITY_UNCERTAIN 또는 골반 VALID 아님)로 갱신된 TENTATIVE 의 확정 횟수 (10 Hz 에서 0.6 s). 전역 confirm_hits 는 그대로다"""
     confirm_delay_radius_m: float = 1.35
     """확정 지연을 거는 확정 Track 과의 수평 거리 (shadow_radius_max_m 과 같은 값)"""
+    birth_hold_enabled: bool = True
+    """-784 출생 보류: 살아 있고 최근 관측된 확정 Track(CONFIRMED·OCCLUDED, 보류 아님) birth_hold_radius_m 안에서 새로 생긴 Track 은
+    내부에서만 추적하고 WorldTrackFrame·world_state·체크포인트에 내보내지 않는다. 같은 시각 같은 카메라의 별도 검출(병합 금지 쌍)로
+    다른 사람임이 보이거나, 반경 밖으로 떨어지거나, 근처 확정 Track 이 없어지거나, birth_hold_max_ms 가 지나면 내보낸다. 근처
+    확정 Track 이 하나뿐이고 갱신되지 않는 동안 보류 Track 만 그 자리에서 관측되면(연결이 깨져 갈라진 같은 사람) 그 Track 으로
+    조용히 흡수한다. 보류 중 병합은 교정 기록·별칭을 남기지 않는다(내보낸 적 없는 ID). False 는 이전 동작(재생 비교용)"""
+    birth_hold_radius_m: float = 1.35
+    """출생 보류 반경(수평). shadow_radius_max_m·confirm_delay_radius_m 과 같은 값(예각 2대 깊이 오차 0.5~1.0 m 를 덮는다)"""
+    birth_hold_guard_recent_ms: int = 1000
+    """보류 근거 확정 Track 의 '최근 관측' 창: 마지막 위치 측정이 이 시간 안이어야 한다(split_suppression_owner_ttl_ms 와 같은 값)"""
+    birth_hold_max_ms: int = 1500
+    """출생 보류 상한. 반증이 없어도 이 시간이 지나면 내보낸다(진짜 새 사람 등장 지연 목표 2 s 안, 사람을 숨긴 채 두지 않는다)"""
+    birth_absorb_ticks: int = 2
+    birth_absorb_max_gap_ms: int = 500
+    """흡수 허용 공백: 근처 확정 Track 의 마지막 위치 측정이 이 시간 안이어야 흡수한다(PREDICTED 상한 500 ms 와 같다, 명세 6.1)"""
+    birth_absorb_max_reach_m: float = 1.0
+    """흡수 거리 상한: σ 확장 없이 갈 수 있는 거리 min(0.5 + 2 m/s × 공백, 이 값) 안이어야 한다. 관찰된 중복은 1 m 안이고, 깊이 뜀
+    0.8 m 는 0.2 s 공백(0.9 m)에 들어온다. 공백이 0.25 s 를 넘어도 1.0 m 로 묶어 다가온 다른 사람을 잇지 않는다"""
+    """흡수에 필요한 연속 시각 수(10 Hz 에서 0.2 s): 근처 확정 Track 이 하나뿐이고 그 Track 은 갱신되지 않은 채 보류 Track 만 관측됨"""
     active_merge_enabled: bool = True
     """-657 동시 활성 중복 병합: 같은 시각 둘 다 갱신된 두 Track 이 카메라가 겹치지 않고 그림자 판정(방향별 반경 + 한 점 재투영)
     을 active_merge_confirm_ticks 번 연속 통과하면 먼저 만든 ID 로 합친다(MERGE·aliases). 같은 카메라 별도 검출이 병합 금지
@@ -560,6 +579,7 @@ class WorldTrackConfig:
             "split_suppression_chain",
             "shadow_suppression_enabled",
             "active_merge_enabled",
+            "birth_hold_enabled",
             "stature_enabled",
             "reid_enabled",
             "reid_swap_correction_enabled",
@@ -578,6 +598,7 @@ class WorldTrackConfig:
             "reid_swap_confirm_frames",
             "confirm_hits_near_confirmed",
             "active_merge_confirm_ticks",
+            "birth_absorb_ticks",
             "stature_window",
             "stature_min_samples",
         ):
@@ -591,6 +612,8 @@ class WorldTrackConfig:
             "shadow_keypoint_sigma_px",
             "shadow_reprojection_px",
             "confirm_delay_radius_m",
+            "birth_hold_radius_m",
+            "birth_absorb_max_reach_m",
         ):
             if not getattr(self, name) > 0:
                 raise ValueError(f"{name} 는 양수여야 한다")
@@ -613,6 +636,9 @@ class WorldTrackConfig:
             "appearance_weight",
             "reid_dormant_ttl_ms",
             "reid_swap_window_ms",
+            "birth_hold_guard_recent_ms",
+            "birth_hold_max_ms",
+            "birth_absorb_max_gap_ms",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 는 0 이상이어야 한다")
@@ -993,6 +1019,18 @@ class _Track:
     last_reid_margin: float | None = None
     reid_checked_reentry: bool = False
     confirm_needed: int = 0
+    birth_hold: bool = False
+    """-784 출생 보류 중(내보낸 적 없음). 보류 중에는 TENTATIVE 로만 두고 WorldTrackFrame·체크포인트에 넣지 않는다"""
+    absorb_ticks: int = 0
+    """-784 흡수 근거가 이어진 시각 수(갱신되지 않은 근처 확정 Track 하나 + 이 Track 만 관측)"""
+    birth_origins: frozenset[str] = frozenset()
+    """-784 태어난 클러스터의 로컬 트랙 옛 주인. 그 주인과 따로 보인 확정 Track 은 보류 근거가 아니다(다른 사람의 로컬 트랙이다)"""
+    borrowed_keys: dict[TrackKey, tuple[str, int]] = field(default_factory=dict)
+    """-784 출생 보류 중 다른 Track 에게서 넘겨받은 로컬 트랙 → (원래 주인, 원래 시각). 보류인 채 소멸하면 원래 주인에게 되돌리고,
+    풀리면 버린다(그때부터 이 Track 의 것). 흡수되면 병합이 키를 원래 Track 으로 옮긴다"""
+    birth_explained: frozenset[str] = frozenset()
+    """-784 태어날 때 위치가 그 Track 의 관측 오차로 설명된 확정 Track(갈 수 있는 거리 + 새 클러스터 삼각측량 불확실성). 보류는 이것이
+    하나 이상일 때만 시작하고, 흡수 대상은 이 안에서만 고른다(기다리면 통과하지 않게 첫 관측으로 정한다, 리뷰 F4)"""
     stature: list[float] = field(default_factory=list)
     """-657 기립 키 표본(머리 − 발목, m, 관측값만). 최근 stature_window 개. 소실·장기 보류 동안 Track 과 함께 남는다"""
     """-657 이 TENTATIVE 의 확정 횟수 하한(확정 Track 근처 저신뢰 갱신이면 confirm_hits_near_confirmed). 0 이면 confirm_hits"""
@@ -1193,11 +1231,16 @@ class WorldTrackManager:
         self._swap_counts: dict[tuple[str, str], int] = {}
         """연속 교차 유사도 우위 횟수 (wid_a, wid_b) -> count"""
         self._revisions: list[IdentityRevision] = []
+        self._silent: list[IdentityRevision] = []
+        """-784 이번 update 의 조용한 병합 기록(출생 보류 Track 이 사라진 병합). 내보내지도 revisions 에 남기지도 않는다"""
         self._duplicates: set[frozenset[str]] = set()
         """같은 사람 두 ID 로 보이는 World ID 쌍 (POSSIBLE_DUPLICATE 를 다시 붙인다)"""
         self._distinct: dict[frozenset[str], int] = {}
         """같은 시각 같은 카메라의 다른 검출로 따로 보인(또는 도달 불가로 관측된) World ID 쌍 → 마지막 근거 시각. 서로 다른 두
         사람이라 distinct_ttl_ms 동안 병합·억제하지 않는다(-657 전에는 시간 제한 없음)"""
+        self._co_seen: dict[frozenset[str], int] = {}
+        """-784 `_distinct` 중 같은 시각 같은 카메라의 별도 검출로 따로 보인 쌍만 → 마지막 시각(같은 TTL). 도달 불가 관측은 예각 2대
+        깊이 오차와 구별되지 않아(-657) 출생 보류를 푸는 '다른 사람' 근거로 쓰지 않는다"""
         self._distinct_fixed: set[frozenset[str]] = set()
         """분할로 생긴 병합 금지 쌍. 시간과 무관하게 남는다(진동 방지, S15P31A101-201)"""
         self._shadow_pairs: dict[frozenset[str], _ShadowEvidence] = {}
@@ -1292,6 +1335,8 @@ class WorldTrackManager:
         window = self.config.split_suppression_owner_ttl_ms if ttl_ms is None else int(ttl_ms)
         groups: list[frozenset[TrackKey]] = []
         for tr in sorted(self._tracks.values(), key=lambda item: item.order):
+            if tr.birth_hold:
+                continue  # -784: 출생 보류 Track 의 묶음은 시간 사전 간선으로 굳히지 않는다(같은 사람 조각일 수 있다)
             by_cam: dict[str, tuple[int, TrackKey]] = {}
             for k, kt in tr.keys.items():
                 if ref_t - kt <= window:
@@ -1310,6 +1355,8 @@ class WorldTrackManager:
         """
         out = []
         for tr in sorted(self._tracks.values(), key=lambda tr: tr.world_id):
+            if tr.birth_hold:
+                continue  # -784: 내보낸 적 없는 출생 보류 Track 은 체크포인트에도 넣지 않는다
             sigma = tr.kf.sigma_xyz
             out.append(
                 TrackCheckpoint(
@@ -1348,6 +1395,7 @@ class WorldTrackManager:
         # 서로 다른 임베딩을 보지 않으며, 이후 도착한 결과는 다음 tick에 반영한다(-499).
         self._tick_features = {}
         self._gallery_sim_memo = {}
+        self._silent = []
         if self.feature_lookup is not None and cfg.reid_enabled:
             for key in sorted({key for cluster in frame.clusters for key in cluster.keys}):
                 self._tick_features[key] = self.feature_lookup(key[0], key[1], t)
@@ -1355,6 +1403,7 @@ class WorldTrackManager:
         self._rig = rig
         self._restore_step(t)
         self._distinct = {p: pt for p, pt in self._distinct.items() if t - pt <= cfg.distinct_ttl_ms}
+        self._co_seen = {p: pt for p, pt in self._co_seen.items() if t - pt <= cfg.distinct_ttl_ms}
         self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if t - ev.last_t <= cfg.key_ttl_ms}
 
         keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms, cfg.split_suppression_owner_ttl_ms)
@@ -1676,7 +1725,18 @@ class WorldTrackManager:
             )
             tr.path.append((t, z[:2].copy()))
             self._relate_restored(tr, z[:2], t)
+            # -784: 살아 있고 최근 관측된 확정 Track 근처에서 태어나면 내보내지 않고 보류한다. 같은 카메라 별도 검출로 다른 사람임이
+            # 보이면 이번 시각 안에서 바로 풀린다(_birth_hold_step 이 _mark_distinct 뒤에 돈다)
+            tr.birth_origins = frozenset(o for o in (holder.get(k) for k in c.cluster.keys) if o is not None)
             self._tracks[tr.world_id] = tr
+            if cfg.birth_hold_enabled:
+                tr.birth_explained = frozenset(
+                    gid for _, gid in self._birth_guards(tr.world_id, z[:2], t, c.cluster)
+                    if self._explains(self._tracks[gid], c.cluster, z, t)
+                )
+                if tr.birth_explained:
+                    tr.birth_hold = True
+                    self.diag["birth_hold.started"] += 1
             for k in c.cluster.keys:
                 self._take_key(k, tr, t, set(assigned) | set(applied))
                 owner[k] = tr.world_id
@@ -1710,14 +1770,14 @@ class WorldTrackManager:
                 del self._evidence[wid]  # 이번 시각 따로 갱신됐거나 사라졌다
                 continue
             rec = self._merge(ev.stale, wid, ev, t, applied, flags)
-            self.diag["revision.merge"] += 1
+            self.diag["birth_hold.merged_silent" if self._is_silent(rec) else "revision.merge"] += 1
             revisions.append(rec)
             linked.add(rec.world_id)
 
         # 비동기 Re-ID 지연 도착 재입장 병합 (S15P31A101-463): 첫 프레임에 특징이 아직 없던 새 Track 이 직후 특징을 얻었을 때
         if self.feature_lookup is not None and cfg.reid_enabled:
             for rec, was_lost in self._reid_late_reentry_merge(applied, held, cluster_of, flags, t):
-                self.diag["revision.merge"] += 1
+                self.diag["birth_hold.merged_silent" if self._is_silent(rec) else "revision.merge"] += 1
                 self.diag["reid.reentry_merged"] += 1
                 revisions.append(rec)
                 linked.add(rec.world_id)
@@ -1730,8 +1790,11 @@ class WorldTrackManager:
         # 동시 활성 중복 병합 (-657): 둘 다 이번 시각 갱신된 두 Track 이 같은 사람의 시점 분할로 연속해 보이면 합친다.
         # 기존 병합(_merge)을 그대로 써서 aliases·MERGE 교정 기록이 워치 배정·이벤트 승계로 이어진다
         for rec in self._active_duplicate_merges(applied, holder, cluster_of, flags, t):
-            self.diag["revision.merge"] += 1
-            self.diag["revision.active_merge"] += 1
+            if self._is_silent(rec):
+                self.diag["birth_hold.merged_silent"] += 1
+            else:
+                self.diag["revision.merge"] += 1
+                self.diag["revision.active_merge"] += 1
             revisions.append(rec)
             linked.add(rec.world_id)
 
@@ -1740,6 +1803,11 @@ class WorldTrackManager:
             self.diag["revision.split"] += 1
             revisions.append(rec)
             linked.update((rec.world_id, rec.previous_world_id))
+
+        # 출생 보류 (-784): 풀 조건(다른 사람 반증·멀어짐·근처 확정 Track 없음·상한)을 보고, 갈라진 같은 사람이면 조용히 흡수한다.
+        # 분할(SPLIT)은 병합 금지 쌍을 만들므로 그 자식은 여기서 풀려 교정 기록과 같은 시각에 내보내진다
+        linked.update(self._birth_hold_step(applied, flags, t))
+        revisions = [r for r in revisions if not self._is_silent(r)]
 
         # 늦은 재연결·병합 뒤 일관성 확인: 자기 로컬 트랙만으로(reconnect_min_cameras 대 이상) 위치가 갱신된 시각을 센다.
         # 다 셀 때까지 LATE_REASSOCIATION 을 매 시각 붙인다. 넘겨받은 로컬 트랙의 옛 주인이 남아 있으면 애매 표시
@@ -1766,6 +1834,8 @@ class WorldTrackManager:
             if np.linalg.norm(ta.kf.predict_xy(t) - tb.kf.predict_xy(t)) > cfg.duplicate_radius_m:
                 self._duplicates.discard(pair)
                 continue
+            if ta.birth_hold or tb.birth_hold:
+                continue  # -784: 숨긴 출생 보류 Track 과의 짝은 풀릴 때까지 표시하지 않는다(짝은 남긴다)
             for wid in (a, b):
                 flags.setdefault(wid, set()).add(IdentityFlag.POSSIBLE_DUPLICATE)
 
@@ -1792,7 +1862,10 @@ class WorldTrackManager:
         # - B: 다른 사람(LOST 가 아닌 Track)이 uncertain_hold_near_m 안에 있음(0 이면 끔)
         risky: dict[str, str] = {}
         if cfg.uncertain_hold_per_reason:
-            live = [(w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST]
+            # -784: 내보내지 않는 출생 보류 Track 은 이웃 판정에 넣지 않는다(숨긴 Track 이 내보내는 Track 의 사유를 바꾸지 않게)
+            live = [
+                (w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST and not o.birth_hold
+            ]
             jumped = [o for _, o in live if o.jump_t == t]
             for j in jumped:
                 for w, o in live:
@@ -1814,7 +1887,10 @@ class WorldTrackManager:
         #   끄지 않는다(새 사유를 만들지는 않는다). 가려진 동안에는 사유가 다시 붙지 않아 300 ms 뒤 꺼지는데, 맞바꿈은 대개
         #   사람이 붙어 가려진 사이에 일어난다(로비 녹화 497~506 s 의 꺼진 tick 대부분)
         if cfg.uncertain_hold_per_reason and cfg.uncertain_hold_hidden_m > 0:
-            live = [(w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST]
+            # -784: 내보내지 않는 출생 보류 Track 은 이웃 판정에 넣지 않는다(숨긴 Track 이 내보내는 Track 의 사유를 바꾸지 않게)
+            live = [
+                (w, o) for w, o in self._tracks.items() if o.lifecycle is not TrackLifecycle.LOST and not o.birth_hold
+            ]
             for w, o in live:
                 if o.t_last_valid >= t or not any(f in _TRANSIENT_FLAGS for f in o.flags):
                     continue
@@ -1845,12 +1921,12 @@ class WorldTrackManager:
             gap = t - tr.t_last_valid
             was_confirmed = tr.lifecycle is not TrackLifecycle.TENTATIVE
             if tr.lifecycle is TrackLifecycle.TENTATIVE:
-                if gap == 0 and tr.hits >= max(cfg.confirm_hits, tr.confirm_needed):
+                if gap == 0 and not tr.birth_hold and tr.hits >= max(cfg.confirm_hits, tr.confirm_needed):
                     tr.lifecycle = TrackLifecycle.CONFIRMED
                     self.diag["lifecycle.confirmed"] += 1
                 elif gap > cfg.tentative_max_gap_ms:
                     tr.lifecycle = TrackLifecycle.LOST
-                    self.diag["lifecycle.lost_tentative"] += 1
+                    self.diag["birth_hold.expired" if tr.birth_hold else "lifecycle.lost_tentative"] += 1
             elif gap == 0:
                 tr.lifecycle = TrackLifecycle.CONFIRMED
             elif gap > cfg.lost_after_ms:
@@ -1864,9 +1940,16 @@ class WorldTrackManager:
         # World Track 갤러리 갱신 및 경쟁 유사도 margin 계산 (S15P31A101-463)
         self._update_galleries(applied, t)
 
-        snapshots = [self._snapshot(tr, t, applied.get(tr.world_id)) for tr in self._tracks.values()]
+        # -784: 출생 보류 Track 은 내보내지 않는다(_snapshot 은 사유 정리 때문에 모두 부른다)
+        snapshots = []
+        for tr in self._tracks.values():
+            snap = self._snapshot(tr, t, applied.get(tr.world_id))
+            if not tr.birth_hold:
+                snapshots.append(snap)
         for tr, was_confirmed in newly_lost:
             self._tracks.pop(tr.world_id, None)
+            if tr.birth_hold:
+                self._return_borrowed(tr)
             gap_lost = t - tr.t_last_valid
             if was_confirmed and cfg.reconnect_window_ms > cfg.lost_after_ms and gap_lost <= cfg.reconnect_window_ms:
                 self._dormant[tr.world_id] = tr  # LOST 는 한 번만 내고 소실 후보로 둔다
@@ -2138,7 +2221,7 @@ class WorldTrackManager:
         cfg = self.config
         live = sorted(
             (w for w, a in applied.items() if a.pelvis is not None and w in self._tracks),
-            key=lambda w: self._tracks[w].order,
+            key=lambda w: self._survivor_key(self._tracks[w]),
         )
         splitting = {sp.source for sp in self._splits.values()} | set(self._splits)
         ready: list[tuple[int, int, str, str]] = []
@@ -2164,7 +2247,7 @@ class WorldTrackManager:
                 self._twins[pair] = t
                 self.diag["duplicate.shadow_pair_ticks"] += 1
                 if cfg.active_merge_enabled and count >= cfg.active_merge_confirm_ticks:
-                    ready.append((self._tracks[older].order, self._tracks[newer].order, older, newer))
+                    ready.append((self._survivor_key(self._tracks[older]), self._survivor_key(self._tracks[newer]), older, newer))
         out: list[IdentityRevision] = []
         done: set[str] = set()
         for _, _, older, newer in sorted(ready):
@@ -2200,6 +2283,160 @@ class WorldTrackManager:
                     tr.confirm_needed = cfg.confirm_hits_near_confirmed
                     self.diag["lifecycle.confirm_delayed"] += 1
                     break
+
+    # ------------------------------------------------------------------ 출생 보류 (-784)
+
+    def _birth_guards(
+        self,
+        world_id: str,
+        xy: np.ndarray | Sequence[float],
+        t: int,
+        cluster: ViewCluster | None = None,
+        ignore_distinct: bool = False,
+    ) -> list[tuple[float, str]]:
+        """world_id 를 보류시키는 근처 확정 Track (거리, World ID) 가까운 순.
+
+        조건: 내보내는 확정 Track(CONFIRMED·OCCLUDED, 보류 아님)이고 마지막 위치 측정이 birth_hold_guard_recent_ms 안이며, 필터
+        위치가 xy 에서 birth_hold_radius_m 안이고, world_id 와 따로 보인 쌍(같은 시각 같은 카메라의 별도 검출·분할 쌍)이 아니다.
+        태어난 클러스터의 로컬 트랙 옛 주인과 따로 보인 Track 도 근거가 아니다(그 주인의 관측이 뛴 것이다). 도달 불가 관측으로
+        생긴 병합 금지 쌍은 보지 않는다(깊이 오차로 뛴 같은 사람이 바로 그 경우다). cluster(이번 관측)가 있고 Re-ID 가 켜져 있으면
+        외형이 뚜렷이 다른(reid_split_different_max_sim 미만) Track 도 근거가 아니다(사람을 내보내는 쪽으로만 쓴다, <n 보호).
+        """
+        cfg = self.config
+        here = np.asarray(xy, dtype=float)[:2]
+        me = self._tracks.get(world_id)
+        origins = me.birth_origins if me is not None else frozenset()
+        reid_on = self.feature_lookup is not None and cfg.reid_enabled
+        out: list[tuple[float, str]] = []
+        for gid, g in self._tracks.items():
+            if gid == world_id or g.birth_hold or g.lifecycle is TrackLifecycle.TENTATIVE:
+                continue
+            if t - g.t_last_valid > cfg.birth_hold_guard_recent_ms:
+                continue
+            d = float(np.linalg.norm(here - g.kf.x[:2]))
+            if d > cfg.birth_hold_radius_m:
+                continue
+            if not ignore_distinct:
+                if self._co_distinct(world_id, gid) or any(o != gid and self._co_distinct(o, gid) for o in origins):
+                    continue
+                if cluster is not None and reid_on:
+                    sim = self._cluster_gallery_sim(gid, cluster, t)
+                    if sim is not None and sim < cfg.reid_split_different_max_sim:
+                        self.diag["birth_hold.appearance_different"] += 1
+                        continue
+            out.append((d, gid))
+        return sorted(out)
+
+    def _explains(self, guard: _Track, cluster: ViewCluster, pelvis: Sequence[float], t: int) -> bool:
+        """새 관측 골반이 guard 의 관측 오차로 설명되는지: 수평 거리 ≤ 갈 수 있는 거리(gate_base_m + max_speed_mps × 공백) +
+        shadow_radius_sigma_k × (새 클러스터 카메라로 그 골반을 풀 때의 삼각측량 σ 를 guard → 관측 방향으로 잰 값).
+
+        예각 2대의 깊이 방향으로 뛴 같은 사람은 σ 가 커서 설명되고, 넓은 기선 카메라로 옆 1.2 m 에 나타난 다른 사람은 설명되지
+        않는다. 공분산을 모르면(시선이 거의 평행) 깊이를 모르므로 설명되는 것으로 본다(호출 전에 반경 상한은 이미 확인했다).
+        """
+        cfg = self.config
+        delta = np.asarray(pelvis[:2], dtype=float) - guard.kf.x[:2]
+        d = float(np.linalg.norm(delta))
+        reach = cfg.gate_base_m + cfg.max_speed_mps * max(t - guard.t_last_valid, 0) / 1000.0
+        if d <= reach:
+            return True
+        assert self._rig is not None
+        cams = [self._rig.cameras[cid] for cid in cluster.camera_ids]
+        cov = triangulation_covariance(cams, np.asarray(pelvis, dtype=float), cfg.shadow_keypoint_sigma_px)
+        if cov is None or not np.all(np.isfinite(cov)):
+            return True
+        u = delta / d
+        sigma = math.sqrt(max(float(u @ cov[:2, :2] @ u), 0.0))
+        return d <= reach + cfg.shadow_radius_sigma_k * sigma
+
+    def _absorbable(self, guard: _Track, pelvis: Sequence[float], t: int) -> bool:
+        """흡수 조건(보류 조건보다 엄격): guard 의 갱신 공백이 birth_absorb_max_gap_ms 이하이고, 이번 관측 골반이 guard 의 마지막 위치에서
+        σ 확장 없이 갈 수 있는 거리 min(gate_base_m + max_speed_mps × 공백, birth_absorb_max_reach_m) 안이다.
+
+        공백이 길면 갈 수 있는 거리가 커져 가려진 사람 옆에 다가온 다른 사람이 그 ID 를 이어받을 수 있다(리뷰). 조건 밖이면 흡수하지
+        않고 보류는 일반 풀림 경로(다른 사람 근거·멀어짐·근처 확정 Track 없음·상한)로 끝난다.
+        """
+        cfg = self.config
+        gap = t - guard.t_last_valid
+        if gap > cfg.birth_absorb_max_gap_ms:
+            return False
+        reach = min(cfg.gate_base_m + cfg.max_speed_mps * max(gap, 0) / 1000.0, cfg.birth_absorb_max_reach_m)
+        return float(np.linalg.norm(np.asarray(pelvis[:2], dtype=float) - guard.kf.x[:2])) <= reach
+
+    def _co_distinct(self, a: str, b: str) -> bool:
+        """같은 시각 같은 카메라의 별도 검출을 distinct_ttl_ms 안에 봤거나 분할 쌍인지 (-784, 다른 사람의 관측 근거)."""
+        pair = frozenset((a, b))
+        if pair in self._distinct_fixed:
+            return True
+        seen = self._co_seen.get(pair)
+        return seen is not None and (self._last_t is None or self._last_t - seen <= self.config.distinct_ttl_ms)
+
+    def _return_borrowed(self, tr: _Track) -> None:
+        """보류인 채 소멸한 Track 이 넘겨받은 로컬 트랙을 원래 주인에게 되돌린다(그 사이 다른 Track 이 가져갔으면 두지 않는다)."""
+        for key, (owner_id, kt) in tr.borrowed_keys.items():
+            owner = self._find(owner_id)
+            if owner is None or key not in tr.keys or any(key in o.keys for o in self._all() if o is not tr):
+                continue
+            owner.keys[key] = max(kt, owner.keys.get(key, kt))
+            self.diag["birth_hold.keys_returned"] += 1
+        tr.borrowed_keys = {}
+
+    def _release_birth(self, tr: _Track, reason: str) -> None:
+        tr.birth_hold = False
+        tr.absorb_ticks = 0
+        tr.borrowed_keys = {}
+        self.diag[f"birth_hold.released_{reason}"] += 1
+
+    def _birth_hold_step(
+        self, applied: dict[str, _Applied], flags: dict[str, set[IdentityFlag]], t: int
+    ) -> set[str]:
+        """출생 보류 Track 을 풀거나 흡수한다. 흡수로 측정을 이어받은 World ID 를 돌려준다(일관성 확인은 다음 시각부터).
+
+        - 분할의 자식이나 원래 ID 가 됐으면 바로 내보낸다(SPLIT 기록과 같은 시각).
+        - 근처 확정 Track 이 없으면(모두 병합 금지 쌍이거나 반경 밖이거나 최근 관측이 없으면) 내보낸다.
+        - birth_hold_max_ms 가 지나면 반증이 없어도 내보낸다(진짜 사람을 오래 숨기지 않는다).
+        - 근처 확정 Track 이 하나뿐이고(태어날 때 위치가 그 Track 의 관측 오차로 설명됐던 Track) 그 Track 은 갱신되지 않은 채
+          이 Track 만 위치 측정을 받은 시각이 birth_absorb_ticks 번 이어지면, 연결이 깨져 갈라진 같은 사람으로 보고 그 Track 으로
+          조용히 흡수한다(측정·필터는 이번 시각 것을 잇는다).
+          이 Track 이 관측되지 않은 시각은 세지도 버리지도 않고, 근처 확정 Track 이 따로 갱신됐거나 둘 이상이면 처음부터 센다.
+        """
+        cfg = self.config
+        linked: set[str] = set()
+        for wid in sorted((w for w, tr in self._tracks.items() if tr.birth_hold), key=lambda w: self._tracks[w].order):
+            tr = self._tracks.get(wid)
+            if tr is None or not tr.birth_hold:
+                continue
+            if tr.split_from is not None or any(o.split_from == wid for o in self._tracks.values()):
+                self._release_birth(tr, "split")
+                continue
+            a = applied.get(wid)
+            guards = self._birth_guards(wid, tr.kf.x[:2], t, a.cluster if a is not None else None)
+            if not guards:
+                near = self._birth_guards(wid, tr.kf.x[:2], t, ignore_distinct=True)
+                self._release_birth(tr, "distinct" if near else "apart")
+                continue
+            if t - tr.created_t >= cfg.birth_hold_max_ms:
+                self._release_birth(tr, "timeout")
+                continue
+            if a is None or a.pelvis is None:
+                continue
+            if (
+                len(guards) != 1
+                or guards[0][1] in applied
+                or guards[0][1] not in tr.birth_explained
+                or not self._absorbable(self._tracks[guards[0][1]], a.pelvis, t)
+            ):
+                tr.absorb_ticks = 0
+                continue
+            tr.absorb_ticks += 1
+            if tr.absorb_ticks < cfg.birth_absorb_ticks:
+                continue
+            gid = guards[0][1]
+            ev = _Evidence(wid, frozenset(a.cluster.keys), tr.absorb_ticks, t)
+            rec = self._merge(gid, wid, ev, t, applied, flags)
+            self.diag["birth_hold.absorbed"] += 1
+            linked.add(rec.world_id)
+        return linked
 
     def _all(self) -> list[_Track]:
         """살아 있는 Track 과 소실 후보."""
@@ -2268,6 +2505,7 @@ class WorldTrackManager:
         alive = set(self._tracks) | set(self._dormant)
         alive_reid = alive | set(self._reid_dormant)
         self._distinct = {p: pt for p, pt in self._distinct.items() if p <= alive_reid}
+        self._co_seen = {p: pt for p, pt in self._co_seen.items() if p <= alive_reid}
         self._distinct_fixed = {p for p in self._distinct_fixed if p <= alive_reid}
         self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if p <= alive}
         self._twins = {p: pt for p, pt in self._twins.items() if p <= alive_reid}
@@ -2281,11 +2519,14 @@ class WorldTrackManager:
         이번 시각 갱신되지 않은 Track(fresh 밖)에게서 넘겨받으면 그 출처를 `origin_of` 에 남긴다(그 사람일 수도 있다).
         """
         previous: _Track | None = None
+        previous_t = t
         for other in self._all():
             if other is not tr and key in other.keys:
-                other.keys.pop(key)
+                previous_t = other.keys.pop(key)
                 other.origin_of.pop(key, None)
                 previous = other
+        if previous is not None and tr.birth_hold and not previous.birth_hold:
+            tr.borrowed_keys.setdefault(key, (previous.world_id, previous_t))  # -784: 보류인 채 소멸하면 되돌린다
         if previous is not None:
             if previous.world_id in fresh:
                 tr.origin_of.pop(key, None)
@@ -2316,6 +2557,7 @@ class WorldTrackManager:
                         for q in b:
                             if p != q:
                                 self._distinct[frozenset((p, q))] = frame.t
+                                self._co_seen[frozenset((p, q))] = frame.t
 
     def _ambiguous(self, tr: _Track) -> bool:
         """넘겨받은 로컬 트랙의 옛 주인이 그 뒤 다시 갱신되지 않고 남아 있어 이 Track 이 그 사람일 수도 있는지.
@@ -2499,8 +2741,10 @@ class WorldTrackManager:
         live = self._tracks[live_id]
         assert stale is not None
         was_lost = stale_id in self._dormant or stale_id in self._reid_dormant
-        survivor, retired = (stale, live) if stale.order < live.order else (live, stale)
-        revision = max(stale.identity_revision, live.identity_revision) + 1
+        # 내보낸 ID 가 출생 보류 ID 에 밀려 사라지지 않게 보류 아닌 쪽을 먼저, 그다음 먼저 만든 ID (-784)
+        survivor, retired = (stale, live) if self._survivor_key(stale) < self._survivor_key(live) else (live, stale)
+        silent = retired.birth_hold  # -784: 내보낸 적 없는 ID 가 사라지는 병합은 교정 기록·별칭·revision 을 남기지 않는다
+        revision = survivor.identity_revision if silent else max(stale.identity_revision, live.identity_revision) + 1
         confirmed = not (stale.lifecycle is TrackLifecycle.TENTATIVE and live.lifecycle is TrackLifecycle.TENTATIVE)
         if survivor is stale:
             survivor.kf = live.kf
@@ -2513,7 +2757,13 @@ class WorldTrackManager:
         survivor.hits += retired.hits
         survivor.path = sorted([*survivor.path, *retired.path], key=lambda p: p[0])
         survivor.identity_revision = revision
-        survivor.aliases.extend([retired.world_id, *retired.aliases])
+        if not silent:
+            survivor.aliases.extend([retired.world_id, *retired.aliases])
+        survivor.birth_hold = survivor.birth_hold and retired.birth_hold
+        survivor.borrowed_keys = (
+            {**retired.borrowed_keys, **survivor.borrowed_keys} if survivor.birth_hold else {}
+        )
+        survivor.absorb_ticks = 0
         survivor.gate.reset()  # 이력이 다른 사람 것일 수 있다 (joint_gate)
         for k, kt in retired.keys.items():
             survivor.keys[k] = max(kt, survivor.keys.get(k, kt))
@@ -2545,6 +2795,12 @@ class WorldTrackManager:
             if len(q) == 2:
                 renamed[q] = max(pt, renamed.get(q, pt))
         self._distinct = renamed
+        co_renamed: dict[frozenset[str], int] = {}
+        for p, pt in self._co_seen.items():
+            q = _rename(p, old, new)
+            if len(q) == 2:
+                co_renamed[q] = max(pt, co_renamed.get(q, pt))
+        self._co_seen = co_renamed
         self._distinct_fixed = {q for q in (_rename(p, old, new) for p in self._distinct_fixed) if len(q) == 2}
         self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if not p & {old, new}}
         self._twins = {p: pt for p, pt in self._twins.items() if old not in p}
@@ -2558,8 +2814,16 @@ class WorldTrackManager:
             reason=str(RevisionReason.LATE_REASSOCIATION if was_lost else RevisionReason.DUPLICATE_MERGE),
             evidence=tuple(sorted(ev.keys)),
         )
-        self._revisions.append(record)
+        (self._silent if silent else self._revisions).append(record)
         return record
+
+    @staticmethod
+    def _survivor_key(tr: _Track) -> tuple[bool, int]:
+        """병합에서 남길 ID 순서: 출생 보류가 아닌 쪽, 그다음 먼저 만든 쪽 (-784)."""
+        return (tr.birth_hold, tr.order)
+
+    def _is_silent(self, record: IdentityRevision) -> bool:
+        return any(record is s for s in self._silent)
 
     # ------------------------------------------------------------------ 분할 (S15P31A101-201)
 

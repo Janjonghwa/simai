@@ -139,8 +139,9 @@ def test_recent_owner_window_boundary_and_one_owned_key(rig, window, extra_ms, s
 
 @pytest.mark.parametrize("ownerless", [False, True])
 def test_recent_key_of_another_track_does_not_qualify_as_remainder(rig, ownerless):
-    """근처 a 가 아닌 먼 b 의 최근 키는 a 의 분할 나머지 근거가 아니다."""
-    m = wt._manager(split_suppress_ownerless=ownerless)
+    """근처 a 가 아닌 먼 b 의 최근 키는 a 의 분할 나머지 근거가 아니다. 분할 나머지 단계만 본다(-784 출생 보류를 켜면 a 0.45 m
+    옆 후보는 내보내기 전에 보류한다: test_birth_hold.py)."""
+    m = wt._manager(split_suppress_ownerless=ownerless, birth_hold_enabled=False)
     for k in range(3):
         t = T + k * DT
         m.update(wt._frame(rig, t, [
