@@ -535,6 +535,44 @@ describe('보정·생성 화면 정리(S15P31A101-691)', () => {
     expect(screen.getByTestId('camera-view')).toBeTruthy();
   });
 
+  it('정밀 3D 맵까지 끝나면 고른 적이 없을 때 왼쪽이 3D 미리보기로 바뀐다', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { rerender } = render(<SetupCalibrateStep {...props(sessionOf())} />, { wrapper });
+    expect(screen.getByTestId('camera-view')).toBeTruthy();
+    const complete = sessionOf({
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      progress_pct: 100,
+      preview_scene_version: 'scene-preview-1',
+      scene_version: 'scene-final-1',
+    });
+    rerender(<SetupCalibrateStep {...props(complete)} />);
+    expect(screen.queryByTestId('camera-view')).toBeNull();
+    expect(screen.getByTestId('setup-preview-viewport')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '3D 미리보기' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    fireEvent.click(screen.getByRole('tab', { name: '카메라 영상' }));
+    expect(screen.getByTestId('camera-view')).toBeTruthy();
+  });
+
+  it('시연 계정은 지금 할 일 없이 자세히 · 진행 단계를 펼쳐 보인다', () => {
+    render(
+      <SetupCalibrateStep
+        {...props(sessionOf({ progress_pct: 52.5 }))}
+        nextStep={{ title: '카메라를 보정하고 있어요', detail: '', tone: 'idle' }}
+        demo
+      />,
+    );
+    expect(screen.queryByTestId('setup-next-step')).toBeNull();
+    const details = screen.getByRole('group', { name: '진행 단계 자세히' });
+    expect(details.hasAttribute('open')).toBe(true);
+    expect(within(details).getByRole('list', { name: '보정·생성 단계' })).toBeTruthy();
+  });
+
   it('오른쪽 맨 위는 지금 할 일 한 장(무엇이 / 어떻게)과 전체 진행 막대 하나다', () => {
     render(
       <SetupCalibrateStep

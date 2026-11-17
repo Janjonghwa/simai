@@ -13,11 +13,12 @@ import type { KeyboardEvent } from 'react';
 // TBM(작업 전 안전대화) 보고서 종이 한 장. 다크 모드에서도 흰 종이(.paper)이고, 고칠 수 있는 종이는 누르면(Enter 도) 편집 창을 연다.
 // 'print' 는 인쇄용 사본의 모양(A4 폭·검은 선): 화면 종이와 표·글은 같다.
 
-/** 종이 모양: 화면은 폭에 맞춰 A4 비율, 인쇄 사본은 A4 한 장 폭. */
+/** 종이 모양: 화면은 폭에 맞춰 A4 비율, 인쇄 사본은 A4 한 장 폭, 'sheet' 는 A4 틀(ReportSheet) 안에 들어가는 내용만. */
 const SHAPE = {
   screen:
     'mx-auto aspect-[210/297] w-full max-w-[794px] min-w-[640px] rounded-sm px-10 pt-9 pb-11 shadow-float',
   print: 'w-[210mm] max-w-none min-h-[297mm] px-[15mm] py-[14mm]',
+  sheet: 'w-full',
 } as const;
 
 const EDIT_LABEL = 'TBM 보고서 편집';

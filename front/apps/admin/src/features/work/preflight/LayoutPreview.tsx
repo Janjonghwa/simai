@@ -77,7 +77,8 @@ export function LayoutPreview({
   );
 
   return (
-    <Card size="sm">
+    // 오른쪽 칸에서 남는 높이를 채운다(작업 전 확인이 페이지 스크롤 없이 화면 높이에 맞도록). 내용보다 작게 줄지는 않는다
+    <Card size="sm" className="grow">
       <CardHeader>
         <CardTitle>
           <h2>가상 레이아웃</h2>
@@ -88,10 +89,10 @@ export function LayoutPreview({
           </CardAction>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex grow flex-col">
         <div
           data-testid="preflight-viewport"
-          className="relative h-[clamp(220px,34vh,400px)] overflow-hidden rounded-lg bg-background ring-1 ring-border"
+          className="relative min-h-[180px] grow overflow-hidden rounded-lg bg-background ring-1 ring-border"
         >
           {failed ? (
             <p className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">

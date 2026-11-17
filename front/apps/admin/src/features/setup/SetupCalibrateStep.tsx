@@ -27,7 +27,7 @@ import { TriangleAlert } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 
 // 세팅 2단계 '보정·생성'(S15P31A101-691 정리). 1단계와 같은 두 칸 배치(SetupSplit).
-// 왼쪽: 카메라 영상 4칸이 끝까지 보이고, 미리보기 맵이 준비되면(85%) 「3D 미리보기」 탭으로 바꿔 볼 수 있다(저절로 바꾸지 않는다).
+// 왼쪽: 카메라 영상 4칸이 보이고, 미리보기 맵이 준비되면(85%) 「3D 미리보기」 탭으로 바꿔 볼 수 있다. 정밀 3D 맵까지 끝나면 3D 로 바뀐다.
 // 오른쪽: 「지금 할 일」 카드 한 장(무엇이 / 어떻게 + 전체 진행 막대 하나)과 실패 안내. 진단(5단계 막대·단계별 %·경과 시간·대기 이유
 // 덧붙임·카메라별 배경 수집 %·높이 불일치 문구·복원 높이 표·쌍별 px 표)은 관리자용 「자세히」로 접는다. 막대·%는 서버 값만 쓴다.
 // 사람이 움직일 일(배경 촬영·높이 확인·카메라 확인 걷기)은 큰 창이 맡는다(-686·-690·-687). 맵 보강 촬영은 '다음' 에 끼어들지 않고
@@ -514,8 +514,8 @@ const TAB_ON = 'bg-primary text-primary-foreground';
 const TAB_OFF = 'text-muted-foreground enabled:hover:bg-surface-3';
 
 /**
- * 왼쪽 칸: 「카메라 영상」(기본, 끝까지 보임)과 「3D 미리보기」(미리보기 맵이 생긴 뒤) 탭. 3D 는 사용자가 고를 때만 보인다
- * (S15P31A101-691: 예전에는 85% 에서 카메라 영상이 3D 로 저절로 바뀌었다).
+ * 왼쪽 칸: 「카메라 영상」(기본)과 「3D 미리보기」(미리보기 맵이 생긴 뒤) 탭. 미리보기 맵만 있는 동안은 사용자가 고를 때만 3D 가 보이고
+ * (S15P31A101-691: 예전에는 85% 에서 저절로 바뀌었다), 정밀 3D 맵까지 끝나면 고른 적이 없을 때 3D 로 바뀐다.
  */
 function CalibrateLeft({
   cameraView,
@@ -524,7 +524,8 @@ function CalibrateLeft({
   cameraView: ReactNode;
   waiting: SetupWaitingView;
 }) {
-  const [tab, setTab] = useState<LeftTab>('cameras');
+  const [picked, setTab] = useState<LeftTab | null>(null);
+  const tab = picked ?? (waiting.mapComplete ? 'map' : 'cameras');
   const showMap = tab === 'map' && waiting.previewReady;
   return (
     <Card size="sm">
@@ -576,6 +577,7 @@ export function SetupCalibrateStep({
   onReturnToStep1,
   onOpenSupplement,
   onTurnOnGpu,
+  demo = false,
 }: {
   waiting: SetupWaitingView;
   /** 왼쪽 「카메라 영상」 탭(카메라 영상 4칸). */
@@ -601,10 +603,12 @@ export function SetupCalibrateStep({
   onOpenSupplement?: () => void;
   /** GPU 가 꺼져 있을 때만 준다. 실패 안내의 주 단추 「GPU 켜기」가 GPU 패널을 연다(S15P31A101-734). */
   onTurnOnGpu?: () => void;
+  /** 시연 계정(features/demo): 「지금 할 일」 없이 「자세히 · 진행 단계」를 펼쳐 보인다. */
+  demo?: boolean;
 }) {
   const column = (
     <>
-      {nextStep && (
+      {nextStep && !demo && (
         <NextStepCard step={nextStep}>
           <OverallBar percent={waiting.progressPct} />
           {waiting.mapComplete && cameraCheck && !cameraCheck.passed && (
@@ -651,7 +655,7 @@ export function SetupCalibrateStep({
           )}
         </div>
       )}
-      <Details label="진행 단계 자세히" summary="자세히 · 진행 단계">
+      <Details label="진행 단계 자세히" summary="자세히 · 진행 단계" defaultOpen={demo}>
         <ProgressCard waiting={waiting} pollingError={pollingError} />
       </Details>
       {(waiting.showHeightNotice || waiting.heightChecks.length > 0) && (

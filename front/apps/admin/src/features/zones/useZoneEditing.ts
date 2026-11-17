@@ -44,6 +44,7 @@ import {
 } from '@/features/zones/zoneEditModel';
 import { formErrors, formOf, newZoneErrors, shapeOfBox } from '@/features/zones/zoneForm';
 import { surfaceZoneShape } from '@/features/zones/zoneShape';
+import { useZoneSource } from '@/features/zones/zoneSource';
 import { linkSurfaces, pickedSurface } from '@/features/zones/zoneSurfaceLink';
 import { useRoomLimit } from '@/store/roomBounds.store';
 import {
@@ -100,6 +101,8 @@ export function useZoneEditing(
   const surfaceList = useWorkSurfaces();
   const { surfaces } = surfaceList;
   const apply = useConfigApply(zones, surfaceList.loaded ? surfaces : undefined);
+  // 세팅 구역 단계(-615)는 세션 구역 목록에 저장하고 현장 묶음은 세팅 완료 때 보낸다. 그 전에는 「다시 보내기」를 띄우지 않는다
+  const setupPlan = useZoneSource() !== null;
   const drafts = useZoneEditStore((s) => s.drafts);
   const links = useMemo(() => linkSurfaces(zones, surfaces), [zones, surfaces]);
   const pickedTarget = targetOfKey(viewport.selectedKey);
@@ -289,7 +292,7 @@ export function useZoneEditing(
     busy: commit.busy,
     canSave: commit.canSave,
     canAdd: commit.canAdd,
-    showRetry: commit.showRetry,
+    showRetry: commit.showRetry && !setupPlan,
     notice: commit.notice,
     pick,
     openAdd,

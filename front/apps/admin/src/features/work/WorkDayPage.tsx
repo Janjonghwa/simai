@@ -39,7 +39,9 @@ const NEXT_STAGE: Partial<Record<WorkStageId, WorkStageId>> = {
 };
 
 /** 날짜 화면 맨 아래 여백(하단 메뉴 위쪽 끝 84px + 여유). 스크롤 끝에서도 메뉴·단추가 문서를 덮지 않는다. */
-const DOCK_CLEARANCE = 'pb-[128px]';
+// 화면 높이에 맞춘 단계(세팅·작업 전 확인, data-fit-height)는 스크롤할 끝이 없으므로 하단 메뉴·단추 위쪽 끝(84px)에서 12px 위까지만 비운다
+// (본문 아래 여백 14 + 82 = 96).
+const DOCK_CLEARANCE = 'pb-[128px] has-[[data-fit-height]]:pb-[82px]';
 
 const KIND_CHIP: Partial<Record<DayKind, string>> = { today: '오늘', future: '예정' };
 
