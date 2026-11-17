@@ -19,6 +19,7 @@ import type {
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 import type { ViewerLayers } from '@/features/viewer3d/layers';
+import type { RiskColorLevel } from '@/features/viewer3d/palette';
 import type { PlannedLayoutInput } from '@/features/viewer3d/planned/plannedLayout';
 import type { ViewerPostProcessingInput } from '@/features/viewer3d/PostProcessingLayer';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
@@ -211,6 +212,8 @@ export interface ViewerBoxEdit {
 export interface ViewerBoxGhost {
   id: string;
   box: ViewerEditBox;
+  /** 있으면 점선 윤곽 대신 그 위험 등급색의 실선 윤곽과 반투명 면으로 도드라지게 그린다(초안 카드에 커서를 댔을 때). */
+  highlight?: RiskColorLevel;
 }
 
 export interface Viewer3DProps {

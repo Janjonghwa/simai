@@ -5,7 +5,12 @@ import {
   requestDemoNewMap,
   useSetupWaitingView,
 } from '@/features/demo/demoNewMap';
-import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
+import { demoReuseShown, useDemoCoverage } from '@/features/demo/demoSetup';
+import {
+  DEMO_DRAFT_SEARCH_TEXT,
+  useDemoZoneDrafts,
+  withDraftHighlight,
+} from '@/features/demo/demoZoneDrafts';
 import { GpuPanel } from '@/features/gpu/GpuPanel';
 import { useGpuStatus } from '@/features/gpu/useGpu';
 import { useGpuGate } from '@/features/gpu/useGpuGate';
@@ -260,6 +265,8 @@ function SetupWorkPage({
 
   const activeSessionId = useSetupFlowStore((s) => s.activeSessionId);
   const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
+  // 시연 계정이 구역 단계에서 커서를 댄 AI 초안 카드(3D 에서 그 초안을 위험 등급색으로 도드라지게 한다)
+  const [hoveredDraftId, setHoveredDraftId] = useState<string | null>(null);
 
   // 새로고침·다른 화면에서 돌아왔을 때: 이 작업에 진행 중인(또는 끝난) 세션이 있으면 이어받아 대기 화면·구역 단계로 연다.
   // 세션 ID 를 메모리에만 두면 다시 시작하다 409 가 나므로 서버의 work_unit.active_setup_session_id 를 정본으로 본다.
@@ -454,19 +461,26 @@ function SetupWorkPage({
   }
   const unconfirmedZones = zoneSource ? pendingReviewCount(zonePlanQuery.data) : 0;
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
-  // 시연 계정은 서버 초안 대신 정해 둔 개구부 초안을 보인다(features/demo/demoZoneDrafts)
+  // 시연 계정은 서버 초안 대신 구역 단계에서 잠깐 찾은 뒤 정해 둔 개구부 초안을 보인다(features/demo/demoZoneDrafts)
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled && !demoAccount);
-  const demoDrafts = useMemo(
-    () => (demoAccount && draftsEnabled && sessionId ? demoZoneDrafts(sessionId) : null),
-    [demoAccount, draftsEnabled, sessionId],
-  );
+  const demoDrafts = useDemoZoneDrafts(sessionId, demoAccount && stage === ZONE_STAGE);
   const draftsResponse = demoAccount ? demoDrafts : zoneDraftsQuery.data;
   const draftsList = draftsResponse?.drafts ?? NO_DRAFTS;
   const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync, zoneSource);
   const acceptedDraftIds = draftAccept.acceptedIds;
+  const hoveredDraft = demoAccount
+    ? draftsList.find(
+        (d) => d.candidate_id === hoveredDraftId && !discardedDraftIds.includes(d.candidate_id),
+      )
+    : undefined;
   const draftGhosts = useMemo(
-    () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
-    [draftsList, acceptedDraftIds, discardedDraftIds],
+    () =>
+      withDraftHighlight(
+        draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
+        hoveredDraft,
+        hoveredDraft !== undefined && acceptedDraftIds.includes(hoveredDraft.candidate_id),
+      ),
+    [draftsList, acceptedDraftIds, discardedDraftIds, hoveredDraft],
   );
   // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758). 시연 계정은 초안 카드를 그대로 보이려고 묶지 않는다
   const { zones: planZones } = useZones(zoneSource);
@@ -897,6 +911,7 @@ function SetupWorkPage({
 
   // 배경 촬영·걷기 창이 카메라 영상을 띄우는 동안 아래 칸의 영상은 내린다(영상 연결은 한 번에 하나, -686·-687).
   // 1단계는 칸마다 배지를 달고, 보정·생성은 탭 안에 영상만 둔다(각도 안내를 다시 받지 않아 배지 근거가 없다).
+  const shownCoverage = useDemoCoverage(coverage, demoAccount);
   const cameraMap =
     capture.open || walkOpen ? (
       <div
@@ -904,7 +919,7 @@ function SetupWorkPage({
         className={cn('min-h-0', stage === 0 ? 'rounded-xl bg-card' : 'size-full rounded-lg')}
       />
     ) : stage === 0 ? (
-      <CameraVideoPanel coverage={coverage} />
+      <CameraVideoPanel coverage={shownCoverage} />
     ) : (
       <CameraVideoPanel coverage={coverage} showBadges={false} title={null} />
     );
@@ -984,11 +999,11 @@ function SetupWorkPage({
 
       {stage === 0 ? (
         <SetupSplit left={cameraMap}>
-          <NextStepCard step={step1Step} />
+          {!demoAccount && <NextStepCard step={step1Step} />}
           <SetupModeChoice
             mode={mode}
             onChange={setPickedMode}
-            reuse={reuse}
+            reuse={demoAccount ? demoReuseShown(reuse, mode) : reuse}
             mapId={reuseMapId}
             onMapChange={setPickedMapId}
           />
@@ -1009,7 +1024,7 @@ function SetupWorkPage({
             retryPending={restartPending}
             canSubmitHeights={heightValidation.valid}
           />
-          <CameraStatusDetails coverage={coverage} />
+          <CameraStatusDetails coverage={shownCoverage} compact={demoAccount} />
           {riskConfirmPairs !== null && (
             <CameraRiskDialog
               riskyPairs={riskConfirmPairs}
@@ -1090,6 +1105,8 @@ function SetupWorkPage({
                 onDiscardDraft={discardSetupZoneDraft}
                 mergedDraftIds={mergedDraftIds}
                 canImportPrevious={canImportPrevious}
+                pendingText={demoAccount ? DEMO_DRAFT_SEARCH_TEXT : undefined}
+                onHoverDraft={demoAccount ? setHoveredDraftId : undefined}
               />
             )}
             {currentSession && !completed && (

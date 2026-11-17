@@ -43,6 +43,10 @@ export const GHOST_LINE = {
   opacity: 0.85,
 } as const;
 
+/** 도드라지게 그리는 초안(highlight): 위험 등급색 면 불투명도와 실선 윤곽 두께. */
+export const HIGHLIGHT_FILL_OPACITY = 0.22;
+export const HIGHLIGHT_LINE_WIDTH = 3;
+
 /** 손잡이 평소 불투명도: 가운데 링 · 가운데 구 · 화살표. */
 export const RING_OPACITY = 0.85;
 export const DOT_OPACITY = 1;

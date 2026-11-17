@@ -25,6 +25,8 @@ export interface ReuseMapOption {
   id: string;
   /** 그 맵을 만든(세팅 완료한) 날짜·시각(한국 시간, 예: 11-12(목) 15:20) */
   dateLabel: string;
+  /** 그 시각(ms). 모르면 0. */
+  completedAtMs: number;
   selectable: boolean;
   recommended: boolean;
   status: ReuseCandidate['status'];
@@ -195,6 +197,7 @@ export function reuseMapsOf(
     return {
       id: c.setup_session_id,
       dateLabel: mapDateLabel(c.completed_at_ms),
+      completedAtMs: c.completed_at_ms ?? 0,
       selectable: c.selectable && c.status === 'MATCH',
       recommended: c.recommended,
       status: c.status,
