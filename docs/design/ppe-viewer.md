@@ -16,7 +16,7 @@ I1 ppe_state ─▶ PpeStateIngestor ─(현재 상태가 바뀌었고 커밋됨
 GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot ───────────────┘
                                                                   │
                     ppeView.personPpe(같은 World ID·identity_revision, 만료·연결)
-                        ├─ 3D 안전모·조끼 형상(usePpeGearStates → viewer3d personHelmets·personVests)
+                        ├─ 3D 미착용 경고 표식(usePpeGearStates → viewer3d personHelmets·personVests, 형상은 -783 에서 뺌)
                         └─ 글 표시용 훅 usePersonPpe(안전모·조끼·사유·마지막 근거 시각). 화면에 그리는 일은 프론트 디자인(아래 넘긴 일)
 ```
 
@@ -29,7 +29,7 @@ GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot 
 | EC2 REST | `PpeViewController`(`GET /api/ppe/current`, VIEWER·FOREMAN·ADMIN) | 같은 시험 |
 | 관제 앱 수신 | `front/apps/admin/src/lib/stomp.ts`(`PPE_TOPIC`, 3D Source 로 넘기지 않음), `store/realtime.store.ts`(`ppe`, `receivePpe`) | `__tests__/lib/stomp.test.ts`, `__tests__/features/ppe/ppeView.test.ts` |
 | 표시 규칙 | `features/ppe/ppeView.ts`, `usePpe.ts`, `api.ts` | `ppeView.test.ts`, `AppLayout.test.tsx`(처음 상태 훅) |
-| 3D 형상 | `features/viewer3d/people/ppe/`(`PpeGear`·`PpeWarningMark`·`ppeFit`·`ppeAssets`, GLB 2개), `PersonLayer.tsx`, prop `personHelmets`·`personVests`(CONTRACT.md·CHANGELOG.md) | `__tests__/features/viewer3d/{ppeFit,ppeAssets,personPpe}.test.ts(x)`(장면 렌더 포함) |
+| 3D 표식 | `features/viewer3d/people/ppe/PpeWarningMark.tsx`, `PersonLayer.tsx`, prop `personHelmets`·`personVests`(CONTRACT.md·CHANGELOG.md). 형상(`PpeGear`·`ppeFit`·`ppeAssets`, GLB 2개)은 -783 에서 지웠다 | `__tests__/features/viewer3d/personPpe.test.tsx`(장면 렌더 포함) |
 | 개발 mock | `front/apps/admin/src/mocks/scenario/ppe.ts`(`ppeViewAt`: mock 사람 셋을 안전모 착용·미착용·모름으로), `mocks/realtime.ts`(`/topic/ppe` 2 Hz, `GET /api/ppe/current`) | `__tests__/mocks/realtimeScenario.test.ts`(계약), `__tests__/mocks/realtime.test.ts` |
 
 ## 명세에 없어 정한 것과 근거
@@ -47,6 +47,8 @@ GET /api/ppe/current(연결마다 1회, 같은 모양) ──▶ usePpeSnapshot 
 | 붙이는 조건 | 지금 world 트랙(LOST 제외)과 World ID·`identity_revision` 이 같을 때만 | §13.3 "이전 ID 의 상태를 새 사람에게 넘기지 않는다". 차수가 다르면 아무것도 붙이지 않는다(UNKNOWN 도 아님) |
 | 글 표시 | 이 MR 에서는 그리지 않는다. 데이터(`usePersonPpe`: 상태·사유·마지막 근거 시각, 만료·연결 반영)까지만 둔다. → -656 에서 착용이 아닐 때만 이름표 뒤 글(`usePpeLabels`·`ppeLabel`, 예: `안전모 미착용 · 조끼 모름(30초 전)`)로 넣었다 | 관제 화면 디자인을 프론트가 정한다(이원준 결정 2026-11-09). 처음 구현했던 이름표 글·보호구 카드는 뺐다 |
 | 3D 형상 | 안전모·조끼 GLB(-552). 골격 막대는 양쪽 귀 가운데에 안전모, 어깨·골반 관절로 조끼 크기를 맞춘다. 캡슐·아바타 메시 사람은 캡슐 몸의 고정 자리. WORN 은 채도를 낮춘 실물, UNKNOWN·NOT_WORN 은 그 장비를 그리지 않는다(-656: 반투명 0.3 + 외곽선은 착용과 구분되지 않았다. 착용이 아닐 때는 이름표 글로 알린다). 안전모·조끼 중 하나라도 NOT_WORN 이면 머리 위 빨간 표식 하나(골격 머리 공 위 0.07+0.22 m, 캡슐 1.64 m, 높이 모름 2.0 m). 높이 모름 기둥은 표식만 | §13.3 표현과 크기 맞춤(어깨 폭·몸통 길이). 아바타 메시 머리 정밀 맞춤은 하지 않고 캡슐 자리에 둔다(19.1 미결) |
+
+- **S15P31A101-783 변경**: 3D 안전모·조끼 형상을 그리지 않는다. 캡슐 고정 자리에 붙어 아바타 몸과 어긋나 목업처럼 보인다는 사용자 결정(2026-11-17). 미착용 경고 표식과 이름표 PPE 칸만 남는다(위 표의 「3D 형상」 행 중 형상 부분은 지난 기록).
 
 ## 버린 대안
 

@@ -54,7 +54,6 @@ import {
   type PersonPose,
   type PersonTone,
 } from '@/features/viewer3d/people/personMotion';
-import { PpeGear } from '@/features/viewer3d/people/ppe/PpeGear';
 import { PpeWarningMark } from '@/features/viewer3d/people/ppe/PpeWarningMark';
 import { SkeletonBody } from '@/features/viewer3d/people/SkeletonBody';
 import {
@@ -186,10 +185,11 @@ function PersonAvatar({
   const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
   // 호스트가 잠깐 켜는 강조(-509 워치 연결 순간). 고리 펄스와 큰 이름표
   const highlight = useStore(viewerStore, (s) => s.personHighlights[worldId] ?? null);
-  // 호스트가 따진 안전모·조끼 상태(-531·-552). 없으면 장비를 그리지 않고, 하나라도 미착용이면 경고 표식이 보인다
-  const helmet = useStore(viewerStore, (s) => s.personHelmets[worldId] ?? null);
-  const vest = useStore(viewerStore, (s) => s.personVests[worldId] ?? null);
-  const notWorn = helmet === 'NOT_WORN' || vest === 'NOT_WORN';
+  // 호스트가 따진 안전모·조끼 상태(-531·-552). 장비 형상은 그리지 않고(-783), 하나라도 미착용이면 경고 표식만 보인다
+  const notWorn = useStore(
+    viewerStore,
+    (s) => s.personHelmets[worldId] === 'NOT_WORN' || s.personVests[worldId] === 'NOT_WORN',
+  );
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
@@ -362,7 +362,7 @@ function PersonAvatar({
   const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
   const placement = trackPlacement(track).basis;
   const meshOn = meshUse && mesh !== null && pose.kind === 'BODY';
-  // 메시가 보이는 사람은 골격 막대를 그리지 않으므로 장비도 캡슐 자리에 붙는다.
+  // 메시가 보이는 사람은 골격 막대를 그리지 않으므로 미착용 표식도 캡슐 머리 위에 둔다.
   const skeletonOn = skeleton && !meshOn;
 
   return (
@@ -398,7 +398,6 @@ function PersonAvatar({
                       : 'NONE'
                 }
               />
-              <PpeGear helmet={helmet} vest={vest} motion={motion} opacity={OPACITY[tone]} />
               {notWorn && <PpeWarningMark figure={motion} fallbackY={HELMET_Y} />}
             </group>
           ) : pose.kind === 'BODY' ? (
@@ -416,8 +415,6 @@ function PersonAvatar({
               ) : (
                 <CapsuleBody color={palette.person} tone={tone} selected={selected} />
               )}
-              {/* 캡슐·아바타 메시 사람은 캡슐 자리에 붙인다(메시 머리·등뼈에 맞추기는 명세 19.1 미결). 개발용 모델은 크기가 달라 뺀다. */}
-              {!model && <PpeGear helmet={helmet} vest={vest} opacity={OPACITY[tone]} />}
             </group>
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />
