@@ -5,6 +5,7 @@ import {
   requestDemoNewMap,
   useSetupWaitingView,
 } from '@/features/demo/demoNewMap';
+import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
 import { GpuPanel } from '@/features/gpu/GpuPanel';
 import { useGpuStatus } from '@/features/gpu/useGpu';
 import { useGpuGate } from '@/features/gpu/useGpuGate';
@@ -159,11 +160,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 확인 필요가 남아 있으면 마지막 단추(세팅 완료)가 '확인 필요 n개'를 붙이고 꺼진다. World 가 끊긴 새 모델은 빈 목록에서 시작한다.
 
 /**
- * 날짜 화면 안의 본문 높이: 화면 높이에서 틀(상단 바 60 + 본문 위아래 여백 28 + 날짜 줄 28·간격 14 + 아래 메뉴 자리 96)을 뺀 값이다.
+ * 날짜 화면 안의 본문 높이: 화면 높이에서 틀(상단 바 60 + 본문 위 여백 14 + 날짜 줄 28·간격 14 + 아래 메뉴 자리 96)을 뺀 값이다.
  * 이렇게 묶어 두면 어느 단계에서도 페이지 스크롤이 생기지 않고, 긴 오른쪽 열은 그 안에서만 스크롤한다.
- * 바닥 474 = 단계 줄 42 + 간격 12 + 두 칸 최소 420.
+ * 바닥 360 = 단계 줄 42 + 간격 12 + 두 칸 최소 306(낮은 노트북 창에서도 페이지가 스크롤되지 않게).
  */
-const EMBEDDED_BODY = 'h-[max(474px,calc(100dvh-226px))] flex-none';
+const EMBEDDED_BODY = 'h-[max(360px,calc(100dvh-212px))] flex-none';
 
 /** 작업의 서버 세션을 다시 보는 주기(다른 탭·새로고침에서 바뀐 시도를 따라간다, S15P31A101-689). */
 const WORK_SESSION_POLL_MS = 5_000;
@@ -453,15 +454,21 @@ function SetupWorkPage({
   }
   const unconfirmedZones = zoneSource ? pendingReviewCount(zonePlanQuery.data) : 0;
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
-  const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
-  const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
+  // 시연 계정은 서버 초안 대신 정해 둔 개구부 초안을 보인다(features/demo/demoZoneDrafts)
+  const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled && !demoAccount);
+  const demoDrafts = useMemo(
+    () => (demoAccount && draftsEnabled && sessionId ? demoZoneDrafts(sessionId) : null),
+    [demoAccount, draftsEnabled, sessionId],
+  );
+  const draftsResponse = demoAccount ? demoDrafts : zoneDraftsQuery.data;
+  const draftsList = draftsResponse?.drafts ?? NO_DRAFTS;
   const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync, zoneSource);
   const acceptedDraftIds = draftAccept.acceptedIds;
   const draftGhosts = useMemo(
     () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
     [draftsList, acceptedDraftIds, discardedDraftIds],
   );
-  // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758)
+  // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758). 시연 계정은 초안 카드를 그대로 보이려고 묶지 않는다
   const { zones: planZones } = useZones(zoneSource);
   const draftPairs = useMemo(
     () =>
@@ -471,9 +478,9 @@ function SetupWorkPage({
             !acceptedDraftIds.includes(d.candidate_id) &&
             !discardedDraftIds.includes(d.candidate_id),
         ),
-        zoneSource ? planZones : [],
+        zoneSource && !demoAccount ? planZones : [],
       ),
-    [draftsList, acceptedDraftIds, discardedDraftIds, planZones, zoneSource],
+    [draftsList, acceptedDraftIds, discardedDraftIds, planZones, zoneSource, demoAccount],
   );
   const mergedDraftIds = useMemo(
     () => [...draftPairs.values()].map((d) => d.candidate_id),
@@ -486,9 +493,10 @@ function SetupWorkPage({
     [heightDefaultsQuery.data, coverageQuery.data],
   );
 
+  // 시연 계정은 배경 촬영·카메라 확인 걷기 창을 띄우지 않는다(서버에는 준비된 맵의 재사용이라 찍을 것이 없다)
   const capture = useBackgroundCapture({
     stage,
-    session: currentSession,
+    session: demoAccount ? null : currentSession,
     cameraIds,
     starting:
       createSession.pending ||
@@ -877,7 +885,7 @@ function SetupWorkPage({
   );
 
   // 카메라 확인 걷기 창(-687): 2단계에서 워커가 걷기를 기다리거나 확인 중일 때. 다른 창(배경 촬영·높이 확인)이 먼저다
-  const walkOpen = stage === 1 && walk.open && !capture.open && !heightReview;
+  const walkOpen = stage === 1 && walk.open && !capture.open && !heightReview && !demoAccount;
   const startWalkRequest = startWalk.start;
   const requestWalk = useCallback(
     (attempt: number) => {
@@ -920,10 +928,12 @@ function SetupWorkPage({
   });
 
   const bodyClass = cn('flex flex-col gap-3', embedded ? EMBEDDED_BODY : 'min-h-0 flex-1');
-  if (entryPending) return <div className={bodyClass} />;
+  // 날짜 화면은 화면 높이에 맞춘 본문의 하단 여백을 줄인다(features/work/WorkDayPage DOCK_CLEARANCE)
+  const fitHeight = embedded ? { 'data-fit-height': '' } : {};
+  if (entryPending) return <div className={bodyClass} {...fitHeight} />;
 
   return (
-    <div className={bodyClass}>
+    <div className={bodyClass} {...fitHeight}>
       {!embedded && <PageTitle>설치 · 보정</PageTitle>}
       {!embedded && (
         <div className="flex flex-wrap justify-end gap-2">
@@ -1033,6 +1043,7 @@ function SetupWorkPage({
             }
             onReturnToStep1={returnToStep1}
             onTurnOnGpu={gpuOff ? () => setGpuPanelOpen(true) : undefined}
+            demo={demoAccount}
           />
         )
       ) : (
@@ -1070,7 +1081,7 @@ function SetupWorkPage({
             {!completed && (
               <AiZoneDraftsPanel
                 cameraIds={waiting.cameraIds}
-                draftsResponse={zoneDraftsQuery.data}
+                draftsResponse={draftsResponse}
                 acceptedDraftIds={acceptedDraftIds}
                 discardedDraftIds={discardedDraftIds}
                 pendingDraftId={draftAccept.pendingId}
@@ -1098,7 +1109,7 @@ function SetupWorkPage({
       {gpuGateDialog}
       {gpuPanelOpen && <GpuPanel onClose={() => setGpuPanelOpen(false)} />}
       <VlmZoneNotice
-        active={stage === ZONE_STAGE && !completed && zoneSource !== null}
+        active={stage === ZONE_STAGE && !completed && zoneSource !== null && !demoAccount}
         sessionId={sessionId}
       />
       {capture.open && (

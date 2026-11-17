@@ -366,14 +366,17 @@ export function NextStepCard({ step, children }: { step: NextStep; children?: Re
 export function Details({
   label,
   summary,
+  defaultOpen = false,
   children,
 }: {
   label: string;
   summary: string;
+  /** 처음부터 펼쳐 둔다(사용자가 접을 수 있다). */
+  defaultOpen?: boolean;
   children: ReactNode;
 }) {
   return (
-    <details aria-label={label} className="rounded-xl bg-card px-3.5 py-2.5">
+    <details aria-label={label} open={defaultOpen} className="rounded-xl bg-card px-3.5 py-2.5">
       <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
         {summary}
       </summary>

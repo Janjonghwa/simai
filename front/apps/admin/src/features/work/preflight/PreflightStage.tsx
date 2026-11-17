@@ -1,3 +1,4 @@
+import { useDemoReportShown } from '@/features/demo/demoReport';
 import { useGpuGate } from '@/features/gpu/useGpuGate';
 import type { StartPpe } from '@/features/work/api';
 import { LayoutPreview } from '@/features/work/preflight/LayoutPreview';
@@ -23,6 +24,7 @@ import { useStartWork } from '@/features/work/useWorkRun';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
 import { draftWarning } from '@/features/work/workDay';
 import { useZones } from '@/features/zones/useZones';
+import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
 import { useCallback, useMemo, useState } from 'react';
 
@@ -36,6 +38,20 @@ import { useCallback, useMemo, useState } from 'react';
 
 type Dialog = 'confirm' | 'sign' | null;
 
+/**
+ * 본문 높이: 화면에서 상단 바(60)·본문 위 여백(14)·날짜 머리줄(28)·간격(14)·하단 메뉴 비움(96)을 뺀 만큼이라 페이지가
+ * 스크롤되지 않는다. 넓은 화면은 두 칸이 이 높이를 나눠 쓰고(종이는 이 높이에 맞춘 A4 한 장), 좁은 화면은 종이 칸만 이 높이다.
+ */
+const BODY_GRID =
+  'grid items-start gap-4 min-[960px]:h-[max(360px,calc(100dvh-212px))] min-[960px]:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] min-[960px]:items-stretch';
+const REPORT_COLUMN =
+  'flex h-[max(360px,calc(100dvh-212px))] min-h-0 min-w-0 flex-col min-[960px]:h-auto';
+/**
+ * 오른쪽 칸: 3D 레이아웃이 남는 높이를 채운다. 카드는 내용보다 작게 줄지 않고(잘리지 않게), 그래도 넘치는 낮은 화면에서만 칸 안에서
+ * 스크롤한다.
+ */
+const SIDE_COLUMN = 'flex min-h-0 min-w-0 flex-col gap-3 *:shrink-0 min-[960px]:overflow-y-auto';
+
 export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: WorkStageProps) {
   const workId = day.work_id;
   // 작업 시작은 세팅 완료 뒤다(서버 setup_completed_at → progress SETUP_DONE, -642). 날짜 화면은 그때만 이 단계를 연다
@@ -44,6 +60,8 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   const start = useStartWork();
   // 확인창의 AI 초안 경고(-625). ReportPanel 과 같은 쿼리라 요청이 더 나가지 않는다
   const { data: report } = useWorkReport(workId);
+  // 시연 계정이 미리 적어 둔 초안을 보였으면 초안 경고를 띄우지 않는다(features/demo/demoReport)
+  const demoReportShown = useDemoReportShown(workId);
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
   const [checks, setChecks] = useState<PreflightChecks>(NO_CHECKS);
   // 작업 중 보호구 요구(S15P31A101-654). 기본 필수, 끄면 그 장비는 R9·R11 을 판정하지 않는다
@@ -94,12 +112,28 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   const loaded = zonesRaw !== undefined;
 
   return (
-    <div className="grid items-start gap-4 min-[960px]:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)]">
+    <div
+      data-fit-height
+      className={cn(
+        BODY_GRID,
+        rerunNo === undefined
+          ? 'min-[960px]:grid-rows-[minmax(0,1fr)]'
+          : 'min-[960px]:grid-rows-[auto_minmax(0,1fr)]',
+      )}
+    >
       {rerunNo !== undefined && <RerunNotice runNo={rerunNo} />}
-      <div className="min-w-0">
-        <ReportPanel workId={workId} editable withPrint draftable setupDone={setupDone} />
+      <div className={REPORT_COLUMN}>
+        <ReportPanel
+          workId={workId}
+          editable
+          withPrint
+          draftable
+          setupDone={setupDone}
+          fit
+          className="flex-1"
+        />
       </div>
-      <div className="flex min-w-0 flex-col gap-3">
+      <div className={SIDE_COLUMN}>
         <LayoutPreview
           zoneCount={loaded ? zones.length : null}
           zonesRaw={zonesRaw}
@@ -123,7 +157,7 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
           signerCount={signers.count}
           pending={start.pending}
           error={start.error ? startErrorMessage(start.error) : null}
-          draftWarning={draftWarning(report)}
+          draftWarning={demoReportShown ? null : draftWarning(report)}
           warnings={startWarnings}
           setupCompleted={setupDone}
           setupBlocked={isSetupRequiredError(start.error)}

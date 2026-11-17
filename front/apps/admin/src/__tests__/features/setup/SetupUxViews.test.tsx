@@ -24,6 +24,7 @@ import {
   buildSetupZoneDraftsResponse,
 } from '@/mocks/setup';
 import { MOCK_ZONES } from '@/mocks/zones';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   act,
   cleanup,
@@ -98,20 +99,24 @@ describe('세팅 상태와 다음 행동(-732)', () => {
     const waiting = deriveWaitingView(current);
     const check = deriveCameraCheckView(current, IDS);
     const onReturn = vi.fn();
+    // 정밀 3D 맵까지 끝나 왼쪽이 3D 미리보기(Scene 조회)로 바뀐다
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <SetupCalibrateStep
-        waiting={waiting}
-        cameraView={<div />}
-        nextStep={calibrateNextStep({
-          waiting,
-          pollingError: false,
-          walkOpen: false,
-          cameraCheckBlocked: '카메라 확인을 마치면 넘어갈 수 있어요',
-        })}
-        cameraCheck={check}
-        onRetry={vi.fn()}
-        onReturnToStep1={onReturn}
-      />,
+      <QueryClientProvider client={client}>
+        <SetupCalibrateStep
+          waiting={waiting}
+          cameraView={<div />}
+          nextStep={calibrateNextStep({
+            waiting,
+            pollingError: false,
+            walkOpen: false,
+            cameraCheckBlocked: '카메라 확인을 마치면 넘어갈 수 있어요',
+          })}
+          cameraCheck={check}
+          onRetry={vi.fn()}
+          onReturnToStep1={onReturn}
+        />
+      </QueryClientProvider>,
     );
     expect(screen.getAllByText('맵은 완성됐지만 카메라 확인이 남아 있어요')).toHaveLength(1);
     expect(screen.getByText(/맵 생성 작업이 끝나 걷기만 다시 할 수 없어요/)).toBeTruthy();
