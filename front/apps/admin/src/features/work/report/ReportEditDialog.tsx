@@ -18,6 +18,7 @@ import { useState } from 'react';
 
 // TBM 보고서 편집 창. 초안 전에는 작업내용만, 초안 후에는 넓게 모든 칸(정보·위험·중점·점검·일일 안전점검·종료 미팅)을 고친다.
 // 저장은 받아 둔 판의 form_revision 으로 보내고, 충돌·잠김 처리는 useReportEdit 이 한다.
+// 화면에 보이는 양식이 서버 양식과 다르면(시연 계정의 미리 적어 둔 초안) initialForm 으로 그 양식에서 시작한다.
 
 const TITLE = 'TBM 보고서 편집';
 const NARROW = 'w-[min(480px,calc(100vw-48px))]';
@@ -31,6 +32,11 @@ export interface ReportEditDialogProps {
   submitLabel?: string;
   /** true 면 작업내용이 비었을 때 저장하지 않고 빨간 윤곽으로 알린다('다음' 에서 연 창). */
   requireTasks?: boolean;
+  /**
+   * 창을 처음 열 때 보일 양식(기본은 `report` 의 양식). 있으면 초안이 끝난 것처럼 넓게 모든 칸을 보인다.
+   * 저장 충돌로 보고서를 다시 받으면 쓰지 않고 받은 서버 양식으로 채운다.
+   */
+  initialForm?: ReportForm;
   onClose: () => void;
   /** 저장이 끝난 뒤(창을 닫기 전). */
   onSaved?: () => void;
@@ -40,17 +46,19 @@ export function ReportEditDialog({
   report,
   submitLabel = '저장',
   requireTasks = false,
+  initialForm,
   onClose,
   onSaved,
 }: ReportEditDialogProps) {
   const edit = useReportEdit(report, { onSaved, onClose });
   const catalog = useWorkTasks().data ?? NO_TASKS;
-  const full = isDrafted(edit.base);
+  const full = initialForm !== undefined || isDrafted(edit.base);
   return (
     <ModalDialog label={TITLE} onClose={onClose} className={full ? WIDE : NARROW}>
       <EditForm
         key={edit.generation}
         report={edit.base}
+        initialForm={edit.generation === 0 ? initialForm : undefined}
         full={full}
         catalog={catalog}
         locked={edit.locked}
@@ -68,6 +76,7 @@ export function ReportEditDialog({
 /** 입력 상태를 가진 창 안쪽. `key` 가 바뀌면(보고서를 다시 받으면) 처음부터 다시 만든다. */
 function EditForm({
   report,
+  initialForm,
   full,
   catalog,
   locked,
@@ -79,6 +88,7 @@ function EditForm({
   onCancel,
 }: {
   report: WorkReport;
+  initialForm: ReportForm | undefined;
   full: boolean;
   catalog: readonly WorkTask[];
   locked: boolean;
@@ -89,7 +99,7 @@ function EditForm({
   onSubmit: (form: ReportForm) => Promise<void>;
   onCancel: () => void;
 }) {
-  const form = reportFormOf(report);
+  const form = initialForm ?? reportFormOf(report);
   const [tasks, setTasks] = useState(() => selectionOfTasks(form.info.tasks));
   const [fields, setFields] = useState(() => (full ? fieldEditsOf(form) : undefined));
   const [invalid, setInvalid] = useState(false);

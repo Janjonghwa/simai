@@ -3,6 +3,8 @@ import { createBoxEditDrag, type BoxEditEmit } from '@/features/viewer3d/editing
 import { BoxHandles } from '@/features/viewer3d/editing/BoxEditHandles';
 import {
   GHOST_LINE,
+  HIGHLIGHT_FILL_OPACITY,
+  HIGHLIGHT_LINE_WIDTH,
   noRaycast,
   PREVIEW_FILL_OPACITY,
   PREVIEW_LINE_WIDTH,
@@ -10,6 +12,7 @@ import {
   UNIT_EDGES,
 } from '@/features/viewer3d/editing/boxEditStyle';
 import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
+import type { RiskColorLevel } from '@/features/viewer3d/palette';
 import { useShownRoomLimit } from '@/features/viewer3d/scene/useShownRoom';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import type { ViewerBoxEdit, ViewerBoxGhost } from '@/features/viewer3d/types';
@@ -61,7 +64,7 @@ export function BoxEditGizmo() {
       {boxGhosts
         .filter((ghost) => ghost.id !== boxEdit?.id)
         .map((ghost) => (
-          <GhostBox key={ghost.id} id={ghost.id} box={ghost.box} />
+          <GhostBox key={ghost.id} id={ghost.id} box={ghost.box} highlight={ghost.highlight} />
         ))}
       {/* ID 가 바뀌면 새로 올려 끌던 조작을 끝낸다. */}
       {boxEdit && <ActiveBoxEdit key={boxEdit.id} edit={boxEdit} onChange={onBoxEditChange} />}
@@ -69,24 +72,54 @@ export function BoxEditGizmo() {
   );
 }
 
-/** 보관된 미저장 초안. 읽기 전용 점선 윤곽이며 클릭을 받지 않는다. */
-function GhostBox({ id, box }: { id: string; box: ViewerEditBox }) {
+/** 보관된 미저장 초안. 읽기 전용 점선 윤곽이며 클릭을 받지 않는다. highlight 면 그 위험 등급색 실선 윤곽과 반투명 면으로 그린다. */
+function GhostBox({
+  id,
+  box,
+  highlight,
+}: {
+  id: string;
+  box: ViewerEditBox;
+  highlight?: RiskColorLevel;
+}) {
   const palette = useScenePalette();
   const three = threeBox(box);
   const [sx, sy, sz] = three ? drawSize(three) : [0, 0, 0];
   const edges = useMemo(() => boxEdges([sx, sy, sz]), [sx, sy, sz]);
   if (!three) return null;
+  const riskColor = highlight ? palette.risk[highlight].color : null;
   return (
     <group name={`box-edit-ghost:${id}`} position={three.position}>
-      <Line
-        points={edges}
-        segments
-        color={palette.zone.preview}
-        dashed
-        transparent
-        raycast={noRaycast}
-        {...GHOST_LINE}
-      />
+      {riskColor === null ? (
+        <Line
+          points={edges}
+          segments
+          color={palette.zone.preview}
+          dashed
+          transparent
+          raycast={noRaycast}
+          {...GHOST_LINE}
+        />
+      ) : (
+        <>
+          <mesh raycast={noRaycast} renderOrder={PREVIEW_ORDER}>
+            <boxGeometry args={[sx, sy, sz]} />
+            <meshBasicMaterial
+              color={riskColor}
+              transparent
+              opacity={HIGHLIGHT_FILL_OPACITY}
+              depthWrite={false}
+            />
+          </mesh>
+          <Line
+            points={edges}
+            segments
+            color={riskColor}
+            lineWidth={HIGHLIGHT_LINE_WIDTH}
+            raycast={noRaycast}
+          />
+        </>
+      )}
     </group>
   );
 }

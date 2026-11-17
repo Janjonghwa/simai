@@ -389,9 +389,16 @@ export function Details({
  * 1단계 「자세히 · 카메라 상태」(관리자용, 처음엔 닫힘): 카메라마다 배지와 각도 안내 문장, 연결 요약, 겹침이 부족한 옆 쌍 안내,
  * 위에서 본 겹침 2D 지도(옆 카메라 4쌍 등급). 기본 화면은 영상 칸 배지와 「지금 할 일」만 보인다(S15P31A101-691).
  */
-export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView }) {
+export function CameraStatusDetails({
+  coverage,
+  compact = false,
+}: {
+  coverage: Step1CoverageView;
+  /** 처음부터 펼쳐 두고 겹침 지도를 낮게 그린다(시연 계정). */
+  compact?: boolean;
+}) {
   return (
-    <Details label="카메라 상태 자세히" summary="자세히 · 카메라 상태">
+    <Details label="카메라 상태 자세히" summary="자세히 · 카메라 상태" defaultOpen={compact}>
       <Rows>
         {coverage.cameras.map((cam) => (
           <Row key={cam.id}>
@@ -409,7 +416,9 @@ export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView 
           </Row>
         ))}
       </Rows>
-      <p className="text-xs text-muted-foreground">{coverage.connectivitySummary}</p>
+      {coverage.connectivitySummary !== '' && (
+        <p className="text-xs text-muted-foreground">{coverage.connectivitySummary}</p>
+      )}
       {coverage.riskyPairs.length > 0 && (
         <Alert className="border-delay/30 bg-delay/10 text-delay">
           <TriangleAlert aria-hidden />
@@ -421,7 +430,7 @@ export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView 
         </Alert>
       )}
       <StageAWarning alerts={coverage.stageAAlerts} />
-      <div className="aspect-square w-full">
+      <div className={cn('w-full', compact ? 'h-48' : 'aspect-square')}>
         <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
       </div>
     </Details>
@@ -590,6 +599,8 @@ export function AiZoneDraftsPanel({
   cameraIds = [],
   mergedDraftIds = [],
   canImportPrevious = false,
+  pendingText = 'AI 구역 초안 분석 중',
+  onHoverDraft,
 }: {
   draftsResponse: SetupZoneDraftsResponse | null;
   /** 구역으로 만든 초안. */
@@ -605,6 +616,10 @@ export function AiZoneDraftsPanel({
   mergedDraftIds?: readonly string[];
   /** 초안이 없을 때 「이전 구역 불러오기」를 권할지(새 모델 + World 이어짐). */
   canImportPrevious?: boolean;
+  /** 초안을 찾는 동안 보이는 글. */
+  pendingText?: string;
+  /** 카드에 커서를 대고(candidateId) 뗄(null) 때 알린다. 3D 에서 그 초안을 도드라지게 보이는 데 쓴다. */
+  onHoverDraft?: (candidateId: string | null) => void;
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
   const visibleDrafts = allDrafts.filter(
@@ -625,7 +640,7 @@ export function AiZoneDraftsPanel({
   return (
     <Panel title="AI 위험 구역 초안" fill={1}>
       {draftsResponse?.status === 'QUEUED' || draftsResponse?.status === 'NOT_REQUESTED' ? (
-        <p className="text-xs text-muted-foreground">AI 구역 초안 분석 중</p>
+        <p className="text-xs text-muted-foreground">{pendingText}</p>
       ) : noneFound ? (
         <p role="status" className="text-xs text-muted-foreground">
           {canImportPrevious
@@ -653,6 +668,8 @@ export function AiZoneDraftsPanel({
                 key={item.candidate_id}
                 data-candidate-id={item.candidate_id}
                 data-no-opinion={isNoOpinion ? 'true' : 'false'}
+                onMouseEnter={() => onHoverDraft?.(item.candidate_id)}
+                onMouseLeave={() => onHoverDraft?.(null)}
                 className={cn(
                   'flex flex-col gap-2 rounded-lg border border-dashed px-3 py-2.5 text-xs',
                   isNoOpinion

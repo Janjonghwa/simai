@@ -1,4 +1,5 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventsStore } from '@/features/events/events.store';
@@ -58,11 +59,14 @@ function Notices({
   ref,
   eventPanel,
   banner,
+  alerts,
 }: {
   ref: RefObject<HTMLDivElement | null>;
   eventPanel: boolean;
   /** 경보 배너를 이 알림 영역에 띄운다(띠로 따로 두는 화면이면 false). */
   banner: boolean;
+  /** 경보 배너·보호구·워치 알림을 띄운다. 끄면 작업 세션 바만 남는다(시연 계정). */
+  alerts: boolean;
 }) {
   const camSplitOpen = useCamSplitStore((s) => s.split !== null);
   return (
@@ -75,12 +79,12 @@ function Notices({
         noticeInset(eventPanel, camSplitOpen),
       )}
     >
-      {banner && <AlarmBanner withPanel={eventPanel} />}
+      {alerts && banner && <AlarmBanner withPanel={eventPanel} />}
       {eventPanel && <WorkSessionBar />}
-      {eventPanel && <WorkPpeStatus />}
-      {eventPanel && <PpePolicyNotice />}
-      {eventPanel && <WatchBindNotice />}
-      <WatchEscalationNotice />
+      {alerts && eventPanel && <WorkPpeStatus />}
+      {alerts && eventPanel && <PpePolicyNotice />}
+      {alerts && eventPanel && <WatchBindNotice />}
+      {alerts && <WatchEscalationNotice />}
     </div>
   );
 }
@@ -137,6 +141,8 @@ export function AppLayout() {
   const dockOverlay = useMatches({
     select: (matches) => matches.some((m) => m.staticData.dockOverlay),
   });
+  // 시연 계정은 경보 배너·알림·경보음을 모두 끈다.
+  const alerts = !useIsDemoAccount();
   const openEvent = useEventsStore((s) => s.openEvent);
   const root = useRef<HTMLDivElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
@@ -163,7 +169,7 @@ export function AppLayout() {
           <TopBar floating={fullBleed} />
         </div>
         {/* 작업 관리 같은 일반 화면은 배너가 달력 「오늘」·「출력」 단추를 가리지 않게 상단 바 아래 띠로 둔다(S15P31A101-757). */}
-        {!eventPanel && !fullBleed && (
+        {alerts && !eventPanel && !fullBleed && (
           <div
             data-testid="alarm-strip"
             className="pointer-events-none relative z-[6] flex flex-none justify-center px-5 pt-2 empty:hidden"
@@ -188,8 +194,13 @@ export function AppLayout() {
           )}
           <Dock />
         </div>
-        <Notices ref={noticesRef} eventPanel={eventPanel} banner={eventPanel || fullBleed} />
-        <AlarmSoundLoop />
+        <Notices
+          ref={noticesRef}
+          eventPanel={eventPanel}
+          banner={eventPanel || fullBleed}
+          alerts={alerts}
+        />
+        {alerts && <AlarmSoundLoop />}
       </div>
     </>
   );
