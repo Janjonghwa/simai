@@ -4,8 +4,11 @@
 1. 프레임 고르기(`select_frames`): 동영상은 낮춘 속도로 디코드해 선명도(라플라시안 분산)를 매기고, 흐린 프레임을 버리고,
    최소 간격·총 상한(기본 40, 파일 전체 합)을 지켜 고르고, 거의 같은 프레임(dHash)을 뺀다. 사진은 한 장이 한 후보다.
    EXIF 35 mm 환산 초점 거리가 아주 짧은 사진(초광각·어안)은 미리 뺀다.
-2. 묶음(chunk)마다 MapAnything 한 번(`run_supplement`): 고정 카메라 4 view(알려진 K, 사람 마스크) + 보조 프레임(K·자세 모름,
-   같은 분할기의 사람 마스크). 기본은 묶음 하나(프레임 ≤ 40). 상한을 올리면 40 장씩 나눠 묶음마다 같은 고정 4 view 를 넣는다.
+2. 묶음(chunk)마다 MapAnything 한 번(`run_supplement`): 고정 카메라 4 view(알려진 K + 정렬 기준 보정 자세, 사람 마스크) + 보조
+   프레임(K·자세 모름, 같은 분할기의 사람 마스크). 기본은 묶음 하나(프레임 ≤ 40). 상한을 올리면 40 장씩 나눠 묶음마다 같은 고정
+   4 view 를 넣는다. 고정 4대에 자세를 넣어 MapAnything 세계를 보정 World 에 붙인다(-787: 걷기 다듬기 보정처럼 MapAnything 고유
+   중심과 어긋난 보정에서도 정렬 잔차가 보정과의 차이로 부풀지 않게). 관문의 기준(보조 촬영 없을 때)도 같은 자세 입력으로 고정
+   4 view 만 한 번 더 돌려 잰다. 자세 조건 시도가 받아들인 묶음 없이 끝나면 자세 없이(K 만, -605 원래 동작) 한 번 더 시도한다.
 3. 묶음마다 World 정렬은 고정 카메라 4대만으로 푼다(`reconstruct_tasks.solve_fixed_alignment`, 지금과 같은 규칙). 보조 프레임
    자세는 출력일 뿐이다. 보조 프레임 등록(`register_views`): 고정 view 에서 시작해 깊이가 맞는 겹침으로 이어지는 프레임만 남긴다.
    화각이 아주 넓게 추정된 파일(어안·초광각 의심)은 통째로 뺀다.
@@ -44,6 +47,10 @@ VIEW_ROLE_SUPPLEMENT = "SETUP_SUPPLEMENT"
 SUP_PREFIX = "sup_"  # = calibration.extrinsics.initial.SUPPLEMENT_VIEW_PREFIX(단위 검사 제외 접두, 시험이 같은지 본다)
 PREPARED_FORMAT = "simai.mapanything_inputs"
 JOINT_FORMAT_VERSION = "0.2.0"  # 0.1.0 + K 없는 view(K_undistorted null)·view_role·supplement 블록
+# 고정 view 의 조건 자세(OpenCV cam2world 4×4, 정렬 기준 World m, S15P31A101-787). = run_mapanything.POSE_KEY(시험이 같은지 본다)
+POSE_KEY = "pose_cam2world"
+MODE_POSE_CONDITIONED = "POSE_CONDITIONED"  # 고정 4대에 정렬 기준 보정 자세 + K, 보조 프레임은 이미지만(-787 기본)
+MODE_K_ONLY = "K_ONLY"  # 고정 4대에 K 만(-605 원래 동작, 자세 조건 실패 때 한 번 더)
 SUPPLEMENT_DIR = "supplement"
 REQUEST_FILE = "request.json"
 RESULT_FILE = "result.json"
@@ -457,10 +464,14 @@ def build_joint_prepared(
     person_mask: Callable[[np.ndarray], np.ndarray | None] | None,
     *,
     mask_dilate_px: int = 31,
+    fixed_poses: Mapping[str, np.ndarray] | None = None,
+    pose_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """고정 카메라 prepared(알려진 K·마스크) + 보조 프레임(K 없음·같은 분할기 마스크) → 한 MapAnything 입력 폴더.
 
-    고정 view 가 앞(MapAnything 기준 view = 첫 view 가 고정 카메라)에 온다. person_mask(BGR) → bool 마스크(사람 = True) 또는 None."""
+    고정 view 가 앞(MapAnything 기준 view = 첫 view 가 고정 카메라)에 온다. person_mask(BGR) → bool 마스크(사람 = True) 또는 None.
+    fixed_poses(카메라 ID → cam2world, -787)가 있으면 고정 view 마다 `POSE_KEY` 로 넣는다(하나라도 없으면 ValueError). 보조 프레임에는
+    넣지 않는다. frames 가 비면 고정 4 view 만의 입력 폴더(관문 기준 실행)다."""
     import cv2
 
     base = json.loads((base_prepared / "prepared.json").read_text(encoding="utf-8"))
@@ -474,7 +485,14 @@ def build_joint_prepared(
         _copy(base_prepared / v["image"], out_dir / v["image"])
         if v.get("mask"):
             _copy(base_prepared / v["mask"], out_dir / v["mask"])
-        views.append({**v, "view_role": VIEW_ROLE_FIXED})
+        entry = {**v, "view_role": VIEW_ROLE_FIXED}
+        entry.pop(POSE_KEY, None)
+        if fixed_poses is not None:
+            key = v.get("camera_id") or v["name"]
+            if key not in fixed_poses:
+                raise ValueError(f"고정 카메라 {key} 의 조건 자세가 정렬 기준 보정에 없다")
+            entry[POSE_KEY] = np.asarray(fixed_poses[key], float).tolist()
+        views.append(entry)
     target_wh = base["views"][0]["image_size"]
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mask_dilate_px, mask_dilate_px))
     for f in frames:
@@ -503,8 +521,32 @@ def build_joint_prepared(
            "person_masks": bool(base.get("person_masks")) or person_mask is not None,
            "supplement": {"input_role": INPUT_ROLE, "frames": len(frames),
                           "media": [media[mid].provenance() for mid in dict.fromkeys(f.media_id for f in frames)]}}
+    doc.pop("pose_conditioning", None)
+    if fixed_poses is not None:
+        doc["pose_conditioning"] = {"mode": MODE_POSE_CONDITIONED, "views": [v["name"] for v in views if POSE_KEY in v],
+                                    "convention": "cam2world 4x4, OpenCV, alignment-reference World m",
+                                    **dict(pose_source or {})}
     (out_dir / "prepared.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     return doc
+
+
+def reference_poses(root: Path) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """고정 카메라 조건 자세 = World 정렬(`solve_fixed_alignment`)이 맞추는 보정 문서의 자세(cam2world, OpenCV, m).
+
+    정렬 기준 문서(`ALIGNMENT_REFERENCE_FILE`, 세팅 대여의 Stage A)가 있으면 그것, 없으면 calibration.json(다시 굽기는 기준 보정
+    문서 = 걷기 다듬기 판일 수 있다). 조건 자세와 정렬 기준이 같아야 정렬 잔차가 '모델이 자세를 얼마나 따랐나'를 잰다."""
+    from .reconstruct import ALIGNMENT_REFERENCE_FILE
+
+    ref = root / ALIGNMENT_REFERENCE_FILE
+    path = ref if ref.is_file() else root / "calibration.json"
+    cal = json.loads(path.read_text(encoding="utf-8"))
+    poses: dict[str, np.ndarray] = {}
+    for c in cal["cameras"]:
+        R, t = np.asarray(c["R"], float), np.asarray(c["t"], float)
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R.T, -R.T @ t
+        poses[str(c["camera_id"])] = T
+    return poses, {"source": path.name, "calibration_version": cal.get("calibration_version")}
 
 
 # --------------------------------------------------------------------------- 등록·관문
@@ -626,6 +668,45 @@ def centers_only_residual(root: Path, ma_dir: Path, prepared_dir: Path) -> float
     return round(float(doc["max_center_residual_m"]), 5)
 
 
+def pose_follow(ma_dir: Path, prepared_dir: Path) -> dict[str, Any] | None:
+    """자세를 넣은 view 들이 출력에서 입력 자세를 얼마나 따랐나(-787). 자세를 넣지 않았으면 None.
+
+    MapAnything 은 입력 자세를 첫 view 기준 틀로 옮겨 쓰고 출력 세계 틀은 보장하지 않으므로, 입력·출력 모두 첫 자세 view 기준
+    상대 자세로 비교한다(세계 틀과 무관). 축척은 카메라 쌍 거리 비(출력/입력) 중앙값. `followed` 는 기록용 판단으로 World 정렬
+    문턱(`reconstruct_tasks.ALIGN_MAX_CENTER_M`·`ALIGN_MAX_ROTATION_DEG`)과 같은 값을 쓴다(관문이 아니다)."""
+    from .reconstruct_tasks import ALIGN_MAX_CENTER_M, ALIGN_MAX_ROTATION_DEG
+
+    prep = json.loads((prepared_dir / "prepared.json").read_text(encoding="utf-8"))
+    given = [(v["name"], np.asarray(v[POSE_KEY], float)) for v in prep["views"] if v.get(POSE_KEY) is not None]
+    if len(given) < 2:
+        return None
+    out_poses = {v["name"]: np.asarray(v["cam2world"], float)
+                 for v in json.loads((ma_dir / "cameras.json").read_text(encoding="utf-8"))["views"]}
+    if any(n not in out_poses for n, _ in given):
+        return None
+    n0, Ti0 = given[0]
+    To0_inv, Ti0_inv = np.linalg.inv(out_poses[n0]), np.linalg.inv(Ti0)
+    centers, rots, ci, co = [], [], [], []
+    for name, Ti in given:
+        rel_in, rel_out = Ti0_inv @ Ti, To0_inv @ out_poses[name]
+        ci.append(Ti[:3, 3])
+        co.append(out_poses[name][:3, 3])
+        if name == n0:
+            continue
+        centers.append(float(np.linalg.norm(rel_in[:3, 3] - rel_out[:3, 3])))
+        dR = rel_in[:3, :3].T @ rel_out[:3, :3]
+        rots.append(float(np.degrees(np.arccos(np.clip((np.trace(dR) - 1) / 2, -1.0, 1.0)))))
+    ci_a, co_a = np.asarray(ci), np.asarray(co)
+    iu = np.triu_indices(len(ci_a), 1)
+    di = np.linalg.norm(ci_a[:, None] - ci_a[None], axis=-1)[iu]
+    do = np.linalg.norm(co_a[:, None] - co_a[None], axis=-1)[iu]
+    ratio = float(np.median(do / np.maximum(di, 1e-9)))
+    max_c, max_r = max(centers), max(rots)
+    return {"reference_view": n0, "max_center_err_m": round(max_c, 5), "max_rotation_err_deg": round(max_r, 4),
+            "distance_ratio_median": round(ratio, 5),
+            "followed": bool(max_c <= ALIGN_MAX_CENTER_M and max_r <= ALIGN_MAX_ROTATION_DEG)}
+
+
 # --------------------------------------------------------------------------- 병합
 def model_k_to_image_k(K_model: np.ndarray, image_wh: Sequence[int], model_hw: Sequence[int]) -> np.ndarray:
     """모델 해상도 K → 입력 영상(펴진 해상도) K. intrinsics_check.expected_crop_resize_k 의 역(덮도록 줄이고 가운데 자르기)."""
@@ -654,6 +735,8 @@ class ChunkResult:
     wide_media: set[str] = field(default_factory=set)
     reason: str | None = None
     seconds: float = 0.0
+    mode: str = MODE_K_ONLY
+    pose_follow: dict[str, Any] | None = None
 
     @property
     def kept(self) -> list[str]:
@@ -663,8 +746,9 @@ class ChunkResult:
     prepared_views: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def record(self) -> dict[str, Any]:
-        return {"chunk": self.index, "frames": len(self.names), "registered": len(self.kept), "reason": self.reason,
-                "center_residual_m": self.center_m, "fixed_reprojection_px": self.fixed_px,
+        return {"chunk": self.index, "mode": self.mode, "frames": len(self.names), "registered": len(self.kept),
+                "reason": self.reason, "center_residual_m": self.center_m, "fixed_reprojection_px": self.fixed_px,
+                "pose_follow": self.pose_follow,
                 "wide_fov_media": sorted(self.wide_media), "seconds": round(self.seconds, 2),
                 "floor_constrained_center_residual_m": None if not self.align_doc
                 else round(float(self.align_doc["max_center_residual_m"]), 5)}
@@ -729,6 +813,8 @@ def materialize_world_run(
                                  "fov_x_deg": round(float(np.degrees(2 * np.arctan(hw[1] / 2 / float(K_model[0, 0])))), 2),
                                  "chunk": ch.index})
                 entry = dict(pv[name])
+                # 조건 자세는 추론 입력일 뿐이다. 병합본 자세(World)는 cameras.json 이 정본이라 view 항목에 남기지 않는다(-787)
+                entry.pop(POSE_KEY, None)
                 _copy(ch.prepared_dir / entry["image"], out_prepared / entry["image"])
                 if entry.get("mask"):
                     _copy(ch.prepared_dir / entry["mask"], out_prepared / entry["mask"])
@@ -902,6 +988,167 @@ def _first_failure_reason(media_stats: Mapping[str, Mapping[str, Any]]) -> str:
     return R_NO_USABLE_FRAMES
 
 
+def _baseline_metrics(root: Path, ma_dir: Path, prepared_dir: Path, fixed_ids: set[str]) -> tuple[float | None, float | None]:
+    """보조 촬영 없는 고정 4 view Run 의 (중심 잔차 m, 고정 카메라 재투영 px). 모르면 None."""
+    from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+
+    center = centers_only_residual(root, ma_dir, prepared_dir)
+    try:
+        run = load_mapanything_run(ma_dir, prepared=load_prepared(prepared_dir))
+        px = fixed_reprojection_px(run.views, fixed_ids)
+    except (OSError, ValueError, KeyError):
+        px = None
+    return center, px
+
+
+@dataclass
+class Attempt:
+    """MapAnything 입력 방식 하나(자세 조건 또는 K 만)로 돌린 묶음들과 그 관문 기준(-787)."""
+
+    mode: str
+    baseline_center_m: float | None = None
+    baseline_px: float | None = None
+    baseline_pose_follow: dict[str, Any] | None = None
+    chunks: list[ChunkResult] = field(default_factory=list)
+    budget_hit: bool = False
+    error: str | None = None  # 묶음까지 가지 못한 실패(자세를 못 만듦·기준 실행 실패)
+
+    @property
+    def accepted(self) -> list[ChunkResult]:
+        return [c for c in self.chunks if c.reason is None]
+
+    def record(self) -> dict[str, Any]:
+        return {"mode": self.mode, "error": self.error, "baseline_center_residual_m": self.baseline_center_m,
+                "baseline_fixed_reprojection_px": self.baseline_px, "baseline_pose_follow": self.baseline_pose_follow,
+                "chunks": [c.record() for c in self.chunks], "accepted_chunks": [c.index for c in self.accepted],
+                "time_budget_hit": self.budget_hit}
+
+
+def _run_chunks(
+    attempt: Attempt,
+    root: Path,
+    work_dir: Path,
+    frames: Sequence[SelectedFrame],
+    by_id: Mapping[str, MediaInput],
+    person_mask: Callable[[np.ndarray], np.ndarray | None],
+    fixed_ids: set[str],
+    infer: Callable[[Path, Path], None],
+    cfg: SupplementConfig,
+    *,
+    fixed_poses: Mapping[str, np.ndarray] | None,
+    pose_source: Mapping[str, Any] | None,
+    t0: float,
+    monotonic: Callable[[], float],
+) -> None:
+    """묶음별 추론·정렬·등록·관문(attempt.chunks 에 채운다). 어떤 묶음 실패도 그 묶음의 사유로만 남긴다."""
+    from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+
+    from .reconstruct import ReconstructionError
+    from .reconstruct_tasks import solve_fixed_alignment
+
+    base_prep = root / "prepared"
+    pending = list(frames)
+    bridge: list[SelectedFrame] = []
+    while pending:
+        if attempt.chunks and monotonic() - t0 >= cfg.time_budget_s:
+            attempt.budget_hit = True
+            break
+        take = pending[: cfg.chunk_frames]
+        pending = pending[cfg.chunk_frames:]
+        batch = bridge + take
+        idx = len(attempt.chunks)
+        cdir = work_dir / f"chunk_{idx:02d}"
+        ch = ChunkResult(idx, [f.name for f in batch], cdir / "prepared", cdir / "mapanything", mode=attempt.mode)
+        tc = monotonic()
+        attempt.chunks.append(ch)
+        try:
+            prep_doc = build_joint_prepared(base_prep, ch.prepared_dir, batch, by_id, person_mask,
+                                            mask_dilate_px=cfg.mask_dilate_px, fixed_poses=fixed_poses,
+                                            pose_source=pose_source)
+            ch.prepared_views = {v["name"]: v for v in prep_doc["views"]}
+            infer(ch.prepared_dir, ch.ma_dir)
+            run = load_mapanything_run(ch.ma_dir, prepared=load_prepared(ch.prepared_dir))
+            if fixed_poses is not None:
+                ch.pose_follow = pose_follow(ch.ma_dir, ch.prepared_dir)
+            try:
+                ch.M, ch.align_doc = solve_fixed_alignment(root, ma_dir=ch.ma_dir, prepared_dir=ch.prepared_dir)
+            except ReconstructionError:
+                ch.M = None
+            ch.center_m = centers_only_residual(root, ch.ma_dir, ch.prepared_dir)
+            ch.fixed_px = fixed_reprojection_px(run.views, fixed_ids)
+            ch.registration = register_views(run.views, fixed_ids, cfg)
+            fov: dict[str, list[float]] = {}
+            for v in run.views:
+                mid = _media_of(v.name, ch.prepared_views)
+                if mid is not None:
+                    fov.setdefault(mid, []).append(hfov_deg(v))
+                    ch.registration.setdefault(v.name, {})["hfov_deg"] = round(hfov_deg(v), 2)
+            ch.wide_media = {mid for mid, fs in fov.items() if float(np.median(fs)) > cfg.wide_fov_deg}
+            new_names = [n for n in ch.names if n not in {f.name for f in bridge}]
+            new_kept = [n for n in ch.kept if n in new_names]
+            ch.reason = R_ALIGNMENT_WORSE if ch.M is None else gate_chunk(
+                selected=len(new_names), registered=len(new_kept), baseline_center_m=attempt.baseline_center_m,
+                chunk_center_m=ch.center_m, baseline_px=attempt.baseline_px, chunk_px=ch.fixed_px, cfg=cfg)
+        except ReconstructionError as exc:
+            ch.reason = R_RECONSTRUCTION_FAILED
+            log.warning("보조 촬영 묶음 %d(%s) MapAnything 실패: %s %s", idx, attempt.mode, exc.code, exc)
+        except Exception as exc:  # noqa: BLE001 - 보조 촬영은 어떤 실패도 세팅을 멈추지 않는다
+            ch.reason = R_RECONSTRUCTION_FAILED
+            log.warning("보조 촬영 묶음 %d(%s) 실패: %s: %s", idx, attempt.mode, type(exc).__name__, exc)
+        ch.seconds = monotonic() - tc
+        log.info("보조 촬영 묶음 %d(%s): 사유=%s 중심 잔차=%s m(기준 %s) 재투영=%s px(기준 %s) 자세 따름=%s",
+                 idx, attempt.mode, ch.reason, ch.center_m, attempt.baseline_center_m, ch.fixed_px, attempt.baseline_px,
+                 ch.pose_follow)
+        bridge = []
+        if ch.reason is None and cfg.bridge_frames > 0 and pending:
+            kept_set = set(ch.kept)
+            bridge = [f for f in batch if f.name in kept_set][-cfg.bridge_frames:]
+
+
+def _pose_attempt(
+    root: Path,
+    sup_dir: Path,
+    frames: Sequence[SelectedFrame],
+    by_id: Mapping[str, MediaInput],
+    person_mask: Callable[[np.ndarray], np.ndarray | None],
+    fixed_ids: set[str],
+    infer: Callable[[Path, Path], None],
+    cfg: SupplementConfig,
+    *,
+    t0: float,
+    monotonic: Callable[[], float],
+) -> tuple[Attempt, dict[str, Any] | None]:
+    """자세 조건 시도(-787): 고정 4 view 만 자세 조건으로 한 번(관문 기준) → 같은 입력 방식으로 묶음들."""
+    attempt = Attempt(MODE_POSE_CONDITIONED)
+    try:
+        poses, source = reference_poses(root)
+        poses = {cid: T for cid, T in poses.items() if cid in fixed_ids}
+        if set(poses) != fixed_ids:
+            raise ValueError(f"정렬 기준 보정에 없는 고정 카메라: {sorted(fixed_ids - set(poses))}")
+    except Exception as exc:  # noqa: BLE001 - 자세를 못 만들면 K 만 시도로 넘어간다
+        attempt.error = f"{type(exc).__name__}: {exc}"
+        log.warning("보조 촬영 자세 조건 입력을 만들지 못함(K 만 시도로): %s", attempt.error)
+        return attempt, None
+    pdir = sup_dir / "posed"
+    bprep, bma = pdir / "baseline" / "prepared", pdir / "baseline" / "mapanything"
+    try:
+        build_joint_prepared(root / "prepared", bprep, [], by_id, None, mask_dilate_px=cfg.mask_dilate_px,
+                             fixed_poses=poses, pose_source=source)
+        infer(bprep, bma)
+        attempt.baseline_pose_follow = pose_follow(bma, bprep)
+        attempt.baseline_center_m, attempt.baseline_px = _baseline_metrics(root, bma, bprep, fixed_ids)
+    except Exception as exc:  # noqa: BLE001 - MapAnything 이 자세 입력을 거부하는 등. K 만 시도로 넘어간다
+        attempt.error = f"{type(exc).__name__}: {exc}"
+        log.warning("보조 촬영 자세 조건 기준 실행 실패(K 만 시도로): %s", attempt.error)
+        return attempt, source
+    log.info("보조 촬영 자세 조건 기준(%s %s): 중심 잔차=%s m 재투영=%s px 자세 따름=%s", source.get("source"),
+             source.get("calibration_version"), attempt.baseline_center_m, attempt.baseline_px,
+             attempt.baseline_pose_follow)
+    _run_chunks(attempt, root, pdir, frames, by_id, person_mask, fixed_ids, infer, cfg, fixed_poses=poses,
+                pose_source=source, t0=t0, monotonic=monotonic)
+    return attempt, source
+
+
 def run_supplement(
     root: Path,
     *,
@@ -913,11 +1160,13 @@ def run_supplement(
     """보조 촬영 전체(고르기 → 묶음별 추론·정렬·등록·관문 → 병합·교체). 요약을 돌려주고 supplement/result.json 에 쓴다.
 
     infer(prepared_dir, ma_dir): MapAnything prepared 모드 한 번(운영은 run_mapanything, 시험은 가짜). 어떤 실패도 예외로
-    올리지 않고 FALLBACK 요약으로 바꾼다(세팅을 실패시키지 않는다). 받아들인 묶음이 있으면 작업 폴더를 병합본으로 바꾼다."""
-    from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+    올리지 않고 FALLBACK 요약으로 바꾼다(세팅을 실패시키지 않는다). 받아들인 묶음이 있으면 작업 폴더를 병합본으로 바꾼다.
 
-    from .reconstruct import ReconstructionError, write_json
-    from .reconstruct_tasks import solve_fixed_alignment
+    입력 방식(-787): 먼저 고정 4대에 정렬 기준 보정 자세를 넣어(`MODE_POSE_CONDITIONED`) 관문 기준과 묶음을 같은 입력으로 잰다.
+    받아들인 묶음이 없으면(자세를 못 만듦·기준 실행 실패 포함) 자세 없이(`MODE_K_ONLY`, 작업 폴더의 고정 카메라 Run 이 기준) 한 번
+    더 시도한다. 자세 조건 시도가 묶음을 돌린 뒤 시간 예산을 넘었으면 다시 시도하지 않는다. 둘 다 실패면 요약은 묶음을 돌린 첫
+    시도(보통 자세 조건)의 것이고, 두 시도 기록은 result.json detail.attempts 에 남는다."""
+    from .reconstruct import write_json
 
     t0 = monotonic()
     sup_dir = root / SUPPLEMENT_DIR
@@ -937,71 +1186,36 @@ def run_supplement(
         return finish(summary(status="FALLBACK", reason=_first_failure_reason(selection.media), media=media,
                               media_stats=selection.media), {"media": selection.media})
     fixed_ids = {im["camera_id"] for im in json.loads((root / "job.json").read_text(encoding="utf-8"))["input"]["images"]}
-    base_prep = root / "prepared"
-    baseline_center = centers_only_residual(root, root / "mapanything", base_prep)
-    try:
-        base_run = load_mapanything_run(root / "mapanything", prepared=load_prepared(base_prep))
-        baseline_px = fixed_reprojection_px(base_run.views, fixed_ids)
-    except (OSError, ValueError, KeyError):
-        baseline_px = None
-    alignment = {"baseline_center_residual_m": baseline_center, "baseline_fixed_reprojection_px": baseline_px,
+    # 자세 없는 고정 카메라 Run(작업 폴더 mapanything/)과 정렬 기준 보정의 어긋남. 크면 보정이 MapAnything 고유 중심과 원래
+    # 다르다(걷기 다듬기 보정 등, -787 원인). K 만 시도의 관문 기준이고, 자세 조건 시도에서는 진단 기록이다
+    k_center, k_px = _baseline_metrics(root, root / "mapanything", root / "prepared", fixed_ids)
+    if k_center is not None and k_center > cfg.align_max_center_m:
+        log.warning("보조 촬영: 자세 없는 고정 카메라 Run 과 정렬 기준 보정의 중심 잔차 %.3f m > %.2f m(보정과 MapAnything 이 원래 "
+                    "어긋남, 걷기 다듬기 보정 등). 자세 조건 입력으로 맞춘다", k_center, cfg.align_max_center_m)
+
+    attempts: list[Attempt] = []
+    posed, pose_source = _pose_attempt(root, sup_dir, frames, by_id, person_mask, fixed_ids, infer, cfg,
+                                       t0=t0, monotonic=monotonic)
+    attempts.append(posed)
+    retry_skipped = None
+    if not posed.accepted:
+        if posed.chunks and monotonic() - t0 >= cfg.time_budget_s:
+            retry_skipped = R_TIME_BUDGET
+            log.warning("보조 촬영: 자세 조건 시도에 받아들인 묶음이 없고 시간 예산을 넘어 K 만 시도는 건너뛴다")
+        else:
+            log.info("보조 촬영: 자세 조건 시도에 받아들인 묶음이 없다(%s) → 자세 없이(K 만) 한 번 더",
+                     posed.error or [c.reason for c in posed.chunks])
+            legacy = Attempt(MODE_K_ONLY, baseline_center_m=k_center, baseline_px=k_px)
+            _run_chunks(legacy, root, sup_dir, frames, by_id, person_mask, fixed_ids, infer, cfg, fixed_poses=None,
+                        pose_source=None, t0=t0, monotonic=monotonic)
+            attempts.append(legacy)
+    chosen = (next((a for a in attempts if a.accepted), None) or next((a for a in attempts if a.chunks), None)
+              or attempts[-1])
+    chunks = chosen.chunks
+    accepted = chosen.accepted
+    alignment = {"baseline_center_residual_m": chosen.baseline_center_m, "baseline_fixed_reprojection_px": chosen.baseline_px,
                  "supplement_center_residual_m": None, "supplement_fixed_reprojection_px": None}
-
-    chunks: list[ChunkResult] = []
-    pending = list(frames)
-    bridge: list[SelectedFrame] = []
-    budget_hit = False
-    while pending:
-        if chunks and monotonic() - t0 >= cfg.time_budget_s:
-            budget_hit = True
-            break
-        take = pending[: cfg.chunk_frames]
-        pending = pending[cfg.chunk_frames:]
-        batch = bridge + take
-        idx = len(chunks)
-        cdir = sup_dir / f"chunk_{idx:02d}"
-        ch = ChunkResult(idx, [f.name for f in batch], cdir / "prepared", cdir / "mapanything")
-        tc = monotonic()
-        chunks.append(ch)
-        try:
-            prep_doc = build_joint_prepared(base_prep, ch.prepared_dir, batch, by_id, person_mask,
-                                            mask_dilate_px=cfg.mask_dilate_px)
-            ch.prepared_views = {v["name"]: v for v in prep_doc["views"]}
-            infer(ch.prepared_dir, ch.ma_dir)
-            run = load_mapanything_run(ch.ma_dir, prepared=load_prepared(ch.prepared_dir))
-            try:
-                ch.M, ch.align_doc = solve_fixed_alignment(root, ma_dir=ch.ma_dir, prepared_dir=ch.prepared_dir)
-            except ReconstructionError:
-                ch.M = None
-            ch.center_m = centers_only_residual(root, ch.ma_dir, ch.prepared_dir)
-            ch.fixed_px = fixed_reprojection_px(run.views, fixed_ids)
-            ch.registration = register_views(run.views, fixed_ids, cfg)
-            fov: dict[str, list[float]] = {}
-            for v in run.views:
-                mid = _media_of(v.name, ch.prepared_views)
-                if mid is not None:
-                    fov.setdefault(mid, []).append(hfov_deg(v))
-                    ch.registration.setdefault(v.name, {})["hfov_deg"] = round(hfov_deg(v), 2)
-            ch.wide_media = {mid for mid, fs in fov.items() if float(np.median(fs)) > cfg.wide_fov_deg}
-            new_names = [n for n in ch.names if n not in {f.name for f in bridge}]
-            new_kept = [n for n in ch.kept if n in new_names]
-            ch.reason = R_ALIGNMENT_WORSE if ch.M is None else gate_chunk(
-                selected=len(new_names), registered=len(new_kept), baseline_center_m=baseline_center,
-                chunk_center_m=ch.center_m, baseline_px=baseline_px, chunk_px=ch.fixed_px, cfg=cfg)
-        except ReconstructionError as exc:
-            ch.reason = R_RECONSTRUCTION_FAILED
-            log.warning("보조 촬영 묶음 %d MapAnything 실패: %s %s", idx, exc.code, exc)
-        except Exception as exc:  # noqa: BLE001 - 보조 촬영은 어떤 실패도 세팅을 멈추지 않는다
-            ch.reason = R_RECONSTRUCTION_FAILED
-            log.warning("보조 촬영 묶음 %d 실패: %s: %s", idx, type(exc).__name__, exc)
-        ch.seconds = monotonic() - tc
-        bridge = []
-        if ch.reason is None and cfg.bridge_frames > 0 and pending:
-            kept_set = set(ch.kept)
-            bridge = [f for f in batch if f.name in kept_set][-cfg.bridge_frames:]
-
-    accepted = [c for c in chunks if c.reason is None]
-    inferred_names = {n for c in chunks for n in c.names}
+    inferred_names = {n for a in attempts for c in a.chunks for n in c.names}
     used_names = {n for c in accepted for n in c.kept}
     registered_names = {n for c in chunks for n in c.kept}
     media_of = {f.name: f.media_id for f in frames}
@@ -1011,11 +1225,18 @@ def run_supplement(
         for mid in c.wide_media:
             selection.media[mid]["status"] = M_WIDE_FOV_REJECTED
     used_media = {media_of[n] for n in used_names}
-    worst = max(accepted or chunks[:1], key=lambda c: c.center_m if c.center_m is not None else math.inf)
-    alignment["supplement_center_residual_m"] = worst.center_m
-    alignment["supplement_fixed_reprojection_px"] = worst.fixed_px
-    detail = {"chunks": [c.record() for c in chunks], "media": selection.media, "time_budget_hit": budget_hit,
-              "registration": {c.index: c.registration for c in chunks}}
+    if chunks:
+        worst = max(accepted or chunks[:1], key=lambda c: c.center_m if c.center_m is not None else math.inf)
+        alignment["supplement_center_residual_m"] = worst.center_m
+        alignment["supplement_fixed_reprojection_px"] = worst.fixed_px
+    detail = {"mode": chosen.mode, "chunks": [c.record() for c in chunks], "media": selection.media,
+              "time_budget_hit": chosen.budget_hit or retry_skipped is not None,
+              "registration": {c.index: c.registration for c in chunks},
+              "attempts": [a.record() for a in attempts], "k_only_retry_skipped": retry_skipped,
+              "alignment_reference": pose_source,
+              "k_only_baseline": {"center_residual_m": k_center, "fixed_reprojection_px": k_px,
+                                  "exceeds_align_max_center_m": bool(k_center is not None
+                                                                     and k_center > cfg.align_max_center_m)}}
     common = dict(media=media, media_stats=selection.media, frames_selected=len(inferred_names),
                   frames_registered=len(registered_names), alignment=alignment,
                   registered_by_media=reg_by, selected_by_media=sel_by)
@@ -1025,6 +1246,7 @@ def run_supplement(
     try:
         merged_prep, merged_ma = sup_dir / "merged" / "prepared", sup_dir / "merged" / "mapanything"
         align_doc = materialize_world_run(root, accepted, merged_prep, merged_ma)
+        align_doc["supplement"]["mode"] = chosen.mode
         swap_in(root, merged_prep, merged_ma, align_doc)
     except Exception as exc:  # noqa: BLE001
         log.warning("보조 촬영 병합 실패: %s: %s", type(exc).__name__, exc)

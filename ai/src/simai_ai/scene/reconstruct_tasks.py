@@ -68,10 +68,12 @@ def _mapanything_model() -> str:
 
 
 def run_mapanything_prepared(prepared_dir: Path, out_dir: Path) -> None:
-    """prepared 모드 MapAnything 한 번 → out_dir(cameras.json·raw.npz·metrics.json). K 없는 view 는 K 없이 넣는다(-605)."""
+    """prepared 모드 MapAnything 한 번 → out_dir(cameras.json·raw.npz·metrics.json). K 없는 view 는 K 없이 넣는다(-605).
+
+    view 에 조건 자세(`pose_cam2world`)가 있으면 그 view 만 자세도 넣는다(세팅 보조 촬영의 고정 카메라, -787)."""
     model = _mapanything_model()
     from . import run_mapanything
-    # 기존 prepared 모드와 같은 K 전용 추론. 모델 세계를 보정 세계로 정렬하는 것은 다음 단계다.
+    # 모델 세계를 보정 세계로 정렬하는 것은 다음 단계다(자세를 넣어도 출력 세계 틀은 보장되지 않는다).
     sys.argv = ["mapanything", "--run-id", out_dir.name, "--runs-dir", str(out_dir.parent), "--mode", "prepared",
                 "--prepared", str(prepared_dir), "--model", model, "--repeat", "1"]
     if run_mapanything.main():
