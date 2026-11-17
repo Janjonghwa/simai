@@ -12,6 +12,7 @@ import com.ssafy.simai.domain.gpu.provider.GpuProvider.Network;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.OfferQuery;
 import com.ssafy.simai.domain.gpu.provider.GpuProviderException;
 import com.ssafy.simai.domain.gpu.provider.GpuProviders;
+import com.ssafy.simai.domain.gpu.provider.RunPodProvider;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.properties.ConfigBundleProperties;
@@ -266,6 +267,10 @@ public class GpuPowerService {
         GpuProvider provider = configuredProvider(s.provider());
         if (templateFor(provider.id(), s) == null) {
             throw new BusinessException(ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED); // RunPod 템플릿·AWS 시작 템플릿이 없다
+        }
+        if (RunPodProvider.ID.equals(provider.id()) && s.interruptible()) {
+            // RunPod v2 에는 스팟이 없다(S15P31A101-781). 기본값·옛 설정이 스팟이면 재고를 묻거나 기록을 남기기 전에 막는다
+            throw new BusinessException(ErrorCode.Gpu.INVALID_GPU_SETTINGS);
         }
         if (ec2BaseUrl.isEmpty()) {
             throw new BusinessException(ErrorCode.Gpu.EC2_BASE_URL_MISSING);

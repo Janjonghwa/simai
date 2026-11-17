@@ -28,9 +28,13 @@ NOT_CONFIGURED·OUT_OF_STOCK·REJECTED·UNAVAILABLE·BAD_RESPONSE(문구·로그
 | 일 | 호출 |
 |---|---|
 | 재고·가격 | `GET https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD&count=1&cloud=SECURE\|COMMUNITY` → `gpus[]: {id, name, memory, price: {secure, community}, availability, dataCenters: [{id, name, availability}]}`. 가격은 GPU 1대 시간당 USD 온디맨드 |
-| 만들기 | `POST https://rest.runpod.io/v1/pods` `{name, templateId, computeType: GPU, cloudType, gpuTypeIds: [종류], gpuTypePriority: custom, gpuCount: 1, dataCenterIds: [지역], dataCenterPriority: custom, interruptible, env}` → `{id, costPerHr, desiredStatus}` |
-| 끄기 | `DELETE /v1/pods/{id}`(지우기, 404 도 성공). 컨테이너 디스크·볼륨 없음이라 정지(stop)보다 지우기가 과금이 깨끗하다 |
-| 상태 | `GET /v1/pods/{id}` → `desiredStatus` RUNNING·EXITED·TERMINATED, 404 → GONE |
+| 만들기 | `POST https://api.runpod.io/v2/pods` `{name, templateId, gpu: {id: 종류, count: 1}, cloud, dataCenterIds: [지역], env}` → 201 `{id, status, cost}`. 스팟 설정이면 만들지 않고 실패(v2 에 스팟 없음) |
+| 끄기 | `DELETE /v2/pods/{id}`(지우기, 404 도 성공). 컨테이너 디스크·볼륨 없음이라 정지(stop)보다 지우기가 과금이 깨끗하다 |
+| 상태 | `GET /v2/pods/{id}` → `status` RUNNING·EXITED·TERMINATED(PROVISIONING·STARTING·ERROR 는 모름), 404 → GONE |
+
+S15P31A101-781: 처음에는 REST v1(`rest.runpod.io/v1`, `{computeType, cloudType, gpuTypeIds, gpuTypePriority, gpuCount, dataCenterPriority, interruptible}` → `{costPerHr, desiredStatus}`)을 썼다.
+RunPod 가 2026-11-15 에 v1 을 닫아 도메인이 DNS 에서 사라졌고(11-17 켜기 8회 연결 실패), v2 로 옮겼다. 인증은 같다. v2 는 GPU 종류를 하나만 받고
+(대체 목록 없음) 스팟 Pod 가 없다. 오류 본문은 RFC 9457(`{title, status, detail}`)이며 배치 불가(400 "could not be placed")를 재고 없음으로 본다.
 
 인증 `Authorization: Bearer <SIMAI_RUNPOD_API_KEY>`(EC2 `.env` → compose → `simai.gpu.runpod.api-key`, `toString` 도 키를 숨김).
 만들기 4xx 본문에 "no longer any instances"·"no instances available" 이 있으면 OUT_OF_STOCK. 시험은 가짜 RunPod 서버(`HttpServer`)로 한다.
@@ -157,7 +161,7 @@ GPU 를 먼저 보는 까닭: TensorRT 엔진 캐시가 GPU 종류별이라 같�
    RunPod 세션으로 보이고 끄기·자동 정지가 instance_id 로 끈다. 등록도 못 하면 RunPod 콘솔에서 지워야 한다(`SIMAI_GPU_LAUNCH_ID` 로 찾음).
 5. 버려진 세팅 세션(COMPLETED·FAILED 가 아닌 채 남음)은 자동 정지를 영원히 막는다(사용자 규칙 "세팅 중엔 절대"). 세팅 대기 시간 초과(-641)가 일부를 닫는다.
 6. 끄기는 RUNPOD 키가 있어야 한다. 키를 지우면 켜진 GPU 를 화면에서 끄지 못한다(RunPod 콘솔).
-7. 스팟(interruptible)은 RunPod 이 중단할 수 있다. 중단되면 G1 STALE → SESSION_ENDED/GONE 으로 정리되지만 관제는 끊긴다.
+7. 스팟(interruptible)은 RunPod v2 에 없어 RunPod 켜기를 거절한다(-781, AWS 스팟은 그대로). 이전 설명: 스팟은 RunPod 이 중단할 수 있다. 중단되면 G1 STALE → SESSION_ENDED/GONE 으로 정리되지만 관제는 끊긴다.
 
 ## -703(AWS)이 붙을 자리
 

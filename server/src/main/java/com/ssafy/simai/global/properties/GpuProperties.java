@@ -42,7 +42,7 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
 
     /**
      * @param apiKey RunPod API 키(EC2 .env SIMAI_RUNPOD_API_KEY). 비어 있으면 켜기·재고 조회가 503 이다
-     * @param restBaseUrl Pod 만들기·끄기·조회 REST(https://rest.runpod.io/v1)
+     * @param restBaseUrl Pod 만들기·끄기·조회 REST(https://api.runpod.io/v2). REST v1(rest.runpod.io/v1)은 2026-11-15 에 닫혔다(S15P31A101-781)
      * @param catalogBaseUrl GPU 재고·가격 목록(https://api.runpod.io, 경로 /v2/catalog/gpus)
      * @param timeout 요청 하나의 시간 제한
      * @param bootId 인스턴스에 넣을 부팅 비밀값 ID(비밀 아님, admin gpu-boot register --id)
@@ -55,7 +55,7 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
 
         public RunPod {
             apiKey = apiKey == null ? "" : apiKey.strip();
-            restBaseUrl = url(restBaseUrl, "https://rest.runpod.io/v1");
+            restBaseUrl = url(restBaseUrl, "https://api.runpod.io/v2");
             catalogBaseUrl = url(catalogBaseUrl, "https://api.runpod.io");
             timeout = positive(timeout, Duration.ofSeconds(20));
             bootId = blank(bootId) ? "gpu-boot-runpod" : bootId.strip();

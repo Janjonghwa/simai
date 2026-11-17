@@ -116,6 +116,9 @@ public class GpuSettingsService {
         if (interruptible == null || !interruptible.isBoolean()) {
             throw invalid();
         }
+        if ("RUNPOD".equals(provider) && interruptible.booleanValue()) {
+            throw invalid(); // RunPod REST v2 에는 스팟 Pod 가 없다(S15P31A101-781). 저장해 두면 켜기가 늘 실패한다
+        }
         BigDecimal maxPrice = null;
         JsonNode price = body.get("max_price_per_hour_usd");
         if (price != null && !price.isNull()) {

@@ -28,8 +28,10 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>재고·가격: {@code GET https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD&count=1&cloud=SECURE|COMMUNITY}
  * → {@code gpus[]: {id, name, memory, price: {secure, community}, availability, dataCenters: [{id, name, availability}]}}.
  * 가격은 GPU 1대 시간당 USD 온디맨드다(스팟 가격은 이 목록에 없다).</li>
- * <li>Pod: {@code POST https://rest.runpod.io/v1/pods}(templateId·gpuTypeIds·gpuCount·dataCenterIds·cloudType·interruptible·env,
- * 우선순위 custom), {@code DELETE /pods/{id}}(지우기, 과금 멈춤), {@code GET /pods/{id}}(desiredStatus RUNNING·EXITED·TERMINATED).</li>
+ * <li>Pod(REST v2, S15P31A101-781): {@code POST https://api.runpod.io/v2/pods}(name·templateId·gpu{id, count}·cloud·dataCenterIds·env
+ * → 201 Pod {id, status, cost}), {@code DELETE /pods/{id}}(지우기, 과금 멈춤), {@code GET /pods/{id}}(status PROVISIONING·STARTING·RUNNING·
+ * EXITED·ERROR·TERMINATED). REST v1(rest.runpod.io/v1)은 2026-11-15 에 닫혔다. v2 에는 스팟(interruptible)이 없고 GPU 종류는 하나만 준다.
+ * 오류 본문은 RFC 9457({title, status, detail})이다.</li>
  * </ul>
  * 인증은 {@code Authorization: Bearer <SIMAI_RUNPOD_API_KEY>}. 키·요청 환경 변수·응답 본문은 로그와 예외 문구에 싣지 않는다(상태 코드만).
  * 비밀 환경 변수는 RunPod Secrets 참조 {@code {{ RUNPOD_SECRET_이름 }}} 글자로만 넣는다(서버는 원문을 모른다).
@@ -117,19 +119,22 @@ public class RunPodProvider implements GpuProvider {
 
     @Override
     public CreatedInstance create(LaunchSpec spec) throws GpuProviderException {
+        if (spec.interruptible()) {
+            // v2 는 스팟 Pod 를 없앴다. 온디맨드로 바꿔 켜면 사용자가 고른 가격 조건과 달라지므로 켜지 않는다
+            throw new GpuProviderException("REJECTED", "RunPod 는 스팟(interruptible) Pod 를 더는 만들지 않는다. GPU 설정에서 스팟을 끈다");
+        }
+        if (spec.templateId() == null) {
+            // v2 는 템플릿이 없으면 image 가 필수다. 이미지·포트·디스크는 템플릿에만 있다
+            throw new GpuProviderException("NOT_CONFIGURED", "RunPod 템플릿 ID 가 설정되지 않았다");
+        }
         ObjectNode body = mapper.createObjectNode();
         body.put("name", spec.name());
-        if (spec.templateId() != null) {
-            body.put("templateId", spec.templateId());
-        }
-        body.put("computeType", "GPU");
-        body.put("cloudType", spec.cloudType());
-        body.putArray("gpuTypeIds").add(spec.gpuType());
-        body.put("gpuTypePriority", "custom");
-        body.put("gpuCount", spec.gpuCount());
+        body.put("templateId", spec.templateId());
+        ObjectNode gpu = body.putObject("gpu");
+        gpu.put("id", spec.gpuType());
+        gpu.put("count", spec.gpuCount());
+        body.put("cloud", "COMMUNITY".equals(spec.cloudType()) ? "COMMUNITY" : "SECURE");
         body.putArray("dataCenterIds").add(spec.region());
-        body.put("dataCenterPriority", "custom");
-        body.put("interruptible", spec.interruptible());
         ObjectNode env = body.putObject("env");
         spec.plainEnv().forEach(env::put);
         for (Map.Entry<String, String> secret : spec.secretEnv().entrySet()) {
@@ -143,7 +148,7 @@ public class RunPodProvider implements GpuProvider {
         if (id == null || id.isBlank()) {
             throw new GpuProviderException("BAD_RESPONSE", "RunPod Pod 만들기 응답에 id 가 없다");
         }
-        BigDecimal cost = pod.hasNonNull("costPerHr") && pod.get("costPerHr").isNumber() ? pod.get("costPerHr").decimalValue() : null;
+        BigDecimal cost = pod.hasNonNull("cost") && pod.get("cost").isNumber() ? pod.get("cost").decimalValue() : null;
         return new CreatedInstance(id, cost);
     }
 
@@ -168,9 +173,13 @@ public class RunPodProvider implements GpuProvider {
             throw failure(res.statusCode(), "Pod 조회");
         }
         JsonNode pod = parse(res.body(), "Pod 조회");
-        String status = text(pod, "desiredStatus");
+        String status = text(pod, "status");
         if (status == null) {
             return InstanceState.UNKNOWN;
+        }
+        // PROVISIONING·STARTING 은 아직 켜는 중, ERROR 는 RunPod 쪽 실패(과금 여부를 모른다)라 모름으로 둔다. 지운 것으로 보지 않는다
+        if ("ERROR".equals(status)) {
+            log.warn("RunPod Pod {} 이 ERROR 상태다. RunPod 화면에서 확인한다", instanceId);
         }
         return switch (status) {
             case "RUNNING" -> InstanceState.RUNNING;
@@ -183,9 +192,15 @@ public class RunPodProvider implements GpuProvider {
     private JsonNode send(HttpRequest.Builder request, String what) throws GpuProviderException {
         HttpResponse<String> res = exchange(request, what);
         if (res.statusCode() < 200 || res.statusCode() >= 300) {
-            if (res.statusCode() >= 400 && res.statusCode() < 500 && outOfStock(res.body())) {
+            // 재고 없음은 배치 불가(400)·대기열 가득(409)에서만 본다. 422(본문 형식)·402(잔액) 등은 다른 실패다
+            if ((res.statusCode() == 400 || res.statusCode() == 409) && outOfStock(res.body())) {
                 log.warn("RunPod {} 거절: 재고 없음(HTTP {})", what, res.statusCode());
                 throw new GpuProviderException("OUT_OF_STOCK", "RunPod 에 그 GPU·지역 재고가 없다");
+            }
+            // v2 오류(RFC 9457)의 title 만 남긴다(짧은 분류 문구, 요청 값·비밀 없음). detail·본문은 남기지 않는다
+            String title = errorTitle(res.body());
+            if (title != null) {
+                log.warn("RunPod {} 거절 사유: {}", what, title);
             }
             throw failure(res.statusCode(), what);
         }
@@ -230,14 +245,29 @@ public class RunPodProvider implements GpuProvider {
         }
     }
 
-    /** 재고 없음 거절 문구(RunPod: "There are no longer any instances available ...", "no instances available") */
+    /**
+     * 재고 없음 거절 문구. v1: "There are no longer any instances available ...", "no instances available".
+     * v2(RFC 9457 detail): 400 "this GPU/data center combination could not be placed", 용량 부족(capacity) 문구.
+     */
     private static boolean outOfStock(String body) {
         if (body == null) {
             return false;
         }
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("no longer any instances") || lower.contains("no instances available")
-                || lower.contains("not enough") && lower.contains("available");
+                || lower.contains("not enough") && lower.contains("available")
+                || lower.contains("could not be placed") || lower.contains("insufficient capacity")
+                || lower.contains("no capacity");
+    }
+
+    private String errorTitle(String body) {
+        try {
+            JsonNode node = body == null ? null : mapper.readTree(body);
+            String title = node == null || !node.isObject() ? null : text(node, "title");
+            return title == null ? null : title.replaceAll("[\\r\\n]", " ").substring(0, Math.min(80, title.length()));
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static String stock(String availability) {
