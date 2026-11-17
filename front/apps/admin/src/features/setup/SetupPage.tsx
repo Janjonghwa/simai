@@ -10,6 +10,10 @@ import { useGpuStatus } from '@/features/gpu/useGpu';
 import { useGpuGate } from '@/features/gpu/useGpuGate';
 import { PageTitle } from '@/features/layout/PageTitle';
 import {
+  useAbandonedSetupStore,
+  useIsAbandonedSetupSession,
+} from '@/features/setup/abandonedSetup.store';
+import {
   cancelSetupSession,
   requestWorkUnitSetupSessionId,
   setupSessionKey,
@@ -46,6 +50,7 @@ import {
 import {
   discardSetupZoneDraft,
   followServerSetupSession,
+  resetSetupFlowStore,
   setActiveSetupSessionId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
@@ -316,7 +321,9 @@ function SetupWorkPage({
 
   // 작업의 서버 세션이 이 화면이 따르는 세션과 다르면 옮긴다: 처음 열 때(새로고침), 따르던 세션이 끝났거나 다른 작업의 것일 때(다른 탭에서
   // 다시 시도·새로 시작). 따르던 세션이 진행 중이면 옮기지 않는다(같은 현장에 진행 중 세션은 하나라 서버 값이 늦게 온 것이다).
-  const serverSessionId = workUnitSessionQuery.data ?? null;
+  // 「세팅 취소」로 버린 세션은 이어받지 않는다(1단계 기본값에서 새로 시작한다, features/setup/abandonedSetup.store).
+  const serverSessionAbandoned = useIsAbandonedSetupSession(workUnitId, workUnitSessionQuery.data);
+  const serverSessionId = serverSessionAbandoned ? null : (workUnitSessionQuery.data ?? null);
   const followedSettled =
     currentSession === null ||
     currentSession.work_unit_id !== workUnitId ||
@@ -662,20 +669,32 @@ function SetupWorkPage({
     createSessionNow,
   ]);
 
-  // 「세팅 취소」: 진행 중인 시도가 있으면 멈추고 세팅에서 나간다(날짜 화면은 보고서로, 단독 화면은 그 작업의 작업 관리로).
+  // 「세팅 취소」: 지금까지의 세팅을 버리고 세팅에서 나간다(날짜 화면은 TBM 보고서로, 단독 화면은 그 작업의 작업 관리로).
+  // 진행 중인 시도는 서버에서 멈추고, 작업에 남은 세션은 버린 세션으로 적어 다시 들어와도 이어받지 않는다.
   const leaveSetup = useCallback(() => {
     if (onExit) onExit();
     else void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
   }, [onExit, navigate, workUnitId]);
+  const abandonSetupSession = useAbandonedSetupStore((s) => s.abandon);
+  // 버릴 세션: 작업의 서버 세션(이미 버린 것은 빼고), 없으면 이 화면이 따르는 세션
+  const discardSessionId = serverSessionId ?? sessionId;
+  const discardAndLeave = useCallback(() => {
+    if (discardSessionId) abandonSetupSession(workUnitId, discardSessionId);
+    resetSetupFlowStore();
+    leaveSetup();
+  }, [discardSessionId, abandonSetupSession, workUnitId, leaveSetup]);
   const exitSetup = useCallback(() => {
     if (cancelMutation.isPending) return;
-    if (!sessionRunning || !sessionId) {
+    if (!discardSessionId) {
       leaveSetup();
       return;
     }
-    if (!window.confirm('진행 중인 시도를 멈추고 세팅에서 나갈까요?')) return;
-    cancelMutation.mutate(sessionId, { onSuccess: leaveSetup });
-  }, [cancelMutation, sessionRunning, sessionId, leaveSetup]);
+    if (!window.confirm('지금까지의 세팅을 지우고 나갈까요? 다시 들어오면 처음부터 시작합니다.'))
+      return;
+    if (sessionRunning && sessionId)
+      cancelMutation.mutate(sessionId, { onSuccess: discardAndLeave });
+    else discardAndLeave();
+  }, [cancelMutation, discardSessionId, sessionRunning, sessionId, leaveSetup, discardAndLeave]);
 
   // 세션을 만들기 전에 배경 촬영 창을 띄운다(-686). 멈춘 세팅을 이어 가는 경우만 배경을 다시 찍지 않아 바로 보낸다.
   const resumesPaused =
