@@ -7,8 +7,9 @@
   known   이미지 + 알려진 intrinsics(+ camera_poses). 이전 Run의 cameras.json을 입력으로 쓰고,
           --pose-scale 로 pose 이동량을 늘려 모델이 pose 입력을 실제로 쓰는지 시험한다.
   prepared  보정용 known-K(S15P31A101-102). `simai_ai.calibration.world_frame.cli prepare` 가 AnyCalib 왜곡을 편 영상과
-          펴진 K(prepared.json)를 만들고, 여기서는 그 K 를 intrinsics 로 넣는다(pose 는 넣지 않음). 사람 마스크는 모델 입력을
-          바꾸지 않으려고 여기서 쓰지 않고, 노트북의 World 고정(`world_frame.cli fix --prepared`)이 점에서 뺀다.
+          펴진 K(prepared.json)를 만들고, 여기서는 그 K 를 intrinsics 로 넣는다. view 에 `pose_cam2world`(OpenCV cam2world,
+          m)가 있으면 그 view 만 camera_poses(+ is_metric_scale)로도 넣는다(세팅 보조 촬영의 고정 카메라, S15P31A101-787).
+          사람 마스크는 모델 입력을 바꾸지 않으려고 여기서 쓰지 않고, 노트북의 World 고정(`world_frame.cli fix --prepared`)이 점에서 뺀다.
 
   python run_mapanything.py --run-id C1_room4_bf16 --images /workspace/simai/datasets/room4
   python run_mapanything.py --run-id C2_room4_apache --model /workspace/simai/weights/map-anything-apache ...
@@ -212,24 +213,45 @@ def build_known_views(paths, known_json, use_poses, pose_scale, device):
     return views
 
 
+POSE_KEY = "pose_cam2world"  # prepared.json view 의 조건 자세(OpenCV cam2world 4×4, m). supplement_capture.POSE_KEY 와 같다
+
+
+def _pose_or_none(v):
+    raw = v.get(POSE_KEY)
+    if raw is None:
+        return None
+    T = np.asarray(raw, dtype=float)
+    if T.shape != (4, 4) or not np.isfinite(T).all() or not np.allclose(T[3], [0, 0, 0, 1]):
+        raise ValueError(f"{v['name']}: {POSE_KEY} 가 4×4 강체 변환이 아니다")
+    R = T[:3, :3]
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-4) or not np.isclose(np.linalg.det(R), 1.0, atol=1e-4):
+        raise ValueError(f"{v['name']}: {POSE_KEY} 의 회전이 정규 직교가 아니다")
+    return T
+
+
 def prepared_views(prepared_dir):
-    """prepared.json → [{name, path, K(원본 해상도, 왜곡 편 영상) 또는 None}] (torch 없이 읽는다).
+    """prepared.json → [{name, path, K(원본 해상도, 왜곡 편 영상) 또는 None, pose(cam2world) 또는 None}] (torch 없이 읽는다).
 
     K_undistorted 가 null 인 view(세팅 보조 촬영 프레임, S15P31A101-605)는 K 를 넘기지 않는다. MapAnything 은 view 마다 입력
-    종류를 따로 받으므로(K 있는 고정 카메라 + K 없는 보조 프레임) 한 번에 같이 추론한다. 자세는 어느 view 에도 넘기지 않는다."""
+    종류를 따로 받으므로(K 있는 고정 카메라 + K 없는 보조 프레임) 한 번에 같이 추론한다. 자세는 `pose_cam2world` 가 있는 view 만
+    넘긴다(S15P31A101-787). MapAnything 추론 API 는 자세를 준 view 가 하나라도 있으면 첫 view(기준)에도 자세를 요구한다
+    (`validate_input_views_for_inference`) — 여기서 먼저 같은 조건을 본다."""
     d = Path(prepared_dir)
     doc = json.loads((d / "prepared.json").read_text(encoding="utf-8"))
     if doc.get("format") != "simai.mapanything_inputs":
         raise ValueError(f"prepared.json 형식이 아니다: {doc.get('format')!r}")
     out = []
     for v in doc["views"]:
+        pose = _pose_or_none(v)
         if v.get("K_undistorted") is None:
-            out.append({"name": v["name"], "path": str(d / v["image"]), "K": None})
+            out.append({"name": v["name"], "path": str(d / v["image"]), "K": None, "pose": pose})
             continue
         K = np.asarray(v["K_undistorted"], dtype=float)
         if K.shape != (3, 3) or not (K[0, 0] > 0 and K[1, 1] > 0):
             raise ValueError(f"{v['name']}: K_undistorted 가 3×3 양의 초점 행렬이 아니다")
-        out.append({"name": v["name"], "path": str(d / v["image"]), "K": K})
+        out.append({"name": v["name"], "path": str(d / v["image"]), "K": K, "pose": pose})
+    if out and out[0]["pose"] is None and any(sp["pose"] is not None for sp in out):
+        raise ValueError("자세를 준 view 가 있으면 첫 view(MapAnything 기준 view)에도 자세가 있어야 한다")
     return out
 
 
@@ -241,6 +263,10 @@ def build_prepared_views(specs):
         view = {"img": torch.from_numpy(img)}
         if sp.get("K") is not None:
             view["intrinsics"] = torch.tensor(sp["K"], dtype=torch.float32)
+        if sp.get("pose") is not None:
+            # 보정 문서 자세는 미터다. is_metric_scale 을 같이 넣어 모델이 자세 축척을 따르게 한다(known 모드와 같은 규칙)
+            view["camera_poses"] = torch.tensor(sp["pose"], dtype=torch.float32)
+            view["is_metric_scale"] = torch.tensor([True])
         views.append(view)
     return views
 
@@ -317,6 +343,8 @@ def main():
         "input_hash": "sha256:" + hashlib.sha256(b"".join(Path(p).read_bytes() for p in paths)).hexdigest(),
         "images": [Path(p).name for p in paths],
         "prepared_sha256": sha256_file(Path(a.prepared) / "prepared.json") if a.mode == "prepared" else None,
+        # 자세를 조건으로 넣은 view(S15P31A101-787). 비면 K 전용 추론(이전과 같음)
+        "pose_conditioned_views": [sp["name"] for sp in specs if sp.get("pose") is not None] if specs is not None else [],
         "gpu": {"model": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda,
                 "driver": subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()},
     }

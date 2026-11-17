@@ -2,6 +2,8 @@
 
 MapAnything 은 가짜(`_FakeMapAnything`)로 바꾼다. 상자 모양 방(6×6×3 m)을 광선 투사해 깊이를 만들고, 자세·깊이를 알려진
 similarity(축척 0.5, z 축 30°, 이동)로 옮겨 '모델 세계'로 낸다. 정렬이 고정 카메라만으로 그 similarity 를 되찾는지 본다.
+고정 view 에 조건 자세가 있으면(-787) 가짜는 그 자세를 따르고(follow_poses) 첫 view 기준 틀로 낸다. 자세를 무시하는 모델·자세
+입력을 거부하는 모델도 흉내 낸다.
 """
 
 from __future__ import annotations
@@ -84,27 +86,46 @@ FIXED_K = _K(90.0)
 
 
 class _FakeMapAnything:
-    """prepared 폴더 → MapAnything 출력 모양(cameras.json·raw.npz·metrics.json). 보조 view 의 실제 자세·K 는 truth 에서."""
+    """prepared 폴더 → MapAnything 출력 모양(cameras.json·raw.npz·metrics.json). 보조 view 의 실제 자세·K 는 truth 에서.
 
-    def __init__(self, truth: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray | None]]) -> None:
+    고정 view 의 '모델 고유' 자세는 FIXED_POSES 다. 조건 자세(sc.POSE_KEY)가 있고 follow_poses 면 고정 view 는 그 자세를 따르고
+    출력은 첫 view 조건 자세 기준 틀(미터)이다(MapAnything 은 입력 자세를 첫 view 기준으로 쓴다). reject_poses 면 자세가 든 입력을
+    거부한다(ValueError)."""
+
+    def __init__(self, truth: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray | None]], *,
+                 follow_poses: bool = True, reject_poses: bool = False) -> None:
         self.truth = truth  # media_id → (실제 cam2world, 실제 영상 K, 보고할 cam2world 또는 None)
+        self.follow_poses = follow_poses
+        self.reject_poses = reject_poses
         self.calls: list[list[str]] = []
+        self.posed_calls: list[bool] = []
 
     def __call__(self, prepared_dir: Path, ma_dir: Path) -> None:
         raw_bytes = (prepared_dir / "prepared.json").read_bytes()
         doc = json.loads(raw_bytes)
+        posed = any(v.get(sc.POSE_KEY) is not None for v in doc["views"])
+        self.calls.append([v["name"] for v in doc["views"]])
+        self.posed_calls.append(posed)
+        if posed and self.reject_poses:
+            raise ValueError("Camera pose constraint violation")
+        use_poses = posed and self.follow_poses
+        P0_inv = np.linalg.inv(np.asarray(doc["views"][0][sc.POSE_KEY], float)) if use_poses else None
         ma_dir.mkdir(parents=True)
         raw, cams = {}, []
-        self.calls.append([v["name"] for v in doc["views"]])
         for v in doc["views"]:
             name = v["name"]
             if v.get("K_undistorted") is not None:
-                T_true, K_img, T_rep = FIXED_POSES[name], np.asarray(v["K_undistorted"]), None
+                T_true = np.asarray(v[sc.POSE_KEY], float) if use_poses else FIXED_POSES[name]
+                K_img, T_rep = np.asarray(v["K_undistorted"]), None
             else:
                 T_true, K_img, T_rep = self.truth[v["source_media"]["media_id"]]
             Km = expected_crop_resize_k(K_img, v["image_size"], MODEL_HW[::-1])
-            depth = _render_depth(T_true, Km) * S_MA
-            T_out = _to_ma(T_rep if T_rep is not None else T_true)
+            if use_poses:
+                depth = _render_depth(T_true, Km)
+                T_out = P0_inv @ (T_rep if T_rep is not None else T_true)
+            else:
+                depth = _render_depth(T_true, Km) * S_MA
+                T_out = _to_ma(T_rep if T_rep is not None else T_true)
             raw[f"{name}__depth_z"] = depth
             raw[f"{name}__conf"] = np.ones_like(depth)
             raw[f"{name}__mask"] = np.isfinite(depth)
@@ -129,14 +150,29 @@ def _noise_png(seed: int, wh=(320, 180)) -> bytes:
     return data.tobytes()
 
 
-def _site(tmp_path: Path) -> Path:
-    """고정 카메라만으로 prepare·mapanything 이 끝난 작업 폴더."""
+# 걷기 다듬기 보정(-760)을 흉내 낸 중심 이동(m): 모델 고유 중심(FIXED_POSES)과 최대 16 cm 다르다(11-17 실측 기준 잔차 0.158 m)
+# (닮음 변환이 흡수하지 못하는 대각 전단 + 높이 비틀림. 자세 없는 기준 중심 잔차 ≈ 0.092 m > 0.08 m)
+WALK_SHIFT = {"cam_A": (0.11, 0.11, 0.05), "cam_B": (0.0, 0.0, -0.05), "cam_C": (0.11, 0.11, 0.05), "cam_D": (0.0, 0.0, -0.05)}
+
+
+def _cal_poses(shift: dict | None) -> dict[str, np.ndarray]:
+    out = {}
+    for cid in FIXED:
+        T = FIXED_POSES[cid].copy()
+        T[:3, 3] += np.asarray((shift or {}).get(cid, (0.0, 0.0, 0.0)), float)
+        out[cid] = T
+    return out
+
+
+def _site(tmp_path: Path, cal_shift: dict | None = None) -> Path:
+    """고정 카메라만으로 prepare·mapanything 이 끝난 작업 폴더. cal_shift 면 보정 중심을 모델 고유 중심에서 옮긴다."""
     root = tmp_path / "root"
     prep = root / "prepared"
     prep.mkdir(parents=True)
     cams, views = [], []
+    cal_poses = _cal_poses(cal_shift)
     for i, cid in enumerate(FIXED):
-        T = FIXED_POSES[cid]
+        T = cal_poses[cid]
         R = T[:3, :3].T
         cams.append({"camera_id": cid, "K": FIXED_K.tolist(), "R": R.tolist(), "t": (-R @ T[:3, 3]).tolist(),
                      "image_size": list(IMG_WH), "distortion": {"model": "NONE", "coeffs": []}})
@@ -277,7 +313,7 @@ def test_prefix_matches_calibration_unit_check_exclusion() -> None:
 
 
 # --------------------------------------------------------------------------- 입력 폴더·K
-def test_joint_prepared_mixes_known_k_fixed_views_and_k_less_supplement(tmp_path: Path) -> None:
+def test_joint_prepared_mixes_known_k_fixed_views_and_k_less_supplement(tmp_path: Path, monkeypatch) -> None:
     root = _site(tmp_path)
     frames = [sc.SelectedFrame("m1", 0, None, 10.0, np.full((360, 480, 3), 120, np.uint8))]
     media = {"m1": sc.MediaInput("m1", "IMAGE", tmp_path / "x", captured_at_ms=5, device={"model": "x1"})}
@@ -291,11 +327,9 @@ def test_joint_prepared_mixes_known_k_fixed_views_and_k_less_supplement(tmp_path
     assert doc["supplement"]["media"] == [{"media_id": "m1", "kind": "IMAGE", "captured_at_ms": 5, "device": {"model": "x1"}}]
     mask = cv2.imread(str(tmp_path / "joint" / sup["mask"]), cv2.IMREAD_GRAYSCALE)
     assert mask.shape == (90, 160) and mask[0, 0] == 255  # 사람 마스크(팽창)
-    torch = pytest.importorskip("torch")  # noqa: F841 - run_mapanything 은 모듈 맨 위에서 torch 를 import 한다
-    from simai_ai.scene import run_mapanything
-
-    specs = run_mapanything.prepared_views(tmp_path / "joint")
+    specs = _load_run_mapanything(monkeypatch).prepared_views(tmp_path / "joint")
     assert [s["K"] is None for s in specs] == [False] * 4 + [True]
+    assert all(s["pose"] is None for s in specs)  # 자세를 주지 않으면 어느 view 에도 넣지 않는다(-605 동작)
 
 
 def test_model_k_roundtrips_crop_resize() -> None:
@@ -425,7 +459,10 @@ def test_chunked_inference_keeps_fixed_views_in_every_chunk_and_drops_only_bad_c
     fake = _FakeMapAnything(truth)
     cfg = sc.SupplementConfig(max_frames=6, chunk_frames=2, bridge_frames=1)
     out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=cfg)
-    assert len(fake.calls) == 3 and all(call[:4] == list(FIXED) for call in fake.calls)  # 묶음마다 같은 고정 4 view
+    assert fake.calls[0] == list(FIXED)  # 자세 조건 관문 기준(고정 4 view 만, -787)
+    chunk_calls = fake.calls[1:]
+    assert len(chunk_calls) == 3 and all(call[:4] == list(FIXED) for call in chunk_calls)  # 묶음마다 같은 고정 4 view
+    assert all(fake.posed_calls)
     detail = json.loads((root / "supplement" / "result.json").read_text(encoding="utf-8"))["detail"]
     reasons = [c["reason"] for c in detail["chunks"]]
     assert reasons == [None, sc.R_TOO_FEW_REGISTERED, None]  # 나쁜 묶음만 뺐다
@@ -445,7 +482,7 @@ def test_time_budget_stops_adding_chunks(tmp_path: Path) -> None:
     cfg = sc.SupplementConfig(max_frames=4, chunk_frames=2, time_budget_s=500.0)
     fake = _FakeMapAnything(truth)
     out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=cfg, monotonic=lambda: float(next(clock)))
-    assert len(fake.calls) == 1 and out["status"] == "APPLIED" and out["frames_selected"] == 2
+    assert len(fake.calls) == 2 and out["status"] == "APPLIED" and out["frames_selected"] == 2  # 기준 1 + 묶음 1
 
 
 def test_annotate_bake_records_provenance_and_keeps_only_fixed_map_cameras(tmp_path: Path) -> None:
@@ -511,3 +548,152 @@ def test_runner_compares_baseline_and_supplement_with_fake_stages(tmp_path: Path
     from simai_ai.providers.contract import schema_errors
 
     assert schema_errors(rec, {"$ref": "https://simai.dev/contracts/experiments/run_record.schema.json"}) == []
+
+
+# --------------------------------------------------------------------------- 자세 조건 입력(-787)
+def _load_run_mapanything(monkeypatch):
+    """노트북 시험 환경에는 torch 가 없을 수 있다. 입력 구성만 보려고 torch 를 흉내 낸 모듈로 run_mapanything 을 읽는다."""
+    import importlib.util
+    import sys
+    import types
+
+    fake = types.ModuleType("torch")
+    fake.float32 = "float32"
+    fake.from_numpy = lambda a: ("img", np.asarray(a))
+    fake.tensor = lambda a, dtype=None: np.asarray(a)
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    path = Path(sc.__file__).with_name("run_mapanything.py")
+    spec = importlib.util.spec_from_file_location("ma_787_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_joint_prepared_puts_calibration_pose_on_fixed_views_only(tmp_path: Path, monkeypatch) -> None:
+    root = _site(tmp_path, WALK_SHIFT)
+    poses, source = sc.reference_poses(root)
+    assert source == {"source": "calibration.json", "calibration_version": "cal-1"}
+    np.testing.assert_allclose(poses["cam_A"], _cal_poses(WALK_SHIFT)["cam_A"], atol=1e-9)
+    frames = [sc.SelectedFrame("m1", 0, None, 10.0, np.full((360, 480, 3), 120, np.uint8))]
+    media = {"m1": sc.MediaInput("m1", "IMAGE", tmp_path / "x")}
+    doc = sc.build_joint_prepared(root / "prepared", tmp_path / "joint", frames, media, None,
+                                  fixed_poses=poses, pose_source=source)
+    fixed = [v for v in doc["views"] if v["view_role"] == sc.VIEW_ROLE_FIXED]
+    sup = [v for v in doc["views"] if v["view_role"] == sc.VIEW_ROLE_SUPPLEMENT]
+    assert all(np.allclose(v[sc.POSE_KEY], poses[v["name"]]) for v in fixed) and all(v["K_undistorted"] for v in fixed)
+    assert all(sc.POSE_KEY not in v and v["K_undistorted"] is None for v in sup)  # 보조 프레임은 이미지만
+    assert doc["pose_conditioning"]["mode"] == sc.MODE_POSE_CONDITIONED and doc["pose_conditioning"]["views"] == list(FIXED)
+    with pytest.raises(ValueError, match="조건 자세"):
+        sc.build_joint_prepared(root / "prepared", tmp_path / "joint2", frames, media, None,
+                                fixed_poses={k: v for k, v in poses.items() if k != "cam_C"})
+
+    ma = _load_run_mapanything(monkeypatch)
+    assert ma.POSE_KEY == sc.POSE_KEY
+    specs = ma.prepared_views(tmp_path / "joint")
+    assert [s["pose"] is not None for s in specs] == [True] * 4 + [False]
+    views = ma.build_prepared_views(specs)
+    assert [("camera_poses" in v, "is_metric_scale" in v, "intrinsics" in v) for v in views] == \
+        [(True, True, True)] * 4 + [(False, False, False)]
+    np.testing.assert_allclose(views[1]["camera_poses"], poses["cam_B"], atol=1e-6)
+    # MapAnything 추론 API 조건: 자세를 준 view 가 있으면 첫 view 에도 자세가 있어야 한다
+    pdoc = json.loads((tmp_path / "joint" / "prepared.json").read_text(encoding="utf-8"))
+    del pdoc["views"][0][sc.POSE_KEY]
+    (tmp_path / "joint" / "prepared.json").write_text(json.dumps(pdoc), encoding="utf-8")
+    with pytest.raises(ValueError, match="첫 view"):
+        ma.prepared_views(tmp_path / "joint")
+    pdoc["views"][1][sc.POSE_KEY] = np.diag([1.0, 1.0, -1.0, 1.0]).tolist()  # 반사 = 회전 아님
+    pdoc["views"][0][sc.POSE_KEY] = np.eye(4).tolist()
+    (tmp_path / "joint" / "prepared.json").write_text(json.dumps(pdoc), encoding="utf-8")
+    with pytest.raises(ValueError, match="정규 직교"):
+        ma.prepared_views(tmp_path / "joint")
+
+
+def test_reference_poses_prefer_alignment_reference(tmp_path: Path) -> None:
+    from simai_ai.scene.reconstruct import ALIGNMENT_REFERENCE_FILE
+
+    root = _site(tmp_path, WALK_SHIFT)
+    ref = json.loads((root / "calibration.json").read_text(encoding="utf-8"))
+    for c in ref["cameras"]:  # 정렬 기준(Stage A) = 모델 고유 중심
+        T = FIXED_POSES[c["camera_id"]]
+        R = T[:3, :3].T
+        c["t"] = (-R @ T[:3, 3]).tolist()
+    ref["calibration_version"] = "cal-stage-a"
+    (root / ALIGNMENT_REFERENCE_FILE).write_text(json.dumps(ref), encoding="utf-8")
+    poses, source = sc.reference_poses(root)
+    assert source == {"source": ALIGNMENT_REFERENCE_FILE, "calibration_version": "cal-stage-a"}
+    np.testing.assert_allclose(poses["cam_A"], FIXED_POSES["cam_A"], atol=1e-9)
+
+
+def test_walk_refined_calibration_applies_with_pose_conditioning(tmp_path: Path) -> None:
+    """11-17 재현: 보정(걷기 다듬기)이 모델 고유 중심과 최대 16 cm 달라 자세 없는 기준 잔차가 8 cm 를 넘는다. 자세 조건이면 통과."""
+    root = _site(tmp_path, WALK_SHIFT)
+    truth = {f"g{i}": (GOOD_POSES[i], _K(120.0), None) for i in range(3)}
+    _request(root, [("g0", 1), ("g1", 2), ("g2", 3)])
+    fake = _FakeMapAnything(truth)
+    out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=sc.SupplementConfig())
+    assert _summary_errors(out) == []
+    assert out["status"] == "APPLIED", out
+    assert fake.posed_calls == [True, True]  # 자세 조건 기준 + 묶음 하나, K 만 시도 없음
+    assert out["alignment"]["baseline_center_residual_m"] < 1e-3 and out["alignment"]["supplement_center_residual_m"] < 1e-3
+    detail = json.loads((root / "supplement" / "result.json").read_text(encoding="utf-8"))["detail"]
+    assert detail["mode"] == sc.MODE_POSE_CONDITIONED and [a["mode"] for a in detail["attempts"]] == [sc.MODE_POSE_CONDITIONED]
+    k_only = detail["k_only_baseline"]
+    assert k_only["exceeds_align_max_center_m"] and k_only["center_residual_m"] > 0.08  # 원인 진단(자세 없는 기준)
+    assert detail["alignment_reference"]["source"] == "calibration.json"
+    follow = detail["attempts"][0]["baseline_pose_follow"]
+    assert follow["followed"] and follow["max_center_err_m"] < 1e-4 and abs(follow["distance_ratio_median"] - 1) < 1e-4
+    assert detail["chunks"][0]["pose_follow"]["followed"]
+    # 병합본: 고정 카메라 자세 = 보정 자세(텍스처·뷰어와 같은 자세, -532), view 항목에 조건 자세는 남기지 않는다
+    cams = {v["name"]: v for v in json.loads((root / "mapanything" / "cameras.json").read_text(encoding="utf-8"))["views"]}
+    # (바닥 제약 정렬이 높이를 2 cm 안팎 당긴다. 중심만 맞춘 잔차는 위에서 1 mm 미만)
+    np.testing.assert_allclose(cams["cam_A"]["cam2world"], _cal_poses(WALK_SHIFT)["cam_A"], atol=3e-2)
+    prep = json.loads((root / "prepared" / "prepared.json").read_text(encoding="utf-8"))
+    assert all(sc.POSE_KEY not in v for v in prep["views"])
+    wa = json.loads((root / "world_alignment.json").read_text(encoding="utf-8"))
+    assert wa["supplement"]["mode"] == sc.MODE_POSE_CONDITIONED
+
+
+def test_pose_ignoring_model_falls_back_after_k_only_retry(tmp_path: Path) -> None:
+    """모델이 자세를 무시하면 자세 조건 시도도 절대선(8 cm)에 걸리고, K 만 시도도 같은 이유로 걸린다. 관문은 느슨해지지 않는다."""
+    root = _site(tmp_path, WALK_SHIFT)
+    truth = {f"g{i}": (GOOD_POSES[i], _K(120.0), None) for i in range(3)}
+    _request(root, [("g0", 1), ("g1", 2), ("g2", 3)])
+    fake = _FakeMapAnything(truth, follow_poses=False)
+    out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=sc.SupplementConfig())
+    assert _summary_errors(out) == []
+    assert out["status"] == "FALLBACK" and out["reason"] == sc.R_ALIGNMENT_WORSE
+    assert fake.posed_calls == [True, True, False]  # 자세 조건 기준·묶음 → K 만 묶음
+    assert out["alignment"]["baseline_center_residual_m"] > 0.08  # 요약은 자세 조건 시도(기준도 같은 입력)
+    detail = json.loads((root / "supplement" / "result.json").read_text(encoding="utf-8"))["detail"]
+    assert [a["mode"] for a in detail["attempts"]] == [sc.MODE_POSE_CONDITIONED, sc.MODE_K_ONLY]
+    assert detail["attempts"][0]["baseline_pose_follow"]["followed"] is False  # 자세를 무시했다는 지표
+    assert detail["attempts"][1]["chunks"][0]["reason"] == sc.R_ALIGNMENT_WORSE
+    assert not (root / "prepared_base").exists()  # 기준 맵 유지
+    assert all(m["status"] == "REGISTERED_NOT_USED" for m in out["media"])
+
+
+def test_pose_rejected_by_model_retries_without_poses(tmp_path: Path) -> None:
+    """자세 입력을 MapAnything 이 거부하면(기준 실행 실패) 자세 없이(-605 동작) 한 번 더 시도해 적용한다."""
+    root = _site(tmp_path)
+    truth = {f"g{i}": (GOOD_POSES[i], _K(120.0), None) for i in range(2)}
+    _request(root, [("g0", 1), ("g1", 2)])
+    fake = _FakeMapAnything(truth, reject_poses=True)
+    out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=sc.SupplementConfig())
+    assert _summary_errors(out) == []
+    assert out["status"] == "APPLIED" and fake.posed_calls == [True, False]
+    detail = json.loads((root / "supplement" / "result.json").read_text(encoding="utf-8"))["detail"]
+    assert detail["mode"] == sc.MODE_K_ONLY and "Camera pose constraint" in detail["attempts"][0]["error"]
+    assert detail["attempts"][0]["chunks"] == [] and (root / "supplement" / "chunk_00").is_dir()
+
+
+def test_k_only_retry_skipped_when_time_budget_is_spent(tmp_path: Path) -> None:
+    root = _site(tmp_path, WALK_SHIFT)
+    truth = {"g0": (GOOD_POSES[0], _K(120.0), None)}
+    _request(root, [("g0", 1)])
+    clock = iter(range(0, 100_000, 400))
+    fake = _FakeMapAnything(truth, follow_poses=False)
+    out = sc.run_supplement(root, infer=fake, person_mask=_no_people, cfg=sc.SupplementConfig(time_budget_s=500.0),
+                            monotonic=lambda: float(next(clock)))
+    assert out["status"] == "FALLBACK" and out["reason"] == sc.R_ALIGNMENT_WORSE and fake.posed_calls == [True, True]
+    detail = json.loads((root / "supplement" / "result.json").read_text(encoding="utf-8"))["detail"]
+    assert detail["k_only_retry_skipped"] == sc.R_TIME_BUDGET and detail["time_budget_hit"]
