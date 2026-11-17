@@ -138,12 +138,12 @@ function fakeReplay() {
   return replay;
 }
 
-function renderPage(date = YESTERDAY, onSubmitted?: () => void) {
+function renderPage(date = YESTERDAY) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
     <QueryClientProvider client={client}>
-      <PastDayPage date={date} onSubmitted={onSubmitted} />
+      <PastDayPage date={date} />
     </QueryClientProvider>,
   );
 }
@@ -508,37 +508,5 @@ describe('PastDayPage — 오른쪽 열 탭', () => {
     expect(rows).toHaveLength(2);
     fireEvent.click(rows[1]!);
     expect(replay.seek).toHaveBeenCalledWith(EVENT_AT);
-  });
-});
-
-describe('PastDayPage — 보고서 미제출 띠(S15P31A101-750)', () => {
-  const endedWork = (progress: 'ENDED' | 'SUBMITTED') =>
-    workDayOf({
-      work_id: '8301',
-      date: YESTERDAY,
-      progress,
-      actual_started_at: new Date(2026, 10, 10, 9, 0).getTime(),
-      actual_ended_at: new Date(2026, 10, 10, 10, 0).getTime(),
-    });
-
-  it('종료만 된 작업이면 「보고서 미제출」 띠와 「보고서 제출」 단추를 보이고, 「한 번 더 실행」은 없다', async () => {
-    server.use(
-      http.get('*/api/work-units', () => HttpResponse.json({ works: [endedWork('ENDED')] })),
-    );
-    renderPage();
-    const band = await screen.findByTestId('late-submit-band');
-    expect(within(band).getByText('보고서 미제출')).toBeTruthy();
-    expect(within(band).getByRole('button', { name: '보고서 제출' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '한 번 더 실행' })).toBeNull();
-  });
-
-  it('제출한 작업이면 띠가 없다', async () => {
-    server.use(
-      http.get('*/api/work-units', () => HttpResponse.json({ works: [endedWork('SUBMITTED')] })),
-    );
-    renderPage();
-    await screen.findByRole('heading', { name: '2026년 11월 10일 (화)' });
-    await screen.findByTestId('report-panel');
-    expect(screen.queryByTestId('late-submit-band')).toBeNull();
   });
 });

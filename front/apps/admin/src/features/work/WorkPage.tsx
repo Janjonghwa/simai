@@ -53,12 +53,6 @@ export function WorkPage({
     return () => clearTimeout(timer);
   }, [notice]);
 
-  // 보고서를 보낸 뒤: 알림을 띄우고 달력으로 나간다(오늘 흐름·지난 날 뒤늦은 제출 모두).
-  const sentAndBack = () => {
-    setNotice(SENT_NOTICE);
-    onOpenDate(null);
-  };
-
   if (!date) {
     return (
       <WorkScreen>
@@ -75,7 +69,7 @@ export function WorkPage({
   if (dayKind(date, today) === 'past') {
     return (
       <WorkScreen>
-        <PastDayPage key={date} date={date} onSubmitted={sentAndBack} />
+        <PastDayPage key={date} date={date} />
       </WorkScreen>
     );
   }
@@ -86,7 +80,10 @@ export function WorkPage({
         date={date}
         todayKey={today}
         onBack={() => onOpenDate(null)}
-        onSubmitted={sentAndBack}
+        onSubmitted={() => {
+          setNotice(SENT_NOTICE);
+          onOpenDate(null);
+        }}
       />
     </WorkScreen>
   );

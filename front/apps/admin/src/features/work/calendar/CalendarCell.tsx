@@ -6,7 +6,7 @@ import {
 import type { DateKey, DayKind } from '@/features/work/workDay';
 import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { CheckCircle2, FileWarning } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 
 // 달력 칸 하나: 오늘 칸만 밝은 주색 테두리·면과 큰 주 단추로 두드러지게 하고, 지난 날은 완료 아이콘과 색 점·숫자로 간소화하며,
 // 작업 없는 지난 날은 차분하게 가라앉히고 예정인 날은 바탕에 맞춰 명도를 낮춘다.
@@ -19,19 +19,6 @@ function EndedMark({ className }: { className?: string }) {
         aria-hidden
         data-slot="ended-mark"
         className="size-3.5 shrink-0 text-muted-foreground"
-      />
-    </span>
-  );
-}
-
-/** 끝났지만 보고서를 안 낸 지난 날의 표시: 경고색 아이콘. 칸 안에도 글(보고서 미제출)로 한 번 더 알린다. */
-function UnsubmittedMark({ className }: { className?: string }) {
-  return (
-    <span title="보고서 미제출" className={cn('inline-flex shrink-0', className)}>
-      <FileWarning
-        aria-hidden
-        data-slot="unsubmitted-mark"
-        className="size-3.5 shrink-0 text-sev-caution"
       />
     </span>
   );
@@ -153,7 +140,6 @@ export function CalendarCell({
         'group/cell flex min-w-0 flex-col items-start gap-1 rounded-[12px] px-2.5 py-2 text-left',
         'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
         cellToneClass(kind, summary !== null),
-        mark?.kind === 'unsubmitted' && 'border-sev-caution/60',
         !inMonth && !isToday && 'opacity-45',
       )}
     >
@@ -176,18 +162,12 @@ export function CalendarCell({
           </span>
         )}
         {mark?.kind === 'ended' && <EndedMark className="ml-auto" />}
-        {mark?.kind === 'unsubmitted' && <UnsubmittedMark className="ml-auto" />}
       </span>
       {summary && (
         <>
           <span className="text-xs text-muted-foreground">
             작업 {summary.count}건{summary.runs ? ` · 실행 ${summary.runs}회` : ''}
           </span>
-          {mark?.kind === 'unsubmitted' && (
-            <span data-slot="unsubmitted-note" className="text-xs font-semibold text-sev-caution">
-              보고서 미제출
-            </span>
-          )}
           <span className="mt-auto flex w-full items-center gap-2">
             <EventCounts
               critical={summary.critical}

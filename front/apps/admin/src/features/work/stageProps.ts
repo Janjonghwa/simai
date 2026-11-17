@@ -35,8 +35,6 @@ export interface RunStageProps extends WorkStageProps {
 export interface PastDayProps {
   /** 날짜 키(YYYY-MM-DD). */
   date: string;
-  /** 지난 날 보고서를 뒤늦게 제출했을 때(S15P31A101-750). 없으면 제출 뒤에도 이 화면에 머문다. */
-  onSubmitted?: () => void;
 }
 
 /** TBM 보고서 종이 하나(`ReportPanel`)를 쓰는 화면들이 넘기는 props. 보고서는 작업의 최신 판을 스스로 읽고 고친다. */
