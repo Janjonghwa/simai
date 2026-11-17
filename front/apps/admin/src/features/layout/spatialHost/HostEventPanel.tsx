@@ -11,8 +11,9 @@ import { useGpuKnownOff } from '@/features/gpu/useGpu';
 import { PastEventsLink } from '@/features/monitor/PastEventsLink';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { outsideWorkKind, splitSince, workStartedAt } from '@/features/monitor/workSession';
+import { useCachedWatchBindings } from '@/features/watch/useWatch';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 
 /**
  * 오른쪽 이벤트 패널. 이벤트 목록은 자주 바뀌어 여기서 직접 받는다(틀 전체가 다시 그려지지 않는다).
@@ -26,6 +27,7 @@ import { useCallback, useMemo } from 'react';
  * 작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트에는 「작업 구역 밖」·「작업 시간 외」 꼬리표가 붙는다.
  * 운영자가 확인한 지 24시간(ACK_HIDE_AFTER_MS)이 지난 이벤트는 이 패널에서만 숨긴다(배너·소리·2D 평면은 그대로).
  * 작업 목록은 관제 화면(MonitorPage·세션 바)이 받아 둔 캐시만 구독한다(여기서 요청하지 않는다).
+ * 워치가 배정된 World ID 는 배정이 풀려도 기억해(realtime.store 의 trackLife) 그 사람의 사라짐 카드를 유령 트랙으로 접지 않는다(S15P31A101-785).
  */
 export function HostEventPanel({
   visible,
@@ -37,6 +39,10 @@ export function HostEventPanel({
   onSelect: (incident: Incident) => void;
 }) {
   const { entries: visibleEntries, loaded, failed } = useVisibleLiveEvents();
+  const watchBindings = useCachedWatchBindings();
+  useEffect(() => {
+    useRealtimeStore.getState().noteWatchedIds(watchBindings.map((b) => b.world_id));
+  }, [watchBindings]);
   const works = useMonitorWorks({ passive: true });
   const active = works.state === 'ready' ? works.active : null;
   const since = active ? workStartedAt(active) : null;

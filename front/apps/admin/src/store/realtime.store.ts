@@ -7,6 +7,12 @@ import {
   pushLagSample,
   type LagSample,
 } from '@/lib/tier0Lag';
+import {
+  EMPTY_TRACK_LIFE,
+  noteWatched,
+  noteWorldFrame,
+  type TrackLifeState,
+} from '@/lib/trackLife';
 import type { PpeViewPayload, ViewerHealthPayload, WorldStatePayload } from '@simai/contracts';
 import { create } from 'zustand';
 
@@ -48,6 +54,11 @@ export interface RealtimeState {
    * 뒤로 가면 이후 프레임을 모두 버려 평면이 멈추기 때문이다.
    */
   worldResync: boolean;
+  /**
+   * World ID 가 이 브라우저에서 보인 구간·병합·워치 배정 기록(S15P31A101-785, lib/trackLife). 받은 world 마다 바뀌므로 화면은 구독하지 않고
+   * 사람이 바뀔 때(selectAliveIdsKey) getState() 로 읽는다. 워치 기록(watched)은 새 배정이 있을 때만 바뀐다.
+   */
+  trackLife: TrackLifeState;
   /** Tier 0(tier0_source_id)별 가장 새 PPE 스냅샷. 스냅샷이라 이전 값을 이어 쓰지 않고 통째로 바꾼다. */
   ppe: Readonly<Record<string, PpeSnapshot>>;
   /** JSON 이 아니거나 계약 검사에 실패해 버린 메시지 수. */
@@ -66,6 +77,8 @@ export interface RealtimeState {
   receiveWorld: (world: WorldSnapshot) => void;
   /** 더 새(snapshot_at_ms) 스냅샷만 받는다. /topic/ppe 와 처음 상태 REST 가 같이 쓴다. */
   receivePpe: (snapshot: PpeSnapshot) => void;
+  /** 워치가 배정된 World ID 를 기록에 더한다(배정이 풀려도 남긴다). */
+  noteWatchedIds: (ids: readonly string[]) => void;
   reject: () => void;
   reset: () => void;
 }
@@ -77,6 +90,7 @@ const INITIAL = {
   lagSamples: [],
   world: null,
   worldResync: false,
+  trackLife: EMPTY_TRACK_LIFE,
   ppe: {},
   rejected: 0,
   source: null,
@@ -109,7 +123,15 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
       // 연결이 그대로여도 시계가 뒤로 가면 이후 프레임을 모두 버리게 된다. 한동안 받지 못했으면 받는다.
       world.receivedAt - s.world.receivedAt <= WORLD_STALE_MS
         ? s
-        : { world, worldResync: false },
+        : {
+            world,
+            worldResync: false,
+            trackLife: noteWorldFrame(
+              s.trackLife,
+              world.payload.tracks,
+              world.payload.t_latest_global,
+            ),
+          },
     ),
   receivePpe: (snapshot) =>
     set((s) => {
@@ -117,6 +139,11 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
       const prev = s.ppe[id];
       if (prev && prev.payload.snapshot_at_ms >= snapshot.payload.snapshot_at_ms) return s;
       return { ppe: { ...s.ppe, [id]: snapshot } };
+    }),
+  noteWatchedIds: (ids) =>
+    set((s) => {
+      const trackLife = noteWatched(s.trackLife, ids);
+      return trackLife === s.trackLife ? s : { trackLife };
     }),
   reject: () => set((s) => ({ rejected: s.rejected + 1 })),
   reset: () => {

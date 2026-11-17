@@ -1,5 +1,6 @@
 import {
   CARD_MERGE_GAP_MS,
+  GHOST_MAX_LIFE_MS,
   RECENT_RESOLVED_INCIDENTS,
   RESOLVED_PER_INCIDENT,
   SEVERITY_RANK,
@@ -14,6 +15,7 @@ import {
   type EventEntry,
 } from '@/features/events/entries';
 import type { EventItem, Severity } from '@/features/events/types';
+import { identityOf, knownLifeMs, rootOf, type TrackLifeState } from '@/lib/trackLife';
 import type { WorldTrack } from '@simai/contracts';
 
 // 한 사람(또는 사람이 없는 구역)에 걸린 이벤트를 묶는 계산(명세 7.4). 화면 없이 시험한다.
@@ -122,6 +124,81 @@ export const isGone = (incident: Incident, alive: AliveIds): boolean =>
   !incident.stale &&
   incident.target?.type === 'person' &&
   !isAlive(alive, incident.target.id);
+
+/** 이 묶음에 든 사람(진행 중 규칙의 대상) ID. */
+const activePeople = (incident: Incident): string[] => [
+  ...new Set(
+    incident.entries
+      .filter((e) => isActive(e.event))
+      .map((e) => incidentTarget(e.event))
+      .filter((t): t is { type: 'person'; id: string } => t?.type === 'person')
+      .map((t) => t.id),
+  ),
+];
+
+/** 유령 트랙 판정(S15P31A101-785)에 쓰는 World ID 기록(lib/trackLife). */
+export type GhostLife = Pick<TrackLifeState, 'lives' | 'survivorOf' | 'watched'>;
+
+/**
+ * 「지금 안 보임」 카드를 접을 후보: 사라진 사람의 카드이고(isGone), 확인 대기 경보가 없고, 든 사람(병합으로 이어진 ID 포함) 누구에게도
+ * 워치가 배정된 적이 없다. 확인 대기 경보가 있는 카드는 운영자가 확인해야 하므로 접지 않는다.
+ */
+function foldCandidate(card: CardGroup, alive: AliveIds, life: GhostLife): boolean {
+  if (!isGone(card.incident, alive) || card.incident.alarming) return false;
+  return activePeople(card.incident).every((id) =>
+    identityOf(life, id).every((member) => !life.watched[member]),
+  );
+}
+
+/** 잠깐 보였다 사라졌다: 같은 사람(병합 포함)이 보인 길이를 알고 GHOST_MAX_LIFE_MS 보다 짧다. 모르면 아니다. */
+function shortLived(id: string, life: GhostLife): boolean {
+  const ms = knownLifeMs(life, identityOf(life, id));
+  return ms !== null && ms < GHOST_MAX_LIFE_MS;
+}
+
+/**
+ * 진행 중 카드를 그대로 둘 것과 접을 것(유령 트랙, S15P31A101-785)으로 나눈다. 접는 카드는 사라진 사람의 카드 중 후보(foldCandidate)이고,
+ * 든 사람마다 다음 중 하나다.
+ * - 잠깐 보였다 사라졌다(shortLived).
+ * - 병합으로 다른 ID 에 흡수됐고, 흡수한 사람이 지금 보이거나 그 사람의 다른 카드가 그대로 남는다(같은 사람의 카드가 이미 있다).
+ * 오래 보였거나 보인 길이를 모르는 사람(접속 전부터 있었음·프레임 공백), 워치가 붙었던 사람, 확인 대기 경보는 그대로 둔다.
+ */
+export function splitGhostCards(
+  cards: readonly CardGroup[],
+  alive: AliveIds,
+  life: GhostLife,
+): { kept: CardGroup[]; ghost: CardGroup[] } {
+  if (alive === null) return { kept: [...cards], ghost: [] };
+  const candidate = new Set(cards.filter((c) => foldCandidate(c, alive, life)));
+  const absorbed = (id: string) => rootOf(life, id) !== id;
+  const short = new Set(
+    [...candidate].filter((c) => activePeople(c.incident).every((id) => shortLived(id, life))),
+  );
+  // 흡수된 ID 의 카드가 기댈 「같은 사람의 남는 카드」: 후보가 아니거나, 잠깐도 아니고 흡수된 사람도 없는 카드.
+  const keptPeople = new Set(
+    cards
+      .filter(
+        (c) =>
+          !candidate.has(c) ||
+          (!short.has(c) && !activePeople(c.incident).some((id) => absorbed(id))),
+      )
+      .flatMap((c) => activePeople(c.incident)),
+  );
+  const duplicate = (id: string) =>
+    absorbed(id) &&
+    identityOf(life, id).some(
+      (member) => member !== id && (keptPeople.has(member) || alive.has(member)),
+    );
+  const ghost = new Set(
+    [...candidate].filter((c) =>
+      activePeople(c.incident).every((id) => shortLived(id, life) || duplicate(id)),
+    ),
+  );
+  return {
+    kept: cards.filter((c) => !ghost.has(c)),
+    ghost: cards.filter((c) => ghost.has(c)),
+  };
+}
 
 /**
  * 화면 카드 하나. 진행 중 카드는 한 사람의 묶음(명세 7.4)에, 같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(World ID)만 바뀌어
@@ -331,6 +408,11 @@ function splitStale(entries: readonly EventEntry[]) {
  */
 export interface EventSections {
   active: CardGroup[];
+  /**
+   * 잠깐 생겼다 사라졌거나 병합으로 흡수된 사람(유령 트랙)의 「지금 안 보임」 카드(S15P31A101-785). 진행 중에서 빼 목록 끝의 접힌 칸에 둔다.
+   * 기록(life)을 주지 않으면 비어 있다.
+   */
+  ghost: CardGroup[];
   resolved: CardGroup[];
   stale: Incident[];
   staleEvents: number;
@@ -344,6 +426,8 @@ export interface SectionOptions {
    * 「최근 해소」를 비운다(작업 종료 때 Tier 0 가 한꺼번에 닫은 이벤트가 대기 화면에 남지 않게). 주지 않으면(undefined) 거르지 않는다.
    */
   runStartedAt?: number | null;
+  /** World ID 가 보인 기록(lib/trackLife). 주면 유령 트랙의 사라짐 카드를 진행 중에서 뺀다(splitGhostCards). 주지 않으면 빼지 않는다. */
+  life?: GhostLife;
 }
 
 /** 지금 실행의 이벤트만(발생 시각 기준, 모르면 마지막 갱신 시각). */
@@ -358,14 +442,17 @@ function inRun(
 
 export function eventSections(
   entries: readonly EventEntry[],
-  { alive = null, runStartedAt }: SectionOptions = {},
+  { alive = null, runStartedAt, life }: SectionOptions = {},
 ): EventSections {
   const { now, stale } = splitStale(entries);
+  const cards = activeCards(
+    groupIncidents(now).filter((i) => i.active),
+    alive,
+  );
+  const { kept, ghost } = life ? splitGhostCards(cards, alive, life) : { kept: cards, ghost: [] };
   return {
-    active: activeCards(
-      groupIncidents(now).filter((i) => i.active),
-      alive,
-    ),
+    active: kept,
+    ghost,
     resolved: resolvedGroups(inRun(entries, runStartedAt), alive).slice(
       0,
       RECENT_RESOLVED_INCIDENTS,
