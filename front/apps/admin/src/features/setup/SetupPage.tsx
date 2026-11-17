@@ -5,7 +5,7 @@ import {
   requestDemoNewMap,
   useSetupWaitingView,
 } from '@/features/demo/demoNewMap';
-import { demoReuseShown, useDemoCoverage } from '@/features/demo/demoSetup';
+import { demoReuseOpen, demoReuseShown, useDemoCoverage } from '@/features/demo/demoSetup';
 import {
   DEMO_DRAFT_SEARCH_TEXT,
   useDemoZoneDrafts,
@@ -568,7 +568,9 @@ function SetupWorkPage({
     cancelMutation.isPending;
 
   // 「맵」 방식(S15P31A101-689). 1단계에서는 이전 맵 재사용을 고를 수 있는지 늘 받아 둔다(세션 유무·실패·취소와 무관)
-  const reuse = useReuseChoice(stage === 0, cameraIds, helperLost);
+  const reuseChoice = useReuseChoice(stage === 0, cameraIds, helperLost);
+  // 시연 계정은 이전 맵을 시점 확인·추천 없이 고른다(서버 SetupDemoAccounts 와 같은 판정)
+  const reuse = demoAccount ? demoReuseOpen(reuseChoice) : reuseChoice;
   const wantedMode: SetupMode = pickedMode ?? currentSession?.requested_mode ?? 'NEW';
   // 고를 수 없으면 새 맵으로 보인다(사용자가 그 상태를 보고 '다음' 을 누른다. 세팅 중 저절로 바꾸지 않는다)
   const mode: SetupMode = wantedMode === 'REUSE' && reuse.blocked === null ? 'REUSE' : 'NEW';
@@ -1006,6 +1008,7 @@ function SetupWorkPage({
             reuse={demoAccount ? demoReuseShown(reuse, mode) : reuse}
             mapId={reuseMapId}
             onMapChange={setPickedMapId}
+            openMaps={demoAccount}
           />
           <CameraHeightPanel
             fields={heightFields}

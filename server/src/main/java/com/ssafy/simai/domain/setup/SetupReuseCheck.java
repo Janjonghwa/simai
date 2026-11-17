@@ -147,7 +147,25 @@ class SetupReuseCheck {
      * 아직 모름 SETUP_REUSE_VIEW_UNCONFIRMED.
      */
     Evaluated require(String siteId, UUID chosen) {
+        return require(siteId, chosen, false);
+    }
+
+    /**
+     * open: 시연 계정({@link SetupDemoAccounts}). 카메라 시점 확인과 추천 없이 제외(EXCLUDED: 보정 없음·완료 전 등 DB 사실로 쓸 수 없는 맵)가 아닌
+     * 맵을 모두 고를 수 있다. 고른 맵이 없으면 가장 최근에 완료된 맵을 쓴다. 쓸 맵이 없으면 SETUP_REUSE_SCENE_MISSING, 고른 맵이 목록에 없거나
+     * 제외면 SETUP_REUSE_MAP_UNAVAILABLE. open 이 아니면 위 판정 그대로다.
+     */
+    Evaluated require(String siteId, UUID chosen, boolean open) {
         Result result = check(siteId);
+        if (open) {
+            List<Evaluated> usable = result.ranked().stream().filter(e -> !EXCLUDED.equals(e.status())).toList();
+            Evaluated picked = chosen == null
+                    ? usable.stream().max(Comparator.comparing((Evaluated e) -> e.candidate().completedAt()))
+                            .orElseThrow(() -> new BusinessException(ErrorCode.Setup.SETUP_REUSE_SCENE_MISSING))
+                    : usable.stream().filter(e -> chosen.equals(e.candidate().setupSessionId())).findFirst()
+                            .orElseThrow(() -> new BusinessException(ErrorCode.Setup.SETUP_REUSE_MAP_UNAVAILABLE));
+            return withDemoSnapshot(picked);
+        }
         if (chosen == null) {
             if (result.recommended() != null) {
                 return result.recommended();
@@ -168,6 +186,25 @@ class SetupReuseCheck {
             case UNCONFIRMED -> throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_VIEW_UNCONFIRMED);
             default -> throw new BusinessException(ErrorCode.Setup.SETUP_REUSE_CAMERA_CHANGED);
         };
+    }
+
+    /**
+     * 시연 계정이 고른 맵의 시작 기록(setup_session.reuse_view_check, 객체여야 한다 — V78). 시점 확인 결과가 없으면(확인 중·Tier 0 회전 감시)
+     * 받은 시각 없이 카메라별 결과를 비워 둔다. 어느 쪽이든 시점 확인을 통과하지 않고 시연 계정이 골랐다는 표시(demo_account=true)를 남긴다.
+     */
+    private Evaluated withDemoSnapshot(Evaluated e) {
+        ObjectNode snapshot;
+        if (e.viewSnapshot() != null) {
+            snapshot = e.viewSnapshot().deepCopy();
+        } else {
+            snapshot = mapper.createObjectNode();
+            snapshot.putNull("received_at_ms");
+            snapshot.put("scene_version", e.candidate().sceneVersion());
+            snapshot.set("cameras", e.cameras().deepCopy());
+        }
+        snapshot.put("demo_account", true);
+        return new Evaluated(e.candidate(), e.status(), e.reason(), e.changedCameras(), e.shiftedCameras(),
+                e.unconfirmedCameras(), e.cameras(), e.score(), e.source(), snapshot);
     }
 
     private Evaluated evaluate(SetupReuseCandidates.Candidate c, String tier0Calibration, List<String> drifted) {
@@ -244,10 +281,19 @@ class SetupReuseCheck {
      * 대표 후보로 채우고, 새 필드 {@code recommended_setup_session_id}·{@code candidates}(순위 순)를 더한다.
      */
     ObjectNode toJson(Result r) {
+        return toJson(r, false);
+    }
+
+    /**
+     * open: 시연 계정({@link SetupDemoAccounts}) — 제외가 아닌 후보는 모두 selectable, 추천 없음(recommended=false,
+     * recommended_setup_session_id=null), 쓸 후보가 있으면 available·blocked_reason=null, 없으면 NO_SCENE.
+     */
+    ObjectNode toJson(Result r, boolean open) {
         ObjectNode out = mapper.createObjectNode();
         Evaluated top = r.top();
-        out.put("available", r.available());
-        out.put("blocked_reason", r.blockedReason());
+        boolean usable = r.ranked().stream().anyMatch(e -> !EXCLUDED.equals(e.status()));
+        out.put("available", open ? usable : r.available());
+        out.put("blocked_reason", open ? (usable ? null : NO_SCENE) : r.blockedReason());
         out.put("scene_version", top == null ? null : top.candidate().sceneVersion());
         out.put("calibration_version", top == null ? null : top.candidate().calibrationVersion());
         String cameraStatus = top == null ? UNKNOWN : switch (top.status()) {
@@ -262,7 +308,7 @@ class SetupReuseCheck {
         }
         out.put("camera_source", top == null || !CHANGED.equals(cameraStatus) ? null
                 : top.source() != null ? top.source() : VIEW_MATCH);
-        out.put("recommended_setup_session_id", r.recommended() == null ? null
+        out.put("recommended_setup_session_id", open || r.recommended() == null ? null
                 : r.recommended().candidate().setupSessionId().toString());
         out.put("as_is_max_rotation_rad", AS_IS_MAX_ROTATION_RAD);
         ArrayNode list = out.putArray("candidates");
@@ -279,8 +325,8 @@ class SetupReuseCheck {
             }
             item.put("status", e.status());
             item.put("reason", e.reason());
-            item.put("selectable", e.selectable());
-            item.put("recommended", e == r.recommended());
+            item.put("selectable", open ? !EXCLUDED.equals(e.status()) : e.selectable());
+            item.put("recommended", !open && e == r.recommended());
             e.changedCameras().forEach(item.putArray("changed_cameras")::add);
             e.shiftedCameras().forEach(item.putArray("shifted_cameras")::add);
             e.unconfirmedCameras().forEach(item.putArray("unconfirmed_cameras")::add);

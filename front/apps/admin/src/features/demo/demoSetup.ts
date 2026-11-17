@@ -6,7 +6,8 @@ import type { ReuseChoiceState } from '@/features/setup/useReuseScene';
 import { useMemo } from 'react';
 
 // 시연 계정(features/demo/demoAccount)의 세팅 1단계 화면. 영상이 나오는 카메라는 연결됨으로 보이고, 「맵」 칸은 새 맵을 고르면 이전 맵 목록을
-// 숨기고 재사용을 고르면 최근 맵 둘만 보인다. 보이는 것만 바꾸며 서버에 보내는 값(고른 맵·판정)은 그대로다.
+// 숨기고 재사용을 고르면 최근 맵 둘만 보인다. 보이는 맵은 카메라 시점 확인·추천 없이 고른다(demoReuseOpen, 서버 SetupDemoAccounts 와
+// 같은 판정). 보정이 없거나 완료 전인 맵(EXCLUDED)만 기술적으로 쓸 수 없어 꺼 둔다.
 
 /** 재사용을 골랐을 때 보이는 이전 맵 수(최근 완료 순). */
 export const DEMO_REUSE_MAP_COUNT = 2;
@@ -61,4 +62,19 @@ export function demoReuseShown(reuse: ReuseChoiceState, mode: SetupMode): ReuseC
     .sort((a, b) => b.completedAtMs - a.completedAtMs)
     .slice(0, DEMO_REUSE_MAP_COUNT);
   return { ...reuse, maps: mode === 'NEW' ? [] : newest };
+}
+
+/**
+ * 시연 계정의 이전 맵 재사용: 제외(EXCLUDED)가 아닌 맵은 카메라 시점 확인과 관계없이 모두 고를 수 있고, 추천 표시·상태 문구가 없다.
+ * 기본 선택은 가장 최근에 완료된 맵이다(서버도 고른 맵이 없으면 그 맵을 쓴다). 고를 맵이 하나라도 있으면 재사용을 막지 않는다.
+ */
+export function demoReuseOpen(reuse: ReuseChoiceState): ReuseChoiceState {
+  const maps = reuse.maps.map((map) =>
+    map.status === 'EXCLUDED' ? map : { ...map, selectable: true, recommended: false, note: '' },
+  );
+  const newest = maps
+    .filter((map) => map.selectable)
+    .sort((a, b) => b.completedAtMs - a.completedAtMs)[0];
+  if (!newest) return { ...reuse, maps };
+  return { ...reuse, blocked: null, note: null, maps, recommendedId: newest.id };
 }

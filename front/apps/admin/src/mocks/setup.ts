@@ -1,3 +1,4 @@
+import { isDemoUser } from '@/features/demo/demoAccount';
 import { completeMapBlockedReason } from '@/features/setup/setup';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import {
@@ -536,9 +537,36 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   // 한 번도 만들지 않은 작업은 workUnitSessionId(이어받기 시험)를 돌려준다
   const workUnitSessions = new Map<number, string>();
   const reuseCheck = (): ReuseCheck => options.reuseCheck ?? NO_SCENE_REUSE_CHECK;
-  const reuseBlockedProblem = () => {
-    const blocked = reuseCheck().blocked_reason;
-    if (reuseCheck().available) return null;
+  /**
+   * 서버처럼(SetupReuseCheck open·SetupDemoAccounts) 시연 계정은 제외(EXCLUDED)가 아닌 맵을 모두 고르고 추천이 없다.
+   * 후보 목록이 없는 옛 응답 모양은 그대로 둔다.
+   */
+  const reuseCheckFor = (userId: string): ReuseCheck => {
+    const check = reuseCheck();
+    if (!isDemoUser(userId) || !check.candidates) return check;
+    const candidates = check.candidates.map((c) => ({
+      ...c,
+      selectable: c.status !== 'EXCLUDED',
+      recommended: false,
+    }));
+    const usable = candidates.some((c) => c.selectable);
+    return {
+      ...check,
+      available: usable,
+      blocked_reason: usable ? null : 'NO_SCENE',
+      recommended_setup_session_id: null,
+      candidates,
+    };
+  };
+  /** 고른 맵이 없을 때 시작할 맵: 추천, 시연 계정이면(추천 없음) 가장 최근에 완료된 맵 */
+  const defaultReuseMapId = (check: ReuseCheck): string | null | undefined =>
+    check.recommended_setup_session_id ??
+    [...(check.candidates ?? [])]
+      .filter((c) => c.selectable)
+      .sort((a, b) => b.completed_at_ms - a.completed_at_ms)[0]?.setup_session_id;
+  const reuseBlockedProblem = (check: ReuseCheck = reuseCheck()) => {
+    const blocked = check.blocked_reason;
+    if (check.available) return null;
     if (blocked === 'CAMERA_CHANGED')
       return problem(
         409,
@@ -1008,16 +1036,16 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return problem(400, 'INVALID_SETUP_REQUEST', '세팅 모드가 올바르지 않습니다');
       }
       const requestedMode = parsedMode.data;
+      const userReuseCheck = reuseCheckFor(user.id);
       if (requestedMode === 'REUSE') {
-        const blocked = reuseBlockedProblem();
+        const blocked = reuseBlockedProblem(userReuseCheck);
         if (blocked) return blocked;
       }
       // 서버처럼(SetupService.createReuse, S15P31A101-714) 후보 맵 목록이 있으면 고른 맵(없으면 추천)의 묶음을 그대로 쓰는 끝난 세션을 만든다
-      const candidates = reuseCheck().candidates ?? [];
+      const candidates = userReuseCheck.candidates ?? [];
       if (requestedMode === 'REUSE' && candidates.length > 0) {
         const sentMap = Reflect.get(raw, 'reuse_setup_session_id');
-        const wanted =
-          typeof sentMap === 'string' ? sentMap : reuseCheck().recommended_setup_session_id;
+        const wanted = typeof sentMap === 'string' ? sentMap : defaultReuseMapId(userReuseCheck);
         const picked = candidates.find((c) => c.setup_session_id === wanted);
         if (!picked || !picked.selectable) {
           return problem(409, 'SETUP_REUSE_MAP_UNAVAILABLE', '고른 이전 맵을 재사용할 수 없습니다');
@@ -1160,8 +1188,9 @@ export function createSetupMock(options: SetupMockOptions = {}) {
 
     // 「이전 맵 재사용」을 지금 고를 수 있는지(S15P31A101-689). :id 경로보다 먼저 둔다
     http.get('*/api/setup-sessions/reuse-check', ({ request }) => {
-      if (!readLiveUser(request, now())) return unauthorized();
-      return HttpResponse.json(reuseCheck());
+      const user = readLiveUser(request, now());
+      if (!user) return unauthorized();
+      return HttpResponse.json(reuseCheckFor(user.id));
     }),
 
     http.get('*/api/setup-sessions/:id', ({ request, params }) => {
@@ -1279,7 +1308,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
 
     http.post('*/api/setup-sessions/:id/retry', async ({ request, params }) => {
       const t = now();
-      if (!readLiveUser(request, t)) return unauthorized();
+      const user = readLiveUser(request, t);
+      if (!user) return unauthorized();
       const prevId = String(params.id ?? '');
       const prevSession = sessions.get(prevId);
       if (!prevSession) {
@@ -1301,7 +1331,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return problem(400, 'INVALID_SETUP_REQUEST', '세팅 모드가 올바르지 않습니다');
       }
       if (parsedMode.data === 'REUSE') {
-        const blocked = reuseBlockedProblem();
+        const blocked = reuseBlockedProblem(reuseCheckFor(user.id));
         if (blocked) return blocked;
       }
 
