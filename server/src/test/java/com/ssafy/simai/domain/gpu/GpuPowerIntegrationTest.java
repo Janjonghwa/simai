@@ -107,11 +107,11 @@ class GpuPowerIntegrationTest {
         fake.createContext("/", this::handle);
         fake.start();
         String base = "http://127.0.0.1:" + fake.getAddress().getPort();
-        runpod.useEndpoints(base + "/v1", base, KEY);
+        runpod.useEndpoints(base + "/v2", base, KEY);
         power.useClock(Clock.systemUTC());
         power.useTier0Link(null);
         catalog = catalog(true);
-        createBody = "{\"id\":\"pod-" + suffix + "\",\"costPerHr\":2.99,\"desiredStatus\":\"RUNNING\"}";
+        createBody = "{\"id\":\"pod-" + suffix + "\",\"cost\":2.99,\"status\":\"PROVISIONING\"}";
 
         // 다른 시험이 남긴 상태를 이 트랜잭션 안에서만 닫는다
         jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = greatest(now(), actual_started_at) WHERE status = 'IN_PROGRESS'");
@@ -142,7 +142,7 @@ class GpuPowerIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        runpod.useEndpoints("https://rest.runpod.io/v1", "https://api.runpod.io", "");
+        runpod.useEndpoints("https://api.runpod.io/v2", "https://api.runpod.io", "");
         power.useClock(Clock.systemUTC());
         power.useTier0Link(null);
         fake.stop(0);
@@ -169,11 +169,12 @@ class GpuPowerIntegrationTest {
 
         JsonNode pod = created.getFirst();
         assertThat(pod.get("templateId").stringValue()).isEqualTo("tpl-simai");
-        assertThat(pod.get("gpuTypeIds").get(0).stringValue()).isEqualTo(HBM3);
+        // RunPod REST v2 모양(S15P31A101-781): gpu{id, count}·cloud, v1 칸(gpuTypeIds·cloudType·interruptible)은 보내지 않는다
+        assertThat(pod.get("gpu").get("id").stringValue()).isEqualTo(HBM3);
+        assertThat(pod.get("gpu").get("count").intValue()).isEqualTo(1);
         assertThat(pod.get("dataCenterIds").get(0).stringValue()).isEqualTo("EU-RO-1");
-        assertThat(pod.get("cloudType").stringValue()).isEqualTo("SECURE");
-        assertThat(pod.get("interruptible").booleanValue()).isFalse();
-        assertThat(pod.get("gpuCount").intValue()).isEqualTo(1);
+        assertThat(pod.get("cloud").stringValue()).isEqualTo("SECURE");
+        assertThat(pod.has("gpuTypeIds") || pod.has("cloudType") || pod.has("interruptible")).isFalse();
         JsonNode env = pod.get("env");
         // 부팅 비밀값 원문은 서버에 없다: RunPod Secret 참조 글자만 넣는다
         assertThat(env.get("SIMAI_GPU_BOOT_SECRET").stringValue()).isEqualTo("{{ RUNPOD_SECRET_simai_gpu_boot_secret }}");
@@ -216,7 +217,7 @@ class GpuPowerIntegrationTest {
 
         // 공급자가 재고 없음으로 거절하면 실패를 남기고 다음 켜기를 막지 않는다
         saveSettings(null, 30);
-        createBody = "{\"error\":\"There are no longer any instances available with the requested specifications.\"}";
+        createBody = "{\"title\":\"Bad Request\",\"status\":400,\"detail\":\"This GPU/data center combination could not be placed.\"}";
         createStatus = 400;
         launch(null, null).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("GPU_OUT_OF_STOCK"));
         current().andExpect(jsonPath("$.launch.state").value("FAILED")).andExpect(jsonPath("$.power").value("ERROR"));
@@ -242,7 +243,7 @@ class GpuPowerIntegrationTest {
         assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
 
         stop().andExpect(status().isNoContent());
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
         assertThat(sessions.endedAmong(List.of(sessionId))).containsExactly(sessionId);
         assertThat(jdbc.queryForObject("SELECT end_reason FROM gpu_session_event WHERE session_id = ? AND kind = 'ENDED'", String.class,
                 sessionId)).isEqualTo("ADMIN_STOPPED");
@@ -287,7 +288,7 @@ class GpuPowerIntegrationTest {
         assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
 
         assertThat(power.autoStop()).contains("IDLE");
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
         assertThat(jdbc.queryForObject("SELECT end_reason FROM gpu_session_event WHERE session_id = ? AND kind = 'ENDED'", String.class,
                 sessionId)).isEqualTo("ADMIN_STOPPED");
         assertThat(jdbc.queryForObject("SELECT reason_code FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
@@ -320,7 +321,7 @@ class GpuPowerIntegrationTest {
         shift(Duration.ofMinutes(31));
         assertThat(calls).noneMatch(c -> c.startsWith("DELETE"));
         assertThat(power.autoStop()).contains("IDLE");
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
     }
 
     @Test
@@ -345,7 +346,7 @@ class GpuPowerIntegrationTest {
         // 마지막 조작 뒤 30분(설정의 자동 정지 분)이 지났다
         shift(Duration.ofMinutes(56));
         assertThat(power.autoStop()).contains("IDLE");
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
         // 상한이 아니라 조작이 끊겨 끈 것으로 남는다(S15P31A101-774)
         assertThat(jdbc.queryForObject("SELECT detail FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
                 String.class, "pod-" + suffix)).startsWith("basis=PRESENCE ");
@@ -382,7 +383,7 @@ class GpuPowerIntegrationTest {
         // 실행 기록 없이 작업만 닫는다(실제 사용 시각은 그대로 준비 완료): 조작만 이어진 시간이 상한을 넘었다
         jdbc.update("UPDATE work_unit SET status = 'DONE', actual_ended_at = now() WHERE work_id = ?", work);
         assertThat(power.autoStop()).contains("IDLE");
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
         String detail = jdbc.queryForObject("SELECT detail FROM gpu_launch_event WHERE instance_id = ? AND kind = 'STOPPED'",
                 String.class, "pod-" + suffix);
         assertThat(detail).startsWith("PRESENCE_CAP ").contains("cap_minutes=90");
@@ -399,7 +400,7 @@ class GpuPowerIntegrationTest {
         // 켠 뒤 25분 넘게 등록이 없다
         shift(Duration.ofMinutes(26));
         assertThat(power.autoStop()).contains("BOOT_TIMEOUT");
-        assertThat(calls).contains("DELETE /v1/pods/pod-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod-" + suffix);
 
         // 다음: 등록했지만 세션이 무응답으로 끝났는데 인스턴스는 남았다
         shift(Duration.ZERO);
@@ -409,14 +410,14 @@ class GpuPowerIntegrationTest {
         sessions.end(sessionId, GpuSessionService.EndReason.STALE);
         current().andExpect(jsonPath("$.power").value("ERROR"));
         assertThat(power.autoStop()).contains("SESSION_ENDED");
-        assertThat(calls).contains("DELETE /v1/pods/pod2-" + suffix);
+        assertThat(calls).contains("DELETE /v2/pods/pod2-" + suffix);
 
         // 공급자에서 이미 사라진 인스턴스는 끄지 않고 닫기만 한다
         createBody = "{\"id\":\"pod3-" + suffix + "\"}";
         launch(null, null).andExpect(status().isCreated());
         podGone = true;
         assertThat(power.autoStop()).isEmpty();
-        assertThat(calls).doesNotContain("DELETE /v1/pods/pod3-" + suffix);
+        assertThat(calls).doesNotContain("DELETE /v2/pods/pod3-" + suffix);
         current().andExpect(jsonPath("$.launch.state").value("STOPPED")).andExpect(jsonPath("$.power").value("OFF"));
     }
 
@@ -512,12 +513,25 @@ class GpuPowerIntegrationTest {
 
         // 선호 밖·추천 아닌 GPU 도 표에서 골라 켤 수 있다(등급은 막지 않는다)
         launch("NVIDIA RTX A4000", "AP-JP-1").andExpect(status().isCreated());
-        assertThat(created.getFirst().get("gpuTypeIds").get(0).stringValue()).isEqualTo("NVIDIA RTX A4000");
+        assertThat(created.getFirst().get("gpu").get("id").stringValue()).isEqualTo("NVIDIA RTX A4000");
+    }
+
+    @Test
+    void RunPod_v2_는_스팟이_없어_스팟_설정을_저장하지_않는다() throws Exception {
+        // S15P31A101-781: 저장해 두면 켜기가 늘 실패한다. 온디맨드로 바꿔 켜면 사용자가 고른 가격 조건과 달라진다
+        ObjectNode spot = settingsBody(null, 30);
+        spot.put("interruptible", true);
+        mvc.perform(post("/api/gpu/settings").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(spot))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_GPU_SETTINGS"));
+        // 직전 온디맨드 설정은 그대로라 켜기는 된다
+        launch(PCIE, "AP-JP-1").andExpect(status().isCreated());
+        assertThat(created).hasSize(1);
     }
 
     @Test
     void API_키가_없으면_재고_조회와_켜기가_503_이다() throws Exception {
-        runpod.useEndpoints("http://127.0.0.1:1/v1", "http://127.0.0.1:1", "");
+        runpod.useEndpoints("http://127.0.0.1:1/v2", "http://127.0.0.1:1", "");
         mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("GPU_PROVIDER_NOT_CONFIGURED"));
         launch(null, null).andExpect(status().isServiceUnavailable());
@@ -536,16 +550,16 @@ class GpuPowerIntegrationTest {
         }
         if (method.equals("GET") && path.equals("/v2/catalog/gpus")) {
             respond(exchange, 200, catalog);
-        } else if (method.equals("POST") && path.equals("/v1/pods")) {
+        } else if (method.equals("POST") && path.equals("/v2/pods")) {
             created.add(mapper.readTree(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
             respond(exchange, createStatus, createBody);
-        } else if (method.equals("DELETE") && path.startsWith("/v1/pods/")) {
+        } else if (method.equals("DELETE") && path.startsWith("/v2/pods/")) {
             respond(exchange, 200, "{}");
-        } else if (method.equals("GET") && path.startsWith("/v1/pods/")) {
+        } else if (method.equals("GET") && path.startsWith("/v2/pods/")) {
             if (podGone) {
                 respond(exchange, 404, "{}");
             } else {
-                respond(exchange, 200, "{\"id\":\"" + path.substring("/v1/pods/".length()) + "\",\"desiredStatus\":\"RUNNING\"}");
+                respond(exchange, 200, "{\"id\":\"" + path.substring("/v2/pods/".length()) + "\",\"status\":\"RUNNING\"}");
             }
         } else {
             respond(exchange, 404, "{}");
