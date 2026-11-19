@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from simai_ai.gpu.admission import AvatarAdmissionGate, avatar_budgets_from_env
+from simai_ai.gpu.admission import AvatarAdmissionGate, avatar_budgets_from_env, avatar_reopen_guard_from_env
 from simai_ai.gpu.budget import WorkerGpuSettings
 from simai_ai.gpu.cv_threads import limit_cv2_threads
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
@@ -42,7 +42,8 @@ def main():
         policy = replace(settings.policy, allow_without_marker=False)
         judge_budget_ms, detect_budget_ms = avatar_budgets_from_env(env)  # 잘못된 값은 경고 후 기본값
         gate = AvatarAdmissionGate(settings.marker, policy, wall_s=time.time, monotonic=time.monotonic,
-                                   judge_budget_ms=judge_budget_ms, detect_budget_ms=detect_budget_ms)
+                                   judge_budget_ms=judge_budget_ms, detect_budget_ms=detect_budget_ms,
+                                   reopen_guard_s=avatar_reopen_guard_from_env(env))
         logging.info("아바타 접수 차단 예산: judge p95 %gms·detect p95 %gms, 자체 감속 기준선: judge %gms·detect %gms",
                      gate.judge_budget_ms, gate.detect_budget_ms, gate.judge_throttle_ms, gate.detect_throttle_ms)
         # vLLM 몫을 제외한 분석 워커 잔여 예산. 프로세스별 0.70을 중복 허용하지 않는다.
