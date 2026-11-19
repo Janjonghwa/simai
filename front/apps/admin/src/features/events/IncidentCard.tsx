@@ -1,45 +1,35 @@
-import { useIsDemoAccount } from '@/features/demo/demoAccount';
-import { latestAlarmStartAt } from '@/features/demo/demoEvents';
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
-import { CameraButton } from '@/features/events/CameraButton';
 import { isActive, isConfirmationPending } from '@/features/events/entries';
-import {
-  ConfirmBadge,
-  DelayedBadge,
-  OutsideWorkBadge,
-  StateChip,
-  type OutsideWorkKind,
-} from '@/features/events/EventBadges';
-import { entryEtaLine } from '@/features/events/format';
+import { OUTSIDE_WORK_TEXT, type OutsideWorkKind } from '@/features/events/EventBadges';
+import { confirmationText, formatTime } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
-import { cardChip, cardTitle, targetLabel, targetShortLabel } from '@/features/events/incidentView';
+import { cardChip, cardTitle, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
-import { Since } from '@/features/events/Since';
 import type { Severity } from '@/features/events/types';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useRef } from 'react';
 
-/** 둘째 줄 오른쪽 끝(경과·발생 횟수) 글자. */
-const TRAILING = 'shrink-0 text-xs whitespace-nowrap text-muted-foreground';
-
-/** 「N회」를 올려 보면 나오는 설명. 트랙 번호가 바뀌며 이어진 경보를 묶었으면(S15P31A101-731) 그 까닭을 알린다. */
-const occurrencesTitle = (occurrences: number, people: number) =>
+/** 발생 횟수 글(올려 보면 나오는 설명 한 줄). 트랙 번호가 바뀌며 이어진 경보를 묶었으면(S15P31A101-731) 번호 수를 붙인다. */
+const occurrencesText = (occurrences: number, people: number) =>
   people > 1
-    ? `같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(작업자 번호)가 바뀌며 이어진 경보 ${occurrences}건(번호 ${people}개)을 한 카드로 묶었습니다. 지금 보이는 서로 다른 두 사람은 묶지 않으며, 기록은 그대로입니다.`
-    : `같은 위험·같은 구역에서 ${occurrences}번 발생했습니다.`;
+    ? `${occurrences}회 발생(트랙 번호 ${people}개를 한 카드로 묶음)`
+    : `${occurrences}회 발생`;
 
 interface IncidentCardProps {
   incident: Incident;
-  /** 카드 대표 위험(규칙·구역)의 발생 횟수(S15P31A101-731 화면 묶음 포함). 2 이상이면 「N회」를 보인다. */
+  /** 카드 대표 위험(규칙·구역)의 발생 횟수(S15P31A101-731 화면 묶음 포함). 2 이상이면 올려 보면 나오는 설명에 적는다. */
   occurrences?: number;
-  /** 카드에 묶인 대상(사람 트랙 번호) 수. 2 이상이면 「N회」에 묶은 까닭을 올려 보면 알린다. */
+  /** 카드에 묶인 대상(사람 트랙 번호) 수. 2 이상이면 올려 보면 나오는 설명에 묶은 번호 수를 적는다. */
   people?: number;
   selected: boolean;
-  /** 대상 사람이 지금 카메라에서 사라졌다(S15P31A101-757). 카드를 흐리게 하고 「지금 안 보임」을 단다. */
+  /**
+   * 대상 사람이 지금 카메라에서 사라졌다(S15P31A101-757). 카드를 흐리게 하고 점멸하지 않는다(「최근 해소」 칸으로 옮긴 카드,
+   * S15P31A101-798). 경보 배너·소리는 이 값과 상관없다.
+   */
   gone?: boolean;
-  /** 작업 외 진입 꼬리표의 이유(작업 시간 외·작업 구역 밖). 없으면 꼬리표가 없다. 등급·소리·표시는 그대로다. */
+  /** 작업 외 진입의 이유(작업 시간 외·작업 구역 밖). 올려 보면 나오는 설명에 적는다. 등급·소리·표시는 그대로다. */
   outsideWork?: OutsideWorkKind | null;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
@@ -54,14 +44,12 @@ const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
 };
 
 /**
- * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard). 세 줄이다.
- * - 첫 줄: 등급 배지 · 대표 규칙(가장 높은 등급) 이름 · 구역, 오른쪽에 처리 상태 칩 하나.
- * - 둘째 줄: 대상(사람은 「작업자 #N」, 구역은 이름) · 꼬리표(확인 필요 · 지연 알림 · 작업 시간 외/작업 구역 밖), 오른쪽 끝에
- *   발생 횟수 「N회」(두 번 이상일 때, S15P31A101-731 화면 묶음 포함)와 경과(진행 중일 때 N초 전). 확인 필요는 운영자가 확인하기 전에만 보인다.
- * - 진입 예측일 때만 한 줄을 더하고, 진행 중이면 카메라 버튼이 맨 아래에 온다.
- * - 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)는 등급 테두리·점멸·카메라 버튼 없이 흐리게 보인다(경과는 보인다).
- * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점),
- * 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
+ * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard). 한 줄이다(S15P31A101-798): 등급 배지 · 대표 규칙(가장 높은
+ * 등급) 이름뿐이다. 처리 상태(미확인 · 확인 시각 · 해소 시각 · 지난 관제, cardChip)·대상(작업자·구역)·발생 시각·발생 횟수·확인 필요·
+ * 지연 알림·작업 외 꼬리표는 줄에서 빼고 머리를 올려 보면 나오는 설명에 둔다(대상은 카드 이름에도 있다). 칩만 뺐고, 미확인 경보의
+ * 점멸·등급 테두리·경보 배너·소리는 그대로다. 진입 예상 줄과 「CCTV로 확인」은 없다. 사람을 고르면 떠 있는 CCTV 창이 그 사람의 카메라로 열린다.
+ * 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)와 사라진 사람의 카드는 등급 테두리·점멸 없이 흐리게 보인다.
+ * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점), 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
  */
 export function IncidentCard({
   incident,
@@ -81,16 +69,21 @@ export function IncidentCard({
   const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find(isConfirmationPending);
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
-  const demo = useIsDemoAccount();
-  // 시연 계정은 경보 배너가 없어 카드가 새 경보를 알린다: 확인 대기 경보가 있으면 그 경보가 울린 때부터 센다(features/demo/demoEvents)
-  const raisedAt = incident.active
-    ? ((demo ? latestAlarmStartAt(incident) : null) ?? firstActiveRaisedAt(incident))
-    : null;
-  // 지금 관제 중인 사건만 등급 테두리·카메라 버튼을 쓴다. 지난 관제의 사람은 지금 카메라에 없다.
+  const raisedAt = incident.active ? firstActiveRaisedAt(incident) : null;
+  // 지금 관제 중인 사건만 등급 테두리·점멸을 쓴다. 지난 관제·사라진 사람은 지금 카메라에 없다.
   const current = incident.active && !incident.stale && !gone;
-  const eta = entryEtaLine(top.event);
-  const target = targetShortLabel(incident.target, zoneName, personNames);
   const fullTarget = targetLabel(incident.target, zoneName, personNames);
+  const detail = [
+    fullTarget,
+    chip?.label ?? null,
+    raisedAt !== null ? `발생 ${formatTime(raisedAt)}` : null,
+    occurrences > 1 ? occurrencesText(occurrences, people) : null,
+    check ? confirmationText(check.event) : null,
+    delayed ? '지연 알림' : null,
+    outsideWork ? OUTSIDE_WORK_TEXT[outsideWork].label : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
 
   // 3D·2D 에서 사람을 눌러 이 묶음이 선택되면 긴 목록에서도 보이게 한다.
   const card = useRef<HTMLElement>(null);
@@ -104,7 +97,7 @@ export function IncidentCard({
         ref={card}
         aria-label={`${fullTarget} 이벤트`}
         className={cn(
-          'relative flex flex-col gap-1 overflow-hidden rounded-[10px] bg-surface-2 py-3 pr-3.5 pl-[18px]',
+          'relative flex flex-col gap-1 overflow-hidden rounded-[10px] bg-surface-2 py-2 pr-3 pl-[18px]',
           'hover:ring-1 hover:ring-point-soft hover:ring-inset',
           current && look.ring,
           !incident.active && 'opacity-55',
@@ -118,52 +111,20 @@ export function IncidentCard({
           className={cn(
             'absolute inset-y-0 left-0 w-1',
             look.bar,
-            incident.alarming && 'motion-safe:animate-alarm-blink',
+            incident.alarming && current && 'motion-safe:animate-alarm-blink',
           )}
         />
         <button
           type="button"
           aria-pressed={selected}
+          title={detail}
           onClick={() => (selected ? onOpen(top.event.event_id) : onSelect(incident))}
-          className="-mx-1 flex flex-col gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-surface-3"
+          className="-mx-1 flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-surface-3"
         >
-          <span className="flex items-start justify-between gap-2">
-            <span className="flex min-w-0 items-start gap-2">
-              <SeverityBadge severity={top.event.severity} />
-              <b className="line-clamp-2 min-w-0">{cardTitle(incident, zoneName)}</b>
-            </span>
-            {chip && <StateChip chip={chip} severity={incident.severity} />}
-          </span>
-          <span className="flex items-center justify-between gap-2">
-            <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <span title={target === fullTarget ? undefined : fullTarget} className="text-sm">
-                {target}
-              </span>
-              {gone && (
-                <span
-                  title="이 사람은 지금 카메라에 보이지 않습니다. 위험이 끝난 것이 아니라 확인·해소를 기다리는 중입니다."
-                  className="text-xs text-muted-foreground"
-                >
-                  지금 안 보임
-                </span>
-              )}
-              {check && <ConfirmBadge event={check.event} compact />}
-              {delayed && <DelayedBadge compact />}
-              {outsideWork && <OutsideWorkBadge kind={outsideWork} />}
-            </span>
-            <span className="flex shrink-0 items-center gap-1.5">
-              {occurrences > 1 && (
-                <span title={occurrencesTitle(occurrences, people)} className={TRAILING}>
-                  {occurrences}회
-                </span>
-              )}
-              {raisedAt !== null && <Since raisedAt={raisedAt} className={TRAILING} />}
-            </span>
-          </span>
+          <SeverityBadge severity={top.event.severity} />
+          <b className="min-w-0 flex-1 truncate">{cardTitle(incident)}</b>
         </button>
-        {eta && <p className="text-sm">{eta}</p>}
         {selected && <EventPhotos event={top.event} compact />}
-        <CameraButton target={current ? incident.target : null} variant="card" />
       </article>
     </li>
   );

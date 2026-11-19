@@ -120,7 +120,7 @@ export function taskPeak(task: Pick<TbmTask, 'evals'>): Severity | null {
 export const taskPlace = (task: Pick<TbmTask, 'area'>) => task.area ?? SITE_WIDE_TEXT;
 
 export const SEVERITY_TEXT: Record<Severity, string> = {
-  CRITICAL: `▲▲ ${SEVERITY_LABEL.CRITICAL}`,
+  CRITICAL: `▲ ${SEVERITY_LABEL.CRITICAL}`,
   HIGH: `▲ ${SEVERITY_LABEL.HIGH}`,
   CAUTION: `! ${SEVERITY_LABEL.CAUTION}`,
   INFO: `i ${SEVERITY_LABEL.INFO}`,

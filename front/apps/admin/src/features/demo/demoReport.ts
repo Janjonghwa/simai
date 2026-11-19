@@ -15,8 +15,12 @@ import { useEffect, useReducer } from 'react';
 // DEMO_REPORT_REVEAL_MS 동안 「TBM 생성중..」으로 흐리게 보인 뒤 미리 적어 둔 내용으로 채워 보인다.
 // 어느 작업을 그렇게 보였는지 이 페이지에 남겨 단계를 옮겨 다시 그려도 또 흐리지 않는다(새로고침하면 처음부터 다시 보인다).
 // 보인 내용은 서버 양식에도 그대로 저장해(useDemoReportSync) 제출한 보고서와 지난 날짜 히스토리가 AI 초안이 아니라 화면에서 본 그대로 남는다.
+// 작업을 끝낸 뒤 종료 미팅도 서버를 기다리지 않고 DEMO_ENDING_REVEAL_MS 동안만 흐리게 보인 뒤 미리 적어 둔 문구로 채운다.
 
 export const DEMO_REPORT_REVEAL_MS = 1_500;
+
+/** 시연 계정이 작업을 끝낸 뒤 종료 미팅 칸을 「TBM 생성중..」으로 가리는 시간(ms). */
+export const DEMO_ENDING_REVEAL_MS = 1_500;
 
 const PLACE = '실습실 단상 및 개구부 주변';
 
@@ -139,6 +143,33 @@ export function useDemoReportDraft(
   }, [waiting, workId]);
 
   return { drafting: demo ? waiting : drafting, shown };
+}
+
+/** 종료 미팅을 보인 작업 id. */
+const endingRevealed = new Set<string>();
+
+/**
+ * 보고서 종이를 종료 미팅 생성 중으로 가릴지. 시연 계정이 아니면 서버 상태(`generating`) 그대로다.
+ * 시연 계정은 작업을 끝내면(`ended`) 서버 종료 미팅과 상관없이 DEMO_ENDING_REVEAL_MS 동안만 가린다. 오늘 작업 흐름의 종이(`today`)에서만 그렇다.
+ */
+export function useDemoEndingGenerating(
+  workId: string,
+  { ended, generating, today }: { ended: boolean; generating: boolean; today: boolean },
+): boolean {
+  const demo = useIsDemoAccount() && today;
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const waiting = demo && ended && !endingRevealed.has(workId);
+
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const timer = window.setTimeout(() => {
+      endingRevealed.add(workId);
+      rerender();
+    }, DEMO_ENDING_REVEAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [waiting, workId]);
+
+  return demo ? waiting : generating;
 }
 
 /** 서버 양식을 시연 양식에 맞춰 보낸 판("작업 id:form_revision"). 같은 판에는 다시 보내지 않아 서버가 값을 다듬어 돌려줘도 저장이 되풀이되지 않는다. */

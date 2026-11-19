@@ -27,6 +27,12 @@ describe('planTip 구역', () => {
     );
   });
 
+  it('위험 등급도 경고와 같은 ▲ 하나이고 글자로 가른다(-798)', () => {
+    expect(tipOf(zone({ zoneType: 'OPENING', severity: 'CRITICAL' }))).toBe(
+      '개구부 구역 · 개구부 · ▲ 위험',
+    );
+  });
+
   it('이름이 비었으면 `구역`이다', () => {
     expect(tipOf(zone({ name: '  ' }))).toBe('구역');
   });

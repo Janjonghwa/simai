@@ -25,8 +25,8 @@ const byAlarmPriority = (a: EventEntry, b: EventEntry) =>
   (b.event.updated_at ?? 0) - (a.event.updated_at ?? 0);
 
 /**
- * 규칙 · 대상 · 구역 이름. 가장 위 경보가 바뀔 때만 읽는다(role=alert). 경과·버튼·건수는 읽지 않는다.
- * 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다. 이름을 모르는 구역은 뺀다.
+ * 규칙 · 대상. 사람 경보에 구역 이름을 붙이지 않는다(-798, 카드 제목과 같게). 구역 대상 경보는 대상이 곧 구역 이름이다.
+ * 가장 위 경보가 바뀔 때만 읽는다(role=alert). 경과·버튼·건수는 읽지 않는다. 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다.
  */
 function AlarmHeadline({
   event,
@@ -38,7 +38,6 @@ function AlarmHeadline({
   personNames: PersonDisplayMap;
 }) {
   const target = incidentTarget(event);
-  const zone = zoneName(event.zone_id);
   return (
     <span role="alert" className="min-w-0 truncate font-medium">
       <span>{eventRuleName(event)}</span> ·{' '}
@@ -47,12 +46,6 @@ function AlarmHeadline({
       >
         {eventShortSubject(event, zoneName, personNames)}
       </span>
-      {target?.type === 'person' && zone && (
-        <>
-          {' '}
-          · <span>{zone}</span>
-        </>
-      )}
     </span>
   );
 }

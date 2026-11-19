@@ -32,27 +32,25 @@ const publish = (box: FloatBox | null) =>
 interface CctvFloatLayout {
   /** 창을 끄는 중이면 알리지 않는다(놓은 뒤에 알린다). */
   dragging: boolean;
-  /** 접어 머리줄만 남은 창은 영상이 없으니 비켜 서지 않게 비운다. */
-  collapsed: boolean;
   /** 창의 자리·크기. 바뀌면 다시 잰다. */
   layoutKey: string;
 }
 
 /**
- * 떠 있는 CCTV 창의 자리를 알린다. 끄는 동안은 알리지 않고, 자리·크기·접힘이 바뀌고 나서 CCTV_BOX_SETTLE_MS 뒤에
- * 잰 자리를 알린다(접혔으면 비운다). 창이 닫히면(내려가면) 비운다.
+ * 떠 있는 CCTV 창의 자리를 알린다. 끄는 동안은 알리지 않고, 자리·크기가 바뀌고 나서 CCTV_BOX_SETTLE_MS 뒤에
+ * 잰 자리를 알린다. 창이 닫히면(내려가면) 비운다(창 접기는 S15P31A101-798 에서 뺐다).
  */
 export function useReportCctvFloatBox(
   target: RefObject<HTMLElement | null>,
-  { dragging, collapsed, layoutKey }: CctvFloatLayout,
+  { dragging, layoutKey }: CctvFloatLayout,
 ) {
   useEffect(() => {
     if (dragging) return undefined;
     const timer = setTimeout(
-      () => publish(collapsed ? null : (measure(target.current)?.box ?? null)),
+      () => publish(measure(target.current)?.box ?? null),
       CCTV_BOX_SETTLE_MS,
     );
     return () => clearTimeout(timer);
-  }, [target, dragging, collapsed, layoutKey]);
+  }, [target, dragging, layoutKey]);
   useEffect(() => () => publish(null), []);
 }

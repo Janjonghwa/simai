@@ -1,4 +1,4 @@
-import { ANY_CAMERA, useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
@@ -69,8 +69,13 @@ function renderCard(
   return { card: screen.getByRole('article'), onSelect, onOpen, incident };
 }
 
+/** 카드 머리를 올려 보면 나오는 설명(줄 단위). 한 줄 카드에서 뺀 정보가 여기에 있다(-798). */
+const detail = (card: HTMLElement) =>
+  (within(card).getAllByRole('button')[0]!.getAttribute('title') ?? '').split('\n');
+
+const CLOCK = /^\d{2}:\d{2}:\d{2}$/;
+
 beforeEach(() => {
-  // 경과는 카드 안의 칸이 시계로 그린다. 발생(T) 12초 뒤로 맞춘다.
   vi.useFakeTimers();
   vi.setSystemTime(T + 12_000);
   navigate.mockReset();
@@ -84,52 +89,69 @@ afterEach(() => {
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
 });
 
-describe('IncidentCard', () => {
-  it('첫 줄은 등급 배지·규칙 이름·구역과 미확인 칩이고, 둘째 줄은 사람 끝번호와 오른쪽 끝의 경과다', () => {
+describe('IncidentCard 한 줄(-798)', () => {
+  it('카드는 등급 배지와 규칙 이름 한 줄뿐이다(구역·작업자·경과·처리 칩 없음)', () => {
     const { card } = renderCard([entry()]);
 
-    expect(within(card).getByText('위험')).toBeTruthy();
-    expect(within(card).getByText('추락 위험(가장자리) · 개구부 구역')).toBeTruthy();
+    expect(card.textContent).toBe('▲위험추락 위험(가장자리)');
+    // 위험 배지 기호는 ▲ 하나이고 화면 낭독기에 읽히지 않는다.
+    expect(within(card).getByText('▲').getAttribute('aria-hidden')).not.toBeNull();
+    expect(within(card).getByText('추락 위험(가장자리)')).toBeTruthy();
+    // 「미확인」 칩은 그리지 않는다(Lead 결정). 미확인 경보의 점멸·테두리는 아래 시험이 따로 본다.
+    expect(card.querySelector('[data-chip]')).toBeNull();
+    expect(card.textContent).not.toContain('미확인');
+    expect(card.textContent).not.toContain('작업자 #0015');
+    expect(card.textContent).not.toContain('초 전');
+    expect(card.textContent).not.toContain('개구부 구역');
     expect(card.textContent).not.toMatch(/z-\d/);
-    const chip = card.querySelector('[data-chip]');
-    expect(chip?.getAttribute('data-chip')).toBe('unacked');
-    expect(chip?.textContent).toBe('미확인');
-    expect(chip?.className).toContain('border-sev-critical');
-    // 사람은 끝번호만 보인다(전체 ID 는 올려 보면 나오고 카드 이름에 있다). 등급색 알약·굵은 글씨·고정폭이 아니다.
-    const person = within(card).getByText('작업자 #0015');
-    expect(card.textContent).not.toContain('w-0015');
-    expect(person.getAttribute('title')).toBe('w-0015');
+    // 대상은 카드 이름에 남는다.
     expect(card.getAttribute('aria-label')).toBe('w-0015 이벤트');
-    expect(person.className).toBe('text-sm');
-    // 경과는 같은 줄(둘째 줄) 오른쪽 끝에 있다.
-    const row = person.parentElement!.parentElement!;
-    expect(within(row).getByText('12초 전')).toBeTruthy();
-    expect(row.lastElementChild?.textContent).toBe('12초 전');
-    expect(within(card).queryByText(/회 발생/)).toBeNull();
   });
 
-  it('지난 관제 카드도 같은 세 줄이고, 지난 관제 칩과 흐린 모양에 등급 테두리·카메라 버튼은 없다', () => {
+  it('뺀 정보(대상·처리 상태·발생 시각)는 머리를 올려 보면 나오는 설명에 있다', () => {
+    const { card } = renderCard([entry()]);
+    const lines = detail(card);
+    expect(lines[0]).toBe('w-0015');
+    expect(lines[1]).toBe('미확인');
+    expect(lines[2]).toMatch(/^발생 \d{2}:\d{2}:\d{2}$/);
+    expect(lines).toHaveLength(3);
+  });
+
+  it('지난 관제 카드는 흐리고 등급 테두리·점멸이 없으며, 설명에 지난 관제라고 적는다', () => {
     const { card } = renderCard([entry({ held_by_tier0: false, severity: 'HIGH' })]);
 
-    expect(card.querySelector('[data-chip]')?.textContent).toBe('지난 관제');
-    expect(within(card).getByText('작업자 #0015').className).toBe('text-sm');
-    expect(within(card).getByText('12초 전')).toBeTruthy();
+    expect(detail(card)).toContain('지난 관제');
+    expect(card.querySelector('[data-chip]')).toBeNull();
     expect(card.className).toContain('opacity-75');
     expect(card.className).not.toContain('ring-sev-high');
-    expect(within(card).queryByRole('button', { name: /로 확인/ })).toBeNull();
+    expect(card.querySelector('.motion-safe\\:animate-alarm-blink')).toBeNull();
   });
 
-  it('긴 사람 ID 는 끝번호만 보인다', () => {
+  it('사라진 사람의 카드는 흐리고 등급 테두리·점멸이 없지만, 미확인 상태는 설명에 그대로 남는다', () => {
+    const { card } = renderCard([entry()], { gone: true });
+
+    expect(card.className).toContain('opacity-60');
+    expect(card.className).not.toContain('ring-sev-critical');
+    expect(card.textContent).not.toContain('지금 안 보임');
+    const bar = card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
+    expect(bar).toContain('bg-sev-critical');
+    expect(bar).not.toContain('animate-alarm-blink');
+    expect(detail(card)).toContain('미확인');
+  });
+
+  it('긴 사람 ID 는 설명에 전체로 있고 카드 줄에는 없다', () => {
     const { card } = renderCard([entry({ world_ids: ['w-mw8y3hai-0722'] })]);
 
-    expect(within(card).getByText('작업자 #0722').getAttribute('title')).toBe('w-mw8y3hai-0722');
+    expect(detail(card)[0]).toBe('w-mw8y3hai-0722');
     expect(card.textContent).not.toContain('mw8y3hai');
+    expect(card.textContent).not.toContain('0722');
   });
 
-  it('R1 주의 묶음은 규칙 이름을 위험구역 진입으로 보인다', () => {
+  it('R1 주의 묶음은 규칙 이름을 구역 이름 없이 위험구역 진입으로 보인다', () => {
     const { card } = renderCard([entry({ rule_id: 'R1', severity: 'CAUTION', zone_id: 'z-04' })]);
 
-    expect(within(card).getByText('위험구역 진입 · 개구부 구역')).toBeTruthy();
+    expect(within(card).getByText('위험구역 진입')).toBeTruthy();
+    expect(card.textContent).not.toContain('개구부 구역');
     expect(card.textContent).not.toContain('위험 구역 근접');
   });
 
@@ -141,28 +163,27 @@ describe('IncidentCard', () => {
 
     expect(card.textContent).not.toContain('0.82');
     expect(card.textContent).not.toContain('높이 차');
-    // 대표 규칙(가장 높은 등급)과 그 구역만 보이고 나머지 규칙 이름·구역은 없다.
+    // 대표 규칙(가장 높은 등급) 이름만 보이고 나머지 규칙 이름·구역은 없다.
     expect(within(card).queryByText('위험구역 진입')).toBeNull();
     expect(card.textContent).not.toContain('단상 구역');
     expect(card.textContent).not.toMatch(/z-\d/);
     expect(card.querySelectorAll('li')).toHaveLength(0);
   });
 
-  it('구역이 대상인 카드는 둘째 줄이 구역 이름이고 제목에서 되풀이하지 않는다. 이름을 모르면 `구역`이다', () => {
+  it('구역이 대상인 카드는 구역 이름이 카드 이름과 설명에만 있다. 이름을 모르면 `구역`이다', () => {
     const { card } = renderCard([entry({ world_ids: [], zone_id: 'z-04' })]);
-    const name = within(card).getByText('개구부 구역');
-    expect(name.className).toBe('text-sm');
-    expect(name.getAttribute('title')).toBeNull();
-    expect(within(card).getByText('추락 위험(가장자리)')).toBeTruthy();
-    expect(card.textContent).not.toMatch(/z-\d/);
+    expect(card.getAttribute('aria-label')).toBe('개구부 구역 이벤트');
+    expect(detail(card)[0]).toBe('개구부 구역');
+    expect(card.textContent).toBe('▲위험추락 위험(가장자리)');
     cleanup();
 
     const unknown = renderCard([entry({ world_ids: [], zone_id: 'z-99' })]).card;
-    expect(within(unknown).getByText('구역')).toBeTruthy();
+    expect(detail(unknown)[0]).toBe('구역');
     expect(unknown.textContent).not.toContain('z-99');
+    expect(detail(unknown).join('\n')).not.toContain('z-99');
   });
 
-  it('위험구역 접근만 셋째 줄에 N초 뒤 진입 예상을 보인다', () => {
+  it('위험구역 접근(R5)도 진입 예상 줄 없이 한 줄이다', () => {
     const { card } = renderCard([
       entry({
         rule_id: 'R5',
@@ -172,12 +193,13 @@ describe('IncidentCard', () => {
       }),
     ]);
 
-    expect(within(card).getByText('1.6초 뒤 진입 예상')).toBeTruthy();
-    // 주의 등급은 확인할 경보가 없어 처리 칩이 없다.
-    expect(card.querySelector('[data-chip]')).toBeNull();
+    expect(card.textContent).not.toContain('진입 예상');
+    expect(detail(card).join('\n')).not.toContain('진입 예상');
+    // 주의 등급은 확인할 경보가 없어 처리 상태가 없다.
+    expect(detail(card)).toHaveLength(2);
   });
 
-  it('안전모 미착용(R9)은 구역 없이 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
+  it('안전모 미착용(R9)은 구역 없이 주의 배지와 규칙 이름으로 보이고 처리 상태가 없다', () => {
     // R9 는 사람 단위라 zone_id 가 없다(-519).
     const { card } = renderCard([
       entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {}, zone_id: null }),
@@ -186,10 +208,10 @@ describe('IncidentCard', () => {
     expect(within(card).getByText('주의')).toBeTruthy();
     expect(within(card).getByText('안전모 미착용')).toBeTruthy();
     expect(card.textContent).not.toMatch(/구역/);
-    expect(card.querySelector('[data-chip]')).toBeNull();
+    expect(detail(card)).not.toContain('미확인');
   });
 
-  it('확인하면 확인 시각 칩이다', () => {
+  it('확인하면 설명의 처리 상태가 확인 시각이다', () => {
     const acked = entry({
       acks: [
         {
@@ -202,55 +224,46 @@ describe('IncidentCard', () => {
       ],
       updated_at: T + 3_000,
     });
-    renderCard([acked]);
-    expect(screen.getByRole('article').querySelector('[data-chip]')?.textContent).toMatch(
-      /^확인 \d{2}:\d{2}:\d{2}$/,
-    );
+    const { card } = renderCard([acked]);
+    const state = detail(card)[1]!;
+    expect(state.startsWith('확인 ')).toBe(true);
+    expect(state.slice('확인 '.length)).toMatch(CLOCK);
+    expect(detail(card)).not.toContain('미확인');
   });
 
-  it('해소된 묶음은 해소 시각 칩만 있고 경과는 없으며, 카드가 흐려진다', () => {
+  it('해소된 묶음은 설명에 해소 시각만 있고 발생 시각은 없으며, 카드가 흐려진다', () => {
     const { card } = renderCard([
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 5_000, updated_at: T + 5_000 }),
     ]);
 
-    expect(card.querySelector('[data-chip]')?.textContent).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
+    expect(detail(card)[1]).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
+    expect(detail(card).some((line) => line.startsWith('발생'))).toBe(false);
     expect(card.textContent).not.toContain('초 전');
-    expect(within(card).getByText('작업자 #0015')).toBeTruthy();
     expect(card.className).toContain('opacity-55');
     expect(card.className).not.toContain('ring-sev-critical');
   });
 
-  it('해소 카드는 두 번 이상 발생했을 때만 N회를 보인다', () => {
+  it('두 번 이상 발생했을 때만 설명에 N회 발생을 적는다(카드 줄에는 없다)', () => {
     const resolved = entry({
       lifecycle: 'RESOLVED',
       resolved_at: T + 5_000,
       updated_at: T + 5_000,
     });
     const twice = renderCard([resolved], { occurrences: 2 });
-    expect(within(twice.card).getByText('2회')).toBeTruthy();
-    expect(within(twice.card).getByText('2회').getAttribute('title')).toBe(
-      '같은 위험·같은 구역에서 2번 발생했습니다.',
-    );
-    // 경과가 없는 해소 카드는 둘째 줄 오른쪽 끝에 발생 횟수가 선다.
-    expect(within(twice.card).getByText('2회').parentElement?.previousElementSibling).toBe(
-      within(twice.card).getByText('작업자 #0015').parentElement,
-    );
+    expect(detail(twice.card)).toContain('2회 발생');
+    expect(twice.card.textContent).not.toContain('2회');
     cleanup();
 
     const once = renderCard([resolved], { occurrences: 1 });
-    expect(within(once.card).queryByText(/\d회$/)).toBeNull();
+    expect(detail(once.card).join('\n')).not.toMatch(/회 발생/);
   });
 
-  it('트랙 번호가 바뀌며 이어진 경보를 묶은 진행 중 카드는 경과 앞에 N회와 묶은 까닭을 보인다(S15P31A101-731)', () => {
+  it('트랙 번호가 바뀌며 이어진 경보를 묶은 카드는 설명에 묶은 번호 수를 적는다(S15P31A101-731)', () => {
     const { card } = renderCard([entry()], { occurrences: 3, people: 3 });
-    const count = within(card).getByText('3회');
-    expect(count.getAttribute('title')).toContain(
-      '트랙 번호(작업자 번호)가 바뀌며 이어진 경보 3건(번호 3개)',
-    );
-    expect(count.nextElementSibling?.textContent).toBe('12초 전');
+    expect(detail(card)).toContain('3회 발생(트랙 번호 3개를 한 카드로 묶음)');
   });
 
-  it('복원 이벤트는 확인 필요와 첫 이유를 꼬리표로 보인다', () => {
+  it('복원 이벤트의 확인 필요와 첫 이유는 설명에만 있다', () => {
     const { card } = renderCard([
       entry({
         verification: 'UNVERIFIABLE',
@@ -259,16 +272,15 @@ describe('IncidentCard', () => {
       }),
     ]);
 
-    // 카드 꼬리표는 "확인 필요"만 적고 이유는 올려 보면 나온다.
-    expect(within(card).getByText('확인 필요').getAttribute('title')).toBe('확인 필요 · 높이 모름');
+    expect(detail(card)).toContain('확인 필요 · 높이 모름');
+    expect(card.textContent).not.toContain('확인 필요');
     expect(card.textContent).not.toContain('높이 모름');
-    expect(card.textContent).not.toContain('예측 위치');
   });
 
-  it('확인 필요는 운영자가 확인하기 전에만 보인다. 확인하면 확인 시각 칩만 남고 꼬리표는 사라진다', () => {
+  it('확인 필요는 운영자가 확인하기 전에만 설명에 있다', () => {
     const needsCheck = { verification: 'UNVERIFIABLE', needs_check: true } as const;
     const before = renderCard([entry(needsCheck)]).card;
-    expect(within(before).getByText('확인 필요')).toBeTruthy();
+    expect(detail(before).some((line) => line.startsWith('확인 필요'))).toBe(true);
     cleanup();
 
     const acked = renderCard([
@@ -286,31 +298,23 @@ describe('IncidentCard', () => {
         updated_at: T + 3_000,
       }),
     ]).card;
-    expect(acked.querySelector('[data-chip]')?.textContent).toMatch(/^확인 \d{2}:\d{2}:\d{2}$/);
-    expect(within(acked).queryByText('확인 필요')).toBeNull();
+    expect(detail(acked).some((line) => line.startsWith('확인 필요'))).toBe(false);
   });
 
-  it('둘째 줄 꼬리표는 사람 번호 옆에 있고, 경과는 맨 오른쪽 끝이다', () => {
+  it('지연 알림·작업 외 꼬리표는 카드 줄에 없고 설명에 있다', () => {
     const { card } = renderCard(
       [entry({ delivery: 'DELAYED_ACTIVE', verification: 'UNVERIFIABLE', needs_check: true })],
       { outsideWork: 'OUTSIDE_ZONE' },
     );
 
-    const row = within(card).getByText('작업자 #0015').parentElement!.parentElement!;
-    expect(within(row).getByText('확인 필요')).toBeTruthy();
-    expect(within(row).getByText('지연 알림')).toBeTruthy();
-    expect(within(row).getByText('작업 구역 밖').getAttribute('title')).toBe(
-      '작업 중이었지만 그 작업의 구역 밖에서 난 이벤트입니다.',
-    );
-    expect(row.lastElementChild?.textContent).toBe('12초 전');
+    for (const tag of ['지연 알림', '작업 구역 밖', '확인 필요']) {
+      expect(card.textContent).not.toContain(tag);
+    }
+    expect(detail(card)).toContain('지연 알림');
+    expect(detail(card)).toContain('작업 구역 밖');
   });
 
-  it('지연 알림 꼬리표를 보인다', () => {
-    const { card } = renderCard([entry({ delivery: 'DELAYED_ACTIVE' })]);
-    expect(within(card).getByText('지연 알림')).toBeTruthy();
-  });
-
-  it('머리줄: 처음 누르면 선택, 이미 선택된 카드를 다시 누르면 상세를 연다', () => {
+  it('머리: 처음 누르면 선택, 이미 선택된 카드를 다시 누르면 상세를 연다', () => {
     const first = renderCard([entry()]);
     fireEvent.click(within(first.card).getByRole('button', { pressed: false }));
     expect(first.onSelect).toHaveBeenCalledWith(first.incident);
@@ -331,15 +335,15 @@ describe('IncidentCard', () => {
     Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
   });
 
-  it('미확인 경보는 왼쪽 가장자리만 깜빡이고, 움직임 줄이기 설정이면 멈춘다', () => {
+  it('미확인 경보는 칩 없이도 왼쪽 가장자리만 깜빡이고, 움직임 줄이기 설정이면 멈춘다', () => {
     const { card } = renderCard([entry()]);
-    // 카메라 버튼의 아이콘(svg)도 aria-hidden 이라 className 문자열이 아닌 class 속성으로 가린다.
     const blink = [...card.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].filter((el) =>
       el.getAttribute('class')?.includes('animate-alarm-blink'),
     );
     expect(blink).toHaveLength(1);
     expect(blink[0]!.className).toContain('motion-safe:animate-alarm-blink');
     expect(blink[0]!.className).toContain('w-1');
+    expect(card.className).toContain('ring-sev-critical');
   });
 
   it('등급마다 띠 색이 다르고, 깜빡이는 것은 미확인 경보뿐이다', () => {
@@ -355,19 +359,16 @@ describe('IncidentCard', () => {
     expect(barOf(info.card)).toContain('bg-faint');
   });
 
-  it('경고는 주황이고, 미확인 칩도 그 묶음의 등급 색을 따른다', () => {
+  it('경고는 주황 띠·테두리이고 칩은 없다', () => {
     const { card } = renderCard([entry({ severity: 'HIGH' })]);
     const bar = card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
     expect(bar).toContain('bg-sev-high');
     expect(bar).not.toContain('bg-sev-critical');
     expect(card.className).toContain('ring-sev-high');
-    const chip = card.querySelector('[data-chip="unacked"]');
-    expect(chip?.className).toContain('border-sev-high');
-    expect(chip?.className).toContain('text-sev-high');
-    expect(chip?.className).not.toContain('sev-critical');
+    expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
-  it('사람을 담은 카메라가 있어도 CCTV 버튼은 이름 없이 오른쪽 카메라 미리보기를 연다', () => {
+  it('사람을 담은 카메라가 있어도 카드에는 「CCTV로 확인」 버튼이 없다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -378,21 +379,14 @@ describe('IncidentCard', () => {
     });
     const { card } = renderCard([entry()]);
 
-    fireEvent.click(within(card).getByRole('button', { name: 'CCTV로 확인' }));
-    // CCTV 화면으로 옮기지 않고 실시간 관제 오른쪽 칸을 연다.
+    expect(within(card).queryByRole('button', { name: /CCTV/ })).toBeNull();
+    expect(within(card).getAllByRole('button')).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button'));
     expect(navigate).not.toHaveBeenCalled();
-    expect(useCamSplitStore.getState().split).toEqual({
-      cam: ANY_CAMERA,
-      target: { type: 'person', id: 'w-0015' },
-    });
+    expect(useCamSplitStore.getState().split).toBeNull();
   });
 
-  it('해소된 묶음에는 카메라 버튼이 없다', () => {
-    const { card } = renderCard([entry({ lifecycle: 'RESOLVED', resolved_at: T })]);
-    expect(within(card).queryByRole('button', { name: /로 확인/ })).toBeNull();
-  });
-
-  it('해석된 사람 표시 이름이 있으면 끝번호 대신 이름을 보이고 동명이인은 끝번호로 구분한다(-658)', () => {
+  it('해석된 사람 표시 이름은 카드 이름과 설명에 있다(-658)', () => {
     useRealtimeStore.setState({
       health: {
         receivedAt: T,
@@ -406,8 +400,8 @@ describe('IncidentCard', () => {
       },
     });
     const { card } = renderCard([entry({ world_ids: ['w-0015'] })]);
-    const person = within(card).getByText('김철수 (0015)');
-    expect(person.getAttribute('title')).toBe('김철수 (w-0015)');
+    expect(detail(card)[0]).toBe('김철수 (w-0015)');
     expect(card.getAttribute('aria-label')).toBe('김철수 (w-0015) 이벤트');
+    expect(card.textContent).not.toContain('김철수');
   });
 });

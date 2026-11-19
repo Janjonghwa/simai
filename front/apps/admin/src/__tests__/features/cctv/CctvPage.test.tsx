@@ -111,6 +111,8 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     render(<CctvPage />);
     expect(lagBadge('cam_A')!.textContent).toBe('판정 180 ms');
     expect(lagBadge('cam_A')!.className).toContain('text-ok');
+    // 4분할 칸의 배지는 그대로 오른쪽 위다(떠 있는 창만 왼쪽 아래로 옮긴다, -798).
+    expect(lagBadge('cam_A')!.className).toContain('top-2 right-2');
     expect(lagBadge('cam_B')!.textContent).toBe('판정 450 ms');
     expect(lagBadge('cam_B')!.className).toContain('text-sev-caution');
     expect(lagBadge('cam_D')!.textContent).toBe('판정 720 ms');

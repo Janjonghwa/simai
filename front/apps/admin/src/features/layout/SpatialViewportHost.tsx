@@ -1,6 +1,7 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { CctvFloat, type CctvCameraRequest } from '@/features/cctv/CctvFloat';
+import { bestCamera, currentPersonId, type Incident } from '@/features/events/incidents';
 import {
   MONITOR_LAYERS,
   PLAN_FALLBACK_MS,
@@ -9,6 +10,7 @@ import {
 import { CoverageLegend } from '@/features/layout/spatialHost/CoverageLegend';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
+import { keyOfTarget, targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
 import { useBoxEditProps } from '@/features/layout/spatialHost/useBoxEditProps';
 import {
@@ -108,7 +110,9 @@ export function SpatialViewportHost({
   } = useViewportHost({ source, loadViewer, planFallbackMs });
   const boxEditProps = useBoxEditProps();
   const editing = useZoneEditActive();
-  const [cctvOpen, setCctvOpen] = useState(false);
+  // 관제 화면에 들어오면 떠 있는 CCTV 창을 연 채로 시작한다(요청 카메라가 없으면 창이 「카메라 1」을 보인다, S15P31A101-798).
+  // 오른쪽 사건 분할 창이 열려 있는 동안은 아래 조건(!split)대로 그리지 않는다.
+  const [cctvOpen, setCctvOpen] = useState(true);
   const [requestedCamera, setRequestedCamera] = useState<CctvCameraRequest | null>(null);
   // 3D 가 카메라 시점 보기 중인지(-590). CCTV 창을 닫거나 「전체 보기」를 누르면 「이 방향으로 보기」 전 시점으로 돌아간다.
   const [cameraView, setCameraView] = useState(false);
@@ -148,10 +152,59 @@ export function SpatialViewportHost({
       if (!eventPanel || editing) return;
       if (useCamSplitStore.getState().split) useCamSplitStore.getState().close();
       setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
-      // CCTV 창만 연다. 3D 시점은 창 제목 줄의 「3D 에서 이 방향으로 보기」로만 옮긴다(-626).
+      // CCTV 창만 연다. 3D 시점은 창 오른쪽 위 「3D 에서 이 방향으로 보기」로만 옮긴다(-626).
       setCctvOpen(true);
     },
     [eventPanel, editing],
+  );
+
+  // 사람을 고르면(3D·2D 미니맵·평면·이벤트 카드) 그 사람을 가장 잘 보는 카메라로 떠 있는 CCTV 창을 연다(닫혀 있으면 연다,
+  // S15P31A101-798). 사람 상세 패널은 없다. 어느 카메라에도 없는 사람이면 창만 열고 카메라는 그대로 둔다.
+  const openCctvFor = useCallback(
+    (key: string | null) => {
+      const target = targetOfKey(key);
+      if (!eventPanel || editing || target?.type !== 'person') return;
+      const best = bestCamera(useRealtimeStore.getState().world?.payload.tracks, {
+        type: 'person',
+        id: target.id,
+      });
+      if (best) setRequestedCamera((prev) => ({ cameraId: best, seq: (prev?.seq ?? 0) + 1 }));
+      setCctvOpen(true);
+    },
+    [eventPanel, editing],
+  );
+
+  // 3D 선택 알림은 FE 명령(카드·2D 선택을 3D 에 맞춤)에도 온다. 지금 선택과 같은 키이거나, 병합으로 같은 사람이 새 World ID 로
+  // 바뀐 것(-661)이면 사람이 새로 고른 것이 아니라 창을 다시 열지 않는다(닫은 창이 저절로 뜨지 않게).
+  const handleViewerSelect = useCallback(
+    (target: ViewerTarget | null) => {
+      const key = target ? keyOfTarget(target) : null;
+      const previous = targetOfKey(selectedKey);
+      const merged =
+        previous?.type === 'person' &&
+        target?.type === 'person' &&
+        currentPersonId(useRealtimeStore.getState().world?.payload.tracks, previous.id) ===
+          target.id;
+      onViewerSelect(target);
+      if (key !== selectedKey && !merged) openCctvFor(key);
+    },
+    [onViewerSelect, openCctvFor, selectedKey],
+  );
+
+  const handlePlanSelect = useCallback(
+    (key: string) => {
+      setSelectedKey(key);
+      openCctvFor(key);
+    },
+    [setSelectedKey, openCctvFor],
+  );
+
+  const handleIncidentSelect = useCallback(
+    (incident: Incident) => {
+      selectIncident(incident);
+      openCctvFor(incident.key);
+    },
+    [selectIncident, openCctvFor],
   );
 
   // 「3D 에서 이 방향으로 보기」(-626). 3D 시점을 그 카메라 자리로 옮긴다. 맞아 있는 동안 뷰어가 VDT 를 켠다(사진이 없으면 시점만 옮긴다).
@@ -215,7 +268,7 @@ export function SpatialViewportHost({
                 vdt={vdt}
                 onCameraClick={handleCameraClick}
                 onSceneStatusChange={onSceneStatusChange}
-                onSelectionChange={onViewerSelect}
+                onSelectionChange={handleViewerSelect}
                 onStatusChange={onViewerStatus}
                 {...boxEditProps}
                 className={cn('absolute inset-0', !viewerReady && 'pointer-events-none')}
@@ -227,7 +280,7 @@ export function SpatialViewportHost({
           <PlanOverlay
             withEventPanel={showEventPanel}
             selectedKey={selectedKey}
-            onSelect={setSelectedKey}
+            onSelect={handlePlanSelect}
             coverage={drawnCoverage}
           />
         )}
@@ -249,12 +302,12 @@ export function SpatialViewportHost({
         />
         {children}
         {showEventPanel && view === '3d' && (
-          <PlanMinimap selectedKey={selectedKey} onSelect={setSelectedKey} />
+          <PlanMinimap selectedKey={selectedKey} onSelect={handlePlanSelect} />
         )}
         <HostEventPanel
           visible={showEventPanel}
           selectedKey={selectedKey}
-          onSelect={selectIncident}
+          onSelect={handleIncidentSelect}
         />
         {showEventPanel && <CamSplitPanel />}
         {showEventPanel && cctvOpen && !split && (

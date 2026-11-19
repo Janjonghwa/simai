@@ -8,8 +8,6 @@ import { IncidentCard } from '@/features/events/IncidentCard';
 import {
   eventSections,
   incidentOf,
-  isGone,
-  type AliveIds,
   type EventSections,
   type Incident,
 } from '@/features/events/incidents';
@@ -22,12 +20,7 @@ import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
-import {
-  ALIVE_ID_SEPARATOR,
-  selectAliveIdsKey,
-  selectTrackedCount,
-  useRealtimeStore,
-} from '@/store/realtime.store';
+import { ALIVE_ID_SEPARATOR, selectAliveIdsKey, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -41,8 +34,9 @@ const PANEL_CLASS =
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 
-/** 「진행 중」·「최근 해소」 카드가 있는지. 없으면 패널을 저절로 접는다(지난 관제만 있어도 접는다). */
-const hasRecentCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
+/** 「진행 중」·「최근 해소」(사라진 사람의 카드 포함) 카드가 있는지. 없으면 패널을 저절로 접는다(지난 관제만 있어도 접는다). */
+const hasRecentCards = ({ active, gone, resolved }: EventSections) =>
+  active.length + gone.length + resolved.length > 0;
 
 /** 보이는 카드가 하나라도 있는지(지난 관제·잠깐 잡힌 번호 포함). 「모두 지우기」 버튼과 빈 목록 문구가 쓴다. */
 const hasCards = (sections: EventSections) =>
@@ -136,8 +130,6 @@ interface EventListProps {
   failed: boolean;
   outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
   selectedKey: string | null;
-  /** 지금 살아 있는 사람(null 은 모른다). 사라진 사람의 카드를 흐리게 한다(S15P31A101-757). */
-  alive: AliveIds;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
@@ -145,6 +137,7 @@ interface EventListProps {
 /**
  * 「진행 중」·「최근 해소」·「지난 관제 · 확인 필요」(접힘) 칸의 카드 목록(빈 칸은 그리지 않는다). 모두 비었으면 상태(없음·받는 중)를
  * 한 줄로 보인다. 지난 관제만 남았으면 진행 중이 없다는 것을 한 줄로 보인다. 받지 못했으면 패널 위의 실패 문구가 대신한다.
+ * 대상 사람이 사라진 진행 중 카드(movesToResolved)는 「최근 해소」 맨 앞에 흐리게 둔다(S15P31A101-798, 화면만 옮기고 서버 기록·확인은 그대로).
  */
 function EventList({
   sections,
@@ -152,10 +145,9 @@ function EventList({
   failed,
   outsideWorkOf,
   selectedKey,
-  alive,
   ...card
 }: EventListProps) {
-  const { active, ghost, resolved, stale, staleEvents } = sections;
+  const { active, ghost, gone, resolved, stale, staleEvents } = sections;
   const outside = (incident: Incident): OutsideWorkKind | null => {
     if (outsideWorkOf === undefined) return null;
     for (const e of incident.entries) {
@@ -183,15 +175,26 @@ function EventList({
               occurrences={occurrences}
               people={people}
               selected={incident.key === selectedKey}
-              gone={isGone(incident, alive)}
               outsideWork={outside(incident)}
               {...card}
             />
           ))}
         </Section>
       )}
-      {resolved.length > 0 && (
+      {gone.length + resolved.length > 0 && (
         <Section title="최근 해소">
+          {gone.map(({ id, incident, occurrences, people }) => (
+            <IncidentCard
+              key={id}
+              incident={incident}
+              occurrences={occurrences}
+              people={people}
+              selected={incident.key === selectedKey}
+              gone
+              outsideWork={outside(incident)}
+              {...card}
+            />
+          ))}
           {resolved.map(({ id, incident, occurrences, people }) => (
             <IncidentCard
               key={id}
@@ -253,31 +256,13 @@ interface EventPanelProps {
   /** 이 이벤트가 작업 외 진입이면 그 이유(카드에 꼬리표). 없으면 꼬리표를 달지 않는다. */
   outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
   /**
-   * 지금 실행이 시작된 시각(EC2 ms). null 은 진행 중인 실행이 없음(작업 전·대기): 「최근 해소」를 비우고 머리줄 사람 수를 미리보기로 적는다.
-   * 주지 않으면(작업 목록을 모름) 거르지 않고 「작업자」로 적는다(S15P31A101-731).
+   * 지금 실행이 시작된 시각(EC2 ms). null 은 진행 중인 실행이 없음(작업 전·대기): 「최근 해소」를 비운다.
+   * 주지 않으면(작업 목록을 모름) 거르지 않는다(S15P31A101-731).
    */
   runStartedAt?: number | null;
-  /** GPU 가 꺼져 있다고 확실히 알면 true(S15P31A101-752): 사람 수를 지어내지 않고 머리줄에 「GPU 꺼짐」을 적는다. */
-  gpuOff?: boolean;
   /** 목록 아래에 붙는 것(이번 실행 전 이벤트 안내). 접으면 함께 접힌다. */
   footer?: ReactNode;
 }
-
-/** 머리줄 사람 수를 올려 보면 나오는 설명(S15P31A101-731). */
-const PEOPLE_TITLE =
-  '지금 카메라로 추적 중인 사람 수입니다(확정·가려짐 트랙). 같은 사람이 잠깐 두 번호로 잡히면 많게, 가려지면 적게 보일 수 있습니다.';
-/** 작업 전(실행 없음)의 사람 수 설명. */
-/** GPU 꺼짐의 사람 수 설명. */
-const GPU_OFF_TITLE =
-  'GPU 가 꺼져 있어 카메라 추적과 위험 판정이 멈춰 있습니다. 상단의 GPU 에서 켤 수 있습니다.';
-const PREVIEW_TITLE = `작업을 시작하기 전 미리보기입니다. 경보는 꺼져 있습니다. ${PEOPLE_TITLE}`;
-/** 머리줄 진행 중 수를 올려 보면 나오는 설명: 사건(카드)과 경보(기록 한 건 한 건)를 가른다. */
-const ACTIVE_TITLE =
-  '지금 진행 중인 사건(카드) 수입니다. 한 사람의 여러 규칙과, 트랙 번호만 바뀌며 이어진 같은 위험은 한 사건으로 셉니다. 경보 기록 한 건 한 건의 수는 작업 관리의 작업 현황·종료 미팅에 있습니다.';
-
-/** 머리줄 해소 대기 수 설명(S15P31A101-757). */
-const WAITING_TITLE =
-  '대상 사람이 카메라에서 사라졌지만 아직 확인·해소되지 않은 사건 수입니다. 사람이 다시 보이거나 확인·해소하면 줄어듭니다.';
 
 /** 「목록에서 숨기기」 단추 설명: 확인 처리가 아니다(S15P31A101-731). */
 const CLEAR_TITLE =
@@ -305,9 +290,8 @@ function ClearConfirm({
 }
 
 /**
- * 실시간 관제 오른쪽 이벤트 패널: 머리줄의 사람 수·진행 중 사건 수, 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창.
- * 머리줄의 진행 중 수는 진행 중 카드(지금 Tier 0 가 들고 있는 사건, 화면 묶음 뒤)만 센다. 지난 관제는 목록 끝의 접힌 칸에 있다(S15P31A101-595).
- * 경보 기록 한 건 한 건의 수(작업 현황·종료 미팅)와 이름을 가른다(S15P31A101-731). 작업 전(실행 없음)이면 사람 수는 「미리보기」다.
+ * 실시간 관제 오른쪽 이벤트 패널: 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창. 지난 관제는 목록 끝의 접힌 칸에
+ * 있다(S15P31A101-595). 머리줄에는 사람 수·사건 수 요약을 두지 않고 「이벤트」 이름만 둔다(S15P31A101-798).
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
  * 보이는 카드가 있으면 머리줄에 「목록에서 숨기기」가 있다(확인 처리가 아니다. 미확인 경보가 있으면 확인 창을 먼저 띄운다).
  */
@@ -322,7 +306,6 @@ export function EventPanel({
   onClearAll,
   outsideWorkOf,
   runStartedAt,
-  gpuOff = false,
   footer,
 }: EventPanelProps) {
   // 화면 묶음(S15P31A101-731)이 지금 살아 있는 서로 다른 두 사람을 섞지 않게 살아 있는 World ID 를 본다. 사람이 바뀔 때만 다시 묶는다.
@@ -344,15 +327,9 @@ export function EventPanel({
     // 시연 계정은 경보 배너가 없어 확인 대기 경보 카드를 맨 위에 둔다(features/demo/demoEvents)
     return demo ? { ...all, active: alarmingCardsFirst(all.active) } : all;
   }, [entries, alive, runStartedAt, watched, demo]);
-  const goneCount = useMemo(
-    () => sections.active.filter((card) => isGone(card.incident, alive)).length,
-    [sections.active, alive],
-  );
-  const trackedCount = useRealtimeStore(selectTrackedCount);
   const unacked = useMemo(() => entries.filter(isAlarming).length, [entries]);
   const [confirmClear, setConfirmClear] = useState(false);
   const clear = () => (unacked > 0 ? setConfirmClear(true) : onClearAll());
-  const preview = runStartedAt === null;
   const opened = useMemo(
     () => (openEventId ? incidentOf(entries, openEventId) : undefined),
     [entries, openEventId],
@@ -402,23 +379,7 @@ export function EventPanel({
             move.active ? 'cursor-grabbing' : 'cursor-grab',
           )}
         >
-          <b className="text-[15px]">
-            <span title={gpuOff ? GPU_OFF_TITLE : preview ? PREVIEW_TITLE : PEOPLE_TITLE}>
-              {gpuOff
-                ? 'GPU 꺼짐 · 사람 수 알 수 없음'
-                : preview
-                  ? `미리보기 · 사람 ${trackedCount}명`
-                  : `작업자 ${trackedCount}명`}
-            </span>
-            {' · '}
-            <span title={ACTIVE_TITLE}>진행 중 {sections.active.length - goneCount}건</span>
-            {goneCount > 0 && (
-              <>
-                {' · '}
-                <span title={WAITING_TITLE}>해소 대기 {goneCount}건</span>
-              </>
-            )}
-          </b>
+          <b className="text-[15px]">이벤트</b>
           <div className="ml-auto flex items-center gap-1">
             {hasCards(sections) && (
               <Button variant="secondary" size="sm" title={CLEAR_TITLE} onClick={clear}>
@@ -442,7 +403,6 @@ export function EventPanel({
                 failed={failed}
                 outsideWorkOf={outsideWorkOf}
                 selectedKey={selectedKey}
-                alive={alive}
                 onSelect={onSelect}
                 onOpen={onOpen}
               />

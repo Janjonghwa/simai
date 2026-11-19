@@ -1,6 +1,7 @@
 import {
   demoPaperForm,
   isWorkEnded,
+  useDemoEndingGenerating,
   useDemoReportDraft,
   useDemoReportSync,
 } from '@/features/demo/demoReport';
@@ -34,7 +35,7 @@ import { useEffect, useState } from 'react';
 // fit 이면 종이를 틀 높이에 맞춘 A4 한 장(ReportSheet)으로 줄여 보이고, 누르면 큰 창에 원래 크기로 보인다(편집은 그 창의 종이를 눌러서).
 // 시연 계정은 초안을 기다리지 않고 잠깐 가렸다가 미리 적어 둔 초안을 보이고, 서버 양식에도 같은 내용을 저장한다(features/demo/demoReport).
 // 그 종이는 작업 전 확인(fit)에서만 고칠 수 있고, 누르면 확대 보기 없이 바로 종이 위 편집 창이 열린다. 직접 고쳐 저장한 보고서는 그 값을 그대로 두고 종료 미팅 칸만 맞춘다.
-// 종료 미팅 칸은 흐림(종료 미팅 생성 중)이 끝난 뒤에 채운다.
+// 종료 미팅 칸은 흐림(종료 미팅 생성 중)이 끝난 뒤에 채운다. 시연 계정은 서버 종료 미팅을 기다리지 않고 잠깐만 가린다.
 
 /** '저장했습니다' 가 보이는 시간(ms). */
 const SAVED_NOTICE_MS = 2_500;
@@ -81,7 +82,11 @@ export function ReportPanel({
     today: editable,
   });
   // 초안이나 종료 미팅을 쓰는 동안 종이를 가린다
-  const endingNow = isEndingGenerating(latest);
+  const endingNow = useDemoEndingGenerating(workId, {
+    ended: isWorkEnded(latest),
+    generating: isEndingGenerating(latest),
+    today: editable,
+  });
   const generating = demoDraft.drafting || endingNow;
   // 시연 계정이 미리 적어 둔 초안이 보이는 동안 종이는 그 양식이다(작업을 끝내면 종료 미팅 칸도). 직접 고쳐 저장한 뒤에는 고친 값 그대로이고 종료 미팅 칸만 시연 문구다
   const paper = demoDraft.shown

@@ -4,9 +4,10 @@ import { Badge } from '@simai/ui/components/badge';
 import { cn } from '@simai/ui/lib/utils';
 
 // 빨강·주황·노랑은 위험 등급에만 쓴다(CONVENTION). 위험 빨강·경고 주황·주의 노랑이고, 위험만 채운다.
-// 기호(▲▲ 등)는 색 없이도 등급을 가르는 표시라 화면 낭독기에는 읽히지 않게 한다. 글자는 위험·경고·주의·안내다.
+// 기호(▲ 등)는 색 없이도 등급을 가르는 표시라 화면 낭독기에는 읽히지 않게 한다. 글자는 위험·경고·주의·안내다.
+// 위험·경고는 같은 ▲ 하나이고 채움(위험)·테두리(경고)와 글자로 가른다(S15P31A101-798).
 const LOOK: Record<Severity, { glyph: string; className: string }> = {
-  CRITICAL: { glyph: '▲▲', className: 'border-sev-critical bg-sev-critical text-background' },
+  CRITICAL: { glyph: '▲', className: 'border-sev-critical bg-sev-critical text-background' },
   HIGH: { glyph: '▲', className: 'border-sev-high text-sev-high' },
   CAUTION: { glyph: '!', className: 'border-sev-caution text-sev-caution' },
   INFO: { glyph: 'i', className: 'border-faint text-muted-foreground' },

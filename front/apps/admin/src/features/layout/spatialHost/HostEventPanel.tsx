@@ -7,7 +7,6 @@ import { ec2Now } from '@/features/events/format';
 import type { EventItem } from '@/features/events/types';
 import { useMinuteNow } from '@/features/events/useSharedNow';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
-import { useGpuKnownOff } from '@/features/gpu/useGpu';
 import { PastEventsLink } from '@/features/monitor/PastEventsLink';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { outsideWorkKind, splitSince, workStartedAt } from '@/features/monitor/workSession';
@@ -68,7 +67,6 @@ export function HostEventPanel({
   );
   // 작업 목록을 받았으면 지금 실행 시작(진행 중 작업이 없으면 null = 실행 없음). 받기 전이거나 시작 시각을 모르면 undefined(거르지 않음).
   const runStartedAt = works.state !== 'ready' ? undefined : active ? (since ?? undefined) : null;
-  const gpuOff = useGpuKnownOff();
   const openEventId = useEventsStore((s) => s.openEventId);
   const openEvent = useEventsStore((s) => s.openEvent);
   const clearAll = useEventClearStore((s) => s.clearAll);
@@ -89,7 +87,6 @@ export function HostEventPanel({
       onClearAll={clearShown}
       outsideWorkOf={knownWorks !== null ? outsideWork : undefined}
       runStartedAt={runStartedAt}
-      gpuOff={gpuOff}
       footer={since !== null && hidden > 0 ? <PastEventsLink hidden={hidden} /> : undefined}
     />
   );

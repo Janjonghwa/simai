@@ -52,6 +52,20 @@ vi.mock('@/features/events/EventPanel', async () => {
   };
 });
 
+// 2D 미니맵 대역: 사람·구역을 고르는 단추만 둔다(S15P31A101-798 선택 시 CCTV 창 열기 시험).
+vi.mock('@/features/plan/PlanMinimap', () => ({
+  PlanMinimap: ({ onSelect }: { onSelect: (key: string) => void }) => (
+    <div>
+      <button type="button" onClick={() => onSelect('person:w-1')}>
+        미니맵 사람 w-1
+      </button>
+      <button type="button" onClick={() => onSelect('zone:z-02')}>
+        미니맵 구역 z-02
+      </button>
+    </div>
+  ),
+}));
+
 // 3D 뷰어 대역: select·focus 를 기록하고, 준비 알림은 시험이 정한다(늦게 준비되는 3D).
 const fake = vi.hoisted(() => ({
   select: vi.fn(),
@@ -264,5 +278,37 @@ describe('이벤트 묶음을 누르면 3D 가 그 대상을 고르고 초점을
     } finally {
       quiet.mockRestore();
     }
+  });
+});
+
+describe('사람을 고르면 떠 있는 CCTV 창이 열린다(-798)', () => {
+  const floatOpen = () => screen.queryByLabelText('떠 있는 CCTV') !== null;
+  const closeFloat = () =>
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
+
+  it('사람 이벤트 카드를 누르면 닫힌 창을 다시 열고, 구역 카드는 열지 않는다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    closeFloat();
+
+    act(() => card('zone:z-02').click());
+    expect(floatOpen()).toBe(false);
+
+    act(() => card('person:w-1').click());
+    expect(selected()).toBe('person:w-1');
+    expect(floatOpen()).toBe(true);
+  });
+
+  it('2D 미니맵에서 사람을 고르면 닫힌 창을 다시 연다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    closeFloat();
+
+    act(() => screen.getByRole('button', { name: '미니맵 구역 z-02' }).click());
+    expect(floatOpen()).toBe(false);
+
+    act(() => screen.getByRole('button', { name: '미니맵 사람 w-1' }).click());
+    expect(selected()).toBe('person:w-1');
+    expect(floatOpen()).toBe(true);
   });
 });

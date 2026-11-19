@@ -57,14 +57,32 @@ function useTileBadge(cameraId: string, state: CameraState): TileBadge | null {
   return tileBadge(tier0Connected, state, lagMs);
 }
 
-/** 칸 오른쪽 위 배지: 지연(ms, 색 점) 또는 끊김. 없으면 그리지 않는다. */
-function CameraBadge({ cameraId, badge }: { cameraId: string; badge: TileBadge | null }) {
+/**
+ * 배지 자리. 기본은 칸 오른쪽 위이고, 떠 있는 CCTV 창은 오른쪽 위에 닫기 버튼을 두어 배지를 왼쪽 아래로 내린다
+ * (오른쪽 아래는 확대 자리 상자 ZoomMap 이 쓴다, S15P31A101-798).
+ */
+export type BadgeCorner = 'top-right' | 'bottom-left';
+const BADGE_CORNER: Record<BadgeCorner, string> = {
+  'top-right': 'top-2 right-2',
+  'bottom-left': 'bottom-2 left-2',
+};
+
+/** 칸 배지: 지연(ms, 색 점) 또는 끊김. 없으면 그리지 않는다. */
+function CameraBadge({
+  cameraId,
+  badge,
+  corner,
+}: {
+  cameraId: string;
+  badge: TileBadge | null;
+  corner: BadgeCorner;
+}) {
   const label = useCameraNames();
   if (!badge) return null;
   if (badge.kind === 'down') {
     return (
       <span
-        className={cn(CAPTION, 'top-2 right-2 font-semibold')}
+        className={cn(CAPTION, BADGE_CORNER[corner], 'font-semibold')}
         aria-label={`${label(cameraId)} 끊김`}
       >
         끊김
@@ -74,7 +92,7 @@ function CameraBadge({ cameraId, badge }: { cameraId: string; badge: TileBadge |
   const tone = LAG_TONE[badge.level];
   return (
     <span
-      className={cn(CAPTION, 'top-2 right-2 gap-1.5 font-mono', tone.text)}
+      className={cn(CAPTION, BADGE_CORNER[corner], 'gap-1.5 font-mono', tone.text)}
       aria-label={`${label(cameraId)} 판정 지연 ${badge.ms} ms`}
       title={`판정 지연: 이 카메라가 찍은 뒤 위험 판정(Tier 0)까지 걸린 시간, 최근 ${LAG_WINDOW_MS / 1000}초 평균. ${LAG_OK_MS} ms 미만 초록, ${LAG_WARN_MS} ms 이상 빨강`}
     >
@@ -115,12 +133,18 @@ export function CameraTile({
   attach,
   state,
   wall,
+  badgeCorner = 'top-right',
+  className,
 }: {
   cameraId: string;
   attach: Attach;
   state: CameraState;
   /** 크게 보기 배치(CctvWall)에서만. 없으면 누르는 칸이 아니라 영상만 보인다. */
   wall?: WallTile;
+  /** 지연·끊김 배지 자리(기본 오른쪽 위). */
+  badgeCorner?: BadgeCorner;
+  /** 칸 틀에 더할 클래스(떠 있는 창은 테두리·모서리를 뺀다). */
+  className?: string;
 }) {
   const label = useCameraNames();
   const badge = useTileBadge(cameraId, state);
@@ -149,14 +173,14 @@ export function CameraTile({
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
-      <CameraBadge cameraId={cameraId} badge={badge} />
+      <CameraBadge cameraId={cameraId} badge={badge} corner={badgeCorner} />
       <ZoomMap view={view} />
     </>
   );
   const pan = zoomed && tilePan(dragging);
   if (!wall) {
     return (
-      <div ref={tileRef} {...handlers} className={cn(TILE_FRAME, 'bg-surface-2', pan)}>
+      <div ref={tileRef} {...handlers} className={cn(TILE_FRAME, 'bg-surface-2', pan, className)}>
         {content}
       </div>
     );
@@ -168,7 +192,7 @@ export function CameraTile({
       type="button"
       onClick={wall.toggle}
       aria-label={`${label(cameraId)} ${wall.focused ? '작게 보기' : '크게 보기'}`}
-      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused), pan)}
+      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused), pan, className)}
     >
       {content}
     </button>
@@ -176,20 +200,36 @@ export function CameraTile({
 }
 
 /** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. 정지는 상태 글을 두지 않는다. 지연은 오른쪽 위 배지다. */
-export function StateTile({ cameraId, state }: { cameraId: string; state: CameraState }) {
+export function StateTile({
+  cameraId,
+  state,
+  badgeCorner = 'top-right',
+  className,
+}: {
+  cameraId: string;
+  state: CameraState;
+  /** 지연 배지 자리(기본 오른쪽 위). */
+  badgeCorner?: BadgeCorner;
+  /** 칸 틀에 더할 클래스. */
+  className?: string;
+}) {
   const label = useCameraNames();
   const badge = useTileBadge(cameraId, state);
   return (
     <div
       role="group"
       aria-label={`${label(cameraId)} 상태`}
-      className={cn(TILE_FRAME, 'flex items-center justify-center bg-surface-2')}
+      className={cn(TILE_FRAME, 'flex items-center justify-center bg-surface-2', className)}
     >
       <span className={cn(CAPTION, 'top-2 left-2 font-mono font-semibold')} title={cameraId}>
         {label(cameraId)}
       </span>
       {/* 끊김은 가운데 글로 보이므로 배지는 지연만 둔다. */}
-      <CameraBadge cameraId={cameraId} badge={badge?.kind === 'lag' ? badge : null} />
+      <CameraBadge
+        cameraId={cameraId}
+        badge={badge?.kind === 'lag' ? badge : null}
+        corner={badgeCorner}
+      />
       {showsState(state) && (
         <span
           className={cn('text-xl', state === 'live' ? 'font-medium' : 'font-semibold text-delay')}

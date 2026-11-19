@@ -6,6 +6,7 @@ import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { bestCamera, currentPersonId } from '@/features/events/incidents';
 import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
+import { useCameraIds } from '@/hooks/useCameraNames';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { env } from '@/lib/env';
 import { FLOAT_MARGIN, type FloatSpot } from '@/lib/floatSpot';
@@ -18,14 +19,32 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@simai/ui/components/tooltip';
-import { View } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { cn } from '@simai/ui/lib/utils';
+import { Maximize2, View, X } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 const KEY = 'simai.cctv.float';
+/** 창 폭(px) 기본값과 한계. 높이는 따로 두지 않고 영상 비율을 따른다(S15P31A101-798). */
+const DEFAULT_WIDTH = 560;
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 1000;
+/** 카메라 해상도를 아직 모를 때의 영상 비율. */
+const DEFAULT_ASPECT = '16 / 9';
 type Settings = {
   spot?: FloatSpot;
-  width?: number;
-  height?: number;
+  /**
+   * 영상 폭(창 폭). 예전 `width`·`height` 는 제목 줄·안쪽 여백을 포함한 창 크기라 읽지 않고, 다음 저장 때 지운다
+   * (S15P31A101-798, 높이는 이제 영상 비율이 정한다).
+   */
+  videoWidth?: number;
 };
 function readSettings(): Settings {
   try {
@@ -42,13 +61,9 @@ function readSettings(): Settings {
         Number.isFinite(p.offset)
           ? { left: p.left, offset: p.offset }
           : undefined,
-      width:
-        typeof v.width === 'number' && Number.isFinite(v.width)
-          ? Math.min(1000, Math.max(280, v.width))
-          : undefined,
-      height:
-        typeof v.height === 'number' && Number.isFinite(v.height)
-          ? Math.min(800, Math.max(180, v.height))
+      videoWidth:
+        typeof v.videoWidth === 'number' && Number.isFinite(v.videoWidth)
+          ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, v.videoWidth))
           : undefined,
     };
   } catch {
@@ -69,18 +84,29 @@ export interface CctvCameraRequest {
 }
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
-/** 창이 지금 보이는 카메라를 위로 알린다(제목 줄의 「3D 에서 이 방향으로 보기」가 쓴다, -626). */
+/** 창이 지금 보이는 카메라를 위로 알린다(오른쪽 위 「3D 에서 이 방향으로 보기」가 쓴다, -626). */
 type OnCurrent = (cameraId: string | undefined) => void;
+
+/** 영상 위에 겹쳐 보이는 상태 글. */
+const STATUS = 'rounded-md bg-card/85 px-2 py-1 text-center text-sm backdrop-blur-[4px]';
+/** 창은 영상만 가장자리까지 채운다. 칸의 테두리·모서리는 빼고 창의 둥근 모서리·그림자만 남긴다. */
+const FRAMELESS = 'rounded-none after:ring-0';
+/** 영상 위 아이콘 버튼. 밝은·어두운 영상 모두에서 보이게 반투명 바탕을 깐다. */
+const OVERLAY_BUTTON = 'bg-card/80 backdrop-blur-[4px] hover:bg-card';
+
 function Content({
   attach,
   selectedKey,
   requestedCamera,
   onCurrent,
+  notice,
 }: {
   attach?: Attach;
   selectedKey: string | null;
   requestedCamera?: CctvCameraRequest | null;
   onCurrent?: OnCurrent;
+  /** 영상 위에 겹쳐 보일 안내(원격 시청 멈춤·다시 보기). */
+  notice?: ReactNode;
 }) {
   const [camera, setCamera] = useState(requestedCamera?.cameraId ?? '');
   const link = useCctvStore((s) => s.link);
@@ -131,36 +157,64 @@ function Content({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCamera(requestedCamera.cameraId);
   }, [requestedCamera]);
-  // 창은 늘 카메라 하나만 보인다. 고른 카메라가 중계 목록에 없으면 첫 카메라를 보인다.
-  const current = ids.includes(camera) ? camera : ids[0];
+  // 창은 늘 카메라 하나만 보인다. 고른 카메라가 없거나(처음 연 창) 중계 목록에 없으면 「카메라 1」(번호 순서의 첫 카메라)을
+  // 보인다(S15P31A101-798). 목록을 아직 모르면 카메라를 지어내지 않고 안내를 보인다.
+  const order = useCameraIds(ids);
+  const current = ids.includes(camera) ? camera : (order.find((id) => ids.includes(id)) ?? ids[0]);
   useEffect(() => {
     onCurrent?.(current);
   }, [current, onCurrent]);
+  // 창 높이는 영상 비율을 따른다(영상 밑에 빈 칸이 남지 않게). 해상도를 모르면 16:9 다.
+  const aspect = useCctvStore((s) => {
+    const view = current ? s.views[current] : undefined;
+    return view?.width && view.height ? `${view.width} / ${view.height}` : DEFAULT_ASPECT;
+  });
+  const linkText = attach && link !== 'open' ? tileLabel(undefined, link) : null;
   return (
-    <>
-      {attach && link !== 'open' && (
-        <p role="status" className="px-2 pt-2 text-xs">
-          {tileLabel(undefined, link)}
-        </p>
-      )}
-      {!current ? (
-        <p role="status" className="p-3">
-          카메라 연결 정보가 없습니다
-        </p>
-      ) : (
-        <div className="min-h-0 flex-1 p-2">
-          <div key={current} className="min-h-0 min-w-0">
-            {attach ? (
-              <CameraTile cameraId={current} attach={attach} state={stateOf(current)} />
-            ) : (
-              <StateTile cameraId={current} state={stateOf(current)} />
-            )}
-          </div>
+    <div className="relative w-full bg-surface-2" style={{ aspectRatio: aspect }}>
+      {current && (
+        <div key={current} className="size-full">
+          {attach ? (
+            <CameraTile
+              cameraId={current}
+              attach={attach}
+              state={stateOf(current)}
+              badgeCorner="bottom-left"
+              className={FRAMELESS}
+            />
+          ) : (
+            <StateTile
+              cameraId={current}
+              state={stateOf(current)}
+              badgeCorner="bottom-left"
+              className={FRAMELESS}
+            />
+          )}
         </div>
       )}
-    </>
+      {(linkText || !current || notice) && (
+        // 상태 글은 영상 가운데에 겹쳐 둔다. 글 자리는 누르기를 통과시켜 영상을 끌어 창을 옮길 수 있다.
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 p-4">
+          {linkText && (
+            <p role="status" className={STATUS}>
+              {linkText}
+            </p>
+          )}
+          {!current && (
+            <p role="status" className={STATUS}>
+              카메라 연결 정보가 없습니다
+            </p>
+          )}
+          {notice}
+        </div>
+      )}
+    </div>
   );
 }
+
+/** 다시 보기 버튼 누르기가 창 끌기로 넘어가지 않게 한다. */
+const keepPress = (e: ReactPointerEvent) => e.stopPropagation();
+
 function AdminContent({
   selectedKey,
   requestedCamera,
@@ -176,28 +230,75 @@ function AdminContent({
   const pause = useCctvStore((s) => s.pause);
   const remote = useCctvStore((s) => s.remote);
   const notice = remoteNotice(mode, pause, remote);
+  const resumable = Boolean(notice?.resumable) || link === 'stopped';
   return (
-    <>
-      <Content
-        attach={attach}
-        selectedKey={selectedKey}
-        requestedCamera={requestedCamera}
-        onCurrent={onCurrent}
-      />
-      {notice && <p role="status">{notice.text}</p>}
-      {(notice?.resumable || link === 'stopped') && (
-        <button type="button" onClick={resume}>
-          다시 보기
-        </button>
-      )}
-    </>
+    <Content
+      attach={attach}
+      selectedKey={selectedKey}
+      requestedCamera={requestedCamera}
+      onCurrent={onCurrent}
+      notice={
+        notice || resumable ? (
+          <>
+            {notice && (
+              <p role="status" className={STATUS}>
+                {notice.text}
+              </p>
+            )}
+            {resumable && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="pointer-events-auto"
+                onPointerDown={keepPress}
+                onClick={resume}
+              >
+                다시 보기
+              </Button>
+            )}
+          </>
+        ) : null
+      }
+    />
   );
 }
 const VIEW_FROM_CAMERA_LABEL = '3D 에서 이 방향으로 보기';
 const NO_CAMERA_REASON = '보이는 카메라가 없습니다';
 
+/** 영상 오른쪽 위의 작은 아이콘 버튼. 이름표(마우스 올림)와 화면 낭독기 이름을 단다. */
+function OverlayIconButton({
+  label,
+  tip = label,
+  onClick,
+  children,
+}: {
+  label: string;
+  tip?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            className={OVERLAY_BUTTON}
+            onClick={onClick}
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /**
- * 제목 줄의 「3D 에서 이 방향으로 보기」 아이콘 버튼(-626). 누르면 3D 시점을 창이 보이는 카메라 자리·방향으로 옮긴다.
+ * 오른쪽 위 「3D 에서 이 방향으로 보기」 아이콘 버튼(-626). 누르면 3D 시점을 창이 보이는 카메라 자리·방향으로 옮긴다.
  * 옮길 수 없으면 끄고 이유를 이름표로 보인다. 꺼진 버튼은 포인터를 받지 않으므로 감싼 자리에 이름표를 단다.
  */
 function ViewFromCameraButton({
@@ -222,6 +323,7 @@ function ViewFromCameraButton({
             disabled
             aria-label={VIEW_FROM_CAMERA_LABEL}
             aria-describedby={reasonId}
+            className={OVERLAY_BUTTON}
           >
             {icon}
           </Button>
@@ -234,24 +336,19 @@ function ViewFromCameraButton({
     );
   }
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={VIEW_FROM_CAMERA_LABEL}
-            onClick={() => onView(cameraId)}
-          />
-        }
-      >
-        {icon}
-      </TooltipTrigger>
-      <TooltipContent>{VIEW_FROM_CAMERA_LABEL}</TooltipContent>
-    </Tooltip>
+    <OverlayIconButton label={VIEW_FROM_CAMERA_LABEL} onClick={() => onView(cameraId)}>
+      {icon}
+    </OverlayIconButton>
   );
 }
 
+/**
+ * 떠 있는 CCTV 창(S15P31A101-798). 제목 줄·테두리·안쪽 여백 없이 카메라 영상 하나만 가장자리까지 채우고, 둥근 모서리와
+ * 그림자만 둔다. 영상을 끌어 창을 옮기고(확대 중의 끌기는 영상 안 옮기기), 오른쪽 아래 모서리로 폭을 바꾸며 높이는 영상
+ * 비율을 따른다. 닫기(X)·「3D 에서 이 방향으로 보기」·「3D 전체 보기」는 영상 오른쪽 위 아이콘이고, 지연 배지는 왼쪽 아래다.
+ * 연결·원격 시청 안내는 영상 가운데에 겹친다. 접기는 없다(닫고 사람을 고르거나 3D 카메라 마커를 눌러 다시 연다).
+ * 기본 자리는 왼쪽 칼럼(구역 목록) 오른쪽이다. 관제 화면에 들어오면 열려 있으므로 구역 목록을 가리지 않게 한다.
+ */
 export function CctvFloat({
   onClose,
   onFullView,
@@ -274,86 +371,47 @@ export function CctvFloat({
   requestedCamera?: CctvCameraRequest | null;
 }) {
   const [initial] = useState(readSettings);
-  const [size, setSize] = useState({ width: initial.width ?? 480, height: initial.height ?? 360 });
+  const [size, setSize] = useState(() => {
+    const width = initial.videoWidth ?? DEFAULT_WIDTH;
+    return { width, height: Math.round((width * 9) / 16) };
+  });
   const box = useRef<HTMLElement>(null);
   const saveSpot = useCallback((spot: FloatSpot) => saveSettings({ spot }), []);
   const spot = useFloatSpot(box, 'top', FLOAT_MARGIN, initial.spot ?? null, saveSpot);
-  const [collapsed, setCollapsed] = useState(false);
-  // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에, 접으면 비운다).
+  // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에).
   const layoutKey = `${spot.style?.left},${spot.style?.top},${size.width}x${size.height}`;
-  useReportCctvFloatBox(box, { dragging: spot.dragging, collapsed, layoutKey });
+  useReportCctvFloatBox(box, { dragging: spot.dragging, layoutKey });
   const isAdmin = useCurrentRole() === 'ADMIN';
-  // 창이 보이는 카메라. 접어 Content 가 내려가도 마지막 값을 쥔다.
+  // 창이 보이는 카메라(「3D 에서 이 방향으로 보기」가 쓴다).
   const [currentCamera, setCurrentCamera] = useState<string | undefined>(requestedCamera?.cameraId);
-  useEffect(() => {
-    if (requestedCamera) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCollapsed(false);
-    }
-  }, [requestedCamera]);
   useEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (!collapsed && el.offsetWidth && el.offsetHeight) {
-        setSize((prev) =>
-          prev.width === el.offsetWidth && prev.height === el.offsetHeight
-            ? prev
-            : { width: el.offsetWidth, height: el.offsetHeight },
-        );
-        saveSettings({ width: el.offsetWidth, height: el.offsetHeight });
-      }
+      const { offsetWidth: width, offsetHeight: height } = el;
+      if (!width || !height) return;
+      setSize((prev) =>
+        prev.width === width && prev.height === height ? prev : { width, height },
+      );
+      saveSettings({ videoWidth: width });
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [collapsed]);
+  }, []);
   return (
     <section
       ref={box}
       aria-label="떠 있는 CCTV"
-      style={{
-        ...spot.style,
-        width: size.width,
-        height: collapsed ? 'auto' : size.height,
-        resize: collapsed ? 'none' : 'both',
-      }}
-      className="absolute top-32 left-24 z-[7] flex max-h-[calc(100%-5rem)] max-w-[calc(100%-2rem)] min-w-[280px] flex-col overflow-auto rounded-xl bg-card shadow-float ring-1 ring-border"
+      style={{ ...spot.style, width: size.width, resize: 'horizontal' }}
+      className="absolute top-32 left-[calc(var(--side-column-width)+28px)] z-[7] max-w-[calc(100%-2rem)] min-w-[280px] overflow-hidden rounded-xl bg-card shadow-float"
     >
-      <div className="flex items-center gap-2 p-2">
-        <div
-          {...spot.handlers}
-          className="flex-1 cursor-grab touch-none font-semibold select-none"
-          aria-label="CCTV 창 이동"
-        >
-          CCTV ⋮⋮
-        </div>
-        {onViewFromCamera && (
-          <TooltipProvider>
-            <ViewFromCameraButton
-              cameraId={currentCamera}
-              blockReason={viewFromCameraBlock}
-              onView={onViewFromCamera}
-            />
-          </TooltipProvider>
-        )}
-        {onFullView && (
-          <button type="button" aria-label="3D 전체 보기" onClick={onFullView}>
-            전체 보기
-          </button>
-        )}
-        <button
-          type="button"
-          aria-label={collapsed ? 'CCTV 펼치기' : 'CCTV 접기'}
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          {collapsed ? '펼치기' : '접기'}
-        </button>
-        <button type="button" aria-label="떠 있는 CCTV 닫기" onClick={onClose}>
-          닫기
-        </button>
-      </div>
-      {!collapsed &&
-        (isAdmin ? (
+      <div
+        {...spot.handlers}
+        role="group"
+        aria-label="CCTV 영상, 끌어서 창 옮기기"
+        className={cn('touch-none select-none', spot.dragging ? 'cursor-grabbing' : 'cursor-grab')}
+      >
+        {isAdmin ? (
           <AdminContent
             selectedKey={selectedKey}
             requestedCamera={requestedCamera}
@@ -365,7 +423,28 @@ export function CctvFloat({
             requestedCamera={requestedCamera}
             onCurrent={setCurrentCamera}
           />
-        ))}
+        )}
+      </div>
+      {/* 끌기 자리(영상) 밖의 형제라 버튼을 눌러도 창 끌기가 시작되지 않는다. */}
+      <TooltipProvider>
+        <div className="absolute top-2 right-2 flex items-center gap-1">
+          {onViewFromCamera && (
+            <ViewFromCameraButton
+              cameraId={currentCamera}
+              blockReason={viewFromCameraBlock}
+              onView={onViewFromCamera}
+            />
+          )}
+          {onFullView && (
+            <OverlayIconButton label="3D 전체 보기" onClick={onFullView}>
+              <Maximize2 aria-hidden />
+            </OverlayIconButton>
+          )}
+          <OverlayIconButton label="떠 있는 CCTV 닫기" tip="닫기" onClick={onClose}>
+            <X aria-hidden />
+          </OverlayIconButton>
+        </div>
+      </TooltipProvider>
     </section>
   );
 }

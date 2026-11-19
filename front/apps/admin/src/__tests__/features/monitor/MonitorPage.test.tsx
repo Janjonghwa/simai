@@ -121,6 +121,26 @@ describe('MonitorPage 3D·2D 전환', () => {
     expect(screen.queryByRole('dialog', { name: '2D 평면' })).toBeNull();
   });
 
+  it('2D 창에서 사람을 고르면 「선택한 작업자」 패널 없이 닫아 둔 떠 있는 CCTV 창이 다시 열린다(-798)', async () => {
+    useRealtimeStore.setState({
+      world: { payload: worldStateAt(Date.now()).payload, receivedAt: Date.now() },
+    });
+    renderPage();
+    await screen.findByTestId('viewer3d');
+    // 관제 화면에 들어오면 창이 열려 있다. 닫아 둔다.
+    act(() => button('떠 있는 CCTV 닫기').click());
+    expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
+
+    act(() => button('2D 평면 크게 보기').click());
+    const dialog = screen.getByRole('dialog', { name: '2D 평면' });
+    const person = within(dialog).getByRole('button', { name: /^w-0012/ });
+    act(() => person.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(person.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '선택한 작업자' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: /표시 이름/ })).toBeNull();
+  });
+
   it('왼쪽에는 도구 아이콘 줄과 2D 미니맵이 있고 워치 패널은 없다', async () => {
     renderPage();
     await screen.findByTestId('viewer3d');

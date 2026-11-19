@@ -125,6 +125,14 @@ export const isGone = (incident: Incident, alive: AliveIds): boolean =>
   incident.target?.type === 'person' &&
   !isAlive(alive, incident.target.id);
 
+/**
+ * 진행 중 카드를 「진행 중」에서 빼 「최근 해소」 칸에 보일지(S15P31A101-798). 대상 사람이 사라졌으면(isGone) 등급(위험 포함)·확인 여부와
+ * 상관없이 옮긴다. 화면에서만 옮기며 서버 기록·확인(ACK)·해소는 건드리지 않는다.
+ * 예외(예: 확인 전 낙상 의심 R4 는 확인할 때까지 진행 중에 남김)를 둘 때는 이 함수 하나만 고친다.
+ */
+export const movesToResolved = (card: CardGroup, alive: AliveIds): boolean =>
+  isGone(card.incident, alive);
+
 /** 이 묶음에 든 사람(진행 중 규칙의 대상) ID. */
 const activePeople = (incident: Incident): string[] => [
   ...new Set(
@@ -409,10 +417,15 @@ function splitStale(entries: readonly EventEntry[]) {
 export interface EventSections {
   active: CardGroup[];
   /**
-   * 잠깐 생겼다 사라졌거나 병합으로 흡수된 사람(유령 트랙)의 「지금 안 보임」 카드(S15P31A101-785). 진행 중에서 빼 목록 끝의 접힌 칸에 둔다.
+   * 잠깐 생겼다 사라졌거나 병합으로 흡수된 사람(유령 트랙)의 사라짐 카드(S15P31A101-785). 진행 중에서 빼 목록 끝의 접힌 칸에 둔다.
    * 기록(life)을 주지 않으면 비어 있다.
    */
   ghost: CardGroup[];
+  /**
+   * 대상 사람이 사라진 진행 중 카드(movesToResolved, S15P31A101-798). 「진행 중」에서 빼 「최근 해소」 칸 맨 앞에 둔다. 아직 해소되지
+   * 않았으므로 「최근 해소」 건수 한도(RECENT_RESOLVED_INCIDENTS)에 넣지 않는다(목록에서 빠지지 않게). 유령 트랙 카드는 ghost 에 있다.
+   */
+  gone: CardGroup[];
   resolved: CardGroup[];
   stale: Incident[];
   staleEvents: number;
@@ -451,8 +464,9 @@ export function eventSections(
   );
   const { kept, ghost } = life ? splitGhostCards(cards, alive, life) : { kept: cards, ghost: [] };
   return {
-    active: kept,
+    active: kept.filter((card) => !movesToResolved(card, alive)),
     ghost,
+    gone: kept.filter((card) => movesToResolved(card, alive)),
     resolved: resolvedGroups(inRun(entries, runStartedAt), alive).slice(
       0,
       RECENT_RESOLVED_INCIDENTS,

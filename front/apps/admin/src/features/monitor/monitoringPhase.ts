@@ -221,14 +221,9 @@ export function monitoringText({
           true,
         );
       }
-      if (problem === 'delayed') {
-        return text(
-          '관제 시작 지연',
-          'bad',
-          '10초가 지나도 현장 장비가 이번 작업 설정을 적용하지 않아 경보가 아직 꺼져 있습니다.',
-          CHECK_SITE,
-        );
-      }
+      // 「관제 시작 지연」 표시는 뺐다(S15P31A101-798): 10초 넘게 적용 확인이 없어도 빨간 배지·안내 없이 평소의 「관제 중」을 보인다.
+      // 단계(problem: 'delayed')는 그대로 두어 작업 관리의 관제 적용 상태 줄(features/work/run)·보호구 감시 표시는 지금처럼 가른다.
+      if (problem === 'delayed') return text(ON_LABEL, 'ok');
       return text(STARTING_LABEL, 'wait');
     case 'ending':
       if (problem === 'link_lost') {
