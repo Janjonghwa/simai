@@ -45,6 +45,17 @@ describe('연습 빌드 GPU mock', () => {
     expect(await power()).toBe('CONNECTED');
   });
 
+  it('alwaysOn 이면 남긴 끈 상태도 무시하고 연결됨이며 끄기를 거절한다', async () => {
+    const storage = memoryStorage();
+    storage.setItem(`${MOCK_STATE_PREFIX}gpu`, '{"on":false}');
+    use(createGpuMock({ alwaysOn: true, storage, now: () => NOW }).handlers);
+    expect(await power()).toBe('CONNECTED');
+    const res = await fetch(`${BASE}/api/gpu/stop`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain('연습용 목업');
+    expect(await power()).toBe('CONNECTED');
+  });
+
   it('저장소가 없으면 기존처럼 꺼진 채 시작한다', async () => {
     use(createGpuMock({ now: () => NOW }).handlers);
     expect(await power()).toBe('OFF');

@@ -82,6 +82,15 @@ export function TopBar({ floating }: { floating: boolean }) {
         <Wordmark />
       </Link>
       <div className="ml-auto flex items-center gap-x-3">
+        {/* 연습 빌드만(-806): 실서버·실제 GPU 와 연결되지 않은 화면임을 늘 보인다. */}
+        {import.meta.env.VITE_MOCK_BUILD === 'true' && (
+          <span
+            title="실제 GPU·서버와 연결되지 않은 연습용 화면입니다"
+            className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
+          >
+            연습용 목업
+          </span>
+        )}
         <SiteLinkBadge />
         <GpuIndicator />
       </div>

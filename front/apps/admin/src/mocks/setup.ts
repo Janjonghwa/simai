@@ -893,11 +893,15 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     });
   }
 
-  /** autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션과 멈춘 세션은 두지 않는다. */
+  /**
+   * autoProgress: 시작 뒤 지난 시간만큼 단계를 앞으로만 넘긴다. 실패·취소한 세션, 멈춘 세션, 이미 끝난 세션은 두지 않는다.
+   * 끝난 세션(이전 맵 재사용은 처음부터 COMPLETED)을 걷기 대기로 되돌리면 세팅 완료가 SETUP_NOT_READY_TO_COMPLETE 로 막힌다(-806).
+   */
   function progressSession(session: SetupSessionResponse): SetupSessionResponse {
     if (
       !options.autoProgress ||
       session.status === 'FAILED' ||
+      session.status === 'COMPLETED' ||
       session.paused_reason ||
       session.started_at_ms === undefined
     ) {

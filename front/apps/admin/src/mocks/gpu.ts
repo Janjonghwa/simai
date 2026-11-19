@@ -18,8 +18,10 @@ interface MockLaunch {
 }
 
 export interface GpuMockOptions {
-  /** 처음부터 준비 완료(연결됨)로 시작한다. 연습 빌드(-806)는 GPU 켜기에서 막히지 않게 켠다. */
+  /** 처음부터 준비 완료(연결됨)로 시작한다. */
   startReady?: boolean;
+  /** 늘 준비 완료로 두고 끄기를 거절한다. 연습 빌드(-806)는 실제 GPU 가 없으니 GPU 단계에서 막히지 않게 켠다(저장소는 보지 않는다). */
+  alwaysOn?: boolean;
   /** 켜기·끄기를 남길 곳(연습 빌드의 localStorage). 남긴 값이 있으면 startReady 보다 먼저 따른다. */
   storage?: MockStateStorage | null;
   now?: () => number;
@@ -53,11 +55,11 @@ function readSavedLaunch(storage: MockStateStorage | null): MockLaunch | null | 
 export function createGpuMock(options: GpuMockOptions = {}) {
   const now = options.now ?? Date.now;
   const storage = options.storage ?? null;
-  const saved = readSavedLaunch(storage);
+  const saved = options.alwaysOn ? undefined : readSavedLaunch(storage);
   let launch: MockLaunch | null =
     saved !== undefined
       ? saved
-      : options.startReady
+      : options.startReady || options.alwaysOn
         ? {
             launch_id: crypto.randomUUID(),
             gpu_type: 'NVIDIA H100 80GB HBM3',
@@ -257,6 +259,13 @@ export function createGpuMock(options: GpuMockOptions = {}) {
       return HttpResponse.json(status().launch, { status: 201 });
     }),
     http.post('*/api/gpu/stop', () => {
+      if (options.alwaysOn) {
+        return problem(
+          409,
+          'MOCK_GPU_ALWAYS_ON',
+          '연습용 목업이라 GPU 를 끌 수 없습니다(실제 GPU·서버와 연결되지 않습니다)',
+        );
+      }
       if (!launch) return problem(409, 'GPU_NOT_ON', '켜져 있는 GPU 가 없습니다');
       launch = null;
       saveLaunch();
