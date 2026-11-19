@@ -141,6 +141,12 @@ public class WatchAlertService implements AutoCloseable {
     private final WatchBindings bindings;
     private final WatchHub hub;
     private final WatchProperties properties;
+    /**
+     * 시연 스위치(S15P31A101-793, simai.watch.demo-device): 비어 있지 않으면 배정과 상관없이 모든 LIVE 위험 이벤트를 이 워치로도 보낸다.
+     * 사람이 하나인 시연에서 걸음 대조·수동 배정을 기다리지 않게. 배정 표·채널 상태는 건드리지 않고 알림 행만 남긴다(world_id 는 이벤트의 첫 사람).
+     * 시험이 바꿀 수 있게 final 이 아니다
+     */
+    private volatile String demoDevice;
     private final RealtimePublisher publisher;
     private final ObjectMapper mapper;
     private final Clock clock;
@@ -170,8 +176,17 @@ public class WatchAlertService implements AutoCloseable {
         this.clock = clock;
         this.health = health;
         this.replayTest = replayTest;
+        this.demoDevice = properties.demoDevice();
+        if (demoDevice != null) {
+            log.warn("워치 시연 스위치 켜짐: 모든 위험 이벤트를 {} 로도 보낸다(simai.watch.demo-device). 본 운영에서는 비울 것", demoDevice);
+        }
         long period = properties.escalationInterval().toMillis();
         escalator.scheduleWithFixedDelay(this::escalateOverdue, period, period, TimeUnit.MILLISECONDS);
+    }
+
+    /** 시험용: 시연 스위치를 바꾼다(null 이면 끔) */
+    void setDemoDevice(String deviceId) {
+        this.demoDevice = deviceId == null || deviceId.isBlank() ? null : deviceId;
     }
 
     @TransactionalEventListener(fallbackExecution = true)
@@ -210,11 +225,17 @@ public class WatchAlertService implements AutoCloseable {
             return;
         }
         LiveEvent event = found.get();
-        bindings.devicesFor(event.worldIds()).forEach((worldId, device) -> {
+        Map<String, String> devices = bindings.devicesFor(event.worldIds());
+        devices.forEach((worldId, device) -> {
             if (hub.isConnected(device)) { // LOST: 워치로 보내지 않는다(기존 경로). 배정 없는 사람(UNBOUND)은 목록에 없다
                 send(event, worldId, device);
             }
         });
+        // 시연 스위치: 배정이 없어도(또는 다른 워치에 배정돼 있어도) 지정 워치로 보낸다. 같은 이벤트·워치 중복은 send 가 거른다
+        String demo = demoDevice;
+        if (demo != null && !devices.containsValue(demo) && hub.isConnected(demo)) {
+            send(event, event.worldIds().getFirst(), demo);
+        }
     }
 
     /** 해소된 LIVE 이벤트면, 그 이벤트로 알림을 받았고 아직 지우지 않은 연결된 워치마다 watch_alert_clear 를 한 번 보낸다 */

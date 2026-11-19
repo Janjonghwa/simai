@@ -33,9 +33,14 @@ class WatchBindingController {
     record BindRequest(@JsonProperty("world_id") String worldId) {
     }
 
+    /**
+     * handoff_from·handoff_confirmed_at(S15P31A101-793): 자리 이어받기로 옮겨 온 배정이면 사라진 옛 World ID 와 대조가 확정한 시각(epoch ms,
+     * 확정 전이면 null). 둘 다 없으면 보통 배정
+     */
     record BindingResponse(@JsonProperty("binding_id") long bindingId, @JsonProperty("device_id") String deviceId,
             @JsonProperty("world_id") String worldId, @JsonProperty("method") String method,
-            @JsonProperty("bound_at") long boundAt, @JsonProperty("channel_state") String channelState) {
+            @JsonProperty("bound_at") long boundAt, @JsonProperty("channel_state") String channelState,
+            @JsonProperty("handoff_from") String handoffFrom, @JsonProperty("handoff_confirmed_at") Long handoffConfirmedAt) {
     }
 
     private final WatchBindings bindings;
@@ -67,6 +72,7 @@ class WatchBindingController {
 
     private BindingResponse response(WatchBindings.Binding b) {
         return new BindingResponse(b.bindingId(), b.deviceId(), b.worldId(), b.method(), b.boundAt().toEpochMilli(),
-                hub.isConnected(b.deviceId()) ? "BOUND" : "LOST");
+                hub.isConnected(b.deviceId()) ? "BOUND" : "LOST", b.handoffFrom(),
+                b.handoffConfirmedAt() == null ? null : b.handoffConfirmedAt().toEpochMilli());
     }
 }

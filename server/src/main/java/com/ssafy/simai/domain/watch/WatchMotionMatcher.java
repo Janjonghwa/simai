@@ -41,9 +41,11 @@ import tools.jackson.databind.ObjectMapper;
  *       워치 0.5~3 Hz 크기 신호와 트랙 연직 가속도(손목 둘·골반)의 밀어 본 상관(강화층), 손목·골반이 없으면 걷기/멈춤 일치(기본층).</li>
  *   <li>점수는 창마다 감쇠해 누적한다(몇 초 창 점수표). 헝가리안으로 1:1 을 고르고 점수·차이 문턱을 넘은 짝만 잇는다.</li>
  *   <li>ID 병합·분할이 보이면 그 World ID 의 점수와 대조 배정을 지우고 잠시(3초) 잇지 않는다(UNBOUND).</li>
+ *   <li>자리 이어받기(S15P31A101-793): 배정된 트랙이 사라진 뒤 5초 안에 그 마지막 자리 1.5 m 안에 새 트랙 하나만 나타나면 배정을
+ *       새 ID 로 옮긴다(임시). 같은 짝을 대조가 다시 뽑으면 확정, 반대 근거가 쌓이면 푼다.</li>
  *   <li>World ID 별 채널 상태(BOUND·UNBOUND·LOST)가 바뀌면 channel_state 에 한 행.</li>
  * </ol>
- * 관리자 수동 배정(MANUAL)이 걸린 워치·World ID 는 대조가 건드리지 않는다. 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
+ * 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는 대조가 건드리지 않는다. 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
  */
 @Service
 public class WatchMotionMatcher implements DisposableBean {
@@ -90,13 +92,24 @@ public class WatchMotionMatcher implements DisposableBean {
     static final int MAX_MERGE_HANDLED = 2_000;
     /** 트랙 표본을 비교 시각에 맞출 때 허용하는 차이 */
     static final long SAMPLE_TOLERANCE_MS = 60;
+    /**
+     * 자리 이어받기(S15P31A101-793). 배정된 트랙이 마지막으로 보인 뒤 이 시간 안에(가려졌다 나오는 데 걸리는 시간, Tier 0 가 끊긴 트랙을
+     * 새 ID 로 다시 내는 데 1~3초) 마지막 자리에서 이 거리 안에(한 사람이 2 m/s 로 반 초 남짓 움직이는 거리, 나란히 선 두 사람의 간격
+     * 0.5~1 m 보다 넓어 후보가 둘이면 옮기지 않는 쪽으로 걸린다) 새 트랙이 나타나야 한다
+     */
+    static final long HANDOFF_WINDOW_MS = 5_000;
+    static final double HANDOFF_RADIUS_M = 1.5;
+    /** 새 트랙이 옛 트랙과 이보다 오래 같이 보였으면 다른 사람이다(Tier 0 가 한 사람을 잠깐 둘로 보는 겹침만 허용) */
+    static final long HANDOFF_OVERLAP_MS = 1_000;
+    /** 새 트랙이 이만큼 보인 뒤에 옮긴다. 바로 옮기면 반 박자 늦게 나타난 두 번째 후보(같은 사람의 두 조각·옆 사람)를 못 본다 */
+    static final long HANDOFF_SETTLE_MS = 300;
     private static final Set<String> WRIST_LAYOUTS = Set.of("COCO17", "HALPE26");
     private static final int L_WRIST = 9;
     private static final int R_WRIST = 10;
     private static final Logger log = LoggerFactory.getLogger(WatchMotionMatcher.class);
 
-    /** 손목은 3D(x, y, z), 관측 없음·추정(inferred)은 NaN */
-    private record Sample(double[] left, double[] right, double pelvisZ, double speed) {
+    /** 손목은 3D(x, y, z), 관측 없음·추정(inferred)은 NaN. x·y 는 구역 판정용 수평 위치(position_xy, 자리 이어받기에 쓴다) */
+    private record Sample(double[] left, double[] right, double pelvisZ, double speed, double x, double y) {
         double leftZ() {
             return left[2];
         }
@@ -111,6 +124,13 @@ public class WatchMotionMatcher implements DisposableBean {
     private static final class Track {
         final TreeMap<Long, Sample> samples = new TreeMap<>();
         long lastSeen;
+        /** 처음 보인 World 시각과 그때 자리(자리 이어받기의 "새 트랙"·"그 자리" 판단) */
+        long firstSeen = -1;
+        double firstX = Double.NaN;
+        double firstY = Double.NaN;
+        /** 마지막으로 보인 자리 */
+        double lastX = Double.NaN;
+        double lastY = Double.NaN;
         int revision = -1;
         long suspectUntil;
     }
@@ -138,10 +158,16 @@ public class WatchMotionMatcher implements DisposableBean {
 
     private final WatchHub hub;
     private final WatchBindings bindings;
+    private final PersonDisplayNames displayNames;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final ScheduledExecutorService executor;
+    /**
+     * 마지막 대조 때의 지금 배정(World ID → 배정). 자리 이어받기는 10 Hz 입력마다 보므로 DB 대신 이것을 보고, 옮기면 바로 고친다.
+     * 대조 주기(2초) 사이에 들어온 수동 배정은 다음 주기까지 모른다(그 사이 그 트랙이 사라지면 이어받지 못하고 관리자가 다시 넣는다)
+     */
+    private Map<String, Binding> boundByWorld = new HashMap<>();
 
     /** 이미 처리한 병합("옛>새"). aliases 는 한동안 계속 실려 오므로 한 번만 처리하려고 기억한다(오래된 것부터 버림) */
     private final LinkedHashSet<String> mergeHandled = new LinkedHashSet<>();
@@ -153,10 +179,11 @@ public class WatchMotionMatcher implements DisposableBean {
     private final java.util.concurrent.atomic.AtomicInteger pendingWorld = new java.util.concurrent.atomic.AtomicInteger();
     private long latestWorldMs;
 
-    WatchMotionMatcher(WatchHub hub, WatchBindings bindings, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper,
-            WatchProperties properties, Clock clock) {
+    WatchMotionMatcher(WatchHub hub, WatchBindings bindings, PersonDisplayNames displayNames, NamedParameterJdbcTemplate jdbc,
+            ObjectMapper mapper, WatchProperties properties, Clock clock) {
         this.hub = hub;
         this.bindings = bindings;
+        this.displayNames = displayNames;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
@@ -280,12 +307,102 @@ public class WatchMotionMatcher implements DisposableBean {
             double speed = v.isArray() && v.size() >= 2 ? Math.hypot(v.get(0).asDouble(), v.get(1).asDouble()) : Double.NaN;
             JsonNode pelvis = track.path("pelvis_xyz");
             double pelvisZ = pelvis.isArray() && pelvis.size() >= 3 ? pelvis.get(2).asDouble() : Double.NaN;
+            JsonNode xy = track.path("position_xy");
+            // null·숫자 아님은 asDouble 이 0 을 주므로(원점에 있는 것으로 보게 된다) 숫자일 때만 자리로 쓴다
+            boolean hasXy = xy.isArray() && xy.size() >= 2 && xy.get(0).isNumber() && xy.get(1).isNumber();
+            double x = hasXy ? xy.get(0).asDouble() : Double.NaN;
+            double y = hasXy ? xy.get(1).asDouble() : Double.NaN;
             JsonNode skeleton = track.path("skeleton");
             boolean wrists = WRIST_LAYOUTS.contains(skeleton.path("joint_layout").asString(""));
             buf.samples.put(t, new Sample(wrists ? joint(skeleton, L_WRIST) : NO_JOINT,
-                    wrists ? joint(skeleton, R_WRIST) : NO_JOINT, pelvisZ, speed));
+                    wrists ? joint(skeleton, R_WRIST) : NO_JOINT, pelvisZ, speed, x, y));
+            if (buf.firstSeen < 0) {
+                buf.firstSeen = t;
+            }
+            if (hasXy) {
+                if (Double.isNaN(buf.firstX)) {
+                    buf.firstX = x; // 처음 자리를 안 프레임(첫 프레임에 자리가 없을 수 있다)
+                    buf.firstY = y;
+                }
+                buf.lastX = x;
+                buf.lastY = y;
+            }
             buf.lastSeen = t;
             buf.samples.headMap(t - BUFFER_MS).clear();
+        }
+        handoffVanished(t);
+    }
+
+    /**
+     * 자리 이어받기(S15P31A101-793). 이번 프레임에 없는 배정된 트랙(5초 안에 보였던 것)마다, 그 마지막 자리 1.5 m 안에 처음 나타난
+     * 배정 없는 트랙이 꼭 하나이고(옛 트랙과 1초 넘게 같이 보인 것은 다른 사람), 옛 자리 근처에 배정 없는 다른 트랙이 없고, 그 새 트랙 근처에
+     * 사라진 배정 트랙이 둘이 아니면(두 사람이 같이 가려짐) 배정을 새 ID 로 옮긴다. 후보가 둘이면 옮기지 않는다: 바꿔 끼우는 것이
+     * 안 붙는 것보다 나쁘다(틀린 사람 손목이 울린다). 옮긴 배정은 임시이고 옛 점수는 버린다. 미확인 번호·이름은 병합처럼 따라간다.
+     * Tier 0 는 가림이든 퇴장이든 측정 공백 3초 뒤 LOST 한 번을 내고 트랙을 뺀다(tier0-world-track.md)라 둘을 가를 수 없다. 퇴장한
+     * 사람 자리로 5초 안에 다른 사람이 들어오면 틀리게 옮길 수 있고, 그때는 임시 배정의 반증(걸음 불일치)·관리자 재배정이 막는다.
+     */
+    private void handoffVanished(long now) {
+        if (boundByWorld.isEmpty()) {
+            return;
+        }
+        List<Track> vanished = new ArrayList<>();
+        List<String> vanishedIds = new ArrayList<>();
+        boundByWorld.forEach((world, b) -> {
+            Track old = tracks.get(world);
+            if (old != null && old.lastSeen < now && old.lastSeen >= now - HANDOFF_WINDOW_MS && old.suspectUntil <= old.lastSeen
+                    && !Double.isNaN(old.lastX)) {
+                vanished.add(old);
+                vanishedIds.add(world);
+            }
+        });
+        for (int i = 0; i < vanished.size(); i++) {
+            Track old = vanished.get(i);
+            String oldId = vanishedIds.get(i);
+            String candidate = null;
+            boolean ambiguous = false;
+            for (Map.Entry<String, Track> e : tracks.entrySet()) {
+                Track t = e.getValue();
+                if (t.lastSeen < now || boundByWorld.containsKey(e.getKey()) || Double.isNaN(t.firstX)) {
+                    continue; // 지금 안 보이거나, 이미 배정이 있거나, 자리를 모른다
+                }
+                boolean nearNow = Math.hypot(t.lastX - old.lastX, t.lastY - old.lastY) <= HANDOFF_RADIUS_M;
+                boolean young = t.firstSeen >= old.lastSeen - HANDOFF_OVERLAP_MS && t.suspectUntil <= now
+                        && Math.hypot(t.firstX - old.lastX, t.firstY - old.lastY) <= HANDOFF_RADIUS_M;
+                if (young) {
+                    ambiguous |= candidate != null;
+                    candidate = e.getKey();
+                } else if (nearNow) {
+                    ambiguous = true; // 옛 자리에 배정 없는 다른 사람이 서 있다
+                }
+            }
+            if (candidate == null || ambiguous) {
+                continue;
+            }
+            Track fresh = tracks.get(candidate);
+            if (fresh.firstSeen > now - HANDOFF_SETTLE_MS) {
+                continue; // 조금 더 보고 옮긴다(두 번째 후보가 뒤따라 나오면 위에서 모호해진다)
+            }
+            boolean othersVanishedNear = false;
+            for (int k = 0; k < vanished.size(); k++) {
+                Track other = vanished.get(k);
+                if (k != i && Math.hypot(other.lastX - fresh.firstX, other.lastY - fresh.firstY) <= HANDOFF_RADIUS_M) {
+                    othersVanishedNear = true; // 두 사람이 같이 가려졌다 하나만 나왔다: 누구인지 모른다
+                }
+            }
+            if (othersVanishedNear) {
+                continue;
+            }
+            Binding moved = bindings.handoff(oldId, candidate);
+            boundByWorld.remove(oldId);
+            tracks.remove(oldId);
+            if (moved == null) {
+                continue; // 그 사이 배정이 바뀌었다(수동 배정·해제). 다음 대조가 DB 를 다시 읽는다
+            }
+            boundByWorld.put(candidate, moved);
+            // 옛 점수는 옮기지 않는다: 옮기면 새 트랙의 걸음을 한 창도 보지 않고 옛 점수만으로 확정될 수 있다. 확정은 새 트랙의 근거로만
+            scores.values().forEach(row -> row.remove(oldId));
+            log.info("자리 이어받기: device={} world_id {} → {} (방식 {}, 임시)", moved.deviceId(), oldId, candidate, moved.method());
+            displayNames.recordHandoff(oldId, candidate);
         }
     }
 
@@ -366,15 +483,19 @@ public class WatchMotionMatcher implements DisposableBean {
         }
         scoreWindows(now);
         List<Binding> active = bindings.active();
+        Map<String, Binding> byWorld = new HashMap<>();
+        active.forEach(b -> byWorld.put(b.worldId(), b));
+        boundByWorld = byWorld;
         Set<String> manualDevices = new HashSet<>();
         Set<String> manualWorlds = new HashSet<>();
-        Map<String, String> motion = new HashMap<>();
+        // 대조가 다루는 배정: 대조 배정과 임시 이어받기(수동이라도). 확정된 수동은 관리자 것이라 행·열에서 뺀다
+        Map<String, Binding> motion = new HashMap<>();
         for (Binding b : active) {
-            if ("MANUAL".equals(b.method())) {
+            if (b.manualFixed()) {
                 manualDevices.add(b.deviceId());
                 manualWorlds.add(b.worldId());
             } else {
-                motion.put(b.deviceId(), b.worldId());
+                motion.put(b.deviceId(), b);
             }
         }
         List<String> rows = new ArrayList<>();
@@ -394,15 +515,26 @@ public class WatchMotionMatcher implements DisposableBean {
         // 이미 이은 대조 배정: 같은 짝이 다시 뽑혔거나, 경쟁 짝이 없고 점수가 KEEP 이상(또는 아직 근거가 없음)이면 둔다.
         // 근거 없음은 서버 재시작 직후 점수표가 빈 경우다. 그때 배정을 다 풀면 다시 쌓는 동안 모두 UNBOUND 가 된다
         Set<String> acceptedWorlds = new HashSet<>(accepted.values());
-        for (Map.Entry<String, String> e : motion.entrySet()) {
+        for (Map.Entry<String, Binding> e : motion.entrySet()) {
             String device = e.getKey();
-            String world = e.getValue();
+            Binding b = e.getValue();
+            String world = b.worldId();
             Track t = tracks.get(world);
             boolean same = world.equals(accepted.get(device));
             boolean contested = accepted.containsKey(device) || acceptedWorlds.contains(world);
             boolean alive = t != null && t.lastSeen >= now - TRACK_GONE_MS && t.suspectUntil <= now;
             Double evidence = scores.getOrDefault(device, Map.of()).get(world);
-            if (same || (!contested && alive && (evidence == null || evidence >= KEEP_SCORE))) {
+            if (same && b.tentative()) {
+                // 자리로 옮긴 배정을 대조가 같은 짝으로 다시 뽑았다: 확정(수동이면 다시 관리자 것). 새 행을 만들지 않는다
+                if (bindings.confirmHandoff(device, world)) {
+                    log.info("자리 이어받기 확정: device={} world_id={} score={}", device, world, String.format("%.2f", score(device, world)));
+                }
+                accepted.remove(device);
+                continue;
+            }
+            // 임시 이어받기는 반대 근거(음수)가 쌓일 때만 푼다. 걷기 일치 같은 약한 근거(0.2)로 수동 배정을 풀지 않으려고 문턱을 0 으로 둔다
+            double keep = b.tentative() ? 0 : KEEP_SCORE;
+            if (same || (!contested && alive && (evidence == null || evidence >= keep))) {
                 accepted.remove(device);
                 continue;
             }
@@ -414,6 +546,10 @@ public class WatchMotionMatcher implements DisposableBean {
             }
         });
         writeChannelStates(now);
+        // 이번 대조가 잇고 푼 결과까지 반영한 배정 목록을 자리 이어받기가 쓴다(다음 대조까지 2초 동안 옛 목록으로 보지 않게)
+        Map<String, Binding> latest = new HashMap<>();
+        bindings.active().forEach(b -> latest.put(b.worldId(), b));
+        boundByWorld = latest;
         tracks.values().removeIf(t -> t.lastSeen < now - BUFFER_MS);
         // 사라진 트랙의 점수 칸, 창이 없고 연결도 없는 워치를 지운다(익명 ID 는 계속 새로 나온다)
         scores.values().forEach(row -> row.keySet().retainAll(tracks.keySet()));

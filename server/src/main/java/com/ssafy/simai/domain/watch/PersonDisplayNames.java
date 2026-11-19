@@ -287,6 +287,31 @@ public class PersonDisplayNames {
         events.publishEvent(new PersonDisplayNamesChanged());
     }
 
+    /**
+     * 워치 배정 자리 이어받기(S15P31A101-793, WatchMotionMatcher): 사라진 {@code vanishedWorldId} 의 이름·미확인 번호를 새
+     * {@code newWorldId} 가 이어받는다. Tier 0 병합(aliases)과 같은 승계 규칙이다. 화면 이름표 번호가 바뀌지 않아야 관리자가
+     * 같은 사람으로 알아본다. 같은 쌍을 다시 받으면(멱등 기록) 아무것도 하지 않는다
+     */
+    public void recordHandoff(String vanishedWorldId, String newWorldId) {
+        if (vanishedWorldId == null || newWorldId == null || vanishedWorldId.equals(newWorldId) || vanishedWorldId.length() > 64
+                || newWorldId.length() > 64) {
+            return;
+        }
+        String siteId = findSingleSiteOrNull();
+        if (siteId == null) {
+            return;
+        }
+        LocalDate today = today();
+        Boolean mutated = requiresNewTx.execute(status -> {
+            lockSiteDate(siteId, today);
+            return applySingleMergeLocked(siteId, today, vanishedWorldId, newWorldId,
+                    OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+        });
+        if (Boolean.TRUE.equals(mutated)) {
+            events.publishEvent(new PersonDisplayNamesChanged());
+        }
+    }
+
     public void observeWorldPayload(JsonNode payload) {
         if (payload == null) {
             return;
