@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     blocked = gpu.policy.live_blocked_types
     blocked = (blocked - {"static_reconstruct"}) if during_live == "1" else (blocked | {"scene_regenerate"})
-    gpu = replace(gpu, policy=replace(gpu.policy, live_blocked_types=frozenset(blocked)))
+    gpu = replace(gpu, policy=replace(gpu.policy, live_blocked_types=frozenset(blocked), processing_blocks=True))
     transport = HttpTransport(base_url, token)
     store = HttpObjectStore(transport)
     live_gate_probe = AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic)

@@ -432,3 +432,11 @@ def test_worker_hold_defers_site_setup_if_marker_becomes_unhealthy_after_lease(e
     assert w.run_once() is Outcome.DEFERRED
     job = ec2.jobs[setup_id]
     assert job.state == "QUEUED" and job.attempt == 0 and job.error["code"] == "TIER0_PRIORITY"
+
+
+def test_processing_overload_pauses_before_lease(ec2, make):
+    ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST")
+    busy = Admission(True, False, "처리 부하 지속 초과", DEFAULT_LIVE_BLOCKED, "tier0_overloaded")
+    w = make({"vlm_rationale": never}, ScriptedGate(busy))
+    assert w.run_once() is Outcome.PAUSED
+    assert ec2.bodies("lease") == []

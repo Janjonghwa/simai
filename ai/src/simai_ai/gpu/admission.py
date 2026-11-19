@@ -32,8 +32,8 @@ Tier 0 쪽(LoadWindow): 정리 주기(약 1초)마다 보정 T_lag(HealthReport.
 
 시계는 주입받는다(wall_s: 표시 파일 수정 시각과 비교·계측 시각, monotonic: 안정 대기·linger).
 
-S15P31A101-498: 상시 아바타는 AvatarAdmissionGate로 처리 부하(processing)를 읽는다. 위 끝단 지연·큐 대기 규칙은
-분석 워커 AdmissionGate에 유지한다. 파일·예약·안정 재개·LIVE 유형 제한은 공통이다.
+상시 아바타는 AvatarAdmissionGate로 처리 부하(processing)를 읽는다. 분석 워커는 끝단 지연·큐 대기와 처리 부하를
+함께 확인하며 PPE는 끝단 지연·큐 대기만 확인한다. 파일·예약·안정 재개·LIVE 유형 제한은 공통이다.
 """
 
 from __future__ import annotations
@@ -93,6 +93,7 @@ NO_SAMPLES = "no_samples"
 LAG_UNKNOWN = "lag_unknown"
 OVER_BUDGET = "over_budget"
 QUEUE_WAIT_EXCEEDED = "queue_wait_exceeded"
+TIER0_OVERLOADED = "tier0_overloaded"
 TIER0_STOPPED = "tier0_stopped"  # 정상 종료 기록으로 LIVE 아님(S15P31A101-403)
 
 
@@ -179,6 +180,10 @@ def _count(v: Any) -> bool:
 
 @dataclass(frozen=True)
 class AdmissionPolicy:
+    detect_budget_ms: float = 150.0
+    judge_budget_ms: float = 200.0
+    over_budget_hold_s: float = 10.0
+    processing_blocks: bool = False
     lag_budget_ms: int = DEFAULT_LAG_BUDGET_MS
     max_marker_age_s: float = 15.0
     resume_after_s: float = DEFAULT_RESUME_AFTER_S  # 멈춘 뒤 이만큼 통과가 이어져야 다시 받음(근거: 10차 실측, 설계 문서)
@@ -191,6 +196,8 @@ class AdmissionPolicy:
     setup_lag_budget_ms: int | None = None
 
     def __post_init__(self) -> None:
+        if not all(_number(v) and v > 0 for v in (self.detect_budget_ms, self.judge_budget_ms)) or not _number(self.over_budget_hold_s) or self.over_budget_hold_s < 0:
+            raise ValueError("처리 예산은 양수, 유지 시간은 0 이상이다")
         if self.lag_budget_ms <= 0 or self.max_marker_age_s <= 0:
             raise ValueError("lag_budget_ms·max_marker_age_s 는 양수다")
         if self.resume_after_s < 0 or self.live_linger_s < 0:
@@ -247,6 +254,14 @@ class AdmissionGate:
         self._opened = False
         self._last_marker_id: tuple[int, bytes] | None = None
         self._setup_admit_types: frozenset[str] = frozenset()
+        self.judge_budget_ms = policy.judge_budget_ms
+        self.detect_budget_ms = policy.detect_budget_ms
+        self.judge_throttle_ms = policy.judge_budget_ms
+        self.detect_throttle_ms = policy.detect_budget_ms
+        self.extreme_lag_ms = math.inf
+        self._last_pressure = 0.0
+        self._recommended_interval_ms = 200
+        self._processing_over_since: float | None = None
         # 계측(판정에 쓰지 않음)
         self.blocked: Counter[str] = Counter()  # 받지 않은 check 횟수, 사유 코드별
         self.resets: Counter[str] = Counter()  # 열림·안정 대기를 지운 횟수, 사유 코드별
@@ -296,10 +311,12 @@ class AdmissionGate:
         state, code, reason, marker_id, qwe = self._evaluate()
         blocked = self.policy.live_blocked_types
         if state == "absent" and not self.policy.allow_without_marker:
+            self._processing_over_since = None
             self._close(code, reason)
             return self._refuse(f"{reason}·정상 종료 기록 없음 → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
                                 "관제가 없는 개발 시간이면 SIMAI_WORKER_DEV_NO_LIVE=1", code)
         if state in ("absent", "stopped"):  # stopped: 정상 종료 기록(S15P31A101-403), absent: 개발 모드(allow_without_marker)
+            self._processing_over_since = None
             self._close(code, reason)
             if self._live_seen is not None and now - self._live_seen < self.policy.live_linger_s:
                 left = self.policy.live_linger_s - (now - self._live_seen)
@@ -307,6 +324,18 @@ class AdmissionGate:
             self._live_seen = None
             return Admission(False, True, reason, blocked, NOT_LIVE)
         self._live_seen = now
+        if state == "over_p95":
+            if self._processing_over_since is None:
+                self._processing_over_since = now
+            if self.policy.processing_blocks and now - self._processing_over_since >= self.policy.over_budget_hold_s:
+                self._setup_admit_types = frozenset()
+                self._close(TIER0_OVERLOADED, reason)
+                return self._refuse(reason, TIER0_OVERLOADED)
+            if not self._opened:
+                self._close(TIER0_OVERLOADED, reason)
+                return self._refuse(reason, TIER0_OVERLOADED)
+        else:
+            self._processing_over_since = None
         if state == "refuse":
             self._close(code, reason)
             return self._refuse(reason, code, admit_types=self._setup_admit_types)
@@ -403,6 +432,11 @@ class AdmissionGate:
             return ("refuse", QUEUE_WAIT_EXCEEDED,
                     f"추론 대기 상한을 넘겨 버린 프레임 {qwe}개(창당 {self.policy.max_queue_wait_exceeded}개 초과)",
                     marker_id, 0)
+        self._last_pressure = 0.0
+        if self.policy.processing_blocks and "processing" in gp:
+            result = _evaluate_processing(self, gp, marker_id)
+            if result[0] != "ok":
+                return (*result[:4], qwe)
         return "ok", OK, f"Tier 0 지연 {lag_max:.0f}ms ≤ 예산 {self.policy.lag_budget_ms}ms", marker_id, qwe
 
 
@@ -463,6 +497,34 @@ def avatar_budgets_from_env(env: Mapping[str, str]) -> tuple[float, float]:
     return out[0], out[1]
 
 
+
+def admission_values_from_env(env: Mapping[str, str]) -> tuple[float, float, float]:
+    """판정·검출 예산과 초과 유지 시간. 잘못된 설정은 경고 후 기본값."""
+    values = []
+    for name, default, zero_ok in (("SIMAI_ADMISSION_JUDGE_BUDGET_MS", 200.0, False), ("SIMAI_ADMISSION_DETECT_BUDGET_MS", 150.0, False), ("SIMAI_ADMISSION_HOLD_S", 10.0, True)):
+        raw = (env.get(name) or "").strip()
+        try:
+            value = float(raw) if raw else default
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or value < 0 or (not zero_ok and value == 0):
+            log.warning("%s=%r 값이 잘못되어 기본값 %g 사용", name, raw, default)
+            value = default
+        values.append(value)
+    return tuple(values)
+
+
+def avatar_reopen_guard_from_env(env: Mapping[str, str]) -> float:
+    raw = (env.get("SIMAI_AVATAR_REOPEN_GUARD_S") or "").strip()
+    try:
+        value = float(raw) if raw else 10.0
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value < 0:
+        log.warning("SIMAI_AVATAR_REOPEN_GUARD_S=%r 값이 잘못되어 기본값 10 사용", raw)
+        return 10.0
+    return value
+
 class AvatarAdmissionGate(AdmissionGate):
     """아바타 전용 처리 부하 기준(S15P31A101-498·547·717).
 
@@ -486,13 +548,18 @@ class AvatarAdmissionGate(AdmissionGate):
         extreme_lag_ms: float = AVATAR_EXTREME_LAG_MS,
         judge_budget_ms: float = AVATAR_JUDGE_BUDGET_MS,
         detect_budget_ms: float = AVATAR_DETECT_BUDGET_MS,
+        reopen_guard_s: float = 10.0,
     ) -> None:
+        if not _number(reopen_guard_s) or reopen_guard_s < 0:
+            raise ValueError("reopen_guard_s 는 0 이상이다")
         if over_budget_hold_s < 0 or extreme_lag_ms <= 0:
             raise ValueError("over_budget_hold_s 는 0 이상, extreme_lag_ms 는 양수다")
         if not (_number(judge_budget_ms) and judge_budget_ms > 0 and _number(detect_budget_ms) and detect_budget_ms > 0):
             raise ValueError("judge_budget_ms·detect_budget_ms 는 양수다")
         super().__init__(marker, policy, wall_s=wall_s, monotonic=monotonic)
         self.over_budget_hold_s = float(over_budget_hold_s)
+        self.reopen_guard_s = reopen_guard_s
+        self._reopened_at: float | None = None
         self.extreme_lag_ms = float(extreme_lag_ms)
         self.judge_budget_ms = float(judge_budget_ms)
         self.detect_budget_ms = float(detect_budget_ms)
@@ -542,7 +609,8 @@ class AvatarAdmissionGate(AdmissionGate):
             return self._refuse(reason, code)
         self._last_marker_id = marker_id
         if state == "over_p95":
-            if self._blocked:
+            if self._blocked or (self._reopened_at is not None and now - self._reopened_at < self.reopen_guard_s):
+                self._blocked = True
                 self._close(code, reason)
                 return self._refuse(reason, code)
             if self._over_since is None:
@@ -567,6 +635,7 @@ class AvatarAdmissionGate(AdmissionGate):
             if held < self.policy.resume_after_s:
                 return self._refuse(f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", STABILIZING)
             self._blocked = False
+            self._reopened_at = now
             self._ok_since = None
         if not self._opened:
             self._opened = True
@@ -574,48 +643,52 @@ class AvatarAdmissionGate(AdmissionGate):
         return Admission(True, True, reason, blocked, OK)
 
     def _evaluate_load(self, gp, marker_id):
-        processing = gp.get("processing")
-        if not isinstance(processing, dict) or not isinstance(processing.get("detect_required"), bool):
-            return "refuse", LAG_UNKNOWN, "Tier 0 처리 부하 신호 없음 → 모름", marker_id, 0
-        stages = [("judge", self.judge_budget_ms)]
-        if processing["detect_required"]:
-            stages.append(("detect", self.detect_budget_ms))
-        parsed: list[tuple[str, float, float, float, bool]] = []
-        for stage, budget in stages:
-            load = processing.get(stage)
-            if (not isinstance(load, dict) or not _count(load.get("samples")) or load["samples"] == 0
-                    or not _count(load.get("unknown")) or load["unknown"] > 0
-                    or not _number(load.get("lag_ms_max")) or load["lag_ms_max"] < 0):
+        return _evaluate_processing(self, gp, marker_id)
+
+
+def _evaluate_processing(self, gp, marker_id):
+    processing = gp.get("processing")
+    if not isinstance(processing, dict) or not isinstance(processing.get("detect_required"), bool):
+        return "refuse", LAG_UNKNOWN, "Tier 0 처리 부하 신호 없음 → 모름", marker_id, 0
+    stages = [("judge", self.judge_budget_ms)]
+    if processing["detect_required"]:
+        stages.append(("detect", self.detect_budget_ms))
+    parsed: list[tuple[str, float, float, float, bool]] = []
+    for stage, budget in stages:
+        load = processing.get(stage)
+        if (not isinstance(load, dict) or not _count(load.get("samples")) or load["samples"] == 0
+                or not _count(load.get("unknown")) or load["unknown"] > 0
+                or not _number(load.get("lag_ms_max")) or load["lag_ms_max"] < 0):
+            return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
+        lag_max = float(load["lag_ms_max"])
+        has_p95 = "lag_ms_p95" in load
+        if has_p95:
+            raw_p95 = load["lag_ms_p95"]
+            if not _number(raw_p95) or raw_p95 < 0:
                 return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
-            lag_max = float(load["lag_ms_max"])
-            has_p95 = "lag_ms_p95" in load
-            if has_p95:
-                raw_p95 = load["lag_ms_p95"]
-                if not _number(raw_p95) or raw_p95 < 0:
-                    return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
-                lag_p95 = float(raw_p95)
-            else:
-                # 옛 표시 파일 호환: lag_ms_p95 필드가 없으면 창 최댓값(p95 의 보수적 상한)을 쓴다.
-                lag_p95 = lag_max
-            parsed.append((stage, budget, lag_p95, lag_max, has_p95))
-        throttle_ref = {"judge": self.judge_throttle_ms, "detect": self.detect_throttle_ms}
-        pressure = max((lag_p95 / throttle_ref[stage] for stage, _budget, lag_p95, _lag_max, _has_p95 in parsed),
-                       default=0.0)
-        self._last_pressure = pressure
-        self._recommended_interval_ms = avatar_recommended_interval_ms(pressure)
-        for stage, _budget, _lag_p95, lag_max, _has_p95 in parsed:
-            if lag_max >= self.extreme_lag_ms:
-                return ("refuse", OVER_BUDGET,
-                        f"Tier 0 {stage} 처리 최댓값 {lag_max:.1f}ms ≥ 극단값 {self.extreme_lag_ms:.0f}ms",
-                        marker_id, 0)
-        # 모든 단계의 p95/예산을 함께 남긴다(17차: 판정 사유만 보여 검출 쪽 여유를 알 수 없었다)
-        summary = "·".join(f"{stage} {'p95' if has_p95 else 'max'} {lag_p95:.1f}/{budget:g}ms"
-                           for stage, budget, lag_p95, _lag_max, has_p95 in parsed)
-        for stage, budget, lag_p95, _lag_max, has_p95 in parsed:
-            if lag_p95 > budget:
-                metric = "p95" if has_p95 else "max(p95 없음)"
-                return ("over_p95", OVER_BUDGET,
-                        f"Tier 0 {stage} 처리 {metric} {lag_p95:.1f}ms > {budget:g}ms ({summary})",
-                        marker_id, 0)
-        return "ok", OK, f"Tier 0 판정·검출 처리 부하 정상 ({summary})", marker_id, 0
+            lag_p95 = float(raw_p95)
+        else:
+            # 옛 표시 파일 호환: lag_ms_p95 필드가 없으면 창 최댓값(p95 의 보수적 상한)을 쓴다.
+            lag_p95 = lag_max
+        parsed.append((stage, budget, lag_p95, lag_max, has_p95))
+    throttle_ref = {"judge": self.judge_throttle_ms, "detect": self.detect_throttle_ms}
+    pressure = max((lag_p95 / throttle_ref[stage] for stage, _budget, lag_p95, _lag_max, _has_p95 in parsed),
+                   default=0.0)
+    self._last_pressure = pressure
+    self._recommended_interval_ms = avatar_recommended_interval_ms(pressure)
+    for stage, _budget, _lag_p95, lag_max, _has_p95 in parsed:
+        if lag_max >= self.extreme_lag_ms:
+            return ("refuse", OVER_BUDGET,
+                    f"Tier 0 {stage} 처리 최댓값 {lag_max:.1f}ms ≥ 극단값 {self.extreme_lag_ms:.0f}ms",
+                    marker_id, 0)
+    # 모든 단계의 p95/예산을 함께 남긴다(17차: 판정 사유만 보여 검출 쪽 여유를 알 수 없었다)
+    summary = "·".join(f"{stage} {'p95' if has_p95 else 'max'} {lag_p95:.1f}/{budget:g}ms"
+                       for stage, budget, lag_p95, _lag_max, has_p95 in parsed)
+    for stage, budget, lag_p95, _lag_max, has_p95 in parsed:
+        if lag_p95 > budget:
+            metric = "p95" if has_p95 else "max(p95 없음)"
+            return ("over_p95", OVER_BUDGET,
+                    f"Tier 0 {stage} 처리 {metric} {lag_p95:.1f}ms > {budget:g}ms ({summary})",
+                    marker_id, 0)
+    return "ok", OK, f"Tier 0 판정·검출 처리 부하 정상 ({summary})", marker_id, 0
 

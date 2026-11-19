@@ -29,6 +29,7 @@ from simai_ai.gpu.admission import (
     DEFAULT_MAX_QUEUE_WAIT_EXCEEDED,
     DEFAULT_RESUME_AFTER_S,
     AdmissionPolicy,
+    admission_values_from_env,
 )
 
 HEADROOM_FRACTION = 0.05
@@ -142,8 +143,10 @@ class WorkerGpuSettings:
             blocked = frozenset()
         else:
             blocked = frozenset(t.strip() for t in raw_types.split(",") if t.strip())
+        judge_budget, detect_budget, hold_s = admission_values_from_env(env)
         try:
             policy = AdmissionPolicy(
+                judge_budget_ms=judge_budget, detect_budget_ms=detect_budget, over_budget_hold_s=hold_s,
                 lag_budget_ms=_int(env, "SIMAI_WORKER_LAG_BUDGET_MS", 600),
                 max_marker_age_s=_float(env, "SIMAI_WORKER_MARKER_MAX_AGE_S", 15.0),
                 resume_after_s=_float(env, "SIMAI_WORKER_RESUME_AFTER_S", DEFAULT_RESUME_AFTER_S),

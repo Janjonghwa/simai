@@ -400,3 +400,95 @@ def test_injected_judge_budget_drives_throttle_baseline(tmp_path):
     write_marker(path, processing={"judge": sample(250.0), "detect_required": False}, mtime=clock.t)
     adm = high.check()
     assert adm.admit and adm.code == "ok" and "judge p95 250.0/300ms" in adm.reason  # 차단은 주입한 예산 300ms 기준
+
+
+def test_reopened_avatar_closes_immediately_on_renewed_overload(tmp_path):
+    path = tmp_path / "tier0.live"
+    clock = Clock()
+    g = gate(path, clock=clock, over_budget_hold_s=10)
+    def put(value):
+        write_marker(path, processing={"judge": sample(value), "detect_required": False}, mtime=clock.t)
+    put(250)
+    assert g.check().admit
+    clock.advance(10); put(250)
+    assert not g.check().admit
+    clock.advance(1); put(100)
+    assert not g.check().admit
+    clock.advance(10); put(100)
+    assert g.check().admit
+    clock.advance(1); put(250)
+    assert not g.check().admit
+
+
+def test_general_gate_processing_hold_and_ppe_mode(tmp_path):
+    path = tmp_path / "tier0.live"
+    clock = Clock()
+    def put(value=None):
+        processing = {} if value is None else {"processing": {"judge": sample(value), "detect_required": False}}
+        doc = {"gpu_priority": {"phase": "running", "reserve": {"state": "OK"},
+            "load": {"samples": 1, "unknown": 0, "lag_ms_max": 200}, **processing}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        os.utime(path, (clock.t, clock.t))
+    policy = AdmissionPolicy(resume_after_s=0, over_budget_hold_s=10, processing_blocks=True)
+    g = AdmissionGate(path, policy, wall_s=lambda: clock.t, monotonic=lambda: clock.t)
+    put(); assert g.check().admit  # 옛 표시 파일
+    put(250); assert g.check().admit
+    clock.advance(9); put(250); assert g.check().admit
+    clock.advance(1); put(250); assert g.check().code == "tier0_overloaded"
+    assert g.stats()["blocked"]["tier0_overloaded"] == 1
+    put(100); assert g.check().admit
+    ppe = AdmissionGate(path, AdmissionPolicy(resume_after_s=0, processing_blocks=False),
+                        wall_s=lambda: clock.t, monotonic=lambda: clock.t)
+    put(250); assert ppe.check().admit
+    clock.advance(20); put(250); assert ppe.check().admit
+
+
+def test_admission_env_invalid_values_warn_and_fall_back(caplog):
+    from simai_ai.gpu.admission import admission_values_from_env, avatar_reopen_guard_from_env
+    assert admission_values_from_env({"SIMAI_ADMISSION_JUDGE_BUDGET_MS": "nan",
+                                      "SIMAI_ADMISSION_DETECT_BUDGET_MS": "0",
+                                      "SIMAI_ADMISSION_HOLD_S": "-1"}) == (200, 150, 10)
+    assert avatar_reopen_guard_from_env({"SIMAI_AVATAR_REOPEN_GUARD_S": "oops"}) == 10
+    assert len(caplog.records) == 4
+    assert admission_values_from_env({"SIMAI_ADMISSION_JUDGE_BUDGET_MS": "220",
+                                      "SIMAI_ADMISSION_DETECT_BUDGET_MS": "120",
+                                      "SIMAI_ADMISSION_HOLD_S": "5"}) == (220, 120, 5)
+
+
+def test_worker_requires_normal_processing_during_recovery(tmp_path):
+    path = tmp_path / "tier0.live"
+    clock = Clock()
+    policy = AdmissionPolicy(resume_after_s=10, processing_blocks=True, over_budget_hold_s=10)
+    g = AdmissionGate(path, policy, wall_s=lambda: clock.t, monotonic=lambda: clock.t)
+
+    def put(value):
+        doc = {"gpu_priority": {"phase": "running", "reserve": {"state": "OK"},
+               "load": {"samples": 1, "unknown": 0, "lag_ms_max": 200},
+               "processing": {"judge": sample(value), "detect_required": False}}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        os.utime(path, (clock.t, clock.t))
+
+    put(250)
+    assert not g.check().admit
+    clock.advance(10); put(250)
+    assert not g.check().admit
+    put(100)
+    assert not g.check().admit
+    clock.advance(10); put(100)
+    assert g.check().admit
+
+
+def test_ppe_ignores_processing_even_if_malformed_but_keeps_lag_gate(tmp_path):
+    path = tmp_path / "tier0.live"
+    clock = Clock()
+    g = AdmissionGate(path, AdmissionPolicy(resume_after_s=0),
+                      wall_s=lambda: clock.t, monotonic=lambda: clock.t)
+    doc = {"gpu_priority": {"phase": "running", "reserve": {"state": "OK"},
+           "load": {"samples": 1, "unknown": 0, "lag_ms_max": 200}, "processing": None}}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    os.utime(path, (clock.t, clock.t))
+    assert g.check().admit
+    doc["gpu_priority"]["load"]["lag_ms_max"] = 601
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    os.utime(path, (clock.t, clock.t))
+    assert not g.check().admit
