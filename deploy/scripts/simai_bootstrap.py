@@ -1280,6 +1280,8 @@ class Supervisor:
         quota, quota_src = cgroup_vcpu()
         self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), avail, quota)
         self.tier0_cpus = tier0_cpus(env.get("SIMAI_TIER0_CPUS"), avail, self.cpus, quota)
+        if self.cpus:
+            base["SIMAI_SIDE_WORK_CPUS"] = ",".join(map(str, sorted(self.cpus)))
         self.cpu_note = (f"CPU 묶기({env.get('SIMAI_SIDECAR_CPUS') or 'auto'}): affinity {len(avail)}개, cgroup 상한 "
                          f"{f'{quota} vCPU ({quota_src})' if quota is not None else '없음·못 읽음'} → vLLM·워커 "
                          f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 "

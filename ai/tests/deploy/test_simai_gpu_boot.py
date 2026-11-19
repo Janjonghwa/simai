@@ -971,3 +971,14 @@ def test_host_cpu_measure_failure_is_swallowed(gb, world):
     boot.stop.set()
     t.join(timeout=30)
     assert box["rc"] == 0 and not any("host_cpu" in r for r in world["ec2"].reports)
+
+
+@pytest.mark.parametrize("score, warned", [(999.0, True), (1000.0, False), (None, False)])
+def test_host_cpu_warning_does_not_block(gb, world, monkeypatch, capsys, score, warned):
+    boot = _boot(gb, world)
+    monkeypatch.setattr(boot, "cpu_measure", lambda: {"model": "CPU", "logical_cpus": 8, "cpu_quota": None,
+                                                        "single_thread_score": score, "measured_at": gb.now_ms()})
+    reporter = gb.Reporter(None, "https://example.invalid", "boot", "secret", "session", 10)
+    boot.measure_cpu(reporter)
+    assert reporter.host_cpu["single_thread_score"] == score
+    assert ("경고: CPU 단일 스레드" in capsys.readouterr().err) is warned

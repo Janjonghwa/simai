@@ -42,7 +42,7 @@ from simai_ai.risk.lifecycle import Change, EventTransition, Lifecycle
 
 log = logging.getLogger("services.tier0.event_frames")
 MAX_CAMERAS = 2
-UPLOAD_WORKERS = 4
+UPLOAD_WORKERS = 2
 QUEUE_DEPTH = 8
 JPEG_QUALITY = 85
 MESSAGE_VERSION = "1.1.0"  # event_frame_ready 1.1.0: 프레임 선택 local_copy (-408)

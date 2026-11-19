@@ -1356,6 +1356,10 @@ class Boot:
         try:
             doc = self.cpu_measure()
             rep.set_host_cpu(doc)
+            score = doc.get("single_thread_score")
+            if score is not None and score < 1000:
+                warning = f"CPU 단일 스레드 점수 {score}가 초기 기준 1000 미만: 판정 지연 가능"
+                log(f"경고: {warning}")
             log(f"호스트 CPU: {doc['model']} · 논리 {doc['logical_cpus']} · 몫 {doc['cpu_quota']} · 단일 스레드 점수 {doc['single_thread_score']}")
         except Exception as e:
             log(f"호스트 CPU 측정 실패(무시하고 계속): {type(e).__name__}")

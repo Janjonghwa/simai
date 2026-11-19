@@ -18,6 +18,7 @@
   simai_ai.vlm.client), 얼굴 처리용 pose 검출기(SIMAI_TIER0_WEIGHTS 의 YOLO26x-pose .pt, Tier 0 와 같은 가중치)가 다 있을 때만
   등록한다. 빠지면 시작 로그에 이유 한 줄. vlm_rationale 은 같은 Pod 의 Tier 0 상태 폴더(SIMAI_STATE_DIR, 없으면
   SIMAI_TIER0_MARKER 의 폴더)에 있는 이벤트 사진 사본을 먼저 읽는다(S15P31A101-408).
+- SIMAI_WORKER_FACE_POSE_WEIGHTS: 얼굴 처리용 pose 가중치 선택. 없으면 SIMAI_TIER0_WEIGHTS 를 쓴다.
 
 사람 지운 배경 묶음 자동 제출(S15P31A101-403, services.worker.auto_static): --once 가 아니고 SIMAI_AUTO_STATIC_RECONSTRUCT 가 0 이
 아니면 보조 스레드가 LIVE 가 아닐 때 Tier 0 의 완성 묶음(SIMAI_STATE_DIR/clean-background)을 올리고 static_reconstruct 를 등록한다.
@@ -97,7 +98,7 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
         handlers["site_setup"] = site_setup
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
-            provider = pose(env["SIMAI_TIER0_WEIGHTS"])
+            provider = pose(env.get("SIMAI_WORKER_FACE_POSE_WEIGHTS", "").strip() or env["SIMAI_TIER0_WEIGHTS"])
             # 같은 Pod 의 Tier 0 상태 폴더에 있는 이벤트 사진 사본을 먼저 읽는다(-408). 없으면 S3
             handlers["vlm_rationale"] = VlmRationaleHandler(store, provider,  # type: ignore[arg-type]
                                                             local_frames=LocalFrames.from_env(env), env=env)
@@ -118,9 +119,9 @@ def _vlm_rationale_missing(store: ObjectStore | None, env: Mapping[str, str]) ->
         VlmSettings.from_env(env)
     except VlmError as e:
         return f"VLM 설정 오류: {e}"
-    weights = env.get("SIMAI_TIER0_WEIGHTS", "").strip()
+    weights = env.get("SIMAI_WORKER_FACE_POSE_WEIGHTS", "").strip() or env.get("SIMAI_TIER0_WEIGHTS", "").strip()
     if not weights or not Path(weights).is_file():
-        return f"pose 가중치(SIMAI_TIER0_WEIGHTS)가 없다: {weights or '설정 안 됨'}"
+        return f"pose 가중치(SIMAI_WORKER_FACE_POSE_WEIGHTS 또는 SIMAI_TIER0_WEIGHTS)가 없다: {weights or '설정 안 됨'}"
     return None
 
 
