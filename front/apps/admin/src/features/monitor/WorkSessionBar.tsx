@@ -11,9 +11,11 @@ import { TestInputBadge } from '@/features/monitor/TestInputBadge';
 import { useMonitoringPhase } from '@/features/monitor/useMonitoringPhase';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { useTodayWorks } from '@/features/monitor/useTodayWorks';
+import { activePpeRequirement, ppeStatusText } from '@/features/monitor/workPpeText';
 import { workElapsedLabel, workStartedAt, workZoneLabel } from '@/features/monitor/workSession';
 import type { TbmWorkUnit } from '@/features/tbm/types';
 import { workNameOf } from '@/features/work/workDay';
+import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { selectTrackedCount, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
@@ -26,39 +28,35 @@ function Elapsed({ startedAt }: { startedAt: number }) {
 }
 
 const PANEL =
-  'pointer-events-auto flex max-w-[680px] flex-wrap items-center gap-x-3 gap-y-2 rounded-[12px] bg-card/94 px-4 py-2 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
+  'pointer-events-auto flex max-w-[680px] items-center gap-x-3 gap-y-2 rounded-[12px] bg-card/94 px-4 py-2 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
 
 /**
- * 진행 중 작업의 세션 바. 맨 앞 배지가 관제 단계다: 이번 작업 묶음이 현장에 적용되기 전에는 「관제 준비 중」, 적용되면 「관제 중」,
- * 거부·현장 끊김은 그 이름과 무엇이 / 어떻게 두 줄(거부는 「현장에 다시 보내기」). 작업 시작 성공만으로 「관제 중」이라 하지 않는다.
- * 적용 확인이 10초 넘게 늦으면 따로 알리지 않고 「관제 중」으로 보인다(「관제 시작 지연」은 뺐다, S15P31A101-798).
+ * 진행 중 작업의 세션 바. 맨 앞 배지가 관제 단계다: 이번 작업 묶음이 현장에 적용되기 전에는 「작업 시작 중」, 적용되면 「작업 중」,
+ * 거부·현장 끊김은 그 이름과 무엇이 / 어떻게 두 줄(거부는 「현장에 다시 보내기」). 작업 시작 성공만으로 「작업 중」이라 하지 않는다.
+ * 적용 확인이 10초 넘게 늦으면 따로 알리지 않고 「작업 중」으로 보인다(「관제 시작 지연」은 뺐다, S15P31A101-798).
  * 녹화 파일 재생(시험 입력) 중이면 배지 옆에 「녹화 재생 중 · 실제 알림 꺼짐」을 붙인다(S15P31A101-731).
  */
 function ActiveSession({ work, phase }: { work: TbmWorkUnit; phase: MonitoringPhase }) {
-  const navigate = useNavigate();
+  const bundles = useRecentBundles().data;
   const startedAt = workStartedAt(work);
   const text = monitoringText(phase);
+  const title = [
+    ...(startedAt !== null ? [`시작 ${formatClock(startedAt)}`] : []),
+    `작업 구역 ${workZoneLabel(work)}`,
+    ppeStatusText(activePpeRequirement(work, bundles), phase.stage === 'on'),
+  ].join('\n');
   return (
-    <section aria-label="작업 세션" className={PANEL}>
-      <MonitoringBadge text={text} />
-      <TestInputBadge />
-      <b className="min-w-0 truncate">{workNameOf(work.name)}</b>
-      {startedAt !== null && (
-        <span className="text-sm whitespace-nowrap text-muted-foreground">
-          시작 {formatClock(startedAt)} · 경과 <Elapsed startedAt={startedAt} />
-        </span>
-      )}
-      <span className="min-w-0 truncate text-sm text-muted-foreground">
-        작업 구역 {workZoneLabel(work)}
-      </span>
-      <Button
-        size="sm"
-        variant="secondary"
-        className="shrink-0"
-        onClick={() => void navigate({ to: '/work', search: { workUnitId: work.work_id } })}
-      >
-        작업 관리로
-      </Button>
+    <section aria-label="작업 세션" className={`${PANEL} flex-col items-stretch`} title={title}>
+      <div className="flex min-w-0 items-center gap-3 whitespace-nowrap">
+        <MonitoringBadge text={text} />
+        <TestInputBadge />
+        <b className="min-w-0 truncate">{workNameOf(work.name)}</b>
+        {startedAt !== null && (
+          <span className="shrink-0 text-sm text-muted-foreground">
+            · <Elapsed startedAt={startedAt} />
+          </span>
+        )}
+      </div>
       <MonitoringProblemNote text={text} />
     </section>
   );
@@ -110,7 +108,7 @@ function IdleNotice() {
 
 /**
  * 실시간 관제 상단의 관제 상태(경보 배너 아래 한 자리).
- * - 진행 중 작업: 세션 바(관제 단계 배지·이름·시작 시각·경과·작업 구역·「작업 관리로」)
+ * - 진행 중 작업: 세션 바(관제 단계 배지·이름·경과, 시작 시각·작업 구역·보호구 상태는 설명)
  * - 작업을 끝냈는데 현장이 아직 그 묶음을 쓰면: 「종료 요청됨 · 현장 경보 끄는 중」(늦음·거부·끊김은 안내)
  * - 진행 중 작업이 없고 관제 화면이 열려 있으면(세팅을 마친 오늘 작업, 대기 화면 아님): 「작업 시작 전 · 경보 꺼짐」(-679).
  *   사람이 보이면 작업 시작 안내와 「작업 관리로」를 붙인다

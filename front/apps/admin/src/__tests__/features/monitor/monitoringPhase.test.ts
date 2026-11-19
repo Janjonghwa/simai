@@ -216,8 +216,8 @@ describe('monitoringText', () => {
       label: '작업 시작 전 · 경보 꺼짐',
       what: null,
     });
-    expect(monitoringText({ stage: 'starting', problem: null }).label).toBe('관제 준비 중');
-    expect(monitoringText({ stage: 'on', problem: null }).label).toBe('관제 중');
+    expect(monitoringText({ stage: 'starting', problem: null }).label).toBe('작업 시작 중');
+    expect(monitoringText({ stage: 'on', problem: null }).label).toBe('작업 중');
     expect(monitoringText({ stage: 'ending', problem: null }).label).toBe(
       '종료 요청됨 · 현장 경보 끄는 중',
     );
@@ -239,7 +239,7 @@ describe('monitoringText', () => {
 
   it('시작 적용이 10초 넘게 늦어도 「관제 시작 지연」 대신 평소의 「관제 중」이고 안내가 없다(S15P31A101-798)', () => {
     expect(monitoringText({ stage: 'starting', problem: 'delayed' })).toEqual({
-      label: '관제 중',
+      label: '작업 중',
       tone: 'ok',
       what: null,
       how: null,

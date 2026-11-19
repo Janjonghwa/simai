@@ -358,7 +358,7 @@ describe('WorkCalendar', () => {
     ['REPORT', '오늘 작업 준비'],
     ['SETUP', '세팅 이어하기'],
     ['SETUP_DONE', '작업 전 확인'],
-    ['IN_PROGRESS', '관제 중'],
+    ['IN_PROGRESS', '작업 중'],
     ['ENDED', '보고서 제출'],
   ] as const)('오늘 칸 단추 글: 진행 값 %s 이면 `%s`', async (progress, label) => {
     works = [daily(TODAY, { progress })];

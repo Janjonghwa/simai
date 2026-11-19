@@ -211,13 +211,15 @@ describe('세션 바', () => {
 
     const bar = await screen.findByRole('region', { name: '작업 세션' });
     expect(within(bar).getByText('양중 작업')).toBeTruthy();
-    expect(bar.textContent).toContain('시작');
-    expect(bar.textContent).toContain('경과 1시간 0분');
-    expect(bar.textContent).toContain('작업 구역 개구부 구역');
+    expect(bar.textContent).toContain('· 1시간 0분');
+    expect(bar.textContent).not.toContain('작업 구역');
+    expect(bar.title).toContain('시작 ');
+    expect(bar.title).toContain('작업 구역 개구부 구역');
+    expect(bar.title).toMatch(/보호구 감시|안전모/);
+    expect(bar.querySelector('.truncate')).toBeTruthy();
+    expect(bar.querySelector('.tabular-nums')).toBeTruthy();
+    expect(within(bar).queryByRole('button', { name: '작업 관리로' })).toBeNull();
     expect(standby()).toBeNull();
-
-    fireEvent.click(within(bar).getByRole('button', { name: '작업 관리로' }));
-    expect(navigate).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '12' } });
   });
 
   it('이름이 빈 작업(작업내용을 고르기 전 날짜 작업)은 이름 자리에 대체어를 보인다', async () => {
@@ -231,7 +233,7 @@ describe('세션 바', () => {
     serveWorks([inProgress({ zone_id: null, place: null })]);
     renderMonitor();
     const bar = await screen.findByRole('region', { name: '작업 세션' });
-    expect(bar.textContent).toContain('작업 구역 현장 전체');
+    expect(bar.title).toContain('작업 구역 현장 전체');
   });
 
   it('오늘 작업이 모두 끝났으면 세션 바 대신 작업이 끝났다는 대기 화면을 보인다', async () => {
@@ -368,7 +370,7 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
     ]);
     const queryClient = renderMonitor();
     const bar = await screen.findByRole('region', { name: '작업 세션' });
-    await waitFor(() => expect(badge(bar)).toBe('관제 준비 중'));
+    await waitFor(() => expect(badge(bar)).toBe('작업 시작 중'));
 
     act(() => {
       queryClient.setQueryData(
@@ -376,7 +378,7 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
         [configBundle('cfg-2', 'APPLIED', 12, Date.now()), configBundle('cfg-1', 'APPLIED', null)],
       );
     });
-    await waitFor(() => expect(badge(sessionBar()!)).toBe('관제 중'));
+    await waitFor(() => expect(badge(sessionBar()!)).toBe('작업 중'));
   });
 
   it('시작 뒤 10초 넘게 적용이 없어도 「관제 시작 지연」·안내 없이 「관제 중」이다(S15P31A101-798)', async () => {
@@ -384,7 +386,7 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
     serveBundles([configBundle('cfg-2', 'PENDING', 12), configBundle('cfg-1', 'APPLIED', null)]);
     renderMonitor();
     const bar = await screen.findByRole('region', { name: '작업 세션' });
-    await waitFor(() => expect(badge(bar)).toBe('관제 중'));
+    await waitFor(() => expect(badge(bar)).toBe('작업 중'));
     expect(bar.textContent).not.toContain('관제 시작 지연');
     expect(bar.textContent).not.toContain('경보가 아직 꺼져 있습니다');
     expect(bar.textContent).not.toContain('현장 노트북과 GPU 서버가 켜져 있고');
@@ -409,7 +411,7 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
     const bar = await screen.findByRole('region', { name: '작업 세션' });
     await waitFor(() => expect(badge(bar)).toBe('관제 시작 실패'));
     fireEvent.click(within(bar).getByRole('button', { name: '현장에 다시 보내기' }));
-    await waitFor(() => expect(badge(sessionBar()!)).toBe('관제 준비 중'));
+    await waitFor(() => expect(badge(sessionBar()!)).toBe('작업 시작 중'));
     expect(posted).toEqual(['/api/config-bundles']);
     server.events.removeAllListeners();
   });
@@ -447,9 +449,8 @@ describe('이벤트 목록 필터', () => {
 
     await screen.findByRole('region', { name: '작업 세션' });
     await waitFor(() => expect(cardNames()).toEqual(['w-0012 이벤트']));
-    expect(screen.getByText('이번 실행 전 이벤트 1건은 목록에서 뺐습니다')).toBeTruthy();
-    // 「작업 관리로」 는 세션 바 한 곳에만 있다(S15P31A101-731)
-    expect(screen.getAllByRole('button', { name: '작업 관리로' })).toHaveLength(1);
+    expect(screen.queryByText(/이번 실행 전 이벤트/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
   });
 
   it('시작 전에 났어도 확인 대기 경보는 패널과 배너에서 숨지 않는다', async () => {
