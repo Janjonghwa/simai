@@ -277,7 +277,7 @@ describe('dayMarkOf — 오늘', () => {
     expect(mark('REPORT')).toEqual(action('오늘 작업 준비'));
     expect(mark('SETUP')).toEqual(action('세팅 이어하기'));
     expect(mark('SETUP_DONE')).toEqual(action('작업 전 확인'));
-    expect(mark('IN_PROGRESS')).toEqual(action('관제 중'));
+    expect(mark('IN_PROGRESS')).toEqual(action('작업 중'));
     expect(mark('ENDED')).toEqual(action('보고서 제출'));
     expect(mark('SUBMITTED')).toEqual({ kind: 'ended' });
   });

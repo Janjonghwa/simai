@@ -192,7 +192,7 @@ describe('WorkPpeStatus', () => {
     ];
     state.receipt = 'stale';
     render(<WorkPpeStatus />);
-    expect(screen.getByRole('status').textContent).toBe('안전모·조끼 감시 중');
+    expect(screen.queryByRole('status')).toBeNull();
     settle();
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toBe(PPE_OFF_TEXT);
@@ -213,7 +213,7 @@ describe('WorkPpeStatus', () => {
     state.receipt = 'ok';
     const { unmount } = render(<WorkPpeStatus />);
     settle();
-    expect(screen.getByRole('status').textContent).toBe('안전모 감시 중 · 조끼 감시 대상 아님');
+    expect(screen.queryByRole('status')).toBeNull();
     expect(state.receiptEnabled.at(-1)).toBe(true);
     // 원인도 규칙 기준도 없으면 자세히 단추가 없다
     expect(screen.queryByRole('button', { name: '자세히' })).toBeNull();
@@ -226,7 +226,7 @@ describe('WorkPpeStatus', () => {
     ];
     render(<WorkPpeStatus />);
     settle();
-    expect(screen.getByRole('status').textContent).toBe('보호구 감시 대상 아님');
+    expect(screen.queryByRole('status')).toBeNull();
     expect(state.receiptEnabled.every((e) => !e)).toBe(true);
   });
 });

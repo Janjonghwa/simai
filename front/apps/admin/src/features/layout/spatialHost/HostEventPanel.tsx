@@ -7,7 +7,6 @@ import { ec2Now } from '@/features/events/format';
 import type { EventItem } from '@/features/events/types';
 import { useMinuteNow } from '@/features/events/useSharedNow';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
-import { PastEventsLink } from '@/features/monitor/PastEventsLink';
 import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { outsideWorkKind, splitSince, workStartedAt } from '@/features/monitor/workSession';
 import { useCachedWatchBindings } from '@/features/watch/useWatch';
@@ -20,7 +19,7 @@ import { useCallback, useEffect, useMemo } from 'react';
  * 「목록에서 숨기기」는 화면에서만 숨긴다(서버·이벤트 캐시·확인 상태는 그대로).
  *
  * 진행 중인 작업이 있으면 지금 실행이 시작된 뒤의 이벤트만 기본으로 보이고(확인 대기 경보는 가리지 않는다),
- * 그 전 이벤트 수는 목록 아래에 한 줄로 알린다. 경보 배너·소리·2D 평면은 이 거름과 상관없이 전체를 쓴다.
+ * 경보 배너·소리·2D 평면은 이 거름과 상관없이 전체를 쓴다.
  * 진행 중인 실행이 없으면(작업 전·대기) 「최근 해소」를 비운다(S15P31A101-731: 지금 실행 이벤트만, 작업 종료 때 Tier 0 가 한꺼번에 닫은 것이
  * 대기 화면에 남지 않게). 진행 중 경보는 실행과 상관없이 보인다.
  * 작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트에는 「작업 구역 밖」·「작업 시간 외」 꼬리표가 붙는다.
@@ -45,7 +44,7 @@ export function HostEventPanel({
   const works = useMonitorWorks({ passive: true });
   const active = works.state === 'ready' ? works.active : null;
   const since = active ? workStartedAt(active) : null;
-  const { shown: sinceShown, hidden } = useMemo(
+  const { shown: sinceShown } = useMemo(
     () => splitSince(visibleEntries, since),
     [visibleEntries, since],
   );
@@ -87,7 +86,6 @@ export function HostEventPanel({
       onClearAll={clearShown}
       outsideWorkOf={knownWorks !== null ? outsideWork : undefined}
       runStartedAt={runStartedAt}
-      footer={since !== null && hidden > 0 ? <PastEventsLink hidden={hidden} /> : undefined}
     />
   );
 }

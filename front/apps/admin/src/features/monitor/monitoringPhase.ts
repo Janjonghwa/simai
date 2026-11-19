@@ -134,7 +134,7 @@ export function endPhase(
 
 /**
  * 실시간 관제의 단계. 진행 중 작업이 있으면 그 작업의 시작 단계, 없으면 현장이 아직 쓰는 작업 묶음의 종료 단계, 그것도 없으면 idle.
- * 작업·묶음 목록 중 하나라도 모르면 unknown 이다(모르는 채로 '경보 꺼짐'·'관제 중'이라 하지 않는다).
+ * 작업·묶음 목록 중 하나라도 모르면 unknown 이다(모르는 채로 '경보 꺼짐'·'작업 중'이라 하지 않는다).
  */
 export function monitoringPhase(
   works: readonly TbmWorkUnit[] | undefined,
@@ -173,8 +173,8 @@ const CHECK_SITE = '현장 노트북과 GPU 서버가 켜져 있고 연결돼 �
 const RETRY_HOW = '「현장에 다시 보내기」를 누르세요. 다시 거부되면 현장 세팅을 확인하세요.';
 
 export const IDLE_LABEL = '작업 시작 전 · 경보 꺼짐';
-export const STARTING_LABEL = '관제 준비 중';
-export const ON_LABEL = '관제 중';
+export const STARTING_LABEL = '작업 시작 중';
+export const ON_LABEL = '작업 중';
 export const ENDING_LABEL = '종료 요청됨 · 현장 경보 끄는 중';
 export const ENDED_LABEL = '현장 경보 종료 확인';
 
