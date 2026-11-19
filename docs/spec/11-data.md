@@ -17,7 +17,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 
 | 테이블 | 주요 내용 |
 |---|---|
-| `site` | 기본 현장 식별자, 현장 규칙 기준(`rule_profile`, 기본값 `CLASSROOM_TEST` 교실 시험 프로파일 고정, `V61`·`V67`, 7.4), 최근 카메라별 실측 높이 기본값(`default_camera_heights_m`, 다음 현장 세팅 입력칸 자동 채움 원본, 4.3), BEV 평면도 참조 |
+| `site` | 기본 현장 식별자, 현장 규칙 기준(`rule_profile`, 기본값 `CLASSROOM_TEST` 교실 시험 프로파일 고정, `V61`·`V67`, 7.4), 최근 카메라별 실측 높이 기본값(`default_camera_heights_m`, 다음 현장 세팅 입력칸 자동 채움 원본, 4.3), 예약된 BEV 평면도 참조 |
 | `setup_session` | 작업별 현장 세팅 세션(`setup_session_id`, 대상 `work_unit_id`, 단계별 상태 `COLLECTING_BACKGROUND` → `INITIAL_POSE_AND_WORLD` → `JOINT_BA_AND_VERIFY` → `PREVIEW_AND_VLM_DRAFT` → `READY_FOR_ZONES` / 백그라운드 `BAKING_TEXTURE` → `COMPLETED` / 실패 `FAILED`, 실제 하위 단계 단조 진행률 `progress_pct`, 카메라별 실측 높이 `camera_heights_m`, 생성된 `calibration_version`·`preview_scene_version`·`scene_version`, 보정 절대 품질 게이트 스냅샷 `quality_gate`·1인 보행 카메라 확인 결과 `camera_check`(`V62`), 이관 구역 높이 변화 판정 `zone_height_changes`(`V64`), VLM 위험구역 초안 참조, 실패 코드·사유 `failure_code`·`failure_message`, 시작·구역편집가능·완료 시각, 4.3·8.1·8.2·12.6, `docs/design/site-setup-pipeline.md`·`docs/design/S15P31A101-646-setup-camera-check.md`·`docs/design/S15P31A101-630-zone-height-change.md`) |
 | `setup_zone_opinion` | 세팅 이관 `CHANGE_SUSPECTED` 구역별 VLM 전후 비교 의견(`V66`, 추가만): 세팅 세션·구역 ID·상태(`OPINION`·`NO_OPINION`)·추천 행동(`KEEP`·`MODIFY`·`REMOVE`)·한국어 한 줄 근거·불가 사유·이전/현재 비교 크롭 메타데이터(5.4·8.2, `docs/design/S15P31A101-631-zone-vlm-opinion.md`) |
 | `camera` | 카메라 ID, 모델, 하드웨어·펌웨어 버전, 해상도·fps |
@@ -153,5 +153,5 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `scale_reference` | 실측 정물 목록(이름·치수·측정일, 4.3) |
 | `calibration_scale_check` | 보정에서 정물별로 잰 크기·오차·불일치 경고 |
 | `coverage_guide` | 세팅 1단계 카메라 각도 헬퍼 최신 결과(`POST /api/devices/coverage-guides` 수신, `contracts/messages/coverage_guide.schema.json` 1.0.0: 4대 수신 상태·6쌍 배경 특징점 매칭 등급·연결 여부 `CONNECTED`/`DISCONNECTED`/`UNKNOWN`·회전 방향 안내 `guides`, 4.3·4.5·12.2) 및 커버리지 설치 안내 |
-| `floor_plan` | BEV 평면도(보정·Scene 버전, 이미지 키, `bev_floorplan` 작업, 4.1) |
-| `bev_frame_set` | BEV 평면도 입력 프레임 묶음(관리 명령으로 등록, 추가만). 같은 보정·묶음의 평면도는 한 번만 만든다 |
+| `floor_plan` | 예약: 과거 BEV 평면도 기록. 현재 뷰어는 Scene GLB 로 직접 생성(4.1) |
+| `bev_frame_set` | 예약: 과거 BEV 평면도 입력 프레임 묶음. 현재 사용하지 않는다(4.1) |

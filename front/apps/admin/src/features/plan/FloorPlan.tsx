@@ -26,7 +26,7 @@ import { cn } from '@simai/ui/lib/utils';
 
 // 위에서 내려다본 2D 평면(명세 13.6 비상 화면, 4.1 BEV 2D 개요). 단위는 m 이고 색은 토큰만 쓴다.
 // 데이터는 props 로만 받는다. 실시간 관제는 LivePlan 이 채운다.
-// 방 범위(bounds)와 평면도 바탕(backdrop)은 GET /api/floor-plans/current 에서 온다. 없으면 기본 10×10m 에 모눈을 그린다.
+// Scene 평면도 범위와 바탕이 없으면 기본 10×10m 에 모눈을 그린다.
 
 /** "오래된 평면도" 글자의 자리와 크기(m). 방 위쪽 여백에 놓는다. */
 const OUTDATED_LABEL = { x: 0.1, y: -0.32, fontSize: 0.42 } as const;
