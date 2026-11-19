@@ -148,3 +148,30 @@ export function tileVideos(
       : null;
   return { videos, shownId: shown?.segment_id ?? null };
 }
+
+/** 녹화 업로드가 진행 중인 작업들의 진행(합). expected 는 진행 중인 작업이 모두 예정 조각 수를 알렸을 때만 있다. */
+export interface UploadProgress {
+  uploaded: number;
+  expected: number | null;
+}
+
+/** 아직 올라오지 않은 칸에 보일 글. 예정 조각 수를 알면 「업로드 중 12/28」, 모르면 「업로드 중」이다. */
+export function uploadLine(progress: UploadProgress): string {
+  if (progress.expected === null || progress.expected <= 0) return '업로드 중';
+  return `업로드 중 ${Math.min(progress.uploaded, progress.expected)}/${progress.expected}`;
+}
+
+/**
+ * 업로드가 끝나지 않아 재생 시각의 조각을 아직 받지 못한 카메라(이름순). 목록에 지우지 않은 조각이 하나라도 있는 카메라(녹화가 있는
+ * 카메라) 중 재생 시각을 덮는 조각(active)이 없는 것이다. 아직 하나도 올라오지 않아 녹화가 있는 카메라를 모르면 비운다(지어내지 않는다).
+ */
+export function waitingCameras(
+  segments: readonly VideoSegment[],
+  active: readonly VideoSegment[],
+): string[] {
+  const covered = new Set(active.map((segment) => segment.camera_id));
+  const recorded = new Set(
+    segments.filter((segment) => segment.deleted_at_ms == null).map((segment) => segment.camera_id),
+  );
+  return [...recorded].filter((id) => !covered.has(id)).sort((a, b) => a.localeCompare(b));
+}

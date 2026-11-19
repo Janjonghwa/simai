@@ -9,6 +9,8 @@ import {
   syncTileVideo,
   syncVideo,
   tileVideos,
+  uploadLine,
+  waitingCameras,
   type VideoLike,
 } from '@/features/history/replaySegments';
 import { videoSegmentsSchema, type VideoSegment } from '@/features/history/types';
@@ -280,5 +282,39 @@ describe('tileVideos', () => {
 
   it('보인 적 없고 첫 화면도 아직이면 보일 조각이 없다', () => {
     expect(tileVideos(s1, null, s2, new Set()).shownId).toBeNull();
+  });
+});
+
+describe('uploadLine', () => {
+  it('예정 조각 수를 알면 올라온 수/예정 수를, 모르거나 0 이면 「업로드 중」만 보인다', () => {
+    expect(uploadLine({ uploaded: 12, expected: 28 })).toBe('업로드 중 12/28');
+    expect(uploadLine({ uploaded: 0, expected: null })).toBe('업로드 중');
+    expect(uploadLine({ uploaded: 0, expected: 0 })).toBe('업로드 중');
+    // 등록 수가 예정 수를 넘겨 보고돼도 예정 수를 넘겨 보이지 않는다
+    expect(uploadLine({ uploaded: 30, expected: 28 })).toBe('업로드 중 28/28');
+  });
+});
+
+describe('waitingCameras', () => {
+  it('녹화가 있는 카메라 중 재생 시각을 덮는 조각이 없는 카메라를 이름순으로 고른다', () => {
+    const a = segment({ segment_id: 'a', camera_id: 'cam_A' });
+    const b = segment({
+      segment_id: 'b',
+      camera_id: 'cam_B',
+      segment_start_capture_ms: T + 60_000,
+    });
+    const c = segment({
+      segment_id: 'c',
+      camera_id: 'cam_C',
+      segment_start_capture_ms: T + 60_000,
+    });
+    expect(waitingCameras([c, a, b], [a])).toEqual(['cam_B', 'cam_C']);
+    expect(waitingCameras([a, b], [a, b])).toEqual([]);
+  });
+
+  it('지운 조각만 있는 카메라와 아직 아무것도 안 올라온 경우는 비운다(지어내지 않는다)', () => {
+    const gone = segment({ segment_id: 'gone', camera_id: 'cam_D', deleted_at_ms: T });
+    expect(waitingCameras([gone], [])).toEqual([]);
+    expect(waitingCameras([], [])).toEqual([]);
   });
 });

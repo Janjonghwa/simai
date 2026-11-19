@@ -1,9 +1,16 @@
+import { LoadingDots } from '@/components/LoadingDots';
 import { CctvWall, type WallRest } from '@/features/cctv/CctvWall';
 import { TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
 import { loadPlayableClip } from '@/features/clips/clipMedia';
 import { formatTime } from '@/features/events/events';
 import { requestVideoUrl } from '@/features/history/api';
-import { syncTileVideo, tileVideos, type TileVideoRole } from '@/features/history/replaySegments';
+import {
+  syncTileVideo,
+  tileVideos,
+  uploadLine,
+  type TileVideoRole,
+  type UploadProgress,
+} from '@/features/history/replaySegments';
 import type { VideoSegment } from '@/features/history/types';
 import { useReplayStatus } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
@@ -12,10 +19,11 @@ import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { cn } from '@simai/ui/lib/utils';
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 const PILL =
   'absolute top-2 rounded-md bg-black/55 px-2 py-0.5 text-xs text-slate-100 backdrop-blur-[2px]';
+const CENTER_LINE = 'absolute inset-0 flex items-center justify-center text-sm text-slate-400';
 
 type OnFailed = (segmentId: string, message?: string) => void;
 
@@ -144,6 +152,40 @@ function SegmentVideo({
   );
 }
 
+/** 카메라 칸 틀: 누르면 크게 보고, 왼쪽 위에 카메라 이름, 오른쪽 위에 재생 시각을 단다. */
+function TileFrame({
+  label,
+  cameraId,
+  playhead,
+  focused,
+  onToggle,
+  children,
+}: {
+  label: string;
+  cameraId: string;
+  playhead: number | null;
+  focused: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={`${label} ${focused ? '작게 보기' : '크게 보기'}`}
+      className={cn(TILE_FRAME, 'bg-slate-900', tileZoom(focused))}
+    >
+      {children}
+      <span className={cn(PILL, 'left-2 font-mono font-bold')} title={cameraId}>
+        {label}
+      </span>
+      <span className={cn(PILL, 'right-2 font-mono')}>
+        {playhead !== null ? formatTime(playhead) : ''}
+      </span>
+    </button>
+  );
+}
+
 function SegmentTile({
   segment,
   upcoming,
@@ -165,11 +207,12 @@ function SegmentTile({
   const { videos, shownId, onReady } = useSegmentSwap(segment, upcoming);
 
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-label={`${label} ${focused ? '작게 보기' : '크게 보기'}`}
-      className={cn(TILE_FRAME, 'bg-slate-900', tileZoom(focused))}
+    <TileFrame
+      label={label}
+      cameraId={segment.camera_id}
+      playhead={status.playhead}
+      focused={focused}
+      onToggle={onToggle}
     >
       {videos.map((video) => (
         <SegmentVideo
@@ -182,18 +225,45 @@ function SegmentTile({
           onFailed={onFailed}
         />
       ))}
+      {/* 목록에 있는(이미 올라온) 조각의 영상을 받는 동안 */}
       {shownId === null && (
-        <span className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">
-          영상을 불러오는 중입니다…
+        <span className={CENTER_LINE}>
+          <LoadingDots label="영상을 불러오는 중입니다" />
         </span>
       )}
-      <span className={cn(PILL, 'left-2 font-mono font-bold')} title={segment.camera_id}>
-        {label}
+    </TileFrame>
+  );
+}
+
+/** 녹화는 있지만 재생 시각의 조각이 아직 올라오지 않은 카메라 칸. 올라오면 SegmentTile 로 바뀐다. */
+function UploadWaitingTile({
+  cameraId,
+  upload,
+  replay,
+  focused,
+  onToggle,
+  label,
+}: {
+  cameraId: string;
+  upload: UploadProgress | null;
+  replay: ReplaySpatialSource | null;
+  focused: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  const status = useReplayStatus(replay);
+  return (
+    <TileFrame
+      label={label}
+      cameraId={cameraId}
+      playhead={status.playhead}
+      focused={focused}
+      onToggle={onToggle}
+    >
+      <span className={CENTER_LINE}>
+        <LoadingDots label={upload ? uploadLine(upload) : '업로드 중'} />
       </span>
-      <span className={cn(PILL, 'right-2 font-mono')}>
-        {status.playhead !== null ? formatTime(status.playhead) : ''}
-      </span>
-    </button>
+    </TileFrame>
   );
 }
 
@@ -201,32 +271,41 @@ function SegmentTile({
  * 재생 시각을 덮는 영상 조각을 카메라 칸마다 튼다(CCTV 영상). 칸을 누르면 크게 본다.
  * upcoming(곧 덮을 조각)은 칸마다 미리 올려 두었다가 조각 경계에서 검은 화면 없이 바꾼다.
  * 조각 영상을 끝내 받지 못하면 onFailed 로 알린다(부르는 쪽이 그 조각을 빼고, 남은 게 없으면 3D 다시 보기로 돌아간다).
+ * waiting 카메라(녹화 업로드 중이라 재생 시각의 조각이 아직 없음)는 「업로드 중」 칸으로 함께 둔다(S15P31A101-801).
  */
 export function ReplayVideoWall({
   segments,
   upcoming,
+  waiting = [],
+  upload = null,
   replay,
   onFailed,
   rest,
 }: {
   segments: readonly VideoSegment[];
   upcoming: readonly VideoSegment[];
+  /** 재생 시각의 조각이 아직 올라오지 않은 카메라. */
+  waiting?: readonly string[];
+  /** 녹화 업로드 진행(「업로드 중 12/28」). 모르면 null. */
+  upload?: UploadProgress | null;
   replay: ReplaySpatialSource | null;
   onFailed?: OnFailed;
   /** 크게 볼 때 나머지 칸을 놓는 곳(CctvWall). */
   rest?: WallRest;
 }) {
-  const label = useCameraNames(segments.map((segment) => segment.camera_id));
   const byCamera = new Map(segments.map((segment) => [segment.camera_id, segment]));
   const nextByCamera = new Map(upcoming.map((segment) => [segment.camera_id, segment]));
+  // 영상 칸과 업로드 중 칸을 카메라 이름순으로 섞는다(조각이 올라와도 칸 자리가 그대로다)
+  const ids = [...new Set([...byCamera.keys(), ...waiting])].sort((a, b) => a.localeCompare(b));
+  const label = useCameraNames(ids);
   return (
     <CctvWall
-      ids={[...byCamera.keys()]}
+      ids={ids}
       rest={rest}
       tile={(id, wall) => {
         const segment = byCamera.get(id);
-        return (
-          segment && (
+        if (segment) {
+          return (
             <SegmentTile
               segment={segment}
               upcoming={nextByCamera.get(id)}
@@ -235,6 +314,18 @@ export function ReplayVideoWall({
               focused={wall.focused}
               onToggle={wall.toggle}
               onFailed={onFailed}
+            />
+          );
+        }
+        return (
+          waiting.includes(id) && (
+            <UploadWaitingTile
+              cameraId={id}
+              upload={upload}
+              label={label(id)}
+              replay={replay}
+              focused={wall.focused}
+              onToggle={wall.toggle}
             />
           )
         );

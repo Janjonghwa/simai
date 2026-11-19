@@ -1,6 +1,6 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { requestVideoSegments } from '@/features/history/api';
-import { activeSegments } from '@/features/history/replaySegments';
+import { activeSegments, type UploadProgress } from '@/features/history/replaySegments';
 import type { Span, VideoSegment } from '@/features/history/types';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
@@ -58,11 +58,12 @@ export function useReplaySegments(range: Span) {
   const checkedAt = query.dataUpdatedAt;
   const segments = admin ? (query.data?.segments ?? NONE) : NONE;
   const uploads = query.data?.recording_uploads ?? [];
-  const activeUploading = uploads.some(
+  const activeUploads = uploads.filter(
     (item) =>
       item.status === 'UPLOADING' ||
       (item.status === 'WAITING' && !isStaleWaiting(item.status, range.to, checkedAt)),
   );
+  const activeUploading = activeUploads.length > 0;
   const staleWaiting = uploads.some((item) => isStaleWaiting(item.status, range.to, checkedAt));
   let message: string | null = null;
   if (!admin || (query.error instanceof ApiError && query.error.status === 403))
@@ -100,7 +101,17 @@ export function useReplaySegments(range: Span) {
       checkedAt > 0 && checkedAt - range.to >= UPLOAD_WINDOW_MS
         ? '이 작업 구간에 녹화된 영상이 없습니다(업로드 기록 없음).'
         : '녹화 영상을 확인 중입니다. 3D 기록을 먼저 볼 수 있습니다.';
-  return { segments, message, refresh: query.refetch, canRefresh: admin };
+  // 아직 올라오지 않은 칸에 보일 진행. 관리자가 아니거나 목록을 받지 못했으면 영상이 없으므로 보이지 않는다
+  const upload: UploadProgress | null =
+    admin && !query.error && activeUploading
+      ? {
+          uploaded: activeUploads.reduce((sum, item) => sum + item.uploaded_segments, 0),
+          expected: activeUploads.every((item) => item.expected_segments !== null)
+            ? activeUploads.reduce((sum, item) => sum + (item.expected_segments ?? 0), 0)
+            : null,
+        }
+      : null;
+  return { segments, message, upload, refresh: query.refetch, canRefresh: admin };
 }
 
 const playheadOf = (status: ReplayStatus) => status.playhead;

@@ -1,4 +1,5 @@
 import { ReplayStage } from '@/features/history/ReplayStage';
+import type { UploadProgress } from '@/features/history/replaySegments';
 import type { Span, VideoSegment } from '@/features/history/types';
 import type { WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplayStatus } from '@/features/viewer3d';
@@ -13,17 +14,25 @@ vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
   return { api: createHttp({ baseUrl: 'http://api.test', getToken: () => 'mock-token.admin' }) };
 });
-// 영상 칸은 어느 조각을 틀라고 받았는지만 보인다(<video>·S3 는 쓰지 않는다).
+// 영상 칸은 어느 조각을 틀라고 받았는지와 업로드 중 카메라만 보인다(<video>·S3 는 쓰지 않는다).
 vi.mock('@/features/history/ReplayVideoWall', () => ({
   ReplayVideoWall: ({
     segments,
+    waiting = [],
+    upload = null,
     onFailed,
   }: {
     segments: readonly VideoSegment[];
+    waiting?: readonly string[];
+    upload?: UploadProgress | null;
     onFailed?: (id: string) => void;
   }) => (
     <>
       <div data-testid="video-wall">{segments.map((s) => s.segment_id).join(',')}</div>
+      <div data-testid="video-waiting">
+        {waiting.join(',')}
+        {upload && ` ${upload.uploaded}/${upload.expected ?? '?'}`}
+      </div>
       {/* 시험: 영상을 끝내 받지 못한 경우를 흉내 낸다 */}
       <button type="button" onClick={() => segments.forEach((s) => onFailed?.(s.segment_id))}>
         영상 실패
@@ -202,6 +211,87 @@ describe('ReplayStage 아직 받지 못한 뒷구간', () => {
 
     await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
     expect(screen.queryByText('기록을 불러오는 중입니다…')).toBeNull();
+  });
+});
+
+describe('ReplayStage 녹화 업로드 중(S15P31A101-801)', () => {
+  const index = {
+    frames: [{ t: T, ids: [], tracks: [] }],
+    workers: [],
+    events: [],
+    gaps: [],
+    pending: null,
+  } as never;
+  const uploads = (status: string) => [
+    {
+      schema_version: '1.0.0',
+      work_id: 1,
+      status,
+      expected_segments: 28,
+      uploaded_segments: status === 'COMPLETED' ? 28 : 12,
+      failed_segments: 0,
+    },
+  ];
+  /** cam_A 는 재생 시각(T+5초)을 덮는 조각이 있고, cam_B 는 뒷구간 조각만 올라왔다. 응답할 때마다 served 를 센다. */
+  let served = 0;
+  const videos = (status: string) =>
+    http.get('http://api.test/api/videos', () => {
+      served += 1;
+      return HttpResponse.json({
+        segments: [
+          {
+            segment_id: 'cover',
+            camera_id: 'cam_A',
+            segment_start_capture_ms: T,
+            segment_end_capture_ms: T + 30_000,
+          },
+          {
+            segment_id: 'b-later',
+            camera_id: 'cam_B',
+            segment_start_capture_ms: T + 30_000,
+            segment_end_capture_ms: T + 60_000,
+          },
+        ],
+        recording_uploads: uploads(status),
+      });
+    });
+  const session = (playhead: number): WorkReplay => ({
+    ...LOADING,
+    loading: false,
+    replay: replayAt(playhead),
+    index,
+  });
+
+  it('업로드 중이면 재생 시각의 조각이 아직 없는 카메라를 진행과 함께 업로드 중 칸으로 넘긴다', async () => {
+    server.use(videos('UPLOADING'));
+    renderStage(session(T + 5_000));
+
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
+    expect(screen.getByTestId('video-waiting').textContent).toBe('cam_B 12/28');
+  });
+
+  it('재생 시각을 덮는 조각이 하나도 없으면 업로드 중이어도 목 화면(3D 기록 먼저 보기)을 두고 칸마다 업로드 배지를 겹친다', async () => {
+    server.use(videos('UPLOADING'));
+    renderStage(session(T + 70_000));
+
+    const badges = await screen.findAllByText('업로드 중 12/28');
+    const tiles = screen.getAllByRole('button', { name: /크게 보기/ });
+    expect(badges).toHaveLength(tiles.length);
+    expect(tiles.every((tile) => tile.querySelector('svg[role="img"]') !== null)).toBe(true);
+    expect(screen.queryByTestId('video-wall')).toBeNull();
+  });
+
+  it('업로드가 끝났으면 업로드 배지·업로드 중 칸을 두지 않는다(없는 시각은 목 화면 그대로)', async () => {
+    served = 0;
+    server.use(videos('COMPLETED'));
+    renderStage(session(T + 70_000));
+
+    await waitFor(() => expect(served).toBe(1));
+    // 목록을 받은 뒤에도 목 화면(카메라 칸)이 그대로다
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('button', { name: /카메라 1 크게 보기/ })).toBeTruthy();
+    expect(screen.queryByText(/업로드 중 \d/)).toBeNull();
+    expect(screen.queryByTestId('video-waiting')).toBeNull();
   });
 });
 

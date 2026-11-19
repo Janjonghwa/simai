@@ -13,7 +13,7 @@ import { saveReportForm } from '@/features/work/api';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import { blankReportForm } from '@/features/work/reportForm';
 import { api } from '@/lib/api';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -83,6 +83,22 @@ describe('보고서 읽기', () => {
     expect(valueOf('장소').textContent).not.toBe('');
     expect(isStriped(valueOf('장소'))).toBe(false);
     expect(isStriped(valueOf('중점위험'))).toBe(false);
+  });
+
+  it('초안을 만드는 동안 종이를 가리고 점이 움직이는 「TBM 생성 중」을 띄우며, 끝나면 걷는다(S15P31A101-801)', async () => {
+    const day = await openDay();
+    server.mock.markSetupDone(day.work_id);
+    renderWithClient(<ReportPanel workId={day.work_id} editable />);
+
+    const status = await screen.findByRole('status');
+    expect(within(status).getByText('TBM 생성 중')).toBeTruthy();
+    const dots = status.querySelector('[data-slot="loading-dots"]');
+    expect(dots?.getAttribute('aria-hidden')).toBe('true');
+    expect(dots?.textContent).toMatch(/^\.{1,3}$/);
+    expect(screen.queryByText('TBM 생성중..')).toBeNull();
+
+    server.clock += DRAFT_DELAY_MS;
+    await waitFor(() => expect(screen.queryByText('TBM 생성 중')).toBeNull(), { timeout: 6_000 });
   });
 
   it('초안이 실패(FAILED)해도 줄무늬를 걷고 사람이 채울 수 있게 한다', async () => {

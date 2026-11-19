@@ -51,6 +51,40 @@ afterEach(() => {
 });
 
 describe('종료 작업 영상 자동 갱신', () => {
+  it('업로드 중이면 진행 중인 작업의 올라온 수·예정 수를 합쳐 주고, 끝나면 비운다(S15P31A101-801)', async () => {
+    request.mockResolvedValueOnce({
+      segments: [],
+      recording_uploads: [
+        { ...pending, expected_segments: 20, uploaded_segments: 9 },
+        { ...pending, work_id: 2, expected_segments: 8, uploaded_segments: 3 },
+        // 끝난 작업은 진행에 넣지 않는다
+        { ...pending, work_id: 3, status: 'COMPLETED', expected_segments: 4, uploaded_segments: 4 },
+      ],
+    });
+    request.mockResolvedValue({
+      segments: [segment],
+      recording_uploads: [{ ...pending, status: 'COMPLETED', uploaded_segments: 1 }],
+    });
+    const hook = mount();
+    await tick();
+    expect(hook.result.current.upload).toEqual({ uploaded: 12, expected: 28 });
+    await tick(10_001);
+    expect(hook.result.current.upload).toBeNull();
+  });
+  it('예정 수를 아직 알리지 않은 작업(WAITING)이 있으면 예정 수는 모른다', async () => {
+    // 작업 종료 직후라 보고 없는 WAITING 도 업로드 대기다(종료 뒤 10분이 지나면 업로드 중으로 보지 않는다)
+    vi.setSystemTime(range.to + 1_000);
+    request.mockResolvedValue({
+      segments: [],
+      recording_uploads: [
+        { ...pending, expected_segments: 20, uploaded_segments: 9 },
+        { ...pending, work_id: 2, status: 'WAITING', expected_segments: null },
+      ],
+    });
+    const hook = mount();
+    await tick();
+    expect(hook.result.current.upload).toEqual({ uploaded: 9, expected: null });
+  });
   it('빈 목록을 열어 둔 상태에서 완료된 영상을 자동 반영하고 폴링을 멈춘다', async () => {
     request.mockResolvedValueOnce({ segments: [], recording_uploads: [pending] });
     request.mockResolvedValue({
