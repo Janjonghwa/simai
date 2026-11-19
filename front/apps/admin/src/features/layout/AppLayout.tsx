@@ -188,11 +188,7 @@ export function AppLayout() {
           )}
           <Dock />
         </div>
-        <Notices
-          ref={noticesRef}
-          eventPanel={eventPanel}
-          banner={eventPanel || fullBleed}
-        />
+        <Notices ref={noticesRef} eventPanel={eventPanel} banner={eventPanel || fullBleed} />
         <AlarmSoundLoop />
       </div>
     </>
