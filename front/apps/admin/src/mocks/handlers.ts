@@ -2,6 +2,7 @@ import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { createFloorPlanMock } from '@/mocks/floorPlan';
 import { createGpuMock } from '@/mocks/gpu';
 import { createHistoryMock } from '@/mocks/history';
+import { mockStateStorage } from '@/mocks/mockPersist';
 import { createRecordingVideoMock } from '@/mocks/recordings';
 import { sceneHandlers } from '@/mocks/scenes';
 import { createSetupMock } from '@/mocks/setup';
@@ -181,6 +182,10 @@ export const handlers = [
   ...createHistoryMock({ liveWorks: () => tbmMock.works }).handlers,
   // 관제 녹화 작업 구간 영상(끝난 작업의 카메라별 mp4 조각, S15P31A101-668).
   ...createRecordingVideoMock({ liveWorks: () => tbmMock.works }).handlers,
-  // GPU 켜기·끄기·설정(S15P31A101-702).
-  ...createGpuMock().handlers,
+  // GPU 켜기·끄기·설정(S15P31A101-702). 연습 빌드는 켜진 상태로 시작하고 켜기·끄기를 새로고침 뒤에도 잇는다(-806).
+  ...createGpuMock(
+    import.meta.env.VITE_MOCK_BUILD === 'true'
+      ? { startReady: true, storage: mockStateStorage() }
+      : {},
+  ).handlers,
 ];

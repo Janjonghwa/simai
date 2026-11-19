@@ -79,7 +79,30 @@ export function LoginPage() {
               </div>
               {wide && <LoginHeadline />}
             </div>
-            {import.meta.env.VITE_MOCK_BUILD === 'true' && <p>연습 계정: demo / demo</p>}
+            {/* 연습 빌드만(-806): 계정·연습 순서 안내와 남긴 연습 상태 지우기. 운영 빌드에서는 이 줄과 동적 import 가 빠진다. */}
+            {import.meta.env.VITE_MOCK_BUILD === 'true' && (
+              <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-muted-foreground">
+                <p className="font-semibold text-foreground">연습 계정: demo / demo</p>
+                <ol className="list-decimal space-y-0.5 pl-5">
+                  <li>GPU 는 켜진 상태로 시작합니다</li>
+                  <li>작업 관리에서 오늘 작업 준비 → TBM</li>
+                  <li>세팅(이전 맵 재사용) → 작업 전 확인 → 작업 시작</li>
+                  <li>실시간 관제에서 경보·사건 확인</li>
+                </ol>
+                <button
+                  type="button"
+                  className="self-start text-foreground underline underline-offset-4"
+                  onClick={() =>
+                    void import('@/mocks/mockPersist').then((m) => {
+                      m.clearMockState(m.mockStateStorage());
+                      window.location.reload();
+                    })
+                  }
+                >
+                  연습 처음부터 다시
+                </button>
+              </div>
+            )}
             <form
               noValidate
               className="flex flex-col gap-8"
