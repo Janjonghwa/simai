@@ -124,13 +124,14 @@ export function useActiveSegments(
   replay: ReplaySpatialSource | null,
   segments: readonly VideoSegment[],
   at: (status: ReplayStatus) => number | null = playheadOf,
+  initialAt: number | null = null,
 ): VideoSegment[] {
   const subscribe = useCallback(
     (listener: () => void) => (replay ? replay.subscribeStatus(listener) : () => {}),
     [replay],
   );
   const key = useSyncExternalStore(subscribe, () =>
-    activeSegments(segments, replay ? at(replay.getStatus()) : null)
+    activeSegments(segments, replay ? at(replay.getStatus()) : initialAt)
       .map((segment) => segment.segment_id)
       .join(','),
   );
