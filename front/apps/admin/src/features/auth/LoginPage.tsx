@@ -79,6 +79,7 @@ export function LoginPage() {
               </div>
               {wide && <LoginHeadline />}
             </div>
+            {import.meta.env.VITE_MOCK_BUILD === 'true' && <p>연습 계정: demo / demo</p>}
             <form
               noValidate
               className="flex flex-col gap-8"

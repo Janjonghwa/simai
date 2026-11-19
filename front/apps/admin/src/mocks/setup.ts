@@ -1071,7 +1071,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
           height_checks: null,
           height_warnings: [],
           object_cross_checks: null,
-          calibration_version: `cal-of-${picked.setup_session_id}`,
+          calibration_version:
+            picked.setup_session_id === 'mock-previous'
+              ? 'cal-7'
+              : `cal-of-${picked.setup_session_id}`,
           preview_scene_version: null,
           scene_version: null,
           config_version: null,
@@ -1085,6 +1088,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
           completed_at_ms: t,
           updated_at_ms: t,
           ...modePatch('REUSE'),
+          ...(options.worldAnchorAccepted ? { world_anchor: { accepted: true } } : {}),
           complete_blocked_reason: null,
           reuse_source: {
             setup_session_id: picked.setup_session_id,

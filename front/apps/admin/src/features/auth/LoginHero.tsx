@@ -9,9 +9,9 @@ import { useState } from 'react';
 // 빛이 서서히 꺼지며 이어지게 하고, RIFE 로 60fps·0.8배 속도를 영상에 넣고, Real-ESRGAN(animevideov3) ×2 로 키웠다.
 // 생성 영상 바탕이 페이지 바탕(#0A111F)과 거의 같아 바탕색 보정은 하지 않았다. 재생 속도는 기본(1배)이다. 포스터는 첫 장면이다.
 export const MASCOT_MEDIA = {
-  webm: '/media/mascot.webm',
-  mp4: '/media/mascot.mp4',
-  poster: '/media/mascot-poster.webp',
+  webm: `${import.meta.env.BASE_URL}media/mascot.webm`,
+  mp4: `${import.meta.env.BASE_URL}media/mascot.mp4`,
+  poster: `${import.meta.env.BASE_URL}media/mascot-poster.webp`,
 } as const;
 
 interface SceneFeature {

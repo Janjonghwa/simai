@@ -23,21 +23,36 @@ export function useCctvPreview(localUrl: string, stompUrl: string) {
       store.setLink('unsupported');
       return;
     }
-    const current = startCctvView(
-      { localUrl, remoteUrl: () => requestRemoteViewUrl(api, stompUrl) },
-      browserDeps(renderer),
-      store,
-    );
-    view.current = current;
-    const onActivity = () => current.activity();
-    const onVisibility = () => current.visibility(document.visibilityState === 'hidden');
+    let stopped = false;
+    const onActivity = () => view.current?.activity();
+    const onVisibility = () => view.current?.visibility(document.visibilityState === 'hidden');
+    const start = async () => {
+      const mock = import.meta.env.VITE_MOCK_BUILD === 'true';
+      const deps = browserDeps(renderer);
+      if (mock) {
+        const { openMockCctvSocket } = await import('@/mocks/cctvPreview');
+        deps.openSocket = openMockCctvSocket;
+      }
+      if (stopped) return;
+      view.current = startCctvView(
+        {
+          localUrl,
+          skipLocal: mock,
+          remoteUrl: mock ? async () => 'mock' : () => requestRemoteViewUrl(api, stompUrl),
+        },
+        deps,
+        store,
+      );
+    };
+    void start();
     for (const name of ACTIVITY_EVENTS)
       window.addEventListener(name, onActivity, { passive: true });
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       for (const name of ACTIVITY_EVENTS) window.removeEventListener(name, onActivity);
       document.removeEventListener('visibilitychange', onVisibility);
-      current.stop();
+      stopped = true;
+      view.current?.stop();
       view.current = null;
       renderer.dispose();
       useCctvStore.getState().reset();

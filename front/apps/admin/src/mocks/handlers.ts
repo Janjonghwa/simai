@@ -45,6 +45,35 @@ export const setupMock = createSetupMock({
   autoProgress: true,
   worldAnchorAccepted: true,
   cameraCheckWalk: true,
+  ...(import.meta.env.VITE_MOCK_BUILD === 'true'
+    ? {
+        reuseCheck: {
+          available: true,
+          blocked_reason: null,
+          scene_version: 'scene-demo',
+          camera_status: 'NOT_DETECTED',
+          changed_cameras: [],
+          camera_source: null,
+          recommended_setup_session_id: null,
+          candidates: [
+            {
+              setup_session_id: 'mock-previous',
+              scene_version: 'scene-demo',
+              completed_at_ms: 1790000000000,
+              camera_heights_m: { cam_A: 2.7, cam_B: 2.7, cam_C: 2.7, cam_D: 2.7 },
+              status: 'MATCH',
+              reason: null,
+              selectable: true,
+              recommended: false,
+              changed_cameras: [],
+              shifted_cameras: [],
+              unconfirmed_cameras: [],
+              camera_source: null,
+            },
+          ],
+        },
+      }
+    : {}),
 });
 // 작업 관리 새 흐름(하루 작업·날짜 보고서·서명·제출). 세팅 mock 의 세션으로 세팅 중·끝남을 안다. 같은 경로를 쓰는 옛 TBM mock·세팅 mock·
 // 히스토리 mock 보다 먼저 답해야 해서(모르는 작업·요청은 undefined 로 넘긴다) 아래 목록에서 그 앞에 둔다.
