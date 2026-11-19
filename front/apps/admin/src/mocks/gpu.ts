@@ -1,10 +1,13 @@
+import { type MockStateStorage, readMockState, writeMockState } from '@/mocks/mockPersist';
 import { problem } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
 
 // GPU 켜기·끄기·설정 mock(S15P31A101-702). 서버(domain/gpu)와 같은 모양으로 답한다. 켜면 켜는 중 → 가중치 → 엔진 → 준비 완료를
 // 몇 초씩 지나 연결된다(실제는 5~7분). 끄면 꺼짐. 관제·세팅 막힘은 흉내 내지 않는다.
 
-const STEP_MS = 4_000;
+export const GPU_MOCK_STEP_MS = 4_000;
+const STEP_MS = GPU_MOCK_STEP_MS;
+const STATE_KEY = 'gpu';
 
 interface MockLaunch {
   launch_id: string;
@@ -14,8 +17,57 @@ interface MockLaunch {
   requestedAt: number;
 }
 
-export function createGpuMock() {
-  let launch: MockLaunch | null = null;
+export interface GpuMockOptions {
+  /** 처음부터 준비 완료(연결됨)로 시작한다. 연습 빌드(-806)는 GPU 켜기에서 막히지 않게 켠다. */
+  startReady?: boolean;
+  /** 켜기·끄기를 남길 곳(연습 빌드의 localStorage). 남긴 값이 있으면 startReady 보다 먼저 따른다. */
+  storage?: MockStateStorage | null;
+  now?: () => number;
+}
+
+// 남긴 값: 끈 상태는 { on: false }, 켠 상태는 { on: true, launch }. 모양이 다르면 남기지 않은 것으로 본다.
+function readSavedLaunch(storage: MockStateStorage | null): MockLaunch | null | undefined {
+  const saved = readMockState(storage, STATE_KEY);
+  if (typeof saved !== 'object' || saved === null || !('on' in saved)) return undefined;
+  if (saved.on === false) return null;
+  if (saved.on !== true || !('launch' in saved)) return undefined;
+  const l = saved.launch as Partial<MockLaunch> | null;
+  if (
+    typeof l?.launch_id !== 'string' ||
+    typeof l.gpu_type !== 'string' ||
+    typeof l.region !== 'string' ||
+    typeof l.price !== 'number' ||
+    typeof l.requestedAt !== 'number'
+  ) {
+    return undefined;
+  }
+  return {
+    launch_id: l.launch_id,
+    gpu_type: l.gpu_type,
+    region: l.region,
+    price: l.price,
+    requestedAt: l.requestedAt,
+  };
+}
+
+export function createGpuMock(options: GpuMockOptions = {}) {
+  const now = options.now ?? Date.now;
+  const storage = options.storage ?? null;
+  const saved = readSavedLaunch(storage);
+  let launch: MockLaunch | null =
+    saved !== undefined
+      ? saved
+      : options.startReady
+        ? {
+            launch_id: crypto.randomUUID(),
+            gpu_type: 'NVIDIA H100 80GB HBM3',
+            region: 'AP-JP-1',
+            price: 2.99,
+            requestedAt: now() - STEP_MS * 3,
+          }
+        : null;
+  const saveLaunch = () =>
+    writeMockState(storage, STATE_KEY, launch ? { on: true, launch } : { on: false });
   let settingsVersion: number | null = null;
   let settings = {
     provider: 'RUNPOD' as 'RUNPOD' | 'AWS',
@@ -30,11 +82,11 @@ export function createGpuMock() {
   let settingsAt: number | null = null;
 
   const status = () => {
-    const now = Date.now();
+    const at = now();
     if (!launch) {
-      return { session: null, server_time_ms: now, launch: null, power: 'OFF', stop_block: null };
+      return { session: null, server_time_ms: at, launch: null, power: 'OFF', stop_block: null };
     }
-    const age = now - launch.requestedAt;
+    const age = at - launch.requestedAt;
     const launchView = {
       launch_id: launch.launch_id,
       state: 'RUNNING',
@@ -54,7 +106,7 @@ export function createGpuMock() {
     if (age < STEP_MS) {
       return {
         session: null,
-        server_time_ms: now,
+        server_time_ms: at,
         launch: launchView,
         power: 'STARTING',
         stop_block: null,
@@ -76,7 +128,7 @@ export function createGpuMock() {
         elapsed_ms: age - STEP_MS,
         tier0_link: stage === 'READY' ? 'CONNECTED' : 'DISCONNECTED',
       },
-      server_time_ms: now,
+      server_time_ms: at,
       launch: launchView,
       power: stage === 'READY' ? 'CONNECTED' : 'PREPARING',
       stop_block: null,
@@ -199,13 +251,15 @@ export function createGpuMock() {
         gpu_type: pick.gpu_type,
         region: pick.region,
         price: cell?.price_per_hour_usd ?? 2.99,
-        requestedAt: Date.now(),
+        requestedAt: now(),
       };
+      saveLaunch();
       return HttpResponse.json(status().launch, { status: 201 });
     }),
     http.post('*/api/gpu/stop', () => {
       if (!launch) return problem(409, 'GPU_NOT_ON', '켜져 있는 GPU 가 없습니다');
       launch = null;
+      saveLaunch();
       return new HttpResponse(null, { status: 204 });
     }),
     http.post('*/api/gpu/presence', () => new HttpResponse(null, { status: 204 })),
