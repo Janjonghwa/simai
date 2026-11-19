@@ -404,4 +404,69 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(card.getAttribute('aria-label')).toBe('김철수 (w-0015) 이벤트');
     expect(card.textContent).not.toContain('김철수');
   });
+
+  it('사람 대상 UNVERIFIABLE 경보의 대상이 world_state 트랙에 없으면 「확인 불가 · 대상 시야 이탈」을 보인다(-811)', () => {
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: {
+          tracks: [
+            { world_id: 'w-0015', track_lifecycle: 'LOST', cameras: [] },
+            { world_id: 'w-0021', track_lifecycle: 'CONFIRMED', cameras: ['cam_A'] },
+          ],
+        } as unknown as WorldStatePayload,
+      },
+    });
+    const { card } = renderCard(
+      [entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] })],
+      { gone: true },
+    );
+
+    // 카드는 한 줄이라 본문에는 없고, 마우스 올림 설명(title)에만 있다
+    expect(within(card).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
+    expect(detail(card)).toContain('확인 불가 · 대상 시야 이탈');
+    cleanup();
+
+    // 대상이 트랙(또는 병합 aliases)에 있으면 기존 한 줄 카드와 문구를 유지한다.
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: {
+          tracks: [
+            {
+              world_id: 'w-0099',
+              aliases: ['w-0015'],
+              track_lifecycle: 'CONFIRMED',
+              cameras: ['cam_A'],
+            },
+          ],
+        } as unknown as WorldStatePayload,
+      },
+    });
+    const present = renderCard([
+      entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
+    ]).card;
+    expect(within(present).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
+    expect(detail(present)).toContain('미확인');
+    cleanup();
+
+    // 구역 이벤트·VERIFIED 이벤트에는 적용하지 않는다.
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: { tracks: [] } as unknown as WorldStatePayload,
+      },
+    });
+    const zoneCard = renderCard([
+      entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' }),
+    ]).card;
+    expect(within(zoneCard).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
+    cleanup();
+
+    const verifiedCard = renderCard([entry({ verification: 'VERIFIED', world_ids: ['w-0015'] })], {
+      gone: true,
+    }).card;
+    expect(within(verifiedCard).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
+    expect(detail(verifiedCard)).toContain('미확인');
+  });
 });

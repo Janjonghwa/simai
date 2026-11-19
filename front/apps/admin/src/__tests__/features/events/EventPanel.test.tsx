@@ -739,4 +739,71 @@ describe('EventDetail 확인 필요', () => {
     ]);
     expect(within(dialog).queryByText('미확인')).toBeNull();
   });
+
+  it('대상이 시야에서 사라진 UNVERIFIABLE 사람 경보는 상세에 「확인 불가 · 대상 시야 이탈」과 안내를 보인다(-811)', () => {
+    const GUIDE =
+      '재입장해 서 있는 모습이 확인되거나 작업을 종료하면 마감됩니다. 소리는 확인(ACK)으로 멈출 수 있습니다.';
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: {
+          tracks: [{ world_id: 'w-0021', track_lifecycle: 'CONFIRMED', cameras: ['cam_A'] }],
+        } as unknown as WorldStatePayload,
+      },
+    });
+    const dialog = renderDetail([
+      entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
+    ]);
+    const rules = within(dialog).getByRole('region', { name: '규칙과 근거' });
+    const process = within(dialog).getByRole('region', { name: '처리' });
+
+    expect(within(dialog).queryByText('해소 확인 불가')).toBeNull();
+    expect(within(rules).getByText(/확인 불가 · 대상 시야 이탈/)).toBeTruthy();
+    expect(within(process).getByText('확인 불가 · 대상 시야 이탈')).toBeTruthy();
+    expect(within(process).getByText(GUIDE)).toBeTruthy();
+    // 소리 중지용 ACK 버튼은 그대로 남는다.
+    expect(within(process).getByRole('button', { name: /경보 확인/ })).toBeTruthy();
+    cleanup();
+
+    // 대상이 트랙에 있으면 기존 문구를 유지하고 안내를 보이지 않는다.
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: {
+          tracks: [{ world_id: 'w-0015', track_lifecycle: 'CONFIRMED', cameras: ['cam_A'] }],
+        } as unknown as WorldStatePayload,
+      },
+    });
+    const present = renderDetail([
+      entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
+    ]);
+    expect(within(present).getByText('해소 확인 불가')).toBeTruthy();
+    expect(within(present).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
+    expect(within(present).queryByText(GUIDE)).toBeNull();
+    expect(
+      within(within(present).getByRole('region', { name: '처리' })).getByText('확인 대기'),
+    ).toBeTruthy();
+    cleanup();
+
+    // 구역 이벤트·VERIFIED 이벤트에는 적용하지 않는다.
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: { tracks: [] } as unknown as WorldStatePayload,
+      },
+    });
+    const zoneDialog = renderDetail([
+      entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' }),
+    ]);
+    expect(within(zoneDialog).getByText('해소 확인 불가')).toBeTruthy();
+    expect(within(zoneDialog).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
+    expect(within(zoneDialog).queryByText(GUIDE)).toBeNull();
+    cleanup();
+
+    const verifiedDialog = renderDetail([
+      entry({ verification: 'VERIFIED', world_ids: ['w-0015'] }),
+    ]);
+    expect(within(verifiedDialog).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
+    expect(within(verifiedDialog).queryByText(GUIDE)).toBeNull();
+  });
 });

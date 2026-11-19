@@ -1,5 +1,12 @@
 import { CONFIDENCE_REASON, METRIC_LABEL, SERVER_CLOSE_LABEL } from '@/features/events/constants';
-import { isActive, type EntryStatus } from '@/features/events/entries';
+import {
+  entryStatus,
+  isActive,
+  isCurrent,
+  type EntryStatus,
+  type EventEntry,
+} from '@/features/events/entries';
+import type { AliveIds } from '@/features/events/incidents';
 import { PPE_RELEASE_LABEL, type PpeRelease } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import {
@@ -54,6 +61,25 @@ export const eventShortSubject = (
     : formatPersonShort(person, personNames);
 };
 
+/** 대상이 시야에서 사라져 해소를 확인할 수 없는 사람 경보의 상태 문구(S15P31A101-811). */
+export const UNVERIFIABLE_TARGET_GONE_LABEL = '확인 불가 · 대상 시야 이탈';
+
+/** 대상 시야 이탈로 확인 불가 상태인 사람 경보의 사건 상세 한 줄 안내(S15P31A101-811). */
+export const UNVERIFIABLE_TARGET_GONE_GUIDE =
+  '재입장해 서 있는 모습이 확인되거나 작업을 종료하면 마감됩니다. 소리는 확인(ACK)으로 멈출 수 있습니다.';
+
+/**
+ * 대상이 시야에서 사라져 확인할 수 없는 사람 경보인지 판정한다(S15P31A101-811, 명세 6.4).
+ * 지금 활성(해소 전·현재 Tier 0 보유)인 사람 대상 이벤트가 verification=UNVERIFIABLE 이고,
+ * 대상 world_id 가 지금 world_state 트랙(alive)에 없을 때만 참이다.
+ * 구역 이벤트(world_ids 비어 있음)·해소된 이벤트·지난 관제·world_state 미수신(alive=null)에는 적용하지 않는다.
+ */
+export function isUnverifiableTargetGone(event: EventItem, alive: AliveIds): boolean {
+  if (alive === null || !isCurrent(event) || event.verification !== 'UNVERIFIABLE') return false;
+  if (event.world_ids.length === 0) return false;
+  return event.world_ids.every((id) => !alive.has(id));
+}
+
 /** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9·R11) "해소" 대신 해소 원인을 보인다. */
 export function statusText(status: EntryStatus, release: PpeRelease | null = null) {
   switch (status.kind) {
@@ -74,6 +100,21 @@ export function statusText(status: EntryStatus, release: PpeRelease | null = nul
       return `${word} ${formatTime(status.at)}`;
     }
   }
+}
+
+/**
+ * 규칙 하나의 처리 상태 문구. 대상이 시야에서 사라져 확인할 수 없는 사람 경보(isUnverifiableTargetGone)는
+ * 「확인 불가 · 대상 시야 이탈」로 구분해 보인다(S15P31A101-811).
+ */
+export function entryStatusText(
+  entry: EventEntry,
+  alive: AliveIds = null,
+  release: PpeRelease | null = null,
+): string {
+  if (isUnverifiableTargetGone(entry.event, alive)) {
+    return UNVERIFIABLE_TARGET_GONE_LABEL;
+  }
+  return statusText(entryStatus(entry), release);
 }
 
 /** 지표 문구. _m 은 미터, _s 는 초로 보인다. */

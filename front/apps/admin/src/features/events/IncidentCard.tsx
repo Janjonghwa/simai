@@ -1,11 +1,17 @@
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
 import { isActive, isConfirmationPending } from '@/features/events/entries';
 import { OUTSIDE_WORK_TEXT, type OutsideWorkKind } from '@/features/events/EventBadges';
-import { confirmationText, formatTime } from '@/features/events/format';
+import {
+  confirmationText,
+  formatTime,
+  isUnverifiableTargetGone,
+  UNVERIFIABLE_TARGET_GONE_LABEL,
+} from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
 import { cardChip, cardTitle, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
+import { useAliveIds } from '@/features/events/useAliveIds';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { cn } from '@simai/ui/lib/utils';
@@ -63,19 +69,22 @@ export function IncidentCard({
 }: IncidentCardProps) {
   const zoneName = useZoneName();
   const personNames = usePersonDisplayMap();
+  const alive = useAliveIds();
   const top = topEntry(incident);
   const look = SEVERITY_LOOK[incident.severity];
   const chip = cardChip(incident);
   const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find(isConfirmationPending);
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
+  const unverifiableGone = incident.entries.some((e) => isUnverifiableTargetGone(e.event, alive));
   const raisedAt = incident.active ? firstActiveRaisedAt(incident) : null;
   // 지금 관제 중인 사건만 등급 테두리·점멸을 쓴다. 지난 관제·사라진 사람은 지금 카메라에 없다.
   const current = incident.active && !incident.stale && !gone;
   const fullTarget = targetLabel(incident.target, zoneName, personNames);
+  const statusLine = unverifiableGone ? UNVERIFIABLE_TARGET_GONE_LABEL : (chip?.label ?? null);
   const detail = [
     fullTarget,
-    chip?.label ?? null,
+    statusLine,
     raisedAt !== null ? `발생 ${formatTime(raisedAt)}` : null,
     occurrences > 1 ? occurrencesText(occurrences, people) : null,
     check ? confirmationText(check.event) : null,
@@ -121,6 +130,7 @@ export function IncidentCard({
           onClick={() => (selected ? onOpen(top.event.event_id) : onSelect(incident))}
           className="-mx-1 flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-surface-3"
         >
+          {/* 카드는 한 줄([등급] 규칙 이름, -798). 「확인 불가 · 대상 시야 이탈」은 마우스 올림 설명(title)과 상세에서 보인다(-811) */}
           <SeverityBadge severity={top.event.severity} />
           <b className="min-w-0 flex-1 truncate">{cardTitle(incident)}</b>
         </button>
