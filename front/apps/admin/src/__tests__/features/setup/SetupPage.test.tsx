@@ -9,6 +9,7 @@ import {
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import { SetupPage } from '@/features/setup/SetupPage';
+import { CameraHeightPanel } from '@/features/setup/SetupPanels';
 import type { SetupSessionResponse } from '@/features/setup/types';
 import type {
   Viewer3DHandle,
@@ -31,6 +32,45 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 /** 저장한 구역이 없을 때 완료 전에 묻는 글(지금 관제 구역을 구체적으로 적는다, S15P31A101-691). */
 const EMPTY_ZONES_CONFIRM = expect.stringContaining('저장한 구역이 없');
+
+it('높이 입력 행과 설명, 문제 및 확인 메모를 표시한다', async () => {
+  const fields = ['a', 'b', 'c', 'd'].map((cameraId, index) => ({
+    cameraId,
+    defaultHeightM: 2.44,
+    rawValue: '2.44',
+    required: false,
+    missing: index === 0,
+    invalid: index === 1,
+    valueM: 2.44,
+  }));
+  render(
+    <CameraHeightPanel
+      fields={fields}
+      onChange={() => {}}
+      submitError={null}
+      heightWarnings={[
+        {
+          cameraId: 'c',
+          inputHeightM: 2.44,
+          restoredHeightM: 2.2,
+          differenceCm: 24,
+          message: '높이 불일치',
+        },
+      ]}
+      fieldNotes={{ d: { text: '맞음', warn: false } }}
+    />,
+  );
+  const input = screen.getByLabelText('카메라 1 높이 (m)');
+  expect(input.parentElement?.textContent).toBe('카메라 1m');
+  expect(screen.getByText('입력 필수')).toBeTruthy();
+  expect(screen.getByText('0~20m 입력')).toBeTruthy();
+  expect(screen.getByText('높이 재확인 필요')).toBeTruthy();
+  expect(screen.getByText('맞음')).toBeTruthy();
+  expect(screen.queryByText('지난 제출값')).toBeNull();
+  expect(screen.queryByText('신규 입력')).toBeNull();
+  fireEvent.focus(screen.getByRole('button', { name: '카메라 높이 설명' }));
+  expect(await screen.findByText(/바닥에서 렌즈 중심까지 줄자로 잰 높이/)).toBeTruthy();
+});
 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
@@ -357,13 +397,11 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(cam1Input.required).toBe(false);
     expect(cam4Input.required).toBe(true);
 
-    expect(
-      screen.getByText(
-        '거치대 기둥을 늘 같은 길이로 펴고(테이프 표시 권장), 바꿨을 때만 다시 재세요',
-      ),
-    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: '카메라 높이 설명' })).toBeTruthy();
+    expect(cam1Input.parentElement?.textContent).toBe('카메라 1m');
+    expect(screen.queryByText('신규 입력')).toBeNull();
     expect(screen.getByText('입력 필수')).toBeTruthy();
-    expect(screen.getAllByText('지난 제출값')).toHaveLength(3);
+    expect(screen.queryByText('지난 제출값')).toBeNull();
 
     const submitButton = screen.getByRole('button', { name: '다음' }) as HTMLButtonElement;
     expect(submitButton.disabled).toBe(true);

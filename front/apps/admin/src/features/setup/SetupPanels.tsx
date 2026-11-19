@@ -39,6 +39,12 @@ import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert'
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@simai/ui/components/tooltip';
 import { cn } from '@simai/ui/lib/utils';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
@@ -88,7 +94,7 @@ function Panel({
   dense = false,
   fill = 0,
 }: {
-  title: string;
+  title: ReactNode;
   children: ReactNode;
   /** 세로 공간이 모자랄 때: 안쪽 간격을 줄인다. */
   dense?: boolean;
@@ -476,8 +482,25 @@ export function CameraHeightPanel({
   ]);
   const cameraIds = fields.map((f) => f.cameraId);
   return (
-    <Panel title="카메라 높이 입력 (바닥~렌즈 중심, m)" dense fill={1}>
-      <p className="text-xs text-muted-foreground">{CAMERA_HEIGHT_HELP}</p>
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-1.5">
+          카메라 높이 입력
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger aria-label="카메라 높이 설명" className="text-muted-foreground">
+                ⓘ
+              </TooltipTrigger>
+              <TooltipContent>
+                바닥에서 렌즈 중심까지 줄자로 잰 높이(m)입니다. {CAMERA_HEIGHT_HELP}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </span>
+      }
+      dense
+      fill={1}
+    >
       {heightWarnings.length > 0 && (
         <div
           role="alert"
@@ -509,18 +532,37 @@ export function CameraHeightPanel({
                 isWarned && 'ring-1 ring-delay',
               )}
             >
-              <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs">
                 <label htmlFor={inputId} className="font-semibold text-foreground">
-                  {cameraLabel(cameraIds, field.cameraId)} 높이 (m)
+                  {cameraLabel(cameraIds, field.cameraId)}
                 </label>
+                <input
+                  id={inputId}
+                  aria-label={`${cameraLabel(cameraIds, field.cameraId)} 높이 (m)`}
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0.01"
+                  max={MAX_CAMERA_HEIGHT_M}
+                  required={needsInput}
+                  aria-invalid={field.missing || field.invalid || isWarned}
+                  placeholder="예: 2.70"
+                  value={field.rawValue}
+                  onChange={(e) => onChange(field.cameraId, e.target.value)}
+                  className={cn(
+                    'h-7 w-20 rounded-md border bg-card px-2 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    field.missing || field.invalid || isWarned ? 'border-delay' : 'border-border',
+                  )}
+                />
+                <span>m</span>
+              </div>
+              {(note || field.missing || field.invalid || isWarned) && (
                 <span
                   className={cn(
                     'text-[11px]',
                     field.missing || field.invalid || isWarned
                       ? 'font-semibold text-delay'
-                      : note
-                        ? 'text-ok'
-                        : 'text-muted-foreground',
+                      : 'text-ok',
                   )}
                 >
                   {note && !field.missing && !field.invalid
@@ -529,30 +571,9 @@ export function CameraHeightPanel({
                       ? '입력 필수'
                       : field.invalid
                         ? `0~${MAX_CAMERA_HEIGHT_M}m 입력`
-                        : isWarned
-                          ? '높이 재확인 필요'
-                          : field.required
-                            ? '신규 입력'
-                            : '지난 제출값'}
+                        : '높이 재확인 필요'}
                 </span>
-              </div>
-              <input
-                id={inputId}
-                type="number"
-                inputMode="decimal"
-                step="0.01"
-                min="0.01"
-                max={MAX_CAMERA_HEIGHT_M}
-                required={needsInput}
-                aria-invalid={field.missing || field.invalid || isWarned}
-                placeholder="예: 2.70"
-                value={field.rawValue}
-                onChange={(e) => onChange(field.cameraId, e.target.value)}
-                className={cn(
-                  'h-7 w-full rounded-md border bg-card px-2.5 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  field.missing || field.invalid || isWarned ? 'border-delay' : 'border-border',
-                )}
-              />
+              )}
             </div>
           );
         })}
