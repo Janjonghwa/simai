@@ -12,6 +12,10 @@ import {
   avatarUvMirrorMapForScene,
   type AvatarUvMirrorMap,
 } from '@/features/viewer3d/people/avatarAppearanceMirror';
+import {
+  createAvatarAssetCache,
+  type AvatarCacheEntry,
+} from '@/features/viewer3d/people/avatarAssetCache';
 import type { AvatarAssetView, AvatarPoseView } from '@/features/viewer3d/people/avatarFrame';
 import { AVATAR_ASSET_RETRY_MS, type AvatarMeshFetch } from '@/features/viewer3d/people/avatarMesh';
 import type { PersonTone } from '@/features/viewer3d/people/personMotion';
@@ -976,13 +980,16 @@ export function avatarAppearanceRequestOf(
   };
 }
 
+/** 외형 요청의 정체(사람·세대·판·두 파일 주소). 판이 key 에 들어가 옛 판을 새 판으로 잘못 다시 쓰지 않는다. */
+const appearanceRequestKey = (req: AvatarAppearanceRequest) =>
+  `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
+
 export function avatarAppearanceKey(
   worldId: string,
   avatar: AvatarPoseView | undefined,
 ): string | null {
   const req = avatarAppearanceRequestOf(worldId, avatar);
-  if (!req) return null;
-  return `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
+  return req ? appearanceRequestKey(req) : null;
 }
 
 /**
@@ -1051,7 +1058,7 @@ export async function loadAvatarAppearanceTextures(
     albedoTexture.dispose();
     throw err;
   }
-  const key = `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
+  const key = appearanceRequestKey(req);
   let disposed = false;
   let display: {
     facePolicy: AvatarFacePolicy;
@@ -1100,6 +1107,87 @@ export async function loadAvatarAppearanceTextures(
   };
 }
 
+// ---- 외형 자산 캐시(-797): 요청 정체별로 한 번만 받고, 아무도 쓰지 않은 뒤 AVATAR_ASSET_RELEASE_MS 동안 남긴다 ----
+
+interface AppearanceEntry extends AvatarCacheEntry {
+  loaded: Promise<AvatarAppearanceTextures>;
+  appearance: AvatarAppearanceTextures | null;
+  /** 읽기가 끝나기 전에 캐시에서 빠졌다. 늦게 끝난 자산은 받자마자 해제한다. */
+  evicted: boolean;
+}
+
+const appearanceCache = createAvatarAssetCache<AppearanceEntry>((entry) => {
+  entry.evicted = true;
+  entry.appearance?.dispose();
+  entry.appearance = null;
+});
+
+/** 캐시에서 빌린 외형 자산. release 는 여러 번 불러도 한 번만 놓는다. */
+export interface AvatarAppearanceLease {
+  key: string;
+  loaded: Promise<AvatarAppearanceTextures>;
+  release(): void;
+}
+
+/**
+ * 같은 요청 정체의 외형 자산을 빌린다. 읽는 중이면 그 읽기를 함께 기다린다(두 화면이 같은 자산을 동시에 열어도 한 번만 받는다).
+ * 실패한 읽기는 캐시에 남기지 않아 다음 시도가 다시 받는다. GPU 텍스처는 캐시에서 빠질 때만 해제한다.
+ */
+export function acquireAvatarAppearance(
+  req: AvatarAppearanceRequest,
+  fetcher: AvatarMeshFetch,
+): AvatarAppearanceLease {
+  const key = appearanceRequestKey(req);
+  let entry = appearanceCache.map.get(key);
+  if (!entry) {
+    const created: AppearanceEntry = {
+      refs: 0,
+      timer: null,
+      idleSeq: 0,
+      appearance: null,
+      evicted: false,
+      loaded: Promise.resolve(null as never),
+    };
+    created.loaded = loadAvatarAppearanceTextures(req, fetcher).then(
+      (appearance) => {
+        if (created.evicted) appearance.dispose();
+        else created.appearance = appearance;
+        return appearance;
+      },
+      (err: unknown) => {
+        if (appearanceCache.map.get(key) === created) appearanceCache.map.delete(key);
+        throw err;
+      },
+    );
+    // 빌린 쪽이 모두 떠난 뒤 실패해도 처리되지 않은 거부로 남지 않게 한다.
+    created.loaded.catch(() => {});
+    appearanceCache.map.set(key, created);
+    entry = created;
+  }
+  appearanceCache.retain(key);
+  const held = entry;
+  let released = false;
+  return {
+    key,
+    loaded: held.loaded,
+    release() {
+      if (released) return;
+      released = true;
+      if (appearanceCache.map.get(key) === held) appearanceCache.release(key);
+    },
+  };
+}
+
+/** 시험용: 외형 캐시를 비우고 모든 텍스처를 해제한다. */
+export function clearAvatarAppearanceCache() {
+  appearanceCache.clear();
+}
+
+interface HeldAppearance {
+  appearance: AvatarAppearanceTextures;
+  release(): void;
+}
+
 export type AvatarAppearanceStatus = 'NONE' | 'LOADING' | 'READY' | 'ERROR';
 
 export interface UseAvatarAppearanceResult {
@@ -1112,7 +1200,8 @@ export interface UseAvatarAppearanceResult {
  * - 같은 사람의 같은 appearance_version 은 한 번만 받는다.
  * - 다른 world_id 와 텍스처를 절대 공유하지 않는다(사람별 외형 자산).
  * - appearance_version 이 바뀌면 새 텍스처를 다 읽을 때까지 이전 텍스처를 유지해 깜빡임을 막고, 새 텍스처가 재질에 들어간 커밋 뒤에
- *   이전 텍스처를 .dispose() 한다(-755: 그 전에 해제하면 사이 프레임이 해제된 텍스처를 GPU 에 다시 올려 남긴다).
+ *   이전 텍스처를 캐시에 돌려준다(-755: 그 전에 해제하면 사이 프레임이 해제된 텍스처를 GPU 에 다시 올려 남긴다).
+ * - 텍스처는 화면이 사라져도 바로 해제하지 않고 캐시에 돌려준다(-797). 작업 시작으로 3D 가 다시 마운트되면 다시 받지 않고 그대로 쓴다.
  * - 둘 중 하나라도 실패하면 기본 재질(appearance = null)로 그리고 AVATAR_ASSET_RETRY_MS 뒤 다시 시도한다.
  */
 export function useAvatarAppearance(
@@ -1132,29 +1221,27 @@ export function useAvatarAppearance(
     appearance: null,
   });
   const readAvatar = useEffectEvent(getAvatar);
-  const activeRef = useRef<AvatarAppearanceTextures | null>(null);
-  // 교체·실패로 물러났지만 아직 재질에 묶여 있을 수 있는 자산. 다음 커밋(자식 MeshBody 가 새 텍스처를 묶은 뒤)에 해제한다.
-  const retiredRef = useRef<AvatarAppearanceTextures[]>([]);
+  const activeRef = useRef<HeldAppearance | null>(null);
+  // 교체·실패로 물러났지만 아직 재질에 묶여 있을 수 있는 자산. 다음 커밋(자식 MeshBody 가 새 텍스처를 묶은 뒤)에 캐시에 돌려준다.
+  const retiredRef = useRef<HeldAppearance[]>([]);
 
-  // worldId 가 바뀌거나 언마운트되면 이전 사람의 외형 자산을 즉시 해제한다(ID 분리 시 유산 금지).
+  // worldId 가 바뀌거나 언마운트되면 이전 사람의 외형 자산을 놓는다. 캐시 key 에 worldId 가 있어 다른 ID 가 이어받지 않는다(ID 분리 시 유산 금지).
   useEffect(() => {
     return () => {
-      if (activeRef.current) {
-        activeRef.current.dispose();
-        activeRef.current = null;
-      }
-      for (const old of retiredRef.current) old.dispose();
+      activeRef.current?.release();
+      activeRef.current = null;
+      for (const old of retiredRef.current) old.release();
       retiredRef.current = [];
     };
   }, [worldId]);
 
-  // 부모 효과는 자식 효과 뒤에 돈다: 이 커밋에서 MeshBody 가 새 외형(또는 기본 재질)을 묶은 다음 물러난 자산을 해제한다.
+  // 부모 효과는 자식 효과 뒤에 돈다: 이 커밋에서 MeshBody 가 새 외형(또는 기본 재질)을 묶은 다음 물러난 자산을 놓는다.
   useEffect(() => {
     if (retiredRef.current.length === 0) return;
     const retired = retiredRef.current;
     retiredRef.current = [];
     for (const old of retired) {
-      if (old !== viewState.appearance) old.dispose();
+      if (old.appearance !== viewState.appearance) old.release();
       else retiredRef.current.push(old);
     }
   }, [viewState]);
@@ -1163,20 +1250,18 @@ export function useAvatarAppearance(
     const avatar = readAvatar();
     const req = avatarAppearanceRequestOf(worldId, avatar);
     if (!appearanceKey || !req) {
-      if (activeRef.current) {
-        activeRef.current.dispose();
-        activeRef.current = null;
-      }
+      activeRef.current?.release();
+      activeRef.current = null;
       return;
     }
 
     // 같은 worldId·streamEpoch·appearanceVersion 이 이미 준비되어 있으면 다시 받지 않는다.
-    if (activeRef.current?.key === appearanceKey) {
+    if (activeRef.current?.appearance.key === appearanceKey) {
       return;
     }
 
-    // streamEpoch 가 바뀌었으면 이전 세대 텍스처는 유지하지 않는다(새 텍스처가 묶인 뒤 해제).
-    if (activeRef.current && activeRef.current.streamEpoch !== req.streamEpoch) {
+    // streamEpoch 가 바뀌었으면 이전 세대 텍스처는 유지하지 않는다(새 텍스처가 묶인 뒤 놓음).
+    if (activeRef.current && activeRef.current.appearance.streamEpoch !== req.streamEpoch) {
       retiredRef.current.push(activeRef.current);
       activeRef.current = null;
     }
@@ -1184,17 +1269,17 @@ export function useAvatarAppearance(
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    void loadAvatarAppearanceTextures(req, fetcher)
+    const lease = acquireAvatarAppearance(req, fetcher);
+    void lease.loaded
       .then((loaded) => {
         if (!alive) {
-          loaded.dispose();
+          lease.release();
           return;
         }
         const prev = activeRef.current;
-        activeRef.current = loaded;
-        if (prev && prev !== loaded) {
-          retiredRef.current.push(prev);
-        }
+        activeRef.current = { appearance: loaded, release: lease.release };
+        if (prev && prev.appearance !== loaded) retiredRef.current.push(prev);
+        else prev?.release();
         setViewState({
           worldId,
           status: 'READY',
@@ -1202,6 +1287,7 @@ export function useAvatarAppearance(
         });
       })
       .catch((err: unknown) => {
+        lease.release();
         if (!alive) return;
         console.warn(
           `[viewer3d] 아바타 외형 텍스처 읽기 실패 (${req.worldId} v${req.appearanceVersion}): ${

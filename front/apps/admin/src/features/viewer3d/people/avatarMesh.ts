@@ -1,5 +1,9 @@
 import type { SpatialDataState } from '@/features/viewer3d/data/spatialData.store';
 import { attachAvatarAppearanceShader } from '@/features/viewer3d/people/avatarAppearance';
+import {
+  createAvatarAssetCache,
+  type AvatarCacheEntry,
+} from '@/features/viewer3d/people/avatarAssetCache';
 import type { AvatarAssetView } from '@/features/viewer3d/people/avatarFrame';
 import {
   avatarMeshStatus,
@@ -47,8 +51,6 @@ export const AvatarMeshContext = createContext<AvatarMeshConfig>({
 
 /** 실패한 자산을 다시 시도하기까지(ms). 워커가 자산을 10초마다 다시 알리는 간격과 같다. */
 export const AVATAR_ASSET_RETRY_MS = 10_000;
-/** 마지막 사용자가 놓은 뒤 자원을 해제하기까지(ms). 같은 자산을 곧 다시 쓰면 다시 받지 않는다. */
-const RELEASE_MS = 5_000;
 
 export interface AvatarMeshAsset {
   key: string;
@@ -153,16 +155,12 @@ export async function readAvatarMesh(
   };
 }
 
-interface Entry {
+interface Entry extends AvatarCacheEntry {
   state: AvatarAssetState;
   mesh: AvatarMeshAsset | null;
   settled: Promise<void>;
   at: number;
-  refs: number;
-  timer: ReturnType<typeof setTimeout> | null;
 }
-
-const cache = new Map<string, Entry>();
 
 function disposeScene(scene: Object3D) {
   scene.traverse((node) => {
@@ -173,6 +171,12 @@ function disposeScene(scene: Object3D) {
     mesh.skeleton?.dispose();
   });
 }
+
+// 마지막 사용자가 놓은 뒤 AVATAR_ASSET_RELEASE_MS 동안 남긴다(-797: 작업 시작으로 화면이 바뀌어도 다시 받지 않음).
+const meshCache = createAvatarAssetCache<Entry>((entry) => {
+  if (entry.mesh) disposeScene(entry.mesh.scene);
+});
+const cache = meshCache.map;
 
 /** 자산 읽기를 시작한다(이미 있으면 그대로). 실패한 지 AVATAR_ASSET_RETRY_MS 가 지났으면 다시 받는다. */
 export function requestAvatarMesh(
@@ -192,6 +196,7 @@ export function requestAvatarMesh(
     at: now,
     refs: prev?.refs ?? 0,
     timer: prev?.timer ?? null,
+    idleSeq: prev?.idleSeq ?? 0,
   };
   entry.settled = Promise.resolve()
     .then(() => fetcher(asset.meshUrl))
@@ -238,33 +243,9 @@ export function selectAvatarMeshStatus(
   });
 }
 
-function retain(key: string) {
-  const entry = cache.get(key);
-  if (!entry) return;
-  entry.refs += 1;
-  if (entry.timer !== null) clearTimeout(entry.timer);
-  entry.timer = null;
-}
-
-function release(key: string) {
-  const entry = cache.get(key);
-  if (!entry) return;
-  entry.refs = Math.max(0, entry.refs - 1);
-  if (entry.refs > 0) return;
-  entry.timer = setTimeout(() => {
-    if (cache.get(key) !== entry || entry.refs > 0) return;
-    cache.delete(key);
-    if (entry.mesh) disposeScene(entry.mesh.scene);
-  }, RELEASE_MS);
-}
-
 /** 시험용: 캐시를 비운다. */
 export function clearAvatarMeshCache() {
-  for (const entry of cache.values()) {
-    if (entry.timer !== null) clearTimeout(entry.timer);
-    if (entry.mesh) disposeScene(entry.mesh.scene);
-  }
-  cache.clear();
+  meshCache.clear();
 }
 
 /**
@@ -283,7 +264,7 @@ export function useAvatarMesh(
     const asset = readAsset();
     if (!key || !asset || avatarAssetKey(asset) !== key) return;
     const entry = requestAvatarMesh(asset, fetcher);
-    retain(key);
+    meshCache.retain(key);
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     void entry.settled.then(() => {
@@ -296,7 +277,7 @@ export function useAvatarMesh(
     return () => {
       alive = false;
       if (timer !== null) clearTimeout(timer);
-      release(key);
+      meshCache.release(key);
     };
     // 자산은 key 가 같으면 같은 것으로 본다(포즈마다 새 객체다). retry 는 실패 뒤 다시 시도할 때만 바뀐다.
   }, [key, fetcher, retry]);
