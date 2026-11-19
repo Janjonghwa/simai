@@ -1016,6 +1016,7 @@ class Tier0Service:
         r = self.settings.reid
         return ReidCollectorConfig(
             enabled=r.enabled,
+            fp16=r.fp16,
             batch_size=r.batch_size,
             update_interval_ms=r.update_interval_ms,
             stable_update_interval_ms=r.stable_update_interval_ms,

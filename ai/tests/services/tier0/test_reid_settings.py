@@ -4,9 +4,11 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from services.tier0.settings import load_settings
+from services.tier0.settings import Tier0ConfigError, load_settings
 
 
 def _config(tmp_path: Path, reid: dict | None = None) -> Path:
@@ -55,3 +57,24 @@ def test_reid_demand_sampling_defaults_and_overrides(tmp_path):
     assert (r.stable_update_interval_ms, r.max_crops_per_second) == (3000, 8)
     r = load_settings(_config(tmp_path, {"stable_update_interval_ms": 5000, "max_crops_per_second": 4})).reid
     assert (r.stable_update_interval_ms, r.max_crops_per_second) == (5000, 4)
+
+
+def test_reid_environment_overrides_and_validation(tmp_path):
+    cfg = _config(tmp_path, {"fp16": False, "update_interval_ms": 800, "max_crops_per_second": 7})
+    r = load_settings(cfg, env={"SIMAI_TIER0_REID_FP16": "1", "SIMAI_TIER0_REID_UPDATE_INTERVAL_MS": "1200",
+                                "SIMAI_TIER0_REID_MAX_CROPS_PER_SECOND": "5"}).reid
+    assert (r.fp16, r.update_interval_ms, r.max_crops_per_second) == (True, 1200, 5)
+    for env in ({"SIMAI_TIER0_REID_FP16": "yes"}, {"SIMAI_TIER0_REID_MAX_CROPS_PER_SECOND": "0"},
+                {"SIMAI_TIER0_REID_UPDATE_INTERVAL_MS": "bad"}, {"SIMAI_TIER0_REID_UPDATE_INTERVAL_MS": "3001"}):
+        with pytest.raises(Tier0ConfigError):
+            load_settings(cfg, env=env)
+
+
+def test_collector_passes_fp16_to_cope():
+    pytest.importorskip("numpy")
+    from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
+
+    collector = AsyncReidCollector(ReidCollectorConfig(enabled=False, fp16=True), start_worker=False)
+    assert collector._cope_config().fp16 is True
+    assert ReidCollectorConfig.from_env({"SIMAI_REID_FP16": "1"}).fp16 is True
+    assert not ReidCollectorConfig().fp16
