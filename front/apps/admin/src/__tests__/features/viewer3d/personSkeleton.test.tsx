@@ -211,6 +211,45 @@ describe('PersonLayer Tier 0 골격 아바타(-56)', () => {
     expect(skeletons()).toBe(10);
   });
 
+  it('짧은 관측 끊김에는 마지막 관측 자세만 유지하고 1초 뒤에는 캡슐로 바꾼다', async () => {
+    await mount();
+    await play(3);
+    const id = crowdTrackId(0);
+    const before = Array.from(instances(avatar(id))[0]!.instanceMatrix.array.slice(0, 16));
+    const observed = scenarioWorld('crowd', 3, T0) as {
+      payload: {
+        t_latest_global: number;
+        tracks: {
+          world_id: string;
+          observation_state: string;
+          t_last_valid: number;
+          skeleton?: unknown;
+        }[];
+      };
+    };
+    const lastAt = observed.payload.t_latest_global;
+    const send = async (age: number, state: string) => {
+      const world = scenarioWorld('crowd', age === 990 ? 4 : 5, T0) as typeof observed;
+      world.payload.t_latest_global = lastAt + age;
+      const track = world.payload.tracks.find((t) => t.world_id === id)!;
+      track.observation_state = state;
+      track.t_last_valid = lastAt;
+      await act(async () => data.getState().ingest(world, Date.now()));
+      await frames();
+    };
+    await send(990, 'PREDICTED');
+    expect(avatar(id).getObjectByName('person-skeleton')).toBeDefined();
+    expect(Array.from(instances(avatar(id))[0]!.instanceMatrix.array.slice(0, 16))).toEqual(before);
+    await send(1010, 'UNKNOWN');
+    expect(avatar(id).getObjectByName('person-skeleton')).toBeUndefined();
+    // 관측이 돌아온 표본(끊김 뒤 시각보다 늦은 틱)이 오면 새 골격으로 돌아간다.
+    await play(16);
+    expect(avatar(id).getObjectByName('person-skeleton')).toBeDefined();
+    expect(Array.from(instances(avatar(id))[0]!.instanceMatrix.array.slice(0, 16))).not.toEqual(
+      before,
+    );
+  });
+
   it('StrictMode 이중 마운트와 해제에도 골격이 하나씩만 있고, 공유 형상은 사람마다 새로 만들지 않는다', async () => {
     await mount(true);
     await play(3);

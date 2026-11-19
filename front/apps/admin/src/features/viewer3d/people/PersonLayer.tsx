@@ -93,6 +93,8 @@ export const PersonModelContext = createContext<string | null>(null);
 // 몸·관절·선택·이름표 색은 장면 색표(palette)를 따른다.
 type PersonColor = ScenePalette['person'];
 const OPACITY: Record<PersonTone, number> = { observed: 1, predicted: 0.45, unknown: 0.3 };
+/** 관측이 잠깐 끊겨도(PREDICTED·UNKNOWN) 마지막 관측 자세를 유지하는 World 시간(ms). 11-19 녹화에서 끊김의 85% 가 1 s 이내였다(-805). */
+const SKELETON_HOLD_MS = 1_000;
 const LABEL_Y = 2.05;
 const COLUMN_TOP = 2.0;
 /** 골격 머리가 없을 때 경고 표식을 두는 높이(캡슐 머리 구 1.58 m 위, -531). */
@@ -161,6 +163,8 @@ interface Motion {
   figure: SkeletonFigure | null;
   /** 이번 표본의 Tier 0 pelvis(Three). 메시 정렬 기준. 없으면 null. */
   pelvis: ThreePoint | null;
+  lastObservedFigure: SkeletonFigure | null;
+  lastObservedAt: number | null;
 }
 
 function PersonAvatar({
@@ -196,6 +200,8 @@ function PersonAvatar({
   const risk = useRiskHighlight('person', worldId);
   const palette = useScenePalette();
   const [hasLastValid, setHasLastValid] = useState(false);
+  const [skeletonHeld, setSkeletonHeld] = useState(false);
+  const skeletonHeldRef = useRef(false);
   // EXP-02 메시(-65). 자산 key 가 바뀔 때만 다시 그린다(포즈는 5 Hz 로 오지만 useFrame 에서만 읽는다).
   const meshConfig = useContext(AvatarMeshContext);
   const meshKey = useSpatialData((s) => {
@@ -248,6 +254,8 @@ function PersonAvatar({
     walk: 0,
     figure: null,
     pelvis: null,
+    lastObservedFigure: null,
+    lastObservedAt: null,
   });
 
   useFrame((_, dt) => {
@@ -269,11 +277,8 @@ function PersonAvatar({
           const derived = headingFromSamples(m.pose.feet, pose.feet, at - m.sampleAt);
           if (derived && track.observationState === 'OBSERVED') ({ heading, speed } = derived);
         }
-        const snap = needsSnap(
-          m.pose,
-          pose,
-          m.revision !== null && m.revision !== track.identityRevision,
-        );
+        const revisionChanged = m.revision !== null && m.revision !== track.identityRevision;
+        const snap = needsSnap(m.pose, pose, revisionChanged);
         if (pose.fresh && pose.feet) {
           m.lastValid = pose.feet;
           if (!hasLastValid) setHasLastValid(true);
@@ -284,16 +289,38 @@ function PersonAvatar({
         m.observation = track.observationState;
         m.speed = speed;
         m.pelvis = track.pelvis ? worldToThree(track.pelvis) : null;
-        // 관절은 이번 표본의 목표 발 위치 기준으로 둔다. 확인된 접지면 그 지지면 높이까지 발 막대를 잇는다.
+        // 관측 자세를 당시 발 위치 기준으로 보관해 예측 위치가 움직여도 자세만 따라가게 한다.
         const placement = trackPlacement(track);
-        m.figure =
-          pose.fresh && pose.feet && skeletonUsable(track)
-            ? skeletonFigure(
-                track.skeleton!,
-                pose.feet,
-                placement.basis === 'GROUND_ANCHOR' ? placement.world[2] : null,
-              )
-            : null;
+        if (track.observationState === 'OBSERVED') {
+          m.figure =
+            pose.fresh && pose.feet && skeletonUsable(track)
+              ? skeletonFigure(
+                  track.skeleton!,
+                  pose.feet,
+                  placement.basis === 'GROUND_ANCHOR' ? placement.world[2] : null,
+                )
+              : null;
+          m.lastObservedFigure = m.figure;
+          m.lastObservedAt = data.world.tLatestGlobal;
+        } else {
+          const age = m.lastObservedAt === null ? -1 : data.world.tLatestGlobal - m.lastObservedAt;
+          const held =
+            !revisionChanged &&
+            pose.kind === 'BODY' &&
+            m.lastObservedFigure !== null &&
+            age >= 0 &&
+            age <= SKELETON_HOLD_MS;
+          m.figure = held ? m.lastObservedFigure : null;
+          if (age < 0 || revisionChanged) {
+            m.lastObservedFigure = null;
+            m.lastObservedAt = null;
+          }
+        }
+        const held = track.observationState !== 'OBSERVED' && m.figure !== null;
+        if (held !== skeletonHeldRef.current) {
+          skeletonHeldRef.current = held;
+          setSkeletonHeld(held);
+        }
         if (heading !== null) m.heading = heading;
         if (snap) {
           const target = pose.feet ?? [pose.columnXz![0], 0, pose.columnXz![1]];
@@ -359,7 +386,7 @@ function PersonAvatar({
   const pose = personPose(track, hasLastValid ? SOME_LAST_VALID : NO_LAST_VALID);
   const tone = personTone(track);
   // Tier 0 골격을 쓸 수 있으면 관절 사이 막대 아바타로, 아니면 -44 의 기본 캡슐(또는 개발용 모델)로 그린다.
-  const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
+  const skeleton = pose.kind === 'BODY' && (skeletonUsable(track) || skeletonHeld);
   const placement = trackPlacement(track).basis;
   const meshOn = meshUse && mesh !== null && pose.kind === 'BODY';
   // 메시가 보이는 사람은 골격 막대를 그리지 않으므로 미착용 표식도 캡슐 머리 위에 둔다.
@@ -389,7 +416,7 @@ function PersonAvatar({
               <SkeletonBody
                 motion={motion}
                 color={bodyColor(palette.person, tone, selected)}
-                opacity={OPACITY[tone]}
+                opacity={OPACITY[skeletonHeld ? 'observed' : tone]}
                 anchor={
                   placement === 'GROUND_ANCHOR'
                     ? 'CONFIRMED'
