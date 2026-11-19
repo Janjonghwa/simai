@@ -83,8 +83,9 @@ export function LoginPage() {
             {import.meta.env.VITE_MOCK_BUILD === 'true' && (
               <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-muted-foreground">
                 <p className="font-semibold text-foreground">연습 계정: demo / demo</p>
+                <p>실제 GPU·서버와 연결되지 않는 연습용 목업입니다.</p>
                 <ol className="list-decimal space-y-0.5 pl-5">
-                  <li>GPU 는 켜진 상태로 시작합니다</li>
+                  <li>GPU 는 늘 켜진 상태입니다(따로 켤 필요 없음)</li>
                   <li>작업 관리에서 오늘 작업 준비 → TBM</li>
                   <li>세팅(이전 맵 재사용) → 작업 전 확인 → 작업 시작</li>
                   <li>실시간 관제에서 경보·사건 확인</li>

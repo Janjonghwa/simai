@@ -82,6 +82,64 @@ describe('세팅 mock autoProgress', () => {
     expect(done.supplement?.rebake_blocked_reason).toBe('NO_MEDIA');
   });
 
+  it('이전 맵 재사용으로 끝난 세션은 시간이 지나도 카메라 확인 걷기 대기로 되돌리지 않고 세팅을 완료할 수 있다(-806)', async () => {
+    let clock = 1_000;
+    const mock = createSetupMock({
+      now: () => clock,
+      autoProgress: true,
+      cameraCheckWalk: true,
+      worldAnchorAccepted: true,
+      reuseCheck: {
+        available: true,
+        blocked_reason: null,
+        scene_version: 'scene-demo',
+        camera_status: 'NOT_DETECTED',
+        changed_cameras: [],
+        camera_source: null,
+        recommended_setup_session_id: null,
+        candidates: [
+          {
+            setup_session_id: 'mock-previous',
+            scene_version: 'scene-demo',
+            completed_at_ms: 500,
+            camera_heights_m: { cam_A: 2.4 },
+            status: 'MATCH',
+            reason: null,
+            selectable: true,
+            recommended: false,
+            changed_cameras: [],
+            shifted_cameras: [],
+            unconfirmed_cameras: [],
+            camera_source: null,
+          },
+        ],
+      },
+    });
+    server.resetHandlers(...mock.handlers);
+    const created = (await (
+      await fetch('http://api.test/api/setup-sessions', {
+        method: 'POST',
+        headers: AUTH,
+        body: JSON.stringify({
+          work_unit_id: 1,
+          mode: 'REUSE',
+          reuse_setup_session_id: 'mock-previous',
+        }),
+      })
+    ).json()) as { setup_session_id: string; status: string };
+    expect(created.status).toBe('COMPLETED');
+    const url = `http://api.test/api/setup-sessions/${created.setup_session_id}`;
+
+    clock += 20_000;
+    const later = setupSessionResponseSchema.parse(
+      await (await fetch(url, { headers: AUTH })).json(),
+    );
+    expect(later.status).toBe('COMPLETED');
+    expect(later.paused_reason ?? null).toBeNull();
+    expect(later.camera_check_phase ?? null).toBeNull();
+    expect((await fetch(`${url}/complete`, { method: 'POST', headers: AUTH })).status).toBe(200);
+  });
+
   it('카메라 확인 걷기(-687)를 켜면 보정 뒤 맵 단계 전에 멈추고, 걷기 시작·표본 부족·확인만 다시·통과 뒤에야 미리보기로 간다', async () => {
     let clock = 1_000;
     const mock = createSetupMock({

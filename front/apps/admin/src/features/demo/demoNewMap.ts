@@ -6,7 +6,8 @@ import { useEffect, useMemo, useState } from 'react';
 // 화면은 새 맵처럼 보정·생성 5단계를 DEMO_NEW_MAP_SECONDS 동안 채운 뒤 구역 단계로 넘어갈 수 있게 한다.
 // 어느 세션을 그렇게 보일지는 이 브라우저가 시작한 시각과 함께 남겨 새로고침·다른 탭에서도 이어서 센다.
 
-export const DEMO_NEW_MAP_SECONDS = 10;
+// 연습용 목업 빌드(-806)는 기다릴 이유가 없어 0초다: 보정·생성 단계가 바로 다 찬 모양으로 보이고 '다음' 이 곧장 열린다.
+export const DEMO_NEW_MAP_SECONDS = import.meta.env.VITE_MOCK_BUILD === 'true' ? 0 : 10;
 
 const STORAGE_KEY = 'simai.demoNewMap';
 /** 남겨 둘 세션 수(오래된 것부터 버린다). */
@@ -68,7 +69,8 @@ export function pacedDemoSession(
   startedAtMs: number,
   nowMs: number,
 ): SetupSessionResponse {
-  const ratio = Math.min(1, Math.max(0, (nowMs - startedAtMs) / (DEMO_NEW_MAP_SECONDS * 1000)));
+  const totalMs = DEMO_NEW_MAP_SECONDS * 1000;
+  const ratio = totalMs <= 0 ? 1 : Math.min(1, Math.max(0, (nowMs - startedAtMs) / totalMs));
   const pct = Math.floor(ratio * 100);
   const stage =
     pct >= 100
