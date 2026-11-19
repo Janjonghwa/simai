@@ -40,9 +40,10 @@ export function PlanMinimap({
           onClick={() => setOpen(true)}
           className="block size-full cursor-zoom-in rounded-[14px] p-2.5"
         >
-          {/* 미니맵 안에서는 고르지 않는다(버튼 안에 버튼을 두지 않는다). 고르기는 큰 창에서 한다. */}
+          {/* 미니맵 안에서는 고르지 않는다(버튼 안에 버튼을 두지 않는다). 고르기는 큰 창에서 한다.
+              작은 칸이라 방 전체 대신 구역·사람이 있는 곳에 맞춰 크게 비춘다(fit, -800). 큰 창은 방 전체다. */}
           <div aria-hidden className="size-full">
-            <LivePlan selectedKey={selectedKey} className="size-full" />
+            <LivePlan selectedKey={selectedKey} fit className="size-full" />
           </div>
         </button>
       </div>

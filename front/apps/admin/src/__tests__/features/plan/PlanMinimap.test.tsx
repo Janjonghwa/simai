@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // 3D 관제 왼쪽 칼럼 맨 아래에 고정된 작은 2D 지도: 누르면 큰 창이 뜨고, 옮기거나 크기를 바꿀 수 없다.
 // 평면 그림(LivePlan)은 따로 시험하므로 자리표시자로 바꾼다.
-vi.mock('@/features/plan/LivePlan', () => ({ LivePlan: () => <div data-testid="live-plan" /> }));
+// 미니맵 칸인지(fit)와 고를 수 있는지(onSelect)만 적는다.
+vi.mock('@/features/plan/LivePlan', () => ({
+  LivePlan: ({ fit, onSelect }: { fit?: boolean; onSelect?: unknown }) => (
+    <div data-testid="live-plan" data-fit={String(Boolean(fit))} data-select={String(!!onSelect)} />
+  ),
+}));
 
 const opener = () => screen.getByRole('button', { name: '2D 평면 크게 보기' });
 
@@ -71,6 +76,17 @@ describe('PlanMinimap', () => {
     expect(screen.getByTestId('plan-modal')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByTestId('plan-modal')).toBeNull();
+  });
+
+  it('작은 칸은 구역·사람에 맞춰 비추고(fit) 고르지 않으며, 큰 창은 방 전체에서 고른다(-800)', () => {
+    renderMinimap();
+    const [small] = screen.getAllByTestId('live-plan');
+    expect(small?.dataset.fit).toBe('true');
+    expect(small?.dataset.select).toBe('false');
+    fireEvent.click(opener());
+    const big = screen.getAllByTestId('live-plan')[1];
+    expect(big?.dataset.fit).toBe('false');
+    expect(big?.dataset.select).toBe('true');
   });
 
   it('끌어도 옮겨지지 않고, 끌고 놓은 뒤의 클릭은 큰 창을 연다', () => {
