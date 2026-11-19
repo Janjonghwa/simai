@@ -633,6 +633,7 @@ def test_sidecar_cpus_use_cgroup_quota_and_log_it(bs, tmp_path, monkeypatch, cap
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w)
     w.ready = w.healthy = True
+    assert sup.svc["tier0"].env["SIMAI_SIDE_WORK_CPUS"] == ",".join(map(str, range(212, 224)))
 
     def ticking(_s):
         if sup._weights is not None:
@@ -2087,7 +2088,8 @@ def _make_lobby_bundle(tmp_path: Path) -> tuple[Path, Path]:
     return bundle, tok_file
 
 
-def test_lobby_s13_tunnel_args_register_contract_valid_1031_shape_and_listen_on_17000_17001(bs, tmp_path):
+@pytest.mark.parametrize("offload", [None, "0"])
+def test_lobby_s13_tunnel_args_register_contract_valid_1031_shape_and_listen_on_17000_17001(bs, tmp_path, offload):
     """(a) 13차 lobby 인자 그대로(127.0.0.1, 제어 17000, 영상 cam_A~D:17001) → 계약 통과 + 10-31 기록과 동일한 모양 + 듣는 포트 17000/17001."""
     ai_dir = REPO / "ai"
     if str(ai_dir) not in sys.path:
@@ -2111,9 +2113,11 @@ def test_lobby_s13_tunnel_args_register_contract_valid_1031_shape_and_listen_on_
         measured_heights="cam_A=2.50,cam_B=2.50,cam_C=2.50,cam_D=2.50",
         control_port=17000,
         video_ports="cam_A:17001,cam_B:17001,cam_C:17001,cam_D:17001",
-        base_env={},
+        base_env={} if offload is None else {"SIMAI_TIER0_OFFLOAD_SIDE_WORK": offload},
     )
     assert lobby_env["SIMAI_TIER0_CONTROL_PORT"] == "70000"
+    # 곁가지 분리는 기본으로 켜지 않는다(-727 결정, -810 에서 되돌림). 운영자가 준 값만 그대로 넘긴다
+    assert lobby_env.get("SIMAI_TIER0_OFFLOAD_SIDE_WORK") == offload
     assert lobby_env["SIMAI_PUBLIC_PORT_70000"] == "17000"
     assert lobby_env["SIMAI_TIER0_VIDEO_PORTS"] == "cam_A:70001,cam_B:70001,cam_C:70001,cam_D:70001"
     assert lobby_env["SIMAI_PUBLIC_PORT_70001"] == "17001"

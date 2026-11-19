@@ -750,3 +750,14 @@ def test_build_handlers_registers_incident_summary_alongside_vlm_rationale(tmp_p
     h = entry.build_handlers(None, FakeStore(), env=env, pose=lambda w: opened.append(w) or Provider())
     assert "vlm_rationale" in h and "incident_summary" in h
     assert opened == [str(weights)], "pose 검출기는 한 번만 열어 두 처리기가 공유한다"
+
+
+def test_face_pose_weights_can_be_selected_independently(tmp_path):
+    weights = tmp_path / "face-pose.pt"
+    weights.write_bytes(b"pt")
+    env = {"SIMAI_VLLM_MODEL": "cosmos3-nano", "SIMAI_WORKER_FACE_POSE_WEIGHTS": str(weights)}
+    opened = []
+    handlers = entry.build_handlers(None, FakeStore(), env=env, pose=lambda w: opened.append(w) or Provider())
+    assert "vlm_rationale" in handlers and opened == [str(weights)]
+    env["SIMAI_WORKER_FACE_POSE_WEIGHTS"] = str(tmp_path / "missing.pt")
+    assert "vlm_rationale" not in entry.build_handlers(None, FakeStore(), env=env, pose=lambda w: Provider())

@@ -85,6 +85,13 @@ def _avatar_writer_main(path: str, cmd_queue: Any, done_queue: Any) -> None:
     """spawn 자식 진입점: 크롭 배열(공유 메모리)과 메타를 받아 공유 채널 NPZ 를 게시한다. numpy·avatar_channel 만 쓴다."""
     import sys
 
+    cpus = os.environ.get("SIMAI_SIDE_WORK_CPUS", "")
+    if cpus and hasattr(os, "sched_setaffinity"):
+        try:
+            os.sched_setaffinity(0, {int(cpu) for cpu in cpus.split(",")})
+        except (OSError, ValueError):
+            log.warning("곁가지 자식 CPU 고정 실패: %s", cpus)
+
     if hasattr(os, "nice"):
         try:
             os.nice(10)  # 곁가지 일: Tier 0 판정·검출 스레드보다 뒤
