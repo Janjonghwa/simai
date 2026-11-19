@@ -1,3 +1,4 @@
+import { useScenePlanStore } from '@/features/plan/scenePlan.store';
 import { CAMERA_VDT_FADE_MS, createFpsGuard } from '@/features/viewer3d/cameras/cameraView';
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import {
@@ -9,6 +10,7 @@ import {
   type SceneDisplay,
   type SurfaceSourceMapUrls,
 } from '@/features/viewer3d/scene/sceneContract';
+import { cachedScenePlan } from '@/features/viewer3d/scene/scenePlan';
 import {
   configureSceneKtx2Loader,
   SceneLoaderContext,
@@ -397,6 +399,12 @@ function Background({ store }: { store: SceneStore }) {
   }, [loaded]);
 
   const sceneVersion = scene?.sceneVersion ?? null;
+  useEffect(() => {
+    useScenePlanStore.getState().setPlan(null);
+    if (loaded && loaded.sceneVersion === sceneVersion) {
+      useScenePlanStore.getState().setPlan(cachedScenePlan(loaded.sceneVersion, loaded.root));
+    }
+  }, [loaded, sceneVersion]);
   const cacheVersion = scene?.state === 'COMMITTED' ? (sceneVersion ?? undefined) : undefined;
   const url = scene?.gltfUrl ?? null;
   const expiresAt = scene?.gltfExpiresAtMs ?? null;

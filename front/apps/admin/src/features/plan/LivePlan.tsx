@@ -45,10 +45,10 @@ export function LivePlan({
   // 연결이 끊겼거나, 연결은 살아 있어도 world 만 멈췄으면(파이프라인 정지) 위치가 지금 것이 아니다.
   const alive = useLinkAlive();
   const fresh = useWorldFresh();
-  // 방 크기와 바탕은 평면도(GET /api/floor-plans/current)에서 온다. 없으면 기본 10×10m 모눈이다.
+  // Scene 평면도가 없으면 기본 10×10m 모눈이다.
   const { bounds, backdrop } = usePlanBackdrop();
   const headings = usePlanHeadings(tracks, t);
-  const view = useMinimapView({ enabled: fit, zones, tracks, bounds, t });
+  const view = useMinimapView({ enabled: fit && !backdrop?.imageUrl, zones, tracks, bounds, t });
   const emphasis = useMemo(() => (view ? minimapEmphasis(view) : undefined), [view]);
   return (
     <FloorPlan

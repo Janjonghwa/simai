@@ -29,6 +29,7 @@ import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { buildPersonLabelCells } from '@/features/people/personLabelCells';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
+import { useScenePlanStore } from '@/features/plan/scenePlan.store';
 import { usePpeGearStates, usePpeLabels } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useWatchBindDetector } from '@/features/watch/useWatch';
@@ -42,6 +43,7 @@ import {
   Suspense,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -87,6 +89,10 @@ export function SpatialViewportHost({
   eventPanel?: boolean;
   children?: ReactNode;
 }) {
+  useEffect(() => {
+    useScenePlanStore.getState().setPlan(null);
+    return () => useScenePlanStore.getState().setPlan(null);
+  }, []);
   const source = useRealtimeStore((s) => s.source);
   const theme = useThemeStore((s) => s.theme);
   const {

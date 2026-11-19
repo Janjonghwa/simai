@@ -137,6 +137,7 @@ v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 | 부록 C | 확장 트랙 | [`appendix-c-extensions.md`](appendix-c-extensions.md) |
 | 부록 D | 회귀 시험 목록 | [`appendix-d-regression.md`](appendix-d-regression.md) |
 | 부록 E | 시연 시나리오 | [`appendix-e-demo.md`](appendix-e-demo.md) |
+| v1.3 수정 87 | 2026-11-20 | BEV 평면도를 뷰어의 Scene GLB 직교 투영으로 변경하고 워커 작업·API 는 예약(3.1, 4.1, 11.7, 12.5·12.6). 계약 변경 없음 |
 | — | 이전 개정 이력(v1.0 \~ v1.2 r4 수정 7) | [`history.md`](history.md) |
 
 ## 에픽별로 먼저 읽을 장
