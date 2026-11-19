@@ -50,6 +50,7 @@ function ReplayCctv({
   holdMs,
   segments,
   upload,
+  initialAt,
 }: {
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
@@ -58,6 +59,7 @@ function ReplayCctv({
   segments: readonly VideoSegment[];
   /** 녹화 업로드 진행. 업로드 중이 아니면 null. */
   upload: UploadProgress | null;
+  initialAt: number;
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
@@ -71,7 +73,7 @@ function ReplayCctv({
       setFailed((held) => (held.has(id) ? held : new Map(held).set(id, message))),
     [],
   );
-  const active = useActiveSegments(replay, playable);
+  const active = useActiveSegments(replay, playable, undefined, initialAt);
   const upcoming = useActiveSegments(replay, playable, preloadAt);
   const uploading = upload !== null;
   const waiting = useMemo(
@@ -162,6 +164,7 @@ export function ReplayStage({ session, range }: ReplayStageProps) {
   const notice = stageNotice(session, range);
   const demo = useIsDemoAccount();
   const segmentMessage = demo ? null : stageSegmentMessage(message, index);
+  const preloading = session.loading && !session.failed && !replay;
   return (
     <div className="flex h-full min-h-0 flex-col">
       {segmentMessage && (
@@ -178,16 +181,18 @@ export function ReplayStage({ session, range }: ReplayStageProps) {
         </div>
       )}
       <div className="min-h-0 flex-1">
-        {notice !== null ? (
-          <Notice>{notice}</Notice>
-        ) : (
-          <ReplayCctv
-            replay={replay}
-            index={index}
-            holdMs={holdMs}
-            segments={segments}
-            upload={upload}
-          />
+        {notice !== null && <Notice>{notice}</Notice>}
+        {(notice === null || preloading) && (
+          <div className="h-full" hidden={preloading}>
+            <ReplayCctv
+              replay={replay}
+              index={index}
+              holdMs={holdMs}
+              segments={segments}
+              upload={upload}
+              initialAt={range.from}
+            />
+          </div>
         )}
       </div>
     </div>
