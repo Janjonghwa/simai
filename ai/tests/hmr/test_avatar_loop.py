@@ -909,3 +909,124 @@ def test_new_id_inheritance_rejections(rig, case, reason):
     if reason is not None:
         assert loop.carry.stats[reason] >= 1
     assert new_uploads == []   # 새 ID 는 처음부터 쌓는다(안정 프레임 전 메시 없음)
+
+
+def test_dormant_same_id_reid_restore_reuses_baked_shape_and_appearance_without_rebaking(rig):
+    """S15P31A101-808: 20초~30분 사이 같은 World ID 가 Re-ID 로 복원되면 앞서 구운 체형·외형을 재사용하고 다시 굽지 않는다."""
+    from simai_ai.hmr.appearance import TexelSnapshot
+
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=2)
+    versions = []
+    loop.upload = lambda wid, epoch, version, glb: (
+        versions.append(version) or f"s3://avatars/{wid}/e{epoch}/v{version}/mesh.glb"
+    )
+    snap_obj = TexelSnapshot(
+        colors=np.zeros((16, 3), np.float32),
+        weights=np.ones(16, np.float32),
+        inherited=np.zeros(16, bool),
+        published_coverage=0.75,
+        last_publish=clock[0],
+        dirty=False,
+    )
+    carry_calls = []
+    loop.appearance = SimpleNamespace(
+        retain=lambda *_: None,
+        track=lambda *_, **__: None,
+        register=lambda *_: None,
+        update=lambda *_, **__: None,
+        snapshot=lambda wid: snap_obj if wid == "w-1" else None,
+        carry_in=lambda wid, snap, *, inherit, publish=True: carry_calls.append((wid, snap, inherit, publish)),
+        config=SimpleNamespace(face_policy="OBSERVED"),
+    )
+    try:
+        for _ in range(2):
+            source.item = snapshot(clock[0])
+            loop.step()
+            clock[0] += 200
+        state = loop.people["w-1"]
+        assert state.shape_frozen and versions == [0]
+        # 이미 텍스처가 발행된 상태라고 가정한다.
+        state.asset["texture"] = {"object_uri": "s3://avatars/w-1/e0/v0/albedo.png", "sha256": "sha256:" + "a" * 64,
+                                  "resolution": [1024, 1024]}
+        published_before = copy.deepcopy(state.asset)
+
+        # 소실(LOST) → 25초 뒤 단기 departed 만료 → 휴면(dormant)으로 승격
+        lost_meta, lost_imgs = snapshot(clock[0])
+        lost_meta["world"]["tracks"][0]["track_lifecycle"] = "LOST"
+        source.item = (lost_meta, lost_imgs)
+        loop.step()
+        assert "w-1" not in loop.people and "w-1" in loop.carry.departed
+
+        # 15분 뒤(900,000 ms, keep_ms 20s 초과 · dormant_ttl_ms 30분 안) Re-ID 로 같은 World ID 복원
+        bakes = counting_bake(model)
+        clock[0] += 900_000
+        source.item = snapshot(clock[0])
+        loop.step()
+        sender.tick()
+
+        assert bakes == []  # 체형 다시 굽지 않음
+        assert versions == [0]  # GLB 다시 올리지 않음
+        assert loop.carry.stats["dormant_restored"] == 1
+        assert loop.identity_events["lost_restored"] == 1
+        assert loop.people["w-1"].shape_frozen and loop.people["w-1"].version == 0
+        # 이미 텍스처가 있는 같은 ID 복원은 publish=False 로 누적 텍셀만 잇고 즉시 재발행하지 않는다.
+        assert carry_calls == [("w-1", snap_obj, False, False)]
+        assets = [m["payload"] for m in sock.messages if m["msg_type"] == "avatar_asset"]
+        assert assets and assets[-1] == published_before
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("kind", ["revision", "split_from"])
+def test_dormant_restore_with_identity_change_resets_and_rebakes(rig, kind):
+    """휴면 복원 때 identity_revision(순수 병합 아님)이나 split_from 이 달라지면 이전 외형을 이어 붙이지 않고 새로 굽는다(-808)."""
+    from simai_ai.hmr.appearance import TexelSnapshot
+
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    versions = []
+    loop.upload = lambda wid, epoch, version, glb: (
+        versions.append(version) or f"s3://avatars/{wid}/e{epoch}/v{version}/mesh.glb"
+    )
+    snap_obj = TexelSnapshot(
+        colors=np.zeros((16, 3), np.float32),
+        weights=np.ones(16, np.float32),
+        inherited=np.zeros(16, bool),
+    )
+    carry_calls = []
+    loop.appearance = SimpleNamespace(
+        retain=lambda *_: None,
+        track=lambda *_, **__: None,
+        register=lambda *_: None,
+        update=lambda *_, **__: None,
+        snapshot=lambda wid: snap_obj if wid == "w-1" else None,
+        carry_in=lambda wid, snap, *, inherit, publish=True: carry_calls.append((wid, snap, inherit, publish)),
+        config=SimpleNamespace(face_policy="OBSERVED"),
+    )
+    try:
+        source.item = snapshot(clock[0])
+        loop.step()
+        assert versions == [0]
+
+        clock[0] += 200
+        lost_meta, lost_imgs = snapshot(clock[0])
+        lost_meta["world"]["tracks"][0]["track_lifecycle"] = "LOST"
+        source.item = (lost_meta, lost_imgs)
+        loop.step()
+
+        # 10분 뒤 돌아왔으나 신원 차수 초기화 또는 분할 표시가 달라짐 -> 이전 외형·체형을 절대 재사용하지 않는다.
+        clock[0] += 600_000
+        meta, imgs = snapshot(clock[0], revision=1 if kind == "revision" else 0)
+        if kind == "split_from":
+            meta["world"]["tracks"][0]["split_from"] = "w-other"
+        source.item = (meta, imgs)
+        bakes = counting_bake(model)
+        loop.step()
+        sender.tick()
+
+        assert loop.identity_events["revision_reset"] == 1
+        assert carry_calls == []
+        assert len(bakes) == 1
+        assert versions == [0, 1]
+        assert loop.people["w-1"].version == 1
+    finally:
+        loop.close()

@@ -146,8 +146,9 @@ def test_env_auto_off_on_and_manifest_hash(monkeypatch, caplog):
     assert segmentation_from_env({"SIMAI_AVATAR_SEG": "0", "SIMAI_AVATAR_SEG_WEIGHTS": "missing"}) is None
     auto = segmentation_from_env({}, cuda_available=True, device="cuda:2")
     assert auto.device == auto.segmenter.device == "cuda:2"
+    assert auto.segmenter.half is True and auto.sync_timing is False and auto.synchronize is None
     forced = segmentation_from_env({"SIMAI_AVATAR_SEG": "1"}, cuda_available=False)
-    assert forced.device == "cpu" and forced.segmenter._model is None
+    assert forced.device == "cpu" and forced.segmenter._model is None and forced.segmenter.half is False
     with pytest.raises(ValueError, match="auto, 0, 1"):
         segmentation_from_env({"SIMAI_AVATAR_SEG": "yes"})
     manifest = json.loads((Path(__file__).parents[3] / "deploy/weights.json").read_text(encoding="utf-8"))
@@ -187,6 +188,7 @@ def test_yolo_is_lazy_verifies_hash_then_batches_people_only(tmp_path, monkeypat
     assert all(len(items) == 1 for items in batch)
     assert batch[0][0].mask.shape == (48, 64) and batch[1][0].mask.shape == (38, 48)
     assert calls[0]["retina_masks"] and calls[0]["classes"] == [0] and calls[0]["device"] == "cpu"
+    assert calls[0]["half"] is False
     seg.predict(images)
     assert len(loaded) == 1
     bad = YoloPersonSegmenter(WeightsRef(str(path), "sha256:" + "0" * 64))

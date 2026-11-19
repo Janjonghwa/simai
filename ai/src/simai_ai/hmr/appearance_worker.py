@@ -1,12 +1,20 @@
 """외형 전용 작업자. 대기 요청·완료 결과는 각각 최신 한 회차만 유지한다."""
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 import logging
 import threading
 from types import SimpleNamespace
 
+
 log = logging.getLogger(__name__)
+
+# 기본은 감속(권장 주기)으로 외형 분할을 미루지 않고, 아바타 게이트가 닫혔을 때만 미룬다(None = 감속 무시).
+# 17차처럼 판정 p95 가 오래 100~200 ms 면 권장 주기가 계속 800 ms 라, 감속으로 미루면 새 사람의 외형이 끝내 안 생긴다.
+# 아바타는 시연 필수다(Lead 결정 2026-11-19, -808). Tier 0 보호는 게이트(예산 초과 10 s 유지·재개 직후 재차단, -807)가 맡는다.
+DEFAULT_SEG_MAX_INTERVAL_MS = None
+DEFAULT_DEFER_INTERVAL_S = 0.2
 
 
 def owned_images(snapshot, images):
@@ -44,13 +52,18 @@ def owned_images(snapshot, images):
 
 
 class AppearanceWorker:
-    def __init__(self, loop):
+    def __init__(self, loop, *, seg_max_interval_ms=DEFAULT_SEG_MAX_INTERVAL_MS,
+                 defer_interval_s=DEFAULT_DEFER_INTERVAL_S):
         self.loop = loop
         self.pipeline = loop.appearance
+        self.seg_max_interval_ms = None if seg_max_interval_ms is None else int(seg_max_interval_ms)
+        self._defer_interval_s = float(defer_interval_s)
         self._condition = threading.Condition()
         self._pending = self._result = None
         self._stopped = False
         self.dropped = 0
+        self.deferred = 0
+        self.deferred_reasons = Counter()
         self.discarded_results = 0
         self._registered = {}
         self._thread = threading.Thread(target=self._run, name="avatar-appearance", daemon=True)
@@ -81,6 +94,30 @@ class AppearanceWorker:
             result, self._result = self._result, None
             return result
 
+    def _gate_state(self, *, check_throttle: bool) -> tuple[bool, str]:
+        """아바타 게이트·감속 상태를 다시 확인한다(S15P31A101-808).
+
+        check_throttle=True 이고 seg_max_interval_ms 가 있으면(기본 None = 끔) 권장 주기가 그 값을 넘을 때도 분할을 미룬다.
+        """
+        if not self.loop.gate.check().admit:
+            return False, "gate_closed"
+        if check_throttle and self.seg_max_interval_ms is not None:
+            rec_fn = getattr(self.loop.gate, "recommended_interval_ms", None)
+            if callable(rec_fn) and int(rec_fn()) > self.seg_max_interval_ms:
+                return False, "throttled"
+        return True, "ok"
+
+    def _defer(self, item, reason: str) -> None:
+        """닫힌 게이트·감속으로 미룬 작업을 버리지 않고 대기 슬롯에 되돌린 뒤 다음 주기를 기다린다."""
+        with self._condition:
+            if self._stopped:
+                return
+            if self._pending is None:
+                self._pending = item
+            self.deferred += 1
+            self.deferred_reasons[reason] += 1
+            self._condition.wait(timeout=self._defer_interval_s)
+
     def _run(self):
         while True:
             with self._condition:
@@ -90,9 +127,13 @@ class AppearanceWorker:
                 item, self._pending = self._pending, None
             tokens, states, frame, doc, snapshot, images, rig, masks = item
             assets = []
-            admit = lambda: self._valid(tokens) and self.loop.gate.check().admit
-            if not admit():
+            if not self._valid(tokens):
                 continue
+            ok, reason = self._gate_state(check_throttle=False)
+            if not ok:
+                self._defer(item, reason)
+                continue
+            admit = lambda: self._valid(tokens) and self.loop.gate.check().admit
             try:
                 active = set(states)
                 self.pipeline.retain(active)
@@ -156,7 +197,13 @@ class AppearanceWorker:
                             ):
                                 continue
                             seg_jobs.append((track, obs))
-                    if seg_jobs and admit():
+                    if seg_jobs:
+                        if not self._valid(tokens):
+                            continue
+                        seg_ok, seg_reason = self._gate_state(check_throttle=True)
+                        if not seg_ok:
+                            self._defer(item, seg_reason)
+                            continue
                         prepared = self.loop._timed("segmentation", seg.prepare, seg_jobs, images, rig)
                         masks = {
                             key: val.original_mask

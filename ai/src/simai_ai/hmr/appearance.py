@@ -56,6 +56,8 @@ class AppearanceConfig:
     fusion_power: float = 4.
     fusion_keep: float = 4.
     fusion_reject_decay: float = .5
+    # 측정용 CUDA 동기화(S15P31A101-808): 기본 False로 불필요한 torch.cuda.synchronize·이벤트 대기를 뺀다.
+    sync_timing: bool = False
 
     def __post_init__(self):
         if (self.resolution < 4 or self.freeze_frames < 1 or self.sample_interval_ms < 1
@@ -119,15 +121,19 @@ def png_asset(array):
 
 @dataclass(frozen=True)
 class TexelSnapshot:
-    """한 World ID 의 누적 텍셀(외형 이어받기·병합용, S15P31A101-743). 배열은 공유하므로 받는 쪽은 복사해 쓴다.
+    """한 World ID 의 누적 텍셀(외형 이어받기·병합·휴면 복원용, S15P31A101-743·808). 배열은 공유하므로 받는 쪽은 복사해 쓴다.
 
     peaks: best 합치기의 텍셀별 최고 관측 세기(S15P31A101-789). mean 이면 쓰지 않는다. 거절 압력은 넘기지 않는다(일시 상태).
+    published_coverage·last_publish·dirty: 같은 ID 복원 때 이미 발행한 텍스처를 다시 올리지 않도록 함께 보관한다.
     """
     colors: np.ndarray
     weights: np.ndarray
     inherited: np.ndarray
     last_confirmed: object = None
     peaks: np.ndarray | None = None
+    published_coverage: float = 0.0
+    last_publish: int = -1
+    dirty: bool = False
 
 
 @dataclass(frozen=True)
@@ -307,11 +313,12 @@ class AppearanceAccumulator:
             return False
         if not admit():
             return False
-        if cfg.device.startswith("cuda"):
+        measure_gpu = bool(cfg.sync_timing and cfg.device.startswith("cuda"))
+        if measure_gpu:
             torch.cuda.synchronize(cfg.device)
         start, cpu_start = time.perf_counter(), time.process_time()
         gpu_ms = 0.
-        if cfg.device.startswith("cuda"):
+        if measure_gpu:
             prep_begin, prep_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
             prep_begin.record(torch.cuda.current_stream(cfg.device))
         def tensor(value):
@@ -347,7 +354,7 @@ class AppearanceAccumulator:
         sharpness = {k: list(v) for k, v in self.sharpness.items()}
         samples, color_samples = [], {}
         accepted = rejected = takeovers = 0
-        if cfg.device.startswith("cuda"):
+        if measure_gpu:
             prep_end.record(torch.cuda.current_stream(cfg.device))
             prep_end.synchronize()
             gpu_ms += prep_begin.elapsed_time(prep_end)
@@ -368,7 +375,7 @@ class AppearanceAccumulator:
             near = camera_vertices[all_faces, 2] <= 1e-4
             if (near.any(axis=1) & ~near.all(axis=1)).any():
                 continue  # near plane을 가로지르는 가림막을 버리고 뒤 색을 채우지 않는다.
-            if cfg.device.startswith("cuda"):
+            if measure_gpu:
                 begin, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
                 begin.record(torch.cuda.current_stream(cfg.device))
             try:
@@ -420,7 +427,7 @@ class AppearanceAccumulator:
                 high = good & (quality >= cfg.color_min_quality)
                 color_samples[camera] = (ids_np[high.cpu().numpy()], observed[high].cpu().numpy())
             samples.append((camera, good, w, observed))
-            if cfg.device.startswith("cuda"):
+            if measure_gpu:
                 end.record(torch.cuda.current_stream(cfg.device))
                 end.synchronize()
                 gpu_ms += begin.elapsed_time(end)
@@ -431,7 +438,7 @@ class AppearanceAccumulator:
         for camera, good, w, observed in samples:
             if not admit():
                 return False
-            if cfg.device.startswith("cuda"):
+            if measure_gpu:
                 begin.record(torch.cuda.current_stream(cfg.device))
             if cfg.color_enabled:
                 observed = (observed * tensor(camera_colors.gain(camera))).clamp(0, 255)
@@ -440,7 +447,7 @@ class AppearanceAccumulator:
                 ok, bad, swapped = fuse_best(colors, weights, peaks, rejects, inherited,
                                              ids[good], w[good], observed[good], cfg)
                 accepted, rejected, takeovers = accepted + ok, rejected + bad, takeovers + swapped
-                if cfg.device.startswith("cuda"):
+                if measure_gpu:
                     end.record(torch.cuda.current_stream(cfg.device))
                     end.synchronize()
                     gpu_ms += begin.elapsed_time(end)
@@ -456,7 +463,7 @@ class AppearanceAccumulator:
             weights[selected] = total[:, 0]
             inherited[selected] = False
             accepted += len(selected)
-            if cfg.device.startswith("cuda"):
+            if measure_gpu:
                 end.record(torch.cuda.current_stream(cfg.device))
                 end.synchronize()
                 gpu_ms += begin.elapsed_time(end)
@@ -474,23 +481,48 @@ class AppearanceAccumulator:
                          np.round(camera_colors.gain(camera), 4).tolist())
         self.last_sample = t
         self.dirty |= accepted > 0
-        if cfg.device.startswith("cuda"):
+        if measure_gpu:
             torch.cuda.synchronize(cfg.device)
         log.info("외형 누적 world_id=%s device=%s wall_ms=%.3f cpu_ms=%.3f gpu_ms=%s accepted=%s rejected=%s "
                  "fusion=%s takeover=%s", world_id, cfg.device, (time.perf_counter() - start) * 1000,
                  (time.process_time() - cpu_start) * 1000,
-                 f"{gpu_ms:.3f}" if cfg.device.startswith("cuda") else "NA", accepted, rejected, cfg.fusion, takeovers)
+                 f"{gpu_ms:.3f}" if measure_gpu else "NA", accepted, rejected, cfg.fusion, takeovers)
         return accepted > 0
 
     def snapshot(self):
-        return TexelSnapshot(self.colors, self.weights, self.inherited, self.last_confirmed, self.peaks)
+        return TexelSnapshot(
+            self.colors,
+            self.weights,
+            self.inherited,
+            self.last_confirmed,
+            self.peaks,
+            self.published_coverage,
+            self.last_publish,
+            self.dirty,
+        )
 
-    def absorb(self, other, *, inherit):
-        """다른 누적(TexelSnapshot)을 합친다(S15P31A101-743). 표시용이며 신원 판단에 쓰지 않는다.
+    def _finish_absorb(self, other, changed, *, publish):
+        if publish:
+            if changed:
+                self.dirty = self.carry_publish = True
+        else:
+            # 같은 ID 복원: 이미 발행한 텍스처를 재사용하므로 즉시 재발행(carry_publish)하지 않는다.
+            self.published_coverage = max(self.published_coverage, float(getattr(other, "published_coverage", 0.0)))
+            other_publish = int(getattr(other, "last_publish", -1))
+            if other_publish >= 0:
+                self.last_publish = max(self.last_publish, other_publish)
+            self.dirty = bool(self.dirty or getattr(other, "dirty", False))
+        if self.last_confirmed is None:
+            self.last_confirmed = other.last_confirmed
+        return changed
+
+    def absorb(self, other, *, inherit, publish=True):
+        """다른 누적(TexelSnapshot)을 합친다(S15P31A101-743·808). 표시용이며 신원 판단에 쓰지 않는다.
 
         inherit=False(병합·같은 ID 재연결, Tier 0 가 같은 사람이라고 한 경우): 두 쪽 본 관측 텍셀은 품질 가중 평균, 한쪽만
         관측한 텍셀은 그 값(본 관측이 이어받은 값보다 먼저). inherit=True(다른 새 World ID 로 이어받기): 이 ID 의 본 관측이
-        없는 텍셀만 채우고 이어받음 표시. 바뀌면 다음 발행 때 안정 프레임을 기다리지 않고 한 번 낸다(carry_publish).
+        없는 텍셀만 채우고 이어받음 표시. publish=True 이면 다음 발행 때 안정 프레임을 기다리지 않고 한 번 낸다(carry_publish).
+        publish=False(같은 ID 복원이며 자산에 이미 텍스처가 있는 경우)는 발행 기록만 잇고 즉시 재발행하지 않는다.
 
         best 합치기(S15P31A101-789)의 두 쪽 본 관측 텍셀: 각자 질량을 k·최고 세기로 묶은 뒤(누적 때와 같은 상한) 색이
         outlier_rgb 안이면 그 질량으로 가중 평균하고 최고 세기는 큰 쪽, 색이 어긋나면 질량이 큰 쪽(같으면 이쪽)을 통째로 쓴다.
@@ -506,7 +538,8 @@ class AppearanceAccumulator:
         mine = (self.weights > 0) & ~self.inherited
         theirs = weights > 0
         if self.config.fusion == "best":
-            return self._absorb_best(other, colors, weights, theirs_inherited, mine, theirs, inherit=inherit)
+            return self._absorb_best(other, colors, weights, theirs_inherited, mine, theirs,
+                                     inherit=inherit, publish=publish)
         if inherit:
             both = np.zeros_like(mine)
             take = theirs & ~mine
@@ -524,13 +557,9 @@ class AppearanceAccumulator:
         self.colors[take], self.weights[take] = colors[take], weights[take]
         self.inherited[take] = mark[take]
         changed = bool(both.any() or take.any())
-        if changed:
-            self.dirty = self.carry_publish = True
-        if self.last_confirmed is None:
-            self.last_confirmed = other.last_confirmed
-        return changed
+        return self._finish_absorb(other, changed, publish=publish)
 
-    def _absorb_best(self, other, colors, weights, theirs_inherited, mine, theirs, *, inherit):
+    def _absorb_best(self, other, colors, weights, theirs_inherited, mine, theirs, *, inherit, publish=True):
         peaks = None if other.peaks is None else np.asarray(other.peaks, np.float32)
         if peaks is None or peaks.shape != weights.shape:
             peaks = weights   # 최고 세기를 모르면 질량 전체를 한 관측으로 본다(상한이 질량을 깎지 않는다)
@@ -563,11 +592,7 @@ class AppearanceAccumulator:
         self.rejects[take] = 0
         self.inherited[take] = mark[take]
         changed = bool(both.any() or take.any())
-        if changed:
-            self.dirty = self.carry_publish = True
-        if self.last_confirmed is None:
-            self.last_confirmed = other.last_confirmed
-        return changed
+        return self._finish_absorb(other, changed, publish=publish)
 
     def adopt(self, old):
         """같은 사람·같은 UV 의 이전 누적을 잇는다(체형만 다시 구워 등록이 바뀐 경우). 이어 쓰면 True."""

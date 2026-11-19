@@ -14,13 +14,24 @@ from simai_ai.hmr.prompt import HmrImageMap, HmrPrompt, PersonObservation, SegIn
 log = logging.getLogger(__name__)
 
 
+def _is_cuda_device(device) -> bool:
+    if device is None:
+        return False
+    if getattr(device, "type", None) is not None:
+        return str(device.type).lower() == "cuda"
+    return str(device).lower().startswith("cuda")
+
+
 class Segmenter(Protocol):
     def predict(self, images: list[np.ndarray]) -> list[list[SegInstance]]: ...
 
 
 class YoloPersonSegmenter:
-    def __init__(self, weights, *, device="cuda"):
+    def __init__(self, weights, *, device="cuda", half=None):
         self.weights, self.device = weights, device
+        is_cuda = _is_cuda_device(device)
+        # CUDA에서는 FP16(half=True)을 기본으로 써 GPU 점유를 줄인다. CPU는 항상 FP32.
+        self.half = is_cuda if half is None else (bool(half) and is_cuda)
         self._model = None
 
     def predict(self, images):
@@ -30,8 +41,16 @@ class YoloPersonSegmenter:
             from ultralytics import YOLO
 
             self._model = YOLO(str(path), task="segment")
-        results = list(self._model.predict(images, classes=[0], conf=0.25, imgsz=1280,
-                                          retina_masks=True, verbose=False, device=self.device))
+        results = list(self._model.predict(
+            images,
+            classes=[0],
+            conf=0.25,
+            imgsz=1280,
+            retina_masks=True,
+            half=self.half,
+            verbose=False,
+            device=self.device,
+        ))
         if len(results) != len(images):
             raise ValueError("seg 배치와 결과 카메라 수가 다르다")
         batch = []
@@ -64,9 +83,12 @@ class PreparedPerson:
 
 
 class AvatarSegmentation:
-    def __init__(self, segmenter: Segmenter, *, device="cpu", synchronize=lambda: None, timer=time.perf_counter):
+    def __init__(self, segmenter: Segmenter, *, device="cpu", synchronize=None, timer=time.perf_counter,
+                 sync_timing=False):
         self.segmenter, self.device = segmenter, device
-        self.synchronize, self.timer = synchronize, timer
+        self.synchronize = synchronize
+        self.sync_timing = bool(sync_timing)
+        self.timer = timer
         self.failed = False
         self._calibration_version = None
         self._maps = {}
@@ -91,10 +113,12 @@ class AvatarSegmentation:
                     camera = rig.cameras[cid]
                     self._maps[cid] = HmrImageMap(camera, camera.K)
                 prepared[cid] = self._maps[cid].prepare_image(images[cid])
-            self.synchronize()
+            if self.sync_timing and self.synchronize is not None:
+                self.synchronize()
             start = self.timer()
             batch = self.segmenter.predict(list(prepared.values()))
-            self.synchronize()
+            if self.sync_timing and self.synchronize is not None:
+                self.synchronize()
             elapsed = (self.timer() - start) * 1000
             if len(batch) != len(grouped):
                 raise ValueError("seg 배치와 결과 카메라 수가 다르다")
@@ -107,9 +131,10 @@ class AvatarSegmentation:
                 for prompt in prompts:
                     mask = None if prompt.mask is None else imap.mask_to_original(prompt.mask)
                     out[(prompt.observation.world_id, cid)] = PreparedPerson(prepared[cid], prompt, mask)
-            log.info("아바타 seg batch cameras=%s instances=%s matched=%s elapsed_ms=%.3f device=%s",
+            log.info("아바타 seg batch cameras=%s instances=%s matched=%s elapsed_ms=%.3f device=%s half=%s",
                      len(grouped), sum(len(items) for items in batch),
-                     sum(p.prompt.mask is not None for p in out.values()), elapsed, self.device)
+                     sum(p.prompt.mask is not None for p in out.values()), elapsed, self.device,
+                     getattr(self.segmenter, "half", False))
             return out
         except Exception as error:
             self.failed = True
@@ -125,6 +150,12 @@ def segmentation_from_env(env, *, device=None, cuda_available=None):
         raise ValueError("SIMAI_AVATAR_SEG는 auto, 0, 1")
     if enabled == "0":
         return None
+    half_env = env.get("SIMAI_AVATAR_SEG_HALF", "auto")
+    if half_env not in {"auto", "0", "1"}:
+        raise ValueError("SIMAI_AVATAR_SEG_HALF는 auto, 0, 1")
+    sync_env = env.get("SIMAI_AVATAR_SEG_SYNC_TIMING", "0")
+    if sync_env not in {"0", "1"}:
+        raise ValueError("SIMAI_AVATAR_SEG_SYNC_TIMING는 0 또는 1")
     if cuda_available is None:
         import torch
 
@@ -141,11 +172,19 @@ def segmentation_from_env(env, *, device=None, cuda_available=None):
     except ValueError:
         log.warning("아바타 seg 끔: 잘못된 가중치 해시 설정; bbox만 사용 (재시작 전까지)")
         return None
-    if cuda_available:
+    half = None if half_env == "auto" else (half_env == "1")
+    sync_timing = sync_env == "1"
+    # 기본 경로에서는 torch.cuda.synchronize를 부르지 않아 Tier 0 CUDA 스트림과의 불필요한 전체 동기화를 막는다.
+    if sync_timing and cuda_available and _is_cuda_device(device):
         def synchronize():
             import torch
 
             torch.cuda.synchronize(device)
     else:
-        synchronize = lambda: None
-    return AvatarSegmentation(YoloPersonSegmenter(weights, device=device), device=device, synchronize=synchronize)
+        synchronize = None
+    return AvatarSegmentation(
+        YoloPersonSegmenter(weights, device=device, half=half),
+        device=device,
+        synchronize=synchronize,
+        sync_timing=sync_timing,
+    )
