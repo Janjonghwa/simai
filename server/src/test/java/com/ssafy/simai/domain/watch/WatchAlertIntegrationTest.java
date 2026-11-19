@@ -211,6 +211,39 @@ class WatchAlertIntegrationTest {
     }
 
     @Test
+    void 시연_스위치가_켜지면_배정_없는_사람의_이벤트도_지정_워치로_가고_끄면_가지_않는다() throws Exception {
+        // S15P31A101-793: 사람이 하나인 시연에서 걸음 대조·수동 배정을 기다리지 않게. 배정된 워치가 따로 있으면 둘 다 받고 배정 표는 그대로다
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch bound = watch(watchId, watchToken);
+        Watch demo = watch(otherId, otherToken);
+        alerts.setDemoDevice(otherId);
+        try {
+            UUID event = liveEvent("R5", "HIGH", "RAISED", "LIVE", worldId);
+            alerts.alert(event);
+            JsonNode toBound = bound.next("watch_alert");
+            JsonNode toDemo = demo.next("watch_alert");
+            assertThat(toBound.path("payload").path("event_id").asString()).isEqualTo(event.toString());
+            assertThat(toDemo.path("payload").path("event_id").asString()).isEqualTo(event.toString());
+            assertThat(schemas.violations("messages/watch_alert", toDemo.toString())).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT world_id FROM watch_alert WHERE device_id = ? AND event_id = ?", String.class, otherId,
+                    event)).isEqualTo(worldId);
+            assertThat(count("SELECT count(*) FROM watch_binding WHERE device_id = ? AND unbound_at IS NULL", otherId)).isZero();
+
+            // 배정이 아예 없는 사람의 이벤트도 지정 워치로 간다. 같은 이벤트를 다시 넘겨도 한 번만
+            UUID unbound = liveEvent("R1", "CRITICAL", "RAISED", "LIVE", "w-nobody-" + tag);
+            alerts.alert(unbound);
+            alerts.alert(unbound);
+            assertThat(demo.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(unbound.toString());
+            assertThat(count("SELECT count(*) FROM watch_alert WHERE device_id = ? AND event_id = ?", otherId, unbound)).isEqualTo(1);
+        } finally {
+            alerts.setDemoDevice(null);
+        }
+        UUID after = liveEvent("R9", "CAUTION", "RAISED", "LIVE", "w-nobody2-" + tag);
+        alerts.alert(after);
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE device_id = ? AND event_id = ?", otherId, after)).isZero();
+    }
+
+    @Test
     void R11_조끼_미착용은_조끼_단어와_CAUTION_진동으로_보낸다() throws Exception {
         // S15P31A101-549: 조끼 미착용(R11, CAUTION)도 R9 안전모처럼 본인 워치로 간다. 단어 표에 없으면 "위험"으로 나가 구분이 안 된다
         bindings.bindManually(watchId, worldId, adminId);

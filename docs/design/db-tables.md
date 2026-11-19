@@ -1554,6 +1554,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 - 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 (V35, S15P31A101-338) · 검토: 곽나혁(워치 트랙 전담)
 - 움직임 대조 배정(`MOTION_MATCH`, -340 `WatchMotionMatcher`, `docs/design/server-watch-match.md`)이 기본이고, 관리자 수동 배정(`MANUAL`, `/api/watch-bindings`)은 덮어쓰기다: 수동 배정이 걸린 워치·World ID 는 대조가 건드리지 않는다.
+- V85(S15P31A101-793) 자리 이어받기: 배정된 트랙이 사라진 자리에 새 트랙 하나만 나타나면 배정을 새 World ID 로 옮긴다. 옮긴 행은 `handoff_from` 에 옛 ID 를 적고 대조가 같은 짝을 다시 뽑을 때까지(`handoff_confirmed_at`) 임시라 수동이라도 대조가 반대 근거로 풀 수 있다. 옛 행은 `HANDOFF` 로 닫는다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1565,7 +1566,9 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `bound_by_user_id` | bigint | FK>app_user.user_id, CHECK(manual) |  | 수동 배정한 관리자. MANUAL 이면 필수 |
 | `bound_at` | ts | NN |  |  |
 | `unbound_at` | ts | CHECK(end) |  |  |
-| `unbind_reason` | text | CK(RELEASED·REPLACED·MATCH_LOST·IDENTITY_CHANGED), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정, 대조 점수가 떨어지거나 트랙이 사라짐(V39), World ID 병합·분할(V39). end: unbound_at 과 함께 채우거나 함께 비운다 |
+| `unbind_reason` | text | CK(RELEASED·REPLACED·MATCH_LOST·IDENTITY_CHANGED·ID_MERGED·HANDOFF), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정, 대조 점수가 떨어지거나 트랙이 사라짐(V39, 임시 이어받기의 반대 근거 포함), World ID 병합·분할(V39), 병합으로 살아남은 ID 로 옮김(V42), 사라진 자리의 새 ID 로 옮김(V85). end: unbound_at 과 함께 채우거나 함께 비운다 |
+| `handoff_from` | text | CK(1~64자, world_id 와 다름) |  | V85(-793). 자리 이어받기로 옮겨 온 배정이면 사라진 옛 World ID, 아니면 NULL |
+| `handoff_confirmed_at` | ts | CHECK(handoff_from 있을 때만) |  | V85. 옮겨 온 배정을 걸음 대조가 같은 짝으로 다시 뽑아 확정한 시각. NULL 이면 임시 |
 
 #### `channel_state` — World ID 별 개인 채널 상태
 

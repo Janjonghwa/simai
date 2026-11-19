@@ -24,7 +24,7 @@ class WatchAlertReplayTestSwitchTest {
         ReplayTestSwitch replayTest = mock(ReplayTestSwitch.class);
         when(replayTest.alerts()).thenReturn(alertsSwitch);
         WatchProperties properties = new WatchProperties(Duration.ofSeconds(20), Duration.ofSeconds(5), Duration.ofSeconds(10),
-                Duration.ofHours(1), Duration.ofSeconds(2));
+                Duration.ofHours(1), Duration.ofSeconds(2), null);
         return new WatchAlertService(mock(NamedParameterJdbcTemplate.class), mock(WatchBindings.class), mock(WatchHub.class),
                 properties, mock(RealtimePublisher.class), JsonMapper.builder().build(), Clock.systemUTC(), health, replayTest);
     }
