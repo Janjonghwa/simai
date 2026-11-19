@@ -31,9 +31,14 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 
-const KEY = 'simai.cctv.float';
-/** 창 폭(px) 기본값과 한계. 높이는 따로 두지 않고 영상 비율을 따른다(S15P31A101-798). */
-const DEFAULT_WIDTH = 560;
+// v2(-812): 끌어 옮긴 자리의 기준이 위쪽에서 아래쪽으로 바뀌어 예전(위쪽 기준) 자리는 읽지 않는다. 모두 처음엔 기본 자리에서 연다.
+const KEY = 'simai.cctv.float.v2';
+/**
+ * 창 폭 기본값과 한계(px). 높이는 따로 두지 않고 영상 비율을 따른다(S15P31A101-798). 기본 폭은 영상 높이가 왼쪽 아래 평면
+ * 지도와 같도록(--minimap-size) 보이는 카메라의 해상도 비율로 정한다(-812, 모르면 16:9 = 2304×1296). 사용자가 폭을 바꾸면
+ * 그 px 를 저장해 쓴다.
+ */
+const defaultWidthCss = (aspect: string) => `calc(var(--minimap-size) * ${aspect})`;
 const MIN_WIDTH = 280;
 const MAX_WIDTH = 1000;
 /** 카메라 해상도를 아직 모를 때의 영상 비율. */
@@ -347,7 +352,8 @@ function ViewFromCameraButton({
  * 그림자만 둔다. 영상을 끌어 창을 옮기고(확대 중의 끌기는 영상 안 옮기기), 오른쪽 아래 모서리로 폭을 바꾸며 높이는 영상
  * 비율을 따른다. 닫기(X)·「3D 에서 이 방향으로 보기」·「3D 전체 보기」는 영상 오른쪽 위 아이콘이고, 지연 배지는 왼쪽 아래다.
  * 연결·원격 시청 안내는 영상 가운데에 겹친다. 접기는 없다(닫고 사람을 고르거나 3D 카메라 마커를 눌러 다시 연다).
- * 기본 자리는 왼쪽 칼럼(구역 목록) 오른쪽이다. 관제 화면에 들어오면 열려 있으므로 구역 목록을 가리지 않게 한다.
+ * 기본 자리는 오른쪽 아래이고 높이는 왼쪽 아래 평면 지도와 같다(-812). 3D 화면 가운데를 가리지 않게 한다. 끌어 옮긴 자리는
+ * 아래쪽 기준이라 폭을 바꿔도 아래 가장자리가 그대로다.
  */
 export function CctvFloat({
   onClose,
@@ -371,25 +377,37 @@ export function CctvFloat({
   requestedCamera?: CctvCameraRequest | null;
 }) {
   const [initial] = useState(readSettings);
-  const [size, setSize] = useState(() => {
-    const width = initial.videoWidth ?? DEFAULT_WIDTH;
-    return { width, height: Math.round((width * 9) / 16) };
+  // width 가 null 이면 기본 폭(평면 지도 높이 기준 CSS 값)이다. 처음 배치 뒤에는 실제 px 로 바뀐다.
+  const [size, setSize] = useState<{ width: number | null; height: number }>(() => {
+    const width = initial.videoWidth ?? null;
+    return { width, height: width === null ? 0 : Math.round((width * 9) / 16) };
   });
   const box = useRef<HTMLElement>(null);
   const saveSpot = useCallback((spot: FloatSpot) => saveSettings({ spot }), []);
-  const spot = useFloatSpot(box, 'top', FLOAT_MARGIN, initial.spot ?? null, saveSpot);
+  const spot = useFloatSpot(box, 'bottom', FLOAT_MARGIN, initial.spot ?? null, saveSpot);
   // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에).
-  const layoutKey = `${spot.style?.left},${spot.style?.top},${size.width}x${size.height}`;
+  const layoutKey = `${spot.style?.left},${spot.style?.bottom},${size.width}x${size.height}`;
   useReportCctvFloatBox(box, { dragging: spot.dragging, layoutKey });
   const isAdmin = useCurrentRole() === 'ADMIN';
   // 창이 보이는 카메라(「3D 에서 이 방향으로 보기」가 쓴다).
   const [currentCamera, setCurrentCamera] = useState<string | undefined>(requestedCamera?.cameraId);
+  // 보이는 카메라의 영상 비율(창 안 영상 칸과 같은 값). 기본 폭 계산에 쓴다.
+  const aspect = useCctvStore((s) => {
+    const view = currentCamera ? s.views[currentCamera] : undefined;
+    return view?.width && view.height ? `${view.width} / ${view.height}` : DEFAULT_ASPECT;
+  });
   useEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
       const { offsetWidth: width, offsetHeight: height } = el;
       if (!width || !height) return;
+      // 사용자가 모서리로 폭을 바꾸면 브라우저가 인라인 폭을 px 로 쓴다. 그때만 px 폭을 쓰고 저장한다. 기본 폭(CSS 값)이면
+      // 높이만 적어 두고 저장하지 않는다(화면 높이가 바뀌면 평면 지도와 함께 다시 맞춰진다, -812).
+      if (!el.style.width.endsWith('px')) {
+        setSize((prev) => (prev.height === height ? prev : { ...prev, height }));
+        return;
+      }
       setSize((prev) =>
         prev.width === width && prev.height === height ? prev : { width, height },
       );
@@ -402,8 +420,8 @@ export function CctvFloat({
     <section
       ref={box}
       aria-label="떠 있는 CCTV"
-      style={{ ...spot.style, width: size.width, resize: 'horizontal' }}
-      className="absolute top-32 left-[calc(var(--side-column-width)+28px)] z-[7] max-w-[calc(100%-2rem)] min-w-[280px] overflow-hidden rounded-xl bg-card shadow-float"
+      style={{ ...spot.style, width: size.width ?? defaultWidthCss(aspect), resize: 'horizontal' }}
+      className="absolute right-3.5 bottom-3.5 z-[7] max-w-[calc(100%-2rem)] min-w-[280px] overflow-hidden rounded-xl bg-card shadow-float"
     >
       <div
         {...spot.handlers}

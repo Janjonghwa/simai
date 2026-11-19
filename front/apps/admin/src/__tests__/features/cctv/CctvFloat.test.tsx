@@ -107,15 +107,15 @@ describe('떠 있는 CCTV', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it('저장한 위치와 영상 폭을 복원하고, 높이는 저장하지 않고 영상 비율을 따른다(-798)', () => {
+  it('저장한 위치(아래쪽 기준, -812)와 영상 폭을 복원하고, 높이는 저장하지 않고 영상 비율을 따른다(-798)', () => {
     localStorage.setItem(
-      'simai.cctv.float',
+      'simai.cctv.float.v2',
       JSON.stringify({ spot: { left: 120, offset: 140 }, videoWidth: 640 }),
     );
     render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
     const box = screen.getByLabelText('떠 있는 CCTV');
     expect(box.style.left).toBe('120px');
-    expect(box.style.top).toBe('140px');
+    expect(box.style.bottom).toBe('140px');
     expect(box.style.width).toBe('640px');
     expect(box.style.height).toBe('');
     expect(box.style.resize).toBe('horizontal');
@@ -128,14 +128,28 @@ describe('떠 있는 CCTV', () => {
 
   it('예전 창 크기(width·height, 제목 줄 포함)는 읽지 않고 기본 폭으로 열며, 위치는 그대로 쓴다(-798)', () => {
     localStorage.setItem(
-      'simai.cctv.float',
+      'simai.cctv.float.v2',
       JSON.stringify({ spot: { left: 120, offset: 140 }, width: 520, height: 400 }),
     );
     render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
     const box = screen.getByLabelText('떠 있는 CCTV');
     expect(box.style.left).toBe('120px');
-    expect(box.style.width).toBe('560px');
+    expect(box.style.width).not.toBe('520px');
     expect(box.style.height).toBe('');
+  });
+
+  it('처음 열면 오른쪽 아래(평면 지도와 같은 여백)이고, 예전 키(위쪽 기준)의 자리는 읽지 않는다(-812)', () => {
+    localStorage.setItem(
+      'simai.cctv.float',
+      JSON.stringify({ spot: { left: 120, offset: 140 }, videoWidth: 640 }),
+    );
+    render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+    const box = screen.getByLabelText('떠 있는 CCTV');
+    expect(box.className).toContain('right-3.5');
+    expect(box.className).toContain('bottom-3.5');
+    expect(box.style.left).toBe('');
+    expect(box.style.bottom).toBe('');
+    expect(box.style.width).not.toBe('640px');
   });
 
   describe('영상을 끌어 창 옮기기(-798)', () => {
@@ -171,7 +185,8 @@ describe('떠 있는 CCTV', () => {
       expect(surface().contains(screen.getByLabelText('카메라 1 영상'))).toBe(true);
       drag(screen.getByLabelText('카메라 1 영상'), 100, 40);
       expect(box.style.left).toBe('196px');
-      expect(box.style.top).toBe('168px');
+      // 아래쪽 기준(-812): 장면 높이 900 − 새 top 168 − 창 높이 270
+      expect(box.style.bottom).toBe('462px');
     });
 
     it('휠로 확대한 동안의 끌기는 영상 안 옮기기라 창은 그대로다', () => {
