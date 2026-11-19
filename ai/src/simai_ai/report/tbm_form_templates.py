@@ -1,7 +1,7 @@
 """TBM 양식 초안의 고정 사전과 결정적 대체 문장(초안 대체 문장, S15P31A101-616).
 
 LLM 이 없거나 두 초안이 모두 검사를 통과하지 못하면 이 문장들로 양식 칸을 채운다(fallback true).
-문장은 규칙 태그(명세 7장 R1~R11)·점검 코드(서버 TbmForm.CHECKS)마다 하나씩이고, 자리 표시는 `{where}`(관련 구역 이름 + ' 주변',
+문장은 규칙 태그(명세 7장 R1~R7·R9·R11, 표시 번호 R1~R9)·점검 코드(서버 TbmForm.CHECKS)마다 하나씩이고, 자리 표시는 `{where}`(관련 구역 이름 + ' 주변',
 없으면 '작업 구간') 하나뿐이다. 사람·수치·조문 번호를 넣지 않는다. 목록은 설계 docs/design/S15P31A101-616-tbm-form-draft.md 에도 적는다.
 """
 
@@ -53,22 +53,16 @@ TAG_THEMES: dict[str, TagTheme] = {
     "R7": TagTheme(RULE_DESCRIPTIONS["R7"], "ZONE_CONTROL",
                    "{where} 자재·시야 가림으로 위험구역 감시가 약해질 위험",
                    "시야를 가리는 자재를 치우고 위험구역 감시자를 둔다"),
-    "R8": TagTheme(RULE_DESCRIPTIONS["R8"], "ZONE_CONTROL",
-                   "{where} 작업 장비에 가까이 다가가 부딪히거나 끼일 위험",
-                   "장비 작업 반경을 표시하고 신호수를 배치한다"),
     "R9": TagTheme(RULE_DESCRIPTIONS["R9"], "PPE",
                    "안전모를 쓰지 않아 떨어지는 물체에 머리를 다칠 위험",
                    "작업 전 안전모 착용과 턱끈 체결을 서로 확인한다"),
-    "R10": TagTheme(RULE_DESCRIPTIONS["R10"], "ZONE_CONTROL",
-                    "{where} 확인되지 않은 물체가 있는 곳에 다가갈 위험",
-                    "작업 전 주변을 확인하고 확인되지 않은 곳은 출입을 통제한다"),
     "R11": TagTheme(RULE_DESCRIPTIONS["R11"], "PPE",
                     "안전조끼를 입지 않아 장비 운전자 눈에 띄지 않을 위험",
                     "작업 전 안전조끼 착용을 서로 확인한다"),
 }
 
-# 위험 3줄을 고르는 순서: 떨어짐(개구부·고소·낙상) → 구역 진입 → 장비·보호구 → 감시 상태
-TAG_PRIORITY: tuple[str, ...] = ("R2", "R3", "R4", "R1", "R5", "R8", "R9", "R11", "R6", "R7", "R10")
+# 위험 3줄을 고르는 순서: 떨어짐(개구부·고소·낙상) → 구역 진입 → 보호구 → 감시 상태
+TAG_PRIORITY: tuple[str, ...] = ("R2", "R3", "R4", "R1", "R5", "R9", "R11", "R6", "R7")
 
 # 규칙 태그가 모자랄 때(직접 쓴 작업만 있거나 태그가 1~2개) 채우는 일반 위험
 GENERAL_RISKS: tuple[tuple[str, str], ...] = (
@@ -97,8 +91,8 @@ ZONE_KIND_TAGS: dict[str, tuple[str, ...]] = {
     "FLOOR_EDGE": ("R2",),
     "ELEVATED_WORK_SURFACE": ("R3", "R4"),
     "SCAFFOLD": ("R3", "R4"),
-    "EQUIPMENT_PARKING": ("R8",),
-    "LIFTING": ("R1", "R8"),
+    "EQUIPMENT_PARKING": ("R1",),
+    "LIFTING": ("R1",),
 }
 
 DEFAULT_WHERE = "작업 구간"

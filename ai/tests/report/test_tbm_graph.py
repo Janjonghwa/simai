@@ -241,7 +241,10 @@ def test_report_prompt_uses_shared_display_names(kind):
     from simai_ai.report.tbm_graph import messages
 
     prompt = messages({"report_kind": kind}, [NODE])
-    assert "R2=추락 위험(가장자리)" in prompt[0]["content"]
-    assert "R6=위험구역 안 시야 끊김" in prompt[0]["content"]
-    assert "CRITICAL=위험" in prompt[0]["content"]
-    assert "HIGH=경고" in prompt[0]["content"]
+    content = prompt[0]["content"]
+    assert "R2=추락 위험(가장자리)" in content
+    assert "R6=위험구역 안 시야 끊김" in content
+    assert "R9→R8" in content and "R11→R9" in content
+    assert "장비 근접" not in content and "불확실 점유 근접" not in content
+    assert "CRITICAL=위험" in content
+    assert "HIGH=경고" in content

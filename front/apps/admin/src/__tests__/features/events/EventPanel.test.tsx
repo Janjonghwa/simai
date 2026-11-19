@@ -614,14 +614,16 @@ describe('EventDetail 확인 필요', () => {
     expect(row({ zone_id: 'z-04' })).toContain('개구부 구역 · ');
     expect(row({ zone_id: 'z-99' })).not.toMatch(/구역|z-99/);
     expect(row({ zone_id: undefined })).toContain('구역 없음 · ');
-    // 사람 단위 규칙(R9)은 구역을 보지 않아 구역 칸이 없다(-519).
+    // 사람 단위 규칙(R9·R11)은 구역을 보지 않아 구역 칸이 없고, 표시 번호는 R8·R9 로 이어 보인다(-519, -804).
     const r9 = row({ rule_id: 'R9', severity: 'CAUTION', zone_id: null, metrics: {} });
     expect(r9).toContain('안전모 미착용');
-    expect(r9).toContain('규칙 R9');
+    expect(r9).toContain('규칙 R8');
+    expect(r9).not.toContain('규칙 R9');
     expect(r9).not.toMatch(/구역/);
     const r11 = row({ rule_id: 'R11', severity: 'CAUTION', zone_id: null, metrics: {} });
     expect(r11).toContain('조끼 미착용');
-    expect(r11).toContain('규칙 R11');
+    expect(r11).toContain('규칙 R9');
+    expect(r11).not.toContain('규칙 R11');
     expect(r11).not.toMatch(/구역/);
   });
 

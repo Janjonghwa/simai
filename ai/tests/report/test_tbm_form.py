@@ -257,7 +257,9 @@ def test_fallback_template_for_every_rule_tag(tag):
 
 
 def test_fallback_tables_cover_every_tag_and_check_code():
-    assert set(TAG_THEMES) == {f"R{i}" for i in range(1, 12)} == set(TAG_PRIORITY)
+    implemented = {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R9", "R11"}
+    assert set(TAG_THEMES) == implemented == set(TAG_PRIORITY)
+    assert "R8" not in TAG_THEMES and "R10" not in TAG_THEMES
     assert set(CHECK_ACTIONS) == set(CHECK_CODES)
     assert {t.check for t in TAG_THEMES.values()} <= set(CHECK_CODES)
     assert TAG_THEMES["R2"].check == "OPENING_GUARD"
@@ -267,6 +269,8 @@ def test_fallback_tables_cover_every_tag_and_check_code():
     form = fallback_draft(text_only)
     assert form_problems(form) == [] and form["risk_assessed"] is None and form["place"] == ""
     assert [r["risk"] for r in form["risks"]] == [r for r, _ in GENERAL_RISKS[:3]]
+    system = build_messages(REQUEST, [NODE])[0]["content"]
+    assert "R9→R8" in system and "R11→R9" in system and "장비 근접" not in system
 
 
 def test_every_task_code_tags_reach_known_themes():

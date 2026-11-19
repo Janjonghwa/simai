@@ -1,5 +1,6 @@
 import { ppePolicyMissing, vestPolicyMissing } from '@/features/events/ppePolicy';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
+import { displayRuleId } from '@/lib/ruleNames';
 
 /** 안내 문구. 명세 7.2 R9 의 표시 이름이다. */
 export const PPE_POLICY_MISSING_TEXT = 'PPE 요구 미수신';
@@ -20,8 +21,8 @@ export function PpePolicyNotice() {
       <b>{missing ? PPE_POLICY_MISSING_TEXT : '조끼 요구 미수신'}</b>
       <span className="text-muted-foreground">
         {missing
-          ? ' · 안전모·조끼 미착용(R9·R11)을 판정하지 않습니다'
-          : ' · 조끼 미착용(R11)을 판정하지 않습니다'}
+          ? ` · 안전모·조끼 미착용(${displayRuleId('R9')}·${displayRuleId('R11')})을 판정하지 않습니다`
+          : ` · 조끼 미착용(${displayRuleId('R11')})을 판정하지 않습니다`}
       </span>
     </p>
   );

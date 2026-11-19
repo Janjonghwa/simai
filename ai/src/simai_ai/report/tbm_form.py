@@ -33,6 +33,7 @@ from simai_ai.report.tbm_form_templates import (
     TAG_THEMES,
     ZONE_KIND_TAGS,
 )
+from simai_ai.risk.names import REPORT_NAME_GUIDE
 
 PROMPT_VERSION = "tbm-form-1"
 MAX_ATTEMPTS = 2  # 첫 초안 + 검사로 버린 뒤 한 번 더
@@ -201,7 +202,7 @@ def build_messages(req: Mapping[str, Any], nodes: Sequence[Mapping[str, Any]] = 
         ],
     }
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + "\n" + REPORT_NAME_GUIDE},
         {"role": "user", "content": json.dumps(facts, ensure_ascii=False, sort_keys=True)},
     ]
     assert_text_only(messages)
