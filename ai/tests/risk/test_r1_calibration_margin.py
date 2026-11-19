@@ -269,7 +269,7 @@ _FIXED = [
       {"zone_distance_m": 0.0, "occupancy_z_min_m": 0.0, "occupancy_z_max_m": 1.75}, ())),
     (track(skel=skeleton(0.0, 1.60)), ABOVE, None),
     (track(anchor=None, head=None), ABOVE,
-     (True, (REASON_XY_INSIDE,), {"zone_distance_m": 0.0}, (ConfidenceReason.Z_UNKNOWN,))),
+     (False, (REASON_XY_INSIDE,), {"zone_distance_m": 0.0}, (ConfidenceReason.Z_UNKNOWN,))),
 ]
 
 

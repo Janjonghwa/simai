@@ -401,12 +401,12 @@ def test_yaw_must_be_radians(yaw, ok):
     assert (schema_errors(request, "risk_plan_request") == []) is ok
 
 
-def test_unknown_head_height_has_no_entry():
-    """머리 높이를 모르는 계획 위치는 발생 항목이 없다."""
+def test_unknown_head_height_entry_needs_check():
+    """머리 높이를 모르는 계획 위치도 구역 안이면 확인 필요(Z_UNKNOWN)로 발생 항목이 된다(실시간 R1 과 같은 판정)."""
     request = load_example("risk_plan_request.json")["payload"]
     items = [_item(f) for f in _evaluate(request).findings if not f.holding]
     p03 = [i for i in items if i["position_ids"] == ["p-03"]]
-    assert not p03
+    assert [(i["rule_id"], i["confidence_reasons"]) for i in p03] == [("R1", ["Z_UNKNOWN"])]
 
 
 def test_holding_findings_are_not_items():

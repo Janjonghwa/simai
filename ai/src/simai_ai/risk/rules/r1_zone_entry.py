@@ -2,7 +2,9 @@
 
 발생은 OBSERVED 이고 기여 카메라가 2대 이상이거나 접지점이 있는 위치만 판정한다.
 접지점이 있으면 그 XY, 없으면 position_xy 점이 다각형 안이나 경계에 있어야 한다.
-VOLUME_3D 는 점유 높이 양 끝을 알아야 하며 높이 범위가 구역과 겹쳐야 한다.
+VOLUME_3D 는 점유 높이 범위가 구역과 겹쳐야 한다. 높이 양 끝 중 모르는 끝이 있어도 XY 가 안이면 발생하고
+확인 필요(Z_UNKNOWN)를 붙인다. 모르는 끝은 열린 쪽으로 보고, 아는 끝만으로 구역과 겹칠 수 없다고 밝혀질 때만
+판정하지 않는다(예: 위 끝이 구역 최저 높이보다 낮음). 모르는 상태를 안전으로 판단하지 않는다.
 수평 불확실성 타원, 점유 반경, 보정 여유만으로 걸린 경우에는 발생하지 않는다.
 높이의 불확실성과 보정 여유는 기존처럼 높이 겹침 판정에 적용한다.
 
@@ -13,9 +15,9 @@ UNKNOWN 관측 상실은 R6 이 담당하고, 발생 지속 3프레임 중 2 및
 (명세 11.4, Lead 승인 2026-11-03).
 
 근거 코드는 xy_inside_polygon, xy_uncertainty_overlap, xy_within_clear_margin 및
-VOLUME_3D 의 z_overlap, z_within_clear_margin 이다. 보정 여유를 사용하면
-calibration_<상태>와 calibration_margin_m 을 기록한다. 발생에는 PREDICTED 와
-Z_UNKNOWN 이 붙지 않으며 유지에는 붙을 수 있다. SINGLE_VIEW, JOINT_UNCERTAIN,
+VOLUME_3D 의 z_overlap(높이 양 끝을 모두 알 때), z_within_clear_margin 이다. 보정 여유를 사용하면
+calibration_<상태>와 calibration_margin_m 을 기록한다. 발생에는 PREDICTED 가 붙지 않고
+Z_UNKNOWN 은 붙을 수 있으며 유지에도 붙을 수 있다. SINGLE_VIEW, JOINT_UNCERTAIN,
 IDENTITY_UNCERTAIN 은 해당 조건에 따라 기록한다. PROVISIONAL_CALIB 는 R1 에 쓰지 않는다.
 zone_distance_m 은 position_xy 와 접지점 중 다각형에 가까운 거리이며, 점유 높이 수치는 넓히기 전 값이다.
 """
@@ -190,19 +192,18 @@ class ZoneEntryRule:
         confidence: set[ConfidenceReason] = set()
 
         if zone.judge_type is ZoneJudgeType.VOLUME_3D and zone.z_range is not None:  # Zone 이 z_range 를 보장한다
-            if height.bottom is None or height.top is None:
-                # 높이를 모르면 발생하지 않고 기존 이벤트만 유지한다.
-                raising = False
-                confidence.add(ConfidenceReason.Z_UNKNOWN)
-            else:
-                z_gap = self._height_gap(height.bottom, height.top, height, zone.z_range, margin)
-                if z_gap <= self._tol:
+            # 모르는 끝은 열어 두고 아는 끝만으로 겹침을 가린다. 겹칠 수 없다고 밝혀지면 판정하지 않는다.
+            z_gap = self._height_gap(height, zone.z_range, margin)
+            if z_gap <= self._tol:
+                if height.bottom is not None and height.top is not None:
                     reasons.append(REASON_Z_OVERLAP)
-                elif z_gap < self._margin:
-                    raising = False
-                    reasons.append(REASON_Z_CLEAR_MARGIN)
-                else:
-                    return None
+            elif z_gap < self._margin:
+                raising = False
+                reasons.append(REASON_Z_CLEAR_MARGIN)
+            else:
+                return None
+            if height.bottom is None or height.top is None:
+                confidence.add(ConfidenceReason.Z_UNKNOWN)  # 높이를 몰라도 XY 가 안이면 발생한다(확인 필요)
             if height.joint_uncertain:
                 confidence.add(ConfidenceReason.JOINT_UNCERTAIN)
             if height.bottom is not None:
@@ -226,12 +227,11 @@ class ZoneEntryRule:
             holding=not raising,
         )
 
-    def _height_gap(
-        self, bottom: float, top: float, height: OccupancyHeight, z_range: tuple[float, ...], margin: float
-    ) -> float:
-        """점유 높이(불확실성·보정 여유로 넓힘)와 구역 높이 [zmin, zmax] 사이 간격. 겹치면(닿음 포함) 0."""
-        lo = bottom - self._k * height.bottom_sigma - margin
-        hi = top + self._k * height.top_sigma + margin
+    def _height_gap(self, height: OccupancyHeight, z_range: tuple[float, ...], margin: float) -> float:
+        """점유 높이(불확실성·보정 여유로 넓힘)와 구역 높이 [zmin, zmax] 사이 간격. 겹치면(닿음 포함) 0.
+        모르는 끝(None)은 끝이 없는 것으로 본다(아래 끝은 -inf, 위 끝은 +inf)."""
+        lo = -math.inf if height.bottom is None else height.bottom - self._k * height.bottom_sigma - margin
+        hi = math.inf if height.top is None else height.top + self._k * height.top_sigma + margin
         return max(z_range[0] - hi, lo - z_range[1], 0.0)
 
 

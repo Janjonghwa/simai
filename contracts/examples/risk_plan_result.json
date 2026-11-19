@@ -63,6 +63,25 @@
     ],
     "items": [
       {
+        "rule_id": "R1",
+        "rule_version": 1,
+        "severity": "HIGH",
+        "position_ids": [
+          "p-03"
+        ],
+        "zone_id": "z-equip-1",
+        "metrics": {
+          "occupancy_z_min_m": 0.0,
+          "zone_distance_m": 0.0
+        },
+        "reason_codes": [
+          "xy_inside_polygon"
+        ],
+        "confidence_reasons": [
+          "Z_UNKNOWN"
+        ]
+      },
+      {
         "rule_id": "R2",
         "rule_version": 1,
         "severity": "CRITICAL",
