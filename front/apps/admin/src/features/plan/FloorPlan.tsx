@@ -7,6 +7,7 @@ import {
   personKey,
   PLAN_MARGIN,
   ROOM_BOUNDS,
+  toPlan,
   trackIds,
   type PlanBackdrop,
   type PlanBounds,
@@ -14,6 +15,7 @@ import {
   type PlanZone,
 } from '@/features/plan/plan';
 import { PlanCoverage } from '@/features/plan/PlanCoverage';
+import { DEFAULT_EMPHASIS, type PlanEmphasis } from '@/features/plan/planDraw';
 import { PlanPerson } from '@/features/plan/PlanPerson';
 import { PlanRoom } from '@/features/plan/PlanRoom';
 import { planTip } from '@/features/plan/planTip';
@@ -32,6 +34,21 @@ const OUTDATED_LABEL = { x: 0.1, y: -0.32, fontSize: 0.42 } as const;
 /** 방 바깥 여백을 더한 길이(m). */
 const withMargin = (extent: number) => extent + PLAN_MARGIN * 2;
 
+/** SVG viewBox. 비출 World 범위(view)가 있으면 그 범위를, 없으면 방 전체와 여백을 비춘다. */
+function viewBoxOf(bounds: PlanBounds, view: PlanBounds | undefined): string {
+  if (!view) {
+    return [
+      -PLAN_MARGIN,
+      -PLAN_MARGIN,
+      withMargin(boundsWidth(bounds)),
+      withMargin(boundsDepth(bounds)),
+    ].join(' ');
+  }
+  // 범위의 왼쪽 위(min x, max y)가 평면 좌표의 왼쪽 위다.
+  const [x, y] = toPlan(view.minX, view.maxY, bounds);
+  return [x, y, boundsWidth(view), boundsDepth(view)].join(' ');
+}
+
 export interface FloorPlanProps {
   tracks: readonly WorldTrack[];
   zones: readonly PlanZone[];
@@ -49,6 +66,12 @@ export interface FloorPlanProps {
   coverage?: FloorCoverage | null;
   /** 단일 사람 표시 어댑터 맵(-658). 주면 2D 말풍선에도 표시 이름을 함께 보인다. */
   personNames?: PersonDisplayMap;
+  /** 비출 World 범위(m). 미니맵은 구역·사람이 있는 곳에 맞춘 범위를 준다(-800). 없으면 방 전체와 여백. */
+  view?: PlanBounds;
+  /** 표시 크기. 미니맵은 사람 표식·구역 선을 키운다(-800). */
+  emphasis?: PlanEmphasis;
+  /** 사람(world_id)마다 진행 방향(World yaw, rad, planHeading). 없거나 null 인 사람은 방향 표식 없이 점만 그린다. */
+  headings?: ReadonlyMap<string, { readonly yaw: number | null }>;
   className?: string;
 }
 
@@ -63,16 +86,14 @@ export function FloorPlan({
   backdrop,
   coverage = null,
   personNames,
+  view,
+  emphasis = DEFAULT_EMPHASIS,
+  headings,
   className,
 }: FloorPlanProps) {
   const dwell = useDwell();
   const tip = dwell.tip && planTip(dwell.tip.key, tracks, zones, marks, personNames);
-  const viewBox = [
-    -PLAN_MARGIN,
-    -PLAN_MARGIN,
-    withMargin(boundsWidth(bounds)),
-    withMargin(boundsDepth(bounds)),
-  ].join(' ');
+  const viewBox = viewBoxOf(bounds, view);
   return (
     <>
       <svg
@@ -102,6 +123,7 @@ export function FloorPlan({
           selectedKey={selectedKey}
           onSelect={onSelect}
           bind={dwell.on}
+          emphasis={emphasis}
         />
         <g>
           {tracks.map((track) => {
@@ -115,6 +137,8 @@ export function FloorPlan({
                 selected={ids.some((id) => selectedKey === personKey(id))}
                 onSelect={onSelect}
                 bind={dwell.on}
+                yaw={headings?.get(track.world_id)?.yaw ?? undefined}
+                emphasis={emphasis}
               />
             );
           })}

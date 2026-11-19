@@ -2,7 +2,9 @@ import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { FloorPlan } from '@/features/plan/FloorPlan';
 import { planMarks } from '@/features/plan/plan';
+import { minimapEmphasis } from '@/features/plan/planFit';
 import { usePlanBackdrop } from '@/features/plan/usePlanBackdrop';
+import { useMinimapView, usePlanHeadings } from '@/features/plan/usePlanFrame';
 import { useWorldFresh } from '@/features/plan/useWorldFresh';
 import { useZones } from '@/features/zones/useZones';
 import { useLinkAlive } from '@/hooks/useLinkAlive';
@@ -16,11 +18,13 @@ const NO_TRACKS: WorldTrack[] = [];
 /**
  * 실시간 2D 평면. 앱 연결이 받은 최신 world·구역·진행 중 이벤트(「모두 지우기」 뒤 것)와 현재 평면도로 그리고 3D 뷰어 코드에 기대지 않는다(명세 13.6).
  * world 가 올 때마다(10Hz) 이 컴포넌트만 다시 그린다. 바탕·구역 층은 바뀔 때만 그린다.
+ * 사람 진행 방향은 world 마다 이어지는 기억으로 정한다(planHeading). fit 이면(미니맵) 구역·사람이 있는 곳만 크게 비춘다(planFit, -800).
  */
 export function LivePlan({
   selectedKey,
   onSelect,
   coverage = null,
+  fit = false,
   className,
 }: {
   selectedKey: string | null;
@@ -28,9 +32,12 @@ export function LivePlan({
   onSelect?: (key: string) => void;
   /** 바닥 감시 범위(-606). 호스트가 켰고 지금 보정에 맞을 때만 넘긴다. */
   coverage?: FloorCoverage | null;
+  /** 작은 칸(미니맵): 방 전체 대신 구역·사람에 맞춘 범위를 비추고 표식을 키운다(-800). */
+  fit?: boolean;
   className?: string;
 }) {
   const tracks = useRealtimeStore((s) => s.world?.payload.tracks ?? NO_TRACKS);
+  const t = useRealtimeStore((s) => s.world?.payload.t_latest_global ?? null);
   const { zones } = useZones();
   const personNames = usePersonDisplayMap();
   const { entries } = useVisibleLiveEvents();
@@ -40,6 +47,9 @@ export function LivePlan({
   const fresh = useWorldFresh();
   // 방 크기와 바탕은 평면도(GET /api/floor-plans/current)에서 온다. 없으면 기본 10×10m 모눈이다.
   const { bounds, backdrop } = usePlanBackdrop();
+  const headings = usePlanHeadings(tracks, t);
+  const view = useMinimapView({ enabled: fit, zones, tracks, bounds, t });
+  const emphasis = useMemo(() => (view ? minimapEmphasis(view) : undefined), [view]);
   return (
     <FloorPlan
       tracks={tracks}
@@ -52,6 +62,9 @@ export function LivePlan({
       backdrop={backdrop}
       coverage={coverage}
       personNames={personNames}
+      view={view}
+      emphasis={emphasis}
+      headings={headings}
       className={className}
     />
   );

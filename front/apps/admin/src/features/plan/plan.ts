@@ -58,6 +58,16 @@ export const toPlan = (
   bounds: PlanBounds = ROOM_BOUNDS,
 ): readonly [number, number] => [x - bounds.minX, bounds.maxY - y];
 
+/**
+ * World 수평 방향(yaw, rad, +X 에서 +Y 쪽으로 반시계) → 평면 SVG 의 단위 방향 벡터.
+ * toPlan 으로 옮긴 두 점의 차라서 위치를 옮기는 방향과 늘 같다(따로 축을 뒤집지 않는다).
+ */
+export function planDirection(yaw: number): readonly [number, number] {
+  const [x0, y0] = toPlan(0, 0);
+  const [x1, y1] = toPlan(Math.cos(yaw), Math.sin(yaw));
+  return [x1 - x0, y1 - y0];
+}
+
 /** World 꼭짓점들 → SVG polygon 의 points 속성(평면 좌표). */
 export const planPoints = (points: readonly PlanPoint[], bounds: PlanBounds): string =>
   points.map(([x, y]) => toPlan(x, y, bounds).join(',')).join(' ');

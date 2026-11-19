@@ -1,21 +1,29 @@
 import { FloorPlan } from '@/features/plan/FloorPlan';
-import { planMarks, type PlanZone } from '@/features/plan/plan';
+import { planMarks, ROOM_BOUNDS, type PlanZone } from '@/features/plan/plan';
+import { DEFAULT_EMPHASIS } from '@/features/plan/planDraw';
+import { minimapEmphasis } from '@/features/plan/planFit';
+import { velocityYaw } from '@/features/plan/planHeading';
 import type { WorldTrack } from '@simai/contracts';
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(cleanup);
 
-const track = (id: string, x: number, y: number) =>
+const track = (id: string, x: number, y: number, change: Partial<WorldTrack> = {}) =>
   ({
     world_id: id,
     position_xy: [x, y],
     position_xy_sigma: [0.1, 0.1],
     observation_state: 'OBSERVED',
     track_lifecycle: 'CONFIRMED',
+    ...change,
   }) as unknown as WorldTrack;
 
 const zone: PlanZone = { zoneId: 'z-1', name: '구역', min: [2, 3, 0], max: [4, 5, 1] };
+
+/** 이 사람의 속도 방향을 진행 방향으로 준 기억(이어짐·뒤집힘 확인은 planHeading 시험이 본다). */
+const headingsOf = (moving: WorldTrack) =>
+  new Map([[moving.world_id, { yaw: velocityYaw(moving) }]]);
 
 const NO_MARKS = planMarks([]);
 
@@ -220,5 +228,128 @@ describe('2D 평면 바닥 감시 범위(-606)', () => {
   it('넘기지 않으면 그리지 않는다', () => {
     const { container } = plan();
     expect(container.querySelector('[data-plan-coverage]')).toBeNull();
+  });
+});
+
+describe('사람 진행 방향 표식(-800)', () => {
+  const bounds = { minX: -0.5, minY: -1, maxX: 12.5, maxY: 7 };
+
+  /** 사람 점의 중심(평면 좌표). */
+  const dotOf = (container: HTMLElement) => {
+    const dot = container.querySelector('circle.fill-foreground')!;
+    return [Number(dot.getAttribute('cx')), Number(dot.getAttribute('cy'))] as const;
+  };
+  /** 방향 표식의 끝 꼭짓점(평면 좌표). 없으면 null. */
+  const tipOf = (container: HTMLElement) => {
+    const points = container.querySelector('polygon[data-heading]')?.getAttribute('points');
+    return points ? (points.split(' ')[0]!.split(',').map(Number) as [number, number]) : null;
+  };
+  const unit = ([x, y]: readonly [number, number]) => {
+    const length = Math.hypot(x, y);
+    return [x / length, y / length];
+  };
+
+  it.each([
+    ['+X', [1, 0, 0], [1, 0]],
+    ['+Y', [0, 1, 0], [0, 1]],
+    ['−X−Y', [-0.5, -0.5, 0], [-1, -1]],
+  ] as const)(
+    '%s 로 움직이는 사람의 방향 표식은 그 사람이 그쪽으로 옮겨 간 화면 방향을 가리킨다',
+    (_, velocity, step) => {
+      const moving = track('w-1', 2, 3, { velocity: [...velocity] });
+      const headings = headingsOf(moving);
+      const before = plan({ bounds, tracks: [moving], headings });
+      const center = dotOf(before.container);
+      const tip = tipOf(before.container)!;
+      before.unmount();
+      // 같은 사람이 그 방향으로 1m 옮겨 간 자리.
+      const after = plan({ bounds, tracks: [track('w-1', 2 + step[0], 3 + step[1])] });
+      const moved = dotOf(after.container);
+      const pointing = unit([tip[0] - center[0], tip[1] - center[1]]);
+      const travel = unit([moved[0] - center[0], moved[1] - center[1]]);
+      expect(pointing[0]).toBeCloseTo(travel[0]);
+      expect(pointing[1]).toBeCloseTo(travel[1]);
+    },
+  );
+
+  it('World +Y 로 걸으면 화면 위쪽(−y)을 가리킨다', () => {
+    const moving = track('w-1', 2, 3, { velocity: [0, 1, 0] });
+    const { container } = plan({
+      bounds,
+      tracks: [moving],
+      headings: headingsOf(moving),
+    });
+    const [cx, cy] = dotOf(container);
+    const [tx, ty] = tipOf(container)!;
+    expect(tx).toBeCloseTo(cx);
+    expect(ty).toBeLessThan(cy);
+  });
+
+  it('방향을 모르면 방향 표식 없이 점만 그리고, 확인 불가 사람에게는 방향 표식을 붙이지 않는다', () => {
+    const still = plan({ bounds, tracks: [track('w-1', 2, 3)], headings: new Map() });
+    expect(tipOf(still.container)).toBeNull();
+    expect(still.container.querySelector('circle.fill-foreground')).not.toBeNull();
+    still.unmount();
+    const unknown = track('w-1', 2, 3, { observation_state: 'UNKNOWN' });
+    const { container } = plan({
+      bounds,
+      tracks: [unknown],
+      headings: new Map([['w-1', { yaw: 0 }]]),
+    });
+    expect(tipOf(container)).toBeNull();
+  });
+});
+
+describe('미니맵 범위·표시 크기(-800)', () => {
+  const fitted = { minX: 2, minY: 3, maxX: 8, maxY: 9 };
+
+  it('비출 범위를 주면 그 범위로 viewBox 를 정한다(왼쪽 위는 min x, max y)', () => {
+    const { svg } = plan({ bounds: ROOM_BOUNDS, view: fitted });
+    // toPlan(2, 9) = (2, 10 - 9)
+    expect(svg.getAttribute('viewBox')).toBe('2 1 6 6');
+  });
+
+  it('표시 배율만큼 사람 점·누르는 자리를 키우고, 구역 선을 굵게·채움을 짙게 한다', () => {
+    const emphasis = minimapEmphasis({ minX: 0, minY: 0, maxX: 24, maxY: 24 });
+    const props = { tracks: [track('w-1', 3, 4)], zones: [zone] };
+    const normal = plan(props);
+    const radius = (c: HTMLElement) =>
+      Number(c.querySelector('circle.fill-foreground')!.getAttribute('r'));
+    const zoneAttr = (c: HTMLElement, name: string) =>
+      Number(c.querySelector('rect[data-zone="z-1"]')!.getAttribute(name));
+    const base = {
+      r: radius(normal.container),
+      stroke: zoneAttr(normal.container, 'stroke-width'),
+      fill: zoneAttr(normal.container, 'fill-opacity'),
+    };
+    normal.unmount();
+    const big = plan({ ...props, emphasis });
+    expect(radius(big.container)).toBeCloseTo(base.r * emphasis.marker);
+    expect(zoneAttr(big.container, 'stroke-width')).toBeCloseTo(base.stroke * emphasis.zoneStroke);
+    expect(zoneAttr(big.container, 'fill-opacity')).toBeGreaterThan(base.fill);
+    expect(base.fill).toBe(DEFAULT_EMPHASIS.zoneFill.normal);
+  });
+
+  it('맞춘 범위·배율·방향 표식이 있어도 사람·구역을 누르면 고른다', () => {
+    const onSelect = vi.fn();
+    const moving = track('w-1', 5, 6, { velocity: [1, 0, 0] });
+    const { container } = plan({
+      bounds: ROOM_BOUNDS,
+      view: fitted,
+      emphasis: minimapEmphasis(fitted),
+      headings: headingsOf(moving),
+      tracks: [moving],
+      zones: [zone],
+      onSelect,
+      selectedKey: 'person:w-1',
+    });
+    const person = container.querySelector('[data-person="w-1"]')!;
+    expect(person.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(person);
+    expect(onSelect).toHaveBeenLastCalledWith('person:w-1');
+    fireEvent.click(container.querySelector('rect[data-zone="z-1"]')!);
+    expect(onSelect).toHaveBeenLastCalledWith('zone:z-1');
+    // 고른 사람의 선택 고리도 그대로 그린다.
+    expect(container.querySelector('circle.stroke-primary')).not.toBeNull();
   });
 });

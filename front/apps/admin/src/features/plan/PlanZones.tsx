@@ -8,19 +8,24 @@ import {
   type PlanTone,
   type PlanZone,
 } from '@/features/plan/plan';
-import { ALARM_BLINK, RING_TONE, type Bind } from '@/features/plan/planDraw';
+import {
+  ALARM_BLINK,
+  DEFAULT_EMPHASIS,
+  RING_TONE,
+  type Bind,
+  type PlanEmphasis,
+} from '@/features/plan/planDraw';
 import { isAxisRect } from '@/features/zones/zones';
 import { cn } from '@simai/ui/lib/utils';
 import { memo } from 'react';
 
 // 평면의 구역 층. 구역·진행 중 이벤트·고른 대상이 바뀔 때만 다시 그린다.
 
-const ZONE_DASH = '0.18 0.1';
+/** 점선 간격(m, 배율 1). */
+const ZONE_DASH = [0.18, 0.1] as const;
 const STROKE = 0.05;
 /** 확인 대기·선택은 선을 굵게 한다(점멸이 멈추는 설정에서도 보이게). */
 const STROKE_STRONG = 0.09;
-/** 구역 채움의 불투명도(채움 색은 선 색과 같다). 고른 구역은 더 짙다. */
-const FILL_OPACITY = { normal: 0.1, selected: 0.24 } as const;
 
 /** 구역 기본 색은 구역 심각도를 따른다(위험 빨강·경고 주황·주의 노랑). 안내나 등급을 모르면 중립이다. */
 const ZONE_TONE = {
@@ -31,12 +36,16 @@ const ZONE_TONE = {
 const NEUTRAL_ZONE = 'fill-foreground stroke-muted-foreground';
 
 /**
- * 채움 불투명도. 진행 중 이벤트가 걸린 구역은 고리 색(RING_TONE)이 투명도를 가지고 있어 따로 정하지 않는다
- * (겹쳐 곱하면 오히려 옅어진다).
+ * 채움 불투명도(채움 색은 선 색과 같고, 고른 구역은 더 짙다). 진행 중 이벤트가 걸린 구역은 고리 색(RING_TONE)이 투명도를
+ * 가지고 있어 따로 정하지 않는다(겹쳐 곱하면 오히려 옅어진다).
  */
-const fillOpacityOf = (eventTone: PlanTone | undefined, selected: boolean) => {
+const fillOpacityOf = (
+  eventTone: PlanTone | undefined,
+  selected: boolean,
+  fill: PlanEmphasis['zoneFill'],
+) => {
   if (eventTone) return undefined;
-  return selected ? FILL_OPACITY.selected : FILL_OPACITY.normal;
+  return selected ? fill.selected : fill.normal;
 };
 
 export const PlanZones = memo(function PlanZones({
@@ -46,6 +55,7 @@ export const PlanZones = memo(function PlanZones({
   selectedKey,
   onSelect,
   bind,
+  emphasis = DEFAULT_EMPHASIS,
 }: {
   zones: readonly PlanZone[];
   bounds: PlanBounds;
@@ -53,7 +63,11 @@ export const PlanZones = memo(function PlanZones({
   selectedKey: string | null;
   onSelect?: (key: string) => void;
   bind: Bind;
+  /** 미니맵은 선을 굵게·채움을 짙게 한다(-800). */
+  emphasis?: PlanEmphasis;
 }) {
+  const scale = emphasis.zoneStroke;
+  const dashed = ZONE_DASH.map((d) => d * scale).join(' ');
   return (
     <g>
       {zones.map((zone) => {
@@ -65,12 +79,12 @@ export const PlanZones = memo(function PlanZones({
         const key = zoneKey(zone.zoneId);
         const selected = selectedKey === key;
         // 입체 판정은 점선, 바닥 판정은 실선이다(관제 데모와 같다).
-        const dash = zone.judgeType === 'GROUND_FOOTPRINT' ? undefined : ZONE_DASH;
+        const dash = zone.judgeType === 'GROUND_FOOTPRINT' ? undefined : dashed;
         const shared = {
           'data-zone': zone.zoneId,
-          strokeWidth: mark?.alarming || selected ? STROKE_STRONG : STROKE,
+          strokeWidth: (mark?.alarming || selected ? STROKE_STRONG : STROKE) * scale,
           strokeDasharray: eventTone || selected ? undefined : dash,
-          fillOpacity: fillOpacityOf(eventTone, selected),
+          fillOpacity: fillOpacityOf(eventTone, selected, emphasis.zoneFill),
           onClick: onSelect && (() => onSelect(key)),
           ...bind(key),
           className: cn(
