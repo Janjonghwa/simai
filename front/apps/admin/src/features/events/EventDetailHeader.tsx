@@ -1,7 +1,11 @@
 import { ALARM_BORDER, ALARM_TEXT } from '@/features/events/alarmTone';
 import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge } from '@/features/events/EventBadges';
-import { formatTime } from '@/features/events/format';
+import {
+  formatTime,
+  isUnverifiableTargetGone,
+  UNVERIFIABLE_TARGET_GONE_LABEL,
+} from '@/features/events/format';
 import { firstRaisedAt, type Incident } from '@/features/events/incidents';
 import {
   resolvedLabel,
@@ -11,6 +15,7 @@ import {
 } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
+import { useAliveIds } from '@/features/events/useAliveIds';
 import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { Badge } from '@simai/ui/components/badge';
@@ -52,8 +57,10 @@ export function EventDetailHeader({
 }) {
   const zoneName = useZoneName();
   const personNames = usePersonDisplayMap();
+  const alive = useAliveIds();
   const events = incident.entries.map((e) => e.event);
   const confirm = events.find((e) => isActive(e) && needsConfirmation(e));
+  const unverifiableGone = events.some((e) => isUnverifiableTargetGone(e, alive));
 
   return (
     <header className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
@@ -73,8 +80,12 @@ export function EventDetailHeader({
         발생 {formatTime(firstRaisedAt(incident))}
       </span>
       {confirm && <ConfirmBadge event={confirm} />}
-      {events.some((e) => e.verification === 'UNVERIFIABLE') && (
-        <Badge variant="outline">해소 확인 불가</Badge>
+      {unverifiableGone ? (
+        <Badge variant="outline">{UNVERIFIABLE_TARGET_GONE_LABEL}</Badge>
+      ) : (
+        events.some((e) => e.verification === 'UNVERIFIABLE') && (
+          <Badge variant="outline">해소 확인 불가</Badge>
+        )
       )}
       {events.some((e) => e.delivery === 'DELAYED_ACTIVE') && <DelayedBadge />}
       <Button ref={closeRef} variant="secondary" size="sm" className="ml-auto" onClick={onClose}>

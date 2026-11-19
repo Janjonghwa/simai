@@ -14,13 +14,14 @@ import {
 import { defaultPanelHeight, movePanel, PANEL_DEFAULT_STYLE } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
 import type { EventItem } from '@/features/events/types';
+import { useAliveIds } from '@/features/events/useAliveIds';
 import { useAutoFold } from '@/features/events/useAutoFold';
 import { useAvoidCctv } from '@/features/events/useAvoidCctv';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
-import { ALIVE_ID_SEPARATOR, selectAliveIdsKey, useRealtimeStore } from '@/store/realtime.store';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -309,11 +310,7 @@ export function EventPanel({
   footer,
 }: EventPanelProps) {
   // 화면 묶음(S15P31A101-731)이 지금 살아 있는 서로 다른 두 사람을 섞지 않게 살아 있는 World ID 를 본다. 사람이 바뀔 때만 다시 묶는다.
-  const aliveKey = useRealtimeStore(selectAliveIdsKey);
-  const alive = useMemo(
-    () => (aliveKey === null ? null : new Set(aliveKey ? aliveKey.split(ALIVE_ID_SEPARATOR) : [])),
-    [aliveKey],
-  );
+  const alive = useAliveIds();
   // 유령 트랙(S15P31A101-785)을 가르는 World ID 기록. 보인 구간은 world 마다 바뀌어 구독하지 않고, 사람이 바뀔 때(alive) 그 순간 값을 읽는다.
   const watched = useRealtimeStore((s) => s.trackLife.watched);
   const demo = useIsDemoAccount();

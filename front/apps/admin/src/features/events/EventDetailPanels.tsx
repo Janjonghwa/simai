@@ -10,12 +10,14 @@ import { escalationStatusLabel, mergedEscalations } from '@/features/events/esca
 import { EscalationControl } from '@/features/events/EscalationControl';
 import {
   confidenceReasonText,
+  entryStatusText,
   eventRuleName,
   formatTime,
+  isUnverifiableTargetGone,
   metricLabels,
-  statusText,
+  UNVERIFIABLE_TARGET_GONE_GUIDE,
 } from '@/features/events/format';
-import type { Incident } from '@/features/events/incidents';
+import type { AliveIds, Incident } from '@/features/events/incidents';
 import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
 import { incidentTimeline } from '@/features/events/incidentView';
 import {
@@ -26,6 +28,7 @@ import {
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { canRequestSummary, latestSummary } from '@/features/events/summary';
 import type { EventEscalation } from '@/features/events/types';
+import { useAliveIds } from '@/features/events/useAliveIds';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { useSummaryState } from '@/features/events/useIncidentSummary';
 import { vlmReadiness } from '@/features/gpu/gpuStatus';
@@ -76,11 +79,13 @@ function RuleRow({
   current,
   zoneName,
   bundles,
+  alive,
 }: {
   entry: EventEntry;
   current: boolean;
   zoneName: ZoneNameOf;
   bundles: readonly ConfigBundle[] | undefined;
+  alive: AliveIds;
 }) {
   const { event } = entry;
   // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다). 사람 단위 규칙(R9·R11)은 구역을 보지 않아 칸이 없다.
@@ -105,7 +110,7 @@ function RuleRow({
         <span className="text-[13px] text-muted-foreground">
           {zone && `${zone} · `}
           <span className="font-mono">{formatTime(event.raised_at)}</span> 발생 ·{' '}
-          {statusText(entryStatus(entry), ppeReleaseOf(event, bundles))}
+          {entryStatusText(entry, alive, ppeReleaseOf(event, bundles))}
         </span>
       </span>
       {/* 규칙 번호·판정 수치는 운영자가 따질 때만 필요해 접어 둔다(S15P31A101-757). */}
@@ -146,6 +151,7 @@ export function RulesPanel({
 }) {
   const zoneName = useZoneName();
   const bundles = useReleaseBundles(entries);
+  const alive = useAliveIds();
   return (
     <DetailPanel title="규칙과 근거">
       <ul className="flex flex-col">
@@ -156,6 +162,7 @@ export function RulesPanel({
             current={entry.event.event_id === openEventId}
             zoneName={zoneName}
             bundles={bundles}
+            alive={alive}
           />
         ))}
       </ul>
@@ -289,6 +296,8 @@ export function ClipsPanel({ entries }: EntriesProps) {
 export function ProcessPanel({ entries }: EntriesProps) {
   const zoneName = useZoneName();
   const bundles = useReleaseBundles(entries);
+  const alive = useAliveIds();
+  const unverifiableGone = entries.some((e) => isUnverifiableTargetGone(e.event, alive));
   return (
     <DetailPanel title="처리">
       <ul className="flex flex-col gap-2">
@@ -308,7 +317,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                       : 'text-muted-foreground'
                   }
                 >
-                  {statusText(status, ppeReleaseOf(entry.event, bundles))}
+                  {entryStatusText(entry, alive, ppeReleaseOf(entry.event, bundles))}
                 </span>
               </span>
               <AckButton entry={entry} label="경보 확인" zoneName={zoneName} />
@@ -316,6 +325,9 @@ export function ProcessPanel({ entries }: EntriesProps) {
           );
         })}
       </ul>
+      {unverifiableGone && (
+        <p className="text-xs text-muted-foreground">{UNVERIFIABLE_TARGET_GONE_GUIDE}</p>
+      )}
     </DetailPanel>
   );
 }

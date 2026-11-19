@@ -34,7 +34,12 @@ import {
   withoutStaleAcked,
   type EventEntry,
 } from '@/features/events/events';
-import { statusText } from '@/features/events/format';
+import {
+  entryStatusText,
+  isUnverifiableTargetGone,
+  statusText,
+  UNVERIFIABLE_TARGET_GONE_LABEL,
+} from '@/features/events/format';
 import { eventsPageSchema, type EventItem } from '@/features/events/types';
 import { zoneNameOf } from '@/features/zones/zoneName';
 import { describe, expect, it } from 'vitest';
@@ -952,5 +957,104 @@ describe('지금 Tier 0 가 들고 있는지(held_by_tier0)', () => {
     expect(incidentOf(entries, 'old')?.entries.map((e) => e.event.event_id)).toEqual(['old']);
     expect(incidentOf(entries, 'old')?.stale).toBe(true);
     expect(incidentOf(entries, 'now')?.stale).toBe(false);
+  });
+});
+
+// S15P31A101-811: 대상이 시야에서 사라져 확인할 수 없는 사람 경보 상태 문구
+describe('확인 불가 · 대상 시야 이탈(S15P31A101-811)', () => {
+  const emptyTracks = new Set<string>();
+  const otherTrack = new Set(['w-0099']);
+  const withTarget = new Set(['w-0015']);
+
+  it('사람 대상 활성 이벤트가 UNVERIFIABLE 이고 대상이 트랙에 없으면 「확인 불가 · 대상 시야 이탈」이다', () => {
+    const e = entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] });
+    expect(isUnverifiableTargetGone(e.event, emptyTracks)).toBe(true);
+    expect(isUnverifiableTargetGone(e.event, otherTrack)).toBe(true);
+    expect(entryStatusText(e, emptyTracks)).toBe(UNVERIFIABLE_TARGET_GONE_LABEL);
+
+    // 확인(ACK) 뒤에도 미해소·시야 이탈 상태면 같은 문구를 유지한다.
+    const acked = entry({
+      rule_id: 'R4',
+      verification: 'UNVERIFIABLE',
+      world_ids: ['w-0015'],
+      acks: [
+        {
+          ack_id: 'a-1',
+          channel: 'CONTROL_ROOM',
+          actor_role: 'ADMIN',
+          actor_id: 'admin',
+          acked_at: T + 1_000,
+        },
+      ],
+      updated_at: T + 1_000,
+    });
+    expect(entryStatusText(acked, emptyTracks)).toBe(UNVERIFIABLE_TARGET_GONE_LABEL);
+
+    // 주의·안내 등급도 사람 대상·UNVERIFIABLE·트랙 부재면 동일하게 구분한다.
+    const caution = entry({
+      rule_id: 'R9',
+      severity: 'CAUTION',
+      verification: 'UNVERIFIABLE',
+      world_ids: ['w-0015'],
+      zone_id: null,
+    });
+    expect(entryStatusText(caution, emptyTracks)).toBe(UNVERIFIABLE_TARGET_GONE_LABEL);
+  });
+
+  it('대상이 트랙에 있으면 기존 상태 문구를 그대로 쓴다', () => {
+    const alarm = entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] });
+    expect(isUnverifiableTargetGone(alarm.event, withTarget)).toBe(false);
+    expect(entryStatusText(alarm, withTarget)).toBe('확인 대기');
+
+    const acked = entry({
+      rule_id: 'R4',
+      verification: 'UNVERIFIABLE',
+      world_ids: ['w-0015'],
+      acks: [
+        {
+          ack_id: 'a-1',
+          channel: 'CONTROL_ROOM',
+          actor_role: 'ADMIN',
+          actor_id: 'admin',
+          acked_at: T + 1_000,
+        },
+      ],
+      updated_at: T + 1_000,
+    });
+    expect(entryStatusText(acked, withTarget)).toMatch(/^확인 \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it('VERIFIED 이거나 구역 이벤트이거나 world_state 미수신(null)이면 적용하지 않는다', () => {
+    const verified = entry({ verification: 'VERIFIED', world_ids: ['w-0015'] });
+    expect(isUnverifiableTargetGone(verified.event, emptyTracks)).toBe(false);
+    expect(entryStatusText(verified, emptyTracks)).toBe('확인 대기');
+
+    const zone = entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' });
+    expect(isUnverifiableTargetGone(zone.event, emptyTracks)).toBe(false);
+    expect(entryStatusText(zone, emptyTracks)).toBe('확인 대기');
+
+    const unknown = entry({ verification: 'UNVERIFIABLE', world_ids: ['w-0015'] });
+    expect(isUnverifiableTargetGone(unknown.event, null)).toBe(false);
+    expect(entryStatusText(unknown, null)).toBe('확인 대기');
+  });
+
+  it('이미 해소되었거나 지난 관제 이벤트에는 적용하지 않는다', () => {
+    const resolved = entry({
+      lifecycle: 'RESOLVED',
+      verification: 'UNVERIFIABLE',
+      world_ids: ['w-0015'],
+      resolved_at: T + 5_000,
+      updated_at: T + 5_000,
+      resolution: { kind: 'WORK_ENDED' },
+    });
+    expect(isUnverifiableTargetGone(resolved.event, emptyTracks)).toBe(false);
+    expect(entryStatusText(resolved, emptyTracks)).toMatch(/^작업 종료로 마감 \d{2}:\d{2}:\d{2}$/);
+
+    const stale = entry({
+      verification: 'UNVERIFIABLE',
+      world_ids: ['w-0015'],
+      held_by_tier0: false,
+    });
+    expect(isUnverifiableTargetGone(stale.event, emptyTracks)).toBe(false);
   });
 });
