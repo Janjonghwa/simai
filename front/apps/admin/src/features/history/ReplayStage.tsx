@@ -1,10 +1,16 @@
+import { LoadingDots } from '@/components/LoadingDots';
 import { CctvFigures, CctvMockWall } from '@/features/cctv/CctvDemo';
 import { cctvPeople, type CctvProjector } from '@/features/cctv/cctvMockView';
 import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { formatTime } from '@/features/events/events';
 import { replayErrorLine } from '@/features/history/replay';
 import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/replayIndex';
-import { preloadAt } from '@/features/history/replaySegments';
+import {
+  preloadAt,
+  uploadLine,
+  waitingCameras,
+  type UploadProgress,
+} from '@/features/history/replaySegments';
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
 import type { Span, VideoSegment } from '@/features/history/types';
 import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
@@ -34,6 +40,8 @@ function Notice({ children }: { children: ReactNode }) {
  * 데이터 없음이면 사람을 그리지 않고 흐리게 둔다(마지막 기록을 이어 그리지 않는다, FR-28). 기록이 없어도 기록 없는 구간
  * 밖이면 그 시각에 아무도 없던 것이라 빈 화면을 그대로 보인다.
  * 아직 받지 못한 뒷구간의 시각이면 목 화면 대신 불러오는 중 안내를 보인다(영상은 기록과 상관없이 튼다).
+ * 녹화 업로드가 진행 중이면(S15P31A101-801): 일부 카메라만 영상이 있으면 녹화가 있는 카메라 중 재생 시각의 조각이 아직 안 올라온 칸에
+ * 「업로드 중」을 보이고, 재생 시각을 덮는 조각이 하나도 없으면 목 화면을 그대로 두고(3D 기록 먼저 보기, -693) 칸마다 업로드 배지를 겹친다.
  * 시연 계정은 한 칸을 크게 볼 때 나머지 칸을 큰 칸 아래 한 줄에 두고, 영상 실패 안내 줄을 보이지 않는다.
  */
 function ReplayCctv({
@@ -41,12 +49,15 @@ function ReplayCctv({
   index,
   holdMs,
   segments,
+  upload,
 }: {
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
   holdMs: number;
   /** 작업 구간과 겹치는 영상 조각 전부. 지금 시각을 덮는 것만 골라 튼다. */
   segments: readonly VideoSegment[];
+  /** 녹화 업로드 진행. 업로드 중이 아니면 null. */
+  upload: UploadProgress | null;
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
@@ -62,6 +73,12 @@ function ReplayCctv({
   );
   const active = useActiveSegments(replay, playable);
   const upcoming = useActiveSegments(replay, playable, preloadAt);
+  const uploading = upload !== null;
+  const waiting = useMemo(
+    () => (uploading ? waitingCameras(playable, active) : []),
+    [uploading, playable, active],
+  );
+  const uploadNotice = upload ? <LoadingDots label={uploadLine(upload)} /> : undefined;
   const pending = useReplayPending(replay, index);
   const demo = useIsDemoAccount();
   const rest = demo ? 'below' : 'side';
@@ -75,6 +92,8 @@ function ReplayCctv({
       <ReplayVideoWall
         segments={active}
         upcoming={upcoming}
+        waiting={waiting}
+        upload={upload}
         replay={replay}
         onFailed={onFailed}
         rest={rest}
@@ -86,6 +105,7 @@ function ReplayCctv({
         figures={figures}
         frozen={noData}
         badge={noData ? '데이터 없음' : frame ? formatTime(frame.t) : '작업자 없음'}
+        notice={uploadNotice}
         rest={rest}
       />
     );
@@ -138,7 +158,7 @@ function stageSegmentMessage(message: string | null, index: ReplayIndex | null):
  */
 export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
-  const { segments, message, refresh, canRefresh } = useReplaySegments(range);
+  const { segments, message, upload, refresh, canRefresh } = useReplaySegments(range);
   const notice = stageNotice(session, range);
   const demo = useIsDemoAccount();
   const segmentMessage = demo ? null : stageSegmentMessage(message, index);
@@ -161,7 +181,13 @@ export function ReplayStage({ session, range }: ReplayStageProps) {
         {notice !== null ? (
           <Notice>{notice}</Notice>
         ) : (
-          <ReplayCctv replay={replay} index={index} holdMs={holdMs} segments={segments} />
+          <ReplayCctv
+            replay={replay}
+            index={index}
+            holdMs={holdMs}
+            segments={segments}
+            upload={upload}
+          />
         )}
       </div>
     </div>

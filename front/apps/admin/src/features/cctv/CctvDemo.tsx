@@ -50,6 +50,9 @@ const VIEW_BY_ID = new Map(VIEWS.map((view) => [view.cam.id, view]));
 
 const PILL =
   'pointer-events-none absolute top-2 rounded-md bg-slate-950/70 px-2 py-0.5 text-xs leading-[18px] text-slate-100';
+/** 칸 아래쪽에 겹치는 작은 안내(다시 보기의 「업로드 중」 등). */
+const NOTICE_PILL =
+  'pointer-events-none absolute bottom-2 left-2 rounded-md bg-slate-950/70 px-2 py-0.5 text-xs leading-[18px] text-slate-100';
 
 /** 사람(평면 좌표)을 그 카메라에서 본 몸통·머리로 그린다. */
 export function CctvFigures({
@@ -158,6 +161,7 @@ function Tile({
   frozen,
   figures,
   badge,
+  notice,
   onToggle,
 }: {
   view: CamView;
@@ -166,6 +170,7 @@ function Tile({
   frozen: boolean;
   figures: (project: CctvProjector) => ReactNode;
   badge: ReactNode;
+  notice: ReactNode;
   onToggle: () => void;
 }) {
   const { id, dir } = view.cam;
@@ -200,6 +205,7 @@ function Tile({
           {down ? '끊김' : badge}
         </span>
       )}
+      {notice != null && <span className={NOTICE_PILL}>{notice}</span>}
     </button>
   );
 }
@@ -213,6 +219,8 @@ interface CctvMockWallProps {
   frozen?: boolean;
   /** 각 칸 오른쪽 위 글(신호 없는 칸은 "끊김"). null 이면 신호 없는 칸 말고는 두지 않는다. */
   badge: ReactNode;
+  /** 각 칸 왼쪽 아래에 겹치는 작은 안내. 없으면 두지 않는다. */
+  notice?: ReactNode;
   /** 크게 볼 때 나머지 칸을 놓는 곳(CctvWall). */
   rest?: WallRest;
 }
@@ -223,6 +231,7 @@ export function CctvMockWall({
   down = NO_CAMS,
   frozen = false,
   badge,
+  notice,
   rest,
 }: CctvMockWallProps) {
   return (
@@ -240,6 +249,7 @@ export function CctvMockWall({
               frozen={frozen}
               figures={figures}
               badge={badge}
+              notice={notice}
               onToggle={wall.toggle}
             />
           )

@@ -24,6 +24,7 @@ front/
           settings/     설정 화면 (/settings): 계정 메뉴의 「설정」으로 들어온다. 화면 모드(모든 계정)·경보 소리(확인 권한 계정)·GPU(관리자) 구역
           tbm/          TBM 작업 공용 부품: 가상 레이아웃 편집 창(TbmLayoutEditorDialog·layoutEditorModel)·공용 창(ModalDialog)·작업·레이아웃 API 요청과 타입
           viewer3d/     3D 관제 뷰어 (3D 담당 영역)
+        components/     두 도메인 이상이 쓰는 작은 화면 부품 (기다리는 중 점 표시 LoadingDots 등)
         hooks/          두 도메인 이상이 쓰는 훅 (useLinkAlive 등)
         lib/            http, api, queryClient, stomp, realtime, bindSession, env, alarmSound 등 두 도메인 이상이 쓰는 것
         store/          두 도메인 이상이 쓰는 스토어 (세션, 실시간 연결 상태, 3D 작업면 편집 알림, 호스트가 3D 장면 상태에서 채우는 스캔 범위)

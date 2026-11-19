@@ -12,7 +12,7 @@ import { isReportGenerating } from '@/features/work/workDay';
 import { useEffect, useReducer } from 'react';
 
 // 시연 계정(features/demo/demoAccount)의 TBM 보고서 초안. 서버 초안을 기다리지 않고, 보고서가 초안 단계가 되면(생성 중이거나 이미 끝남)
-// DEMO_REPORT_REVEAL_MS 동안 「TBM 생성중..」으로 흐리게 보인 뒤 미리 적어 둔 내용으로 채워 보인다.
+// DEMO_REPORT_REVEAL_MS 동안 「TBM 생성 중」으로 흐리게 보인 뒤 미리 적어 둔 내용으로 채워 보인다.
 // 어느 작업을 그렇게 보였는지 이 페이지에 남겨 단계를 옮겨 다시 그려도 또 흐리지 않는다(새로고침하면 처음부터 다시 보인다).
 // 보인 내용은 서버 양식에도 그대로 저장해(useDemoReportSync) 제출한 보고서와 지난 날짜 히스토리가 AI 초안이 아니라 화면에서 본 그대로 남는다.
 

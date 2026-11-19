@@ -1,3 +1,4 @@
+import { LoadingDots } from '@/components/LoadingDots';
 import {
   demoPaperForm,
   isWorkEnded,
@@ -30,7 +31,7 @@ import { Printer, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 // TBM 보고서 종이 하나. 작업의 최신 판과 서명 목록을 스스로 읽어 그리고, 고칠 수 있으면 종이를 눌러 편집 창을 연다.
-// 출력은 종이 사본만 인쇄한다. 보고서가 아직 없으면(받는 중) 줄무늬 빈 종이다. 초안·종료 미팅을 쓰는 동안은 종이를 흐리게 가리고 「TBM 생성중..」을 띄운다.
+// 출력은 종이 사본만 인쇄한다. 보고서가 아직 없으면(받는 중) 줄무늬 빈 종이다. 초안·종료 미팅을 쓰는 동안은 종이를 흐리게 가리고 점이 움직이는 「TBM 생성 중」을 띄운다.
 // fit 이면 종이를 틀 높이에 맞춘 A4 한 장(ReportSheet)으로 줄여 보이고, 누르면 큰 창에 원래 크기로 보인다(편집은 그 창의 종이를 눌러서).
 // 시연 계정은 초안을 기다리지 않고 잠깐 가렸다가 미리 적어 둔 초안을 보이고, 서버 양식에도 같은 내용을 저장한다(features/demo/demoReport).
 // 그 종이는 작업 전 확인(fit)에서만 고칠 수 있고, 누르면 확대 보기 없이 바로 종이 위 편집 창이 열린다. 직접 고쳐 저장한 보고서는 그 값을 그대로 두고 종료 미팅 칸만 맞춘다.
@@ -182,7 +183,7 @@ export function ReportPanel({
         {generating && (
           <div role="status" className="absolute inset-0 grid place-items-center">
             <span className="rounded-lg bg-card px-5 py-2.5 text-base font-bold text-foreground shadow-float ring-1 ring-border">
-              TBM 생성중..
+              <LoadingDots label="TBM 생성 중" />
             </span>
           </div>
         )}
