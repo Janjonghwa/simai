@@ -29,6 +29,7 @@ import {
   AVATAR_WAIST_REST_Y,
   avatarBaseColorAtHeight,
   classifyAvatarSurfaceCode,
+  clearAvatarAppearanceCache,
   createAvatarAlbedoTexture,
   createAvatarDisplayAlbedoTexture,
   createAvatarPmremEnvMap,
@@ -41,6 +42,7 @@ import {
   type AvatarFacePolicy,
   type RgbTuple,
 } from '@/features/viewer3d/people/avatarAppearance';
+import { AVATAR_ASSET_RELEASE_MS } from '@/features/viewer3d/people/avatarAssetCache';
 import {
   AVATAR_ASSET_RETRY_MS,
   AvatarMeshContext,
@@ -456,7 +458,8 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
   async function flushFrames(count = 4) {
     for (let i = 0; i < count; i++) {
       await act(async () => {
-        await new Promise((r) => setTimeout(r, 0));
+        if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(20);
+        else await new Promise((r) => setTimeout(r, 0));
       });
       await act(async () => advance(performance.now() + i * 16));
     }
@@ -500,6 +503,8 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     if (root) await act(async () => root!.unmount());
     root = null;
     clearAvatarMeshCache();
+    clearAvatarAppearanceCache();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -552,7 +557,9 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     expect(scene!.environment).toBeNull();
   });
 
-  it('appearance_version 이 바뀌면 새 텍스처를 다 읽을 때까지 이전 텍스처를 유지(깜빡임 없음)하고 교체 뒤 이전 텍스처를 dispose 한다', async () => {
+  it('appearance_version 이 바뀌면 새 텍스처를 다 읽을 때까지 이전 텍스처를 유지(깜빡임 없음)하고 교체 뒤 이전 텍스처를 캐시에 돌려주어 해제 지연 뒤 dispose 한다', async () => {
+    // -797: 물러난 텍스처는 캐시에 남았다가 AVATAR_ASSET_RELEASE_MS 뒤에 해제된다. 그 시간을 넘기려고 가짜 시계를 쓴다.
+    vi.useFakeTimers();
     let resolveV1Albedo!: (buf: ArrayBuffer) => void;
     const v1AlbedoGate = new Promise<ArrayBuffer>((r) => {
       resolveV1Albedo = r;
@@ -594,7 +601,7 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     expect(uniforms.uAvatarAlbedoMap.value).toBe(v0Albedo);
     expect(disposeAlbedoSpy).not.toHaveBeenCalled();
 
-    // v1 읽기가 끝나면 새 텍스처로 바뀌고 v0 텍스처는 dispose 된다.
+    // v1 읽기가 끝나면 새 텍스처로 바뀌고, v0 텍스처는 캐시에 돌아가 해제 지연 동안 남는다.
     await act(async () => {
       resolveV1Albedo(new Uint8Array(getSyntheticAvatarPngPair('w-0001', 1, 16).albedoPng).buffer);
     });
@@ -602,6 +609,12 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
 
     expect(uniforms.uAvatarHasAppearance.value).toBe(1);
     expect(uniforms.uAvatarAlbedoMap.value).not.toBe(v0Albedo);
+    expect(disposeAlbedoSpy).not.toHaveBeenCalled();
+
+    // 해제 지연이 지나면 v0 텍스처를 dispose 한다(그때 재질에는 v1 이 묶여 있다).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AVATAR_ASSET_RELEASE_MS + 100);
+    });
     expect(disposeAlbedoSpy).toHaveBeenCalledTimes(1);
     expect(boundAtDispose).not.toBeNull();
     expect(boundAtDispose).not.toBe(v0Albedo);
