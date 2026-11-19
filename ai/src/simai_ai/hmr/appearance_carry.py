@@ -43,8 +43,8 @@ class CarryConfig:
     radius_max_m: float = 1.5
     crowd_radius_m: float = 1.5
     height_tolerance_m: float = 0.15
-    keep_ms: int = 10_000
-    """소실 ID 상태를 들고 있는 시간(빠진 뒤 World 시각). 같은 ID 늦은 재연결 창(reconnect_window_ms)과 같다"""
+    keep_ms: int = 20_000
+    """소실 ID 상태를 들고 있는 시간(빠진 뒤 World 시각). 같은 ID 늦은 재연결 창(reconnect_window_ms, -802 에서 20 s)과 같다"""
     max_departed: int = 16
     """들고 있는 소실 ID 수 상한(텍스처 누적 사본 메모리 상한). 넘으면 오래된 것부터 버린다"""
 

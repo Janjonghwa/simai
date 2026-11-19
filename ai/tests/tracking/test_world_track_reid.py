@@ -360,16 +360,16 @@ def test_lost_to_dormant_not_exported_and_reentry_within_30min_inherits_world_id
     (wid_orig,) = (tr.world_id for tr in frame.tracks)
     assert frame.tracks[0].lifecycle is TrackLifecycle.CONFIRMED
 
-    # 15초 뒤(reconnect_window_ms=10s 경과): 첫 소실 tick 에서는 LOST 이벤트를 한 번 내고 바로 DORMANT 로 이관됨
-    t_lost = T + 15_000
+    # 25초 뒤(reconnect_window_ms=20s 경과, -802): 첫 소실 tick 에서는 LOST 이벤트를 한 번 내고 바로 DORMANT 로 이관됨
+    t_lost = T + 25_000
     frame_lost = mgr.update(wt._frame(rig, t_lost, []), rig)
     assert len(frame_lost.tracks) == 1
     assert frame_lost.tracks[0].lifecycle is TrackLifecycle.LOST
     assert mgr.diag.get("lifecycle.dormant", 0) == 1
     assert wid_orig in mgr.dormant_candidates
 
-    # 다음 tick(16초 뒤)부터는 DORMANT 상태이므로 frame.tracks 및 world_state 에 절대 송출되지 않는다
-    t_absent = T + 16_000
+    # 다음 tick(26초 뒤)부터는 DORMANT 상태이므로 frame.tracks 및 world_state 에 절대 송출되지 않는다
+    t_absent = T + 26_000
     frame_absent = mgr.update(wt._frame(rig, t_absent, []), rig)
     assert frame_absent.tracks == ()
     assert mgr.export_tracks() == ()

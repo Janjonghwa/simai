@@ -129,7 +129,7 @@ def test_pending_receiver_without_donor_expires_and_departed_expire_and_capacity
     for i, wid in enumerate(("a", "b", "c")):
         lose(carry, wid, (10. * i, 0.), 1000 + i)
     assert set(carry.departed) == {"b", "c"} and carry.stats["dropped_capacity"] == 1
-    carry.expire(1202 + 10_000)
+    carry.expire(1202 + CarryConfig().keep_ms)  # b 는 keep_ms 를 1 ms 넘김, c 는 경계
     assert set(carry.departed) == {"c"}
 
 

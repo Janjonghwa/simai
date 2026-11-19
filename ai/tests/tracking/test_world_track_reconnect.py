@@ -44,6 +44,7 @@ _spec.loader.exec_module(wt)
 T, DT, ALL = wt.T, wt.DT, wt.ALL
 MSG_ID = "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
 UNCERTAIN = IdentityConfidence.IDENTITY_UNCERTAIN
+WINDOW = WorldTrackConfig().reconnect_window_ms  # 소실 후보 창 (-802 에서 10 → 20 s)
 
 
 @pytest.fixture(scope="module")
@@ -160,16 +161,17 @@ def test_single_camera_history_does_not_restore_identity(rig):
 
 def test_switched_local_id_does_not_restore_lost_identity(rig):
     """리뷰 F1 장면: A 가 3.5 s 가려진 뒤 다른 사람 B 가 (4.2, 3.0) 에 나타나고 cam1 로컬 트래커만 A 의 옛 ID 를 B 에게
-    붙였다. B 는 새 ID 이고, A 가 소실 후보로 남는 동안(마지막 관측 + 10 s) IDENTITY_UNCERTAIN 이 풀리지 않는다.
+    붙였다. B 는 새 ID 이고, A 가 소실 후보로 남는 동안(마지막 관측 + reconnect_window_ms) IDENTITY_UNCERTAIN 이 풀리지 않는다.
     교정(병합)도 없다."""
     m = _manager()
     a = _seen_then_lost(m, rig)
-    frames = [_tick(m, rig, k, [lambda t: _mixed(rig, "B", t, 4.2, 3.0, ONE_OLD)]) for k in range(45, 125)]
+    stop = (900 + WINDOW) // DT + 16  # 소실 후보 끝 + 유지 시간(1 s) 넘어서까지
+    frames = [_tick(m, rig, k, [lambda t: _mixed(rig, "B", t, 4.2, 3.0, ONE_OLD)]) for k in range(45, stop)]
     b = frames[0].tracks[0].world_id
     assert b != a and all([tr.world_id for tr in f.tracks] == [b] for f in frames)
     assert all(f.revisions == () and f.reassociations == () for f in frames)
-    # A 의 소실 후보는 T+900+10000 (k=109) 까지. 그동안 B 는 A 일 수도 있어 IDENTITY_UNCERTAIN 이다
-    until = (900 + 10_000) // DT
+    # A 의 소실 후보는 T+900+WINDOW (20 s 면 k=209) 까지. 그동안 B 는 A 일 수도 있어 IDENTITY_UNCERTAIN 이다
+    until = (900 + WINDOW) // DT
     for f in frames:
         k = (f.t - T) // DT
         if k <= until:
@@ -190,12 +192,13 @@ def test_no_local_track_history_long_loss_gets_new_id(rig):
     assert IdentityFlag.REASSOCIATION_AMBIGUOUS not in tr.identity_flags
 
 
-@pytest.mark.parametrize("gap_ms, same", [(9999, True), (10_000, True), (10_001, False)])
+@pytest.mark.parametrize("gap_ms, same", [(-1, True), (0, True), (1, False)])
 def test_reconnect_window_boundary(rig, gap_ms, same):
-    """소실 후보는 마지막 관측부터 reconnect_window_ms(10 s) 까지다 (넘으면 같은 로컬 트랙이라도 새 ID)."""
+    """소실 후보는 마지막 관측부터 reconnect_window_ms(20 s, -802) 까지다 (넘으면 같은 로컬 트랙이라도 새 ID)."""
+    assert WINDOW == 20_000
     m = _manager()
     wid = _seen_then_lost(m, rig)
-    t = T + 900 + gap_ms
+    t = T + 900 + WINDOW + gap_ms
     f = _at(m, rig, t, [lambda t: _mixed(rig, "back", t, 3.0, 3.0, TWO_OLD)])
     assert (f.tracks[0].world_id == wid) is same
 
