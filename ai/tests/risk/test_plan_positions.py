@@ -218,8 +218,8 @@ def test_only_active_opening_zones_get_positions():
     assert [p.position_id for p in out.positions] == ["gen-now-01"]
 
 
-def test_generated_position_inside_volume_zone_has_no_entry():
-    """머리 높이를 모르는 VOLUME_3D 안 생성 위치는 발생 항목이 없다."""
+def test_generated_position_inside_volume_zone_is_flagged_as_unknown_height():
+    """머리 높이를 모르는 VOLUME_3D 안 생성 위치는 구역 높이와 겹칠 수 있으므로 확인 필요(Z_UNKNOWN) 항목이 된다."""
     volume = {
         "zone_id": "z-vol",
         "zone_version": "v1",
@@ -231,7 +231,7 @@ def test_generated_position_inside_volume_zone_has_no_entry():
     }
     out = evaluate_plan(_payload(zones=[volume], work_surfaces=[_surface()]))
     r1 = [i for i in _items_for(out, "gen-s-1-01") if i["rule_id"] == "R1"]
-    assert not r1
+    assert [i["confidence_reasons"] for i in r1] == [["Z_UNKNOWN"]]
 
 
 def test_no_surfaces_no_openings_gives_no_positions():

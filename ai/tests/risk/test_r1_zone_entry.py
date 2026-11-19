@@ -338,22 +338,39 @@ def test_height_uncertainty_widens_range():
     [
         (None, None),  # 둘 다 모름
         (None, 2.5),  # 서 있는 면 모름, 위 끝이 구역 높이 안
-        (None, 4.5),  # 서 있는 면 모름, 위 끝이 구역보다 높음
-        (None, 1.6),  # 서 있는 면 모름, 위 끝이 구역보다 0.4 m 낮음
+        (None, 4.5),  # 서 있는 면 모름, 위 끝이 구역보다 높음(발은 구역 높이에 있을 수 있다)
         (2.5, None),  # 위 끝 모름, 서 있는 면이 구역 높이 안
-        (0.0, None),  # 위 끝 모름, 서 있는 면이 구역 아래
-        (4.5, None),  # 위 끝 모름, 서 있는 면이 구역보다 높음
+        (0.0, None),  # 위 끝 모름, 서 있는 면이 구역 아래(머리는 구역 높이에 닿을 수 있다)
     ],
 )
-def test_partial_height_unknown_holds_with_z_unknown(anchor_z, head):
-    """높이 양 끝 중 하나라도 모르면 기존 이벤트만 유지하고 Z_UNKNOWN 을 기록한다."""
+def test_partial_height_unknown_still_raises_with_z_unknown(anchor_z, head):
+    """높이 양 끝 중 하나라도 모르면 XY 가 안일 때 발생하고 Z_UNKNOWN(확인 필요)을 붙인다. 높이 겹침 근거는 붙이지 않는다."""
     anchor = None if anchor_z is None else (None, None, anchor_z)
     f = only(judge(track(anchor=anchor, head=head), zones=[ABOVE]))
-    assert f.holding
+    assert not f.holding
     assert f.needs_check and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
     # XY 가 유지 띠면 유지 + Z_UNKNOWN(새 이벤트는 만들지 않는다)
     f = only(judge(track((4.5, 5.0), anchor=anchor, head=head), zones=[ABOVE]))
     assert f.holding and f.needs_check and f.reasons == (REASON_XY_CLEAR_MARGIN,)
+    assert f.confidence_reasons == (Z_UNKNOWN,)
+
+
+@pytest.mark.parametrize(
+    ("anchor_z", "head"),
+    [
+        (None, 1.6),  # 위 끝이 구역 최저 높이(2.0)보다 0.4 m 낮음: 아는 끝만으로 겹칠 수 없다
+        (4.5, None),  # 서 있는 면이 구역 최고 높이(4.0)보다 0.5 m 높음
+    ],
+)
+def test_partial_height_unknown_not_judged_when_known_end_excludes_overlap(anchor_z, head):
+    anchor = None if anchor_z is None else (None, None, anchor_z)
+    assert judge(track(anchor=anchor, head=head), zones=[ABOVE]) == []
+
+
+def test_partial_height_unknown_within_clear_margin_only_holds():
+    # 위 끝 1.8 → 구역 최저 2.0 과 간격 0.2(해소 간격 0.3 안): 유지만 한다
+    f = only(judge(track(anchor=None, head=1.8), zones=[ABOVE]))
+    assert f.holding and f.reasons == (REASON_XY_INSIDE, REASON_Z_CLEAR_MARGIN)
     assert f.confidence_reasons == (Z_UNKNOWN,)
 
 
@@ -383,6 +400,21 @@ def _run(xs, *, origin=Origin.LIVE, dt=100):
         transitions += step.transitions
         signals += step.local_signals
     return transitions, signals
+
+
+def test_height_unknown_inside_zone_opens_event_with_needs_check():
+    """회귀(11-18 시연): 접지점·머리 높이가 없는 프레임만 이어져도 구역 안이면 이벤트가 열리고 확인 필요가 붙는다."""
+    clock = FixedClock(T0)
+    engine = RiskEngine([default_registry().create("R1", 1)], clock)
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock)
+    transitions = []
+    for i in range(5):
+        t = T0 + i * 100
+        clock.set(t + 50)
+        w = world(track(anchor=None, head=None, t=t), t=t)
+        transitions += tracker.apply(engine.evaluate(w, [ABOVE], Origin.LIVE), w, config_version="cfg-1").transitions
+    raised = [x for x in transitions if x.state.rule_id == "R1"]
+    assert raised and raised[0].state.confidence_reasons == (Z_UNKNOWN,) and raised[0].state.needs_check
 
 
 def test_flicker_at_boundary_makes_one_event():
@@ -426,13 +458,13 @@ def test_invalid_parameters(name, value):
 @pytest.mark.parametrize("head", [1.5, 1.7])
 def test_uncertain_head_z_value_from_v2_keeps_z_unknown_like_v14(head):
     """회귀: VOLUME_3D 구역(z 2.0~4.0), skeleton 전부 UNCERTAIN, XY 안. 2.0.0 은 UNCERTAIN head_z 값(1.5·1.7)을 싣지만
-    risk.world 가 확정값으로 넘기지 않으므로, 1.4.0(UNCERTAIN + null)·dev 와 같이 위 끝을 모르는 Z_UNKNOWN 유지다.
-    (값을 확정값으로 쓰면 1.7 은 유지만, 1.5 는 판정 없음이 되어 유지 판정이 바뀐다.)"""
+    risk.world 가 확정값으로 넘기지 않으므로, 1.4.0(UNCERTAIN + null)·dev 와 같이 위 끝을 모르는 Z_UNKNOWN 발생이다.
+    (값을 확정값으로 쓰면 1.7 은 유지만, 1.5 는 판정 없음이 되어 판정이 바뀐다.)"""
     skel = skeleton(0.0, head - 0.12, validity="UNCERTAIN")
     v2 = dict(track(head=head, head_sigma=0.04, skel=skel), head_z_validity="UNCERTAIN")
     v14 = dict(track(head=None, skel=skel), head_z_validity="UNCERTAIN")
     (f,) = judge(v2, zones=[ABOVE])
-    assert f.holding and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
+    assert not f.holding and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
     assert judge(v2, zones=[ABOVE]) == judge(v14, zones=[ABOVE])
 
 
