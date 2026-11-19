@@ -24,6 +24,7 @@ export interface ViewSink extends PreviewSink {
 
 export interface ViewOptions {
   localUrl: string;
+  skipLocal?: boolean;
   /** 원격 시청 주소(입장권 포함)를 새로 받는다. */
   remoteUrl: () => Promise<string>;
   probeMs?: number;
@@ -137,10 +138,13 @@ export function startCctvView(options: ViewOptions, deps: PreviewDeps, sink: Vie
   };
 
   sink.setMode('probing');
-  const started = startPreviewSession(options.localUrl, deps, localSink);
-  if (localFailedEarly) started.stop();
-  else local = started;
-  if (mode === 'probing') probeTimer = deps.setTimer(toRemote, probeMs);
+  if (options.skipLocal) toRemote();
+  else {
+    const started = startPreviewSession(options.localUrl, deps, localSink);
+    if (localFailedEarly) started.stop();
+    else local = started;
+    if (mode === 'probing') probeTimer = deps.setTimer(toRemote, probeMs);
+  }
 
   return {
     activity: () => {

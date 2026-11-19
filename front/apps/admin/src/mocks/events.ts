@@ -63,7 +63,7 @@ function toRest(payload: Payload): Record<string, unknown> {
   const present = Object.entries(payload).filter(
     ([key, value]) =>
       value !== undefined &&
-      !(Array.isArray(value) && value.length === 0) &&
+      !(key !== 'world_ids' && Array.isArray(value) && value.length === 0) &&
       !(key === 'resolved_at' && value === null),
   );
   return {

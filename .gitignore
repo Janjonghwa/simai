@@ -14,6 +14,7 @@ letsencrypt/
 # Node / React (Vite, PWA)
 node_modules/
 dist/
+dist-mock/
 build/
 .pnpm-store/
 .vite/

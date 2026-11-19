@@ -3,7 +3,7 @@ import { Client } from '@stomp/stompjs';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-const URL = 'ws://stomp.test/ws';
+const URL = 'wss://mock.simai.invalid/ws';
 const broker = createStompBroker({ url: URL, authorize: (auth) => auth === 'Bearer ok' });
 const server = setupServer(broker.handler);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));

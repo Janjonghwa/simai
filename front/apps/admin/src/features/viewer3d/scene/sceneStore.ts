@@ -82,7 +82,7 @@ export function useSceneState<T>(select: (state: SceneStoreState) => T): T {
 }
 
 /** KTX2 Basis Universal 변환기(basis_transcoder.js·wasm) 정적 자산 경로. */
-export const SCENE_KTX2_TRANSCODER_PATH = '/basis/';
+export const SCENE_KTX2_TRANSCODER_PATH = `${import.meta.env.BASE_URL}basis/`;
 
 interface Ktx2WorkerConfig {
   astcSupported: boolean;

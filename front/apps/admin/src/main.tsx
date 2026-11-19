@@ -34,6 +34,7 @@ const clearUserScreenState = () => {
 
 const router = createRouter({
   routeTree,
+  basepath: import.meta.env.VITE_MOCK_BUILD === 'true' ? import.meta.env.BASE_URL : '/',
   context: { sessionStore: useSessionStore, queryClient },
 });
 
@@ -51,9 +52,9 @@ declare module '@tanstack/react-router' {
   }
 }
 
-// 서버가 아직 없는 API 는 개발 서버에서 msw 로 REST·STOMP 를 흉내 낸다. DEV 조건이라 빌드에는 들어가지 않는다.
+// 서버가 아직 없는 API 는 개발 서버에서 msw 로 REST·STOMP 를 흉내 낸다. 개발 서버와 연습 빌드에서만 켠다.
 // VITE_API_REAL 에 적은 경로(예: /api/auth)는 흉내 내지 않고 개발 서버 프록시로 실서버에 보낸다(vite.config.ts).
-if (import.meta.env.DEV && env.VITE_API_MOCK) {
+if ((import.meta.env.DEV && env.VITE_API_MOCK) || import.meta.env.VITE_MOCK_BUILD === 'true') {
   const { startMockBackend } = await import('@/mocks/startBackend');
   await startMockBackend();
 }

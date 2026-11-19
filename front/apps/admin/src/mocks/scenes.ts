@@ -11,7 +11,8 @@ const demoSceneUrl = new URL(
 // 서버가 주는 서명 URL 의 유효 시간.
 const SIGNED_URL_TTL_MS = 5 * 60_000;
 
-const MOCK_CALIBRATION_VERSION = 'cal-mock-1';
+const MOCK_CALIBRATION_VERSION =
+  import.meta.env.VITE_MOCK_BUILD === 'true' ? 'cal-7' : 'cal-mock-1';
 
 /** 서버가 Scene 버전으로 받는 형식(SceneService.SCENE_VERSION). 어긋나면 보이는 Scene 이 없어 404 다. */
 const SCENE_VERSION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,159}$/;
@@ -48,8 +49,8 @@ interface MockSceneState {
 
 const state: MockSceneState = {
   currentSceneVersion: 'scene-demo',
-  isDefault: true,
-  committedAtMs: null,
+  isDefault: import.meta.env.VITE_MOCK_BUILD !== 'true',
+  committedAtMs: import.meta.env.VITE_MOCK_BUILD === 'true' ? Date.now() : null,
   nextRequestId: 1,
   requests: new Map(),
   autoAdvanceOnPoll: false,
