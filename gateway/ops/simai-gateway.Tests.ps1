@@ -295,6 +295,34 @@ Describe '녹화 작업 구간 업로드 (S15P31A101-668)' {
   }
 }
 
+Describe '업로더 python 실행 실패 재시도 (S15P31A101-794)' {
+  It 'uv 의 Failed to spawn 출력을 실행 실패로 알아본다' {
+    Test-UvSpawnFailure @('error: Failed to spawn: python', '  cause: 액세스가 거부되었습니다. (os error 5)') | Should Be $true
+    Test-UvSpawnFailure @('녹화 업로드: 올림 0, 이미 있음 0, 거절 0, 실패 0, 끝난 녹화 0, 남은 녹화 1') | Should Be $false
+    Test-UvSpawnFailure @() | Should Be $false
+  }
+
+  It '실행 실패(코드 2)는 멈추지 않고 다시 시도한다(11-18 시연 녹화가 관제 종료까지 안 올라간 원인)' {
+    Get-UploadLoopStep -ExitCode 2 -SpawnFailed $true -Monitoring $true -SpawnFailures 1 | Should Be 'retry'
+    Get-UploadLoopStep -ExitCode 2 -SpawnFailed $true -Monitoring $false -SpawnFailures 1 | Should Be 'retry'
+  }
+
+  It '연속 실행 실패가 상한에 닿으면 멈춘다' {
+    Get-UploadLoopStep -ExitCode 2 -SpawnFailed $true -Monitoring $true -SpawnFailures 29 -MaxSpawnFailures 30 | Should Be 'retry'
+    Get-UploadLoopStep -ExitCode 2 -SpawnFailed $true -Monitoring $true -SpawnFailures 30 -MaxSpawnFailures 30 | Should Be 'stop'
+  }
+
+  It '실행 실패가 아닌 코드 2(설정 오류)는 지금처럼 멈춘다' {
+    Get-UploadLoopStep -ExitCode 2 -SpawnFailed $false -Monitoring $true -SpawnFailures 0 | Should Be 'stop'
+  }
+
+  It '관제 중이면 다음 조회를 기다리고, 관제가 끝나고 다 올렸으면 끝낸다' {
+    Get-UploadLoopStep -ExitCode 0 -SpawnFailed $false -Monitoring $true -SpawnFailures 0 | Should Be 'wait'
+    Get-UploadLoopStep -ExitCode 0 -SpawnFailed $false -Monitoring $false -SpawnFailures 0 | Should Be 'stop'
+    Get-UploadLoopStep -ExitCode 1 -SpawnFailed $false -Monitoring $false -SpawnFailures 0 | Should Be 'wait'
+  }
+}
+
 
 Describe '종료 확인 없는 녹화 보호 (S15P31A101-693)' {
   It 'PID 기록이 없으면 녹화 파일을 종료된 것으로 확정하지 않는다' {

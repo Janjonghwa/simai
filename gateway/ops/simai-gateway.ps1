@@ -352,6 +352,20 @@ function Start-RecordingUpload {
   }
   Say "녹화 작업 구간 업로드를 백그라운드로 시작했다(로그 $UploadLog, gw.sh logs upload)"
 }
+# uv 가 python 을 띄우지 못한 실패(`Failed to spawn`)도 종료 코드 2 라 설정 오류와 구분해야 한다(S15P31A101-794).
+# 11-17~11-19 업로더에서만 4번 났고(os error 5, 실행 파일 변경 없음, 백신 실행 검사 추정) 그때마다 업로더가 꺼져 시연 녹화가 관제 종료 때까지 안 올라갔다.
+$UploadSpawnRetryMax = 30   # 연속 실행 실패 상한(조회 10초 간격이라 약 5분). 넘으면 막힌 것으로 보고 멈춘다
+function Test-UvSpawnFailure([object[]]$Output) {
+  return [bool](@($Output | Where-Object { "$_" -match 'Failed to spawn' }).Count)
+}
+# 한 번 돈 뒤 할 일: stop(끝냄) / retry(실행 실패, 잠시 뒤 다시) / wait(다음 조회까지 대기)
+function Get-UploadLoopStep {
+  param([int]$ExitCode, [bool]$SpawnFailed, [bool]$Monitoring, [int]$SpawnFailures, [int]$MaxSpawnFailures = $UploadSpawnRetryMax)
+  if ($SpawnFailed) { if ($SpawnFailures -ge $MaxSpawnFailures) { return 'stop' }; return 'retry' }
+  if ($ExitCode -eq 2) { return 'stop' }   # simai_recorder 설정 오류(.env·인자)는 다시 해도 같다
+  if (-not $Monitoring -and $ExitCode -eq 0) { return 'stop' }
+  return 'wait'
+}
 function Do-UploadWorker {
   $uploadMutex = [Threading.Mutex]::new($false, 'Local\SimaiRecordingUpload')
   try { $acquired = $uploadMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }
@@ -365,12 +379,18 @@ function Do-UploadWorker {
   try {
     $env:PYTHONUTF8 = '1'
     $uploadArgs = Get-RecordingUploadArgs
+    $spawnFailures = 0
     do {
-      & uv @uploadArgs 2>&1 | ForEach-Object { Add-Content -LiteralPath $UploadLog -Value "$_" -Encoding UTF8 }
+      $out = @(& uv @uploadArgs 2>&1 | ForEach-Object { $l = "$_"; Add-Content -LiteralPath $UploadLog -Value $l -Encoding UTF8; $l })
       $code = $LASTEXITCODE
-      if ($code -eq 2) { break }
+      $spawnFailed = ($code -ne 0) -and (Test-UvSpawnFailure $out)
+      if ($spawnFailed) { $spawnFailures++ } else { $spawnFailures = 0 }
       $monitoring = (Test-Path $ModeFile) -and (Get-Content $ModeFile -Raw -Encoding UTF8).Trim().StartsWith('관제')
-      if (-not $monitoring -and $code -eq 0) { break }
+      $step = Get-UploadLoopStep -ExitCode $code -SpawnFailed $spawnFailed -Monitoring $monitoring -SpawnFailures $spawnFailures
+      if ($step -eq 'stop') { break }
+      if ($step -eq 'retry') {
+        Add-Content -LiteralPath $UploadLog -Value ("{0:yyyy-MM-dd HH:mm:ss} python 실행 실패, 다시 시도 {1}/{2}" -f (Get-Date), $spawnFailures, $UploadSpawnRetryMax) -Encoding UTF8
+      }
       Start-Sleep -Seconds 10
     } while ($true)
     Add-Content -LiteralPath $UploadLog -Value "=== 끝(코드 $code) ===" -Encoding UTF8
