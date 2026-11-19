@@ -107,6 +107,7 @@ class COPEConfig:
     clip_sha256: str | None = DEFAULT_CLIP_VIT_B_16_SHA256
     device: str = "auto"
     batch_size: int = 16
+    fp16: bool = False
     input_size_hw: tuple[int, int] = (256, 128)
     pixel_mean: tuple[float, float, float] = (0.5, 0.5, 0.5)
     pixel_std: tuple[float, float, float] = (0.5, 0.5, 0.5)
@@ -219,6 +220,7 @@ class COPEEmbedder(Embedder):
         if self._config.batch_size < 1:
             raise ValueError(f"batch_size 는 1 이상이어야 합니다: {self._config.batch_size}")
 
+        self._stream = None
         if model is not None:
             self._device = "cpu" if self._config.device == "auto" else self._config.device
             self._model = model
@@ -234,6 +236,12 @@ class COPEEmbedder(Embedder):
         self.clip_sha256 = verify_file_sha256(self._config.clip_path, self._config.clip_sha256)
         self._device = resolve_torch_device(self._config.device)
         self._model = self._load_cope_model(cope_root)
+        if self._device.startswith("cuda"):
+            import torch
+
+            with torch.cuda.device(self._device):
+                self._stream = torch.cuda.Stream(device=self._device, priority=0)
+                self._stream.wait_stream(torch.cuda.current_stream(self._device))
 
     @property
     def config(self) -> COPEConfig:
@@ -393,29 +401,39 @@ class COPEEmbedder(Embedder):
         with torch.inference_mode():
             for start in range(0, len(valid_tensors), bs):
                 batch_np = np.stack(valid_tensors[start : start + bs], axis=0)
-                batch_t = torch.from_numpy(batch_np).to(self._device, dtype=torch.float32)
-                if with_scores:
-                    res = self._model(batch_t, cam_label=None, view_label=None, get_image=False)
-                    if isinstance(res, tuple):
-                        raw_feat, raw_score = res[0], res[1]
-                    else:
-                        raw_feat = res
-                        raw_score = torch.ones((batch_t.shape[0],), device=batch_t.device, dtype=torch.float32)
-                else:
-                    try:
-                        raw_feat = self._model(batch_t, cam_label=None, view_label=None, get_image=True)
-                    except TypeError:
-                        raw_feat = self._model(batch_t)
-                    if isinstance(raw_feat, tuple):
-                        raw_score = raw_feat[1]
-                        raw_feat = raw_feat[0]
-                    else:
-                        raw_score = torch.ones((batch_t.shape[0],), device=batch_t.device, dtype=torch.float32)
-
-                feat_np = l2_normalize_rows(raw_feat.detach().cpu().numpy())
-                score_np = raw_score.detach().cpu().numpy().astype(np.float32).reshape(-1)
+                stream_context = torch.cuda.stream(self._stream) if self._stream is not None else contextlib.nullcontext()
+                with stream_context:
+                    batch_t = torch.from_numpy(batch_np).to(
+                        self._device, dtype=torch.float32, non_blocking=self._stream is not None
+                    )
+                    autocast = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                                if self._stream is not None and self._config.fp16 else contextlib.nullcontext())
+                    with autocast:
+                        raw_feat, raw_score = self._infer_batch(batch_t, with_scores=with_scores)
+                    feat_cpu = raw_feat.detach().to(device="cpu", dtype=torch.float32, non_blocking=self._stream is not None)
+                    score_cpu = raw_score.detach().to(device="cpu", dtype=torch.float32, non_blocking=self._stream is not None)
+                if self._stream is not None:
+                    self._stream.synchronize()
+                feat_np = l2_normalize_rows(feat_cpu.numpy())
+                score_np = score_cpu.numpy().reshape(-1)
                 for offset, target_idx in enumerate(valid_indices[start : start + bs]):
                     out_feats[target_idx] = feat_np[offset]
                     out_scores[target_idx] = score_np[offset]
 
         return out_feats, out_scores
+
+    def _infer_batch(self, batch_t: Any, *, with_scores: bool) -> tuple[Any, Any]:
+        import torch
+
+        if with_scores:
+            res = self._model(batch_t, cam_label=None, view_label=None, get_image=False)
+            if isinstance(res, tuple):
+                return res[0], res[1]
+            return res, torch.ones((batch_t.shape[0],), device=batch_t.device, dtype=torch.float32)
+        try:
+            raw_feat = self._model(batch_t, cam_label=None, view_label=None, get_image=True)
+        except TypeError:
+            raw_feat = self._model(batch_t)
+        if isinstance(raw_feat, tuple):
+            return raw_feat[0], raw_feat[1]
+        return raw_feat, torch.ones((batch_t.shape[0],), device=batch_t.device, dtype=torch.float32)

@@ -126,7 +126,7 @@ class ReidCollectorConfig:
     weights_path: str | Path | None = None
     clip_model_path: str | Path | None = None
     device: str = "cuda"
-    fp16: bool = True
+    fp16: bool = False
     batch_size: int = DEFAULT_BATCH_SIZE
     update_interval_ms: int = DEFAULT_UPDATE_INTERVAL_MS
     stable_update_interval_ms: int = 3000
@@ -172,6 +172,8 @@ class ReidCollectorConfig:
             "clip_model_path": src.get("SIMAI_CLIP_MODEL_PATH") or None,
             "device": src.get("SIMAI_REID_DEVICE", "cuda"),
         }
+        if "SIMAI_REID_FP16" in src:
+            kwargs["fp16"] = src["SIMAI_REID_FP16"].strip().lower() in {"1", "true", "yes", "on"}
         if "SIMAI_REID_BATCH_SIZE" in src:
             kwargs["batch_size"] = int(src["SIMAI_REID_BATCH_SIZE"])
         if "SIMAI_REID_UPDATE_INTERVAL_MS" in src:
@@ -503,9 +505,9 @@ class AsyncReidCollector:
 
     def _cope_config(self) -> COPEConfig:
         """수집기 설정 → COPE 설정. 이름이 다른 필드(clip_model_path → clip_path)를 맞추고, 수집기가 넘기는 crop 은
-        RGB 라 input_format="rgb" 로 둔다(기본 bgr 이면 채널이 한 번 더 뒤집힌다). fp16 은 COPE 설정에 없다(S15P31A101-472)."""
+        RGB 라 input_format="rgb" 로 둔다(기본 bgr 이면 채널이 한 번 더 뒤집힌다)."""
         cfg = self.config
-        kwargs: dict[str, Any] = {"device": cfg.device, "batch_size": cfg.batch_size, "input_format": "rgb"}
+        kwargs: dict[str, Any] = {"device": cfg.device, "batch_size": cfg.batch_size, "input_format": "rgb", "fp16": cfg.fp16}
         if cfg.cope_root is not None:
             kwargs["cope_root"] = Path(cfg.cope_root)
         if cfg.weights_path is not None:

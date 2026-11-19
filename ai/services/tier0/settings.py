@@ -196,6 +196,7 @@ class ReidSettings:
 
     enabled: bool = True
     batch_size: int = 8
+    fp16: bool = False
     update_interval_ms: int = 750
     stable_update_interval_ms: int = 3000
     max_crops_per_second: int = 8
@@ -418,9 +419,26 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
             raise Tier0ConfigError("SIMAI_TIER0_REID_ENABLED 은 0 또는 1이다")
         enabled = env_enabled == "1"
     batch_size = _int(doc, "batch_size", 8, minimum=1)
-    update_interval_ms = _int(doc, "update_interval_ms", 750, minimum=0)
+    fp16 = doc.get("fp16", False)
+    if not isinstance(fp16, bool):
+        raise Tier0ConfigError("reid.fp16 는 bool이다")
+    env_fp16 = (env.get("SIMAI_TIER0_REID_FP16") or "").strip()
+    if env_fp16:
+        if env_fp16 not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_REID_FP16 은 0 또는 1이다")
+        fp16 = env_fp16 == "1"
+    sampling_doc = dict(doc)
+    for key in ("update_interval_ms", "max_crops_per_second"):
+        env_key = "SIMAI_TIER0_REID_" + key.upper()
+        raw = (env.get(env_key) or "").strip()
+        if raw:
+            try:
+                sampling_doc[key] = int(raw)
+            except ValueError as exc:
+                raise Tier0ConfigError(f"{env_key} 는 정수다") from exc
+    update_interval_ms = _int(sampling_doc, "update_interval_ms", 750, minimum=0)
     stable_update_interval_ms = _int(doc, "stable_update_interval_ms", 3000, minimum=update_interval_ms)
-    max_crops_per_second = _int(doc, "max_crops_per_second", 8, minimum=1)
+    max_crops_per_second = _int(sampling_doc, "max_crops_per_second", 8, minimum=1)
     max_queue_size = _int(doc, "max_queue_size", 32, minimum=1)
     # 설정 파일에 없으면 환경변수(Pod 템플릿·세션 준비 스크립트가 넣는다). 둘 다 없으면 None(임베더 기본값, S15P31A101-471)
     def _reid_path(key: str, env_key: str) -> Path | None:
@@ -443,6 +461,7 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
     return ReidSettings(
         enabled=enabled,
         batch_size=batch_size,
+        fp16=fp16,
         update_interval_ms=update_interval_ms,
         stable_update_interval_ms=stable_update_interval_ms,
         max_crops_per_second=max_crops_per_second,
