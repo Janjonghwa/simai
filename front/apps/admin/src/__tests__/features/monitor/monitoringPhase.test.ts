@@ -221,8 +221,11 @@ describe('monitoringText', () => {
     expect(monitoringText({ stage: 'ending', problem: null }).label).toBe(
       '종료 요청됨 · 현장 경보 끄는 중',
     );
-    for (const stage of ['starting', 'ending'] as const) {
-      for (const problem of ['delayed', 'rejected', 'link_lost'] as const) {
+    for (const [stage, problems] of [
+      ['starting', ['rejected', 'link_lost']],
+      ['ending', ['delayed', 'rejected', 'link_lost']],
+    ] as const) {
+      for (const problem of problems) {
         const text = monitoringText({ stage, problem });
         expect(text.tone).toBe('bad');
         expect(text.what).toBeTruthy();
@@ -232,5 +235,15 @@ describe('monitoringText', () => {
         expect(`${text.label}${text.what}${text.how}`).not.toMatch(/묶음|Tier|config|ACK|R\d/);
       }
     }
+  });
+
+  it('시작 적용이 10초 넘게 늦어도 「관제 시작 지연」 대신 평소의 「관제 중」이고 안내가 없다(S15P31A101-798)', () => {
+    expect(monitoringText({ stage: 'starting', problem: 'delayed' })).toEqual({
+      label: '관제 중',
+      tone: 'ok',
+      what: null,
+      how: null,
+      retry: false,
+    });
   });
 });

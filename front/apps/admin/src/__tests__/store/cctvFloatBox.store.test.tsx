@@ -41,9 +41,9 @@ describe('useReportCctvFloatBox', () => {
   /** 창 상태를 바꿔 가며 훅을 그린다. */
   const report = (target: ReturnType<typeof stage>, initial: Partial<Layout> = {}) =>
     renderHook((layout: Layout) => useReportCctvFloatBox(target, layout), {
-      initialProps: { dragging: false, collapsed: false, layoutKey: 'a', ...initial },
+      initialProps: { dragging: false, layoutKey: 'a', ...initial },
     });
-  type Layout = { dragging: boolean; collapsed: boolean; layoutKey: string };
+  type Layout = { dragging: boolean; layoutKey: string };
   const settle = (times = 1) => act(() => vi.advanceTimersByTime(CCTV_BOX_SETTLE_MS * times));
 
   it('자리가 자리 잡은 뒤(SETTLE_MS) 잰 자리를 알리고, 창이 내려가면 비운다', () => {
@@ -62,25 +62,13 @@ describe('useReportCctvFloatBox', () => {
     expect(reported()).toMatchObject({ left: 96 });
 
     place.left = 900;
-    hook.rerender({ dragging: true, collapsed: false, layoutKey: '900,128' });
+    hook.rerender({ dragging: true, layoutKey: '900,128' });
     settle(10);
     expect(reported()).toMatchObject({ left: 96 });
 
-    hook.rerender({ dragging: false, collapsed: false, layoutKey: '900,128' });
+    hook.rerender({ dragging: false, layoutKey: '900,128' });
     settle();
     expect(reported()).toMatchObject({ left: 900 });
-  });
-
-  it('접으면(영상 없음) 비우고, 펼치면 다시 알린다', () => {
-    const hook = report(stage());
-    settle();
-    hook.rerender({ dragging: false, collapsed: true, layoutKey: 'a' });
-    settle();
-    expect(reported()).toBeNull();
-
-    hook.rerender({ dragging: false, collapsed: false, layoutKey: 'a' });
-    settle();
-    expect(reported()).toEqual(place);
   });
 
   it('잇달아 바뀌면(크기 바꾸는 중) 멈춘 뒤 한 번만 알린다', () => {
@@ -89,10 +77,10 @@ describe('useReportCctvFloatBox', () => {
     const first = reported();
 
     place.width = 600;
-    hook.rerender({ dragging: false, collapsed: false, layoutKey: '600x360' });
+    hook.rerender({ dragging: false, layoutKey: '600x360' });
     settle(0.5);
     place.width = 700;
-    hook.rerender({ dragging: false, collapsed: false, layoutKey: '700x360' });
+    hook.rerender({ dragging: false, layoutKey: '700x360' });
     settle(0.5);
     expect(reported()).toBe(first);
     settle();
@@ -103,7 +91,7 @@ describe('useReportCctvFloatBox', () => {
     const hook = report(stage());
     settle();
     const first = reported();
-    hook.rerender({ dragging: false, collapsed: false, layoutKey: 'b' });
+    hook.rerender({ dragging: false, layoutKey: 'b' });
     settle();
     expect(reported()).toBe(first);
   });

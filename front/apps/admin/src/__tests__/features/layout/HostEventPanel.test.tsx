@@ -224,13 +224,18 @@ describe('HostEventPanel 확인한 지 오래된 이벤트', () => {
     item({ event_id: 'unacked', world_ids: ['w-0003'], severity: 'HIGH' }),
   ];
 
-  it('확인한 지 24시간이 지난 이벤트는 패널에서 빠지고 사건 수도 줄며, 확인하지 않은 이벤트는 남는다', () => {
+  it('확인한 지 24시간이 지난 이벤트는 패널에서 빠지고, 확인하지 않은 이벤트는 남는다', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(T + 25 * HOUR);
     renderEvents(events());
 
     expect(cardNames()).toEqual(['w-0002 이벤트', 'w-0003 이벤트']);
-    expect(screen.getByTestId('event-panel-head').textContent).toContain('진행 중 2건');
+    // 남은 둘은 진행 중 칸에 있다(머리줄 사건 수 요약은 뺐다, S15P31A101-798).
+    expect(
+      within(screen.getByRole('region', { name: '진행 중' }))
+        .getAllByRole('article')
+        .map((a) => a.getAttribute('aria-label')),
+    ).toEqual(['w-0002 이벤트', 'w-0003 이벤트']);
   });
 
   it('시간이 흘러 24시간을 넘기는 순간(분 단위) 목록에서 빠진다', () => {

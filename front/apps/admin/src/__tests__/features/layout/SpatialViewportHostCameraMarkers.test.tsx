@@ -2,6 +2,7 @@ import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/viewer3d';
+import { worldStateAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import { startZoneEdit, stopZoneEdit } from '@/store/zoneEditMode.store';
@@ -163,8 +164,9 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
     await screen.findByTestId('viewer3d');
     await waitFor(() => expect(fake.props?.onCameraClick).toBeTypeOf('function'));
 
-    // 도구 모음에는 CCTV 창 버튼이 없고, 창은 카메라 마커로만 열린다
+    // 도구 모음에는 CCTV 창 버튼이 없다. 처음 열려 있는 창을 닫으면 카메라 마커·사람 선택으로 다시 연다
     expect(screen.queryByRole('button', { name: 'CCTV 창' })).toBeNull();
+    act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
     expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
 
     // 마커 클릭 시 떠 있는 CCTV 창이 열리고 클릭한 카메라(cam_B) 하나만 보여준다. 4분할·카메라 버튼 줄은 없다
@@ -241,6 +243,104 @@ describe('틀의 카메라 마커와 CCTV 창 연동', () => {
     await waitFor(() => {
       expect(fake.props?.cameraPoses?.[0]?.cameraId).toBe('cam_C');
     });
+  });
+});
+
+/** 사람 트랙(world). 2D 미니맵이 그리므로 mock 장면의 트랙 하나를 바탕으로 ID·카메라·병합 ID 만 바꾼다. */
+function seedTracks(...people: { id: string; cameras: string[]; aliases?: string[] }[]) {
+  const base = worldStateAt(1_760_342_400_000).payload;
+  const template = base.tracks[0]!;
+  act(() =>
+    useRealtimeStore.setState({
+      world: {
+        payload: {
+          ...base,
+          tracks: people.map((p) => ({
+            ...template,
+            world_id: p.id,
+            cameras: p.cameras,
+            aliases: p.aliases,
+          })),
+        } as never,
+        receivedAt: Date.now(),
+      },
+    }),
+  );
+}
+
+const floatOpen = () => screen.queryByLabelText('떠 있는 CCTV') !== null;
+const closeFloat = () =>
+  act(() => screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }).click());
+
+describe('떠 있는 CCTV 기본 열기와 사람 선택(-798)', () => {
+  beforeEach(() => useCctvStore.getState().setLink('open'));
+
+  it('관제 화면에 들어오면 떠 있는 CCTV 창이 「카메라 1」로 열려 있고, X 로 닫는다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    expect(floatOpen()).toBe(true);
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('카메라 2 영상')).toBeNull();
+    closeFloat();
+    expect(floatOpen()).toBe(false);
+  });
+
+  it('오른쪽 사건 분할 창이 열려 있으면 그리지 않고, 분할 창이 닫히면 보인다', async () => {
+    useCamSplitStore.getState().open({ cam: 'cam_B', target: null });
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    expect(floatOpen()).toBe(false);
+    act(() => useCamSplitStore.getState().close());
+    expect(floatOpen()).toBe(true);
+    expect(screen.getByLabelText('카메라 1 영상')).toBeTruthy();
+  });
+
+  it('3D 에서 사람을 고르면 닫힌 창을 그 사람을 가장 잘 보는 카메라로 연다. 구역 선택·같은 선택의 되울림·병합은 다시 열지 않는다', async () => {
+    seedTracks({ id: 'w-1', cameras: ['cam_C', 'cam_A'] });
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onSelectionChange).toBeTypeOf('function'));
+    closeFloat();
+
+    act(() => fake.props?.onSelectionChange?.({ type: 'zone', id: 'z-02' }));
+    expect(floatOpen()).toBe(false);
+
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-1' }));
+    expect(floatOpen()).toBe(true);
+    expect(screen.getByLabelText('카메라 3 영상')).toBeTruthy();
+
+    // 이미 고른 사람을 3D 가 다시 알리면(카드·2D 선택을 3D 에 맞춘 되울림) 닫은 창을 다시 열지 않는다
+    closeFloat();
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-1' }));
+    expect(floatOpen()).toBe(false);
+
+    // 병합(-661)으로 같은 사람이 새 World ID 가 되어도 다시 열지 않는다
+    seedTracks({ id: 'w-2', cameras: ['cam_D'], aliases: ['w-1'] });
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-2' }));
+    expect(floatOpen()).toBe(false);
+
+    // 다른 사람을 고르면 연다(이미 열린 창이면 그 사람의 카메라로 바꾼다)
+    seedTracks(
+      { id: 'w-2', cameras: ['cam_D'], aliases: ['w-1'] },
+      { id: 'w-3', cameras: ['cam_B'] },
+    );
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-3' }));
+    expect(floatOpen()).toBe(true);
+    expect(screen.getByLabelText('카메라 2 영상')).toBeTruthy();
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-2' }));
+    expect(screen.getByLabelText('카메라 4 영상')).toBeTruthy();
+  });
+
+  it('구역 편집 중에는 사람을 골라도 창을 열지 않는다', async () => {
+    seedTracks({ id: 'w-1', cameras: ['cam_C'] });
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(fake.props?.onSelectionChange).toBeTypeOf('function'));
+    closeFloat();
+    act(() => startZoneEdit());
+    act(() => fake.props?.onSelectionChange?.({ type: 'person', id: 'w-1' }));
+    act(() => stopZoneEdit());
+    expect(floatOpen()).toBe(false);
   });
 });
 

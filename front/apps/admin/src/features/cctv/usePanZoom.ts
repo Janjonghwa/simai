@@ -36,6 +36,7 @@ function pointInBox(box: DOMRect, clientX: number, clientY: number): PanZoomPoin
  * 휠은 포인터 밑을 기준으로 확대하고, 확대 중에는 누른 채 DRAG_THRESHOLD_PX 넘게 움직여 옮긴다. 확대 전의 누르기와
  * 움직이지 않은 누르기는 그대로 클릭이고, 끌어서 옮긴 뒤 따라 나오는 click 은 삼킨다(칸 크게 보기가 켜지지 않게).
  * + - 0 과 화살표 키는 칸에 포커스가 있을 때만 듣는다(브라우저 확대 키 Ctrl/Cmd 조합은 건드리지 않는다).
+ * 확대 중의 누르기는 감싼 요소로 넘기지 않는다(떠 있는 창 옮기기와 겹치지 않게).
  */
 export function usePanZoom() {
   const [view, setView] = useState<PanZoomView>(IDENTITY_VIEW);
@@ -75,6 +76,9 @@ export function usePanZoom() {
   const handlers = {
     onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0) return;
+      // 확대 중의 끌기는 칸 안 영상 옮기기다. 칸을 감싼 쪽(떠 있는 CCTV 창의 영상 끌어 창 옮기기)에 누르기를 넘기지 않는다
+      // (S15P31A101-798). 확대 전에는 그대로 넘겨 창을 옮긴다.
+      if (zoomed) e.stopPropagation();
       swallowClick.current = false;
       const start = { x: e.clientX, y: e.clientY };
       gesture.current = { start, last: start, dragging: false };

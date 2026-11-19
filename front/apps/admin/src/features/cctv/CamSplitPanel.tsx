@@ -16,7 +16,7 @@ import {
   withoutStale,
   type Incident,
 } from '@/features/events/incidents';
-import { cardTitle, targetFont, targetLabel } from '@/features/events/incidentView';
+import { ruleZoneTitle, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
 import { useZoneName } from '@/features/zones/useZoneName';
@@ -57,7 +57,7 @@ function IncidentSummary({
         <SeverityBadge severity={top.event.severity} />
         <span className="ml-auto text-xs text-muted-foreground">{statusText(status)}</span>
       </div>
-      <p className="text-sm">{cardTitle(incident, zoneName)}</p>
+      <p className="text-sm">{ruleZoneTitle(incident, zoneName)}</p>
       <div className="flex items-center justify-end gap-2">
         <AckButton entry={top} label="경보 확인(ACK)" zoneName={zoneName} />
         <Button

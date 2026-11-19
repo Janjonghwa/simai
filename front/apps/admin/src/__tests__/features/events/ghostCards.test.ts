@@ -8,7 +8,8 @@ import {
 } from '@/lib/trackLife';
 import { describe, expect, it } from 'vitest';
 
-// 잠깐 생겼다 사라진 중복 트랙(유령 트랙)의 「지금 안 보임」 카드 접기(S15P31A101-785).
+// 잠깐 생겼다 사라진 중복 트랙(유령 트랙)의 사라짐 카드 접기(S15P31A101-785). 접지 않은 사라진 사람의 카드는 진행 중이 아니라
+// 「최근 해소」 쪽(gone)으로 가므로(S15P31A101-798) 「그대로 둔다」는 active·gone 을 합쳐 본다.
 
 const T = 1_760_342_400_000;
 const SEC = 1_000;
@@ -65,7 +66,7 @@ describe('유령 트랙 카드 접기', () => {
       [5, 7, 'w-212'],
       [10, 30, 'w-231'],
     ]);
-    const { active, ghost } = sections(
+    const { active, gone, ghost } = sections(
       [
         entry({ event_id: 'a', world_ids: ['w-1'] }),
         entry({ event_id: 'b', world_ids: ['w-212'], rule_id: 'R1', zone_id: 'z-04' }),
@@ -74,46 +75,47 @@ describe('유령 트랙 카드 접기', () => {
       [],
       life,
     );
-    expect(keys(active)).toEqual(['person:w-1']);
+    expect(keys([...active, ...gone])).toEqual(['person:w-1']);
     expect(keys(ghost)).toEqual(['person:w-212', 'person:w-231']);
   });
 
-  it('충분히 오래(30초 이상) 보였다 사라진 사람은 그대로 둔다', () => {
+  it('충분히 오래(30초 이상) 보였다 사라진 사람은 접지 않고 최근 해소 쪽(gone)에 둔다', () => {
     const life = lifeOf([[2, 32, 'w-5']]);
-    const { active, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
-    expect(keys(active)).toEqual(['person:w-5']);
+    const { active, gone, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
+    expect(active).toEqual([]);
+    expect(keys(gone)).toEqual(['person:w-5']);
     expect(ghost).toEqual([]);
   });
 
   it('언제 생겼는지 모르면(화면을 연 때 이미 있었음) 짧아 보여도 그대로 둔다', () => {
     const life = lifeOf([[0, 3, 'w-5']]);
     expect(life.lives['w-5']!.bornSeen).toBe(false);
-    const { active, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
-    expect(keys(active)).toEqual(['person:w-5']);
+    const { active, gone, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
+    expect(keys([...active, ...gone])).toEqual(['person:w-5']);
     expect(ghost).toEqual([]);
   });
 
   it('이 브라우저가 본 적 없는 번호는 그대로 둔다', () => {
-    const { active, ghost } = sections(
+    const { active, gone, ghost } = sections(
       [entry({ world_ids: ['w-7'] })],
       [],
       lifeOf([[1, 2, 'w-1']]),
     );
-    expect(keys(active)).toEqual(['person:w-7']);
+    expect(keys([...active, ...gone])).toEqual(['person:w-7']);
     expect(ghost).toEqual([]);
   });
 
   it('워치가 붙었던 사람은 잠깐 보였어도 그대로 둔다', () => {
     const life = noteWatched(lifeOf([[1, 3, 'w-5']]), ['w-5']);
-    const { active, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
-    expect(keys(active)).toEqual(['person:w-5']);
+    const { active, gone, ghost } = sections([entry({ world_ids: ['w-5'] })], [], life);
+    expect(keys([...active, ...gone])).toEqual(['person:w-5']);
     expect(ghost).toEqual([]);
   });
 
   it('확인 대기 경보(위험·경고, 확인 전)가 있으면 잠깐 보였어도 그대로 두고, 확인한 뒤에는 접는다', () => {
     const life = lifeOf([[1, 3, 'w-5']]);
     const alarm = entry({ world_ids: ['w-5'], severity: 'CRITICAL' });
-    expect(keys(sections([alarm], [], life).active)).toEqual(['person:w-5']);
+    expect(keys(sections([alarm], [], life).gone)).toEqual(['person:w-5']);
     const acked = entry({
       world_ids: ['w-5'],
       severity: 'CRITICAL',
@@ -146,8 +148,9 @@ describe('유령 트랙 카드 접기', () => {
       [0, 120, 'w-1', ['w-9']],
       [10, 50, 'w-9'],
     ]);
-    const { active, ghost } = sections([entry({ world_ids: ['w-9'] })], ['w-1'], life);
+    const { active, gone, ghost } = sections([entry({ world_ids: ['w-9'] })], ['w-1'], life);
     expect(active).toEqual([]);
+    expect(gone).toEqual([]);
     expect(keys(ghost)).toEqual(['person:w-9']);
   });
 
@@ -164,7 +167,7 @@ describe('유령 트랙 카드 접기', () => {
       [],
       merged,
     );
-    expect(keys(both.active)).toEqual(['person:w-1']);
+    expect(keys([...both.active, ...both.gone])).toEqual(['person:w-1']);
     expect(keys(both.ghost)).toEqual(['person:w-9']);
     // 흡수한 사람의 카드가 없으면 흡수된 번호의 카드가 그 사람을 대신하므로 남긴다(둘 다 흡수된 번호여도 서로 기대지 않는다)
     const twoAbsorbed = lifeOf([
@@ -180,7 +183,7 @@ describe('유령 트랙 카드 접기', () => {
       [],
       twoAbsorbed,
     );
-    expect(keys(alone.active)).toEqual(['person:w-8', 'person:w-9']);
+    expect(keys([...alone.active, ...alone.gone])).toEqual(['person:w-8', 'person:w-9']);
     expect(alone.ghost).toEqual([]);
   });
 });

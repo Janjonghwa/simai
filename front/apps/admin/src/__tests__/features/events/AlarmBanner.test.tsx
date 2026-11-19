@@ -126,14 +126,14 @@ describe('AlarmBanner', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('등급 배지, 규칙 · 대상 · 구역, 발생 뒤 경과를 이벤트 카드와 같은 규칙으로 보인다', () => {
+  it('등급 배지, 규칙 · 대상(사람 경보는 구역 이름 없이), 발생 뒤 경과를 이벤트 카드와 같은 규칙으로 보인다', () => {
     vi.useFakeTimers();
     vi.setSystemTime(T + 12_000);
     const banner = renderBanner(true);
 
     expect(within(banner).getByText('위험')).toBeTruthy();
     expect(within(banner).getByRole('alert').textContent).toBe(
-      '추락 위험(가장자리) · 작업자 #0015 · 개구부 구역',
+      '추락 위험(가장자리) · 작업자 #0015',
     );
     // 사람은 끝번호만 보이고 전체 ID 는 올려 보면 나온다. 고정폭 글꼴도 쓰지 않는다.
     const person = within(banner).getByText('작업자 #0015');
@@ -226,9 +226,7 @@ describe('AlarmBanner', () => {
       },
     });
     const banner = renderBanner(true);
-    expect(within(banner).getByRole('alert').textContent).toBe(
-      '추락 위험(가장자리) · 김철수 · 개구부 구역',
-    );
+    expect(within(banner).getByRole('alert').textContent).toBe('추락 위험(가장자리) · 김철수');
     expect(
       within(banner).getByRole('button', { name: '추락 위험(가장자리) 김철수 (w-0015) 확인' }),
     ).toBeTruthy();

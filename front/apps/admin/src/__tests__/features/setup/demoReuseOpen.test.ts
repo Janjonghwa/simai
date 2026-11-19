@@ -2,7 +2,7 @@ import { demoReuseOpen, demoReuseShown } from '@/features/demo/demoSetup';
 import type { ReuseChoiceState, ReuseMapOption } from '@/features/setup/useReuseScene';
 import { describe, expect, it } from 'vitest';
 
-// 시연 계정의 이전 맵 재사용: 보이는 맵(최근 2개)을 시점 확인·추천 없이 고른다(서버 SetupDemoAccounts 와 같은 판정)
+// 시연 계정의 이전 맵 재사용: 맵을 시점 확인·추천 없이 고르고(서버 SetupDemoAccounts 와 같은 판정), 하루 전·이틀 전 날짜로 보인다
 
 const map = (overrides: Partial<ReuseMapOption>): ReuseMapOption => ({
   id: 'm',
@@ -77,9 +77,48 @@ describe('demoReuseOpen', () => {
 });
 
 describe('demoReuseShown', () => {
-  it('재사용이면 이전 맵을 최근 순으로 둘만, 새 맵이면 목록 없이 보인다', () => {
-    const maps = [1, 5, 3, 4, 2].map((n) => map({ id: `m${n}`, completedAtMs: n }));
-    expect(demoReuseShown(state({ maps }), 'REUSE').maps.map((m) => m.id)).toEqual(['m5', 'm4']);
-    expect(demoReuseShown(state({ maps }), 'NEW').maps).toEqual([]);
+  // 지금 = 11-19(목) 12:00 KST, 시작할 맵 = 11-16(월) 13:31 KST, 막힌 맵 = 11-17(화) 16:38 KST
+  const now = Date.UTC(2026, 10, 19, 3, 0);
+  const open = map({
+    id: 'mon',
+    status: 'MATCH',
+    selectable: true,
+    completedAtMs: Date.UTC(2026, 10, 16, 4, 31),
+    note: '',
+  });
+  const excluded = map({
+    id: 'tue',
+    status: 'EXCLUDED',
+    completedAtMs: Date.UTC(2026, 10, 17, 7, 38),
+    note: '그날 카메라 확인을 통과하지 못한 맵이에요',
+  });
+
+  it('재사용이면 시작할 맵을 하루 전, 막힌 맵을 이틀 전 날짜로 보이고 막힌 이유는 그대로 둔다', () => {
+    const shown = demoReuseShown(
+      state({ maps: [open, excluded], recommendedId: 'mon' }),
+      'REUSE',
+      now,
+    );
+    expect(shown.maps.map((m) => [m.id, m.dateLabel, m.selectable, m.note])).toEqual([
+      ['mon', '11-18(수) 13:31', true, ''],
+      ['demo-blocked-map', '11-17(화) 16:38', false, '그날 카메라 확인을 통과하지 못한 맵이에요'],
+    ]);
+  });
+
+  it('막힌 맵이 없으면 시작할 맵에 보정이 맞지 않는다는 이유를 달아 이틀 전으로 보인다', () => {
+    const shown = demoReuseShown(state({ maps: [open], recommendedId: 'mon' }), 'REUSE', now);
+    expect(shown.maps[1]).toMatchObject({
+      dateLabel: '11-17(화) 13:31',
+      selectable: false,
+      note: '지금 카메라 보정과 맞지 않아요',
+    });
+  });
+
+  it('새 맵이면 목록 없이, 시작할 맵이 없으면 서버 목록 그대로 보인다', () => {
+    expect(demoReuseShown(state({ maps: [open], recommendedId: 'mon' }), 'NEW', now).maps).toEqual(
+      [],
+    );
+    const none = state({ maps: [excluded] });
+    expect(demoReuseShown(none, 'REUSE', now)).toBe(none);
   });
 });

@@ -52,10 +52,18 @@ export const targetFont = (target: Incident['target'], personNames?: PersonDispl
 };
 
 /**
- * 카드 제목: 대표 규칙 이름 · 구역 이름. 대상이 구역이면 카드 둘째 줄에 그 구역이 있어 제목에서는 되풀이하지 않는다.
- * 이름을 모르는 구역은 뺀다.
+ * 카드 제목: 대표 규칙(가장 높은 등급) 이름만이다. 구역 이름은 붙이지 않는다(S15P31A101-798, 「위험구역 진입 · 단상 개구부」가
+ * 길어 줄이 넘쳤다). 구역은 3D·2D 윤곽선과 사건 상세에서 본다.
  */
-export function cardTitle(incident: Incident, zoneName: ZoneNameOf): string {
+export function cardTitle(incident: Incident): string {
+  return eventRuleName(topEntry(incident).event);
+}
+
+/**
+ * 규칙 이름 · 구역 이름(CCTV 분할 창의 사건 요약). 카드와 달리 구역을 붙인다. 대상이 구역이면 그 줄 위에 구역이 있어
+ * 되풀이하지 않고, 이름을 모르는 구역은 뺀다.
+ */
+export function ruleZoneTitle(incident: Incident, zoneName: ZoneNameOf): string {
   const event = topEntry(incident).event;
   const own = incident.target?.type === 'zone' ? incident.target.id : null;
   const name = event.zone_id === own ? null : zoneName(event.zone_id);
@@ -71,7 +79,7 @@ export function resolvedLabel(incident: Incident): string {
   return `해소 ${formatTime(Math.max(...times))}`;
 }
 
-/** 카드 머리줄 오른쪽의 처리 상태 칩 하나. */
+/** 카드의 처리 상태 하나. 한 줄 카드에서는 칩으로 그리지 않고 올려 보면 나오는 설명에 글로 둔다(S15P31A101-798). */
 export interface CardChip {
   kind: 'ticket' | 'ack' | 'unacked' | 'resolved' | 'stale';
   label: string;

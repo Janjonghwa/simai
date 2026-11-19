@@ -197,6 +197,9 @@ const idleNotice = () => screen.queryByRole('region', { name: '관제 상태' })
 const cardNames = () =>
   screen.queryAllByRole('article').map((card) => card.getAttribute('aria-label'));
 const card = (name: string) => screen.getByRole('article', { name });
+/** 카드를 올려 보면 나오는 설명의 줄들. 작업 외 꼬리표는 한 줄 카드에서 여기로 옮겼다(S15P31A101-798). */
+const cardTags = (name: string) =>
+  (within(card(name)).getAllByRole('button')[0]!.getAttribute('title') ?? '').split('\n');
 /** 작업 외 진입 꼬리표(S15P31A101-731 에서 이유별 문구로 나눴다). */
 const BADGE = '작업 구역 밖';
 const NO_WORK_BADGE = '작업 시간 외';
@@ -376,14 +379,15 @@ describe('관제 단계(-692): 작업 시작 API 성공만으로 관제 중이�
     await waitFor(() => expect(badge(sessionBar()!)).toBe('관제 중'));
   });
 
-  it('시작 뒤 10초 넘게 적용이 없으면 지연을 무엇이 / 어떻게로 알린다', async () => {
+  it('시작 뒤 10초 넘게 적용이 없어도 「관제 시작 지연」·안내 없이 「관제 중」이다(S15P31A101-798)', async () => {
     serveWorks([inProgress()]);
     serveBundles([configBundle('cfg-2', 'PENDING', 12), configBundle('cfg-1', 'APPLIED', null)]);
     renderMonitor();
     const bar = await screen.findByRole('region', { name: '작업 세션' });
-    await waitFor(() => expect(badge(bar)).toBe('관제 시작 지연'));
-    expect(bar.textContent).toContain('경보가 아직 꺼져 있습니다');
-    expect(bar.textContent).toContain('현장 노트북과 GPU 서버가 켜져 있고');
+    await waitFor(() => expect(badge(bar)).toBe('관제 중'));
+    expect(bar.textContent).not.toContain('관제 시작 지연');
+    expect(bar.textContent).not.toContain('경보가 아직 꺼져 있습니다');
+    expect(bar.textContent).not.toContain('현장 노트북과 GPU 서버가 켜져 있고');
   });
 
   it('이번 작업 묶음이 거부되면 「현장에 다시 보내기」가 묶음만 다시 발행하고 작업 시작은 다시 보내지 않는다', async () => {
@@ -489,9 +493,9 @@ describe('작업 외 진입 배지', () => {
 
     await screen.findByRole('region', { name: '작업 세션' });
     await waitFor(() => expect(screen.queryAllByRole('article')).toHaveLength(3));
-    await waitFor(() => expect(within(card('w-0013 이벤트')).queryByText(BADGE)).toBeTruthy());
-    expect(within(card('w-0012 이벤트')).queryByText(BADGE)).toBeNull();
-    expect(within(card('w-0014 이벤트')).queryByText(BADGE)).toBeNull();
+    await waitFor(() => expect(cardTags('w-0013 이벤트')).toContain(BADGE));
+    expect(cardTags('w-0012 이벤트')).not.toContain(BADGE);
+    expect(cardTags('w-0014 이벤트')).not.toContain(BADGE);
   });
 
   it('배지는 경보 등급·확인 대기 표시를 바꾸지 않는다', async () => {
@@ -501,7 +505,7 @@ describe('작업 외 진입 배지', () => {
     ]);
 
     await screen.findByRole('region', { name: '작업 세션' });
-    await waitFor(() => expect(within(card('w-0013 이벤트')).queryByText(BADGE)).toBeTruthy());
+    await waitFor(() => expect(cardTags('w-0013 이벤트')).toContain(BADGE));
     expect(within(card('w-0013 이벤트')).getByText(/^(위험|CRITICAL)$/)).toBeTruthy();
     expect(screen.getByRole('group', { name: '확인 대기 경보' })).toBeTruthy();
   });
@@ -511,9 +515,7 @@ describe('작업 외 진입 배지', () => {
     renderMonitor([item({ event_id: 'idle', world_ids: ['w-0012'], zone_id: 'z-04' })]);
 
     await screen.findByRole('region', { name: '관제 대기' });
-    await waitFor(() =>
-      expect(within(card('w-0012 이벤트')).queryByText(NO_WORK_BADGE)).toBeTruthy(),
-    );
+    await waitFor(() => expect(cardTags('w-0012 이벤트')).toContain(NO_WORK_BADGE));
   });
 });
 
@@ -564,7 +566,7 @@ describe('대기 화면에서도 경보', () => {
     const banner = screen.getByRole('group', { name: '확인 대기 경보' });
     expect(banner).toBeTruthy();
     expect(card('w-0015 이벤트')).toBeTruthy();
-    expect(within(card('w-0015 이벤트')).queryByText(NO_WORK_BADGE)).toBeTruthy();
+    expect(cardTags('w-0015 이벤트')).toContain(NO_WORK_BADGE);
     // 경보는 대기 화면 안에 있지 않고(가려지지 않고), 대기 화면보다 뒤에 그려져 위에 뜬다.
     expect(waiting.contains(banner)).toBe(false);
     const panel = screen.getByRole('complementary', { name: '이벤트' });

@@ -25,6 +25,7 @@ import {
   mergeEvent,
   metricLabels,
   needsConfirmation,
+  ruleZoneTitle,
   shortPersonId,
   targetFont,
   targetLabel,
@@ -385,19 +386,46 @@ describe('화면 묶음(S15P31A101-731)', () => {
 
   it('위험(규칙)이나 구역이 다르거나 짧은 시간(1분) 밖이면 묶지 않는다', () => {
     const alive = new Set(['w-3']);
+    // 묶이지 않은 사라진 번호(w-1)의 카드는 진행 중이 아니라 최근 해소 쪽(gone)에 따로 남는다(S15P31A101-798).
+    const cards = (s: ReturnType<typeof eventSections>) =>
+      [...s.active, ...s.gone].map((c) => c.incident.key).sort();
+    const apart = ['person:w-1', 'person:w-3'];
     expect(
-      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { rule_id: 'R1' })], {
-        alive,
-      }).active,
-    ).toHaveLength(2);
+      cards(
+        eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { rule_id: 'R1' })], {
+          alive,
+        }),
+      ),
+    ).toEqual(apart);
     expect(
-      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { zone_id: 'z-02' })], {
-        alive,
-      }).active,
-    ).toHaveLength(2);
+      cards(
+        eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { zone_id: 'z-02' })], {
+          alive,
+        }),
+      ),
+    ).toEqual(apart);
     expect(
-      eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 2 * MIN)], { alive }).active,
-    ).toHaveLength(2);
+      cards(eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 2 * MIN)], { alive })),
+    ).toEqual(apart);
+  });
+
+  it('사라진 사람의 진행 중 카드는 등급(위험 포함)·확인 여부와 상관없이 gone 으로 옮기고, 해소 한도에 들지 않는다(S15P31A101-798)', () => {
+    const alive = new Set(['w-1']);
+    const entries = [
+      live('a', 'w-1', T),
+      live('b', 'w-2', T, { rule_id: 'R4', severity: 'CRITICAL' }),
+      live('c', 'w-3', T, { rule_id: 'R1', severity: 'CAUTION', zone_id: 'z-02' }),
+      ...[1, 2, 3, 4, 5].map((n) => done(`r${n}`, `w-10${n}`, T + n * 10 * MIN)),
+    ];
+    const sections = eventSections(entries, { alive });
+    expect(sections.active.map((c) => c.incident.key)).toEqual(['person:w-1']);
+    expect(sections.gone.map((c) => c.incident.key)).toEqual(['person:w-2', 'person:w-3']);
+    // 화면만 옮긴다: 묶음은 여전히 진행 중이고 확인 대기 경보도 그대로다.
+    expect(sections.gone.every((c) => c.incident.active)).toBe(true);
+    expect(sections.gone[0]!.incident.alarming).toBe(true);
+    expect(sections.resolved).toHaveLength(4);
+    // 사람 수를 모르면(World 수신 전) 옮기지 않는다.
+    expect(eventSections(entries).gone).toEqual([]);
   });
 
   it('최근 해소도 같은 위험·구역의 짧은 시간 안 발생을 번호가 달라도 한 카드로 센다', () => {
@@ -782,30 +810,37 @@ describe('카드 표시 계산', () => {
     expect(cardChip(incidentOfEntries(entry({ severity: 'INFO' })))).toBeNull();
   });
 
-  it('카드 제목: 대표 규칙(가장 높은 등급)의 이름 · 구역 이름', () => {
+  it('카드 제목: 대표 규칙(가장 높은 등급)의 이름만이고 구역 이름은 붙이지 않는다(-798)', () => {
     const incident = incidentOfEntries(
       entry({ event_id: 'a', zone_id: 'z-04' }),
       entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
     );
-    expect(cardTitle(incident, zoneName)).toBe('추락 위험(가장자리) · 개구부 구역');
+    expect(cardTitle(incident)).toBe('추락 위험(가장자리)');
   });
 
-  it('R1 주의 묶음의 카드 제목은 위험구역 진입이다', () => {
+  it('R1 주의 묶음의 카드 제목은 구역 이름 없이 위험구역 진입이다(-798)', () => {
     const incident = incidentOfEntries(entry({ rule_id: 'R1', severity: 'CAUTION' }));
-    expect(cardTitle(incident, zoneName)).toBe('위험구역 진입 · 개구부 구역');
+    expect(cardTitle(incident)).toBe('위험구역 진입');
   });
 
-  it('구역이 대상인 묶음은 제목에서 구역을 되풀이하지 않고, 구역이 없거나 이름을 모르면 규칙 이름만이다', () => {
-    const title = (change: Partial<EventItem>) =>
-      cardTitle(incidentOfEntries(entry(change)), zoneName);
+  it('구역이 대상이거나 구역이 없거나 이름을 몰라도 제목은 규칙 이름만이다', () => {
+    const title = (change: Partial<EventItem>) => cardTitle(incidentOfEntries(entry(change)));
     expect(title({ world_ids: [], zone_id: 'z-04' })).toBe('추락 위험(가장자리)');
     expect(title({ zone_id: undefined })).toBe('추락 위험(가장자리)');
     expect(title({ zone_id: 'z-99' })).toBe('추락 위험(가장자리)');
   });
 
-  it('이름이 빈 구역은 제목에서 빼고, 구역이 대상이거나 주어이면 `구역` 이다', () => {
+  it('CCTV 분할 창 요약은 규칙 이름 · 구역 이름이고, 구역이 대상이거나 이름을 모르면 구역을 뺀다', () => {
+    const title = (change: Partial<EventItem>) =>
+      ruleZoneTitle(incidentOfEntries(entry(change)), zoneName);
+    expect(title({ rule_id: 'R1', severity: 'CAUTION' })).toBe('위험구역 진입 · 개구부 구역');
+    expect(title({ world_ids: [], zone_id: 'z-04' })).toBe('추락 위험(가장자리)');
+    expect(title({ zone_id: 'z-99' })).toBe('추락 위험(가장자리)');
+    expect(title({ zone_id: 'z-05' })).toBe('추락 위험(가장자리)');
+  });
+
+  it('구역이 대상이거나 주어인데 이름이 비면 `구역` 이다', () => {
     const incident = (change: Partial<EventItem>) => incidentOfEntries(entry(change));
-    expect(cardTitle(incident({ zone_id: 'z-05' }), zoneName)).toBe('추락 위험(가장자리)');
     expect(targetLabel(incident({ world_ids: [], zone_id: 'z-05' }).target, zoneName)).toBe('구역');
     expect(eventSubject(item({ world_ids: [], zone_id: 'z-05' }), zoneName)).toBe('구역');
   });
