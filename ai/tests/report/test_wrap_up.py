@@ -229,8 +229,8 @@ def test_real_case_narrative_and_timing_validation():
     assert generate(request, lambda: Client([json.dumps({"text": paragraph}), "오류"]))["fallback"]
 
 
-@pytest.mark.parametrize("rule", ["R8", "R9", "R10", "R11"])
-def test_ppe_and_extended_rules_are_accepted_with_description(rule):
+@pytest.mark.parametrize("rule", ["R9", "R11"])
+def test_ppe_rules_are_accepted_with_description(rule):
     """R9 안전모·R11 조끼(-549) 이벤트가 있어도 요청 전체가 거절되지 않고 설명 절이 붙는다."""
     req = copy.deepcopy(REQUEST)
     req["facts"]["rule_counts"] = {"R1": 2, rule: 1}
@@ -241,9 +241,10 @@ def test_ppe_and_extended_rules_are_accepted_with_description(rule):
     assert f"{RULE_DESCRIPTIONS[rule]} 1건" in text and numbers_match(text, req["facts"])
 
 
-def test_unknown_rule_is_rejected():
+@pytest.mark.parametrize("rule", ["R8", "R10", "R12"])
+def test_unknown_rule_is_rejected(rule):
     req = copy.deepcopy(REQUEST)
-    req["facts"]["rule_counts"] = {"R1": 2, "R12": 1}
+    req["facts"]["rule_counts"] = {"R1": 2, rule: 1}
     with pytest.raises(ValueError):
         validate_request(req)
 
@@ -296,9 +297,9 @@ def test_follow_up_uses_most_frequent_rule_and_zone_and_keeps_positive_actions()
     assert "다음 작업 반영: 개구부 1 점검과 추락 위험(가장자리) 예방 대책" in text
     assert "운영자 종료 2건" in text and numbers_match(text, req["facts"])
     # 빈도가 같으면 규칙 번호로 결정해 입력 dict 순서에 흔들리지 않는다.
-    req["facts"]["rule_counts"] = {"R10": 1, "R2": 1, "R1": 1}
+    req["facts"]["rule_counts"] = {"R11": 1, "R2": 1, "R1": 1}
     tied = deterministic(req["facts"])
-    assert "주요 위험: 위험구역 진입 1건, 추락 위험(가장자리) 1건, 불확실 점유 근접 1건" in tied
+    assert "주요 위험: 위험구역 진입 1건, 추락 위험(가장자리) 1건, 조끼 미착용 1건" in tied
 
 
 def test_구역_없는_경보도_종료_미팅을_만든다():

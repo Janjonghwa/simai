@@ -34,6 +34,7 @@ import type { ConfigBundle } from '@/features/zones/types';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { useZoneName } from '@/features/zones/useZoneName';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
+import { displayRuleId } from '@/lib/ruleNames';
 import { cn } from '@simai/ui/lib/utils';
 import type { ReactNode } from 'react';
 
@@ -112,7 +113,7 @@ function RuleRow({
       <details className="text-sm">
         <summary className="w-fit cursor-pointer text-muted-foreground">자세히</summary>
         <div className="mt-1 flex flex-col gap-1">
-          <span className="text-muted-foreground">규칙 {event.rule_id}</span>
+          <span className="text-muted-foreground">규칙 {displayRuleId(event.rule_id)}</span>
           {metrics.length > 0 && (
             <span className="flex flex-wrap gap-x-2 font-mono">
               {metrics.map((label) => (

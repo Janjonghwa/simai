@@ -22,7 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
  * config_bundle.applied_at) 이 현장의 마지막 구성 묶음이 실은 판이다(config_bundle_item). 발행했지만 아직 적용 전이거나 거부된 묶음은
  * 현재가 아니고 pending_config_version 으로만 알린다. 적용된 묶음이 없으면 묶음을 만들 때와 같은 선택(RuleSelection)으로 현장 규칙 기준
  * (site.rule_profile, 기본 교실 시험, S15P31A101-669)의 판을 준다.
- * R1~R11 은 활성 여부와 함께 모두 싣고(확장 규칙은 비활성), 적용 기간은 versions 에 모든 판의 valid_from·valid_to 로 싣는다.
+ * 구현 규칙(내부 ID R1~R7·R9·R11, 표시 번호 R1~R9)은 활성 여부와 함께 모두 싣고, 적용 기간은 versions 에 모든 판의 valid_from·valid_to 로 싣는다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -33,7 +33,7 @@ class RuleViews {
             r.rule_id, r.rule_version, r.profile, r.thresholds::text AS thresholds, r.default_severity, r.legal_basis, r.reads,
             r.valid_from, r.valid_to
             """;
-    /** 규칙 ID 를 R1, R2, …, R11 순서로(문자열 순이면 R10 이 R2 앞에 온다) */
+    /** 규칙 ID 를 R1, R2, …, R9, R11 순서로(문자열 순이면 R11 이 R2 앞에 온다) */
     private static final String RULE_ORDER = "length(r.rule_id), r.rule_id";
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -80,10 +80,10 @@ class RuleViews {
                 """, site, String.class).stream().findFirst().orElse(null));
         ArrayNode rules = node.putArray("rules");
         for (RuleCatalog rule : RuleCatalog.values()) {
-            rules.add(entry(rule.name(), rule.title(), rule.stage(), byRule.remove(rule.name()), selected));
+            rules.add(entry(rule.name(), rule.displayId(), rule.title(), rule.stage(), byRule.remove(rule.name()), selected));
         }
-        // 등록부에 7.1 표 밖의 규칙이 생기면 이름 없이 싣는다(숨기지 않는다)
-        byRule.forEach((id, v) -> rules.add(entry(id, null, null, v, selected)));
+        // 등록부에 7.2 표 밖의 규칙이 생기면 이름 없이 싣는다(숨기지 않는다)
+        byRule.forEach((id, v) -> rules.add(entry(id, RuleCatalog.displayIdOf(id), null, null, v, selected)));
         // 적용 기간만 싣는다(값은 current 에만)
         node.putArray("versions").addAll(jdbc.query("""
                 SELECT r.rule_id, r.rule_version, r.profile, r.valid_from, r.valid_to FROM rule_version r ORDER BY
@@ -91,9 +91,10 @@ class RuleViews {
         return node;
     }
 
-    private ObjectNode entry(String ruleId, String title, String stage, ObjectNode current, List<ObjectNode> selected) {
+    private ObjectNode entry(String ruleId, String displayId, String title, String stage, ObjectNode current, List<ObjectNode> selected) {
         ObjectNode n = mapper.createObjectNode();
         n.put("rule_id", ruleId);
+        n.put("display_id", displayId);
         n.put("name", title);
         n.put("stage", stage);
         n.set("current", current == null ? mapper.nullNode() : current);

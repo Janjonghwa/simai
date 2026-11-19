@@ -39,7 +39,7 @@ describe('PpePolicyNotice', () => {
       bundle('cfg-3', 'APPLIED', null),
     ]);
     expect(screen.getByRole('status').textContent).toContain(PPE_POLICY_MISSING_TEXT);
-    expect(screen.getByRole('status').textContent).toContain('안전모·조끼 미착용(R9·R11)');
+    expect(screen.getByRole('status').textContent).toContain('안전모·조끼 미착용(R8·R9)');
   });
 
   it('이전 문서에 vest 가 없으면 조끼만 미판정이라고 보인다', () => {
@@ -52,7 +52,7 @@ describe('PpePolicyNotice', () => {
       }),
     ]);
     expect(screen.getByRole('status').textContent).toContain('조끼 요구 미수신');
-    expect(screen.getByRole('status').textContent).toContain('조끼 미착용(R11)');
+    expect(screen.getByRole('status').textContent).toContain('조끼 미착용(R9)');
     expect(screen.getByRole('status').textContent).not.toContain('안전모');
   });
 

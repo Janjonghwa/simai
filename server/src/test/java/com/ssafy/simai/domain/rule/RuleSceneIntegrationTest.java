@@ -89,7 +89,7 @@ class RuleSceneIntegrationTest {
     }
 
     @Test
-    void 규칙은_R1부터_R11까지_활성_여부와_현재_판_임계값과_모든_판의_적용_기간을_준다() throws Exception {
+    void 규칙은_구현된_9종을_내부_ID와_표시_번호로_주고_현재_판_임계값과_모든_판의_적용_기간을_준다() throws Exception {
         String bundle = bundle("OPERATION");
         item(bundle, "R1", 1);
         item(bundle, "R2", 1);
@@ -100,8 +100,9 @@ class RuleSceneIntegrationTest {
         assertThat(body.get("rule_profile").asString()).isEqualTo("OPERATION");
         assertThat(body.get("config_version").asString()).isEqualTo(bundle);
         JsonNode rules = body.get("rules");
-        assertThat(rules).hasSize(11);
+        assertThat(rules).hasSize(9);
         assertThat(rules.get(0).get("rule_id").asString()).isEqualTo("R1");
+        assertThat(rules.get(0).get("display_id").asString()).isEqualTo("R1");
         assertThat(rules.get(0).get("name").asString()).isEqualTo("위험구역 진입");
         assertThat(rules.get(0).get("active").asBoolean()).isTrue();
         JsonNode r1 = rules.get(0).get("current");
@@ -119,18 +120,16 @@ class RuleSceneIntegrationTest {
         assertThat(r6.get("rule_id").asString()).isEqualTo("R6");
         assertThat(r6.get("active").asBoolean()).isTrue();
         assertThat(r6.get("applied_with").get(0).asString()).isEqualTo("R1");
-        // 확장 규칙
-        assertThat(rules.get(9).get("rule_id").asString()).isEqualTo("R10");
-        assertThat(rules.get(9).get("stage").asString()).isEqualTo("EXTENSION");
-        assertThat(rules.get(9).get("active").asBoolean()).isFalse();
-        // PPE 규칙(MVP, 시연 예외로 시드에는 있지만 이 시험의 적용 묶음에는 없어 비활성): R9·R11(-556)
-        assertThat(rules.get(8).get("rule_id").asString()).isEqualTo("R9");
-        assertThat(rules.get(8).get("name").asString()).isEqualTo("안전모 미착용");
+        // 미구현 확장 규칙 R8·R10 은 제외되고 PPE 규칙 R9·R11 은 표시 번호 R8·R9 로 이어 보인다(-804)
+        assertThat(rules.get(7).get("rule_id").asString()).isEqualTo("R9");
+        assertThat(rules.get(7).get("display_id").asString()).isEqualTo("R8");
+        assertThat(rules.get(7).get("name").asString()).isEqualTo("안전모 미착용");
+        assertThat(rules.get(7).get("stage").asString()).isEqualTo("MVP");
+        assertThat(rules.get(8).get("rule_id").asString()).isEqualTo("R11");
+        assertThat(rules.get(8).get("display_id").asString()).isEqualTo("R9");
+        assertThat(rules.get(8).get("name").asString()).isEqualTo("조끼 미착용");
         assertThat(rules.get(8).get("stage").asString()).isEqualTo("MVP");
-        assertThat(rules.get(10).get("rule_id").asString()).isEqualTo("R11");
-        assertThat(rules.get(10).get("name").asString()).isEqualTo("조끼 미착용");
-        assertThat(rules.get(10).get("stage").asString()).isEqualTo("MVP");
-        assertThat(rules.get(10).get("active").asBoolean()).isFalse();
+        assertThat(rules.get(8).get("active").asBoolean()).isFalse();
         // 적용 기간: 교실 시험 판까지 모든 판, 값 없이
         JsonNode versions = body.get("versions");
         assertThat(versions.size()).isGreaterThanOrEqualTo(9);

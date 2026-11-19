@@ -232,7 +232,7 @@ public class DailyReportService implements DisposableBean {
                 severities.put(s, n);
             }
         }
-        // 규칙 번호 순(R1, R2, …, R10). 같은 길이면 사전 순
+        // 규칙 번호 순(R1, R2, …, R9, R11). 같은 길이면 사전 순
         Map<String, Long> byRule = new TreeMap<>((a, b) -> a.length() != b.length() ? Integer.compare(a.length(), b.length()) : a.compareTo(b));
         facts.forEach(f -> byRule.merge(f.ruleId(), 1L, Long::sum));
         ObjectNode rules = out.putObject("rule_counts");
