@@ -140,3 +140,73 @@ def test_split_child_never_inherits():
     carry.observe([child], 1100)
     carry.receiver("w-7")
     assert carry.decide([child], 1100) == [] and carry.stats == {"rejected_split_child": 1}
+
+
+def test_dormant_defaults_match_world_track_reid_ttl_and_caps():
+    cfg, world = CarryConfig(), WorldTrackConfig()
+    assert cfg.dormant_ttl_ms == world.reid_dormant_ttl_ms == 1_800_000
+    assert cfg.max_dormant == 64
+    assert cfg.max_dormant_bytes == 512 * 1024 * 1024
+    with pytest.raises(ValueError):
+        CarryConfig(dormant_ttl_ms=-1)
+    with pytest.raises(ValueError):
+        CarryConfig(max_dormant=-1)
+    with pytest.raises(ValueError):
+        CarryConfig(max_dormant_bytes=-1)
+
+
+def test_dormant_restores_same_id_up_to_30_minutes_without_donating_to_new_id():
+    carry = AppearanceCarry()
+    lose(carry, "w-1", (3., 2.), 1000, donor=True)
+    lose(carry, "w-2", (8., 2.), 1000, donor=True)
+    lose(carry, "w-no-asset", (12., 2.), 1000, donor=False)
+
+    # 20초(keep_ms) 초과 -> departed 에서 빠지고 자산 보유 ID 만 dormant 로 승격한다.
+    carry.expire(1200 + CarryConfig().keep_ms + 1)
+    assert carry.departed == {}
+    assert set(carry.dormant) == {"w-1", "w-2"}
+
+    # 휴면 보관된 ID 는 새 World ID 에 이어 주지 않으며 혼잡 근거로도 쓰지 않는다.
+    assert appear(carry, "w-new", (3., 2.), 1200 + CarryConfig().keep_ms + 2) == []
+
+    # 30분(1,800,000 ms) 경계 안: 같은 World ID 복원 성공
+    t_before_limit = 1200 + CarryConfig().dormant_ttl_ms
+    carry.expire(t_before_limit)
+    assert carry.take("w-1") == "state-w-1"
+    assert carry.stats["dormant_restored"] == 1
+    assert "w-1" not in carry.dormant
+
+    # 30분 초과: 휴면 만료
+    carry.expire(t_before_limit + 1)
+    assert carry.take("w-2") is None
+    assert carry.stats["dormant_expired"] == 1
+
+
+def test_dormant_enforces_count_cap_and_memory_cap_evicting_oldest():
+    # 개수 상한 검증
+    carry = AppearanceCarry(CarryConfig(max_departed=1, max_dormant=3, max_dormant_bytes=10_000))
+    for i, wid in enumerate(("w-1", "w-2", "w-3", "w-4")):
+        carry.observe([track(wid, (float(i), 0.), t_last=1000 + i)], 1000 + i)
+        carry.depart(wid, f"p-{wid}", 1000 + i, donor=True, size_bytes=100)
+    carry.expire(1004 + CarryConfig().keep_ms + 1)
+    assert set(carry.dormant) == {"w-2", "w-3", "w-4"}
+    assert carry.dormant_bytes == 300
+    assert carry.stats["dormant_dropped_capacity"] == 1
+
+    # 메모리 상한 검증(가장 오래된 항목부터 축출, 단일 항목 초과 시 거부)
+    mem_carry = AppearanceCarry(CarryConfig(max_departed=1, max_dormant=64, max_dormant_bytes=1000))
+    for i, wid in enumerate(("m-1", "m-2", "m-3")):
+        mem_carry.observe([track(wid, (float(i), 0.), t_last=2000 + i)], 2000 + i)
+        mem_carry.depart(wid, f"p-{wid}", 2000 + i, donor=True, size_bytes=400)
+    mem_carry.expire(2003 + CarryConfig().keep_ms + 1)
+    assert set(mem_carry.dormant) == {"m-2", "m-3"}
+    assert mem_carry.dormant_bytes == 800
+    assert mem_carry.stats["dormant_dropped_memory"] == 1
+
+    # 단일 항목이 max_dormant_bytes 를 넘으면 저장하지 않는다.
+    mem_carry.observe([track("m-huge", (9., 0.), t_last=3000)], 3000)
+    mem_carry.depart("m-huge", "huge", 3000, donor=True, size_bytes=1500)
+    mem_carry.expire(3000 + CarryConfig().keep_ms + 1)
+    assert "m-huge" not in mem_carry.dormant
+    assert mem_carry.dormant_bytes == 800
+    assert mem_carry.stats["dormant_dropped_memory"] == 2

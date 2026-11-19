@@ -29,6 +29,14 @@ import math
 from typing import Any
 
 
+DEFAULT_DORMANT_TTL_MS = 1_800_000
+"""같은 World ID Re-ID 휴면 보존 시간(30분). WorldTrackConfig.reid_dormant_ttl_ms 와 같다(S15P31A101-802·808)."""
+DEFAULT_MAX_DORMANT = 64
+"""휴면 보존 World ID 개수 상한."""
+DEFAULT_MAX_DORMANT_BYTES = 512 * 1024 * 1024
+"""휴면 보존 누적 텍셀·체형 사본 메모리 상한(512 MiB)."""
+
+
 @dataclass(frozen=True)
 class CarryConfig:
     """수치 근거는 설계 문서 '수치'. 거리 게이트 값은 WorldTrackConfig 기본값과 같다(tests 가 같음을 확인)."""
@@ -47,11 +55,18 @@ class CarryConfig:
     """소실 ID 상태를 들고 있는 시간(빠진 뒤 World 시각). 같은 ID 늦은 재연결 창(reconnect_window_ms, -802 에서 20 s)과 같다"""
     max_departed: int = 16
     """들고 있는 소실 ID 수 상한(텍스처 누적 사본 메모리 상한). 넘으면 오래된 것부터 버린다"""
+    dormant_ttl_ms: int = DEFAULT_DORMANT_TTL_MS
+    """같은 World ID 가 Re-ID 로 복원될 때 외형·체형을 재사용하기 위해 보관하는 시간(기본 30분). 새 ID 이어받기에는 쓰지 않는다"""
+    max_dormant: int = DEFAULT_MAX_DORMANT
+    """휴면 보관 ID 수 상한. 넘으면 가장 오래된 ID 부터 버린다"""
+    max_dormant_bytes: int = DEFAULT_MAX_DORMANT_BYTES
+    """휴면 보관 메모리 상한(바이트). 넘으면 가장 오래된 ID 부터 버린다"""
 
     def __post_init__(self):
         if (self.window_ms < 0 or self.overlap_ms < 0 or self.gate_base_m < 0 or self.max_speed_mps < 0
                 or self.radius_max_m < self.gate_base_m or self.crowd_radius_m < 0 or self.height_tolerance_m < 0
-                or self.keep_ms < self.window_ms or self.max_departed < 1):
+                or self.keep_ms < self.window_ms or self.max_departed < 1
+                or self.dormant_ttl_ms < 0 or self.max_dormant < 0 or self.max_dormant_bytes < 0):
             raise ValueError("외형 이어받기 설정 범위 오류")
 
     def reach_m(self, gap_ms: float) -> float:
@@ -75,6 +90,21 @@ class Departed:
     payload: Any
     donor: bool
     """새 ID 에 외형을 줄 수 있는가(호출자가 정한다: 보낸 아바타 자산이 있음)"""
+    size_bytes: int = 0
+
+
+def _payload_bytes(payload: Any) -> int:
+    size_fn = getattr(payload, "size_bytes", None)
+    if callable(size_fn):
+        return max(0, int(size_fn()))
+    if isinstance(size_fn, int) and not isinstance(size_fn, bool):
+        return max(0, size_fn)
+    if isinstance(payload, (bytes, bytearray, memoryview)):
+        return len(payload)
+    nbytes = getattr(payload, "nbytes", None)
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool):
+        return max(0, nbytes)
+    return 0
 
 
 def standing_height(track: Mapping[str, Any]) -> float | None:
@@ -105,8 +135,43 @@ class AppearanceCarry:
         self.config = config or CarryConfig()
         self.seen: dict[str, Seen] = {}
         self.departed: dict[str, Departed] = {}
+        self.dormant: dict[str, Departed] = {}
+        self._dormant_bytes: int = 0
         self.pending: set[str] = set()
         self.stats: Counter = Counter()
+
+    @property
+    def dormant_bytes(self) -> int:
+        return self._dormant_bytes
+
+    def _remove_dormant(self, world_id: str) -> Departed | None:
+        gone = self.dormant.pop(world_id, None)
+        if gone is not None:
+            self._dormant_bytes = max(0, self._dormant_bytes - gone.size_bytes)
+        return gone
+
+    def _archive_dormant(self, gone: Departed, t: int) -> None:
+        """단기 소실(20s)을 넘긴 자산 보유 ID 를 같은 World ID Re-ID 복원용 휴면 보관으로 옮긴다."""
+        cfg = self.config
+        if not gone.donor or cfg.dormant_ttl_ms <= 0 or cfg.max_dormant <= 0 or cfg.max_dormant_bytes <= 0:
+            return
+        if t - gone.departed_t > cfg.dormant_ttl_ms:
+            self.stats["dormant_expired"] += 1
+            return
+        if gone.size_bytes > cfg.max_dormant_bytes:
+            self.stats["dormant_dropped_memory"] += 1
+            return
+        self._remove_dormant(gone.world_id)
+        self.dormant[gone.world_id] = gone
+        self._dormant_bytes += gone.size_bytes
+        while len(self.dormant) > cfg.max_dormant:
+            oldest = min(self.dormant.values(), key=lambda d: d.departed_t)
+            self._remove_dormant(oldest.world_id)
+            self.stats["dormant_dropped_capacity"] += 1
+        while self._dormant_bytes > cfg.max_dormant_bytes and self.dormant:
+            oldest = min(self.dormant.values(), key=lambda d: d.departed_t)
+            self._remove_dormant(oldest.world_id)
+            self.stats["dormant_dropped_memory"] += 1
 
     def observe(self, tracks: Iterable[Mapping[str, Any]], t: int) -> None:
         """LOST 가 아닌 트랙의 처음·마지막 위치와 키 최댓값을 적는다."""
@@ -128,21 +193,30 @@ class AppearanceCarry:
             if height is not None and (seen.height is None or height > seen.height):
                 seen.height = height
 
-    def depart(self, world_id: str, payload: Any, t: int, *, donor: bool) -> None:
+    def depart(self, world_id: str, payload: Any, t: int, *, donor: bool, size_bytes: int | None = None) -> None:
+        self._remove_dormant(world_id)
         seen = self.seen.pop(world_id, None)
         self.pending.discard(world_id)
         if seen is None:
             return
-        self.departed[world_id] = Departed(world_id, seen, int(t), payload, donor)
+        nbytes = _payload_bytes(payload) if size_bytes is None else max(0, int(size_bytes))
+        self.departed[world_id] = Departed(world_id, seen, int(t), payload, donor, nbytes)
         while len(self.departed) > self.config.max_departed:
             oldest = min(self.departed.values(), key=lambda d: d.departed_t)
             del self.departed[oldest.world_id]
             self.stats["dropped_capacity"] += 1
+            self._archive_dormant(oldest, int(t))
 
     def take(self, world_id: str) -> Any:
-        """병합·같은 ID 재연결 때 그 ID 의 상태를 꺼낸다(이어받기 후보에서 빠진다). 없으면 None."""
+        """병합·같은 ID 재연결·Re-ID 휴면 복원 때 그 ID 의 상태를 꺼낸다(이어받기 후보에서 빠진다). 없으면 None."""
         gone = self.departed.pop(world_id, None)
-        return None if gone is None else gone.payload
+        if gone is not None:
+            return gone.payload
+        gone = self._remove_dormant(world_id)
+        if gone is not None:
+            self.stats["dormant_restored"] += 1
+            return gone.payload
+        return None
 
     def receiver(self, world_id: str) -> None:
         self.pending.add(world_id)
@@ -208,5 +282,10 @@ class AppearanceCarry:
         return accepted
 
     def expire(self, t: int) -> None:
-        for wid in [w for w, d in self.departed.items() if t - d.departed_t > self.config.keep_ms]:
-            del self.departed[wid]
+        now = int(t)
+        for wid in [w for w, d in self.departed.items() if now - d.departed_t > self.config.keep_ms]:
+            gone = self.departed.pop(wid)
+            self._archive_dormant(gone, now)
+        for wid in [w for w, d in self.dormant.items() if now - d.departed_t > self.config.dormant_ttl_ms]:
+            self._remove_dormant(wid)
+            self.stats["dormant_expired"] += 1

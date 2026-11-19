@@ -311,3 +311,138 @@ def test_async_appearance_keeps_images_after_source_buffers_are_rewritten(rig):
     finally:
         release.set()
         loop.close()
+
+
+def test_worker_default_ignores_throttle_and_defers_only_when_gate_closed():
+    """기본값은 감속으로 외형 분할을 미루지 않는다(-808, 아바타 시연 필수). 게이트가 닫혔을 때만 미룬다."""
+    from simai_ai.hmr.appearance_worker import DEFAULT_SEG_MAX_INTERVAL_MS, AppearanceWorker
+
+    assert DEFAULT_SEG_MAX_INTERVAL_MS is None
+    gate_open = [True]
+    loop = SimpleNamespace(
+        gate=SimpleNamespace(check=lambda: SimpleNamespace(admit=gate_open[0]), recommended_interval_ms=lambda: 800),
+    )
+    worker = AppearanceWorker.__new__(AppearanceWorker)
+    worker.loop, worker.seg_max_interval_ms = loop, DEFAULT_SEG_MAX_INTERVAL_MS
+    assert worker._gate_state(check_throttle=True) == (True, "ok")
+    gate_open[0] = False
+    assert worker._gate_state(check_throttle=True) == (False, "gate_closed")
+
+
+@pytest.mark.parametrize("mode", ["gate_closed", "throttled"])
+def test_worker_defers_segmentation_when_gate_closed_or_throttled_and_runs_when_reopened(rig, mode):
+    """분할 실행 직전에 아바타 게이트·감속 상태를 다시 확인해 닫혀 있으면 작업을 버리지 않고 다음 주기로 미룬다(-808)."""
+    from simai_ai.geometry.rig import CameraRig
+    from simai_ai.hmr.appearance_worker import AppearanceWorker
+    from simai_ai.hmr.stream import SnapshotCalibration
+
+    _, source, _, _, _, loop, _ = harness(rig, freeze=1)
+    loop.step()
+    gate_open = [mode != "gate_closed"]
+    interval_ms = [800 if mode == "throttled" else 200]
+    loop.gate = SimpleNamespace(
+        check=lambda: SimpleNamespace(admit=gate_open[0]),
+        recommended_interval_ms=lambda: interval_ms[0],
+    )
+    seg_calls = []
+    update_done = threading.Event()
+    loop.segmentation = SimpleNamespace(
+        failed=False,
+        prepare=lambda jobs, imgs, r: seg_calls.append(len(jobs)) or {},
+    )
+    loop.appearance = fake_pipeline(lambda *args, **kwargs: update_done.set())
+    worker = loop._appearance_worker = AppearanceWorker(loop, seg_max_interval_ms=200, defer_interval_s=0.01)
+    meta, images = source.item
+    camera_rig = CameraRig.from_provider(SnapshotCalibration(meta["calibration"]))
+    try:
+        worker.offer(None, meta["world"], meta, images, camera_rig, {})
+        wait_until(lambda: worker.deferred >= 1)
+        assert not seg_calls and not update_done.is_set()
+        assert worker.deferred_reasons[mode] >= 1
+        # 추가 offer 없이 게이트·감속만 풀리면 미뤄 둔 작업이 그대로 실행된다(작업을 버리지 않음).
+        gate_open[0] = True
+        interval_ms[0] = 200
+        assert update_done.wait(1)
+        assert len(seg_calls) == 1 and seg_calls[0] >= 1
+    finally:
+        loop.close()
+
+
+def test_worker_rechecks_gate_and_throttle_immediately_before_seg_prepare(rig):
+    """큐 진입 때는 열려 있었더라도 seg.prepare 직전에 게이트가 닫히거나 감속되면 분할을 미룬다(-808)."""
+    from simai_ai.geometry.rig import CameraRig
+    from simai_ai.hmr.appearance_worker import AppearanceWorker
+    from simai_ai.hmr.stream import SnapshotCalibration
+
+    _, source, _, _, _, loop, _ = harness(rig, freeze=1)
+    loop.step()
+    interval_ms = [200]
+    loop.gate = SimpleNamespace(
+        check=lambda: SimpleNamespace(admit=True),
+        recommended_interval_ms=lambda: interval_ms[0],
+    )
+    seg_calls = []
+    update_done = threading.Event()
+    track_calls = []
+
+    def track_hook(*args, **kwargs):
+        track_calls.append(1)
+        if len(track_calls) == 1:
+            # _run() 진입 게이트를 통과한 뒤 seg.prepare 직전에 Tier 0 감속이 걸린 상황
+            interval_ms[0] = 800
+
+    loop.segmentation = SimpleNamespace(
+        failed=False,
+        prepare=lambda jobs, imgs, r: seg_calls.append(len(jobs)) or {},
+    )
+    loop.appearance = SimpleNamespace(
+        retain=lambda *_: None,
+        track=track_hook,
+        register=lambda *_: None,
+        update=lambda *args, **kwargs: update_done.set(),
+        config=SimpleNamespace(face_policy="EXCLUDED"),
+    )
+    worker = loop._appearance_worker = AppearanceWorker(loop, seg_max_interval_ms=200, defer_interval_s=0.01)
+    meta, images = source.item
+    camera_rig = CameraRig.from_provider(SnapshotCalibration(meta["calibration"]))
+    try:
+        worker.offer(None, meta["world"], meta, images, camera_rig, {})
+        wait_until(lambda: worker.deferred_reasons["throttled"] >= 1)
+        assert not seg_calls and not update_done.is_set()
+        interval_ms[0] = 200
+        assert update_done.wait(1)
+        assert len(seg_calls) == 1
+    finally:
+        loop.close()
+
+
+def test_worker_discards_deferred_item_after_identity_change_and_closes_promptly(rig):
+    """미뤄 둔 작업의 신원이 바뀌면 폐기하고, 대기 중 close() 해도 지연 없이 종료된다(-808)."""
+    from simai_ai.geometry.rig import CameraRig
+    from simai_ai.hmr.appearance_worker import AppearanceWorker
+    from simai_ai.hmr.stream import SnapshotCalibration
+
+    _, source, _, _, _, loop, _ = harness(rig, freeze=1)
+    loop.step()
+    gate_open = [False]
+    loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=gate_open[0]))
+    seg_calls = []
+    loop.segmentation = SimpleNamespace(
+        failed=False,
+        prepare=lambda jobs, imgs, r: seg_calls.append(len(jobs)) or {},
+    )
+    loop.appearance = fake_pipeline(lambda *args, **kwargs: seg_calls.append("update"))
+    worker = loop._appearance_worker = AppearanceWorker(loop, defer_interval_s=5.0)
+    meta, images = source.item
+    camera_rig = CameraRig.from_provider(SnapshotCalibration(meta["calibration"]))
+    try:
+        worker.offer(None, meta["world"], meta, images, camera_rig, {})
+        wait_until(lambda: worker.deferred >= 1)
+        # 신원 변경 뒤 close()가 5초 대기를 끝까지 기다리지 않고 즉시 끝난다.
+        loop.people["w-1"].revision += 1
+        started = time.perf_counter()
+        loop.close()
+        assert time.perf_counter() - started < 1.0
+        assert not seg_calls
+    finally:
+        loop.close()

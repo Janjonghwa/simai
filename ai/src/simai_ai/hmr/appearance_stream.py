@@ -89,6 +89,9 @@ def appearance_from_env(env, *, cuda_available=None):
     fusion = env.get("SIMAI_AVATAR_TEXTURE_FUSION", "best")
     if fusion not in {"best", "mean"}:
         raise ValueError("SIMAI_AVATAR_TEXTURE_FUSION는 best 또는 mean")
+    sync_timing = env.get("SIMAI_AVATAR_TEXTURE_SYNC_TIMING", "0")
+    if sync_timing not in {"0", "1"}:
+        raise ValueError("SIMAI_AVATAR_TEXTURE_SYNC_TIMING는 0 또는 1")
     cfg = AppearanceConfig(
         resolution=int(env.get("SIMAI_AVATAR_TEXTURE_SIZE", "1024")),
         device=env.get("SIMAI_AVATAR_TEXTURE_DEVICE", "cuda" if cuda else "cpu"),
@@ -100,7 +103,8 @@ def appearance_from_env(env, *, cuda_available=None):
         color_enabled=quality_enabled("COLOR"),
         blur_enabled=quality_enabled("BLUR"),
         fit_enabled=quality_enabled("FIT"),
-        fusion=fusion)
+        fusion=fusion,
+        sync_timing=sync_timing == "1")
     region_path = env.get("SIMAI_AVATAR_FACE_REGION")
     region = json.loads(Path(region_path).read_text(encoding="utf-8")) if region_path else None
     return AppearancePipeline(cfg, face_region=region, output_dir=env.get("SIMAI_AVATAR_TEXTURE_OUTPUT_DIR"))
@@ -135,12 +139,15 @@ class AppearancePipeline:
             queued = self._carry.get(wid)
             return queued[0][0] if queued else None
 
-    def carry_in(self, wid, snapshot, *, inherit):
-        """wid 누적에 합칠 사본을 넣는다. inherit=True 는 다른 World ID 에서 이어받기, False 는 병합·같은 ID 재연결."""
+    def carry_in(self, wid, snapshot, *, inherit, publish=True):
+        """wid 누적에 합칠 사본을 넣는다. inherit=True 는 다른 World ID 에서 이어받기, False 는 병합·같은 ID 재연결.
+
+        publish=False 는 이미 텍스처가 발행된 같은 World ID 복원용으로, 누적 텍셀·발행 기록만 잇고 즉시 재발행하지 않는다.
+        """
         if snapshot is None:
             return
         with self._carry_lock:
-            self._carry.setdefault(wid, []).append((snapshot, inherit))
+            self._carry.setdefault(wid, []).append((snapshot, inherit, publish))
 
     def apply_carry(self, wid):
         """누적이 있으면 대기 사본을 합친다(외형 작업자 스레드). 누적이 아직 없으면(체형 굽기 전) 기다린다."""
@@ -149,11 +156,20 @@ class AppearancePipeline:
             return
         with self._carry_lock:
             queued = self._carry.pop(wid, [])
-        for snapshot, inherit in queued:
-            if acc.absorb(snapshot, inherit=inherit):
-                self.carry_events["inherited" if inherit else "merged"] += 1
-                log.info("외형 승계 world_id=%s kind=%s inherited=%.4f", wid,
-                         "inherit" if inherit else "merge", acc.inherited_ratio())
+        for snapshot, inherit, publish in queued:
+            if acc.absorb(snapshot, inherit=inherit, publish=publish):
+                if inherit:
+                    self.carry_events["inherited"] += 1
+                    kind = "inherit"
+                elif publish:
+                    self.carry_events["merged"] += 1
+                    kind = "merge"
+                else:
+                    self.carry_events["restored"] = self.carry_events.get("restored", 0) + 1
+                    kind = "restore"
+                    if acc.last_publish >= 0 and acc.last_identity_t >= 0:
+                        acc.last_publish = max(acc.last_publish, acc.last_identity_t)
+                log.info("외형 승계 world_id=%s kind=%s inherited=%.4f", wid, kind, acc.inherited_ratio())
 
     def track(self, track, t, *, identity_key=None):
         """identity_key: 같은 사람으로 누적을 잇는 기준 차수(포즈 루프의 revision_base, 순수 병합이면 그대로). 없으면 트랙 차수."""

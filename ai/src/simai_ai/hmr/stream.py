@@ -171,11 +171,49 @@ class PersonState:
             self.revision_base = self.revision
 
 
+def _object_bytes(obj) -> int:
+    if obj is None:
+        return 0
+    nbytes = getattr(obj, "nbytes", None)
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool):
+        return max(0, nbytes)
+    size = getattr(obj, "size_bytes", None)
+    if isinstance(size, int) and not isinstance(size, bool):
+        return max(0, size)
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return len(obj)
+    return 0
+
+
 @dataclass
 class CarryDonor:
     """소실·흡수된 ID 의 포즈 루프 상태와 외형 누적 사본(없으면 None)."""
     state: PersonState
     appearance: object = None
+
+    def size_bytes(self) -> int:
+        """휴면 보관 메모리 상한 계산용 추정 바이트 수(배열·PNG·GLB 버퍼 기준, 공유 MHR 리그 제외)."""
+        total = 0
+        app = self.appearance
+        if app is not None:
+            for attr in ("colors", "weights", "inherited", "peaks"):
+                total += _object_bytes(getattr(app, attr, None))
+            confirmed = getattr(app, "last_confirmed", None)
+            if confirmed is not None:
+                total += _object_bytes(getattr(confirmed, "albedo", None))
+                total += _object_bytes(getattr(confirmed, "surface", None))
+        baked = self.state.baked
+        if baked is not None:
+            for attr in ("rest_vertices_m", "local_translations_m", "local_rotations",
+                         "local_scales", "inverse_bind_matrices"):
+                total += _object_bytes(getattr(baked, attr, None))
+        total += _object_bytes(self.state.pending_glb)
+        for sample in self.state.samples:
+            if isinstance(sample, (tuple, list)):
+                total += sum(_object_bytes(item) for item in sample)
+            else:
+                total += _object_bytes(sample)
+        return total
 
 
 def asset_current(state) -> bool:
@@ -294,10 +332,10 @@ class AvatarLoop:
         snapshot = getattr(self.appearance, "snapshot", None)
         return CarryDonor(state, snapshot(wid) if snapshot is not None else None)
 
-    def _carry_in(self, wid, donor, *, inherit):
+    def _carry_in(self, wid, donor, *, inherit, publish=True):
         carry_in = getattr(self.appearance, "carry_in", None)
         if carry_in is not None and donor.appearance is not None:
-            carry_in(wid, donor.appearance, inherit=inherit)
+            carry_in(wid, donor.appearance, inherit=inherit, publish=publish)
 
     @staticmethod
     def _shape_from(state, donor):
@@ -370,8 +408,14 @@ class AvatarLoop:
                  gate.get("queue_wait_tolerated_windows"), gate.get("queue_wait_tolerated_frames"))
         with self._timing_lock:
             log.info("아바타 단계 시간 ms 누계=%s 횟수=%s", dict(self.timings), dict(self.timing_counts))
-        log.info("아바타 신원·외형 승계 identity_events=%s carry=%s appearance_carry=%s", dict(self.identity_events),
-                 dict(self.carry.stats), getattr(self.appearance, "carry_events", None))
+        worker_deferred = (
+            dict(self._appearance_worker.deferred_reasons)
+            if self._appearance_worker is not None and hasattr(self._appearance_worker, "deferred_reasons")
+            else None
+        )
+        log.info("아바타 신원·외형 승계 identity_events=%s carry=%s appearance_carry=%s dormant=%s/%.1fMB worker_deferred=%s",
+                 dict(self.identity_events), dict(self.carry.stats), getattr(self.appearance, "carry_events", None),
+                 len(self.carry.dormant), self.carry.dormant_bytes / (1024 * 1024), worker_deferred)
         self._report_at = now + 60_000
 
     def _classify_input(self, snapshot, now_ms: int) -> str | None:
@@ -465,9 +509,13 @@ class AvatarLoop:
                         self.carry.receiver(wid)
                     self.people[wid] = state
                 reset = False
-                if state.revision != rev:
-                    absorbed = pure_merge_absorbed(wid, state.revision, state.aliases, state.split_from,
-                                                   rev, aliases, split_from, marks)
+                if state.revision != rev or state.split_from != split_from:
+                    absorbed = (
+                        pure_merge_absorbed(wid, state.revision, state.aliases, state.split_from,
+                                            rev, aliases, split_from, marks)
+                        if state.revision != rev
+                        else None
+                    )
                     if absorbed is not None:
                         # 순수 병합: 같은 사람이다. 표본·자산·굽는 중인 메시를 잇고 차수만 따른다(다시 굽지 않음).
                         # 안정 수만 0 으로 둬 다시 안정될 때까지(30 프레임) 외형 누적·체형 확정을 멈춘다(명세 20.4)
@@ -489,6 +537,7 @@ class AvatarLoop:
                         state.revision, state.stable, state.samples = rev, 0, []
                         state.revision_base = rev
                         state.shape_frozen = False
+                        state.baked = None
                         state.pending_glb = None
                         state.pending_version = None
                         state.pending_target_frozen = False
@@ -499,7 +548,8 @@ class AvatarLoop:
                         self.identity_events["revision_reset"] += 1
                     state.aliases, state.split_from = aliases, split_from
                 if restored is not None and not reset:
-                    self._carry_in(wid, restored, inherit=False)
+                    already_textured = asset_current(state) and state.asset.get("texture") is not None
+                    self._carry_in(wid, restored, inherit=False, publish=not already_textured)
                     if asset_current(state):
                         self.sender.asset(state.asset)   # 같은 버전 재알림(빠질 때 송신기가 놓았다), 내용은 처음 그대로
             if (
