@@ -149,6 +149,7 @@ origin_world_ids 에 남음) 자동 해소되지 않는다(D-G3-10). 분할하�
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -193,6 +194,11 @@ JOINT_LAYOUT = "COCO17"
 _FORBIDDEN = 1e9
 """헝가리안 금지 짝 비용 (유한 값, 결과에서 걸러낸다)"""
 _SESSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
+_REENTRY_LOG_INTERVAL_MS = 5000
+"""-802 재입장 판정 로그: 같은 (판정 위치, 최선 후보, 거절 결정)은 이 간격에 한 번만 남긴다(나머지 조각이 매 시각 다시 묻는다).
+이은 판정은 매번 남긴다. diag 횟수는 줄이지 않는다"""
+
+log = logging.getLogger(__name__)
 
 
 class TrackLifecycle(StrEnum):
@@ -375,9 +381,11 @@ class WorldTrackConfig:
     lost_after_ms: int = 3000
     """짧은 재연결 창: 마지막 측정 뒤 이 시간까지 기존 거리 게이트로 같은 ID 를 유지한다.
     넘으면 LOST 이며 2대 로컬 이력에 의한 늦은 재연결만 허용한다. 관측 상태의 PREDICTED 상한과는 별도다"""
-    reconnect_window_ms: int = 10_000
+    reconnect_window_ms: int = 20_000
     """LOST 가 된 CONFIRMED Track 을 마지막 측정부터 이 시간 동안 소실 후보로 둔다(로컬 트랙 연결 이력도 이 시간 동안
-    남긴다). lost_after_ms 와 같게 두면 늦은 재연결을 끈다. 명세 6.4 재개 시간 초기값(10 s)과 같게 둔 초기값이다"""
+    남긴다). lost_after_ms 와 같게 두면 늦은 재연결을 끈다. 처음에는 명세 6.4 재개 시간 초기값(10 s)과 같게 뒀으나
+    S15P31A101-802 에서 20 s 로 늘렸다: 로비 2대 화각 끝 모서리를 11~15 s 비웠다 돌아온 한 사람이 10 s 창을 갓 넘겨
+    매번 새 ID 가 됐다(18분에 12개). Risk 의 재개 시간(6.4, LifecyclePolicy.resume_window_ms)은 따로이고 바꾸지 않았다"""
     reconnect_crowd_radius_m: float = 1.5
     """잇거나 합칠 Track 의 마지막 위치 이 반경 안에 다른 소실·가림 Track 이 있으면 잇지 않는다(로컬 트랙이 서로
     넘어갔을 수 있다). gate_max_m 과 같은 초기값"""
@@ -527,7 +535,7 @@ class WorldTrackConfig:
     reid_enabled: bool = True
     """Re-ID 외형 갤러리·분할 판정·swap 교정·DORMANT 재입장 사용 여부 (S15P31A101-463)"""
     reid_dormant_ttl_ms: int = 1_800_000
-    """CONFIRMED 트랙이 reconnect_window_ms(10 s)를 넘긴 뒤 DORMANT 로 보관하는 시간 (기본 30분 = 1,800,000 ms)"""
+    """CONFIRMED 트랙이 reconnect_window_ms(20 s, -802)를 넘긴 뒤 DORMANT 로 보관하는 시간 (기본 30분 = 1,800,000 ms)"""
     reid_split_same_min_sim: float = 0.60
     """분할 나머지 클러스터가 활성 트랙 갤러리와 같은 사람으로 판정되기 위한 최소 유사도 (주인 없는 나머지·확장 반경 포함)"""
     reid_split_different_max_sim: float = 0.42
@@ -539,7 +547,13 @@ class WorldTrackConfig:
     reid_reentry_min_sim: float = 0.65
     """DORMANT·LOST 트랙 재입장(Re-entry) 시 기존 World ID 를 이어받기 위한 보수적 최소 외형 유사도"""
     reid_reentry_margin: float = 0.10
-    """DORMANT·LOST 트랙 재입장 시 2위 후보(활성·소실·휴면 포함) 대비 최소 유사도 마진"""
+    """DORMANT·LOST 트랙 재입장 시 경쟁자 대비 최소 유사도 마진. 경쟁자는 지금 활성 Track 과, 최선 후보와 다른 사람으로
+    확인된(동시 활성 또는 병합 금지 쌍) 소실·휴면 후보다(reid_reentry_rival_proven_only, -802)"""
+    reid_reentry_rival_proven_only: bool = True
+    """S15P31A101-802: 재입장 마진의 경쟁자에서, 최선 후보와 같은 시각에 함께 위치 측정을 받은 적이 없고(동시 활성 아님) 병합
+    금지 쌍도 아닌 소실·휴면 후보를 뺀다. 그런 후보는 같은 사람의 더 옛 ID 일 수 있어, 경쟁자로 세면 한 사람이 남긴 옛 ID 들끼리
+    마진을 0 으로 만들어 돌아올 때마다 새 ID 가 생긴다(로비 모서리 18분 12 ID). 지금 활성 Track 은 그대로 경쟁자다. 그런 옛 ID 들이
+    마진 안에서 겨루면 가장 최근에 관측된 ID 를 고른다(_reentry_pick). False 는 이전 동작(재생 비교용)"""
     reid_swap_min_sim: float = 0.58
     """근접 교차 후 두 트랙의 교차 외형 유사도가 swap 교정을 발동하기 위한 최소 유사도"""
     reid_swap_margin: float = 0.10
@@ -585,6 +599,7 @@ class WorldTrackConfig:
             "reid_swap_correction_enabled",
             "reid_dormant_enabled",
             "reid_split_respect_distinct",
+            "reid_reentry_rival_proven_only",
             "reid_query_visibility",
             "shadow_clears_ambiguity",
             "uncertain_hold_per_reason",
@@ -1059,6 +1074,24 @@ class _ShadowEvidence:
     last_t: int
 
 
+@dataclass(frozen=True)
+class _ReentryRival:
+    """Re-ID 재입장 판정에서 최선 후보의 경쟁자 (-802)."""
+
+    rival_id: str | None
+    rival_sim: float
+    """경쟁자 중 최고 유사도. 경쟁자가 없으면 -1.0"""
+    kind: str
+    """경쟁자 종류: active(지금 활성), coactive(최선 후보와 동시 활성), distinct(병합 금지 쌍), candidate(이전 규칙), none"""
+    margin: float
+    legacy_margin: float
+    """이전 규칙(동시에 있은 적 없는 소실·휴면 후보도 경쟁자)의 마진. 계측 전용"""
+    rivals: tuple[tuple[str, float], ...]
+    """경쟁자로 센 (ID, 유사도) 전부 (키 동률 깨기에 쓴다)"""
+    skipped: tuple[tuple[str, float], ...]
+    """최선 후보와 동시에 있은 적이 없어 경쟁자에서 뺀 (ID, 유사도). 같은 사람의 옛 ID 일 수 있다"""
+
+
 @dataclass
 class _Split:
     """분할 후보: 갱신된 Track `source` 의 로컬 트랙(keys)이 같은 카메라의 다른 검출로 갈라져 새 Track `child` 가 됐다."""
@@ -1249,6 +1282,12 @@ class WorldTrackManager:
         """시점 분할 근거가 한 번이라도 있었던 쌍(분신) → 마지막 근거 시각. 둘 다 살아 있는 동안(소실·장기 보류 포함) 남겨,
         재입장 Re-ID 경쟁자·늦은 재연결 crowd 판정에서 서로를 빼는 데 쓴다(14차: 분신끼리 margin 을 0 으로 만들어 재입장 실패).
         그 뒤 병합 금지 근거가 생기면 분신으로 보지 않는다 (-657)"""
+        self._co_active: dict[str, set[str]] = {}
+        """-802 동시 활성: World ID → 같은 시각에 함께 위치 측정을 받은 적이 있는 World ID 들(대칭). 한 시각에 몸 둘이 함께 측정됐으니
+        다른 사람이라는 근거다(분신은 _shadows_of 로 따로 뺀다). 재입장 마진의 경쟁자 판정에만 쓴다. 살아 있는 Track·소실 후보·
+        장기 보류 동안 남기고(_forget_gone), 병합하면 남는 ID 로 잇는다. 크기는 장기 보류 TTL(30분) 안의 ID 와 그 동시 활성 상대 수"""
+        self._reentry_log_t: dict[tuple[str, str, str], int] = {}
+        """-802 재입장 판정 로그 간격: (판정 위치, 최선 후보, 결정) → 마지막으로 남긴 시각"""
         self._rig: CameraRig | None = None
         """이번 update 의 보정 (그림자 판정 전용)"""
         self._evidence: dict[str, _Evidence] = {}
@@ -1915,6 +1954,10 @@ class WorldTrackManager:
         # 확정 지연 (-657): 카메라가 겹치지 않는 확정 Track 근처에서 저신뢰로 갱신된 TENTATIVE 는 확정을 늦춘다(그림자일 수 있다)
         self._delay_confirmation(applied)
 
+        # 동시 활성 (-802): 이번 시각 함께 위치 측정을 받은 Track 쌍을 기록한다(병합·분할·출생 보류를 마친 뒤의 applied).
+        # 재입장 마진의 경쟁자 판정(_reentry_rival)에 쓴다
+        self._mark_co_active(applied)
+
         # 생명주기
         newly_lost: list[tuple[_Track, bool]] = []
         for tr in list(self._tracks.values()):
@@ -2085,6 +2128,140 @@ class WorldTrackManager:
             if world_id in pair:
                 out |= pair - {world_id}
         return {w for w in out if not self._is_distinct(world_id, w)}
+
+    # ------------------------------------------------------------------ 동시 활성·재입장 경쟁자 (-802)
+
+    def _mark_co_active(self, applied: Mapping[str, _Applied]) -> None:
+        """이번 시각 함께 위치 측정을 받은 Track 끼리 동시 활성으로 기록한다. 측정 Track 수 n 에 대해 O(n²)(10명이면 45쌍)."""
+        ids = [w for w in applied if w in self._tracks]
+        for i, a in enumerate(ids):
+            for b in ids[i + 1 :]:
+                self._co_active.setdefault(a, set()).add(b)
+                self._co_active.setdefault(b, set()).add(a)
+
+    def _proven_different(self, a: str, b: str) -> bool:
+        """두 ID 가 다른 사람으로 확인됐는지: 같은 시각에 함께 위치 측정을 받았거나(동시 활성) 병합 금지 쌍."""
+        return b in self._co_active.get(a, ()) or self._is_distinct(a, b)
+
+    def _reentry_pick(self, candidates: Sequence[tuple[float, str]]) -> tuple[float, str]:
+        """(유사도, 먼저 만든 ID) 순으로 정렬된 재입장 후보에서 최선 후보를 고른다.
+
+        -802: 최선 후보와 마진(reid_reentry_margin) 안이고 재입장 하한(reid_reentry_min_sim) 이상이며 최선 후보와 다른 사람으로
+        확인되지 않은 후보(같은 사람의 옛 ID 일 수 있다) 중에서는 가장 최근에 관측된 ID 를 고른다. 외형이 같은 옛 ID 들 사이를
+        돌아올 때마다 오가지 않고 마지막으로 쓰던 ID 로 돌아오게 한다. 분신(동시 활성)끼리는 이전처럼 먼저 만든 ID 다(-657).
+        """
+        cfg = self.config
+        best_sim, best_id = candidates[0]
+        if not cfg.reid_reentry_rival_proven_only:
+            return best_sim, best_id
+        floor = max(best_sim - cfg.reid_reentry_margin, cfg.reid_reentry_min_sim)
+        group = [(best_sim, best_id)] + [
+            (s, w) for s, w in candidates[1:] if s >= floor and not self._proven_different(best_id, w)
+        ]
+        if len(group) == 1:
+            return best_sim, best_id
+
+        def recency(item: tuple[float, str]) -> tuple[int, int]:
+            tr = self._find_with_dormant(item[1])
+            return (tr.t_last_valid if tr is not None else -1, -self._order_of(item[1]))
+
+        pick = max(group, key=recency)
+        if pick[1] != best_id:
+            self.diag["reid.reentry_pick_recent"] += 1
+        return pick
+
+    def _reentry_rival(
+        self,
+        best_id: str,
+        best_sim: float,
+        others: Iterable[tuple[float, str]],
+        active_sims: Mapping[str, float],
+    ) -> _ReentryRival:
+        """재입장 마진의 경쟁자를 고른다.
+
+        지금 활성 Track(active_sims)은 늘 경쟁자다. 소실·휴면·미갱신 후보(others)는 최선 후보와 다른 사람으로 확인됐을 때만
+        경쟁자다: 같은 시각에 함께 위치 측정을 받았거나(동시 활성) 병합 금지 쌍(_is_distinct). 그 밖의 후보는 같은 사람의 옛
+        ID 일 수 있어 빼고 skipped 로 남긴다(reid_reentry_rival_proven_only 가 False 면 이전처럼 모두 센다). 최선 후보의
+        분신(_shadows_of)은 어느 쪽이든 경쟁자가 아니다(-657).
+        """
+        cfg = self.config
+        twins = self._shadows_of(best_id)
+        co_active = self._co_active.get(best_id, set())
+        counted: list[tuple[float, str, str]] = []
+        skipped: list[tuple[str, float]] = []
+        legacy = -1.0
+        for s, w in others:
+            if w == best_id or w in twins:
+                continue
+            legacy = max(legacy, s)
+            if not cfg.reid_reentry_rival_proven_only:
+                counted.append((s, w, "candidate"))
+            elif w in co_active:
+                counted.append((s, w, "coactive"))
+            elif self._is_distinct(best_id, w):
+                counted.append((s, w, "distinct"))
+            else:
+                skipped.append((w, s))
+        for w, s in active_sims.items():
+            if w == best_id or w in twins:
+                continue
+            legacy = max(legacy, s)
+            counted.append((s, w, "active"))
+        top = max(counted, key=lambda r: (r[0], r[1]), default=None)
+        rival_sim = top[0] if top is not None else -1.0
+        return _ReentryRival(
+            rival_id=top[1] if top is not None else None,
+            rival_sim=rival_sim,
+            kind=top[2] if top is not None else "none",
+            margin=best_sim - rival_sim if rival_sim >= 0.0 else best_sim,
+            legacy_margin=best_sim - legacy if legacy >= 0.0 else best_sim,
+            rivals=tuple((w, s) for s, w, _ in counted),
+            skipped=tuple(skipped),
+        )
+
+    def _note_reentry(
+        self,
+        site: str,
+        subject: str,
+        best_id: str,
+        best_sim: float,
+        rival: _ReentryRival,
+        margin: float,
+        min_sim: float,
+        decision: str,
+        t: int,
+        *,
+        tiebreak: bool = False,
+    ) -> None:
+        """재입장 판정 한 건의 diag 횟수와 INFO 로그 (계측 전용, 판정에 쓰지 않는다).
+
+        decision: linked / rejected_low_sim / rejected_margin. 거절 로그는 같은 (site, 최선 후보, 결정)마다
+        _REENTRY_LOG_INTERVAL_MS 에 한 번만 남긴다. linked_coactive_rule 은 이전 규칙이면 마진으로 거절됐을 연결이다.
+        """
+        cfg = self.config
+        self.diag[f"reid.reentry_{decision}"] += 1
+        if rival.skipped:
+            self.diag["reid.reentry_rival_never_coactive"] += len(rival.skipped)
+        coactive_rule = decision == "linked" and not tiebreak and rival.legacy_margin < cfg.reid_reentry_margin
+        if coactive_rule:
+            self.diag["reid.reentry_linked_coactive_rule"] += 1
+        key = (site, best_id, decision)
+        last = self._reentry_log_t.get(key)
+        if decision != "linked" and last is not None and t - last < _REENTRY_LOG_INTERVAL_MS:
+            return
+        if len(self._reentry_log_t) > 256:
+            self._reentry_log_t = {
+                k: v for k, v in self._reentry_log_t.items() if t - v < _REENTRY_LOG_INTERVAL_MS
+            }
+        self._reentry_log_t[key] = t
+        skipped = ",".join(f"{w}:{s:.3f}" for w, s in rival.skipped) or "-"
+        log.info(
+            "Re-ID 재입장 판정 site=%s decision=%s subject=%s best=%s sim=%.3f rival=%s rival_sim=%.3f rival_kind=%s "
+            "margin=%.3f legacy_margin=%.3f min_sim=%.2f min_margin=%.2f never_coactive=%s tiebreak=%s "
+            "coactive_rule=%s t=%d",
+            site, decision, subject, best_id, best_sim, rival.rival_id or "-", rival.rival_sim, rival.kind,
+            margin, rival.legacy_margin, min_sim, cfg.reid_reentry_margin, skipped, tiebreak, coactive_rule, t,
+        )
 
     def _undistorted(self, cluster: ViewCluster) -> list[UndistortedKeypoints]:
         """클러스터 view 의 왜곡 제거 결과 (Cross-view 가 푼 것을 다시 쓰고, 없으면 지금 푼다)."""
@@ -2509,6 +2686,12 @@ class WorldTrackManager:
         self._distinct_fixed = {p for p in self._distinct_fixed if p <= alive_reid}
         self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if p <= alive}
         self._twins = {p: pt for p, pt in self._twins.items() if p <= alive_reid}
+        # -802: 사라진 ID 만 찾아 지운다(전체를 다시 만들지 않는다. ID 수 + 지운 ID 의 상대 수)
+        for gone in [w for w in self._co_active if w not in alive_reid]:
+            for other in self._co_active.pop(gone):
+                partners = self._co_active.get(other)
+                if partners is not None:
+                    partners.discard(gone)
         self._evidence = {w: ev for w, ev in self._evidence.items() if w in alive and ev.stale in alive}
         self._recent_proximity = {p: pt for p, pt in self._recent_proximity.items() if p <= alive}
         self._swap_counts = {k: v for k, v in self._swap_counts.items() if k[0] in alive and k[1] in alive}
@@ -2802,6 +2985,17 @@ class WorldTrackManager:
                 co_renamed[q] = max(pt, co_renamed.get(q, pt))
         self._co_seen = co_renamed
         self._distinct_fixed = {q for q in (_rename(p, old, new) for p in self._distinct_fixed) if len(q) == 2}
+        # -802: 사라지는 ID 의 동시 활성 상대는 남는 ID 의 상대가 된다(같은 사람이므로). 둘 사이 기록은 지운다
+        retired_partners = self._co_active.pop(old, set()) - {new}
+        for other in retired_partners:
+            partners = self._co_active.setdefault(other, set())
+            partners.discard(old)
+            partners.add(new)
+        survivor_partners = self._co_active.get(new)
+        if survivor_partners is not None:
+            survivor_partners.discard(old)
+        if retired_partners:
+            self._co_active.setdefault(new, set()).update(retired_partners)
         self._shadow_pairs = {p: ev for p, ev in self._shadow_pairs.items() if not p & {old, new}}
         self._twins = {p: pt for p, pt in self._twins.items() if old not in p}
         self._evidence = {w: e for w, e in self._evidence.items() if {w, e.stale}.isdisjoint({old, new})}
@@ -3085,20 +3279,21 @@ class WorldTrackManager:
             return None, False
         # 유사도가 같으면 먼저 만든 ID (분신끼리 같은 외형이면 원래 ID 로 돌아온다, -657)
         candidates.sort(key=lambda c: (c[0], -self._order_of(c[1])), reverse=True)
-        best_sim, best_id = candidates[0]
-        # 같은 사람의 분신 Track(시점 분할 근거가 있었던 쌍)은 경쟁자가 아니다(-657, 14차 reentry_ambiguous 원인)
-        twins = self._shadows_of(best_id)
-        second_sim = max((s for s, w in candidates[1:] if w not in twins), default=-1.0)
-        active_rival = max(
-            (s for w, s in active_sims.items() if w not in twins), default=-1.0
-        )
-        rival_sim = max(second_sim, active_rival)
-        margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
+        best_sim, best_id = self._reentry_pick(candidates)  # 같은 사람의 옛 ID 들끼리면 마지막으로 쓰던 ID (-802)
+        # 경쟁자: 지금 활성 Track 과, 최선 후보와 다른 사람으로 확인된(동시 활성·병합 금지) 후보만(-802). 동시에 있은 적 없는
+        # 후보는 같은 사람의 옛 ID 일 수 있다. 같은 사람의 분신 Track 은 경쟁자가 아니다(-657, 14차 reentry_ambiguous 원인)
+        rival = self._reentry_rival(best_id, best_sim, candidates, active_sims)
+        margin = rival.margin
 
         # 1대 로컬 트랙이 유지된 경우(single_camera_evidence)는 재입장 임계값을 소폭 완화
         has_single_cam_holder = holders == {best_id}
         min_sim = (cfg.reid_reentry_min_sim - 0.04) if has_single_cam_holder else cfg.reid_reentry_min_sim
-        if best_sim >= min_sim and margin >= cfg.reid_reentry_margin:
+        linked = best_sim >= min_sim and margin >= cfg.reid_reentry_margin
+        decision = "linked" if linked else ("rejected_low_sim" if best_sim < min_sim else "rejected_margin")
+        self._note_reentry(
+            "reconnect", c.cluster.association_id, best_id, best_sim, rival, margin, min_sim, decision, t
+        )
+        if linked:
             return best_id, False
         if best_sim >= cfg.reid_split_same_min_sim and margin < cfg.reid_reentry_margin:
             self.diag["reid.reentry_ambiguous"] += 1
@@ -3177,20 +3372,27 @@ class WorldTrackManager:
             if not candidates:
                 continue
             candidates.sort(key=lambda c: (c[0], -self._order_of(c[1])), reverse=True)
-            best_sim, best_id = candidates[0]
-            twins = self._shadows_of(best_id)  # 분신은 경쟁자가 아니다(-657)
-            second_sim = max((s for s, w in candidates[1:] if w not in twins), default=-1.0)
-            active_max_sim = max((s for w, s in active_sims.items() if w not in twins), default=-1.0)
-            rival_sim = max(second_sim, active_max_sim)
-            margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
+            best_sim, best_id = self._reentry_pick(candidates)
+            # 경쟁자는 활성 Track 과 최선 후보와 다른 사람으로 확인된 후보만(-802). 분신은 경쟁자가 아니다(-657)
+            rival = self._reentry_rival(best_id, best_sim, candidates, active_sims)
+            margin = rival.margin
+            tiebreak = False
             if cfg.stature_enabled and best_sim >= cfg.reid_reentry_min_sim and margin < cfg.reid_reentry_margin:
                 # 외형이 애매하다: 키 허용치 안이 최선 후보 하나뿐이고 겨룬 후보가 모두 허용치의 2배 넘게 다르면 잇는다(-657)
-                rivals = [w for s, w in candidates[1:] if w not in twins and s >= cfg.reid_split_same_min_sim]
-                rivals += [w for w, s in active_sims.items() if w not in twins and s >= cfg.reid_split_same_min_sim]
+                rivals = [w for w, s in rival.rivals if s >= cfg.reid_split_same_min_sim]
                 if self._stature_breaks_tie(tr, best_id, rivals):
                     self.diag["reid.stature_tiebreak"] += 1
                     margin = cfg.reid_reentry_margin
-            if best_sim >= cfg.reid_reentry_min_sim and margin >= cfg.reid_reentry_margin:
+                    tiebreak = True
+            linked = best_sim >= cfg.reid_reentry_min_sim and margin >= cfg.reid_reentry_margin
+            decision = "linked" if linked else (
+                "rejected_low_sim" if best_sim < cfg.reid_reentry_min_sim else "rejected_margin"
+            )
+            self._note_reentry(
+                "late_merge", wid, best_id, best_sim, rival, margin, cfg.reid_reentry_min_sim, decision, t,
+                tiebreak=tiebreak,
+            )
+            if linked:
                 tr.reid_checked_reentry = True
                 was_lost = best_id in self._dormant or best_id in self._reid_dormant
                 ev = _Evidence(best_id, frozenset(a.cluster.keys), cfg.merge_confirm_frames, t)

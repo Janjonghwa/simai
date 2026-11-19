@@ -368,7 +368,10 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
     life = [(last[w] - first[w]) / 1000 for w in first]
     tick_ms = int(cfg.get("tick_ms", 100))
     lost_after_ms = int((cfg.get("world") or {}).get("lost_after_ms", 3000))
-    reconnect_window_ms = int((cfg.get("time") or {}).get("reconnect_window_ms", 10000))
+    # -802: 재연결 창은 WorldTrackConfig 값이다(time 이 아니라 world 절, 빠지면 운영 기본값 20 s)
+    reconnect_window_ms = int(
+        (cfg.get("world") or {}).get("reconnect_window_ms", WorldTrackConfig().reconnect_window_ms)
+    )
     session_end_t = rows[-1]["t"] if rows else 0
     resumed_after_lost = 0
     resumed_after_dormant = 0
