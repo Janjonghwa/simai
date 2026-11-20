@@ -2066,6 +2066,9 @@ class Tier0Service:
             doc["gpu_priority"] = self._gpu_section(RUNNING if shutdown_failures is None else "shutdown_failed")
         except Exception as e:  # noqa: BLE001 - 지연 신호를 못 만들어도 표시 파일은 남긴다(분석 워커는 칸이 없으면 받지 않는다)
             doc["gpu_priority_error"] = repr(e)
+        # 판정에 적용된 구성만 전달한다. 아직 구성이 없으면 모름이다.
+        active = getattr(getattr(self, "judge", None), "active_config", None)
+        doc["work_in_progress"] = active.work_in_progress if active is not None else None
         try:
             doc["status"] = self.status()
         except Exception as e:  # noqa: BLE001 - 일부 객체가 없거나 멈춰도 표시 파일은 남긴다
