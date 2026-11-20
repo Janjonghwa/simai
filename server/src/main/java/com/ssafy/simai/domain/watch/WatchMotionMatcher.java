@@ -45,7 +45,9 @@ import tools.jackson.databind.ObjectMapper;
  *       새 ID 로 옮긴다(임시). 같은 짝을 대조가 다시 뽑으면 확정, 반대 근거가 쌓이면 푼다.</li>
  *   <li>World ID 별 채널 상태(BOUND·UNBOUND·LOST)가 바뀌면 channel_state 에 한 행.</li>
  * </ol>
- * 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는 대조가 건드리지 않는다. 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
+ * 배정은 시간이 지나도 풀지 않으며(Re-ID 로 원래 ID 가 다시 보이면 그대로 유지), 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는
+ * 그 World ID 가 보이는 동안 대조가 건드리지 않는다. 배정된 World ID 가 지금 보이지 않을 때(>10초 미관측, 수동 확정 포함)만 새 후보(걸음 대조 또는
+ * 시연 스위치 1명 자동 배정)가 옛 행을 REPLACED 로 닫고 갈아 끼울 수 있다(S15P31A101-826). 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
  */
 @Service
 public class WatchMotionMatcher implements DisposableBean {
@@ -103,6 +105,8 @@ public class WatchMotionMatcher implements DisposableBean {
     static final long HANDOFF_OVERLAP_MS = 1_000;
     /** 새 트랙이 이만큼 보인 뒤에 옮긴다. 바로 옮기면 반 박자 늦게 나타난 두 번째 후보(같은 사람의 두 조각·옆 사람)를 못 본다 */
     static final long HANDOFF_SETTLE_MS = 300;
+    /** 시연 스위치 1명 자동 배정: LIVE 추적 사람이 정확히 1명이고 이 시간 넘게 이어졌을 때 잇는다(S15P31A101-826) */
+    static final long DEMO_SINGLE_MIN_MS = 5_000;
     private static final Set<String> WRIST_LAYOUTS = Set.of("COCO17", "HALPE26");
     private static final int L_WRIST = 9;
     private static final int R_WRIST = 10;
@@ -161,8 +165,11 @@ public class WatchMotionMatcher implements DisposableBean {
     private final PersonDisplayNames displayNames;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
+    private final WatchProperties properties;
     private final Clock clock;
     private final ScheduledExecutorService executor;
+    /** 시연 스위치(simai.watch.demo-device, S15P31A101-826). 시험이 바꿀 수 있게 final 이 아니다 */
+    private volatile String demoDevice;
     /**
      * 마지막 대조 때의 지금 배정(World ID → 배정). 자리 이어받기는 10 Hz 입력마다 보므로 DB 대신 이것을 보고, 옮기면 바로 고친다.
      * 대조 주기(2초) 사이에 들어온 수동 배정은 다음 주기까지 모른다(그 사이 그 트랙이 사라지면 이어받지 못하고 관리자가 다시 넣는다)
@@ -186,7 +193,9 @@ public class WatchMotionMatcher implements DisposableBean {
         this.displayNames = displayNames;
         this.jdbc = jdbc;
         this.mapper = mapper;
+        this.properties = properties;
         this.clock = clock;
+        this.demoDevice = properties.demoDevice();
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "watch-match");
             t.setDaemon(true);
@@ -194,6 +203,25 @@ public class WatchMotionMatcher implements DisposableBean {
         });
         long ms = properties.matchInterval().toMillis();
         executor.scheduleWithFixedDelay(this::matchSafely, ms, ms, TimeUnit.MILLISECONDS);
+    }
+
+    /** 시험용: 시연 스위치를 바꾼다(null 이면 끔) */
+    void setDemoDevice(String deviceId) {
+        this.demoDevice = deviceId == null || deviceId.isBlank() ? null : deviceId.strip();
+    }
+
+    /** 시험용: 대조기 메모리 상태를 비운다(앞 시험의 트랙·시각이 다음 시험의 1명 판정이나 시각 한도에 섞이지 않게) */
+    void resetForTest() throws InterruptedException, ExecutionException {
+        executor.submit(() -> {
+            tracks.clear();
+            windows.clear();
+            scores.clear();
+            written.clear();
+            boundByWorld.clear();
+            mergeHandled.clear();
+            latestWorldMs = 0;
+            demoDevice = properties.demoDevice();
+        }).get();
     }
 
     @EventListener
@@ -488,12 +516,18 @@ public class WatchMotionMatcher implements DisposableBean {
         boundByWorld = byWorld;
         Set<String> manualDevices = new HashSet<>();
         Set<String> manualWorlds = new HashSet<>();
-        // 대조가 다루는 배정: 대조 배정과 임시 이어받기(수동이라도). 확정된 수동은 관리자 것이라 행·열에서 뺀다
+        // 배정된 World ID 가 지금 보이지 않는(>10초 미관측) 확정 수동 배정은 새 걸음 대조 후보가 REPLACED 로 갈아 끼울 수 있다(S15P31A101-826)
+        Map<String, Long> replaceableManual = new HashMap<>();
+        // 대조가 다루는 배정: 대조 배정·시연 1명 배정·임시 이어받기. 확정 수동은 그 World ID 가 보이는 동안 행·열에서 뺀다
         Map<String, Binding> motion = new HashMap<>();
         for (Binding b : active) {
             if (b.manualFixed()) {
-                manualDevices.add(b.deviceId());
-                manualWorlds.add(b.worldId());
+                if (isTrackVisible(b.worldId(), now)) {
+                    manualDevices.add(b.deviceId());
+                    manualWorlds.add(b.worldId());
+                } else {
+                    replaceableManual.put(b.deviceId(), b.bindingId());
+                }
             } else {
                 motion.put(b.deviceId(), b);
             }
@@ -512,8 +546,9 @@ public class WatchMotionMatcher implements DisposableBean {
         });
         Map<String, String> accepted = assign(rows, cols);
 
-        // 이미 이은 대조 배정: 같은 짝이 다시 뽑혔거나, 경쟁 짝이 없고 점수가 KEEP 이상(또는 아직 근거가 없음)이면 둔다.
-        // 근거 없음은 서버 재시작 직후 점수표가 빈 경우다. 그때 배정을 다 풀면 다시 쌓는 동안 모두 UNBOUND 가 된다
+        // 배정은 시간이 지나도 풀지 않는다(Re-ID 로 원래 ID 가 다시 보이면 그대로 유지, S15P31A101-826).
+        // 경쟁 짝이 뽑혔으면 아래 bindByMotion 이 옛 행을 REPLACED 로 닫고 새 행을 넣는다.
+        // 경쟁이 없을 때는 ID 교정 직후이거나 점수가 유지 문턱 아래로 떨어진 경우에만 MATCH_LOST 로 푼다.
         Set<String> acceptedWorlds = new HashSet<>(accepted.values());
         for (Map.Entry<String, Binding> e : motion.entrySet()) {
             String device = e.getKey();
@@ -522,8 +557,12 @@ public class WatchMotionMatcher implements DisposableBean {
             Track t = tracks.get(world);
             boolean same = world.equals(accepted.get(device));
             boolean contested = accepted.containsKey(device) || acceptedWorlds.contains(world);
-            boolean alive = t != null && t.lastSeen >= now - TRACK_GONE_MS && t.suspectUntil <= now;
+            boolean suspect = t != null && t.suspectUntil > now;
             Double evidence = scores.getOrDefault(device, Map.of()).get(world);
+            if (same && b.demoSingle()) {
+                // 시연 1명 자동 배정을 걸음 대조가 같은 짝으로 뽑았다: accepted 에 남겨 아래 bindByMotion 으로 MOTION_MATCH 승격
+                continue;
+            }
             if (same && b.tentative()) {
                 // 자리로 옮긴 배정을 대조가 같은 짝으로 다시 뽑았다: 확정(수동이면 다시 관리자 것). 새 행을 만들지 않는다
                 if (bindings.confirmHandoff(device, world)) {
@@ -532,19 +571,25 @@ public class WatchMotionMatcher implements DisposableBean {
                 accepted.remove(device);
                 continue;
             }
-            // 임시 이어받기는 반대 근거(음수)가 쌓일 때만 푼다. 걷기 일치 같은 약한 근거(0.2)로 수동 배정을 풀지 않으려고 문턱을 0 으로 둔다
-            double keep = b.tentative() ? 0 : KEEP_SCORE;
-            if (same || (!contested && alive && (evidence == null || evidence >= keep))) {
+            // 임시 이어받기·시연 1명 배정은 반대 근거(음수)가 쌓일 때만 푼다. 걷기 일치 같은 약한 근거(0.2)로 풀지 않으려고 문턱을 0 으로 둔다
+            double keep = b.provisional() ? 0 : KEEP_SCORE;
+            if (same || (!contested && !suspect && (evidence == null || evidence >= keep))) {
                 accepted.remove(device);
+                continue;
+            }
+            if (contested) {
                 continue;
             }
             bindings.unbindMotion(device, world, "MATCH_LOST");
         }
         accepted.forEach((device, world) -> {
-            if (bindings.bindByMotion(device, world, score(device, world) / MAX_SCORE)) {
-                log.info("움직임 대조로 이음: device={} world_id={} score={}", device, world, String.format("%.2f", score(device, world)));
+            Long replaceId = replaceableManual.get(device);
+            if (bindings.bindByMotion(device, world, score(device, world) / MAX_SCORE, replaceId)) {
+                log.info("움직임 대조로 이음: device={} world_id={} score={}{}", device, world,
+                        String.format("%.2f", score(device, world)), replaceId == null ? "" : " (사라진 수동 배정 교체)");
             }
         });
+        bindDemoSingleIfEligible(now);
         writeChannelStates(now);
         // 이번 대조가 잇고 푼 결과까지 반영한 배정 목록을 자리 이어받기가 쓴다(다음 대조까지 2초 동안 옛 목록으로 보지 않게)
         Map<String, Binding> latest = new HashMap<>();
@@ -555,6 +600,63 @@ public class WatchMotionMatcher implements DisposableBean {
         scores.values().forEach(row -> row.keySet().retainAll(tracks.keySet()));
         windows.entrySet().removeIf(e -> e.getValue().isEmpty() && !hub.isConnected(e.getKey()));
         scores.keySet().removeIf(device -> !windows.containsKey(device));
+    }
+
+    /** 배정된 World ID 가 최근 {@link #TRACK_GONE_MS}(10초) 안에 관측돼 지금 보이는지 판정한다(S15P31A101-826) */
+    private boolean isTrackVisible(String worldId, long now) {
+        Track t = tracks.get(worldId);
+        return t != null && t.lastSeen >= now - TRACK_GONE_MS;
+    }
+
+    /**
+     * 시연 스위치 1명 자동 배정(S15P31A101-826): simai.watch.demo-device 가 켜져 있고, LIVE 추적 사람이 정확히 1명이며
+     * 그 트랙이 5초 넘게 이어졌을 때, 시연 워치에 배정이 없거나 기존 배정의 World ID 가 지금 보이지 않으면(>10초 미관측, 수동 확정 포함)
+     * 시연 워치를 그 World ID 에 잇는다(DEMO_SINGLE, 임시 성격, 기존 배정은 REPLACED 로 닫음).
+     * 사람이 2명 이상이거나, 걸음 대조가 이미 반대 근거(음수)를 냈거나, ID 교정 직후면 잇지 않는다.
+     */
+    private boolean bindDemoSingleIfEligible(long now) {
+        String demo = demoDevice;
+        if (demo == null) {
+            return false;
+        }
+        String soleWorld = null;
+        Track soleTrack = null;
+        for (Map.Entry<String, Track> e : tracks.entrySet()) {
+            Track t = e.getValue();
+            if (t.lastSeen >= now - TRACK_STALE_MS) {
+                if (soleWorld != null) {
+                    return false; // 2명 이상이면 걸음 대조에 맡긴다
+                }
+                soleWorld = e.getKey();
+                soleTrack = t;
+            }
+        }
+        if (soleWorld == null || soleTrack.firstSeen < 0 || soleTrack.lastSeen - soleTrack.firstSeen <= DEMO_SINGLE_MIN_MS
+                || soleTrack.suspectUntil > now) {
+            return false;
+        }
+        Double evidence = scores.getOrDefault(demo, Map.of()).get(soleWorld);
+        if (evidence != null && evidence < 0) {
+            return false; // 걸음 대조 반대 근거로 풀린 직후 다시 잇지 않는다
+        }
+        Long replaceableBindingId = null;
+        for (Binding b : bindings.active()) {
+            if (soleWorld.equals(b.worldId())) {
+                return false; // 대상 트랙에 이미 배정이 있다(시연 워치 본인이거나 다른 워치)
+            }
+            if (demo.equals(b.deviceId())) {
+                if (isTrackVisible(b.worldId(), now)) {
+                    return false; // 기존 배정의 World ID 가 지금 보이면 갈아 끼우지 않는다
+                }
+                replaceableBindingId = b.bindingId();
+            }
+        }
+        if (bindings.bindDemoSingle(demo, soleWorld, replaceableBindingId)) {
+            log.info("시연 1명 자동 배정: device={} world_id={} duration_ms={}{}", demo, soleWorld,
+                    soleTrack.lastSeen - soleTrack.firstSeen, replaceableBindingId == null ? "" : " (사라진 배정 교체)");
+            return true;
+        }
+        return false;
     }
 
     private void scoreWindows(long now) {

@@ -13,8 +13,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *        관리자에게 격상한다(S15P31A101-338). 10초는 '진입 → 진동 p95 1.5초' 와 재연결 백오프(최대 30초)를 함께 본 초깃값(watch-i4-contract.md)
  * @param escalationInterval ACK 기한이 지난 알림을 살피는 간격(초기 1 s). 격상은 기한 + 이 값 안에 난다
  * @param matchInterval 움직임 대조·배정을 다시 계산하는 간격(초기 2 s, 워치가 걸음 특징 창을 보내는 주기와 같다, S15P31A101-340)
- * @param demoDevice 시연 스위치(S15P31A101-793): 비어 있지 않으면 배정과 상관없이 모든 LIVE 위험 이벤트를 이 워치(기기 ID)로도 보낸다.
- *        시연은 사람이 하나라 걸음 대조·수동 배정을 기다리지 않고 바로 울리게 한다. 배정 표는 건드리지 않는다. 본 운영에서는 비운다
+ * @param demoDevice 시연 스위치(S15P31A101-793·-826): 비어 있지 않으면 배정과 상관없이 모든 LIVE 위험 이벤트를 이 워치(기기 ID)로도 보내고,
+ *        시연 워치에 배정이 없거나 배정된 World ID 가 지금 보이지 않을 때(>10초 미관측, 수동 확정 포함) LIVE 추적 사람이 정확히 1명(5초 초과)이면
+ *        임시 성격(DEMO_SINGLE)으로 잇거나 옛 배정을 REPLACED 로 갈아 끼운다. 본 운영에서는 비운다
  */
 @ConfigurationProperties("simai.watch")
 public record WatchProperties(Duration heartbeatInterval, Duration sweepInterval, Duration ackWithin, Duration escalationInterval,

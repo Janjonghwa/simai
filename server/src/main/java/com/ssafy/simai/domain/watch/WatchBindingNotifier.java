@@ -98,7 +98,9 @@ public class WatchBindingNotifier implements AutoCloseable {
         long now = clock.millis();
         if (binding.isPresent()) {
             payload.put("state", "BOUND");
-            payload.put("method", binding.get().method());
+            // 계약 watch_binding_notice 1.0.0 method 는 MOTION_MATCH·WAVE·MANUAL 닫힌 enum 이다.
+            // DB 의 DEMO_SINGLE 은 자동 배정이라 계약을 깨지 않게 MOTION_MATCH 로 싣는다(S15P31A101-826)
+            payload.put("method", binding.get().demoSingle() ? "MOTION_MATCH" : binding.get().method());
             payload.put("world_id", binding.get().worldId());
         } else {
             payload.put("state", "UNBOUND");
