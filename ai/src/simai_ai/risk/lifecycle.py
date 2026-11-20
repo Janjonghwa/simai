@@ -115,6 +115,7 @@ from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import ConfidenceReason, Origin, Severity, normalize_confidence
 from simai_ai.risk.engine import Evaluation
 from simai_ai.risk.event_id import EventIdFactory
+from simai_ai.risk.posture_gate import PostureGate
 from simai_ai.risk.rule import Finding, FindingTarget
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
 from simai_ai.risk.rules.r9_helmet import R9_RULE_ID
@@ -1056,6 +1057,7 @@ class LifecycleTracker:
         self._resolved: dict[EventKey, _Resolved] = {}  # 재개 시간 안의 해소 이벤트(6.4)
         self._last_evaluated_at = -1
         self._last_observation_time: int | None = None
+        self._posture_gate = PostureGate()
 
     @property
     def origin(self) -> Origin:
@@ -1113,6 +1115,11 @@ class LifecycleTracker:
         if not config_version:
             raise RiskInputError("apply: config_version 이 비었다")
         self._last_evaluated_at = evaluation.evaluated_at
+        self._posture_gate.observe(world)
+        for state in self.active():
+            if state.key.rule_id == "R4":
+                for world_id in state.world_ids:
+                    self._posture_gate.recent_r4[world_id] = world.t_latest_global
 
         grouped: dict[EventKey, list[Finding]] = {}
         for finding in evaluation.findings:
@@ -1143,6 +1150,17 @@ class LifecycleTracker:
             findings = grouped.get(key, [])
             active = self._by_key.get(key)
             if active is None:
+                if key.rule_id == "R5" and any(
+                    self._posture_gate.blocked(
+                        world_id, tracks.get(world_id), world.t_latest_global,
+                        {wid for state in self.active() if state.key.rule_id == "R4" for wid in state.world_ids},
+                    ) for world_id in key.world_ids
+                ):
+                    self._pending.pop(key, None)
+                    self._related_hint.pop(key, None)
+                    if any(not f.holding for f in findings):
+                        _log.info("POSTURE_TRANSITION: R5 신규 발생 억제 %s", key.world_ids)
+                    continue
                 # holding 은 기존 이벤트 유지용이다. 새 이벤트의 등급·구역은 발생 판정에서만 고른다.
                 raising = [f for f in findings if not f.holding]
                 opening = self._persist(key, raising, advancing, world, evaluation.evaluated_at)
@@ -1509,6 +1527,7 @@ class LifecycleTracker:
         self._pending.clear()
         self._related_hint.clear()
         self._resolved.clear()
+        self._posture_gate = PostureGate()
         tracks = {t.world_id: t for t in world.tracks}
         transitions: list[EventTransition] = []
         signals: list[LocalSignal] = []
