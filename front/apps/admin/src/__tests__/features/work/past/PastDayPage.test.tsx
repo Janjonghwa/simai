@@ -148,12 +148,6 @@ function renderPage(date = YESTERDAY) {
   );
 }
 
-// 숨겨진 요소는 접근 가능한 이름이 비므로 aria-label 로 찾는다.
-const tabpanel = (name: string) =>
-  screen
-    .getAllByRole('tabpanel', { hidden: true })
-    .find((p) => p.getAttribute('aria-label') === name)!;
-
 describe('PastDayPage — 머리', () => {
   it('달력 단추 · 날짜 · 칩 `지난 작업` 을 보이고, 달력 단추는 작업 관리 달력으로 보낸다', async () => {
     renderPage();
@@ -281,30 +275,31 @@ describe('PastDayPage — 작업 선택', () => {
 });
 
 describe('PastDayPage — 본문', () => {
-  it('왼쪽 `CCTV 다시 보기` 와 타임라인, 오른쪽 열 탭을 보이고 작업자 목록은 없다', async () => {
+  it('왼쪽 `CCTV 다시 보기` 와 타임라인, 오른쪽 열 이벤트 로그·TBM 보고서를 함께 보이고 작업자 목록은 없다', async () => {
     fakeReplay();
     renderPage();
     expect(await screen.findByTestId('replay-stage')).toBeTruthy();
     const cctv = screen.getByRole('region', { name: 'CCTV 다시 보기' });
     expect(within(cctv).getByTestId('replay-stage')).toBeTruthy();
     expect(screen.getByRole('region', { name: '타임라인' })).toBeTruthy();
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
-      'TBM 보고서',
-      '이벤트 로그',
-    ]);
+    expect(screen.getByRole('list', { name: '이벤트 로그' })).toBeTruthy();
+    expect(screen.getByTestId('report-panel')).toBeTruthy();
+    expect(screen.queryByRole('tablist')).toBeNull();
     expect(screen.queryByRole('list', { name: '작업자 목록' })).toBeNull();
     expect(screen.queryByText('작업자')).toBeNull();
   });
 
-  it('처음 보일 시각은 첫 기록 뒤의 첫 사건이고, 타임라인의 사건 표시를 누르면 그 시각으로 옮긴다', async () => {
+  it('처음 보일 시각은 첫 기록 뒤의 첫 사건이고, 타임라인의 사건 표시를 누르면 3초 앞으로 옮겨 재생한다', async () => {
     const replay = fakeReplay();
     renderPage();
     await waitFor(() => expect(replay.seek).toHaveBeenCalledWith(EVENT_AT));
     replay.seek.mockClear();
+    replay.play.mockClear();
 
     fireEvent.click(screen.getAllByRole('button', { name: /^이벤트 / })[0]!);
     expect(replay.seek).toHaveBeenCalledTimes(1);
-    expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME - 1000);
+    expect(replay.seek).toHaveBeenCalledWith(FIRST_FRAME - 4000);
+    expect(replay.play).toHaveBeenCalledTimes(1);
   });
 
   describe('긴 작업: 앞 구간만 받고 화면이 뜬 뒤 뒤 구간이 오는 경우의 처음 보일 시각', () => {
@@ -467,46 +462,30 @@ describe('PastDayPage — 본문', () => {
   });
 });
 
-describe('PastDayPage — 오른쪽 열 탭', () => {
-  it('탭을 바꿔도 `TBM 보고서` 와 `이벤트 로그` 두 패널이 모두 마운트돼 있다', async () => {
+describe('PastDayPage — 오른쪽 열', () => {
+  it('`이벤트 로그` 와 `TBM 보고서` 두 패널이 탭 없이 함께 보인다', async () => {
     fakeReplay();
     renderPage();
-    const report = await screen.findByTestId('report-panel');
-    expect(screen.getByRole('tab', { name: 'TBM 보고서' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
-    expect(tabpanel('TBM 보고서').hidden).toBe(false);
-    expect(tabpanel('이벤트 로그').hidden).toBe(true);
-    // 이벤트 로그도 이미 그려져 있다(숨겨져 있을 뿐).
-    expect(
-      within(tabpanel('이벤트 로그')).getAllByRole('listitem', { hidden: true }).length,
-    ).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getByRole('tab', { name: '이벤트 로그' }));
-    expect(screen.getByRole('tab', { name: '이벤트 로그' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
-    expect(tabpanel('이벤트 로그').hidden).toBe(false);
-    expect(tabpanel('TBM 보고서').hidden).toBe(true);
-    // 보고서는 그대로 마운트돼 있다(같은 요소).
-    expect(screen.getByTestId('report-panel')).toBe(report);
-
-    fireEvent.click(screen.getByRole('tab', { name: 'TBM 보고서' }));
-    expect(tabpanel('TBM 보고서').hidden).toBe(false);
+    expect(await screen.findByTestId('report-panel')).toBeTruthy();
+    const log = screen.getByRole('list', { name: '이벤트 로그' });
+    expect(within(log).getAllByRole('listitem').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('tablist')).toBeNull();
   });
 
-  it('이벤트 로그의 사건을 누르면 그 시각으로 옮긴다', async () => {
+  it('이벤트 로그의 사건을 누르면 3초 앞으로 옮겨 재생하고 그 줄을 강조한다', async () => {
     const replay = fakeReplay();
     renderPage();
     await screen.findByTestId('report-panel');
     await waitFor(() => expect(replay.seek).toHaveBeenCalled());
     replay.seek.mockClear();
+    replay.play.mockClear();
 
-    fireEvent.click(screen.getByRole('tab', { name: '이벤트 로그' }));
     const log = screen.getByRole('list', { name: '이벤트 로그' });
     const rows = within(log).getAllByRole('button');
     expect(rows).toHaveLength(2);
     fireEvent.click(rows[1]!);
-    expect(replay.seek).toHaveBeenCalledWith(EVENT_AT);
+    expect(replay.seek).toHaveBeenCalledWith(EVENT_AT - 3000);
+    expect(replay.play).toHaveBeenCalledTimes(1);
+    expect(rows[1]!.getAttribute('aria-current')).toBe('true');
   });
 });

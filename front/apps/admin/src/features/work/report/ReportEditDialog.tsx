@@ -74,13 +74,15 @@ export function ReportEditDialog({
   const edit = useReportEdit(report, { onSaved, onClose });
   const catalog = useWorkTasks().data ?? NO_TASKS;
   const full = initialForm !== undefined || isDrafted(edit.base);
+  const title = full ? TITLE : '작업내용 선택';
   return (
-    <ModalDialog label={TITLE} onClose={onClose} className={paper ? PAPER : full ? WIDE : NARROW}>
+    <ModalDialog label={title} onClose={onClose} className={paper ? PAPER : full ? WIDE : NARROW}>
       <EditForm
         key={edit.generation}
         report={edit.base}
         initialForm={edit.generation === 0 ? initialForm : undefined}
         full={full}
+        title={title}
         paper={paper}
         catalog={catalog}
         locked={edit.locked}
@@ -100,6 +102,7 @@ function EditForm({
   report,
   initialForm,
   full,
+  title,
   paper,
   catalog,
   locked,
@@ -113,6 +116,7 @@ function EditForm({
   report: WorkReport;
   initialForm: ReportForm | undefined;
   full: boolean;
+  title: string;
   paper: PaperExtras | undefined;
   catalog: readonly WorkTask[];
   locked: boolean;
@@ -155,7 +159,7 @@ function EditForm({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex flex-none items-center border-b border-border px-5 py-3">
-        <h2 className={H2}>{TITLE}</h2>
+        <h2 className={H2}>{title}</h2>
       </header>
       <div className={cn('min-h-0 flex-1 overflow-auto', paper ? 'p-5' : 'px-5 py-4')}>
         <fieldset disabled={locked} className="min-w-0">

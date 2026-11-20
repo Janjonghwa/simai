@@ -53,7 +53,8 @@ function signersOf(overrides: Partial<SignersState> & { items?: WorkSignature[] 
   return state;
 }
 
-const addButton = () => screen.getByRole('button', { name: '서명 추가' }) as HTMLButtonElement;
+const addButton = () =>
+  screen.getByRole('button', { name: '저장 후 다음 사람' }) as HTMLButtonElement;
 const nameInput = () => screen.getByLabelText('서명자 이름') as HTMLInputElement;
 const type = (name: string) => fireEvent.change(nameInput(), { target: { value: name } });
 const draw = () =>
@@ -69,10 +70,11 @@ describe('SignDialog', () => {
     expect(screen.getByRole('dialog', { name: '참석자 서명' })).toBeTruthy();
     expect(nameInput().maxLength).toBe(SIGNER_NAME_MAX);
     expect(screen.getByLabelText('서명 패드')).toBeTruthy();
-    for (const name of ['지우기', '서명 추가', '완료']) {
+    for (const name of ['지우기', '저장 후 다음 사람', '저장 후 완료']) {
       expect(screen.getByRole('button', { name })).toBeTruthy();
     }
-    expect(screen.getByText('서명자 0명')).toBeTruthy();
+    expect(screen.getByText('이곳에 서명해 주세요')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '닫기' })).toBeTruthy();
   });
 
   it('이름과 획이 모두 있어야 서명 추가가 켜지고, 지우기로 획을 지우면 다시 꺼진다', () => {
@@ -227,12 +229,23 @@ describe('SignDialog', () => {
     ).toBe(true);
   });
 
+  it('저장 후 완료는 서명을 저장한 뒤 창을 닫는다', async () => {
+    const signers = signersOf();
+    const onClose = vi.fn();
+    render(<SignDialog signers={signers} onClose={onClose} />);
+    type('홍길동');
+    draw();
+    fireEvent.click(screen.getByRole('button', { name: '저장 후 완료' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(signers.add).toHaveBeenCalledTimes(1);
+  });
+
   it('열 때 지난 실패 안내를 지우고, 완료를 누르면 닫는다', () => {
     const signers = signersOf();
     const onClose = vi.fn();
     render(<SignDialog signers={signers} onClose={onClose} />);
     expect(signers.resetErrors).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: '완료' }));
+    fireEvent.click(screen.getByRole('button', { name: '닫기' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

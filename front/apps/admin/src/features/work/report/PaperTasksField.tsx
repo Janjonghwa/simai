@@ -30,7 +30,13 @@ export function PaperTasksField({
         {tasks.map((task, index) => (
           <p key={index}>{`• ${taskLabelOf(task, catalog)}`}</p>
         ))}
-        {tasks.length === 0 && <span className="text-muted-foreground">+ 작업내용 선택</span>}
+        {tasks.length === 0 && (
+          <span className="flex justify-center py-3">
+            <span className="rounded-lg bg-[#2F66E8] px-6 py-3 text-base font-bold text-white">
+              + 작업내용 선택
+            </span>
+          </span>
+        )}
       </button>
       {open && (
         <div className="p-2">

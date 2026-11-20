@@ -225,7 +225,7 @@ async function signAs(name: string) {
   const dialog = await screen.findByRole('dialog', { name: '참석자 서명' });
   fireEvent.change(within(dialog).getByLabelText('서명자 이름'), { target: { value: name } });
   draw();
-  const add = within(dialog).getByRole('button', { name: '서명 추가' });
+  const add = within(dialog).getByRole('button', { name: '저장 후 다음 사람' });
   await waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false), ROUND_TRIP);
   fireEvent.click(add);
   await waitFor(() => expect(within(dialog).getByText('서명자 1명')).toBeTruthy(), ROUND_TRIP);
@@ -235,112 +235,40 @@ async function signAs(name: string) {
 
 /** '다음' → 확인창에서 두 체크를 켠다. */
 async function openConfirmAndCheck() {
-  fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+  fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
   const dialog = await screen.findByRole('dialog', { name: '작업 전 확인' });
   fireEvent.click(within(dialog).getByRole('checkbox', { name: 'TBM 보고서를 확인했습니다' }));
-  fireEvent.click(within(dialog).getByRole('checkbox', { name: '가상 레이아웃을 확인했습니다' }));
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: '현장 3D 맵을 확인했습니다' }));
   return dialog;
 }
 
 describe('PreflightStage 화면', () => {
-  it('왼쪽에 고칠 수 있고 출력되는 보고서, 오른쪽에 가상 레이아웃·참석자 서명 카드를 둔다', async () => {
+  it('왼쪽에 고칠 수 있고 출력되는 보고서, 오른쪽에 현장 3D 맵을 두고 서명 카드·구역 목록은 없다', async () => {
     renderStage(await openToday());
     const report = screen.getByTestId('report-panel');
     expect(report.dataset.work).toBe('9001');
     expect(report.dataset.editable).toBe('true');
     expect(report.dataset.print).toBe('true');
 
-    expect(screen.getByRole('heading', { name: '가상 레이아웃' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '참석자 서명' })).toBeTruthy();
-    expect(screen.getByText('0명')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '현장 3D 맵' })).toBeTruthy();
+    expect(await screen.findByText('위험 1 · 주의 1')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '참석자 서명' })).toBeNull();
+    expect(screen.queryByRole('list', { name: '구역 목록' })).toBeNull();
     expect(screen.getByRole('button', { name: '서명하기' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '다음' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '작업 시작' })).toBeNull();
   });
 
-  it('구역을 받으면 구역 수 칩과 구역 이름·위험 등급 목록을 보인다', async () => {
-    renderStage(await openToday());
-    const list = await screen.findByRole('list', { name: '구역 목록' });
-    expect(screen.getByText('구역 2개')).toBeTruthy();
-    const rows = within(list).getAllByRole('button');
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]!).getByText('개구부 구역')).toBeTruthy();
-    expect(within(rows[0]!).getByText('위험')).toBeTruthy();
-    expect(within(rows[1]!).getByText('단상 구역')).toBeTruthy();
-    expect(within(rows[1]!).getByText('주의')).toBeTruthy();
-  });
-
-  it('구역이 하나도 없으면 구역 없음을 보인다', async () => {
+  it('구역이 하나도 없으면 위험 0 · 주의 0 칩을 보인다', async () => {
     server.use(http.get('*/api/zones', () => HttpResponse.json([])));
     renderStage(await openToday());
-    expect(await screen.findByText('구역 없음')).toBeTruthy();
-    expect(screen.getByText('구역 0개')).toBeTruthy();
+    expect(await screen.findByText('위험 0 · 주의 0')).toBeTruthy();
     expect(screen.queryByRole('list', { name: '구역 목록' })).toBeNull();
   });
 
-  it('워치 카드에 등록된 워치마다 표시 이름·기기·연결을 보이고, 사람과 짝지어졌으면 그 표시를 붙인다(-692)', async () => {
-    watchBindings = [
-      {
-        binding_id: 1,
-        device_id: 'watch-a',
-        world_id: 'w-0001',
-        method: 'MOTION_MATCH',
-        bound_at: T0,
-        channel_state: 'BOUND',
-      },
-    ];
-    useRealtimeStore.setState({
-      phase: 'OPEN',
-      openedAt: Date.now(),
-      health: {
-        receivedAt: Date.now(),
-        clockOffsetMs: 0,
-        payload: {
-          watches: {
-            registered: 2,
-            connected: 1,
-            items: [
-              {
-                device_id: 'watch-a',
-                link: 'CONNECTED',
-                last_heartbeat_at: T0,
-                battery_pct: 80,
-                transport: 'WIFI',
-              },
-              {
-                device_id: 'watch-b',
-                link: 'LOST',
-                last_heartbeat_at: null,
-                battery_pct: null,
-                transport: null,
-              },
-            ],
-          },
-          watch_names: [
-            { device_id: 'watch-a', display_name: '작업자 A' },
-            { device_id: 'watch-b', display_name: '작업자 B' },
-          ],
-        },
-      } as never,
-    });
+  it('워치 상태를 모르면(health 없음) 확인창에 시작 전 경고가 없다', async () => {
     renderStage(await openToday());
-    expect(screen.getByRole('heading', { name: '워치' })).toBeTruthy();
-    expect(screen.getByText('연결 1/2')).toBeTruthy();
-    const list = screen.getByRole('list', { name: '워치 목록' });
-    const rows = within(list)
-      .getAllByRole('listitem')
-      .map((li) => li.textContent);
-    expect(rows[0]).toContain('작업자 A');
-    expect(rows[0]).toContain('watch-a');
-    expect(rows[0]).toContain('연결됨');
-    expect(rows[1]).toContain('작업자 B');
-    expect(rows[1]).toContain('끊김');
-    await waitFor(() => expect(within(list).getByText('사람 연결됨')).toBeTruthy());
-  });
-
-  it('워치 상태를 모르면(health 없음) 없다고 하지 않는다', async () => {
-    renderStage(await openToday());
-    expect(screen.getByText('워치 상태를 아직 모릅니다.')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    await signAs('박반장');
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
     await screen.findByRole('dialog', { name: '작업 전 확인' });
     expect(screen.queryByRole('list', { name: '시작 전 경고' })).toBeNull();
   });
@@ -359,16 +287,17 @@ describe('PreflightStage 화면', () => {
       } as never,
     });
     renderStage(await openToday());
+    await signAs('박반장');
     const dialog = await openConfirmAndCheck();
     const warnings = within(dialog).getByRole('list', { name: '시작 전 경고' });
     expect(warnings.textContent).toContain('연결된 워치가 없어 현장 경보는 현장 노트북에서만');
   });
 
-  it('구역을 받지 못했으면 없다고 하지 않고 안내만 보인다', async () => {
+  it('구역을 받지 못했으면 구역 수 칩을 숨긴다', async () => {
     server.use(http.get('*/api/zones', () => HttpResponse.json({ message: 'x' }, { status: 500 })));
     renderStage(await openToday());
-    expect(await screen.findByText('구역을 불러오지 못했어요')).toBeTruthy();
-    expect(screen.queryByText('구역 없음')).toBeNull();
+    await waitFor(() => expect(requests).toContain('GET /api/zones'));
+    expect(screen.queryByText(/위험 \d+ · 주의 \d+/)).toBeNull();
   });
 });
 
@@ -431,63 +360,46 @@ describe('PreflightStage 3D·구역 편집', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '구역 편집' })).toBeNull());
   }, 30_000);
 
-  it('3D 가 아닌 구역 목록에서 눌러도 그 구역의 편집 창이 열린다', async () => {
-    renderStage(await openToday());
-    const list = await screen.findByRole('list', { name: '구역 목록' });
-    fireEvent.click(within(list).getByRole('button', { name: /단상 구역/ }));
-    await screen.findByRole('dialog', { name: '구역 편집' });
-    await waitFor(() =>
-      expect(editor.selectTarget).toHaveBeenCalledWith(
-        { type: 'zone', id: 'z-02' },
-        { focus: true },
-      ),
-    );
-  }, 30_000);
-
-  it('3D 가 멈추면 3D 칸에 안내만 남고 구역 목록은 그대로 보인다', async () => {
+  it('3D 가 멈추면 3D 칸에 안내만 남기고 구역 수 칩은 그대로 보인다', async () => {
     fakeViewer.phase = 'error';
     renderStage(await openToday());
     expect(
       await screen.findByText('3D 를 표시할 수 없습니다', undefined, { timeout: 15_000 }),
     ).toBeTruthy();
     expect(screen.queryByTestId('viewer3d')).toBeNull();
-    const list = await screen.findByRole('list', { name: '구역 목록' });
-    expect(within(list).getAllByRole('button')).toHaveLength(2);
-    expect(screen.getByText('구역 2개')).toBeTruthy();
+    expect(await screen.findByText('위험 1 · 주의 1')).toBeTruthy();
   }, 30_000);
 });
 
 describe('PreflightStage 서명·시작', () => {
-  it('서명하기로 서명을 더하면 카드에 인원·이름·썸네일·삭제가 나오고, 삭제하면 사라진다', async () => {
+  it('서명하기로 서명을 더하면 주 단추가 작업 시작으로 바뀌고, 서명 추가 창에서 삭제하면 다시 서명하기가 된다', async () => {
     renderStage(await openToday());
-    await screen.findByRole('list', { name: '구역 목록' });
     await signAs('박반장');
 
-    await waitFor(() => expect(screen.getByText('1명')).toBeTruthy());
-    const list = screen.getByRole('list', { name: '서명자 목록' });
+    expect(await screen.findByRole('button', { name: '작업 시작' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '서명 추가' }));
+    const dialog = await screen.findByRole('dialog', { name: '참석자 서명' });
+    const list = within(dialog).getByRole('list', { name: '서명자 목록' });
     expect(within(list).getByText('박반장')).toBeTruthy();
     expect(within(list).getByAltText('박반장 서명')).toBeTruthy();
 
     fireEvent.click(within(list).getByRole('button', { name: '박반장 서명 삭제' }));
-    await waitFor(() => expect(screen.queryByRole('list', { name: '서명자 목록' })).toBeNull());
-    expect(screen.getByText('0명')).toBeTruthy();
+    await waitFor(() =>
+      expect(within(dialog).queryByRole('list', { name: '서명자 목록' })).toBeNull(),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: '닫기' }));
+    expect(await screen.findByRole('button', { name: '서명하기' })).toBeTruthy();
     expect(requests).toContain('POST /api/reports/tbm/9001/signatures');
     expect(requests.some((r) => r.startsWith('DELETE /api/reports/tbm/9001/signatures/'))).toBe(
       true,
     );
   }, 30_000);
 
-  it('서명이 없으면 확인창의 작업 시작이 꺼져 있고, 서명하기가 확인창을 닫고 서명 창을 연다', async () => {
+  it('서명이 없으면 주 단추가 서명하기이고 누르면 서명 창을 연다', async () => {
     renderStage(await openToday());
-    const dialog = await openConfirmAndCheck();
-    expect(within(dialog).getByText('참석자 서명이 필요합니다')).toBeTruthy();
-    expect(
-      (within(dialog).getByRole('button', { name: '작업 시작' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-
-    fireEvent.click(within(dialog).getByRole('button', { name: '서명하기' }));
+    expect(screen.queryByRole('button', { name: '작업 시작' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '서명하기' }));
     await screen.findByRole('dialog', { name: '참석자 서명' });
-    expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull();
   }, 30_000);
 
   it('서명을 더하고 두 체크를 켜면 작업을 시작해 서버 작업이 진행 중이 된다', async () => {
@@ -567,11 +479,12 @@ describe('PreflightStage 서명·시작', () => {
 
   it('확인창을 다시 열어도 앞서 켠 체크가 남아 있다', async () => {
     renderStage(await openToday());
+    await signAs('박반장');
     const dialog = await openConfirmAndCheck();
     fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull());
 
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '작업 시작' }));
     const reopened = await screen.findByRole('dialog', { name: '작업 전 확인' });
     expect(
       (
@@ -615,10 +528,11 @@ describe('PreflightStage 서명·시작', () => {
     const created = await putDailyWorkUnit(api, TODAY);
     const onBackToSetup = vi.fn();
     renderStage(workDayOf({ ...created, progress: 'SETUP' }), onBackToSetup);
-    fireEvent.click(await screen.findByRole('button', { name: '다음' }));
+    await signAs('박반장');
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
     const dialog = await screen.findByRole('dialog', { name: '작업 전 확인' });
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'TBM 보고서를 확인했습니다' }));
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: '가상 레이아웃을 확인했습니다' }));
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '현장 3D 맵을 확인했습니다' }));
     expect(
       (within(dialog).getByRole('button', { name: '작업 시작' }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -660,7 +574,7 @@ describe('PreflightStage 서명·시작', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '작업 시작' }));
     const reopened = await screen.findByRole('dialog', { name: '작업 전 확인' });
     expect(within(reopened).queryByRole('alert')).toBeNull();
   }, 30_000);

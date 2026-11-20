@@ -233,7 +233,7 @@ describe('RunStage — 진행 중', () => {
     expect(reportPanel().dataset).toMatchObject({
       work: workId,
       editable: 'true',
-      print: 'true',
+      print: 'false',
     });
     expect(screen.getByText('진행 중')).toBeTruthy();
     expect(screen.getByRole('timer', { name: '경과 시간' }).textContent).toBe('00:01:05');
@@ -241,11 +241,11 @@ describe('RunStage — 진행 중', () => {
     await waitFor(() => expect(screen.getByText('서명 1명')).toBeTruthy());
 
     const events = screen.getByRole('list', { name: '경보 기록 목록' });
-    expect(screen.getByText('2건 · 위험 1 · 경고 1')).toBeTruthy();
+    expect(screen.getByText('3건 · 위험 1 · 주의 2')).toBeTruthy();
     expect(
       within(events)
-        .getAllByRole('listitem')
-        .map((li) => li.textContent),
+        .getAllByRole('article')
+        .map((article) => article.getAttribute('aria-label')),
     ).toEqual([expect.stringContaining('단상 구역'), expect.stringContaining('개구부 구역')]);
 
     expect(screen.getByRole('heading', { name: '관제 적용 상태' })).toBeTruthy();
@@ -314,14 +314,14 @@ describe('RunStage — 진행 중', () => {
 });
 
 describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
-  it('종료 화면은 `보고서 제출` 옆에 `한 번 더 실행` 을 두고, 누르면 onRerun 만 부른다', async () => {
+  it('종료 화면에는 `한 번 더 실행` 단추가 없다', async () => {
     await prepare('ended');
     requests = [];
     const onRerun = vi.fn();
     renderStage(undefined, onRerun);
-    fireEvent.click(await screen.findByRole('button', { name: '한 번 더 실행' }));
-    expect(onRerun).toHaveBeenCalledTimes(1);
-    expect(requests.some((r) => r.endsWith('/start'))).toBe(false);
+    expect(await screen.findByRole('button', { name: '보고서 제출' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '한 번 더 실행' })).toBeNull();
+    expect(onRerun).not.toHaveBeenCalled();
   });
 
   it('실행 2 진행 중에는 경과·시작 시각·경보 기록이 실행 2 기준이고, 끝나면 실행 기록에 두 실행이 보인다', async () => {
@@ -337,7 +337,7 @@ describe('RunStage — 한 번 더 실행(S15P31A101-696)', () => {
     expect(await screen.findByText('실행 2 · 진행 중')).toBeTruthy();
     expect(screen.getByRole('timer', { name: '경과 시간' }).textContent).toBe('00:00:30');
     expect(screen.getByText('시작 시각 2026-11-11 11:00')).toBeTruthy();
-    expect(screen.getByText('1건 · 위험 0 · 경고 1')).toBeTruthy();
+    expect(screen.getByText('1건 · 위험 0 · 주의 1')).toBeTruthy();
 
     clock = T0 + 150 * MIN;
     fireEvent.click(screen.getByRole('button', { name: '작업 종료' }));
@@ -595,7 +595,7 @@ describe('RunStage — 종료 뒤 요약·꺼진 이유·GPU 안내(-734)', () =
     renderStage();
     // 보고서를 받는 동안은 「불러오는 중」이고, 받으면 서버가 쓰는 중인 종료 미팅이 이유다
     await waitFor(() =>
-      expect(screen.getByTestId('action-reason').textContent).toBe('종료 미팅 작성 중이에요'),
+      expect(screen.getByTestId('action-reason').textContent).toBe('종료 미팅 작성 중'),
     );
     expect(doneButton().disabled).toBe(true);
 

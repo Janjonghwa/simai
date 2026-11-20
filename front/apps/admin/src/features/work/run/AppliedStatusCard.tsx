@@ -7,7 +7,7 @@ import { useWorkStartPhase } from '@/features/monitor/useMonitoringPhase';
 import { useReplayTestAlerts, useTestInput } from '@/features/monitor/useTestInput';
 import { appliedStatusLines, type AppliedLine } from '@/features/work/run/run';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
-import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
+import { Card, CardContent } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 import { Check, Clock, TriangleAlert } from 'lucide-react';
 
@@ -57,31 +57,48 @@ export function AppliedStatusCard({
     replayTestAlerts,
   });
   if (lines.length === 0) return null;
+  const problem =
+    lines.find((line) => line.tone === 'bad') ?? lines.find((line) => line.tone === 'wait');
+  const zoneCount = applied?.items.filter((item) => item.item_type === 'ZONE').length;
+  const live = cameras.filter((camera) => stateOf(camera.id) === 'live').length;
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>
-          <h2>관제 적용 상태</h2>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <ul className="flex flex-col divide-y divide-border">
-          {lines.map((line) => {
-            const Icon = ICON[line.tone];
-            return (
-              <li
-                key={line.text}
-                data-tone={line.tone}
-                className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
-              >
-                <Icon aria-hidden className={cn('size-[18px] flex-none', ICON_COLOR[line.tone])} />
-                <span>{line.text}</span>
-              </li>
-            );
-          })}
-        </ul>
-        <MonitoringProblemNote text={monitoringText(phase)} />
-      </CardContent>
+    <Card size="sm" className="flex-none">
+      <details>
+        <summary
+          className={cn(
+            'cursor-pointer px-4 py-3 text-sm font-medium',
+            problem ? 'text-sev-caution' : 'text-ok',
+          )}
+        >
+          {problem ? `⚠ ${problem.text}` : '✓ 관제 적용됨'}
+          {zoneCount !== undefined && ` · 구역 ${zoneCount}`}
+          {cameras.length > 0 &&
+            !(problem && problem.text.includes('카메라')) &&
+            ` · 카메라 ${live}/${cameras.length}`}
+        </summary>
+        <CardContent className="flex max-h-[180px] flex-col gap-3 overflow-auto">
+          <h2 className="font-semibold">관제 적용 상태</h2>
+          <ul className="flex flex-col divide-y divide-border">
+            {lines.map((line) => {
+              const Icon = ICON[line.tone];
+              return (
+                <li
+                  key={line.text}
+                  data-tone={line.tone}
+                  className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
+                >
+                  <Icon
+                    aria-hidden
+                    className={cn('size-[18px] flex-none', ICON_COLOR[line.tone])}
+                  />
+                  <span>{line.text}</span>
+                </li>
+              );
+            })}
+          </ul>
+          <MonitoringProblemNote text={monitoringText(phase)} />
+        </CardContent>
+      </details>
     </Card>
   );
 }

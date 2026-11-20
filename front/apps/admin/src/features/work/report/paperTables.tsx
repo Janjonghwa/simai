@@ -1,3 +1,4 @@
+import { LoadingDots } from '@/components/LoadingDots';
 import {
   circledNumber,
   dateTimeInputValue,
@@ -254,14 +255,26 @@ export function InfoTable({
         </tr>
         <tr>
           <th className={TH}>작업내용</th>
-          <td colSpan={3} className={cn(CELL, TALL)}>
+          <td
+            colSpan={3}
+            className={cn(
+              CELL,
+              TALL,
+              editable && info.tasks.length === 0 && 'task-choice ring-2 ring-blue-600 ring-inset',
+            )}
+          >
             {tasksField ??
               info.tasks.map((task, index) => (
                 <p key={index}>{`• ${taskLabelOf(task, catalog)}`}</p>
               ))}
             {editable && !tasksField && info.tasks.length === 0 && (
-              <span className="inline-flex h-[30px] items-center rounded-md border border-dashed border-primary px-3.5 font-semibold text-primary">
-                + 작업내용 선택
+              <span className="flex flex-col items-center gap-1 py-2">
+                <span className="inline-flex items-center rounded-lg bg-[#2F66E8] px-6 py-2.5 text-base font-bold text-white">
+                  + 작업내용 선택
+                </span>
+                <span className="text-xs text-slate-600">
+                  고르면 잠재위험·대책 초안이 채워집니다
+                </span>
               </span>
             )}
           </td>
@@ -464,10 +477,12 @@ export function ChecksTable({
 export function ReviewTable({
   form,
   drafted,
+  endingGenerating = false,
   onChange,
 }: {
   form: ReportForm;
   drafted: boolean;
+  endingGenerating?: boolean;
   onChange?: (form: ReportForm) => void;
 }) {
   const edit =
@@ -492,14 +507,18 @@ export function ReviewTable({
         </tr>
         <tr>
           <th className={TH}>종료 미팅</th>
-          <td className={valueCell(drafted, TALL)}>
-            <Text
-              value={form.review.ending}
-              label="종료 미팅"
-              max={REPORT_FORM_LIMITS.review}
-              height="tall"
-              onChange={edit && ((ending) => edit({ ending }))}
-            />
+          <td data-ending-meeting className={valueCell(drafted, TALL)}>
+            {endingGenerating ? (
+              <LoadingDots label="종료 미팅 작성 중" />
+            ) : (
+              <Text
+                value={form.review.ending}
+                label="종료 미팅"
+                max={REPORT_FORM_LIMITS.review}
+                height="tall"
+                onChange={edit && ((ending) => edit({ ending }))}
+              />
+            )}
           </td>
         </tr>
       </tbody>

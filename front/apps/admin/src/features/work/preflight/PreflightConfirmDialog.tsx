@@ -12,7 +12,7 @@ import { cn } from '@simai/ui/lib/utils';
 import { Check, TriangleAlert, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-// '작업 전 확인' 창: 보고서·가상 레이아웃을 확인했는지 체크하고, 참석자 서명이 1명 이상이면 '작업 시작'이 켜진다.
+// '작업 전 확인' 창: 보고서·현장 3D 맵을 확인했는지 체크하고, 참석자 서명이 1명 이상이면 '작업 시작'이 켜진다.
 // 서명이 없으면 이 창을 닫고 서명 창을 여는 '서명하기'가 있다. 시작이 거절되면 이유를 창 안에 보인다.
 // 세팅 완료(서버 setup_completed_at) 전이면 '작업 시작'을 끄고 「세팅을 완료해야 시작할 수 있습니다」와 '세팅으로' 단추를 보인다(-642).
 // 서명 수처럼 자동으로 정해지는 줄은 체크 칸 모양이 아니라 ✓/✗ 상태로 보인다(사람이 누르는 칸과 헷갈리지 않게, -730).
@@ -20,7 +20,7 @@ import type { ReactNode } from 'react';
 
 const CHECK_ROWS: readonly { key: PreflightCheckKey; label: string }[] = [
   { key: 'reportChecked', label: 'TBM 보고서를 확인했습니다' },
-  { key: 'layoutChecked', label: '가상 레이아웃을 확인했습니다' },
+  { key: 'layoutChecked', label: '현장 3D 맵을 확인했습니다' },
 ];
 
 // 작업 중 보호구 요구(S15P31A101-654). 기본 필수이고 끄면 그 장비 미착용(R9·R11)을 판정하지 않는다.

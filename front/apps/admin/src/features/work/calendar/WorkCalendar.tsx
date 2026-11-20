@@ -20,7 +20,7 @@ import { useMemo, useState } from 'react';
 // 지난 날 칸은 끝난 작업(종료·제출)만 간결하게 보이고 작업하지 않은 지난 날은 누를 수 없다(-670). 오늘 칸은 지금 할 일 주 단추를 크게 보이고, 예정인 날 칸은 차분히 비운다.
 // 한 화면에 맞춘다: 폭 1080 가운데, 아래 80px 비움(5주는 높이 720 에 맞고 6주는 스크롤).
 
-/** 날짜 칸의 완료 아이콘(✓)과 점 색깔(빨강=위험, 주황=경고)의 의미를 마우스 올림·초점 시 설명하는 범례. */
+/** 날짜 칸의 완료 아이콘(✓)과 점 색깔(빨강=위험, 노랑=주의)의 의미를 마우스 올림·초점 시 설명하는 범례. */
 function CalendarLegend() {
   const [open, setOpen] = useState(false);
   return (
@@ -57,8 +57,8 @@ function CalendarLegend() {
               <span>빨간 점 + 숫자: 위험 사건 수(관제 카드 기준)</span>
             </li>
             <li className="flex items-center gap-2">
-              <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-high" />
-              <span>주황 점 + 숫자: 경고 사건 수(관제 카드 기준)</span>
+              <span aria-hidden className="mx-1 size-1.5 shrink-0 rounded-full bg-sev-caution" />
+              <span>노란 점 + 숫자: 주의 사건 수(관제 카드 기준)</span>
             </li>
           </ul>
         </div>
@@ -132,8 +132,8 @@ export function WorkCalendar({
                 aria-label="월간 요약"
                 title={
                   monthSummary.incidents
-                    ? `이번 달 완료 작업 일수와 위험·경고 사건 합계(관제 카드 기준). 경보 기록 한 건 한 건은 위험 ${monthSummary.critical}건·경고 ${monthSummary.high}건입니다.`
-                    : '이번 달 완료 작업 일수와 위험(빨간 점)·경고(주황 점) 경보 합계'
+                    ? `이번 달 완료 작업 일수와 위험·주의 사건 합계(관제 카드 기준). 경보 기록 한 건 한 건은 위험 ${monthSummary.critical}건·주의 ${monthSummary.high}건입니다.`
+                    : '이번 달 완료 작업 일수와 위험(빨간 점)·주의(노랑 점) 경보 합계'
                 }
                 className="rounded-lg border border-border/70 bg-card/80 px-3 py-1 text-[13px] text-muted-foreground tabular-nums"
               >
@@ -151,8 +151,10 @@ export function WorkCalendar({
                   건
                 </span>
                 {' · '}
-                <span className={monthSummary.high > 0 ? 'font-semibold text-sev-high' : undefined}>
-                  경고{' '}
+                <span
+                  className={monthSummary.high > 0 ? 'font-semibold text-sev-caution' : undefined}
+                >
+                  주의{' '}
                   {monthSummary.incidents
                     ? `사건 ${monthSummary.incidents.high}`
                     : monthSummary.high}

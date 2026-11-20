@@ -24,6 +24,10 @@ const data = vi.hoisted(() => ({
 }));
 
 vi.mock('@/features/layout/useNow', () => ({ useNow: () => NOW }));
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => vi.fn(),
+}));
 vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: data.entries, loaded: true, failed: false }),
@@ -118,37 +122,37 @@ describe('RunStatusCard', () => {
 });
 
 describe('EventListCard', () => {
-  it('시작 뒤 경보를 최근 것부터 시각·종류·구역·등급으로 보이고, 구역이 없으면 `현장` 이다', () => {
+  it('시작 뒤 경보를 최근 것부터 IncidentCard 로 보이고, 구역이 없으면 대상 없음이다', () => {
     data.entries = [
       entry('a', START + 5_000, 'CRITICAL', 'z-04'),
       entry('b', START + 65_000, 'HIGH', null),
     ];
     withClient(<EventListCard startedAt={START} />);
-    const count = screen.getByText('2건 · 위험 1 · 경고 1');
-    expect(count.getAttribute('title')).toContain('관제 화면의 「진행 중」');
+    const count = screen.getByText('2건 · 위험 1 · 주의 1');
+    expect(count.getAttribute('title')).toContain('위험·주의');
     const rows = within(screen.getByRole('list', { name: '경보 기록 목록' })).getAllByRole(
       'listitem',
     );
     expect(rows[0]?.textContent).toContain('추락 위험(가장자리)');
-    expect(rows[0]?.textContent).toContain('현장');
     expect(rows[0]?.textContent).toContain('주의');
-    expect(rows[1]?.textContent).toContain('개구부 구역');
+    expect(rows[0]?.querySelector('article')?.getAttribute('aria-label')).toContain('대상 없음');
     expect(rows[1]?.textContent).toContain('위험');
+    expect(rows[1]?.querySelector('article')?.getAttribute('aria-label')).toContain('개구부 구역');
   });
 
-  it('같은 초·같은 사람의 위험·경고 쌍은 한 줄이고 수는 두 건이다(S15P31A101-731)', () => {
+  it('같은 대상의 위험·주의 경보는 IncidentCard 한 줄로 묶고 수는 두 건이다(S15P31A101-731)', () => {
     const r3 = entry('b', START + 5_400, 'HIGH', 'z-04');
     data.entries = [
       entry('a', START + 5_000, 'CRITICAL', 'z-04'),
       { ...r3, event: { ...r3.event, rule_id: 'R3' } },
     ];
     withClient(<EventListCard startedAt={START} />);
-    expect(screen.getByText('2건 · 위험 1 · 경고 1')).toBeTruthy();
+    expect(screen.getByText('2건 · 위험 1 · 주의 1')).toBeTruthy();
     const rows = within(screen.getByRole('list', { name: '경보 기록 목록' })).getAllByRole(
       'listitem',
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.textContent).toContain('추락 위험(가장자리) · 고소 작업면 위');
+    expect(rows[0]?.textContent).toContain('추락 위험(가장자리)');
     expect(rows[0]?.textContent).toContain('위험');
   });
 
@@ -158,7 +162,7 @@ describe('EventListCard', () => {
       entry('b', START + 9_000, 'HIGH', 'z-02'),
     ];
     withClient(<EventListCard startedAt={START} zoneId="z-04" />);
-    expect(screen.getByText('1건 · 위험 1 · 경고 0')).toBeTruthy();
+    expect(screen.getByText('1건 · 위험 1 · 주의 0')).toBeTruthy();
   });
 
   it('경보가 없으면 `경보 없음`', () => {

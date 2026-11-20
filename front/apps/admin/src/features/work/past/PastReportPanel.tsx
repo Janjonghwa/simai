@@ -2,14 +2,18 @@ import { DashPanel } from '@/features/dashboard/DashPanel';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
 import { H2, SECONDARY } from '@/features/tbm/styles';
 import { localizeEndingReview, withLocalizedEnding } from '@/features/work/past/pastDay';
+import { PaperPrint } from '@/features/work/report/PaperPrint';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import { ReportThumbnail } from '@/features/work/report/ReportThumbnail';
+import { ReportView } from '@/features/work/report/ReportView';
+import { usePaperPrint } from '@/features/work/report/usePaperPrint';
+import { useReportPaper } from '@/features/work/report/useReportPaper';
 import type { ReportsByWork } from '@/features/work/types';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { workReportsKey } from '@/lib/queryKeys';
 import { Button } from '@simai/ui/components/button';
 import { useQueryClient } from '@tanstack/react-query';
-import { FileText } from 'lucide-react';
+import { FileText, Printer } from 'lucide-react';
 import { useLayoutEffect, useState } from 'react';
 
 // 지난 날짜 오른쪽 열의 'TBM 보고서' 탭: 그 작업의 보고서를 읽기 전용으로. 열에는 작게 보이고, 누르면 창에 크게(서명·출력 포함) 본다.
@@ -22,6 +26,8 @@ export function PastReportPanel({ workId }: { workId: string }) {
   const [open, setOpen] = useState(false);
   const client = useQueryClient();
   const { data: report } = useWorkReport(workId);
+  const { latest, paper } = useReportPaper(workId);
+  const { printing, print } = usePaperPrint();
 
   useLayoutEffect(() => {
     const ending = report?.form?.review.ending;
@@ -32,10 +38,27 @@ export function PastReportPanel({ workId }: { workId: string }) {
   }, [client, report, workId]);
 
   return (
-    <DashPanel icon={FileText} title={TITLE}>
-      <div className="flex min-h-0 flex-1 flex-col p-3">
+    <DashPanel
+      icon={FileText}
+      title={TITLE}
+      count={
+        <Button variant="action" size="action" disabled={latest === null} onClick={print}>
+          <Printer />
+          출력
+        </Button>
+      }
+    >
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
         <ReportThumbnail workId={workId} onOpen={() => setOpen(true)} />
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
+          크게 보기
+        </Button>
       </div>
+      {printing && (
+        <PaperPrint>
+          <ReportView {...paper} variant="print" />
+        </PaperPrint>
+      )}
       {open && (
         <ModalDialog label={TITLE} onClose={() => setOpen(false)} className={DIALOG}>
           <header className="flex flex-none items-center border-b border-border px-5 py-3">

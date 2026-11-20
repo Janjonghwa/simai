@@ -113,7 +113,7 @@ export function dayMarkOf(works: readonly WorkDayItem[], kind: DayKind): DayMark
 
 // ── 지난 날·월간 요약 ────────────────────────────────────────────────────────
 
-/** 그날 작업 요약: 작업 수와 위험(CRITICAL)·경고(HIGH) 이벤트 합계. */
+/** 그날 작업 요약: 작업 수와 위험(CRITICAL)·주의(HIGH) 이벤트 합계. */
 export interface DaySummary {
   count: number;
   critical: number;
@@ -127,11 +127,11 @@ export interface DaySummary {
   runs?: number;
 }
 
-/** 위험·경고 수 문구. 사건 수를 알면 「위험 사건 m건(경보 기록 n건)」, 모르면 경보 기록 수만(S15P31A101-751). */
+/** 위험·주의 수 문구. 사건 수를 알면 「위험 사건 m건(경보 기록 n건)」, 모르면 경보 기록 수만(S15P31A101-751). */
 export function alertText(summary: Pick<DaySummary, 'critical' | 'high' | 'incidents'>): string {
   const { critical, high, incidents } = summary;
-  if (!incidents) return `위험 ${critical}건, 경고 ${high}건`;
-  return `위험 사건 ${incidents.critical}건(경보 ${critical}건), 경고 사건 ${incidents.high}건(경보 ${high}건)`;
+  if (!incidents) return `위험 ${critical}건, 주의 ${high}건`;
+  return `위험 사건 ${incidents.critical}건(경보 ${critical}건), 주의 사건 ${incidents.high}건(경보 ${high}건)`;
 }
 
 /** 지난 날 요약. 끝난 작업(`isEndedWork`)만 세고, 끝난 작업이 없으면 null(빈칸)이다. */
@@ -149,18 +149,25 @@ export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null
   return {
     count: ended.length,
     critical: ended.reduce((sum, work) => sum + (work.event_counts?.CRITICAL ?? 0), 0),
-    high: ended.reduce((sum, work) => sum + (work.event_counts?.HIGH ?? 0), 0),
+    high: ended.reduce(
+      (sum, work) => sum + ((work.event_counts?.HIGH ?? 0) + (work.event_counts?.CAUTION ?? 0)),
+      0,
+    ),
     ...(incidentsKnown && {
       incidents: {
         critical: ended.reduce((sum, work) => sum + (work.incident_counts?.CRITICAL ?? 0), 0),
-        high: ended.reduce((sum, work) => sum + (work.incident_counts?.HIGH ?? 0), 0),
+        high: ended.reduce(
+          (sum, work) =>
+            sum + ((work.incident_counts?.HIGH ?? 0) + (work.incident_counts?.CAUTION ?? 0)),
+          0,
+        ),
       },
     }),
     ...(runs > ended.length && { runs }),
   };
 }
 
-/** 월간 요약: 그 달에 끝난 작업이 있는 날 수와 위험(CRITICAL)·경고(HIGH) 합계. */
+/** 월간 요약: 그 달에 끝난 작업이 있는 날 수와 위험(CRITICAL)·주의(HIGH) 합계. */
 export interface MonthSummary {
   days: number;
   critical: number;
@@ -171,7 +178,7 @@ export interface MonthSummary {
 
 /**
  * 이미 받은 달력 범위 작업으로 그 달(`inMonth`)의 월간 요약을 계산한다.
- * 달 밖 칸과 예정인 날은 빼고, 끝난 작업(`summarizeWorks`)이 있는 날만 작업 일수와 위험·경고를 더한다.
+ * 달 밖 칸과 예정인 날은 빼고, 끝난 작업(`summarizeWorks`)이 있는 날만 작업 일수와 위험·주의를 더한다.
  */
 export function summarizeMonth(
   cells: readonly CalendarDay[],
@@ -206,7 +213,7 @@ export function summarizeMonth(
 }
 
 /**
- * 달력 칸의 접근성 이름: 날짜에 더해 오늘이면 할 일(제출했으면 작업 완료), 지난 작업 날이면 완료 건수와 위험·경고 수를 담아
+ * 달력 칸의 접근성 이름: 날짜에 더해 오늘이면 할 일(제출했으면 작업 완료), 지난 작업 날이면 완료 건수와 위험·주의 수를 담아
  * 화면 낭독기가 완료 아이콘·색 점만으로 정보를 잃지 않게 한다.
  */
 export function cellAriaLabel({
