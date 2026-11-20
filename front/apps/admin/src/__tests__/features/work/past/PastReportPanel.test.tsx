@@ -133,7 +133,7 @@ describe('PastReportPanel', () => {
 
     expect(
       await screen.findByText(
-        '전체 이벤트 0건. 등급 위험 0건. 등급 경고 0건. 등급 주의 0건. 등급 안내 0건.',
+        '전체 이벤트 0건. 등급 위험 0건. 등급 주의 0건. 등급 주의 0건. 등급 안내 0건.',
       ),
     ).toBeTruthy();
   });

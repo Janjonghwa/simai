@@ -26,7 +26,7 @@ export const RULE_DISPLAY_ID: Readonly<Record<string, string>> = {
 
 export const SEVERITY_LABEL = {
   CRITICAL: '위험',
-  HIGH: '경고',
+  HIGH: '주의',
   CAUTION: '주의',
   INFO: '안내',
 } as const;

@@ -98,13 +98,13 @@ describe('같은 순번의 VLM 근거 반영(S15P31A101-598)', () => {
   it('같은 순번에 rationale 만 달라지면 상세 AI 설명에 근거를 그리고 등급은 그대로 둔다', async () => {
     const view = renderLiveDetail(mergeEvent(undefined, makeEvent()));
     expect(within(view.ai).queryByText(RATIONALE)).toBeNull();
-    expect(within(view.rules).getByText('경고')).toBeTruthy();
+    expect(within(view.rules).getByText('주의')).toBeTruthy();
 
     // 서버는 근거 저장 뒤 같은 event_sequence 로 다시 발행한다. 등급 칸이 달라도 순번 규칙상 받지 않는다.
     view.emit(makeEvent({ rationale: RATIONALE, severity: 'CRITICAL', lifecycle: 'UPDATED' }));
 
     await waitFor(() => expect(within(view.ai).getByText(RATIONALE)).toBeTruthy());
-    expect(within(view.rules).getByText('경고')).toBeTruthy();
+    expect(within(view.rules).getByText('주의')).toBeTruthy();
     expect(view.cached().severity).toBe('HIGH');
     expect(view.cached().lifecycle).toBe('RAISED');
   });

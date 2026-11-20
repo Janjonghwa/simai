@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const route = vi.hoisted(() => ({
   staticData: {} as { fullBleed?: boolean; eventPanel?: boolean; dockOverlay?: boolean },
   alarm: true,
+  path: '/work',
 }));
 
 /** AppLayout 안의 사람 표시 이름 어댑터(-658)가 워치 배정 캐시(react-query)를 읽어 QueryClient 가 필요하다 */
@@ -26,7 +27,16 @@ function renderLayout() {
 vi.mock('@tanstack/react-router', () => ({
   useMatches: ({ select }: { select: (matches: unknown[]) => unknown }) =>
     select([{ staticData: route.staticData }]),
+  useRouterState: ({ select }: { select: (state: unknown) => unknown }) =>
+    select({ location: { pathname: route.path } }),
   Outlet: () => <div data-testid="page" />,
+}));
+vi.mock('@/features/events/useVisibleLiveEvents', () => ({
+  useVisibleLiveEvents: () => ({ entries: route.alarm ? [{}] : [] }),
+}));
+vi.mock('@/features/events/entries', async (original) => ({
+  ...(await original()),
+  isAlarming: () => true,
 }));
 vi.mock('@/features/layout/TopBar', () => ({ TopBar: () => <header /> }));
 vi.mock('@/features/layout/Dock', () => ({ Dock: () => null }));
@@ -52,6 +62,7 @@ const ids = (el: HTMLElement) => [...el.children].map((child) => child.getAttrib
 beforeEach(() => {
   route.staticData = {};
   route.alarm = true;
+  route.path = '/work';
 });
 afterEach(() => {
   cleanup();
@@ -100,13 +111,21 @@ describe('AppLayout 알림 자리', () => {
 
     expect(ids(notices())).toEqual([]);
     const strip = screen.getByTestId('alarm-strip');
-    expect(ids(strip)).toEqual(['alarm']);
+    expect(strip.querySelector('[data-testid=alarm]')).toBeTruthy();
     expect(strip.className).not.toContain('absolute');
-    expect(strip.className).toContain('empty:hidden');
+    expect(strip.className).toContain('duration-150');
+    expect(strip.className).toContain('grid-rows-[1fr]');
     // 본문(main) 앞, 상단 바 쪽에 둔다.
     const page = screen.getByRole('main');
     expect(page.contains(strip)).toBe(false);
     expect(page.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it('CCTV는 본문을 밀지 않고 배너를 겹친다', () => {
+    route.path = '/cctv';
+    renderLayout();
+    expect(screen.queryByTestId('alarm-strip')).toBeNull();
+    expect(notices().querySelector('[data-testid=alarm]')).toBeTruthy();
   });
 
   it('알릴 것이 없으면 자리가 비어 숨는다(empty:hidden)', () => {
@@ -120,9 +139,9 @@ describe('AppLayout 알림 자리', () => {
 });
 
 describe('AppLayout 본문 아래 여백', () => {
-  it('보통 화면은 하단 메뉴(독) 자리를 비우고, dockOverlay 화면은 독이 본문 위에 떠서 아래 여백을 줄인다', () => {
+  it('하단 메뉴 없이 본문 여백을 둔다', () => {
     renderLayout();
-    expect(screen.getByRole('main').className).toContain('pb-[90px]');
+    expect(screen.getByRole('main').className).toContain('pb-3.5');
     cleanup();
 
     route.staticData = { dockOverlay: true };

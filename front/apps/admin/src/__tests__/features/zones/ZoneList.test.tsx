@@ -131,7 +131,7 @@ async function renderList() {
 }
 
 /** 구역 이름 버튼의 이름(앞에 등급 글자가 붙는다). 연필 버튼의 이름과 겹치지 않는다. */
-const nameButtonOf = (name: string) => new RegExp(`^(위험|경고)\\s*${name}$`);
+const nameButtonOf = (name: string) => new RegExp(`^(위험|주의)\\s*${name}$`);
 const rowOf = (name: RegExp) =>
   screen.getAllByRole('listitem').find((item) => name.test(item.textContent ?? ''))!;
 const rowButton = (name: RegExp) => within(rowOf(name)).getAllByRole('button')[0]!;
@@ -150,10 +150,10 @@ describe('구역 목록', () => {
     expect(screen.queryByText(/z-0\d/)).toBeNull();
     expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
       '위험 개구부 구역',
-      '경고 단상 구역',
+      '주의 단상 구역',
     ]);
     expect(rowButton(/개구부 구역/).className).toContain('border-sev-critical');
-    expect(rowButton(/단상 구역/).className).toContain('border-sev-high');
+    expect(rowButton(/단상 구역/).className).toContain('border-sev-caution');
   });
 
   async function renderEmptyList() {

@@ -186,7 +186,7 @@ describe('0초 작업 및 옛 종료 미팅 enum 한국어화(S15P31A101-735)', 
     const raw =
       '전체 이벤트 0건. 등급 CRITICAL 0건. 등급 HIGH 0건. 등급 CAUTION 0건. 등급 INFO 0건. 운영자 미확인 CRITICAL 0건, HIGH 0건.';
     expect(localizeEndingReview(raw)).toBe(
-      '전체 이벤트 0건. 등급 위험 0건. 등급 경고 0건. 등급 주의 0건. 등급 안내 0건. 운영자 미확인 위험 0건, 경고 0건.',
+      '전체 이벤트 0건. 등급 위험 0건. 등급 주의 0건. 등급 주의 0건. 등급 안내 0건. 운영자 미확인 위험 0건, 주의 0건.',
     );
     const report = { form: { review: { daily: '일일', ending: raw } } };
     expect(withLocalizedEnding(report).form?.review.ending).toContain('등급 위험 0건');

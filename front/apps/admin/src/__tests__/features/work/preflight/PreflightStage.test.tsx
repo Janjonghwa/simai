@@ -266,7 +266,7 @@ describe('PreflightStage 화면', () => {
     expect(within(rows[0]!).getByText('개구부 구역')).toBeTruthy();
     expect(within(rows[0]!).getByText('위험')).toBeTruthy();
     expect(within(rows[1]!).getByText('단상 구역')).toBeTruthy();
-    expect(within(rows[1]!).getByText('경고')).toBeTruthy();
+    expect(within(rows[1]!).getByText('주의')).toBeTruthy();
   });
 
   it('구역이 하나도 없으면 구역 없음을 보인다', async () => {

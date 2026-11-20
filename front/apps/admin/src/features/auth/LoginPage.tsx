@@ -36,7 +36,7 @@ const FIELD_ERROR = 'absolute top-full left-0 mt-1 text-sm leading-5 text-destru
 // 예전 끝색 #3539FA 는 보라로 보여 로고의 하늘색·파랑보다 튀었고 광채도 강했다(-620). 그림자는 약하게 둔다.
 // 다크 토큰 primary(#6886D5)에 검은 글자는 눌리지 않는 버튼처럼 흐려 보였다(-591).
 const SUBMIT =
-  'mt-0.5 h-12 cursor-pointer rounded-xl bg-linear-to-r from-[#1D63F0] to-[#094EFC] text-base font-semibold text-white shadow-md shadow-[#094EFC]/15 transition-[filter,box-shadow] hover:brightness-110 hover:shadow-[#094EFC]/25 disabled:cursor-default';
+  'mt-0.5 cursor-pointer rounded-xl shadow-md shadow-[#094EFC]/15 disabled:cursor-default';
 
 export function LoginPage() {
   const { login, pending, error } = useLogin();
@@ -88,7 +88,7 @@ export function LoginPage() {
                   <li>GPU 는 늘 켜진 상태입니다(따로 켤 필요 없음)</li>
                   <li>작업 관리에서 오늘 작업 준비 → TBM</li>
                   <li>세팅(이전 맵 재사용) → 작업 전 확인 → 작업 시작</li>
-                  <li>실시간 관제에서 경보·사건 확인</li>
+                  <li>실시간 3D 관제에서 경보·사건 확인</li>
                 </ol>
                 <button
                   type="button"
@@ -187,7 +187,13 @@ export function LoginPage() {
                   )
                 )}
               </div>
-              <Button type="submit" size="lg" disabled={pending} className={SUBMIT}>
+              <Button
+                type="submit"
+                variant="flow"
+                size="flow"
+                disabled={pending}
+                className={SUBMIT}
+              >
                 {pending ? '로그인 중…' : '로그인'}
               </Button>
             </form>

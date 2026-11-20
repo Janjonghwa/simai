@@ -536,7 +536,7 @@ describe('결과·이력 시간순 표시 및 STOMP 갱신 반영(승인 응답�
     const aiPanel = within(dialog).getByRole('region', { name: 'AI 설명' });
 
     // 초기 상태: 규칙 등급 배지는 경고(HIGH)다.
-    expect(within(rulesPanel).getByText('경고')).toBeTruthy();
+    expect(within(rulesPanel).getByText('주의')).toBeTruthy();
     expect(within(rulesPanel).queryByText('위험')).toBeNull();
 
     // 승인 요청 후 응답 도착(아직 STOMP 전이 전)
@@ -549,7 +549,7 @@ describe('결과·이력 시간순 표시 및 STOMP 갱신 반영(승인 응답�
     expect(within(aiPanel).getByText('적용')).toBeTruthy();
 
     // 핵심 검증: POST 응답만으로는 규칙·머리줄의 등급 배지가 위험(CRITICAL)으로 바뀌지 않는다.
-    expect(within(rulesPanel).getByText('경고')).toBeTruthy();
+    expect(within(rulesPanel).getByText('주의')).toBeTruthy();
     expect(within(rulesPanel).queryByText('위험')).toBeNull();
     expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)?.entries[0]?.event.severity).toBe(
       'HIGH',
@@ -585,7 +585,7 @@ describe('결과·이력 시간순 표시 및 STOMP 갱신 반영(승인 응답�
 
     // STOMP 수신 뒤: 등급 배지가 위험(CRITICAL)으로 갱신되고 상향 의견 버튼은 사라지며 이력은 1건으로 합쳐진다.
     await waitFor(() => expect(within(rulesPanel).getByText('위험')).toBeTruthy());
-    expect(within(rulesPanel).queryByText('경고')).toBeNull();
+    expect(within(rulesPanel).queryByText('주의')).toBeNull();
     expect(within(aiPanel).queryByText(/상향 의견/)).toBeNull();
     const historyItems = within(
       within(aiPanel).getByRole('list', { name: '상향 이력' }),

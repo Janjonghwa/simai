@@ -235,7 +235,7 @@ describe('관제 관리자 편집 모드', () => {
     const list = await screen.findByRole('region', { name: '위험 구역' });
     act(() =>
       within(list)
-        .getByRole('button', { name: /^경고\s*단상 구역$/ })
+        .getByRole('button', { name: /^주의\s*단상 구역$/ })
         .click(),
     );
 
@@ -268,7 +268,7 @@ describe('관제 관리자 편집 모드', () => {
     expect(SEVERITY_CHOICES).toEqual(['CRITICAL', 'HIGH']);
     expect(options.map((o) => [o.value, o.textContent])).toEqual([
       ['CRITICAL', '위험'],
-      ['HIGH', '경고'],
+      ['HIGH', '주의'],
     ]);
     expect(zoneStyle('UNVERIFIED', false, PALETTE.dark, 'CRITICAL').color).toBe(
       PALETTE.dark.risk.CRITICAL.color,
