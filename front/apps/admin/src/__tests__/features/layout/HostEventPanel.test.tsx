@@ -1,10 +1,9 @@
-import { useEventClearStore } from '@/features/events/eventClear.store';
 import { applyEvents, LIVE_EVENTS_KEY, type LiveEvents } from '@/features/events/eventsCache';
 import type { EventItem } from '@/features/events/types';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -42,152 +41,34 @@ function item(change: Partial<EventItem> = {}): EventItem {
   };
 }
 
-/** 목록을 받은 상태의 캐시. useLiveEvents 는 받은 목록이면 다시 요청하지 않는다. */
-function renderHost() {
-  const queryClient = new QueryClient();
-  applyEvents(queryClient, [
-    item(),
-    item({ event_id: 'e-2', world_ids: ['w-0021'], severity: 'HIGH' }),
-  ]);
-  queryClient.setQueryData<LiveEvents>(LIVE_EVENTS_KEY, (old) => ({ ...old!, loaded: true }));
-  render(
-    <QueryClientProvider client={queryClient}>
-      <HostEventPanel visible selectedKey={null} onSelect={vi.fn()} />
-    </QueryClientProvider>,
-  );
-  return queryClient;
-}
-
-const clearButton = () => screen.getByRole('button', { name: '목록에서 숨기기' });
-/** 「목록에서 숨기기」를 누르고, 미확인 경보가 있어 확인 창이 뜨면 「숨기기」로 넘긴다(S15P31A101-731). */
-const hideAll = () => {
-  fireEvent.click(clearButton());
-  const dialog = screen.queryByRole('dialog', { name: '목록에서 숨길까요?' });
-  if (dialog) fireEvent.click(within(dialog).getByRole('button', { name: '숨기기' }));
-};
 const cards = () => screen.queryAllByRole('article');
 const cardNames = () => cards().map((card) => card.getAttribute('aria-label'));
 
 beforeEach(() => {
   localStorage.clear();
-  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
   apiCall.mockClear();
 });
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   useSessionStore.setState(useSessionStore.getInitialState(), true);
 });
 
-describe('HostEventPanel 목록에서 숨기기(옛 모두 지우기)', () => {
-  it('누르면 목록이 비고 서버는 부르지 않으며 이벤트 캐시는 그대로다', () => {
-    const queryClient = renderHost();
-    const before = queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)!;
-    expect(cards()).toHaveLength(2);
-
-    hideAll();
-
-    expect(cards()).toHaveLength(0);
-    expect(screen.queryByRole('button', { name: '목록에서 숨기기' })).toBeNull();
-    expect(screen.getByRole('button', { name: '이벤트 펼치기' })).toBeTruthy();
-    expect(apiCall).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)).toBe(before);
-    expect(before.entries).toHaveLength(2);
-  });
-
-  it('지운 시각은 목록에서 가장 늦게 시작된 경보의 시각이고 지운 사용자를 함께 남긴다', async () => {
-    const queryClient = renderHost();
-    act(() =>
-      applyEvents(queryClient, [
-        item({
-          event_id: 'e-3',
-          world_ids: ['w-0030'],
-          raised_at: T + 7_000,
-          updated_at: T + 7_000,
-        }),
-      ]),
-    );
-    await waitFor(() => expect(cards()).toHaveLength(3));
-    hideAll();
-    expect(useEventClearStore.getState()).toMatchObject({ clearedAt: T + 7_000, clearedBy: 'u' });
-  });
-
-  it('브라우저 시계가 하루 빨라도 지운 뒤에 생긴 경보는 숨지 않는다', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(T + 86_400_000);
-    const queryClient = renderHost();
-    hideAll();
-    expect(useEventClearStore.getState().clearedAt).toBe(T);
-
-    act(() =>
-      applyEvents(queryClient, [
-        item({
-          event_id: 'e-3',
-          world_ids: ['w-0030'],
-          raised_at: T + 20_000,
-          updated_at: T + 20_000,
-        }),
-      ]),
-    );
-    await waitFor(() => expect(cardNames()).toEqual(['w-0030 이벤트']));
-  });
-
-  it('시각을 아는 경보가 하나도 없으면 아무것도 지우지 않는다', () => {
-    const queryClient = new QueryClient();
-    applyEvents(queryClient, [item({ raised_at: undefined, updated_at: undefined })]);
-    queryClient.setQueryData<LiveEvents>(LIVE_EVENTS_KEY, (old) => ({ ...old!, loaded: true }));
-    render(
-      <QueryClientProvider client={queryClient}>
-        <HostEventPanel visible selectedKey={null} onSelect={vi.fn()} />
-      </QueryClientProvider>,
-    );
-
-    hideAll();
-
-    expect(useEventClearStore.getState()).toMatchObject({ clearedAt: null, clearedBy: null });
-    expect(cards()).toHaveLength(1);
-  });
-
-  it('지운 뒤에 생긴 이벤트만 다시 보인다', async () => {
-    const queryClient = renderHost();
-    hideAll();
-
-    act(() =>
-      applyEvents(queryClient, [
-        item({
-          event_id: 'e-3',
-          world_ids: ['w-0030'],
-          raised_at: T + 20_000,
-          updated_at: T + 20_000,
-        }),
-      ]),
-    );
-
-    await waitFor(() => expect(cardNames()).toEqual(['w-0030 이벤트']));
-    expect(clearButton()).toBeTruthy();
-  });
-
-  it('지운 뒤에 등급이 오른 이벤트는 새 단계로 다시 보인다', async () => {
-    const queryClient = renderHost();
-    hideAll();
-
-    act(() =>
-      applyEvents(queryClient, [
-        item({
-          event_id: 'e-2',
-          event_sequence: 2,
-          world_ids: ['w-0021'],
-          lifecycle: 'UPDATED',
-          severity: 'CRITICAL',
-          updated_at: T + 20_000,
-        }),
-      ]),
-    );
-
-    await waitFor(() => expect(cardNames()).toEqual(['w-0021 이벤트']));
-  });
+it('이전에 저장된 화면 정리 기록이 있어도 진행 중 경보를 표시한다', () => {
+  localStorage.setItem(
+    'simai.events.cleared',
+    JSON.stringify({ state: { clearedAt: T + 1000, clearedBy: 'u' }, version: 0 }),
+  );
+  const client = new QueryClient();
+  applyEvents(client, [item()]);
+  client.setQueryData<LiveEvents>(LIVE_EVENTS_KEY, (old) => ({ ...old!, loaded: true }));
+  render(
+    <QueryClientProvider client={client}>
+      <HostEventPanel visible selectedKey={null} onSelect={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  expect(cards()).toHaveLength(1);
 });
 
 describe('HostEventPanel 확인한 지 오래된 이벤트', () => {

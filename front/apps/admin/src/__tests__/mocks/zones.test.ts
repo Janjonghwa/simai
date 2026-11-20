@@ -1421,7 +1421,7 @@ describe('목업 빌드 시연 구역 이름(S15P31A101-824)', () => {
     server.resetHandlers(...demoMock.handlers);
     const list = (await (await call('GET', '/api/zones', 'viewer')).json()) as ZoneItem[];
     expect(list.find((z) => z.zone_id === 'z-04')?.name).toBe('단상 개구부');
-    expect(list.find((z) => z.zone_id === 'z-02')?.name).toBe('단상 구역');
+    expect(list.find((z) => z.zone_id === 'z-02')).toBeUndefined();
     expect(MOCK_ZONES[0]?.name).toBe('개구부 구역');
   });
 });

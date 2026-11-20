@@ -47,6 +47,7 @@ export function startRealtimeMock(
   // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
   config: () => MockConfig = () => MOCK_CONFIG,
   peopleNames?: PeopleNamesMock,
+  demoElapsed?: () => number,
 ): RealtimeMock {
   let healthPausedUntil = 0;
   let fault: { kind: MockOutage; since: number } | undefined;
@@ -64,7 +65,14 @@ export function startRealtimeMock(
   function publishWorld() {
     if (!live() || fault) return;
     const configVersion = config().applied_version;
-    broker.publish(WORLD_TOPIC, worldStateAt(now(), { sceneMismatch: staleScene, configVersion }));
+    broker.publish(
+      WORLD_TOPIC,
+      worldStateAt(now(), {
+        sceneMismatch: staleScene,
+        configVersion,
+        demoElapsedMs: demoElapsed?.(),
+      }),
+    );
   }
 
   function publishHealth() {

@@ -1,13 +1,9 @@
 import { createAlarmPolicy } from '@/features/events/alarmPolicy';
-import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
-import { useEventClearStore } from '@/features/events/eventClear.store';
 import { mergeEvent, type EventEntry } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
 import { ringingSeverity, useAlarmSound } from '@/features/events/useAlarmSound';
 import { alarmSound } from '@/lib/alarmSound';
-import { useSessionStore } from '@/store/session.store';
-import { act, cleanup, render, renderHook } from '@testing-library/react';
-import { createElement } from 'react';
+import { cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const link = vi.hoisted(() => ({ alive: true, canAck: true }));
@@ -207,59 +203,6 @@ describe('useAlarmSound', () => {
     expect(ring).toHaveBeenLastCalledWith('CRITICAL');
     unmount();
     expect(ring).toHaveBeenLastCalledWith(null);
-  });
-});
-
-describe('AlarmSoundLoop 모두 지우기', () => {
-  beforeEach(() => {
-    link.canAck = true;
-    live.entries = [entry()];
-    useEventClearStore.setState({ clearedAt: null, clearedBy: null });
-    useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    useEventClearStore.setState({ clearedAt: null, clearedBy: null });
-    useSessionStore.setState(useSessionStore.getInitialState(), true);
-  });
-
-  it('모두 지우면 확인 대기 경보의 소리가 멈춘다', () => {
-    const ring = vi.spyOn(alarmSound, 'ring').mockImplementation(() => undefined);
-    render(createElement(AlarmSoundLoop));
-    expect(ring).toHaveBeenLastCalledWith('CRITICAL');
-
-    act(() => useEventClearStore.getState().clearAll(T));
-    expect(ring).toHaveBeenLastCalledWith(null);
-  });
-
-  it('지운 뒤에 새로 생긴 경보는 다시 울린다', () => {
-    const ring = vi.spyOn(alarmSound, 'ring').mockImplementation(() => undefined);
-    const view = render(createElement(AlarmSoundLoop));
-    act(() => useEventClearStore.getState().clearAll(T));
-    expect(ring).toHaveBeenLastCalledWith(null);
-
-    live.entries = [
-      entry(),
-      entry({
-        event_id: 'e-2',
-        severity: 'HIGH',
-        world_ids: ['other'],
-        raised_at: T + 1_000,
-        updated_at: T + 1_000,
-      }),
-    ];
-    view.rerender(createElement(AlarmSoundLoop));
-    expect(ring).toHaveBeenLastCalledWith('HIGH');
-  });
-
-  it('이미 지운 경보가 있는 채로 열어도 울리지 않는다', () => {
-    useEventClearStore.getState().clearAll(T);
-    const ring = vi.spyOn(alarmSound, 'ring').mockImplementation(() => undefined);
-    render(createElement(AlarmSoundLoop));
-    expect(ring).toHaveBeenLastCalledWith(null);
-    expect(ring).not.toHaveBeenCalledWith('CRITICAL');
   });
 });
 

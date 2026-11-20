@@ -169,7 +169,7 @@ describe('실시간 mock 시나리오', () => {
       ['R5 CAUTION', ['RAISED', 'RESOLVED']],
       ['R2 CRITICAL', ['RAISED', 'UPDATED', 'RESOLVED']],
       ['R1 HIGH', ['RAISED', 'RESOLVED']],
-      ['R1 HIGH', ['RAISED', 'RESOLVED', 'UPDATED', 'RESOLVED']],
+      ['R1 CRITICAL', ['RAISED', 'RESOLVED', 'UPDATED', 'RESOLVED']],
     ]);
     for (const { sequences } of byEvent.values()) {
       expect(sequences).toEqual(sequences.map((_, i) => i + 1));

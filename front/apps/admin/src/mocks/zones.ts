@@ -449,8 +449,24 @@ export function createZonesMock({
   mockBuild?: boolean;
 } = {}): ZonesMock {
   // 지금 버전과 닫힌 버전. 지금 버전은 valid_to 가 null 이다.
-  let versions: ZoneItem[] = structuredClone(MOCK_ZONES).map((zone) =>
-    mockBuild && zone.zone_id === 'z-04' ? { ...zone, name: '단상 개구부' } : zone,
+  let versions: ZoneItem[] = (
+    mockBuild
+      ? structuredClone(MOCK_ZONES).filter((zone) => zone.zone_id === 'z-04')
+      : structuredClone(MOCK_ZONES)
+  ).map((zone) =>
+    mockBuild
+      ? {
+          ...zone,
+          name: '단상 개구부',
+          polygon_xy: [
+            [5.2, 2.25],
+            [7.6, 2.25],
+            [7.6, 4.55],
+            [5.2, 4.55],
+          ],
+          z_max_m: 1.4,
+        }
+      : zone,
   );
   let issued = 0;
   let bundleNumber = SEEDED_CONFIG_NUMBER;
@@ -462,7 +478,7 @@ export function createZonesMock({
       issued_at: SEEDED_AT,
       ack_at: SEEDED_AT,
       rejected: false,
-      items: [...MOCK_ZONES.map(zoneItem), RULE_ITEM, ...SEEDED_SURFACE_ITEMS],
+      items: [...versions.map(zoneItem), RULE_ITEM, ...SEEDED_SURFACE_ITEMS],
     },
   ];
   let rejectNext = false;

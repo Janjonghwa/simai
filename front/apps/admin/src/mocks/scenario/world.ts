@@ -1,3 +1,4 @@
+import { DEMO_TIMES } from '@/mocks/demoAlarmScenario';
 import {
   CAMERAS,
   LATEST_GLOBAL_LAG_MS,
@@ -61,6 +62,42 @@ function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
   };
 }
 
+/** 구역 경계와 경보 시각에 맞춘 단일 작업자의 이동. */
+function demoTrack(t: number, elapsed: number): WorldTrack {
+  const points = [
+    [0, 3.5, 3.4, 1.68],
+    [DEMO_TIMES.approach, 4.62, 3.4, 1.68],
+    [DEMO_TIMES.entry, 5.4, 3.4, 1.68],
+    [DEMO_TIMES.fall - 1000, 6, 3.4, 1.68],
+    [DEMO_TIMES.fall, 6, 3.4, 1.09],
+    [DEMO_TIMES.fall + 2000, 6, 3.4, 1.09],
+    [DEMO_TIMES.return - 2000, 4.08, 3.4, 1.68],
+    [DEMO_TIMES.return, 4.08, 3.4, 1.68],
+    [DEMO_TIMES.return + 5000, 5.1, 3.4, 1.68],
+  ];
+  const time = Math.max(0, elapsed);
+  const index = points.findIndex((point) => point[0]! > time);
+  const right = points[index < 0 ? points.length - 1 : index]!;
+  const left = points[index < 0 ? points.length - 1 : Math.max(0, index - 1)]!;
+  const fraction = right[0] === left[0] ? 0 : (time - left[0]!) / (right[0]! - left[0]!);
+  const x = r2(left[1]! + (right[1]! - left[1]!) * fraction);
+  const y = r2(left[2]! + (right[2]! - left[2]!) * fraction);
+  const head = r2(left[3]! + (right[3]! - left[3]!) * fraction);
+  const base = track(WORKERS[0], t);
+  return {
+    ...base,
+    position_xy: [x, y],
+    pelvis_xyz: [x, y, r2(head - 0.76)],
+    ground_anchor_xyz: [x, y, 0],
+    head_z: head,
+    velocity: [
+      right[0] === left[0] ? 0 : r2(((right[1]! - left[1]!) * 1000) / (right[0]! - left[0]!)),
+      0,
+      0,
+    ],
+  };
+}
+
 /**
  * /topic/world: 시각 t(ms)의 World 상태. EC2 가 봉투만 새로 쓴다(source_id ec2, 명세 12.4).
  * sceneMismatch 면 Tier 0 가 이전 Scene 으로 판정한다(health 의 scene.live_version 과 같다, 명세 FR-12).
@@ -70,7 +107,8 @@ export function worldStateAt(
   {
     sceneMismatch = false,
     configVersion = MOCK_CONFIG.applied_version,
-  }: { sceneMismatch?: boolean; configVersion?: string | null } = {},
+    demoElapsedMs,
+  }: { sceneMismatch?: boolean; configVersion?: string | null; demoElapsedMs?: number } = {},
 ): WorldStateMessage {
   return {
     schema_version: '2.0.0',
@@ -89,7 +127,10 @@ export function worldStateAt(
         tracks: { source: 'TIER0_LIVE', provider_version: 'tier0-0.1.0' },
         is_upper_bound: false,
       },
-      tracks: WORKERS.map((worker) => track(worker, t)),
+      tracks:
+        demoElapsedMs === undefined
+          ? WORKERS.map((worker) => track(worker, t))
+          : [demoTrack(t, demoElapsedMs)],
     },
   };
 }

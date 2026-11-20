@@ -3,7 +3,6 @@ import '@/index.css';
 import '@/features/layout/theme.store';
 
 import { requestAck } from '@/features/events/api';
-import { resetEventClear } from '@/features/events/eventClear.store';
 import { bindEventsCache } from '@/features/events/eventsCache';
 import { bindConfigCache } from '@/features/zones/configCache';
 import { installAudioUnlock } from '@/lib/alarmSound';
@@ -29,7 +28,6 @@ const RESTORE_WAIT_MS = 3000;
 const clearUserScreenState = () => {
   clearZoneDrafts();
   stopZoneEdit();
-  resetEventClear();
 };
 
 const router = createRouter({

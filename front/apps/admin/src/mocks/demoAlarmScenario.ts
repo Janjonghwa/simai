@@ -1,7 +1,14 @@
 import { nextMsgId } from '@/mocks/scenario/shared';
 import type { RiskEventMessage } from '@simai/contracts';
 
-/** 목업 시연 경보 단계 한 건(S15P31A101-824). 사람 ID 는 mocks/peopleNames 의 목업 작업자(이영희·김철수)와 맞춘다. */
+/** 작업 시작 이후 경보와 이동이 공유하는 시각(ms). */
+export const DEMO_TIMES = {
+  approach: 10_000,
+  entry: 17_000,
+  fall: 35_000,
+  return: 43_000,
+} as const;
+
 export interface DemoAlarmStep {
   delayMs: number;
   ruleId: string;
@@ -9,48 +16,43 @@ export interface DemoAlarmStep {
   personId: string;
   zoneId?: string;
   metrics: RiskEventMessage['payload']['metrics'];
+  rationale?: string;
 }
 
-/**
- * 목업 빌드 작업 시작 시연 경보 시나리오:
- * - 5초: 안전모 미착용(주의, 이영희 w-0015)
- * - 12초: 위험구역 접근 예측(주의, 김철수 w-0012, 단상 개구부 z-04)
- * - 14초: 추락 위험 가장자리(주의, 김철수 w-0012, 단상 개구부 z-04)
- * - 20초: 위험구역 진입 + 낙상 의심(위험, 김철수 w-0012, 단상 개구부 z-04)
- */
 export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
-  { delayMs: 5_000, ruleId: 'R9', severity: 'CAUTION', personId: 'w-0015', metrics: {} },
   {
-    delayMs: 12_000,
+    delayMs: DEMO_TIMES.approach,
     ruleId: 'R5',
     severity: 'CAUTION',
     personId: 'w-0012',
     zoneId: 'z-04',
-    metrics: { time_to_entry_s: 1.6 },
+    metrics: { speed_mps: 0.88, zone_distance_m: 0.58 },
   },
   {
-    delayMs: 14_000,
-    ruleId: 'R2',
-    severity: 'CAUTION',
-    personId: 'w-0012',
-    zoneId: 'z-04',
-    metrics: { edge_distance_m: 0.8 },
-  },
-  {
-    delayMs: 20_000,
+    delayMs: DEMO_TIMES.entry,
     ruleId: 'R1',
     severity: 'CRITICAL',
     personId: 'w-0012',
     zoneId: 'z-04',
     metrics: { zone_distance_m: 0 },
+    rationale: '사람이 위험 구역에 들어서 있습니다.',
   },
   {
-    delayMs: 20_000,
+    delayMs: DEMO_TIMES.fall,
     ruleId: 'R4',
     severity: 'CRITICAL',
     personId: 'w-0012',
+    metrics: { head_z_m: 1.09 },
+    rationale:
+      '작업자가 평평한 작업면 위에 서 있다가 갑자기 바닥에 넘어져 머리 높이가 급격히 낮아졌습니다. 낙상 사고로 보입니다.',
+  },
+  {
+    delayMs: DEMO_TIMES.return,
+    ruleId: 'R5',
+    severity: 'CAUTION',
+    personId: 'w-0012',
     zoneId: 'z-04',
-    metrics: {},
+    metrics: { zone_distance_m: 1.12 },
   },
 ];
 
@@ -117,7 +119,7 @@ export function createDemoAlarmScheduler({
               world_ids: [step.personId],
               zone_id: step.zoneId ?? null,
               metrics: step.metrics,
-              rationale: null,
+              rationale: step.rationale ?? null,
               proposed_severity: null,
               raised_at: at,
               updated_at: at,
