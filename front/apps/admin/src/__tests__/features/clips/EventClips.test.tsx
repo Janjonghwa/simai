@@ -584,7 +584,7 @@ describe('EventClips', () => {
     expect(listCalls).toBe(0);
   });
 
-  it('사건 상세 창의 이벤트 클립 칸에 규칙별 클립이 들어간다', async () => {
+  it('사건 상세 창의 접힌 「이벤트 클립」 안에 규칙별 클립이 들어간다(-831)', async () => {
     const item = event();
     const [incident] = groupIncidents([{ event: item, stageStartedAt: T }]);
     render(
@@ -592,7 +592,9 @@ describe('EventClips', () => {
         <EventDetail incident={incident!} openEventId={item.event_id} onClose={() => {}} />
       </QueryClientProvider>,
     );
-    const detail = screen.getByRole('region', { name: '이벤트 클립' });
-    expect(await within(detail).findByRole('button', { name: '카메라 1 재생' })).toBeTruthy();
+    const detail = screen.getByText('이벤트 클립', { selector: 'summary' }).closest('details')!;
+    expect(
+      await within(detail).findByRole('button', { name: '카메라 1 재생', hidden: true }),
+    ).toBeTruthy();
   });
 });

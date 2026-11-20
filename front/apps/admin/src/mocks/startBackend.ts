@@ -49,12 +49,16 @@ export async function startMockBackend() {
     seed: isMockBuild ? [] : seededEventsAt(Date.now()),
   });
   let demoStartedAt: number | undefined;
+  let demoWorkId: string | undefined;
   let demoCounts = { CRITICAL: 0, HIGH: 0 };
   if (isMockBuild) {
     const scheduler = createDemoAlarmScheduler({
       publish: (message) => {
-        if (message.payload.severity === 'CRITICAL') demoCounts.CRITICAL++;
-        else demoCounts.HIGH++;
+        if (message.payload.lifecycle === 'RAISED') {
+          if (message.payload.severity === 'CRITICAL') demoCounts.CRITICAL++;
+          else demoCounts.HIGH++;
+          if (demoWorkId) workMock.setEventCounts(demoWorkId, demoCounts);
+        }
         const opening = zones.currentZones().find((zone) => zone.name === '단상 개구부');
         if (message.payload.zone_id && opening) message.payload.zone_id = opening.zone_id;
         broker.publish(EVENTS_TOPIC, events.record(message));
@@ -64,16 +68,18 @@ export async function startMockBackend() {
       const action = workRunActionOf(request, response);
       if (action === 'start') {
         demoStartedAt = Date.now();
+        demoWorkId = new URL(request.url).pathname.split('/').at(-2);
         demoCounts = { CRITICAL: 0, HIGH: 0 };
         scheduler.start();
       } else if (action === 'end') {
         scheduler.stop();
         const workId = new URL(request.url).pathname.split('/').at(-2);
         if (workId) workMock.setEventCounts(workId, demoCounts);
+        demoWorkId = undefined;
       }
     });
   }
-  const clips = createClipsMock({ findEvent: events.find });
+  const clips = createClipsMock({ findEvent: events.find, demoReady: isMockBuild });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다. 구역을 저장하면 세팅 mock 의
   // 세션이 COMPLETED·zones_committed_at 이 된다. 작업 관리의 '세팅 완료'(SETUP_DONE)는 세팅 화면의 「세팅 완료」(POST .../complete, -615)가 정한다.
   const zones = createZonesMock({

@@ -53,7 +53,10 @@ export function ppeViewAt(t: number, demoElapsedMs?: number): PpeViewMessage {
         capture_time_ms: capture,
         received_at_ms: t,
         helmet: item(
-          p.id === 'w-0012' && demoElapsedMs !== undefined && demoElapsedMs >= DEMO_TIMES.helmet
+          p.id === 'w-0012' &&
+            demoElapsedMs !== undefined &&
+            demoElapsedMs >= DEMO_TIMES.helmet &&
+            demoElapsedMs < DEMO_TIMES.helmetResolved
             ? 'NOT_WORN'
             : p.helmet,
           capture,

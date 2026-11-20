@@ -4,10 +4,10 @@ import type { RiskEventMessage } from '@simai/contracts';
 /** 작업 시작 이후 경보와 이동이 공유하는 시각(ms). */
 export const DEMO_TIMES = {
   helmet: 5_000,
+  helmetResolved: 25_000,
   approach: 10_000,
   entry: 17_000,
   fall: 35_000,
-  return: 43_000,
 } as const;
 
 export interface DemoAlarmStep {
@@ -18,11 +18,13 @@ export interface DemoAlarmStep {
   zoneId?: string;
   metrics: RiskEventMessage['payload']['metrics'];
   rationale?: string;
+  resolveAtMs?: number;
 }
 
 export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
   {
     delayMs: DEMO_TIMES.helmet,
+    resolveAtMs: DEMO_TIMES.helmetResolved,
     ruleId: 'R9',
     severity: 'CAUTION',
     personId: 'w-0012',
@@ -31,6 +33,7 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
   },
   {
     delayMs: DEMO_TIMES.approach,
+    resolveAtMs: DEMO_TIMES.entry,
     ruleId: 'R5',
     severity: 'CAUTION',
     personId: 'w-0012',
@@ -57,16 +60,6 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
     metrics: { head_z_m: 1.09 },
     rationale:
       '작업자가 평평한 작업면 위에 서 있다가 갑자기 바닥에 넘어져 머리 높이가 급격히 낮아졌습니다. 낙상 사고로 보입니다.',
-  },
-  {
-    delayMs: DEMO_TIMES.return,
-    ruleId: 'R5',
-    severity: 'CAUTION',
-    personId: 'w-0012',
-    zoneId: 'z-04',
-    metrics: { zone_distance_m: 1.12 },
-    rationale:
-      '작업자가 단상 개구부 쪽으로 다가가고 있습니다. 이대로 움직이면 곧 위험 구역에 들어설 것으로 보입니다.',
   },
 ];
 
@@ -141,6 +134,26 @@ export function createDemoAlarmScheduler({
             },
           };
           publish(message);
+          if (step.resolveAtMs !== undefined) {
+            timers.push(
+              setTimeout(() => {
+                const resolvedAt = now();
+                publish({
+                  ...message,
+                  msg_id: nextMsgId(),
+                  sent_at: resolvedAt,
+                  payload: {
+                    ...message.payload,
+                    lifecycle: 'RESOLVED',
+                    event_sequence: 2,
+                    updated_at: resolvedAt,
+                    resolved_at: resolvedAt,
+                    held_by_tier0: false,
+                  },
+                });
+              }, step.resolveAtMs - step.delayMs),
+            );
+          }
         }, step.delayMs),
       );
     }

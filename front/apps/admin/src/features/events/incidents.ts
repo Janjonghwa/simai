@@ -1,7 +1,6 @@
 import {
   CARD_MERGE_GAP_MS,
   GHOST_MAX_LIFE_MS,
-  RECENT_RESOLVED_INCIDENTS,
   RESOLVED_PER_INCIDENT,
   SEVERITY_RANK,
 } from '@/features/events/constants';
@@ -402,7 +401,7 @@ function splitStale(entries: readonly EventEntry[]) {
 }
 
 /**
- * 이벤트 패널의 세 칸: 진행 중 카드 전부, 최근에 해소된 카드 몇 건, 「지난 관제 · 확인 필요」 사건 전부(S15P31A101-595).
+ * 이벤트 패널의 세 칸: 진행 중 카드 전부, 이번 실행에서 해소된 카드 전부, 「지난 관제 · 확인 필요」 사건 전부(S15P31A101-595).
  * staleEvents 는 지난 관제 칸의 이벤트 수(사건이 아니라 규칙 하나하나)다.
  */
 export interface EventSections {
@@ -414,7 +413,7 @@ export interface EventSections {
   ghost: CardGroup[];
   /**
    * 대상 사람이 사라진 진행 중 카드(movesToResolved, S15P31A101-798). 「진행 중」에서 빼 「최근 해소」 칸 맨 앞에 둔다. 아직 해소되지
-   * 않았으므로 「최근 해소」 건수 한도(RECENT_RESOLVED_INCIDENTS)에 넣지 않는다(목록에서 빠지지 않게). 유령 트랙 카드는 ghost 에 있다.
+   * 않았으며 유령 트랙 카드는 ghost 에 있다.
    */
   gone: CardGroup[];
   resolved: CardGroup[];
@@ -458,10 +457,7 @@ export function eventSections(
     active: kept.filter((card) => !movesToResolved(card, alive)),
     ghost,
     gone: kept.filter((card) => movesToResolved(card, alive)),
-    resolved: resolvedGroups(inRun(entries, runStartedAt), alive).slice(
-      0,
-      RECENT_RESOLVED_INCIDENTS,
-    ),
+    resolved: resolvedGroups(inRun(entries, runStartedAt), alive),
     stale: groupIncidents(stale),
     staleEvents: stale.length,
   };

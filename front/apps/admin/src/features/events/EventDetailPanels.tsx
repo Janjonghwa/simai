@@ -3,8 +3,6 @@ import { hasClips } from '@/features/clips/clips';
 import { EventClips } from '@/features/clips/EventClips';
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
 import { hasPhotos } from '@/features/eventPhotos/useEventPhotos';
-import { AckButton } from '@/features/events/AckButton';
-import { ALARM_TEXT } from '@/features/events/alarmTone';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
 import { escalationStatusLabel, mergedEscalations } from '@/features/events/escalation';
 import { EscalationControl } from '@/features/events/EscalationControl';
@@ -13,13 +11,10 @@ import {
   entryStatusText,
   eventRuleName,
   formatTime,
-  isUnverifiableTargetGone,
   metricLabels,
-  UNVERIFIABLE_TARGET_GONE_GUIDE,
 } from '@/features/events/format';
-import type { AliveIds, Incident } from '@/features/events/incidents';
+import type { AliveIds } from '@/features/events/incidents';
 import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
-import { incidentTimeline } from '@/features/events/incidentView';
 import {
   needsBundlesForRelease,
   PERSON_ONLY_RULES,
@@ -264,79 +259,12 @@ export function PhotosPanel({ entries }: EntriesProps) {
 export function ClipsPanel({ entries }: EntriesProps) {
   const role = useCurrentRole();
   const clipEntries = role === 'ADMIN' ? entries.filter((e) => hasClips(e.event)) : [];
+  if (clipEntries.length === 0) return null;
   return (
-    <DetailPanel title="이벤트 클립">
-      {clipEntries.length === 0 ? (
-        <None text="영상을 남기는 경보(위험·경고 등급)가 아닙니다" />
-      ) : (
-        clipEntries.map(({ event }) => (
-          <EventClips key={event.event_id} event={event} title={eventRuleName(event)} />
-        ))
-      )}
-    </DetailPanel>
-  );
-}
-
-export function ProcessPanel({ entries }: EntriesProps) {
-  const zoneName = useZoneName();
-  const bundles = useReleaseBundles(entries);
-  const alive = useAliveIds();
-  const unverifiableGone = entries.some((e) => isUnverifiableTargetGone(e.event, alive));
-  return (
-    <DetailPanel title="처리">
-      <ul className="flex flex-col gap-2">
-        {entries.map((entry) => {
-          const status = entryStatus(entry);
-          return (
-            <li
-              key={entry.event.event_id}
-              className="flex flex-wrap items-center justify-between gap-2"
-            >
-              <span className="flex flex-wrap items-center gap-2 text-sm">
-                <span>{eventRuleName(entry.event)}</span>
-                <span
-                  className={
-                    status.kind === 'alarm'
-                      ? cn('font-bold', ALARM_TEXT[entry.event.severity])
-                      : 'text-muted-foreground'
-                  }
-                >
-                  {entryStatusText(entry, alive, ppeReleaseOf(entry.event, bundles))}
-                </span>
-              </span>
-              <AckButton entry={entry} label="경보 확인" zoneName={zoneName} />
-            </li>
-          );
-        })}
-      </ul>
-      {unverifiableGone && (
-        <p className="text-xs text-muted-foreground">{UNVERIFIABLE_TARGET_GONE_GUIDE}</p>
-      )}
-    </DetailPanel>
-  );
-}
-
-export function TimelinePanel({ incident }: { incident: Incident }) {
-  const bundles = useReleaseBundles(incident.entries);
-  const timeline = incidentTimeline(incident, bundles);
-  return (
-    <DetailPanel title="타임라인">
-      {timeline.length === 0 ? (
-        <None />
-      ) : (
-        <ol className="flex flex-col">
-          {timeline.map((item, n) => (
-            <li
-              key={n}
-              className="grid grid-cols-[72px_82px_minmax(0,1fr)] gap-2.5 py-1.5 text-[13px] [&+&]:shadow-[0_-1px_0_var(--border)]"
-            >
-              <span className="font-mono text-faint">{formatTime(item.at)}</span>
-              <span className="text-point-soft">{item.who}</span>
-              <span>{item.text}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </DetailPanel>
+    <div className="flex flex-col gap-3">
+      {clipEntries.map(({ event }) => (
+        <EventClips key={event.event_id} event={event} title={eventRuleName(event)} />
+      ))}
+    </div>
   );
 }

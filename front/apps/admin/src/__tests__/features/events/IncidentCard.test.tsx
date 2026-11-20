@@ -251,6 +251,7 @@ describe('IncidentCard', () => {
     ]);
 
     expect(detail(card)[1]).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
+    expect(card.textContent).toMatch(/해소 \d{2}:\d{2}:\d{2}/);
     expect(detail(card).some((line) => line.startsWith('발생'))).toBe(false);
     expect(card.textContent).not.toContain('초 전');
     expect(card.className).toContain('opacity-55');

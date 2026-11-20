@@ -321,7 +321,7 @@ describe('eventSections', () => {
     expect(resolved.map((g) => g.occurrences).sort()).toEqual([1, 3]);
   });
 
-  it('해소 칸은 최근에 해소된 묶음부터 네 건만 보인다', () => {
+  it('해소 칸은 최근에 해소된 묶음부터 모두 보인다', () => {
     // 같은 위험·구역이라도 짧은 시간(1분) 밖이면 다른 카드다
     const entries = [1, 2, 3, 4, 5, 6].map((n) =>
       done({
@@ -338,6 +338,8 @@ describe('eventSections', () => {
       'event:r5',
       'event:r4',
       'event:r3',
+      'event:r2',
+      'event:r1',
     ]);
   });
 });
@@ -414,7 +416,7 @@ describe('화면 묶음(S15P31A101-731)', () => {
     ).toEqual(apart);
   });
 
-  it('사라진 사람의 진행 중 카드는 등급(위험 포함)·확인 여부와 상관없이 gone 으로 옮기고, 해소 한도에 들지 않는다(S15P31A101-798)', () => {
+  it('사라진 사람의 진행 중 카드는 등급(위험 포함)·확인 여부와 상관없이 gone 으로 옮기고, 해소 카드와 함께 남는다(S15P31A101-798)', () => {
     const alive = new Set(['w-1']);
     const entries = [
       live('a', 'w-1', T),
@@ -428,7 +430,7 @@ describe('화면 묶음(S15P31A101-731)', () => {
     // 화면만 옮긴다: 묶음은 여전히 진행 중이고 확인 대기 경보도 그대로다.
     expect(sections.gone.every((c) => c.incident.active)).toBe(true);
     expect(sections.gone[0]!.incident.alarming).toBe(true);
-    expect(sections.resolved).toHaveLength(4);
+    expect(sections.resolved).toHaveLength(5);
     // 사람 수를 모르면(World 수신 전) 옮기지 않는다.
     expect(eventSections(entries).gone).toEqual([]);
   });

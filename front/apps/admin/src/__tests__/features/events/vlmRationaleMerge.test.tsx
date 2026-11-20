@@ -89,7 +89,7 @@ function renderLiveDetail(initial: EventEntry) {
   return {
     emit,
     ai: dialog,
-    rules: within(dialog).getByRole('region', { name: '규칙과 근거' }),
+    rules: dialog,
     cached: () => queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)!.entries[0]!.event,
   };
 }

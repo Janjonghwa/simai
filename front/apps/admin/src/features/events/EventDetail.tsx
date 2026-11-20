@@ -1,14 +1,7 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { AckButton } from '@/features/events/AckButton';
 import { EventDetailHeader } from '@/features/events/EventDetailHeader';
-import {
-  AiPanel,
-  ClipsPanel,
-  PhotosPanel,
-  ProcessPanel,
-  RulesPanel,
-  TimelinePanel,
-} from '@/features/events/EventDetailPanels';
+import { ClipsPanel, PhotosPanel } from '@/features/events/EventDetailPanels';
 import type { Incident } from '@/features/events/incidents';
 import { topEntry } from '@/features/events/incidents';
 import { useZoneName } from '@/features/zones/useZoneName';
@@ -27,7 +20,7 @@ interface EventDetailProps {
  * 사건 상세 창(관제 데모와 같다). 한 대상에 걸린 규칙 전부를 장면 위에 띄워 보인다. 바깥을 누르거나 Esc 로 닫는다.
  * 상세 API(GET /api/events/{id}) 형식이 정해지기 전이라 받은 이벤트 값으로 그린다. 조치 요청·조치 단계는 서버 API(M2)가 없어 두지 않는다.
  */
-export function EventDetail({ incident, openEventId, onClose, onSeekTimestamp }: EventDetailProps) {
+export function EventDetail({ incident, onClose }: EventDetailProps) {
   const close = useRef<HTMLButtonElement>(null);
   const { entries } = incident;
   const entry = topEntry(incident);
@@ -60,21 +53,18 @@ export function EventDetail({ incident, openEventId, onClose, onSeekTimestamp }:
         className="flex max-h-full min-w-0 flex-[0_1_720px] flex-col gap-3 overflow-auto rounded-[16px] bg-background/97 px-4 py-3.5 shadow-float ring-1 ring-border ring-inset"
       >
         <EventDetailHeader incident={incident} closeRef={close} onClose={onClose} />
-        {entry.event.rationale && <p className="text-sm">{entry.event.rationale}</p>}
+        {entry.event.rationale && (
+          <section aria-label="AI 설명">
+            <h3 className="text-xs font-semibold text-muted-foreground">AI 설명</h3>
+            <p className="text-sm">{entry.event.rationale}</p>
+          </section>
+        )}
         {role === 'ADMIN' && <AckButton entry={entry} zoneName={zoneName} />}
         <details className="min-h-0 overflow-auto">
-          <summary className="cursor-pointer font-semibold">자세히</summary>
-          <div className="mt-3 grid grid-cols-2 gap-3.5">
-            <div className="flex flex-col gap-3">
-              <PhotosPanel entries={entries} />
-              <RulesPanel entries={entries} openEventId={openEventId} />
-              <AiPanel entries={entries} onSeekTimestamp={onSeekTimestamp} />
-              <ClipsPanel entries={entries} />
-            </div>
-            <div className="flex flex-col gap-3">
-              <ProcessPanel entries={entries} />
-              <TimelinePanel incident={incident} />
-            </div>
+          <summary className="cursor-pointer font-semibold">이벤트 클립</summary>
+          <div className="mt-3 flex flex-col gap-3">
+            <ClipsPanel entries={entries} />
+            <PhotosPanel entries={entries} />
           </div>
         </details>
       </section>
