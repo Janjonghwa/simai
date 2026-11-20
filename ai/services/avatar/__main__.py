@@ -18,6 +18,7 @@ from simai_ai.hmr.loader import prepare_checkpoint
 from simai_ai.hmr.stream import AvatarLoop
 from simai_ai.hmr.segmentation import segmentation_from_env
 from simai_ai.hmr.appearance_stream import appearance_from_env, face_faces_from_rig
+from simai_ai.hmr.work_state import read_work_state
 from simai_ai.io.avatar_channel import LatestChannelReader, avatar_channel_path
 
 from .transport import AvatarSender, AvatarUpload, websocket_connector
@@ -67,6 +68,7 @@ def main():
         segmentation = segmentation_from_env(env, device=model.device)
         appearance = appearance_from_env(env)
         if appearance is not None:
+            appearance.work_state = lambda: read_work_state(settings.marker, time.time(), policy.max_marker_age_s)
             try:
                 face_faces_from_rig(model.rig, appearance.face_region)
             except ValueError as e:

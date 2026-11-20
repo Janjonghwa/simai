@@ -275,6 +275,30 @@ class AppearanceAccumulator:
         self.published_coverage = 0.
         self.last_confirmed = None
         self.dirty = False
+        self.work_in_progress = None
+        self.low_gain_samples = 0
+        self.schedule_revision = None
+
+    def set_schedule_revision(self, revision):
+        if revision != self.schedule_revision:
+            self.low_gain_samples = 0
+            self.schedule_revision = revision
+
+    def sample_due(self, t):
+        interval = (500 if self.work_in_progress is False else
+                    6000 if self.work_in_progress is True and self.low_gain_samples >= 5 else
+                    self.config.sample_interval_ms)
+        return self.last_sample < 0 or t - self.last_sample >= interval
+
+    def set_work_in_progress(self, value):
+        value = value if type(value) is bool else None
+        if value is not self.work_in_progress:
+            self.low_gain_samples = 0
+        self.work_in_progress = value
+
+    def record_sample_gain(self, gain):
+        if self.work_in_progress is True:
+            self.low_gain_samples = self.low_gain_samples + 1 if gain < .005 else 0
 
     def track(self, revision, confidence, t):
         if t <= self.last_identity_t:
@@ -293,6 +317,7 @@ class AppearanceAccumulator:
             self.last_sample = self.last_publish = -1
             self.dirty = False
             self.sharpness.clear()
+            self.low_gain_samples = 0
         if confidence == "IDENTITY_UNCERTAIN":
             self.stable = 0
         else:
@@ -305,7 +330,7 @@ class AppearanceAccumulator:
         import torch
 
         cfg = self.config
-        if not self.ready or (self.last_sample >= 0 and t - self.last_sample < cfg.sample_interval_ms):
+        if not self.ready or not self.sample_due(t):
             return False
         if not views or any(abs(v.capture_time_ms - t) > cfg.sync_tolerance_ms for v in views):
             return False
@@ -469,7 +494,10 @@ class AppearanceAccumulator:
                 gpu_ms += begin.elapsed_time(end)
         if not admit():
             return False
+        previous_coverage = np.count_nonzero(self.weights) / int(self.valid.sum())
         self.colors, self.weights = colors.cpu().numpy(), weights.cpu().numpy()
+        gain = np.count_nonzero(self.weights) / int(self.valid.sum()) - previous_coverage
+        self.record_sample_gain(gain)
         self.inherited = inherited.cpu().numpy()
         if best:
             self.peaks, self.rejects = peaks.cpu().numpy(), rejects.cpu().numpy()
@@ -604,6 +632,8 @@ class AppearanceAccumulator:
         self.dirty, self.carry_publish = old.dirty, old.carry_publish
         self.last_sample, self.last_publish = old.last_sample, old.last_publish
         self.published_coverage, self.sharpness = old.published_coverage, old.sharpness
+        self.work_in_progress, self.low_gain_samples = old.work_in_progress, old.low_gain_samples
+        self.schedule_revision = old.schedule_revision
         return True
 
     def inherited_ratio(self):

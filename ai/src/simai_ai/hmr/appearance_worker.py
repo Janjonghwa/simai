@@ -158,8 +158,13 @@ class AppearanceWorker:
                     # 유계 큐에서 생략한 회차도 포즈 루프가 센 연속 안정 30프레임에 포함한다.
                     acc = getattr(self.pipeline, "people", {}).get(wid)
                     if acc is not None:
+                        acc.set_schedule_revision(track["identity_revision"])
                         acc.stable = state.stable
                         acc.ready = state.stable >= self.pipeline.config.freeze_frames
+
+                work_state = getattr(self.pipeline, "work_state", lambda: None)()
+                for acc in getattr(self.pipeline, "people", {}).values():
+                    acc.set_work_in_progress(work_state)
 
                 seg = getattr(self.loop, "segmentation", None)
                 if not masks and seg is not None and not getattr(seg, "failed", False) and rig is not None:
@@ -182,7 +187,7 @@ class AppearanceWorker:
                                 acc is None
                                 or not acc.ready
                                 or wid in pending_map
-                                or (acc.last_sample >= 0 and doc["t"] - acc.last_sample < acc.config.sample_interval_ms)
+                                or not acc.sample_due(doc["t"])
                             ):
                                 continue
                         for obs in track.get("per_camera", []):
