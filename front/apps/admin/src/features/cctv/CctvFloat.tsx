@@ -6,10 +6,15 @@ import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { bestCamera, currentPersonId } from '@/features/events/incidents';
 import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
+import {
+  collectBottomPanelObstacles,
+  defaultMinimapSize,
+  useAspectResize,
+} from '@/features/layout/useAspectResize';
 import { useCameraIds, useCameraNames } from '@/hooks/useCameraNames';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { env } from '@/lib/env';
-import { FLOAT_MARGIN, type FloatSpot } from '@/lib/floatSpot';
+import { FLOAT_MARGIN, type FloatBounds, type FloatBox, type FloatSpot } from '@/lib/floatSpot';
 import { useReportCctvFloatBox } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
@@ -40,9 +45,10 @@ const KEY = 'simai.cctv.float.v2';
  */
 const defaultWidthCss = (aspect: string) => `calc(var(--minimap-size) * ${aspect})`;
 const MIN_WIDTH = 280;
-const MAX_WIDTH = 1000;
+const MAX_WIDTH = 2000;
 /** 카메라 해상도를 아직 모를 때의 영상 비율. */
 const DEFAULT_ASPECT = '16 / 9';
+const DEFAULT_ASPECT_RATIO = 16 / 9;
 type Settings = {
   spot?: FloatSpot;
   /**
@@ -351,9 +357,9 @@ function ViewFromCameraButton({
 
 /**
  * 떠 있는 CCTV 창(S15P31A101-798). 제목 줄·테두리·안쪽 여백 없이 카메라 영상 하나만 가장자리까지 채우고, 둥근 모서리와
- * 그림자만 둔다. 영상을 끌어 창을 옮기고(확대 중의 끌기는 영상 안 옮기기), 오른쪽 아래 모서리로 폭을 바꾸며 높이는 영상
- * 비율을 따른다. 닫기(X)·「3D 에서 이 방향으로 보기」·「3D 전체 보기」는 영상 오른쪽 위 아이콘이고, 지연 배지는 왼쪽 아래다.
- * 연결·원격 시청 안내는 영상 가운데에 겹친다. 접기는 없다(닫고 사람을 고르거나 3D 카메라 마커를 눌러 다시 연다).
+ * 그림자만 둔다. 영상을 끌어 창을 옮기고(확대 중의 끌기는 영상 안 옮기기), 왼쪽 위(화면 안쪽) 모서리 손잡이로 영상 비율을
+ * 유지한 채 크기를 바꾼다(S15P31A101-829). 닫기(X)·「3D 에서 이 방향으로 보기」·「3D 전체 보기」는 영상 오른쪽 위 아이콘이고,
+ * 지연 배지는 왼쪽 아래다. 연결·원격 시청 안내는 영상 가운데에 겹친다. 접기는 없다(닫고 사람을 고르거나 3D 카메라 마커를 눌러 다시 연다).
  * 기본 자리는 오른쪽 아래이고 높이는 왼쪽 아래 평면 지도와 같다(-812). 3D 화면 가운데를 가리지 않게 한다. 끌어 옮긴 자리는
  * 아래쪽 기준이라 폭을 바꿔도 아래 가장자리가 그대로다.
  */
@@ -379,17 +385,14 @@ export function CctvFloat({
   requestedCamera?: CctvCameraRequest | null;
 }) {
   const [initial] = useState(readSettings);
-  // width 가 null 이면 기본 폭(평면 지도 높이 기준 CSS 값)이다. 처음 배치 뒤에는 실제 px 로 바뀐다.
-  const [size, setSize] = useState<{ width: number | null; height: number }>(() => {
-    const width = initial.videoWidth ?? null;
-    return { width, height: width === null ? 0 : Math.round((width * 9) / 16) };
-  });
+  // videoWidth 가 null 이면 기본 폭(평면 지도 높이 기준 CSS 값)이다. 사용자가 손잡이로 크기를 바꾸면 px 폭을 쓴다.
+  const [videoWidth, setVideoWidth] = useState<number | null>(() => initial.videoWidth ?? null);
+  const [measuredHeight, setMeasuredHeight] = useState<number>(() =>
+    initial.videoWidth === undefined ? 0 : Math.round((initial.videoWidth * 9) / 16),
+  );
   const box = useRef<HTMLElement>(null);
   const saveSpot = useCallback((spot: FloatSpot) => saveSettings({ spot }), []);
   const spot = useFloatSpot(box, 'bottom', FLOAT_MARGIN, initial.spot ?? null, saveSpot);
-  // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에).
-  const layoutKey = `${spot.style?.left},${spot.style?.bottom},${size.width}x${size.height}`;
-  useReportCctvFloatBox(box, { dragging: spot.dragging, layoutKey });
   const cameraName = useCameraNames();
   const [alarmSeq, setAlarmSeq] = useState<number | null>(null);
   useEffect(() => {
@@ -406,27 +409,79 @@ export function CctvFloat({
   const isAdmin = useCurrentRole() === 'ADMIN';
   // 창이 보이는 카메라(「3D 에서 이 방향으로 보기」가 쓴다).
   const [currentCamera, setCurrentCamera] = useState<string | undefined>(requestedCamera?.cameraId);
-  // 보이는 카메라의 영상 비율(창 안 영상 칸과 같은 값). 기본 폭 계산에 쓴다.
+  // 보이는 카메라의 영상 비율(창 안 영상 칸과 같은 값). 기본 폭과 비율 고정 크기 조절에 쓴다.
   const aspect = useCctvStore((s) => {
     const view = currentCamera ? s.views[currentCamera] : undefined;
     return view?.width && view.height ? `${view.width} / ${view.height}` : DEFAULT_ASPECT;
   });
+  const aspectRatio = useCctvStore((s) => {
+    const view = currentCamera ? s.views[currentCamera] : undefined;
+    return view?.width && view.height ? view.width / view.height : DEFAULT_ASPECT_RATIO;
+  });
+
+  const minWidthOf = useCallback(
+    (bounds: FloatBounds) =>
+      Math.max(MIN_WIDTH, Math.round(defaultMinimapSize(bounds.height) * aspectRatio)),
+    [aspectRatio],
+  );
+  const getObstacles = useCallback(
+    (container: HTMLElement) =>
+      collectBottomPanelObstacles(container, box.current, { shrinkableEventPanel: true }),
+    [],
+  );
+  const placedSpot = spot.spot;
+  const setSpot = spot.setSpot;
+  const handleResize = useCallback(
+    (nextWidth: number, startBox: FloatBox) => {
+      setVideoWidth(nextWidth);
+      // 이미 끌어 옮긴 창이면 오른쪽·아래 모서리를 고정한 채 왼쪽 위로 늘거나 줄게 left 를 함께 맞춘다.
+      if (placedSpot !== null) {
+        const rightEdge = startBox.left + startBox.width;
+        setSpot({
+          left: Math.max(FLOAT_MARGIN.side, rightEdge - nextWidth),
+          offset: placedSpot.offset,
+        });
+      }
+    },
+    [placedSpot, setSpot],
+  );
+  const handleResizeEnd = useCallback((finalWidth: number, minWidth: number) => {
+    if (finalWidth <= minWidth) {
+      setVideoWidth(null);
+      saveSettings({ videoWidth: undefined });
+      return;
+    }
+    setVideoWidth(finalWidth);
+    saveSettings({ videoWidth: finalWidth });
+  }, []);
+  const handleResetSize = useCallback(() => {
+    setVideoWidth(null);
+    saveSettings({ videoWidth: undefined });
+  }, []);
+
+  const resize = useAspectResize({
+    target: box,
+    corner: 'top-left',
+    aspect: aspectRatio,
+    width: videoWidth,
+    minWidthOf,
+    getObstacles,
+    onResize: handleResize,
+    onResizeEnd: handleResizeEnd,
+    onReset: handleResetSize,
+  });
+
+  // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(옮기거나 크기를 바꾸는 동안은 알리지 않고 놓은 뒤에).
+  const layoutKey = `${spot.style?.left},${spot.style?.bottom},${resize.width}x${measuredHeight}`;
+  useReportCctvFloatBox(box, { dragging: spot.dragging || resize.resizing, layoutKey });
+
   useEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      const { offsetWidth: width, offsetHeight: height } = el;
-      if (!width || !height) return;
-      // 사용자가 모서리로 폭을 바꾸면 브라우저가 인라인 폭을 px 로 쓴다. 그때만 px 폭을 쓰고 저장한다. 기본 폭(CSS 값)이면
-      // 높이만 적어 두고 저장하지 않는다(화면 높이가 바뀌면 평면 지도와 함께 다시 맞춰진다, -812).
-      if (!el.style.width.endsWith('px')) {
-        setSize((prev) => (prev.height === height ? prev : { ...prev, height }));
-        return;
-      }
-      setSize((prev) =>
-        prev.width === width && prev.height === height ? prev : { width, height },
-      );
-      saveSettings({ videoWidth: width });
+      const height = el.offsetHeight;
+      if (!height) return;
+      setMeasuredHeight((prev) => (prev === height ? prev : height));
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -435,14 +490,17 @@ export function CctvFloat({
     <section
       ref={box}
       aria-label="떠 있는 CCTV"
-      style={{ ...spot.style, width: size.width ?? defaultWidthCss(aspect), resize: 'horizontal' }}
-      className="absolute right-3.5 bottom-3.5 z-[7] max-w-[calc(100%-2rem)] min-w-[280px] overflow-hidden rounded-xl bg-card shadow-float"
+      style={{ ...spot.style, width: resize.width ?? defaultWidthCss(aspect) }}
+      className="absolute right-3.5 bottom-3.5 z-[7] max-w-[calc(100%-2rem)] min-w-[280px] rounded-xl bg-card shadow-float"
     >
       <div
         {...spot.handlers}
         role="group"
         aria-label="CCTV 영상, 끌어서 창 옮기기"
-        className={cn('touch-none select-none', spot.dragging ? 'cursor-grabbing' : 'cursor-grab')}
+        className={cn(
+          'touch-none overflow-hidden rounded-xl select-none',
+          spot.dragging ? 'cursor-grabbing' : 'cursor-grab',
+        )}
       >
         {isAdmin ? (
           <AdminContent
@@ -458,6 +516,21 @@ export function CctvFloat({
           />
         )}
       </div>
+      {/* 왼쪽 위(화면 안쪽) 모서리 손잡이: 끌기 표면 밖의 형제라 끌어 옮기기·카메라 이름 배지와 겹치지 않는다. */}
+      <div
+        aria-hidden
+        data-testid="cctv-float-grip"
+        data-grip="nw"
+        title="끌어서 크기 조절 (두 번 누르면 기본 크기)"
+        {...resize.gripHandlers}
+        className={cn(
+          'absolute -top-1.5 -left-1.5 z-[2] size-5 cursor-nwse-resize touch-none rounded-[6px] transition-colors',
+          'hover:bg-primary/25',
+          'after:absolute after:inset-[4px] after:rounded-tl-[6px] after:border-t-2 after:border-l-2 after:border-faint/80 after:transition-colors',
+          'hover:after:border-primary',
+          resize.resizing && 'bg-primary/35 after:border-primary',
+        )}
+      />
       {alarmSeq !== null && alarmSeq === requestedCamera?.seq && currentCamera && (
         <div
           role="status"

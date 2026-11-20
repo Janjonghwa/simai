@@ -118,7 +118,12 @@ describe('떠 있는 CCTV', () => {
     expect(box.style.bottom).toBe('140px');
     expect(box.style.width).toBe('640px');
     expect(box.style.height).toBe('');
-    expect(box.style.resize).toBe('horizontal');
+    // 기본 브라우저 resize 손잡이는 빼고 왼쪽 위 모서리 손잡이를 쓴다(-829).
+    expect(box.style.resize).toBe('');
+    const grip = screen.getByTestId('cctv-float-grip');
+    expect(grip.className).toContain('cursor-nwse-resize');
+    expect(grip.className).toContain('-top-1.5');
+    expect(grip.className).toContain('-left-1.5');
     // 영상 자리는 해상도를 모르면 16:9, 알면 그 비율이다.
     const frame = screen.getByLabelText('카메라 1 영상').closest<HTMLElement>('.relative.w-full');
     expect(frame?.style.aspectRatio).toBe('16 / 9');
@@ -223,6 +228,118 @@ describe('떠 있는 CCTV', () => {
       expect(full).toHaveBeenCalledOnce();
       fireEvent.click(screen.getByRole('button', { name: '떠 있는 CCTV 닫기' }), { detail: 1 });
       expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('왼쪽 위 모서리 손잡이를 끌면 창이 옮겨지지 않고 영상 비율에 맞춰 크기가 바뀌며 localStorage 에 저장된다(-829)', () => {
+      // 기본 자리(오른쪽 아래)에 맞춘 장면: 1440×900, 기본 폭 462×260, left=964, top=626.
+      spies.forEach((spy) => spy.mockRestore());
+      const scene = document.createElement('main');
+      Object.defineProperties(scene, {
+        clientWidth: { get: () => 1440 },
+        clientHeight: { get: () => 900 },
+      });
+      scene.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 1440, height: 900 }) as DOMRect;
+      spies = [
+        vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(scene),
+        vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(964),
+        vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockReturnValue(626),
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(462),
+        vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(260),
+      ];
+
+      render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+      const box = screen.getByLabelText('떠 있는 CCTV');
+      const grip = screen.getByTestId('cctv-float-grip');
+      expect(surface().contains(grip)).toBe(false);
+
+      fireEvent.pointerDown(grip, at(964, 626));
+      fireEvent.pointerMove(grip, at(864, 570));
+      // 끌기 이동(spot)은 작동하지 않고 폭만 늘어난다.
+      expect(box.style.left).toBe('');
+      expect(box.style.width).toBe('562px');
+
+      // 짧은 변 절반(450px) × 16/9 = 800px 를 넘기지 않는다.
+      fireEvent.pointerMove(grip, at(200, 100));
+      expect(box.style.width).toBe('800px');
+      fireEvent.pointerUp(grip, at(200, 100));
+      expect(JSON.parse(localStorage.getItem('simai.cctv.float.v2') ?? '{}').videoWidth).toBe(800);
+
+      // 두 번 누르면 기본 크기로 돌아간다.
+      fireEvent.doubleClick(grip);
+      expect(box.style.width).not.toBe('800px');
+      expect(
+        JSON.parse(localStorage.getItem('simai.cctv.float.v2') ?? '{}').videoWidth,
+      ).toBeUndefined();
+    });
+
+    it('이미 끌어 옮긴 창을 왼쪽 위 손잡이로 키우면 오른쪽 가장자리를 고정한 채 왼쪽으로 넓어진다(-829)', () => {
+      localStorage.setItem(
+        'simai.cctv.float.v2',
+        JSON.stringify({ spot: { left: 700, offset: 140 }, videoWidth: 480 }),
+      );
+      spies.forEach((spy) => spy.mockRestore());
+      const scene = document.createElement('main');
+      Object.defineProperties(scene, {
+        clientWidth: { get: () => 1440 },
+        clientHeight: { get: () => 900 },
+      });
+      scene.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 1440, height: 900 }) as DOMRect;
+      spies = [
+        vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(scene),
+        vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(700),
+        vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockReturnValue(490),
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(480),
+        vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(270),
+      ];
+
+      render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+      const box = screen.getByLabelText('떠 있는 CCTV');
+      const grip = screen.getByTestId('cctv-float-grip');
+      fireEvent.pointerDown(grip, at(700, 490));
+      fireEvent.pointerMove(grip, at(600, 490));
+      fireEvent.pointerUp(grip, at(600, 490));
+      // 오른쪽 끝(700+480=1180) 고정 → 새 폭 580, 새 left 600.
+      expect(box.style.width).toBe('580px');
+      expect(box.style.left).toBe('600px');
+      expect(box.style.bottom).toBe('140px');
+    });
+
+    it('localStorage 읽기·쓰기가 실패해도 기본 크기로 열리고 크기 조절이 동작한다(-829)', () => {
+      const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('blocked');
+      });
+      const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('quota');
+      });
+      try {
+        spies.forEach((spy) => spy.mockRestore());
+        const scene = document.createElement('main');
+        Object.defineProperties(scene, {
+          clientWidth: { get: () => 1440 },
+          clientHeight: { get: () => 900 },
+        });
+        scene.getBoundingClientRect = () =>
+          ({ left: 0, top: 0, width: 1440, height: 900 }) as DOMRect;
+        spies = [
+          vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(scene),
+          vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(964),
+          vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockReturnValue(626),
+          vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(462),
+          vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(260),
+        ];
+        render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+        const box = screen.getByLabelText('떠 있는 CCTV');
+        const grip = screen.getByTestId('cctv-float-grip');
+        fireEvent.pointerDown(grip, at(964, 626));
+        fireEvent.pointerMove(grip, at(864, 626));
+        fireEvent.pointerUp(grip, at(864, 626));
+        expect(box.style.width).toBe('562px');
+      } finally {
+        getSpy.mockRestore();
+        setSpy.mockRestore();
+      }
     });
   });
 
