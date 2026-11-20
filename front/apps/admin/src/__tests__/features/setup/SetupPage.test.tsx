@@ -1606,6 +1606,14 @@ describe('설치 · 보정 2단계(보정·생성)', () => {
     expect(requested).not.toContain('/api/scenes/current');
     expect(screen.getByTestId('zones-page-stub')).toBeTruthy();
     expect(screen.getByText('✓ 적용됨')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락 취소' }));
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' })).toBeTruthy(),
+      POLL_WAIT,
+    );
+    expect(setupMock.zonePlans.get(sessionId)?.items).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
+    expect(await screen.findByText('✓ 적용됨', undefined, POLL_WAIT)).toBeTruthy();
   }, 25_000);
 
   it('구역 단계는 왼쪽 3D 와 오른쪽 구역 편집 도구(옆 칸)가 같은 선택을 쓴다: 패널에서 고르면 3D 가 고르고 초점을 옮기고, 3D 에서 고르면 패널이 따른다', async () => {

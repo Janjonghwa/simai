@@ -132,6 +132,7 @@ describe('AI 위험 구역 초안 패널', () => {
         pendingDraftId={null}
         acceptFailure={null}
         onAcceptDraft={onAcceptDraft}
+        onUnacceptDraft={vi.fn()}
         onDiscardDraft={onDiscardDraft}
         {...overrides}
       />,
