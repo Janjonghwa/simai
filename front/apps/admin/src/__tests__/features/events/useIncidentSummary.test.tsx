@@ -1,7 +1,6 @@
-import { EventDetail } from '@/features/events/EventDetail';
+import { AiPanel, RulesPanel } from '@/features/events/EventDetailPanels';
 import {
   canRequestSummary,
-  groupIncidents,
   isSummaryFailed,
   isSummaryInProgress,
   latestSummary,
@@ -117,14 +116,11 @@ function LiveDetailHarness({
       staleTime: Infinity,
     });
     const entries = data?.entries ?? initialEntries;
-    const incident = groupIncidents(entries)[0]!;
     return (
-      <EventDetail
-        incident={incident}
-        openEventId={EVENT_ID}
-        onClose={vi.fn()}
-        onSeekTimestamp={onSeekTimestamp}
-      />
+      <div role="dialog" aria-label="사건 상세">
+        <RulesPanel entries={entries} openEventId={EVENT_ID} />
+        <AiPanel entries={entries} onSeekTimestamp={onSeekTimestamp} />
+      </div>
     );
   }
 

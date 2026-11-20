@@ -105,6 +105,14 @@ const EC2_FIELDS = ['auto_retained', 'deleted_at_ms', 'uploaded_at_ms', 'receive
 const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
 describe('클립 mock', () => {
+  it('시연 빌드에서는 위험 알림의 시험 클립을 즉시 제공한다', async () => {
+    events.set('demo', event('demo', { severity: 'CRITICAL' }));
+    t = T;
+    server.use(...createClipsMock({ findEvent, now: () => t, demoReady: true }).handlers);
+    expect((await list('demo')).length).toBe(3);
+    events.set('caution', event('caution', { severity: 'CAUTION' }));
+    expect(await list('caution')).toEqual([]);
+  });
   it('클립은 위험 구간이 끝나고 올라간 뒤에 생기고, cam_B 는 앞이 잘리고 cam_C 는 프레임이 빠진다', async () => {
     events.set('e-high', event('e-high'));
     t = T + 20_000 + 4_000 - 1;

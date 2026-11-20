@@ -56,10 +56,12 @@ export function createClipsMock({
   findEvent,
   now = Date.now,
   video = testClipVideo,
+  demoReady = false,
 }: {
   /** 이벤트 mock 저장소의 이벤트(events.find). */
   findEvent: (eventId: string) => RiskEventPayload | undefined;
   now?: () => number;
+  demoReady?: boolean;
   /** 재생할 영상 주소(프레임 수를 받는다). 기본은 코드로 만든 시험 패턴이다. */
   video?: (frames: number) => string | Promise<string>;
 }): ClipsMock {
@@ -93,7 +95,7 @@ export function createClipsMock({
     const anchor = anchorsOf(event)[resume];
     if (anchor === undefined) return undefined;
     const { truncatedStart, start, end, uploaded } = windowOf(anchor, resume, camera);
-    if (t < uploaded) return undefined;
+    if (!demoReady && t < uploaded) return undefined;
     const clipId = clipIdOf(event.event_id, resume, camera);
     const created = end + CREATE_DELAY_MS;
     const critical = event.severity === 'CRITICAL';

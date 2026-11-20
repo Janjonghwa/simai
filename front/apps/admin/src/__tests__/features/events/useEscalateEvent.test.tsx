@@ -1,9 +1,8 @@
-import { EventDetail } from '@/features/events/EventDetail';
+import { AiPanel, RulesPanel } from '@/features/events/EventDetailPanels';
 import {
   escalationErrorMessage,
   escalationStatus,
   escalationStatusLabel,
-  groupIncidents,
   isStaleEscalationError,
   mergedEscalations,
   mergeEvent,
@@ -110,8 +109,12 @@ function LiveDetailHarness({ initialEntries }: { initialEntries: EventEntry[] })
       staleTime: Infinity,
     });
     const entries = data?.entries ?? initialEntries;
-    const incident = groupIncidents(entries)[0]!;
-    return <EventDetail incident={incident} openEventId={EVENT_ID} onClose={vi.fn()} />;
+    return (
+      <div role="dialog" aria-label="사건 상세">
+        <RulesPanel entries={entries} openEventId={EVENT_ID} />
+        <AiPanel entries={entries} />
+      </div>
+    );
   }
 
   render(

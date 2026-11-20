@@ -216,7 +216,7 @@ describe('EventPanel 머리줄과 두 칸', () => {
     expect(fold().getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('사람이 사라진 카드는 최근 해소 한도(4건)에 들지 않아 목록에서 빠지지 않는다', () => {
+  it('사람이 사라진 카드와 해소된 카드를 모두 남긴다', () => {
     setTracks([]);
     const done = [1, 2, 3, 4, 5].map((n) =>
       resolved({ event_id: `r${n}`, world_ids: [`w-10${n}`], rule_id: `R${n}` }),
@@ -228,7 +228,7 @@ describe('EventPanel 머리줄과 두 칸', () => {
     ]);
     const shown = labels('최근 해소');
     expect(shown.slice(0, 2).sort()).toEqual(['w-1 이벤트', 'w-2 이벤트']);
-    expect(shown).toHaveLength(2 + 4);
+    expect(shown).toHaveLength(2 + 5);
   });
 
   it('몇 초 살다 사라진 번호(유령 트랙)의 카드는 최근 해소가 아니라 접힌 칸에 두고, 펼치면 보인다(S15P31A101-785)', () => {
@@ -535,114 +535,18 @@ describe('EventDetail 확인 필요', () => {
     expect(unknown.textContent).not.toContain('z-99');
   });
 
-  it('규칙 줄은 구역 이름을 앞에 두고, 이름을 모르면 칸을 빼며, 구역이 없으면 `구역 없음` 이다', () => {
-    const row = (change: Partial<EventItem>) => {
-      const dialog = renderDetail([entry(change)]);
-      const text = within(within(dialog).getByRole('region', { name: '규칙과 근거' })).getByRole(
-        'listitem',
-      ).textContent!;
-      cleanup();
-      return text;
-    };
-    expect(row({ zone_id: 'z-04' })).toContain('개구부 구역 · ');
-    expect(row({ zone_id: 'z-99' })).not.toMatch(/구역|z-99/);
-    expect(row({ zone_id: undefined })).toContain('구역 없음 · ');
-    // 사람 단위 규칙(R9·R11)은 구역을 보지 않아 구역 칸이 없고, 표시 번호는 R8·R9 로 이어 보인다(-519, -804).
-    const r9 = row({ rule_id: 'R9', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r9).toContain('안전모 미착용');
-    expect(r9).toContain('규칙 R8');
-    expect(r9).not.toContain('규칙 R9');
-    expect(r9).not.toMatch(/구역/);
-    const r11 = row({ rule_id: 'R11', severity: 'CAUTION', zone_id: null, metrics: {} });
-    expect(r11).toContain('조끼 미착용');
-    expect(r11).toContain('규칙 R9');
-    expect(r11).not.toContain('규칙 R11');
-    expect(r11).not.toMatch(/구역/);
-  });
-
-  it.each([
-    ['R9', '안전모'],
-    ['R11', '조끼'],
-  ])('%s 는 해당 보호구의 확인 필요 이유를 보인다', (ruleId, equipment) => {
-    const dialog = renderDetail([
-      entry({
-        rule_id: ruleId,
-        severity: 'CAUTION',
-        zone_id: null,
-        metrics: {},
-        lifecycle: 'UPDATED',
-        needs_check: true,
-        confidence_reasons: ['PPE_UNKNOWN'],
-      }),
-    ]);
-    // 머리(첫 이유)와 규칙 줄(전체 이유)에 같은 문구가 보인다.
+  it('AI 설명과 이벤트 클립만 표시한다', () => {
+    const dialog = renderDetail([entry({ rationale: '상황 설명' })]);
+    expect(within(dialog).getByRole('region', { name: 'AI 설명' }).textContent).toContain(
+      '상황 설명',
+    );
+    expect(within(dialog).getByText('이벤트 클립')).toBeTruthy();
+    for (const name of ['규칙과 근거', '처리', '타임라인'])
+      expect(within(dialog).queryByRole('region', { name })).toBeNull();
+    cleanup();
     expect(
-      within(dialog).getAllByText(`확인 필요 · ${equipment} 상태 모름`).length,
-    ).toBeGreaterThan(0);
-    expect(dialog.textContent).not.toContain('PPE_UNKNOWN');
-  });
-
-  it.each([
-    ['R9', '안전모'],
-    ['R11', '조끼'],
-  ])('%s 는 해당 장비 요구로 작업 종료·착용 해소를 보인다', (ruleId, equipment) => {
-    const bundle = (version: string, helmet: 'REQUIRED' | 'NOT_REQUIRED') => ({
-      config_version: version,
-      issued_at: T,
-      status: 'APPLIED',
-      applied_at: T,
-      items: [],
-      ppe_policy: {
-        helmet,
-        vest: helmet,
-        work_id: helmet === 'REQUIRED' ? 12 : null,
-        effective_from_ms: T,
-      },
-    });
-    const bundles = [bundle('cfg-8', 'NOT_REQUIRED'), bundle('cfg-7', 'REQUIRED')];
-    const resolvedPpe = (configVersion: string) =>
-      entry({
-        rule_id: ruleId,
-        severity: 'CAUTION',
-        zone_id: null,
-        metrics: {},
-        lifecycle: 'RESOLVED',
-        resolved_at: T + 9_000,
-        updated_at: T + 9_000,
-        config_version: configVersion,
-      });
-
-    const ended = renderDetail([resolvedPpe('cfg-8')], bundles);
-    expect(within(ended).getByRole('region', { name: '규칙과 근거' }).textContent).toContain(
-      '작업 종료로 해소',
-    );
-    expect(within(ended).getByRole('region', { name: '타임라인' }).textContent).toContain(
-      `${equipment} 미착용 작업 종료로 해소`,
-    );
-    cleanup();
-
-    const worn = renderDetail([resolvedPpe('cfg-7')], bundles);
-    expect(within(worn).getByRole('region', { name: '처리' }).textContent).toContain(
-      '착용 확인으로 해소',
-    );
-    cleanup();
-
-    // 묶음을 모르면(최근 목록 밖) 그냥 해소다.
-    const unknown = renderDetail([resolvedPpe('cfg-1')], bundles);
-    const rules = within(unknown).getByRole('region', { name: '규칙과 근거' }).textContent!;
-    expect(rules).toMatch(/해소 \d/);
-    expect(rules).not.toMatch(/작업 종료로|착용 확인으로/);
-  });
-
-  it('복원 이벤트는 확인 필요와 첫 이유를 머리에, 전체 이유를 규칙 줄에 보인다', () => {
-    const dialog = renderDetail([
-      entry({
-        verification: 'UNVERIFIABLE',
-        needs_check: true,
-        confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'],
-      }),
-    ]);
-    expect(within(dialog).getByText('확인 필요 · 높이 모름, 예측 위치')).toBeTruthy();
+      within(renderDetail([entry({ rationale: null })])).queryByRole('region', { name: 'AI 설명' }),
+    ).toBeNull();
   });
 
   it('미확인 경보는 작은 외곽선 표시만 깜빡이고 움직임 줄이기 설정이면 멈춘다', () => {
@@ -666,70 +570,5 @@ describe('EventDetail 확인 필요', () => {
       }),
     ]);
     expect(within(dialog).queryByText('미확인')).toBeNull();
-  });
-
-  it('대상이 시야에서 사라진 UNVERIFIABLE 사람 경보는 상세에 「확인 불가 · 대상 시야 이탈」과 안내를 보인다(-811)', () => {
-    const GUIDE =
-      '재입장해 서 있는 모습이 확인되거나 작업을 종료하면 마감됩니다. 소리는 확인(ACK)으로 멈출 수 있습니다.';
-    useRealtimeStore.setState({
-      world: {
-        receivedAt: T,
-        payload: {
-          tracks: [{ world_id: 'w-0021', track_lifecycle: 'CONFIRMED', cameras: ['cam_A'] }],
-        } as unknown as WorldStatePayload,
-      },
-    });
-    const dialog = renderDetail([
-      entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
-    ]);
-    const rules = within(dialog).getByRole('region', { name: '규칙과 근거' });
-    const process = within(dialog).getByRole('region', { name: '처리' });
-
-    expect(within(dialog).queryByText('해소 확인 불가')).toBeNull();
-    expect(within(rules).getByText(/확인 불가 · 대상 시야 이탈/)).toBeTruthy();
-    expect(within(process).getByText('확인 불가 · 대상 시야 이탈')).toBeTruthy();
-    expect(within(process).getByText(GUIDE)).toBeTruthy();
-    // 소리 중지용 ACK 버튼은 그대로 남는다.
-    expect(within(process).getByRole('button', { name: /경보 확인/ })).toBeTruthy();
-    cleanup();
-
-    // 대상이 트랙에 있으면 기존 문구를 유지하고 안내를 보이지 않는다.
-    useRealtimeStore.setState({
-      world: {
-        receivedAt: T,
-        payload: {
-          tracks: [{ world_id: 'w-0015', track_lifecycle: 'CONFIRMED', cameras: ['cam_A'] }],
-        } as unknown as WorldStatePayload,
-      },
-    });
-    const present = renderDetail([
-      entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
-    ]);
-    expect(within(present).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
-    expect(within(present).queryByText(GUIDE)).toBeNull();
-    expect(
-      within(within(present).getByRole('region', { name: '처리' })).getByText('확인 대기'),
-    ).toBeTruthy();
-    cleanup();
-
-    // 구역 이벤트·VERIFIED 이벤트에는 적용하지 않는다.
-    useRealtimeStore.setState({
-      world: {
-        receivedAt: T,
-        payload: { tracks: [] } as unknown as WorldStatePayload,
-      },
-    });
-    const zoneDialog = renderDetail([
-      entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' }),
-    ]);
-    expect(within(zoneDialog).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
-    expect(within(zoneDialog).queryByText(GUIDE)).toBeNull();
-    cleanup();
-
-    const verifiedDialog = renderDetail([
-      entry({ verification: 'VERIFIED', world_ids: ['w-0015'] }),
-    ]);
-    expect(within(verifiedDialog).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
-    expect(within(verifiedDialog).queryByText(GUIDE)).toBeNull();
   });
 });

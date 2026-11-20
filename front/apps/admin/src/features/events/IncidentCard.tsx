@@ -147,7 +147,9 @@ export function IncidentCard({
             </span>
           </span>
           <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
-            {formatTime(latest.event.raised_at)}
+            {incident.active || incident.stale
+              ? formatTime(latest.event.raised_at)
+              : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
           </span>
         </button>
         {selected && <EventPhotos event={top.event} compact />}
