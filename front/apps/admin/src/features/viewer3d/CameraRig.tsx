@@ -7,7 +7,13 @@ import {
   sameView,
   type ViewerViewPose,
 } from '@/features/viewer3d/cameras/cameraView';
-import { roomViewOf, topRoomViewOf } from '@/features/viewer3d/scene/roomView';
+import {
+  DEFAULT_VIEW_ASPECT,
+  DEFAULT_VIEW_FOV_DEG,
+  roomViewOf,
+  topRoomViewOf,
+  viewBoundsFrom,
+} from '@/features/viewer3d/scene/roomView';
 import { useShownScanBounds } from '@/features/viewer3d/scene/useShownRoom';
 import { targetKey } from '@/features/viewer3d/target';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
@@ -59,10 +65,21 @@ export function CameraRig() {
   const store = useViewerStore();
   const camera = useThree((s) => s.camera);
   const scene = useThree((s) => s.scene);
+  const size = useThree((s) => s.size);
   const controlsRef = useRef<Controls>(null);
   const bounds = useShownScanBounds();
   const limit = useMemo(() => roomLimitFrom(bounds), [bounds]);
-  const view = useMemo(() => roomViewOf(limit), [limit]);
+  const viewBounds = useMemo(() => viewBoundsFrom(bounds), [bounds]);
+  // 처음 시야각. 처음·위에서 보기 시점으로 갈 때 이 값으로 돌린다(카메라 시점 보기가 시야각을 바꾼다).
+  const [homeFov] = useState(() => fovOf(camera));
+  const aspect =
+    size.width > 0 && size.height > 0
+      ? size.width / size.height
+      : (perspective(camera)?.aspect ?? DEFAULT_VIEW_ASPECT);
+  const view = useMemo(
+    () => roomViewOf(viewBounds, { fovDeg: homeFov ?? DEFAULT_VIEW_FOV_DEG, aspect }),
+    [viewBounds, homeFov, aspect],
+  );
   const topView = useMemo(() => topRoomViewOf(limit), [limit]);
   const savedPose = useRef<{
     home: readonly [number, number, number];
@@ -71,8 +88,6 @@ export function CameraRig() {
   const movedForBounds = useRef<RoomBounds | null>(null);
   // 회전 중심은 처음 한 번만 넘긴다. 스캔이 사라질 때 보던 방향이 갑자기 돌지 않게 이후 이동은 아래에서 직접 한다.
   const [initialTarget] = useState(view.target);
-  // 처음 시야각. 처음·위에서 보기 시점으로 갈 때 이 값으로 돌린다(카메라 시점 보기가 시야각을 바꾼다).
-  const [homeFov] = useState(() => fovOf(camera));
   const flight = useRef<CameraFlight | null>(null);
   // 첫 카메라 시점 보기 직전의 시점. 나가기(exitCameraView)로 여기로 돌아간다.
   const beforeCameraView = useRef<ViewerViewPose | null>(null);
