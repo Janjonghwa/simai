@@ -48,7 +48,7 @@ export async function startMockBackend() {
     summaryCompleteDelayMs: 1_500,
     seed: isMockBuild ? [] : seededEventsAt(Date.now()),
   });
-  let demoStartedAt = Date.now();
+  let demoStartedAt: number | undefined;
   let demoCounts = { CRITICAL: 0, HIGH: 0 };
   if (isMockBuild) {
     const scheduler = createDemoAlarmScheduler({
@@ -91,7 +91,9 @@ export async function startMockBackend() {
     Date.now,
     zones.config,
     peopleNames,
-    isMockBuild ? () => Date.now() - demoStartedAt : undefined,
+    isMockBuild
+      ? () => (demoStartedAt === undefined ? undefined : Date.now() - demoStartedAt)
+      : undefined,
   );
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).

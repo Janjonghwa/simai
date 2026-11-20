@@ -3,6 +3,7 @@ import {
   DEMO_ALARM_STEPS,
   workRunActionOf,
 } from '@/mocks/demoAlarmScenario';
+import { ppeViewAt } from '@/mocks/scenario/ppe';
 import { worldStateAt } from '@/mocks/scenario/world';
 import { validateMessage, type RiskEventMessage } from '@simai/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,13 +13,14 @@ afterEach(() => {
 });
 
 describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)', () => {
-  it('작업 시작 뒤 10·17·35·43초에 네 경보를 계약 형식으로 송출한다', () => {
+  it('작업 시작 뒤 5·10·17·35·43초에 다섯 경보를 계약 형식으로 송출한다', () => {
     vi.useFakeTimers();
     const received: RiskEventMessage[] = [];
     const scheduler = createDemoAlarmScheduler({ publish: (message) => received.push(message) });
     scheduler.start();
     for (const [delay, rule, severity, zone] of [
-      [10_000, 'R5', 'CAUTION', 'z-04'],
+      [5_000, 'R9', 'CAUTION', null],
+      [5_000, 'R5', 'CAUTION', 'z-04'],
       [7_000, 'R1', 'CRITICAL', 'z-04'],
       [18_000, 'R4', 'CRITICAL', null],
       [8_000, 'R5', 'CAUTION', 'z-04'],
@@ -31,7 +33,7 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
         world_ids: ['w-0012'],
       });
     }
-    expect(received).toHaveLength(4);
+    expect(received).toHaveLength(5);
     for (const message of received)
       expect(validateMessage('risk_event', message)).toMatchObject({ ok: true });
     expect(new Set(received.map((message) => message.payload.event_id)).size).toBe(
@@ -47,15 +49,19 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
     vi.advanceTimersByTime(10_000);
     scheduler.stop();
     vi.advanceTimersByTime(50_000);
-    expect(published).toHaveLength(1);
+    expect(published).toHaveLength(2);
     scheduler.start();
     vi.advanceTimersByTime(43_000);
-    expect(published).toHaveLength(5);
+    expect(published).toHaveLength(7);
   });
 
   it('목업 트랙은 경보 시각에 한 사람이 접근·진입·하강·재접근한다', () => {
+    const TIME = 1_795_000_000_000;
     const at = (ms: number) =>
       worldStateAt(1_795_000_000_000, { demoElapsedMs: ms }).payload.tracks;
+    expect(at(0)[0]?.position_xy).toEqual(at(5_000)[0]?.position_xy);
+    expect(ppeViewAt(TIME, 4_999).payload.people[0]?.helmet.state).toBe('WORN');
+    expect(ppeViewAt(TIME, 5_000).payload.people[0]?.helmet.state).toBe('NOT_WORN');
     expect(at(10_000)).toHaveLength(1);
     expect(at(10_000)[0]?.position_xy[0]).toBeCloseTo(4.62);
     expect(at(17_000)[0]?.position_xy[0]).toBeGreaterThan(5.2);

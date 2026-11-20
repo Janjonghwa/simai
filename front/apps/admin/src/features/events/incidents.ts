@@ -18,9 +18,9 @@ import type { EventItem, Severity } from '@/features/events/types';
 import { identityOf, knownLifeMs, rootOf, type TrackLifeState } from '@/lib/trackLife';
 import type { WorldTrack } from '@simai/contracts';
 
-// 한 사람(또는 사람이 없는 구역)에 걸린 이벤트를 묶는 계산(명세 7.4). 화면 없이 시험한다.
+// 알림 단위 카드와 트랙 번호 변경에 따른 화면 연결을 계산한다(명세 7.4).
 
-/** 한 사람(또는 사람이 없는 구역)에 걸린 이벤트 묶음(명세 7.4 "한 사람에게 걸린 여러 규칙은 화면에서 한 묶음"). */
+/** 카드에 표시할 알림 하나. */
 export interface Incident {
   key: string;
   target: { type: 'person' | 'zone'; id: string } | null;
@@ -92,8 +92,8 @@ function buildIncident(key: string, group: EventEntry[]): Incident {
 }
 
 export function groupIncidents(entries: readonly EventEntry[]): Incident[] {
-  const incidents = [...groupBy(entries, targetKey)].map(([key, group]) =>
-    buildIncident(key, group),
+  const incidents = [...groupBy(entries, (event) => `event:${event.event_id}`)].map(
+    ([key, group]) => buildIncident(key, group),
   );
   return incidents.sort(
     (a, b) =>
@@ -208,11 +208,7 @@ export function splitGhostCards(
   };
 }
 
-/**
- * 화면 카드 하나. 진행 중 카드는 한 사람의 묶음(명세 7.4)에, 같은 위험·같은 구역에서 짧은 시간 안에 트랙 번호(World ID)만 바뀌어
- * 다시 난 묶음을 더한 것이고(S15P31A101-731), 최근 해소 카드는 같은 위험·같은 구역의 해소된 발생을 묶은 것이다.
- * 기록·이벤트는 그대로이고 화면만 묶는다.
- */
+/** 알림 하나를 표시하는 카드. 조건을 만족하는 트랙 변경은 횟수로만 잇는다. */
 export interface CardGroup {
   /** 목록 key. 대표 묶음 키(incident.key)와 다를 수 있다(같은 사람의 다른 규칙·구역 해소 카드). */
   id: string;
@@ -245,20 +241,26 @@ interface Chain<T> {
 
 /**
  * 같은 위험·같은 구역 항목을 시각(시작) 순으로 잇는다(S15P31A101-731). 다음일 때 앞 묶음에 넣는다:
- * - 같은 사람이 이미 그 묶음에 있다(시각 무관, 이전의 사람·규칙·구역별 해소 묶음과 같다), 또는
- * - 앞 묶음의 마지막 갱신에서 CARD_MERGE_GAP_MS 안에 시작했다(트랙 번호가 바뀌며 다시 난 경보).
- * 단, 지금 살아 있는 사람이 든 묶음에 지금 살아 있는 다른 사람은 넣지 않는다(실제 두 번째 사람을 숨기지 않는다).
+ * - 생존 여부를 알고 앞 사람은 사라졌으며 새 알림의 사람 번호가 다르다.
+ * - 앞 알림의 마지막 갱신에서 CARD_MERGE_GAP_MS 안에 시작했다.
  */
 export function chainItems<T>(items: readonly ChainItem<T>[], alive: AliveIds): T[][] {
   const chains: Chain<T>[] = [];
   for (const item of [...items].sort((a, b) => a.start - b.start)) {
     const person = item.person;
     const living = person !== null && isAlive(alive, person);
-    const allowed = (chain: Chain<T>) => !(living && [...chain.living].some((p) => p !== person));
-    const near = (chain: Chain<T>) => item.start - chain.end <= CARD_MERGE_GAP_MS;
-    const chain =
-      chains.find((c) => person !== null && c.people.has(person) && allowed(c)) ??
-      [...chains].reverse().find((c) => near(c) && allowed(c));
+    const chain = [...chains]
+      .reverse()
+      .find(
+        (c) =>
+          alive !== null &&
+          person !== null &&
+          !c.people.has(person) &&
+          c.people.size > 0 &&
+          c.living.size === 0 &&
+          item.start >= c.end &&
+          item.start - c.end <= CARD_MERGE_GAP_MS,
+      );
     if (chain) {
       chain.values.push(item.value);
       chain.end = Math.max(chain.end, item.end);
@@ -284,10 +286,7 @@ const riskKey = (event: EventItem): string => riskKeyOf(event.rule_id, event.zon
 const personOf = (incident: Incident): string | null =>
   incident.target?.type === 'person' ? incident.target.id : null;
 
-/**
- * 진행 중 묶음들을 한 카드로. 대표는 살아 있는 사람의 묶음이고(없으면 가장 최근에 난 묶음), 나머지 묶음의 진행 중 규칙을 뒤에 더한다:
- * 카드의 처리 칩·점멸·경과가 묶인 경보 전부를 반영해야 확인 대기 경보가 카드에서 사라지지 않는다. 대표 규칙(topEntry)은 대표 묶음 것이다.
- */
+/** 살아 있는 사람의 알림, 없으면 가장 최근 알림을 대표로 삼는다. */
 function combineActive(members: readonly Incident[], alive: AliveIds): CardGroup {
   const startOf = (i: Incident) => firstActiveRaisedAt(i) ?? i.latestAt;
   const living = members.find((i) => {
@@ -306,31 +305,21 @@ function combineActive(members: readonly Incident[], alive: AliveIds): CardGroup
   );
   const others = members.filter((i) => i !== lead);
   if (others.length === 0) return { id: lead.key, incident: lead, occurrences, people: 1 };
-  const severity = members.reduce(
-    (top, i) => (SEVERITY_RANK[i.severity] > SEVERITY_RANK[top] ? i.severity : top),
-    lead.severity,
-  );
   return {
     id: lead.key,
     incident: {
       ...lead,
-      entries: [
-        ...lead.entries,
-        ...others.flatMap((i) => i.entries.filter((e) => isActive(e.event))),
-      ],
-      severity,
-      alarming: members.some((i) => i.alarming),
-      latestAt: Math.max(...members.map((i) => i.latestAt)),
+      entries: lead.entries,
+      severity: lead.severity,
+      alarming: lead.alarming,
+      latestAt: lead.latestAt,
     },
     occurrences,
     people: members.length,
   };
 }
 
-/**
- * 진행 중 카드(S15P31A101-731). 사람 묶음(명세 7.4)을 대표 규칙의 위험·구역별로 시각 순으로 잇는다(chainItems).
- * 구역 대상 묶음은 묶지 않는다. 지금 살아 있는 서로 다른 두 사람은 같은 카드에 들지 않는다.
- */
+/** 알림별 카드에 같은 위험·구역의 트랙 변경만 연결한다. */
 export function activeCards(incidents: readonly Incident[], alive: AliveIds): CardGroup[] {
   const byRisk = new Map<string, ChainItem<Incident>[]>();
   const cards: CardGroup[] = [];
@@ -362,7 +351,7 @@ export function activeCards(incidents: readonly Incident[], alive: AliveIds): Ca
 }
 
 /**
- * 해소된 이벤트를 같은 위험·같은 구역별로, 같은 사람이거나 짧은 시간 안에 이어진 것끼리 묶는다(S15P31A101-731, chainItems).
+ * 해소된 알림도 같은 위험·구역에서 생존 여부와 시간 조건을 만족할 때만 잇는다.
  * 최근에 해소된 묶음이 앞선다. EC2 마감(S15P31A101-722: Tier 0 가 사라져 닫은 것)은 관측 해소가 아니라 넣지 않는다
  * (지난 작업·이벤트 목록에서는 그대로 보인다).
  */
@@ -390,7 +379,9 @@ export function resolvedGroups(
       const first = members[0]!;
       cards.push({
         id: `${key}|${first.event.event_id}`,
-        incident: buildIncident(targetKey(first.event), members),
+        incident: buildIncident(`event:${members[members.length - 1]!.event.event_id}`, [
+          members[members.length - 1]!,
+        ]),
         occurrences: members.reduce((sum, e) => sum + occurrencesOf(e.event), 0),
         people: new Set(members.map((e) => targetKey(e.event))).size,
       });
@@ -498,7 +489,7 @@ export function firstActiveRaisedAt(incident: Incident): number | null {
 }
 
 /**
- * 이 이벤트가 든 묶음. 패널과 같이 지금 쪽과 지난 관제 쪽을 따로 묶는다. 사람별 묶음에 없는 해소 이벤트는 해소 묶음이다.
+ * 이 이벤트에 해당하는 알림을 찾는다.
  * 목록에서 빠졌으면 없다.
  */
 export function incidentOf(entries: readonly EventEntry[], eventId: string): Incident | undefined {

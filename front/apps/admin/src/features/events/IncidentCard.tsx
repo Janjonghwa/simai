@@ -51,7 +51,7 @@ const SEVERITY_LOOK: Record<Severity, { bar: string; ring: string }> = {
 };
 
 /**
- * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard).
+ * 알림 하나를 표시하는 카드(명세 7.4).
  * 큰 등급 배지를 세로 가운데에 두고, 가운데에 최근 사건(굵게) / 대상 두 줄, 오른쪽에 시각(HH:MM:SS)을 세로 가운데에 둔다.
  * 처리 상태(미확인 · 확인 시각 · 해소 시각 · 지난 관제, cardChip)·발생 횟수·확인 필요·지연 알림·작업 외 꼬리표는
  * 머리를 올려 보면 나오는 설명에 둔다. 미확인 경보의 왼쪽 띠 점멸·진행 중 카드 테두리·배너·소리는 그대로다.
@@ -139,6 +139,9 @@ export function IncidentCard({
           <SeverityBadge severity={latest.event.severity} size="large" />
           <span className="flex min-w-0 flex-1 flex-col gap-1">
             <b className="min-w-0 truncate text-base">{eventRuleName(latest.event)}</b>
+            {occurrences > 1 && (
+              <span className="text-xs text-muted-foreground">{occurrences}회</span>
+            )}
             <span className="min-w-0 truncate text-sm text-muted-foreground">
               {targetShortLabel(incident.target, zoneName, personNames)}
             </span>

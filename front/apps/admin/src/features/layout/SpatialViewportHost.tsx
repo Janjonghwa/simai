@@ -226,7 +226,7 @@ export function SpatialViewportHost({
   const handleIncidentSelect = useCallback(
     (incident: Incident) => {
       selectIncident(incident);
-      openCctvFor(incident.key);
+      if (incident.target) openCctvFor(`${incident.target.type}:${incident.target.id}`);
     },
     [selectIncident, openCctvFor],
   );

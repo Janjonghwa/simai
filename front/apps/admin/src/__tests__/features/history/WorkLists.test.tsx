@@ -47,7 +47,7 @@ function renderRows(events: EventRow[]) {
 }
 
 describe('이벤트 로그의 묶음(S15P31A101-751)', () => {
-  it('같은 초에 트랙 번호만 다른 같은 위험·구역은 한 줄로 묶고(×n 없음), 원래 ID 는 hover 로 보인다', () => {
+  it('같은 초의 여러 알림은 별도 줄로 보이고 원래 ID 는 hover 로 보인다', () => {
     const buttons = renderRows([
       row({
         eventId: 'a',
@@ -78,12 +78,12 @@ describe('이벤트 로그의 묶음(S15P31A101-751)', () => {
         raisedAt: T,
       }),
     ]);
-    expect(buttons).toHaveLength(1);
+    expect(buttons).toHaveLength(4);
     expect(buttons[0]!.textContent).not.toContain('×4');
-    expect(buttons[0]!.textContent).toContain('작업자 #0010 외 3명');
+    expect(buttons[0]!.textContent).toContain('작업자 #0010');
     expect(buttons[0]!.textContent).not.toContain('w-mwhubgp0');
     expect(buttons[0]!.querySelector('[title*="w-mwhubgp0-0010"]')).not.toBeNull();
-    expect(screen.getByRole('heading', { name: '이벤트 로그 · 1건' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '이벤트 로그 · 4건' })).toBeTruthy();
   });
 
   it('위험이나 구역이 다르거나 간격이 길면 따로 둔다', () => {

@@ -6,7 +6,7 @@ import { CameraTile, StateTile } from '@/features/cctv/CctvPage';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { AckButton } from '@/features/events/AckButton';
-import { entryStatus, isActive } from '@/features/events/entries';
+import { entryStatus } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
 import { statusText } from '@/features/events/format';
 import {
@@ -100,9 +100,11 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   // 지금 보는 사람의 사건만 보인다. 지난 관제(지금 Tier 0 가 들고 있지 않음)의 같은 World ID 는 섞지 않는다(S15P31A101-595).
   const incidents = useMemo(() => groupIncidents(withoutStale(entries)), [entries]);
   const { target } = split;
-  const incident = target
-    ? incidents.find((i) => i.target?.type === target.type && i.target.id === target.id)
-    : undefined;
+  const matching = target
+    ? incidents.filter(
+        (i) => i.target?.type === target.type && i.target.id === target.id && i.active,
+      )
+    : [];
 
   // 요청한 카메라가 목록에 없으면 첫 카메라를 보인다.
   const camId = ids.includes(split.cam) ? split.cam : ids[0];
@@ -204,14 +206,15 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
           {label(best)}로 보기
         </Button>
       )}
-      <div className="rounded-[10px] bg-surface-2 p-3">
-        <IncidentSummary
-          incident={
-            incident && incident.entries.some((e) => isActive(e.event)) ? incident : undefined
-          }
-          onClose={close}
-        />
-      </div>
+      {matching.length === 0 ? (
+        <IncidentSummary incident={undefined} onClose={close} />
+      ) : (
+        matching.map((incident) => (
+          <div key={incident.key} className="rounded-[10px] bg-surface-2 p-3">
+            <IncidentSummary incident={incident} onClose={close} />
+          </div>
+        ))
+      )}
     </section>
   );
 }

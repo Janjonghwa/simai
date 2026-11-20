@@ -3,6 +3,7 @@ import type { RiskEventMessage } from '@simai/contracts';
 
 /** 작업 시작 이후 경보와 이동이 공유하는 시각(ms). */
 export const DEMO_TIMES = {
+  helmet: 5_000,
   approach: 10_000,
   entry: 17_000,
   fall: 35_000,
@@ -21,12 +22,22 @@ export interface DemoAlarmStep {
 
 export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
   {
+    delayMs: DEMO_TIMES.helmet,
+    ruleId: 'R9',
+    severity: 'CAUTION',
+    personId: 'w-0012',
+    metrics: {},
+    rationale: '작업자가 안전모를 쓰지 않고 있습니다. 머리 보호 장비 착용이 필요합니다.',
+  },
+  {
     delayMs: DEMO_TIMES.approach,
     ruleId: 'R5',
     severity: 'CAUTION',
     personId: 'w-0012',
     zoneId: 'z-04',
     metrics: { speed_mps: 0.88, zone_distance_m: 0.58 },
+    rationale:
+      '작업자가 단상 개구부 쪽으로 다가가고 있습니다. 이대로 움직이면 곧 위험 구역에 들어설 것으로 보입니다.',
   },
   {
     delayMs: DEMO_TIMES.entry,
@@ -35,7 +46,8 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
     personId: 'w-0012',
     zoneId: 'z-04',
     metrics: { zone_distance_m: 0 },
-    rationale: '사람이 위험 구역에 들어서 있습니다.',
+    rationale:
+      '작업자가 단상 개구부 위험 구역의 경계를 넘어 안으로 들어갔습니다. 개구부 아래로 떨어질 수 있어 바로 확인이 필요합니다.',
   },
   {
     delayMs: DEMO_TIMES.fall,
@@ -53,6 +65,8 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
     personId: 'w-0012',
     zoneId: 'z-04',
     metrics: { zone_distance_m: 1.12 },
+    rationale:
+      '작업자가 단상 개구부 쪽으로 다가가고 있습니다. 이대로 움직이면 곧 위험 구역에 들어설 것으로 보입니다.',
   },
 ];
 

@@ -56,7 +56,10 @@ function lifeOf(spans: [number, number, string, string[]?][], start = 0): TrackL
 const sections = (entries: EventEntry[], alive: string[], life: TrackLifeState) =>
   eventSections(entries, { alive: new Set(alive), life });
 
-const keys = (cards: { incident: { key: string } }[]) => cards.map((c) => c.incident.key).sort();
+const keys = (cards: { incident: { target: { type: string; id: string } | null } }[]) =>
+  cards
+    .map((c) => (c.incident.target ? `${c.incident.target.type}:${c.incident.target.id}` : ''))
+    .sort();
 
 describe('유령 트랙 카드 접기', () => {
   it('11-16: 실제 두 사람 곁에 몇 초 살다 사라진 번호의 카드는 진행 중에서 빠져 접힌 칸으로 간다', () => {

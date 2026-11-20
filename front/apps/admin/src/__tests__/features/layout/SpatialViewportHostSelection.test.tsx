@@ -40,7 +40,10 @@ vi.mock('@/features/events/EventPanel', async () => {
           <li key={incident.key}>
             <button
               type="button"
-              aria-pressed={incident.key === selectedKey}
+              aria-pressed={
+                incident.target !== null &&
+                `${incident.target.type}:${incident.target.id}` === selectedKey
+              }
               onClick={() => onSelect(incident)}
             >
               {incident.key}
@@ -143,7 +146,10 @@ function renderHost(loadViewer = loadFake) {
   );
 }
 
-const card = (key: string) => screen.getByRole('button', { name: key });
+const card = (key: string) =>
+  screen.getByRole('button', {
+    name: key === 'person:w-1' ? 'event:e-1' : key === 'zone:z-02' ? 'event:e-2' : key,
+  });
 const pressed = (key: string) => card(key).getAttribute('aria-pressed');
 const selected = () => screen.getByTestId('selected').textContent;
 
