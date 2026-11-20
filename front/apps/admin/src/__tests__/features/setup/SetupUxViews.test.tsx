@@ -88,7 +88,7 @@ afterEach(() => {
 });
 
 describe('세팅 상태와 다음 행동(-732)', () => {
-  it('맵 완료 뒤 걷기를 재요청할 수 없으면 이유와 카메라 연결 관리로 가는 단추를 한 번만 보인다', () => {
+  it('맵 완료 뒤 걷기를 재요청할 수 없으면 이유와 카메라·맵 준비로 가는 단추를 한 번만 보인다', () => {
     const current = session({
       status: 'COMPLETED',
       stage: 'COMPLETED',
@@ -121,7 +121,7 @@ describe('세팅 상태와 다음 행동(-732)', () => {
     expect(screen.getAllByText('맵은 완성됐지만 카메라 확인이 남아 있어요')).toHaveLength(1);
     expect(screen.getByText(/맵 생성 작업이 끝나 걷기만 다시 할 수 없어요/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: '카메라 확인만 다시' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '카메라 연결 관리로' }));
+    fireEvent.click(screen.getByRole('button', { name: '카메라·맵 준비로' }));
     expect(onReturn).toHaveBeenCalledOnce();
   });
 

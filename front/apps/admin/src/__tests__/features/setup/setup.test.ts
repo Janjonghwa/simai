@@ -47,8 +47,8 @@ import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks
 import { describe, expect, it } from 'vitest';
 
 describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 안내 계산', () => {
-  it('보정 단계 순서에서 1단계는 카메라 연결 관리이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
-    expect(STEPS).toEqual(['카메라 연결 관리', '보정·생성', '구역']);
+  it('보정 단계 순서에서 1단계는 카메라·맵 준비이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
+    expect(STEPS).toEqual(['카메라·맵 준비', '보정·생성', '구역']);
     expect(STEPS[ZONE_STAGE]).toBe('구역');
     expect(DEFAULT_CAMERA_IDS).toEqual(['cam_A', 'cam_B', 'cam_C', 'cam_D']);
     expect(CAMERA_CORNERS).toHaveLength(4);
@@ -631,21 +631,21 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
   });
 
   it('구역 단계 3D 칸 제목은 세팅 맵 단계 이름뿐이고(Scene 버전은 붙이지 않는다), 세팅 맵이 아직이면 3D 맵이다', () => {
-    expect(zoneMapTitle(deriveSceneTierStatus(baseSession))).toBe('3D 맵');
+    expect(zoneMapTitle(deriveSceneTierStatus(baseSession))).toBe('현장 3D 맵');
     const preview: SetupSessionResponse = {
       ...baseSession,
       status: 'READY_FOR_ZONES',
       stage: 'READY_FOR_ZONES',
       preview_scene_version: 'scene-preview-1',
     };
-    expect(zoneMapTitle(deriveSceneTierStatus(preview))).toBe('미리보기 맵');
+    expect(zoneMapTitle(deriveSceneTierStatus(preview))).toBe('현장 3D 맵');
     const final: SetupSessionResponse = {
       ...preview,
       status: 'COMPLETED',
       stage: 'COMPLETED',
       scene_version: 'scene-final-1',
     };
-    expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵');
+    expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('현장 3D 맵');
   });
 });
 

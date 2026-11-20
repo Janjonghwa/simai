@@ -221,13 +221,13 @@ function DraftPolygons({
           ? 'fill-muted-foreground/15 stroke-muted-foreground'
           : draft.recommended_severity === 'CRITICAL'
             ? 'fill-sev-critical/15 stroke-sev-critical'
-            : 'fill-sev-high/15 stroke-sev-high';
+            : 'fill-sev-caution/15 stroke-sev-caution';
 
         const labelTone = noOpinion
           ? 'fill-muted-foreground'
           : draft.recommended_severity === 'CRITICAL'
             ? 'fill-sev-critical'
-            : 'fill-sev-high';
+            : 'fill-sev-caution';
 
         return (
           <g

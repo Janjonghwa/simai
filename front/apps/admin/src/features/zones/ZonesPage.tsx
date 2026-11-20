@@ -89,7 +89,7 @@ function ZoneEditPanel({
       )}
 
       {edit.collapsed ? (
-        <Button variant="secondary" size="action" onClick={edit.openAdd} className="w-full">
+        <Button variant="quiet" size="action" onClick={edit.openAdd} className="w-full">
           <Plus aria-hidden />
           구역 추가
         </Button>

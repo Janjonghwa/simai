@@ -1,3 +1,4 @@
+import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
 import { createSetupSession, requestSetupZonePlan } from '@/features/setup/api';
 import { draftZoneFootprint } from '@/features/setup/draftZone';
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
@@ -618,6 +619,18 @@ describe('같은 자리 판정과 AI 초안 묶음(zoneOverlap, S15P31A101-758)'
     expect([...pairs.keys()]).toEqual(['z-same']);
     expect(pairs.get('z-same')?.candidate_id).toBe(opening.candidate_id);
     expect(pairDraftsWithCarried([], [zoneAt('z-same', openingSpot)]).size).toBe(0);
+  });
+
+  it('시연 초안과 같은 위치의 이전 맵 구역은 각각 한 번만 묶는다', () => {
+    const drafts = demoZoneDrafts('demo').drafts;
+    const carried = drafts.map((draft, index) => ({
+      ...zoneAt(`previous-${index}`, draftZoneFootprint(draft).polygon),
+      zBounds: [draft.z_min_m, draft.z_max_m] as [number, number],
+    }));
+    const pairs = pairDraftsWithCarried(drafts, carried);
+    expect([...pairs.values()].map((draft) => draft.candidate_id).sort()).toEqual(
+      drafts.map((draft) => draft.candidate_id).sort(),
+    );
   });
 
   describe('묶인 항목에서 하나만 남기기(useSetupZoneReview)', () => {

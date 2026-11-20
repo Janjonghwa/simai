@@ -47,7 +47,7 @@ import { openingZoneZ } from '@/features/zones/zoneShape';
 
 export type Point = readonly [number, number];
 
-export const STEPS = ['카메라 연결 관리', '보정·생성', '구역'] as const;
+export const STEPS = ['카메라·맵 준비', '보정·생성', '구역'] as const;
 export type Stage = 0 | 1 | 2;
 
 /** 구역 단계(마지막 단계). 맵이 준비되면 넘어가 3D 위에서 구역을 고치고 발행한다. */
@@ -1072,9 +1072,10 @@ export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
   };
 }
 
-/** 구역 단계 3D 칸 제목: 미리보기 맵·정밀 3D 맵(Scene 버전은 보이지 않는다). 세팅 맵이 아직이면 지금 현장 맵이다. */
-export function zoneMapTitle(sceneTier: SceneTierStatusView): string {
-  return sceneTier.tier === 'NONE' ? MAP_TITLE[ZONE_STAGE] : sceneTier.label;
+/** 구역 단계 3D 칸 제목. 맵의 준비 단계와 관계없이 같은 이름을 쓴다. */
+export function zoneMapTitle(sceneTier?: SceneTierStatusView): string {
+  void sceneTier;
+  return '현장 3D 맵';
 }
 
 /**

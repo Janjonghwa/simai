@@ -28,29 +28,28 @@ const guideView = (patch: Partial<CameraGuideView>): CameraGuideView => ({
 
 describe('카메라 영상 위 방향 안내', () => {
   it.each(['LEFT', 'RIGHT', 'UP', 'DOWN'] as const)(
-    '%s 방향이면 그 가장자리에 꺾쇠를 둔다(조금 = 하나, 더 = 둘)',
+    '%s 방향과 조정 크기를 영상 위 문구로 표시한다',
     (direction) => {
       const { container, rerender } = render(
         <CameraCue guide={guideView({ direction, magnitude: 'SMALL' })} aspect={16 / 9} />,
       );
       const arrow = screen.getByTestId('camera-cue-arrow');
       expect(arrow.getAttribute('data-direction')).toBe(direction);
-      expect(arrow.querySelectorAll('svg')).toHaveLength(1);
+      expect(arrow.textContent).toContain('조금');
       rerender(<CameraCue guide={guideView({ direction, magnitude: 'MORE' })} aspect={16 / 9} />);
-      expect(screen.getByTestId('camera-cue-arrow').querySelectorAll('svg')).toHaveLength(2);
+      expect(screen.getByTestId('camera-cue-arrow').textContent).toContain('더');
       // 안내는 보기만 하는 것이라 보조 기기에는 숨기고 누름을 막지 않는다.
       expect(container.firstElementChild!.getAttribute('aria-hidden')).toBe('true');
     },
   );
 
-  it('같이 보는 곳은 영상 사각형 안의 비율 위치에 동그라미와 이웃 카메라 이름으로 둔다', () => {
+  it('안내는 영상 비율에 맞추고 겹침 위치 도식은 표시하지 않는다', () => {
     render(<CameraCue guide={guideView({ spot: [0.25, 0.6] })} aspect={4 / 3} />);
-    const spot = screen.getByTestId('camera-cue-spot');
-    expect(spot.textContent).toBe('카메라 3');
-    expect(spot.style.left).toBe('25%');
-    expect(spot.style.top).toBe('60%');
+    expect(screen.queryByTestId('camera-cue-spot')).toBeNull();
     // 위치를 잡는 틀은 영상이 그려지는 비율의 사각형이다.
-    expect(parseFloat(spot.parentElement!.style.aspectRatio)).toBeCloseTo(4 / 3);
+    expect(
+      parseFloat(screen.getByTestId('camera-cue-arrow').parentElement!.style.aspectRatio),
+    ).toBeCloseTo(4 / 3);
   });
 
   it('방향이 없고 같이 보는 곳도 없으면 아무것도 그리지 않는다', () => {
@@ -60,12 +59,12 @@ describe('카메라 영상 위 방향 안내', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('방향이 없어도 같이 보는 곳이 있으면 동그라미만 그린다', () => {
+  it('방향이 없으면 겹침 위치가 있어도 안내를 그리지 않는다', () => {
     render(
       <CameraCue guide={guideView({ direction: 'NONE', spot: [0.5, 0.5] })} aspect={16 / 9} />,
     );
     expect(screen.queryByTestId('camera-cue-arrow')).toBeNull();
-    expect(screen.getByTestId('camera-cue-spot')).toBeTruthy();
+    expect(screen.queryByTestId('camera-cue-spot')).toBeNull();
   });
 });
 
@@ -102,14 +101,11 @@ describe('카메라 영상 칸의 방향 안내', () => {
     const arrows = screen.getAllByTestId('camera-cue-arrow');
     expect(arrows).toHaveLength(1);
     expect(arrows[0]!.getAttribute('data-direction')).toBe('RIGHT');
-    expect(arrows[0]!.querySelectorAll('svg')).toHaveLength(2);
+    expect(arrows[0]!.textContent).toContain('→ 오른쪽으로 더');
     // 카메라 3 의 칸(오른쪽 열 아래)에 있고, 같이 보는 곳은 쌍 cam_C–cam_D 의 카메라 3 쪽 값이다.
     const tile = screen.getByLabelText('카메라 3 영상').parentElement!;
     expect(within(tile).getByTestId('camera-cue-arrow')).toBe(arrows[0]);
-    const spot = within(tile).getByTestId('camera-cue-spot');
-    expect(spot.textContent).toBe('카메라 4');
-    expect(spot.style.left).toBe('79%');
-    expect(spot.style.top).toBe('62%');
+    expect(within(tile).queryByTestId('camera-cue-spot')).toBeNull();
     expect(within(tile).getByText('카메라 3')).toBeTruthy();
   });
 
@@ -118,7 +114,7 @@ describe('카메라 영상 칸의 방향 안내', () => {
       <CameraVideoPanel coverage={deriveStep1Coverage(response('OK', cam3Guide))} />,
     );
     const aspectOf = () =>
-      parseFloat(screen.getByTestId('camera-cue-spot').parentElement!.style.aspectRatio);
+      parseFloat(screen.getByTestId('camera-cue-arrow').parentElement!.style.aspectRatio);
     expect(aspectOf()).toBeCloseTo(16 / 9);
     unmount();
     useCctvStore.getState().codec('cam_C', 1280, 960);

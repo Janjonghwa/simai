@@ -228,7 +228,7 @@ describe('세팅 화면 임베드', () => {
     expect(page.queryByText('세팅 1단계 · 카메라 확인')).toBeNull();
     const steps = within(page.getByRole('list', { name: '보정 단계' }));
     expect(steps.getAllByRole('listitem').map((step) => step.textContent)).toEqual([
-      '1카메라 연결 관리',
+      '1카메라·맵 준비',
       '2보정·생성',
       '3구역',
     ]);
@@ -284,7 +284,7 @@ describe('세팅 화면 임베드', () => {
       await waitFor(() => expect(setupMock.sessions.get(sessionId)?.status).toBe('FAILED'));
       expect(confirm).toHaveBeenCalledTimes(1);
       expect(await screen.findByRole('radiogroup', { name: '맵 방식' }, POLL_WAIT)).toBeTruthy();
-      expect(currentStepText()).toBe('1카메라 연결 관리');
+      expect(currentStepText()).toBe('1카메라·맵 준비');
       expect(onExit).not.toHaveBeenCalled();
     } finally {
       confirm.mockRestore();
@@ -343,7 +343,7 @@ describe('세팅 화면 임베드', () => {
         .getByRole('radio', { name: /^새 맵 만들기/ })
         .getAttribute('aria-checked'),
     ).toBe('true');
-    expect(currentStepText()).toBe('1카메라 연결 관리');
+    expect(currentStepText()).toBe('1카메라·맵 준비');
     expect(useSetupFlowStore.getState().activeSessionId).toBeNull();
   }, 20_000);
 
@@ -388,12 +388,12 @@ describe('세팅 화면 임베드', () => {
     expect(lineLabels()).toEqual(['세팅 취소', '다음']);
   }, 20_000);
 
-  it('구역 단계: 다시 보정이 보조 단추이고 다음은 처음부터 켜져 있으며 구역 목록·완료 카드는 없다', async () => {
+  it('구역 단계: 다음만 처음부터 켜져 있으며 다시 보정·구역 목록·완료 카드는 없다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, FINAL_PATCH);
     await goToZoneStep();
 
-    expect(lineLabels()).toEqual(['다시 보정', '다음']);
+    expect(lineLabels()).toEqual(['다음']);
     expect(mainButton().disabled).toBe(false);
     expect(mainButton().title).toBe('');
     expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
@@ -465,38 +465,12 @@ describe('세팅 화면 임베드', () => {
     expect(paths.some((path) => path.endsWith('/complete'))).toBe(false);
   }, 20_000);
 
-  it('구역 단계의 다시 보정은 확인한 뒤 1단계로 돌아간다', async () => {
+  it('구역 단계에 다시 보정 단추가 없다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, FINAL_PATCH);
     await goToZoneStep();
-
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.click(line().getByRole('button', { name: '다시 보정' }));
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(await screen.findByLabelText('카메라 4 높이 (m)')).toBeTruthy();
-      expect(lineLabels()).toEqual(['세팅 취소', '다음']);
-    } finally {
-      confirm.mockRestore();
-    }
+    expect(line().queryByRole('button', { name: '다시 보정' })).toBeNull();
   }, 20_000);
-
-  it('구역 단계의 다시 보정을 확인 창에서 취소하면 구역 단계에 머문다', async () => {
-    const { sessionId } = await startSetupSession();
-    setupMock.updateSession(sessionId, FINAL_PATCH);
-    await goToZoneStep();
-
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      fireEvent.click(line().getByRole('button', { name: '다시 보정' }));
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(screen.queryByLabelText('카메라 4 높이 (m)')).toBeNull();
-      expect(lineLabels()).toEqual(['다시 보정', '다음']);
-    } finally {
-      confirm.mockRestore();
-    }
-  }, 20_000);
-
   it('날짜 작업에는 레이아웃이 없어서 구역 저장에 세션 id 는 싣되 가상 레이아웃 반영은 요청하지 않고 실패 안내도 띄우지 않는다', async () => {
     const layoutRequests: string[] = [];
     server.events.on('request:start', ({ request }) => {

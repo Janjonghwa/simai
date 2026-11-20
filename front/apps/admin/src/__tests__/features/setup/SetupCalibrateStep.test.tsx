@@ -232,7 +232,7 @@ describe('보정·생성 실패 안내', () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
-  it('같은 상태로 다시 해도 소용없는 실패는 카메라 연결 관리로 단추 하나뿐이다', () => {
+  it('같은 상태로 다시 해도 소용없는 실패는 카메라·맵 준비로 단추 하나뿐이다', () => {
     const { onRetry, onReturnToStep1 } = renderStep(
       failedSession({
         progress_pct: 40,
@@ -246,27 +246,27 @@ describe('보정·생성 실패 안내', () => {
     ).toBeTruthy();
     expect(box.queryByRole('button', { name: '다시 시도' })).toBeNull();
     expect(box.getAllByRole('button')).toHaveLength(1);
-    fireEvent.click(box.getByRole('button', { name: '카메라 연결 관리로' }));
+    fireEvent.click(box.getByRole('button', { name: '카메라·맵 준비로' }));
     expect(onReturnToStep1).toHaveBeenCalledTimes(1);
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('다시 해 볼 만한 실패는 다시 시도(주)와 카메라 연결 관리로(보조) 두 단추다', () => {
+  it('다시 해 볼 만한 실패는 다시 시도(주)와 카메라·맵 준비로(보조) 두 단추다', () => {
     const { onRetry, onReturnToStep1 } = renderStep(
       failedSession({ progress_pct: 40, failure_code: 'TIMEOUT' }),
     );
     const box = within(screen.getByRole('alert', { name: '세팅 실패 안내' }));
     expect(box.getAllByRole('button').map((b) => b.textContent)).toEqual([
       '다시 시도',
-      '카메라 연결 관리로',
+      '카메라·맵 준비로',
     ]);
     fireEvent.click(box.getByRole('button', { name: '다시 시도' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    fireEvent.click(box.getByRole('button', { name: '카메라 연결 관리로' }));
+    fireEvent.click(box.getByRole('button', { name: '카메라·맵 준비로' }));
     expect(onReturnToStep1).toHaveBeenCalledTimes(1);
   });
 
-  it('GPU 가 꺼져 있으면 주 단추는 「GPU 켜기」이고 다시 시도·카메라 연결 관리로는 보조로 내려간다(-734)', () => {
+  it('GPU 가 꺼져 있으면 주 단추는 「GPU 켜기」이고 다시 시도·카메라·맵 준비로는 보조로 내려간다(-734)', () => {
     const onTurnOnGpu = vi.fn();
     const { onRetry } = renderStep(failedSession({ progress_pct: 40, failure_code: 'TIMEOUT' }), {
       onTurnOnGpu,
@@ -275,7 +275,7 @@ describe('보정·생성 실패 안내', () => {
     expect(box.getAllByRole('button').map((b) => b.textContent)).toEqual([
       'GPU 켜기',
       '다시 시도',
-      '카메라 연결 관리로',
+      '카메라·맵 준비로',
     ]);
     expect(box.getByText('GPU 가 꺼져 있어요. 켠 뒤 다시 시도하세요.')).toBeTruthy();
     // 주 단추(기본 모양)는 GPU 켜기 하나, 나머지는 보조 모양이다
@@ -283,7 +283,7 @@ describe('보정·생성 실패 안내', () => {
       box.getByRole('button', { name }).classList.contains('bg-primary');
     expect(isPrimary('GPU 켜기')).toBe(true);
     expect(isPrimary('다시 시도')).toBe(false);
-    expect(isPrimary('카메라 연결 관리로')).toBe(false);
+    expect(isPrimary('카메라·맵 준비로')).toBe(false);
     fireEvent.click(box.getByRole('button', { name: 'GPU 켜기' }));
     expect(onTurnOnGpu).toHaveBeenCalledTimes(1);
     expect(onRetry).not.toHaveBeenCalled();
@@ -467,7 +467,7 @@ describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이
   it('옛 품질 게이트 멈춤(paused_reason QUALITY_GATE)도 멈춤 안내를 그리지 않는다(PausedNotice 삭제, S15P31A101-691)', () => {
     renderCheck(readySession({ paused_reason: 'QUALITY_GATE' }));
     expect(screen.queryByRole('alert', { name: '세팅 멈춤 안내' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '카메라 연결 관리로' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라·맵 준비로' })).toBeNull();
   });
 
   it('카메라 확인 걷기 대기(paused_reason CAMERA_CHECK)는 보정 멈춤 안내로 보이지 않는다', () => {
@@ -479,7 +479,7 @@ describe('쌍별 검증 표(S15P31A101-646) · 카메라 확인은 걷기 창이
         paused_reason: 'CAMERA_CHECK',
       }),
     );
-    expect(screen.queryByRole('button', { name: '카메라 연결 관리로' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '카메라·맵 준비로' })).toBeNull();
     expect(screen.queryByText(/멈췄습니다/)).toBeNull();
   });
 

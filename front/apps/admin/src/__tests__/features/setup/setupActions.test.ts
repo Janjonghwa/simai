@@ -90,14 +90,14 @@ describe('deriveSetupActions: 단계별 단추', () => {
   it('세션 취소·카메라 다시 맞추기는 2단계에만 있다', () => {
     const extras = { sessionRunning: true, showHeightNotice: true };
     expect(summary(stateOf({ stage: 0, ...extras }))).toEqual(['*다음']);
-    expect(summary(stateOf({ stage: 2, ...extras }))).toEqual(['다시 보정', '*작업 관리로(꺼짐)']);
+    expect(summary(stateOf({ stage: 2, ...extras }))).toEqual(['*작업 관리로(꺼짐)']);
   });
 });
 
 describe('deriveSetupActions: 구역 단계', () => {
   it('단독 화면은 구역 단계에서 맨 오른쪽에 작업 관리로가 항상 있고, 세팅을 완료할 수 있어야 켜진다', () => {
-    expect(summary(stateOf({ stage: 2 }))).toEqual(['다시 보정', '*작업 관리로(꺼짐)']);
-    expect(summary(stateOf({ stage: 2, canFinish: true }))).toEqual(['다시 보정', '*작업 관리로']);
+    expect(summary(stateOf({ stage: 2 }))).toEqual(['*작업 관리로(꺼짐)']);
+    expect(summary(stateOf({ stage: 2, canFinish: true }))).toEqual(['*작업 관리로']);
   });
 
   it('세팅을 완료한 작업은 다시 보정이 없고 마지막 단추만 남는다(하루 1회)', () => {
@@ -115,15 +115,15 @@ describe('deriveSetupActions: 구역 단계', () => {
 
   it('날짜 화면 안은 마지막 단추가 다음이고 세팅을 완료할 수 있어야 켜진다', () => {
     const before = deriveSetupActions(stateOf({ stage: 2, embedded: true }), handlers());
-    expect(before.map((button) => button.label)).toEqual(['다시 보정', '다음']);
-    expect(before[1]).toMatchObject({ primary: true, disabled: true });
+    expect(before.map((button) => button.label)).toEqual(['다음']);
+    expect(before[0]).toMatchObject({ primary: true, disabled: true });
 
     const after = deriveSetupActions(
       stateOf({ stage: 2, embedded: true, canFinish: true }),
       handlers(),
     );
-    expect(after[1]).toMatchObject({ label: '다음', primary: true, disabled: false });
-    expect(after[1]?.title).toBeUndefined();
+    expect(after[0]).toMatchObject({ label: '다음', primary: true, disabled: false });
+    expect(after[0]?.title).toBeUndefined();
   });
 
   it('세팅 완료를 요청하는 동안은 마지막 단추가 꺼진다', () => {
@@ -132,7 +132,7 @@ describe('deriveSetupActions: 구역 단계', () => {
         stateOf({ stage: 2, embedded, canFinish: true, finishPending: true }),
         handlers(),
       );
-      expect(buttons[1]).toMatchObject({ primary: true, disabled: true });
+      expect(buttons[0]).toMatchObject({ primary: true, disabled: true });
     }
   });
 
@@ -158,8 +158,6 @@ describe('deriveSetupActions: 구역 단계', () => {
     expect(on.cancelSession).toHaveBeenCalledTimes(1);
     run(stateOf({ stage: 1, showHeightNotice: true }), '카메라 다시 맞추기');
     expect(on.recheckCameras).toHaveBeenCalledTimes(1);
-    run(stateOf({ stage: 2 }), '다시 보정');
-    expect(on.restart).toHaveBeenCalledTimes(1);
     run(stateOf({ stage: 2, embedded: true, canFinish: true }), '다음');
     run(stateOf({ stage: 2, canFinish: true }), '작업 관리로');
     expect(on.finish).toHaveBeenCalledTimes(2);
@@ -214,14 +212,14 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
       deriveSetupActions(stateOf({ stage: 2, embedded: true }), handlers()),
     );
     expect(zoneStage).toMatchObject({ label: '다음', enabled: false });
-    expect(zoneStage?.secondary?.map((item) => item.label)).toEqual(['다시 보정']);
+    expect(zoneStage?.secondary?.map((item) => item.label)).toEqual([]);
   });
 
   it('주 단추가 없으면 null 이다', () => {
     const restartOnly = deriveSetupActions(stateOf({ stage: 2 }), handlers()).filter(
       (button) => !button.primary,
     );
-    expect(restartOnly.map((button) => button.label)).toEqual(['다시 보정']);
+    expect(restartOnly.map((button) => button.label)).toEqual([]);
     expect(toWorkAction(restartOnly)).toBeNull();
     expect(toWorkAction([])).toBeNull();
   });
@@ -230,7 +228,6 @@ describe('toWorkAction: 아래 오른쪽 단추 줄 설정', () => {
 describe('deriveSetupActions: 확인 필요 구역(S15P31A101-629)', () => {
   it('확인 필요 구역이 남으면 마지막 단추가 개수를 붙이고 꺼지며 이유를 title 로 알린다', () => {
     expect(summary(stateOf({ stage: 2, canFinish: true, unconfirmedZones: 3 }))).toEqual([
-      '다시 보정',
       '*작업 관리로 · 확인 필요 3개(꺼짐)',
     ]);
     const embedded = deriveSetupActions(
@@ -243,7 +240,6 @@ describe('deriveSetupActions: 확인 필요 구역(S15P31A101-629)', () => {
       title: expect.stringContaining('확인') as unknown,
     });
     expect(summary(stateOf({ stage: 2, canFinish: true, unconfirmedZones: 0 }))).toEqual([
-      '다시 보정',
       '*작업 관리로',
     ]);
   });
