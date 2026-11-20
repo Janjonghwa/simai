@@ -124,19 +124,34 @@ function regionCatalogFor(
 
 export function GpuSettingsSection() {
   const { data, loading, loadError, save, saving, saveError, saved } = useGpuSettings(true);
+  // 평소에는 접힌 「고급 설정」으로 두고, 요약 한 줄로 현재 공급자·선호 GPU·자동 정지 설정을 보인다(S15P31A101-824).
+  const summaryText = data
+    ? `${data.settings.provider === 'AWS' ? 'AWS' : 'RunPod'} · ${
+        data.settings.preferred_gpu_types.map((gpu) => shortGpuName(gpu)).join(', ') || 'GPU 미선택'
+      } · ${
+        data.settings.auto_stop_idle_minutes
+          ? `자동 정지 ${data.settings.auto_stop_idle_minutes}분`
+          : '자동 정지 꺼짐'
+      }`
+    : loadError
+      ? 'GPU 설정을 불러오지 못했습니다'
+      : 'GPU 설정을 불러오는 중…';
   return (
-    <section
+    <details
       aria-labelledby="settings-gpu"
-      className="flex flex-col rounded-xl bg-card text-card-foreground ring-1 ring-border"
+      className="group flex flex-col rounded-xl bg-card text-card-foreground ring-1 ring-border"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-        <h2 id="settings-gpu" className="text-base font-semibold">
-          GPU
+      <summary className="cursor-pointer px-5 py-3 select-none group-open:border-b group-open:border-border">
+        <h2 id="settings-gpu" className="inline text-base font-semibold">
+          고급 설정 · GPU
         </h2>
-        <span className="flex items-center gap-3 text-xs text-muted-foreground">
-          {saved && <span role="status">저장했습니다</span>}
-        </span>
-      </div>
+        <span className="mt-1 block text-sm text-muted-foreground">{summaryText}</span>
+        {saved && (
+          <span className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+            <span role="status">저장했습니다</span>
+          </span>
+        )}
+      </summary>
       {loading && <p className="p-5 text-sm text-muted-foreground">불러오는 중…</p>}
       {loadError && (
         <p role="alert" className="p-5 text-sm">
@@ -154,7 +169,7 @@ export function GpuSettingsSection() {
           onSave={(body) => save(body)}
         />
       )}
-    </section>
+    </details>
   );
 }
 
@@ -396,10 +411,10 @@ function SettingsForm({
           {invalid ?? error}
         </p>
       )}
-      <div className="flex justify-end gap-2">
+      <div className="sticky bottom-0 z-10 -mx-5 -mb-5 flex justify-end gap-2 rounded-b-xl border-t border-border bg-card px-5 py-3">
         <Button
           type="button"
-          variant="secondary"
+          variant="quiet"
           onClick={() => {
             setForm(initial);
             setInvalid(null);
@@ -408,7 +423,7 @@ function SettingsForm({
         >
           되돌리기
         </Button>
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" variant="flow" disabled={saving}>
           {saving ? '저장 중…' : '저장'}
         </Button>
       </div>

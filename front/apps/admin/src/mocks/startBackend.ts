@@ -1,4 +1,6 @@
 import { env } from '@/lib/env';
+import { EVENTS_TOPIC } from '@/lib/stomp';
+import { createDemoAlarmScheduler, workRunActionOf } from '@/mocks/demoAlarmScenario';
 
 /**
  * 서버가 아직 없는 API 를 msw 로 REST·STOMP 흉내 낸다(개발 서버 전용, main.tsx 가 DEV 에서만 불러서 빌드에는 들어가지 않는다).
@@ -30,6 +32,7 @@ export async function startMockBackend() {
     import('@/mocks/peopleNames'),
     import('@/mocks/realtimeScenario'),
   ]);
+  const isMockBuild = import.meta.env.VITE_MOCK_BUILD === 'true';
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명은 보지 않는다).
   // 로그아웃 뒤 토큰 없이 붙지 않는지, 만료된 실서버 토큰이 서버처럼 ERROR 로 거절되는지 볼 수 있다.
   const broker = createStompBroker({
@@ -39,12 +42,22 @@ export async function startMockBackend() {
       return user !== undefined && (user.expiresAt === undefined || user.expiresAt > Date.now());
     },
   });
-  // 진행 중 두 건과 지난 관제(꺼진 관제에서 열린 채 남은) 세 건을 싣고 시작한다(S15P31A101-595).
+  // 목업 빌드는 작업 시작 시연 시나리오가 경보를 만들므로 빈 목록으로 시작하고, 개발 서버는 진행 중·지난 관제 시드를 싣는다.
   const events = createEventsMock({
     broker,
     summaryCompleteDelayMs: 1_500,
-    seed: seededEventsAt(Date.now()),
+    seed: isMockBuild ? [] : seededEventsAt(Date.now()),
   });
+  if (isMockBuild) {
+    const scheduler = createDemoAlarmScheduler({
+      publish: (message) => broker.publish(EVENTS_TOPIC, events.record(message)),
+    });
+    network.events.on('response:mocked', ({ request, response }) => {
+      const action = workRunActionOf(request, response);
+      if (action === 'start') scheduler.start();
+      else if (action === 'end') scheduler.stop();
+    });
+  }
   const clips = createClipsMock({ findEvent: events.find });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다. 구역을 저장하면 세팅 mock 의
   // 세션이 COMPLETED·zones_committed_at 이 된다. 작업 관리의 '세팅 완료'(SETUP_DONE)는 세팅 화면의 「세팅 완료」(POST .../complete, -615)가 정한다.

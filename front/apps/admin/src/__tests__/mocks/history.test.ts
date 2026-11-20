@@ -16,6 +16,14 @@ import { replayResponseSchema } from '@/features/history/types';
 import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import type { TbmWorkUnit } from '@/features/tbm/types';
 import { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
+import {
+  groupByDate,
+  monthCells,
+  monthOfKey,
+  summarizeMonth,
+  summarizeWorks,
+} from '@/features/work/calendar/calendarMath';
+import { workDayItemSchema, type WorkDayItem } from '@/features/work/types';
 import { ApiError, createHttp } from '@/lib/http';
 import { createHistoryMock, hasNoRecord, historyReplay, historyWorks } from '@/mocks/history';
 import { http, HttpResponse } from 'msw/http';
@@ -520,5 +528,57 @@ describe('실제 createHttp 로 받는 구간 기록', () => {
     const index = indexReplay(fitLog(log, range), merged.gaps);
     expect(noDataAt(index, outage!.from + OUTAGE_MS / 2, holdFor(range.stepMs))).toBe(true);
     expect(allGap(index.gaps, range)).toBe(false);
+  });
+});
+
+describe('11월 목업 데이터: HIGH → CAUTION 2단 통일 및 달력·월간 요약 일치(S15P31A101-824)', () => {
+  const NOV_20 = new Date(2026, 10, 20, 17, 0).getTime();
+  const novWorks = historyWorks(NOV_20);
+
+  it('지난 작업 리플레이 이벤트에는 HIGH 가 없고 CRITICAL·CAUTION 2단만 나온다', () => {
+    const nov18 = novWorks.filter((w) => w.date === '2026-11-18' && !hasNoRecord(w));
+    expect(nov18.length).toBeGreaterThan(0);
+    for (const work of nov18) {
+      const replay = replayResponseSchema.parse(
+        historyReplay(novWorks, work.from_ms, work.to_ms, 5_000, NOV_20),
+      );
+      const allEvents = [...replay.initial_events, ...replay.events];
+      expect(allEvents.length).toBeGreaterThan(0);
+      expect(allEvents.some((e) => e.payload.severity === 'HIGH')).toBe(false);
+      expect(allEvents.some((e) => e.payload.severity === 'CRITICAL')).toBe(true);
+      expect(allEvents.some((e) => e.payload.severity === 'CAUTION')).toBe(true);
+
+      // RAISED 건수가 작업 event_counts(위험=CRITICAL, 주의=HIGH 칸)와 정확히 일치한다.
+      const raised = replay.events.filter((e) => e.payload.lifecycle === 'RAISED');
+      expect(work.event_counts).toEqual({
+        CRITICAL: raised.filter((e) => e.payload.severity === 'CRITICAL').length,
+        HIGH: raised.filter((e) => e.payload.severity === 'CAUTION').length,
+      });
+    }
+  });
+
+  it('달력 칸(11-18·11-19)과 11월 월간 요약의 위험·주의 숫자가 합계와 일치한다', () => {
+    const pastItems: WorkDayItem[] = novWorks
+      .filter((w) => w.date < '2026-11-20')
+      .map((w) =>
+        workDayItemSchema.parse({
+          ...w,
+          daily: false,
+          progress: 'SUBMITTED',
+        }),
+      );
+    const byDate = groupByDate(pastItems);
+    const day18 = summarizeWorks(byDate.get('2026-11-18') ?? [])!;
+    const day19 = summarizeWorks(byDate.get('2026-11-19') ?? [])!;
+    expect(day18).toMatchObject({ count: 3, critical: 9, high: 27 });
+    expect(day19).toMatchObject({ count: 3, critical: 17, high: 51 });
+
+    const cells = monthCells(monthOfKey('2026-11-20'));
+    const month = summarizeMonth(cells, byDate, '2026-11-20');
+    expect(month).toEqual({
+      days: 2,
+      critical: day18.critical + day19.critical,
+      high: day18.high + day19.high,
+    });
   });
 });

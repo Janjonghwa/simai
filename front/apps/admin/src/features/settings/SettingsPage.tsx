@@ -5,11 +5,12 @@ import { GpuSettingsSection } from '@/features/gpu/GpuSettingsSection';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { useThemeStore, type Theme } from '@/features/layout/theme.store';
 import { alarmSound } from '@/lib/alarmSound';
+import { Button } from '@simai/ui/components/button';
 import type { ReactNode } from 'react';
 
-// 설정 페이지(/settings, S15P31A101-705). 상단바 계정 메뉴의 「설정」 하나로 들어온다. front 에 흩어져 있던 설정을 모았다:
-// 화면(다크·화이트 모드, 모든 계정, 브라우저에 저장) · 경보 소리(확인 권한이 있는 계정만, 상단바 소리 버튼과 같은 값) ·
-// GPU(관리자만, 서버 GET·POST /api/gpu/settings 에 새 버전). 새 서버 기능은 없다. 계정이 쓸 수 없는 구역은 보이지 않는다.
+// 설정 페이지(/settings, S15P31A101-705, -824). 상단바 계정 메뉴의 「설정」 하나로 들어온다. front 에 흩어져 있던 설정을 모았다:
+// 화면(다크·화이트 모드, 모든 계정, 브라우저에 저장) · 경보 소리(확인 권한이 있는 계정만, 상단바 스피커 버튼과 같은 저장값·실제 상태 표시) ·
+// 고급 설정 · GPU(관리자만, 기본 접힘, 서버 GET·POST /api/gpu/settings 에 새 버전). 새 서버 기능은 없다. 계정이 쓸 수 없는 구역은 보이지 않는다.
 
 const THEMES: { value: Theme; label: string }[] = [
   { value: 'dark', label: '다크 모드' },
@@ -57,21 +58,29 @@ function ThemeSection() {
 
 function SoundSection() {
   const { muted, ready } = useAlarmSoundState();
+  // 상단 바 스피커 단추(SoundButton)와 같은 우선순위: 사용자가 끈 상태를 먼저 보이고, 켠 상태에서는 브라우저 차단 여부를 알린다.
+  const statusText = muted ? '경보음 꺼짐' : ready ? '경보음 켜짐' : '경보음 차단됨';
   return (
     <Section id="settings-sound" title="경보 소리">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"
           checked={!muted}
-          onChange={(e) => alarmSound.setMuted(!e.target.checked)}
+          onChange={(e) => {
+            alarmSound.setMuted(!e.target.checked);
+            if (e.target.checked) void alarmSound.unlock();
+          }}
         />
         확인 대기 경보를 소리로 알리기
       </label>
-      {!ready && !muted && (
-        <p className="text-muted-foreground">
-          브라우저가 소리를 막고 있습니다. 화면을 한 번 누르면 풀립니다.
-        </p>
-      )}
+      <div className="flex items-center gap-3 text-muted-foreground">
+        <span data-slot="sound-status">{statusText}</span>
+        {!muted && !ready && (
+          <Button variant="quiet" size="sm" onClick={() => void alarmSound.unlock()}>
+            소리 켜기
+          </Button>
+        )}
+      </div>
     </Section>
   );
 }

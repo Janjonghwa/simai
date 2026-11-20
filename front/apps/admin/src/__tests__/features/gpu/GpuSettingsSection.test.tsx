@@ -60,6 +60,16 @@ function renderSection() {
 }
 
 describe('GpuSettingsSection', () => {
+  it('처음에는 접힌 「고급 설정 · GPU」로 보이고 요약 줄에 공급자·선호 GPU·자동 정지를 보인다(S15P31A101-824)', async () => {
+    renderSection();
+    await screen.findByText('RunPod · H100 SXM, H100 PCIe · 자동 정지 30분');
+    const details = screen.getByText('고급 설정 · GPU').closest('details') as HTMLDetailsElement;
+    expect(details).toBeTruthy();
+    expect(details.open).toBe(false);
+    act(() => fireEvent.click(screen.getByText('고급 설정 · GPU')));
+    expect(details.open).toBe(true);
+  });
+
   it('설정 페이지 GPU 구역: 목록에서 GPU·지역을 고르고 순서·유휴 기준·다음 켜기 적용 안내를 보이며, 버전·템플릿 ID 는 자세히 아래에 두고 준비 안 된 공급자는 비활성화한다(-733)', async () => {
     renderSection();
     await screen.findByLabelText('선호 GPU (위가 먼저)');

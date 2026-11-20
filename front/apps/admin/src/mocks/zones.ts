@@ -435,6 +435,7 @@ export function createZonesMock({
   ackDelayMs = ACK_DELAY_MS,
   staticObjects = createStaticObjectStore([]),
   onCommit,
+  mockBuild = import.meta.env.VITE_MOCK_BUILD === 'true',
 }: {
   now?: () => number;
   ackDelayMs?: number;
@@ -444,9 +445,13 @@ export function createZonesMock({
    * 시각 ms). 개발 서버가 세팅 mock 의 세션을 끝내는 데 쓴다.
    */
   onCommit?: (setupSessionId: string, at: number) => void;
+  /** 목업 빌드 시연 구역 이름(z-04 = 단상 개구부)을 쓴다. 일반 단위 시험은 MOCK_ZONES 기본 이름을 유지한다. */
+  mockBuild?: boolean;
 } = {}): ZonesMock {
   // 지금 버전과 닫힌 버전. 지금 버전은 valid_to 가 null 이다.
-  let versions: ZoneItem[] = structuredClone(MOCK_ZONES);
+  let versions: ZoneItem[] = structuredClone(MOCK_ZONES).map((zone) =>
+    mockBuild && zone.zone_id === 'z-04' ? { ...zone, name: '단상 개구부' } : zone,
+  );
   let issued = 0;
   let bundleNumber = SEEDED_CONFIG_NUMBER;
   // 새것부터.
