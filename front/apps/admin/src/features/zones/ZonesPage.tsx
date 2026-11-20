@@ -8,13 +8,13 @@ import { ZoneAttributesCard } from '@/features/zones/ZoneAttributesCard';
 import {
   NOTE_CLASS,
   PANEL_CLASS,
-  PRIMARY_BUTTON_CLASS,
   WARNING_CLASS,
   type ZonePanelPlacement,
 } from '@/features/zones/zonePanelStyle';
 import { ZoneSelect } from '@/features/zones/ZoneSelect';
 import { ZoneSizeCard } from '@/features/zones/ZoneSizeCard';
 import { Button } from '@simai/ui/components/button';
+import { Plus } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 /** 직사각형이 아니거나 높이가 없거나 바닥 판정이라 3D 손잡이로 고칠 수 없는 구역을 골랐을 때 알림. */
@@ -89,7 +89,8 @@ function ZoneEditPanel({
       )}
 
       {edit.collapsed ? (
-        <Button onClick={edit.openAdd} className={`${PRIMARY_BUTTON_CLASS} w-full`}>
+        <Button variant="secondary" size="action" onClick={edit.openAdd} className="w-full">
+          <Plus aria-hidden />
           구역 추가
         </Button>
       ) : edit.orphan ? (

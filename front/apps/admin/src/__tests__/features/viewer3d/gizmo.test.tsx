@@ -508,6 +508,12 @@ describe('GizmoController 장면', () => {
       measureText: (text: string) => ({ width: text.length * 12 }),
       beginPath: () => {},
       roundRect: () => {},
+      save: () => {},
+      restore: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      stroke: () => {},
       fill: () => {},
       fillText,
     } as unknown as CanvasRenderingContext2D);

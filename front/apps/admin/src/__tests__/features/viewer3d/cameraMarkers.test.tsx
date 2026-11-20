@@ -112,8 +112,19 @@ async function mount(boxEditBinding: BoxEditBinding = { boxEdit: null, boxGhosts
 }
 
 type Handler = (event: unknown) => void;
-const onClickOf = (object: Object3D) =>
-  (object as unknown as { __r3f: { handlers: { onClick: Handler } } }).__r3f.handlers.onClick;
+const handlersOf = (object: Object3D) =>
+  (
+    object as unknown as {
+      __r3f: {
+        handlers: {
+          onClick?: Handler;
+          onPointerOver?: Handler;
+          onPointerOut?: Handler;
+        };
+      };
+    }
+  ).__r3f.handlers;
+const onClickOf = (object: Object3D) => handlersOf(object).onClick!;
 
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
@@ -263,6 +274,36 @@ describe('CameraLayer 3D 렌더링·클릭·사람 선택 강조·편집 모드 
 
     expect(scene!.getObjectByName('camera-marker:cam_A')?.userData.highlighted).toBe(false);
     expect(scene!.getObjectByName('camera-marker:cam_B')?.userData.highlighted).toBe(true);
+  });
+
+  it('카메라 이름표는 기본 숨김이고 마우스를 올렸을 때만 보인다', async () => {
+    const poses = readCalibrationCameraPoses(RAW_CALIBRATION);
+    viewer.getState().setCameraPoses(poses);
+    await mount();
+
+    const countSprites = (node: Object3D) => {
+      let count = 0;
+      node.traverse((child) => {
+        if (child instanceof THREE.Sprite) count += 1;
+      });
+      return count;
+    };
+
+    const markerA = scene!.getObjectByName('camera-marker:cam_A')!;
+    const markerB = scene!.getObjectByName('camera-marker:cam_B')!;
+    expect(countSprites(markerA)).toBe(0);
+    expect(countSprites(markerB)).toBe(0);
+
+    await act(async () => {
+      handlersOf(markerA).onPointerOver?.({ stopPropagation: vi.fn() });
+    });
+    expect(countSprites(markerA)).toBe(1);
+    expect(countSprites(markerB)).toBe(0);
+
+    await act(async () => {
+      handlersOf(markerA).onPointerOut?.({});
+    });
+    expect(countSprites(markerA)).toBe(0);
   });
 
   it('구역 상자 편집(boxEdit) 중에는 카메라 마커를 숨긴다', async () => {

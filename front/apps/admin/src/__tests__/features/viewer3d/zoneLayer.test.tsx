@@ -14,6 +14,7 @@ import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
 import { ZoneApplyContext, type ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
+import { MonitorZoneLabels, useZoneHoverStore } from '@/store/zoneHover.store';
 import { createRoot, extend, useThree, type ReconcilerRoot } from '@react-three/fiber';
 import { act, StrictMode, useEffect } from 'react';
 import type { BoxGeometry, Mesh, MeshBasicMaterial, Object3D, Scene } from 'three';
@@ -94,8 +95,19 @@ const named = (name: string) => scene!.getObjectByName(name);
 const zoneKeys = () => [...viewer.getState().targets.keys()].filter((k) => k.startsWith('zone:'));
 
 type Handler = (event: unknown) => void;
-const onClickOf = (object: Object3D) =>
-  (object as unknown as { __r3f: { handlers: { onClick: Handler } } }).__r3f.handlers.onClick;
+const handlersOf = (object: Object3D) =>
+  (
+    object as unknown as {
+      __r3f: {
+        handlers: {
+          onClick?: Handler;
+          onPointerOver?: Handler;
+          onPointerOut?: Handler;
+        };
+      };
+    }
+  ).__r3f.handlers;
+const onClickOf = (object: Object3D) => handlersOf(object).onClick!;
 
 function click(zoneId: string, hits: string[]) {
   const stopPropagation = vi.fn();
@@ -120,6 +132,7 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   root = null;
   scene = null;
+  useZoneHoverStore.setState({ zoneId: null });
   vi.restoreAllMocks();
 });
 
@@ -416,6 +429,74 @@ describe('ZoneLayer', () => {
     expect(edgesOf('warn').visible.color.getHex()).toBe(PALETTE.dark.risk.HIGH.color);
     // 심각도를 모르는 구역은 위험 색으로 지어내지 않고 기본 청록이다.
     expect(edgesOf('unknown').visible.color.getHex()).toBe(PALETTE.dark.zone.color);
+  });
+
+  it('관제 모드에서는 구역 이름표를 기본 숨기고 호버·선택·진행 중 경보일 때만 보이며 hover 스토어와 연동한다', async () => {
+    const t0 = 1_760_342_400_000;
+    const countSprites = (node: Object3D) => {
+      let count = 0;
+      node.traverse((child) => {
+        if (child instanceof THREE.Sprite) count += 1;
+      });
+      return count;
+    };
+    viewer.getState().setLayers({ workSurfaces: 'visible', obstacles: 'visible' });
+    data.getState().setConnection({ state: 'OPEN', at: t0 });
+    await mount();
+    await ingest(DEMO_ZONES_RESPONSE);
+
+    // 기본은 모두 숨김
+    expect(countSprites(scene!)).toBe(0);
+
+    // 3D 구역에 포인터를 올리면 zoneHover 스토어에 반영되고 해당 구역 이름표만 보인다.
+    const z1Group = named('zone:z-01')!;
+    const stopPropagation = vi.fn();
+    await act(async () => {
+      handlersOf(z1Group).onPointerOver?.({ stopPropagation });
+    });
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(useZoneHoverStore.getState().zoneId).toBe('z-01');
+    expect(countSprites(named('zone-entry:z-01')!)).toBe(1);
+    expect(countSprites(named('zone-entry:z-02')!)).toBe(0);
+
+    await act(async () => {
+      handlersOf(z1Group).onPointerOut?.({});
+    });
+    expect(useZoneHoverStore.getState().zoneId).toBeNull();
+    expect(countSprites(scene!)).toBe(0);
+
+    // 왼쪽 구역 목록에서 hover(스토어 갱신)해도 3D 구역 이름표가 보인다.
+    await act(async () => {
+      useZoneHoverStore.getState().setZoneId('z-02');
+    });
+    expect(countSprites(named('zone-entry:z-02')!)).toBe(1);
+    await act(async () => {
+      useZoneHoverStore.getState().setZoneId(null);
+    });
+    expect(countSprites(scene!)).toBe(0);
+
+    // 선택된 구역 이름표가 보인다.
+    await act(async () => {
+      viewer.getState().select({ type: 'zone', id: 'z-03' });
+    });
+    expect(countSprites(named('zone-entry:z-03')!)).toBe(1);
+    await act(async () => {
+      viewer.getState().clearSelection();
+    });
+    expect(countSprites(scene!)).toBe(0);
+
+    // 진행 중 경보가 있는 구역(z-01)은 hover·선택 없이도 이름표가 보인다.
+    await act(async () => {
+      for (let tick = 0; tick < 11; tick++) {
+        for (const out of scenarioTick('risk-lifecycle', tick, t0)) {
+          if (out.type === 'message') data.getState().ingest(out.raw, t0 + tick * TICK_MS + 50);
+        }
+      }
+    });
+    expect(countSprites(named('zone-entry:z-01')!)).toBe(1);
+    expect(countSprites(named('zone-entry:z-02')!)).toBe(0);
+    // MonitorZoneLabels 컨텍스트도 export 된다.
+    expect(MonitorZoneLabels).toBeDefined();
   });
 
   it('StrictMode 이중 마운트 뒤에도 구역 등록은 하나씩이고, 내리면 모두 풀린다', async () => {

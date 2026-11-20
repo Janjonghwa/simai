@@ -1,8 +1,10 @@
 import { targetKey } from '@/features/viewer3d/target';
 import type { ViewerTarget } from '@/features/viewer3d/types';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
+import { MonitorZoneLabels, useZoneHoverStore } from '@/store/zoneHover.store';
 import type { ThreeEvent } from '@react-three/fiber';
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useRef, type ReactNode } from 'react';
+import { useStore } from 'zustand';
 
 /** 같은 대상을 연속 클릭했을 때 더블클릭으로 인정하는 최대 간격(ms). */
 const DOUBLE_CLICK_MS = 400;
@@ -43,6 +45,13 @@ function isDoubleClick(
 /** 장면 객체를 선택·초점 대상으로 올린다. 사람·구역·OBB 레이어가 이것으로 감싼다. */
 export function Selectable({ target, children, pickInstead, interactive = true }: SelectableProps) {
   const store = useViewerStore();
+  const monitorContext = useContext(MonitorZoneLabels);
+  const monitorLayer = useStore(
+    store,
+    (s) =>
+      s.mode === 'LIVE' && s.layers.zones === 'interactive' && s.layers.workSurfaces === 'visible',
+  );
+  const monitor = monitorContext || monitorLayer;
   const { type, id } = target;
   const lastClickRef = useRef<LastClick | null>(null);
 
@@ -77,8 +86,29 @@ export function Selectable({ target, children, pickInstead, interactive = true }
     [store, pickTarget],
   );
 
+  const handleZonePointerOver = useCallback(
+    (event: ThreeEvent<PointerEvent>) => {
+      event.stopPropagation();
+      useZoneHoverStore.getState().setZoneId(id);
+    },
+    [id],
+  );
+
+  const handleZonePointerOut = useCallback(() => {
+    if (useZoneHoverStore.getState().zoneId === id) {
+      useZoneHoverStore.getState().setZoneId(null);
+    }
+  }, [id]);
+
+  const hoverZone = interactive && monitor && type === 'zone';
+
   return (
-    <group name={targetKey({ type, id })} onClick={interactive ? handleClick : undefined}>
+    <group
+      name={targetKey({ type, id })}
+      onClick={interactive ? handleClick : undefined}
+      onPointerOver={hoverZone ? handleZonePointerOver : undefined}
+      onPointerOut={hoverZone ? handleZonePointerOut : undefined}
+    >
       {children}
     </group>
   );

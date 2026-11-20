@@ -7,6 +7,7 @@ import { createZonesMock, MOCK_ZONES, type ZonesMock } from '@/mocks/zones';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
 import { stopZoneEdit, useZoneEditModeStore } from '@/store/zoneEditMode.store';
+import { useZoneHoverStore } from '@/store/zoneHover.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
@@ -114,6 +115,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  useZoneHoverStore.setState({ zoneId: null });
   useSessionStore.setState({ session: undefined });
 });
 
@@ -154,6 +156,23 @@ describe('구역 목록', () => {
     ]);
     expect(rowButton(/개구부 구역/).className).toContain('border-sev-critical');
     expect(rowButton(/단상 구역/).className).toContain('border-sev-caution');
+  });
+
+  it('구역 행과 3D 구역 hover 스토어가 양방향으로 강조를 연동한다', async () => {
+    await renderList();
+    const openingItem = rowOf(/개구부 구역/);
+    const podiumBtn = rowButton(/단상 구역/);
+
+    fireEvent.mouseEnter(openingItem);
+    expect(useZoneHoverStore.getState().zoneId).toBe('z-04');
+    expect(rowButton(/개구부 구역/).className).toContain('bg-foreground/10');
+
+    fireEvent.mouseLeave(openingItem);
+    expect(useZoneHoverStore.getState().zoneId).toBeNull();
+
+    // 3D 구역에서 hover 하면 목록의 해당 행이 강조된다.
+    act(() => useZoneHoverStore.getState().setZoneId('z-02'));
+    expect(podiumBtn.className).toContain('bg-foreground/10');
   });
 
   async function renderEmptyList() {

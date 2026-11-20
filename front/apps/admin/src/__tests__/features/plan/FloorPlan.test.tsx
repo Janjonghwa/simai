@@ -128,7 +128,7 @@ describe('2D 평면 구역 색', () => {
 
   it.each([
     ['CRITICAL', 'stroke-sev-critical'],
-    ['HIGH', 'stroke-sev-high'],
+    ['HIGH', 'stroke-sev-caution'],
     ['CAUTION', 'stroke-sev-caution'],
   ] as const)('구역 윤곽선은 심각도 %s 의 색(%s)이다', (severity, stroke) => {
     expect(zoneRect({ severity }).className).toContain(stroke);
@@ -148,7 +148,7 @@ describe('2D 평면 구역 색', () => {
   it('고른 구역도 심각도 색 그대로이고 채움만 짙어진다', () => {
     const idle = zoneRect({ severity: 'HIGH' });
     const selected = zoneRect({ severity: 'HIGH' }, 'zone:z-1');
-    expect(selected.className).toContain('stroke-sev-high');
+    expect(selected.className).toContain('stroke-sev-caution');
     expect(selected.className).toBe(idle.className);
     expect(selected.fillOpacity).toBeGreaterThan(idle.fillOpacity);
   });

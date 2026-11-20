@@ -12,9 +12,10 @@ const rect = (seq: number, x: number, y: number, w = 100, h = 30) => ({
 });
 
 describe('이름표 화면 크기 상한', () => {
-  it('글자 높이에 비례하되 22~60px 안이다', () => {
+  it('글자 높이에 비례하되 30~60px 안이다', () => {
     expect(labelCapPx(0.24)).toBeCloseTo(36);
-    expect(labelCapPx(0.01)).toBe(22);
+    expect(labelCapPx(0.4)).toBe(60);
+    expect(labelCapPx(0.01)).toBe(30);
     expect(labelCapPx(5)).toBe(60);
   });
 });

@@ -23,11 +23,11 @@ describe('planTip 구역', () => {
 
   it('유형과 등급이 있으면 이름 뒤에 붙는다', () => {
     expect(tipOf(zone({ zoneType: 'OPENING', severity: 'HIGH' }))).toBe(
-      '개구부 구역 · 개구부 · ▲ 주의',
+      '개구부 구역 · 개구부 · ! 주의',
     );
   });
 
-  it('위험 등급도 경고와 같은 ▲ 하나이고 글자로 가른다(-798)', () => {
+  it('위험 등급은 ▲ 위험으로 표시한다', () => {
     expect(tipOf(zone({ zoneType: 'OPENING', severity: 'CRITICAL' }))).toBe(
       '개구부 구역 · 개구부 · ▲ 위험',
     );

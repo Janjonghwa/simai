@@ -368,6 +368,12 @@ describe('이름표(같은 장면)', () => {
       measureText: (text: string) => ({ width: text.length * 12 }),
       beginPath: () => {},
       roundRect: () => {},
+      save: () => {},
+      restore: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      stroke: () => {},
       fill: () => {},
       fillText(text: string) {
         drawn.push({ text, color: this.fillStyle });

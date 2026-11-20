@@ -10,9 +10,10 @@ import { zonesForList } from '@/features/zones/zoneListOrder';
 import { ZoneListRow } from '@/features/zones/ZoneListRow';
 import { NOTE_CLASS, WARNING_CLASS } from '@/features/zones/zonePanelStyle';
 import { startZoneEdit } from '@/store/zoneEditMode.store';
+import { useZoneHoverStore } from '@/store/zoneHover.store';
 import { Button } from '@simai/ui/components/button';
 import { Plus } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 /**
  * 관제 화면 왼쪽의 위험 구역 목록. 모든 역할에게 보인다. 장면(SpatialViewportHost) 밖이면 그리지 않는다.
@@ -28,9 +29,12 @@ export function ZoneList() {
  */
 function ZoneListPanel({ viewport }: { viewport: SpatialViewportValue }) {
   const { zones, zonesFailed, selectedZoneId, selectTarget, clearSelection } = viewport;
+  const hoveredZoneId = useZoneHoverStore((s) => s.zoneId);
   const isAdmin = useCurrentRole() === 'ADMIN';
   const rename = useZoneRename(zones);
   const rows = useMemo(() => zonesForList(zones), [zones]);
+
+  useEffect(() => () => useZoneHoverStore.getState().setZoneId(null), []);
 
   const open = (zoneId: string) => {
     // 이름을 저장하는 중에 칼럼이 사라지면 저장 결과 알림도 사라지므로, 저장이 끝난 뒤에 연다.
@@ -84,6 +88,12 @@ function ZoneListPanel({ viewport }: { viewport: SpatialViewportValue }) {
             key={zone.zoneId}
             zone={zone}
             selected={zone.zoneId === selectedZoneId}
+            hovered={zone.zoneId === hoveredZoneId}
+            onHover={(hovered) => {
+              const store = useZoneHoverStore.getState();
+              if (hovered) store.setZoneId(zone.zoneId);
+              else if (store.zoneId === zone.zoneId) store.setZoneId(null);
+            }}
             canRename={isAdmin}
             busy={rename.busy}
             onOpen={() => open(zone.zoneId)}
