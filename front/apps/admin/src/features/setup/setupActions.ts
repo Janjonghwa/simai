@@ -98,7 +98,7 @@ export function deriveSetupActions(
     restart: false,
   };
   const staged = STAGE_ACTIONS[state.stage]
-    .filter((key) => !(key === 'restart' && state.setupCompleted))
+    .filter((key) => !(key === 'restart' && (state.setupCompleted || state.stage === ZONE_STAGE)))
     .map((key): SetupActionButton => ({
       key,
       label: ACTION_LABEL[key],

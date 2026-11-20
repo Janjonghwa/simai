@@ -224,7 +224,7 @@ function ProgressCard({
   );
 }
 
-/** 실패 안내: 어느 단계에서 멈췄는지, 원인, 해결, 그리고 다시 시도(가능할 때)·카메라 연결 관리로 단추. */
+/** 실패 안내: 어느 단계에서 멈췄는지, 원인, 해결, 그리고 다시 시도(가능할 때)·카메라·맵 준비로 단추. */
 function FailureNotice({
   waiting,
   retryPending,
@@ -306,7 +306,7 @@ function FailureNotice({
           variant={onTurnOnGpu || guide.retry || newMap ? 'secondary' : 'default'}
           onClick={onReturnToStep1}
         >
-          카메라 연결 관리로
+          카메라·맵 준비로
         </Button>
       </div>
     </div>
@@ -613,7 +613,7 @@ export function SetupCalibrateStep({
           <OverallBar percent={waiting.progressPct} />
           {waiting.mapComplete && cameraCheck && !cameraCheck.passed && (
             <Button size="sm" variant="secondary" onClick={onReturnToStep1}>
-              카메라 연결 관리로
+              카메라·맵 준비로
             </Button>
           )}
         </NextStepCard>

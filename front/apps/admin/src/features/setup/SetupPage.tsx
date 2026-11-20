@@ -61,6 +61,7 @@ import {
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
 import { deriveSetupActions, toWorkAction } from '@/features/setup/setupActions';
+import { SetupAddedZones } from '@/features/setup/SetupAddedZones';
 import { SetupCalibrateStep } from '@/features/setup/SetupCalibrateStep';
 import {
   canCompleteSetup,
@@ -112,7 +113,9 @@ import { useValidationRejections } from '@/features/setup/useValidationRejection
 import { VlmZoneNotice } from '@/features/setup/VlmZoneNotice';
 import { pairDraftsWithCarried } from '@/features/setup/zoneOverlap';
 import { useWorkAction } from '@/features/work/WorkActionContext';
+import type { Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
+import { boxOfZone } from '@/features/zones/zoneEditModel';
 import { ZoneSourceContext, type SetupZoneSource } from '@/features/zones/zoneSource';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { api } from '@/lib/api';
@@ -121,7 +124,7 @@ import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { Check } from 'lucide-react';
+import { ArrowRight, Check } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
@@ -133,7 +136,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 세션이 생기기 전에는 2·3단계로 갈 수 없다.
 // 2단계(보정·생성): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
 // 「지금 할 일」과 전체 진행 막대 하나(5단계 막대·단계별 %·경과 시간은 「자세히 · 진행 단계」),
-// 실패 시 원인·해결 + 다시 시도(POST /api/setup-sessions/{id}/retry)·카메라 연결 관리로, 높이 불일치 시 카메라 다시 맞추기(1단계 복귀 후 재시도),
+// 실패 시 원인·해결 + 다시 시도(POST /api/setup-sessions/{id}/retry)·카메라·맵 준비로, 높이 불일치 시 카메라 다시 맞추기(1단계 복귀 후 재시도),
 // 높이 확인 멈춤(paused_reason HEIGHT_CHECK)은 높이 확인 창이 같은 세션을 이어 간다(POST .../resume, -690),
 // 3D 맵이 다 만들어지면 '다음' 으로 구역 단계에 간다(저절로 넘어가지 않는다).
 // 1·2단계는 같은 두 칸 배치(SetupSplit)이고, 2단계 왼쪽은 카메라 영상 4칸이 끝까지 보이며 미리보기 맵이 생기면 「3D 미리보기」 탭이 켜진다.
@@ -176,6 +179,7 @@ const WORK_SESSION_POLL_MS = 5_000;
 
 const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 const NO_GHOSTS: ReturnType<typeof draftGhostsOf> = [];
+const NO_ZONES: readonly Zone[] = [];
 /** 레이아웃 반영을 하지 않는 화면(날짜 화면 안)이 구역 저장에 넘기는 반영 함수. */
 const skipLayoutSync = async () => {};
 
@@ -267,6 +271,7 @@ function SetupWorkPage({
   const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
   // 시연 계정이 구역 단계에서 커서를 댄 AI 초안 카드(3D 에서 그 초안을 위험 등급색으로 도드라지게 한다)
   const [hoveredDraftId, setHoveredDraftId] = useState<string | null>(null);
+  const [hoveredZone, setHoveredZone] = useState<Zone | null>(null);
 
   // 새로고침·다른 화면에서 돌아왔을 때: 이 작업에 진행 중인(또는 끝난) 세션이 있으면 이어받아 대기 화면·구역 단계로 연다.
   // 세션 ID 를 메모리에만 두면 다시 시작하다 409 가 나므로 서버의 work_unit.active_setup_session_id 를 정본으로 본다.
@@ -421,7 +426,7 @@ function SetupWorkPage({
     cancelMutation.mutate(sessionId);
   }, [sessionId, cancelMutation]);
 
-  // 구역 단계의 '다시 보정'은 카메라 연결 관리(1단계)부터 다시 시작하므로 세팅 취소처럼 한 번 묻는다.
+  // 구역 단계의 '다시 보정'은 카메라·맵 준비(1단계)부터 다시 시작하므로 세팅 취소처럼 한 번 묻는다.
   // 세팅을 완료했다(C17). 완료 뒤에는 구역 편집·초안 수락을 감춘다
   const completed = setupCompleted(currentSession);
   const completion = useCompleteSetup(currentSession);
@@ -460,19 +465,24 @@ function SetupWorkPage({
     }
   }
   const unconfirmedZones = zoneSource ? pendingReviewCount(zonePlanQuery.data) : 0;
+  const canImportPrevious = reviewsCarriedZones(currentSession);
+  const showReviewCard = Boolean(zoneSource) && (canImportPrevious || unconfirmedZones > 0);
+  const { zones: planZones } = useZones(zoneSource);
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
-  // 시연 계정은 서버 초안 대신 구역 단계에서 잠깐 찾은 뒤 정해 둔 개구부 초안을 보인다(features/demo/demoZoneDrafts)
+  // 시연 계정은 서버 초안 대신 구역 단계에서 잠깐 찾은 뒤 정해 둔 초안을 보인다. 맵에서 이미 들어온 같은 구역과 겹치는 가짜 초안은 뺀다
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled && !demoAccount);
-  const demoDrafts = useDemoZoneDrafts(sessionId, demoAccount && stage === ZONE_STAGE);
+  const demoDrafts = useDemoZoneDrafts(
+    sessionId,
+    demoAccount && stage === ZONE_STAGE,
+    zoneSource ? planZones : NO_ZONES,
+  );
   const draftsResponse = demoAccount ? demoDrafts : zoneDraftsQuery.data;
   const draftsList = draftsResponse?.drafts ?? NO_DRAFTS;
   const draftAccept = useAcceptZoneDraft(draftsList, setupLayoutSync, zoneSource);
   const acceptedDraftIds = draftAccept.acceptedIds;
-  const hoveredDraft = demoAccount
-    ? draftsList.find(
-        (d) => d.candidate_id === hoveredDraftId && !discardedDraftIds.includes(d.candidate_id),
-      )
-    : undefined;
+  const hoveredDraft = draftsList.find(
+    (d) => d.candidate_id === hoveredDraftId && !discardedDraftIds.includes(d.candidate_id),
+  );
   const draftGhosts = useMemo(
     () =>
       withDraftHighlight(
@@ -482,8 +492,7 @@ function SetupWorkPage({
       ),
     [draftsList, acceptedDraftIds, discardedDraftIds, hoveredDraft],
   );
-  // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758). 시연 계정은 초안 카드를 그대로 보이려고 묶지 않는다
-  const { zones: planZones } = useZones(zoneSource);
+  // 같은 자리의 이어 온 구역과 아직 고르지 않은 AI 초안 짝(S15P31A101-758). 「이어 쓴 구역 확인」 카드가 열릴 때만 묶는다
   const draftPairs = useMemo(
     () =>
       pairDraftsWithCarried(
@@ -492,15 +501,14 @@ function SetupWorkPage({
             !acceptedDraftIds.includes(d.candidate_id) &&
             !discardedDraftIds.includes(d.candidate_id),
         ),
-        zoneSource && !demoAccount ? planZones : [],
+        showReviewCard && !demoAccount ? planZones : NO_ZONES,
       ),
-    [draftsList, acceptedDraftIds, discardedDraftIds, planZones, zoneSource, demoAccount],
+    [draftsList, acceptedDraftIds, discardedDraftIds, planZones, showReviewCard, demoAccount],
   );
   const mergedDraftIds = useMemo(
     () => [...draftPairs.values()].map((d) => d.candidate_id),
     [draftPairs],
   );
-  const canImportPrevious = reviewsCarriedZones(currentSession);
 
   const cameraIds = useMemo(
     () => resolveHeightCameraIds(heightDefaultsQuery.data, coverageQuery.data),
@@ -790,7 +798,7 @@ function SetupWorkPage({
     });
   }, [sessionId, retrySession, currentSession]);
 
-  /** 카메라 연결 관리(1단계)로 돌아가 고쳐서 다시 시작한다. 실패 안내와 높이 불일치가 같이 쓴다. */
+  /** 카메라·맵 준비(1단계)로 돌아가 고쳐서 다시 시작한다. 실패 안내와 높이 불일치가 같이 쓴다. */
   const returnToStep1 = useCallback(() => {
     if (currentSession?.camera_heights_m) {
       const initialEdits: Record<string, string> = {};
@@ -808,14 +816,14 @@ function SetupWorkPage({
     if (!sessionId || cancelMutation.isPending) return;
     if (
       !window.confirm(
-        '현재 시도를 멈출까요? 카메라 연결 관리에서 맵 방식을 다시 골라 시작할 수 있습니다.',
+        '현재 시도를 멈출까요? 카메라·맵 준비에서 맵 방식을 다시 골라 시작할 수 있습니다.',
       )
     )
       return;
     cancelMutation.mutate(sessionId, { onSuccess: returnToStep1 });
   }, [sessionId, cancelMutation, returnToStep1]);
 
-  // 구역 단계의 '다시 보정': 확인을 받고 카메라 연결 관리(0단계)로 돌아간다. 진행 중인 세션은 0단계에서 다시 시도할 때 취소하고 이어 간다.
+  // 구역 단계의 '다시 보정': 확인을 받고 카메라·맵 준비(0단계)로 돌아간다. 진행 중인 세션은 0단계에서 다시 시도할 때 취소하고 이어 간다.
   const handleRestart = useCallback(() => {
     const zoneCount = sessionId
       ? (queryClient.getQueryData<SetupZonePlanView>(setupZonePlanKey(sessionId))?.items.length ??
@@ -957,14 +965,14 @@ function SetupWorkPage({
           {actions.map((action) => (
             <Button
               key={action.key}
-              size="lg"
-              variant={action.primary ? undefined : 'secondary'}
-              className={cn('px-4', !action.primary && 'bg-surface-3 hover:bg-surface-3/70')}
+              size={action.primary ? 'flow' : 'action'}
+              variant={action.primary ? 'flow' : 'quiet'}
               disabled={action.disabled}
               title={action.title}
               onClick={action.onClick}
             >
               {action.label}
+              {action.primary && action.label.startsWith('다음') && <ArrowRight aria-hidden />}
             </Button>
           ))}
         </div>
@@ -1000,7 +1008,7 @@ function SetupWorkPage({
       </ol>
 
       {stage === 0 ? (
-        <SetupSplit left={cameraMap}>
+        <SetupSplit left={cameraMap} fillMap>
           {!demoAccount && <NextStepCard step={step1Step} />}
           <SetupModeChoice
             mode={mode}
@@ -1008,7 +1016,6 @@ function SetupWorkPage({
             reuse={demoAccount ? demoReuseShown(reuse, mode) : reuse}
             mapId={reuseMapId}
             onMapChange={setPickedMapId}
-            openMaps={demoAccount}
           />
           <CameraHeightPanel
             fields={heightFields}
@@ -1027,7 +1034,7 @@ function SetupWorkPage({
             retryPending={restartPending}
             canSubmitHeights={heightValidation.valid}
           />
-          <CameraStatusDetails coverage={shownCoverage} compact={demoAccount} />
+          <CameraStatusDetails coverage={shownCoverage} />
           {riskConfirmPairs !== null && (
             <CameraRiskDialog
               riskyPairs={riskConfirmPairs}
@@ -1069,7 +1076,21 @@ function SetupWorkPage({
           <SetupZoneStep
             title={zoneMapTitle(waiting.sceneTier)}
             sceneVersion={sessionSceneVersion(waiting.sceneTier)}
-            draftGhosts={completed ? NO_GHOSTS : draftGhosts}
+            draftGhosts={
+              completed
+                ? NO_GHOSTS
+                : hoveredZone
+                  ? [
+                      ...draftGhosts,
+                      {
+                        id: `hover-${hoveredZone.zoneId}`,
+                        box: boxOfZone(hoveredZone),
+                        highlight:
+                          hoveredZone.severity === 'INFO' ? 'CAUTION' : hoveredZone.severity,
+                      },
+                    ]
+                  : draftGhosts
+            }
             plan={
               <SetupMap
                 stage={stage}
@@ -1109,7 +1130,15 @@ function SetupWorkPage({
                 mergedDraftIds={mergedDraftIds}
                 canImportPrevious={canImportPrevious}
                 pendingText={demoAccount ? DEMO_DRAFT_SEARCH_TEXT : undefined}
-                onHoverDraft={demoAccount ? setHoveredDraftId : undefined}
+                onHoverDraft={setHoveredDraftId}
+              />
+            )}
+            {zoneSource && !completed && (
+              <SetupAddedZones
+                sessionId={zoneSource.sessionId}
+                plan={zonePlanQuery.data}
+                zones={planZones}
+                onHover={setHoveredZone}
               />
             )}
             {currentSession && !completed && (

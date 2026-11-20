@@ -40,8 +40,8 @@ describe('세팅 카메라 영상(S15P31A101-691: 2×2 칸, 겹침 2D 지도는 
       expect(canvasIds).toEqual([
         '카메라 1 영상',
         '카메라 2 영상',
-        '카메라 4 영상',
         '카메라 3 영상',
+        '카메라 4 영상',
       ]);
       expect(screen.queryByRole('img', { name: /위에서 본 보정 화면/ })).toBeNull();
       expect(screen.getAllByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toHaveLength(1);
@@ -87,130 +87,39 @@ const fresh: CoverageGuidesResponse = {
   latest,
 };
 
-describe('「자세히 · 카메라 상태」의 카메라 각도 표시', () => {
-  it.each([
-    { label: '확인 중', response: undefined, error: false, expected: '—' },
-    { label: '계산 요청 실패', response: fresh, error: true, expected: '—' },
-    {
-      label: '결과 없음',
-      response: { ...fresh, status: 'EMPTY' as const, latest: null },
-      error: false,
-      expected: '—',
-    },
-    {
-      label: '응답 STALE',
-      response: { ...fresh, status: 'STALE' as const },
-      error: false,
-      expected: '—',
-    },
-    { label: 'stale 플래그', response: { ...fresh, stale: true }, error: false, expected: '—' },
-    {
-      label: '계산 불가',
-      response: { ...fresh, latest: { ...latest, connectivity: 'UNKNOWN' as const } },
-      error: false,
-      expected: '—',
-    },
-    ...(['STALE', 'NO_VIDEO', 'OK'] as const).map((status) => ({
-      label: `카메라 ${status}`,
-      response: {
-        ...fresh,
-        latest: buildCoverageGuidePayload({
-          connectivity: 'CONNECTED',
-          guides: [],
-          cameraStatuses: { cam_A: status },
-        }),
-      },
-      error: false,
-      expected: status === 'OK' ? '각도 양호' : '—',
-    })),
-    {
-      label: 'OK + 회전 안내',
-      response: {
-        ...fresh,
-        latest: buildCoverageGuidePayload({
-          connectivity: 'DISCONNECTED',
-          guides: [
-            {
-              camera_id: 'cam_A',
-              pair: ['cam_A', 'cam_B'],
-              direction: 'RIGHT',
-              magnitude: 'SMALL',
-              reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
-            },
-          ],
-        }),
-      },
-      error: false,
-      expected: '오른쪽으로 조금 돌려 주세요 (카메라 1–카메라 2)',
-    },
-    {
-      label: 'CONNECTED + 선택 보강만',
-      response: {
-        ...fresh,
-        latest: buildCoverageGuidePayload({
-          guides: [
-            {
-              camera_id: 'cam_A',
-              pair: ['cam_A', 'cam_B'],
-              direction: 'RIGHT',
-              magnitude: 'SMALL',
-              reason_code: 'OPTIONAL_IMPROVE',
-            },
-          ],
-        }),
-      },
-      error: false,
-      expected: '각도 양호',
-    },
-  ])('$label', ({ response, error, expected }) => {
-    render(<CameraStatusDetails coverage={deriveStep1Coverage(response, error)} />);
-    const row = screen.getByText('카메라 1', { selector: 'b' }).closest('li')!;
-    expect(within(row).getByText(expected)).toBeTruthy();
-    if (expected !== '각도 양호') expect(within(row).queryByText('각도 양호')).toBeNull();
+describe('카메라 각도 확인', () => {
+  it('확인되지 않은 결과는 정상으로 표시하지 않고 카메라별 연결 줄과 도식이 없다', () => {
+    render(<CameraStatusDetails coverage={deriveStep1Coverage(undefined)} />);
+    expect(screen.getByRole('heading', { name: '카메라 각도 확인' })).toBeTruthy();
+    expect(screen.queryByText(/카메라 각도가 맵 만들기에 충분/)).toBeNull();
+    expect(screen.queryByText('연결됨')).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
   });
 
-  it('옆 카메라 쌍의 겹침이 부족하면 「자세히」에 보정 실패 위험을 쌍 이름과 함께 알리고, 아니면 알리지 않는다', () => {
-    const pair = (a: string, b: string, grade: 'ENOUGH' | 'LACK') => ({
-      a,
-      b,
-      raw_matches: null,
-      inliers: null,
-      inlier_ratio: null,
-      grade,
-      centroid_a: null,
-      centroid_b: null,
-    });
-    const lackNeighbors = {
-      ...fresh,
-      latest: buildCoverageGuidePayload({
-        guides: [],
-        pairs: [
-          pair('cam_A', 'cam_B', 'ENOUGH'),
-          pair('cam_B', 'cam_C', 'LACK'),
-          pair('cam_C', 'cam_D', 'LACK'),
-          pair('cam_A', 'cam_C', 'LACK'),
-        ],
-      }),
-    };
-    render(<CameraStatusDetails coverage={deriveStep1Coverage(lackNeighbors)} />);
-    const alert = screen.getByRole('alert');
-    expect(alert.textContent).toContain('보정이 실패할 수 있어요');
-    expect(alert.textContent).toContain(
-      '카메라 2–카메라 3, 카메라 3–카메라 4 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬 있는 물건을 두세요.',
+  it('신선한 모든 쌍이 충분하면 성공 문구를 표시한다', () => {
+    const pairs = latest.pairs.map((pair) => ({ ...pair, grade: 'ENOUGH' as const }));
+    render(
+      <CameraStatusDetails
+        coverage={deriveStep1Coverage({ ...fresh, latest: { ...latest, pairs } })}
+      />,
     );
-    cleanup();
-    render(<CameraStatusDetails coverage={deriveStep1Coverage(fresh)} />);
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('✓ 카메라 각도가 맵 만들기에 충분해요')).toBeTruthy();
   });
 
-  it('「자세히」는 처음 닫혀 있고 겹침 2D 지도를 안에 둔다', () => {
-    render(<CameraStatusDetails coverage={deriveStep1Coverage(fresh)} />);
-    const details = screen.getByRole('group', { name: '카메라 상태 자세히' });
-    expect(details.hasAttribute('open')).toBe(false);
-    expect(within(details).getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
+  it('약한 쌍이 있으면 쌍 칩과 안내를 표시한다', () => {
+    const pairs = latest.pairs.map((pair, index) => ({
+      ...pair,
+      grade: index === 0 ? ('LACK' as const) : ('ENOUGH' as const),
+    }));
+    render(
+      <CameraStatusDetails
+        coverage={deriveStep1Coverage({ ...fresh, latest: { ...latest, pairs } })}
+      />,
+    );
+    expect(screen.getByLabelText('카메라 쌍별 시야 겹침').textContent).toContain('⚠');
+    expect(screen.getByText(/카메라 각도를 확인해 주세요/)).toBeTruthy();
   });
 });
-
 describe('AI 위험 구역 초안 패널', () => {
   const renderDrafts = (overrides: Partial<Parameters<typeof AiZoneDraftsPanel>[0]> = {}) => {
     const onAcceptDraft = vi.fn();
@@ -247,7 +156,7 @@ describe('AI 위험 구역 초안 패널', () => {
     expect(onAcceptDraft).toHaveBeenCalledWith(
       expect.objectContaining({ candidate_id: 'cand-opening-1' }),
     );
-    fireEvent.click(screen.getByRole('button', { name: '전면 단상 작업면 후보 버리기' }));
+    fireEvent.click(screen.getByRole('button', { name: '전면 단상 작업면 후보 이 초안 버리기' }));
     expect(onDiscardDraft).toHaveBeenCalledWith('cand-surface-2');
   });
 

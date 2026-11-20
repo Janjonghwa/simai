@@ -194,7 +194,7 @@ const NAME_KIND_OF: Record<ZoneDraftItem['candidate_kind'], AutoNameKind> = {
 
 /**
  * 초안 하나로 만들 구역. 작업면을 믿을 수 있으면 작업면 구역, 아니면 AI 다각형을 민 일반 구역이다. 이름은 AI 추천 이름이되
- * 활성 구역(zones)과 겹치면 구분자를 붙인다. snap 이면 방 축에 거의 나란한 초안을 축 정렬로 맞춘다.
+ * 시연 개구부는 정해진 이름을 유지하고 그 밖은 활성 구역과 겹치면 구분자를 붙인다. snap 이면 방 축에 거의 나란한 초안을 축 정렬로 맞춘다.
  */
 function planOf(
   item: ZoneDraftItem,
@@ -202,15 +202,22 @@ function planOf(
   snap = true,
 ): DraftZonePlan {
   const geometry = draftSurfaceGeometry(item, snap);
-  const name = uniqueZoneName(
-    item.recommended_name,
-    zones,
-    geometry ? 'surface' : NAME_KIND_OF[item.candidate_kind],
-  );
+  const name =
+    item.candidate_id === 'demo-opening-stage'
+      ? item.recommended_name
+      : uniqueZoneName(
+          item.recommended_name,
+          zones,
+          geometry ? 'surface' : NAME_KIND_OF[item.candidate_kind],
+        );
   if (geometry) {
+    // 시연 단상은 기존 목업 구역의 종류와 낮은 높이를 그대로 이어간다.
+    const demoPlatform = item.candidate_id === 'demo-platform-stage';
+    const form = surfaceZoneForm(newZoneForm({ name }, name));
+    const shape = surfaceZoneShape(geometry);
     return {
-      form: surfaceZoneForm(newZoneForm({ name }, name)),
-      shape: surfaceZoneShape(geometry),
+      form: demoPlatform ? { ...form, zoneType: 'PLATFORM' } : form,
+      shape: demoPlatform ? { ...shape, z_max_m: item.z_max_m } : shape,
       surface: { id: null, name: null, geometry },
     };
   }

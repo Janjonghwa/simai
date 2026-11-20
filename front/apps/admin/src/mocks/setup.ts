@@ -1508,7 +1508,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       }
       if (cameraCheckBlocks(session)) return cameraCheckProblem();
       if (session.mode === 'REUSE' && !zonePlans.has(id)) {
-        const items = liveZones().map((zone) => ({
+        const items = (isDemoUser(user.id) ? [] : liveZones()).map((zone) => ({
           zone_id: zone.zone_id,
           source: 'MANUAL',
           candidate_id: null,

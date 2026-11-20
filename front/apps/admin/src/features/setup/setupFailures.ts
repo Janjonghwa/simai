@@ -3,7 +3,7 @@ import { cameraLabel, pairLabel } from '@/features/setup/cameraLabels';
 import type { CameraCheck } from '@/features/setup/types';
 
 // 서버 세팅 세션이 실패한 이유(failure_code)마다 무엇이 문제이고 어디서 어떻게 풀지 보이는 안내.
-// retry 가 false 면 같은 상태로 다시 해도 같은 곳에서 멈추므로 '다시 시도' 없이 '카메라 연결 관리로' 만 둔다
+// retry 가 false 면 같은 상태로 다시 해도 같은 곳에서 멈추므로 '다시 시도' 없이 '카메라·맵 준비로' 만 둔다
 // (서버는 FAILED 세션이면 늘 다시 시도를 받는다). 표에 없는 코드는 FALLBACK 이다.
 // S15P31A101-719: 원인은 「자세히」를 열지 않아도 첫 줄에 보인다. 카메라 확인 실패는 걷기 창과 같은 문장(walkFailure)을 쓰고,
 // 배경 미완료는 못 찍은 카메라 이름을 쓰고, 워커가 내는 그 밖의 코드도 표에 둔다. 서버 코드·메시지 원문은 화면에 쓰지 않는다.
@@ -50,7 +50,7 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
   },
   FLOOR_FIT_FAILED: {
     title: () => '바닥을 찾지 못했어요',
-    fix: '카메라 연결 관리에서 카메라 높이를 확인하고, 바닥이 영상에 넓게 보이게 맞춘 뒤 다시 시작하세요.',
+    fix: '카메라·맵 준비에서 카메라 높이를 확인하고, 바닥이 영상에 넓게 보이게 맞춘 뒤 다시 시작하세요.',
     retry: false,
   },
   INSUFFICIENT_FEATURES: {
@@ -58,7 +58,7 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
       pairs
         ? `옆 카메라 ${pairs} 사이에 같이 보이는 곳이 적어요`
         : '옆 카메라끼리 같이 보이는 곳이 적어요',
-    fix: '카메라 연결 관리로 돌아가 두 카메라를 서로 쪽으로 돌리거나, 겹치는 곳에 무늬 있는 물건을 두세요.',
+    fix: '카메라·맵 준비로 돌아가 두 카메라를 서로 쪽으로 돌리거나, 겹치는 곳에 무늬 있는 물건을 두세요.',
     retry: false,
   },
   VALIDATION_REJECTED: {
@@ -108,7 +108,7 @@ export const SETUP_FAILURES: Readonly<Record<string, FailureEntry>> = {
   },
   INVALID_INPUT: {
     title: () => '세팅 요청 값이 맞지 않아 시작하지 못했어요',
-    fix: '카메라 연결 관리에서 카메라와 높이 칸을 확인한 뒤 다시 시작하세요.',
+    fix: '카메라·맵 준비에서 카메라와 높이 칸을 확인한 뒤 다시 시작하세요.',
     retry: false,
   },
   INTERNAL_CONTRACT_ERROR: {

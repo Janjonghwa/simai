@@ -1,14 +1,16 @@
 import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
-import { draftCreateRequest } from '@/features/setup/draftZone';
+import { draftCreateRequest, draftZoneFootprint } from '@/features/setup/draftZone';
+import { SETUP_NEW_ZONE_PREFIX } from '@/features/setup/setupZonePlan';
 import { describe, expect, it } from 'vitest';
 
 describe('시연 계정 AI 구역 초안', () => {
-  it('개구부 초안 하나를 끝난 분석으로 보인다', () => {
+  it('개구부와 단상 초안 둘을 끝난 분석으로 보인다', () => {
     const res = demoZoneDrafts('s-1');
     expect(res.status).toBe('SUCCEEDED');
     expect(res.setup_session_id).toBe('s-1');
     expect(res.drafts.map((d) => [d.recommended_name, d.candidate_kind, d.no_opinion])).toEqual([
       ['단상 개구부', 'OPENING', false],
+      ['단상 구역', 'ELEVATED_WORK_SURFACE', false],
     ]);
   });
 
@@ -26,5 +28,34 @@ describe('시연 계정 AI 구역 초안', () => {
     expect(zone.body.z_min_m).toBeCloseTo(0);
     expect(zone.body.z_max_m).toBeCloseTo(1.4);
     expect(zone.body.severity).toBe('CRITICAL');
+  });
+
+  it('맵에서 이미 들어온 같은 자리 구역과 겹치는 가짜 초안은 만들지 않고, 방금 수락한 새 구역은 그대로 둔다', () => {
+    const [opening, platform] = demoZoneDrafts('s-1').drafts;
+    const openingSpot = draftZoneFootprint(opening!);
+    const platformSpot = draftZoneFootprint(platform!);
+    const filtered = demoZoneDrafts('s-1', [
+      {
+        zoneId: 'z-carried-opening',
+        polygon: openingSpot.polygon,
+        zBounds: [openingSpot.zMin, openingSpot.zMax],
+      },
+      {
+        zoneId: `${SETUP_NEW_ZONE_PREFIX}0`,
+        polygon: platformSpot.polygon,
+        zBounds: [platformSpot.zMin, platformSpot.zMax],
+      },
+      {
+        zoneId: 'z-far',
+        polygon: [
+          [20, 20],
+          [22, 20],
+          [22, 22],
+          [20, 22],
+        ],
+        zBounds: [0, 2],
+      },
+    ]);
+    expect(filtered.drafts.map((d) => d.candidate_id)).toEqual(['demo-platform-stage']);
   });
 });

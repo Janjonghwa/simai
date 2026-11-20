@@ -2,7 +2,7 @@ import { tileLabel } from '@/features/cctv/cctv';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
-import { ROOM } from '@/features/plan/plan';
+import { SeverityBadge } from '@/features/events/SeverityBadge';
 import {
   AIM_ALL_ALIGNED_TEXT,
   AIM_ALL_SETUP_READY_TEXT,
@@ -11,12 +11,10 @@ import {
 import { AimOverlay } from '@/features/setup/AimOverlay';
 import type { CameraBadge } from '@/features/setup/cameraBadge';
 import { CameraCue } from '@/features/setup/CameraCue';
-import { CALIBRATION_RISK_TITLE } from '@/features/setup/cameraGuides';
 import { cameraLabel, cameraText } from '@/features/setup/cameraLabels';
 import type { NextStep } from '@/features/setup/nextStep';
 import {
   CAMERA_HEIGHT_HELP,
-  CANDIDATE_KIND_LABEL,
   MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
   type CoverageCameraView,
@@ -26,16 +24,12 @@ import {
   type SetupTone,
   type Step1CoverageView,
 } from '@/features/setup/setup';
-import { SetupMap } from '@/features/setup/SetupMap';
 import { draftReason } from '@/features/setup/setupUx';
-import { StageAWarning } from '@/features/setup/StageAWarning';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useAimReferenceImages } from '@/features/setup/useAimReferenceImages';
 import { useTwoCardsMaxHeight } from '@/features/setup/useTwoCardsMaxHeight';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
-import { SEVERITY_LABEL } from '@/lib/ruleNames';
-import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
@@ -46,19 +40,12 @@ import {
   TooltipTrigger,
 } from '@simai/ui/components/tooltip';
 import { cn } from '@simai/ui/lib/utils';
-import { CircleCheck, TriangleAlert } from 'lucide-react';
+import { Check, CircleCheck, X } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
-// 세팅 화면 패널: 카메라 영상 4칸(칸마다 배지 하나, 기존 디코딩 재사용)·「지금 할 일」 카드·「자세히」(카메라 상태·겹침 2D 지도)·
+// 세팅 화면 패널: 카메라 영상 4칸(칸마다 배지 하나, 기존 디코딩 재사용)·「지금 할 일」 카드·「시야 겹침」 카드·
 // 카메라 높이 입력, 이후 단계 요약(S15P31A101-691 정리).
 // 색은 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 토큰만 쓴다.
-
-const DOT: Record<SetupTone, string> = {
-  ok: 'bg-ok',
-  active: 'bg-primary',
-  delay: 'bg-delay',
-  idle: 'bg-faint',
-};
 
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
@@ -82,10 +69,6 @@ export function readPreviewUrls() {
       ? raw.VITE_STOMP_URL.trim()
       : 'ws://localhost:8080/ws';
   return { localUrl, stompUrl };
-}
-
-function Dot({ tone }: { tone: SetupTone }) {
-  return <i aria-hidden className={cn('size-2 flex-none rounded-full', DOT[tone])} />;
 }
 
 function Panel({
@@ -121,14 +104,6 @@ function Panel({
   );
 }
 
-function Rows({ children }: { children: ReactNode }) {
-  return <ul className="flex flex-1 flex-col divide-y divide-border">{children}</ul>;
-}
-
-function Row({ children }: { children: ReactNode }) {
-  return <li className="flex flex-1 items-center gap-2.5 px-0.5 py-1 text-sm">{children}</li>;
-}
-
 /** 영상 칸 비율(중계가 영상 크기를 알리기 전). */
 const TILE_ASPECT = 16 / 9;
 
@@ -146,7 +121,7 @@ function CameraBadgeChip({ badge }: { badge: CameraBadge }) {
 
 /**
  * 카메라 영상 한 칸. 이름표에는 카메라 이름과 배지 하나만 둔다(S15P31A101-691). 영상이 오지 않을 때만 칸을 흐리게 하고 영상 상태를
- * 덧붙인다(카메라 상태가 아니라 이 화면의 영상 중계 상태다). 각도 안내가 있으면 영상 위에 꺾쇠·같이 보는 곳을 얹는다.
+ * 덧붙인다(카메라 상태가 아니라 이 화면의 영상 중계 상태다). 각도 안내가 있으면 영상 위에 방향 문구를 얹는다.
  * 기준 시점 맞추기(S15P31A101-765)가 이 카메라를 판단했으면 옆 카메라 쌍 꺾쇠 대신 기준 시점 표시(십자선·목표 점·화살표·각도)를 얹고,
  * 재사용 허용 오차 안이면 칸 테두리 초록, 새 맵 세팅 허용 오차 안이면 노랑으로 한다. 기준 사진 겹쳐 보기를 켜면 기준 사진을 반투명으로 겹친다.
  */
@@ -240,16 +215,9 @@ function AimReferenceProbe({
   return null;
 }
 
-/** 교실 모서리 위치대로 2×2 칸 순서(위 왼쪽 → 위 오른쪽 → 아래 왼쪽 → 아래 오른쪽). */
-function camerasByCorner(cameras: readonly CoverageCameraView[]): CoverageCameraView[] {
-  const top = (camera: CoverageCameraView) => camera.corner[1] >= ROOM.depth / 2;
-  return [...cameras].sort((a, b) => Number(top(b)) - Number(top(a)) || a.corner[0] - b.corner[0]);
-}
-
 /**
- * 세팅의 카메라 영상 4칸(2×2, 교실 모서리 위치대로). 1단계와 보정·생성 단계 끝까지 같은 자리에 보인다(S15P31A101-691). 1단계는 칸마다
+ * 세팅의 카메라 영상 4칸(2×2, 카메라 번호순). 1단계와 보정·생성 단계 끝까지 같은 자리에 보인다(S15P31A101-691). 1단계는 칸마다
  * 배지 하나를 단다(showBadges). 보정·생성 중에는 각도 안내를 다시 받지 않아 배지 근거가 없으므로 배지를 달지 않는다.
- * 겹침 2D 지도는 「자세히」로 옮겼다(CameraStatusDetails).
  */
 export function CameraVideoPanel({
   coverage,
@@ -276,7 +244,7 @@ export function CameraVideoPanel({
       aria-label="카메라 영상"
       className="grid size-full min-h-0 grid-cols-2 grid-rows-2 gap-3"
     >
-      {camerasByCorner(coverage.cameras).map((camera) => (
+      {coverage.cameras.map((camera) => (
         <CameraTile
           key={camera.id}
           camera={camera}
@@ -391,55 +359,72 @@ export function Details({
   );
 }
 
-/**
- * 1단계 「자세히 · 카메라 상태」(관리자용, 처음엔 닫힘): 카메라마다 배지와 각도 안내 문장, 연결 요약, 겹침이 부족한 옆 쌍 안내,
- * 위에서 본 겹침 2D 지도(옆 카메라 4쌍 등급). 기본 화면은 영상 칸 배지와 「지금 할 일」만 보인다(S15P31A101-691).
- */
-export function CameraStatusDetails({
-  coverage,
-  compact = false,
-}: {
-  coverage: Step1CoverageView;
-  /** 처음부터 펼쳐 두고 겹침 지도를 낮게 그린다(시연 계정). */
-  compact?: boolean;
-}) {
+/** 서버의 옆 카메라 쌍 판정과 방향 안내를 보여 준다. */
+export function CameraStatusDetails({ coverage }: { coverage: Step1CoverageView }) {
+  const pairs = coverage.pairs;
+  const allEnough =
+    coverage.fresh &&
+    coverage.cameras.length === 4 &&
+    pairs.length === 4 &&
+    pairs.every((pair) => pair.grade === 'ENOUGH');
+  const weakPairs = coverage.fresh
+    ? pairs.filter((pair) => pair.grade === 'WEAK' || pair.grade === 'LACK')
+    : [];
+  const directions = { LEFT: '왼쪽', RIGHT: '오른쪽', UP: '위', DOWN: '아래' } as const;
+  const guidance = coverage.cameras.flatMap((camera) =>
+    camera.guides
+      .filter((guide) =>
+        weakPairs.some(
+          (pair) =>
+            (pair.a === camera.id || pair.b === camera.id) &&
+            coverage.cameras.find((other) => other.id === (pair.a === camera.id ? pair.b : pair.a))
+              ?.label === guide.neighborLabel,
+        ),
+      )
+      .map((guide) => {
+        if (guide.direction === 'NONE') return `${camera.label}: ${guide.text}`;
+        const direction = directions[guide.direction];
+        const amount =
+          guide.magnitude === 'MORE' ? '더 ' : guide.magnitude === 'SMALL' ? '조금 ' : '';
+        return `${camera.label}을 ${direction}(${guide.neighborLabel} 쪽)으로 ${amount}돌려 주세요`;
+      }),
+  );
   return (
-    <Details label="카메라 상태 자세히" summary="자세히 · 카메라 상태" defaultOpen={compact}>
-      <Rows>
-        {coverage.cameras.map((cam) => (
-          <Row key={cam.id}>
-            <Dot tone={cam.tone} />
-            <b>{cam.label}</b>
-            <CameraBadgeChip badge={cam.badge} />
-            <span
-              className={cn(
-                'ml-auto min-w-0 text-right text-xs',
-                cam.guides.length > 0 ? 'font-semibold text-delay' : 'text-muted-foreground',
-              )}
-            >
-              {cam.guideLabel}
-            </span>
-          </Row>
-        ))}
-      </Rows>
-      {coverage.connectivitySummary !== '' && (
-        <p className="text-xs text-muted-foreground">{coverage.connectivitySummary}</p>
+    <Panel title="카메라 각도 확인" dense>
+      {allEnough ? (
+        <p className="text-sm font-semibold text-ok">✓ 카메라 각도가 맵 만들기에 충분해요</p>
+      ) : (
+        <div className="flex flex-wrap gap-2" aria-label="카메라 쌍별 시야 겹침">
+          {pairs.map((pair) => {
+            const grade = coverage.fresh ? pair.grade : 'UNKNOWN';
+            const good = grade === 'ENOUGH';
+            const weak = grade === 'WEAK' || grade === 'LACK';
+            return (
+              <span
+                key={pair.key}
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs font-semibold',
+                  good
+                    ? 'bg-ok/15 text-ok'
+                    : weak
+                      ? 'bg-delay/15 text-delay'
+                      : 'bg-surface-3 text-muted-foreground',
+                )}
+                aria-label={`${pair.label} ${grade === 'UNKNOWN' ? '미확인' : pair.gradeLabel}`}
+              >
+                {pair.label.replaceAll('카메라 ', '').replace('–', '·')}{' '}
+                {good ? '✓' : weak ? '⚠' : '·'}
+              </span>
+            );
+          })}
+        </div>
       )}
-      {coverage.riskyPairs.length > 0 && (
-        <Alert className="border-delay/30 bg-delay/10 text-delay">
-          <TriangleAlert aria-hidden />
-          <AlertTitle>{CALIBRATION_RISK_TITLE}</AlertTitle>
-          <AlertDescription className="text-xs text-foreground">
-            {coverage.riskyPairs.join(', ')} 겹침이 부족합니다. 카메라를 돌리거나 겹치는 곳에 무늬
-            있는 물건을 두세요.
-          </AlertDescription>
-        </Alert>
+      {weakPairs.length > 0 && (
+        <p className="text-sm text-delay">
+          {guidance[0] ?? '겹치는 곳이 잘 보이도록 카메라 각도를 확인해 주세요'}
+        </p>
       )}
-      <StageAWarning alerts={coverage.stageAAlerts} />
-      <div className={cn('w-full', compact ? 'h-48' : 'aspect-square')}>
-        <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
-      </div>
-    </Details>
+    </Panel>
   );
 }
 
@@ -499,7 +484,6 @@ export function CameraHeightPanel({
         </span>
       }
       dense
-      fill={1}
     >
       {heightWarnings.length > 0 && (
         <div
@@ -518,7 +502,8 @@ export function CameraHeightPanel({
           ))}
         </div>
       )}
-      <div className="grid flex-1 auto-rows-fr grid-cols-2 gap-2">
+      {/* 높이 칸은 내용 크기로 둔다(남는 높이로 늘리지 않음). */}
+      <div className="grid grid-cols-2 gap-2">
         {fields.map((field) => {
           const inputId = `camera-height-${field.cameraId}`;
           const needsInput = field.required || field.missing;
@@ -692,18 +677,15 @@ export function AiZoneDraftsPanel({
                 onMouseEnter={() => onHoverDraft?.(item.candidate_id)}
                 onMouseLeave={() => onHoverDraft?.(null)}
                 className={cn(
-                  'flex flex-col gap-2 rounded-lg border border-dashed px-3 py-2.5 text-xs',
+                  'relative flex flex-col gap-2 rounded-lg border border-dashed px-3 py-2.5 text-xs',
                   isNoOpinion
                     ? 'border-muted-foreground/50 bg-surface-3/60 text-muted-foreground'
                     : 'border-primary/40 bg-surface-2 text-foreground',
                 )}
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                     <strong className="text-sm font-semibold text-foreground">{name}</strong>
-                    <Badge className="h-auto rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                      {CANDIDATE_KIND_LABEL[item.candidate_kind]}
-                    </Badge>
                     {isNoOpinion ? (
                       <Badge
                         aria-label={`${name} AI 의견 없음`}
@@ -712,26 +694,38 @@ export function AiZoneDraftsPanel({
                         AI 의견 없음
                       </Badge>
                     ) : (
-                      <Badge
-                        className={cn(
-                          'h-auto rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold',
-                          item.recommended_severity === 'CRITICAL'
-                            ? 'bg-sev-critical/15 text-sev-critical'
-                            : 'bg-sev-high/15 text-sev-high',
-                        )}
-                      >
-                        {SEVERITY_LABEL[item.recommended_severity]}
-                      </Badge>
-                    )}
-                    {isAccepted && (
-                      <Badge className="h-auto rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-point-soft">
-                        반영됨
-                      </Badge>
+                      <SeverityBadge severity={item.recommended_severity} />
                     )}
                   </div>
+                  {isAccepted ? (
+                    <span className="shrink-0 font-semibold text-point-soft">✓ 적용됨</span>
+                  ) : (
+                    <>
+                      <Button
+                        size="xs"
+                        variant="action"
+                        aria-label={`${name} 수락`}
+                        disabled={pendingDraftId !== null}
+                        onClick={() => onAcceptDraft(item)}
+                      >
+                        <Check aria-hidden />
+                        수락
+                      </Button>
+                      <button
+                        type="button"
+                        title="이 초안 버리기"
+                        aria-label={`${name} 이 초안 버리기`}
+                        disabled={pendingDraftId === item.candidate_id}
+                        onClick={() => onDiscardDraft(item.candidate_id)}
+                        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-surface-3"
+                      >
+                        <X className="size-4" aria-hidden />
+                      </button>
+                    </>
+                  )}
                 </div>
 
-                <p className="text-xs text-muted-foreground">{draftReason(item)}</p>
+                <p className="text-xs break-keep text-muted-foreground">{draftReason(item)}</p>
                 <details aria-label={`${name} 근거 자세히`}>
                   <summary className="cursor-pointer text-muted-foreground">자세히</summary>
                   <p className="mt-2">{cameraText(cameraIds, item.rationale)}</p>
@@ -747,28 +741,6 @@ export function AiZoneDraftsPanel({
                   <p role="alert" className="text-xs font-medium text-delay">
                     {acceptFailure.text}
                   </p>
-                )}
-
-                {!isAccepted && (
-                  <div className="flex items-center justify-end gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      aria-label={`${name} 버리기`}
-                      disabled={pendingDraftId === item.candidate_id}
-                      onClick={() => onDiscardDraft(item.candidate_id)}
-                    >
-                      버리기
-                    </Button>
-                    <Button
-                      size="sm"
-                      aria-label={`${name} 수락`}
-                      disabled={pendingDraftId !== null}
-                      onClick={() => onAcceptDraft(item)}
-                    >
-                      수락
-                    </Button>
-                  </div>
                 )}
               </li>
             );

@@ -5,11 +5,13 @@ import {
   type SetupZoneDraftsResponse,
   type ZoneDraftItem,
 } from '@/features/setup/types';
+import { isCarriedZone, sameZoneSpot, zoneFootprint } from '@/features/setup/zoneOverlap';
 import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
+import type { Zone } from '@/features/zones/types';
 import { SURFACE_ZONE_MARGIN_M } from '@/features/zones/zoneShape';
 import { useEffect, useMemo, useReducer } from 'react';
 
-// 시연 계정(features/demo/demoAccount)의 세팅 구역 단계 「AI 위험 구역 초안」. 서버 초안 대신 정해 둔 개구부 하나를 보인다.
+// 시연 계정(features/demo/demoAccount)의 세팅 구역 단계 「AI 위험 구역 초안」. 서버 초안 대신 정해 둔 개구부와 단상 초안을 보인다.
 // 자리는 시연 맵(assets 의 GLB)에 지금 놓인 「단상 개구부」 구역(바닥 x 5.2~7.6 m, y 2.25~4.55 m, 높이 0~1.4 m)이다.
 // 초안을 수락하면 다각형을 SURFACE_ZONE_MARGIN_M 만큼 넓혀 구역을 만들므로(draftZone), 초안은 그만큼 안으로 줄여 둔다.
 
@@ -20,13 +22,19 @@ export const DEMO_DRAFT_SEARCH_TEXT = 'AI가 위험구역을 찾고있어요...'
 const OPENING = { minX: 5.2, maxX: 7.6, minY: 2.25, maxY: 4.55, zMin: 0, zMax: 1.4 } as const;
 const INSET = SURFACE_ZONE_MARGIN_M;
 
-/** 시연 계정이 보는 AI 구역 초안 응답(세팅 세션 하나). */
-export function demoZoneDrafts(sessionId: string): SetupZoneDraftsResponse {
+type ExistingZoneShape = Pick<Zone, 'zoneId' | 'polygon' | 'zBounds'>;
+const NO_EXISTING_ZONES: readonly ExistingZoneShape[] = [];
+
+/** 시연 계정이 보는 AI 구역 초안 응답(세팅 세션 하나). 맵에서 이미 이어 온 구역과 같은 자리인 가짜 초안은 뺀다. */
+export function demoZoneDrafts(
+  sessionId: string,
+  existingZones: readonly ExistingZoneShape[] = NO_EXISTING_ZONES,
+): SetupZoneDraftsResponse {
   const minX = OPENING.minX + INSET;
   const maxX = OPENING.maxX - INSET;
   const minY = OPENING.minY + INSET;
   const maxY = OPENING.maxY - INSET;
-  return setupZoneDraftsResponseSchema.parse({
+  const response = setupZoneDraftsResponseSchema.parse({
     setup_session_id: sessionId,
     site_id: 'demo',
     status: 'SUCCEEDED',
@@ -47,20 +55,50 @@ export function demoZoneDrafts(sessionId: string): SetupZoneDraftsResponse {
         rationale: '단상 둘레에 난간 없이 트인 단차가 있어 발을 헛디디면 떨어질 수 있어요.',
         confidence: 0.92,
       },
+      {
+        candidate_id: 'demo-platform-stage',
+        candidate_kind: 'ELEVATED_WORK_SURFACE',
+        zone_kind: 'PLATFORM',
+        eval_type: 'VOLUME_3D',
+        polygon_xy: [
+          [1.3, 6.5],
+          [3.7, 6.5],
+          [3.7, 8.1],
+          [1.3, 8.1],
+        ],
+        z_min_m: 0,
+        z_max_m: 0.4,
+        top_height_m: 0.4,
+        obb: { center: [2.5, 7.3, 0.2], size: [2.4, 1.6, 0.4], yaw_rad: 0 },
+        recommended_name: '단상 구역',
+        recommended_severity: 'HIGH',
+        rationale: '단상 위 작업 중 단차에 주의가 필요해요.',
+        confidence: 0.92,
+      },
     ],
   });
+  const carried = existingZones.filter((zone) => isCarriedZone(zone.zoneId));
+  if (carried.length === 0) return response;
+  return {
+    ...response,
+    drafts: response.drafts.filter((draft) => {
+      const footprint = draftZoneFootprint(draft);
+      return !carried.some((zone) => sameZoneSpot(zoneFootprint(zone), footprint));
+    }),
+  };
 }
 
 /** 초안을 이미 찾아 보인 세팅 세션. 단계를 옮겨 다시 와도 또 기다리지 않는다(새로고침하면 처음부터 다시 찾는다). */
 const searched = new Set<string>();
 
 /**
- * 시연 계정의 AI 구역 초안 응답. 켜진(구역 단계) 뒤 DEMO_DRAFT_SEARCH_MS 동안은 찾는 중(초안 없음)이고 그 뒤에 개구부 초안을 보인다.
- * 꺼져 있으면 null 이다.
+ * 시연 계정의 AI 구역 초안 응답. 켜진(구역 단계) 뒤 DEMO_DRAFT_SEARCH_MS 동안은 찾는 중(초안 없음)이고 그 뒤에 두 초안을 보인다.
+ * 맵에서 이미 들어온 같은 구역과 겹치는 가짜 초안은 만들지 않는다. 꺼져 있으면 null 이다.
  */
 export function useDemoZoneDrafts(
   sessionId: string | null,
   active: boolean,
+  existingZones: readonly ExistingZoneShape[] = NO_EXISTING_ZONES,
 ): SetupZoneDraftsResponse | null {
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const searching = active && sessionId !== null && !searched.has(sessionId) ? sessionId : null;
@@ -76,9 +114,9 @@ export function useDemoZoneDrafts(
 
   return useMemo<SetupZoneDraftsResponse | null>(() => {
     if (!active || sessionId === null) return null;
-    const drafts = demoZoneDrafts(sessionId);
+    const drafts = demoZoneDrafts(sessionId, existingZones);
     return searching === null ? drafts : { ...drafts, status: 'QUEUED', drafts: [] };
-  }, [active, sessionId, searching]);
+  }, [active, sessionId, searching, existingZones]);
 }
 
 /** 이미 구역이 된 초안의 3D 상자: 수락할 때 넓혀진 구역 자리다. */
