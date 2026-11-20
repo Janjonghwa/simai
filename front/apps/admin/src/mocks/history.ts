@@ -83,12 +83,13 @@ export interface HistoryMockWork {
 /** 기록이 하나도 없는 작업(이벤트 수를 모른다). */
 export const hasNoRecord = (work: HistoryMockWork) => work.event_counts === null;
 
-/** 구간에 발생(RAISED)한 이벤트를 등급별로 센다. */
+/** 구간에 발생(RAISED)한 이벤트를 등급별로 센다. 화면 2단(위험·주의) 기준으로 HIGH 칸에 주의(HIGH·CAUTION) 건수를 합쳐 담는다. */
 function countEvents(from: number, to: number): { CRITICAL: number; HIGH: number } {
   const raised = sampledEvents(from, to).filter((e) => e.payload.lifecycle === 'RAISED');
   return {
     CRITICAL: raised.filter((e) => e.payload.severity === 'CRITICAL').length,
-    HIGH: raised.filter((e) => e.payload.severity === 'HIGH').length,
+    HIGH: raised.filter((e) => e.payload.severity === 'HIGH' || e.payload.severity === 'CAUTION')
+      .length,
   };
 }
 
@@ -176,8 +177,13 @@ const stableWorld = (ot: number) => {
 };
 // 서버는 기록 이벤트(LIVE)에 재시작 복원 표시 delivery 를 싣는다(S15P31A101-355). 복원된 것이 없는 기록은 REALTIME 이다.
 // 지금 Tier 0 가 들고 있는지(held_by_tier0)는 실시간 표시용이라 기록에는 싣지 않는다(S15P31A101-595, 서버 ReplayRepository 와 같다).
+// 지난 작업 목업 데이터는 실제 시연과 같이 위험(CRITICAL)·주의(CAUTION) 2단만 쓰므로 HIGH 를 CAUTION 으로 바꾼다(S15P31A101-824).
 const stableEvent = (message: ReturnType<typeof riskEventsBetween>[number]) => {
-  const payload = { ...message.payload, delivery: 'REALTIME' as const };
+  const payload = {
+    ...message.payload,
+    severity: message.payload.severity === 'HIGH' ? ('CAUTION' as const) : message.payload.severity,
+    delivery: 'REALTIME' as const,
+  };
   delete payload.held_by_tier0;
   return {
     ...message,

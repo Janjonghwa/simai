@@ -1414,3 +1414,14 @@ describe('deleteZone(REST 도우미)', () => {
     expect(error).toMatchObject({ status: 404, code: 'ZONE_NOT_FOUND' });
   });
 });
+
+describe('목업 빌드 시연 구역 이름(S15P31A101-824)', () => {
+  it('mockBuild=true 면 z-04 구역을 단상 개구부로 시드하고, 기본값은 MOCK_ZONES 를 유지한다', async () => {
+    const demoMock = createZonesMock({ now: () => t, ackDelayMs: 3_000, mockBuild: true });
+    server.resetHandlers(...demoMock.handlers);
+    const list = (await (await call('GET', '/api/zones', 'viewer')).json()) as ZoneItem[];
+    expect(list.find((z) => z.zone_id === 'z-04')?.name).toBe('단상 개구부');
+    expect(list.find((z) => z.zone_id === 'z-02')?.name).toBe('단상 구역');
+    expect(MOCK_ZONES[0]?.name).toBe('개구부 구역');
+  });
+});
