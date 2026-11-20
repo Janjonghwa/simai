@@ -21,6 +21,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useState,
   useSyncExternalStore,
 } from 'react';
 import { BufferAttribute, BufferGeometry, DoubleSide } from 'three';
@@ -107,6 +108,7 @@ function CameraMarker({
   highlighted: boolean;
   label: string;
 }) {
+  const [hovered, setHovered] = useState(false);
   const onCameraClick = useContext(CameraClickContext);
   const palette = useScenePalette();
   const transform = useMemo(() => cameraMarkerTransform(pose), [pose]);
@@ -201,8 +203,14 @@ function CameraMarker({
       name={`camera-marker:${pose.cameraId}`}
       position={transform.position}
       userData={{ cameraId: pose.cameraId, highlighted }}
+      onPointerOver={(event) => {
+        event?.stopPropagation?.();
+        setHovered(true);
+      }}
+      onPointerOut={() => setHovered(false)}
     >
-      <LabelSprite text={label} y={0.28} height={0.22} color={labelColor} />
+      {/* 카메라 이름표는 마우스를 올렸을 때만 보인다(사용자 결정 2026-11-20). */}
+      {hovered && <LabelSprite text={label} y={0.28} height={0.22} color={labelColor} />}
       <group name={`camera-rig:${pose.cameraId}`} quaternion={transform.quaternion}>
         {/* 카메라 본체 및 렌즈(클릭 시 CCTV 떠 있는 창을 연다). */}
         <mesh name={`camera-body:${pose.cameraId}`} position={[0, 0, -0.04]} onClick={handleClick}>

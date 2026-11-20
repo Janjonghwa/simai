@@ -323,8 +323,8 @@ describe('CctvPage 관리자 · 중계가 이어지지 않았을 때', () => {
     expect(
       screen.getByText('현장 노트북에서 중계 프로그램을 켜세요. 연결되면 바로 보입니다.'),
     ).toBeTruthy();
-    expect(container.querySelector('[data-slot="cctv-page"]')?.className).toContain(
-      'pt-(--notices-h,0px)',
+    expect(container.querySelector('[data-slot="cctv-page"]')?.className).not.toContain(
+      'pt-(--notices-h',
     );
     expect(screen.getByRole('img', { name: '카메라 1 영상' })).toBeTruthy();
     expect(document.querySelector('canvas')).toBeNull();

@@ -328,7 +328,8 @@ export function CctvPage() {
   return (
     <div
       data-slot="cctv-page"
-      className="flex min-h-0 flex-1 flex-col gap-3 pt-(--notices-h,0px) transition-[padding] duration-150"
+      // 경보 배너는 영상 위에 떠서 덮는다(격자를 밀어내지 않음, 사용자 결정 2026-11-20).
+      className="flex min-h-0 flex-1 flex-col gap-3"
     >
       <PageTitle>CCTV 관제</PageTitle>
       {isAdmin ? <AdminCctv /> : <StatesOnly />}

@@ -1,4 +1,5 @@
 import { Card } from '@simai/ui/components/card';
+import { cn } from '@simai/ui/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 
@@ -8,14 +9,21 @@ export function DashPanel({
   title,
   count,
   children,
+  className,
 }: {
   icon: LucideIcon;
   title: string;
   count?: ReactNode;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <Card className="min-h-0 min-w-0 gap-0 rounded-[12px] py-0 text-[15px] leading-[22px] ring-0">
+    <Card
+      className={cn(
+        'min-h-0 min-w-0 gap-0 rounded-[12px] py-0 text-[15px] leading-[22px] ring-0',
+        className,
+      )}
+    >
       <div className="flex min-h-[52px] w-full flex-none items-center gap-3 border-b border-border px-4 py-3">
         <h2>
           <span className="flex items-center gap-2 text-[15px] leading-[22px] font-bold">

@@ -337,6 +337,12 @@ describe('연속 7핸들 세션·호버 강조·미저장 미리보기 겹침(�
       measureText: (text: string) => ({ width: text.length * 12 }),
       beginPath: () => {},
       roundRect: () => {},
+      save: () => {},
+      restore: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      stroke: () => {},
       fill: () => {},
       fillText,
     } as unknown as CanvasRenderingContext2D);

@@ -31,6 +31,7 @@ import {
   zoneSeverity,
   zoneStyle,
 } from '@/features/viewer3d/zones/zonePresentation';
+import { MonitorZoneLabels, useZoneHoverStore } from '@/store/zoneHover.store';
 import { Line } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import { memo, useContext, useEffect, useMemo, type ComponentProps } from 'react';
@@ -125,10 +126,20 @@ interface ZoneEntryProps {
 
 function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
   const applyState = useContext(ZoneApplyContext);
+  const viewerStore = useViewerStore();
+  const monitorContext = useContext(MonitorZoneLabels);
+  const monitorLayer = useStore(
+    viewerStore,
+    (s) =>
+      s.mode === 'LIVE' && s.layers.zones === 'interactive' && s.layers.workSurfaces === 'visible',
+  );
+  const monitor = monitorContext || monitorLayer;
+  const hovered = useZoneHoverStore((s) => s.zoneId === zone.zoneId);
   const selected = useStore(
-    useViewerStore(),
+    viewerStore,
     (s) => s.selected?.type === 'zone' && s.selected.id === zone.zoneId,
   );
+  const highlighted = selected || hovered;
   const box = zoneBox(zone);
   const palette = useScenePalette();
   // 위험 강조는 형상·적용 상태 표시와 따로 얹는다. 구역 상자·모서리·이름표는 바꾸지 않는다.
@@ -139,7 +150,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
   const edges = useMemo(() => boxEdges([sx, sy, sz]), [sx, sy, sz]);
   const guides = useMemo(() => aerialGuides([sx, sy, sz], py), [sx, sy, sz, py]);
   if (!box) return null;
-  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone), zone.needsReview);
+  const style = zoneStyle(applyState, highlighted, palette, zoneSeverity(zone), zone.needsReview);
 
   return (
     <group name={`zone-entry:${zone.zoneId}`}>
@@ -162,7 +173,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
           <ZoneEdges
             points={edges}
             color={style.color}
-            lineWidth={edgeWidth(selected, null)}
+            lineWidth={edgeWidth(highlighted, null)}
             dashed={style.dashed}
             dashSize={style.dashSize}
             gapSize={style.gapSize}
@@ -187,17 +198,18 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
           />
         )}
         {/* 이름표는 상자 앞쪽(World min X·min Y, 기본 시점 쪽) 모서리의 윗면 높이에 둔다.
-            구역을 가리지 않고 위로 읽히며, 구역 이름만 늘 보인다. 왼쪽 띠는 심각도 색이고,
-            위험이 있으면 글자 색이 위험 색이 된다. */}
-        <group position={[-sx / 2, sy / 2, sz / 2]}>
-          <LabelSprite
-            text={zoneLabel(zone)}
-            y={ZONE_LABEL_LIFT}
-            height={ZONE_LABEL_HEIGHT}
-            color={risk ? riskStyle(risk, palette).labelColor : undefined}
-            accent={cssHex(style.color)}
-          />
-        </group>
+            관제 화면에서는 기본 숨김이고 마우스 올림·선택·진행 중 경보가 있을 때만 보인다. */}
+        {(!monitor || highlighted || risk) && (
+          <group position={[-sx / 2, sy / 2, sz / 2]}>
+            <LabelSprite
+              text={zoneLabel(zone)}
+              y={ZONE_LABEL_LIFT}
+              height={ZONE_LABEL_HEIGHT}
+              color={risk ? riskStyle(risk, palette).labelColor : undefined}
+              accent={cssHex(style.color)}
+            />
+          </group>
+        )}
         {risk && <ZoneRiskMark risk={risk} zoneId={zone.zoneId} size={[sx, sy, sz]} />}
       </group>
     </group>
@@ -220,10 +232,20 @@ function usePolygonGeometry(mesh: PolygonMesh) {
 /** BE 정식 비직사각형(PRISM)·바닥 판정(FOOTPRINT) 구역. 꼭짓점은 official.polygonXy 그대로다. */
 function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
   const applyState = useContext(ZoneApplyContext);
+  const viewerStore = useViewerStore();
+  const monitorContext = useContext(MonitorZoneLabels);
+  const monitorLayer = useStore(
+    viewerStore,
+    (s) =>
+      s.mode === 'LIVE' && s.layers.zones === 'interactive' && s.layers.workSurfaces === 'visible',
+  );
+  const monitor = monitorContext || monitorLayer;
+  const hovered = useZoneHoverStore((s) => s.zoneId === zone.zoneId);
   const selected = useStore(
-    useViewerStore(),
+    viewerStore,
     (s) => s.selected?.type === 'zone' && s.selected.id === zone.zoneId,
   );
+  const highlighted = selected || hovered;
   const palette = useScenePalette();
   const risk = useRiskHighlight('zone', zone.zoneId);
   const points = zone.official!.polygonXy;
@@ -238,7 +260,7 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
     () => (footprint ? ringEdges(points, FLOOR_GUIDE_LIFT) : prismEdges(points, zMin, zMax)),
     [footprint, points, zMin, zMax],
   );
-  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone), zone.needsReview);
+  const style = zoneStyle(applyState, highlighted, palette, zoneSeverity(zone), zone.needsReview);
   const riskLook = risk && riskStyle(risk, palette);
   const [lx, ly] = labelVertex(points);
   // 기둥은 윗면 높이, 바닥 판정(FOOTPRINT)은 바닥에 둔다.
@@ -265,22 +287,24 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
         name={`zone-polygon-edges:${zone.zoneId}`}
         points={edges}
         color={riskLook ? riskLook.color : style.color}
-        lineWidth={edgeWidth(selected, riskLook)}
+        lineWidth={edgeWidth(highlighted, riskLook)}
         dashed={riskLook ? riskLook.dashed : style.dashed}
         dashSize={style.dashed ? style.dashSize : RISK_DASH.dashSize}
         gapSize={style.dashed ? style.gapSize : RISK_DASH.gapSize}
         opacity={style.edgeOpacity}
         hiddenOpacity={style.hiddenEdgeOpacity}
       />
-      <group position={labelAt}>
-        <LabelSprite
-          text={zoneLabel(zone)}
-          y={ZONE_LABEL_LIFT}
-          height={ZONE_LABEL_HEIGHT}
-          color={riskLook?.labelColor}
-          accent={cssHex(style.color)}
-        />
-      </group>
+      {(!monitor || highlighted || risk) && (
+        <group position={labelAt}>
+          <LabelSprite
+            text={zoneLabel(zone)}
+            y={ZONE_LABEL_LIFT}
+            height={ZONE_LABEL_HEIGHT}
+            color={riskLook?.labelColor}
+            accent={cssHex(style.color)}
+          />
+        </group>
+      )}
     </group>
   );
 }

@@ -89,18 +89,23 @@ afterEach(() => {
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
 });
 
-describe('IncidentCard 한 줄(-798)', () => {
-  it('카드는 등급 배지와 규칙 이름 한 줄뿐이다(구역·작업자·경과·처리 칩 없음)', () => {
+describe('IncidentCard', () => {
+  it('카드는 큰 배지 · 사건(굵게)/사람 두 줄 · 오른쪽 HH:MM:SS 시각을 보인다', () => {
     const { card } = renderCard([entry()]);
 
-    expect(card.textContent).toBe('▲위험추락 위험(가장자리)');
+    const badge = within(card).getByText('위험');
+    expect(badge.className).toContain('h-7');
     // 위험 배지 기호는 ▲ 하나이고 화면 낭독기에 읽히지 않는다.
     expect(within(card).getByText('▲').getAttribute('aria-hidden')).not.toBeNull();
     expect(within(card).getByText('추락 위험(가장자리)')).toBeTruthy();
-    // 「미확인」 칩은 그리지 않는다(Lead 결정). 미확인 경보의 점멸·테두리는 아래 시험이 따로 본다.
+    expect(within(card).getByText('작업자 #0015')).toBeTruthy();
+    const timeEl = [...card.querySelectorAll('span')].find((el) =>
+      CLOCK.test(el.textContent ?? ''),
+    );
+    expect(timeEl).toBeTruthy();
+    // 「미확인」 칩은 그리지 않는다. 미확인 경보의 점멸·테두리는 아래 시험이 따로 본다.
     expect(card.querySelector('[data-chip]')).toBeNull();
     expect(card.textContent).not.toContain('미확인');
-    expect(card.textContent).not.toContain('작업자 #0015');
     expect(card.textContent).not.toContain('초 전');
     expect(card.textContent).not.toContain('개구부 구역');
     expect(card.textContent).not.toMatch(/z-\d/);
@@ -123,7 +128,7 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(detail(card)).toContain('지난 관제');
     expect(card.querySelector('[data-chip]')).toBeNull();
     expect(card.className).toContain('opacity-75');
-    expect(card.className).not.toContain('ring-sev-high');
+    expect(card.className).not.toContain('ring-sev-caution');
     expect(card.querySelector('.motion-safe\\:animate-alarm-blink')).toBeNull();
   });
 
@@ -139,12 +144,12 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(detail(card)).toContain('미확인');
   });
 
-  it('긴 사람 ID 는 설명에 전체로 있고 카드 줄에는 없다', () => {
+  it('긴 사람 ID 는 카드에 끝번호로 줄이고 설명에 전체를 둔다', () => {
     const { card } = renderCard([entry({ world_ids: ['w-mw8y3hai-0722'] })]);
 
     expect(detail(card)[0]).toBe('w-mw8y3hai-0722');
     expect(card.textContent).not.toContain('mw8y3hai');
-    expect(card.textContent).not.toContain('0722');
+    expect(within(card).getByText('작업자 #0722')).toBeTruthy();
   });
 
   it('R1 주의 묶음은 규칙 이름을 구역 이름 없이 위험구역 진입으로 보인다', () => {
@@ -155,30 +160,39 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(card.textContent).not.toContain('위험 구역 근접');
   });
 
-  it('개구부 수치와 나머지 규칙·구역은 카드에 없다(상세에만 있다)', () => {
+  it('묶인 카드 제목·배지는 가장 최근 경보로 보이고, 개구부 수치·나머지 구역은 카드에 없다', () => {
     const { card } = renderCard([
-      entry(),
-      entry({ event_id: 'e-2', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
+      entry({ event_id: 'e-1', rule_id: 'R2', severity: 'CRITICAL', raised_at: T }),
+      entry({
+        event_id: 'e-2',
+        rule_id: 'R4',
+        severity: 'CRITICAL',
+        zone_id: 'z-02',
+        raised_at: T + 5_000,
+        updated_at: T + 5_000,
+      }),
     ]);
 
     expect(card.textContent).not.toContain('0.82');
     expect(card.textContent).not.toContain('높이 차');
-    // 대표 규칙(가장 높은 등급) 이름만 보이고 나머지 규칙 이름·구역은 없다.
-    expect(within(card).queryByText('위험구역 진입')).toBeNull();
+    expect(within(card).getByText('낙상 의심')).toBeTruthy();
+    expect(within(card).queryByText('추락 위험(가장자리)')).toBeNull();
     expect(card.textContent).not.toContain('단상 구역');
     expect(card.textContent).not.toMatch(/z-\d/);
     expect(card.querySelectorAll('li')).toHaveLength(0);
   });
 
-  it('구역이 대상인 카드는 구역 이름이 카드 이름과 설명에만 있다. 이름을 모르면 `구역`이다', () => {
+  it('구역이 대상인 카드는 대상 줄에 구역 이름을 보이고, 이름을 모르면 `구역`이다', () => {
     const { card } = renderCard([entry({ world_ids: [], zone_id: 'z-04' })]);
     expect(card.getAttribute('aria-label')).toBe('개구부 구역 이벤트');
     expect(detail(card)[0]).toBe('개구부 구역');
-    expect(card.textContent).toBe('▲위험추락 위험(가장자리)');
+    expect(within(card).getByText('추락 위험(가장자리)')).toBeTruthy();
+    expect(within(card).getByText('개구부 구역')).toBeTruthy();
     cleanup();
 
     const unknown = renderCard([entry({ world_ids: [], zone_id: 'z-99' })]).card;
     expect(detail(unknown)[0]).toBe('구역');
+    expect(within(unknown).getByText('구역')).toBeTruthy();
     expect(unknown.textContent).not.toContain('z-99');
     expect(detail(unknown).join('\n')).not.toContain('z-99');
   });
@@ -359,12 +373,12 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(barOf(info.card)).toContain('bg-faint');
   });
 
-  it('경고는 주황 띠·테두리이고 칩은 없다', () => {
+  it('HIGH 는 주의 노랑 띠·테두리이고 칩은 없다', () => {
     const { card } = renderCard([entry({ severity: 'HIGH' })]);
     const bar = card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
-    expect(bar).toContain('bg-sev-high');
+    expect(bar).toContain('bg-sev-caution');
     expect(bar).not.toContain('bg-sev-critical');
-    expect(card.className).toContain('ring-sev-high');
+    expect(card.className).toContain('ring-sev-caution');
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
@@ -386,7 +400,7 @@ describe('IncidentCard 한 줄(-798)', () => {
     expect(useCamSplitStore.getState().split).toBeNull();
   });
 
-  it('해석된 사람 표시 이름은 카드 이름과 설명에 있다(-658)', () => {
+  it('해석된 사람 표시 이름은 카드 대상 줄과 설명에 보인다(-658)', () => {
     useRealtimeStore.setState({
       health: {
         receivedAt: T,
@@ -402,7 +416,7 @@ describe('IncidentCard 한 줄(-798)', () => {
     const { card } = renderCard([entry({ world_ids: ['w-0015'] })]);
     expect(detail(card)[0]).toBe('김철수 (w-0015)');
     expect(card.getAttribute('aria-label')).toBe('김철수 (w-0015) 이벤트');
-    expect(card.textContent).not.toContain('김철수');
+    expect(within(card).getByText('김철수 (0015)')).toBeTruthy();
   });
 
   it('사람 대상 UNVERIFIABLE 경보의 대상이 world_state 트랙에 없으면 「확인 불가 · 대상 시야 이탈」을 보인다(-811)', () => {

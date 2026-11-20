@@ -20,8 +20,8 @@ import type { WorldTrack } from '@simai/contracts';
 
 // 2D 평면 말풍선 글자. 화면 컴포넌트 없이 만든다.
 
-// 위험·경고는 같은 ▲ 하나다(등급 배지와 같다, S15P31A101-798).
-const GLYPH = { CRITICAL: '▲', HIGH: '▲', CAUTION: '!', INFO: 'i' } as const;
+// 위험은 ▲, 주의(HIGH·CAUTION)는 ! 로 표시한다(등급 배지와 같다).
+const GLYPH = { CRITICAL: '▲', HIGH: '!', CAUTION: '!', INFO: 'i' } as const;
 
 /** 관측 상태 뒤에 붙는 말. 관측 중이면 없다. */
 export const LOOK_LABEL = { observed: '', predicted: ' · 예측', unknown: ' · 확인 불가' } as const;

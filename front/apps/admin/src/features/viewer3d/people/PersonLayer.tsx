@@ -454,14 +454,15 @@ function PersonAvatar({
             <LabelSprite
               cells={labelCells ?? DEFAULT_PERSON_CELLS}
               y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
-              height={0.24}
+              height={0.4}
               color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
             />
           ) : (
             <LabelSprite
               text={badge ? `${track.worldId} · ${badge}` : track.worldId}
+              tail
               y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
-              height={0.24}
+              height={0.4}
               color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
             />
           )}

@@ -68,7 +68,7 @@ export type TipTone = PlanTone;
 
 const TONE = {
   critical: 'text-sev-critical',
-  high: 'text-sev-high',
+  high: 'text-sev-caution',
   caution: 'text-sev-caution',
 } as const satisfies Record<TipTone, string>;
 

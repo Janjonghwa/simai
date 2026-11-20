@@ -25,6 +25,17 @@ const TAG_INK = PALETTE.light.label.observed;
 const TAG_STRIPE_PX = 9;
 const RADIUS_PX = 10;
 const PADDING_PX = 12;
+/** 말풍선 꼬리(아래 삼각형) 여백 높이(px). */
+const TAIL_HEIGHT_PX = 12;
+/** 3D 사람 이름표 칩 바탕·테두리 색(배경과 또렷이 구분되는 밝은 칩). */
+const CHIP_BACKGROUND: Record<ViewerTheme, string> = {
+  dark: 'rgba(30, 45, 72, 0.95)',
+  light: 'rgba(255, 255, 255, 0.97)',
+};
+const CHIP_BORDER: Record<ViewerTheme, string> = {
+  dark: 'rgba(255, 255, 255, 0.18)',
+  light: 'rgba(15, 23, 42, 0.2)',
+};
 
 // 칸 목록 이름표(S15P31A101-658 A안): 3D 에서 작게 봐도 워치 선 아이콘과 한글 이름이 또렷하도록 64px 해상도로 그린다.
 const CELL_HEIGHT_PX = 64;
@@ -116,6 +127,8 @@ function strokeRoundedRect(
 function labelTexture(
   text: string,
   style: TextureStyle,
+  tail = false,
+  theme: ViewerTheme = 'dark',
 ): { texture: CanvasTexture; aspect: number } {
   const { ink, background, accent } = style;
   const stripe = accent === undefined ? 0 : TAG_STRIPE_PX;
@@ -127,10 +140,29 @@ function labelTexture(
   const textWidth = context?.measureText(text).width ?? text.length * LABEL_PX * 0.45;
   const width = Math.max(LABEL_PX, Math.ceil(textWidth + PADDING_PX * 2 + stripe));
   canvas.width = width;
-  canvas.height = LABEL_PX;
+  canvas.height = LABEL_PX + (tail ? TAIL_HEIGHT_PX : 0);
   if (context) {
     if (accent === undefined) {
-      fillRoundedRect(context, 0, 0, width, LABEL_PX, RADIUS_PX, background);
+      context.save();
+      if (tail) {
+        context.shadowColor = 'rgba(0, 0, 0, 0.25)';
+        context.shadowBlur = 4;
+      }
+      fillRoundedRect(context, 1, 1, width - 2, LABEL_PX - 2, RADIUS_PX, background);
+      if (tail) {
+        context.beginPath();
+        context.moveTo(width / 2 - 7, LABEL_PX - 2);
+        context.lineTo(width / 2, LABEL_PX + 9);
+        context.lineTo(width / 2 + 7, LABEL_PX - 2);
+        context.fillStyle = background;
+        context.fill();
+      }
+      context.restore();
+      if (tail) {
+        context.strokeStyle = CHIP_BORDER[theme];
+        context.lineWidth = 1;
+        strokeRoundedRect(context, 1, 1, width - 2, LABEL_PX - 2, RADIUS_PX);
+      }
     } else {
       // 띠 색으로 이름표 전체를 칠한 뒤, 띠 너비만 남기고 오른쪽을 바탕색으로 덮는다(왼쪽 모서리는 띠 색이 둥글게 남는다).
       fillRoundedRect(context, 0, 0, width, LABEL_PX, RADIUS_PX, accent);
@@ -152,7 +184,7 @@ function labelTexture(
   }
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
-  return { texture, aspect: width / LABEL_PX };
+  return { texture, aspect: width / canvas.height };
 }
 
 /**
@@ -250,11 +282,24 @@ export function drawLabelCellsOnCanvas(
   );
 
   canvas.width = width;
-  canvas.height = CELL_HEIGHT_PX;
+  canvas.height = CELL_HEIGHT_PX + TAIL_HEIGHT_PX;
 
   if (context) {
-    // 1. 전체 이름표 알약 배경(기존 투명도 규칙 유지)
-    fillRoundedRect(context, 0, 0, width, CELL_HEIGHT_PX, CELL_RADIUS_PX, background);
+    // 이름표 칩과 머리 방향 꼬리를 같은 색으로 그리고 그림자·테두리로 장면과 구분한다.
+    context.save();
+    context.shadowColor = 'rgba(0, 0, 0, 0.25)';
+    context.shadowBlur = 4;
+    fillRoundedRect(context, 1, 1, width - 2, CELL_HEIGHT_PX - 2, CELL_RADIUS_PX, background);
+    context.beginPath();
+    context.moveTo(width / 2 - 7, CELL_HEIGHT_PX - 2);
+    context.lineTo(width / 2, CELL_HEIGHT_PX + 9);
+    context.lineTo(width / 2 + 7, CELL_HEIGHT_PX - 2);
+    context.fillStyle = background;
+    context.fill();
+    context.restore();
+    context.strokeStyle = CHIP_BORDER[theme];
+    context.lineWidth = 1;
+    strokeRoundedRect(context, 1, 1, width - 2, CELL_HEIGHT_PX - 2, CELL_RADIUS_PX);
 
     // 2. 왼쪽 워치 아이콘 칸(있을 때만)
     let cursorX: number;
@@ -313,7 +358,7 @@ export function drawLabelCellsOnCanvas(
     }
   }
 
-  return { width, height: CELL_HEIGHT_PX };
+  return { width, height: CELL_HEIGHT_PX + TAIL_HEIGHT_PX };
 }
 
 function cellsTexture(
@@ -332,7 +377,7 @@ const noRaycast = () => null;
 // 화면 크기 상한·겹침 밀어내기(S15P31A101-757). 이름표는 장면 안 스프라이트라 확대하면 같이 커져 화면을 덮었다.
 // 화면에서 높이가 상한(글자 높이 m × 배율 px)을 넘지 않게 줄이고, 먼저 만들어진 이름표와 겹치면 위로 밀어 올린다.
 const CAP_PX_PER_M = 150;
-const CAP_MIN_PX = 22;
+const CAP_MIN_PX = 30;
 const CAP_MAX_PX = 60;
 const OVERLAP_GAP_PX = 3;
 const MAX_LIFT_PX = 180;
@@ -406,6 +451,8 @@ interface LabelSpriteProps {
   color?: string;
   /** 왼쪽 띠 색(CSS 색). 주면 흰 바탕·굵은 고딕 글자에 이 색 띠를 단 이름표가 된다. 구역 이름표가 쓴다. */
   accent?: string;
+  /** 아래쪽 삼각형 꼬리·테두리·그림자 표시(3D 사람 이름표가 쓴다). */
+  tail?: boolean;
 }
 
 /**
@@ -419,11 +466,18 @@ export function LabelSprite({
   height = 0.3,
   color,
   accent,
+  tail = false,
 }: LabelSpriteProps) {
   const theme = useSceneTheme();
   const { label } = useScenePalette();
   const ink = color ?? (accent === undefined ? label.observed : TAG_INK);
-  const background = accent === undefined ? label.background : TAG_BACKGROUND;
+  const isPersonChip = Boolean((cells && cells.length > 0) || tail);
+  const background =
+    accent !== undefined
+      ? TAG_BACKGROUND
+      : isPersonChip
+        ? CHIP_BACKGROUND[theme]
+        : label.background;
   const cellsKey = cellsKeyOf(cells);
   const sprite = useRef<Sprite>(null);
   const seq = useRef(0);
@@ -432,10 +486,10 @@ export function LabelSprite({
     () =>
       cells && cells.length > 0
         ? cellsTexture(cells, { ink, background, theme })
-        : labelTexture(text, { ink, background, accent }),
+        : labelTexture(text, { ink, background, accent }, tail, theme),
     // cells 내용은 cellsKey 원시 문자열로 동치 비교해 불필요한 캔버스 재생성을 막는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cellsKey, text, ink, background, accent, theme],
+    [cellsKey, text, ink, background, accent, theme, tail],
   );
   useEffect(() => () => texture.dispose(), [texture]);
   useEffect(() => {
@@ -453,7 +507,7 @@ export function LabelSprite({
     const pxPerM = pixelsPerMeter(camera, size.height, camera.position.distanceTo(worldAt));
     if (!Number.isFinite(pxPerM) || pxPerM <= 0) return;
     const natural = height * pxPerM;
-    const k = Math.min(1, labelCapPx(height) / natural);
+    const k = Math.max(CAP_MIN_PX / natural, Math.min(1, labelCapPx(height) / natural));
     el.scale.set(height * aspect * k, height * k, 1);
     const w = height * aspect * k * pxPerM;
     const h = height * k * pxPerM;

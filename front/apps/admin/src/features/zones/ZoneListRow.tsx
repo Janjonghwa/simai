@@ -81,6 +81,8 @@ function NameEditor({
 export function ZoneListRow({
   zone,
   selected,
+  hovered,
+  onHover,
   canRename,
   busy,
   onOpen,
@@ -89,6 +91,8 @@ export function ZoneListRow({
 }: {
   zone: Zone;
   selected: boolean;
+  hovered: boolean;
+  onHover: (hovered: boolean) => void;
   canRename: boolean;
   busy: boolean;
   onOpen: () => void;
@@ -112,7 +116,11 @@ export function ZoneListRow({
   };
 
   return (
-    <li className="group/row relative">
+    <li
+      className="group/row relative"
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+    >
       {editing ? (
         <NameEditor initial={zone.name} busy={busy} onSave={save} onCancel={cancelEdit} />
       ) : (
@@ -123,6 +131,7 @@ export function ZoneListRow({
             onClick={onOpen}
             className={cn(
               NAME_BUTTON_CLASS,
+              hovered && 'bg-foreground/10',
               canRename ? NAME_PAD_RENAME : NAME_PAD_PLAIN,
               ALARM_BORDER[zone.severity],
             )}

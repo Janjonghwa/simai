@@ -6,6 +6,7 @@ import {
   PRIMARY_BUTTON_CLASS,
 } from '@/features/zones/zonePanelStyle';
 import { Button } from '@simai/ui/components/button';
+import { Plus } from 'lucide-react';
 
 /**
  * 하단 버튼: 기존 구역은 저장·되돌리기·삭제(두 번 눌러 확인), 새 구역은 추가. 추가를 눌러야 양식이 열리는 화면(cancelAdd 가
@@ -15,10 +16,13 @@ export function ZoneActions({ edit }: { edit: ZoneEditing }) {
   if (!edit.zone) {
     const addButton = (
       <Button
+        variant="action"
+        size="action"
         disabled={!edit.canAdd}
         onClick={() => void edit.add()}
-        className={`${PRIMARY_BUTTON_CLASS} w-full`}
+        className="w-full"
       >
+        <Plus aria-hidden />
         구역 추가
       </Button>
     );

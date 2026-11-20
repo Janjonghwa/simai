@@ -3,12 +3,13 @@ import { isActive, isConfirmationPending } from '@/features/events/entries';
 import { OUTSIDE_WORK_TEXT, type OutsideWorkKind } from '@/features/events/EventBadges';
 import {
   confirmationText,
+  eventRuleName,
   formatTime,
   isUnverifiableTargetGone,
   UNVERIFIABLE_TARGET_GONE_LABEL,
 } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
-import { cardChip, cardTitle, targetLabel } from '@/features/events/incidentView';
+import { cardChip, targetLabel, targetShortLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
 import { useAliveIds } from '@/features/events/useAliveIds';
@@ -41,20 +42,20 @@ interface IncidentCardProps {
   onOpen: (eventId: string) => void;
 }
 
-/** 등급 색: 위험 빨강, 경고 주황, 주의 노랑, 안내 회색. 띠는 늘 있고, 테두리는 진행 중인 묶음에만 있다. */
-const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
+/** 등급 색: 위험 빨강, 주의 노랑(HIGH 포함), 안내 회색. 왼쪽 띠와 진행 중 카드 테두리에 표시한다(사용자 결정: 테두리 유지). */
+const SEVERITY_LOOK: Record<Severity, { bar: string; ring: string }> = {
   CRITICAL: { bar: 'bg-sev-critical', ring: 'ring-1 ring-sev-critical ring-inset' },
-  HIGH: { bar: 'bg-sev-high', ring: 'ring-1 ring-sev-high ring-inset' },
+  HIGH: { bar: 'bg-sev-caution', ring: 'ring-1 ring-sev-caution ring-inset' },
   CAUTION: { bar: 'bg-sev-caution', ring: 'ring-1 ring-sev-caution ring-inset' },
-  INFO: { bar: 'bg-faint' },
+  INFO: { bar: 'bg-faint', ring: '' },
 };
 
 /**
- * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard). 한 줄이다(S15P31A101-798): 등급 배지 · 대표 규칙(가장 높은
- * 등급) 이름뿐이다. 처리 상태(미확인 · 확인 시각 · 해소 시각 · 지난 관제, cardChip)·대상(작업자·구역)·발생 시각·발생 횟수·확인 필요·
- * 지연 알림·작업 외 꼬리표는 줄에서 빼고 머리를 올려 보면 나오는 설명에 둔다(대상은 카드 이름에도 있다). 칩만 뺐고, 미확인 경보의
- * 점멸·등급 테두리·경보 배너·소리는 그대로다. 진입 예상 줄과 「CCTV로 확인」은 없다. 사람을 고르면 떠 있는 CCTV 창이 그 사람의 카메라로 열린다.
- * 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)와 사라진 사람의 카드는 등급 테두리·점멸 없이 흐리게 보인다.
+ * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard).
+ * 큰 등급 배지를 세로 가운데에 두고, 가운데에 최근 사건(굵게) / 대상 두 줄, 오른쪽에 시각(HH:MM:SS)을 세로 가운데에 둔다.
+ * 처리 상태(미확인 · 확인 시각 · 해소 시각 · 지난 관제, cardChip)·발생 횟수·확인 필요·지연 알림·작업 외 꼬리표는
+ * 머리를 올려 보면 나오는 설명에 둔다. 미확인 경보의 왼쪽 띠 점멸·진행 중 카드 테두리·배너·소리는 그대로다.
+ * 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)와 사라진 사람의 카드는 테두리·점멸 없이 흐리게 보인다.
  * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점), 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
  */
 export function IncidentCard({
@@ -71,9 +72,14 @@ export function IncidentCard({
   const personNames = usePersonDisplayMap();
   const alive = useAliveIds();
   const top = topEntry(incident);
+  const live = incident.entries.filter((e) => isActive(e.event));
+  // 묶인 카드 제목·배지·시각은 가장 최근 경보(진행 중 묶음이면 진행 중 경보 중 최신)를 기준으로 한다.
+  const latestPool = live.length > 0 ? live : incident.entries;
+  const latest = latestPool.reduce((a, b) =>
+    (b.event.raised_at ?? 0) > (a.event.raised_at ?? 0) ? b : a,
+  );
   const look = SEVERITY_LOOK[incident.severity];
   const chip = cardChip(incident);
-  const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find(isConfirmationPending);
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');
   const unverifiableGone = incident.entries.some((e) => isUnverifiableTargetGone(e.event, alive));
@@ -130,9 +136,16 @@ export function IncidentCard({
           onClick={() => (selected ? onOpen(top.event.event_id) : onSelect(incident))}
           className="-mx-1 flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-surface-3"
         >
-          {/* 카드는 한 줄([등급] 규칙 이름, -798). 「확인 불가 · 대상 시야 이탈」은 마우스 올림 설명(title)과 상세에서 보인다(-811) */}
-          <SeverityBadge severity={top.event.severity} />
-          <b className="min-w-0 flex-1 truncate">{cardTitle(incident)}</b>
+          <SeverityBadge severity={latest.event.severity} size="large" />
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <b className="min-w-0 truncate text-base">{eventRuleName(latest.event)}</b>
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
+              {targetShortLabel(incident.target, zoneName, personNames)}
+            </span>
+          </span>
+          <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
+            {formatTime(latest.event.raised_at)}
+          </span>
         </button>
         {selected && <EventPhotos event={top.event} compact />}
       </article>

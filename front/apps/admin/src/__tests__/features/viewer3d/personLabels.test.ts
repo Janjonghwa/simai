@@ -136,18 +136,22 @@ describe('3D 이름표 캔버스 렌더링 drawLabelCellsOnCanvas(-658 A안)', (
     expect(texts).toEqual(['이영희']);
   });
 
-  it('워치 없는 사람은 아이콘 칸 없이 이름 칸과 뒤따르는 PPE 칸만 위험 글자 색으로 그린다', () => {
+  it('워치 없는 사람은 아이콘 칸 없이 이름 칸·PPE 칸과 칩 테두리·꼬리를 그린다', () => {
     const { canvas, ctx, strokes, texts } = createMockCanvas();
-    drawLabelCellsOnCanvas(
+    const size = drawLabelCellsOnCanvas(
       canvas,
       [
         { kind: 'text', text: '미확인 1' },
         { kind: 'text', text: '안전모 미착용' },
       ],
-      { ink: '#ff6b74', background: 'rgba(10, 27, 51, 0.8)', theme: 'dark' },
+      { ink: '#ff6b74', background: 'rgba(30, 45, 72, 0.95)', theme: 'dark' },
     );
 
-    expect(strokes).toHaveLength(0);
+    // 칩 외곽선 1회만 그리고 워치 아이콘 선은 그리지 않는다.
+    expect(strokes).toEqual(['rgba(255, 255, 255, 0.18)']);
+    expect(size.height).toBe(76);
+    expect(ctx.moveTo).toHaveBeenCalledTimes(1);
+    expect(ctx.lineTo).toHaveBeenCalledTimes(2);
     expect(texts).toEqual(['미확인 1', '안전모 미착용']);
     expect(ctx.fillStyle).toBe('#ff6b74');
   });

@@ -27,10 +27,10 @@ const STROKE = 0.05;
 /** 확인 대기·선택은 선을 굵게 한다(점멸이 멈추는 설정에서도 보이게). */
 const STROKE_STRONG = 0.09;
 
-/** 구역 기본 색은 구역 심각도를 따른다(위험 빨강·경고 주황·주의 노랑). 안내나 등급을 모르면 중립이다. */
+/** 구역 기본 색은 구역 심각도를 따른다(위험 빨강·주의 노랑). 안내나 등급을 모르면 중립이다. */
 const ZONE_TONE = {
   critical: 'fill-sev-critical stroke-sev-critical',
-  high: 'fill-sev-high stroke-sev-high',
+  high: 'fill-sev-caution stroke-sev-caution',
   caution: 'fill-sev-caution stroke-sev-caution',
 } as const satisfies Record<PlanTone, string>;
 const NEUTRAL_ZONE = 'fill-foreground stroke-muted-foreground';
