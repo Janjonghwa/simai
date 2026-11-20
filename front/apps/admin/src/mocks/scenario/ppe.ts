@@ -38,6 +38,9 @@ function item(state: State, capture: number) {
 /** /topic/ppe·GET /api/ppe/current: 시각 t(ms)의 PPE 스냅샷(ppe_view, S15P31A101-531). */
 export function ppeViewAt(t: number, demoElapsedMs?: number): PpeViewMessage {
   const capture = t - DELAY_MS;
+  // 시연 목업(demoElapsedMs 지정)은 단일 작업자(w-0012 추창만)만 송출해 다른 작업자의 미착용 이름표가 뜨지 않게 한다.
+  const targetPeople =
+    demoElapsedMs === undefined ? PEOPLE : PEOPLE.filter((person) => person.id === 'w-0012');
   return {
     schema_version: '1.0.0',
     msg_type: 'ppe_view',
@@ -47,7 +50,7 @@ export function ppeViewAt(t: number, demoElapsedMs?: number): PpeViewMessage {
     payload: {
       tier0_source_id: 'tier0-01',
       snapshot_at_ms: t,
-      people: PEOPLE.map((p) => ({
+      people: targetPeople.map((p) => ({
         world_id: p.id,
         identity_revision: 0,
         capture_time_ms: capture,

@@ -69,10 +69,13 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
     expect(published.filter((m) => m.payload.lifecycle === 'RAISED')).toHaveLength(6);
   });
 
-  it('목업 트랙은 경보 시각에 한 사람이 접근·진입·하강한 뒤 제자리에서 일어난다', () => {
+  it('목업 트랙은 작업 시작 전(0ms)에도 추창만(w-0012) 1명만 보이고, 경보 시각에 접근·진입·하강한 뒤 제자리에서 일어난다', () => {
     const TIME = 1_795_000_000_000;
     const at = (ms: number) =>
       worldStateAt(1_795_000_000_000, { demoElapsedMs: ms }).payload.tracks;
+    expect(at(0).map((track) => track.world_id)).toEqual(['w-0012']);
+    expect(ppeViewAt(TIME, 0).payload.people.map((person) => person.world_id)).toEqual(['w-0012']);
+    expect(ppeViewAt(TIME, 0).payload.people[0]?.helmet.state).toBe('WORN');
     expect(at(0)[0]?.position_xy).toEqual(at(5_000)[0]?.position_xy);
     expect(ppeViewAt(TIME, 4_999).payload.people[0]?.helmet.state).toBe('WORN');
     expect(ppeViewAt(TIME, 5_000).payload.people[0]?.helmet.state).toBe('NOT_WORN');

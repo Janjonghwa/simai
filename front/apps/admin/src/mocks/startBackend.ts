@@ -9,7 +9,7 @@ import { createDemoAlarmScheduler, workRunActionOf } from '@/mocks/demoAlarmScen
 export async function startMockBackend() {
   const [
     { network },
-    { handlers, staticObjectsMock, tbmMock, workMock, setupMock },
+    { handlers, staticObjectsMock, tbmMock, workMock, setupMock, demoReplayStore },
     { readMockUser },
     { withoutRealPaths },
     { createStompBroker },
@@ -50,31 +50,41 @@ export async function startMockBackend() {
   });
   let demoStartedAt: number | undefined;
   let demoWorkId: string | undefined;
-  let demoCounts = { CRITICAL: 0, HIGH: 0 };
   if (isMockBuild) {
     const scheduler = createDemoAlarmScheduler({
       publish: (message) => {
-        if (message.payload.lifecycle === 'RAISED') {
-          if (message.payload.severity === 'CRITICAL') demoCounts.CRITICAL++;
-          else demoCounts.HIGH++;
-          if (demoWorkId) workMock.setEventCounts(demoWorkId, demoCounts);
-        }
         const opening = zones.currentZones().find((zone) => zone.name === '단상 개구부');
         if (message.payload.zone_id && opening) message.payload.zone_id = opening.zone_id;
+        // 시연 경보 전이를 세션 기록 저장소에 남겨 오늘 다시 보기(/api/replay)와 사건 수 집계가 같은 기록을 쓰게 한다.
+        if (demoWorkId) demoReplayStore.recordEvent(demoWorkId, message);
         broker.publish(EVENTS_TOPIC, events.record(message));
       },
     });
     network.events.on('response:mocked', ({ request, response }) => {
       const action = workRunActionOf(request, response);
       if (action === 'start') {
-        demoStartedAt = Date.now();
-        demoWorkId = new URL(request.url).pathname.split('/').at(-2);
-        demoCounts = { CRITICAL: 0, HIGH: 0 };
+        const workId = new URL(request.url).pathname.split('/').at(-2);
+        const run = workId
+          ? workMock
+              .workItems()
+              .find((work) => work.work_id === workId)
+              ?.runs?.at(-1)
+          : undefined;
+        const startedAt = run?.started_at ?? Date.now();
+        demoStartedAt = startedAt;
+        demoWorkId = workId;
+        if (workId) demoReplayStore.startRun(workId, startedAt);
         scheduler.start();
       } else if (action === 'end') {
         scheduler.stop();
         const workId = new URL(request.url).pathname.split('/').at(-2);
-        if (workId) workMock.setEventCounts(workId, demoCounts);
+        if (workId) {
+          const run = workMock
+            .workItems()
+            .find((work) => work.work_id === workId)
+            ?.runs?.at(-1);
+          demoReplayStore.endRun(workId, run?.ended_at ?? Date.now());
+        }
         demoWorkId = undefined;
       }
     });
@@ -97,9 +107,8 @@ export async function startMockBackend() {
     Date.now,
     zones.config,
     peopleNames,
-    isMockBuild
-      ? () => (demoStartedAt === undefined ? undefined : Date.now() - demoStartedAt)
-      : undefined,
+    // 목업 빌드는 작업 시작 전에도 시연 인원(추창만 1명, elapsed=0)만 보인다.
+    isMockBuild ? () => (demoStartedAt === undefined ? 0 : Date.now() - demoStartedAt) : undefined,
   );
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
