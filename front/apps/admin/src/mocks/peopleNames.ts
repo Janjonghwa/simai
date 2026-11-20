@@ -1,5 +1,6 @@
 import {
   normalizeDisplayName,
+  type HistoricalPersonNameSpan,
   type ViewerHealthPersonName,
   type ViewerHealthWatchName,
 } from '@/features/people/personDisplay';
@@ -62,6 +63,36 @@ const SEOUL_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
 
 function seoulDateOf(ms: number): string {
   return SEOUL_DATE_FMT.format(ms);
+}
+
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DAY_MS = 86_400_000;
+
+/** Asia/Seoul 날짜 문자열을 [00:00, 다음날 00:00) UTC ms 구간으로 바꾼다. 잘못된 날짜면 null. */
+function seoulDayBounds(date: string): { startMs: number; endMs: number } | null {
+  const match = DATE_RE.exec(date);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() + 1 !== month ||
+    check.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  const startMs = Date.parse(`${date}T00:00:00+09:00`);
+  return Number.isFinite(startMs) ? { startMs, endMs: startMs + DAY_MS } : null;
+}
+
+interface BindingHistoryRow {
+  bindingId: number;
+  deviceId: string;
+  worldId: string;
+  boundAt: number;
+  unboundAt: number | null;
 }
 
 function numericUserId(id: string): number {
@@ -154,6 +185,14 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
       channel_state: 'LOST',
     },
   ];
+  // 추가 전용 배정 이력(오늘 날짜의 시각별 조회 GET /api/people/display-names 용, S15P31A101-835)
+  const bindingHistory: BindingHistoryRow[] = activeBindings.map((b) => ({
+    bindingId: b.binding_id,
+    deviceId: b.device_id,
+    worldId: b.world_id,
+    boundAt: b.bound_at,
+    unboundAt: null,
+  }));
 
   // 추가만 하는(append-only) 이력 배열 — 기존 행을 덮어쓰거나 지우지 않는다(AGENTS 규칙 6)
   const watchHistory: WatchNameRow[] = [
@@ -300,6 +339,129 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
     return { user } as const;
   }
 
+  function historicalItemsFor(date: string, t: number): HistoricalPersonNameSpan[] {
+    const bounds = seoulDayBounds(date);
+    if (!bounds) return [];
+    const { startMs, endMs } = bounds;
+    const isToday = date === seoulDateOf(t);
+
+    // 지난 날 가짜 기록은 이름 없음(작업자 #NNNN)을 유지한다. 오늘 날짜만 워치 배정·이름 이력을 반영한다(S15P31A101-835).
+    const dayManual = worldHistory.filter((r) => r.siteDate === date);
+    const dayBindings = isToday
+      ? bindingHistory.filter(
+          (b) => b.boundAt < endMs && (b.unboundAt === null || b.unboundAt > startMs),
+        )
+      : [];
+
+    const worlds = new Set<string>();
+    for (const r of dayManual) worlds.add(r.worldId);
+    for (const b of dayBindings) worlds.add(b.worldId);
+    if (worlds.size === 0) return [];
+
+    const clamp = (v: number) => Math.max(startMs, Math.min(endMs, v));
+    const pointSet = new Set<number>([startMs, endMs]);
+    for (const r of dayManual) pointSet.add(clamp(r.createdAt));
+    for (const b of dayBindings) {
+      pointSet.add(clamp(b.boundAt));
+      if (b.unboundAt !== null) pointSet.add(clamp(b.unboundAt));
+    }
+    for (const r of watchHistory) {
+      if (r.createdAt > startMs && r.createdAt < endMs) pointSet.add(r.createdAt);
+    }
+    const points = [...pointSet].sort((a, b) => a - b);
+
+    const resolveAt = (
+      worldId: string,
+      atMs: number,
+    ): { displayName: string; nameSource: 'WORLD_MANUAL' | 'WATCH_DEVICE' } | null => {
+      let latestManual: WorldNameRow | null = null;
+      for (const r of dayManual) {
+        if (r.worldId === worldId && r.createdAt <= atMs) {
+          if (
+            latestManual === null ||
+            r.createdAt > latestManual.createdAt ||
+            (r.createdAt === latestManual.createdAt && r.historyId > latestManual.historyId)
+          ) {
+            latestManual = r;
+          }
+        }
+      }
+      if (latestManual && latestManual.action === 'SET' && latestManual.displayName !== null) {
+        return { displayName: latestManual.displayName, nameSource: 'WORLD_MANUAL' };
+      }
+
+      let activeBinding: BindingHistoryRow | null = null;
+      for (const b of dayBindings) {
+        if (
+          b.worldId === worldId &&
+          b.boundAt <= atMs &&
+          (b.unboundAt === null || atMs < b.unboundAt)
+        ) {
+          if (
+            activeBinding === null ||
+            b.boundAt > activeBinding.boundAt ||
+            (b.boundAt === activeBinding.boundAt && b.bindingId > activeBinding.bindingId)
+          ) {
+            activeBinding = b;
+          }
+        }
+      }
+      if (activeBinding) {
+        let latestWatch: WatchNameRow | null = null;
+        for (const r of watchHistory) {
+          if (r.deviceId === activeBinding.deviceId && r.createdAt <= atMs) {
+            if (
+              latestWatch === null ||
+              r.createdAt > latestWatch.createdAt ||
+              (r.createdAt === latestWatch.createdAt && r.historyId > latestWatch.historyId)
+            ) {
+              latestWatch = r;
+            }
+          }
+        }
+        if (latestWatch && latestWatch.action === 'SET' && latestWatch.displayName !== null) {
+          return { displayName: latestWatch.displayName, nameSource: 'WATCH_DEVICE' };
+        }
+      }
+      return null;
+    };
+
+    const out: HistoricalPersonNameSpan[] = [];
+    for (const worldId of [...worlds].sort()) {
+      let open: HistoricalPersonNameSpan | null = null;
+      for (let i = 0; i < points.length - 1; i++) {
+        const segStart = points[i]!;
+        const segEnd = points[i + 1]!;
+        if (segStart >= segEnd) continue;
+        const resolved = resolveAt(worldId, segStart);
+        if (resolved === null) {
+          if (open) {
+            out.push(open);
+            open = null;
+          }
+        } else if (
+          open &&
+          open.display_name === resolved.displayName &&
+          open.name_source === resolved.nameSource &&
+          open.to_ms === segStart
+        ) {
+          open.to_ms = segEnd;
+        } else {
+          if (open) out.push(open);
+          open = {
+            world_id: worldId,
+            display_name: resolved.displayName,
+            name_source: resolved.nameSource,
+            from_ms: segStart,
+            to_ms: segEnd,
+          };
+        }
+      }
+      if (open) out.push(open);
+    }
+    return out;
+  }
+
   return {
     bindings: () => activeBindings,
     snapshotAt,
@@ -312,14 +474,27 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
       } else {
         registeredWatches.set(deviceId, { link: 'CONNECTED', batteryPct: 88 });
       }
+      const t = now();
       const next: WatchBinding = {
         binding_id: ++bindingSeq,
         device_id: deviceId,
         world_id: worldId,
         method,
-        bound_at: now(),
+        bound_at: t,
         channel_state: 'BOUND',
       };
+      for (const row of bindingHistory) {
+        if (row.unboundAt === null && (row.deviceId === deviceId || row.worldId === worldId)) {
+          row.unboundAt = t;
+        }
+      }
+      bindingHistory.push({
+        bindingId: next.binding_id,
+        deviceId,
+        worldId,
+        boundAt: t,
+        unboundAt: null,
+      });
       activeBindings = [
         ...activeBindings.filter((b) => b.device_id !== deviceId && b.world_id !== worldId),
         next,
@@ -328,6 +503,19 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
       return next;
     },
     handlers: [
+      http.get('*/api/people/display-names', ({ request }) => {
+        const t = now();
+        if (!readLiveUser(request, t)) return unauthorized();
+        const date = new URL(request.url).searchParams.get('date') ?? '';
+        if (!seoulDayBounds(date)) {
+          return problem(400, 'INVALID_DISPLAY_NAME_DATE', 'date 는 YYYY-MM-DD 형식이어야 합니다');
+        }
+        return HttpResponse.json({
+          site_id: MOCK_SITE_ID,
+          date,
+          items: historicalItemsFor(date, t),
+        });
+      }),
       http.get('*/api/watch-bindings', ({ request }) => {
         if (!readLiveUser(request, now())) return unauthorized();
         return HttpResponse.json(activeBindings);

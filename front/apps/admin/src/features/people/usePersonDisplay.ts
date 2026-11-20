@@ -2,6 +2,7 @@ import { requestHealth } from '@/features/layout/api';
 import {
   deletePersonWorldDisplayName,
   deleteWatchDisplayName,
+  getHistoricalPersonNames,
   putPersonWorldDisplayName,
   putWatchDisplayName,
 } from '@/features/people/api';
@@ -15,6 +16,7 @@ import {
   watchNamesOfKey,
   worldIdsKeyOf,
   worldIdsOfKey,
+  type HistoricalPersonNameSpan,
   type PersonDisplayInfo,
   type PersonDisplayMap,
 } from '@/features/people/personDisplay';
@@ -26,7 +28,9 @@ import { useCachedWatchBindings } from '@/features/watch/useWatch';
 import { linkKeyOf, watchesOfLinkKey, watchRows } from '@/features/watch/watchStatus';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
+import { historicalPersonNamesKey } from '@/lib/queryKeys';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 /**
@@ -66,6 +70,21 @@ export function usePersonDisplayMap(): PersonDisplayMap {
 export function usePersonDisplay(worldId: string | null): PersonDisplayInfo | null {
   const map = usePersonDisplayMap();
   return useMemo(() => (worldId ? resolvePersonDisplay(worldId, map) : null), [worldId, map]);
+}
+
+const selectHistoricalItems = (response: { items: HistoricalPersonNameSpan[] }) => response.items;
+
+/**
+ * 지난 기록 화면에서 날짜별 시각 구간 사람 표시 이름을 조회한다(S15P31A101-835).
+ * 서버 응답이 없거나(이전 EC2 등) 불러오는 중이면 undefined 로 두고 화면은 기존 `작업자 #NNNN` 폴백을 유지한다.
+ */
+export function useHistoricalPersonNames(date: string | undefined) {
+  return useQuery({
+    queryKey: historicalPersonNamesKey(date ?? ''),
+    queryFn: ({ signal }) => getHistoricalPersonNames(api, date!, signal),
+    select: selectHistoricalItems,
+    enabled: Boolean(date),
+  });
 }
 
 async function refreshHealthSnapshot() {

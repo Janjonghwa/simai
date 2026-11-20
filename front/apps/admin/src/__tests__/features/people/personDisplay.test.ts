@@ -1,18 +1,24 @@
+import { getHistoricalPersonNames } from '@/features/people/api';
 import {
   formatPersonFull,
   formatPersonShort,
   formatWatchBindHighlight,
   formatWatchBindNotice,
   normalizeDisplayName,
+  resolveHistoricalPersonName,
   resolvePersonDisplayMap,
   workerLabel,
+  workerShortLabel,
+  type HistoricalPersonNameSpan,
 } from '@/features/people/personDisplay';
 import { buildPersonLabelCells } from '@/features/people/personLabelCells';
 import {
   overridesOf,
   usePersonNameOverrideStore,
 } from '@/features/people/personNameOverride.store';
+import { createHttp } from '@/lib/http';
 import { createPeopleNamesMock } from '@/mocks/peopleNames';
+import { setupServer } from 'msw/node';
 import { afterEach, describe, expect, it } from 'vitest';
 
 describe('normalizeDisplayName 입력 검증(-658)', () => {
@@ -195,5 +201,55 @@ describe('목업 createPeopleNamesMock(-658)', () => {
       display_name: '박민수',
       name_source: 'WATCH_DEVICE',
     });
+  });
+
+  it('지난 기록 표시 이름 조회 API(GET /api/people/display-names)는 오늘 w-0012 는 추창만, 지난 날은 빈 목록을 준다(S15P31A101-835)', async () => {
+    const todayMs = Date.parse('2026-11-21T14:00:00+09:00');
+    const mock = createPeopleNamesMock(() => todayMs);
+    const server = setupServer(...mock.handlers);
+    server.listen({ onUnhandledFrame: 'error' });
+    try {
+      const http = createHttp({ baseUrl: 'http://api.test', getToken: () => 'mock-token.viewer' });
+      const todayRes = await getHistoricalPersonNames(http, '2026-11-21');
+      expect(todayRes.date).toBe('2026-11-21');
+      expect(resolveHistoricalPersonName('w-0012', todayMs, todayRes.items)).toBe('추창만');
+      expect(workerShortLabel('w-0012', todayMs, todayRes.items)).toBe('추창만');
+      expect(workerShortLabel('w-0021', todayMs, todayRes.items)).toBe('작업자 #0021');
+
+      const pastRes = await getHistoricalPersonNames(http, '2026-11-19');
+      expect(pastRes.items).toEqual([]);
+      expect(
+        workerShortLabel('w-0012', Date.parse('2026-11-19T10:00:00+09:00'), pastRes.items),
+      ).toBe('작업자 #0012');
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe('지난 기록 시각별 이름 해석 workerShortLabel(S15P31A101-835)', () => {
+  it('반열린 구간 [from_ms, to_ms) 안에서는 그 시각 이름을, 구간 밖이나 이름이 없으면 작업자 #NNNN 을 돌려준다', () => {
+    const spans: HistoricalPersonNameSpan[] = [
+      {
+        world_id: 'w-0012',
+        display_name: '추창만',
+        name_source: 'WATCH_DEVICE',
+        from_ms: 1000,
+        to_ms: 2000,
+      },
+      {
+        world_id: 'w-0012',
+        display_name: '추반장',
+        name_source: 'WORLD_MANUAL',
+        from_ms: 2000,
+        to_ms: 3000,
+      },
+    ];
+    expect(workerShortLabel('w-0012', 999, spans)).toBe('작업자 #0012');
+    expect(workerShortLabel('w-0012', 1000, spans)).toBe('추창만');
+    expect(workerShortLabel('w-0012', 1999, spans)).toBe('추창만');
+    expect(workerShortLabel('w-0012', 2000, spans)).toBe('추반장');
+    expect(workerShortLabel('w-0012', 3000, spans)).toBe('작업자 #0012');
+    expect(workerShortLabel('w-0099', 1500, spans)).toBe('작업자 #0099');
   });
 });

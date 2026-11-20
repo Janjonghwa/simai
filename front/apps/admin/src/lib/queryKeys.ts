@@ -29,3 +29,7 @@ export const workSignaturesKey = (reportId: number) =>
 
 /** 작업내용 항목(GET /api/work-tasks). */
 export const WORK_TASKS_KEY = [...WORK_KEY, 'tasks'] as const;
+
+/** 지난 기록용 날짜별 사람 표시 이름(GET /api/people/display-names?date=YYYY-MM-DD, S15P31A101-835). */
+export const historicalPersonNamesKey = (date: string) =>
+  ['people', 'display-names', date] as const;

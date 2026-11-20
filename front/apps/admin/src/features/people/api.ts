@@ -21,10 +21,33 @@ const worldDisplayNameResponseSchema = z.object({
   updated_at: z.number(),
 });
 
+const historicalPersonNameItemSchema = z.object({
+  world_id: z.string(),
+  display_name: z.string(),
+  name_source: z.enum(['WORLD_MANUAL', 'WATCH_DEVICE']),
+  from_ms: z.number(),
+  to_ms: z.number(),
+});
+
+const historicalPersonNamesResponseSchema = z.object({
+  site_id: z.string(),
+  date: z.string(),
+  items: z.array(historicalPersonNameItemSchema),
+});
+
 export type WatchDisplayNameResponse = z.infer<typeof watchDisplayNameResponseSchema>;
 export type WorldDisplayNameResponse = z.infer<typeof worldDisplayNameResponseSchema>;
+export type HistoricalPersonNamesResponse = z.infer<typeof historicalPersonNamesResponseSchema>;
 
 const emptySchema = z.undefined();
+
+/** 지난 기록용 날짜별 사람 표시 이름 조회(읽기 전용, S15P31A101-835). */
+export function getHistoricalPersonNames(http: Http, date: string, signal?: AbortSignal) {
+  return http(`/api/people/display-names?date=${encodeURIComponent(date)}`, {
+    schema: historicalPersonNamesResponseSchema,
+    signal,
+  });
+}
 
 /** (a) 워치 기기 표시 이름 변경(현장 단위 지속, 권장 경로). */
 export function putWatchDisplayName(http: Http, deviceId: string, displayName: string) {

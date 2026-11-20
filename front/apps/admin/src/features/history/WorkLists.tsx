@@ -4,7 +4,11 @@ import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { isRowActiveAt, pastEventRows, type PastEventRow } from '@/features/history/pastEventRows';
 import type { EventRow, WorkerRow } from '@/features/history/replayIndex';
 import { formatClock } from '@/features/history/works';
-import { workerShortLabel } from '@/features/people/personDisplay';
+import {
+  resolveHistoricalWorkerName,
+  workerShortLabel,
+  type HistoricalPersonNameSpan,
+} from '@/features/people/personDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
@@ -20,13 +24,22 @@ function WorkerItem({
   worker,
   visible,
   selected,
+  personNames,
   onPick,
 }: {
   worker: WorkerRow;
   visible: boolean;
   selected: boolean;
+  personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (worldId: string) => void;
 }) {
+  const resolvedName = resolveHistoricalWorkerName(
+    worker.worldId,
+    worker.firstSeen,
+    worker.lastSeen,
+    personNames,
+  );
+  const label = resolvedName ?? workerShortLabel(worker.worldId);
   return (
     <li>
       <button
@@ -35,7 +48,9 @@ function WorkerItem({
         onClick={() => onPick(worker.worldId)}
         className={cn(ROW, 'gap-3', selected && 'bg-surface-2 ring-1 ring-primary ring-inset')}
       >
-        <span className="font-mono font-semibold">{worker.worldId}</span>
+        <span className={cn('font-semibold', !resolvedName && 'font-mono')} title={worker.worldId}>
+          {label}
+        </span>
         <span className="font-mono text-sm text-muted-foreground">
           {formatClock(worker.firstSeen)}–{formatClock(worker.lastSeen)}
         </span>
@@ -50,18 +65,20 @@ function WorkerItem({
   );
 }
 
-/** 구간에 잡힌 작업자(익명 World ID). 누르면 고른다. */
+/** 구간에 잡힌 작업자(그 시각 이름이 있으면 이름, 없으면 작업자 #NNNN, hover 로 World ID). 누르면 고른다. */
 export function WorkerList({
   workers,
   planned,
   visible,
   selectedId,
+  personNames,
   onPick,
 }: {
   workers: readonly WorkerRow[];
   planned: number;
   visible: ReadonlySet<string>;
   selectedId: string | null;
+  personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (worldId: string) => void;
 }) {
   return (
@@ -74,6 +91,7 @@ export function WorkerList({
             worker={w}
             visible={visible.has(w.worldId)}
             selected={selectedId === w.worldId}
+            personNames={personNames}
             onPick={onPick}
           />
         ))}
@@ -86,6 +104,7 @@ function EventItem({
   row,
   playhead,
   zoneName,
+  personNames,
   onPick,
   selected,
 }: {
@@ -93,6 +112,7 @@ function EventItem({
   row: PastEventRow;
   playhead: number | null;
   zoneName: ZoneNameOf;
+  personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (event: EventRow) => void;
 }) {
   const ref = useRef<HTMLLIElement>(null);
@@ -102,9 +122,9 @@ function EventItem({
   const { first, people } = row;
   const active = playhead !== null && isRowActiveAt(row, playhead);
   const later = playhead !== null && first.raisedAt > playhead;
-  // 화면에는 내부 트랙 ID(w-…) 대신 「작업자 #n」(관제 카드와 같은 표시)을 보이고, 원래 ID 는 hover 로 알린다(S15P31A101-751)
+  // 그 시각 표시 이름이 있으면 이름으로, 없으면 「작업자 #n」으로 보이고, 「외 n명」 묶음과 hover 의 World ID 는 유지한다(S15P31A101-751, -835)
   const workers = people.length
-    ? `${workerShortLabel(people[0]!)}${people.length > 1 ? ` 외 ${people.length - 1}명` : ''}`
+    ? `${workerShortLabel(people[0]!, first.raisedAt, personNames)}${people.length > 1 ? ` 외 ${people.length - 1}명` : ''}`
     : '';
   // 작업자가 없으면 구역이 대상이라 이름을 모르면 `구역` 이고, 작업자 뒤에 붙을 때는 모르면 뺀다.
   const zone = workers
@@ -146,10 +166,12 @@ export function EventLog({
   playhead,
   onPick,
   selectedEventId = null,
+  personNames,
 }: {
   selectedEventId?: string | null;
   events: readonly EventRow[];
   playhead: number | null;
+  personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (event: EventRow) => void;
 }) {
   const zoneName = useZoneName();
@@ -165,6 +187,7 @@ export function EventLog({
             selected={row.members.some((event) => event.eventId === selectedEventId)}
             playhead={playhead}
             zoneName={zoneName}
+            personNames={personNames}
             onPick={onPick}
           />
         ))}
