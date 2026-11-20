@@ -100,8 +100,10 @@ export function useFloatSpot(
   }, [placed, target, refit]);
 
   return {
+    spot,
     style: spot ? spotStyle(spot, anchor) : undefined,
     dragging,
+    setSpot,
     reset: () => setSpot(null),
     refit,
     handlers: {
