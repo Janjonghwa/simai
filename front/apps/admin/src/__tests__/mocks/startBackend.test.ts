@@ -3,7 +3,7 @@ import {
   DEMO_ALARM_STEPS,
   workRunActionOf,
 } from '@/mocks/demoAlarmScenario';
-import { defaultHealthPeopleSnapshot } from '@/mocks/peopleNames';
+import { worldStateAt } from '@/mocks/scenario/world';
 import { validateMessage, type RiskEventMessage } from '@simai/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,105 +12,56 @@ afterEach(() => {
 });
 
 describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)', () => {
-  it('작업 시작 뒤 5초(R9 주의)·12초(R5 주의)·14초(R2 주의)·20초(R1+R4 위험) 순으로 계약 형식 경보를 송출한다', () => {
+  it('작업 시작 뒤 10·17·35·43초에 네 경보를 계약 형식으로 송출한다', () => {
     vi.useFakeTimers();
-    let now = 1_795_000_000_000;
-    const received: { elapsed: number; message: RiskEventMessage }[] = [];
-    const startAt = now;
-    const scheduler = createDemoAlarmScheduler({
-      now: () => now,
-      publish: (message) => {
-        received.push({ elapsed: now - startAt, message });
-      },
-    });
-
+    const received: RiskEventMessage[] = [];
+    const scheduler = createDemoAlarmScheduler({ publish: (message) => received.push(message) });
     scheduler.start();
-    expect(received).toEqual([]);
-
-    // 5초: 안전모 미착용(주의)
-    now += 5_000;
-    vi.advanceTimersByTime(5_000);
-    expect(received).toHaveLength(1);
-    expect(received[0]!.message.payload).toMatchObject({
-      rule_id: 'R9',
-      severity: 'CAUTION',
-      world_ids: ['w-0015'],
-      zone_id: null,
-    });
-
-    // 12초: 위험구역 접근 예측(주의)
-    now += 7_000;
-    vi.advanceTimersByTime(7_000);
-    expect(received).toHaveLength(2);
-    expect(received[1]!.message.payload).toMatchObject({
-      rule_id: 'R5',
-      severity: 'CAUTION',
-      world_ids: ['w-0012'],
-      zone_id: 'z-04',
-      metrics: { time_to_entry_s: 1.6 },
-    });
-
-    // 14초: 추락 위험 가장자리(주의)
-    now += 2_000;
-    vi.advanceTimersByTime(2_000);
-    expect(received).toHaveLength(3);
-    expect(received[2]!.message.payload).toMatchObject({
-      rule_id: 'R2',
-      severity: 'CAUTION',
-      world_ids: ['w-0012'],
-      zone_id: 'z-04',
-      metrics: { edge_distance_m: 0.8 },
-    });
-
-    // 20초: 위험구역 진입 + 낙상 의심(위험)
-    now += 6_000;
-    vi.advanceTimersByTime(6_000);
-    expect(received).toHaveLength(5);
-    expect(received[3]!.message.payload).toMatchObject({
-      rule_id: 'R1',
-      severity: 'CRITICAL',
-      world_ids: ['w-0012'],
-      zone_id: 'z-04',
-      metrics: { zone_distance_m: 0 },
-    });
-    expect(received[4]!.message.payload).toMatchObject({
-      rule_id: 'R4',
-      severity: 'CRITICAL',
-      world_ids: ['w-0012'],
-      zone_id: 'z-04',
-    });
-
-    // 모든 메시지는 계약 스키마를 통과하고, 대상 작업자 ID 는 목업 작업자 이름표에 등록되어 있다.
-    const namedWorlds = new Map(
-      defaultHealthPeopleSnapshot(now).personNames.map((p) => [p.world_id, p.display_name]),
-    );
-    for (const { message } of received) {
-      expect(validateMessage('risk_event', message)).toMatchObject({ ok: true });
-      for (const id of message.payload.world_ids) {
-        expect(namedWorlds.get(id)).toMatch(/^(김철수|이영희)$/);
-      }
+    for (const [delay, rule, severity, zone] of [
+      [10_000, 'R5', 'CAUTION', 'z-04'],
+      [7_000, 'R1', 'CRITICAL', 'z-04'],
+      [18_000, 'R4', 'CRITICAL', null],
+      [8_000, 'R5', 'CAUTION', 'z-04'],
+    ] as const) {
+      vi.advanceTimersByTime(delay);
+      expect(received.at(-1)?.payload).toMatchObject({
+        rule_id: rule,
+        severity,
+        zone_id: zone,
+        world_ids: ['w-0012'],
+      });
     }
-    expect(new Set(received.map((r) => r.message.payload.event_id)).size).toBe(
+    expect(received).toHaveLength(4);
+    for (const message of received)
+      expect(validateMessage('risk_event', message)).toMatchObject({ ok: true });
+    expect(new Set(received.map((message) => message.payload.event_id)).size).toBe(
       DEMO_ALARM_STEPS.length,
     );
   });
 
-  it('작업 종료(stop) 시 남은 시연 경보 타이머를 취소하고, 다시 시작하면 처음부터 다시 울린다', () => {
+  it('종료 시 남은 타이머를 취소하고 다시 시작하면 처음부터 울린다', () => {
     vi.useFakeTimers();
     const published: RiskEventMessage[] = [];
-    const scheduler = createDemoAlarmScheduler({ publish: (m) => published.push(m) });
-
+    const scheduler = createDemoAlarmScheduler({ publish: (message) => published.push(message) });
     scheduler.start();
-    vi.advanceTimersByTime(5_000);
-    expect(published).toHaveLength(1);
-
+    vi.advanceTimersByTime(10_000);
     scheduler.stop();
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(50_000);
     expect(published).toHaveLength(1);
-
     scheduler.start();
-    vi.advanceTimersByTime(20_000);
-    expect(published).toHaveLength(6);
+    vi.advanceTimersByTime(43_000);
+    expect(published).toHaveLength(5);
+  });
+
+  it('목업 트랙은 경보 시각에 한 사람이 접근·진입·하강·재접근한다', () => {
+    const at = (ms: number) =>
+      worldStateAt(1_795_000_000_000, { demoElapsedMs: ms }).payload.tracks;
+    expect(at(10_000)).toHaveLength(1);
+    expect(at(10_000)[0]?.position_xy[0]).toBeCloseTo(4.62);
+    expect(at(17_000)[0]?.position_xy[0]).toBeGreaterThan(5.2);
+    expect(at(35_000)[0]?.head_z).toBe(1.09);
+    expect(at(43_000)[0]?.position_xy[0]).toBeCloseTo(4.08);
+    expect(at(60_000)[0]?.position_xy[0]).toBeCloseTo(5.1);
   });
 
   it('workRunActionOf 는 성공(2xx)한 POST /api/work-units/:id/start·end 만 감지한다', () => {

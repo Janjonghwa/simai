@@ -106,12 +106,12 @@ export function defaultHealthPeopleSnapshot(t: number): HealthPeopleSnapshot {
       ],
     },
     watchNames: [
-      { device_id: 'watch-01', display_name: '김철수' },
+      { device_id: 'watch-01', display_name: '추창만' },
       { device_id: 'watch-02', display_name: '이영희' },
       { device_id: 'watch-03', display_name: '박민수' },
     ],
     personNames: [
-      { world_id: 'w-0012', display_name: '김철수', name_source: 'WATCH_DEVICE' },
+      { world_id: 'w-0012', display_name: '추창만', name_source: 'WATCH_DEVICE' },
       { world_id: 'w-0015', display_name: '이영희', name_source: 'WATCH_DEVICE' },
       { world_id: 'w-0021', display_name: '미확인 1', name_source: 'UNIDENTIFIED' },
     ],
@@ -135,7 +135,7 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
     ['watch-03', { link: 'CONNECTED', batteryPct: 92 }],
   ]);
 
-  // w-0012: 연결된 워치(김철수), w-0015: 끊긴 워치(이영희), w-0021: 워치 없음(미확인 1) — A안 3가지 상태를 한눈에 검수
+  // w-0012: 연결된 워치(추창만), w-0015: 끊긴 워치(이영희), w-0021: 워치 없음(미확인 1) — A안 3가지 상태를 한눈에 검수
   let activeBindings: WatchBinding[] = [
     {
       binding_id: 1,
@@ -161,7 +161,7 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
       historyId: ++historySeq,
       deviceId: 'watch-01',
       action: 'SET',
-      displayName: '김철수',
+      displayName: '추창만',
       changedByUserId: 1,
       createdAt: 1_760_342_400_000,
     },

@@ -59,7 +59,7 @@ const at = (day: number, hhmm: string) => {
 
 /** 표본 이벤트만 남긴다(EVENT_EVERY_CYCLES 바퀴마다 한 번). */
 const sampledEvents = (from: number, to: number) =>
-  riskEventsBetween(from, to).filter(
+  riskEventsBetween(from, to, true).filter(
     (e) => Math.floor((e.payload.raised_at ?? 0) / EVENT_CYCLE_MS) % EVENT_EVERY_CYCLES === 0,
   );
 

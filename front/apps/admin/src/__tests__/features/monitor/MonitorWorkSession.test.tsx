@@ -1,5 +1,4 @@
 import { AlarmBanner } from '@/features/events/AlarmBanner';
-import { useEventClearStore } from '@/features/events/eventClear.store';
 import { applyEvents, LIVE_EVENTS_KEY, type LiveEvents } from '@/features/events/eventsCache';
 import type { EventItem } from '@/features/events/types';
 import {
@@ -72,13 +71,11 @@ function configBundle(version: string, status: string, workId: number | null, is
 beforeEach(() => {
   navigate.mockReset();
   serveBundles([]);
-  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
 });
 afterEach(() => {
   cleanup();
   server.resetHandlers();
-  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   useSessionStore.setState(useSessionStore.getInitialState(), true);
 });
 

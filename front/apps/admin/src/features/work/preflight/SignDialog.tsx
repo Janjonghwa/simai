@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 
 // 참석자 서명 창: 서명자 이름 + 손서명 → 서명 추가(여러 명), 서명자 목록, 완료. 추가·삭제는 바로 서버에 반영된다.
 // 이름과 획이 있어야 서명 추가가 켜지고(Enter 로도 추가), 추가하면 이름과 패드를 비워 다음 사람이 이어 쓴다.
-// 시연 계정은 이름 칸이 김싸피로 채워져 있고, 서명 추가 때 미리 받아 둔 작업자1·2 서명도 함께 올린다(features/demo/demoSigners).
+// 시연 계정은 이름 칸이 김싸피로 채워져 있고, 서명 추가 때 미리 받아 둔 작업자 서명도 함께 올린다(features/demo/demoSigners).
 
 export function SignDialog({ signers, onClose }: { signers: SignersState; onClose: () => void }) {
   const { resetErrors } = signers;
@@ -57,7 +57,7 @@ export function SignDialog({ signers, onClose }: { signers: SignersState; onClos
       if (!image) return;
       if (await signers.add(name.trim(), image)) {
         if (demo) {
-          for (const worker of await demoWorkerSignatures(signers.signers)) {
+          for (const worker of await demoWorkerSignatures(signers.signers, name.trim())) {
             if (!(await signers.add(worker.name, worker.image))) break;
           }
         }

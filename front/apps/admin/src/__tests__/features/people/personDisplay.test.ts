@@ -183,7 +183,7 @@ describe('목업 createPeopleNamesMock(-658)', () => {
     const mock = createPeopleNamesMock(() => 1_760_342_500_000);
     const snap1 = mock.snapshotAt(1_760_342_500_000);
     expect(snap1.personNames).toEqual([
-      { world_id: 'w-0012', display_name: '김철수', name_source: 'WATCH_DEVICE' },
+      { world_id: 'w-0012', display_name: '추창만', name_source: 'WATCH_DEVICE' },
       { world_id: 'w-0015', display_name: '이영희', name_source: 'WATCH_DEVICE' },
       { world_id: 'w-0021', display_name: '미확인 1', name_source: 'UNIDENTIFIED' },
     ]);

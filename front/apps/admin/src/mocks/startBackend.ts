@@ -48,14 +48,29 @@ export async function startMockBackend() {
     summaryCompleteDelayMs: 1_500,
     seed: isMockBuild ? [] : seededEventsAt(Date.now()),
   });
+  let demoStartedAt = Date.now();
+  let demoCounts = { CRITICAL: 0, HIGH: 0 };
   if (isMockBuild) {
     const scheduler = createDemoAlarmScheduler({
-      publish: (message) => broker.publish(EVENTS_TOPIC, events.record(message)),
+      publish: (message) => {
+        if (message.payload.severity === 'CRITICAL') demoCounts.CRITICAL++;
+        else demoCounts.HIGH++;
+        const opening = zones.currentZones().find((zone) => zone.name === '단상 개구부');
+        if (message.payload.zone_id && opening) message.payload.zone_id = opening.zone_id;
+        broker.publish(EVENTS_TOPIC, events.record(message));
+      },
     });
     network.events.on('response:mocked', ({ request, response }) => {
       const action = workRunActionOf(request, response);
-      if (action === 'start') scheduler.start();
-      else if (action === 'end') scheduler.stop();
+      if (action === 'start') {
+        demoStartedAt = Date.now();
+        demoCounts = { CRITICAL: 0, HIGH: 0 };
+        scheduler.start();
+      } else if (action === 'end') {
+        scheduler.stop();
+        const workId = new URL(request.url).pathname.split('/').at(-2);
+        if (workId) workMock.setEventCounts(workId, demoCounts);
+      }
     });
   }
   const clips = createClipsMock({ findEvent: events.find });
@@ -63,6 +78,7 @@ export async function startMockBackend() {
   // 세션이 COMPLETED·zones_committed_at 이 된다. 작업 관리의 '세팅 완료'(SETUP_DONE)는 세팅 화면의 「세팅 완료」(POST .../complete, -615)가 정한다.
   const zones = createZonesMock({
     staticObjects: staticObjectsMock.store,
+    mockBuild: isMockBuild,
     onCommit: setupMock.completeAfterZonesCommit,
   });
   tbmMock.bindLayoutZones(zones.layoutZones);
@@ -75,6 +91,7 @@ export async function startMockBackend() {
     Date.now,
     zones.config,
     peopleNames,
+    isMockBuild ? () => Date.now() - demoStartedAt : undefined,
   );
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).

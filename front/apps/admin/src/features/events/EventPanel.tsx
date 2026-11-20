@@ -1,7 +1,7 @@
 import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { alarmingCardsFirst } from '@/features/demo/demoEvents';
 import { GHOST_MAX_LIFE_MS } from '@/features/events/constants';
-import { isAlarming, type EventEntry } from '@/features/events/entries';
+import { type EventEntry } from '@/features/events/entries';
 import type { OutsideWorkKind } from '@/features/events/EventBadges';
 import { EventDetail } from '@/features/events/EventDetail';
 import { IncidentCard } from '@/features/events/IncidentCard';
@@ -19,10 +19,8 @@ import { useAutoFold } from '@/features/events/useAutoFold';
 import { useAvoidCctv } from '@/features/events/useAvoidCctv';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
-import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
@@ -252,8 +250,6 @@ interface EventPanelProps {
   onSelect: (incident: Incident) => void;
   openEventId: string | null;
   onOpen: (eventId: string | null) => void;
-  /** 「목록에서 숨기기」(옛 「모두 지우기」). 화면에서만 숨기고 서버·확인 상태는 건드리지 않는다. */
-  onClearAll: () => void;
   /** 이 이벤트가 작업 외 진입이면 그 이유(카드에 꼬리표). 없으면 꼬리표를 달지 않는다. */
   outsideWorkOf?: (event: EventItem) => OutsideWorkKind | null;
   /**
@@ -265,36 +261,10 @@ interface EventPanelProps {
   footer?: ReactNode;
 }
 
-/** 「목록에서 숨기기」 단추 설명: 확인 처리가 아니다(S15P31A101-731). */
-const CLEAR_TITLE =
-  '지금 보이는 이벤트를 이 브라우저의 목록·배너·경보음에서만 숨깁니다. 확인(ACK) 처리가 아니며 서버 기록과 확인 상태는 그대로입니다. 새로 나거나 등급이 오른 경보는 다시 보입니다.';
-
-/** 숨기기 전 확인 창: 미확인 경보가 있을 때만 띄운다(확인한 것처럼 보이지 않게). */
-function ClearConfirm({
-  unacked,
-  onConfirm,
-  onCancel,
-}: {
-  unacked: number;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <ConfirmDialog
-      title="목록에서 숨길까요?"
-      description={`확인(ACK) 처리가 아닙니다. 미확인 경보 ${unacked}건이 이 화면의 목록·배너·경보음에서 사라지지만 확인 기록은 남지 않습니다. 서버 기록은 그대로이고, 새로 나거나 등급이 오른 경보는 다시 보입니다.`}
-      confirmLabel="숨기기"
-      onConfirm={onConfirm}
-      onCancel={onCancel}
-    />
-  );
-}
-
 /**
  * 실시간 관제 오른쪽 이벤트 패널: 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창. 지난 관제는 목록 끝의 접힌 칸에
  * 있다(S15P31A101-595). 머리줄에는 사람 수·사건 수 요약을 두지 않고 「이벤트」 이름만 둔다(S15P31A101-798).
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
- * 보이는 카드가 있으면 머리줄에 「목록에서 숨기기」가 있다(확인 처리가 아니다. 미확인 경보가 있으면 확인 창을 먼저 띄운다).
  */
 export function EventPanel({
   entries,
@@ -304,7 +274,6 @@ export function EventPanel({
   onSelect,
   openEventId,
   onOpen,
-  onClearAll,
   outsideWorkOf,
   runStartedAt,
   footer,
@@ -324,9 +293,6 @@ export function EventPanel({
     // 시연 계정은 경보 배너가 없어 확인 대기 경보 카드를 맨 위에 둔다(features/demo/demoEvents)
     return demo ? { ...all, active: alarmingCardsFirst(all.active) } : all;
   }, [entries, alive, runStartedAt, watched, demo]);
-  const unacked = useMemo(() => entries.filter(isAlarming).length, [entries]);
-  const [confirmClear, setConfirmClear] = useState(false);
-  const clear = () => (unacked > 0 ? setConfirmClear(true) : onClearAll());
   const opened = useMemo(
     () => (openEventId ? incidentOf(entries, openEventId) : undefined),
     [entries, openEventId],
@@ -378,11 +344,6 @@ export function EventPanel({
         >
           <b className="text-[15px]">이벤트</b>
           <div className="ml-auto flex items-center gap-1">
-            {hasCards(sections) && (
-              <Button variant="secondary" size="sm" title={CLEAR_TITLE} onClick={clear}>
-                목록에서 숨기기
-              </Button>
-            )}
             <FoldButton folded={folded} onToggle={() => setFolded(!folded)} />
           </div>
         </div>
@@ -413,16 +374,6 @@ export function EventPanel({
       </aside>
       {opened && openEventId && (
         <EventDetail incident={opened} openEventId={openEventId} onClose={() => onOpen(null)} />
-      )}
-      {confirmClear && (
-        <ClearConfirm
-          unacked={unacked}
-          onConfirm={() => {
-            setConfirmClear(false);
-            onClearAll();
-          }}
-          onCancel={() => setConfirmClear(false)}
-        />
       )}
     </>
   );

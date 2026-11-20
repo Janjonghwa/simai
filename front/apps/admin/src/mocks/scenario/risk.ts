@@ -11,13 +11,13 @@ type Base = Pick<Payload, 'rule_id' | 'severity' | 'world_ids' | 'zone_id'>;
  * - edge: w-0015 개구부 근접 CRITICAL(발생 → 가까워짐 → 해소)
  * - zone: 같은 사람 w-0015 의 위험 구역 진입 HIGH(한 묶음 표시, VLM 상향 의견 CRITICAL 포함)
  * - predict: w-0012 진입 예측 CAUTION(안내만, 소리 없음)
- * - unsure: w-0021 높이를 몰라 확인 필요인 HIGH(해소 → 재개 → 해소, VLM 상향 의견 CRITICAL 포함)
+ * - unsure: w-0021 높이를 몰라 확인 필요인 CRITICAL(해소 → 재개 → 해소, VLM 상향 의견 CRITICAL 포함)
  */
 const EVENTS: Record<'edge' | 'zone' | 'predict' | 'unsure', Base> = {
   edge: { rule_id: 'R2', severity: 'CRITICAL', world_ids: ['w-0015'], zone_id: 'z-04' },
   zone: { rule_id: 'R1', severity: 'HIGH', world_ids: ['w-0015'], zone_id: 'z-02' },
   predict: { rule_id: 'R5', severity: 'CAUTION', world_ids: ['w-0012'], zone_id: 'z-02' },
-  unsure: { rule_id: 'R1', severity: 'HIGH', world_ids: ['w-0021'], zone_id: 'z-04' },
+  unsure: { rule_id: 'R1', severity: 'CRITICAL', world_ids: ['w-0021'], zone_id: 'z-04' },
 };
 type EventKey = keyof typeof EVENTS;
 const KEYS = Object.keys(EVENTS) as EventKey[];
@@ -33,7 +33,7 @@ const UNSURE: Partial<Payload> = {
   needs_check: true,
   confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'],
   rationale: '한쪽 카메라 시야가 가려져 높이를 확정할 수 없으나 개구부 경계 안쪽 진입이 관측된다.',
-  proposed_severity: 'CRITICAL',
+  proposed_severity: null,
 };
 
 /** 바퀴 안에서 at(ms)에 일어나는 이벤트 전이 하나. */
@@ -156,8 +156,19 @@ function riskEvent(cycle: number, step: Step, t: number): RiskEventMessage {
 }
 
 /** /topic/events: (from, to] 사이에 일어난 이벤트 전이. 같은 구간을 두 번 넘기지 않으면 전이마다 한 번씩 나온다. */
-export function riskEventsBetween(from: number, to: number): RiskEventMessage[] {
-  return occurrencesBetween(from, to).map(({ cycle, step, at }) => riskEvent(cycle, step, at));
+export function riskEventsBetween(
+  from: number,
+  to: number,
+  historical = false,
+): RiskEventMessage[] {
+  return occurrencesBetween(from, to).map(({ cycle, step, at }) => {
+    const event = riskEvent(cycle, step, at);
+    if (historical && step.key === 'unsure') {
+      event.payload.severity = 'HIGH';
+      if (step.change?.rationale) event.payload.proposed_severity = 'CRITICAL';
+    }
+    return event;
+  });
 }
 
 /** 개발 서버가 처음부터 들고 있는 이벤트 하나. 순번은 1, 시각은 now 기준이다. */

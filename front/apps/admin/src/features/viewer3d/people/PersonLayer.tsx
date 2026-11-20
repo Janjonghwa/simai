@@ -269,6 +269,11 @@ function PersonAvatar({
       m.world = data.world;
       const track = trackOf(data.world, worldId);
       if (track) {
+        // 목업 시연의 캡슐은 머리 높이 변화로 낙상 자세를 표시한다.
+        if (import.meta.env.VITE_MOCK_BUILD === 'true' && body.current) {
+          body.current.scale.y =
+            track.headZ == null ? 1 : Math.max(0.3, Math.min(1, track.headZ / 1.68));
+        }
         const pose = personPose(track, m.lastValid);
         const at = data.world.meta.receivedAt;
         let { heading, speed } = pose;
