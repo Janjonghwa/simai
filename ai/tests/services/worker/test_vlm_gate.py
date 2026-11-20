@@ -8,6 +8,11 @@ import pytest
 
 from services.worker.runner import Outcome, Worker
 from services.worker.vlm_gate import VLM_TYPES, VlmHealthGate, from_env
+
+
+def test_disabled_gate_only_excludes_vlm_jobs():
+    gate = from_env({"SIMAI_WORKER_VLM_GATE": "off"})
+    assert gate(["vlm_rationale", "incident_summary", "site_setup", "vlm_zone_draft"]) == ["site_setup", "vlm_zone_draft"]
 from simai_ai.providers.testing import load_example
 
 T0 = 1760342400000  # conftest 와 같은 기준 시각

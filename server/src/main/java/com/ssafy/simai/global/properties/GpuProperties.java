@@ -27,7 +27,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties("simai.gpu")
 public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration bootTimeout, Duration failedGrace, Duration uploadHold,
-        Duration sweepInterval, Duration presenceMaxExtension) {
+        Duration sweepInterval, Duration presenceMaxExtension, boolean vlmEnabled) {
 
     public GpuProperties {
         runpod = runpod == null ? new RunPod(null, null, null, null, null, null, null, null) : runpod;

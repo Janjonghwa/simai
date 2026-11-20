@@ -1004,14 +1004,15 @@ def cache_findings(results: dict[str, str], reid_is_ready: bool) -> dict[str, di
     return out
 
 
-def service_findings(want: list[str], vllm_vram_ok: bool) -> dict[str, dict]:
+def service_findings(want: list[str], vllm_vram_ok: bool, disabled: set[str] | None = None) -> dict[str, dict]:
     """기동하지 않는 서비스(--services 에 없거나 VRAM 부족) → 꺼진 기능 항목."""
     out: dict[str, dict] = {}
     for svc, key in (("ppe", "svc_ppe"), ("avatar", "svc_avatar"), ("worker", "svc_worker")):
         if svc not in want:
             out[key] = notice(SERVICE_TEXT[key], detail=f"기동 서비스: {','.join(want) or '(없음)'}")
     if "vllm" not in want or not vllm_vram_ok:
-        out["svc_vllm"] = notice(SERVICE_TEXT["svc_vllm"], detail=f"기동 서비스: {','.join(want) or '(없음)'}, VRAM 충분: {vllm_vram_ok}")
+        configured_off = "vllm" in (disabled or set())
+        out["svc_vllm"] = notice("AI 설명(VLM)은 설정으로 꺼져 있어요(경보는 그대로)." if configured_off else SERVICE_TEXT["svc_vllm"], level="info" if configured_off else "warning", detail=f"기동 서비스: {','.join(want) or '(없음)'}, VRAM 충분: {vllm_vram_ok}")
     return out
 
 
@@ -1114,7 +1115,7 @@ def warmup_vlm(env: dict[str, str], opener=urllib.request.urlopen, clock=time.mo
         return False, clock() - t0, f"{type(e).__name__}"
 
 
-def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
+def _boot_services_base(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
     """lobby 서비스를 VRAM(nvidia-smi memory.total, MiB)으로 정한다(S15P31A101-705, 명세 3.12 최소 사양).
     SIMAI_BOOT_SERVICES 가 있으면 그 값을 그대로 쓴다(명시값 우선). 돌려주는 것은 (services, 보고에 붙일 한 줄 또는 None).
     - PPE_MIN_VRAM_MB(70,000 MiB) 이상: BOOT_SERVICES(tier0,vllm,worker,avatar,ppe, -718)
@@ -1136,6 +1137,19 @@ def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier
     if mb >= min_tier0_mb:
         return "tier0", f"VRAM {gib:.1f} GiB(24GB급): Tier 0 관제만, 세팅·맵 굽기·VLM·아바타 꺼짐"
     return "tier0", f"VRAM {gib:.1f} GiB: Tier 0 최소 사양(24GB급) 미만, 개발·시험용(준비 실패 가능)"
+
+
+def boot_services(env: dict[str, str], gpu: dict, min_worker_mb: float, min_tier0_mb: float) -> tuple[str | None, str | None]:
+    """명시 목록 또는 VRAM 기본값에서 설정으로 제외한 서비스만 뺀다."""
+    services, note = _boot_services_base(env, gpu, min_worker_mb, min_tier0_mb)
+    disabled = {s.strip() for s in env.get("SIMAI_BOOT_DISABLE", "").split(",") if s.strip()}
+    if not disabled:
+        return services, note
+    selected = services if services is not None else "tier0,vllm,worker,avatar"
+    remaining = ",".join(s.strip() for s in selected.split(",") if s.strip() and s.strip() not in disabled)
+    if not remaining:
+        raise ValueError("SIMAI_BOOT_DISABLE 적용 후 기동 서비스가 없다")
+    return remaining, note
 
 
 def lobby_failure(code: int, stage: str) -> tuple[str, str]:
@@ -1478,7 +1492,8 @@ class Boot:
             return self.idle()
         want = [s.strip() for s in (services or self.bs.LOBBY_SERVICES).split(",") if s.strip()]
         want_vllm = "vllm" in want and (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB
-        services_off = service_findings(want, (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB)
+        services_off = service_findings(want, (gpu.get("memory_total_mb") or 0) >= self.bs.MIN_WORKER_VRAM_MB,
+                                        {s.strip() for s in self.env.get("SIMAI_BOOT_DISABLE", "").split(",") if s.strip()})
         for key, item in services_off.items():
             rep.set_disabled(key, item["text"], item["level"], item.get("detail"))
         vllm_port = int(self.env.get("SIMAI_VLLM_PORT") or 8000)

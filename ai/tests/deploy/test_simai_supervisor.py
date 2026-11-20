@@ -157,6 +157,15 @@ def test_order_tier0_then_weights_then_vllm_then_worker_after_health(bs, tmp_pat
     assert ("tier0", signal.SIGTERM) not in w.signals
 
 
+def test_worker_without_vllm_disables_vlm_leases(bs, tmp_path, monkeypatch):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "worker"))
+    _start(sup, w)
+    w.ready = True
+    _settle(sup, w, 5)
+    assert w.envs["worker"]["SIMAI_WORKER_VLM_GATE"] == "off"
+
+
 def _marker(root: Path, written_at, pid, phase="running") -> None:
     m = root / "state" / "tier0.live"
     m.parent.mkdir(parents=True, exist_ok=True)

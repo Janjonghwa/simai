@@ -4,7 +4,7 @@ import type { EventItem } from '@/features/events/types';
 import { GPU_STATUS_KEY } from '@/features/gpu/api';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // 근거가 없을 때 대기 문구를 표시하지 않는다. 설명은 상세 머리 아래에 표시한다.
@@ -113,5 +113,17 @@ describe('AI 근거 준비 중(S15P31A101-706)', () => {
     expect(within(panel).queryByText('AI 근거 준비 중')).toBeNull();
     client.setQueryData(GPU_STATUS_KEY, gpuStatus('READY'));
     expect(within(panel).queryByText('AI 근거 준비 중')).toBeNull();
+  });
+
+  it('현재 세션에서 VLM 이 꺼지면 AI 설명 전체를 숨기고 다시 켜지면 보인다', () => {
+    const { client } = renderAi(makeEvent(), 'READY');
+    const disabled = gpuStatus('READY');
+    Object.assign(disabled.status.session!, {
+      disabled_notices: [{ key: 'svc_vllm', level: 'info', text: '설정으로 꺼짐' }],
+    });
+    act(() => client.setQueryData(GPU_STATUS_KEY, disabled));
+    expect(screen.queryByRole('region', { name: 'AI 설명' })).toBeNull();
+    act(() => client.setQueryData(GPU_STATUS_KEY, gpuStatus('READY')));
+    expect(screen.getByRole('region', { name: 'AI 설명' })).toBeTruthy();
   });
 });

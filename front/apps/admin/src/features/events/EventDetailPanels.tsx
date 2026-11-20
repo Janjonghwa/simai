@@ -31,6 +31,7 @@ import type { EventEscalation } from '@/features/events/types';
 import { useAliveIds } from '@/features/events/useAliveIds';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { useSummaryState } from '@/features/events/useIncidentSummary';
+import { useCachedGpuStatus } from '@/features/gpu/useGpu';
 import type { ConfigBundle } from '@/features/zones/types';
 import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { useZoneName } from '@/features/zones/useZoneName';
@@ -191,6 +192,12 @@ export function AiPanel({
   const role = useCurrentRole();
   const historyByEvent = useEscalationHistory();
   const summaryByEvent = useSummaryState();
+  // 이미 받아 둔 GPU 상태만 본다(상단바 점이 받는다). 설정으로 VLM 을 끈 세션이면 AI 설명 칸을 숨긴다(S15P31A101-830)
+  const gpuStatus = useCachedGpuStatus();
+  const vlmDisabled =
+    import.meta.env.VITE_MOCK_BUILD !== 'true' &&
+    gpuStatus?.session?.state === 'ACTIVE' &&
+    gpuStatus.session.disabled_notices?.some((notice) => notice.key === 'svc_vllm');
   const ai = entries.filter(({ event }) => {
     const history = mergedEscalations(event, historyByEvent[event.event_id]);
     const summary = latestSummary(event, summaryByEvent[event.event_id]);
@@ -201,6 +208,7 @@ export function AiPanel({
       canRequestSummary(event, role),
     );
   });
+  if (vlmDisabled) return null;
   return (
     <DetailPanel title="AI 설명">
       {ai.length === 0 ? (

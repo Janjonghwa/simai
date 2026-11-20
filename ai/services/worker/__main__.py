@@ -96,6 +96,9 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
         handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, None, client_factory=None, env=env)
     if site_setup is not None:
         handlers["site_setup"] = site_setup
+    if (env.get("SIMAI_WORKER_VLM_GATE") or "").strip() == "off":
+        log.info("VLM 설정 꺼짐: 기하 구역 후보만 처리한다")
+        return handlers
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             provider = pose(env.get("SIMAI_WORKER_FACE_POSE_WEIGHTS", "").strip() or env["SIMAI_TIER0_WEIGHTS"])
@@ -233,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"services.worker: {e}", file=sys.stderr)
         return 2
     if vlm_gate is not None:
-        log.info("VLM 작업 유형은 %s 가 200 일 때만 받는다(SIMAI_WORKER_VLM_GATE=health)", vlm_gate.url)
+        log.info("VLM 작업 관문 사용: %s", os.environ.get("SIMAI_WORKER_VLM_GATE"))
 
     stop = threading.Event()
     client = LeaseClient(
