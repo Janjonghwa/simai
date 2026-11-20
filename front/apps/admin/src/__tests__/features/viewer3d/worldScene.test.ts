@@ -6,7 +6,7 @@ import {
   PEOPLE,
   ZONES,
 } from '@/features/viewer3d/dev-harness/mockUi';
-import { roomViewOf } from '@/features/viewer3d/scene/roomView';
+import { roomViewOf, viewBoundsFrom } from '@/features/viewer3d/scene/roomView';
 import {
   threeToWorld,
   toThreePoint,
@@ -15,7 +15,7 @@ import {
 } from '@/features/viewer3d/worldCoordinates';
 import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { DEMO_ROOM, FLOOR_ROTATION_X, roomLayout } from '@/features/viewer3d/WorldScene';
-import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
+import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
 import { Mesh, PlaneGeometry, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
@@ -76,32 +76,47 @@ describe('World 교실 배치', () => {
 });
 
 describe('처음 시점(roomViewOf)', () => {
-  it('스캔이 없으면 예전 처음 시점과 같다(방 가운데 (5, 5, 0) 을 앞·오른쪽 10m 위에서 본다)', () => {
+  it('스캔이 없으면 목업 교실 중심(5, 5, 0.8)을 World 남쪽(−Y) 수평 위 35° 에서 내려다본다', () => {
     const view = roomViewOf(DEFAULT_ROOM_LIMIT);
-    expect(view.target).toEqual(worldToThree(worldPoint(5, 5, 0)));
-    expect(view.home).toEqual(worldToThree(worldPoint(15, -5, 10)));
+    const targetW = threeToWorld(view.target);
+    const homeW = threeToWorld(view.home);
+    expect(clean(targetW)).toEqual([5, 5, 0.8]);
+    expect(homeW[0]).toBeCloseTo(5, 6);
+    expect(homeW[1]).toBeLessThan(5);
+    expect(homeW[2]).toBeGreaterThan(0.8);
+    expect((Math.atan2(homeW[2] - targetW[2], targetW[1] - homeW[1]) * 180) / Math.PI).toBeCloseTo(
+      35,
+      6,
+    );
   });
 
-  it('스캔이 있으면 스캔 범위 가운데 바닥을 보고 거리는 긴 변에 비례한다', () => {
-    const scan = { min: [2, 1, -0.1], max: [6, 9, 3] } as const;
-    const view = roomViewOf(roomLimitFrom(scan));
-    // 가운데 (4, 5), 긴 변 8m(y) → 앞·오른쪽·위로 8m.
-    expect(view.target).toEqual(worldToThree(worldPoint(4, 5, 0)));
-    expect(view.home).toEqual(worldToThree(worldPoint(12, -3, 8)));
+  it('스캔이 있으면 스캔 중심(xy)·높이 min(0.8, 높이×0.3)을 남쪽 35° 에서 본다', () => {
+    const scan = { min: [2, 1, 0], max: [6, 9, 2] } as const;
+    const view = roomViewOf(viewBoundsFrom(scan));
+    const targetW = threeToWorld(view.target);
+    const homeW = threeToWorld(view.home);
+    // 가운데 (4, 5), 높이 2m → 바라보는 점 높이 0.6m.
+    expect(clean(targetW)).toEqual([4, 5, 0.6]);
+    expect(homeW[0]).toBeCloseTo(4, 6);
+    expect(homeW[1]).toBeLessThan(5);
+    expect((Math.atan2(homeW[2] - targetW[2], targetW[1] - homeW[1]) * 180) / Math.PI).toBeCloseTo(
+      35,
+      6,
+    );
   });
 
   it('쓸 수 없는 스캔(한 변 0.2m·NaN)이면 목업 시점이라 카메라가 가운데에 붙거나 사라지지 않는다', () => {
     const mock = roomViewOf(DEFAULT_ROOM_LIMIT);
-    expect(roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [0.2, 0.2, 3] }))).toEqual(mock);
-    expect(roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [Number.NaN, 5, 3] }))).toEqual(mock);
+    expect(roomViewOf(viewBoundsFrom({ min: [0, 0, 0], max: [0.2, 0.2, 3] }))).toEqual(mock);
+    expect(roomViewOf(viewBoundsFrom({ min: [0, 0, 0], max: [Number.NaN, 5, 3] }))).toEqual(mock);
   });
 
-  it('범위가 두 배면 카메라가 가운데에서 두 배 멀어진다', () => {
-    const near = roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [5, 5, 3] }));
-    const far = roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [10, 10, 3] }));
+  it('범위가 두 배면 카메라가 가운데에서 더 멀어진다', () => {
+    const near = roomViewOf(viewBoundsFrom({ min: [0, 0, 0], max: [5, 5, 2] }));
+    const far = roomViewOf(viewBoundsFrom({ min: [0, 0, 0], max: [10, 10, 4] }));
     const distance = (v: ReturnType<typeof roomViewOf>) =>
       new Vector3(...v.home).distanceTo(new Vector3(...v.target));
-    expect(distance(far) / distance(near)).toBeCloseTo(2, 9);
+    expect(distance(far)).toBeGreaterThan(distance(near) * 1.8);
   });
 });
 

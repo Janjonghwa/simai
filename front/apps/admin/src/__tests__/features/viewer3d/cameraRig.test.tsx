@@ -1,7 +1,7 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
 import type { CalibratedCameraPose } from '@/features/viewer3d/cameras/cameraMarkers';
 import { cameraViewPose } from '@/features/viewer3d/cameras/cameraView';
-import { roomViewOf } from '@/features/viewer3d/scene/roomView';
+import { roomViewOf, viewBoundsFrom } from '@/features/viewer3d/scene/roomView';
 import { IDLE_LOAD, type SceneLoad } from '@/features/viewer3d/scene/sceneContract';
 import {
   createSceneStore,
@@ -11,7 +11,7 @@ import {
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { worldPoint } from '@/features/viewer3d/worldCoordinates';
-import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
+import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
 import {
   advance,
   createRoot,
@@ -37,9 +37,28 @@ const TOO_SMALL: Bounds = { min: [0, 0, 0], max: [0.2, 0.2, 3] };
 /** 사용자가 돌려 놓은 카메라 자리(어느 시점과도 다르다). */
 const USER_POSITION = [7, 7, 7] as const;
 
-const homeOf = (bounds: Bounds | null) => roomViewOf(roomLimitFrom(bounds)).home;
-const targetOf = (bounds: Bounds | null) => roomViewOf(roomLimitFrom(bounds)).target;
-const MOCK_HOME = roomViewOf(DEFAULT_ROOM_LIMIT).home;
+/** 시험 Canvas 기본 크기(800×600)와 R3F 기본 PerspectiveCamera 세로 시야각(75°). */
+const DEFAULT_SIZE: { width: number; height: number } = { width: 800, height: 600 };
+const TEST_FOV = 75;
+const viewOf = (
+  bounds: Bounds | null,
+  size: { width: number; height: number } = DEFAULT_SIZE,
+  fovDeg = TEST_FOV,
+) => roomViewOf(viewBoundsFrom(bounds), { fovDeg, aspect: size.width / size.height });
+const homeOf = (
+  bounds: Bounds | null,
+  size: { width: number; height: number } = DEFAULT_SIZE,
+  fovDeg = TEST_FOV,
+) => viewOf(bounds, size, fovDeg).home;
+const targetOf = (
+  bounds: Bounds | null,
+  size: { width: number; height: number } = DEFAULT_SIZE,
+  fovDeg = TEST_FOV,
+) => viewOf(bounds, size, fovDeg).target;
+const MOCK_HOME = roomViewOf(DEFAULT_ROOM_LIMIT, {
+  fovDeg: TEST_FOV,
+  aspect: DEFAULT_SIZE.width / DEFAULT_SIZE.height,
+}).home;
 
 function fakeRenderer(canvas: HTMLCanvasElement) {
   return {
@@ -76,12 +95,13 @@ function Probe() {
   return null;
 }
 
-async function mount() {
+async function mount(size: { width: number; height: number } = DEFAULT_SIZE, cameraFov?: number) {
   const canvas = document.createElement('canvas');
   root = createRoot(canvas);
   await root.configure({
     gl: fakeRenderer(canvas) as never,
-    size: { width: 800, height: 600, top: 0, left: 0 },
+    size: { ...size, top: 0, left: 0 },
+    ...(cameraFov !== undefined ? { camera: { fov: cameraFov } } : {}),
     frameloop: 'never',
   });
   await act(async () =>
@@ -206,6 +226,31 @@ describe('CameraRig 시점 초기화', () => {
     moveByUser();
     await resetView();
     expectNear(position(), homeOf(SCAN_B));
+  });
+
+  it('실제 세로 시야각(50°)과 화면 비율(1440×900·1288×674)에 맞춘 남쪽 35° 시점으로 옮기고 시점 초기화도 같은 시점으로 돌아간다', async () => {
+    const lobby: Bounds = { min: [0, 0, 0], max: [7.9, 8.4, 2.8] };
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 1288, height: 674 },
+    ]) {
+      viewer = createViewerStore('LIVE');
+      viewer.getState().markReady();
+      sceneStore = createSceneStore();
+      await mount(viewport, 50);
+      await showScan(lobby);
+      expectNear(position(), homeOf(lobby, viewport, 50));
+      expectNear(orbitTarget().toArray(), targetOf(lobby, viewport, 50));
+
+      moveByUser();
+      await resetView();
+      expectNear(position(), homeOf(lobby, viewport, 50));
+      expectNear(orbitTarget().toArray(), targetOf(lobby, viewport, 50));
+
+      await act(async () => root?.unmount());
+      root = null;
+      three = null;
+    }
   });
 });
 

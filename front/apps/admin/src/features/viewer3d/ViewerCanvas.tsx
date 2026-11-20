@@ -10,7 +10,7 @@ import { PlannedLayer } from '@/features/viewer3d/planned/PlannedLayer';
 import { PostProcessingLayer } from '@/features/viewer3d/PostProcessingLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
 import { FloorCoverageLayer } from '@/features/viewer3d/scene/FloorCoverageLayer';
-import { roomViewOf } from '@/features/viewer3d/scene/roomView';
+import { DEFAULT_VIEW_FOV_DEG, roomViewOf } from '@/features/viewer3d/scene/roomView';
 import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
 import { WorkSurfaceLayer } from '@/features/viewer3d/surfaces/WorkSurfaceLayer';
@@ -21,11 +21,16 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, type ReactNode } from 'react';
 import { NoToneMapping, SRGBColorSpace } from 'three';
 
-// 처음 시점: 방 가운데를 앞·오른쪽 위에서 내려다본다. 스캔이 들어오면 CameraRig 가 스캔 범위 기준 시점으로 옮긴다.
-const DEFAULT_VIEW = roomViewOf(DEFAULT_ROOM_LIMIT);
+// 처음 시점: 방 가운데를 남쪽(World −Y) 수평 위 35° 에서 내려다본다. 스캔이 들어오면 CameraRig 가 스캔 범위·화면 비율 기준 시점으로 옮긴다.
+const DEFAULT_VIEW = roomViewOf(DEFAULT_ROOM_LIMIT, { fovDeg: DEFAULT_VIEW_FOV_DEG });
 
 // 모듈 상수로 둬서 Canvas 가 다시 렌더돼도 카메라·렌더러 설정을 다시 적용하지 않는다.
-const CAMERA = { position: DEFAULT_VIEW.home, fov: 50, near: 0.1, far: 500 };
+const CAMERA = {
+  position: DEFAULT_VIEW.home,
+  fov: DEFAULT_VIEW_FOV_DEG,
+  near: 0.1,
+  far: 500,
+};
 // 사진 텍스처 배경 색이 톤매핑으로 틀어지지 않게 SRGB 출력·NoToneMapping 으로 맞춘다(-360).
 export const VIEWER_GL_CONSTRAINTS = {
   antialias: true,
