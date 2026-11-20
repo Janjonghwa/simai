@@ -169,23 +169,31 @@ def test_not_worn_needs_last_bin_not_worn():
     assert v.state == "NOT_WORN" and v.last_evidence_at == t_of(6)
 
 
-def test_empty_bin_does_not_excuse_unknown_bin():
-    """빈 칸 1칸과 모호(검출 없음) 칸 1칸이 함께면 미착용이 아니다. 착용·충돌·모호 칸은 그대로 막는다."""
-    j = PpeJudge()
-    _not_worn_bins(j, [0, 3, 4, 5])
-    feed(j, "cam1", t_of(2), [person("w1")], [])
-    assert state(j, closed_after(5)).state == "UNKNOWN"
+def test_empty_bin_plus_neutral_bin_is_allowed_since_0_9():
+    """빈 칸 1칸과 판정 없는(검출 없음) 칸 1칸이 함께여도 미착용이다(0.9.0, S15P31A101-818). 0.8.0 규칙에서는 막혔다."""
+    for cfg, want in ((pa.DEFAULT_CONFIG, "NOT_WORN"),
+                      (dataclasses.replace(pa.DEFAULT_CONFIG, not_worn_max_neutral_bins=0), "UNKNOWN")):
+        j = PpeJudge(cfg)
+        _not_worn_bins(j, [0, 3, 4, 5])
+        feed(j, "cam1", t_of(2), [person("w1")], [])
+        assert state(j, closed_after(5)).state == want
 
 
 def test_missing_detection_is_not_not_worn_evidence():
+    """검출 없음만으로는 미착용이 되지 않고, 미착용 근거 시각도 늘리지 않는다(창에 끼는 것만 허용, S15P31A101-818)."""
     j = PpeJudge()
-    for b in range(6):
-        feed(j, "cam1", t_of(b), [person("w1")], [NO_HELMET()] if b != 3 else [])
-    assert state(j, closed_after(5)).state == "UNKNOWN"
-    for b in range(6, 20):
+    for b in range(20):
         feed(j, "cam1", t_of(b), [person("w1")], [])
     v = state(j, closed_after(19))
     assert (v.state, v.reason) == ("UNKNOWN", pa.R_NO_DETECTION)
+    k = PpeJudge()
+    for b in range(6):
+        feed(k, "cam1", t_of(b), [person("w1")], [NO_HELMET()] if b != 3 else [])
+    v = state(k, closed_after(5))
+    assert v.state == "NOT_WORN" and v.last_evidence_at == t_of(5)
+    for b in range(6, 30):
+        feed(k, "cam1", t_of(b), [person("w1")], [])
+    assert state(k, closed_after(29)).state == "UNKNOWN"   # 마지막 미착용 근거 + 10초가 지나 만료
 
 
 def test_not_worn_requires_clear_head():
@@ -733,7 +741,7 @@ def test_contrary_reason_still_stays_until_confirmed():
 
 def test_policy_version_marks_current_rules():
     from simai_ai.ppe.config import POLICY_VERSION
-    assert POLICY_VERSION == "ppe-policy-0.8.0"
+    assert POLICY_VERSION == "ppe-policy-0.9.0"
 
 
 # ---- 머리 폭 하한 = 어깨 폭 × 0.6 (S15P31A101-737, ppe-policy-0.6.0) ----------------------------------------------
@@ -856,3 +864,80 @@ def test_contest_flag_off_restores_immediate_reset():
         feed(j, "cam1", t_of(b), [person("w1", local="7")], [HELMET()])
     feed(j, "cam1", t_of(6), [person("t1", local="7", ident="IDENTITY_UNCERTAIN")], [HELMET()])
     assert state(j, closed_after(6)).reason == ps.R_MAPPING_CHANGED
+
+
+# ---- 고립된 ID 불확실 사람은 판정에 쓴다(S15P31A101-818, ppe-policy-0.9.0) ----------------------------------------------
+def _uncertain(wid="w1", *, isolated, **kw):
+    return dataclasses.replace(person(wid, ident="IDENTITY_UNCERTAIN", **kw), isolated=isolated)
+
+
+def test_isolated_uncertain_person_is_not_blocked_in_association():
+    a = feed(PpeJudge(), "cam1", t_of(0), [_uncertain(isolated=True)], [NO_HELMET()])
+    [s] = [s for s in a.samples if s.item == "helmet"]
+    assert (s.kind, s.reason) == (pa.S_NOT_WORN, pa.R_NOT_WORN_MATCHED)
+    b = feed(PpeJudge(), "cam1", t_of(0), [_uncertain(isolated=False)], [NO_HELMET()])
+    [s] = [s for s in b.samples if s.item == "helmet"]
+    assert (s.kind, s.reason) == (pa.S_UNKNOWN, pa.R_IDENTITY_UNCERTAIN)
+
+
+def test_isolated_uncertain_person_confirms_not_worn_like_certain():
+    """2026-11-19 연습: 혼자 선 작업자가 Tier 0 불확실인 채로 안전모를 벗었다. 고립이면 6칸으로 미착용이 확정된다."""
+    j = PpeJudge()
+    _worn(j)
+    for b in range(6, 14):
+        feed(j, "cam1", t_of(b), [_uncertain(isolated=True)], [NO_HELMET()])
+    v = state(j, closed_after(13))
+    assert (v.state, v.reason) == ("NOT_WORN", ps.R_WINDOW_NOT_WORN)
+    assert j.tracks["w1"].skipped_bins == set()   # 건너뛴 칸이 없다
+
+
+def test_non_isolated_uncertain_person_is_still_skipped_and_reset():
+    j = PpeJudge()
+    _worn(j)
+    for b in range(6, 14):
+        feed(j, "cam1", t_of(b), [_uncertain(isolated=False)], [NO_HELMET()])
+    v = state(j, closed_after(13))
+    assert v.state == "UNKNOWN" and v.reason == ps.R_IDENTITY_UNCERTAIN   # 3초 초과로 초기화, 미착용 아님
+
+
+def test_isolation_radius_zero_turns_exception_off():
+    j = PpeJudge(dataclasses.replace(pa.DEFAULT_CONFIG, isolated_uncertain_radius_m=0.0))
+    for b in range(8):
+        feed(j, "cam1", t_of(b), [_uncertain(isolated=True)], [NO_HELMET()])
+    assert state(j, closed_after(7)).state == "UNKNOWN"
+
+
+# ---- 판정 없는 칸(중립 칸) 허용(S15P31A101-818, ppe-policy-0.9.0) -------------------------------------------------------
+def _not_worn_with(j, pattern, start=0):
+    """pattern: 칸마다 'N'(미착용)·'0'(검출 없음 = 중립)·'C'(머리 불선명 = 중립)·'-'(표본 없음 = 빈 칸)·'W'(착용)·'S'(두 사람 겹침)."""
+    for i, c in enumerate(pattern):
+        b = start + i
+        if c == "-":
+            continue
+        if c == "S":   # 두 사람에 걸친 미착용 상자 → 모호(SHARED_DETECTION)
+            feed(j, "cam1", t_of(b), [person("w1"), person("w9", 530, local="l-w9")], [NO_HELMET(515)])
+            continue
+        p = person("w1", face_conf=0.1) if c == "C" else person("w1")
+        cands = {"N": [NO_HELMET()], "0": [], "C": [NO_HELMET()], "W": [HELMET()]}[c]
+        feed(j, "cam1", t_of(b), [p], cands)
+    return state(j, closed_after(start + len(pattern) - 1))
+
+
+def test_neutral_bins_up_to_two_do_not_block_not_worn():
+    assert _not_worn_with(PpeJudge(), "NN0NN0N").state == "NOT_WORN"      # 중립 2칸(검출 없음)
+    assert _not_worn_with(PpeJudge(), "N-NN0NN").state == "NOT_WORN"      # 빈 칸 1 + 중립 1
+
+
+def test_too_many_gaps_or_two_empty_bins_still_block():
+    assert _not_worn_with(PpeJudge(), "N00N0N").state != "NOT_WORN"       # 중립 3칸
+    assert _not_worn_with(PpeJudge(), "NN-NN-N").state != "NOT_WORN"      # 빈 칸 2칸(빈 칸은 1칸까지)
+
+
+def test_worn_and_ambiguous_bins_still_block_not_worn():
+    assert _not_worn_with(PpeJudge(), "NNWNNN").state != "NOT_WORN"
+    assert _not_worn_with(PpeJudge(), "NNSNNN").state != "NOT_WORN"
+
+
+def test_neutral_bins_zero_restores_previous_rule():
+    j = PpeJudge(dataclasses.replace(pa.DEFAULT_CONFIG, not_worn_max_neutral_bins=0))
+    assert _not_worn_with(j, "NN0NNN").state != "NOT_WORN"

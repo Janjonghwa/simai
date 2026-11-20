@@ -55,8 +55,8 @@ def test_admission_is_rechecked_after_observations_before_first_inference(monkey
     source.value = shared(START, dict.fromkeys(CAMERAS, 1), cams=CAMERAS)
     clock.t = START + 30
 
-    def close_after_observations(*args):
-        observations = frame_observations(*args)
+    def close_after_observations(*args, **kw):
+        observations = frame_observations(*args, **kw)
         gate.admission = SimpleNamespace(live=live, admit=not live, code="over_budget" if live else "not_live")
         return observations
 
