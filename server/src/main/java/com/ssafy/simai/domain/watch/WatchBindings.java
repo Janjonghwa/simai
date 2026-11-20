@@ -48,6 +48,16 @@ public class WatchBindings {
             return handoffFrom != null && handoffConfirmedAt == null;
         }
 
+        /** 시연 스위치 1명 자동 배정(S15P31A101-826). 임시 성격으로 대조가 반대 근거로 풀거나 MOTION_MATCH 로 올릴 수 있다 */
+        public boolean demoSingle() {
+            return "DEMO_SINGLE".equals(method);
+        }
+
+        /** 임시 성격 배정(미확정 자리 이어받기·시연 1명 자동 배정). 걸음 대조 반대 근거(음수)로 풀 수 있다 */
+        public boolean provisional() {
+            return tentative() || demoSingle();
+        }
+
         /** 관리자 선택으로 대조가 건드리지 않는 배정(수동이고 임시가 아님) */
         public boolean manualFixed() {
             return "MANUAL".equals(method) && !tentative();
@@ -62,8 +72,8 @@ public class WatchBindings {
                 rs.getDouble("score"), rs.getTimestamp("bound_at").toInstant(), rs.getString("handoff_from"),
                 confirmed == null ? null : confirmed.toInstant());
     };
-    /** 대조가 끝낼 수 있는 행: 대조 배정과 임시 이어받기(수동이라도). 확정된 수동은 관리자 것이라 건드리지 않는다 */
-    private static final String MOTION_OWNED = "(method = 'MOTION_MATCH' OR (handoff_from IS NOT NULL AND handoff_confirmed_at IS NULL))";
+    /** 대조가 끝낼 수 있는 행: 대조 배정·시연 1명 배정·임시 이어받기(수동이라도). 확정된 수동은 관리자 것이라 건드리지 않는다 */
+    private static final String MOTION_OWNED = "(method IN ('MOTION_MATCH', 'DEMO_SINGLE') OR (handoff_from IS NOT NULL AND handoff_confirmed_at IS NULL))";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final Clock clock;
@@ -128,35 +138,57 @@ public class WatchBindings {
     }
 
     /**
-     * 움직임 대조 배정(MOTION_MATCH, S15P31A101-340). 그 워치나 그 World ID 의 옛 대조 배정(임시 이어받기 포함)은 REPLACED 로 끝낸다.
-     * 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는 건드리지 않는다(관리자 덮어쓰기가 이긴다).
+     * 움직임 대조 배정(MOTION_MATCH, S15P31A101-340). 그 워치나 그 World ID 의 옛 대조 배정(임시 이어받기·시연 1명 배정 포함)은
+     * REPLACED 로 끝낸다. 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는 건드리지 않는다(관리자 덮어쓰기가 이긴다).
      *
      * @return 새로 이었으면 true. 수동 배정에 막혔거나 같은 순간 수동 배정이 들어와 부분 유일 색인에 걸렸으면 false
      */
     @Transactional
     public boolean bindByMotion(String deviceId, String worldId, double score) {
+        return bindByMotion(deviceId, worldId, score, null);
+    }
+
+    /**
+     * 움직임 대조 배정(MOTION_MATCH). {@code replaceableBindingId} 가 주어지면 그 행(지금 화면에 보이지 않는 World ID 에 묶인
+     * 해당 워치의 확정 수동 배정, S15P31A101-826)도 함께 REPLACED 로 닫고 새 World ID 로 갈아 끼운다. 같은 순간 관리자가 새로 만든
+     * 수동 배정(다른 binding_id)이나 대상 World ID 의 확정 수동 배정은 건드리지 않는다.
+     */
+    @Transactional
+    public boolean bindByMotion(String deviceId, String worldId, double score, Long replaceableBindingId) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("device", deviceId).addValue("world", worldId)
                 .addValue("score", Math.max(0, Math.min(1, score)))
                 .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
+        if (replaceableBindingId != null) {
+            params.addValue("replaceId", replaceableBindingId);
+        }
+        String excludeReplace = replaceableBindingId == null ? "" : " AND NOT (b.binding_id = :replaceId AND b.device_id = :device)";
         Integer manual = jdbc.queryForObject("""
                 SELECT count(*) FROM watch_binding b JOIN device d ON d.device_id = b.device_id
                 WHERE b.unbound_at IS NULL AND b.method = 'MANUAL' AND d.revoked_at IS NULL
                   AND NOT (b.handoff_from IS NOT NULL AND b.handoff_confirmed_at IS NULL)
-                  AND (b.device_id = :device OR b.world_id = :world)
-                """, params, Integer.class);
+                  AND (b.device_id = :device OR b.world_id = :world)%s
+                """.formatted(excludeReplace), params, Integer.class);
         if (manual != null && manual > 0) {
             return false;
         }
+        String closeCondition = replaceableBindingId == null
+                ? MOTION_OWNED
+                : "(" + MOTION_OWNED + " OR (binding_id = :replaceId AND device_id = :device))";
         List<String> ended = jdbc.queryForList("""
                 UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
                 WHERE unbound_at IS NULL AND %s AND (device_id = :device OR world_id = :world) RETURNING device_id
-                """.formatted(MOTION_OWNED), params, String.class);
+                """.formatted(closeCondition), params, String.class);
         // 예외로 받으면 트랜잭션이 깨지니 부분 유일 색인 충돌은 행 없이 돌아오게 한다
         boolean bound = !jdbc.queryForList("""
                 INSERT INTO watch_binding (device_id, world_id, method, score, bound_at)
                 VALUES (:device, :world, 'MOTION_MATCH', :score, :now)
                 ON CONFLICT DO NOTHING RETURNING binding_id
                 """, params, Long.class).isEmpty();
+        if (!bound && !ended.isEmpty()) {
+            // 같은 순간 다른 배정이 끼어들어 부분 유일 색인에 걸렸다. 옛 배정을 닫은 채 두지 않도록 되돌린다
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            return false;
+        }
         changedEnded(ended, bound ? deviceId : null, "REPLACED");
         if (bound) {
             changed(deviceId, null);
@@ -175,6 +207,66 @@ public class WatchBindings {
                 String.class);
         changedEnded(ended, null, reason);
         return ended.size();
+    }
+
+    /**
+     * 시연 스위치 1명 자동 배정(DEMO_SINGLE, S15P31A101-826). 등록된 활성 워치이고 대상 World ID 에 배정이 없을 때
+     * 임시 성격(score 0)으로 잇는다. {@code replaceableBindingId} 가 null 이면 그 워치에 배정이 없을 때만 잇고,
+     * 주어지면 그 행(지금 보이지 않는 옛 World ID 에 묶인 배정, 수동 포함)만 REPLACED 로 닫고 새 World ID 로 갈아 끼운다.
+     * 걸음 대조가 반대 근거로 풀거나 같은 짝이면 MOTION_MATCH 로 올릴 수 있다.
+     */
+    @Transactional
+    public boolean bindDemoSingle(String deviceId, String worldId, Long replaceableBindingId) {
+        if (deviceId == null || deviceId.isBlank() || worldId == null || worldId.isBlank() || worldId.length() > 64) {
+            return false;
+        }
+        Integer watches = jdbc.queryForObject("""
+                SELECT count(*) FROM device WHERE device_id = :device AND kind = 'WATCH' AND revoked_at IS NULL
+                """, new MapSqlParameterSource("device", deviceId), Integer.class);
+        if (watches == null || watches == 0) {
+            return false;
+        }
+        OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("device", deviceId).addValue("world", worldId)
+                .addValue("now", now);
+        Integer blocking;
+        if (replaceableBindingId == null) {
+            blocking = jdbc.queryForObject("""
+                    SELECT count(*) FROM watch_binding
+                    WHERE unbound_at IS NULL AND (device_id = :device OR world_id = :world)
+                    """, params, Integer.class);
+        } else {
+            params.addValue("replaceId", replaceableBindingId);
+            blocking = jdbc.queryForObject("""
+                    SELECT count(*) FROM watch_binding
+                    WHERE unbound_at IS NULL
+                      AND (world_id = :world OR (device_id = :device AND binding_id <> :replaceId))
+                    """, params, Integer.class);
+        }
+        if (blocking != null && blocking > 0) {
+            return false;
+        }
+        if (replaceableBindingId != null) {
+            int closed = jdbc.update("""
+                    UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
+                    WHERE binding_id = :replaceId AND device_id = :device AND unbound_at IS NULL
+                    """, params);
+            if (closed == 0) {
+                return false; // 그 사이 다른 흐름(수동 해제·재배정)이 이미 닫았다
+            }
+        }
+        boolean bound = !jdbc.queryForList("""
+                INSERT INTO watch_binding (device_id, world_id, method, score, bound_at)
+                VALUES (:device, :world, 'DEMO_SINGLE', 0, :now)
+                ON CONFLICT DO NOTHING RETURNING binding_id
+                """, params, Long.class).isEmpty();
+        if (!bound) {
+            // 같은 순간 부분 유일 색인 충돌(동시 수동 배정 등). 옛 행을 닫은 채 두지 않도록 되돌린다
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            return false;
+        }
+        changed(deviceId, null);
+        return true;
     }
 
     /**
