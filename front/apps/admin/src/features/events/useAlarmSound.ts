@@ -24,7 +24,11 @@ export function useAlarmSound(entries: readonly EventEntry[]) {
   useEffect(() => {
     const plan = policy(entries, canAck);
     const token = plan ? `${plan.severity}:${plan.once ? plan.key : 'repeat'}` : 'silent';
-    if (previous.current === token) return;
+    if (previous.current === token) {
+      // 같은 소리가 이미 울리는 중에 낙상이 새로 뜨면 다음 주기를 기다리지 않는다.
+      if (plan?.restart) alarmSound.restart();
+      return;
+    }
     previous.current = token;
     if (plan?.once) alarmSound.ring(plan.severity, { once: true, key: plan.key, keys: plan.keys });
     else alarmSound.ring(plan?.severity ?? null);

@@ -321,6 +321,22 @@ describe('createAlarmSound: 등급별 소리', () => {
     vi.advanceTimersByTime(2500 * 4);
     expect(ctx.oscillators).toHaveLength(1);
   });
+
+  it('restart 는 울리는 소리를 주기를 기다리지 않고 바로 한 묶음 울리고, 울리는 소리가 없으면 아무것도 하지 않는다', async () => {
+    const { sound, ctx } = await unlocked();
+    sound.restart();
+    expect(ctx.oscillators).toHaveLength(0);
+
+    sound.ring('CRITICAL');
+    vi.advanceTimersByTime(1000);
+    sound.restart();
+    expect(ctx.oscillators).toHaveLength(2);
+    // 주기도 다시 잡는다: 다시 울린 뒤 2.5초가 돼야 다음 묶음이다.
+    vi.advanceTimersByTime(2499);
+    expect(ctx.oscillators).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(ctx.oscillators).toHaveLength(3);
+  });
 });
 
 describe('createAlarmSound: 끄기와 저장', () => {

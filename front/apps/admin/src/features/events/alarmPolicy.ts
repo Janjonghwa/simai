@@ -13,7 +13,12 @@ export interface AlarmPlan {
   once: boolean;
   key: string;
   keys?: readonly string[];
+  /** 이번 판단에서 낙상이 새로 울리기 시작했다. 같은 소리가 이미 나고 있어도 바로 한 묶음 다시 울린다. */
+  restart?: boolean;
 }
+
+/** 낙상 의심. 같은 사람의 진행 중 경보(같거나 높은 단계)에 막히지 않고 따로 울린다. */
+const FALL_RULE = 'R4';
 
 /** 같은 사람·구역·규칙이 소리 낸 뒤 같거나 낮은 단계로 다시 걸려도 화면만 보이는 시간(ms, 사용자 결정 2026-11-05). Tier 0 `SOUND_COOLDOWN_MS` 와 같다. */
 export const SOUND_COOLDOWN_MS = 60_000;
@@ -63,19 +68,23 @@ export function createAlarmPolicy() {
           a.event.rule_id.localeCompare(b.event.rule_id),
       );
     const plans: AlarmPlan[] = [];
+    let restart = false;
     for (const entry of alarms) {
       const event = entry.event;
       if (event.severity !== 'HIGH' && event.severity !== 'CRITICAL') continue;
       const rank = SEVERITY_RANK[event.severity];
+      const fall = event.rule_id === FALL_RULE;
       const key = `${event.event_id}:${event.resume_count ?? 0}:${entry.stageStartedAt ?? 'unknown'}:${event.severity}`;
       let stage = stages.get(event.event_id);
       if (stage?.key !== key) {
         const at = entry.stageStartedAt ?? event.raised_at ?? event.updated_at;
         const quietAllowed = event.severity !== 'CRITICAL';
         const blocked =
-          [...levels.values()].some(
-            (prior) => prior.rank >= rank && event.world_ids.some((w) => prior.worlds.includes(w)),
-          ) ||
+          (!fall &&
+            [...levels.values()].some(
+              (prior) =>
+                prior.rank >= rank && event.world_ids.some((w) => prior.worlds.includes(w)),
+            )) ||
           (quietAllowed &&
             event.world_ids.some((world) => {
               const ack = acks.get(ackKey(world, event.zone_id));
@@ -101,6 +110,7 @@ export function createAlarmPolicy() {
         stage = { rank, allowed: !blocked, once: event.rule_id === 'R3', key };
         stages.set(event.event_id, stage);
         if (!blocked) {
+          if (fall) restart = true;
           levels.set(event.event_id, { worlds: event.world_ids, rank });
           if (at !== undefined) {
             for (const [key, prior] of sounded)
@@ -112,6 +122,7 @@ export function createAlarmPolicy() {
       }
       // 높은 단계가 새로 생겼으면 이전 낮은 소리도 돌아오지 않는다.
       if (
+        !fall &&
         [...levels.entries()].some(
           ([id, prior]) =>
             id !== event.event_id &&
@@ -128,7 +139,8 @@ export function createAlarmPolicy() {
         SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || Number(a.once) - Number(b.once),
     );
     const top = plans[0];
-    if (!top?.once) return top ?? null;
+    // 새 낙상은 반복 경보라 맨 위가 1회 경보일 수 없다.
+    if (!top?.once) return top && restart ? { ...top, restart } : (top ?? null);
     const keys = plans
       .filter((p) => p.once && p.severity === top.severity)
       .map((p) => p.key)

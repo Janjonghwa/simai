@@ -26,7 +26,11 @@ export function CameraButton({
     <button
       type="button"
       onClick={() => open({ cam: ANY_CAMERA, target })}
-      className={cn('inline-flex items-center gap-1.5 text-sm', LOOK[variant])}
+      className={cn(
+        // 경보 문구가 길어도 이 버튼은 줄지 않고 한 줄로 남는다(문구 쪽이 말줄임된다).
+        'inline-flex shrink-0 items-center gap-1.5 text-sm whitespace-nowrap',
+        LOOK[variant],
+      )}
     >
       <Video aria-hidden className="size-[15px]" />
       <span>CCTV로 확인</span>

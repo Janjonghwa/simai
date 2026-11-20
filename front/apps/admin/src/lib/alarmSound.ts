@@ -60,6 +60,8 @@ export interface AlarmSound {
     severity: RingSeverity | null,
     options?: { once: boolean; key: string; keys?: readonly string[] },
   ): void;
+  /** 지금 되풀이하는 소리를 다음 주기를 기다리지 않고 바로 한 묶음 울린다(새 낙상). 울리는 소리가 없으면 아무것도 하지 않는다. */
+  restart(): void;
   /** 소리를 끄거나 켠다. 저장소에 남긴다(저장할 수 없어도 이 화면에서는 반영한다). */
   setMuted(muted: boolean): void;
   /**
@@ -245,6 +247,9 @@ export function createAlarmSound(
       onceKeys = options?.once ? (options.keys?.length ? options.keys : [options.key]) : null;
       want = severity;
       sync();
+    },
+    restart() {
+      if (playing) sync(true);
     },
     setMuted,
     toggle() {

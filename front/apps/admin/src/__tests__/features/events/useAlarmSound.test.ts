@@ -175,6 +175,32 @@ describe('useAlarmSound', () => {
     expect(ring).not.toHaveBeenCalledWith('CRITICAL');
   });
 
+  it('같은 위험 소리가 울리는 중 낙상이 새로 뜨면 바로 다시 울린다', () => {
+    const ring = vi.spyOn(alarmSound, 'ring').mockImplementation(() => undefined);
+    const restart = vi.spyOn(alarmSound, 'restart').mockImplementation(() => undefined);
+    const zone = entry({ event_id: 'e-z', rule_id: 'R1' });
+    const fall = entry({
+      event_id: 'e-f',
+      rule_id: 'R4',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    const { rerender } = renderHook(({ entries }) => useAlarmSound(entries), {
+      initialProps: { entries: [zone] },
+    });
+    expect(ring).toHaveBeenLastCalledWith('CRITICAL');
+    const calls = ring.mock.calls.length;
+
+    rerender({ entries: [zone, fall] });
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(ring.mock.calls.length).toBe(calls);
+
+    // 진입 경보를 확인해도 낙상은 확인 전이라 소리가 이어진다.
+    rerender({ entries: [acked({ event_id: 'e-z', rule_id: 'R1' }), fall] });
+    expect(ring).not.toHaveBeenCalledWith(null);
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
   it('화면이 사라지면 멈춘다', () => {
     const ring = vi.spyOn(alarmSound, 'ring').mockImplementation(() => undefined);
     const { unmount } = renderHook(() => useAlarmSound([entry()]));
@@ -264,6 +290,38 @@ describe('소리 사다리 정책', () => {
         true,
       ),
     ).toBeNull();
+  });
+
+  it('낙상(R4)은 같은 사람의 진행 중 위험 경보에 막히지 않고, 처음 뜰 때 한 번 바로 다시 울린다', () => {
+    const decide = createAlarmPolicy();
+    const zone = entry({ event_id: 'z-1', rule_id: 'R1' });
+    const fall = entry({
+      event_id: 'f-1',
+      rule_id: 'R4',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    expect(decide([zone], true)?.restart).toBeUndefined();
+    expect(decide([zone, fall], true)).toMatchObject({ severity: 'CRITICAL', restart: true });
+    expect(decide([zone, fall], true)?.restart).toBeUndefined();
+    // 진입 경보를 확인해도 낙상은 확인 전이라 계속 울린다.
+    const zoneAcked = acked({ event_id: 'z-1', rule_id: 'R1' });
+    expect(decide([zoneAcked, fall], true)?.severity).toBe('CRITICAL');
+
+    // 진입 경보를 먼저 확인한 뒤 넘어져도 울린다. 낙상이 아닌 같은 사람 위험 경보는 그대로 막힌다.
+    const after = createAlarmPolicy();
+    expect(after([zoneAcked], true)).toBeNull();
+    const edge = entry({
+      event_id: 'r2-1',
+      rule_id: 'R2',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    expect(after([zoneAcked, edge], true)).toBeNull();
+    expect(after([zoneAcked, edge, fall], true)).toMatchObject({
+      severity: 'CRITICAL',
+      restart: true,
+    });
   });
 
   it('ACK 30초 안의 같은 사람·구역 재발생만 억제하며 상향과 30초 경계는 울린다', () => {
