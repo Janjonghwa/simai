@@ -180,6 +180,7 @@ class GpuPowerIntegrationTest {
         assertThat(env.get("SIMAI_GPU_BOOT_SECRET").stringValue()).isEqualTo("{{ RUNPOD_SECRET_simai_gpu_boot_secret }}");
         assertThat(env.get("SIMAI_TIER0_TLS_PRIVATE_KEY").stringValue()).isEqualTo("{{ RUNPOD_SECRET_simai_tier0_tls_key }}");
         assertThat(env.get("SIMAI_GPU_BOOT_ID").stringValue()).isEqualTo("gpu-boot-runpod");
+        assertThat(env.get("SIMAI_BOOT_DISABLE").stringValue()).isEqualTo("vllm");
         assertThat(env.get("SIMAI_EC2_BASE_URL").stringValue()).isEqualTo("https://ec2.test");
         assertThat(env.get("SIMAI_PRICE_PER_HOUR_USD").stringValue()).isEqualTo("2.99");
 

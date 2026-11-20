@@ -453,6 +453,20 @@ def test_boot_services_explicit_value_wins(gb):
     assert gb.boot_services({"SIMAI_BOOT_SERVICES": "tier0"}, {"memory_total_mb": 81559.0}, 45_000, 22_500) == ("tier0", None)
 
 
+@pytest.mark.parametrize("mb,explicit,expected", [
+    (81559, None, "tier0,worker,avatar,ppe"),
+    (46068, None, "tier0,worker,avatar"),
+    (23028, None, "tier0"),
+    (81559, "tier0,vllm", "tier0"),
+])
+def test_disabled_vllm_respects_selected_services(gb, mb, explicit, expected):
+    env = {"SIMAI_BOOT_DISABLE": "vllm"}
+    if explicit:
+        env["SIMAI_BOOT_SERVICES"] = explicit
+    assert gb.boot_services(env, {"memory_total_mb": mb}, 45000, 22500)[0] == expected
+    assert gb.service_findings(expected.split(","), True, {"vllm"})["svc_vllm"]["level"] == "info"
+
+
 def test_boot_default_is_lobby_default_plus_ppe_within_gpu_budget(gb):
     """S15P31A101-718: 자동 부팅은 안전모·조끼 감시(ppe)를 기본으로 띄운다. 손 lobby 기본(-507 명시 선택)은 그대로 두고,
     PPE 몫(기본 0.05)을 더해도 Tier 0 0.20 + 분석 0.70 + PPE ≤ 0.95 라 preflight 예산 점검을 통과한다(비율이라 80·96GB 같음)"""

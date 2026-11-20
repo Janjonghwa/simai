@@ -14,6 +14,15 @@ VLM_INPUT = load_example("job_request.vlm_rationale.json")["payload"]["input"]
 VLM_RESULT = load_example("job_callback.vlm_rationale.json")["payload"]["result"]
 
 
+def test_vlm_off_keeps_geometry_handler_without_opening_pose():
+    def unexpected_pose(_):
+        raise AssertionError("VLM 꺼짐에서 pose 를 열면 안 된다")
+
+    handlers = worker_main.build_handlers(None, object(), env={"SIMAI_WORKER_VLM_GATE": "off"}, pose=unexpected_pose)
+    assert "vlm_zone_draft" in handlers
+    assert "vlm_rationale" not in handlers and "incident_summary" not in handlers
+
+
 def test_sample_job_leases_runs_extends_and_submits(ec2, run_main):
     job_id = ec2.add_job("vlm_rationale", VLM_INPUT, priority="VLM_FAST")
 

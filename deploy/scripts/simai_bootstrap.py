@@ -1332,8 +1332,8 @@ class Supervisor:
                 e["SIMAI_TIER0_TOKEN"] = tier0_token
             if name in ("worker", "avatar") and self.worker_id:
                 e[WORKER_ID_ENV] = self.worker_id
-            if name == "worker" and "vllm" in services:  # 워커가 vLLM 보다 먼저 뜬다: VLM 작업 유형은 /health 200 뒤에만 받는다(S15P31A101-577)
-                e["SIMAI_WORKER_VLM_GATE"] = "health"
+            if name == "worker":
+                e["SIMAI_WORKER_VLM_GATE"] = "health" if "vllm" in services else "off"
             if fractions is not None:
                 if "avatar" in services:
                     e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(fractions["avatar_fraction"])

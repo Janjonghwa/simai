@@ -687,6 +687,9 @@ public class GpuPowerService {
         env.put("SIMAI_GPU_BOOT_ID", properties.runpod().bootId());
         env.put("SIMAI_EC2_BASE_URL", ec2BaseUrl);
         env.put("SIMAI_GPU_PROVIDER", provider);
+        if (!properties.vlmEnabled()) {
+            env.put("SIMAI_BOOT_DISABLE", "vllm");
+        }
         if (chosen.pricePerHourUsd() != null) {
             env.put("SIMAI_PRICE_PER_HOUR_USD", chosen.pricePerHourUsd().toPlainString());
         }

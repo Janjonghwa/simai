@@ -59,13 +59,22 @@ class VlmHealthGate:
         return [t for t in types if t not in VLM_TYPES]
 
 
-def from_env(env: Mapping[str, str]) -> VlmHealthGate | None:
+class VlmDisabledGate:
+    """의도적으로 끈 VLM 작업은 대여하지 않는다."""
+
+    def __call__(self, types: list[str]) -> list[str]:
+        return [t for t in types if t not in VLM_TYPES]
+
+
+def from_env(env: Mapping[str, str]) -> VlmHealthGate | VlmDisabledGate | None:
     """SIMAI_WORKER_VLM_GATE: 비었거나 0 이면 없음(지금까지와 같다), health 면 127.0.0.1:SIMAI_VLLM_PORT/health 를 본다."""
     mode = (env.get(ENV) or "").strip()
     if mode in ("", "0"):
         return None
+    if mode == "off":
+        return VlmDisabledGate()
     if mode != "health":
-        raise ValueError(f"{ENV} 는 health 또는 0 이다: {mode!r}")
+        raise ValueError(f"{ENV} 는 health, off 또는 0 이다: {mode!r}")
     port = int(env.get("SIMAI_VLLM_PORT") or 8000)
     if not 0 < port < 65536:
         raise ValueError(f"SIMAI_VLLM_PORT 범위 밖: {port}")
