@@ -3,11 +3,14 @@
 근거·칸의 시간은 촬영 시각(UTC ms)이다. 500 ms 칸마다 카메라당 표본 하나를 모아 다시점 비대칭 규칙으로 칸 결과를 정하고,
 유효 칸 6개 창으로 상태를 바꾼다. 착용·미착용 카메라가 섞인 칸은 미착용 카메라가 2대 이상일 때만 충돌이고 1대면 착용 칸이다
 (S15P31A101-766). 착용은 창 안 5칸 이상이 착용이고 마지막 유효 칸이 착용일 때, 미착용은 마지막 칸이 미착용이고 나머지가
-미착용이거나 빈 칸(표본 없음, 추론 건너뜀) 1칸까지일 때다(S15P31A101-654). 착용·충돌·모호 칸이 하나라도 있으면 미착용이 아니다.
+미착용이거나 빈 칸(표본 없음, 추론 건너뜀) 1칸까지일 때다(S15P31A101-654). 빈 칸과 중립 칸(모든 표본이 검출 없음·머리
+불선명·영역 안 보임·관절 미관측)은 합쳐 2칸까지 허용한다(S15P31A101-818). 착용·충돌·모호 칸이 하나라도 있으면 미착용이 아니다.
 반대 근거가 나오면 곧바로 반대 상태로 가지 않고 먼저 UNKNOWN 으로 두고 창을 다시 쌓는다(깜빡임 방지).
 
 유효 칸은 그 사람의 ID 대응이 불확실하지 않은 칸이다(S15P31A101-653). 한 프레임이라도 IDENTITY_UNCERTAIN(또는 분할 대기·swap
 의심 보류)인 칸은 건너뛴다: 창에 넣지 않고 근거로도 쓰지 않되 확정 상태는 유지한다(근거를 더하지 않으므로 만료 시각은 늘지 않는다).
+예외로 Tier 0 IDENTITY_UNCERTAIN 이어도 같은 시각 다른 Track(LOST 제외)이 수평 2 m 안에 없는 고립된 사람(PersonObservation.isolated)은
+확실한 사람처럼 쓴다(association.ppe_uncertain, S15P31A101-818). ID 가 섞일 상대가 없기 때문이다.
 유효 6칸은 최근 window_span_bins 칸(5초) 안에 있어야 한다. 상태를 바로 초기화하는 것은 identity_revision 이 오를 때, 같은 카메라
 local ID 의 주인이 바뀔 때, ID 불확실이 uncertain_reset_ms(3초)를 넘게 이어질 때다. 만료·트랙 정리는 현재 UTC로 판단해 마지막
 유효 근거 + 10초가 지나면 UNKNOWN 이다. 이 모듈은 World 위치·ID 를 만들거나 바꾸지 않는다.
@@ -51,6 +54,7 @@ from .association import (
     UNKNOWN,
     WORN,
     FrameAssociation,
+    ppe_uncertain,
     Sample,
 )
 from .config import DEFAULT_CONFIG, PpeConfig
@@ -60,6 +64,8 @@ LocalKey = tuple[str, int, str]   # (카메라, stream_epoch, local_track_id)
 
 # 칸(500 ms) 결과
 B_WORN, B_NOT_WORN, B_CONFLICT, B_UNKNOWN, B_EMPTY = "WORN", "NOT_WORN", "CONFLICT", "UNKNOWN", "EMPTY"
+# 중립 칸: 표본은 있으나 모두 판정 없음(아래 _NEUTRAL_REASONS). 착용 근거가 없어 미착용 창에서 빈 칸과 함께 허용한다(S15P31A101-818)
+B_NEUTRAL = "NEUTRAL"
 
 R_ACCUMULATING = "ACCUMULATING"
 R_WINDOW_WORN = "WINDOW_WORN"
@@ -76,6 +82,7 @@ RESET_REASONS = (R_REVISION_CHANGED, R_MAPPING_CHANGED, R_IDENTITY_UNCERTAIN)
 _STICKY_REASONS = (R_CONTRARY, R_CROSS_CAMERA_CONFLICT, R_REVISION_CHANGED, R_MAPPING_CHANGED)
 # 이 중 ID 초기화 사유는 초기화한 칸(ItemState.reset_bin)까지만 남긴다(S15P31A101-729)
 _ID_RESET_REASONS = (R_REVISION_CHANGED, R_MAPPING_CHANGED)
+_NEUTRAL_REASONS = frozenset((R_NO_DETECTION, R_REGION_NOT_CLEAR, R_REGION_NOT_OBSERVABLE, R_KEYPOINTS_NOT_OBSERVED))
 _REASON_PRIORITY = (R_SHARED_DETECTION, R_CONFLICTING_CLASSES, R_PARTIAL_OVERLAP, R_IDENTITY_UNCERTAIN,
                     R_KEYPOINTS_NOT_OBSERVED, R_REGION_NOT_CLEAR, R_REGION_NOT_OBSERVABLE, R_NO_DETECTION)
 
@@ -193,7 +200,7 @@ class PpeJudge:
                     self._count("merge_carried")
                 track.identity_revision = p.identity_revision
                 track.aliases, track.split_from = tuple(p.aliases), p.split_from
-            uncertain = p.identity_confidence == "IDENTITY_UNCERTAIN"
+            uncertain = ppe_uncertain(p, self.cfg)   # 고립된 Tier 0 불확실은 확실한 사람처럼(S15P31A101-818)
             if uncertain:
                 # 불확실한 칸은 건너뛰고 확정 상태는 둔다. 불확실이 uncertain_reset_ms 를 넘게 이어지면 그때 초기화한다
                 track.skipped_bins.add(b)
@@ -333,6 +340,8 @@ class PpeJudge:
             return B_NOT_WORN, near
         if not samples:
             return B_EMPTY, []
+        if all(s.reason in _NEUTRAL_REASONS for s in samples):
+            return B_NEUTRAL, []
         return B_UNKNOWN, []
 
     # ---- 평가 -------------------------------------------------------------------------------
@@ -479,9 +488,11 @@ def _carry_item(dst: ItemState, src: ItemState, b: int) -> ItemState:
 
 
 def _not_worn_window(window: Sequence[str], cfg: PpeConfig) -> bool:
-    """미착용 창: 모두 미착용, 빈 칸(B_EMPTY)은 cfg.not_worn_max_empty_bins 칸까지. 착용·충돌·모호 칸은 하나도 없어야 한다."""
-    empty = window.count(B_EMPTY)
-    return empty <= cfg.not_worn_max_empty_bins and window.count(B_NOT_WORN) + empty == len(window)
+    """미착용 창: 나머지는 모두 미착용. 빈 칸(B_EMPTY)은 cfg.not_worn_max_empty_bins 칸까지, 중립 칸(B_NEUTRAL)은
+    cfg.not_worn_max_neutral_bins 칸까지이고 둘을 합쳐도 두 상한 중 큰 값까지다(S15P31A101-818). 착용·충돌·모호 칸은 하나도 없어야 한다."""
+    empty, neutral = window.count(B_EMPTY), window.count(B_NEUTRAL)
+    gap = max(cfg.not_worn_max_neutral_bins, cfg.not_worn_max_empty_bins)
+    return empty <= cfg.not_worn_max_empty_bins and neutral <= cfg.not_worn_max_neutral_bins and empty + neutral <= gap         and window.count(B_NOT_WORN) + empty + neutral == len(window)
 
 
 def _bin_reason(result: str, samples: Sequence[Sample]) -> str:

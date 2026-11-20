@@ -57,6 +57,16 @@ class PersonObservation:
     aliases: tuple[str, ...] = ()
     split_from: str | None = None
     split_source: bool = False   # 같은 world_state 에 이 ID·이 차수로 갈라져 나간 Track 이 있다(identity_carry.split_marks)
+    # Tier 0 IDENTITY_UNCERTAIN 이지만 같은 시각 다른 Track(LOST 제외)이 isolated_uncertain_radius_m 안에 없다(서비스가 채운다,
+    # S15P31A101-818). 이때 PPE 는 확실한 사람처럼 쓴다(ppe_uncertain)
+    isolated: bool = False
+
+
+def ppe_uncertain(p: PersonObservation, cfg: PpeConfig = DEFAULT_CONFIG) -> bool:
+    """PPE 판정에서 ID 불확실로 다룰지. Tier 0 IDENTITY_UNCERTAIN 이어도 고립(isolated)이면 확실한 사람처럼 쓴다(S15P31A101-818)."""
+    if p.identity_confidence != "IDENTITY_UNCERTAIN":
+        return False
+    return not (p.isolated and cfg.isolated_uncertain_radius_m > 0)
 
 
 @dataclass(frozen=True)
@@ -233,7 +243,7 @@ def associate_frame(frame: FrameObservations, detections: FrameDetections,
     regions: dict[tuple[int, str], Region | None] = {}
     blocked: dict[int, str] = {}
     for pi, p in enumerate(persons):
-        if p.identity_confidence == "IDENTITY_UNCERTAIN":
+        if ppe_uncertain(p, cfg):
             blocked[pi] = R_IDENTITY_UNCERTAIN
         elif p.joint_layout != "COCO17" or p.joint_source != "observed" or len(p.keypoints_2d) != 17:
             blocked[pi] = R_KEYPOINTS_NOT_OBSERVED

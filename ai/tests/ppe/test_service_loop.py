@@ -329,11 +329,11 @@ def test_rate_limit_includes_time_spent_building_observations(monkeypatch):
     loop, source, _gate, det, _out, clock = make_loop(monotonic_ms=monotonic)
     observed = []
 
-    def slow_first_observation(*args):
+    def slow_first_observation(*args, **kw):
         if not observed:
             monotonic.t += 100
         observed.append(monotonic.t)
-        return frame_observations(*args)
+        return frame_observations(*args, **kw)
 
     monkeypatch.setattr("services.ppe.loop.frame_observations", slow_first_observation)
     source.value = shared(1000, {"cam1": 1})
@@ -508,3 +508,33 @@ def test_min_infer_gap_env_out_of_range_fails_start(raw):
     from services.ppe.__main__ import min_infer_gap_ms
     with pytest.raises(ValueError):
         min_infer_gap_ms({"SIMAI_PPE_MIN_INFER_GAP_MS": raw})
+
+
+# ---- 고립된 ID 불확실 트랙 표시(S15P31A101-818) -------------------------------------------------------------------------
+def _tracks(*specs):
+    """specs: (world_id, identity_confidence, xy 또는 None, lifecycle)."""
+    return [{"world_id": w, "identity_confidence": c, "track_lifecycle": lc,
+             **({} if xy is None else {"position_xy": list(xy)})} for w, c, xy, lc in specs]
+
+
+def test_isolated_world_ids_need_uncertain_known_position_and_no_one_near():
+    from services.ppe.loop import isolated_world_ids
+    U, H = "IDENTITY_UNCERTAIN", "HIGH"
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED")), 2.0) == {"a"}
+    assert isolated_world_ids(_tracks(("a", H, (0, 0), "CONFIRMED")), 2.0) == set()            # 확실하면 표시 없음
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED"), ("b", H, (1.5, 0), "TENTATIVE")), 2.0) == set()
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED"), ("b", H, (2.5, 0), "CONFIRMED")), 2.0) == {"a"}
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED"), ("b", H, (0.5, 0), "LOST")), 2.0) == {"a"}  # LOST 제외
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED"), ("b", H, None, "OCCLUDED")), 2.0) == set()  # 위치 모름
+    assert isolated_world_ids(_tracks(("a", U, None, "CONFIRMED")), 2.0) == set()
+    assert isolated_world_ids(_tracks(("a", U, (0, 0), "CONFIRMED")), 0.0) == set()            # 끔
+
+
+def test_frame_observations_mark_isolated_uncertain_but_not_plain_hold():
+    doc, _ = shared(1000, {"cam1": 5}, identity="IDENTITY_UNCERTAIN", hold=True)
+    doc["world"]["tracks"][0]["position_xy"] = [1.0, 2.0]
+    [p] = frame_observations(doc, "cam1", IMAGE).persons
+    assert (p.identity_confidence, p.isolated) == ("IDENTITY_UNCERTAIN", True)
+    doc["world"]["tracks"][0]["identity_confidence"] = "HIGH"   # 불확실이 아닌데 보류만 걸림 → 예외 없음
+    [p] = frame_observations(doc, "cam1", IMAGE).persons
+    assert (p.identity_confidence, p.isolated) == ("IDENTITY_UNCERTAIN", False)

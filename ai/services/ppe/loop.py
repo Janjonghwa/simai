@@ -15,6 +15,9 @@
 - Tier 0 가 LIVE 가 아니면(정상 종료) 보내지 않는다.
 - 원본 영상은 이 주기 안에서만 쓰고 저장·기록하지 않는다(11장).
 - 트랙의 aliases·split_from(world_state 값 그대로)을 사람 관측에 실어 PpeJudge 가 순수 병합을 가린다(S15P31A101-661).
+- Tier 0 IDENTITY_UNCERTAIN 인 트랙 중 같은 문서의 다른 트랙(LOST 제외)이 수평 isolated_uncertain_radius_m 안에 없는 트랙은
+  고립(isolated)으로 표시한다. PpeJudge·associate_frame 은 고립된 불확실 사람을 확실한 사람처럼 쓴다(S15P31A101-818).
+  위치를 모르는 트랙이 하나라도 있으면 고립으로 보지 않는다(보수적).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import uuid
 
 from simai_ai.ppe import FrameDetections, FrameObservations, PersonObservation, PpeJudge, associate_frame, build_ppe_state
 from simai_ai.ppe.classes import Candidate
+from simai_ai.ppe.config import DEFAULT_CONFIG
 from simai_ai.io.channel_timing import ChannelTiming
 from simai_ai.tracking.identity_carry import split_marks
 
@@ -58,7 +62,47 @@ class Gate(Protocol):
     def check(self): ...
 
 
-def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple[int, int]) -> FrameObservations | None:
+def _xy(track: Mapping[str, Any]) -> tuple[float, float] | None:
+    p = track.get("position_xy")
+    if isinstance(p, Mapping):
+        p = (p.get("x"), p.get("y"))
+    if not isinstance(p, (list, tuple)) or len(p) < 2:
+        return None
+    try:
+        x, y = float(p[0]), float(p[1])
+    except (TypeError, ValueError):
+        return None
+    return (x, y) if x == x and y == y else None
+
+
+def isolated_world_ids(tracks: list[Mapping[str, Any]], radius_m: float) -> set[str]:
+    """Tier 0 IDENTITY_UNCERTAIN 이면서 다른 트랙(LOST 제외)이 수평 radius_m 안에 없는 World ID (S15P31A101-818).
+    radius_m <= 0 이면 끈다. 자기 위치나 다른 트랙 위치를 하나라도 모르면 고립으로 보지 않는다."""
+    if radius_m <= 0:
+        return set()
+    others = [t for t in tracks if str(t.get("track_lifecycle") or "") != "LOST"]
+    out: set[str] = set()
+    for track in tracks:
+        if str(track.get("identity_confidence") or "") != UNCERTAIN:
+            continue
+        me = _xy(track)
+        if me is None:
+            continue
+        near = False
+        for other in others:
+            if other is track or str(other.get("world_id")) == str(track.get("world_id")):
+                continue
+            q = _xy(other)
+            if q is None or (q[0] - me[0]) ** 2 + (q[1] - me[1]) ** 2 < radius_m ** 2:
+                near = True
+                break
+        if not near:
+            out.add(str(track["world_id"]))
+    return out
+
+
+def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple[int, int], *,
+                       isolated_radius_m: float = DEFAULT_CONFIG.isolated_uncertain_radius_m) -> FrameObservations | None:
     """공유 문서에서 한 카메라·한 프레임의 사람 관측을 만든다. 그 프레임의 관측이 없으면 사람 없는 프레임이다."""
     ref = doc.get("frames", {}).get(camera_id)
     if not isinstance(ref, Mapping):
@@ -71,6 +115,7 @@ def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple
     persons = []
     tracks = doc.get("world", {}).get("tracks", [])
     marks = split_marks(tracks)   # 같은 차수로 갈라져 나간 Track(순수 병합 판정, S15P31A101-661)
+    isolated = isolated_world_ids(tracks, isolated_radius_m)
     for track in tracks:
         hold = bool(track.get("avatar_update_hold"))
         revision = int(track.get("identity_revision") or 0)
@@ -93,6 +138,8 @@ def frame_observations(doc: Mapping[str, Any], camera_id: str, image_size: tuple
                 aliases=aliases,
                 split_from=split_from,
                 split_source=(str(track["world_id"]), revision) in marks,
+                # 보류가 Tier 0 IDENTITY_UNCERTAIN 때문일 때만 고립 예외를 준다(불확실 아닌 보류는 그대로 건너뛴다)
+                isolated=confidence == UNCERTAIN and str(track["world_id"]) in isolated,
             ))
     return FrameObservations(camera_id, epoch, seq, capture, image_size, tuple(persons))
 
@@ -255,7 +302,8 @@ class PpeLoop:
                 continue
             height, width = image.shape[:2]
             with self.timing.measure("camera_observations", camera=camera_id):
-                obs = frame_observations(doc, camera_id, (int(width), int(height)))
+                obs = frame_observations(doc, camera_id, (int(width), int(height)),
+                                         isolated_radius_m=self.judge.cfg.isolated_uncertain_radius_m)
             if obs is None:
                 self.counts["bad_frame"] += 1
                 continue
