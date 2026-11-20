@@ -66,6 +66,7 @@ function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
 function demoTrack(t: number, elapsed: number): WorldTrack {
   const points = [
     [0, 3.5, 3.4, 1.68],
+    [DEMO_TIMES.helmet, 3.5, 3.4, 1.68],
     [DEMO_TIMES.approach, 4.62, 3.4, 1.68],
     [DEMO_TIMES.entry, 5.4, 3.4, 1.68],
     [DEMO_TIMES.fall - 1000, 6, 3.4, 1.68],

@@ -47,7 +47,7 @@ export function startRealtimeMock(
   // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
   config: () => MockConfig = () => MOCK_CONFIG,
   peopleNames?: PeopleNamesMock,
-  demoElapsed?: () => number,
+  demoElapsed?: () => number | undefined,
 ): RealtimeMock {
   let healthPausedUntil = 0;
   let fault: { kind: MockOutage; since: number } | undefined;
@@ -84,7 +84,7 @@ export function startRealtimeMock(
 
   function publishPpe() {
     // 장애 흉내 중에는 PPE 도 오지 않는다(화면은 만료·연결로 UNKNOWN 을 보인다).
-    if (live() && !fault) broker.publish(PPE_TOPIC, ppeViewAt(now()));
+    if (live() && !fault) broker.publish(PPE_TOPIC, ppeViewAt(now(), demoElapsed?.()));
   }
 
   const timers = [
@@ -104,7 +104,7 @@ export function startRealtimeMock(
       http.get('*/api/ppe/current', ({ request }) => {
         const t = now();
         if (!readLiveUser(request, t)) return unauthorized();
-        return HttpResponse.json(fault ? [] : [ppeViewAt(t).payload]);
+        return HttpResponse.json(fault ? [] : [ppeViewAt(t, demoElapsed?.()).payload]);
       }),
     ],
     pauseHealth: (ms) => {

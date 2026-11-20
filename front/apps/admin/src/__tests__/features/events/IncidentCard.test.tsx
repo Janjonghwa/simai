@@ -257,7 +257,7 @@ describe('IncidentCard', () => {
     expect(card.className).not.toContain('ring-sev-critical');
   });
 
-  it('두 번 이상 발생했을 때만 설명에 N회 발생을 적는다(카드 줄에는 없다)', () => {
+  it('두 번 이상 발생하면 카드와 설명에 횟수를 적는다', () => {
     const resolved = entry({
       lifecycle: 'RESOLVED',
       resolved_at: T + 5_000,
@@ -265,7 +265,7 @@ describe('IncidentCard', () => {
     });
     const twice = renderCard([resolved], { occurrences: 2 });
     expect(detail(twice.card)).toContain('2회 발생');
-    expect(twice.card.textContent).not.toContain('2회');
+    expect(twice.card.textContent).toContain('2회');
     cleanup();
 
     const once = renderCard([resolved], { occurrences: 1 });

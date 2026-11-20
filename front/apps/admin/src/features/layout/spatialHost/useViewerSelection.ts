@@ -102,15 +102,16 @@ export function useViewerSelection({
   // 이벤트 패널에서 묶음을 누르면 선택하고 초점을 맞춘다. 3D 가 못 고르면 올라올 때까지 초점을 미룬다.
   const selectIncident = useCallback(
     (incident: Incident) => {
-      setSelectedKey(incident.key);
       if (!incident.target) return;
+      const key = keyOfTarget(incident.target);
+      setSelectedKey(key);
       const res = viewer.current?.select(incident.target);
       if (res?.ok) {
-        syncedKeyRef.current = incident.key;
+        syncedKeyRef.current = key;
         viewer.current?.focus(incident.target);
       } else {
         syncedKeyRef.current = null;
-        pendingFocusRef.current = incident.key;
+        pendingFocusRef.current = key;
       }
     },
     [viewer, setSelectedKey],

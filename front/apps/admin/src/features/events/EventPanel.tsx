@@ -280,6 +280,13 @@ export function EventPanel({
 }: EventPanelProps) {
   // 화면 묶음(S15P31A101-731)이 지금 살아 있는 서로 다른 두 사람을 섞지 않게 살아 있는 World ID 를 본다. 사람이 바뀔 때만 다시 묶는다.
   const alive = useAliveIds();
+  const [selectedCard, setSelectedCard] = useState<string | null>(null);
+  // 선택이 풀리면 고른 카드도 비운다. effect 대신 렌더 중 이전 값과 비교해 맞춘다(연쇄 렌더 방지).
+  const [prevSelectedKey, setPrevSelectedKey] = useState(selectedKey);
+  if (prevSelectedKey !== selectedKey) {
+    setPrevSelectedKey(selectedKey);
+    if (!selectedKey) setSelectedCard(null);
+  }
   // 유령 트랙(S15P31A101-785)을 가르는 World ID 기록. 보인 구간은 world 마다 바뀌어 구독하지 않고, 사람이 바뀔 때(alive) 그 순간 값을 읽는다.
   const watched = useRealtimeStore((s) => s.trackLife.watched);
   const demo = useIsDemoAccount();
@@ -343,6 +350,7 @@ export function EventPanel({
           )}
         >
           <b className="text-[15px]">이벤트</b>
+          <span className="text-sm text-muted-foreground">진행 중 {sections.active.length}건</span>
           <div className="ml-auto flex items-center gap-1">
             <FoldButton folded={folded} onToggle={() => setFolded(!folded)} />
           </div>
@@ -360,8 +368,11 @@ export function EventPanel({
                 loaded={loaded}
                 failed={failed}
                 outsideWorkOf={outsideWorkOf}
-                selectedKey={selectedKey}
-                onSelect={onSelect}
+                selectedKey={selectedCard}
+                onSelect={(incident) => {
+                  setSelectedCard(incident.key);
+                  onSelect(incident);
+                }}
                 onOpen={onOpen}
               />
             </div>

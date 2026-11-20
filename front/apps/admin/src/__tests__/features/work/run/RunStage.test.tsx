@@ -246,7 +246,11 @@ describe('RunStage — 진행 중', () => {
       within(events)
         .getAllByRole('article')
         .map((article) => article.getAttribute('aria-label')),
-    ).toEqual([expect.stringContaining('단상 구역'), expect.stringContaining('개구부 구역')]);
+    ).toEqual([
+      expect.stringContaining('단상 구역'),
+      expect.stringContaining('단상 구역'),
+      expect.stringContaining('개구부 구역'),
+    ]);
 
     expect(screen.getByRole('heading', { name: '관제 적용 상태' })).toBeTruthy();
     expect(screen.getByText('3D 모델 적용됨')).toBeTruthy();

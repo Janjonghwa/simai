@@ -4,11 +4,10 @@ import type { EventItem } from '@/features/events/types';
 import { GPU_STATUS_KEY } from '@/features/gpu/api';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// 관제 중 경보 근거(VLM rationale)가 아직 없을 때 GPU 단계가 VLLM 이면 「AI 근거 준비 중」(S15P31A101-706).
-// GPU 상태는 상단바 점이 받아 둔 캐시만 읽는다(이 칸은 새로 요청하지 않는다).
+// 근거가 없을 때 대기 문구를 표시하지 않는다. 설명은 상세 머리 아래에 표시한다.
 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
@@ -85,7 +84,7 @@ function renderAi(event: EventItem, stage: string | null, role: 'ADMIN' | 'VIEWE
 describe('AI 근거 준비 중(S15P31A101-706)', () => {
   it('LIVE 위험 경보에 근거가 없고 GPU 단계가 VLLM 이면 빈 칸 대신 「AI 근거 준비 중」', () => {
     const { panel } = renderAi(makeEvent(), 'VLLM');
-    expect(within(panel).getByText('AI 근거 준비 중')).toBeTruthy();
+    expect(within(panel).queryByText('AI 근거 준비 중')).toBeNull();
   });
 
   it('비관리자(열람)도 받아 둔 상태가 없으니 지금처럼 빈 칸(—)', () => {
@@ -102,7 +101,7 @@ describe('AI 근거 준비 중(S15P31A101-706)', () => {
     expect(within(none.panel).queryByText('AI 근거 준비 중')).toBeNull();
     cleanup();
     const withRationale = renderAi(makeEvent({ rationale: '난간 없음' }), 'VLLM');
-    expect(within(withRationale.panel).getByText('난간 없음')).toBeTruthy();
+    expect(within(withRationale.panel).queryByText('난간 없음')).toBeNull();
     expect(within(withRationale.panel).queryByText('AI 근거 준비 중')).toBeNull();
     cleanup();
     const high = renderAi(makeEvent({ severity: 'HIGH' }), 'VLLM');
@@ -111,8 +110,8 @@ describe('AI 근거 준비 중(S15P31A101-706)', () => {
 
   it('VLM 이 준비되면(캐시가 READY 로 바뀌면) 표시를 걷는다', () => {
     const { client, panel } = renderAi(makeEvent(), 'VLLM');
-    expect(within(panel).getByText('AI 근거 준비 중')).toBeTruthy();
-    act(() => client.setQueryData(GPU_STATUS_KEY, gpuStatus('READY')));
+    expect(within(panel).queryByText('AI 근거 준비 중')).toBeNull();
+    client.setQueryData(GPU_STATUS_KEY, gpuStatus('READY'));
     expect(within(panel).queryByText('AI 근거 준비 중')).toBeNull();
   });
 });

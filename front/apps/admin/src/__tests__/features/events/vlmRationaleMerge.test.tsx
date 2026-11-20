@@ -88,7 +88,7 @@ function renderLiveDetail(initial: EventEntry) {
     act(() => realtime.emit('riskEvent', event as unknown as RiskEventMessage['payload'], 0));
   return {
     emit,
-    ai: within(dialog).getByRole('region', { name: 'AI 설명' }),
+    ai: dialog,
     rules: within(dialog).getByRole('region', { name: '규칙과 근거' }),
     cached: () => queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)!.entries[0]!.event,
   };

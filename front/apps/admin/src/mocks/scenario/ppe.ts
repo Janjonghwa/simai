@@ -1,3 +1,4 @@
+import { DEMO_TIMES } from '@/mocks/demoAlarmScenario';
 import { nextMsgId, SOURCE_ID } from '@/mocks/scenario/shared';
 import type { PpeViewMessage } from '@simai/contracts';
 
@@ -35,7 +36,7 @@ function item(state: State, capture: number) {
 }
 
 /** /topic/ppe·GET /api/ppe/current: 시각 t(ms)의 PPE 스냅샷(ppe_view, S15P31A101-531). */
-export function ppeViewAt(t: number): PpeViewMessage {
+export function ppeViewAt(t: number, demoElapsedMs?: number): PpeViewMessage {
   const capture = t - DELAY_MS;
   return {
     schema_version: '1.0.0',
@@ -51,7 +52,12 @@ export function ppeViewAt(t: number): PpeViewMessage {
         identity_revision: 0,
         capture_time_ms: capture,
         received_at_ms: t,
-        helmet: item(p.helmet, capture),
+        helmet: item(
+          p.id === 'w-0012' && demoElapsedMs !== undefined && demoElapsedMs >= DEMO_TIMES.helmet
+            ? 'NOT_WORN'
+            : p.helmet,
+          capture,
+        ),
         vest: item(p.vest, capture),
       })),
     },

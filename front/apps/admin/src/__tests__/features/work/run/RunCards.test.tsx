@@ -140,7 +140,7 @@ describe('EventListCard', () => {
     expect(rows[1]?.querySelector('article')?.getAttribute('aria-label')).toContain('개구부 구역');
   });
 
-  it('같은 대상의 위험·주의 경보는 IncidentCard 한 줄로 묶고(제목은 가장 최근 경보) 수는 두 건이다(S15P31A101-731)', () => {
+  it('같은 대상의 위험·주의 경보는 각각 한 줄로 보인다', () => {
     const r3 = entry('b', START + 5_400, 'HIGH', 'z-04');
     data.entries = [
       entry('a', START + 5_000, 'CRITICAL', 'z-04'),
@@ -151,7 +151,7 @@ describe('EventListCard', () => {
     const rows = within(screen.getByRole('list', { name: '경보 기록 목록' })).getAllByRole(
       'listitem',
     );
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain('고소 작업면 위');
     expect(rows[0]?.textContent).toContain('주의');
   });

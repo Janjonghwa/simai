@@ -234,7 +234,7 @@ describe('upsertEvents', () => {
 });
 
 describe('groupIncidents', () => {
-  it('같은 사람의 여러 규칙은 한 묶음이고, 묶음 등급은 진행 중 규칙 중 가장 높다', () => {
+  it('같은 사람의 다른 알림도 각각 표시하고 각자 등급을 유지한다', () => {
     const entries: EventEntry[] = [
       entry({ event_id: 'a', rule_id: 'R1', severity: 'HIGH', world_ids: ['w-1'] }),
       entry({
@@ -248,10 +248,10 @@ describe('groupIncidents', () => {
       entry({ event_id: 'd', rule_id: 'R7', severity: 'CAUTION', world_ids: [], zone_id: 'z-02' }),
     ];
     const incidents = groupIncidents(entries);
-    expect(incidents.map((i) => i.key)).toEqual(['person:w-1', 'person:w-2', 'zone:z-02']);
+    expect(incidents.map((i) => i.key)).toEqual(['event:a', 'event:c', 'event:d', 'event:b']);
     const [first] = incidents;
     expect(first?.severity).toBe('HIGH');
-    expect(first?.entries.map((e) => e.event.event_id)).toEqual(['a', 'b']);
+    expect(first?.entries.map((e) => e.event.event_id)).toEqual(['a']);
     expect(first?.alarming).toBe(true);
   });
 
@@ -263,7 +263,7 @@ describe('groupIncidents', () => {
     expect(incidents.map((i) => i.active)).toEqual([true, false]);
   });
 
-  it('묶음 안의 해소된 규칙은 최근 두 건만 보인다', () => {
+  it('해소된 알림도 각각 표시한다', () => {
     const resolved = [1, 2, 3, 4].map((n) =>
       entry({ event_id: `r${n}`, lifecycle: 'RESOLVED', updated_at: T + n * 100 }),
     );
@@ -271,7 +271,7 @@ describe('groupIncidents', () => {
       ...resolved,
       entry({ event_id: 'live', severity: 'HIGH', updated_at: T }),
     ]);
-    expect(incident?.entries.map((e) => e.event.event_id)).toEqual(['live', 'r4', 'r3']);
+    expect(incident?.entries.map((e) => e.event.event_id)).toEqual(['live']);
     expect(incident?.severity).toBe('HIGH');
   });
 });
@@ -285,8 +285,8 @@ describe('eventSections', () => {
       entry({ event_id: 'live', world_ids: ['w-1'] }),
       done({ event_id: 'old', world_ids: ['w-2'] }),
     ]);
-    expect(active.map((c) => c.incident.key)).toEqual(['person:w-1']);
-    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-2']);
+    expect(active.map((c) => c.incident.key)).toEqual(['event:live']);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['event:old']);
   });
 
   it('같은 사람이 진행 중이면서 지난 해소도 있으면 두 칸에 모두 나온다', () => {
@@ -294,12 +294,12 @@ describe('eventSections', () => {
       entry({ event_id: 'live', world_ids: ['w-1'] }),
       done({ event_id: 'old', rule_id: 'R1', severity: 'HIGH', world_ids: ['w-1'] }),
     ]);
-    expect(active.map((c) => c.incident.key)).toEqual(['person:w-1']);
-    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-1']);
+    expect(active.map((c) => c.incident.key)).toEqual(['event:live']);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['event:old']);
     expect(resolved[0]?.incident.active).toBe(false);
   });
 
-  it('해소 묶음은 같은 사람의 같은 규칙·구역만 한 카드이고, 발생 횟수를 센다', () => {
+  it('생존 여부를 모르면 같은 사람의 해소 알림도 따로 표시한다', () => {
     const { resolved } = eventSections([
       done({ event_id: 'a', updated_at: T + 100, resolved_at: T + 100 }),
       done({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
@@ -307,9 +307,9 @@ describe('eventSections', () => {
       done({ event_id: 'd', zone_id: 'z-05', updated_at: T + 50, resolved_at: T + 50 }),
     ]);
     // 규칙이 다르거나 구역이 다르면 같은 사람이어도 다른 카드다.
-    expect(resolved).toHaveLength(3);
-    expect(new Set(resolved.map((g) => g.id)).size).toBe(3);
-    expect(resolved.map((g) => g.occurrences).sort()).toEqual([1, 1, 2]);
+    expect(resolved).toHaveLength(4);
+    expect(new Set(resolved.map((g) => g.id)).size).toBe(4);
+    expect(resolved.map((g) => g.occurrences)).toEqual([1, 1, 1, 1]);
   });
 
   it('발생 횟수는 해소 뒤 곧바로 다시 열린(resume) 횟수를 더한다', () => {
@@ -317,8 +317,8 @@ describe('eventSections', () => {
       done({ event_id: 'a', resume_count: 2, updated_at: T + 100, resolved_at: T + 100 }),
       done({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
     ]);
-    expect(resolved).toHaveLength(1);
-    expect(resolved[0]?.occurrences).toBe(4);
+    expect(resolved).toHaveLength(2);
+    expect(resolved.map((g) => g.occurrences).sort()).toEqual([1, 3]);
   });
 
   it('해소 칸은 최근에 해소된 묶음부터 네 건만 보인다', () => {
@@ -334,10 +334,10 @@ describe('eventSections', () => {
     );
     const { resolved } = eventSections(entries);
     expect(resolved.map((g) => g.incident.key)).toEqual([
-      'person:w-6',
-      'person:w-5',
-      'person:w-4',
-      'person:w-3',
+      'event:r6',
+      'event:r5',
+      'event:r4',
+      'event:r3',
     ]);
   });
 });
@@ -367,9 +367,9 @@ describe('화면 묶음(S15P31A101-731)', () => {
     expect(active[0]!.incident.target).toEqual({ type: 'person', id: 'w-235' });
     expect(active[0]!.occurrences).toBe(3);
     expect(active[0]!.people).toBe(3);
-    // 확인 대기 경보가 카드에서 사라지지 않게 묶인 경보 전부가 카드 칩·점멸에 든다
+    // 카드의 상태와 시각은 대표 알림을 따른다
     expect(active[0]!.incident.alarming).toBe(true);
-    expect(firstActiveRaisedAt(active[0]!.incident)).toBe(T);
+    expect(firstActiveRaisedAt(active[0]!.incident)).toBe(T + 80 * SEC);
     expect(active[0]!.incident.entries[0]!.event.event_id).toBe('c');
   });
 
@@ -378,9 +378,9 @@ describe('화면 묶음(S15P31A101-731)', () => {
       [live('a', 'w-1', T), live('b', 'w-2', T + SEC), live('c', 'w-gone', T + 2 * SEC)],
       { alive: new Set(['w-1', 'w-2']) },
     );
-    expect(active.map((c) => c.incident.key).sort()).toEqual(['person:w-1', 'person:w-2']);
+    expect(active.map((c) => c.incident.key).sort()).toEqual(['event:a', 'event:b']);
     // 사라진 번호는 둘 중 한 사람에게만 붙는다(사람 카드는 그대로 둘이다)
-    expect(active.reduce((n, c) => n + c.people, 0)).toBe(3);
+    expect(active.reduce((n, c) => n + c.people, 0)).toBe(2);
   });
 
   it('살아 있는 사람을 모르면(World 수신 전) 서로 다른 사람을 묶지 않는다', () => {
@@ -394,7 +394,7 @@ describe('화면 묶음(S15P31A101-731)', () => {
     // 묶이지 않은 사라진 번호(w-1)의 카드는 진행 중이 아니라 최근 해소 쪽(gone)에 따로 남는다(S15P31A101-798).
     const cards = (s: ReturnType<typeof eventSections>) =>
       [...s.active, ...s.gone].map((c) => c.incident.key).sort();
-    const apart = ['person:w-1', 'person:w-3'];
+    const apart = ['event:a', 'event:b'];
     expect(
       cards(
         eventSections([live('a', 'w-1', T), live('b', 'w-3', T + 10 * SEC, { rule_id: 'R1' })], {
@@ -423,8 +423,8 @@ describe('화면 묶음(S15P31A101-731)', () => {
       ...[1, 2, 3, 4, 5].map((n) => done(`r${n}`, `w-10${n}`, T + n * 10 * MIN)),
     ];
     const sections = eventSections(entries, { alive });
-    expect(sections.active.map((c) => c.incident.key)).toEqual(['person:w-1']);
-    expect(sections.gone.map((c) => c.incident.key)).toEqual(['person:w-2', 'person:w-3']);
+    expect(sections.active.map((c) => c.incident.key)).toEqual(['event:a']);
+    expect(sections.gone.map((c) => c.incident.key)).toEqual(['event:b', 'event:c']);
     // 화면만 옮긴다: 묶음은 여전히 진행 중이고 확인 대기 경보도 그대로다.
     expect(sections.gone.every((c) => c.incident.active)).toBe(true);
     expect(sections.gone[0]!.incident.alarming).toBe(true);
@@ -590,13 +590,13 @@ describe('사건 상세', () => {
     acks: [ack(T + 2_000)],
   });
 
-  it('카드 머리줄 시각은 묶음에서 가장 먼저 발생한 시각이다', () => {
+  it('카드 머리줄 시각은 해당 알림의 발생 시각이다', () => {
     const [incident] = groupIncidents([r2, r1]);
-    expect(firstRaisedAt(incident!)).toBe(T);
+    expect(firstRaisedAt(incident!)).toBe(T + 5_000);
   });
 
   it('누른 이벤트가 든 묶음을 찾고, 목록에 없으면 없다', () => {
-    expect(incidentOf([r2, r1], 'r1')?.key).toBe('person:w-1');
+    expect(incidentOf([r2, r1], 'r1')?.key).toBe('event:r1');
     expect(incidentOf([r2, r1], 'missing')).toBeUndefined();
   });
 
@@ -610,20 +610,17 @@ describe('사건 상세', () => {
         updated_at: T + n * 100,
       }),
     );
-    // 사람별 묶음은 최근 해소 두 건(d3·d2)만 담지만, 가장 오래된 d1 카드도 상세를 연다.
-    expect(groupIncidents(resolved)[0]?.entries.map((e) => e.event.event_id)).toEqual(['d3', 'd2']);
+    // 각 알림을 따로 찾는다.
+    expect(groupIncidents(resolved)[0]?.entries.map((e) => e.event.event_id)).toEqual(['d3']);
     const found = incidentOf(resolved, 'd1');
-    expect(found?.key).toBe('person:w-1');
+    expect(found?.key).toBe('event:d1');
     expect(found?.entries.map((e) => e.event.event_id)).toEqual(['d1']);
   });
 
-  it('타임라인은 규칙마다 발생·확인·해소를 시각 순으로 늘어놓는다', () => {
+  it('타임라인은 해당 알림의 전이만 보인다', () => {
     const [incident] = groupIncidents([r2, r1]);
     expect(incidentTimeline(incident!)).toEqual([
-      { at: T, who: '시스템', text: '위험구역 진입 발생' },
-      { at: T + 2_000, who: '관제', text: expect.stringMatching(/^위험구역 진입 확인 · /) },
       { at: T + 5_000, who: '시스템', text: '추락 위험(가장자리) 발생' },
-      { at: T + 9_000, who: '시스템', text: '위험구역 진입 해소' },
     ]);
   });
 
@@ -729,7 +726,7 @@ describe('EC2 마감(WORK_ENDED·SESSION_ENDED·NOT_IN_SNAPSHOT, S15P31A101-722)
       }),
     ]);
     expect(active).toEqual([]);
-    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-2']);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['event:seen']);
   });
 
   it('상태 문구와 타임라인에 해소·운영자 종료가 아니라 마감 까닭을 적는다', () => {
@@ -769,13 +766,13 @@ describe('카드 표시 계산', () => {
     expect(ec2Now(T, undefined)).toBe(T);
   });
 
-  it('경과 기준은 진행 중인 규칙 중 가장 먼저 발생한 시각이다', () => {
+  it('경과 기준은 해당 알림의 발생 시각이다', () => {
     const incident = incidentOfEntries(
       entry({ event_id: 'a', raised_at: T + 5_000 }),
       entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', raised_at: T + 2_000 }),
       entry({ event_id: 'c', rule_id: 'R3', lifecycle: 'RESOLVED', raised_at: T - 9_000 }),
     );
-    expect(firstActiveRaisedAt(incident)).toBe(T + 2_000);
+    expect(firstActiveRaisedAt(incident)).toBe(T + 5_000);
     expect(
       firstActiveRaisedAt(incidentOfEntries(entry({ lifecycle: 'RESOLVED', resolved_at: T }))),
     ).toBeNull();
@@ -941,9 +938,9 @@ describe('지금 Tier 0 가 들고 있는지(held_by_tier0)', () => {
       entry({ event_id: 'old-1', world_ids: ['w-1'], rule_id: 'R1', held_by_tier0: false }),
       entry({ event_id: 'old-2', world_ids: ['w-9'], held_by_tier0: false }),
     ]);
-    expect(sections.active.map((c) => c.incident.key)).toEqual(['person:w-1']);
+    expect(sections.active.map((c) => c.incident.key)).toEqual(['event:now']);
     expect(sections.active[0]?.incident.entries.map((e) => e.event.event_id)).toEqual(['now']);
-    expect(sections.stale.map((i) => i.key).sort()).toEqual(['person:w-1', 'person:w-9']);
+    expect(sections.stale.map((i) => i.key).sort()).toEqual(['event:old-1', 'event:old-2']);
     expect(sections.stale.every((i) => i.stale && !i.alarming)).toBe(true);
     expect(sections.staleEvents).toBe(2);
     expect(cardChip(sections.stale[0]!)).toEqual({ kind: 'stale', label: '지난 관제' });

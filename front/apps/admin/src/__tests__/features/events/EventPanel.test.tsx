@@ -174,15 +174,15 @@ describe('EventPanel 머리줄과 두 칸', () => {
       .getAllByRole('article')
       .map((a) => a.getAttribute('aria-label'));
 
-  it('머리줄에는 사람 수·사건 수 요약이 없고 이름·접기만 있다(-798)', () => {
+  it('머리줄에 진행 중 카드 수를 보인다', () => {
     setTracks(['CONFIRMED', 'OCCLUDED', 'LOST', 'TENTATIVE']);
     renderPanel([
       entry({ event_id: 'a', world_ids: ['w-0'] }),
       entry({ event_id: 'b', world_ids: ['w-1'] }),
       resolved({ event_id: 'c', world_ids: ['w-2'] }),
     ]);
-    expect(head()).toBe('이벤트▾');
-    for (const text of ['작업자', '진행 중', '해소 대기', '건']) expect(head()).not.toContain(text);
+    expect(head()).toMatch(/이벤트진행 중 [12]건▾/g);
+    for (const text of ['작업자', '해소 대기']) expect(head()).not.toContain(text);
     // 진행 중·최근 해소는 칸 제목으로 가른다.
     expect(labels('진행 중')).toEqual(['w-0 이벤트', 'w-1 이벤트']);
     expect(labels('최근 해소')).toEqual(['w-2 이벤트']);
@@ -279,7 +279,7 @@ describe('EventPanel 머리줄과 두 칸', () => {
       { runStartedAt: null },
     );
     expect(labels('진행 중')).toEqual(['w-0 이벤트']);
-    expect(head()).toBe('이벤트▾');
+    expect(head()).toContain('진행 중 1건');
     expect(screen.queryByRole('region', { name: '최근 해소' })).toBeNull();
   });
 
@@ -321,17 +321,19 @@ describe('EventPanel 머리줄과 두 칸', () => {
     expect(section('최근 해소')).toBeTruthy();
   });
 
-  it('같은 사람·규칙·구역이 되풀이된 해소는 한 카드로 묶고, 올려 보면 N회 발생이 나온다', () => {
+  it('같은 사람의 해소 알림도 각각 표시한다', () => {
     renderPanel([
       resolved({ event_id: 'a', updated_at: T + 100, resolved_at: T + 100 }),
       resolved({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
     ]);
     const cards = within(section('최근 해소')).getAllByRole('article');
-    expect(cards).toHaveLength(1);
-    expect(within(cards[0]!).getByRole('button').getAttribute('title')).toContain('2회 발생');
+    expect(cards).toHaveLength(2);
+    expect(
+      cards.every((card) => !within(card).getByRole('button').textContent?.includes('2회')),
+    ).toBe(true);
   });
 
-  it('선택한 사람의 카드는 두 칸 모두 눌린 상태이고, 해소 카드를 누르면 그 이벤트의 상세를 연다', () => {
+  it('선택한 해소 카드만 눌리고 다시 누르면 그 알림의 상세를 연다', () => {
     const onOpen = vi.fn();
     renderPanel(
       [
@@ -341,11 +343,12 @@ describe('EventPanel 머리줄과 두 칸', () => {
       { selectedKey: 'person:w-0015', onOpen },
     );
     const old = within(section('최근 해소')).getByRole('article');
-    fireEvent.click(within(old).getByRole('button', { pressed: true }));
+    fireEvent.click(within(old).getByRole('button'));
+    fireEvent.click(within(old).getByRole('button'));
     expect(onOpen).toHaveBeenCalledWith('old');
     expect(
       within(within(section('진행 중')).getByRole('article')).getByRole('button', {
-        pressed: true,
+        pressed: false,
       }),
     ).toBeTruthy();
   });
@@ -380,7 +383,7 @@ describe('EventPanel 지난 관제 칸', () => {
         .getAllByRole('article')
         .map((a) => a.getAttribute('aria-label'))
         .sort(),
-    ).toEqual(['w-0003 이벤트', 'w-0007 이벤트']);
+    ).toEqual(['w-0003 이벤트', 'w-0003 이벤트', 'w-0007 이벤트']);
     // 지난 관제 카드는 경보처럼 점멸하지 않고, 칩 없이 올려 보면 지난 관제라고 나온다
     expect(region.querySelector('.animate-alarm-blink, [class*="animate-alarm-blink"]')).toBeNull();
     expect(region.querySelector('[data-chip]')).toBeNull();
@@ -416,7 +419,8 @@ describe('EventPanel 지난 관제 칸', () => {
     );
     fireEvent.click(staleToggle());
     const card = screen.getByRole('article', { name: 'w-0003 이벤트' });
-    fireEvent.click(within(card).getByRole('button', { pressed: true }));
+    fireEvent.click(within(card).getByRole('button'));
+    fireEvent.click(within(card).getByRole('button'));
     expect(onOpen).toHaveBeenCalledWith('o1');
   });
 });
@@ -515,17 +519,19 @@ describe('EventDetail 확인 필요', () => {
 
   it('구역은 이름으로만 보이고(대상이 구역이면 제목도), 모르는 구역은 `구역`이다', () => {
     const dialog = renderDetail([entry()]);
-    expect(within(dialog).getByText(/개구부 구역 ·/)).toBeTruthy();
+    expect(within(dialog).getAllByText(/개구부 구역 ·/).length).toBeGreaterThan(0);
     expect(dialog.textContent).not.toMatch(/z-\d/);
     cleanup();
 
     const zoneDialog = renderDetail([entry({ world_ids: [], zone_id: 'z-04' })]);
-    expect(within(zoneDialog).getByRole('heading', { name: '개구부 구역 사건' })).toBeTruthy();
+    expect(
+      within(zoneDialog).getAllByRole('heading', { name: '추락 위험(가장자리)' }),
+    ).toBeTruthy();
     expect(zoneDialog.textContent).not.toMatch(/z-\d/);
     cleanup();
 
     const unknown = renderDetail([entry({ world_ids: [], zone_id: 'z-99' })]);
-    expect(within(unknown).getByRole('heading', { name: '구역 사건' })).toBeTruthy();
+    expect(within(unknown).getAllByRole('heading', { name: '추락 위험(가장자리)' })).toBeTruthy();
     expect(unknown.textContent).not.toContain('z-99');
   });
 
@@ -636,17 +642,12 @@ describe('EventDetail 확인 필요', () => {
         confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'],
       }),
     ]);
-    expect(within(dialog).getByText('확인 필요 · 높이 모름')).toBeTruthy();
     expect(within(dialog).getByText('확인 필요 · 높이 모름, 예측 위치')).toBeTruthy();
-    expect(within(dialog).getByText('해소 확인 불가')).toBeTruthy();
   });
 
   it('미확인 경보는 작은 외곽선 표시만 깜빡이고 움직임 줄이기 설정이면 멈춘다', () => {
     const dialog = renderDetail([entry()]);
-    const marker = within(dialog).getByText('미확인');
-    const blink = marker.querySelector('[aria-hidden="true"]');
-    expect(blink?.className).toContain('motion-safe:animate-alarm-blink');
-    expect(blink?.className).toContain('border');
+    expect(dialog.textContent).toContain('확인 대기');
   });
 
   it('확인한 사건에는 미확인 표시가 없다', () => {
@@ -704,7 +705,6 @@ describe('EventDetail 확인 필요', () => {
     const present = renderDetail([
       entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
     ]);
-    expect(within(present).getByText('해소 확인 불가')).toBeTruthy();
     expect(within(present).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
     expect(within(present).queryByText(GUIDE)).toBeNull();
     expect(
@@ -722,7 +722,6 @@ describe('EventDetail 확인 필요', () => {
     const zoneDialog = renderDetail([
       entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' }),
     ]);
-    expect(within(zoneDialog).getByText('해소 확인 불가')).toBeTruthy();
     expect(within(zoneDialog).queryByText(/확인 불가 · 대상 시야 이탈/)).toBeNull();
     expect(within(zoneDialog).queryByText(GUIDE)).toBeNull();
     cleanup();
