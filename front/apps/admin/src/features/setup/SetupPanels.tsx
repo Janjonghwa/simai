@@ -601,6 +601,7 @@ export function AiZoneDraftsPanel({
   pendingDraftId,
   acceptFailure,
   onAcceptDraft,
+  onUnacceptDraft,
   onDiscardDraft,
   cameraIds = [],
   mergedDraftIds = [],
@@ -616,6 +617,7 @@ export function AiZoneDraftsPanel({
   pendingDraftId: string | null;
   acceptFailure: DraftAcceptFailure | null;
   onAcceptDraft: (item: ZoneDraftItem) => void;
+  onUnacceptDraft: (item: ZoneDraftItem) => void;
   onDiscardDraft: (candidateId: string) => void;
   cameraIds?: readonly string[];
   /** 같은 자리의 이어 온 구역과 한 항목으로 묶어 「이어 쓴 구역 확인」에서 고르는 초안(S15P31A101-758). 여기서는 감춘다. */
@@ -698,7 +700,16 @@ export function AiZoneDraftsPanel({
                     )}
                   </div>
                   {isAccepted ? (
-                    <span className="shrink-0 font-semibold text-point-soft">✓ 적용됨</span>
+                    <button
+                      type="button"
+                      title="수락 취소"
+                      aria-label={`${name} 수락 취소`}
+                      disabled={pendingDraftId !== null}
+                      onClick={() => onUnacceptDraft(item)}
+                      className="shrink-0 cursor-pointer rounded font-semibold text-point-soft hover:underline"
+                    >
+                      ✓ 적용됨
+                    </button>
                   ) : (
                     <>
                       <Button

@@ -272,6 +272,7 @@ describe('세팅 상태와 다음 행동(-732)', () => {
         pendingDraftId={null}
         acceptFailure={null}
         onAcceptDraft={vi.fn()}
+        onUnacceptDraft={vi.fn()}
         onDiscardDraft={vi.fn()}
         cameraIds={IDS}
       />,

@@ -11,7 +11,7 @@ import type { Zone } from '@/features/zones/types';
 import { SURFACE_ZONE_MARGIN_M } from '@/features/zones/zoneShape';
 import { useEffect, useMemo, useReducer } from 'react';
 
-// 시연 계정(features/demo/demoAccount)의 세팅 구역 단계 「AI 위험 구역 초안」. 서버 초안 대신 정해 둔 개구부와 단상 초안을 보인다.
+// 시연 계정의 세팅 구역 단계에서 서버 초안 대신 정해 둔 개구부 초안을 보인다.
 // 자리는 시연 맵(assets 의 GLB)에 지금 놓인 「단상 개구부」 구역(바닥 x 5.2~7.6 m, y 2.25~4.55 m, 높이 0~1.4 m)이다.
 // 초안을 수락하면 다각형을 SURFACE_ZONE_MARGIN_M 만큼 넓혀 구역을 만들므로(draftZone), 초안은 그만큼 안으로 줄여 둔다.
 
@@ -55,26 +55,6 @@ export function demoZoneDrafts(
         rationale: '단상 둘레에 난간 없이 트인 단차가 있어 발을 헛디디면 떨어질 수 있어요.',
         confidence: 0.92,
       },
-      {
-        candidate_id: 'demo-platform-stage',
-        candidate_kind: 'ELEVATED_WORK_SURFACE',
-        zone_kind: 'PLATFORM',
-        eval_type: 'VOLUME_3D',
-        polygon_xy: [
-          [1.3, 6.5],
-          [3.7, 6.5],
-          [3.7, 8.1],
-          [1.3, 8.1],
-        ],
-        z_min_m: 0,
-        z_max_m: 0.4,
-        top_height_m: 0.4,
-        obb: { center: [2.5, 7.3, 0.2], size: [2.4, 1.6, 0.4], yaw_rad: 0 },
-        recommended_name: '단상 구역',
-        recommended_severity: 'HIGH',
-        rationale: '단상 위 작업 중 단차에 주의가 필요해요.',
-        confidence: 0.92,
-      },
     ],
   });
   const carried = existingZones.filter((zone) => isCarriedZone(zone.zoneId));
@@ -92,7 +72,7 @@ export function demoZoneDrafts(
 const searched = new Set<string>();
 
 /**
- * 시연 계정의 AI 구역 초안 응답. 켜진(구역 단계) 뒤 DEMO_DRAFT_SEARCH_MS 동안은 찾는 중(초안 없음)이고 그 뒤에 두 초안을 보인다.
+ * 시연 계정의 AI 구역 초안 응답. 켜진 뒤 잠깐 찾는 중을 보이고 개구부 초안을 보인다.
  * 맵에서 이미 들어온 같은 구역과 겹치는 가짜 초안은 만들지 않는다. 꺼져 있으면 null 이다.
  */
 export function useDemoZoneDrafts(

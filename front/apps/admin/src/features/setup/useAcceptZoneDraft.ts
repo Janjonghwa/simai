@@ -1,12 +1,20 @@
+import { requestSetupZonePlan, saveSetupZonePlan, setupZonePlanKey } from '@/features/setup/api';
 import { acceptedByZones, draftCreateRequest } from '@/features/setup/draftZone';
-import { markSetupZoneDraftAccepted, useSetupFlowStore } from '@/features/setup/setup.store';
+import {
+  markSetupZoneDraftAccepted,
+  unmarkSetupZoneDraftAccepted,
+  useSetupFlowStore,
+} from '@/features/setup/setup.store';
 import { draftPublishFailure } from '@/features/setup/setupUx';
+import { planItemViewId } from '@/features/setup/setupZonePlan';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { commitErrorText, CommitInFlightError } from '@/features/zones/commitErrors';
 import { useZoneCommitMutation } from '@/features/zones/useZoneCommitMutation';
 import { useZones } from '@/features/zones/useZones';
 import type { SetupZoneSource } from '@/features/zones/zoneSource';
+import { api } from '@/lib/api';
+import { useQueryClient } from '@tanstack/react-query';
 import { useMemo, useRef, useState } from 'react';
 
 /** 수락하지 못한 초안과 그 문구. */
@@ -26,6 +34,7 @@ export function useAcceptZoneDraft(
   setupLayoutSync?: import('@/features/setup/useSetupLayoutSync').SetupLayoutSync,
   source?: SetupZoneSource | null,
 ) {
+  const queryClient = useQueryClient();
   const commit = useZoneCommitMutation(setupLayoutSync, source);
   const { zones } = useZones(source);
   const plan = useSetupZonePlanQuery(source?.sessionId ?? null);
@@ -74,5 +83,43 @@ export function useAcceptZoneDraft(
     }
   };
 
-  return { acceptedIds, accept, pendingId, failure };
+  const unaccept = async (item: ZoneDraftItem) => {
+    if (!source || sending.current) return;
+    sending.current = true;
+    setPendingId(item.candidate_id);
+    setFailure(null);
+    try {
+      const key = setupZonePlanKey(source.sessionId);
+      const current = await queryClient.fetchQuery({
+        queryKey: key,
+        queryFn: ({ signal }) => requestSetupZonePlan(api, source.sessionId, signal),
+      });
+      let index = current.items.findIndex((entry) => entry.candidate_id === item.candidate_id);
+      if (index < 0)
+        index = current.items.findIndex((_, i) =>
+          zones.some(
+            (zone) =>
+              zone.zoneId === planItemViewId(current.items, i) &&
+              acceptedByZones([item], [zone]).includes(item.candidate_id),
+          ),
+        );
+      if (index < 0) throw new Error('수락한 구역을 찾을 수 없습니다');
+      const saved = await saveSetupZonePlan(
+        api,
+        source.sessionId,
+        current.items.filter((_, i) => i !== index),
+        current.revision,
+      );
+      queryClient.setQueryData(key, saved);
+      unmarkSetupZoneDraftAccepted(item.candidate_id);
+    } catch (error) {
+      setFailure({ candidateId: item.candidate_id, text: commitErrorText(error) });
+      void queryClient.invalidateQueries({ queryKey: setupZonePlanKey(source.sessionId) });
+    } finally {
+      sending.current = false;
+      setPendingId(null);
+    }
+  };
+
+  return { acceptedIds, accept, unaccept, pendingId, failure };
 }

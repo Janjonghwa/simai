@@ -1,4 +1,5 @@
 import { isDemoUser } from '@/features/demo/demoAccount';
+import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
 import { completeMapBlockedReason } from '@/features/setup/setup';
 import { SETUP_COMPLETE_ERROR_TEXT } from '@/features/setup/setupErrorMessage';
 import {
@@ -1425,11 +1426,14 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return HttpResponse.json(existing);
       }
 
-      const built = buildSetupZoneDraftsResponse(id, {
-        site_id: session.site_id,
-        calibration_version: session.calibration_version ?? 'cal-8',
-        preview_scene_version: session.preview_scene_version ?? 'scene-preview-1',
-      });
+      const built =
+        import.meta.env.VITE_MOCK_BUILD === 'true'
+          ? demoZoneDrafts(id)
+          : buildSetupZoneDraftsResponse(id, {
+              site_id: session.site_id,
+              calibration_version: session.calibration_version ?? 'cal-8',
+              preview_scene_version: session.preview_scene_version ?? 'scene-preview-1',
+            });
       zoneDraftsBySession.set(id, built);
       return HttpResponse.json(built);
     }),

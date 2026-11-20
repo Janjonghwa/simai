@@ -1126,6 +1126,7 @@ function SetupWorkPage({
                 pendingDraftId={draftAccept.pendingId}
                 acceptFailure={draftAccept.failure}
                 onAcceptDraft={(item) => void draftAccept.accept(item)}
+                onUnacceptDraft={(item) => void draftAccept.unaccept(item)}
                 onDiscardDraft={discardSetupZoneDraft}
                 mergedDraftIds={mergedDraftIds}
                 canImportPrevious={canImportPrevious}

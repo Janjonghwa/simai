@@ -58,6 +58,13 @@ export function markSetupZoneDraftAccepted(candidateId: string) {
   }));
 }
 
+/** 저장된 구역을 뺀 뒤 수락 표시를 지운다. */
+export function unmarkSetupZoneDraftAccepted(candidateId: string) {
+  useSetupFlowStore.setState((state) => ({
+    acceptedDraftIds: state.acceptedDraftIds.filter((id) => id !== candidateId),
+  }));
+}
+
 /** AI 구역 초안 하나를 버린다. */
 export function discardSetupZoneDraft(candidateId: string) {
   useSetupFlowStore.setState((state) => ({
