@@ -31,7 +31,9 @@ export function SetupSplit({
   return (
     <div className={SETUP_SPLIT}>
       {left}
-      <div className={`${SETUP_SIDE_COLUMN} ${fillMap ? '[&>[data-map-choice]]:shrink' : ''}`}>
+      <div
+        className={`${SETUP_SIDE_COLUMN} ${fillMap ? '[&>[data-map-choice]]:min-h-fit [&>[data-map-choice]]:shrink' : ''}`}
+      >
         {children}
       </div>
     </div>

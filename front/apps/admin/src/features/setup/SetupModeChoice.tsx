@@ -37,7 +37,8 @@ function Option({
       className={cn(
         OPTION,
         selected ? SELECTED : IDLE,
-        selected && 'min-h-0',
+        // 펼친 새 맵 카드는 내용 높이 아래로 줄지 않는다(낮은 화면에서 3단계가 카드 밖으로 넘치지 않게). 재사용 카드는 맵 목록이 안에서 스크롤되도록 줄 수 있다.
+        selected && label !== '새 맵 만들기' && 'min-h-0',
         selected && label === '새 맵 만들기' && 'flex-1',
         disabled && 'opacity-60',
       )}
