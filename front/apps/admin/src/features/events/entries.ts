@@ -237,7 +237,7 @@ function sameSequenceDisplay(prev: EventItem, next: EventItem): Partial<EventIte
 }
 
 /** 등급이 오르거나 재개되면 새 경보 단계가 열린다. */
-const opensNewStage = (prev: EventItem, next: EventItem) =>
+export const opensNewStage = (prev: EventItem, next: EventItem) =>
   SEVERITY_RANK[next.severity] > SEVERITY_RANK[prev.severity] ||
   (next.resume_count ?? 0) > (prev.resume_count ?? 0);
 

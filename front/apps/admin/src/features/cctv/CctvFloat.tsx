@@ -6,7 +6,7 @@ import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { bestCamera, currentPersonId } from '@/features/events/incidents';
 import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
-import { useCameraIds } from '@/hooks/useCameraNames';
+import { useCameraIds, useCameraNames } from '@/hooks/useCameraNames';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { env } from '@/lib/env';
 import { FLOAT_MARGIN, type FloatSpot } from '@/lib/floatSpot';
@@ -86,6 +86,8 @@ function saveSettings(update: Settings) {
 export interface CctvCameraRequest {
   readonly cameraId: string;
   readonly seq: number;
+  readonly reason?: 'alarm';
+  readonly expiresAt?: number;
 }
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
@@ -388,6 +390,19 @@ export function CctvFloat({
   // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에).
   const layoutKey = `${spot.style?.left},${spot.style?.bottom},${size.width}x${size.height}`;
   useReportCctvFloatBox(box, { dragging: spot.dragging, layoutKey });
+  const cameraName = useCameraNames();
+  const [alarmSeq, setAlarmSeq] = useState<number | null>(null);
+  useEffect(() => {
+    const remaining = (requestedCamera?.expiresAt ?? 0) - Date.now();
+    if (requestedCamera?.reason !== 'alarm' || remaining <= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAlarmSeq(null);
+      return;
+    }
+    setAlarmSeq(requestedCamera.seq);
+    const timer = window.setTimeout(() => setAlarmSeq(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [requestedCamera]);
   const isAdmin = useCurrentRole() === 'ADMIN';
   // 창이 보이는 카메라(「3D 에서 이 방향으로 보기」가 쓴다).
   const [currentCamera, setCurrentCamera] = useState<string | undefined>(requestedCamera?.cameraId);
@@ -443,6 +458,14 @@ export function CctvFloat({
           />
         )}
       </div>
+      {alarmSeq !== null && alarmSeq === requestedCamera?.seq && currentCamera && (
+        <div
+          role="status"
+          className="pointer-events-none absolute top-2 left-2 rounded-md bg-card/85 px-2 py-1 text-sm backdrop-blur-[4px]"
+        >
+          경보 · {cameraName(currentCamera)}
+        </div>
+      )}
       {/* 끌기 자리(영상) 밖의 형제라 버튼을 눌러도 창 끌기가 시작되지 않는다. */}
       <TooltipProvider>
         <div className="absolute top-2 right-2 flex items-center gap-1">
