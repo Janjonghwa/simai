@@ -12,6 +12,7 @@ import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
 import { keyOfTarget, targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
+import { useAlarmCamera } from '@/features/layout/spatialHost/useAlarmCamera';
 import { useBoxEditProps } from '@/features/layout/spatialHost/useBoxEditProps';
 import {
   importViewer,
@@ -81,6 +82,7 @@ export function SpatialViewportHost({
   planFallbackMs = PLAN_FALLBACK_MS,
   eventPanel = true,
   children,
+  now = Date.now,
 }: {
   loadViewer?: () => Promise<ViewerModule>;
   /** 3D 가 준비되지 않았을 때 2D 를 띄우기까지 기다리는 시간(ms). 시험에서 줄인다. */
@@ -88,6 +90,7 @@ export function SpatialViewportHost({
   /** 오른쪽 이벤트 패널과 왼쪽 아래 2D 미니맵을 두는 화면인지(라우트 staticData.eventPanel, 실시간 관제). */
   eventPanel?: boolean;
   children?: ReactNode;
+  now?: () => number;
 }) {
   useEffect(() => {
     useScenePlanStore.getState().setPlan(null);
@@ -153,15 +156,29 @@ export function SpatialViewportHost({
   const personHighlights = editing ? undefined : bindHighlights;
   const cameraPoses = editing ? undefined : calibratedCameraPoses;
 
+  const { markManual } = useAlarmCamera({
+    enabled: showEventPanel && cctvOpen && !split,
+    now,
+    onCamera: useCallback((cameraId: string) => {
+      setRequestedCamera((prev) => ({
+        cameraId,
+        seq: (prev?.seq ?? 0) + 1,
+        reason: 'alarm',
+        expiresAt: Date.now() + 3000,
+      }));
+    }, []),
+  });
+
   const handleCameraClick = useCallback(
     (cameraId: string) => {
       if (!eventPanel || editing) return;
+      markManual();
       if (useCamSplitStore.getState().split) useCamSplitStore.getState().close();
       setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
       // CCTV 창만 연다. 3D 시점은 창 오른쪽 위 「3D 에서 이 방향으로 보기」로만 옮긴다(-626).
       setCctvOpen(true);
     },
-    [eventPanel, editing],
+    [eventPanel, editing, markManual],
   );
 
   // 사람을 고르면(3D·2D 미니맵·평면·이벤트 카드) 그 사람을 가장 잘 보는 카메라로 떠 있는 CCTV 창을 연다(닫혀 있으면 연다,
@@ -170,6 +187,7 @@ export function SpatialViewportHost({
     (key: string | null) => {
       const target = targetOfKey(key);
       if (!eventPanel || editing || target?.type !== 'person') return;
+      markManual();
       const best = bestCamera(useRealtimeStore.getState().world?.payload.tracks, {
         type: 'person',
         id: target.id,
@@ -177,7 +195,7 @@ export function SpatialViewportHost({
       if (best) setRequestedCamera((prev) => ({ cameraId: best, seq: (prev?.seq ?? 0) + 1 }));
       setCctvOpen(true);
     },
-    [eventPanel, editing],
+    [eventPanel, editing, markManual],
   );
 
   // 3D 선택 알림은 FE 명령(카드·2D 선택을 3D 에 맞춤)에도 온다. 지금 선택과 같은 키이거나, 병합으로 같은 사람이 새 World ID 로
