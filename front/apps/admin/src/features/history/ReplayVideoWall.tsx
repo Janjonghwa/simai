@@ -106,6 +106,7 @@ function SegmentVideo({
   const segmentId = segment.segment_id;
   // 서명 주소가 만료돼(5분) 이어 받기가 막히면 <video> 가 오류를 낸다. 주소를 한 번 다시 받아 같은 재생 시각으로 잇고, 그래도 안 되면 뺀다.
   const [renewed, setRenewed] = useState(false);
+  const [videoTime, setVideoTime] = useState<number | null>(null);
 
   useEffect(() => {
     if (video.current && url) syncTileVideo(video.current, segment, role, status);
@@ -132,23 +133,38 @@ function SegmentVideo({
 
   if (!url || failed) return null;
   return (
-    <video
-      ref={video}
-      src={url}
-      muted
-      playsInline
-      preload="auto"
-      // 영상은 재생 시각이 끌고 간다. 영상 안의 위치가 아니라 기록의 시각이 기준이다.
-      onLoadedMetadata={() => {
-        // 새 주소로 다시 읽혔으면 다음 만료 때 또 한 번 다시 받을 수 있다
-        setRenewed(false);
-        if (video.current) syncTileVideo(video.current, segment, role, status);
-      }}
-      onLoadedData={() => onReady(segmentId, true)}
-      onEmptied={() => onReady(segmentId, false)}
-      onError={onVideoError}
-      className={cn('absolute inset-0 size-full object-cover', !shown && 'opacity-0')}
-    />
+    <>
+      <video
+        ref={video}
+        src={url}
+        muted
+        playsInline
+        preload="auto"
+        // 영상은 재생 시각이 끌고 간다. 영상 안의 위치가 아니라 기록의 시각이 기준이다.
+        onLoadedMetadata={() => {
+          // 새 주소로 다시 읽혔으면 다음 만료 때 또 한 번 다시 받을 수 있다
+          setRenewed(false);
+          if (video.current) syncTileVideo(video.current, segment, role, status);
+        }}
+        onLoadedData={() => {
+          onReady(segmentId, true);
+          if (video.current)
+            setVideoTime(segment.segment_start_capture_ms + video.current.currentTime * 1000);
+        }}
+        onTimeUpdate={(event) =>
+          setVideoTime(segment.segment_start_capture_ms + event.currentTarget.currentTime * 1000)
+        }
+        onEmptied={() => onReady(segmentId, false)}
+        onError={onVideoError}
+        className={cn('absolute inset-0 size-full object-cover', !shown && 'opacity-0')}
+      />
+      {shown &&
+        videoTime !== null &&
+        status.playhead !== null &&
+        Math.abs(videoTime - status.playhead) > 1000 && (
+          <span className={cn(PILL, 'right-2 font-mono')}>{formatTime(videoTime)}</span>
+        )}
+    </>
   );
 }
 
@@ -156,14 +172,12 @@ function SegmentVideo({
 function TileFrame({
   label,
   cameraId,
-  playhead,
   focused,
   onToggle,
   children,
 }: {
   label: string;
   cameraId: string;
-  playhead: number | null;
   focused: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -178,9 +192,6 @@ function TileFrame({
       {children}
       <span className={cn(PILL, 'left-2 font-mono font-bold')} title={cameraId}>
         {label}
-      </span>
-      <span className={cn(PILL, 'right-2 font-mono')}>
-        {playhead !== null ? formatTime(playhead) : ''}
       </span>
     </button>
   );
@@ -207,13 +218,7 @@ function SegmentTile({
   const { videos, shownId, onReady } = useSegmentSwap(segment, upcoming);
 
   return (
-    <TileFrame
-      label={label}
-      cameraId={segment.camera_id}
-      playhead={status.playhead}
-      focused={focused}
-      onToggle={onToggle}
-    >
+    <TileFrame label={label} cameraId={segment.camera_id} focused={focused} onToggle={onToggle}>
       {videos.map((video) => (
         <SegmentVideo
           key={video.segment.segment_id}
@@ -239,27 +244,18 @@ function SegmentTile({
 function UploadWaitingTile({
   cameraId,
   upload,
-  replay,
   focused,
   onToggle,
   label,
 }: {
   cameraId: string;
   upload: UploadProgress | null;
-  replay: ReplaySpatialSource | null;
   focused: boolean;
   onToggle: () => void;
   label: string;
 }) {
-  const status = useReplayStatus(replay);
   return (
-    <TileFrame
-      label={label}
-      cameraId={cameraId}
-      playhead={status.playhead}
-      focused={focused}
-      onToggle={onToggle}
-    >
+    <TileFrame label={label} cameraId={cameraId} focused={focused} onToggle={onToggle}>
       <span className={CENTER_LINE}>
         <LoadingDots label={upload ? uploadLine(upload) : '업로드 중'} />
       </span>
@@ -323,7 +319,6 @@ export function ReplayVideoWall({
               cameraId={id}
               upload={upload}
               label={label(id)}
-              replay={replay}
               focused={wall.focused}
               onToggle={wall.toggle}
             />

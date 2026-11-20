@@ -10,13 +10,10 @@ import {
 } from '@/features/work/preflight/preflight';
 import { PreflightConfirmDialog } from '@/features/work/preflight/PreflightConfirmDialog';
 import { isSetupRequiredError, startErrorMessage } from '@/features/work/preflight/preflightErrors';
-import { PreflightZoneList } from '@/features/work/preflight/PreflightZoneList';
 import { RerunNotice } from '@/features/work/preflight/RerunNotice';
 import { SignDialog } from '@/features/work/preflight/SignDialog';
-import { SignerCard } from '@/features/work/preflight/SignerCard';
 import { useSigners } from '@/features/work/preflight/useSigners';
 import { useStartWarnings } from '@/features/work/preflight/useStartWarnings';
-import { WatchSummaryCard } from '@/features/work/preflight/WatchSummaryCard';
 import { ZoneEditDialog } from '@/features/work/preflight/ZoneEditDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
 import type { WorkStageProps } from '@/features/work/stageProps';
@@ -45,7 +42,7 @@ type Dialog = 'confirm' | 'sign' | null;
  * 스크롤되지 않는다. 넓은 화면은 두 칸이 이 높이를 나눠 쓰고(종이는 이 높이에 맞춘 A4 한 장), 좁은 화면은 종이 칸만 이 높이다.
  */
 const BODY_GRID =
-  'grid items-start gap-4 min-[960px]:h-[max(360px,calc(100dvh-212px))] min-[960px]:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] min-[960px]:items-stretch';
+  'grid items-start gap-4 min-[960px]:h-[max(360px,calc(100dvh-212px))] min-[960px]:grid-cols-2 min-[960px]:items-stretch';
 const REPORT_COLUMN =
   'flex h-[max(360px,calc(100dvh-212px))] min-h-0 min-w-0 flex-col min-[960px]:h-auto';
 /**
@@ -65,7 +62,7 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   const demo = useIsDemoAccount();
   // 시연 계정이 미리 적어 둔 초안을 보였으면 초안 경고를 띄우지 않는다(features/demo/demoReport)
   const demoReportShown = useDemoReportShown(workId);
-  const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
+  const { zones, raw: zonesRaw } = useZones();
   const [checks, setChecks] = useState<PreflightChecks>(NO_CHECKS);
   // 작업 중 보호구 요구(S15P31A101-654). 기본 필수, 끄면 그 장비는 R9·R11 을 판정하지 않는다
   const [ppe, setPpe] = useState<StartPpe>(() => ({
@@ -110,14 +107,17 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   }, [demo, resetStart, beginWork]);
   const action = useMemo<WorkActionConfig>(
     () => ({
-      label: '다음',
+      label: signers.count ? '작업 시작' : '서명하기',
       enabled: true,
-      onClick: openConfirm,
+      onClick: signers.count ? openConfirm : () => setDialog('sign'),
       // 시작 요청 중에는 눌러도 같은 시작을 다시 보내지 않는다(확인창이 없는 시연 계정)
       pending: start.pending,
-      secondary: onCancelRerun ? [{ label: '작업 종료로', onClick: onCancelRerun }] : undefined,
+      secondary: [
+        ...(onCancelRerun ? [{ label: '작업 종료로', onClick: onCancelRerun }] : []),
+        ...(signers.count ? [{ label: '서명 추가', onClick: () => setDialog('sign') }] : []),
+      ],
     }),
-    [openConfirm, start.pending, onCancelRerun],
+    [openConfirm, start.pending, onCancelRerun, signers.count],
   );
   useWorkAction(action);
 
@@ -147,17 +147,17 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
       </div>
       <div className={SIDE_COLUMN}>
         <LayoutPreview
-          zoneCount={loaded ? zones.length : null}
+          severityCounts={
+            loaded
+              ? {
+                  critical: zones.filter((z) => z.severity === 'CRITICAL').length,
+                  caution: zones.filter((z) => z.severity === 'HIGH' || z.severity === 'CAUTION')
+                    .length,
+                }
+              : null
+          }
           zonesRaw={zonesRaw}
           onPickZone={setEditingZoneId}
-        />
-        <SignerCard signers={signers} onSign={() => setDialog('sign')} />
-        {!demo && <WatchSummaryCard />}
-        <PreflightZoneList
-          zones={zones}
-          loaded={loaded}
-          failed={zonesFailed}
-          onOpen={setEditingZoneId}
         />
       </div>
       {dialog === 'confirm' && (

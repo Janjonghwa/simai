@@ -1,3 +1,4 @@
+import { LoadingDots } from '@/components/LoadingDots';
 import { useWorkActionState, type WorkActionSecondary } from '@/features/work/WorkActionContext';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -50,7 +51,11 @@ export function WorkActionLayer() {
           title={config.reason}
           className="max-w-[320px] truncate text-sm text-muted-foreground"
         >
-          {config.reason}
+          {config.reason === '종료 미팅 작성 중' ? (
+            <LoadingDots label={config.reason} />
+          ) : (
+            config.reason
+          )}
         </span>
       )}
       {config.secondary?.map((secondary) => (
@@ -62,7 +67,9 @@ export function WorkActionLayer() {
           onClick={config.onClick}
           disabled={!config.enabled || config.pending}
           aria-busy={config.pending || undefined}
-          className={BUTTON_SIZE}
+          variant="flow"
+          size="flow"
+          className={config.label === '작업 종료' ? 'h-[52px] px-7 text-[17px]' : BUTTON_SIZE}
         >
           {config.pending && <Loader2 aria-hidden className="animate-spin" />}
           {config.label}

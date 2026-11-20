@@ -25,14 +25,15 @@ afterEach(cleanup);
 const papers = () => screen.getAllByText(PAPER_TITLE);
 
 describe('PastReportPanel', () => {
-  it('처음에는 작은 미리보기 종이 한 장만 보이고 창은 닫혀 있다', async () => {
+  it('처음에는 작은 미리보기 종이 한 장과 카드 머리 출력·아래 크게 보기 단추를 보이고 창은 닫혀 있다', async () => {
     const day = await openDay();
     renderWithClient(<PastReportPanel workId={day.work_id} />);
 
     expect(await screen.findByRole('button', THUMBNAIL)).toBeTruthy();
     expect(papers()).toHaveLength(1);
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.queryByRole('button', { name: '출력' })).toBeNull();
+    expect(screen.getByRole('button', { name: '출력' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '크게 보기' })).toBeTruthy();
   });
 
   it('미리보기를 누르면 창에 같은 종이가 읽기 전용으로 크게 열리고 출력할 수 있다', async () => {

@@ -9,7 +9,7 @@ import { useZoneName } from '@/features/zones/useZoneName';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { ListOrdered, Users } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 const LIST = 'flex min-h-0 flex-col gap-1 overflow-auto px-2.5 py-2';
 const ROW =
@@ -87,12 +87,18 @@ function EventItem({
   playhead,
   zoneName,
   onPick,
+  selected,
 }: {
+  selected: boolean;
   row: PastEventRow;
   playhead: number | null;
   zoneName: ZoneNameOf;
   onPick: (event: EventRow) => void;
 }) {
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [selected]);
   const { first, people } = row;
   const active = playhead !== null && isRowActiveAt(row, playhead);
   const later = playhead !== null && first.raisedAt > playhead;
@@ -105,31 +111,22 @@ function EventItem({
     ? zoneName(first.zoneId)
     : first.zoneId && zoneNameOrDefault(first.zoneId, zoneName);
   return (
-    <li>
+    <li ref={ref}>
       <button
         type="button"
-        aria-current={active ? 'true' : undefined}
+        aria-current={selected || active ? 'true' : undefined}
         onClick={() => onPick(first)}
         className={cn(
           ROW,
           'gap-2.5',
           active && 'bg-surface-2 font-semibold',
+          selected && 'bg-primary/15 font-semibold ring-2 ring-primary ring-inset',
           later && 'text-muted-foreground',
         )}
       >
         <span className="font-mono text-sm">{formatTime(first.raisedAt)}</span>
         <SeverityBadge severity={row.severity} />
-        <span className="min-w-0 flex-1 truncate">
-          {ruleName(first.ruleId)}
-          {row.occurrences > 1 && (
-            <span
-              className="ml-1.5 font-semibold text-muted-foreground"
-              title="같은 위험이 이어져 한 줄로 묶었습니다(관제 카드의 「n회」와 같은 기준)"
-            >
-              ×{row.occurrences}
-            </span>
-          )}
-        </span>
+        <span className="min-w-0 flex-1 truncate">{ruleName(first.ruleId)}</span>
         <span className="text-sm text-muted-foreground">
           <span title={people.length ? people.join(' · ') : undefined}>{workers}</span>
           {workers && zone && ' · '}
@@ -148,7 +145,9 @@ export function EventLog({
   events,
   playhead,
   onPick,
+  selectedEventId = null,
 }: {
+  selectedEventId?: string | null;
   events: readonly EventRow[];
   playhead: number | null;
   onPick: (event: EventRow) => void;
@@ -156,23 +155,14 @@ export function EventLog({
   const zoneName = useZoneName();
   const rows = useMemo(() => pastEventRows(events), [events]);
   return (
-    <DashPanel
-      icon={ListOrdered}
-      title="이벤트 로그"
-      count={
-        <span title="관제 카드와 같은 기준으로 묶은 사건 수입니다. 경보 기록 한 건 한 건은 전체 건수(괄호)입니다.">
-          {rows.length === events.length
-            ? rows.length
-            : `사건 ${rows.length} (경보 ${events.length})`}
-        </span>
-      }
-    >
+    <DashPanel icon={ListOrdered} title={`이벤트 로그 · ${rows.length}건`}>
       <ol aria-label="이벤트 로그" className={LIST}>
-        {rows.length === 0 && <li className={EMPTY_ROW}>위험·경고 없음</li>}
+        {rows.length === 0 && <li className={EMPTY_ROW}>위험·주의 없음</li>}
         {rows.map((row) => (
           <EventItem
             key={row.key}
             row={row}
+            selected={row.members.some((event) => event.eventId === selectedEventId)}
             playhead={playhead}
             zoneName={zoneName}
             onPick={onPick}

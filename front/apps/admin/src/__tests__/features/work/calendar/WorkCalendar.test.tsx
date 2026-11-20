@@ -149,10 +149,10 @@ describe('WorkCalendar', () => {
     ];
     renderCalendar();
     const summary = await screen.findByLabelText('월간 요약');
-    // 11월 8·9·10일 3일(9일은 작업 2건이어도 1일), 위험 3건, 경고 1건. 추가 요청 없음(범위 요청 1번뿐).
-    expect(summary.textContent).toBe('작업 3일 · 위험 3건 · 경고 1건');
+    // 11월 8·9·10일 3일(9일은 작업 2건이어도 1일), 위험 3건, 주의 1건. 추가 요청 없음(범위 요청 1번뿐).
+    expect(summary.textContent).toBe('작업 3일 · 위험 3건 · 주의 1건');
     expect(within(summary).getByText('위험 3건').className).toContain('text-sev-critical');
-    expect(within(summary).getByText('경고 1건').className).toContain('text-sev-high');
+    expect(within(summary).getByText('주의 1건').className).toContain('text-sev-caution');
     // 상단 바 오른쪽 GPU 호버 툴팁과 겹치지 않도록 월간 요약 줄은 오른쪽 끝(ml-auto)으로 밀지 않는다.
     expect(summary.parentElement?.className).not.toContain('ml-auto');
     expect(ranges).toEqual(['2026-11-01..2026-12-05']);
@@ -167,40 +167,32 @@ describe('WorkCalendar', () => {
     const tooltip = screen.getByRole('tooltip', { name: '달력 기호 안내' });
     expect(tooltip.textContent).toContain('작업 완료');
     expect(tooltip.textContent).toContain('빨간 점 + 숫자: 위험 사건 수');
-    expect(tooltip.textContent).toContain('주황 점 + 숫자: 경고 사건 수');
+    expect(tooltip.textContent).toContain('노란 점 + 숫자: 주의 사건 수');
 
     fireEvent.mouseLeave(trigger.parentElement!);
     expect(screen.queryByRole('tooltip', { name: '달력 기호 안내' })).toBeNull();
   });
 
-  it('오늘 칸에는 오늘 태그가 붙고, 작업이 없으면 오늘 작업 준비 주 단추 모양이 크게 들어간다', async () => {
+  it('오늘 칸은 오늘 배지 없이 칸 전체가 파란 단추(B안)이고, 작업이 없으면 오늘 작업 준비 글이 들어간다', async () => {
     renderCalendar();
     const today = cellOf('11월 11일');
-    expect(within(today).getByText('오늘')).toBeTruthy();
-    const cta = within(today).getByText('오늘 작업 준비');
-    expect(cta.className).toContain('w-full');
-    expect(cta.className).toContain('h-9');
-    expect(cta.className).toContain('bg-primary');
-    // 오늘 태그·오늘 작업 준비 단추는 오늘 칸에만 있다.
+    expect(within(today).queryByText('오늘')).toBeNull();
+    expect(today.className).toContain('bg-[#2F66E8]');
+    expect(today.className).toContain('text-white');
+    expect(within(today).getByText('오늘 작업 준비')).toBeTruthy();
+    // 오늘 작업 준비 문구는 오늘 칸에만 있다.
     expect(screen.getAllByText('오늘 작업 준비')).toHaveLength(1);
-    expect(screen.getAllByText('오늘', { selector: 'span' })).toHaveLength(1);
     await screen.findByText('작업 2건');
   });
 
-  it('오늘 칸만 불투명한 주색 혼합 면과 2px 주색 테두리로 강조하고(격자 비침 없음), 어두운·밝은 테마 모두 대응한다', async () => {
+  it('오늘 칸만 파란 단추 스타일(B안)로 강조하고, 달 밖 칸으로 보여도 투명도를 낮추지 않는다', async () => {
     document.documentElement.classList.add('dark');
     renderCalendar();
     const today = cellOf('11월 11일');
-    expect(today.className).toContain('border-2');
-    expect(today.className).toContain('border-primary');
-    // 반투명 bg-primary/10 대신 카드 바탕과 불투명하게 섞어 모눈이 비치지 않게 한다.
-    expect(today.className).toContain('bg-[color-mix(in_oklab,var(--card),var(--primary)_14%)]');
-    expect(today.className).toContain(
-      'dark:bg-[color-mix(in_oklab,var(--card),var(--primary)_22%)]',
-    );
-    expect(today.className).not.toContain('bg-primary/10');
+    expect(today.className).toContain('bg-[#2F66E8]');
+    expect(today.className).toContain('text-white');
     const other = cellOf('11월 12일');
-    expect(other.className).not.toContain('border-primary');
+    expect(other.className).not.toContain('bg-[#2F66E8]');
     await screen.findByText('작업 2건');
 
     // 다른 달에서 오늘이 달 밖 칸으로 보여도 투명도를 낮추지 않아 격자가 비치지 않는다.
@@ -210,7 +202,7 @@ describe('WorkCalendar', () => {
     expect(cellOf('12월 1일').className).not.toContain('opacity-45');
   });
 
-  it('지난 날 + 작업 있음: 작업 종료 글자 대신 작은 완료 아이콘, 작업 건수, 색 점 + 숫자를 보이고 날짜 옆 빨간 점은 없다(-677)', async () => {
+  it('지난 날 + 작업 있음: 작업 종료 글자 대신 작은 완료 아이콘, 작업 건수, 위험·주의 수를 보이고 날짜 옆 빨간 점은 없다(-677)', async () => {
     renderCalendar();
     await screen.findByText('작업 2건');
     const day = cellOf('11월 9일');
@@ -220,13 +212,12 @@ describe('WorkCalendar', () => {
     expect(within(day).getByText('작업 2건')).toBeTruthy();
     // 날짜 옆 빨간 점은 위험 수와 중복이라 그리지 않는다(-677).
     expect(topCriticalDotOf(day)).toBeNull();
-    // 위험·경고는 작은 색 점 + 숫자로 보인다.
-    expect(criticalBadgeOf(day)?.textContent).toBe('3');
+    // 위험·주의는 텍스트 한 줄(위험 N · 주의 M)로 보인다.
+    expect(criticalBadgeOf(day)?.textContent).toBe('위험 3');
     expect(criticalBadgeOf(day)?.className).toContain('text-sev-critical');
-    expect(criticalBadgeOf(day)?.querySelector('.bg-sev-critical')).not.toBeNull();
-    expect(highBadgeOf(day)?.textContent).toBe('1');
-    expect(highBadgeOf(day)?.className).toContain('text-sev-high');
-    expect(highBadgeOf(day)?.querySelector('.bg-sev-high')).not.toBeNull();
+    expect(highBadgeOf(day)?.textContent).toBe('주의 1');
+    expect(highBadgeOf(day)?.className).toContain('text-sev-caution');
+    expect(day.querySelector('[data-slot="event-counts"]')?.textContent).toBe('위험 3 · 주의 1');
   });
 
   it('위험·경고가 둘 다 0 이거나 모르면 아무 문구도 그리지 않고(위험·경고 없음 제거), 경고만 있으면 경고만 보인다', async () => {
@@ -248,7 +239,7 @@ describe('WorkCalendar', () => {
     const highOnly = cellOf('11월 7일');
     expect(topCriticalDotOf(highOnly)).toBeNull();
     expect(criticalBadgeOf(highOnly)).toBeNull();
-    expect(highBadgeOf(highOnly)?.textContent).toBe('2');
+    expect(highBadgeOf(highOnly)?.textContent).toBe('주의 2');
   });
 
   it('지난 날 완료 아이콘은 제출 여부와 상관없이 표시된다(종료·제출·진행 값 없는 옛 응답 모두)', async () => {
@@ -278,7 +269,7 @@ describe('WorkCalendar', () => {
     renderCalendar();
     const counted = cellOf('11월 5일');
     expect(await within(counted).findByText('작업 1건')).toBeTruthy();
-    expect(criticalBadgeOf(counted)?.textContent).toBe('1');
+    expect(criticalBadgeOf(counted)?.textContent).toBe('위험 1');
     expect(highBadgeOf(counted)).toBeNull();
     for (const day of [10, 9, 8, 7, 6]) {
       const empty = cellOf(`11월 ${day}일`);
@@ -345,10 +336,10 @@ describe('WorkCalendar', () => {
     await screen.findByText('작업 2건');
     expect(cellOf('11월 11일').getAttribute('aria-label')).toBe('11월 11일, 오늘, 오늘 작업 준비');
     expect(cellOf('11월 9일').getAttribute('aria-label')).toBe(
-      '11월 9일, 작업 2건 완료, 위험 3건, 경고 1건',
+      '11월 9일, 작업 2건 완료, 위험 3건, 주의 1건',
     );
     expect(cellOf('11월 8일').getAttribute('aria-label')).toBe(
-      '11월 8일, 작업 1건 완료, 위험 0건, 경고 0건',
+      '11월 8일, 작업 1건 완료, 위험 0건, 주의 0건',
     );
     expect(cellOf('11월 5일').getAttribute('aria-label')).toBe('11월 5일');
     expect(cellOf('11월 12일').getAttribute('aria-label')).toBe('11월 12일');
@@ -365,10 +356,9 @@ describe('WorkCalendar', () => {
     renderCalendar();
     const today = cellOf('11월 11일');
     const button = await within(today).findByText(label);
-    // 칸 전체가 이미 단추라 안에 단추를 또 두지 않는다(주 단추 모양의 span).
+    // 칸 전체가 이미 파란 단추(B안)라 안에 단추를 또 두지 않는다.
     expect(button.tagName).toBe('SPAN');
-    expect(button.className).toContain('bg-primary');
-    expect(button.className).toContain('w-full');
+    expect(today.className).toContain('bg-[#2F66E8]');
     expect(today.querySelectorAll('button')).toHaveLength(0);
     expect(today.getAttribute('aria-label')).toBe(`11월 11일, 오늘, ${label}`);
   });
@@ -460,7 +450,7 @@ describe('WorkCalendar', () => {
     renderCalendar({ notice: '보고서를 보냈습니다' });
     expect(screen.getByRole('status').textContent).toBe('보고서를 보냈습니다');
     expect((await screen.findByLabelText('월간 요약')).textContent).toBe(
-      '작업 3일 · 위험 3건 · 경고 1건',
+      '작업 3일 · 위험 3건 · 주의 1건',
     );
     await screen.findByText('작업 2건');
   });
@@ -474,6 +464,6 @@ describe('WorkCalendar', () => {
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     expect(await screen.findByText('작업 2건')).toBeTruthy();
     expect(screen.queryByText('작업 목록을 불러오지 못했습니다.')).toBeNull();
-    expect(screen.getByLabelText('월간 요약').textContent).toBe('작업 3일 · 위험 3건 · 경고 1건');
+    expect(screen.getByLabelText('월간 요약').textContent).toBe('작업 3일 · 위험 3건 · 주의 1건');
   });
 });

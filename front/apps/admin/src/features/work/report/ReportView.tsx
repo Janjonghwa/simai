@@ -35,6 +35,7 @@ export function ReportView({
   onFormChange,
   tasksField,
   variant = 'screen',
+  endingGenerating = false,
 }: {
   form: ReportForm;
   /** 보고서를 만든 계정(리더). 사람이 고치지 않는다. */
@@ -52,6 +53,7 @@ export function ReportView({
   /** 종이 위에서 고칠 때 작업내용 칸에 넣을 고르기. */
   tasksField?: ReactNode;
   variant?: keyof typeof SHAPE;
+  endingGenerating?: boolean;
 }) {
   const edit = editable ? onEdit : undefined;
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -71,6 +73,10 @@ export function ReportView({
       className={cn(
         'paper box-border bg-card text-[13px] leading-normal text-card-foreground print:bg-white print:text-black',
         SHAPE[variant],
+        editable &&
+          form.info.tasks.length === 0 &&
+          variant !== 'print' &&
+          '[&_.task-choice]:bg-white [&_.task-choice]:bg-none [&_td]:bg-[repeating-linear-gradient(135deg,#e5e7eb_0_6px,#cbd0d8_6px_8px)] [&_th]:bg-slate-300',
         edit &&
           'cursor-pointer transition-shadow hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
       )}
@@ -89,7 +95,12 @@ export function ReportView({
       <RisksTable form={form} drafted={drafted} onChange={onFormChange} />
       <FocusTable form={form} leader={leader} drafted={drafted} onChange={onFormChange} />
       <ChecksTable form={form} drafted={drafted} onChange={onFormChange} />
-      <ReviewTable form={form} drafted={drafted} onChange={onFormChange} />
+      <ReviewTable
+        form={form}
+        drafted={drafted}
+        endingGenerating={endingGenerating}
+        onChange={onFormChange}
+      />
       <AttendeesTable signatures={signatures} />
     </div>
   );

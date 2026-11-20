@@ -8,6 +8,8 @@ import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { CheckCircle2 } from 'lucide-react';
 
+const TODAY_CELL_STYLE = 'B';
+
 // 달력 칸 하나: 오늘 칸만 밝은 주색 테두리·면과 큰 주 단추로 두드러지게 하고, 지난 날은 완료 아이콘과 색 점·숫자로 간소화하며,
 // 작업 없는 지난 날은 차분하게 가라앉히고 예정인 날은 바탕에 맞춰 명도를 낮춘다.
 
@@ -41,7 +43,7 @@ function ActionLabel({ label }: { label: string }) {
   );
 }
 
-/** 위험·경고 수: 작은 색 점 + 숫자만 보이고, 둘 다 0 이면 아무 문구도 그리지 않는다. */
+/** 위험·주의 수: 작은 색 점 + 숫자만 보이고, 둘 다 0 이면 아무 문구도 그리지 않는다. */
 function EventCounts({
   critical,
   high,
@@ -58,28 +60,24 @@ function EventCounts({
   const noun = incidents ? '사건' : '경보';
   const extra = (alarms: number) => (incidents ? `(경보 기록 ${alarms}건)` : '');
   return (
-    <span
-      data-slot="event-counts"
-      className="flex items-center gap-2 font-mono text-xs tabular-nums"
-    >
+    <span data-slot="event-counts" className="min-w-0 font-mono text-xs tabular-nums">
       {shownCritical > 0 && (
         <span
           data-slot="sev-critical"
           title={`위험 ${noun} ${shownCritical}건${extra(critical)}`}
-          className="inline-flex items-center gap-1 font-bold text-sev-critical"
+          className="inline-flex items-center gap-1 font-bold whitespace-nowrap text-sev-critical"
         >
-          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-critical" />
-          {shownCritical}
+          위험 {shownCritical}
         </span>
       )}
+      {shownCritical > 0 && shownHigh > 0 && <span aria-hidden> · </span>}
       {shownHigh > 0 && (
         <span
           data-slot="sev-high"
-          title={`경고 ${noun} ${shownHigh}건${extra(high)}`}
-          className="inline-flex items-center gap-1 font-semibold text-sev-high"
+          title={`주의 ${noun} ${shownHigh}건${extra(high)}`}
+          className="inline-flex items-center gap-1 font-semibold whitespace-nowrap text-sev-caution"
         >
-          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-sev-high" />
-          {shownHigh}
+          주의 {shownHigh}
         </span>
       )}
     </span>
@@ -122,7 +120,7 @@ export function CalendarCell({
   kind: DayKind;
   /** 그 날의 표시(완료 아이콘·오늘의 주 단추). 없으면 비어 있다. */
   mark: DayMark | null;
-  /** 지난 날 요약(작업 건수·위험·경고). 지난 날이 아니거나 끝난 작업이 없으면 null. */
+  /** 지난 날 요약(작업 건수·위험·주의). 지난 날이 아니거나 끝난 작업이 없으면 null. */
   summary: DaySummary | null;
   /** 작업하지 않은 지난 날이라 누를 수 없다. */
   disabled: boolean;
@@ -139,7 +137,9 @@ export function CalendarCell({
       className={cn(
         'group/cell flex min-w-0 flex-col items-start gap-1 rounded-[12px] px-2.5 py-2 text-left',
         'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-        cellToneClass(kind, summary !== null),
+        isToday && TODAY_CELL_STYLE === 'B'
+          ? 'border border-transparent bg-[#2F66E8] text-white hover:bg-[#2556c8]'
+          : cellToneClass(kind, summary !== null),
         !inMonth && !isToday && 'opacity-45',
       )}
     >
@@ -156,11 +156,6 @@ export function CalendarCell({
         >
           {day}
         </span>
-        {isToday && (
-          <span className="rounded-[4px] bg-primary px-1.5 text-[11px] leading-[18px] font-bold text-primary-foreground">
-            오늘
-          </span>
-        )}
         {mark?.kind === 'ended' && <EndedMark className="ml-auto" />}
       </span>
       {summary && (
@@ -168,7 +163,7 @@ export function CalendarCell({
           <span className="text-xs text-muted-foreground">
             작업 {summary.count}건{summary.runs ? ` · 실행 ${summary.runs}회` : ''}
           </span>
-          <span className="mt-auto flex w-full items-center gap-2">
+          <span className="relative mt-auto w-full min-w-0">
             <EventCounts
               critical={summary.critical}
               high={summary.high}
@@ -176,14 +171,21 @@ export function CalendarCell({
             />
             <span
               data-slot="history-hint"
-              className="ml-auto text-[11px] font-medium whitespace-nowrap text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/cell:opacity-100 group-focus-visible/cell:opacity-100"
+              className="pointer-events-none absolute right-0 bottom-0 bg-card text-[11px] font-medium whitespace-nowrap text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/cell:opacity-100 group-focus-visible/cell:opacity-100"
             >
               히스토리 보기
             </span>
           </span>
         </>
       )}
-      {mark?.kind === 'action' && <ActionLabel label={mark.label} />}
+      {mark?.kind === 'action' &&
+        (isToday ? (
+          <span className="mt-auto text-sm font-bold">
+            <span>{mark.label}</span> <span aria-hidden>→</span>
+          </span>
+        ) : (
+          <ActionLabel label={mark.label} />
+        ))}
     </button>
   );
 }

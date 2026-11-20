@@ -1,4 +1,5 @@
 import { useIsDemoAccount } from '@/features/demo/demoAccount';
+import { useDemoEndingGenerating } from '@/features/demo/demoReport';
 import { ALERT } from '@/features/tbm/styles';
 import { ConfirmDialog } from '@/features/work/ConfirmDialog';
 import { ReportPanel } from '@/features/work/report/ReportPanel';
@@ -19,9 +20,9 @@ import type { WorkDayItem } from '@/features/work/types';
 import { useSignatures } from '@/features/work/useSignatures';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
-import { draftWarning, isReportGenerating } from '@/features/work/workDay';
+import { draftWarning, isEndingGenerating, isReportGenerating } from '@/features/work/workDay';
 import { lastRun, openRun } from '@/lib/workRuns';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 // 단계 4 '작업 종료'. 서버 진행(progress)이 두 모양을 정한다: 진행 중(IN_PROGRESS) → 종료(ENDED).
 // 보낸(SUBMITTED) 뒤에는 날짜 화면이 이 단계 대신 지난 날과 같은 다시 보기 화면을 보인다(WorkDayPage).
@@ -30,9 +31,6 @@ import { useMemo } from 'react';
 // 한 번 더 실행(S15P31A101-696): 같은 날 리허설 뒤 본 시연. 보고서를 내기 전이면 작업 전 확인(서명 재확인·보호구)을 거쳐 실행 2 를 연다.
 // 진행 중 화면의 경과·경보 기록·관제 적용은 지금 실행 기준이다.
 // 시연 계정(features/demo/demoAccount)은 종료 확인창에 제목만 두고, 종료 뒤에는 보고서만 보인다.
-
-const SPLIT =
-  'grid grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)] items-start gap-4 max-[960px]:grid-cols-1';
 
 function FailureNote({ text }: { text: string }) {
   return (
@@ -66,11 +64,14 @@ function RunningView({ day }: { day: WorkDayItem }) {
   useWorkAction(action);
   return (
     <>
-      <div className={SPLIT}>
-        <div className="min-w-0">
-          <ReportPanel workId={day.work_id} editable withPrint />
+      <div
+        data-fit-height
+        className="grid gap-4 min-[960px]:h-[max(360px,calc(100dvh-212px-var(--alarm-strip-height,0px)))] min-[960px]:grid-cols-2"
+      >
+        <div className="flex h-[max(360px,calc(100dvh-212px-var(--alarm-strip-height,0px)))] min-h-0 min-w-0 flex-col min-[960px]:h-auto">
+          <ReportPanel workId={day.work_id} editable fit className="flex-1" />
         </div>
-        <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex min-h-0 min-w-0 flex-col gap-3 pb-[76px]">
           <RunStatusCard day={day} signerCount={signers?.length} />
           <EventListCard startedAt={runStart} zoneId={day.zone_id} />
           <AppliedStatusCard workId={day.work_id} startedAt={runStart} />
@@ -79,9 +80,7 @@ function RunningView({ day }: { day: WorkDayItem }) {
       {end.open && (
         <ConfirmDialog
           title="작업을 종료할까요?"
-          description={
-            demo ? undefined : '종료한 뒤 보고서를 내기 전이면 한 번 더 실행할 수 있습니다.'
-          }
+          description={demo ? undefined : '작업을 종료하고 종료 미팅을 작성합니다.'}
           confirmLabel="종료"
           pending={end.pending}
           onConfirm={end.confirm}
@@ -114,9 +113,33 @@ function EndedView({
   const demo = useIsDemoAccount();
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
-  const filling = isReportGenerating(report);
+  const endingNow =
+    useDemoEndingGenerating(day.work_id, {
+      ended: true,
+      generating: isEndingGenerating(report),
+      today: true,
+    }) || isEndingGenerating(report);
+  const filling = isReportGenerating(report) || endingNow;
+  const reportRef = useRef<HTMLDivElement>(null);
+  const wasEnding = useRef(false);
+  useEffect(() => {
+    const finished = wasEnding.current && !endingNow;
+    wasEnding.current = endingNow;
+    if (!finished) return;
+    const cell = reportRef.current?.querySelector<HTMLElement>('[data-ending-meeting]');
+    if (!cell) return;
+    cell.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    cell.classList.add('ring-2', 'ring-primary');
+    const timer = window.setTimeout(() => cell.classList.remove('ring-2', 'ring-primary'), 2500);
+    return () => {
+      window.clearTimeout(timer);
+      cell.classList.remove('ring-2', 'ring-primary');
+    };
+  }, [endingNow]);
   // 꺼진 이유는 단추 옆에 늘 보인다(문서 속 흐린 글이나 hover 에 기대지 않는다, -734)
-  const blockedBy = submitBlockReason(report, reportError !== null);
+  const blockedBy = endingNow
+    ? '종료 미팅 작성 중'
+    : submitBlockReason(report, reportError !== null);
   const endedAt =
     lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
       ?.ended_at ?? day.actual_ended_at;
@@ -127,9 +150,6 @@ function EndedView({
       pending: send.pending,
       onClick: send.request,
       reason: blockedBy ?? undefined,
-      secondary: onRerun
-        ? [{ label: '한 번 더 실행', onClick: onRerun, disabled: send.pending }]
-        : undefined,
     }),
     [reportId, filling, blockedBy, send.pending, send.request, onRerun],
   );
@@ -146,8 +166,8 @@ function EndedView({
           </div>
         </>
       )}
-      <div className="min-w-0">
-        <ReportPanel workId={day.work_id} editable withPrint />
+      <div ref={reportRef} className="min-w-0">
+        <ReportPanel workId={day.work_id} editable withPrint endingGenerating={endingNow} />
       </div>
       {send.open && reportId !== undefined && (
         <ConfirmDialog

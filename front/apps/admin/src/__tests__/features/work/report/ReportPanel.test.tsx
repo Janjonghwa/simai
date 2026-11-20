@@ -27,6 +27,7 @@ vi.mock('@/lib/api', async () => {
 const server = installReportServer();
 const PAPER_TITLE = 'TBM(작업 전 안전대화) 보고서';
 const EDIT = { name: 'TBM 보고서 편집' };
+const EDIT_DIALOG = { name: '작업내용 선택' };
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -165,12 +166,12 @@ describe('편집', () => {
     const day = await openDay();
     renderWithClient(<ReportPanel workId={day.work_id} editable />);
     fireEvent.click(await screen.findByRole('button', EDIT));
-    expect(await screen.findByRole('dialog', EDIT)).toBeTruthy();
+    expect(await screen.findByRole('dialog', EDIT_DIALOG)).toBeTruthy();
     fireEvent.click(await screen.findByRole('checkbox', { name: '철근 배근' }));
     fireEvent.click(screen.getByRole('button', { name: '저장' }));
 
     expect(await screen.findByText('저장했습니다')).toBeTruthy();
-    expect(screen.queryByRole('dialog', EDIT)).toBeNull();
+    expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull();
     expect(await screen.findByText('• 철근 배근')).toBeTruthy();
     expect(screen.queryByText('+ 작업내용 선택')).toBeNull();
     expect((await latestReport(day.work_id)).form?.info.tasks).toEqual([{ code: 'REBAR' }]);
@@ -182,7 +183,7 @@ describe('편집', () => {
     const day = await openDay();
     renderWithClient(<ReportPanel workId={day.work_id} editable />);
     fireEvent.keyDown(await screen.findByRole('button', EDIT), { key: 'Enter' });
-    expect(await screen.findByRole('dialog', EDIT)).toBeTruthy();
+    expect(await screen.findByRole('dialog', EDIT_DIALOG)).toBeTruthy();
   });
 
   it('취소하면 창만 닫히고 저장하지 않는다', async () => {
@@ -191,7 +192,7 @@ describe('편집', () => {
     fireEvent.click(await screen.findByRole('button', EDIT));
     fireEvent.click(await screen.findByRole('checkbox', { name: '철근 배근' }));
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', EDIT)).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull());
     expect(screen.queryByText('저장했습니다')).toBeNull();
     expect((await latestReport(day.work_id)).form?.info.tasks).toEqual([]);
   });

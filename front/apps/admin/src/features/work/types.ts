@@ -97,10 +97,16 @@ export const workDayItemSchema = z.object({
   /** 실행 목록(번호순, 진행 중 실행은 ended_at null). 옛 서버는 칸이 없다(`runsOf` 가 actual_* 로 실행 1 을 만든다). */
   runs: workRunsField,
   /** 구간에 발생한 이벤트 수(등급별). 모르면 null. */
-  event_counts: orNull(z.object({ CRITICAL: z.number().int(), HIGH: z.number().int() }).partial()),
+  event_counts: orNull(
+    z
+      .object({ CRITICAL: z.number().int(), HIGH: z.number().int(), CAUTION: z.number().int() })
+      .partial(),
+  ),
   /** 관제 카드 기준 사건 수(등급별, S15P31A101-751). 이전 서버는 칸이 없다. */
   incident_counts: orNull(
-    z.object({ CRITICAL: z.number().int(), HIGH: z.number().int() }).partial(),
+    z
+      .object({ CRITICAL: z.number().int(), HIGH: z.number().int(), CAUTION: z.number().int() })
+      .partial(),
   ),
   zone_id: orNull(z.string()),
   place: orNull(z.string()),

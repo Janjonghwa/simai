@@ -13,7 +13,7 @@ import { Badge } from '@simai/ui/components/badge';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
-// 작업 전 확인의 '가상 레이아웃' 카드: 현재 배경(Scene) 위에 구역을 그린 읽기용 3D. 구역을 누르면 onPickZone 으로 알린다.
+// 작업 전 확인의 '현장 3D 맵' 카드: 현재 배경(Scene) 위에 구역을 그린 읽기용 3D. 구역을 누르면 onPickZone 으로 알린다.
 // three.js 묶음은 그릴 때 동적으로 받는다. 받지 못하거나 3D 가 멈추면 3D 칸에 안내만 남기고 카드 밖 구역 목록은 그대로 보인다.
 // 세팅 보정 단계의 미리보기(SetupPreviewModel)처럼 관제 틀(useViewportHost)을 쓰지 않아, 구역 편집 창의 전역 편집 상태와 부딪치지 않는다.
 
@@ -45,12 +45,12 @@ function useZoneSource(zonesRaw: ViewerZones | undefined) {
 }
 
 export function LayoutPreview({
-  zoneCount,
+  severityCounts,
   zonesRaw,
   onPickZone,
 }: {
   /** 구역 수. 구역을 아직 받지 못했으면 null(칩을 숨긴다). */
-  zoneCount: number | null;
+  severityCounts: { critical: number; caution: number } | null;
   /** 3D 에 넘길 구역 응답(받기 전에는 undefined). */
   zonesRaw: ViewerZones | undefined;
   /** 3D 에서 구역을 눌렀다. */
@@ -81,11 +81,14 @@ export function LayoutPreview({
     <Card size="sm" className="grow">
       <CardHeader>
         <CardTitle>
-          <h2>가상 레이아웃</h2>
+          <h2>현장 3D 맵</h2>
         </CardTitle>
-        {zoneCount !== null && (
+        {severityCounts !== null && (
           <CardAction>
-            <Badge variant="outline" className="rounded-[4px]">{`구역 ${zoneCount}개`}</Badge>
+            <Badge
+              variant="outline"
+              className="rounded-[4px]"
+            >{`위험 ${severityCounts.critical} · 주의 ${severityCounts.caution}`}</Badge>
           </CardAction>
         )}
       </CardHeader>

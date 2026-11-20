@@ -1,7 +1,7 @@
 import { useIsDemoAccount } from '@/features/demo/demoAccount';
 import { DEMO_SIGNER_NAME, demoWorkerSignatures } from '@/features/demo/demoSigners';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
-import { ACTION, H3, SECONDARY } from '@/features/tbm/styles';
+import { H3 } from '@/features/tbm/styles';
 import { canAddSigner, isSignerLimitReached } from '@/features/work/preflight/preflight';
 import {
   addSignatureErrorMessage,
@@ -49,7 +49,7 @@ export function SignDialog({ signers, onClose }: { signers: SignersState; onClos
       ? addSignatureErrorMessage(signers.addError)
       : null;
 
-  const addSigner = async () => {
+  const addSigner = async (close = false) => {
     if (!canAdd || submitting.current) return;
     submitting.current = true;
     try {
@@ -60,6 +60,10 @@ export function SignDialog({ signers, onClose }: { signers: SignersState; onClos
           for (const worker of await demoWorkerSignatures(signers.signers)) {
             if (!(await signers.add(worker.name, worker.image))) break;
           }
+        }
+        if (close) {
+          onClose();
+          return;
         }
         setName(firstName);
         pad.current?.clear();
@@ -77,7 +81,18 @@ export function SignDialog({ signers, onClose }: { signers: SignersState; onClos
       className="max-h-[calc(100vh-48px)] w-[min(560px,calc(100vw-48px))] overflow-y-auto"
     >
       <div className="flex flex-col gap-4 px-5 py-[18px]">
-        <h2 className="text-[15px] leading-[22px] font-bold text-foreground">참석자 서명</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-[15px] font-bold">참석자 서명</h2>
+          <Button variant="ghost" size="icon" aria-label="닫기" onClick={onClose}>
+            ×
+          </Button>
+        </div>
+        {signers.count > 0 && (
+          <div>
+            <h3 className={H3}>{`서명자 ${signers.count}명`}</h3>
+            <SignerList signers={signers} />
+          </div>
+        )}
         <label className="flex flex-col gap-1.5 text-sm">
           <span className="font-medium">서명자 이름</span>
           <Input
@@ -91,25 +106,40 @@ export function SignDialog({ signers, onClose }: { signers: SignersState; onClos
             }}
           />
         </label>
-        <SignPad ref={pad} onInkChange={setHasInk} />
+        <div className="relative">
+          <SignPad ref={pad} onInkChange={setHasInk} />
+          {!hasInk && (
+            <span className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-slate-400">
+              이곳에 서명해 주세요
+            </span>
+          )}
+        </div>
         {message && (
           <p role="alert" className="text-[13px] text-destructive">
             {message}
           </p>
         )}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="secondary" className={SECONDARY} onClick={() => pad.current?.clear()}>
+          <Button variant="outline" onClick={() => pad.current?.clear()}>
             지우기
           </Button>
-          <Button className={ACTION} disabled={!canAdd} onClick={() => void addSigner()}>
-            서명 추가
+          <Button
+            variant="action"
+            size="action"
+            disabled={!canAdd}
+            onClick={() => void addSigner()}
+          >
+            저장 후 다음 사람
           </Button>
         </div>
-        <h3 className={H3}>{`서명자 ${signers.count}명`}</h3>
-        <SignerList signers={signers} />
         <div className="flex justify-end">
-          <Button className={ACTION} onClick={onClose}>
-            완료
+          <Button
+            variant="flow"
+            size="flow"
+            disabled={hasInk ? !canAdd : signers.count === 0}
+            onClick={() => (hasInk ? void addSigner(true) : onClose())}
+          >
+            {hasInk || signers.count === 0 ? '저장 후 완료' : '완료'}
           </Button>
         </div>
       </div>

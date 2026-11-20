@@ -24,7 +24,6 @@ import { useWorkDays } from '@/features/work/useWorkDays';
 import { formatDayTitle } from '@/features/work/workDay';
 import type { WorkRun } from '@/lib/workRuns';
 import { Button } from '@simai/ui/components/button';
-import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
 import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -33,17 +32,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 같은 부품(useWorkReplay·ReplayStage·ReplayTimeline·EventLog)을 그대로 쓴다. 오른쪽 열은 보고서와 이벤트 로그를 탭으로 나눈다.
 // 하루 작업 안에서 실행을 여러 번 했으면(S15P31A101-696) 실행을 골라 그 실행 구간만 다시 본다(기본은 마지막 실행). 보고서는 하루 하나다.
 
-type RightTab = 'report' | 'events';
-const RIGHT_TABS: readonly { id: RightTab; label: string }[] = [
-  { id: 'report', label: 'TBM 보고서' },
-  { id: 'events', label: '이벤트 로그' },
-];
 const NO_EVENTS: readonly EventRow[] = [];
 
 // 오른쪽 열은 560px. 좁은 화면에서는 한 열로 쌓고 오른쪽 열 높이를 따로 준다.
 // 높이는 화면 높이로만 정한다: shrink-0 으로 안쪽(보고서·이벤트 로그 탭)의 내용이 높이를 바꾸지 못하게 하고, 행도 minmax(0,1fr) 로 고정해 두 탭 패널이 같은 크기가 된다.
 const BODY =
-  'grid h-[clamp(520px,calc(100vh-300px),900px)] shrink-0 grid-cols-[minmax(0,1fr)_560px] grid-rows-[minmax(0,1fr)] gap-3.5 max-[1100px]:h-auto max-[1100px]:grid-cols-1';
+  'grid shrink-0 grid-cols-[minmax(0,2.5fr)_minmax(320px,1fr)] gap-3.5 max-[1100px]:grid-cols-1';
 const CHIP =
   'inline-flex h-[22px] items-center rounded-full border border-border bg-surface-2 px-[9px] text-xs font-semibold whitespace-nowrap text-muted-foreground';
 const CHOICE =
@@ -120,70 +114,46 @@ function DayHead({
 function PastEvents({
   session,
   onPick,
+  selectedEventId,
 }: {
+  selectedEventId: string | null;
   session: WorkReplay;
   onPick: (event: EventRow) => void;
 }) {
   const { playhead } = useReplayStatus(session.replay);
   return (
-    <EventLog events={session.index?.events ?? NO_EVENTS} playhead={playhead} onPick={onPick} />
+    <EventLog
+      events={session.index?.events ?? NO_EVENTS}
+      playhead={playhead}
+      selectedEventId={selectedEventId}
+      onPick={onPick}
+    />
   );
 }
 
-/** 오른쪽 열: `TBM 보고서 | 이벤트 로그` 탭. 두 패널을 모두 마운트해 두고 hidden 으로 전환한다. */
 function RightColumn({
   workId,
   session,
   onPickEvent,
+  selectedEventId,
 }: {
   workId: string;
   session: WorkReplay;
   onPickEvent: (event: EventRow) => void;
+  selectedEventId: string | null;
 }) {
-  const [tab, setTab] = useState<RightTab>('report');
   return (
-    <div className="flex min-h-0 flex-col gap-2.5 max-[1100px]:h-[760px]">
-      <span role="tablist" aria-label="오른쪽 보기" className="flex flex-wrap gap-1.5">
-        {RIGHT_TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={CHOICE}
-          >
-            {label}
-          </button>
-        ))}
-      </span>
-      <div
-        role="tabpanel"
-        aria-label="TBM 보고서"
-        hidden={tab !== 'report'}
-        className={cn(
-          'min-h-0 flex-1 grid-rows-[minmax(0,1fr)]',
-          tab === 'report' ? 'grid' : 'hidden',
-        )}
-      >
-        <PastReportPanel workId={workId} />
+    <div className="flex min-h-0 flex-col gap-3 max-[1100px]:h-[760px]">
+      <div className="flex max-h-[45%] min-h-0 flex-col overflow-hidden">
+        <PastEvents session={session} onPick={onPickEvent} selectedEventId={selectedEventId} />
       </div>
-      <div
-        role="tabpanel"
-        aria-label="이벤트 로그"
-        hidden={tab !== 'events'}
-        className={cn(
-          'min-h-0 flex-1 grid-rows-[minmax(0,1fr)]',
-          tab === 'events' ? 'grid' : 'hidden',
-        )}
-      >
-        <PastEvents session={session} onPick={onPickEvent} />
+      <div className="flex min-h-0 flex-1 flex-col *:flex-1">
+        <PastReportPanel workId={workId} />
       </div>
     </div>
   );
 }
 
-/** 지난 날짜 화면. 그날 작업(둘 이상이면 고른 하나)의 구간을 다시 보고, 그 작업의 보고서·이벤트 로그를 옆에 둔다. */
 export function PastDayPage({ date }: PastDayProps) {
   const { data: works, error } = useWorkDays({ from: date, to: date });
   const dayWorks = useMemo(() => works && dayWorksOf(works, date), [works, date]);
@@ -196,7 +166,15 @@ export function PastDayPage({ date }: PastDayProps) {
   const replayWork = useMemo(() => work && runReplayWork(work, run), [work, run]);
   const session = useWorkReplay(replayWork);
   const { replay, index, range } = session;
-  const pickEvent = useCallback((event: EventRow) => seekTo(replay, event.raisedAt), [replay]);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const pickEvent = useCallback(
+    (event: EventRow) => {
+      setSelectedEventId(event.eventId);
+      seekTo(replay, Math.max(range?.from ?? event.raisedAt, event.raisedAt - 3000));
+      replay?.play();
+    },
+    [replay, range],
+  );
 
   // 처음 보일 시각: 첫 사건, 없으면 첫 기록. 긴 작업은 앞 구간만 받은 채 화면이 뜨고 뒤 구간에서 첫 사건이 나올 수 있어,
   // 우리가 옮겨 둔 자리를 사용자가 그대로 두는 동안에만 새 시각으로 옮긴다(옮기거나 재생했으면 그 자리를 지킨다).
@@ -252,32 +230,39 @@ export function PastDayPage({ date }: PastDayProps) {
   return (
     <div className="flex shrink-0 flex-col gap-3 pb-24">
       {head}
-      {range && !emptyReplay && (
-        <ReplayTimeline
-          replay={replay}
-          index={index}
-          holdMs={session.holdMs}
-          from={range.from}
-          to={range.to}
-          stepMs={session.stepMs}
-          disabled={replay === null}
-          onJump={pickEvent}
-        />
-      )}
       <div className={BODY}>
-        <section aria-label="CCTV 다시 보기" className="flex min-h-[420px] min-w-0 flex-col">
-          {range ? (
-            <ReplayStage session={session} range={range} />
-          ) : (
-            <div
-              role="status"
-              className="flex h-full items-center justify-center rounded-lg border border-border bg-card p-6 text-muted-foreground"
-            >
-              {noRangeLine}
-            </div>
+        <section aria-label="CCTV 다시 보기" className="flex min-w-0 flex-col gap-3">
+          <div className="aspect-video min-w-0">
+            {range ? (
+              <ReplayStage session={session} range={range} />
+            ) : (
+              <div
+                role="status"
+                className="flex h-full items-center justify-center rounded-lg border border-border bg-card p-6 text-muted-foreground"
+              >
+                {noRangeLine}
+              </div>
+            )}
+          </div>
+          {range && !emptyReplay && (
+            <ReplayTimeline
+              replay={replay}
+              index={index}
+              holdMs={session.holdMs}
+              from={range.from}
+              to={range.to}
+              stepMs={session.stepMs}
+              disabled={replay === null}
+              onJump={pickEvent}
+            />
           )}
         </section>
-        <RightColumn workId={work.work_id} session={session} onPickEvent={pickEvent} />
+        <RightColumn
+          workId={work.work_id}
+          session={session}
+          onPickEvent={pickEvent}
+          selectedEventId={selectedEventId}
+        />
       </div>
     </div>
   );

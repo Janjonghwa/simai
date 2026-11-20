@@ -30,7 +30,8 @@ vi.mock('@/features/work/api', async (importOriginal) => {
 // 보고서 편집 창을 작업 관리 mock 에 붙여 본다(저장은 실제 요청 함수로 mock 까지 간다).
 
 const server = installReportServer();
-const DIALOG = { name: 'TBM 보고서 편집' };
+const DIALOG = { name: '작업내용 선택' };
+const FULL_DIALOG = { name: 'TBM 보고서 편집' };
 
 /** 날짜를 열어 둔 초안 전 보고서. */
 async function blankReport(): Promise<WorkReport> {
@@ -54,7 +55,7 @@ describe('초안 전: 작업내용만', () => {
     const report = await blankReport();
     renderWithClient(<ReportEditDialog report={report} onClose={vi.fn()} />);
     await screen.findByRole('dialog', DIALOG);
-    expect(screen.getByText('TBM 보고서 편집', { selector: 'h2' })).toBeTruthy();
+    expect(screen.getByText('작업내용 선택', { selector: 'h2' })).toBeTruthy();
 
     await screen.findByRole('checkbox', { name: '철근 배근' });
     expect(screen.getAllByRole('checkbox')).toHaveLength(8);
@@ -197,7 +198,7 @@ describe('초안 후: 모든 칸', () => {
   it('정보·잠재위험·중점·안전조치·점검 칸이 넓은 창에 나오고 리더 칸은 없다', async () => {
     const report = await draftedReport();
     renderWithClient(<ReportEditDialog report={report} onClose={vi.fn()} />);
-    await screen.findByRole('dialog', DIALOG);
+    await screen.findByRole('dialog', FULL_DIALOG);
     for (const title of ['정보', '잠재위험과 대책', '중점위험과 대책', '안전조치 확인']) {
       expect(screen.getByText(title, { selector: 'h3' })).toBeTruthy();
     }
@@ -231,7 +232,7 @@ describe('초안 후: 모든 칸', () => {
     const checks = report.form!.checks;
     expect(checks.map((c) => c.yes)).toEqual([true, true, false, true, true]);
     renderWithClient(<ReportEditDialog report={report} onClose={vi.fn()} />);
-    await screen.findByRole('dialog', DIALOG);
+    await screen.findByRole('dialog', FULL_DIALOG);
     for (const row of checks)
       expect(screen.getByRole('radiogroup', { name: row.label })).toBeTruthy();
     expect(screen.getAllByLabelText('조치 내용')).toHaveLength(1);
@@ -274,7 +275,7 @@ describe('초안 후: 모든 칸', () => {
   it('입력 한도는 서버 한도와 같다', async () => {
     const report = await draftedReport();
     renderWithClient(<ReportEditDialog report={report} onClose={vi.fn()} />);
-    await screen.findByRole('dialog', DIALOG);
+    await screen.findByRole('dialog', FULL_DIALOG);
     const max = (label: string) => screen.getByLabelText(label).getAttribute('maxlength');
     expect(max('장소')).toBe('200');
     expect(max('작업명')).toBe('100');

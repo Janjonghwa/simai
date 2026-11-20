@@ -26,6 +26,7 @@ vi.mock('@/lib/api', async () => {
 
 installReportServer();
 const EDIT = { name: 'TBM 보고서 편집' };
+const EDIT_DIALOG = { name: '작업내용 선택' };
 const FUTURE_TITLE = '작업 날짜에 시작할 수 있어요';
 
 /** 등록된 단추 줄을 그대로 그린다(날짜 화면의 WorkActionLayer 를 흉내 낸다). */
@@ -93,7 +94,7 @@ describe('오늘', () => {
     await screen.findByText('• 철근 배근');
     fireEvent.click(next());
     expect(onNext).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('dialog', EDIT)).toBeNull();
+    expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull();
   });
 
   it('작업내용이 비었으면 다음 이 저장하고 세팅 시작 창을 연다', async () => {
@@ -102,7 +103,7 @@ describe('오늘', () => {
     await waitFor(() => expect(next().disabled).toBe(false));
     fireEvent.click(next());
 
-    expect(await screen.findByRole('dialog', EDIT)).toBeTruthy();
+    expect(await screen.findByRole('dialog', EDIT_DIALOG)).toBeTruthy();
     expect(screen.getByRole('button', { name: '저장하고 세팅 시작' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '저장' })).toBeNull();
     expect(onNext).not.toHaveBeenCalled();
@@ -119,7 +120,7 @@ describe('오늘', () => {
     expect(screen.getByRole('group', { name: '작업내용' }).getAttribute('aria-invalid')).toBe(
       'true',
     );
-    expect(screen.getByRole('dialog', EDIT)).toBeTruthy();
+    expect(screen.getByRole('dialog', EDIT_DIALOG)).toBeTruthy();
     expect(onNext).not.toHaveBeenCalled();
     expect((await latestReport(day.work_id)).form?.info.tasks).toEqual([]);
 
@@ -127,7 +128,7 @@ describe('오늘', () => {
     fireEvent.click(screen.getByRole('button', { name: '저장하고 세팅 시작' }));
     await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
     expect((await latestReport(day.work_id)).form?.info.tasks).toEqual([{ code: 'REBAR' }]);
-    await waitFor(() => expect(screen.queryByRole('dialog', EDIT)).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull());
   });
 
   it('창을 취소하면 다음 단계로 가지 않고 다시 다음 을 눌러 열 수 있다', async () => {
@@ -135,12 +136,12 @@ describe('오늘', () => {
     const { onNext } = renderStage(day);
     await waitFor(() => expect(next().disabled).toBe(false));
     fireEvent.click(next());
-    await screen.findByRole('dialog', EDIT);
+    await screen.findByRole('dialog', EDIT_DIALOG);
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', EDIT)).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull());
     expect(onNext).not.toHaveBeenCalled();
     fireEvent.click(next());
-    expect(await screen.findByRole('dialog', EDIT)).toBeTruthy();
+    expect(await screen.findByRole('dialog', EDIT_DIALOG)).toBeTruthy();
   });
 
   it('종이를 눌러 작업내용을 저장하면(일반 저장) 다음 단계로 가지 않는다', async () => {
@@ -173,7 +174,7 @@ describe('예정인 날(미래)', () => {
     expect(next().disabled).toBe(true);
     fireEvent.click(next());
     expect(onNext).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog', EDIT)).toBeNull();
+    expect(screen.queryByRole('dialog', EDIT_DIALOG)).toBeNull();
   });
 
   it('보고서를 받기 전에도 같은 이유를 보인다', async () => {

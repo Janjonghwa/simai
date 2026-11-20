@@ -53,7 +53,7 @@ function Harness({
 
 const start = () => screen.getByRole('button', { name: '작업 시작' }) as HTMLButtonElement;
 const checkReport = () => screen.getByRole('checkbox', { name: 'TBM 보고서를 확인했습니다' });
-const checkLayout = () => screen.getByRole('checkbox', { name: '가상 레이아웃을 확인했습니다' });
+const checkLayout = () => screen.getByRole('checkbox', { name: '현장 3D 맵을 확인했습니다' });
 
 describe('PreflightConfirmDialog', () => {
   it('제목·체크 둘·서명 줄과 취소·작업 시작을 보인다', () => {

@@ -79,7 +79,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     expect(groups.get('2026-11-11')).toBeUndefined();
   });
 
-  it('끝난 작업(종료·제출)만 세고, 작업 수와 위험(CRITICAL)·경고(HIGH)를 더한다(없는 칸은 0)', () => {
+  it('끝난 작업(종료·제출)만 세고, 작업 수와 위험(CRITICAL)·주의(HIGH)를 더한다(없는 칸은 0)', () => {
     expect(
       summarizeWorks([
         workDayOf({ progress: 'SUBMITTED', event_counts: { CRITICAL: 2, HIGH: 1 } }),
@@ -105,7 +105,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     });
     expect(
       cellAriaLabel({ dateKey: '2026-11-15', day: 15, kind: 'past', mark: null, summary }),
-    ).toBe('11월 15일, 작업 1건 완료, 위험 사건 12건(경보 190건), 경고 사건 20건(경보 250건)');
+    ).toBe('11월 15일, 작업 1건 완료, 위험 사건 12건(경보 190건), 주의 사건 20건(경보 250건)');
     // 하나라도 모르면(이전 서버) 사건 수를 싣지 않는다
     expect(
       summarizeWorks([
@@ -119,7 +119,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     ).toBeUndefined();
   });
 
-  it('끝나지 않은 작업은 건수에도 위험·경고에도 들어가지 않는다', () => {
+  it('끝나지 않은 작업은 건수에도 위험·주의에도 들어가지 않는다', () => {
     expect(
       summarizeWorks([
         workDayOf({ progress: 'SUBMITTED', event_counts: { CRITICAL: 1, HIGH: 2 } }),
@@ -138,7 +138,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     expect(summary).toEqual({ count: 1, critical: 0, high: 0, runs: 2 });
     expect(
       cellAriaLabel({ dateKey: '2026-11-10', day: 10, kind: 'past', mark: null, summary }),
-    ).toBe('11월 10일, 작업 1건 완료, 실행 2회, 위험 0건, 경고 0건');
+    ).toBe('11월 10일, 작업 1건 완료, 실행 2회, 위험 0건, 주의 0건');
     // 실행이 하나면 싣지 않는다
     expect(
       summarizeWorks([workDayOf({ progress: 'SUBMITTED', runs: [run(1)] })])?.runs,
@@ -152,7 +152,7 @@ describe('groupByDate · summarizeWorks · summarizeMonth', () => {
     ).toBeNull();
   });
 
-  it('월간 요약은 그 달 안(inMonth)에서 끝난 작업이 있는 날 수와 위험·경고 합계를 구하고 달 밖·예정·미종료는 뺀다', () => {
+  it('월간 요약은 그 달 안(inMonth)에서 끝난 작업이 있는 날 수와 위험·주의 합계를 구하고 달 밖·예정·미종료는 뺀다', () => {
     // 2026년 10월 달력 칸: 9월 27~30일(달 밖) + 10월 1~31일(그 달)
     const cells = monthCells({ year: 2026, month: 10 });
     const byDate = groupByDate([
@@ -306,7 +306,7 @@ describe('dayMarkOf — 예정인 날', () => {
 });
 
 describe('cellAriaLabel', () => {
-  it('날짜에 더해 오늘 할 일·지난 날 완료 및 위험·경고 수를 담는다', () => {
+  it('날짜에 더해 오늘 할 일·지난 날 완료 및 위험·주의 수를 담는다', () => {
     expect(
       cellAriaLabel({
         dateKey: '2026-11-11',
@@ -335,7 +335,7 @@ describe('cellAriaLabel', () => {
         mark: { kind: 'ended' },
         summary: { count: 2, critical: 3, high: 1 },
       }),
-    ).toBe('11월 9일, 작업 2건 완료, 위험 3건, 경고 1건');
+    ).toBe('11월 9일, 작업 2건 완료, 위험 3건, 주의 1건');
 
     expect(
       cellAriaLabel({

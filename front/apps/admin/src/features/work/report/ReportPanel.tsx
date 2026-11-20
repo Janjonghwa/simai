@@ -2,7 +2,6 @@ import { LoadingDots } from '@/components/LoadingDots';
 import {
   demoPaperForm,
   isWorkEnded,
-  useDemoEndingGenerating,
   useDemoReportDraft,
   useDemoReportSync,
 } from '@/features/demo/demoReport';
@@ -25,7 +24,7 @@ import {
 } from '@/features/work/reportForm';
 import type { ReportPanelProps } from '@/features/work/stageProps';
 import { useStartReportDraft } from '@/features/work/useWorkReport';
-import { isDraftPending, isEndingGenerating } from '@/features/work/workDay';
+import { isDraftPending } from '@/features/work/workDay';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Printer, Sparkles } from 'lucide-react';
@@ -52,10 +51,12 @@ export function ReportPanel({
   draftable = false,
   setupDone = false,
   fit = false,
+  endingGenerating = false,
   className,
 }: ReportPanelProps & {
   /** 틀 높이에 맞춘 A4 한 장으로 줄여 보이고 누르면 크게 본다(작업 전 확인). 틀(className)의 높이가 정해져 있어야 한다. */
   fit?: boolean;
+  endingGenerating?: boolean;
 }) {
   const { query, latest, paper: serverPaper } = useReportPaper(workId);
   const draft = useStartReportDraft(workId);
@@ -83,12 +84,8 @@ export function ReportPanel({
     today: editable,
   });
   // 초안이나 종료 미팅을 쓰는 동안 종이를 가린다
-  const endingNow = useDemoEndingGenerating(workId, {
-    ended: isWorkEnded(latest),
-    generating: isEndingGenerating(latest),
-    today: editable,
-  });
-  const generating = demoDraft.drafting || endingNow;
+  const endingNow = endingGenerating;
+  const generating = demoDraft.drafting;
   // 시연 계정이 미리 적어 둔 초안이 보이는 동안 종이는 그 양식이다(작업을 끝내면 종료 미팅 칸도). 직접 고쳐 저장한 뒤에는 고친 값 그대로이고 종료 미팅 칸만 시연 문구다
   const paper = demoDraft.shown
     ? {
@@ -119,8 +116,9 @@ export function ReportPanel({
 
   return (
     <div className={cn('flex min-h-0 flex-col gap-2.5', className)}>
-      {(submittedAt !== null || saved || withPrint || showDraft) && (
+      {(fit || submittedAt !== null || saved || withPrint || showDraft) && (
         <div className="flex flex-none items-center gap-2.5">
+          {fit && <h2 className="font-heading text-sm font-medium">TBM 보고서</h2>}
           {submittedAt !== null && (
             <span className="inline-flex items-center rounded-md px-2 py-1 text-[13px] text-ok ring-1 ring-ok/40 ring-inset">
               {`보냄 ${formatDateTime(submittedAt)}`}
@@ -150,10 +148,11 @@ export function ReportPanel({
           )}
           {withPrint && (
             <Button
-              variant="secondary"
+              variant="action"
+              size="action"
               disabled={latest === null}
               onClick={print}
-              className={cn(SWITCH, 'ml-auto')}
+              className="ml-auto"
             >
               <Printer />
               출력
@@ -182,7 +181,12 @@ export function ReportPanel({
               }}
             />
           ) : (
-            <ReportView {...paper} editable={canEdit} onEdit={() => setEditing(true)} />
+            <ReportView
+              {...paper}
+              endingGenerating={endingNow}
+              editable={canEdit && !endingNow}
+              onEdit={() => setEditing(true)}
+            />
           )}
         </div>
         {generating && (

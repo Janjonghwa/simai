@@ -206,10 +206,10 @@ describe('타임라인: 이벤트 표시', () => {
   });
 
   it.each([
-    ['CRITICAL', 'bg-sev-critical'],
-    ['HIGH', 'bg-sev-high'],
-    ['CAUTION', 'bg-sev-caution'],
-    ['INFO', 'bg-muted-foreground'],
+    ['CRITICAL', 'text-sev-critical'],
+    ['HIGH', 'text-sev-caution'],
+    ['CAUTION', 'text-sev-caution'],
+    ['INFO', 'text-muted-foreground'],
   ] as const)('%s 이벤트 표시는 등급색(%s)이다', (severity, tone) => {
     renderTimeline({ events: [event({ severity })] });
     const mark = screen.getByRole('button', { name: /^이벤트 / }).querySelector('span')!;
@@ -219,6 +219,41 @@ describe('타임라인: 이벤트 표시', () => {
   it('이벤트가 없으면 이벤트 버튼이 없다', () => {
     renderTimeline({ events: [] });
     expect(screen.queryAllByRole('button', { name: /^이벤트 / })).toHaveLength(0);
+  });
+
+  it('트랙 폭이 있으면 가까운 핀을 겹치지 않게 벌리고, 막대 위 핀 근처를 클릭해도 그 이벤트를 선택한다', () => {
+    const a = event({ eventId: 'e-a', raisedAt: at(10, 0, 1) });
+    const b = event({ eventId: 'e-b', raisedAt: at(10, 0, 2) });
+    const proto = HTMLElement.prototype;
+    const origWidth = Object.getOwnPropertyDescriptor(proto, 'clientWidth');
+    Object.defineProperty(proto, 'clientWidth', { configurable: true, get: () => 400 });
+    try {
+      const { onJump } = renderTimeline({ events: [a, b] });
+      const buttons = within(region()).getAllByRole('button', { name: /^이벤트 / });
+      const x0 = parseFloat(buttons[0]!.style.left);
+      const x1 = parseFloat(buttons[1]!.style.left);
+      const w0 = parseFloat(buttons[0]!.style.width);
+      expect(x1 - x0).toBeGreaterThanOrEqual(w0);
+
+      // 슬라이더 트랙 위 첫 핀 근처를 클릭하면 onJump 가 불린다
+      const trackEl = slider().parentElement!;
+      vi.spyOn(trackEl, 'getBoundingClientRect').mockReturnValue({
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 36,
+        width: 400,
+        height: 36,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      fireEvent.click(slider(), { clientX: x1 + 2 });
+      expect(onJump).toHaveBeenCalledWith(b);
+    } finally {
+      if (origWidth) Object.defineProperty(proto, 'clientWidth', origWidth);
+      else delete (proto as unknown as Record<string, unknown>).clientWidth;
+    }
   });
 });
 
