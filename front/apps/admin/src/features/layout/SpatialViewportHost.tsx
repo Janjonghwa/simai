@@ -73,7 +73,7 @@ function readSceneVersion(scene: unknown): string | null {
 }
 
 /**
- * 실시간 관제(/)의 3D World · 2D 비상 평면 · 도구 모음 · 우측 이벤트 패널 호스트. 관리자 편집 모드(구역 편집)도
+ * 실시간 3D 관제(/)의 3D World · 2D 비상 평면 · 도구 모음 · 우측 이벤트 패널 호스트. 관리자 편집 모드(구역 편집)도
  * 이 화면 위에서 한다. AppLayout 이 fullBleed 인 화면(관제 하나뿐)에서만 마운트하므로 다른 화면으로 가면 내려가고,
  * 돌아오면 3D 를 새로 띄운다.
  */
@@ -87,7 +87,7 @@ export function SpatialViewportHost({
   loadViewer?: () => Promise<ViewerModule>;
   /** 3D 가 준비되지 않았을 때 2D 를 띄우기까지 기다리는 시간(ms). 시험에서 줄인다. */
   planFallbackMs?: number;
-  /** 오른쪽 이벤트 패널과 왼쪽 아래 2D 미니맵을 두는 화면인지(라우트 staticData.eventPanel, 실시간 관제). */
+  /** 오른쪽 이벤트 패널과 왼쪽 아래 2D 미니맵을 두는 화면인지(라우트 staticData.eventPanel, 실시간 3D 관제). */
   eventPanel?: boolean;
   children?: ReactNode;
   now?: () => number;
@@ -264,7 +264,7 @@ export function SpatialViewportHost({
 
   return (
     <SpatialViewportContext value={viewport}>
-      <main aria-label="실시간 관제" className="relative flex-1 bg-background">
+      <main aria-label="실시간 3D 관제" className="relative flex-1 bg-background">
         {view === '3d' && sceneStatus?.regenerationRequired && (
           <div
             role="status"

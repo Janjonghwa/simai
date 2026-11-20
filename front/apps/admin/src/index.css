@@ -1,5 +1,9 @@
 @import '@simai/ui/globals.css';
 
+body {
+  word-break: keep-all;
+}
+
 /*
  * 관제 경보 애니메이션. motion-safe:animate-* 로 써서 움직임 줄이기 설정이면 멈춘다.
  * alarm-blink: 경보 점멸(1초 주기, 명세 FR-8). bell-ring: 경보음이 울리는 동안 상단 바 소리 버튼의 종이 흔들린다(0.75초 주기, 관제 데모).

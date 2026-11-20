@@ -21,7 +21,7 @@ export interface ScenePalette {
   label: { observed: string; predicted: string; unknown: string; background: string };
   /** 등급을 모르거나 안내인 구역 색(color)과 미리보기 색(preview). */
   zone: { color: number; preview: number };
-  /** CRITICAL 은 빨강 이중선, HIGH 는 주황, CAUTION 은 노랑. 구역 윤곽선도 이 색을 쓴다. */
+  /** CRITICAL 은 빨강 이중선, HIGH·CAUTION 은 노랑. 구역 윤곽선도 이 색을 쓴다. */
   risk: Record<RiskColorLevel, { color: number }>;
   surface: { color: string; selected: string; topEdge: string };
   obstacle: { color: string; selected: string };
@@ -43,7 +43,7 @@ export const PALETTE: Record<ViewerTheme, ScenePalette> = {
     zone: { color: 0x5fb3a8, preview: 0xc4a7ff },
     risk: {
       CRITICAL: { color: 0xff6b74 },
-      HIGH: { color: 0xff8f3f },
+      HIGH: { color: 0xffd23f },
       CAUTION: { color: 0xffd23f },
     },
     surface: { color: '#8d99b8', selected: '#b4c4ee', topEdge: '#e3e9f5' },
@@ -64,7 +64,7 @@ export const PALETTE: Record<ViewerTheme, ScenePalette> = {
     zone: { color: 0x0f8a80, preview: 0x7048d8 },
     risk: {
       CRITICAL: { color: 0xc21d1d },
-      HIGH: { color: 0xb54f00 },
+      HIGH: { color: 0x7a6000 },
       CAUTION: { color: 0x7a6000 },
     },
     surface: { color: '#5f7394', selected: '#1d4f9e', topEdge: '#2b4a74' },

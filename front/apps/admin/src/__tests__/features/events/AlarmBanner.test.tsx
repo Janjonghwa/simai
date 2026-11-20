@@ -85,7 +85,7 @@ describe('AlarmBanner', () => {
     ];
     const banner = renderBanner(true);
     expect(banner.textContent).not.toContain('+1');
-    expect(within(banner).getByText('경고')).toBeTruthy();
+    expect(within(banner).getByText('주의')).toBeTruthy();
   });
 
   it('깜빡이는 테두리는 배너 전체를 덮지만 클릭을 가로채지 않는다(버튼이 눌린다)', () => {
@@ -98,8 +98,8 @@ describe('AlarmBanner', () => {
   });
 
   it.each([
-    ['CRITICAL', 'ring-sev-critical', 'ring-sev-high'],
-    ['HIGH', 'ring-sev-high', 'ring-sev-critical'],
+    ['CRITICAL', 'ring-sev-critical', 'ring-sev-caution'],
+    ['HIGH', 'ring-sev-caution', 'ring-sev-critical'],
   ] as const)('깜빡이는 테두리는 경보 등급 %s 의 색(%s)이다', (severity, ring, other) => {
     live.entries = [{ ...alarm, event: { ...alarm.event, severity } }];
     const banner = renderBanner(true);

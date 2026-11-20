@@ -208,7 +208,7 @@ describe('요청 → 대기 상태 표시 → STOMP 갱신 → 결과 표시', (
     const aiPanel = within(dialog).getByRole('region', { name: 'AI 설명' });
 
     // 초기 규칙 등급 배지는 경고(HIGH)다.
-    expect(within(rulesPanel).getByText('경고')).toBeTruthy();
+    expect(within(rulesPanel).getByText('주의')).toBeTruthy();
 
     fireEvent.click(within(aiPanel).getByRole('button', { name: '구간 요약 요청' }));
 
@@ -280,7 +280,7 @@ describe('요청 → 대기 상태 표시 → STOMP 갱신 → 결과 표시', (
     // AI 설명임을 표시하고 규칙 등급 배지·알람에는 영향을 주지 않는다(규칙 4).
     const summaryGroup = within(aiPanel).getByRole('group', { name: '사고 구간 요약' });
     expect(within(summaryGroup).getByText('AI 설명')).toBeTruthy();
-    expect(within(rulesPanel).getByText('경고')).toBeTruthy();
+    expect(within(rulesPanel).getByText('주의')).toBeTruthy();
     expect(within(rulesPanel).queryByText('위험')).toBeNull();
     expect(queryClient.getQueryData<LiveEvents>(LIVE_EVENTS_KEY)?.entries[0]?.event.severity).toBe(
       'HIGH',

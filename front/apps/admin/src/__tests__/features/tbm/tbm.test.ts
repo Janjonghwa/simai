@@ -145,7 +145,7 @@ describe('동시 작업 간섭', () => {
 
   it('등급 글자의 기호는 위험·경고 모두 ▲ 하나다(관제 등급 배지와 같다, -798)', () => {
     expect(SEVERITY_TEXT.CRITICAL).toBe('▲ 위험');
-    expect(SEVERITY_TEXT.HIGH).toBe('▲ 경고');
+    expect(SEVERITY_TEXT.HIGH).toBe('▲ 주의');
   });
 
   it('구역 작업은 구역 이름(번호 없이), 구역 없는 작업은 적어 둔 장소 또는 현장 전체를 보인다', () => {

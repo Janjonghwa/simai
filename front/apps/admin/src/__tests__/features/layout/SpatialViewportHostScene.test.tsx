@@ -75,7 +75,7 @@ describe('관제 호스트의 Scene 연결', () => {
         gltf_expires_at_ms: expect.any(Number),
       },
     });
-    expect(screen.getByRole('main', { name: '실시간 관제' })).toBeTruthy();
+    expect(screen.getByRole('main', { name: '실시간 3D 관제' })).toBeTruthy();
   });
 
   it.each([401, 503])('Scene 조회 %s 에도 관제 화면과 뷰어를 띄운다', async (status) => {
@@ -90,7 +90,7 @@ describe('관제 호스트의 Scene 연결', () => {
     await screen.findByTestId('viewer3d');
     await waitFor(() => expect(calls).toBe(1));
     expect(viewer.props?.scene).toBeNull();
-    expect(screen.getByRole('main', { name: '실시간 관제' })).toBeTruthy();
+    expect(screen.getByRole('main', { name: '실시간 3D 관제' })).toBeTruthy();
   });
 
   it('뷰어가 만료를 알리면 재조회한 본문을 다시 넘긴다', async () => {

@@ -1,8 +1,9 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
+import { isAlarming } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
-import { Dock } from '@/features/layout/Dock';
+import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
@@ -14,7 +15,7 @@ import { WatchBindNotice } from '@/features/watch/WatchBindNotice';
 import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { Outlet, useMatches } from '@tanstack/react-router';
+import { Outlet, useMatches, useRouterState } from '@tanstack/react-router';
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
 /**
@@ -134,9 +135,9 @@ export function AppLayout() {
   const eventPanel = useMatches({
     select: (matches) => matches.some((m) => m.staticData.eventPanel),
   });
-  const dockOverlay = useMatches({
-    select: (matches) => matches.some((m) => m.staticData.dockOverlay),
-  });
+  const isCctv = useRouterState({ select: (state) => state.location.pathname === '/cctv' });
+  const { entries } = useVisibleLiveEvents();
+  const hasAlarm = entries.some(isAlarming);
   const openEvent = useEventsStore((s) => s.openEvent);
   const root = useRef<HTMLDivElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
@@ -163,12 +164,19 @@ export function AppLayout() {
           <TopBar floating={fullBleed} />
         </div>
         {/* 작업 관리 같은 일반 화면은 배너가 달력 「오늘」·「출력」 단추를 가리지 않게 상단 바 아래 띠로 둔다(S15P31A101-757). */}
-        {!eventPanel && !fullBleed && (
+        {!eventPanel && !fullBleed && !isCctv && (
           <div
             data-testid="alarm-strip"
-            className="pointer-events-none relative z-[6] flex flex-none justify-center px-5 pt-2 empty:hidden"
+            className={cn(
+              'pointer-events-none relative z-[6] grid flex-none transition-[grid-template-rows,opacity] duration-150 motion-reduce:transition-none',
+              hasAlarm ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0',
+            )}
           >
-            <AlarmBanner withPanel={false} />
+            <div className="flex min-h-0 justify-center overflow-hidden px-5">
+              <div className="pt-2">
+                <AlarmBanner withPanel={false} />
+              </div>
+            </div>
           </div>
         )}
         <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
@@ -180,15 +188,18 @@ export function AppLayout() {
             <main
               className={cn(
                 'relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto bg-blueprint px-5 pt-3.5',
-                dockOverlay ? 'pb-3.5' : 'pb-[90px]',
+                'pb-3.5',
               )}
             >
               <Outlet />
             </main>
           )}
-          <Dock />
         </div>
-        <Notices ref={noticesRef} eventPanel={eventPanel} banner={eventPanel || fullBleed} />
+        <Notices
+          ref={noticesRef}
+          eventPanel={eventPanel}
+          banner={eventPanel || fullBleed || isCctv}
+        />
         <AlarmSoundLoop />
       </div>
     </>

@@ -6,21 +6,21 @@ import type { Severity } from '@/features/events/types';
 
 export const ALARM_TEXT: Record<Severity, string> = {
   CRITICAL: 'text-sev-critical',
-  HIGH: 'text-sev-high',
+  HIGH: 'text-sev-caution',
   CAUTION: 'text-sev-caution',
   INFO: 'text-muted-foreground',
 };
 
 export const ALARM_BORDER: Record<Severity, string> = {
   CRITICAL: 'border-sev-critical',
-  HIGH: 'border-sev-high',
+  HIGH: 'border-sev-caution',
   CAUTION: 'border-sev-caution',
   INFO: 'border-faint',
 };
 
 export const ALARM_RING: Record<Severity, string> = {
   CRITICAL: 'ring-sev-critical',
-  HIGH: 'ring-sev-high',
+  HIGH: 'ring-sev-caution',
   CAUTION: 'ring-sev-caution',
   INFO: 'ring-faint',
 };

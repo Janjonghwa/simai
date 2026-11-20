@@ -339,14 +339,14 @@ describe('구역 편집 화면', () => {
     expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
       ['주의', true],
       ['위험', false],
-      ['경고', false],
+      ['주의', false],
     ]);
     expect(severitySelect().value).toBe('CAUTION');
-    expect(screen.getByText('위험·경고 중에서 고르세요.')).toBeTruthy();
+    expect(screen.getByText('위험·주의 중에서 고르세요.')).toBeTruthy();
     rename('다른 이름');
     expect((button('저장') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(severitySelect(), { target: { value: 'HIGH' } });
-    expect(screen.queryByText('위험·경고 중에서 고르세요.')).toBeNull();
+    expect(screen.queryByText('위험·주의 중에서 고르세요.')).toBeNull();
     expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
   });
 

@@ -131,7 +131,7 @@ describe('EventListCard', () => {
     );
     expect(rows[0]?.textContent).toContain('추락 위험(가장자리)');
     expect(rows[0]?.textContent).toContain('현장');
-    expect(rows[0]?.textContent).toContain('경고');
+    expect(rows[0]?.textContent).toContain('주의');
     expect(rows[1]?.textContent).toContain('개구부 구역');
     expect(rows[1]?.textContent).toContain('위험');
   });

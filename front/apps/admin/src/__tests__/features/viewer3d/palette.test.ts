@@ -28,7 +28,7 @@ function token(theme: ViewerTheme, name: string): string {
 
 const LEVELS = [
   ['CRITICAL', 'sev-critical'],
-  ['HIGH', 'sev-high'],
+  ['HIGH', 'sev-caution'],
   ['CAUTION', 'sev-caution'],
 ] as const;
 
@@ -39,10 +39,10 @@ describe('3D 색표와 CSS 심각도 토큰', () => {
     });
   });
 
-  it('위험·경고·주의 색은 서로 다르다', () => {
+  it('위험과 주의 색을 구분한다', () => {
     for (const theme of ['dark', 'light'] as const) {
       const colors = LEVELS.map(([level]) => PALETTE[theme].risk[level].color);
-      expect(new Set(colors).size).toBe(LEVELS.length);
+      expect(new Set(colors).size).toBe(2);
     }
   });
 });

@@ -4,6 +4,7 @@ import { useLogout } from '@/features/auth/useLogout';
 import { SoundButton } from '@/features/events/SoundButton';
 import { GpuIndicator } from '@/features/gpu/GpuIndicator';
 import { BrandMark, Wordmark } from '@/features/layout/BrandMark';
+import { Dock } from '@/features/layout/Dock';
 import { SiteLinkBadge } from '@/features/layout/SiteLinkBadge';
 import { clockLabel } from '@/features/layout/status';
 import { useNow } from '@/features/layout/useNow';
@@ -73,7 +74,7 @@ export function TopBar({ floating }: { floating: boolean }) {
   return (
     <header
       className={cn(
-        'flex h-[60px] items-center gap-x-5 gap-y-3 bg-card px-5',
+        'relative flex h-[60px] items-center gap-x-5 gap-y-3 bg-card px-5',
         floating && 'bg-card/78 shadow-[0_1px_0_var(--border)] backdrop-blur-[8px]',
       )}
     >
@@ -81,6 +82,9 @@ export function TopBar({ floating }: { floating: boolean }) {
         <BrandMark />
         <Wordmark />
       </Link>
+      <div className="absolute left-1/2 -translate-x-1/2">
+        <Dock />
+      </div>
       <div className="ml-auto flex items-center gap-x-3">
         {/* 연습 빌드만(-806): 실서버·실제 GPU 와 연결되지 않은 화면임을 늘 보인다. */}
         {import.meta.env.VITE_MOCK_BUILD === 'true' && (
