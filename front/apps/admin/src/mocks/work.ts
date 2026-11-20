@@ -111,6 +111,8 @@ export interface WorkMockOptions {
   draftDelayMs?: number;
   /** 초안이 쓰는 구역. 기본은 프로토타입의 구역 셋(개구부·고소 작업면·바닥 가장자리). */
   draftZones?: readonly DraftZone[];
+  /** 시연 경보 기록 저장소에서 작업별 사건 수를 읽는다. 기록이 있으면 오늘 작업의 event_counts·incident_counts·종료 미팅이 이 값을 따른다. */
+  eventCounts?: (workId: string) => { CRITICAL: number; HIGH: number } | null;
 }
 
 type MockReport = WorkReport & { form: ReportForm };
@@ -163,6 +165,7 @@ export interface WorkItemJson {
   actual_ended_at: number | null;
   runs?: WorkRun[];
   event_counts: { CRITICAL: number; HIGH: number } | null;
+  incident_counts?: { CRITICAL: number; HIGH: number } | null;
   zone_id: string | null;
   place: string | null;
   lead: string | null;
@@ -393,6 +396,9 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     report.draft_status = 'SUCCEEDED';
   }
 
+  /** 작업의 현재 사건 수(시연 기록 저장소가 있으면 그 값, 없으면 수동 지정 값). */
+  const countsOf = (work: MockWork) => options.eventCounts?.(work.work_id) ?? work.event_counts;
+
   /**
    * 종료 미팅 채우기(서버 B10): 종료한 뒤 draftDelayMs 가 지나면 `review.ending` 이 비어 있을 때만 종료 문장으로 채우고(form_revision+1)
    * wrap_up_status 를 SUCCEEDED 로 끝낸다. 채우는 동안은 제출을 받지 않으므로(409 REPORT_NOT_READY) 그 사이 보고서가 잠기지 않는다.
@@ -403,7 +409,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     if (now() - endedAt < draftDelayMs) return;
     if (report.form.review.ending === '') {
       const total = endedAt - (startedAt ?? endedAt);
-      report.form.review.ending = endingMeetingText(total, eventCountOf(work.event_counts));
+      report.form.review.ending = endingMeetingText(total, eventCountOf(countsOf(work)));
       report.form_revision += 1;
     }
     report.wrap_up_status = 'SUCCEEDED';
@@ -436,6 +442,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
   function viewWork(work: MockWork): WorkItemJson {
     sync(work);
     const { report } = work;
+    const counts = countsOf(work);
     return {
       work_id: work.work_id,
       date: work.date,
@@ -454,7 +461,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       actual_started_at: work.actual_started_at,
       actual_ended_at: work.actual_ended_at,
       runs: work.runs.map((run) => ({ ...run })),
-      event_counts: { ...work.event_counts },
+      event_counts: { ...counts },
+      incident_counts: { ...counts },
       zone_id: null,
       place: report.form.info.place || null,
       lead: null,
@@ -1024,9 +1032,14 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       if (work) work.draftFails = true;
     },
     /** 그 작업 구간의 사건 수를 정한다(종료 문장의 '사건 N건'). */
-    setEventCounts(workId: string, counts: { CRITICAL?: number; HIGH?: number }) {
+    setEventCounts(workId: string, counts: { CRITICAL?: number; HIGH?: number; CAUTION?: number }) {
       const work = dailyOf(workId);
-      if (work) work.event_counts = { CRITICAL: counts.CRITICAL ?? 0, HIGH: counts.HIGH ?? 0 };
+      if (work) {
+        work.event_counts = {
+          CRITICAL: counts.CRITICAL ?? 0,
+          HIGH: (counts.HIGH ?? 0) + (counts.CAUTION ?? 0),
+        };
+      }
     },
   };
 }

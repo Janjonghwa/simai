@@ -1,5 +1,6 @@
 import { TBM_TASKS, TBM_ZONES } from '@/features/tbm/tbmDemo';
 import type { TbmWorkUnit } from '@/features/tbm/types';
+import type { DemoReplayReader } from '@/mocks/demoReplayStore';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { EVENT_CYCLE_MS, riskEventsBetween, worldStateAt } from '@/mocks/realtimeScenario';
 import { http, HttpResponse } from 'msw/http';
@@ -78,6 +79,8 @@ export interface HistoryMockWork {
   planned_people: number;
   /** 기록이 하나도 없는 작업은 모른다(null). */
   event_counts: { CRITICAL: number; HIGH: number } | null;
+  /** 관제 카드 기준 사건 수(시연 기록이 있는 오늘 작업에만 싣는다). */
+  incident_counts?: { CRITICAL: number; HIGH: number } | null;
 }
 
 /** 기록이 하나도 없는 작업(이벤트 수를 모른다). */
@@ -122,9 +125,10 @@ const msOrNull = (value: string | number | null | undefined) =>
   typeof value === 'number' ? value : null;
 
 /** TBM 목(/api/work-units)의 작업을 히스토리 응답 모양으로. 시작·종료는 그 목이 기록한 값이다. */
-function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
+function liveWork(work: TbmWorkUnit, now: number, demoReplay?: DemoReplayReader): HistoryMockWork {
   const started = msOrNull(work.actual_started_at);
   const ended = msOrNull(work.actual_ended_at);
+  const demoCounts = demoReplay?.countsOf(work.work_id) ?? null;
   return {
     work_id: work.work_id,
     date: work.date,
@@ -138,9 +142,12 @@ function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
     place: work.place ?? null,
     planned_people: work.planned_people,
     event_counts:
-      started === null
-        ? countEvents(work.from_ms, Math.min(work.to_ms, now))
-        : countEvents(started, Math.min(ended ?? now, now)),
+      demoCounts !== null
+        ? { ...demoCounts }
+        : started === null
+          ? countEvents(work.from_ms, Math.min(work.to_ms, now))
+          : countEvents(started, Math.min(ended ?? now, now)),
+    ...(demoCounts !== null ? { incident_counts: { ...demoCounts } } : {}),
   };
 }
 
@@ -149,8 +156,14 @@ function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
  * 마지막 작업은 기록이 없다(다른 작업과 겹치지 않는다). 오늘 작업은 live(TBM 목의 지금 작업)가 있으면 그것이고,
  * 없으면 계획 시각을 따르는 데모 작업이다.
  */
-export function historyWorks(now: number, live?: readonly TbmWorkUnit[]): HistoryMockWork[] {
-  const today = live ? live.map((work) => liveWork(work, now)) : scenarioWorks(now, now, false);
+export function historyWorks(
+  now: number,
+  live?: readonly TbmWorkUnit[],
+  demoReplay?: DemoReplayReader,
+): HistoryMockWork[] {
+  const today = live
+    ? live.map((work) => liveWork(work, now, demoReplay))
+    : scenarioWorks(now, now, false);
   const past = Array.from({ length: DAYS - 1 }, (_, i) =>
     scenarioWorks(now - (i + 1) * DAY_MS, now, i === DAYS - 2),
   );
@@ -171,8 +184,11 @@ const workOf = (works: readonly HistoryMockWork[], from: number, to: number) =>
   });
 
 /** 같은 시각이면 같은 msg_id 다(서버가 저장된 원래 msg_id 를 주므로 같은 구간을 다시 읽어도 같다). */
-const stableWorld = (ot: number) => {
-  const message = worldStateAt(ot + WORLD_LATENCY_MS);
+const stableWorld = (ot: number, demoElapsedMs?: number) => {
+  const message = worldStateAt(
+    ot + WORLD_LATENCY_MS,
+    demoElapsedMs === undefined ? undefined : { demoElapsedMs },
+  );
   return { ...message, msg_id: `${WORLD_MSG_ID_PREFIX}${hex12(ot)}` };
 };
 // 서버는 기록 이벤트(LIVE)에 재시작 복원 표시 delivery 를 싣는다(S15P31A101-355). 복원된 것이 없는 기록은 REALTIME 이다.
@@ -235,9 +251,19 @@ function gapsBetween(from: number, to: number, now: number, quiet: Quiet, empty:
   return gaps;
 }
 
+/** 시연 실행 구간의 world tick. 인공 끊김·빈 방을 넣지 않고 시연 이동 경로(demoElapsedMs)로 채운다. */
+function demoWorldStatesBetween(from: number, until: number, step: number, startedAt: number) {
+  const worldStates = [];
+  for (let ot = Math.ceil(from / step) * step; ot <= until; ot += step) {
+    worldStates.push(stableWorld(ot, Math.max(0, ot - startedAt)));
+  }
+  return worldStates;
+}
+
 /**
- * 구간 기록(GET /api/replay 의 본문). 작업 구간 40% 쯤 OUTAGE_MS 는 기록이 없고(gaps), 20% 쯤 EMPTY_ROOM_MS 는 사람이 없어
- * world 행이 없다(gaps 아님). 아직 오지 않은 시각(now 뒤)도 gaps 다. 기록이 없는 작업은 구간 전체가 gaps 다.
+ * 구간 기록(GET /api/replay 의 본문). 시연 실행 구간이 기록돼 있으면 가짜 경보 대신 시연 경보만 돌려준다.
+ * 그 외 작업(지난 날 등)은 구간 40% 쯤 OUTAGE_MS 가 끊김(gaps), 20% 쯤 EMPTY_ROOM_MS 는 빈 방(gaps 아님)이다.
+ * 아직 오지 않은 시각(now 뒤)도 gaps 다. 기록이 없는 작업은 구간 전체가 gaps 다.
  */
 export function historyReplay(
   works: readonly HistoryMockWork[],
@@ -245,7 +271,21 @@ export function historyReplay(
   to: number,
   step: number,
   now: number,
+  demoReplay?: DemoReplayReader,
 ) {
+  const until = Math.min(to, now);
+  const demoRun = demoReplay?.findRun(from, to);
+  if (demoRun && demoReplay) {
+    return {
+      from,
+      to,
+      step_ms: step,
+      world_states: demoWorldStatesBetween(from, until, step, demoRun.startedAt),
+      initial_events: from > now ? [] : demoReplay.initialEventsAt(demoRun, from),
+      events: until <= from ? [] : demoReplay.eventsBetween(demoRun, from, until),
+      gaps: now < to ? [{ from: Math.max(from, now), to }] : [],
+    };
+  }
   const work = workOf(works, from, to);
   const empty = work !== undefined && hasNoRecord(work);
   const span = work && spanOf(work);
@@ -254,7 +294,6 @@ export function historyReplay(
       ? { from_ms: span.from, to_ms: span.to ?? work.to_ms }
       : { from_ms: from, to_ms: to },
   );
-  const until = Math.min(to, now);
   return {
     from,
     to,
@@ -290,7 +329,12 @@ function readReplayQuery(url: URL) {
 export function createHistoryMock({
   now = Date.now,
   liveWorks,
-}: { now?: () => number; liveWorks?: () => readonly TbmWorkUnit[] } = {}) {
+  demoReplay,
+}: {
+  now?: () => number;
+  liveWorks?: () => readonly TbmWorkUnit[];
+  demoReplay?: DemoReplayReader;
+} = {}) {
   const deny = (request: Request) => (readLiveUser(request, now()) ? undefined : unauthorized());
   const tooLarge = () => problem(400, CODE_TOO_LARGE, '한 번에 받을 수 있는 기록보다 많습니다');
 
@@ -298,7 +342,7 @@ export function createHistoryMock({
     http.get('*/api/work-units', ({ request }) => {
       const denied = deny(request);
       if (denied) return denied;
-      return HttpResponse.json({ works: historyWorks(now(), liveWorks?.()) });
+      return HttpResponse.json({ works: historyWorks(now(), liveWorks?.(), demoReplay) });
     }),
     http.get('*/api/replay', ({ request }) => {
       const denied = deny(request);
@@ -309,7 +353,14 @@ export function createHistoryMock({
       if (to - from > MAX_RANGE_MS || Math.floor((to - from) / step) + 1 > MAX_FRAMES)
         return tooLarge();
       const t = now();
-      const body = historyReplay(historyWorks(t, liveWorks?.()), from, to, step, t);
+      const body = historyReplay(
+        historyWorks(t, liveWorks?.(), demoReplay),
+        from,
+        to,
+        step,
+        t,
+        demoReplay,
+      );
       if (body.events.length > MAX_TRANSITIONS || body.world_states.length > MAX_FRAMES)
         return tooLarge();
       return HttpResponse.json(body);

@@ -1,4 +1,5 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { createDemoReplayStore } from '@/mocks/demoReplayStore';
 import { createFloorPlanMock } from '@/mocks/floorPlan';
 import { createGpuMock } from '@/mocks/gpu';
 import { createHistoryMock } from '@/mocks/history';
@@ -75,9 +76,15 @@ export const setupMock = createSetupMock({
       }
     : {}),
 });
+// 시연 시나리오 경보(demoAlarmScenario)가 띄운 실행·경보 전이를 세션 메모리에 남긴다.
+// 오늘 작업의 다시 보기(/api/replay)와 사건 수(event_counts·incident_counts·종료 미팅)가 같은 저장소를 읽는다.
+export const demoReplayStore = createDemoReplayStore();
 // 작업 관리 새 흐름(하루 작업·날짜 보고서·서명·제출). 세팅 mock 의 세션으로 세팅 중·끝남을 안다. 같은 경로를 쓰는 옛 TBM mock·세팅 mock·
 // 히스토리 mock 보다 먼저 답해야 해서(모르는 작업·요청은 undefined 로 넘긴다) 아래 목록에서 그 앞에 둔다.
-export const workMock = createWorkMock({ setupSessions: () => setupMock.sessions.values() });
+export const workMock = createWorkMock({
+  setupSessions: () => setupMock.sessions.values(),
+  eventCounts: demoReplayStore.countsOf,
+});
 // 옛 TBM mock(작업 CRUD·레이아웃). 관제가 읽는 작업 목록에는 위 작업 mock 의 날짜 작업이 진행 값과 함께 이어 붙는다.
 export const tbmMock = createTbmMock({
   deferDaysToHistory: true,
@@ -177,8 +184,11 @@ export const handlers = [
   ...workMock.handlers,
   ...tbmMock.handlers,
   ...setupMock.handlers,
-  // 히스토리 작업 목록·구간 기록(그때그때 합성한다). 오늘 작업은 TBM 목의 작업이라 시작·종료가 따라온다.
-  ...createHistoryMock({ liveWorks: () => tbmMock.works }).handlers,
+  // 히스토리 작업 목록·구간 기록(그때그때 합성한다). 오늘 작업은 TBM·날짜 작업 목을 따르고, 시연 실행 구간은 시연 경보 기록을 돌려준다.
+  ...createHistoryMock({
+    liveWorks: () => [...tbmMock.works, ...workMock.workItems()],
+    demoReplay: demoReplayStore,
+  }).handlers,
   // 관제 녹화 작업 구간 영상(끝난 작업의 카메라별 mp4 조각, S15P31A101-668).
   ...createRecordingVideoMock({ liveWorks: () => tbmMock.works }).handlers,
   // GPU 켜기·끄기·설정(S15P31A101-702). 연습 빌드는 실제 GPU 가 없으니 늘 켜진(준비 완료) 상태로 두고 끄기를 거절한다(-806).
