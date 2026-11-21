@@ -85,7 +85,9 @@ export function ReportPanel({
   });
   // 초안이나 종료 미팅을 쓰는 동안 종이를 가린다
   const endingNow = endingGenerating;
-  const generating = demoDraft.drafting;
+  // 종료 미팅을 쓰는 동안도 TBM 초안처럼 종이 전체를 흐리게 가리고 가운데에 문구를 띄운다(S15P31A101-837)
+  const generating = demoDraft.drafting || endingNow;
+  const generatingLabel = demoDraft.drafting ? 'TBM 생성 중' : '종료 미팅 작성 중';
   // 시연 계정이 미리 적어 둔 초안이 보이는 동안 종이는 그 양식이다(작업을 끝내면 종료 미팅 칸도). 직접 고쳐 저장한 뒤에는 고친 값 그대로이고 종료 미팅 칸만 시연 문구다
   const paper = demoDraft.shown
     ? {
@@ -190,9 +192,10 @@ export function ReportPanel({
           )}
         </div>
         {generating && (
-          <div role="status" className="absolute inset-0 grid place-items-center">
-            <span className="rounded-lg bg-card px-5 py-2.5 text-base font-bold text-foreground shadow-float ring-1 ring-border">
-              <LoadingDots label="TBM 생성 중" />
+          <div role="status" className="absolute inset-0 flex justify-center">
+            {/* 종이가 화면보다 길어도(작업 종료 단계) 문구는 보이는 화면 가운데쯤에 머문다 */}
+            <span className="sticky top-[40vh] mt-[min(40vh,40%)] h-fit rounded-lg bg-card px-5 py-2.5 text-base font-bold text-foreground shadow-float ring-1 ring-border">
+              <LoadingDots label={generatingLabel} />
             </span>
           </div>
         )}
