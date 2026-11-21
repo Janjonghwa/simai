@@ -1,9 +1,5 @@
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
-import {
-  isActive,
-  isConfirmationPending,
-  isUnacknowledgedResolved,
-} from '@/features/events/entries';
+import { isActive, isConfirmationPending } from '@/features/events/entries';
 import { OUTSIDE_WORK_TEXT, type OutsideWorkKind } from '@/features/events/EventBadges';
 import {
   confirmationText,
@@ -57,8 +53,8 @@ const SEVERITY_LOOK: Record<Severity, { bar: string; ring: string }> = {
 /**
  * 알림 하나를 표시하는 카드(명세 7.4).
  * 큰 등급 배지를 세로 가운데에 두고, 가운데에 최근 사건(굵게) / 대상 두 줄, 오른쪽에 시각(HH:MM:SS)을 세로 가운데에 둔다.
- * 처리 상태(미확인 · 확인 시각 · 해소 시각 · 지난 관제, cardChip)·발생 횟수·확인 필요·지연 알림·작업 외 꼬리표는
- * 머리를 올려 보면 나오는 설명에 둔다. 미확인 경보의 왼쪽 띠 점멸·진행 중 카드 테두리·배너·소리는 그대로다.
+ * 처리 상태(해소 시각 · 지난 관제, cardChip)·발생 횟수·지연 알림·작업 외 꼬리표는 머리를 올려 보면 나오는 설명에 둔다.
+ * 사이드 카드에는 확인 개념을 두지 않는다(미확인 점멸·확인 칩 없음, S15P31A101-838 후속). 확인은 위쪽 배너를 내리는 용도이고 진행 중 카드 테두리·배너·소리는 그대로다.
  * 지난 관제(지금 Tier 0 가 들고 있지 않음, S15P31A101-595)와 사라진 사람의 카드는 테두리·점멸 없이 흐리게 보인다.
  * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점), 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
  */
@@ -125,14 +121,7 @@ export function IncidentCard({
           selected && 'outline-2 outline-offset-1 outline-primary',
         )}
       >
-        <span
-          aria-hidden
-          className={cn(
-            'absolute inset-y-0 left-0 w-1',
-            look.bar,
-            incident.alarming && current && 'motion-safe:animate-alarm-blink',
-          )}
-        />
+        <span aria-hidden className={cn('absolute inset-y-0 left-0 w-1', look.bar)} />
         <button
           type="button"
           aria-pressed={selected}
@@ -150,17 +139,10 @@ export function IncidentCard({
               {targetShortLabel(incident.target, zoneName, personNames)}
             </span>
           </span>
-          <span className="flex shrink-0 flex-col items-end gap-1">
-            <span className="text-sm whitespace-nowrap text-muted-foreground tabular-nums">
-              {incident.active || incident.stale
-                ? formatTime(latest.event.raised_at)
-                : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
-            </span>
-            {!incident.active && isUnacknowledgedResolved(latest.event) && (
-              <span className="rounded bg-sev-critical/15 px-1.5 py-0.5 text-xs font-semibold text-sev-critical">
-                미확인
-              </span>
-            )}
+          <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
+            {incident.active || incident.stale
+              ? formatTime(latest.event.raised_at)
+              : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
           </span>
         </button>
         {selected && <EventPhotos event={top.event} compact />}

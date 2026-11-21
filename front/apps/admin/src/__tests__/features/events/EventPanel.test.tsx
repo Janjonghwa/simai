@@ -201,11 +201,11 @@ describe('EventPanel 머리줄과 두 칸', () => {
     expect(gone.className).toContain('opacity-60');
     expect(gone.className).not.toContain('ring-sev-critical');
     expect(gone.querySelector('[class*="animate-alarm-blink"]')).toBeNull();
-    // 화면만 옮긴다: 숨기기를 부르지 않고 미확인 상태는 카드 설명에 남는다.
-    expect(within(gone).getByRole('button').getAttribute('title')).toContain('미확인');
-    // 지금 보이는 사람의 미확인 카드는 그대로 점멸한다.
+    // 화면만 옮긴다: 숨기기를 부르지 않는다. 사이드 카드에는 확인 개념이 없어 미확인 표시도 없다(S15P31A101-838 후속).
+    expect(within(gone).getByRole('button').getAttribute('title')).not.toContain('미확인');
+    // 지금 보이는 사람의 카드도 확인 여부로 점멸하지 않는다.
     const live = screen.getByRole('article', { name: 'w-0 이벤트' });
-    expect(live.querySelector('[class*="animate-alarm-blink"]')).toBeTruthy();
+    expect(live.querySelector('[class*="animate-alarm-blink"]')).toBeNull();
     cleanup();
 
     // 사람이 다 나가면 진행 중 칸이 없고, 최근 해소에 남아 패널은 접히지 않는다.
@@ -549,19 +549,19 @@ describe('EventDetail 확인 필요', () => {
     ).toBeNull();
   });
 
-  it('주의는 안내로 표시하고 자료가 없으면 접힘 칸을 숨긴다', () => {
+  it('상태는 진행 중으로만 표시하고(확인 개념 없음) 자료가 없으면 접힘 칸을 숨긴다', () => {
     const dialog = renderDetail([entry({ severity: 'CAUTION' })]);
-    expect(dialog.textContent).toContain('안내');
+    expect(dialog.textContent).toContain('진행 중');
     expect(within(dialog).queryByText('이벤트 클립')).toBeNull();
     cleanup();
     const high = renderDetail([entry({ severity: 'HIGH' })]);
-    expect(high.textContent).toContain('안내');
+    expect(high.textContent).toContain('진행 중');
     expect(within(high).getByText('이벤트 클립')).toBeTruthy();
   });
 
   it('미확인 경보는 작은 외곽선 표시만 깜빡이고 움직임 줄이기 설정이면 멈춘다', () => {
     const dialog = renderDetail([entry()]);
-    expect(dialog.textContent).toContain('확인 대기');
+    expect(dialog.textContent).toContain('진행 중');
     expect(within(dialog).queryByRole('button', { name: /확인$/ })).toBeNull();
   });
 
@@ -581,6 +581,6 @@ describe('EventDetail 확인 필요', () => {
       }),
     ]);
     expect(within(dialog).queryByText('미확인')).toBeNull();
-    expect(dialog.textContent).toContain('확인됨');
+    expect(dialog.textContent).toContain('진행 중');
   });
 });

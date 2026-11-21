@@ -1,5 +1,4 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
-import { EventDetailHeader } from '@/features/events/EventDetailHeader';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
@@ -118,9 +117,10 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry()]);
     const lines = detail(card);
     expect(lines[0]).toBe('w-0015');
-    expect(lines[1]).toBe('미확인');
-    expect(lines[2]).toMatch(/^발생 \d{2}:\d{2}:\d{2}$/);
-    expect(lines).toHaveLength(3);
+    // 사이드 카드에는 확인 개념이 없어 처리 상태 줄(미확인·확인 시각)이 없다(S15P31A101-838 후속)
+    expect(lines[1]).toMatch(/^발생 \d{2}:\d{2}:\d{2}$/);
+    expect(lines).not.toContain('미확인');
+    expect(lines).toHaveLength(2);
   });
 
   it('지난 관제 카드는 흐리고 등급 테두리·점멸이 없으며, 설명에 지난 관제라고 적는다', () => {
@@ -142,7 +142,7 @@ describe('IncidentCard', () => {
     const bar = card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
     expect(bar).toContain('bg-sev-critical');
     expect(bar).not.toContain('animate-alarm-blink');
-    expect(detail(card)).toContain('미확인');
+    expect(detail(card)).not.toContain('미확인');
   });
 
   it('긴 사람 ID 는 카드에 끝번호로 줄이고 설명에 전체를 둔다', () => {
@@ -226,7 +226,7 @@ describe('IncidentCard', () => {
     expect(detail(card)).not.toContain('미확인');
   });
 
-  it('확인하면 설명의 처리 상태가 확인 시각이다', () => {
+  it('확인해도 사이드 카드 설명에 확인 표시가 없다(확인은 배너 전용)', () => {
     const acked = entry({
       acks: [
         {
@@ -240,9 +240,7 @@ describe('IncidentCard', () => {
       updated_at: T + 3_000,
     });
     const { card } = renderCard([acked]);
-    const state = detail(card)[1]!;
-    expect(state.startsWith('확인 ')).toBe(true);
-    expect(state.slice('확인 '.length)).toMatch(CLOCK);
+    expect(detail(card).some((line) => line.startsWith('확인 '))).toBe(false);
     expect(detail(card)).not.toContain('미확인');
   });
 
@@ -257,40 +255,6 @@ describe('IncidentCard', () => {
     expect(card.textContent).not.toContain('초 전');
     expect(card.className).toContain('opacity-55');
     expect(card.className).not.toContain('ring-sev-critical');
-  });
-
-  it('확인 없이 해소된 위험만 카드와 상세에 미확인으로 표시한다', () => {
-    const resolved = {
-      lifecycle: 'RESOLVED',
-      resolved_at: T + 5_000,
-      updated_at: T + 5_000,
-    } as const;
-    const ack = {
-      ack_id: 'a-1',
-      channel: 'CONTROL_ROOM',
-      actor_role: 'ADMIN',
-      actor_id: 'admin',
-      acked_at: T + 3_000,
-    } as const;
-    for (const [change, expected] of [
-      [{ ...resolved }, true],
-      [{ ...resolved, acks: [ack] }, false],
-      [{ ...resolved, severity: 'HIGH' }, false],
-      [{ ...resolved, severity: 'CAUTION' }, false],
-      [{ ...resolved, severity: 'INFO' }, false],
-      [{ lifecycle: 'RAISED' }, false],
-    ] as [Partial<EventItem>, boolean][]) {
-      const { card, incident } = renderCard([entry(change)]);
-      expect(within(card).queryByText('미확인') !== null).toBe(expected);
-      const client = new QueryClient();
-      render(
-        <QueryClientProvider client={client}>
-          <EventDetailHeader incident={incident} closeRef={null} onClose={() => {}} />
-        </QueryClientProvider>,
-      );
-      expect(screen.queryByText(/해소 · 미확인/) !== null).toBe(expected);
-      cleanup();
-    }
   });
 
   it('두 번 이상 발생하면 카드와 설명에 횟수를 적는다', () => {
@@ -385,18 +349,16 @@ describe('IncidentCard', () => {
     Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
   });
 
-  it('미확인 경보는 칩 없이도 왼쪽 가장자리만 깜빡이고, 움직임 줄이기 설정이면 멈춘다', () => {
+  it('위험 경보 카드도 확인 여부로 깜빡이지 않고(확인은 배너 전용) 진행 중 테두리만 있다', () => {
     const { card } = renderCard([entry()]);
     const blink = [...card.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].filter((el) =>
       el.getAttribute('class')?.includes('animate-alarm-blink'),
     );
-    expect(blink).toHaveLength(1);
-    expect(blink[0]!.className).toContain('motion-safe:animate-alarm-blink');
-    expect(blink[0]!.className).toContain('w-1');
+    expect(blink).toHaveLength(0);
     expect(card.className).toContain('ring-sev-critical');
   });
 
-  it('등급마다 띠 색이 다르고, 깜빡이는 것은 미확인 경보뿐이다', () => {
+  it('등급마다 띠 색이 다르고 깜빡이지 않는다', () => {
     const barOf = (card: HTMLElement) =>
       card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
 
@@ -497,7 +459,7 @@ describe('IncidentCard', () => {
       entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] }),
     ]).card;
     expect(within(present).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
-    expect(detail(present)).toContain('미확인');
+    expect(detail(present)).not.toContain('미확인');
     cleanup();
 
     // 구역 이벤트·VERIFIED 이벤트에는 적용하지 않는다.
@@ -517,6 +479,6 @@ describe('IncidentCard', () => {
       gone: true,
     }).card;
     expect(within(verifiedCard).queryByText('확인 불가 · 대상 시야 이탈')).toBeNull();
-    expect(detail(verifiedCard)).toContain('미확인');
+    expect(detail(verifiedCard)).not.toContain('미확인');
   });
 });
