@@ -72,7 +72,9 @@ function demoTrack(t: number, elapsed: number): WorldTrack {
     [DEMO_TIMES.fall - 1000, 6, 3.4, 1.68],
     [DEMO_TIMES.fall, 6, 3.4, 1.09],
     [DEMO_TIMES.fall + 2000, 6, 3.4, 1.09],
-    [DEMO_TIMES.fall + 6000, 6, 3.4, 1.68],
+    [DEMO_TIMES.fall + 5000, 6, 3.4, 1.68],
+    [DEMO_TIMES.fallResolved, 6, 3.4, 1.68],
+    [DEMO_TIMES.entryResolved, 4.5, 3.4, 1.68],
   ];
   const time = Math.max(0, elapsed);
   const index = points.findIndex((point) => point[0]! > time);

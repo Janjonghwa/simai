@@ -37,7 +37,7 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
     vi.advanceTimersByTime(25_000);
     expect(received.filter((m) => m.payload.lifecycle === 'RAISED')).toHaveLength(4);
     const resolved = received.filter((m) => m.payload.lifecycle === 'RESOLVED');
-    expect(resolved.map((m) => m.payload.rule_id)).toEqual(['R5', 'R9']);
+    expect(resolved.map((m) => m.payload.rule_id)).toEqual(['R5', 'R9', 'R4', 'R1']);
     for (const message of resolved) {
       const raised = received.find(
         (m) => m.payload.event_id === message.payload.event_id && m.payload.lifecycle === 'RAISED',
@@ -69,7 +69,7 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
     expect(published.filter((m) => m.payload.lifecycle === 'RAISED')).toHaveLength(6);
   });
 
-  it('목업 트랙은 작업 시작 전(0ms)에도 추창만(w-0012) 1명만 보이고, 경보 시각에 접근·진입·하강한 뒤 제자리에서 일어난다', () => {
+  it('목업 트랙은 작업 시작 전(0ms)에도 추창만(w-0012) 1명만 보이고, 경보 시각에 접근·진입·하강한 뒤 일어나 서쪽으로 이동한다', () => {
     const TIME = 1_795_000_000_000;
     const at = (ms: number) =>
       worldStateAt(1_795_000_000_000, { demoElapsedMs: ms }).payload.tracks;
@@ -85,7 +85,9 @@ describe('목업 시연 경보 시나리오(mocks/startBackend, S15P31A101-824)'
     expect(at(17_000)[0]?.position_xy[0]).toBeGreaterThan(5.2);
     expect(at(35_000)[0]?.head_z).toBe(1.09);
     expect(at(43_000)[0]?.position_xy[0]).toBeCloseTo(6);
-    expect(at(60_000)[0]?.position_xy[0]).toBeCloseTo(6);
+    expect(at(40_000)[0]?.head_z).toBe(1.68);
+    expect(at(50_000)[0]?.position_xy[0]).toBeCloseTo(4.5);
+    expect(at(60_000)[0]?.position_xy[0]).toBeCloseTo(4.5);
   });
 
   it('workRunActionOf 는 성공(2xx)한 POST /api/work-units/:id/start·end 만 감지한다', () => {

@@ -810,6 +810,7 @@ describe('카드 표시 계산', () => {
   });
 
   it('주의·안내만 있는 묶음은 처리 상태 칩이 없다', () => {
+    expect(cardChip(incidentOfEntries(entry({ severity: 'HIGH' })))).toBeNull();
     expect(cardChip(incidentOfEntries(entry({ severity: 'CAUTION' })))).toBeNull();
     expect(cardChip(incidentOfEntries(entry({ severity: 'INFO' })))).toBeNull();
   });

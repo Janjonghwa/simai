@@ -81,6 +81,37 @@ describe('AlarmBanner', () => {
     expect(within(banner).getByText('주의')).toBeTruthy();
   });
 
+  it('최신 경보를 확인하면 다음 확인 대기 경보가 보인다', () => {
+    const newer = {
+      ...alarm,
+      event: { ...alarm.event, event_id: 'e-2', rule_id: 'R1', updated_at: T + 1000 },
+      stageStartedAt: T + 1000,
+    };
+    live.entries = [alarm, newer];
+    const { rerender } = renderBanner();
+    expect(screen.getByRole('alert').textContent).toContain('위험구역 진입');
+    live.entries = [
+      alarm,
+      {
+        ...newer,
+        event: {
+          ...newer.event,
+          acks: [
+            {
+              ack_id: 'a',
+              channel: 'CONTROL_ROOM',
+              actor_role: 'ADMIN',
+              actor_id: 'u',
+              acked_at: T + 2000,
+            },
+          ],
+        },
+      },
+    ];
+    rerender();
+    expect(screen.getByRole('alert').textContent).toContain('추락 위험(가장자리)');
+  });
+
   it('깜빡이는 테두리는 배너 전체를 덮지만 클릭을 가로채지 않는다(버튼이 눌린다)', () => {
     const { banner } = renderBanner();
     const blink = [...banner.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].find((el) =>

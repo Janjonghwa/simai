@@ -549,9 +549,20 @@ describe('EventDetail 확인 필요', () => {
     ).toBeNull();
   });
 
+  it('주의는 안내로 표시하고 자료가 없으면 접힘 칸을 숨긴다', () => {
+    const dialog = renderDetail([entry({ severity: 'CAUTION' })]);
+    expect(dialog.textContent).toContain('안내');
+    expect(within(dialog).queryByText('이벤트 클립')).toBeNull();
+    cleanup();
+    const high = renderDetail([entry({ severity: 'HIGH' })]);
+    expect(high.textContent).toContain('안내');
+    expect(within(high).getByText('이벤트 클립')).toBeTruthy();
+  });
+
   it('미확인 경보는 작은 외곽선 표시만 깜빡이고 움직임 줄이기 설정이면 멈춘다', () => {
     const dialog = renderDetail([entry()]);
     expect(dialog.textContent).toContain('확인 대기');
+    expect(within(dialog).queryByRole('button', { name: /확인$/ })).toBeNull();
   });
 
   it('확인한 사건에는 미확인 표시가 없다', () => {
@@ -570,5 +581,6 @@ describe('EventDetail 확인 필요', () => {
       }),
     ]);
     expect(within(dialog).queryByText('미확인')).toBeNull();
+    expect(dialog.textContent).toContain('확인됨');
   });
 });

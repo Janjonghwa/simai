@@ -233,10 +233,10 @@ describe('표시 문구', () => {
   });
 
   it('경과: 1분 미만 초, 1시간 미만 분·초, 그 뒤 시간·분', () => {
-    expect(workElapsedLabel(5_000)).toBe('5초');
-    expect(workElapsedLabel(12 * MIN + 3_000)).toBe('12분 3초');
-    expect(workElapsedLabel(65 * MIN + 30_000)).toBe('1시간 5분');
-    expect(workElapsedLabel(-1)).toBe('0초');
+    expect(workElapsedLabel(5_000)).toBe('0:05');
+    expect(workElapsedLabel(12 * MIN + 3_000)).toBe('12:03');
+    expect(workElapsedLabel(65 * MIN + 30_000)).toBe('1:05:30');
+    expect(workElapsedLabel(-1)).toBe('0:00');
   });
 });
 

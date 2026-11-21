@@ -303,10 +303,15 @@ function SetupWorkPage({
       setPickedMode(null);
       setPickedMapId(null);
       claimDemoNewMap(next.setup_session_id);
-      // 고른 맵을 그대로 쓰는 재사용(S15P31A101-714)은 워커 작업 없이 끝난 세션이라 바로 구역 단계로 간다. 시연 계정의 새 맵은 보정·생성을 보인다
-      go(next.reuse_source && !isDemoNewMap(next.setup_session_id) ? ZONE_STAGE : 1);
+      // 재사용은 바로 구역 단계로 간다. 목업 시연 계정은 새 맵도 보정·생성을 건너뛴다.
+      go(
+        (demoAccount && import.meta.env.VITE_MOCK_BUILD === 'true') ||
+          (next.reuse_source && !isDemoNewMap(next.setup_session_id))
+          ? ZONE_STAGE
+          : 1,
+      );
     },
-    [queryClient, workUnitId, go],
+    [queryClient, workUnitId, go, demoAccount],
   );
   const createSession = useCreateSetupSession(startedHere);
   const retrySession = useRetrySetupSession(startedHere);
