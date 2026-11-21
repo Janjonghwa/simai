@@ -4,6 +4,7 @@ import { workTimeRange } from '@/features/history/works';
 import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import { PastDayPage } from '@/features/work/past/PastDayPage';
 import { ZONES_KEY } from '@/features/zones/api';
+import { createPeopleNamesMock } from '@/mocks/peopleNames';
 import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock } from '@/mocks/work';
 import { MOCK_ZONES } from '@/mocks/zones';
@@ -76,7 +77,11 @@ const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {
-  server.resetHandlers(...createWorkMock({ now: () => T0 }).handlers, ...createTbmMock().handlers);
+  server.resetHandlers(
+    ...createWorkMock({ now: () => T0 }).handlers,
+    ...createTbmMock().handlers,
+    ...createPeopleNamesMock(() => T0).handlers,
+  );
 });
 afterEach(() => {
   cleanup();
@@ -487,5 +492,51 @@ describe('PastDayPage — 오른쪽 열', () => {
     expect(replay.seek).toHaveBeenCalledWith(EVENT_AT - 3000);
     expect(replay.play).toHaveBeenCalledTimes(1);
     expect(rows[1]!.getAttribute('aria-current')).toBe('true');
+  });
+
+  it('지난 기록 표시 이름 API 응답이 있으면 이벤트 로그에 그 시각 이름을 보이고, 없으면 작업자 #NNNN 으로 둔다(S15P31A101-835)', async () => {
+    fakeReplay();
+    (engine.index as ReplayIndex).events = [
+      {
+        eventId: 'e-named',
+        ruleId: 'R9',
+        severity: 'CAUTION',
+        worldIds: ['w-0012'],
+        zoneId: null,
+        raisedAt: EVENT_AT,
+        resolvedAt: null,
+      },
+      {
+        eventId: 'e-unnamed',
+        ruleId: 'R4',
+        severity: 'CRITICAL',
+        worldIds: ['w-0021'],
+        zoneId: null,
+        raisedAt: EVENT_AT + 10_000,
+        resolvedAt: null,
+      },
+    ];
+    server.use(
+      http.get('*/api/people/display-names', () =>
+        HttpResponse.json({
+          site_id: 'classroom-1',
+          date: YESTERDAY,
+          items: [
+            {
+              world_id: 'w-0012',
+              display_name: '추창만',
+              name_source: 'WATCH_DEVICE',
+              from_ms: EVENT_AT - 60_000,
+              to_ms: EVENT_AT + 60_000,
+            },
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    const log = await screen.findByRole('list', { name: '이벤트 로그' });
+    expect(await within(log).findByText('추창만')).toBeTruthy();
+    expect(within(log).getByText('작업자 #0021')).toBeTruthy();
+    expect(log.querySelector('[title="w-0012"]')).not.toBeNull();
   });
 });

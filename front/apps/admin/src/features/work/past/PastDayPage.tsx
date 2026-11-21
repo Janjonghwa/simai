@@ -4,6 +4,8 @@ import { ReplayStage } from '@/features/history/ReplayStage';
 import { useReplayStatus, useWorkReplay, type WorkReplay } from '@/features/history/useWorkReplay';
 import { EventLog } from '@/features/history/WorkLists';
 import { worksLoadingLine } from '@/features/history/works';
+import type { HistoricalPersonNameSpan } from '@/features/people/personDisplay';
+import { useHistoricalPersonNames } from '@/features/people/usePersonDisplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import {
   dayWorksOf,
@@ -115,9 +117,11 @@ function PastEvents({
   session,
   onPick,
   selectedEventId,
+  personNames,
 }: {
   selectedEventId: string | null;
   session: WorkReplay;
+  personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (event: EventRow) => void;
 }) {
   const { playhead } = useReplayStatus(session.replay);
@@ -126,6 +130,7 @@ function PastEvents({
       events={session.index?.events ?? NO_EVENTS}
       playhead={playhead}
       selectedEventId={selectedEventId}
+      personNames={personNames}
       onPick={onPick}
     />
   );
@@ -136,16 +141,23 @@ function RightColumn({
   session,
   onPickEvent,
   selectedEventId,
+  personNames,
 }: {
   workId: string;
   session: WorkReplay;
   onPickEvent: (event: EventRow) => void;
   selectedEventId: string | null;
+  personNames?: readonly HistoricalPersonNameSpan[];
 }) {
   return (
     <div className="flex min-h-0 flex-col gap-3 max-[1100px]:h-[760px]">
       <div className="flex max-h-[45%] min-h-0 flex-col overflow-hidden">
-        <PastEvents session={session} onPick={onPickEvent} selectedEventId={selectedEventId} />
+        <PastEvents
+          session={session}
+          onPick={onPickEvent}
+          selectedEventId={selectedEventId}
+          personNames={personNames}
+        />
       </div>
       <div className="flex min-h-0 flex-1 flex-col *:flex-1">
         <PastReportPanel workId={workId} />
@@ -156,6 +168,7 @@ function RightColumn({
 
 export function PastDayPage({ date }: PastDayProps) {
   const { data: works, error } = useWorkDays({ from: date, to: date });
+  const { data: personNames } = useHistoricalPersonNames(date);
   const dayWorks = useMemo(() => works && dayWorksOf(works, date), [works, date]);
   const [pickedId, setPickedId] = useState<string>();
   const [pickedRunNo, setPickedRunNo] = useState<number>();
@@ -262,6 +275,7 @@ export function PastDayPage({ date }: PastDayProps) {
           session={session}
           onPickEvent={pickEvent}
           selectedEventId={selectedEventId}
+          personNames={personNames}
         />
       </div>
     </div>

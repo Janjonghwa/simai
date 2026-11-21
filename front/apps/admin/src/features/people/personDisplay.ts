@@ -26,8 +26,73 @@ export const workerLabel = (serverName: string): string => {
 /** 이름 목록이 없을 때(수신 전·이전 EC2)의 짧은 표시: World ID 끝번호를 `작업자 #0722` 로(4자리 번호만 보이면 뜻을 몰랐다). */
 const fallbackShortLabel = (worldId: string): string => `${WORKER_PREFIX}${shortPersonId(worldId)}`;
 
-/** 지난 날 이벤트 로그처럼 이름 목록이 없는 자리의 표시(S15P31A101-751): `작업자 #0722`. 원래 World ID 는 hover 로 따로 보인다. */
-export const workerShortLabel = fallbackShortLabel;
+/** 지난 기록 조회 API(GET /api/people/display-names?date=YYYY-MM-DD) 의 시각 구간 항목 하나(S15P31A101-835). */
+export interface HistoricalPersonNameSpan {
+  world_id: string;
+  display_name: string;
+  name_source: 'WORLD_MANUAL' | 'WATCH_DEVICE';
+  from_ms: number;
+  to_ms: number;
+}
+
+/**
+ * 지난 기록에서 특정 시각(atMs)의 World ID 표시 이름을 찾는다(S15P31A101-835).
+ * 구간은 반열린 구간 [from_ms, to_ms) 이고, 해당하는 이름이 없으면 null 을 돌려준다.
+ */
+export function resolveHistoricalPersonName(
+  worldId: string,
+  atMs: number,
+  spans: readonly HistoricalPersonNameSpan[] | undefined,
+): string | null {
+  if (!spans || spans.length === 0) return null;
+  for (const span of spans) {
+    if (span.world_id === worldId && span.from_ms <= atMs && atMs < span.to_ms) {
+      return span.display_name;
+    }
+  }
+  return null;
+}
+
+/**
+ * 지난 기록 작업자 목록처럼 활동 구간([firstSeen, lastSeen])으로 이름을 찾을 때 쓴다(S15P31A101-835).
+ * 마지막 관측 시각 → 첫 관측 시각 → 구간과 겹치는 가장 늦은 이름 순으로 찾는다.
+ */
+export function resolveHistoricalWorkerName(
+  worldId: string,
+  firstSeen: number,
+  lastSeen: number,
+  spans: readonly HistoricalPersonNameSpan[] | undefined,
+): string | null {
+  if (!spans || spans.length === 0) return null;
+  const atLast = resolveHistoricalPersonName(worldId, lastSeen, spans);
+  if (atLast !== null) return atLast;
+  const atFirst = resolveHistoricalPersonName(worldId, firstSeen, spans);
+  if (atFirst !== null) return atFirst;
+  let latest: HistoricalPersonNameSpan | null = null;
+  for (const span of spans) {
+    if (span.world_id !== worldId) continue;
+    if (span.from_ms <= lastSeen && span.to_ms > firstSeen) {
+      if (latest === null || span.to_ms > latest.to_ms) latest = span;
+    }
+  }
+  return latest?.display_name ?? null;
+}
+
+/**
+ * 지난 날 이벤트 로그 등의 사람 짧은 표시(S15P31A101-751, -835).
+ * 그 시각(atMs)에 해석된 표시 이름이 있으면 그 이름을, 없으면 `작업자 #0722` 를 돌려준다. 원래 World ID 는 hover 로 따로 보인다.
+ */
+export function workerShortLabel(
+  worldId: string,
+  atMs?: number,
+  spans?: readonly HistoricalPersonNameSpan[],
+): string {
+  if (atMs !== undefined && spans !== undefined) {
+    const resolved = resolveHistoricalPersonName(worldId, atMs, spans);
+    if (resolved !== null) return resolved;
+  }
+  return fallbackShortLabel(worldId);
+}
 
 export const DISPLAY_NAME_MAX_LENGTH = 20;
 

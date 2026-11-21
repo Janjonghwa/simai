@@ -2,6 +2,7 @@ import type { EventRow, ReplayIndex, WorkerRow } from '@/features/history/replay
 import { Timeline, type TimelineProps } from '@/features/history/Timeline';
 import { useReplayFrame, useReplayNoData, useReplayStatus } from '@/features/history/useWorkReplay';
 import { EventLog, WorkerList } from '@/features/history/WorkLists';
+import type { HistoricalPersonNameSpan } from '@/features/people/personDisplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useMemo } from 'react';
 
@@ -45,12 +46,14 @@ export function ReplayTimeline({ replay, index, holdMs, ...props }: ReplayTimeli
 interface ReplayListProps {
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
+  personNames?: readonly HistoricalPersonNameSpan[];
 }
 
 /** 작업자 목록. 지금 보이는 사람은 기록이 바뀔 때만 다시 센다. */
 function ReplayWorkers({
   replay,
   index,
+  personNames,
   holdMs,
   planned,
   selectedId,
@@ -69,6 +72,7 @@ function ReplayWorkers({
       planned={planned}
       visible={visible}
       selectedId={selectedId}
+      personNames={personNames}
       onPick={onPick}
     />
   );
@@ -78,16 +82,25 @@ function ReplayWorkers({
 function ReplayEvents({
   replay,
   index,
+  personNames,
   onPick,
 }: ReplayListProps & { onPick: (event: EventRow) => void }) {
   const { playhead } = useReplayStatus(replay);
-  return <EventLog events={index?.events ?? NO_EVENTS} playhead={playhead} onPick={onPick} />;
+  return (
+    <EventLog
+      events={index?.events ?? NO_EVENTS}
+      playhead={playhead}
+      personNames={personNames}
+      onPick={onPick}
+    />
+  );
 }
 
 /** 오른쪽 열: 작업자 목록과 이벤트 로그. */
 export function ReplayLists({
   replay,
   index,
+  personNames,
   holdMs,
   planned,
   selectedId,
@@ -105,12 +118,13 @@ export function ReplayLists({
       <ReplayWorkers
         replay={replay}
         index={index}
+        personNames={personNames}
         holdMs={holdMs}
         planned={planned}
         selectedId={selectedId}
         onPick={onPickWorker}
       />
-      <ReplayEvents replay={replay} index={index} onPick={onPickEvent} />
+      <ReplayEvents replay={replay} index={index} personNames={personNames} onPick={onPickEvent} />
     </div>
   );
 }

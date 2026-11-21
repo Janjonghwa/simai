@@ -1,5 +1,6 @@
 import { EventLog } from '@/features/history/WorkLists';
 import type { EventRow } from '@/features/history/replayIndex';
+import type { HistoricalPersonNameSpan } from '@/features/people/personDisplay';
 import { ZONES_KEY } from '@/features/zones/api';
 import { MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -19,12 +20,12 @@ const row = (change: Partial<EventRow>): EventRow => ({
   ...change,
 });
 
-function renderLog(events: EventRow[]) {
+function renderLog(events: EventRow[], personNames?: readonly HistoricalPersonNameSpan[]) {
   const client = new QueryClient();
   client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
     <QueryClientProvider client={client}>
-      <EventLog events={events} playhead={null} onPick={vi.fn()} />
+      <EventLog events={events} playhead={null} personNames={personNames} onPick={vi.fn()} />
     </QueryClientProvider>,
   );
   const button = within(screen.getByRole('list', { name: '이벤트 로그' })).getByRole('button');
@@ -35,12 +36,12 @@ afterEach(cleanup);
 
 const T = 1_760_342_400_000;
 
-function renderRows(events: EventRow[]) {
+function renderRows(events: EventRow[], personNames?: readonly HistoricalPersonNameSpan[]) {
   const client = new QueryClient();
   client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
     <QueryClientProvider client={client}>
-      <EventLog events={events} playhead={null} onPick={vi.fn()} />
+      <EventLog events={events} playhead={null} personNames={personNames} onPick={vi.fn()} />
     </QueryClientProvider>,
   );
   return within(screen.getByRole('list', { name: '이벤트 로그' })).queryAllByRole('button');
@@ -118,5 +119,56 @@ describe('이벤트 로그의 대상', () => {
     cleanup();
 
     expect(renderLog([row({ zoneId: 'z-99' })])).toBe('구역');
+  });
+
+  it('그 시각 표시 이름이 있으면 이름으로 보이고, 외 n명과 hover World ID 는 유지하며, 이름이 없으면 작업자 #NNNN 으로 돌아간다(S15P31A101-835)', () => {
+    const spans: HistoricalPersonNameSpan[] = [
+      {
+        world_id: 'w-0012',
+        display_name: '추창만',
+        name_source: 'WATCH_DEVICE',
+        from_ms: T - 10_000,
+        to_ms: T + 10_000,
+      },
+      {
+        world_id: 'w-0012',
+        display_name: '추반장',
+        name_source: 'WORLD_MANUAL',
+        from_ms: T + 10_000,
+        to_ms: T + 60_000,
+      },
+    ];
+    const buttons = renderRows(
+      [
+        row({
+          eventId: 'e1',
+          ruleId: 'R9',
+          worldIds: ['w-0012', 'w-0015'],
+          zoneId: 'z-04',
+          raisedAt: T,
+        }),
+        row({
+          eventId: 'e2',
+          ruleId: 'R4',
+          worldIds: ['w-0012'],
+          zoneId: null,
+          raisedAt: T + 20_000,
+        }),
+        row({
+          eventId: 'e3',
+          ruleId: 'R1',
+          worldIds: ['w-0021'],
+          zoneId: 'z-04',
+          raisedAt: T + 30_000,
+        }),
+      ],
+      spans,
+    );
+    expect(buttons[0]!.lastElementChild!.textContent).toBe('추창만 외 1명 · 개구부 구역');
+    expect(buttons[0]!.querySelector('[title="w-0012 · w-0015"]')).not.toBeNull();
+    expect(buttons[1]!.lastElementChild!.textContent).toBe('추반장');
+    expect(buttons[1]!.querySelector('[title="w-0012"]')).not.toBeNull();
+    expect(buttons[2]!.lastElementChild!.textContent).toBe('작업자 #0021 · 개구부 구역');
+    expect(buttons[2]!.querySelector('[title="w-0021"]')).not.toBeNull();
   });
 });
