@@ -249,6 +249,20 @@ export function draftZoneFootprint(item: ZoneDraftItem): {
   return { polygon: shape.polygon_xy, zMin: shape.z_min_m ?? null, zMax: shape.z_max_m ?? null };
 }
 
+/**
+ * 초안을 수락하면 생길 구역 자리의 3D 상자(SURFACE_ZONE_MARGIN_M 만큼 넓힌 다각형을 덮는 상자). 수락 전 점선 윤곽도 이 크기로
+ * 그려, 수락할 때 상자가 갑자기 커져 보이지 않게 한다.
+ */
+export function boxOfPlannedDraft(item: ZoneDraftItem): ViewerEditBox {
+  const { polygon, zMin, zMax } = draftZoneFootprint(item);
+  return boxOfDraftItem({
+    ...item,
+    polygon_xy: polygon.map(([x, y]): [number, number] => [x, y]),
+    z_min_m: zMin ?? item.z_min_m,
+    z_max_m: zMax ?? item.z_max_m,
+  });
+}
+
 /** 두 다각형이 같은 꼭짓점들인지(시작점·순서와 상관없이, 오차 SAME_POINT_EPS_M 안). */
 function samePolygon(a: readonly Point[], b: readonly Point[]): boolean {
   const near = (p: Point, q: Point) =>

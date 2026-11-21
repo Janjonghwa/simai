@@ -1086,10 +1086,11 @@ export function draftGhostsOf(
   drafts: readonly ZoneDraftItem[],
   acceptedIds: readonly string[],
   discardedIds: readonly string[],
+  boxOf: (item: ZoneDraftItem) => ViewerEditBox = boxOfDraftItem,
 ): ViewerBoxGhost[] {
   return drafts
     .filter((d) => !acceptedIds.includes(d.candidate_id) && !discardedIds.includes(d.candidate_id))
-    .map((d) => ({ id: draftGhostId(d.candidate_id), box: boxOfDraftItem(d) }));
+    .map((d) => ({ id: draftGhostId(d.candidate_id), box: boxOf(d) }));
 }
 
 /** 3D 초안 윤곽 ID. 구역 편집 초안 윤곽과 겹치지 않게 앞머리를 붙인다. */
