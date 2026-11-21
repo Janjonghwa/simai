@@ -1,4 +1,4 @@
-import { entryStatus } from '@/features/events/entries';
+import { acknowledgedAt } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { targetShortLabel } from '@/features/events/incidentView';
@@ -21,7 +21,10 @@ export function EventDetailHeader({
   const personNames = usePersonDisplayMap();
   const entry = topEntry(incident);
   const { event } = entry;
-  const status = entryStatus(entry).kind;
+  const ackedAt =
+    event.lifecycle === 'RESOLVED'
+      ? Math.max(0, ...(event.acks ?? []).map((ack) => ack.acked_at)) || null
+      : acknowledgedAt(entry);
   const zone = event.zone_id ? zoneName(event.zone_id) : null;
   return (
     <header className="flex flex-col gap-2">
@@ -37,13 +40,11 @@ export function EventDetailHeader({
           targetShortLabel(incident.target, zoneName, personNames),
           zone,
           formatTime(event.raised_at),
-          status === 'resolved'
-            ? '해소'
-            : status === 'acked'
-              ? '확인됨'
-              : status === 'alarm'
-                ? '확인 대기'
-                : '진행 중',
+          event.severity === 'HIGH' || event.severity === 'CAUTION'
+            ? '안내'
+            : ackedAt !== null
+              ? `확인됨 ${formatTime(ackedAt).slice(0, 5)}`
+              : '확인 대기',
         ]
           .filter(Boolean)
           .join(' · ')}

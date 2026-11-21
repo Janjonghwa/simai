@@ -208,7 +208,7 @@ describe('세션 바', () => {
 
     const bar = await screen.findByRole('region', { name: '작업 세션' });
     expect(within(bar).getByText('양중 작업')).toBeTruthy();
-    expect(bar.textContent).toContain('· 1시간 0분');
+    expect(bar.textContent).toMatch(/· 시작 \d{2}:\d{2} · 경과 1:00:\d{2}/);
     expect(bar.textContent).not.toContain('작업 구역');
     expect(bar.title).toContain('시작 ');
     expect(bar.title).toContain('작업 구역 개구부 구역');

@@ -53,7 +53,7 @@ function ActiveSession({ work, phase }: { work: TbmWorkUnit; phase: MonitoringPh
         <b className="min-w-0 truncate">{workNameOf(work.name)}</b>
         {startedAt !== null && (
           <span className="shrink-0 text-sm text-muted-foreground">
-            · <Elapsed startedAt={startedAt} />
+            · 시작 {formatClock(startedAt)} · 경과 <Elapsed startedAt={startedAt} />
           </span>
         )}
       </div>
@@ -108,7 +108,7 @@ function IdleNotice() {
 
 /**
  * 실시간 관제 상단의 관제 상태(경보 배너 아래 한 자리).
- * - 진행 중 작업: 세션 바(관제 단계 배지·이름·경과, 시작 시각·작업 구역·보호구 상태는 설명)
+ * - 진행 중 작업: 세션 바(관제 단계 배지·이름·시작 시각·경과, 작업 구역·보호구 상태는 설명)
  * - 작업을 끝냈는데 현장이 아직 그 묶음을 쓰면: 「종료 요청됨 · 현장 경보 끄는 중」(늦음·거부·끊김은 안내)
  * - 진행 중 작업이 없고 관제 화면이 열려 있으면(세팅을 마친 오늘 작업, 대기 화면 아님): 「작업 시작 전 · 경보 꺼짐」(-679).
  *   사람이 보이면 작업 시작 안내와 「작업 관리로」를 붙인다

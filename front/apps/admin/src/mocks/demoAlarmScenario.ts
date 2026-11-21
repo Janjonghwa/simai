@@ -7,7 +7,9 @@ export const DEMO_TIMES = {
   helmetResolved: 25_000,
   approach: 10_000,
   entry: 17_000,
+  entryResolved: 50_000,
   fall: 35_000,
+  fallResolved: 45_000,
 } as const;
 
 export interface DemoAlarmStep {
@@ -44,6 +46,7 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
   },
   {
     delayMs: DEMO_TIMES.entry,
+    resolveAtMs: DEMO_TIMES.entryResolved,
     ruleId: 'R1',
     severity: 'CRITICAL',
     personId: 'w-0012',
@@ -54,6 +57,7 @@ export const DEMO_ALARM_STEPS: readonly DemoAlarmStep[] = [
   },
   {
     delayMs: DEMO_TIMES.fall,
+    resolveAtMs: DEMO_TIMES.fallResolved,
     ruleId: 'R4',
     severity: 'CRITICAL',
     personId: 'w-0012',

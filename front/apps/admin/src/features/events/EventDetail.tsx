@@ -1,10 +1,10 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
-import { AckButton } from '@/features/events/AckButton';
+import { hasClips } from '@/features/clips/clips';
+import { hasPhotos } from '@/features/eventPhotos/useEventPhotos';
 import { EventDetailHeader } from '@/features/events/EventDetailHeader';
 import { ClipsPanel, PhotosPanel } from '@/features/events/EventDetailPanels';
 import type { Incident } from '@/features/events/incidents';
 import { topEntry } from '@/features/events/incidents';
-import { useZoneName } from '@/features/zones/useZoneName';
 import { useEffect, useRef } from 'react';
 
 interface EventDetailProps {
@@ -25,7 +25,6 @@ export function EventDetail({ incident, onClose }: EventDetailProps) {
   const { entries } = incident;
   const entry = topEntry(incident);
   const role = useCurrentRole();
-  const zoneName = useZoneName();
 
   // 열 때(다른 사건으로 바꿀 때)만 닫기 버튼에 포커스를 둔다. 패널이 다시 그려질 때마다 옮기면 ACK 등에 둔 포커스를 빼앗는다.
   useEffect(() => {
@@ -59,14 +58,15 @@ export function EventDetail({ incident, onClose }: EventDetailProps) {
             <p className="text-sm">{entry.event.rationale}</p>
           </section>
         )}
-        {role === 'ADMIN' && <AckButton entry={entry} zoneName={zoneName} />}
-        <details className="min-h-0 overflow-auto">
-          <summary className="cursor-pointer font-semibold">이벤트 클립</summary>
-          <div className="mt-3 flex flex-col gap-3">
-            <ClipsPanel entries={entries} />
-            <PhotosPanel entries={entries} />
-          </div>
-        </details>
+        {role === 'ADMIN' && entries.some(({ event }) => hasClips(event) || hasPhotos(event)) && (
+          <details className="min-h-0 overflow-auto">
+            <summary className="cursor-pointer font-semibold">이벤트 클립</summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <ClipsPanel entries={entries} />
+              <PhotosPanel entries={entries} />
+            </div>
+          </details>
+        )}
       </section>
     </div>
   );

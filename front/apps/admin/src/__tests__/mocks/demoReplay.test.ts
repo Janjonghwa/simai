@@ -45,7 +45,7 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', () => {
-  it('시연 시나리오가 띄운 4건(6전이)을 세션 저장소에 남기고 /api/replay 가 시연 기록만 돌려준다', async () => {
+  it('시연 시나리오가 띄운 4건(8전이)을 세션 저장소에 남기고 /api/replay 가 시연 기록만 돌려준다', async () => {
     let clock = START_MS;
     const now = () => clock;
 
@@ -73,7 +73,7 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
     const runStart = started.runs![0]!.started_at;
     store.startRun(work.work_id, runStart);
 
-    // 스케줄러 타이머 구간만 가짜 시계로 45초 진행한다(fetch·msw 호출에는 실 시계를 쓴다).
+    // 스케줄러 타이머 구간만 가짜 시계로 51초 진행한다(fetch·msw 호출에는 실 시계를 쓴다).
     vi.useFakeTimers();
     vi.setSystemTime(runStart);
     const scheduler = createDemoAlarmScheduler({
@@ -85,8 +85,8 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
     });
     scheduler.start();
 
-    // 45초 진행(5초 안전모, 10초 접근, 17초 접근 해소·진입, 25초 안전모 해소, 35초 낙상)
-    vi.advanceTimersByTime(45_000);
+    // 51초 진행(5초 안전모, 10초 접근, 17초 접근 해소·진입, 25초 안전모 해소, 35초 낙상)
+    vi.advanceTimersByTime(51_000);
     scheduler.stop();
     clock = Date.now();
     vi.useRealTimers();
@@ -95,19 +95,19 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
     const runEnd = ended.work_unit.runs![0]!.ended_at!;
     store.endRun(work.work_id, runEnd);
 
-    // 1. /api/replay 가 시연 경보 6전이(4건)를 스키마·재생 엔진 오류 없이 돌려준다.
+    // 1. /api/replay 가 시연 경보 8전이(4건)를 스키마·재생 엔진 오류 없이 돌려준다.
     const stepMs = chooseStep(runStart, runEnd);
     const replay = await requestReplay(asAdmin, { from: runStart, to: runEnd, stepMs });
     expect(replay.initial_events).toEqual([]);
-    expect(replay.events).toHaveLength(6);
+    expect(replay.events).toHaveLength(8);
     expect(replay.gaps).toEqual([]);
     expect(replay.world_states.length).toBeGreaterThan(0);
 
     // 17초 동시 전이(R5 해소·R1 발생)도 msg_id 가 겹치지 않아 재생 엔진이 하나도 빠뜨리지 않는다.
-    expect(new Set(replay.events.map((event) => event.msg_id)).size).toBe(6);
+    expect(new Set(replay.events.map((event) => event.msg_id)).size).toBe(8);
     const log = parseReplayLog(replayFiles(replay));
     expect(log.issues).toEqual([]);
-    expect(log.events).toHaveLength(6);
+    expect(log.events).toHaveLength(8);
 
     const index = indexReplay(fitLog(log, { from: runStart, to: runEnd }), replay.gaps);
     expect(index.events).toHaveLength(4);
@@ -133,9 +133,9 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
         severity: 'CRITICAL',
         worldIds: ['w-0012'],
         zoneId: 'z-demo-opening',
-        resolved: false,
+        resolved: true,
       },
-      { ruleId: 'R4', severity: 'CRITICAL', worldIds: ['w-0012'], zoneId: null, resolved: false },
+      { ruleId: 'R4', severity: 'CRITICAL', worldIds: ['w-0012'], zoneId: null, resolved: true },
     ]);
     expect(pastEventRows(index.events)).toHaveLength(4);
 
@@ -150,6 +150,8 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
     expect(second.events.map((event) => Reflect.get(event.payload, 'rule_id'))).toEqual([
       'R9',
       'R4',
+      'R4',
+      'R1',
     ]);
     const whole = replayResponseSchema.parse(
       historyReplay([], runStart, runEnd, 500, runEnd, store),
@@ -167,7 +169,7 @@ describe('목업 시연 경보 기록과 오늘 다시 보기(S15P31A101-834)', 
     // 종료 미팅 자동 생성 대기(2.5초) 뒤 종료 문장이 '사건 4건'으로 채워진다.
     clock += 2_500;
     const finishedReport = (await fetchReportsByWork(asAdmin, work.work_id)).latest!;
-    expect(finishedReport.form?.review.ending).toBe('작업 종료 · 총 작업 시간 00:00:45, 사건 4건');
+    expect(finishedReport.form?.review.ending).toBe('작업 종료 · 총 작업 시간 00:00:51, 사건 4건');
 
     // 달력 목록(11월): 지난 날(11-18·19)은 그대로 두고 오늘(11-20) 위험 2·주의 2가 월 요약에 합쳐진다.
     const monthWorks = await fetchWorkUnits(asAdmin, { from: '2026-11-01', to: '2026-11-30' });

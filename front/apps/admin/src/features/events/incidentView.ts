@@ -4,7 +4,6 @@ import {
   entryStatus,
   eventTime,
   isActive,
-  isAlarmSeverity,
   isAlarming,
   serverCloseKind,
 } from '@/features/events/entries';
@@ -99,7 +98,7 @@ export function cardChip(
   if (incident.stale) return { kind: 'stale', label: '지난 관제' };
   const live = incident.entries.filter((e) => isActive(e.event));
   if (options.ticketStage) return { kind: 'ticket', label: options.ticketStage };
-  const alarmLevel = live.filter((e) => isAlarmSeverity(e.event.severity));
+  const alarmLevel = live.filter((e) => e.event.severity === 'CRITICAL');
   if (alarmLevel.length === 0) return null;
   if (alarmLevel.some(isAlarming)) return { kind: 'unacked', label: '미확인' };
   const at = Math.max(...alarmLevel.map((e) => acknowledgedAt(e) ?? 0));
