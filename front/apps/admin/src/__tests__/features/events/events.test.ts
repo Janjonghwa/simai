@@ -749,7 +749,6 @@ describe('EC2 마감(WORK_ENDED·SESSION_ENDED·NOT_IN_SNAPSHOT, S15P31A101-722)
 
 describe('카드 표시 계산', () => {
   const incidentOfEntries = (...entries: EventEntry[]) => groupIncidents(entries)[0]!;
-  const HH = /^확인 \d{2}:\d{2}:\d{2}$/;
 
   it('경과는 초, 1분부터 분과 초, 1시간부터 시간과 분, 하루부터 일과 시간으로 쓰고 음수는 0초다', () => {
     expect(elapsedLabel(0)).toBe('0초');
@@ -790,17 +789,16 @@ describe('카드 표시 계산', () => {
     ).toBeNull();
   });
 
-  it('처리 상태 칩: 조치 단계 > 확인 시각 > 미확인, 해소되면 해소 시각', () => {
+  it('처리 상태 칩: 조치 단계만, 확인 개념은 없고(-838 후속) 해소되면 해소 시각', () => {
     const open = incidentOfEntries(entry({ updated_at: T }));
-    expect(cardChip(open)).toEqual({ kind: 'unacked', label: '미확인' });
+    expect(cardChip(open)).toBeNull();
     expect(cardChip(open, { ticketStage: '조치 중' })).toEqual({
       kind: 'ticket',
       label: '조치 중',
     });
 
     const acked = incidentOfEntries(entry({ acks: [ack(T + 3_000)], updated_at: T + 3_000 }));
-    expect(cardChip(acked)?.kind).toBe('ack');
-    expect(cardChip(acked)?.label).toMatch(HH);
+    expect(cardChip(acked)).toBeNull();
 
     const done = incidentOfEntries(
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 9_000, updated_at: T + 9_000 }),
@@ -1004,7 +1002,7 @@ describe('확인 불가 · 대상 시야 이탈(S15P31A101-811)', () => {
   it('대상이 트랙에 있으면 기존 상태 문구를 그대로 쓴다', () => {
     const alarm = entry({ rule_id: 'R4', verification: 'UNVERIFIABLE', world_ids: ['w-0015'] });
     expect(isUnverifiableTargetGone(alarm.event, withTarget)).toBe(false);
-    expect(entryStatusText(alarm, withTarget)).toBe('확인 대기');
+    expect(entryStatusText(alarm, withTarget)).toBe('진행 중');
 
     const acked = entry({
       rule_id: 'R4',
@@ -1021,21 +1019,21 @@ describe('확인 불가 · 대상 시야 이탈(S15P31A101-811)', () => {
       ],
       updated_at: T + 1_000,
     });
-    expect(entryStatusText(acked, withTarget)).toMatch(/^확인 \d{2}:\d{2}:\d{2}$/);
+    expect(entryStatusText(acked, withTarget)).toBe('진행 중');
   });
 
   it('VERIFIED 이거나 구역 이벤트이거나 world_state 미수신(null)이면 적용하지 않는다', () => {
     const verified = entry({ verification: 'VERIFIED', world_ids: ['w-0015'] });
     expect(isUnverifiableTargetGone(verified.event, emptyTracks)).toBe(false);
-    expect(entryStatusText(verified, emptyTracks)).toBe('확인 대기');
+    expect(entryStatusText(verified, emptyTracks)).toBe('진행 중');
 
     const zone = entry({ verification: 'UNVERIFIABLE', world_ids: [], zone_id: 'z-04' });
     expect(isUnverifiableTargetGone(zone.event, emptyTracks)).toBe(false);
-    expect(entryStatusText(zone, emptyTracks)).toBe('확인 대기');
+    expect(entryStatusText(zone, emptyTracks)).toBe('진행 중');
 
     const unknown = entry({ verification: 'UNVERIFIABLE', world_ids: ['w-0015'] });
     expect(isUnverifiableTargetGone(unknown.event, null)).toBe(false);
-    expect(entryStatusText(unknown, null)).toBe('확인 대기');
+    expect(entryStatusText(unknown, null)).toBe('진행 중');
   });
 
   it('이미 해소되었거나 지난 관제 이벤트에는 적용하지 않는다', () => {

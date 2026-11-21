@@ -1,4 +1,3 @@
-import { acknowledgedAt, isUnacknowledgedResolved } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { targetShortLabel } from '@/features/events/incidentView';
@@ -21,10 +20,6 @@ export function EventDetailHeader({
   const personNames = usePersonDisplayMap();
   const entry = topEntry(incident);
   const { event } = entry;
-  const ackedAt =
-    event.lifecycle === 'RESOLVED'
-      ? Math.max(0, ...(event.acks ?? []).map((ack) => ack.acked_at)) || null
-      : acknowledgedAt(entry);
   const zone = event.zone_id ? zoneName(event.zone_id) : null;
   return (
     <header className="flex flex-col gap-2">
@@ -40,13 +35,10 @@ export function EventDetailHeader({
           targetShortLabel(incident.target, zoneName, personNames),
           zone,
           formatTime(event.raised_at),
-          isUnacknowledgedResolved(event)
-            ? '해소 · 미확인'
-            : event.severity === 'HIGH' || event.severity === 'CAUTION'
-              ? '안내'
-              : ackedAt !== null
-                ? `확인됨 ${formatTime(ackedAt).slice(0, 5)}`
-                : '확인 대기',
+          // 사이드 카드·상세에는 확인 개념을 두지 않는다(확인은 위쪽 배너를 내리는 용도, S15P31A101-838 후속). 상태는 진행 중·해소만
+          event.lifecycle === 'RESOLVED'
+            ? `해소${event.resolved_at ? ` ${formatTime(event.resolved_at)}` : ''}`
+            : '진행 중',
         ]
           .filter(Boolean)
           .join(' · ')}

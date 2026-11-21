@@ -1,12 +1,5 @@
 import { ACK_CHANNEL_LABEL, SERVER_CLOSE_LABEL } from '@/features/events/constants';
-import {
-  acknowledgedAt,
-  entryStatus,
-  eventTime,
-  isActive,
-  isAlarming,
-  serverCloseKind,
-} from '@/features/events/entries';
+import { entryStatus, eventTime, isActive, serverCloseKind } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { PPE_RELEASE_LABEL, ppeReleaseOf } from '@/features/events/ppePolicy';
@@ -96,13 +89,9 @@ export function cardChip(
   if (!incident.active) return { kind: 'resolved', label: resolvedLabel(incident) };
   // 지난 관제(지금 Tier 0 가 들고 있지 않음)는 경보가 아니다. 미확인·확인 칩 대신 조용한 칩 하나만 둔다(S15P31A101-595).
   if (incident.stale) return { kind: 'stale', label: '지난 관제' };
-  const live = incident.entries.filter((e) => isActive(e.event));
   if (options.ticketStage) return { kind: 'ticket', label: options.ticketStage };
-  const alarmLevel = live.filter((e) => e.event.severity === 'CRITICAL');
-  if (alarmLevel.length === 0) return null;
-  if (alarmLevel.some(isAlarming)) return { kind: 'unacked', label: '미확인' };
-  const at = Math.max(...alarmLevel.map((e) => acknowledgedAt(e) ?? 0));
-  return { kind: 'ack', label: at > 0 ? `확인 ${formatTime(at)}` : '확인' };
+  // 사이드 카드에는 확인 개념을 두지 않는다(미확인·확인 칩 없음). 확인은 위쪽 배너를 내리는 용도다(S15P31A101-838 후속)
+  return null;
 }
 
 export interface TimelineItem {

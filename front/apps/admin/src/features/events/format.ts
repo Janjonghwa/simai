@@ -83,10 +83,10 @@ export function isUnverifiableTargetGone(event: EventItem, alive: AliveIds): boo
 /** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9·R11) "해소" 대신 해소 원인을 보인다. */
 export function statusText(status: EntryStatus, release: PpeRelease | null = null) {
   switch (status.kind) {
+    // 확인은 위쪽 배너를 내리는 용도라 처리 상태에 확인 대기·확인 시각을 쓰지 않는다(S15P31A101-838 후속)
     case 'alarm':
-      return '확인 대기';
     case 'acked':
-      return `확인 ${formatTime(status.at)}`;
+      return '진행 중';
     case 'notice':
       return '안내';
     case 'resolved': {
