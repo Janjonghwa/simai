@@ -1,3 +1,4 @@
+import { boxOfPlannedDraft } from '@/features/setup/draftZone';
 import {
   boxOfDraftItem,
   CAMERA_CORNERS,
@@ -628,6 +629,20 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     ]);
     expect(draftGhostsOf(drafts, [first!.candidate_id], [])).toHaveLength(1);
     expect(draftGhostsOf(drafts, [first!.candidate_id], [second!.candidate_id])).toEqual([]);
+  });
+
+  it('세팅 화면은 수락 전 점선 윤곽도 수락하면 저장될 크기(둘레 여유 0.3 m)로 그려 수락할 때 상자가 커지지 않는다', () => {
+    const { drafts } = setupZoneDraftsResponseSchema.parse(
+      buildSetupZoneDraftsResponse('019a0000-0000-7000-8000-000000000001'),
+    );
+    const first = drafts[0]!;
+    const [ghost] = draftGhostsOf([first], [], [], boxOfPlannedDraft);
+    const raw = boxOfDraftItem(first);
+    expect(ghost!.box).toEqual(boxOfPlannedDraft(first));
+    expect(ghost!.box.min[0]).toBeCloseTo(raw.min[0] - 0.3);
+    expect(ghost!.box.min[1]).toBeCloseTo(raw.min[1] - 0.3);
+    expect(ghost!.box.max[0]).toBeCloseTo(raw.max[0] + 0.3);
+    expect(ghost!.box.max[1]).toBeCloseTo(raw.max[1] + 0.3);
   });
 
   it('구역 단계 3D 칸 제목은 세팅 맵 단계 이름뿐이고(Scene 버전은 붙이지 않는다), 세팅 맵이 아직이면 3D 맵이다', () => {

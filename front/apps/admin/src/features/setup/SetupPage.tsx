@@ -37,6 +37,7 @@ import {
 } from '@/features/setup/cameraCheck';
 import { CameraCheckModal } from '@/features/setup/CameraCheckModal';
 import { CameraRiskDialog } from '@/features/setup/CameraRiskDialog';
+import { boxOfPlannedDraft } from '@/features/setup/draftZone';
 import { heightsChanged } from '@/features/setup/heightCheck';
 import { HeightCheckModal } from '@/features/setup/HeightCheckModal';
 import { calibrateNextStep, step1NextStep } from '@/features/setup/nextStep';
@@ -491,9 +492,8 @@ function SetupWorkPage({
   const draftGhosts = useMemo(
     () =>
       withDraftHighlight(
-        draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
+        draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds, boxOfPlannedDraft),
         hoveredDraft,
-        hoveredDraft !== undefined && acceptedDraftIds.includes(hoveredDraft.candidate_id),
       ),
     [draftsList, acceptedDraftIds, discardedDraftIds, hoveredDraft],
   );

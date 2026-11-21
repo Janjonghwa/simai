@@ -1,12 +1,12 @@
-import { draftZoneFootprint } from '@/features/setup/draftZone';
-import { boxOfDraftItem, draftGhostId } from '@/features/setup/setup';
+import { boxOfPlannedDraft, draftZoneFootprint } from '@/features/setup/draftZone';
+import { draftGhostId } from '@/features/setup/setup';
 import {
   setupZoneDraftsResponseSchema,
   type SetupZoneDraftsResponse,
   type ZoneDraftItem,
 } from '@/features/setup/types';
 import { isCarriedZone, sameZoneSpot, zoneFootprint } from '@/features/setup/zoneOverlap';
-import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
+import type { ViewerBoxGhost } from '@/features/viewer3d';
 import type { Zone } from '@/features/zones/types';
 import { SURFACE_ZONE_MARGIN_M } from '@/features/zones/zoneShape';
 import { useEffect, useMemo, useReducer } from 'react';
@@ -99,17 +99,6 @@ export function useDemoZoneDrafts(
   }, [active, sessionId, searching, existingZones]);
 }
 
-/** 이미 구역이 된 초안의 3D 상자: 수락할 때 넓혀진 구역 자리다. */
-function boxOfAcceptedDraft(draft: ZoneDraftItem): ViewerEditBox {
-  const { polygon, zMin, zMax } = draftZoneFootprint(draft);
-  return boxOfDraftItem({
-    ...draft,
-    polygon_xy: polygon.map(([x, y]): [number, number] => [x, y]),
-    z_min_m: zMin ?? draft.z_min_m,
-    z_max_m: zMax ?? draft.z_max_m,
-  });
-}
-
 /**
  * 초안 카드에 커서를 댄 초안의 3D 윤곽을 점선 대신 위험 등급색의 실선·면으로 바꾼다. 이미 구역이 된 초안(accepted)은 그 구역 자리에 그린다.
  * 커서를 댄 초안이 없으면 윤곽을 그대로 둔다.
@@ -117,11 +106,11 @@ function boxOfAcceptedDraft(draft: ZoneDraftItem): ViewerEditBox {
 export function withDraftHighlight(
   ghosts: readonly ViewerBoxGhost[],
   hovered: ZoneDraftItem | undefined,
-  accepted: boolean,
 ): readonly ViewerBoxGhost[] {
   if (!hovered) return ghosts;
   const id = draftGhostId(hovered.candidate_id);
-  const box = accepted ? boxOfAcceptedDraft(hovered) : boxOfDraftItem(hovered);
+  // 수락 전·후 모두 수락하면 생길(이미 생긴) 구역 자리에 그린다. 수락할 때 상자 크기가 바뀌지 않는다.
+  const box = boxOfPlannedDraft(hovered);
   return [
     ...ghosts.filter((ghost) => ghost.id !== id),
     { id, box, highlight: hovered.recommended_severity },
