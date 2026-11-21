@@ -1,4 +1,5 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { EventDetailHeader } from '@/features/events/EventDetailHeader';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
@@ -256,6 +257,40 @@ describe('IncidentCard', () => {
     expect(card.textContent).not.toContain('초 전');
     expect(card.className).toContain('opacity-55');
     expect(card.className).not.toContain('ring-sev-critical');
+  });
+
+  it('확인 없이 해소된 위험만 카드와 상세에 미확인으로 표시한다', () => {
+    const resolved = {
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 5_000,
+      updated_at: T + 5_000,
+    } as const;
+    const ack = {
+      ack_id: 'a-1',
+      channel: 'CONTROL_ROOM',
+      actor_role: 'ADMIN',
+      actor_id: 'admin',
+      acked_at: T + 3_000,
+    } as const;
+    for (const [change, expected] of [
+      [{ ...resolved }, true],
+      [{ ...resolved, acks: [ack] }, false],
+      [{ ...resolved, severity: 'HIGH' }, false],
+      [{ ...resolved, severity: 'CAUTION' }, false],
+      [{ ...resolved, severity: 'INFO' }, false],
+      [{ lifecycle: 'RAISED' }, false],
+    ] as [Partial<EventItem>, boolean][]) {
+      const { card, incident } = renderCard([entry(change)]);
+      expect(within(card).queryByText('미확인') !== null).toBe(expected);
+      const client = new QueryClient();
+      render(
+        <QueryClientProvider client={client}>
+          <EventDetailHeader incident={incident} closeRef={null} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      expect(screen.queryByText(/해소 · 미확인/) !== null).toBe(expected);
+      cleanup();
+    }
   });
 
   it('두 번 이상 발생하면 카드와 설명에 횟수를 적는다', () => {
