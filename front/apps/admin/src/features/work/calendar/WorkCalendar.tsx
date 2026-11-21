@@ -11,13 +11,13 @@ import {
   type CalendarMonth,
 } from '@/features/work/calendar/calendarMath';
 import { useWorkDays } from '@/features/work/useWorkDays';
-import { dayKind, WEEKDAY_NAMES, type DateKey } from '@/features/work/workDay';
+import { dayKind, isEndedWork, WEEKDAY_NAMES, type DateKey } from '@/features/work/workDay';
 import { Button } from '@simai/ui/components/button';
 import { Check, CheckCircle2, ChevronLeft, ChevronRight, CircleHelp } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 // 작업 관리 첫 화면: 작업 히스토리 달력 + 오늘 작업 진입점. 날짜를 누르면 그 날로 간다(지난 날 = 다시 보기, 오늘·예정 = 작업 흐름).
-// 지난 날 칸은 끝난 작업(종료·제출)만 간결하게 보이고 작업하지 않은 지난 날은 누를 수 없다(-670). 오늘 칸은 지금 할 일 주 단추를 크게 보이고, 예정인 날 칸은 차분히 비운다.
+// 지난 날 칸은 끝난 작업(종료·제출)만 간결하게 보이고 작업하지 않은 지난 날은 누를 수 없다(-670). 오늘 칸은 작업이 없을 때 준비 단추를 보이고 작업이 있으면 요약을 보이며, 예정인 날 칸은 차분히 비운다.
 // 한 화면에 맞춘다: 폭 1080 가운데, 아래 80px 비움(5주는 높이 720 에 맞고 6주는 스크롤).
 
 /** 날짜 칸의 완료 아이콘(✓)과 점 색깔(빨강=위험, 노랑=주의)의 의미를 마우스 올림·초점 시 설명하는 범례. */
@@ -187,7 +187,7 @@ export function WorkCalendar({
         {cells.map(({ key, day, inMonth }) => {
           const kind = dayKind(key, todayKey);
           const works = byDate.get(key) ?? [];
-          const summary = kind === 'past' ? summarizeWorks(works) : null;
+          const summary = kind === 'future' ? null : summarizeWorks(works, kind === 'today');
           return (
             <CalendarCell
               key={key}
@@ -195,7 +195,13 @@ export function WorkCalendar({
               day={day}
               inMonth={inMonth}
               kind={kind}
-              mark={dayMarkOf(works, kind)}
+              mark={
+                kind === 'today' && summary
+                  ? works.some(isEndedWork)
+                    ? { kind: 'ended' }
+                    : null
+                  : dayMarkOf(works, kind)
+              }
               summary={summary}
               disabled={kind === 'past' && summary === null}
               onPick={onPick}

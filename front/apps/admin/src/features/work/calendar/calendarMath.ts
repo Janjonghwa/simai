@@ -134,9 +134,12 @@ export function alertText(summary: Pick<DaySummary, 'critical' | 'high' | 'incid
   return `위험 사건 ${incidents.critical}건(경보 ${critical}건), 주의 사건 ${incidents.high}건(경보 ${high}건)`;
 }
 
-/** 지난 날 요약. 끝난 작업(`isEndedWork`)만 세고, 끝난 작업이 없으면 null(빈칸)이다. */
-export function summarizeWorks(works: readonly WorkDayItem[]): DaySummary | null {
-  const ended = works.filter(isEndedWork);
+/** 기본은 끝난 작업만 요약하고, 오늘은 진행 중인 작업도 포함한다. 작업이 없으면 null이다. */
+export function summarizeWorks(
+  works: readonly WorkDayItem[],
+  includeActive = false,
+): DaySummary | null {
+  const ended = includeActive ? works : works.filter(isEndedWork);
   if (ended.length === 0) return null;
   const runs = ended.reduce(
     (sum, work) =>
@@ -232,8 +235,12 @@ export function cellAriaLabel({
   const [, month] = dateKey.split('-');
   const base = `${Number(month)}월 ${day}일`;
   if (kind === 'today') {
-    const status = mark?.kind === 'action' ? mark.label : '작업 완료';
-    return `${base}, 오늘, ${status}`;
+    if (summary) {
+      const status = mark?.kind === 'ended' ? ' 완료' : '';
+      const runs = summary.runs ? `, 실행 ${summary.runs}회` : '';
+      return `${base}, 오늘, 작업 ${summary.count}건${status}${runs}, ${alertText(summary)}`;
+    }
+    return `${base}, 오늘, ${mark?.kind === 'action' ? mark.label : '작업 완료'}`;
   }
   if (summary) {
     const runs = summary.runs ? `, 실행 ${summary.runs}회` : '';
