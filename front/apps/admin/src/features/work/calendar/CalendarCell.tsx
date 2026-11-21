@@ -8,9 +8,7 @@ import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { CheckCircle2 } from 'lucide-react';
 
-const TODAY_CELL_STYLE = 'B';
-
-// 달력 칸 하나: 오늘 칸만 밝은 주색 테두리·면과 큰 주 단추로 두드러지게 하고, 지난 날은 완료 아이콘과 색 점·숫자로 간소화하며,
+// 달력 칸 하나: 작업 없는 오늘은 준비 단추, 작업이 있는 오늘은 테두리와 요약을 보이며, 지난 날은 완료 아이콘과 숫자로 간소화한다.
 // 작업 없는 지난 날은 차분하게 가라앉히고 예정인 날은 바탕에 맞춰 명도를 낮춘다.
 
 /** 끝난 날의 표시: '작업 종료' 글자 반복 대신 작은 완료 아이콘(차분한 색). 마우스를 올리면 의미를 설명한다. */
@@ -86,8 +84,8 @@ function EventCounts({
 
 function cellToneClass(kind: DayKind, hasSummary: boolean): string {
   if (kind === 'today') {
-    // 불투명하게 섞어 바탕 모눈이 오늘 칸 안쪽에 비치지 않게 하고, 화면에서 유일하게 두드러지게 한다.
-    return 'border-2 border-primary bg-[color-mix(in_oklab,var(--card),var(--primary)_14%)] text-foreground shadow-sm hover:bg-[color-mix(in_oklab,var(--card),var(--primary)_20%)] dark:bg-[color-mix(in_oklab,var(--card),var(--primary)_22%)] dark:hover:bg-[color-mix(in_oklab,var(--card),var(--primary)_28%)]';
+    // 작업이 있는 오늘은 테두리로만 강조한다.
+    return 'border-2 border-primary bg-card text-foreground shadow-sm hover:bg-surface-2';
   }
   if (kind === 'future') {
     // 예정인 날: 바탕과 어울리게 명도를 낮추되 점선 테두리로 작업 없는 지난 날과 가른다.
@@ -120,7 +118,7 @@ export function CalendarCell({
   kind: DayKind;
   /** 그 날의 표시(완료 아이콘·오늘의 주 단추). 없으면 비어 있다. */
   mark: DayMark | null;
-  /** 지난 날 요약(작업 건수·위험·주의). 지난 날이 아니거나 끝난 작업이 없으면 null. */
+  /** 날짜 요약(작업 건수·위험·주의). 요약할 작업이 없으면 null. */
   summary: DaySummary | null;
   /** 작업하지 않은 지난 날이라 누를 수 없다. */
   disabled: boolean;
@@ -137,7 +135,7 @@ export function CalendarCell({
       className={cn(
         'group/cell flex min-w-0 flex-col items-start gap-1 rounded-[12px] px-2.5 py-2 text-left',
         'transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-        isToday && TODAY_CELL_STYLE === 'B'
+        isToday && !summary
           ? 'border border-transparent bg-[#2F66E8] text-white hover:bg-[#2556c8]'
           : cellToneClass(kind, summary !== null),
         !inMonth && !isToday && 'opacity-45',
@@ -147,6 +145,7 @@ export function CalendarCell({
         <span
           className={cn(
             'tabular-nums',
+            isToday && summary && 'text-primary',
             kind === 'past' && !summary
               ? 'text-sm font-normal'
               : kind === 'future'
@@ -169,12 +168,14 @@ export function CalendarCell({
               high={summary.high}
               incidents={summary.incidents}
             />
-            <span
-              data-slot="history-hint"
-              className="pointer-events-none absolute right-0 bottom-0 bg-card text-[11px] font-medium whitespace-nowrap text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/cell:opacity-100 group-focus-visible/cell:opacity-100"
-            >
-              히스토리 보기
-            </span>
+            {kind === 'past' && (
+              <span
+                data-slot="history-hint"
+                className="pointer-events-none absolute right-0 bottom-0 bg-card text-[11px] font-medium whitespace-nowrap text-muted-foreground opacity-0 transition-opacity duration-150 group-hover/cell:opacity-100 group-focus-visible/cell:opacity-100"
+              >
+                히스토리 보기
+              </span>
+            )}
           </span>
         </>
       )}
