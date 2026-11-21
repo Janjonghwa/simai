@@ -370,6 +370,10 @@ export function entryStatus(entry: EventEntry): EntryStatus {
   return at === null ? { kind: 'alarm' } : { kind: 'acked', at };
 }
 
+/** 확인 기록 없이 해소된 위험만 표시한다. 주의·안내에는 확인 의무가 없다. */
+export const isUnacknowledgedResolved = (event: EventItem) =>
+  event.lifecycle === 'RESOLVED' && event.severity === 'CRITICAL' && !event.acks?.length;
+
 /** 확인 필요(명세 7.1): 이유가 있거나 needs_check. */
 export const needsCheck = (event: EventItem) =>
   event.needs_check || (event.confidence_reasons?.length ?? 0) > 0;

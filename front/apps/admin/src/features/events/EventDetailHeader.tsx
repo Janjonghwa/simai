@@ -1,4 +1,4 @@
-import { acknowledgedAt } from '@/features/events/entries';
+import { acknowledgedAt, isUnacknowledgedResolved } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { targetShortLabel } from '@/features/events/incidentView';
@@ -40,11 +40,13 @@ export function EventDetailHeader({
           targetShortLabel(incident.target, zoneName, personNames),
           zone,
           formatTime(event.raised_at),
-          event.severity === 'HIGH' || event.severity === 'CAUTION'
-            ? '안내'
-            : ackedAt !== null
-              ? `확인됨 ${formatTime(ackedAt).slice(0, 5)}`
-              : '확인 대기',
+          isUnacknowledgedResolved(event)
+            ? '해소 · 미확인'
+            : event.severity === 'HIGH' || event.severity === 'CAUTION'
+              ? '안내'
+              : ackedAt !== null
+                ? `확인됨 ${formatTime(ackedAt).slice(0, 5)}`
+                : '확인 대기',
         ]
           .filter(Boolean)
           .join(' · ')}

@@ -1,5 +1,9 @@
 import { EventPhotos } from '@/features/eventPhotos/EventPhotos';
-import { isActive, isConfirmationPending } from '@/features/events/entries';
+import {
+  isActive,
+  isConfirmationPending,
+  isUnacknowledgedResolved,
+} from '@/features/events/entries';
 import { OUTSIDE_WORK_TEXT, type OutsideWorkKind } from '@/features/events/EventBadges';
 import {
   confirmationText,
@@ -146,10 +150,17 @@ export function IncidentCard({
               {targetShortLabel(incident.target, zoneName, personNames)}
             </span>
           </span>
-          <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
-            {incident.active || incident.stale
-              ? formatTime(latest.event.raised_at)
-              : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
+          <span className="flex shrink-0 flex-col items-end gap-1">
+            <span className="text-sm whitespace-nowrap text-muted-foreground tabular-nums">
+              {incident.active || incident.stale
+                ? formatTime(latest.event.raised_at)
+                : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
+            </span>
+            {!incident.active && isUnacknowledgedResolved(latest.event) && (
+              <span className="rounded bg-sev-critical/15 px-1.5 py-0.5 text-xs font-semibold text-sev-critical">
+                미확인
+              </span>
+            )}
           </span>
         </button>
         {selected && <EventPhotos event={top.event} compact />}
