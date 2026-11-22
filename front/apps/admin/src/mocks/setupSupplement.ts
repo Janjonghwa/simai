@@ -6,6 +6,14 @@ import type {
   SupplementRebake,
   SupplementState,
 } from '@/features/setup/types';
+import {
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  mapOf,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
 
@@ -357,5 +365,34 @@ export function createSupplementMock({ now, sessions, updateSession }: Supplemen
     }),
   ];
 
-  return { handlers, withView, bySession };
+  // 연습 빌드 저장·복원(S15P31A101-806): 세션별 파일 목록·다시 굽기. 경로 색인(byPath)은 같은 파일 객체로 다시 만든다.
+  const persist: MockSessionPart = {
+    exportState: () => ({ sessions: cloneJson([...bySession]), seq }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isNumber(raw.seq)) return undefined;
+      const saved = mapOf(raw.sessions, isString, isSavedSupplement);
+      if (!saved) return undefined;
+      const savedSeq = raw.seq;
+      return () => {
+        bySession.clear();
+        byPath.clear();
+        for (const [id, item] of cloneJson([...saved])) {
+          bySession.set(id, item);
+          for (const media of item.media) byPath.set(media.objectPath, media);
+        }
+        seq = savedSeq;
+      };
+    },
+  };
+
+  return { handlers, withView, bySession, persist };
+}
+
+function isSavedSupplement(value: unknown): value is SessionSupplement {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.media) &&
+    value.media.every((m) => isRecord(m) && isString(m.objectPath)) &&
+    (value.rebake === null || (isRecord(value.rebake) && isNumber(value.rebake.startedAt)))
+  );
 }

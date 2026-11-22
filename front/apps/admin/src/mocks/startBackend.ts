@@ -1,6 +1,10 @@
 import { env } from '@/lib/env';
 import { EVENTS_TOPIC } from '@/lib/stomp';
-import { createDemoAlarmScheduler, workRunActionOf } from '@/mocks/demoAlarmScenario';
+import {
+  createDemoAlarmScheduler,
+  parseDemoAlarmSchedulerState,
+  workRunActionOf,
+} from '@/mocks/demoAlarmScenario';
 
 /**
  * 서버가 아직 없는 API 를 msw 로 REST·STOMP 흉내 낸다(개발 서버 전용, main.tsx 가 DEV 에서만 불러서 빌드에는 들어가지 않는다).
@@ -19,6 +23,9 @@ export async function startMockBackend() {
     { createZonesMock },
     { createPeopleNamesMock },
     { seededEventsAt },
+    { mockStateStorage },
+    { createMockSession, isRecord },
+    { msgIdSerial, resumeMsgIdSerial },
   ] = await Promise.all([
     import('virtual:msw'),
     import('@/mocks/handlers'),
@@ -31,6 +38,9 @@ export async function startMockBackend() {
     import('@/mocks/zones'),
     import('@/mocks/peopleNames'),
     import('@/mocks/realtimeScenario'),
+    import('@/mocks/mockPersist'),
+    import('@/mocks/mockSession'),
+    import('@/mocks/scenario/shared'),
   ]);
   const isMockBuild = import.meta.env.VITE_MOCK_BUILD === 'true';
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명은 보지 않는다).
@@ -50,16 +60,22 @@ export async function startMockBackend() {
   });
   let demoStartedAt: number | undefined;
   let demoWorkId: string | undefined;
+  // 연습 빌드는 mock 상태를 localStorage 에 남겨 새로고침·새 탭·주소 직접 입력 뒤에도 이어 간다(S15P31A101-806, mocks/mockSession).
+  // 개발 서버·시험은 저장소가 null 이라 지금처럼 메모리만 쓴다.
+  const storage = isMockBuild ? mockStateStorage() : null;
+  let saveSoon = () => {};
+  let saveNow = () => {};
+  const scheduler = createDemoAlarmScheduler({
+    publish: (message) => {
+      const opening = zones.currentZones().find((zone) => zone.name === '단상 개구부');
+      if (message.payload.zone_id && opening) message.payload.zone_id = opening.zone_id;
+      // 시연 경보 전이를 세션 기록 저장소에 남겨 오늘 다시 보기(/api/replay)와 사건 수 집계가 같은 기록을 쓰게 한다.
+      if (demoWorkId) demoReplayStore.recordEvent(demoWorkId, message);
+      broker.publish(EVENTS_TOPIC, events.record(message));
+      saveSoon();
+    },
+  });
   if (isMockBuild) {
-    const scheduler = createDemoAlarmScheduler({
-      publish: (message) => {
-        const opening = zones.currentZones().find((zone) => zone.name === '단상 개구부');
-        if (message.payload.zone_id && opening) message.payload.zone_id = opening.zone_id;
-        // 시연 경보 전이를 세션 기록 저장소에 남겨 오늘 다시 보기(/api/replay)와 사건 수 집계가 같은 기록을 쓰게 한다.
-        if (demoWorkId) demoReplayStore.recordEvent(demoWorkId, message);
-        broker.publish(EVENTS_TOPIC, events.record(message));
-      },
-    });
     network.events.on('response:mocked', ({ request, response }) => {
       const action = workRunActionOf(request, response);
       if (action === 'start') {
@@ -74,7 +90,8 @@ export async function startMockBackend() {
         demoStartedAt = startedAt;
         demoWorkId = workId;
         if (workId) demoReplayStore.startRun(workId, startedAt);
-        scheduler.start();
+        scheduler.start(startedAt);
+        saveNow();
       } else if (action === 'end') {
         scheduler.stop();
         const workId = new URL(request.url).pathname.split('/').at(-2);
@@ -86,6 +103,10 @@ export async function startMockBackend() {
           demoReplayStore.endRun(workId, run?.ended_at ?? Date.now());
         }
         demoWorkId = undefined;
+        saveNow();
+      } else {
+        // GET 도 상태를 앞으로 보낸다(세팅 단계·초안 진행은 조회할 때 시각으로 정한다). 짧게 모아 한 번 저장한다.
+        saveSoon();
       }
     });
   }
@@ -110,6 +131,66 @@ export async function startMockBackend() {
     // 목업 빌드는 작업 시작 전에도 시연 인원(추창만 1명, elapsed=0)만 보인다.
     isMockBuild ? () => (demoStartedAt === undefined ? 0 : Date.now() - demoStartedAt) : undefined,
   );
+  if (storage) {
+    // 시연 진행(작업 시작 시각·작업·경보 번호)과 msg_id 번호. 시각이 같아야 3D 사람 움직임(elapsed)과 남은 경보가 이어진다.
+    const demoPart = {
+      exportState: () => ({
+        startedAt: demoStartedAt ?? null,
+        workId: demoWorkId ?? null,
+        scheduler: scheduler.exportState(),
+        msgIdSerial: msgIdSerial(),
+      }),
+      loadState: (raw: unknown) => {
+        if (!isRecord(raw)) return undefined;
+        const { startedAt, workId, msgIdSerial: serial } = raw;
+        const state = parseDemoAlarmSchedulerState(raw.scheduler);
+        if (
+          !state ||
+          (startedAt !== null && typeof startedAt !== 'number') ||
+          (workId !== null && typeof workId !== 'string') ||
+          typeof serial !== 'number'
+        ) {
+          return undefined;
+        }
+        return () => {
+          demoStartedAt = startedAt ?? undefined;
+          demoWorkId = workId ?? undefined;
+          resumeMsgIdSerial(serial);
+          // 작업이 아직 진행 중일 때만 시나리오를 잇는다(종료한 작업은 다시 돌리지 않는다).
+          const running =
+            workId !== null &&
+            [...workMock.workItems(), ...tbmMock.works].some(
+              (work) => work.work_id === workId && work.status === 'IN_PROGRESS',
+            );
+          scheduler.resume(running ? state : { ...state, run: null }, (eventId) =>
+            workId === null ? undefined : demoReplayStore.latestEvent(workId, eventId)?.payload,
+          );
+        };
+      },
+    };
+    const session = createMockSession({
+      storage,
+      // 적용 순서: 작업면·구역 → 세팅 → 작업·TBM → 이벤트·다시 보기 → 사람 이름 → 시연(작업 진행 여부와 다시 보기 기록을 읽는다).
+      parts: {
+        zones: zones.persist,
+        setup: setupMock.persist,
+        work: workMock.persist,
+        tbm: tbmMock.persist,
+        events: events.persist,
+        demoReplay: demoReplayStore.persist,
+        peopleNames: peopleNames.persist,
+        demo: demoPart,
+      },
+    });
+    session.restore();
+    saveSoon = session.scheduleSave;
+    saveNow = session.save;
+    // 탭을 닫거나 새로고침하기 직전에 기다리던 저장을 마저 한다.
+    globalThis.addEventListener?.('pagehide', session.save);
+    globalThis.document?.addEventListener('visibilitychange', () => {
+      if (globalThis.document.visibilityState === 'hidden') session.save();
+    });
+  }
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
     handlers: [

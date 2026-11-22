@@ -47,3 +47,9 @@ const MSG_ID_PREFIX = '0192a6f0-7c1e-4b3a-9f2d-';
 let messages = 0;
 /** 메시지마다 다른 msg_id(UUID 형식). 다른 mock(이벤트 저장소)도 쓴다. */
 export const nextMsgId = () => `${MSG_ID_PREFIX}${uuidTail(++messages)}`;
+/** 지금까지 쓴 msg_id 번호(연습 빌드 저장, S15P31A101-806). */
+export const msgIdSerial = () => messages;
+/** 새로고침 뒤 저장해 둔 번호부터 이어 써서 다시 보기 기록의 msg_id 와 겹치지 않게 한다(뒤로는 가지 않는다). */
+export const resumeMsgIdSerial = (serial: number) => {
+  messages = Math.max(messages, serial);
+};

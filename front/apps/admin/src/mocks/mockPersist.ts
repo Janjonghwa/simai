@@ -29,8 +29,12 @@ export function readMockState(storage: MockStateStorage | null, key: string): un
   }
 }
 
+// 「연습 처음부터 다시」로 지운 저장소. 지운 뒤 새로고침 직전(pagehide)의 마지막 저장이 지운 상태를 되살리지 않게, 이 페이지에서는 더
+// 쓰지 않는다(새로고침하면 모듈이 새로 올라와 다시 쓴다).
+const clearedStorages = new WeakSet<MockStateStorage>();
+
 export function writeMockState(storage: MockStateStorage | null, key: string, value: unknown) {
-  if (!storage) return;
+  if (!storage || clearedStorages.has(storage)) return;
   try {
     storage.setItem(MOCK_STATE_PREFIX + key, JSON.stringify(value));
   } catch {
@@ -38,9 +42,10 @@ export function writeMockState(storage: MockStateStorage | null, key: string, va
   }
 }
 
-/** 연습 상태를 모두 지운다(「연습 처음부터 다시」). */
+/** 연습 상태를 모두 지운다(「연습 처음부터 다시」). 지운 뒤 이 페이지에서는 더 남기지 않는다(곧 새로고침한다). */
 export function clearMockState(storage: MockStateStorage | null) {
   if (!storage) return;
+  clearedStorages.add(storage);
   try {
     const keys: string[] = [];
     for (let i = 0; i < storage.length; i += 1) {

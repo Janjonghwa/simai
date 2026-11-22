@@ -5,6 +5,15 @@ import {
   type ViewerHealthWatchName,
 } from '@/features/people/personDisplay';
 import type { WatchBinding } from '@/features/watch/api';
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  mapOf,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import type { ViewerHealthPayload } from '@simai/contracts';
 import { http, HttpResponse } from 'msw/http';
@@ -52,6 +61,8 @@ export interface PeopleNamesMock {
     method?: 'MOTION_MATCH' | 'MANUAL',
   ) => WatchBinding;
   onChange: (listener: () => void) => void;
+  /** 연습 빌드 저장·복원(S15P31A101-806): 워치 등록·배정·이름 이력과 날짜별 미확인 번호. */
+  persist: MockSessionPart;
 }
 
 const SEOUL_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
@@ -462,7 +473,78 @@ export function createPeopleNamesMock(now: () => number = Date.now): PeopleNames
     return out;
   }
 
+  type WatchState = { link: 'CONNECTED' | 'LOST'; batteryPct: number | null };
+  const isWatchState = (v: unknown): v is WatchState =>
+    isRecord(v) && (v.link === 'CONNECTED' || v.link === 'LOST');
+  const isNumberMap = (v: unknown): v is [string, number][] =>
+    mapOf(v, isString, isNumber) !== undefined;
+  const persist: MockSessionPart = {
+    exportState: () =>
+      cloneJson({
+        historySeq,
+        bindingSeq,
+        watches: [...registeredWatches],
+        activeBindings,
+        bindingHistory,
+        watchHistory,
+        worldHistory,
+        unidentified: [...unidentifiedByDate].map(([date, byWorld]) => [date, [...byWorld]]),
+        nextUnidentified: [...nextUnidentifiedByDate],
+      }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isNumber(raw.historySeq) || !isNumber(raw.bindingSeq))
+        return undefined;
+      const watches = mapOf(raw.watches, isString, isWatchState);
+      const bindings = arrayOf(
+        raw.activeBindings,
+        (b): b is WatchBinding => isRecord(b) && isNumber(b.binding_id) && isString(b.device_id),
+      );
+      const bindingRows = arrayOf(
+        raw.bindingHistory,
+        (r): r is BindingHistoryRow => isRecord(r) && isNumber(r.bindingId) && isString(r.deviceId),
+      );
+      const watchRows = arrayOf(
+        raw.watchHistory,
+        (r): r is WatchNameRow => isRecord(r) && isNumber(r.historyId) && isString(r.deviceId),
+      );
+      const worldRows = arrayOf(
+        raw.worldHistory,
+        (r): r is WorldNameRow => isRecord(r) && isNumber(r.historyId) && isString(r.worldId),
+      );
+      const unidentified = mapOf(raw.unidentified, isString, isNumberMap);
+      const nextUnidentified = mapOf(raw.nextUnidentified, isString, isNumber);
+      if (
+        !watches ||
+        !bindings ||
+        !bindingRows ||
+        !watchRows ||
+        !worldRows ||
+        !unidentified ||
+        !nextUnidentified
+      ) {
+        return undefined;
+      }
+      const { historySeq: savedHistorySeq, bindingSeq: savedBindingSeq } = raw;
+      return () => {
+        historySeq = savedHistorySeq;
+        bindingSeq = savedBindingSeq;
+        registeredWatches.clear();
+        for (const [id, watch] of cloneJson([...watches])) registeredWatches.set(id, watch);
+        activeBindings = cloneJson(bindings);
+        bindingHistory.splice(0, bindingHistory.length, ...cloneJson(bindingRows));
+        watchHistory.splice(0, watchHistory.length, ...cloneJson(watchRows));
+        worldHistory.splice(0, worldHistory.length, ...cloneJson(worldRows));
+        unidentifiedByDate.clear();
+        for (const [date, byWorld] of unidentified) unidentifiedByDate.set(date, new Map(byWorld));
+        nextUnidentifiedByDate.clear();
+        for (const [date, n] of nextUnidentified) nextUnidentifiedByDate.set(date, n);
+        notify();
+      };
+    },
+  };
+
   return {
+    persist,
     bindings: () => activeBindings,
     snapshotAt,
     onChange: (listener) => {

@@ -1,3 +1,12 @@
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isNumberOrNull,
+  isRecord,
+  isString,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import type { RiskEventMessage } from '@simai/contracts';
 
 /** 목업 작업의 등급별 사건 수(화면 2단 기준: 위험 CRITICAL, 주의 HIGH). */
@@ -53,8 +62,12 @@ export interface DemoReplayStore extends DemoReplayReader {
   recordEvent(workId: string, message: RiskEventMessage): void;
   /** 진행 중인 시연 실행 구간을 닫는다. */
   endRun(workId: string, endedAt: number): void;
+  /** 진행 중인 시연 실행에서 그 이벤트의 마지막 전이. 없으면 undefined(새로고침 뒤 시나리오 이어 가기가 지난 경보를 확인한다). */
+  latestEvent(workId: string, eventId: string): ReplayStoredEvent | undefined;
   /** 저장소를 비운다(시험 초기화용). */
   clear(): void;
+  /** 연습 빌드 저장·복원(S15P31A101-806): 실행 구간과 경보 전이 기록. */
+  persist: MockSessionPart;
 }
 
 /** 이벤트 전이 시각(재생 엔진 replayLog.ts 와 같은 우선순위). */
@@ -145,8 +158,43 @@ export function createDemoReplayStore(): DemoReplayStore {
     return { CRITICAL: critical, HIGH: high };
   }
 
+  function latestEvent(workId: string, eventId: string): ReplayStoredEvent | undefined {
+    const run = openRunOf(workId);
+    if (!run) return undefined;
+    for (let i = run.events.length - 1; i >= 0; i -= 1) {
+      const message = run.events[i]!;
+      if (message.payload.event_id === eventId) return message;
+    }
+    return undefined;
+  }
+
+  const persist: MockSessionPart = {
+    exportState: () => cloneJson(runs),
+    loadState: (raw) => {
+      const saved = arrayOf(
+        raw,
+        (run): run is DemoReplayRun =>
+          isRecord(run) &&
+          isString(run.workId) &&
+          isNumber(run.startedAt) &&
+          isNumberOrNull(run.endedAt) &&
+          arrayOf(
+            run.events,
+            (m): m is ReplayStoredEvent =>
+              isRecord(m) && isRecord(m.payload) && isString(m.payload.event_id),
+          ) !== undefined,
+      );
+      if (!saved) return undefined;
+      return () => {
+        runs.splice(0, runs.length, ...cloneJson(saved));
+      };
+    },
+  };
+
   return {
     startRun,
+    latestEvent,
+    persist,
     recordEvent,
     endRun,
     findRun,

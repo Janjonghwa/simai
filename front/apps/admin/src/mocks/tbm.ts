@@ -1,5 +1,15 @@
 import { todayIsoDate } from '@/features/tbm/taskInput';
 import { dateHhmmToMs, type LayoutDetail, type TbmWorkUnit } from '@/features/tbm/types';
+import {
+  arrayOf,
+  base64ToBytes,
+  bytesToBase64,
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { MOCK_ZONES, type LayoutZonesHooks } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
@@ -487,8 +497,60 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
     }),
   ];
 
+  // 연습 빌드 저장·복원(S15P31A101-806): 오늘 작업 셋·레이아웃·리비전·올린 서명 이미지(base64). 화면이 들고 있는 배열은 그대로 두고
+  // 안을 바꾼다(관제·히스토리 mock 이 works·layouts 참조를 나눈다).
+  const persist: MockSessionPart = {
+    exportState: () => ({
+      works: cloneJson(works),
+      layouts: cloneJson(layouts),
+      revisions: cloneJson([...layoutRevisions.values()]),
+      nextLayoutSeq,
+      signatures: [...uploadedSignatures].map(([key, bytes]) => [key, bytesToBase64(bytes)]),
+    }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isNumber(raw.nextLayoutSeq)) return undefined;
+      const savedWorks = arrayOf(
+        raw.works,
+        (w): w is TbmWorkUnit => isRecord(w) && isString(w.work_id) && isString(w.status),
+      );
+      const savedLayouts = arrayOf(
+        raw.layouts,
+        (l): l is LayoutDetail =>
+          isRecord(l) && isNumber(l.layout_id) && isNumber(l.revision) && Array.isArray(l.items),
+      );
+      const savedRevisions = arrayOf(
+        raw.revisions,
+        (r): r is LayoutRevisionRecord =>
+          isRecord(r) && isNumber(r.layout_id) && isNumber(r.revision) && Array.isArray(r.items),
+      );
+      const savedSignatures = arrayOf(
+        raw.signatures,
+        (e): e is [string, string] => Array.isArray(e) && isString(e[0]) && isString(e[1]),
+      );
+      if (!savedWorks || !savedLayouts || !savedRevisions || !savedSignatures) return undefined;
+      const images = new Map<string, Uint8Array>();
+      for (const [key, text] of savedSignatures) {
+        const bytes = base64ToBytes(text);
+        if (!bytes) return undefined;
+        images.set(key, bytes);
+      }
+      const seq = raw.nextLayoutSeq;
+      return () => {
+        works.splice(0, works.length, ...cloneJson(savedWorks));
+        layouts.splice(0, layouts.length, ...cloneJson(savedLayouts));
+        layoutRevisions.clear();
+        for (const r of cloneJson(savedRevisions))
+          layoutRevisions.set(`${r.layout_id}:${r.revision}`, r);
+        nextLayoutSeq = seq;
+        uploadedSignatures.clear();
+        for (const [key, bytes] of images) uploadedSignatures.set(key, bytes);
+      };
+    },
+  };
+
   return {
     handlers,
+    persist,
     bindLayoutZones(hooks: LayoutZonesHooks) {
       layoutZones = hooks;
     },
