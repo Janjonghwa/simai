@@ -37,7 +37,9 @@ import {
 } from 'react';
 
 // v2(-812): 끌어 옮긴 자리의 기준이 위쪽에서 아래쪽으로 바뀌어 예전(위쪽 기준) 자리는 읽지 않는다. 모두 처음엔 기본 자리에서 연다.
-const KEY = 'simai.cctv.float.v2';
+// v3: 오른쪽 절반에 놓은 창은 오른쪽 틈(right)으로 저장한다. v2 는 왼쪽 px 로만 저장해 창 폭이 바뀌면 오른쪽 끝이 이벤트
+// 패널과 어긋났으므로 읽지 않는다(처음 자리인 오른쪽 아래로 돌아간다).
+const KEY = 'simai.cctv.float.v3';
 /**
  * 창 폭 기본값과 한계(px). 높이는 따로 두지 않고 영상 비율을 따른다(S15P31A101-798). 기본 폭은 영상 높이가 왼쪽 아래 평면
  * 지도와 같도록(--minimap-size) 보이는 카메라의 해상도 비율로 정한다(-812, 모르면 16:9 = 2304×1296). 사용자가 폭을 바꾸면
@@ -70,7 +72,13 @@ function readSettings(): Settings {
         Number.isFinite(p.left) &&
         typeof p.offset === 'number' &&
         Number.isFinite(p.offset)
-          ? { left: p.left, offset: p.offset }
+          ? {
+              left: p.left,
+              offset: p.offset,
+              ...(typeof p.right === 'number' && Number.isFinite(p.right)
+                ? { right: p.right }
+                : {}),
+            }
           : undefined,
       videoWidth:
         typeof v.videoWidth === 'number' && Number.isFinite(v.videoWidth)
@@ -435,7 +443,8 @@ export function CctvFloat({
     (nextWidth: number, startBox: FloatBox) => {
       setVideoWidth(nextWidth);
       // 이미 끌어 옮긴 창이면 오른쪽·아래 모서리를 고정한 채 왼쪽 위로 늘거나 줄게 left 를 함께 맞춘다.
-      if (placedSpot !== null) {
+      // 오른쪽 틈(right)으로 놓은 창은 이미 오른쪽이 고정이라 맞출 것이 없다.
+      if (placedSpot !== null && placedSpot.right === undefined) {
         const rightEdge = startBox.left + startBox.width;
         setSpot({
           left: Math.max(FLOAT_MARGIN.side, rightEdge - nextWidth),
@@ -472,7 +481,7 @@ export function CctvFloat({
   });
 
   // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(옮기거나 크기를 바꾸는 동안은 알리지 않고 놓은 뒤에).
-  const layoutKey = `${spot.style?.left},${spot.style?.bottom},${resize.width}x${measuredHeight}`;
+  const layoutKey = `${spot.style?.left},${spot.style?.right},${spot.style?.bottom},${resize.width}x${measuredHeight}`;
   useReportCctvFloatBox(box, { dragging: spot.dragging || resize.resizing, layoutKey });
 
   useEffect(() => {

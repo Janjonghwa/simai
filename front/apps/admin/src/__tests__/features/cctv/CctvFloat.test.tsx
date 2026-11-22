@@ -109,7 +109,7 @@ describe('떠 있는 CCTV', () => {
 
   it('저장한 위치(아래쪽 기준, -812)와 영상 폭을 복원하고, 높이는 저장하지 않고 영상 비율을 따른다(-798)', () => {
     localStorage.setItem(
-      'simai.cctv.float.v2',
+      'simai.cctv.float.v3',
       JSON.stringify({ spot: { left: 120, offset: 140 }, videoWidth: 640 }),
     );
     render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
@@ -133,7 +133,7 @@ describe('떠 있는 CCTV', () => {
 
   it('예전 창 크기(width·height, 제목 줄 포함)는 읽지 않고 기본 폭으로 열며, 위치는 그대로 쓴다(-798)', () => {
     localStorage.setItem(
-      'simai.cctv.float.v2',
+      'simai.cctv.float.v3',
       JSON.stringify({ spot: { left: 120, offset: 140 }, width: 520, height: 400 }),
     );
     render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
@@ -155,6 +155,30 @@ describe('떠 있는 CCTV', () => {
     expect(box.style.left).toBe('');
     expect(box.style.bottom).toBe('');
     expect(box.style.width).not.toBe('640px');
+  });
+
+  it('오른쪽 틈(right)으로 저장한 자리는 left 없이 right 로 복원해 창 폭이 바뀌어도 오른쪽 끝이 이벤트 패널과 맞는다', () => {
+    localStorage.setItem(
+      'simai.cctv.float.v3',
+      JSON.stringify({ spot: { left: 900, offset: 14, right: 14 }, videoWidth: 640 }),
+    );
+    render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+    const box = screen.getByLabelText('떠 있는 CCTV');
+    expect(box.style.right).toBe('14px');
+    expect(box.style.left).toBe('');
+    expect(box.style.bottom).toBe('14px');
+  });
+
+  it('왼쪽 px 로만 저장하던 v2 자리는 읽지 않고 처음 자리(오른쪽 아래)로 연다', () => {
+    localStorage.setItem(
+      'simai.cctv.float.v2',
+      JSON.stringify({ spot: { left: 993, offset: 19 }, videoWidth: 640 }),
+    );
+    render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+    const box = screen.getByLabelText('떠 있는 CCTV');
+    expect(box.className).toContain('right-3.5');
+    expect(box.style.left).toBe('');
+    expect(box.style.bottom).toBe('');
   });
 
   describe('영상을 끌어 창 옮기기(-798)', () => {
@@ -263,19 +287,19 @@ describe('떠 있는 CCTV', () => {
       fireEvent.pointerMove(grip, at(200, 100));
       expect(box.style.width).toBe('800px');
       fireEvent.pointerUp(grip, at(200, 100));
-      expect(JSON.parse(localStorage.getItem('simai.cctv.float.v2') ?? '{}').videoWidth).toBe(800);
+      expect(JSON.parse(localStorage.getItem('simai.cctv.float.v3') ?? '{}').videoWidth).toBe(800);
 
       // 두 번 누르면 기본 크기로 돌아간다.
       fireEvent.doubleClick(grip);
       expect(box.style.width).not.toBe('800px');
       expect(
-        JSON.parse(localStorage.getItem('simai.cctv.float.v2') ?? '{}').videoWidth,
+        JSON.parse(localStorage.getItem('simai.cctv.float.v3') ?? '{}').videoWidth,
       ).toBeUndefined();
     });
 
     it('이미 끌어 옮긴 창을 왼쪽 위 손잡이로 키우면 오른쪽 가장자리를 고정한 채 왼쪽으로 넓어진다(-829)', () => {
       localStorage.setItem(
-        'simai.cctv.float.v2',
+        'simai.cctv.float.v3',
         JSON.stringify({ spot: { left: 700, offset: 140 }, videoWidth: 480 }),
       );
       spies.forEach((spy) => spy.mockRestore());
