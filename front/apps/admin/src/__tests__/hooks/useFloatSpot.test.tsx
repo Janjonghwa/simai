@@ -196,13 +196,13 @@ describe('useFloatSpot 화면 안으로 다시 맞추기', () => {
     const { result, handlers } = setup();
     dragTo(handlers, 300, 1300);
     act(() => handlers().onPointerUp());
-    expect(result.current.style).toEqual({ left: 1000 - 120 - FLOAT_MARGIN.side, top: 200 });
+    expect(result.current.style).toEqual({ right: FLOAT_MARGIN.side, top: 200 });
 
     // 브라우저가 옮긴 자리를 반영한 뒤 창이 줄었다고 본다.
     place.left = 1000 - 120 - FLOAT_MARGIN.side;
     bounds.width = 600;
     act(() => void window.dispatchEvent(new Event('resize')));
-    expect(result.current.style).toEqual({ left: 600 - 120 - FLOAT_MARGIN.side, top: 200 });
+    expect(result.current.style).toEqual({ right: FLOAT_MARGIN.side, top: 200 });
   });
 
   it('옮긴 뒤 상자 크기가 바뀌어 밖으로 나가면 지켜보다가 안으로 다시 맞춘다', () => {
@@ -219,7 +219,7 @@ describe('useFloatSpot 화면 안으로 다시 맞추기', () => {
     place.left = 1000 - 120 - FLOAT_MARGIN.side;
     place.width = 300;
     act(() => observers[0]?.callback());
-    expect(result.current.style).toEqual({ left: 1000 - 300 - FLOAT_MARGIN.side, top: 200 });
+    expect(result.current.style).toEqual({ right: FLOAT_MARGIN.side, top: 200 });
   });
 
   it('refit 을 부르면 그 자리에서 바로 안으로 다시 맞춘다', () => {
@@ -230,7 +230,7 @@ describe('useFloatSpot 화면 안으로 다시 맞추기', () => {
     place.left = 1000 - 120 - FLOAT_MARGIN.side;
     place.width = 300;
     act(() => result.current.refit());
-    expect(result.current.style).toEqual({ left: 1000 - 300 - FLOAT_MARGIN.side, top: 200 });
+    expect(result.current.style).toEqual({ right: FLOAT_MARGIN.side, top: 200 });
   });
 
   it('옮기지 않았으면 창 크기가 바뀌거나 refit 을 불러도 아무것도 하지 않는다', () => {

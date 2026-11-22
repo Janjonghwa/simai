@@ -18,9 +18,11 @@ describe('moveSpot', () => {
 
   it('틈을 남기고 부모 안에 머문다', () => {
     expect(moveSpot(start, -5000, -5000, bounds, margin, 'top')).toEqual({ left: 14, offset: 72 });
+    // 오른쪽 끝까지 끌면 오른쪽 틈(right)으로 놓는다.
     expect(moveSpot(start, 5000, 5000, bounds, margin, 'top')).toEqual({
       left: 1000 - 120 - 14,
       offset: 700 - 40 - 14,
+      right: 14,
     });
     expect(moveSpot(start, -5000, -5000, bounds, margin, 'bottom')).toEqual({
       left: 14,
@@ -29,6 +31,7 @@ describe('moveSpot', () => {
     expect(moveSpot(start, 5000, 5000, bounds, margin, 'bottom')).toEqual({
       left: 1000 - 120 - 14,
       offset: 14,
+      right: 14,
     });
   });
 
@@ -38,7 +41,47 @@ describe('moveSpot', () => {
   });
 });
 
+describe('moveSpot 오른쪽 기준·틈 붙이기', () => {
+  it('오른쪽 절반에 놓으면 오른쪽 틈(right)으로 놓아 창 폭이 바뀌어도 오른쪽 끝이 그대로다', () => {
+    // 가운데 = 600 + 60 = 660 > 500 → 오른쪽 틈 = 1000 − 600 − 120 = 280
+    expect(moveSpot(start, 500, 0, bounds, margin, 'bottom')).toEqual({
+      left: 600,
+      offset: 700 - 200 - 40,
+      right: 280,
+    });
+  });
+
+  it('옆 틈에서 16 px 안쪽으로 놓으면 틈에 딱 붙인다(오른쪽 이벤트 패널과 끝이 맞는다)', () => {
+    // 오른쪽 틈 = 1000 − 850 − 120 = 30 → 30 − 14 = 16 이하라 14 로 붙인다.
+    expect(moveSpot(start, 750, 0, bounds, margin, 'top')).toEqual({
+      left: 1000 - 120 - 14,
+      offset: 200,
+      right: 14,
+    });
+    // 오른쪽 틈 31 은 그대로 둔다.
+    expect(moveSpot(start, 749, 0, bounds, margin, 'top')).toMatchObject({ right: 31 });
+    // 왼쪽도 같다: 왼쪽 30 → 14.
+    expect(moveSpot(start, -70, 0, bounds, margin, 'top')).toEqual({ left: 14, offset: 200 });
+    expect(moveSpot(start, -69, 0, bounds, margin, 'top')).toEqual({ left: 31, offset: 200 });
+  });
+
+  it('위·아래 틈에서 16 px 안쪽으로 놓아도 틈에 붙인다', () => {
+    // 아래 틈 = 700 − 630 − 40 = 30 → 아래 offset 14
+    expect(moveSpot(start, 0, 430, bounds, margin, 'bottom')).toEqual({ left: 100, offset: 14 });
+    // 위 = 88 → 72
+    expect(moveSpot(start, 0, -112, bounds, margin, 'top')).toEqual({ left: 100, offset: 72 });
+    expect(moveSpot(start, 0, -111, bounds, margin, 'top')).toEqual({ left: 100, offset: 89 });
+  });
+});
+
 describe('spotStyle', () => {
+  it('오른쪽 틈(right)이 있으면 left 대신 right 로 놓는다', () => {
+    expect(spotStyle({ left: 866, offset: 14, right: 14 }, 'bottom')).toEqual({
+      right: 14,
+      bottom: 14,
+    });
+  });
+
   it('위 기준은 left·top, 아래 기준은 left·bottom 으로 바꾼다', () => {
     expect(spotStyle({ left: 150, offset: 230 }, 'top')).toEqual({ left: 150, top: 230 });
     expect(spotStyle({ left: 150, offset: 430 }, 'bottom')).toEqual({ left: 150, bottom: 430 });
