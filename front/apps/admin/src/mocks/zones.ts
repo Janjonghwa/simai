@@ -10,6 +10,14 @@ import {
   type ZoneItem,
 } from '@/features/zones/types';
 import { hexId } from '@/mocks/hexId';
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { readLiveUser } from '@/mocks/problem';
 import type { MockConfig } from '@/mocks/realtimeScenario';
 import {
@@ -418,6 +426,8 @@ export interface ZonesMock {
   rejectNextBundle(): void;
   /** 다음 발행 요청 하나를 서버 오류로 거절한다(묶음은 만들지 않는다). 409(보정·규칙·현장)·503(공개 주소). 기본은 보정 문서 없음이다. */
   failNextPublish(code?: PublishFailureCode): void;
+  /** 연습 빌드 저장·복원(S15P31A101-806): 구역 버전·구성 묶음과 함께 바꾸는 작업면 저장소까지 한 덩어리로 남긴다. */
+  persist: MockSessionPart;
 }
 
 /**
@@ -854,9 +864,56 @@ export function createZonesMock({
     }),
   ];
 
+  // 구역·작업면은 한 번 저장으로 함께 바뀌므로(서버 한 트랜잭션) 같이 남기고 같이 되살린다. 거절·실패 흉내 스위치는 남기지 않는다.
+  const persist: MockSessionPart = {
+    exportState: () =>
+      cloneJson({ versions, issued, bundleNumber, bundles, surfaces: staticObjects.snapshot() }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isNumber(raw.issued) || !isNumber(raw.bundleNumber)) return undefined;
+      const savedVersions = arrayOf(
+        raw.versions,
+        (z): z is ZoneItem => isRecord(z) && isString(z.zone_id) && isNumber(z.zone_version),
+      );
+      const savedBundles = arrayOf(
+        raw.bundles,
+        (b): b is MockBundle =>
+          isRecord(b) &&
+          isString(b.config_version) &&
+          isNumber(b.issued_at) &&
+          isNumber(b.ack_at) &&
+          Array.isArray(b.items),
+      );
+      const surfaces = isRecord(raw.surfaces) ? raw.surfaces : undefined;
+      const savedSurfaces = arrayOf(
+        surfaces?.versions,
+        (o): o is StaticObjectItem => isRecord(o) && isString(o.object_id),
+      );
+      if (
+        !savedVersions ||
+        !savedBundles ||
+        savedBundles.length === 0 ||
+        !savedSurfaces ||
+        !isNumber(surfaces?.issued)
+      ) {
+        return undefined;
+      }
+      const savedIssued = raw.issued;
+      const savedNumber = raw.bundleNumber;
+      const surfacesIssued = surfaces.issued;
+      return () => {
+        versions = cloneJson(savedVersions);
+        issued = savedIssued;
+        bundleNumber = savedNumber;
+        bundles.splice(0, bundles.length, ...cloneJson(savedBundles));
+        staticObjects.restore({ versions: cloneJson(savedSurfaces), issued: surfacesIssued });
+      };
+    },
+  };
+
   return {
     handlers,
     layoutZones,
+    persist,
     config: () => {
       const t = now();
       const latest = bundles[0]!;

@@ -1,5 +1,14 @@
 import type { EventSummary } from '@/features/events/types';
 import { EVENTS_TOPIC } from '@/lib/stomp';
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  mapOf,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { nextMsgId } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
@@ -56,6 +65,8 @@ export interface EventsMock {
   failNextSummary(code?: SummaryFailureCode): void;
   /** 이벤트의 최신 구간 요약 상태를 갱신하고 /topic/events 로 다시 발행한다(시험·개발 콘솔용). */
   updateSummary(eventId: string, patch: Partial<EventSummary>): RiskEventMessage | undefined;
+  /** 연습 빌드 저장·복원(S15P31A101-806): 이벤트 저장분·상향 결정·구간 요약. 되살린 뒤 진행 중이던 요약은 다시 끝을 예약한다. */
+  persist: MockSessionPart;
 }
 
 // 서버는 비어 있는 선택 칸을 보내지 않는다(zone_id·rationale·proposed_severity 는 null 로 보낸다).
@@ -614,8 +625,74 @@ export function createEventsMock({
     return stored;
   }
 
+  const SEVERITIES = Object.keys(SEVERITY_ORDER);
+  const persist: MockSessionPart = {
+    exportState: () =>
+      cloneJson({
+        events: [...events.values()],
+        decided: [...decidedTargets],
+        summaries: [...summariesByEvent],
+        summarySeq,
+      }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isNumber(raw.summarySeq)) return undefined;
+      const saved = arrayOf(
+        raw.events,
+        (m): m is RiskEventMessage =>
+          isRecord(m) &&
+          isRecord(m.payload) &&
+          isString(m.payload.event_id) &&
+          isNumber(m.payload.event_sequence) &&
+          isString(m.payload.lifecycle),
+      );
+      const decided = mapOf(
+        raw.decided,
+        isString,
+        (v): v is Payload['severity'] => isString(v) && SEVERITIES.includes(v),
+      );
+      const summaries = mapOf(
+        raw.summaries,
+        isString,
+        (list): list is EventSummary[] =>
+          arrayOf(
+            list,
+            (item): item is EventSummary =>
+              isRecord(item) && isNumber(item.summary_id) && isString(item.status),
+          ) !== undefined,
+      );
+      if (!saved || !decided || !summaries) return undefined;
+      const savedSeq = raw.summarySeq;
+      return () => {
+        events.clear();
+        for (const message of cloneJson(saved)) events.set(message.payload.event_id, message);
+        decidedTargets.clear();
+        for (const [id, severity] of decided) decidedTargets.set(id, severity);
+        summariesByEvent.clear();
+        for (const [id, list] of cloneJson([...summaries])) summariesByEvent.set(id, list);
+        summarySeq = savedSeq;
+        // 새로고침 전에 걸어 둔 요약 끝 타이머는 사라졌으므로 진행 중이던 요약을 다시 끝낸다(개발·연습 빌드만 지연이 있다).
+        if (summaryCompleteDelayMs === undefined || summaryCompleteDelayMs <= 0) return;
+        for (const [id, list] of summariesByEvent) {
+          const latest = list[0];
+          if (latest?.status !== 'QUEUED' && latest?.status !== 'RUNNING') continue;
+          const summaryId = latest.summary_id;
+          setTimeout(() => {
+            const current = summariesByEvent.get(id)?.[0];
+            if (
+              current?.summary_id === summaryId &&
+              (current.status === 'QUEUED' || current.status === 'RUNNING')
+            ) {
+              updateSummary(id, { status: 'SUCCEEDED' });
+            }
+          }, summaryCompleteDelayMs);
+        }
+      };
+    },
+  };
+
   return {
     record,
+    persist,
     handlers: [
       http.get('*/api/events', ({ request }) => list(request)),
       http.post('*/api/events/:id/ack', ({ params, request }) => ack(String(params.id), request)),

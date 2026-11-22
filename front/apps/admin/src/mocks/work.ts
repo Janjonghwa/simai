@@ -20,6 +20,15 @@ import {
 import { dayKind, isReportGenerating, parseDateKey, toDateKey } from '@/features/work/workDay';
 import type { WorkRun } from '@/lib/workRuns';
 import { historyWorks } from '@/mocks/history';
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isNumberOrNull,
+  isRecord,
+  isString,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
 
@@ -1021,8 +1030,41 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     return work.work_id;
   }
 
+  // ── 연습 빌드 저장·복원(S15P31A101-806, mocks/mockSession) ─────────────────
+
+  /** 날짜 작업과 그 보고서의 서명, 번호. 합성 지난 이력은 날짜로 다시 만들므로 남기지 않는다. */
+  const persist: MockSessionPart = {
+    exportState: () => ({
+      works: cloneJson(works),
+      signatures: works.map(
+        (w) => [w.report.report_id, cloneJson(signaturesOf(w.report.report_id))] as const,
+      ),
+      nextWorkId,
+      nextReportId,
+      nextSignatureId,
+    }),
+    loadState: (raw) => {
+      if (!isRecord(raw)) return undefined;
+      const saved = arrayOf(raw.works, isSavedWork);
+      const signatures = arrayOf(raw.signatures, isSavedSignatureList);
+      const { nextWorkId: w, nextReportId: r, nextSignatureId: g } = raw;
+      if (!saved || !signatures || !isNumber(w) || !isNumber(r) || !isNumber(g)) return undefined;
+      return () => {
+        works.splice(0, works.length, ...cloneJson(saved));
+        signaturesByReport.clear();
+        for (const [reportId, list] of signatures)
+          signaturesByReport.set(reportId, cloneJson(list));
+        nextWorkId = w;
+        nextReportId = r;
+        nextSignatureId = g;
+        pastCache = null;
+      };
+    },
+  };
+
   return {
     handlers,
+    persist,
     markSetupDone,
     /** 날짜 작업 전부를 서버 목록(GET /api/work-units)의 한 건 모양으로, 진행 값(progress)과 함께. */
     workItems: () => works.map(viewWork),
@@ -1042,6 +1084,42 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       }
     },
   };
+}
+
+/** 저장분의 날짜 작업 한 건(복원에 쓰는 칸만 본다). */
+function isSavedWork(value: unknown): value is MockWork {
+  if (!isRecord(value) || !isRecord(value.report) || !isRecord(value.report.form)) return false;
+  return (
+    isString(value.work_id) &&
+    isString(value.date) &&
+    isString(value.name) &&
+    isNumber(value.from_ms) &&
+    isNumber(value.to_ms) &&
+    isString(value.status) &&
+    isNumberOrNull(value.actual_started_at) &&
+    isNumberOrNull(value.actual_ended_at) &&
+    Array.isArray(value.runs) &&
+    isRecord(value.event_counts) &&
+    isNumberOrNull(value.setupDoneAt) &&
+    isNumberOrNull(value.draftRequestedAt) &&
+    typeof value.draftFails === 'boolean' &&
+    isNumber(value.report.report_id)
+  );
+}
+
+function isSavedSignatureList(value: unknown): value is [number, MockSignature[]] {
+  if (!Array.isArray(value) || value.length !== 2 || !isNumber(value[0])) return false;
+  return (
+    arrayOf(
+      value[1],
+      (s): s is MockSignature =>
+        isRecord(s) &&
+        isString(s.signature_id) &&
+        isString(s.signer_name) &&
+        isSignerRole(s.signer_role) &&
+        isNumber(s.signed_at),
+    ) !== undefined
+  );
 }
 
 export type WorkMock = ReturnType<typeof createWorkMock>;

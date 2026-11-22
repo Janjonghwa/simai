@@ -20,6 +20,15 @@ import {
   type SetupZoneDraftsResponseInput,
   type ZoneDraftItemInput,
 } from '@/features/setup/types';
+import {
+  arrayOf,
+  cloneJson,
+  isNumber,
+  isRecord,
+  isString,
+  mapOf,
+  type MockSessionPart,
+} from '@/mocks/mockSession';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { createSupplementMock } from '@/mocks/setupSupplement';
 import { http, HttpResponse } from 'msw/http';
@@ -1617,8 +1626,99 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     ...supplement.handlers,
   ];
 
+  // ── 연습 빌드 저장·복원(S15P31A101-806, mocks/mockSession) ─────────────────
+  // 세션·단계·맵 선택·구역 목록·카메라 확인 걷기 상태와 맵 보강. autoProgress 는 세션 시작 시각으로 단계를 정하므로, 되살린 세션은
+  // 새로고침한 동안 지난 시간만큼 앞으로 간다(서버처럼). 화면이 나눠 쓰는 Map·배열은 그대로 두고 안을 바꾼다.
+  const isWalkAttempt = (v: unknown): v is { at: number; attempt: number } =>
+    isRecord(v) && isNumber(v.at) && isNumber(v.attempt);
+  const isSession = (v: unknown): v is SetupSessionResponse =>
+    isRecord(v) && isString(v.setup_session_id) && isString(v.status);
+  const persist: MockSessionPart = {
+    exportState: () =>
+      cloneJson({
+        state,
+        pausedAt: [...pausedAt],
+        walkPausedAt: [...walkPausedAt],
+        walkAttempts: [...walkAttempts],
+        submittedBodies,
+        workUnitSessions: [...workUnitSessions],
+        retryRequests,
+        sessions: [...sessions.values()],
+        zoneDrafts: [...zoneDraftsBySession],
+        zonePlans: [...zonePlans],
+        seq,
+        supplement: supplement.persist.exportState(),
+      }),
+    loadState: (raw) => {
+      if (!isRecord(raw) || !isRecord(raw.state) || !isNumber(raw.seq)) return undefined;
+      const savedState = raw.state as unknown as SetupMockState;
+      if (!isString(savedState.siteId) || !isRecord(savedState.cameraHeightsM)) return undefined;
+      const savedPausedAt = mapOf(raw.pausedAt, isString, isNumber);
+      const savedWalkPausedAt = mapOf(raw.walkPausedAt, isString, isNumber);
+      const savedWalkAttempts = mapOf(raw.walkAttempts, isString, isWalkAttempt);
+      const savedBodies = arrayOf(raw.submittedBodies, isRecord);
+      const savedWorkUnits = mapOf(raw.workUnitSessions, isNumber, isString);
+      const savedRetries = arrayOf(
+        raw.retryRequests,
+        (r): r is RetrySetupRecord =>
+          isRecord(r) && isString(r.sessionId) && isString(r.retriedSessionId),
+      );
+      const savedSessions = arrayOf(raw.sessions, isSession);
+      const savedDrafts = mapOf(raw.zoneDrafts, isString, (d): d is SetupZoneDraftsResponse =>
+        isRecord(d),
+      );
+      const savedPlans = mapOf(
+        raw.zonePlans,
+        isString,
+        (p): p is { items: unknown[]; revision: number; updatedAt: number } =>
+          isRecord(p) && Array.isArray(p.items) && isNumber(p.revision) && isNumber(p.updatedAt),
+      );
+      const applySupplement = supplement.persist.loadState(raw.supplement);
+      if (
+        !savedPausedAt ||
+        !savedWalkPausedAt ||
+        !savedWalkAttempts ||
+        !savedBodies ||
+        !savedWorkUnits ||
+        !savedRetries ||
+        !savedSessions ||
+        !savedDrafts ||
+        !savedPlans ||
+        !applySupplement
+      ) {
+        return undefined;
+      }
+      const savedSeq = raw.seq;
+      const refill = <K, V>(target: Map<K, V>, source: Map<K, V>) => {
+        target.clear();
+        for (const [k, v] of source) target.set(k, v);
+      };
+      return () => {
+        Object.assign(state, cloneJson(savedState));
+        refill(pausedAt, savedPausedAt);
+        refill(walkPausedAt, savedWalkPausedAt);
+        refill(walkAttempts, new Map(cloneJson([...savedWalkAttempts])));
+        submittedBodies.splice(
+          0,
+          submittedBodies.length,
+          ...(cloneJson(savedBodies) as unknown as CreateSetupSessionBody[]),
+        );
+        refill(workUnitSessions, savedWorkUnits);
+        retryRequests.splice(0, retryRequests.length, ...cloneJson(savedRetries));
+        sessions.clear();
+        for (const session of cloneJson(savedSessions))
+          sessions.set(session.setup_session_id, session);
+        refill(zoneDraftsBySession, new Map(cloneJson([...savedDrafts])));
+        refill(zonePlans, new Map(cloneJson([...savedPlans])));
+        seq = savedSeq;
+        applySupplement();
+      };
+    },
+  };
+
   return {
     handlers,
+    persist,
     state,
     submittedBodies,
     retryRequests,
