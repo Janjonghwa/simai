@@ -953,3 +953,15 @@ def test_bundle_without_ppe_policy_keeps_judging(site) -> None:
     site.tick({"w-x": (INSIDE, 0)})
     assert [e.rule_id for e in site.tracker.active()] == ["R1"]
     assert site.loop.stats.idle_ticks == 0
+
+
+class _HintManager(_Manager):
+    posture_hint: frozenset = frozenset()
+
+
+def test_posture_transition_ids_are_handed_to_world_track_after_judgment(site) -> None:
+    """-852: 판정한 tick 의 자세 전이 ID 를 다음 인지 tick 의 World Track 낙상 출생 보류 힌트로 넘긴다(조립만)."""
+    site.perception.manager = _HintManager()
+    site.tracker.posture_transition_ids = lambda: frozenset({"w-1"})
+    site.tick({"w-1": (OUTSIDE, 0)})
+    assert site.perception.manager.posture_hint == {"w-1"}

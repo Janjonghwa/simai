@@ -279,7 +279,17 @@ class JudgmentLoop:
         self.stats.frozen_evaluations += 1
         self._record(step)
         self._note_risk(evaluation)
+        self._hint_posture(True)
         return TickResult(None, version, msg_id, self._idle_steps + (step,))
+
+    def _hint_posture(self, evaluated: bool) -> None:
+        """-852: 이 tick 판정의 자세 전이 World ID 를 다음 인지 tick 의 낙상 출생 보류 힌트로 넘긴다(조립만, 판정 로직 없음).
+        판정하지 않은 tick(묶음 없음·작업 진행 중 아님)은 빈 힌트다. 인지·추적기가 힌트를 받지 않으면 넘기지 않는다."""
+        manager = getattr(self.perception, "manager", None)
+        source = getattr(self.tracker, "posture_transition_ids", None)
+        if manager is None or not hasattr(manager, "posture_hint"):
+            return
+        manager.posture_hint = frozenset(source()) if evaluated and source is not None else frozenset()
 
     def _ppe(self) -> Any:
         """이 tick 의 안전모 상태 스냅샷. 읽기 실패는 빈 스냅샷(모름)이다: 판정 tick 을 잃지 않고 모르는 착용을 지어내지 않는다."""
@@ -346,6 +356,7 @@ class JudgmentLoop:
             self._record(step)
             steps.append(step)
             self._note_risk(evaluation)
+        self._hint_posture(evaluation is not None)
         self._last = (payload, msg_id)
         if self._offer_world_state is not None:  # 6) world_state (msg_id = 이 tick 의 evidence_ref)
             with self.timing.measure("i1_offer", len(payload["tracks"])):

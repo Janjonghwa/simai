@@ -1058,6 +1058,7 @@ class LifecycleTracker:
         self._last_evaluated_at = -1
         self._last_observation_time: int | None = None
         self._posture_gate = PostureGate()
+        self._posture_ids: frozenset[str] = frozenset()  # -852 마지막 apply 의 자세 전이 World ID
 
     @property
     def origin(self) -> Origin:
@@ -1176,7 +1177,20 @@ class LifecycleTracker:
             replace(t, state=replace(t.state, sound_mode=self._by_id[t.event_id].state.sound_mode))
             if t.event_id in self._by_id else t for t in transitions
         ]
+        r4_active = {wid for state in self.active() if state.key.rule_id == "R4" for wid in state.world_ids}
+        r4_candidate = {wid for key in (*self._pending, *grouped) if key.rule_id == "R4" for wid in key.world_ids}
+        self._posture_ids = frozenset(
+            t.world_id for t in world.tracks
+            if t.world_id in r4_candidate
+            or self._posture_gate.blocked(t.world_id, t, world.t_latest_global, r4_active)
+        )
         return LifecycleStep(tuple(transitions), tuple(signals))
+
+    def posture_transition_ids(self) -> frozenset[str]:
+        """마지막 apply 에서 자세 전이 중으로 본 World ID (-852). -833 R5 억제와 같은 판정(R4 진행·최근 낙상·머리 낮음·머리 급변)에
+        R4 발생 대기·이번 판정의 R4 발생 판정(R4 후보)을 더한다. Tier 0 조립부가 World Track 의 낙상 출생 보류 힌트로 넘긴다
+        (판정 문맥이라 world_state 계약에 싣지 않는다). 감시 내림·복원 뒤에는 비어 있다."""
+        return self._posture_ids
 
     def pending(self) -> Mapping[EventKey, int]:
         """발생 지속 조건을 세는 중인 키 → 창 안의 발생 판정 프레임 수(시험·진단용)."""
@@ -1528,6 +1542,7 @@ class LifecycleTracker:
         self._related_hint.clear()
         self._resolved.clear()
         self._posture_gate = PostureGate()
+        self._posture_ids = frozenset()
         tracks = {t.world_id: t for t in world.tracks}
         transitions: list[EventTransition] = []
         signals: list[LocalSignal] = []

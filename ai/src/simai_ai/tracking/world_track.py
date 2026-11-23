@@ -458,6 +458,17 @@ class WorldTrackConfig:
     """보류 근거 확정 Track 의 '최근 관측' 창: 마지막 위치 측정이 이 시간 안이어야 한다(split_suppression_owner_ttl_ms 와 같은 값)"""
     birth_hold_max_ms: int = 1500
     """출생 보류 상한. 반증이 없어도 이 시간이 지나면 내보낸다(진짜 새 사람 등장 지연 목표 2 s 안, 사람을 숨긴 채 두지 않는다)"""
+    fall_birth_hold_enabled: bool = True
+    """S15P31A101-852 낙상 출생 보류: 자세 전이 중(posture_hint, Risk 의 -833 판정: R4 진행·대기·최근 낙상·머리 낮음·머리 급변)인
+    확정 Track(CONFIRMED·OCCLUDED, 마지막 측정 birth_hold_guard_recent_ms 안)에서 birth_hold_radius_m 안에 태어난 Track 은 같은 카메라
+    별도 검출·외형 차이·관측 오차 설명과 관계없이 보류한다(넘어지는 사람의 몸이 둘로 잡히고 자세가 바뀌어 외형도 달라진다. 넘어지는
+    순간 다른 사람과 겹치는 일은 드물다, 사용자 판단 2026-11-23). 보류 중에는 Re-ID 지연 병합으로 옛 ID 에 잇지 않는다. 자세 전이가
+    끝나면 일반 보류 규칙으로 돌아가고, fall_birth_hold_max_ms 가 지나면 내보낸다. 흡수는 일반 보류와 같은 조건이다.
+    birth_hold_enabled 가 False 면 함께 꺼진다. False 는 이전 동작(재생 비교용)"""
+    fall_birth_hold_max_ms: int = 3000
+    """낙상 출생 보류 상한. lost_after_ms(3 s, 관측이 끊긴 Track 을 같은 Track 으로 이어 보는 시간)와 같다: 넘어지는 사람의 관측이
+    끊겼다 갈라져 생긴 Track 이 그 사람의 것으로 설명될 수 있는 시간. 그 뒤에 다가와 태어나는 사람(돕는 사람)은 정상으로 나가고,
+    보류된 진짜 사람도 이 시간 안에는 나간다"""
     birth_absorb_ticks: int = 2
     birth_absorb_max_gap_ms: int = 500
     """흡수 허용 공백: 근처 확정 Track 의 마지막 위치 측정이 이 시간 안이어야 흡수한다(PREDICTED 상한 500 ms 와 같다, 명세 6.1)"""
@@ -600,6 +611,7 @@ class WorldTrackConfig:
             "shadow_suppression_enabled",
             "active_merge_enabled",
             "birth_hold_enabled",
+            "fall_birth_hold_enabled",
             "stature_enabled",
             "reid_enabled",
             "reid_swap_correction_enabled",
@@ -660,6 +672,7 @@ class WorldTrackConfig:
             "reid_swap_window_ms",
             "birth_hold_guard_recent_ms",
             "birth_hold_max_ms",
+            "fall_birth_hold_max_ms",
             "birth_absorb_max_gap_ms",
         ):
             if getattr(self, name) < 0:
@@ -1050,6 +1063,8 @@ class _Track:
     borrowed_keys: dict[TrackKey, tuple[str, int]] = field(default_factory=dict)
     """-784 출생 보류 중 다른 Track 에게서 넘겨받은 로컬 트랙 → (원래 주인, 원래 시각). 보류인 채 소멸하면 원래 주인에게 되돌리고,
     풀리면 버린다(그때부터 이 Track 의 것). 흡수되면 병합이 키를 원래 Track 으로 옮긴다"""
+    fall_hold: bool = False
+    """-852 낙상 출생 보류 중(자세 전이 Track 근처에서 태어남). 자세 전이 Track 이 근처에 남아 있는 동안 그쪽 규칙을 쓴다"""
     birth_explained: frozenset[str] = frozenset()
     """-784 태어날 때 위치가 그 Track 의 관측 오차로 설명된 확정 Track(갈 수 있는 거리 + 새 클러스터 삼각측량 불확실성). 보류는 이것이
     하나 이상일 때만 시작하고, 흡수 대상은 이 안에서만 고른다(기다리면 통과하지 않게 첫 관측으로 정한다, 리뷰 F4)"""
@@ -1253,6 +1268,9 @@ class WorldTrackManager:
         self.issuer = issuer
         self.config = config if config is not None else WorldTrackConfig()
         self.input_provenance = dict(input_provenance) if input_provenance is not None else None
+        self.posture_hint: frozenset[str] = frozenset()
+        """-852 자세 전이 중인 World ID (Risk LifecycleTracker.posture_transition_ids, Tier 0 조립부가 판정 뒤에 넣는다). 다음
+        update 의 낙상 출생 보류에만 쓴다. 비어 있으면(판정하지 않는 tick 포함) 낙상 보류가 없다"""
         self.appearance_cost_fn = appearance_cost_fn
         self.feature_lookup = feature_lookup
         self._tick_features: dict[TrackKey, LocalTrackFeature | None] = {}
@@ -1779,13 +1797,17 @@ class WorldTrackManager:
             tr.birth_origins = frozenset(o for o in (holder.get(k) for k in c.cluster.keys) if o is not None)
             self._tracks[tr.world_id] = tr
             if cfg.birth_hold_enabled:
-                tr.birth_explained = frozenset(
+                fall = frozenset(gid for _, gid in self._fall_guards(tr.world_id, z[:2], t))
+                tr.birth_explained = fall | frozenset(
                     gid for _, gid in self._birth_guards(tr.world_id, z[:2], t, c.cluster)
                     if self._explains(self._tracks[gid], c.cluster, z, t)
                 )
                 if tr.birth_explained:
                     tr.birth_hold = True
                     self.diag["birth_hold.started"] += 1
+                if fall:
+                    tr.fall_hold = True
+                    self.diag["fall_hold.started"] += 1
             for k in c.cluster.keys:
                 self._take_key(k, tr, t, set(assigned) | set(applied))
                 owner[k] = tr.world_id
@@ -2573,6 +2595,29 @@ class WorldTrackManager:
             out.append((d, gid))
         return sorted(out)
 
+    def _fall_guards(self, world_id: str, xy: np.ndarray | Sequence[float], t: int) -> list[tuple[float, str]]:
+        """-852 world_id 를 낙상 출생 보류시키는 자세 전이 Track (거리, World ID) 가까운 순.
+
+        조건: posture_hint 에 있고 내보내는 확정 Track(CONFIRMED·OCCLUDED, 보류 아님)이며 마지막 위치 측정이 birth_hold_guard_recent_ms
+        안이고 필터 위치가 xy 에서 birth_hold_radius_m 안이다. 같은 카메라 별도 검출·외형 차이는 보지 않는다(넘어지는 사람이 둘로
+        잡히고 자세에 따라 외형이 달라진다). fall_birth_hold_enabled 가 꺼져 있거나 힌트가 비면 없다.
+        """
+        cfg = self.config
+        if not (cfg.birth_hold_enabled and cfg.fall_birth_hold_enabled) or not self.posture_hint:
+            return []
+        here = np.asarray(xy, dtype=float)[:2]
+        out: list[tuple[float, str]] = []
+        for gid in self.posture_hint:
+            g = self._tracks.get(gid)
+            if gid == world_id or g is None or g.birth_hold or g.lifecycle is TrackLifecycle.TENTATIVE:
+                continue
+            if t - g.t_last_valid > cfg.birth_hold_guard_recent_ms:
+                continue
+            d = float(np.linalg.norm(here - g.kf.x[:2]))
+            if d <= cfg.birth_hold_radius_m:
+                out.append((d, gid))
+        return sorted(out)
+
     def _explains(self, guard: _Track, cluster: ViewCluster, pelvis: Sequence[float], t: int) -> bool:
         """새 관측 골반이 guard 의 관측 오차로 설명되는지: 수평 거리 ≤ 갈 수 있는 거리(gate_base_m + max_speed_mps × 공백) +
         shadow_radius_sigma_k × (새 클러스터 카메라로 그 골반을 풀 때의 삼각측량 σ 를 guard → 관측 방향으로 잰 값).
@@ -2629,6 +2674,7 @@ class WorldTrackManager:
 
     def _release_birth(self, tr: _Track, reason: str) -> None:
         tr.birth_hold = False
+        tr.fall_hold = False
         tr.absorb_ticks = 0
         tr.borrowed_keys = {}
         self.diag[f"birth_hold.released_{reason}"] += 1
@@ -2656,13 +2702,21 @@ class WorldTrackManager:
                 self._release_birth(tr, "split")
                 continue
             a = applied.get(wid)
-            guards = self._birth_guards(wid, tr.kf.x[:2], t, a.cluster if a is not None else None)
+            # -852: 근처 자세 전이 Track 이 남아 있으면 낙상 보류 규칙(다른 사람 근거를 보지 않고 상한 fall_birth_hold_max_ms)
+            guards = self._fall_guards(wid, tr.kf.x[:2], t) if tr.fall_hold else []
+            limit = cfg.fall_birth_hold_max_ms
             if not guards:
-                near = self._birth_guards(wid, tr.kf.x[:2], t, ignore_distinct=True)
-                self._release_birth(tr, "distinct" if near else "apart")
-                continue
-            if t - tr.created_t >= cfg.birth_hold_max_ms:
-                self._release_birth(tr, "timeout")
+                if tr.fall_hold:  # 자세 전이가 끝났거나 멀어졌다: 일반 보류 규칙으로 돌아간다
+                    tr.fall_hold = False
+                    self.diag["fall_hold.ended"] += 1
+                limit = cfg.birth_hold_max_ms
+                guards = self._birth_guards(wid, tr.kf.x[:2], t, a.cluster if a is not None else None)
+                if not guards:
+                    near = self._birth_guards(wid, tr.kf.x[:2], t, ignore_distinct=True)
+                    self._release_birth(tr, "distinct" if near else "apart")
+                    continue
+            if t - tr.created_t >= limit:
+                self._release_birth(tr, "fall_timeout" if tr.fall_hold else "timeout")
                 continue
             if a is None or a.pelvis is None:
                 continue
@@ -3012,6 +3066,7 @@ class WorldTrackManager:
         if not silent:
             survivor.aliases.extend([retired.world_id, *retired.aliases])
         survivor.birth_hold = survivor.birth_hold and retired.birth_hold
+        survivor.fall_hold = survivor.birth_hold and (survivor.fall_hold or retired.fall_hold)
         survivor.borrowed_keys = (
             {**retired.borrowed_keys, **survivor.borrowed_keys} if survivor.birth_hold else {}
         )
@@ -3387,6 +3442,10 @@ class WorldTrackManager:
         for wid, a in list(applied.items()):
             tr = self._tracks.get(wid)
             if tr is None or tr.reid_checked_reentry:
+                continue
+            if tr.fall_hold:
+                # -852: 넘어지는 사람 근처에서 태어나 보류 중이면 옛 ID 로 잇지 않는다(11-23 0010→0007). 풀리면 창 안에서 다시 본다
+                self.diag["fall_hold.reentry_deferred"] += 1
                 continue
             if t - tr.created_t > self._late_reentry_window_ms():
                 tr.reid_checked_reentry = True

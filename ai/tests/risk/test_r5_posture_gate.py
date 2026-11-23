@@ -81,3 +81,19 @@ def test_recorded_fall_lifecycle_projection(track_json):
         step = h.step([finding(rule, zone_id=None if rule == "R4" else "z-04")], tracks=[track], dt=0)
         emitted.extend(t.state.key.rule_id for t in step.transitions if t.transition.value == "RAISED")
     assert emitted == ["R5", "R1", "R4"]
+
+
+def test_posture_transition_ids_for_fall_birth_hold(track_json):
+    """-852: 마지막 apply 의 자세 전이 ID(World Track 낙상 출생 보류 힌트). R4 후보(이번 R4 발생 판정)·머리 낮음은 들어가고,
+    서 있는 사람은 빠지며, 감시를 내리면 비운다."""
+    h = Harness(track_json)
+    standing = track_json(world_id="w-stand")
+    h.step(tracks=[track_json(), standing])
+    assert h.tracker.posture_transition_ids() == frozenset()
+    h.step([finding("R4", zone_id=None)], tracks=[track_json(), standing])
+    assert h.tracker.posture_transition_ids() == {"w-0012"}
+    h.step(tracks=[track_json(world_id="w-low", head_z=0.7), standing], dt=20_000)
+    assert h.tracker.posture_transition_ids() == {"w-low"}
+    world = h.world([standing])
+    h.tracker.stand_down(world, config_version="cfg-12", evidence_ref="msg-1")
+    assert h.tracker.posture_transition_ids() == frozenset()
