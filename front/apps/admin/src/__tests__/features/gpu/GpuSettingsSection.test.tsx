@@ -1,7 +1,7 @@
 import { GpuSettingsSection, toBody, toForm } from '@/features/gpu/GpuSettingsSection';
 import type { GpuSettings } from '@/features/gpu/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -154,16 +154,11 @@ describe('GpuSettingsSection', () => {
     await screen.findByLabelText('선호 GPU (위가 먼저)');
     act(() => fireEvent.change(screen.getByLabelText('공급자'), { target: { value: 'AWS' } }));
     expect(screen.queryByLabelText('RunPod 템플릿 ID')).toBeNull();
-    act(() =>
-      fireEvent.change(screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)'), {
-        target: { value: 'g6e.2xlarge' },
-      }),
-    );
-    act(() =>
-      fireEvent.change(screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)'), {
-        target: { value: 'g7e.2xlarge' },
-      }),
-    );
+    // AWS 목록은 서버 허용 목록과 같은 g7e.4xlarge 하나다(-854)
+    const instance = screen.getByLabelText('선호 인스턴스 종류 (위가 먼저)');
+    expect(within(instance).getByRole('option', { name: /g7e\.4xlarge/ })).toBeTruthy();
+    expect(within(instance).queryByRole('option', { name: /p5\.48xlarge|g6e/ })).toBeNull();
+    act(() => fireEvent.change(instance, { target: { value: 'g7e.4xlarge' } }));
     act(() =>
       fireEvent.change(screen.getByLabelText('선호 가용 영역 (위가 먼저)'), {
         target: { value: 'ap-northeast-2a' },
@@ -183,7 +178,7 @@ describe('GpuSettingsSection', () => {
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({
       provider: 'AWS',
-      preferred_gpu_types: ['g6e.2xlarge', 'g7e.2xlarge'],
+      preferred_gpu_types: ['g7e.4xlarge'],
       preferred_regions: ['ap-northeast-2a'],
       aws_launch_template_id: 'lt-0123456789abcdef0',
       aws_subnet_ids: ['subnet-0aaa1111bbbb2222c'],
