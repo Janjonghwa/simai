@@ -1,8 +1,10 @@
+import { GPU_ERROR } from '@/features/gpu/api';
 import {
   availabilityLabel,
   cellUsable,
   formatRegion,
   formatUsd,
+  GPU_PROVIDER_LABEL,
   gpuErrorMessage,
   LAUNCH_PREP_TIME_NOTE,
   needsTierConfirm,
@@ -14,8 +16,9 @@ import {
   TIER_TONE,
   tierWarning,
 } from '@/features/gpu/gpuStatus';
-import type { GpuOfferCell, GpuOfferRow, GpuOffers } from '@/features/gpu/types';
+import type { GpuOfferCell, GpuOfferRow, GpuOffers, GpuProviderId } from '@/features/gpu/types';
 import { useGpuLaunch, useGpuOffers } from '@/features/gpu/useGpu';
+import { ApiError } from '@/lib/http';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useState } from 'react';
@@ -30,6 +33,12 @@ interface Pick {
 }
 
 const ENGINE_NOTE = '엔진 캐시가 GPU 종류별이라 첫 실행은 엔진 빌드로 몇 분 더 걸립니다.';
+
+/** 「종류 · GPU 이름」 꼴이면 둘로 나눈다(AWS). 아니면 [이름, null] */
+function splitGpuName(name: string): [string, string | null] {
+  const at = name.indexOf(' · ');
+  return at < 0 ? [name, null] : [name.slice(0, at), name.slice(at + 3)];
+}
 
 function cellOf(offers: GpuOffers, pick: Pick): GpuOfferCell | undefined {
   return offers.cells.find((c) => c.gpu_type === pick.gpuType && c.region === pick.region);
@@ -62,20 +71,77 @@ function RowBadge({ row, usable }: { row: GpuOfferRow; usable: boolean }) {
   );
 }
 
-export function GpuLaunchForm({
-  onLaunched,
+/** 공급자가 준비 안 됐을 때(서버 503 GPU_PROVIDER_NOT_CONFIGURED) 탭 안에 보이는 까닭과 할 일 */
+const NOT_READY_TEXT: Record<GpuProviderId, string> = {
+  AWS: '관리자가 서버 설정(자격 증명·시작 템플릿)을 마치면 여기서 켤 수 있어요. 지금은 RunPod 탭에서 켜세요.',
+  RUNPOD: '관리자가 서버 설정(API 키·템플릿)을 마쳐야 켤 수 있어요. AWS 탭에서 켜세요.',
+};
+
+function ProviderNotReady({
+  provider,
+  onSwitchProvider,
   onCancel,
 }: {
-  onLaunched: () => void;
+  provider: GpuProviderId;
+  onSwitchProvider?: (provider: GpuProviderId) => void;
   onCancel: () => void;
 }) {
-  const { offers, pending, error: offersError } = useGpuOffers(true);
+  const other: GpuProviderId = provider === 'AWS' ? 'RUNPOD' : 'AWS';
+  return (
+    <div className="flex flex-col gap-3 p-5" data-testid="gpu-provider-not-ready">
+      <p role="status" className="text-sm font-semibold">
+        {GPU_PROVIDER_LABEL[provider]} GPU 는 아직 준비 중입니다
+      </p>
+      <p className="text-sm text-muted-foreground">{NOT_READY_TEXT[provider]}</p>
+      <div className="flex justify-end gap-2">
+        <Button variant="secondary" onClick={onCancel}>
+          닫기
+        </Button>
+        {onSwitchProvider && (
+          <Button onClick={() => onSwitchProvider(other)}>
+            {GPU_PROVIDER_LABEL[other]} 탭으로
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * provider 를 주면 그 공급자의 재고 표를 보이고 켜기에 provider 를 싣는다(S15P31A101-841, 패널의 공급자 탭).
+ * 비우면 서버 기본 공급자(게이트 창). 공급자가 준비 안 됐으면 까닭과 다른 탭으로 가는 단추를 보인다.
+ */
+export function GpuLaunchForm({
+  provider,
+  onLaunched,
+  onCancel,
+  onSwitchProvider,
+}: {
+  provider?: GpuProviderId;
+  onLaunched: () => void;
+  onCancel: () => void;
+  onSwitchProvider?: (provider: GpuProviderId) => void;
+}) {
+  const { offers, pending, error: offersError } = useGpuOffers(true, provider);
   const { launch, pending: launching, error: launchError } = useGpuLaunch();
   const [picked, setPicked] = useState<Pick | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
   if (pending) return <p className="p-5 text-sm text-muted-foreground">재고를 확인하는 중…</p>;
+  if (
+    provider &&
+    offersError instanceof ApiError &&
+    offersError.code === GPU_ERROR.NOT_CONFIGURED
+  ) {
+    return (
+      <ProviderNotReady
+        provider={provider}
+        onSwitchProvider={onSwitchProvider}
+        onCancel={onCancel}
+      />
+    );
+  }
   if (offersError || !offers) {
     return (
       <div className="flex flex-col gap-3 p-5">
@@ -116,7 +182,10 @@ export function GpuLaunchForm({
   const submit = () => {
     if (!pick) return;
     // 기본 그대로면 서버가 고르게 비운다(그 사이 재고가 바뀌어도 같은 규칙으로 다시 고른다)
-    const body = picked === null ? {} : { gpu_type: pick.gpuType, region: pick.region };
+    const body = {
+      ...(provider ? { provider } : {}),
+      ...(picked === null ? {} : { gpu_type: pick.gpuType, region: pick.region }),
+    };
     launch(body, { onSuccess: onLaunched });
   };
 
@@ -194,12 +263,14 @@ export function GpuLaunchForm({
           <tbody>
             {visibleRows.map((g) => {
               const gpuName = shortGpuName(g.gpu_type, g.name);
+              // AWS 이름(「g7e.4xlarge · NVIDIA RTX PRO 6000 ×1」)은 길어 표가 잘리므로 종류와 GPU 를 두 줄로 나눈다(S15P31A101-841)
+              const [mainName, gpuDetail] = splitGpuName(gpuName);
               const usable = rowUsable(offers, g.gpu_type);
               return (
                 <tr key={g.gpu_type}>
                   <th scope="row" className="pr-2 text-left font-medium whitespace-nowrap">
                     <span className="flex items-center gap-1.5">
-                      {gpuName}
+                      {mainName}
                       {g.memory_gb != null && (
                         <span className="font-mono text-xs font-normal text-muted-foreground">
                           {g.memory_gb}GB
@@ -207,6 +278,11 @@ export function GpuLaunchForm({
                       )}
                       <RowBadge row={g} usable={usable} />
                     </span>
+                    {gpuDetail && (
+                      <span className="block text-xs font-normal text-muted-foreground">
+                        {gpuDetail}
+                      </span>
+                    )}
                   </th>
                   {visibleRegions.map((r) => {
                     const c = cellOf(offers, { gpuType: g.gpu_type, region: r.region });

@@ -80,6 +80,71 @@ describe('연습 빌드 GPU mock', () => {
     expect(await power()).toBe('CONNECTED');
   });
 
+  it('처음부터 켜진 GPU 는 기본 공급자 AWS 이고, 공급자를 실어 켜면 그 공급자로 남는다(S15P31A101-841)', async () => {
+    use(createGpuMock({ alwaysOn: true, now: () => NOW }).handlers);
+    const on = (await (await fetch(`${BASE}/api/gpu/sessions/current`)).json()) as {
+      launch: { provider: string };
+      session: { provider: string };
+    };
+    expect(on.launch.provider).toBe('AWS');
+    expect(on.session.provider).toBe('AWS');
+
+    const storage = memoryStorage();
+    use(createGpuMock({ storage, now: () => NOW }).handlers);
+    const offers = (await (await fetch(`${BASE}/api/gpu/offers?provider=RUNPOD`)).json()) as {
+      provider: string;
+    };
+    expect(offers.provider).toBe('RUNPOD');
+    const res = await fetch(`${BASE}/api/gpu/launches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'RUNPOD' }),
+    });
+    expect(((await res.json()) as { provider: string }).provider).toBe('RUNPOD');
+    use(createGpuMock({ storage, now: () => NOW }).handlers);
+    const again = (await (await fetch(`${BASE}/api/gpu/sessions/current`)).json()) as {
+      launch: { provider: string };
+    };
+    expect(again.launch.provider).toBe('RUNPOD');
+  });
+
+  it('AWS 재고는 g7e.4xlarge 한 행이고 다른 종류로는 켜지 않는다(S15P31A101-841, 예산)', async () => {
+    use(createGpuMock({ now: () => NOW }).handlers);
+    const aws = (await (await fetch(`${BASE}/api/gpu/offers?provider=AWS`)).json()) as {
+      gpu_types: { gpu_type: string }[];
+    };
+    expect(aws.gpu_types.map((g) => g.gpu_type)).toEqual(['g7e.4xlarge']);
+    const res = await fetch(`${BASE}/api/gpu/launches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'AWS', gpu_type: 'p5.48xlarge', region: 'ap-northeast-2a' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await power()).toBe('OFF');
+  });
+
+  it('공급자가 없는 옛 남긴 값은 RunPod 으로 읽는다', async () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      `${MOCK_STATE_PREFIX}gpu`,
+      JSON.stringify({
+        on: true,
+        launch: {
+          launch_id: 'l-old',
+          gpu_type: 'NVIDIA H100 80GB HBM3',
+          region: 'AP-JP-1',
+          price: 2.99,
+          requestedAt: NOW,
+        },
+      }),
+    );
+    use(createGpuMock({ storage, now: () => NOW }).handlers);
+    const status = (await (await fetch(`${BASE}/api/gpu/sessions/current`)).json()) as {
+      launch: { provider: string };
+    };
+    expect(status.launch.provider).toBe('RUNPOD');
+  });
+
   it('남긴 값이 깨졌으면 무시하고 처음 상태로 둔다', async () => {
     const storage = memoryStorage();
     storage.setItem(`${MOCK_STATE_PREFIX}gpu`, '{"on":true,"launch":{"launch_id":1}}');

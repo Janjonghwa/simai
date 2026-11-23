@@ -19,6 +19,7 @@ import {
 import type {
   GpuLaunchBody,
   GpuOffers,
+  GpuProviderId,
   GpuSettingsBody,
   GpuSettingsResponse,
   GpuStatus,
@@ -107,21 +108,29 @@ export function useCachedGpuIdleMinutes(): number {
   return data?.settings.auto_stop_idle_minutes ?? DEFAULT_AUTO_STOP_IDLE_MINUTES;
 }
 
-/** 이미 받아 둔 GPU 재고 표만 읽는다(새로 요청하지 않음) */
-export function useCachedGpuOffers(): GpuOffers | undefined {
+/** 이미 받아 둔 그 공급자의 GPU 재고 표만 읽는다(새로 요청하지 않음). 탭마다 따로 받으므로 응답의 provider 로 찾는다 */
+export function useCachedGpuOffers(provider: string): GpuOffers | undefined {
   const client = useQueryClient();
   const subscribe = useCallback(
     (onChange: () => void) => client.getQueryCache().subscribe(onChange),
     [client],
   );
-  return useSyncExternalStore(subscribe, () => client.getQueryData<GpuOffers>(GPU_OFFERS_KEY));
+  return useSyncExternalStore(subscribe, () =>
+    client
+      .getQueriesData<GpuOffers>({ queryKey: GPU_OFFERS_KEY })
+      .map(([, data]) => data)
+      .find((data) => data?.provider === provider),
+  );
 }
 
-/** 켜기 패널의 재고·가격 표. 패널을 열 때만 받는다(공급자 API 를 부른다) */
-export function useGpuOffers(enabled: boolean) {
+/**
+ * 켜기 패널의 재고·가격 표. 패널을 열 때만 받는다(공급자 API 를 부른다).
+ * provider 를 주면 그 공급자 탭의 표, 비우면 서버 기본 공급자의 표(게이트 창, S15P31A101-841)
+ */
+export function useGpuOffers(enabled: boolean, provider?: GpuProviderId) {
   const query = useQuery({
-    queryKey: GPU_OFFERS_KEY,
-    queryFn: ({ signal }) => requestGpuOffers(api, signal),
+    queryKey: [...GPU_OFFERS_KEY, provider ?? 'default'],
+    queryFn: ({ signal }) => requestGpuOffers(api, provider, signal),
     enabled,
     staleTime: 0,
     gcTime: 0,

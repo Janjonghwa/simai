@@ -4,6 +4,7 @@ import {
   GPU_PRESENCE_MIN_INTERVAL_MS,
   shouldSendGpuPresence,
 } from '@/features/gpu/useGpuPresence';
+import { problem } from '@/mocks/problem';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
@@ -165,7 +166,12 @@ const offers = {
 
 const server = setupServer(
   http.get('*/api/gpu/sessions/current', () => HttpResponse.json(current)),
-  http.get('*/api/gpu/offers', () => HttpResponse.json(offers)),
+  // S15P31A101-841: 운영 지금처럼 AWS 는 준비 안 됨(503), RunPod 은 재고 표
+  http.get('*/api/gpu/offers', ({ request }) =>
+    new URL(request.url).searchParams.get('provider') === 'AWS'
+      ? problem(503, 'GPU_PROVIDER_NOT_CONFIGURED', 'GPU 공급자 설정이 없습니다')
+      : HttpResponse.json(offers),
+  ),
   http.post('*/api/gpu/launches', async ({ request }) => {
     posts.push('launch');
     launchBodies.push(await request.json());
@@ -255,6 +261,12 @@ function renderIndicator() {
 
 const indicator = () => screen.getByTestId('gpu-indicator');
 
+/** 패널은 AWS 탭으로 열린다(S15P31A101-841). RunPod 재고 표를 보는 시험은 RunPod 탭으로 옮긴다 */
+async function openRunPodTab() {
+  const tab = await screen.findByRole('tab', { name: 'RunPod' });
+  act(() => fireEvent.click(tab));
+}
+
 describe('GpuIndicator', () => {
   it.each([
     ['OFF', {}, 'OFF', 'GPU 꺼짐'],
@@ -335,6 +347,7 @@ describe('GpuIndicator', () => {
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
+    await openRunPodTab();
     const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     expect(def.getAttribute('aria-pressed')).toBe('true');
     // 지역 머리글은 나라 이름 + 코드, 예상 준비 시간 안내
@@ -394,7 +407,7 @@ describe('GpuIndicator', () => {
     expect(posts).toEqual([]);
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     await waitFor(() => expect(posts).toEqual(['launch']));
-    expect(launchBodies).toEqual([{ gpu_type: PCIE, region: 'AP-JP-1' }]);
+    expect(launchBodies).toEqual([{ provider: 'RUNPOD', gpu_type: PCIE, region: 'AP-JP-1' }]);
   });
 
   it('켜기 패널: 칸이 모두 「없음」인 지역 열은 접고, 가로 스크롤 막대 없이, 미리 고른 칸에 「선호 1순위」를 단다(-752)', async () => {
@@ -422,6 +435,7 @@ describe('GpuIndicator', () => {
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
+    await openRunPodTab();
     const def = await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     expect(screen.queryByRole('columnheader', { name: /US-CA-2/ })).toBeNull();
     expect(screen.getByText(/재고 없음: .*US-CA-2/)).toBeTruthy();
@@ -441,6 +455,7 @@ describe('GpuIndicator', () => {
       renderIndicator();
       await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
       act(() => fireEvent.click(indicator()));
+      await openRunPodTab();
       const cell = await screen.findByRole('button', { name });
       act(() => fireEvent.click(cell));
       act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
@@ -449,7 +464,9 @@ describe('GpuIndicator', () => {
       expect(warning.getAttribute('role')).toBe('alert');
       expect(posts).toEqual([]);
       act(() => fireEvent.click(screen.getByRole('button', { name: '그래도 켜기' })));
-      await waitFor(() => expect(launchBodies).toEqual([{ gpu_type: gpu, region: 'AP-JP-1' }]));
+      await waitFor(() =>
+        expect(launchBodies).toEqual([{ provider: 'RUNPOD', gpu_type: gpu, region: 'AP-JP-1' }]),
+      );
     },
   );
 
@@ -459,22 +476,24 @@ describe('GpuIndicator', () => {
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
+    await openRunPodTab();
     await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     expect(screen.queryByTestId('gpu-tier-warning')).toBeNull();
     expect(screen.getByTestId('gpu-launch-confirm').textContent).toContain('H100 SXM (80GB)');
   });
 
-  it('기본 칸 그대로 켜면 서버가 고르게 빈 본문을 보낸다', async () => {
+  it('기본 칸 그대로 켜면 서버가 고르게 공급자만 싣는다', async () => {
     current = statusOf('OFF');
     signInAs('ADMIN');
     renderIndicator();
     await waitFor(() => expect(indicator().dataset.dot).toBe('OFF'));
     act(() => fireEvent.click(indicator()));
+    await openRunPodTab();
     await screen.findByRole('button', { name: 'H100 SXM EU-RO-1 켤 수 있음' });
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
     act(() => fireEvent.click(screen.getByRole('button', { name: '켜기' })));
-    await waitFor(() => expect(launchBodies).toEqual([{}]));
+    await waitFor(() => expect(launchBodies).toEqual([{ provider: 'RUNPOD' }]));
   });
 
   it('관제 중이면 끄기를 막고 까닭을 보이며, 아니면 다시 켤 때 걸리는 시간·이번 세션 비용을 보여 주고 확인 뒤 끈다(-733)', async () => {

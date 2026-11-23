@@ -4,13 +4,17 @@ import { http, HttpResponse } from 'msw/http';
 
 // GPU 켜기·끄기·설정 mock(S15P31A101-702). 서버(domain/gpu)와 같은 모양으로 답한다. 켜면 켜는 중 → 가중치 → 엔진 → 준비 완료를
 // 몇 초씩 지나 연결된다(실제는 5~7분). 끄면 꺼짐. 관제·세팅 막힘은 흉내 내지 않는다.
+// S15P31A101-841: AWS·RunPod 둘 다 준비된 것으로 두고 공급자별 재고 표(?provider=)를 주며 켜기의 provider 를 받는다. 기본 공급자는 AWS.
 
 export const GPU_MOCK_STEP_MS = 4_000;
 const STEP_MS = GPU_MOCK_STEP_MS;
 const STATE_KEY = 'gpu';
 
+type MockProvider = 'RUNPOD' | 'AWS';
+
 interface MockLaunch {
   launch_id: string;
+  provider: MockProvider;
   gpu_type: string;
   region: string;
   price: number;
@@ -28,6 +32,7 @@ export interface GpuMockOptions {
 }
 
 // 남긴 값: 끈 상태는 { on: false }, 켠 상태는 { on: true, launch }. 모양이 다르면 남기지 않은 것으로 본다.
+// launch.provider 는 S15P31A101-841 에 더했다. 그 전에 남긴 값(provider 없음)은 RunPod 으로 읽는다(그때는 RunPod 만 있었다).
 function readSavedLaunch(storage: MockStateStorage | null): MockLaunch | null | undefined {
   const saved = readMockState(storage, STATE_KEY);
   if (typeof saved !== 'object' || saved === null || !('on' in saved)) return undefined;
@@ -45,6 +50,7 @@ function readSavedLaunch(storage: MockStateStorage | null): MockLaunch | null | 
   }
   return {
     launch_id: l.launch_id,
+    provider: l.provider === 'AWS' ? 'AWS' : 'RUNPOD',
     gpu_type: l.gpu_type,
     region: l.region,
     price: l.price,
@@ -56,15 +62,17 @@ export function createGpuMock(options: GpuMockOptions = {}) {
   const now = options.now ?? Date.now;
   const storage = options.storage ?? null;
   const saved = options.alwaysOn ? undefined : readSavedLaunch(storage);
+  // 처음부터 켜진 GPU 는 기본 공급자 AWS 의 기본 종류(연습 빌드에서 패널이 AWS 탭으로 열린다, S15P31A101-841)
   let launch: MockLaunch | null =
     saved !== undefined
       ? saved
       : options.startReady || options.alwaysOn
         ? {
             launch_id: crypto.randomUUID(),
-            gpu_type: 'NVIDIA H100 80GB HBM3',
-            region: 'AP-JP-1',
-            price: 2.99,
+            provider: 'AWS',
+            gpu_type: 'g7e.4xlarge',
+            region: 'ap-northeast-2a',
+            price: 4.9155,
             requestedAt: now() - STEP_MS * 3,
           }
         : null;
@@ -89,10 +97,14 @@ export function createGpuMock(options: GpuMockOptions = {}) {
       return { session: null, server_time_ms: at, launch: null, power: 'OFF', stop_block: null };
     }
     const age = at - launch.requestedAt;
+    const instanceId =
+      launch.provider === 'AWS'
+        ? `i-0${launch.launch_id.replace(/-/g, '').slice(0, 16)}`
+        : `pod-${launch.launch_id.slice(0, 6)}`;
     const launchView = {
       launch_id: launch.launch_id,
       state: 'RUNNING',
-      provider: 'RUNPOD',
+      provider: launch.provider,
       gpu_type: launch.gpu_type,
       region: launch.region,
       cloud_type: settings.cloud_type,
@@ -100,7 +112,7 @@ export function createGpuMock(options: GpuMockOptions = {}) {
       price_per_hour_usd: launch.price,
       requested_by: 'admin1',
       requested_at_ms: launch.requestedAt,
-      instance_id: `pod-${launch.launch_id.slice(0, 6)}`,
+      instance_id: instanceId,
       ended_at_ms: null,
       end_reason: null,
       failure_code: null,
@@ -121,7 +133,7 @@ export function createGpuMock(options: GpuMockOptions = {}) {
         state: 'ACTIVE',
         stage,
         stage_reason_code: null,
-        provider: 'RUNPOD',
+        provider: launch.provider,
         instance_id: launchView.instance_id,
         gpu_type: launch.gpu_type,
         region: launch.region,
@@ -148,19 +160,56 @@ export function createGpuMock(options: GpuMockOptions = {}) {
     { id: 'NVIDIA GeForce RTX 4090', name: 'RTX 4090', mem: 24, price: 0.69 },
     { id: 'NVIDIA RTX A4000', name: 'RTX A4000', mem: 16, price: 0.25 },
   ];
+  // AWS 서울 GPU 인스턴스 흉내(이름은 서버 AwsGpuProvider 꼴, 가격은 서버 예비 가격표). 실시간 재고를 몰라 UNKNOWN(「모름」).
+  // 서버 허용 목록과 같이 g7e.4xlarge 하나만(사용자 결정 11-23, 예산 약 200달러)
+  const AWS_CATALOG = [
+    { id: 'g7e.4xlarge', name: 'g7e.4xlarge · NVIDIA RTX PRO 6000 ×1', mem: 96, price: 4.9155 },
+  ];
+  const AWS_ALLOWED = AWS_CATALOG.map((c) => c.id);
+  // 설정 공급자가 아니면 그 공급자의 서버 기본 선호(서버 GpuProperties.Defaults, AWS 는 g7e.4xlarge 먼저)
+  const prefsFor = (provider: MockProvider) =>
+    provider === settings.provider
+      ? {
+          gpus:
+            provider === 'AWS'
+              ? settings.preferred_gpu_types.filter((id) => AWS_ALLOWED.includes(id)).length > 0
+                ? settings.preferred_gpu_types.filter((id) => AWS_ALLOWED.includes(id))
+                : AWS_ALLOWED
+              : settings.preferred_gpu_types,
+          regions: settings.preferred_regions,
+          cap: settings.max_price_per_hour_usd,
+          cloud: settings.cloud_type,
+          interruptible: settings.interruptible,
+        }
+      : provider === 'AWS'
+        ? {
+            gpus: AWS_ALLOWED,
+            regions: ['ap-northeast-2a', 'ap-northeast-2b', 'ap-northeast-2c', 'ap-northeast-2d'],
+            cap: null,
+            cloud: 'SECURE',
+            interruptible: false,
+          }
+        : {
+            gpus: ['NVIDIA H100 80GB HBM3', 'NVIDIA H100 NVL', 'NVIDIA H100 PCIe'],
+            regions: ['AP-JP-1', 'OC-AU-1'],
+            cap: null,
+            cloud: 'SECURE',
+            interruptible: false,
+          };
   const tierOf = (mem: number) =>
     mem >= 74 ? 'RECOMMENDED' : mem >= 44 ? 'BELOW_RECOMMENDED' : mem >= 22 ? 'LIMITED' : 'RISKY';
   const recommendedOf = (name: string) => /(^|[^A-Za-z0-9])H(100|200)(?![0-9])/.test(name);
-  const rows = () => {
-    const known = new Set(CATALOG.map((c) => c.id));
+  const rows = (provider: MockProvider, gpus: string[]) => {
+    const catalog = provider === 'AWS' ? AWS_CATALOG : CATALOG;
+    const known = new Set(catalog.map((c) => c.id));
     const all = [
-      ...CATALOG,
-      ...settings.preferred_gpu_types
+      ...catalog,
+      ...gpus
         .filter((id) => !known.has(id))
         .map((id) => ({ id, name: id, mem: null as number | null, price: 1 })),
     ];
     const rank = (id: string) => {
-      const i = settings.preferred_gpu_types.indexOf(id);
+      const i = gpus.indexOf(id);
       return i < 0 ? Number.MAX_SAFE_INTEGER : i;
     };
     const tierRank = (mem: number | null) =>
@@ -177,56 +226,88 @@ export function createGpuMock(options: GpuMockOptions = {}) {
           (b.mem ?? -1) - (a.mem ?? -1),
       );
   };
-  const stockOf = (gi: number, ri: number) =>
-    gi === 1 && ri === 0 ? 'NONE' : (gi + ri) % 4 === 3 ? 'NONE' : 'HIGH';
+  const stockOf = (provider: MockProvider, gi: number, ri: number) => {
+    if (provider === 'AWS') return (gi + ri) % 4 === 3 ? 'NONE' : 'UNKNOWN'; // NONE = 설정 서브넷이 없는 가용 영역
+    return gi === 1 && ri === 0 ? 'NONE' : (gi + ri) % 4 === 3 ? 'NONE' : 'HIGH';
+  };
+  const availableOf = (stock: string) =>
+    stock === 'NONE' ? false : stock === 'UNKNOWN' ? null : true;
 
-  const offers = () => {
-    const list = rows();
+  const offers = (provider: MockProvider) => {
+    const prefs = prefsFor(provider);
+    const list = rows(provider, prefs.gpus);
     const cells = list.flatMap((g, gi) =>
-      settings.preferred_regions.map((r, ri) => {
-        const stock = stockOf(gi, ri);
+      prefs.regions.map((r, ri) => {
+        const stock = stockOf(provider, gi, ri);
         return {
           gpu_type: g.id,
           region: r,
           stock,
-          available: stock !== 'NONE',
+          available: availableOf(stock),
           price_per_hour_usd: g.price,
-          within_cap:
-            settings.max_price_per_hour_usd === null || g.price <= settings.max_price_per_hour_usd,
+          within_cap: prefs.cap === null || g.price <= prefs.cap,
         };
       }),
     );
-    const usable = (id: string, r: string) =>
-      cells.some((c) => c.gpu_type === id && c.region === r && c.available && c.within_cap);
-    const order = [...list.filter((g) => g.rec).map((g) => g.id), ...settings.preferred_gpu_types];
+    // 서버 autoPick 과 같다: 추천 중 켤 수 있다고 확인된 칸 → 선호 GPU 순서로 재고가 있거나 모르는 칸
+    const cellOk = (id: string, r: string, known: boolean) =>
+      cells.some(
+        (c) =>
+          c.gpu_type === id &&
+          c.region === r &&
+          (known ? c.available === true : c.stock !== 'NONE') &&
+          c.within_cap,
+      );
     let pick: { gpu_type: string; region: string } | null = null;
-    for (const id of order) {
-      const r = settings.preferred_regions.find((region) => usable(id, region));
-      if (r) {
-        pick = { gpu_type: id, region: r };
-        break;
+    const passes: Array<[string[], boolean]> = [
+      [list.filter((g) => g.rec).map((g) => g.id), true],
+      [prefs.gpus, false],
+    ];
+    for (const [ids, known] of passes) {
+      for (const id of ids) {
+        const r = prefs.regions.find((region) => cellOk(id, region, known));
+        if (r) {
+          pick = { gpu_type: id, region: r };
+          break;
+        }
       }
+      if (pick) break;
     }
     return {
-      provider: settings.provider,
-      cloud_type: settings.cloud_type,
-      interruptible: settings.interruptible,
-      max_price_per_hour_usd: settings.max_price_per_hour_usd,
-      gpu_types: list.map((g) => ({
-        gpu_type: g.id,
-        name: g.name,
-        memory_gb: g.mem,
-        preferred: settings.preferred_gpu_types.includes(g.id),
-        recommended: g.rec,
-        tier: g.mem === null ? null : tierOf(g.mem),
-        available: cells.some((c) => c.gpu_type === g.id && c.available),
-      })),
-      regions: settings.preferred_regions.map((r) => ({ region: r, name: r, preferred: true })),
+      provider,
+      cloud_type: prefs.cloud,
+      interruptible: prefs.interruptible,
+      max_price_per_hour_usd: prefs.cap,
+      gpu_types: list.map((g) => {
+        const rowCells = cells.filter((c) => c.gpu_type === g.id);
+        return {
+          gpu_type: g.id,
+          name: g.name,
+          memory_gb: g.mem,
+          preferred: prefs.gpus.includes(g.id),
+          recommended: g.rec,
+          tier: g.mem === null ? null : tierOf(g.mem),
+          available: rowCells.some((c) => c.available === true)
+            ? true
+            : rowCells.some((c) => c.available === null)
+              ? null
+              : false,
+        };
+      }),
+      regions: prefs.regions.map((r) => ({ region: r, name: r, preferred: true })),
       cells,
       default: pick,
       fetched_at_ms: Date.now(),
     };
   };
+  // 두 공급자 모두 준비됐다고 흉내 내므로 서버 규칙(AWS 준비 → AWS)대로 기본은 AWS
+  const DEFAULT_PROVIDER: MockProvider = 'AWS';
+  const providerOf = (value: unknown): MockProvider | null =>
+    value === undefined || value === null || value === ''
+      ? DEFAULT_PROVIDER
+      : value === 'AWS' || value === 'RUNPOD'
+        ? value
+        : null;
 
   const settingsView = () => ({
     version_id: settingsVersion,
@@ -236,20 +317,32 @@ export function createGpuMock(options: GpuMockOptions = {}) {
 
   const handlers = [
     http.get('*/api/gpu/sessions/current', () => HttpResponse.json(status())),
-    http.get('*/api/gpu/offers', () => HttpResponse.json(offers())),
+    http.get('*/api/gpu/offers', ({ request }) => {
+      const provider = providerOf(new URL(request.url).searchParams.get('provider'));
+      if (!provider) return problem(400, 'INVALID_GPU_SETTINGS', 'GPU 설정 값이 올바르지 않습니다');
+      return HttpResponse.json(offers(provider));
+    }),
     http.post('*/api/gpu/launches', async ({ request }) => {
-      if (launch) return problem(409, 'GPU_ALREADY_ON', 'GPU 가 이미 켜져 있거나 켜는 중입니다');
       const body = (await request.json().catch(() => ({}))) as {
+        provider?: string;
         gpu_type?: string;
         region?: string;
       };
-      const o = offers();
+      const provider = providerOf(body.provider);
+      if (!provider) return problem(400, 'INVALID_GPU_SETTINGS', 'GPU 설정 값이 올바르지 않습니다');
+      if (launch) return problem(409, 'GPU_ALREADY_ON', 'GPU 가 이미 켜져 있거나 켜는 중입니다');
+      const o = offers(provider);
+      // 서버처럼 AWS 는 허용 목록 밖 종류를 켜지 않는다
+      if (provider === 'AWS' && body.gpu_type && !AWS_ALLOWED.includes(body.gpu_type)) {
+        return problem(400, 'INVALID_GPU_SETTINGS', 'GPU 설정 값이 올바르지 않습니다');
+      }
       const pick =
         body.gpu_type && body.region ? { gpu_type: body.gpu_type, region: body.region } : o.default;
       if (!pick) return problem(409, 'GPU_OUT_OF_STOCK', '재고가 없습니다');
       const cell = o.cells.find((c) => c.gpu_type === pick.gpu_type && c.region === pick.region);
       launch = {
         launch_id: crypto.randomUUID(),
+        provider,
         gpu_type: pick.gpu_type,
         region: pick.region,
         price: cell?.price_per_hour_usd ?? 2.99,
@@ -276,8 +369,8 @@ export function createGpuMock(options: GpuMockOptions = {}) {
       HttpResponse.json({
         settings: settingsView(),
         providers: [
-          { id: 'RUNPOD', configured: true },
-          { id: 'AWS', configured: false },
+          { id: 'RUNPOD', configured: true, default: false },
+          { id: 'AWS', configured: true, default: true },
         ],
       }),
     ),

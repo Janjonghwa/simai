@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.gpu;
 import com.ssafy.simai.domain.gpu.GpuActivity.Busy;
 import com.ssafy.simai.domain.gpu.GpuSessionService.EndReason;
 import com.ssafy.simai.domain.gpu.GpuSettingsService.GpuSettings;
+import com.ssafy.simai.domain.gpu.provider.AwsGpuProvider;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.CreatedInstance;
 import com.ssafy.simai.domain.gpu.provider.GpuProvider.GpuOffer;
@@ -174,17 +175,59 @@ public class GpuPowerService {
         lastPresence = now();
     }
 
-    // ---------------------------------------------------------------- 재고
+    // ---------------------------------------------------------------- 기본 공급자
 
     /**
-     * 지금 설정의 공급자 재고 표와 기본 선택(S15P31A101-705: 행은 공급자 카탈로그의 모든 GPU, 선호 목록은 정렬·기본 선택용).
-     * 행은 추천(H100·H200 계열) → VRAM 등급 → 선호 순서 → VRAM 큰 순 → 이름 순이고, 칸마다 켤 수 있음(available: true·false·모름 null)을 준다.
-     * 기존 stock 칸은 그대로 둔다(추가만).
+     * 켜기 기본 공급자(S15P31A101-841, 설계 docs/design/S15P31A101-841-gpu-provider-tabs.md). AWS 가 켤 수 있게 준비됐으면(서버 설정 configured +
+     * GPU 설정의 시작 템플릿) AWS, 아니면 RunPod. 공급자를 정하지 않은 재고 조회·켜기(게이트 창 등)가 쓴다. GPU 설정의 provider 는
+     * 「선호값이 어느 공급자의 것인지」만 뜻하고 기본 공급자를 정하지 않는다.
      */
+    public String defaultProvider() {
+        return defaultProvider(settings.current());
+    }
+
+    private String defaultProvider(GpuSettings s) {
+        boolean awsReady = s.awsLaunchTemplateId() != null
+                && providers.find(AwsGpuProvider.ID).map(GpuProvider::configured).orElse(false);
+        return awsReady ? AwsGpuProvider.ID : RunPodProvider.ID;
+    }
+
+    /**
+     * 공급자 하나로 쓸 설정. onlyPreferred 면 재고 표 행과 켤 수 있는 종류를 선호 목록으로만 한정한다(S15P31A101-841):
+     * 설정 공급자가 아닌 공급자(서버 기본 선호)와 AWS(허용 목록 g7e.4xlarge 만. 카탈로그의 p5.48xlarge 시간당 약 76달러가 예산 약 200달러를 한 번에 태울 수 있다).
+     * 설정 공급자인 RunPod 은 지금처럼 카탈로그 전체(-705).
+     */
+    private record Scoped(GpuSettings settings, boolean onlyPreferred) {
+    }
+
+    /** 요청한 공급자(없으면 기본 공급자)와 그 공급자로 쓸 설정. 모르는 공급자 ID 는 INVALID_GPU_SETTINGS(400) */
+    private Scoped settingsFor(String requested) {
+        GpuSettings current = settings.current();
+        String id = requested == null ? defaultProvider(current) : requested;
+        if (!GpuSettingsService.PROVIDERS.contains(id)) {
+            throw new BusinessException(ErrorCode.Gpu.INVALID_GPU_SETTINGS);
+        }
+        return new Scoped(settings.forProvider(current, id), AwsGpuProvider.ID.equals(id) || !id.equals(current.provider()));
+    }
+
+    // ---------------------------------------------------------------- 재고
+
+    /** 기본 공급자의 재고 표({@link #offers(String)}) */
     public ObjectNode offers() {
-        GpuSettings s = settings.current();
+        return offers(null);
+    }
+
+    /**
+     * 공급자 하나의 재고 표와 기본 선택(S15P31A101-705: 행은 공급자 카탈로그의 모든 GPU, 선호 목록은 정렬·기본 선택용).
+     * 행은 추천(H100·H200 계열) → VRAM 등급 → 선호 순서 → VRAM 큰 순 → 이름 순이고, 칸마다 켤 수 있음(available: true·false·모름 null)을 준다.
+     * 기존 stock 칸은 그대로 둔다(추가만). providerId 가 null 이면 기본 공급자, 설정 공급자가 아니면 그 공급자의 서버 기본 선호로 고른다(S15P31A101-841).
+     * 준비 안 된 공급자는 GPU_PROVIDER_NOT_CONFIGURED(503).
+     */
+    public ObjectNode offers(String providerId) {
+        Scoped scoped = settingsFor(providerId);
+        GpuSettings s = scoped.settings();
         GpuProvider provider = configuredProvider(s.provider());
-        List<GpuOffer> all = fetchOffers(provider, s);
+        List<GpuOffer> all = fetchOffers(provider, s, scoped.onlyPreferred());
         Table table = table(s, all);
         ObjectNode body = mapper.createObjectNode();
         body.put("provider", s.provider());
@@ -258,12 +301,20 @@ public class GpuPowerService {
 
     // ---------------------------------------------------------------- 켜기
 
+    /** 기본 공급자로 켠다({@link #launch(Long, String, String, String)}) */
+    public ObjectNode launch(Long userId, String gpuType, String region) {
+        return launch(userId, null, gpuType, region);
+    }
+
     /**
-     * 켠다. gpuType·region 이 없으면 추천 → 선호 순서 × 선호 지역 × 재고 × 가격 상한으로 고른다(autoPick). 이미 켜져 있거나 켜는 중이면 GPU_ALREADY_ON.
+     * 켠다. providerId 가 없으면 기본 공급자(AWS 준비됐으면 AWS, 아니면 RunPod, S15P31A101-841). gpuType·region 이 없으면 추천 → 선호 순서 ×
+     * 선호 지역 × 재고 × 가격 상한으로 고른다(autoPick, 설정 공급자가 아니면 그 공급자의 서버 기본 선호). 공급자별 템플릿은 지금 설정 버전 것을 쓴다.
+     * 이미 켜져 있거나 켜는 중이면 공급자와 무관하게 GPU_ALREADY_ON(한 시점에 GPU 하나, 명세 3.12).
      * @return 켠 요청 보기(launch)
      */
-    public ObjectNode launch(Long userId, String gpuType, String region) {
-        GpuSettings s = settings.current();
+    public ObjectNode launch(Long userId, String providerId, String gpuType, String region) {
+        Scoped scoped = settingsFor(providerId);
+        GpuSettings s = scoped.settings();
         GpuProvider provider = configuredProvider(s.provider());
         if (templateFor(provider.id(), s) == null) {
             throw new BusinessException(ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED); // RunPod 템플릿·AWS 시작 템플릿이 없다
@@ -277,15 +328,16 @@ public class GpuPowerService {
         }
         // 이미 켜져 있으면 재고를 묻기 전에 거부한다
         ensureNothingOn();
-        List<GpuOffer> all = fetchOffers(provider, s);
+        List<GpuOffer> all = fetchOffers(provider, s, scoped.onlyPreferred());
         GpuOffer chosen;
         boolean auto = gpuType == null && region == null;
         if (auto) {
             chosen = autoPick(s, all).orElseThrow(() -> new BusinessException(
                     anyInStock(s, all) ? ErrorCode.Gpu.GPU_PRICE_OVER_CAP : ErrorCode.Gpu.GPU_OUT_OF_STOCK));
         } else {
-            if (gpuType == null || region == null || !GPU_TYPE.matcher(gpuType).matches() || !REGION.matcher(region).matches()) {
-                throw new BusinessException(ErrorCode.Gpu.INVALID_GPU_SETTINGS);
+            if (gpuType == null || region == null || !GPU_TYPE.matcher(gpuType).matches() || !REGION.matcher(region).matches()
+                    || scoped.onlyPreferred() && !s.gpuTypes().contains(gpuType)) {
+                throw new BusinessException(ErrorCode.Gpu.INVALID_GPU_SETTINGS); // 선호 목록 밖 종류(표에 없는 칸)는 API 로도 켜지 않는다
             }
             chosen = all.stream().filter(o -> gpuType.equals(o.gpuType()) && region.equals(o.region()) && o.inStock()).findFirst()
                     .orElseThrow(() -> new BusinessException(ErrorCode.Gpu.GPU_OUT_OF_STOCK));
@@ -718,13 +770,17 @@ public class GpuPowerService {
         return provider;
     }
 
-    private List<GpuOffer> fetchOffers(GpuProvider provider, GpuSettings s) {
-        // 후보 = 선호 목록 + 공급자 카탈로그 후보(AWS 처럼 물어볼 종류를 알아야 하는 공급자, S15P31A101-705). RunPod 은 목록 전체를 준다
+    private List<GpuOffer> fetchOffers(GpuProvider provider, GpuSettings s, boolean onlyPreferred) {
+        // 후보 = 선호 목록 + 공급자 카탈로그 후보(AWS 처럼 물어볼 종류를 알아야 하는 공급자, S15P31A101-705). RunPod 은 목록 전체를 준다.
+        // onlyPreferred(S15P31A101-841)면 선호 목록만 묻고 답에서도 선호 목록 밖은 버린다
         Set<String> candidates = new LinkedHashSet<>(s.gpuTypes());
-        candidates.addAll(provider.catalogGpuTypes());
+        if (!onlyPreferred) {
+            candidates.addAll(provider.catalogGpuTypes());
+        }
         try {
-            return listed(s, provider.offers(new OfferQuery(s.cloudType(), 1, List.copyOf(candidates), s.regions(), s.interruptible(),
-                    network(provider.id(), s))));
+            List<GpuOffer> offers = listed(s, provider.offers(new OfferQuery(s.cloudType(), 1, List.copyOf(candidates), s.regions(),
+                    s.interruptible(), network(provider.id(), s))));
+            return onlyPreferred ? offers.stream().filter(o -> s.gpuTypes().contains(o.gpuType())).toList() : offers;
         } catch (GpuProviderException e) {
             log.warn("GPU 재고 조회 실패: {}", e.code());
             throw new BusinessException("NOT_CONFIGURED".equals(e.code()) ? ErrorCode.Gpu.GPU_PROVIDER_NOT_CONFIGURED

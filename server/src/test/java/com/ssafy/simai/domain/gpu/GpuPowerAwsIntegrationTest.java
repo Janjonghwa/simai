@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.ssafy.simai.domain.gpu.provider.AwsGpuApi;
 import com.ssafy.simai.domain.gpu.provider.AwsGpuProvider;
 import com.ssafy.simai.domain.gpu.provider.FakeAwsGpuApi;
+import com.ssafy.simai.domain.gpu.provider.RunPodProvider;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.properties.GpuProperties;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
@@ -54,6 +55,7 @@ class GpuPowerAwsIntegrationTest {
     private static final String IMAGE = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/simai/tier0@sha256:" + "b".repeat(64);
     private static final String G6E = "g6e.2xlarge";
     private static final String G7E = "g7e.2xlarge";
+    private static final String G7E4 = "g7e.4xlarge";
 
     @Autowired
     MockMvc mvc;
@@ -78,6 +80,9 @@ class GpuPowerAwsIntegrationTest {
 
     @Autowired
     GpuProperties properties;
+
+    @Autowired
+    RunPodProvider runpod;
 
     private final FakeAwsGpuApi api = new FakeAwsGpuApi();
     private String admin;
@@ -111,11 +116,16 @@ class GpuPowerAwsIntegrationTest {
         api.subnets.put("subnet-0ddd3333eeee4444f", "ap-northeast-2b");
         api.onDemand.put(G6E, new BigDecimal("2.7565"));
         api.onDemand.put(G7E, new BigDecimal("4.1348"));
+        // S15P31A101-841: AWS 허용 목록은 g7e.4xlarge 하나(사용자 결정 11-23). 2c 는 설정 서브넷이 없어 NONE
+        api.zones.put(G7E4, Set.of("ap-northeast-2a", "ap-northeast-2b", "ap-northeast-2c"));
+        api.specs.put(G7E4, new AwsGpuApi.GpuSpec("NVIDIA RTX PRO 6000", 1, 96));
+        api.onDemand.put(G7E4, new BigDecimal("4.9155"));
     }
 
     @AfterEach
     void tearDown() {
         awsProvider.useApi(new FakeAwsGpuApi(), properties.aws()); // 기본(꺼짐)으로 되돌린다
+        runpod.useEndpoints("https://api.runpod.io/v2", "https://api.runpod.io", "");
     }
 
     @Test
@@ -124,10 +134,12 @@ class GpuPowerAwsIntegrationTest {
         save(awsSettings("lt-0123456789abcdef0", false)).andExpect(status().isCreated());
         mvc.perform(get("/api/gpu/settings").header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(jsonPath("$.providers[1].id").value("AWS"))
-                .andExpect(jsonPath("$.providers[1].configured").value(false));
-        mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.providers[1].configured").value(false))
+                .andExpect(jsonPath("$.providers[1].default").value(false))
+                .andExpect(jsonPath("$.providers[0].default").value(true)); // S15P31A101-841: AWS 가 준비 안 됐으면 RunPod 이 기본
+        mvc.perform(get("/api/gpu/offers").param("provider", "AWS").header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("GPU_PROVIDER_NOT_CONFIGURED"));
-        launch().andExpect(status().isServiceUnavailable());
+        launch("AWS").andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("GPU_PROVIDER_NOT_CONFIGURED"));
         assertThat(api.calls).isEmpty();
     }
 
@@ -142,30 +154,34 @@ class GpuPowerAwsIntegrationTest {
                 .andExpect(jsonPath("$.settings.provider").value("AWS"))
                 .andExpect(jsonPath("$.providers[1].configured").value(true));
 
-        // 선호 종류 g6e 먼저, 선호 가용 영역 2a 먼저. 실시간 재고를 모르니 UNKNOWN(고를 수 있음), 서브넷 없는 2c 는 NONE
-        // S15P31A101-705: 선호 밖 카탈로그 종류(p5.48xlarge, H100)도 행으로 위에 보이지만 재고를 모르니 기본은 선호 g6e 다
+        // 선호 가용 영역 2a 먼저. 실시간 재고를 모르니 UNKNOWN(고를 수 있음)
+        // S15P31A101-841: AWS 표는 허용 목록(g7e.4xlarge)만 행이 된다. 저장한 선호(g6e·g7e.2xlarge)와 카탈로그의 p5.48xlarge(시간당 약 76달러,
+        // 예산 약 200달러)는 묻지도 싣지도 않는다
         api.zones.put("p5.48xlarge", Set.of("ap-northeast-2a"));
         api.specs.put("p5.48xlarge", new AwsGpuApi.GpuSpec("NVIDIA H100", 8, 80));
-        // S15P31A101-713: GPU 정보(이름·VRAM)를 못 받은 선호 밖 종류(g5.xlarge)는 행이 되지 않는다. 선호 g7e 는 정보가 없어도 행이 있다
         api.zones.put("g5.xlarge", Set.of("ap-northeast-2a"));
         mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.provider").value("AWS"))
-                .andExpect(jsonPath("$.default.gpu_type").value(G6E))
+                .andExpect(jsonPath("$.default.gpu_type").value(G7E4))
                 .andExpect(jsonPath("$.default.region").value("ap-northeast-2a"))
-                .andExpect(jsonPath("$.gpu_types[0].gpu_type").value("p5.48xlarge"))
-                .andExpect(jsonPath("$.gpu_types[0].recommended").value(true))
+                .andExpect(jsonPath("$.gpu_types.length()").value(1))
+                .andExpect(jsonPath("$.gpu_types[0].gpu_type").value(G7E4))
+                .andExpect(jsonPath("$.gpu_types[0].name").value(G7E4 + " · NVIDIA RTX PRO 6000 ×1"))
                 .andExpect(jsonPath("$.gpu_types[0].tier").value("RECOMMENDED"))
                 .andExpect(jsonPath("$.gpu_types[0].available").isEmpty())
-                .andExpect(jsonPath("$.gpu_types[1].name").value(G6E + " · NVIDIA L40S ×1"))
-                .andExpect(jsonPath("$.gpu_types[1].tier").value("BELOW_RECOMMENDED"))
-                .andExpect(jsonPath("$.gpu_types.length()").value(3))
-                .andExpect(jsonPath("$.gpu_types[2].gpu_type").value(G7E))
-                .andExpect(jsonPath("$.cells[2].gpu_type").value(G6E))
-                .andExpect(jsonPath("$.cells[2].region").value("ap-northeast-2a"))
-                .andExpect(jsonPath("$.cells[2].stock").value("UNKNOWN"))
-                .andExpect(jsonPath("$.cells[2].available").isEmpty())
-                .andExpect(jsonPath("$.cells[2].price_per_hour_usd").value(2.7565));
+                .andExpect(jsonPath("$.cells[0].gpu_type").value(G7E4))
+                .andExpect(jsonPath("$.cells[0].region").value("ap-northeast-2a"))
+                .andExpect(jsonPath("$.cells[0].stock").value("UNKNOWN"))
+                .andExpect(jsonPath("$.cells[0].available").isEmpty())
+                .andExpect(jsonPath("$.cells[0].price_per_hour_usd").value(4.9155));
+        assertThat(api.calls).noneMatch(c -> c.contains("p5.48xlarge") || c.contains(G6E) || c.contains(G7E));
+        // 허용 목록 밖 종류는 API 로도 켜지 않는다(저장한 선호에 있어도)
+        for (String type : new String[] {"p5.48xlarge", G7E, "g6e.4xlarge", G6E}) {
+            launchCell("AWS", type, "ap-northeast-2a").andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_GPU_SETTINGS"));
+        }
+        assertThat(api.runs).isEmpty();
 
         JsonNode launch = mapper.readTree(launch().andExpect(status().isCreated()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8));
@@ -173,17 +189,17 @@ class GpuPowerAwsIntegrationTest {
         assertThat(launch.get("instance_id").stringValue()).isEqualTo("i-0123456789abcdef0");
         AwsGpuApi.RunRequest run = api.runs.getFirst();
         assertThat(run.launchTemplateId()).isEqualTo("lt-0123456789abcdef0");
-        assertThat(run.instanceType()).isEqualTo(G6E);
+        assertThat(run.instanceType()).isEqualTo(G7E4);
         assertThat(run.subnetId()).isEqualTo("subnet-0aaa1111bbbb2222c");
         assertThat(run.securityGroupIds()).containsExactly("sg-0123456789abcdef0");
         assertThat(run.spot()).isFalse();
         assertThat(run.clientToken()).isEqualTo(launch.get("launch_id").stringValue());
         String script = new String(Base64.getDecoder().decode(run.userDataBase64()), StandardCharsets.UTF_8);
         assertThat(script).contains("\nSIMAI_GPU_PROVIDER=AWS\n").contains("\nSIMAI_EC2_BASE_URL=https://ec2.test\n")
-                .contains("\nSIMAI_PRICE_PER_HOUR_USD=2.7565\n").contains("\nSIMAI_SECRETS_SOURCE=aws-secretsmanager\n")
+                .contains("\nSIMAI_PRICE_PER_HOUR_USD=4.9155\n").contains("\nSIMAI_SECRETS_SOURCE=aws-secretsmanager\n")
                 .doesNotContain("SIMAI_GPU_BOOT_SECRET=").doesNotContain("RUNPOD_SECRET");
         assertThat(jdbc.queryForObject("SELECT provider || '/' || gpu_type || '/' || region FROM gpu_launch WHERE launch_id = ?::uuid",
-                String.class, launch.get("launch_id").stringValue())).isEqualTo("AWS/" + G6E + "/ap-northeast-2a");
+                String.class, launch.get("launch_id").stringValue())).isEqualTo("AWS/" + G7E4 + "/ap-northeast-2a");
         current().andExpect(jsonPath("$.power").value("STARTING"));
 
         mvc.perform(post("/api/gpu/stop").header(HttpHeaders.AUTHORIZATION, admin)).andExpect(status().isNoContent());
@@ -195,11 +211,11 @@ class GpuPowerAwsIntegrationTest {
     void 시작_템플릿이_없으면_켜지_않고_용량_없음은_재고_없음으로_남긴다() throws Exception {
         awsProvider.useApi(api, enabled());
         save(awsSettings(null, true)).andExpect(status().isCreated());
-        launch().andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("GPU_PROVIDER_NOT_CONFIGURED"));
+        launch("AWS").andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("GPU_PROVIDER_NOT_CONFIGURED"));
         assertThat(api.runs).isEmpty();
 
         save(awsSettings("lt-0123456789abcdef0", true)).andExpect(status().isCreated());
-        api.spot.put(G6E + "\nap-northeast-2a", new BigDecimal("1.4211"));
+        api.spot.put(G7E4 + "\nap-northeast-2a", new BigDecimal("1.4211"));
         api.runFailure = new com.ssafy.simai.domain.gpu.provider.GpuProviderException("OUT_OF_STOCK", "AWS 용량 없음");
         launch().andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("GPU_OUT_OF_STOCK"));
         current().andExpect(jsonPath("$.launch.state").value("FAILED")).andExpect(jsonPath("$.launch.failure_code").value("OUT_OF_STOCK"))
@@ -221,7 +237,116 @@ class GpuPowerAwsIntegrationTest {
         save(badTemplate).andExpect(status().isBadRequest());
     }
 
+    // ---- S15P31A101-841 공급자 탭
+
+    @Test
+    void 기본_공급자는_AWS_가_준비되면_AWS_이고_시작_템플릿이_없으면_RunPod_이다() throws Exception {
+        awsProvider.useApi(api, enabled());
+        save(awsSettings(null, false)).andExpect(status().isCreated());
+        assertThat(power.defaultProvider()).isEqualTo("RUNPOD"); // 서버 설정은 됐지만 시작 템플릿이 없어 켤 수 없다
+        save(runpodSettingsWithAwsTemplate()).andExpect(status().isCreated());
+        assertThat(power.defaultProvider()).isEqualTo("AWS"); // 설정 공급자(선호값 주인)가 RunPod 이어도 AWS 가 기본
+        mvc.perform(get("/api/gpu/settings").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(jsonPath("$.settings.provider").value("RUNPOD"))
+                .andExpect(jsonPath("$.providers[0].id").value("RUNPOD"))
+                .andExpect(jsonPath("$.providers[0].default").value(false))
+                .andExpect(jsonPath("$.providers[1].id").value("AWS"))
+                .andExpect(jsonPath("$.providers[1].default").value(true));
+        FakeAwsGpuApi noCredentials = new FakeAwsGpuApi();
+        noCredentials.credentials = false; // 자격 증명이 없으면(준비 안 됨) 다시 RunPod
+        awsProvider.useApi(noCredentials, enabled());
+        assertThat(power.defaultProvider()).isEqualTo("RUNPOD");
+    }
+
+    @Test
+    void 설정_공급자가_아닌_AWS_를_고르면_서버_기본_선호로_재고와_켜기를_하고_시작_템플릿은_설정_것을_쓴다() throws Exception {
+        awsProvider.useApi(api, enabled());
+        api.zones.put(G7E4, Set.of("ap-northeast-2b", "ap-northeast-2c"));
+        save(runpodSettingsWithAwsTemplate()).andExpect(status().isCreated());
+
+        // 선호값은 RunPod 것이라 AWS 는 서버 기본 선호(g7e.4xlarge 먼저, 가용 영역 2a → 2d)를 쓴다. 2a 에는 g7e.4xlarge 가 없다.
+        // 표 행은 g7e.4xlarge 하나뿐이다(카탈로그의 p5.48xlarge·g6e 없음)
+        api.zones.put("p5.48xlarge", Set.of("ap-northeast-2a"));
+        api.specs.put("p5.48xlarge", new AwsGpuApi.GpuSpec("NVIDIA H100", 8, 80));
+        String body = mvc.perform(get("/api/gpu/offers").param("provider", "AWS").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(mapper.readTree(body).get("gpu_types").valueStream().map(g -> g.get("gpu_type").stringValue()).toList())
+                .containsExactly(G7E4);
+        for (String type : new String[] {"p5.48xlarge", G7E, "g6e.4xlarge"}) {
+            launchCell("AWS", type, "ap-northeast-2b").andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_GPU_SETTINGS"));
+        }
+        assertThat(api.runs).isEmpty();
+        mvc.perform(get("/api/gpu/offers").param("provider", "AWS").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.provider").value("AWS"))
+                .andExpect(jsonPath("$.interruptible").value(false))
+                .andExpect(jsonPath("$.default.gpu_type").value("g7e.4xlarge"))
+                .andExpect(jsonPath("$.default.region").value("ap-northeast-2b"));
+        mvc.perform(get("/api/gpu/offers").param("provider", "GCP").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_GPU_SETTINGS"));
+
+        // provider 를 실어 켜면 AWS 로, 시작 템플릿·서브넷·보안 그룹은 지금 설정 버전 것
+        JsonNode launch = mapper.readTree(launch("AWS").andExpect(status().isCreated()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8));
+        assertThat(launch.get("provider").stringValue()).isEqualTo("AWS");
+        assertThat(launch.get("gpu_type").stringValue()).isEqualTo("g7e.4xlarge");
+        AwsGpuApi.RunRequest run = api.runs.getFirst();
+        assertThat(run.launchTemplateId()).isEqualTo("lt-0123456789abcdef0");
+        assertThat(run.instanceType()).isEqualTo("g7e.4xlarge");
+        assertThat(run.subnetId()).isEqualTo("subnet-0ddd3333eeee4444f");
+        assertThat(run.securityGroupIds()).containsExactly("sg-0123456789abcdef0");
+
+        // 켜는 중이면 다른 공급자로도 켜지 않는다(한 시점에 GPU 하나). RunPod 키만 있으면 되고 RunPod 은 부르지 않는다
+        runpod.useEndpoints("http://127.0.0.1:1/v2", "http://127.0.0.1:1", "test-only-runpod-key");
+        launch("RUNPOD").andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("GPU_ALREADY_ON"));
+        launch(null).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("GPU_ALREADY_ON"));
+        assertThat(api.runs).hasSize(1);
+        mvc.perform(post("/api/gpu/stop").header(HttpHeaders.AUTHORIZATION, admin)).andExpect(status().isNoContent());
+        assertThat(api.terminated).containsExactly("i-0123456789abcdef0");
+    }
+
+    @Test
+    void 공급자_없이_켜면_기본_공급자_AWS_로_켠다() throws Exception {
+        awsProvider.useApi(api, enabled());
+        api.zones.put("g7e.4xlarge", Set.of("ap-northeast-2a"));
+        save(runpodSettingsWithAwsTemplate()).andExpect(status().isCreated());
+        mvc.perform(get("/api/gpu/offers").header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.provider").value("AWS"));
+        launch().andExpect(status().isCreated()).andExpect(jsonPath("$.provider").value("AWS"))
+                .andExpect(jsonPath("$.gpu_type").value("g7e.4xlarge")).andExpect(jsonPath("$.region").value("ap-northeast-2a"));
+        assertThat(api.runs).hasSize(1);
+    }
+
     // ---- 도우미
+
+    /** 설정 공급자 RunPod(선호값은 RunPod 것) + AWS 시작 템플릿·서브넷·보안 그룹 */
+    private ObjectNode runpodSettingsWithAwsTemplate() {
+        ObjectNode body = awsSettings("lt-0123456789abcdef0", false);
+        body.put("provider", "RUNPOD");
+        body.putArray("preferred_gpu_types").add("NVIDIA H100 80GB HBM3");
+        body.putArray("preferred_regions").add("AP-JP-1");
+        body.put("runpod_template_id", "tpl-simai");
+        return body;
+    }
+
+    private ResultActions launchCell(String provider, String gpuType, String region) throws Exception {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("provider", provider);
+        body.put("gpu_type", gpuType);
+        body.put("region", region);
+        return mvc.perform(post("/api/gpu/launches").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(body)));
+    }
+
+    private ResultActions launch(String provider) throws Exception {
+        ObjectNode body = mapper.createObjectNode();
+        if (provider != null) {
+            body.put("provider", provider);
+        }
+        return mvc.perform(post("/api/gpu/launches").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(body)));
+    }
 
     private GpuProperties.Aws enabled() {
         GpuProperties.Aws base = properties.aws();

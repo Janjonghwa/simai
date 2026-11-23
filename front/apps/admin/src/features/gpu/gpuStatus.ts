@@ -1,5 +1,11 @@
 import { GPU_ERROR } from '@/features/gpu/api';
-import type { GpuOfferCell, GpuOffers, GpuStatus, GpuTier } from '@/features/gpu/types';
+import type {
+  GpuOfferCell,
+  GpuOffers,
+  GpuProviderId,
+  GpuStatus,
+  GpuTier,
+} from '@/features/gpu/types';
 import { ApiError } from '@/lib/http';
 
 // 상단바 GPU 점·정보창·패널·설정이 쓰는 순수 계산(S15P31A101-702, -705, -733). 서버 상태(GET /api/gpu/sessions/current 의 power·launch·session)를
@@ -296,6 +302,29 @@ export function isGpuOn(status: GpuStatus | undefined): boolean {
   const launch = status.launch;
   if (launch && (launch.state === 'REQUESTED' || launch.state === 'RUNNING')) return true;
   return status.session?.state === 'ACTIVE';
+}
+
+/** 화면에 보이는 공급자 이름 */
+export const GPU_PROVIDER_LABEL: Record<GpuProviderId, string> = { AWS: 'AWS', RUNPOD: 'RunPod' };
+
+/** 켜기 패널 탭 순서. 처음 여는 탭은 AWS(사용자 결정 2026-11-23, S15P31A101-841) */
+export const GPU_PROVIDER_TABS: readonly GpuProviderId[] = ['AWS', 'RUNPOD'];
+
+function asProviderId(value: string | null | undefined): GpuProviderId | null {
+  return value === 'AWS' || value === 'RUNPOD' ? value : null;
+}
+
+/**
+ * 켜져 있거나 켜는 중인 GPU 의 공급자(S15P31A101-841). 열린 켠 요청이 있으면 그 공급자, 아니면 살아 있는 세션의 공급자.
+ * 꺼져 있거나 손으로 켠 GPU(MANUAL 등 탭에 없는 공급자)면 null.
+ */
+export function activeGpuProvider(status: GpuStatus | undefined): GpuProviderId | null {
+  if (!isGpuOn(status)) return null;
+  const launch = status?.launch;
+  if (launch && (launch.state === 'REQUESTED' || launch.state === 'RUNNING')) {
+    return asProviderId(launch.provider);
+  }
+  return asProviderId(status?.session?.provider);
 }
 
 export interface GpuSummary {

@@ -146,14 +146,29 @@ export const gpuSettingsSchema = z.object({
 export type GpuSettings = z.infer<typeof gpuSettingsSchema>;
 export type GpuSettingsBody = Omit<GpuSettings, 'version_id' | 'created_at_ms'>;
 
+// default: 켜기 기본 공급자(S15P31A101-841, AWS 가 준비됐으면 AWS, 아니면 RunPod). 옛 서버는 보내지 않는다
+export const gpuProviderInfoSchema = z.object({
+  id: z.string(),
+  configured: z.boolean(),
+  default: z.boolean().optional(),
+});
+export type GpuProviderInfo = z.infer<typeof gpuProviderInfoSchema>;
+
 export const gpuSettingsResponseSchema = z.object({
   settings: gpuSettingsSchema,
-  providers: z.array(z.object({ id: z.string(), configured: z.boolean() })),
+  providers: z.array(gpuProviderInfoSchema),
 });
 export type GpuSettingsResponse = z.infer<typeof gpuSettingsResponseSchema>;
 
-/** 켜기 요청. 비우면 서버가 추천 → 선호 순서 × 재고 × 가격 상한으로 고른다 */
+/** GPU 공급자 ID(서버 gpu_settings_version.provider·gpu_session.provider) */
+export type GpuProviderId = GpuSettings['provider'];
+
+/**
+ * 켜기 요청. gpu_type·region 을 비우면 서버가 추천 → 선호 순서 × 재고 × 가격 상한으로 고른다.
+ * provider 를 비우면 서버 기본 공급자(AWS 준비됐으면 AWS, 아니면 RunPod, S15P31A101-841)
+ */
 export interface GpuLaunchBody {
+  provider?: GpuProviderId;
   gpu_type?: string;
   region?: string;
 }
