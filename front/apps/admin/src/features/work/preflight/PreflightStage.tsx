@@ -84,7 +84,8 @@ export function PreflightStage({ day, onBackToSetup, rerunNo, onCancelRerun }: W
   // 결과는 약속으로 받는다: 시작에 성공하면 진행 값이 바뀌어 이 단계가 먼저 내려가고, 그러면 mutate 에 건 onSuccess 는 불리지 않아 관제로 가지 못했다
   const sendStart = useCallback(
     () =>
-      void startWork({ workId, ppe }).then(
+      // 시연 계정은 확인창 없이 바로 시작해 고를 칸이 없고 시연 흐름에 조끼가 없어 조끼는 필수로 보내지 않는다(안전모만, S15P31A101-849)
+      void startWork({ workId, ppe: demo ? { ...ppe, vest: 'NOT_REQUIRED' } : ppe }).then(
         () => {
           closeDialog();
           void navigate({ to: '/live' });
