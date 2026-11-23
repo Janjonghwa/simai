@@ -7,6 +7,7 @@ import {
   type GpuLaunch,
   type GpuLaunchBody,
   type GpuOffers,
+  type GpuProviderId,
   type GpuSettings,
   type GpuSettingsBody,
   type GpuSettingsResponse,
@@ -39,8 +40,16 @@ export const GPU_ERROR = {
 export const requestGpuStatus = (http: Http, signal?: AbortSignal): Promise<GpuStatus> =>
   http('/api/gpu/sessions/current', { schema: gpuStatusSchema, signal });
 
-export const requestGpuOffers = (http: Http, signal?: AbortSignal): Promise<GpuOffers> =>
-  http('/api/gpu/offers', { schema: gpuOffersSchema, signal });
+/** 재고 표. provider 를 비우면 서버 기본 공급자의 표(S15P31A101-841) */
+export const requestGpuOffers = (
+  http: Http,
+  provider?: GpuProviderId,
+  signal?: AbortSignal,
+): Promise<GpuOffers> =>
+  http(provider ? `/api/gpu/offers?provider=${provider}` : '/api/gpu/offers', {
+    schema: gpuOffersSchema,
+    signal,
+  });
 
 export const requestGpuLaunch = (http: Http, body: GpuLaunchBody): Promise<GpuLaunch> =>
   http('/api/gpu/launches', { method: 'POST', body, schema: gpuLaunchSchema });

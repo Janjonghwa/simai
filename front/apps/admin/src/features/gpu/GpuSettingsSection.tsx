@@ -190,14 +190,14 @@ function SettingsForm({
 }) {
   const [form, setForm] = useState<GpuSettingsForm>(initial);
   const [invalid, setInvalid] = useState<string | null>(null);
-  const cachedOffers = useCachedGpuOffers();
+  const cachedOffers = useCachedGpuOffers(form.provider);
   const set = <K extends keyof GpuSettingsForm>(key: K, value: GpuSettingsForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   const aws = form.provider === 'AWS';
 
   const selectedGpus = lines(form.gpuTypes);
   const selectedRegions = lines(form.regions);
-  const sameProviderOffers = cachedOffers?.provider === form.provider ? cachedOffers : undefined;
+  const sameProviderOffers = cachedOffers;
   const gpuOptions = gpuCatalogFor(form.provider, sameProviderOffers?.gpu_types, selectedGpus);
   const regionOptions = regionCatalogFor(
     form.provider,
@@ -248,6 +248,9 @@ function SettingsForm({
     >
       <p className="text-xs text-muted-foreground">
         다음 켜기부터 적용됩니다(자동 정지 시간은 켜져 있는 GPU 에도 바로 적용).
+      </p>
+      <p className="text-xs text-muted-foreground">
+        켜기 기본은 AWS 입니다(준비 안 됐으면 RunPod). 아래 선호값은 고른 공급자로 켤 때만 씁니다.
       </p>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="gpu-provider">공급자</Label>

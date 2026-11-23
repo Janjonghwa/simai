@@ -97,6 +97,35 @@ public class GpuSettingsService {
                 defaults.autoStopIdleMinutes(), defaults.templateId(), null, null, null, List.of(), List.of());
     }
 
+    /**
+     * 공급자 하나로 켜거나 재고를 볼 때 쓸 설정(S15P31A101-841). 선호 GPU·지역·클라우드·스팟·가격 상한은 저장한 provider 의 것이라, 그 공급자면
+     * 그대로 주고 다른 공급자면 그 공급자의 서버 기본 선호(GpuProperties.Defaults, AWS 는 g7e.4xlarge 먼저)로 바꾼다. 자동 정지 분·공급자별
+     * 템플릿(RunPod 템플릿, AWS 시작 템플릿·서브넷·보안 그룹)·버전은 공급자와 무관하게 지금 설정 그대로 쓴다.
+     */
+    public GpuSettings forProvider(GpuSettings s, String provider) {
+        GpuSettings scoped = provider.equals(s.provider()) ? s : serverPreferences(s, provider);
+        if (!"AWS".equals(provider)) {
+            return scoped;
+        }
+        // AWS 는 허용 목록(GpuProperties.Defaults.awsGpuTypes, 기본 g7e.4xlarge 하나) 안 종류만 쓴다. 저장한 선호가 목록과 겹치지 않으면 목록 그대로
+        List<String> allowed = defaults.awsGpuTypes();
+        List<String> kept = scoped.gpuTypes().stream().filter(allowed::contains).toList();
+        List<String> gpuTypes = kept.isEmpty() ? allowed : kept;
+        return new GpuSettings(scoped.versionId(), provider, gpuTypes, scoped.regions(), scoped.cloudType(), scoped.interruptible(),
+                scoped.maxPricePerHourUsd(), scoped.autoStopIdleMinutes(), scoped.templateId(), scoped.createdAt(), scoped.createdBy(),
+                scoped.awsLaunchTemplateId(), scoped.awsSubnetIds(), scoped.awsSecurityGroupIds());
+    }
+
+    /** 설정 공급자가 아닌 공급자의 서버 기본 선호(템플릿·자동 정지 분 등은 지금 설정 그대로) */
+    private GpuSettings serverPreferences(GpuSettings s, String provider) {
+        boolean aws = "AWS".equals(provider);
+        return new GpuSettings(s.versionId(), provider, aws ? defaults.awsGpuTypes() : defaults.gpuTypes(),
+                aws ? defaults.awsRegions() : defaults.regions(), defaults.cloudType(), !aws && defaults.interruptible(),
+                defaults.maxPricePerHourUsd() == null ? null : BigDecimal.valueOf(defaults.maxPricePerHourUsd()),
+                s.autoStopIdleMinutes(), s.templateId(), s.createdAt(), s.createdBy(), s.awsLaunchTemplateId(), s.awsSubnetIds(),
+                s.awsSecurityGroupIds());
+    }
+
     /** 새 버전으로 저장한다. 값이 틀리면 INVALID_GPU_SETTINGS */
     public GpuSettings save(JsonNode body, Long userId) {
         if (body == null || !body.isObject()) {

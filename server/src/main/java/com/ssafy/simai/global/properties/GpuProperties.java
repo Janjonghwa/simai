@@ -32,7 +32,7 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
     public GpuProperties {
         runpod = runpod == null ? new RunPod(null, null, null, null, null, null, null, null) : runpod;
         aws = aws == null ? new Aws(null, null, null, null, null, null, null, null, null, null, null) : aws;
-        defaults = defaults == null ? new Defaults(null, null, null, null, null, null, null) : defaults;
+        defaults = defaults == null ? new Defaults(null, null, null, null, null, null, null, null, null) : defaults;
         bootTimeout = positive(bootTimeout, Duration.ofMinutes(25));
         failedGrace = positive(failedGrace, Duration.ofMinutes(20));
         uploadHold = positive(uploadHold, Duration.ofMinutes(10));
@@ -151,9 +151,17 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
         }
     }
 
-    /** DB 설정이 없을 때의 기본값. 선호 GPU 는 H100 80GB 계열, 지역은 서울(EC2·게이트웨이)과 가까운 아시아 먼저 */
+    /**
+     * DB 설정이 없을 때의 기본값. 선호 GPU 는 H100 80GB 계열, 지역은 서울(EC2·게이트웨이)과 가까운 아시아 먼저.
+     * awsGpuTypes·awsRegions(S15P31A101-841)는 AWS 의 서버 기본 선호(인스턴스 종류·가용 영역)다. GPU 설정의 선호값은 설정에 저장한 공급자
+     * 하나의 것이라, 다른 공급자 탭에서 재고를 보거나 켤 때와 기본 공급자(AWS)가 설정 공급자와 다를 때 이 값을 쓴다.
+     * awsGpuTypes 는 AWS 로 켤 수 있는 종류의 허용 목록이기도 하다(설정에 AWS 선호를 저장해도 이 목록 밖 종류는 표·켜기에서 뺀다).
+     * 기본 g7e.4xlarge 하나인 까닭: 서울 할당량이 그 종류로 승인됐고 AWS 예산이 약 200달러라 다른 종류(p5.48xlarge 시간당 약 76달러 등)를
+     * 잘못 켜지 않게 한다(사용자 결정 2026-11-23).
+     */
     public record Defaults(List<String> gpuTypes, List<String> regions, String cloudType, Boolean interruptible,
-            Double maxPricePerHourUsd, Integer autoStopIdleMinutes, String templateId) {
+            Double maxPricePerHourUsd, Integer autoStopIdleMinutes, String templateId, List<String> awsGpuTypes,
+            List<String> awsRegions) {
 
         public Defaults {
             gpuTypes = gpuTypes == null || gpuTypes.isEmpty()
@@ -163,6 +171,10 @@ public record GpuProperties(RunPod runpod, Aws aws, Defaults defaults, Duration 
             interruptible = interruptible != null && interruptible;
             autoStopIdleMinutes = autoStopIdleMinutes == null ? 30 : autoStopIdleMinutes;
             templateId = blank(templateId) ? null : templateId.strip();
+            awsGpuTypes = awsGpuTypes == null || awsGpuTypes.isEmpty()
+                    ? List.of("g7e.4xlarge") : List.copyOf(awsGpuTypes);
+            awsRegions = awsRegions == null || awsRegions.isEmpty()
+                    ? List.of("ap-northeast-2a", "ap-northeast-2b", "ap-northeast-2c", "ap-northeast-2d") : List.copyOf(awsRegions);
         }
     }
 
