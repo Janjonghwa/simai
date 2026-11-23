@@ -49,6 +49,8 @@ const server = setupServer(
     });
   }),
 );
+// jsdom 은 load() 가 없다(칸에서 빠진 영상을 비울 때 부른다, S15P31A101-859)
+vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
 beforeEach(() => {

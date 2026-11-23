@@ -12,8 +12,13 @@ import {
   type UploadProgress,
 } from '@/features/history/replaySegments';
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
+import { criticalPrefetchSegments } from '@/features/history/segmentPrefetch';
 import type { Span, VideoSegment } from '@/features/history/types';
-import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
+import {
+  useActiveSegments,
+  useReplaySegments,
+  useSegmentBlobCache,
+} from '@/features/history/useReplaySegments';
 import {
   useReplayFrame,
   useReplayNoData,
@@ -21,7 +26,7 @@ import {
   type WorkReplay,
 } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const LOADING_LINE = '기록을 불러오는 중입니다…';
 
@@ -43,6 +48,8 @@ function Notice({ children }: { children: ReactNode }) {
  * 녹화 업로드가 진행 중이면(S15P31A101-801): 일부 카메라만 영상이 있으면 녹화가 있는 카메라 중 재생 시각의 조각이 아직 안 올라온 칸에
  * 「업로드 중」을 보이고, 재생 시각을 덮는 조각이 하나도 없으면 목 화면을 그대로 두고(3D 기록 먼저 보기, -693) 칸마다 업로드 배지를 겹친다.
  * 시연 계정은 한 칸을 크게 볼 때 나머지 칸을 큰 칸 아래 한 줄에 두고, 영상 실패 안내 줄을 보이지 않는다.
+ * 위험(CRITICAL) 이벤트 시각의 조각은 지금 보이는 칸이 모두 첫 화면을 낸 뒤 먼저 받아 두고(blob), 그 이벤트로 옮기면 받아 둔 것을
+ * 튼다(사용자 결정, S15P31A101-859). 지금 시각에 영상 칸이 없으면(목 화면) 기록을 다 받은 뒤 바로 받기 시작한다.
  */
 function ReplayCctv({
   replay,
@@ -82,6 +89,20 @@ function ReplayCctv({
   );
   const uploadNotice = upload ? <LoadingDots label={uploadLine(upload)} /> : undefined;
   const pending = useReplayPending(replay, index);
+  const blobs = useSegmentBlobCache(initialAt);
+  // 첫 화면은 작업 구간마다 다시 기다린다(다른 작업으로 바꾸면 그 작업의 첫 화면 뒤에 받는다)
+  const [firstFramesOf, setFirstFramesOf] = useState<number | null>(null);
+  const onFirstFrames = useCallback(() => setFirstFramesOf(initialAt), [initialAt]);
+  const firstFrames = firstFramesOf === initialAt;
+  const events = index?.events;
+  const prefetch = useMemo(
+    () => (events ? criticalPrefetchSegments(events, playable, initialAt) : []),
+    [events, playable, initialAt],
+  );
+  const canPrefetch = firstFrames || (active.length === 0 && !pending);
+  useEffect(() => {
+    if (blobs && canPrefetch && prefetch.length > 0) blobs.prefetch(prefetch);
+  }, [blobs, canPrefetch, prefetch]);
   const demo = useIsDemoAccount();
   const rest = demo ? 'below' : 'side';
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
@@ -99,6 +120,8 @@ function ReplayCctv({
         replay={replay}
         onFailed={onFailed}
         rest={rest}
+        blobs={blobs}
+        onFirstFrames={onFirstFrames}
       />
     ) : pending ? (
       <Notice>{LOADING_LINE}</Notice>

@@ -21,11 +21,13 @@ vi.mock('@/features/history/ReplayVideoWall', () => ({
     waiting = [],
     upload = null,
     onFailed,
+    onFirstFrames,
   }: {
     segments: readonly VideoSegment[];
     waiting?: readonly string[];
     upload?: UploadProgress | null;
     onFailed?: (id: string) => void;
+    onFirstFrames?: () => void;
   }) => (
     <>
       <div data-testid="video-wall">{segments.map((s) => s.segment_id).join(',')}</div>
@@ -37,9 +39,29 @@ vi.mock('@/features/history/ReplayVideoWall', () => ({
       <button type="button" onClick={() => segments.forEach((s) => onFailed?.(s.segment_id))}>
         영상 실패
       </button>
+      {/* 시험: 영상 칸이 모두 첫 화면을 낸 경우를 흉내 낸다 */}
+      <button type="button" onClick={() => onFirstFrames?.()}>
+        첫 화면
+      </button>
     </>
   ),
 }));
+
+// 미리 받기 보관소는 무엇을 줄 세웠는지와 해제만 본다(S15P31A101-859).
+const blobCache = vi.hoisted(() => ({ prefetched: [] as string[][], disposed: 0 }));
+vi.mock('@/features/history/segmentPrefetch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/history/segmentPrefetch')>();
+  return {
+    ...actual,
+    createSegmentBlobCache: () => ({
+      prefetch: (segments: readonly VideoSegment[]) =>
+        blobCache.prefetched.push(segments.map((segment) => segment.segment_id)),
+      get: () => undefined,
+      subscribe: () => () => {},
+      dispose: () => (blobCache.disposed += 1),
+    }),
+  };
+});
 
 const T = 1_762_732_800_000;
 const RANGE = { from: T, to: T + 600_000 };
@@ -52,6 +74,8 @@ afterAll(() => server.close());
 let videoRequests: string[] = [];
 beforeEach(() => {
   videoRequests = [];
+  blobCache.prefetched = [];
+  blobCache.disposed = 0;
   useSessionStore.setState({ session: { accessToken: 'token', user: { id: 'a', role: 'ADMIN' } } });
   server.resetHandlers(
     http.get('http://api.test/api/videos', ({ request }) => {
@@ -393,5 +417,48 @@ describe('ReplayStage 3D 다시 보기(목 화면)·빈 기록 사유(S15P31A101
       </QueryClientProvider>,
     );
     expect(await screen.findByText(new RegExp(text))).toBeTruthy();
+  });
+});
+
+describe('ReplayStage 위험 이벤트 조각 미리 받기', () => {
+  const index = {
+    frames: [{ t: T, ids: [], tracks: [] }],
+    workers: [],
+    events: [
+      // 위험: 3초 앞(T+67초)은 'later' 조각
+      {
+        eventId: 'crit',
+        ruleId: 'R1',
+        severity: 'CRITICAL',
+        worldIds: [],
+        zoneId: null,
+        raisedAt: T + 70_000,
+        resolvedAt: null,
+      },
+      // 주의는 미리 받지 않는다(눌렀을 때 받는다)
+      {
+        eventId: 'caution',
+        ruleId: 'R2',
+        severity: 'CAUTION',
+        worldIds: [],
+        zoneId: null,
+        raisedAt: T + 30_000,
+        resolvedAt: null,
+      },
+    ],
+    gaps: [],
+    pending: null,
+  } as never;
+
+  it('지금 보이는 칸이 모두 첫 화면을 낸 뒤에 위험 이벤트 조각만 줄 세우고, 화면을 떠나면 해제한다', async () => {
+    const view = renderStage({ ...LOADING, loading: false, replay: replayAt(T + 5_000), index });
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
+    expect(blobCache.prefetched).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: '첫 화면' }));
+    await waitFor(() => expect(blobCache.prefetched).toEqual([['later']]));
+
+    view.unmount();
+    expect(blobCache.disposed).toBeGreaterThan(0);
   });
 });

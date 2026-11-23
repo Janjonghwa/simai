@@ -1,6 +1,7 @@
 import { isEmptyReplay, type EventRow } from '@/features/history/replayIndex';
 import { ReplayTimeline, seekTo } from '@/features/history/ReplayPanels';
 import { ReplayStage } from '@/features/history/ReplayStage';
+import { eventJumpAt } from '@/features/history/segmentPrefetch';
 import { useReplayStatus, useWorkReplay, type WorkReplay } from '@/features/history/useWorkReplay';
 import { EventLog } from '@/features/history/WorkLists';
 import { worksLoadingLine } from '@/features/history/works';
@@ -183,7 +184,7 @@ export function PastDayPage({ date }: PastDayProps) {
   const pickEvent = useCallback(
     (event: EventRow) => {
       setSelectedEventId(event.eventId);
-      seekTo(replay, Math.max(range?.from ?? event.raisedAt, event.raisedAt - 3000));
+      seekTo(replay, eventJumpAt(event.raisedAt, range?.from));
       replay?.play();
     },
     [replay, range],
