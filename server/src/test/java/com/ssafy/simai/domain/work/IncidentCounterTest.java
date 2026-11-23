@@ -53,4 +53,16 @@ class IncidentCounterTest {
         assertThat(counts.critical()).isEqualTo(1);
         assertThat(counts.high()).isZero();
     }
+
+    @Test
+    void 주의는_HIGH_와_CAUTION_을_함께_세고_INFO_는_세지_않는다() {
+        var counts = IncidentCounter.count(List.of(
+                alert("R5", "z1", "w-1", "CAUTION", 0, 10),
+                alert("R9", "z1", "w-2", "CAUTION", 0, 10),
+                alert("R9", "z1", "w-3", "HIGH", 20, 30),
+                alert("R11", "z1", "w-4", "INFO", 0, 10)));
+        // R5 1건, R9 은 CAUTION·HIGH 가 60초 안에 이어져 1건(주의), R11 INFO 는 세지 않는다
+        assertThat(counts.high()).isEqualTo(2);
+        assertThat(counts.critical()).isZero();
+    }
 }

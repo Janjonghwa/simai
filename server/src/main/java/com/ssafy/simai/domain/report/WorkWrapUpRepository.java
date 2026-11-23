@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.report;
 
+import com.ssafy.simai.domain.rule.SeverityNames;
 import com.ssafy.simai.domain.work.IncidentCounter;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -270,7 +271,7 @@ public class WorkWrapUpRepository {
 
     /**
      * 실행이 둘 이상인 작업이면 종료 미팅 앞에 실행 요약 한 줄을 붙인다(S15P31A101-696, 보고서는 하루 끝 한 번 제출).
-     * 실행마다 시각(현장 시각)과 위험·경고 수(작업 구역 기준, 작업 목록의 event_counts 와 같은 범위)를 DB 에서 센다. AI 가 쓰지 않는다.
+     * 실행마다 시각(현장 시각)과 위험·주의(HIGH·CAUTION) 수(작업 구역 기준, 작업 목록의 event_counts 와 같은 범위)를 DB 에서 센다. AI 가 쓰지 않는다.
      * 실행이 하나면 받은 글 그대로다. 합친 글이 상한을 넘으면 뒤를 자른다.
      */
     String withRunSummary(long workId, String ending) {
@@ -289,21 +290,21 @@ public class WorkWrapUpRepository {
     }
 
     /**
-     * "관제 카드 기준 사건: 위험 3건·경고 2건(위 경보 수는 기록 한 건 한 건)." 작업의 끝난 실행 구간·작업 구역의 LIVE 위험·경고 이벤트를
-     * 카드와 같은 규칙으로 묶어 센다(IncidentCounter). 위험·경고가 없으면 빈 글. AI 가 쓰지 않는다.
+     * "관제 카드 기준 사건: 위험 3건·주의 2건(위 경보 수는 기록 한 건 한 건)." 작업의 끝난 실행 구간·작업 구역의 LIVE 위험·주의(HIGH·CAUTION)
+     * 이벤트를 카드와 같은 규칙으로 묶어 센다(IncidentCounter). 위험·주의가 없으면 빈 글. AI 가 쓰지 않는다.
      */
     String incidentNote(long workId) {
         List<IncidentCounter.Alert> alerts = jdbc.query("""
                 SELECT e.rule_id, e.zone_id, e.world_ids[1] AS person, e.severity, e.raised_at,
                        COALESCE(e.updated_at, e.raised_at) AS last_at
                 FROM work_unit w
-                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN ('CRITICAL', 'HIGH')
+                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN %s
                     AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
                     AND e.raised_at BETWEEN w.actual_started_at AND w.actual_ended_at
                     AND EXISTS (SELECT 1 FROM work_run_window r WHERE r.work_id = w.work_id AND r.ended_at IS NOT NULL
                         AND e.raised_at BETWEEN r.started_at AND r.ended_at)
                 WHERE w.work_id = :w
-                """, new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
+                """.formatted(SeverityNames.COUNTED_SQL), new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
                 rs.getString("rule_id"), rs.getString("zone_id"), rs.getString("person"), rs.getString("severity"),
                 rs.getObject("raised_at", OffsetDateTime.class).toInstant(),
                 rs.getObject("last_at", OffsetDateTime.class).toInstant()));
@@ -311,22 +312,22 @@ public class WorkWrapUpRepository {
         if (counts.critical() + counts.high() == 0) {
             return "";
         }
-        return "관제 카드 기준 사건: 위험 " + counts.critical() + "건·경고 " + counts.high() + "건(위 경보 수는 기록 한 건 한 건의 수).";
+        return "관제 카드 기준 사건: 위험 " + counts.critical() + "건·주의 " + counts.high() + "건(위 경보 수는 기록 한 건 한 건의 수).";
     }
 
-    /** "실행 2회: 1회 14:00–14:20(위험 0·경고 1), 2회 15:00–15:30(위험 1·경고 0)." 끝난 실행이 둘 미만이면 빈 글 */
+    /** "실행 2회: 1회 14:00–14:20(위험 0·주의 1), 2회 15:00–15:30(위험 1·주의 0)." 끝난 실행이 둘 미만이면 빈 글 */
     String runSummary(long workId) {
         record Run(int no, Instant start, Instant end, long critical, long high) { }
         List<Run> runs = jdbc.query("""
                 SELECT r.run_no, r.started_at, r.ended_at,
                     count(e.event_id) FILTER (WHERE e.severity = 'CRITICAL') AS critical,
-                    count(e.event_id) FILTER (WHERE e.severity = 'HIGH') AS high
+                    count(e.event_id) FILTER (WHERE e.severity IN %s) AS high
                 FROM work_run_window r JOIN work_unit w ON w.work_id = r.work_id
                 LEFT JOIN risk_event e ON e.source = 'LIVE' AND e.raised_at BETWEEN r.started_at AND r.ended_at
                     AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
                 WHERE r.work_id = :w AND r.ended_at IS NOT NULL
                 GROUP BY r.run_no, r.started_at, r.ended_at ORDER BY r.run_no
-                """, new MapSqlParameterSource("w", workId), (rs, i) -> new Run(rs.getInt("run_no"),
+                """.formatted(SeverityNames.CAUTION_TIER_SQL), new MapSqlParameterSource("w", workId), (rs, i) -> new Run(rs.getInt("run_no"),
                 rs.getObject("started_at", OffsetDateTime.class).toInstant(),
                 rs.getObject("ended_at", OffsetDateTime.class).toInstant(), rs.getLong("critical"), rs.getLong("high")));
         if (runs.size() < 2) {
@@ -338,7 +339,7 @@ public class WorkWrapUpRepository {
             Run run = runs.get(i);
             if (i > 0) out.append(", ");
             out.append(run.no()).append("회 ").append(clock.format(run.start())).append('\u2013').append(clock.format(run.end()))
-                    .append("(위험 ").append(run.critical()).append("·경고 ").append(run.high()).append(')');
+                    .append("(위험 ").append(run.critical()).append("·주의 ").append(run.high()).append(')');
         }
         return out.append('.').toString();
     }
