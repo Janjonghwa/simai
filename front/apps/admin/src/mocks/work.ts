@@ -446,6 +446,30 @@ export function createWorkMock(options: WorkMockOptions = {}) {
     return open.at(-1)?.setup_session_id ?? null;
   }
 
+  /**
+   * 빈 날짜 작업(서버 WorkUnitRepository.EMPTY_DAILY, S15P31A101-842): 날짜를 열기만 하고 아무것도 하지 않은 작업. 달력 목록에서 뺀다.
+   * 시작·실행·세팅 세션·세팅 완료·AI 초안 요청이 없고, 보고서가 만든 그대로(1판·PENDING·form_revision 0·제출 없음)이며 서명이 없다.
+   * 이름(작업내용)이 비었는지는 보지 않는다: 양식을 저장했으면(form_revision ≥ 1) 이름이 빈칸이어도 센다.
+   */
+  function isEmptyDaily(work: MockWork): boolean {
+    sync(work);
+    const { report } = work;
+    return (
+      work.status === 'PLANNED' &&
+      work.actual_started_at === null &&
+      work.runs.length === 0 &&
+      work.setupDoneAt === null &&
+      work.draftRequestedAt === null &&
+      sessionsOf(work).length === 0 &&
+      report.report_version === 1 &&
+      report.status === 'PENDING' &&
+      report.form_revision === 0 &&
+      report.submitted_at === null &&
+      // signaturesOf 는 빈 목록을 만들어 두므로 쓰지 않는다(저장 상태를 바꾸지 않게)
+      (signaturesByReport.get(report.report_id)?.length ?? 0) === 0
+    );
+  }
+
   // ── 응답 모양 ──────────────────────────────────────────────────────────────
 
   function viewWork(work: MockWork): WorkItemJson {
@@ -692,7 +716,8 @@ export function createWorkMock(options: WorkMockOptions = {}) {
       return HttpResponse.json(viewWork(work), { status: 201 });
     }),
 
-    // 달력 월 목록: 날짜 범위의 날짜 작업과 합성 지난 이력. from·to 가 없는 옛 요청(`?days=` 등)은 다음 핸들러로 넘긴다.
+    // 달력 월 목록: 날짜 범위의 날짜 작업(열기만 한 빈 작업은 뺀다, -842)과 합성 지난 이력. from·to 가 없는 옛 요청(`?days=` 등)은
+    // 다음 핸들러로 넘긴다.
     // 옛 핸들러(mocks/tbm·history)를 고치지 않으려고 이 핸들러를 먼저 등록하고 여기서 넘기는 쪽을 골랐다.
     http.get('*/api/work-units', ({ request }) => {
       const url = new URL(request.url);
@@ -715,7 +740,7 @@ export function createWorkMock(options: WorkMockOptions = {}) {
           `한 번에 ${MAX_RANGE_DAYS}일까지만 받을 수 있습니다`,
         );
       const inRange = (date: string) => date >= from && date <= to;
-      const daily = works.filter((w) => inRange(w.date)).map(viewWork);
+      const daily = works.filter((w) => inRange(w.date) && !isEmptyDaily(w)).map(viewWork);
       const past = pastEntries()
         .filter((e) => inRange(e.item.date))
         .map((e) => e.item);

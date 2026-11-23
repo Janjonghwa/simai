@@ -90,10 +90,36 @@ public class WorkUnitRepository {
                 new MapSqlParameterSource().addValue("siteId", siteId).addValue("since", utc(since)), (rs, i) -> view(rs));
     }
 
-    /** 작업 날짜가 [from, to](양끝 포함)인 작업. 달력이 한 달씩 받는다. 예전 작업도 함께 나온다 */
+    /**
+     * 빈 날짜 작업(S15P31A101-842): 날짜 화면을 열기만 하면 PUT /daily 가 날짜 작업과 빈 TBM 보고서를 만든다. 그 뒤 아무것도 하지 않은
+     * 날이 달력에 「작업 1건」으로 보이지 않게 달력 목록에서 뺀다(기록은 지우지 않고 세는 것만 바꾼다). 아래를 모두 만족하면 비었다고 본다.
+     * - 시작한 적 없음: PLANNED, actual_started_at 없음, 실행(work_run) 없음
+     * - 세팅을 시작한 적 없음: active_setup_session_id·setup_completed_at 없음, setup_session 행 없음
+     * - 보고서에 사람 손이 닿지 않음: 이 작업의 보고서가 createBlank 가 만든 그대로(TBM 1판, PENDING, form_revision 0, 제출·결재 없음)이고
+     *   서명(report_signature)이 한 장도 없음. form_revision 은 양식 저장·AI 초안·종료 미팅 채우기가 1씩 올리므로 0 이면 아무도 저장하지
+     *   않은 서버 기본 양식이다. 이름 칸(작업내용)이 비었는지로 보지 않는다: 작업내용 체크를 풀어도 저장했으면 사용자가 쓴 날이다.
+     * 보고서가 아예 없는 날짜 작업(보고서 생기기 전 예전 데이터)도 위 조건이면 빈 것으로 본다.
+     */
+    static final String EMPTY_DAILY = """
+            (w.daily AND w.status = 'PLANNED' AND w.actual_started_at IS NULL
+              AND w.active_setup_session_id IS NULL AND w.setup_completed_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM setup_session s WHERE s.work_unit_id = w.work_id)
+              AND NOT EXISTS (SELECT 1 FROM work_run x WHERE x.work_id = w.work_id)
+              AND NOT EXISTS (SELECT 1 FROM report x WHERE x.work_id = w.work_id
+                  AND NOT (x.report_kind = 'TBM' AND x.report_version = 1 AND x.status = 'PENDING' AND x.form_revision = 0
+                      AND x.submitted_at IS NULL AND x.approved_at IS NULL))
+              AND NOT EXISTS (SELECT 1 FROM report_signature g JOIN report x ON x.report_id = g.report_id
+                  WHERE x.work_id = w.work_id))
+            """;
+
+    /**
+     * 작업 날짜가 [from, to](양끝 포함)인 작업. 달력이 한 달씩 받는다. 예전 작업도 함께 나온다.
+     * 빈 날짜 작업(EMPTY_DAILY)은 빼서 달력 칸·월 요약이 「작업 없음」으로 센다. 날짜 화면(PUT /daily·GET /{id})은 그대로 그 작업을 쓴다
+     */
     public List<ObjectNode> findByDateRange(String siteId, LocalDate from, LocalDate to) {
         return jdbc.query(SELECT + """
                  WHERE w.site_id = :siteId AND w.work_date BETWEEN :from AND :to
+                   AND NOT\s""" + EMPTY_DAILY + """
                  ORDER BY w.work_date, COALESCE(w.actual_started_at, w.starts_at), w.work_id
                 """,
                 new MapSqlParameterSource().addValue("siteId", siteId).addValue("from", from).addValue("to", to),
