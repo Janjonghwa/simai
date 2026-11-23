@@ -15,6 +15,7 @@ import {
   VIDEO_URL_CACHE_MS,
   videoUrlQuery,
   type SegmentBlobCache,
+  type StandbyEvent,
 } from '@/features/history/segmentPrefetch';
 import type { VideoSegment } from '@/features/history/types';
 import { useReplayStatus } from '@/features/history/useWorkReplay';
@@ -91,9 +92,13 @@ function useSegmentSource(segment: VideoSegment, blobUrl: string | undefined) {
 
 /**
  * 칸 하나의 영상 바꾸기. 첫 화면이 나온 조각 id 와 마지막으로 보인 조각을 들고, 그릴 영상들과 보일 조각을 고른다(tileVideos).
- * onReady 는 영상이 첫 화면을 냈을 때(true)와 비거나 사라졌을 때(false) 부른다.
+ * onReady 는 영상이 첫 화면을 냈을 때(true)와 비거나 사라졌을 때(false) 부른다. event 는 대체 모드의 다음 위험 이벤트 조각이다.
  */
-function useSegmentSwap(live: VideoSegment, upcoming: VideoSegment | undefined) {
+function useSegmentSwap(
+  live: VideoSegment,
+  upcoming: VideoSegment | undefined,
+  event: TileStandby | undefined,
+) {
   const [ready, setReady] = useState<ReadonlySet<string>>(() => new Set());
   const [held, setHeld] = useState<VideoSegment | null>(null);
   // 지금 조각이 첫 화면을 내면 그 조각이 마지막으로 보인 조각이 된다(그리는 중에 맞춰 이전 조각을 한 번 더 그리지 않는다)
@@ -107,13 +112,24 @@ function useSegmentSwap(live: VideoSegment, upcoming: VideoSegment | undefined) 
       return next;
     });
   }, []);
-  return { ...tileVideos(live, held, upcoming, ready), onReady };
+  return { ...tileVideos(live, held, upcoming, ready, event), onReady };
 }
 
-/** 칸 안 영상 하나. 맡은 일(role)대로 재생 시각을 따르거나 멈춰 두고, 보일 때만 불투명하다. */
+/** 칸 하나에 미리 올려 둘 다음 위험 이벤트 조각과 멈춰 둘 시각(대체 모드, S15P31A101-862). */
+interface TileStandby {
+  segment: VideoSegment;
+  at: number;
+}
+
+/**
+ * 칸 안 영상 하나. 맡은 일(role)대로 재생 시각을 따르거나 멈춰 두고, 보일 때만 불투명하다.
+ * at 이 있으면 다음 위험 이벤트의 숨긴 영상이다(S15P31A101-862): preload 를 metadata 로 두고 그 시각으로 옮겨(currentTime)
+ * 그 근처만 받게 한다(조각 전체를 받는 auto 보다 가볍다). 그 이벤트로 넘어가면 at 이 빠지고 auto 로 바뀐다.
+ */
 function SegmentVideo({
   segment,
   role,
+  at,
   status,
   shown,
   onReady,
@@ -122,6 +138,7 @@ function SegmentVideo({
 }: {
   segment: VideoSegment;
   role: TileVideoRole;
+  at?: number;
   status: ReplayStatus;
   shown: boolean;
   onReady: (segmentId: string, isReady: boolean) => void;
@@ -140,8 +157,8 @@ function SegmentVideo({
   const [videoTime, setVideoTime] = useState<number | null>(null);
 
   useEffect(() => {
-    if (video.current && url) syncTileVideo(video.current, segment, role, status);
-  }, [segment, role, status, url]);
+    if (video.current && url) syncTileVideo(video.current, segment, role, status, at);
+  }, [segment, role, status, url, at]);
 
   useEffect(() => () => onReady(segmentId, false), [segmentId, onReady]);
 
@@ -163,6 +180,7 @@ function SegmentVideo({
     if (failed) onFailed?.(segmentId, errorLine);
   }, [failed, onFailed, segmentId, errorLine]);
 
+  // 숨긴 영상이 오래 기다리다 서명 주소가 만료돼도(서버 5분) 이어 받을 때 나는 오류로 아래 재요청 경로를 탄다
   const onVideoError = () => {
     // blob 이 해제됐거나 읽지 못하면 서명 주소로 다시 튼다
     if (blobUrl) {
@@ -191,12 +209,12 @@ function SegmentVideo({
         src={url}
         muted
         playsInline
-        preload="auto"
+        preload={at === undefined ? 'auto' : 'metadata'}
         // 영상은 재생 시각이 끌고 간다. 영상 안의 위치가 아니라 기록의 시각이 기준이다.
         onLoadedMetadata={() => {
           // 새 주소로 다시 읽혔으면 다음 만료 때 또 한 번 다시 받을 수 있다
           setRenewed(false);
-          if (video.current) syncTileVideo(video.current, segment, role, status);
+          if (video.current) syncTileVideo(video.current, segment, role, status, at);
         }}
         onLoadedData={() => {
           onReady(segmentId, true);
@@ -263,6 +281,7 @@ function SegmentTile({
   label,
   blobs,
   onShown,
+  standby,
 }: {
   segment: VideoSegment;
   upcoming: VideoSegment | undefined;
@@ -273,9 +292,10 @@ function SegmentTile({
   label: string;
   blobs?: SegmentBlobCache | null;
   onShown: (cameraId: string, shown: boolean) => void;
+  standby?: TileStandby;
 }) {
   const status = useReplayStatus(replay);
-  const { videos, shownId, onReady } = useSegmentSwap(segment, upcoming);
+  const { videos, shownId, onReady } = useSegmentSwap(segment, upcoming, standby);
   const cameraId = segment.camera_id;
   const anyShown = shownId !== null;
   useEffect(() => {
@@ -290,6 +310,7 @@ function SegmentTile({
           key={video.segment.segment_id}
           segment={video.segment}
           role={video.role}
+          at={video.at}
           status={status}
           shown={video.segment.segment_id === shownId}
           onReady={onReady}
@@ -337,6 +358,8 @@ function UploadWaitingTile({
  * upcoming(곧 덮을 조각)은 칸마다 미리 올려 두었다가 조각 경계에서 검은 화면 없이 바꾼다.
  * 조각 영상을 끝내 받지 못하면 onFailed 로 알린다(부르는 쪽이 그 조각을 빼고, 남은 게 없으면 3D 다시 보기로 돌아간다).
  * waiting 카메라(녹화 업로드 중이라 재생 시각의 조각이 아직 없음)는 「업로드 중」 칸으로 함께 둔다(S15P31A101-801).
+ * standby(대체 모드의 다음 위험 이벤트, S15P31A101-862)는 칸마다 그 조각을 숨긴 영상으로 같은 칸 목록에 올려 두었다가, 그
+ * 이벤트로 넘어가면 같은 <video> 를 보인다(다른 부모로 옮기면 다시 붙어 받은 것을 잃으므로 칸 안에서 보임·숨김만 바꾼다).
  */
 export function ReplayVideoWall({
   segments,
@@ -348,6 +371,7 @@ export function ReplayVideoWall({
   rest,
   blobs = null,
   onFirstFrames,
+  standby = null,
 }: {
   segments: readonly VideoSegment[];
   upcoming: readonly VideoSegment[];
@@ -363,6 +387,8 @@ export function ReplayVideoWall({
   blobs?: SegmentBlobCache | null;
   /** 영상 칸이 모두 첫 화면을 냈다(미리 받기를 이 뒤에 시작한다). */
   onFirstFrames?: () => void;
+  /** 숨긴 영상으로 미리 올려 둘 다음 위험 이벤트(blob 을 못 받는 대체 모드에서만, S15P31A101-862). */
+  standby?: StandbyEvent | null;
 }) {
   const byCamera = new Map(segments.map((segment) => [segment.camera_id, segment]));
   const [shownCameras, setShownCameras] = useState<ReadonlySet<string>>(() => new Set());
@@ -380,6 +406,11 @@ export function ReplayVideoWall({
     if (allShown) onFirstFrames?.();
   }, [allShown, onFirstFrames]);
   const nextByCamera = new Map(upcoming.map((segment) => [segment.camera_id, segment]));
+  const standbyByCamera = new Map<string, TileStandby>(
+    standby
+      ? standby.segments.map((item) => [item.camera_id, { segment: item, at: standby.at }])
+      : [],
+  );
   // 영상 칸과 업로드 중 칸을 카메라 이름순으로 섞는다(조각이 올라와도 칸 자리가 그대로다)
   const ids = [...new Set([...byCamera.keys(), ...waiting])].sort((a, b) => a.localeCompare(b));
   const label = useCameraNames(ids);
@@ -401,6 +432,7 @@ export function ReplayVideoWall({
               onFailed={onFailed}
               blobs={blobs}
               onShown={onShown}
+              standby={standbyByCamera.get(id)}
             />
           );
         }

@@ -1,11 +1,16 @@
 import type { EventRow } from '@/features/history/replayIndex';
 import {
   createSegmentBlobCache,
+  criticalJumpTimes,
   criticalPrefetchSegments,
   eventJumpAt,
   fetchSegmentBlob,
+  nextCriticalStandby,
   PREFETCH_CONCURRENCY,
   PREFETCH_MAX_EVENTS,
+  SegmentFetchBlockedError,
+  STANDBY_MAX,
+  standbyFromStatus,
   VIDEO_URL_CACHE_MS,
   videoUrlQuery,
   type FetchSegment,
@@ -105,7 +110,7 @@ describe('criticalPrefetchSegments', () => {
 function controlledFetch() {
   const pending = new Map<
     string,
-    { resolve: () => void; reject: () => void; signal: AbortSignal }
+    { resolve: () => void; reject: (error?: Error) => void; signal: AbortSignal }
   >();
   const released: string[] = [];
   let running = 0;
@@ -124,9 +129,9 @@ function controlledFetch() {
             release: () => released.push(segment.segment_id),
           });
         },
-        reject: () => {
+        reject: (error = new Error('실패')) => {
           done();
-          reject(new Error('실패'));
+          reject(error);
         },
       });
     });
@@ -202,6 +207,103 @@ describe('createSegmentBlobCache', () => {
   });
 });
 
+// 저장소 CORS 가 막혔을 때 대체 모드로 바꾸기(S15P31A101-862).
+describe('createSegmentBlobCache 저장소 받기 막힘', () => {
+  it('네트워크 오류(CORS 차단)면 막힘으로 바꿔 알리고, 줄 선 조각과 새로 줄 세운 조각은 받지 않는다', async () => {
+    const fake = controlledFetch();
+    const cache = createSegmentBlobCache(fake.fetchSegment);
+    const listener = vi.fn();
+    cache.subscribe(listener);
+    cache.prefetch(segments.slice(0, 8));
+    expect(fake.pending.size).toBe(4);
+    expect(cache.isBlocked()).toBe(false);
+
+    fake.pending.get('cam_A-0')!.reject(new SegmentFetchBlockedError());
+    await flush();
+    expect(cache.isBlocked()).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // 받는 중이던 나머지가 끝나도 줄 선 조각(5번째부터)은 받지 않는다
+    fake.pending.get('cam_B-0')!.reject(new SegmentFetchBlockedError());
+    fake.pending.get('cam_C-0')!.resolve();
+    await flush();
+    expect(fake.pending.size).toBe(4);
+    expect(fake.pending.has('cam_A-1')).toBe(false);
+    expect(listener).toHaveBeenCalledTimes(2);
+    cache.prefetch(segments.slice(20, 24));
+    expect(fake.pending.has('cam_A-5')).toBe(false);
+  });
+
+  it('HTTP 오류(403 등)는 막힘으로 보지 않고 다음 조각을 계속 받는다', async () => {
+    const fake = controlledFetch();
+    const cache = createSegmentBlobCache(fake.fetchSegment);
+    cache.prefetch(segments.slice(0, 5));
+    fake.pending.get('cam_A-0')!.reject(new Error('조각 받기 실패 (403)'));
+    await flush();
+    expect(cache.isBlocked()).toBe(false);
+    expect(fake.pending.has('cam_A-1')).toBe(true);
+  });
+});
+
+describe('대체 모드의 다음 위험 이벤트', () => {
+  const NONE = new Set<string>();
+  const jumps = criticalJumpTimes(
+    [
+      event('b', T + 5 * SEG_MS + 10_000, 'CRITICAL'),
+      event('caution', T + 2 * SEG_MS + 10_000, 'CAUTION'),
+      event('a', T + 2 * SEG_MS + 10_000, 'CRITICAL'),
+      event('a2', T + 2 * SEG_MS + 10_000, 'CRITICAL'),
+    ],
+    T,
+  );
+
+  it('위험 이벤트만 옮겨 갈 시각순으로, 같은 시각은 한 번 둔다', () => {
+    expect(jumps).toEqual([T + 2 * SEG_MS + 7_000, T + 5 * SEG_MS + 7_000]);
+  });
+
+  it('처음(작업 시작)에는 시각순 첫 위험 이벤트, 그 이벤트로 넘어간 뒤에는 그다음 위험 이벤트를 고른다', () => {
+    const first = nextCriticalStandby(jumps, segments, T, NONE);
+    expect(first?.at).toBe(T + 2 * SEG_MS + 7_000);
+    expect(ids(first!.segments)).toEqual(['cam_A-2', 'cam_B-2', 'cam_C-2', 'cam_D-2']);
+    // 그 이벤트를 눌러 재생 시각이 옮겨 간 시각이 됐다
+    const after = nextCriticalStandby(jumps, segments, first!.at, NONE);
+    expect(after?.at).toBe(T + 5 * SEG_MS + 7_000);
+    expect(ids(after!.segments)).toEqual(['cam_A-5', 'cam_B-5', 'cam_C-5', 'cam_D-5']);
+    // 마지막 위험 이벤트 뒤에는 없다
+    expect(nextCriticalStandby(jumps, segments, after!.at, NONE)).toBeNull();
+  });
+
+  it('그 시각의 조각이 이미 칸에 있으면(지금·다음 조각) 그 이벤트는 건너뛰고, 칸에 없는 조각만 고른다', () => {
+    const covered = new Set(['cam_A-2', 'cam_B-2', 'cam_C-2', 'cam_D-2']);
+    expect(nextCriticalStandby(jumps, segments, T, covered)?.at).toBe(T + 5 * SEG_MS + 7_000);
+    const partly = nextCriticalStandby(jumps, segments, T, new Set(['cam_A-2']));
+    expect(ids(partly!.segments)).toEqual(['cam_B-2', 'cam_C-2', 'cam_D-2']);
+  });
+
+  it('숨긴 영상은 카메라당 하나, 모두 4개를 넘지 않는다', () => {
+    const five = ['cam_A', 'cam_B', 'cam_C', 'cam_D', 'cam_E'].map((camera_id) => ({
+      segment_id: `${camera_id}-x`,
+      camera_id,
+      segment_start_capture_ms: T,
+      segment_end_capture_ms: T + SEG_MS,
+    }));
+    const picked = nextCriticalStandby([T + 10_000], five, T, NONE);
+    expect(STANDBY_MAX).toBe(4);
+    expect(picked!.segments).toHaveLength(4);
+    expect(new Set(picked!.segments.map((segment) => segment.camera_id)).size).toBe(4);
+  });
+
+  it('재생 상태에서 고를 때 지금 조각과 곧 덮을 다음 조각은 칸에 있는 것으로 본다', () => {
+    // 재생 시각이 조각 1 끝 3초 앞: 다음 조각(5초 앞)이 조각 2 라 첫 위험 이벤트(조각 2)는 이미 칸에 있다
+    const status = { playhead: T + 2 * SEG_MS - 3_000, speed: 1 };
+    expect(standbyFromStatus(jumps, segments, status)?.at).toBe(T + 5 * SEG_MS + 7_000);
+    expect(standbyFromStatus(jumps, segments, { playhead: T, speed: 1 })?.at).toBe(
+      T + 2 * SEG_MS + 7_000,
+    );
+    expect(standbyFromStatus([], segments, { playhead: T, speed: 1 })).toBeNull();
+    expect(standbyFromStatus(jumps, segments, { playhead: null, speed: 1 })).toBeNull();
+  });
+});
+
 describe('videoUrlQuery', () => {
   it('서명 주소(5분)를 만료보다 짧은 4분 보관한다', () => {
     const query = videoUrlQuery(
@@ -233,7 +335,10 @@ describe('fetchSegmentBlob', () => {
   beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
   afterAll(() => server.close());
   let restore = () => {};
-  afterEach(() => restore());
+  afterEach(() => {
+    restore();
+    server.resetHandlers();
+  });
 
   it('서명 주소를 칸과 같은 쿼리로 받아(보관 재사용) 조각 전체를 blob 주소로 만들고, release 로 해제한다', async () => {
     const created: Blob[] = [];
@@ -263,5 +368,45 @@ describe('fetchSegmentBlob', () => {
 
     first.release();
     expect(revoked).toEqual(['blob:1']);
+  });
+
+  it('저장소 받기가 네트워크 오류(CORS 차단)면 SegmentFetchBlockedError 로 알린다', async () => {
+    server.use(http.get('https://s3.test/:file', () => HttpResponse.error()));
+    const api = createHttp({ baseUrl: 'http://api.test', getToken: () => 't' });
+    const load = fetchSegmentBlob(api, new QueryClient());
+    await expect(load(segments[1]!, new AbortController().signal)).rejects.toBeInstanceOf(
+      SegmentFetchBlockedError,
+    );
+  });
+
+  it('저장소가 HTTP 오류(403)로 답하면 막힘으로 보지 않는다', async () => {
+    server.use(http.get('https://s3.test/:file', () => new HttpResponse(null, { status: 403 })));
+    const api = createHttp({ baseUrl: 'http://api.test', getToken: () => 't' });
+    const load = fetchSegmentBlob(api, new QueryClient());
+    const error = await load(segments[2]!, new AbortController().signal).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SegmentFetchBlockedError);
+  });
+
+  it('h264-annexb 조각도 저장소 네트워크 오류면 막힘으로, HTTP 오류면 아니다', async () => {
+    server.use(
+      http.get('http://api.test/api/videos/:id', ({ params }) =>
+        HttpResponse.json({
+          segment_id: params.id,
+          url: `https://s3.test/${String(params.id)}.h264`,
+          expires_at_ms: T + 300_000,
+          content_type: 'video/h264',
+          container: 'h264-annexb',
+        }),
+      ),
+      http.get('https://s3.test/cam_A-3.h264', () => HttpResponse.error()),
+      http.get('https://s3.test/cam_A-4.h264', () => new HttpResponse(null, { status: 403 })),
+    );
+    const api = createHttp({ baseUrl: 'http://api.test', getToken: () => 't' });
+    const load = fetchSegmentBlob(api, new QueryClient());
+    const signal = new AbortController().signal;
+    await expect(load(segments[12]!, signal)).rejects.toBeInstanceOf(SegmentFetchBlockedError);
+    const http403 = await load(segments[16]!, signal).catch((e: unknown) => e);
+    expect(http403).not.toBeInstanceOf(SegmentFetchBlockedError);
   });
 });

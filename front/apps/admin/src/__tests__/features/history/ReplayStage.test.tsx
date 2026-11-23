@@ -1,11 +1,12 @@
 import { ReplayStage } from '@/features/history/ReplayStage';
 import type { UploadProgress } from '@/features/history/replaySegments';
+import type { StandbyEvent } from '@/features/history/segmentPrefetch';
 import type { Span, VideoSegment } from '@/features/history/types';
 import type { WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplayStatus } from '@/features/viewer3d';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,15 +23,21 @@ vi.mock('@/features/history/ReplayVideoWall', () => ({
     upload = null,
     onFailed,
     onFirstFrames,
+    standby = null,
   }: {
     segments: readonly VideoSegment[];
     waiting?: readonly string[];
     upload?: UploadProgress | null;
     onFailed?: (id: string) => void;
     onFirstFrames?: () => void;
+    standby?: StandbyEvent | null;
   }) => (
     <>
       <div data-testid="video-wall">{segments.map((s) => s.segment_id).join(',')}</div>
+      {/* 대체 모드의 숨긴 영상(S15P31A101-862): 멈춰 둘 시각과 조각 */}
+      <div data-testid="video-standby">
+        {standby && `${standby.at}:${standby.segments.map((s) => s.segment_id).join(',')}`}
+      </div>
       <div data-testid="video-waiting">
         {waiting.join(',')}
         {upload && ` ${upload.uploaded}/${upload.expected ?? '?'}`}
@@ -47,8 +54,13 @@ vi.mock('@/features/history/ReplayVideoWall', () => ({
   ),
 }));
 
-// 미리 받기 보관소는 무엇을 줄 세웠는지와 해제만 본다(S15P31A101-859).
-const blobCache = vi.hoisted(() => ({ prefetched: [] as string[][], disposed: 0 }));
+// 미리 받기 보관소는 무엇을 줄 세웠는지와 해제, 저장소 받기 막힘(S15P31A101-862)만 본다.
+const blobCache = vi.hoisted(() => ({
+  prefetched: [] as string[][],
+  disposed: 0,
+  blocked: false,
+  listeners: new Set<() => void>(),
+}));
 vi.mock('@/features/history/segmentPrefetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/history/segmentPrefetch')>();
   return {
@@ -57,7 +69,11 @@ vi.mock('@/features/history/segmentPrefetch', async (importOriginal) => {
       prefetch: (segments: readonly VideoSegment[]) =>
         blobCache.prefetched.push(segments.map((segment) => segment.segment_id)),
       get: () => undefined,
-      subscribe: () => () => {},
+      isBlocked: () => blobCache.blocked,
+      subscribe: (listener: () => void) => {
+        blobCache.listeners.add(listener);
+        return () => blobCache.listeners.delete(listener);
+      },
       dispose: () => (blobCache.disposed += 1),
     }),
   };
@@ -76,6 +92,8 @@ beforeEach(() => {
   videoRequests = [];
   blobCache.prefetched = [];
   blobCache.disposed = 0;
+  blobCache.blocked = false;
+  blobCache.listeners.clear();
   useSessionStore.setState({ session: { accessToken: 'token', user: { id: 'a', role: 'ADMIN' } } });
   server.resetHandlers(
     http.get('http://api.test/api/videos', ({ request }) => {
@@ -460,5 +478,29 @@ describe('ReplayStage 위험 이벤트 조각 미리 받기', () => {
 
     view.unmount();
     expect(blobCache.disposed).toBeGreaterThan(0);
+  });
+
+  it('blob 받기가 되면(CORS 열림) 숨긴 영상을 두지 않는다', async () => {
+    renderStage({ ...LOADING, loading: false, replay: replayAt(T + 5_000), index });
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
+    fireEvent.click(screen.getByRole('button', { name: '첫 화면' }));
+    await waitFor(() => expect(blobCache.prefetched).toEqual([['later']]));
+    expect(screen.getByTestId('video-standby').textContent).toBe('');
+  });
+
+  it('저장소 받기가 막히면(CORS 차단) 다음 위험 이벤트의 조각을 그 이벤트로 옮겨 갈 시각과 함께 숨긴 영상으로 넘긴다', async () => {
+    renderStage({ ...LOADING, loading: false, replay: replayAt(T + 5_000), index });
+    await waitFor(() => expect(screen.getByTestId('video-wall').textContent).toBe('cover'));
+    fireEvent.click(screen.getByRole('button', { name: '첫 화면' }));
+    await waitFor(() => expect(blobCache.prefetched).toEqual([['later']]));
+
+    act(() => {
+      blobCache.blocked = true;
+      blobCache.listeners.forEach((listener) => listener());
+    });
+    // 위험 이벤트 T+70초 → 3초 앞 T+67초, 'later' 조각(주의 이벤트는 고르지 않는다)
+    await waitFor(() =>
+      expect(screen.getByTestId('video-standby').textContent).toBe(`${T + 67_000}:later`),
+    );
   });
 });

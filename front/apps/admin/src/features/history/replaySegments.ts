@@ -94,7 +94,8 @@ export function syncVideo(video: VideoLike, segment: VideoSegment, status: SyncS
 
 /**
  * 칸 안 영상 하나가 맡은 일. live 는 재생 시각을 따른다. held 는 다음 영상이 첫 화면을 낼 때까지 멈춘 채 보인다.
- * standby 는 곧 덮을 조각을 시작 위치에 멈춰 미리 받아 둔다.
+ * standby 는 곧 덮을 조각을 시작 위치에 멈춰 미리 받아 둔다. 다음 위험 이벤트의 숨긴 영상(S15P31A101-862)은 시작 위치 대신
+ * 그 이벤트로 옮겨 갈 시각(standbyAt)에 멈춰 둔다.
  */
 export type TileVideoRole = 'live' | 'held' | 'standby';
 
@@ -104,6 +105,7 @@ export function syncTileVideo(
   segment: VideoSegment,
   role: TileVideoRole,
   status: SyncStatus,
+  standbyAt?: number,
 ): void {
   if (role === 'held') {
     if (!video.paused) video.pause();
@@ -112,34 +114,44 @@ export function syncTileVideo(
   const at =
     role === 'live'
       ? status
-      : { playhead: segment.segment_start_capture_ms, playing: false, speed: status.speed };
+      : {
+          playhead: standbyAt ?? segment.segment_start_capture_ms,
+          playing: false,
+          speed: status.speed,
+        };
   syncVideo(video, segment, at);
 }
 
 export interface TileVideo {
   segment: VideoSegment;
   role: TileVideoRole;
+  /** 다음 위험 이벤트의 숨긴 영상이면 멈춰 둘 기록 시각(S15P31A101-862). 그 밖에는 없다. */
+  at?: number;
 }
 
 /**
  * 카메라 칸 하나에 그릴 영상들과 보일 조각. 지금 조각(live)이 첫 화면을 낼 때까지 마지막으로 보이던 조각(held)을 보여 칸이
  * 검게 비지 않게 하고, 곧 덮을 조각(upcoming)은 미리 올려 경계에서 바로 바꾼다. ready 는 첫 화면이 나온 조각 id 다.
  * 같은 조각은 하나만, 시작 시각 순으로 둔다(맡은 일이 바뀌어도 <video> 순서가 그대로라 옮겨지지 않는다).
+ * event(대체 모드의 다음 위험 이벤트 조각, S15P31A101-862)는 그 이벤트 시각(at)에 멈춘 standby 로 더한다. 그 이벤트로 넘어가면
+ * 같은 조각이 live 가 되어 같은 <video>(key = 조각 id)를 그대로 보인다. 이미 다른 일로 있는 조각이면 더하지 않는다.
  */
 export function tileVideos(
   live: VideoSegment,
   held: VideoSegment | null,
   upcoming: VideoSegment | undefined,
   ready: ReadonlySet<string>,
+  event?: { segment: VideoSegment; at: number },
 ): { videos: TileVideo[]; shownId: string | null } {
   const videos: TileVideo[] = [{ segment: live, role: 'live' }];
-  const add = (segment: VideoSegment | null | undefined, role: TileVideoRole) => {
+  const add = (segment: VideoSegment | null | undefined, role: TileVideoRole, at?: number) => {
     if (segment && videos.every((video) => video.segment.segment_id !== segment.segment_id)) {
-      videos.push({ segment, role });
+      videos.push(at === undefined ? { segment, role } : { segment, role, at });
     }
   };
   add(held, 'held');
   add(upcoming, 'standby');
+  add(event?.segment, 'standby', event?.at);
   videos.sort((a, b) => a.segment.segment_start_capture_ms - b.segment.segment_start_capture_ms);
   const shown = ready.has(live.segment_id)
     ? live
