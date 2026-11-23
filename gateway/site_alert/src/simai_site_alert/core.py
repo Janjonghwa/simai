@@ -19,6 +19,9 @@
   경보는 실제 카메라(RTSP)로 돌아온 뒤에도 해소될 때까지 울리지 않는다(재생 영상의 경보가 실제 관제 중에 울리지 않게).
 - 재생 시험 알림 스위치(S15P31A101-736, replay_test_alerts, .env SIMAI_REPLAY_TEST_ALERTS, 기본 꺼짐): 켜면 위 시험 입력 차단을 하지 않는다
   (녹화 재생 리허설에서 소리를 라이브처럼 낸다). 켜진 채 시험 입력이면 화면에 「재생 시험 · 실제 알림 켜짐」 띠를 띄운다.
+- 낙상 새 알림(S15P31A101-863): 소리는 목표 패턴(최상위 등급)이 지금과 같으면 이어 간다(-723 경보 피로). 예외로 처음 들어온
+  event_id 의 낙상(RESTART_RULE) 경보가 소리를 내는 대상이면 같은 패턴이어도 처음부터 다시 울린다(진입 소리 중 낙상을 귀로 알게).
+  같은 event_id 의 재전송·재판단·재동기화는 다시 울리지 않는다. 해소돼 활성에서 빠지면 잊는다(재개는 새로 판단).
 
 상태 모델은 '활성 경보 집합'(event_id → ActiveAlert)이다.
 
@@ -160,6 +163,10 @@ class HandleResult:
 
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1}
 
+# 목표 패턴이 지금과 같아도 새 이벤트면 경보음을 처음부터 다시 시작하는 규칙. 사용자 결정 2026-11-23(낙상만):
+# 관제 화면(-819)·워치(-860)·Tier 0 소리 사다리(-861)가 낙상을 새로 알리는 것과 같은 규칙을 현장 스피커에도 쓴다.
+RESTART_RULE = "R4"
+
 
 class SiteAlertCore:
     def __init__(self, sound: SoundBackend, *, laptop_id: str, clock: Clock | None = None,
@@ -182,6 +189,7 @@ class SiteAlertCore:
         self._site: SiteStatus | None = None
         self._test_input = False  # 영상 중계 입력이 녹화 파일·합성 영상이다(set_test_input)
         self._test_muted: set[str] = set()  # 시험 입력 중에 활성이었던 경보. 해소될 때까지 울리지 않는다
+        self._restart_seen: set[str] = set()  # 이미 처리한 RESTART_RULE 경보 event_id. 활성에서 빠지면 지운다
         # 재생 시험 알림 스위치(S15P31A101-736): 켜면 시험 입력이어도 소리를 끄지 않는다. 기동 때 정하고 바꾸지 않는다
         self._replay_test_alerts = bool(replay_test_alerts)
         if self._replay_test_alerts:
@@ -596,6 +604,15 @@ class SiteAlertCore:
             self._test_muted.update(self._active)
         self._test_muted.intersection_update(self._active)
 
+    def _take_new_restart(self) -> bool:
+        """처음 보는 RESTART_RULE 경보를 기억하고, 그중 소리를 내는 대상(시험 소리 끔 아님)이 있으면 True.
+        _target() 뒤에 부른다(_test_muted 를 그때 맞춘다). 소리를 내지 않던 경보도 기억해 나중에 다시 시작하지 않는다."""
+        ids = {a.event_id for a in self._active.values() if a.rule_id == RESTART_RULE}
+        self._restart_seen.intersection_update(ids)
+        new = ids - self._restart_seen
+        self._restart_seen |= new
+        return any(self._active[i].sounding and i not in self._test_muted for i in new)
+
     def _set_fault(self, e: BaseException) -> None:
         reason = str(e) or type(e).__name__
         if self._sound_fault != reason:
@@ -605,11 +622,12 @@ class SiteAlertCore:
     def _reconcile(self, received_mono: float | None) -> float | None:
         """목표 소리와 지금 소리를 맞춘다. 이 호출로 소리 시작을 걸었고 received_mono 가 있으면 지연(초)을 돌려준다."""
         target = self._target()
+        restart = self._take_new_restart()
         new_once = target is not None and not target.repeat and any(
             a.sounding and a.event_id not in self._test_muted and a.sound_mode == "ONCE"
             and (a.event_id, a.alarm_sequence) not in self._once_played and pattern_for(a.severity, once=True) is target for a in self._active.values()
         )
-        if target is self._playing and not new_once and (target is None or self._sound_fault is None):
+        if target is self._playing and not new_once and not restart and (target is None or self._sound_fault is None):
             return None
         if target is None:
             try:
@@ -618,6 +636,13 @@ class SiteAlertCore:
                 self._set_fault(e)
             self._playing = None
             return None
+        if restart and target is self._playing:
+            # 같은 패턴 재시작: 백엔드 start 는 '재생 중이면 바꾼다'만 약속하므로 멈춘 뒤 다시 걸어 처음부터 울린다
+            # (winsound 는 PlaySound(None) 뒤 새 PlaySound). 정지가 실패해도 시작은 건다.
+            try:
+                self._sound.stop()
+            except Exception as e:
+                self._set_fault(e)
         try:
             self._sound.start(target)
         except Exception as e:  # 백엔드 오류가 수신 루프를 멈추지 않게 한다
