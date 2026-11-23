@@ -422,6 +422,69 @@ class WatchAlertIntegrationTest {
         assertThat(watch.next("watch_alert").path("payload").path("severity").asString()).as("상향되면 울린다").isEqualTo("CRITICAL");
     }
 
+    @Test
+    void 낙상_R4_는_같은_사람의_열린_진입_알림에_묶이지_않고_바로_보내고_재발행은_한_번만() throws Exception {
+        // S15P31A101-860: 11-23 리허설에서 R4(CRITICAL)가 같은 사람의 R1(CRITICAL)이 지워질 때까지 묶였다
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID r1 = liveEvent("R1", "CRITICAL", "RAISED", "LIVE", worldId);
+        UUID r4 = liveEvent("R4", "CRITICAL", "RAISED", "LIVE", worldId);
+
+        alerts.alert(r1);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r1.toString());
+        alerts.alert(r4);
+        JsonNode fall = watch.next("watch_alert");
+        assertThat(fall.path("payload").path("event_id").asString()).as("R1 이 열려 있어도 바로").isEqualTo(r4.toString());
+        assertThat(fall.path("payload").path("word").asString()).isEqualTo("낙상 의심");
+
+        alerts.alert(r4);
+        alerts.resync(watchId);
+        assertThat(watch.poll(400)).as("같은 R4 재발행·재동기화는 다시 울리지 않는다").isNull();
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", r4)).isEqualTo(1);
+    }
+
+    @Test
+    void 재동기화도_낙상_R4_를_열린_진입_알림에_묶지_않는다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID r1 = liveEvent("R1", "CRITICAL", "RAISED", "LIVE", worldId);
+        alerts.alert(r1);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r1.toString());
+
+        UUID r4 = liveEvent("R4", "CRITICAL", "RAISED", "LIVE", worldId); // alert 를 거치지 않고 재동기화로만 본다
+        alerts.resync(watchId);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r4.toString());
+        assertThat(watch.poll(400)).isNull();
+    }
+
+    @Test
+    void 낙상_R4_가_열려_있으면_접근_R5_는_기존처럼_묶인다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID r4 = liveEvent("R4", "CRITICAL", "RAISED", "LIVE", worldId);
+        UUID r5 = liveEvent("R5", "CAUTION", "RAISED", "LIVE", worldId);
+
+        alerts.alert(r4);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r4.toString());
+        alerts.alert(r5);
+        assertThat(watch.poll(400)).as("R4 는 묶는 쪽으로는 그대로 참여한다").isNull();
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", r5)).isZero();
+    }
+
+    @Test
+    void 진입_R1_이_열려_있으면_접근_R5_는_기존처럼_묶인다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        UUID r1 = liveEvent("R1", "CRITICAL", "RAISED", "LIVE", worldId);
+        UUID r5 = liveEvent("R5", "CAUTION", "RAISED", "LIVE", worldId);
+
+        alerts.alert(r1);
+        assertThat(watch.next("watch_alert").path("payload").path("event_id").asString()).isEqualTo(r1.toString());
+        alerts.alert(r5);
+        assertThat(watch.poll(400)).isNull();
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE event_id = ?", r5)).isZero();
+    }
+
     // ------------------------------------------------------------------ 해소 통지·재발송·AUDIT_ONLY (S15P31A101-634)
 
     @Test
