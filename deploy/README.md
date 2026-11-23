@@ -679,7 +679,7 @@ EC2 가 세션을 끝내면(409 `GPU_SESSION_ENDED`) lobby 를 멈추고, 같은
 RunPod 이 자동으로 넣는 `RUNPOD_POD_ID`·`RUNPOD_DC_ID`·`RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_17000`·`_17001`·`_22` 는 등록 메시지(`instance_id`·`region`·`public_host`·`ports`)로 간다.
 AWS·VM 은 같은 자리에 `SIMAI_INSTANCE_ID`·`SIMAI_REGION`·`SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>`(매핑이 없으면 듣는 포트 그대로)를 넣는다(S15P31A101-703).
 
-**AWS 서울 GPU(S15P31A101-703, 설계 `docs/design/S15P31A101-703-aws-gpu-provider.md`).** 화면에서 켜면 EC2 서버가 RunInstances 의 user-data 로 위 이름들을 넣는다:
+**AWS 서울 GPU(S15P31A101-703, 설계 `docs/design/S15P31A101-703-aws-gpu-provider.md`).** 계정 쪽 준비(ECR 사본·Secrets Manager·역할·보안 그룹·키 페어·시작 템플릿·서버 IAM 키·EC2 `.env`)는 `deploy/aws/setup_gpu_aws.sh`(S15P31A101-840, `deploy/aws/README.md`). 화면에서 켜면 EC2 서버가 RunInstances 의 user-data 로 위 이름들을 넣는다:
 호스트(Deep Learning AMI)가 IMDSv2 로 인스턴스 ID·가용 영역·공개 IP 를 읽어 `SIMAI_INSTANCE_ID`·`SIMAI_REGION`·`SIMAI_PUBLIC_HOST` 로, 포트는 `SIMAI_PUBLIC_PORT_17000=17000`·`_17001=17001`(직접 포트),
 그리고 `docker run --gpus all --ipc host -p 17000:17000 -p 17001:17001 --env-file /run/simai-gpu.env <이미지>`(기본 CMD `auto`). 비밀 값은 user-data·환경 파일에 없다:
 `SIMAI_SECRETS_SOURCE=aws-secretsmanager`·`SIMAI_AWS_SECRET_ID`(비밀 이름)·`SIMAI_AWS_REGION` 을 보면 `simai-bootstrap auto` 가 `simai-gpu-boot` 로 넘기고, `simai-gpu-boot` 가 인스턴스 역할(IMDSv2, 홉 2) 자격으로

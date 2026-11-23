@@ -99,7 +99,8 @@ F2·G4dn·G5·G5g·G6·G6e·G6f·Gr6·Gr6f·G7e·Inf1·Inf2·P4d·P5·P5en·P6-B
 ## AMI
 
 AWS Deep Learning Base OSS Nvidia Driver GPU AMI(Ubuntu 22.04): NVIDIA 드라이버·Docker·NVIDIA Container Toolkit·AWS CLI v2 가 들어 있어 user-data 가 그대로 돈다.
-최신 AMI ID 는 SSM 공개 파라미터 `/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id` 로 찾는다(이름 확인 필요).
+최신 AMI ID 는 SSM 공개 파라미터 `/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id` 로 찾는다(리전별 값, AWS DLAMI 문서에서 이름 확인 2026-11-23).
+AMI 이름 형식은 `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04) YYYYMMDD`. 20261113 판 릴리스 노트: NVIDIA 595.112.07, 기본 CUDA 13.2, supported_ec2_instances 에 G7e(-840 이 확인, 판단 방법은 설계 메모).
 **드라이버가 CUDA 13 을 지원해야 한다**(3.12, R580 이상). G7e(Blackwell RTX PRO 6000)를 쓰면 그 GPU 를 지원하는 판인지도 본다. 확인하지 못했다(체크리스트 8).
 대안: Ubuntu 공식 AMI + 직접 설치(시간 김, 굽기 필요) — 버렸다.
 
@@ -196,19 +197,22 @@ S3 권한은 주지 않는다(GPU 캐시는 -700 서명 API). 비밀을 고객 �
 
 ## 신청·준비 체크리스트(사람이 콘솔에서, 순서대로)
 
+**[스크립트]** 표시는 `deploy/aws/setup_gpu_aws.sh`(S15P31A101-840, `check` 읽기만·`apply` 멱등, 사용법 `deploy/aws/README.md`)가 한다. 기본 인스턴스는 2026-11-23 사용자 결정으로 `g7e.4xlarge`(vCPU 16, 서울 온디맨드 할당량 승인됨).
+
+
 1. 계정·결제: 팀 S3 버킷(`simai-k15a101-media-apne2`)과 같은 AWS 계정, 리전 서울. AWS Budgets 에 월 예산 경보를 건다.
 2. Service Quotas(서울, EC2): `Running On-Demand G and VT instances` 16 vCPU(필요하면 `All G and VT Spot Instance Requests` 16, P 를 쓸 거면 `Running On-Demand P instances` 192) 신청 → 승인 대기.
-3. ECR 서울 비공개 저장소 `simai/tier0` 만들기 → RunPod 이 쓰는 이미지 다이제스트를 그대로 복사(사용자 확인 뒤 push). 다이제스트를 적어 둔다.
-4. EC2 서버에서 부팅 비밀값 확인: RunPod 과 같은 `SIMAI_GPU_BOOT_ID` 의 원문을 쓴다(새로 만들면 `admin gpu-boot register --id <ID> --worker-id <워커>`, RunPod Secret 도 같이 바꿈).
-5. Secrets Manager(서울) 비밀 `simai/gpu-boot`(다른 이름이면 `SIMAI_GPU_AWS_SECRET_ID`): 키·값 JSON `SIMAI_GPU_BOOT_SECRET`, `SIMAI_TIER0_TLS_PRIVATE_KEY`(고정 Tier 0 키, PEM 또는 base64 한 줄), `HF_TOKEN`, `SIMAI_TIER0_TLS_CERT_PEM`(공개 인증서).
-6. IAM 역할 `simai-gpu-instance`(신뢰: ec2.amazonaws.com) + 위 인스턴스 정책 + 인스턴스 프로파일.
-7. 보안 그룹 `simai-gpu`(위 표, EC2 서버 공인 IP/32). 키 페어 하나(호스트 SSH, 노트북 `~/.ssh/` 에만).
-8. AMI 확인: DLAMI Base OSS Nvidia Driver(Ubuntu 22.04) 최신 ID, 드라이버 R580 이상(CUDA 13)인지 릴리스 노트로 확인. G7e 를 쓸 거면 Blackwell 지원 판인지.
-9. 시작 템플릿 `simai-gpu`: AMI, 루트 gp3 200GB(삭제 시 함께 삭제), 키 페어, IAM 인스턴스 프로파일, 보안 그룹, **네트워크 인터페이스는 넣지 않음**(서버가 서브넷·보안 그룹을 정한다),
+3. **[스크립트]** ECR 서울 비공개 저장소 `simai/tier0` 만들기 → RunPod 이 쓰는 이미지 다이제스트를 그대로 복사(사용자 확인 뒤 push). 다이제스트를 적어 둔다.
+4. EC2 서버에서 부팅 비밀값 확인(손, 원문이 없으면 `deploy/aws/README.md` 회전 절차 — `admin gpu-boot rotate --id gpu-boot-runpod`): RunPod 과 같은 `SIMAI_GPU_BOOT_ID` 의 원문을 쓴다(새로 만들면 `admin gpu-boot register --id <ID> --worker-id <워커>`, RunPod Secret 도 같이 바꿈).
+5. **[스크립트]** Secrets Manager(서울) 비밀 `simai/gpu-boot`(다른 이름이면 `SIMAI_GPU_AWS_SECRET_ID`): 키·값 JSON `SIMAI_GPU_BOOT_SECRET`, `SIMAI_TIER0_TLS_PRIVATE_KEY`(고정 Tier 0 키, PEM 또는 base64 한 줄), `HF_TOKEN`, `SIMAI_TIER0_TLS_CERT_PEM`(공개 인증서).
+6. **[스크립트]** IAM 역할 `simai-gpu-instance`(신뢰: ec2.amazonaws.com) + 위 인스턴스 정책 + 인스턴스 프로파일.
+7. **[스크립트]** 보안 그룹 `simai-gpu`(위 표, EC2 서버 공인 IP/32). 키 페어 하나(호스트 SSH, 노트북 `~/.ssh/` 에만).
+8. **[스크립트 check]** AMI 확인: DLAMI Base OSS Nvidia Driver(Ubuntu 22.04) 최신 ID, 드라이버 R580 이상(CUDA 13)인지 릴리스 노트로 확인. G7e 를 쓸 거면 Blackwell 지원 판인지.
+9. **[스크립트]** 시작 템플릿 `simai-gpu`: AMI, 루트 gp3 200GB(삭제 시 함께 삭제), 키 페어, IAM 인스턴스 프로파일, 보안 그룹, **네트워크 인터페이스는 넣지 않음**(서버가 서브넷·보안 그룹을 정한다),
    인스턴스 종류·user-data 비움(서버가 정함), 메타데이터 IMDSv2 필수. 서브넷을 따로 쓰면 「공인 IPv4 자동 할당」이 켜진 서브넷이어야 한다(기본 VPC 는 켜져 있음). → `lt-…` 를 적는다.
-10. IAM 사용자 `simai-gpu-launcher` + 위 서버 정책(`<LT_ID>` 채움) → 액세스 키 → EC2 `/opt/simai/.env` 에 `SIMAI_GPU_AWS_ACCESS_KEY_ID`·`_SECRET_ACCESS_KEY`(키는 다른 곳에 남기지 않는다).
-11. EC2 `.env`: `SIMAI_GPU_AWS_ENABLED=true`, `SIMAI_GPU_AWS_IMAGE=<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/simai/tier0@sha256:…`, (선택) `SIMAI_TIER0_PINNED_SPKI_SHA256` → 서버 재시작(배포).
-12. 화면 「GPU 설정」: 공급자 AWS(목록에 「(준비 안 됨)」이 없어야 함), 선호 인스턴스 종류(예 `g7e.2xlarge`, `g6e.4xlarge`), 선호 가용 영역(`ap-northeast-2a` …), 시작 템플릿 ID,
+10. **[스크립트]** IAM 사용자 `simai-gpu-launcher` + 위 서버 정책(`<LT_ID>` 채움) → 액세스 키 → EC2 `/opt/simai/.env` 에 `SIMAI_GPU_AWS_ACCESS_KEY_ID`·`_SECRET_ACCESS_KEY`(키는 다른 곳에 남기지 않는다).
+11. **[스크립트, 재시작 제외]** EC2 `.env`: `SIMAI_GPU_AWS_ENABLED=true`, `SIMAI_GPU_AWS_IMAGE=<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/simai/tier0@sha256:…`, (선택) `SIMAI_TIER0_PINNED_SPKI_SHA256` → 서버 재시작(배포).
+12. 화면 「GPU 설정」: 공급자 AWS(목록에 「(준비 안 됨)」이 없어야 함), 선호 인스턴스 종류(기본 `g7e.4xlarge`, 그 밖 `g7e.2xlarge`·`g6e.4xlarge`), 선호 가용 영역(`ap-northeast-2a` …), 시작 템플릿 ID,
     서브넷·보안 그룹(선택), 온디맨드/스팟, 가격 상한, 자동 정지 분 저장. 재고 표에 칸이 「모름」으로 보이면 준비 끝.
 13. 첫 켜기 뒤 확인: user-data 로그(`/var/log/simai-gpu-user-data.log`), 이미지 받기 시간, Secrets Manager 받기 로그(이름만), G1 등록(`provider=AWS`·공인 IP·17000/17001), 등록까지 시간, 끄기 뒤 인스턴스·EBS 가 사라지는지.
 
