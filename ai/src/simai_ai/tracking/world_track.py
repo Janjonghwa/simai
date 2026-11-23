@@ -554,6 +554,12 @@ class WorldTrackConfig:
     금지 쌍도 아닌 소실·휴면 후보를 뺀다. 그런 후보는 같은 사람의 더 옛 ID 일 수 있어, 경쟁자로 세면 한 사람이 남긴 옛 ID 들끼리
     마진을 0 으로 만들어 돌아올 때마다 새 ID 가 생긴다(로비 모서리 18분 12 ID). 지금 활성 Track 은 그대로 경쟁자다. 그런 옛 ID 들이
     마진 안에서 겨루면 가장 최근에 관측된 ID 를 고른다(_reentry_pick). False 는 이전 동작(재생 비교용)"""
+    reid_reentry_active_guard: bool = True
+    """S15P31A101-848: 재입장 마진의 '지금 활성 Track' 경쟁자를 넓힌다. (1) 이번 시각만 위치 측정이 빠진 확정 Track
+    (CONFIRMED·OCCLUDED, 출생 보류 아님, 마지막 측정 birth_hold_guard_recent_ms 안)도 갤러리 유사도로 센다. (2) 같은 판정
+    대상(클러스터 로컬 트랙·World ID)에서 지연 병합 재확인 창 동안 본 활성 Track 유사도를 기억해 다시 센다. 활성 Track 이 한
+    시각 빠졌다고 경쟁자가 바뀌어 더 덜 닮은 옛 ID 가 되살아나지 않게 한다(11-23 리허설 낙상 뒤 옛 ID 부활). False 는 이전
+    동작(재생 비교용)"""
     reid_swap_min_sim: float = 0.58
     """근접 교차 후 두 트랙의 교차 외형 유사도가 swap 교정을 발동하기 위한 최소 유사도"""
     reid_swap_margin: float = 0.10
@@ -600,6 +606,7 @@ class WorldTrackConfig:
             "reid_dormant_enabled",
             "reid_split_respect_distinct",
             "reid_reentry_rival_proven_only",
+            "reid_reentry_active_guard",
             "reid_query_visibility",
             "shadow_clears_ambiguity",
             "uncertain_hold_per_reason",
@@ -1288,6 +1295,9 @@ class WorldTrackManager:
         장기 보류 동안 남기고(_forget_gone), 병합하면 남는 ID 로 잇는다. 크기는 장기 보류 TTL(30분) 안의 ID 와 그 동시 활성 상대 수"""
         self._reentry_log_t: dict[tuple[str, str, str], int] = {}
         """-802 재입장 판정 로그 간격: (판정 위치, 최선 후보, 결정) → 마지막으로 남긴 시각"""
+        self._reentry_active_seen: dict[TrackKey | str, dict[str, tuple[float, int]]] = {}
+        """-848 재입장 판정 대상(클러스터 로컬 트랙 또는 World ID) → {그때 본 활성 Track: (최대 유사도, 시각)}. 지연 병합 재확인
+        창 동안만 쓴다(_guard_active_sims). 체크포인트에는 넣지 않는다"""
         self._rig: CameraRig | None = None
         """이번 update 의 보정 (그림자 판정 전용)"""
         self._evidence: dict[str, _Evidence] = {}
@@ -2218,6 +2228,65 @@ class WorldTrackManager:
             rivals=tuple((w, s) for s, w, _ in counted),
             skipped=tuple(skipped),
         )
+
+    def _late_reentry_window_ms(self) -> int:
+        """새 Track 이 생긴 뒤 Re-ID 지연 병합을 다시 묻는 창 (key_ttl_ms 의 3배, 최소 2.5 s)."""
+        return max(self.config.key_ttl_ms * 3, 2500)
+
+    def _guard_active_sims(
+        self,
+        subjects: Sequence[TrackKey | str],
+        cluster: ViewCluster,
+        active_sims: dict[str, float],
+        exclude: Collection[str],
+        applied: Mapping[str, _Applied],
+        t: int,
+    ) -> None:
+        """-848: 재입장 마진의 활성 경쟁자(active_sims)를 제자리에서 넓힌다. reid_reentry_active_guard 가 꺼져 있으면 그대로.
+
+        1. 이번 시각 위치 측정이 빠졌을 뿐인 확정 Track(CONFIRMED·OCCLUDED, 출생 보류 아님, 마지막 측정이
+           birth_hold_guard_recent_ms 안 = 출생 보류의 근거 Track 과 같은 기준)도 갤러리 유사도로 활성 경쟁자에 넣는다.
+        2. 이번 시각의 활성 유사도를 판정 대상(subjects: 클러스터 로컬 트랙, 지연 병합이면 그 World ID)마다 기억하고, 지연 병합
+           재확인 창 안에서 기억한 유사도를 다시 넣는다(이번 값보다 클 때만). 병합 등으로 없어진 ID 는 넣지 않는다.
+        exclude(판정 대상 자신·분신)는 어느 쪽에도 넣지 않는다. 경쟁자를 늘리기만 하므로(잇지 않는 쪽) 보수적이다. 11-23 리허설에서
+        활성 Track 이 한 시각 측정되지 않자 같은 대상을 다른 경쟁자로 다시 따져 더 덜 닮은 옛 ID 로 이었던 경로를 막는다.
+        """
+        cfg = self.config
+        if not cfg.reid_reentry_active_guard:
+            return
+        for wid, tr in self._tracks.items():
+            if wid in active_sims or wid in applied or wid in exclude or tr.birth_hold:
+                continue
+            if tr.lifecycle not in (TrackLifecycle.CONFIRMED, TrackLifecycle.OCCLUDED):
+                continue
+            if t - tr.t_last_valid > cfg.birth_hold_guard_recent_ms:
+                continue
+            sim = self._cluster_gallery_sim(wid, cluster, t)
+            if sim is not None:
+                active_sims[wid] = sim
+                self.diag["reid.reentry_active_recent"] += 1
+        window = self._late_reentry_window_ms()
+        if len(self._reentry_active_seen) > 512:
+            self._reentry_active_seen = {
+                s: kept
+                for s, seen in self._reentry_active_seen.items()
+                if (kept := {w: v for w, v in seen.items() if t - v[1] <= window})
+            }
+        remembered: dict[str, float] = {}
+        for s in subjects:
+            seen = self._reentry_active_seen.setdefault(s, {})
+            for wid, (sim, seen_t) in seen.items():
+                if t - seen_t <= window and sim > remembered.get(wid, -1.0):
+                    remembered[wid] = sim
+            for wid, sim in active_sims.items():
+                prev = seen.get(wid)
+                if prev is None or t - prev[1] > window or sim >= prev[0]:
+                    seen[wid] = (sim, t)
+        for wid, sim in remembered.items():
+            if wid in exclude or sim <= active_sims.get(wid, -1.0) or self._find_with_dormant(wid) is None:
+                continue
+            active_sims[wid] = sim
+            self.diag["reid.reentry_active_remembered"] += 1
 
     def _note_reentry(
         self,
@@ -3282,6 +3351,8 @@ class WorldTrackManager:
         best_sim, best_id = self._reentry_pick(candidates)  # 같은 사람의 옛 ID 들끼리면 마지막으로 쓰던 ID (-802)
         # 경쟁자: 지금 활성 Track 과, 최선 후보와 다른 사람으로 확인된(동시 활성·병합 금지) 후보만(-802). 동시에 있은 적 없는
         # 후보는 같은 사람의 옛 ID 일 수 있다. 같은 사람의 분신 Track 은 경쟁자가 아니다(-657, 14차 reentry_ambiguous 원인)
+        # 활성 Track 은 이번 시각 측정이 빠졌거나 직전 판정에서 본 것까지 센다(-848)
+        self._guard_active_sims(c.cluster.keys, c.cluster, active_sims, (), applied, t)
         rival = self._reentry_rival(best_id, best_sim, candidates, active_sims)
         margin = rival.margin
 
@@ -3317,7 +3388,7 @@ class WorldTrackManager:
             tr = self._tracks.get(wid)
             if tr is None or tr.reid_checked_reentry:
                 continue
-            if t - tr.created_t > max(cfg.key_ttl_ms * 3, 2500):
+            if t - tr.created_t > self._late_reentry_window_ms():
                 tr.reid_checked_reentry = True
                 continue
             feats = self._cluster_features(a.cluster, t)
@@ -3373,7 +3444,9 @@ class WorldTrackManager:
                 continue
             candidates.sort(key=lambda c: (c[0], -self._order_of(c[1])), reverse=True)
             best_sim, best_id = self._reentry_pick(candidates)
-            # 경쟁자는 활성 Track 과 최선 후보와 다른 사람으로 확인된 후보만(-802). 분신은 경쟁자가 아니다(-657)
+            # 경쟁자는 활성 Track 과 최선 후보와 다른 사람으로 확인된 후보만(-802). 분신은 경쟁자가 아니다(-657).
+            # 활성 Track 은 이번 시각 측정이 빠졌거나 이 Track·로컬 트랙의 직전 판정에서 본 것까지 센다(-848)
+            self._guard_active_sims((*a.cluster.keys, wid), a.cluster, active_sims, {wid, *shadows}, applied, t)
             rival = self._reentry_rival(best_id, best_sim, candidates, active_sims)
             margin = rival.margin
             tiebreak = False
