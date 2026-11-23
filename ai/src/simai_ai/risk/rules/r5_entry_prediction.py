@@ -57,6 +57,13 @@ JOINT_UNCERTAIN. PREDICTED 는 붙이지 않는다(Lead 결정): 판정에 쓰�
 트랙은 판정하지 않는다. 앞날을 내다보는 것은 이 규칙의 정의다. 속도를 모를 때의 holding 에도 PREDICTED 를 붙이지 않는다
 (PREDICTED·UNKNOWN 트랙의 활성 이벤트는 lifecycle 이 이미 UNVERIFIABLE 로 둔다).
 
+**낮은 신뢰 새 발생 보류(7.1·7.2, S15P31A101-855).** 높이를 모르는(Z_UNKNOWN) 예측이 위치 예측(PREDICTED)으로만 발생하려
+하면 새 R5 를 내지 않는다(R2·R3 의 S15P31A101-725 와 같은 조합, `r5_low_confidence_onset`). 이 규칙은 PREDICTED 트랙을 판정하지
+않고 Z_UNKNOWN 은 R1 구역 대상에만, PREDICTED 는 가장자리 대상(HELD)에만 붙으므로 한 판정에 둘이 같이 오지 않는다. 둘이
+겹치는 곳은 lifecycle 의 '지속 대기 중 관측 상실' 발생(마지막 발생 판정에 PREDICTED 를 더함)뿐이라 lifecycle 이 그 자리에서
+이 함수로 걸러 대기를 버린다. 이미 열린 R5 의 유지·해소·확인 필요는 그대로고, 둘 중 하나만이면(관측 위치의 Z_UNKNOWN 이
+지속 조건을 채움, 또는 높이를 아는 대기의 관측 상실) 지금처럼 발생한다.
+
 **R2 가장자리(7.2 'R1·R2 구역 진입').** 등록 작업면이 있으면(RuleContext.work_surfaces) R2 와 같은 위험 가장자리
 (height_common.hazard_edges, 높이 기준은 이 규칙의 프로파일)도 예측 대상이다. R2 의 발생 영역은 위험 가장자리 선분에서 1.0 m
 (R2_RAISE_DISTANCE_M) 안이므로, 불확실성 범위의 점유 반경을 그만큼 넓힌 범위가 선분에 처음 닿는 때를 같은 계산
@@ -450,6 +457,19 @@ class EntryPredictionRule:
             metrics=metrics,
             holding=not raising,
         )
+
+
+R5_LOW_CONFIDENCE_ONSET_REASONS = frozenset({ConfidenceReason.Z_UNKNOWN, ConfidenceReason.PREDICTED})
+"""R5 새 발생을 보류하는 확인 필요 이유 조합(높이 모름 + 위치 예측, S15P31A101-725 와 같은 조합)"""
+
+
+def r5_low_confidence_onset(finding: Finding) -> bool:
+    """R5 새 발생을 보류할 낮은 신뢰 판정: 높이를 모르고(Z_UNKNOWN) 위치가 예측(PREDICTED)이다(S15P31A101-855).
+
+    참이면 lifecycle 은 이 판정으로 새 이벤트를 만들지 않는다. 활성 이벤트의 유지·해소·확인 필요 이유는 바꾸지 않는다.
+    둘 중 하나만이면 거짓(지금처럼 발생).
+    """
+    return finding.rule_id == R5_RULE_ID and R5_LOW_CONFIDENCE_ONSET_REASONS <= set(finding.confidence_reasons)
 
 
 def first_touch_range_s(
