@@ -244,13 +244,14 @@ describe('IncidentCard', () => {
     expect(detail(card)).not.toContain('미확인');
   });
 
-  it('해소된 묶음은 설명에 해소 시각만 있고 발생 시각은 없으며, 카드가 흐려진다', () => {
+  it('해소된 묶음은 설명에 해소 시각만 있고 발생 시각은 없으며, 카드는 흐려지고 「해소」 글 없이 발생 시각만 보인다(-856)', () => {
     const { card } = renderCard([
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 5_000, updated_at: T + 5_000 }),
     ]);
 
     expect(detail(card)[1]).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
-    expect(card.textContent).toMatch(/해소 \d{2}:\d{2}:\d{2}/);
+    expect(card.textContent).not.toMatch(/해소/);
+    expect(card.textContent).toMatch(/\d{2}:\d{2}:\d{2}/);
     expect(detail(card).some((line) => line.startsWith('발생'))).toBe(false);
     expect(card.textContent).not.toContain('초 전');
     expect(card.className).toContain('opacity-55');
