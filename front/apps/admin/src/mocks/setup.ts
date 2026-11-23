@@ -1435,6 +1435,23 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return HttpResponse.json(existing);
       }
 
+      // 서버처럼(SetupService.getZoneDrafts, S15P31A101-844) 이전 맵 재사용 세션은 초안 작업이 돌지 않아 그 맵을 만든 세팅의 초안을
+      // 돌려준다. 원 세션 초안을 시험이 정해 두었으면(setZoneDrafts) 그것을, 아니면 기본 초안을 원 세션 것으로 만든다
+      const sourceId = session.reuse_source?.setup_session_id ?? null;
+      if (sourceId !== null && import.meta.env.VITE_MOCK_BUILD !== 'true') {
+        const source =
+          zoneDraftsBySession.get(sourceId) ??
+          buildSetupZoneDraftsResponse(sourceId, {
+            site_id: session.site_id,
+            calibration_version: session.calibration_version ?? 'cal-8',
+          });
+        return HttpResponse.json({
+          ...source,
+          setup_session_id: id,
+          draft_source_setup_session_id: sourceId,
+        });
+      }
+
       const built =
         import.meta.env.VITE_MOCK_BUILD === 'true'
           ? demoZoneDrafts(id)

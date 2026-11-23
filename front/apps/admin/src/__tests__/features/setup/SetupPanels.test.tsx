@@ -187,6 +187,47 @@ describe('AI 위험 구역 초안 패널', () => {
     expect(screen.queryByRole('list', { name: 'AI 구역 초안 목록' })).toBeNull();
   });
 
+  it('이전 맵 재사용 세션은 그 맵을 만든 세팅의 초안을 보이고, 그때도 초안이 없었으면 기다리지 않고 그렇게 알린다(S15P31A101-844)', () => {
+    const fromSource = { setup_session_id: 'reuse-1', draft_source_setup_session_id: 'new-1' };
+    const { onAcceptDraft } = renderDrafts({
+      draftsResponse: buildSetupZoneDraftsResponse('new-1', fromSource),
+    });
+    fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
+    expect(onAcceptDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate_id: 'cand-opening-1' }),
+    );
+    cleanup();
+    // 원 세션에 초안 작업이 없었다: 재사용은 새로 돌지 않으므로 「분석 중」이 아니다
+    renderDrafts({
+      draftsResponse: buildSetupZoneDraftsResponse('new-1', {
+        ...fromSource,
+        status: 'NOT_REQUESTED',
+        drafts: [],
+      }),
+    });
+    expect(screen.queryByText('AI 구역 초안 분석 중')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe(
+      '이전 맵 세팅 때도 AI 초안이 없었어요 — 직접 그려 주세요',
+    );
+    cleanup();
+    renderDrafts({
+      draftsResponse: buildSetupZoneDraftsResponse('new-1', { ...fromSource, drafts: [] }),
+    });
+    expect(screen.getByRole('status').textContent).toBe(
+      '이전 맵 세팅 때도 AI 초안이 없었어요 — 직접 그려 주세요',
+    );
+    cleanup();
+    // 새 세션의 NOT_REQUESTED 는 아직 기다리는 중이다(지금 그대로)
+    renderDrafts({
+      draftsResponse: buildSetupZoneDraftsResponse('s1', {
+        draft_source_setup_session_id: 's1',
+        status: 'NOT_REQUESTED',
+        drafts: [],
+      }),
+    });
+    expect(screen.getByText('AI 구역 초안 분석 중')).toBeTruthy();
+  });
+
   it('같은 자리의 이전 구역과 묶인 초안은 목록에서 감추고 「이어 쓴 구역 확인」에서 고른다고 알린다', () => {
     renderDrafts({ mergedDraftIds: ['cand-opening-1'] });
     const list = screen.getByRole('list', { name: 'AI 구역 초안 목록' });

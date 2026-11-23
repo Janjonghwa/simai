@@ -472,7 +472,168 @@ class SetupReuseModeIntegrationTest {
                 .andExpect(jsonPath("$.code").value("SETUP_ALREADY_COMPLETED"));
     }
 
+    @Test
+    void 재사용_세션은_그_맵을_만든_세팅의_AI_초안을_보이고_채우기에서는_그_초안으로_만든_구역만_뺀다() throws Exception {
+        // 그 맵을 만든 NEW 세팅: AI 초안(개구부 하나) → 수락해 만든 구역 zAi, 사람이 그린 구역 zHuman,
+        // 지금 다시 보이지 않는 초안(시연 화면의 가짜 초안처럼 DB 초안에 없는 후보)으로 만든 구역 zOther
+        MapFixture chosen = mapSession("ai", Instant.now().minusSeconds(86400), true, "PASSED");
+        draftRun(chosen.session(), chosen.calibration(), "cand-open-1", "[[1, 1], [3, 1], [3, 3], [1, 3]]");
+        String zAi = "zone-reuse-ai-" + suffix;
+        String zHuman = "zone-reuse-human-" + suffix;
+        String zOther = "zone-reuse-other-" + suffix;
+        zone(zAi, 1, "POLYGON((0.9 0.9, 3.1 0.9, 3.1 3.1, 0.9 3.1, 0.9 0.9))", true);
+        zone(zHuman, 1, "POLYGON((5 5, 6 5, 6 6, 5 6, 5 5))", true);
+        zone(zOther, 1, "POLYGON((8 8, 9 8, 9 9, 8 9, 8 8))", true);
+        for (String z : List.of(zAi, zHuman, zOther)) {
+            jdbc.update("INSERT INTO setup_session_zone (setup_session_id, zone_id, zone_version, created_at) VALUES (?, ?, 1, now())",
+                    chosen.session(), z);
+        }
+        ArrayNode sourceItems = mapper.createArrayNode();
+        sourceItems.addObject().putNull("zone_id").put("source", "AI").put("candidate_id", "cand-open-1")
+                .set("zone", zoneBody("단상 개구부 1", "[[0.9, 0.9], [3.1, 0.9], [3.1, 3.1], [0.9, 3.1]]"));
+        sourceItems.addObject().putNull("zone_id").put("source", "MANUAL").putNull("candidate_id")
+                .set("zone", zoneBody("사람 구역", "[[5, 5], [6, 5], [6, 6], [5, 6]]"));
+        sourceItems.addObject().putNull("zone_id").put("source", "AI").put("candidate_id", "demo-opening-stage")
+                .set("zone", zoneBody("다른 초안 구역", "[[8, 8], [9, 8], [9, 9], [8, 9]]"));
+        jdbc.update("""
+                INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
+                VALUES (?, ?::jsonb, 4, ?, now())
+                """, chosen.session(), sourceItems.toString(), userId);
+        bundle(chosen.calibration(), List.of(zAi + ":1", zHuman + ":1", zOther + ":1"), List.of());
+        tier0Uses(chosen.calibration());
+        view(chosen.scene(), 300, "SAME", 0.0);
+        String sourcePlanBefore = sourcePlan(chosen.session());
+
+        JsonNode created = body(mvc.perform(createReuse(chosen.session())).andExpect(status().isAccepted()).andReturn());
+        String id = created.get("setup_session_id").asString();
+
+        // 초안: 재사용 세션은 초안 작업이 없어도 그 맵을 만든 세팅의 초안을 그대로(같은 보정·같은 World 좌표) 받는다
+        JsonNode drafts = body(mvc.perform(get("/api/setup-sessions/{id}/zone-drafts", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(drafts.get("setup_session_id").asString()).isEqualTo(id);
+        assertThat(drafts.get("draft_source_setup_session_id").asString()).isEqualTo(chosen.session().toString());
+        assertThat(drafts.get("status").asString()).isEqualTo("SUCCEEDED");
+        assertThat(drafts.get("calibration_version").asString()).isEqualTo(chosen.calibration());
+        assertThat(created.get("calibration_version").asString()).isEqualTo(chosen.calibration());
+        assertThat(drafts.get("drafts")).hasSize(1);
+        assertThat(drafts.at("/drafts/0/candidate_id").asString()).isEqualTo("cand-open-1");
+        assertThat(drafts.at("/drafts/0/polygon_xy/1/0").asDouble()).isEqualTo(3.0);
+        // 재사용 세션에는 초안 작업을 새로 만들지 않는다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_zone_draft_run WHERE setup_session_id = ?::uuid", Integer.class, id))
+                .isZero();
+
+        // 채우기: 그 초안을 수락해 만든 zAi 는 빼고(초안으로 다시 보인다), 사람 구역과 다시 보이지 않는 초안의 구역은 그대로
+        JsonNode plan = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        List<String> seeded = new ArrayList<>();
+        plan.get("items").forEach(item -> seeded.add(item.get("zone_id").asString()));
+        assertThat(seeded).containsExactlyInAnyOrder(zHuman, zOther);
+
+        // 수락: 그 초안 ID 로 이 세션 구역 목록에 AI 항목을 더한다(화면 useAcceptZoneDraft 와 같은 저장)
+        ArrayNode items = ((ArrayNode) plan.get("items")).deepCopy();
+        items.addObject().putNull("zone_id").put("source", "AI").put("candidate_id", "cand-open-1")
+                .set("zone", zoneBody("단상 개구부 1", "[[0.9, 0.9], [3.1, 0.9], [3.1, 3.1], [0.9, 3.1]]"));
+        ObjectNode put = mapper.createObjectNode().put("revision", plan.get("revision").asInt());
+        put.set("items", items);
+        JsonNode accepted = body(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .put("/api/setup-sessions/{id}/zones", id).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(put.toString()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(accepted.get("items")).hasSize(3);
+        assertThat(accepted.at("/items/2/candidate_id").asString()).isEqualTo("cand-open-1");
+
+        // 완료: 수락한 초안이 이 세션의 새 구역이 되고, 같은 자리의 옛 zAi 는 보관된다(같은 개구부가 둘 남지 않는다)
+        JsonNode done = body(mvc.perform(complete(id)).andExpect(status().isOk()).andReturn());
+        assertThat(done.at("/applied_zones/created")).hasSize(1);
+        assertThat(done.at("/applied_zones/archived").toString()).contains(zAi);
+        assertThat(done.at("/applied_zones/kept").toString()).contains(zHuman).contains(zOther);
+        String newZone = done.at("/applied_zones/created/0").asString();
+        assertThat(jdbc.queryForObject("SELECT setup_session_id::text FROM setup_session_zone WHERE zone_id = ?", String.class, newZone))
+                .isEqualTo(id);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM zone WHERE site_id = ? AND valid_to IS NULL AND name = '단상 개구부 1'",
+                Integer.class, site)).isEqualTo(1);
+
+        // 원 세션의 초안·구역 목록 기록은 바꾸지 않는다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_zone_draft WHERE setup_session_id = ?", Integer.class,
+                chosen.session())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM setup_zone_draft_run WHERE setup_session_id = ?", String.class,
+                chosen.session())).isEqualTo("SUCCEEDED");
+        assertThat(sourcePlan(chosen.session())).isEqualTo(sourcePlanBefore);
+    }
+
+    @Test
+    void 그_맵을_만든_세팅에도_초안이_없으면_재사용_초안은_NOT_REQUESTED_이고_구역은_모두_채운다() throws Exception {
+        MapFixture chosen = mapSession("nodraft", Instant.now().minusSeconds(86400), true, "PASSED");
+        String zAi = "zone-reuse-nodraft-" + suffix;
+        zone(zAi, 1, "POLYGON((0.9 0.9, 3.1 0.9, 3.1 3.1, 0.9 3.1, 0.9 0.9))", true);
+        jdbc.update("INSERT INTO setup_session_zone (setup_session_id, zone_id, zone_version, created_at) VALUES (?, ?, 1, now())",
+                chosen.session(), zAi);
+        ArrayNode sourceItems = mapper.createArrayNode();
+        sourceItems.addObject().putNull("zone_id").put("source", "AI").put("candidate_id", "cand-open-1")
+                .set("zone", zoneBody("단상 개구부 1", "[[0.9, 0.9], [3.1, 0.9], [3.1, 3.1], [0.9, 3.1]]"));
+        jdbc.update("""
+                INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
+                VALUES (?, ?::jsonb, 1, ?, now())
+                """, chosen.session(), sourceItems.toString(), userId);
+        bundle(chosen.calibration(), List.of(zAi + ":1"), List.of());
+        tier0Uses(chosen.calibration());
+        view(chosen.scene(), 300, "SAME", 0.0);
+
+        // 새 세션 자신의 조회는 초안 출처가 자기 자신이다
+        JsonNode own = body(mvc.perform(get("/api/setup-sessions/{id}/zone-drafts", chosen.session()).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(own.get("draft_source_setup_session_id").asString()).isEqualTo(chosen.session().toString());
+
+        JsonNode created = body(mvc.perform(createReuse(chosen.session())).andExpect(status().isAccepted()).andReturn());
+        String id = created.get("setup_session_id").asString();
+        JsonNode drafts = body(mvc.perform(get("/api/setup-sessions/{id}/zone-drafts", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(drafts.get("status").asString()).isEqualTo("NOT_REQUESTED");
+        assertThat(drafts.get("drafts")).isEmpty();
+        assertThat(drafts.get("setup_session_id").asString()).isEqualTo(id);
+        assertThat(drafts.get("draft_source_setup_session_id").asString()).isEqualTo(chosen.session().toString());
+        assertThat(drafts.get("calibration_version").asString()).isEqualTo(chosen.calibration());
+        // 다시 보일 초안이 없으니 빼지 않는다(빼면 그 구역을 되살릴 길이 없다)
+        JsonNode plan = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(plan.get("items")).hasSize(1);
+        assertThat(plan.at("/items/0/zone_id").asString()).isEqualTo(zAi);
+    }
+
     // ------------------------------------------------------------------ 도우미
+
+    /** 그 세팅의 끝난 초안 작업 하나와 초안 하나(높이 0~1.4 m 개구부) */
+    private void draftRun(UUID session, String calibration, String candidateId, String polygonXy) {
+        String job = "job-reuse-draft-" + session.toString().substring(0, 8) + "-" + suffix;
+        jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
+                + " VALUES (?, 'vlm_zone_draft','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb, now())", job);
+        UUID run = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO setup_zone_draft_run (draft_run_id, setup_session_id, job_id, site_id, calibration_version,
+                    preview_scene_version, status, created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'SUCCEEDED', now(), now())
+                """, run, session, job, site, calibration, "preview-" + suffix);
+        jdbc.update("""
+                INSERT INTO setup_zone_draft (draft_id, draft_run_id, setup_session_id, job_id, draft_index, candidate_id,
+                    candidate_kind, zone_kind, eval_type, polygon_xy, z_min_m, z_max_m, recommended_name, recommended_severity,
+                    rationale, vlm_status)
+                VALUES (?, ?, ?, ?, 0, ?, 'OPENING', 'OPENING', 'VOLUME_3D', ?::jsonb, 0, 1.4, '단상 개구부', 'CRITICAL',
+                    '단상 둘레가 트여 있어요.', 'VLM')
+                """, UUID.randomUUID(), run, session, job, candidateId, polygonXy);
+    }
+
+    /** 세팅 구역 목록 항목의 구역 본문(입체 판정 0~1.4 m) */
+    private ObjectNode zoneBody(String name, String polygonXy) throws Exception {
+        ObjectNode zone = mapper.createObjectNode().put("name", name).put("zone_kind", "OPENING").put("eval_type", "VOLUME_3D")
+                .put("z_min_m", 0.0).put("z_max_m", 1.4).put("severity", "CRITICAL");
+        zone.set("polygon_xy", mapper.readTree(polygonXy));
+        return zone;
+    }
+
+    private String sourcePlan(UUID session) {
+        return jdbc.queryForObject("SELECT items::text || ':' || revision FROM setup_session_zone_plan WHERE setup_session_id = ?",
+                String.class, session);
+    }
 
     /** 지난 새 맵 세팅 하나: 그 세션·맵·보정 */
     private record MapFixture(UUID session, String scene, String calibration) {

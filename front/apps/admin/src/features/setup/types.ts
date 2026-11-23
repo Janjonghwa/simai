@@ -789,6 +789,11 @@ export type ZoneDraftRunStatus = z.infer<typeof zoneDraftRunStatusSchema>;
 export const setupZoneDraftsResponseSchema = z.object({
   draft_run_id: z.string().nullable().optional().default(null),
   setup_session_id: z.string().min(1),
+  /**
+   * 초안을 만든 세팅 세션(S15P31A101-844). 보통은 setup_session_id 와 같고, 이전 맵 재사용 세션이면 그 맵을 만든 세팅이다
+   * (재사용은 초안 작업이 돌지 않아 그 세팅의 초안을 다시 보인다). 옛 서버는 보내지 않는다(null).
+   */
+  draft_source_setup_session_id: z.string().nullable().optional().default(null),
   site_id: z.string().min(1),
   calibration_version: z.string().nullable().optional().default(null),
   preview_scene_version: z.string().nullable().optional().default(null),

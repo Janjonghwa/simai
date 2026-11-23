@@ -1,4 +1,4 @@
-import type { ZoneDraftItem } from '@/features/setup/types';
+import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { ZoneAiOpinion } from '@/features/zones/types';
 import { ApiError } from '@/lib/http';
 
@@ -21,6 +21,17 @@ export function draftReason(item: ZoneDraftItem): string {
   return item.no_opinion
     ? 'AI가 사진에서 확인하지 못한 후보이므로 현장과 비교해 주세요.'
     : DRAFT_REASON[item.candidate_kind];
+}
+
+/**
+ * 이전 맵 재사용 세션이 그 맵을 만든 세팅의 초안을 받았는지(S15P31A101-844). 재사용은 초안 작업이 새로 돌지 않으므로, 원 세션에도
+ * 초안 작업이 없으면(NOT_REQUESTED) 기다리지 않고 「이전 맵 세팅 때도 AI 초안이 없었어요」로 끝낸다.
+ */
+export function draftsFromReuseSource(
+  response: SetupZoneDraftsResponse | null | undefined,
+): boolean {
+  const source = response?.draft_source_setup_session_id ?? null;
+  return source !== null && source !== response?.setup_session_id;
 }
 
 /** 저장 후 발행 실패의 원인과 실제 재발행 시점을 함께 알린다. */

@@ -17,6 +17,7 @@ import {
 import { coverageFreshUntil, coverageHelperLost } from '@/features/setup/cameraBadge';
 import { setActiveSetupSessionId } from '@/features/setup/setup.store';
 import { setupErrorMessage } from '@/features/setup/setupErrorMessage';
+import { draftsFromReuseSource } from '@/features/setup/setupUx';
 import { rebakeRunning } from '@/features/setup/supplement';
 import type {
   CreateSetupSessionBody,
@@ -251,10 +252,15 @@ export function useStartCameraCheck() {
 
 function isDraftRunPending(data: SetupZoneDraftsResponse | undefined): boolean {
   if (!data) return true;
-  return data.status === 'NOT_REQUESTED' || data.status === 'QUEUED';
+  // 재사용 세션은 그 맵을 만든 세팅의 초안을 받는다. 그 세팅에 초안 작업이 없었으면 앞으로도 생기지 않는다(S15P31A101-844)
+  if (data.status === 'NOT_REQUESTED') return !draftsFromReuseSource(data);
+  return data.status === 'QUEUED';
 }
 
-/** GET /api/setup-sessions/{id}/zone-drafts 조회 훅. 아직 QUEUED/NOT_REQUESTED 면 2초 주기로 다시 확인한다. */
+/**
+ * GET /api/setup-sessions/{id}/zone-drafts 조회 훅. 아직 QUEUED/NOT_REQUESTED 면 2초 주기로 다시 확인한다(재사용 세션의 NOT_REQUESTED 는
+ * 끝난 상태라 다시 묻지 않는다).
+ */
 export function useSetupZoneDrafts(sessionId: string | null, enabled = true) {
   const active = Boolean(sessionId) && enabled;
   const query = useQuery({

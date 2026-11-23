@@ -419,10 +419,23 @@ public class SetupService {
         return getInSite(sites.siteId(), setupSessionId);
     }
 
-    /** 세팅 세션에 귀속된 VLM 위험구역 초안 목록 조회(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455). */
+    /**
+     * 세팅 세션에 귀속된 VLM 위험구역 초안 목록 조회(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455).
+     * <p>고른 맵을 그대로 쓰는 재사용 세션(reuse_source_session_id, -714)은 워커 작업이 없어 초안 작업이 돌지 않는다. 그 맵을 만든 세팅(늘 걷기 확인을
+     * 한 NEW 세션)의 초안을 그대로 돌려준다(S15P31A101-844). 같은 맵·같은 보정 내용(재사용이 다시 낸 보정은 content_hash 가 같다)이라 World 좌표가
+     * 그대로 맞다. 응답 setup_session_id 는 요청한 세션, draft_source_setup_session_id 는 초안을 만든 세션이다(보통은 같다). 원 세션의 초안 기록은
+     * 바꾸지 않는다(읽기만). 원 세션에도 초안 작업이 없으면 NOT_REQUESTED 이고, 재사용 세션에서는 새로 돌지 않으므로 화면은 기다리지 않는다.
+     */
     public ObjectNode getZoneDrafts(UUID setupSessionId) {
         String siteId = sites.siteId();
-        SessionRow session = findForUpdateOrView(siteId, setupSessionId, false);
+        SessionRow requested = findForUpdateOrView(siteId, setupSessionId, false);
+        UUID reuseSource = jdbc.queryForList("""
+                SELECT reuse_source_session_id FROM setup_session
+                WHERE site_id = :site AND setup_session_id = :id AND reuse_source_session_id IS NOT NULL
+                """, new MapSqlParameterSource("site", siteId).addValue("id", setupSessionId), UUID.class)
+                .stream().findFirst().orElse(null);
+        UUID draftSessionId = reuseSource == null ? setupSessionId : reuseSource;
+        SessionRow session = reuseSource == null ? requested : findForUpdateOrView(siteId, reuseSource, false);
         List<ObjectNode> runs = jdbc.query("""
                 SELECT draft_run_id, job_id, calibration_version, preview_scene_version, status,
                        model_version, prompt_version, latency_ms, error_code, error_message,
@@ -431,11 +444,12 @@ public class SetupService {
                 WHERE setup_session_id = :id
                 ORDER BY created_at DESC
                 LIMIT 1
-                """, new MapSqlParameterSource("id", setupSessionId), (rs, i) -> {
+                """, new MapSqlParameterSource("id", draftSessionId), (rs, i) -> {
             ObjectNode run = mapper.createObjectNode();
             UUID runId = rs.getObject("draft_run_id", UUID.class);
             run.put("draft_run_id", runId.toString());
             run.put("setup_session_id", setupSessionId.toString());
+            run.put("draft_source_setup_session_id", draftSessionId.toString());
             run.put("site_id", siteId);
             run.put("calibration_version", rs.getString("calibration_version"));
             run.put("preview_scene_version", rs.getString("preview_scene_version"));
@@ -511,6 +525,7 @@ public class SetupService {
         ObjectNode empty = mapper.createObjectNode();
         empty.putNull("draft_run_id");
         empty.put("setup_session_id", setupSessionId.toString());
+        empty.put("draft_source_setup_session_id", draftSessionId.toString());
         empty.put("site_id", siteId);
         putText(empty, "calibration_version", session.calibrationVersion());
         putText(empty, "preview_scene_version", session.previewSceneVersion());
