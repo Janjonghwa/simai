@@ -10,6 +10,7 @@ import {
   type HistoricalPersonNameSpan,
 } from '@/features/people/personDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
+import { useZones } from '@/features/zones/useZones';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { ListOrdered, Users } from 'lucide-react';
@@ -174,6 +175,8 @@ export function EventLog({
   personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (event: EventRow) => void;
 }) {
+  // 구역 이름은 구역 캐시를 읽는다. 관제 화면을 거치지 않고 달력에서 바로 들어오면 캐시가 비어 있어 여기서 직접 받는다(S15P31A101-850)
+  useZones(null);
   const zoneName = useZoneName();
   const rows = useMemo(() => pastEventRows(events), [events]);
   return (
