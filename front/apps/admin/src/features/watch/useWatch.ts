@@ -14,6 +14,8 @@ import {
   bindKeyOf,
   linkKeyOf,
   newBinds,
+  nextAppearanceDonors,
+  NO_APPEARANCE_DONORS,
   watchBadges,
   watchesOfLinkKey,
   watchRows,
@@ -21,7 +23,7 @@ import {
 import { api } from '@/lib/api';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { skipToken, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const NONE: WatchBinding[] = [];
 
@@ -50,6 +52,19 @@ export function useCachedWatchBindings(): WatchBinding[] {
     queryFn: skipToken,
   });
   return data ?? NONE;
+}
+
+/**
+ * 3D 아바타 외형 이어받기 짝(받는 World ID → 주는 옛 World ID, -851). 캐시된 배정만 읽고, 자리 이어받기(-793)로 옮겨 온 배정의
+ * `handoff_from` 을 쓴다. 같은 World ID 가 계속 배정돼 있는 동안은 짝을 유지하고 배정이 없어지면(반증 등) 짝을 지운다.
+ */
+export function useAppearanceDonors(): Readonly<Record<string, string>> {
+  const bindings = useCachedWatchBindings();
+  // 이전 짝을 기억해야 승격 뒤에도 유지된다. 렌더 중 상태 갱신(같은 내용이면 prev 그대로라 다시 돌지 않음)
+  const [donors, setDonors] = useState(NO_APPEARANCE_DONORS);
+  const next = nextAppearanceDonors(donors, bindings);
+  if (next !== donors) setDonors(next);
+  return next;
 }
 
 /**

@@ -269,6 +269,13 @@ export interface Viewer3DProps {
    */
   personVests?: Readonly<Record<string, PersonHelmetState>>;
   /**
+   * 아바타 외형 이어받기 짝(받는 World ID → 주는 옛 World ID, -851, 선택 사항). 워치 배정이 자리 이어받기(-793)로 새 ID 에 옮겨 가면
+   * 호스트가 넘긴다. 새 ID 의 메시가 자기 외형이 없거나 옛 ID 보다 덜 본 동안 옛 ID 의 외형 텍스처를 입힌다(표시 전용).
+   * 위치·골격·관측 출처·메시 형상은 그대로 새 ID 것이다. 주는 ID 가 지금 다시 보이면 이어받지 않는다. 키를 빼면 바로 자기 외형으로 돌아간다.
+   * 내용이 같으면 다시 그리지 않는다.
+   */
+  personAppearanceDonors?: Readonly<Record<string, string>>;
+  /**
    * 보정된 카메라 마커 목록(-522, 선택 사항). LIVE 모드에서 카메라 본체·렌즈, 카메라 ID 이름표, 약 1.5 m 시야 절두체를 그린다.
    * 구역·작업면 편집 중에는 자동으로 숨기고, 사람이 선택되면 그 트랙의 cameras 에 포함된 카메라 마커를 강조 표시한다.
    * 렌더마다 새 배열을 넘겨도 값이 같으면 다시 그리지 않는다.

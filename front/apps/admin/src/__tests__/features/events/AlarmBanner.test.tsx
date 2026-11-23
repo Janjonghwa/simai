@@ -216,4 +216,34 @@ describe('AlarmBanner', () => {
       within(banner).getByRole('button', { name: '추락 위험(가장자리) 김철수 (w-0015) 확인' }),
     ).toBeTruthy();
   });
+  it('워치 배정이 다른 World ID 로 옮겨 가도 앞선 경보 배너는 경보가 났을 때 이름을 유지한다(-851)', () => {
+    const health = (names: { world_id: string; display_name: string; name_source: string }[]) => ({
+      receivedAt: T,
+      clockOffsetMs: 0,
+      payload: { as_of: T, person_names: names } as never,
+    });
+    useRealtimeStore
+      .getState()
+      .receiveHealth(
+        health([{ world_id: 'w-0015', display_name: '추창만', name_source: 'WATCH_DEVICE' }]),
+      );
+    const { banner, rerender } = renderBanner();
+    expect(within(banner).getByText('추창만')).toBeTruthy();
+
+    // 넘어지며 새 트랙(w-0020)으로 갈라져 워치 배정이 옮겨 갔다: 옛 ID 는 서버에서 자동 번호 이름이 된다.
+    act(() =>
+      useRealtimeStore.getState().receiveHealth(
+        health([
+          { world_id: 'w-0015', display_name: '미확인 7', name_source: 'UNIDENTIFIED' },
+          { world_id: 'w-0020', display_name: '추창만', name_source: 'WATCH_DEVICE' },
+        ]),
+      ),
+    );
+    rerender();
+    expect(within(banner).getByText('추창만')).toBeTruthy();
+    expect(within(banner).queryByText('작업자 #7')).toBeNull();
+    expect(
+      within(banner).getByRole('button', { name: '추락 위험(가장자리) 추창만 (w-0015) 확인' }),
+    ).toBeTruthy();
+  });
 });

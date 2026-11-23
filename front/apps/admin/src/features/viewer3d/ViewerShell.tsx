@@ -139,6 +139,7 @@ export function ViewerShell({
   personHighlights,
   personHelmets,
   personVests,
+  personAppearanceDonors,
   cameraPoses,
   floorCoverage,
   onCameraClick,
@@ -169,6 +170,7 @@ export function ViewerShell({
     created.getState().setPersonHighlights(personHighlights);
     created.getState().setPersonHelmets(personHelmets);
     created.getState().setPersonVests(personVests);
+    created.getState().setPersonAppearanceDonors(personAppearanceDonors);
     created.getState().setCameraPoses(cameraPoses);
     created.getState().setFloorCoverage(floorCoverage);
     created.getState().setTopView(topView);
@@ -315,6 +317,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setPersonVests(personVests);
   }, [store, personVests]);
+
+  useEffect(() => {
+    store.getState().setPersonAppearanceDonors(personAppearanceDonors);
+  }, [store, personAppearanceDonors]);
 
   useEffect(() => {
     store.getState().setCameraPoses(cameraPoses);

@@ -33,7 +33,7 @@ import { PlanMinimap } from '@/features/plan/PlanMinimap';
 import { useScenePlanStore } from '@/features/plan/scenePlan.store';
 import { usePpeGearStates, usePpeLabels } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
-import { useWatchBindDetector } from '@/features/watch/useWatch';
+import { useAppearanceDonors, useWatchBindDetector } from '@/features/watch/useWatch';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -152,6 +152,8 @@ export function SpatialViewportHost({
   // 손 흔들어 워치가 새로 이어진 사람 알림(-509). 상단 작은 배너(WatchBindNotice)만 쓰고, 3D 머리 위 큰 「⌚ 이름 연결됨」
   // 강조는 시연 중 갑자기 떠서 방해돼 넘기지 않는다(S15P31A101-845)
   useWatchBindDetector();
+  // 워치 배정이 자리 이어받기(-793)로 새 World ID 에 옮겨 가면 새 ID 가 옛 ID 의 아바타 외형을 이어 입는다(-851, 표시 전용)
+  const personAppearanceDonors = useAppearanceDonors();
   const cameraPoses = editing ? undefined : calibratedCameraPoses;
 
   const { markManual } = useAlarmCamera({
@@ -284,6 +286,7 @@ export function SpatialViewportHost({
                 personLabels={personLabels}
                 personHelmets={personHelmets}
                 personVests={personVests}
+                personAppearanceDonors={personAppearanceDonors}
                 cameraPoses={cameraPoses}
                 floorCoverage={drawnCoverage}
                 vdt={vdt}

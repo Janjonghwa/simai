@@ -14,6 +14,7 @@ import {
   resolvePersonDisplayMap,
   watchNamesKeyOf,
   watchNamesOfKey,
+  withRememberedNames,
   worldIdsKeyOf,
   worldIdsOfKey,
   type HistoricalPersonNameSpan,
@@ -64,6 +65,16 @@ export function usePersonDisplayMap(): PersonDisplayMap {
       worldOverrides: overridesOf(worldEntries),
     });
   }, [worldKey, personNames, watchNames, linksKey, bindings, watchEntries, worldEntries]);
+}
+
+/**
+ * 관제 경보 카드·배너·사건 상세 머리용 사람 표시 맵(S15P31A101-851). 워치 배정이 다른 World ID 로 옮겨 가도 앞선 경보가
+ * 「작업자 #N」으로 바뀌지 않게, 지금 실제 이름이 없는 ID 는 그 ID 가 마지막으로 가졌던 실제 이름으로 둔다(withRememberedNames).
+ */
+export function useEventPersonDisplayMap(): PersonDisplayMap {
+  const live = usePersonDisplayMap();
+  const remembered = useRealtimeStore((s) => s.personNameMemory);
+  return useMemo(() => withRememberedNames(live, remembered), [live, remembered]);
 }
 
 /** 선택된 한 사람의 표시 정보. worldId 가 null 이면 null. */

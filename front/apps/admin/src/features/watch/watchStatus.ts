@@ -146,3 +146,30 @@ export function newBinds(
     .filter((b) => b.channel_state === 'BOUND' && !prev.has(bindKeyOf(b)))
     .map((b) => ({ deviceId: b.device_id, worldId: b.world_id, method: bindMethodOf(b.method) }));
 }
+
+/** 3D 아바타 외형 이어받기 짝(받는 World ID → 주는 옛 World ID, -851). 없으면 이 빈 객체를 쓴다. */
+export const NO_APPEARANCE_DONORS: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
+ * 워치 배정이 자리 이어받기(-793)로 다른 World ID 에 옮겨 갔으면 새 ID 가 옛 ID 의 아바타 외형을 이어받는 짝을 만든다(-851, 표시 전용).
+ * - 지금 배정 행의 `handoff_from` 이 있으면(임시·확정 모두) `world_id → handoff_from`.
+ * - 이전 짝이 있던 World ID 가 여전히 배정돼 있으면 짝을 유지한다. 걸음 대조가 같은 짝을 다시 뽑아 `handoff_from` 없는 새 행으로
+ *   올려도(승격·교체) 외형이 갑자기 회색으로 돌아가지 않게 하려는 것이다.
+ * - 그 World ID 의 배정이 없어지면(반증 MATCH_LOST·해제·다른 사람으로 교체) 짝도 없어진다. 반증으로 되돌리면 이어받기도 되돌아간다.
+ * 내용이 같으면 prev 를 그대로 돌려줘 뷰어가 다시 그리지 않게 한다.
+ */
+export function nextAppearanceDonors(
+  prev: Readonly<Record<string, string>>,
+  bindings: readonly Pick<WatchBinding, 'world_id' | 'handoff_from'>[],
+): Readonly<Record<string, string>> {
+  const next: Record<string, string> = {};
+  for (const b of bindings) {
+    const from = b.handoff_from;
+    if (from && from !== b.world_id) next[b.world_id] = from;
+    else if (prev[b.world_id] !== undefined) next[b.world_id] = prev[b.world_id]!;
+  }
+  const keys = Object.keys(next);
+  if (keys.length === 0) return NO_APPEARANCE_DONORS;
+  const same = keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === next[k]);
+  return same ? prev : next;
+}
