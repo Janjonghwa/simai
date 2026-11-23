@@ -2,7 +2,7 @@ import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import { targetShortLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
-import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
+import { useEventPersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { Button } from '@simai/ui/components/button';
 import type { Ref } from 'react';
@@ -17,7 +17,8 @@ export function EventDetailHeader({
   onClose: () => void;
 }) {
   const zoneName = useZoneName();
-  const personNames = usePersonDisplayMap();
+  // 경보가 난 뒤 워치 배정이 옮겨 가도 그때 이름을 유지한다(-851)
+  const personNames = useEventPersonDisplayMap();
   const entry = topEntry(incident);
   const { event } = entry;
   const zone = event.zone_id ? zoneName(event.zone_id) : null;

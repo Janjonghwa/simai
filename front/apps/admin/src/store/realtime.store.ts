@@ -40,6 +40,36 @@ export interface PpeSnapshot {
   receivedAt: number;
 }
 
+type HealthPersonName = NonNullable<ViewerHealthPayload['person_names']>[number];
+
+/** 기억하는 실제 이름 하나(-851). */
+export interface RememberedPersonName {
+  displayName: string;
+  nameSource: 'WORLD_MANUAL' | 'WATCH_DEVICE';
+}
+
+const NO_REMEMBERED_NAMES: Readonly<Record<string, RememberedPersonName>> = Object.freeze({});
+
+/**
+ * health person_names 의 실제 이름을 World ID 별로 덧붙여 기억한다(-851). 같은 ID 의 이름이 바뀌면 새 이름으로 바꾼다.
+ * 바뀐 것이 없으면 prev 를 그대로 돌려줘 구독자가 다시 그리지 않게 한다.
+ */
+export function rememberPersonNames(
+  prev: Readonly<Record<string, RememberedPersonName>>,
+  items: readonly HealthPersonName[] | undefined,
+): Readonly<Record<string, RememberedPersonName>> {
+  let next: Record<string, RememberedPersonName> | null = null;
+  for (const item of items ?? []) {
+    if (item.name_source !== 'WORLD_MANUAL' && item.name_source !== 'WATCH_DEVICE') continue;
+    const old = (next ?? prev)[item.world_id];
+    if (old && old.displayName === item.display_name && old.nameSource === item.name_source)
+      continue;
+    next ??= { ...prev };
+    next[item.world_id] = { displayName: item.display_name, nameSource: item.name_source };
+  }
+  return next ?? prev;
+}
+
 export interface RealtimeState {
   phase: LinkPhase;
   /** 마지막으로 연결이 열린 시각. 연결 뒤 health 를 아직 못 받았을 때 끊김 판단의 기준이다. */
@@ -54,6 +84,12 @@ export interface RealtimeState {
    * 뒤로 가면 이후 프레임을 모두 버려 평면이 멈추기 때문이다.
    */
   worldResync: boolean;
+  /**
+   * World ID 별로 마지막으로 받은 실제 이름(health person_names 중 WORLD_MANUAL·WATCH_DEVICE, S15P31A101-851).
+   * 워치 배정이 다른 ID 로 옮겨 가 지금 이름이 「작업자 #N」으로 바뀌어도, 앞서 난 경보 카드·배너는 그때 이름을 계속 보인다.
+   * 세션을 새로 시작하면(begin·reset) 비운다. 이름 없는 항목(UNIDENTIFIED)은 기억하지 않는다.
+   */
+  personNameMemory: Readonly<Record<string, RememberedPersonName>>;
   /**
    * World ID 가 이 브라우저에서 보인 구간·병합·워치 배정 기록(S15P31A101-785, lib/trackLife). 받은 world 마다 바뀌므로 화면은 구독하지 않고
    * 사람이 바뀔 때(selectAliveIdsKey) getState() 로 읽는다. 워치 기록(watched)은 새 배정이 있을 때만 바뀐다.
@@ -94,6 +130,7 @@ const INITIAL = {
   ppe: {},
   rejected: 0,
   source: null,
+  personNameMemory: NO_REMEMBERED_NAMES,
 } as const satisfies Partial<RealtimeState>;
 
 // 10Hz 로 오는 world 는 최신 프레임 하나만 둔다. 3D 뷰어는 같은 메시지를 Source 로 받아 자기 저장소에 둔다(viewer3d).
@@ -108,12 +145,20 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
   setPhase: (phase) => set({ phase }),
   opened: (at) => set({ phase: 'OPEN', openedAt: at, worldResync: true }),
   receiveHealth: (health) =>
-    set((s) => ({ health, lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)) })),
+    set((s) => ({
+      health,
+      lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)),
+      personNameMemory: rememberPersonNames(s.personNameMemory, health.payload.person_names),
+    })),
   seedHealth: (health) =>
     set((s) =>
       s.health && s.health.payload.as_of >= health.payload.as_of
         ? s
-        : { health, lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)) },
+        : {
+            health,
+            lagSamples: pushLagSample(s.lagSamples, lagSample(health.payload)),
+            personNameMemory: rememberPersonNames(s.personNameMemory, health.payload.person_names),
+          },
     ),
   receiveWorld: (world) =>
     set((s) =>

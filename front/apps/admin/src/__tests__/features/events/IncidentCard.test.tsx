@@ -417,6 +417,29 @@ describe('IncidentCard', () => {
     expect(within(card).getByText('김철수 (0015)')).toBeTruthy();
   });
 
+  it('워치 배정이 다른 World ID 로 옮겨 가도 앞선 경보 카드는 「작업자 #N」으로 바뀌지 않는다(-851)', () => {
+    const health = (names: { world_id: string; display_name: string; name_source: string }[]) => ({
+      receivedAt: T,
+      clockOffsetMs: 0,
+      payload: { as_of: T, person_names: names } as never,
+    });
+    useRealtimeStore
+      .getState()
+      .receiveHealth(
+        health([{ world_id: 'w-0008', display_name: '추창만', name_source: 'WATCH_DEVICE' }]),
+      );
+    useRealtimeStore.getState().receiveHealth(
+      health([
+        { world_id: 'w-0008', display_name: '미확인 7', name_source: 'UNIDENTIFIED' },
+        { world_id: 'w-0010', display_name: '추창만', name_source: 'WATCH_DEVICE' },
+      ]),
+    );
+    const { card } = renderCard([entry({ world_ids: ['w-0008'] })]);
+    expect(within(card).getByText('추창만')).toBeTruthy();
+    expect(within(card).queryByText('작업자 #7')).toBeNull();
+    expect(detail(card)[0]).toBe('추창만 (w-0008)');
+  });
+
   it('사람 대상 UNVERIFIABLE 경보의 대상이 world_state 트랙에 없으면 「확인 불가 · 대상 시야 이탈」을 보인다(-811)', () => {
     useRealtimeStore.setState({
       world: {

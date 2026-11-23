@@ -1,6 +1,8 @@
 import type { WatchBinding } from '@/features/watch/api';
 import {
   linkKeyOf,
+  nextAppearanceDonors,
+  NO_APPEARANCE_DONORS,
   watchBadges,
   watchesOfLinkKey,
   watchRows,
@@ -82,5 +84,37 @@ describe('워치 상태(-342)', () => {
     expect(watchBadges(connected)).toEqual({ 'w-17': '워치 watch-01' });
     expect(watchBadges(watchRows(undefined, []))).toEqual({});
     expect(JSON.stringify(watchBadges(rows))).not.toContain('미착용');
+  });
+});
+
+describe('nextAppearanceDonors 아바타 외형 이어받기 짝(-851)', () => {
+  const row = (world_id: string, handoff_from: string | null = null) => ({
+    world_id,
+    handoff_from,
+  });
+
+  it('자리 이어받기로 옮겨 온 배정(handoff_from)이면 새 ID → 옛 ID 짝을 만든다(임시·확정 모두)', () => {
+    expect(
+      nextAppearanceDonors(NO_APPEARANCE_DONORS, [row('w-0010', 'w-0008'), row('w-0003')]),
+    ).toEqual({
+      'w-0010': 'w-0008',
+    });
+    expect(nextAppearanceDonors(NO_APPEARANCE_DONORS, [row('w-0003')])).toBe(NO_APPEARANCE_DONORS);
+  });
+
+  it('같은 World ID 가 handoff_from 없는 새 행(대조 승격)으로 계속 배정돼 있으면 짝을 유지한다', () => {
+    const first = nextAppearanceDonors(NO_APPEARANCE_DONORS, [row('w-0010', 'w-0008')]);
+    expect(nextAppearanceDonors(first, [row('w-0010')])).toBe(first);
+  });
+
+  it('그 World ID 의 배정이 없어지면(반증 MATCH_LOST·해제) 짝도 지운다', () => {
+    const first = nextAppearanceDonors(NO_APPEARANCE_DONORS, [row('w-0010', 'w-0008')]);
+    expect(nextAppearanceDonors(first, [])).toBe(NO_APPEARANCE_DONORS);
+    expect(nextAppearanceDonors(first, [row('w-0011', 'w-0010')])).toEqual({ 'w-0011': 'w-0010' });
+  });
+
+  it('내용이 같으면 이전 객체를 그대로 돌려준다', () => {
+    const first = nextAppearanceDonors(NO_APPEARANCE_DONORS, [row('w-0010', 'w-0008')]);
+    expect(nextAppearanceDonors(first, [row('w-0010', 'w-0008')])).toBe(first);
   });
 });

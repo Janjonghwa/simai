@@ -146,6 +146,8 @@ export interface ViewerState {
   personHelmets: Readonly<Record<string, PersonHelmetState>>;
   /** 사람별 조끼 상태(World ID → 상태, -552). */
   personVests: Readonly<Record<string, PersonHelmetState>>;
+  /** 아바타 외형 이어받기 짝(받는 World ID → 주는 옛 World ID, -851). */
+  personAppearanceDonors: Readonly<Record<string, string>>;
   /** 보정된 카메라 마커 자세·시야각 목록(-522). */
   cameraPoses: readonly CalibratedCameraPose[];
   /** 바닥 감시 범위 겹침(-606). 호스트가 지금 보정에 맞는 것만 넘긴다. 없으면 그리지 않는다. */
@@ -172,6 +174,8 @@ export interface ViewerState {
   setPersonHighlights(input: Readonly<Record<string, string>> | undefined): void;
   setPersonHelmets(input: Readonly<Record<string, PersonHelmetState>> | undefined): void;
   setPersonVests(input: Readonly<Record<string, PersonHelmetState>> | undefined): void;
+  /** 내용이 같으면 바꾸지 않는다. 비우면 모두 지운다(-851). */
+  setPersonAppearanceDonors(input: Readonly<Record<string, string>> | undefined): void;
   setCameraPoses(input: readonly CalibratedCameraPose[] | undefined): void;
   /** 같은 객체면 바꾸지 않는다. 없으면 겹침을 지운다. */
   setFloorCoverage(input: FloorCoverage | null | undefined): void;
@@ -305,6 +309,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       personHighlights: NO_BADGES,
       personHelmets: NO_HELMETS,
       personVests: NO_HELMETS,
+      personAppearanceDonors: NO_BADGES,
       cameraPoses: NO_CAMERA_POSES,
       floorCoverage: null,
       pendingSelect: null,
@@ -471,6 +476,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setPersonVests: (input) => {
         const next = input ?? NO_HELMETS;
         if (!sameBadges(next, get().personVests)) set({ personVests: next });
+      },
+
+      setPersonAppearanceDonors: (input) => {
+        const next = input ?? NO_BADGES;
+        if (!sameBadges(next, get().personAppearanceDonors)) set({ personAppearanceDonors: next });
       },
 
       setCameraPoses: (input) => {

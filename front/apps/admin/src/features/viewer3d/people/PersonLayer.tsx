@@ -8,17 +8,22 @@ import {
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import {
+  appearanceRequestKey,
   applyAvatarAppearanceToMaterials,
   AVATAR_ENV_MAP_INTENSITY,
   AVATAR_PBR_METALNESS,
   AVATAR_PBR_ROUGHNESS,
-  avatarAppearanceKey,
   updateAvatarBaseColors,
   useAvatarAppearance,
   useAvatarPmremEnvMap,
   type AvatarAppearanceTextures,
   type AvatarFacePolicy,
 } from '@/features/viewer3d/people/avatarAppearance';
+import {
+  appearanceMemoryOf,
+  chooseAvatarAppearance,
+  rememberAppearance,
+} from '@/features/viewer3d/people/avatarAppearanceCarry';
 import {
   avatarAssetKey,
   avatarAssetState,
@@ -214,18 +219,50 @@ function PersonAvatar({
     meshConfig.fetch,
   );
   // EXP-02 외형 텍스처(-359). 사람(worldId)별 appearance_version 이 바뀔 때만 새로 받는다.
-  const appearanceKey = useSpatialData((s) =>
-    meshConfig.enabled ? avatarAppearanceKey(worldId, s.avatars.get(worldId)) : null,
-  );
+  // 워치 배정이 자리 이어받기로 이 ID 에 옮겨 왔으면(-851) 자기 외형이 없거나 덜 본 동안 옛 ID 의 외형을 입힌다(텍스처만, 표시 전용).
+  const appearanceDonor = useStore(viewerStore, (s) => s.personAppearanceDonors[worldId] ?? null);
+  const pickAppearance = (s: SpatialDataState) =>
+    meshConfig.enabled
+      ? chooseAvatarAppearance({
+          worldId,
+          avatars: s.avatars,
+          donorId: appearanceDonor,
+          donorVisible:
+            appearanceDonor !== null &&
+            (trackOf(s.world, appearanceDonor)?.lifecycle ?? 'LOST') !== 'LOST',
+          memory: appearanceMemoryOf(store),
+        })
+      : null;
+  const appearanceKey = useSpatialData((s) => {
+    const choice = pickAppearance(s);
+    return choice ? appearanceRequestKey(choice.request) : null;
+  });
+  const appearanceCarriedFrom = useSpatialData((s) => pickAppearance(s)?.carriedFrom ?? null);
   const facePolicy = useSpatialData((s) =>
-    meshConfig.enabled ? (s.avatars.get(worldId)?.asset?.facePolicy ?? 'EXCLUDED') : 'EXCLUDED',
+    meshConfig.enabled
+      ? (pickAppearance(s)?.facePolicy ?? s.avatars.get(worldId)?.asset?.facePolicy ?? 'EXCLUDED')
+      : 'EXCLUDED',
   );
   const { appearance } = useAvatarAppearance(
     worldId,
     appearanceKey,
     () => store.getState().avatars.get(worldId),
     meshConfig.fetch,
+    () => pickAppearance(store.getState())?.request ?? null,
   );
+  // 지금 입힌 외형을 기억해 이 ID 가 사라진 뒤 배정을 이어받은 새 ID 가 쓰게 한다(-851).
+  useEffect(() => {
+    if (appearanceKey === null) return;
+    rememberAppearance(appearanceMemoryOf(store), worldId, pickAppearance(store.getState()));
+    // pickAppearance 는 렌더마다 새 함수지만 결과는 appearanceKey·facePolicy 로 정해진다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, worldId, appearanceKey, facePolicy]);
+  useEffect(() => {
+    if (appearanceCarriedFrom === null) return;
+    console.info(
+      `[viewer3d] 아바타 외형 이어받기 ${worldId} ← ${appearanceCarriedFrom} (워치 자리 이어받기, 표시 전용)`,
+    );
+  }, [worldId, appearanceCarriedFrom]);
   const [player] = useState(() => new PosePlayer());
   const [meshUse, setMeshUse] = useState(false);
   const meshUseRef = useRef(meshUse);

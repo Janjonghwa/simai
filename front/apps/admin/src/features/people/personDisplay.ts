@@ -335,6 +335,43 @@ export function resolvePersonDisplayMap({
   return out;
 }
 
+/** 경보 카드·배너가 쓰는 World ID 별 기억 이름(realtime 저장소 personNameMemory, -851). */
+export type RememberedPersonNames = Readonly<
+  Record<string, { displayName: string; nameSource: 'WORLD_MANUAL' | 'WATCH_DEVICE' }>
+>;
+
+/**
+ * 경보 카드·배너·상세 머리용 사람 표시 맵(S15P31A101-851). 경보가 난 뒤 워치 배정이 다른 World ID 로 옮겨 가
+ * 지금 이름이 「작업자 #N」(UNIDENTIFIED)이나 수신 전 기본값(FALLBACK)이 되거나 맵에서 빠진 ID 는, 그 ID 가 마지막으로 가졌던
+ * 실제 이름(관리자 지정·워치 이름)으로 둔다. 지금 실제 이름이 있으면 지금 이름을 쓴다(이름 변경은 따른다).
+ * 기억 이름은 같은 사람의 새 ID 와 이름이 같아도 동명이인 표시(끝번호 괄호)를 붙이지 않는다. 워치 상태는 지금 값을 둔다.
+ * 3D 이름표·2D 평면은 지금 이름을 그대로 쓴다(이 맵을 쓰지 않는다). 바뀐 것이 없으면 live 를 그대로 돌려준다.
+ */
+export function withRememberedNames(
+  live: PersonDisplayMap,
+  remembered: RememberedPersonNames,
+): PersonDisplayMap {
+  let out: Record<string, PersonDisplayInfo> | null = null;
+  for (const [worldId, name] of Object.entries(remembered)) {
+    const current = live[worldId];
+    if (
+      current &&
+      (current.nameSource === 'WORLD_MANUAL' || current.nameSource === 'WATCH_DEVICE')
+    ) {
+      continue;
+    }
+    out ??= { ...live };
+    out[worldId] = {
+      worldId,
+      displayName: name.displayName,
+      nameSource: name.nameSource,
+      isDuplicateName: false,
+      watch: current?.watch ?? { status: 'none', deviceId: null },
+    };
+  }
+  return out ?? live;
+}
+
 /** 맵에 아직 없는 World ID 도 안전하게 기본값으로 돌려준다. */
 export function resolvePersonDisplay(
   worldId: string,

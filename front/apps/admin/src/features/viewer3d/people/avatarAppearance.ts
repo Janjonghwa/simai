@@ -981,7 +981,7 @@ export function avatarAppearanceRequestOf(
 }
 
 /** 외형 요청의 정체(사람·세대·판·두 파일 주소). 판이 key 에 들어가 옛 판을 새 판으로 잘못 다시 쓰지 않는다. */
-const appearanceRequestKey = (req: AvatarAppearanceRequest) =>
+export const appearanceRequestKey = (req: AvatarAppearanceRequest) =>
   `${req.worldId}|${req.streamEpoch}|${req.appearanceVersion}|${req.textureUrl}|${req.surfaceSourceUrl}`;
 
 export function avatarAppearanceKey(
@@ -1209,6 +1209,11 @@ export function useAvatarAppearance(
   appearanceKey: string | null,
   getAvatar: () => AvatarPoseView | undefined,
   fetcher: AvatarMeshFetch,
+  /**
+   * 받을 외형 요청을 직접 고른다(-851 외형 이어받기: 다른 World ID 의 요청일 수 있다). 없으면 이 사람 자산의 요청이다.
+   * 고른 요청의 `appearanceRequestKey` 가 `appearanceKey` 와 같아야 한다.
+   */
+  getRequest?: () => AvatarAppearanceRequest | null,
 ): UseAvatarAppearanceResult {
   const [retry, setRetry] = useState(0);
   const [viewState, setViewState] = useState<{
@@ -1220,12 +1225,15 @@ export function useAvatarAppearance(
     status: 'NONE',
     appearance: null,
   });
-  const readAvatar = useEffectEvent(getAvatar);
+  const readRequest = useEffectEvent(() =>
+    getRequest ? getRequest() : avatarAppearanceRequestOf(worldId, getAvatar()),
+  );
   const activeRef = useRef<HeldAppearance | null>(null);
   // 교체·실패로 물러났지만 아직 재질에 묶여 있을 수 있는 자산. 다음 커밋(자식 MeshBody 가 새 텍스처를 묶은 뒤)에 캐시에 돌려준다.
   const retiredRef = useRef<HeldAppearance[]>([]);
 
-  // worldId 가 바뀌거나 언마운트되면 이전 사람의 외형 자산을 놓는다. 캐시 key 에 worldId 가 있어 다른 ID 가 이어받지 않는다(ID 분리 시 유산 금지).
+  // worldId 가 바뀌거나 언마운트되면 이전 사람의 외형 자산을 놓는다. 캐시 key 에 worldId 가 있어 다른 ID 가 저절로 이어받지 않는다(ID 분리 시 유산 금지).
+  // 다른 ID 의 외형은 호스트가 워치 자리 이어받기로 짝을 정해 getRequest 로 고를 때만 쓴다(-851).
   useEffect(() => {
     return () => {
       activeRef.current?.release();
@@ -1247,8 +1255,7 @@ export function useAvatarAppearance(
   }, [viewState]);
 
   useEffect(() => {
-    const avatar = readAvatar();
-    const req = avatarAppearanceRequestOf(worldId, avatar);
+    const req = readRequest();
     if (!appearanceKey || !req) {
       activeRef.current?.release();
       activeRef.current = null;

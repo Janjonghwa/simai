@@ -705,6 +705,77 @@ describe('PersonLayer 외형 텍스처·표면 출처·환경맵 통합', () => 
     expect(firstBodyMaterial('w-0002')).toBeNull();
   });
 
+  it('워치 자리 이어받기 짝(-851)이 있으면 새 ID 메시가 사라진 옛 ID 외형을 입고, 짝이 빠지면(반증) 자기 외형(없음)으로 돌아간다', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    await mount();
+    for (let i = 0; i <= 3; i++) await stepTick(i, makeTexturedFrame(i));
+    expect(
+      getAvatarMaterialUniforms(firstBodyMaterial('w-0001')!)!.uAvatarHasAppearance.value,
+    ).toBe(1);
+
+    // w-0001 이 사라지고 그 자리에 외형 텍스처가 아직 없는 새 ID w-0099 가 나타난다(넘어지며 갈라진 경우).
+    const baseWorld = scenarioWorld('avatar-mesh', 4, T0) as {
+      payload: { tracks: Array<Record<string, unknown>> };
+    };
+    const rebound = structuredClone(baseWorld);
+    const gone = rebound.payload.tracks.findIndex((t) => t.world_id === 'w-0001');
+    const fresh = structuredClone(rebound.payload.tracks[gone]!);
+    fresh.world_id = 'w-0099';
+    rebound.payload.tracks.splice(gone, 1, fresh);
+    const frame = (i: number) =>
+      makeTexturedFrame(i, { extraTrackId: 'w-0099', untexturedWorldIds: ['w-0099'] });
+
+    for (let i = 4; i <= 5; i++) await stepTick(i, frame(i), rebound);
+    expect(
+      getAvatarMaterialUniforms(firstBodyMaterial('w-0099')!)!.uAvatarHasAppearance.value,
+    ).toBe(0);
+
+    // 워치 배정이 w-0099 로 옮겨 왔다(handoff_from = w-0001): 옛 ID 의 외형을 입는다. 새 ID 텍스처는 받지 않는다.
+    await act(async () => viewer.getState().setPersonAppearanceDonors({ 'w-0099': 'w-0001' }));
+    for (let i = 6; i <= 7; i++) await stepTick(i, frame(i), rebound);
+    const carried = getAvatarMaterialUniforms(firstBodyMaterial('w-0099')!)!;
+    expect(carried.uAvatarHasAppearance.value).toBe(1);
+    expect(
+      defaultFetcher.mock.calls.some(([u]) => u.includes('/w-0099/') && u.endsWith('.png')),
+    ).toBe(false);
+    // 옛 ID 외형 파일은 처음 한 번만 받았다(기억·캐시를 다시 쓴다)
+    expect(
+      defaultFetcher.mock.calls.filter(([u]) => u.includes('/w-0001/') && u.endsWith('/albedo.png'))
+        .length,
+    ).toBe(1);
+    expect(console.info).toHaveBeenCalledWith(expect.stringContaining('w-0099 ← w-0001'));
+
+    // 반증(MATCH_LOST)으로 배정이 빠지면 짝도 빠지고 자기 외형(아직 없음)으로 돌아간다.
+    await act(async () => viewer.getState().setPersonAppearanceDonors({}));
+    for (let i = 8; i <= 9; i++) await stepTick(i, frame(i), rebound);
+    expect(
+      getAvatarMaterialUniforms(firstBodyMaterial('w-0099')!)!.uAvatarHasAppearance.value,
+    ).toBe(0);
+  });
+
+  it('주는 옛 ID 가 지금 다시 보이면(-851) 짝이 있어도 이어받지 않는다', async () => {
+    await mount();
+    const frame = (i: number) =>
+      makeTexturedFrame(i, { extraTrackId: 'w-0099', untexturedWorldIds: ['w-0099'] });
+    const baseWorld = scenarioWorld('avatar-mesh', 0, T0) as {
+      payload: { tracks: Array<Record<string, unknown>> };
+    };
+    const both = structuredClone(baseWorld);
+    const extra = structuredClone(both.payload.tracks[0]!);
+    extra.world_id = 'w-0099';
+    extra.position_xy = [4.5, 4.5];
+    extra.pelvis_xyz = [4.5, 4.5, 0.95];
+    both.payload.tracks.push(extra);
+    await act(async () => viewer.getState().setPersonAppearanceDonors({ 'w-0099': 'w-0001' }));
+    for (let i = 0; i <= 3; i++) await stepTick(i, frame(i), both);
+    expect(
+      getAvatarMaterialUniforms(firstBodyMaterial('w-0001')!)!.uAvatarHasAppearance.value,
+    ).toBe(1);
+    expect(
+      getAvatarMaterialUniforms(firstBodyMaterial('w-0099')!)!.uAvatarHasAppearance.value,
+    ).toBe(0);
+  });
+
   it('createAvatarPmremEnvMap 은 WebGLRenderTarget 이 있는 렌더러와 가짜 렌더러 모두에서 유효한 텍스처를 만들고 해제한다', () => {
     const fallbackHandle = createAvatarPmremEnvMap(null);
     expect(fallbackHandle.texture).toBeInstanceOf(THREE.Texture);

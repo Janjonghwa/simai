@@ -1,5 +1,5 @@
 import { formatPersonFull } from '@/features/people/personDisplay';
-import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
+import { useEventPersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { realtime } from '@/lib/realtime';
 import { SEVERITY_LABEL } from '@/lib/ruleNames';
 import type { WatchEscalationPayload } from '@simai/contracts';
@@ -17,7 +17,8 @@ const REASON_TEXT = { NO_ACK: '진동 뒤 확인 없음', SEND_FAILED: '워치�
  */
 export function WatchEscalationNotice() {
   const [items, setItems] = useState<{ e: WatchEscalationPayload; at: number }[]>([]);
-  const personNames = usePersonDisplayMap();
+  // 경보 뒤 워치 배정이 옮겨 가도 그때 이름을 유지한다(-851)
+  const personNames = useEventPersonDisplayMap();
 
   useEffect(
     () =>

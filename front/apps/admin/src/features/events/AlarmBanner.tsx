@@ -9,7 +9,7 @@ import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
 import { formatPersonFull, type PersonDisplayMap } from '@/features/people/personDisplay';
-import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
+import { useEventPersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
@@ -63,7 +63,8 @@ export function AlarmBanner({
   const { entries } = useVisibleLiveEvents();
   const alarms = useMemo(() => entries.filter(isAlarming).sort(byAlarmPriority), [entries]);
   const zoneName = useZoneName();
-  const personNames = usePersonDisplayMap();
+  // 경보가 난 뒤 워치 배정이 옮겨 가도 그때 이름을 유지한다(-851)
+  const personNames = useEventPersonDisplayMap();
   const current = alarms[0];
   const [held, setHeld] = useState<EventEntry | undefined>(current);
   if (current && current !== held) setHeld(current);

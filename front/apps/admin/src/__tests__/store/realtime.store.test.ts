@@ -3,6 +3,7 @@ import {
   HEALTH_TIMEOUT_MS,
   isLinkAlive,
   isWorldFresh,
+  rememberPersonNames,
   selectCameraLagMs,
   selectTier0LagMs,
   selectTrackedCount,
@@ -163,5 +164,47 @@ describe('selectTrackedCount', () => {
     const world = { receivedAt: T, payload: { tracks } as unknown as WorldStatePayload };
     expect(selectTrackedCount({ world })).toBe(3);
     expect(selectTrackedCount({ world: null })).toBe(0);
+  });
+});
+
+describe('personNameMemory 실제 이름 기억(-851)', () => {
+  beforeEach(() => useRealtimeStore.setState(useRealtimeStore.getInitialState(), true));
+  const names = (list: [string, string, string][]) =>
+    list.map(([world_id, display_name, name_source]) => ({
+      world_id,
+      display_name,
+      name_source,
+    })) as never;
+
+  it('관리자 지정·워치 이름만 덧붙여 기억하고 자동 번호는 기억하지 않으며, 같으면 이전 객체를 돌려준다', () => {
+    const first = rememberPersonNames(
+      {},
+      names([
+        ['w-1', '추창만', 'WATCH_DEVICE'],
+        ['w-2', '미확인 3', 'UNIDENTIFIED'],
+      ]),
+    );
+    expect(first).toEqual({ 'w-1': { displayName: '추창만', nameSource: 'WATCH_DEVICE' } });
+    expect(rememberPersonNames(first, names([['w-1', '미확인 7', 'UNIDENTIFIED']]))).toBe(first);
+    expect(rememberPersonNames(first, names([['w-1', '추창만', 'WATCH_DEVICE']]))).toBe(first);
+    expect(rememberPersonNames(first, names([['w-1', '김철수', 'WORLD_MANUAL']]))['w-1']).toEqual({
+      displayName: '김철수',
+      nameSource: 'WORLD_MANUAL',
+    });
+  });
+
+  it('health 를 받을 때 기억하고, 세션을 새로 시작하면 비운다', () => {
+    const store = useRealtimeStore.getState();
+    store.receiveHealth({
+      payload: {
+        ...viewerHealthAt(T).payload,
+        person_names: names([['w-1', '추창만', 'WATCH_DEVICE']]),
+      },
+      receivedAt: T,
+      clockOffsetMs: 0,
+    });
+    expect(useRealtimeStore.getState().personNameMemory['w-1']?.displayName).toBe('추창만');
+    useRealtimeStore.getState().begin();
+    expect(useRealtimeStore.getState().personNameMemory).toEqual({});
   });
 });

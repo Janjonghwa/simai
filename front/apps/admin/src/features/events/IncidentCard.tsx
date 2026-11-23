@@ -13,7 +13,7 @@ import { cardChip, targetLabel, targetShortLabel } from '@/features/events/incid
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
 import { useAliveIds } from '@/features/events/useAliveIds';
-import { usePersonDisplayMap } from '@/features/people/usePersonDisplay';
+import { useEventPersonDisplayMap } from '@/features/people/usePersonDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useRef } from 'react';
@@ -69,7 +69,8 @@ export function IncidentCard({
   onOpen,
 }: IncidentCardProps) {
   const zoneName = useZoneName();
-  const personNames = usePersonDisplayMap();
+  // 경보가 난 뒤 워치 배정이 옮겨 가도 그때 이름을 유지한다(-851)
+  const personNames = useEventPersonDisplayMap();
   const alive = useAliveIds();
   const top = topEntry(incident);
   const live = incident.entries.filter((e) => isActive(e.event));

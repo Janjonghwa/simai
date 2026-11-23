@@ -7,6 +7,7 @@ import {
   normalizeDisplayName,
   resolveHistoricalPersonName,
   resolvePersonDisplayMap,
+  withRememberedNames,
   workerLabel,
   workerShortLabel,
   type HistoricalPersonNameSpan,
@@ -251,5 +252,35 @@ describe('지난 기록 시각별 이름 해석 workerShortLabel(S15P31A101-835)
     expect(workerShortLabel('w-0012', 2000, spans)).toBe('추반장');
     expect(workerShortLabel('w-0012', 3000, spans)).toBe('작업자 #0012');
     expect(workerShortLabel('w-0099', 1500, spans)).toBe('작업자 #0099');
+  });
+});
+
+describe('경보 카드용 기억 이름 withRememberedNames(-851)', () => {
+  const live = resolvePersonDisplayMap({
+    activeWorldIds: ['w-0010'],
+    personNames: [
+      { world_id: 'w-0008', display_name: '미확인 7', name_source: 'UNIDENTIFIED' },
+      { world_id: 'w-0010', display_name: '추창만', name_source: 'WATCH_DEVICE' },
+    ],
+  });
+
+  it('지금 이름이 없는(자동 번호·맵에 없음) ID 는 마지막 실제 이름을 쓰고 동명이인 괄호를 붙이지 않는다', () => {
+    const map = withRememberedNames(live, {
+      'w-0008': { displayName: '추창만', nameSource: 'WATCH_DEVICE' },
+      'w-0003': { displayName: '이영희', nameSource: 'WORLD_MANUAL' },
+    });
+    expect(formatPersonShort('w-0008', map)).toBe('추창만');
+    expect(formatPersonFull('w-0008', map)).toBe('추창만 (w-0008)');
+    expect(formatPersonShort('w-0003', map)).toBe('이영희');
+    expect(formatPersonShort('w-0010', map)).toBe('추창만');
+  });
+
+  it('지금 실제 이름이 있으면 지금 이름을 쓰고, 바뀐 것이 없으면 같은 맵을 돌려준다', () => {
+    expect(
+      withRememberedNames(live, {
+        'w-0010': { displayName: '옛 이름', nameSource: 'WATCH_DEVICE' },
+      }),
+    ).toBe(live);
+    expect(withRememberedNames(live, {})).toBe(live);
   });
 });
