@@ -172,6 +172,17 @@ def test_unidentifiable_item_blocks_clearing(core: SiteAlertCore) -> None:
     assert eid in core.active_alerts()
 
 
+def test_fall_resync_same_event_does_not_restart(core: SiteAlertCore, sound: FakeSoundBackend) -> None:
+    """낙상(R4) 새 이벤트는 같은 패턴이어도 다시 울리지만(S15P31A101-863), 재접속 목록의 같은 event_id 는 다시 울리지 않는다."""
+    entry, fall = uuid7(), uuid7()
+    core.handle(la(entry, 1, "RAISED", sent_at=T))
+    core.handle(health([item(entry, 1), item(fall, 1, rule_id="R4")], as_of=T + 10))  # 놓친 낙상: 목록으로 처음 봄
+    assert sound.calls == [("start", "CRITICAL"), ("stop", None), ("start", "CRITICAL")]
+    core.handle(health([item(entry, 1), item(fall, 2, rule_id="R4")], as_of=T + 20))  # 재동기화(같은 event_id)
+    core.handle(la(fall, 3, sent_at=T + 30, rule_id="R4"))  # 재전송
+    assert sound.calls == [("start", "CRITICAL"), ("stop", None), ("start", "CRITICAL")]
+
+
 # ---- 상향 전 확인의 늦은 alarm_stop ----------------------------------------------------------------------------
 
 

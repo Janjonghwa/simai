@@ -431,6 +431,49 @@ def test_listener_error_does_not_break_core(core: SiteAlertCore, sound: FakeSoun
     assert sound.playing is not None
 
 
+# ---- 낙상 새 알림: 같은 패턴이어도 처음부터 다시 (S15P31A101-863) ------------------------------------------------
+
+
+def test_new_fall_restarts_same_critical_pattern(core: SiteAlertCore, sound: FakeSoundBackend, clock) -> None:
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R1"))  # 진입 CRITICAL 소리 중
+    received = clock.monotonic()
+    clock.advance(0.003)
+    result = core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R4"), received)
+    assert sound.calls == [("start", "CRITICAL"), ("stop", None), ("start", "CRITICAL")]
+    assert sound.playing is not None and sound.playing.name == "CRITICAL"
+    assert result.sound_start_latency_s == pytest.approx(0.003, abs=1e-6)  # 다시 시작도 소리 시작으로 잰다
+
+
+def test_same_fall_resend_does_not_restart(core: SiteAlertCore, sound: FakeSoundBackend) -> None:
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R1"))
+    fall = uuid7()
+    core.handle(local_alert(fall, 1, "RAISED", severity="CRITICAL", rule_id="R4"))
+    calls = list(sound.calls)
+    core.handle(local_alert(fall, 2, "UPDATED", severity="CRITICAL", rule_id="R4"))  # 재판단
+    core.handle(local_alert(fall, 2, "UPDATED", severity="CRITICAL", rule_id="R4"))  # 재전송(같은 sequence)
+    assert sound.calls == calls
+
+
+def test_new_non_fall_same_severity_does_not_restart(core: SiteAlertCore, sound: FakeSoundBackend) -> None:
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R1"))
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R2"))  # 같은 등급: 이어 감(-723)
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="HIGH", rule_id="R3"))  # 낮은 등급: 이어 감
+    assert sound.calls == [("start", "CRITICAL")]
+
+
+def test_test_muted_fall_does_not_restart(core: SiteAlertCore, sound: FakeSoundBackend) -> None:
+    entry = uuid7()
+    core.handle(local_alert(entry, 1, "RAISED", severity="CRITICAL", rule_id="R1"))
+    core.set_test_input(True)
+    fall = uuid7()
+    core.handle(local_alert(fall, 1, "RAISED", severity="CRITICAL", rule_id="R4"))  # 시험 입력 중 낙상: 소리 없음
+    assert sound.calls == [("start", "CRITICAL"), ("stop", None)]
+    core.set_test_input(False)
+    core.handle(local_alert(uuid7(), 1, "RAISED", severity="CRITICAL", rule_id="R2"))  # 실제 입력의 새 경보
+    core.handle(local_alert(fall, 2, "UPDATED", severity="CRITICAL", rule_id="R4"))
+    assert sound.calls == [("start", "CRITICAL"), ("stop", None), ("start", "CRITICAL")]
+
+
 # ---- 지연 기록 -------------------------------------------------------------------------------------------------
 
 
