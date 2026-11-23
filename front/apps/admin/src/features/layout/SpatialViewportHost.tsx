@@ -34,7 +34,6 @@ import { useScenePlanStore } from '@/features/plan/scenePlan.store';
 import { usePpeGearStates, usePpeLabels } from '@/features/ppe/usePpe';
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useWatchBindDetector } from '@/features/watch/useWatch';
-import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -150,10 +149,9 @@ export function SpatialViewportHost({
   );
   // 사람 머리 위 미착용 경고 표식에 쓰는 안전모·조끼 상태(-531·-552·-656·-783, 명세 13.3). 장비 형상은 그리지 않는다
   const { helmets: personHelmets, vests: personVests } = usePpeGearStates();
-  // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
+  // 손 흔들어 워치가 새로 이어진 사람 알림(-509). 상단 작은 배너(WatchBindNotice)만 쓰고, 3D 머리 위 큰 「⌚ 이름 연결됨」
+  // 강조는 시연 중 갑자기 떠서 방해돼 넘기지 않는다(S15P31A101-845)
   useWatchBindDetector();
-  const bindHighlights = useWatchBindEffectStore((s) => s.highlights);
-  const personHighlights = editing ? undefined : bindHighlights;
   const cameraPoses = editing ? undefined : calibratedCameraPoses;
 
   const { markManual } = useAlarmCamera({
@@ -286,7 +284,6 @@ export function SpatialViewportHost({
                 personLabels={personLabels}
                 personHelmets={personHelmets}
                 personVests={personVests}
-                personHighlights={personHighlights}
                 cameraPoses={cameraPoses}
                 floorCoverage={drawnCoverage}
                 vdt={vdt}
