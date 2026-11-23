@@ -105,10 +105,8 @@ describe('이벤트 로그의 묶음(S15P31A101-751)', () => {
 });
 
 describe('이벤트 로그의 대상', () => {
-  it('작업자 뒤에 구역 이름을 붙이고, 이름을 모르는 구역은 뺀다(구역 번호는 보이지 않는다)', () => {
-    expect(renderLog([row({ worldIds: ['w-0015'], zoneId: 'z-04' })])).toBe(
-      '작업자 #0015 · 개구부 구역',
-    );
+  it('작업자가 있으면 작업자만 보이고 구역 이름은 붙이지 않는다(-853, 구역 번호도 보이지 않는다)', () => {
+    expect(renderLog([row({ worldIds: ['w-0015'], zoneId: 'z-04' })])).toBe('작업자 #0015');
     cleanup();
 
     expect(renderLog([row({ worldIds: ['w-0015'], zoneId: 'z-99' })])).toBe('작업자 #0015');
@@ -164,11 +162,11 @@ describe('이벤트 로그의 대상', () => {
       ],
       spans,
     );
-    expect(buttons[0]!.lastElementChild!.textContent).toBe('추창만 외 1명 · 개구부 구역');
+    expect(buttons[0]!.lastElementChild!.textContent).toBe('추창만 외 1명');
     expect(buttons[0]!.querySelector('[title="w-0012 · w-0015"]')).not.toBeNull();
     expect(buttons[1]!.lastElementChild!.textContent).toBe('추반장');
     expect(buttons[1]!.querySelector('[title="w-0012"]')).not.toBeNull();
-    expect(buttons[2]!.lastElementChild!.textContent).toBe('작업자 #0021 · 개구부 구역');
+    expect(buttons[2]!.lastElementChild!.textContent).toBe('작업자 #0021');
     expect(buttons[2]!.querySelector('[title="w-0021"]')).not.toBeNull();
   });
 });
