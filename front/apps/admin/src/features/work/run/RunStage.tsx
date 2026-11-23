@@ -20,7 +20,7 @@ import type { WorkDayItem } from '@/features/work/types';
 import { useSignatures } from '@/features/work/useSignatures';
 import { useWorkReport } from '@/features/work/useWorkReport';
 import { useWorkAction, type WorkActionConfig } from '@/features/work/WorkActionContext';
-import { draftWarning, isEndingGenerating, isReportGenerating } from '@/features/work/workDay';
+import { draftWarning, isEndingGenerating } from '@/features/work/workDay';
 import { lastRun, openRun } from '@/lib/workRuns';
 import { useEffect, useMemo, useRef } from 'react';
 
@@ -99,6 +99,8 @@ function RunningView({ day }: { day: WorkDayItem }) {
  * `보고서 제출` 이 보낼지 묻고, `한 번 더 실행` 은 작업 전 확인으로 간다(S15P31A101-696, 보고서는 하루 끝에 한 번 낸다).
  * 종료 미팅은 서버가 채운다(`wrap_up_status` GENERATING 인 동안 보고서를 다시 받는다). 서버는 종료 미팅이나 AI 초안(`status`)을
  * 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) `보고서 제출` 은 그동안 꺼 둔다.
+ * 시연 계정은 종이가 미리 적어 둔 종료 미팅을 보이므로 1.5초 가림이 끝나면 서버 종료 미팅을 기다리지 않고 켜고,
+ * 그 사이 확인한 제출은 서버가 종료 미팅을 마치는 대로 이어서 보낸다(-858).
  */
 function EndedView({
   day,
@@ -111,18 +113,22 @@ function EndedView({
 }) {
   const { data: report, error: reportError } = useWorkReport(day.work_id);
   const demo = useIsDemoAccount();
-  const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
   // 서버가 종료 미팅을 쓰는 중인지(제출은 이게 끝나야 받는다, 409 REPORT_NOT_READY)
   const serverEnding = isEndingGenerating(report);
+  // 종료 미팅 말고 제출을 막는 이유(AI 초안 작성 중 등)
+  const otherBlock = submitBlockReason(report, reportError !== null, { ignoreEnding: true });
+  // 확인한 제출은 서버 종료 미팅이 끝날 때까지 기다렸다가 보낸다(시연 계정만 그 사이에 확인할 수 있다, -858)
+  const send = useSendReport(onSubmitted, { waiting: serverEnding, blockedBy: otherBlock });
   // 종이 가림: 시연 계정은 서버와 상관없이 DEMO_ENDING_REVEAL_MS(1.5초)만 가린다(useDemoEndingGenerating), 아니면 서버 상태(S15P31A101-847)
   const endingNow = useDemoEndingGenerating(day.work_id, {
     ended: true,
     generating: serverEnding,
     today: true,
   });
-  // 제출 단추는 시연 계정이어도 서버 종료 미팅이 끝날 때까지 꺼 둔다
-  const filling = isReportGenerating(report) || endingNow || serverEnding;
+  // 제출 단추가 서버 종료 미팅을 기다리는가: 시연 계정은 가림이 끝나면 기다리지 않는다(-858), 아니면 끝날 때까지 꺼 둔다
+  const waitsEnding = serverEnding && !demo;
+  const filling = report?.status === 'GENERATING' || endingNow || waitsEnding;
   const reportRef = useRef<HTMLDivElement>(null);
   const wasEnding = useRef(false);
   useEffect(() => {
@@ -140,10 +146,7 @@ function EndedView({
     };
   }, [endingNow]);
   // 꺼진 이유는 단추 옆에 늘 보인다(문서 속 흐린 글이나 hover 에 기대지 않는다, -734)
-  const blockedBy =
-    endingNow || serverEnding
-      ? '종료 미팅 작성 중'
-      : submitBlockReason(report, reportError !== null);
+  const blockedBy = endingNow || waitsEnding ? '종료 미팅 작성 중' : otherBlock;
   const endedAt =
     lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
       ?.ended_at ?? day.actual_ended_at;
@@ -186,6 +189,7 @@ function EndedView({
           {draftWarning(report) && (
             <p className="text-[13px] text-sev-caution">{draftWarning(report)}</p>
           )}
+          {send.held && <FailureNote text={send.held} />}
           {send.error && <FailureNote text={sendErrorMessage(send.error)} />}
         </ConfirmDialog>
       )}

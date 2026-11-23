@@ -49,6 +49,9 @@ export function useWorkReport(
   };
 }
 
+/** 양식 저장 변경의 키. 미뤄 둔 제출이 진행 중인 저장(시연 양식 맞춤 등)을 기다리는 데 쓴다(-858). */
+export const SAVE_REPORT_FORM_KEY = ['work', 'report-form-save'] as const;
+
 /** 양식 저장 변수. form_revision 은 마지막으로 읽은 값이다. */
 export interface SaveReportFormVariables {
   reportId: number;
@@ -64,6 +67,7 @@ export interface SaveReportFormVariables {
 export function useSaveReportForm() {
   const client = useQueryClient();
   const mutation = useMutation({
+    mutationKey: SAVE_REPORT_FORM_KEY,
     mutationFn: ({ reportId, form, form_revision }: SaveReportFormVariables) =>
       saveReportForm(api, reportId, { form, form_revision }),
     onSuccess: (report) => {
