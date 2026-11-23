@@ -477,6 +477,33 @@ describe('PreflightStage 서명·시작', () => {
     await waitFor(() => expect(bodies).toEqual([{ helmet: 'REQUIRED', vest: 'NOT_REQUIRED' }]));
   }, 30_000);
 
+  it('시연 계정은 확인창 없이 시작하며 조끼는 필수로 보내지 않는다(안전모만, -849)', async () => {
+    const bodies: unknown[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && request.url.endsWith('/start')) {
+        void request
+          .clone()
+          .json()
+          .then((body: unknown) => bodies.push(body));
+      }
+    });
+    renderStage(await openToday());
+    await signAs('박반장');
+    // 서명 뒤 시연 계정으로 바꾼다(시연 계정의 서명 창은 다른 흐름). GPU 경고창은 관리자만 띄우므로 관리자 아닌 역할로 시작 요청만 본다
+    act(() =>
+      useSessionStore
+        .getState()
+        .signIn({ accessToken: 't', user: { id: 'demo', role: 'FOREMAN' } }),
+    );
+    try {
+      fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
+      await waitFor(() => expect(bodies).toEqual([{ helmet: 'REQUIRED', vest: 'NOT_REQUIRED' }]));
+      expect(screen.queryByRole('dialog', { name: '작업 전 확인' })).toBeNull();
+    } finally {
+      useSessionStore.getState().signOut();
+    }
+  }, 30_000);
+
   it('확인창을 다시 열어도 앞서 켠 체크가 남아 있다', async () => {
     renderStage(await openToday());
     await signAs('박반장');
