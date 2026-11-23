@@ -1,12 +1,17 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { requestVideoSegments } from '@/features/history/api';
 import { activeSegments, type UploadProgress } from '@/features/history/replaySegments';
+import {
+  createSegmentBlobCache,
+  fetchSegmentBlob,
+  type SegmentBlobCache,
+} from '@/features/history/segmentPrefetch';
 import type { Span, VideoSegment } from '@/features/history/types';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
-import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 const NONE: VideoSegment[] = [];
 
@@ -141,4 +146,21 @@ export function useActiveSegments(
       .filter((segment) => ids.has(segment.segment_id))
       .sort((a, b) => a.camera_id.localeCompare(b.camera_id));
   }, [key, segments]);
+}
+
+/**
+ * 미리 받은 조각(blob) 보관소. key(작업 구간)가 바뀌거나 화면을 떠나면 받는 중인 것을 끊고 blob 을 모두 해제한다(S15P31A101-859).
+ * 보관소가 준비되기 전(첫 그리기)에는 null 이다.
+ */
+export function useSegmentBlobCache(key: unknown): SegmentBlobCache | null {
+  const client = useQueryClient();
+  const [cache, setCache] = useState<SegmentBlobCache | null>(null);
+  useEffect(() => {
+    const created = createSegmentBlobCache(fetchSegmentBlob(api, client));
+    // 보관소는 받는 중인 요청·blob 을 들고 있어 effect 에서 만들고 정리한다(StrictMode 의 두 번 실행에도 하나만 남는다)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCache(created);
+    return () => created.dispose();
+  }, [client, key]);
+  return cache;
 }
