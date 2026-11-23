@@ -4,7 +4,9 @@ import { activeSegments, type UploadProgress } from '@/features/history/replaySe
 import {
   createSegmentBlobCache,
   fetchSegmentBlob,
+  standbyFromStatus,
   type SegmentBlobCache,
+  type StandbyEvent,
 } from '@/features/history/segmentPrefetch';
 import type { Span, VideoSegment } from '@/features/history/types';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
@@ -163,4 +165,46 @@ export function useSegmentBlobCache(key: unknown): SegmentBlobCache | null {
     return () => created.dispose();
   }, [client, key]);
   return cache;
+}
+
+/** 미리 받기 보관소가 저장소 받기 막힘(CORS)으로 대체 모드가 됐는가(S15P31A101-862). */
+export function useBlobsBlocked(blobs: SegmentBlobCache | null): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => (blobs ? blobs.subscribe(listener) : () => {}),
+    [blobs],
+  );
+  return useSyncExternalStore(subscribe, () => blobs?.isBlocked() ?? false);
+}
+
+/**
+ * 대체 모드에서 숨긴 영상으로 미리 올려 둘 다음 위험 이벤트(standbyFromStatus). jumps 가 비면(대체 모드가 아님) 없다.
+ * 재생 시각은 0.1초마다 바뀌지만 고른 이벤트·조각이 바뀔 때만 다시 그린다(같으면 같은 값).
+ */
+export function useStandbyEvent(
+  replay: ReplaySpatialSource | null,
+  segments: readonly VideoSegment[],
+  jumps: readonly number[],
+  initialAt: number | null = null,
+): StandbyEvent | null {
+  const subscribe = useCallback(
+    (listener: () => void) => (replay ? replay.subscribeStatus(listener) : () => {}),
+    [replay],
+  );
+  const key = useSyncExternalStore(subscribe, () => {
+    if (jumps.length === 0) return '';
+    const status = replay ? replay.getStatus() : { playhead: initialAt, speed: 1 };
+    const picked = standbyFromStatus(jumps, segments, status);
+    return picked ? `${picked.at}|${picked.segments.map((s) => s.segment_id).join(',')}` : '';
+  });
+  return useMemo(() => {
+    if (key === '') return null;
+    const [at = '', ids = ''] = key.split('|');
+    const wanted = new Set(ids.split(','));
+    return {
+      at: Number(at),
+      segments: segments
+        .filter((segment) => wanted.has(segment.segment_id))
+        .sort((a, b) => a.camera_id.localeCompare(b.camera_id)),
+    };
+  }, [key, segments]);
 }

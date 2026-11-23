@@ -241,6 +241,19 @@ describe('syncTileVideo', () => {
     expect(v.play).not.toHaveBeenCalled();
   });
 
+  it('다음 위험 이벤트의 숨긴 영상(standbyAt)은 그 시각에 멈춰 둔다(S15P31A101-862)', () => {
+    const v = video({ currentTime: 0 });
+    syncTileVideo(
+      v,
+      segment({ segment_start_capture_ms: T + 20_000 }),
+      'standby',
+      status,
+      T + 27_000,
+    );
+    expect(v.currentTime).toBe(7);
+    expect(v.play).not.toHaveBeenCalled();
+  });
+
   it('held 는 멈춘 채 둔다', () => {
     const v = video({ currentTime: 29.9, paused: false });
     syncTileVideo(v, segment(), 'held', status);
@@ -282,6 +295,26 @@ describe('tileVideos', () => {
 
   it('보인 적 없고 첫 화면도 아직이면 보일 조각이 없다', () => {
     expect(tileVideos(s1, null, s2, new Set()).shownId).toBeNull();
+  });
+
+  it('다음 위험 이벤트 조각은 그 시각에 멈춘 standby 로 더하고, 넘어가면 같은 조각이 live 가 된다(S15P31A101-862)', () => {
+    const before = tileVideos(s1, null, undefined, new Set(['s1', 's3']), {
+      segment: s3,
+      at: T + 67_000,
+    });
+    expect(roles(before)).toEqual(['s1:live', 's3:standby']);
+    expect(before.videos[1]!.at).toBe(T + 67_000);
+    expect(before.shownId).toBe('s1');
+    // 그 이벤트로 넘어감: 숨긴 영상이 이미 첫 화면을 냈으므로 바로 보인다
+    const after = tileVideos(s3, s1, undefined, new Set(['s1', 's3']));
+    expect(after.shownId).toBe('s3');
+    expect(after.videos.find((v) => v.segment.segment_id === 's3')).toEqual({
+      segment: s3,
+      role: 'live',
+    });
+    // 곧 덮을 조각과 같으면 더하지 않는다(시작 위치에 둔 그 영상을 그대로 쓴다)
+    const same = tileVideos(s2, null, s3, new Set(), { segment: s3, at: T + 67_000 });
+    expect(same.videos.map((v) => v.at)).toEqual([undefined, undefined]);
   });
 });
 

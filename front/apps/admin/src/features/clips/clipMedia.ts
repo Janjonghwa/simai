@@ -8,8 +8,12 @@ import type { Clip, ClipUrl } from '@/features/clips/types';
 export type ClipMediaFailure = 'UNSUPPORTED' | 'DOWNLOAD' | 'FORMAT';
 
 export class ClipMediaError extends Error {
-  constructor(readonly reason: ClipMediaFailure) {
-    super(`클립을 재생할 수 없다 (${reason})`);
+  /** cause: 받기 실패의 원래 오류(fetch 의 TypeError 면 네트워크·CORS 차단이다). */
+  constructor(
+    readonly reason: ClipMediaFailure,
+    options?: ErrorOptions,
+  ) {
+    super(`클립을 재생할 수 없다 (${reason})`, options);
     this.name = 'ClipMediaError';
   }
 }
@@ -33,7 +37,9 @@ async function download(url: string, signal?: AbortSignal): Promise<Uint8Array> 
     return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw error instanceof ClipMediaError ? error : new ClipMediaError('DOWNLOAD');
+    throw error instanceof ClipMediaError
+      ? error
+      : new ClipMediaError('DOWNLOAD', { cause: error });
   }
 }
 

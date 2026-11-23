@@ -111,6 +111,7 @@ const blobsOf = (held: Record<string, string>) =>
   ({
     prefetch: () => {},
     get: (id: string) => held[id],
+    isBlocked: () => false,
     subscribe: () => () => {},
     dispose: () => {},
   }) satisfies SegmentBlobCache;
@@ -260,5 +261,89 @@ describe('ReplayVideoWall 다른 시각으로 넘어가기', () => {
     await waitFor(() => expect(first.isConnected).toBe(false));
     expect(first.hasAttribute('src')).toBe(false);
     expect(load).toHaveBeenCalled();
+  });
+});
+
+// 저장소 CORS 가 막힌 대체 모드(S15P31A101-862): 다음 위험 이벤트 조각을 칸마다 숨긴 영상으로 올려 두고, 넘어가면 같은 요소를 보인다.
+
+/** src 로 <video> 하나를 찾는다(나올 때까지 기다린다). */
+const videoOf = (src: string) =>
+  waitFor(() => {
+    const found = document.querySelector<HTMLVideoElement>(`video[src="${src}"]`);
+    expect(found).not.toBeNull();
+    return found!;
+  });
+
+describe('ReplayVideoWall 대체 모드의 숨긴 영상', () => {
+  const STANDBY = { at: T + 67_000, segments: [next] };
+
+  it('다음 위험 이벤트 조각을 숨긴 영상으로 올려 metadata 만 받게 두고 그 이벤트 시각으로 옮겨 둔다', async () => {
+    renderWall({ segments: [cover], standby: STANDBY });
+    const hidden = await videoOf('https://s3.test/next.mp4');
+    const live = await videoOf('https://s3.test/cover.mp4');
+    expect(hidden.getAttribute('preload')).toBe('metadata');
+    expect(hidden.classList.contains('opacity-0')).toBe(true);
+    expect(live.getAttribute('preload')).toBe('auto');
+    // 칸과 같은 서명 주소 쿼리로 받는다
+    expect(urlRequests.sort()).toEqual(['cover', 'next']);
+    fireEvent.loadedMetadata(hidden);
+    // 조각 시작(T+60초)에서 7초 = 옮겨 갈 시각(T+67초)
+    expect(hidden.currentTime).toBe(7);
+  });
+
+  it('그 이벤트로 넘어가면 숨긴 영상 요소를 그대로 보이고(다시 붙이거나 다시 받지 않음) 「불러오는 중」 없이 바로 보인다', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(wallWith(client, { segments: [cover], standby: STANDBY }));
+    const live = await videoOf('https://s3.test/cover.mp4');
+    const hidden = await videoOf('https://s3.test/next.mp4');
+    fireEvent.loadedData(live);
+    fireEvent.loadedData(hidden);
+
+    view.rerender(wallWith(client, { segments: [next], standby: null }));
+    const shown = await videoOf('https://s3.test/next.mp4');
+    expect(shown).toBe(hidden);
+    expect(shown.isConnected).toBe(true);
+    expect(shown.classList.contains('opacity-0')).toBe(false);
+    expect(shown.getAttribute('preload')).toBe('auto');
+    expect(screen.queryByText('불러오는 중')).toBeNull();
+    expect(urlRequests.filter((id) => id === 'next')).toHaveLength(1);
+    // 숨긴 영상은 비우지 않았다(앞 조각만 비운다)
+    expect(shown.getAttribute('src')).toBe('https://s3.test/next.mp4');
+  });
+
+  it('4칸이면 숨긴 영상은 칸마다 하나씩, 모두 4개다', async () => {
+    const cams = ['cam_A', 'cam_B', 'cam_C', 'cam_D'];
+    const now = cams.map((camera_id) => ({ ...cover, segment_id: `now-${camera_id}`, camera_id }));
+    const later = cams.map((camera_id) => ({ ...next, segment_id: `evt-${camera_id}`, camera_id }));
+    renderWall({ segments: now, standby: { at: T + 67_000, segments: later } });
+    await waitFor(() => expect(document.querySelectorAll('video')).toHaveLength(8));
+    expect(document.querySelectorAll('video[preload="metadata"]')).toHaveLength(4);
+    for (const tile of screen.getAllByRole('button', { name: /크게 보기/ })) {
+      expect(tile.querySelectorAll('video[preload="metadata"]')).toHaveLength(1);
+    }
+  });
+
+  it('쓰지 않게 된 숨긴 영상은 주소를 비워 받기·디코더를 놓는다', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(wallWith(client, { segments: [cover], standby: STANDBY }));
+    const hidden = await videoOf('https://s3.test/next.mp4');
+    view.rerender(wallWith(client, { segments: [cover], standby: null }));
+    await waitFor(() => expect(hidden.isConnected).toBe(false));
+    expect(hidden.hasAttribute('src')).toBe(false);
+    expect(load).toHaveBeenCalled();
+  });
+
+  it('숨긴 영상이 오래 기다리다 서명 주소가 만료돼 오류가 나면 주소를 다시 받는다', async () => {
+    renderWall({ segments: [cover], standby: STANDBY });
+    const hidden = await videoOf('https://s3.test/next.mp4');
+    fireEvent.error(hidden);
+    await waitFor(() => expect(urlRequests.filter((id) => id === 'next')).toHaveLength(2));
+  });
+
+  it('대체 모드가 아니면(standby 없음) 숨긴 영상을 두지 않는다', async () => {
+    renderWall({ segments: [cover], upcoming: [], blobs: blobsOf({}) });
+    await videoOf('https://s3.test/cover.mp4');
+    expect(document.querySelectorAll('video')).toHaveLength(1);
+    expect(document.querySelector('video[preload="metadata"]')).toBeNull();
   });
 });

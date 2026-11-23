@@ -12,12 +12,14 @@ import {
   type UploadProgress,
 } from '@/features/history/replaySegments';
 import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
-import { criticalPrefetchSegments } from '@/features/history/segmentPrefetch';
+import { criticalJumpTimes, criticalPrefetchSegments } from '@/features/history/segmentPrefetch';
 import type { Span, VideoSegment } from '@/features/history/types';
 import {
   useActiveSegments,
+  useBlobsBlocked,
   useReplaySegments,
   useSegmentBlobCache,
+  useStandbyEvent,
 } from '@/features/history/useReplaySegments';
 import {
   useReplayFrame,
@@ -29,6 +31,7 @@ import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const LOADING_LINE = '기록을 불러오는 중입니다…';
+const NO_JUMPS: number[] = [];
 
 function Notice({ children }: { children: ReactNode }) {
   return (
@@ -50,6 +53,8 @@ function Notice({ children }: { children: ReactNode }) {
  * 시연 계정은 한 칸을 크게 볼 때 나머지 칸을 큰 칸 아래 한 줄에 두고, 영상 실패 안내 줄을 보이지 않는다.
  * 위험(CRITICAL) 이벤트 시각의 조각은 지금 보이는 칸이 모두 첫 화면을 낸 뒤 먼저 받아 두고(blob), 그 이벤트로 옮기면 받아 둔 것을
  * 튼다(사용자 결정, S15P31A101-859). 지금 시각에 영상 칸이 없으면(목 화면) 기록을 다 받은 뒤 바로 받기 시작한다.
+ * 저장소 CORS 가 막혀 blob 을 받지 못하면(S15P31A101-862, 사용자 결정) 대체 모드로 바꿔, 다음에 볼 위험 이벤트 하나의 조각만
+ * 칸마다 숨긴 영상으로 그 시각에 맞춰 올려 둔다(useStandbyEvent). CORS 가 열려 있으면 이 대체 모드는 쓰지 않는다.
  */
 function ReplayCctv({
   replay,
@@ -103,6 +108,12 @@ function ReplayCctv({
   useEffect(() => {
     if (blobs && canPrefetch && prefetch.length > 0) blobs.prefetch(prefetch);
   }, [blobs, canPrefetch, prefetch]);
+  const blocked = useBlobsBlocked(blobs);
+  const jumps = useMemo(
+    () => (events && blocked && canPrefetch ? criticalJumpTimes(events, initialAt) : NO_JUMPS),
+    [events, blocked, canPrefetch, initialAt],
+  );
+  const standby = useStandbyEvent(replay, playable, jumps, initialAt);
   const demo = useIsDemoAccount();
   const rest = demo ? 'below' : 'side';
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
@@ -122,6 +133,7 @@ function ReplayCctv({
         rest={rest}
         blobs={blobs}
         onFirstFrames={onFirstFrames}
+        standby={standby}
       />
     ) : pending ? (
       <Notice>{LOADING_LINE}</Notice>
