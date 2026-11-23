@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.work;
 
+import com.ssafy.simai.domain.rule.SeverityNames;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.ResultSet;
@@ -59,8 +60,9 @@ public class WorkUnitRepository {
                 ORDER BY r.report_version DESC, r.report_id DESC LIMIT 1
             ) t ON true
             LEFT JOIN LATERAL (
+                -- 주의 칸(high)은 HIGH·CAUTION 을 함께 센다(SeverityNames.CAUTION_TIER, S15P31A101-846)
                 SELECT count(*) FILTER (WHERE e.severity = 'CRITICAL') AS critical,
-                       count(*) FILTER (WHERE e.severity = 'HIGH') AS high
+                       count(*) FILTER (WHERE e.severity IN %s) AS high
                 FROM risk_event e
                 WHERE e.source = 'LIVE' AND e.raised_at BETWEEN COALESCE(w.actual_started_at, w.starts_at)
                     AND COALESCE(w.actual_ended_at, CASE WHEN w.status = 'IN_PROGRESS' THEN CURRENT_TIMESTAMP ELSE w.ends_at END)
@@ -68,7 +70,7 @@ public class WorkUnitRepository {
                   -- 날짜 작업은 계획 시간이 하루 전체라 실제 시작 전에는 세지 않는다
                   AND (NOT w.daily OR w.actual_started_at IS NOT NULL)
             ) c ON true
-            """;
+            """.formatted(SeverityNames.CAUTION_TIER_SQL);
 
     /** 현장이 한국이라 날짜를 Asia/Seoul 로 자른다(현장별 시간대 칸이 없다, DailyReportService 와 같다) */
     public static final ZoneId SITE_ZONE = ZoneId.of("Asia/Seoul");
@@ -565,19 +567,19 @@ public class WorkUnitRepository {
     }
 
     /**
-     * 작업 구간의 위험·경고를 관제 카드 기준 사건으로 센 수(event_counts 와 같은 구간·구역 범위). 이벤트는 바꾸지 않는다.
+     * 작업 구간의 위험·주의(HIGH·CAUTION)를 관제 카드 기준 사건으로 센 수(event_counts 와 같은 구간·구역 범위). 이벤트는 바꾸지 않는다.
      */
     private IncidentCounter.Counts incidentCounts(long workId) {
         List<IncidentCounter.Alert> alerts = jdbc.query("""
                 SELECT e.rule_id, e.zone_id, e.world_ids[1] AS person, e.severity, e.raised_at,
                        COALESCE(e.updated_at, e.raised_at) AS last_at
                 FROM work_unit w
-                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN ('CRITICAL', 'HIGH')
+                JOIN risk_event e ON e.source = 'LIVE' AND e.severity IN %s
                     AND e.raised_at BETWEEN COALESCE(w.actual_started_at, w.starts_at)
                         AND COALESCE(w.actual_ended_at, CASE WHEN w.status = 'IN_PROGRESS' THEN CURRENT_TIMESTAMP ELSE w.ends_at END)
                     AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
                 WHERE w.work_id = :w AND (NOT w.daily OR w.actual_started_at IS NOT NULL)
-                """, new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
+                """.formatted(SeverityNames.COUNTED_SQL), new MapSqlParameterSource("w", workId), (rs, i) -> new IncidentCounter.Alert(
                 rs.getString("rule_id"), rs.getString("zone_id"), rs.getString("person"), rs.getString("severity"),
                 rs.getObject("raised_at", OffsetDateTime.class).toInstant(),
                 rs.getObject("last_at", OffsetDateTime.class).toInstant()));

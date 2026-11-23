@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.work;
 
+import com.ssafy.simai.domain.rule.SeverityNames;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -13,7 +14,7 @@ import java.util.Set;
  *
  * <p>같은 위험(규칙·구역)끼리 시작 시각순으로 잇는다: 같은 사람이 이미 든 묶음이거나, 앞 묶음의 마지막 갱신에서 {@link #MERGE_GAP_MS} 안에
  * 시작했으면 앞 묶음에 넣는다. 지난 작업이라 지금 살아 있는 사람은 없으므로(화면의 alive 가 빈 집합) 서로 다른 사람도 그 시간 안이면 한 사건이다.
- * 사건의 등급은 든 경보 중 가장 높은 등급이다.
+ * 사건의 등급은 든 경보 중 가장 높은 등급이다. 위험(CRITICAL) 아래는 HIGH·CAUTION 을 같은 주의로 센다(SeverityNames.CAUTION_TIER).
  */
 public final class IncidentCounter {
 
@@ -23,7 +24,7 @@ public final class IncidentCounter {
     /** 경보 하나: 사람이 없으면 person 이 null 이다. lastAt 은 마지막 갱신 시각(없으면 발생 시각). */
     public record Alert(String ruleId, String zoneId, String person, String severity, Instant raisedAt, Instant lastAt) { }
 
-    /** 등급별 사건 수(위험·경고만 센다). */
+    /** 등급별 사건 수. high 는 주의(HIGH·CAUTION) 사건 수이고 INFO 만 든 사건은 세지 않는다. */
     public record Counts(long critical, long high) { }
 
     private IncidentCounter() { }
@@ -79,7 +80,7 @@ public final class IncidentCounter {
             for (Chain c : chains) {
                 if (c.alerts.stream().anyMatch(a -> "CRITICAL".equals(a.severity()))) {
                     critical++;
-                } else if (c.alerts.stream().anyMatch(a -> "HIGH".equals(a.severity()))) {
+                } else if (c.alerts.stream().anyMatch(a -> SeverityNames.isCautionTier(a.severity()))) {
                     high++;
                 }
             }

@@ -310,6 +310,9 @@ class WorkSessionIntegrationTest {
 
         event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(100)); // 실행 사이(경보 꺼짐): 세지 않는다
         event("LIVE", "R1", "CRITICAL", zone, started.plusSeconds(310));
+        // 알림 4단계 뒤 주의 경보는 CAUTION 으로 저장된다: 주의로 센다. INFO 는 세지 않는다(S15P31A101-846)
+        event("LIVE", "R5", "CAUTION", zone, started.plusSeconds(320));
+        event("LIVE", "R9", "INFO", zone, started.plusSeconds(330));
         clock.now.set(started.plusSeconds(400));
         ObjectNode ended = end(work);
         assertThat(ended.path("work_unit").path("status").asString()).isEqualTo("DONE");
@@ -317,8 +320,10 @@ class WorkSessionIntegrationTest {
         ObjectNode done = awaitWrapUp(report);
         // 사람이 고치지 않은 지난 종료 미팅은 모든 실행 요약을 앞에 붙여 다시 쓴다
         String ending = done.path("form").path("review").path("ending").asString();
-        assertThat(ending).startsWith("실행 2회: 1회 ").contains("2회 ", "(위험 1·경고 0)", "엔진이 쓴 종료 미팅 문단", "관제 카드 기준 사건: 위험 1건");
-        assertThat(MAPPER.readTree(endingBody.get()).path("facts").path("event_count").asInt()).isEqualTo(1);
+        assertThat(ending).startsWith("실행 2회: 1회 ").contains("2회 ", "(위험 0·주의 0)", "(위험 1·주의 1)", "엔진이 쓴 종료 미팅 문단",
+                "관제 카드 기준 사건: 위험 1건·주의 1건");
+        // 경보 기록 수(facts)는 등급과 상관없이 실행 구간 안의 이벤트를 모두 센다(INFO 포함, 이 티켓 전과 같다)
+        assertThat(MAPPER.readTree(endingBody.get()).path("facts").path("event_count").asInt()).isEqualTo(3);
         // 실행 기록: 시작·종료한 사람과 시작 전 확인 스냅샷
         long adminId = adminUserId();
         assertThat(jdbc.queryForList("SELECT started_by FROM work_run WHERE work_id = ? ORDER BY run_no", Long.class, work))

@@ -69,11 +69,14 @@ class WorkUnitIntegrationTest {
         String site = jdbc.queryForObject("SELECT site_id FROM site", String.class);
         zone(site, zoneId, "개구부 구역");
         zone(site, otherZoneId, "단상 구역");
-        // 구간 안: 이 구역 CRITICAL 1·HIGH 2(끝 시각 포함), 다른 구역 HIGH 1. 구간 밖: 이 구역 CRITICAL 1. REPLAY 는 세지 않는다
+        // 구간 안: 이 구역 CRITICAL 1·HIGH 2(끝 시각 포함)·CAUTION 1·INFO 1, 다른 구역 HIGH 1. 구간 밖: 이 구역 CRITICAL 1. REPLAY 는 세지 않는다
         event("CRITICAL", zoneId, start.plusSeconds(60), "LIVE");
         event("HIGH", zoneId, start.plusSeconds(120), "LIVE");
         event("HIGH", zoneId, end, "LIVE");
         event("HIGH", otherZoneId, start.plusSeconds(180), "LIVE");
+        // 알림 4단계 뒤 주의 경보는 CAUTION 이다: HIGH 와 같은 주의 칸에 센다. INFO 는 세지 않는다(S15P31A101-846)
+        event("CAUTION", zoneId, start.plusSeconds(300), "LIVE", "R5");
+        event("INFO", zoneId, start.plusSeconds(360), "LIVE", "R9");
         event("CRITICAL", zoneId, end.plusSeconds(60), "LIVE");
         event("CRITICAL", zoneId, start.plusSeconds(240), "REPLAY");
     }
@@ -107,10 +110,13 @@ class WorkUnitIntegrationTest {
                 .andExpect(jsonPath("$.lead").value("B조"))
                 .andExpect(jsonPath("$.detail").doesNotExist())
                 .andExpect(jsonPath("$.event_counts.CRITICAL").value(1))
-                .andExpect(jsonPath("$.event_counts.HIGH").value(2))
-                // 같은 사람·같은 위험의 경보는 관제 카드 기준으로 한 사건이다(등급은 든 경보 중 가장 높은 위험, S15P31A101-751)
+                // 주의 칸은 HIGH 2 + CAUTION 1, INFO 는 빠진다(S15P31A101-846)
+                .andExpect(jsonPath("$.event_counts.HIGH").value(3))
+                .andExpect(jsonPath("$.event_counts.CAUTION").doesNotExist())
+                // 같은 사람·같은 위험의 경보는 관제 카드 기준으로 한 사건이다(등급은 든 경보 중 가장 높은 위험, S15P31A101-751).
+                // R5 CAUTION 은 따로 주의 1사건, R9 INFO 는 세지 않는다
                 .andExpect(jsonPath("$.incident_counts.CRITICAL").value(1))
-                .andExpect(jsonPath("$.incident_counts.HIGH").value(0))
+                .andExpect(jsonPath("$.incident_counts.HIGH").value(1))
                 .andReturn().getResponse().getContentAsString();
         String workId = JsonPath.read(created, "$.work_id");
 
@@ -123,9 +129,9 @@ class WorkUnitIntegrationTest {
                 .andExpect(jsonPath("$.place").value("야적장"))
                 .andExpect(jsonPath("$.lead").value((Object) null))
                 .andExpect(jsonPath("$.event_counts.CRITICAL").value(1))
-                .andExpect(jsonPath("$.event_counts.HIGH").value(3))
+                .andExpect(jsonPath("$.event_counts.HIGH").value(4))
                 .andExpect(jsonPath("$.incident_counts.CRITICAL").value(1))
-                .andExpect(jsonPath("$.incident_counts.HIGH").value(1));
+                .andExpect(jsonPath("$.incident_counts.HIGH").value(2));
 
         // 열람 계정도 목록을 본다
         String list = mvc.perform(get("/api/work-units").param("days", "90").header(HttpHeaders.AUTHORIZATION, viewer))
@@ -307,12 +313,16 @@ class WorkUnitIntegrationTest {
     }
 
     private void event(String severity, String zone, Instant raisedAt, String source) {
+        event(severity, zone, raisedAt, source, "R1");
+    }
+
+    private void event(String severity, String zone, Instant raisedAt, String source, String rule) {
         jdbc.update("""
                 INSERT INTO risk_event (event_id, source, gateway_id, rule_id, rule_version, lifecycle, verification, severity,
                     confidence, needs_check, world_ids, zone_id, metrics, resume_count, event_sequence, raised_at, updated_at,
                     delivery, retention_hold)
-                VALUES (?, ?, ?, 'R1', 1, 'RAISED', 'VERIFIED', ?, 'HIGH', false, '{w-1}', ?, '{}', 0, 1, ?, ?, 'REALTIME', false)
-                """, UUID.randomUUID(), source, gatewayId, severity, zone, Timestamp.from(raisedAt), Timestamp.from(raisedAt));
+                VALUES (?, ?, ?, ?, 1, 'RAISED', 'VERIFIED', ?, 'HIGH', false, '{w-1}', ?, '{}', 0, 1, ?, ?, 'REALTIME', false)
+                """, UUID.randomUUID(), source, gatewayId, rule, severity, zone, Timestamp.from(raisedAt), Timestamp.from(raisedAt));
     }
 
     private String token(String name, Role role) throws Exception {
