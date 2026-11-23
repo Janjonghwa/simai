@@ -24,7 +24,7 @@ import {
   type SetupTone,
   type Step1CoverageView,
 } from '@/features/setup/setup';
-import { draftReason } from '@/features/setup/setupUx';
+import { draftReason, draftsFromReuseSource } from '@/features/setup/setupUx';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useAimReferenceImages } from '@/features/setup/useAimReferenceImages';
@@ -636,24 +636,33 @@ export function AiZoneDraftsPanel({
   const merged = allDrafts.filter(
     (d) => mergedDraftIds.includes(d.candidate_id) && !discardedDraftIds.includes(d.candidate_id),
   );
+  // 이전 맵 재사용 세션은 그 맵을 만든 세팅의 초안을 다시 보인다(S15P31A101-844). 그 세팅에 초안 작업이 없었으면(NOT_REQUESTED)
+  // 앞으로도 생기지 않으므로 기다리지 않고 「찾지 못함」으로 본다
+  const fromReuseSource = draftsFromReuseSource(draftsResponse);
+  const searching =
+    draftsResponse?.status === 'QUEUED' ||
+    (draftsResponse?.status === 'NOT_REQUESTED' && !fromReuseSource);
   // 분석이 끝났는데(실패 포함) 초안이 하나도 없다: 시연은 개구부 하나를 기대한다(S15P31A101-671, -758)
   const noneFound =
     draftsResponse != null &&
-    (draftsResponse.status === 'FAILED' || allDrafts.length === 0) &&
-    draftsResponse.status !== 'QUEUED' &&
-    draftsResponse.status !== 'NOT_REQUESTED';
+    !searching &&
+    (draftsResponse.status === 'FAILED' ||
+      draftsResponse.status === 'NOT_REQUESTED' ||
+      allDrafts.length === 0);
   // 초안이 많아도 카드 두 장 높이까지만 보이고 나머지는 목록 안에서 스크롤한다.
   const listRef = useTwoCardsMaxHeight();
 
   return (
     <Panel title="AI 위험 구역 초안" fill={1}>
-      {draftsResponse?.status === 'QUEUED' || draftsResponse?.status === 'NOT_REQUESTED' ? (
+      {searching ? (
         <p className="text-xs text-muted-foreground">{pendingText}</p>
       ) : noneFound ? (
         <p role="status" className="text-xs text-muted-foreground">
-          {canImportPrevious
-            ? 'AI 가 개구부를 찾지 못했어요 — 직접 그리거나 이전 구역을 불러오세요'
-            : 'AI 가 개구부를 찾지 못했어요 — 직접 그려 주세요'}
+          {fromReuseSource
+            ? '이전 맵 세팅 때도 AI 초안이 없었어요 — 직접 그려 주세요'
+            : canImportPrevious
+              ? 'AI 가 개구부를 찾지 못했어요 — 직접 그리거나 이전 구역을 불러오세요'
+              : 'AI 가 개구부를 찾지 못했어요 — 직접 그려 주세요'}
         </p>
       ) : visibleDrafts.length === 0 ? (
         <p className="text-xs text-muted-foreground">

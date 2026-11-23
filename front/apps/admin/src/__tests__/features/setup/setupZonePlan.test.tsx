@@ -25,11 +25,12 @@ import {
   type SetupSessionResponse,
   type ZoneDraftItem,
 } from '@/features/setup/types';
+import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import {
   useImportPreviousZones,
   useSeedSetupZonePlan,
 } from '@/features/setup/useSeedSetupZonePlan';
-import { useSetupSession } from '@/features/setup/useSetupStep1';
+import { useSetupSession, useSetupZoneDrafts } from '@/features/setup/useSetupStep1';
 import { useSetupZonePlanQuery } from '@/features/setup/useSetupZonePlan';
 import { useSetupZoneReview } from '@/features/setup/useSetupZoneReview';
 import {
@@ -405,6 +406,43 @@ describe('세팅 구역 단계의 저장', () => {
         .catch((e: unknown) => (failure = e));
     });
     expect(commitErrorText(failure)).toContain('더 고칠 수 없습니다');
+  });
+
+  it('이전 맵 재사용 세션은 그 맵을 만든 세팅의 AI 초안을 받고, 수락하면 이 세션 구역 목록에 AI 항목으로 들어간다(S15P31A101-844)', async () => {
+    const sessionId = await readySession({
+      mode: 'REUSE',
+      reuse_source: { setup_session_id: 'map-new-1', scene_version: 'scene-map-1' },
+    });
+    setupMock.setZoneDrafts('map-new-1', { drafts: [buildDefaultZoneDraftItems()[0]!] });
+    const { result } = renderHook(
+      () => {
+        const drafts = useSetupZoneDrafts(sessionId);
+        return {
+          drafts,
+          accept: useAcceptZoneDraft(drafts.data?.drafts ?? [], undefined, { sessionId }),
+        };
+      },
+      { wrapper: wrapperFor(sessionId) },
+    );
+    await waitFor(() => expect(result.current.drafts.data?.drafts).toHaveLength(1));
+    expect(result.current.drafts.data).toMatchObject({
+      setup_session_id: sessionId,
+      draft_source_setup_session_id: 'map-new-1',
+      status: 'SUCCEEDED',
+    });
+    const [opening] = result.current.drafts.data!.drafts;
+    await act(async () => {
+      await result.current.accept.accept(opening!);
+    });
+    expect(result.current.accept.failure).toBeNull();
+    const plan = await requestSetupZonePlan(api, sessionId);
+    expect(plan.items).toEqual([
+      expect.objectContaining({ zone_id: null, source: 'AI', candidate_id: opening!.candidate_id }),
+    ]);
+    // 원 세션의 초안 기록은 그대로다(읽기만)
+    expect(setupMock.zoneDraftsBySession.get('map-new-1')?.drafts).toHaveLength(1);
+    expect(setupMock.zonePlans.has('map-new-1')).toBe(false);
+    await waitFor(() => expect(result.current.accept.acceptedIds).toContain(opening!.candidate_id));
   });
 });
 
