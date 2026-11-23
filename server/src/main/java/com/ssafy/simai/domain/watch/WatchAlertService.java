@@ -88,6 +88,13 @@ public class WatchAlertService implements AutoCloseable {
      */
     static final String RESEND_MAX_AGE = "10 minutes";
 
+    /**
+     * 같은 사람 묶음(-723)에 묶이지 않고 바로 울리는 규칙(S15P31A101-860, 사용자 결정 2026-11-23): R4(낙상).
+     * 사람이 쓰러진 것은 가장 급하고 워치 글자도 「낙상」으로 다르므로, 같은 사람의 진입(R1) 등 다른 열린 알림이 있어도 기다리지 않는다
+     * (11-23 리허설에서 R1 이 지워질 때까지 3~14초 늦거나 울리지 않았다). 묶는 쪽으로는 그대로 참여해 R4 가 열려 있으면 다른 규칙은 묶인다.
+     */
+    static final String IMMEDIATE_RULE = RuleCatalog.R4.name();
+
     /** 수동 알림 요청(컨트롤러가 JSON 을 옮긴 값. 검증은 sendManual 이 한다) */
     public record ManualRequest(String deviceId, String severity, String word, String direction, Integer ackWithinMs, Boolean needsCheck) {
     }
@@ -361,7 +368,9 @@ public class WatchAlertService implements AutoCloseable {
         String word = RuleCatalog.watchWord(event.ruleId());
         // 같은 이벤트·워치에 같거나 높은 등급을 이미 보냈으면 넣지 않는다(재발행·요약 갱신·ACK 로 다시 와도 진동은 한 번, 등급이 오르면 다시).
         // S15P31A101-723: 같은 사람(이 워치)에게 아직 열린 다른 이벤트로 같거나 높은 등급 진동을 이미 보냈고 지우지 않았으면 넣지 않는다
-        // (R2 CRITICAL 과 함께 열린 R3 HIGH·R5 CAUTION 은 진동 하나로). 위 이벤트가 해소되면 clearIfResolved 가 resync 로 남은 것을 다시 본다
+        // (R2 CRITICAL 과 함께 열린 R3 HIGH·R5 CAUTION 은 진동 하나로). 위 이벤트가 해소되면 clearIfResolved 가 resync 로 남은 것을 다시 본다.
+        // S15P31A101-860: 보내려는 이벤트가 IMMEDIATE_RULE(R4 낙상)이면 이 묶음을 건너뛴다(같은 이벤트 중복 방지는 그대로). alert·resync 모두 여기를 지난다
+        boolean immediate = IMMEDIATE_RULE.equals(event.ruleId());
         List<Long> inserted = jdbc.queryForList("""
                 INSERT INTO watch_alert (origin, alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,
                     vibration_pattern, word, needs_check, ack_within_ms, sent_at)
@@ -370,11 +379,12 @@ public class WatchAlertService implements AutoCloseable {
                 WHERE NOT EXISTS (SELECT 1 FROM watch_alert WHERE event_id = :eventId AND resume_count = :resumeCount
                                   AND device_id = :device AND escalation_reason IS DISTINCT FROM 'SEND_FAILED'
                                   AND %1$s >= %2$s)
-                  AND NOT EXISTS (SELECT 1 FROM watch_alert w JOIN risk_event r ON r.event_id = w.event_id AND r.source = w.source
-                                  WHERE w.device_id = :device AND w.origin = 'EVENT' AND w.event_id <> :eventId
-                                    AND w.cleared_at IS NULL AND w.escalation_reason IS DISTINCT FROM 'SEND_FAILED'
-                                    AND r.lifecycle <> 'RESOLVED' AND r.resume_count = w.resume_count
-                                    AND r.delivery IS DISTINCT FROM 'AUDIT_ONLY' AND %3$s >= %2$s)
+                  AND (CAST(:immediate AS boolean)
+                       OR NOT EXISTS (SELECT 1 FROM watch_alert w JOIN risk_event r ON r.event_id = w.event_id AND r.source = w.source
+                                      WHERE w.device_id = :device AND w.origin = 'EVENT' AND w.event_id <> :eventId
+                                        AND w.cleared_at IS NULL AND w.escalation_reason IS DISTINCT FROM 'SEND_FAILED'
+                                        AND r.lifecycle <> 'RESOLVED' AND r.resume_count = w.resume_count
+                                        AND r.delivery IS DISTINCT FROM 'AUDIT_ONLY' AND %3$s >= %2$s))
                 ON CONFLICT DO NOTHING
                 RETURNING alert_id
                 """.formatted(RANK_SQL.formatted("severity"), RANK_SQL.formatted("CAST(:severity AS text)"),
@@ -383,7 +393,7 @@ public class WatchAlertService implements AutoCloseable {
                         .addValue("sequence", event.sequence()).addValue("resumeCount", event.resumeCount()).addValue("device", deviceId).addValue("world", worldId)
                         .addValue("severity", event.severity()).addValue("pattern", PATTERNS.get(event.severity()))
                         .addValue("word", word).addValue("needsCheck", event.needsCheck()).addValue("ackWithin", ackWithinMs)
-                        .addValue("now", utc(now)), Long.class);
+                        .addValue("now", utc(now)).addValue("immediate", immediate), Long.class);
         if (inserted.isEmpty()) {
             return;
         }
