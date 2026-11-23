@@ -41,16 +41,9 @@ export const RUNPOD_GPU_CATALOG: readonly GpuCatalogItem[] = [
 ];
 
 /** AWS 서울 GPU 인스턴스 목록(S15P31A101-703, -733) */
+// AWS 는 서버가 g7e.4xlarge 만 켜게 한정한다(GpuProperties.awsGpuTypes, S15P31A101-841). 목록도 그것만 보인다(S15P31A101-854)
 export const AWS_GPU_CATALOG: readonly GpuCatalogItem[] = [
-  { gpuType: 'p5.48xlarge', name: 'p5.48xlarge · H100', memoryGb: 80 },
-  { gpuType: 'p4de.24xlarge', name: 'p4de.24xlarge · A100 80GB', memoryGb: 80 },
-  { gpuType: 'p4d.24xlarge', name: 'p4d.24xlarge · A100 40GB', memoryGb: 40 },
-  { gpuType: 'g6e.2xlarge', name: 'g6e.2xlarge · L40S', memoryGb: 48 },
-  { gpuType: 'g6e.4xlarge', name: 'g6e.4xlarge · L40S', memoryGb: 48 },
-  { gpuType: 'g6e.12xlarge', name: 'g6e.12xlarge · L40S', memoryGb: 48 },
-  { gpuType: 'g7e.2xlarge', name: 'g7e.2xlarge', memoryGb: 48 },
-  { gpuType: 'g6.2xlarge', name: 'g6.2xlarge · L4', memoryGb: 24 },
-  { gpuType: 'g5.2xlarge', name: 'g5.2xlarge · A10G', memoryGb: 24 },
+  { gpuType: 'g7e.4xlarge', name: 'g7e.4xlarge · RTX PRO 6000', memoryGb: 96 },
 ];
 
 const KNOWN_GPU_SHORT_NAMES: Readonly<Record<string, string>> = {
