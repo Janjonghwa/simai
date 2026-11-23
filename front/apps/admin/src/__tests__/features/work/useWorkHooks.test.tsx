@@ -108,7 +108,7 @@ describe('useOpenDay', () => {
 });
 
 describe('useWorkDays·useWorkTasks', () => {
-  it('월 목록에 하루 작업이 들어온다', async () => {
+  it('월 목록에 하루 작업이 들어온다(열기만 한 날은 빠지고 손대면 들어온다, -842)', async () => {
     const { wrapper } = setup();
     const open = renderHook(() => useOpenDay(TODAY, TODAY), { wrapper });
     await waitFor(() => expect(open.result.current.data).toBeDefined());
@@ -116,8 +116,14 @@ describe('useWorkDays·useWorkTasks', () => {
       wrapper,
     });
     await waitFor(() => expect(result.current.data).toBeDefined());
-    expect(result.current.data?.some((w) => w.daily && w.date === TODAY)).toBe(true);
+    expect(result.current.data?.some((w) => w.daily)).toBe(false);
     expect(result.current.data?.some((w) => !w.daily)).toBe(true);
+
+    mock.markSetupDone(open.result.current.data!.work_id);
+    await act(() => result.current.refetch());
+    await waitFor(() =>
+      expect(result.current.data?.some((w) => w.daily && w.date === TODAY)).toBe(true),
+    );
   });
 
   it('꺼 두면 요청하지 않는다', () => {

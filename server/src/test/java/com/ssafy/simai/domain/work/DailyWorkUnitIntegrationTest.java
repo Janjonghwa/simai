@@ -122,9 +122,10 @@ class DailyWorkUnitIntegrationTest {
     void 달력은_작업_날짜_구간으로_받고_예전_작업도_나온다() throws Exception {
         LocalDate from = today.plusDays(30);
         LocalDate to = from.plusDays(29);
-        daily(admin, from);
-        daily(admin, to);
-        daily(admin, to.plusDays(1));
+        // 열기만 한 날짜 작업은 달력에서 빠지므로(S15P31A101-842) 양식을 한 번 저장해 둔다
+        saveForm(body(daily(admin, from)));
+        saveForm(body(daily(admin, to)));
+        saveForm(body(daily(admin, to.plusDays(1))));
         jdbc.update("""
                 INSERT INTO work_unit(site_id, work_date, name, starts_at, ends_at, planned_people, created_by, created_at, updated_at)
                 VALUES (?, ?, '예전 작업', now(), now() + interval '1 hour', 3, ?, now(), now())
@@ -147,6 +148,73 @@ class DailyWorkUnitIntegrationTest {
         }
         // 날짜를 주지 않으면 예전 days 목록 그대로
         mvc.perform(get("/api/work-units").header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isOk());
+    }
+
+    @Test
+    void 열기만_한_날짜_작업은_달력에서_빠지고_손대면_다시_센다() throws Exception {
+        // (a) 날짜 화면을 열기만 한 오늘·미래 → 달력 0건. 날짜 화면이 쓰는 단건 조회는 그대로다
+        JsonNode opened = body(daily(admin, today));
+        body(daily(admin, today.plusDays(1)));
+        assertThat(calendar(today, today.plusDays(1)).size()).isZero();
+        one(opened);
+        // 다시 열어도(PUT 반복) 비어 있으면 그대로 0건
+        daily(admin, today);
+        assertThat(calendar(today, today).size()).isZero();
+
+        // (b) TBM 양식을 저장하면 센다. 작업내용 체크를 모두 풀어 이름이 빈칸이어도 저장했으면 센다
+        saveForm(opened);
+        JsonNode saved = calendar(today, today);
+        assertThat(saved.size()).isEqualTo(1);
+        assertThat(saved.get(0).path("work_id").asString()).isEqualTo(opened.path("work_id").asString());
+        assertThat(saved.get(0).path("name").asString()).isEmpty();
+    }
+
+    @Test
+    void 세팅을_시작한_날짜_작업은_달력에서_센다() throws Exception {
+        // (c) 세팅 세션이 하나라도 있으면(실패로 끝났어도) 센다
+        JsonNode work = body(daily(admin, today));
+        String job = "job-842-" + UUID.randomUUID();
+        jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
+                + " VALUES (?, 'site_setup','BACKGROUND','FAILED',1,1,1000,'{}'::jsonb,now())", job);
+        jdbc.update("""
+                INSERT INTO setup_session (setup_session_id, site_id, work_unit_id, job_id, status, camera_heights_m,
+                    height_tolerance_cm, requested_by, started_at, updated_at)
+                VALUES (?, ?, ?, ?, 'FAILED', '{}'::jsonb, 5, ?, now(), now())
+                """, UUID.randomUUID(), site, Long.parseLong(work.path("work_id").asString()), job, adminId);
+        assertThat(calendar(today, today).size()).isEqualTo(1);
+    }
+
+    @Test
+    void 서명만_받은_날짜_작업도_달력에서_센다() throws Exception {
+        // (d) 양식 저장 없이 서명만 있어도 센다
+        JsonNode work = body(daily(admin, today));
+        jdbc.update("""
+                INSERT INTO report_signature(report_id, report_version, signer_name, signature_image_key, image_sha256,
+                    report_content_sha256, legal_notice_ack, recorded_by, signed_at)
+                VALUES (?, 1, '참석자', ?, 'a', 'b', true, ?, now())
+                """, work.path("tbm_report").path("report_id").asLong(), "sig-" + UUID.randomUUID(), adminId);
+        assertThat(calendar(today, today).size()).isEqualTo(1);
+    }
+
+    @Test
+    void 지난_날_일반_작업과_끝난_날짜_작업은_그대로_센다() throws Exception {
+        // (e) 예전 작업(daily=false)은 시작하지 않았어도, 끝난 날짜 작업은 보고서가 없어도 그대로 나온다
+        LocalDate past = today.minusDays(3);
+        jdbc.update("""
+                INSERT INTO work_unit(site_id, work_date, name, starts_at, ends_at, planned_people, created_by, created_at, updated_at)
+                VALUES (?, ?, '예전 작업', now() - interval '3 days', now() - interval '3 days' + interval '1 hour', 2, ?, now(), now())
+                """, site, past, adminId);
+        jdbc.update("""
+                INSERT INTO work_unit(site_id, work_date, starts_at, ends_at, planned_people, daily, status,
+                    actual_started_at, actual_ended_at, created_by, created_at, updated_at)
+                VALUES (?, ?, now() - interval '2 days', now() - interval '1 day', 0, true, 'DONE',
+                    now() - interval '2 days', now() - interval '2 days' + interval '1 hour', ?, now(), now())
+                """, site, today.minusDays(2), adminId);
+        JsonNode list = calendar(past, today.minusDays(2));
+        assertThat(list.size()).isEqualTo(2);
+        assertThat(list.get(0).path("name").asString()).isEqualTo("예전 작업");
+        assertThat(list.get(1).path("daily").asBoolean()).isTrue();
+        assertThat(list.get(1).path("status").asString()).isEqualTo("DONE");
     }
 
     @Test
@@ -258,6 +326,21 @@ class DailyWorkUnitIntegrationTest {
     private JsonNode one(JsonNode work) throws Exception {
         return body(mvc.perform(get("/api/work-units/{id}", work.path("work_id").asString())
                 .header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isOk()));
+    }
+
+    /** 달력 목록(GET /api/work-units?from&to)의 works */
+    private JsonNode calendar(LocalDate from, LocalDate to) throws Exception {
+        return body(mvc.perform(get("/api/work-units").param("from", from.toString()).param("to", to.toString())
+                .header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isOk())).path("works");
+    }
+
+    /** 받은 양식을 작업내용 없이 그대로 한 번 저장한다(TBM 저장, 이름은 빈칸으로 남는다) */
+    private void saveForm(JsonNode work) throws Exception {
+        long reportId = work.path("tbm_report").path("report_id").asLong();
+        JsonNode report = body(mvc.perform(get("/api/reports/tbm/{id}", reportId).header(HttpHeaders.AUTHORIZATION, admin)));
+        ObjectNode form = (ObjectNode) report.path("form").deepCopy();
+        ((ObjectNode) form.path("info")).putArray("tasks");
+        putForm(reportId, form, report.path("form_revision").asInt());
     }
 
     private void putForm(long reportId, JsonNode form, int revision) throws Exception {

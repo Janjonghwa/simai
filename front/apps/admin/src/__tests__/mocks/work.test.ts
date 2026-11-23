@@ -157,6 +157,20 @@ async function readyToStart() {
   return { work, report };
 }
 
+/** 양식을 작업내용 없이 그대로 한 번 저장한다(TBM 저장. 작업명은 빈칸으로 남는다). */
+async function saveOnce(workId: string) {
+  const report = await latestOf(workId);
+  const form = formOf(report);
+  return saveReportForm(asAdmin, report.report_id, {
+    form: { ...form, info: { ...form.info, tasks: [] } },
+    form_revision: report.form_revision,
+  });
+}
+
+/** 그 날 달력 칸에 들어가는 날짜 작업 수(달력 월 목록 기준). */
+const dailyCountOn = async (date: string) =>
+  (await fetchWorkUnits(asAdmin, { from: date, to: date })).filter((w) => w.daily).length;
+
 describe('작업 관리 mock: 날짜 열기', () => {
   it('오늘 이전 날짜는 거절하고 오늘은 멱등으로 만든다', async () => {
     expect(await failure(putDailyWorkUnit(asAdmin, '2026-11-10'))).toEqual({
@@ -186,8 +200,12 @@ describe('작업 관리 mock: 날짜 열기', () => {
     const second = await openToday();
     expect(second.work_id).toBe(first.work_id);
     expect(second.tbm_report?.report_id).toBe(first.tbm_report?.report_id);
+    // 열기만 한 날은 달력 목록에 나오지 않는다(-842). 양식을 저장하면 하나만 나온다.
     const month = await fetchWorkUnits(asAdmin, { from: '2026-11-01', to: '2026-11-30' });
-    expect(month.filter((w) => w.daily)).toHaveLength(1);
+    expect(month.filter((w) => w.daily)).toHaveLength(0);
+    await saveOnce(first.work_id);
+    const saved = await fetchWorkUnits(asAdmin, { from: '2026-11-01', to: '2026-11-30' });
+    expect(saved.filter((w) => w.daily).map((w) => w.work_id)).toEqual([first.work_id]);
   });
 
   it('이미 열어 둔 날은 지난 뒤에도 그대로 돌려주고, 없는 지난 날짜만 거절한다(WORK_DATE_PAST)', async () => {
@@ -989,10 +1007,56 @@ describe('작업 관리 mock: 시작·종료·제출', () => {
   });
 });
 
+describe('작업 관리 mock: 열기만 한 날짜 작업은 달력에서 세지 않는다(-842)', () => {
+  it('오늘·예정인 날을 열기만 하면 달력에 없고, 다시 열어도 없다', async () => {
+    const opened = await openToday();
+    await putDailyWorkUnit(asAdmin, TOMORROW);
+    expect(await dailyCountOn(TODAY)).toBe(0);
+    expect(await dailyCountOn(TOMORROW)).toBe(0);
+    await openToday();
+    expect(await dailyCountOn(TODAY)).toBe(0);
+    // 날짜 화면이 쓰는 단건 조회는 그대로다.
+    expect((await fetchWorkUnit(asAdmin, opened.work_id)).work_id).toBe(opened.work_id);
+  });
+
+  it('양식을 저장하면 작업명이 빈칸이어도 센다', async () => {
+    const work = await openToday();
+    await saveOnce(work.work_id);
+    expect((await fetchWorkUnit(asAdmin, work.work_id)).name).toBe('');
+    expect(await dailyCountOn(TODAY)).toBe(1);
+  });
+
+  it('서명만 받아도 센다', async () => {
+    const work = await openToday();
+    const report = await latestOf(work.work_id);
+    await signReport(asAdmin, report.report_id, {
+      image: png(),
+      signerName: '박반장',
+      reportVersion: report.report_version,
+    });
+    expect(await dailyCountOn(TODAY)).toBe(1);
+  });
+
+  it('세팅을 시작하면 센다', async () => {
+    const work = await openToday();
+    startSession(work.work_id);
+    expect(await dailyCountOn(TODAY)).toBe(1);
+  });
+
+  it('지난 이력(예전 작업)은 그대로 센다', async () => {
+    expect(
+      (await fetchWorkUnits(asAdmin, { from: '2026-11-09', to: '2026-11-10' })).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
 describe('작업 관리 mock: 월 목록과 지난 이력', () => {
   it('일일 작업과 합성 지난 이력을 같은 모양으로 날짜 순서로 준다', async () => {
     const today = await openToday();
-    await putDailyWorkUnit(asAdmin, TOMORROW);
+    const tomorrow = await putDailyWorkUnit(asAdmin, TOMORROW);
+    // 열기만 한 날은 달력에서 빠지므로(-842) 양식을 한 번씩 저장한다.
+    await saveOnce(today.work_id);
+    await saveOnce(tomorrow.work_id);
     const month = await fetchWorkUnits(asAdmin, { from: '2026-11-01', to: '2026-11-30' });
 
     const daily = month.filter((w) => w.daily);
@@ -1105,6 +1169,8 @@ describe('작업 관리 mock: 관제가 읽는 작업 목록', () => {
 describe('작업 관리 mock: 권한', () => {
   it('로그인하지 않으면 401, 쓰기는 관리자만(아니면 403), 읽기는 열람자도 된다', async () => {
     const work = await openToday();
+    // 달력 목록에 나오도록 한 번 저장해 둔다(열기만 한 날은 빠진다, -842).
+    await saveOnce(work.work_id);
     const report = await latestOf(work.work_id);
     expect(await failure(putDailyWorkUnit(anonymous, TODAY))).toEqual({ status: 401, code: null });
     expect(await failure(fetchWorkUnits(anonymous, { from: TODAY, to: TODAY }))).toEqual({
