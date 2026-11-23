@@ -14,7 +14,8 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
   판정이 없거나 관측 시각이 멈췄고(영상 정지) 대상을 유효하게 관측할 수 없으면(UNKNOWN·트랙 없음·gap·lag 초과)
   그 자리에서 발생시킨다. 프레임 집계와 달리 이 검사는 관측 시각이 멈춰도 판정 주기마다 한다(주입 시계는 간다, 6.1).
   마지막 발생 판정으로 만들고 검증 상태는 UNVERIFIABLE, 확인 필요 이유에 PREDICTED 를 더한다. 진입 직후 관측을 잃은 사람이 R6 holding(유지만 함)만 남아
-  경보 없이 끝나는 틈을 막는 안전 쪽 처리다(S15P31A101-73 리뷰).
+  경보 없이 끝나는 틈을 막는 안전 쪽 처리다(S15P31A101-73 리뷰). 단 R5 는 마지막 발생 판정이 높이 모름(Z_UNKNOWN)이면
+  이 경로로 발생시키지 않고 대기를 버린다(Z_UNKNOWN + PREDICTED 낮은 신뢰 새 발생 보류, r5_low_confidence_onset, S15P31A101-855).
 - 재개(6.4, 7.4): 같은 키가 해소 후 재개 시간(초기값 10초, 관측 시각 기준) 안에 다시 발생 조건을 채우면 새 이벤트를
   만들지 않고 해소된 이벤트를 다시 활성으로 돌린다. 같은 event_id 로 UPDATED 전이(변경 사유 RESUMED, I1 resumed=true)를
   내고 event_sequence 를 이어 올린다. 재개는 새 위험 발생처럼 다룬다: 확인 기록(acks)을 비워 미확인으로 되돌리고
@@ -117,6 +118,7 @@ from simai_ai.risk.engine import Evaluation
 from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.posture_gate import PostureGate
 from simai_ai.risk.rule import Finding, FindingTarget
+from simai_ai.risk.rules.r5_entry_prediction import R5_RULE_ID, r5_low_confidence_onset
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
 from simai_ai.risk.rules.r9_helmet import R9_RULE_ID
 from simai_ai.risk.rules.r11_vest import R11_RULE_ID
@@ -1208,6 +1210,7 @@ class LifecycleTracker:
            (UNKNOWN·PREDICTED·트랙 없음·gap 초과·lag 초과, VerificationPolicy) 마지막 발생 판정으로 바로 발생시킨다.
            판정 주기 시계(주입 시계)는 영상이 멈춰도 간다(6.1). 그래서 전체 정지 중에도 늦어도 lag 기준
            (ObservedTracksPolicy.max_lag_ms, 초기 600ms)을 넘는 첫 판정 주기에 발생한다.
+           R5 는 그 발생 판정이 Z_UNKNOWN + PREDICTED(낮은 신뢰)면 발생시키지 않고 대기를 버린다(S15P31A101-855).
         """
         persistence = self._policy.persistence_for(key.rule_id)
         if raising and persistence.immediate:
@@ -1239,11 +1242,16 @@ class LifecycleTracker:
         # (위치가 현재 관측이 아니라 마지막 추정값이다). 재개 시간 안이면 _open 이 재개로 처리한다.
         del self._pending[key]
         last = pending.last
-        return replace(
+        onset = replace(
             last,
             confidence_reasons=last.confidence_reasons + (ConfidenceReason.PREDICTED,),
             reasons=last.reasons + (REASON_PENDING_OBSERVATION_LOST,),
         )
+        if key.rule_id == R5_RULE_ID and r5_low_confidence_onset(onset):
+            # R5: 높이 모름(Z_UNKNOWN) 대기가 위치 예측(PREDICTED)으로만 발생하려 하면 새 발생을 내지 않는다(S15P31A101-855).
+            _log.info("R5_LOW_CONFIDENCE: R5 새 발생 보류(Z_UNKNOWN + PREDICTED) %s", key.world_ids)
+            return None
+        return onset
 
     def _open(
         self,
