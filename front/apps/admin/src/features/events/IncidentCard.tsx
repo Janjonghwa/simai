@@ -141,9 +141,8 @@ export function IncidentCard({
             </span>
           </span>
           <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
-            {incident.active || incident.stale
-              ? formatTime(latest.event.raised_at)
-              : `해소 ${formatTime(latest.event.resolved_at ?? latest.event.updated_at)}`}
+            {/* 해소된 카드는 이미 흐리게 보여 「해소」 글 없이 발생 시각만 둔다(해소 시각은 올려 보면 나오는 설명에 있다, S15P31A101-856) */}
+            {formatTime(latest.event.raised_at)}
           </span>
         </button>
         {selected && <EventPhotos event={top.event} compact />}
