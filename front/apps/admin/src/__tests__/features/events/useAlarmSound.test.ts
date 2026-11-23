@@ -267,6 +267,41 @@ describe('소리 사다리 정책', () => {
     });
   });
 
+  it('낙상(R4)이 열린 동안 같은 사람의 다른 경보는 묶이고, 같은 낙상 재발행은 다시 울리지 않는다(S15P31A101-861)', () => {
+    const decide = createAlarmPolicy();
+    const fall = entry({ event_id: 'f-1', rule_id: 'R4' });
+    const first = decide([fall], true);
+    expect(first).toMatchObject({ severity: 'CRITICAL', restart: true });
+    // 같은 사람의 진입(같은 등급)·진입 예측(낮은 등급)은 낙상 소리에 묶여 새로 울리지 않는다.
+    const zone = entry({
+      event_id: 'z-1',
+      rule_id: 'R1',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    const predicted = entry({
+      event_id: 'p-1',
+      rule_id: 'R5',
+      severity: 'HIGH',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    const grouped = decide([fall, zone, predicted], true);
+    expect(grouped?.key).toBe(first?.key);
+    expect(grouped?.restart).toBeUndefined();
+    // 같은 낙상을 재발행(요약 갱신·재동기화)으로 다시 받아도 한 번만 울린다.
+    const reissued = entry({
+      event_id: 'f-1',
+      rule_id: 'R4',
+      event_sequence: 2,
+      lifecycle: 'UPDATED',
+      updated_at: T + 3000,
+    });
+    const again = decide([reissued, zone, predicted], true);
+    expect(again?.key).toBe(first?.key);
+    expect(again?.restart).toBeUndefined();
+  });
+
   it('ACK 30초 안의 같은 사람·구역 재발생만 억제하며 상향과 30초 경계는 울린다', () => {
     const decide = createAlarmPolicy();
     const resolved = acked({ severity: 'HIGH', lifecycle: 'RESOLVED', resolved_at: T + 2000 });

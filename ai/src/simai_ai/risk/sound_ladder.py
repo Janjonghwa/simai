@@ -1,9 +1,14 @@
 """소리만 억제하는 단계·ACK 정책(S15P31A101-497). 위험 등급은 바꾸지 않는다."""
 
+from simai_ai.risk.rules.r4_fall_suspect import R4_RULE_ID
+
 RANK = {"INFO": 0, "CAUTION": 1, "HIGH": 2, "CRITICAL": 3}
 ACK_QUIET_MS = 30_000
 # 같은 사람·구역·규칙이 소리 낸 뒤 같거나 낮은 단계로 다시 걸려도 이 시간 동안은 화면만(사용자 결정 2026-11-05).
 SOUND_COOLDOWN_MS = 60_000
+# 낙상(R4)은 같은 사람의 다른 열린 경보 소리에 묶이지 않고 새로 울린다(사용자 결정 2026-11-23, 서버 워치 -860 과 같은 기준).
+# 사람이 쓰러진 것이 가장 급하다. R4 가 열린 동안 같은 사람의 같거나 낮은 경보는 그대로 묶이고, 같은 R4 이벤트는 한 번만 울린다.
+IMMEDIATE_RULE = R4_RULE_ID
 
 
 class SoundLadder:
@@ -27,9 +32,11 @@ class SoundLadder:
         rank = RANK[severity]
         # 위험(CRITICAL)은 시간 억제(ACK 뒤·소리 뒤)를 받지 않는다.
         quiet_allowed = severity != "CRITICAL"
+        immediate = rule == IMMEDIATE_RULE
         blocked = any(
             rank <= level and set(worlds).intersection(ids)
-            for ids, level in self.active.values()
+            and (not immediate or eid == event_id)
+            for eid, (ids, level) in self.active.items()
         )
         blocked |= quiet_allowed and any(
             (ack := self.acks.get((world, zone))) is not None
