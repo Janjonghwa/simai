@@ -10,7 +10,6 @@ import {
   type HistoricalPersonNameSpan,
 } from '@/features/people/personDisplay';
 import { useZoneName } from '@/features/zones/useZoneName';
-import { useZones } from '@/features/zones/useZones';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { ListOrdered, Users } from 'lucide-react';
@@ -127,10 +126,9 @@ function EventItem({
   const workers = people.length
     ? `${workerShortLabel(people[0]!, first.raisedAt, personNames)}${people.length > 1 ? ` 외 ${people.length - 1}명` : ''}`
     : '';
-  // 작업자가 없으면 구역이 대상이라 이름을 모르면 `구역` 이고, 작업자 뒤에 붙을 때는 모르면 뺀다.
-  const zone = workers
-    ? zoneName(first.zoneId)
-    : first.zoneId && zoneNameOrDefault(first.zoneId, zoneName);
+  // 대상은 작업자만 보인다(구역 이름을 붙이면 줄이 길어져 경보 이름이 잘린다, S15P31A101-853).
+  // 작업자가 없는 경보만 구역이 대상이라 구역 이름(모르면 `구역`)을 보인다.
+  const zone = workers ? null : first.zoneId && zoneNameOrDefault(first.zoneId, zoneName);
   return (
     <li ref={ref}>
       <button
@@ -150,7 +148,6 @@ function EventItem({
         <span className="min-w-0 flex-1 truncate">{ruleName(first.ruleId)}</span>
         <span className="text-sm text-muted-foreground">
           <span title={people.length ? people.join(' · ') : undefined}>{workers}</span>
-          {workers && zone && ' · '}
           {zone}
         </span>
       </button>
@@ -175,8 +172,6 @@ export function EventLog({
   personNames?: readonly HistoricalPersonNameSpan[];
   onPick: (event: EventRow) => void;
 }) {
-  // 구역 이름은 구역 캐시를 읽는다. 관제 화면을 거치지 않고 달력에서 바로 들어오면 캐시가 비어 있어 여기서 직접 받는다(S15P31A101-850)
-  useZones(null);
   const zoneName = useZoneName();
   const rows = useMemo(() => pastEventRows(events), [events]);
   return (
