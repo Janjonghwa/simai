@@ -113,13 +113,16 @@ function EndedView({
   const demo = useIsDemoAccount();
   const send = useSendReport(onSubmitted);
   const reportId = report?.report_id;
-  const endingNow =
-    useDemoEndingGenerating(day.work_id, {
-      ended: true,
-      generating: isEndingGenerating(report),
-      today: true,
-    }) || isEndingGenerating(report);
-  const filling = isReportGenerating(report) || endingNow;
+  // 서버가 종료 미팅을 쓰는 중인지(제출은 이게 끝나야 받는다, 409 REPORT_NOT_READY)
+  const serverEnding = isEndingGenerating(report);
+  // 종이 가림: 시연 계정은 서버와 상관없이 DEMO_ENDING_REVEAL_MS(1.5초)만 가린다(useDemoEndingGenerating), 아니면 서버 상태(S15P31A101-847)
+  const endingNow = useDemoEndingGenerating(day.work_id, {
+    ended: true,
+    generating: serverEnding,
+    today: true,
+  });
+  // 제출 단추는 시연 계정이어도 서버 종료 미팅이 끝날 때까지 꺼 둔다
+  const filling = isReportGenerating(report) || endingNow || serverEnding;
   const reportRef = useRef<HTMLDivElement>(null);
   const wasEnding = useRef(false);
   useEffect(() => {
@@ -137,9 +140,10 @@ function EndedView({
     };
   }, [endingNow]);
   // 꺼진 이유는 단추 옆에 늘 보인다(문서 속 흐린 글이나 hover 에 기대지 않는다, -734)
-  const blockedBy = endingNow
-    ? '종료 미팅 작성 중'
-    : submitBlockReason(report, reportError !== null);
+  const blockedBy =
+    endingNow || serverEnding
+      ? '종료 미팅 작성 중'
+      : submitBlockReason(report, reportError !== null);
   const endedAt =
     lastRun({ runs: day.runs, startedAt: day.actual_started_at, endedAt: day.actual_ended_at })
       ?.ended_at ?? day.actual_ended_at;
