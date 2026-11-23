@@ -16,6 +16,7 @@ import { api } from '@/lib/api';
 import { createTbmMock } from '@/mocks/tbm';
 import { createWorkMock, type WorkMock } from '@/mocks/work';
 import { MOCK_ZONES } from '@/mocks/zones';
+import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
@@ -533,6 +534,108 @@ describe('RunStage — 종료', () => {
       expect(onSubmitted).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('RunStage — 시연 계정은 종료 미팅을 기다리지 않고 제출을 켠다(S15P31A101-858)', () => {
+  const signInDemo = () =>
+    useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'demo', role: 'ADMIN' } });
+  const submits = () => requests.filter((r) => r.endsWith('/submit'));
+  const reportGets = () => requests.filter((r) => r === 'GET /api/reports/tbm').length;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const confirmSubmit = () => {
+    fireEvent.click(doneButton());
+    const dialog = screen.getByRole('dialog', { name: '보고서를 제출할까요?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '제출' }));
+    return dialog;
+  };
+  /** 다음 보고서 다시 받기(2초마다)가 끝날 때까지 기다린다. */
+  const nextPoll = async () => {
+    const before = reportGets();
+    await waitFor(() => expect(reportGets()).toBeGreaterThan(before), { timeout: 3_000 });
+    await sleep(50);
+  };
+  afterEach(() => useSessionStore.getState().signOut());
+
+  it('가림 1.5초 뒤 서버가 종료 미팅을 쓰는 중에도 켜지고, 확인하면 종료 미팅이 끝난 뒤에 한 번 보낸다', async () => {
+    const workId = await prepare('ended');
+    signInDemo();
+    const onSubmitted = vi.fn();
+    const startedAt = Date.now();
+    renderStage(onSubmitted);
+    await waitFor(() => expect(reportGets()).toBeGreaterThan(0));
+    expect(doneButton().disabled).toBe(true);
+    await waitFor(() => expect(doneButton().disabled).toBe(false), { timeout: 3_000 });
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_400);
+    expect(screen.queryByTestId('action-reason')).toBeNull();
+    const { latest } = await fetchReportsByWork(api, workId);
+    expect(latest?.wrap_up_status).toBe('GENERATING');
+
+    // 확인하면 제출 중으로 기다리고, 서버가 아직 쓰는 동안은 보내지 않는다(409 를 받지 않는다)
+    const dialog = confirmSubmit();
+    await waitFor(() => expect(doneButton().disabled).toBe(true));
+    expect(
+      (within(dialog).getByRole('button', { name: '제출' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    await nextPoll();
+    expect(submits()).toEqual([]);
+    expect(onSubmitted).not.toHaveBeenCalled();
+
+    // 서버가 종료 미팅을 마치면 다음 다시 받기에서 이어서 한 번 보낸다
+    clock += ENDING_DELAY_MS;
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    expect(submits()).toHaveLength(1);
+  }, 20_000);
+
+  it('기다리는 동안 취소하면 종료 미팅이 끝나도 보내지 않는다', async () => {
+    await prepare('ended');
+    signInDemo();
+    const onSubmitted = vi.fn();
+    renderStage(onSubmitted);
+    await waitFor(() => expect(doneButton().disabled).toBe(false), { timeout: 3_000 });
+    const dialog = confirmSubmit();
+    fireEvent.click(within(dialog).getByRole('button', { name: '취소' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    clock += ENDING_DELAY_MS;
+    await nextPoll();
+    expect(submits()).toEqual([]);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(doneButton().disabled).toBe(false);
+  }, 20_000);
+
+  it('종료 미팅이 끝났는데(FAILED) AI 초안을 쓰는 중이면 보내지 않고 그 이유를 확인창에 보인다', async () => {
+    const workId = await prepare('ended');
+    const { latest } = await fetchReportsByWork(api, workId);
+    let ending = true;
+    server.use(
+      http.get('*/api/reports/tbm', () =>
+        HttpResponse.json({
+          latest: ending
+            ? { ...latest, status: 'SUCCEEDED', wrap_up_status: 'GENERATING' }
+            : { ...latest, status: 'GENERATING', wrap_up_status: 'FAILED' },
+          versions: [],
+        }),
+      ),
+    );
+    signInDemo();
+    renderStage();
+    await waitFor(() => expect(doneButton().disabled).toBe(false), { timeout: 3_000 });
+    const dialog = confirmSubmit();
+
+    ending = false;
+    expect(await within(dialog).findByRole('alert', {}, { timeout: 3_000 })).toBeTruthy();
+    expect(within(dialog).getByRole('alert').textContent).toBe('AI 초안 작성 중이에요');
+    expect(submits()).toEqual([]);
+  }, 20_000);
+
+  it('시연 계정이 아니면 1.5초가 지나도 서버 종료 미팅이 끝날 때까지 꺼 둔다', async () => {
+    await prepare('ended');
+    renderStage();
+    await waitFor(() => expect(reportGets()).toBeGreaterThan(0));
+    await sleep(1_700);
+    expect(doneButton().disabled).toBe(true);
+    expect(screen.getByTestId('action-reason').textContent).toBe('종료 미팅 작성 중');
+  }, 20_000);
 });
 
 /** 확인한 위험 경보·해소된 경보를 만든다(종료 확인창·종료 뒤 요약 시험). */

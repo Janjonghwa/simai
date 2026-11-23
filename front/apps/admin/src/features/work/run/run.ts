@@ -88,16 +88,18 @@ export function alarmCountsOf(
  * 종료 뒤 `보고서 제출` 이 꺼진 이유(단추 옆에 늘 보인다, -734). 켜져도 되면 null.
  * 서버는 종료 미팅이나 AI 초안을 쓰는 중이면 제출을 받지 않으므로(409 REPORT_NOT_READY) 그 이유를 가른다.
  * report 는 `useWorkReport` 의 값(undefined 받는 중·실패, null 보고서 없음)이고 failed 는 받기가 실패했는지다.
+ * ignoreEnding 이면 종료 미팅 작성 중은 이유로 치지 않는다(시연 계정은 제출을 켜 두고 그게 끝나면 이어서 보낸다, -858).
  */
 export function submitBlockReason(
   report: WorkReport | null | undefined,
   failed: boolean,
+  { ignoreEnding = false }: { ignoreEnding?: boolean } = {},
 ): string | null {
   if (report === undefined) {
     return failed ? '보고서를 불러오지 못했어요. 새로고침해 주세요' : '보고서를 불러오는 중이에요';
   }
   if (report === null) return '보고서가 없어요';
-  if (isEndingGenerating(report)) return '종료 미팅 작성 중이에요';
+  if (!ignoreEnding && isEndingGenerating(report)) return '종료 미팅 작성 중이에요';
   if (report.status === 'GENERATING') return 'AI 초안 작성 중이에요';
   return null;
 }
