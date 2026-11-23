@@ -43,6 +43,8 @@ import tools.jackson.databind.ObjectMapper;
  *   <li>시각별 워치 배정·해제·재배정과 워치 표시 이름 변경·초기화·다음 날 변경 미반영</li>
  *   <li>우선순위(World 당일 지정 이름 &gt; 그 시각 배정 워치 이름 &gt; 없음)와 당일 지정 해제 시 워치 이름 복귀</li>
  *   <li>병합(aliases)·자리 이어받기(handoff_from) 승계와 분할(split_from) 미승계</li>
+ *   <li>대조 놓침(MATCH_LOST)으로 잠깐 끊긴 배정은 같은 작업 실행 안에서 다음 배정까지 직전 워치 이름을 이어 쓰고, 워치가 다른 사람에게
+ *       옮겨 가거나 관리자 해제·실행 밖이면 이어 쓰지 않는다(S15P31A101-857)</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -72,6 +74,7 @@ class HistoricalPersonDisplayNameIntegrationTest {
     private final List<String> testDevices = new ArrayList<>();
     private final List<String> testWorlds = new ArrayList<>();
     private final List<Long> testUsers = new ArrayList<>();
+    private final List<Long> testWorks = new ArrayList<>();
 
     private String siteId;
     private String watchA;
@@ -103,6 +106,9 @@ class HistoricalPersonDisplayNameIntegrationTest {
             jdbc.update("DELETE FROM person_world_name_history WHERE world_id = ? OR source_world_id = ?", w, w);
             jdbc.update("DELETE FROM person_unidentified_number_history WHERE world_id = ? OR source_world_id = ?", w, w);
             jdbc.update("DELETE FROM watch_binding WHERE world_id = ?", w);
+        }
+        for (Long w : testWorks) {
+            jdbc.update("DELETE FROM work_unit WHERE work_id = ?", w); // work_run 은 함께 지워진다
         }
         for (Long u : testUsers) {
             jdbc.update("DELETE FROM app_user WHERE user_id = ?", u);
@@ -231,6 +237,71 @@ class HistoricalPersonDisplayNameIntegrationTest {
         assertThat(resolveAt(items, wSplitChild, kst(day, 10, 15))).isNull();
     }
 
+    @Test
+    void 대조_놓침으로_잠깐_끊긴_배정은_같은_실행_안에서_직전_이름을_이어_쓰고_옮겨_가면_멈춘다() throws Exception {
+        LocalDate day = LocalDate.of(2025, 6, 12);
+        String actor = trackWorld("w-857-actor-" + tag);
+        String wx = trackWorld("w-857-x-" + tag);
+        String wy = trackWorld("w-857-y-" + tag);
+        String wz = trackWorld("w-857-z-" + tag);
+        insertWatchName(watchA, "SET", "시연작업자", kst(day, 8, 0));
+        insertWatchName(watchB, "SET", "이영희", kst(day, 8, 0));
+        // 작업 실행 1: 09:00~11:00, 실행 2: 16:40~16:50 (12:00 대는 실행 밖)
+        insertRuns(day, new Instant[] {kst(day, 9, 0), kst(day, 11, 0)}, new Instant[] {kst(day, 16, 40), kst(day, 16, 50)});
+
+        // 1) 11-23 리허설 watch_binding 51~54 재현: 같은 트랙에 붙였다 뗐다(REPLACED·MATCH_LOST), 53→54 사이 10초 공백, 54 뒤 배정 없음
+        insertBinding(watchA, actor, kst(day, 16, 42, 55, 760), kst(day, 16, 43, 3, 780), "REPLACED", null, null);
+        insertBinding(watchA, actor, kst(day, 16, 43, 3, 780), kst(day, 16, 43, 17, 813), "MATCH_LOST", null, null);
+        insertBinding(watchA, actor, kst(day, 16, 43, 17, 819), kst(day, 16, 43, 19, 828), "MATCH_LOST", null, null);
+        insertBinding(watchA, actor, kst(day, 16, 43, 29, 842), kst(day, 16, 43, 35, 854), "MATCH_LOST", null, null);
+
+        // 2) 워치가 다른 사람에게 옮겨 감: watchB 가 wx 에 10:00~10:05(MATCH_LOST) → 10:10 wy 로(10:20 관리자 해제)
+        insertBinding(watchB, wx, kst(day, 10, 0), kst(day, 10, 5), "MATCH_LOST", null, null);
+        insertBinding(watchB, wy, kst(day, 10, 10), kst(day, 10, 20), "RELEASED", null, null);
+
+        // 3) 실행 밖: watchA 가 wz 에 12:00~12:05(MATCH_LOST)
+        insertBinding(watchA, wz, kst(day, 12, 0), kst(day, 12, 5), "MATCH_LOST", null, null);
+
+        JsonNode items = fetchItems(day);
+
+        assertThat(resolveAt(items, actor, kst(day, 16, 42, 50, 0))).as("첫 배정 전에는 비움").isNull();
+        assertThat(resolveAt(items, actor, kst(day, 16, 43, 17, 815))).isEqualTo("시연작업자|WATCH_DEVICE"); // 52→53 사이 6 ms
+        assertThat(resolveAt(items, actor, kst(day, 16, 43, 25, 0))).isEqualTo("시연작업자|WATCH_DEVICE"); // 53→54 사이 10초
+        assertThat(resolveAt(items, actor, kst(day, 16, 43, 36, 0))).as("진입 경보").isEqualTo("시연작업자|WATCH_DEVICE");
+        assertThat(resolveAt(items, actor, kst(day, 16, 43, 56, 0))).as("낙상 경보").isEqualTo("시연작업자|WATCH_DEVICE");
+        assertThat(resolveAt(items, actor, kst(day, 16, 49, 59, 0))).isEqualTo("시연작업자|WATCH_DEVICE");
+        assertThat(resolveAt(items, actor, kst(day, 16, 50, 1, 0))).as("실행 끝에서 멈춤").isNull();
+        // 한 구간으로 이어진다(경보 카드와 같이 그 ID 의 마지막 실제 이름)
+        long actorSpans = 0;
+        for (JsonNode item : items) {
+            if (actor.equals(item.path("world_id").asString(""))) {
+                actorSpans++;
+            }
+        }
+        assertThat(actorSpans).isEqualTo(1);
+
+        assertThat(resolveAt(items, wx, kst(day, 10, 7))).isEqualTo("이영희|WATCH_DEVICE");
+        assertThat(resolveAt(items, wx, kst(day, 10, 12))).as("워치가 다른 World ID 로 옮겨 가면 이어 쓰지 않음").isNull();
+        assertThat(resolveAt(items, wy, kst(day, 10, 15))).isEqualTo("이영희|WATCH_DEVICE");
+        assertThat(resolveAt(items, wy, kst(day, 10, 25))).as("관리자 해제(RELEASED)는 이어 쓰지 않음").isNull();
+        assertThat(resolveAt(items, wz, kst(day, 12, 7))).as("실행 밖은 이어 쓰지 않음").isNull();
+    }
+
+    private void insertRuns(LocalDate day, Instant[]... runs) {
+        Long workId = jdbc.queryForObject("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status,
+                    actual_started_at, actual_ended_at, created_by, created_at, updated_at)
+                VALUES (?, ?, 'hist-857', ?, ?, 1, 'DONE', ?, ?, ?, now(), now()) RETURNING work_id
+                """, Long.class, siteId, day, utc(runs[0][0]), utc(runs[runs.length - 1][1]), utc(runs[0][0]),
+                utc(runs[runs.length - 1][1]), adminId);
+        testWorks.add(workId);
+        for (int i = 0; i < runs.length; i++) {
+            jdbc.update("""
+                    INSERT INTO work_run (work_id, run_no, site_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?)
+                    """, workId, i + 1, siteId, utc(runs[i][0]), utc(runs[i][1]));
+        }
+    }
+
     private JsonNode fetchItems(LocalDate date) throws Exception {
         HttpResponse<String> resp = get("/api/people/display-names?date=" + date, viewerJwt);
         assertThat(resp.statusCode()).isEqualTo(200);
@@ -288,6 +359,11 @@ class HistoricalPersonDisplayNameIntegrationTest {
     private static Instant kst(LocalDate day, int hour, int minute) {
         return ZonedDateTime.of(day.getYear(), day.getMonthValue(), day.getDayOfMonth(),
                 hour, minute, 0, 0, PersonDisplayNames.SITE_ZONE).toInstant();
+    }
+
+    private static Instant kst(LocalDate day, int hour, int minute, int second, int millis) {
+        return ZonedDateTime.of(day.getYear(), day.getMonthValue(), day.getDayOfMonth(),
+                hour, minute, second, millis * 1_000_000, PersonDisplayNames.SITE_ZONE).toInstant();
     }
 
     private static OffsetDateTime utc(Instant instant) {

@@ -19,6 +19,7 @@ import {
 } from '@/features/people/personNameOverride.store';
 import { createHttp } from '@/lib/http';
 import { createPeopleNamesMock } from '@/mocks/peopleNames';
+import { rememberPersonNames } from '@/store/realtime.store';
 import { setupServer } from 'msw/node';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -282,5 +283,45 @@ describe('경보 카드용 기억 이름 withRememberedNames(-851)', () => {
       }),
     ).toBe(live);
     expect(withRememberedNames(live, {})).toBe(live);
+  });
+});
+
+describe('배정이 잠깐 끊겨도 경보 이름은 관제 카드와 지난 기록이 같다(S15P31A101-857)', () => {
+  // 11-23 16:42 리허설: 트랙 w-0001 하나, 워치 배정이 붙었다 뗐다(MATCH_LOST) 했고 진입·낙상 경보는 배정이 없는 순간에 났다
+  const actor = 'w-0001';
+  const runEndMs = 1_795_340_000_000;
+  const entryMs = runEndMs - 384_000;
+  const fallMs = runEndMs - 364_000;
+  const health = (displayName: string, nameSource: 'WATCH_DEVICE' | 'UNIDENTIFIED') => [
+    { world_id: actor, display_name: displayName, name_source: nameSource },
+  ];
+
+  it('관제 카드는 그 ID 의 마지막 실제 이름을, 지난 기록은 서버가 이어 붙인 구간을 써서 같은 이름이 된다', () => {
+    // 관제: 배정 중 health(워치 이름) → 끊긴 뒤 health(자동 번호). 카드는 기억 이름으로 보인다(-851)
+    let memory = rememberPersonNames({}, health('시연작업자', 'WATCH_DEVICE'));
+    memory = rememberPersonNames(memory, health('미확인 1', 'UNIDENTIFIED'));
+    const live = withRememberedNames(
+      resolvePersonDisplayMap({
+        activeWorldIds: [actor],
+        personNames: health('미확인 1', 'UNIDENTIFIED'),
+      }),
+      memory,
+    );
+    // 지난 기록: 서버(GET /api/people/display-names)는 MATCH_LOST 로 끊긴 동안 직전 워치 이름을 실행 끝까지 한 구간으로 이어 준다
+    const spans: HistoricalPersonNameSpan[] = [
+      {
+        world_id: actor,
+        display_name: '시연작업자',
+        name_source: 'WATCH_DEVICE',
+        from_ms: entryMs - 40_000,
+        to_ms: runEndMs,
+      },
+    ];
+    for (const at of [entryMs, fallMs]) {
+      expect(workerShortLabel(actor, at, spans)).toBe('시연작업자');
+      expect(formatPersonShort(actor, live)).toBe(workerShortLabel(actor, at, spans));
+    }
+    // 실행이 끝난 뒤에는 지난 기록이 이어 쓰지 않는다
+    expect(workerShortLabel(actor, runEndMs, spans)).toBe('작업자 #0001');
   });
 });

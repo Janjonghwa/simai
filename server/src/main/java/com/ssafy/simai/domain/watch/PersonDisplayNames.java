@@ -102,6 +102,13 @@ public class PersonDisplayNames {
     private record ResolvedHistoricalName(String displayName, String nameSource) {
     }
 
+    /** 작업 실행 한 번(work_run_window) [startedAt, endedAt). 실행 중이면 endedAt 은 null(S15P31A101-857 이름 이어 쓰기 범위) */
+    private record HistoricalRunWindow(Instant startedAt, Instant endedAt) {
+        boolean contains(Instant at) {
+            return !at.isBefore(startedAt) && (endedAt == null || at.isBefore(endedAt));
+        }
+    }
+
     private final NamedParameterJdbcTemplate jdbc;
     private final SiteLookup sites;
     private final WatchBindings bindings;
@@ -628,6 +635,8 @@ public class PersonDisplayNames {
      * <ul>
      *   <li>우선순위: World 지정 이름(그날, WORLD_MANUAL) &gt; 그 시각 그 World ID 에 배정된 워치의 그 시각 표시 이름(WATCH_DEVICE) &gt; 없음(생략)</li>
      *   <li>병합(person_world_merge_log)·이어받기(watch_binding.handoff_from) 승계 규칙을 반영한다</li>
+     *   <li>대조가 잠깐 놓쳐(MATCH_LOST) 배정이 끊긴 World ID 는 같은 작업 실행 안에서 다음 배정까지 직전 워치 이름을 이어 쓴다.
+     *       그 워치가 계보 밖 다른 World ID 에 배정되면 그때부터 이어 쓰지 않는다(S15P31A101-857)</li>
      *   <li>인접한 같은 (world_id, display_name, name_source) 구간은 하나로 합친 반열린 구간 [from_ms, to_ms) 으로 돌려준다</li>
      * </ul>
      */
@@ -722,6 +731,26 @@ public class PersonDisplayNames {
             }
         });
 
+        // 3-1) 그 날짜와 겹치는 작업 실행 구간. 배정이 잠깐 끊긴 동안 이름을 이어 쓰는 범위다(S15P31A101-857)
+        List<HistoricalRunWindow> runs = new ArrayList<>();
+        jdbc.query("""
+                SELECT started_at, ended_at
+                FROM work_run_window
+                WHERE site_id = :site AND started_at < :dayEnd AND (ended_at IS NULL OR ended_at > :dayStart)
+                ORDER BY started_at ASC
+                """, new MapSqlParameterSource()
+                .addValue("site", siteId)
+                .addValue("dayStart", dayStartUtc)
+                .addValue("dayEnd", dayEndUtc), (RowCallbackHandler) rs -> {
+            Timestamp endedTs = rs.getTimestamp("ended_at");
+            runs.add(new HistoricalRunWindow(rs.getTimestamp("started_at").toInstant(),
+                    endedTs == null ? null : endedTs.toInstant()));
+        });
+        Map<String, List<HistoricalBindingRow>> bindingsByDevice = new HashMap<>();
+        for (HistoricalBindingRow row : allBindings) {
+            bindingsByDevice.computeIfAbsent(row.deviceId(), k -> new ArrayList<>()).add(row);
+        }
+
         // 4) 배정된 워치 기기들의 dayEnd 이전 표시 이름 이력(이전 날 지정분 포함)
         Map<String, List<HistoricalWatchNameRow>> watchNamesByDevice = new HashMap<>();
         List<HistoricalWatchNameRow> allWatchNameRows = new ArrayList<>();
@@ -783,6 +812,11 @@ public class PersonDisplayNames {
                 changePoints.add(row.createdAt());
             }
         }
+        for (HistoricalRunWindow run : runs) {
+            if (run.endedAt() != null) {
+                changePoints.add(clamp(run.endedAt(), dayStart, dayEnd)); // 이어 쓰기는 실행 끝에서 멈춘다
+            }
+        }
         List<Instant> points = new ArrayList<>(changePoints);
 
         Map<String, Set<String>> fullComponents = new HashMap<>();
@@ -812,6 +846,10 @@ public class PersonDisplayNames {
                 ResolvedHistoricalName resolved = resolveHistoricalAt(
                         worldId, canonical, fullGroup, segStart, allEdges,
                         manualByWorld, bindingsByWorld, watchNamesByDevice);
+                if (resolved == null) {
+                    resolved = carriedHistoricalName(worldId, fullGroup, segStart, allEdges, runs,
+                            bindingsByWorld, bindingsByDevice, watchNamesByDevice);
+                }
                 long segStartMs = segStart.toEpochMilli();
                 long segEndMs = segEnd.toEpochMilli();
                 if (resolved == null) {
@@ -895,6 +933,64 @@ public class PersonDisplayNames {
 
         // 3순위: 없음(지난 기록에서는 호출부가 「작업자 #NNNN」으로 표기한다)
         return null;
+    }
+
+    /**
+     * 배정이 잠깐 끊긴 동안의 이름 이어 쓰기(S15P31A101-857). 시각 {@code at} 에 그 World ID(그 시각까지의 병합·이어받기 계보 포함)에
+     * 지금 배정이 없고, 가장 최근에 끝난 배정이 대조 놓침(MATCH_LOST)으로 끝났으며, 그 끝과 {@code at} 이 같은 작업 실행 안이고,
+     * 그 사이 그 워치가 계보 밖 다른 World ID 에 배정되지 않았으면, 끝나기 직전 그 워치 이름을 돌려준다(관제 경보 카드의
+     * 「그 ID 의 마지막 실제 이름」(-851)과 같은 결과). 관리자 해제(RELEASED)·ID 교정·교체로 끝난 배정, 실행 밖, 지금 다른(이름 없는)
+     * 배정이 있으면 이어 쓰지 않는다(모르면 비운다).
+     */
+    private static ResolvedHistoricalName carriedHistoricalName(
+            String worldId,
+            Set<String> fullGroup,
+            Instant at,
+            List<HistoricalMergeEdge> allEdges,
+            List<HistoricalRunWindow> runs,
+            Map<String, List<HistoricalBindingRow>> bindingsByWorld,
+            Map<String, List<HistoricalBindingRow>> bindingsByDevice,
+            Map<String, List<HistoricalWatchNameRow>> watchNamesByDevice) {
+        Set<String> group = fullGroup.size() == 1 ? fullGroup : connectedComponent(worldId, allEdges, at);
+        HistoricalBindingRow last = null;
+        for (String member : group) {
+            for (HistoricalBindingRow row : bindingsByWorld.getOrDefault(member, List.of())) {
+                if (row.boundAt().isAfter(at)) {
+                    break;
+                }
+                if (row.effectiveEnd() == null || at.isBefore(row.effectiveEnd())) {
+                    return null; // 지금 배정이 있다(이름 없는 워치 등): 다음 배정까지만 이어 쓴다
+                }
+                if (last == null || row.effectiveEnd().isAfter(last.effectiveEnd())
+                        || (row.effectiveEnd().equals(last.effectiveEnd()) && row.bindingId() > last.bindingId())) {
+                    last = row;
+                }
+            }
+        }
+        if (last == null || !"MATCH_LOST".equals(last.unbindReason())) {
+            return null;
+        }
+        Instant endedAt = last.effectiveEnd();
+        boolean sameRun = false;
+        for (HistoricalRunWindow run : runs) {
+            if (run.contains(endedAt) && run.contains(at)) {
+                sameRun = true;
+                break;
+            }
+        }
+        if (!sameRun) {
+            return null;
+        }
+        for (HistoricalBindingRow row : bindingsByDevice.getOrDefault(last.deviceId(), List.of())) {
+            if (!fullGroup.contains(row.worldId()) && !row.boundAt().isBefore(endedAt) && !row.boundAt().isAfter(at)) {
+                return null; // 그 워치가 다른 사람에게 옮겨 갔다
+            }
+        }
+        HistoricalWatchNameRow watchName = latestWatchName(last.deviceId(), endedAt.minusNanos(1), watchNamesByDevice);
+        if (watchName == null || watchName.displayName() == null) {
+            return null;
+        }
+        return new ResolvedHistoricalName(watchName.displayName(), SOURCE_WATCH_DEVICE);
     }
 
     private static Set<String> connectedComponent(String start, List<HistoricalMergeEdge> edges, Instant upToInclusive) {

@@ -47,7 +47,9 @@ import tools.jackson.databind.ObjectMapper;
  * </ol>
  * 배정은 시간이 지나도 풀지 않으며(Re-ID 로 원래 ID 가 다시 보이면 그대로 유지), 관리자 수동 배정(MANUAL, 확정된 것)이 걸린 워치·World ID 는
  * 그 World ID 가 보이는 동안 대조가 건드리지 않는다. 배정된 World ID 가 지금 보이지 않을 때(>10초 미관측, 수동 확정 포함)만 새 후보(걸음 대조 또는
- * 시연 스위치 1명 자동 배정)가 옛 행을 REPLACED 로 닫고 갈아 끼울 수 있다(S15P31A101-826). 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
+ * 시연 스위치 1명 자동 배정)가 옛 행을 REPLACED 로 닫고 갈아 끼울 수 있다(S15P31A101-826). 시연 스위치가 켜져 있고 확정 사람이 1명인 동안
+ * 시연 워치의 배정은 반대 근거(MATCH_LOST)로 끊지 않고, 배정이 없으면 반대 근거가 있어도 바로 다시 잇는다(S15P31A101-857).
+ * 모든 상태는 한 스레드(watch-match)에서만 바꾼다.
  */
 @Service
 public class WatchMotionMatcher implements DisposableBean {
@@ -137,6 +139,8 @@ public class WatchMotionMatcher implements DisposableBean {
         double lastY = Double.NaN;
         int revision = -1;
         long suspectUntil;
+        /** 마지막 프레임의 track_lifecycle 이 TENTATIVE(Tier 0 가 아직 확정하지 않은 트랙)인가. 시연 1명 판정에서 세지 않는다(S15P31A101-857) */
+        boolean tentative;
     }
 
     private static final class Window {
@@ -302,6 +306,7 @@ public class WatchMotionMatcher implements DisposableBean {
                 identityChanged(id);
             }
             buf.revision = revision;
+            buf.tentative = "TENTATIVE".equals(track.path("track_lifecycle").asString(""));
             // 병합: 합쳐진 옛 ID 의 배정은 끝낸다. 분할: 원래 ID 와 새 ID 모두 잠시 잇지 않는다
             // 병합(S15P31A101-508): 옛 ID 에 걸린 배정(MOTION_MATCH·MANUAL)은 살아남은 ID 로 옮긴다. 같은 사람의 트랙 조각이 합쳐진 것이고
             // 12차에서 ID 가 자주 바뀌어 매번 풀리면 워치가 쓸모없어서다. 옮긴 배정은 의심 구간 없이 이어 가고 옛 점수를 같이 옮긴다.
@@ -545,10 +550,13 @@ public class WatchMotionMatcher implements DisposableBean {
             }
         });
         Map<String, String> accepted = assign(rows, cols);
+        // 시연 1명·워치 1개(S15P31A101-857): 확정 사람이 1명인 동안 시연 워치의 대조 배정은 반대 근거로 끊지 않는다
+        String demo = demoDevice;
+        String soleWorld = demo == null ? null : soleConfirmedWorld(now);
 
         // 배정은 시간이 지나도 풀지 않는다(Re-ID 로 원래 ID 가 다시 보이면 그대로 유지, S15P31A101-826).
         // 경쟁 짝이 뽑혔으면 아래 bindByMotion 이 옛 행을 REPLACED 로 닫고 새 행을 넣는다.
-        // 경쟁이 없을 때는 ID 교정 직후이거나 점수가 유지 문턱 아래로 떨어진 경우에만 MATCH_LOST 로 푼다.
+        // 경쟁이 없을 때는 ID 교정 직후이거나 점수가 유지 문턱 아래로 떨어진 경우에만 MATCH_LOST 로 푼다(시연 1명·워치 1개 동안은 풀지 않음, -857).
         Set<String> acceptedWorlds = new HashSet<>(accepted.values());
         for (Map.Entry<String, Binding> e : motion.entrySet()) {
             String device = e.getKey();
@@ -580,6 +588,11 @@ public class WatchMotionMatcher implements DisposableBean {
             if (contested) {
                 continue;
             }
+            if (!suspect && device.equals(demo) && world.equals(soleWorld)) {
+                // 시연 1명·워치 1개 동안에는 손목과 몸이 어긋나는 순간(진입·낙상)의 반대 근거로 끊지 않는다(S15P31A101-857).
+                // 끊으면 그 순간 난 경보가 「작업자 #N」으로 남는다. 2명 이상이 되면 위 규칙(유지 문턱·반대 근거)으로 돌아간다
+                continue;
+            }
             bindings.unbindMotion(device, world, "MATCH_LOST");
         }
         accepted.forEach((device, world) -> {
@@ -589,7 +602,7 @@ public class WatchMotionMatcher implements DisposableBean {
                         String.format("%.2f", score(device, world)), replaceId == null ? "" : " (사라진 수동 배정 교체)");
             }
         });
-        bindDemoSingleIfEligible(now);
+        bindDemoSingleIfEligible(now, soleWorld);
         writeChannelStates(now);
         // 이번 대조가 잇고 푼 결과까지 반영한 배정 목록을 자리 이어받기가 쓴다(다음 대조까지 2초 동안 옛 목록으로 보지 않게)
         Map<String, Binding> latest = new HashMap<>();
@@ -609,35 +622,39 @@ public class WatchMotionMatcher implements DisposableBean {
     }
 
     /**
-     * 시연 스위치 1명 자동 배정(S15P31A101-826): simai.watch.demo-device 가 켜져 있고, LIVE 추적 사람이 정확히 1명이며
-     * 그 트랙이 5초 넘게 이어졌을 때, 시연 워치에 배정이 없거나 기존 배정의 World ID 가 지금 보이지 않으면(>10초 미관측, 수동 확정 포함)
-     * 시연 워치를 그 World ID 에 잇는다(DEMO_SINGLE, 임시 성격, 기존 배정은 REPLACED 로 닫음).
-     * 사람이 2명 이상이거나, 걸음 대조가 이미 반대 근거(음수)를 냈거나, ID 교정 직후면 잇지 않는다.
+     * 최근 3초({@link #TRACK_STALE_MS}) 안에 보인 확정 트랙(TENTATIVE 제외)이 꼭 하나면 그 World ID, 없거나 둘 이상이면 null(S15P31A101-857).
+     * Tier 0 가 아직 확정하지 않은 잠깐의 유령 트랙 하나로 시연 1명 조건이 깨지지 않게 TENTATIVE 는 세지 않는다
      */
-    private boolean bindDemoSingleIfEligible(long now) {
-        String demo = demoDevice;
-        if (demo == null) {
-            return false;
-        }
-        String soleWorld = null;
-        Track soleTrack = null;
+    private String soleConfirmedWorld(long now) {
+        String sole = null;
         for (Map.Entry<String, Track> e : tracks.entrySet()) {
             Track t = e.getValue();
-            if (t.lastSeen >= now - TRACK_STALE_MS) {
-                if (soleWorld != null) {
-                    return false; // 2명 이상이면 걸음 대조에 맡긴다
+            if (t.lastSeen >= now - TRACK_STALE_MS && !t.tentative) {
+                if (sole != null) {
+                    return null; // 2명 이상이면 걸음 대조에 맡긴다
                 }
-                soleWorld = e.getKey();
-                soleTrack = t;
+                sole = e.getKey();
             }
         }
-        if (soleWorld == null || soleTrack.firstSeen < 0 || soleTrack.lastSeen - soleTrack.firstSeen <= DEMO_SINGLE_MIN_MS
-                || soleTrack.suspectUntil > now) {
+        return sole;
+    }
+
+    /**
+     * 시연 스위치 1명 자동 배정(S15P31A101-826): simai.watch.demo-device 가 켜져 있고, 확정 사람이 정확히 1명이며
+     * 그 트랙이 5초 넘게 이어졌을 때, 시연 워치에 배정이 없거나 기존 배정의 World ID 가 지금 보이지 않으면(>10초 미관측, 수동 확정 포함)
+     * 시연 워치를 그 World ID 에 잇는다(DEMO_SINGLE, 기존 배정은 REPLACED 로 닫음).
+     * 사람이 2명 이상이거나 ID 교정 직후면 잇지 않는다. 걸음 대조 반대 근거(음수)가 있어도 잇는다(S15P31A101-857): 1명인 동안은
+     * 반대 근거로 끊지 않으므로 붙였다 뗐다 하는 진동이 없고, 2명에서 1명으로 돌아왔을 때 바로 다시 붙어야 한다.
+     */
+    private boolean bindDemoSingleIfEligible(long now, String soleWorld) {
+        String demo = demoDevice;
+        if (demo == null || soleWorld == null) {
             return false;
         }
-        Double evidence = scores.getOrDefault(demo, Map.of()).get(soleWorld);
-        if (evidence != null && evidence < 0) {
-            return false; // 걸음 대조 반대 근거로 풀린 직후 다시 잇지 않는다
+        Track soleTrack = tracks.get(soleWorld);
+        if (soleTrack == null || soleTrack.firstSeen < 0 || soleTrack.lastSeen - soleTrack.firstSeen <= DEMO_SINGLE_MIN_MS
+                || soleTrack.suspectUntil > now) {
+            return false;
         }
         Long replaceableBindingId = null;
         for (Binding b : bindings.active()) {

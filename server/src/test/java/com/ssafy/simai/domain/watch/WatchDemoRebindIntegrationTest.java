@@ -48,8 +48,10 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>사라진 지 10초(TRACK_GONE_MS) 이내에는 갈아 끼우지 않고, 10초가 지나 보이지 않게 된 뒤에 갈아 끼운다</li>
  * <li>2명 이상이거나, 트랙이 5초 이하이거나, 시연 스위치가 꺼져 있으면 시연 잇기·갈아 끼우기를 하지 않는다</li>
  * <li>시연 스위치가 꺼져 있어도 배정 ID 가 안 보이는 동안 걸음 대조가 맞는 새 후보를 찾으면 수동 배정도 MOTION_MATCH 로 갈아 끼운다</li>
- * <li>DEMO_SINGLE 배정은 임시 성격이라 걸음 대조 반대 근거로 MATCH_LOST 해제되며 바로 재결합하지 않고,
- *     같은 리듬으로 걸으면 MOTION_MATCH 로 승격된다</li>
+ * <li>시연 1명·워치 1개 동안에는 DEMO_SINGLE 배정이 걸음 대조 반대 근거로 풀리지 않고, 같은 리듬으로 걸으면 MOTION_MATCH 로
+ *     승격된다(S15P31A101-857)</li>
+ * <li>11-23 리허설 재현(S15P31A101-857): 1명인 동안 승격된 MOTION_MATCH 도 반대 근거·TENTATIVE 유령 트랙에 끊기지 않고,
+ *     2명이 되면 기존처럼 MATCH_LOST 로 풀리며, 다시 1명이 되면 반대 근거가 남아 있어도 바로 DEMO_SINGLE 로 다시 붙는다</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -59,13 +61,18 @@ class WatchDemoRebindIntegrationTest {
     private static final int FEED_BATCH = WatchMotionMatcher.MAX_PENDING_WORLD / 2;
     private static final String PASSWORD = "demo-rebind-password";
 
-    private record Person(String worldId, double x, double y, Double freq, double phase) {
+    private record Person(String worldId, double x, double y, Double freq, double phase, String lifecycle) {
         static Person still(String worldId, double x, double y) {
-            return new Person(worldId, x, y, null, 0);
+            return new Person(worldId, x, y, null, 0, "CONFIRMED");
         }
 
         static Person walking(String worldId, double x, double y, double freq, double phase) {
-            return new Person(worldId, x, y, freq, phase);
+            return new Person(worldId, x, y, freq, phase, "CONFIRMED");
+        }
+
+        /** Tier 0 가 아직 확정하지 않은 잠깐의 유령 트랙(TENTATIVE) */
+        static Person ghost(String worldId, double x, double y) {
+            return new Person(worldId, x, y, null, 0, "TENTATIVE");
         }
     }
 
@@ -342,8 +349,8 @@ class WatchDemoRebindIntegrationTest {
     }
 
     @Test
-    void 시연_자동_배정은_임시_성격이라_반대_근거로_풀리고_재결합하지_않으며_걸음이_맞으면_MOTION_MATCH_로_승격된다() throws Exception {
-        // 1) 반대 근거로 풀림: 서 있는 사람에게 DEMO_SINGLE 배정 후 워치가 걷는 창을 보내면 MATCH_LOST 로 풀리고 다시 붙지 않는다
+    void 시연_자동_배정은_1명인_동안_반대_근거로_풀리지_않고_걸음이_맞으면_MOTION_MATCH_로_승격된다() throws Exception {
+        // 1) 1명·워치 1개: 서 있는 사람에게 DEMO_SINGLE 배정 후 워치가 걷는 창(반대 근거)을 보내도 풀리지 않는다(S15P31A101-857)
         Watch watch = connect(watchDemo, tokenDemo);
         watch.next("watch_binding_notice"); // 초기 UNBOUND
         matcher.setDemoDevice(watchDemo);
@@ -360,13 +367,10 @@ class WatchDemoRebindIntegrationTest {
         assertThat(waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id = ?", watchDemo) >= 3, 15_000))
                 .as("걸음 특징 저장").isTrue();
         matcher.matchNow();
-        assertThat(activeWorld(watchDemo)).as("반대 근거로 풀리고 바로 재결합하지 않음").isNull();
-        assertThat(jdbc.queryForList("""
-                SELECT method || ':' || coalesce(unbind_reason, '-') FROM watch_binding WHERE device_id = ? ORDER BY binding_id
-                """, String.class, watchDemo)).containsExactly("DEMO_SINGLE:MATCH_LOST");
-        // 한 번 더 돌려도 음수 점수가 남아 있는 동안 다시 잇지 않는다
         matcher.matchNow();
-        assertThat(activeWorld(watchDemo)).isNull();
+        assertThat(activeWorld(watchDemo)).as("1명인 동안 반대 근거로 풀리지 않음").isEqualTo(stillId);
+        assertThat(bindingRows()).containsExactly("DEMO_SINGLE:-");
+        assertThat(watch.none("watch_binding_notice")).as("붙였다 뗐다 알림 없음").isTrue();
 
         // 2) 같은 리듬으로 걸으면 MOTION_MATCH 로 승격된다
         matcher.resetForTest();
@@ -393,7 +397,68 @@ class WatchDemoRebindIntegrationTest {
         assertThat(watch2.none("watch_binding_notice")).as("같은 World ID 승격은 알림 반복 없음").isTrue();
     }
 
+    @Test
+    void 리허설_재현_1명인_동안_승격된_배정도_끊기지_않고_2명이면_풀리며_다시_1명이면_바로_붙는다() throws Exception {
+        // 11-23 16:42 리허설(S15P31A101-857): 트랙은 하나인데 DEMO_SINGLE → MOTION_MATCH 승격 → 손목·몸 어긋남(진입·낙상)에 MATCH_LOST
+        // → DEMO_SINGLE → MATCH_LOST → (반대 근거가 남아 10초 공백) → … 로 붙였다 뗐다 했다
+        Watch watch = connect(watchDemo, tokenDemo);
+        watch.next("watch_binding_notice"); // 초기 UNBOUND
+        matcher.setDemoDevice(watchDemo);
+        String actor = world("actor");
+        String other = world("other");
+
+        // 1) 0~6초 혼자 걸음 → DEMO_SINGLE, 6~20초 같은 리듬으로 걸음 → MOTION_MATCH 승격(행 51·52)
+        Person walking = Person.walking(actor, 1.0, 1.0, 1.9, 0.7);
+        feed(0, 6_000, walking);
+        matcher.matchNow();
+        assertThat(activeWorld(watchDemo)).isEqualTo(actor);
+        feed(6_000, 20_000, walking);
+        sendGaits(watch, 6_000, 20_000, 1.9, 0.7, 6);
+        matcher.matchNow();
+        assertThat(bindingRows()).containsExactly("DEMO_SINGLE:REPLACED", "MOTION_MATCH:-");
+
+        // 2) 20~34초 몸은 멈췄는데 손목(워치)은 걷는 창 → 누적 점수가 음수로 떨어진다. 30~34초에는 TENTATIVE 유령 트랙도 잠깐 보인다.
+        //    예전에는 여기서 MATCH_LOST(행 52)가 났다. 1명·워치 1개 동안은 끊지 않는다
+        feed(20_000, 30_000, Person.still(actor, 1.0, 1.0));
+        feed(30_000, 34_000, Person.still(actor, 1.0, 1.0), Person.ghost(world("ghost"), 3.0, 3.0));
+        sendGaits(watch, 20_000, 34_000, 1.8, 0.0, 12);
+        matcher.matchNow();
+        matcher.matchNow();
+        assertThat(activeWorld(watchDemo)).isEqualTo(actor);
+        assertThat(bindingRows()).as("반대 근거·유령 트랙에도 끊기지 않음").containsExactly("DEMO_SINGLE:REPLACED", "MOTION_MATCH:-");
+
+        // 3) 34~38초 확정 사람이 2명 → 기존 규칙대로 걸음 대조가 판단해 반대 근거로 MATCH_LOST
+        feed(34_000, 38_000, Person.still(actor, 1.0, 1.0), Person.still(other, 4.0, 1.0));
+        matcher.matchNow();
+        assertThat(activeWorld(watchDemo)).isNull();
+        assertThat(bindingRows()).containsExactly("DEMO_SINGLE:REPLACED", "MOTION_MATCH:MATCH_LOST");
+
+        // 4) 38~42초 다른 사람이 나가 다시 1명 → 반대 근거가 남아 있어도 바로 DEMO_SINGLE 로 다시 붙는다(예전 10초 공백의 원인)
+        feed(38_000, 42_000, Person.still(actor, 1.0, 1.0));
+        matcher.matchNow();
+        assertThat(activeWorld(watchDemo)).isEqualTo(actor);
+        assertThat(bindingRows()).containsExactly("DEMO_SINGLE:REPLACED", "MOTION_MATCH:MATCH_LOST", "DEMO_SINGLE:-");
+        matcher.matchNow();
+        assertThat(bindingRows()).as("다시 붙은 뒤에도 끊기지 않음")
+                .containsExactly("DEMO_SINGLE:REPLACED", "MOTION_MATCH:MATCH_LOST", "DEMO_SINGLE:-");
+    }
+
     // ------------------------------------------------------------------ 도우미
+
+    private List<String> bindingRows() {
+        return jdbc.queryForList("""
+                SELECT method || ':' || coalesce(unbind_reason, '-') FROM watch_binding WHERE device_id = ? ORDER BY binding_id
+                """, String.class, watchDemo);
+    }
+
+    /** 시연 워치로 [from, to) 안의 4초 창을 2초 간격으로 보내고, 지금까지 저장된 창이 stored 개가 될 때까지 기다린다 */
+    private void sendGaits(Watch watch, long from, long to, double freq, double phase, int stored) throws Exception {
+        for (long start = from; start + 4_000 <= to; start += 2_000) {
+            watch.send(gait(watchDemo, t0 + start, freq, phase, true));
+        }
+        assertThat(waitUntil(() -> count("SELECT count(*) FROM watch_feature WHERE device_id = ?", watchDemo) >= stored, 15_000))
+                .as("걸음 특징 저장").isTrue();
+    }
 
     private String world(String name) {
         return "wdr-" + name + "-" + tag;
@@ -425,7 +490,7 @@ class WatchDemoRebindIntegrationTest {
             double wristZ = moving ? 1.0 + Math.sin(w * sec + person.phase()) / (w * w) : 1.0;
             ObjectNode tr = tracks.addObject();
             tr.put("world_id", person.worldId());
-            tr.put("track_lifecycle", "CONFIRMED");
+            tr.put("track_lifecycle", person.lifecycle());
             tr.put("identity_revision", 0);
             tr.putArray("position_xy").add(person.x()).add(person.y());
             tr.putArray("velocity").add(moving ? 1.0 : 0.0).add(0.0).add(0.0);
