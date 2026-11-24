@@ -18,6 +18,7 @@ import {
   type SetupSessionResponse,
   type SetupZoneDraftsResponse,
   type SetupZoneDraftsResponseInput,
+  type ZoneDraftAdjustment,
   type ZoneDraftItemInput,
 } from '@/features/setup/types';
 import {
@@ -253,6 +254,66 @@ export function buildSetupZoneDraftsResponse(
     completed_at_ms: 1_793_690_011_840,
     drafts: buildDefaultZoneDraftItems(),
     ...overrides,
+  });
+}
+
+/** 조정 정보 예시의 구역 본문(이름·모양·높이만 고르고 나머지는 개구부 구역 값). */
+const adjustmentExample = (
+  zone: Pick<ZoneDraftAdjustment, 'zone_id' | 'name' | 'polygon_xy' | 'z_min_m' | 'z_max_m'>,
+): ZoneDraftAdjustment => ({
+  zone_version: 1,
+  zone_kind: 'OPENING',
+  eval_type: 'VOLUME_3D',
+  severity: 'CRITICAL',
+  has_guardrail: null,
+  requirements: null,
+  surface: null,
+  ...zone,
+});
+
+/**
+ * 이전 맵 재사용 초안 응답의 조정 정보 예시(S15P31A101-864). 개발 서버: 지난 세팅에서 사람이 기본 개구부 초안(1.6×0.8 m)의 구역을 2.8×2.0 m
+ * 로 키웠다. 목업 빌드: 시연 맵의 「단상 개구부」 구역(z-04, 2.4×2.3 m·높이 0~1.4 m)이 시연 개구부 초안에서 왔다.
+ */
+export const REUSE_ADJUSTMENT_EXAMPLE = {
+  dev: adjustmentExample({
+    zone_id: 'z-reuse-adjusted',
+    name: '창가 개구부 1',
+    polygon_xy: [
+      [6.4, 7.4],
+      [9.2, 7.4],
+      [9.2, 9.4],
+      [6.4, 9.4],
+    ],
+    z_min_m: 0,
+    z_max_m: 2.4,
+  }),
+  mockBuild: adjustmentExample({
+    zone_id: 'z-04',
+    name: '단상 개구부',
+    polygon_xy: [
+      [5.2, 2.25],
+      [7.6, 2.25],
+      [7.6, 4.55],
+      [5.2, 4.55],
+    ],
+    z_min_m: 0,
+    z_max_m: 1.4,
+  }),
+} as const;
+
+/** 응답의 첫 개구부 초안에 조정 정보를 붙인다(서버 SetupService.getZoneDrafts 처럼, 초안 값 자체는 그대로). */
+export function withReuseAdjustment(
+  response: SetupZoneDraftsResponse,
+  adjustment: ZoneDraftAdjustment,
+): SetupZoneDraftsResponse {
+  const index = response.drafts.findIndex((d) => d.candidate_kind === 'OPENING');
+  if (index < 0) return response;
+  return setupZoneDraftsResponseSchema.parse({
+    ...response,
+    drafts: response.drafts.map((d, i) =>
+      i === index ? { ...d, adjusted_from_previous: adjustment } : d,
+    ),
   });
 }
 
@@ -974,6 +1035,32 @@ export function createSetupMock(options: SetupMockOptions = {}) {
     });
   }
 
+  /**
+   * 서버처럼(SetupService.getZoneDrafts, S15P31A101-844) 이전 맵 재사용 세션은 초안 작업이 돌지 않아 그 맵을 만든 세팅의 초안을 돌려준다.
+   * 원 세션 초안을 시험이 정해 두었으면(setZoneDrafts) 그것을 그대로, 아니면 기본 초안(목업 빌드는 시연 개구부 초안)을 원 세션 것으로
+   * 만들고 조정 정보 예시를 붙인다(S15P31A101-864). 재사용 세션이 아니면 null.
+   */
+  function reuseDrafts(session: SetupSessionResponse): SetupZoneDraftsResponse | null {
+    const sourceId = session.reuse_source?.setup_session_id ?? null;
+    if (sourceId === null) return null;
+    const source =
+      zoneDraftsBySession.get(sourceId) ??
+      (import.meta.env.VITE_MOCK_BUILD === 'true'
+        ? withReuseAdjustment(demoZoneDrafts(sourceId), REUSE_ADJUSTMENT_EXAMPLE.mockBuild)
+        : withReuseAdjustment(
+            buildSetupZoneDraftsResponse(sourceId, {
+              site_id: session.site_id,
+              calibration_version: session.calibration_version ?? 'cal-8',
+            }),
+            REUSE_ADJUSTMENT_EXAMPLE.dev,
+          ));
+    return {
+      ...source,
+      setup_session_id: session.setup_session_id,
+      draft_source_setup_session_id: sourceId,
+    };
+  }
+
   function setZoneDrafts(
     sessionId: string,
     overrides: Partial<SetupZoneDraftsResponseInput>,
@@ -1435,22 +1522,8 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return HttpResponse.json(existing);
       }
 
-      // 서버처럼(SetupService.getZoneDrafts, S15P31A101-844) 이전 맵 재사용 세션은 초안 작업이 돌지 않아 그 맵을 만든 세팅의 초안을
-      // 돌려준다. 원 세션 초안을 시험이 정해 두었으면(setZoneDrafts) 그것을, 아니면 기본 초안을 원 세션 것으로 만든다
-      const sourceId = session.reuse_source?.setup_session_id ?? null;
-      if (sourceId !== null && import.meta.env.VITE_MOCK_BUILD !== 'true') {
-        const source =
-          zoneDraftsBySession.get(sourceId) ??
-          buildSetupZoneDraftsResponse(sourceId, {
-            site_id: session.site_id,
-            calibration_version: session.calibration_version ?? 'cal-8',
-          });
-        return HttpResponse.json({
-          ...source,
-          setup_session_id: id,
-          draft_source_setup_session_id: sourceId,
-        });
-      }
+      const reuse = reuseDrafts(session);
+      if (reuse) return HttpResponse.json(reuse);
 
       const built =
         import.meta.env.VITE_MOCK_BUILD === 'true'
@@ -1538,7 +1611,16 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       }
       if (cameraCheckBlocks(session)) return cameraCheckProblem();
       if (session.mode === 'REUSE' && !zonePlans.has(id)) {
-        const items = (isDemoUser(user.id) ? [] : liveZones()).map((zone) => ({
+        // 서버(SetupZoneReuseSeed, -844·-864)처럼 다시 보일 초안에서 온 구역(조정 정보의 구역)은 채우지 않는다
+        const fromDrafts = new Set(
+          (reuseDrafts(session)?.drafts ?? []).flatMap((d) =>
+            d.adjusted_from_previous ? [d.adjusted_from_previous.zone_id] : [],
+          ),
+        );
+        const live = isDemoUser(user.id)
+          ? []
+          : liveZones().filter((z) => !fromDrafts.has(z.zone_id));
+        const items = live.map((zone) => ({
           zone_id: zone.zone_id,
           source: 'MANUAL',
           candidate_id: null,

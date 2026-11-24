@@ -7,7 +7,12 @@ import {
   CameraVideoPanel,
 } from '@/features/setup/SetupPanels';
 import { setupSessionResponseSchema, type CoverageGuidesResponse } from '@/features/setup/types';
-import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
+import {
+  buildCoverageGuidePayload,
+  buildSetupZoneDraftsResponse,
+  REUSE_ADJUSTMENT_EXAMPLE,
+  withReuseAdjustment,
+} from '@/mocks/setup';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -226,6 +231,35 @@ describe('AI 위험 구역 초안 패널', () => {
       }),
     });
     expect(screen.getByText('AI 구역 초안 분석 중')).toBeTruthy();
+  });
+
+  it('지난 세팅에서 사람이 고친 구역이 붙은 초안은 「지난 세팅에서 크기 조정」과 고친 이름·크기를 보이고 그대로 수락한다(S15P31A101-864)', () => {
+    const fromSource = { setup_session_id: 'reuse-1', draft_source_setup_session_id: 'new-1' };
+    const { onAcceptDraft } = renderDrafts({
+      draftsResponse: withReuseAdjustment(
+        buildSetupZoneDraftsResponse('new-1', fromSource),
+        REUSE_ADJUSTMENT_EXAMPLE.dev,
+      ),
+    });
+    const list = screen.getByRole('list', { name: 'AI 구역 초안 목록' });
+    const card = within(list).getAllByRole('listitem')[0]!;
+    expect(within(card).getByText('창가 개구부 1')).toBeTruthy();
+    expect(within(card).queryByText('창가 개구부 추락 주의')).toBeNull();
+    expect(within(card).getByLabelText('창가 개구부 1 지난 세팅에서 크기 조정')).toBeTruthy();
+    expect(
+      within(card).getByText('지난 세팅에서 고친 크기(2.8×2.0 m, 높이 0.0~2.4 m)로 만들어요.'),
+    ).toBeTruthy();
+    expect(within(card).getByText('높이 범위 0.0~2.4m · 신뢰도 86%')).toBeTruthy();
+    // 조정 정보가 없는 초안(작업면 후보)은 꼬리표가 없다
+    const other = within(list).getAllByRole('listitem')[1]!;
+    expect(within(other).queryByText('지난 세팅에서 크기 조정')).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: '창가 개구부 1 수락' }));
+    expect(onAcceptDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate_id: 'cand-opening-1',
+        adjusted_from_previous: expect.objectContaining({ zone_id: 'z-reuse-adjusted' }),
+      }),
+    );
   });
 
   it('같은 자리의 이전 구역과 묶인 초안은 목록에서 감추고 「이어 쓴 구역 확인」에서 고른다고 알린다', () => {

@@ -14,6 +14,7 @@ import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.work.WorkStarted;
 import com.ssafy.simai.domain.work.WorkUnitRepository;
+import com.ssafy.simai.domain.zone.SetupZoneReuseSeed;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.ResultSet;
@@ -138,15 +139,17 @@ public class SetupService {
     private final SetupReuseCheck reuseCheck;
     private final ReplayTestSwitch replayTest;
     private final SetupDemoAccounts demoAccounts;
+    private final SetupZoneReuseSeed reuseSeed;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
             ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
             ConfigBundleService configs, SceneActivationService scenes, SetupWaitReasonReader waitReasons,
             SetupSupplementService supplements, SceneCompatibility compatibility, WorkUnitRepository workUnits,
             SetupZoneOpinions opinions, SetupReuseCheck reuseCheck, ReplayTestSwitch replayTest,
-            SetupDemoAccounts demoAccounts) {
+            SetupDemoAccounts demoAccounts, SetupZoneReuseSeed reuseSeed) {
         this.jdbc = jdbc;
         this.demoAccounts = demoAccounts;
+        this.reuseSeed = reuseSeed;
         this.replayTest = replayTest;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -425,6 +428,9 @@ public class SetupService {
      * 한 NEW 세션)의 초안을 그대로 돌려준다(S15P31A101-844). 같은 맵·같은 보정 내용(재사용이 다시 낸 보정은 content_hash 가 같다)이라 World 좌표가
      * 그대로 맞다. 응답 setup_session_id 는 요청한 세션, draft_source_setup_session_id 는 초안을 만든 세션이다(보통은 같다). 원 세션의 초안 기록은
      * 바꾸지 않는다(읽기만). 원 세션에도 초안 작업이 없으면 NOT_REQUESTED 이고, 재사용 세션에서는 새로 돌지 않으므로 화면은 기다리지 않는다.
+     * <p>재사용 세션에서 그 맵의 구역 중 이 초안에서 온 구역(수락 기록 또는 초안을 대부분 품음, {@link SetupZoneReuseSeed#draftAdjustments})이
+     * 있으면 그 초안에 adjusted_from_previous(구역의 그 맵 때 모양·이름·심각도 등)를 붙인다(S15P31A101-864). 그 구역은 「사용자 추가 구역」
+     * 채우기에서 빠지고, 화면은 이 칸이 있으면 카드에 조정한 모양을 보이고 수락할 때 그 모양으로 만든다. 초안 행은 바꾸지 않는다.
      */
     public ObjectNode getZoneDrafts(UUID setupSessionId) {
         String siteId = sites.siteId();
@@ -436,6 +442,8 @@ public class SetupService {
                 .stream().findFirst().orElse(null);
         UUID draftSessionId = reuseSource == null ? setupSessionId : reuseSource;
         SessionRow session = reuseSource == null ? requested : findForUpdateOrView(siteId, reuseSource, false);
+        Map<String, ObjectNode> adjustments = reuseSource == null
+                ? Map.of() : reuseSeed.draftAdjustments(siteId, reuseSource, session.calibrationVersion());
         List<ObjectNode> runs = jdbc.query("""
                 SELECT draft_run_id, job_id, calibration_version, preview_scene_version, status,
                        model_version, prompt_version, latency_ms, error_code, error_message,
@@ -515,6 +523,10 @@ public class SetupService {
                     d.putNull("confidence");
                 } else {
                     d.put("confidence", (double) conf);
+                }
+                ObjectNode adjusted = adjustments.get(dRs.getString("candidate_id"));
+                if (adjusted != null) {
+                    d.set("adjusted_from_previous", adjusted.deepCopy());
                 }
             });
             return run;

@@ -24,7 +24,12 @@ import {
   type SetupTone,
   type Step1CoverageView,
 } from '@/features/setup/setup';
-import { draftReason, draftsFromReuseSource } from '@/features/setup/setupUx';
+import {
+  DRAFT_ADJUSTED_LABEL,
+  draftAdjustmentText,
+  draftReason,
+  draftsFromReuseSource,
+} from '@/features/setup/setupUx';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { useAimReferenceImages } from '@/features/setup/useAimReferenceImages';
@@ -680,6 +685,7 @@ export function AiZoneDraftsPanel({
             const name = cameraText(cameraIds, item.recommended_name);
             const isAccepted = acceptedDraftIds.includes(item.candidate_id);
             const isNoOpinion = item.no_opinion;
+            const adjustedText = draftAdjustmentText(item);
             return (
               <li
                 key={item.candidate_id}
@@ -706,6 +712,14 @@ export function AiZoneDraftsPanel({
                       </Badge>
                     ) : (
                       <SeverityBadge severity={item.recommended_severity} />
+                    )}
+                    {adjustedText && (
+                      <Badge
+                        aria-label={`${name} ${DRAFT_ADJUSTED_LABEL}`}
+                        className="h-auto rounded bg-surface-3 px-1.5 py-0.5 text-[11px] font-semibold text-foreground"
+                      >
+                        {DRAFT_ADJUSTED_LABEL}
+                      </Badge>
                     )}
                   </div>
                   {isAccepted ? (
@@ -746,6 +760,9 @@ export function AiZoneDraftsPanel({
                 </div>
 
                 <p className="text-xs break-keep text-muted-foreground">{draftReason(item)}</p>
+                {adjustedText && (
+                  <p className="text-xs break-keep text-foreground">{adjustedText}</p>
+                )}
                 <details aria-label={`${name} 근거 자세히`}>
                   <summary className="cursor-pointer text-muted-foreground">자세히</summary>
                   <p className="mt-2">{cameraText(cameraIds, item.rationale)}</p>

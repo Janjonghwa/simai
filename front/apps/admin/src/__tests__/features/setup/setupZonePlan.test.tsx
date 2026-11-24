@@ -1,6 +1,6 @@
 import { demoZoneDrafts } from '@/features/demo/demoZoneDrafts';
 import { createSetupSession, requestSetupZonePlan } from '@/features/setup/api';
-import { draftZoneFootprint } from '@/features/setup/draftZone';
+import { draftCreateRequest, draftZoneFootprint } from '@/features/setup/draftZone';
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import {
   applyCommitToPlan,
@@ -47,7 +47,11 @@ import { readZones, toViewerZones } from '@/features/zones/zones';
 import { ZoneSourceContext } from '@/features/zones/zoneSource';
 import { api } from '@/lib/api';
 import { problem } from '@/mocks/problem';
-import { buildDefaultZoneDraftItems, createSetupMock } from '@/mocks/setup';
+import {
+  buildDefaultZoneDraftItems,
+  createSetupMock,
+  REUSE_ADJUSTMENT_EXAMPLE,
+} from '@/mocks/setup';
 import { createZonesMock, MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -443,6 +447,97 @@ describe('세팅 구역 단계의 저장', () => {
     expect(setupMock.zoneDraftsBySession.get('map-new-1')?.drafts).toHaveLength(1);
     expect(setupMock.zonePlans.has('map-new-1')).toBe(false);
     await waitFor(() => expect(result.current.accept.acceptedIds).toContain(opening!.candidate_id));
+  });
+  it('지난 세팅에서 사람이 고친 구역이 붙은 재사용 초안은 그 모양·이름·심각도로 수락해 AI 항목이 된다(S15P31A101-864)', async () => {
+    const sessionId = await readySession({
+      mode: 'REUSE',
+      reuse_source: { setup_session_id: 'map-new-1', scene_version: 'scene-map-1' },
+    });
+    const { result } = renderHook(
+      () => {
+        const drafts = useSetupZoneDrafts(sessionId);
+        return {
+          drafts,
+          accept: useAcceptZoneDraft(drafts.data?.drafts ?? [], undefined, { sessionId }),
+        };
+      },
+      { wrapper: wrapperFor(sessionId) },
+    );
+    // 개발 목업은 원 세션 기본 초안의 개구부에 조정 정보 예시를 붙인다
+    await waitFor(() => expect(result.current.drafts.data?.drafts.length).toBeGreaterThan(0));
+    const opening = result.current.drafts.data!.drafts.find(
+      (d) => d.candidate_id === 'cand-opening-1',
+    )!;
+    const adjusted = REUSE_ADJUSTMENT_EXAMPLE.dev;
+    expect(opening.adjusted_from_previous).toEqual(adjusted);
+    // 카드·3D 는 고친 모양을 쓰고, 근거 글은 AI 값 그대로다
+    expect(opening.recommended_name).toBe('창가 개구부 1');
+    expect(opening.polygon_xy).toEqual(adjusted.polygon_xy);
+    expect(opening.z_max_m).toBe(2.4);
+    expect(draftZoneFootprint(opening).polygon).toEqual(adjusted.polygon_xy);
+    await act(async () => {
+      await result.current.accept.accept(opening);
+    });
+    expect(result.current.accept.failure).toBeNull();
+    const plan = await requestSetupZonePlan(api, sessionId);
+    expect(plan.items).toEqual([
+      expect.objectContaining({
+        zone_id: null,
+        source: 'AI',
+        candidate_id: 'cand-opening-1',
+        zone: {
+          name: '창가 개구부 1',
+          zone_kind: 'OPENING',
+          eval_type: 'VOLUME_3D',
+          polygon_xy: adjusted.polygon_xy,
+          z_min_m: 0,
+          z_max_m: 2.4,
+          severity: 'CRITICAL',
+          has_guardrail: null,
+          requirements: null,
+        },
+        surface: null,
+      }),
+    ]);
+    await waitFor(() => expect(result.current.accept.acceptedIds).toContain('cand-opening-1'));
+  });
+
+  it('조정 정보의 작업면·난간·요구 조건도 그대로 만들고, 같은 이름의 활성 구역이 있으면 구분자를 붙인다(S15P31A101-864)', () => {
+    const [opening] = buildDefaultZoneDraftItems();
+    const surface = {
+      kind: 'WORK_SURFACE' as const,
+      name: '작업대',
+      obb: {
+        center: [5, 1, 0.45] as [number, number, number],
+        size: [1, 1, 0.9] as [number, number, number],
+        yaw_rad: 0,
+      },
+      top_height_m: 0.9,
+      top_height_sigma_m: null,
+    };
+    const draft = zoneDraftItemSchema.parse({
+      ...opening,
+      adjusted_from_previous: {
+        ...REUSE_ADJUSTMENT_EXAMPLE.dev,
+        severity: 'HIGH',
+        has_guardrail: true,
+        requirements: { helmet: true },
+        surface,
+      },
+    });
+    expect(draft.recommended_severity).toBe('HIGH');
+    const request = draftCreateRequest(draft, [{ name: '창가 개구부 1' }]);
+    expect(request.zone).toMatchObject({
+      op: 'CREATE',
+      body: {
+        severity: 'HIGH',
+        has_guardrail: true,
+        requirements: { helmet: true },
+        polygon_xy: REUSE_ADJUSTMENT_EXAMPLE.dev.polygon_xy,
+      },
+    });
+    expect(request.zone.op === 'CREATE' && request.zone.body.name).not.toBe('창가 개구부 1');
+    expect(request.surface).toEqual({ op: 'CREATE', body: surface });
   });
 });
 

@@ -23,6 +23,24 @@ export function draftReason(item: ZoneDraftItem): string {
     : DRAFT_REASON[item.candidate_kind];
 }
 
+/** 지난 세팅에서 사람이 고친 구역이 붙은 초안 카드의 꼬리표(S15P31A101-864). */
+export const DRAFT_ADJUSTED_LABEL = '지난 세팅에서 크기 조정';
+
+/**
+ * 지난 세팅에서 사람이 고친 구역이 붙은 초안(S15P31A101-864)을 수락하면 만들 크기 글(바닥 가로×세로는 다각형을 덮는 축 정렬 상자, 0.1 m).
+ * 붙은 값이 없으면 null.
+ */
+export function draftAdjustmentText(item: ZoneDraftItem): string | null {
+  const adjusted = item.adjusted_from_previous;
+  if (!adjusted) return null;
+  const xs = adjusted.polygon_xy.map((p) => p[0]);
+  const ys = adjusted.polygon_xy.map((p) => p[1]);
+  const size = `${(Math.max(...xs) - Math.min(...xs)).toFixed(1)}×${(Math.max(...ys) - Math.min(...ys)).toFixed(1)} m`;
+  const { z_min_m: low, z_max_m: high } = adjusted;
+  const height = low != null && high != null ? `, 높이 ${low.toFixed(1)}~${high.toFixed(1)} m` : '';
+  return `지난 세팅에서 고친 크기(${size}${height})로 만들어요.`;
+}
+
 /**
  * 이전 맵 재사용 세션이 그 맵을 만든 세팅의 초안을 받았는지(S15P31A101-844). 재사용은 초안 작업이 새로 돌지 않으므로, 원 세션에도
  * 초안 작업이 없으면(NOT_REQUESTED) 기다리지 않고 「이전 맵 세팅 때도 AI 초안이 없었어요」로 끝낸다.
