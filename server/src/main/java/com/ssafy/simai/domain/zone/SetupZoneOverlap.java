@@ -18,6 +18,8 @@ final class SetupZoneOverlap {
 
     static final double MIN_SHARED_RATIO = 0.5;
     static final double MIN_SIZE_RATIO = 0.25;
+    /** 재사용 구역이 AI 초안을 "품었다"고 볼 초안 넓이 몫(S15P31A101-864, {@link #containedShare}) */
+    static final double MIN_CONTAINED_SHARE = 0.5;
     private static final double EPS = 1e-9;
 
     /** 바닥 다각형(x, y)과 높이 범위(없으면 null) */
@@ -54,6 +56,25 @@ final class SetupZoneOverlap {
             return false;
         }
         return area(clip(carried.polygon(), hull)) >= MIN_SHARED_RATIO * small;
+    }
+
+    /**
+     * inner(AI 초안) 바닥 넓이 중 outer(구역) 안에 든 몫(0~1, S15P31A101-864). 높이 범위가 겹치지 않으면 0 이다.
+     * 초안의 볼록 껍질로 구역 다각형을 잘라 그 넓이를 껍질 넓이로 나눈다(AI 초안은 볼록이라 껍질이 곧 초안이다). 구역은 오목해도 된다.
+     */
+    static double containedShare(Footprint outer, Footprint inner) {
+        if (!heightsOverlap(outer, inner) || outer.polygon().size() < 3) {
+            return 0;
+        }
+        List<double[]> hull = convexHull(inner.polygon());
+        if (hull.size() < 3) {
+            return 0;
+        }
+        double hullArea = area(hull);
+        if (hullArea <= EPS) {
+            return 0;
+        }
+        return Math.min(1, area(clip(outer.polygon(), hull)) / hullArea);
     }
 
     private static boolean heightsOverlap(Footprint a, Footprint b) {

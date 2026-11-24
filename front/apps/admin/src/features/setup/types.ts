@@ -1,4 +1,5 @@
-import { zoneHeightChangeSchema } from '@/features/zones/types';
+import { staticObjectBodySchema } from '@/features/surfaces/types';
+import { zoneBodySchema, zoneHeightChangeSchema } from '@/features/zones/types';
 import { z } from 'zod';
 
 // 세팅 1단계 카메라 각도 헬퍼(GET /api/cameras/coverage-guides, S15P31A101-447, contracts/messages/coverage_guide.schema.json 1.0.0),
@@ -750,6 +751,24 @@ export type ZoneDraftObb = z.infer<typeof zoneDraftObbSchema>;
 
 export const zoneDraftPolygonPointSchema = z.tuple([z.number(), z.number()]);
 
+/**
+ * 이전 맵 재사용 세션에서 이 초안에서 온 구역의 그 맵 때 값(서버 adjusted_from_previous, S15P31A101-864). 사람이 지난 세팅에서 크기·이름·
+ * 심각도를 고친 AI 구역은 「사용자 추가 구역」 채우기에서 빠지고, 이 값이 초안에 붙어 온다. 칸은 구역 만들기 본문과 같고 그 구역의 ID·버전과
+ * 이은 작업면 본문(없으면 null)이 더해진다. 옛 서버·새 맵 세션에는 없다(null).
+ */
+export const zoneDraftAdjustmentSchema = zoneBodySchema.extend({
+  zone_id: z.string().min(1),
+  zone_version: z.number().int(),
+  has_guardrail: z.boolean().nullable().optional().default(null),
+  requirements: z.record(z.string(), z.unknown()).nullable().optional().default(null),
+  surface: staticObjectBodySchema.nullable().optional().default(null),
+});
+export type ZoneDraftAdjustment = z.infer<typeof zoneDraftAdjustmentSchema>;
+
+/** 초안 카드 심각도 표시로 받을 수 있는 값인지(구역의 주의·안내는 카드에서 AI 값을 둔다). */
+const isDraftSeverity = (severity: string): severity is ZoneDraftSeverity =>
+  zoneDraftSeveritySchema.safeParse(severity).success;
+
 export const zoneDraftItemSchema = z
   .object({
     draft_id: z.string().optional(),
@@ -769,11 +788,30 @@ export const zoneDraftItemSchema = z
     vlm_status: vlmOpinionStatusSchema.optional().default('VLM'),
     evidence_cameras: z.array(z.string()).optional().default([]),
     confidence: z.number().min(0).max(1).nullable().optional().default(null),
+    adjusted_from_previous: zoneDraftAdjustmentSchema.nullable().optional().default(null),
   })
-  .transform((item) => ({
-    ...item,
-    no_opinion: item.vlm_status === 'NO_OPINION',
-  }));
+  .transform((item) => {
+    const adjusted = item.adjusted_from_previous;
+    return {
+      ...item,
+      no_opinion: item.vlm_status === 'NO_OPINION',
+      // 지난 세팅에서 사람이 고친 구역이 있으면 카드 이름·심각도·3D 미리보기·높이 표시는 그 값을 쓴다(S15P31A101-864). 수락은
+      // draftCreateRequest 가 adjusted_from_previous 로 만든다. 근거 글(rationale)·후보 종류·신뢰도는 AI 값 그대로다
+      ...(adjusted
+        ? {
+            polygon_xy: adjusted.polygon_xy,
+            z_min_m: adjusted.z_min_m ?? item.z_min_m,
+            z_max_m: adjusted.z_max_m ?? item.z_max_m,
+            recommended_name: adjusted.name.trim() || item.recommended_name,
+            recommended_severity: isDraftSeverity(adjusted.severity)
+              ? adjusted.severity
+              : item.recommended_severity,
+            zone_kind: adjusted.zone_kind,
+            eval_type: adjusted.eval_type,
+          }
+        : {}),
+    };
+  });
 export type ZoneDraftItem = z.infer<typeof zoneDraftItemSchema>;
 export type ZoneDraftItemInput = z.input<typeof zoneDraftItemSchema>;
 

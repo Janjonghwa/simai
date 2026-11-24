@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.setup;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
@@ -518,6 +519,9 @@ class SetupReuseModeIntegrationTest {
         assertThat(drafts.get("drafts")).hasSize(1);
         assertThat(drafts.at("/drafts/0/candidate_id").asString()).isEqualTo("cand-open-1");
         assertThat(drafts.at("/drafts/0/polygon_xy/1/0").asDouble()).isEqualTo(3.0);
+        // zAi 는 수락 본문(단상 개구부 1·CRITICAL)과 이름·심각도가 달라졌으므로 그 맵 때 값을 조정 정보로 붙인다(S15P31A101-864)
+        assertThat(drafts.at("/drafts/0/adjusted_from_previous/zone_id").asString()).isEqualTo(zAi);
+        assertThat(drafts.at("/drafts/0/adjusted_from_previous/name").asString()).isEqualTo("재사용 구역 " + zAi);
         // 재사용 세션에는 초안 작업을 새로 만들지 않는다
         assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_zone_draft_run WHERE setup_session_id = ?::uuid", Integer.class, id))
                 .isZero();
@@ -558,6 +562,104 @@ class SetupReuseModeIntegrationTest {
                 chosen.session())).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT status FROM setup_zone_draft_run WHERE setup_session_id = ?", String.class,
                 chosen.session())).isEqualTo("SUCCEEDED");
+        assertThat(sourcePlan(chosen.session())).isEqualTo(sourcePlanBefore);
+    }
+
+    @Test
+    void 사람이_키운_AI_구역은_수락_기록이_없어도_채우기에서_빼고_초안에_조정_정보를_붙여_그_모양으로_수락한다() throws Exception {
+        // 2026-11-24 운영 값: 원 세션 초안 0.3 x 0.7 m(z 0~0.6205), 지금 구역 2.4 x 2.3 m(z 0~1.4), 원 세션 목록에 AI 수락 기록 없음
+        MapFixture chosen = mapSession("grown", Instant.now().minusSeconds(86400), true, "PASSED");
+        draftRun(chosen.session(), chosen.calibration(), "cand-platform-opening-07",
+                "[[6.3336, 2.99], [6.6336, 2.99], [6.6336, 3.69], [6.3336, 3.69]]", 0.6205);
+        String zGrown = "z-reuse-grown-" + suffix;
+        String zHuman = "z-reuse-grown-human-" + suffix;
+        zone(zGrown, "단상 개구부 1", "POLYGON((5.2 2.25, 7.6 2.25, 7.6 4.55, 5.2 4.55, 5.2 2.25))", 0.0, 1.4);
+        zone(zHuman, "사람 구역", "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))", 0.0, 1.4);
+        for (String z : List.of(zGrown, zHuman)) {
+            jdbc.update("INSERT INTO setup_session_zone (setup_session_id, zone_id, zone_version, created_at) VALUES (?, ?, 1, now())",
+                    chosen.session(), z);
+        }
+        // 원 세션 목록은 사람 항목(MANUAL)으로만 이어졌다(-612 이전 수락이라 AI 기록이 없다)
+        ArrayNode sourceItems = mapper.createArrayNode();
+        sourceItems.addObject().put("zone_id", zGrown).put("source", "MANUAL").putNull("candidate_id");
+        sourceItems.addObject().put("zone_id", zHuman).put("source", "MANUAL").putNull("candidate_id");
+        jdbc.update("""
+                INSERT INTO setup_session_zone_plan (setup_session_id, items, revision, updated_by, updated_at)
+                VALUES (?, ?::jsonb, 2, ?, now())
+                """, chosen.session(), sourceItems.toString(), userId);
+        bundle(chosen.calibration(), List.of(zGrown + ":1", zHuman + ":1"), List.of());
+        tier0Uses(chosen.calibration());
+        view(chosen.scene(), 300, "SAME", 0.0);
+        String sourcePlanBefore = sourcePlan(chosen.session());
+
+        JsonNode created = body(mvc.perform(createReuse(chosen.session())).andExpect(status().isAccepted()).andReturn());
+        String id = created.get("setup_session_id").asString();
+
+        // 초안: 원 세션 초안(0.3 x 0.7) 그대로에 그 초안을 품은 구역의 그 맵 때 모양·이름·심각도를 조정 정보로 붙인다
+        JsonNode drafts = body(mvc.perform(get("/api/setup-sessions/{id}/zone-drafts", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(drafts.get("drafts")).hasSize(1);
+        JsonNode draft = drafts.at("/drafts/0");
+        assertThat(draft.get("candidate_id").asString()).isEqualTo("cand-platform-opening-07");
+        assertThat(draft.at("/polygon_xy/1/0").asDouble()).isEqualTo(6.6336);
+        assertThat(draft.get("z_max_m").asDouble()).isCloseTo(0.6205, within(1e-4));
+        JsonNode adjusted = draft.get("adjusted_from_previous");
+        assertThat(adjusted.get("zone_id").asString()).isEqualTo(zGrown);
+        assertThat(adjusted.get("zone_version").asInt()).isEqualTo(1);
+        assertThat(adjusted.get("name").asString()).isEqualTo("단상 개구부 1");
+        assertThat(adjusted.get("severity").asString()).isEqualTo("CRITICAL");
+        assertThat(adjusted.get("zone_kind").asString()).isEqualTo("OPENING");
+        assertThat(adjusted.get("eval_type").asString()).isEqualTo("VOLUME_3D");
+        assertThat(adjusted.get("z_min_m").asDouble()).isEqualTo(0.0);
+        assertThat(adjusted.get("z_max_m").asDouble()).isEqualTo(1.4);
+        assertThat(adjusted.get("polygon_xy").toString()).isEqualTo("[[5.2,2.25],[7.6,2.25],[7.6,4.55],[5.2,4.55]]");
+        assertThat(adjusted.get("surface").isNull()).isTrue();
+
+        // 채우기: 초안을 품은 구역은 빼고, 초안을 품지 않는 사람 구역은 그대로
+        JsonNode plan = body(mvc.perform(post("/api/setup-sessions/{id}/zones/seed", id).with(adminJwt()))
+                .andExpect(status().isOk()).andReturn());
+        List<String> seeded = new ArrayList<>();
+        plan.get("items").forEach(item -> seeded.add(item.get("zone_id").asString()));
+        assertThat(seeded).containsExactly(zHuman);
+
+        // 수락: 화면은 조정 정보로 본문을 만들어 그 초안 ID 로 AI 항목을 더한다(source AI·candidate_id 유지)
+        ArrayNode items = ((ArrayNode) plan.get("items")).deepCopy();
+        ObjectNode acceptedBody = mapper.createObjectNode();
+        for (String field : List.of("name", "zone_kind", "eval_type", "polygon_xy", "z_min_m", "z_max_m", "severity",
+                "has_guardrail", "requirements")) {
+            acceptedBody.set(field, adjusted.get(field));
+        }
+        items.addObject().putNull("zone_id").put("source", "AI").put("candidate_id", "cand-platform-opening-07")
+                .set("zone", acceptedBody);
+        ObjectNode put = mapper.createObjectNode().put("revision", plan.get("revision").asInt());
+        put.set("items", items);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .put("/api/setup-sessions/{id}/zones", id).with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(put.toString()))
+                .andExpect(status().isOk());
+
+        // 완료: 조정한 모양(2.4 x 2.3, z 0~1.4)으로 새 구역이 생기고 옛 구역은 보관된다(같은 개구부가 둘 남지 않는다)
+        JsonNode done = body(mvc.perform(complete(id)).andExpect(status().isOk()).andReturn());
+        assertThat(done.at("/applied_zones/created")).hasSize(1);
+        assertThat(done.at("/applied_zones/archived").toString()).contains(zGrown);
+        assertThat(done.at("/applied_zones/kept").toString()).contains(zHuman);
+        String newZone = done.at("/applied_zones/created/0").asString();
+        Map<String, Object> row = jdbc.queryForMap("""
+                SELECT name, severity, z_max_m, ST_Area(polygon) AS area, ST_XMin(polygon) AS x_min, ST_XMax(polygon) AS x_max
+                FROM zone WHERE zone_id = ? AND valid_to IS NULL
+                """, newZone);
+        assertThat(row.get("name")).isEqualTo("단상 개구부 1");
+        assertThat(row.get("severity")).isEqualTo("CRITICAL");
+        assertThat(((Number) row.get("z_max_m")).doubleValue()).isCloseTo(1.4, within(1e-6));
+        assertThat(((Number) row.get("area")).doubleValue()).isCloseTo(2.4 * 2.3, within(1e-6));
+        assertThat(((Number) row.get("x_min")).doubleValue()).isCloseTo(5.2, within(1e-6));
+        assertThat(((Number) row.get("x_max")).doubleValue()).isCloseTo(7.6, within(1e-6));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM zone WHERE site_id = ? AND valid_to IS NULL AND name = '단상 개구부 1'",
+                Integer.class, site)).isEqualTo(1);
+
+        // 원 세션의 초안 행·목록 기록은 바꾸지 않는다
+        assertThat(jdbc.queryForObject("SELECT polygon_xy::text FROM setup_zone_draft WHERE setup_session_id = ?", String.class,
+                chosen.session())).contains("6.3336");
         assertThat(sourcePlan(chosen.session())).isEqualTo(sourcePlanBefore);
     }
 
@@ -604,6 +706,11 @@ class SetupReuseModeIntegrationTest {
 
     /** 그 세팅의 끝난 초안 작업 하나와 초안 하나(높이 0~1.4 m 개구부) */
     private void draftRun(UUID session, String calibration, String candidateId, String polygonXy) {
+        draftRun(session, calibration, candidateId, polygonXy, 1.4);
+    }
+
+    /** 그 세팅의 끝난 초안 작업 하나와 초안 하나(높이 0~zMax m 개구부) */
+    private void draftRun(UUID session, String calibration, String candidateId, String polygonXy, double zMax) {
         String job = "job-reuse-draft-" + session.toString().substring(0, 8) + "-" + suffix;
         jdbc.update("INSERT INTO analysis_job(job_id,job_type,priority,status,attempt,max_attempts,timeout_ms,input,created_at)"
                 + " VALUES (?, 'vlm_zone_draft','BACKGROUND','SUCCEEDED',1,1,1000,'{}'::jsonb, now())", job);
@@ -617,9 +724,9 @@ class SetupReuseModeIntegrationTest {
                 INSERT INTO setup_zone_draft (draft_id, draft_run_id, setup_session_id, job_id, draft_index, candidate_id,
                     candidate_kind, zone_kind, eval_type, polygon_xy, z_min_m, z_max_m, recommended_name, recommended_severity,
                     rationale, vlm_status)
-                VALUES (?, ?, ?, ?, 0, ?, 'OPENING', 'OPENING', 'VOLUME_3D', ?::jsonb, 0, 1.4, '단상 개구부', 'CRITICAL',
+                VALUES (?, ?, ?, ?, 0, ?, 'OPENING', 'OPENING', 'VOLUME_3D', ?::jsonb, 0, ?, '단상 개구부', 'CRITICAL',
                     '단상 둘레가 트여 있어요.', 'VLM')
-                """, UUID.randomUUID(), run, session, job, candidateId, polygonXy);
+                """, UUID.randomUUID(), run, session, job, candidateId, polygonXy, zMax);
     }
 
     /** 세팅 구역 목록 항목의 구역 본문(입체 판정 0~1.4 m) */
@@ -722,6 +829,15 @@ class SetupReuseModeIntegrationTest {
                 VALUES (?, ?, ?, ?, 'HAZARD', 'GROUND_FOOTPRINT', ST_GeomFromText(?, 0), 'HIGH', now() - interval '3 days',
                     CASE WHEN ? THEN NULL ELSE now() END)
                 """, id, version, site, "재사용 구역 " + id, wkt, active);
+    }
+
+    /** 관제 중인 개구부 구역 v1(입체 판정, 위험) */
+    private void zone(String id, String name, String wkt, double zMin, double zMax) {
+        jdbc.update("""
+                INSERT INTO zone (zone_id, zone_version, site_id, name, zone_kind, eval_type, polygon, z_min_m, z_max_m, severity,
+                    valid_from, valid_to)
+                VALUES (?, 1, ?, ?, 'OPENING', 'VOLUME_3D', ST_GeomFromText(?, 0), ?, ?, 'CRITICAL', now() - interval '3 days', NULL)
+                """, id, site, name, wkt, zMin, zMax);
     }
 
     private void surface(String id, int version, String zoneId, boolean active) {

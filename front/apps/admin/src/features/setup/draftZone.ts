@@ -1,5 +1,5 @@
 import { boxOfDraftItem } from '@/features/setup/setup';
-import type { ZoneDraftItem } from '@/features/setup/types';
+import type { ZoneDraftAdjustment, ZoneDraftItem } from '@/features/setup/types';
 import { geometryErrors, wrapYaw } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry } from '@/features/surfaces/types';
 import type { ViewerEditBox } from '@/features/viewer3d';
@@ -201,6 +201,8 @@ function planOf(
   zones: readonly Pick<Zone, 'name'>[] = [],
   snap = true,
 ): DraftZonePlan {
+  const adjusted = item.adjusted_from_previous;
+  if (adjusted) return adjustedPlanOf(item, adjusted, zones);
   const geometry = draftSurfaceGeometry(item, snap);
   const name =
     item.candidate_id === 'demo-opening-stage'
@@ -229,13 +231,61 @@ function planOf(
 }
 
 /**
+ * 지난 세팅에서 사람이 고친 구역이 붙은 초안(S15P31A101-864): 그 구역의 모양·높이 그대로(넓히거나 축에 맞추지 않는다), 이름은 그 구역
+ * 이름(활성 구역과 겹치면 구분자), 판정·종류·심각도도 그 구역 값이다. 작업면은 draftCreateRequest 가 그 구역의 작업면 본문으로 붙인다.
+ */
+function adjustedPlanOf(
+  item: ZoneDraftItem,
+  adjusted: ZoneDraftAdjustment,
+  zones: readonly Pick<Zone, 'name'>[],
+): DraftZonePlan {
+  const name = uniqueZoneName(
+    adjusted.name,
+    zones,
+    adjusted.surface ? 'surface' : NAME_KIND_OF[item.candidate_kind],
+  );
+  return {
+    form: {
+      name,
+      judgeType: adjusted.eval_type,
+      zoneType: adjusted.zone_kind,
+      severity: adjusted.severity,
+    },
+    shape: {
+      polygon_xy: adjusted.polygon_xy.map(([x, y]): [number, number] => [x, y]),
+      z_min_m: adjusted.z_min_m,
+      z_max_m: adjusted.z_max_m,
+    },
+    surface: null,
+  };
+}
+
+/**
  * 초안을 수락할 때 보낼 구역 만들기 요청(관제의 구역 추가와 같은 POST /api/zones/commit). zones 는 이름이 겹치지 않게 볼 활성
- * 구역이다.
+ * 구역이다. 지난 세팅에서 고친 구역이 붙은 초안(-864)은 그 구역 본문(난간·요구 조건 포함)과 이은 작업면 본문 그대로 만든다. 세팅 구역
+ * 단계에서는 이 요청이 source AI·candidate_id 그대로 세션 구역 목록 항목이 된다(useAcceptZoneDraft).
  */
 export const draftCreateRequest = (
   item: ZoneDraftItem,
   zones: readonly Pick<Zone, 'name'>[] = [],
-): ZoneCommitRequest => createRequestOf(planOf(item, zones));
+): ZoneCommitRequest => {
+  const adjusted = item.adjusted_from_previous;
+  if (!adjusted) return createRequestOf(planOf(item, zones));
+  const { form, shape } = adjustedPlanOf(item, adjusted, zones);
+  const zone = {
+    op: 'CREATE',
+    body: {
+      name: form.name,
+      zone_kind: form.zoneType,
+      eval_type: form.judgeType,
+      ...shape,
+      severity: form.severity,
+      has_guardrail: adjusted.has_guardrail,
+      requirements: adjusted.requirements && { ...adjusted.requirements },
+    },
+  } as const;
+  return adjusted.surface ? { zone, surface: { op: 'CREATE', body: adjusted.surface } } : { zone };
+};
 
 /**
  * 초안을 수락하면 만들 구역의 바닥 다각형과 높이(S15P31A101-758). 이어 온 구역과 같은 자리인지 볼 때 쓴다(zoneOverlap).
